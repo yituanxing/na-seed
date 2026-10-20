@@ -687,7 +687,9 @@ struct linux_stat {
 _Static_assert(sizeof(struct linux_stat) == 144, "Linux x86-64 stat ABI");
 static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
     if (fd >= 64 || !descriptors[fd]) return (uint64_t)-9;
-    struct linux_stat st = {0};
+    struct linux_stat st;
+    volatile uint8_t *bytes = (volatile uint8_t *)&st;
+    for (unsigned i = 0; i < sizeof(st); i++) bytes[i] = 0;
     st.nlink = 1;
     st.blksize = PAGE;
     if (descriptors[fd] == FD_BOOTFS) {
