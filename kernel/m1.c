@@ -24,12 +24,12 @@
 #define user_fs_base TASK.user_fs_base
 #define descriptors TASK.fds.descriptors
 #define file_slot TASK.fds.file_slot
-#define file_refcount TASK.fds.file_refcount
+#define file_refcount nas_file_refcount
 #define fd_cloexec TASK.fds.fd_cloexec
-#define file_status_flags TASK.fds.file_status_flags
+#define file_status_flags nas_file_status_flags
 #define boot_files TASK.fds.boot_files
 #define boot_entries TASK.fds.boot_entries
-#define boot_file_offsets TASK.fds.boot_file_offsets
+#define boot_file_offsets nas_boot_file_offsets
 #define current_workdir TASK.cwd
 #define blocked_signals TASK.blocked_signals
 #define signal_actions TASK.signal_actions
@@ -226,6 +226,48 @@ static bool reclaim_user_root(uint64_t pa) {
 static void switch_user_root(uint64_t pa) {
     root_phys = pa;
     __asm__ volatile ("mov %0, %%cr3" : : "r"(pa) : "memory");
+}
+
+
+/* Copy every PRESENT user page into independent physical frames.
+ * This is eager fork, not COW: parent/child writes must not alias.
+ * Lower-half mappings are 4K; huge user mappings are not implemented.
+ * On partial OOM, reclaim_user_root() frees exactly the created tree.
+ */
+static bool clone_user_level(uint64_t source_pa, uint64_t dest_pa,
+                             unsigned depth, unsigned entries) {
+    uint64_t *source = phys_table(source_pa);
+    uint64_t *dest = phys_table(dest_pa);
+    for (unsigned i = 0; i < entries; ++i) {
+        uint64_t e = source[i];
+        if (!(e & P_PRESENT)) continue;
+        if (!(e & P_USER) || (e & (1ULL << 7))) return false;
+        uint64_t child_pa = nas_frame_alloc();
+        if (!child_pa) return false;
+        dest[i] = child_pa | (e & ~PHYS_MASK);
+        if (depth) {
+            if (!clone_user_level(e & PHYS_MASK, child_pa, depth - 1, 512))
+                return false;
+        } else {
+            uint64_t *from = phys_table(e & PHYS_MASK);
+            uint64_t *to = phys_table(child_pa);
+            for (unsigned n = 0; n < PAGE / 8; n++) to[n] = from[n];
+        }
+    }
+    return true;
+}
+static uint64_t fork_copy_user_root(void) {
+    uint64_t destination = alloc_user_root();
+    if (!destination) return 0;
+    if (clone_user_level(root_phys, destination, 3, 256)) return destination;
+    if (!reclaim_user_root(destination))
+        fail("fork private page rollback corrupted");
+    return 0;
+}
+static void task_restore_cpu(const struct nas_task *task) {
+    __asm__ volatile("mov %0, %%cr3" : : "r"(task->root_phys) : "memory");
+    wrmsr(0xc0000100, task->user_fs_base);
+    __asm__ volatile("fxrstor64 %0" : : "m"(task->fpu_state) : "memory");
 }
 
 static uint64_t *user_leaf(uint64_t va, bool allocate_tables) {
@@ -1414,6 +1456,81 @@ static uint64_t sys_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     fail("execve iretq returned unexpectedly");
 }
 
+
+/* A cooperative, child-first fork implementation: user processes overlap in
+ * lifetime but the sole CPU never context-switches with a kernel call live.
+ * Syscall entry saves all 15 GPRs in the kernel-owned trap frame; the parent
+ * resumes at its original fork return after its child exits. This policy
+ * is sufficient for ordinary non-pipelined ash commands, NOT for blocking
+ * pipes, background jobs, SMP, or timer preemption.
+ */
+static uint64_t sys_fork(uint64_t *frame) {
+    struct nas_task *parent = nas_current_task;
+    __asm__ volatile("fxsave64 %0" : "=m"(parent->fpu_state) : : "memory");
+    struct nas_task *child = nas_task_fork_slot();
+    if (!child) return (uint64_t)-EAGAIN;
+    uint64_t new_root = fork_copy_user_root();
+    if (!new_root) {
+        nas_task_release(child);
+        return (uint64_t)-ENOMEM;
+    }
+    child->root_phys = new_root;
+    /* FD tables are per-task. Each FD entry points to a shared open-file
+     * description and the two tasks must agree on its offset and flags.
+     */
+    for (unsigned fd = 0; fd < NAS_FD_LIMIT; fd++)
+        if (child->fds.descriptors[fd] != FD_CLOSED) {
+            unsigned slot = child->fds.file_slot[fd];
+            if (!file_refcount[slot]) fail("fork dangling open-file slot");
+            file_refcount[slot]++;
+        }
+    parent->resume_user_rsp = syscall_user_rsp;
+    for (unsigned i = 0; i < 15; i++) parent->resume_regs[i] = frame[i];
+    parent->resume_regs[0] = child->pid; /* fork returns PID to parent */
+    parent->resume_valid = true;
+    parent->state = NAS_TASK_READY;
+    child->state = NAS_TASK_RUNNING;
+    nas_current_task = child;
+    task_restore_cpu(child);
+    nas_print("[PROC] fork parent="); nas_dec(parent->pid);
+    nas_print(" child="); nas_dec(child->pid); nas_print("\n");
+    return 0; /* fork returns zero in the child */
+}
+static uint64_t sys_wait4(uint64_t desired, uint64_t status_addr,
+                           uint64_t options, uint64_t rusage) {
+    if (options & ~1ULL) return (uint64_t)-EINVAL;
+    if (rusage) return (uint64_t)-EOPNOTSUPP;
+    bool have_child = false;
+    /* POSIX -1 waits for any child; direct positive PID is also valid.
+     * This first model only supports a single process group.
+     */
+    if ((int64_t)desired == 0 || (int64_t)desired < -1)
+        return (uint64_t)-EOPNOTSUPP;
+    for (uint64_t pid = 2; pid < 0x10000; ++pid) {
+        struct nas_task *child = nas_task_by_pid(pid);
+        if (!child || child->ppid != TASK.pid) continue;
+        if (desired != UINT64_MAX && desired != pid) continue;
+        have_child = true;
+        if (child->state != NAS_TASK_ZOMBIE) continue;
+        uint64_t code = (child->exit_code & 255U) << 8;
+        if (status_addr) {
+            uint8_t status_bytes[4] = {
+                (uint8_t)code, (uint8_t)(code >> 8), 0, 0
+            };
+            if (!user_write_bytes(status_addr, status_bytes, 4))
+                return (uint64_t)-EFAULT;
+        }
+        if (!reclaim_user_root(child->root_phys))
+            fail("wait4 failed to reclaim child address space");
+        nas_print("[PROC] wait4 reaped pid="); nas_dec(pid);
+        nas_print(" status="); nas_dec(code); nas_print("\\n");
+        nas_task_release(child);
+        return pid;
+    }
+    return have_child ? ((options & 1) ? 0 : (uint64_t)-EOPNOTSUPP)
+                      : (uint64_t)-ECHILD;
+}
+
 /* Strict single-program ABI diagnostic dispatcher, for a real syscall gate. */
 uint64_t syscall_dispatch(const uint64_t *args) {
     uint64_t nr = args[0];
@@ -1468,6 +1585,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == __NR_rt_sigprocmask) return sys_sigprocmask(args[1], args[2], args[3], args[4]);
     if (nr == __NR_uname) return sys_uname_naseed(args[1]);
     if (nr == __NR_getcwd) return sys_getcwd_root(args[1], args[2]);
+    if (nr == __NR_fork) return sys_fork((uint64_t *)(uintptr_t)args);
+    if (nr == __NR_wait4) return sys_wait4(args[1], args[2], args[3], args[4]);
     if (nr == __NR_execve) return sys_execve(args[1], args[2], args[3]);
     if (nr == __NR_fcntl) return sys_fcntl(args[1], args[2], args[3]);
     if (nr == __NR_poll) return sys_poll(args[1], args[2], args[3]);
@@ -1485,6 +1604,28 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == __NR_exit || nr == __NR_exit_group) { /* exit / exit_group */
         TASK.exit_code = (uint32_t)(args[1] & 255ULL);
         TASK.state = NAS_TASK_ZOMBIE;
+        if (TASK.ppid) {
+            struct nas_task *child = nas_current_task;
+            struct nas_task *parent = nas_task_by_pid(child->ppid);
+            if (!parent || !parent->resume_valid)
+                fail("child exited without valid parent continuation");
+            for (unsigned fd = 0; fd < NAS_FD_LIMIT; fd++)
+                if (descriptors[fd] != FD_CLOSED) fd_close_raw(fd);
+            __asm__ volatile("fxsave64 %0" : "=m"(child->fpu_state) : : "memory");
+            for (unsigned i = 0; i < 15; i++)
+                ((uint64_t *)(uintptr_t)args)[i] = parent->resume_regs[i];
+            syscall_user_rsp = parent->resume_user_rsp;
+            uint64_t result = parent->resume_regs[0];
+            parent->resume_valid = false;
+            parent->state = NAS_TASK_RUNNING;
+            nas_current_task = parent;
+            task_restore_cpu(parent);
+            nas_print("[PROC] child exited pid="); nas_dec(child->pid);
+            nas_print(" status="); nas_dec(child->exit_code);
+            nas_print("; parent resumed pid="); nas_dec(parent->pid);
+            nas_print("\\n");
+            return result;
+        }
         nas_print("[EXIT] user status="); nas_dec(args[1]); nas_print("\n");
         /* In cmdline-driven tests, the host verifies real stdout and status.
          * Do not encode applet-specific success checks into the kernel.
