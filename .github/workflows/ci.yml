@@ -53,6 +53,8 @@ jobs:
         run: make ash-diagnostic
       - name: Unmodified Alpine BusyBox ash execve CPIO process replacement
         run: make ash-execve-probe
+      - name: Real BusyBox ash fork, execve, wait4 and parent continuation
+        run: make ash-fork-probe
       - name: Attach serial log on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -69,4 +71,5 @@ jobs:
             build/alpine-selector-*-serial.log
             build/ash-diag-*-serial.log
             build/ash-exec-*-serial.log
+            build/ash-fork-*-serial.log
           if-no-files-found: ignore
