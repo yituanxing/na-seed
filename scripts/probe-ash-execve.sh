@@ -18,8 +18,8 @@ for scenario in cat echo execbuiltin missing; do
              expect='naseed'
              execpath='/bin/busybox'
              good=yes ;;
-        missing) args="sh -c 'if /bin/does-not-exist; then echo incorrectly-ok; else echo missing-ok; fi'"
-             expect='missing-ok'
+        missing) args="sh -c 'exec /bin/does-not-exist'"
+             expect='[EXIT] user status=127'
              good=no ;;
     esac
     stage="build/ash-exec-$scenario-iso"
@@ -41,25 +41,34 @@ for scenario in cat echo execbuiltin missing; do
     rc=0
     timeout 10s sh scripts/run.sh "$iso" > "$log" 2>&1 || rc=$?
     tr -d '\r' < "$log" > "$clean"
-    if [ "$rc" -ne 1 ] ||
-       ! grep -Fxq "$expect" "$clean" ||
-       ! grep -Fq '[EXIT] user status=0' "$clean" ||
-       ! grep -Fq '[PASS] cmdline userspace exit 0' "$clean"; then
-        echo "[FAIL] real ash execve scenario=$scenario" >&2
-        tail -120 "$clean" >&2
-        exit 1
-    fi
     if [ "$good" = yes ]; then
+        if [ "$rc" -ne 1 ] ||
+           ! grep -Fxq "$expect" "$clean" ||
+           ! grep -Fq '[EXIT] user status=0' "$clean" ||
+           ! grep -Fq '[PASS] cmdline userspace exit 0' "$clean"; then
+            echo "[FAIL] real ash execve scenario=$scenario" >&2
+            tail -120 "$clean" >&2
+            exit 1
+        fi
         if ! grep -Fq "[EXEC] replaced process with CPIO ELF: $execpath" "$clean"; then
             echo '[FAIL] syscall execve did not replace the image' >&2
             tail -120 "$clean" >&2
             exit 1
         fi
-    elif grep -Fq '[EXEC] replaced process with CPIO ELF:' "$clean" ||
-         grep -Fxq incorrectly-ok "$clean"; then
-        echo '[FAIL] missing executable incorrectly reported success' >&2
-        tail -120 "$clean" >&2
-        exit 1
+    else
+        # A real shell exec builtin exits 127 when Linux execve returns
+        # ENOENT. NaSeed's diagnostic fail-stop for nonzero boot program
+        # exit requires the timeout; it must NOT log image replacement.
+        if [ "$rc" -ne 124 ] ||
+           ! grep -Fq 'does-not-exist' "$clean" ||
+           ! grep -Fq "$expect" "$clean" ||
+           ! grep -Fq '[FAIL] M1 cmdline userspace exited nonzero' "$clean" ||
+           grep -Fq '[EXEC] replaced process with CPIO ELF:' "$clean" ||
+           grep -Fq '[PASS] cmdline userspace exit 0' "$clean"; then
+            echo '[FAIL] missing executable did not return real ENOENT to ash' >&2
+            tail -120 "$clean" >&2
+            exit 1
+        fi
     fi
     echo "[ACCEPTED] original BusyBox ash real execve scenario=$scenario"
 done
