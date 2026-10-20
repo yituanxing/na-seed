@@ -381,6 +381,62 @@ static bool parse_boot_argv(const char *cmdline,
     boot_argv_override = true;
     return true;
 }
+#define NAS_ENV_MAX 16
+static bool build_user_stack(const char *const *args, unsigned argc,
+                             const char *const *vars, unsigned envc,
+                             const char *execfn, uint64_t *out_sp) {
+    uint64_t sp = USER_STACK_TOP;
+    uint64_t arg_ptrs[NAS_ARGV_MAX], env_ptrs[NAS_ENV_MAX];
+    uint64_t execfn_ptr;
+    if (argc > NAS_ARGV_MAX || envc > NAS_ENV_MAX) return false;
+    uint32_t lo, hi;
+    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+    uint64_t tsc = (uint64_t)lo | ((uint64_t)hi << 32);
+    /* Noncryptographic boot seed for AT_RANDOM. Add real entropy later. */
+    uint64_t random_bytes[2] = {
+        tsc ^ (uint64_t)(uintptr_t)&tss,
+        (tsc << 17) ^ nas_hhdm_offset()
+    };
+    sp -= sizeof(random_bytes);
+    if (!user_copy_in(sp, (const uint8_t *)random_bytes,
+                      sizeof(random_bytes))) return false;
+    uint64_t random_address = sp;
+    if (!put_stack_string(&sp, execfn, &execfn_ptr)) return false;
+    for (unsigned i = 0; i < envc; i++)
+        if (!put_stack_string(&sp, vars[i], &env_ptrs[i])) return false;
+    for (unsigned i = 0; i < argc; i++)
+        if (!put_stack_string(&sp, args[i], &arg_ptrs[i])) return false;
+
+    /* argc | argv[] NULL | envp[] NULL | auxv pairs | AT_NULL */
+    uint64_t words[96];
+    unsigned n = 0;
+    words[n++] = argc;
+    for (unsigned i = 0; i < argc; i++) words[n++] = arg_ptrs[i];
+    words[n++] = 0;
+    for (unsigned i = 0; i < envc; i++) words[n++] = env_ptrs[i];
+    words[n++] = 0;
+#define AUX(key, value) do { words[n++] = (key); words[n++] = (value); } while (0)
+    AUX(3, loaded_phdr);      /* AT_PHDR */
+    AUX(4, sizeof(struct elf_phdr)); /* AT_PHENT */
+    AUX(5, loaded_phnum);     /* AT_PHNUM */
+    AUX(6, PAGE);             /* AT_PAGESZ */
+    AUX(7, loaded_interp_base); /* AT_BASE: real interpreter */
+    AUX(9, loaded_main_entry); /* AT_ENTRY: main ELF */
+    AUX(11, 0); AUX(12, 0);   /* UID / EUID */
+    AUX(13, 0); AUX(14, 0);   /* GID / EGID */
+    AUX(23, 0);               /* AT_SECURE */
+    AUX(25, random_address);  /* AT_RANDOM */
+    AUX(31, execfn_ptr);    /* AT_EXECFN */
+    AUX(0, 0);                /* AT_NULL */
+#undef AUX
+    uint64_t byte_count = n * sizeof(uint64_t);
+    if (sp < USER_STACK_TOP - USER_STACK_PAGES * PAGE + byte_count + 16)
+        return false;
+    sp = (sp - byte_count) & ~15ULL;
+    if (!user_copy_in(sp, (const uint8_t *)words, byte_count)) return false;
+    *out_sp = sp;
+    return true;
+}
 static bool build_linux_stack(bool bash, bool busybox, uint64_t *out_sp) {
     static const char * const args_bash[] = {
         "/bin/bash", "--noprofile", "--norc", "-c", "echo hello"
@@ -405,54 +461,7 @@ static bool build_linux_stack(bool bash, bool busybox, uint64_t *out_sp) {
         nas_print(cmdline);
         nas_print("\n");
     }
-    uint64_t sp = USER_STACK_TOP;
-    uint64_t arg_ptrs[NAS_ARGV_MAX], env_ptrs[4];
-    uint32_t lo, hi;
-    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
-    uint64_t tsc = (uint64_t)lo | ((uint64_t)hi << 32);
-    /* Noncryptographic boot seed for AT_RANDOM. Add real entropy later. */
-    uint64_t random_bytes[2] = {
-        tsc ^ (uint64_t)(uintptr_t)&tss,
-        (tsc << 17) ^ nas_hhdm_offset()
-    };
-    sp -= sizeof(random_bytes);
-    if (!user_copy_in(sp, (const uint8_t *)random_bytes,
-                      sizeof(random_bytes))) return false;
-    uint64_t random_address = sp;
-    for (unsigned i = 0; i < 4; i++)
-        if (!put_stack_string(&sp, vars[i], &env_ptrs[i])) return false;
-    for (unsigned i = 0; i < argc; i++)
-        if (!put_stack_string(&sp, args[i], &arg_ptrs[i])) return false;
-
-    /* argc | argv[] NULL | envp[] NULL | auxv pairs | AT_NULL */
-    uint64_t words[64];
-    unsigned n = 0;
-    words[n++] = argc;
-    for (unsigned i = 0; i < argc; i++) words[n++] = arg_ptrs[i];
-    words[n++] = 0;
-    for (unsigned i = 0; i < 4; i++) words[n++] = env_ptrs[i];
-    words[n++] = 0;
-#define AUX(key, value) do { words[n++] = (key); words[n++] = (value); } while (0)
-    AUX(3, loaded_phdr);      /* AT_PHDR */
-    AUX(4, sizeof(struct elf_phdr)); /* AT_PHENT */
-    AUX(5, loaded_phnum);     /* AT_PHNUM */
-    AUX(6, PAGE);             /* AT_PAGESZ */
-    AUX(7, loaded_interp_base); /* AT_BASE: real interpreter */
-    AUX(9, loaded_main_entry); /* AT_ENTRY: main ELF */
-    AUX(11, 0); AUX(12, 0);   /* UID / EUID */
-    AUX(13, 0); AUX(14, 0);   /* GID / EGID */
-    AUX(23, 0);               /* AT_SECURE */
-    AUX(25, random_address);  /* AT_RANDOM */
-    AUX(31, arg_ptrs[0]);    /* AT_EXECFN */
-    AUX(0, 0);                /* AT_NULL */
-#undef AUX
-    uint64_t byte_count = n * sizeof(uint64_t);
-    if (sp < USER_STACK_TOP - USER_STACK_PAGES * PAGE + byte_count + 16)
-        return false;
-    sp = (sp - byte_count) & ~15ULL;
-    if (!user_copy_in(sp, (const uint8_t *)words, byte_count)) return false;
-    *out_sp = sp;
-    return true;
+    return build_user_stack(args, argc, vars, 4, args[0], out_sp);
 }
 static bool busybox_module(const struct limine_file *file) {
     if (!file || !file->path) return false;
