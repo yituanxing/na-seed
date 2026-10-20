@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include "nr.h"
 #include "errno.h"
+#include "bootfs.h"
 
 /* Single-core M1: run a REAL static ELF from a Limine module in ring 3.
  * The new process CR3 preserves Limine's supervisor upper-half/HHDM mappings.
@@ -575,7 +576,8 @@ static uint64_t sys_arch_prctl(uint64_t op, uint64_t address) {
  * No fake TTY, disk, /proc, or filesystem contents are supplied.
  */
 extern void nas_putchar(char c);
-enum { FD_CLOSED = 0, FD_UART = 1, FD_NULL = 2, FD_ZERO = 3, FD_BOOTFS = 4 };
+enum { FD_CLOSED = 0, FD_UART = 1, FD_NULL = 2, FD_ZERO = 3,
+       FD_BOOTFS = 4, FD_ARCHIVE = 5, FD_DIR = 6 };
 static bool same_string(const char *a, const char *b);
 static uint8_t descriptors[64];
 /* Read-only boot filesystem backed by bytes of the actual Limine modules.
@@ -583,6 +585,7 @@ static uint8_t descriptors[64];
  */
 static const struct limine_file *boot_files[64];
 static uint64_t boot_file_offsets[64];
+static const struct bootfs_entry *boot_entries[64];
 static const struct limine_file *bootfs_lookup(const char *path) {
     if (same_string(path, "/bin/busybox")) return nas_module(0);
     if (same_string(path, "/lib/ld-musl-x86_64.so.1") ||
@@ -629,37 +632,93 @@ static bool same_string(const char *a, const char *b) {
     for (; *a && *b; a++, b++) if (*a != *b) return false;
     return *a == *b;
 }
-static uint64_t sys_open_device(uint64_t pathname, uint64_t flags) {
-    char path[256];
-    unsigned i = 0;
+/* Resolve absolute and dirfd-relative Linux paths. chdir/symlinks are not
+ * implemented, but dot components and root traversal are normalized.
+ */
+static uint64_t resolve_path(uint64_t dirfd, uint64_t pathname, char out[256]) {
+    char src[256];
+    unsigned n = 0;
     if (pathname >= USER_LIMIT) return (uint64_t)-EFAULT;
-    for (; i < sizeof(path) - 1; i++) {
-        uint8_t *p = user_byte(pathname + i);
+    for (; n < sizeof(src); n++) {
+        uint8_t *p = user_byte(pathname + n);
         if (!p) return (uint64_t)-EFAULT;
-        path[i] = (char)*p;
-        if (path[i] == 0) break;
+        src[n] = (char)*p;
+        if (!src[n]) break;
     }
-    if (i == sizeof(path) - 1) return (uint64_t)-ENAMETOOLONG; /* ENAMETOOLONG */
-    if (same_string(path, "/dev/tty")) return (uint64_t)-ENXIO; /* ENXIO */
+    if (n == sizeof(src)) return (uint64_t)-ENAMETOOLONG;
+    if (!n) return (uint64_t)-ENOENT;
+    unsigned used = 1;
+    out[0] = '/';
+    if (src[0] != '/' && dirfd != (uint64_t)-100) {
+        if (dirfd >= 64 || descriptors[dirfd] == FD_CLOSED)
+            return (uint64_t)-EBADF;
+        if (descriptors[dirfd] != FD_DIR || !boot_entries[dirfd])
+            return (uint64_t)-ENOTDIR;
+        const char *base = boot_entries[dirfd]->path;
+        for (unsigned i = 1; base[i]; i++) {
+            if (used + 1 >= 256) return (uint64_t)-ENAMETOOLONG;
+            out[used++] = base[i];
+        }
+    }
+    for (unsigned pos = 0; pos < n;) {
+        while (pos < n && src[pos] == '/') pos++;
+        unsigned start = pos;
+        while (pos < n && src[pos] != '/') pos++;
+        unsigned len = pos - start;
+        if (!len || (len == 1 && src[start] == '.')) continue;
+        if (len == 2 && src[start] == '.' && src[start + 1] == '.') {
+            if (used > 1) {
+                while (used > 1 && out[used - 1] != '/') used--;
+                if (used > 1) used--;
+            }
+            continue;
+        }
+        if (used + len + 1 >= 256) return (uint64_t)-ENAMETOOLONG;
+        if (used != 1) out[used++] = '/';
+        for (unsigned i = 0; i < len; i++) out[used++] = src[start + i];
+    }
+    out[used] = 0;
+    return 0;
+}
+static uint64_t sys_open_path(const char *path, uint64_t flags) {
+    const uint64_t permitted = 3ULL | 0x800ULL | 0x8000ULL |
+                               0x10000ULL | 0x80000ULL | 0x100ULL |
+                               0x40ULL | 0x200ULL | 0x400ULL;
+    if (flags & ~permitted) return (uint64_t)-EINVAL;
+    if (same_string(path, "/dev/tty")) return (uint64_t)-ENXIO;
     uint8_t kind = FD_CLOSED;
-    if (same_string(path, "/dev/null")) kind = FD_NULL;
-    if (same_string(path, "/dev/zero")) kind = FD_ZERO;
+    const struct bootfs_entry *entry = 0;
     const struct limine_file *real_file = 0;
-    if (running_alpine && !kind) {
-        real_file = bootfs_lookup(path);
-        if (real_file) kind = FD_BOOTFS;
+    if (same_string(path, "/dev/null")) kind = FD_NULL;
+    else if (same_string(path, "/dev/zero")) kind = FD_ZERO;
+    else if (bootfs_mounted() && (entry = bootfs_find(path))) {
+        kind = bootfs_is_dir(entry) ? FD_DIR : FD_ARCHIVE;
+    } else if (running_alpine && (real_file = bootfs_lookup(path))) {
+        kind = FD_BOOTFS; /* Legacy M4 module mapping. */
     }
-    if (!kind) return (uint64_t)-ENOENT; /* ENOENT, path does not exist */
-    if (flags & (0x40ULL | 0x200ULL)) return (uint64_t)-EROFS; /* EROFS */
-    if (kind == FD_BOOTFS && (flags & 3)) return (uint64_t)-EACCES; /* EACCES */
+    if (!kind) return (flags & 0x40ULL) && bootfs_mounted()
+        ? (uint64_t)-EROFS : (uint64_t)-ENOENT;
+    if ((flags & 0x10000ULL) && kind != FD_DIR)
+        return (uint64_t)-ENOTDIR;
+    if (flags & (0x40ULL | 0x200ULL | 0x400ULL))
+        return (uint64_t)-EROFS;
+    if ((kind == FD_ARCHIVE || kind == FD_DIR || kind == FD_BOOTFS) &&
+        (flags & 3ULL)) return kind == FD_DIR ? (uint64_t)-EISDIR :
+                                                  (uint64_t)-EACCES;
     for (unsigned fd = 3; fd < 64; fd++) {
         if (descriptors[fd] != FD_CLOSED) continue;
         descriptors[fd] = kind;
         boot_files[fd] = real_file;
+        boot_entries[fd] = entry;
         boot_file_offsets[fd] = 0;
         return fd;
     }
-    return (uint64_t)-EMFILE; /* EMFILE */
+    return (uint64_t)-EMFILE;
+}
+static uint64_t sys_open_device(uint64_t pathname, uint64_t flags) {
+    char path[256];
+    uint64_t result = resolve_path((uint64_t)-100, pathname, path);
+    return (int64_t)result < 0 ? result : sys_open_path(path, flags);
 }
 static uint64_t sys_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     if (fd >= 64 || descriptors[fd] == FD_CLOSED) return (uint64_t)-EBADF;
@@ -667,7 +726,8 @@ static uint64_t sys_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
         address >= USER_LIMIT || length > USER_LIMIT - address)
         return (uint64_t)-EFAULT;
     if (descriptors[fd] == FD_NULL || descriptors[fd] == FD_ZERO) return length;
-    if (descriptors[fd] == FD_BOOTFS) return (uint64_t)-EBADF; /* EBADF, O_RDONLY */
+    if (descriptors[fd] == FD_BOOTFS || descriptors[fd] == FD_ARCHIVE ||
+        descriptors[fd] == FD_DIR) return (uint64_t)-EBADF; /* O_RDONLY */
     if (descriptors[fd] != FD_UART) return (uint64_t)-EBADF;
     for (uint64_t i = 0; i < length; i++) {
         uint8_t *p = user_byte(address + i);
@@ -680,6 +740,19 @@ static uint64_t sys_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
 static uint64_t sys_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     if (fd >= 64 || descriptors[fd] == FD_CLOSED) return (uint64_t)-EBADF;
     if (descriptors[fd] == FD_NULL) return 0;
+    if (descriptors[fd] == FD_DIR) return (uint64_t)-EISDIR;
+    if (descriptors[fd] == FD_ARCHIVE) {
+        const struct bootfs_entry *entry = boot_entries[fd];
+        if (!entry) return (uint64_t)-EBADF;
+        uint64_t start = boot_file_offsets[fd];
+        if (start >= entry->size) return 0;
+        uint64_t available = entry->size - start;
+        if (length > available) length = available;
+        if (!user_write_bytes(address, entry->data + start, length))
+            return (uint64_t)-EFAULT;
+        boot_file_offsets[fd] += length;
+        return length;
+    }
     if (descriptors[fd] == FD_BOOTFS) {
         const struct limine_file *file = boot_files[fd];
         if (!file || !file->address) return (uint64_t)-EBADF;
@@ -756,7 +829,15 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
     for (unsigned i = 0; i < sizeof(st); i++) bytes[i] = 0;
     st.nlink = 1;
     st.blksize = PAGE;
-    if (descriptors[fd] == FD_BOOTFS) {
+    if (descriptors[fd] == FD_DIR || descriptors[fd] == FD_ARCHIVE) {
+        const struct bootfs_entry *entry = boot_entries[fd];
+        if (!entry) return (uint64_t)-EBADF;
+        st.dev = 3; st.ino = entry->ino;
+        st.mode = entry->mode;
+        st.nlink = bootfs_is_dir(entry) ? 2 : 1;
+        st.size = (int64_t)entry->size;
+        st.blocks = (int64_t)((entry->size + 511) / 512);
+    } else if (descriptors[fd] == FD_BOOTFS) {
         const struct limine_file *file = boot_files[fd];
         if (!file) return (uint64_t)-EBADF;
         st.dev = 1; st.ino = fd + 100;
