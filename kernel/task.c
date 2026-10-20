@@ -56,6 +56,7 @@ struct nas_task *nas_task_fork_slot(void) {
         child->ppid = nas_current_task->pid;
         child->state = NAS_TASK_READY;
         child->exit_code = 0;
+        child->termination_signal = 0;
         child->resume_valid = false;
         child->blocked_nr = 0;
         child->pending_valid = false;
