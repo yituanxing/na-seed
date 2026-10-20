@@ -15,7 +15,7 @@ CFLAGS := --target=x86_64-unknown-none-elf -std=c11 -O2 -g -Wall -Wextra -Werror
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
  -z noexecstack -T kernel/linker.ld
 
-.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch alpine-probe alpine-argv-probe preflight
+.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch alpine-probe alpine-argv-probe alpine-fs-probe preflight
 all: iso
 iso: $(ISO)
 kernel: $(KERNEL)
@@ -30,7 +30,11 @@ $(OUT)/kernel.o: kernel/kernel.c $(HDR)
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
-$(OUT)/m1.o: kernel/m1.c kernel/nr.h kernel/errno.h $(HDR)
+$(OUT)/m1.o: kernel/m1.c kernel/nr.h kernel/errno.h kernel/bootfs.h $(HDR)
+	mkdir -p $(dir $@)
+	clang $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(OUT)/bootfs.o: kernel/bootfs.c kernel/bootfs.h
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
@@ -45,8 +49,8 @@ $(OUT)/user-hello.o: user/hello.S kernel/nr.h kernel/errno.h
 $(OUT)/user-hello: $(OUT)/user-hello.o user/linker.ld
 	ld.lld -m elf_x86_64 -nostdlib -static -T user/linker.ld $< -o $@
 
-$(KERNEL): $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/arch.o kernel/linker.ld
-	ld.lld $(LDFLAGS) $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/arch.o -o $@
+$(KERNEL): $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/bootfs.o $(OUT)/arch.o kernel/linker.ld
+	ld.lld $(LDFLAGS) $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/bootfs.o $(OUT)/arch.o -o $@
 
 $(BINARY_TAR):
 	mkdir -p $(dir $@)
@@ -168,6 +172,31 @@ alpine-probe: $(ALPINE_ISO)
 alpine-argv-probe: $(ALPINE_ISO)
 	sh scripts/probe-alpine-argv.sh
 
+# Stage a REAL read-only CPIO newc archive as a third Limine module.
+# The legacy module ELF path remains unchanged to preserve M4 regression.
+ALPINE_FS_IMAGE := $(OUT)/alpine-rootfs.cpio
+ALPINE_FS_ISO := $(OUT)/naseed-alpine-fs.iso
+
+$(ALPINE_FS_IMAGE): $(OUT)/alpine/bin/busybox $(OUT)/alpine/lib/ld-musl-x86_64.so.1 scripts/make-initramfs.sh
+	sh scripts/make-initramfs.sh "$@"
+
+$(ALPINE_FS_ISO): $(KERNEL) $(ALPINE_FS_IMAGE) $(BINARY_EFI) limine-alpine-fs.conf
+	rm -rf $(OUT)/alpine-fs-iso
+	mkdir -p $(OUT)/alpine-fs-iso/boot/limine $(OUT)/alpine-fs-iso/EFI/BOOT
+	cp $(KERNEL) $(OUT)/alpine-fs-iso/boot/kernel
+	cp $(OUT)/alpine/bin/busybox $(OUT)/alpine-fs-iso/boot/busybox
+	cp $(OUT)/alpine/lib/ld-musl-x86_64.so.1 $(OUT)/alpine-fs-iso/boot/ld-musl-x86_64.so.1
+	cp $(ALPINE_FS_IMAGE) $(OUT)/alpine-fs-iso/boot/rootfs.cpio
+	cp limine-alpine-fs.conf $(OUT)/alpine-fs-iso/boot/limine/limine.conf
+	cp $(OUT)/deps/limine-binary/limine-uefi-cd.bin $(OUT)/alpine-fs-iso/boot/limine/
+	cp $(BINARY_EFI) $(OUT)/alpine-fs-iso/EFI/BOOT/BOOTX64.EFI
+	xorriso -as mkisofs -R -r -J \
+	 --efi-boot boot/limine/limine-uefi-cd.bin \
+	 --efi-boot-part --efi-boot-image -o $@ $(OUT)/alpine-fs-iso
+
+alpine-fs-probe: $(ALPINE_FS_ISO)
+	sh scripts/probe-alpine-fs.sh
+
 preflight:
 	sh scripts/preflight.sh
 
@@ -178,4 +207,4 @@ run: $(ISO)
 clean:
 	rm -rf $(OUT)
 
--include $(OUT)/kernel.d $(OUT)/m1.d
+-include $(OUT)/kernel.d $(OUT)/m1.d $(OUT)/bootfs.d
