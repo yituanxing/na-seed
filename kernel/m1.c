@@ -1086,6 +1086,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == __NR_openat) return sys_openat_boot(args[1], args[2], args[3]);
     if (nr == __NR_fstat) return sys_fstat_boot(args[1], args[2]);
     if (nr == __NR_newfstatat) return sys_fstatat_boot(args[1], args[2], args[3], args[4]);
+    if (nr == __NR_stat) return sys_fstatat_boot((uint64_t)-100, args[1], args[2], 0);
+    if (nr == __NR_lstat) return sys_fstatat_boot((uint64_t)-100, args[1], args[2], 0x100ULL);
     if (nr == __NR_lseek) return sys_lseek_boot(args[1], args[2], args[3]);
     if (nr == __NR_getdents64) return sys_getdents64(args[1], args[2], args[3]);
     if (nr == __NR_close) {
