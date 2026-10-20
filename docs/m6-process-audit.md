@@ -132,3 +132,38 @@ process-group/TTY semantics. A child blocking indefinitely cannot be
 rescued by the parent under this cooperative policy. The next true
 software-driven step is a pipeline; it will force runnable scheduling,
 pipes and kernel sleep/wake semantics instead of just child-first work.
+
+## M6.3 — real anonymous pipe data and BusyBox shell pipeline
+
+Original upstream Alpine ash first exposed Linux `pipe(22)`. The kernel
+now creates two real FD endpoints for each pipe (and `pipe2(293)` with
+`O_NONBLOCK`/`O_CLOEXEC`), using a bounded 4096-byte FIFO ring, two
+independent shared open-file descriptions and normal dup/fork/close
+reference accounting. `fstat` reports `S_IFIFO`, `poll` reports
+immediate readiness, `read` returns buffered bytes or genuine EOF
+when the last writer closes, and `write` transfers bytes or returns
+`-EPIPE` once all readers close. Unsupported blocking reads/writes
+on an open empty/full pipe return `-EOPNOTSUPP` instead of claiming
+successful waiting.
+
+Black-box QEMU exercises **unmodified BusyBox**, not a custom app:
+```sh
+sh -c 'echo abc | /bin/busybox wc -c'                           # prints 4
+sh -c '/bin/busybox cat /etc/hostname | /bin/busybox wc -c'     # prints 7
+sh -c 'echo test | /bin/busybox cat | /bin/busybox wc -c'       # prints 5
+```
+Each test requires exact stdout, the kernel's observed real pipe
+allocation, and zero userspace exit status; all M0–M6.2 QEMU regressions
+remain mandatory. The explicit `/bin/busybox` invocation matters:
+the current tiny CPIO archive does **not** install the usual
+`/bin/wc` and `/bin/cat` BusyBox applet symlinks, so bare `wc`
+would fail pathname resolution despite correct pipes.
+
+**Boundary:** these small pipelines can finish using child-first
+cooperative scheduling because each producer fits in the pipe ring.
+They are not proof of full simultaneous streaming or blocking/wakeup.
+A real larger input (e.g. `/bin/busybox cat /bin/busybox | ...`)
+will require a scheduler that can yield a blocked producer/consumer,
+reschedule another runnable process and deliver the eventual read/write
+result, plus proper deadlock detection. Do not introduce a pretend
+sleep/wakeup implementation or claim preemptive scheduling.
