@@ -773,7 +773,12 @@ static uint64_t sys_open_path(const char *path, uint64_t flags) {
         ? (uint64_t)-EROFS : (uint64_t)-ENOENT;
     if ((flags & 0x10000ULL) && kind != FD_DIR)
         return (uint64_t)-ENOTDIR;
-    if (flags & (0x40ULL | 0x200ULL | 0x400ULL))
+    /* O_CREAT on an existing /dev/null or /dev/zero is not a request
+     * to create a new file. O_TRUNC has no effect on character devices.
+     * Archive-backed data, however, stays strictly read-only.
+     */
+    if (kind != FD_NULL && kind != FD_ZERO &&
+        (flags & (0x40ULL | 0x200ULL | 0x400ULL)))
         return (uint64_t)-EROFS;
     if ((kind == FD_ARCHIVE || kind == FD_DIR) && (flags & 3ULL))
         return kind == FD_DIR ? (uint64_t)-EISDIR : (uint64_t)-EROFS;
@@ -803,6 +808,8 @@ static uint64_t sys_open_device(uint64_t pathname, uint64_t flags) {
 }
 static uint64_t sys_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     if (fd >= 64 || descriptors[fd] == FD_CLOSED) return (uint64_t)-EBADF;
+    if ((file_status_flags[file_slot[fd]] & 3ULL) == 0)
+        return (uint64_t)-EBADF;
     if (length > (1ULL << 20) ||
         address >= USER_LIMIT || length > USER_LIMIT - address)
         return (uint64_t)-EFAULT;
@@ -820,6 +827,8 @@ static uint64_t sys_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
 }
 static uint64_t sys_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     if (fd >= 64 || descriptors[fd] == FD_CLOSED) return (uint64_t)-EBADF;
+    if ((file_status_flags[file_slot[fd]] & 3ULL) == 1)
+        return (uint64_t)-EBADF;
     if (descriptors[fd] == FD_NULL) return 0;
     if (descriptors[fd] == FD_DIR) return (uint64_t)-EISDIR;
     if (descriptors[fd] == FD_ARCHIVE) {
@@ -1365,6 +1374,7 @@ void m1_start(void) {
         descriptors[fd] = FD_UART;
         file_slot[fd] = (uint8_t)fd;
         file_refcount[fd] = 1;
+        file_status_flags[fd] = fd == 0 ? 0 : 1; /* stdin R, stdout/err W */
     }
     if (!build_linux_stack(running_bash, running_busybox, &stack_pointer))
         fail("cannot initialize Linux userspace stack");
