@@ -1,7 +1,8 @@
 #!/bin/sh
 # Discover missing *classes* of Linux process/shell semantics from the
 # unmodified Alpine BusyBox ash on an archive-only NaSeed boot.
-# Diagnostic only: a printed failure is NOT an accepted new capability.
+# Strict output acceptance for supported builtins; missing process features
+# are recorded as explicit blockers, NEVER as accepted capabilities.
 set -eu
 base=build/alpine-archive-iso
 for scenario in builtin builtinpwd cd readfile cdread readtwice redirect applet external pipeline; do
@@ -65,6 +66,23 @@ for scenario in builtin builtinpwd cd readfile cdread readtwice redirect applet 
         fi
         echo "[ACCEPTED] unmodified Alpine ash scenario=$scenario"
     else
-        echo "[BLOCKED] unimplemented multi-program scenario=$scenario (diagnostic only)"
+        case "$scenario" in
+            applet)
+                blocker='[EXIT] user status=127'
+                reason='PATH applet entry /bin/cat absent (no symlinks yet)' ;;
+            external)
+                blocker='[MISS] syscall nr=59'
+                reason='execve (single-process replacement not implemented)' ;;
+            pipeline)
+                blocker='[MISS] syscall nr=22'
+                reason='pipe + process semantics not implemented' ;;
+        esac
+        if grep -Fq '[PASS] cmdline userspace exit 0' "$log" ||
+           ! grep -Fq "$blocker" "$log"; then
+            echo "[ASH-FAIL] expected blocker changed for scenario=$scenario" >&2
+            tail -85 "$log" >&2
+            exit 1
+        fi
+        echo "[BLOCKED] scenario=$scenario, observed $reason"
     fi
 done
