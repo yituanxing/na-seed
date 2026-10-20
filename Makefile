@@ -15,7 +15,7 @@ CFLAGS := --target=x86_64-unknown-none-elf -std=c11 -O2 -g -Wall -Wextra -Werror
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
  -z noexecstack -T kernel/linker.ld
 
-.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch alpine-probe alpine-argv-probe alpine-fs-probe alpine-archive-probe preflight
+.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch alpine-probe alpine-argv-probe alpine-fs-probe alpine-archive-probe alpine-selector-probe preflight
 all: iso
 iso: $(ISO)
 kernel: $(KERNEL)
@@ -216,6 +216,16 @@ alpine-archive-probe: $(ALPINE_ARCHIVE_ISO)
 	NASEED_FS_BASE=build/alpine-archive-iso \
 	 NASEED_FS_CONFIG=limine-alpine-archive.conf \
 	 NASEED_FS_PREFIX=alpine-archive sh scripts/probe-alpine-fs.sh
+
+# Two independent, upstream, checksum-pinned BusyBox ELFs in one CPIO:
+# Alpine dynamic musl at /bin/busybox and Debian static at /usr/bin/busybox.
+# Select by Limine argv[0] only; kernel remains unchanged between boots.
+ALPINE_SELECTOR_IMAGE := $(OUT)/alpine-selector-rootfs.cpio
+$(ALPINE_SELECTOR_IMAGE): $(OUT)/alpine/bin/busybox $(OUT)/alpine/lib/ld-musl-x86_64.so.1 $(DEBIAN_BUSYBOX) scripts/make-initramfs.sh
+	NASEED_SECOND_BUSYBOX=$(DEBIAN_BUSYBOX) sh scripts/make-initramfs.sh "$@"
+
+alpine-selector-probe: $(ALPINE_ARCHIVE_ISO) $(ALPINE_SELECTOR_IMAGE)
+	sh scripts/probe-alpine-selector.sh
 
 preflight:
 	sh scripts/preflight.sh
