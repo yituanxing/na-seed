@@ -23,6 +23,8 @@ if grep -Fq "$pass" "$log"; then
   echo "[ACCEPTED] Debian $kind wrote hello and exited 0"
 elif grep -Fq "$loaded" "$log"; then
   echo "[BLOCKED] Debian $kind entered kernel but did not pass"
+  echo "[DIAG] Unfiltered tail (includes user stderr):"
+  tail -90 "$log"
   if [ "$(printenv DEBIAN_REQUIRE_PASS || echo 0)" = 1 ]; then
     echo "[FAIL] real Debian $kind behavior not accepted" >&2
     exit 1
