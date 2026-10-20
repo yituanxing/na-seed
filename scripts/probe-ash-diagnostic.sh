@@ -51,6 +51,7 @@ for scenario in builtin builtinpwd pid cd readfile cdread readtwice redirect app
         readfile|cdread) expected='naseed' ;;
         readtwice) expected='naseed:' ;;
         external) expected='naseed' ;;
+        sequence) expected='finished' ;;
         redirect) expected='redirect-ok' ;;
         *) expected='' ;;
     esac
@@ -68,6 +69,15 @@ for scenario in builtin builtinpwd pid cd readfile cdread readtwice redirect app
             echo '[ASH-FAIL] redirected hello incorrectly reached stdout' >&2
             exit 1
         fi
+        if [ "$scenario" = sequence ] && {
+              ! tr -d '\r' < "$log" | grep -Fxq 'naseed' ||
+              ! grep -Fq '[PROC] fork parent=1 child=' "$log" ||
+              ! grep -Fq '[PROC] wait4 reaped pid=' "$log";
+           }; then
+            echo '[ASH-FAIL] no real child and wait4 continuation' >&2
+            tail -90 "$log" >&2
+            exit 1
+        fi
         if [ "$scenario" = external ] &&
            ! grep -Fq '[EXEC] replaced process with CPIO ELF: /bin/busybox' "$log"; then
             echo '[ASH-FAIL] external image was not replaced' >&2
@@ -79,9 +89,6 @@ for scenario in builtin builtinpwd pid cd readfile cdread readtwice redirect app
             applet)
                 blocker='[EXIT] user status=127'
                 reason='PATH applet entry /bin/cat absent (no symlinks yet)' ;;
-            sequence)
-                blocker='[MISS] syscall nr='
-                reason='parent continuation after spawning subprocess not yet implemented' ;;
             pipeline)
                 blocker='[MISS] syscall nr=22'
                 reason='pipe + process semantics not implemented' ;;
