@@ -41,7 +41,8 @@
 
 /* Single-core M1: run a REAL static ELF from a Limine module in ring 3.
  * The new process CR3 preserves Limine's supervisor upper-half/HHDM mappings.
- * Separate process address spaces, scheduler and preemption come later.
+ * Private user address spaces and cooperative task switching are present.
+ * Timer preemption and independent per-task kernel stacks are not.
  * Interrupts are disabled on syscall entry; TSS handles ring3 faults.
  */
 extern uint64_t nas_frame_alloc(void);
@@ -1616,12 +1617,10 @@ static uint64_t sys_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
 }
 
 
-/* A cooperative, child-first fork implementation: user processes overlap in
- * lifetime but the sole CPU never context-switches with a kernel call live.
- * Syscall entry saves all 15 GPRs in the kernel-owned trap frame; the parent
- * resumes at its original fork return after its child exits. This policy
- * is sufficient for ordinary non-pipelined ash commands, NOT for blocking
- * pipes, background jobs, SMP, or timer preemption.
+/* A cooperative child-first fork; parent remains READY while child runs.
+ * Once a child blocks on a pipe, another READY task runs and the blocked
+ * syscall is completed later in its owner's address space. No timer
+ * preemption, SMP, or independent kernel stack is claimed.
  */
 static uint64_t sys_fork(uint64_t *frame) {
     struct nas_task *parent = nas_current_task;
