@@ -1197,9 +1197,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == __NR_close) {
         if (args[1] >= 64 || descriptors[args[1]] == FD_CLOSED)
             return (uint64_t)-EBADF;
-        descriptors[args[1]] = FD_CLOSED;
-        boot_files[args[1]] = 0;
-        boot_entries[args[1]] = 0;
+        fd_close_raw(args[1]);
         return 0;
     }
     if (nr == __NR_ioctl) {
@@ -1212,6 +1210,14 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == __NR_rt_sigprocmask) return sys_sigprocmask(args[1], args[2], args[3], args[4]);
     if (nr == __NR_uname) return sys_uname_naseed(args[1]);
     if (nr == __NR_getcwd) return sys_getcwd_root(args[1], args[2]);
+    if (nr == __NR_fcntl) return sys_fcntl(args[1], args[2], args[3]);
+    if (nr == __NR_dup) return fd_duplicate(args[1], 0, false);
+    if (nr == __NR_dup2) return fd_clone(args[1], args[2], false);
+    if (nr == __NR_dup3) {
+        if (args[1] == args[2] || (args[3] & ~0x80000ULL))
+            return (uint64_t)-EINVAL;
+        return fd_clone(args[1], args[2], (args[3] & 0x80000ULL) != 0);
+    }
     if (nr == __NR_chdir) return sys_chdir(args[1]);
     if (nr == __NR_fchdir) return sys_fchdir(args[1]);
     if (nr == __NR_getpgid) return args[1] == 0 || args[1] == 1 ? 1 : (uint64_t)-ESRCH;
