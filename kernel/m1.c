@@ -853,11 +853,18 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
     return 0;
 }
 static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
-    if (fd >= 64 || descriptors[fd] != FD_BOOTFS || !boot_files[fd])
-        return (uint64_t)-ESPIPE; /* ESPIPE */
+    if (fd >= 64 || descriptors[fd] == FD_CLOSED)
+        return (uint64_t)-EBADF;
+    uint64_t size = 0;
+    if (descriptors[fd] == FD_BOOTFS && boot_files[fd])
+        size = boot_files[fd]->size;
+    else if (descriptors[fd] == FD_ARCHIVE && boot_entries[fd])
+        size = boot_entries[fd]->size;
+    else if (descriptors[fd] != FD_DIR || !boot_entries[fd])
+        return (uint64_t)-ESPIPE;
     uint64_t base = 0;
     if (whence == 1) base = boot_file_offsets[fd];
-    else if (whence == 2) base = boot_files[fd]->size;
+    else if (whence == 2 && descriptors[fd] != FD_DIR) base = size;
     else if (whence != 0) return (uint64_t)-EINVAL;
     int64_t signed_off = (int64_t)off;
     if (signed_off < 0) {
@@ -871,20 +878,114 @@ static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
     boot_file_offsets[fd] = base;
     return base;
 }
-static uint64_t sys_openat_boot(uint64_t dirfd, uint64_t path, uint64_t flags) {
-    /* Linux AT_FDCWD is -100; absolute paths ignore dirfd. */
-    if (dirfd != (uint64_t)-100 && dirfd != 0) return (uint64_t)-EBADF;
-    return sys_open_device(path, flags);
+static uint64_t sys_openat_boot(uint64_t dirfd, uint64_t pathname, uint64_t flags) {
+    char path[256];
+    uint64_t result = resolve_path(dirfd, pathname, path);
+    return (int64_t)result < 0 ? result : sys_open_path(path, flags);
 }
-static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t path,
+static uint64_t write_boot_stat(const struct bootfs_entry *entry, uint64_t dst) {
+    struct linux_stat st;
+    uint8_t *p = (uint8_t *)&st;
+    for (unsigned i = 0; i < sizeof(st); i++) p[i] = 0;
+    st.dev = 3;
+    st.ino = entry->ino;
+    st.nlink = bootfs_is_dir(entry) ? 2 : 1;
+    st.mode = entry->mode;
+    st.blksize = PAGE;
+    st.size = (int64_t)entry->size;
+    st.blocks = (int64_t)((entry->size + 511) / 512);
+    return user_write_bytes(dst, (const uint8_t *)&st, sizeof(st))
+        ? 0 : (uint64_t)-EFAULT;
+}
+static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
                                  uint64_t statbuf, uint64_t flags) {
-    if (flags) return (uint64_t)-EINVAL;
-    uint64_t result = sys_openat_boot(dirfd, path, 0);
+    const uint64_t AT_SYMLINK_NOFOLLOW = 0x100ULL;
+    const uint64_t AT_EMPTY_PATH = 0x1000ULL;
+    if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH))
+        return (uint64_t)-EINVAL;
+    uint8_t first;
+    if (!user_read_bytes(pathname, &first, 1)) return (uint64_t)-EFAULT;
+    if (first == 0 && (flags & AT_EMPTY_PATH))
+        return sys_fstat_boot(dirfd, statbuf);
+    char path[256];
+    uint64_t result = resolve_path(dirfd, pathname, path);
+    if ((int64_t)result < 0) return result;
+    if (bootfs_mounted()) {
+        const struct bootfs_entry *entry = bootfs_find(path);
+        if (entry) return write_boot_stat(entry, statbuf);
+    }
+    /* Legacy modules and character devices retain their existing fstat. */
+    result = sys_open_path(path, 0);
     if ((int64_t)result < 0) return result;
     uint64_t ret = sys_fstat_boot(result, statbuf);
     descriptors[result] = FD_CLOSED;
     boot_files[result] = 0;
+    boot_entries[result] = 0;
     return ret;
+}
+
+/* Linux x86-64 linux_dirent64: ino64, off64, reclen16, dtype8, name[].
+ * The offset cookie indexes '.', '..', then direct children of a directory.
+ */
+static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
+    if (fd >= 64 || descriptors[fd] == FD_CLOSED) return (uint64_t)-EBADF;
+    if (descriptors[fd] != FD_DIR || !boot_entries[fd])
+        return (uint64_t)-ENOTDIR;
+    if (capacity < 24) return (uint64_t)-EINVAL;
+    const struct bootfs_entry *dir = boot_entries[fd];
+    uint64_t cursor = boot_file_offsets[fd];
+    uint64_t written = 0;
+    while (written + 24 <= capacity) {
+        const struct bootfs_entry *item;
+        const char *name;
+        uint64_t ino;
+        unsigned dtype;
+        if (cursor == 0) {
+            name = "."; ino = dir->ino; dtype = 4;
+        } else if (cursor == 1) {
+            name = ".."; dtype = 4;
+            char parent[256];
+            unsigned len = 0;
+            while (dir->path[len]) { parent[len] = dir->path[len]; len++; }
+            while (len > 1 && parent[len - 1] != '/') len--;
+            if (len > 1) len--;
+            parent[len] = 0;
+            item = bootfs_find(parent);
+            ino = item ? item->ino : dir->ino;
+        } else {
+            if (cursor - 2 > 95) break;
+            item = bootfs_child(dir, (unsigned)(cursor - 2));
+            if (!item) break;
+            name = item->path;
+            for (const char *p = item->path; *p; p++)
+                if (*p == '/') name = p + 1;
+            ino = item->ino;
+            dtype = bootfs_is_dir(item) ? 4 : 8;
+        }
+        unsigned len = 0;
+        while (name[len]) len++;
+        unsigned reclen = (19 + len + 1 + 7) & ~7U;
+        if (reclen > capacity - written) {
+            if (!written) return (uint64_t)-EINVAL;
+            break;
+        }
+        uint8_t record[280];
+        for (unsigned i = 0; i < reclen; i++) record[i] = 0;
+        for (unsigned i = 0; i < 8; i++) {
+            record[i] = (uint8_t)(ino >> (i * 8));
+            record[8 + i] = (uint8_t)((cursor + 1) >> (i * 8));
+        }
+        record[16] = (uint8_t)reclen;
+        record[17] = (uint8_t)(reclen >> 8);
+        record[18] = (uint8_t)dtype;
+        for (unsigned i = 0; i < len; i++) record[19 + i] = (uint8_t)name[i];
+        if (!user_write_bytes(dst + written, record, reclen))
+            return written ? written : (uint64_t)-EFAULT;
+        written += reclen;
+        cursor++;
+        boot_file_offsets[fd] = cursor;
+    }
+    return written;
 }
 
 /* Proper syscall-level rt_sigaction / sigprocmask structures, 8-byte sigset. 
@@ -986,11 +1087,13 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == __NR_fstat) return sys_fstat_boot(args[1], args[2]);
     if (nr == __NR_newfstatat) return sys_fstatat_boot(args[1], args[2], args[3], args[4]);
     if (nr == __NR_lseek) return sys_lseek_boot(args[1], args[2], args[3]);
+    if (nr == __NR_getdents64) return sys_getdents64(args[1], args[2], args[3]);
     if (nr == __NR_close) {
         if (args[1] >= 64 || descriptors[args[1]] == FD_CLOSED)
             return (uint64_t)-EBADF;
         descriptors[args[1]] = FD_CLOSED;
         boot_files[args[1]] = 0;
+        boot_entries[args[1]] = 0;
         return 0;
     }
     if (nr == __NR_ioctl) {
@@ -1066,6 +1169,12 @@ void m1_start(void) {
     running_bash = bash_module(module);
     running_busybox = busybox_module(module);
     running_alpine = running_busybox && nas_module(1) != 0;
+    const struct limine_file *archive = nas_module(2);
+    if (archive) {
+        if (!running_alpine || !bootfs_mount(archive->address, archive->size))
+            fail("invalid CPIO initramfs module");
+        nas_print("[FS] CPIO newc read-only archive mounted\n");
+    }
     if (running_bash) nas_print("[M2] real GNU Bash module discovered\n");
     if (running_busybox) nas_print("[M3] real BusyBox module discovered\n");
     uint64_t entry = 0;
