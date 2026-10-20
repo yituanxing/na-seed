@@ -186,7 +186,12 @@ static bool user_map(uint64_t va, bool writable) {
 }
 static uint8_t *user_byte(uint64_t va) {
     uint64_t *entry = user_leaf(va & ~(PAGE - 1), false);
-    if (!entry || !(*entry & P_PRESENT)) return 0;
+    /* A syscall may only dereference present user pages, never supervisor
+     * entries or an address outside the user half of this address space.
+     * HHDM physical aliases bypass the CPU's normal U/S protection.
+     */
+    if (!entry || (*entry & (P_PRESENT | P_USER)) != (P_PRESENT | P_USER))
+        return 0;
     return (uint8_t *)(uintptr_t)(nas_hhdm_offset() +
         (*entry & PHYS_MASK) + (va & (PAGE - 1)));
 }
@@ -486,6 +491,8 @@ static uint64_t sys_brk(uint64_t want) {
     heap_break = want;
     return want;
 }
+/* Defined with the other syscall copy-to-user helpers below. */
+static bool user_write_bytes(uint64_t address, const uint8_t *src, uint64_t length);
 static uint64_t sys_arch_prctl(uint64_t op, uint64_t address) {
     if (op == 0x1002) { /* ARCH_SET_FS */
         if (address >= USER_LIMIT) return (uint64_t)-22;
@@ -496,12 +503,11 @@ static uint64_t sys_arch_prctl(uint64_t op, uint64_t address) {
     if (op == 0x1003) { /* ARCH_GET_FS */
         if (address >= USER_LIMIT || address > USER_LIMIT - sizeof(uint64_t))
             return (uint64_t)-14;
-        for (unsigned i = 0; i < sizeof(uint64_t); i++) {
-            uint8_t *p = user_byte(address + i);
-            if (!p) return (uint64_t)-14;
-            *p = (uint8_t)(user_fs_base >> (8 * i));
-        }
-        return 0;
+        uint8_t bytes[sizeof(uint64_t)];
+        for (unsigned i = 0; i < sizeof(bytes); i++)
+            bytes[i] = (uint8_t)(user_fs_base >> (8 * i));
+        return user_write_bytes(address, bytes, sizeof(bytes))
+            ? 0 : (uint64_t)-14;
     }
     return (uint64_t)-22;
 }

@@ -15,7 +15,7 @@ CFLAGS := --target=x86_64-unknown-none-elf -std=c11 -O2 -g -Wall -Wextra -Werror
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
  -z noexecstack -T kernel/linker.ld
 
-.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch alpine-probe
+.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch alpine-probe preflight
 all: iso
 iso: $(ISO)
 kernel: $(KERNEL)
@@ -75,7 +75,11 @@ $(ISO): $(KERNEL) $(OUT)/user-hello $(BINARY_EFI) limine.conf
 BASH_BIN := $(OUT)/userspace/bash
 BASH_ISO := $(OUT)/naseed-bash.iso
 
-$(BASH_BIN): scripts/build-bash.sh
+# CI restores Bash from a content-addressed cache keyed by build-bash.sh.
+# Order-only dependency prevents checkout's newer script mtime from forcing
+# a full rebuild of an already-verified cached executable every run.
+# When changing this builder locally, delete $(BASH_BIN) or use make -B.
+$(BASH_BIN): | scripts/build-bash.sh
 	sh scripts/build-bash.sh "$(abspath $(OUT))"
 	test -x "$@"
 
@@ -158,6 +162,9 @@ $(ALPINE_ISO): $(KERNEL) $(OUT)/alpine/bin/busybox $(OUT)/alpine/lib/ld-musl-x86
 
 alpine-probe: $(ALPINE_ISO)
 	sh scripts/probe-alpine.sh $(ALPINE_ISO)
+
+preflight:
+	sh scripts/preflight.sh
 
 smoke: $(ISO)
 	sh scripts/smoke.sh $(ISO)
