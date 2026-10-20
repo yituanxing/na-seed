@@ -16,9 +16,12 @@ for testname in uname pwd id; do
     cp -R "$base" "$stage"
     # Deliberately reuse source config's module list and command; only
     # inject the test-specific kernel cmdline immediately below kernel path.
-    sed "/^    path: boot():\\/boot\\/kernel$/a\\
-    cmdline: naseed.argv=/bin/busybox $args" \
-        limine-alpine.conf > "$stage/boot/limine/limine.conf"
+    awk -v userargs="$args" '
+        { print }
+        $0 == "    path: boot():/boot/kernel" {
+            print "    cmdline: naseed.argv=/bin/busybox " userargs
+        }
+    ' limine-alpine.conf > "$stage/boot/limine/limine.conf"
     xorriso -as mkisofs -R -r -J \
       --efi-boot boot/limine/limine-uefi-cd.bin \
       --efi-boot-part --efi-boot-image -o "$iso" "$stage" > /dev/null 2>&1
