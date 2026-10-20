@@ -71,6 +71,10 @@ void nas_task_boot_init(void);
 struct nas_task *nas_task_current(void);
 struct nas_task *nas_task_fork_slot(void);
 void nas_task_release(struct nas_task *task);
+uint64_t nas_task_page_root(const struct nas_task *task);
+uint64_t nas_task_tls_base(const struct nas_task *task);
+void nas_task_set_root(struct nas_task *task, uint64_t root);
+bool nas_task_hold_files(const struct nas_task *task);
 struct nas_task *nas_task_by_pid(uint64_t pid);
 const struct nas_task *nas_task_find(uint64_t pid);
 #endif
