@@ -234,6 +234,7 @@ void kmain(void) {
 
 /* M1 bridge: shared M0 allocator, UART and bootloader state. */
 uint64_t nas_frame_alloc(void) { return frame_alloc(); }
+bool nas_frame_free(uint64_t pa) { return frame_free(pa); }
 uint64_t nas_hhdm_offset(void) { return hhdm; }
 void nas_print(const char *s) { serial_puts(s); }
 void nas_dec(uint64_t v) { serial_dec(v); }
