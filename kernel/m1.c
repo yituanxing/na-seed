@@ -592,6 +592,7 @@ enum { FD_CLOSED = 0, FD_UART = 1, FD_NULL = 2, FD_ZERO = 3,
        FD_BOOTFS = 4, FD_ARCHIVE = 5, FD_DIR = 6 };
 static bool same_string(const char *a, const char *b);
 static uint8_t descriptors[64];
+static char current_workdir[256] = "/";
 /* Read-only boot filesystem backed by bytes of the actual Limine modules.
  * Paths name exactly the binaries the bootloader provided, not fake files.
  */
@@ -644,8 +645,8 @@ static bool same_string(const char *a, const char *b) {
     for (; *a && *b; a++, b++) if (*a != *b) return false;
     return *a == *b;
 }
-/* Resolve absolute and dirfd-relative Linux paths. chdir/symlinks are not
- * implemented, but dot components and root traversal are normalized.
+/* Resolve absolute, process-cwd-relative and dirfd-relative paths.
+ * Symbolic links are not yet part of the read-only archive ABI.
  */
 static uint64_t resolve_path(uint64_t dirfd, uint64_t pathname, char out[256]) {
     char src[256];
@@ -661,12 +662,16 @@ static uint64_t resolve_path(uint64_t dirfd, uint64_t pathname, char out[256]) {
     if (!n) return (uint64_t)-ENOENT;
     unsigned used = 1;
     out[0] = '/';
-    if (src[0] != '/' && dirfd != (uint64_t)-100) {
-        if (dirfd >= 64 || descriptors[dirfd] == FD_CLOSED)
-            return (uint64_t)-EBADF;
-        if (descriptors[dirfd] != FD_DIR || !boot_entries[dirfd])
-            return (uint64_t)-ENOTDIR;
-        const char *base = boot_entries[dirfd]->path;
+    if (src[0] != '/') {
+        const char *base;
+        if (dirfd == (uint64_t)-100) base = current_workdir;
+        else {
+            if (dirfd >= 64 || descriptors[dirfd] == FD_CLOSED)
+                return (uint64_t)-EBADF;
+            if (descriptors[dirfd] != FD_DIR || !boot_entries[dirfd])
+                return (uint64_t)-ENOTDIR;
+            base = boot_entries[dirfd]->path;
+        }
         for (unsigned i = 1; base[i]; i++) {
             if (used + 1 >= 256) return (uint64_t)-ENAMETOOLONG;
             out[used++] = base[i];
@@ -804,10 +809,33 @@ static uint64_t sys_fd_writev(uint64_t fd, uint64_t iov, uint64_t count) {
     return sent;
 }
 static uint64_t sys_getcwd_root(uint64_t buffer, uint64_t size) {
-    const uint8_t cwd[2] = {'/', 0};
-    if (size < 2) return (uint64_t)-ERANGE; /* ERANGE */
-    if (!user_write_bytes(buffer, cwd, 2)) return (uint64_t)-EFAULT;
-    return 2;
+    uint64_t length = 0;
+    while (current_workdir[length]) length++;
+    length++; /* Linux raw getcwd includes NUL in returned length. */
+    if (size < length) return (uint64_t)-ERANGE;
+    return user_write_bytes(buffer, (const uint8_t *)current_workdir, length)
+        ? length : (uint64_t)-EFAULT;
+}
+static uint64_t sys_chdir(uint64_t pathname) {
+    char path[256];
+    uint64_t ret = resolve_path((uint64_t)-100, pathname, path);
+    if ((int64_t)ret < 0) return ret;
+    const struct bootfs_entry *entry = bootfs_find(path);
+    if (!entry) return (uint64_t)-ENOENT;
+    if (!bootfs_is_dir(entry)) return (uint64_t)-ENOTDIR;
+    unsigned i = 0;
+    do { current_workdir[i] = path[i]; } while (path[i++]);
+    return 0;
+}
+static uint64_t sys_fchdir(uint64_t fd) {
+    if (fd >= 64 || descriptors[fd] == FD_CLOSED)
+        return (uint64_t)-EBADF;
+    if (descriptors[fd] != FD_DIR || !boot_entries[fd])
+        return (uint64_t)-ENOTDIR;
+    const char *path = boot_entries[fd]->path;
+    unsigned i = 0;
+    do { current_workdir[i] = path[i]; } while (path[i++]);
+    return 0;
 }
 static uint64_t sys_uname_naseed(uint64_t buffer) {
     struct uts {
@@ -1122,6 +1150,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == __NR_rt_sigprocmask) return sys_sigprocmask(args[1], args[2], args[3], args[4]);
     if (nr == __NR_uname) return sys_uname_naseed(args[1]);
     if (nr == __NR_getcwd) return sys_getcwd_root(args[1], args[2]);
+    if (nr == __NR_chdir) return sys_chdir(args[1]);
+    if (nr == __NR_fchdir) return sys_fchdir(args[1]);
     if (nr == __NR_getpgid) return args[1] == 0 || args[1] == 1 ? 1 : (uint64_t)-ESRCH;
     if (nr == __NR_getpgrp) return 1; /* getpgrp: only process group 1 exists */
     if (nr == __NR_exit || nr == __NR_exit_group) { /* exit / exit_group */
