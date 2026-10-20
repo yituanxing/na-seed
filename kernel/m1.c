@@ -388,7 +388,7 @@ static bool build_linux_stack(bool bash, bool busybox, uint64_t *out_sp) {
         if (!parse_boot_argv(cmdline, &args, &argc)) return false;
         nas_print("[CMDLINE] userspace argv from Limine: ");
         nas_print(cmdline);
-        nas_print("\\n");
+        nas_print("\n");
     }
     uint64_t sp = USER_STACK_TOP;
     uint64_t arg_ptrs[NAS_ARGV_MAX], env_ptrs[4];
@@ -930,7 +930,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
          */
         if (boot_argv_override) {
             if (args[1] != 0) fail("cmdline userspace exited nonzero");
-            nas_print("[PASS] cmdline userspace exit 0\\n");
+            nas_print("[PASS] cmdline userspace exit 0\n");
             outb(0xf4, 0);
             fail("QEMU debug exit returned unexpectedly");
         }
