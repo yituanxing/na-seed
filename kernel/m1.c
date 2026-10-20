@@ -356,18 +356,28 @@ uint64_t syscall_dispatch(const uint64_t *args) {
             /* This UART writer handles bare M1 output, no TTY yet. */
             char str[2] = { (char)*byte, 0 };
             nas_print(str);
+            if (fd == 1 && running_bash) observe_stdout((char)*byte);
         }
         return len;
     }
     if (nr == 60) { /* exit(status) */
         nas_print("[EXIT] user status="); nas_dec(args[1]); nas_print("\n");
+        if (running_bash) {
+            if (args[1] == 0 && saw_bash_hello) {
+                nas_print("[PASS] M2 real GNU Bash -c echo hello\n");
+                outb(0xf4, 0);
+            }
+            fail("real Bash exited without exact hello and status zero");
+        }
         if (args[1] == 0) {
             nas_print("[PASS] M1 ELF / ring3 / syscall write / ENOSYS / exit\n");
-            outb(0xf4, 0); /* QEMU ISA debug-exit, status 1, real user-triggered. */
+            outb(0xf4, 0);
         }
         fail("user program exit was non-zero");
     }
-    nas_print("[MISS] syscall nr="); nas_dec(nr); nas_print("\n");
+    if (nr >= 512 || ++missing_count[nr] <= 3) {
+        nas_print("[MISS] syscall nr="); nas_dec(nr); nas_print("\n");
+    }
     return (uint64_t)-38;
 }
 
@@ -386,14 +396,20 @@ void m1_start(void) {
     syscall_enable();
     const struct limine_file *module = nas_user_module();
     if (!module) fail("no Limine userspace ELF module");
+    running_bash = bash_module(module);
+    if (running_bash) nas_print("[M2] real GNU Bash module discovered\n");
     uint64_t entry = 0;
     if (!elf_load(module, &entry)) fail("invalid or unmappable static ELF");
     for (uint64_t va = USER_STACK_TOP - USER_STACK_PAGES * PAGE;
          va < USER_STACK_TOP; va += PAGE) {
         if (!user_map(va, true)) fail("cannot map user stack");
     }
+    uint64_t stack_pointer;
+    if (!build_linux_stack(running_bash, entry, &stack_pointer))
+        fail("cannot initialize Linux userspace stack");
     nas_print("[M1] static ELF entry="); nas_hex(entry); nas_print("\n");
-    nas_print("[M1] entering actual ring 3\n");
-    enter_user(entry, USER_STACK_TOP - 16);
+    if (running_bash) nas_print("[M2] entering real Bash in ring 3\n");
+    else nas_print("[M1] entering actual ring 3\n");
+    enter_user(entry, stack_pointer);
     fail("iretq returned");
 }
