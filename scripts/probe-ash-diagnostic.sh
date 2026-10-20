@@ -9,7 +9,7 @@ for scenario in builtin builtinpwd pid cd readfile cdread readtwice redirect app
     case "$scenario" in
         builtin) args="sh -c 'echo shell-ready'" ;;
         builtinpwd) args="sh -c 'pwd'" ;;
-        pid) args="sh -c 'echo $(printf '\044\044')'" ;;
+        pid) marker=$(printf '\044\044'); args="sh -c 'echo $marker'" ;;
         cd) args="sh -c 'cd /etc; pwd'" ;;
         readfile) args="sh -c 'read word < /etc/hostname; echo \$word'" ;;
         cdread) args="sh -c 'cd /etc; read word < hostname; echo \$word'" ;;
