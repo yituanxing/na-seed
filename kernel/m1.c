@@ -1621,6 +1621,7 @@ static uint64_t sys_fork(uint64_t *frame) {
     for (unsigned i = 0; i < 15; i++) parent->resume_regs[i] = frame[i];
     parent->resume_regs[0] = child->pid; /* fork returns PID to parent */
     parent->resume_valid = true;
+    parent->blocked_nr = 0;
     parent->state = NAS_TASK_READY;
     child->state = NAS_TASK_RUNNING;
     nas_current_task = child;
@@ -1665,6 +1666,133 @@ static uint64_t sys_wait4(uint64_t desired, uint64_t status_addr,
                       : (uint64_t)-ECHILD;
 }
 
+
+/* M6.4 syscall-boundary cooperative scheduler. All live syscalls unwind on
+ * the same kernel stack. Parked syscalls are re-issued ONLY after a wake
+ * condition is true and the task's own CR3 and FS state are restored.
+ * Thus a switched task always receives the real read/write/wait4 result;
+ * a fabricated success or USER RIP rewind would corrupt Linux userspace.
+ */
+static bool task_io_ready(const struct nas_task *task) {
+    uint64_t fd = task->blocked_args[0];
+    uint8_t kind = nas_task_fd_kind(task, fd);
+    unsigned slot = nas_task_fd_slot(task, fd);
+    if (slot >= NAS_FD_LIMIT) return true; /* replay to return EBADF */
+    unsigned h = (unsigned)pipe_slot_owner[slot];
+    if (!h || h > PIPE_COUNT) return true; /* replay to return EBADF */
+    const struct nas_pipe *pipe = &pipe_table[h - 1];
+    if (task->blocked_nr == __NR_read)
+        return kind != FD_PIPE_R || pipe->count ||
+               !file_refcount[pipe->write_slot];
+    if (task->blocked_nr == __NR_write ||
+        task->blocked_nr == __NR_writev)
+        return kind != FD_PIPE_W || pipe->count < PIPE_CAP ||
+               !file_refcount[pipe->read_slot];
+    return true;
+}
+static bool task_wait_ready(const struct nas_task *task) {
+    uint64_t desired = task->blocked_args[0];
+    for (unsigned slot = 0; slot < NAS_TASK_LIMIT; slot++) {
+        struct nas_task *child = nas_task_child_at(task->pid, slot);
+        if (!child) continue;
+        if (desired != UINT64_MAX && desired != child->pid) continue;
+        if (child->state == NAS_TASK_ZOMBIE) return true;
+    }
+    return false;
+}
+static bool task_can_wake(const struct nas_task *task) {
+    if (task->state != NAS_TASK_BLOCKED || !task->resume_valid) return false;
+    if (task->blocked_nr == __NR_wait4) return task_wait_ready(task);
+    if (task->blocked_nr == __NR_read ||
+        task->blocked_nr == __NR_write ||
+        task->blocked_nr == __NR_writev)
+        return task_io_ready(task);
+    return false;
+}
+static uint64_t task_replay(struct nas_task *task) {
+    uint64_t nr = task->blocked_nr;
+    const uint64_t *a = task->blocked_args;
+    if (nr == __NR_read) return sys_fd_read(a[0], a[1], a[2]);
+    if (nr == __NR_write) return sys_fd_write(a[0], a[1], a[2]);
+    if (nr == __NR_writev) return sys_fd_writev(a[0], a[1], a[2]);
+    if (nr == __NR_wait4) return sys_wait4(a[0], a[1], a[2], a[3]);
+    fail("scheduler unknown blocked syscall");
+}
+static unsigned schedule_count;
+static uint64_t task_schedule(uint64_t *frame) {
+    struct nas_task *previous = nas_current_task;
+    /* A READY task always gets one turn before re-evaluating blocked tasks.
+     * This allows ash to construct consumers after a producer fills its pipe.
+     */
+    for (unsigned pass = 0; pass < 2; ++pass) {
+        for (unsigned slot = 0; slot < NAS_TASK_LIMIT; ++slot) {
+            struct nas_task *next = nas_task_at(slot);
+            if (next == previous || !next->resume_valid) continue;
+            if (pass == 0 && next->state != NAS_TASK_READY) continue;
+            if (pass == 1 && !task_can_wake(next)) continue;
+            nas_current_task = next;
+            task_restore_cpu(next);
+            uint64_t result = next->resume_regs[0];
+            if (next->blocked_nr) {
+                result = task_replay(next);
+                if ((int64_t)result == -EOPNOTSUPP &&
+                    (next->blocked_nr == __NR_read ||
+                     next->blocked_nr == __NR_write ||
+                     next->blocked_nr == __NR_writev)) {
+                    next->state = NAS_TASK_BLOCKED;
+                    nas_current_task = previous;
+                    task_restore_cpu(previous);
+                    continue;
+                }
+                next->blocked_nr = 0;
+            }
+            next->state = NAS_TASK_RUNNING;
+            next->resume_valid = false;
+            for (unsigned i = 0; i < 15; i++)
+                frame[i] = next->resume_regs[i];
+            syscall_user_rsp = next->resume_user_rsp;
+            if (schedule_count++ < 48) {
+                nas_print("[SCHED] from="); nas_dec(previous->pid);
+                nas_print(" to="); nas_dec(next->pid); nas_print("\n");
+            }
+            return result;
+        }
+    }
+    fail("scheduler deadlock: all live tasks blocked; no ready process");
+}
+static uint64_t task_block(uint64_t *frame, uint64_t nr,
+                           uint64_t a, uint64_t b, uint64_t c,
+                           uint64_t d) {
+    struct nas_task *task = nas_current_task;
+    for (unsigned i = 0; i < 15; i++) task->resume_regs[i] = frame[i];
+    task->resume_user_rsp = syscall_user_rsp;
+    task->resume_valid = true;
+    task->blocked_nr = nr;
+    task->blocked_args[0] = a;
+    task->blocked_args[1] = b;
+    task->blocked_args[2] = c;
+    task->blocked_args[3] = d;
+    task->state = NAS_TASK_BLOCKED;
+    __asm__ volatile("fxsave64 %0" : "=m"(task->fpu_state) : : "memory");
+    if (schedule_count < 48) {
+        nas_print("[SCHED] blocked pid="); nas_dec(task->pid);
+        nas_print(" syscall="); nas_dec(nr); nas_print("\n");
+    }
+    return task_schedule(frame);
+}
+static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
+                             uint64_t fd, uint64_t buf, uint64_t count) {
+    uint64_t ret;
+    if (nr == __NR_read) ret = sys_fd_read(fd, buf, count);
+    else if (nr == __NR_write) ret = sys_fd_write(fd, buf, count);
+    else ret = sys_fd_writev(fd, buf, count);
+    if ((int64_t)ret == -EOPNOTSUPP && fd < NAS_FD_LIMIT &&
+        (descriptors[fd] == FD_PIPE_R || descriptors[fd] == FD_PIPE_W) &&
+        !(file_status_flags[file_slot[fd]] & 0x800ULL))
+        return task_block(frame, nr, fd, buf, count, 0);
+    return ret;
+}
+
 /* Strict single-program ABI diagnostic dispatcher, for a real syscall gate. */
 uint64_t syscall_dispatch(const uint64_t *args) {
     uint64_t nr = args[0];
@@ -1693,8 +1821,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
                                        args[4], args[5], args[6]);
     if (nr == __NR_munmap) return sys_munmap(args[1], args[2]);
     if (nr == __NR_brk) return sys_brk(args[1]);
-    if (nr == __NR_read) return sys_fd_read(args[1], args[2], args[3]);
-    if (nr == __NR_write) return sys_fd_write(args[1], args[2], args[3]);
+    if (nr == __NR_read) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
+    if (nr == __NR_write) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
     if (nr == __NR_open) return sys_open_device(args[1], args[2]);
     if (nr == __NR_openat) return sys_openat_boot(args[1], args[2], args[3]);
     if (nr == __NR_fstat) return sys_fstat_boot(args[1], args[2]);
@@ -1714,7 +1842,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
             return (uint64_t)-EBADF;
         return (uint64_t)-ENOTTY; /* ENOTTY: no TTY driver yet */
     }
-    if (nr == __NR_writev) return sys_fd_writev(args[1], args[2], args[3]);
+    if (nr == __NR_writev) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
     if (nr == __NR_rt_sigaction) return sys_sigaction(args[1], args[2], args[3], args[4]);
     if (nr == __NR_rt_sigprocmask) return sys_sigprocmask(args[1], args[2], args[3], args[4]);
     if (nr == __NR_uname) return sys_uname_naseed(args[1]);
@@ -1722,7 +1850,14 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == __NR_fork) return sys_fork((uint64_t *)(uintptr_t)args);
     if (nr == __NR_pipe) return sys_pipe2(args[1], 0);
     if (nr == __NR_pipe2) return sys_pipe2(args[1], args[2]);
-    if (nr == __NR_wait4) return sys_wait4(args[1], args[2], args[3], args[4]);
+    if (nr == __NR_wait4) {
+        uint64_t ret = sys_wait4(args[1], args[2], args[3], args[4]);
+        if ((int64_t)ret == -EOPNOTSUPP && args[4] == 0 &&
+            args[3] == 0 && ((int64_t)args[1] == -1 || (int64_t)args[1] > 0))
+            return task_block((uint64_t *)(uintptr_t)args, nr,
+                              args[1], args[2], args[3], args[4]);
+        return ret;
+    }
     if (nr == __NR_execve) return sys_execve(args[1], args[2], args[3]);
     if (nr == __NR_fcntl) return sys_fcntl(args[1], args[2], args[3]);
     if (nr == __NR_poll) return sys_poll(args[1], args[2], args[3]);
@@ -1742,25 +1877,19 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         TASK.state = NAS_TASK_ZOMBIE;
         if (TASK.ppid) {
             struct nas_task *child = nas_current_task;
-            struct nas_task *parent = nas_task_by_pid(child->ppid);
-            if (!parent || !parent->resume_valid)
-                fail("child exited without valid parent continuation");
+            uint64_t parent_pid = child->ppid;
+            if (!nas_task_by_pid(parent_pid))
+                fail("child exited without living parent");
             for (unsigned fd = 0; fd < NAS_FD_LIMIT; fd++)
                 if (descriptors[fd] != FD_CLOSED) fd_close_raw(fd);
-            __asm__ volatile("fxsave64 %0" : "=m"(child->fpu_state) : : "memory");
-            for (unsigned i = 0; i < 15; i++)
-                ((uint64_t *)(uintptr_t)args)[i] = parent->resume_regs[i];
-            syscall_user_rsp = parent->resume_user_rsp;
-            uint64_t result = parent->resume_regs[0];
-            parent->resume_valid = false;
-            parent->state = NAS_TASK_RUNNING;
-            nas_current_task = parent;
-            task_restore_cpu(parent);
             nas_print("[PROC] child exited pid="); nas_dec(child->pid);
             nas_print(" status="); nas_dec(child->exit_code);
-            nas_print("; parent resumed pid="); nas_dec(parent->pid);
+            nas_print("; parent pid="); nas_dec(parent_pid);
             nas_print("\n");
-            return result;
+            /* A blocked parent waiting in wait4 gets woken only after the
+             * zombie is visible; otherwise a READY parent resumes fork.
+             */
+            return task_schedule((uint64_t *)(uintptr_t)args);
         }
         nas_print("[EXIT] user status="); nas_dec(args[1]); nas_print("\n");
         /* In cmdline-driven tests, the host verifies real stdout and status.
