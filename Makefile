@@ -15,7 +15,7 @@ CFLAGS := --target=x86_64-unknown-none-elf -std=c11 -O2 -g -Wall -Wextra -Werror
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
  -z noexecstack -T kernel/linker.ld
 
-.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch
+.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch alpine-probe
 all: iso
 iso: $(ISO)
 kernel: $(KERNEL)
@@ -140,6 +140,24 @@ debian-probe: debian-bash-probe debian-busybox-probe
 $(OUT)/alpine/bin/busybox $(OUT)/alpine/lib/ld-musl-x86_64.so.1 &: scripts/fetch-alpine.sh
 	sh scripts/fetch-alpine.sh "$(abspath $(OUT))"
 alpine-fetch: $(OUT)/alpine/bin/busybox $(OUT)/alpine/lib/ld-musl-x86_64.so.1
+
+
+ALPINE_ISO := $(OUT)/naseed-alpine-dynamic.iso
+$(ALPINE_ISO): $(KERNEL) $(OUT)/alpine/bin/busybox $(OUT)/alpine/lib/ld-musl-x86_64.so.1 $(BINARY_EFI) limine-alpine.conf
+	rm -rf $(OUT)/alpine-iso
+	mkdir -p $(OUT)/alpine-iso/boot/limine $(OUT)/alpine-iso/EFI/BOOT
+	cp $(KERNEL) $(OUT)/alpine-iso/boot/kernel
+	cp $(OUT)/alpine/bin/busybox $(OUT)/alpine-iso/boot/busybox
+	cp $(OUT)/alpine/lib/ld-musl-x86_64.so.1 $(OUT)/alpine-iso/boot/ld-musl-x86_64.so.1
+	cp limine-alpine.conf $(OUT)/alpine-iso/boot/limine/limine.conf
+	cp $(OUT)/deps/limine-binary/limine-uefi-cd.bin $(OUT)/alpine-iso/boot/limine/
+	cp $(BINARY_EFI) $(OUT)/alpine-iso/EFI/BOOT/BOOTX64.EFI
+	xorriso -as mkisofs -R -r -J \
+	  --efi-boot boot/limine/limine-uefi-cd.bin \
+	  --efi-boot-part --efi-boot-image -o $@ $(OUT)/alpine-iso
+
+alpine-probe: $(ALPINE_ISO)
+	sh scripts/probe-alpine.sh $(ALPINE_ISO)
 
 smoke: $(ISO)
 	sh scripts/smoke.sh $(ISO)
