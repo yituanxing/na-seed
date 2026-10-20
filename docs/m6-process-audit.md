@@ -81,3 +81,54 @@ userspace driver once fork/wait works.
 - Check negative `fork` errors, `wait4` with no children, and
   address-space/FD lifetime on repeated invocations.
 - CI result without the expected actual user stdout is not acceptance.
+
+## M6.2 — process creation as demanded by real BusyBox ash
+
+QEMU on the untouched M6.1 kernel confirmed the **actual** source of the
+next blocker: unmodified upstream Alpine BusyBox ash executing
+
+```sh
+/bin/busybox sh -c '/bin/busybox cat /etc/hostname; echo finished'
+```
+
+uses Linux x86-64 **fork syscall 57**, not vfork. The previous kernel
+returned `-ENOSYS` and ash exited with status 2. This evidence
+determined the implementation: native `fork(57)`, `execve(59)`,
+`exit/exit_group` and `wait4(61)`, not speculative clone/vfork.
+
+Kernel architecture introduced at this stage:
+
+- Parent and child have distinct monotonic PID values, private eager-copied
+  user page tables and memory, preserved TLS (FS base), FXSAVE/FXRSTOR user
+  floating-point state, cwd, signal mask and signal actions.
+- Descriptor **tables** are inherited independently, while the open-file
+  descriptions (reference counts, offsets and status flags) are genuinely
+  shared across fork. Child exit drops descriptor references; wait4 reaps
+  the zombie and reclaims its private page hierarchy. A failed fork returns
+  a Linux error and frees any partially built private memory.
+- System-call entry saves **all 15 user GPRs** (including RBX/RBP/R12–R15)
+  as a restorable SYSRET frame. The first scheduler is intentionally
+  **child-first cooperative**: the child runs to exit and its saved parent
+  resumes at the original fork return. The kernel has one syscall stack
+  and never switches in the middle of an in-progress kernel call.
+  Two user tasks have independent address spaces and overlapping lifetimes,
+  but are **not preemptively time-sliced**.
+- `wait4` accepts a specific positive child PID or -1 and basic WNOHANG,
+  reaps the exited child with Linux `status = exit_code << 8`, returns
+  `-ECHILD` when appropriate, and explicitly rejects unsupported
+  process groups/rusage and kernel-blocking waits rather than faking them.
+
+QEMU real-software acceptance runs the original ash with three scenarios:
+a child `cat` followed by parent `echo finished`; two consecutive
+child `echo` invocations followed by a parent command; and a child
+reading a file after the parent changed cwd to `/etc`. Each requires
+genuine stdout from **both** processes, observed fork+wait4 boundaries
+and successful final process exit. The legacy full suite remains active.
+
+**Not yet supported:** concurrent CPU execution, preemptive scheduling,
+interleaved parent/child execution, independent kernel stacks with sleeping
+syscalls, `clone` threads, `vfork`, job control, `pipe`, or arbitrary
+process-group/TTY semantics. A child blocking indefinitely cannot be
+rescued by the parent under this cooperative policy. The next true
+software-driven step is a pipeline; it will force runnable scheduling,
+pipes and kernel sleep/wake semantics instead of just child-first work.
