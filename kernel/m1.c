@@ -706,7 +706,8 @@ static uint64_t sys_arch_prctl(uint64_t op, uint64_t address) {
  */
 extern void nas_putchar(char c);
 enum { FD_CLOSED = 0, FD_UART = 1, FD_NULL = 2, FD_ZERO = 3,
-       FD_BOOTFS = 4, FD_ARCHIVE = 5, FD_DIR = 6 };
+       FD_BOOTFS = 4, FD_ARCHIVE = 5, FD_DIR = 6,
+       FD_PIPE_R = 7, FD_PIPE_W = 8 };
 static bool same_string(const char *a, const char *b);
 /* Per-FD handles share a refcounted open-file description after dup().
  * All fd aliases must observe the same read/seek/directory cursor.
@@ -714,10 +715,139 @@ static bool same_string(const char *a, const char *b);
 /* Read-only boot filesystem backed by bytes of the actual Limine modules.
  * Paths name exactly the binaries the bootloader provided, not fake files.
  */
+
+/* M6.3: anonymous Linux pipe endpoints use existing shared open-file
+ * description slots and real duplicated/inherited FD reference counts.
+ * 4K ring is bounded; no filesystem backend is involved.
+ */
+#define PIPE_COUNT 8
+#define PIPE_CAP 4096
+struct nas_pipe {
+    bool used;
+    uint8_t bytes[PIPE_CAP];
+    unsigned head, count, read_slot, write_slot;
+};
+static struct nas_pipe pipe_table[PIPE_COUNT];
+static int pipe_slot_owner[NAS_FD_LIMIT]; /* 0 => unbound; value is index+1 */
+static bool pipe_readable(unsigned fd) {
+    unsigned slot = file_slot[fd], handle = (unsigned)pipe_slot_owner[slot];
+    return handle && descriptors[fd] == FD_PIPE_R &&
+        (pipe_table[handle - 1].count ||
+         !file_refcount[pipe_table[handle - 1].write_slot]);
+}
+static bool pipe_writable(unsigned fd) {
+    unsigned slot = file_slot[fd], handle = (unsigned)pipe_slot_owner[slot];
+    return handle && descriptors[fd] == FD_PIPE_W &&
+        !(!file_refcount[pipe_table[handle - 1].read_slot]) &&
+        pipe_table[handle - 1].count < PIPE_CAP;
+}
+static void pipe_release_description(unsigned slot) {
+    unsigned handle = (unsigned)pipe_slot_owner[slot];
+    if (!handle) return;
+    struct nas_pipe *pipe = &pipe_table[handle - 1];
+    pipe_slot_owner[slot] = 0;
+    if (!file_refcount[pipe->read_slot] && !file_refcount[pipe->write_slot]) {
+        pipe->used = false;
+        pipe->count = pipe->head = 0;
+    }
+}
+static uint64_t sys_pipe2(uint64_t user_pair, uint64_t flags) {
+    if (flags & ~(0x800ULL | 0x80000ULL)) return (uint64_t)-EINVAL;
+    if (user_pair >= USER_LIMIT || user_pair > USER_LIMIT - 8)
+        return (uint64_t)-EFAULT;
+    for (unsigned i = 0; i < 8; i++)
+        if (!user_byte(user_pair + i)) return (uint64_t)-EFAULT;
+    unsigned fds[2], slots[2], nfds = 0, nslots = 0;
+    for (unsigned fd = 3; fd < NAS_FD_LIMIT && nfds < 2; fd++)
+        if (descriptors[fd] == FD_CLOSED) fds[nfds++] = fd;
+    if (nfds != 2) return (uint64_t)-EMFILE;
+    for (unsigned slot = 0; slot < NAS_FD_LIMIT && nslots < 2; slot++)
+        if (!file_refcount[slot]) slots[nslots++] = slot;
+    if (nslots != 2) return (uint64_t)-ENFILE;
+    unsigned index = PIPE_COUNT;
+    for (unsigned i = 0; i < PIPE_COUNT; i++)
+        if (!pipe_table[i].used) { index = i; break; }
+    if (index == PIPE_COUNT) return (uint64_t)-ENFILE;
+    struct nas_pipe *pipe = &pipe_table[index];
+    pipe->used = true;
+    pipe->head = pipe->count = 0;
+    pipe->read_slot = slots[0];
+    pipe->write_slot = slots[1];
+    for (unsigned i = 0; i < 2; i++) {
+        unsigned fd = fds[i], slot = slots[i];
+        descriptors[fd] = i ? FD_PIPE_W : FD_PIPE_R;
+        file_slot[fd] = (uint8_t)slot;
+        file_refcount[slot] = 1;
+        file_status_flags[slot] = (i ? 1ULL : 0ULL) | (flags & 0x800ULL);
+        fd_cloexec[fd] = !!(flags & 0x80000ULL);
+        pipe_slot_owner[slot] = (int)index + 1;
+    }
+    uint8_t output[8] = {0};
+    for (unsigned i = 0; i < 2; i++)
+        for (unsigned j = 0; j < 4; j++)
+            output[i * 4 + j] = (uint8_t)(fds[i] >> (j * 8));
+    if (!user_write_bytes(user_pair, output, sizeof(output)))
+        fail("pipe2 validated destination became inaccessible");
+    return 0;
+}
+static uint64_t pipe_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
+    struct nas_pipe *pipe = &pipe_table[pipe_slot_owner[file_slot[fd]] - 1];
+    if (!length) return 0;
+    if (address >= USER_LIMIT || length > USER_LIMIT - address)
+        return (uint64_t)-EFAULT;
+    if (!pipe->count)
+        return !file_refcount[pipe->write_slot] ? 0 :
+            (file_status_flags[file_slot[fd]] & 0x800ULL)
+                ? (uint64_t)-EAGAIN : (uint64_t)-EOPNOTSUPP;
+    if (length > pipe->count) length = pipe->count;
+    if (length > PIPE_CAP) length = PIPE_CAP;
+    unsigned n = 0;
+    for (; n < length; n++)
+        if (!user_byte(address + n)) break;
+    if (!n) return (uint64_t)-EFAULT;
+    for (unsigned i = 0; i < n; i++) {
+        uint8_t value = pipe->bytes[(pipe->head + i) % PIPE_CAP];
+        if (!user_write_bytes(address + i, &value, 1))
+            fail("pipe read validated user mapping became inaccessible");
+    }
+    pipe->head = (pipe->head + n) % PIPE_CAP;
+    pipe->count -= n;
+    return n;
+}
+static uint64_t pipe_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
+    struct nas_pipe *pipe = &pipe_table[pipe_slot_owner[file_slot[fd]] - 1];
+    if (!length) return 0;
+    if (address >= USER_LIMIT || length > USER_LIMIT - address)
+        return (uint64_t)-EFAULT;
+    if (!file_refcount[pipe->read_slot]) return (uint64_t)-EPIPE;
+    if (pipe->count == PIPE_CAP)
+        return (file_status_flags[file_slot[fd]] & 0x800ULL)
+            ? (uint64_t)-EAGAIN : (uint64_t)-EOPNOTSUPP;
+    unsigned space = PIPE_CAP - pipe->count;
+    if (length > space) {
+        if (length <= PIPE_CAP)
+            return (file_status_flags[file_slot[fd]] & 0x800ULL)
+                ? (uint64_t)-EAGAIN : (uint64_t)-EOPNOTSUPP;
+        length = space; /* writes > PIPE_BUF may complete partially */
+    }
+    unsigned n = 0;
+    for (; n < length; n++) {
+        uint8_t *src = user_byte(address + n);
+        if (!src) break;
+        pipe->bytes[(pipe->head + pipe->count + n) % PIPE_CAP] = *src;
+    }
+    if (!n) return (uint64_t)-EFAULT;
+    pipe->count += n;
+    return n;
+}
+
 static void fd_close_raw(uint64_t fd) {
     if (descriptors[fd] == FD_CLOSED) return;
     unsigned slot = file_slot[fd];
-    if (file_refcount[slot]) file_refcount[slot]--;
+    if (file_refcount[slot]) {
+        file_refcount[slot]--;
+        if (!file_refcount[slot]) pipe_release_description(slot);
+    }
     descriptors[fd] = FD_CLOSED;
     boot_files[fd] = 0;
     boot_entries[fd] = 0;
@@ -922,6 +1052,7 @@ static uint64_t sys_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
         address >= USER_LIMIT || length > USER_LIMIT - address)
         return (uint64_t)-EFAULT;
     if (descriptors[fd] == FD_NULL || descriptors[fd] == FD_ZERO) return length;
+    if (descriptors[fd] == FD_PIPE_W) return pipe_fd_write(fd, address, length);
     if (descriptors[fd] == FD_BOOTFS || descriptors[fd] == FD_ARCHIVE ||
         descriptors[fd] == FD_DIR) return (uint64_t)-EBADF; /* O_RDONLY */
     if (descriptors[fd] != FD_UART) return (uint64_t)-EBADF;
@@ -938,6 +1069,7 @@ static uint64_t sys_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     if ((file_status_flags[file_slot[fd]] & 3ULL) == 1)
         return (uint64_t)-EBADF;
     if (descriptors[fd] == FD_NULL) return 0;
+    if (descriptors[fd] == FD_PIPE_R) return pipe_fd_read(fd, address, length);
     if (descriptors[fd] == FD_DIR) return (uint64_t)-EISDIR;
     if (descriptors[fd] == FD_ARCHIVE) {
         const struct bootfs_entry *entry = boot_entries[fd];
@@ -1015,6 +1147,10 @@ static uint64_t sys_poll(uint64_t address, uint64_t nfds, uint64_t timeout) {
                     kind == FD_DIR || kind == FD_NULL || kind == FD_ZERO)
                     revents = events & (POLLIN | POLLOUT);
                 else if (kind == FD_UART)
+                    revents = events & POLLOUT;
+                else if (kind == FD_PIPE_R && pipe_readable((unsigned)fd))
+                    revents = events & POLLIN;
+                else if (kind == FD_PIPE_W && pipe_writable((unsigned)fd))
                     revents = events & POLLOUT;
             }
         }
@@ -1095,6 +1231,9 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
         st.nlink = bootfs_is_dir(entry) ? 2 : 1;
         st.size = (int64_t)entry->size;
         st.blocks = (int64_t)((entry->size + 511) / 512);
+    } else if (descriptors[fd] == FD_PIPE_R || descriptors[fd] == FD_PIPE_W) {
+        st.dev = 4; st.ino = (uint64_t)file_slot[fd] + 1000;
+        st.mode = 0010600; /* S_IFIFO | owner read/write */
     } else if (descriptors[fd] == FD_BOOTFS) {
         const struct limine_file *file = boot_files[fd];
         if (!file) return (uint64_t)-EBADF;
@@ -1579,6 +1718,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == __NR_uname) return sys_uname_naseed(args[1]);
     if (nr == __NR_getcwd) return sys_getcwd_root(args[1], args[2]);
     if (nr == __NR_fork) return sys_fork((uint64_t *)(uintptr_t)args);
+    if (nr == __NR_pipe) return sys_pipe2(args[1], 0);
+    if (nr == __NR_pipe2) return sys_pipe2(args[1], args[2]);
     if (nr == __NR_wait4) return sys_wait4(args[1], args[2], args[3], args[4]);
     if (nr == __NR_execve) return sys_execve(args[1], args[2], args[3]);
     if (nr == __NR_fcntl) return sys_fcntl(args[1], args[2], args[3]);
