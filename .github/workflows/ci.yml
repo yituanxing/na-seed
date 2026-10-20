@@ -15,7 +15,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y clang lld xorriso qemu-system-x86 ovmf musl-tools binutils
+          sudo apt-get install -y clang lld xorriso qemu-system-x86 ovmf musl-tools binutils cpio
       - name: Preflight audit, shell syntax, kernel compile and link
         run: sh scripts/preflight.sh
       - name: Cache verified static GNU Bash
@@ -43,6 +43,8 @@ jobs:
         run: ALPINE_REQUIRE_PASS=1 make alpine-probe
       - name: Verify multiple Alpine BusyBox applets via Limine cmdline
         run: make alpine-argv-probe
+      - name: Real archive-backed Alpine BusyBox ls and cat under QEMU
+        run: make alpine-fs-probe
       - name: Attach serial log on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -54,4 +56,5 @@ jobs:
             build/debian-*-serial.log
             build/alpine-serial.log
             build/alpine-argv-*-serial.log
+            build/alpine-fs-*-serial.log
           if-no-files-found: ignore
