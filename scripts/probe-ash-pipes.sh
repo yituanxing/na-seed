@@ -4,7 +4,7 @@ set -eu
 for testcase in builtin external chain; do
   case "$testcase" in
     builtin)
-      args="sh -c 'echo abc | wc -c'"
+      args="sh -c 'echo abc | /bin/busybox wc -c'"
       expected=4 ;;
     external)
       args="sh -c '/bin/busybox cat /etc/hostname | /bin/busybox wc -c'"
