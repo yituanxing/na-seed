@@ -94,3 +94,11 @@ bool nas_task_hold_files(const struct nas_task *task) {
             nas_file_refcount[task->fds.file_slot[fd]]++;
     return true;
 }
+
+struct nas_task *nas_task_child_at(uint64_t parent_pid, unsigned slot) {
+    if (slot >= NAS_TASK_LIMIT || !parent_pid) return NULL;
+    struct nas_task *task = &task_table[slot];
+    if (task->state == NAS_TASK_FREE || task->ppid != parent_pid)
+        return NULL;
+    return task;
+}
