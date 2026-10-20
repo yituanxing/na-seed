@@ -30,7 +30,11 @@ $(OUT)/kernel.o: kernel/kernel.c $(HDR)
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
-$(OUT)/m1.o: kernel/m1.c kernel/nr.h kernel/errno.h kernel/bootfs.h $(HDR)
+$(OUT)/m1.o: kernel/m1.c kernel/nr.h kernel/errno.h kernel/bootfs.h kernel/task.h $(HDR)
+	mkdir -p $(dir $@)
+	clang $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(OUT)/task.o: kernel/task.c kernel/task.h
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
@@ -49,8 +53,8 @@ $(OUT)/user-hello.o: user/hello.S kernel/nr.h kernel/errno.h
 $(OUT)/user-hello: $(OUT)/user-hello.o user/linker.ld
 	ld.lld -m elf_x86_64 -nostdlib -static -T user/linker.ld $< -o $@
 
-$(KERNEL): $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/bootfs.o $(OUT)/arch.o kernel/linker.ld
-	ld.lld $(LDFLAGS) $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/bootfs.o $(OUT)/arch.o -o $@
+$(KERNEL): $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/bootfs.o $(OUT)/arch.o kernel/linker.ld
+	ld.lld $(LDFLAGS) $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/bootfs.o $(OUT)/arch.o -o $@
 
 $(BINARY_TAR):
 	mkdir -p $(dir $@)
@@ -243,4 +247,4 @@ run: $(ISO)
 clean:
 	rm -rf $(OUT)
 
--include $(OUT)/kernel.d $(OUT)/m1.d $(OUT)/bootfs.d
+-include $(OUT)/kernel.d $(OUT)/m1.d $(OUT)/bootfs.d $(OUT)/task.d
