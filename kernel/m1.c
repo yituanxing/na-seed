@@ -265,8 +265,8 @@ static uint64_t fork_copy_user_root(void) {
     return 0;
 }
 static void task_restore_cpu(const struct nas_task *task) {
-    __asm__ volatile("mov %0, %%cr3" : : "r"(task->root_phys) : "memory");
-    wrmsr(0xc0000100, task->user_fs_base);
+    __asm__ volatile("mov %0, %%cr3" : : "r"(nas_task_page_root(task)) : "memory");
+    wrmsr(0xc0000100, nas_task_tls_base(task));
     __asm__ volatile("fxrstor64 %0" : : "m"(task->fpu_state) : "memory");
 }
 
@@ -1474,16 +1474,8 @@ static uint64_t sys_fork(uint64_t *frame) {
         nas_task_release(child);
         return (uint64_t)-ENOMEM;
     }
-    child->root_phys = new_root;
-    /* FD tables are per-task. Each FD entry points to a shared open-file
-     * description and the two tasks must agree on its offset and flags.
-     */
-    for (unsigned fd = 0; fd < NAS_FD_LIMIT; fd++)
-        if (child->fds.descriptors[fd] != FD_CLOSED) {
-            unsigned slot = child->fds.file_slot[fd];
-            if (!file_refcount[slot]) fail("fork dangling open-file slot");
-            file_refcount[slot]++;
-        }
+    nas_task_set_root(child, new_root);
+    if (!nas_task_hold_files(child)) fail("fork dangling open-file slot");
     parent->resume_user_rsp = syscall_user_rsp;
     for (unsigned i = 0; i < 15; i++) parent->resume_regs[i] = frame[i];
     parent->resume_regs[0] = child->pid; /* fork returns PID to parent */
@@ -1520,7 +1512,7 @@ static uint64_t sys_wait4(uint64_t desired, uint64_t status_addr,
             if (!user_write_bytes(status_addr, status_bytes, 4))
                 return (uint64_t)-EFAULT;
         }
-        if (!reclaim_user_root(child->root_phys))
+        if (!reclaim_user_root(nas_task_page_root(child)))
             fail("wait4 failed to reclaim child address space");
         nas_print("[PROC] wait4 reaped pid="); nas_dec(pid);
         nas_print(" status="); nas_dec(code); nas_print("\\n");
