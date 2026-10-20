@@ -43,6 +43,7 @@ struct nas_task {
      * pointers. The task's private CR3 must be restored before replay.
      */
     uint64_t blocked_nr, blocked_args[4];
+    bool pending_valid; /* read(0) is a real pending syscall, not 'none' */
     uint8_t fpu_state[512] __attribute__((aligned(16)));
 
     /* One independent VM mapping root and ELF/brk/mmap tracking per task. */
