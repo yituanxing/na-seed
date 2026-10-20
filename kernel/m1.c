@@ -228,15 +228,20 @@ static uint64_t heap_break, mmap_cursor = 0x60000000ULL;
 #define ALPINE_APP_BASE 0x10000000ULL
 #define ALPINE_LDSO_BASE 0x30000000ULL
 
-/* A real ET_DYN/PT_INTERP handoff: kernel maps both ELFs; musl ldso is
- * responsible for relocations and symbol resolution in user mode.
+/* ELF bytes may originate from a Limine ELF module (M1-M4) or a file
+ * inside the indexed CPIO initramfs (M5.1). This is not an execve ABI.
+ * PT_INTERP is still checked against the one supported musl interpreter.
  */
-static bool elf_map_image(const struct limine_file *module,
+struct elf_image {
+    const uint8_t *data;
+    uint64_t size;
+};
+static bool elf_map_image(const struct elf_image *image,
                           uint64_t bias, bool main_image,
                           uint64_t *entry, bool *has_interp) {
-    if (!module || !module->address || module->size < sizeof(struct elf_hdr))
+    if (!image || !image->data || image->size < sizeof(struct elf_hdr))
         return false;
-    const uint8_t *file = (const uint8_t *)module->address;
+    const uint8_t *file = image->data;
     const struct elf_hdr *e = (const struct elf_hdr *)file;
     if (e->ident[0] != 0x7f || e->ident[1] != 'E' ||
         e->ident[2] != 'L' || e->ident[3] != 'F' ||
@@ -245,7 +250,7 @@ static bool elf_map_image(const struct limine_file *module,
         e->phentsize != sizeof(struct elf_phdr) ||
         !e->phnum || e->phnum > 64 ||
         !checked_range(e->phoff, (uint64_t)e->phnum * e->phentsize,
-                       module->size))
+                       image->size))
         return false;
     if ((e->type == 2 && bias) || (e->type == 3 && !bias))
         return false;
@@ -255,7 +260,7 @@ static bool elf_map_image(const struct limine_file *module,
         const struct elf_phdr *p = &ph[i];
         if (p->type == 3 && main_image) { /* PT_INTERP */
             static const char name[] = "/lib/ld-musl-x86_64.so.1";
-            if (!checked_range(p->offset, p->filesz, module->size) ||
+            if (!checked_range(p->offset, p->filesz, image->size) ||
                 p->filesz != sizeof(name)) return false;
             for (unsigned n = 0; n < sizeof(name); n++)
                 if (file[p->offset + n] != (uint8_t)name[n]) return false;
@@ -264,7 +269,7 @@ static bool elf_map_image(const struct limine_file *module,
         if (p->type != 1) continue;
         if (!p->memsz || p->memsz > (64ULL << 20) ||
             p->filesz > p->memsz ||
-            !checked_range(p->offset, p->filesz, module->size) ||
+            !checked_range(p->offset, p->filesz, image->size) ||
             !checked_range(p->vaddr, p->memsz, USER_LIMIT) ||
             p->vaddr > UINT64_MAX - bias ||
             p->memsz > UINT64_MAX - bias - p->vaddr)
@@ -291,21 +296,21 @@ static bool elf_map_image(const struct limine_file *module,
     if (main_image) loaded_phnum = e->phnum;
     return true;
 }
-static bool elf_load(const struct limine_file *module, uint64_t *entry) {
-    if (!module || !module->address || module->size < sizeof(struct elf_hdr))
+static bool elf_load(const struct elf_image *image,
+                     const struct elf_image *interpreter, uint64_t *entry) {
+    if (!image || !image->data || image->size < sizeof(struct elf_hdr))
         return false;
-    const struct elf_hdr *e = (const struct elf_hdr *)module->address;
+    const struct elf_hdr *e = (const struct elf_hdr *)image->data;
     uint64_t bias = e->type == 3 ? ALPINE_APP_BASE : 0;
     bool has_interp = false;
-    if (!elf_map_image(module, bias, true, &loaded_main_entry, &has_interp))
+    if (!elf_map_image(image, bias, true, &loaded_main_entry, &has_interp))
         return false;
     *entry = loaded_main_entry;
     if (!has_interp) return true;
-    const struct limine_file *interp = nas_module(1);
-    if (!interp) return false;
+    if (!interpreter || !interpreter->data) return false;
     loaded_interp_base = ALPINE_LDSO_BASE;
     bool nested_interp = false;
-    if (!elf_map_image(interp, loaded_interp_base, false, entry, &nested_interp))
+    if (!elf_map_image(interpreter, loaded_interp_base, false, entry, &nested_interp))
         return false;
     nas_print("[DYN] real musl interpreter loaded, entry=");
     nas_hex(*entry); nas_print("\n");
@@ -1169,20 +1174,55 @@ void m1_start(void) {
     if (!paging_init()) fail("requires four-level paging");
     syscall_enable();
     const struct limine_file *module = nas_user_module();
-    if (!module) fail("no Limine userspace ELF module");
-    running_bash = bash_module(module);
-    running_busybox = busybox_module(module);
-    running_alpine = running_busybox && nas_module(1) != 0;
-    const struct limine_file *archive = nas_module(2);
+    if (!module) fail("no Limine userspace module");
+    const uint8_t *first = (const uint8_t *)module->address;
+    bool archive_only = module->size >= 6 && first &&
+        first[0] == '0' && first[1] == '7' && first[2] == '0' &&
+        first[3] == '7' && first[4] == '0' && first[5] == '1';
+
+    const struct limine_file *archive = archive_only ? module : nas_module(2);
     if (archive) {
-        if (!running_alpine || !bootfs_mount(archive->address, archive->size))
+        if (!bootfs_mount(archive->address, archive->size))
             fail("invalid CPIO initramfs module");
         nas_print("[FS] CPIO newc read-only archive mounted\n");
+    }
+
+    struct elf_image main_image = {0};
+    struct elf_image interp_image = {0};
+    const struct elf_image *interpreter = 0;
+    if (archive_only) {
+        /* Boot one real program by its path in the archive. Other commands
+         * are that ELF's unmodified BusyBox applets selected by argv.
+         * A process model and execve belong to a separate milestone.
+         */
+        const struct bootfs_entry *app = bootfs_find("/bin/busybox");
+        const struct bootfs_entry *ldso = bootfs_find("/lib/ld-musl-x86_64.so.1");
+        if (!app || !ldso || bootfs_is_dir(app) || bootfs_is_dir(ldso))
+            fail("CPIO missing BusyBox or musl interpreter ELF");
+        main_image = (struct elf_image){app->data, app->size};
+        interp_image = (struct elf_image){ldso->data, ldso->size};
+        interpreter = &interp_image;
+        running_busybox = true;
+        running_alpine = true;
+        nas_print("[M5] actual ELF images sourced from CPIO file entries\n");
+    } else {
+        main_image = (struct elf_image){(const uint8_t *)module->address, module->size};
+        running_bash = bash_module(module);
+        running_busybox = busybox_module(module);
+        running_alpine = running_busybox && nas_module(1) != 0;
+        if (archive && !running_alpine)
+            fail("archive file requires real Alpine BusyBox runtime");
+        if (running_alpine) {
+            const struct limine_file *ldso = nas_module(1);
+            interp_image = (struct elf_image){(const uint8_t *)ldso->address, ldso->size};
+            interpreter = &interp_image;
+        }
     }
     if (running_bash) nas_print("[M2] real GNU Bash module discovered\n");
     if (running_busybox) nas_print("[M3] real BusyBox module discovered\n");
     uint64_t entry = 0;
-    if (!elf_load(module, &entry)) fail("invalid or unmappable static ELF");
+    if (!elf_load(&main_image, interpreter, &entry))
+        fail("invalid or unmappable userspace ELF");
     for (uint64_t va = USER_STACK_TOP - USER_STACK_PAGES * PAGE;
          va < USER_STACK_TOP; va += PAGE) {
         if (!user_map(va, true)) fail("cannot map user stack");
