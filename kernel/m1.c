@@ -1539,6 +1539,15 @@ static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
             parent[len] = 0;
             item = bootfs_find(parent);
             ino = item ? item->ino : dir->ino;
+        } else if (same_string(dir->path, "/tmp")) {
+            /* Archive /tmp directory is initially empty: list volatile
+             * inodes, with the same stable cursor and Linux dirent ABI. */
+            if (cursor - 2 >= TMP_FILE_COUNT) break;
+            const struct nas_tmp_file *file = tmp_child((unsigned)(cursor - 2));
+            if (!file) break;
+            name = file->path + 5;
+            ino = 5000 + tmp_number(file);
+            dtype = 8; /* DT_REG */
         } else {
             if (cursor - 2 > 95) break;
             item = bootfs_child(dir, (unsigned)(cursor - 2));
