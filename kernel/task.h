@@ -76,5 +76,6 @@ uint64_t nas_task_tls_base(const struct nas_task *task);
 void nas_task_set_root(struct nas_task *task, uint64_t root);
 bool nas_task_hold_files(const struct nas_task *task);
 struct nas_task *nas_task_by_pid(uint64_t pid);
+struct nas_task *nas_task_child_at(uint64_t parent_pid, unsigned slot);
 const struct nas_task *nas_task_find(uint64_t pid);
 #endif
