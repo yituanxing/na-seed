@@ -729,24 +729,42 @@ struct nas_pipe {
 };
 static struct nas_pipe pipe_table[PIPE_COUNT];
 static int pipe_slot_owner[NAS_FD_LIMIT]; /* 0 => unbound; value is index+1 */
+/* An open-file slot is recyclable after its final close. A pipe must not
+ * mistake a later unrelated file on that slot for its old writer: record
+ * the endpoint closure in the pipe object before the slot is reused.
+ */
+static bool pipe_has_reader(const struct nas_pipe *pipe) {
+    return pipe->read_slot < NAS_FD_LIMIT &&
+           file_refcount[pipe->read_slot] != 0;
+}
+static bool pipe_has_writer(const struct nas_pipe *pipe) {
+    return pipe->write_slot < NAS_FD_LIMIT &&
+           file_refcount[pipe->write_slot] != 0;
+}
 static bool pipe_readable(unsigned fd) {
     unsigned slot = file_slot[fd], handle = (unsigned)pipe_slot_owner[slot];
     return handle && descriptors[fd] == FD_PIPE_R &&
         (pipe_table[handle - 1].count ||
-         !file_refcount[pipe_table[handle - 1].write_slot]);
+         !pipe_has_writer(&pipe_table[handle - 1]));
 }
 static bool pipe_writable(unsigned fd) {
     unsigned slot = file_slot[fd], handle = (unsigned)pipe_slot_owner[slot];
     return handle && descriptors[fd] == FD_PIPE_W &&
-        !(!file_refcount[pipe_table[handle - 1].read_slot]) &&
+        pipe_has_reader(&pipe_table[handle - 1]) &&
         pipe_table[handle - 1].count < PIPE_CAP;
 }
 static void pipe_release_description(unsigned slot) {
     unsigned handle = (unsigned)pipe_slot_owner[slot];
     if (!handle) return;
     struct nas_pipe *pipe = &pipe_table[handle - 1];
+    /* Mark endpoint closed BEFORE the open-file slot can be reallocated
+     * to another pipe. Without this, the next pipe reusing the slot
+     * resurrects an old writer and makes a valid pipeline deadlock.
+     */
+    if (slot == pipe->read_slot) pipe->read_slot = NAS_FD_LIMIT;
+    if (slot == pipe->write_slot) pipe->write_slot = NAS_FD_LIMIT;
     pipe_slot_owner[slot] = 0;
-    if (!file_refcount[pipe->read_slot] && !file_refcount[pipe->write_slot]) {
+    if (!pipe_has_reader(pipe) && !pipe_has_writer(pipe)) {
         pipe->used = false;
         pipe->count = pipe->head = 0;
     }
@@ -798,7 +816,7 @@ static uint64_t pipe_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     if (address >= USER_LIMIT || length > USER_LIMIT - address)
         return (uint64_t)-EFAULT;
     if (!pipe->count)
-        return !file_refcount[pipe->write_slot] ? 0 :
+        return !pipe_has_writer(pipe) ? 0 :
             (file_status_flags[file_slot[fd]] & 0x800ULL)
                 ? (uint64_t)-EAGAIN : (uint64_t)-EOPNOTSUPP;
     if (length > pipe->count) length = pipe->count;
@@ -821,7 +839,7 @@ static uint64_t pipe_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     if (!length) return 0;
     if (address >= USER_LIMIT || length > USER_LIMIT - address)
         return (uint64_t)-EFAULT;
-    if (!file_refcount[pipe->read_slot]) return (uint64_t)-EPIPE;
+    if (!pipe_has_reader(pipe)) return (uint64_t)-EPIPE;
     if (pipe->count == PIPE_CAP)
         return (file_status_flags[file_slot[fd]] & 0x800ULL)
             ? (uint64_t)-EAGAIN : (uint64_t)-EOPNOTSUPP;
@@ -1709,11 +1727,11 @@ static bool task_io_ready(const struct nas_task *task) {
     const struct nas_pipe *pipe = &pipe_table[h - 1];
     if (task->blocked_nr == __NR_read)
         return kind != FD_PIPE_R || pipe->count ||
-               !file_refcount[pipe->write_slot];
+               !pipe_has_writer(pipe);
     if (task->blocked_nr == __NR_write ||
         task->blocked_nr == __NR_writev)
         return kind != FD_PIPE_W || pipe->count < PIPE_CAP ||
-               !file_refcount[pipe->read_slot];
+               !pipe_has_reader(pipe);
     return true;
 }
 static bool task_wait_ready(const struct nas_task *task) {
@@ -1790,8 +1808,8 @@ static uint64_t task_schedule(uint64_t *frame) {
         if (!pipe->used) continue;
         nas_print("[DEADLOCK] pipe="); nas_dec(i);
         nas_print(" bytes="); nas_dec(pipe->count);
-        nas_print(" readers="); nas_dec(file_refcount[pipe->read_slot]);
-        nas_print(" writers="); nas_dec(file_refcount[pipe->write_slot]);
+        nas_print(" readers="); nas_dec(pipe_has_reader(pipe));
+        nas_print(" writers="); nas_dec(pipe_has_writer(pipe));
         nas_print("\n");
     }
     for (unsigned i = 0; i < NAS_TASK_LIMIT; i++) {
