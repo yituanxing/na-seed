@@ -15,7 +15,7 @@ CFLAGS := --target=x86_64-unknown-none-elf -std=c11 -O2 -g -Wall -Wextra -Werror
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
  -z noexecstack -T kernel/linker.ld
 
-.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch alpine-probe alpine-argv-probe alpine-fs-probe preflight
+.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch alpine-probe alpine-argv-probe alpine-fs-probe alpine-archive-probe preflight
 all: iso
 iso: $(ISO)
 kernel: $(KERNEL)
@@ -196,6 +196,26 @@ $(ALPINE_FS_ISO): $(KERNEL) $(ALPINE_FS_IMAGE) $(BINARY_EFI) limine-alpine-fs.co
 
 alpine-fs-probe: $(ALPINE_FS_ISO)
 	sh scripts/probe-alpine-fs.sh
+
+# Archive-only boot: no separately staged BusyBox/musl modules. The kernel
+# fetches both actual ELF images by path from the indexed CPIO contents.
+ALPINE_ARCHIVE_ISO := $(OUT)/naseed-alpine-archive.iso
+$(ALPINE_ARCHIVE_ISO): $(KERNEL) $(ALPINE_FS_IMAGE) $(BINARY_EFI) limine-alpine-archive.conf
+	rm -rf $(OUT)/alpine-archive-iso
+	mkdir -p $(OUT)/alpine-archive-iso/boot/limine $(OUT)/alpine-archive-iso/EFI/BOOT
+	cp $(KERNEL) $(OUT)/alpine-archive-iso/boot/kernel
+	cp $(ALPINE_FS_IMAGE) $(OUT)/alpine-archive-iso/boot/rootfs.cpio
+	cp limine-alpine-archive.conf $(OUT)/alpine-archive-iso/boot/limine/limine.conf
+	cp $(OUT)/deps/limine-binary/limine-uefi-cd.bin $(OUT)/alpine-archive-iso/boot/limine/
+	cp $(BINARY_EFI) $(OUT)/alpine-archive-iso/EFI/BOOT/BOOTX64.EFI
+	xorriso -as mkisofs -R -r -J \
+	 --efi-boot boot/limine/limine-uefi-cd.bin \
+	 --efi-boot-part --efi-boot-image -o $@ $(OUT)/alpine-archive-iso
+
+alpine-archive-probe: $(ALPINE_ARCHIVE_ISO)
+	NASEED_FS_BASE=build/alpine-archive-iso \
+	 NASEED_FS_CONFIG=limine-alpine-archive.conf \
+	 NASEED_FS_PREFIX=alpine-archive sh scripts/probe-alpine-fs.sh
 
 preflight:
 	sh scripts/preflight.sh
