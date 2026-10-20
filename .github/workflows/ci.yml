@@ -47,6 +47,8 @@ jobs:
         run: make ash-tmp-probe
       - name: BusyBox directory creation, removal, and open inode lifecycle
         run: make ash-tree-probe
+      - name: Real Alpine BusyBox cp/mv, rename atomicity, and open inode lifecycle
+        run: make ash-rename-probe
       - name: Real BusyBox ash pipeline pipe/pipe2 and EOF under QEMU
         run: make ash-pipes-probe
       - name: Boot genuine Alpine dynamic BusyBox and report ABI blockers
@@ -87,4 +89,5 @@ jobs:
             build/ash-link-*-serial.log
             build/ash-tmp-*-serial.log
             build/ash-tree-*-serial.log
+            build/ash-rename-*-serial.log
           if-no-files-found: ignore
