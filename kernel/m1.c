@@ -16,6 +16,7 @@ extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
 extern void nas_hex(uint64_t);
 extern const struct limine_file *nas_user_module(void);
+extern const struct limine_file *nas_module(uint64_t index);
 extern void gdt_reload(const void *);
 extern void enter_user(uint64_t entry, uint64_t stack_top);
 extern void syscall_entry(void);
@@ -214,9 +215,17 @@ struct __attribute__((packed)) elf_phdr {
 static bool checked_range(uint64_t start, uint64_t size, uint64_t limit) {
     return start <= limit && size <= limit - start;
 }
-static uint64_t loaded_phdr, loaded_phnum;
+static uint64_t loaded_phdr, loaded_phnum, loaded_main_entry, loaded_interp_base;
 static uint64_t heap_break, mmap_cursor = 0x60000000ULL;
-static bool elf_load(const struct limine_file *module, uint64_t *entry) {
+#define ALPINE_APP_BASE 0x10000000ULL
+#define ALPINE_LDSO_BASE 0x30000000ULL
+
+/* A real ET_DYN/PT_INTERP handoff: kernel maps both ELFs; musl ldso is
+ * responsible for relocations and symbol resolution in user mode.
+ */
+static bool elf_map_image(const struct limine_file *module,
+                          uint64_t bias, bool main_image,
+                          uint64_t *entry, bool *has_interp) {
     if (!module || !module->address || module->size < sizeof(struct elf_hdr))
         return false;
     const uint8_t *file = (const uint8_t *)module->address;
@@ -224,48 +233,76 @@ static bool elf_load(const struct limine_file *module, uint64_t *entry) {
     if (e->ident[0] != 0x7f || e->ident[1] != 'E' ||
         e->ident[2] != 'L' || e->ident[3] != 'F' ||
         e->ident[4] != 2 || e->ident[5] != 1 ||
-        e->type != 2 || e->machine != 62 ||
+        (e->type != 2 && e->type != 3) || e->machine != 62 ||
         e->phentsize != sizeof(struct elf_phdr) ||
         !e->phnum || e->phnum > 64 ||
-        !checked_range(e->phoff, (uint64_t)e->phnum * e->phentsize, module->size))
+        !checked_range(e->phoff, (uint64_t)e->phnum * e->phentsize,
+                       module->size))
         return false;
-
-    bool executable_entry = false;
+    if ((e->type == 2 && bias) || (e->type == 3 && !bias))
+        return false;
+    bool has_entry = false;
     const struct elf_phdr *ph = (const struct elf_phdr *)(file + e->phoff);
-    for (unsigned i = 0; i < e->phnum; ++i) {
+    for (unsigned i = 0; i < e->phnum; i++) {
         const struct elf_phdr *p = &ph[i];
+        if (p->type == 3 && main_image) { /* PT_INTERP */
+            static const char name[] = "/lib/ld-musl-x86_64.so.1";
+            if (!checked_range(p->offset, p->filesz, module->size) ||
+                p->filesz != sizeof(name)) return false;
+            for (unsigned n = 0; n < sizeof(name); n++)
+                if (file[p->offset + n] != (uint8_t)name[n]) return false;
+            *has_interp = true;
+        }
         if (p->type != 1) continue;
         if (!p->memsz || p->memsz > (64ULL << 20) ||
             p->filesz > p->memsz ||
             !checked_range(p->offset, p->filesz, module->size) ||
             !checked_range(p->vaddr, p->memsz, USER_LIMIT) ||
-            p->vaddr < 0x10000 ||
-            p->vaddr + p->memsz > USER_STACK_TOP - 0x100000)
+            p->vaddr > UINT64_MAX - bias ||
+            p->memsz > UINT64_MAX - bias - p->vaddr)
             return false;
-        if (e->phoff >= p->offset &&
+        uint64_t start = p->vaddr + bias, end = start + p->memsz;
+        if (start < 0x10000 || end > USER_STACK_TOP - 0x100000 ||
+            end > UINT64_MAX - PAGE) return false;
+        if ((p->flags & 1) && e->entry >= p->vaddr &&
+            e->entry - p->vaddr < p->memsz) has_entry = true;
+        if (main_image && e->phoff >= p->offset &&
             e->phoff - p->offset < p->filesz &&
             (uint64_t)e->phnum * e->phentsize <=
-                  p->filesz - (e->phoff - p->offset)) {
-            loaded_phdr = p->vaddr + (e->phoff - p->offset);
-        }
-        if ((p->flags & 1) &&
-            e->entry >= p->vaddr && e->entry - p->vaddr < p->memsz)
-            executable_entry = true;
-        uint64_t segment_end = p->vaddr + p->memsz;
-        if (segment_end > heap_break) heap_break = segment_end;
-        uint64_t begin = p->vaddr & ~(PAGE - 1);
-        uint64_t end = (p->vaddr + p->memsz + PAGE - 1) & ~(PAGE - 1);
-        for (uint64_t va = begin; va < end; va += PAGE)
+                p->filesz - (e->phoff - p->offset))
+            loaded_phdr = start + (e->phoff - p->offset);
+        if (main_image && end > heap_break) heap_break = end;
+        uint64_t first = start & ~(PAGE - 1);
+        uint64_t last = (end + PAGE - 1) & ~(PAGE - 1);
+        for (uint64_t va = first; va < last; va += PAGE)
             if (!user_map(va, (p->flags & 2) != 0)) return false;
-        if (!user_copy_in(p->vaddr, file + p->offset, p->filesz))
-            return false;
+        if (!user_copy_in(start, file + p->offset, p->filesz)) return false;
     }
-    if (!executable_entry) return false;
-    *entry = e->entry;
-    loaded_phnum = e->phnum;
-    return true; /* Small ET_EXEC probes need not map ELF/PHDR headers. */
+    if (!has_entry || e->entry > UINT64_MAX - bias) return false;
+    *entry = e->entry + bias;
+    if (main_image) loaded_phnum = e->phnum;
+    return true;
 }
-
+static bool elf_load(const struct limine_file *module, uint64_t *entry) {
+    if (!module || !module->address || module->size < sizeof(struct elf_hdr))
+        return false;
+    const struct elf_hdr *e = (const struct elf_hdr *)module->address;
+    uint64_t bias = e->type == 3 ? ALPINE_APP_BASE : 0;
+    bool has_interp = false;
+    if (!elf_map_image(module, bias, true, &loaded_main_entry, &has_interp))
+        return false;
+    *entry = loaded_main_entry;
+    if (!has_interp) return true;
+    const struct limine_file *interp = nas_module(1);
+    if (!interp) return false;
+    loaded_interp_base = ALPINE_LDSO_BASE;
+    bool nested_interp = false;
+    if (!elf_map_image(interp, loaded_interp_base, false, entry, &nested_interp))
+        return false;
+    nas_print("[DYN] real musl interpreter loaded, entry=");
+    nas_hex(*entry); nas_print("\n");
+    return true;
+}
 
 /* A real Linux x86-64 userspace entry stack, not argv spoofing in kernel. */
 static uint64_t cstr_len(const char *str) {
@@ -281,7 +318,7 @@ static bool put_stack_string(uint64_t *sp, const char *str, uint64_t *address) {
     *address = *sp;
     return true;
 }
-static bool build_linux_stack(bool bash, bool busybox, uint64_t entry, uint64_t *out_sp) {
+static bool build_linux_stack(bool bash, bool busybox, uint64_t *out_sp) {
     static const char * const args_bash[] = {
         "/bin/bash", "--noprofile", "--norc", "-c", "echo hello"
     };
@@ -324,8 +361,8 @@ static bool build_linux_stack(bool bash, bool busybox, uint64_t entry, uint64_t 
     AUX(4, sizeof(struct elf_phdr)); /* AT_PHENT */
     AUX(5, loaded_phnum);     /* AT_PHNUM */
     AUX(6, PAGE);             /* AT_PAGESZ */
-    AUX(7, 0);                /* AT_BASE: static binary */
-    AUX(9, entry);            /* AT_ENTRY */
+    AUX(7, loaded_interp_base); /* AT_BASE: real interpreter */
+    AUX(9, loaded_main_entry); /* AT_ENTRY: main ELF */
     AUX(11, 0); AUX(12, 0);   /* UID / EUID */
     AUX(13, 0); AUX(14, 0);   /* GID / EGID */
     AUX(23, 0);               /* AT_SECURE */
@@ -364,6 +401,7 @@ static bool bash_module(const struct limine_file *file) {
 }
 static bool running_bash;
 static bool running_busybox;
+static bool running_alpine;
 static bool saw_bash_hello;
 static unsigned matched_chars;
 static uint32_t missing_count[512];
@@ -473,8 +511,21 @@ static uint64_t sys_arch_prctl(uint64_t op, uint64_t address) {
  * No fake TTY, disk, /proc, or filesystem contents are supplied.
  */
 extern void nas_putchar(char c);
-enum { FD_CLOSED = 0, FD_UART = 1, FD_NULL = 2, FD_ZERO = 3 };
+enum { FD_CLOSED = 0, FD_UART = 1, FD_NULL = 2, FD_ZERO = 3, FD_BOOTFS = 4 };
+static bool same_string(const char *a, const char *b);
 static uint8_t descriptors[64];
+/* Read-only boot filesystem backed by bytes of the actual Limine modules.
+ * Paths name exactly the binaries the bootloader provided, not fake files.
+ */
+static const struct limine_file *boot_files[64];
+static uint64_t boot_file_offsets[64];
+static const struct limine_file *bootfs_lookup(const char *path) {
+    if (same_string(path, "/bin/busybox")) return nas_module(0);
+    if (same_string(path, "/lib/ld-musl-x86_64.so.1") ||
+        same_string(path, "/lib/libc.musl-x86_64.so.1"))
+        return nas_module(1);
+    return 0;
+}
 static uint64_t blocked_signals;
 static uint64_t signal_actions[65][4];
 
@@ -529,11 +580,19 @@ static uint64_t sys_open_device(uint64_t pathname, uint64_t flags) {
     uint8_t kind = FD_CLOSED;
     if (same_string(path, "/dev/null")) kind = FD_NULL;
     if (same_string(path, "/dev/zero")) kind = FD_ZERO;
-    if (!kind) return (uint64_t)-2; /* ENOENT: no filesystem exists yet */
+    const struct limine_file *real_file = 0;
+    if (running_alpine && !kind) {
+        real_file = bootfs_lookup(path);
+        if (real_file) kind = FD_BOOTFS;
+    }
+    if (!kind) return (uint64_t)-2; /* ENOENT, path does not exist */
     if (flags & (0x40ULL | 0x200ULL)) return (uint64_t)-30; /* EROFS */
+    if (kind == FD_BOOTFS && (flags & 3)) return (uint64_t)-13; /* EACCES */
     for (unsigned fd = 3; fd < 64; fd++) {
         if (descriptors[fd] != FD_CLOSED) continue;
         descriptors[fd] = kind;
+        boot_files[fd] = real_file;
+        boot_file_offsets[fd] = 0;
         return fd;
     }
     return (uint64_t)-24; /* EMFILE */
@@ -544,6 +603,7 @@ static uint64_t sys_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
         address >= USER_LIMIT || length > USER_LIMIT - address)
         return (uint64_t)-14;
     if (descriptors[fd] == FD_NULL || descriptors[fd] == FD_ZERO) return length;
+    if (descriptors[fd] == FD_BOOTFS) return (uint64_t)-9; /* EBADF, O_RDONLY */
     if (descriptors[fd] != FD_UART) return (uint64_t)-9;
     for (uint64_t i = 0; i < length; i++) {
         uint8_t *p = user_byte(address + i);
@@ -556,6 +616,18 @@ static uint64_t sys_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
 static uint64_t sys_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     if (fd >= 64 || descriptors[fd] == FD_CLOSED) return (uint64_t)-9;
     if (descriptors[fd] == FD_NULL) return 0;
+    if (descriptors[fd] == FD_BOOTFS) {
+        const struct limine_file *file = boot_files[fd];
+        if (!file || !file->address) return (uint64_t)-9;
+        uint64_t start = boot_file_offsets[fd];
+        if (start > file->size) return 0;
+        uint64_t available = file->size - start;
+        if (length > available) length = available;
+        if (!user_write_bytes(address, (const uint8_t *)file->address + start,
+                              length)) return (uint64_t)-14;
+        boot_file_offsets[fd] += length;
+        return length;
+    }
     if (descriptors[fd] == FD_UART) return (uint64_t)-11; /* no RX-ready: EAGAIN */
     if (descriptors[fd] != FD_ZERO) return (uint64_t)-9;
     if (address >= USER_LIMIT || length > USER_LIMIT - address)
@@ -600,6 +672,76 @@ static uint64_t sys_uname_naseed(uint64_t buffer) {
     return user_write_bytes(buffer, (const uint8_t *)&data, sizeof(data))
         ? 0 : (uint64_t)-14;
 }
+
+/* Linux x86-64 struct stat layout, 144 bytes. File size is actual module.
+ * Device entries have character-device type; mounted files are regular.
+ */
+struct linux_stat {
+    uint64_t dev, ino, nlink;
+    uint32_t mode, uid, gid, pad;
+    uint64_t rdev;
+    int64_t size, blksize, blocks;
+    int64_t atime_sec, atime_nsec, mtime_sec, mtime_nsec, ctime_sec, ctime_nsec;
+    int64_t unused[3];
+};
+_Static_assert(sizeof(struct linux_stat) == 144, "Linux x86-64 stat ABI");
+static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
+    if (fd >= 64 || !descriptors[fd]) return (uint64_t)-9;
+    struct linux_stat st;
+    volatile uint8_t *bytes = (volatile uint8_t *)&st;
+    for (unsigned i = 0; i < sizeof(st); i++) bytes[i] = 0;
+    st.nlink = 1;
+    st.blksize = PAGE;
+    if (descriptors[fd] == FD_BOOTFS) {
+        const struct limine_file *file = boot_files[fd];
+        if (!file) return (uint64_t)-9;
+        st.dev = 1; st.ino = fd + 100;
+        st.mode = 0100555;
+        st.size = (int64_t)file->size;
+        st.blocks = (int64_t)((file->size + 511) / 512);
+    } else {
+        st.dev = 2; st.ino = fd + 10;
+        st.mode = 0020666; /* real character device backed by UART/null/zero */
+    }
+    if (!user_write_bytes(address, (const uint8_t *)&st, sizeof(st)))
+        return (uint64_t)-14;
+    return 0;
+}
+static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
+    if (fd >= 64 || descriptors[fd] != FD_BOOTFS || !boot_files[fd])
+        return (uint64_t)-29; /* ESPIPE */
+    uint64_t base = 0;
+    if (whence == 1) base = boot_file_offsets[fd];
+    else if (whence == 2) base = boot_files[fd]->size;
+    else if (whence != 0) return (uint64_t)-22;
+    int64_t signed_off = (int64_t)off;
+    if (signed_off < 0) {
+        uint64_t magnitude = 0 - off;
+        if (magnitude > base) return (uint64_t)-22;
+        base -= magnitude;
+    } else {
+        if (base > UINT64_MAX - off) return (uint64_t)-22;
+        base += off;
+    }
+    boot_file_offsets[fd] = base;
+    return base;
+}
+static uint64_t sys_openat_boot(uint64_t dirfd, uint64_t path, uint64_t flags) {
+    /* Linux AT_FDCWD is -100; absolute paths ignore dirfd. */
+    if (dirfd != (uint64_t)-100 && dirfd != 0) return (uint64_t)-9;
+    return sys_open_device(path, flags);
+}
+static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t path,
+                                 uint64_t statbuf, uint64_t flags) {
+    if (flags) return (uint64_t)-22;
+    uint64_t result = sys_openat_boot(dirfd, path, 0);
+    if ((int64_t)result < 0) return result;
+    uint64_t ret = sys_fstat_boot(result, statbuf);
+    descriptors[result] = FD_CLOSED;
+    boot_files[result] = 0;
+    return ret;
+}
+
 /* Proper syscall-level rt_sigaction / sigprocmask structures, 8-byte sigset. 
  * Delivery is intentionally not claimed until an actual signal path exists. */
 static uint64_t sys_sigaction(uint64_t signum, uint64_t new_action,
@@ -695,10 +837,15 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == 0) return sys_fd_read(args[1], args[2], args[3]);
     if (nr == 1) return sys_fd_write(args[1], args[2], args[3]);
     if (nr == 2) return sys_open_device(args[1], args[2]);
+    if (nr == 257) return sys_openat_boot(args[1], args[2], args[3]);
+    if (nr == 5) return sys_fstat_boot(args[1], args[2]);
+    if (nr == 262) return sys_fstatat_boot(args[1], args[2], args[3], args[4]);
+    if (nr == 8) return sys_lseek_boot(args[1], args[2], args[3]);
     if (nr == 3) {
         if (args[1] >= 64 || descriptors[args[1]] == FD_CLOSED)
             return (uint64_t)-9;
         descriptors[args[1]] = FD_CLOSED;
+        boot_files[args[1]] = 0;
         return 0;
     }
     if (nr == 16) {
@@ -717,7 +864,10 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         nas_print("[EXIT] user status="); nas_dec(args[1]); nas_print("\n");
         if (running_busybox) {
             if (args[1] == 0 && saw_bash_hello) {
-                nas_print("[PASS] M2 Debian BusyBox echo hello\n");
+                if (running_alpine)
+                    nas_print("[PASS] M4 Alpine dynamic BusyBox echo hello\n");
+                else
+                    nas_print("[PASS] M2 Debian BusyBox echo hello\n");
                 outb(0xf4, 0);
             }
             fail("real BusyBox exited without stdout hello and status 0");
@@ -759,6 +909,7 @@ void m1_start(void) {
     if (!module) fail("no Limine userspace ELF module");
     running_bash = bash_module(module);
     running_busybox = busybox_module(module);
+    running_alpine = running_busybox && nas_module(1) != 0;
     if (running_bash) nas_print("[M2] real GNU Bash module discovered\n");
     if (running_busybox) nas_print("[M3] real BusyBox module discovered\n");
     uint64_t entry = 0;
@@ -771,11 +922,12 @@ void m1_start(void) {
     descriptors[0] = FD_UART;
     descriptors[1] = FD_UART;
     descriptors[2] = FD_UART;
-    if (!build_linux_stack(running_bash, running_busybox, entry, &stack_pointer))
+    if (!build_linux_stack(running_bash, running_busybox, &stack_pointer))
         fail("cannot initialize Linux userspace stack");
-    nas_print("[M1] static ELF entry="); nas_hex(entry); nas_print("\n");
+    nas_print("[ELF] userspace entry="); nas_hex(entry); nas_print("\n");
     if (running_bash) nas_print("[M2] entering real Bash in ring 3\n");
-    else if (running_busybox) nas_print("[M3] entering real BusyBox in ring 3\n");
+    else if (running_alpine) nas_print("[M4] real Alpine busybox via musl interpreter in ring 3\n");
+    else if (running_busybox) nas_print("[M2] entering real BusyBox in ring 3\n");
     else nas_print("[M1] entering actual ring 3\n");
     enter_user(entry, stack_pointer);
     fail("iretq returned");

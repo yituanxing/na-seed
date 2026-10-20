@@ -25,6 +25,10 @@ jobs:
         run: BASH_REQUIRE_PASS=1 make bash-probe
       - name: Probe official Debian prebuilt static Bash and BusyBox
         run: DEBIAN_REQUIRE_PASS=1 make debian-probe
+      - name: Stage official Alpine prebuilt dynamic ELF and musl runtime
+        run: make alpine-fetch
+      - name: Boot genuine Alpine dynamic BusyBox and report ABI blockers
+        run: ALPINE_REQUIRE_PASS=1 make alpine-probe
       - name: Attach serial log on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -34,4 +38,5 @@ jobs:
             build/serial.log
             build/bash-serial.log
             build/debian-*-serial.log
+            build/alpine-serial.log
           if-no-files-found: ignore
