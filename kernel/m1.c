@@ -10,6 +10,7 @@
  * Interrupts are disabled on syscall entry; TSS handles ring3 faults.
  */
 extern uint64_t nas_frame_alloc(void);
+extern bool nas_frame_free(uint64_t physical);
 extern uint64_t nas_hhdm_offset(void);
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
@@ -214,6 +215,7 @@ static bool checked_range(uint64_t start, uint64_t size, uint64_t limit) {
     return start <= limit && size <= limit - start;
 }
 static uint64_t loaded_phdr, loaded_phnum;
+static uint64_t heap_break, mmap_cursor = 0x60000000ULL;
 static bool elf_load(const struct limine_file *module, uint64_t *entry) {
     if (!module || !module->address || module->size < sizeof(struct elf_hdr))
         return false;
@@ -249,6 +251,8 @@ static bool elf_load(const struct limine_file *module, uint64_t *entry) {
         if ((p->flags & 1) &&
             e->entry >= p->vaddr && e->entry - p->vaddr < p->memsz)
             executable_entry = true;
+        uint64_t segment_end = p->vaddr + p->memsz;
+        if (segment_end > heap_break) heap_break = segment_end;
         uint64_t begin = p->vaddr & ~(PAGE - 1);
         uint64_t end = (p->vaddr + p->memsz + PAGE - 1) & ~(PAGE - 1);
         for (uint64_t va = begin; va < end; va += PAGE)
@@ -358,9 +362,109 @@ static void observe_stdout(char ch) {
     } else matched_chars = (ch == text[0]) ? 1 : 0;
 }
 
+
+/* M2: genuine Linux ABI semantics for single-process TLS + anonymous VM. */
+static uint64_t thread_clear_tid;
+static uint64_t user_fs_base;
+static void user_invalidate(uint64_t va) {
+    __asm__ volatile ("invlpg (%0)" : : "r"(va) : "memory");
+}
+static bool user_unmap_page(uint64_t va) {
+    uint64_t *pte = user_leaf(va, false);
+    if (!pte || !(*pte & P_PRESENT) || !(*pte & P_USER)) return true;
+    uint64_t pa = *pte & PHYS_MASK;
+    *pte = 0;
+    user_invalidate(va);
+    return nas_frame_free(pa);
+}
+static uint64_t sys_anon_mmap(uint64_t hint, uint64_t length,
+                              uint64_t prot, uint64_t flags,
+                              uint64_t fd, uint64_t offset) {
+    (void)hint;
+    /* MAP_PRIVATE|MAP_ANONYMOUS; no file/offset/map-fixed emulation. */
+    if (!length || length > (64ULL << 20) || length > UINT64_MAX - PAGE)
+        return (uint64_t)-22;
+    if ((flags & 0x22) != 0x22 || (flags & ~0x22ULL) || fd != UINT64_MAX || offset)
+        return (uint64_t)-38;
+    if (prot & ~7ULL) return (uint64_t)-22;
+    uint64_t count = (length + PAGE - 1) / PAGE;
+    if (count > mmap_cursor / PAGE) return (uint64_t)-12;
+    uint64_t start = mmap_cursor - count * PAGE;
+    if (start < 0x20000000 || start >= USER_LIMIT) return (uint64_t)-12;
+    uint64_t va = start;
+    for (; va < mmap_cursor; va += PAGE)
+        if (!user_map(va, (prot & 2) != 0)) break;
+    if (va < mmap_cursor) {
+        while (va > start) { va -= PAGE; user_unmap_page(va); }
+        return (uint64_t)-12;
+    }
+    mmap_cursor = start;
+    return start;
+}
+static uint64_t sys_munmap(uint64_t addr, uint64_t len) {
+    if (!len || (addr & (PAGE - 1)) || len > UINT64_MAX - (PAGE - 1))
+        return (uint64_t)-22;
+    uint64_t count = (len + PAGE - 1) / PAGE;
+    if (addr >= USER_LIMIT || count > (USER_LIMIT - addr) / PAGE)
+        return (uint64_t)-22;
+    for (uint64_t i = 0; i < count; i++)
+        if (!user_unmap_page(addr + i * PAGE)) return (uint64_t)-14;
+    return 0;
+}
+static uint64_t sys_brk(uint64_t want) {
+    uint64_t base = heap_break;
+    if (!want) return heap_break;
+    /* brk is a Linux special: failure returns the unchanged break. */
+    if (want < 0x10000 || want >= 0x20000000) return base;
+    uint64_t before = (heap_break + PAGE - 1) & ~(PAGE - 1);
+    uint64_t after = (want + PAGE - 1) & ~(PAGE - 1);
+    if (after > before) {
+        uint64_t va = before;
+        for (; va < after; va += PAGE)
+            if (!user_map(va, true)) break;
+        if (va != after) {
+            while (va > before) { va -= PAGE; user_unmap_page(va); }
+            return base;
+        }
+    } else if (after < before) {
+        for (uint64_t va = after; va < before; va += PAGE)
+            if (!user_unmap_page(va)) return base;
+    }
+    heap_break = want;
+    return want;
+}
+static uint64_t sys_arch_prctl(uint64_t op, uint64_t address) {
+    if (op == 0x1002) { /* ARCH_SET_FS */
+        if (address >= USER_LIMIT) return (uint64_t)-22;
+        user_fs_base = address;
+        wrmsr(0xc0000100, address);
+        return 0;
+    }
+    if (op == 0x1003) { /* ARCH_GET_FS */
+        if (address >= USER_LIMIT || address > USER_LIMIT - sizeof(uint64_t))
+            return (uint64_t)-14;
+        for (unsigned i = 0; i < sizeof(uint64_t); i++) {
+            uint8_t *p = user_byte(address + i);
+            if (!p) return (uint64_t)-14;
+            *p = (uint8_t)(user_fs_base >> (8 * i));
+        }
+        return 0;
+    }
+    return (uint64_t)-22;
+}
+
 /* Strict single-program ABI diagnostic dispatcher, for a real syscall gate. */
 uint64_t syscall_dispatch(const uint64_t *args) {
     uint64_t nr = args[0];
+    if (nr == 158) return sys_arch_prctl(args[1], args[2]);
+    if (nr == 218) { thread_clear_tid = args[1]; return 1; }
+    if (nr == 39 || nr == 186) return 1;  /* getpid / gettid */
+    if (nr == 110) return 0;  /* getppid for PID 1 */
+    if (nr == 102 || nr == 104 || nr == 107 || nr == 108) return 0; /* root credentials */
+    if (nr == 9) return sys_anon_mmap(args[1], args[2], args[3],
+                                       args[4], args[5], args[6]);
+    if (nr == 11) return sys_munmap(args[1], args[2]);
+    if (nr == 12) return sys_brk(args[1]);
     if (nr == 1) { /* write(fd, user_buf, count) */
         uint64_t fd = args[1], addr = args[2], len = args[3];
         if (fd != 1 && fd != 2) return (uint64_t)-9;
@@ -376,7 +480,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         }
         return len;
     }
-    if (nr == 60) { /* exit(status) */
+    if (nr == 60 || nr == 231) { /* exit / exit_group */
         nas_print("[EXIT] user status="); nas_dec(args[1]); nas_print("\n");
         if (running_bash) {
             if (args[1] == 0 && saw_bash_hello) {
