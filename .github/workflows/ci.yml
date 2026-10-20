@@ -39,6 +39,8 @@ jobs:
         run: DEBIAN_REQUIRE_PASS=1 make debian-probe
       - name: Stage official Alpine prebuilt dynamic ELF and musl runtime
         run: make alpine-fetch
+      - name: Real BusyBox ash pipeline pipe/pipe2 and EOF under QEMU
+        run: make ash-pipes-probe
       - name: Boot genuine Alpine dynamic BusyBox and report ABI blockers
         run: ALPINE_REQUIRE_PASS=1 make alpine-probe
       - name: Verify multiple Alpine BusyBox applets via Limine cmdline
@@ -55,8 +57,6 @@ jobs:
         run: make ash-execve-probe
       - name: Real BusyBox ash fork, execve, wait4 and parent continuation
         run: make ash-fork-probe
-      - name: Real BusyBox ash pipeline pipe/pipe2 and EOF under QEMU
-        run: make ash-pipes-probe
       - name: Attach serial log on failure
         if: failure()
         uses: actions/upload-artifact@v4
