@@ -708,7 +708,7 @@ static uint64_t sys_arch_prctl(uint64_t op, uint64_t address) {
 extern void nas_putchar(char c);
 enum { FD_CLOSED = 0, FD_UART = 1, FD_NULL = 2, FD_ZERO = 3,
        FD_BOOTFS = 4, FD_ARCHIVE = 5, FD_DIR = 6,
-       FD_PIPE_R = 7, FD_PIPE_W = 8, FD_TMP = 9 };
+       FD_PIPE_R = 7, FD_PIPE_W = 8, FD_TMP = 9, FD_TMP_DIR = 10 };
 static bool same_string(const char *a, const char *b);
 /* Per-FD handles share a refcounted open-file description after dup().
  * All fd aliases must observe the same read/seek/directory cursor.
@@ -736,13 +736,23 @@ static int pipe_slot_owner[NAS_FD_LIMIT]; /* 0 => unbound; value is index+1 */
 #define TMP_FILE_COUNT 8
 #define TMP_FILE_CAP 16384U
 struct nas_tmp_file {
-    bool used;
+    bool used, linked, is_dir;
     char path[256];
     uint8_t bytes[TMP_FILE_CAP];
     uint64_t size;
 };
 static struct nas_tmp_file tmp_files[TMP_FILE_COUNT];
 static uint8_t tmp_slot_owner[NAS_FD_LIMIT]; /* 1-based inode index */
+static void tmp_try_reclaim(unsigned owner) {
+    if (!owner || owner > TMP_FILE_COUNT) return;
+    struct nas_tmp_file *node = &tmp_files[owner - 1];
+    if (!node->used || node->linked) return;
+    for (unsigned slot = 0; slot < NAS_FD_LIMIT; slot++)
+        if (tmp_slot_owner[slot] == owner && file_refcount[slot])
+            return;
+    node->used = false;
+}
+
 /* An open-file slot is recyclable after its final close. A pipe must not
  * mistake a later unrelated file on that slot for its old writer: record
  * the endpoint closure in the pipe object before the slot is reused.
@@ -882,7 +892,9 @@ static void fd_close_raw(uint64_t fd) {
         file_refcount[slot]--;
         if (!file_refcount[slot]) {
             pipe_release_description(slot);
+            unsigned owner = tmp_slot_owner[slot];
             tmp_slot_owner[slot] = 0;
+            tmp_try_reclaim(owner);
         }
     }
     descriptors[fd] = FD_CLOSED;
@@ -1029,50 +1041,72 @@ static uint64_t resolve_path(uint64_t dirfd, uint64_t pathname, char out[256]) {
     return 0;
 }
 
-/* Actual BusyBox redirection creates regular files directly in /tmp.
- * Limit memory/directory scope rather than claiming generic writable VFS.
- */
-static bool tmp_direct_path(const char *path) {
-    if (!(path[0] == '/' && path[1] == 't' && path[2] == 'm' &&
-          path[3] == 'p' && path[4] == '/' && path[5])) return false;
-    for (const char *p = path + 5; *p; p++)
-        if (*p == '/') return false;
+/* Real CPIO /tmp mountpoint with a small volatile directory tree.
+ * Unlinked entries keep their inode until every fork/dup FD releases it. */
+static bool tmp_path(const char *path) {
+    return path[0]=='/' && path[1]=='t' && path[2]=='m' &&
+           path[3]=='p' && path[4]=='/' && path[5];
+}
+static bool tmp_parent(const char *path, char parent[256]) {
+    if (!tmp_path(path)) return false;
+    unsigned n = 0, slash = 0;
+    for (; path[n] && n < 255; n++)
+        if (path[n] == '/') slash = n;
+    if (path[n] || slash < 4 || !path[slash+1]) return false;
+    if (slash == 4) {
+        parent[0]='/'; parent[1]='t'; parent[2]='m'; parent[3]='p';
+        parent[4]=0;
+    } else {
+        for (unsigned i=0;i<slash;i++) parent[i]=path[i];
+        parent[slash]=0;
+    }
     return true;
 }
 static struct nas_tmp_file *tmp_find(const char *path) {
-    for (unsigned n = 0; n < TMP_FILE_COUNT; n++)
-        if (tmp_files[n].used && same_string(tmp_files[n].path, path))
-            return &tmp_files[n];
+    for (unsigned n=0;n<TMP_FILE_COUNT;n++)
+        if (tmp_files[n].used && tmp_files[n].linked &&
+            same_string(tmp_files[n].path,path)) return &tmp_files[n];
     return 0;
 }
-static struct nas_tmp_file *tmp_create(const char *path) {
-    for (unsigned n = 0; n < TMP_FILE_COUNT; n++) {
-        struct nas_tmp_file *file = &tmp_files[n];
+static int tmp_parent_check(const char *path) {
+    char parent[256];
+    if (!tmp_parent(path)) return -EROFS;
+    if (same_string(parent,"/tmp"))
+        return bootfs_is_dir(bootfs_find("/tmp")) ? 0 : -ENOENT;
+    struct nas_tmp_file *dir=tmp_find(parent);
+    return !dir ? -ENOENT : dir->is_dir ? 0 : -ENOTDIR;
+}
+static struct nas_tmp_file *tmp_create(const char *path,bool dir) {
+    for (unsigned n=0;n<TMP_FILE_COUNT;n++) {
+        struct nas_tmp_file *file=&tmp_files[n];
         if (file->used) continue;
-        unsigned i = 0;
-        while (path[i] && i < sizeof(file->path) - 1) {
-            file->path[i] = path[i]; i++;
-        }
-        file->path[i] = 0;
-        file->size = 0;
-        file->used = true;
+        unsigned i=0;
+        while (path[i] && i<255) { file->path[i]=path[i]; i++; }
+        file->path[i]=0;
+        file->size=0;
+        file->is_dir=dir;
+        file->linked=file->used=true;
         return file;
     }
     return 0;
 }
 static unsigned tmp_number(const struct nas_tmp_file *file) {
-    return (unsigned)(file - tmp_files);
+    return (unsigned)(file-tmp_files);
 }
 static const struct nas_tmp_file *tmp_by_fd(uint64_t fd) {
-    unsigned owner = tmp_slot_owner[file_slot[fd]];
-    if (!owner || owner > TMP_FILE_COUNT) return 0;
-    const struct nas_tmp_file *file = &tmp_files[owner - 1];
+    unsigned owner=tmp_slot_owner[file_slot[fd]];
+    if (!owner || owner>TMP_FILE_COUNT) return 0;
+    const struct nas_tmp_file *file=&tmp_files[owner-1];
     return file->used ? file : 0;
 }
-static const struct nas_tmp_file *tmp_child(unsigned index) {
-    for (unsigned n = 0; n < TMP_FILE_COUNT; n++) {
-        if (!tmp_files[n].used) continue;
-        if (!index) return &tmp_files[n];
+static const struct nas_tmp_file *tmp_child(const char *parent,unsigned index) {
+    for (unsigned n=0;n<TMP_FILE_COUNT;n++) {
+        const struct nas_tmp_file *file=&tmp_files[n];
+        if (!file->used || !file->linked) continue;
+        char dir[256];
+        if (!tmp_parent(file->path,dir) || !same_string(dir,parent))
+            continue;
+        if (!index) return file;
         index--;
     }
     return 0;
@@ -1141,17 +1175,23 @@ static uint64_t sys_open_path(const char *path, uint64_t flags) {
         }
         if (!kind && running_alpine && (real_file = bootfs_lookup(path)))
             kind = FD_BOOTFS; /* Legacy M4 module mapping. */
-        if (!kind && bootfs_mounted() && tmp_direct_path(path) &&
+        if (!kind && bootfs_mounted() && tmp_path(path) &&
             bootfs_find("/tmp")) {
             tmp_file = tmp_find(path);
-            if (tmp_file) kind = FD_TMP;
-            else if (flags & 0x40ULL) { kind = FD_TMP; create_tmp = true; }
+            if (tmp_file) kind = tmp_file->is_dir ? FD_TMP_DIR : FD_TMP;
+            else {
+                int parent = tmp_parent_check(path);
+                if (parent) return (uint64_t)(int64_t)parent;
+                if (flags & 0x40ULL) { kind = FD_TMP; create_tmp = true; }
+            }
         }
     }
     if (!kind) return (flags & 0x40ULL) && bootfs_mounted()
         ? (uint64_t)-EROFS : (uint64_t)-ENOENT;
-    if ((flags & 0x10000ULL) && kind != FD_DIR)
+    if ((flags & 0x10000ULL) && kind != FD_DIR && kind != FD_TMP_DIR)
         return (uint64_t)-ENOTDIR;
+    if (kind == FD_TMP_DIR && ((flags & 3ULL) || (flags & 0x200ULL)))
+        return (uint64_t)-EISDIR;
     if (kind == FD_TMP) {
         if (tmp_file && (flags & 0xc0ULL) == 0xc0ULL)
             return (uint64_t)-EEXIST;
@@ -1173,13 +1213,13 @@ static uint64_t sys_open_path(const char *path, uint64_t flags) {
         for (unsigned slot = 0; slot < 64; slot++) {
             if (file_refcount[slot]) continue;
             if (create_tmp) {
-                tmp_file = tmp_create(path);
+                tmp_file = tmp_create(path, false);
                 if (!tmp_file) return (uint64_t)-ENOSPC;
             }
-            if (kind == FD_TMP && !tmp_file) return (uint64_t)-ENOENT;
+            if ((kind == FD_TMP || kind == FD_TMP_DIR) && !tmp_file) return (uint64_t)-ENOENT;
             if (kind == FD_TMP && (flags & 0x200ULL)) tmp_file->size = 0;
             file_refcount[slot] = 1;
-            if (kind == FD_TMP)
+            if (kind == FD_TMP || kind == FD_TMP_DIR)
                 tmp_slot_owner[slot] = (uint8_t)(tmp_number(tmp_file) + 1);
             file_slot[fd] = (uint8_t)slot;
             file_status_flags[slot] = flags & (3ULL | 0x800ULL | 0x400ULL);
@@ -1227,7 +1267,7 @@ static uint64_t sys_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     if (descriptors[fd] == FD_NULL) return 0;
     if (descriptors[fd] == FD_PIPE_R) return pipe_fd_read(fd, address, length);
     if (descriptors[fd] == FD_TMP) return tmp_fd_read(fd, address, length);
-    if (descriptors[fd] == FD_DIR) return (uint64_t)-EISDIR;
+    if (descriptors[fd] == FD_DIR || descriptors[fd] == FD_TMP_DIR) return (uint64_t)-EISDIR;
     if (descriptors[fd] == FD_ARCHIVE) {
         const struct bootfs_entry *entry = boot_entries[fd];
         if (!entry) return (uint64_t)-EBADF;
@@ -1301,7 +1341,7 @@ static uint64_t sys_poll(uint64_t address, uint64_t nfds, uint64_t timeout) {
             else {
                 uint8_t kind = descriptors[(unsigned)fd];
                 if (kind == FD_ARCHIVE || kind == FD_BOOTFS ||
-                    kind == FD_DIR || kind == FD_NULL || kind == FD_ZERO ||
+                    kind == FD_DIR || kind == FD_TMP_DIR || kind == FD_NULL || kind == FD_ZERO ||
                     kind == FD_TMP)
                     revents = events & (POLLIN | POLLOUT);
                 else if (kind == FD_UART)
@@ -1391,11 +1431,12 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
         st.nlink = bootfs_is_dir(entry) ? 2 : 1;
         st.size = (int64_t)entry->size;
         st.blocks = (int64_t)((entry->size + 511) / 512);
-    } else if (descriptors[fd] == FD_TMP) {
+    } else if (descriptors[fd] == FD_TMP || descriptors[fd] == FD_TMP_DIR) {
         const struct nas_tmp_file *file = tmp_by_fd(fd);
         if (!file) return (uint64_t)-EBADF;
         st.dev = 5; st.ino = 5000 + tmp_number(file);
-        st.mode = 0100644;
+        st.mode = file->is_dir ? 0040755 : 0100644;
+        st.nlink = file->linked ? (file->is_dir ? 2 : 1) : 0;
         st.size = (int64_t)file->size;
         st.blocks = (int64_t)((file->size + 511) / 512);
     } else if (descriptors[fd] == FD_PIPE_R || descriptors[fd] == FD_PIPE_W) {
@@ -1424,7 +1465,7 @@ static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
         size = boot_files[fd]->size;
     else if (descriptors[fd] == FD_ARCHIVE && boot_entries[fd])
         size = boot_entries[fd]->size;
-    else if (descriptors[fd] == FD_TMP) {
+    else if (descriptors[fd] == FD_TMP || descriptors[fd] == FD_TMP_DIR) {
         const struct nas_tmp_file *file = tmp_by_fd(fd);
         if (!file) return (uint64_t)-EBADF;
         size = file->size;
@@ -1433,7 +1474,7 @@ static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
         return (uint64_t)-ESPIPE;
     uint64_t base = 0;
     if (whence == 1) base = boot_file_offsets[file_slot[fd]];
-    else if (whence == 2 && descriptors[fd] != FD_DIR) base = size;
+    else if (whence == 2 && descriptors[fd] != FD_DIR && descriptors[fd] != FD_TMP_DIR) base = size;
     else if (whence != 0) return (uint64_t)-EINVAL;
     int64_t signed_off = (int64_t)off;
     if (signed_off < 0) {
