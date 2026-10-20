@@ -1,7 +1,7 @@
 #!/bin/sh
 # Real unmodified BusyBox ash exercises Linux anonymous pipes and POSIX EOF.
 set -eu
-for testcase in builtin external chain large; do
+for testcase in builtin external chain large largechain hash; do
   case "$testcase" in
     builtin)
       args="sh -c 'echo abc | /bin/busybox wc -c'"
@@ -19,6 +19,12 @@ for testcase in builtin external chain large; do
         echo '[FAIL] fixture smaller than pipe ring; not a blocking test' >&2
         exit 1
       fi ;;
+    largechain)
+      args="sh -c '/bin/busybox cat /bin/busybox | /bin/busybox cat | /bin/busybox wc -c'"
+      expected=$(wc -c < build/alpine/bin/busybox | tr -d ' ') ;;
+    hash)
+      args="sh -c '/bin/busybox cat /bin/busybox | /bin/busybox sha256sum'"
+      expected=$(sha256sum build/alpine/bin/busybox | cut -d ' ' -f 1) ;;
   esac
   stage="build/ash-pipe-$testcase-iso"
   iso="build/naseed-ash-pipe-$testcase.iso"
@@ -37,14 +43,19 @@ for testcase in builtin external chain large; do
   timeout 25s sh scripts/run.sh "$iso" >"$log" 2>&1 || rc=$?
   tr -d '\r' < "$log" > "$clean"
   if [ "$rc" -ne 1 ] ||
-     ! grep -Fxq "$expected" "$clean" ||
+     ! { if [ "$testcase" = hash ]; then
+             grep -Fq "$expected" "$clean"
+           else
+             grep -Fxq "$expected" "$clean"
+           fi; } ||
      ! grep -Fq '[PIPE] created read=' "$clean" ||
      ! grep -Fq '[PASS] cmdline userspace exit 0' "$clean"; then
     echo "[FAIL] real ash $testcase pipeline did not produce $expected" >&2
     tail -110 "$clean" >&2
     exit 1
   fi
-  if [ "$testcase" = large ]; then
+  if [ "$testcase" = large ] || [ "$testcase" = largechain ] ||
+     [ "$testcase" = hash ]; then
     if ! grep -Fq '[SCHED] blocked pid=' "$clean" ||
        ! grep -Fq '[SCHED] from=' "$clean"; then
       echo '[FAIL] large input completed without real block and task switch' >&2
