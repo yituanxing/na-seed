@@ -33,7 +33,8 @@ printf '%s  %s\n' "$sha" "$archive" | sha256sum -c -
 root="$dir/files/$kind"
 mkdir -p "$root"
 dpkg-deb -x "$archive" "$root"
-source=$(find "$root" -type f -name "$binary" -print -quit)
+# Use the package's known executable path, not a same-named text helper.
+source="$root/usr/bin/$binary"
 if [ -z "$source" ] || [ ! -s "$source" ]; then
   echo "[DEBIAN] binary $binary not found in $filename" >&2
   exit 1
