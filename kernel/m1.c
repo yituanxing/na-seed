@@ -323,6 +323,54 @@ static bool put_stack_string(uint64_t *sp, const char *str, uint64_t *address) {
     *address = *sp;
     return true;
 }
+/* A boot test selects user argv via Limine's executable command line.
+ * Kept deliberately independent of filesystem paths and kernel program names.
+ * Quotes/backslash group arguments; this is NOT a shell or a second ABI.
+ * Missing cmdline means legacy M0-M4 regression argv; malformed cmdline fails.
+ */
+#define NAS_ARGV_MAX 12
+static char boot_argv_chars[256];
+static const char *boot_argv[NAS_ARGV_MAX];
+static bool boot_argv_override;
+static bool parse_boot_argv(const char *cmdline,
+                            const char *const **out_args, unsigned *out_argc) {
+    static const char prefix[] = "naseed.argv=";
+    const char *p = cmdline;
+    for (unsigned i = 0; i < sizeof(prefix) - 1; i++)
+        if (p[i] != prefix[i]) return false;
+    p += sizeof(prefix) - 1;
+    unsigned count = 0, used = 0;
+    while (*p) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        if (count == NAS_ARGV_MAX) return false;
+        boot_argv[count] = &boot_argv_chars[used];
+        char quote = 0;
+        while (*p) {
+            char ch = *p++;
+            if (ch == '\\') {
+                if (!*p) return false;
+                ch = *p++;
+            } else if (ch == '\'' || ch == '"') {
+                if (!quote) { quote = ch; continue; }
+                if (quote == ch) { quote = 0; continue; }
+            } else if (!quote && (ch == ' ' || ch == '\t')) {
+                break;
+            }
+            if ((unsigned char)ch < 32 || used + 2 > sizeof(boot_argv_chars))
+                return false;
+            boot_argv_chars[used++] = ch;
+        }
+        if (quote || used + 1 > sizeof(boot_argv_chars)) return false;
+        boot_argv_chars[used++] = 0;
+        count++;
+    }
+    if (!count || !boot_argv_chars[0]) return false;
+    *out_args = boot_argv;
+    *out_argc = count;
+    boot_argv_override = true;
+    return true;
+}
 static bool build_linux_stack(bool bash, bool busybox, uint64_t *out_sp) {
     static const char * const args_bash[] = {
         "/bin/bash", "--noprofile", "--norc", "-c", "echo hello"
@@ -334,8 +382,16 @@ static bool build_linux_stack(bool bash, bool busybox, uint64_t *out_sp) {
     };
     const char * const *args = bash ? args_bash : (busybox ? args_busybox : args_hello);
     unsigned argc = bash ? 5 : (busybox ? 3 : 1);
+    extern const char *nas_cmdline(void);
+    const char *cmdline = nas_cmdline();
+    if (cmdline && *cmdline) {
+        if (!parse_boot_argv(cmdline, &args, &argc)) return false;
+        nas_print("[CMDLINE] userspace argv from Limine: ");
+        nas_print(cmdline);
+        nas_print("\n");
+    }
     uint64_t sp = USER_STACK_TOP;
-    uint64_t arg_ptrs[5], env_ptrs[4];
+    uint64_t arg_ptrs[NAS_ARGV_MAX], env_ptrs[4];
     uint32_t lo, hi;
     __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
     uint64_t tsc = (uint64_t)lo | ((uint64_t)hi << 32);
@@ -868,6 +924,16 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == 111) return 1; /* getpgrp: only process group 1 exists */
     if (nr == 60 || nr == 231) { /* exit / exit_group */
         nas_print("[EXIT] user status="); nas_dec(args[1]); nas_print("\n");
+        /* In cmdline-driven tests, the host verifies real stdout and status.
+         * Do not encode applet-specific success checks into the kernel.
+         * Legacy M0-M4 tests keep their strict hello-specific acceptance.
+         */
+        if (boot_argv_override) {
+            if (args[1] != 0) fail("cmdline userspace exited nonzero");
+            nas_print("[PASS] cmdline userspace exit 0\n");
+            outb(0xf4, 0);
+            fail("QEMU debug exit returned unexpectedly");
+        }
         if (running_busybox) {
             if (args[1] == 0 && saw_bash_hello) {
                 if (running_alpine)
