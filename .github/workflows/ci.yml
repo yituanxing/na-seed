@@ -22,7 +22,7 @@ jobs:
       - name: Build and boot real kernel
         run: make smoke
       - name: Build authentic static Bash and probe actual QEMU behavior
-        run: make bash-probe
+        run: BASH_REQUIRE_PASS=1 make bash-probe
       - name: Attach serial log on failure
         if: failure()
         uses: actions/upload-artifact@v4
