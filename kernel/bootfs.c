@@ -178,7 +178,9 @@ int bootfs_resolve(const char *absolute, bool follow_final, char out[256]) {
     pending[count] = 0;
     unsigned links = 0;
     for (;;) {
-        char resolved[256] = "/";
+        char resolved[256];
+        resolved[0] = '/';
+        resolved[1] = 0;
         unsigned used = 1;
         unsigned pos = 0;
         bool restart = false;
