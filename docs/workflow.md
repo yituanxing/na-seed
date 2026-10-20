@@ -72,3 +72,21 @@ upgrades must regenerate the header and update its validation together.
 **Number defined does not mean function implemented:** unknown syscall IDs
 continue to return `-ENOSYS` and are traced. x32/i386 syscall ABIs are
 explicitly out of scope. Linux `errno` constants are a distinct ABI contract.
+
+## Linux errno ABI and unsupported operations (x86-64)
+
+`kernel/errno.h` pins all 133 definitions and aliases from Linux v6.18
+`include/uapi/asm-generic/errno-base.h` and `errno.h`; as with
+`kernel/nr.h`, a preflight validator compares each constant with the
+Linux host UAPI. The kernel's existing negative error returns are now
+spelled symbolically (`-EFAULT`, `-ENOENT`, `-ENOSYS`, etc.), without
+changing their numeric values or dispatch branches. The independently
+assembled Ring-3 probe verifies raw `-EFAULT` and `-ENOSYS` syscall
+results in real QEMU. The libc wrappers (musl/glibc), not the kernel,
+convert these into `-1` and `errno`.
+
+Linux's UAPI notes that `-ENOSYS` is normally reserved for unknown
+syscall numbers; known syscalls with unsupported arguments/features should
+return the **interface-prescribed** error, not a fabricated success. Legacy
+partial implementations (`mmap/mprotect`, signal installation without real
+delivery) still require per-behavior audits, and are **not** claimed complete.

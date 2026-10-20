@@ -1,4 +1,5 @@
 #include "../kernel/nr.h"
+#include "../kernel/errno.h"
 .text
 .global _start
 _start:
@@ -15,7 +16,7 @@ _start:
     mov $0x1003, %rdi
     lea message(%rip), %rsi
     syscall
-    cmp $-14, %rax
+    cmp $-EFAULT, %rax
     jne fail
     /* The same syscall must work with a writable user stack address. */
     mov $__NR_arch_prctl, %rax
@@ -30,7 +31,7 @@ _start:
     movabs $0xffffffff80000000, %rsi
     mov $1, %rdx
     syscall
-    cmp $-14, %rax
+    cmp $-EFAULT, %rax
     jne fail
     mov $__NR_write, %rax
     mov $1, %rdi
@@ -41,7 +42,7 @@ _start:
     jne fail
     mov $999, %rax
     syscall
-    cmp $-38, %rax
+    cmp $-ENOSYS, %rax
     jne fail
     mov $__NR_exit, %rax
     xor %rdi, %rdi
