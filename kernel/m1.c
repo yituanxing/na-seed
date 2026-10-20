@@ -1483,6 +1483,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == __NR_getpgid) return args[1] == 0 || args[1] == TASK.pid ? TASK.pid : (uint64_t)-ESRCH;
     if (nr == __NR_getpgrp) return TASK.pid; /* one process group today */
     if (nr == __NR_exit || nr == __NR_exit_group) { /* exit / exit_group */
+        TASK.exit_code = (uint32_t)(args[1] & 255ULL);
+        TASK.state = NAS_TASK_ZOMBIE;
         nas_print("[EXIT] user status="); nas_dec(args[1]); nas_print("\n");
         /* In cmdline-driven tests, the host verifies real stdout and status.
          * Do not encode applet-specific success checks into the kernel.
