@@ -13,6 +13,7 @@ done
 
 # Compare our pinned Linux x86-64 syscall numbers against the host UAPI.
 python3 scripts/check-syscall-nr.py
+python3 scripts/check-syscall-errno.py
 
 make -j2 kernel
 test -s build/kernel.elf

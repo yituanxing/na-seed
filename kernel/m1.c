@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "nr.h"
+#include "errno.h"
 
 /* Single-core M1: run a REAL static ELF from a Limine module in ring 3.
  * The new process CR3 preserves Limine's supervisor upper-half/HHDM mappings.
@@ -498,32 +499,32 @@ static uint64_t sys_anon_mmap(uint64_t hint, uint64_t length,
     (void)hint;
     /* MAP_PRIVATE|MAP_ANONYMOUS; no file/offset/map-fixed emulation. */
     if (!length || length > (64ULL << 20) || length > UINT64_MAX - PAGE)
-        return (uint64_t)-22;
+        return (uint64_t)-EINVAL;
     if ((flags & 0x22) != 0x22 || (flags & ~0x22ULL) || fd != UINT64_MAX || offset)
-        return (uint64_t)-38;
-    if (prot & ~7ULL) return (uint64_t)-22;
+        return (uint64_t)-ENOSYS;
+    if (prot & ~7ULL) return (uint64_t)-EINVAL;
     uint64_t count = (length + PAGE - 1) / PAGE;
-    if (count > mmap_cursor / PAGE) return (uint64_t)-12;
+    if (count > mmap_cursor / PAGE) return (uint64_t)-ENOMEM;
     uint64_t start = mmap_cursor - count * PAGE;
-    if (start < 0x20000000 || start >= USER_LIMIT) return (uint64_t)-12;
+    if (start < 0x20000000 || start >= USER_LIMIT) return (uint64_t)-ENOMEM;
     uint64_t va = start;
     for (; va < mmap_cursor; va += PAGE)
         if (!user_map(va, (prot & 2) != 0)) break;
     if (va < mmap_cursor) {
         while (va > start) { va -= PAGE; user_unmap_page(va); }
-        return (uint64_t)-12;
+        return (uint64_t)-ENOMEM;
     }
     mmap_cursor = start;
     return start;
 }
 static uint64_t sys_munmap(uint64_t addr, uint64_t len) {
     if (!len || (addr & (PAGE - 1)) || len > UINT64_MAX - (PAGE - 1))
-        return (uint64_t)-22;
+        return (uint64_t)-EINVAL;
     uint64_t count = (len + PAGE - 1) / PAGE;
     if (addr >= USER_LIMIT || count > (USER_LIMIT - addr) / PAGE)
-        return (uint64_t)-22;
+        return (uint64_t)-EINVAL;
     for (uint64_t i = 0; i < count; i++)
-        if (!user_unmap_page(addr + i * PAGE)) return (uint64_t)-14;
+        if (!user_unmap_page(addr + i * PAGE)) return (uint64_t)-EFAULT;
     return 0;
 }
 static uint64_t sys_brk(uint64_t want) {
@@ -552,21 +553,21 @@ static uint64_t sys_brk(uint64_t want) {
 static bool user_write_bytes(uint64_t address, const uint8_t *src, uint64_t length);
 static uint64_t sys_arch_prctl(uint64_t op, uint64_t address) {
     if (op == 0x1002) { /* ARCH_SET_FS */
-        if (address >= USER_LIMIT) return (uint64_t)-22;
+        if (address >= USER_LIMIT) return (uint64_t)-EINVAL;
         user_fs_base = address;
         wrmsr(0xc0000100, address);
         return 0;
     }
     if (op == 0x1003) { /* ARCH_GET_FS */
         if (address >= USER_LIMIT || address > USER_LIMIT - sizeof(uint64_t))
-            return (uint64_t)-14;
+            return (uint64_t)-EFAULT;
         uint8_t bytes[sizeof(uint64_t)];
         for (unsigned i = 0; i < sizeof(bytes); i++)
             bytes[i] = (uint8_t)(user_fs_base >> (8 * i));
         return user_write_bytes(address, bytes, sizeof(bytes))
-            ? 0 : (uint64_t)-14;
+            ? 0 : (uint64_t)-EFAULT;
     }
-    return (uint64_t)-22;
+    return (uint64_t)-EINVAL;
 }
 
 
@@ -631,15 +632,15 @@ static bool same_string(const char *a, const char *b) {
 static uint64_t sys_open_device(uint64_t pathname, uint64_t flags) {
     char path[256];
     unsigned i = 0;
-    if (pathname >= USER_LIMIT) return (uint64_t)-14;
+    if (pathname >= USER_LIMIT) return (uint64_t)-EFAULT;
     for (; i < sizeof(path) - 1; i++) {
         uint8_t *p = user_byte(pathname + i);
-        if (!p) return (uint64_t)-14;
+        if (!p) return (uint64_t)-EFAULT;
         path[i] = (char)*p;
         if (path[i] == 0) break;
     }
-    if (i == sizeof(path) - 1) return (uint64_t)-36; /* ENAMETOOLONG */
-    if (same_string(path, "/dev/tty")) return (uint64_t)-6; /* ENXIO */
+    if (i == sizeof(path) - 1) return (uint64_t)-ENAMETOOLONG; /* ENAMETOOLONG */
+    if (same_string(path, "/dev/tty")) return (uint64_t)-ENXIO; /* ENXIO */
     uint8_t kind = FD_CLOSED;
     if (same_string(path, "/dev/null")) kind = FD_NULL;
     if (same_string(path, "/dev/zero")) kind = FD_ZERO;
@@ -648,9 +649,9 @@ static uint64_t sys_open_device(uint64_t pathname, uint64_t flags) {
         real_file = bootfs_lookup(path);
         if (real_file) kind = FD_BOOTFS;
     }
-    if (!kind) return (uint64_t)-2; /* ENOENT, path does not exist */
-    if (flags & (0x40ULL | 0x200ULL)) return (uint64_t)-30; /* EROFS */
-    if (kind == FD_BOOTFS && (flags & 3)) return (uint64_t)-13; /* EACCES */
+    if (!kind) return (uint64_t)-ENOENT; /* ENOENT, path does not exist */
+    if (flags & (0x40ULL | 0x200ULL)) return (uint64_t)-EROFS; /* EROFS */
+    if (kind == FD_BOOTFS && (flags & 3)) return (uint64_t)-EACCES; /* EACCES */
     for (unsigned fd = 3; fd < 64; fd++) {
         if (descriptors[fd] != FD_CLOSED) continue;
         descriptors[fd] = kind;
@@ -658,58 +659,58 @@ static uint64_t sys_open_device(uint64_t pathname, uint64_t flags) {
         boot_file_offsets[fd] = 0;
         return fd;
     }
-    return (uint64_t)-24; /* EMFILE */
+    return (uint64_t)-EMFILE; /* EMFILE */
 }
 static uint64_t sys_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
-    if (fd >= 64 || descriptors[fd] == FD_CLOSED) return (uint64_t)-9;
+    if (fd >= 64 || descriptors[fd] == FD_CLOSED) return (uint64_t)-EBADF;
     if (length > (1ULL << 20) ||
         address >= USER_LIMIT || length > USER_LIMIT - address)
-        return (uint64_t)-14;
+        return (uint64_t)-EFAULT;
     if (descriptors[fd] == FD_NULL || descriptors[fd] == FD_ZERO) return length;
-    if (descriptors[fd] == FD_BOOTFS) return (uint64_t)-9; /* EBADF, O_RDONLY */
-    if (descriptors[fd] != FD_UART) return (uint64_t)-9;
+    if (descriptors[fd] == FD_BOOTFS) return (uint64_t)-EBADF; /* EBADF, O_RDONLY */
+    if (descriptors[fd] != FD_UART) return (uint64_t)-EBADF;
     for (uint64_t i = 0; i < length; i++) {
         uint8_t *p = user_byte(address + i);
-        if (!p) return i ? i : (uint64_t)-14;
+        if (!p) return i ? i : (uint64_t)-EFAULT;
         nas_putchar((char)*p);
         if (fd == 1 && (running_bash || running_busybox)) observe_stdout((char)*p);
     }
     return length;
 }
 static uint64_t sys_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
-    if (fd >= 64 || descriptors[fd] == FD_CLOSED) return (uint64_t)-9;
+    if (fd >= 64 || descriptors[fd] == FD_CLOSED) return (uint64_t)-EBADF;
     if (descriptors[fd] == FD_NULL) return 0;
     if (descriptors[fd] == FD_BOOTFS) {
         const struct limine_file *file = boot_files[fd];
-        if (!file || !file->address) return (uint64_t)-9;
+        if (!file || !file->address) return (uint64_t)-EBADF;
         uint64_t start = boot_file_offsets[fd];
         if (start > file->size) return 0;
         uint64_t available = file->size - start;
         if (length > available) length = available;
         if (!user_write_bytes(address, (const uint8_t *)file->address + start,
-                              length)) return (uint64_t)-14;
+                              length)) return (uint64_t)-EFAULT;
         boot_file_offsets[fd] += length;
         return length;
     }
-    if (descriptors[fd] == FD_UART) return (uint64_t)-11; /* no RX-ready: EAGAIN */
-    if (descriptors[fd] != FD_ZERO) return (uint64_t)-9;
+    if (descriptors[fd] == FD_UART) return (uint64_t)-EAGAIN; /* no RX-ready: EAGAIN */
+    if (descriptors[fd] != FD_ZERO) return (uint64_t)-EBADF;
     if (address >= USER_LIMIT || length > USER_LIMIT - address)
-        return (uint64_t)-14;
+        return (uint64_t)-EFAULT;
     uint8_t zero = 0;
     for (uint64_t i = 0; i < length; i++)
-        if (!user_write_bytes(address + i, &zero, 1)) return i ? i : (uint64_t)-14;
+        if (!user_write_bytes(address + i, &zero, 1)) return i ? i : (uint64_t)-EFAULT;
     return length;
 }
 static uint64_t sys_fd_writev(uint64_t fd, uint64_t iov, uint64_t count) {
-    if (count > 64) return (uint64_t)-22;
+    if (count > 64) return (uint64_t)-EINVAL;
     if (count && (iov >= USER_LIMIT || count > (USER_LIMIT - iov) / 16))
-        return (uint64_t)-14;
+        return (uint64_t)-EFAULT;
     uint64_t sent = 0;
     for (uint64_t n = 0; n < count; n++) {
         uint64_t address, bytes;
         if (!read_u64(iov + n * 16, &address) ||
             !read_u64(iov + n * 16 + 8, &bytes))
-            return sent ? sent : (uint64_t)-14;
+            return sent ? sent : (uint64_t)-EFAULT;
         uint64_t r = sys_fd_write(fd, address, bytes);
         if ((int64_t)r < 0) return sent ? sent : r;
         sent += r;
@@ -719,8 +720,8 @@ static uint64_t sys_fd_writev(uint64_t fd, uint64_t iov, uint64_t count) {
 }
 static uint64_t sys_getcwd_root(uint64_t buffer, uint64_t size) {
     const uint8_t cwd[2] = {'/', 0};
-    if (size < 2) return (uint64_t)-34; /* ERANGE */
-    if (!user_write_bytes(buffer, cwd, 2)) return (uint64_t)-14;
+    if (size < 2) return (uint64_t)-ERANGE; /* ERANGE */
+    if (!user_write_bytes(buffer, cwd, 2)) return (uint64_t)-EFAULT;
     return 2;
 }
 static uint64_t sys_uname_naseed(uint64_t buffer) {
@@ -733,7 +734,7 @@ static uint64_t sys_uname_naseed(uint64_t buffer) {
         "x86_64", "localdomain"
     };
     return user_write_bytes(buffer, (const uint8_t *)&data, sizeof(data))
-        ? 0 : (uint64_t)-14;
+        ? 0 : (uint64_t)-EFAULT;
 }
 
 /* Linux x86-64 struct stat layout, 144 bytes. File size is actual module.
@@ -749,7 +750,7 @@ struct linux_stat {
 };
 _Static_assert(sizeof(struct linux_stat) == 144, "Linux x86-64 stat ABI");
 static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
-    if (fd >= 64 || !descriptors[fd]) return (uint64_t)-9;
+    if (fd >= 64 || !descriptors[fd]) return (uint64_t)-EBADF;
     struct linux_stat st;
     volatile uint8_t *bytes = (volatile uint8_t *)&st;
     for (unsigned i = 0; i < sizeof(st); i++) bytes[i] = 0;
@@ -757,7 +758,7 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
     st.blksize = PAGE;
     if (descriptors[fd] == FD_BOOTFS) {
         const struct limine_file *file = boot_files[fd];
-        if (!file) return (uint64_t)-9;
+        if (!file) return (uint64_t)-EBADF;
         st.dev = 1; st.ino = fd + 100;
         st.mode = 0100555;
         st.size = (int64_t)file->size;
@@ -767,23 +768,23 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
         st.mode = 0020666; /* real character device backed by UART/null/zero */
     }
     if (!user_write_bytes(address, (const uint8_t *)&st, sizeof(st)))
-        return (uint64_t)-14;
+        return (uint64_t)-EFAULT;
     return 0;
 }
 static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
     if (fd >= 64 || descriptors[fd] != FD_BOOTFS || !boot_files[fd])
-        return (uint64_t)-29; /* ESPIPE */
+        return (uint64_t)-ESPIPE; /* ESPIPE */
     uint64_t base = 0;
     if (whence == 1) base = boot_file_offsets[fd];
     else if (whence == 2) base = boot_files[fd]->size;
-    else if (whence != 0) return (uint64_t)-22;
+    else if (whence != 0) return (uint64_t)-EINVAL;
     int64_t signed_off = (int64_t)off;
     if (signed_off < 0) {
         uint64_t magnitude = 0 - off;
-        if (magnitude > base) return (uint64_t)-22;
+        if (magnitude > base) return (uint64_t)-EINVAL;
         base -= magnitude;
     } else {
-        if (base > UINT64_MAX - off) return (uint64_t)-22;
+        if (base > UINT64_MAX - off) return (uint64_t)-EINVAL;
         base += off;
     }
     boot_file_offsets[fd] = base;
@@ -791,12 +792,12 @@ static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
 }
 static uint64_t sys_openat_boot(uint64_t dirfd, uint64_t path, uint64_t flags) {
     /* Linux AT_FDCWD is -100; absolute paths ignore dirfd. */
-    if (dirfd != (uint64_t)-100 && dirfd != 0) return (uint64_t)-9;
+    if (dirfd != (uint64_t)-100 && dirfd != 0) return (uint64_t)-EBADF;
     return sys_open_device(path, flags);
 }
 static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t path,
                                  uint64_t statbuf, uint64_t flags) {
-    if (flags) return (uint64_t)-22;
+    if (flags) return (uint64_t)-EINVAL;
     uint64_t result = sys_openat_boot(dirfd, path, 0);
     if ((int64_t)result < 0) return result;
     uint64_t ret = sys_fstat_boot(result, statbuf);
@@ -809,27 +810,27 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t path,
  * Delivery is intentionally not claimed until an actual signal path exists. */
 static uint64_t sys_sigaction(uint64_t signum, uint64_t new_action,
                               uint64_t old_action, uint64_t size) {
-    if (size != 8 || signum < 1 || signum > 64) return (uint64_t)-22;
-    if (new_action && (signum == 9 || signum == 19)) return (uint64_t)-22;
+    if (size != 8 || signum < 1 || signum > 64) return (uint64_t)-EINVAL;
+    if (new_action && (signum == 9 || signum == 19)) return (uint64_t)-EINVAL;
     if (old_action &&
         !user_write_bytes(old_action, (const uint8_t *)signal_actions[signum], 32))
-        return (uint64_t)-14;
+        return (uint64_t)-EFAULT;
     if (new_action &&
         !user_read_bytes(new_action, (uint8_t *)signal_actions[signum], 32))
-        return (uint64_t)-14;
+        return (uint64_t)-EFAULT;
     return 0;
 }
 static uint64_t sys_sigprocmask(uint64_t how, uint64_t set,
                                 uint64_t previous, uint64_t size) {
-    if (size != 8) return (uint64_t)-22;
+    if (size != 8) return (uint64_t)-EINVAL;
     uint64_t newmask = 0;
-    if (set && !read_u64(set, &newmask)) return (uint64_t)-14;
-    if (previous && !write_u64(previous, blocked_signals)) return (uint64_t)-14;
+    if (set && !read_u64(set, &newmask)) return (uint64_t)-EFAULT;
+    if (previous && !write_u64(previous, blocked_signals)) return (uint64_t)-EFAULT;
     if (set) {
         if (how == 0) blocked_signals |= newmask;        /* SIG_BLOCK */
         else if (how == 1) blocked_signals &= ~newmask;  /* SIG_UNBLOCK */
         else if (how == 2) blocked_signals = newmask;    /* SIG_SETMASK */
-        else return (uint64_t)-22;
+        else return (uint64_t)-EINVAL;
         blocked_signals &= ~((1ULL << 8) | (1ULL << 18));
     }
     return 0;
@@ -840,22 +841,22 @@ static uint64_t sys_mprotect(uint64_t addr, uint64_t length, uint64_t prot) {
     const uint64_t nx = 1ULL << 63;
     if (addr & (PAGE - 1) || (prot & ~7ULL) ||
         length > UINT64_MAX - (PAGE - 1))
-        return (uint64_t)-22;
+        return (uint64_t)-EINVAL;
     if (!length) return 0;
     uint64_t pages = (length + PAGE - 1) / PAGE;
     if (addr >= USER_LIMIT || pages > (USER_LIMIT - addr) / PAGE)
-        return (uint64_t)-12;
+        return (uint64_t)-ENOMEM;
     uint64_t efer = rdmsr(0xc0000080);
     if (!(efer & (1ULL << 11))) {
         /* Cannot claim executable permission enforcement without NXE. */
-        return (uint64_t)-38;
+        return (uint64_t)-ENOSYS;
     }
-    if (!prot) return (uint64_t)-38; /* PROT_NONE needs VMA semantics. */
+    if (!prot) return (uint64_t)-ENOSYS; /* PROT_NONE needs VMA semantics. */
     /* Validate every mapped page before touching any permission bit. */
     for (uint64_t i = 0; i < pages; i++) {
         uint64_t *pte = user_leaf(addr + i * PAGE, false);
         if (!pte || !(*pte & P_PRESENT) || !(*pte & P_USER))
-            return (uint64_t)-12;
+            return (uint64_t)-ENOMEM;
     }
     for (uint64_t i = 0; i < pages; i++) {
         uint64_t va = addr + i * PAGE;
@@ -906,22 +907,22 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == __NR_lseek) return sys_lseek_boot(args[1], args[2], args[3]);
     if (nr == __NR_close) {
         if (args[1] >= 64 || descriptors[args[1]] == FD_CLOSED)
-            return (uint64_t)-9;
+            return (uint64_t)-EBADF;
         descriptors[args[1]] = FD_CLOSED;
         boot_files[args[1]] = 0;
         return 0;
     }
     if (nr == __NR_ioctl) {
         if (args[1] >= 64 || descriptors[args[1]] == FD_CLOSED)
-            return (uint64_t)-9;
-        return (uint64_t)-25; /* ENOTTY: no TTY driver yet */
+            return (uint64_t)-EBADF;
+        return (uint64_t)-ENOTTY; /* ENOTTY: no TTY driver yet */
     }
     if (nr == __NR_writev) return sys_fd_writev(args[1], args[2], args[3]);
     if (nr == __NR_rt_sigaction) return sys_sigaction(args[1], args[2], args[3], args[4]);
     if (nr == __NR_rt_sigprocmask) return sys_sigprocmask(args[1], args[2], args[3], args[4]);
     if (nr == __NR_uname) return sys_uname_naseed(args[1]);
     if (nr == __NR_getcwd) return sys_getcwd_root(args[1], args[2]);
-    if (nr == __NR_getpgid) return args[1] == 0 || args[1] == 1 ? 1 : (uint64_t)-3;
+    if (nr == __NR_getpgid) return args[1] == 0 || args[1] == 1 ? 1 : (uint64_t)-ESRCH;
     if (nr == __NR_getpgrp) return 1; /* getpgrp: only process group 1 exists */
     if (nr == __NR_exit || nr == __NR_exit_group) { /* exit / exit_group */
         nas_print("[EXIT] user status="); nas_dec(args[1]); nas_print("\n");
@@ -962,7 +963,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         ++missing_count[nr] <= 3) {
         nas_print("[MISS] syscall nr="); nas_dec(nr); nas_print("\n");
     }
-    return (uint64_t)-38;
+    return (uint64_t)-ENOSYS;
 }
 
 static void syscall_enable(void) {
