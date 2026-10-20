@@ -1733,7 +1733,17 @@ static uint64_t task_replay(struct nas_task *task) {
     const uint64_t *a = task->blocked_args;
     if (nr == __NR_read) return sys_fd_read(a[0], a[1], a[2]);
     if (nr == __NR_write) return sys_fd_write(a[0], a[1], a[2]);
-    if (nr == __NR_writev) return sys_fd_writev(a[0], a[1], a[2]);
+    if (nr == __NR_writev) {
+        uint64_t ret = sys_fd_writev(a[0], a[1], a[2]);
+        static unsigned resume_count;
+        if (resume_count++ < 18) {
+            nas_print("[LIFE-REPLAY] pid="); nas_dec(TASK.pid);
+            nas_print(" fd="); nas_dec(a[0]);
+            nas_print(" ret="); nas_hex(ret);
+            nas_print("\n");
+        }
+        return ret;
+    }
     if (nr == __NR_wait4) return sys_wait4(a[0], a[1], a[2], a[3]);
     fail("scheduler unknown blocked syscall");
 }
@@ -1833,6 +1843,23 @@ static uint64_t task_block(uint64_t *frame, uint64_t nr,
 }
 static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
                              uint64_t fd, uint64_t buf, uint64_t count) {
+    static unsigned life_trace;
+    if (life_trace++ < 48 && fd < NAS_FD_LIMIT &&
+        (descriptors[fd] == FD_PIPE_R || descriptors[fd] == FD_PIPE_W)) {
+        unsigned slot = file_slot[fd];
+        unsigned handle = (unsigned)pipe_slot_owner[slot];
+        nas_print("[LIFE-TRACE] pid="); nas_dec(TASK.pid);
+        nas_print(" nr="); nas_dec(nr);
+        nas_print(" fd="); nas_dec(fd);
+        nas_print(" len="); nas_dec(count);
+        if (handle && handle <= PIPE_COUNT) {
+            const struct nas_pipe *pipe = &pipe_table[handle - 1];
+            nas_print(" bytes="); nas_dec(pipe->count);
+            nas_print(" r="); nas_dec(pipe_has_reader(pipe));
+            nas_print(" w="); nas_dec(pipe_has_writer(pipe));
+        }
+        nas_print("\n");
+    }
     uint64_t ret;
     if (nr == __NR_read) ret = sys_fd_read(fd, buf, count);
     else if (nr == __NR_write) ret = sys_fd_write(fd, buf, count);
