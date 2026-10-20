@@ -39,6 +39,10 @@ struct nas_task {
      */
     uint64_t resume_regs[15], resume_user_rsp;
     bool resume_valid;
+    /* Pending blocking syscall holds user pointers, but never kernel-stack
+     * pointers. The task's private CR3 must be restored before replay.
+     */
+    uint64_t blocked_nr, blocked_args[4];
     uint8_t fpu_state[512] __attribute__((aligned(16)));
 
     /* One independent VM mapping root and ELF/brk/mmap tracking per task. */
@@ -77,5 +81,8 @@ void nas_task_set_root(struct nas_task *task, uint64_t root);
 bool nas_task_hold_files(const struct nas_task *task);
 struct nas_task *nas_task_by_pid(uint64_t pid);
 struct nas_task *nas_task_child_at(uint64_t parent_pid, unsigned slot);
+struct nas_task *nas_task_at(unsigned slot);
+uint8_t nas_task_fd_kind(const struct nas_task *task, uint64_t fd);
+unsigned nas_task_fd_slot(const struct nas_task *task, uint64_t fd);
 const struct nas_task *nas_task_find(uint64_t pid);
 #endif
