@@ -49,7 +49,7 @@ jobs:
         run: make alpine-archive-probe
       - name: Select between two authentic CPIO executables and reject invalid paths
         run: make alpine-selector-probe
-      - name: Diagnose unmodified BusyBox ash and external-command kernel gaps
+      - name: Accept real BusyBox ash cwd/FD/readiness and diagnose process blockers
         run: make ash-diagnostic
       - name: Attach serial log on failure
         if: failure()
