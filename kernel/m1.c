@@ -68,6 +68,22 @@ static struct x86_tss tss;
 static uint64_t gdt[7] __attribute__((aligned(16)));
 static struct idt_entry idt[256];
 
+static void cpu_user_fp_init(void) {
+    /* Actual musl Bash emits SSE2 (e.g. movq XMM0) in static_init_tls.
+     * Without CR4.OSFXSR the CPU raises #UD at its first XMM instruction.
+     * M2 runs one userspace task; preserve FPU/SIMD context when adding
+     * multitasking and kernel SIMD later.
+     */
+    uint64_t cr0, cr4;
+    __asm__ volatile ("mov %%cr0, %0" : "=r"(cr0));
+    __asm__ volatile ("mov %%cr4, %0" : "=r"(cr4));
+    cr0 |= (1ULL << 1);                /* MP */
+    cr0 &= ~((1ULL << 2) | (1ULL << 3)); /* clear EM/TS */
+    cr4 |= (1ULL << 9) | (1ULL << 10);   /* OSFXSR + OSXMMEXCPT */
+    __asm__ volatile ("mov %0, %%cr0" : : "r"(cr0) : "memory");
+    __asm__ volatile ("mov %0, %%cr4" : : "r"(cr4) : "memory");
+    __asm__ volatile ("fninit");
+}
 static void cpu_tables_init(void) {
     tss.rsp0 = (uint64_t)(uintptr_t)&kernel_stack_top;
     tss.iomap_base = sizeof(tss);
@@ -392,6 +408,7 @@ static void syscall_enable(void) {
 void m1_start(void) {
     nas_print("[M1] setting up GDT, TSS, IDT, syscall MSRs\n");
     cpu_tables_init();
+    cpu_user_fp_init();
     if (!paging_init()) fail("requires four-level paging");
     syscall_enable();
     const struct limine_file *module = nas_user_module();
