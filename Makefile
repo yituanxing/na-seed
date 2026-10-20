@@ -15,7 +15,7 @@ CFLAGS := --target=x86_64-unknown-none-elf -std=c11 -O2 -g -Wall -Wextra -Werror
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
  -z noexecstack -T kernel/linker.ld
 
-.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe
+.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch
 all: iso
 iso: $(ISO)
 kernel: $(KERNEL)
@@ -134,6 +134,12 @@ debian-bash-probe: $(DEBIAN_BASH_ISO)
 debian-busybox-probe: $(DEBIAN_BUSYBOX_ISO)
 	sh scripts/probe-debian.sh busybox $(DEBIAN_BUSYBOX_ISO)
 debian-probe: debian-bash-probe debian-busybox-probe
+
+
+# Official Alpine: stage real ET_DYN interpreter and dynamic BusyBox first.
+$(OUT)/alpine/bin/busybox $(OUT)/alpine/lib/ld-musl-x86_64.so.1 &: scripts/fetch-alpine.sh
+	sh scripts/fetch-alpine.sh "$(abspath $(OUT))"
+alpine-fetch: $(OUT)/alpine/bin/busybox $(OUT)/alpine/lib/ld-musl-x86_64.so.1
 
 smoke: $(ISO)
 	sh scripts/smoke.sh $(ISO)
