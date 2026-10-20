@@ -15,7 +15,7 @@ CFLAGS := --target=x86_64-unknown-none-elf -std=c11 -O2 -g -Wall -Wextra -Werror
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
  -z noexecstack -T kernel/linker.ld
 
-.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch alpine-probe alpine-argv-probe alpine-fs-probe alpine-archive-probe alpine-selector-probe preflight
+.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch alpine-probe alpine-argv-probe alpine-fs-probe alpine-archive-probe alpine-selector-probe ash-diagnostic preflight
 all: iso
 iso: $(ISO)
 kernel: $(KERNEL)
@@ -226,6 +226,9 @@ $(ALPINE_SELECTOR_IMAGE): $(OUT)/alpine/bin/busybox $(OUT)/alpine/lib/ld-musl-x8
 
 alpine-selector-probe: $(ALPINE_ARCHIVE_ISO) $(ALPINE_SELECTOR_IMAGE)
 	sh scripts/probe-alpine-selector.sh
+
+ash-diagnostic: $(ALPINE_ARCHIVE_ISO)
+	sh scripts/probe-ash-diagnostic.sh
 
 preflight:
 	sh scripts/preflight.sh

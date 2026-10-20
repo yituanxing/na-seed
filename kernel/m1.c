@@ -592,12 +592,69 @@ enum { FD_CLOSED = 0, FD_UART = 1, FD_NULL = 2, FD_ZERO = 3,
        FD_BOOTFS = 4, FD_ARCHIVE = 5, FD_DIR = 6 };
 static bool same_string(const char *a, const char *b);
 static uint8_t descriptors[64];
+/* Per-FD handles share a refcounted open-file description after dup().
+ * All fd aliases must observe the same read/seek/directory cursor.
+ */
+static uint8_t file_slot[64], file_refcount[64], fd_cloexec[64];
+static uint64_t file_status_flags[64];
+static char current_workdir[256] = "/";
 /* Read-only boot filesystem backed by bytes of the actual Limine modules.
  * Paths name exactly the binaries the bootloader provided, not fake files.
  */
 static const struct limine_file *boot_files[64];
 static uint64_t boot_file_offsets[64];
 static const struct bootfs_entry *boot_entries[64];
+static void fd_close_raw(uint64_t fd) {
+    if (descriptors[fd] == FD_CLOSED) return;
+    unsigned slot = file_slot[fd];
+    if (file_refcount[slot]) file_refcount[slot]--;
+    descriptors[fd] = FD_CLOSED;
+    boot_files[fd] = 0;
+    boot_entries[fd] = 0;
+    file_slot[fd] = 0;
+    fd_cloexec[fd] = 0;
+}
+static uint64_t fd_clone(uint64_t src, uint64_t dst, bool cloexec) {
+    if (src >= 64 || descriptors[src] == FD_CLOSED || dst >= 64)
+        return (uint64_t)-EBADF;
+    if (src == dst) return dst;
+    fd_close_raw(dst);
+    unsigned slot = file_slot[src];
+    descriptors[dst] = descriptors[src];
+    boot_files[dst] = boot_files[src];
+    boot_entries[dst] = boot_entries[src];
+    file_slot[dst] = (uint8_t)slot;
+    fd_cloexec[dst] = cloexec ? 1 : 0;
+    file_refcount[slot]++;
+    return dst;
+}
+static uint64_t fd_duplicate(uint64_t oldfd, uint64_t minimum, bool cloexec) {
+    if (oldfd >= 64 || descriptors[oldfd] == FD_CLOSED)
+        return (uint64_t)-EBADF;
+    if (minimum >= 64) return (uint64_t)-EINVAL;
+    for (unsigned fd = (unsigned)minimum; fd < 64; fd++)
+        if (descriptors[fd] == FD_CLOSED)
+            return fd_clone(oldfd, fd, cloexec);
+    return (uint64_t)-EMFILE;
+}
+static uint64_t sys_fcntl(uint64_t fd, uint64_t command, uint64_t arg) {
+    if (fd >= 64 || descriptors[fd] == FD_CLOSED)
+        return (uint64_t)-EBADF;
+    unsigned slot = file_slot[fd];
+    switch (command) {
+    case 0: return fd_duplicate(fd, arg, false);  /* F_DUPFD */
+    case 1: return fd_cloexec[fd];                 /* F_GETFD */
+    case 2: fd_cloexec[fd] = (uint8_t)(arg & 1); return 0; /* F_SETFD */
+    case 3: return file_status_flags[slot];       /* F_GETFL */
+    case 4: /* F_SETFL: only the O_NONBLOCK/O_APPEND mutable subset */
+        file_status_flags[slot] =
+            (file_status_flags[slot] & ~(0x800ULL | 0x400ULL)) |
+            (arg & (0x800ULL | 0x400ULL));
+        return 0;
+    case 1030: return fd_duplicate(fd, arg, true); /* F_DUPFD_CLOEXEC */
+    default: return (uint64_t)-EINVAL; /* unsupported fcntl cmd */
+    }
+}
 static const struct limine_file *bootfs_lookup(const char *path) {
     if (same_string(path, "/bin/busybox")) return nas_module(0);
     if (same_string(path, "/lib/ld-musl-x86_64.so.1") ||
@@ -644,8 +701,8 @@ static bool same_string(const char *a, const char *b) {
     for (; *a && *b; a++, b++) if (*a != *b) return false;
     return *a == *b;
 }
-/* Resolve absolute and dirfd-relative Linux paths. chdir/symlinks are not
- * implemented, but dot components and root traversal are normalized.
+/* Resolve absolute, process-cwd-relative and dirfd-relative paths.
+ * Symbolic links are not yet part of the read-only archive ABI.
  */
 static uint64_t resolve_path(uint64_t dirfd, uint64_t pathname, char out[256]) {
     char src[256];
@@ -661,12 +718,16 @@ static uint64_t resolve_path(uint64_t dirfd, uint64_t pathname, char out[256]) {
     if (!n) return (uint64_t)-ENOENT;
     unsigned used = 1;
     out[0] = '/';
-    if (src[0] != '/' && dirfd != (uint64_t)-100) {
-        if (dirfd >= 64 || descriptors[dirfd] == FD_CLOSED)
-            return (uint64_t)-EBADF;
-        if (descriptors[dirfd] != FD_DIR || !boot_entries[dirfd])
-            return (uint64_t)-ENOTDIR;
-        const char *base = boot_entries[dirfd]->path;
+    if (src[0] != '/') {
+        const char *base;
+        if (dirfd == (uint64_t)-100) base = current_workdir;
+        else {
+            if (dirfd >= 64 || descriptors[dirfd] == FD_CLOSED)
+                return (uint64_t)-EBADF;
+            if (descriptors[dirfd] != FD_DIR || !boot_entries[dirfd])
+                return (uint64_t)-ENOTDIR;
+            base = boot_entries[dirfd]->path;
+        }
         for (unsigned i = 1; base[i]; i++) {
             if (used + 1 >= 256) return (uint64_t)-ENAMETOOLONG;
             out[used++] = base[i];
@@ -712,18 +773,31 @@ static uint64_t sys_open_path(const char *path, uint64_t flags) {
         ? (uint64_t)-EROFS : (uint64_t)-ENOENT;
     if ((flags & 0x10000ULL) && kind != FD_DIR)
         return (uint64_t)-ENOTDIR;
-    if (flags & (0x40ULL | 0x200ULL | 0x400ULL))
+    /* O_CREAT on an existing /dev/null or /dev/zero is not a request
+     * to create a new file. O_TRUNC has no effect on character devices.
+     * Archive-backed data, however, stays strictly read-only.
+     */
+    if (kind != FD_NULL && kind != FD_ZERO &&
+        (flags & (0x40ULL | 0x200ULL | 0x400ULL)))
         return (uint64_t)-EROFS;
     if ((kind == FD_ARCHIVE || kind == FD_DIR) && (flags & 3ULL))
         return kind == FD_DIR ? (uint64_t)-EISDIR : (uint64_t)-EROFS;
     if (kind == FD_BOOTFS && (flags & 3ULL)) return (uint64_t)-EACCES;
     for (unsigned fd = 3; fd < 64; fd++) {
         if (descriptors[fd] != FD_CLOSED) continue;
-        descriptors[fd] = kind;
-        boot_files[fd] = real_file;
-        boot_entries[fd] = entry;
-        boot_file_offsets[fd] = 0;
-        return fd;
+        for (unsigned slot = 0; slot < 64; slot++) {
+            if (file_refcount[slot]) continue;
+            file_refcount[slot] = 1;
+            file_slot[fd] = (uint8_t)slot;
+            file_status_flags[slot] = flags & (3ULL | 0x800ULL | 0x400ULL);
+            fd_cloexec[fd] = !!(flags & 0x80000ULL);
+            boot_file_offsets[slot] = 0;
+            descriptors[fd] = kind;
+            boot_files[fd] = real_file;
+            boot_entries[fd] = entry;
+            return fd;
+        }
+        return (uint64_t)-ENFILE;
     }
     return (uint64_t)-EMFILE;
 }
@@ -734,6 +808,8 @@ static uint64_t sys_open_device(uint64_t pathname, uint64_t flags) {
 }
 static uint64_t sys_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     if (fd >= 64 || descriptors[fd] == FD_CLOSED) return (uint64_t)-EBADF;
+    if ((file_status_flags[file_slot[fd]] & 3ULL) == 0)
+        return (uint64_t)-EBADF;
     if (length > (1ULL << 20) ||
         address >= USER_LIMIT || length > USER_LIMIT - address)
         return (uint64_t)-EFAULT;
@@ -751,30 +827,32 @@ static uint64_t sys_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
 }
 static uint64_t sys_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     if (fd >= 64 || descriptors[fd] == FD_CLOSED) return (uint64_t)-EBADF;
+    if ((file_status_flags[file_slot[fd]] & 3ULL) == 1)
+        return (uint64_t)-EBADF;
     if (descriptors[fd] == FD_NULL) return 0;
     if (descriptors[fd] == FD_DIR) return (uint64_t)-EISDIR;
     if (descriptors[fd] == FD_ARCHIVE) {
         const struct bootfs_entry *entry = boot_entries[fd];
         if (!entry) return (uint64_t)-EBADF;
-        uint64_t start = boot_file_offsets[fd];
+        uint64_t start = boot_file_offsets[file_slot[fd]];
         if (start >= entry->size) return 0;
         uint64_t available = entry->size - start;
         if (length > available) length = available;
         if (!user_write_bytes(address, entry->data + start, length))
             return (uint64_t)-EFAULT;
-        boot_file_offsets[fd] += length;
+        boot_file_offsets[file_slot[fd]] += length;
         return length;
     }
     if (descriptors[fd] == FD_BOOTFS) {
         const struct limine_file *file = boot_files[fd];
         if (!file || !file->address) return (uint64_t)-EBADF;
-        uint64_t start = boot_file_offsets[fd];
+        uint64_t start = boot_file_offsets[file_slot[fd]];
         if (start > file->size) return 0;
         uint64_t available = file->size - start;
         if (length > available) length = available;
         if (!user_write_bytes(address, (const uint8_t *)file->address + start,
                               length)) return (uint64_t)-EFAULT;
-        boot_file_offsets[fd] += length;
+        boot_file_offsets[file_slot[fd]] += length;
         return length;
     }
     if (descriptors[fd] == FD_UART) return (uint64_t)-EAGAIN; /* no RX-ready: EAGAIN */
@@ -803,11 +881,71 @@ static uint64_t sys_fd_writev(uint64_t fd, uint64_t iov, uint64_t count) {
     }
     return sent;
 }
+/* poll() readiness for real in-memory files and available output devices.
+ * There is no scheduler/TTY RX yet: unsupported blocking waits return
+ * -EOPNOTSUPP rather than pretending that a timeout elapsed.
+ * Linux pollfd ABI: int32 fd, int16 events, int16 revents (8 bytes).
+ */
+static uint64_t sys_poll(uint64_t address, uint64_t nfds, uint64_t timeout) {
+    const uint16_t POLLIN = 0x0001, POLLOUT = 0x0004, POLLNVAL = 0x0020;
+    if (nfds > 64) return (uint64_t)-EINVAL;
+    if (nfds && (address >= USER_LIMIT || nfds > (USER_LIMIT - address) / 8))
+        return (uint64_t)-EFAULT;
+    uint64_t ready = 0;
+    for (uint64_t i = 0; i < nfds; ++i) {
+        uint64_t word;
+        if (!read_u64(address + i * 8, &word)) return (uint64_t)-EFAULT;
+        int32_t fd = (int32_t)(uint32_t)word;
+        uint16_t events = (uint16_t)(word >> 32);
+        uint16_t revents = 0;
+        if (fd >= 0) {
+            if (fd >= 64 || descriptors[(unsigned)fd] == FD_CLOSED)
+                revents = POLLNVAL;
+            else {
+                uint8_t kind = descriptors[(unsigned)fd];
+                if (kind == FD_ARCHIVE || kind == FD_BOOTFS ||
+                    kind == FD_DIR || kind == FD_NULL || kind == FD_ZERO)
+                    revents = events & (POLLIN | POLLOUT);
+                else if (kind == FD_UART)
+                    revents = events & POLLOUT;
+            }
+        }
+        if (revents) ready++;
+        word = (word & 0x0000ffffffffffffULL) | ((uint64_t)revents << 48);
+        if (!write_u64(address + i * 8, word)) return (uint64_t)-EFAULT;
+    }
+    if (ready || (int64_t)timeout == 0) return ready;
+    return (uint64_t)-EOPNOTSUPP; /* no scheduler-backed blocking poll */
+}
+
 static uint64_t sys_getcwd_root(uint64_t buffer, uint64_t size) {
-    const uint8_t cwd[2] = {'/', 0};
-    if (size < 2) return (uint64_t)-ERANGE; /* ERANGE */
-    if (!user_write_bytes(buffer, cwd, 2)) return (uint64_t)-EFAULT;
-    return 2;
+    uint64_t length = 0;
+    while (current_workdir[length]) length++;
+    length++; /* Linux raw getcwd includes NUL in returned length. */
+    if (size < length) return (uint64_t)-ERANGE;
+    return user_write_bytes(buffer, (const uint8_t *)current_workdir, length)
+        ? length : (uint64_t)-EFAULT;
+}
+static uint64_t sys_chdir(uint64_t pathname) {
+    char path[256];
+    uint64_t ret = resolve_path((uint64_t)-100, pathname, path);
+    if ((int64_t)ret < 0) return ret;
+    const struct bootfs_entry *entry = bootfs_find(path);
+    if (!entry) return (uint64_t)-ENOENT;
+    if (!bootfs_is_dir(entry)) return (uint64_t)-ENOTDIR;
+    unsigned i = 0;
+    do { current_workdir[i] = path[i]; } while (path[i++]);
+    return 0;
+}
+static uint64_t sys_fchdir(uint64_t fd) {
+    if (fd >= 64 || descriptors[fd] == FD_CLOSED)
+        return (uint64_t)-EBADF;
+    if (descriptors[fd] != FD_DIR || !boot_entries[fd])
+        return (uint64_t)-ENOTDIR;
+    const char *path = boot_entries[fd]->path;
+    unsigned i = 0;
+    do { current_workdir[i] = path[i]; } while (path[i++]);
+    return 0;
 }
 static uint64_t sys_uname_naseed(uint64_t buffer) {
     struct uts {
@@ -875,7 +1013,7 @@ static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
     else if (descriptors[fd] != FD_DIR || !boot_entries[fd])
         return (uint64_t)-ESPIPE;
     uint64_t base = 0;
-    if (whence == 1) base = boot_file_offsets[fd];
+    if (whence == 1) base = boot_file_offsets[file_slot[fd]];
     else if (whence == 2 && descriptors[fd] != FD_DIR) base = size;
     else if (whence != 0) return (uint64_t)-EINVAL;
     int64_t signed_off = (int64_t)off;
@@ -887,7 +1025,7 @@ static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
         if (base > UINT64_MAX - off) return (uint64_t)-EINVAL;
         base += off;
     }
-    boot_file_offsets[fd] = base;
+    boot_file_offsets[file_slot[fd]] = base;
     return base;
 }
 static uint64_t sys_openat_boot(uint64_t dirfd, uint64_t pathname, uint64_t flags) {
@@ -930,9 +1068,7 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
     result = sys_open_path(path, 0);
     if ((int64_t)result < 0) return result;
     uint64_t ret = sys_fstat_boot(result, statbuf);
-    descriptors[result] = FD_CLOSED;
-    boot_files[result] = 0;
-    boot_entries[result] = 0;
+    fd_close_raw(result);
     return ret;
 }
 
@@ -947,7 +1083,7 @@ static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
     if (dst >= USER_LIMIT || capacity > USER_LIMIT - dst)
         return (uint64_t)-EFAULT;
     const struct bootfs_entry *dir = boot_entries[fd];
-    uint64_t cursor = boot_file_offsets[fd];
+    uint64_t cursor = boot_file_offsets[file_slot[fd]];
     uint64_t written = 0;
     while (written + 24 <= capacity) {
         const struct bootfs_entry *item;
@@ -997,7 +1133,7 @@ static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
             return written ? written : (uint64_t)-EFAULT;
         written += reclen;
         cursor++;
-        boot_file_offsets[fd] = cursor;
+        boot_file_offsets[file_slot[fd]] = cursor;
     }
     return written;
 }
@@ -1107,9 +1243,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == __NR_close) {
         if (args[1] >= 64 || descriptors[args[1]] == FD_CLOSED)
             return (uint64_t)-EBADF;
-        descriptors[args[1]] = FD_CLOSED;
-        boot_files[args[1]] = 0;
-        boot_entries[args[1]] = 0;
+        fd_close_raw(args[1]);
         return 0;
     }
     if (nr == __NR_ioctl) {
@@ -1122,6 +1256,17 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == __NR_rt_sigprocmask) return sys_sigprocmask(args[1], args[2], args[3], args[4]);
     if (nr == __NR_uname) return sys_uname_naseed(args[1]);
     if (nr == __NR_getcwd) return sys_getcwd_root(args[1], args[2]);
+    if (nr == __NR_fcntl) return sys_fcntl(args[1], args[2], args[3]);
+    if (nr == __NR_poll) return sys_poll(args[1], args[2], args[3]);
+    if (nr == __NR_dup) return fd_duplicate(args[1], 0, false);
+    if (nr == __NR_dup2) return fd_clone(args[1], args[2], false);
+    if (nr == __NR_dup3) {
+        if (args[1] == args[2] || (args[3] & ~0x80000ULL))
+            return (uint64_t)-EINVAL;
+        return fd_clone(args[1], args[2], (args[3] & 0x80000ULL) != 0);
+    }
+    if (nr == __NR_chdir) return sys_chdir(args[1]);
+    if (nr == __NR_fchdir) return sys_fchdir(args[1]);
     if (nr == __NR_getpgid) return args[1] == 0 || args[1] == 1 ? 1 : (uint64_t)-ESRCH;
     if (nr == __NR_getpgrp) return 1; /* getpgrp: only process group 1 exists */
     if (nr == __NR_exit || nr == __NR_exit_group) { /* exit / exit_group */
@@ -1263,9 +1408,12 @@ void m1_start(void) {
         if (!user_map(va, true)) fail("cannot map user stack");
     }
     uint64_t stack_pointer;
-    descriptors[0] = FD_UART;
-    descriptors[1] = FD_UART;
-    descriptors[2] = FD_UART;
+    for (unsigned fd = 0; fd < 3; fd++) {
+        descriptors[fd] = FD_UART;
+        file_slot[fd] = (uint8_t)fd;
+        file_refcount[fd] = 1;
+        file_status_flags[fd] = fd == 0 ? 0 : 1; /* stdin R, stdout/err W */
+    }
     if (!build_linux_stack(running_bash, running_busybox, &stack_pointer))
         fail("cannot initialize Linux userspace stack");
     nas_print("[ELF] userspace entry="); nas_hex(entry); nas_print("\n");
