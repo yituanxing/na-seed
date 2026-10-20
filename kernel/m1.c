@@ -1776,6 +1776,16 @@ static uint64_t task_schedule(uint64_t *frame) {
         nas_print(" blocked_nr="); nas_dec(task->blocked_nr);
         nas_print(" fd="); nas_dec(task->blocked_args[0]);
         nas_print("\n");
+        for (unsigned fd = 0; fd < NAS_FD_LIMIT; fd++) {
+            uint8_t kind = nas_task_fd_kind(task, fd);
+            if (kind != FD_PIPE_R && kind != FD_PIPE_W) continue;
+            unsigned slot = nas_task_fd_slot(task, fd);
+            nas_print("[DEADLOCK] holder pid="); nas_dec(task->pid);
+            nas_print(" fd="); nas_dec(fd);
+            nas_print(" kind="); nas_dec(kind);
+            nas_print(" slot="); nas_dec(slot);
+            nas_print("\n");
+        }
     }
     fail("scheduler deadlock: all live tasks blocked; no ready process");
 }
