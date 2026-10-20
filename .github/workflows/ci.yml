@@ -45,6 +45,8 @@ jobs:
         run: make alpine-argv-probe
       - name: Real archive-backed Alpine BusyBox ls and cat under QEMU
         run: make alpine-fs-probe
+      - name: Real Alpine BusyBox ELF loaded entirely from CPIO
+        run: make alpine-archive-probe
       - name: Attach serial log on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -57,4 +59,5 @@ jobs:
             build/alpine-serial.log
             build/alpine-argv-*-serial.log
             build/alpine-fs-*-serial.log
+            build/alpine-archive-*-serial.log
           if-no-files-found: ignore
