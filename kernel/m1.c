@@ -36,7 +36,7 @@ extern uint64_t syscall_user_rsp;
 #define USER_STACK_TOP 0x0000000070000000ULL
 #define USER_STACK_PAGES 32
 
-static void fail(const char *message) {
+__attribute__((noreturn)) static void fail(const char *message) {
     nas_print("[FAIL] M1 ");
     nas_print(message);
     nas_print("\n");
