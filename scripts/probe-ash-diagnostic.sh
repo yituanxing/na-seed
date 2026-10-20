@@ -50,6 +50,7 @@ for scenario in builtin builtinpwd pid cd readfile cdread readtwice redirect app
         cd) expected='/etc' ;;
         readfile|cdread) expected='naseed' ;;
         readtwice) expected='naseed:' ;;
+        applet) expected='naseed' ;;
         external) expected='naseed' ;;
         sequence) expected='finished' ;;
         pipeline) expected='4' ;;
@@ -85,24 +86,17 @@ for scenario in builtin builtinpwd pid cd readfile cdread readtwice redirect app
             tail -90 "$log" >&2
             exit 1
         fi
+        if [ "$scenario" = applet ] &&
+           ! grep -Fq '[EXEC] replaced process with CPIO ELF: /bin/cat' "$log"; then
+            echo '[ASH-FAIL] PATH applet did not exec via actual archive symlink' >&2
+            tail -90 "$log" >&2
+            exit 1
+        fi
         if [ "$scenario" = external ] &&
            ! grep -Fq '[EXEC] replaced process with CPIO ELF: /bin/busybox' "$log"; then
             echo '[ASH-FAIL] external image was not replaced' >&2
             exit 1
         fi
         echo "[ACCEPTED] unmodified Alpine ash scenario=$scenario"
-    else
-        case "$scenario" in
-            applet)
-                blocker='[EXIT] user status=127'
-                reason='PATH applet entry /bin/cat absent (no symlinks yet)' ;;
-        esac
-        if grep -Fq '[PASS] cmdline userspace exit 0' "$log" ||
-           ! grep -Fq "$blocker" "$log"; then
-            echo "[ASH-FAIL] expected blocker changed for scenario=$scenario" >&2
-            tail -85 "$log" >&2
-            exit 1
-        fi
-        echo "[BLOCKED] scenario=$scenario, observed $reason"
     fi
 done
