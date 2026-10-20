@@ -881,6 +881,43 @@ static uint64_t sys_fd_writev(uint64_t fd, uint64_t iov, uint64_t count) {
     }
     return sent;
 }
+/* poll() readiness for real in-memory files and available output devices.
+ * There is no scheduler/TTY RX yet: unsupported blocking waits return
+ * -ENOSYS rather than pretending that a timeout elapsed.
+ * Linux pollfd ABI: int32 fd, int16 events, int16 revents (8 bytes).
+ */
+static uint64_t sys_poll(uint64_t address, uint64_t nfds, uint64_t timeout) {
+    const uint16_t POLLIN = 0x0001, POLLOUT = 0x0004, POLLNVAL = 0x0020;
+    if (nfds > 64) return (uint64_t)-EINVAL;
+    if (nfds && (address >= USER_LIMIT || nfds > (USER_LIMIT - address) / 8))
+        return (uint64_t)-EFAULT;
+    uint64_t ready = 0;
+    for (uint64_t i = 0; i < nfds; ++i) {
+        uint64_t word;
+        if (!read_u64(address + i * 8, &word)) return (uint64_t)-EFAULT;
+        int32_t fd = (int32_t)(uint32_t)word;
+        uint16_t events = (uint16_t)(word >> 32);
+        uint16_t revents = 0;
+        if (fd >= 0) {
+            if (fd >= 64 || descriptors[(unsigned)fd] == FD_CLOSED)
+                revents = POLLNVAL;
+            else {
+                uint8_t kind = descriptors[(unsigned)fd];
+                if (kind == FD_ARCHIVE || kind == FD_BOOTFS ||
+                    kind == FD_DIR || kind == FD_NULL || kind == FD_ZERO)
+                    revents = events & (POLLIN | POLLOUT);
+                else if (kind == FD_UART)
+                    revents = events & POLLOUT;
+            }
+        }
+        if (revents) ready++;
+        word = (word & 0x0000ffffffffffffULL) | ((uint64_t)revents << 48);
+        if (!write_u64(address + i * 8, word)) return (uint64_t)-EFAULT;
+    }
+    if (ready || (int64_t)timeout == 0) return ready;
+    return (uint64_t)-ENOSYS;
+}
+
 static uint64_t sys_getcwd_root(uint64_t buffer, uint64_t size) {
     uint64_t length = 0;
     while (current_workdir[length]) length++;
@@ -1220,6 +1257,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == __NR_uname) return sys_uname_naseed(args[1]);
     if (nr == __NR_getcwd) return sys_getcwd_root(args[1], args[2]);
     if (nr == __NR_fcntl) return sys_fcntl(args[1], args[2], args[3]);
+    if (nr == __NR_poll) return sys_poll(args[1], args[2], args[3]);
     if (nr == __NR_dup) return fd_duplicate(args[1], 0, false);
     if (nr == __NR_dup2) return fd_clone(args[1], args[2], false);
     if (nr == __NR_dup3) {
