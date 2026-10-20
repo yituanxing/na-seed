@@ -153,6 +153,50 @@ static bool paging_init(void) {
     __asm__ volatile ("mov %0, %%cr3" : : "r"(root_phys) : "memory");
     return true;
 }
+/* Every execve owns a fresh user page-table root; the supervisor upper
+ * half is inherited without allocating or freeing its boot mappings.
+ * The retired root is reclaimed ONLY after CR3 switches successfully.
+ * User pages are private: NaSeed has no fork/COW or shared mappings yet.
+ */
+static uint64_t alloc_user_root(void) {
+    uint64_t pa = nas_frame_alloc();
+    if (!pa) return 0;
+    uint64_t *fresh = phys_table(pa), *current = phys_table(root_phys);
+    for (unsigned i = 256; i < 512; i++)
+        fresh[i] = current[i] & ~P_USER;
+    return pa;
+}
+static bool free_user_tree(uint64_t table_pa, unsigned depth) {
+    uint64_t *table = phys_table(table_pa);
+    for (unsigned i = 0; i < 512; i++) {
+        uint64_t e = table[i];
+        if (!(e & P_PRESENT)) continue;
+        if (!(e & P_USER) || (e & (1ULL << 7))) return false;
+        uint64_t pa = e & PHYS_MASK;
+        if (depth && !free_user_tree(pa, depth - 1)) return false;
+        table[i] = 0;
+        if (!nas_frame_free(pa)) return false;
+    }
+    return true;
+}
+static bool reclaim_user_root(uint64_t pa) {
+    uint64_t *root = phys_table(pa);
+    for (unsigned i = 0; i < 256; i++) {
+        uint64_t e = root[i];
+        if (!(e & P_PRESENT)) continue;
+        if (!(e & P_USER) || (e & (1ULL << 7))) return false;
+        uint64_t child = e & PHYS_MASK;
+        if (!free_user_tree(child, 2)) return false;
+        root[i] = 0;
+        if (!nas_frame_free(child)) return false;
+    }
+    return nas_frame_free(pa);
+}
+static void switch_user_root(uint64_t pa) {
+    root_phys = pa;
+    __asm__ volatile ("mov %0, %%cr3" : : "r"(pa) : "memory");
+}
+
 static uint64_t *user_leaf(uint64_t va, bool allocate_tables) {
     if (va < PAGE || va >= USER_LIMIT || (va & (PAGE - 1))) return 0;
     uint64_t table = root_phys;
