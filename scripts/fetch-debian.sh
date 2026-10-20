@@ -50,6 +50,8 @@ fi
 if [ "$kind" = bash ]; then
   test "$("$target" --noprofile --norc -c 'echo hello')" = hello
 else
-  test "$("$target" echo hello)" = hello
+  # BusyBox dispatches applets using argv[0]; use its upstream basename.
+  ln -sf "debian-busybox" "$out/userspace/busybox"
+  test "$("$out/userspace/busybox" echo hello)" = hello
 fi
 echo "[DEBIAN] verified unmodified $filename, static ELF, host stdout=hello"
