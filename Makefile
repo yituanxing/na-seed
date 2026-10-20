@@ -15,7 +15,7 @@ CFLAGS := --target=x86_64-unknown-none-elf -std=c11 -O2 -g -Wall -Wextra -Werror
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
  -z noexecstack -T kernel/linker.ld
 
-.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch alpine-probe alpine-argv-probe alpine-fs-probe alpine-archive-probe alpine-selector-probe ash-diagnostic ash-execve-probe ash-fork-probe ash-pipes-probe ash-lifecycle-probe ash-symlinks-probe preflight
+.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch alpine-probe alpine-argv-probe alpine-fs-probe alpine-archive-probe alpine-selector-probe ash-diagnostic ash-execve-probe ash-fork-probe ash-pipes-probe ash-lifecycle-probe ash-symlinks-probe ash-tmp-probe preflight
 all: iso
 iso: $(ISO)
 kernel: $(KERNEL)
@@ -248,6 +248,9 @@ ash-lifecycle-probe: $(ALPINE_ARCHIVE_ISO)
 
 ash-symlinks-probe: $(ALPINE_ARCHIVE_ISO)
 	sh scripts/probe-ash-symlinks.sh
+
+ash-tmp-probe: $(ALPINE_ARCHIVE_ISO)
+	sh scripts/probe-ash-tmp.sh
 
 preflight:
 	sh scripts/preflight.sh
