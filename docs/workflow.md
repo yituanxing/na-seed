@@ -4,7 +4,7 @@ The long-term core of NaSeed is **real device driver support**, not just a Bash 
 
 - M0: Limine + memory map/HHDM, serial UART, conservative bitmap allocator. QEMU smoke test is mandatory.
 - M1: CPU exceptions, separately rooted user mappings inheriting supervisor-only kernel/HHDM mappings, static ELF and userspace ring-3 entry; Linux x86-64 syscall gate with write/exit, trace and -ENOSYS for missing calls.
-- M2: Fixed static musl + GNU Bash loaded from initramfs, actual bash -c echo. Repair related semantic failures in batches.
+- M2: Fixed static musl + GNU Bash loaded as a Limine module, actual bash -c echo. (General initramfs is not yet implemented.) Repair related semantic failures in batches.
 - M3: Serial/keyboard-backed TTY, interactive Bash; then fork, exec, wait, pipes, signals and real external commands.
 - Drivers: grow the driver model from real requirements: interrupt-driven serial and keyboard, PCI enumeration, block I/O, AHCI/NVMe, etc. Test both QEMU and available physical hardware.
 
@@ -55,3 +55,7 @@ Upstream, unmodified Alpine v3.23 x86_64 packages are fixed by version and SHA25
 Real Linux host control runs Alpine musl ldso on upstream dynamic BusyBox. QEMU boots NaSeed with distinct BusyBox ET_DYN and musl interpreter ELF modules. The kernel interprets genuine PT_INTERP, maps both ELF objects to nonoverlapping user virtual addresses, passes AT_BASE and AT_ENTRY correctly, then transfers control to the **actual musl runtime linker** in Ring 3. The linker completes startup, BusyBox prints hello, and it exits with status zero. CI requires ALPINE_REQUIRE_PASS=1 make alpine-probe; loading the module alone cannot pass.
 
 A small read-only bootfs maps genuine Limine-provided file bytes for openat/read/lseek/fstat. It is deliberately NOT a general VFS, CPIO initramfs, PT_INTERP loader for arbitrary paths, or complete Alpine rootfs. Other shared-library dependencies, full memory-mapping semantics, interrupts, interactive TTY, processes, scheduling and genuine disk/network drivers remain separate future work. Existing M0/M1/musl Bash/Debian Bash/BusyBox regressions remain mandatory.
+
+## M4.5 engineering checkpoint
+
+The read-only Limine-module BootFS and one-process syscall switch remain temporary and intentionally unchanged in this checkpoint. For the completed pre-M5 audit, review `docs/audit-m45.md` before extending file or process semantics. Run `make preflight` before opening a PR; GitHub Actions repeats preflight before real QEMU acceptance. Cached musl Bash no longer recompiles solely due to checkout mtimes; the CI cache key includes the Bash builder script's content hash. To deliberately rebuild after changing the script locally: `rm -f build/userspace/bash && make bash-probe`.

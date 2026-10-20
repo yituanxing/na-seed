@@ -9,6 +9,28 @@ _start:
     and $3, %ax
     cmp $3, %ax
     jne fail
+    /* ARCH_GET_FS must reject the program's read-only .text page. */
+    mov $158, %rax
+    mov $0x1003, %rdi
+    lea message(%rip), %rsi
+    syscall
+    cmp $-14, %rax
+    jne fail
+    /* The same syscall must work with a writable user stack address. */
+    mov $158, %rax
+    mov $0x1003, %rdi
+    lea -8(%rsp), %rsi
+    syscall
+    test %rax, %rax
+    jne fail
+    /* write must not be able to read a kernel higher-half virtual address. */
+    mov $1, %rax
+    mov $1, %rdi
+    movabs $0xffffffff80000000, %rsi
+    mov $1, %rdx
+    syscall
+    cmp $-14, %rax
+    jne fail
     mov $1, %rax
     mov $1, %rdi
     lea message(%rip), %rsi

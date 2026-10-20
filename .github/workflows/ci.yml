@@ -10,15 +10,27 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y clang lld xorriso qemu-system-x86 ovmf musl-tools binutils
+      - name: Preflight audit, shell syntax, kernel compile and link
+        run: sh scripts/preflight.sh
       - name: Cache verified static GNU Bash
         uses: actions/cache@v4
         with:
           path: build/userspace/bash
           key: naseed-musl-bash-5.2.37-${{ runner.os }}-${{ hashFiles('scripts/build-bash.sh') }}
+      - name: Validate a restored Bash binary without compiling it
+        run: |
+          if [ -f build/userspace/bash ]; then
+            readelf -h build/userspace/bash | grep -q 'EXEC (Executable file)'
+            if readelf -l build/userspace/bash | grep -q INTERP; then exit 1; fi
+            test "$(build/userspace/bash --noprofile --norc -c 'echo hello')" = hello
+            echo '[CACHE] restored static Bash verified; no source rebuild'
+          fi
       - name: Build and boot real kernel
         run: make smoke
       - name: Build authentic static Bash and probe actual QEMU behavior
