@@ -56,6 +56,7 @@ struct nas_task {
 };
 
 /* Called before paging_init. get_current is non-null afterwards. */
+extern struct nas_task *nas_current_task;
 void nas_task_boot_init(void);
 struct nas_task *nas_task_current(void);
 const struct nas_task *nas_task_find(uint64_t pid);
