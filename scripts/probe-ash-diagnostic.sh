@@ -4,13 +4,14 @@
 # Diagnostic only: a printed failure is NOT an accepted new capability.
 set -eu
 base=build/alpine-archive-iso
-for scenario in builtin builtinpwd cd readfile cdread redirect applet external pipeline; do
+for scenario in builtin builtinpwd cd readfile cdread readtwice redirect applet external pipeline; do
     case "$scenario" in
         builtin) args="sh -c 'echo shell-ready'" ;;
         builtinpwd) args="sh -c 'pwd'" ;;
         cd) args="sh -c 'cd /etc; pwd'" ;;
         readfile) args="sh -c 'read word < /etc/hostname; echo \$word'" ;;
         cdread) args="sh -c 'cd /etc; read word < hostname; echo \$word'" ;;
+        readtwice) args="sh -c 'exec 3< /etc/hostname; read first <&3; read second <&3; echo \$first:\$second'" ;;
         redirect) args="sh -c 'echo hello > /dev/null; echo redirect-ok'" ;;
         applet) args="sh -c 'cat /etc/hostname'" ;;
         external) args="sh -c '/bin/busybox cat /etc/hostname'" ;;
@@ -44,6 +45,7 @@ for scenario in builtin builtinpwd cd readfile cdread redirect applet external p
         builtinpwd) expected='/' ;;
         cd) expected='/etc' ;;
         readfile|cdread) expected='naseed' ;;
+        readtwice) expected='naseed:' ;;
         redirect) expected='redirect-ok' ;;
         *) expected='' ;;
     esac
