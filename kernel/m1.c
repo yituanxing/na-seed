@@ -670,6 +670,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     /* Real-program execution trace: syscall identity, callsite and args.
      * Capped to avoid serial storms; not needed in exception context.
      */
+#ifdef NASEED_SYSCALL_TRACE
     static unsigned trace_count;
     if ((running_bash || running_busybox) && trace_count++ < 96) {
         nas_print("[TRACE] nr="); nas_dec(nr);
@@ -680,6 +681,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         nas_print(" a3="); nas_hex(args[3]);
         nas_print("\n");
     }
+#endif
     if (nr == 158) return sys_arch_prctl(args[1], args[2]);
     if (nr == 218) { thread_clear_tid = args[1]; return 1; }
     if (nr == 39 || nr == 186) return 1;  /* getpid / gettid */
@@ -715,7 +717,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         nas_print("[EXIT] user status="); nas_dec(args[1]); nas_print("\n");
         if (running_busybox) {
             if (args[1] == 0 && saw_bash_hello) {
-                nas_print("[PASS] M3 Debian BusyBox echo hello\n");
+                nas_print("[PASS] M2 Debian BusyBox echo hello\n");
                 outb(0xf4, 0);
             }
             fail("real BusyBox exited without stdout hello and status 0");

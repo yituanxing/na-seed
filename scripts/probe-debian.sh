@@ -12,7 +12,7 @@ if [ "$kind" = bash ]; then
   pass='[PASS] M2 real GNU Bash -c echo hello'
   loaded='[M2] real GNU Bash module discovered'
 else
-  pass='[PASS] M3 Debian BusyBox echo hello'
+  pass='[PASS] M2 Debian BusyBox echo hello'
   loaded='[M3] real BusyBox module discovered'
 fi
 if grep -Fq "$pass" "$log"; then

@@ -1,4 +1,4 @@
-name: NaSeed M0+M1 QEMU smoke
+name: NaSeed userspace regressions
 on:
   push:
     branches: [main]
@@ -24,7 +24,7 @@ jobs:
       - name: Build authentic static Bash and probe actual QEMU behavior
         run: BASH_REQUIRE_PASS=1 make bash-probe
       - name: Probe official Debian prebuilt static Bash and BusyBox
-        run: make debian-probe
+        run: DEBIAN_REQUIRE_PASS=1 make debian-probe
       - name: Attach serial log on failure
         if: failure()
         uses: actions/upload-artifact@v4
