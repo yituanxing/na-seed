@@ -1011,9 +1011,15 @@ static uint64_t resolve_path(uint64_t dirfd, uint64_t pathname, char out[256]) {
         else {
             if (dirfd >= 64 || descriptors[dirfd] == FD_CLOSED)
                 return (uint64_t)-EBADF;
-            if (descriptors[dirfd] != FD_DIR || !boot_entries[dirfd])
-                return (uint64_t)-ENOTDIR;
-            base = boot_entries[dirfd]->path;
+            if (descriptors[dirfd] == FD_TMP_DIR) {
+                const struct nas_tmp_file *t = tmp_by_fd(dirfd);
+                if (!t) return (uint64_t)-EBADF;
+                base = t->path;
+            } else {
+                if (descriptors[dirfd] != FD_DIR || !boot_entries[dirfd])
+                    return (uint64_t)-ENOTDIR;
+                base = boot_entries[dirfd]->path;
+            }
         }
         for (unsigned i = 1; base[i]; i++) {
             if (used + 1 >= 256) return (uint64_t)-ENAMETOOLONG;
@@ -1374,7 +1380,14 @@ static uint64_t sys_chdir(uint64_t pathname) {
     if ((int64_t)ret < 0) return ret;
     char actual[256];
     int err = bootfs_resolve(path, true, actual);
-    if (err) return (uint64_t)(int64_t)err;
+    if (err) {
+        struct nas_tmp_file *t = tmp_find(path);
+        if (!t) return (uint64_t)(int64_t)err;
+        if (!t->is_dir) return (uint64_t)-ENOTDIR;
+        unsigned n = 0;
+        do { current_workdir[n] = path[n]; } while (path[n++]);
+        return 0;
+    }
     const struct bootfs_entry *entry = bootfs_find(actual);
     if (!bootfs_is_dir(entry)) return (uint64_t)-ENOTDIR;
     unsigned i = 0;
@@ -1384,9 +1397,16 @@ static uint64_t sys_chdir(uint64_t pathname) {
 static uint64_t sys_fchdir(uint64_t fd) {
     if (fd >= 64 || descriptors[fd] == FD_CLOSED)
         return (uint64_t)-EBADF;
-    if (descriptors[fd] != FD_DIR || !boot_entries[fd])
-        return (uint64_t)-ENOTDIR;
-    const char *path = boot_entries[fd]->path;
+    const char *path;
+    if (descriptors[fd] == FD_TMP_DIR) {
+        const struct nas_tmp_file *dir = tmp_by_fd(fd);
+        if (!dir || !dir->linked) return (uint64_t)-ENOENT;
+        path = dir->path;
+    } else {
+        if (descriptors[fd] != FD_DIR || !boot_entries[fd])
+            return (uint64_t)-ENOTDIR;
+        path = boot_entries[fd]->path;
+    }
     unsigned i = 0;
     do { current_workdir[i] = path[i]; } while (path[i++]);
     return 0;
@@ -1555,12 +1575,17 @@ static uint64_t sys_readlinkat_boot(uint64_t dirfd, uint64_t pathname,
 
 static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
     if (fd >= 64 || descriptors[fd] == FD_CLOSED) return (uint64_t)-EBADF;
-    if (descriptors[fd] != FD_DIR || !boot_entries[fd])
+    if (descriptors[fd] != FD_TMP_DIR &&
+        (descriptors[fd] != FD_DIR || !boot_entries[fd]))
         return (uint64_t)-ENOTDIR;
     if (capacity < 24) return (uint64_t)-EINVAL;
     if (dst >= USER_LIMIT || capacity > USER_LIMIT - dst)
         return (uint64_t)-EFAULT;
     const struct bootfs_entry *dir = boot_entries[fd];
+    const struct nas_tmp_file *tmpdir =
+        descriptors[fd] == FD_TMP_DIR ? tmp_by_fd(fd) : 0;
+    const char *dirpath = tmpdir ? tmpdir->path : dir->path;
+    uint64_t dirino = tmpdir ? 5000 + tmp_number(tmpdir) : dir->ino;
     uint64_t cursor = boot_file_offsets[file_slot[fd]];
     uint64_t written = 0;
     while (written + 24 <= capacity) {
@@ -1569,26 +1594,29 @@ static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
         uint64_t ino;
         unsigned dtype;
         if (cursor == 0) {
-            name = "."; ino = dir->ino; dtype = 4;
+            name = "."; ino = dirino; dtype = 4;
         } else if (cursor == 1) {
             name = ".."; dtype = 4;
             char parent[256];
             unsigned len = 0;
-            while (dir->path[len]) { parent[len] = dir->path[len]; len++; }
+            while (dirpath[len]) { parent[len] = dirpath[len]; len++; }
             while (len > 1 && parent[len - 1] != '/') len--;
             if (len > 1) len--;
             parent[len] = 0;
             item = bootfs_find(parent);
-            ino = item ? item->ino : dir->ino;
-        } else if (same_string(dir->path, "/tmp")) {
-            /* Archive /tmp directory is initially empty: list volatile
-             * inodes, with the same stable cursor and Linux dirent ABI. */
+            struct nas_tmp_file *tparent = tmp_find(parent);
+            ino = tparent ? 5000 + tmp_number(tparent) :
+                  item ? item->ino : dirino;
+        } else if (same_string(dirpath, "/tmp") || tmpdir) {
             if (cursor - 2 >= TMP_FILE_COUNT) break;
-            const struct nas_tmp_file *file = tmp_child((unsigned)(cursor - 2));
+            const struct nas_tmp_file *file =
+                tmp_child(dirpath, (unsigned)(cursor - 2));
             if (!file) break;
-            name = file->path + 5;
+            name = file->path;
+            for (const char *p = file->path; *p; p++)
+                if (*p == '/') name = p + 1;
             ino = 5000 + tmp_number(file);
-            dtype = 8; /* DT_REG */
+            dtype = file->is_dir ? 4 : 8;
         } else {
             if (cursor - 2 > 95) break;
             item = bootfs_child(dir, (unsigned)(cursor - 2));
