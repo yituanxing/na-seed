@@ -511,8 +511,21 @@ static uint64_t sys_arch_prctl(uint64_t op, uint64_t address) {
  * No fake TTY, disk, /proc, or filesystem contents are supplied.
  */
 extern void nas_putchar(char c);
-enum { FD_CLOSED = 0, FD_UART = 1, FD_NULL = 2, FD_ZERO = 3 };
+enum { FD_CLOSED = 0, FD_UART = 1, FD_NULL = 2, FD_ZERO = 3, FD_BOOTFS = 4 };
+static bool same_string(const char *a, const char *b);
 static uint8_t descriptors[64];
+/* Read-only boot filesystem backed by bytes of the actual Limine modules.
+ * Paths name exactly the binaries the bootloader provided, not fake files.
+ */
+static const struct limine_file *boot_files[64];
+static uint64_t boot_file_offsets[64];
+static const struct limine_file *bootfs_lookup(const char *path) {
+    if (same_string(path, "/bin/busybox")) return nas_module(0);
+    if (same_string(path, "/lib/ld-musl-x86_64.so.1") ||
+        same_string(path, "/lib/libc.musl-x86_64.so.1"))
+        return nas_module(1);
+    return 0;
+}
 static uint64_t blocked_signals;
 static uint64_t signal_actions[65][4];
 
@@ -567,11 +580,19 @@ static uint64_t sys_open_device(uint64_t pathname, uint64_t flags) {
     uint8_t kind = FD_CLOSED;
     if (same_string(path, "/dev/null")) kind = FD_NULL;
     if (same_string(path, "/dev/zero")) kind = FD_ZERO;
-    if (!kind) return (uint64_t)-2; /* ENOENT: no filesystem exists yet */
+    const struct limine_file *real_file = 0;
+    if (running_alpine && !kind) {
+        real_file = bootfs_lookup(path);
+        if (real_file) kind = FD_BOOTFS;
+    }
+    if (!kind) return (uint64_t)-2; /* ENOENT, path does not exist */
     if (flags & (0x40ULL | 0x200ULL)) return (uint64_t)-30; /* EROFS */
+    if (kind == FD_BOOTFS && (flags & 3)) return (uint64_t)-13; /* EACCES */
     for (unsigned fd = 3; fd < 64; fd++) {
         if (descriptors[fd] != FD_CLOSED) continue;
         descriptors[fd] = kind;
+        boot_files[fd] = real_file;
+        boot_file_offsets[fd] = 0;
         return fd;
     }
     return (uint64_t)-24; /* EMFILE */
@@ -582,6 +603,7 @@ static uint64_t sys_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
         address >= USER_LIMIT || length > USER_LIMIT - address)
         return (uint64_t)-14;
     if (descriptors[fd] == FD_NULL || descriptors[fd] == FD_ZERO) return length;
+    if (descriptors[fd] == FD_BOOTFS) return (uint64_t)-9; /* EBADF, O_RDONLY */
     if (descriptors[fd] != FD_UART) return (uint64_t)-9;
     for (uint64_t i = 0; i < length; i++) {
         uint8_t *p = user_byte(address + i);
@@ -594,6 +616,18 @@ static uint64_t sys_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
 static uint64_t sys_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     if (fd >= 64 || descriptors[fd] == FD_CLOSED) return (uint64_t)-9;
     if (descriptors[fd] == FD_NULL) return 0;
+    if (descriptors[fd] == FD_BOOTFS) {
+        const struct limine_file *file = boot_files[fd];
+        if (!file || !file->address) return (uint64_t)-9;
+        uint64_t start = boot_file_offsets[fd];
+        if (start > file->size) return 0;
+        uint64_t available = file->size - start;
+        if (length > available) length = available;
+        if (!user_write_bytes(address, (const uint8_t *)file->address + start,
+                              length)) return (uint64_t)-14;
+        boot_file_offsets[fd] += length;
+        return length;
+    }
     if (descriptors[fd] == FD_UART) return (uint64_t)-11; /* no RX-ready: EAGAIN */
     if (descriptors[fd] != FD_ZERO) return (uint64_t)-9;
     if (address >= USER_LIMIT || length > USER_LIMIT - address)
@@ -638,6 +672,74 @@ static uint64_t sys_uname_naseed(uint64_t buffer) {
     return user_write_bytes(buffer, (const uint8_t *)&data, sizeof(data))
         ? 0 : (uint64_t)-14;
 }
+
+/* Linux x86-64 struct stat layout, 144 bytes. File size is actual module.
+ * Device entries have character-device type; mounted files are regular.
+ */
+struct linux_stat {
+    uint64_t dev, ino, nlink;
+    uint32_t mode, uid, gid, pad;
+    uint64_t rdev;
+    int64_t size, blksize, blocks;
+    int64_t atime_sec, atime_nsec, mtime_sec, mtime_nsec, ctime_sec, ctime_nsec;
+    int64_t unused[3];
+};
+_Static_assert(sizeof(struct linux_stat) == 144, "Linux x86-64 stat ABI");
+static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
+    if (fd >= 64 || !descriptors[fd]) return (uint64_t)-9;
+    struct linux_stat st = {0};
+    st.nlink = 1;
+    st.blksize = PAGE;
+    if (descriptors[fd] == FD_BOOTFS) {
+        const struct limine_file *file = boot_files[fd];
+        if (!file) return (uint64_t)-9;
+        st.dev = 1; st.ino = fd + 100;
+        st.mode = 0100555;
+        st.size = (int64_t)file->size;
+        st.blocks = (int64_t)((file->size + 511) / 512);
+    } else {
+        st.dev = 2; st.ino = fd + 10;
+        st.mode = 0020666; /* real character device backed by UART/null/zero */
+    }
+    if (!user_write_bytes(address, (const uint8_t *)&st, sizeof(st)))
+        return (uint64_t)-14;
+    return 0;
+}
+static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
+    if (fd >= 64 || descriptors[fd] != FD_BOOTFS || !boot_files[fd])
+        return (uint64_t)-29; /* ESPIPE */
+    uint64_t base = 0;
+    if (whence == 1) base = boot_file_offsets[fd];
+    else if (whence == 2) base = boot_files[fd]->size;
+    else if (whence != 0) return (uint64_t)-22;
+    int64_t signed_off = (int64_t)off;
+    if (signed_off < 0) {
+        uint64_t magnitude = 0 - off;
+        if (magnitude > base) return (uint64_t)-22;
+        base -= magnitude;
+    } else {
+        if (base > UINT64_MAX - off) return (uint64_t)-22;
+        base += off;
+    }
+    boot_file_offsets[fd] = base;
+    return base;
+}
+static uint64_t sys_openat_boot(uint64_t dirfd, uint64_t path, uint64_t flags) {
+    /* Linux AT_FDCWD is -100; absolute paths ignore dirfd. */
+    if (dirfd != (uint64_t)-100 && dirfd != 0) return (uint64_t)-9;
+    return sys_open_device(path, flags);
+}
+static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t path,
+                                 uint64_t statbuf, uint64_t flags) {
+    if (flags) return (uint64_t)-22;
+    uint64_t result = sys_openat_boot(dirfd, path, 0);
+    if ((int64_t)result < 0) return result;
+    uint64_t ret = sys_fstat_boot(result, statbuf);
+    descriptors[result] = FD_CLOSED;
+    boot_files[result] = 0;
+    return ret;
+}
+
 /* Proper syscall-level rt_sigaction / sigprocmask structures, 8-byte sigset. 
  * Delivery is intentionally not claimed until an actual signal path exists. */
 static uint64_t sys_sigaction(uint64_t signum, uint64_t new_action,
@@ -733,10 +835,15 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == 0) return sys_fd_read(args[1], args[2], args[3]);
     if (nr == 1) return sys_fd_write(args[1], args[2], args[3]);
     if (nr == 2) return sys_open_device(args[1], args[2]);
+    if (nr == 257) return sys_openat_boot(args[1], args[2], args[3]);
+    if (nr == 5) return sys_fstat_boot(args[1], args[2]);
+    if (nr == 262) return sys_fstatat_boot(args[1], args[2], args[3], args[4]);
+    if (nr == 8) return sys_lseek_boot(args[1], args[2], args[3]);
     if (nr == 3) {
         if (args[1] >= 64 || descriptors[args[1]] == FD_CLOSED)
             return (uint64_t)-9;
         descriptors[args[1]] = FD_CLOSED;
+        boot_files[args[1]] = 0;
         return 0;
     }
     if (nr == 16) {
