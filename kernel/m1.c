@@ -788,6 +788,8 @@ static uint64_t sys_pipe2(uint64_t user_pair, uint64_t flags) {
             output[i * 4 + j] = (uint8_t)(fds[i] >> (j * 8));
     if (!user_write_bytes(user_pair, output, sizeof(output)))
         fail("pipe2 validated destination became inaccessible");
+    nas_print("[PIPE] created read="); nas_dec(fds[0]);
+    nas_print(" write="); nas_dec(fds[1]); nas_print("\n");
     return 0;
 }
 static uint64_t pipe_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
