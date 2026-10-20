@@ -24,6 +24,11 @@ enter_user:
     pushq $0x202
     pushq $0x23
     pushq %rdi
+    /* Linux ELF _start ABI: RDX is rtld_fini. A static executable has no
+     * dynamic linker destructor, so the finalizer must be NULL.
+     * Leaving the kernel's arbitrary RDX here makes glibc call it on exit.
+     */
+    xorq %rdx, %rdx
     iretq
 
 .global syscall_entry
