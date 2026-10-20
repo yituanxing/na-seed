@@ -5,10 +5,11 @@
 # are recorded as explicit blockers, NEVER as accepted capabilities.
 set -eu
 base=build/alpine-archive-iso
-for scenario in builtin builtinpwd cd readfile cdread readtwice redirect applet external pipeline; do
+for scenario in builtin builtinpwd pid cd readfile cdread readtwice redirect applet external pipeline; do
     case "$scenario" in
         builtin) args="sh -c 'echo shell-ready'" ;;
         builtinpwd) args="sh -c 'pwd'" ;;
+        pid) args="sh -c 'echo $'" ;;
         cd) args="sh -c 'cd /etc; pwd'" ;;
         readfile) args="sh -c 'read word < /etc/hostname; echo \$word'" ;;
         cdread) args="sh -c 'cd /etc; read word < hostname; echo \$word'" ;;
@@ -44,6 +45,7 @@ for scenario in builtin builtinpwd cd readfile cdread readtwice redirect applet 
     case "$scenario" in
         builtin) expected='shell-ready' ;;
         builtinpwd) expected='/' ;;
+        pid) expected='1' ;;
         cd) expected='/etc' ;;
         readfile|cdread) expected='naseed' ;;
         readtwice) expected='naseed:' ;;
