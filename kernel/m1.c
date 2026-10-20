@@ -1758,6 +1758,25 @@ static uint64_t task_schedule(uint64_t *frame) {
             return result;
         }
     }
+    /* Fatal deadlock diagnostic: dump who holds each pipe endpoint. */
+    for (unsigned i = 0; i < PIPE_COUNT; i++) {
+        const struct nas_pipe *pipe = &pipe_table[i];
+        if (!pipe->used) continue;
+        nas_print("[DEADLOCK] pipe="); nas_dec(i);
+        nas_print(" bytes="); nas_dec(pipe->count);
+        nas_print(" readers="); nas_dec(file_refcount[pipe->read_slot]);
+        nas_print(" writers="); nas_dec(file_refcount[pipe->write_slot]);
+        nas_print("\n");
+    }
+    for (unsigned i = 0; i < NAS_TASK_LIMIT; i++) {
+        struct nas_task *task = nas_task_at(i);
+        if (task->state == NAS_TASK_FREE) continue;
+        nas_print("[DEADLOCK] pid="); nas_dec(task->pid);
+        nas_print(" state="); nas_dec(task->state);
+        nas_print(" blocked_nr="); nas_dec(task->blocked_nr);
+        nas_print(" fd="); nas_dec(task->blocked_args[0]);
+        nas_print("\n");
+    }
     fail("scheduler deadlock: all live tasks blocked; no ready process");
 }
 static uint64_t task_block(uint64_t *frame, uint64_t nr,
