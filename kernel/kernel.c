@@ -244,7 +244,8 @@ void nas_hex(uint64_t n) {
     serial_puts("0x");
     for (int bit = 60; bit >= 0; bit -= 4) serial_putc(digits[(n >> bit) & 15]);
 }
-const struct limine_file *nas_user_module(void) {
-    if (!module_req.response || !module_req.response->module_count) return 0;
-    return module_req.response->modules[0];
+const struct limine_file *nas_module(uint64_t index) {
+    if (!module_req.response || index >= module_req.response->module_count) return 0;
+    return module_req.response->modules[index];
 }
+const struct limine_file *nas_user_module(void) { return nas_module(0); }
