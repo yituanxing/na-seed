@@ -702,9 +702,9 @@ static uint64_t sys_open_path(const char *path, uint64_t flags) {
         return (uint64_t)-ENOTDIR;
     if (flags & (0x40ULL | 0x200ULL | 0x400ULL))
         return (uint64_t)-EROFS;
-    if ((kind == FD_ARCHIVE || kind == FD_DIR || kind == FD_BOOTFS) &&
-        (flags & 3ULL)) return kind == FD_DIR ? (uint64_t)-EISDIR :
-                                                  (uint64_t)-EACCES;
+    if ((kind == FD_ARCHIVE || kind == FD_DIR) && (flags & 3ULL))
+        return kind == FD_DIR ? (uint64_t)-EISDIR : (uint64_t)-EROFS;
+    if (kind == FD_BOOTFS && (flags & 3ULL)) return (uint64_t)-EACCES;
     for (unsigned fd = 3; fd < 64; fd++) {
         if (descriptors[fd] != FD_CLOSED) continue;
         descriptors[fd] = kind;
@@ -932,6 +932,8 @@ static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
     if (descriptors[fd] != FD_DIR || !boot_entries[fd])
         return (uint64_t)-ENOTDIR;
     if (capacity < 24) return (uint64_t)-EINVAL;
+    if (dst >= USER_LIMIT || capacity > USER_LIMIT - dst)
+        return (uint64_t)-EFAULT;
     const struct bootfs_entry *dir = boot_entries[fd];
     uint64_t cursor = boot_file_offsets[fd];
     uint64_t written = 0;
