@@ -1,8 +1,7 @@
 #!/bin/sh
 # Black-box acceptance of unmodified Alpine BusyBox with genuine archive data.
 set -eu
-# Same real-ELF applet matrix covers both legacy module + CPIO and
-# single CPIO-module boot. The latter is our primary M5.1 acceptance.
+# Use the same real-ELF matrix for legacy module+CPIO and CPIO-only boot.
 base=${NASEED_FS_BASE:-build/alpine-fs-iso}
 config=${NASEED_FS_CONFIG:-limine-alpine-fs.conf}
 prefix=${NASEED_FS_PREFIX:-alpine-fs}
@@ -72,11 +71,7 @@ for testcase in lsroot lsbin cat find wc grep head; do
                 exit 1
             } ;;
         wc)
-            grep -Eq '^[[:space:]]*7[[:space:]]+/etc/hostname
-    esac
-    echo "[ACCEPTED] Alpine BusyBox $args (real QEMU, archive-backed)"
-done
- "$clean" || {
+            grep -Eq '^[[:space:]]*7[[:space:]]+/etc/hostname$' "$clean" || {
                 echo '[FAIL] wc -c not equal to actual 7-byte file' >&2
                 tail -110 "$clean" >&2
                 exit 1
