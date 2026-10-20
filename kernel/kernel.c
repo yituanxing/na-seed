@@ -237,6 +237,7 @@ uint64_t nas_frame_alloc(void) { return frame_alloc(); }
 bool nas_frame_free(uint64_t pa) { return frame_free(pa); }
 uint64_t nas_hhdm_offset(void) { return hhdm; }
 void nas_print(const char *s) { serial_puts(s); }
+void nas_putchar(char c) { serial_putc(c); }
 void nas_dec(uint64_t v) { serial_dec(v); }
 void nas_hex(uint64_t n) {
     static const char digits[] = "0123456789abcdef";
