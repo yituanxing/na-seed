@@ -5,7 +5,7 @@
 #include <stdbool.h>
 
 /* Single-core M1: run a REAL static ELF from a Limine module in ring 3.
- * The kernel's supervisor entries and HHDM remain mapped under Limine's CR3.
+ * The new process CR3 preserves Limine's supervisor upper-half/HHDM mappings.
  * Separate process address spaces, scheduler and preemption come later.
  * Interrupts are disabled on syscall entry; TSS handles ring3 faults.
  */
@@ -120,8 +120,17 @@ static bool paging_init(void) {
     __asm__ volatile ("mov %%cr4, %0" : "=r"(cr4));
     __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
     if (cr4 & (1ULL << 12)) return false; /* LA57 not part of M1. */
-    root_phys = cr3 & PHYS_MASK;
-    return root_phys != 0;
+    /* Separate userspace CR3: copy supervisor upper half, zero the lower half. */
+    uint64_t boot_root = cr3 & PHYS_MASK;
+    if (!boot_root) return false;
+    root_phys = nas_frame_alloc();
+    if (!root_phys) return false;
+    uint64_t *old = phys_table(boot_root);
+    uint64_t *fresh = phys_table(root_phys);
+    for (unsigned i = 256; i < 512; i++)
+        fresh[i] = old[i] & ~P_USER;
+    __asm__ volatile ("mov %0, %%cr3" : : "r"(root_phys) : "memory");
+    return true;
 }
 static uint64_t *user_leaf(uint64_t va, bool allocate_tables) {
     if (va < PAGE || va >= USER_LIMIT || (va & (PAGE - 1))) return 0;

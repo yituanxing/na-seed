@@ -1,6 +1,11 @@
 .text
 .global _start
 _start:
+    /* Verify CPL3 so syscall acceptance cannot pass from ring zero. */
+    mov %cs, %ax
+    and $3, %ax
+    cmp $3, %ax
+    jne fail
     mov $1, %rax
     mov $1, %rdi
     lea message(%rip), %rsi
