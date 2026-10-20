@@ -112,3 +112,24 @@ CI run failed because the authentic BusyBox `ls` used legacy Linux
 `lstat` (syscall 6); adding that genuine directory/file metadata
 path, alongside `stat`, allowed all three real BusyBox applets to
 pass CI #39415504635. All older QEMU regressions remained green.
+
+## M5.1 — archive-only ELF boot and real BusyBox text/path operations
+
+The archive-only ISO contains **one userspace module**: `rootfs.cpio`.
+The kernel indexes that archive and obtains the real, unmodified
+`/bin/busybox` and `/lib/ld-musl-x86_64.so.1` ELF image bytes directly
+from the indexed entries, then uses the same existing ELF mapper and
+real musl PT_INTERP startup. A small `struct elf_image` abstracts the
+byte source; it does not introduce speculative VFS interfaces or `execve`.
+
+The earlier M4 two-module layout and M5 three-module layout remain explicit
+regressions. A matching black-box QEMU matrix exercises `ls -la /`,
+`ls /bin`, `cat /etc/hostname`, `find /etc -type f`,
+`wc -c /etc/hostname`, `grep -n naseed /etc/hostname`,
+and `head -n 1 /etc/hostname`. The expected text and byte count are
+checked independently on the host; a successful boot alone cannot pass.
+
+Limitations: currently the archive-only single-program boot selects the
+known `/bin/busybox` pathname. It does not claim a general `execve`
+implementation, dynamic dependencies, symlinks, signal delivery, or a
+writable root filesystem.
