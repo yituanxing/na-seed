@@ -25,6 +25,10 @@ for case_name in shorthead yeshead yeschain; do
   timeout 12s sh scripts/run.sh "$iso" >"$log" 2>&1 || rc=$?
   tr -d '\r' < "$log" > "$clean"
   echo "[LIFE-DIAG] case=$case_name qemu_rc=$rc args=$args"
+  if [ "$case_name" = yeschain ] && [ "$rc" -ne 1 ]; then
+    echo '[LIFE-DIAG] detailed yeschain serial tail:'
+    tail -95 "$clean"
+  fi
   grep -E '^\[(DEADLOCK|FAIL|FAULT|EXIT|PASS|SCHED|PROC|MISS)\]|^(256|3|Y|after-short|after-chain)$' "$clean" | tail -65 || true
   grep -Fq '[FS] CPIO newc read-only archive mounted' "$clean" || {
       echo "[FAIL] archive did not mount in $case_name" >&2
