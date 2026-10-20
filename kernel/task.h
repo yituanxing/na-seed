@@ -3,10 +3,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* M6.1: ownership boundaries for real user processes.
- * NaOS (2025-04-26) initially separated PID/PPID, state, page root,
- * CPU context, cwd and FDs. NaSeed first establishes the same lifetime
- * boundaries, without pretending fork() or scheduling already works.
+/* NaOS-informed ownership boundaries for x86-64 user tasks.
+ * A single kernel stack is shared, so cooperative switching occurs only
+ * at the syscall boundary; each task retains its own user CPU/VM state.
  */
 #define NAS_TASK_LIMIT 4
 #define NAS_FD_LIMIT 64
@@ -34,8 +33,8 @@ struct nas_task {
     uint64_t pid, ppid;
     enum nas_task_state state;
     uint32_t exit_code;
-    /* Saved syscall-boundary frame: RAX,RDI,RSI,RDX,R10,R8,R9,RCX,R11.
-     * The scheduler switches ONLY when no kernel call remains active.
+    /* Saved syscall-boundary GPR frame in the exact arch.S push order.
+     * The scheduler switches after unwinding the current syscall frame.
      */
     uint64_t resume_regs[15], resume_user_rsp;
     bool resume_valid;
@@ -58,7 +57,7 @@ struct nas_task {
     char cwd[256];
     struct nas_fd_table fds;
 
-    /* Current M6.1 only: real user-thread lifecycle, no scheduler yet. */
+    /* Real user-thread lifecycle and per-task syscall-boundary state. */
     bool running_bash, running_busybox, running_alpine;
     bool saw_bash_hello;
     unsigned matched_chars;
