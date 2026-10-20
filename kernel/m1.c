@@ -1078,7 +1078,7 @@ static struct nas_tmp_file *tmp_find(const char *path) {
 }
 static int tmp_parent_check(const char *path) {
     char parent[256];
-    if (!tmp_parent(path)) return -EROFS;
+    if (!tmp_parent(path,parent)) return -EROFS;
     if (same_string(parent,"/tmp"))
         return bootfs_is_dir(bootfs_find("/tmp")) ? 0 : -ENOENT;
     struct nas_tmp_file *dir=tmp_find(parent);
