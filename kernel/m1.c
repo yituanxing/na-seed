@@ -12,7 +12,7 @@
  * its explicit owner; the single-task aliases keep the proven syscall path
  * unchanged while the upcoming arch task switch is developed separately.
  */
-#define TASK (*nas_task_current())
+#define TASK (*nas_current_task)
 #define root_phys TASK.root_phys
 #define heap_break TASK.heap_break
 #define mmap_cursor TASK.mmap_cursor
