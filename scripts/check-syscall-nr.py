@@ -10,7 +10,7 @@ host_candidates = (
     Path("/usr/include/x86_64-linux-gnu/asm/unistd_64.h"),
     Path("/usr/include/asm/unistd_64.h"),
 )
-pattern = re.compile(r"^#define\s+__NR_([a-z][a-z0-9_]*)\s+(\d+)\s*$", re.MULTILINE)
+pattern = re.compile(r"^#define\s+__NR_([a-z_][a-z0-9_]*)\s+(\d+)\s*$", re.MULTILINE)
 
 
 def definitions(path: Path) -> dict[str, int]:
