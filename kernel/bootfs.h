@@ -18,4 +18,10 @@ bool bootfs_mounted(void);
 const struct bootfs_entry *bootfs_find(const char *absolute);
 const struct bootfs_entry *bootfs_child(const struct bootfs_entry *dir, unsigned ordinal);
 bool bootfs_is_dir(const struct bootfs_entry *entry);
+/* Return 0 and the canonical path of an archive entry, or negative Linux
+ * errno. Follow intermediate links and, optionally, the final link.
+ * This is deliberately a bounded read-only archive pathname resolver.
+ */
+int bootfs_resolve(const char *absolute, bool follow_final, char out[256]);
+bool bootfs_is_link(const struct bootfs_entry *entry);
 #endif

@@ -12,8 +12,17 @@ printf 'naseed\n' > "$root/etc/hostname"
 chmod 755 "$root" "$root/bin" "$root/lib" "$root/etc" \
     "$root/bin/busybox" "$root/lib/ld-musl-x86_64.so.1"
 chmod 644 "$root/etc/hostname"
+# Genuine BusyBox applet symlinks, not duplicated executables or kernel
+# pathname aliases. CPIO newc preserves links as S_IFLNK + target bytes.
+applets='cat wc head yes sha256sum readlink ls grep'
+for applet in $applets; do
+    ln -s busybox "$root/bin/$applet"
+done
 touch -t 197001010000 "$root" "$root/bin" "$root/lib" "$root/etc" \
     "$root/bin/busybox" "$root/lib/ld-musl-x86_64.so.1" "$root/etc/hostname"
+for applet in $applets; do
+    touch -h -t 197001010000 "$root/bin/$applet"
+done
 # The optional second *authentic* ELF uses the pinned Debian BusyBox static
 # binary already validated by the existing Debian QEMU regression.
 if [ -n "${NASEED_SECOND_BUSYBOX:-}" ]; then
@@ -28,6 +37,7 @@ mkdir -p "$(dirname "$out")"
     cd "$root"
     {
         printf '%s\n' . bin bin/busybox etc etc/hostname lib lib/ld-musl-x86_64.so.1
+        for applet in $applets; do printf '%s\n' "bin/$applet"; done
         if [ -n "${NASEED_SECOND_BUSYBOX:-}" ]; then
             printf '%s\n' usr usr/bin usr/bin/busybox
         fi

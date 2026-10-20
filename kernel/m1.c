@@ -960,8 +960,8 @@ static bool same_string(const char *a, const char *b) {
     for (; *a && *b; a++, b++) if (*a != *b) return false;
     return *a == *b;
 }
-/* Resolve absolute, process-cwd-relative and dirfd-relative paths.
- * Symbolic links are not yet part of the read-only archive ABI.
+/* Lexically combine absolute, cwd-relative and dirfd-relative paths.
+ * bootfs_resolve performs archive symlink traversal at the actual lookup.
  */
 static uint64_t resolve_path(uint64_t dirfd, uint64_t pathname, char out[256]) {
     char src[256];
@@ -1014,7 +1014,7 @@ static uint64_t resolve_path(uint64_t dirfd, uint64_t pathname, char out[256]) {
 }
 static uint64_t sys_open_path(const char *path, uint64_t flags) {
     const uint64_t permitted = 3ULL | 0x800ULL | 0x8000ULL |
-                               0x10000ULL | 0x80000ULL | 0x100ULL |
+                               0x10000ULL | 0x20000ULL | 0x80000ULL | 0x100ULL |
                                0x40ULL | 0x200ULL | 0x400ULL;
     if (flags & ~permitted) return (uint64_t)-EINVAL;
     if (same_string(path, "/dev/tty")) return (uint64_t)-ENXIO;
@@ -1023,10 +1023,20 @@ static uint64_t sys_open_path(const char *path, uint64_t flags) {
     const struct limine_file *real_file = 0;
     if (same_string(path, "/dev/null")) kind = FD_NULL;
     else if (same_string(path, "/dev/zero")) kind = FD_ZERO;
-    else if (bootfs_mounted() && (entry = bootfs_find(path))) {
-        kind = bootfs_is_dir(entry) ? FD_DIR : FD_ARCHIVE;
-    } else if (running_alpine && (real_file = bootfs_lookup(path))) {
-        kind = FD_BOOTFS; /* Legacy M4 module mapping. */
+    else {
+        if (bootfs_mounted()) {
+            char actual[256];
+            int err = bootfs_resolve(path, !(flags & 0x20000ULL), actual);
+            if (!err) {
+                entry = bootfs_find(actual);
+                if (bootfs_is_link(entry)) return (uint64_t)-ELOOP;
+                kind = bootfs_is_dir(entry) ? FD_DIR : FD_ARCHIVE;
+            } else if (err != -ENOENT) {
+                return (uint64_t)(int64_t)err;
+            }
+        }
+        if (!kind && running_alpine && (real_file = bootfs_lookup(path)))
+            kind = FD_BOOTFS; /* Legacy M4 module mapping. */
     }
     if (!kind) return (flags & 0x40ULL) && bootfs_mounted()
         ? (uint64_t)-EROFS : (uint64_t)-ENOENT;
@@ -1195,11 +1205,13 @@ static uint64_t sys_chdir(uint64_t pathname) {
     char path[256];
     uint64_t ret = resolve_path((uint64_t)-100, pathname, path);
     if ((int64_t)ret < 0) return ret;
-    const struct bootfs_entry *entry = bootfs_find(path);
-    if (!entry) return (uint64_t)-ENOENT;
+    char actual[256];
+    int err = bootfs_resolve(path, true, actual);
+    if (err) return (uint64_t)(int64_t)err;
+    const struct bootfs_entry *entry = bootfs_find(actual);
     if (!bootfs_is_dir(entry)) return (uint64_t)-ENOTDIR;
     unsigned i = 0;
-    do { current_workdir[i] = path[i]; } while (path[i++]);
+    do { current_workdir[i] = actual[i]; } while (actual[i++]);
     return 0;
 }
 static uint64_t sys_fchdir(uint64_t fd) {
@@ -1329,8 +1341,10 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
     uint64_t result = resolve_path(dirfd, pathname, path);
     if ((int64_t)result < 0) return result;
     if (bootfs_mounted()) {
-        const struct bootfs_entry *entry = bootfs_find(path);
-        if (entry) return write_boot_stat(entry, statbuf);
+        char actual[256];
+        int err = bootfs_resolve(path, !(flags & AT_SYMLINK_NOFOLLOW), actual);
+        if (!err) return write_boot_stat(bootfs_find(actual), statbuf);
+        if (err != -ENOENT) return (uint64_t)(int64_t)err;
     }
     /* Legacy modules and character devices retain their existing fstat. */
     result = sys_open_path(path, 0);
@@ -1343,6 +1357,22 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
 /* Linux x86-64 linux_dirent64: ino64, off64, reclen16, dtype8, name[].
  * The offset cookie indexes '.', '..', then direct children of a directory.
  */
+/* Linux readlink/readlinkat return the link bytes without a terminating NUL,
+ * and deliberately do not follow the last component. */
+static uint64_t sys_readlinkat_boot(uint64_t dirfd, uint64_t pathname,
+                                     uint64_t dst, uint64_t capacity) {
+    if (!capacity) return (uint64_t)-EINVAL;
+    char path[256], actual[256];
+    uint64_t r = resolve_path(dirfd, pathname, path);
+    if ((int64_t)r < 0) return r;
+    int err = bootfs_resolve(path, false, actual);
+    if (err) return (uint64_t)(int64_t)err;
+    const struct bootfs_entry *entry = bootfs_find(actual);
+    if (!bootfs_is_link(entry)) return (uint64_t)-EINVAL;
+    uint64_t len = entry->size < capacity ? entry->size : capacity;
+    return user_write_bytes(dst, entry->data, len) ? len : (uint64_t)-EFAULT;
+}
+
 static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
     if (fd >= 64 || descriptors[fd] == FD_CLOSED) return (uint64_t)-EBADF;
     if (descriptors[fd] != FD_DIR || !boot_entries[fd])
@@ -1378,7 +1408,7 @@ static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
             for (const char *p = item->path; *p; p++)
                 if (*p == '/') name = p + 1;
             ino = item->ino;
-            dtype = bootfs_is_dir(item) ? 4 : 8;
+            dtype = bootfs_is_dir(item) ? 4 : bootfs_is_link(item) ? 10 : 8;
         }
         unsigned len = 0;
         while (name[len]) len++;
@@ -1537,8 +1567,10 @@ static uint64_t sys_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     if (!bootfs_mounted()) return (uint64_t)-ENOENT;
     uint64_t result = resolve_path((uint64_t)-100, pathname, pending_exec.filename);
     if ((int64_t)result < 0) return result;
-    const struct bootfs_entry *app = bootfs_find(pending_exec.filename);
-    if (!app) return (uint64_t)-ENOENT;
+    char actual[256];
+    int err = bootfs_resolve(pending_exec.filename, true, actual);
+    if (err) return (uint64_t)(int64_t)err;
+    const struct bootfs_entry *app = bootfs_find(actual);
     if (bootfs_is_dir(app) || !(app->mode & 0111U))
         return (uint64_t)-EACCES;
     struct elf_image main_img = { app->data, app->size };
@@ -1602,7 +1634,7 @@ static uint64_t sys_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
             signal_actions[i][j] = 0; /* exec resets user signal handlers */
     if (!reclaim_user_root(previous_root))
         fail("execve stale address-space frame reclaim failure");
-    const char *basename = pending_exec.filename;
+    const char *basename = actual;
     for (const char *p = basename; *p; p++)
         if (*p == '/') basename = p + 1;
     running_busybox = same_string(basename, "busybox");
@@ -1932,6 +1964,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == __NR_lstat) return sys_fstatat_boot((uint64_t)-100, args[1], args[2], 0x100ULL);
     if (nr == __NR_lseek) return sys_lseek_boot(args[1], args[2], args[3]);
     if (nr == __NR_getdents64) return sys_getdents64(args[1], args[2], args[3]);
+    if (nr == __NR_readlink) return sys_readlinkat_boot((uint64_t)-100, args[1], args[2], args[3]);
+    if (nr == __NR_readlinkat) return sys_readlinkat_boot(args[1], args[2], args[3], args[4]);
     if (nr == __NR_close) {
         if (args[1] >= 64 || descriptors[args[1]] == FD_CLOSED)
             return (uint64_t)-EBADF;

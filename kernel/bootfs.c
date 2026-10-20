@@ -1,4 +1,5 @@
 #include "bootfs.h"
+#include "errno.h"
 #include <stddef.h>
 
 #define MAX_ENTRIES 96
@@ -6,6 +7,7 @@
 #define S_IFMT 0170000U
 #define S_IFREG 0100000U
 #define S_IFDIR 0040000U
+#define S_IFLNK 0120000U
 
 static struct bootfs_entry entries[MAX_ENTRIES];
 static unsigned entry_count;
@@ -101,8 +103,14 @@ bool bootfs_mount(const void *bytes, uint64_t size) {
         }
         if (entry_count >= MAX_ENTRIES) return false;
         unsigned type = mode & S_IFMT;
-        if (type != S_IFREG && type != S_IFDIR) return false;
+        if (type != S_IFREG && type != S_IFDIR && type != S_IFLNK) return false;
         if (type == S_IFDIR && file_size) return false;
+        /* In newc, a symlink's bytes are its literal target without NUL. */
+        if (type == S_IFLNK) {
+            if (!file_size || file_size >= 256) return false;
+            for (uint32_t n = 0; n < file_size; n++)
+                if (base[data_at + n] == 0) return false;
+        }
         struct bootfs_entry *entry = &entries[entry_count];
         if (!archive_name(entry, name, name_size)) return false;
         for (unsigned n = 0; n < entry_count; n++)
@@ -117,6 +125,9 @@ bool bootfs_mount(const void *bytes, uint64_t size) {
     return false;
 }
 bool bootfs_mounted(void) { return mounted; }
+bool bootfs_is_link(const struct bootfs_entry *entry) {
+    return entry && (entry->mode & S_IFMT) == S_IFLNK;
+}
 const struct bootfs_entry *bootfs_find(const char *absolute) {
     if (!absolute) return 0;
     for (unsigned i = 0; i < entry_count; ++i)
@@ -147,4 +158,87 @@ const struct bootfs_entry *bootfs_child(const struct bootfs_entry *dir,
         if (ordinal-- == 0) return &entries[i];
     }
     return 0;
+}
+
+/* Resolve real CPIO symlinks, including relative targets and intermediate
+ * directory links. No heap, no VFS, no writable state. All expansions are
+ * bounded to the 256-byte pathname ABI and at most eight traversals.
+ * Dot segments are applied AFTER each expansion, not to the link target
+ * before locating the link (e.g. /bin/link/../file).
+ */
+int bootfs_resolve(const char *absolute, bool follow_final, char out[256]) {
+    if (!mounted || !absolute || absolute[0] != '/') return -ENOENT;
+    char pending[256];
+    unsigned count = 0;
+    while (absolute[count]) {
+        if (count >= sizeof(pending) - 1) return -ENAMETOOLONG;
+        pending[count] = absolute[count];
+        count++;
+    }
+    pending[count] = 0;
+    unsigned links = 0;
+    for (;;) {
+        char resolved[256];
+        resolved[0] = '/';
+        resolved[1] = 0;
+        unsigned used = 1;
+        unsigned pos = 0;
+        bool restart = false;
+        while (pending[pos]) {
+            while (pending[pos] == '/') pos++;
+            if (!pending[pos]) break;
+            unsigned start = pos;
+            while (pending[pos] && pending[pos] != '/') pos++;
+            unsigned len = pos - start;
+            if (len == 1 && pending[start] == '.') continue;
+            if (len == 2 && pending[start] == '.' && pending[start + 1] == '.') {
+                while (used > 1 && resolved[used - 1] != '/') used--;
+                if (used > 1) used--;
+                resolved[used] = 0;
+                continue;
+            }
+            if (used + (used != 1) + len >= sizeof(resolved))
+                return -ENAMETOOLONG;
+            if (used != 1) resolved[used++] = '/';
+            for (unsigned i = 0; i < len; i++)
+                resolved[used++] = pending[start + i];
+            resolved[used] = 0;
+            const struct bootfs_entry *entry = bootfs_find(resolved);
+            if (!entry) return -ENOENT;
+            unsigned tail = pos;
+            while (pending[tail] == '/') tail++;
+            bool last = !pending[tail];
+            if (bootfs_is_link(entry) && (!last || follow_final)) {
+                if (++links > 8) return -ELOOP;
+                char expanded[256];
+                unsigned size = 0;
+                if (entry->data[0] != '/') {
+                    /* Relative links use the symlink's owning directory. */
+                    unsigned parent = used - len;
+                    if (parent > 1 && resolved[parent - 1] == '/') parent--;
+                    for (unsigned i = 0; i < parent; i++)
+                        expanded[size++] = resolved[i];
+                    if (size > 1) expanded[size++] = '/';
+                }
+                if (size + entry->size >= sizeof(expanded))
+                    return -ENAMETOOLONG;
+                for (uint64_t i = 0; i < entry->size; i++)
+                    expanded[size++] = (char)entry->data[i];
+                for (unsigned i = pos; pending[i]; i++) {
+                    if (size >= sizeof(expanded) - 1)
+                        return -ENAMETOOLONG;
+                    expanded[size++] = pending[i];
+                }
+                expanded[size] = 0;
+                if (expanded[0] != '/') return -ENOENT;
+                for (unsigned i = 0; i <= size; i++) pending[i] = expanded[i];
+                restart = true;
+                break;
+            }
+            if (!last && !bootfs_is_dir(entry)) return -ENOTDIR;
+        }
+        if (restart) continue;
+        for (unsigned i = 0; i <= used; i++) out[i] = resolved[i];
+        return 0;
+    }
 }
