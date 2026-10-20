@@ -14,11 +14,24 @@ chmod 755 "$root" "$root/bin" "$root/lib" "$root/etc" \
 chmod 644 "$root/etc/hostname"
 touch -t 197001010000 "$root" "$root/bin" "$root/lib" "$root/etc" \
     "$root/bin/busybox" "$root/lib/ld-musl-x86_64.so.1" "$root/etc/hostname"
+# The optional second *authentic* ELF uses the pinned Debian BusyBox static
+# binary already validated by the existing Debian QEMU regression.
+if [ -n "${NASEED_SECOND_BUSYBOX:-}" ]; then
+    test -f "$NASEED_SECOND_BUSYBOX"
+    mkdir -p "$root/usr/bin"
+    cp "$NASEED_SECOND_BUSYBOX" "$root/usr/bin/busybox"
+    chmod 755 "$root/usr" "$root/usr/bin" "$root/usr/bin/busybox"
+    touch -t 197001010000 "$root/usr" "$root/usr/bin" "$root/usr/bin/busybox"
+fi
 mkdir -p "$(dirname "$out")"
 (
     cd "$root"
-    printf '%s\n' . bin bin/busybox etc etc/hostname lib lib/ld-musl-x86_64.so.1 |
-        cpio -o -H newc --quiet --owner=0:0
+    {
+        printf '%s\n' . bin bin/busybox etc etc/hostname lib lib/ld-musl-x86_64.so.1
+        if [ -n "${NASEED_SECOND_BUSYBOX:-}" ]; then
+            printf '%s\n' usr usr/bin usr/bin/busybox
+        fi
+    } | cpio -o -H newc --quiet --owner=0:0
 ) > "$out.tmp"
 mv "$out.tmp" "$out"
 echo '[CPIO] built archive of actual Alpine ELF + fixed hostname fixture'

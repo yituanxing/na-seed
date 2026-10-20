@@ -133,3 +133,21 @@ Limitations: currently the archive-only single-program boot selects the
 known `/bin/busybox` pathname. It does not claim a general `execve`
 implementation, dynamic dependencies, symlinks, signal delivery, or a
 writable root filesystem.
+
+## M5.2 — CPIO executable selection from existing cmdline argv[0]
+
+In the archive-only mode, the first argument already supplied by Limine,
+`naseed.argv=/absolute/path [arguments...]`, selects the real executable
+file entry before Linux userspace begins. The same parsed argv, including
+the exact argv[0], reaches the ELF Linux entry stack; the kernel does not
+silently replace the program name or fall back to another ELF. The default
+without a cmdline remains `/bin/busybox echo hello` for regression.
+
+The acceptance fixture uses **two separate official, previously pinned
+ELFs**, not renamed copies: Alpine dynamic-musl `/bin/busybox` and Debian
+static-glibc `/usr/bin/busybox`. A real QEMU test selects each by its
+path and checks independent stdout + exit status. Additional negative
+tests demand explicit boot failures for a missing executable and for the
+nonexecuting real `/etc/hostname` file. The M0-M5.1 regression remains
+mandatory; no general execve, process creation, shell/PATH search, or
+writable filesystem is claimed.
