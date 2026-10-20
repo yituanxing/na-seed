@@ -453,6 +453,168 @@ static uint64_t sys_arch_prctl(uint64_t op, uint64_t address) {
     return (uint64_t)-22;
 }
 
+
+/* Single-process POSIX descriptors over actual UART and device files.
+ * No fake TTY, disk, /proc, or filesystem contents are supplied.
+ */
+extern void nas_putchar(char c);
+enum { FD_CLOSED = 0, FD_UART = 1, FD_NULL = 2, FD_ZERO = 3 };
+static uint8_t descriptors[64];
+static uint64_t blocked_signals;
+static uint64_t signal_actions[65][4];
+
+static bool user_read_bytes(uint64_t addr, uint8_t *dst, uint64_t len) {
+    if (addr >= USER_LIMIT || len > USER_LIMIT - addr) return false;
+    for (uint64_t n = 0; n < len; n++) {
+        uint8_t *p = user_byte(addr + n);
+        if (!p) return false;
+        dst[n] = *p;
+    }
+    return true;
+}
+static bool user_write_bytes(uint64_t addr, const uint8_t *src, uint64_t len) {
+    if (addr >= USER_LIMIT || len > USER_LIMIT - addr) return false;
+    for (uint64_t n = 0; n < len; n++) {
+        uint64_t *pte = user_leaf((addr + n) & ~(PAGE - 1), false);
+        if (!pte || !(*pte & P_PRESENT) || !(*pte & P_RW) || !(*pte & P_USER))
+            return false;
+    }
+    for (uint64_t n = 0; n < len; n++)
+        *user_byte(addr + n) = src[n];
+    return true;
+}
+static bool read_u64(uint64_t addr, uint64_t *value) {
+    uint8_t bytes[8];
+    if (!user_read_bytes(addr, bytes, 8)) return false;
+    *value = 0;
+    for (unsigned n = 0; n < 8; n++) *value |= (uint64_t)bytes[n] << (8 * n);
+    return true;
+}
+static bool write_u64(uint64_t addr, uint64_t value) {
+    uint8_t bytes[8];
+    for (unsigned n = 0; n < 8; n++) bytes[n] = (uint8_t)(value >> (8 * n));
+    return user_write_bytes(addr, bytes, 8);
+}
+static bool same_string(const char *a, const char *b) {
+    for (; *a && *b; a++, b++) if (*a != *b) return false;
+    return *a == *b;
+}
+static uint64_t sys_open_device(uint64_t pathname, uint64_t flags) {
+    char path[256];
+    unsigned i = 0;
+    if (pathname >= USER_LIMIT) return (uint64_t)-14;
+    for (; i < sizeof(path) - 1; i++) {
+        uint8_t *p = user_byte(pathname + i);
+        if (!p) return (uint64_t)-14;
+        path[i] = (char)*p;
+        if (path[i] == 0) break;
+    }
+    if (i == sizeof(path) - 1) return (uint64_t)-36; /* ENAMETOOLONG */
+    if (same_string(path, "/dev/tty")) return (uint64_t)-6; /* ENXIO */
+    uint8_t kind = FD_CLOSED;
+    if (same_string(path, "/dev/null")) kind = FD_NULL;
+    if (same_string(path, "/dev/zero")) kind = FD_ZERO;
+    if (!kind) return (uint64_t)-2; /* ENOENT: no filesystem exists yet */
+    if (flags & (0x40ULL | 0x200ULL)) return (uint64_t)-30; /* EROFS */
+    for (unsigned fd = 3; fd < 64; fd++) {
+        if (descriptors[fd] != FD_CLOSED) continue;
+        descriptors[fd] = kind;
+        return fd;
+    }
+    return (uint64_t)-24; /* EMFILE */
+}
+static uint64_t sys_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
+    if (fd >= 64 || descriptors[fd] == FD_CLOSED) return (uint64_t)-9;
+    if (length > (1ULL << 20) ||
+        address >= USER_LIMIT || length > USER_LIMIT - address)
+        return (uint64_t)-14;
+    if (descriptors[fd] == FD_NULL || descriptors[fd] == FD_ZERO) return length;
+    if (descriptors[fd] != FD_UART) return (uint64_t)-9;
+    for (uint64_t i = 0; i < length; i++) {
+        uint8_t *p = user_byte(address + i);
+        if (!p) return i ? i : (uint64_t)-14;
+        nas_putchar((char)*p);
+        if (fd == 1 && running_bash) observe_stdout((char)*p);
+    }
+    return length;
+}
+static uint64_t sys_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
+    if (fd >= 64 || descriptors[fd] == FD_CLOSED) return (uint64_t)-9;
+    if (descriptors[fd] == FD_NULL) return 0;
+    if (descriptors[fd] == FD_UART) return (uint64_t)-11; /* no RX-ready: EAGAIN */
+    if (descriptors[fd] != FD_ZERO) return (uint64_t)-9;
+    if (address >= USER_LIMIT || length > USER_LIMIT - address)
+        return (uint64_t)-14;
+    uint8_t zero = 0;
+    for (uint64_t i = 0; i < length; i++)
+        if (!user_write_bytes(address + i, &zero, 1)) return i ? i : (uint64_t)-14;
+    return length;
+}
+static uint64_t sys_fd_writev(uint64_t fd, uint64_t iov, uint64_t count) {
+    if (count > 64) return (uint64_t)-22;
+    if (count && (iov >= USER_LIMIT || count > (USER_LIMIT - iov) / 16))
+        return (uint64_t)-14;
+    uint64_t sent = 0;
+    for (uint64_t n = 0; n < count; n++) {
+        uint64_t address, bytes;
+        if (!read_u64(iov + n * 16, &address) ||
+            !read_u64(iov + n * 16 + 8, &bytes))
+            return sent ? sent : (uint64_t)-14;
+        uint64_t r = sys_fd_write(fd, address, bytes);
+        if ((int64_t)r < 0) return sent ? sent : r;
+        sent += r;
+        if (r != bytes) break;
+    }
+    return sent;
+}
+static uint64_t sys_getcwd_root(uint64_t buffer, uint64_t size) {
+    const uint8_t cwd[2] = {'/', 0};
+    if (size < 2) return (uint64_t)-34; /* ERANGE */
+    if (!user_write_bytes(buffer, cwd, 2)) return (uint64_t)-14;
+    return 2;
+}
+static uint64_t sys_uname_naseed(uint64_t buffer) {
+    struct uts {
+        char sysname[65], node[65], release[65], version[65];
+        char machine[65], domain[65];
+    };
+    static const struct uts data = {
+        "Linux", "naseed", "0.1", "NaSeed experimental x86_64",
+        "x86_64", "localdomain"
+    };
+    return user_write_bytes(buffer, (const uint8_t *)&data, sizeof(data))
+        ? 0 : (uint64_t)-14;
+}
+/* Proper syscall-level rt_sigaction / sigprocmask structures, 8-byte sigset. 
+ * Delivery is intentionally not claimed until an actual signal path exists. */
+static uint64_t sys_sigaction(uint64_t signum, uint64_t new_action,
+                              uint64_t old_action, uint64_t size) {
+    if (size != 8 || signum < 1 || signum > 64) return (uint64_t)-22;
+    if (new_action && (signum == 9 || signum == 19)) return (uint64_t)-22;
+    if (old_action &&
+        !user_write_bytes(old_action, (const uint8_t *)signal_actions[signum], 32))
+        return (uint64_t)-14;
+    if (new_action &&
+        !user_read_bytes(new_action, (uint8_t *)signal_actions[signum], 32))
+        return (uint64_t)-14;
+    return 0;
+}
+static uint64_t sys_sigprocmask(uint64_t how, uint64_t set,
+                                uint64_t previous, uint64_t size) {
+    if (size != 8) return (uint64_t)-22;
+    uint64_t newmask = 0;
+    if (set && !read_u64(set, &newmask)) return (uint64_t)-14;
+    if (previous && !write_u64(previous, blocked_signals)) return (uint64_t)-14;
+    if (set) {
+        if (how == 0) blocked_signals |= newmask;        /* SIG_BLOCK */
+        else if (how == 1) blocked_signals &= ~newmask;  /* SIG_UNBLOCK */
+        else if (how == 2) blocked_signals = newmask;    /* SIG_SETMASK */
+        else return (uint64_t)-22;
+        blocked_signals &= ~((1ULL << 8) | (1ULL << 18));
+    }
+    return 0;
+}
+
 /* Strict single-program ABI diagnostic dispatcher, for a real syscall gate. */
 uint64_t syscall_dispatch(const uint64_t *args) {
     uint64_t nr = args[0];
@@ -465,21 +627,27 @@ uint64_t syscall_dispatch(const uint64_t *args) {
                                        args[4], args[5], args[6]);
     if (nr == 11) return sys_munmap(args[1], args[2]);
     if (nr == 12) return sys_brk(args[1]);
-    if (nr == 1) { /* write(fd, user_buf, count) */
-        uint64_t fd = args[1], addr = args[2], len = args[3];
-        if (fd != 1 && fd != 2) return (uint64_t)-9;
-        if (len > 4096 || addr >= USER_LIMIT ||
-            len > USER_LIMIT - addr) return (uint64_t)-14;
-        for (uint64_t i = 0; i < len; i++) {
-            uint8_t *byte = user_byte(addr + i);
-            if (!byte) return (uint64_t)-14;
-            /* This UART writer handles bare M1 output, no TTY yet. */
-            char str[2] = { (char)*byte, 0 };
-            nas_print(str);
-            if (fd == 1 && running_bash) observe_stdout((char)*byte);
-        }
-        return len;
+    if (nr == 0) return sys_fd_read(args[1], args[2], args[3]);
+    if (nr == 1) return sys_fd_write(args[1], args[2], args[3]);
+    if (nr == 2) return sys_open_device(args[1], args[2]);
+    if (nr == 3) {
+        if (args[1] >= 64 || descriptors[args[1]] == FD_CLOSED)
+            return (uint64_t)-9;
+        descriptors[args[1]] = FD_CLOSED;
+        return 0;
     }
+    if (nr == 16) {
+        if (args[1] >= 64 || descriptors[args[1]] == FD_CLOSED)
+            return (uint64_t)-9;
+        return (uint64_t)-25; /* ENOTTY: no TTY driver yet */
+    }
+    if (nr == 20) return sys_fd_writev(args[1], args[2], args[3]);
+    if (nr == 13) return sys_sigaction(args[1], args[2], args[3], args[4]);
+    if (nr == 14) return sys_sigprocmask(args[1], args[2], args[3], args[4]);
+    if (nr == 63) return sys_uname_naseed(args[1]);
+    if (nr == 79) return sys_getcwd_root(args[1], args[2]);
+    if (nr == 121) return args[1] == 0 || args[1] == 1 ? 1 : (uint64_t)-3;
+    if (nr == 111) return 1; /* getpgrp: only process group 1 exists */
     if (nr == 60 || nr == 231) { /* exit / exit_group */
         nas_print("[EXIT] user status="); nas_dec(args[1]); nas_print("\n");
         if (running_bash) {
@@ -526,6 +694,9 @@ void m1_start(void) {
         if (!user_map(va, true)) fail("cannot map user stack");
     }
     uint64_t stack_pointer;
+    descriptors[0] = FD_UART;
+    descriptors[1] = FD_UART;
+    descriptors[2] = FD_UART;
     if (!build_linux_stack(running_bash, entry, &stack_pointer))
         fail("cannot initialize Linux userspace stack");
     nas_print("[M1] static ELF entry="); nas_hex(entry); nas_print("\n");
