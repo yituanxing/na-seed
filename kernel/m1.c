@@ -1515,7 +1515,7 @@ static uint64_t sys_wait4(uint64_t desired, uint64_t status_addr,
         if (!reclaim_user_root(nas_task_page_root(child)))
             fail("wait4 failed to reclaim child address space");
         nas_print("[PROC] wait4 reaped pid="); nas_dec(pid);
-        nas_print(" status="); nas_dec(code); nas_print("\\n");
+        nas_print(" status="); nas_dec(code); nas_print("\n");
         nas_task_release(child);
         return pid;
     }
@@ -1615,7 +1615,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
             nas_print("[PROC] child exited pid="); nas_dec(child->pid);
             nas_print(" status="); nas_dec(child->exit_code);
             nas_print("; parent resumed pid="); nas_dec(parent->pid);
-            nas_print("\\n");
+            nas_print("\n");
             return result;
         }
         nas_print("[EXIT] user status="); nas_dec(args[1]); nas_print("\n");
