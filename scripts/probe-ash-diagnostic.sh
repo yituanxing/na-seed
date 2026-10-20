@@ -5,7 +5,7 @@
 # are recorded as explicit blockers, NEVER as accepted capabilities.
 set -eu
 base=build/alpine-archive-iso
-for scenario in builtin builtinpwd pid cd readfile cdread readtwice redirect applet external pipeline; do
+for scenario in builtin builtinpwd pid cd readfile cdread readtwice redirect applet external sequence pipeline; do
     case "$scenario" in
         builtin) args="sh -c 'echo shell-ready'" ;;
         builtinpwd) args="sh -c 'pwd'" ;;
@@ -17,6 +17,7 @@ for scenario in builtin builtinpwd pid cd readfile cdread readtwice redirect app
         redirect) args="sh -c 'echo hello > /dev/null; echo redirect-ok'" ;;
         applet) args="sh -c 'cat /etc/hostname'" ;;
         external) args="sh -c '/bin/busybox cat /etc/hostname'" ;;
+        sequence) args="sh -c '/bin/busybox cat /etc/hostname; echo finished'" ;;
         pipeline) args="sh -c 'echo abc | wc -c'" ;;
     esac
     stage="build/ash-diag-$scenario-iso"
@@ -50,6 +51,7 @@ for scenario in builtin builtinpwd pid cd readfile cdread readtwice redirect app
         readfile|cdread) expected='naseed' ;;
         readtwice) expected='naseed:' ;;
         external) expected='naseed' ;;
+        sequence) expected='finished' ;;
         redirect) expected='redirect-ok' ;;
         *) expected='' ;;
     esac
@@ -65,6 +67,15 @@ for scenario in builtin builtinpwd pid cd readfile cdread readtwice redirect app
         if [ "$scenario" = redirect ] &&
            tr -d '\r' < "$log" | grep -Fxq hello; then
             echo '[ASH-FAIL] redirected hello incorrectly reached stdout' >&2
+            exit 1
+        fi
+        if [ "$scenario" = sequence ] && {
+              ! tr -d '\r' < "$log" | grep -Fxq 'naseed' ||
+              ! grep -Fq '[PROC] fork parent=1 child=' "$log" ||
+              ! grep -Fq '[PROC] wait4 reaped pid=' "$log";
+           }; then
+            echo '[ASH-FAIL] no real child and wait4 continuation' >&2
+            tail -90 "$log" >&2
             exit 1
         fi
         if [ "$scenario" = external ] &&

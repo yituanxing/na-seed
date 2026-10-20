@@ -33,9 +33,19 @@ enter_user:
 
 .global syscall_entry
 syscall_entry:
+    /* The task switch is cooperative, at the syscall return boundary.
+     * Preserve *all* user GPRs: a different user process may execute
+     * before we restore the parent's saved SYSRET frame.
+     */
     cld
     movq %rsp, syscall_user_rsp(%rip)
     leaq kernel_stack_top(%rip), %rsp
+    pushq %r15
+    pushq %r14
+    pushq %r13
+    pushq %r12
+    pushq %rbp
+    pushq %rbx
     pushq %r11
     pushq %rcx
     pushq %r9
@@ -57,6 +67,12 @@ syscall_entry:
     movq 48(%rsp), %r9
     movq 56(%rsp), %rcx
     movq 64(%rsp), %r11
+    movq 72(%rsp), %rbx
+    movq 80(%rsp), %rbp
+    movq 88(%rsp), %r12
+    movq 96(%rsp), %r13
+    movq 104(%rsp), %r14
+    movq 112(%rsp), %r15
     movq syscall_user_rsp(%rip), %rsp
     sysretq
 

@@ -25,10 +25,7 @@ enum nas_task_state {
 struct nas_fd_table {
     uint8_t descriptors[NAS_FD_LIMIT];
     uint8_t file_slot[NAS_FD_LIMIT];
-    uint8_t file_refcount[NAS_FD_LIMIT];
     uint8_t fd_cloexec[NAS_FD_LIMIT];
-    uint64_t file_status_flags[NAS_FD_LIMIT];
-    uint64_t boot_file_offsets[NAS_FD_LIMIT];
     const struct limine_file *boot_files[NAS_FD_LIMIT];
     const struct bootfs_entry *boot_entries[NAS_FD_LIMIT];
 };
@@ -37,6 +34,12 @@ struct nas_task {
     uint64_t pid, ppid;
     enum nas_task_state state;
     uint32_t exit_code;
+    /* Saved syscall-boundary frame: RAX,RDI,RSI,RDX,R10,R8,R9,RCX,R11.
+     * The scheduler switches ONLY when no kernel call remains active.
+     */
+    uint64_t resume_regs[15], resume_user_rsp;
+    bool resume_valid;
+    uint8_t fpu_state[512] __attribute__((aligned(16)));
 
     /* One independent VM mapping root and ELF/brk/mmap tracking per task. */
     uint64_t root_phys, heap_break, mmap_cursor;
@@ -57,8 +60,22 @@ struct nas_task {
 };
 
 /* Called before paging_init. get_current is non-null afterwards. */
+/* Open-file descriptions are shared ACROSS tasks after fork, unlike
+ * descriptor tables; read offsets must remain shared.
+ */
+extern uint16_t nas_file_refcount[NAS_FD_LIMIT];
+extern uint64_t nas_file_status_flags[NAS_FD_LIMIT];
+extern uint64_t nas_boot_file_offsets[NAS_FD_LIMIT];
 extern struct nas_task *nas_current_task;
 void nas_task_boot_init(void);
 struct nas_task *nas_task_current(void);
+struct nas_task *nas_task_fork_slot(void);
+void nas_task_release(struct nas_task *task);
+uint64_t nas_task_page_root(const struct nas_task *task);
+uint64_t nas_task_tls_base(const struct nas_task *task);
+void nas_task_set_root(struct nas_task *task, uint64_t root);
+bool nas_task_hold_files(const struct nas_task *task);
+struct nas_task *nas_task_by_pid(uint64_t pid);
+struct nas_task *nas_task_child_at(uint64_t parent_pid, unsigned slot);
 const struct nas_task *nas_task_find(uint64_t pid);
 #endif
