@@ -11,4 +11,5 @@ if [ -z "$ovmf" ]; then
 fi
 exec qemu-system-x86_64 -M q35 -m 256M -cpu qemu64 \
     -display none -monitor none -serial stdio -no-reboot -no-shutdown \
+    -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
     -drive "if=pflash,unit=0,format=raw,file=$ovmf,readonly=on" -cdrom "$iso"

@@ -4,7 +4,7 @@ iso="$1"
 mkdir -p build
 rc=0
 timeout 35s sh scripts/run.sh "$iso" > build/serial.log 2>&1 || rc=$?
-if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
+if [ "$rc" -ne 1 ]; then
     cat build/serial.log
     exit 1
 fi
@@ -15,3 +15,11 @@ if ! grep -Fq '[PASS] M0 memory allocator' build/serial.log ||
     exit 1
 fi
 grep -F '[PASS] M0' build/serial.log
+if ! grep -Fq '[USER] hello from standalone ELF via syscall' build/serial.log ||
+   ! grep -Fq '[MISS] syscall nr=999' build/serial.log ||
+   ! grep -Fq '[PASS] M1 ELF / ring3 / syscall write / ENOSYS / exit' build/serial.log; then
+    cat build/serial.log
+    echo 'M1 user-space acceptance markers missing' >&2
+    exit 1
+fi
+grep -F '[PASS] M1' build/serial.log

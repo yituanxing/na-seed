@@ -30,8 +30,23 @@ $(OUT)/kernel.o: kernel/kernel.c $(HDR)
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
-$(KERNEL): $(OUT)/kernel.o kernel/linker.ld
-	ld.lld $(LDFLAGS) $(OUT)/kernel.o -o $@
+$(OUT)/m1.o: kernel/m1.c $(HDR)
+	mkdir -p $(dir $@)
+	clang $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(OUT)/arch.o: kernel/arch.S
+	mkdir -p $(dir $@)
+	clang --target=x86_64-unknown-none-elf -g -mno-red-zone -c $< -o $@
+
+$(OUT)/user-hello.o: user/hello.S
+	mkdir -p $(dir $@)
+	clang --target=x86_64-unknown-none-elf -g -c $< -o $@
+
+$(OUT)/user-hello: $(OUT)/user-hello.o user/linker.ld
+	ld.lld -m elf_x86_64 -nostdlib -static -T user/linker.ld $< -o $@
+
+$(KERNEL): $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/arch.o kernel/linker.ld
+	ld.lld $(LDFLAGS) $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/arch.o -o $@
 
 $(BINARY_TAR):
 	mkdir -p $(dir $@)
@@ -43,10 +58,11 @@ $(BINARY_EFI): $(BINARY_TAR)
 	tar -xzf $(BINARY_TAR) -C $(OUT)/deps
 	test -f $@
 
-$(ISO): $(KERNEL) $(BINARY_EFI) limine.conf
+$(ISO): $(KERNEL) $(OUT)/user-hello $(BINARY_EFI) limine.conf
 	rm -rf $(OUT)/iso
 	mkdir -p $(OUT)/iso/boot/limine $(OUT)/iso/EFI/BOOT
 	cp $(KERNEL) $(OUT)/iso/boot/kernel
+	cp $(OUT)/user-hello $(OUT)/iso/boot/user-hello
 	cp limine.conf $(OUT)/iso/boot/limine/limine.conf
 	cp $(OUT)/deps/limine-binary/limine-uefi-cd.bin $(OUT)/iso/boot/limine/
 	cp $(BINARY_EFI) $(OUT)/iso/EFI/BOOT/BOOTX64.EFI
@@ -62,4 +78,4 @@ run: $(ISO)
 clean:
 	rm -rf $(OUT)
 
--include $(OUT)/kernel.d
+-include $(OUT)/kernel.d $(OUT)/m1.d

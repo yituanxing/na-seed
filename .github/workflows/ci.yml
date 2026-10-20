@@ -1,4 +1,4 @@
-name: M0 QEMU smoke
+name: NaSeed M0+M1 QEMU smoke
 on:
   push:
     branches: [main]
@@ -20,6 +20,6 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: naseed-m0-serial
+          name: naseed-serial
           path: build/serial.log
           if-no-files-found: ignore
