@@ -29,7 +29,7 @@ extern uint64_t syscall_user_rsp;
 #define PHYS_MASK 0x000ffffffffff000ULL
 #define USER_LIMIT 0x0000800000000000ULL
 #define USER_STACK_TOP 0x0000000070000000ULL
-#define USER_STACK_PAGES 4
+#define USER_STACK_PAGES 32
 
 static void fail(const char *message) {
     nas_print("[FAIL] M1 ");
@@ -153,7 +153,13 @@ static uint64_t *user_leaf(uint64_t va, bool allocate_tables) {
 }
 static bool user_map(uint64_t va, bool writable) {
     uint64_t *entry = user_leaf(va, true);
-    if (!entry || (*entry & P_PRESENT)) return false;
+    if (!entry) return false;
+    if (*entry & P_PRESENT) {
+        if (!(*entry & P_USER)) return false;
+        if (writable) *entry |= P_RW;
+        __asm__ volatile ("invlpg (%0)" : : "r"(va) : "memory");
+        return true;
+    }
     uint64_t pa = nas_frame_alloc();
     if (!pa) return false;
     *entry = pa | P_PRESENT | P_USER | (writable ? P_RW : 0);
@@ -191,6 +197,7 @@ struct __attribute__((packed)) elf_phdr {
 static bool checked_range(uint64_t start, uint64_t size, uint64_t limit) {
     return start <= limit && size <= limit - start;
 }
+static uint64_t loaded_phdr, loaded_phnum;
 static bool elf_load(const struct limine_file *module, uint64_t *entry) {
     if (!module || !module->address || module->size < sizeof(struct elf_hdr))
         return false;
@@ -201,7 +208,7 @@ static bool elf_load(const struct limine_file *module, uint64_t *entry) {
         e->ident[4] != 2 || e->ident[5] != 1 ||
         e->type != 2 || e->machine != 62 ||
         e->phentsize != sizeof(struct elf_phdr) ||
-        !e->phnum || e->phnum > 32 ||
+        !e->phnum || e->phnum > 64 ||
         !checked_range(e->phoff, (uint64_t)e->phnum * e->phentsize, module->size))
         return false;
 
@@ -210,13 +217,19 @@ static bool elf_load(const struct limine_file *module, uint64_t *entry) {
     for (unsigned i = 0; i < e->phnum; ++i) {
         const struct elf_phdr *p = &ph[i];
         if (p->type != 1) continue;
-        if (!p->memsz || p->memsz > (1ULL << 20) ||
+        if (!p->memsz || p->memsz > (64ULL << 20) ||
             p->filesz > p->memsz ||
             !checked_range(p->offset, p->filesz, module->size) ||
             !checked_range(p->vaddr, p->memsz, USER_LIMIT) ||
             p->vaddr < 0x10000 ||
             p->vaddr + p->memsz > USER_STACK_TOP - 0x100000)
             return false;
+        if (e->phoff >= p->offset &&
+            e->phoff - p->offset < p->filesz &&
+            (uint64_t)e->phnum * e->phentsize <=
+                  p->filesz - (e->phoff - p->offset)) {
+            loaded_phdr = p->vaddr + (e->phoff - p->offset);
+        }
         if ((p->flags & 1) &&
             e->entry >= p->vaddr && e->entry - p->vaddr < p->memsz)
             executable_entry = true;
@@ -229,7 +242,8 @@ static bool elf_load(const struct limine_file *module, uint64_t *entry) {
     }
     if (!executable_entry) return false;
     *entry = e->entry;
-    return true;
+    loaded_phnum = e->phnum;
+    return loaded_phdr != 0;
 }
 
 /* Strict single-program ABI diagnostic dispatcher, for a real syscall gate. */
