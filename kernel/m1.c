@@ -1666,6 +1666,7 @@ static uint64_t sys_fork(uint64_t *frame) {
     parent->resume_regs[0] = child->pid; /* fork returns PID to parent */
     parent->resume_valid = true;
     parent->blocked_nr = 0;
+    parent->pending_valid = false;
     parent->state = NAS_TASK_READY;
     child->state = NAS_TASK_RUNNING;
     nas_current_task = child;
@@ -1745,7 +1746,8 @@ static bool task_wait_ready(const struct nas_task *task) {
     return false;
 }
 static bool task_can_wake(const struct nas_task *task) {
-    if (task->state != NAS_TASK_BLOCKED || !task->resume_valid) return false;
+    if (task->state != NAS_TASK_BLOCKED || !task->resume_valid ||
+        !task->pending_valid) return false;
     if (task->blocked_nr == __NR_wait4) return task_wait_ready(task);
     if (task->blocked_nr == __NR_read ||
         task->blocked_nr == __NR_write ||
@@ -1777,7 +1779,7 @@ static uint64_t task_schedule(uint64_t *frame) {
             nas_current_task = next;
             task_restore_cpu(next);
             uint64_t result = next->resume_regs[0];
-            if (next->blocked_nr) {
+            if (next->pending_valid) {
                 result = task_replay(next);
                 if ((int64_t)result == -EOPNOTSUPP &&
                     (next->blocked_nr == __NR_read ||
@@ -1788,6 +1790,7 @@ static uint64_t task_schedule(uint64_t *frame) {
                     task_restore_cpu(previous);
                     continue;
                 }
+                next->pending_valid = false;
                 next->blocked_nr = 0;
             }
             next->state = NAS_TASK_RUNNING;
@@ -1841,6 +1844,7 @@ static uint64_t task_block(uint64_t *frame, uint64_t nr,
     task->resume_user_rsp = syscall_user_rsp;
     task->resume_valid = true;
     task->blocked_nr = nr;
+    task->pending_valid = true;
     task->blocked_args[0] = a;
     task->blocked_args[1] = b;
     task->blocked_args[2] = c;
