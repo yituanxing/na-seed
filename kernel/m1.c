@@ -1201,6 +1201,124 @@ static uint64_t sys_unlinkat_tmp(uint64_t dirfd,uint64_t pathname,
     tmp_try_reclaim(tmp_number(file)+1);
     return 0;
 }
+/* M6.9: an inode rename is a namespace operation; open descriptions keep
+ * referencing the same inode regardless of the old/new pathname. A replaced
+ * inode stays alive while inherited or duplicated descriptors hold it.
+ *
+ * Single-core cooperative syscall dispatch makes preflight+commit atomic.
+ * No CPIO mutation or cross-mount fake copy/rename is permitted.
+ */
+static bool tmp_under(const char *path, const char *directory) {
+    unsigned n = 0;
+    while (directory[n]) {
+        if (path[n] != directory[n]) return false;
+        n++;
+    }
+    return path[n] == '/';
+}
+static unsigned tmp_strlen(const char *text) {
+    unsigned n = 0;
+    while (text[n]) n++;
+    return n;
+}
+static bool tmp_move_name(char dest[256], const char *newbase,
+                          const char *oldbase, const char *existing) {
+    const unsigned base = tmp_strlen(newbase);
+    const unsigned cut = tmp_strlen(oldbase);
+    const unsigned suffix = tmp_strlen(existing + cut);
+    if (base + suffix >= 256) return false;
+    for (unsigned i = 0; i < base; i++) dest[i] = newbase[i];
+    for (unsigned i = 0; i <= suffix; i++)
+        dest[base + i] = existing[cut + i];
+    return true;
+}
+static uint64_t sys_renameat_tmp(uint64_t olddirfd, uint64_t oldptr,
+                                  uint64_t newdirfd, uint64_t newptr,
+                                  uint64_t flags) {
+    /* Linux renameat2 RENAME_NOREPLACE only. EXCHANGE and WHITEOUT are
+     * unsupported rather than silently performing the wrong operation.
+     */
+    if (flags & ~1ULL) return (uint64_t)-EINVAL;
+    char oldpath[256], newpath[256];
+    uint64_t err = resolve_path(olddirfd, oldptr, oldpath);
+    if ((int64_t)err < 0) return err;
+    err = resolve_path(newdirfd, newptr, newpath);
+    if ((int64_t)err < 0) return err;
+    const bool oldtmp = tmp_path(oldpath), newtmp = tmp_path(newpath);
+    if (oldtmp != newtmp) return (uint64_t)-EXDEV;
+    if (!oldtmp || !bootfs_mounted()) return (uint64_t)-EROFS;
+    struct nas_tmp_file *source = tmp_find(oldpath);
+    if (!source) {
+        int parent = tmp_parent_check(oldpath);
+        return parent ? (uint64_t)(int64_t)parent : (uint64_t)-ENOENT;
+    }
+    if (same_string(oldpath, newpath)) return 0;
+    int parent = tmp_parent_check(newpath);
+    if (parent) return (uint64_t)(int64_t)parent;
+    if (source->is_dir && tmp_under(newpath, oldpath))
+        return (uint64_t)-EINVAL; /* cannot move a directory into itself */
+    struct nas_tmp_file *target = tmp_find(newpath);
+    if (target) {
+        if (flags & 1ULL) return (uint64_t)-EEXIST;
+        if (source->is_dir && !target->is_dir)
+            return (uint64_t)-ENOTDIR;
+        if (!source->is_dir && target->is_dir)
+            return (uint64_t)-EISDIR;
+        if (target->is_dir && tmp_child(newpath, 0))
+            return (uint64_t)-ENOTEMPTY;
+    }
+    /* Check every descendant and task cwd before touching the namespace.
+     * When moving directory trees, the cwd is an inode identity, so its
+     * printable path must move too. All results fit fixed-sized buffers.
+     */
+    if (source->is_dir) {
+        char candidate[256];
+        for (unsigned n = 0; n < TMP_FILE_COUNT; n++) {
+            const struct nas_tmp_file *entry = &tmp_files[n];
+            if (!entry->used || !entry->linked ||
+                !tmp_under(entry->path, oldpath)) continue;
+            if (!tmp_move_name(candidate, newpath, oldpath, entry->path))
+                return (uint64_t)-ENAMETOOLONG;
+        }
+        for (unsigned n = 0; n < NAS_TASK_LIMIT; n++) {
+            const struct nas_task *task = nas_task_at(n);
+            if (task->state == NAS_TASK_FREE ||
+                !tmp_under(task->cwd, oldpath)) continue;
+            if (!tmp_move_name(candidate, newpath, oldpath, task->cwd))
+                return (uint64_t)-ENAMETOOLONG;
+        }
+    }
+    /* Commit: remove destination pathname but preserve open inode contents. */
+    if (target) {
+        unsigned owner = tmp_number(target) + 1;
+        target->linked = false;
+        tmp_try_reclaim(owner);
+    }
+    if (source->is_dir) {
+        char candidate[256];
+        for (unsigned n = 0; n < TMP_FILE_COUNT; n++) {
+            struct nas_tmp_file *entry = &tmp_files[n];
+            if (!entry->used || !entry->linked ||
+                !tmp_under(entry->path, oldpath)) continue;
+            if (!tmp_move_name(candidate, newpath, oldpath, entry->path))
+                fail("rename validated descendant exceeded path bound");
+            unsigned i = 0;
+            do { entry->path[i] = candidate[i]; } while (candidate[i++]);
+        }
+        for (unsigned n = 0; n < NAS_TASK_LIMIT; n++) {
+            struct nas_task *task = nas_task_at(n);
+            if (task->state == NAS_TASK_FREE ||
+                !tmp_under(task->cwd, oldpath)) continue;
+            if (!tmp_move_name(candidate, newpath, oldpath, task->cwd))
+                fail("rename validated cwd exceeded path bound");
+            unsigned i = 0;
+            do { task->cwd[i] = candidate[i]; } while (candidate[i++]);
+        }
+    }
+    unsigned i = 0;
+    do { source->path[i] = newpath[i]; } while (newpath[i++]);
+    return 0;
+}
 static uint64_t sys_open_path(const char *path, uint64_t flags) {
     const uint64_t permitted = 3ULL | 0x800ULL | 0x8000ULL |
                                0x10000ULL | 0x20000ULL | 0x80000ULL | 0x100ULL |
@@ -2221,6 +2339,13 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == __NR_brk) return sys_brk(args[1]);
     if (nr == __NR_read) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
     if (nr == __NR_write) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
+    if (nr == __NR_rename)
+        return sys_renameat_tmp((uint64_t)-100,args[1],
+                                (uint64_t)-100,args[2],0);
+    if (nr == __NR_renameat)
+        return sys_renameat_tmp(args[1],args[2],args[3],args[4],0);
+    if (nr == __NR_renameat2)
+        return sys_renameat_tmp(args[1],args[2],args[3],args[4],args[5]);
     if (nr == __NR_mkdir) return sys_mkdirat_tmp((uint64_t)-100,args[1],args[2]);
     if (nr == __NR_mkdirat) return sys_mkdirat_tmp(args[1],args[2],args[3]);
     if (nr == __NR_unlink) return sys_unlinkat_tmp((uint64_t)-100,args[1],0);
