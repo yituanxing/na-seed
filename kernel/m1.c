@@ -1665,7 +1665,8 @@ static uint64_t sys_wait4(uint64_t desired, uint64_t status_addr,
         if (desired != UINT64_MAX && desired != pid) continue;
         have_child = true;
         if (child->state != NAS_TASK_ZOMBIE) continue;
-        uint64_t code = (child->exit_code & 255U) << 8;
+        uint64_t code = child->termination_signal
+            ? child->termination_signal : (child->exit_code & 255U) << 8;
         if (status_addr) {
             uint8_t status_bytes[4] = {
                 (uint8_t)code, (uint8_t)(code >> 8), 0, 0
@@ -1733,22 +1734,48 @@ static uint64_t task_replay(struct nas_task *task) {
     const uint64_t *a = task->blocked_args;
     if (nr == __NR_read) return sys_fd_read(a[0], a[1], a[2]);
     if (nr == __NR_write) return sys_fd_write(a[0], a[1], a[2]);
-    if (nr == __NR_writev) {
-        uint64_t ret = sys_fd_writev(a[0], a[1], a[2]);
-        static unsigned resume_count;
-        if (resume_count++ < 18) {
-            nas_print("[LIFE-REPLAY] pid="); nas_dec(TASK.pid);
-            nas_print(" fd="); nas_dec(a[0]);
-            nas_print(" ret="); nas_hex(ret);
-            nas_print("\n");
-        }
-        return ret;
-    }
+    if (nr == __NR_writev) return sys_fd_writev(a[0], a[1], a[2]);
     if (nr == __NR_wait4) return sys_wait4(a[0], a[1], a[2], a[3]);
     fail("scheduler unknown blocked syscall");
 }
+
+/* Broken pipe generates SIGPIPE. POSIX/Linux default action terminates the
+ * writer; returning EPIPE alone is insufficient (BusyBox yes retries forever).
+ * Blocked or ignored SIGPIPE returns EPIPE to userspace as Linux does.
+ * A custom userspace handler requires signal-frame delivery (not yet here).
+ */
+#define NAS_SIGPIPE 13
+static bool sigpipe_default_on_fd(uint64_t fd) {
+    return TASK.ppid && fd < NAS_FD_LIMIT &&
+        descriptors[fd] == FD_PIPE_W &&
+        signal_actions[NAS_SIGPIPE][0] == 0 &&
+        !(blocked_signals & (1ULL << (NAS_SIGPIPE - 1)));
+}
+static void task_mark_child_exit(uint32_t code, uint32_t signum) {
+    struct nas_task *child = nas_current_task;
+    if (!child->ppid || !nas_task_by_pid(child->ppid))
+        fail("child termination without living parent");
+    child->exit_code = code & 255U;
+    child->termination_signal = signum;
+    child->state = NAS_TASK_ZOMBIE;
+    child->pending_valid = false;
+    child->blocked_nr = 0;
+    for (unsigned fd = 0; fd < NAS_FD_LIMIT; fd++)
+        if (descriptors[fd] != FD_CLOSED) fd_close_raw(fd);
+    if (signum) {
+        nas_print("[SIGNAL] default SIGPIPE terminated pid=");
+        nas_dec(child->pid);
+        nas_print("\n");
+    } else {
+        nas_print("[PROC] child exited pid="); nas_dec(child->pid);
+        nas_print(" status="); nas_dec(child->exit_code);
+        nas_print("; parent pid="); nas_dec(child->ppid);
+        nas_print("\n");
+    }
+}
 static unsigned schedule_count;
 static uint64_t task_schedule(uint64_t *frame) {
+retry_schedule:
     struct nas_task *previous = nas_current_task;
     uint64_t previous_pid = previous->pid; /* zombie may be reaped on replay */
     /* A READY task always gets one turn before re-evaluating blocked tasks.
@@ -1765,6 +1792,13 @@ static uint64_t task_schedule(uint64_t *frame) {
             uint64_t result = next->resume_regs[0];
             if (next->pending_valid) {
                 result = task_replay(next);
+                if ((int64_t)result == -EPIPE &&
+                    (next->blocked_nr == __NR_write ||
+                     next->blocked_nr == __NR_writev) &&
+                    sigpipe_default_on_fd(next->blocked_args[0])) {
+                    task_mark_child_exit(0, NAS_SIGPIPE);
+                    goto retry_schedule; /* parent can now observe zombie */
+                }
                 if ((int64_t)result == -EOPNOTSUPP &&
                     (next->blocked_nr == __NR_read ||
                      next->blocked_nr == __NR_write ||
@@ -1843,27 +1877,16 @@ static uint64_t task_block(uint64_t *frame, uint64_t nr,
 }
 static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
                              uint64_t fd, uint64_t buf, uint64_t count) {
-    static unsigned life_trace;
-    if (life_trace++ < 48 && fd < NAS_FD_LIMIT &&
-        (descriptors[fd] == FD_PIPE_R || descriptors[fd] == FD_PIPE_W)) {
-        unsigned slot = file_slot[fd];
-        unsigned handle = (unsigned)pipe_slot_owner[slot];
-        nas_print("[LIFE-TRACE] pid="); nas_dec(TASK.pid);
-        nas_print(" nr="); nas_dec(nr);
-        nas_print(" fd="); nas_dec(fd);
-        nas_print(" len="); nas_dec(count);
-        if (handle && handle <= PIPE_COUNT) {
-            const struct nas_pipe *pipe = &pipe_table[handle - 1];
-            nas_print(" bytes="); nas_dec(pipe->count);
-            nas_print(" r="); nas_dec(pipe_has_reader(pipe));
-            nas_print(" w="); nas_dec(pipe_has_writer(pipe));
-        }
-        nas_print("\n");
-    }
     uint64_t ret;
     if (nr == __NR_read) ret = sys_fd_read(fd, buf, count);
     else if (nr == __NR_write) ret = sys_fd_write(fd, buf, count);
     else ret = sys_fd_writev(fd, buf, count);
+    if ((int64_t)ret == -EPIPE &&
+        (nr == __NR_write || nr == __NR_writev) &&
+        sigpipe_default_on_fd(fd)) {
+        task_mark_child_exit(0, NAS_SIGPIPE);
+        return task_schedule(frame);
+    }
     if ((int64_t)ret == -EOPNOTSUPP && fd < NAS_FD_LIMIT &&
         (descriptors[fd] == FD_PIPE_R || descriptors[fd] == FD_PIPE_W) &&
         !(file_status_flags[file_slot[fd]] & 0x800ULL))
@@ -1951,24 +1974,13 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == __NR_getpgid) return args[1] == 0 || args[1] == TASK.pid ? TASK.pid : (uint64_t)-ESRCH;
     if (nr == __NR_getpgrp) return TASK.pid; /* one process group today */
     if (nr == __NR_exit || nr == __NR_exit_group) { /* exit / exit_group */
-        TASK.exit_code = (uint32_t)(args[1] & 255ULL);
-        TASK.state = NAS_TASK_ZOMBIE;
         if (TASK.ppid) {
-            struct nas_task *child = nas_current_task;
-            uint64_t parent_pid = child->ppid;
-            if (!nas_task_by_pid(parent_pid))
-                fail("child exited without living parent");
-            for (unsigned fd = 0; fd < NAS_FD_LIMIT; fd++)
-                if (descriptors[fd] != FD_CLOSED) fd_close_raw(fd);
-            nas_print("[PROC] child exited pid="); nas_dec(child->pid);
-            nas_print(" status="); nas_dec(child->exit_code);
-            nas_print("; parent pid="); nas_dec(parent_pid);
-            nas_print("\n");
-            /* A blocked parent waiting in wait4 gets woken only after the
-             * zombie is visible; otherwise a READY parent resumes fork.
-             */
+            task_mark_child_exit((uint32_t)args[1], 0);
             return task_schedule((uint64_t *)(uintptr_t)args);
         }
+        TASK.exit_code = (uint32_t)(args[1] & 255ULL);
+        TASK.termination_signal = 0;
+        TASK.state = NAS_TASK_ZOMBIE;
         nas_print("[EXIT] user status="); nas_dec(args[1]); nas_print("\n");
         /* In cmdline-driven tests, the host verifies real stdout and status.
          * Do not encode applet-specific success checks into the kernel.
