@@ -91,7 +91,7 @@ return the **interface-prescribed** error, not a fabricated success. Legacy
 partial implementations (`mmap/mprotect`, signal installation without real
 delivery) still require per-behavior audits, and are **not** claimed complete.
 
-## M5: CPIO-backed read-only files and directories (in progress)
+## M5: CPIO-backed read-only files and directories (QEMU accepted, 2026-10-20)
 
 The new fixture keeps the two original unmodified Alpine ELF modules used for
 PT_INTERP execution, and supplies an additional, uncompressed CPIO newc
@@ -107,5 +107,8 @@ getdents64, fstat/newfstatat, read, lseek and close. No write support,
 symlinks, chdir, mount namespaces, writable tmpfs, block storage or general
 VFS is claimed. `make alpine-fs-probe` checks genuine unmodified Alpine
 BusyBox `ls -la /`, `ls /bin` and `cat /etc/hostname` through QEMU.
-The existing M0-M4 CI probes remain mandatory; this text does not substitute
-for a green independent QEMU result.
+The existing M0-M4 CI probes remain mandatory. The first full PR #10
+CI run failed because the authentic BusyBox `ls` used legacy Linux
+`lstat` (syscall 6); adding that genuine directory/file metadata
+path, alongside `stat`, allowed all three real BusyBox applets to
+pass CI #39415504635. All older QEMU regressions remained green.
