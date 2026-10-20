@@ -22,6 +22,10 @@ if grep -Fq '[PASS] M2 real GNU Bash -c echo hello' build/bash-serial.log; then
     echo "[PROBE] genuine Bash acceptance confirmed"
 elif grep -Fq '[M2] real GNU Bash module discovered' build/bash-serial.log; then
     echo "[PROBE] Bash booted; outstanding ABI/kernel blockers remain. NOT A PASS."
+    if [ "${BASH_REQUIRE_PASS:-0}" = "1" ]; then
+        echo "[FAIL] required real Bash stdout and zero exit were not observed" >&2
+        exit 1
+    fi
 else
     cat build/bash-serial.log
     echo "[PROBE] Bash module did not initialize" >&2
