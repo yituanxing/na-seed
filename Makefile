@@ -30,7 +30,7 @@ $(OUT)/kernel.o: kernel/kernel.c $(HDR)
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
-$(OUT)/m1.o: kernel/m1.c $(HDR)
+$(OUT)/m1.o: kernel/m1.c kernel/nr.h $(HDR)
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
@@ -38,7 +38,7 @@ $(OUT)/arch.o: kernel/arch.S
 	mkdir -p $(dir $@)
 	clang --target=x86_64-unknown-none-elf -g -mno-red-zone -c $< -o $@
 
-$(OUT)/user-hello.o: user/hello.S
+$(OUT)/user-hello.o: user/hello.S kernel/nr.h
 	mkdir -p $(dir $@)
 	clang --target=x86_64-unknown-none-elf -g -c $< -o $@
 

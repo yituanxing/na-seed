@@ -59,3 +59,16 @@ A small read-only bootfs maps genuine Limine-provided file bytes for openat/read
 ## M4.5 engineering checkpoint
 
 The read-only Limine-module BootFS and one-process syscall switch remain temporary and intentionally unchanged in this checkpoint. For the completed pre-M5 audit, review `docs/audit-m45.md` before extending file or process semantics. Run `make preflight` before opening a PR; GitHub Actions repeats preflight before real QEMU acceptance. Cached musl Bash no longer recompiles solely due to checkout mtimes; the CI cache key includes the Bash builder script's content hash. To deliberately rebuild after changing the script locally: `rm -f build/userspace/bash && make bash-probe`.
+
+## Linux syscall number policy (x86-64 native)
+
+NaSeed's `kernel/nr.h` is generated from the **pinned Linux v6.18**
+`arch/x86/entry/syscalls/syscall_64.tbl`, including only `common` and `64`
+entries (383 definitions). Kernel dispatch and standalone Ring-3 tests use
+Linux's official `__NR_*` spellings, not handwritten syscall integers.
+`make preflight` verifies every overlapping number against the host Linux
+x86-64 UAPI header, with checks for duplicates and native ABI scope. Pin
+upgrades must regenerate the header and update its validation together.
+**Number defined does not mean function implemented:** unknown syscall IDs
+continue to return `-ENOSYS` and are traced. x32/i386 syscall ABIs are
+explicitly out of scope. Linux `errno` constants are a distinct ABI contract.
