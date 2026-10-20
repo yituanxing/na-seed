@@ -16,6 +16,7 @@ extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
 extern void nas_hex(uint64_t);
 extern const struct limine_file *nas_user_module(void);
+extern const struct limine_file *nas_module(uint64_t index);
 extern void gdt_reload(const void *);
 extern void enter_user(uint64_t entry, uint64_t stack_top);
 extern void syscall_entry(void);
@@ -214,9 +215,17 @@ struct __attribute__((packed)) elf_phdr {
 static bool checked_range(uint64_t start, uint64_t size, uint64_t limit) {
     return start <= limit && size <= limit - start;
 }
-static uint64_t loaded_phdr, loaded_phnum;
+static uint64_t loaded_phdr, loaded_phnum, loaded_main_entry, loaded_interp_base;
 static uint64_t heap_break, mmap_cursor = 0x60000000ULL;
-static bool elf_load(const struct limine_file *module, uint64_t *entry) {
+#define ALPINE_APP_BASE 0x10000000ULL
+#define ALPINE_LDSO_BASE 0x30000000ULL
+
+/* A real ET_DYN/PT_INTERP handoff: kernel maps both ELFs; musl ldso is
+ * responsible for relocations and symbol resolution in user mode.
+ */
+static bool elf_map_image(const struct limine_file *module,
+                          uint64_t bias, bool main_image,
+                          uint64_t *entry, bool *has_interp) {
     if (!module || !module->address || module->size < sizeof(struct elf_hdr))
         return false;
     const uint8_t *file = (const uint8_t *)module->address;
@@ -224,48 +233,76 @@ static bool elf_load(const struct limine_file *module, uint64_t *entry) {
     if (e->ident[0] != 0x7f || e->ident[1] != 'E' ||
         e->ident[2] != 'L' || e->ident[3] != 'F' ||
         e->ident[4] != 2 || e->ident[5] != 1 ||
-        e->type != 2 || e->machine != 62 ||
+        (e->type != 2 && e->type != 3) || e->machine != 62 ||
         e->phentsize != sizeof(struct elf_phdr) ||
         !e->phnum || e->phnum > 64 ||
-        !checked_range(e->phoff, (uint64_t)e->phnum * e->phentsize, module->size))
+        !checked_range(e->phoff, (uint64_t)e->phnum * e->phentsize,
+                       module->size))
         return false;
-
-    bool executable_entry = false;
+    if ((e->type == 2 && bias) || (e->type == 3 && !bias))
+        return false;
+    bool has_entry = false;
     const struct elf_phdr *ph = (const struct elf_phdr *)(file + e->phoff);
-    for (unsigned i = 0; i < e->phnum; ++i) {
+    for (unsigned i = 0; i < e->phnum; i++) {
         const struct elf_phdr *p = &ph[i];
+        if (p->type == 3 && main_image) { /* PT_INTERP */
+            static const char name[] = "/lib/ld-musl-x86_64.so.1";
+            if (!checked_range(p->offset, p->filesz, module->size) ||
+                p->filesz != sizeof(name)) return false;
+            for (unsigned n = 0; n < sizeof(name); n++)
+                if (file[p->offset + n] != (uint8_t)name[n]) return false;
+            *has_interp = true;
+        }
         if (p->type != 1) continue;
         if (!p->memsz || p->memsz > (64ULL << 20) ||
             p->filesz > p->memsz ||
             !checked_range(p->offset, p->filesz, module->size) ||
             !checked_range(p->vaddr, p->memsz, USER_LIMIT) ||
-            p->vaddr < 0x10000 ||
-            p->vaddr + p->memsz > USER_STACK_TOP - 0x100000)
+            p->vaddr > UINT64_MAX - bias ||
+            p->memsz > UINT64_MAX - bias - p->vaddr)
             return false;
-        if (e->phoff >= p->offset &&
+        uint64_t start = p->vaddr + bias, end = start + p->memsz;
+        if (start < 0x10000 || end > USER_STACK_TOP - 0x100000 ||
+            end > UINT64_MAX - PAGE) return false;
+        if ((p->flags & 1) && e->entry >= p->vaddr &&
+            e->entry - p->vaddr < p->memsz) has_entry = true;
+        if (main_image && e->phoff >= p->offset &&
             e->phoff - p->offset < p->filesz &&
             (uint64_t)e->phnum * e->phentsize <=
-                  p->filesz - (e->phoff - p->offset)) {
-            loaded_phdr = p->vaddr + (e->phoff - p->offset);
-        }
-        if ((p->flags & 1) &&
-            e->entry >= p->vaddr && e->entry - p->vaddr < p->memsz)
-            executable_entry = true;
-        uint64_t segment_end = p->vaddr + p->memsz;
-        if (segment_end > heap_break) heap_break = segment_end;
-        uint64_t begin = p->vaddr & ~(PAGE - 1);
-        uint64_t end = (p->vaddr + p->memsz + PAGE - 1) & ~(PAGE - 1);
-        for (uint64_t va = begin; va < end; va += PAGE)
+                p->filesz - (e->phoff - p->offset))
+            loaded_phdr = start + (e->phoff - p->offset);
+        if (main_image && end > heap_break) heap_break = end;
+        uint64_t first = start & ~(PAGE - 1);
+        uint64_t last = (end + PAGE - 1) & ~(PAGE - 1);
+        for (uint64_t va = first; va < last; va += PAGE)
             if (!user_map(va, (p->flags & 2) != 0)) return false;
-        if (!user_copy_in(p->vaddr, file + p->offset, p->filesz))
-            return false;
+        if (!user_copy_in(start, file + p->offset, p->filesz)) return false;
     }
-    if (!executable_entry) return false;
-    *entry = e->entry;
-    loaded_phnum = e->phnum;
-    return true; /* Small ET_EXEC probes need not map ELF/PHDR headers. */
+    if (!has_entry || e->entry > UINT64_MAX - bias) return false;
+    *entry = e->entry + bias;
+    if (main_image) loaded_phnum = e->phnum;
+    return true;
 }
-
+static bool elf_load(const struct limine_file *module, uint64_t *entry) {
+    if (!module || !module->address || module->size < sizeof(struct elf_hdr))
+        return false;
+    const struct elf_hdr *e = (const struct elf_hdr *)module->address;
+    uint64_t bias = e->type == 3 ? ALPINE_APP_BASE : 0;
+    bool has_interp = false;
+    if (!elf_map_image(module, bias, true, &loaded_main_entry, &has_interp))
+        return false;
+    *entry = loaded_main_entry;
+    if (!has_interp) return true;
+    const struct limine_file *interp = nas_module(1);
+    if (!interp) return false;
+    loaded_interp_base = ALPINE_LDSO_BASE;
+    bool nested_interp = false;
+    if (!elf_map_image(interp, loaded_interp_base, false, entry, &nested_interp))
+        return false;
+    nas_print("[DYN] real musl interpreter loaded, entry=");
+    nas_hex(*entry); nas_print("\n");
+    return true;
+}
 
 /* A real Linux x86-64 userspace entry stack, not argv spoofing in kernel. */
 static uint64_t cstr_len(const char *str) {
@@ -324,8 +361,8 @@ static bool build_linux_stack(bool bash, bool busybox, uint64_t entry, uint64_t 
     AUX(4, sizeof(struct elf_phdr)); /* AT_PHENT */
     AUX(5, loaded_phnum);     /* AT_PHNUM */
     AUX(6, PAGE);             /* AT_PAGESZ */
-    AUX(7, 0);                /* AT_BASE: static binary */
-    AUX(9, entry);            /* AT_ENTRY */
+    AUX(7, loaded_interp_base); /* AT_BASE: real interpreter */
+    AUX(9, loaded_main_entry); /* AT_ENTRY: main ELF */
     AUX(11, 0); AUX(12, 0);   /* UID / EUID */
     AUX(13, 0); AUX(14, 0);   /* GID / EGID */
     AUX(23, 0);               /* AT_SECURE */
@@ -364,6 +401,7 @@ static bool bash_module(const struct limine_file *file) {
 }
 static bool running_bash;
 static bool running_busybox;
+static bool running_alpine;
 static bool saw_bash_hello;
 static unsigned matched_chars;
 static uint32_t missing_count[512];
@@ -717,7 +755,10 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         nas_print("[EXIT] user status="); nas_dec(args[1]); nas_print("\n");
         if (running_busybox) {
             if (args[1] == 0 && saw_bash_hello) {
-                nas_print("[PASS] M2 Debian BusyBox echo hello\n");
+                if (running_alpine)
+                    nas_print("[PASS] M4 Alpine dynamic BusyBox echo hello\n");
+                else
+                    nas_print("[PASS] M2 Debian BusyBox echo hello\n");
                 outb(0xf4, 0);
             }
             fail("real BusyBox exited without stdout hello and status 0");
@@ -759,6 +800,7 @@ void m1_start(void) {
     if (!module) fail("no Limine userspace ELF module");
     running_bash = bash_module(module);
     running_busybox = busybox_module(module);
+    running_alpine = running_busybox && nas_module(1) != 0;
     if (running_bash) nas_print("[M2] real GNU Bash module discovered\n");
     if (running_busybox) nas_print("[M3] real BusyBox module discovered\n");
     uint64_t entry = 0;
