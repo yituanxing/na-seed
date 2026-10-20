@@ -1775,7 +1775,7 @@ static void task_mark_child_exit(uint32_t code, uint32_t signum) {
 }
 static unsigned schedule_count;
 static uint64_t task_schedule(uint64_t *frame) {
-retry_schedule:
+retry_schedule: ; /* label must precede a statement in C11 */
     struct nas_task *previous = nas_current_task;
     uint64_t previous_pid = previous->pid; /* zombie may be reaped on replay */
     /* A READY task always gets one turn before re-evaluating blocked tasks.
