@@ -246,6 +246,102 @@ static bool elf_load(const struct limine_file *module, uint64_t *entry) {
     return loaded_phdr != 0;
 }
 
+
+/* A real Linux x86-64 userspace entry stack, not argv spoofing in kernel. */
+static uint64_t cstr_len(const char *str) {
+    uint64_t n = 0;
+    while (str[n]) n++;
+    return n;
+}
+static bool put_stack_string(uint64_t *sp, const char *str, uint64_t *address) {
+    uint64_t size = cstr_len(str) + 1;
+    if (*sp < USER_STACK_TOP - USER_STACK_PAGES * PAGE + size) return false;
+    *sp -= size;
+    if (!user_copy_in(*sp, (const uint8_t *)str, size)) return false;
+    *address = *sp;
+    return true;
+}
+static bool build_linux_stack(bool bash, uint64_t entry, uint64_t *out_sp) {
+    static const char * const args_bash[] = {
+        "/bin/bash", "--noprofile", "--norc", "-c", "echo hello"
+    };
+    static const char * const args_hello[] = {"/bin/hello"};
+    static const char * const vars[] = {
+        "PATH=/bin:/usr/bin", "HOME=/", "TERM=dumb", "LC_ALL=C"
+    };
+    const char * const *args = bash ? args_bash : args_hello;
+    unsigned argc = bash ? 5 : 1;
+    uint64_t sp = USER_STACK_TOP;
+    uint64_t arg_ptrs[5], env_ptrs[4];
+    uint32_t lo, hi;
+    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+    uint64_t tsc = (uint64_t)lo | ((uint64_t)hi << 32);
+    /* Noncryptographic boot seed for AT_RANDOM. Add real entropy later. */
+    uint64_t random_bytes[2] = {
+        tsc ^ (uint64_t)(uintptr_t)&tss,
+        (tsc << 17) ^ nas_hhdm_offset()
+    };
+    sp -= sizeof(random_bytes);
+    if (!user_copy_in(sp, (const uint8_t *)random_bytes,
+                      sizeof(random_bytes))) return false;
+    uint64_t random_address = sp;
+    for (unsigned i = 0; i < 4; i++)
+        if (!put_stack_string(&sp, vars[i], &env_ptrs[i])) return false;
+    for (unsigned i = 0; i < argc; i++)
+        if (!put_stack_string(&sp, args[i], &arg_ptrs[i])) return false;
+
+    /* argc | argv[] NULL | envp[] NULL | auxv pairs | AT_NULL */
+    uint64_t words[64];
+    unsigned n = 0;
+    words[n++] = argc;
+    for (unsigned i = 0; i < argc; i++) words[n++] = arg_ptrs[i];
+    words[n++] = 0;
+    for (unsigned i = 0; i < 4; i++) words[n++] = env_ptrs[i];
+    words[n++] = 0;
+#define AUX(key, value) do { words[n++] = (key); words[n++] = (value); } while (0)
+    AUX(3, loaded_phdr);      /* AT_PHDR */
+    AUX(4, sizeof(struct elf_phdr)); /* AT_PHENT */
+    AUX(5, loaded_phnum);     /* AT_PHNUM */
+    AUX(6, PAGE);             /* AT_PAGESZ */
+    AUX(7, 0);                /* AT_BASE: static binary */
+    AUX(9, entry);            /* AT_ENTRY */
+    AUX(11, 0); AUX(12, 0);   /* UID / EUID */
+    AUX(13, 0); AUX(14, 0);   /* GID / EGID */
+    AUX(23, 0);               /* AT_SECURE */
+    AUX(25, random_address);  /* AT_RANDOM */
+    AUX(31, arg_ptrs[0]);    /* AT_EXECFN */
+    AUX(0, 0);                /* AT_NULL */
+#undef AUX
+    uint64_t byte_count = n * sizeof(uint64_t);
+    if (sp < USER_STACK_TOP - USER_STACK_PAGES * PAGE + byte_count + 16)
+        return false;
+    sp = (sp - byte_count) & ~15ULL;
+    if (!user_copy_in(sp, (const uint8_t *)words, byte_count)) return false;
+    *out_sp = sp;
+    return true;
+}
+static bool bash_module(const struct limine_file *file) {
+    if (!file || !file->path) return false;
+    const char *p = file->path;
+    for (; *p; p++)
+        if (p[0] == 'b' && p[1] == 'a' && p[2] == 's' && p[3] == 'h')
+            return true;
+    return false;
+}
+static bool running_bash;
+static bool saw_bash_hello;
+static unsigned matched_chars;
+static uint32_t missing_count[512];
+static void observe_stdout(char ch) {
+    static const char text[] = "hello\n";
+    if (ch == text[matched_chars]) {
+        if (++matched_chars == sizeof(text) - 1) {
+            saw_bash_hello = true;
+            matched_chars = 0;
+        }
+    } else matched_chars = (ch == text[0]) ? 1 : 0;
+}
+
 /* Strict single-program ABI diagnostic dispatcher, for a real syscall gate. */
 uint64_t syscall_dispatch(const uint64_t *args) {
     uint64_t nr = args[0];
