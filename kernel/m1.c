@@ -744,6 +744,7 @@ struct nas_tmp_file {
 };
 static struct nas_tmp_file tmp_files[TMP_FILE_COUNT];
 static uint8_t tmp_slot_owner[NAS_FD_LIMIT]; /* 1-based inode index */
+static const struct nas_tmp_file *tmp_by_fd(uint64_t fd);
 static void tmp_try_reclaim(unsigned owner) {
     if (!owner || owner > TMP_FILE_COUNT) return;
     struct nas_tmp_file *node = &tmp_files[owner - 1];
