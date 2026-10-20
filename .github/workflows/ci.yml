@@ -39,6 +39,8 @@ jobs:
         run: DEBIAN_REQUIRE_PASS=1 make debian-probe
       - name: Stage official Alpine prebuilt dynamic ELF and musl runtime
         run: make alpine-fetch
+      - name: Diagnose real BusyBox producer early close and pipe lifecycle
+        run: make ash-lifecycle-probe
       - name: Real BusyBox ash pipeline pipe/pipe2 and EOF under QEMU
         run: make ash-pipes-probe
       - name: Boot genuine Alpine dynamic BusyBox and report ABI blockers
@@ -75,4 +77,5 @@ jobs:
             build/ash-exec-*-serial.log
             build/ash-fork-*-serial.log
             build/ash-pipe-*-serial.log
+            build/ash-life-*-serial.log
           if-no-files-found: ignore
