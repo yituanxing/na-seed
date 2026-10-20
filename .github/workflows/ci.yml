@@ -51,6 +51,8 @@ jobs:
         run: make alpine-selector-probe
       - name: Accept real BusyBox ash cwd/FD/readiness and diagnose process blockers
         run: make ash-diagnostic
+      - name: Unmodified Alpine BusyBox ash execve CPIO process replacement
+        run: make ash-execve-probe
       - name: Attach serial log on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -66,4 +68,5 @@ jobs:
             build/alpine-archive-*-serial.log
             build/alpine-selector-*-serial.log
             build/ash-diag-*-serial.log
+            build/ash-exec-*-serial.log
           if-no-files-found: ignore

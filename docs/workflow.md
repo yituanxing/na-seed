@@ -185,3 +185,24 @@ or writable root filesystem yet. `poll` only reports readiness for
 in-memory files and available output devices; it returns
 `-EOPNOTSUPP` for requests requiring an unsupported blocking wait.
 No kernel syscall silently claims to have waited.
+
+## M5.4 — real single-process execve (under verification)
+
+The original upstream Alpine BusyBox ash's direct
+`sh -c '/bin/busybox cat /etc/hostname'` reaches Linux syscall 59.
+The kernel snapshots pathname, argv and envp **before destroying any user
+memory**, resolves a genuine executable CPIO entry, allocates a new private
+user CR3 with preserved supervisor mappings, uses the existing x86-64
+ELF/PT_INTERP loader, constructs the real Linux argv/envp/auxv stack,
+and enters the replacement image in Ring 3 without returning to the
+old shell instruction stream. The old private user pages/page tables
+are reclaimed on commit. ELF load failures restore the old root,
+heap/cursor and previous ELF metadata. CLOEXEC descriptors are closed
+only at commit, while cwd, other open files and signal mask persist;
+userspace TLS and installed signal handlers are reset.
+
+A separate strict QEMU test probes ordinary ash exec, `exec` shell
+builtin, and non-existent executable error preservation. This **does
+not implement fork/vfork/clone, wait, pipes, a task scheduler or
+arbitrary script execution**. Shell pipelines remain blocked for a
+separate milestone.

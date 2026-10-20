@@ -36,7 +36,7 @@ extern uint64_t syscall_user_rsp;
 #define USER_STACK_TOP 0x0000000070000000ULL
 #define USER_STACK_PAGES 32
 
-static void fail(const char *message) {
+__attribute__((noreturn)) static void fail(const char *message) {
     nas_print("[FAIL] M1 ");
     nas_print(message);
     nas_print("\n");
@@ -153,6 +153,50 @@ static bool paging_init(void) {
     __asm__ volatile ("mov %0, %%cr3" : : "r"(root_phys) : "memory");
     return true;
 }
+/* Every execve owns a fresh user page-table root; the supervisor upper
+ * half is inherited without allocating or freeing its boot mappings.
+ * The retired root is reclaimed ONLY after CR3 switches successfully.
+ * User pages are private: NaSeed has no fork/COW or shared mappings yet.
+ */
+static uint64_t alloc_user_root(void) {
+    uint64_t pa = nas_frame_alloc();
+    if (!pa) return 0;
+    uint64_t *fresh = phys_table(pa), *current = phys_table(root_phys);
+    for (unsigned i = 256; i < 512; i++)
+        fresh[i] = current[i] & ~P_USER;
+    return pa;
+}
+static bool free_user_tree(uint64_t table_pa, unsigned depth) {
+    uint64_t *table = phys_table(table_pa);
+    for (unsigned i = 0; i < 512; i++) {
+        uint64_t e = table[i];
+        if (!(e & P_PRESENT)) continue;
+        if (!(e & P_USER) || (e & (1ULL << 7))) return false;
+        uint64_t pa = e & PHYS_MASK;
+        if (depth && !free_user_tree(pa, depth - 1)) return false;
+        table[i] = 0;
+        if (!nas_frame_free(pa)) return false;
+    }
+    return true;
+}
+static bool reclaim_user_root(uint64_t pa) {
+    uint64_t *root = phys_table(pa);
+    for (unsigned i = 0; i < 256; i++) {
+        uint64_t e = root[i];
+        if (!(e & P_PRESENT)) continue;
+        if (!(e & P_USER) || (e & (1ULL << 7))) return false;
+        uint64_t child = e & PHYS_MASK;
+        if (!free_user_tree(child, 2)) return false;
+        root[i] = 0;
+        if (!nas_frame_free(child)) return false;
+    }
+    return nas_frame_free(pa);
+}
+static void switch_user_root(uint64_t pa) {
+    root_phys = pa;
+    __asm__ volatile ("mov %0, %%cr3" : : "r"(pa) : "memory");
+}
+
 static uint64_t *user_leaf(uint64_t va, bool allocate_tables) {
     if (va < PAGE || va >= USER_LIMIT || (va & (PAGE - 1))) return 0;
     uint64_t table = root_phys;
@@ -381,6 +425,62 @@ static bool parse_boot_argv(const char *cmdline,
     boot_argv_override = true;
     return true;
 }
+#define NAS_ENV_MAX 16
+static bool build_user_stack(const char *const *args, unsigned argc,
+                             const char *const *vars, unsigned envc,
+                             const char *execfn, uint64_t *out_sp) {
+    uint64_t sp = USER_STACK_TOP;
+    uint64_t arg_ptrs[NAS_ARGV_MAX], env_ptrs[NAS_ENV_MAX];
+    uint64_t execfn_ptr;
+    if (argc > NAS_ARGV_MAX || envc > NAS_ENV_MAX) return false;
+    uint32_t lo, hi;
+    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+    uint64_t tsc = (uint64_t)lo | ((uint64_t)hi << 32);
+    /* Noncryptographic boot seed for AT_RANDOM. Add real entropy later. */
+    uint64_t random_bytes[2] = {
+        tsc ^ (uint64_t)(uintptr_t)&tss,
+        (tsc << 17) ^ nas_hhdm_offset()
+    };
+    sp -= sizeof(random_bytes);
+    if (!user_copy_in(sp, (const uint8_t *)random_bytes,
+                      sizeof(random_bytes))) return false;
+    uint64_t random_address = sp;
+    if (!put_stack_string(&sp, execfn, &execfn_ptr)) return false;
+    for (unsigned i = 0; i < envc; i++)
+        if (!put_stack_string(&sp, vars[i], &env_ptrs[i])) return false;
+    for (unsigned i = 0; i < argc; i++)
+        if (!put_stack_string(&sp, args[i], &arg_ptrs[i])) return false;
+
+    /* argc | argv[] NULL | envp[] NULL | auxv pairs | AT_NULL */
+    uint64_t words[96];
+    unsigned n = 0;
+    words[n++] = argc;
+    for (unsigned i = 0; i < argc; i++) words[n++] = arg_ptrs[i];
+    words[n++] = 0;
+    for (unsigned i = 0; i < envc; i++) words[n++] = env_ptrs[i];
+    words[n++] = 0;
+#define AUX(key, value) do { words[n++] = (key); words[n++] = (value); } while (0)
+    AUX(3, loaded_phdr);      /* AT_PHDR */
+    AUX(4, sizeof(struct elf_phdr)); /* AT_PHENT */
+    AUX(5, loaded_phnum);     /* AT_PHNUM */
+    AUX(6, PAGE);             /* AT_PAGESZ */
+    AUX(7, loaded_interp_base); /* AT_BASE: real interpreter */
+    AUX(9, loaded_main_entry); /* AT_ENTRY: main ELF */
+    AUX(11, 0); AUX(12, 0);   /* UID / EUID */
+    AUX(13, 0); AUX(14, 0);   /* GID / EGID */
+    AUX(23, 0);               /* AT_SECURE */
+    AUX(25, random_address);  /* AT_RANDOM */
+    AUX(31, execfn_ptr);    /* AT_EXECFN */
+    AUX(0, 0);                /* AT_NULL */
+#undef AUX
+    uint64_t byte_count = n * sizeof(uint64_t);
+    if (sp < USER_STACK_TOP - USER_STACK_PAGES * PAGE + byte_count + 16)
+        return false;
+    sp = (sp - byte_count) & ~15ULL;
+    if (!user_copy_in(sp, (const uint8_t *)words, byte_count)) return false;
+    *out_sp = sp;
+    return true;
+}
 static bool build_linux_stack(bool bash, bool busybox, uint64_t *out_sp) {
     static const char * const args_bash[] = {
         "/bin/bash", "--noprofile", "--norc", "-c", "echo hello"
@@ -405,54 +505,7 @@ static bool build_linux_stack(bool bash, bool busybox, uint64_t *out_sp) {
         nas_print(cmdline);
         nas_print("\n");
     }
-    uint64_t sp = USER_STACK_TOP;
-    uint64_t arg_ptrs[NAS_ARGV_MAX], env_ptrs[4];
-    uint32_t lo, hi;
-    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
-    uint64_t tsc = (uint64_t)lo | ((uint64_t)hi << 32);
-    /* Noncryptographic boot seed for AT_RANDOM. Add real entropy later. */
-    uint64_t random_bytes[2] = {
-        tsc ^ (uint64_t)(uintptr_t)&tss,
-        (tsc << 17) ^ nas_hhdm_offset()
-    };
-    sp -= sizeof(random_bytes);
-    if (!user_copy_in(sp, (const uint8_t *)random_bytes,
-                      sizeof(random_bytes))) return false;
-    uint64_t random_address = sp;
-    for (unsigned i = 0; i < 4; i++)
-        if (!put_stack_string(&sp, vars[i], &env_ptrs[i])) return false;
-    for (unsigned i = 0; i < argc; i++)
-        if (!put_stack_string(&sp, args[i], &arg_ptrs[i])) return false;
-
-    /* argc | argv[] NULL | envp[] NULL | auxv pairs | AT_NULL */
-    uint64_t words[64];
-    unsigned n = 0;
-    words[n++] = argc;
-    for (unsigned i = 0; i < argc; i++) words[n++] = arg_ptrs[i];
-    words[n++] = 0;
-    for (unsigned i = 0; i < 4; i++) words[n++] = env_ptrs[i];
-    words[n++] = 0;
-#define AUX(key, value) do { words[n++] = (key); words[n++] = (value); } while (0)
-    AUX(3, loaded_phdr);      /* AT_PHDR */
-    AUX(4, sizeof(struct elf_phdr)); /* AT_PHENT */
-    AUX(5, loaded_phnum);     /* AT_PHNUM */
-    AUX(6, PAGE);             /* AT_PAGESZ */
-    AUX(7, loaded_interp_base); /* AT_BASE: real interpreter */
-    AUX(9, loaded_main_entry); /* AT_ENTRY: main ELF */
-    AUX(11, 0); AUX(12, 0);   /* UID / EUID */
-    AUX(13, 0); AUX(14, 0);   /* GID / EGID */
-    AUX(23, 0);               /* AT_SECURE */
-    AUX(25, random_address);  /* AT_RANDOM */
-    AUX(31, arg_ptrs[0]);    /* AT_EXECFN */
-    AUX(0, 0);                /* AT_NULL */
-#undef AUX
-    uint64_t byte_count = n * sizeof(uint64_t);
-    if (sp < USER_STACK_TOP - USER_STACK_PAGES * PAGE + byte_count + 16)
-        return false;
-    sp = (sp - byte_count) & ~15ULL;
-    if (!user_copy_in(sp, (const uint8_t *)words, byte_count)) return false;
-    *out_sp = sp;
-    return true;
+    return build_user_stack(args, argc, vars, 4, args[0], out_sp);
 }
 static bool busybox_module(const struct limine_file *file) {
     if (!file || !file->path) return false;
@@ -1202,6 +1255,152 @@ static uint64_t sys_mprotect(uint64_t addr, uint64_t length, uint64_t prot) {
     return 0;
 }
 
+/* Single-process execve: replace this process's user image, not fork.
+ * Snapshot ALL user pointers before changing CR3. The ELF and interpreter
+ * bytes are immutable CPIO entries, so they remain valid after replacement.
+ * Stage image in a fresh root, rollback if load fails; only on success
+ * close CLOEXEC descriptors, release old user pages and re-enter Ring 3.
+ */
+#define EXEC_STRING_MAX 256
+static struct exec_snapshot {
+    char filename[256];
+    char argbuf[NAS_ARGV_MAX][EXEC_STRING_MAX];
+    char envbuf[NAS_ENV_MAX][EXEC_STRING_MAX];
+    const char *argv[NAS_ARGV_MAX];
+    const char *envp[NAS_ENV_MAX];
+    unsigned argc, envc;
+} pending_exec;
+
+static uint64_t copy_exec_string(uint64_t addr, char dst[EXEC_STRING_MAX]) {
+    if (addr >= USER_LIMIT) return (uint64_t)-EFAULT;
+    for (unsigned i = 0; i < EXEC_STRING_MAX; i++) {
+        uint8_t ch;
+        if (!user_read_bytes(addr + i, &ch, 1)) return (uint64_t)-EFAULT;
+        dst[i] = (char)ch;
+        if (!ch) return 0;
+    }
+    return (uint64_t)-E2BIG;
+}
+static uint64_t copy_exec_vector(uint64_t user_array, bool environment) {
+    unsigned limit = environment ? NAS_ENV_MAX : NAS_ARGV_MAX;
+    if (!user_array) {
+        if (!environment) {
+            pending_exec.argv[0] = pending_exec.argbuf[0];
+            pending_exec.argbuf[0][0] = 0;
+            pending_exec.argc = 1; /* argc>=1 Linux compatibility */
+        }
+        return 0;
+    }
+    for (unsigned i = 0; i <= limit; i++) {
+        uint64_t value;
+        if (user_array >= USER_LIMIT ||
+            i > (USER_LIMIT - user_array) / 8 ||
+            !read_u64(user_array + i * 8, &value))
+            return (uint64_t)-EFAULT;
+        if (!value) {
+            if (environment) pending_exec.envc = i;
+            else {
+                pending_exec.argc = i;
+                if (!i) {
+                    pending_exec.argc = 1;
+                    pending_exec.argv[0] = pending_exec.argbuf[0];
+                    pending_exec.argbuf[0][0] = 0;
+                }
+            }
+            return 0;
+        }
+        if (i == limit) return (uint64_t)-E2BIG;
+        char *storage = environment ? pending_exec.envbuf[i] : pending_exec.argbuf[i];
+        uint64_t ret = copy_exec_string(value, storage);
+        if ((int64_t)ret < 0) return ret;
+        if (environment) pending_exec.envp[i] = storage;
+        else pending_exec.argv[i] = storage;
+    }
+    return (uint64_t)-E2BIG;
+}
+static uint64_t sys_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
+    if (!bootfs_mounted()) return (uint64_t)-ENOENT;
+    uint64_t result = resolve_path((uint64_t)-100, pathname, pending_exec.filename);
+    if ((int64_t)result < 0) return result;
+    const struct bootfs_entry *app = bootfs_find(pending_exec.filename);
+    if (!app) return (uint64_t)-ENOENT;
+    if (bootfs_is_dir(app) || !(app->mode & 0111U))
+        return (uint64_t)-EACCES;
+    struct elf_image main_img = { app->data, app->size };
+    /* This milestone accepts native x86_64 ELF64 only, not scripts. */
+    if (main_img.size < sizeof(struct elf_hdr) ||
+        main_img.data[0] != 0x7f || main_img.data[1] != 'E' ||
+        main_img.data[2] != 'L' || main_img.data[3] != 'F')
+        return (uint64_t)-ENOEXEC;
+    const struct bootfs_entry *loader = bootfs_find("/lib/ld-musl-x86_64.so.1");
+    struct elf_image interp_img = {0};
+    const struct elf_image *interp = 0;
+    if (loader && !bootfs_is_dir(loader)) {
+        interp_img = (struct elf_image){loader->data, loader->size};
+        interp = &interp_img;
+    }
+    result = copy_exec_vector(argv, false);
+    if ((int64_t)result < 0) return result;
+    result = copy_exec_vector(envp, true);
+    if ((int64_t)result < 0) return result;
+    uint64_t new_root = alloc_user_root();
+    if (!new_root) return (uint64_t)-ENOMEM;
+    uint64_t previous_root = root_phys;
+    uint64_t old_heap = heap_break, old_cursor = mmap_cursor;
+    uint64_t old_phdr = loaded_phdr, old_phnum = loaded_phnum;
+    uint64_t old_entry = loaded_main_entry, old_interp = loaded_interp_base;
+    switch_user_root(new_root);
+    heap_break = 0;
+    mmap_cursor = 0x60000000ULL;
+    loaded_phdr = loaded_phnum = loaded_main_entry = loaded_interp_base = 0;
+    uint64_t entry, sp = 0;
+    bool good = elf_load(&main_img, interp, &entry);
+    if (good) {
+        for (uint64_t va = USER_STACK_TOP - USER_STACK_PAGES * PAGE;
+             va < USER_STACK_TOP; va += PAGE)
+            if (!user_map(va, true)) { good = false; break; }
+    }
+    if (good)
+        good = build_user_stack(pending_exec.argv, pending_exec.argc,
+                                pending_exec.envp, pending_exec.envc,
+                                pending_exec.filename, &sp);
+    if (!good) {
+        switch_user_root(previous_root);
+        if (!reclaim_user_root(new_root)) fail("execve rollback page-table corruption");
+        heap_break = old_heap;
+        mmap_cursor = old_cursor;
+        loaded_phdr = old_phdr;
+        loaded_phnum = old_phnum;
+        loaded_main_entry = old_entry;
+        loaded_interp_base = old_interp;
+        return (uint64_t)-ENOEXEC;
+    }
+    /* Commit: syscall can no longer return to old userspace RIP or RSP. */
+    for (unsigned fd = 0; fd < 64; fd++)
+        if (descriptors[fd] != FD_CLOSED && fd_cloexec[fd])
+            fd_close_raw(fd);
+    thread_clear_tid = 0;
+    user_fs_base = 0;
+    wrmsr(0xc0000100, 0); /* fresh musl/glibc TLS initialization */
+    for (unsigned i = 0; i < 65; i++)
+        for (unsigned j = 0; j < 4; j++)
+            signal_actions[i][j] = 0; /* exec resets user signal handlers */
+    if (!reclaim_user_root(previous_root))
+        fail("execve stale address-space frame reclaim failure");
+    const char *basename = pending_exec.filename;
+    for (const char *p = basename; *p; p++)
+        if (*p == '/') basename = p + 1;
+    running_busybox = same_string(basename, "busybox");
+    running_bash = same_string(basename, "bash");
+    running_alpine = running_busybox &&
+        ((const struct elf_hdr *)main_img.data)->type == 3;
+    nas_print("[EXEC] replaced process with CPIO ELF: ");
+    nas_print(pending_exec.filename);
+    nas_print("\n");
+    enter_user(entry, sp);
+    fail("execve iretq returned unexpectedly");
+}
+
 /* Strict single-program ABI diagnostic dispatcher, for a real syscall gate. */
 uint64_t syscall_dispatch(const uint64_t *args) {
     uint64_t nr = args[0];
@@ -1256,6 +1455,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == __NR_rt_sigprocmask) return sys_sigprocmask(args[1], args[2], args[3], args[4]);
     if (nr == __NR_uname) return sys_uname_naseed(args[1]);
     if (nr == __NR_getcwd) return sys_getcwd_root(args[1], args[2]);
+    if (nr == __NR_execve) return sys_execve(args[1], args[2], args[3]);
     if (nr == __NR_fcntl) return sys_fcntl(args[1], args[2], args[3]);
     if (nr == __NR_poll) return sys_poll(args[1], args[2], args[3]);
     if (nr == __NR_dup) return fd_duplicate(args[1], 0, false);
