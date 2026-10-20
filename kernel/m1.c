@@ -846,6 +846,13 @@ static uint64_t pipe_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
 static void fd_close_raw(uint64_t fd) {
     if (descriptors[fd] == FD_CLOSED) return;
     unsigned slot = file_slot[fd];
+    if (pipe_slot_owner[slot] && file_refcount[slot]) {
+        nas_print("[FD] close pid="); nas_dec(TASK.pid);
+        nas_print(" fd="); nas_dec(fd);
+        nas_print(" slot="); nas_dec(slot);
+        nas_print(" before="); nas_dec(file_refcount[slot]);
+        nas_print("\n");
+    }
     if (file_refcount[slot]) {
         file_refcount[slot]--;
         if (!file_refcount[slot]) pipe_release_description(slot);
@@ -868,6 +875,14 @@ static uint64_t fd_clone(uint64_t src, uint64_t dst, bool cloexec) {
     file_slot[dst] = (uint8_t)slot;
     fd_cloexec[dst] = cloexec ? 1 : 0;
     file_refcount[slot]++;
+    if (pipe_slot_owner[slot]) {
+        nas_print("[FD] dup pid="); nas_dec(TASK.pid);
+        nas_print(" src="); nas_dec(src);
+        nas_print(" dst="); nas_dec(dst);
+        nas_print(" slot="); nas_dec(slot);
+        nas_print(" refs="); nas_dec(file_refcount[slot]);
+        nas_print("\n");
+    }
     return dst;
 }
 static uint64_t fd_duplicate(uint64_t oldfd, uint64_t minimum, bool cloexec) {
@@ -1617,6 +1632,17 @@ static uint64_t sys_fork(uint64_t *frame) {
     }
     nas_task_set_root(child, new_root);
     if (!nas_task_hold_files(child)) fail("fork dangling open-file slot");
+    for (unsigned fd = 0; fd < NAS_FD_LIMIT; fd++) {
+        uint8_t kind = nas_task_fd_kind(child, fd);
+        if (kind != FD_PIPE_R && kind != FD_PIPE_W) continue;
+        unsigned slot = nas_task_fd_slot(child, fd);
+        nas_print("[FD] fork child="); nas_dec(child->pid);
+        nas_print(" fd="); nas_dec(fd);
+        nas_print(" kind="); nas_dec(kind);
+        nas_print(" slot="); nas_dec(slot);
+        nas_print(" refs="); nas_dec(file_refcount[slot]);
+        nas_print("\n");
+    }
     parent->resume_user_rsp = syscall_user_rsp;
     for (unsigned i = 0; i < 15; i++) parent->resume_regs[i] = frame[i];
     parent->resume_regs[0] = child->pid; /* fork returns PID to parent */
