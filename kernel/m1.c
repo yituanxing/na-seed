@@ -924,9 +924,10 @@ void m1_start(void) {
     descriptors[2] = FD_UART;
     if (!build_linux_stack(running_bash, running_busybox, &stack_pointer))
         fail("cannot initialize Linux userspace stack");
-    nas_print("[M1] static ELF entry="); nas_hex(entry); nas_print("\n");
+    nas_print("[ELF] userspace entry="); nas_hex(entry); nas_print("\n");
     if (running_bash) nas_print("[M2] entering real Bash in ring 3\n");
-    else if (running_busybox) nas_print("[M3] entering real BusyBox in ring 3\n");
+    else if (running_alpine) nas_print("[M4] real Alpine busybox via musl interpreter in ring 3\n");
+    else if (running_busybox) nas_print("[M2] entering real BusyBox in ring 3\n");
     else nas_print("[M1] entering actual ring 3\n");
     enter_user(entry, stack_pointer);
     fail("iretq returned");
