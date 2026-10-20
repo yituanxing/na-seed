@@ -15,7 +15,7 @@ chmod 644 "$root/etc/hostname"
 chmod 1777 "$root/tmp" # mountpoint only; actual new files live in kernel RAM
 # Genuine BusyBox applet symlinks, not duplicated executables or kernel
 # pathname aliases. CPIO newc preserves links as S_IFLNK + target bytes.
-applets='cat wc head yes sha256sum readlink ls grep'
+applets='cat wc head yes sha256sum readlink ls grep mkdir rmdir rm'
 for applet in $applets; do
     ln -s busybox "$root/bin/$applet"
 done
