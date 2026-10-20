@@ -740,6 +740,7 @@ struct nas_tmp_file {
     char path[256];
     uint8_t bytes[TMP_FILE_CAP];
     uint64_t size;
+    uint32_t mode;
 };
 static struct nas_tmp_file tmp_files[TMP_FILE_COUNT];
 static uint8_t tmp_slot_owner[NAS_FD_LIMIT]; /* 1-based inode index */
@@ -1090,6 +1091,7 @@ static struct nas_tmp_file *tmp_create(const char *path,bool dir) {
         while (path[i] && i<255) { file->path[i]=path[i]; i++; }
         file->path[i]=0;
         file->size=0;
+        file->mode=dir ? 0040755U : 0100644U;
         file->is_dir=dir;
         file->linked=file->used=true;
         return file;
@@ -1152,6 +1154,51 @@ static uint64_t tmp_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     if (offset + n > file->size) file->size = offset + n;
     boot_file_offsets[slot] = offset + n;
     return n;
+}
+/* These are actual Linux mkdir(83), rmdir(84), unlink(87) and
+ * mkdirat/unlinkat entry points, not shell-command path rewrites.
+ * Read-only CPIO refuses mutations; only the /tmp overlay is writable.
+ */
+static uint64_t sys_mkdirat_tmp(uint64_t dirfd,uint64_t pathname,uint64_t mode) {
+    char path[256];
+    uint64_t r=resolve_path(dirfd,pathname,path);
+    if ((int64_t)r<0) return r;
+    if (bootfs_find(path) || tmp_find(path)) return (uint64_t)-EEXIST;
+    if (!tmp_path(path) || !bootfs_mounted()) return (uint64_t)-EROFS;
+    int parent=tmp_parent_check(path);
+    if (parent) return (uint64_t)(int64_t)parent;
+    struct nas_tmp_file *dir=tmp_create(path,true);
+    if (!dir) return (uint64_t)-ENOSPC;
+    dir->mode=0040000U | (uint32_t)(mode & 0777U);
+    return 0;
+}
+static uint64_t sys_unlinkat_tmp(uint64_t dirfd,uint64_t pathname,
+                                  uint64_t flags) {
+    const uint64_t AT_REMOVEDIR=0x200ULL;
+    if (flags & ~AT_REMOVEDIR) return (uint64_t)-EINVAL;
+    char path[256];
+    uint64_t r=resolve_path(dirfd,pathname,path);
+    if ((int64_t)r<0) return r;
+    if (!tmp_path(path) || !bootfs_mounted()) return (uint64_t)-EROFS;
+    struct nas_tmp_file *file=tmp_find(path);
+    if (!file) {
+        int parent=tmp_parent_check(path);
+        if (parent) return (uint64_t)(int64_t)parent;
+        return (uint64_t)-ENOENT;
+    }
+    if (file->is_dir && !(flags & AT_REMOVEDIR)) return (uint64_t)-EISDIR;
+    if (!file->is_dir && (flags & AT_REMOVEDIR)) return (uint64_t)-ENOTDIR;
+    if (file->is_dir) {
+        if (tmp_child(path,0)) return (uint64_t)-ENOTEMPTY;
+        for (unsigned n=0;n<NAS_TASK_LIMIT;n++) {
+            struct nas_task *task=nas_task_at(n);
+            if (task && task->state != NAS_TASK_FREE &&
+                same_string(task->cwd,path)) return (uint64_t)-EBUSY;
+        }
+    }
+    file->linked=false;
+    tmp_try_reclaim(tmp_number(file)+1);
+    return 0;
 }
 static uint64_t sys_open_path(const char *path, uint64_t flags) {
     const uint64_t permitted = 3ULL | 0x800ULL | 0x8000ULL |
@@ -1455,7 +1502,7 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
         const struct nas_tmp_file *file = tmp_by_fd(fd);
         if (!file) return (uint64_t)-EBADF;
         st.dev = 5; st.ino = 5000 + tmp_number(file);
-        st.mode = file->is_dir ? 0040755 : 0100644;
+        st.mode = file->mode;
         st.nlink = file->linked ? (file->is_dir ? 2 : 1) : 0;
         st.size = (int64_t)file->size;
         st.blocks = (int64_t)((file->size + 511) / 512);
@@ -2173,6 +2220,11 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == __NR_brk) return sys_brk(args[1]);
     if (nr == __NR_read) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
     if (nr == __NR_write) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
+    if (nr == __NR_mkdir) return sys_mkdirat_tmp((uint64_t)-100,args[1],args[2]);
+    if (nr == __NR_mkdirat) return sys_mkdirat_tmp(args[1],args[2],args[3]);
+    if (nr == __NR_unlink) return sys_unlinkat_tmp((uint64_t)-100,args[1],0);
+    if (nr == __NR_rmdir) return sys_unlinkat_tmp((uint64_t)-100,args[1],0x200ULL);
+    if (nr == __NR_unlinkat) return sys_unlinkat_tmp(args[1],args[2],args[3]);
     if (nr == __NR_open) return sys_open_device(args[1], args[2]);
     if (nr == __NR_openat) return sys_openat_boot(args[1], args[2], args[3]);
     if (nr == __NR_fstat) return sys_fstat_boot(args[1], args[2]);
