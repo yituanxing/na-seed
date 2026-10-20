@@ -13,7 +13,7 @@ if [ ! -f "$ARCHIVE" ]; then
     mv "$ARCHIVE.part" "$ARCHIVE"
 fi
 echo "[BASH] source=GNU Bash 5.2.37"
-sha256sum "$ARCHIVE"
+printf '%s  %s\n' '9599b22ecd1d5787ad7d3b7bf0c59f312b3396d1e281175dd1f8a4014da621ff' "$ARCHIVE" | sha256sum -c -
 if [ ! -f "$SRC/config.status" ]; then
     tar -xzf "$ARCHIVE" -C "$DEPS"
     ( cd "$SRC" &&
