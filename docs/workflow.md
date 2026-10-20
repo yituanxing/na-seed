@@ -151,3 +151,37 @@ tests demand explicit boot failures for a missing executable and for the
 nonexecuting real `/etc/hostname` file. The M0-M5.1 regression remains
 mandatory; no general execve, process creation, shell/PATH search, or
 writable filesystem is claimed.
+
+## M5.3 — actual BusyBox ash drives cwd, FD lifetime and in-memory poll
+
+The first archive-only invocation of upstream Alpine BusyBox `sh -c ...`
+was used to diagnose syscall classes **before** writing implementations.
+The shell's `echo` and `pwd` builtins already worked; `cd /etc`
+required Linux `chdir(80)` and per-process cwd-aware path resolution.
+Real shell input redirection required `fcntl(72)` and Linux's shared
+open-file-description offset semantics for `dup/dup2/dup3`, not just
+copying fd table values. A builtin `read` also required `poll(7)`
+readiness on a genuine memory-backed regular file. Added Linux raw
+`fchdir`, `getcwd` and descriptor CLOEXEC/status flags as part of
+the same single-process family. `/dev/null` now accepts sensible
+character-device open flags while archive files remain read-only.
+
+The strict QEMU black-box suite boots the **unmodified** BusyBox ash
+from the one-module CPIO and verifies actual stdout and zero exit for:
+`sh -c 'echo shell-ready'`, `sh -c 'pwd'`,
+`sh -c 'cd /etc; pwd'`, `sh -c 'read word < /etc/hostname; echo $word'`,
+`sh -c 'cd /etc; read word < hostname; echo $word'`,
+stdout redirection to real `/dev/null`, and an open fd duplicated to
+two sequential shell `read` calls (shared EOF/offset). Older M0–M5.2
+real software regressions remain mandatory.
+
+**Still unsupported and explicitly diagnosed, not marked as accepted:**
+`sh -c '/bin/busybox cat /etc/hostname'` reaches `execve(59)`;
+`sh -c 'echo abc | wc -c'` reaches `pipe(22)`. Bare shell `cat`
+cannot be located because `/bin/cat` is absent from the archive;
+this is a userspace rootfs/path issue, **not** a syscall success.
+There is no `fork`, `execve`, pipes, scheduler, interactive TTY,
+or writable root filesystem yet. `poll` only reports readiness for
+in-memory files and available output devices; it returns
+`-EOPNOTSUPP` for requests requiring an unsupported blocking wait.
+No kernel syscall silently claims to have waited.
