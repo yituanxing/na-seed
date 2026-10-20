@@ -47,6 +47,7 @@ for scenario in builtin builtinpwd cd readfile cdread readtwice redirect applet 
         cd) expected='/etc' ;;
         readfile|cdread) expected='naseed' ;;
         readtwice) expected='naseed:' ;;
+        external) expected='naseed' ;;
         redirect) expected='redirect-ok' ;;
         *) expected='' ;;
     esac
@@ -64,15 +65,17 @@ for scenario in builtin builtinpwd cd readfile cdread readtwice redirect applet 
             echo '[ASH-FAIL] redirected hello incorrectly reached stdout' >&2
             exit 1
         fi
+        if [ "$scenario" = external ] &&
+           ! grep -Fq '[EXEC] replaced process with CPIO ELF: /bin/busybox' "$log"; then
+            echo '[ASH-FAIL] external image was not replaced' >&2
+            exit 1
+        fi
         echo "[ACCEPTED] unmodified Alpine ash scenario=$scenario"
     else
         case "$scenario" in
             applet)
                 blocker='[EXIT] user status=127'
                 reason='PATH applet entry /bin/cat absent (no symlinks yet)' ;;
-            external)
-                blocker='[MISS] syscall nr=59'
-                reason='execve (single-process replacement not implemented)' ;;
             pipeline)
                 blocker='[MISS] syscall nr=22'
                 reason='pipe + process semantics not implemented' ;;
