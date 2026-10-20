@@ -318,7 +318,7 @@ static bool put_stack_string(uint64_t *sp, const char *str, uint64_t *address) {
     *address = *sp;
     return true;
 }
-static bool build_linux_stack(bool bash, bool busybox, uint64_t entry, uint64_t *out_sp) {
+static bool build_linux_stack(bool bash, bool busybox, uint64_t *out_sp) {
     static const char * const args_bash[] = {
         "/bin/bash", "--noprofile", "--norc", "-c", "echo hello"
     };
@@ -920,7 +920,7 @@ void m1_start(void) {
     descriptors[0] = FD_UART;
     descriptors[1] = FD_UART;
     descriptors[2] = FD_UART;
-    if (!build_linux_stack(running_bash, running_busybox, entry, &stack_pointer))
+    if (!build_linux_stack(running_bash, running_busybox, &stack_pointer))
         fail("cannot initialize Linux userspace stack");
     nas_print("[M1] static ELF entry="); nas_hex(entry); nas_print("\n");
     if (running_bash) nas_print("[M2] entering real Bash in ring 3\n");
