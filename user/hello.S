@@ -1,6 +1,9 @@
 .text
 .global _start
 _start:
+    /* Kernel must not supply a garbage dynamic-loader finalizer. */
+    test %rdx, %rdx
+    jne fail
     /* Verify CPL3 so syscall acceptance cannot pass from ring zero. */
     mov %cs, %ax
     and $3, %ax

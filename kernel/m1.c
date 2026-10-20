@@ -281,16 +281,17 @@ static bool put_stack_string(uint64_t *sp, const char *str, uint64_t *address) {
     *address = *sp;
     return true;
 }
-static bool build_linux_stack(bool bash, uint64_t entry, uint64_t *out_sp) {
+static bool build_linux_stack(bool bash, bool busybox, uint64_t entry, uint64_t *out_sp) {
     static const char * const args_bash[] = {
         "/bin/bash", "--noprofile", "--norc", "-c", "echo hello"
     };
     static const char * const args_hello[] = {"/bin/hello"};
+    static const char * const args_busybox[] = {"/bin/busybox", "echo", "hello"};
     static const char * const vars[] = {
         "PATH=/bin:/usr/bin", "HOME=/", "TERM=dumb", "LC_ALL=C"
     };
-    const char * const *args = bash ? args_bash : args_hello;
-    unsigned argc = bash ? 5 : 1;
+    const char * const *args = bash ? args_bash : (busybox ? args_busybox : args_hello);
+    unsigned argc = bash ? 5 : (busybox ? 3 : 1);
     uint64_t sp = USER_STACK_TOP;
     uint64_t arg_ptrs[5], env_ptrs[4];
     uint32_t lo, hi;
@@ -340,6 +341,19 @@ static bool build_linux_stack(bool bash, uint64_t entry, uint64_t *out_sp) {
     *out_sp = sp;
     return true;
 }
+static bool busybox_module(const struct limine_file *file) {
+    if (!file || !file->path) return false;
+    const char *p = file->path, *tail = p;
+    while (*p) {
+        if (*p == '/') tail = p + 1;
+        p++;
+    }
+    const char *expected = "busybox";
+    while (*tail && *expected && *tail == *expected) {
+        tail++; expected++;
+    }
+    return !*tail && !*expected;
+}
 static bool bash_module(const struct limine_file *file) {
     if (!file || !file->path) return false;
     const char *p = file->path;
@@ -349,6 +363,7 @@ static bool bash_module(const struct limine_file *file) {
     return false;
 }
 static bool running_bash;
+static bool running_busybox;
 static bool saw_bash_hello;
 static unsigned matched_chars;
 static uint32_t missing_count[512];
@@ -534,7 +549,7 @@ static uint64_t sys_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
         uint8_t *p = user_byte(address + i);
         if (!p) return i ? i : (uint64_t)-14;
         nas_putchar((char)*p);
-        if (fd == 1 && running_bash) observe_stdout((char)*p);
+        if (fd == 1 && (running_bash || running_busybox)) observe_stdout((char)*p);
     }
     return length;
 }
@@ -615,14 +630,64 @@ static uint64_t sys_sigprocmask(uint64_t how, uint64_t set,
     return 0;
 }
 
+/* Real x86-64 mprotect on mapped user pages, with NX (if enabled). */
+static uint64_t sys_mprotect(uint64_t addr, uint64_t length, uint64_t prot) {
+    const uint64_t nx = 1ULL << 63;
+    if (addr & (PAGE - 1) || (prot & ~7ULL) ||
+        length > UINT64_MAX - (PAGE - 1))
+        return (uint64_t)-22;
+    if (!length) return 0;
+    uint64_t pages = (length + PAGE - 1) / PAGE;
+    if (addr >= USER_LIMIT || pages > (USER_LIMIT - addr) / PAGE)
+        return (uint64_t)-12;
+    uint64_t efer = rdmsr(0xc0000080);
+    if (!(efer & (1ULL << 11))) {
+        /* Cannot claim executable permission enforcement without NXE. */
+        return (uint64_t)-38;
+    }
+    if (!prot) return (uint64_t)-38; /* PROT_NONE needs VMA semantics. */
+    /* Validate every mapped page before touching any permission bit. */
+    for (uint64_t i = 0; i < pages; i++) {
+        uint64_t *pte = user_leaf(addr + i * PAGE, false);
+        if (!pte || !(*pte & P_PRESENT) || !(*pte & P_USER))
+            return (uint64_t)-12;
+    }
+    for (uint64_t i = 0; i < pages; i++) {
+        uint64_t va = addr + i * PAGE;
+        uint64_t *pte = user_leaf(va, false);
+        uint64_t e = *pte & ~(P_RW | nx);
+        if (prot & 2) e |= P_RW;
+        if (!(prot & 4)) e |= nx;
+        *pte = e;
+        user_invalidate(va);
+    }
+    return 0;
+}
+
 /* Strict single-program ABI diagnostic dispatcher, for a real syscall gate. */
 uint64_t syscall_dispatch(const uint64_t *args) {
     uint64_t nr = args[0];
+    /* Real-program execution trace: syscall identity, callsite and args.
+     * Capped to avoid serial storms; not needed in exception context.
+     */
+#ifdef NASEED_SYSCALL_TRACE
+    static unsigned trace_count;
+    if ((running_bash || running_busybox) && trace_count++ < 96) {
+        nas_print("[TRACE] nr="); nas_dec(nr);
+        nas_print(" rip="); nas_hex(args[7]);
+        nas_print(" rsp="); nas_hex(syscall_user_rsp);
+        nas_print(" a1="); nas_hex(args[1]);
+        nas_print(" a2="); nas_hex(args[2]);
+        nas_print(" a3="); nas_hex(args[3]);
+        nas_print("\n");
+    }
+#endif
     if (nr == 158) return sys_arch_prctl(args[1], args[2]);
     if (nr == 218) { thread_clear_tid = args[1]; return 1; }
     if (nr == 39 || nr == 186) return 1;  /* getpid / gettid */
     if (nr == 110) return 0;  /* getppid for PID 1 */
     if (nr == 102 || nr == 104 || nr == 107 || nr == 108) return 0; /* root credentials */
+    if (nr == 10) return sys_mprotect(args[1], args[2], args[3]);
     if (nr == 9) return sys_anon_mmap(args[1], args[2], args[3],
                                        args[4], args[5], args[6]);
     if (nr == 11) return sys_munmap(args[1], args[2]);
@@ -650,6 +715,13 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == 111) return 1; /* getpgrp: only process group 1 exists */
     if (nr == 60 || nr == 231) { /* exit / exit_group */
         nas_print("[EXIT] user status="); nas_dec(args[1]); nas_print("\n");
+        if (running_busybox) {
+            if (args[1] == 0 && saw_bash_hello) {
+                nas_print("[PASS] M2 Debian BusyBox echo hello\n");
+                outb(0xf4, 0);
+            }
+            fail("real BusyBox exited without stdout hello and status 0");
+        }
         if (running_bash) {
             if (args[1] == 0 && saw_bash_hello) {
                 nas_print("[PASS] M2 real GNU Bash -c echo hello\n");
@@ -686,7 +758,9 @@ void m1_start(void) {
     const struct limine_file *module = nas_user_module();
     if (!module) fail("no Limine userspace ELF module");
     running_bash = bash_module(module);
+    running_busybox = busybox_module(module);
     if (running_bash) nas_print("[M2] real GNU Bash module discovered\n");
+    if (running_busybox) nas_print("[M3] real BusyBox module discovered\n");
     uint64_t entry = 0;
     if (!elf_load(module, &entry)) fail("invalid or unmappable static ELF");
     for (uint64_t va = USER_STACK_TOP - USER_STACK_PAGES * PAGE;
@@ -697,10 +771,11 @@ void m1_start(void) {
     descriptors[0] = FD_UART;
     descriptors[1] = FD_UART;
     descriptors[2] = FD_UART;
-    if (!build_linux_stack(running_bash, entry, &stack_pointer))
+    if (!build_linux_stack(running_bash, running_busybox, entry, &stack_pointer))
         fail("cannot initialize Linux userspace stack");
     nas_print("[M1] static ELF entry="); nas_hex(entry); nas_print("\n");
     if (running_bash) nas_print("[M2] entering real Bash in ring 3\n");
+    else if (running_busybox) nas_print("[M3] entering real BusyBox in ring 3\n");
     else nas_print("[M1] entering actual ring 3\n");
     enter_user(entry, stack_pointer);
     fail("iretq returned");

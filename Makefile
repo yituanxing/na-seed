@@ -15,7 +15,7 @@ CFLAGS := --target=x86_64-unknown-none-elf -std=c11 -O2 -g -Wall -Wextra -Werror
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
  -z noexecstack -T kernel/linker.ld
 
-.PHONY: all iso kernel smoke run clean bash-iso bash-probe
+.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe
 all: iso
 iso: $(ISO)
 kernel: $(KERNEL)
@@ -94,6 +94,46 @@ $(BASH_ISO): $(KERNEL) $(BASH_BIN) $(BINARY_EFI) limine-bash.conf
 bash-iso: $(BASH_ISO)
 bash-probe: $(BASH_ISO)
 	sh scripts/probe-bash.sh $(BASH_ISO)
+
+
+# Debian 13 binary packages, SHA256 verified in scripts/fetch-debian.sh.
+DEBIAN_BASH := $(OUT)/userspace/debian-bash
+DEBIAN_BUSYBOX := $(OUT)/userspace/debian-busybox
+DEBIAN_BASH_ISO := $(OUT)/naseed-debian-bash.iso
+DEBIAN_BUSYBOX_ISO := $(OUT)/naseed-debian-busybox.iso
+
+$(OUT)/userspace/debian-%: scripts/fetch-debian.sh
+	sh scripts/fetch-debian.sh $* "$(abspath $(OUT))"
+
+$(DEBIAN_BASH_ISO): $(KERNEL) $(DEBIAN_BASH) $(BINARY_EFI) limine-bash.conf
+	rm -rf $(OUT)/debian-bash-iso
+	mkdir -p $(OUT)/debian-bash-iso/boot/limine $(OUT)/debian-bash-iso/EFI/BOOT
+	cp $(KERNEL) $(OUT)/debian-bash-iso/boot/kernel
+	cp $(DEBIAN_BASH) $(OUT)/debian-bash-iso/boot/bash
+	cp limine-bash.conf $(OUT)/debian-bash-iso/boot/limine/limine.conf
+	cp $(OUT)/deps/limine-binary/limine-uefi-cd.bin $(OUT)/debian-bash-iso/boot/limine/
+	cp $(BINARY_EFI) $(OUT)/debian-bash-iso/EFI/BOOT/BOOTX64.EFI
+	xorriso -as mkisofs -R -r -J \
+	  --efi-boot boot/limine/limine-uefi-cd.bin \
+	  --efi-boot-part --efi-boot-image -o $@ $(OUT)/debian-bash-iso
+
+$(DEBIAN_BUSYBOX_ISO): $(KERNEL) $(DEBIAN_BUSYBOX) $(BINARY_EFI) limine-busybox.conf
+	rm -rf $(OUT)/debian-busybox-iso
+	mkdir -p $(OUT)/debian-busybox-iso/boot/limine $(OUT)/debian-busybox-iso/EFI/BOOT
+	cp $(KERNEL) $(OUT)/debian-busybox-iso/boot/kernel
+	cp $(DEBIAN_BUSYBOX) $(OUT)/debian-busybox-iso/boot/busybox
+	cp limine-busybox.conf $(OUT)/debian-busybox-iso/boot/limine/limine.conf
+	cp $(OUT)/deps/limine-binary/limine-uefi-cd.bin $(OUT)/debian-busybox-iso/boot/limine/
+	cp $(BINARY_EFI) $(OUT)/debian-busybox-iso/EFI/BOOT/BOOTX64.EFI
+	xorriso -as mkisofs -R -r -J \
+	  --efi-boot boot/limine/limine-uefi-cd.bin \
+	  --efi-boot-part --efi-boot-image -o $@ $(OUT)/debian-busybox-iso
+
+debian-bash-probe: $(DEBIAN_BASH_ISO)
+	sh scripts/probe-debian.sh bash $(DEBIAN_BASH_ISO)
+debian-busybox-probe: $(DEBIAN_BUSYBOX_ISO)
+	sh scripts/probe-debian.sh busybox $(DEBIAN_BUSYBOX_ISO)
+debian-probe: debian-bash-probe debian-busybox-probe
 
 smoke: $(ISO)
 	sh scripts/smoke.sh $(ISO)
