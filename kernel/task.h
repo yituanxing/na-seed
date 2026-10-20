@@ -3,10 +3,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* M6.1: ownership boundaries for real user processes.
- * NaOS (2025-04-26) initially separated PID/PPID, state, page root,
- * CPU context, cwd and FDs. NaSeed first establishes the same lifetime
- * boundaries, without pretending fork() or scheduling already works.
+/* NaOS-informed ownership boundaries for x86-64 user tasks.
+ * A single kernel stack is shared, so cooperative switching occurs only
+ * at the syscall boundary; each task retains its own user CPU/VM state.
  */
 #define NAS_TASK_LIMIT 4
 #define NAS_FD_LIMIT 64
@@ -34,11 +33,16 @@ struct nas_task {
     uint64_t pid, ppid;
     enum nas_task_state state;
     uint32_t exit_code;
-    /* Saved syscall-boundary frame: RAX,RDI,RSI,RDX,R10,R8,R9,RCX,R11.
-     * The scheduler switches ONLY when no kernel call remains active.
+    /* Saved syscall-boundary GPR frame in the exact arch.S push order.
+     * The scheduler switches after unwinding the current syscall frame.
      */
     uint64_t resume_regs[15], resume_user_rsp;
     bool resume_valid;
+    /* Pending blocking syscall holds user pointers, but never kernel-stack
+     * pointers. The task's private CR3 must be restored before replay.
+     */
+    uint64_t blocked_nr, blocked_args[4];
+    bool pending_valid; /* read(0) is a real pending syscall, not 'none' */
     uint8_t fpu_state[512] __attribute__((aligned(16)));
 
     /* One independent VM mapping root and ELF/brk/mmap tracking per task. */
@@ -53,7 +57,7 @@ struct nas_task {
     char cwd[256];
     struct nas_fd_table fds;
 
-    /* Current M6.1 only: real user-thread lifecycle, no scheduler yet. */
+    /* Real user-thread lifecycle and per-task syscall-boundary state. */
     bool running_bash, running_busybox, running_alpine;
     bool saw_bash_hello;
     unsigned matched_chars;
@@ -77,5 +81,8 @@ void nas_task_set_root(struct nas_task *task, uint64_t root);
 bool nas_task_hold_files(const struct nas_task *task);
 struct nas_task *nas_task_by_pid(uint64_t pid);
 struct nas_task *nas_task_child_at(uint64_t parent_pid, unsigned slot);
+struct nas_task *nas_task_at(unsigned slot);
+uint8_t nas_task_fd_kind(const struct nas_task *task, uint64_t fd);
+unsigned nas_task_fd_slot(const struct nas_task *task, uint64_t fd);
 const struct nas_task *nas_task_find(uint64_t pid);
 #endif

@@ -167,3 +167,54 @@ will require a scheduler that can yield a blocked producer/consumer,
 reschedule another runnable process and deliver the eventual read/write
 result, plus proper deadlock detection. Do not introduce a pretend
 sleep/wakeup implementation or claim preemptive scheduling.
+
+## M6.4 — real cooperative blocking and resumption (BusyBox ELF stream)
+
+The previous M6.3 pipe fixture moved only 4–7 bytes. This milestone
+uses **the original unmodified Alpine BusyBox ELF (~805KB, build-pinned)**,
+not a synthetic generator, as actual input to a 4096-byte anonymous
+pipe. The correct shell pipeline has to suspend a full producer,
+run/restore the consumer, and repeat until real EOF; a single 4096-byte
+read followed by fabricated EOF is an explicit test failure.
+
+The scheduler retains the simple one-kernel-stack syscall boundary:
+when a syscall cannot complete, it snapshots all 15 user GPRs and
+userspace RSP, marks that task BLOCKED, saves FPU state, and selects
+another READY task, restoring its CR3, FS and FPU state. A blocked
+reader/writer/wait4 operation is resumed by **replaying the original
+kernel syscall with actual user buffer pointers under the owning
+process's CR3**, not by returning success or subtracting two bytes
+from the userspace RIP. Results and SYSRET frames are delivered
+directly to their owning task.
+
+Two actual correctness bugs were exposed and fixed by the real
+multi-stage/large-file workload:
+
+1. Pipe endpoint slots are recyclable as open-file descriptions.
+   Once the last writer closes, the old pipe must permanently mark
+   that endpoint closed. Otherwise reuse of the same slot for the
+   *next pipe's reader* resurrects an unrelated writer and makes a
+   three-stage pipeline falsely wait for EOF forever.
+2. Linux syscall number `read = 0` is **not** a missing pending
+   operation. The task therefore carries a separate
+   `pending_valid` flag, ensuring every awakened read is actually
+   executed and returns its true data/EOF result.
+
+Acceptance on real QEMU now checks:
+```sh
+sh -c '/bin/busybox cat /bin/busybox | /bin/busybox wc -c'
+sh -c '/bin/busybox cat /bin/busybox | /bin/busybox cat | /bin/busybox wc -c'
+sh -c '/bin/busybox cat /bin/busybox | /bin/busybox sha256sum'
+```
+The first two must equal the ELF's **actual byte length** calculated
+independently by the CI host; the last must equal the original ELF's
+host SHA-256 digest. The large cases also require observed real task
+blocking and task switches. All preceding small-pipeline and
+M0–M6.3 software regressions must remain successful.
+
+**Scope boundary:** cooperative runnable selection when a syscall blocks
+or a task exits, not timer-driven preemption; no SMP, interactive TTY,
+signal delivery, or general kernel-thread preemption. If every living
+process is blocked with no wake condition, the scheduler reports a
+genuine deadlock with task/pipe ownership instead of silently returning
+an invented syscall result. This is not a completed general scheduler.

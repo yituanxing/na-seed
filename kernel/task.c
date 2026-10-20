@@ -57,6 +57,8 @@ struct nas_task *nas_task_fork_slot(void) {
         child->state = NAS_TASK_READY;
         child->exit_code = 0;
         child->resume_valid = false;
+        child->blocked_nr = 0;
+        child->pending_valid = false;
         return child;
     }
     return NULL;
@@ -101,4 +103,14 @@ struct nas_task *nas_task_child_at(uint64_t parent_pid, unsigned slot) {
     if (task->state == NAS_TASK_FREE || task->ppid != parent_pid)
         return NULL;
     return task;
+}
+
+struct nas_task *nas_task_at(unsigned slot) {
+    return slot < NAS_TASK_LIMIT ? &task_table[slot] : NULL;
+}
+uint8_t nas_task_fd_kind(const struct nas_task *task, uint64_t fd) {
+    return task && fd < NAS_FD_LIMIT ? task->fds.descriptors[fd] : 0;
+}
+unsigned nas_task_fd_slot(const struct nas_task *task, uint64_t fd) {
+    return task && fd < NAS_FD_LIMIT ? task->fds.file_slot[fd] : NAS_FD_LIMIT;
 }
