@@ -4,10 +4,13 @@
 # Diagnostic only: a printed failure is NOT an accepted new capability.
 set -eu
 base=build/alpine-archive-iso
-for scenario in builtin builtinpwd applet external pipeline; do
+for scenario in builtin builtinpwd cd readfile redirect applet external pipeline; do
     case "$scenario" in
         builtin) args="sh -c 'echo shell-ready'" ;;
         builtinpwd) args="sh -c 'pwd'" ;;
+        cd) args="sh -c 'cd /etc; pwd'" ;;
+        readfile) args="sh -c 'read word < /etc/hostname; echo \$word'" ;;
+        redirect) args="sh -c 'echo hello > /dev/null; echo redirect-ok'" ;;
         applet) args="sh -c 'cat /etc/hostname'" ;;
         external) args="sh -c '/bin/busybox cat /etc/hostname'" ;;
         pipeline) args="sh -c 'echo abc | wc -c'" ;;
@@ -30,7 +33,7 @@ for scenario in builtin builtinpwd applet external pipeline; do
     rc=0
     timeout 4s sh scripts/run.sh "$iso" > "$log" 2>&1 || rc=$?
     echo "[ASH-DIAG] case=$scenario qemu_status=$rc args=$args"
-    tr -d '\r' < "$log" | grep -E '^\[(MISS|FAULT|FAIL|EXIT|PASS)\]|^(shell-ready|naseed|/|4)$' || true
+    tr -d '\r' < "$log" | grep -E '^\[(MISS|FAULT|FAIL|EXIT|PASS)\]|^(shell-ready|naseed|redirect-ok|/etc|/|4)$' || true
     if ! grep -Fq '[FS] CPIO newc read-only archive mounted' "$log"; then
         echo "[ASH-DIAG-FAIL] missing actual archive mount" >&2
         exit 1
