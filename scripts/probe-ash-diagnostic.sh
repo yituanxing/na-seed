@@ -18,7 +18,7 @@ for scenario in builtin builtinpwd pid cd readfile cdread readtwice redirect app
         applet) args="sh -c 'cat /etc/hostname'" ;;
         external) args="sh -c '/bin/busybox cat /etc/hostname'" ;;
         sequence) args="sh -c '/bin/busybox cat /etc/hostname; echo finished'" ;;
-        pipeline) args="sh -c 'echo abc | wc -c'" ;;
+        pipeline) args="sh -c 'echo abc | /bin/busybox wc -c'" ;;
     esac
     stage="build/ash-diag-$scenario-iso"
     iso="build/naseed-ash-diag-$scenario.iso"
@@ -52,6 +52,7 @@ for scenario in builtin builtinpwd pid cd readfile cdread readtwice redirect app
         readtwice) expected='naseed:' ;;
         external) expected='naseed' ;;
         sequence) expected='finished' ;;
+        pipeline) expected='4' ;;
         redirect) expected='redirect-ok' ;;
         *) expected='' ;;
     esac
@@ -67,6 +68,12 @@ for scenario in builtin builtinpwd pid cd readfile cdread readtwice redirect app
         if [ "$scenario" = redirect ] &&
            tr -d '\r' < "$log" | grep -Fxq hello; then
             echo '[ASH-FAIL] redirected hello incorrectly reached stdout' >&2
+            exit 1
+        fi
+        if [ "$scenario" = pipeline ] &&
+           ! grep -Fq '[PIPE] created read=' "$log"; then
+            echo '[ASH-FAIL] shell pipeline did not use kernel pipe endpoints' >&2
+            tail -90 "$log" >&2
             exit 1
         fi
         if [ "$scenario" = sequence ] && {
@@ -89,9 +96,6 @@ for scenario in builtin builtinpwd pid cd readfile cdread readtwice redirect app
             applet)
                 blocker='[EXIT] user status=127'
                 reason='PATH applet entry /bin/cat absent (no symlinks yet)' ;;
-            pipeline)
-                blocker='[MISS] syscall nr=22'
-                reason='pipe + process semantics not implemented' ;;
         esac
         if grep -Fq '[PASS] cmdline userspace exit 0' "$log" ||
            ! grep -Fq "$blocker" "$log"; then
