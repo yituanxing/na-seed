@@ -15,7 +15,7 @@ CFLAGS := --target=x86_64-unknown-none-elf -std=c11 -O2 -g -Wall -Wextra -Werror
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
  -z noexecstack -T kernel/linker.ld
 
-.PHONY: all iso kernel smoke run clean
+.PHONY: all iso kernel smoke run clean bash-iso bash-probe
 all: iso
 iso: $(ISO)
 kernel: $(KERNEL)
@@ -70,6 +70,30 @@ $(ISO): $(KERNEL) $(OUT)/user-hello $(BINARY_EFI) limine.conf
 	 --efi-boot boot/limine/limine-uefi-cd.bin \
 	 --efi-boot-part --efi-boot-image \
 	 -o $(ISO) $(OUT)/iso
+
+
+BASH_BIN := $(OUT)/userspace/bash
+BASH_ISO := $(OUT)/naseed-bash.iso
+
+$(BASH_BIN): scripts/build-bash.sh
+	sh scripts/build-bash.sh "$(abspath $(OUT))"
+	test -x "$@"
+
+$(BASH_ISO): $(KERNEL) $(BASH_BIN) $(BINARY_EFI) limine-bash.conf
+	rm -rf $(OUT)/bash-iso
+	mkdir -p $(OUT)/bash-iso/boot/limine $(OUT)/bash-iso/EFI/BOOT
+	cp $(KERNEL) $(OUT)/bash-iso/boot/kernel
+	cp $(BASH_BIN) $(OUT)/bash-iso/boot/bash
+	cp limine-bash.conf $(OUT)/bash-iso/boot/limine/limine.conf
+	cp $(OUT)/deps/limine-binary/limine-uefi-cd.bin $(OUT)/bash-iso/boot/limine/
+	cp $(BINARY_EFI) $(OUT)/bash-iso/EFI/BOOT/BOOTX64.EFI
+	xorriso -as mkisofs -R -r -J \
+	 --efi-boot boot/limine/limine-uefi-cd.bin \
+	 --efi-boot-part --efi-boot-image -o $@ $(OUT)/bash-iso
+
+bash-iso: $(BASH_ISO)
+bash-probe: $(BASH_ISO)
+	sh scripts/probe-bash.sh $(BASH_ISO)
 
 smoke: $(ISO)
 	sh scripts/smoke.sh $(ISO)

@@ -13,9 +13,16 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y clang lld xorriso qemu-system-x86 ovmf
+          sudo apt-get install -y clang lld xorriso qemu-system-x86 ovmf musl-tools binutils
+      - name: Cache verified static GNU Bash
+        uses: actions/cache@v4
+        with:
+          path: build/userspace/bash
+          key: naseed-musl-bash-5.2.37-${{ runner.os }}-${{ hashFiles('scripts/build-bash.sh') }}
       - name: Build and boot real kernel
         run: make smoke
+      - name: Build authentic static Bash and probe actual QEMU behavior
+        run: BASH_REQUIRE_PASS=1 make bash-probe
       - name: Attach serial log on failure
         if: failure()
         uses: actions/upload-artifact@v4
