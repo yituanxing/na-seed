@@ -652,7 +652,7 @@ static uint64_t sys_fcntl(uint64_t fd, uint64_t command, uint64_t arg) {
             (arg & (0x800ULL | 0x400ULL));
         return 0;
     case 1030: return fd_duplicate(fd, arg, true); /* F_DUPFD_CLOEXEC */
-    default: return (uint64_t)-ENOSYS;
+    default: return (uint64_t)-EINVAL; /* unsupported fcntl cmd */
     }
 }
 static const struct limine_file *bootfs_lookup(const char *path) {
@@ -883,7 +883,7 @@ static uint64_t sys_fd_writev(uint64_t fd, uint64_t iov, uint64_t count) {
 }
 /* poll() readiness for real in-memory files and available output devices.
  * There is no scheduler/TTY RX yet: unsupported blocking waits return
- * -ENOSYS rather than pretending that a timeout elapsed.
+ * -EOPNOTSUPP rather than pretending that a timeout elapsed.
  * Linux pollfd ABI: int32 fd, int16 events, int16 revents (8 bytes).
  */
 static uint64_t sys_poll(uint64_t address, uint64_t nfds, uint64_t timeout) {
@@ -915,7 +915,7 @@ static uint64_t sys_poll(uint64_t address, uint64_t nfds, uint64_t timeout) {
         if (!write_u64(address + i * 8, word)) return (uint64_t)-EFAULT;
     }
     if (ready || (int64_t)timeout == 0) return ready;
-    return (uint64_t)-ENOSYS;
+    return (uint64_t)-EOPNOTSUPP; /* no scheduler-backed blocking poll */
 }
 
 static uint64_t sys_getcwd_root(uint64_t buffer, uint64_t size) {
