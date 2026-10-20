@@ -227,5 +227,22 @@ void kmain(void) {
     }
     serial_puts("[PASS] M0 memory allocator\n");
     serial_puts("[PASS] M0 boot / serial / memory\n");
+    extern void m1_start(void);
+    m1_start();
     halt();
+}
+
+/* M1 bridge: shared M0 allocator, UART and bootloader state. */
+uint64_t nas_frame_alloc(void) { return frame_alloc(); }
+uint64_t nas_hhdm_offset(void) { return hhdm; }
+void nas_print(const char *s) { serial_puts(s); }
+void nas_dec(uint64_t v) { serial_dec(v); }
+void nas_hex(uint64_t n) {
+    static const char digits[] = "0123456789abcdef";
+    serial_puts("0x");
+    for (int bit = 60; bit >= 0; bit -= 4) serial_putc(digits[(n >> bit) & 15]);
+}
+const struct limine_file *nas_user_module(void) {
+    if (!module_req.response || !module_req.response->module_count) return 0;
+    return module_req.response->modules[0];
 }
