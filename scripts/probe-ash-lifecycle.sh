@@ -24,15 +24,38 @@ for case_name in shorthead yeshead yeschain; do
   rc=0
   timeout 12s sh scripts/run.sh "$iso" >"$log" 2>&1 || rc=$?
   tr -d '\r' < "$log" > "$clean"
-  echo "[LIFE-DIAG] case=$case_name qemu_rc=$rc args=$args"
-  if [ "$case_name" = yeschain ] && [ "$rc" -ne 1 ]; then
-    echo '[LIFE-DIAG] detailed yeschain serial tail:'
-    tail -95 "$clean"
+  if [ "$rc" -ne 1 ] ||
+     ! grep -Fq '[FS] CPIO newc read-only archive mounted' "$clean" ||
+     ! grep -Fq '[PASS] cmdline userspace exit 0' "$clean" ||
+     ! grep -Fq '[SIGNAL] default SIGPIPE terminated pid=' "$clean" ||
+     ! grep -Fq '[PROC] wait4 reaped pid=2 status=13' "$clean" ||
+     grep -Fq '[DEADLOCK]' "$clean" ||
+     grep -Fq '[FAULT]' "$clean"; then
+    echo "[FAIL] early-closed pipe has no genuine SIGPIPE/reap: $case_name rc=$rc" >&2
+    tail -95 "$clean" >&2
+    exit 1
   fi
-  grep -E '^\[(DEADLOCK|FAIL|FAULT|EXIT|PASS|SCHED|PROC|MISS)\]|^(256|3|Y|after-short|after-chain)$' "$clean" | tail -65 || true
-  grep -Fq '[FS] CPIO newc read-only archive mounted' "$clean" || {
-      echo "[FAIL] archive did not mount in $case_name" >&2
-      tail -80 "$clean" >&2
-      exit 1
-  }
+  case "$case_name" in
+    shorthead)
+      if ! grep -Fxq '256' "$clean"; then
+        echo "[FAIL] truncated cat/head/wc did not transfer exactly 256 bytes" >&2
+        tail -90 "$clean" >&2
+        exit 1
+      fi ;;
+    yeshead)
+      if [ "$(grep -Fxc 'Y' "$clean" || true)" -ne 3 ] ||
+         ! grep -Fxq 'after-short' "$clean"; then
+        echo "[FAIL] yes/head must emit exactly three Y lines and resume shell" >&2
+        tail -90 "$clean" >&2
+        exit 1
+      fi ;;
+    yeschain)
+      if ! grep -Fxq '3' "$clean" ||
+         ! grep -Fxq 'after-chain' "$clean"; then
+        echo "[FAIL] yes/head/wc must count exactly three lines and resume shell" >&2
+        tail -90 "$clean" >&2
+        exit 1
+      fi ;;
+  esac
+  echo "[ACCEPTED] real BusyBox $case_name SIGPIPE, Linux wait status 13, and shell continuation"
 done
