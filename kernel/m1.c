@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "nr.h"
 
 /* Single-core M1: run a REAL static ELF from a Limine module in ring 3.
  * The new process CR3 preserves Limine's supervisor upper-half/HHDM mappings.
@@ -886,43 +887,43 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         nas_print("\n");
     }
 #endif
-    if (nr == 158) return sys_arch_prctl(args[1], args[2]);
-    if (nr == 218) { thread_clear_tid = args[1]; return 1; }
-    if (nr == 39 || nr == 186) return 1;  /* getpid / gettid */
-    if (nr == 110) return 0;  /* getppid for PID 1 */
-    if (nr == 102 || nr == 104 || nr == 107 || nr == 108) return 0; /* root credentials */
-    if (nr == 10) return sys_mprotect(args[1], args[2], args[3]);
-    if (nr == 9) return sys_anon_mmap(args[1], args[2], args[3],
+    if (nr == __NR_arch_prctl) return sys_arch_prctl(args[1], args[2]);
+    if (nr == __NR_set_tid_address) { thread_clear_tid = args[1]; return 1; }
+    if (nr == __NR_getpid || nr == __NR_gettid) return 1;  /* getpid / gettid */
+    if (nr == __NR_getppid) return 0;  /* getppid for PID 1 */
+    if (nr == __NR_getuid || nr == __NR_getgid || nr == __NR_geteuid || nr == __NR_getegid) return 0; /* root credentials */
+    if (nr == __NR_mprotect) return sys_mprotect(args[1], args[2], args[3]);
+    if (nr == __NR_mmap) return sys_anon_mmap(args[1], args[2], args[3],
                                        args[4], args[5], args[6]);
-    if (nr == 11) return sys_munmap(args[1], args[2]);
-    if (nr == 12) return sys_brk(args[1]);
-    if (nr == 0) return sys_fd_read(args[1], args[2], args[3]);
-    if (nr == 1) return sys_fd_write(args[1], args[2], args[3]);
-    if (nr == 2) return sys_open_device(args[1], args[2]);
-    if (nr == 257) return sys_openat_boot(args[1], args[2], args[3]);
-    if (nr == 5) return sys_fstat_boot(args[1], args[2]);
-    if (nr == 262) return sys_fstatat_boot(args[1], args[2], args[3], args[4]);
-    if (nr == 8) return sys_lseek_boot(args[1], args[2], args[3]);
-    if (nr == 3) {
+    if (nr == __NR_munmap) return sys_munmap(args[1], args[2]);
+    if (nr == __NR_brk) return sys_brk(args[1]);
+    if (nr == __NR_read) return sys_fd_read(args[1], args[2], args[3]);
+    if (nr == __NR_write) return sys_fd_write(args[1], args[2], args[3]);
+    if (nr == __NR_open) return sys_open_device(args[1], args[2]);
+    if (nr == __NR_openat) return sys_openat_boot(args[1], args[2], args[3]);
+    if (nr == __NR_fstat) return sys_fstat_boot(args[1], args[2]);
+    if (nr == __NR_newfstatat) return sys_fstatat_boot(args[1], args[2], args[3], args[4]);
+    if (nr == __NR_lseek) return sys_lseek_boot(args[1], args[2], args[3]);
+    if (nr == __NR_close) {
         if (args[1] >= 64 || descriptors[args[1]] == FD_CLOSED)
             return (uint64_t)-9;
         descriptors[args[1]] = FD_CLOSED;
         boot_files[args[1]] = 0;
         return 0;
     }
-    if (nr == 16) {
+    if (nr == __NR_ioctl) {
         if (args[1] >= 64 || descriptors[args[1]] == FD_CLOSED)
             return (uint64_t)-9;
         return (uint64_t)-25; /* ENOTTY: no TTY driver yet */
     }
-    if (nr == 20) return sys_fd_writev(args[1], args[2], args[3]);
-    if (nr == 13) return sys_sigaction(args[1], args[2], args[3], args[4]);
-    if (nr == 14) return sys_sigprocmask(args[1], args[2], args[3], args[4]);
-    if (nr == 63) return sys_uname_naseed(args[1]);
-    if (nr == 79) return sys_getcwd_root(args[1], args[2]);
-    if (nr == 121) return args[1] == 0 || args[1] == 1 ? 1 : (uint64_t)-3;
-    if (nr == 111) return 1; /* getpgrp: only process group 1 exists */
-    if (nr == 60 || nr == 231) { /* exit / exit_group */
+    if (nr == __NR_writev) return sys_fd_writev(args[1], args[2], args[3]);
+    if (nr == __NR_rt_sigaction) return sys_sigaction(args[1], args[2], args[3], args[4]);
+    if (nr == __NR_rt_sigprocmask) return sys_sigprocmask(args[1], args[2], args[3], args[4]);
+    if (nr == __NR_uname) return sys_uname_naseed(args[1]);
+    if (nr == __NR_getcwd) return sys_getcwd_root(args[1], args[2]);
+    if (nr == __NR_getpgid) return args[1] == 0 || args[1] == 1 ? 1 : (uint64_t)-3;
+    if (nr == __NR_getpgrp) return 1; /* getpgrp: only process group 1 exists */
+    if (nr == __NR_exit || nr == __NR_exit_group) { /* exit / exit_group */
         nas_print("[EXIT] user status="); nas_dec(args[1]); nas_print("\n");
         /* In cmdline-driven tests, the host verifies real stdout and status.
          * Do not encode applet-specific success checks into the kernel.
@@ -957,7 +958,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         }
         fail("user program exit was non-zero");
     }
-    if (nr >= 512 || ++missing_count[nr] <= 3) {
+    if (nr >= sizeof(missing_count) / sizeof(missing_count[0]) ||
+        ++missing_count[nr] <= 3) {
         nas_print("[MISS] syscall nr="); nas_dec(nr); nas_print("\n");
     }
     return (uint64_t)-38;
