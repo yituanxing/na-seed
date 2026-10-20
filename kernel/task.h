@@ -37,7 +37,7 @@ struct nas_task {
     /* Saved syscall-boundary frame: RAX,RDI,RSI,RDX,R10,R8,R9,RCX,R11.
      * The scheduler switches ONLY when no kernel call remains active.
      */
-    uint64_t resume_regs[9], resume_user_rsp;
+    uint64_t resume_regs[15], resume_user_rsp;
     bool resume_valid;
     uint8_t fpu_state[512] __attribute__((aligned(16)));
 
