@@ -243,7 +243,7 @@ static bool elf_load(const struct limine_file *module, uint64_t *entry) {
     if (!executable_entry) return false;
     *entry = e->entry;
     loaded_phnum = e->phnum;
-    return loaded_phdr != 0;
+    return true; /* Small ET_EXEC probes need not map ELF/PHDR headers. */
 }
 
 
