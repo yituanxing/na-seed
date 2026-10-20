@@ -667,6 +667,19 @@ static uint64_t sys_mprotect(uint64_t addr, uint64_t length, uint64_t prot) {
 /* Strict single-program ABI diagnostic dispatcher, for a real syscall gate. */
 uint64_t syscall_dispatch(const uint64_t *args) {
     uint64_t nr = args[0];
+    /* Real-program execution trace: syscall identity, callsite and args.
+     * Capped to avoid serial storms; not needed in exception context.
+     */
+    static unsigned trace_count;
+    if ((running_bash || running_busybox) && trace_count++ < 96) {
+        nas_print("[TRACE] nr="); nas_dec(nr);
+        nas_print(" rip="); nas_hex(args[7]);
+        nas_print(" rsp="); nas_hex(syscall_user_rsp);
+        nas_print(" a1="); nas_hex(args[1]);
+        nas_print(" a2="); nas_hex(args[2]);
+        nas_print(" a3="); nas_hex(args[3]);
+        nas_print("\n");
+    }
     if (nr == 158) return sys_arch_prctl(args[1], args[2]);
     if (nr == 218) { thread_clear_tid = args[1]; return 1; }
     if (nr == 39 || nr == 186) return 1;  /* getpid / gettid */
