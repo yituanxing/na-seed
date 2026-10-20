@@ -6,6 +6,38 @@
 #include "nr.h"
 #include "errno.h"
 #include "bootfs.h"
+#include "task.h"
+
+/* Process-local state was previously static global memory. A task is now
+ * its explicit owner; the single-task aliases keep the proven syscall path
+ * unchanged while the upcoming arch task switch is developed separately.
+ */
+#define TASK (*nas_task_current())
+#define root_phys TASK.root_phys
+#define heap_break TASK.heap_break
+#define mmap_cursor TASK.mmap_cursor
+#define loaded_phdr TASK.loaded_phdr
+#define loaded_phnum TASK.loaded_phnum
+#define loaded_main_entry TASK.loaded_main_entry
+#define loaded_interp_base TASK.loaded_interp_base
+#define thread_clear_tid TASK.thread_clear_tid
+#define user_fs_base TASK.user_fs_base
+#define descriptors TASK.fds.descriptors
+#define file_slot TASK.fds.file_slot
+#define file_refcount TASK.fds.file_refcount
+#define fd_cloexec TASK.fds.fd_cloexec
+#define file_status_flags TASK.fds.file_status_flags
+#define boot_files TASK.fds.boot_files
+#define boot_entries TASK.fds.boot_entries
+#define boot_file_offsets TASK.fds.boot_file_offsets
+#define current_workdir TASK.cwd
+#define blocked_signals TASK.blocked_signals
+#define signal_actions TASK.signal_actions
+#define running_bash TASK.running_bash
+#define running_busybox TASK.running_busybox
+#define running_alpine TASK.running_alpine
+#define saw_bash_hello TASK.saw_bash_hello
+#define matched_chars TASK.matched_chars
 
 /* Single-core M1: run a REAL static ELF from a Limine module in ring 3.
  * The new process CR3 preserves Limine's supervisor upper-half/HHDM mappings.
@@ -132,7 +164,6 @@ void exception_report(const uint64_t *frame) {
 }
 
 /* User pages: read and amend existing Limine CR3 paging hierarchy. */
-static uint64_t root_phys;
 static uint64_t *phys_table(uint64_t physical) {
     return (uint64_t *)(uintptr_t)(nas_hhdm_offset() + physical);
 }
@@ -267,8 +298,6 @@ struct __attribute__((packed)) elf_phdr {
 static bool checked_range(uint64_t start, uint64_t size, uint64_t limit) {
     return start <= limit && size <= limit - start;
 }
-static uint64_t loaded_phdr, loaded_phnum, loaded_main_entry, loaded_interp_base;
-static uint64_t heap_break, mmap_cursor = 0x60000000ULL;
 #define ALPINE_APP_BASE 0x10000000ULL
 #define ALPINE_LDSO_BASE 0x30000000ULL
 
@@ -528,11 +557,6 @@ static bool bash_module(const struct limine_file *file) {
             return true;
     return false;
 }
-static bool running_bash;
-static bool running_busybox;
-static bool running_alpine;
-static bool saw_bash_hello;
-static unsigned matched_chars;
 static uint32_t missing_count[512];
 static void observe_stdout(char ch) {
     static const char text[] = "hello\n";
@@ -546,8 +570,6 @@ static void observe_stdout(char ch) {
 
 
 /* M2: genuine Linux ABI semantics for single-process TLS + anonymous VM. */
-static uint64_t thread_clear_tid;
-static uint64_t user_fs_base;
 static void user_invalidate(uint64_t va) {
     __asm__ volatile ("invlpg (%0)" : : "r"(va) : "memory");
 }
@@ -644,19 +666,12 @@ extern void nas_putchar(char c);
 enum { FD_CLOSED = 0, FD_UART = 1, FD_NULL = 2, FD_ZERO = 3,
        FD_BOOTFS = 4, FD_ARCHIVE = 5, FD_DIR = 6 };
 static bool same_string(const char *a, const char *b);
-static uint8_t descriptors[64];
 /* Per-FD handles share a refcounted open-file description after dup().
  * All fd aliases must observe the same read/seek/directory cursor.
  */
-static uint8_t file_slot[64], file_refcount[64], fd_cloexec[64];
-static uint64_t file_status_flags[64];
-static char current_workdir[256] = "/";
 /* Read-only boot filesystem backed by bytes of the actual Limine modules.
  * Paths name exactly the binaries the bootloader provided, not fake files.
  */
-static const struct limine_file *boot_files[64];
-static uint64_t boot_file_offsets[64];
-static const struct bootfs_entry *boot_entries[64];
 static void fd_close_raw(uint64_t fd) {
     if (descriptors[fd] == FD_CLOSED) return;
     unsigned slot = file_slot[fd];
@@ -715,8 +730,6 @@ static const struct limine_file *bootfs_lookup(const char *path) {
         return nas_module(1);
     return 0;
 }
-static uint64_t blocked_signals;
-static uint64_t signal_actions[65][4];
 
 static bool user_read_bytes(uint64_t addr, uint8_t *dst, uint64_t len) {
     if (addr >= USER_LIMIT || len > USER_LIMIT - addr) return false;
@@ -1420,9 +1433,9 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     }
 #endif
     if (nr == __NR_arch_prctl) return sys_arch_prctl(args[1], args[2]);
-    if (nr == __NR_set_tid_address) { thread_clear_tid = args[1]; return 1; }
-    if (nr == __NR_getpid || nr == __NR_gettid) return 1;  /* getpid / gettid */
-    if (nr == __NR_getppid) return 0;  /* getppid for PID 1 */
+    if (nr == __NR_set_tid_address) { thread_clear_tid = args[1]; return TASK.pid; }
+    if (nr == __NR_getpid || nr == __NR_gettid) return TASK.pid;
+    if (nr == __NR_getppid) return TASK.ppid;
     if (nr == __NR_getuid || nr == __NR_getgid || nr == __NR_geteuid || nr == __NR_getegid) return 0; /* root credentials */
     if (nr == __NR_mprotect) return sys_mprotect(args[1], args[2], args[3]);
     if (nr == __NR_mmap) return sys_anon_mmap(args[1], args[2], args[3],
@@ -1467,8 +1480,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     }
     if (nr == __NR_chdir) return sys_chdir(args[1]);
     if (nr == __NR_fchdir) return sys_fchdir(args[1]);
-    if (nr == __NR_getpgid) return args[1] == 0 || args[1] == 1 ? 1 : (uint64_t)-ESRCH;
-    if (nr == __NR_getpgrp) return 1; /* getpgrp: only process group 1 exists */
+    if (nr == __NR_getpgid) return args[1] == 0 || args[1] == TASK.pid ? TASK.pid : (uint64_t)-ESRCH;
+    if (nr == __NR_getpgrp) return TASK.pid; /* one process group today */
     if (nr == __NR_exit || nr == __NR_exit_group) { /* exit / exit_group */
         nas_print("[EXIT] user status="); nas_dec(args[1]); nas_print("\n");
         /* In cmdline-driven tests, the host verifies real stdout and status.
@@ -1521,6 +1534,7 @@ static void syscall_enable(void) {
 
 void m1_start(void) {
     nas_print("[M1] setting up GDT, TSS, IDT, syscall MSRs\n");
+    nas_task_boot_init();
     cpu_tables_init();
     cpu_user_fp_init();
     if (!paging_init()) fail("requires four-level paging");
