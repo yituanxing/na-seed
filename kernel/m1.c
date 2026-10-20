@@ -1498,9 +1498,10 @@ static uint64_t sys_wait4(uint64_t desired, uint64_t status_addr,
      */
     if ((int64_t)desired == 0 || (int64_t)desired < -1)
         return (uint64_t)-EOPNOTSUPP;
-    for (uint64_t pid = 2; pid < 0x10000; ++pid) {
-        struct nas_task *child = nas_task_by_pid(pid);
-        if (!child || child->ppid != TASK.pid) continue;
+    for (unsigned slot = 0; slot < NAS_TASK_LIMIT; ++slot) {
+        struct nas_task *child = nas_task_child_at(TASK.pid, slot);
+        if (!child) continue;
+        uint64_t pid = child->pid;
         if (desired != UINT64_MAX && desired != pid) continue;
         have_child = true;
         if (child->state != NAS_TASK_ZOMBIE) continue;
