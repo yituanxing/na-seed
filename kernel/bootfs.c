@@ -65,7 +65,6 @@ static bool archive_name(struct bootfs_entry *entry,
         if (!n || (n == 1 && raw[seg_start] == '.') ||
             (n == 2 && raw[seg_start] == '.' && raw[seg_start + 1] == '.'))
             return false;
-        if (i < end) { /* handled only after completing segment */ }
         seg_start = i + 1;
     }
     for (unsigned i = start; i < end; i++) entry->path[used++] = (char)raw[i];
