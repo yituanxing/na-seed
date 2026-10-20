@@ -90,3 +90,22 @@ syscall numbers; known syscalls with unsupported arguments/features should
 return the **interface-prescribed** error, not a fabricated success. Legacy
 partial implementations (`mmap/mprotect`, signal installation without real
 delivery) still require per-behavior audits, and are **not** claimed complete.
+
+## M5: CPIO-backed read-only files and directories (in progress)
+
+The new fixture keeps the two original unmodified Alpine ELF modules used for
+PT_INTERP execution, and supplies an additional, uncompressed CPIO newc
+archive via a **third Limine module**. A bounded in-kernel parser indexes
+real `/bin/busybox`, `/lib/ld-musl-x86_64.so.1`, and a deterministic
+`/etc/hostname` test file without copying file contents or inventing
+syscall-specific bytes. The existing M4 hardcoded module lookup is retained
+as a compatibility fallback when the archive is absent.
+
+The archive provides actual read-only directory entries, per-entry stable
+inode/mode/size metadata, and read-only regular file data to open/openat,
+getdents64, fstat/newfstatat, read, lseek and close. No write support,
+symlinks, chdir, mount namespaces, writable tmpfs, block storage or general
+VFS is claimed. `make alpine-fs-probe` checks genuine unmodified Alpine
+BusyBox `ls -la /`, `ls /bin` and `cat /etc/hostname` through QEMU.
+The existing M0-M4 CI probes remain mandatory; this text does not substitute
+for a green independent QEMU result.
