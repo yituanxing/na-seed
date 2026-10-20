@@ -5,7 +5,7 @@
 # are recorded as explicit blockers, NEVER as accepted capabilities.
 set -eu
 base=build/alpine-archive-iso
-for scenario in builtin builtinpwd pid cd readfile cdread readtwice redirect applet external pipeline; do
+for scenario in builtin builtinpwd pid cd readfile cdread readtwice redirect applet external sequence pipeline; do
     case "$scenario" in
         builtin) args="sh -c 'echo shell-ready'" ;;
         builtinpwd) args="sh -c 'pwd'" ;;
@@ -17,6 +17,7 @@ for scenario in builtin builtinpwd pid cd readfile cdread readtwice redirect app
         redirect) args="sh -c 'echo hello > /dev/null; echo redirect-ok'" ;;
         applet) args="sh -c 'cat /etc/hostname'" ;;
         external) args="sh -c '/bin/busybox cat /etc/hostname'" ;;
+        sequence) args="sh -c '/bin/busybox cat /etc/hostname; echo finished'" ;;
         pipeline) args="sh -c 'echo abc | wc -c'" ;;
     esac
     stage="build/ash-diag-$scenario-iso"
@@ -78,6 +79,9 @@ for scenario in builtin builtinpwd pid cd readfile cdread readtwice redirect app
             applet)
                 blocker='[EXIT] user status=127'
                 reason='PATH applet entry /bin/cat absent (no symlinks yet)' ;;
+            sequence)
+                blocker='[MISS] syscall nr='
+                reason='parent continuation after spawning subprocess not yet implemented' ;;
             pipeline)
                 blocker='[MISS] syscall nr=22'
                 reason='pipe + process semantics not implemented' ;;
