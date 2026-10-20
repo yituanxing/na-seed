@@ -4,12 +4,13 @@
 # Diagnostic only: a printed failure is NOT an accepted new capability.
 set -eu
 base=build/alpine-archive-iso
-for scenario in builtin builtinpwd cd readfile redirect applet external pipeline; do
+for scenario in builtin builtinpwd cd readfile cdread redirect applet external pipeline; do
     case "$scenario" in
         builtin) args="sh -c 'echo shell-ready'" ;;
         builtinpwd) args="sh -c 'pwd'" ;;
         cd) args="sh -c 'cd /etc; pwd'" ;;
         readfile) args="sh -c 'read word < /etc/hostname; echo \$word'" ;;
+        cdread) args="sh -c 'cd /etc; read word < hostname; echo \$word'" ;;
         redirect) args="sh -c 'echo hello > /dev/null; echo redirect-ok'" ;;
         applet) args="sh -c 'cat /etc/hostname'" ;;
         external) args="sh -c '/bin/busybox cat /etc/hostname'" ;;
@@ -37,5 +38,31 @@ for scenario in builtin builtinpwd cd readfile redirect applet external pipeline
     if ! grep -Fq '[FS] CPIO newc read-only archive mounted' "$log"; then
         echo "[ASH-DIAG-FAIL] missing actual archive mount" >&2
         exit 1
+    fi
+    case "$scenario" in
+        builtin) expected='shell-ready' ;;
+        builtinpwd) expected='/' ;;
+        cd) expected='/etc' ;;
+        readfile|cdread) expected='naseed' ;;
+        redirect) expected='redirect-ok' ;;
+        *) expected='' ;;
+    esac
+    if [ -n "$expected" ]; then
+        if [ "$rc" -ne 1 ] ||
+           ! tr -d '\r' < "$log" | grep -Fxq "$expected" ||
+           ! grep -Fq '[EXIT] user status=0' "$log" ||
+           ! grep -Fq '[PASS] cmdline userspace exit 0' "$log"; then
+            echo "[ASH-FAIL] real shell did not pass scenario=$scenario" >&2
+            tail -85 "$log" >&2
+            exit 1
+        fi
+        if [ "$scenario" = redirect ] &&
+           tr -d '\r' < "$log" | grep -Fxq hello; then
+            echo '[ASH-FAIL] redirected hello incorrectly reached stdout' >&2
+            exit 1
+        fi
+        echo "[ACCEPTED] unmodified Alpine ash scenario=$scenario"
+    else
+        echo "[BLOCKED] unimplemented multi-program scenario=$scenario (diagnostic only)"
     fi
 done
