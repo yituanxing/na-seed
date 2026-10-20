@@ -41,6 +41,8 @@ jobs:
         run: make alpine-fetch
       - name: Boot genuine Alpine dynamic BusyBox and report ABI blockers
         run: ALPINE_REQUIRE_PASS=1 make alpine-probe
+      - name: Verify multiple Alpine BusyBox applets via Limine cmdline
+        run: make alpine-argv-probe
       - name: Attach serial log on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -51,4 +53,5 @@ jobs:
             build/bash-serial.log
             build/debian-*-serial.log
             build/alpine-serial.log
+            build/alpine-argv-*-serial.log
           if-no-files-found: ignore

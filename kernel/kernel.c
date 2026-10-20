@@ -19,6 +19,10 @@ USED_REQUEST static volatile struct limine_memmap_request mmap_req = {
 USED_REQUEST static volatile struct limine_module_request module_req = {
     .id = LIMINE_MODULE_REQUEST_ID, .revision = 0
 };
+/* Same Limine executable-cmdline feature as NaOS boot_get_cmdline(). */
+USED_REQUEST static volatile struct limine_executable_cmdline_request cmdline_req = {
+    .id = LIMINE_EXECUTABLE_CMDLINE_REQUEST_ID, .revision = 0
+};
 USED_REQUEST static volatile struct limine_framebuffer_request fb_req = {
     .id = LIMINE_FRAMEBUFFER_REQUEST_ID, .revision = 0
 };
@@ -249,3 +253,6 @@ const struct limine_file *nas_module(uint64_t index) {
     return module_req.response->modules[index];
 }
 const struct limine_file *nas_user_module(void) { return nas_module(0); }
+const char *nas_cmdline(void) {
+    return cmdline_req.response ? cmdline_req.response->cmdline : 0;
+}

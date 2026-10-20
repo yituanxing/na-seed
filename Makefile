@@ -15,7 +15,7 @@ CFLAGS := --target=x86_64-unknown-none-elf -std=c11 -O2 -g -Wall -Wextra -Werror
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
  -z noexecstack -T kernel/linker.ld
 
-.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch alpine-probe preflight
+.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch alpine-probe alpine-argv-probe preflight
 all: iso
 iso: $(ISO)
 kernel: $(KERNEL)
@@ -162,6 +162,11 @@ $(ALPINE_ISO): $(KERNEL) $(OUT)/alpine/bin/busybox $(OUT)/alpine/lib/ld-musl-x86
 
 alpine-probe: $(ALPINE_ISO)
 	sh scripts/probe-alpine.sh $(ALPINE_ISO)
+
+# Reuse exactly the same prebuilt Alpine binary. Change only Limine cmdline,
+# not kernel code, to test multiple real BusyBox applets.
+alpine-argv-probe: $(ALPINE_ISO)
+	sh scripts/probe-alpine-argv.sh
 
 preflight:
 	sh scripts/preflight.sh
