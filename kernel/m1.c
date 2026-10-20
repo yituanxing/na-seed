@@ -630,6 +630,40 @@ static uint64_t sys_sigprocmask(uint64_t how, uint64_t set,
     return 0;
 }
 
+/* Real x86-64 mprotect on mapped user pages, with NX (if enabled). */
+static uint64_t sys_mprotect(uint64_t addr, uint64_t length, uint64_t prot) {
+    const uint64_t nx = 1ULL << 63;
+    if (addr & (PAGE - 1) || (prot & ~7ULL) ||
+        length > UINT64_MAX - (PAGE - 1))
+        return (uint64_t)-22;
+    if (!length) return 0;
+    uint64_t pages = (length + PAGE - 1) / PAGE;
+    if (addr >= USER_LIMIT || pages > (USER_LIMIT - addr) / PAGE)
+        return (uint64_t)-12;
+    uint64_t efer = rdmsr(0xc0000080);
+    if (!(efer & (1ULL << 11))) {
+        /* Cannot claim executable permission enforcement without NXE. */
+        return (uint64_t)-38;
+    }
+    if (!prot) return (uint64_t)-38; /* PROT_NONE needs VMA semantics. */
+    /* Validate every mapped page before touching any permission bit. */
+    for (uint64_t i = 0; i < pages; i++) {
+        uint64_t *pte = user_leaf(addr + i * PAGE, false);
+        if (!pte || !(*pte & P_PRESENT) || !(*pte & P_USER))
+            return (uint64_t)-12;
+    }
+    for (uint64_t i = 0; i < pages; i++) {
+        uint64_t va = addr + i * PAGE;
+        uint64_t *pte = user_leaf(va, false);
+        uint64_t e = *pte & ~(P_RW | nx);
+        if (prot & 2) e |= P_RW;
+        if (!(prot & 4)) e |= nx;
+        *pte = e;
+        user_invalidate(va);
+    }
+    return 0;
+}
+
 /* Strict single-program ABI diagnostic dispatcher, for a real syscall gate. */
 uint64_t syscall_dispatch(const uint64_t *args) {
     uint64_t nr = args[0];
@@ -638,6 +672,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == 39 || nr == 186) return 1;  /* getpid / gettid */
     if (nr == 110) return 0;  /* getppid for PID 1 */
     if (nr == 102 || nr == 104 || nr == 107 || nr == 108) return 0; /* root credentials */
+    if (nr == 10) return sys_mprotect(args[1], args[2], args[3]);
     if (nr == 9) return sys_anon_mmap(args[1], args[2], args[3],
                                        args[4], args[5], args[6]);
     if (nr == 11) return sys_munmap(args[1], args[2]);
