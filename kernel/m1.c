@@ -340,6 +340,7 @@ static bool put_stack_string(uint64_t *sp, const char *str, uint64_t *address) {
 static char boot_argv_chars[256];
 static const char *boot_argv[NAS_ARGV_MAX];
 static bool boot_argv_override;
+static unsigned boot_argc;
 static bool parse_boot_argv(const char *cmdline,
                             const char *const **out_args, unsigned *out_argc) {
     static const char prefix[] = "naseed.argv=";
@@ -376,6 +377,7 @@ static bool parse_boot_argv(const char *cmdline,
     if (!count || !boot_argv_chars[0]) return false;
     *out_args = boot_argv;
     *out_argc = count;
+    boot_argc = count;
     boot_argv_override = true;
     return true;
 }
@@ -393,7 +395,12 @@ static bool build_linux_stack(bool bash, bool busybox, uint64_t *out_sp) {
     extern const char *nas_cmdline(void);
     const char *cmdline = nas_cmdline();
     if (cmdline && *cmdline) {
-        if (!parse_boot_argv(cmdline, &args, &argc)) return false;
+        /* m1_start parses once, before the archive-only ELF lookup. The same
+         * exact argv is handed to libc on the Linux entry stack.
+         */
+        if (!boot_argv_override) return false;
+        args = boot_argv;
+        argc = boot_argc;
         nas_print("[CMDLINE] userspace argv from Limine: ");
         nas_print(cmdline);
         nas_print("\n");
@@ -1173,6 +1180,18 @@ void m1_start(void) {
     cpu_user_fp_init();
     if (!paging_init()) fail("requires four-level paging");
     syscall_enable();
+    /* Select the boot ELF with the very same argv[0] passed to userspace.
+     * No shell, PATH lookup, or alternative program-name ABI is invented.
+     * Legacy M0-M5 configurations without cmdline preserve their defaults.
+     */
+    extern const char *nas_cmdline(void);
+    const char *cmdline = nas_cmdline();
+    if (cmdline && *cmdline) {
+        const char *const *args;
+        unsigned argc;
+        if (!parse_boot_argv(cmdline, &args, &argc))
+            fail("invalid Limine naseed.argv configuration");
+    }
     const struct limine_file *module = nas_user_module();
     if (!module) fail("no Limine userspace module");
     const uint8_t *first = (const uint8_t *)module->address;
@@ -1191,20 +1210,36 @@ void m1_start(void) {
     struct elf_image interp_image = {0};
     const struct elf_image *interpreter = 0;
     if (archive_only) {
-        /* Boot one real program by its path in the archive. Other commands
-         * are that ELF's unmodified BusyBox applets selected by argv.
-         * A process model and execve belong to a separate milestone.
+        /* For the single-archive configuration, argv[0] is the absolute
+         * executable path. The path is looked up in real CPIO file entries;
+         * unknown/nonexecutable paths are rejected, never spoofed as success.
          */
-        const struct bootfs_entry *app = bootfs_find("/bin/busybox");
-        const struct bootfs_entry *ldso = bootfs_find("/lib/ld-musl-x86_64.so.1");
-        if (!app || !ldso || bootfs_is_dir(app) || bootfs_is_dir(ldso))
-            fail("CPIO missing BusyBox or musl interpreter ELF");
+        const char *selected = boot_argv_override ? boot_argv[0] : "/bin/busybox";
+        if (selected[0] != '/') fail("CPIO executable must be an absolute path");
+        const struct bootfs_entry *app = bootfs_find(selected);
+        if (!app) fail("CPIO executable path not found");
+        if (bootfs_is_dir(app) || !(app->mode & 0111U))
+            fail("CPIO selected path is not an executable regular file");
         main_image = (struct elf_image){app->data, app->size};
-        interp_image = (struct elf_image){ldso->data, ldso->size};
-        interpreter = &interp_image;
-        running_busybox = true;
-        running_alpine = true;
-        nas_print("[M5] actual ELF images sourced from CPIO file entries\n");
+        const struct bootfs_entry *ldso = bootfs_find("/lib/ld-musl-x86_64.so.1");
+        if (ldso && !bootfs_is_dir(ldso)) {
+            interp_image = (struct elf_image){ldso->data, ldso->size};
+            interpreter = &interp_image;
+        }
+        const char *basename = selected;
+        for (const char *p = selected; *p; ++p)
+            if (*p == '/') basename = p + 1;
+        running_busybox = same_string(basename, "busybox");
+        /* The two fixture programs are authentic Alpine ET_DYN and
+         * Debian static ET_EXEC BusyBoxes; don't label static ELF as musl.
+         */
+        const struct elf_hdr *hdr = (const struct elf_hdr *)app->data;
+        running_alpine = running_busybox && app->size >= sizeof(*hdr) &&
+                         hdr->type == 3;
+        nas_print("[M5] CPIO executable selected: ");
+        nas_print(selected);
+        nas_print("\n");
+        nas_print("[M5] actual ELF image sourced from CPIO file entry\n");
     } else {
         main_image = (struct elf_image){(const uint8_t *)module->address, module->size};
         running_bash = bash_module(module);
