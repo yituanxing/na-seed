@@ -36,6 +36,7 @@ struct nas_fd_table {
 struct nas_task {
     uint64_t pid, ppid;
     enum nas_task_state state;
+    uint32_t exit_code;
 
     /* One independent VM mapping root and ELF/brk/mmap tracking per task. */
     uint64_t root_phys, heap_break, mmap_cursor;
