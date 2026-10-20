@@ -18,7 +18,7 @@ for scenario in builtin builtinpwd pid cd readfile cdread readtwice redirect app
         applet) args="sh -c 'cat /etc/hostname'" ;;
         external) args="sh -c '/bin/busybox cat /etc/hostname'" ;;
         sequence) args="sh -c '/bin/busybox cat /etc/hostname; echo finished'" ;;
-        pipeline) args="sh -c 'echo abc | wc -c'" ;;
+        pipeline) args="sh -c 'echo abc | /bin/busybox wc -c'" ;;
     esac
     stage="build/ash-diag-$scenario-iso"
     iso="build/naseed-ash-diag-$scenario.iso"
