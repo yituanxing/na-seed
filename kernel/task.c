@@ -6,6 +6,10 @@
  * until the arch switch and independent kernel stacks are implemented.
  */
 static struct nas_task task_table[NAS_TASK_LIMIT];
+static uint64_t next_pid = 2;
+uint16_t nas_file_refcount[NAS_FD_LIMIT];
+uint64_t nas_file_status_flags[NAS_FD_LIMIT];
+uint64_t nas_boot_file_offsets[NAS_FD_LIMIT];
 struct nas_task *nas_current_task;
 
 void nas_task_boot_init(void) {
@@ -13,6 +17,12 @@ void nas_task_boot_init(void) {
         struct nas_task *task = &task_table[n];
         unsigned char *bytes = (unsigned char *)task;
         for (unsigned j = 0; j < sizeof(*task); j++) bytes[j] = 0;
+    }
+    next_pid = 2;
+    for (unsigned i = 0; i < NAS_FD_LIMIT; i++) {
+        nas_file_refcount[i] = 0;
+        nas_file_status_flags[i] = 0;
+        nas_boot_file_offsets[i] = 0;
     }
     nas_current_task = &task_table[0];
     nas_current_task->pid = 1;
@@ -30,4 +40,36 @@ const struct nas_task *nas_task_find(uint64_t pid) {
             task_table[i].pid == pid)
             return &task_table[i];
     return 0;
+}
+
+/* Reuse slots, NEVER PID identities. FD tables are copied, but
+ * shared open-file references are adjusted after a successful VM fork.
+ */
+struct nas_task *nas_task_fork_slot(void) {
+    for (unsigned i = 1; i < NAS_TASK_LIMIT; i++) {
+        if (task_table[i].state != NAS_TASK_FREE) continue;
+        struct nas_task *child = &task_table[i];
+        const unsigned char *src = (const unsigned char *)nas_current_task;
+        unsigned char *dst = (unsigned char *)child;
+        for (size_t j = 0; j < sizeof(*child); j++) dst[j] = src[j];
+        child->pid = next_pid++;
+        child->ppid = nas_current_task->pid;
+        child->state = NAS_TASK_READY;
+        child->exit_code = 0;
+        child->resume_valid = false;
+        return child;
+    }
+    return NULL;
+}
+void nas_task_release(struct nas_task *task) {
+    if (!task || task == nas_current_task) return;
+    task->state = NAS_TASK_FREE;
+    task->pid = 0;
+    task->ppid = 0;
+}
+struct nas_task *nas_task_by_pid(uint64_t pid) {
+    for (unsigned i = 0; i < NAS_TASK_LIMIT; i++)
+        if (task_table[i].state != NAS_TASK_FREE && task_table[i].pid == pid)
+            return &task_table[i];
+    return NULL;
 }
