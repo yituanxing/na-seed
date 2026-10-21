@@ -3,6 +3,7 @@
 #include "mmu.h"
 #include "usermode.h"
 #include "elf_image.h"
+#include "../linux_syscall_abi.h"
 #include "../../mm/frame.h"
 #include "../../mm/user_space.h"
 #include "../../drivers/serial.h"
@@ -27,7 +28,7 @@ void nas_rv_user_trap_c(uint64_t cause, uint64_t sstatus, uint64_t sepc,
     /* RISC-V scause 8 is ECALL from User. SPP must be zero.
      * Linux asm-generic __NR_exit is 93, with code in a0. */
     if (cause != 8 || (sstatus & (1ULL << 8)) ||
-        nr != 93 || result != 42 ||
+        nas_linux_decode_syscall(nr) != NAS_SC_exit || result != 42 ||
         sepc < rv_elf_entry || sepc >= rv_elf_entry + NAS_RV_PAGE_SIZE) {
         nas_print("[RV64 TRAP] scause="); nas_hex(cause);
         nas_print(" sstatus="); nas_hex(sstatus);

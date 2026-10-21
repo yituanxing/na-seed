@@ -126,3 +126,10 @@ This detects silent unreclaimed user frames and private-fork omissions.
 The RV64 and ARM64 real-QEMU probe scripts require explicit PASS markers
 from the same linked kernel/mm/user_space.c regression after high-user-VA
 fork-private mappings are checked, not just older architecture smoke markers.
+
+## Real RISC-V trap agrees with the SAME Linux syscall ABI
+The already-verified RV64 hardware ECALL from the native ELF now decodes
+its a7 Linux syscall number with arch/linux_syscall_abi.h, exactly as the
+full generic syscall dispatcher does. The smoke trap still asserts
+exit(42); this is evidence of shared ABI interpretation, NOT a second
+syscall/process implementation or a complete RV64 syscall entry yet.
