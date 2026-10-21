@@ -67,6 +67,8 @@ jobs:
         run: make boot-handoff-probe
       - name: Repeated real BusyBox fork, wait, tmpfs tombstone, pipe and SIGPIPE lifecycle
         run: make ash-resources-probe
+      - name: Native execve of real CPIO shebang scripts and BusyBox shell workflows
+        run: make shebang-abi-probe
       - name: Real BusyBox ash pipeline pipe/pipe2 and EOF under QEMU
         run: make ash-pipes-probe
       - name: Boot genuine Alpine dynamic BusyBox and report ABI blockers
@@ -113,5 +115,6 @@ jobs:
             build/ash-pipe-backend-*-serial.log
             build/boot-handoff-*-serial.log
             build/ash-resource-*-serial.log
+            build/ash-shebang-*-serial.log
             build/path-abi-serial.log
           if-no-files-found: ignore

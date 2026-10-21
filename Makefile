@@ -15,7 +15,7 @@ CFLAGS := --target=x86_64-unknown-none-elf -std=c11 -O2 -g -Wall -Wextra -Werror
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
  -z noexecstack -T kernel/linker.ld
 
-.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch alpine-probe alpine-argv-probe alpine-fs-probe alpine-archive-probe alpine-selector-probe ash-diagnostic ash-execve-probe ash-fork-probe ash-pipes-probe ash-lifecycle-probe ash-symlinks-probe ash-tmp-probe ash-tree-probe ash-rename-probe ash-fds-probe ash-paths-probe path-abi-probe ash-pipe-backend-probe boot-handoff-probe ash-resources-probe preflight
+.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch alpine-probe alpine-argv-probe alpine-fs-probe alpine-archive-probe alpine-selector-probe ash-diagnostic ash-execve-probe ash-fork-probe ash-pipes-probe ash-lifecycle-probe ash-symlinks-probe ash-tmp-probe ash-tree-probe ash-rename-probe ash-fds-probe ash-paths-probe path-abi-probe ash-pipe-backend-probe boot-handoff-probe ash-resources-probe shebang-abi-probe preflight
 all: iso
 iso: $(ISO)
 kernel: $(KERNEL)
@@ -78,6 +78,13 @@ $(OUT)/path-abi.o: user/path-abi.S kernel/nr.h kernel/errno.h
 	clang --target=x86_64-unknown-none-elf -g -c $< -o $@
 
 $(OUT)/path-abi: $(OUT)/path-abi.o user/linker.ld
+	ld.lld -m elf_x86_64 -nostdlib -static -T user/linker.ld $< -o $@
+
+$(OUT)/shebang-abi.o: user/shebang-abi.S kernel/nr.h kernel/errno.h
+	mkdir -p $(dir $@)
+	clang --target=x86_64-unknown-none-elf -g -c $< -o $@
+
+$(OUT)/shebang-abi: $(OUT)/shebang-abi.o user/linker.ld
 	ld.lld -m elf_x86_64 -nostdlib -static -T user/linker.ld $< -o $@
 
 $(KERNEL): $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/boot_image.o $(OUT)/arch.o kernel/linker.ld
@@ -318,6 +325,15 @@ $(PATH_ABI_ISO): $(ALPINE_ARCHIVE_ISO) $(PATH_ABI_IMAGE)
 
 path-abi-probe: $(PATH_ABI_ISO)
 	sh scripts/probe-path-abi.sh
+
+# M8.0 original executable CPIO scripts, invoked via actual Linux
+# execve(2), *not* as arguments to a kernel-owned command interpreter.
+SHEBANG_ABI_IMAGE := $(OUT)/shebang-abi-rootfs.cpio
+$(SHEBANG_ABI_IMAGE): $(OUT)/shebang-abi $(OUT)/alpine/bin/busybox $(OUT)/alpine/lib/ld-musl-x86_64.so.1 scripts/make-initramfs.sh
+	NASEED_SHEBANG_ABI=$(abspath $(OUT)/shebang-abi) sh scripts/make-initramfs.sh "$@"
+
+shebang-abi-probe: $(ALPINE_ARCHIVE_ISO) $(SHEBANG_ABI_IMAGE)
+	sh scripts/probe-shebang.sh
 
 preflight:
 	sh scripts/preflight.sh

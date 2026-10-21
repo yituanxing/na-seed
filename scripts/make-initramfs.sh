@@ -15,7 +15,7 @@ chmod 644 "$root/etc/hostname"
 chmod 1777 "$root/tmp" # mountpoint only; actual new files live in kernel RAM
 # Genuine BusyBox applet symlinks, not duplicated executables or kernel
 # pathname aliases. CPIO newc preserves links as S_IFLNK + target bytes.
-applets='cat wc head yes sha256sum readlink ls grep mkdir rmdir rm cp mv'
+applets='cat wc head yes sha256sum readlink ls grep mkdir rmdir rm cp mv sh'
 for applet in $applets; do
     ln -s busybox "$root/bin/$applet"
 done
@@ -41,6 +41,57 @@ if [ -n "${NASEED_PATH_ABI:-}" ]; then
     chmod 755 "$root/bin/path-abi"
     touch -t 197001010000 "$root/bin/path-abi"
 fi
+# Optional M8.0 native Linux shebang fixtures. The interpreter is the
+# SAME pinned unmodified Alpine BusyBox ELF already present in /bin.
+if [ -n "${NASEED_SHEBANG_ABI:-}" ]; then
+    test -f "$NASEED_SHEBANG_ABI"
+    cp "$NASEED_SHEBANG_ABI" "$root/bin/shebang-abi"
+    cat >"$root/etc/naseed-stage.sh" <<'SCRIPT'
+#!/bin/busybox sh
+[ "$1" = token ] || exit 17
+echo script-native:$1
+echo hello > /tmp/from-script
+cat /tmp/from-script | wc -c
+echo script-success
+SCRIPT
+    cat >"$root/etc/naseed-normal.sh" <<'SCRIPT'
+#!/bin/sh
+[ "$1" = token ] || exit 18
+echo normal-native:$1
+SCRIPT
+    cat >"$root/etc/naseed-flow.sh" <<'SCRIPT'
+#!/bin/sh
+mkdir /tmp/work
+echo source > /tmp/work/in
+cp /tmp/work/in /tmp/work/out
+cat /tmp/work/out | wc -c
+mv /tmp/work/out /tmp/work/result
+cat /tmp/work/result
+rm /tmp/work/in
+rm /tmp/work/result
+rmdir /tmp/work
+echo flow-success
+SCRIPT
+    cat >"$root/etc/naseed-missing.sh" <<'SCRIPT'
+#!/bin/does-not-exist sh
+echo wrong
+SCRIPT
+    cat >"$root/etc/naseed-plain.sh" <<'SCRIPT'
+echo without-shebang
+SCRIPT
+    cat >"$root/etc/naseed-noexec.sh" <<'SCRIPT'
+#!/bin/busybox sh
+echo wrong
+SCRIPT
+    chmod 755 "$root/bin/shebang-abi" "$root/etc/naseed-stage.sh" \
+        "$root/etc/naseed-normal.sh" "$root/etc/naseed-flow.sh" \
+        "$root/etc/naseed-missing.sh" "$root/etc/naseed-plain.sh"
+    chmod 644 "$root/etc/naseed-noexec.sh"
+    touch -t 197001010000 "$root/bin/shebang-abi" \
+        "$root/etc/naseed-stage.sh" "$root/etc/naseed-normal.sh" \
+        "$root/etc/naseed-flow.sh" "$root/etc/naseed-missing.sh" \
+        "$root/etc/naseed-plain.sh" "$root/etc/naseed-noexec.sh"
+fi
 mkdir -p "$(dirname "$out")"
 (
     cd "$root"
@@ -52,6 +103,12 @@ mkdir -p "$(dirname "$out")"
         fi
         if [ -n "${NASEED_PATH_ABI:-}" ]; then
             printf '%s\n' bin/path-abi
+        fi
+        if [ -n "${NASEED_SHEBANG_ABI:-}" ]; then
+            printf '%s\n' bin/shebang-abi \
+                etc/naseed-stage.sh etc/naseed-normal.sh \
+                etc/naseed-flow.sh etc/naseed-missing.sh \
+                etc/naseed-plain.sh etc/naseed-noexec.sh
         fi
     } | cpio -o -H newc --quiet --owner=0:0
 ) > "$out.tmp"

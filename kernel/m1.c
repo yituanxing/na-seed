@@ -1557,7 +1557,69 @@ static struct exec_snapshot {
     const char *argv[NAS_ARGV_MAX];
     const char *envp[NAS_ENV_MAX];
     unsigned argc, envc;
+    /* #! interpreter and its single optional argument survive user CR3
+     * replacement; never retain pointers into a CPIO line buffer. */
+    char shebang_path[256], shebang_arg[256];
 } pending_exec;
+
+/* Linux binfmt_script: interpret a bounded CPIO #! line as an ELF
+ * interpreter plus one optional argument. The script itself is NOT mapped
+ * as ELF and argv[0] of the original caller is replaced by the interpreter.
+ * No recursive shebangs or Linux-binfmt registrations are pretended.
+ */
+static int read_shebang(const struct elf_image *image,
+                        char interpreter[256], char option[256]) {
+    if (!image || image->size < 3 || image->data[0] != '#' ||
+        image->data[1] != '!') return -ENOEXEC;
+    unsigned end = 2;
+    while (end < image->size && end < 256 &&
+           image->data[end] != '\n' && image->data[end] != 0)
+        end++;
+    /* Reject a truncated first line rather than guessing an interpreter. */
+    if (end == 256 || end == image->size || image->data[end] == 0)
+        return -ENOEXEC;
+    unsigned i = 2;
+    while (i < end && (image->data[i] == ' ' || image->data[i] == '\t'))
+        i++;
+    unsigned start = i;
+    while (i < end && image->data[i] != ' ' && image->data[i] != '\t' &&
+           image->data[i] != '\r')
+        i++;
+    if (i == start || image->data[start] != '/') return -ENOEXEC;
+    unsigned n = i - start;
+    for (unsigned j = 0; j < n; j++)
+        interpreter[j] = (char)image->data[start + j];
+    interpreter[n] = 0;
+    while (i < end && (image->data[i] == ' ' || image->data[i] == '\t'))
+        i++;
+    start = i;
+    while (end > start && (image->data[end - 1] == ' ' ||
+                            image->data[end - 1] == '\t' ||
+                            image->data[end - 1] == '\r'))
+        end--;
+    n = end - start;
+    for (unsigned j = 0; j < n; j++)
+        option[j] = (char)image->data[start + j];
+    option[n] = 0;
+    return 0;
+}
+static uint64_t shebang_rewrite_args(void) {
+    /* argv[0] is replaced, not appended. Preserve argv[1..] and envp. */
+    const bool option = pending_exec.shebang_arg[0] != 0;
+    unsigned original = pending_exec.argc;
+    if (original + 1 + (option ? 1U : 0U) > NAS_ARGV_MAX)
+        return (uint64_t)-E2BIG;
+    const char *rebuilt[NAS_ARGV_MAX];
+    unsigned n = 0;
+    rebuilt[n++] = pending_exec.shebang_path;
+    if (option) rebuilt[n++] = pending_exec.shebang_arg;
+    rebuilt[n++] = pending_exec.filename;
+    for (unsigned i = 1; i < original; i++)
+        rebuilt[n++] = pending_exec.argv[i];
+    for (unsigned i = 0; i < n; i++) pending_exec.argv[i] = rebuilt[i];
+    pending_exec.argc = n;
+    return 0;
+}
 
 static uint64_t copy_exec_string(uint64_t addr, char dst[EXEC_STRING_MAX]) {
     if (addr >= USER_LIMIT) return (uint64_t)-EFAULT;
@@ -1617,7 +1679,28 @@ static uint64_t sys_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     if (bootfs_is_dir(app) || !(app->mode & 0111U))
         return (uint64_t)-EACCES;
     struct elf_image main_img = { app->data, app->size };
-    /* This milestone accepts native x86_64 ELF64 only, not scripts. */
+    bool scripted = false;
+    if (main_img.size >= 2 && main_img.data[0] == '#' &&
+        main_img.data[1] == '!') {
+        err = read_shebang(&main_img, pending_exec.shebang_path,
+                           pending_exec.shebang_arg);
+        if (err) return (uint64_t)(int64_t)err;
+        char resolved_interpreter[256];
+        err = bootfs_resolve(pending_exec.shebang_path, true,
+                             resolved_interpreter);
+        if (err) return (uint64_t)(int64_t)err;
+        const struct bootfs_entry *bin = bootfs_find(resolved_interpreter);
+        if (!bin) return (uint64_t)-ENOENT;
+        if (bootfs_is_dir(bin) || !(bin->mode & 0111U))
+            return (uint64_t)-EACCES;
+        main_img = (struct elf_image){ bin->data, bin->size };
+        unsigned n = 0;
+        do { actual[n] = resolved_interpreter[n]; }
+        while (resolved_interpreter[n++]);
+        scripted = true;
+    }
+    /* Scripts are accepted only through an actual executable ELF
+     * interpreter; never claim a nested or invalid #! succeeds. */
     if (main_img.size < sizeof(struct elf_hdr) ||
         main_img.data[0] != 0x7f || main_img.data[1] != 'E' ||
         main_img.data[2] != 'L' || main_img.data[3] != 'F')
@@ -1633,6 +1716,10 @@ static uint64_t sys_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     if ((int64_t)result < 0) return result;
     result = copy_exec_vector(envp, true);
     if ((int64_t)result < 0) return result;
+    if (scripted) {
+        result = shebang_rewrite_args();
+        if ((int64_t)result < 0) return result;
+    }
     uint64_t new_root = alloc_user_root();
     if (!new_root) return (uint64_t)-ENOMEM;
     uint64_t previous_root = root_phys;
@@ -1684,6 +1771,10 @@ static uint64_t sys_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     running_bash = same_string(basename, "bash");
     running_alpine = running_busybox &&
         ((const struct elf_hdr *)main_img.data)->type == 3;
+    if (scripted) {
+        nas_print("[EXEC] CPIO #! interpreter: ");
+        nas_print(pending_exec.shebang_path); nas_print("\n");
+    }
     nas_print("[EXEC] replaced process with CPIO ELF: ");
     nas_print(pending_exec.filename);
     nas_print("\n");
