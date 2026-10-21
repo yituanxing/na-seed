@@ -7,6 +7,7 @@
 #include "../fd.h"
 #include "../mm/usercopy.h"
 #include "process.h"
+#include "wait_pid.h"
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
 static void proc_fail(const char *s) __attribute__((noreturn));
@@ -98,13 +99,15 @@ uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
     /* POSIX -1 waits for any child; direct positive PID is also valid.
      * This first model only supports a single process group.
      */
-    if ((int64_t)desired == 0 || (int64_t)desired < -1)
+    /* Linux wait4 pid_t is signed 32-bit, even on LP64. glibc may pass
+     * -1 zero-extended to 0x00000000ffffffff; do not treat it as PID. */
+    if (!nas_wait_pid_supported(desired))
         return (uint64_t)-EOPNOTSUPP;
     for (unsigned slot = 0; slot < NAS_TASK_LIMIT; ++slot) {
         struct nas_task *child = nas_task_child_at(nas_current_task->pid, slot);
         if (!child) continue;
         uint64_t pid = child->pid;
-        if (desired != UINT64_MAX && desired != pid) continue;
+        if (!nas_wait_pid_matches(desired,pid)) continue;
         have_child = true;
         if (child->state != NAS_TASK_ZOMBIE) continue;
         uint64_t code = child->termination_signal

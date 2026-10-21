@@ -9,6 +9,7 @@
 #include "../fs/io.h"
 #include "process.h"
 #include "sched.h"
+#include "wait_pid.h"
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
 #define TASK (*nas_current_task)
@@ -40,7 +41,7 @@ static bool task_wait_ready(const struct nas_task *task) {
     for (unsigned slot = 0; slot < NAS_TASK_LIMIT; slot++) {
         struct nas_task *child = nas_task_child_at(task->pid, slot);
         if (!child) continue;
-        if (desired != UINT64_MAX && desired != child->pid) continue;
+        if (!nas_wait_pid_matches(desired,child->pid)) continue;
         if (child->state == NAS_TASK_ZOMBIE) return true;
     }
     return false;

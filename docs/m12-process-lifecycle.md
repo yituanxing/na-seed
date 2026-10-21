@@ -62,3 +62,26 @@ The shared source manifest now runs
 so the BusyBox shell **remains PID 1**, starts the real tester as PID 2
 and leaves exactly 14 remaining slots. The tester independently checks
 its PID 1 parent. All three ISA tests must be rerun after this correction.
+
+## Second complete cross-ISA test finding: wait4 pid_t width at ABI boundary
+
+After preserving BusyBox ash PID1, the real x86-64 glibc test
+successfully occupied all 16 slots and got Linux EAGAIN on the extra
+fork. The next real call `waitpid(-1, WNOHANG)` returned ECHILD
+instead of 0 while **14 children were blocked alive on the same pipe**.
+
+The x86-64 libc actually emits `or $0xffffffff,%edi` for signed
+`pid_t=-1`, and the hardware zero-extends this into RDI as
+`0x00000000ffffffff`. All three NaSeed layers previously interpreted
+`-1` as a full 64-bit `UINT64_MAX`:
+
+- process wait4 child filtering;
+- blocked-wait scheduler wake eligibility;
+- syscall dispatcher deciding whether a blocking wait is supported.
+
+The **one architecture-independent fix** decodes the Linux signed
+32-bit `pid_t` once in `task/wait_pid.h`, reused by all three.
+Host regression tests both -1 encodings, exact positive PIDs and
+invalid process-group forms. There are no x86-specific special cases
+or edits to the original Linux user program. Native three-ISA CI
+must be rerun after this correction.
