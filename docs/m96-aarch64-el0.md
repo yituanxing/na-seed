@@ -37,3 +37,7 @@ one final EL1 register-state trace (SPSel, SP_EL1, TCR, MAIR) before
 ERET. The descriptor mapping now uses MAIR index 7 instead of rewriting
 index 0, preserving Limine's existing memory types for kernel/HHDM.
 This remains a QEMU-only diagnostic, not a hardware console.
+
+With no last-EL1 trace in the next QEMU boot, stage-indexed markers
+0..5 now bracket VBAR, MAIR, TCR, TTBR0 and TLB operations. Arguments
+are saved around trace calls and real EL0 success remains the sole CI gate.

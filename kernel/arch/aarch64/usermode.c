@@ -17,6 +17,18 @@ static void fatal(const char *why) {
     nas_print("\n");
     nas_arch_halt();
 }
+void nas_arm_user_trace_stage(uint64_t stage) {
+    uint64_t spsel, el;
+    __asm__ volatile ("mrs %0, SPSel" : "=r"(spsel));
+    __asm__ volatile ("mrs %0, CurrentEL" : "=r"(el));
+    nas_print("[ARM64 TRACE] stage=");
+    nas_dec(stage);
+    nas_print(" currentEL=");
+    nas_hex(el);
+    nas_print(" spsel=");
+    nas_hex(spsel);
+    nas_print("\n");
+}
 void nas_arm_user_last_el1_trace(void) {
     uint64_t spsel, sp_el1, tcr, mair;
     __asm__ volatile ("mrs %0, SPSel" : "=r"(spsel));
