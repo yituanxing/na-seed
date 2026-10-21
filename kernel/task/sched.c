@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "../errno.h"
-#include "../nr.h"
+#include "../syscall/ops.h"
 #include "../task.h"
 #include "../fd.h"
 #include "../pipe.h"
@@ -28,10 +28,10 @@ static bool task_io_ready(const struct nas_task *task) {
     uint8_t kind = nas_task_fd_kind(task, fd);
     unsigned slot = nas_task_fd_slot(task, fd);
     if (slot >= NAS_FD_LIMIT) return true; /* replay to return EBADF */
-    if (task->blocked_nr == __NR_read)
+    if (task->blocked_op == NAS_SC_read)
         return kind != FD_PIPE_R || nas_pipe_read_ready(slot);
-    if (task->blocked_nr == __NR_write ||
-        task->blocked_nr == __NR_writev)
+    if (task->blocked_op == NAS_SC_write ||
+        task->blocked_op == NAS_SC_writev)
         return kind != FD_PIPE_W || nas_pipe_write_ready(slot);
     return true;
 }
@@ -48,20 +48,20 @@ static bool task_wait_ready(const struct nas_task *task) {
 static bool task_can_wake(const struct nas_task *task) {
     if (task->state != NAS_TASK_BLOCKED || !task->resume_valid ||
         !task->pending_valid) return false;
-    if (task->blocked_nr == __NR_wait4) return task_wait_ready(task);
-    if (task->blocked_nr == __NR_read ||
-        task->blocked_nr == __NR_write ||
-        task->blocked_nr == __NR_writev)
+    if (task->blocked_op == NAS_SC_wait4) return task_wait_ready(task);
+    if (task->blocked_op == NAS_SC_read ||
+        task->blocked_op == NAS_SC_write ||
+        task->blocked_op == NAS_SC_writev)
         return task_io_ready(task);
     return false;
 }
 static uint64_t task_replay(struct nas_task *task) {
-    uint64_t nr = task->blocked_nr;
+    enum nas_syscall_op nr = (enum nas_syscall_op)task->blocked_op;
     const uint64_t *a = task->blocked_args;
-    if (nr == __NR_read) return nas_fs_fd_read(a[0], a[1], a[2]);
-    if (nr == __NR_write) return nas_fs_fd_write(a[0], a[1], a[2]);
-    if (nr == __NR_writev) return nas_fs_fd_writev(a[0], a[1], a[2]);
-    if (nr == __NR_wait4) return nas_process_wait4(a[0], a[1], a[2], a[3]);
+    if (nr == NAS_SC_read) return nas_fs_fd_read(a[0], a[1], a[2]);
+    if (nr == NAS_SC_write) return nas_fs_fd_write(a[0], a[1], a[2]);
+    if (nr == NAS_SC_writev) return nas_fs_fd_writev(a[0], a[1], a[2]);
+    if (nr == NAS_SC_wait4) return nas_process_wait4(a[0], a[1], a[2], a[3]);
     sched_fail("scheduler unknown blocked syscall");
 }
 
@@ -84,7 +84,7 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     child->termination_signal = signum;
     child->state = NAS_TASK_ZOMBIE;
     child->pending_valid = false;
-    child->blocked_nr = 0;
+    child->blocked_op = 0;
     for (unsigned fd = 0; fd < NAS_FD_LIMIT; fd++)
         if (descriptors[fd] != FD_CLOSED) nas_fs_close_fd(fd);
     if (signum) {
@@ -118,23 +118,23 @@ retry_schedule: ; /* label must precede a statement in C11 */
             if (next->pending_valid) {
                 result = task_replay(next);
                 if ((int64_t)result == -EPIPE &&
-                    (next->blocked_nr == __NR_write ||
-                     next->blocked_nr == __NR_writev) &&
+                    (next->blocked_op == NAS_SC_write ||
+                     next->blocked_op == NAS_SC_writev) &&
                     nas_sched_sigpipe_default(next->blocked_args[0])) {
                     nas_sched_child_exit(0, NAS_SIGPIPE);
                     goto retry_schedule; /* parent can now observe zombie */
                 }
                 if ((int64_t)result == -EOPNOTSUPP &&
-                    (next->blocked_nr == __NR_read ||
-                     next->blocked_nr == __NR_write ||
-                     next->blocked_nr == __NR_writev)) {
+                    (next->blocked_op == NAS_SC_read ||
+                     next->blocked_op == NAS_SC_write ||
+                     next->blocked_op == NAS_SC_writev)) {
                     next->state = NAS_TASK_BLOCKED;
                     nas_current_task = previous;
                     nas_arch_restore_cpu(previous);
                     continue;
                 }
                 next->pending_valid = false;
-                next->blocked_nr = 0;
+                next->blocked_op = 0;
             }
             next->state = NAS_TASK_RUNNING;
             next->resume_valid = false;
@@ -162,7 +162,7 @@ retry_schedule: ; /* label must precede a statement in C11 */
         if (task->state == NAS_TASK_FREE) continue;
         nas_print("[DEADLOCK] pid="); nas_dec(task->pid);
         nas_print(" state="); nas_dec(task->state);
-        nas_print(" blocked_nr="); nas_dec(task->blocked_nr);
+        nas_print(" blocked_op="); nas_dec(task->blocked_op);
         nas_print(" fd="); nas_dec(task->blocked_args[0]);
         nas_print("\n");
         for (unsigned fd = 0; fd < NAS_FD_LIMIT; fd++) {
@@ -178,13 +178,13 @@ retry_schedule: ; /* label must precede a statement in C11 */
     }
     sched_fail("scheduler deadlock: all live tasks blocked; no ready process");
 }
-uint64_t nas_task_block(uint64_t *frame, uint64_t nr,
+uint64_t nas_task_block(uint64_t *frame, enum nas_syscall_op nr,
                            uint64_t a, uint64_t b, uint64_t c,
                            uint64_t d) {
     struct nas_task *task = nas_current_task;
     nas_arch_save_user_frame(task, frame);
     task->resume_valid = true;
-    task->blocked_nr = nr;
+    task->blocked_op = nr;
     task->pending_valid = true;
     task->blocked_args[0] = a;
     task->blocked_args[1] = b;

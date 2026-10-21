@@ -31,7 +31,7 @@ uint64_t nas_process_fork(uint64_t *frame) {
     nas_arch_save_user_frame(parent, frame);
     nas_arch_set_saved_return(parent, child->pid);
     parent->resume_valid = true;
-    parent->blocked_nr = 0;
+    parent->blocked_op = 0;
     parent->pending_valid = false;
     parent->state = NAS_TASK_READY;
     child->state = NAS_TASK_RUNNING;

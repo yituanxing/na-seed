@@ -53,7 +53,7 @@ struct nas_task *nas_task_fork_slot(void) {
         child->exit_code = 0;
         child->termination_signal = 0;
         child->resume_valid = false;
-        child->blocked_nr = 0;
+        child->blocked_op = 0;
         child->pending_valid = false;
         return child;
     }

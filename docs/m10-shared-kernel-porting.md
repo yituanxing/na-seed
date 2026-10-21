@@ -16,9 +16,12 @@ Its x86-specific paging.h is not a multiarch page-table contract.
 - Context/process: kernel/arch/context.h and saved syscall frame are x86.
   Architecture-owned trap/user entry and FPU/TLS are required; one task
   registry, scheduler and process lifecycle must be preserved.
-- ABI: kernel/nr.h and kernel/fs/syscall.c are x86-specific. Decode each ISA
-  syscall register/number to named semantic IDs and pack stat/dirent/signal
-  types by ABI. Unsupported calls must return -ENOSYS.
+- ABI: kernel/nr.h remains the pinned x86 source, now used only by the
+  syscall decoder. All common dispatch/FS/scheduler comparisons use named
+  NAS_SC semantic IDs. RV/ARM asm-generic syscall decoding is available;
+  raw clone is never treated as fork. stat/dirent/signal packing and the
+  architecture trap-to-dispatch adapter are STILL REQUIRED. Unsupported
+  calls must return -ENOSYS.
 - ELF/exec: share structural validation and program loading through VM,
   keep one transactional exec implementation. This change begins the
   common validator and target ABI metadata; mapping logic not yet unified.

@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "../errno.h"
-#include "../nr.h"
+#include "../syscall/ops.h"
 #include "../task.h"
 #include "../fd.h"
 #include "../bootfs.h"
@@ -806,45 +806,46 @@ static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
 /* A known filesystem operation returns its genuine Linux ABI result.
  * Non-FS operations remain owned by the common dispatcher. */
 #define FS_RESULT(expr) return (struct nas_fs_result){ .handled = true, .value = (expr) }
-struct nas_fs_result nas_fs_syscall(const uint64_t *args) {
-    switch (args[0]) {
-    case __NR_rename: FS_RESULT(sys_renameat_tmp((uint64_t)-100, args[1], (uint64_t)-100, args[2], 0));
-    case __NR_renameat: FS_RESULT(sys_renameat_tmp(args[1], args[2], args[3], args[4], 0));
-    case __NR_renameat2: FS_RESULT(sys_renameat_tmp(args[1], args[2], args[3], args[4], args[5]));
-    case __NR_mkdir: FS_RESULT(sys_mkdirat_tmp((uint64_t)-100, args[1], args[2]));
-    case __NR_mkdirat: FS_RESULT(sys_mkdirat_tmp(args[1], args[2], args[3]));
-    case __NR_unlink: FS_RESULT(sys_unlinkat_tmp((uint64_t)-100, args[1], 0));
-    case __NR_rmdir: FS_RESULT(sys_unlinkat_tmp((uint64_t)-100, args[1], 0x200ULL));
-    case __NR_unlinkat: FS_RESULT(sys_unlinkat_tmp(args[1], args[2], args[3]));
-    case __NR_open: FS_RESULT(sys_open_device(args[1], args[2]));
-    case __NR_openat: FS_RESULT(sys_openat_boot(args[1], args[2], args[3]));
-    case __NR_fstat: FS_RESULT(sys_fstat_boot(args[1], args[2]));
-    case __NR_newfstatat: FS_RESULT(sys_fstatat_boot(args[1], args[2], args[3], args[4]));
-    case __NR_stat: FS_RESULT(sys_fstatat_boot((uint64_t)-100, args[1], args[2], 0));
-    case __NR_lstat: FS_RESULT(sys_fstatat_boot((uint64_t)-100, args[1], args[2], 0x100ULL));
-    case __NR_lseek: FS_RESULT(sys_lseek_boot(args[1], args[2], args[3]));
-    case __NR_getdents64: FS_RESULT(sys_getdents64(args[1], args[2], args[3]));
-    case __NR_readlink: FS_RESULT(sys_readlinkat_boot((uint64_t)-100, args[1], args[2], args[3]));
-    case __NR_readlinkat: FS_RESULT(sys_readlinkat_boot(args[1], args[2], args[3], args[4]));
-    case __NR_getcwd: FS_RESULT(sys_getcwd_root(args[1], args[2]));
-    case __NR_pipe: FS_RESULT(sys_pipe2(args[1], 0));
-    case __NR_pipe2: FS_RESULT(sys_pipe2(args[1], args[2]));
-    case __NR_fcntl: FS_RESULT(sys_fcntl(args[1], args[2], args[3]));
-    case __NR_poll: FS_RESULT(sys_poll(args[1], args[2], args[3]));
-    case __NR_dup: FS_RESULT(fd_duplicate(args[1], 0, false));
-    case __NR_dup2: FS_RESULT(fd_clone(args[1], args[2], false));
-    case __NR_chdir: FS_RESULT(sys_chdir(args[1]));
-    case __NR_fchdir: FS_RESULT(sys_fchdir(args[1]));
-    case __NR_close:
+struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
+                                     const uint64_t *args) {
+    switch (op) {
+    case NAS_SC_rename: FS_RESULT(sys_renameat_tmp((uint64_t)-100, args[1], (uint64_t)-100, args[2], 0));
+    case NAS_SC_renameat: FS_RESULT(sys_renameat_tmp(args[1], args[2], args[3], args[4], 0));
+    case NAS_SC_renameat2: FS_RESULT(sys_renameat_tmp(args[1], args[2], args[3], args[4], args[5]));
+    case NAS_SC_mkdir: FS_RESULT(sys_mkdirat_tmp((uint64_t)-100, args[1], args[2]));
+    case NAS_SC_mkdirat: FS_RESULT(sys_mkdirat_tmp(args[1], args[2], args[3]));
+    case NAS_SC_unlink: FS_RESULT(sys_unlinkat_tmp((uint64_t)-100, args[1], 0));
+    case NAS_SC_rmdir: FS_RESULT(sys_unlinkat_tmp((uint64_t)-100, args[1], 0x200ULL));
+    case NAS_SC_unlinkat: FS_RESULT(sys_unlinkat_tmp(args[1], args[2], args[3]));
+    case NAS_SC_open: FS_RESULT(sys_open_device(args[1], args[2]));
+    case NAS_SC_openat: FS_RESULT(sys_openat_boot(args[1], args[2], args[3]));
+    case NAS_SC_fstat: FS_RESULT(sys_fstat_boot(args[1], args[2]));
+    case NAS_SC_newfstatat: FS_RESULT(sys_fstatat_boot(args[1], args[2], args[3], args[4]));
+    case NAS_SC_stat: FS_RESULT(sys_fstatat_boot((uint64_t)-100, args[1], args[2], 0));
+    case NAS_SC_lstat: FS_RESULT(sys_fstatat_boot((uint64_t)-100, args[1], args[2], 0x100ULL));
+    case NAS_SC_lseek: FS_RESULT(sys_lseek_boot(args[1], args[2], args[3]));
+    case NAS_SC_getdents64: FS_RESULT(sys_getdents64(args[1], args[2], args[3]));
+    case NAS_SC_readlink: FS_RESULT(sys_readlinkat_boot((uint64_t)-100, args[1], args[2], args[3]));
+    case NAS_SC_readlinkat: FS_RESULT(sys_readlinkat_boot(args[1], args[2], args[3], args[4]));
+    case NAS_SC_getcwd: FS_RESULT(sys_getcwd_root(args[1], args[2]));
+    case NAS_SC_pipe: FS_RESULT(sys_pipe2(args[1], 0));
+    case NAS_SC_pipe2: FS_RESULT(sys_pipe2(args[1], args[2]));
+    case NAS_SC_fcntl: FS_RESULT(sys_fcntl(args[1], args[2], args[3]));
+    case NAS_SC_poll: FS_RESULT(sys_poll(args[1], args[2], args[3]));
+    case NAS_SC_dup: FS_RESULT(fd_duplicate(args[1], 0, false));
+    case NAS_SC_dup2: FS_RESULT(fd_clone(args[1], args[2], false));
+    case NAS_SC_chdir: FS_RESULT(sys_chdir(args[1]));
+    case NAS_SC_fchdir: FS_RESULT(sys_fchdir(args[1]));
+    case NAS_SC_close:
         if (args[1] >= 64 || descriptors[args[1]] == FD_CLOSED)
             FS_RESULT((uint64_t)-EBADF);
         nas_fs_close_fd(args[1]);
         FS_RESULT(0);
-    case __NR_ioctl:
+    case NAS_SC_ioctl:
         if (args[1] >= 64 || descriptors[args[1]] == FD_CLOSED)
             FS_RESULT((uint64_t)-EBADF);
         FS_RESULT((uint64_t)-ENOTTY); /* No TTY driver. */
-    case __NR_dup3:
+    case NAS_SC_dup3:
         if (args[1] == args[2] || (args[3] & ~0x80000ULL))
             FS_RESULT((uint64_t)-EINVAL);
         FS_RESULT(fd_clone(args[1], args[2], (args[3] & 0x80000ULL) != 0));
