@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "user_space.h"
+#include "prot.h"
 #include "../task.h"
 #include "../arch/arch.h"
 #include "../arch/mmu.h"
@@ -41,6 +42,15 @@ uint64_t nas_mmu_fork_root(void) {
 bool nas_mmu_map_page(uint64_t va,bool writable) {
     struct nas_user_space s=current();
     return nas_space_map_page(&s,va,writable);
+}
+bool nas_mmu_map_prot_page(uint64_t va, uint64_t prot) {
+    if (!nas_vm_prot_supported(prot)) return false;
+    struct nas_user_space s=current();
+    /* RV64 and ARM64 can both enforce R/RW/RX. Linux PROT_WRITE and
+     * PROT_EXEC implicitly include read under our documented contract. */
+    return nas_space_map_access(&s, va, NAS_UP_READ |
+        ((prot & NAS_VM_WRITE) ? NAS_UP_WRITE : 0) |
+        ((prot & NAS_VM_EXEC) ? NAS_UP_EXEC : 0));
 }
 bool nas_mmu_unmap_page(uint64_t va) {
     struct nas_user_space s=current();

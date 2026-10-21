@@ -19,6 +19,19 @@ bool nas_space_regression(void) {
     if (!levels || !nas_space_new(&a, levels)) return false;
     if (!nas_space_map_page(&a, va, true) ||
         !nas_space_map_page(&a, high, true)) return false;
+    /* Exact user permissions rather than legacy writable->executable.
+     * Exercise both native RV64 SvX and ARM64 TTBR0 PTE encoders. */
+    const uint64_t ro=0x240000ULL, rx=0x250000ULL;
+    if (!nas_space_map_access(&a, ro, NAS_UP_READ) ||
+        !nas_space_map_access(&a, rx, NAS_UP_READ|NAS_UP_EXEC)) return false;
+    unsigned ro_access=0, rx_access=0;
+    if (!nas_space_lookup(&a, ro, 0, &ro_access) ||
+        !nas_space_lookup(&a, rx, 0, &rx_access) ||
+        ro_access != NAS_UP_READ ||
+        rx_access != (NAS_UP_READ|NAS_UP_EXEC)) return false;
+    if (nas_space_protect(&a, ro, 1, NAS_UP_WRITE|NAS_UP_EXEC) ||
+        !nas_space_lookup(&a, ro, 0, &ro_access) ||
+        ro_access != NAS_UP_READ) return false;
     uint8_t *high_a=nas_space_user_byte(&a,high+71);
     if(!high_a) return false;
     *high_a=0x5a;

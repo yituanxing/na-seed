@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include "frame.h"
 #include "user_space.h"
+#include "prot.h"
 #define PAGE_BYTES 4096ULL
 /* Arch page tables never own user DATA frames: one shared owner controls
  * mapping, cloning, rollback and reclamation. Reject malformed walks. */
@@ -74,8 +75,8 @@ bool nas_space_unmap_page(struct nas_user_space *space, uint64_t va) {
 }
 bool nas_space_protect(struct nas_user_space *space, uint64_t va,
                        uint64_t pages, unsigned prot) {
-    if (!space || !page_aligned(va) || !pages || !(prot & 7U) ||
-        (prot & ~7U) || pages > (UINT64_MAX-va)/PAGE_BYTES) return false;
+    if (!space || !page_aligned(va) || !pages || !nas_vm_prot_supported(prot) ||
+        pages > (UINT64_MAX-va)/PAGE_BYTES) return false;
     unsigned desired = (prot & 7U) | NAS_UP_READ;
     /* Validate entire range first to avoid partially changing permissions
      * on ordinary unmapped-range failures. */

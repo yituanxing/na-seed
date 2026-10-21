@@ -30,6 +30,8 @@ bool nas_mmu_reclaim_root(uint64_t);
 void nas_mmu_switch_root(uint64_t);
 uint64_t nas_mmu_fork_root(void);
 bool nas_mmu_map_page(uint64_t, bool writable);
+/* Typed user mapping permissions, never the ambiguous writable-only API. */
+bool nas_mmu_map_prot_page(uint64_t va, uint64_t prot);
 bool nas_mmu_unmap_page(uint64_t);
 uint8_t *nas_mmu_user_byte(uint64_t);
 bool nas_mmu_user_writable(uint64_t);

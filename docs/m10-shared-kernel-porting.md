@@ -5,6 +5,30 @@ NaOS (kadds/NaOS) was inspected for its single kernel initialization,
 arch/task split, shared ELF load_common and scheduler-policy boundary.
 Its x86-specific paging.h is not a multiarch page-table contract.
 
+## Next native-workload gate: explicit anonymous VM rights (2026-10-21)
+
+The first 17 static BusyBox cases expose no guarantee about anonymous
+PROT_READ / PROT_EXEC mappings. Previously `nas_vm_anon_mmap` passed a
+single `writable` boolean to `nas_mmu_map_page`; a nonwritable page
+could be executable, and on x86 writable pages could remain executable
+until a later `mprotect`. This is an observable Linux ABI mistake, not a
+reason to build a full VMA subsystem before its requirements are known.
+
+- Anonymous mmap now requests **exact permissions at initial PTE mapping**,
+  via `nas_mmu_map_prot_page`; x86 explicitly sets NX, while RV/ARM use
+  the same common space lifecycle and translate R/RW/RX to native PTEs.
+- W+X is explicitly refused with `-EOPNOTSUPP` (including mprotect);
+  `PROT_NONE` is explicitly `-ENOSYS` until a VMA tracks inaccessible
+  but still-owned pages. No fake PROT_NONE -> readable mapping.
+- Host test covers supported/unsupported policies; native RV/ARM physical
+  PTE regression checks R versus RX and refuses W+X without changing rights.
+  Existing real ELF/Bash/BusyBox QEMU regression remains mandatory.
+- This is deliberately narrower than NaOS's `vm::info_t`/VMA and
+  COW/lazy pager features: future dynamic ELF, file mappings and page
+  faults should inform that larger design. The legacy ELF eager PT_LOAD
+  mapping contract is unchanged in this pass, and still needs a separate
+  page-granular permission review before claiming universal W^X.
+
 ## Current verified integration status — 2026-10-21
 
 The sections below retain the chronological engineering trail, including
