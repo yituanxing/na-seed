@@ -10,6 +10,7 @@
 #elif defined(NASEED_PORT_M0) && defined(__aarch64__)
 #include "arch/aarch64/cpu.h"
 #include "arch/aarch64/mmu.h"
+#include "arch/aarch64/usermode.h"
 #endif
 #include "drivers/serial.h"
 #include "mm/frame.h"
@@ -120,7 +121,7 @@ void kmain(void) {
     }
     nas_print("[PASS] AArch64 39/48-bit user PTE map/query/unmap/reclaim\n");
     nas_print("[PASS] aarch64 M0 Limine/UEFI/semihost/frame allocator\n");
-    nas_arch_halt();
+    nas_arm_user_smoke();
 #else
 #error "Unimplemented M0 architecture"
 #endif

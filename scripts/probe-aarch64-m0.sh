@@ -42,6 +42,11 @@ if ! grep -Fq '[PASS] AArch64 39/48-bit user PTE map/query/unmap/reclaim' "$log"
     tail -100 "$log" >&2
     exit 1
 fi
+if ! grep -Fq '[PASS] AArch64 hardware EL0 Linux exit(42) SVC via ERET/TTBR0' "$log"; then
+    echo '[ARM64 BOOT FAIL] real EL0/SVC hardware-trap pass marker not found' >&2
+    tail -100 "$log" >&2
+    exit 1
+fi
 if ! grep -Fq '[PASS] aarch64 M0 Limine/UEFI/semihost/frame allocator' "$log"; then
     echo "[AARCH64 BOOT FAIL] missing real kernel M0 marker (QEMU=$rc)" >&2
     tail -100 "$log" >&2
