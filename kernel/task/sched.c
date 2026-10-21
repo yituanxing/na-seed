@@ -86,6 +86,10 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     child->state = NAS_TASK_ZOMBIE;
     child->pending_valid = false;
     child->blocked_op = 0;
+    /* Reparent *both* living and already-zombie descendants to init.
+     * Task identity (PID) and physical page ownership remain unchanged.
+     * PID 1 owns future wait4 and is responsible for reaping orphans. */
+    nas_task_adopt_orphans(child->pid);
     for (unsigned fd = 0; fd < NAS_FD_LIMIT; fd++)
         if (descriptors[fd] != FD_CLOSED) nas_fs_close_fd(fd);
     if (signum) {

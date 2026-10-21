@@ -105,6 +105,12 @@ if grep -Eq 'NASEED_PORT_M0' kernel/task/*.c kernel/fs/*.c kernel/mm/vm.c; then
     exit 1
 fi
 
+# M12: process table bound and orphan adoption are common-Task mechanisms,
+# not ISA-specific or synthetic syscall fallbacks.
+grep -Fq '#define NAS_TASK_LIMIT 16' kernel/task.h
+grep -Fq 'nas_task_adopt_orphans(child->pid)' kernel/task/sched.c
+grep -Fq 'BUSYBOX_EXTRA_DIR' scripts/stage-busybox-rootfs.sh
+
 # Compare our pinned Linux x86-64 syscall numbers against the host UAPI.
 python3 scripts/check-syscall-nr.py
 python3 scripts/check-syscall-errno.py
