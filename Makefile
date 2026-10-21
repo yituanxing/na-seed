@@ -34,7 +34,15 @@ $(OUT)/kernel.o: kernel/kernel.c kernel/arch/arch.h kernel/drivers/serial.h kern
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
-$(OUT)/m1.o: kernel/m1.c kernel/nr.h kernel/errno.h kernel/bootfs.h kernel/task.h kernel/fd.h kernel/tmpfs.h kernel/path.h kernel/pipe.h kernel/boot_image.h kernel/arch/arch.h kernel/platform/platform.h kernel/mm/vm.h kernel/arch/mmu.h kernel/task/process.h kernel/task/sched.h kernel/fs/io.h kernel/mm/usercopy.h kernel/task/elf.h kernel/task/user_stack.h kernel/task/signal.h kernel/arch/$(ARCH)/syscall.h kernel/fs/syscall.h $(HDR)
+$(OUT)/init_main.o: kernel/init/main.c kernel/init/main.h kernel/panic.h
+	mkdir -p $(dir $@)
+	clang $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(OUT)/task_exec.o: kernel/task/exec.c kernel/task/exec.h kernel/task/elf.h kernel/panic.h
+	mkdir -p $(dir $@)
+	clang $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(OUT)/syscall_dispatch.o: kernel/syscall/dispatch.c kernel/syscall/dispatch.h kernel/task/exec.h
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
@@ -151,8 +159,8 @@ $(OUT)/shebang-abi.o: user/shebang-abi.S kernel/nr.h kernel/errno.h
 $(OUT)/shebang-abi: $(OUT)/shebang-abi.o user/linker.ld
 	ld.lld -m elf_x86_64 -nostdlib -static -T user/linker.ld $< -o $@
 
-$(KERNEL): $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/process.o $(OUT)/sched.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/boot_image.o $(OUT)/arch.o $(OUT)/arch_cpu.o $(OUT)/arch_context.o $(OUT)/serial.o $(OUT)/frame.o $(OUT)/platform.o $(OUT)/arch_mmu.o $(OUT)/vm.o $(OUT)/usercopy.o $(OUT)/elf.o $(OUT)/user_stack.o $(OUT)/signal.o $(OUT)/arch_syscall.o $(OUT)/fs_syscall.o kernel/arch/$(ARCH)/linker.ld
-	ld.lld $(LDFLAGS) $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/process.o $(OUT)/sched.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/boot_image.o $(OUT)/arch.o $(OUT)/arch_cpu.o $(OUT)/arch_context.o $(OUT)/serial.o $(OUT)/frame.o $(OUT)/platform.o $(OUT)/arch_mmu.o $(OUT)/vm.o $(OUT)/usercopy.o $(OUT)/elf.o $(OUT)/user_stack.o $(OUT)/signal.o $(OUT)/arch_syscall.o $(OUT)/fs_syscall.o -o $@
+$(KERNEL): $(OUT)/kernel.o $(OUT)/init_main.o $(OUT)/task_exec.o $(OUT)/syscall_dispatch.o $(OUT)/task.o $(OUT)/process.o $(OUT)/sched.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/boot_image.o $(OUT)/arch.o $(OUT)/arch_cpu.o $(OUT)/arch_context.o $(OUT)/serial.o $(OUT)/frame.o $(OUT)/platform.o $(OUT)/arch_mmu.o $(OUT)/vm.o $(OUT)/usercopy.o $(OUT)/elf.o $(OUT)/user_stack.o $(OUT)/signal.o $(OUT)/arch_syscall.o $(OUT)/fs_syscall.o kernel/arch/$(ARCH)/linker.ld
+	ld.lld $(LDFLAGS) $(OUT)/kernel.o $(OUT)/init_main.o $(OUT)/task_exec.o $(OUT)/syscall_dispatch.o $(OUT)/task.o $(OUT)/process.o $(OUT)/sched.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/boot_image.o $(OUT)/arch.o $(OUT)/arch_cpu.o $(OUT)/arch_context.o $(OUT)/serial.o $(OUT)/frame.o $(OUT)/platform.o $(OUT)/arch_mmu.o $(OUT)/vm.o $(OUT)/usercopy.o $(OUT)/elf.o $(OUT)/user_stack.o $(OUT)/signal.o $(OUT)/arch_syscall.o $(OUT)/fs_syscall.o -o $@
 
 $(BINARY_TAR):
 	mkdir -p $(dir $@)

@@ -1,0 +1,85 @@
+#include <stdint.h>
+#include <stdbool.h>
+#include "../task.h"
+#include "../fd.h"
+#include "../boot_image.h"
+#include "../arch/arch.h"
+#include "../arch/mmu.h"
+#include "../drivers/serial.h"
+#include "../panic.h"
+#include "../task/elf.h"
+#include "../task/user_stack.h"
+#include "main.h"
+#define TASK (*nas_current_task)
+#define descriptors TASK.fds.descriptors
+#define file_slot TASK.fds.file_slot
+#define file_refcount nas_file_refcount
+#define file_status_flags nas_file_status_flags
+#define running_bash TASK.running_bash
+#define running_busybox TASK.running_busybox
+#define running_alpine TASK.running_alpine
+#define USER_STACK_TOP 0x0000000070000000ULL
+#define USER_STACK_PAGES 32
+
+void nas_init_userspace(void) {
+    nas_print("[M1] setting up GDT, TSS, IDT, syscall MSRs\n");
+    nas_task_boot_init();
+    nas_arch_cpu_tables_init();
+    nas_arch_cpu_user_fp_init();
+    if (!nas_mmu_bootstrap()) nas_fail("requires four-level paging");
+    nas_arch_syscall_enable();
+    /* Select the boot ELF with the very same argv[0] passed to userspace.
+     * No shell, PATH lookup, or alternative program-name ABI is invented.
+     * Legacy M0-M5 configurations without cmdline preserve their defaults.
+     */
+    extern const char *nas_cmdline(void);
+    const char *cmdline = nas_cmdline();
+    if (cmdline && *cmdline) {
+        const char *const *args;
+        unsigned argc;
+        if (!nas_parse_boot_argv(cmdline, &args, &argc))
+            nas_fail("invalid Limine naseed.argv configuration");
+    }
+    /* File-system bytes and the selected executable are separate:
+     * boot_image.c recognizes the Limine handoff and indexes CPIO via
+     * bootfs.c; only this layer maps the actual ELF into userspace.
+     */
+    struct nas_boot_image selected_image;
+    const char *boot_error = nas_boot_prepare(
+        nas_boot_argv_first(), &selected_image);
+    if (boot_error) nas_fail(boot_error);
+    struct elf_image main_image = {
+        selected_image.image, selected_image.size
+    };
+    struct elf_image interp_image = {
+        selected_image.interpreter, selected_image.interpreter_size
+    };
+    const struct elf_image *interpreter =
+        selected_image.has_interpreter ? &interp_image : 0;
+    running_bash = selected_image.bash;
+    running_busybox = selected_image.busybox;
+    running_alpine = selected_image.alpine;
+    uint64_t entry = 0;
+    if (!nas_elf_load(&main_image, interpreter, &entry))
+        nas_fail("invalid or unmappable userspace ELF");
+    for (uint64_t va = USER_STACK_TOP - USER_STACK_PAGES * PAGE;
+         va < USER_STACK_TOP; va += PAGE) {
+        if (!nas_mmu_map_page(va, true)) nas_fail("cannot map user stack");
+    }
+    uint64_t stack_pointer;
+    for (unsigned fd = 0; fd < 3; fd++) {
+        descriptors[fd] = FD_UART;
+        file_slot[fd] = (uint8_t)fd;
+        file_refcount[fd] = 1;
+        file_status_flags[fd] = fd == 0 ? 0 : 1; /* stdin R, stdout/err W */
+    }
+    if (!nas_build_linux_stack(running_bash, running_busybox, &stack_pointer))
+        nas_fail("cannot initialize Linux userspace stack");
+    nas_print("[ELF] userspace entry="); nas_hex(entry); nas_print("\n");
+    if (running_bash) nas_print("[M2] entering real Bash in ring 3\n");
+    else if (running_alpine) nas_print("[M4] real Alpine busybox via musl interpreter in ring 3\n");
+    else if (running_busybox) nas_print("[M2] entering real BusyBox in ring 3\n");
+    else nas_print("[M1] entering actual ring 3\n");
+    nas_arch_enter_user(entry, stack_pointer);
+    nas_fail("iretq returned");
+}
