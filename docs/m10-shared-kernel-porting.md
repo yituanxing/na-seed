@@ -113,3 +113,11 @@ overlapping pages, W+X and malformed alignment. Common frame allocator
 zeroes BSS. Verified by a host loader regression and real RV QEMU.
 Current x86 MMU map_page still does not guarantee runtime W^X: separate
 leaf-protection finishing passes are a different feature, not claimed here.
+
+## Page-table shape is not interchangeable between ISAs
+RV64 SVx leaf walker iterates 256 top-level positive-canonical entries
+because upper indices hold shared Limine supervisor mappings. ARM64 TTBR0
+has a separate root from TTBR1 and ALL 512 entries of TTBR0 are userspace.
+The shared VM regression now maps, clones and reclaims the highest legal
+user VA with hardware-selected Sv39/48/57 or TTBR0 39/48-bit semantics.
+This detects silent unreclaimed user frames and private-fork omissions.

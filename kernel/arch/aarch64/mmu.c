@@ -182,7 +182,10 @@ bool nas_arm_pt_protect(const struct nas_arm_pt *pt,uint64_t va,
 static bool arm_walk(uint64_t pa,unsigned level,uint64_t base,bool top,
                      nas_user_pt_visit fn,void *ctx) {
     const uint64_t *entries=table(pa);
-    unsigned count=top?256:512;
+    /* TTBR0 owns the entire lower-VA user region; unlike Sv39 it does not
+     * reserve the upper 256 root entries for the kernel (TTBR1 does). */
+    (void)top;
+    unsigned count=512;
     for(unsigned i=0;i<count;i++) {
         uint64_t e=entries[i];
         if(!e) continue;
