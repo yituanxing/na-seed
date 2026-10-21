@@ -81,4 +81,3 @@ uint64_t nas_vm_mprotect(uint64_t addr, uint64_t length, uint64_t prot) {
     return nas_mmu_protect_pages(addr, pages, prot)
         ? 0 : (uint64_t)-ENOMEM;
 }
-
