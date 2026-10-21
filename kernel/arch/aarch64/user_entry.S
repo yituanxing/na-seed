@@ -33,7 +33,7 @@ nas_arm_vectors:
 .macro ARM_TRACE stage
     stp x0, x1, [sp, #-32]!
     str x2, [sp, #16]
-    mov x0, #\\stage
+    mov x0, #\stage
     bl nas_arm_user_trace_stage
     ldr x2, [sp, #16]
     ldp x0, x1, [sp], #32
