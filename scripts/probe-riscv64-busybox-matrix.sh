@@ -64,7 +64,7 @@ boot_case() {
         -drive if=pflash,format=raw,unit=0,readonly=on,file="$fw/RISCV_VIRT_CODE.fd" \
         -drive if=pflash,format=raw,unit=1,file="$work/$name.vars.fd" \
         -drive if=none,id=esp,format=raw,file="$disk" \
-        -device virtio-blk-device,drive=esp > "$log" 2>&1 &
+        -device virtio-blk-device,drive=esp > "$log" 2>&1 < /dev/null &
     pid=$!
     sh scripts/port-boot-until.sh "$log" "$pid" "$time_budget" \
       '[INIT] creating common task/VM and architecture user entry' \
