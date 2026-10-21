@@ -199,3 +199,12 @@ stdout. Archive-only checks real bootfs mount, not a pretend in-kernel
 file response. This matrix is required in RV64 CI beside the existing
 native Debian BusyBox echo and low-level M0 tests.
 Longer x86 ash/fork/pipe/tmpfs workflows remain separate remaining gates.
+
+## Real RV64 ash compatibility gate
+After 12 verified native BusyBox direct/CPIO workloads, five further
+real original-BusyBox ash cases exercise shared kernel shell startup,
+execve process replacement, fork/exec/wait4, pipe2/pipeline/EOF and tmpfs
+create/remove. Assertions check actual serial stdout, Linux exit status,
+and kernel process/pipe/exec evidence. Batch all five failures into one CI
+feedback cycle to expose a whole error class instead of one test per PR.
+Complete x86 resource/signal/large-pipe/dynamic ELF parity remains pending.

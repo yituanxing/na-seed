@@ -28,19 +28,19 @@ printf 'naseed\n' > "$root/etc/hostname"
 chmod 755 "$root" "$root/bin" "$root/etc" "$root/bin/busybox"
 chmod 644 "$root/etc/hostname"
 chmod 1777 "$root/tmp"
-for name in cat wc head grep ls sh; do
+for name in cat wc head grep ls sh mkdir rmdir rm cp mv; do
     ln -sf busybox "$root/bin/$name"
 done
 touch -t 197001010000 "$root" "$root/bin" "$root/etc" "$root/tmp" \
      "$root/bin/busybox" "$root/etc/hostname"
-for name in cat wc head grep ls sh; do
+for name in cat wc head grep ls sh mkdir rmdir rm cp mv; do
     touch -h -t 197001010000 "$root/bin/$name"
 done
 (
     cd "$root"
     {
         printf '%s\n' . bin bin/busybox etc etc/hostname tmp
-        for name in cat wc head grep ls sh; do printf '%s\n' "bin/$name"; done
+        for name in cat wc head grep ls sh mkdir rmdir rm cp mv; do printf '%s\n' "bin/$name"; done
     } | cpio -o -H newc --quiet --owner=0:0
 ) > "$work/rootfs.cpio.tmp"
 mv "$work/rootfs.cpio.tmp" "$work/rootfs.cpio"
@@ -48,7 +48,7 @@ mv "$work/rootfs.cpio.tmp" "$work/rootfs.cpio"
 # analogous to the x86 initramfs tests. Command selection differs, kernel
 # ELF loader / FS and task runtime are identical.
 boot_case() {
-    name=$1 mode=$2 args=$3 expected=$4
+    name=$1 mode=$2 args=$3 expected=$4 extra=${5:-}
     disk="$work/$name.img"
     config="$work/$name.conf"
     log="$work/$name.serial.log"
@@ -96,18 +96,49 @@ boot_case() {
        ! grep -Fq "[CMDLINE] userspace argv from Limine: naseed.argv=/bin/busybox $args" "$clean"; then
         echo "[RV64 BUSYBOX FAIL] real $mode BusyBox $args did not cleanly exit" >&2
         tail -110 "$clean" >&2
-        exit 1
+        return 1
     fi
     if [ "$expected" != '-' ] && ! grep -Fxq "$expected" "$clean"; then
         echo "[RV64 BUSYBOX FAIL] wrong stdout for $mode $args: expected [$expected]" >&2
         tail -110 "$clean" >&2
-        exit 1
+        return 1
     fi
     if [ "$mode" = cpio ] && ! grep -Fq '[FS] CPIO newc read-only archive mounted' "$clean"; then
         echo '[RV64 BUSYBOX FAIL] CPIO mount marker missing' >&2
         tail -110 "$clean" >&2
-        exit 1
+        return 1
     fi
+    case "$extra" in
+        '') ;;
+        fork)
+            if ! grep -Fq '[PROC] fork parent=' "$clean" ||
+               ! grep -Fq '[PROC] wait4 reaped pid=' "$clean"; then
+                echo "[RV64 ASH FAIL] fork/exec/wait4 not reached: $args" >&2
+                tail -110 "$clean" >&2
+                return 1
+            fi ;;
+        pipe)
+            if ! grep -Fq '[PIPE] created read=' "$clean" ||
+               ! grep -Fq '[PROC] wait4 reaped pid=' "$clean"; then
+                echo "[RV64 ASH FAIL] pipe/scheduler/EOF not reached: $args" >&2
+                tail -110 "$clean" >&2
+                return 1
+            fi ;;
+        exec)
+            if ! grep -Fq '[EXEC] replaced process with CPIO ELF: /bin/busybox' "$clean"; then
+                echo "[RV64 ASH FAIL] syscall execve not reached: $args" >&2
+                tail -110 "$clean" >&2
+                return 1
+            fi ;;
+        tmp)
+            if ! grep -Fxq hello "$clean" || ! grep -Fxq removed "$clean"; then
+                echo '[RV64 ASH FAIL] tmpfs creation/remove/output incorrect' >&2
+                tail -110 "$clean" >&2
+                return 1
+            fi ;;
+        *) echo "[RV64 ASH TEST BUG] unexpected assertion: $extra" >&2
+           return 1 ;;
+    esac
     echo "[ACCEPTED] native RV64 BusyBox ($mode): $args"
 }
 # Native ABI+kernel mechanism checks, run as identical unmodified BusyBox
@@ -128,3 +159,29 @@ boot_case head   cpio 'head -n 1 /etc/hostname' naseed
 boot_case grep   cpio 'grep -n naseed /etc/hostname' 1:naseed
 boot_case wc     cpio 'wc -c /etc/hostname' '7 /etc/hostname'
 echo '[PASS] RV64 official BusyBox direct+CPIO full common-kernel matrix'
+
+# Original x86-derived BusyBox ash acceptance themes, run as actual
+# unmodified native user binaries. Aggregate all failures in one CI cycle
+# rather than commit-per-test; final status is strictly nonzero on failures.
+failures=0
+if ! boot_case ash-builtin cpio 'sh -c "echo shell-native"' shell-native; then
+    failures=$((failures+1))
+fi
+if ! boot_case ash-exec cpio 'sh -c "exec /bin/busybox cat /etc/hostname"' naseed exec; then
+    failures=$((failures+1))
+fi
+if ! boot_case ash-fork cpio 'sh -c "/bin/busybox cat /etc/hostname; echo finished"' finished fork; then
+    failures=$((failures+1))
+fi
+if ! boot_case ash-pipe cpio 'sh -c "echo abc | /bin/busybox wc -c"' 4 pipe; then
+    failures=$((failures+1))
+fi
+if ! boot_case ash-tmp cpio 'sh -c "mkdir /tmp/work && echo hello > /tmp/work/test && cat /tmp/work/test && rm /tmp/work/test && rmdir /tmp/work && echo removed"' removed tmp; then
+    failures=$((failures+1))
+fi
+if [ "$failures" -ne 0 ]; then
+    echo "[RV64 ASH FAIL] $failures genuine shell workloads failed" >&2
+    exit 1
+fi
+echo '[PASS] RV64 native BusyBox ash execve/fork/pipe/tmpfs parity'
+
