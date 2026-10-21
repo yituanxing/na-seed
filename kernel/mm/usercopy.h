@@ -2,6 +2,10 @@
 #define NASEED_MM_USERCOPY_H
 #include <stdint.h>
 #include <stdbool.h>
-/* Transitional: checked copy implementation stays in m1.c until MM usercopy extraction. */
+/* MM address check and user-page access; current implementation is single-core. */
+bool nas_user_copy_to_mapped(uint64_t addr, const uint8_t *src, uint64_t len);
+bool nas_user_read_bytes(uint64_t addr, uint8_t *dst, uint64_t len);
 bool nas_user_write_bytes(uint64_t addr, const uint8_t *src, uint64_t len);
+bool nas_user_read_u64(uint64_t addr, uint64_t *result);
+bool nas_user_write_u64(uint64_t addr, uint64_t value);
 #endif
