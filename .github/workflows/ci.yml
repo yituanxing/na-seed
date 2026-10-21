@@ -118,3 +118,23 @@ jobs:
             build/ash-shebang-*-serial.log
             build/path-abi-serial.log
           if-no-files-found: ignore
+  riscv64_m0:
+    name: RISC-V real Limine/OpenSBI boot
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cross-build and UEFI/QEMU tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang lld binutils mtools gdisk \
+            qemu-system-misc qemu-efi-riscv64
+      - name: Compile and boot genuine RV64 M0 kernel
+        run: sh scripts/probe-riscv64-m0.sh
+      - name: Attach riscv64 boot console on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naseed-riscv64-m0
+          path: build/port-riscv64/serial.log
+          if-no-files-found: ignore
