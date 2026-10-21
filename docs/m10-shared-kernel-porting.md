@@ -263,3 +263,15 @@ and Kconfig verification is a distinct gate. Alpine musl dynamic BusyBox
 remains a SECOND, explicitly named fixture rather than being mixed into
 Debian static x86/RV parity claims. AArch64 must be checksum-pinned
 before it joins this package fixture, not silently choose some binary.
+
+## Canonical BusyBox input fixture: test commands cannot drift by ISA
+The shared tab-separated `scripts/busybox-parity-cases.tsv` contains the
+EXACT 17 applet and shell workloads, expected output and process/pipe/exec
+evidence. Architecture CI scripts must consume this file, not independently
+write what they think is the same BusyBox test. The new common
+`scripts/stage-busybox-rootfs.sh` stages identical CPIO file contents,
+permissions, symlinks and timestamps for any native ELF. The architecture
+determines ELF machine only; programs, input bytes and observable Linux
+semantics are the same. This is independent of the additional x86 Alpine
+dynamic-mUSL suite, whose libc/path/ELF differ and must be reported as
+a separate profile.

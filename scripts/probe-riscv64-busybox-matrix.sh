@@ -21,29 +21,7 @@ fw=/usr/share/qemu-efi-riscv64
 test -s "$fw/RISCV_VIRT_CODE.fd"
 # The rootfs is built only from verified native BusyBox plus actual bytes
 # in the archive. The same kernel bootfs.c handles archive/file lookup.
-root="$work/rootfs"
-mkdir -p "$root/bin" "$root/etc" "$root/tmp"
-cp "$dir/busybox" "$root/bin/busybox"
-printf 'naseed\n' > "$root/etc/hostname"
-chmod 755 "$root" "$root/bin" "$root/etc" "$root/bin/busybox"
-chmod 644 "$root/etc/hostname"
-chmod 1777 "$root/tmp"
-for name in cat wc head grep ls sh mkdir rmdir rm cp mv; do
-    ln -sf busybox "$root/bin/$name"
-done
-touch -t 197001010000 "$root" "$root/bin" "$root/etc" "$root/tmp" \
-     "$root/bin/busybox" "$root/etc/hostname"
-for name in cat wc head grep ls sh mkdir rmdir rm cp mv; do
-    touch -h -t 197001010000 "$root/bin/$name"
-done
-(
-    cd "$root"
-    {
-        printf '%s\n' . bin bin/busybox etc etc/hostname tmp
-        for name in cat wc head grep ls sh mkdir rmdir rm cp mv; do printf '%s\n' "bin/$name"; done
-    } | cpio -o -H newc --quiet --owner=0:0
-) > "$work/rootfs.cpio.tmp"
-mv "$work/rootfs.cpio.tmp" "$work/rootfs.cpio"
+sh scripts/stage-busybox-rootfs.sh "$dir/busybox" "$work"
 # Two boot modes: real module first; and *archive-only* Limine handoff,
 # analogous to the x86 initramfs tests. Command selection differs, kernel
 # ELF loader / FS and task runtime are identical.
@@ -146,46 +124,22 @@ boot_case() {
     esac
     echo "[ACCEPTED] native RV64 BusyBox ($mode): $args"
 }
-# Native ABI+kernel mechanism checks, run as identical unmodified BusyBox
-# applets to the x86 matrix, never hand-coded substitute ELF programs.
-boot_case echo   direct 'echo hello'        hello
-boot_case uname  direct 'uname -s'          Linux
-boot_case pwd    direct 'pwd'              /
-boot_case id     direct 'id -u'            0
-boot_case true   direct 'true'             -
-boot_case printf direct 'printf rv-printf\\n' rv-printf
-
-# Actual CPIO: exercised via the same bootfs, openat, stat, getdents, read,
-# fd and VFS code as the established x86 Alpine BusyBox tests.
-boot_case root   cpio 'ls -1 /'           bin
-boot_case bin    cpio 'ls -1 /bin'        busybox
-boot_case cat    cpio 'cat /etc/hostname' naseed
-boot_case head   cpio 'head -n 1 /etc/hostname' naseed
-boot_case grep   cpio 'grep -n naseed /etc/hostname' 1:naseed
-boot_case wc     cpio 'wc -c /etc/hostname' '7 /etc/hostname'
-echo '[PASS] RV64 official BusyBox direct+CPIO full common-kernel matrix'
-
-# Original x86-derived BusyBox ash acceptance themes, run as actual
-# unmodified native user binaries. Aggregate all failures in one CI cycle
-# rather than commit-per-test; final status is strictly nonzero on failures.
+# The actual BusyBox argv, FS input and expected output are held in
+# ONE architecture-independent manifest. Both CI ISA jobs consume it.
 failures=0
-if ! boot_case ash-builtin cpio 'sh -c "echo shell-native"' shell-native; then
-    failures=$((failures+1))
-fi
-if ! boot_case ash-exec cpio 'sh -c "exec /bin/busybox cat /etc/hostname"' naseed exec; then
-    failures=$((failures+1))
-fi
-if ! boot_case ash-fork cpio 'sh -c "/bin/busybox cat /etc/hostname; echo finished"' finished fork; then
-    failures=$((failures+1))
-fi
-if ! boot_case ash-pipe cpio 'sh -c "echo abc | /bin/busybox wc -c"' 4 pipe; then
-    failures=$((failures+1))
-fi
-if ! boot_case ash-tmp cpio 'sh -c "mkdir /tmp/work && echo hello > /tmp/work/test && cat /tmp/work/test && rm /tmp/work/test && rmdir /tmp/work && echo removed"' removed tmp; then
-    failures=$((failures+1))
-fi
+total=0
+tab=$(printf '\t')
+while IFS="$tab" read -r name mode args expected extra; do
+    case "$name" in ''|\#*) continue ;; esac
+    [ "$extra" = '-' ] && extra=''
+    total=$((total+1))
+    if ! boot_case "$name" "$mode" "$args" "$expected" "$extra"; then
+        failures=$((failures+1))
+    fi
+done < scripts/busybox-parity-cases.tsv
+test "$total" -eq 17
 if [ "$failures" -ne 0 ]; then
-    echo "[RV64 ASH FAIL] $failures genuine shell workloads failed" >&2
+    echo "[RV64 BUSYBOX FAIL] $failures/$total common parity fixtures failed" >&2
     exit 1
 fi
-echo '[PASS] RV64 native BusyBox ash execve/fork/pipe/tmpfs parity'
+echo '[PASS] native RV64 Debian BusyBox: ALL 17 canonical parity cases'

@@ -18,6 +18,17 @@ for arch in amd64 riscv64; do
 done
 grep -Fq 'scripts/fetch-busybox-fixture.sh amd64' scripts/fetch-debian.sh
 grep -Fq 'scripts/fetch-busybox-fixture.sh riscv64' scripts/fetch-debian-riscv64.sh
+test "$(grep -vc '^#' scripts/busybox-parity-cases.tsv)" -eq 17
+awk -F '\t' '
+    /^[^#]/ {
+        if (NF != 5 || $1 == "" || ($2 != "direct" && $2 != "cpio"))
+            exit 1
+        if (used[$1]++) exit 1
+    }
+' scripts/busybox-parity-cases.tsv
+grep -Fq 'scripts/busybox-parity-cases.tsv' scripts/probe-riscv64-busybox-matrix.sh
+sh -n scripts/stage-busybox-rootfs.sh
+sh -n scripts/probe-riscv64-busybox-matrix.sh
 sh -n scripts/fetch-busybox-fixture.sh
 sh -n scripts/fetch-debian-riscv64.sh
 sh -n scripts/fetch-debian.sh
