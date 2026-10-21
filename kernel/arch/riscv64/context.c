@@ -13,11 +13,16 @@ static struct nas_rv_trap_frame *live;
 /* Architecture entry translates the full hardware register image to the
  * established 8-word Linux syscall contract used by the x86 kernel. */
 void nas_rv_full_trap_c(struct nas_rv_trap_frame *frame) {
-    uint64_t scause;
+    uint64_t scause, stval;
     __asm__ volatile("csrr %0, scause" : "=r"(scause));
+    __asm__ volatile("csrr %0, stval" : "=r"(stval));
     if(scause != 8U || (frame->sstatus & 0x100U)) {
         nas_print("[RV64 FAULT] scause=");nas_hex(scause);
-        nas_print(" sepc=");nas_hex(frame->sepc);nas_print("\n");
+        nas_print(" sepc=");nas_hex(frame->sepc);
+        nas_print(" stval=");nas_hex(stval);
+        nas_print(" tp=");nas_hex(frame->x[4]);
+        nas_print(" sp=");nas_hex(frame->x[2]);
+        nas_print("\n");
         nas_fail("unexpected RV64 user trap (not U-mode ECALL)");
     }
     frame->sepc += 4; /* ECALL is always an uncompressed 4-byte instruction. */

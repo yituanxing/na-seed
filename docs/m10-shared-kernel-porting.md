@@ -236,3 +236,17 @@ those flags still uses the exact prior algorithm. Unsupported clone
 flags/alternate stacks fail -ENOSYS. Thread-shared futex wake remains
 unsupported because CLONE_VM/CLONE_THREAD are not implemented.
 This is a real ABI contract, not returning success without behavior.
+
+## RV64 first post-fork hardware fault — context snapshot ordering
+The native ash fork/pipeline/tmpfs cases reached actual child creation
+and child TID setup, then faulted at the identical U-mode instruction
+PC=0x102d86 with scause=15 (store/AMO page fault). Whole-system review
+found a concrete common-core bug: nas_task_fork_slot() copied the parent
+struct BEFORE nas_arch_save_user_frame(parent), leaving the child with a
+stale/zero saved RV64 user TP. nas_arch_restore_cpu(child) then restored
+that stale TP, so libc's post-clone thread-pointer-relative store faulted.
+Fix in ONE common process fork: snapshot live user CPU and FP state
+before copying the child task. Preserve the existing child-set/clear-TID
+semantics. Additional fault diagnostics report stval/tp/sp to confirm
+real page address if the hardware fault recurs. Do not declare shell
+regressions passed until real QEMU verifies.

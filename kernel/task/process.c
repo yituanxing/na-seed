@@ -29,6 +29,13 @@ static uint64_t fork_common(uint64_t *frame, uint64_t child_tid) {
          !nas_mmu_user_writable(child_tid+3)))
         return (uint64_t)-EFAULT;
     struct nas_task *parent = nas_current_task;
+    /* The child slot is copied from the parent, including its ARCH context.
+     * Save LIVE user GPR/PC/SP/TLS and FPU BEFORE that copy, otherwise a
+     * freshly booted task may still have a zero saved thread pointer.
+     * This is critical on RV64: libc uses tp-relative stores immediately
+     * after clone and zeroing tp causes a real U-mode store page fault.
+     * This ordering is common to all architectures, not an RV workaround. */
+    nas_arch_save_user_frame(parent, frame);
     nas_arch_save_fpu(parent);
     struct nas_task *child = nas_task_fork_slot();
     if (!child) return (uint64_t)-EAGAIN;
@@ -39,7 +46,6 @@ static uint64_t fork_common(uint64_t *frame, uint64_t child_tid) {
     }
     nas_task_set_root(child, new_root);
     if (!nas_task_hold_files(child)) proc_fail("fork dangling open-file slot");
-    nas_arch_save_user_frame(parent, frame);
     nas_arch_set_saved_return(parent, child->pid);
     parent->resume_valid = true;
     parent->blocked_op = 0;
