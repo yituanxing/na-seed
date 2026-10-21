@@ -59,6 +59,13 @@ nas_arch_enter_user:
     mov x2,#0x3c0       /* DAIF masked, EL0t */
     msr spsr_el1,x2
     msr tpidr_el0,xzr
+    /* Linux AArch64 ELF entry passes rtld_fini in x0.  A directly
+     * entered static binary has no runtime linker finalizer, so x0
+     * must be NULL.  Leaving the entry PC in x0 makes glibc _start
+     * register _start itself with atexit: normal program exit runs
+     * _start again, re-entering libc initialization after GNU_RELRO
+     * has become read-only.  ELR_EL1 already holds the real entry PC. */
+    mov x0,xzr
     isb
     eret
 
