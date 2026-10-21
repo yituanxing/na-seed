@@ -99,6 +99,15 @@ nas_rv_full_trap:
     ld x29, 232(sp)
     ld x30, 240(sp)
     ld x31, 248(sp)
+    /* The kernel may have scheduled a DIFFERENT task during this ECALL.
+     * x2 saved in the selected task's frame is the authoritative user SP.
+     * sscratch still contains the interrupted OLD task's user SP. If we
+     * don't replace it here, the final csrrw resumes the parent on the
+     * child's user stack after fork/exit, corrupting libc and triggering
+     * user abort/EBREAK (scause=3) even when TLS and PTEs are valid.
+     * Do the CSR update before restoring t0/x5 from its saved frame. */
+    ld t0, 16(sp)
+    csrw sscratch,t0
     ld x5,40(sp)
     addi sp,sp,272
     csrrw sp,sscratch,sp
