@@ -13,6 +13,9 @@ on:
       - 'kernel/syscall/**'
       - 'scripts/build-aarch64-full.sh'
       - 'scripts/probe-aarch64-full.sh'
+      - 'scripts/probe-aarch64-busybox-matrix.sh'
+      - 'scripts/busybox-static-fixtures.txt'
+      - 'scripts/busybox-parity-cases.tsv'
       - 'limine-aarch64-full.conf'
       - '.github/workflows/arm64-full.yml'
   push:
@@ -35,13 +38,17 @@ jobs:
       - name: Install native AArch64 EDK2, QEMU and cross-compile tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y clang lld binutils mtools gdisk qemu-system-arm qemu-efi-aarch64
+          sudo apt-get install -y clang lld binutils mtools gdisk cpio qemu-system-arm qemu-efi-aarch64
       - name: Build and boot THE shared Task/ELF/FS/syscall kernel on real ARM64
         run: NASEED_ARM_FULL_TIMEOUT=25 sh scripts/probe-aarch64-full.sh
+      - name: ARM64 — original Debian BusyBox through common kernel (echo gate)
+        run: BUSYBOX_PARITY_CASE=echo sh scripts/probe-aarch64-busybox-matrix.sh
       - name: Upload real UART and semihosting evidence on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: naseed-arm64-full-boot
-          path: build/port-aarch64/full/serial.log
+          path: |
+            build/port-aarch64/full/serial.log
+            build/port-aarch64/full/matrix/*.serial.log
           if-no-files-found: ignore

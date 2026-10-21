@@ -3,7 +3,7 @@
 # Only ELF machine and byte checksum differ. Caller chooses the artifact path.
 set -eu
 if [ "$#" -ne 2 ]; then
-    echo 'usage: fetch-busybox-fixture.sh amd64|riscv64 OUTPUT_FILE' >&2
+    echo 'usage: fetch-busybox-fixture.sh amd64|riscv64|arm64 OUTPUT_FILE' >&2
     exit 2
 fi
 arch=$1

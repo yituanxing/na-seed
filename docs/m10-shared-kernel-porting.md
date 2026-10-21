@@ -337,3 +337,13 @@ contract and never tries to switch SP banks mid-C-function. The M0-only
 kernel continues using its own proven boot entry and does not link this
 ARM full symbol. The isolated QEMU full test is now bounded to 25 sec
 per bringup attempt, but still requires full Linux user write+exit.
+
+## ARM64 native Debian BusyBox parity fixture — no platform test shortcuts
+The exact official Debian `busybox-static 1.37.0-6+b9` for arm64 is
+pinned with SHA256 `c833be48abfa16bc19c4966ec93e289ff1ce5d2f1476cad3a57bd105378cd15c` (Debian package archive), same upstream
+revision and recipe as amd64/RV64. `scripts/probe-aarch64-busybox-matrix.sh`
+is wired to the **existing** `scripts/busybox-parity-cases.tsv` (17
+identical workloads) and common CPIO staging. Separate, fast ARM64
+full-kernel CI initially gates just `BUSYBOX_PARITY_CASE=echo` to expose
+ELF/ABI issues with the untouched native binary before enabling all 17.
+Never report ARM64 parity as passed until the entire suite is green.
