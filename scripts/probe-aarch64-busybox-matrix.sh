@@ -26,6 +26,18 @@ sh scripts/stage-busybox-rootfs.sh "$dir/busybox" "$work"
 # differs from the same x86/RV64 ELF loader. This is evidence, not a
 # new architecture-specific loader or ELF transformation.
 readelf -lW "$dir/busybox" | grep -E 'LOAD|GNU_RELRO|Entry point|Type'
+readelf -SW "$dir/busybox" | grep -E 'Name|\.got|\.data|\.bss|\.init_array|\.fini_array|\.tdata|\.tbss'
+# A known-good Linux arm64 user-mode reference prevents misdiagnosing
+# a broken Debian build as a kernel issue; it must execute unmodified.
+if [ -n "${BUSYBOX_PARITY_CASE:-}" ] && [ "$BUSYBOX_PARITY_CASE" = echo ]; then
+    printf '[ARM64 REFERENCE] QEMU Linux-user BusyBox echo: '
+    reference=$(LC_ALL=C qemu-aarch64 "$dir/busybox" echo hello)
+    [ "$reference" = hello ] || {
+        echo "[ARM64 REFERENCE FAIL] original binary returned [$reference]" >&2
+        exit 1
+    }
+    echo '[PASS] authentic Debian static BusyBox executes on ARM Linux-user'
+fi
 # Two boot modes: real module first; and *archive-only* Limine handoff,
 # analogous to the x86 initramfs tests. Command selection differs, kernel
 # ELF loader / FS and task runtime are identical.
