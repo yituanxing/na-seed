@@ -1,0 +1,47 @@
+name: NaSeed ARM64 full-kernel gate
+on:
+  pull_request:
+    paths:
+      - 'kernel/arch/aarch64/**'
+      - 'kernel/arch/arch.h'
+      - 'kernel/arch/abi.h'
+      - 'kernel/arch/user_pt.c'
+      - 'kernel/mm/mmu_bridge.c'
+      - 'kernel/mm/user_space.c'
+      - 'kernel/task/**'
+      - 'kernel/init/main.c'
+      - 'kernel/syscall/**'
+      - 'scripts/build-aarch64-full.sh'
+      - 'scripts/probe-aarch64-full.sh'
+      - 'limine-aarch64-full.conf'
+      - '.github/workflows/arm64-full.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'kernel/arch/aarch64/**'
+      - 'kernel/task/**'
+      - 'scripts/build-aarch64-full.sh'
+      - 'scripts/probe-aarch64-full.sh'
+      - '.github/workflows/arm64-full.yml'
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  full:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native AArch64 EDK2, QEMU and cross-compile tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang lld binutils mtools gdisk qemu-system-arm qemu-efi-aarch64
+      - name: Build and boot THE shared Task/ELF/FS/syscall kernel on real ARM64
+        run: sh scripts/probe-aarch64-full.sh
+      - name: Upload real UART and semihosting evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naseed-arm64-full-boot
+          path: build/port-aarch64/full/serial.log
+          if-no-files-found: ignore
