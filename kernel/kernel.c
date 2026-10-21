@@ -6,6 +6,7 @@
 #if defined(NASEED_PORT_M0) && defined(__riscv)
 #include "arch/riscv64/cpu.h"
 #include "arch/riscv64/mmu.h"
+#include "arch/riscv64/usermode.h"
 #elif defined(NASEED_PORT_M0) && defined(__aarch64__)
 #include "arch/aarch64/cpu.h"
 #include "arch/aarch64/mmu.h"
@@ -97,7 +98,7 @@ void kmain(void) {
     }
     nas_print("[PASS] RV64 Sv39/Sv48/Sv57 user PTE map/query/unmap/reclaim\n");
     nas_print("[PASS] riscv64 M0 Limine/SBI/frame allocator\n");
-    nas_arch_halt();
+    nas_rv_user_smoke(paging_req.response->mode);
 #elif defined(__aarch64__)
     /* AArch64 needs a different MMU regime; never assume RISC-V SATP. */
     if (!nas_arm64_el1_4k_mmu_active()) {
