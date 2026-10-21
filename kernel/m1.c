@@ -11,6 +11,7 @@
 #include "tmpfs.h"
 #include "path.h"
 #include "pipe.h"
+#include "boot_image.h"
 
 /* Process-local state was previously static global memory. A task is now
  * its explicit owner; the single-task aliases keep the proven syscall path
@@ -582,27 +583,6 @@ static bool build_linux_stack(bool bash, bool busybox, uint64_t *out_sp) {
         nas_print("\n");
     }
     return build_user_stack(args, argc, vars, 4, args[0], out_sp);
-}
-static bool busybox_module(const struct limine_file *file) {
-    if (!file || !file->path) return false;
-    const char *p = file->path, *tail = p;
-    while (*p) {
-        if (*p == '/') tail = p + 1;
-        p++;
-    }
-    const char *expected = "busybox";
-    while (*tail && *expected && *tail == *expected) {
-        tail++; expected++;
-    }
-    return !*tail && !*expected;
-}
-static bool bash_module(const struct limine_file *file) {
-    if (!file || !file->path) return false;
-    const char *p = file->path;
-    for (; *p; p++)
-        if (p[0] == 'b' && p[1] == 'a' && p[2] == 's' && p[3] == 'h')
-            return true;
-    return false;
 }
 static uint32_t missing_count[512];
 static void observe_stdout(char ch) {
@@ -2154,69 +2134,25 @@ void m1_start(void) {
         if (!parse_boot_argv(cmdline, &args, &argc))
             fail("invalid Limine naseed.argv configuration");
     }
-    const struct limine_file *module = nas_user_module();
-    if (!module) fail("no Limine userspace module");
-    const uint8_t *first = (const uint8_t *)module->address;
-    bool archive_only = module->size >= 6 && first &&
-        first[0] == '0' && first[1] == '7' && first[2] == '0' &&
-        first[3] == '7' && first[4] == '0' && first[5] == '1';
-
-    const struct limine_file *archive = archive_only ? module : nas_module(2);
-    if (archive) {
-        if (!bootfs_mount(archive->address, archive->size))
-            fail("invalid CPIO initramfs module");
-        nas_print("[FS] CPIO newc read-only archive mounted\n");
-    }
-
-    struct elf_image main_image = {0};
-    struct elf_image interp_image = {0};
-    const struct elf_image *interpreter = 0;
-    if (archive_only) {
-        /* For the single-archive configuration, argv[0] is the absolute
-         * executable path. The path is looked up in real CPIO file entries;
-         * unknown/nonexecutable paths are rejected, never spoofed as success.
-         */
-        const char *selected = boot_argv_override ? boot_argv[0] : "/bin/busybox";
-        if (selected[0] != '/') fail("CPIO executable must be an absolute path");
-        const struct bootfs_entry *app = bootfs_find(selected);
-        if (!app) fail("CPIO executable path not found");
-        if (bootfs_is_dir(app) || !(app->mode & 0111U))
-            fail("CPIO selected path is not an executable regular file");
-        main_image = (struct elf_image){app->data, app->size};
-        const struct bootfs_entry *ldso = bootfs_find("/lib/ld-musl-x86_64.so.1");
-        if (ldso && !bootfs_is_dir(ldso)) {
-            interp_image = (struct elf_image){ldso->data, ldso->size};
-            interpreter = &interp_image;
-        }
-        const char *basename = selected;
-        for (const char *p = selected; *p; ++p)
-            if (*p == '/') basename = p + 1;
-        running_busybox = same_string(basename, "busybox");
-        /* The two fixture programs are authentic Alpine ET_DYN and
-         * Debian static ET_EXEC BusyBoxes; don't label static ELF as musl.
-         */
-        const struct elf_hdr *hdr = (const struct elf_hdr *)app->data;
-        running_alpine = running_busybox && app->size >= sizeof(*hdr) &&
-                         hdr->type == 3;
-        nas_print("[M5] CPIO executable selected: ");
-        nas_print(selected);
-        nas_print("\n");
-        nas_print("[M5] actual ELF image sourced from CPIO file entry\n");
-    } else {
-        main_image = (struct elf_image){(const uint8_t *)module->address, module->size};
-        running_bash = bash_module(module);
-        running_busybox = busybox_module(module);
-        running_alpine = running_busybox && nas_module(1) != 0;
-        if (archive && !running_alpine)
-            fail("archive file requires real Alpine BusyBox runtime");
-        if (running_alpine) {
-            const struct limine_file *ldso = nas_module(1);
-            interp_image = (struct elf_image){(const uint8_t *)ldso->address, ldso->size};
-            interpreter = &interp_image;
-        }
-    }
-    if (running_bash) nas_print("[M2] real GNU Bash module discovered\n");
-    if (running_busybox) nas_print("[M3] real BusyBox module discovered\n");
+    /* File-system bytes and the selected executable are separate:
+     * boot_image.c recognizes the Limine handoff and indexes CPIO via
+     * bootfs.c; only this layer maps the actual ELF into userspace.
+     */
+    struct nas_boot_image selected_image;
+    const char *boot_error = nas_boot_prepare(
+        boot_argv_override ? boot_argv[0] : 0, &selected_image);
+    if (boot_error) fail(boot_error);
+    struct elf_image main_image = {
+        selected_image.image, selected_image.size
+    };
+    struct elf_image interp_image = {
+        selected_image.interpreter, selected_image.interpreter_size
+    };
+    const struct elf_image *interpreter =
+        selected_image.has_interpreter ? &interp_image : 0;
+    running_bash = selected_image.bash;
+    running_busybox = selected_image.busybox;
+    running_alpine = selected_image.alpine;
     uint64_t entry = 0;
     if (!elf_load(&main_image, interpreter, &entry))
         fail("invalid or unmappable userspace ELF");
