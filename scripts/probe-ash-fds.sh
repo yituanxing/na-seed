@@ -11,7 +11,7 @@ for scenario in shared dup inherited unlink finalclose; do
             args="sh -c 'echo abc > /tmp/f; exec 3< /tmp/f; exec 4<&3; cat <&4; cat <&3; echo dup-ok'"
             expect=dup-ok; payload=abc; once=abc ;;
         inherited)
-            args="sh -c 'echo abc > /tmp/f; exec 3< /tmp/f; sh -c "cat <&3"; cat <&3; echo inherited-ok'"
+            args="sh -c 'echo abc > /tmp/f; exec 3< /tmp/f; ( cat <&3 ); cat <&3; echo inherited-ok'"
             expect=inherited-ok; payload=abc; once=abc ;;
         unlink)
             args="sh -c 'echo original > /tmp/f; exec 3< /tmp/f; rm /tmp/f; echo replacement > /tmp/f; cat <&3; cat /tmp/f; echo unlink-ok'"
