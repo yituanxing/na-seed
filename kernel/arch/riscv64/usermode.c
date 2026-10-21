@@ -2,7 +2,7 @@
 #include "cpu.h"
 #include "mmu.h"
 #include "usermode.h"
-#include "elf_image.h"
+#include "../../task/elf_user.h"
 #include "../linux_syscall_abi.h"
 #include "../../mm/frame.h"
 #include "../../mm/user_space.h"
@@ -57,8 +57,13 @@ void nas_rv_user_smoke(uint64_t limine_mode, const uint8_t *elf, uint64_t size) 
     uint64_t stack_pa = 0;
     if (!nas_space_lookup(&space, RV_USER_STACK, &stack_pa, 0))
         rv_fatal("shared stack translate");
-    if (!nas_rv_elf_load(&space, elf, size, &rv_elf_entry))
-        rv_fatal("external ET_EXEC ELF64 validation / PT_LOAD");
+    /* Workload bounds only. No RISC-V-only ELF loader or segment mapper. */
+    const struct nas_user_elf_limits elf_limits={
+        .min_va=0x10000ULL,.max_va=RV_USER_STACK,
+        .max_image_bytes=1ULL<<20,.max_phnum=16,.max_pages=32
+    };
+    if (!nas_user_elf_load(&space, elf, size, &elf_limits, &rv_elf_entry))
+        rv_fatal("shared ELF64 PT_LOAD/BSS loader");
     uint64_t got = 0, perms = 0;
     if (!nas_rv_pt_translate(&pt, rv_elf_entry, &got, &perms) ||
         !(perms & NAS_RV_PTE_X) ||

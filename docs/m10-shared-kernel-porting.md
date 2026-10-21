@@ -141,3 +141,11 @@ monitor the real kernel's serial log and terminate QEMU only after ALL
 required markers (including shared VM high-VA clone/reclaim) appear and no
 FAIL marker is present. An incomplete or failed boot remains a failure.
 Separate POSIX host regression verifies no partial-marker acceptance.
+
+## Retiring the RISC-V-only ELF frontend
+The old kernel/arch/riscv64/elf_image.{c,h} has now been deleted, not
+left as a second application loader. kernel/task/elf_user.c is a
+shared user address-space adapter and links into **both** RV64 and ARM64
+real boot images. The RV64 test passes only its workload bounds into
+that common adapter, which calls the same kernel/task/elf_segments.c as
+full x86 execve. No ISA parser or PT_LOAD loop remains under arch/riscv64.
