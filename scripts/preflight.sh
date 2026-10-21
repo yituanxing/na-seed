@@ -71,6 +71,12 @@ if grep -Eq 'syscall_dispatch|__NR_|nas_pipe_|nas_tmp_' kernel/mm/vm.c; then
     echo '[PREFLIGHT] VM policy acquired syscall/FS dependencies' >&2
     exit 1
 fi
+# M8.3: ELF parsing, user stack, usercopy and arch_prctl have owning modules.
+if grep -Eq 'struct __attribute__\(\(packed\)\) elf_hdr|static bool user_read_bytes\(|static uint64_t sys_arch_prctl\(|static uint64_t sys_sigaction\(' kernel/m1.c; then
+    echo '[PREFLIGHT] old ELF/usercopy/syscall ABI implementation leaked into m1.c' >&2
+    exit 1
+fi
+
 # Compare our pinned Linux x86-64 syscall numbers against the host UAPI.
 python3 scripts/check-syscall-nr.py
 python3 scripts/check-syscall-errno.py

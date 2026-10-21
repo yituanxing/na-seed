@@ -17,6 +17,10 @@
 #include "mm/usercopy.h"
 #include "task/process.h"
 #include "task/sched.h"
+#include "task/elf.h"
+#include "task/user_stack.h"
+#include "task/signal.h"
+#include "arch/x86_64/syscall.h"
 #include "fs/io.h"
 #include "platform/platform.h"
 
@@ -75,267 +79,6 @@ __attribute__((noreturn)) static void fail(const char *message) {
     nas_print("\n");
     nas_arch_halt();
 }
-static bool user_copy_in(uint64_t va, const uint8_t *data, uint64_t length) {
-    for (uint64_t i = 0; i < length; i++) {
-        uint8_t *dst = nas_mmu_user_byte(va + i);
-        if (!dst) return false;
-        *dst = data[i];
-    }
-    return true;
-}
-
-/* Parse the ELF64 program headers rather than executing embedded kernel code. */
-struct __attribute__((packed)) elf_hdr {
-    uint8_t ident[16];
-    uint16_t type, machine;
-    uint32_t version;
-    uint64_t entry, phoff, shoff;
-    uint32_t flags;
-    uint16_t ehsize, phentsize, phnum, shentsize, shnum, shstrndx;
-};
-struct __attribute__((packed)) elf_phdr {
-    uint32_t type, flags;
-    uint64_t offset, vaddr, paddr, filesz, memsz, align;
-};
-static bool checked_range(uint64_t start, uint64_t size, uint64_t limit) {
-    return start <= limit && size <= limit - start;
-}
-#define ALPINE_APP_BASE 0x10000000ULL
-#define ALPINE_LDSO_BASE 0x30000000ULL
-
-/* ELF bytes may originate from a Limine ELF module (M1-M4) or a file
- * inside the indexed CPIO initramfs (M5.1). This is not an execve ABI.
- * PT_INTERP is still checked against the one supported musl interpreter.
- */
-struct elf_image {
-    const uint8_t *data;
-    uint64_t size;
-};
-static bool elf_map_image(const struct elf_image *image,
-                          uint64_t bias, bool main_image,
-                          uint64_t *entry, bool *has_interp) {
-    if (!image || !image->data || image->size < sizeof(struct elf_hdr))
-        return false;
-    const uint8_t *file = image->data;
-    const struct elf_hdr *e = (const struct elf_hdr *)file;
-    if (e->ident[0] != 0x7f || e->ident[1] != 'E' ||
-        e->ident[2] != 'L' || e->ident[3] != 'F' ||
-        e->ident[4] != 2 || e->ident[5] != 1 ||
-        (e->type != 2 && e->type != 3) || e->machine != 62 ||
-        e->phentsize != sizeof(struct elf_phdr) ||
-        !e->phnum || e->phnum > 64 ||
-        !checked_range(e->phoff, (uint64_t)e->phnum * e->phentsize,
-                       image->size))
-        return false;
-    if ((e->type == 2 && bias) || (e->type == 3 && !bias))
-        return false;
-    bool has_entry = false;
-    const struct elf_phdr *ph = (const struct elf_phdr *)(file + e->phoff);
-    for (unsigned i = 0; i < e->phnum; i++) {
-        const struct elf_phdr *p = &ph[i];
-        if (p->type == 3 && main_image) { /* PT_INTERP */
-            static const char name[] = "/lib/ld-musl-x86_64.so.1";
-            if (!checked_range(p->offset, p->filesz, image->size) ||
-                p->filesz != sizeof(name)) return false;
-            for (unsigned n = 0; n < sizeof(name); n++)
-                if (file[p->offset + n] != (uint8_t)name[n]) return false;
-            *has_interp = true;
-        }
-        if (p->type != 1) continue;
-        if (!p->memsz || p->memsz > (64ULL << 20) ||
-            p->filesz > p->memsz ||
-            !checked_range(p->offset, p->filesz, image->size) ||
-            !checked_range(p->vaddr, p->memsz, USER_LIMIT) ||
-            p->vaddr > UINT64_MAX - bias ||
-            p->memsz > UINT64_MAX - bias - p->vaddr)
-            return false;
-        uint64_t start = p->vaddr + bias, end = start + p->memsz;
-        if (start < 0x10000 || end > USER_STACK_TOP - 0x100000 ||
-            end > UINT64_MAX - PAGE) return false;
-        if ((p->flags & 1) && e->entry >= p->vaddr &&
-            e->entry - p->vaddr < p->memsz) has_entry = true;
-        if (main_image && e->phoff >= p->offset &&
-            e->phoff - p->offset < p->filesz &&
-            (uint64_t)e->phnum * e->phentsize <=
-                p->filesz - (e->phoff - p->offset))
-            loaded_phdr = start + (e->phoff - p->offset);
-        if (main_image && end > heap_break) heap_break = end;
-        uint64_t first = start & ~(PAGE - 1);
-        uint64_t last = (end + PAGE - 1) & ~(PAGE - 1);
-        for (uint64_t va = first; va < last; va += PAGE)
-            if (!nas_mmu_map_page(va, (p->flags & 2) != 0)) return false;
-        if (!user_copy_in(start, file + p->offset, p->filesz)) return false;
-    }
-    if (!has_entry || e->entry > UINT64_MAX - bias) return false;
-    *entry = e->entry + bias;
-    if (main_image) loaded_phnum = e->phnum;
-    return true;
-}
-static bool elf_load(const struct elf_image *image,
-                     const struct elf_image *interpreter, uint64_t *entry) {
-    if (!image || !image->data || image->size < sizeof(struct elf_hdr))
-        return false;
-    const struct elf_hdr *e = (const struct elf_hdr *)image->data;
-    uint64_t bias = e->type == 3 ? ALPINE_APP_BASE : 0;
-    bool has_interp = false;
-    if (!elf_map_image(image, bias, true, &loaded_main_entry, &has_interp))
-        return false;
-    *entry = loaded_main_entry;
-    if (!has_interp) return true;
-    if (!interpreter || !interpreter->data) return false;
-    loaded_interp_base = ALPINE_LDSO_BASE;
-    bool nested_interp = false;
-    if (!elf_map_image(interpreter, loaded_interp_base, false, entry, &nested_interp))
-        return false;
-    nas_print("[DYN] real musl interpreter loaded, entry=");
-    nas_hex(*entry); nas_print("\n");
-    return true;
-}
-
-/* A real Linux x86-64 userspace entry stack, not argv spoofing in kernel. */
-static uint64_t cstr_len(const char *str) {
-    uint64_t n = 0;
-    while (str[n]) n++;
-    return n;
-}
-static bool put_stack_string(uint64_t *sp, const char *str, uint64_t *address) {
-    uint64_t size = cstr_len(str) + 1;
-    if (*sp < USER_STACK_TOP - USER_STACK_PAGES * PAGE + size) return false;
-    *sp -= size;
-    if (!user_copy_in(*sp, (const uint8_t *)str, size)) return false;
-    *address = *sp;
-    return true;
-}
-/* A boot test selects user argv via Limine's executable command line.
- * Kept deliberately independent of filesystem paths and kernel program names.
- * Quotes/backslash group arguments; this is NOT a shell or a second ABI.
- * Missing cmdline means legacy M0-M4 regression argv; malformed cmdline fails.
- */
-#define NAS_ARGV_MAX 12
-static char boot_argv_chars[256];
-static const char *boot_argv[NAS_ARGV_MAX];
-static bool boot_argv_override;
-static unsigned boot_argc;
-static bool parse_boot_argv(const char *cmdline,
-                            const char *const **out_args, unsigned *out_argc) {
-    static const char prefix[] = "naseed.argv=";
-    const char *p = cmdline;
-    for (unsigned i = 0; i < sizeof(prefix) - 1; i++)
-        if (p[i] != prefix[i]) return false;
-    p += sizeof(prefix) - 1;
-    unsigned count = 0, used = 0;
-    while (*p) {
-        while (*p == ' ' || *p == '\t') p++;
-        if (!*p) break;
-        if (count == NAS_ARGV_MAX) return false;
-        boot_argv[count] = &boot_argv_chars[used];
-        char quote = 0;
-        while (*p) {
-            char ch = *p++;
-            if (ch == '\\') {
-                if (!*p) return false;
-                ch = *p++;
-            } else if (ch == '\'' || ch == '"') {
-                if (!quote) { quote = ch; continue; }
-                if (quote == ch) { quote = 0; continue; }
-            } else if (!quote && (ch == ' ' || ch == '\t')) {
-                break;
-            }
-            if ((unsigned char)ch < 32 || used + 2 > sizeof(boot_argv_chars))
-                return false;
-            boot_argv_chars[used++] = ch;
-        }
-        if (quote || used + 1 > sizeof(boot_argv_chars)) return false;
-        boot_argv_chars[used++] = 0;
-        count++;
-    }
-    if (!count || !boot_argv_chars[0]) return false;
-    *out_args = boot_argv;
-    *out_argc = count;
-    boot_argc = count;
-    boot_argv_override = true;
-    return true;
-}
-#define NAS_ENV_MAX 16
-static bool build_user_stack(const char *const *args, unsigned argc,
-                             const char *const *vars, unsigned envc,
-                             const char *execfn, uint64_t *out_sp) {
-    uint64_t sp = USER_STACK_TOP;
-    uint64_t arg_ptrs[NAS_ARGV_MAX], env_ptrs[NAS_ENV_MAX];
-    uint64_t execfn_ptr;
-    if (argc > NAS_ARGV_MAX || envc > NAS_ENV_MAX) return false;
-    uint64_t tsc = nas_arch_cycle_counter();
-    /* Noncryptographic boot seed for AT_RANDOM. Add real entropy later. */
-    uint64_t random_bytes[2] = {
-        tsc ^ (uint64_t)(uintptr_t)&build_user_stack,
-        (tsc << 17) ^ nas_hhdm_offset()
-    };
-    sp -= sizeof(random_bytes);
-    if (!user_copy_in(sp, (const uint8_t *)random_bytes,
-                      sizeof(random_bytes))) return false;
-    uint64_t random_address = sp;
-    if (!put_stack_string(&sp, execfn, &execfn_ptr)) return false;
-    for (unsigned i = 0; i < envc; i++)
-        if (!put_stack_string(&sp, vars[i], &env_ptrs[i])) return false;
-    for (unsigned i = 0; i < argc; i++)
-        if (!put_stack_string(&sp, args[i], &arg_ptrs[i])) return false;
-
-    /* argc | argv[] NULL | envp[] NULL | auxv pairs | AT_NULL */
-    uint64_t words[96];
-    unsigned n = 0;
-    words[n++] = argc;
-    for (unsigned i = 0; i < argc; i++) words[n++] = arg_ptrs[i];
-    words[n++] = 0;
-    for (unsigned i = 0; i < envc; i++) words[n++] = env_ptrs[i];
-    words[n++] = 0;
-#define AUX(key, value) do { words[n++] = (key); words[n++] = (value); } while (0)
-    AUX(3, loaded_phdr);      /* AT_PHDR */
-    AUX(4, sizeof(struct elf_phdr)); /* AT_PHENT */
-    AUX(5, loaded_phnum);     /* AT_PHNUM */
-    AUX(6, PAGE);             /* AT_PAGESZ */
-    AUX(7, loaded_interp_base); /* AT_BASE: real interpreter */
-    AUX(9, loaded_main_entry); /* AT_ENTRY: main ELF */
-    AUX(11, 0); AUX(12, 0);   /* UID / EUID */
-    AUX(13, 0); AUX(14, 0);   /* GID / EGID */
-    AUX(23, 0);               /* AT_SECURE */
-    AUX(25, random_address);  /* AT_RANDOM */
-    AUX(31, execfn_ptr);    /* AT_EXECFN */
-    AUX(0, 0);                /* AT_NULL */
-#undef AUX
-    uint64_t byte_count = n * sizeof(uint64_t);
-    if (sp < USER_STACK_TOP - USER_STACK_PAGES * PAGE + byte_count + 16)
-        return false;
-    sp = (sp - byte_count) & ~15ULL;
-    if (!user_copy_in(sp, (const uint8_t *)words, byte_count)) return false;
-    *out_sp = sp;
-    return true;
-}
-static bool build_linux_stack(bool bash, bool busybox, uint64_t *out_sp) {
-    static const char * const args_bash[] = {
-        "/bin/bash", "--noprofile", "--norc", "-c", "echo hello"
-    };
-    static const char * const args_hello[] = {"/bin/hello"};
-    static const char * const args_busybox[] = {"/bin/busybox", "echo", "hello"};
-    static const char * const vars[] = {
-        "PATH=/bin:/usr/bin", "HOME=/", "TERM=dumb", "LC_ALL=C"
-    };
-    const char * const *args = bash ? args_bash : (busybox ? args_busybox : args_hello);
-    unsigned argc = bash ? 5 : (busybox ? 3 : 1);
-    extern const char *nas_cmdline(void);
-    const char *cmdline = nas_cmdline();
-    if (cmdline && *cmdline) {
-        /* m1_start parses once, before the archive-only ELF lookup. The same
-         * exact argv is handed to libc on the Linux entry stack.
-         */
-        if (!boot_argv_override) return false;
-        args = boot_argv;
-        argc = boot_argc;
-        nas_print("[CMDLINE] userspace argv from Limine: ");
-        nas_print(cmdline);
-        nas_print("\n");
-    }
-    return build_user_stack(args, argc, vars, 4, args[0], out_sp);
-}
 static uint32_t missing_count[512];
 static void observe_stdout(char ch) {
     static const char text[] = "hello\n";
@@ -349,26 +92,6 @@ static void observe_stdout(char ch) {
 
 
 /* User-copy contract now declared in mm/usercopy.h. */
-static uint64_t sys_arch_prctl(uint64_t op, uint64_t address) {
-    if (op == 0x1002) { /* ARCH_SET_FS */
-        if (address >= USER_LIMIT) return (uint64_t)-EINVAL;
-        user_fs_base = address;
-        nas_arch_set_user_tls(address);
-        return 0;
-    }
-    if (op == 0x1003) { /* ARCH_GET_FS */
-        if (address >= USER_LIMIT || address > USER_LIMIT - sizeof(uint64_t))
-            return (uint64_t)-EFAULT;
-        uint8_t bytes[sizeof(uint64_t)];
-        for (unsigned i = 0; i < sizeof(bytes); i++)
-            bytes[i] = (uint8_t)(user_fs_base >> (8 * i));
-        return nas_user_write_bytes(address, bytes, sizeof(bytes))
-            ? 0 : (uint64_t)-EFAULT;
-    }
-    return (uint64_t)-EINVAL;
-}
-
-
 /* Single-process POSIX descriptors over actual UART and device files.
  * No fake TTY, disk, /proc, or filesystem contents are supplied.
  */
@@ -513,37 +236,6 @@ static const struct limine_file *bootfs_lookup(const char *path) {
     return 0;
 }
 
-static bool user_read_bytes(uint64_t addr, uint8_t *dst, uint64_t len) {
-    if (addr >= USER_LIMIT || len > USER_LIMIT - addr) return false;
-    for (uint64_t n = 0; n < len; n++) {
-        uint8_t *p = nas_mmu_user_byte(addr + n);
-        if (!p) return false;
-        dst[n] = *p;
-    }
-    return true;
-}
-bool nas_user_write_bytes(uint64_t addr, const uint8_t *src, uint64_t len) {
-    if (addr >= USER_LIMIT || len > USER_LIMIT - addr) return false;
-    for (uint64_t n = 0; n < len; n++) {
-        if (!nas_mmu_user_writable(addr + n))
-            return false;
-    }
-    for (uint64_t n = 0; n < len; n++)
-        *nas_mmu_user_byte(addr + n) = src[n];
-    return true;
-}
-static bool read_u64(uint64_t addr, uint64_t *value) {
-    uint8_t bytes[8];
-    if (!user_read_bytes(addr, bytes, 8)) return false;
-    *value = 0;
-    for (unsigned n = 0; n < 8; n++) *value |= (uint64_t)bytes[n] << (8 * n);
-    return true;
-}
-static bool write_u64(uint64_t addr, uint64_t value) {
-    uint8_t bytes[8];
-    for (unsigned n = 0; n < 8; n++) bytes[n] = (uint8_t)(value >> (8 * n));
-    return nas_user_write_bytes(addr, bytes, 8);
-}
 static bool same_string(const char *a, const char *b) {
     for (; *a && *b; a++, b++) if (*a != *b) return false;
     return *a == *b;
@@ -820,8 +512,8 @@ uint64_t nas_fs_fd_writev(uint64_t fd, uint64_t iov, uint64_t count) {
     uint64_t sent = 0;
     for (uint64_t n = 0; n < count; n++) {
         uint64_t address, bytes;
-        if (!read_u64(iov + n * 16, &address) ||
-            !read_u64(iov + n * 16 + 8, &bytes))
+        if (!nas_user_read_u64(iov + n * 16, &address) ||
+            !nas_user_read_u64(iov + n * 16 + 8, &bytes))
             return sent ? sent : (uint64_t)-EFAULT;
         uint64_t r = nas_fs_fd_write(fd, address, bytes);
         if ((int64_t)r < 0) return sent ? sent : r;
@@ -843,7 +535,7 @@ static uint64_t sys_poll(uint64_t address, uint64_t nfds, uint64_t timeout) {
     uint64_t ready = 0;
     for (uint64_t i = 0; i < nfds; ++i) {
         uint64_t word;
-        if (!read_u64(address + i * 8, &word)) return (uint64_t)-EFAULT;
+        if (!nas_user_read_u64(address + i * 8, &word)) return (uint64_t)-EFAULT;
         int32_t fd = (int32_t)(uint32_t)word;
         uint16_t events = (uint16_t)(word >> 32);
         uint16_t revents = 0;
@@ -866,7 +558,7 @@ static uint64_t sys_poll(uint64_t address, uint64_t nfds, uint64_t timeout) {
         }
         if (revents) ready++;
         word = (word & 0x0000ffffffffffffULL) | ((uint64_t)revents << 48);
-        if (!write_u64(address + i * 8, word)) return (uint64_t)-EFAULT;
+        if (!nas_user_write_u64(address + i * 8, word)) return (uint64_t)-EFAULT;
     }
     if (ready || (int64_t)timeout == 0) return ready;
     return (uint64_t)-EOPNOTSUPP; /* no scheduler-backed blocking poll */
@@ -1040,7 +732,7 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
     if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH))
         return (uint64_t)-EINVAL;
     uint8_t first;
-    if (!user_read_bytes(pathname, &first, 1)) return (uint64_t)-EFAULT;
+    if (!nas_user_read_bytes(pathname, &first, 1)) return (uint64_t)-EFAULT;
     if (first == 0 && (flags & AT_EMPTY_PATH))
         return sys_fstat_boot(dirfd, statbuf);
     char path[256];
@@ -1159,36 +851,6 @@ static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
     return written;
 }
 
-/* Proper syscall-level rt_sigaction / sigprocmask structures, 8-byte sigset. 
- * Delivery is intentionally not claimed until an actual signal path exists. */
-static uint64_t sys_sigaction(uint64_t signum, uint64_t new_action,
-                              uint64_t old_action, uint64_t size) {
-    if (size != 8 || signum < 1 || signum > 64) return (uint64_t)-EINVAL;
-    if (new_action && (signum == 9 || signum == 19)) return (uint64_t)-EINVAL;
-    if (old_action &&
-        !nas_user_write_bytes(old_action, (const uint8_t *)signal_actions[signum], 32))
-        return (uint64_t)-EFAULT;
-    if (new_action &&
-        !user_read_bytes(new_action, (uint8_t *)signal_actions[signum], 32))
-        return (uint64_t)-EFAULT;
-    return 0;
-}
-static uint64_t sys_sigprocmask(uint64_t how, uint64_t set,
-                                uint64_t previous, uint64_t size) {
-    if (size != 8) return (uint64_t)-EINVAL;
-    uint64_t newmask = 0;
-    if (set && !read_u64(set, &newmask)) return (uint64_t)-EFAULT;
-    if (previous && !write_u64(previous, blocked_signals)) return (uint64_t)-EFAULT;
-    if (set) {
-        if (how == 0) blocked_signals |= newmask;        /* SIG_BLOCK */
-        else if (how == 1) blocked_signals &= ~newmask;  /* SIG_UNBLOCK */
-        else if (how == 2) blocked_signals = newmask;    /* SIG_SETMASK */
-        else return (uint64_t)-EINVAL;
-        blocked_signals &= ~((1ULL << 8) | (1ULL << 18));
-    }
-    return 0;
-}
-
 /* Single-process execve: replace this process's user image, not fork.
  * Snapshot ALL user pointers before changing CR3. The ELF and interpreter
  * bytes are immutable CPIO entries, so they remain valid after replacement.
@@ -1271,7 +933,7 @@ static uint64_t copy_exec_string(uint64_t addr, char dst[EXEC_STRING_MAX]) {
     if (addr >= USER_LIMIT) return (uint64_t)-EFAULT;
     for (unsigned i = 0; i < EXEC_STRING_MAX; i++) {
         uint8_t ch;
-        if (!user_read_bytes(addr + i, &ch, 1)) return (uint64_t)-EFAULT;
+        if (!nas_user_read_bytes(addr + i, &ch, 1)) return (uint64_t)-EFAULT;
         dst[i] = (char)ch;
         if (!ch) return 0;
     }
@@ -1291,7 +953,7 @@ static uint64_t copy_exec_vector(uint64_t user_array, bool environment) {
         uint64_t value;
         if (user_array >= USER_LIMIT ||
             i > (USER_LIMIT - user_array) / 8 ||
-            !read_u64(user_array + i * 8, &value))
+            !nas_user_read_u64(user_array + i * 8, &value))
             return (uint64_t)-EFAULT;
         if (!value) {
             if (environment) pending_exec.envc = i;
@@ -1377,14 +1039,14 @@ static uint64_t sys_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     mmap_cursor = 0x60000000ULL;
     loaded_phdr = loaded_phnum = loaded_main_entry = loaded_interp_base = 0;
     uint64_t entry, sp = 0;
-    bool good = elf_load(&main_img, interp, &entry);
+    bool good = nas_elf_load(&main_img, interp, &entry);
     if (good) {
         for (uint64_t va = USER_STACK_TOP - USER_STACK_PAGES * PAGE;
              va < USER_STACK_TOP; va += PAGE)
             if (!nas_mmu_map_page(va, true)) { good = false; break; }
     }
     if (good)
-        good = build_user_stack(pending_exec.argv, pending_exec.argc,
+        good = nas_build_user_stack(pending_exec.argv, pending_exec.argc,
                                 pending_exec.envp, pending_exec.envc,
                                 pending_exec.filename, &sp);
     if (!good) {
@@ -1466,7 +1128,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         nas_print("\n");
     }
 #endif
-    if (nr == __NR_arch_prctl) return sys_arch_prctl(args[1], args[2]);
+    if (nr == __NR_arch_prctl) return nas_arch_prctl(args[1], args[2]);
     if (nr == __NR_set_tid_address) { thread_clear_tid = args[1]; return TASK.pid; }
     if (nr == __NR_getpid || nr == __NR_gettid) return TASK.pid;
     if (nr == __NR_getppid) return TASK.ppid;
@@ -1512,8 +1174,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         return (uint64_t)-ENOTTY; /* ENOTTY: no TTY driver yet */
     }
     if (nr == __NR_writev) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
-    if (nr == __NR_rt_sigaction) return sys_sigaction(args[1], args[2], args[3], args[4]);
-    if (nr == __NR_rt_sigprocmask) return sys_sigprocmask(args[1], args[2], args[3], args[4]);
+    if (nr == __NR_rt_sigaction) return nas_signal_action(args[1], args[2], args[3], args[4]);
+    if (nr == __NR_rt_sigprocmask) return nas_signal_procmask(args[1], args[2], args[3], args[4]);
     if (nr == __NR_uname) return sys_uname_naseed(args[1]);
     if (nr == __NR_getcwd) return sys_getcwd_root(args[1], args[2]);
     if (nr == __NR_fork) return nas_process_fork((uint64_t *)(uintptr_t)args);
@@ -1554,7 +1216,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
          * Do not encode applet-specific success checks into the kernel.
          * Legacy M0-M4 tests keep their strict hello-specific acceptance.
          */
-        if (boot_argv_override) {
+        if (nas_boot_argv_enabled()) {
             if (args[1] != 0) fail("cmdline userspace exited nonzero");
             nas_print("[PASS] cmdline userspace exit 0\n");
             nas_platform_debug_exit(0);
@@ -1606,7 +1268,7 @@ void m1_start(void) {
     if (cmdline && *cmdline) {
         const char *const *args;
         unsigned argc;
-        if (!parse_boot_argv(cmdline, &args, &argc))
+        if (!nas_parse_boot_argv(cmdline, &args, &argc))
             fail("invalid Limine naseed.argv configuration");
     }
     /* File-system bytes and the selected executable are separate:
@@ -1615,7 +1277,7 @@ void m1_start(void) {
      */
     struct nas_boot_image selected_image;
     const char *boot_error = nas_boot_prepare(
-        boot_argv_override ? boot_argv[0] : 0, &selected_image);
+        nas_boot_argv_first(), &selected_image);
     if (boot_error) fail(boot_error);
     struct elf_image main_image = {
         selected_image.image, selected_image.size
@@ -1629,7 +1291,7 @@ void m1_start(void) {
     running_busybox = selected_image.busybox;
     running_alpine = selected_image.alpine;
     uint64_t entry = 0;
-    if (!elf_load(&main_image, interpreter, &entry))
+    if (!nas_elf_load(&main_image, interpreter, &entry))
         fail("invalid or unmappable userspace ELF");
     for (uint64_t va = USER_STACK_TOP - USER_STACK_PAGES * PAGE;
          va < USER_STACK_TOP; va += PAGE) {
@@ -1642,7 +1304,7 @@ void m1_start(void) {
         file_refcount[fd] = 1;
         file_status_flags[fd] = fd == 0 ? 0 : 1; /* stdin R, stdout/err W */
     }
-    if (!build_linux_stack(running_bash, running_busybox, &stack_pointer))
+    if (!nas_build_linux_stack(running_bash, running_busybox, &stack_pointer))
         fail("cannot initialize Linux userspace stack");
     nas_print("[ELF] userspace entry="); nas_hex(entry); nas_print("\n");
     if (running_bash) nas_print("[M2] entering real Bash in ring 3\n");
