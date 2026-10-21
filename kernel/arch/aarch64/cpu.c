@@ -43,12 +43,17 @@ void nas_arch_prepare_user_cpu(void) {
     __asm__ volatile("mrs %0, CurrentEL" : "=r"(el));
     __asm__ volatile("mrs %0, SPSel" : "=r"(spsel));
     if (el != 4) nas_arch_halt();
+    /* These markers localize real hardware failures without adding a
+     * second ARM-specific Task/FS/syscall codepath. */
+    extern void nas_print(const char *);
+    nas_print("[ARM64 CPU] preparing SPSel\n");
     if (!(spsel & 1U)) {
         uint64_t current_sp;
         __asm__ volatile("mov %0, sp" : "=r"(current_sp));
         __asm__ volatile("msr sp_el1,%0\nmsr spsel,#1\nisb"
                          : : "r"(current_sp) : "memory");
     }
+    nas_print("[ARM64 CPU] SP_EL1 live kernel stack selected\n");
     __asm__ volatile("msr daifset,#15" : : : "memory");
     /* Kernel save/restore uses genuine NEON/FP state. */
     uint64_t cpacr;
@@ -56,6 +61,7 @@ void nas_arch_prepare_user_cpu(void) {
     cpacr |= (3ULL<<20); /* FPEN 11: EL0/EL1 FP access */
     __asm__ volatile("msr cpacr_el1,%0\nisb"
                      : : "r"(cpacr) : "memory");
+    nas_print("[ARM64 CPU] FPEN enabled\n");
     /* Stage-1 user leaf AttrIndx=7. Install normal write-back memory
      * there without altering Limine's existing kernel indices 0..6. */
     uint64_t mair;
@@ -63,6 +69,7 @@ void nas_arch_prepare_user_cpu(void) {
     mair = (mair & ~(255ULL<<56)) | (255ULL<<56);
     __asm__ volatile("msr mair_el1,%0\nisb"
                      : : "r"(mair) : "memory");
+    nas_print("[ARM64 CPU] MAIR user WB index active\n");
     /* TTBR0 lower EL0: 39-bit 3-level, 4KiB, inner shareable, WB WA.
      * Leave the HIGH TTBR1 kernel translation regime unchanged. */
     uint64_t tcr=nas_arm64_read_tcr();
@@ -70,6 +77,7 @@ void nas_arch_prepare_user_cpu(void) {
              (3ULL<<12)|(3ULL<<14)|(1ULL<<7));
     tcr |= 25ULL | (1ULL<<8) | (1ULL<<10) | (3ULL<<12);
     __asm__ volatile("msr tcr_el1,%0\nisb" : : "r"(tcr) : "memory");
+    nas_print("[ARM64 CPU] TCR lower EL0 VA regime selected\n");
 }
 extern void nas_arm_full_vectors(void);
 void nas_arch_enable_user_traps(void) {
