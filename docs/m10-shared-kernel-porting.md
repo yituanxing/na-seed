@@ -149,3 +149,13 @@ shared user address-space adapter and links into **both** RV64 and ARM64
 real boot images. The RV64 test passes only its workload bounds into
 that common adapter, which calls the same kernel/task/elf_segments.c as
 full x86 execve. No ISA parser or PT_LOAD loop remains under arch/riscv64.
+
+## Linux native BusyBox fork ABI (shared task path)
+On x86 libc can invoke fork(57). On RV64/AArch64 the Linux asm-generic
+interface typically invokes clone(220, SIGCHLD, 0), not a fork syscall.
+The ISA decoder now normalizes ONLY exactly fork-equivalent clone flags
+(SIGCHLD with null child stack) to NAS_SC_fork; the full kernel continues
+to call the SAME nas_process_fork, scheduler, MMU and FD implementations.
+Threads and CLONE_VM are correctly unsupported (-ENOSYS), not silently
+converted into a bogus fork. Host regression tests both accepted and
+rejected clone forms. Live non-x86 trap/context entry is still incomplete.

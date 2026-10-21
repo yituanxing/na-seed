@@ -9,5 +9,17 @@ int main(void) {
     assert(nas_linux_decode_syscall(__NR_mmap) == NAS_SC_mmap);
     assert(nas_linux_decode_syscall(__NR_newfstatat) == NAS_SC_newfstatat);
     assert(nas_linux_decode_syscall(UINT64_MAX) == NAS_SC_NONE);
+    uint64_t clone_args[7] = {__NR_clone, 17, 0, 0, 0, 0, 0};
+    assert(nas_linux_decode_call(clone_args) == NAS_SC_fork);
+    clone_args[1] = 17U | 0x100U; /* CLONE_VM: not fork */
+    assert(nas_linux_decode_call(clone_args) == NAS_SC_NONE);
+    clone_args[1] = 17;
+    clone_args[2] = 0x70000000; /* child stack: thread-style clone */
+    assert(nas_linux_decode_call(clone_args) == NAS_SC_NONE);
+    clone_args[2] = 0;
+    clone_args[3] = UINT64_MAX; /* ignored unless CLONE_PARENT_SETTID */
+    assert(nas_linux_decode_call(clone_args) == NAS_SC_fork);
+    clone_args[0] = __NR_fork;
+    assert(nas_linux_decode_call(clone_args) == NAS_SC_fork);
     return 0;
 }

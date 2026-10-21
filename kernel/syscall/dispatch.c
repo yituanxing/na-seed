@@ -67,7 +67,7 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
 /* Strict single-program ABI diagnostic dispatcher, for a real syscall gate. */
 uint64_t syscall_dispatch(const uint64_t *args) {
     const uint64_t raw_nr = args[0];
-    enum nas_syscall_op nr = nas_linux_decode_syscall(raw_nr);
+    enum nas_syscall_op nr = nas_linux_decode_call(args);
     /* Real-program execution trace: syscall identity, callsite and args.
      * Capped to avoid serial storms; not needed in exception context.
      */

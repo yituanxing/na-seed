@@ -18,7 +18,9 @@ static inline uint64_t nas_linux_arch_prctl(uint64_t op, uint64_t arg) {
 }
 /* Decode real Linux register syscall numbers once at the arch/core boundary.
  * RISC-V and AArch64 use Linux asm-generic numbers; x86 has a separate table.
- * A raw clone(220) is deliberately NOT treated as fork: semantics differ.
+ * Generic64 clone(220) maps to the EXISTING fork operation ONLY for the
+ * exactly supported Linux fork-equivalent form (SIGCHLD, null child stack).
+ * Threads/CLONE_VM/CLONE_VFORK and unknown flags remain unsupported.
  * Unsupported/legacy syscalls map to NONE and are reported as -ENOSYS. */
 #if defined(__x86_64__)
 # include "../nr.h" /* pinned native x86 table; only the decoder includes it */
@@ -130,5 +132,25 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
 #endif
     default: return NAS_SC_NONE;
     }
+}
+
+/* The Linux syscall ABI supplies syscall-specific arguments, not just a
+ * number. The only accepted legacy clone form is clone(SIGCHLD, 0, ...).
+ * ptr arguments are ignored by Linux unless matching CLONE_* flags are
+ * selected; do not reject unspecified garbage registers from libc.
+ * This uses the EXISTING generic fork/task/VM algorithm, not a new clone
+ * implementation. Never treat a thread clone as a process fork.
+ */
+static inline enum nas_syscall_op nas_linux_decode_call(const uint64_t *args) {
+    if (!args) return NAS_SC_NONE;
+#if defined(__x86_64__)
+    const uint64_t clone_nr = __NR_clone;
+#else
+    const uint64_t clone_nr = 220U; /* Linux asm-generic __NR_clone */
+#endif
+    if (args[0] == clone_nr)
+        return args[1] == 17U && args[2] == 0U
+            ? NAS_SC_fork : NAS_SC_NONE;
+    return nas_linux_decode_syscall(args[0]);
 }
 #endif
