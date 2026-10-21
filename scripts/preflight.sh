@@ -62,6 +62,15 @@ if grep -Eq 'bootfs_mount\\(|nas_user_module\\(' kernel/m1.c; then
     exit 1
 fi
 
+# M8.1: generic VM / syscall code must not manipulate x86 PTEs directly.
+if grep -Eq 'P_PRESENT|P_RW|P_USER|PHYS_MASK|user_leaf' kernel/m1.c kernel/mm/vm.c; then
+    echo '[PREFLIGHT] x86 PTE details escaped arch/x86_64/mmu.c' >&2
+    exit 1
+fi
+if grep -Eq 'syscall_dispatch|__NR_|nas_pipe_|nas_tmp_' kernel/mm/vm.c; then
+    echo '[PREFLIGHT] VM policy acquired syscall/FS dependencies' >&2
+    exit 1
+fi
 # Compare our pinned Linux x86-64 syscall numbers against the host UAPI.
 python3 scripts/check-syscall-nr.py
 python3 scripts/check-syscall-errno.py
