@@ -13,6 +13,7 @@
 #include "../arch/arch.h"
 #include "../arch/abi.h"
 #include "../arch/linux_stat_abi.h"
+#include "../arch/linux_fcntl_abi.h"
 #include "../arch/mmu.h"
 #include "io.h"
 #include "syscall.h"
@@ -307,7 +308,9 @@ static uint64_t sys_renameat_tmp(uint64_t olddirfd, uint64_t oldptr,
     return (int64_t)ret < 0 ? ret :
         (uint64_t)(int64_t)tmp_rename(oldpath, newpath, flags);
 }
-static uint64_t sys_open_path(const char *path, uint64_t flags) {
+static uint64_t sys_open_path(const char *path, uint64_t native_flags) {
+    uint64_t flags;
+    if (!nas_linux_open_flags(native_flags, &flags)) return (uint64_t)-EINVAL;
     const uint64_t permitted = 3ULL | 0x800ULL | 0x8000ULL |
                                0x10000ULL | 0x20000ULL | 0x80000ULL | 0x100ULL |
                                0x80ULL | /* O_EXCL */
