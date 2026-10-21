@@ -141,6 +141,17 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
  * This uses the EXISTING generic fork/task/VM algorithm, not a new clone
  * implementation. Never treat a thread clone as a process fork.
  */
+/* Native Linux clone syscall registers differ between ISAs:
+ * x86-64:      flags,stack,parent_tid,child_tid,tls
+ * asm-generic: flags,stack,parent_tid,tls,child_tid
+ * Common process code must never guess the ABI-specific register slot. */
+static inline uint64_t nas_linux_clone_child_tid(const uint64_t *call) {
+#if defined(__x86_64__)
+    return call[4];
+#else
+    return call[5];
+#endif
+}
 static inline enum nas_syscall_op nas_linux_decode_call(const uint64_t *args) {
     if (!args) return NAS_SC_NONE;
 #if defined(__x86_64__)
@@ -151,16 +162,11 @@ static inline enum nas_syscall_op nas_linux_decode_call(const uint64_t *args) {
     if (args[0] == clone_nr) {
         if (args[2] != 0U) return NAS_SC_NONE; /* no alternate user stack */
         if (args[1] == 17U) return NAS_SC_fork;
-#if !defined(__x86_64__)
-        /* Observed directly from original Debian riscv64 BusyBox ash on
-         * real QEMU: CLONE_CHILD_SETTID|CLONE_CHILD_CLEARTID|SIGCHLD.
-         * No CLONE_VM/CLONE_THREAD/CLONE_VFORK, so this is an actual fork
-         * with per-child TID set/clear, NOT an approximated vfork/thread.
-         * Reject unknown flags rather than silently weakening semantics. */
+        /* Fork with child TID set/clear, no shared VM or alternate stack.
+         * Caller translates child_tid from architecture-specific registers. */
         if (args[1] == (0x01000000ULL|0x00200000ULL|17U) &&
-            args[5] != 0)
+            nas_linux_clone_child_tid(args) != 0)
             return NAS_SC_fork_child_tid;
-#endif
         return NAS_SC_NONE;
     }
     return nas_linux_decode_syscall(args[0]);

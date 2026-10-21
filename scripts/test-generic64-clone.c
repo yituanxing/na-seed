@@ -9,6 +9,9 @@
 int main(void) {
     uint64_t call[8]={220,0x01200011ULL,0,0,0,0x1a1d30ULL,0,0};
     assert(nas_linux_decode_call(call)==NAS_SC_fork_child_tid);
+    assert(nas_linux_clone_child_tid(call)==0x1a1d30ULL);
+    call[4]=UINT64_MAX; /* ignored TLS without CLONE_SETTLS */
+    assert(nas_linux_clone_child_tid(call)==0x1a1d30ULL);
     call[5]=0; /* CHILD_SETTID without pointer has no safe implementation. */
     assert(nas_linux_decode_call(call)==NAS_SC_NONE);
     call[5]=0x1a1d30ULL;

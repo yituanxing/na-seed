@@ -295,3 +295,16 @@ many ISA/distro build-option differences; **it does not establish equality
 of every Kconfig CONFIG_* option**, which requires extracting/rebuilding
 the fully resolved upstream config separately. Do not call this a
 fully config-identical fixture without that additional verification.
+
+## Native clone syscall argument order is architecture-owned
+Official Debian x86 BusyBox 1.37.0 produced clone(56) on the same
+three real shell cases which RV64 passes using clone(220). Linux native
+x86 syscall clone's FOURTH argument is child_tid, but Linux generic64
+RV64/ARM64's FIFTH argument is child_tid (fourth is TLS). The ABI
+translation `nas_linux_clone_child_tid` selects the right user pointer
+before invoking ONE shared process fork/TID implementation. Only exact
+CLONE_CHILD_SETTID|CLONE_CHILD_CLEARTID|SIGCHLD with a null alternate
+child stack is accepted, rejecting CLONE_VM/VFORK/THREAD. Both x86 and
+asm-generic64 host unit tests verify register layout and rejection.
+Real x86 BusyBox runtime CI still needs confirmation: do not report
+17/17 until it has completed.

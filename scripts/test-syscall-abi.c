@@ -19,12 +19,20 @@ int main(void) {
     clone_args[2] = 0;
     clone_args[3] = UINT64_MAX; /* ignored unless CLONE_PARENT_SETTID */
     assert(nas_linux_decode_call(clone_args) == NAS_SC_fork);
-    /* x86 must not incorrectly accept the RV64 native child TID form. */
+    /* Native glibc x86 clone child_tid is ARG4 (r10), not ARG5 (r8 TLS). */
     clone_args[0] = __NR_clone;
     clone_args[1] = 0x01200011U;
     clone_args[2] = 0;
-    clone_args[5] = 0x70010000;
+    clone_args[4] = 0x70010000;
+    clone_args[5] = UINT64_MAX; /* ignored x86 TLS without CLONE_SETTLS */
+    assert(nas_linux_clone_child_tid(clone_args) == 0x70010000);
+    assert(nas_linux_decode_call(clone_args) == NAS_SC_fork_child_tid);
+    clone_args[4] = 0;
     assert(nas_linux_decode_call(clone_args) == NAS_SC_NONE);
+    clone_args[4] = 0x70010000;
+    clone_args[1] |= 0x100U; /* CLONE_VM is NOT fork */
+    assert(nas_linux_decode_call(clone_args) == NAS_SC_NONE);
+    clone_args[1] = 0x01200011U;
     clone_args[0] = __NR_fork;
     assert(nas_linux_decode_call(clone_args) == NAS_SC_fork);
     return 0;
