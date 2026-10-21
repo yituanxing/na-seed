@@ -35,18 +35,6 @@ static bool path_from_base(const char *base, const char *src,
     raw[n]=0;
     return true;
 }
-static bool on_cpio_branch(const char *raw) {
-    /* A known archive root means an error inside it cannot be silently
-     * discarded by a lexical '..'. /tmp is a different writable backend.
-     */
-    if (raw[0]!='/' || !raw[1]) return false;
-    char first[256];
-    unsigned n=0;
-    do { first[n]=raw[n]; n++; } while (raw[n] && raw[n]!='/');
-    first[n]=0;
-    return bootfs_find(first) && !(first[0]=='/' && first[1]=='t' &&
-        first[2]=='m' && first[3]=='p' && first[4]==0);
-}
 int nas_path_resolve(const char *base, const char *src, char out[256]) {
     if (!src || !src[0]) return -ENOENT;
     /* Run the real CPIO symlink walk while '..' remains in input.
@@ -58,7 +46,7 @@ int nas_path_resolve(const char *base, const char *src, char out[256]) {
         if (path_from_base(base,src,raw)) {
             int rc=bootfs_resolve(raw,false,out);
             if (!rc) return 0;
-            if (rc!=-ENOENT || on_cpio_branch(raw)) return rc;
+            if (rc!=-ENOENT) return rc;
         }
     }
     unsigned used=1;
