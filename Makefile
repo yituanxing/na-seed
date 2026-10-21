@@ -1,13 +1,13 @@
 .DEFAULT_GOAL := iso
 ifeq ($(ARCH),riscv64)
 .DEFAULT_GOAL := port-kernel
-ifneq ($(strip $(filter-out port-kernel clean,$(MAKECMDGOALS))),)
+ifneq ($(strip $(filter-out port-kernel clean build/deps/limine.h,$(MAKECMDGOALS))),)
 $(error riscv64 supports only port-kernel M0 and clean; userspace is not ported)
 endif
 endif
 ifeq ($(ARCH),aarch64)
 .DEFAULT_GOAL := port-kernel
-ifneq ($(strip $(filter-out port-kernel clean,$(MAKECMDGOALS))),)
+ifneq ($(strip $(filter-out port-kernel clean build/deps/limine.h,$(MAKECMDGOALS))),)
 $(error aarch64 supports only M0 port-kernel and clean; no userspace backend)
 endif
 endif
