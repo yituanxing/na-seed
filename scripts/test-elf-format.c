@@ -38,3 +38,4 @@ int main(void) {
     p->offset = UINT64_MAX - 5;
     assert(!nas_elf_segment_file_ok(p, sizeof(image.bytes)));
     return 0;
+}
