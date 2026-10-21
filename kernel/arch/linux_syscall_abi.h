@@ -2,6 +2,20 @@
 #define NASEED_LINUX_SYSCALL_ABI_H
 #include <stdint.h>
 #include "../syscall/ops.h"
+#include "../errno.h"
+#if defined(__x86_64__)
+# include "x86_64/syscall.h"
+#endif
+/* Native-x86-only Linux operation; do not link an x86 syscall provider
+ * into RV64 or ARM64 common dispatch. Unsupported returns -ENOSYS. */
+static inline uint64_t nas_linux_arch_prctl(uint64_t op, uint64_t arg) {
+#if defined(__x86_64__)
+    return nas_arch_prctl(op, arg);
+#else
+    (void)op; (void)arg;
+    return (uint64_t)(int64_t)-ENOSYS;
+#endif
+}
 /* Decode real Linux register syscall numbers once at the arch/core boundary.
  * RISC-V and AArch64 use Linux asm-generic numbers; x86 has a separate table.
  * A raw clone(220) is deliberately NOT treated as fork: semantics differ.

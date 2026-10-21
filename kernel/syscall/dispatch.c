@@ -8,7 +8,6 @@
 #include "../fd.h"
 #include "../arch/arch.h"
 #include "../arch/abi.h"
-#include "../arch/x86_64/syscall.h"
 #include "../mm/vm.h"
 #include "../mm/usercopy.h"
 #include "../task/exec.h"
@@ -84,7 +83,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         nas_print("\n");
     }
 #endif
-    if (nr == NAS_SC_arch_prctl) return nas_arch_prctl(args[1], args[2]);
+    if (nr == NAS_SC_arch_prctl) return nas_linux_arch_prctl(args[1], args[2]);
     if (nr == NAS_SC_set_tid_address) { thread_clear_tid = args[1]; return TASK.pid; }
     if (nr == NAS_SC_getpid || nr == NAS_SC_gettid) return TASK.pid;
     if (nr == NAS_SC_getppid) return TASK.ppid;
