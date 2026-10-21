@@ -30,7 +30,7 @@ $(OUT)/kernel.o: kernel/kernel.c $(HDR)
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
-$(OUT)/m1.o: kernel/m1.c kernel/nr.h kernel/errno.h kernel/bootfs.h kernel/task.h kernel/fd.h kernel/tmpfs.h kernel/path.h kernel/pipe.h $(HDR)
+$(OUT)/m1.o: kernel/m1.c kernel/nr.h kernel/errno.h kernel/bootfs.h kernel/task.h kernel/fd.h kernel/tmpfs.h kernel/path.h kernel/pipe.h kernel/boot_image.h $(HDR)
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
@@ -58,6 +58,10 @@ $(OUT)/pipe.o: kernel/pipe.c kernel/pipe.h kernel/fd.h kernel/task.h kernel/errn
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
+$(OUT)/boot_image.o: kernel/boot_image.c kernel/boot_image.h kernel/bootfs.h $(HDR)
+	mkdir -p $(dir $@)
+	clang $(CFLAGS) -MMD -MP -c $< -o $@
+
 $(OUT)/arch.o: kernel/arch.S
 	mkdir -p $(dir $@)
 	clang --target=x86_64-unknown-none-elf -g -mno-red-zone -c $< -o $@
@@ -76,8 +80,8 @@ $(OUT)/path-abi.o: user/path-abi.S kernel/nr.h kernel/errno.h
 $(OUT)/path-abi: $(OUT)/path-abi.o user/linker.ld
 	ld.lld -m elf_x86_64 -nostdlib -static -T user/linker.ld $< -o $@
 
-$(KERNEL): $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/arch.o kernel/linker.ld
-	ld.lld $(LDFLAGS) $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/arch.o -o $@
+$(KERNEL): $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/boot_image.o $(OUT)/arch.o kernel/linker.ld
+	ld.lld $(LDFLAGS) $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/boot_image.o $(OUT)/arch.o -o $@
 
 $(BINARY_TAR):
 	mkdir -p $(dir $@)
@@ -319,4 +323,4 @@ run: $(ISO)
 clean:
 	rm -rf $(OUT)
 
--include $(OUT)/kernel.d $(OUT)/m1.d $(OUT)/bootfs.d $(OUT)/fd.d $(OUT)/path.d $(OUT)/pipe.d $(OUT)/task.d
+-include $(OUT)/kernel.d $(OUT)/m1.d $(OUT)/bootfs.d $(OUT)/fd.d $(OUT)/path.d $(OUT)/pipe.d $(OUT)/boot_image.d $(OUT)/task.d
