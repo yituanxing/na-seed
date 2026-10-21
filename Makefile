@@ -34,7 +34,7 @@ $(OUT)/kernel.o: kernel/kernel.c kernel/arch/arch.h kernel/drivers/serial.h kern
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
-$(OUT)/m1.o: kernel/m1.c kernel/nr.h kernel/errno.h kernel/bootfs.h kernel/task.h kernel/fd.h kernel/tmpfs.h kernel/path.h kernel/pipe.h kernel/boot_image.h kernel/arch/arch.h kernel/platform/platform.h kernel/mm/vm.h kernel/arch/mmu.h kernel/task/process.h kernel/mm/usercopy.h $(HDR)
+$(OUT)/m1.o: kernel/m1.c kernel/nr.h kernel/errno.h kernel/bootfs.h kernel/task.h kernel/fd.h kernel/tmpfs.h kernel/path.h kernel/pipe.h kernel/boot_image.h kernel/arch/arch.h kernel/platform/platform.h kernel/mm/vm.h kernel/arch/mmu.h kernel/task/process.h kernel/task/sched.h kernel/fs/io.h kernel/mm/usercopy.h $(HDR)
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
@@ -43,6 +43,10 @@ $(OUT)/task.o: kernel/task.c kernel/task.h kernel/fd.h
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
 $(OUT)/process.o: kernel/task/process.c kernel/task/process.h kernel/arch/arch.h kernel/arch/mmu.h kernel/mm/usercopy.h
+	mkdir -p $(dir $@)
+	clang $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(OUT)/sched.o: kernel/task/sched.c kernel/task/sched.h kernel/task/process.h kernel/fs/io.h
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
@@ -123,8 +127,8 @@ $(OUT)/shebang-abi.o: user/shebang-abi.S kernel/nr.h kernel/errno.h
 $(OUT)/shebang-abi: $(OUT)/shebang-abi.o user/linker.ld
 	ld.lld -m elf_x86_64 -nostdlib -static -T user/linker.ld $< -o $@
 
-$(KERNEL): $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/process.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/boot_image.o $(OUT)/arch.o $(OUT)/arch_cpu.o $(OUT)/arch_context.o $(OUT)/serial.o $(OUT)/frame.o $(OUT)/platform.o $(OUT)/arch_mmu.o $(OUT)/vm.o kernel/arch/$(ARCH)/linker.ld
-	ld.lld $(LDFLAGS) $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/process.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/boot_image.o $(OUT)/arch.o $(OUT)/arch_cpu.o $(OUT)/arch_context.o $(OUT)/serial.o $(OUT)/frame.o $(OUT)/platform.o $(OUT)/arch_mmu.o $(OUT)/vm.o -o $@
+$(KERNEL): $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/process.o $(OUT)/sched.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/boot_image.o $(OUT)/arch.o $(OUT)/arch_cpu.o $(OUT)/arch_context.o $(OUT)/serial.o $(OUT)/frame.o $(OUT)/platform.o $(OUT)/arch_mmu.o $(OUT)/vm.o kernel/arch/$(ARCH)/linker.ld
+	ld.lld $(LDFLAGS) $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/process.o $(OUT)/sched.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/boot_image.o $(OUT)/arch.o $(OUT)/arch_cpu.o $(OUT)/arch_context.o $(OUT)/serial.o $(OUT)/frame.o $(OUT)/platform.o $(OUT)/arch_mmu.o $(OUT)/vm.o -o $@
 
 $(BINARY_TAR):
 	mkdir -p $(dir $@)

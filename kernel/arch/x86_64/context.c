@@ -15,3 +15,10 @@ void nas_arch_save_user_frame(struct nas_task *task, const uint64_t *frame) {
 void nas_arch_set_saved_return(struct nas_task *task, uint64_t value) {
     task->arch.resume_regs[0] = value;
 }
+uint64_t nas_arch_saved_return(const struct nas_task *task) {
+    return task->arch.resume_regs[0];
+}
+void nas_arch_load_user_frame(const struct nas_task *task, uint64_t *frame) {
+    for (unsigned i=0;i<15;i++) frame[i] = task->arch.resume_regs[i];
+    syscall_user_rsp = task->arch.resume_user_rsp;
+}
