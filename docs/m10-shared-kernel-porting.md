@@ -100,3 +100,16 @@ mm/mmu_bridge.c exposes the existing nas_mmu_* ABI for later RV/ARM full
 kernel linkage; its inclusion in the M0 kernel is deliberately NOT claimed.
 The shared ELF mapping needs a final RWX permission pass before W^X;
 do not call initial writable mappings a W^X protection guarantee.
+
+## Shared executable load — no second PT_LOAD algorithm
+The x86 native full loader and RV64 real U-mode test now call the SAME
+kernel/task/elf_segments.c for whole-image checks, executable entry,
+PT_LOAD mapping, file copying and zero-filled BSS. RV-private ELF loader is
+only a VM callback adapter; no duplicate structural/segment loops.
+AArch64 compiles the same shared segment engine. Native executable choices
+remain per target (x86 62, RV64 243, ARM64 183), with dynamic musl selection
+in the existing full exec path. RV64 static smoke rejects PT_DYNAMIC/INTERP,
+overlapping pages, W+X and malformed alignment. Common frame allocator
+zeroes BSS. Verified by a host loader regression and real RV QEMU.
+Current x86 MMU map_page still does not guarantee runtime W^X: separate
+leaf-protection finishing passes are a different feature, not claimed here.

@@ -56,7 +56,7 @@ void nas_rv_user_smoke(uint64_t limine_mode, const uint8_t *elf, uint64_t size) 
     uint64_t stack_pa = 0;
     if (!nas_space_lookup(&space, RV_USER_STACK, &stack_pa, 0))
         rv_fatal("shared stack translate");
-    if (!nas_rv_elf_load(&pt, elf, size, &rv_elf_entry))
+    if (!nas_rv_elf_load(&space, elf, size, &rv_elf_entry))
         rv_fatal("external ET_EXEC ELF64 validation / PT_LOAD");
     uint64_t got = 0, perms = 0;
     if (!nas_rv_pt_translate(&pt, rv_elf_entry, &got, &perms) ||

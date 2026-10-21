@@ -6,6 +6,7 @@
 #include "../mm/usercopy.h"
 #include "elf.h"
 #include "elf_format.h"
+#include "elf_segments.h"
 extern void nas_print(const char *);
 extern void nas_hex(uint64_t);
 #define TASK (*nas_current_task)
@@ -16,72 +17,48 @@ extern void nas_hex(uint64_t);
 #define loaded_interp_base TASK.loaded_interp_base
 #define USER_STACK_TOP NAS_USER_STACK_TOP
 
-/* Parse the ELF64 program headers rather than executing embedded kernel code. */
-static bool checked_range(uint64_t start, uint64_t size, uint64_t limit) {
-    return start <= limit && size <= limit - start;
-}
-/* Current fixed ET_DYN placement, not architecture-neutral ASLR. */
+/* Full kernel and RV64 hardware-smoke use the SAME ELF PT_LOAD loader.
+ * All architectural differences are memory-map and copy callbacks.
+ */
 #define ALPINE_APP_BASE NAS_ELF_DYN_APP_BASE
 #define ALPINE_LDSO_BASE NAS_ELF_DYN_INTERP_BASE
-
-/* ELF bytes may originate from a Limine ELF module (M1-M4) or a file
- * inside the indexed CPIO initramfs (M5.1). This is not an execve ABI.
- * PT_INTERP is still checked against the one supported musl interpreter.
- */
-
-static bool elf_map_image(const struct elf_image *image,
-                          uint64_t bias, bool main_image,
-                          uint64_t *entry, bool *has_interp) {
-    if (!image || !image->data || image->size < sizeof(struct elf_hdr))
+static bool elf_kernel_map(void *ignored,uint64_t va,unsigned flags) {
+    (void)ignored;
+    return nas_mmu_map_page(va,(flags & 2U)!=0);
+}
+static bool elf_kernel_copy(void *ignored,uint64_t va,
+                            const uint8_t *src,uint64_t len) {
+    (void)ignored;
+    return nas_user_copy_to_mapped(va,src,len);
+}
+static bool elf_map_image(const struct elf_image *image,uint64_t bias,
+                          bool main_image,uint64_t *entry,bool *has_interp) {
+    struct nas_elf_segment_policy options={
+        .machine=NAS_ELF_MACHINE,
+        .allow_dynamic_elf=true,
+        .max_phnum=64,
+        .bias=bias,
+        .min_va=0x10000,
+        .max_va=USER_STACK_TOP-0x100000,
+        .max_segment=64ULL<<20,
+        .interpreter=main_image?NAS_ELF_INTERP:0
+    };
+    struct nas_elf_segment_ops op={
+        .ctx=0,.map_page=elf_kernel_map,.copy_bytes=elf_kernel_copy
+    };
+    struct nas_elf_segment_result result={0};
+    if(!nas_elf_segments_load(image,&options,&op,&result))
         return false;
-    const uint8_t *file = image->data;
-    struct nas_elf_view view;
-    if (!nas_elf_open(&view, file, image->size, NAS_ELF_MACHINE, true, 64))
-        return false;
-    const struct elf_hdr *e = view.header;
-    if ((e->type == 2 && bias) || (e->type == 3 && !bias))
-        return false;
-    bool has_entry = false;
-    const struct elf_phdr *ph = view.phdrs;
-    for (unsigned i = 0; i < e->phnum; i++) {
-        const struct elf_phdr *p = &ph[i];
-        if (p->type == 3 && main_image) { /* PT_INTERP */
-            static const char name[] = NAS_ELF_INTERP;
-            if (!checked_range(p->offset, p->filesz, image->size) ||
-                p->filesz != sizeof(name)) return false;
-            for (unsigned n = 0; n < sizeof(name); n++)
-                if (file[p->offset + n] != (uint8_t)name[n]) return false;
-            *has_interp = true;
-        }
-        if (p->type != 1) continue;
-        if (!p->memsz || p->memsz > (64ULL << 20) ||
-            !nas_elf_segment_file_ok(p, image->size) ||
-            !checked_range(p->vaddr, p->memsz, USER_LIMIT) ||
-            p->vaddr > UINT64_MAX - bias ||
-            p->memsz > UINT64_MAX - bias - p->vaddr)
-            return false;
-        uint64_t start = p->vaddr + bias, end = start + p->memsz;
-        if (start < 0x10000 || end > USER_STACK_TOP - 0x100000 ||
-            end > UINT64_MAX - PAGE) return false;
-        if ((p->flags & 1) && e->entry >= p->vaddr &&
-            e->entry - p->vaddr < p->memsz) has_entry = true;
-        if (main_image && e->phoff >= p->offset &&
-            e->phoff - p->offset < p->filesz &&
-            (uint64_t)e->phnum * e->phentsize <=
-                p->filesz - (e->phoff - p->offset))
-            loaded_phdr = start + (e->phoff - p->offset);
-        if (main_image && end > heap_break) heap_break = end;
-        uint64_t first = start & ~(PAGE - 1);
-        uint64_t last = (end + PAGE - 1) & ~(PAGE - 1);
-        for (uint64_t va = first; va < last; va += PAGE)
-            if (!nas_mmu_map_page(va, (p->flags & 2) != 0)) return false;
-        if (!nas_user_copy_to_mapped(start, file + p->offset, p->filesz)) return false;
+    *entry=result.entry;
+    *has_interp=result.has_interp;
+    if(main_image) {
+        loaded_phdr=result.phdr;
+        loaded_phnum=result.phnum;
+        if(result.end>heap_break) heap_break=result.end;
     }
-    if (!has_entry || e->entry > UINT64_MAX - bias) return false;
-    *entry = e->entry + bias;
-    if (main_image) loaded_phnum = e->phnum;
     return true;
 }
+
 bool nas_elf_load(const struct elf_image *image,
                      const struct elf_image *interpreter, uint64_t *entry) {
     if (!image || !image->data || image->size < sizeof(struct elf_hdr))

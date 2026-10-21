@@ -30,6 +30,22 @@ bool nas_space_delete(struct nas_user_space *space) {
     nas_arch_pt_destroy(space);
     return space->root_pa == 0;
 }
+bool nas_space_map_access(struct nas_user_space *space,uint64_t va,
+                          unsigned access) {
+    if(!space || !page_aligned(va) || !(access&NAS_UP_READ) ||
+       (access&~7U) || ((access&NAS_UP_WRITE)&&(access&NAS_UP_EXEC)))
+        return false;
+    uint64_t prior;
+    if(nas_arch_pt_lookup(space,va,&prior,0)) return false;
+    uint64_t pa=nas_frame_alloc();
+    if(!pa) return false;
+    if(!nas_arch_pt_map(space,va,pa,access)) {
+        (void)nas_frame_free(pa);
+        return false;
+    }
+    nas_arch_pt_flush(va);
+    return true;
+}
 bool nas_space_map_page(struct nas_user_space *space,
                         uint64_t va, bool writable) {
     if (!space || !page_aligned(va)) return false;
@@ -37,24 +53,15 @@ bool nas_space_map_page(struct nas_user_space *space,
     unsigned old_access;
     if (nas_arch_pt_lookup(space, va, &old_pa, &old_access)) {
         if (!writable || (old_access & NAS_UP_WRITE)) return true;
+        /* Never promote executable memory to W+X by an untyped API. */
+        if (old_access & NAS_UP_EXEC) return false;
         if (!nas_arch_pt_protect(space, va, old_access | NAS_UP_WRITE))
             return false;
         nas_arch_pt_flush(va);
         return true;
     }
-    uint64_t pa = nas_frame_alloc();
-    if (!pa) return false;
-    /* Loader uses HHDM to populate even execute-only segments, and current
-     * shared ELF loader has no RX finalization hook yet. Preserve the
-     * x86 baseline's initially executable mappings until that change. */
-    unsigned access = NAS_UP_READ | NAS_UP_EXEC |
-                      (writable ? NAS_UP_WRITE : 0);
-    if (!nas_arch_pt_map(space, va, pa, access)) {
-        (void)nas_frame_free(pa);
-        return false;
-    }
-    nas_arch_pt_flush(va);
-    return true;
+    return nas_space_map_access(space,va,NAS_UP_READ|
+                               (writable?NAS_UP_WRITE:NAS_UP_EXEC));
 }
 bool nas_space_unmap_page(struct nas_user_space *space, uint64_t va) {
     if (!space || !page_aligned(va)) return false;
