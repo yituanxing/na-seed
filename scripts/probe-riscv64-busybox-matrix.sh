@@ -3,11 +3,19 @@
 # BusyBox through the SAME shared kernel as x86 for a growing workload matrix.
 # No guest-side test-specific kernel shortcuts. Strict stdout + exit checks.
 set -eu
-sh scripts/fetch-debian-riscv64.sh
 test -s build/port-riscv64/full/kernel.elf || sh scripts/build-riscv64-full.sh
 dir=build/port-riscv64/full
-work="$dir/matrix"
-mkdir -p "$work"
+if [ -n "${BUSYBOX_PARITY_BINARY:-}" ]; then
+    work="$dir/matrix-source"
+    mkdir -p "$work"
+    cp "$BUSYBOX_PARITY_BINARY" "$work/input-busybox"
+    binary="$work/input-busybox"
+else
+    sh scripts/fetch-debian-riscv64.sh
+    work="$dir/matrix"
+    mkdir -p "$work"
+    binary="$dir/busybox"
+fi
 archive=build/deps/limine-binary.tar.gz
 if [ ! -s "$archive" ]; then
     curl -fL --retry 3 -o "$archive.tmp" \
@@ -21,7 +29,7 @@ fw=/usr/share/qemu-efi-riscv64
 test -s "$fw/RISCV_VIRT_CODE.fd"
 # The rootfs is built only from verified native BusyBox plus actual bytes
 # in the archive. The same kernel bootfs.c handles archive/file lookup.
-sh scripts/stage-busybox-rootfs.sh "$dir/busybox" "$work"
+sh scripts/stage-busybox-rootfs.sh "$binary" "$work"
 # Two boot modes: real module first; and *archive-only* Limine handoff,
 # analogous to the x86 initramfs tests. Command selection differs, kernel
 # ELF loader / FS and task runtime are identical.
@@ -41,7 +49,7 @@ boot_case() {
         mcopy -i "$disk@@1048576" "$work/rootfs.cpio" ::/boot/rootfs.cpio
         module='rootfs.cpio'
     else
-        mcopy -i "$disk@@1048576" "$dir/busybox" ::/boot/busybox
+        mcopy -i "$disk@@1048576" "$binary" ::/boot/busybox
         module='busybox'
     fi
     {
@@ -138,8 +146,12 @@ while IFS="$tab" read -r name mode args expected extra; do
     if ! boot_case "$name" "$mode" "$args" "$expected" "$extra"; then
         failures=$((failures+1))
     fi
-done < scripts/busybox-parity-cases.tsv
-if [ -n "${BUSYBOX_PARITY_CASE:-}" ]; then test "$total" -eq 1; else test "$total" -eq 17; fi
+done < "${BUSYBOX_PARITY_MANIFEST:-scripts/busybox-parity-cases.tsv}"
+if [ -n "${BUSYBOX_PARITY_CASE:-}" ]; then
+    test "$total" -eq 1
+else
+    test "$total" -eq "${BUSYBOX_PARITY_EXPECTED_COUNT:-17}"
+fi
 if [ "$failures" -ne 0 ]; then
     echo "[RV64 BUSYBOX FAIL] $failures/$total common parity fixtures failed" >&2
     exit 1

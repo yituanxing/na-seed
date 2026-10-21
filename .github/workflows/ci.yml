@@ -219,3 +219,47 @@ jobs:
             build/port-aarch64/serial.log
             build/port-aarch64/full/serial.log
           if-no-files-found: ignore
+
+  source_busybox:
+    name: Controlled source BusyBox / ${{ matrix.port }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native cross toolchain and QEMU
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y make gcc binutils curl bzip2 xorriso \
+            clang lld cpio mtools gdisk qemu-user
+          case "${{ matrix.port }}" in
+            amd64)
+              sudo apt-get install -y qemu-system-x86 ovmf ;;
+            riscv64)
+              sudo apt-get install -y gcc-riscv64-linux-gnu libc6-dev-riscv64-cross \
+                qemu-system-misc qemu-efi-riscv64 ;;
+            arm64)
+              sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
+                qemu-system-arm qemu-efi-aarch64 ;;
+          esac
+      - name: Local Kconfig, fixture and shared-harness preflight
+        run: sh scripts/check-source-busybox.sh
+      - name: Build original BusyBox from one SHA256-pinned source and Kconfig
+        run: sh scripts/build-source-busybox.sh ${{ matrix.port }}
+      - name: Execute all six source-controlled workloads on actual NaSeed QEMU kernel
+        run: sh scripts/probe-source-busybox.sh ${{ matrix.port }}
+      - name: Upload native source BusyBox/serial evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naseed-source-busybox-${{ matrix.port }}
+          path: |
+            build/source-busybox/${{ matrix.port }}/verified.config
+            build/source-busybox/${{ matrix.port }}/artifacts.sha256
+            build/busybox-source-parity-x86/*.serial.log
+            build/port-riscv64/full/matrix-source/*.serial.log
+            build/port-aarch64/full/matrix-source/*.serial.log
+          if-no-files-found: ignore

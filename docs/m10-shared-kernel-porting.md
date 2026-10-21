@@ -73,6 +73,38 @@ job logs. The test steps were previously exploratory with
 native dynamic 7-case matrices mandatory along with Debian static 17/17.
 Do not infer general ELF or Linux compatibility beyond these scenarios.
 
+## Two software routes: unchanged Linux binaries + controlled-source BusyBox
+
+**Do not confuse controlled recompilation with a NaSeed-native ABI.**
+The official Debian static 17-case and Alpine musl dynamic 7-case binaries
+remain immutable Linux compatibility acceptance. A second controlled-source
+route builds upstream BusyBox 1.37.0 (fixed SHA256
+`3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4`)
+with one explicit `scripts/source-busybox.config` across **amd64, riscv64
+and arm64**. This route uses existing Linux ABI and target static glibc;
+it does **not** add an mlibc fork, a new syscall ABI or a second kernel core.
+
+- `sh scripts/build-source-busybox.sh <arch>` verifies upstream source
+  integrity, resolves Kconfig with fail-closed feature checks, builds
+  native static ELF and checks `--list` + `echo` against the host or
+  real QEMU Linux-user oracle. Outputs and verified config are saved in
+  `build/source-busybox/<arch>/`.
+- `sh scripts/probe-source-busybox.sh <arch>` uses the **existing actual
+  NaSeed kernel QEMU boot harness**, shared Task/ELF/FS/VM and CPIO rootfs,
+  running six source-profile scenarios including shell fork/exec, pipelines,
+  tmpfs and four sequential shell pipeline iterations in a single boot.
+  This intentionally tests state reuse beyond single applet boot.
+- The three canonical parity runners now support an explicit alternate
+  immutable `BUSYBOX_PARITY_BINARY`, `BUSYBOX_PARITY_MANIFEST`, and
+  `BUSYBOX_PARITY_EXPECTED_COUNT` without changing their default Debian
+  17/17 behavior or overwriting the Debian fixture. No duplicated
+  architecture-specific ELF/userland execution paths.
+- Development workflow: finish an OS-capability-sized batch and inexpensive
+  `scripts/check-source-busybox.sh` first, then one aggregated CI pass
+  with three parallel native source profiles. Treat a new profile as not
+  accepted until actual QEMU logs prove it. Controlled source is an
+  ability-driver; immutable distro binaries remain the compatibility oracle.
+
 ## Current verified integration status — 2026-10-21
 
 The sections below retain the chronological engineering trail, including

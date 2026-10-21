@@ -3,11 +3,19 @@
 # BusyBox through the SAME shared kernel as x86 for a growing workload matrix.
 # No guest-side test-specific kernel shortcuts. Strict stdout + exit checks.
 set -eu
-sh scripts/fetch-busybox-fixture.sh arm64 build/port-aarch64/full/busybox
 test -s build/port-aarch64/full/kernel.elf || sh scripts/build-aarch64-full.sh
 dir=build/port-aarch64/full
-work="$dir/matrix"
-mkdir -p "$work"
+if [ -n "${BUSYBOX_PARITY_BINARY:-}" ]; then
+    work="$dir/matrix-source"
+    mkdir -p "$work"
+    cp "$BUSYBOX_PARITY_BINARY" "$work/input-busybox"
+    binary="$work/input-busybox"
+else
+    sh scripts/fetch-busybox-fixture.sh arm64 "$dir/busybox"
+    work="$dir/matrix"
+    mkdir -p "$work"
+    binary="$dir/busybox"
+fi
 archive=build/deps/limine-binary.tar.gz
 if [ ! -s "$archive" ]; then
     curl -fL --retry 3 -o "$archive.tmp" \
@@ -21,20 +29,22 @@ fw=/usr/share/qemu-efi-aarch64/QEMU_EFI.fd
 test -s "$fw"
 # The rootfs is built only from verified native BusyBox plus actual bytes
 # in the archive. The same kernel bootfs.c handles archive/file lookup.
-sh scripts/stage-busybox-rootfs.sh "$dir/busybox" "$work"
+sh scripts/stage-busybox-rootfs.sh "$binary" "$work"
 # Read exact guest program headers when a native ARM-only page access
 # differs from the same x86/RV64 ELF loader. This is evidence, not a
 # new architecture-specific loader or ELF transformation.
-readelf -lW "$dir/busybox" | grep -E 'LOAD|GNU_RELRO|Entry point|Type'
-readelf -SW "$dir/busybox" | grep -E 'Name|\.got|\.data|\.bss|\.init_array|\.fini_array|\.tdata|\.tbss'
+readelf -lW "$binary" | grep -E 'LOAD|GNU_RELRO|Entry point|Type'
+readelf -SW "$binary" | grep -E 'Name|\.got|\.data|\.bss|\.init_array|\.fini_array|\.tdata|\.tbss'
 # A known-good Linux arm64 user-mode reference prevents misdiagnosing
 # a broken Debian build as a kernel issue; it must execute unmodified.
-if [ -n "${BUSYBOX_PARITY_CASE:-}" ] && [ "$BUSYBOX_PARITY_CASE" = echo ]; then
+if [ -z "${BUSYBOX_PARITY_BINARY:-}" ] &&
+   [ -n "${BUSYBOX_PARITY_CASE:-}" ] &&
+   [ "$BUSYBOX_PARITY_CASE" = echo ]; then
     printf '[ARM64 REFERENCE] QEMU Linux-user BusyBox echo: '
     # The real Linux system-call trace provides an external oracle for
     # whether native glibc calls mprotect(RELRO) at all. Comparing kernel
     # behavior is sounder than bypassing memory protection to make CI green.
-    reference=$(LC_ALL=C qemu-aarch64 -strace "$dir/busybox" echo hello \
+    reference=$(LC_ALL=C qemu-aarch64 -strace "$binary" echo hello \
       2>"$work/echo.linux-user.syscalls.log")
     echo '[ARM64 REFERENCE] actual Linux-user syscall trace:'
     grep -E 'mprotect|brk|mmap|exit_group|set_tid_address|write' \
@@ -64,7 +74,7 @@ boot_case() {
         mcopy -i "$disk@@1048576" "$work/rootfs.cpio" ::/boot/rootfs.cpio
         module='rootfs.cpio'
     else
-        mcopy -i "$disk@@1048576" "$dir/busybox" ::/boot/busybox
+        mcopy -i "$disk@@1048576" "$binary" ::/boot/busybox
         module='busybox'
     fi
     {
@@ -161,8 +171,12 @@ while IFS="$tab" read -r name mode args expected extra; do
     if ! boot_case "$name" "$mode" "$args" "$expected" "$extra"; then
         failures=$((failures+1))
     fi
-done < scripts/busybox-parity-cases.tsv
-if [ -n "${BUSYBOX_PARITY_CASE:-}" ]; then test "$total" -eq 1; else test "$total" -eq 17; fi
+done < "${BUSYBOX_PARITY_MANIFEST:-scripts/busybox-parity-cases.tsv}"
+if [ -n "${BUSYBOX_PARITY_CASE:-}" ]; then
+    test "$total" -eq 1
+else
+    test "$total" -eq "${BUSYBOX_PARITY_EXPECTED_COUNT:-17}"
+fi
 if [ "$failures" -ne 0 ]; then
     echo "[ARM64 BUSYBOX FAIL] $failures/$total common parity fixtures failed" >&2
     exit 1

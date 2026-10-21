@@ -3,9 +3,15 @@
 # Alpine dynamic/musl is intentionally a separate test profile.
 set -eu
 make kernel build/deps/limine-binary/BOOTX64.EFI
-dir=build/busybox-parity-x86
-mkdir -p "$dir"
-sh scripts/fetch-busybox-fixture.sh amd64 "$dir/busybox"
+if [ -n "${BUSYBOX_PARITY_BINARY:-}" ]; then
+    dir=build/busybox-source-parity-x86
+    mkdir -p "$dir"
+    cp "$BUSYBOX_PARITY_BINARY" "$dir/busybox"
+else
+    dir=build/busybox-parity-x86
+    mkdir -p "$dir"
+    sh scripts/fetch-busybox-fixture.sh amd64 "$dir/busybox"
+fi
 sh scripts/stage-busybox-rootfs.sh "$dir/busybox" "$dir"
 efi=build/deps/limine-binary/BOOTX64.EFI
 cdrom=build/deps/limine-binary/limine-uefi-cd.bin
@@ -83,8 +89,12 @@ while IFS="$tab" read -r id mode args expected evidence; do
     if [ -n "${BUSYBOX_PARITY_CASE:-}" ] && [ "$id" != "$BUSYBOX_PARITY_CASE" ]; then continue; fi
     count=$((count+1))
     if ! run_case "$id" "$mode" "$args" "$expected" "$evidence"; then failures=$((failures+1)); fi
-done < scripts/busybox-parity-cases.tsv
-if [ -n "${BUSYBOX_PARITY_CASE:-}" ]; then test "$count" -eq 1; else test "$count" -eq 17; fi
+done < "${BUSYBOX_PARITY_MANIFEST:-scripts/busybox-parity-cases.tsv}"
+if [ -n "${BUSYBOX_PARITY_CASE:-}" ]; then
+    test "$count" -eq 1
+else
+    test "$count" -eq "${BUSYBOX_PARITY_EXPECTED_COUNT:-17}"
+fi
 if [ "$failures" -ne 0 ]; then
     echo "[X86 PARITY FAIL] $failures/$count Debian static cases failed" >&2
     exit 1
