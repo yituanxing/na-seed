@@ -24,7 +24,11 @@ void nas_arm_full_trap_c(struct nas_arm_trap_frame *frame) {
         nas_print("\n");
         nas_fail("unexpected AArch64 EL0 synchronous exception");
     }
-    frame->elr_el1+=4; /* SVC #0 instruction is 4 bytes. */
+    /* ARMv8-A SVC saves NextInstrAddr() to ELR_EL1 in hardware.
+     * Unlike RISC-V ECALL/sepc, advancing PC again SKIPS the instruction
+     * after SVC. The native hello ELF prints successfully but misses
+     * 'cmp x0,#6', branching with stale NZCV and exiting nonzero.
+     * Save/use the hardware-provided post-SVC ELR unchanged. */
     uint64_t call[15] = {frame->x[8],frame->x[0],frame->x[1],
         frame->x[2],frame->x[3],frame->x[4],frame->x[5],frame->elr_el1};
     live=frame;
