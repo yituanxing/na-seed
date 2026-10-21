@@ -3,7 +3,7 @@
 #include "../task.h"
 #include "../mm/usercopy.h"
 #include "signal.h"
-/* Proper syscall-level rt_sigaction / sigprocmask structures, 8-byte sigset. 
+/* Proper syscall-level rt_sigaction / sigprocmask structures, 8-byte sigset.
  * Delivery is intentionally not claimed until an actual signal path exists. */
 uint64_t nas_signal_action(uint64_t signum, uint64_t new_action,
                               uint64_t old_action, uint64_t size) {
