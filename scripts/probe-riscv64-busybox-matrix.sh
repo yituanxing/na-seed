@@ -117,12 +117,12 @@ boot_case uname  direct 'uname -s'          Linux
 boot_case pwd    direct 'pwd'              /
 boot_case id     direct 'id -u'            0
 boot_case true   direct 'true'             -
-boot_case printf direct 'printf rv-printf' rv-printf
+boot_case printf direct 'printf rv-printf\\\\n' rv-printf
 
 # Actual CPIO: exercised via the same bootfs, openat, stat, getdents, read,
 # fd and VFS code as the established x86 Alpine BusyBox tests.
-boot_case root   cpio 'ls /'              bin
-boot_case bin    cpio 'ls /bin'           busybox
+boot_case root   cpio 'ls -1 /'           bin
+boot_case bin    cpio 'ls -1 /bin'        busybox
 boot_case cat    cpio 'cat /etc/hostname' naseed
 boot_case head   cpio 'head -n 1 /etc/hostname' naseed
 boot_case grep   cpio 'grep -n naseed /etc/hostname' 1:naseed
