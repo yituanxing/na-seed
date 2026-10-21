@@ -250,3 +250,16 @@ before copying the child task. Preserve the existing child-set/clear-TID
 semantics. Additional fault diagnostics report stval/tp/sp to confirm
 real page address if the hardware fault recurs. Do not declare shell
 regressions passed until real QEMU verifies.
+
+## BusyBox test provenance is fixed centrally (no ISA-local choices)
+`scripts/busybox-static-fixtures.txt` pins Debian 13 BusyBox **1.37.0**
+with EXACT binary package version `1.37.0-6+b9` for both amd64 and
+riscv64 and verifies architecture-specific SHA256 and ET_EXEC/no
+PT_INTERP. Both pre-existing fetch scripts delegate to
+`scripts/fetch-busybox-fixture.sh`. A source code version match alone
+is NOT proof of effective CONFIG values or libc behavior: the package is
+the same Debian **busybox-static** recipe, and further effective applet
+and Kconfig verification is a distinct gate. Alpine musl dynamic BusyBox
+remains a SECOND, explicitly named fixture rather than being mixed into
+Debian static x86/RV parity claims. AArch64 must be checksum-pinned
+before it joins this package fixture, not silently choose some binary.

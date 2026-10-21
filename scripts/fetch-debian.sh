@@ -11,10 +11,14 @@ bash)
   binary='bash-static'
   ;;
 busybox)
-  filename='busybox-static_1.37.0-6+b9_amd64.deb'
-  sha='598a3fd92bdafc34cd81196b2952ad36e910e47a4ecf162f8ce5e8e262598e53'
-  pool='busybox'
-  binary='busybox'
+  # Shared pinned BusyBox fixture; architecture-specific hashes are data.
+  target="$out/userspace/debian-busybox"
+  mkdir -p "$(dirname "$target")"
+  sh scripts/fetch-busybox-fixture.sh amd64 "$target"
+  ln -sf "debian-busybox" "$out/userspace/busybox"
+  test "$("$out/userspace/busybox" echo hello)" = hello
+  echo "[DEBIAN] verified same-version BusyBox fixture: $target"
+  exit 0
   ;;
 *)
   echo "Usage: $0 bash|busybox ABSOLUTE_BUILD_DIR" >&2

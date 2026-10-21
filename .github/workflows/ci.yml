@@ -30,6 +30,8 @@ jobs:
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-syscall-abi.c -o /tmp/naseed-syscall-test && /tmp/naseed-syscall-test
       - name: Verify native x86-64 stat layout
         run: cc -std=c11 -Wall -Wextra -Werror -c scripts/check-linux-stat.c -o /tmp/naseed-stat.o
+      - name: Verify one Debian BusyBox fixture for all architectures
+        run: sh scripts/check-busybox-fixtures.sh
       - name: Verify real-QEMU marker monitor fails closed
         run: sh scripts/test-port-boot-monitor.sh
       - name: Verify generic64 fork+child-TID and unsupported clone forms
