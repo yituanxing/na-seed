@@ -22,6 +22,9 @@ uint64_t nas_arch_user_limit(void) {
     unsigned t0sz = (unsigned)(nas_arm64_read_tcr() & 63U);
     return (t0sz >= 16 && t0sz <= 25) ? (1ULL << (64 - t0sz)) : 0;
 }
+bool nas_arch_user_nx_supported(void) {
+    return nas_arm64_el1_4k_mmu_active(); /* EL0 UXN descriptor enforcement */
+}
 void nas_arch_halt(void) {
     for (;;) __asm__ volatile ("wfi");
 }

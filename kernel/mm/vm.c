@@ -64,7 +64,7 @@ uint64_t nas_vm_brk(uint64_t want) {
     return want;
 }
 
-/* Real x86-64 mprotect on mapped user pages, with NX (if enabled). */
+/* VM protection semantics are shared; arch provider reports executable-disable enforcement. */
 uint64_t nas_vm_mprotect(uint64_t addr, uint64_t length, uint64_t prot) {
     if (addr & (PAGE - 1) || (prot & ~7ULL) ||
         length > UINT64_MAX - (PAGE - 1))
@@ -73,7 +73,7 @@ uint64_t nas_vm_mprotect(uint64_t addr, uint64_t length, uint64_t prot) {
     uint64_t pages = (length + PAGE - 1) / PAGE;
     if (addr >= USER_LIMIT || pages > (USER_LIMIT - addr) / PAGE)
         return (uint64_t)-ENOMEM;
-    if (!nas_arch_nx_enabled()) {
+    if (!nas_arch_user_nx_supported()) {
         /* Cannot claim executable permission enforcement without NXE. */
         return (uint64_t)-ENOSYS;
     }

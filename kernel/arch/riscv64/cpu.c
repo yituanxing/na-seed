@@ -27,6 +27,10 @@ uint64_t nas_arch_user_limit(void) {
     if (mode < 8 || mode > 10) return 0;
     return 1ULL << (11 + (unsigned)(mode - 5) * 9);
 }
+bool nas_arch_user_nx_supported(void) {
+    uint64_t mode = nas_riscv_satp_read() >> 60;
+    return mode == 8 || mode == 9 || mode == 10; /* leaf X is mandatory */
+}
 void nas_arch_halt(void) {
     for (;;) __asm__ volatile ("wfi");
 }
