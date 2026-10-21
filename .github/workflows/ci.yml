@@ -4,6 +4,12 @@ on:
     branches: [main]
   pull_request:
 
+# Collapse superseded PR commits into a single expensive QEMU suite. Keep
+# pushed main regressions independent; only pull-request runs are canceled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   smoke:
     runs-on: ubuntu-latest
