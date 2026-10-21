@@ -17,12 +17,16 @@ nas_arm64_bootstrap:
     adr x1,nas_arm_early_a
     hlt #0xf000
     mov x9,sp
-    msr sp_el1,x9
+    /* ARMv8-A: MSR SP_EL1, Xt is UNDEFINED when executed at EL1.
+     * To initialize the EL1 stack from Limine's live SP_EL0, first
+     * select SP_EL1 and then write through the architected SP alias.
+     * The entire transition must happen before the FIRST C frame. */
+    msr spsel,#1
+    mov sp,x9
+    isb
     mov x0,#3
     adr x1,nas_arm_early_b
     hlt #0xf000
-    msr spsel,#1
-    isb
     mov x0,#3
     adr x1,nas_arm_early_c
     hlt #0xf000
