@@ -49,7 +49,8 @@ nas_arm_enter_el0:
      * Only TTBR0 fields change; preserve bootloader's TTBR1 setup. */
     mrs x9, tcr_el1
     bic x9, x9, #0x3f
-    orr x9, x9, #25
+    mov x10, #25
+    orr x9, x9, x10
     bic x9, x9, #0x80
     bic x9, x9, #0xc000
     msr tcr_el1, x9
