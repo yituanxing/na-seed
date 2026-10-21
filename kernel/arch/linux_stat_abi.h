@@ -42,7 +42,11 @@ _Static_assert(sizeof(struct nas_linux_stat) == 128, "generic 64 stat size");
 _Static_assert(offsetof(struct nas_linux_stat, mode) == 16, "generic mode");
 _Static_assert(offsetof(struct nas_linux_stat, nlink) == 20, "generic nlink");
 #endif
-_Static_assert(offsetof(struct nas_linux_stat, rdev) == 40, "rdev");
+#if defined(__x86_64__)
+_Static_assert(offsetof(struct nas_linux_stat, rdev) == 40, "x86 rdev");
+#else
+_Static_assert(offsetof(struct nas_linux_stat, rdev) == 32, "generic64 rdev");
+#endif
 _Static_assert(offsetof(struct nas_linux_stat, size) == 48, "size");
 _Static_assert(offsetof(struct nas_linux_stat, blocks) == 64, "blocks");
 _Static_assert(offsetof(struct nas_linux_stat, atime_sec) == 72, "timestamps");
