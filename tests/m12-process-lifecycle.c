@@ -109,6 +109,11 @@ static void orphan(void) {
 }
 int main(int argc,char **argv) {
     int limit=argc>1 && strcmp(argv[1],"--naseed-limit")==0;
+    /* BusyBox ash tail-execs a single final command. To test all 16
+     * slots (PID1 shell + this task + 14 children), the wrapper shell
+     * must remain alive as PID1. Never lower the saturation condition. */
+    if (limit && getppid()!=1)
+        fail("M12 requires a persistent PID1 shell parent");
     pid_t last_pid=0;
     for (int i=0;i<WAVES;i++) wave(limit,&last_pid);
     orphan();

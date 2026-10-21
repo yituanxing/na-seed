@@ -47,3 +47,18 @@ This improves finite-process lifecycle and tests concurrent blocking,
 long-running PID1 userspace service. The latter must introduce a genuine
 init that waits for adopted children before zombie reclamation can be
 certified over indefinite uptime.
+
+## First native integration evidence: no false pass on BusyBox ash tail-exec
+
+Original three ISA full-QEMU tests reached the real m12 binary, while
+BusyBox ash tail-`execve`d a sole final external command into its own
+PID 1 slot. The 16-slot capacity test correctly rejected this: with
+14 live children PID 1 leaves one extra slot, so EAGAIN is **not**
+expected. This was a workload orchestration mismatch, not a defect
+in process slot allocation or an excuse to weaken the assertion.
+
+The shared source manifest now runs
+`sh -c "/bin/m12-process --naseed-limit; echo process-parent-done"`
+so the BusyBox shell **remains PID 1**, starts the real tester as PID 2
+and leaves exactly 14 remaining slots. The tester independently checks
+its PID 1 parent. All three ISA tests must be rerun after this correction.

@@ -16,6 +16,9 @@ grep -Fq 'sha256sum -c -' scripts/build-source-busybox.sh
 grep -Fq 'BUSYBOX_EXTRA_DIR' scripts/stage-busybox-rootfs.sh
 grep -Fq 'BUSYBOX_EXTRA_DIR' scripts/probe-source-busybox.sh
 grep -Fq '#define NAS_TASK_LIMIT 16' kernel/task.h
+# A single last command is tail-exec'd by ash, so it does NOT occupy a
+# second task slot; the final echo forces test execution as PID 2.
+grep -Fq 'm12-process --naseed-limit; echo process-parent-done' "$cases"
 for id in echo ash-builtin ash-fork ash-pipe ash-tmp source-lifecycle vm-lifetime process-capacity; do
     [ "$(grep -c "^$id$(printf '\t')" "$cases")" -eq 1 ]
 done
