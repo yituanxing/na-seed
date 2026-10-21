@@ -7,3 +7,4 @@ ash-fork	cpio	sh -c "/bin/busybox cat /etc/hostname; echo finished"	finished	for
 ash-pipe	cpio	sh -c "echo abc | /bin/busybox wc -c"	4	pipe
 ash-tmp	cpio	sh -c "mkdir /tmp/work && echo hello > /tmp/work/test && cat /tmp/work/test && rm /tmp/work/test && rmdir /tmp/work && echo removed"	removed	tmp
 source-lifecycle	cpio	sh -c "i=0; while [ $i -lt 4 ]; do echo ping | /bin/busybox wc -c; i=$((i+1)); done; echo source-lifecycle-ok"	source-lifecycle-ok	pipe
+vm-lifetime	cpio	sh -c "/bin/m11-vm"	m11-vm-ok	-

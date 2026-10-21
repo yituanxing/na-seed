@@ -23,7 +23,6 @@ void nas_task_boot_init(void) {
     nas_current_task->pid = 1;
     nas_current_task->ppid = 0;
     nas_current_task->state = NAS_TASK_RUNNING;
-    nas_current_task->mmap_cursor = NAS_TASK_MMAP_CURSOR;
     nas_current_task->cwd[0] = '/';
     nas_current_task->cwd[1] = 0;
 }
