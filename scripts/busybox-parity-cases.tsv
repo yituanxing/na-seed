@@ -5,7 +5,7 @@ uname	direct	uname -s	Linux	-
 pwd	direct	pwd	/	-
 id	direct	id -u	0	-
 true	direct	true	-	-
-printf	direct	printf rv-printf\n	rv-printf	-
+printf	direct	printf rv-printf\\n	rv-printf	-
 root	cpio	ls -1 /	bin	-
 bin	cpio	ls -1 /bin	busybox	-
 cat	cpio	cat /etc/hostname	naseed	-
