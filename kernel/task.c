@@ -22,6 +22,8 @@ void nas_task_boot_init(void) {
     nas_current_task = &task_table[0];
     nas_current_task->pid = 1;
     nas_current_task->ppid = 0;
+    nas_current_task->pgid = 1;
+    nas_current_task->sid = 1;
     nas_current_task->state = NAS_TASK_RUNNING;
     nas_current_task->cwd[0] = '/';
     nas_current_task->cwd[1] = 0;
@@ -49,6 +51,8 @@ struct nas_task *nas_task_fork_slot(void) {
         for (size_t j = 0; j < sizeof(*child); j++) dst[j] = src[j];
         child->pid = next_pid++;
         child->ppid = nas_current_task->pid;
+        /* pgid and sid were inherited from parent; execed is per-fork. */
+        child->execed = false;
         child->state = NAS_TASK_READY;
         child->exit_code = 0;
         child->termination_signal = 0;
@@ -76,6 +80,9 @@ void nas_task_release(struct nas_task *task) {
     task->state = NAS_TASK_FREE;
     task->pid = 0;
     task->ppid = 0;
+    task->pgid = 0;
+    task->sid = 0;
+    task->execed = false;
 }
 struct nas_task *nas_task_by_pid(uint64_t pid) {
     for (unsigned i = 0; i < NAS_TASK_LIMIT; i++)
