@@ -64,13 +64,9 @@ struct nas_task {
     unsigned matched_chars;
 };
 
-/* Called before paging_init. get_current is non-null afterwards. */
-/* Open-file descriptions are shared ACROSS tasks after fork, unlike
- * descriptor tables; read offsets must remain shared.
+/* Called before paging_init. get_current is non-null afterwards.
+ * Shared open-file-description state and hold-on-fork live in fd.h.
  */
-extern uint16_t nas_file_refcount[NAS_FD_LIMIT];
-extern uint64_t nas_file_status_flags[NAS_FD_LIMIT];
-extern uint64_t nas_boot_file_offsets[NAS_FD_LIMIT];
 extern struct nas_task *nas_current_task;
 void nas_task_boot_init(void);
 struct nas_task *nas_task_current(void);
@@ -79,7 +75,6 @@ void nas_task_release(struct nas_task *task);
 uint64_t nas_task_page_root(const struct nas_task *task);
 uint64_t nas_task_tls_base(const struct nas_task *task);
 void nas_task_set_root(struct nas_task *task, uint64_t root);
-bool nas_task_hold_files(const struct nas_task *task);
 struct nas_task *nas_task_by_pid(uint64_t pid);
 struct nas_task *nas_task_child_at(uint64_t parent_pid, unsigned slot);
 struct nas_task *nas_task_at(unsigned slot);
