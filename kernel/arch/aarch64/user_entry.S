@@ -45,6 +45,15 @@ nas_arm_vectors:
 .global nas_arm_enter_el0
 nas_arm_enter_el0:
     ARM_TRACE 0
+    /* Limine currently transfers control in EL1t (SPSel=0), with the
+     * boot stack in SP_EL0 and SP_EL1 not established for exceptions.
+     * Copy the live kernel stack to SP_EL1 and select EL1h BEFORE using
+     * SP_EL0 for userspace; lower-EL vectors always run on SP_EL1. */
+    mov x9, sp
+    msr sp_el1, x9
+    msr spsel, #1
+    isb
+    ARM_TRACE 1
     msr daifset, #0xf
     adrp x9, nas_arm_vectors
     add x9, x9, :lo12:nas_arm_vectors
