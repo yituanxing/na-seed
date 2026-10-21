@@ -7,6 +7,7 @@
 #include "errno.h"
 #include "bootfs.h"
 #include "task.h"
+#include "tmpfs.h"
 
 /* Process-local state was previously static global memory. A task is now
  * its explicit owner; the single-task aliases keep the proven syscall path
@@ -730,29 +731,10 @@ struct nas_pipe {
 };
 static struct nas_pipe pipe_table[PIPE_COUNT];
 static int pipe_slot_owner[NAS_FD_LIMIT]; /* 0 => unbound; value is index+1 */
-/* /tmp is a bounded volatile file store, not a writable CPIO image.
- * File offsets live in shared open-file-description slots across fork/dup.
- */
-#define TMP_FILE_COUNT 8
-#define TMP_FILE_CAP 16384U
-struct nas_tmp_file {
-    bool used, linked, is_dir;
-    char path[256];
-    uint8_t bytes[TMP_FILE_CAP];
-    uint64_t size;
-    uint32_t mode;
-};
-static struct nas_tmp_file tmp_files[TMP_FILE_COUNT];
-static uint8_t tmp_slot_owner[NAS_FD_LIMIT]; /* 1-based inode index */
-static const struct nas_tmp_file *tmp_by_fd(uint64_t fd);
-static void tmp_try_reclaim(unsigned owner) {
-    if (!owner || owner > TMP_FILE_COUNT) return;
-    struct nas_tmp_file *node = &tmp_files[owner - 1];
-    if (!node->used || node->linked) return;
-    for (unsigned slot = 0; slot < NAS_FD_LIMIT; slot++)
-        if (tmp_slot_owner[slot] == owner && file_refcount[slot])
-            return;
-    node->used = false;
+/* FD bookkeeping is syscall-local, but inode lifetime and slot identity now
+ * live in the dedicated RAM /tmp backend, with shared file descriptions. */
+static const struct nas_tmp_file *tmp_by_fd(uint64_t fd) {
+    return tmp_by_slot(file_slot[fd]);
 }
 
 /* An open-file slot is recyclable after its final close. A pipe must not
@@ -894,9 +876,7 @@ static void fd_close_raw(uint64_t fd) {
         file_refcount[slot]--;
         if (!file_refcount[slot]) {
             pipe_release_description(slot);
-            unsigned owner = tmp_slot_owner[slot];
-            tmp_slot_owner[slot] = 0;
-            tmp_try_reclaim(owner);
+            tmp_release_slot(slot);
         }
     }
     descriptors[fd] = FD_CLOSED;
@@ -1049,77 +1029,6 @@ static uint64_t resolve_path(uint64_t dirfd, uint64_t pathname, char out[256]) {
     return 0;
 }
 
-/* Real CPIO /tmp mountpoint with a small volatile directory tree.
- * Unlinked entries keep their inode until every fork/dup FD releases it. */
-static bool tmp_path(const char *path) {
-    return path[0]=='/' && path[1]=='t' && path[2]=='m' &&
-           path[3]=='p' && path[4]=='/' && path[5];
-}
-static bool tmp_parent(const char *path, char parent[256]) {
-    if (!tmp_path(path)) return false;
-    unsigned n = 0, slash = 0;
-    for (; path[n] && n < 255; n++)
-        if (path[n] == '/') slash = n;
-    if (path[n] || slash < 4 || !path[slash+1]) return false;
-    if (slash == 4) {
-        parent[0]='/'; parent[1]='t'; parent[2]='m'; parent[3]='p';
-        parent[4]=0;
-    } else {
-        for (unsigned i=0;i<slash;i++) parent[i]=path[i];
-        parent[slash]=0;
-    }
-    return true;
-}
-static struct nas_tmp_file *tmp_find(const char *path) {
-    for (unsigned n=0;n<TMP_FILE_COUNT;n++)
-        if (tmp_files[n].used && tmp_files[n].linked &&
-            same_string(tmp_files[n].path,path)) return &tmp_files[n];
-    return 0;
-}
-static int tmp_parent_check(const char *path) {
-    char parent[256];
-    if (!tmp_parent(path,parent)) return -EROFS;
-    if (same_string(parent,"/tmp"))
-        return bootfs_is_dir(bootfs_find("/tmp")) ? 0 : -ENOENT;
-    struct nas_tmp_file *dir=tmp_find(parent);
-    return !dir ? -ENOENT : dir->is_dir ? 0 : -ENOTDIR;
-}
-static struct nas_tmp_file *tmp_create(const char *path,bool dir) {
-    for (unsigned n=0;n<TMP_FILE_COUNT;n++) {
-        struct nas_tmp_file *file=&tmp_files[n];
-        if (file->used) continue;
-        unsigned i=0;
-        while (path[i] && i<255) { file->path[i]=path[i]; i++; }
-        file->path[i]=0;
-        file->size=0;
-        file->mode=dir ? 0040755U : 0100644U;
-        file->is_dir=dir;
-        file->linked=file->used=true;
-        return file;
-    }
-    return 0;
-}
-static unsigned tmp_number(const struct nas_tmp_file *file) {
-    return (unsigned)(file-tmp_files);
-}
-static const struct nas_tmp_file *tmp_by_fd(uint64_t fd) {
-    unsigned owner=tmp_slot_owner[file_slot[fd]];
-    if (!owner || owner>TMP_FILE_COUNT) return 0;
-    const struct nas_tmp_file *file=&tmp_files[owner-1];
-    return file->used ? file : 0;
-}
-static const struct nas_tmp_file *tmp_child(const char *parent,unsigned index) {
-    for (unsigned n=0;n<TMP_FILE_COUNT;n++) {
-        const struct nas_tmp_file *file=&tmp_files[n];
-        if (!file->used || !file->linked) continue;
-        char dir[256];
-        if (!tmp_parent(file->path,dir) || !same_string(dir,parent))
-            continue;
-        if (!index) return file;
-        index--;
-    }
-    return 0;
-}
 static uint64_t tmp_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     const struct nas_tmp_file *file = tmp_by_fd(fd);
     if (!file) return (uint64_t)-EBADF;
@@ -1133,9 +1042,9 @@ static uint64_t tmp_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     return length;
 }
 static uint64_t tmp_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
-    unsigned slot = file_slot[fd], owner = tmp_slot_owner[slot];
-    if (!owner || owner > TMP_FILE_COUNT) return (uint64_t)-EBADF;
-    struct nas_tmp_file *file = &tmp_files[owner - 1];
+    unsigned slot = file_slot[fd];
+    struct nas_tmp_file *file = tmp_by_slot(slot);
+    if (!file) return (uint64_t)-EBADF;
     if (!length) return 0;
     if (address >= USER_LIMIT || length > USER_LIMIT - address)
         return (uint64_t)-EFAULT;
@@ -1156,168 +1065,33 @@ static uint64_t tmp_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     boot_file_offsets[slot] = offset + n;
     return n;
 }
-/* These are actual Linux mkdir(83), rmdir(84), unlink(87) and
- * mkdirat/unlinkat entry points, not shell-command path rewrites.
- * Read-only CPIO refuses mutations; only the /tmp overlay is writable.
- */
-static uint64_t sys_mkdirat_tmp(uint64_t dirfd,uint64_t pathname,uint64_t mode) {
+/* Linux syscall decoders retain user-pointer validation and task-relative
+ * path resolution; the RAM filesystem backend owns namespace operations. */
+static uint64_t sys_mkdirat_tmp(uint64_t dirfd, uint64_t pathname,
+                                uint64_t mode) {
     char path[256];
-    uint64_t r=resolve_path(dirfd,pathname,path);
-    if ((int64_t)r<0) return r;
-    if (bootfs_find(path) || tmp_find(path)) return (uint64_t)-EEXIST;
-    if (!tmp_path(path) || !bootfs_mounted()) return (uint64_t)-EROFS;
-    int parent=tmp_parent_check(path);
-    if (parent) return (uint64_t)(int64_t)parent;
-    struct nas_tmp_file *dir=tmp_create(path,true);
-    if (!dir) return (uint64_t)-ENOSPC;
-    dir->mode=0040000U | (uint32_t)(mode & 0777U);
-    return 0;
+    uint64_t ret = resolve_path(dirfd, pathname, path);
+    return (int64_t)ret < 0 ? ret :
+        (uint64_t)(int64_t)tmp_mkdir(path, mode);
 }
-static uint64_t sys_unlinkat_tmp(uint64_t dirfd,uint64_t pathname,
-                                  uint64_t flags) {
-    const uint64_t AT_REMOVEDIR=0x200ULL;
-    if (flags & ~AT_REMOVEDIR) return (uint64_t)-EINVAL;
+static uint64_t sys_unlinkat_tmp(uint64_t dirfd, uint64_t pathname,
+                                 uint64_t flags) {
     char path[256];
-    uint64_t r=resolve_path(dirfd,pathname,path);
-    if ((int64_t)r<0) return r;
-    if (!tmp_path(path) || !bootfs_mounted()) return (uint64_t)-EROFS;
-    struct nas_tmp_file *file=tmp_find(path);
-    if (!file) {
-        int parent=tmp_parent_check(path);
-        if (parent) return (uint64_t)(int64_t)parent;
-        return (uint64_t)-ENOENT;
-    }
-    if (file->is_dir && !(flags & AT_REMOVEDIR)) return (uint64_t)-EISDIR;
-    if (!file->is_dir && (flags & AT_REMOVEDIR)) return (uint64_t)-ENOTDIR;
-    if (file->is_dir) {
-        if (tmp_child(path,0)) return (uint64_t)-ENOTEMPTY;
-        for (unsigned n=0;n<NAS_TASK_LIMIT;n++) {
-            struct nas_task *task=nas_task_at(n);
-            if (task && task->state != NAS_TASK_FREE &&
-                same_string(task->cwd,path)) return (uint64_t)-EBUSY;
-        }
-    }
-    file->linked=false;
-    tmp_try_reclaim(tmp_number(file)+1);
-    return 0;
-}
-/* M6.9: an inode rename is a namespace operation; open descriptions keep
- * referencing the same inode regardless of the old/new pathname. A replaced
- * inode stays alive while inherited or duplicated descriptors hold it.
- *
- * Single-core cooperative syscall dispatch makes preflight+commit atomic.
- * No CPIO mutation or cross-mount fake copy/rename is permitted.
- */
-static bool tmp_under(const char *path, const char *directory) {
-    unsigned n = 0;
-    while (directory[n]) {
-        if (path[n] != directory[n]) return false;
-        n++;
-    }
-    return path[n] == '/';
-}
-static unsigned tmp_strlen(const char *text) {
-    unsigned n = 0;
-    while (text[n]) n++;
-    return n;
-}
-static bool tmp_move_name(char dest[256], const char *newbase,
-                          const char *oldbase, const char *existing) {
-    const unsigned base = tmp_strlen(newbase);
-    const unsigned cut = tmp_strlen(oldbase);
-    const unsigned suffix = tmp_strlen(existing + cut);
-    if (base + suffix >= 256) return false;
-    for (unsigned i = 0; i < base; i++) dest[i] = newbase[i];
-    for (unsigned i = 0; i <= suffix; i++)
-        dest[base + i] = existing[cut + i];
-    return true;
+    uint64_t ret = resolve_path(dirfd, pathname, path);
+    return (int64_t)ret < 0 ? ret :
+        (uint64_t)(int64_t)tmp_unlink(path, flags);
 }
 static uint64_t sys_renameat_tmp(uint64_t olddirfd, uint64_t oldptr,
-                                  uint64_t newdirfd, uint64_t newptr,
-                                  uint64_t flags) {
-    /* Linux renameat2 RENAME_NOREPLACE only. EXCHANGE and WHITEOUT are
-     * unsupported rather than silently performing the wrong operation.
-     */
+                                 uint64_t newdirfd, uint64_t newptr,
+                                 uint64_t flags) {
+    /* Reject unsupported flags before reading user paths, as before. */
     if (flags & ~1ULL) return (uint64_t)-EINVAL;
     char oldpath[256], newpath[256];
-    uint64_t err = resolve_path(olddirfd, oldptr, oldpath);
-    if ((int64_t)err < 0) return err;
-    err = resolve_path(newdirfd, newptr, newpath);
-    if ((int64_t)err < 0) return err;
-    const bool oldtmp = tmp_path(oldpath), newtmp = tmp_path(newpath);
-    if (oldtmp != newtmp) return (uint64_t)-EXDEV;
-    if (!oldtmp || !bootfs_mounted()) return (uint64_t)-EROFS;
-    struct nas_tmp_file *source = tmp_find(oldpath);
-    if (!source) {
-        int parent = tmp_parent_check(oldpath);
-        return parent ? (uint64_t)(int64_t)parent : (uint64_t)-ENOENT;
-    }
-    if (same_string(oldpath, newpath)) return 0;
-    int parent = tmp_parent_check(newpath);
-    if (parent) return (uint64_t)(int64_t)parent;
-    if (source->is_dir && tmp_under(newpath, oldpath))
-        return (uint64_t)-EINVAL; /* cannot move a directory into itself */
-    struct nas_tmp_file *target = tmp_find(newpath);
-    if (target) {
-        if (flags & 1ULL) return (uint64_t)-EEXIST;
-        if (source->is_dir && !target->is_dir)
-            return (uint64_t)-ENOTDIR;
-        if (!source->is_dir && target->is_dir)
-            return (uint64_t)-EISDIR;
-        if (target->is_dir && tmp_child(newpath, 0))
-            return (uint64_t)-ENOTEMPTY;
-    }
-    /* Check every descendant and task cwd before touching the namespace.
-     * When moving directory trees, the cwd is an inode identity, so its
-     * printable path must move too. All results fit fixed-sized buffers.
-     */
-    if (source->is_dir) {
-        char candidate[256];
-        for (unsigned n = 0; n < TMP_FILE_COUNT; n++) {
-            const struct nas_tmp_file *entry = &tmp_files[n];
-            if (!entry->used || !entry->linked ||
-                !tmp_under(entry->path, oldpath)) continue;
-            if (!tmp_move_name(candidate, newpath, oldpath, entry->path))
-                return (uint64_t)-ENAMETOOLONG;
-        }
-        for (unsigned n = 0; n < NAS_TASK_LIMIT; n++) {
-            const struct nas_task *task = nas_task_at(n);
-            if (task->state == NAS_TASK_FREE ||
-                !tmp_under(task->cwd, oldpath)) continue;
-            if (!tmp_move_name(candidate, newpath, oldpath, task->cwd))
-                return (uint64_t)-ENAMETOOLONG;
-        }
-    }
-    /* Commit: remove destination pathname but preserve open inode contents. */
-    if (target) {
-        unsigned owner = tmp_number(target) + 1;
-        target->linked = false;
-        tmp_try_reclaim(owner);
-    }
-    if (source->is_dir) {
-        char candidate[256];
-        for (unsigned n = 0; n < TMP_FILE_COUNT; n++) {
-            struct nas_tmp_file *entry = &tmp_files[n];
-            if (!entry->used || !entry->linked ||
-                !tmp_under(entry->path, oldpath)) continue;
-            if (!tmp_move_name(candidate, newpath, oldpath, entry->path))
-                fail("rename validated descendant exceeded path bound");
-            unsigned i = 0;
-            do { entry->path[i] = candidate[i]; } while (candidate[i++]);
-        }
-        for (unsigned n = 0; n < NAS_TASK_LIMIT; n++) {
-            struct nas_task *task = nas_task_at(n);
-            if (task->state == NAS_TASK_FREE ||
-                !tmp_under(task->cwd, oldpath)) continue;
-            if (!tmp_move_name(candidate, newpath, oldpath, task->cwd))
-                fail("rename validated cwd exceeded path bound");
-            unsigned i = 0;
-            do { task->cwd[i] = candidate[i]; } while (candidate[i++]);
-        }
-    }
-    unsigned i = 0;
-    do { source->path[i] = newpath[i]; } while (newpath[i++]);
-    return 0;
+    uint64_t ret = resolve_path(olddirfd, oldptr, oldpath);
+    if ((int64_t)ret < 0) return ret;
+    ret = resolve_path(newdirfd, newptr, newpath);
+    return (int64_t)ret < 0 ? ret :
+        (uint64_t)(int64_t)tmp_rename(oldpath, newpath, flags);
 }
 static uint64_t sys_open_path(const char *path, uint64_t flags) {
     const uint64_t permitted = 3ULL | 0x800ULL | 0x8000ULL |
@@ -1392,7 +1166,7 @@ static uint64_t sys_open_path(const char *path, uint64_t flags) {
             if (kind == FD_TMP && (flags & 0x200ULL)) tmp_file->size = 0;
             file_refcount[slot] = 1;
             if (kind == FD_TMP || kind == FD_TMP_DIR)
-                tmp_slot_owner[slot] = (uint8_t)(tmp_number(tmp_file) + 1);
+                tmp_bind_slot(slot, tmp_file);
             file_slot[fd] = (uint8_t)slot;
             file_status_flags[slot] = flags & (3ULL | 0x800ULL | 0x400ULL);
             fd_cloexec[fd] = !!(flags & 0x80000ULL);
