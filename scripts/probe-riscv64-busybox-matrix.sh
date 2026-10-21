@@ -117,7 +117,7 @@ boot_case uname  direct 'uname -s'          Linux
 boot_case pwd    direct 'pwd'              /
 boot_case id     direct 'id -u'            0
 boot_case true   direct 'true'             -
-boot_case printf direct 'printf rv-printf\\\\n' rv-printf
+boot_case printf direct 'printf rv-printf\\n' rv-printf
 
 # Actual CPIO: exercised via the same bootfs, openat, stat, getdents, read,
 # fd and VFS code as the established x86 Alpine BusyBox tests.
