@@ -7,6 +7,7 @@
 #include "errno.h"
 #include "bootfs.h"
 #include "task.h"
+#include "fd.h"
 #include "tmpfs.h"
 
 /* Process-local state was previously static global memory. A task is now
@@ -869,44 +870,26 @@ static uint64_t pipe_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     return n;
 }
 
+/* FD table aliases and shared open descriptions are owned by fd.c.
+ * Release the pipe and RAM-inode backends only after the last reference
+ * disappears. dup2 must close an existing destination through this hook.
+ */
 static void fd_close_raw(uint64_t fd) {
-    if (descriptors[fd] == FD_CLOSED) return;
-    unsigned slot = file_slot[fd];
-    if (file_refcount[slot]) {
-        file_refcount[slot]--;
-        if (!file_refcount[slot]) {
-            pipe_release_description(slot);
-            tmp_release_slot(slot);
-        }
-    }
-    descriptors[fd] = FD_CLOSED;
-    boot_files[fd] = 0;
-    boot_entries[fd] = 0;
-    file_slot[fd] = 0;
-    fd_cloexec[fd] = 0;
+    unsigned final_slot=nas_fd_close(nas_current_task, (unsigned)fd);
+    if (final_slot == NAS_FD_LIMIT) return;
+    pipe_release_description(final_slot);
+    tmp_release_slot(final_slot);
 }
 static uint64_t fd_clone(uint64_t src, uint64_t dst, bool cloexec) {
-    if (src >= 64 || descriptors[src] == FD_CLOSED || dst >= 64)
-        return (uint64_t)-EBADF;
+    if (src >= NAS_FD_LIMIT || descriptors[src] == FD_CLOSED ||
+        dst >= NAS_FD_LIMIT) return (uint64_t)-EBADF;
     if (src == dst) return dst;
     fd_close_raw(dst);
-    unsigned slot = file_slot[src];
-    descriptors[dst] = descriptors[src];
-    boot_files[dst] = boot_files[src];
-    boot_entries[dst] = boot_entries[src];
-    file_slot[dst] = (uint8_t)slot;
-    fd_cloexec[dst] = cloexec ? 1 : 0;
-    file_refcount[slot]++;
-    return dst;
+    return nas_fd_clone(nas_current_task, src, dst, cloexec);
 }
-static uint64_t fd_duplicate(uint64_t oldfd, uint64_t minimum, bool cloexec) {
-    if (oldfd >= 64 || descriptors[oldfd] == FD_CLOSED)
-        return (uint64_t)-EBADF;
-    if (minimum >= 64) return (uint64_t)-EINVAL;
-    for (unsigned fd = (unsigned)minimum; fd < 64; fd++)
-        if (descriptors[fd] == FD_CLOSED)
-            return fd_clone(oldfd, fd, cloexec);
-    return (uint64_t)-EMFILE;
+static uint64_t fd_duplicate(uint64_t oldfd, uint64_t minimum,
+                             bool cloexec) {
+    return nas_fd_duplicate(nas_current_task, oldfd, minimum, cloexec);
 }
 static uint64_t sys_fcntl(uint64_t fd, uint64_t command, uint64_t arg) {
     if (fd >= 64 || descriptors[fd] == FD_CLOSED)
