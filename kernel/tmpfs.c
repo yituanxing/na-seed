@@ -252,4 +252,3 @@ int tmp_rename(const char *oldpath, const char *newpath, uint64_t flags) {
     do { source->path[i] = newpath[i]; } while (newpath[i++]);
     return 0;
 }
-
