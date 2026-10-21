@@ -17,7 +17,7 @@ efi=build/deps/limine-binary/BOOTX64.EFI
 cdrom=build/deps/limine-binary/limine-uefi-cd.bin
 test -s "$efi" && test -s "$cdrom"
 run_case() {
-    name=$1 mode=$2 args=$3 expected=$4 evidence=$5
+    name=$1 mode=$2 args=$3 expected=$4 evidence=$5 entry=${6:-/bin/busybox}
     stage="$dir/$name-stage"
     iso="$dir/$name.iso"
     log="$dir/$name.serial.log"
@@ -36,18 +36,18 @@ run_case() {
     {
         printf '%s\n' 'timeout: 0' '/NaSeed x86 Debian BusyBox parity'
         printf '%s\n' '    protocol: limine' '    path: boot():/boot/kernel'
-        printf '    cmdline: naseed.argv=/bin/busybox %s\n' "$args"
+        printf '    cmdline: naseed.argv=%s %s\n' "$entry" "$args"
         printf '    module_path: boot():/boot/%s\n' "$module"
     } > "$stage/boot/limine/limine.conf"
     xorriso -as mkisofs -R -r -J \
       --efi-boot boot/limine/limine-uefi-cd.bin \
       --efi-boot-part --efi-boot-image -o "$iso" "$stage" >/dev/null 2>&1
     rc=0
-    case "$name" in process-capacity) budget=45 ;; *) budget=15 ;; esac
+    case "$name" in process-capacity) budget=45 ;; init-reaper) budget=110 ;; *) budget=15 ;; esac
     timeout "${budget}s" sh scripts/run.sh "$iso" > "$log" 2>&1 < /dev/null || rc=$?
     tr -d '\r' < "$log" > "$clean"
     if [ "$rc" -ne 1 ] ||
-       ! grep -Fq "[CMDLINE] userspace argv from Limine: naseed.argv=/bin/busybox $args" "$clean" ||
+       ! grep -Fq "[CMDLINE] userspace argv from Limine: naseed.argv=$entry $args" "$clean" ||
        ! grep -Fq '[EXIT] user status=0' "$clean" ||
        ! grep -Fq '[PASS] cmdline userspace exit 0' "$clean" ||
        grep -Fq '[FAIL]' "$clean"; then
@@ -78,6 +78,14 @@ run_case() {
         tmp)
             grep -Fxq hello "$clean" || return 1
             grep -Fxq removed "$clean" || return 1 ;;
+        init)
+            if [ "$(grep -Fxc 'm13-init-round-ok' "$clean")" -ne 3 ] ||
+               ! grep -Fq '[M5] CPIO executable selected: /bin/m13-init' "$clean" ||
+               ! grep -Fq '[PROC] wait4 reaped pid=' "$clean"; then
+                echo "[M13 INIT FAIL] genuine PID1 3-epoch service supervision missing" >&2
+                tail -110 "$clean" >&2
+                return 1
+            fi ;;
         *) echo "[X86 PARITY] invalid evidence: $evidence" >&2; return 1 ;;
     esac
     echo "[ACCEPTED] x86 Debian BusyBox ($mode): $args"
@@ -85,11 +93,11 @@ run_case() {
 failures=0
 count=0
 tab=$(printf '\t')
-while IFS="$tab" read -r id mode args expected evidence; do
+while IFS="$tab" read -r id mode args expected evidence entry; do
     case "$id" in ''|\#*) continue ;; esac
     if [ -n "${BUSYBOX_PARITY_CASE:-}" ] && [ "$id" != "$BUSYBOX_PARITY_CASE" ]; then continue; fi
     count=$((count+1))
-    if ! run_case "$id" "$mode" "$args" "$expected" "$evidence"; then failures=$((failures+1)); fi
+    if ! run_case "$id" "$mode" "$args" "$expected" "$evidence" "$entry"; then failures=$((failures+1)); fi
 done < "${BUSYBOX_PARITY_MANIFEST:-scripts/busybox-parity-cases.tsv}"
 if [ -n "${BUSYBOX_PARITY_CASE:-}" ]; then
     test "$count" -eq 1
