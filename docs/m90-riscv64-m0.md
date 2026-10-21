@@ -20,3 +20,13 @@ Audit comparing NaOS's four backends:
 - `drivers/serial.c` is PC COM1 port I/O. RISC-V uses SBI for now.
 - aarch64 and loongarch64 will join as the next actual boot/ABI ports,
   rather than being listed as supported without code or test evidence.
+
+## Concrete RV64 QEMU acceptance
+
+`sh scripts/probe-riscv64-m0.sh` constructs a GPT/FAT UEFI disk with
+`BOOTRISCV64.EFI`, launches QEMU virt with EDK2/OpenSBI, and asserts
+that the **kernel itself** prints its post-Limine, post-frame-allocation
+success marker. Cross-compilation alone is not accepted as a runtime pass.
+
+This runtime test is a separate CI job so slow x86-64 Bash/BusyBox
+regressions run independently. It does not validate usermode.

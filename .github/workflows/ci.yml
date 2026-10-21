@@ -24,11 +24,6 @@ jobs:
           sudo apt-get install -y clang lld xorriso qemu-system-x86 ovmf musl-tools binutils cpio
       - name: Preflight audit, shell syntax, kernel compile and link
         run: sh scripts/preflight.sh
-      - name: Compile riscv64 Limine M0 and verify RISC-V ELF
-        run: |
-          make ARCH=riscv64 port-kernel
-          test -s build/port-riscv64/kernel.elf
-          readelf -h build/port-riscv64/kernel.elf | grep -q 'Machine:.*RISC-V'
       - name: Cache verified static GNU Bash
         uses: actions/cache@v4
         with:
@@ -122,4 +117,24 @@ jobs:
             build/ash-resource-*-serial.log
             build/ash-shebang-*-serial.log
             build/path-abi-serial.log
+          if-no-files-found: ignore
+  riscv64_m0:
+    name: RISC-V real Limine/OpenSBI boot
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cross-build and UEFI/QEMU tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang lld binutils mtools gdisk \
+            qemu-system-misc qemu-efi-riscv64
+      - name: Compile and boot genuine RV64 M0 kernel
+        run: sh scripts/probe-riscv64-m0.sh
+      - name: Attach riscv64 boot console on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naseed-riscv64-m0
+          path: build/port-riscv64/serial.log
           if-no-files-found: ignore
