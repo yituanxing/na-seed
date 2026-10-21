@@ -65,6 +65,8 @@ jobs:
         run: make ash-pipe-backend-probe
       - name: Limine archive-only initramfs boot, default and explicit authentic BusyBox ELF
         run: make boot-handoff-probe
+      - name: Repeated real BusyBox fork, wait, tmpfs tombstone, pipe and SIGPIPE lifecycle
+        run: make ash-resources-probe
       - name: Real BusyBox ash pipeline pipe/pipe2 and EOF under QEMU
         run: make ash-pipes-probe
       - name: Boot genuine Alpine dynamic BusyBox and report ABI blockers
@@ -110,5 +112,6 @@ jobs:
             build/ash-path-*-serial.log
             build/ash-pipe-backend-*-serial.log
             build/boot-handoff-*-serial.log
+            build/ash-resource-*-serial.log
             build/path-abi-serial.log
           if-no-files-found: ignore
