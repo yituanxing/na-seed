@@ -1,5 +1,9 @@
 .DEFAULT_GOAL := iso
 .DELETE_ON_ERROR:
+ARCH ?= x86_64
+ifneq ($(ARCH),x86_64)
+$(error NaSeed does not yet have a validated $(ARCH) CPU/boot backend)
+endif
 OUT := build
 HDR := $(OUT)/deps/limine.h
 PROTO_REV := 3a0526b700e356f0eac1b71a77697b3fd1c707a3
@@ -11,9 +15,9 @@ ISO := $(OUT)/naseed.iso
 CFLAGS := --target=x86_64-unknown-none-elf -std=c11 -O2 -g -Wall -Wextra -Werror \
  -ffreestanding -fno-builtin -fno-stack-protector -fno-stack-check \
  -fno-pic -fno-pie -mcmodel=kernel -mno-red-zone -mno-sse -mno-mmx \
- -I $(OUT)/deps
+ -I $(OUT)/deps -I kernel
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
- -z noexecstack -T kernel/linker.ld
+ -z noexecstack -T kernel/arch/$(ARCH)/linker.ld
 
 .PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch alpine-probe alpine-argv-probe alpine-fs-probe alpine-archive-probe alpine-selector-probe ash-diagnostic ash-execve-probe ash-fork-probe ash-pipes-probe ash-lifecycle-probe ash-symlinks-probe ash-tmp-probe ash-tree-probe ash-rename-probe ash-fds-probe ash-paths-probe path-abi-probe ash-pipe-backend-probe boot-handoff-probe ash-resources-probe shebang-abi-probe preflight
 all: iso
@@ -26,11 +30,11 @@ $(HDR):
 	 https://raw.githubusercontent.com/Limine-Bootloader/limine-protocol/$(PROTO_REV)/include/limine.h
 	mv $@.tmp $@
 
-$(OUT)/kernel.o: kernel/kernel.c $(HDR)
+$(OUT)/kernel.o: kernel/kernel.c kernel/arch/arch.h kernel/drivers/serial.h kernel/mm/frame.h $(HDR)
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
-$(OUT)/m1.o: kernel/m1.c kernel/nr.h kernel/errno.h kernel/bootfs.h kernel/task.h kernel/fd.h kernel/tmpfs.h kernel/path.h kernel/pipe.h kernel/boot_image.h $(HDR)
+$(OUT)/m1.o: kernel/m1.c kernel/nr.h kernel/errno.h kernel/bootfs.h kernel/task.h kernel/fd.h kernel/tmpfs.h kernel/path.h kernel/pipe.h kernel/boot_image.h kernel/arch/arch.h kernel/platform/platform.h $(HDR)
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
@@ -62,7 +66,27 @@ $(OUT)/boot_image.o: kernel/boot_image.c kernel/boot_image.h kernel/bootfs.h $(H
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
-$(OUT)/arch.o: kernel/arch.S
+$(OUT)/arch_cpu.o: kernel/arch/$(ARCH)/cpu.c kernel/arch/$(ARCH)/cpu.h
+	mkdir -p $(dir $@)
+	clang $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(OUT)/arch_context.o: kernel/arch/$(ARCH)/context.c kernel/arch/$(ARCH)/context.h kernel/task.h
+	mkdir -p $(dir $@)
+	clang $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(OUT)/serial.o: kernel/drivers/serial.c kernel/drivers/serial.h
+	mkdir -p $(dir $@)
+	clang $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(OUT)/frame.o: kernel/mm/frame.c kernel/mm/frame.h $(HDR)
+	mkdir -p $(dir $@)
+	clang $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(OUT)/platform.o: kernel/platform/qemu_debug_exit.c kernel/platform/platform.h
+	mkdir -p $(dir $@)
+	clang $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(OUT)/arch.o: kernel/arch/$(ARCH)/entry.S
 	mkdir -p $(dir $@)
 	clang --target=x86_64-unknown-none-elf -g -mno-red-zone -c $< -o $@
 
@@ -87,8 +111,8 @@ $(OUT)/shebang-abi.o: user/shebang-abi.S kernel/nr.h kernel/errno.h
 $(OUT)/shebang-abi: $(OUT)/shebang-abi.o user/linker.ld
 	ld.lld -m elf_x86_64 -nostdlib -static -T user/linker.ld $< -o $@
 
-$(KERNEL): $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/boot_image.o $(OUT)/arch.o kernel/linker.ld
-	ld.lld $(LDFLAGS) $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/boot_image.o $(OUT)/arch.o -o $@
+$(KERNEL): $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/boot_image.o $(OUT)/arch.o $(OUT)/arch_cpu.o $(OUT)/arch_context.o $(OUT)/serial.o $(OUT)/frame.o $(OUT)/platform.o kernel/arch/$(ARCH)/linker.ld
+	ld.lld $(LDFLAGS) $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/boot_image.o $(OUT)/arch.o $(OUT)/arch_cpu.o $(OUT)/arch_context.o $(OUT)/serial.o $(OUT)/frame.o $(OUT)/platform.o -o $@
 
 $(BINARY_TAR):
 	mkdir -p $(dir $@)

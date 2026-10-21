@@ -13,8 +13,8 @@ gdt_reload:
     movw %ax, %ss
     ret
 
-.global enter_user
-enter_user:
+.global nas_arch_enter_user
+nas_arch_enter_user:
     cli
     movw $0x1b, %ax
     movw %ax, %ds
