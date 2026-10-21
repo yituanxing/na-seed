@@ -27,6 +27,13 @@ on:
   push:
     branches: [main]
     paths:
+      - 'kernel/**'
+      - 'scripts/fetch-alpine-native.sh'
+      - 'scripts/stage-alpine-native-rootfs.sh'
+      - 'scripts/probe-alpine-native-dynamic.sh'
+      - 'scripts/probe-alpine-native-matrix.sh'
+      - 'scripts/alpine-native-fixtures.txt'
+      - 'scripts/check-alpine-native-fixtures.sh'
       - 'kernel/arch/aarch64/**'
       - 'kernel/task/**'
       - 'scripts/build-aarch64-full.sh'
@@ -45,12 +52,13 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y clang lld binutils mtools gdisk cpio qemu-user qemu-system-arm qemu-efi-aarch64
+      - name: Verify pinned native Alpine fixture and exact test matrix
+        run: sh scripts/check-alpine-native-fixtures.sh
       - name: Build and boot THE shared Task/ELF/FS/syscall kernel on real ARM64
         run: NASEED_ARM_FULL_TIMEOUT=25 sh scripts/probe-aarch64-full.sh
       - name: ARM64 — native Debian BusyBox canonical 17-case parity matrix
         run: sh scripts/probe-aarch64-busybox-matrix.sh
-      - name: EXPERIMENTAL original Alpine AArch64 dynamic BusyBox + musl (not a gate)
-        continue-on-error: true
+      - name: Native Alpine AArch64 dynamic BusyBox seven-case parity (SHA256 pinned)
         run: sh scripts/probe-alpine-native-matrix.sh arm64
       - name: Upload real UART and semihosting evidence on failure
         if: failure()

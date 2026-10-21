@@ -1,6 +1,6 @@
 #!/bin/sh
 # Real Alpine Linux v3.23 native ET_DYN BusyBox + native musl loader.
-# Deliberate diagnostic only until Alpine package sha256 values are pinned.
+# All four official package archives must match checked-in SHA256 before use.
 # The downloaded binaries are NEVER edited or rebuilt.
 set -eu
 [ "$#" -eq 2 ] || { echo 'usage: fetch-alpine-native.sh arm64|riscv64 OUTPUT' >&2; exit 2; }

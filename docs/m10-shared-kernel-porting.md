@@ -60,12 +60,18 @@ through the common kernel's ELF/PT_INTERP path.
 The four archive SHA256 digests observed in actual official-package
 downloads are now **pinned** in `scripts/alpine-native-fixtures.txt`;
 unrecorded/unverified hashes abort before boot. Both native CI workflows
-now *explore*, without gating the Debian 17-case baseline, seven fixed
-dynamic-workload cases: echo, cat, ls, shell builtins, fork/exec/wait,
-pipeline and tmpfs file lifecycle. Per-case QEMU logs and exact output
-checks identify the earliest remaining system/ABI boundary for future
-design. Any 7/7 claim requires the **new** CI logs, not only the older
-echo successes.
+execute seven fixed dynamic-workload cases: echo, cat, ls, shell builtins,
+fork/exec/wait, pipeline and tmpfs file lifecycle. Every native QEMU boot
+asserts actual dynamic interpreter entry, actual guest stdout, exit 0,
+and architecture-specific exit telemetry.
+
+**First native dynamic 7/7 evidence:** ARM64 [#39620119229](https://github.com/yituanxing/na-seed/actions/runs/39620119229)
+and RV64 [#39620119460](https://github.com/yituanxing/na-seed/actions/runs/39620119460)
+both printed `[ALPINE NATIVE MATRIX PASS] 7/7` in their completed
+job logs. The test steps were previously exploratory with
+`continue-on-error`; follow-up removes that exemption and makes BOTH
+native dynamic 7-case matrices mandatory along with Debian static 17/17.
+Do not infer general ELF or Linux compatibility beyond these scenarios.
 
 ## Current verified integration status — 2026-10-21
 

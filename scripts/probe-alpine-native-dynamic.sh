@@ -1,7 +1,7 @@
 #!/bin/sh
-# Diagnostic stage: pinned-version Alpine ET_DYN BusyBox on *full* NaSeed
+# Native dynamic parity: SHA256-pinned Alpine ET_DYN BusyBox on *full* NaSeed
 # kernel, actual EL0/U-mode and native musl. No hand-written ELF substitute.
-# Exit nonzero if the guest fails; CI may mark this exploratory step optional.
+# Exit nonzero on guest failure; successful dynamic cases are CI gates.
 set -eu
 [ "$#" -eq 1 ] || { echo 'usage: probe-alpine-native-dynamic.sh arm64|riscv64' >&2; exit 2; }
 port=$1

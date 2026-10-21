@@ -36,6 +36,8 @@ jobs:
         run: sh scripts/check-full-kernel-sources.sh
       - name: Verify native x86-64 stat layout
         run: cc -std=c11 -Wall -Wextra -Werror -c scripts/check-linux-stat.c -o /tmp/naseed-stat.o
+      - name: Verify 4 original pinned Alpine dynamic native package digests
+        run: sh scripts/check-alpine-native-fixtures.sh
       - name: Verify one Debian BusyBox fixture for all architectures
         run: sh scripts/check-busybox-fixtures.sh
       - name: Verify real-QEMU marker monitor fails closed
@@ -174,8 +176,7 @@ jobs:
         run: sh scripts/probe-riscv64-busybox-matrix.sh
       - name: Compile and boot genuine RV64 M0 kernel
         run: sh scripts/probe-riscv64-m0.sh
-      - name: EXPERIMENTAL original Alpine RV64 dynamic BusyBox + musl (not a gate)
-        continue-on-error: true
+      - name: Native Alpine RV64 dynamic BusyBox seven-case parity (SHA256 pinned)
         run: sh scripts/probe-alpine-native-matrix.sh riscv64
       - name: Attach riscv64 boot console on failure
         if: failure()
