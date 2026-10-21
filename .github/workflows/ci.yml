@@ -53,6 +53,8 @@ jobs:
         run: make ash-fds-probe
       - name: Real BusyBox pathname traversal, symlink and dotdot semantics
         run: make ash-paths-probe
+      - name: Direct ring3 openat ABI flags and readonly CPIO error semantics
+        run: make path-abi-probe
       - name: Real BusyBox ash pipeline pipe/pipe2 and EOF under QEMU
         run: make ash-pipes-probe
       - name: Boot genuine Alpine dynamic BusyBox and report ABI blockers
@@ -96,4 +98,5 @@ jobs:
             build/ash-rename-*-serial.log
             build/ash-fd-*-serial.log
             build/ash-path-*-serial.log
+            build/path-abi-serial.log
           if-no-files-found: ignore
