@@ -57,6 +57,8 @@ jobs:
         run: BASH_REQUIRE_PASS=1 make bash-probe
       - name: Probe official Debian prebuilt static Bash and BusyBox
         run: DEBIAN_REQUIRE_PASS=1 make debian-probe
+      - name: x86 Debian static BusyBox — same 17 cases as RV64
+        run: sh scripts/probe-x86-busybox-parity.sh
       - name: Stage official Alpine prebuilt dynamic ELF and musl runtime
         run: make alpine-fetch
       - name: Diagnose real BusyBox producer early close and pipe lifecycle
@@ -110,6 +112,7 @@ jobs:
             build/serial.log
             build/bash-serial.log
             build/debian-*-serial.log
+            build/busybox-parity-x86/*.serial.log
             build/alpine-serial.log
             build/alpine-argv-*-serial.log
             build/alpine-fs-*-serial.log

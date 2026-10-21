@@ -275,3 +275,13 @@ determines ELF machine only; programs, input bytes and observable Linux
 semantics are the same. This is independent of the additional x86 Alpine
 dynamic-mUSL suite, whose libc/path/ELF differ and must be reported as
 a separate profile.
+
+## x86/RV parity is one executable contract, not Alpine vs Debian
+`scripts/probe-x86-busybox-parity.sh` runs the **same** pinned Debian
+1.37.0-6+b9 static BusyBox recipe as RV64, with the **identical 17-case
+manifest and identical CPIO rootfs bytes/layout**. Both test native ELF,
+actual QEMU/UEFI boot, Linux stdout/exit and process/FS/pipe evidence.
+The existing x86 Alpine dynamic/musl suite is separately labeled rather
+than being compared as if it were the same fixture. Select one case with
+`BUSYBOX_PARITY_CASE=ash-fork` on either ISA to avoid repeating 16
+known-passing cases while diagnosing one compatibility class.

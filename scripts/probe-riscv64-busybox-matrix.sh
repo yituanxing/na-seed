@@ -131,13 +131,15 @@ total=0
 tab=$(printf '\t')
 while IFS="$tab" read -r name mode args expected extra; do
     case "$name" in ''|\#*) continue ;; esac
+    if [ -n "${BUSYBOX_PARITY_CASE:-}" ] &&
+       [ "$name" != "$BUSYBOX_PARITY_CASE" ]; then continue; fi
     [ "$extra" = '-' ] && extra=''
     total=$((total+1))
     if ! boot_case "$name" "$mode" "$args" "$expected" "$extra"; then
         failures=$((failures+1))
     fi
 done < scripts/busybox-parity-cases.tsv
-test "$total" -eq 17
+if [ -n "${BUSYBOX_PARITY_CASE:-}" ]; then test "$total" -eq 1; else test "$total" -eq 17; fi
 if [ "$failures" -ne 0 ]; then
     echo "[RV64 BUSYBOX FAIL] $failures/$total common parity fixtures failed" >&2
     exit 1
