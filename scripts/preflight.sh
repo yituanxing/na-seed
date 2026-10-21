@@ -40,6 +40,17 @@ if grep -Eq 'user_byte\\(|user_write_bytes\\(|nas_task_fd_|descriptors\\[' kerne
     exit 1
 fi
 
+# M7.3: bounded pipe data and ownership must not move back into m1.c.
+# Backend must not depend on user-copy, task switching or signal delivery.
+if grep -Eq 'pipe_table\\[|pipe_slot_owner\\[|struct nas_pipe[[:space:]]*\\{' kernel/m1.c; then
+    echo '[PREFLIGHT] pipe backing leaked back into syscall layer' >&2
+    exit 1
+fi
+if grep -Eq 'user_byte\\(|user_read_bytes\\(|user_write_bytes\\(|task_schedule\\(|signal_actions\\[' kernel/pipe.c; then
+    echo '[PREFLIGHT] pipe backend acquired syscall/task/user-copy dependencies' >&2
+    exit 1
+fi
+
 # Compare our pinned Linux x86-64 syscall numbers against the host UAPI.
 python3 scripts/check-syscall-nr.py
 python3 scripts/check-syscall-errno.py
