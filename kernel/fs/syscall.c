@@ -27,6 +27,8 @@
 #define boot_entries TASK.fds.boot_entries
 #define boot_file_offsets nas_boot_file_offsets
 #define current_workdir TASK.cwd
+#define running_bash TASK.running_bash
+#define running_busybox TASK.running_busybox
 #define running_alpine TASK.running_alpine
 #define saw_bash_hello TASK.saw_bash_hello
 #define matched_chars TASK.matched_chars
