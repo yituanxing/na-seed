@@ -10,7 +10,17 @@
 #error "NaSeed architecture backend not implemented"
 #endif
 struct nas_task;
+/* Shared mechanism API: these must be real, not silent stubs, before a
+ * non-x86 full-kernel binary may link. */
+void nas_arch_cpu_tables_init(void);
+void nas_arch_cpu_user_fp_init(void);
+void nas_arch_syscall_enable(void);
+void nas_arch_enter_user(uint64_t entry, uint64_t sp);
+uint64_t nas_arch_cycle_counter(void);
+void nas_arch_set_user_tls(uint64_t);
+#if defined(__x86_64__)
 extern uint64_t syscall_user_rsp;
+#endif
 void nas_arch_restore_cpu(const struct nas_task *);
 void nas_arch_save_fpu(struct nas_task *);
 void nas_arch_save_user_frame(struct nas_task *, const uint64_t *frame);

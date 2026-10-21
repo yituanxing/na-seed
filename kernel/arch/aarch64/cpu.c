@@ -16,6 +16,12 @@ bool nas_arm64_el1_4k_mmu_active(void) {
     uint64_t tcr = nas_arm64_read_tcr();
     return (sctlr & 1) && (((tcr >> 30) & 3) == 2);
 }
+/* AArch64 TTBR0 user regime from TCR_EL1.T0SZ; reject unsupported
+ * 4KiB user range instead of assuming a fixed x86 USER_LIMIT. */
+uint64_t nas_arch_user_limit(void) {
+    unsigned t0sz = (unsigned)(nas_arm64_read_tcr() & 63U);
+    return (t0sz >= 16 && t0sz <= 25) ? (1ULL << (64 - t0sz)) : 0;
+}
 void nas_arch_halt(void) {
     for (;;) __asm__ volatile ("wfi");
 }

@@ -76,7 +76,7 @@ uint64_t nas_task_page_root(const struct nas_task *task) {
     return task ? task->root_phys : 0;
 }
 uint64_t nas_task_tls_base(const struct nas_task *task) {
-    return task ? task->arch.user_fs_base : 0;
+    return task ? nas_arch_context_tls_base(&task->arch) : 0;
 }
 void nas_task_set_root(struct nas_task *task, uint64_t root) {
     if (task) task->root_phys = root;

@@ -58,3 +58,12 @@ nas_arch_console_init/putc. The shared drivers/serial.c owns print/decimal/
 hex formatting. Existing CRLF behavior remains in the x86 device adapter;
 the QEMU boot paths use exactly the same common formatter object.
 ARM semihost is *not* misrepresented as an actual PL011 driver.
+
+## Whole-tree ISA build check: no parallel subset hiding common dependencies
+The arch/MMU and arch/context selection interfaces now expose shared-kernel
+compile-time contracts for RV64 and ARM64; task TLS access is no longer an
+x86 FSBASE field access in common code. Compiler verifies ALL non-arch/
+and non-platform/ kernel C sources for each target, not only port/M0 files.
+This is NOT a full-kernel link: the required real RV/ARM MMU root lifecycle,
+trap, task switching, syscall entry and platform exit provider functions are
+intentionally unresolved until implemented. Full runtime claims remain gated.

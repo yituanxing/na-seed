@@ -24,7 +24,6 @@
 #define loaded_main_entry TASK.loaded_main_entry
 #define loaded_interp_base TASK.loaded_interp_base
 #define thread_clear_tid TASK.thread_clear_tid
-#define user_fs_base TASK.arch.user_fs_base
 #define descriptors TASK.fds.descriptors
 #define fd_cloexec TASK.fds.fd_cloexec
 #define signal_actions TASK.signal_actions
@@ -253,7 +252,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
         if (descriptors[fd] != FD_CLOSED && fd_cloexec[fd])
             nas_fs_close_fd(fd);
     thread_clear_tid = 0;
-    user_fs_base = 0;
+    nas_arch_context_set_tls(&TASK.arch, 0);
     nas_arch_set_user_tls(0); /* fresh musl/glibc TLS initialization */
     for (unsigned i = 0; i < 65; i++)
         for (unsigned j = 0; j < 4; j++)

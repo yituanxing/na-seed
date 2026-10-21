@@ -141,6 +141,8 @@ jobs:
         run: clang --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 -std=c11 -Wall -Wextra -Werror -ffreestanding -fsyntax-only scripts/check-linux-stat.c
       - name: Validate asm-generic syscall decoder with RV64 Clang
         run: clang --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 -std=c11 -Wall -Wextra -Werror -ffreestanding -fsyntax-only scripts/check-linux-syscalls.c
+      - name: Compile the entire shared kernel source set for RV64
+        run: make ARCH=riscv64 build/deps/limine.h && ARCH=riscv64 sh scripts/check-shared-kernel-build.sh
       - name: Compile and boot genuine RV64 M0 kernel
         run: sh scripts/probe-riscv64-m0.sh
       - name: Attach riscv64 boot console on failure
@@ -165,6 +167,8 @@ jobs:
         run: clang --target=aarch64-none-elf -march=armv8-a -std=c11 -Wall -Wextra -Werror -ffreestanding -fsyntax-only scripts/check-linux-stat.c
       - name: Validate asm-generic syscall decoder with ARM64 Clang
         run: clang --target=aarch64-none-elf -march=armv8-a -std=c11 -Wall -Wextra -Werror -ffreestanding -fsyntax-only scripts/check-linux-syscalls.c
+      - name: Compile the entire shared kernel source set for AArch64
+        run: make ARCH=aarch64 build/deps/limine.h && ARCH=aarch64 sh scripts/check-shared-kernel-build.sh
       - name: Compile and QEMU-boot genuine AArch64 M0 kernel
         run: sh scripts/probe-aarch64-m0.sh
       - name: Attach aarch64 boot diagnostics on failure
