@@ -176,3 +176,15 @@ rejected clone forms. Live non-x86 trap/context entry is still incomplete.
   Next step is native Debian/Alpine RV64 BusyBox and identical x86 test cases.
 - CI explicitly checks full shared-kernel QEMU path in addition to existing
   M0 hardware smoke (and x86 suite); never conflate these two tests.
+
+## Native RV64 BusyBox — same workload source as x86
+The full RV64 kernel now links all x86 generic task/exec/scheduler/FS/VM/
+syscall objects and passes real ELF write(1) + exit(0) using that one path.
+Next CI target fetches the **unmodified official Debian 13 riscv64
+busybox-static 1.37.0-6+b9** package and SHA256-verifies its native ELF,
+rather than recompiling/copying a test-only BusyBox. The same native
+kernel boots it as a Limine module using the existing common ELF loader,
+Linux stack and syscall dispatcher. Acceptance requires BusyBox's own
+stdout hello plus successful exit, identical to the x86 BusyBox smoke.
+The full x86 test *matrix* (CPIO ash, fork/pipe/tmpfs, etc.) remains a
+separate further gate and must not be declared passed prematurely.

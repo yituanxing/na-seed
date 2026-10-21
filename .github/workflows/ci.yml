@@ -151,6 +151,8 @@ jobs:
         run: make ARCH=riscv64 build/deps/limine.h && ARCH=riscv64 sh scripts/check-shared-kernel-build.sh
       - name: Compile and boot RV64 full shared kernel (real ELF + common syscall)
         run: sh scripts/probe-riscv64-full.sh
+      - name: Execute official RV64 Debian static BusyBox via full shared kernel
+        run: sh scripts/probe-riscv64-busybox.sh
       - name: Compile and boot genuine RV64 M0 kernel
         run: sh scripts/probe-riscv64-m0.sh
       - name: Attach riscv64 boot console on failure
