@@ -51,6 +51,8 @@ static volatile uint64_t requests_start[] = LIMINE_REQUESTS_START_MARKER;
 __attribute__((used, section(".limine_requests_end")))
 static volatile uint64_t requests_end[] = LIMINE_REQUESTS_END_MARKER;
 
+const struct limine_file *nas_user_module(void);
+
 void kmain(void) {
     nas_serial_init();
     nas_print("[BOOT] NaSeed M0 kernel entered\n");
@@ -98,7 +100,13 @@ void kmain(void) {
     }
     nas_print("[PASS] RV64 Sv39/Sv48/Sv57 user PTE map/query/unmap/reclaim\n");
     nas_print("[PASS] riscv64 M0 Limine/SBI/frame allocator\n");
-    nas_rv_user_smoke(paging_req.response->mode);
+    const struct limine_file *app = nas_user_module();
+    if (!app || !app->address || !app->size) {
+        nas_print("[FAIL] RV64 missing real ELF module\n");
+        nas_arch_halt();
+    }
+    nas_rv_user_smoke(paging_req.response->mode,
+                      (const uint8_t *)app->address, app->size);
 #elif defined(__aarch64__)
     /* AArch64 needs a different MMU regime; never assume RISC-V SATP. */
     if (!nas_arm64_el1_4k_mmu_active()) {

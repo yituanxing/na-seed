@@ -2,11 +2,12 @@
 #include "cpu.h"
 #include "mmu.h"
 #include "usermode.h"
+#include "elf_image.h"
 #include "../../mm/frame.h"
 #include "../../drivers/serial.h"
 
-#define RV_USER_PC 0x00010000ULL
 #define RV_USER_STACK 0x00020000ULL
+static uint64_t rv_elf_entry;
 #define RV_SATP_PPN_MASK ((1ULL << 44) - 1)
 /* Single-core M0 diagnostic uses a dedicated supervisor trap stack.
  * No scheduler, nested trap support or independent kernel threads yet. */
@@ -26,7 +27,7 @@ void nas_rv_user_trap_c(uint64_t cause, uint64_t sstatus, uint64_t sepc,
      * Linux asm-generic __NR_exit is 93, with code in a0. */
     if (cause != 8 || (sstatus & (1ULL << 8)) ||
         nr != 93 || result != 42 ||
-        sepc < RV_USER_PC || sepc >= RV_USER_PC + NAS_RV_PAGE_SIZE) {
+        sepc < rv_elf_entry || sepc >= rv_elf_entry + NAS_RV_PAGE_SIZE) {
         nas_print("[RV64 TRAP] scause="); nas_hex(cause);
         nas_print(" sstatus="); nas_hex(sstatus);
         nas_print(" sepc="); nas_hex(sepc);
@@ -36,20 +37,19 @@ void nas_rv_user_trap_c(uint64_t cause, uint64_t sstatus, uint64_t sepc,
         rv_fatal("unexpected trap / syscall identity");
     }
     nas_print("[PASS] RV64 hardware U-mode Linux exit(42) ecall via sret/satp\n");
+    nas_print("[PASS] RV64 real external ELF64 PT_LOAD/BSS executed in U-mode\n");
     nas_arch_halt();
 }
 
-void nas_rv_user_smoke(uint64_t limine_mode) {
+void nas_rv_user_smoke(uint64_t limine_mode, const uint8_t *elf, uint64_t size) {
     unsigned levels = nas_riscv_page_table_levels(limine_mode);
     uint64_t active_satp = nas_riscv_satp_read();
     if (!levels || (active_satp >> 60) != (uint64_t)(levels + 5))
         rv_fatal("invalid active Sv mode");
     struct nas_rv_page_table pt = {0};
     if (!nas_rv_pt_init(&pt, levels)) rv_fatal("user root frame allocation");
-    uint64_t code_pa = nas_frame_alloc();
     uint64_t stack_pa = nas_frame_alloc();
-    if (!code_pa || !stack_pa || code_pa == stack_pa)
-        rv_fatal("user code/stack physical frames");
+    if (!stack_pa) rv_fatal("user stack physical frame");
 
     /* Full trap return tests hardware page walks through a *new* satp root:
      * share only existing higher-half kernel/boot HHDM mappings from Limine.
@@ -60,30 +60,22 @@ void nas_rv_user_smoke(uint64_t limine_mode) {
     uint64_t *new_root = (uint64_t *)(uintptr_t)(hhdm + pt.root_pa);
     for (unsigned i = 256; i < 512; i++) new_root[i] = prior_root[i];
 
-    if (!nas_rv_pt_map(&pt, RV_USER_PC, code_pa,
-                       NAS_RV_PTE_U | NAS_RV_PTE_R | NAS_RV_PTE_X) ||
-        !nas_rv_pt_map(&pt, RV_USER_STACK, stack_pa,
+    if (!nas_rv_pt_map(&pt, RV_USER_STACK, stack_pa,
                        NAS_RV_PTE_U | NAS_RV_PTE_R | NAS_RV_PTE_W))
-        rv_fatal("offline user code/stack page mappings");
-
-    uint64_t code_size = (uint64_t)(nas_rv_user_end - nas_rv_user_start);
-    if (!code_size || code_size > NAS_RV_PAGE_SIZE)
-        rv_fatal("user machine code size invalid");
-    unsigned char *code = (unsigned char *)(uintptr_t)(hhdm + code_pa);
-    for (uint64_t i = 0; i < code_size; i++)
-        code[i] = nas_rv_user_start[i];
-
+        rv_fatal("user stack mapping");
+    if (!nas_rv_elf_load(&pt, elf, size, &rv_elf_entry))
+        rv_fatal("external ET_EXEC ELF64 validation / PT_LOAD");
     uint64_t got = 0, perms = 0;
-    if (!nas_rv_pt_translate(&pt, RV_USER_PC, &got, &perms) ||
-        got != code_pa || !(perms & NAS_RV_PTE_X) ||
+    if (!nas_rv_pt_translate(&pt, rv_elf_entry, &got, &perms) ||
+        !(perms & NAS_RV_PTE_X) ||
         !nas_rv_pt_translate(&pt, RV_USER_STACK, &got, &perms) ||
         got != stack_pa || !(perms & NAS_RV_PTE_W))
-        rv_fatal("user mapping verification");
+        rv_fatal("user ELF executable entry / stack permissions");
 
     uint64_t new_satp = (active_satp & (15ULL << 60)) |
                         (pt.root_pa >> 12);
     uint64_t trap_sp = (uint64_t)(uintptr_t)
                        (rv_user_trap_stack + sizeof(rv_user_trap_stack));
-    nas_print("[PORT] RV64 replacing boot satp root; real U-mode exit syscall\n");
-    nas_rv_jump_user(new_satp, RV_USER_PC, RV_USER_STACK + 4080, trap_sp);
+    nas_print("[PORT] RV64 Limine module ELF64 mapped; switching satp into U-mode\n");
+    nas_rv_jump_user(new_satp, rv_elf_entry, RV_USER_STACK + 4080, trap_sp);
 }
