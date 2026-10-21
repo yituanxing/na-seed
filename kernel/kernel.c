@@ -5,6 +5,7 @@
 #include "arch/arch.h"
 #include "drivers/serial.h"
 #include "mm/frame.h"
+#include "init/main.h"
 
 /*
  * NaSeed M0: Limine handoff + real COM1 UART + physical frame bitmap.
@@ -64,8 +65,7 @@ void kmain(void) {
     }
     nas_print("[PASS] M0 memory allocator\n");
     nas_print("[PASS] M0 boot / serial / memory\n");
-    extern void m1_start(void);
-    m1_start();
+    nas_init_userspace();
     nas_arch_halt();
 }
 

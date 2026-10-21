@@ -14,7 +14,7 @@ done
 # Keep the M7 /tmp inode storage boundary intact. The syscall layer may
 # call the backend but must not own inode/description tables. The backend
 # must not dereference userspace addresses or decode syscall user pointers.
-if grep -Eq 'tmp_files\\[|tmp_slot_owner\\[' kernel/m1.c; then
+if grep -Eq 'tmp_files\\[|tmp_slot_owner\\[' kernel/syscall/dispatch.c kernel/task/exec.c kernel/init/main.c; then
     echo '[PREFLIGHT] /tmp backend storage leaked into syscall layer' >&2
     exit 1
 fi
@@ -24,7 +24,7 @@ if grep -Eq 'user_byte\\(|user_write_bytes\\(|resolve_path\\(' kernel/tmpfs.c; t
 fi
 
 # M7.1: one owner for open-description reference/position tables.
-if grep -Eq '^(uint16_t nas_file_refcount|uint64_t nas_file_status_flags|uint64_t nas_boot_file_offsets)' kernel/task.c kernel/m1.c; then
+if grep -Eq '^(uint16_t nas_file_refcount|uint64_t nas_file_status_flags|uint64_t nas_boot_file_offsets)' kernel/task.c kernel/syscall/dispatch.c kernel/task/exec.c kernel/init/main.c; then
     echo '[PREFLIGHT] open-file-description storage escaped fd.c' >&2
     exit 1
 fi
@@ -42,7 +42,7 @@ fi
 
 # M7.3: bounded pipe data and ownership must not move back into m1.c.
 # Backend must not depend on user-copy, task switching or signal delivery.
-if grep -Eq 'pipe_table\\[|pipe_slot_owner\\[|struct nas_pipe[[:space:]]*\\{' kernel/m1.c; then
+if grep -Eq 'pipe_table\\[|pipe_slot_owner\\[|struct nas_pipe[[:space:]]*\\{' kernel/syscall/dispatch.c kernel/task/exec.c kernel/init/main.c; then
     echo '[PREFLIGHT] pipe backing leaked back into syscall layer' >&2
     exit 1
 fi
@@ -57,13 +57,13 @@ if grep -Eq 'user_byte\\(|user_write_bytes\\(|syscall_dispatch\\(|elf_load\\(|us
     echo '[PREFLIGHT] boot_image.c acquired syscall/ELF VM responsibilities' >&2
     exit 1
 fi
-if grep -Eq 'bootfs_mount\\(|nas_user_module\\(' kernel/m1.c; then
+if grep -Eq 'bootfs_mount\\(|nas_user_module\\(' kernel/syscall/dispatch.c kernel/task/exec.c kernel/init/main.c; then
     echo '[PREFLIGHT] Limine/CPIO boot selection leaked into m1.c' >&2
     exit 1
 fi
 
 # M8.1: generic VM / syscall code must not manipulate x86 PTEs directly.
-if grep -Eq 'P_PRESENT|P_RW|P_USER|PHYS_MASK|user_leaf' kernel/m1.c kernel/mm/vm.c; then
+if grep -Eq 'P_PRESENT|P_RW|P_USER|PHYS_MASK|user_leaf' kernel/syscall/dispatch.c kernel/task/exec.c kernel/init/main.c kernel/mm/vm.c; then
     echo '[PREFLIGHT] x86 PTE details escaped arch/x86_64/mmu.c' >&2
     exit 1
 fi
@@ -72,18 +72,25 @@ if grep -Eq 'syscall_dispatch|__NR_|nas_pipe_|nas_tmp_' kernel/mm/vm.c; then
     exit 1
 fi
 # M8.3: ELF parsing, user stack, usercopy and arch_prctl have owning modules.
-if grep -Eq 'struct __attribute__\(\(packed\)\) elf_hdr|static bool user_read_bytes\(|static uint64_t sys_arch_prctl\(|static uint64_t sys_sigaction\(' kernel/m1.c; then
+if grep -Eq 'struct __attribute__\(\(packed\)\) elf_hdr|static bool user_read_bytes\(|static uint64_t sys_arch_prctl\(|static uint64_t sys_sigaction\(' kernel/syscall/dispatch.c kernel/task/exec.c kernel/init/main.c; then
     echo '[PREFLIGHT] old ELF/usercopy/syscall ABI implementation leaked into m1.c' >&2
     exit 1
 fi
 
 # M8.4: descriptor/path/stat/pipe syscall bodies reside with FS.
-if grep -Eq '^static uint64_t (sys_pipe2|sys_open_path|sys_fcntl|sys_fstat_boot|sys_getdents64|sys_poll)\\(' kernel/m1.c; then
+if grep -Eq '^static uint64_t (sys_pipe2|sys_open_path|sys_fcntl|sys_fstat_boot|sys_getdents64|sys_poll)\\(' kernel/syscall/dispatch.c kernel/task/exec.c kernel/init/main.c; then
     echo '[PREFLIGHT] FS syscall implementation leaked back into m1.c' >&2
     exit 1
 fi
-if ! grep -q 'nas_fs_syscall(args)' kernel/m1.c; then
+if ! grep -q 'nas_fs_syscall(args)' kernel/syscall/dispatch.c kernel/task/exec.c kernel/init/main.c; then
     echo '[PREFLIGHT] common syscall dispatcher stopped forwarding FS calls' >&2
+    exit 1
+fi
+
+# M8.5: the monolithic syscall image has been removed.
+test ! -e kernel/m1.c
+if grep -Eq 'syscall_dispatch\(|__NR_' kernel/init/main.c kernel/task/exec.c; then
+    echo '[PREFLIGHT] architecture syscall ABI leaked into init or exec' >&2
     exit 1
 fi
 

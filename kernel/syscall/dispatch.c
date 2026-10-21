@@ -1,0 +1,149 @@
+#include <stdint.h>
+#include <stdbool.h>
+#include "dispatch.h"
+#include "../nr.h"
+#include "../errno.h"
+#include "../task.h"
+#include "../fd.h"
+#include "../arch/arch.h"
+#include "../arch/x86_64/syscall.h"
+#include "../mm/vm.h"
+#include "../mm/usercopy.h"
+#include "../task/exec.h"
+#include "../task/process.h"
+#include "../task/sched.h"
+#include "../task/signal.h"
+#include "../task/user_stack.h"
+#include "../fs/io.h"
+#include "../fs/syscall.h"
+#include "../platform/platform.h"
+#include "../drivers/serial.h"
+#include "../panic.h"
+#define TASK (*nas_current_task)
+#define thread_clear_tid TASK.thread_clear_tid
+#define descriptors TASK.fds.descriptors
+#define file_slot TASK.fds.file_slot
+#define file_status_flags nas_file_status_flags
+#define running_bash TASK.running_bash
+#define running_busybox TASK.running_busybox
+#define running_alpine TASK.running_alpine
+#define saw_bash_hello TASK.saw_bash_hello
+
+static uint32_t missing_count[512];
+static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
+                             uint64_t fd, uint64_t buf, uint64_t count) {
+    uint64_t ret;
+    if (nr == __NR_read) ret = nas_fs_fd_read(fd, buf, count);
+    else if (nr == __NR_write) ret = nas_fs_fd_write(fd, buf, count);
+    else ret = nas_fs_fd_writev(fd, buf, count);
+    if ((int64_t)ret == -EPIPE &&
+        (nr == __NR_write || nr == __NR_writev) &&
+        nas_sched_sigpipe_default(fd)) {
+        nas_sched_child_exit(0, NAS_SIGPIPE);
+        return nas_task_schedule(frame);
+    }
+    if ((int64_t)ret == -EOPNOTSUPP && fd < NAS_FD_LIMIT &&
+        (descriptors[fd] == FD_PIPE_R || descriptors[fd] == FD_PIPE_W) &&
+        !(file_status_flags[file_slot[fd]] & 0x800ULL))
+        return nas_task_block(frame, nr, fd, buf, count, 0);
+    return ret;
+}
+
+/* Strict single-program ABI diagnostic dispatcher, for a real syscall gate. */
+uint64_t syscall_dispatch(const uint64_t *args) {
+    uint64_t nr = args[0];
+    /* Real-program execution trace: syscall identity, callsite and args.
+     * Capped to avoid serial storms; not needed in exception context.
+     */
+#ifdef NASEED_SYSCALL_TRACE
+    static unsigned trace_count;
+    if ((running_bash || running_busybox) && trace_count++ < 96) {
+        nas_print("[TRACE] nr="); nas_dec(nr);
+        nas_print(" rip="); nas_hex(args[7]);
+        nas_print(" rsp="); nas_hex(syscall_user_rsp);
+        nas_print(" a1="); nas_hex(args[1]);
+        nas_print(" a2="); nas_hex(args[2]);
+        nas_print(" a3="); nas_hex(args[3]);
+        nas_print("\n");
+    }
+#endif
+    if (nr == __NR_arch_prctl) return nas_arch_prctl(args[1], args[2]);
+    if (nr == __NR_set_tid_address) { thread_clear_tid = args[1]; return TASK.pid; }
+    if (nr == __NR_getpid || nr == __NR_gettid) return TASK.pid;
+    if (nr == __NR_getppid) return TASK.ppid;
+    if (nr == __NR_getuid || nr == __NR_getgid || nr == __NR_geteuid || nr == __NR_getegid) return 0; /* root credentials */
+    if (nr == __NR_mprotect) return nas_vm_mprotect(args[1], args[2], args[3]);
+    if (nr == __NR_mmap) return nas_vm_anon_mmap(args[1], args[2], args[3],
+                                       args[4], args[5], args[6]);
+    if (nr == __NR_munmap) return nas_vm_munmap(args[1], args[2]);
+    if (nr == __NR_brk) return nas_vm_brk(args[1]);
+    if (nr == __NR_read) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
+    if (nr == __NR_write) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
+    if (nr == __NR_writev) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
+    struct nas_fs_result fs_result = nas_fs_syscall(args);
+    if (fs_result.handled) return fs_result.value;
+    if (nr == __NR_rt_sigaction) return nas_signal_action(args[1], args[2], args[3], args[4]);
+    if (nr == __NR_rt_sigprocmask) return nas_signal_procmask(args[1], args[2], args[3], args[4]);
+    if (nr == __NR_uname) return sys_uname_naseed(args[1]);
+
+    if (nr == __NR_fork) return nas_process_fork((uint64_t *)(uintptr_t)args);
+
+    if (nr == __NR_wait4) {
+        uint64_t ret = nas_process_wait4(args[1], args[2], args[3], args[4]);
+        if ((int64_t)ret == -EOPNOTSUPP && args[4] == 0 &&
+            args[3] == 0 && ((int64_t)args[1] == -1 || (int64_t)args[1] > 0))
+            return nas_task_block((uint64_t *)(uintptr_t)args, nr,
+                              args[1], args[2], args[3], args[4]);
+        return ret;
+    }
+    if (nr == __NR_execve) return nas_task_execve(args[1], args[2], args[3]);
+    if (nr == __NR_getpgid) return args[1] == 0 || args[1] == TASK.pid ? TASK.pid : (uint64_t)-ESRCH;
+    if (nr == __NR_getpgrp) return TASK.pid; /* one process group today */
+    if (nr == __NR_exit || nr == __NR_exit_group) { /* exit / exit_group */
+        if (TASK.ppid) {
+            nas_sched_child_exit((uint32_t)args[1], 0);
+            return nas_task_schedule((uint64_t *)(uintptr_t)args);
+        }
+        TASK.exit_code = (uint32_t)(args[1] & 255ULL);
+        TASK.termination_signal = 0;
+        TASK.state = NAS_TASK_ZOMBIE;
+        nas_print("[EXIT] user status="); nas_dec(args[1]); nas_print("\n");
+        /* In cmdline-driven tests, the host verifies real stdout and status.
+         * Do not encode applet-specific success checks into the kernel.
+         * Legacy M0-M4 tests keep their strict hello-specific acceptance.
+         */
+        if (nas_boot_argv_enabled()) {
+            if (args[1] != 0) nas_fail("cmdline userspace exited nonzero");
+            nas_print("[PASS] cmdline userspace exit 0\n");
+            nas_platform_debug_exit(0);
+            nas_fail("QEMU debug exit returned unexpectedly");
+        }
+        if (running_busybox) {
+            if (args[1] == 0 && saw_bash_hello) {
+                if (running_alpine)
+                    nas_print("[PASS] M4 Alpine dynamic BusyBox echo hello\n");
+                else
+                    nas_print("[PASS] M2 Debian BusyBox echo hello\n");
+                nas_platform_debug_exit(0);
+            }
+            nas_fail("real BusyBox exited without stdout hello and status 0");
+        }
+        if (running_bash) {
+            if (args[1] == 0 && saw_bash_hello) {
+                nas_print("[PASS] M2 real GNU Bash -c echo hello\n");
+                nas_platform_debug_exit(0);
+            }
+            nas_fail("real Bash exited without exact hello and status zero");
+        }
+        if (args[1] == 0) {
+            nas_print("[PASS] M1 ELF / ring3 / syscall write / ENOSYS / exit\n");
+            nas_platform_debug_exit(0);
+        }
+        nas_fail("user program exit was non-zero");
+    }
+    if (nr >= sizeof(missing_count) / sizeof(missing_count[0]) ||
+        ++missing_count[nr] <= 3) {
+        nas_print("[MISS] syscall nr="); nas_dec(nr); nas_print("\n");
+    }
+    return (uint64_t)-ENOSYS;
+}
