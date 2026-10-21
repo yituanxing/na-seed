@@ -5,6 +5,7 @@
 #include "arch/arch.h"
 #if defined(NASEED_PORT_M0) && defined(__riscv)
 #include "arch/riscv64/cpu.h"
+#include "arch/riscv64/mmu.h"
 #endif
 #include "drivers/serial.h"
 #include "mm/frame.h"
@@ -85,7 +86,13 @@ void kmain(void) {
     }
     nas_print("[PORT] riscv64 paging levels=");
     nas_dec(nas_riscv_page_table_levels(paging_req.response->mode));
-    nas_print("\n[PASS] riscv64 M0 Limine/SBI/frame allocator\n");
+    nas_print("\n");
+    if (!nas_rv_pt_smoke()) {
+        nas_print("[FAIL] RV64 Sv39/Sv48/Sv57 page-table selftest\n");
+        nas_arch_halt();
+    }
+    nas_print("[PASS] RV64 Sv39/Sv48/Sv57 user PTE map/query/unmap/reclaim\n");
+    nas_print("[PASS] riscv64 M0 Limine/SBI/frame allocator\n");
     nas_arch_halt();
 #else
     nas_init_userspace();

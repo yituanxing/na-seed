@@ -40,6 +40,11 @@ timeout 90s qemu-system-riscv64 \
     -device virtio-blk-device,drive=esp >"$log" 2>&1
 rc=$?
 set -e
+if ! grep -Fq '[PASS] RV64 Sv39/Sv48/Sv57 user PTE map/query/unmap/reclaim' "$log"; then
+    echo '[RV64 BOOT FAIL] genuine Sv39/Sv48/Sv57 PTE regression marker absent' >&2
+    tail -100 "$log" >&2
+    exit 1
+fi
 if ! grep -Fq '[PASS] riscv64 M0 Limine/SBI/frame allocator' "$log"; then
     echo "[RV64 BOOT FAIL] missing genuine kernel M0 marker (qemu status: $rc)" >&2
     tail -100 "$log" >&2
