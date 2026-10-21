@@ -1,19 +1,5 @@
 /* Real supervisor-to-user entry and first genuine U-mode trap.
  * This intentionally does not use the x86 register frame or syscall gate. */
-.section .rodata.rv_user, "a", @progbits
-.p2align 2
-.globl nas_rv_user_start
-nas_rv_user_start:
-    .option push
-    .option norvc
-    addi a0, zero, 42
-    addi a7, zero, 93  /* Linux/RV64 asm-generic exit */
-    ecall
-1:  jal zero, 1b
-    .option pop
-.globl nas_rv_user_end
-nas_rv_user_end:
-
 .section .text, "ax", @progbits
 .p2align 2
 .globl nas_rv_jump_user

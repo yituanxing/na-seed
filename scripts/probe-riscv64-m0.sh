@@ -24,6 +24,7 @@ mformat -i "$disk@@1048576" -F ::
 mmd -i "$disk@@1048576" ::/EFI ::/EFI/BOOT ::/boot ::/boot/limine
 mcopy -i "$disk@@1048576" "$efi" ::/EFI/BOOT/BOOTRISCV64.EFI
 mcopy -i "$disk@@1048576" "$dir/kernel.elf" ::/boot/kernel
+mcopy -i "$disk@@1048576" "$dir/user-exit.elf" ::/boot/user-exit.elf
 mcopy -i "$disk@@1048576" limine-riscv64.conf ::/boot/limine/limine.conf
 
 firmware=/usr/share/qemu-efi-riscv64
@@ -42,6 +43,11 @@ rc=$?
 set -e
 if ! grep -Fq '[PASS] RV64 Sv39/Sv48/Sv57 user PTE map/query/unmap/reclaim' "$log"; then
     echo '[RV64 BOOT FAIL] genuine Sv39/Sv48/Sv57 PTE regression marker absent' >&2
+    tail -100 "$log" >&2
+    exit 1
+fi
+if ! grep -Fq '[PASS] RV64 real external ELF64 PT_LOAD/BSS executed in U-mode' "$log"; then
+    echo '[RV64 BOOT FAIL] external RISC-V ELF PT_LOAD/BSS user execution absent' >&2
     tail -100 "$log" >&2
     exit 1
 fi

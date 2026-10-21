@@ -79,19 +79,33 @@ $(RVOUT)/usermode.o: kernel/arch/riscv64/usermode.c kernel/arch/riscv64/usermode
 	mkdir -p $(dir $@)
 	clang $(RVCFLAGS) -MMD -MP -c $< -o $@
 
+$(RVOUT)/elf_image.o: kernel/arch/riscv64/elf_image.c kernel/arch/riscv64/elf_image.h kernel/task/elf.h
+	mkdir -p $(dir $@)
+	clang $(RVCFLAGS) -MMD -MP -c $< -o $@
+
+$(RVOUT)/user_exit.o: user/riscv64/exit.S
+	mkdir -p $(dir $@)
+	clang --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 -mno-relax -c $< -o $@
+
+RVUSER := $(RVOUT)/user-exit.elf
+$(RVUSER): $(RVOUT)/user_exit.o user/riscv64/linker.ld
+	ld.lld -m elf64lriscv -nostdlib -static --no-relax \
+	 -z max-page-size=0x1000 -T user/riscv64/linker.ld $< -o $@
+
 $(RVOUT)/user_entry.o: kernel/arch/riscv64/user_entry.S
 	mkdir -p $(dir $@)
 	clang $(RVCFLAGS) -c $< -o $@
 
-$(RVKERNEL): $(RVOUT)/kernel.o $(RVOUT)/frame.o $(RVOUT)/cpu.o $(RVOUT)/serial.o $(RVOUT)/mmu.o $(RVOUT)/mmu_test.o $(RVOUT)/usermode.o $(RVOUT)/user_entry.o kernel/arch/riscv64/linker.ld
+$(RVKERNEL): $(RVOUT)/kernel.o $(RVOUT)/frame.o $(RVOUT)/cpu.o $(RVOUT)/serial.o $(RVOUT)/mmu.o $(RVOUT)/mmu_test.o $(RVOUT)/usermode.o $(RVOUT)/user_entry.o $(RVOUT)/elf_image.o kernel/arch/riscv64/linker.ld
 	ld.lld -m elf64lriscv -nostdlib -static --no-relax \
 	 -z max-page-size=0x1000 -T kernel/arch/riscv64/linker.ld \
 	 $(RVOUT)/kernel.o $(RVOUT)/frame.o $(RVOUT)/cpu.o $(RVOUT)/serial.o \
-	 $(RVOUT)/mmu.o $(RVOUT)/mmu_test.o $(RVOUT)/usermode.o $(RVOUT)/user_entry.o -o $@
+	 $(RVOUT)/mmu.o $(RVOUT)/mmu_test.o $(RVOUT)/usermode.o $(RVOUT)/user_entry.o $(RVOUT)/elf_image.o -o $@
 
 ifeq ($(ARCH),riscv64)
 .PHONY: port-kernel
-port-kernel: $(RVKERNEL)
+port-kernel: $(RVKERNEL) $(RVUSER)
+	readelf -h $(RVUSER) | grep -q 'Machine:.*RISC-V'
 	readelf -h $(RVKERNEL) | grep -q 'Machine:.*RISC-V'
 	echo '[PORT] riscv64 real Limine M0 ELF built (QEMU boot not yet verified)'
 endif
