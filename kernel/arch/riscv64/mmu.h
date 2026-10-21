@@ -18,7 +18,8 @@ struct nas_rv_page_table {
     uint64_t root_pa;
     unsigned levels;
 };
-/* No active satp writes yet. This API manipulates offline user mappings. */
+/* Page-table API constructs mappings offline; RV64 usermode smoke is a
+ * separate one-way architectural SATP switch test. */
 bool nas_rv_pt_init(struct nas_rv_page_table *pt, unsigned levels);
 void nas_rv_pt_destroy(struct nas_rv_page_table *pt);
 bool nas_rv_pt_map(struct nas_rv_page_table *pt, uint64_t user_va,

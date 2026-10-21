@@ -51,7 +51,7 @@ RVCFLAGS := --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 \
 RVOUT := $(OUT)/port-riscv64
 RVKERNEL := $(RVOUT)/kernel.elf
 
-$(RVOUT)/kernel.o: kernel/kernel.c kernel/arch/arch.h kernel/arch/riscv64/cpu.h kernel/arch/riscv64/mmu.h $(HDR)
+$(RVOUT)/kernel.o: kernel/kernel.c kernel/arch/arch.h kernel/arch/riscv64/cpu.h kernel/arch/riscv64/mmu.h kernel/arch/riscv64/usermode.h $(HDR)
 	mkdir -p $(dir $@)
 	clang $(RVCFLAGS) -MMD -MP -c $< -o $@
 
@@ -75,11 +75,19 @@ $(RVOUT)/mmu_test.o: kernel/arch/riscv64/mmu_test.c kernel/arch/riscv64/mmu.h
 	mkdir -p $(dir $@)
 	clang $(RVCFLAGS) -MMD -MP -c $< -o $@
 
-$(RVKERNEL): $(RVOUT)/kernel.o $(RVOUT)/frame.o $(RVOUT)/cpu.o $(RVOUT)/serial.o $(RVOUT)/mmu.o $(RVOUT)/mmu_test.o kernel/arch/riscv64/linker.ld
+$(RVOUT)/usermode.o: kernel/arch/riscv64/usermode.c kernel/arch/riscv64/usermode.h kernel/arch/riscv64/mmu.h
+	mkdir -p $(dir $@)
+	clang $(RVCFLAGS) -MMD -MP -c $< -o $@
+
+$(RVOUT)/user_entry.o: kernel/arch/riscv64/user_entry.S
+	mkdir -p $(dir $@)
+	clang $(RVCFLAGS) -c $< -o $@
+
+$(RVKERNEL): $(RVOUT)/kernel.o $(RVOUT)/frame.o $(RVOUT)/cpu.o $(RVOUT)/serial.o $(RVOUT)/mmu.o $(RVOUT)/mmu_test.o $(RVOUT)/usermode.o $(RVOUT)/user_entry.o kernel/arch/riscv64/linker.ld
 	ld.lld -m elf64lriscv -nostdlib -static --no-relax \
 	 -z max-page-size=0x1000 -T kernel/arch/riscv64/linker.ld \
 	 $(RVOUT)/kernel.o $(RVOUT)/frame.o $(RVOUT)/cpu.o $(RVOUT)/serial.o \
-	 $(RVOUT)/mmu.o $(RVOUT)/mmu_test.o -o $@
+	 $(RVOUT)/mmu.o $(RVOUT)/mmu_test.o $(RVOUT)/usermode.o $(RVOUT)/user_entry.o -o $@
 
 ifeq ($(ARCH),riscv64)
 .PHONY: port-kernel
