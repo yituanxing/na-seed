@@ -82,3 +82,21 @@ previously emitted CRLF only in diagnostic nas_print, never for individual
 user bytes. Shared formatter preserves this split by invoking the
 architecture's optional newline hook only for diagnostic nas_print.
 No extra CR is injected into BusyBox output or pipe bytes.
+
+## M10: one REAL reusable user address-space implementation (RV64/ARM64)
+Both ISA page-table backends retain their existing native PTE formats.
+The SAME kernel/mm/user_space.c now owns user page allocation, lookup,
+permission changes, eager fork cloning, rollback and frame reclamation;
+ISA-specific code provides PTE map/query/unmap/walk/protect and TLB actions.
+M0 QEMU kernels link this SAME common source and execute an allocation /
+fork-private-frame / mprotect / unmap / reclaim regression with frame counts.
+The RV64 real ELF + hardware U-mode path now uses the shared space root
+creation and user stack mapping, not a second copy of Limine upper entries.
+This is an actual reused runtime implementation, not just headers.
+
+Unfinished: generic VM calls still use the existing x86 provider because
+new-ISA full kernel linking/context/syscall trap work is not complete.
+mm/mmu_bridge.c exposes the existing nas_mmu_* ABI for later RV/ARM full
+kernel linkage; its inclusion in the M0 kernel is deliberately NOT claimed.
+The shared ELF mapping needs a final RWX permission pass before W^X;
+do not call initial writable mappings a W^X protection guarantee.

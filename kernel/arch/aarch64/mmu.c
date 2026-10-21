@@ -1,4 +1,5 @@
 #include "mmu.h"
+#include "../user_pt.h"
 #include "../../mm/frame.h"
 
 /* AArch64 stage-1 4-KiB descriptor format (not Sv39-style R/W/X bits):
@@ -157,4 +158,51 @@ void nas_arm_pt_destroy(struct nas_arm_pt *pt) {
     destroy_descendants(pt->root_pa, pt->levels - 1);
     (void)nas_frame_free(pt->root_pa);
     pt->root_pa = 0; pt->levels = 0;
+}
+
+bool nas_arm_pt_protect(const struct nas_arm_pt *pt,uint64_t va,
+                         unsigned access) {
+    if (!valid_user(pt,va) || (va & OFF_MASK) ||
+        !(access & NAS_UP_READ) || (access & ~7U)) return false;
+    uint64_t *tablep=table(pt->root_pa);
+    for (unsigned level=pt->levels-1;level>0;level--) {
+        uint64_t e=tablep[IDX(va,level)];
+        if(!is_table(e)) return false;
+        tablep=table(e&PA_MASK);
+    }
+    uint64_t *leaf=&tablep[IDX(va,0)];
+    uint64_t e=*leaf;
+    if ((e&3)!=DESCRIPTOR || !(e&AP_EL0) || !(e&AF)) return false;
+    e &= ~(AP_RO|UXN);
+    if (!(access&NAS_UP_WRITE)) e |= AP_RO;
+    if (!(access&NAS_UP_EXEC)) e |= UXN;
+    *leaf=e;
+    return true;
+}
+static bool arm_walk(uint64_t pa,unsigned level,uint64_t base,bool top,
+                     nas_user_pt_visit fn,void *ctx) {
+    const uint64_t *entries=table(pa);
+    unsigned count=top?256:512;
+    for(unsigned i=0;i<count;i++) {
+        uint64_t e=entries[i];
+        if(!e) continue;
+        uint64_t va=base | ((uint64_t)i<<(12+9*level));
+        if(level) {
+            if(!is_table(e) ||
+               !arm_walk(e&PA_MASK,level-1,va,false,fn,ctx)) return false;
+        } else {
+            if((e&3)!=DESCRIPTOR || !(e&AP_EL0) || !(e&AF) ||
+               !(e&PA_MASK)) return false;
+            unsigned perms=NAS_UP_READ |
+                ((e&AP_RO)?0:NAS_UP_WRITE) |
+                ((e&UXN)?0:NAS_UP_EXEC);
+            if(!fn(va,e&PA_MASK,perms,ctx)) return false;
+        }
+    }
+    return true;
+}
+bool nas_arm_pt_walk(const struct nas_arm_pt *pt,
+                      nas_user_pt_visit fn,void *ctx) {
+    return pt && frame_pa(pt->root_pa) && valid_levels(pt->levels) && fn &&
+           arm_walk(pt->root_pa,pt->levels-1,0,true,fn,ctx);
 }

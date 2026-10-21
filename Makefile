@@ -79,6 +79,18 @@ $(RVOUT)/mmu_test.o: kernel/arch/riscv64/mmu_test.c kernel/arch/riscv64/mmu.h
 	mkdir -p $(dir $@)
 	clang $(RVCFLAGS) -MMD -MP -c $< -o $@
 
+$(RVOUT)/user_pt.o: kernel/arch/user_pt.c kernel/arch/user_pt.h
+	mkdir -p $(dir $@)
+	clang $(RVCFLAGS) -MMD -MP -c $< -o $@
+
+$(RVOUT)/user_space.o: kernel/mm/user_space.c kernel/mm/user_space.h
+	mkdir -p $(dir $@)
+	clang $(RVCFLAGS) -MMD -MP -c $< -o $@
+
+$(RVOUT)/user_space_test.o: kernel/mm/user_space_test.c kernel/mm/user_space.h
+	mkdir -p $(dir $@)
+	clang $(RVCFLAGS) -MMD -MP -c $< -o $@
+
 $(RVOUT)/usermode.o: kernel/arch/riscv64/usermode.c kernel/arch/riscv64/usermode.h kernel/arch/riscv64/mmu.h
 	mkdir -p $(dir $@)
 	clang $(RVCFLAGS) -MMD -MP -c $< -o $@
@@ -100,11 +112,11 @@ $(RVOUT)/user_entry.o: kernel/arch/riscv64/user_entry.S
 	mkdir -p $(dir $@)
 	clang $(RVCFLAGS) -c $< -o $@
 
-$(RVKERNEL): $(RVOUT)/kernel.o $(RVOUT)/frame.o $(RVOUT)/cpu.o $(RVOUT)/serial.o $(RVOUT)/console.o $(RVOUT)/mmu.o $(RVOUT)/mmu_test.o $(RVOUT)/usermode.o $(RVOUT)/user_entry.o $(RVOUT)/elf_image.o kernel/arch/riscv64/linker.ld
+$(RVKERNEL): $(RVOUT)/kernel.o $(RVOUT)/frame.o $(RVOUT)/cpu.o $(RVOUT)/serial.o $(RVOUT)/console.o $(RVOUT)/user_pt.o $(RVOUT)/user_space.o $(RVOUT)/user_space_test.o $(RVOUT)/mmu.o $(RVOUT)/mmu_test.o $(RVOUT)/usermode.o $(RVOUT)/user_entry.o $(RVOUT)/elf_image.o kernel/arch/riscv64/linker.ld
 	ld.lld -m elf64lriscv -nostdlib -static --no-relax \
 	 -z max-page-size=0x1000 -T kernel/arch/riscv64/linker.ld \
 	 $(RVOUT)/kernel.o $(RVOUT)/frame.o $(RVOUT)/cpu.o $(RVOUT)/serial.o $(RVOUT)/console.o \
-	 $(RVOUT)/mmu.o $(RVOUT)/mmu_test.o $(RVOUT)/usermode.o $(RVOUT)/user_entry.o $(RVOUT)/elf_image.o -o $@
+	 $(RVOUT)/user_pt.o $(RVOUT)/user_space.o $(RVOUT)/user_space_test.o $(RVOUT)/mmu.o $(RVOUT)/mmu_test.o $(RVOUT)/usermode.o $(RVOUT)/user_entry.o $(RVOUT)/elf_image.o -o $@
 
 ifeq ($(ARCH),riscv64)
 .PHONY: port-kernel
@@ -147,15 +159,27 @@ $(ARMOUT)/mmu.o: kernel/arch/aarch64/mmu.c kernel/arch/aarch64/mmu.h kernel/mm/f
 	mkdir -p $(dir $@)
 	clang $(ARMCFLAGS) -MMD -MP -c $< -o $@
 
+$(ARMOUT)/user_pt.o: kernel/arch/user_pt.c kernel/arch/user_pt.h
+	mkdir -p $(dir $@)
+	clang $(ARMCFLAGS) -MMD -MP -c $< -o $@
+
+$(ARMOUT)/user_space.o: kernel/mm/user_space.c kernel/mm/user_space.h
+	mkdir -p $(dir $@)
+	clang $(ARMCFLAGS) -MMD -MP -c $< -o $@
+
+$(ARMOUT)/user_space_test.o: kernel/mm/user_space_test.c kernel/mm/user_space.h
+	mkdir -p $(dir $@)
+	clang $(ARMCFLAGS) -MMD -MP -c $< -o $@
+
 $(ARMOUT)/mmu_test.o: kernel/arch/aarch64/mmu_test.c kernel/arch/aarch64/mmu.h
 	mkdir -p $(dir $@)
 	clang $(ARMCFLAGS) -MMD -MP -c $< -o $@
 
-$(ARMKERNEL): $(ARMOUT)/kernel.o $(ARMOUT)/frame.o $(ARMOUT)/cpu.o $(ARMOUT)/debug_console.o $(ARMOUT)/serial.o $(ARMOUT)/mmu.o $(ARMOUT)/mmu_test.o kernel/arch/aarch64/linker.ld
+$(ARMKERNEL): $(ARMOUT)/kernel.o $(ARMOUT)/frame.o $(ARMOUT)/cpu.o $(ARMOUT)/debug_console.o $(ARMOUT)/serial.o $(ARMOUT)/user_pt.o $(ARMOUT)/user_space.o $(ARMOUT)/user_space_test.o $(ARMOUT)/mmu.o $(ARMOUT)/mmu_test.o kernel/arch/aarch64/linker.ld
 	ld.lld -m aarch64elf -nostdlib -static \
 	 -z max-page-size=0x1000 -T kernel/arch/aarch64/linker.ld \
 	 $(ARMOUT)/kernel.o $(ARMOUT)/frame.o $(ARMOUT)/cpu.o \
-	 $(ARMOUT)/debug_console.o $(ARMOUT)/serial.o $(ARMOUT)/mmu.o $(ARMOUT)/mmu_test.o -o $@
+	 $(ARMOUT)/debug_console.o $(ARMOUT)/serial.o $(ARMOUT)/user_pt.o $(ARMOUT)/user_space.o $(ARMOUT)/user_space_test.o $(ARMOUT)/mmu.o $(ARMOUT)/mmu_test.o -o $@
 
 ifeq ($(ARCH),aarch64)
 .PHONY: port-kernel

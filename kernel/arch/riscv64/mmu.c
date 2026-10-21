@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include "../../mm/frame.h"
 #include "mmu.h"
+#include "../user_pt.h"
 
 /* RISC-V privileged ISA PTE encoding: low 10 flags, then PPN[43:0].
  * V-only intermediate entries, 4-KiB R/W/X/U/A/D leaf entries.
@@ -164,4 +165,51 @@ void nas_rv_pt_destroy(struct nas_rv_page_table *pt) {
     (void)nas_frame_free(pt->root_pa);
     pt->root_pa = 0;
     pt->levels = 0;
+}
+
+/* Optional full-kernel primitive: change a present mapped user 4K leaf
+ * without allocating/freeing frames. Caller owns TLB invalidation. */
+bool nas_rv_pt_protect(const struct nas_rv_page_table *pt,uint64_t va,
+                        unsigned access) {
+    if (!good_user_va(pt,va) || (va & PAGE_MASK) ||
+        !(access & NAS_UP_READ) || (access & ~7U)) return false;
+    uint64_t *table=table_at(pt->root_pa);
+    for(unsigned level=pt->levels-1;level>0;level--) {
+        uint64_t e=table[(va>>(12+9*level))&511];
+        if(!table_entry(e)) return false;
+        table=table_at(entry_pa(e));
+    }
+    uint64_t *slot=&table[(va>>12)&511], e=*slot;
+    if (!(e&V) || !(e&U) || !(e&(R|X))) return false;
+    e &= ~(R|W|X|D);
+    e |= R | ((access&NAS_UP_WRITE)?(W|D):0) |
+         ((access&NAS_UP_EXEC)?X:0);
+    *slot=e;
+    return true;
+}
+static bool rv_walk(uint64_t pa,unsigned level,uint64_t base,bool top,
+                    nas_user_pt_visit fn,void *ctx) {
+    const uint64_t *entries=table_at(pa);
+    unsigned count=top?256:512;
+    for(unsigned i=0;i<count;i++) {
+        uint64_t e=entries[i];
+        if (!e) continue;
+        if (!(e&V)) return false;
+        uint64_t va=base | ((uint64_t)i<<(12+9*level));
+        if (level) {
+            if(!table_entry(e) ||
+               !rv_walk(entry_pa(e),level-1,va,false,fn,ctx)) return false;
+        } else {
+            if (!(e&U) || !(e&(R|X)) || ((e&W)&&!(e&R))) return false;
+            unsigned perms=((e&R)?NAS_UP_READ:0)|
+                ((e&W)?NAS_UP_WRITE:0)|((e&X)?NAS_UP_EXEC:0);
+            if(!fn(va,entry_pa(e),perms,ctx)) return false;
+        }
+    }
+    return true;
+}
+bool nas_rv_pt_walk(const struct nas_rv_page_table *pt,
+                     nas_user_pt_visit fn,void *ctx) {
+    return pt && pt->root_pa && valid_levels(pt->levels) && fn &&
+           rv_walk(pt->root_pa,pt->levels-1,0,true,fn,ctx);
 }
