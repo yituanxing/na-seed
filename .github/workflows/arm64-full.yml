@@ -32,7 +32,7 @@ concurrency:
 jobs:
   full:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Install native AArch64 EDK2, QEMU and cross-compile tools
@@ -41,8 +41,8 @@ jobs:
           sudo apt-get install -y clang lld binutils mtools gdisk cpio qemu-user qemu-system-arm qemu-efi-aarch64
       - name: Build and boot THE shared Task/ELF/FS/syscall kernel on real ARM64
         run: NASEED_ARM_FULL_TIMEOUT=25 sh scripts/probe-aarch64-full.sh
-      - name: ARM64 — original Debian BusyBox through common kernel (echo gate)
-        run: BUSYBOX_PARITY_CASE=echo sh scripts/probe-aarch64-busybox-matrix.sh
+      - name: ARM64 — native Debian BusyBox canonical 17-case parity matrix
+        run: sh scripts/probe-aarch64-busybox-matrix.sh
       - name: Upload real UART and semihosting evidence on failure
         if: failure()
         uses: actions/upload-artifact@v4
