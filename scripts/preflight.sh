@@ -51,6 +51,17 @@ if grep -Eq 'user_byte\\(|user_read_bytes\\(|user_write_bytes\\(|task_schedule\\
     exit 1
 fi
 
+# M7.4: a boot *image* selector, not an ELF loader, syscall table,
+# or a second CPIO filesystem; keep these dependencies outside boot_image.c.
+if grep -Eq 'user_byte\\(|user_write_bytes\\(|syscall_dispatch\\(|elf_load\\(|user_map\\(|alloc_user_root\\(' kernel/boot_image.c; then
+    echo '[PREFLIGHT] boot_image.c acquired syscall/ELF VM responsibilities' >&2
+    exit 1
+fi
+if grep -Eq 'bootfs_mount\\(|nas_user_module\\(' kernel/m1.c; then
+    echo '[PREFLIGHT] Limine/CPIO boot selection leaked into m1.c' >&2
+    exit 1
+fi
+
 # Compare our pinned Linux x86-64 syscall numbers against the host UAPI.
 python3 scripts/check-syscall-nr.py
 python3 scripts/check-syscall-errno.py
