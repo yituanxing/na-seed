@@ -67,3 +67,11 @@ and non-platform/ kernel C sources for each target, not only port/M0 files.
 This is NOT a full-kernel link: the required real RV/ARM MMU root lifecycle,
 trap, task switching, syscall entry and platform exit provider functions are
 intentionally unresolved until implemented. Full runtime claims remain gated.
+
+## One shared userland initialization contract
+The normal kernel init invokes arch_prepare_user_cpu / arch_enable_user_traps,
+rather than executing x86 GDT/TSS/MSR operations from common init. x86
+providers still call its original, tested hardware routines. RV/ARM
+providers are outstanding real link dependencies, not no-op shims.
+CPIO boot program selection now resolves the target musl interpreter from
+one architecture ABI descriptor.

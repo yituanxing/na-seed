@@ -12,9 +12,12 @@
 struct nas_task;
 /* Shared mechanism API: these must be real, not silent stubs, before a
  * non-x86 full-kernel binary may link. */
-void nas_arch_cpu_tables_init(void);
-void nas_arch_cpu_user_fp_init(void);
-void nas_arch_syscall_enable(void);
+/* Each ISA prepares its own exception/FPU and syscall entry protocol.
+ * Shared init never calls x86 GDT/IDT/TSS/MSR functions by name.
+ * RV/ARM full-kernel providers must be implemented before linking.
+ */
+void nas_arch_prepare_user_cpu(void);
+void nas_arch_enable_user_traps(void);
 void nas_arch_enter_user(uint64_t entry, uint64_t sp);
 uint64_t nas_arch_cycle_counter(void);
 void nas_arch_set_user_tls(uint64_t);

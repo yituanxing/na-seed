@@ -127,3 +127,12 @@ uint64_t nas_arch_cycle_counter(void) {
 }
 bool nas_arch_nx_enabled(void) { return (rdmsr(0xc0000080) & (1ULL << 11)) != 0; }
 void nas_arch_set_user_tls(uint64_t address) { wrmsr(0xc0000100, address); }
+
+/* Shared init contract: preserve all established x86 hardware operations. */
+void nas_arch_prepare_user_cpu(void) {
+    nas_arch_cpu_tables_init();
+    nas_arch_cpu_user_fp_init();
+}
+void nas_arch_enable_user_traps(void) {
+    nas_arch_syscall_enable();
+}
