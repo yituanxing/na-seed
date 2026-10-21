@@ -3,6 +3,7 @@
 #include "../task.h"
 #include "../arch/arch.h"
 #include "../mm/frame.h"
+#include "../arch/mmu.h"
 #include "../mm/usercopy.h"
 #include "elf.h"
 #include "user_stack.h"
