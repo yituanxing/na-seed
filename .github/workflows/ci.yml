@@ -138,3 +138,23 @@ jobs:
           name: naseed-riscv64-m0
           path: build/port-riscv64/serial.log
           if-no-files-found: ignore
+  aarch64_m0:
+    name: AArch64 real UEFI/Limine boot
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install AArch64 UEFI/QEMU and cross-compiler tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang lld binutils mtools gdisk \
+            qemu-system-arm qemu-efi-aarch64
+      - name: Compile and QEMU-boot genuine AArch64 M0 kernel
+        run: sh scripts/probe-aarch64-m0.sh
+      - name: Attach aarch64 boot diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naseed-aarch64-m0
+          path: build/port-aarch64/serial.log
+          if-no-files-found: ignore

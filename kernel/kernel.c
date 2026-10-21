@@ -6,6 +6,8 @@
 #if defined(NASEED_PORT_M0) && defined(__riscv)
 #include "arch/riscv64/cpu.h"
 #include "arch/riscv64/mmu.h"
+#elif defined(NASEED_PORT_M0) && defined(__aarch64__)
+#include "arch/aarch64/cpu.h"
 #endif
 #include "drivers/serial.h"
 #include "mm/frame.h"
@@ -78,7 +80,8 @@ void kmain(void) {
     nas_print("[PASS] M0 memory allocator\n");
     nas_print("[PASS] M0 boot / serial / memory\n");
 #ifdef NASEED_PORT_M0
-    /* Real Limine M0 kernel only: no false RISC-V userspace support claim. */
+#if defined(__riscv)
+    /* Preserve the proven RV64 Limine + all three page-table depth tests. */
     if (!paging_req.response ||
         !nas_riscv_validate_limine_mode(paging_req.response->mode)) {
         nas_print("[FAIL] RV64 Limine paging mode / satp mismatch\n");
@@ -94,6 +97,18 @@ void kmain(void) {
     nas_print("[PASS] RV64 Sv39/Sv48/Sv57 user PTE map/query/unmap/reclaim\n");
     nas_print("[PASS] riscv64 M0 Limine/SBI/frame allocator\n");
     nas_arch_halt();
+#elif defined(__aarch64__)
+    /* AArch64 needs a different MMU regime; never assume RISC-V SATP. */
+    if (!nas_arm64_el1_4k_mmu_active()) {
+        nas_print("[FAIL] AArch64 expected EL1 4KiB TTBR1 regime\n");
+        nas_arch_halt();
+    }
+    nas_print("[PORT] AArch64 EL1 stage-1 MMU 4KiB confirmed\n");
+    nas_print("[PASS] aarch64 M0 Limine/UEFI/semihost/frame allocator\n");
+    nas_arch_halt();
+#else
+#error "Unimplemented M0 architecture"
+#endif
 #else
     nas_init_userspace();
 #endif

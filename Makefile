@@ -5,9 +5,15 @@ ifneq ($(strip $(filter-out port-kernel clean,$(MAKECMDGOALS))),)
 $(error riscv64 supports only port-kernel M0 and clean; userspace is not ported)
 endif
 endif
+ifeq ($(ARCH),aarch64)
+.DEFAULT_GOAL := port-kernel
+ifneq ($(strip $(filter-out port-kernel clean,$(MAKECMDGOALS))),)
+$(error aarch64 supports only M0 port-kernel and clean; no userspace backend)
+endif
+endif
 .DELETE_ON_ERROR:
 ARCH ?= x86_64
-ifneq ($(filter $(ARCH),x86_64 riscv64),$(ARCH))
+ifneq ($(filter $(ARCH),x86_64 riscv64 aarch64),$(ARCH))
 $(error Unsupported NaSeed ARCH=$(ARCH))
 endif
 OUT := build
@@ -75,10 +81,50 @@ $(RVKERNEL): $(RVOUT)/kernel.o $(RVOUT)/frame.o $(RVOUT)/cpu.o $(RVOUT)/serial.o
 	 $(RVOUT)/kernel.o $(RVOUT)/frame.o $(RVOUT)/cpu.o $(RVOUT)/serial.o \
 	 $(RVOUT)/mmu.o $(RVOUT)/mmu_test.o -o $@
 
+ifeq ($(ARCH),riscv64)
 .PHONY: port-kernel
 port-kernel: $(RVKERNEL)
 	readelf -h $(RVKERNEL) | grep -q 'Machine:.*RISC-V'
 	echo '[PORT] riscv64 real Limine M0 ELF built (QEMU boot not yet verified)'
+endif
+
+
+# Independent actual AArch64 Limine M0 ELF; no pretend syscall/user backend.
+ARMCFLAGS := --target=aarch64-none-elf -march=armv8-a -mgeneral-regs-only \
+ -std=c11 -O2 -g -Wall -Wextra -Werror -ffreestanding -fno-builtin \
+ -fno-stack-protector -fno-pic -fno-pie -fno-unwind-tables \
+ -DNASEED_PORT_M0 -I $(OUT)/deps -I kernel
+ARMOUT := $(OUT)/port-aarch64
+ARMKERNEL := $(ARMOUT)/kernel.elf
+
+$(ARMOUT)/kernel.o: kernel/kernel.c kernel/arch/arch.h kernel/arch/aarch64/cpu.h $(HDR)
+	mkdir -p $(dir $@)
+	clang $(ARMCFLAGS) -MMD -MP -c $< -o $@
+
+$(ARMOUT)/frame.o: kernel/mm/frame.c kernel/mm/frame.h $(HDR)
+	mkdir -p $(dir $@)
+	clang $(ARMCFLAGS) -MMD -MP -c $< -o $@
+
+$(ARMOUT)/cpu.o: kernel/arch/aarch64/cpu.c kernel/arch/aarch64/cpu.h
+	mkdir -p $(dir $@)
+	clang $(ARMCFLAGS) -MMD -MP -c $< -o $@
+
+$(ARMOUT)/debug_console.o: kernel/arch/aarch64/debug_console.c kernel/drivers/serial.h
+	mkdir -p $(dir $@)
+	clang $(ARMCFLAGS) -MMD -MP -c $< -o $@
+
+$(ARMKERNEL): $(ARMOUT)/kernel.o $(ARMOUT)/frame.o $(ARMOUT)/cpu.o $(ARMOUT)/debug_console.o kernel/arch/aarch64/linker.ld
+	ld.lld -m aarch64elf -nostdlib -static \
+	 -z max-page-size=0x1000 -T kernel/arch/aarch64/linker.ld \
+	 $(ARMOUT)/kernel.o $(ARMOUT)/frame.o $(ARMOUT)/cpu.o \
+	 $(ARMOUT)/debug_console.o -o $@
+
+ifeq ($(ARCH),aarch64)
+.PHONY: port-kernel
+port-kernel: $(ARMKERNEL)
+	readelf -h $(ARMKERNEL) | grep -q 'Machine:.*AArch64'
+	echo '[PORT] aarch64 real Limine M0 ELF built (QEMU boot not yet verified)'
+endif
 
 $(OUT)/kernel.o: kernel/kernel.c kernel/arch/arch.h kernel/drivers/serial.h kernel/mm/frame.h $(HDR)
 	mkdir -p $(dir $@)
