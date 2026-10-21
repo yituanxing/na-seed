@@ -34,9 +34,21 @@ void nas_arm_full_trap_c(struct nas_arm_trap_frame *frame) {
      * Save/use the hardware-provided post-SVC ELR unchanged. */
     uint64_t call[15] = {frame->x[8],frame->x[0],frame->x[1],
         frame->x[2],frame->x[3],frame->x[4],frame->x[5],frame->elr_el1};
+    /* Trace native Linux syscall entry and return around original glibc's
+     * post-RELRO .got write fault. Do not relax the permission contract
+     * just to make a single BusyBox test return success. */
+    nas_print("[ARM64 SVC] nr="); nas_dec(frame->x[8]);
+    nas_print(" pc="); nas_hex(frame->elr_el1);
+    nas_print(" x0="); nas_hex(frame->x[0]);
+    nas_print(" lr="); nas_hex(frame->x[30]);
+    nas_print("\n");
     live=frame;
     uint64_t result=syscall_dispatch(call);
     frame->x[0]=result;
+    nas_print("[ARM64 SVC RETURN] nr="); nas_dec(call[0]);
+    nas_print(" result="); nas_hex(frame->x[0]);
+    nas_print(" pc="); nas_hex(frame->elr_el1);
+    nas_print("\n");
     live=0;
 }
 void nas_arch_restore_cpu(const struct nas_task *task) {
