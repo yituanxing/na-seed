@@ -14,6 +14,10 @@
 #include "boot_image.h"
 #include "arch/arch.h"
 #include "mm/vm.h"
+#include "mm/usercopy.h"
+#include "task/process.h"
+#include "task/sched.h"
+#include "fs/io.h"
 #include "platform/platform.h"
 
 /* Process-local state was previously static global memory. A task is now
@@ -344,8 +348,7 @@ static void observe_stdout(char ch) {
 }
 
 
-/* Defined with the other syscall copy-to-user helpers below. */
-static bool user_write_bytes(uint64_t address, const uint8_t *src, uint64_t length);
+/* User-copy contract now declared in mm/usercopy.h. */
 static uint64_t sys_arch_prctl(uint64_t op, uint64_t address) {
     if (op == 0x1002) { /* ARCH_SET_FS */
         if (address >= USER_LIMIT) return (uint64_t)-EINVAL;
@@ -359,7 +362,7 @@ static uint64_t sys_arch_prctl(uint64_t op, uint64_t address) {
         uint8_t bytes[sizeof(uint64_t)];
         for (unsigned i = 0; i < sizeof(bytes); i++)
             bytes[i] = (uint8_t)(user_fs_base >> (8 * i));
-        return user_write_bytes(address, bytes, sizeof(bytes))
+        return nas_user_write_bytes(address, bytes, sizeof(bytes))
             ? 0 : (uint64_t)-EFAULT;
     }
     return (uint64_t)-EINVAL;
@@ -370,9 +373,7 @@ static uint64_t sys_arch_prctl(uint64_t op, uint64_t address) {
  * No fake TTY, disk, /proc, or filesystem contents are supplied.
  */
 extern void nas_putchar(char c);
-enum { FD_CLOSED = 0, FD_UART = 1, FD_NULL = 2, FD_ZERO = 3,
-       FD_BOOTFS = 4, FD_ARCHIVE = 5, FD_DIR = 6,
-       FD_PIPE_R = 7, FD_PIPE_W = 8, FD_TMP = 9, FD_TMP_DIR = 10 };
+
 static bool same_string(const char *a, const char *b);
 /* Per-FD handles share a refcounted open-file description after dup().
  * All fd aliases must observe the same read/seek/directory cursor.
@@ -420,7 +421,7 @@ static uint64_t sys_pipe2(uint64_t user_pair, uint64_t flags) {
     for (unsigned i = 0; i < 2; i++)
         for (unsigned j = 0; j < 4; j++)
             output[i * 4 + j] = (uint8_t)(fds[i] >> (j * 8));
-    if (!user_write_bytes(user_pair, output, sizeof(output)))
+    if (!nas_user_write_bytes(user_pair, output, sizeof(output)))
         fail("pipe2 validated destination became inaccessible");
     nas_print("[PIPE] created read="); nas_dec(fds[0]);
     nas_print(" write="); nas_dec(fds[1]); nas_print("\n");
@@ -440,7 +441,7 @@ static uint64_t pipe_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     if (!n) return (uint64_t)-EFAULT;
     for (unsigned i = 0; i < n; i++) {
         uint8_t value = nas_pipe_read_byte(slot, i);
-        if (!user_write_bytes(address + i, &value, 1))
+        if (!nas_user_write_bytes(address + i, &value, 1))
             fail("pipe read validated user mapping became inaccessible");
     }
     nas_pipe_read_commit(slot, n);
@@ -469,7 +470,7 @@ static uint64_t pipe_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
  * Release the pipe and RAM-inode backends only after the last reference
  * disappears. dup2 must close an existing destination through this hook.
  */
-static void fd_close_raw(uint64_t fd) {
+void nas_fs_close_fd(uint64_t fd) {
     unsigned final_slot=nas_fd_close(nas_current_task, (unsigned)fd);
     if (final_slot == NAS_FD_LIMIT) return;
     nas_pipe_release_description(final_slot);
@@ -479,7 +480,7 @@ static uint64_t fd_clone(uint64_t src, uint64_t dst, bool cloexec) {
     if (src >= NAS_FD_LIMIT || descriptors[src] == FD_CLOSED ||
         dst >= NAS_FD_LIMIT) return (uint64_t)-EBADF;
     if (src == dst) return dst;
-    fd_close_raw(dst);
+    nas_fs_close_fd(dst);
     return nas_fd_clone(nas_current_task, src, dst, cloexec);
 }
 static uint64_t fd_duplicate(uint64_t oldfd, uint64_t minimum,
@@ -521,7 +522,7 @@ static bool user_read_bytes(uint64_t addr, uint8_t *dst, uint64_t len) {
     }
     return true;
 }
-static bool user_write_bytes(uint64_t addr, const uint8_t *src, uint64_t len) {
+bool nas_user_write_bytes(uint64_t addr, const uint8_t *src, uint64_t len) {
     if (addr >= USER_LIMIT || len > USER_LIMIT - addr) return false;
     for (uint64_t n = 0; n < len; n++) {
         if (!nas_mmu_user_writable(addr + n))
@@ -541,7 +542,7 @@ static bool read_u64(uint64_t addr, uint64_t *value) {
 static bool write_u64(uint64_t addr, uint64_t value) {
     uint8_t bytes[8];
     for (unsigned n = 0; n < 8; n++) bytes[n] = (uint8_t)(value >> (8 * n));
-    return user_write_bytes(addr, bytes, 8);
+    return nas_user_write_bytes(addr, bytes, 8);
 }
 static bool same_string(const char *a, const char *b) {
     for (; *a && *b; a++, b++) if (*a != *b) return false;
@@ -592,7 +593,7 @@ static uint64_t tmp_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     uint64_t slot = file_slot[fd], offset = boot_file_offsets[slot];
     if (offset >= file->size) return 0;
     if (length > file->size - offset) length = file->size - offset;
-    if (!user_write_bytes(address, file->bytes + offset, length))
+    if (!nas_user_write_bytes(address, file->bytes + offset, length))
         return (uint64_t)-EFAULT;
     boot_file_offsets[slot] += length;
     return length;
@@ -750,7 +751,7 @@ static uint64_t sys_open_device(uint64_t pathname, uint64_t flags) {
     uint64_t result = resolve_path((uint64_t)-100, pathname, path);
     return (int64_t)result < 0 ? result : sys_open_path(path, flags);
 }
-static uint64_t sys_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
+uint64_t nas_fs_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     if (fd >= 64 || descriptors[fd] == FD_CLOSED) return (uint64_t)-EBADF;
     if ((file_status_flags[file_slot[fd]] & 3ULL) == 0)
         return (uint64_t)-EBADF;
@@ -771,7 +772,7 @@ static uint64_t sys_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     }
     return length;
 }
-static uint64_t sys_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
+uint64_t nas_fs_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     if (fd >= 64 || descriptors[fd] == FD_CLOSED) return (uint64_t)-EBADF;
     if ((file_status_flags[file_slot[fd]] & 3ULL) == 1)
         return (uint64_t)-EBADF;
@@ -786,7 +787,7 @@ static uint64_t sys_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
         if (start >= entry->size) return 0;
         uint64_t available = entry->size - start;
         if (length > available) length = available;
-        if (!user_write_bytes(address, entry->data + start, length))
+        if (!nas_user_write_bytes(address, entry->data + start, length))
             return (uint64_t)-EFAULT;
         boot_file_offsets[file_slot[fd]] += length;
         return length;
@@ -798,7 +799,7 @@ static uint64_t sys_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
         if (start > file->size) return 0;
         uint64_t available = file->size - start;
         if (length > available) length = available;
-        if (!user_write_bytes(address, (const uint8_t *)file->address + start,
+        if (!nas_user_write_bytes(address, (const uint8_t *)file->address + start,
                               length)) return (uint64_t)-EFAULT;
         boot_file_offsets[file_slot[fd]] += length;
         return length;
@@ -809,10 +810,10 @@ static uint64_t sys_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
         return (uint64_t)-EFAULT;
     uint8_t zero = 0;
     for (uint64_t i = 0; i < length; i++)
-        if (!user_write_bytes(address + i, &zero, 1)) return i ? i : (uint64_t)-EFAULT;
+        if (!nas_user_write_bytes(address + i, &zero, 1)) return i ? i : (uint64_t)-EFAULT;
     return length;
 }
-static uint64_t sys_fd_writev(uint64_t fd, uint64_t iov, uint64_t count) {
+uint64_t nas_fs_fd_writev(uint64_t fd, uint64_t iov, uint64_t count) {
     if (count > 64) return (uint64_t)-EINVAL;
     if (count && (iov >= USER_LIMIT || count > (USER_LIMIT - iov) / 16))
         return (uint64_t)-EFAULT;
@@ -822,7 +823,7 @@ static uint64_t sys_fd_writev(uint64_t fd, uint64_t iov, uint64_t count) {
         if (!read_u64(iov + n * 16, &address) ||
             !read_u64(iov + n * 16 + 8, &bytes))
             return sent ? sent : (uint64_t)-EFAULT;
-        uint64_t r = sys_fd_write(fd, address, bytes);
+        uint64_t r = nas_fs_fd_write(fd, address, bytes);
         if ((int64_t)r < 0) return sent ? sent : r;
         sent += r;
         if (r != bytes) break;
@@ -876,7 +877,7 @@ static uint64_t sys_getcwd_root(uint64_t buffer, uint64_t size) {
     while (current_workdir[length]) length++;
     length++; /* Linux raw getcwd includes NUL in returned length. */
     if (size < length) return (uint64_t)-ERANGE;
-    return user_write_bytes(buffer, (const uint8_t *)current_workdir, length)
+    return nas_user_write_bytes(buffer, (const uint8_t *)current_workdir, length)
         ? length : (uint64_t)-EFAULT;
 }
 static uint64_t sys_chdir(uint64_t pathname) {
@@ -925,7 +926,7 @@ static uint64_t sys_uname_naseed(uint64_t buffer) {
         "Linux", "naseed", "0.1", "NaSeed experimental x86_64",
         "x86_64", "localdomain"
     };
-    return user_write_bytes(buffer, (const uint8_t *)&data, sizeof(data))
+    return nas_user_write_bytes(buffer, (const uint8_t *)&data, sizeof(data))
         ? 0 : (uint64_t)-EFAULT;
 }
 
@@ -978,7 +979,7 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
         st.dev = 2; st.ino = fd + 10;
         st.mode = 0020666; /* real character device backed by UART/null/zero */
     }
-    if (!user_write_bytes(address, (const uint8_t *)&st, sizeof(st)))
+    if (!nas_user_write_bytes(address, (const uint8_t *)&st, sizeof(st)))
         return (uint64_t)-EFAULT;
     return 0;
 }
@@ -1029,7 +1030,7 @@ static uint64_t write_boot_stat(const struct bootfs_entry *entry, uint64_t dst) 
     st.blksize = PAGE;
     st.size = (int64_t)entry->size;
     st.blocks = (int64_t)((entry->size + 511) / 512);
-    return user_write_bytes(dst, (const uint8_t *)&st, sizeof(st))
+    return nas_user_write_bytes(dst, (const uint8_t *)&st, sizeof(st))
         ? 0 : (uint64_t)-EFAULT;
 }
 static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
@@ -1055,7 +1056,7 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
     result = sys_open_path(path, 0);
     if ((int64_t)result < 0) return result;
     uint64_t ret = sys_fstat_boot(result, statbuf);
-    fd_close_raw(result);
+    nas_fs_close_fd(result);
     return ret;
 }
 
@@ -1075,7 +1076,7 @@ static uint64_t sys_readlinkat_boot(uint64_t dirfd, uint64_t pathname,
     const struct bootfs_entry *entry = bootfs_find(actual);
     if (!bootfs_is_link(entry)) return (uint64_t)-EINVAL;
     uint64_t len = entry->size < capacity ? entry->size : capacity;
-    return user_write_bytes(dst, entry->data, len) ? len : (uint64_t)-EFAULT;
+    return nas_user_write_bytes(dst, entry->data, len) ? len : (uint64_t)-EFAULT;
 }
 
 static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
@@ -1149,7 +1150,7 @@ static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
         record[17] = (uint8_t)(reclen >> 8);
         record[18] = (uint8_t)dtype;
         for (unsigned i = 0; i < len; i++) record[19 + i] = (uint8_t)name[i];
-        if (!user_write_bytes(dst + written, record, reclen))
+        if (!nas_user_write_bytes(dst + written, record, reclen))
             return written ? written : (uint64_t)-EFAULT;
         written += reclen;
         cursor++;
@@ -1165,7 +1166,7 @@ static uint64_t sys_sigaction(uint64_t signum, uint64_t new_action,
     if (size != 8 || signum < 1 || signum > 64) return (uint64_t)-EINVAL;
     if (new_action && (signum == 9 || signum == 19)) return (uint64_t)-EINVAL;
     if (old_action &&
-        !user_write_bytes(old_action, (const uint8_t *)signal_actions[signum], 32))
+        !nas_user_write_bytes(old_action, (const uint8_t *)signal_actions[signum], 32))
         return (uint64_t)-EFAULT;
     if (new_action &&
         !user_read_bytes(new_action, (uint8_t *)signal_actions[signum], 32))
@@ -1400,7 +1401,7 @@ static uint64_t sys_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     /* Commit: syscall can no longer return to old userspace RIP or RSP. */
     for (unsigned fd = 0; fd < 64; fd++)
         if (descriptors[fd] != FD_CLOSED && fd_cloexec[fd])
-            fd_close_raw(fd);
+            nas_fs_close_fd(fd);
     thread_clear_tid = 0;
     user_fs_base = 0;
     nas_arch_set_user_tls(0); /* fresh musl/glibc TLS initialization */
@@ -1428,276 +1429,22 @@ static uint64_t sys_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
 }
 
 
-/* A cooperative child-first fork; parent remains READY while child runs.
- * Once a child blocks on a pipe, another READY task runs and the blocked
- * syscall is completed later in its owner's address space. No timer
- * preemption, SMP, or independent kernel stack is claimed.
- */
-static uint64_t sys_fork(uint64_t *frame) {
-    struct nas_task *parent = nas_current_task;
-    nas_arch_save_fpu(parent);
-    struct nas_task *child = nas_task_fork_slot();
-    if (!child) return (uint64_t)-EAGAIN;
-    uint64_t new_root = nas_mmu_fork_root();
-    if (!new_root) {
-        nas_task_release(child);
-        return (uint64_t)-ENOMEM;
-    }
-    nas_task_set_root(child, new_root);
-    if (!nas_task_hold_files(child)) fail("fork dangling open-file slot");
-    parent->arch.resume_user_rsp = syscall_user_rsp;
-    for (unsigned i = 0; i < 15; i++) parent->arch.resume_regs[i] = frame[i];
-    parent->arch.resume_regs[0] = child->pid; /* fork returns PID to parent */
-    parent->resume_valid = true;
-    parent->blocked_nr = 0;
-    parent->pending_valid = false;
-    parent->state = NAS_TASK_READY;
-    child->state = NAS_TASK_RUNNING;
-    nas_current_task = child;
-    nas_arch_restore_cpu(child);
-    nas_print("[PROC] fork parent="); nas_dec(parent->pid);
-    nas_print(" child="); nas_dec(child->pid); nas_print("\n");
-    return 0; /* fork returns zero in the child */
-}
-static uint64_t sys_wait4(uint64_t desired, uint64_t status_addr,
-                           uint64_t options, uint64_t rusage) {
-    if (options & ~1ULL) return (uint64_t)-EINVAL;
-    if (rusage) return (uint64_t)-EOPNOTSUPP;
-    bool have_child = false;
-    /* POSIX -1 waits for any child; direct positive PID is also valid.
-     * This first model only supports a single process group.
-     */
-    if ((int64_t)desired == 0 || (int64_t)desired < -1)
-        return (uint64_t)-EOPNOTSUPP;
-    for (unsigned slot = 0; slot < NAS_TASK_LIMIT; ++slot) {
-        struct nas_task *child = nas_task_child_at(TASK.pid, slot);
-        if (!child) continue;
-        uint64_t pid = child->pid;
-        if (desired != UINT64_MAX && desired != pid) continue;
-        have_child = true;
-        if (child->state != NAS_TASK_ZOMBIE) continue;
-        uint64_t code = child->termination_signal
-            ? child->termination_signal : (child->exit_code & 255U) << 8;
-        if (status_addr) {
-            uint8_t status_bytes[4] = {
-                (uint8_t)code, (uint8_t)(code >> 8), 0, 0
-            };
-            if (!user_write_bytes(status_addr, status_bytes, 4))
-                return (uint64_t)-EFAULT;
-        }
-        if (!nas_mmu_reclaim_root(nas_task_page_root(child)))
-            fail("wait4 failed to reclaim child address space");
-        nas_print("[PROC] wait4 reaped pid="); nas_dec(pid);
-        nas_print(" status="); nas_dec(code); nas_print("\n");
-        nas_task_release(child);
-        return pid;
-    }
-    return have_child ? ((options & 1) ? 0 : (uint64_t)-EOPNOTSUPP)
-                      : (uint64_t)-ECHILD;
-}
-
-
-/* M6.4 syscall-boundary cooperative scheduler. All live syscalls unwind on
- * the same kernel stack. Parked syscalls are re-issued ONLY after a wake
- * condition is true and the task's own CR3 and FS state are restored.
- * Thus a switched task always receives the real read/write/wait4 result;
- * a fabricated success or USER RIP rewind would corrupt Linux userspace.
- */
-static bool task_io_ready(const struct nas_task *task) {
-    uint64_t fd = task->blocked_args[0];
-    uint8_t kind = nas_task_fd_kind(task, fd);
-    unsigned slot = nas_task_fd_slot(task, fd);
-    if (slot >= NAS_FD_LIMIT) return true; /* replay to return EBADF */
-    if (task->blocked_nr == __NR_read)
-        return kind != FD_PIPE_R || nas_pipe_read_ready(slot);
-    if (task->blocked_nr == __NR_write ||
-        task->blocked_nr == __NR_writev)
-        return kind != FD_PIPE_W || nas_pipe_write_ready(slot);
-    return true;
-}
-static bool task_wait_ready(const struct nas_task *task) {
-    uint64_t desired = task->blocked_args[0];
-    for (unsigned slot = 0; slot < NAS_TASK_LIMIT; slot++) {
-        struct nas_task *child = nas_task_child_at(task->pid, slot);
-        if (!child) continue;
-        if (desired != UINT64_MAX && desired != child->pid) continue;
-        if (child->state == NAS_TASK_ZOMBIE) return true;
-    }
-    return false;
-}
-static bool task_can_wake(const struct nas_task *task) {
-    if (task->state != NAS_TASK_BLOCKED || !task->resume_valid ||
-        !task->pending_valid) return false;
-    if (task->blocked_nr == __NR_wait4) return task_wait_ready(task);
-    if (task->blocked_nr == __NR_read ||
-        task->blocked_nr == __NR_write ||
-        task->blocked_nr == __NR_writev)
-        return task_io_ready(task);
-    return false;
-}
-static uint64_t task_replay(struct nas_task *task) {
-    uint64_t nr = task->blocked_nr;
-    const uint64_t *a = task->blocked_args;
-    if (nr == __NR_read) return sys_fd_read(a[0], a[1], a[2]);
-    if (nr == __NR_write) return sys_fd_write(a[0], a[1], a[2]);
-    if (nr == __NR_writev) return sys_fd_writev(a[0], a[1], a[2]);
-    if (nr == __NR_wait4) return sys_wait4(a[0], a[1], a[2], a[3]);
-    fail("scheduler unknown blocked syscall");
-}
-
-/* Broken pipe generates SIGPIPE. POSIX/Linux default action terminates the
- * writer; returning EPIPE alone is insufficient (BusyBox yes retries forever).
- * Blocked or ignored SIGPIPE returns EPIPE to userspace as Linux does.
- * A custom userspace handler requires signal-frame delivery (not yet here).
- */
-#define NAS_SIGPIPE 13
-static bool sigpipe_default_on_fd(uint64_t fd) {
-    return TASK.ppid && fd < NAS_FD_LIMIT &&
-        descriptors[fd] == FD_PIPE_W &&
-        signal_actions[NAS_SIGPIPE][0] == 0 &&
-        !(blocked_signals & (1ULL << (NAS_SIGPIPE - 1)));
-}
-static void task_mark_child_exit(uint32_t code, uint32_t signum) {
-    struct nas_task *child = nas_current_task;
-    if (!child->ppid || !nas_task_by_pid(child->ppid))
-        fail("child termination without living parent");
-    child->exit_code = code & 255U;
-    child->termination_signal = signum;
-    child->state = NAS_TASK_ZOMBIE;
-    child->pending_valid = false;
-    child->blocked_nr = 0;
-    for (unsigned fd = 0; fd < NAS_FD_LIMIT; fd++)
-        if (descriptors[fd] != FD_CLOSED) fd_close_raw(fd);
-    if (signum) {
-        nas_print("[SIGNAL] default SIGPIPE terminated pid=");
-        nas_dec(child->pid);
-        nas_print("\n");
-    } else {
-        nas_print("[PROC] child exited pid="); nas_dec(child->pid);
-        nas_print(" status="); nas_dec(child->exit_code);
-        nas_print("; parent pid="); nas_dec(child->ppid);
-        nas_print("\n");
-    }
-}
-static unsigned schedule_count;
-static uint64_t task_schedule(uint64_t *frame) {
-retry_schedule: ; /* label must precede a statement in C11 */
-    struct nas_task *previous = nas_current_task;
-    uint64_t previous_pid = previous->pid; /* zombie may be reaped on replay */
-    /* A READY task always gets one turn before re-evaluating blocked tasks.
-     * This allows ash to construct consumers after a producer fills its pipe.
-     */
-    for (unsigned pass = 0; pass < 2; ++pass) {
-        for (unsigned slot = 0; slot < NAS_TASK_LIMIT; ++slot) {
-            struct nas_task *next = nas_task_at(slot);
-            if (next == previous || !next->resume_valid) continue;
-            if (pass == 0 && next->state != NAS_TASK_READY) continue;
-            if (pass == 1 && !task_can_wake(next)) continue;
-            nas_current_task = next;
-            nas_arch_restore_cpu(next);
-            uint64_t result = next->arch.resume_regs[0];
-            if (next->pending_valid) {
-                result = task_replay(next);
-                if ((int64_t)result == -EPIPE &&
-                    (next->blocked_nr == __NR_write ||
-                     next->blocked_nr == __NR_writev) &&
-                    sigpipe_default_on_fd(next->blocked_args[0])) {
-                    task_mark_child_exit(0, NAS_SIGPIPE);
-                    goto retry_schedule; /* parent can now observe zombie */
-                }
-                if ((int64_t)result == -EOPNOTSUPP &&
-                    (next->blocked_nr == __NR_read ||
-                     next->blocked_nr == __NR_write ||
-                     next->blocked_nr == __NR_writev)) {
-                    next->state = NAS_TASK_BLOCKED;
-                    nas_current_task = previous;
-                    nas_arch_restore_cpu(previous);
-                    continue;
-                }
-                next->pending_valid = false;
-                next->blocked_nr = 0;
-            }
-            next->state = NAS_TASK_RUNNING;
-            next->resume_valid = false;
-            for (unsigned i = 0; i < 15; i++)
-                frame[i] = next->arch.resume_regs[i];
-            syscall_user_rsp = next->arch.resume_user_rsp;
-            if (schedule_count++ < 48) {
-                nas_print("[SCHED] from="); nas_dec(previous_pid);
-                nas_print(" to="); nas_dec(next->pid); nas_print("\n");
-            }
-            return result;
-        }
-    }
-    /* Fatal deadlock diagnostic: dump who holds each pipe endpoint. */
-    for (unsigned i = 0; i < NAS_PIPE_COUNT; i++) {
-        unsigned count = 0;
-        bool readers = false, writers = false;
-        if (!nas_pipe_snapshot(i, &count, &readers, &writers)) continue;
-        nas_print("[DEADLOCK] pipe="); nas_dec(i);
-        nas_print(" bytes="); nas_dec(count);
-        nas_print(" readers="); nas_dec(readers);
-        nas_print(" writers="); nas_dec(writers);
-        nas_print("\n");
-    }
-    for (unsigned i = 0; i < NAS_TASK_LIMIT; i++) {
-        struct nas_task *task = nas_task_at(i);
-        if (task->state == NAS_TASK_FREE) continue;
-        nas_print("[DEADLOCK] pid="); nas_dec(task->pid);
-        nas_print(" state="); nas_dec(task->state);
-        nas_print(" blocked_nr="); nas_dec(task->blocked_nr);
-        nas_print(" fd="); nas_dec(task->blocked_args[0]);
-        nas_print("\n");
-        for (unsigned fd = 0; fd < NAS_FD_LIMIT; fd++) {
-            uint8_t kind = nas_task_fd_kind(task, fd);
-            if (kind != FD_PIPE_R && kind != FD_PIPE_W) continue;
-            unsigned slot = nas_task_fd_slot(task, fd);
-            nas_print("[DEADLOCK] holder pid="); nas_dec(task->pid);
-            nas_print(" fd="); nas_dec(fd);
-            nas_print(" kind="); nas_dec(kind);
-            nas_print(" slot="); nas_dec(slot);
-            nas_print("\n");
-        }
-    }
-    fail("scheduler deadlock: all live tasks blocked; no ready process");
-}
-static uint64_t task_block(uint64_t *frame, uint64_t nr,
-                           uint64_t a, uint64_t b, uint64_t c,
-                           uint64_t d) {
-    struct nas_task *task = nas_current_task;
-    for (unsigned i = 0; i < 15; i++) task->arch.resume_regs[i] = frame[i];
-    task->arch.resume_user_rsp = syscall_user_rsp;
-    task->resume_valid = true;
-    task->blocked_nr = nr;
-    task->pending_valid = true;
-    task->blocked_args[0] = a;
-    task->blocked_args[1] = b;
-    task->blocked_args[2] = c;
-    task->blocked_args[3] = d;
-    task->state = NAS_TASK_BLOCKED;
-    nas_arch_save_fpu(task);
-    if (schedule_count < 48) {
-        nas_print("[SCHED] blocked pid="); nas_dec(task->pid);
-        nas_print(" syscall="); nas_dec(nr); nas_print("\n");
-    }
-    return task_schedule(frame);
-}
 static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
                              uint64_t fd, uint64_t buf, uint64_t count) {
     uint64_t ret;
-    if (nr == __NR_read) ret = sys_fd_read(fd, buf, count);
-    else if (nr == __NR_write) ret = sys_fd_write(fd, buf, count);
-    else ret = sys_fd_writev(fd, buf, count);
+    if (nr == __NR_read) ret = nas_fs_fd_read(fd, buf, count);
+    else if (nr == __NR_write) ret = nas_fs_fd_write(fd, buf, count);
+    else ret = nas_fs_fd_writev(fd, buf, count);
     if ((int64_t)ret == -EPIPE &&
         (nr == __NR_write || nr == __NR_writev) &&
-        sigpipe_default_on_fd(fd)) {
-        task_mark_child_exit(0, NAS_SIGPIPE);
-        return task_schedule(frame);
+        nas_sched_sigpipe_default(fd)) {
+        nas_sched_child_exit(0, NAS_SIGPIPE);
+        return nas_task_schedule(frame);
     }
     if ((int64_t)ret == -EOPNOTSUPP && fd < NAS_FD_LIMIT &&
         (descriptors[fd] == FD_PIPE_R || descriptors[fd] == FD_PIPE_W) &&
         !(file_status_flags[file_slot[fd]] & 0x800ULL))
-        return task_block(frame, nr, fd, buf, count, 0);
+        return nas_task_block(frame, nr, fd, buf, count, 0);
     return ret;
 }
 
@@ -1756,7 +1503,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == __NR_close) {
         if (args[1] >= 64 || descriptors[args[1]] == FD_CLOSED)
             return (uint64_t)-EBADF;
-        fd_close_raw(args[1]);
+        nas_fs_close_fd(args[1]);
         return 0;
     }
     if (nr == __NR_ioctl) {
@@ -1769,14 +1516,14 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == __NR_rt_sigprocmask) return sys_sigprocmask(args[1], args[2], args[3], args[4]);
     if (nr == __NR_uname) return sys_uname_naseed(args[1]);
     if (nr == __NR_getcwd) return sys_getcwd_root(args[1], args[2]);
-    if (nr == __NR_fork) return sys_fork((uint64_t *)(uintptr_t)args);
+    if (nr == __NR_fork) return nas_process_fork((uint64_t *)(uintptr_t)args);
     if (nr == __NR_pipe) return sys_pipe2(args[1], 0);
     if (nr == __NR_pipe2) return sys_pipe2(args[1], args[2]);
     if (nr == __NR_wait4) {
-        uint64_t ret = sys_wait4(args[1], args[2], args[3], args[4]);
+        uint64_t ret = nas_process_wait4(args[1], args[2], args[3], args[4]);
         if ((int64_t)ret == -EOPNOTSUPP && args[4] == 0 &&
             args[3] == 0 && ((int64_t)args[1] == -1 || (int64_t)args[1] > 0))
-            return task_block((uint64_t *)(uintptr_t)args, nr,
+            return nas_task_block((uint64_t *)(uintptr_t)args, nr,
                               args[1], args[2], args[3], args[4]);
         return ret;
     }
@@ -1796,8 +1543,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == __NR_getpgrp) return TASK.pid; /* one process group today */
     if (nr == __NR_exit || nr == __NR_exit_group) { /* exit / exit_group */
         if (TASK.ppid) {
-            task_mark_child_exit((uint32_t)args[1], 0);
-            return task_schedule((uint64_t *)(uintptr_t)args);
+            nas_sched_child_exit((uint32_t)args[1], 0);
+            return nas_task_schedule((uint64_t *)(uintptr_t)args);
         }
         TASK.exit_code = (uint32_t)(args[1] & 255ULL);
         TASK.termination_signal = 0;
