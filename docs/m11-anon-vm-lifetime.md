@@ -45,3 +45,24 @@ This is one complete eager-anonymous-VM ownership increment, not a claim
 that NaSeed implements all Linux process and VMA semantics. The next
 real-workload milestone will decide whether file-backed mappings, COW or
 true PROT_NONE justify deeper VMA/pager work.
+
+## Verified first integration failure and common ABI correction
+
+The three original source-built Linux libc binaries executed correctly under
+Linux / QEMU-user. The first M11 full-kernel QEMU run accepted all 7/7 on RV64
+and ARM64, but x86-64 reported mmap ENOSYS for the standard C program.
+
+Inspection of the **actual unmodified x86-64 glibc program disassembly**
+showed `mov $0xffffffff,%r8d` before `__mmap64`: the signed 32-bit
+fd=-1 reaches the raw syscall interface zero-extended to
+0x00000000ffffffff, not UINT64_MAX. Existing NaSeed mmap erroneously
+required fd == UINT64_MAX, even though the Linux MAP_ANONYMOUS ABI **ignores
+fd**. This was a shared syscall-contract bug exposed by real user code,
+not a reason to special-case the x86 provider or weaken the test.
+
+The complete fix removes the fd restriction only for Linux anonymous mmap;
+the unsupported flags/offset policy remains fail-closed. A new host ABI
+regression covers both encodings of -1, arbitrary ignored fd values,
+invalid mode bits and nonzero offsets on every build. Native QEMU M11
+acceptance must be rerun after this change; do not mistake the earlier
+x86 failure for a passed result.

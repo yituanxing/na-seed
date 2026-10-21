@@ -5,6 +5,7 @@
 #include "vm.h"
 #include "prot.h"
 #include "anon_regions.h"
+#include "mmap_abi.h"
 #define TASK (*nas_current_task)
 #define heap_break TASK.heap_break
 
@@ -19,11 +20,12 @@ uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
                          uint64_t prot, uint64_t flags,
                          uint64_t fd, uint64_t offset) {
     (void)hint;
-    /* MAP_PRIVATE|MAP_ANONYMOUS; no file/offset/map-fixed emulation. */
+    /* MAP_PRIVATE|MAP_ANONYMOUS. Linux ignores fd under MAP_ANONYMOUS:
+     * an x86-64 libc may pass int -1 zero-extended to 0x00000000ffffffff.
+     * Non-anonymous mappings and nonzero offsets remain explicitly refused. */
     if (!length || length > (64ULL << 20) || length > UINT64_MAX - PAGE)
         return (uint64_t)-EINVAL;
-    if ((flags & 0x22) != 0x22 || (flags & ~0x22ULL) ||
-        fd != UINT64_MAX || offset)
+    if (!nas_linux_anon_map_supported(flags,fd,offset))
         return (uint64_t)-ENOSYS;
     if (prot & ~7ULL) return (uint64_t)-EINVAL;
     if (!prot) return (uint64_t)-ENOSYS; /* needs inaccessible-VMA support */

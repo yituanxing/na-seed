@@ -30,6 +30,8 @@ jobs:
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-syscall-abi.c -o /tmp/naseed-syscall-test && /tmp/naseed-syscall-test
       - name: Anonymous VM range reuse, split, fork ownership and bounded capacity
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-anon-regions.c kernel/mm/anon_regions.c -o /tmp/naseed-anon && /tmp/naseed-anon
+      - name: Linux anonymous mmap ABI: ignored fd including x86 zero-extended -1
+        run: cc -std=c11 -Wall -Wextra -Werror scripts/test-mmap-abi.c -o /tmp/naseed-mmap-abi && /tmp/naseed-mmap-abi
       - name: Linux mmap/mprotect permission policy regression
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-vm-prot.c -o /tmp/naseed-vm-prot && /tmp/naseed-vm-prot
       - name: Linux open flags ABI regression (including ARM64 values)
