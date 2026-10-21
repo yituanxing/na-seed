@@ -9,6 +9,7 @@
 #include "task.h"
 #include "fd.h"
 #include "tmpfs.h"
+#include "path.h"
 
 /* Process-local state was previously static global memory. A task is now
  * its explicit owner; the single-task aliases keep the proven syscall path
@@ -956,60 +957,39 @@ static bool same_string(const char *a, const char *b) {
 /* Lexically combine absolute, cwd-relative and dirfd-relative paths.
  * bootfs_resolve performs archive symlink traversal at the actual lookup.
  */
-static uint64_t resolve_path(uint64_t dirfd, uint64_t pathname, char out[256]) {
+/* This adapter owns user memory and dirfd lookup. Component processing
+ * lives in path.c and can be tested independently of the syscall ABI. */
+static uint64_t resolve_path(uint64_t dirfd, uint64_t pathname,
+                             char out[256]) {
     char src[256];
-    unsigned n = 0;
-    if (pathname >= USER_LIMIT) return (uint64_t)-EFAULT;
-    for (; n < sizeof(src); n++) {
-        uint8_t *p = user_byte(pathname + n);
+    unsigned n=0;
+    if (pathname>=USER_LIMIT) return (uint64_t)-EFAULT;
+    for (;n<sizeof(src);n++) {
+        uint8_t *p=user_byte(pathname+n);
         if (!p) return (uint64_t)-EFAULT;
-        src[n] = (char)*p;
+        src[n]=(char)*p;
         if (!src[n]) break;
     }
-    if (n == sizeof(src)) return (uint64_t)-ENAMETOOLONG;
+    if (n==sizeof(src)) return (uint64_t)-ENAMETOOLONG;
     if (!n) return (uint64_t)-ENOENT;
-    unsigned used = 1;
-    out[0] = '/';
-    if (src[0] != '/') {
-        const char *base;
-        if (dirfd == (uint64_t)-100) base = current_workdir;
+    const char *base=0;
+    if (src[0]!='/') {
+        if (dirfd==(uint64_t)-100) base=current_workdir;
         else {
-            if (dirfd >= 64 || descriptors[dirfd] == FD_CLOSED)
+            if (dirfd>=NAS_FD_LIMIT || descriptors[dirfd]==FD_CLOSED)
                 return (uint64_t)-EBADF;
-            if (descriptors[dirfd] == FD_TMP_DIR) {
-                const struct nas_tmp_file *t = tmp_by_fd(dirfd);
-                if (!t) return (uint64_t)-EBADF;
-                base = t->path;
+            if (descriptors[dirfd]==FD_TMP_DIR) {
+                const struct nas_tmp_file *dir=tmp_by_fd(dirfd);
+                if (!dir) return (uint64_t)-EBADF;
+                base=dir->path;
             } else {
-                if (descriptors[dirfd] != FD_DIR || !boot_entries[dirfd])
+                if (descriptors[dirfd]!=FD_DIR || !boot_entries[dirfd])
                     return (uint64_t)-ENOTDIR;
-                base = boot_entries[dirfd]->path;
+                base=boot_entries[dirfd]->path;
             }
         }
-        for (unsigned i = 1; base[i]; i++) {
-            if (used + 1 >= 256) return (uint64_t)-ENAMETOOLONG;
-            out[used++] = base[i];
-        }
     }
-    for (unsigned pos = 0; pos < n;) {
-        while (pos < n && src[pos] == '/') pos++;
-        unsigned start = pos;
-        while (pos < n && src[pos] != '/') pos++;
-        unsigned len = pos - start;
-        if (!len || (len == 1 && src[start] == '.')) continue;
-        if (len == 2 && src[start] == '.' && src[start + 1] == '.') {
-            if (used > 1) {
-                while (used > 1 && out[used - 1] != '/') used--;
-                if (used > 1) used--;
-            }
-            continue;
-        }
-        if (used + len + 1 >= 256) return (uint64_t)-ENAMETOOLONG;
-        if (used != 1) out[used++] = '/';
-        for (unsigned i = 0; i < len; i++) out[used++] = src[start + i];
-    }
-    out[used] = 0;
-    return 0;
+    return (uint64_t)(int64_t)nas_path_resolve(base,src,out);
 }
 
 static uint64_t tmp_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
@@ -1131,8 +1111,17 @@ static uint64_t sys_open_path(const char *path, uint64_t flags) {
      * to create a new file. O_TRUNC has no effect on character devices.
      * Archive-backed data, however, stays strictly read-only.
      */
+    /* O_CREAT means "create if absent", not "write". A pre-existing
+     * immutable CPIO regular file can be opened O_RDONLY|O_CREAT.
+     * O_CREAT|O_EXCL must refuse an existing name with EEXIST.
+     */
+    if ((flags & 0xc0ULL) == 0xc0ULL &&
+        (kind == FD_ARCHIVE || kind == FD_DIR || kind == FD_BOOTFS))
+        return (uint64_t)-EEXIST;
     if (kind != FD_NULL && kind != FD_ZERO && kind != FD_TMP &&
-        (flags & (0x40ULL | 0x200ULL | 0x400ULL)))
+        (flags & 0x200ULL))
+        return (uint64_t)-EROFS;
+    if (kind == FD_BOOTFS && (flags & (0x40ULL | 0x400ULL)))
         return (uint64_t)-EROFS;
     if ((kind == FD_ARCHIVE || kind == FD_DIR) && (flags & 3ULL))
         return kind == FD_DIR ? (uint64_t)-EISDIR : (uint64_t)-EROFS;

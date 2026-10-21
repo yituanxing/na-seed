@@ -15,7 +15,7 @@ CFLAGS := --target=x86_64-unknown-none-elf -std=c11 -O2 -g -Wall -Wextra -Werror
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
  -z noexecstack -T kernel/linker.ld
 
-.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch alpine-probe alpine-argv-probe alpine-fs-probe alpine-archive-probe alpine-selector-probe ash-diagnostic ash-execve-probe ash-fork-probe ash-pipes-probe ash-lifecycle-probe ash-symlinks-probe ash-tmp-probe ash-tree-probe ash-rename-probe ash-fds-probe preflight
+.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch alpine-probe alpine-argv-probe alpine-fs-probe alpine-archive-probe alpine-selector-probe ash-diagnostic ash-execve-probe ash-fork-probe ash-pipes-probe ash-lifecycle-probe ash-symlinks-probe ash-tmp-probe ash-tree-probe ash-rename-probe ash-fds-probe ash-paths-probe path-abi-probe preflight
 all: iso
 iso: $(ISO)
 kernel: $(KERNEL)
@@ -30,7 +30,7 @@ $(OUT)/kernel.o: kernel/kernel.c $(HDR)
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
-$(OUT)/m1.o: kernel/m1.c kernel/nr.h kernel/errno.h kernel/bootfs.h kernel/task.h kernel/fd.h kernel/tmpfs.h $(HDR)
+$(OUT)/m1.o: kernel/m1.c kernel/nr.h kernel/errno.h kernel/bootfs.h kernel/task.h kernel/fd.h kernel/tmpfs.h kernel/path.h $(HDR)
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
@@ -50,6 +50,10 @@ $(OUT)/fd.o: kernel/fd.c kernel/fd.h kernel/task.h kernel/errno.h
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
+$(OUT)/path.o: kernel/path.c kernel/path.h kernel/bootfs.h kernel/errno.h
+	mkdir -p $(dir $@)
+	clang $(CFLAGS) -MMD -MP -c $< -o $@
+
 $(OUT)/arch.o: kernel/arch.S
 	mkdir -p $(dir $@)
 	clang --target=x86_64-unknown-none-elf -g -mno-red-zone -c $< -o $@
@@ -61,8 +65,15 @@ $(OUT)/user-hello.o: user/hello.S kernel/nr.h kernel/errno.h
 $(OUT)/user-hello: $(OUT)/user-hello.o user/linker.ld
 	ld.lld -m elf_x86_64 -nostdlib -static -T user/linker.ld $< -o $@
 
-$(KERNEL): $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/arch.o kernel/linker.ld
-	ld.lld $(LDFLAGS) $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/arch.o -o $@
+$(OUT)/path-abi.o: user/path-abi.S kernel/nr.h kernel/errno.h
+	mkdir -p $(dir $@)
+	clang --target=x86_64-unknown-none-elf -g -c $< -o $@
+
+$(OUT)/path-abi: $(OUT)/path-abi.o user/linker.ld
+	ld.lld -m elf_x86_64 -nostdlib -static -T user/linker.ld $< -o $@
+
+$(KERNEL): $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/arch.o kernel/linker.ld
+	ld.lld $(LDFLAGS) $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/arch.o -o $@
 
 $(BINARY_TAR):
 	mkdir -p $(dir $@)
@@ -269,6 +280,28 @@ ash-rename-probe: $(ALPINE_ARCHIVE_ISO)
 ash-fds-probe: $(ALPINE_ARCHIVE_ISO)
 	sh scripts/probe-ash-fds.sh
 
+ash-paths-probe: $(ALPINE_ARCHIVE_ISO)
+	sh scripts/probe-ash-paths.sh
+
+# Optional direct Linux ABI probe, additional to (not in place of) the
+# unchanged BusyBox QEMU regression. Stage a dedicated CPIO ISO fixture.
+PATH_ABI_IMAGE := $(OUT)/path-abi-rootfs.cpio
+PATH_ABI_ISO := $(OUT)/naseed-path-abi.iso
+$(PATH_ABI_IMAGE): $(OUT)/path-abi $(OUT)/alpine/bin/busybox $(OUT)/alpine/lib/ld-musl-x86_64.so.1 scripts/make-initramfs.sh
+	NASEED_PATH_ABI=$(abspath $(OUT)/path-abi) sh scripts/make-initramfs.sh "$@"
+
+$(PATH_ABI_ISO): $(ALPINE_ARCHIVE_ISO) $(PATH_ABI_IMAGE)
+	rm -rf $(OUT)/path-abi-iso
+	cp -R $(OUT)/alpine-archive-iso $(OUT)/path-abi-iso
+	cp $(PATH_ABI_IMAGE) $(OUT)/path-abi-iso/boot/rootfs.cpio
+	awk '/^    cmdline: / { print "    cmdline: naseed.argv=/bin/path-abi"; next } { print }' limine-alpine-archive.conf > $(OUT)/path-abi-iso/boot/limine/limine.conf
+	xorriso -as mkisofs -R -r -J \
+	 --efi-boot boot/limine/limine-uefi-cd.bin \
+	 --efi-boot-part --efi-boot-image -o $@ $(OUT)/path-abi-iso
+
+path-abi-probe: $(PATH_ABI_ISO)
+	sh scripts/probe-path-abi.sh
+
 preflight:
 	sh scripts/preflight.sh
 
@@ -279,4 +312,4 @@ run: $(ISO)
 clean:
 	rm -rf $(OUT)
 
--include $(OUT)/kernel.d $(OUT)/m1.d $(OUT)/bootfs.d $(OUT)/fd.d $(OUT)/task.d
+-include $(OUT)/kernel.d $(OUT)/m1.d $(OUT)/bootfs.d $(OUT)/fd.d $(OUT)/path.d $(OUT)/task.d

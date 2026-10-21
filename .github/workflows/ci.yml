@@ -4,6 +4,12 @@ on:
     branches: [main]
   pull_request:
 
+# Collapse superseded PR commits into a single expensive QEMU suite. Keep
+# pushed main regressions independent; only pull-request runs are canceled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   smoke:
     runs-on: ubuntu-latest
@@ -51,6 +57,10 @@ jobs:
         run: make ash-rename-probe
       - name: Real BusyBox FD inheritance, dup offsets and last-close lifecycle
         run: make ash-fds-probe
+      - name: Real BusyBox pathname traversal, symlink and dotdot semantics
+        run: make ash-paths-probe
+      - name: Direct ring3 openat ABI flags and readonly CPIO error semantics
+        run: make path-abi-probe
       - name: Real BusyBox ash pipeline pipe/pipe2 and EOF under QEMU
         run: make ash-pipes-probe
       - name: Boot genuine Alpine dynamic BusyBox and report ABI blockers
@@ -93,4 +103,6 @@ jobs:
             build/ash-tree-*-serial.log
             build/ash-rename-*-serial.log
             build/ash-fd-*-serial.log
+            build/ash-path-*-serial.log
+            build/path-abi-serial.log
           if-no-files-found: ignore

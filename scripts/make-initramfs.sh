@@ -33,6 +33,14 @@ if [ -n "${NASEED_SECOND_BUSYBOX:-}" ]; then
     chmod 755 "$root/usr" "$root/usr/bin" "$root/usr/bin/busybox"
     touch -t 197001010000 "$root/usr" "$root/usr/bin" "$root/usr/bin/busybox"
 fi
+# Optional supplementary ABI executable: not a replacement for the pinned
+# unmodified Alpine BusyBox that owns the normal acceptance matrix.
+if [ -n "${NASEED_PATH_ABI:-}" ]; then
+    test -f "$NASEED_PATH_ABI"
+    cp "$NASEED_PATH_ABI" "$root/bin/path-abi"
+    chmod 755 "$root/bin/path-abi"
+    touch -t 197001010000 "$root/bin/path-abi"
+fi
 mkdir -p "$(dirname "$out")"
 (
     cd "$root"
@@ -41,6 +49,9 @@ mkdir -p "$(dirname "$out")"
         for applet in $applets; do printf '%s\n' "bin/$applet"; done
         if [ -n "${NASEED_SECOND_BUSYBOX:-}" ]; then
             printf '%s\n' usr usr/bin usr/bin/busybox
+        fi
+        if [ -n "${NASEED_PATH_ABI:-}" ]; then
+            printf '%s\n' bin/path-abi
         fi
     } | cpio -o -H newc --quiet --owner=0:0
 ) > "$out.tmp"
