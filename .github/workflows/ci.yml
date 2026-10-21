@@ -198,10 +198,14 @@ jobs:
         run: make ARCH=aarch64 build/deps/limine.h && ARCH=aarch64 sh scripts/check-shared-kernel-build.sh
       - name: Compile and QEMU-boot genuine AArch64 M0 kernel
         run: sh scripts/probe-aarch64-m0.sh
+      - name: Boot complete shared Task/ELF/FS/syscall kernel in real AArch64 EL0
+        run: sh scripts/probe-aarch64-full.sh
       - name: Attach aarch64 boot diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: naseed-aarch64-m0
-          path: build/port-aarch64/serial.log
+          path: |
+            build/port-aarch64/serial.log
+            build/port-aarch64/full/serial.log
           if-no-files-found: ignore

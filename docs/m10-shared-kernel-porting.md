@@ -308,3 +308,19 @@ child stack is accepted, rejecting CLONE_VM/VFORK/THREAD. Both x86 and
 asm-generic64 host unit tests verify register layout and rejection.
 Real x86 BusyBox runtime CI still needs confirmation: do not report
 17/17 until it has completed.
+
+## AArch64 full shared kernel hardware backend (not another OS)
+The ARM64 native build now links the SAME generic C translation units as
+x86/RV64, with no NASEED_PORT_M0 and NO duplicate Task, process,
+scheduler, ELF, execve, FS, pipe, or syscall code. Architecture-owned
+EL0 context/CPU trap handles genuine SVC from native ELF; caller saves
+and restores all 31 GPRs, PC/SP/PSTATE, TPIDR_EL0 and NEON q0..q31,
+FPCR and FPSR. `nas_arch_prepare_user_cpu` first transfers Limine's
+kernel SP_EL0 stack address into SP_EL1 and selects SPSEL=1 before
+reusing SP_EL0 for userspace (the prior #44 EL0 smoke stalled after
+SPSEL=0). Real TTBR0 39-bit 4KiB and user MAIR index 7 are managed
+alongside Limine's preserved high TTBR1 kernel mapping.
+The first true AArch64 full-kernel QEMU acceptance is a native ELF write
+and exit executed through the SAME generic dispatcher. This is NOT
+yet a claim that original BusyBox works: its ABI runtime needs real
+validation and the 17-case parity manifest, not a separate new C library.
