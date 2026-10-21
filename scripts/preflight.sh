@@ -23,6 +23,16 @@ if grep -Eq 'user_byte\\(|user_write_bytes\\(|resolve_path\\(' kernel/tmpfs.c; t
     exit 1
 fi
 
+# M7.1: one owner for open-description reference/position tables.
+if grep -Eq '^(uint16_t nas_file_refcount|uint64_t nas_file_status_flags|uint64_t nas_boot_file_offsets)' kernel/task.c kernel/m1.c; then
+    echo '[PREFLIGHT] open-file-description storage escaped fd.c' >&2
+    exit 1
+fi
+if grep -Eq 'pipe_release_description|tmp_release_slot|tmp_bind_slot' kernel/fd.c; then
+    echo '[PREFLIGHT] generic fd.c acquired a backend dependency' >&2
+    exit 1
+fi
+
 # Compare our pinned Linux x86-64 syscall numbers against the host UAPI.
 python3 scripts/check-syscall-nr.py
 python3 scripts/check-syscall-errno.py

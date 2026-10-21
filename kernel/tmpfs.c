@@ -1,5 +1,6 @@
 #include "tmpfs.h"
 #include "task.h"
+#include "fd.h"
 #include "bootfs.h"
 #include "errno.h"
 

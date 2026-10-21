@@ -15,7 +15,7 @@ CFLAGS := --target=x86_64-unknown-none-elf -std=c11 -O2 -g -Wall -Wextra -Werror
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
  -z noexecstack -T kernel/linker.ld
 
-.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch alpine-probe alpine-argv-probe alpine-fs-probe alpine-archive-probe alpine-selector-probe ash-diagnostic ash-execve-probe ash-fork-probe ash-pipes-probe ash-lifecycle-probe ash-symlinks-probe ash-tmp-probe ash-tree-probe ash-rename-probe preflight
+.PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch alpine-probe alpine-argv-probe alpine-fs-probe alpine-archive-probe alpine-selector-probe ash-diagnostic ash-execve-probe ash-fork-probe ash-pipes-probe ash-lifecycle-probe ash-symlinks-probe ash-tmp-probe ash-tree-probe ash-rename-probe ash-fds-probe preflight
 all: iso
 iso: $(ISO)
 kernel: $(KERNEL)
@@ -30,11 +30,11 @@ $(OUT)/kernel.o: kernel/kernel.c $(HDR)
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
-$(OUT)/m1.o: kernel/m1.c kernel/nr.h kernel/errno.h kernel/bootfs.h kernel/task.h kernel/tmpfs.h $(HDR)
+$(OUT)/m1.o: kernel/m1.c kernel/nr.h kernel/errno.h kernel/bootfs.h kernel/task.h kernel/fd.h kernel/tmpfs.h $(HDR)
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
-$(OUT)/task.o: kernel/task.c kernel/task.h
+$(OUT)/task.o: kernel/task.c kernel/task.h kernel/fd.h
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
@@ -42,7 +42,11 @@ $(OUT)/bootfs.o: kernel/bootfs.c kernel/bootfs.h
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
-$(OUT)/tmpfs.o: kernel/tmpfs.c kernel/tmpfs.h kernel/task.h kernel/bootfs.h kernel/errno.h
+$(OUT)/tmpfs.o: kernel/tmpfs.c kernel/tmpfs.h kernel/fd.h kernel/task.h kernel/bootfs.h kernel/errno.h
+	mkdir -p $(dir $@)
+	clang $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(OUT)/fd.o: kernel/fd.c kernel/fd.h kernel/task.h kernel/errno.h
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
@@ -57,8 +61,8 @@ $(OUT)/user-hello.o: user/hello.S kernel/nr.h kernel/errno.h
 $(OUT)/user-hello: $(OUT)/user-hello.o user/linker.ld
 	ld.lld -m elf_x86_64 -nostdlib -static -T user/linker.ld $< -o $@
 
-$(KERNEL): $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/arch.o kernel/linker.ld
-	ld.lld $(LDFLAGS) $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/arch.o -o $@
+$(KERNEL): $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/arch.o kernel/linker.ld
+	ld.lld $(LDFLAGS) $(OUT)/kernel.o $(OUT)/m1.o $(OUT)/task.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/arch.o -o $@
 
 $(BINARY_TAR):
 	mkdir -p $(dir $@)
@@ -262,6 +266,9 @@ ash-tree-probe: $(ALPINE_ARCHIVE_ISO)
 ash-rename-probe: $(ALPINE_ARCHIVE_ISO)
 	sh scripts/probe-ash-rename.sh
 
+ash-fds-probe: $(ALPINE_ARCHIVE_ISO)
+	sh scripts/probe-ash-fds.sh
+
 preflight:
 	sh scripts/preflight.sh
 
@@ -272,4 +279,4 @@ run: $(ISO)
 clean:
 	rm -rf $(OUT)
 
--include $(OUT)/kernel.d $(OUT)/m1.d $(OUT)/bootfs.d $(OUT)/task.d
+-include $(OUT)/kernel.d $(OUT)/m1.d $(OUT)/bootfs.d $(OUT)/fd.d $(OUT)/task.d

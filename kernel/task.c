@@ -1,4 +1,5 @@
 #include "task.h"
+#include "fd.h"
 #include <stddef.h>
 
 /* This is a real task registry, not a fabricated fork implementation.
@@ -7,9 +8,6 @@
  */
 static struct nas_task task_table[NAS_TASK_LIMIT];
 static uint64_t next_pid = 2;
-uint16_t nas_file_refcount[NAS_FD_LIMIT];
-uint64_t nas_file_status_flags[NAS_FD_LIMIT];
-uint64_t nas_boot_file_offsets[NAS_FD_LIMIT];
 struct nas_task *nas_current_task;
 
 void nas_task_boot_init(void) {
@@ -19,11 +17,7 @@ void nas_task_boot_init(void) {
         for (unsigned j = 0; j < sizeof(*task); j++) bytes[j] = 0;
     }
     next_pid = 2;
-    for (unsigned i = 0; i < NAS_FD_LIMIT; i++) {
-        nas_file_refcount[i] = 0;
-        nas_file_status_flags[i] = 0;
-        nas_boot_file_offsets[i] = 0;
-    }
+    nas_fd_system_init();
     nas_current_task = &task_table[0];
     nas_current_task->pid = 1;
     nas_current_task->ppid = 0;
@@ -86,18 +80,6 @@ uint64_t nas_task_tls_base(const struct nas_task *task) {
 void nas_task_set_root(struct nas_task *task, uint64_t root) {
     if (task) task->root_phys = root;
 }
-bool nas_task_hold_files(const struct nas_task *task) {
-    if (!task) return false;
-    for (unsigned fd = 0; fd < NAS_FD_LIMIT; fd++)
-        if (task->fds.descriptors[fd] &&
-            !nas_file_refcount[task->fds.file_slot[fd]])
-            return false;
-    for (unsigned fd = 0; fd < NAS_FD_LIMIT; fd++)
-        if (task->fds.descriptors[fd])
-            nas_file_refcount[task->fds.file_slot[fd]]++;
-    return true;
-}
-
 struct nas_task *nas_task_child_at(uint64_t parent_pid, unsigned slot) {
     if (slot >= NAS_TASK_LIMIT || !parent_pid) return NULL;
     struct nas_task *task = &task_table[slot];
