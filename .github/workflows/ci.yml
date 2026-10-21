@@ -260,7 +260,7 @@ jobs:
           key: naseed-source-busybox-1.37.0-3311dff32e746499
       - name: Build original BusyBox from one SHA256-pinned source and Kconfig
         run: sh scripts/build-source-busybox.sh ${{ matrix.port }}
-      - name: Execute eight full-kernel source workloads incl. VM and process lifecycle
+      - name: Execute nine native source workloads including PID1 orphan reaping
         run: sh scripts/probe-source-busybox.sh ${{ matrix.port }}
       - name: Upload native source BusyBox/serial evidence on failure
         if: failure()

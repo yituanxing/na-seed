@@ -17,7 +17,7 @@ efi=build/deps/limine-binary/BOOTX64.EFI
 cdrom=build/deps/limine-binary/limine-uefi-cd.bin
 test -s "$efi" && test -s "$cdrom"
 run_case() {
-    name=$1 mode=$2 args=$3 expected=$4 evidence=$5
+    name=$1 mode=$2 args=$3 expected=$4 evidence=$5 entry=${6:-/bin/busybox}
     stage="$dir/$name-stage"
     iso="$dir/$name.iso"
     log="$dir/$name.serial.log"
@@ -36,18 +36,18 @@ run_case() {
     {
         printf '%s\n' 'timeout: 0' '/NaSeed x86 Debian BusyBox parity'
         printf '%s\n' '    protocol: limine' '    path: boot():/boot/kernel'
-        printf '    cmdline: naseed.argv=/bin/busybox %s\n' "$args"
+        printf '    cmdline: naseed.argv=%s %s\n' "$entry" "$args"
         printf '    module_path: boot():/boot/%s\n' "$module"
     } > "$stage/boot/limine/limine.conf"
     xorriso -as mkisofs -R -r -J \
       --efi-boot boot/limine/limine-uefi-cd.bin \
       --efi-boot-part --efi-boot-image -o "$iso" "$stage" >/dev/null 2>&1
     rc=0
-    case "$name" in process-capacity) budget=45 ;; *) budget=15 ;; esac
+    case "$name" in process-capacity) budget=45 ;; init-reaper) budget=110 ;; *) budget=15 ;; esac
     timeout "${budget}s" sh scripts/run.sh "$iso" > "$log" 2>&1 < /dev/null || rc=$?
     tr -d '\r' < "$log" > "$clean"
     if [ "$rc" -ne 1 ] ||
-       ! grep -Fq "[CMDLINE] userspace argv from Limine: naseed.argv=/bin/busybox $args" "$clean" ||
+       ! grep -Fq "[CMDLINE] userspace argv from Limine: naseed.argv=$entry $args" "$clean" ||
        ! grep -Fq '[EXIT] user status=0' "$clean" ||
        ! grep -Fq '[PASS] cmdline userspace exit 0' "$clean" ||
        grep -Fq '[FAIL]' "$clean"; then
@@ -65,6 +65,9 @@ run_case() {
         echo "[X86 PARITY FAIL] CPIO mount missing: $args" >&2
         tail -100 "$clean" >&2
         return 1
+    fi
+    if [ "$name" = init-reaper ]; then
+        sh scripts/check-m13-init-log.sh "$clean" || return 1
     fi
     case "$evidence" in
         -) ;;
@@ -85,11 +88,11 @@ run_case() {
 failures=0
 count=0
 tab=$(printf '\t')
-while IFS="$tab" read -r id mode args expected evidence; do
+while IFS="$tab" read -r id mode args expected evidence entry; do
     case "$id" in ''|\#*) continue ;; esac
     if [ -n "${BUSYBOX_PARITY_CASE:-}" ] && [ "$id" != "$BUSYBOX_PARITY_CASE" ]; then continue; fi
     count=$((count+1))
-    if ! run_case "$id" "$mode" "$args" "$expected" "$evidence"; then failures=$((failures+1)); fi
+    if ! run_case "$id" "$mode" "$args" "$expected" "$evidence" "$entry"; then failures=$((failures+1)); fi
 done < "${BUSYBOX_PARITY_MANIFEST:-scripts/busybox-parity-cases.tsv}"
 if [ -n "${BUSYBOX_PARITY_CASE:-}" ]; then
     test "$count" -eq 1
