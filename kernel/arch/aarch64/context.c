@@ -21,6 +21,9 @@ void nas_arm_full_trap_c(struct nas_arm_trap_frame *frame) {
         nas_print(" elr="); nas_hex(frame->elr_el1);
         nas_print(" far="); nas_hex(far);
         nas_print(" sp="); nas_hex(frame->sp_el0);
+        nas_print(" access="); nas_hex(esr & 0x7f);
+        nas_print(" user_writable=");
+        nas_dec(nas_mmu_user_writable(far) ? 1 : 0);
         nas_print("\n");
         nas_fail("unexpected AArch64 EL0 synchronous exception");
     }

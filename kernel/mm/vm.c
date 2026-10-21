@@ -2,6 +2,9 @@
 #include "../errno.h"
 #include "../task.h"
 #include "../arch/arch.h"
+#if defined(__aarch64__)
+#include "../drivers/serial.h"
+#endif
 #include "vm.h"
 #define TASK (*nas_current_task)
 #define heap_break TASK.heap_break
@@ -78,6 +81,16 @@ uint64_t nas_vm_mprotect(uint64_t addr, uint64_t length, uint64_t prot) {
         return (uint64_t)-ENOSYS;
     }
     if (!prot) return (uint64_t)-ENOSYS; /* PROT_NONE needs VMA semantics. */
-    return nas_mmu_protect_pages(addr, pages, prot)
-        ? 0 : (uint64_t)-ENOMEM;
+    bool ok=nas_mmu_protect_pages(addr, pages, prot);
+#if defined(__aarch64__)
+    /* Temporary verified userland compatibility tracing. Avoid inventing
+     * a platform-specific VM policy; observe exact native Linux mprotect
+     * permissions that Debian arm64 glibc applies to PT_GNU_RELRO. */
+    nas_print("[ARM64 MPROTECT] address="); nas_hex(addr);
+    nas_print(" pages="); nas_dec(pages);
+    nas_print(" prot="); nas_hex(prot);
+    nas_print(" result="); nas_dec(ok ? 0 : 1);
+    nas_print("\n");
+#endif
+    return ok ? 0 : (uint64_t)-ENOMEM;
 }

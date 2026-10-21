@@ -22,6 +22,10 @@ test -s "$fw"
 # The rootfs is built only from verified native BusyBox plus actual bytes
 # in the archive. The same kernel bootfs.c handles archive/file lookup.
 sh scripts/stage-busybox-rootfs.sh "$dir/busybox" "$work"
+# Read exact guest program headers when a native ARM-only page access
+# differs from the same x86/RV64 ELF loader. This is evidence, not a
+# new architecture-specific loader or ELF transformation.
+readelf -lW "$dir/busybox" | grep -E 'LOAD|GNU_RELRO|Entry point|Type'
 # Two boot modes: real module first; and *archive-only* Limine handoff,
 # analogous to the x86 initramfs tests. Command selection differs, kernel
 # ELF loader / FS and task runtime are identical.

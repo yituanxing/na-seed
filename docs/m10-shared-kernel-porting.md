@@ -347,3 +347,13 @@ identical workloads) and common CPIO staging. Separate, fast ARM64
 full-kernel CI initially gates just `BUSYBOX_PARITY_CASE=echo` to expose
 ELF/ABI issues with the untouched native binary before enabling all 17.
 Never report ARM64 parity as passed until the entire suite is green.
+
+## First genuine arm64 BusyBox blocked AFTER printing hello
+Official pinned native AArch64 Debian BusyBox runs via real full shared
+kernel, performs Linux syscalls and prints literal `hello`, but then
+raises hardware EL0 ESR=0x9200004f (data permission fault on WRITE),
+PC=0x404794 and FAR=0x5dfa10 during exit/runtime cleanup. This is NOT
+a missing ELF loader, wrong printf output or fabricated success. Added
+PT_LOAD/RELRO segment evidence and actual ARM user PTE writable and
+mprotect range diagnostics. Must fix real ARM ABI/VM semantics before
+claiming even BusyBox echo pass, without modifying the original binary.
