@@ -70,7 +70,6 @@ static uint64_t task_replay(struct nas_task *task) {
  * Blocked or ignored SIGPIPE returns EPIPE to userspace as Linux does.
  * A custom userspace handler requires signal-frame delivery (not yet here).
  */
-#define NAS_SIGPIPE 13
 bool nas_sched_sigpipe_default(uint64_t fd) {
     return TASK.ppid && fd < NAS_FD_LIMIT &&
         descriptors[fd] == FD_PIPE_W &&
