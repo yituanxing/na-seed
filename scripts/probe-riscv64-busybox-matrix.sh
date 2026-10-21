@@ -189,4 +189,3 @@ if [ "$failures" -ne 0 ]; then
     exit 1
 fi
 echo '[PASS] RV64 native BusyBox ash execve/fork/pipe/tmpfs parity'
-

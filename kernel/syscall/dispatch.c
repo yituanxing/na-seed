@@ -68,6 +68,20 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
 uint64_t syscall_dispatch(const uint64_t *args) {
     const uint64_t raw_nr = args[0];
     enum nas_syscall_op nr = nas_linux_decode_call(args);
+#if defined(__riscv) && __riscv_xlen == 64
+    /* Native BusyBox ash may invoke clone with Linux flags other than
+     * SIGCHLD. Do not pretend this is fork: show the actual ABI contract
+     * before implementing vfork/clone semantics in the existing task core. */
+    if (raw_nr == 220U && nr == NAS_SC_NONE) {
+        nas_print("[RV64 CLONE] unsupported flags=");
+        nas_hex(args[1]);
+        nas_print(" child_stack="); nas_hex(args[2]);
+        nas_print(" parent_tid="); nas_hex(args[3]);
+        nas_print(" tls="); nas_hex(args[4]);
+        nas_print(" child_tid="); nas_hex(args[5]);
+        nas_print("\n");
+    }
+#endif
     /* Real-program execution trace: syscall identity, callsite and args.
      * Capped to avoid serial storms; not needed in exception context.
      */

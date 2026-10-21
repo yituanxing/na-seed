@@ -208,3 +208,14 @@ create/remove. Assertions check actual serial stdout, Linux exit status,
 and kernel process/pipe/exec evidence. Batch all five failures into one CI
 feedback cycle to expose a whole error class instead of one test per PR.
 Complete x86 resource/signal/large-pipe/dynamic ELF parity remains pending.
+
+## RV64 native shell clone ABI blocker (measured, not papered over)
+The original Debian RV64 BusyBox passed 12 full-kernel direct/CPIO applets
+and shell builtins + an exec-builtin image replacement. Three additional
+ash fork/pipeline/tmpfs workflows all emitted a native Linux clone(220)
+request rejected by the intentionally strict fork-equivalent decoder.
+Rather than silently mapping thread/vfork semantics to a fake fork, the
+shared dispatcher now records actual RV64 clone flags, child stack and
+TID/TLS arguments. Implement only the measured semantics, sharing the
+existing scheduler, address space, FD and process lifecycle. This blocker
+must stay a failing real CI gate until correctly handled.
