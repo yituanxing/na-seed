@@ -27,5 +27,7 @@ clang --target=aarch64-none-elf -march=armv8-a \
 ld.lld -m aarch64elf -nostdlib -static -z max-page-size=0x1000 \
   -T user/aarch64/linker.ld "$out/hello.o" -o "$out/user-hello.elf"
 readelf -h "$out/kernel.elf" | grep -q 'Machine:.*AArch64'
+readelf -h "$out/kernel.elf" | grep 'Entry point address'
+readelf -Ws "$out/kernel.elf" | grep -E 'nas_arm64_bootstrap|kmain'
 readelf -h "$out/user-hello.elf" | grep -q 'Machine:.*AArch64'
 echo '[PORT FULL] AArch64 the actual shared kernel and native user ELF linked'

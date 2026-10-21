@@ -10,11 +10,28 @@
 .global nas_arm64_bootstrap
 .balign 4
 nas_arm64_bootstrap:
+    /* Never depend on an uninitialized C stack/console to diagnose the
+     * AArch64 ELF entry. QEMU's existing ARM semihosting SYS_WRITEC
+     * transport prints 1-char A/B/C progression with no stack activity. */
+    mov x0,#3
+    adr x1,nas_arm_early_a
+    hlt #0xf000
     mov x9,sp
     msr sp_el1,x9
+    mov x0,#3
+    adr x1,nas_arm_early_b
+    hlt #0xf000
     msr spsel,#1
     isb
+    mov x0,#3
+    adr x1,nas_arm_early_c
+    hlt #0xf000
     b kmain
+.section .rodata,"a",%progbits
+nas_arm_early_a: .ascii "A"
+nas_arm_early_b: .ascii "B"
+nas_arm_early_c: .ascii "C"
+.section .text,"ax",%progbits
 
 .balign 2048
 .global nas_arm_full_vectors
