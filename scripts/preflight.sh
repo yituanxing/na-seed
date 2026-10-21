@@ -33,6 +33,13 @@ if grep -Eq 'pipe_release_description|tmp_release_slot|tmp_bind_slot' kernel/fd.
     exit 1
 fi
 
+# Kernel pathname logic must never reach into raw user memory or FD
+# tables. Only m1.c performs the syscall argument copying.
+if grep -Eq 'user_byte\\(|user_write_bytes\\(|nas_task_fd_|descriptors\\[' kernel/path.c; then
+    echo '[PREFLIGHT] path.c reached into syscall user/FD layer' >&2
+    exit 1
+fi
+
 # Compare our pinned Linux x86-64 syscall numbers against the host UAPI.
 python3 scripts/check-syscall-nr.py
 python3 scripts/check-syscall-errno.py
