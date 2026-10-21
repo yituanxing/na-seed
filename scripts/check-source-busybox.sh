@@ -28,4 +28,4 @@ for f in scripts/probe-x86-busybox-parity.sh \
     grep -Fq 'BUSYBOX_PARITY_MANIFEST' "$f"
     grep -Fq 'BUSYBOX_PARITY_BINARY' "$f"
 done
-echo '[PASS] controlled-source BusyBox config, six-case manifest and shared QEMU runners'
+echo '[PASS] controlled-source BusyBox config, seven-case manifest and shared QEMU runners'
