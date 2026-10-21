@@ -28,9 +28,15 @@ lexical collapse could incorrectly return /bin/busybox and open it.
   immutable CPIO regular file does not require writing the archive.
   `O_CREAT|O_EXCL` with an existing name returns `EEXIST`;
   truncating an existing CPIO file still returns `EROFS`.
-- New untouched BusyBox ash QEMU cases check intermediate symlink+dotdot,
+- Five untouched BusyBox ash QEMU cases check intermediate symlink+dotdot,
   ordinary file + dotdot, link-final readlink, ../ CPIO navigation, and
   relative /tmp writes; all prior tests remain mandatory.
+- A **supplementary**, independent freestanding x86-64 ring3 ELF checks
+  exact `openat` return codes: existing CPIO with `O_RDONLY|O_CREAT`
+  succeeds and returns actual hostname bytes, `O_CREAT|O_EXCL` gets
+  `EEXIST`, `O_WRONLY|O_TRUNC` and new CPIO creation get `EROFS`,
+  and applet symlink+`..` gets `ENOTDIR`. It is staged only in a
+  dedicated ISO and does **not** replace the unmodified BusyBox binary.
 
 ## Remaining explicit limitations
 
