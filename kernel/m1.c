@@ -13,6 +13,7 @@
 #include "pipe.h"
 #include "boot_image.h"
 #include "arch/arch.h"
+#include "mm/vm.h"
 #include "platform/platform.h"
 
 /* Process-local state was previously static global memory. A task is now
@@ -61,12 +62,6 @@ extern void nas_hex(uint64_t);
 extern const struct limine_file *nas_user_module(void);
 extern const struct limine_file *nas_module(uint64_t index);
 
-#define PAGE 4096ULL
-#define P_PRESENT 1ULL
-#define P_RW 2ULL
-#define P_USER 4ULL
-#define PHYS_MASK 0x000ffffffffff000ULL
-#define USER_LIMIT 0x0000800000000000ULL
 #define USER_STACK_TOP 0x0000000070000000ULL
 #define USER_STACK_PAGES 32
 
@@ -76,153 +71,9 @@ __attribute__((noreturn)) static void fail(const char *message) {
     nas_print("\n");
     nas_arch_halt();
 }
-/* User pages: read and amend existing Limine CR3 paging hierarchy. */
-static uint64_t *phys_table(uint64_t physical) {
-    return (uint64_t *)(uintptr_t)(nas_hhdm_offset() + physical);
-}
-static bool paging_init(void) {
-    uint64_t cr3 = nas_arch_current_page_root();
-    if (nas_arch_la57_enabled()) return false; /* LA57 not part of M1. */
-    /* Separate userspace CR3: copy supervisor upper half, zero the lower half. */
-    uint64_t boot_root = cr3 & PHYS_MASK;
-    if (!boot_root) return false;
-    root_phys = nas_frame_alloc();
-    if (!root_phys) return false;
-    uint64_t *old = phys_table(boot_root);
-    uint64_t *fresh = phys_table(root_phys);
-    for (unsigned i = 256; i < 512; i++)
-        fresh[i] = old[i] & ~P_USER;
-    nas_arch_switch_page_root(root_phys);
-    return true;
-}
-/* Every execve owns a fresh user page-table root; the supervisor upper
- * half is inherited without allocating or freeing its boot mappings.
- * The retired root is reclaimed ONLY after CR3 switches successfully.
- * User pages are private: NaSeed has no fork/COW or shared mappings yet.
- */
-static uint64_t alloc_user_root(void) {
-    uint64_t pa = nas_frame_alloc();
-    if (!pa) return 0;
-    uint64_t *fresh = phys_table(pa), *current = phys_table(root_phys);
-    for (unsigned i = 256; i < 512; i++)
-        fresh[i] = current[i] & ~P_USER;
-    return pa;
-}
-static bool free_user_tree(uint64_t table_pa, unsigned depth) {
-    uint64_t *table = phys_table(table_pa);
-    for (unsigned i = 0; i < 512; i++) {
-        uint64_t e = table[i];
-        if (!(e & P_PRESENT)) continue;
-        if (!(e & P_USER) || (e & (1ULL << 7))) return false;
-        uint64_t pa = e & PHYS_MASK;
-        if (depth && !free_user_tree(pa, depth - 1)) return false;
-        table[i] = 0;
-        if (!nas_frame_free(pa)) return false;
-    }
-    return true;
-}
-static bool reclaim_user_root(uint64_t pa) {
-    uint64_t *root = phys_table(pa);
-    for (unsigned i = 0; i < 256; i++) {
-        uint64_t e = root[i];
-        if (!(e & P_PRESENT)) continue;
-        if (!(e & P_USER) || (e & (1ULL << 7))) return false;
-        uint64_t child = e & PHYS_MASK;
-        if (!free_user_tree(child, 2)) return false;
-        root[i] = 0;
-        if (!nas_frame_free(child)) return false;
-    }
-    return nas_frame_free(pa);
-}
-static void switch_user_root(uint64_t pa) {
-    root_phys = pa;
-    nas_arch_switch_page_root(pa);
-}
-
-
-/* Copy every PRESENT user page into independent physical frames.
- * This is eager fork, not COW: parent/child writes must not alias.
- * Lower-half mappings are 4K; huge user mappings are not implemented.
- * On partial OOM, reclaim_user_root() frees exactly the created tree.
- */
-static bool clone_user_level(uint64_t source_pa, uint64_t dest_pa,
-                             unsigned depth, unsigned entries) {
-    uint64_t *source = phys_table(source_pa);
-    uint64_t *dest = phys_table(dest_pa);
-    for (unsigned i = 0; i < entries; ++i) {
-        uint64_t e = source[i];
-        if (!(e & P_PRESENT)) continue;
-        if (!(e & P_USER) || (e & (1ULL << 7))) return false;
-        uint64_t child_pa = nas_frame_alloc();
-        if (!child_pa) return false;
-        dest[i] = child_pa | (e & ~PHYS_MASK);
-        if (depth) {
-            if (!clone_user_level(e & PHYS_MASK, child_pa, depth - 1, 512))
-                return false;
-        } else {
-            uint64_t *from = phys_table(e & PHYS_MASK);
-            uint64_t *to = phys_table(child_pa);
-            for (unsigned n = 0; n < PAGE / 8; n++) to[n] = from[n];
-        }
-    }
-    return true;
-}
-static uint64_t fork_copy_user_root(void) {
-    uint64_t destination = alloc_user_root();
-    if (!destination) return 0;
-    if (clone_user_level(root_phys, destination, 3, 256)) return destination;
-    if (!reclaim_user_root(destination))
-        fail("fork private page rollback corrupted");
-    return 0;
-}
-static uint64_t *user_leaf(uint64_t va, bool allocate_tables) {
-    if (va < PAGE || va >= USER_LIMIT || (va & (PAGE - 1))) return 0;
-    uint64_t table = root_phys;
-    for (int level = 3; level >= 1; --level) {
-        unsigned index = (va >> (12 + (unsigned)level * 9)) & 511;
-        uint64_t *entries = phys_table(table);
-        uint64_t e = entries[index];
-        if (!(e & P_PRESENT)) {
-            if (!allocate_tables) return 0;
-            uint64_t pa = nas_frame_alloc();
-            if (!pa) return 0;
-            entries[index] = pa | P_PRESENT | P_RW | P_USER;
-            e = entries[index];
-        }
-        if (!(e & P_USER) || (e & (1ULL << 7))) return 0;
-        table = e & PHYS_MASK;
-    }
-    return &phys_table(table)[(va >> 12) & 511];
-}
-static bool user_map(uint64_t va, bool writable) {
-    uint64_t *entry = user_leaf(va, true);
-    if (!entry) return false;
-    if (*entry & P_PRESENT) {
-        if (!(*entry & P_USER)) return false;
-        if (writable) *entry |= P_RW;
-        nas_arch_invalidate_page(va);
-        return true;
-    }
-    uint64_t pa = nas_frame_alloc();
-    if (!pa) return false;
-    *entry = pa | P_PRESENT | P_USER | (writable ? P_RW : 0);
-    nas_arch_invalidate_page(va);
-    return true;
-}
-static uint8_t *user_byte(uint64_t va) {
-    uint64_t *entry = user_leaf(va & ~(PAGE - 1), false);
-    /* A syscall may only dereference present user pages, never supervisor
-     * entries or an address outside the user half of this address space.
-     * HHDM physical aliases bypass the CPU's normal U/S protection.
-     */
-    if (!entry || (*entry & (P_PRESENT | P_USER)) != (P_PRESENT | P_USER))
-        return 0;
-    return (uint8_t *)(uintptr_t)(nas_hhdm_offset() +
-        (*entry & PHYS_MASK) + (va & (PAGE - 1)));
-}
 static bool user_copy_in(uint64_t va, const uint8_t *data, uint64_t length) {
     for (uint64_t i = 0; i < length; i++) {
-        uint8_t *dst = user_byte(va + i);
+        uint8_t *dst = nas_mmu_user_byte(va + i);
         if (!dst) return false;
         *dst = data[i];
     }
@@ -308,7 +159,7 @@ static bool elf_map_image(const struct elf_image *image,
         uint64_t first = start & ~(PAGE - 1);
         uint64_t last = (end + PAGE - 1) & ~(PAGE - 1);
         for (uint64_t va = first; va < last; va += PAGE)
-            if (!user_map(va, (p->flags & 2) != 0)) return false;
+            if (!nas_mmu_map_page(va, (p->flags & 2) != 0)) return false;
         if (!user_copy_in(start, file + p->offset, p->filesz)) return false;
     }
     if (!has_entry || e->entry > UINT64_MAX - bias) return false;
@@ -493,74 +344,6 @@ static void observe_stdout(char ch) {
 }
 
 
-/* M2: genuine Linux ABI semantics for single-process TLS + anonymous VM. */
-static void user_invalidate(uint64_t va) {
-    nas_arch_invalidate_page(va);
-}
-static bool user_unmap_page(uint64_t va) {
-    uint64_t *pte = user_leaf(va, false);
-    if (!pte || !(*pte & P_PRESENT) || !(*pte & P_USER)) return true;
-    uint64_t pa = *pte & PHYS_MASK;
-    *pte = 0;
-    user_invalidate(va);
-    return nas_frame_free(pa);
-}
-static uint64_t sys_anon_mmap(uint64_t hint, uint64_t length,
-                              uint64_t prot, uint64_t flags,
-                              uint64_t fd, uint64_t offset) {
-    (void)hint;
-    /* MAP_PRIVATE|MAP_ANONYMOUS; no file/offset/map-fixed emulation. */
-    if (!length || length > (64ULL << 20) || length > UINT64_MAX - PAGE)
-        return (uint64_t)-EINVAL;
-    if ((flags & 0x22) != 0x22 || (flags & ~0x22ULL) || fd != UINT64_MAX || offset)
-        return (uint64_t)-ENOSYS;
-    if (prot & ~7ULL) return (uint64_t)-EINVAL;
-    uint64_t count = (length + PAGE - 1) / PAGE;
-    if (count > mmap_cursor / PAGE) return (uint64_t)-ENOMEM;
-    uint64_t start = mmap_cursor - count * PAGE;
-    if (start < 0x20000000 || start >= USER_LIMIT) return (uint64_t)-ENOMEM;
-    uint64_t va = start;
-    for (; va < mmap_cursor; va += PAGE)
-        if (!user_map(va, (prot & 2) != 0)) break;
-    if (va < mmap_cursor) {
-        while (va > start) { va -= PAGE; user_unmap_page(va); }
-        return (uint64_t)-ENOMEM;
-    }
-    mmap_cursor = start;
-    return start;
-}
-static uint64_t sys_munmap(uint64_t addr, uint64_t len) {
-    if (!len || (addr & (PAGE - 1)) || len > UINT64_MAX - (PAGE - 1))
-        return (uint64_t)-EINVAL;
-    uint64_t count = (len + PAGE - 1) / PAGE;
-    if (addr >= USER_LIMIT || count > (USER_LIMIT - addr) / PAGE)
-        return (uint64_t)-EINVAL;
-    for (uint64_t i = 0; i < count; i++)
-        if (!user_unmap_page(addr + i * PAGE)) return (uint64_t)-EFAULT;
-    return 0;
-}
-static uint64_t sys_brk(uint64_t want) {
-    uint64_t base = heap_break;
-    if (!want) return heap_break;
-    /* brk is a Linux special: failure returns the unchanged break. */
-    if (want < 0x10000 || want >= 0x20000000) return base;
-    uint64_t before = (heap_break + PAGE - 1) & ~(PAGE - 1);
-    uint64_t after = (want + PAGE - 1) & ~(PAGE - 1);
-    if (after > before) {
-        uint64_t va = before;
-        for (; va < after; va += PAGE)
-            if (!user_map(va, true)) break;
-        if (va != after) {
-            while (va > before) { va -= PAGE; user_unmap_page(va); }
-            return base;
-        }
-    } else if (after < before) {
-        for (uint64_t va = after; va < before; va += PAGE)
-            if (!user_unmap_page(va)) return base;
-    }
-    heap_break = want;
-    return want;
-}
 /* Defined with the other syscall copy-to-user helpers below. */
 static bool user_write_bytes(uint64_t address, const uint8_t *src, uint64_t length);
 static uint64_t sys_arch_prctl(uint64_t op, uint64_t address) {
@@ -615,7 +398,7 @@ static uint64_t sys_pipe2(uint64_t user_pair, uint64_t flags) {
     if (user_pair >= USER_LIMIT || user_pair > USER_LIMIT - 8)
         return (uint64_t)-EFAULT;
     for (unsigned i = 0; i < 8; i++)
-        if (!user_byte(user_pair + i)) return (uint64_t)-EFAULT;
+        if (!nas_mmu_user_byte(user_pair + i)) return (uint64_t)-EFAULT;
     unsigned fds[2], slots[2], nfds = 0, nslots = 0;
     for (unsigned fd = 3; fd < NAS_FD_LIMIT && nfds < 2; fd++)
         if (descriptors[fd] == FD_CLOSED) fds[nfds++] = fd;
@@ -653,7 +436,7 @@ static uint64_t pipe_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     if (available <= 0) return (uint64_t)available;
     unsigned count = (unsigned)available, n = 0;
     for (; n < count; n++)
-        if (!user_byte(address + n)) break;
+        if (!nas_mmu_user_byte(address + n)) break;
     if (!n) return (uint64_t)-EFAULT;
     for (unsigned i = 0; i < n; i++) {
         uint8_t value = nas_pipe_read_byte(slot, i);
@@ -673,7 +456,7 @@ static uint64_t pipe_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     if (available <= 0) return (uint64_t)available;
     unsigned count = (unsigned)available, n = 0;
     for (; n < count; n++) {
-        uint8_t *src = user_byte(address + n);
+        uint8_t *src = nas_mmu_user_byte(address + n);
         if (!src) break;
         nas_pipe_write_byte(slot, n, *src);
     }
@@ -732,7 +515,7 @@ static const struct limine_file *bootfs_lookup(const char *path) {
 static bool user_read_bytes(uint64_t addr, uint8_t *dst, uint64_t len) {
     if (addr >= USER_LIMIT || len > USER_LIMIT - addr) return false;
     for (uint64_t n = 0; n < len; n++) {
-        uint8_t *p = user_byte(addr + n);
+        uint8_t *p = nas_mmu_user_byte(addr + n);
         if (!p) return false;
         dst[n] = *p;
     }
@@ -741,12 +524,11 @@ static bool user_read_bytes(uint64_t addr, uint8_t *dst, uint64_t len) {
 static bool user_write_bytes(uint64_t addr, const uint8_t *src, uint64_t len) {
     if (addr >= USER_LIMIT || len > USER_LIMIT - addr) return false;
     for (uint64_t n = 0; n < len; n++) {
-        uint64_t *pte = user_leaf((addr + n) & ~(PAGE - 1), false);
-        if (!pte || !(*pte & P_PRESENT) || !(*pte & P_RW) || !(*pte & P_USER))
+        if (!nas_mmu_user_writable(addr + n))
             return false;
     }
     for (uint64_t n = 0; n < len; n++)
-        *user_byte(addr + n) = src[n];
+        *nas_mmu_user_byte(addr + n) = src[n];
     return true;
 }
 static bool read_u64(uint64_t addr, uint64_t *value) {
@@ -776,7 +558,7 @@ static uint64_t resolve_path(uint64_t dirfd, uint64_t pathname,
     unsigned n=0;
     if (pathname>=USER_LIMIT) return (uint64_t)-EFAULT;
     for (;n<sizeof(src);n++) {
-        uint8_t *p=user_byte(pathname+n);
+        uint8_t *p=nas_mmu_user_byte(pathname+n);
         if (!p) return (uint64_t)-EFAULT;
         src[n]=(char)*p;
         if (!src[n]) break;
@@ -828,7 +610,7 @@ static uint64_t tmp_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     if (length > TMP_FILE_CAP - offset) length = TMP_FILE_CAP - offset;
     uint64_t n = 0;
     for (; n < length; n++) {
-        uint8_t *src = user_byte(address + n);
+        uint8_t *src = nas_mmu_user_byte(address + n);
         if (!src) break;
         file->bytes[offset + n] = *src;
     }
@@ -982,7 +764,7 @@ static uint64_t sys_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
         descriptors[fd] == FD_DIR) return (uint64_t)-EBADF; /* O_RDONLY */
     if (descriptors[fd] != FD_UART) return (uint64_t)-EBADF;
     for (uint64_t i = 0; i < length; i++) {
-        uint8_t *p = user_byte(address + i);
+        uint8_t *p = nas_mmu_user_byte(address + i);
         if (!p) return i ? i : (uint64_t)-EFAULT;
         nas_putchar((char)*p);
         if (fd == 1 && (running_bash || running_busybox)) observe_stdout((char)*p);
@@ -1406,39 +1188,6 @@ static uint64_t sys_sigprocmask(uint64_t how, uint64_t set,
     return 0;
 }
 
-/* Real x86-64 mprotect on mapped user pages, with NX (if enabled). */
-static uint64_t sys_mprotect(uint64_t addr, uint64_t length, uint64_t prot) {
-    const uint64_t nx = 1ULL << 63;
-    if (addr & (PAGE - 1) || (prot & ~7ULL) ||
-        length > UINT64_MAX - (PAGE - 1))
-        return (uint64_t)-EINVAL;
-    if (!length) return 0;
-    uint64_t pages = (length + PAGE - 1) / PAGE;
-    if (addr >= USER_LIMIT || pages > (USER_LIMIT - addr) / PAGE)
-        return (uint64_t)-ENOMEM;
-    if (!nas_arch_nx_enabled()) {
-        /* Cannot claim executable permission enforcement without NXE. */
-        return (uint64_t)-ENOSYS;
-    }
-    if (!prot) return (uint64_t)-ENOSYS; /* PROT_NONE needs VMA semantics. */
-    /* Validate every mapped page before touching any permission bit. */
-    for (uint64_t i = 0; i < pages; i++) {
-        uint64_t *pte = user_leaf(addr + i * PAGE, false);
-        if (!pte || !(*pte & P_PRESENT) || !(*pte & P_USER))
-            return (uint64_t)-ENOMEM;
-    }
-    for (uint64_t i = 0; i < pages; i++) {
-        uint64_t va = addr + i * PAGE;
-        uint64_t *pte = user_leaf(va, false);
-        uint64_t e = *pte & ~(P_RW | nx);
-        if (prot & 2) e |= P_RW;
-        if (!(prot & 4)) e |= nx;
-        *pte = e;
-        user_invalidate(va);
-    }
-    return 0;
-}
-
 /* Single-process execve: replace this process's user image, not fork.
  * Snapshot ALL user pointers before changing CR3. The ELF and interpreter
  * bytes are immutable CPIO entries, so they remain valid after replacement.
@@ -1616,13 +1365,13 @@ static uint64_t sys_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
         result = shebang_rewrite_args();
         if ((int64_t)result < 0) return result;
     }
-    uint64_t new_root = alloc_user_root();
+    uint64_t new_root = nas_mmu_alloc_root();
     if (!new_root) return (uint64_t)-ENOMEM;
     uint64_t previous_root = root_phys;
     uint64_t old_heap = heap_break, old_cursor = mmap_cursor;
     uint64_t old_phdr = loaded_phdr, old_phnum = loaded_phnum;
     uint64_t old_entry = loaded_main_entry, old_interp = loaded_interp_base;
-    switch_user_root(new_root);
+    nas_mmu_switch_root(new_root);
     heap_break = 0;
     mmap_cursor = 0x60000000ULL;
     loaded_phdr = loaded_phnum = loaded_main_entry = loaded_interp_base = 0;
@@ -1631,15 +1380,15 @@ static uint64_t sys_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     if (good) {
         for (uint64_t va = USER_STACK_TOP - USER_STACK_PAGES * PAGE;
              va < USER_STACK_TOP; va += PAGE)
-            if (!user_map(va, true)) { good = false; break; }
+            if (!nas_mmu_map_page(va, true)) { good = false; break; }
     }
     if (good)
         good = build_user_stack(pending_exec.argv, pending_exec.argc,
                                 pending_exec.envp, pending_exec.envc,
                                 pending_exec.filename, &sp);
     if (!good) {
-        switch_user_root(previous_root);
-        if (!reclaim_user_root(new_root)) fail("execve rollback page-table corruption");
+        nas_mmu_switch_root(previous_root);
+        if (!nas_mmu_reclaim_root(new_root)) fail("execve rollback page-table corruption");
         heap_break = old_heap;
         mmap_cursor = old_cursor;
         loaded_phdr = old_phdr;
@@ -1658,7 +1407,7 @@ static uint64_t sys_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     for (unsigned i = 0; i < 65; i++)
         for (unsigned j = 0; j < 4; j++)
             signal_actions[i][j] = 0; /* exec resets user signal handlers */
-    if (!reclaim_user_root(previous_root))
+    if (!nas_mmu_reclaim_root(previous_root))
         fail("execve stale address-space frame reclaim failure");
     const char *basename = actual;
     for (const char *p = basename; *p; p++)
@@ -1689,7 +1438,7 @@ static uint64_t sys_fork(uint64_t *frame) {
     nas_arch_save_fpu(parent);
     struct nas_task *child = nas_task_fork_slot();
     if (!child) return (uint64_t)-EAGAIN;
-    uint64_t new_root = fork_copy_user_root();
+    uint64_t new_root = nas_mmu_fork_root();
     if (!new_root) {
         nas_task_release(child);
         return (uint64_t)-ENOMEM;
@@ -1736,7 +1485,7 @@ static uint64_t sys_wait4(uint64_t desired, uint64_t status_addr,
             if (!user_write_bytes(status_addr, status_bytes, 4))
                 return (uint64_t)-EFAULT;
         }
-        if (!reclaim_user_root(nas_task_page_root(child)))
+        if (!nas_mmu_reclaim_root(nas_task_page_root(child)))
             fail("wait4 failed to reclaim child address space");
         nas_print("[PROC] wait4 reaped pid="); nas_dec(pid);
         nas_print(" status="); nas_dec(code); nas_print("\n");
@@ -1975,11 +1724,11 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == __NR_getpid || nr == __NR_gettid) return TASK.pid;
     if (nr == __NR_getppid) return TASK.ppid;
     if (nr == __NR_getuid || nr == __NR_getgid || nr == __NR_geteuid || nr == __NR_getegid) return 0; /* root credentials */
-    if (nr == __NR_mprotect) return sys_mprotect(args[1], args[2], args[3]);
-    if (nr == __NR_mmap) return sys_anon_mmap(args[1], args[2], args[3],
+    if (nr == __NR_mprotect) return nas_vm_mprotect(args[1], args[2], args[3]);
+    if (nr == __NR_mmap) return nas_vm_anon_mmap(args[1], args[2], args[3],
                                        args[4], args[5], args[6]);
-    if (nr == __NR_munmap) return sys_munmap(args[1], args[2]);
-    if (nr == __NR_brk) return sys_brk(args[1]);
+    if (nr == __NR_munmap) return nas_vm_munmap(args[1], args[2]);
+    if (nr == __NR_brk) return nas_vm_brk(args[1]);
     if (nr == __NR_read) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
     if (nr == __NR_write) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
     if (nr == __NR_rename)
@@ -2099,7 +1848,7 @@ void m1_start(void) {
     nas_task_boot_init();
     nas_arch_cpu_tables_init();
     nas_arch_cpu_user_fp_init();
-    if (!paging_init()) fail("requires four-level paging");
+    if (!nas_mmu_bootstrap()) fail("requires four-level paging");
     nas_arch_syscall_enable();
     /* Select the boot ELF with the very same argv[0] passed to userspace.
      * No shell, PATH lookup, or alternative program-name ABI is invented.
@@ -2137,7 +1886,7 @@ void m1_start(void) {
         fail("invalid or unmappable userspace ELF");
     for (uint64_t va = USER_STACK_TOP - USER_STACK_PAGES * PAGE;
          va < USER_STACK_TOP; va += PAGE) {
-        if (!user_map(va, true)) fail("cannot map user stack");
+        if (!nas_mmu_map_page(va, true)) fail("cannot map user stack");
     }
     uint64_t stack_pointer;
     for (unsigned fd = 0; fd < 3; fd++) {
