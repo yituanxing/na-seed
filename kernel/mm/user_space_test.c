@@ -2,7 +2,7 @@
 #include <stdbool.h>
 #include "frame.h"
 #include "user_space.h"
-#include "../arch/arch.h"
+#include "../arch/mmu.h"
 /* Real physical frame allocator and real ISA PTEs exercised by QEMU
  * BEFORE any one-way U-mode transition. Shared implementation and test
  * runs on RV64 and AArch64; no hand-waved off-line mock. */
