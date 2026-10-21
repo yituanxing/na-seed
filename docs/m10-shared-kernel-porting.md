@@ -285,3 +285,13 @@ The existing x86 Alpine dynamic/musl suite is separately labeled rather
 than being compared as if it were the same fixture. Select one case with
 `BUSYBOX_PARITY_CASE=ash-fork` on either ISA to avoid repeating 16
 known-passing cases while diagnosing one compatibility class.
+
+## Effective applets, not just version strings
+The RV64 QEMU CI job installs qemu-user and executes the exact official
+Debian busybox-static binaries **natively on amd64 and through
+qemu-riscv64 on RV64**. It compares sorted `busybox --list` applet sets
+as a hard gate and checks all canonical test applets exist. This detects
+many ISA/distro build-option differences; **it does not establish equality
+of every Kconfig CONFIG_* option**, which requires extracting/rebuilding
+the fully resolved upstream config separately. Do not call this a
+fully config-identical fixture without that additional verification.

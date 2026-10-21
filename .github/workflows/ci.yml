@@ -144,7 +144,7 @@ jobs:
       - name: Install cross-build and UEFI/QEMU tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y clang lld binutils mtools gdisk cpio \
+          sudo apt-get install -y clang lld binutils mtools gdisk cpio qemu-user \
             qemu-system-misc qemu-efi-riscv64
       - name: Shared ELF PT_LOAD loader host regression
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-elf-segments.c kernel/task/elf_segments.c -o /tmp/naseed-segments-test && /tmp/naseed-segments-test
@@ -160,6 +160,8 @@ jobs:
         run: make ARCH=riscv64 build/deps/limine.h && ARCH=riscv64 sh scripts/check-shared-kernel-build.sh
       - name: Compile and boot RV64 full shared kernel (real ELF + common syscall)
         run: sh scripts/probe-riscv64-full.sh
+      - name: Compare actual amd64/RV64 BusyBox applet configuration
+        run: sh scripts/compare-busybox-applets.sh
       - name: Execute official RV64 Debian static BusyBox via full shared kernel
         run: sh scripts/probe-riscv64-busybox.sh
       - name: Verify native RV64 BusyBox command and CPIO filesystem matrix
@@ -175,6 +177,7 @@ jobs:
             build/port-riscv64/serial.log
             build/port-riscv64/full/serial.log
             build/port-riscv64/full/matrix/*.serial.log
+            build/port-riscv64/full/applet-parity/*
           if-no-files-found: ignore
   aarch64_m0:
     name: AArch64 real UEFI/Limine boot
