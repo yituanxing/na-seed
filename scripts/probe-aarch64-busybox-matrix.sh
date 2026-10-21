@@ -36,8 +36,9 @@ if [ -n "${BUSYBOX_PARITY_CASE:-}" ] && [ "$BUSYBOX_PARITY_CASE" = echo ]; then
     # behavior is sounder than bypassing memory protection to make CI green.
     reference=$(LC_ALL=C qemu-aarch64 -strace "$dir/busybox" echo hello \
       2>"$work/echo.linux-user.syscalls.log")
-    grep -E 'mprotect|brk\\(|mmap\\(|exit_group|set_tid_address' \
-      "$work/echo.linux-user.syscalls.log" | tail -30 || :
+    echo '[ARM64 REFERENCE] actual Linux-user syscall trace:'
+    grep -E 'mprotect|brk|mmap|exit_group|set_tid_address|write' \
+      "$work/echo.linux-user.syscalls.log" | tail -25 || :
     [ "$reference" = hello ] || {
         echo "[ARM64 REFERENCE FAIL] original binary returned [$reference]" >&2
         exit 1
