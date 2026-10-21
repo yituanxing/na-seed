@@ -3,6 +3,8 @@
 # Only CI debug I/O uses semihosting, NOT a PL011/real machine driver.
 set -eu
 make ARCH=aarch64 port-kernel
+# AArch64 still obeys Limine's fixed high-half ELF PHDR floor.
+readelf -lW build/port-aarch64/kernel.elf
 dir=build/port-aarch64
 mkdir -p "$dir" build/deps
 archive=build/deps/limine-binary.tar.gz

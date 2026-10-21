@@ -7,7 +7,7 @@ PHDRS {
   data PT_LOAD FLAGS(0x06);
 }
 SECTIONS {
-  . = 0xffff800000000000; /* canonical TTBR1 upper half (VA bit 47=1) */
+  . = 0xffffffff80000000; /* Limine ELF loader's >= 0xffffffff80000000 PHDR floor */
   .limine_requests : {
     KEEP(*(.limine_requests_start))
     KEEP(*(.limine_requests))

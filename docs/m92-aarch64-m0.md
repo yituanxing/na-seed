@@ -23,3 +23,12 @@ TTY/PL011 MMIO, stage-2 VM, AArch64 user page table, longarch backend.
 No magic null-returning feature stubs and no changes to existing x86 or RV
 user/kernel regressions. This stage uses actual architectural differences
 to guide the next common ABI cut rather than speculative pluggability.
+
+## Link-time ELF PHDR floor
+
+Limine's non-relocatable ELF loader rejects PT_LOAD virtual addresses below
+`0xffffffff80000000`, even if an earlier AArch64 address would be valid in
+a 48-bit TTBR1 translation regime. The AArch64 linker therefore uses the
+same high-half *loader-compatible base* as x86, but AArch64 MMU descriptors
+and CPU state are **not** shared with x86. Confirm the generated PHDRs with
+`readelf -lW` during CI.
