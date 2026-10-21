@@ -1,0 +1,3 @@
+# M8.2 Process lifecycle extraction
+
+NaOS-inspired incremental ownership split: fork and wait/reap now live in task/process.c, with the original eager MMU fork clone, child-first scheduling behavior, errno and PID lifecycle intact. An arch-owned helper saves the x86 syscall frame and parent fork return register; task/process.c does not inspect saved 15-register fields. A transitional checked user-copy API is defined in mm/usercopy.h, with the existing implementation still in m1.c. Cooperative scheduler, FD syscall adapters, SIGPIPE exit and ELF remain for the next coherent subsystem extraction. No new ISA/algorithm, syscall behavior or preemption claim; requires full Bash/BusyBox/Alpine QEMU regressions.
