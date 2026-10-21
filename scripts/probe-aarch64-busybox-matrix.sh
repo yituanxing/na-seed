@@ -62,6 +62,7 @@ boot_case() {
         -machine virt -cpu cortex-a57 -m 512M -smp 1 \
         -display none -serial stdio -monitor none \
         -semihosting-config enable=on,target=native -bios "$fw" \
+        -d in_asm -dfilter 0x404700+0x180 -D "$work/$name.instructions.log" \
         -drive if=none,id=esp,format=raw,file="$disk" \
         -device virtio-blk-device,drive=esp > "$log" 2>&1 < /dev/null &
     pid=$!
@@ -78,6 +79,10 @@ boot_case() {
        ! grep -Fq "[CMDLINE] userspace argv from Limine: naseed.argv=/bin/busybox $args" "$clean"; then
         echo "[ARM64 BUSYBOX FAIL] real $mode BusyBox $args did not cleanly exit" >&2
         tail -110 "$clean" >&2
+        if [ -s "$work/$name.instructions.log" ]; then
+            echo '[ARM64 BUSYBOX DIAG] real QEMU guest instructions near ELF exception PC:' >&2
+            tail -90 "$work/$name.instructions.log" >&2
+        fi
         return 1
     fi
     if [ "$expected" != '-' ] && ! grep -Fxq "$expected" "$clean"; then
