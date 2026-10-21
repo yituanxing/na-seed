@@ -2,6 +2,12 @@ name: NaSeed ARM64 full-kernel gate
 on:
   pull_request:
     paths:
+      # Full ARM64 BusyBox parity must run for changes in shared core too,
+      # not just AArch64 backend or test harness changes.
+      - 'kernel/**'
+      - 'scripts/full-kernel-core.sources'
+      - 'scripts/check-full-kernel-sources.sh'
+      - 'scripts/test-fcntl-abi.c'
       - 'kernel/arch/aarch64/**'
       - 'kernel/arch/arch.h'
       - 'kernel/arch/abi.h'

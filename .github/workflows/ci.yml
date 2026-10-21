@@ -28,6 +28,10 @@ jobs:
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-elf-format.c -o /tmp/naseed-elf-test && /tmp/naseed-elf-test
       - name: Linux syscall semantic decoder regression
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-syscall-abi.c -o /tmp/naseed-syscall-test && /tmp/naseed-syscall-test
+      - name: Linux open flags ABI regression (including ARM64 values)
+        run: cc -std=c11 -Wall -Wextra -Werror scripts/test-fcntl-abi.c -o /tmp/naseed-fcntl-abi && /tmp/naseed-fcntl-abi
+      - name: Verify one full-kernel core TU manifest across ISAs
+        run: sh scripts/check-full-kernel-sources.sh
       - name: Verify native x86-64 stat layout
         run: cc -std=c11 -Wall -Wextra -Werror -c scripts/check-linux-stat.c -o /tmp/naseed-stat.o
       - name: Verify one Debian BusyBox fixture for all architectures

@@ -7,7 +7,9 @@ make ARCH=aarch64 build/deps/limine.h
 out=build/port-aarch64/full
 mkdir -p "$out"
 flags="--target=aarch64-none-elf -march=armv8-a -mgeneral-regs-only -std=c11 -O2 -g -Wall -Wextra -Werror -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie -fno-unwind-tables -I build/deps -I kernel"
-common="kernel/kernel.c kernel/init/main.c kernel/task/exec.c kernel/syscall/dispatch.c kernel/task.c kernel/task/process.c kernel/task/sched.c kernel/bootfs.c kernel/tmpfs.c kernel/fd.c kernel/path.c kernel/pipe.c kernel/boot_image.c kernel/drivers/serial.c kernel/mm/frame.c kernel/mm/vm.c kernel/mm/usercopy.c kernel/task/elf.c kernel/task/elf_segments.c kernel/task/user_stack.c kernel/task/signal.c kernel/fs/syscall.c"
+# One authoritative full-kernel core TU list for every native ISA.
+# ISA-specific hardware providers remain below in the arch= selection.
+common=$(grep -v '^#' scripts/full-kernel-core.sources)
 arch="kernel/arch/aarch64/cpu.c kernel/arch/aarch64/mmu.c kernel/arch/aarch64/context.c kernel/arch/aarch64/debug_console.c kernel/arch/user_pt.c kernel/mm/user_space.c kernel/mm/mmu_bridge.c kernel/platform/aarch64.c"
 obj=
 for f in $common $arch; do

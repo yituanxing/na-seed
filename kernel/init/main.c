@@ -25,21 +25,9 @@
 void nas_init_userspace(void) {
     nas_print("[INIT] creating common task/VM and architecture user entry\n");
     nas_task_boot_init();
-#if defined(__aarch64__)
-    nas_print("[ARM64 TRACE] common Task initialized\n");
-#endif
     nas_arch_prepare_user_cpu();
-#if defined(__aarch64__)
-    nas_print("[ARM64 TRACE] EL1 CPU/TTBR0 user regime prepared\n");
-#endif
     if (!nas_mmu_bootstrap()) nas_fail("architecture user VM bootstrap failed");
-#if defined(__aarch64__)
-    nas_print("[ARM64 TRACE] shared user VM root installed\n");
-#endif
     nas_arch_enable_user_traps();
-#if defined(__aarch64__)
-    nas_print("[ARM64 TRACE] native EL0 SVC vector installed\n");
-#endif
     /* Select the boot ELF with the very same argv[0] passed to userspace.
      * No shell, PATH lookup, or alternative program-name ABI is invented.
      * Legacy M0-M5 configurations without cmdline preserve their defaults.

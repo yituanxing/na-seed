@@ -38,4 +38,4 @@ grep -Fq 'scripts/busybox-parity-cases.tsv' scripts/probe-x86-busybox-parity.sh
 sh -n scripts/fetch-busybox-fixture.sh
 sh -n scripts/fetch-debian-riscv64.sh
 sh -n scripts/fetch-debian.sh
-echo '[PASS] both ISAs use same pinned Debian static BusyBox source/package'
+echo '[PASS] three ISAs use the same pinned Debian static BusyBox source/package'

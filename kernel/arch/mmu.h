@@ -5,8 +5,9 @@
 /* COMMON kernel VM contract: NOT an ISA PTE format. VM, ELF, exec, FS,
  * usercopy and fork use identical operations. Implementations must provide
  * frame ownership, root switching and permission semantics, not fake stubs.
- * x86 has a real full provider; RV/ARM providers are still linker blockers
- * until integrated (cross-ISA compilation only is not a runtime claim).
+ * x86 keeps its existing proven page-tree provider. RV64/AArch64 use
+ * mm/mmu_bridge.c over the shared user_space.c lifecycle and native PTEs.
+ * All three link and execute the full kernel; this is not an M0 stub.
  */
 #if defined(__x86_64__)
 #include "x86_64/mmu.h"

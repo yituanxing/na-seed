@@ -5,7 +5,38 @@ NaOS (kadds/NaOS) was inspected for its single kernel initialization,
 arch/task split, shared ELF load_common and scheduler-policy boundary.
 Its x86-specific paging.h is not a multiarch page-table contract.
 
-## Whole-codebase audit; uncompleted integration blockers
+## Current verified integration status — 2026-10-21
+
+The sections below retain the chronological engineering trail, including
+older *not yet integrated* statements from intermediate milestones. Those
+historical blockers have now been retired as follows:
+
+- Real x86-64, RV64, and AArch64 QEMU full kernels link and execute the
+  same Task, process/scheduler, ELF, syscall, and FS C modules. Each runs
+  the original pinned Debian 13 static BusyBox 1.37.0 through the same
+  17 canonical cases in `scripts/busybox-parity-cases.tsv`.
+- The completed ARM64 native matrix is CI #39609991928 (17/17), and the
+  three-ISA userspace regression is #39609991837 (all jobs SUCCESS).
+- RV64 and AArch64 share `mm/user_space.c` (physical frame lifetime,
+  fork clone, mprotect, reclaim), with ISA-native user page tables and
+  context/trap providers. The original x86 MMU provider remains separate.
+- All full non-x86 builds now read `scripts/full-kernel-core.sources`:
+  shared-core membership has one source of truth instead of independent
+  duplicated shell lists. Hardware provider selections remain ISA-specific.
+- AArch64 Linux O_* numeric flags normalize in `arch/linux_fcntl_abi.h`;
+  the portable ARM translation receives its own host-executed ABI tests.
+- Verbose ARM-only SVC tracing can be re-enabled at build time by defining
+  `NASEED_TRACE_ARCH_SYSCALL`; normal core VM/init code does not contain
+  ARM diagnostic policy.
+
+**Limits:** This proves the fixed BusyBox workload, not unrestricted Linux
+application compatibility. Dynamic ARM64 Alpine, SMP/preemptive scheduling,
+threads/futexes, and unifying x86 with the RV/ARM user-space lifecycle
+remain separate objectives. The root Makefile still defaults non-x86
+`port-kernel` to the M0 smoke; use the explicit full build scripts for the
+integrated kernels until the build entrypoints are consolidated.
+
+## Historical porting log: whole-codebase audit and earlier blockers
 
 - Build/boot: Makefile and kernel/kernel.c use NASEED_PORT_M0 to bypass
   the real init, VM, process, FS and syscall modules for RV64 and ARM64.
