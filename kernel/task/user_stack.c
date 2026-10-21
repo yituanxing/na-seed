@@ -88,7 +88,7 @@ bool nas_build_user_stack(const char *const *args, unsigned argc,
     uint64_t tsc = nas_arch_cycle_counter();
     /* Noncryptographic boot seed for AT_RANDOM. Add real entropy later. */
     uint64_t random_bytes[2] = {
-        tsc ^ (uint64_t)(uintptr_t)&build_user_stack,
+        tsc ^ (uint64_t)(uintptr_t)&nas_build_user_stack,
         (tsc << 17) ^ nas_hhdm_offset()
     };
     sp -= sizeof(random_bytes);

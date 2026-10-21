@@ -32,14 +32,14 @@ bool nas_user_write_bytes(uint64_t addr, const uint8_t *src, uint64_t len) {
         *nas_mmu_user_byte(addr + n) = src[n];
     return true;
 }
-bool nas_user_nas_user_read_u64(uint64_t addr, uint64_t *value) {
+bool nas_user_read_u64(uint64_t addr, uint64_t *value) {
     uint8_t bytes[8];
     if (!nas_user_read_bytes(addr, bytes, 8)) return false;
     *value = 0;
     for (unsigned n = 0; n < 8; n++) *value |= (uint64_t)bytes[n] << (8 * n);
     return true;
 }
-bool nas_user_nas_user_write_u64(uint64_t addr, uint64_t value) {
+bool nas_user_write_u64(uint64_t addr, uint64_t value) {
     uint8_t bytes[8];
     for (unsigned n = 0; n < 8; n++) bytes[n] = (uint8_t)(value >> (8 * n));
     return nas_user_write_bytes(addr, bytes, 8);
