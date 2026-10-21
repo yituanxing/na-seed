@@ -27,3 +27,13 @@ returning fake Linux success.
 Architecture decision exposed by the port: same *semantic* user mapping
 test as RISC-V, completely different descriptors and exception mechanism;
 therefore no premature shared PTE type or shared CPU register frame.
+
+## Hardware-trap debugging guardrails
+
+First live TTBR0 boot proved the allocator-backed mappings and reported
+`[PORT] AArch64 entering live TTBR0 + EL0`, but did not reach the EL0
+trap marker. To avoid blind iteration, the vector switch now emits
+one final EL1 register-state trace (SPSel, SP_EL1, TCR, MAIR) before
+ERET. The descriptor mapping now uses MAIR index 7 instead of rewriting
+index 0, preserving Limine's existing memory types for kernel/HHDM.
+This remains a QEMU-only diagnostic, not a hardware console.

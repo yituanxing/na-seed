@@ -12,7 +12,7 @@
 #define OFF_MASK (ARM_PAGE - 1)
 #define PA_MASK 0x0000fffffffff000ULL
 #define DESCRIPTOR 3ULL
-#define ATTR_NORMAL 0ULL
+#define ATTR_NORMAL (7ULL << 2) /* user AttrIndx=7, preserve Limine MAIR 0..6 */
 #define AP_EL0 (1ULL << 6)
 #define AP_RO  (1ULL << 7)
 #define SH_INNER (3ULL << 8)

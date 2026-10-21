@@ -39,10 +39,12 @@ nas_arm_enter_el0:
     msr vbar_el1, x9
     isb
 
-    /* Offline descriptor AttrIndx=0 must resolve to normal WB cacheable. */
+    /* Leave Limine's existing kernel MAIR entries 0..6 unchanged.
+     * User descriptors select AttrIndx=7, which we set to normal WB. */
     mrs x9, mair_el1
-    bic x9, x9, #0xff
-    orr x9, x9, #0xff
+    mov x10, #0xff
+    lsl x10, x10, #56
+    orr x9, x9, x10
     msr mair_el1, x9
 
     /* TTBR0_EL1 uses 39-bit / 3-level, TG0=4KiB, EPD0=0.
@@ -60,6 +62,11 @@ nas_arm_enter_el0:
     tlbi vmalle1is
     dsb ish
     isb
+    /* Diagnose which side of ERET reaches the exception vectors.
+     * Preserve EL0 PC/SP around the one final EL1 logging call. */
+    stp x1, x2, [sp, #-16]!
+    bl nas_arm_user_last_el1_trace
+    ldp x1, x2, [sp], #16
     msr sp_el0, x2
     msr elr_el1, x1
     mov x9, #0x3c0       // mask D/A/I/F, target EL0t (M=0)

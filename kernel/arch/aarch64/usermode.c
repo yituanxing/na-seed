@@ -17,6 +17,18 @@ static void fatal(const char *why) {
     nas_print("\n");
     nas_arch_halt();
 }
+void nas_arm_user_last_el1_trace(void) {
+    uint64_t spsel, sp_el1, tcr, mair;
+    __asm__ volatile ("mrs %0, SPSel" : "=r"(spsel));
+    __asm__ volatile ("mrs %0, SP_EL1" : "=r"(sp_el1));
+    __asm__ volatile ("mrs %0, TCR_EL1" : "=r"(tcr));
+    __asm__ volatile ("mrs %0, MAIR_EL1" : "=r"(mair));
+    nas_print("[ARM64 TRACE] EL1 before ERET spsel=");
+    nas_hex(spsel); nas_print(" sp_el1="); nas_hex(sp_el1);
+    nas_print(" tcr="); nas_hex(tcr);
+    nas_print(" mair="); nas_hex(mair);
+    nas_print("\n");
+}
 void nas_arm_user_bad_vector(void) {
     fatal("unexpected exception vector");
 }
