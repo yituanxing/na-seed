@@ -38,19 +38,6 @@ static bool same_string(const char *a, const char *b) {
     for (; *a && *b; a++, b++) if (*a != *b) return false;
     return *a == *b;
 }
-static uint64_t sys_uname_naseed(uint64_t buffer) {
-    struct uts {
-        char sysname[65], node[65], release[65], version[65];
-        char machine[65], domain[65];
-    };
-    static const struct uts data = {
-        "Linux", "naseed", "0.1", "NaSeed experimental x86_64",
-        "x86_64", "localdomain"
-    };
-    return nas_user_write_bytes(buffer, (const uint8_t *)&data, sizeof(data))
-        ? 0 : (uint64_t)-EFAULT;
-}
-
 /* Single-process execve: replace this process's user image, not fork.
  * Snapshot ALL user pointers before changing CR3. The ELF and interpreter
  * bytes are immutable CPIO entries, so they remain valid after replacement.
