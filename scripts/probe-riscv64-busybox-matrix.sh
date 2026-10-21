@@ -74,8 +74,13 @@ boot_case() {
     } > "$config"
     mcopy -i "$disk@@1048576" "$config" ::/boot/limine/limine.conf
     cp "$fw/RISCV_VIRT_VARS.fd" "$work/$name.vars.fd"
+    # 9s is the established firmware+kernel runtime. Bound unexpected
+    # shell deadlocks to 30s per scenario so the *whole class* of five
+    # shell tests produces diagnostics within the 10-minute CI budget.
+    # Ordinary applet/cpio cases have a more generous 45s cap.
+    case "$name" in ash-*) time_budget=30 ;; *) time_budget=45 ;; esac
     set +e
-    timeout 90s qemu-system-riscv64 \
+    timeout "${time_budget}s" qemu-system-riscv64 \
         -machine virt,acpi=off -m 512M -smp 1 \
         -display none -serial stdio -monitor none \
         -drive if=pflash,format=raw,unit=0,readonly=on,file="$fw/RISCV_VIRT_CODE.fd" \
@@ -83,7 +88,7 @@ boot_case() {
         -drive if=none,id=esp,format=raw,file="$disk" \
         -device virtio-blk-device,drive=esp > "$log" 2>&1 &
     pid=$!
-    sh scripts/port-boot-until.sh "$log" "$pid" 90 \
+    sh scripts/port-boot-until.sh "$log" "$pid" "$time_budget" \
       '[INIT] creating common task/VM and architecture user entry' \
       '[PASS] cmdline userspace exit 0' \
       '[RV64] userspace debug-exit status=0'
