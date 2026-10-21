@@ -116,7 +116,11 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_rt_sigprocmask) return nas_signal_procmask(args[1], args[2], args[3], args[4]);
     if (nr == NAS_SC_uname) return sys_uname_naseed(args[1]);
 
-    if (nr == NAS_SC_fork) return nas_process_fork((uint64_t *)(uintptr_t)args);
+    if (nr == NAS_SC_fork)
+        return nas_process_fork((uint64_t *)(uintptr_t)args);
+    if (nr == NAS_SC_fork_child_tid)
+        return nas_process_fork_child_tid((uint64_t *)(uintptr_t)args,
+                                          args[5]);
 
     if (nr == NAS_SC_wait4) {
         uint64_t ret = nas_process_wait4(args[1], args[2], args[3], args[4]);
@@ -134,6 +138,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
             nas_sched_child_exit((uint32_t)args[1], 0);
             return nas_task_schedule((uint64_t *)(uintptr_t)args);
         }
+        nas_process_clear_tid_on_exit();
         TASK.exit_code = (uint32_t)(args[1] & 255ULL);
         TASK.termination_signal = 0;
         TASK.state = NAS_TASK_ZOMBIE;

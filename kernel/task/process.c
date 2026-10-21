@@ -16,7 +16,18 @@ static void proc_fail(const char *s) { nas_print("[FAIL] M1 "); nas_print(s); na
  * syscall is completed later in its owner's address space. No timer
  * preemption, SMP, or independent kernel stack is claimed.
  */
-uint64_t nas_process_fork(uint64_t *frame) {
+/* One architecture-neutral process fork algorithm, with optional Linux
+ * per-child TID setup. The original shared VM and scheduler algorithms
+ * remain in charge; no RV-specific fork implementation is introduced. */
+static uint64_t fork_common(uint64_t *frame, uint64_t child_tid) {
+    /* Validate before allocating task/VM objects. Linux CHILD_SETTID
+     * stores a native 32-bit PID in the CHILD's copied address space, not
+     * in the parent. Check both ends in case of a page boundary. */
+    if (child_tid &&
+        (child_tid > UINT64_MAX-3 ||
+         !nas_mmu_user_writable(child_tid) ||
+         !nas_mmu_user_writable(child_tid+3)))
+        return (uint64_t)-EFAULT;
     struct nas_task *parent = nas_current_task;
     nas_arch_save_fpu(parent);
     struct nas_task *child = nas_task_fork_slot();
@@ -37,10 +48,42 @@ uint64_t nas_process_fork(uint64_t *frame) {
     child->state = NAS_TASK_RUNNING;
     nas_current_task = child;
     nas_arch_restore_cpu(child);
+    if (child_tid) {
+        /* Entire 4-byte write uses the child CR3/satp copy. Parent's
+         * memory must retain its independent old contents. */
+        uint32_t tid=(uint32_t)child->pid;
+        uint8_t bytes[4]={(uint8_t)tid,(uint8_t)(tid>>8),
+                          (uint8_t)(tid>>16),(uint8_t)(tid>>24)};
+        if (!nas_user_write_bytes(child_tid,bytes,sizeof(bytes)))
+            proc_fail("clone child_tid write failed after writable validation");
+        child->thread_clear_tid=child_tid;
+        nas_print("[PROC] clone child TID initialized pid=");
+        nas_dec(child->pid);
+        nas_print("\n");
+    }
     nas_print("[PROC] fork parent="); nas_dec(parent->pid);
     nas_print(" child="); nas_dec(child->pid); nas_print("\n");
-    return 0; /* fork returns zero in the child */
+    return 0; /* shared syscall decoder sees zero in new child */
 }
+uint64_t nas_process_fork(uint64_t *frame) {
+    return fork_common(frame,0);
+}
+uint64_t nas_process_fork_child_tid(uint64_t *frame,uint64_t child_tid) {
+    if(!child_tid) return (uint64_t)-EFAULT;
+    return fork_common(frame,child_tid);
+}
+void nas_process_clear_tid_on_exit(void) {
+    uint64_t tid_addr=nas_current_task->thread_clear_tid;
+    if (!tid_addr) return;
+    /* For a forked process (separate VM), Linux clear_child_tid applies
+     * only to the child's VM. Wake-on-futex only matters for shared-VM
+     * threads, which this kernel does not claim to support. */
+    static const uint8_t zero[4]={0,0,0,0};
+    if (!nas_user_write_bytes(tid_addr,zero,sizeof(zero)))
+        proc_fail("clone clear_child_tid unmapped before exit");
+    nas_current_task->thread_clear_tid=0;
+}
+
 uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
                            uint64_t options, uint64_t rusage) {
     if (options & ~1ULL) return (uint64_t)-EINVAL;

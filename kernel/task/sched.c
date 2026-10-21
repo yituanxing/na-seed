@@ -80,6 +80,7 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     struct nas_task *child = nas_current_task;
     if (!child->ppid || !nas_task_by_pid(child->ppid))
         sched_fail("child termination without living parent");
+    nas_process_clear_tid_on_exit();
     child->exit_code = code & 255U;
     child->termination_signal = signum;
     child->state = NAS_TASK_ZOMBIE;

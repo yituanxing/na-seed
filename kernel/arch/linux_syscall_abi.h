@@ -148,9 +148,21 @@ static inline enum nas_syscall_op nas_linux_decode_call(const uint64_t *args) {
 #else
     const uint64_t clone_nr = 220U; /* Linux asm-generic __NR_clone */
 #endif
-    if (args[0] == clone_nr)
-        return args[1] == 17U && args[2] == 0U
-            ? NAS_SC_fork : NAS_SC_NONE;
+    if (args[0] == clone_nr) {
+        if (args[2] != 0U) return NAS_SC_NONE; /* no alternate user stack */
+        if (args[1] == 17U) return NAS_SC_fork;
+#if !defined(__x86_64__)
+        /* Observed directly from original Debian riscv64 BusyBox ash on
+         * real QEMU: CLONE_CHILD_SETTID|CLONE_CHILD_CLEARTID|SIGCHLD.
+         * No CLONE_VM/CLONE_THREAD/CLONE_VFORK, so this is an actual fork
+         * with per-child TID set/clear, NOT an approximated vfork/thread.
+         * Reject unknown flags rather than silently weakening semantics. */
+        if (args[1] == (0x01000000ULL|0x00200000ULL|17U) &&
+            args[5] != 0)
+            return NAS_SC_fork_child_tid;
+#endif
+        return NAS_SC_NONE;
+    }
     return nas_linux_decode_syscall(args[0]);
 }
 #endif

@@ -219,3 +219,20 @@ shared dispatcher now records actual RV64 clone flags, child stack and
 TID/TLS arguments. Implement only the measured semantics, sharing the
 existing scheduler, address space, FD and process lifecycle. This blocker
 must stay a failing real CI gate until correctly handled.
+
+## Native Debian RISC-V BusyBox ash — measured clone contract
+CI QEMU logs of three independent ash failures all identified exactly:
+Linux clone(220), flags=0x01200011 (SIGCHLD|CLONE_CHILD_SETTID|
+CLONE_CHILD_CLEARTID), child stack=0, parent TID=0, TLS=0, child TID
+address=0x1a1d30. This is a **separate-VM process fork** with child
+TID bookkeeping, NOT vfork, shared-VM threads or generic clone.
+
+The ABI decoder now accepts ONLY that measured form as semantic
+NAS_SC_fork_child_tid and routes it to the SAME process_fork core.
+The fork core writes the child PID as a 4-byte Linux tid_t in the CHILD's
+copy of memory, leaves parent memory unchanged, and registers an exit
+clear_child_tid action performed before frame reclamation; fork without
+those flags still uses the exact prior algorithm. Unsupported clone
+flags/alternate stacks fail -ENOSYS. Thread-shared futex wake remains
+unsupported because CLONE_VM/CLONE_THREAD are not implemented.
+This is a real ABI contract, not returning success without behavior.
