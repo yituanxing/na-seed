@@ -133,3 +133,11 @@ its a7 Linux syscall number with arch/linux_syscall_abi.h, exactly as the
 full generic syscall dispatcher does. The smoke trap still asserts
 exit(42); this is evidence of shared ABI interpretation, NOT a second
 syscall/process implementation or a complete RV64 syscall entry yet.
+
+## Real-QEMU CI timing without dropping correctness
+Before M10, each RV/ARM QEMU boot always spent 90s in timeout because the
+guest halts after its PASS markers. Both architecture probe scripts now
+monitor the real kernel's serial log and terminate QEMU only after ALL
+required markers (including shared VM high-VA clone/reclaim) appear and no
+FAIL marker is present. An incomplete or failed boot remains a failure.
+Separate POSIX host regression verifies no partial-marker acceptance.

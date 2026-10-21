@@ -38,8 +38,19 @@ timeout 90s qemu-system-riscv64 \
     -drive if=pflash,format=raw,unit=0,readonly=on,file="$firmware/RISCV_VIRT_CODE.fd" \
     -drive if=pflash,format=raw,unit=1,file="$dir/vars.fd" \
     -drive if=none,id=esp,format=raw,file="$disk" \
-    -device virtio-blk-device,drive=esp >"$log" 2>&1
+    -device virtio-blk-device,drive=esp >"$log" 2>&1 &
+qemu_pid=$!
+sh scripts/port-boot-until.sh "$log" "$qemu_pid" 90 \
+    '[PASS] RV64 Sv39/Sv48/Sv57 user PTE map/query/unmap/reclaim' \
+    '[PASS] shared user VM clone/protect/unmap/reclaim RV64' \
+    '[PASS] RV64 real external ELF64 PT_LOAD/BSS executed in U-mode' \
+    '[PASS] RV64 hardware U-mode Linux exit(42) ecall via sret/satp' \
+    '[PASS] riscv64 M0 Limine/SBI/frame allocator'
+monitor_rc=$?
+kill "$qemu_pid" 2>/dev/null || :
+wait "$qemu_pid"
 rc=$?
+if [ "$monitor_rc" -eq 0 ]; then rc=0; fi
 set -e
 if ! grep -Fq '[PASS] RV64 Sv39/Sv48/Sv57 user PTE map/query/unmap/reclaim' "$log"; then
     echo '[RV64 BOOT FAIL] genuine Sv39/Sv48/Sv57 PTE regression marker absent' >&2

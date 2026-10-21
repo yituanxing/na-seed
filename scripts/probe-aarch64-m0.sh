@@ -34,8 +34,17 @@ timeout 90s qemu-system-aarch64 \
     -semihosting-config enable=on,target=native \
     -bios "$fw" \
     -drive if=none,id=esp,format=raw,file="$disk" \
-    -device virtio-blk-device,drive=esp >"$log" 2>&1
+    -device virtio-blk-device,drive=esp >"$log" 2>&1 &
+qemu_pid=$!
+sh scripts/port-boot-until.sh "$log" "$qemu_pid" 90 \
+    '[PASS] AArch64 39/48-bit user PTE map/query/unmap/reclaim' \
+    '[PASS] shared user VM clone/protect/unmap/reclaim AArch64' \
+    '[PASS] aarch64 M0 Limine/UEFI/semihost/frame allocator'
+monitor_rc=$?
+kill "$qemu_pid" 2>/dev/null || :
+wait "$qemu_pid"
 rc=$?
+if [ "$monitor_rc" -eq 0 ]; then rc=0; fi
 set -e
 if ! grep -Fq '[PASS] AArch64 39/48-bit user PTE map/query/unmap/reclaim' "$log"; then
     echo '[AARCH64 BOOT FAIL] missing genuine user PTE runtime assertion' >&2
