@@ -188,3 +188,14 @@ Linux stack and syscall dispatcher. Acceptance requires BusyBox's own
 stdout hello plus successful exit, identical to the x86 BusyBox smoke.
 The full x86 test *matrix* (CPIO ash, fork/pipe/tmpfs, etc.) remains a
 separate further gate and must not be declared passed prematurely.
+
+## RV64 parity matrix rather than a one-off echo
+scripts/probe-riscv64-busybox-matrix.sh now runs 12 QEMU-booted native
+BusyBox applets through the **same full task/ELF/VM/FS/syscall core**:
+six direct-module tests (echo, uname, pwd, id, true, printf), plus six
+*archive-only CPIO* cases (ls root/bin, cat, head, grep, wc).
+Each asserts native userspace exit 0, correct Limine argv, and exact
+stdout. Archive-only checks real bootfs mount, not a pretend in-kernel
+file response. This matrix is required in RV64 CI beside the existing
+native Debian BusyBox echo and low-level M0 tests.
+Longer x86 ash/fork/pipe/tmpfs workflows remain separate remaining gates.
