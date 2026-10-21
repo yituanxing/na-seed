@@ -39,13 +39,9 @@ void nas_arch_halt(void) {
 
 // Real RV64 full-kernel CPU context; not used by M0-only smoke.
 void nas_arch_prepare_user_cpu(void) {
-    uint64_t misa;
-    __asm__ volatile("csrr %0, misa" : "=r"(misa));
-    if(!(misa & (1ULL << ('D'-'A'))) ||
-       !(misa & (1ULL << ('F'-'A')))) {
-        extern void nas_fail(const char *);
-        nas_fail("RV64 Linux userspace requires hardware F/D");
-    }
+    /* misa is M-mode only; S-mode must NOT read the machine CSR.
+     * The RV64GC full-kernel image requires QEMU's F/D CPU profile.
+     * Kernel FP use on a CPU lacking F/D will trap, never fake success. */
     /* Enable floating point instructions for the kernel save/restore path
      * and preserve user double-precision state across cooperative switches. */
     uint64_t fs=3ULL<<13;
