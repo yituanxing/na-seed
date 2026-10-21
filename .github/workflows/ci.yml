@@ -26,6 +26,8 @@ jobs:
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-elf-format.c -o /tmp/naseed-elf-test && /tmp/naseed-elf-test
       - name: Linux syscall semantic decoder regression
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-syscall-abi.c -o /tmp/naseed-syscall-test && /tmp/naseed-syscall-test
+      - name: Verify native x86-64 stat layout
+        run: cc -std=c11 -Wall -Wextra -Werror -c scripts/check-linux-stat.c -o /tmp/naseed-stat.o
       - name: Preflight audit, shell syntax, kernel compile and link
         run: sh scripts/preflight.sh
       - name: Cache verified static GNU Bash
@@ -135,6 +137,8 @@ jobs:
             qemu-system-misc qemu-efi-riscv64
       - name: Verify reused ELF64 validator
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-elf-format.c -o /tmp/naseed-elf-test && /tmp/naseed-elf-test
+      - name: Verify asm-generic 64-bit stat layout (RV64)
+        run: clang --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 -std=c11 -Wall -Wextra -Werror -ffreestanding -fsyntax-only scripts/check-linux-stat.c
       - name: Validate asm-generic syscall decoder with RV64 Clang
         run: clang --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 -std=c11 -Wall -Wextra -Werror -ffreestanding -fsyntax-only scripts/check-linux-syscalls.c
       - name: Compile and boot genuine RV64 M0 kernel
@@ -157,6 +161,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y clang lld binutils mtools gdisk \
             qemu-system-arm qemu-efi-aarch64
+      - name: Verify asm-generic 64-bit stat layout (ARM64)
+        run: clang --target=aarch64-none-elf -march=armv8-a -std=c11 -Wall -Wextra -Werror -ffreestanding -fsyntax-only scripts/check-linux-stat.c
       - name: Validate asm-generic syscall decoder with ARM64 Clang
         run: clang --target=aarch64-none-elf -march=armv8-a -std=c11 -Wall -Wextra -Werror -ffreestanding -fsyntax-only scripts/check-linux-syscalls.c
       - name: Compile and QEMU-boot genuine AArch64 M0 kernel

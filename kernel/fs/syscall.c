@@ -12,6 +12,7 @@
 #include "../mm/usercopy.h"
 #include "../arch/arch.h"
 #include "../arch/abi.h"
+#include "../arch/linux_stat_abi.h"
 #include "../arch/mmu.h"
 #include "io.h"
 #include "syscall.h"
@@ -577,18 +578,9 @@ static uint64_t sys_fchdir(uint64_t fd) {
 /* Linux x86-64 struct stat layout, 144 bytes. File size is actual module.
  * Device entries have character-device type; mounted files are regular.
  */
-struct linux_stat {
-    uint64_t dev, ino, nlink;
-    uint32_t mode, uid, gid, pad;
-    uint64_t rdev;
-    int64_t size, blksize, blocks;
-    int64_t atime_sec, atime_nsec, mtime_sec, mtime_nsec, ctime_sec, ctime_nsec;
-    int64_t unused[3];
-};
-_Static_assert(sizeof(struct linux_stat) == 144, "Linux x86-64 stat ABI");
 static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
     if (fd >= 64 || !descriptors[fd]) return (uint64_t)-EBADF;
-    struct linux_stat st;
+    struct nas_linux_stat st;
     volatile uint8_t *bytes = (volatile uint8_t *)&st;
     for (unsigned i = 0; i < sizeof(st); i++) bytes[i] = 0;
     st.nlink = 1;
@@ -664,7 +656,7 @@ static uint64_t sys_openat_boot(uint64_t dirfd, uint64_t pathname, uint64_t flag
     return (int64_t)result < 0 ? result : sys_open_path(path, flags);
 }
 static uint64_t write_boot_stat(const struct bootfs_entry *entry, uint64_t dst) {
-    struct linux_stat st;
+    struct nas_linux_stat st;
     uint8_t *p = (uint8_t *)&st;
     for (unsigned i = 0; i < sizeof(st); i++) p[i] = 0;
     st.dev = 3;

@@ -45,3 +45,9 @@ Its x86-specific paging.h is not a multiarch page-table contract.
 - Existing process/exec/loader/filesystem code reuses that descriptor.
 - Real workload regressions preserved; host test rejects malformed ELF
   and accepts architecture IDs 62, 243 and 183.
+
+## Linux stat ABI boundary
+The SAME common FS fills stat fields. x86-64 uses a 144-byte native
+wire struct; RV64/AArch64 use the 128-byte asm-generic struct. The
+target ABI owns the wire representation and compile-time size/offset checks;
+no per-arch copy of FS logic. Signal/clone ABI is not yet implemented.
