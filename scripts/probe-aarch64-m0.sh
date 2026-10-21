@@ -37,6 +37,11 @@ timeout 90s qemu-system-aarch64 \
     -device virtio-blk-device,drive=esp >"$log" 2>&1
 rc=$?
 set -e
+if ! grep -Fq '[PASS] AArch64 39/48-bit user PTE map/query/unmap/reclaim' "$log"; then
+    echo '[AARCH64 BOOT FAIL] missing genuine user PTE runtime assertion' >&2
+    tail -100 "$log" >&2
+    exit 1
+fi
 if ! grep -Fq '[PASS] aarch64 M0 Limine/UEFI/semihost/frame allocator' "$log"; then
     echo "[AARCH64 BOOT FAIL] missing real kernel M0 marker (QEMU=$rc)" >&2
     tail -100 "$log" >&2

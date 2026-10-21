@@ -97,7 +97,7 @@ ARMCFLAGS := --target=aarch64-none-elf -march=armv8-a -mgeneral-regs-only \
 ARMOUT := $(OUT)/port-aarch64
 ARMKERNEL := $(ARMOUT)/kernel.elf
 
-$(ARMOUT)/kernel.o: kernel/kernel.c kernel/arch/arch.h kernel/arch/aarch64/cpu.h $(HDR)
+$(ARMOUT)/kernel.o: kernel/kernel.c kernel/arch/arch.h kernel/arch/aarch64/cpu.h kernel/arch/aarch64/mmu.h $(HDR)
 	mkdir -p $(dir $@)
 	clang $(ARMCFLAGS) -MMD -MP -c $< -o $@
 
@@ -113,11 +113,19 @@ $(ARMOUT)/debug_console.o: kernel/arch/aarch64/debug_console.c kernel/drivers/se
 	mkdir -p $(dir $@)
 	clang $(ARMCFLAGS) -MMD -MP -c $< -o $@
 
-$(ARMKERNEL): $(ARMOUT)/kernel.o $(ARMOUT)/frame.o $(ARMOUT)/cpu.o $(ARMOUT)/debug_console.o kernel/arch/aarch64/linker.ld
+$(ARMOUT)/mmu.o: kernel/arch/aarch64/mmu.c kernel/arch/aarch64/mmu.h kernel/mm/frame.h
+	mkdir -p $(dir $@)
+	clang $(ARMCFLAGS) -MMD -MP -c $< -o $@
+
+$(ARMOUT)/mmu_test.o: kernel/arch/aarch64/mmu_test.c kernel/arch/aarch64/mmu.h
+	mkdir -p $(dir $@)
+	clang $(ARMCFLAGS) -MMD -MP -c $< -o $@
+
+$(ARMKERNEL): $(ARMOUT)/kernel.o $(ARMOUT)/frame.o $(ARMOUT)/cpu.o $(ARMOUT)/debug_console.o $(ARMOUT)/mmu.o $(ARMOUT)/mmu_test.o kernel/arch/aarch64/linker.ld
 	ld.lld -m aarch64elf -nostdlib -static \
 	 -z max-page-size=0x1000 -T kernel/arch/aarch64/linker.ld \
 	 $(ARMOUT)/kernel.o $(ARMOUT)/frame.o $(ARMOUT)/cpu.o \
-	 $(ARMOUT)/debug_console.o -o $@
+	 $(ARMOUT)/debug_console.o $(ARMOUT)/mmu.o $(ARMOUT)/mmu_test.o -o $@
 
 ifeq ($(ARCH),aarch64)
 .PHONY: port-kernel
