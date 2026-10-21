@@ -29,6 +29,26 @@ reason to build a full VMA subsystem before its requirements are known.
   mapping contract is unchanged in this pass, and still needs a separate
   page-granular permission review before claiming universal W^X.
 
+
+## Native dynamic Alpine exploration — diagnostics, not acceptance
+
+The already-green static Debian 17-case matrix remains the mandatory gate.
+Use `scripts/probe-alpine-native-dynamic.sh arm64|riscv64` to boot the SAME
+full kernel with original Alpine v3.23 ET_DYN BusyBox 1.37.0-r30 and the
+original native musl interpreter 1.2.5-r23 from a real CPIO rootfs.
+The first probe requests `echo hello`; archive layout and ELF machine/ABI
+are checked, and serial logs capture the first real failure, without
+inventing success, modifying binaries or adding a per-ISA runtime.
+
+**Exploratory-only security gate:** the four initial package SHA256 values
+are deliberately marked `-` in `scripts/alpine-native-fixtures.txt`; the
+diagnostic prints the actual downloaded digest. They must be pinned in a
+follow-up before interpreting any successful run as verified native Alpine
+compatibility. CI marks exploratory steps `continue-on-error` so dynamic
+failures cannot revoke the accepted Debian static baseline. This
+investigation should inform VM/VMA/ELF loader design instead of prompting
+immediate broad refactoring.
+
 ## Current verified integration status — 2026-10-21
 
 The sections below retain the chronological engineering trail, including

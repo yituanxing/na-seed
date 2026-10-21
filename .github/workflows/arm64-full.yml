@@ -49,6 +49,9 @@ jobs:
         run: NASEED_ARM_FULL_TIMEOUT=25 sh scripts/probe-aarch64-full.sh
       - name: ARM64 — native Debian BusyBox canonical 17-case parity matrix
         run: sh scripts/probe-aarch64-busybox-matrix.sh
+      - name: EXPERIMENTAL original Alpine AArch64 dynamic BusyBox + musl (not a gate)
+        continue-on-error: true
+        run: sh scripts/probe-alpine-native-dynamic.sh arm64
       - name: Upload real UART and semihosting evidence on failure
         if: failure()
         uses: actions/upload-artifact@v4

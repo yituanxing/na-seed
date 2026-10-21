@@ -1,0 +1,6 @@
+# arch|alpine-package-version|sha256
+# '-' is discovery-only: CI experiment must not be treated as acceptance.
+aarch64|busybox-1.37.0-r30|-
+aarch64|musl-1.2.5-r23|-
+riscv64|busybox-1.37.0-r30|-
+riscv64|musl-1.2.5-r23|-
