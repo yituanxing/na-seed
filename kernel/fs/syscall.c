@@ -11,6 +11,7 @@
 #include "../path.h"
 #include "../mm/usercopy.h"
 #include "../arch/arch.h"
+#include "../arch/abi.h"
 #include "../arch/mmu.h"
 #include "io.h"
 #include "syscall.h"
@@ -193,8 +194,8 @@ static uint64_t sys_fcntl(uint64_t fd, uint64_t command, uint64_t arg) {
 }
 static const struct limine_file *bootfs_lookup(const char *path) {
     if (same_string(path, "/bin/busybox")) return nas_module(0);
-    if (same_string(path, "/lib/ld-musl-x86_64.so.1") ||
-        same_string(path, "/lib/libc.musl-x86_64.so.1"))
+    if (same_string(path, NAS_ELF_INTERP) ||
+        same_string(path, NAS_ELF_LIBC_ALIAS))
         return nas_module(1);
     return 0;
 }

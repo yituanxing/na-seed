@@ -22,6 +22,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y clang lld xorriso qemu-system-x86 ovmf musl-tools binutils cpio
+      - name: Shared ELF64 structural regression (x86/RV64/ARM64)
+        run: cc -std=c11 -Wall -Wextra -Werror scripts/test-elf-format.c -o /tmp/naseed-elf-test && /tmp/naseed-elf-test
       - name: Preflight audit, shell syntax, kernel compile and link
         run: sh scripts/preflight.sh
       - name: Cache verified static GNU Bash
@@ -129,6 +131,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y clang lld binutils mtools gdisk \
             qemu-system-misc qemu-efi-riscv64
+      - name: Verify reused ELF64 validator
+        run: cc -std=c11 -Wall -Wextra -Werror scripts/test-elf-format.c -o /tmp/naseed-elf-test && /tmp/naseed-elf-test
       - name: Compile and boot genuine RV64 M0 kernel
         run: sh scripts/probe-riscv64-m0.sh
       - name: Attach riscv64 boot console on failure

@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include "../arch/abi.h"
 #include <stdbool.h>
 #include "../task.h"
 #include "../fd.h"
@@ -18,7 +19,7 @@
 #define running_bash TASK.running_bash
 #define running_busybox TASK.running_busybox
 #define running_alpine TASK.running_alpine
-#define USER_STACK_TOP 0x0000000070000000ULL
+#define USER_STACK_TOP NAS_USER_STACK_TOP
 #define USER_STACK_PAGES 32
 
 void nas_init_userspace(void) {
@@ -81,5 +82,5 @@ void nas_init_userspace(void) {
     else if (running_busybox) nas_print("[M2] entering real BusyBox in ring 3\n");
     else nas_print("[M1] entering actual ring 3\n");
     nas_arch_enter_user(entry, stack_pointer);
-    nas_fail("iretq returned");
+    nas_fail("architecture user-entry unexpectedly returned");
 }

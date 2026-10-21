@@ -6,6 +6,7 @@
 #include "../task.h"
 #include "../fd.h"
 #include "../arch/arch.h"
+#include "../arch/abi.h"
 #include "../arch/x86_64/syscall.h"
 #include "../mm/vm.h"
 #include "../mm/usercopy.h"
@@ -36,8 +37,8 @@ static uint64_t sys_uname_naseed(uint64_t buffer) {
         char machine[65], domain[65];
     };
     static const struct uts data = {
-        "Linux", "naseed", "0.1", "NaSeed experimental x86_64",
-        "x86_64", "localdomain"
+        "Linux", "naseed", "0.1", "NaSeed experimental",
+        NAS_UTS_MACHINE, "localdomain"
     };
     return nas_user_write_bytes(buffer, (const uint8_t *)&data, sizeof(data))
         ? 0 : (uint64_t)-EFAULT;

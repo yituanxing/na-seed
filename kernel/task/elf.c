@@ -1,9 +1,11 @@
 #include <stdint.h>
+#include "../arch/abi.h"
 #include <stdbool.h>
 #include "../task.h"
 #include "../arch/mmu.h"
 #include "../mm/usercopy.h"
 #include "elf.h"
+#include "elf_format.h"
 extern void nas_print(const char *);
 extern void nas_hex(uint64_t);
 #define TASK (*nas_current_task)
@@ -12,15 +14,15 @@ extern void nas_hex(uint64_t);
 #define loaded_phnum TASK.loaded_phnum
 #define loaded_main_entry TASK.loaded_main_entry
 #define loaded_interp_base TASK.loaded_interp_base
-#define USER_STACK_TOP 0x0000000070000000ULL
+#define USER_STACK_TOP NAS_USER_STACK_TOP
 
 /* Parse the ELF64 program headers rather than executing embedded kernel code. */
 static bool checked_range(uint64_t start, uint64_t size, uint64_t limit) {
     return start <= limit && size <= limit - start;
 }
 /* Current fixed ET_DYN placement, not architecture-neutral ASLR. */
-#define ALPINE_APP_BASE 0x10000000ULL
-#define ALPINE_LDSO_BASE 0x30000000ULL
+#define ALPINE_APP_BASE NAS_ELF_DYN_APP_BASE
+#define ALPINE_LDSO_BASE NAS_ELF_DYN_INTERP_BASE
 
 /* ELF bytes may originate from a Limine ELF module (M1-M4) or a file
  * inside the indexed CPIO initramfs (M5.1). This is not an execve ABI.
@@ -33,24 +35,18 @@ static bool elf_map_image(const struct elf_image *image,
     if (!image || !image->data || image->size < sizeof(struct elf_hdr))
         return false;
     const uint8_t *file = image->data;
-    const struct elf_hdr *e = (const struct elf_hdr *)file;
-    if (e->ident[0] != 0x7f || e->ident[1] != 'E' ||
-        e->ident[2] != 'L' || e->ident[3] != 'F' ||
-        e->ident[4] != 2 || e->ident[5] != 1 ||
-        (e->type != 2 && e->type != 3) || e->machine != 62 ||
-        e->phentsize != sizeof(struct elf_phdr) ||
-        !e->phnum || e->phnum > 64 ||
-        !checked_range(e->phoff, (uint64_t)e->phnum * e->phentsize,
-                       image->size))
+    struct nas_elf_view view;
+    if (!nas_elf_open(&view, file, image->size, NAS_ELF_MACHINE, true, 64))
         return false;
+    const struct elf_hdr *e = view.header;
     if ((e->type == 2 && bias) || (e->type == 3 && !bias))
         return false;
     bool has_entry = false;
-    const struct elf_phdr *ph = (const struct elf_phdr *)(file + e->phoff);
+    const struct elf_phdr *ph = view.phdrs;
     for (unsigned i = 0; i < e->phnum; i++) {
         const struct elf_phdr *p = &ph[i];
         if (p->type == 3 && main_image) { /* PT_INTERP */
-            static const char name[] = "/lib/ld-musl-x86_64.so.1";
+            static const char name[] = NAS_ELF_INTERP;
             if (!checked_range(p->offset, p->filesz, image->size) ||
                 p->filesz != sizeof(name)) return false;
             for (unsigned n = 0; n < sizeof(name); n++)
@@ -59,8 +55,7 @@ static bool elf_map_image(const struct elf_image *image,
         }
         if (p->type != 1) continue;
         if (!p->memsz || p->memsz > (64ULL << 20) ||
-            p->filesz > p->memsz ||
-            !checked_range(p->offset, p->filesz, image->size) ||
+            !nas_elf_segment_file_ok(p, image->size) ||
             !checked_range(p->vaddr, p->memsz, USER_LIMIT) ||
             p->vaddr > UINT64_MAX - bias ||
             p->memsz > UINT64_MAX - bias - p->vaddr)
@@ -91,7 +86,10 @@ bool nas_elf_load(const struct elf_image *image,
                      const struct elf_image *interpreter, uint64_t *entry) {
     if (!image || !image->data || image->size < sizeof(struct elf_hdr))
         return false;
-    const struct elf_hdr *e = (const struct elf_hdr *)image->data;
+    struct nas_elf_view view;
+    if (!nas_elf_open(&view, image->data, image->size,
+                      NAS_ELF_MACHINE, true, 64)) return false;
+    const struct elf_hdr *e = view.header;
     uint64_t bias = e->type == 3 ? ALPINE_APP_BASE : 0;
     bool has_interp = false;
     if (!elf_map_image(image, bias, true, &loaded_main_entry, &has_interp))

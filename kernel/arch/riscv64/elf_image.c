@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdbool.h>
-#include "../../task/elf.h"  /* shared ELF64 structural format only */
+#include "../../task/elf_format.h"
+#include "../abi.h"
 #include "../../mm/frame.h"
 #include "mmu.h"
 #include "elf_image.h"
@@ -12,9 +13,6 @@
 #define ELF_DYNAMIC 2U
 #define ELF_INTERP 3U
 
-static bool in_file(uint64_t off, uint64_t len, uint64_t size) {
-    return off <= size && len <= size - off;
-}
 static uint64_t max64(uint64_t a, uint64_t b) { return a > b ? a : b; }
 static uint64_t min64(uint64_t a, uint64_t b) { return a < b ? a : b; }
 
@@ -24,18 +22,11 @@ bool nas_rv_elf_load(struct nas_rv_page_table *pt,
     if (!pt || !pt->root_pa || !image || !entry || size < sizeof(struct elf_hdr) ||
         size > (1ULL << 20)) return false;
 
-    const struct elf_hdr *h = (const struct elf_hdr *)(const void *)image;
-    if (h->ident[0] != 0x7f || h->ident[1] != 'E' ||
-        h->ident[2] != 'L' || h->ident[3] != 'F' ||
-        h->ident[4] != 2 || h->ident[5] != 1 || h->ident[6] != 1 ||
-        h->type != 2 || h->machine != 243 || h->version != 1 ||
-        h->phentsize != sizeof(struct elf_phdr) ||
-        !h->phnum || h->phnum > 16 ||
-        !in_file(h->phoff, (uint64_t)h->phnum * h->phentsize, size))
+    struct nas_elf_view view;
+    if (!nas_elf_open(&view, image, size, NAS_ELF_MACHINE, false, 16))
         return false;
-
-    const struct elf_phdr *ph =
-        (const struct elf_phdr *)(const void *)(image + h->phoff);
+    const struct elf_hdr *h = view.header;
+    const struct elf_phdr *ph = view.phdrs;
     bool has_entry = false;
     unsigned total_pages = 0;
 
@@ -47,7 +38,7 @@ bool nas_rv_elf_load(struct nas_rv_page_table *pt,
         if (p->type == ELF_INTERP || p->type == ELF_DYNAMIC) return false;
         if (p->type != ELF_LOAD) continue;
         if (!p->memsz || p->filesz > p->memsz ||
-            !in_file(p->offset, p->filesz, size) ||
+            !nas_elf_segment_file_ok(p, size) ||
             (p->offset & 4095) != (p->vaddr & 4095) ||
             p->vaddr < RV_ELF_MIN_VA ||
             p->vaddr >= RV_ELF_STACK_VA ||
