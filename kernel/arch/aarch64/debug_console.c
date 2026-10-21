@@ -12,3 +12,6 @@ void nas_arch_console_putc(char ch) {
     register uint64_t x1 __asm__("x1") = (uint64_t)(uintptr_t)&ch_local;
     __asm__ volatile ("hlt #0xf000" : "+r"(x0) : "r"(x1) : "memory");
 }
+
+/* QEMU semihost log stream uses plain LF; no raw-output conversion. */
+void nas_arch_console_log_newline(void) { }

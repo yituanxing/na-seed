@@ -8,7 +8,11 @@ void nas_serial_init(void) { nas_arch_console_init(); }
 void nas_putchar(char ch) { nas_arch_console_putc(ch); }
 void nas_print(const char *s) {
     if (!s) return;
-    while (*s) nas_putchar(*s++);
+    while (*s) {
+        /* Diagnostic terminal formatting is separate from raw stdout. */
+        if (*s == '\n') nas_arch_console_log_newline();
+        nas_putchar(*s++);
+    }
 }
 void nas_dec(uint64_t n) {
     char digits[21]; unsigned len = 0;

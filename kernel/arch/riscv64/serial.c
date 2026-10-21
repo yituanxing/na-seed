@@ -25,3 +25,6 @@ void nas_arch_console_putc(char c) {
     }
     (void)call_sbi(1, 0, (unsigned char)c);
 }
+
+/* SBI console handles plain LF; raw stdout bytes remain unmodified. */
+void nas_arch_console_log_newline(void) { }

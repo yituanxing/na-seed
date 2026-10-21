@@ -24,7 +24,5 @@ static void raw_putc(char ch) {
     while (timeout-- && !(inb(COM1 + 5) & 0x20)) {}
     if (inb(COM1 + 5) & 0x20) outb(COM1, (uint8_t)ch);
 }
-void nas_arch_console_putc(char ch) {
-    if (ch == '\n') raw_putc('\r');
-    raw_putc(ch);
-}
+void nas_arch_console_putc(char ch) { raw_putc(ch); }
+void nas_arch_console_log_newline(void) { raw_putc('\r'); }

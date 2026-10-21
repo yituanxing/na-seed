@@ -75,3 +75,10 @@ providers still call its original, tested hardware routines. RV/ARM
 providers are outstanding real link dependencies, not no-op shims.
 CPIO boot program selection now resolves the target musl interpreter from
 one architecture ABI descriptor.
+
+## Console integrity detail
+Raw nas_putchar is also the program's stdout byte transport. x86
+previously emitted CRLF only in diagnostic nas_print, never for individual
+user bytes. Shared formatter preserves this split by invoking the
+architecture's optional newline hook only for diagnostic nas_print.
+No extra CR is injected into BusyBox output or pipe bytes.
