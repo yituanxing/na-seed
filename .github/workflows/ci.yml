@@ -149,6 +149,8 @@ jobs:
         run: clang --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 -std=c11 -Wall -Wextra -Werror -ffreestanding -fsyntax-only scripts/check-linux-syscalls.c
       - name: Compile the entire shared kernel source set for RV64
         run: make ARCH=riscv64 build/deps/limine.h && ARCH=riscv64 sh scripts/check-shared-kernel-build.sh
+      - name: Compile and boot RV64 full shared kernel (real ELF + common syscall)
+        run: sh scripts/probe-riscv64-full.sh
       - name: Compile and boot genuine RV64 M0 kernel
         run: sh scripts/probe-riscv64-m0.sh
       - name: Attach riscv64 boot console on failure

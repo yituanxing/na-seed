@@ -159,3 +159,20 @@ to call the SAME nas_process_fork, scheduler, MMU and FD implementations.
 Threads and CLONE_VM are correctly unsupported (-ENOSYS), not silently
 converted into a bogus fork. Host regression tests both accepted and
 rejected clone forms. Live non-x86 trap/context entry is still incomplete.
+
+## RV64 full-kernel BusyBox integration gate (not a separate OS)
+- Build kernel from the SAME generic core .c files as x86, plus real RV64
+  CPU, trap, context, MMU, console and platform provider files. This has
+  **no NASEED_PORT_M0**. ELF/task/syscall/fs/pipe/signal/process/exec/VM
+  are direct original shared sources. No duplicate kernel implementation.
+- RV64 supervisor ECALL frame saves all 31 GPRs, sepc and sstatus, then
+  translates Linux a7/a0..a5 to the existing x86-neutral dispatcher format.
+  Scheduler uses real saved per-task RV contexts and per-task hardware root.
+- Real user floating-point ABI requires the D/F ISA; full-kernel path saves
+  and restores f0..f31 plus fcsr on task switches. Unsupported CPUs fail.
+- First runtime acceptance is a real linked native RV64 ELF which exercises
+  the same common boot image, ELF loader, Linux stack, UART write syscall
+  and syscall exit path as x86. That is a prerequisite, **not BusyBox parity**.
+  Next step is native Debian/Alpine RV64 BusyBox and identical x86 test cases.
+- CI explicitly checks full shared-kernel QEMU path in addition to existing
+  M0 hardware smoke (and x86 suite); never conflate these two tests.
