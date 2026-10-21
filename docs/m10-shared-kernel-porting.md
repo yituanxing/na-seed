@@ -324,3 +324,16 @@ The first true AArch64 full-kernel QEMU acceptance is a native ELF write
 and exit executed through the SAME generic dispatcher. This is NOT
 yet a claim that original BusyBox works: its ABI runtime needs real
 validation and the 17-case parity manifest, not a separate new C library.
+
+## Root cause of AArch64 bootstrap stall: changing banked stack under C
+The full AArch64 kernel reliably reached common Task boot, then printed
+`[ARM64 CPU] preparing SPSel` and hung before the next print. This
+identified the actual EL1 PSTATE.SP bank switch, previously performed
+inside a live C function. New ARM full-kernel **ELF entry symbol**
+`nas_arm64_bootstrap` transfers Limine's SP_EL0 boot stack to SP_EL1,
+selects SPSel=1, and tail branches to the EXACT existing kmain BEFORE
+the first C call frame. `nas_arch_prepare_user_cpu` now asserts that
+contract and never tries to switch SP banks mid-C-function. The M0-only
+kernel continues using its own proven boot entry and does not link this
+ARM full symbol. The isolated QEMU full test is now bounded to 25 sec
+per bringup attempt, but still requires full Linux user write+exit.

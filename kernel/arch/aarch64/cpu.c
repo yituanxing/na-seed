@@ -47,11 +47,13 @@ void nas_arch_prepare_user_cpu(void) {
      * second ARM-specific Task/FS/syscall codepath. */
     extern void nas_print(const char *);
     nas_print("[ARM64 CPU] preparing SPSel\n");
+    /* The stack-bank selection MUST happen at ELF ENTRY BEFORE the first
+     * C frame is created, not halfway through nas_init_userspace. Limine
+     * enters with SPSel=0 on QEMU; the ARM64 full-entry assembly transfers
+     * the original stack to SP_EL1 and selects SPSel=1 before kmain. */
     if (!(spsel & 1U)) {
-        uint64_t current_sp;
-        __asm__ volatile("mov %0, sp" : "=r"(current_sp));
-        __asm__ volatile("msr sp_el1,%0\nmsr spsel,#1\nisb"
-                         : : "r"(current_sp) : "memory");
+        nas_print("[FAIL] ARM64 full ELF boot entry did not select SP_EL1\n");
+        nas_arch_halt();
     }
     nas_print("[ARM64 CPU] SP_EL1 live kernel stack selected\n");
     __asm__ volatile("msr daifset,#15" : : : "memory");

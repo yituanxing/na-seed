@@ -26,15 +26,16 @@ mcopy -i "$disk@@1048576" limine-aarch64-full.conf ::/boot/limine/limine.conf
 fw=/usr/share/qemu-efi-aarch64/QEMU_EFI.fd
 test -s "$fw"
 log="$dir/serial.log"
+limit=${NASEED_ARM_FULL_TIMEOUT:-45}
 set +e
-timeout 90s qemu-system-aarch64 \
+timeout "${limit}s" qemu-system-aarch64 \
     -machine virt -cpu cortex-a57 -m 512M -smp 1 \
     -display none -serial stdio -monitor none \
     -semihosting-config enable=on,target=native -bios "$fw" \
     -drive if=none,id=esp,format=raw,file="$disk" \
     -device virtio-blk-device,drive=esp >"$log" 2>&1 < /dev/null &
 pid=$!
-sh scripts/port-boot-until.sh "$log" "$pid" 90 \
+sh scripts/port-boot-until.sh "$log" "$pid" "$limit" \
  '[INIT] creating common task/VM and architecture user entry' \
  '[PASS] M1 ELF / ring3 / syscall write / ENOSYS / exit' \
  '[ARM64] userspace debug-exit status=0'

@@ -4,6 +4,18 @@
  * entering EL0; no independent ARM userland loop exists.
  */
 .section .text,"ax",%progbits
+/* Limine initializes EL1 with SPSel=0. Change stack banks AT BOOT ENTRY,
+ * before any C prologue/stack frame exists. Otherwise the live kernel C
+ * stack changes bank mid-call, which stalled both ARM EL0 attempts. */
+.global nas_arm64_bootstrap
+.balign 4
+nas_arm64_bootstrap:
+    mov x9,sp
+    msr sp_el1,x9
+    msr spsel,#1
+    isb
+    b kmain
+
 .balign 2048
 .global nas_arm_full_vectors
 nas_arm_full_vectors:
