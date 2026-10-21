@@ -31,7 +31,13 @@ readelf -SW "$dir/busybox" | grep -E 'Name|\.got|\.data|\.bss|\.init_array|\.fin
 # a broken Debian build as a kernel issue; it must execute unmodified.
 if [ -n "${BUSYBOX_PARITY_CASE:-}" ] && [ "$BUSYBOX_PARITY_CASE" = echo ]; then
     printf '[ARM64 REFERENCE] QEMU Linux-user BusyBox echo: '
-    reference=$(LC_ALL=C qemu-aarch64 "$dir/busybox" echo hello)
+    # The real Linux system-call trace provides an external oracle for
+    # whether native glibc calls mprotect(RELRO) at all. Comparing kernel
+    # behavior is sounder than bypassing memory protection to make CI green.
+    reference=$(LC_ALL=C qemu-aarch64 -strace "$dir/busybox" echo hello \
+      2>"$work/echo.linux-user.syscalls.log")
+    grep -E 'mprotect|brk\\(|mmap\\(|exit_group|set_tid_address' \
+      "$work/echo.linux-user.syscalls.log" | tail -30 || :
     [ "$reference" = hello ] || {
         echo "[ARM64 REFERENCE FAIL] original binary returned [$reference]" >&2
         exit 1
