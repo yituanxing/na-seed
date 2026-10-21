@@ -51,3 +51,10 @@ The SAME common FS fills stat fields. x86-64 uses a 144-byte native
 wire struct; RV64/AArch64 use the 128-byte asm-generic struct. The
 target ABI owns the wire representation and compile-time size/offset checks;
 no per-arch copy of FS logic. Signal/clone ABI is not yet implemented.
+
+## Shared console formatter across three real QEMU architectures
+Real x86 COM1, RV SBI DBCN and ARM semihost transports now export only
+nas_arch_console_init/putc. The shared drivers/serial.c owns print/decimal/
+hex formatting. Existing CRLF behavior remains in the x86 device adapter;
+the QEMU boot paths use exactly the same common formatter object.
+ARM semihost is *not* misrepresented as an actual PL011 driver.

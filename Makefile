@@ -63,7 +63,11 @@ $(RVOUT)/cpu.o: kernel/arch/riscv64/cpu.c kernel/arch/riscv64/cpu.h
 	mkdir -p $(dir $@)
 	clang $(RVCFLAGS) -MMD -MP -c $< -o $@
 
-$(RVOUT)/serial.o: kernel/arch/riscv64/serial.c kernel/drivers/serial.h
+$(RVOUT)/serial.o: kernel/drivers/serial.c kernel/drivers/serial.h kernel/arch/console.h
+	mkdir -p $(dir $@)
+	clang $(RVCFLAGS) -MMD -MP -c $< -o $@
+
+$(RVOUT)/console.o: kernel/arch/riscv64/serial.c kernel/arch/console.h
 	mkdir -p $(dir $@)
 	clang $(RVCFLAGS) -MMD -MP -c $< -o $@
 
@@ -96,10 +100,10 @@ $(RVOUT)/user_entry.o: kernel/arch/riscv64/user_entry.S
 	mkdir -p $(dir $@)
 	clang $(RVCFLAGS) -c $< -o $@
 
-$(RVKERNEL): $(RVOUT)/kernel.o $(RVOUT)/frame.o $(RVOUT)/cpu.o $(RVOUT)/serial.o $(RVOUT)/mmu.o $(RVOUT)/mmu_test.o $(RVOUT)/usermode.o $(RVOUT)/user_entry.o $(RVOUT)/elf_image.o kernel/arch/riscv64/linker.ld
+$(RVKERNEL): $(RVOUT)/kernel.o $(RVOUT)/frame.o $(RVOUT)/cpu.o $(RVOUT)/serial.o $(RVOUT)/console.o $(RVOUT)/mmu.o $(RVOUT)/mmu_test.o $(RVOUT)/usermode.o $(RVOUT)/user_entry.o $(RVOUT)/elf_image.o kernel/arch/riscv64/linker.ld
 	ld.lld -m elf64lriscv -nostdlib -static --no-relax \
 	 -z max-page-size=0x1000 -T kernel/arch/riscv64/linker.ld \
-	 $(RVOUT)/kernel.o $(RVOUT)/frame.o $(RVOUT)/cpu.o $(RVOUT)/serial.o \
+	 $(RVOUT)/kernel.o $(RVOUT)/frame.o $(RVOUT)/cpu.o $(RVOUT)/serial.o $(RVOUT)/console.o \
 	 $(RVOUT)/mmu.o $(RVOUT)/mmu_test.o $(RVOUT)/usermode.o $(RVOUT)/user_entry.o $(RVOUT)/elf_image.o -o $@
 
 ifeq ($(ARCH),riscv64)
@@ -131,7 +135,11 @@ $(ARMOUT)/cpu.o: kernel/arch/aarch64/cpu.c kernel/arch/aarch64/cpu.h
 	mkdir -p $(dir $@)
 	clang $(ARMCFLAGS) -MMD -MP -c $< -o $@
 
-$(ARMOUT)/debug_console.o: kernel/arch/aarch64/debug_console.c kernel/drivers/serial.h
+$(ARMOUT)/debug_console.o: kernel/arch/aarch64/debug_console.c kernel/arch/console.h
+	mkdir -p $(dir $@)
+	clang $(ARMCFLAGS) -MMD -MP -c $< -o $@
+
+$(ARMOUT)/serial.o: kernel/drivers/serial.c kernel/drivers/serial.h kernel/arch/console.h
 	mkdir -p $(dir $@)
 	clang $(ARMCFLAGS) -MMD -MP -c $< -o $@
 
@@ -143,11 +151,11 @@ $(ARMOUT)/mmu_test.o: kernel/arch/aarch64/mmu_test.c kernel/arch/aarch64/mmu.h
 	mkdir -p $(dir $@)
 	clang $(ARMCFLAGS) -MMD -MP -c $< -o $@
 
-$(ARMKERNEL): $(ARMOUT)/kernel.o $(ARMOUT)/frame.o $(ARMOUT)/cpu.o $(ARMOUT)/debug_console.o $(ARMOUT)/mmu.o $(ARMOUT)/mmu_test.o kernel/arch/aarch64/linker.ld
+$(ARMKERNEL): $(ARMOUT)/kernel.o $(ARMOUT)/frame.o $(ARMOUT)/cpu.o $(ARMOUT)/debug_console.o $(ARMOUT)/serial.o $(ARMOUT)/mmu.o $(ARMOUT)/mmu_test.o kernel/arch/aarch64/linker.ld
 	ld.lld -m aarch64elf -nostdlib -static \
 	 -z max-page-size=0x1000 -T kernel/arch/aarch64/linker.ld \
 	 $(ARMOUT)/kernel.o $(ARMOUT)/frame.o $(ARMOUT)/cpu.o \
-	 $(ARMOUT)/debug_console.o $(ARMOUT)/mmu.o $(ARMOUT)/mmu_test.o -o $@
+	 $(ARMOUT)/debug_console.o $(ARMOUT)/serial.o $(ARMOUT)/mmu.o $(ARMOUT)/mmu_test.o -o $@
 
 ifeq ($(ARCH),aarch64)
 .PHONY: port-kernel
@@ -248,11 +256,15 @@ $(OUT)/arch_context.o: kernel/arch/$(ARCH)/context.c kernel/arch/$(ARCH)/context
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
-$(OUT)/serial.o: kernel/drivers/serial.c kernel/drivers/serial.h
+$(OUT)/serial.o: kernel/drivers/serial.c kernel/drivers/serial.h kernel/arch/console.h
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
 $(OUT)/frame.o: kernel/mm/frame.c kernel/mm/frame.h $(HDR)
+	mkdir -p $(dir $@)
+	clang $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(OUT)/arch_console.o: kernel/arch/$(ARCH)/console.c kernel/arch/console.h
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
@@ -285,8 +297,8 @@ $(OUT)/shebang-abi.o: user/shebang-abi.S kernel/nr.h kernel/errno.h
 $(OUT)/shebang-abi: $(OUT)/shebang-abi.o user/linker.ld
 	ld.lld -m elf_x86_64 -nostdlib -static -T user/linker.ld $< -o $@
 
-$(KERNEL): $(OUT)/kernel.o $(OUT)/init_main.o $(OUT)/task_exec.o $(OUT)/syscall_dispatch.o $(OUT)/task.o $(OUT)/process.o $(OUT)/sched.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/boot_image.o $(OUT)/arch.o $(OUT)/arch_cpu.o $(OUT)/arch_context.o $(OUT)/serial.o $(OUT)/frame.o $(OUT)/platform.o $(OUT)/arch_mmu.o $(OUT)/vm.o $(OUT)/usercopy.o $(OUT)/elf.o $(OUT)/user_stack.o $(OUT)/signal.o $(OUT)/arch_syscall.o $(OUT)/fs_syscall.o kernel/arch/$(ARCH)/linker.ld
-	ld.lld $(LDFLAGS) $(OUT)/kernel.o $(OUT)/init_main.o $(OUT)/task_exec.o $(OUT)/syscall_dispatch.o $(OUT)/task.o $(OUT)/process.o $(OUT)/sched.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/boot_image.o $(OUT)/arch.o $(OUT)/arch_cpu.o $(OUT)/arch_context.o $(OUT)/serial.o $(OUT)/frame.o $(OUT)/platform.o $(OUT)/arch_mmu.o $(OUT)/vm.o $(OUT)/usercopy.o $(OUT)/elf.o $(OUT)/user_stack.o $(OUT)/signal.o $(OUT)/arch_syscall.o $(OUT)/fs_syscall.o -o $@
+$(KERNEL): $(OUT)/kernel.o $(OUT)/init_main.o $(OUT)/task_exec.o $(OUT)/syscall_dispatch.o $(OUT)/task.o $(OUT)/process.o $(OUT)/sched.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/boot_image.o $(OUT)/arch.o $(OUT)/arch_cpu.o $(OUT)/arch_context.o $(OUT)/serial.o $(OUT)/arch_console.o $(OUT)/frame.o $(OUT)/platform.o $(OUT)/arch_mmu.o $(OUT)/vm.o $(OUT)/usercopy.o $(OUT)/elf.o $(OUT)/user_stack.o $(OUT)/signal.o $(OUT)/arch_syscall.o $(OUT)/fs_syscall.o kernel/arch/$(ARCH)/linker.ld
+	ld.lld $(LDFLAGS) $(OUT)/kernel.o $(OUT)/init_main.o $(OUT)/task_exec.o $(OUT)/syscall_dispatch.o $(OUT)/task.o $(OUT)/process.o $(OUT)/sched.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/boot_image.o $(OUT)/arch.o $(OUT)/arch_cpu.o $(OUT)/arch_context.o $(OUT)/serial.o $(OUT)/arch_console.o $(OUT)/frame.o $(OUT)/platform.o $(OUT)/arch_mmu.o $(OUT)/vm.o $(OUT)/usercopy.o $(OUT)/elf.o $(OUT)/user_stack.o $(OUT)/signal.o $(OUT)/arch_syscall.o $(OUT)/fs_syscall.o -o $@
 
 $(BINARY_TAR):
 	mkdir -p $(dir $@)
