@@ -2,13 +2,13 @@
 ifeq ($(ARCH),riscv64)
 .DEFAULT_GOAL := port-kernel
 ifneq ($(strip $(filter-out port-kernel clean build/deps/limine.h,$(MAKECMDGOALS))),)
-$(error riscv64 supports only port-kernel M0 and clean; userspace is not ported)
+$(error riscv64 Makefile port-kernel is M0 smoke only; use sh scripts/build-riscv64-full.sh for the shared userspace kernel)
 endif
 endif
 ifeq ($(ARCH),aarch64)
 .DEFAULT_GOAL := port-kernel
 ifneq ($(strip $(filter-out port-kernel clean build/deps/limine.h,$(MAKECMDGOALS))),)
-$(error aarch64 supports only M0 port-kernel and clean; no userspace backend)
+$(error aarch64 Makefile port-kernel is M0 smoke only; use sh scripts/build-aarch64-full.sh for the shared userspace kernel)
 endif
 endif
 .DELETE_ON_ERROR:
@@ -43,7 +43,8 @@ $(HDR):
 	mv $@.tmp $@
 
 
-# Actual riscv64 M0-only Limine ELF. Not the x86 full kernel.
+# M0-only RV64 hardware smoke. Full RV64 shared-kernel build lives in
+# scripts/build-riscv64-full.sh until the target entrypoints are unified.
 RVCFLAGS := --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 \
  -mcmodel=medany -mno-relax -std=c11 -O2 -g -Wall -Wextra -Werror \
  -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
