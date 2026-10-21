@@ -15,7 +15,11 @@ for f in $common $arch; do
     clang $flags -c "$f" -o "$target"
     obj="$obj $target"
 done
-clang $flags -c kernel/arch/aarch64/trap.S -o "$out/trap.o"
+# Clang -mgeneral-regs-only deliberately forbids SIMD opcodes even in
+# hand-written .S. Keep it for ALL common C, but assemble the explicit
+# FP/SIMD save/restore provider with the architecture's native FP ISA.
+clang --target=aarch64-none-elf -march=armv8-a -g -c \
+  kernel/arch/aarch64/trap.S -o "$out/trap.o"
 ld.lld -m aarch64elf -nostdlib -static -z max-page-size=0x1000 \
   -T kernel/arch/aarch64/linker.ld $obj "$out/trap.o" -o "$out/kernel.elf"
 clang --target=aarch64-none-elf -march=armv8-a \
