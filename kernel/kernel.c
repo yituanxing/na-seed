@@ -8,6 +8,7 @@
 #include "arch/riscv64/mmu.h"
 #elif defined(NASEED_PORT_M0) && defined(__aarch64__)
 #include "arch/aarch64/cpu.h"
+#include "arch/aarch64/mmu.h"
 #endif
 #include "drivers/serial.h"
 #include "mm/frame.h"
@@ -104,6 +105,11 @@ void kmain(void) {
         nas_arch_halt();
     }
     nas_print("[PORT] AArch64 EL1 stage-1 MMU 4KiB confirmed\n");
+    if (!nas_arm_pt_smoke()) {
+        nas_print("[FAIL] AArch64 39/48-bit user PTE selftest\n");
+        nas_arch_halt();
+    }
+    nas_print("[PASS] AArch64 39/48-bit user PTE map/query/unmap/reclaim\n");
     nas_print("[PASS] aarch64 M0 Limine/UEFI/semihost/frame allocator\n");
     nas_arch_halt();
 #else
