@@ -12,6 +12,8 @@
 #include "path.h"
 #include "pipe.h"
 #include "boot_image.h"
+#include "arch/arch.h"
+#include "platform/platform.h"
 
 /* Process-local state was previously static global memory. A task is now
  * its explicit owner; the single-task aliases keep the proven syscall path
@@ -26,7 +28,7 @@
 #define loaded_main_entry TASK.loaded_main_entry
 #define loaded_interp_base TASK.loaded_interp_base
 #define thread_clear_tid TASK.thread_clear_tid
-#define user_fs_base TASK.user_fs_base
+#define user_fs_base TASK.arch.user_fs_base
 #define descriptors TASK.fds.descriptors
 #define file_slot TASK.fds.file_slot
 #define file_refcount nas_file_refcount
@@ -58,12 +60,6 @@ extern void nas_dec(uint64_t);
 extern void nas_hex(uint64_t);
 extern const struct limine_file *nas_user_module(void);
 extern const struct limine_file *nas_module(uint64_t index);
-extern void gdt_reload(const void *);
-extern void enter_user(uint64_t entry, uint64_t stack_top);
-extern void syscall_entry(void);
-extern void *exception_vectors[32];
-extern char kernel_stack_top;
-extern uint64_t syscall_user_rsp;
 
 #define PAGE 4096ULL
 #define P_PRESENT 1ULL
@@ -78,106 +74,15 @@ __attribute__((noreturn)) static void fail(const char *message) {
     nas_print("[FAIL] M1 ");
     nas_print(message);
     nas_print("\n");
-    for (;;) __asm__ volatile ("cli; hlt");
+    nas_arch_halt();
 }
-static void outb(uint16_t port, uint8_t value) {
-    __asm__ volatile ("outb %0, %1" : : "a"(value), "Nd"(port));
-}
-static void wrmsr(uint32_t reg, uint64_t value) {
-    __asm__ volatile ("wrmsr" : : "c"(reg), "a"((uint32_t)value), "d"((uint32_t)(value >> 32)));
-}
-static uint64_t rdmsr(uint32_t reg) {
-    uint32_t lo, hi;
-    __asm__ volatile ("rdmsr" : "=a"(lo), "=d"(hi) : "c"(reg));
-    return ((uint64_t)hi << 32) | lo;
-}
-
-/* ABI-shaped TSS; all exceptions from user mode use the kernel stack. */
-struct __attribute__((packed)) x86_tss {
-    uint32_t reserved0;
-    uint64_t rsp0, rsp1, rsp2, reserved1;
-    uint64_t ist1, ist2, ist3, ist4, ist5, ist6, ist7;
-    uint64_t reserved2;
-    uint16_t reserved3, iomap_base;
-};
-struct __attribute__((packed)) table_pointer { uint16_t limit; uint64_t base; };
-struct __attribute__((packed)) idt_entry {
-    uint16_t offset_low, selector;
-    uint8_t ist, type;
-    uint16_t offset_middle;
-    uint32_t offset_high, reserved;
-};
-static struct x86_tss tss;
-static uint64_t gdt[7] __attribute__((aligned(16)));
-static struct idt_entry idt[256];
-
-static void cpu_user_fp_init(void) {
-    /* Actual musl Bash emits SSE2 (e.g. movq XMM0) in static_init_tls.
-     * Without CR4.OSFXSR the CPU raises #UD at its first XMM instruction.
-     * M2 runs one userspace task; preserve FPU/SIMD context when adding
-     * multitasking and kernel SIMD later.
-     */
-    uint64_t cr0, cr4;
-    __asm__ volatile ("mov %%cr0, %0" : "=r"(cr0));
-    __asm__ volatile ("mov %%cr4, %0" : "=r"(cr4));
-    cr0 |= (1ULL << 1);                /* MP */
-    cr0 &= ~((1ULL << 2) | (1ULL << 3)); /* clear EM/TS */
-    cr4 |= (1ULL << 9) | (1ULL << 10);   /* OSFXSR + OSXMMEXCPT */
-    __asm__ volatile ("mov %0, %%cr0" : : "r"(cr0) : "memory");
-    __asm__ volatile ("mov %0, %%cr4" : : "r"(cr4) : "memory");
-    __asm__ volatile ("fninit");
-}
-static void cpu_tables_init(void) {
-    tss.rsp0 = (uint64_t)(uintptr_t)&kernel_stack_top;
-    tss.iomap_base = sizeof(tss);
-    gdt[0] = 0;
-    gdt[1] = 0x00af9a000000ffffULL; /* kernel code: 0x08 */
-    gdt[2] = 0x00cf92000000ffffULL; /* kernel data: 0x10 */
-    gdt[3] = 0x00cff2000000ffffULL; /* user data: 0x1b */
-    gdt[4] = 0x00affa000000ffffULL; /* user code: 0x23 */
-    uint64_t base = (uint64_t)(uintptr_t)&tss;
-    uint64_t limit = sizeof(tss) - 1;
-    gdt[5] = (limit & 0xffff) | ((base & 0xffffff) << 16)
-        | (0x89ULL << 40) | (((limit >> 16) & 15) << 48)
-        | (((base >> 24) & 0xff) << 56);
-    gdt[6] = base >> 32;
-    struct table_pointer gdtr = { sizeof(gdt) - 1, (uint64_t)(uintptr_t)gdt };
-    gdt_reload(&gdtr);
-    uint16_t tr = 0x28;
-    __asm__ volatile ("ltr %0" : : "r"(tr));
-    for (unsigned i = 0; i < 32; i++) {
-        uint64_t addr = (uint64_t)(uintptr_t)exception_vectors[i];
-        idt[i].offset_low = addr & 0xffff;
-        idt[i].offset_middle = (addr >> 16) & 0xffff;
-        idt[i].offset_high = addr >> 32;
-        idt[i].selector = 0x08;
-        idt[i].ist = 0;
-        idt[i].type = 0x8e;
-        idt[i].reserved = 0;
-    }
-    struct table_pointer idtr = { sizeof(idt) - 1, (uint64_t)(uintptr_t)idt };
-    __asm__ volatile ("lidt %0" : : "m"(idtr));
-}
-void exception_report(const uint64_t *frame) {
-    uint64_t cr2;
-    __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
-    nas_print("[FAULT] vector="); nas_dec(frame[0]);
-    nas_print(" err="); nas_hex(frame[1]);
-    nas_print(" rip="); nas_hex(frame[2]);
-    nas_print(" cs="); nas_hex(frame[3]);
-    nas_print(" cr2="); nas_hex(cr2);
-    nas_print("\n");
-}
-
 /* User pages: read and amend existing Limine CR3 paging hierarchy. */
 static uint64_t *phys_table(uint64_t physical) {
     return (uint64_t *)(uintptr_t)(nas_hhdm_offset() + physical);
 }
 static bool paging_init(void) {
-    uint64_t cr4, cr3;
-    __asm__ volatile ("mov %%cr4, %0" : "=r"(cr4));
-    __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
-    if (cr4 & (1ULL << 12)) return false; /* LA57 not part of M1. */
+    uint64_t cr3 = nas_arch_current_page_root();
+    if (nas_arch_la57_enabled()) return false; /* LA57 not part of M1. */
     /* Separate userspace CR3: copy supervisor upper half, zero the lower half. */
     uint64_t boot_root = cr3 & PHYS_MASK;
     if (!boot_root) return false;
@@ -187,7 +92,7 @@ static bool paging_init(void) {
     uint64_t *fresh = phys_table(root_phys);
     for (unsigned i = 256; i < 512; i++)
         fresh[i] = old[i] & ~P_USER;
-    __asm__ volatile ("mov %0, %%cr3" : : "r"(root_phys) : "memory");
+    nas_arch_switch_page_root(root_phys);
     return true;
 }
 /* Every execve owns a fresh user page-table root; the supervisor upper
@@ -231,7 +136,7 @@ static bool reclaim_user_root(uint64_t pa) {
 }
 static void switch_user_root(uint64_t pa) {
     root_phys = pa;
-    __asm__ volatile ("mov %0, %%cr3" : : "r"(pa) : "memory");
+    nas_arch_switch_page_root(pa);
 }
 
 
@@ -270,12 +175,6 @@ static uint64_t fork_copy_user_root(void) {
         fail("fork private page rollback corrupted");
     return 0;
 }
-static void task_restore_cpu(const struct nas_task *task) {
-    __asm__ volatile("mov %0, %%cr3" : : "r"(nas_task_page_root(task)) : "memory");
-    wrmsr(0xc0000100, nas_task_tls_base(task));
-    __asm__ volatile("fxrstor64 %0" : : "m"(task->fpu_state) : "memory");
-}
-
 static uint64_t *user_leaf(uint64_t va, bool allocate_tables) {
     if (va < PAGE || va >= USER_LIMIT || (va & (PAGE - 1))) return 0;
     uint64_t table = root_phys;
@@ -301,13 +200,13 @@ static bool user_map(uint64_t va, bool writable) {
     if (*entry & P_PRESENT) {
         if (!(*entry & P_USER)) return false;
         if (writable) *entry |= P_RW;
-        __asm__ volatile ("invlpg (%0)" : : "r"(va) : "memory");
+        nas_arch_invalidate_page(va);
         return true;
     }
     uint64_t pa = nas_frame_alloc();
     if (!pa) return false;
     *entry = pa | P_PRESENT | P_USER | (writable ? P_RW : 0);
-    __asm__ volatile ("invlpg (%0)" : : "r"(va) : "memory");
+    nas_arch_invalidate_page(va);
     return true;
 }
 static uint8_t *user_byte(uint64_t va) {
@@ -510,12 +409,10 @@ static bool build_user_stack(const char *const *args, unsigned argc,
     uint64_t arg_ptrs[NAS_ARGV_MAX], env_ptrs[NAS_ENV_MAX];
     uint64_t execfn_ptr;
     if (argc > NAS_ARGV_MAX || envc > NAS_ENV_MAX) return false;
-    uint32_t lo, hi;
-    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
-    uint64_t tsc = (uint64_t)lo | ((uint64_t)hi << 32);
+    uint64_t tsc = nas_arch_cycle_counter();
     /* Noncryptographic boot seed for AT_RANDOM. Add real entropy later. */
     uint64_t random_bytes[2] = {
-        tsc ^ (uint64_t)(uintptr_t)&tss,
+        tsc ^ (uint64_t)(uintptr_t)&build_user_stack,
         (tsc << 17) ^ nas_hhdm_offset()
     };
     sp -= sizeof(random_bytes);
@@ -598,7 +495,7 @@ static void observe_stdout(char ch) {
 
 /* M2: genuine Linux ABI semantics for single-process TLS + anonymous VM. */
 static void user_invalidate(uint64_t va) {
-    __asm__ volatile ("invlpg (%0)" : : "r"(va) : "memory");
+    nas_arch_invalidate_page(va);
 }
 static bool user_unmap_page(uint64_t va) {
     uint64_t *pte = user_leaf(va, false);
@@ -670,7 +567,7 @@ static uint64_t sys_arch_prctl(uint64_t op, uint64_t address) {
     if (op == 0x1002) { /* ARCH_SET_FS */
         if (address >= USER_LIMIT) return (uint64_t)-EINVAL;
         user_fs_base = address;
-        wrmsr(0xc0000100, address);
+        nas_arch_set_user_tls(address);
         return 0;
     }
     if (op == 0x1003) { /* ARCH_GET_FS */
@@ -1519,8 +1416,7 @@ static uint64_t sys_mprotect(uint64_t addr, uint64_t length, uint64_t prot) {
     uint64_t pages = (length + PAGE - 1) / PAGE;
     if (addr >= USER_LIMIT || pages > (USER_LIMIT - addr) / PAGE)
         return (uint64_t)-ENOMEM;
-    uint64_t efer = rdmsr(0xc0000080);
-    if (!(efer & (1ULL << 11))) {
+    if (!nas_arch_nx_enabled()) {
         /* Cannot claim executable permission enforcement without NXE. */
         return (uint64_t)-ENOSYS;
     }
@@ -1758,7 +1654,7 @@ static uint64_t sys_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
             fd_close_raw(fd);
     thread_clear_tid = 0;
     user_fs_base = 0;
-    wrmsr(0xc0000100, 0); /* fresh musl/glibc TLS initialization */
+    nas_arch_set_user_tls(0); /* fresh musl/glibc TLS initialization */
     for (unsigned i = 0; i < 65; i++)
         for (unsigned j = 0; j < 4; j++)
             signal_actions[i][j] = 0; /* exec resets user signal handlers */
@@ -1778,7 +1674,7 @@ static uint64_t sys_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     nas_print("[EXEC] replaced process with CPIO ELF: ");
     nas_print(pending_exec.filename);
     nas_print("\n");
-    enter_user(entry, sp);
+    nas_arch_enter_user(entry, sp);
     fail("execve iretq returned unexpectedly");
 }
 
@@ -1790,7 +1686,7 @@ static uint64_t sys_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
  */
 static uint64_t sys_fork(uint64_t *frame) {
     struct nas_task *parent = nas_current_task;
-    __asm__ volatile("fxsave64 %0" : "=m"(parent->fpu_state) : : "memory");
+    nas_arch_save_fpu(parent);
     struct nas_task *child = nas_task_fork_slot();
     if (!child) return (uint64_t)-EAGAIN;
     uint64_t new_root = fork_copy_user_root();
@@ -1800,16 +1696,16 @@ static uint64_t sys_fork(uint64_t *frame) {
     }
     nas_task_set_root(child, new_root);
     if (!nas_task_hold_files(child)) fail("fork dangling open-file slot");
-    parent->resume_user_rsp = syscall_user_rsp;
-    for (unsigned i = 0; i < 15; i++) parent->resume_regs[i] = frame[i];
-    parent->resume_regs[0] = child->pid; /* fork returns PID to parent */
+    parent->arch.resume_user_rsp = syscall_user_rsp;
+    for (unsigned i = 0; i < 15; i++) parent->arch.resume_regs[i] = frame[i];
+    parent->arch.resume_regs[0] = child->pid; /* fork returns PID to parent */
     parent->resume_valid = true;
     parent->blocked_nr = 0;
     parent->pending_valid = false;
     parent->state = NAS_TASK_READY;
     child->state = NAS_TASK_RUNNING;
     nas_current_task = child;
-    task_restore_cpu(child);
+    nas_arch_restore_cpu(child);
     nas_print("[PROC] fork parent="); nas_dec(parent->pid);
     nas_print(" child="); nas_dec(child->pid); nas_print("\n");
     return 0; /* fork returns zero in the child */
@@ -1949,8 +1845,8 @@ retry_schedule: ; /* label must precede a statement in C11 */
             if (pass == 0 && next->state != NAS_TASK_READY) continue;
             if (pass == 1 && !task_can_wake(next)) continue;
             nas_current_task = next;
-            task_restore_cpu(next);
-            uint64_t result = next->resume_regs[0];
+            nas_arch_restore_cpu(next);
+            uint64_t result = next->arch.resume_regs[0];
             if (next->pending_valid) {
                 result = task_replay(next);
                 if ((int64_t)result == -EPIPE &&
@@ -1966,7 +1862,7 @@ retry_schedule: ; /* label must precede a statement in C11 */
                      next->blocked_nr == __NR_writev)) {
                     next->state = NAS_TASK_BLOCKED;
                     nas_current_task = previous;
-                    task_restore_cpu(previous);
+                    nas_arch_restore_cpu(previous);
                     continue;
                 }
                 next->pending_valid = false;
@@ -1975,8 +1871,8 @@ retry_schedule: ; /* label must precede a statement in C11 */
             next->state = NAS_TASK_RUNNING;
             next->resume_valid = false;
             for (unsigned i = 0; i < 15; i++)
-                frame[i] = next->resume_regs[i];
-            syscall_user_rsp = next->resume_user_rsp;
+                frame[i] = next->arch.resume_regs[i];
+            syscall_user_rsp = next->arch.resume_user_rsp;
             if (schedule_count++ < 48) {
                 nas_print("[SCHED] from="); nas_dec(previous_pid);
                 nas_print(" to="); nas_dec(next->pid); nas_print("\n");
@@ -2020,8 +1916,8 @@ static uint64_t task_block(uint64_t *frame, uint64_t nr,
                            uint64_t a, uint64_t b, uint64_t c,
                            uint64_t d) {
     struct nas_task *task = nas_current_task;
-    for (unsigned i = 0; i < 15; i++) task->resume_regs[i] = frame[i];
-    task->resume_user_rsp = syscall_user_rsp;
+    for (unsigned i = 0; i < 15; i++) task->arch.resume_regs[i] = frame[i];
+    task->arch.resume_user_rsp = syscall_user_rsp;
     task->resume_valid = true;
     task->blocked_nr = nr;
     task->pending_valid = true;
@@ -2030,7 +1926,7 @@ static uint64_t task_block(uint64_t *frame, uint64_t nr,
     task->blocked_args[2] = c;
     task->blocked_args[3] = d;
     task->state = NAS_TASK_BLOCKED;
-    __asm__ volatile("fxsave64 %0" : "=m"(task->fpu_state) : : "memory");
+    nas_arch_save_fpu(task);
     if (schedule_count < 48) {
         nas_print("[SCHED] blocked pid="); nas_dec(task->pid);
         nas_print(" syscall="); nas_dec(nr); nas_print("\n");
@@ -2165,7 +2061,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         if (boot_argv_override) {
             if (args[1] != 0) fail("cmdline userspace exited nonzero");
             nas_print("[PASS] cmdline userspace exit 0\n");
-            outb(0xf4, 0);
+            nas_platform_debug_exit(0);
             fail("QEMU debug exit returned unexpectedly");
         }
         if (running_busybox) {
@@ -2174,20 +2070,20 @@ uint64_t syscall_dispatch(const uint64_t *args) {
                     nas_print("[PASS] M4 Alpine dynamic BusyBox echo hello\n");
                 else
                     nas_print("[PASS] M2 Debian BusyBox echo hello\n");
-                outb(0xf4, 0);
+                nas_platform_debug_exit(0);
             }
             fail("real BusyBox exited without stdout hello and status 0");
         }
         if (running_bash) {
             if (args[1] == 0 && saw_bash_hello) {
                 nas_print("[PASS] M2 real GNU Bash -c echo hello\n");
-                outb(0xf4, 0);
+                nas_platform_debug_exit(0);
             }
             fail("real Bash exited without exact hello and status zero");
         }
         if (args[1] == 0) {
             nas_print("[PASS] M1 ELF / ring3 / syscall write / ENOSYS / exit\n");
-            outb(0xf4, 0);
+            nas_platform_debug_exit(0);
         }
         fail("user program exit was non-zero");
     }
@@ -2198,21 +2094,13 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     return (uint64_t)-ENOSYS;
 }
 
-static void syscall_enable(void) {
-    uint64_t efer = rdmsr(0xc0000080);
-    wrmsr(0xc0000080, efer | 1); /* EFER.SCE */
-    wrmsr(0xc0000081, (0x10ULL << 48) | (0x08ULL << 32)); /* STAR */
-    wrmsr(0xc0000082, (uint64_t)(uintptr_t)syscall_entry); /* LSTAR */
-    wrmsr(0xc0000084, (1ULL << 9) | (1ULL << 10)); /* FMASK IF|DF */
-}
-
 void m1_start(void) {
     nas_print("[M1] setting up GDT, TSS, IDT, syscall MSRs\n");
     nas_task_boot_init();
-    cpu_tables_init();
-    cpu_user_fp_init();
+    nas_arch_cpu_tables_init();
+    nas_arch_cpu_user_fp_init();
     if (!paging_init()) fail("requires four-level paging");
-    syscall_enable();
+    nas_arch_syscall_enable();
     /* Select the boot ELF with the very same argv[0] passed to userspace.
      * No shell, PATH lookup, or alternative program-name ABI is invented.
      * Legacy M0-M5 configurations without cmdline preserve their defaults.
@@ -2265,6 +2153,6 @@ void m1_start(void) {
     else if (running_alpine) nas_print("[M4] real Alpine busybox via musl interpreter in ring 3\n");
     else if (running_busybox) nas_print("[M2] entering real BusyBox in ring 3\n");
     else nas_print("[M1] entering actual ring 3\n");
-    enter_user(entry, stack_pointer);
+    nas_arch_enter_user(entry, stack_pointer);
     fail("iretq returned");
 }

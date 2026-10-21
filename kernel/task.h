@@ -2,6 +2,7 @@
 #define NASEED_TASK_H
 #include <stdint.h>
 #include <stdbool.h>
+#include "arch/context.h"
 
 /* NaOS-informed ownership boundaries for x86-64 user tasks.
  * A single kernel stack is shared, so cooperative switching occurs only
@@ -37,20 +38,19 @@ struct nas_task {
     /* Saved syscall-boundary GPR frame in the exact arch.S push order.
      * The scheduler switches after unwinding the current syscall frame.
      */
-    uint64_t resume_regs[15], resume_user_rsp;
+    struct nas_arch_context arch;
     bool resume_valid;
     /* Pending blocking syscall holds user pointers, but never kernel-stack
      * pointers. The task's private CR3 must be restored before replay.
      */
     uint64_t blocked_nr, blocked_args[4];
     bool pending_valid; /* read(0) is a real pending syscall, not 'none' */
-    uint8_t fpu_state[512] __attribute__((aligned(16)));
 
     /* One independent VM mapping root and ELF/brk/mmap tracking per task. */
     uint64_t root_phys, heap_break, mmap_cursor;
     uint64_t loaded_phdr, loaded_phnum;
     uint64_t loaded_main_entry, loaded_interp_base;
-    uint64_t user_fs_base, thread_clear_tid;
+    uint64_t thread_clear_tid;
 
     /* Per-process signal disposition/mask and filesystem context. */
     uint64_t blocked_signals;
