@@ -37,6 +37,7 @@ void nas_arch_halt(void) {
     for (;;) __asm__ volatile ("wfi");
 }
 
+#ifndef NASEED_PORT_M0
 // Real RV64 full-kernel CPU context; not used by M0-only smoke.
 void nas_arch_prepare_user_cpu(void) {
     /* misa is M-mode only; S-mode must NOT read the machine CSR.
@@ -66,3 +67,5 @@ void nas_arch_set_user_tls(uint64_t address) {
     if (nas_current_task)
         nas_arch_context_set_tls(&nas_current_task->arch,address);
 }
+
+#endif /* full shared kernel, not M0 hardware-only smoke */
