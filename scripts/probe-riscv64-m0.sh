@@ -46,6 +46,11 @@ if ! grep -Fq '[PASS] RV64 Sv39/Sv48/Sv57 user PTE map/query/unmap/reclaim' "$lo
     tail -100 "$log" >&2
     exit 1
 fi
+if ! grep -Fq '[PASS] shared user VM clone/protect/unmap/reclaim RV64' "$log"; then
+    echo '[RV64 BOOT FAIL] shared user address space missing or high-VA test failed' >&2
+    tail -100 "$log" >&2
+    exit 1
+fi
 if ! grep -Fq '[PASS] RV64 real external ELF64 PT_LOAD/BSS executed in U-mode' "$log"; then
     echo '[RV64 BOOT FAIL] external RISC-V ELF PT_LOAD/BSS user execution absent' >&2
     tail -100 "$log" >&2

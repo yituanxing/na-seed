@@ -121,3 +121,8 @@ has a separate root from TTBR1 and ALL 512 entries of TTBR0 are userspace.
 The shared VM regression now maps, clones and reclaims the highest legal
 user VA with hardware-selected Sv39/48/57 or TTBR0 39/48-bit semantics.
 This detects silent unreclaimed user frames and private-fork omissions.
+
+## CI evidence policy
+The RV64 and ARM64 real-QEMU probe scripts require explicit PASS markers
+from the same linked kernel/mm/user_space.c regression after high-user-VA
+fork-private mappings are checked, not just older architecture smoke markers.
