@@ -3,6 +3,9 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "arch/arch.h"
+#if defined(NASEED_PORT_M0) && defined(__riscv)
+#include "arch/riscv64/cpu.h"
+#endif
 #include "drivers/serial.h"
 #include "mm/frame.h"
 #include "init/main.h"
@@ -23,6 +26,14 @@ USED_REQUEST static volatile struct limine_memmap_request mmap_req = {
 USED_REQUEST static volatile struct limine_module_request module_req = {
     .id = LIMINE_MODULE_REQUEST_ID, .revision = 0
 };
+#if defined(NASEED_PORT_M0) && defined(__riscv)
+USED_REQUEST static volatile struct limine_paging_mode_request paging_req = {
+    .id = LIMINE_PAGING_MODE_REQUEST_ID, .revision = 0,
+    .mode = LIMINE_PAGING_MODE_RISCV_SV48,
+    .max_mode = LIMINE_PAGING_MODE_RISCV_SV57,
+    .min_mode = LIMINE_PAGING_MODE_RISCV_SV39
+};
+#endif
 /* Same Limine executable-cmdline feature as NaOS boot_get_cmdline(). */
 USED_REQUEST static volatile struct limine_executable_cmdline_request cmdline_req = {
     .id = LIMINE_EXECUTABLE_CMDLINE_REQUEST_ID, .revision = 0
@@ -65,7 +76,20 @@ void kmain(void) {
     }
     nas_print("[PASS] M0 memory allocator\n");
     nas_print("[PASS] M0 boot / serial / memory\n");
+#ifdef NASEED_PORT_M0
+    /* Real Limine M0 kernel only: no false RISC-V userspace support claim. */
+    if (!paging_req.response ||
+        !nas_riscv_validate_limine_mode(paging_req.response->mode)) {
+        nas_print("[FAIL] RV64 Limine paging mode / satp mismatch\n");
+        nas_arch_halt();
+    }
+    nas_print("[PORT] riscv64 paging levels=");
+    nas_dec(nas_riscv_page_table_levels(paging_req.response->mode));
+    nas_print("\n[PASS] riscv64 M0 Limine/SBI/frame allocator\n");
+    nas_arch_halt();
+#else
     nas_init_userspace();
+#endif
     nas_arch_halt();
 }
 

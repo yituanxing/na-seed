@@ -1,8 +1,14 @@
 .DEFAULT_GOAL := iso
+ifeq ($(ARCH),riscv64)
+.DEFAULT_GOAL := port-kernel
+ifneq ($(strip $(filter-out port-kernel clean,$(MAKECMDGOALS))),)
+$(error riscv64 supports only port-kernel M0 and clean; userspace is not ported)
+endif
+endif
 .DELETE_ON_ERROR:
 ARCH ?= x86_64
-ifneq ($(ARCH),x86_64)
-$(error NaSeed does not yet have a validated $(ARCH) CPU/boot backend)
+ifneq ($(filter $(ARCH),x86_64 riscv64),$(ARCH))
+$(error Unsupported NaSeed ARCH=$(ARCH))
 endif
 OUT := build
 HDR := $(OUT)/deps/limine.h
@@ -29,6 +35,41 @@ $(HDR):
 	curl -fL --retry 3 -o $@.tmp \
 	 https://raw.githubusercontent.com/Limine-Bootloader/limine-protocol/$(PROTO_REV)/include/limine.h
 	mv $@.tmp $@
+
+
+# Actual riscv64 M0-only Limine ELF. Not the x86 full kernel.
+RVCFLAGS := --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 \
+ -mcmodel=medany -mno-relax -std=c11 -O2 -g -Wall -Wextra -Werror \
+ -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
+ -DNASEED_PORT_M0 -I $(OUT)/deps -I kernel
+RVOUT := $(OUT)/port-riscv64
+RVKERNEL := $(RVOUT)/kernel.elf
+
+$(RVOUT)/kernel.o: kernel/kernel.c kernel/arch/arch.h kernel/arch/riscv64/cpu.h $(HDR)
+	mkdir -p $(dir $@)
+	clang $(RVCFLAGS) -MMD -MP -c $< -o $@
+
+$(RVOUT)/frame.o: kernel/mm/frame.c kernel/mm/frame.h $(HDR)
+	mkdir -p $(dir $@)
+	clang $(RVCFLAGS) -MMD -MP -c $< -o $@
+
+$(RVOUT)/cpu.o: kernel/arch/riscv64/cpu.c kernel/arch/riscv64/cpu.h
+	mkdir -p $(dir $@)
+	clang $(RVCFLAGS) -MMD -MP -c $< -o $@
+
+$(RVOUT)/serial.o: kernel/arch/riscv64/serial.c kernel/drivers/serial.h
+	mkdir -p $(dir $@)
+	clang $(RVCFLAGS) -MMD -MP -c $< -o $@
+
+$(RVKERNEL): $(RVOUT)/kernel.o $(RVOUT)/frame.o $(RVOUT)/cpu.o $(RVOUT)/serial.o kernel/arch/riscv64/linker.ld
+	ld.lld -m elf64lriscv -nostdlib -static --no-relax \
+	 -z max-page-size=0x1000 -T kernel/arch/riscv64/linker.ld \
+	 $(RVOUT)/kernel.o $(RVOUT)/frame.o $(RVOUT)/cpu.o $(RVOUT)/serial.o -o $@
+
+.PHONY: port-kernel
+port-kernel: $(RVKERNEL)
+	readelf -h $(RVKERNEL) | grep -q 'Machine:.*RISC-V'
+	echo '[PORT] riscv64 real Limine M0 ELF built (QEMU boot not yet verified)'
 
 $(OUT)/kernel.o: kernel/kernel.c kernel/arch/arch.h kernel/drivers/serial.h kernel/mm/frame.h $(HDR)
 	mkdir -p $(dir $@)

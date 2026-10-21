@@ -24,6 +24,11 @@ jobs:
           sudo apt-get install -y clang lld xorriso qemu-system-x86 ovmf musl-tools binutils cpio
       - name: Preflight audit, shell syntax, kernel compile and link
         run: sh scripts/preflight.sh
+      - name: Compile riscv64 Limine M0 and verify RISC-V ELF
+        run: |
+          make ARCH=riscv64 port-kernel
+          test -s build/port-riscv64/kernel.elf
+          readelf -h build/port-riscv64/kernel.elf | grep -q 'Machine:.*RISC-V'
       - name: Cache verified static GNU Bash
         uses: actions/cache@v4
         with:
