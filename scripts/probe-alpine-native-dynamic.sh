@@ -24,8 +24,8 @@ case "$port" in
         test -s "$firmware/RISCV_VIRT_CODE.fd" ;;
     *) echo "unsupported target: $port" >&2; exit 2 ;;
 esac
-dir="build/port-$port/full"
-test -s "$dir/kernel.elf" || sh "scripts/build-$port-full.sh"
+dir="build/port-$arch/full"
+test -s "$dir/kernel.elf" || sh "scripts/build-$arch-full.sh"
 work="$dir/alpine-native"
 mkdir -p "$work"
 sh scripts/fetch-alpine-native.sh "$port" "$work/native"
