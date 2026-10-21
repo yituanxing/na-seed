@@ -77,6 +77,16 @@ if grep -Eq 'struct __attribute__\(\(packed\)\) elf_hdr|static bool user_read_by
     exit 1
 fi
 
+# M8.4: descriptor/path/stat/pipe syscall bodies reside with FS.
+if grep -Eq '^static uint64_t (sys_pipe2|sys_open_path|sys_fcntl|sys_fstat_boot|sys_getdents64|sys_poll)\\(' kernel/m1.c; then
+    echo '[PREFLIGHT] FS syscall implementation leaked back into m1.c' >&2
+    exit 1
+fi
+if ! grep -q 'nas_fs_syscall(args)' kernel/m1.c; then
+    echo '[PREFLIGHT] common syscall dispatcher stopped forwarding FS calls' >&2
+    exit 1
+fi
+
 # Compare our pinned Linux x86-64 syscall numbers against the host UAPI.
 python3 scripts/check-syscall-nr.py
 python3 scripts/check-syscall-errno.py
