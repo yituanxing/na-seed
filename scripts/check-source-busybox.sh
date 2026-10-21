@@ -10,6 +10,9 @@ for applet in ASH SH_IS_ASH ECHO CAT LS WC MKDIR RMDIR RM STATIC; do
     grep -Fxq "CONFIG_$applet=y" "$config"
 done
 [ "$(grep -c -v '^#' "$cases")" -eq 6 ]
+# BusyBox Kbuild requires a pre-existing O= directory even for allnoconfig.
+grep -Fq '"$target" "$obj"' scripts/build-source-busybox.sh
+grep -Fq 'sha256sum -c -' scripts/build-source-busybox.sh
 for id in echo ash-builtin ash-fork ash-pipe ash-tmp source-lifecycle; do
     [ "$(grep -c "^$id$(printf '\t')" "$cases")" -eq 1 ]
 done

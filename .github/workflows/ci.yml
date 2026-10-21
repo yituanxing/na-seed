@@ -247,6 +247,11 @@ jobs:
           esac
       - name: Local Kconfig, fixture and shared-harness preflight
         run: sh scripts/check-source-busybox.sh
+      - name: Cache SHA256-pinned upstream BusyBox source tarball
+        uses: actions/cache@v4
+        with:
+          path: build/deps/source-busybox/busybox-1.37.0.tar.bz2
+          key: naseed-source-busybox-1.37.0-3311dff32e746499
       - name: Build original BusyBox from one SHA256-pinned source and Kconfig
         run: sh scripts/build-source-busybox.sh ${{ matrix.port }}
       - name: Execute all six source-controlled workloads on actual NaSeed QEMU kernel

@@ -23,7 +23,7 @@ source_root=build/deps/source-busybox/busybox-$version
 target=build/source-busybox/$port
 obj="$target/obj"
 binary="$target/busybox"
-mkdir -p "$(dirname "$tarball")" "$target"
+mkdir -p "$(dirname "$tarball")" "$target" "$obj"
 if [ ! -s "$tarball" ]; then
     # Known official release, with independent content pin. No floating git tags.
     curl -fLsS --retry 3 --retry-delay 2 -o "$tarball.tmp" \
@@ -35,8 +35,8 @@ if [ ! -s "$source_root/Makefile" ]; then
     tar -xjf "$tarball" -C "$(dirname "$source_root")"
 fi
 test -s "$source_root/Makefile"
-# O= is out-of-source. Never patch upstream and never reuse a Kconfig
-# generated for another architecture.
+# O= is out-of-source. BusyBox requires this directory to preexist.
+# Never patch upstream and never reuse Kconfig across architectures.
 make -s -C "$source_root" O="$PWD/$obj" HOSTCC=cc CROSS_COMPILE="$cross" allnoconfig
 # Kconfig may hide dependent symbols in allnoconfig; repeated oldconfig
 # passes expose them. Every requested option MUST survive final resolution.
