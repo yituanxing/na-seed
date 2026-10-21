@@ -176,7 +176,7 @@ jobs:
         run: sh scripts/probe-riscv64-m0.sh
       - name: EXPERIMENTAL original Alpine RV64 dynamic BusyBox + musl (not a gate)
         continue-on-error: true
-        run: sh scripts/probe-alpine-native-dynamic.sh riscv64
+        run: sh scripts/probe-alpine-native-matrix.sh riscv64
       - name: Attach riscv64 boot console on failure
         if: failure()
         uses: actions/upload-artifact@v4

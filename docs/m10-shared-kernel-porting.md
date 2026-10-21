@@ -49,6 +49,24 @@ failures cannot revoke the accepted Debian static baseline. This
 investigation should inform VM/VMA/ELF loader design instead of prompting
 immediate broad refactoring.
 
+## SHA256-pinned Alpine dynamic userspace: 7-case cross-ISA expansion
+
+Exploratory native Alpine dynamic `echo hello` completed on **both** real
+ISA QEMU boots: arm64 #39619274956 (after fixing native build-dir name
+in `afde101c`) and riscv64 #39618675840. These are true original
+Alpine BusyBox 1.37.0-r30 ET_DYN + musl 1.2.5-r23, loaded from CPIO
+through the common kernel's ELF/PT_INTERP path.
+
+The four archive SHA256 digests observed in actual official-package
+downloads are now **pinned** in `scripts/alpine-native-fixtures.txt`;
+unrecorded/unverified hashes abort before boot. Both native CI workflows
+now *explore*, without gating the Debian 17-case baseline, seven fixed
+dynamic-workload cases: echo, cat, ls, shell builtins, fork/exec/wait,
+pipeline and tmpfs file lifecycle. Per-case QEMU logs and exact output
+checks identify the earliest remaining system/ABI boundary for future
+design. Any 7/7 claim requires the **new** CI logs, not only the older
+echo successes.
+
 ## Current verified integration status — 2026-10-21
 
 The sections below retain the chronological engineering trail, including

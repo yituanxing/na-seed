@@ -40,10 +40,15 @@ if [ ! -s "$archive" ]; then
 fi
 tar -xzf "$archive" -C build/deps
 test -s "$limine/$efi"
-disk="$work/dynamic.img"
-config="$work/dynamic.conf"
-log="$work/dynamic.serial.log"
-clean="$work/dynamic.clean.log"
+case_name=${ALPINE_NATIVE_CASE:-echo}
+case "$case_name" in *[!a-zA-Z0-9_-]*|'')
+    echo '[ALPINE NATIVE] invalid testcase name' >&2
+    exit 2 ;;
+esac
+disk="$work/$case_name.img"
+config="$work/$case_name.conf"
+log="$work/$case_name.serial.log"
+clean="$work/$case_name.clean.log"
 truncate -s 128M "$disk"
 sgdisk --clear --new 1:2048:0 --typecode 1:ef00 "$disk" > /dev/null
 mformat -i "$disk@@1048576" -F ::
@@ -86,10 +91,11 @@ kill "$pid" 2>/dev/null || :
 wait "$pid" 2>/dev/null || :
 set -e
 tr -d '\r' < "$log" > "$clean"
+expected=${ALPINE_NATIVE_EXPECT:-hello}
 if [ "$monitor" -ne 0 ] || grep -Fq '[FAIL]' "$clean" ||
-   ! grep -Fxq hello "$clean"; then
+   ! grep -Fxq "$expected" "$clean"; then
     echo "[ALPINE NATIVE BLOCKED] $arch dynamic BusyBox $args" >&2
     tail -125 "$clean" >&2
     exit 1
 fi
-echo "[ALPINE NATIVE PASS] $arch genuine Alpine musl dynamic BusyBox $args"
+echo "[ALPINE NATIVE PASS] $arch genuine Alpine musl dynamic BusyBox [$case_name]: $args"

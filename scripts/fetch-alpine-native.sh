@@ -22,7 +22,8 @@ for name in busybox-1.37.0-r30 musl-1.2.5-r23; do
         ''|*'
 '*) echo "[ALPINE FIXTURE FAIL] missing/duplicate digest: $apk_arch $name" >&2; exit 1 ;;
         '-')
-            echo '[ALPINE DISCOVERY] upstream package SHA256 not pinned: NOT an accepted fixture' >&2 ;;
+            echo '[ALPINE FIXTURE FAIL] unpinned Alpine package checksum' >&2
+            exit 1 ;;
         *) printf '%s  %s\n' "$required" "$pkg" | sha256sum -c - ;;
     esac
     case "$name" in busybox*) root="$out/unpack/busybox" ;; *) root="$out/unpack/musl" ;; esac
