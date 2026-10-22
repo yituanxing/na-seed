@@ -36,7 +36,11 @@ try:
             sent=True
         if p.poll() is not None:break
         if b"[PASS] cmdline userspace exit 0" in log and sent:
-            if port=="amd64":break
+            # On x86 QEMU exits via isa-debug-exit with status 1. The
+            # serial marker can precede the process exit by one poll:
+            # killing the still-running QEMU here gives rc=-9 despite all
+            # real hardware tests passing. Wait for the ACTUAL exit, and
+            # still fail at the deadline if it never happens.
             if port=="riscv64" and b"[RV64] userspace debug-exit status=0" in log:break
             if port=="arm64" and b"[ARM64] userspace debug-exit status=0" in log:break
     if p.poll() is None:p.kill()
