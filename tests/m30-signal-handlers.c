@@ -74,24 +74,39 @@ int main(void) {
             "pending signal visible");
     require(sigprocmask(SIG_UNBLOCK,&mask,NULL)==0,"unmask SIGUSR1");
     require(observed_usr1==2,"unmask delivers exactly once");
-    /* A blocked syscall must return EINTR, not falsely succeed or wait
-     * to its original deadline after the caught signal is delivered. */
+    /* Deterministic interrupted-wait test: block SIGUSR2 in child, send it
+     * after the explicit pipe handshake, then ppoll atomically temporarily
+     * unblocks SIGUSR2. The pending signal necessarily interrupts ppoll
+     * regardless of whether the parent ran just before or during the wait.
+     * No probabilistic sleep-before-kill synchronization. */
+    int gate[2];
+    require(pipe(gate)==0,"handshake pipe");
     pid_t child=fork();
-    require(child>=0,"fork for interrupted sleep");
+    require(child>=0,"fork for interrupted ppoll");
     if(child==0) {
+        close(gate[0]);
         observed_usr2=0;
-        struct timespec one={1,0},rem={0,0};
+        sigset_t blocked,oldmask;
+        sigemptyset(&blocked);
+        sigaddset(&blocked,SIGUSR2);
+        require(sigprocmask(SIG_BLOCK,&blocked,&oldmask)==0,"child block");
+        require(write(gate[1],"R",1)==1,"child handshake");
+        close(gate[1]);
+        struct timespec one={1,0};
         errno=0;
-        int rc=nanosleep(&one,&rem);
-        require(rc==-1 && errno==EINTR,"nanosleep interrupted by handler");
-        require(observed_usr2==1,"caught signal ran during sleep");
-        require(rem.tv_sec>=0 && rem.tv_nsec>=0 && rem.tv_nsec<1000000000L,
-                "valid remaining nanosleep duration");
+        int rc=ppoll(NULL,0,&one,&oldmask);
+        require(rc==-1 && errno==EINTR,"ppoll interrupted by pending signal");
+        require(observed_usr2==1,"caught signal ran during ppoll");
+        sigset_t after;
+        require(sigprocmask(SIG_BLOCK,NULL,&after)==0 &&
+                sigismember(&after,SIGUSR2)==1,"ppoll restored saved mask");
         _exit(0);
     }
-    struct timespec delay={0,50000000};
-    require(nanosleep(&delay,NULL)==0,"parent delay");
-    require(kill(child,SIGUSR2)==0,"deliver signal to sleeping child");
+    close(gate[1]);
+    char ready=0;
+    require(read(gate[0],&ready,1)==1 && ready=='R',"child ready handshake");
+    close(gate[0]);
+    require(kill(child,SIGUSR2)==0,"signal blocked ppoll child");
     int status=0;
     require(waitpid(child,&status,0)==child &&
             WIFEXITED(status) && WEXITSTATUS(status)==0,
