@@ -19,6 +19,9 @@ static volatile sig_atomic_t observed_usr1;
 static volatile sig_atomic_t observed_usr2;
 static volatile sig_atomic_t observed_info;
 static volatile sig_atomic_t observed_mask;
+static volatile sig_atomic_t observed_simple_mask;
+static volatile sig_atomic_t observed_sigpipe;
+static volatile sig_atomic_t observed_sigint;
 
 static void die(const char *what) {
     perror(what);
@@ -40,7 +43,18 @@ static void handler_info(int sig,siginfo_t *info,void *opaque) {
 }
 static void handler_simple(int sig) {
     if(sig!=SIGUSR2) _exit(95);
+    sigset_t blocked;
+    if(sigprocmask(SIG_BLOCK,NULL,&blocked)!=0)_exit(94);
+    observed_simple_mask=sigismember(&blocked,SIGUSR2);
     observed_usr2++;
+}
+static void handler_pipe(int sig) {
+    if(sig!=SIGPIPE)_exit(93);
+    observed_sigpipe++;
+}
+static void handler_int(int sig) {
+    if(sig!=SIGINT)_exit(92);
+    observed_sigint++;
 }
 static void install(void) {
     struct sigaction sa;
@@ -60,7 +74,42 @@ int main(int argc,char **argv) {
     require(observed_usr1==1 && observed_info==1 && observed_mask==1,
             "handler invoked with siginfo/context and current mask");
     require(kill(getpid(),SIGUSR2)==0,"ordinary handler");
-    require(observed_usr2==1,"ordinary handler actually returned");
+    require(observed_usr2==1 && observed_simple_mask==1,
+            "ordinary handler runs with automatic signal block");
+    /* Linux flag values are intentionally tested separately: SA_NODEFER
+     * (0x40000000) changes the mask but does NOT reset the disposition,
+     * while SA_RESETHAND (0x80000000) resets it to SIG_DFL. */
+    struct sigaction attr,previous;
+    memset(&attr,0,sizeof(attr));
+    sigemptyset(&attr.sa_mask);
+    attr.sa_handler=handler_simple;
+    attr.sa_flags=SA_NODEFER | SA_RESETHAND;
+    require(sigaction(SIGUSR2,&attr,NULL)==0,"SA_NODEFER/RESETHAND setup");
+    require(kill(getpid(),SIGUSR2)==0,"one-shot unblocked signal");
+    require(observed_usr2==2 && observed_simple_mask==0,
+            "SA_NODEFER leaves caught signal unblocked");
+    require(sigaction(SIGUSR2,NULL,&previous)==0 &&
+            previous.sa_handler==SIG_DFL,
+            "SA_RESETHAND reset disposition, not just mask");
+    /* Reinstall ordinary handler for interrupted-ppoll child below. */
+    install();
+    memset(&attr,0,sizeof(attr));
+    sigemptyset(&attr.sa_mask);
+    attr.sa_handler=handler_pipe;
+    require(sigaction(SIGPIPE,&attr,NULL)==0,"SIGPIPE handler install");
+    int pipefd[2];
+    require(pipe(pipefd)==0,"broken pipe creation");
+    require(close(pipefd[0])==0,"close broken pipe reader");
+    errno=0;
+    require(write(pipefd[1],"X",1)==-1 && errno==EPIPE &&
+            observed_sigpipe==1,"SIGPIPE handler with real EPIPE");
+    require(close(pipefd[1])==0,"close broken pipe writer");
+    memset(&attr,0,sizeof(attr));
+    sigemptyset(&attr.sa_mask);
+    attr.sa_handler=handler_int;
+    require(sigaction(SIGINT,&attr,NULL)==0,"SIGINT handler install");
+    require(kill(getpid(),SIGINT)==0 && observed_sigint==1,
+            "caught SIGINT does not kill the process");
     /* Blocked standard signals coalesce. Pending remains masked until
      * SIG_UNBLOCK; delivery must happen before userspace continuation. */
     sigset_t mask,pending;
