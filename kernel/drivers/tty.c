@@ -15,11 +15,13 @@ static struct {
     uint64_t sid,pgid;
     struct nas_termios t;
     bool rx_enabled;
+    bool unsupported_input;
     struct nas_ldisc ldisc;
 } tty;
 void nas_tty_init(void) {
     tty.sid=nas_current_task->sid; tty.pgid=nas_current_task->pgid;
     tty.rx_enabled=false;
+    tty.unsupported_input=false;
     nas_ldisc_reset(&tty.ldisc);
     /* Freestanding RV64/ARM64 kernel links no libc memcpy/memset.
      * Explicit field/CC initialization avoids compiler-emitted libc calls. */
@@ -75,7 +77,10 @@ uint64_t nas_tty_ioctl(uint64_t cmd,uint64_t arg) {
         tty.t.cflag=t.cflag;tty.t.lflag=t.lflag;
         tty.t.line=t.line;
         for(unsigned i=0;i<19;i++)tty.t.cc[i]=t.cc[i];
-        if(cmd==0x5404)nas_ldisc_reset(&tty.ldisc);
+        if(cmd==0x5404) {
+            nas_ldisc_reset(&tty.ldisc);
+            tty.unsupported_input=false;
+        }
         return 0;
     }
     case 0x540e: /* TIOCSCTTY: only owning session leader */
@@ -89,6 +94,7 @@ uint64_t nas_tty_ioctl(uint64_t cmd,uint64_t arg) {
         if(self->pid==self->sid) {
             tty.sid=tty.pgid=0;tty.rx_enabled=false;
             nas_ldisc_reset(&tty.ldisc);
+            tty.unsupported_input=false;
         }
         return 0;
     case 0x5429: /* TIOCGSID */
@@ -112,48 +118,63 @@ uint64_t nas_tty_ioctl(uint64_t cmd,uint64_t arg) {
     default:return (uint64_t)-ENOTTY;
     }
 }
+/* The bounded transport pump is the ONLY consumer of real console RX.
+ * It runs at syscall boundaries and on scheduler/idle wake scans.
+ * It never enters a task, uses a user address, or switches CPU context. */
+void nas_tty_pump(void) {
+    if(!tty.rx_enabled || !nas_arch_console_has_rx() ||
+       tty.ldisc.ready || tty.unsupported_input) return;
+    for(unsigned i=0;i<32;i++) {
+        uint8_t byte;
+        if(!nas_arch_console_getc(&byte))break;
+        if(nas_ldisc_feed(&tty.ldisc,&tty.t,byte,tty_echo,0)
+           ==NAS_LDISC_UNSUPPORTED_SIGNAL) {
+            tty.unsupported_input=true;
+            break;
+        }
+        if(tty.ldisc.ready)break;
+    }
+}
+bool nas_tty_read_waitable(void) {
+    return tty.rx_enabled && nas_arch_console_has_rx() &&
+           ((tty.t.lflag&0000002) || tty.t.cc[5]==0);
+}
+bool nas_tty_read_ready(uint64_t length) {
+    if(!length) return true;
+    if(!nas_tty_read_waitable())return true; /* replay a real error */
+    nas_tty_pump();
+    if(tty.unsupported_input)return true;
+    unsigned wanted=length>NAS_LDISC_CAPACITY?
+        NAS_LDISC_CAPACITY:(unsigned)length;
+    return nas_ldisc_readable(&tty.ldisc,&tty.t,wanted);
+}
 uint64_t nas_tty_read(uint64_t dst,uint64_t len,bool nonblock) {
     if(!len)return 0;
     if(!tty.rx_enabled)return (uint64_t)-EAGAIN;
     if(!nas_arch_console_has_rx())return (uint64_t)-EOPNOTSUPP;
-    /* VTIME needs an actual clock/timer: never pretend its timeout elapsed. */
+    /* Timed noncanonical reads require a real clock and timeout source.
+     * Do not park an unsupported read or fabricate timeout success. */
     if(!(tty.t.lflag&0000002)&&tty.t.cc[5])
         return (uint64_t)-EOPNOTSUPP;
     if(dst>UINT64_MAX-len)return (uint64_t)-EFAULT;
-    for(uint64_t j=0;j<len;j+=4096)
-        if(!nas_mmu_user_writable(dst+j))return (uint64_t)-EFAULT;
+    for(uint64_t i=0;i<len;i+=4096)
+        if(!nas_mmu_user_writable(dst+i))return (uint64_t)-EFAULT;
     if(!nas_mmu_user_writable(dst+len-1))return (uint64_t)-EFAULT;
+    nas_tty_pump();
+    if(tty.unsupported_input) {
+        tty.unsupported_input=false;
+        return (uint64_t)-EOPNOTSUPP; /* explicit, never fake ISIG delivery */
+    }
     uint8_t bytes[NAS_LDISC_CAPACITY];
     unsigned wanted=len>NAS_LDISC_CAPACITY?NAS_LDISC_CAPACITY:(unsigned)len;
-    /* MIN=0/TIME=0 is a hardware poll; a zero-byte return is correct
-     * ONLY if no byte was available at the instant of this read.
-     * Do not skip the physical input probe just because min == 0. */
-    if(!(tty.t.lflag&0000002) && !tty.t.cc[6] &&
-       tty.ldisc.used==tty.ldisc.pos) {
-        uint8_t b;
-        if(!nas_arch_console_getc(&b))return nonblock ? (uint64_t)-EAGAIN : 0;
-        if(nas_ldisc_feed(&tty.ldisc,&tty.t,b,tty_echo,0)
-           ==NAS_LDISC_UNSUPPORTED_SIGNAL)
-            return (uint64_t)-EOPNOTSUPP;
+    if(!nas_ldisc_readable(&tty.ldisc,&tty.t,wanted)) {
+        /* Noncanonical VMIN=0,VTIME=0 is an immediate 0-byte read.
+         * Nonblocking read follows Linux's EAGAIN behavior when empty. */
+        if(!(tty.t.lflag&0000002)&&tty.t.cc[6]==0)
+            return nonblock?(uint64_t)-EAGAIN:0;
+        return (uint64_t)-EAGAIN; /* dispatcher parks only blocking tty */
     }
-    /* This cooperative kernel still polls the input stream in the
-     * existing blocking read path; IRQ-based scheduler wake is a
-     * separate capability and must not be claimed here. */
-    while(!nas_ldisc_readable(&tty.ldisc,&tty.t,wanted)) {
-        uint8_t byte;
-        if(!nas_arch_console_getc(&byte)) {
-            if(nonblock)return (uint64_t)-EAGAIN;
-            if(!(tty.t.lflag&0000002)&&tty.t.cc[6]==0)return 0;
-            continue;
-        }
-        if(nas_ldisc_feed(&tty.ldisc,&tty.t,byte,tty_echo,0)
-           ==NAS_LDISC_UNSUPPORTED_SIGNAL)
-            return (uint64_t)-EOPNOTSUPP;
-    }
-    if(tty.ldisc.eof) {
-        nas_ldisc_reset(&tty.ldisc);
-        return 0;
-    }
+    if(tty.ldisc.eof) { nas_ldisc_reset(&tty.ldisc);return 0; }
     unsigned n=nas_ldisc_peek(&tty.ldisc,&tty.t,bytes,wanted);
     if(!nas_user_write_bytes(dst,bytes,n))return (uint64_t)-EFAULT;
     nas_ldisc_commit(&tty.ldisc,n);

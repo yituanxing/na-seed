@@ -21,6 +21,7 @@
 #include "../fs/syscall.h"
 #include "../platform/platform.h"
 #include "../drivers/serial.h"
+#include "../drivers/tty.h"
 #include "../panic.h"
 #define TASK (*nas_current_task)
 #define thread_clear_tid TASK.thread_clear_tid
@@ -59,10 +60,16 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
         nas_sched_child_exit(0, NAS_SIGPIPE);
         return nas_task_schedule(frame);
     }
-    if ((int64_t)ret == -EOPNOTSUPP && fd < NAS_FD_LIMIT &&
-        (descriptors[fd] == FD_PIPE_R || descriptors[fd] == FD_PIPE_W) &&
-        !(file_status_flags[file_slot[fd]] & 0x800ULL))
-        return nas_task_block(frame, nr, fd, buf, count, 0);
+    if (fd < NAS_FD_LIMIT && file_slot[fd] < NAS_FD_LIMIT &&
+        !(file_status_flags[file_slot[fd]] & 0x800ULL)) {
+        if ((int64_t)ret == -EOPNOTSUPP &&
+            (descriptors[fd] == FD_PIPE_R || descriptors[fd] == FD_PIPE_W))
+            return nas_task_block(frame,nr,fd,buf,count,0);
+        if (nr == NAS_SC_read && (int64_t)ret == -EAGAIN &&
+            (descriptors[fd] == FD_TTY || descriptors[fd] == FD_UART) &&
+            nas_tty_read_waitable())
+            return nas_task_block(frame,nr,fd,buf,count,0);
+    }
     return ret;
 }
 
