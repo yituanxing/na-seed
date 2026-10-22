@@ -1,47 +1,43 @@
-# CI and branch hygiene (2026-10-22)
+# NaSeed CI and Git hygiene — completed 2026-10-22
 
-## Baseline
-M10-M14 were consolidated into five milestones on `main`; the exact main
-`ccc916c1` has already passed both full userspace and ARM64 gate push workflows.
-At the time of audit there were 54 remote branches, zero open PRs, and 53
-closed PRs. Among the remaining heads, 44 correspond to **merged** PRs;
-nine heads correspond to **closed but not merged** PRs.
+## Verified baseline
+- M10–M14 are merged into five reviewed capability commits on `main`.
+- PR #54 split the original single x86 smoke chain into independently
+  executed `smoke`, `x86_fs`, and `x86_process` jobs; no original
+  test script or real Linux binary oracle was removed.
+- PR #54's complete native userspace CI: **SUCCESS**, eight jobs, run
+  39701066788. Measured workflow wall time 4m52s vs 13m02s for prior
+  main run 39699050816; a 62.7% wall-time reduction on these runs.
+- The independent ARM64 full-kernel gate also passed on PR #54.
+- The original Debian static BusyBox 17-case and native Alpine/musl
+  7-case compatibility runs stay mandatory; controlled-source BusyBox
+  remains an additional, not substituting, test route.
 
-## CI ownership
-- `smoke`: fast shared ABI / compile preflight plus authentic x86 Bash and
-  canonical Debian static BusyBox parity. Preserves the existing job name.
-- `x86_fs`: authentic Alpine filesystem, CPIO, FD, path and shebang workloads.
-- `x86_process`: authentic Alpine pipe, process, fork/exec, lifecycle workloads.
-  Each job builds its own kernel and stages original Alpine binaries; no job
-  secretly relies on another job's working directory.
-- `riscv64_m0`, `aarch64_m0` and `source_busybox` remain intact, including
-  immutable distro oracles, controlled original BusyBox source and matrices.
-- The separate ARM64 full-kernel workflow is still mandatory for its Debian
-  17-case and Alpine 7-case compatibility gates. Its push and PR path filters
-  now use the identical dependency list.
+## Branch cleanup outcome
+The verified one-time GitHub Actions cleanup, run 39701749264, exited
+SUCCESS. It deleted **52** audited remote branch heads:
+45 already-merged PR heads, five historical heads with byte-identical
+trees at their consolidated M10–M14 milestones, and two explicitly
+superseded duplicate M13 PR branches. Commit and PR histories remain.
 
-Only independent x86 suites were parallelized. Existing coverage and exact
-runner scripts were not removed. Both workflows retain PR-only cancellation
-of superseded runs; main pushes remain uncanceled. Each x86 shard uploads its
-own failure serial evidence. Never treat a fast pass as a substitute for the
-full QEMU gates.
+Three remote branches remain deliberately:
+- `main` — canonical source.
+- `design/arch-contract-v1` (#31) — distinct design document.
+- `port/m96-aarch64-el0-svc` (#44) — previous unmerged architecture
+  work; review semantic differences before deleting.
 
-## Remote branch cleanup
-`sh scripts/prune-merged-branches.sh` is **dry-run** and lists just the 44
-branches whose PR was actually merged according to GitHub at audit time.
-Run `sh scripts/prune-merged-branches.sh --apply` in an authenticated local
-clone to delete those audited remote heads. The script checks the origin
-repository before acting. Git commit and PR history are retained.
+The single-use destructive cleanup workflow and obsolete dry-run script
+were removed from `main` after successful completion. Their history is
+preserved in Git.
 
-The nine closed-but-unmerged branches are intentionally **not deleted**:
-- `design/arch-contract-v1` (#31): unique design document.
-- `port/m96-aarch64-el0-svc` (#44): unmerged predecessor; review its
-  runtime contribution before removal.
-- `refactor/shared-kernel-arch-boundaries` (#45) and feature branches
-  M11-M14 (#46-51): superseded by #52 and #53, but their old commit
-  ancestry differs from consolidated main history. Verify exact tree /
-  semantic equivalence before pruning, never delete based solely on
-  ahead/behind or a closed PR state.
+## Running CI
+The userspace workflow retains all existing native real-kernel checks,
+PR-only cancellation of superseded runs, and the current three-way x86
+split. Pure docs / completed-cleanup-file main pushes no longer launch
+the expensive userspace matrix; PRs still receive full coverage.
+Never treat the fast suite as a substitute for the separate ARM64 gate.
 
-Do not enable automatic deletion of superseded unmerged work without
-reviewing its contents and the actual current `main` tree.
+On measured PR #54, the longest job is RV64 Debian static BusyBox
+17-case parity plus Alpine native parity (about 4.8 minutes), followed
+by x86 VFS/archive (about 4.2 minutes). Do not further fragment tests
+without a significant net speed or feedback-quality benefit.

@@ -2,6 +2,14 @@ name: NaSeed userspace regressions
 on:
   push:
     branches: [main]
+    # Only pure documentation / completed one-off cleanup edits skip the
+    # heavyweight main QEMU suite. Kernel, scripts, test fixtures, boot
+    # configs, Makefile and CI changes continue to trigger it.
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - '.github/workflows/prune-historical-branches.yml'
+      - 'scripts/prune-merged-branches.sh'
   pull_request:
 
 # Collapse superseded PR commits into a single expensive QEMU suite. Keep
