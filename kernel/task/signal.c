@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include "../errno.h"
 #include "../task.h"
+#include "../fd.h"
 #include "../mm/usercopy.h"
 #include "signal.h"
 #include "../arch/arch.h"
