@@ -11,6 +11,36 @@
 - M29 adds monotonic task deadlines and nanosleep/poll; signal arrival
   must now *interrupt* a parked syscall with EINTR + correct remainder.
 
+## Architecture extraction in the second consolidated review
+
+The initial M30 prototype lived in one 746-line `kernel/task/signal.c`.
+A complete three-ISA code audit found this placed x86 sigcontext, RV64
+ucontext, ARM64 FPSIMD, FP save/restore and executable vDSO-like return
+mappings in the **common** Signal Core, despite no shared layout.
+
+That implementation has now been reorganized, *without creating another
+scheduler or process table*:
+
+- `kernel/task/signal.c`: one shared pending/disposition/mask/TTY/SIGPIPE
+  lifecycle, Linux SA flag semantics, ppoll mask, and user-return selection.
+- `kernel/arch/x86_64/signal_frame.c`: native AMD64 frame, Linux libc
+  SA_RESTORER, red zone and checked IRET context.
+- `kernel/arch/riscv64/signal_frame.c`: native RISC-V64 sigcontext, FP and
+  RX rt_sigreturn trampoline; uses the existing SRET path.
+- `kernel/arch/aarch64/signal_frame.c`: ARM64 FPSIMD native signal frame,
+  RX trampoline and the existing ERET path.
+- `kernel/arch/arch.h` defines the three common entry points:
+  `nas_arch_signal_install_handler`, `nas_arch_signal_sigreturn`,
+  `nas_arch_signal_install_trampoline`. The common core owns the
+  handler-enter mask behavior with a single shared helper.
+- The two full-port kernel scripts link exactly one matching ISA provider,
+  preserving the *27* common translation units; the x86 Makefile links its
+  own provider. CI source validation rejects a missing ISA signal unit.
+
+This is a *mechanical ownership refactor*, not a claim to implement
+nested, POSIX realtime queued signals, on-stack handlers or editable
+ucontext, which remain outside the M30 acceptance contract.
+
 ## Native Linux requirements — no generic homemade user signal ABI
 1. Define a native, validated rt_sigframe for **each ISA**, matching the
    Linux user-visible ucontext/siginfo layout and preserving all user GPR
