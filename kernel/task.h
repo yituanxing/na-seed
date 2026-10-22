@@ -30,8 +30,6 @@ struct nas_fd_table {
     uint8_t descriptors[NAS_FD_LIMIT];
     uint8_t file_slot[NAS_FD_LIMIT];
     uint8_t fd_cloexec[NAS_FD_LIMIT];
-    const struct limine_file *boot_files[NAS_FD_LIMIT];
-    const struct bootfs_entry *boot_entries[NAS_FD_LIMIT];
 };
 
 struct nas_task {
