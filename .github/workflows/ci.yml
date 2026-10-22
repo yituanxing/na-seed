@@ -21,6 +21,12 @@ on:
       - 'scripts/lua-native-cases.tsv'
       - 'tests/lua-*.lua'
       - '.github/workflows/lua.yml'
+      - 'scripts/build-external-tcc.sh'
+      - 'scripts/stage-external-tcc-rootfs.sh'
+      - 'scripts/probe-external-tcc.sh'
+      - 'scripts/tcc-native-cases.tsv'
+      - 'tests/tcc-first.c'
+      - '.github/workflows/tcc.yml'
 
 # Collapse superseded PR commits into a single expensive QEMU suite. Keep
 # pushed main regressions independent; only pull-request runs are canceled.

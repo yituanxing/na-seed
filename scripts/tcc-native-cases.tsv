@@ -1,0 +1,3 @@
+# The executable is original TinyCC, not BusyBox. Source is in CPIO.
+tcc-preprocess	cpio	-E /tests/first.c	int naseed_answer = 42;	-	/bin/tcc
+tcc-compile	cpio	-c /tests/first.c -o /tmp/first.o	-	-	/bin/tcc

@@ -1,0 +1,44 @@
+name: NaSeed original TinyCC
+on:
+  pull_request:
+    paths:
+      - 'scripts/build-external-tcc.sh'
+      - 'scripts/stage-external-tcc-rootfs.sh'
+      - 'scripts/probe-external-tcc.sh'
+      - 'scripts/tcc-native-cases.tsv'
+      - 'tests/tcc-first.c'
+      - 'scripts/probe-x86-busybox-parity.sh'
+      - '.github/workflows/tcc.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  tinycc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install x86 host compiler, QEMU and UEFI boot tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y gcc make binutils curl bzip2 tar clang lld             xorriso cpio qemu-system-x86 ovmf
+      - name: Cache official TinyCC release
+        uses: actions/cache@v4
+        with:
+          path: build/deps/external/tcc-0.9.27.tar.bz2
+          key: naseed-tcc-0.9.27-de23af78fca90ce3
+      - name: Linux compiler oracle then original TinyCC boot on NaSeed x86-64
+        run: sh scripts/probe-external-tcc.sh
+      - name: Upload genuine serial and Linux compiler output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naseed-native-tcc
+          path: |
+            build/external/tcc/amd64/artifacts.sha256
+            build/external/tcc/amd64/first.o
+            build/busybox-source-parity-x86/tcc-*.serial.log
+          if-no-files-found: ignore
