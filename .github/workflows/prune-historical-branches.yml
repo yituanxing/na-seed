@@ -1,0 +1,73 @@
+name: Prune merged PR branches
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/prune-historical-branches.yml'
+      - '**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: naseed-safe-branch-prune
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Delete verified merged, unchanged same-repo PR heads only
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const info = await github.rest.repos.get({owner, repo});
+            const defaultBranch = info.data.default_branch;
+            const [closed, open] = await Promise.all([
+              github.paginate(github.rest.pulls.list, {owner,repo,state:"closed",per_page:100}),
+              github.paginate(github.rest.pulls.list, {owner,repo,state:"open",per_page:100}),
+            ]);
+            const active = new Set(open.map(p=>p.head?.ref).filter(Boolean));
+            const candidates = new Map();
+            for (const pr of closed) {
+              if (!pr.merged_at || !pr.head?.ref || !pr.head?.sha) continue;
+              if (pr.head.repo?.full_name !== `${owner}/${repo}`) continue;
+              const name = pr.head.ref;
+              if (name === defaultBranch || active.has(name)) continue;
+              if (!/^(feature|work|staging|port|design)\//.test(name)) continue;
+              if (!candidates.has(name)) candidates.set(name, []);
+              candidates.get(name).push({pr:pr.number,sha:pr.head.sha});
+            }
+            let deleted=0, skipped=0, errors=0;
+            for (const [name,heads] of candidates) {
+              let ref;
+              try {
+                const result = await github.rest.git.getRef({owner,repo,ref:`heads/${name}`});
+                ref=result.data;
+              } catch (err) {
+                if (err.status === 404) { skipped++; continue; }
+                core.error(`lookup failed ${name}: ${err.message}`); errors++; continue;
+              }
+              const matching=heads.find(x=>x.sha === ref.object.sha);
+              if (!matching) {
+                core.info(`PRESERVE ${name}: branch changed since all merged PRs`);
+                skipped++;
+                continue;
+              }
+              try {
+                await github.rest.git.deleteRef({owner,repo,ref:`heads/${name}`});
+                core.info(`DELETE ${name} merged PR #${matching.pr} at ${matching.sha}`);
+                deleted++;
+              } catch(err) {
+                core.error(`delete failed ${name}: ${err.message}`); errors++;
+              }
+            }
+            core.summary.addHeading("Verified branch pruning")
+              .addRaw(`Deleted ${deleted}, preserved/absent ${skipped}, errors ${errors}; open PR heads always protected.`)
+              .write();
+            if(errors) core.setFailed(`Could not delete ${errors} verified branches`);
