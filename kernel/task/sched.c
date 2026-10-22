@@ -12,6 +12,7 @@
 #include "sched.h"
 #include "wait_pid.h"
 #include "signal.h"
+#include "../time/clock.h"
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
 #define TASK (*nas_current_task)
@@ -57,6 +58,13 @@ static bool task_wait_ready(const struct nas_task *task) {
 static bool task_can_wake(const struct nas_task *task) {
     if (task->state != NAS_TASK_BLOCKED || !task->resume_valid ||
         !task->pending_valid) return false;
+    /* A kernel-owned monotonic deadline can wake a task independently of
+     * pipe/TTY events. No foreign userspace pointer is touched here. */
+    if (task->deadline_active &&
+        nas_time_deadline_expired(nas_arch_monotonic_ns(),task->deadline_ns))
+        return true;
+    if (task->blocked_op == NAS_SC_nanosleep ||
+        task->blocked_op == NAS_SC_clock_nanosleep) return false;
     if (task->blocked_op == NAS_SC_wait4) return task_wait_ready(task);
     if (task->blocked_op == NAS_SC_poll ||
         task->blocked_op == NAS_SC_ppoll)
@@ -70,6 +78,11 @@ static bool task_can_wake(const struct nas_task *task) {
 static uint64_t task_replay(struct nas_task *task) {
     enum nas_syscall_op nr = (enum nas_syscall_op)task->blocked_op;
     const uint64_t *a = task->blocked_args;
+    /* Sleep input was validated and converted into task-owned absolute
+     * deadline at the original syscall boundary; never restart a relative
+     * timeout or dereference its userspace timespec during replay. */
+    if (nr == NAS_SC_nanosleep || nr == NAS_SC_clock_nanosleep)
+        return 0;
     if (nr == NAS_SC_read) return nas_fs_fd_read(a[0], a[1], a[2]);
     if (nr == NAS_SC_write) return nas_fs_fd_write(a[0], a[1], a[2]);
     if (nr == NAS_SC_writev) return nas_fs_fd_writev(a[0], a[1], a[2]);
@@ -179,6 +192,7 @@ bool nas_sched_preempt_select(void) {
                 nas_arch_set_saved_return(next,result);
                 next->pending_valid=false;
                 next->blocked_op=0;
+                next->deadline_active=false;
             }
             from->state=NAS_TASK_READY;
             from->resume_valid=true;
@@ -246,6 +260,7 @@ retry_schedule: ; /* label must precede a statement in C11 */
                 }
                 next->pending_valid = false;
                 next->blocked_op = 0;
+                next->deadline_active = false;
             }
             next->state = NAS_TASK_RUNNING;
             next->resume_valid = false;
@@ -273,6 +288,19 @@ retry_schedule: ; /* label must precede a statement in C11 */
         if(t->blocked_op != NAS_SC_read)continue;
         uint8_t kind=nas_task_fd_kind(t,t->blocked_args[0]);
         if ((kind==FD_TTY || kind==FD_UART) && nas_tty_read_waitable()) {
+            __asm__ volatile ("" ::: "memory");
+            goto retry_schedule;
+        }
+    }
+    /* All runnable Tasks may be asleep or waiting for a finite I/O
+     * deadline. Poll the real hardware monotonic counter with IRQs masked;
+     * no interrupt is delivered into non-preemptible kernel C frames.
+     * This is an intentional bounded-feature busy idle, not tick-based
+     * fake advancement or a premature interruptible kernel scheduler. */
+    for (unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
+        const struct nas_task *t=nas_task_at(slot);
+        if(t->state==NAS_TASK_BLOCKED && t->pending_valid &&
+           t->deadline_active) {
             __asm__ volatile ("" ::: "memory");
             goto retry_schedule;
         }
