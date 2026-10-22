@@ -54,7 +54,7 @@ static void install(void) {
     sa.sa_handler=handler_simple;
     require(sigaction(SIGUSR2,&sa,NULL)==0,"install SIGUSR2 handler");
 }
-int main(void) {
+int main(int argc,char **argv) {
     install();
     require(kill(getpid(),SIGUSR1)==0,"self signal");
     require(observed_usr1==1 && observed_info==1 && observed_mask==1,
@@ -74,6 +74,10 @@ int main(void) {
             "pending signal visible");
     require(sigprocmask(SIG_UNBLOCK,&mask,NULL)==0,"unmask SIGUSR1");
     require(observed_usr1==2,"unmask delivers exactly once");
+    if(argc==2 && strcmp(argv[1],"--self-only")==0) {
+        puts("m30-basic-ok");
+        return 0;
+    }
     /* Deterministic interrupted-wait test: block SIGUSR2 in child, send it
      * after the explicit pipe handshake, then ppoll atomically temporarily
      * unblocks SIGUSR2. The pending signal necessarily interrupts ppoll
