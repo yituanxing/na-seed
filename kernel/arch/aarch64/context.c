@@ -6,6 +6,7 @@ extern void nas_arm_timer_irq_c(struct nas_arm_trap_frame *frame);
 #include "../mmu.h"
 #include "../../task.h"
 #include "../../syscall/dispatch.h"
+#include "../../task/signal.h"
 #include "../../panic.h"
 #include "../../drivers/serial.h"
 #include "../../lib/string.h"
@@ -31,6 +32,7 @@ void nas_arm_lower_irq_c(struct nas_arm_trap_frame *frame) {
         nas_fail("ARM64 timer interrupted non-EL0 execution");
     live=frame;
     nas_arm_timer_irq_c(frame);
+    nas_signal_user_return((uint64_t *)(void *)frame);
     live=0;
 }
 void nas_arm_full_trap_c(struct nas_arm_trap_frame *frame) {
@@ -69,6 +71,7 @@ void nas_arm_full_trap_c(struct nas_arm_trap_frame *frame) {
     live=frame;
     uint64_t result=syscall_dispatch(call);
     frame->x[0]=result;
+    nas_signal_user_return((uint64_t *)(void *)frame);
 #ifdef NASEED_TRACE_ARCH_SYSCALL
     nas_print("[ARM64 SVC RETURN] nr="); nas_dec(call[0]);
     nas_print(" result="); nas_hex(frame->x[0]);
