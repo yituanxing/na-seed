@@ -10,6 +10,7 @@ extern void gdt_reload(const void *);
 extern void syscall_entry(void);
 extern void *exception_vectors[32];
 extern char kernel_stack_top;
+extern void nas_x86_timer_isr(void);
 extern uint64_t nas_x86_kernel_stack_ptr;
 void nas_arch_outb(uint16_t port, uint8_t value) {
     __asm__ volatile ("outb %0, %1" : : "a"(value), "Nd"(port));
@@ -92,6 +93,17 @@ void nas_arch_cpu_tables_init(void) {
         idt[i].type = 0x8e;
         idt[i].reserved = 0;
     }
+
+    /* 0x20 is the remapped legacy PIT IRQ0; do not confuse it with an
+     * exception vector. Never put an IRQ through exception_report(). */
+    uint64_t irq_addr=(uint64_t)(uintptr_t)nas_x86_timer_isr;
+    idt[0x20].offset_low=irq_addr & 0xffffU;
+    idt[0x20].offset_middle=(irq_addr>>16)&0xffffU;
+    idt[0x20].offset_high=irq_addr>>32;
+    idt[0x20].selector=0x08;
+    idt[0x20].ist=0;
+    idt[0x20].type=0x8e;
+    idt[0x20].reserved=0;
     struct table_pointer idtr = { sizeof(idt) - 1, (uint64_t)(uintptr_t)idt };
     __asm__ volatile ("lidt %0" : : "m"(idtr));
 }
@@ -136,12 +148,33 @@ uint64_t nas_arch_cycle_counter(void) {
 bool nas_arch_nx_enabled(void) { return (rdmsr(0xc0000080) & (1ULL << 11)) != 0; }
 void nas_arch_set_user_tls(uint64_t address) { wrmsr(0xc0000100, address); }
 
+/* QEMU q35 PIT 8254 -> i8259 PIC IRQ0 at vector 0x20. All other
+ * legacy PIC IRQs remain masked. Interrupts are disabled in kernel
+ * syscall/trap C; user IRET restores IF from saved user flags.
+ * Single-CPU bringup only; an APIC provider must supersede this later. */
+static void nas_x86_enable_legacy_pit(void) {
+    nas_arch_outb(0x20,0x11);
+    nas_arch_outb(0xa0,0x11);
+    nas_arch_outb(0x21,0x20);
+    nas_arch_outb(0xa1,0x28);
+    nas_arch_outb(0x21,0x04);
+    nas_arch_outb(0xa1,0x02);
+    nas_arch_outb(0x21,0x01);
+    nas_arch_outb(0xa1,0x01);
+    nas_arch_outb(0x21,0xfe); /* IRQ0 only */
+    nas_arch_outb(0xa1,0xff);
+    const uint16_t divisor=11932U; /* PIT 1,193,182Hz => ~100Hz */
+    nas_arch_outb(0x43,0x36); /* channel0, lo/hi, mode3 */
+    nas_arch_outb(0x40,(uint8_t)divisor);
+    nas_arch_outb(0x40,(uint8_t)(divisor>>8));
+}
 /* Shared init contract: preserve all established x86 hardware operations. */
 void nas_arch_prepare_user_cpu(void) {
     nas_arch_cpu_tables_init();
     nas_arch_cpu_user_fp_init();
     if (!nas_task_kernel_stack_ok(nas_current_task)) nas_arch_halt();
     nas_arch_x86_set_kernel_stack(nas_current_task->kernel_stack_top);
+    nas_x86_enable_legacy_pit();
 }
 void nas_arch_enable_user_traps(void) {
     nas_arch_syscall_enable();
