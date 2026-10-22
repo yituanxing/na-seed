@@ -30,7 +30,7 @@ try:
             p.stdin.write(b"\032");p.stdin.flush()
             stage=2
         if stage==2 and b"[PASS] cmdline userspace exit 0" in log:
-            if port=="amd64":break
+            if port=="amd64" and p.poll() is not None:break
             if port=="riscv64" and b"[RV64] userspace debug-exit status=0" in log:break
             if port=="arm64" and b"[ARM64] userspace debug-exit status=0" in log:break
         if p.poll() is not None:break
