@@ -23,6 +23,8 @@ uint64_t nas_signal_procmask(uint64_t how, uint64_t set,
  * user-return trap image; never deliver by switching to a foreign task. */
 void nas_signal_user_return(uint64_t *frame);
 uint64_t nas_signal_sigreturn(uint64_t *frame);
+/* Install native RX restorer into each new user address space, before exec. */
+bool nas_signal_install_trampoline(void);
 bool nas_signal_user_pending(const struct nas_task *task);
 void nas_signal_ppoll_restore(struct nas_task *task,bool interrupted);
 uint64_t nas_signal_pending(uint64_t destination,uint64_t size);
