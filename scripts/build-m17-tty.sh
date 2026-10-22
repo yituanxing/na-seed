@@ -17,7 +17,9 @@ if readelf -l "$dir/m17-tty" | grep -q INTERP; then
 fi
 command -v script >/dev/null 2>&1 || { echo '[M17] missing Linux PTY script tool' >&2;exit 2; }
 commandline="$dir/m17-tty"
-if [ -n "$emulator" ]; then commandline="$emulator $commandline";fi
+if [ -n "$emulator" ]; then
+    commandline="env NASEED_QEMU_USER_TTY=1 $emulator $commandline"
+fi
 # A real PTY is necessary: never mock /dev/tty or set a pretend
 # controlling foreground group when checking the Linux oracle.
 output=$(script -q -e -c "$commandline" /dev/null | tr -d '\r')

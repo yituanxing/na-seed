@@ -20,7 +20,11 @@ static struct {
 void nas_tty_init(void) {
     tty.sid=nas_current_task->sid; tty.pgid=nas_current_task->pgid;
     tty.rx_enabled=tty.done=tty.eof=false; tty.size=tty.pos=0;
-    tty.t=(struct nas_termios){0};
+    /* Freestanding RV64/ARM64 kernel links no libc memcpy/memset.
+     * Explicit field/CC initialization avoids compiler-emitted libc calls. */
+    tty.t.iflag=tty.t.oflag=tty.t.cflag=tty.t.lflag=0;
+    tty.t.line=0;
+    for(unsigned i=0;i<19;i++)tty.t.cc[i]=0;
     tty.t.iflag=0000400; /* ICRNL */
     tty.t.oflag=0000001|0000004; /* OPOST|ONLCR */
     tty.t.cflag=0000060|0000200|0004000|0000017; /* CS8|CREAD|CLOCAL|B38400 */
@@ -57,7 +61,10 @@ uint64_t nas_tty_ioctl(uint64_t cmd,uint64_t arg) {
         if(!nas_user_read_bytes(arg,(uint8_t *)&t,36))
             return (uint64_t)-EFAULT;
         if(t.line) return (uint64_t)-EINVAL;
-        tty.t=t;
+        tty.t.iflag=t.iflag;tty.t.oflag=t.oflag;
+        tty.t.cflag=t.cflag;tty.t.lflag=t.lflag;
+        tty.t.line=t.line;
+        for(unsigned i=0;i<19;i++)tty.t.cc[i]=t.cc[i];
         if(cmd==0x5404) tty.size=tty.pos=0,tty.done=tty.eof=false;
         return 0;
     }

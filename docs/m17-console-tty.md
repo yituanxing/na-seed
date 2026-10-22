@@ -31,3 +31,13 @@ roundtrip, foreground child group switch/restore, real pipe/parent
 handshake, and signaled child wait. `tests/m17-input.c` runs as
 actual x86 PID1 via CPIO ELF and consumes live QEMU COM1 input.
 The immutable original Debian and Alpine binary matrices remain intact.
+
+## Linux/QEMU-user oracle exception
+
+QEMU-user for generic64 on the CI host returns success from `TIOCGSID`
+but does not propagate the actual host terminal SID to its target ABI
+buffer. The standalone native-Linux PTY oracle and ALL THREE actual
+NaSeed full-kernel QEMU tests check SID equality. The Linux QEMU-user
+oracle still checks the ioctl success, other tty operations and child
+foreground process-group semantics; it selectively skips that single
+*host-emulator* copy-out comparison, not any NaSeed test.
