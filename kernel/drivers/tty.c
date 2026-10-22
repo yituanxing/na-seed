@@ -125,9 +125,20 @@ uint64_t nas_tty_read(uint64_t dst,uint64_t len,bool nonblock) {
     if(!nas_mmu_user_writable(dst+len-1))return (uint64_t)-EFAULT;
     uint8_t bytes[NAS_LDISC_CAPACITY];
     unsigned wanted=len>NAS_LDISC_CAPACITY?NAS_LDISC_CAPACITY:(unsigned)len;
-    /* A single cooperative kernel stack cannot yet yield a tty reader.
-     * This existing bounded RX polling behavior remains until a proper
-     * IRQ-driven scheduler wake is implemented; no fake task wake. */
+    /* MIN=0/TIME=0 is a hardware poll; a zero-byte return is correct
+     * ONLY if no byte was available at the instant of this read.
+     * Do not skip the physical input probe just because min == 0. */
+    if(!(tty.t.lflag&0000002) && !tty.t.cc[6] &&
+       tty.ldisc.used==tty.ldisc.pos) {
+        uint8_t b;
+        if(!nas_arch_console_getc(&b))return nonblock ? (uint64_t)-EAGAIN : 0;
+        if(nas_ldisc_feed(&tty.ldisc,&tty.t,b,tty_echo,0)
+           ==NAS_LDISC_UNSUPPORTED_SIGNAL)
+            return (uint64_t)-EOPNOTSUPP;
+    }
+    /* This cooperative kernel still polls the input stream in the
+     * existing blocking read path; IRQ-based scheduler wake is a
+     * separate capability and must not be claimed here. */
     while(!nas_ldisc_readable(&tty.ldisc,&tty.t,wanted)) {
         uint8_t byte;
         if(!nas_arch_console_getc(&byte)) {
