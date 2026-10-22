@@ -64,6 +64,9 @@ void nas_arch_prepare_user_cpu(void) {
     __asm__ volatile("msr cpacr_el1,%0\nisb"
                      : : "r"(cpacr) : "memory");
     nas_print("[ARM64 CPU] FPEN enabled\n");
+    extern uint64_t nas_arm_entry_stack_top;
+    if (!nas_task_kernel_stack_ok(nas_current_task)) nas_arch_halt();
+    nas_arm_entry_stack_top = nas_current_task->kernel_stack_top;
     /* Stage-1 user leaf AttrIndx=7. Install normal write-back memory
      * there without altering Limine's existing kernel indices 0..6. */
     uint64_t mair;
