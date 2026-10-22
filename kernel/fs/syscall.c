@@ -20,6 +20,7 @@
 #include "io.h"
 #include "syscall.h"
 #include "file_ops.h"
+#include "../time/clock.h"
 /* Linux x86-64 filesystem syscall adapter. Backend state is already
  * task-local or refcounted via fd.c, pipe.c, bootfs.c and tmpfs.c.
  * The user ABI stat/dirent encodings are still x86-specific in v1. */
@@ -577,7 +578,7 @@ uint64_t nas_fs_fd_writev(uint64_t fd, uint64_t iov, uint64_t count) {
 }
 /* Kernel Linux pollfd ABI: int32 fd, int16 events, int16 revents.
  * The only supported blocking timeout is infinite; positive timeouts need
- * a real monotonic time source and cannot be reported as fake expiry.
+ * monotonic deadline ownership is provided by the Task scheduler.
  * Readiness and the snapshot are distinct: pollfd copy-out is in the
  * owning task's VM, scheduler tests only a kernel-owned interest snapshot.
  */
@@ -607,13 +608,17 @@ uint64_t nas_fs_poll(uint64_t address, uint64_t nfds, uint64_t timeout) {
     }
     int32_t ms=(int32_t)(uint32_t)timeout;
     if(ready || ms==0)return ready;
-    if(ms>0)return (uint64_t)-EOPNOTSUPP; /* no timer, no fake expiry */
-    return (uint64_t)-EAGAIN; /* dispatcher may arm actual event sources */
+    /* Deadline belongs to the current Task and survives syscall replay;
+     * zero return is reached only after the hardware clock truly advances. */
+    if(TASK.deadline_active &&
+       nas_time_deadline_expired(nas_arch_monotonic_ns(),TASK.deadline_ns))
+        return 0;
+    return (uint64_t)-EAGAIN; /* dispatcher arms actual I/O or timer wait */
 }
 /* Linux asm-generic supplies ppoll(73), not legacy poll(7).
- * A NULL timeout means infinity, zero timespec means immediate. Nonzero
- * timeout and atomic temporary sigmask require unimplemented facilities,
- * so they fail explicitly without a fabricated success. */
+ * A NULL timeout means infinity, zero timespec means immediate. A finite
+ * timeout is converted once by the dispatcher to an absolute Task deadline.
+ * Atomic temporary sigmask remains unsupported until signal frames exist. */
 uint64_t nas_fs_ppoll(uint64_t addr,uint64_t nfds,
                       uint64_t timeout_ptr,uint64_t sigmask_ptr) {
     if(sigmask_ptr)return (uint64_t)-EOPNOTSUPP;
@@ -623,9 +628,9 @@ uint64_t nas_fs_ppoll(uint64_t addr,uint64_t nfds,
        timeout_ptr>UINT64_MAX-8 ||
        !nas_user_read_u64(timeout_ptr+8,&nsecs))
         return (uint64_t)-EFAULT;
-    if((int64_t)secs<0 || nsecs>=1000000000ULL)return (uint64_t)-EINVAL;
-    if(secs||nsecs)return (uint64_t)-EOPNOTSUPP;
-    return nas_fs_poll(addr,nfds,0);
+    uint64_t ns;
+    if(!nas_time_duration_ns(secs,nsecs,&ns))return (uint64_t)-EINVAL;
+    return nas_fs_poll(addr,nfds,ns ? (uint64_t)-1 : 0);
 }
 bool nas_fs_poll_arm(uint64_t address,uint64_t nfds) {
     struct nas_task *task=nas_current_task;

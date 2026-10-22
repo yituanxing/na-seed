@@ -20,6 +20,10 @@ void nas_arch_prepare_user_cpu(void);
 void nas_arch_enable_user_traps(void);
 void nas_arch_enter_user(uint64_t entry, uint64_t sp);
 uint64_t nas_arch_cycle_counter(void);
+/* Monotonic nanoseconds, independent of interrupt delivery and user Tasks. */
+uint64_t nas_arch_monotonic_ns(void);
+/* Report real hardware resolution (rounded up). */
+uint64_t nas_arch_clock_resolution_ns(void);
 void nas_arch_set_user_tls(uint64_t);
 /* True only when user mappings can enforce a non-executable protection. */
 #if defined(__x86_64__)

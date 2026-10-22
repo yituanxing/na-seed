@@ -15,6 +15,7 @@
 #include "../task/wait_pid.h"
 #include "../task/session.h"
 #include "../task/sched.h"
+#include "../time/clock.h"
 #include "../task/signal.h"
 #include "../task/user_stack.h"
 #include "../fs/io.h"
@@ -31,6 +32,63 @@
 #define running_busybox TASK.running_busybox
 #define running_alpine TASK.running_alpine
 #define saw_bash_hello TASK.saw_bash_hello
+
+/* Linux timespec64: two signed 64-bit fields for all three LP64 ISAs.
+ * Keep clock errors honest: without an RTC we cannot supply CLOCK_REALTIME.
+ * CLOCK_REALTIME *relative* sleeps still use elapsed monotonic duration. */
+static uint64_t nas_time_read_request(uint64_t addr,uint64_t *ns) {
+    uint64_t sec,nsec;
+    if(!addr || !nas_user_read_u64(addr,&sec) ||
+       addr>UINT64_MAX-8 || !nas_user_read_u64(addr+8,&nsec))
+        return (uint64_t)-EFAULT;
+    return nas_time_duration_ns(sec,nsec,ns) ? 0 : (uint64_t)-EINVAL;
+}
+static uint64_t nas_time_read_clock(uint64_t clockid,uint64_t dst,bool resolution) {
+    if(clockid!=1ULL)return (uint64_t)-EOPNOTSUPP; /* CLOCK_MONOTONIC only */
+    if(!dst && resolution)return 0; /* clock_getres accepts NULL */
+    uint64_t now=resolution ? nas_arch_clock_resolution_ns() : nas_arch_monotonic_ns();
+    struct { int64_t sec,nsec; } ts={
+        (int64_t)(now/NAS_NSEC_PER_SEC),
+        (int64_t)(now%NAS_NSEC_PER_SEC)
+    };
+    return nas_user_write_bytes(dst,(const uint8_t *)&ts,sizeof(ts))
+        ? 0 : (uint64_t)-EFAULT;
+}
+static uint64_t nas_time_sleep_syscall(uint64_t *frame,enum nas_syscall_op nr,
+                                      const uint64_t *args) {
+    uint64_t request=nr==NAS_SC_nanosleep ? args[1] : args[3];
+    uint64_t duration,rc=nas_time_read_request(request,&duration);
+    if((int64_t)rc<0)return rc;
+    uint64_t now=nas_arch_monotonic_ns(), deadline;
+    if(nr==NAS_SC_clock_nanosleep) {
+        const uint64_t clockid=args[1], flags=args[2];
+        if(clockid!=0ULL && clockid!=1ULL)return (uint64_t)-EINVAL;
+        if(flags&~1ULL)return (uint64_t)-EINVAL; /* TIMER_ABSTIME */
+        if((flags&1ULL) && clockid!=1ULL)
+            return (uint64_t)-EOPNOTSUPP; /* no absolute wall clock */
+        deadline=(flags&1ULL) ? duration : nas_time_add_deadline(now,duration);
+    } else deadline=nas_time_add_deadline(now,duration);
+    if(nas_time_deadline_expired(now,deadline))return 0;
+    TASK.deadline_ns=deadline;
+    TASK.deadline_active=true;
+    return nas_task_block(frame,nr,args[1],args[2],args[3],args[4]);
+}
+static uint64_t nas_time_poll_arm_deadline(enum nas_syscall_op nr,
+                                           const uint64_t *args) {
+    uint64_t delta=0;
+    if(nr==NAS_SC_poll) {
+        int32_t ms=(int32_t)(uint32_t)args[3];
+        if(ms>0)delta=(uint64_t)(unsigned)ms*1000000ULL;
+    } else if(args[3]) {
+        uint64_t rc=nas_time_read_request(args[3],&delta);
+        if((int64_t)rc<0)return rc;
+    }
+    if(delta) {
+        TASK.deadline_ns=nas_time_add_deadline(nas_arch_monotonic_ns(),delta);
+        TASK.deadline_active=true;
+    }
+    return 0;
+}
 
 static uint32_t missing_count[512];
 static uint64_t sys_uname_naseed(uint64_t buffer) {
@@ -109,6 +167,12 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_set_tid_address) { thread_clear_tid = args[1]; return TASK.pid; }
     if (nr == NAS_SC_getpid || nr == NAS_SC_gettid) return TASK.pid;
     if (nr == NAS_SC_getppid) return TASK.ppid;
+    if(nr==NAS_SC_clock_gettime)
+        return nas_time_read_clock(args[1],args[2],false);
+    if(nr==NAS_SC_clock_getres)
+        return nas_time_read_clock(args[1],args[2],true);
+    if(nr==NAS_SC_nanosleep || nr==NAS_SC_clock_nanosleep)
+        return nas_time_sleep_syscall((uint64_t *)(uintptr_t)args,nr,args);
     if (nr == NAS_SC_getuid || nr == NAS_SC_getgid || nr == NAS_SC_geteuid || nr == NAS_SC_getegid) return 0; /* root credentials */
     if (nr == NAS_SC_mprotect) return nas_vm_mprotect(args[1], args[2], args[3]);
     if (nr == NAS_SC_mmap) return nas_vm_anon_mmap(args[1], args[2], args[3],
@@ -120,8 +184,13 @@ uint64_t syscall_dispatch(const uint64_t *args) {
             nas_fs_poll(args[1],args[2],args[3]) :
             nas_fs_ppoll(args[1],args[2],args[3],args[4]));
         if((int64_t)result==-EAGAIN) {
-            if(!nas_fs_poll_arm(args[1],args[2]))
-                return (uint64_t)-EOPNOTSUPP; /* no registered event source */
+            /* Arm at most once: replay must retain the ORIGINAL absolute
+             * deadline, not restart a relative timeout after every wake. */
+            uint64_t rc=nas_time_poll_arm_deadline(nr,args);
+            if((int64_t)rc<0)return rc;
+            bool has_io=nas_fs_poll_arm(args[1],args[2]);
+            if(!has_io && !TASK.deadline_active)
+                return (uint64_t)-EOPNOTSUPP; /* no event/deadline source */
             return nas_task_block((uint64_t *)(uintptr_t)args,nr,
                                   args[1],args[2],args[3],args[4]);
         }

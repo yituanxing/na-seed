@@ -25,6 +25,17 @@ static struct sbi_result sbi_call(uint64_t eid, uint64_t fid, uint64_t arg0) {
                      "r"(a6), "r"(a7) : "memory");
     return (struct sbi_result){(int64_t)a0,(int64_t)a1};
 }
+/* QEMU virt hardware time CSR remains readable with supervisor IRQs masked.
+ * The frequency is QEMU-virt-specific until FDT timebase-frequency exists. */
+uint64_t nas_arch_monotonic_ns(void) {
+    uint64_t ticks;
+    __asm__ volatile("rdtime %0" : "=r"(ticks));
+    return (ticks / QEMU_VIRT_TIMEBASE_HZ) * 1000000000ULL +
+           (ticks % QEMU_VIRT_TIMEBASE_HZ) * 1000000000ULL / QEMU_VIRT_TIMEBASE_HZ;
+}
+uint64_t nas_arch_clock_resolution_ns(void) {
+    return 1000000000ULL / QEMU_VIRT_TIMEBASE_HZ;
+}
 static void arm_next_tick(void) {
     uint64_t now;
     __asm__ volatile("rdtime %0" : "=r"(now));

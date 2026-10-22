@@ -33,6 +33,10 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_arch_prctl: return NAS_SC_arch_prctl;
     case __NR_brk: return NAS_SC_brk;
     case __NR_chdir: return NAS_SC_chdir;
+    case __NR_clock_gettime: return NAS_SC_clock_gettime;
+    case __NR_clock_getres: return NAS_SC_clock_getres;
+    case __NR_clock_nanosleep: return NAS_SC_clock_nanosleep;
+    case __NR_nanosleep: return NAS_SC_nanosleep;
     case __NR_close: return NAS_SC_close;
     case __NR_dup: return NAS_SC_dup;
     case __NR_dup2: return NAS_SC_dup2;
@@ -94,6 +98,9 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_writev: return NAS_SC_writev;
 #else
     case 73U: return NAS_SC_ppoll; /* asm-generic ppoll; poll absent */
+    case 113U: return NAS_SC_clock_gettime;
+    case 114U: return NAS_SC_clock_getres;
+    case 115U: return NAS_SC_clock_nanosleep; /* asm-generic lacks nanosleep */
     case 63U: return NAS_SC_read;
     case 64U: return NAS_SC_write;
     case 66U: return NAS_SC_writev;

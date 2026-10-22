@@ -17,3 +17,5 @@ tty-session	cpio	sh -c "/bin/m17-tty; echo m17-parent-done"	m17-tty-ok	-
 standard-signals	cpio	sh -c "/bin/m24-signals; echo m24-parent-done"	m24-signals-ok	-
 kstack-fork-stress	cpio	sh -c "i=0; while [ $i -lt 6 ]; do /bin/busybox echo child-$i; i=$((i+1)); done; echo kstack-forks-ok"	kstack-forks-ok	fork
 kstack-pipe-stress	cpio	sh -c "i=0; while [ $i -lt 6 ]; do echo ping | /bin/busybox wc -c; i=$((i+1)); done; echo kstack-pipes-ok"	kstack-pipes-ok	pipe
+m29-time-api	cpio	sh -c "/bin/m29-time; echo m29-time-shell-ok"	m29-time-shell-ok	-
+m29-busybox-sleep	cpio	sh -c "sleep 1; echo m29-busybox-sleep-ok"	m29-busybox-sleep-ok	-
