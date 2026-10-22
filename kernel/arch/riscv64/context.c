@@ -67,6 +67,10 @@ void nas_arch_restore_cpu(const struct nas_task *task) {
     if(live) live->x[4]=nas_task_tls_base(task);
     nas_rv_restore_fp(task->arch.fp_regs);
 }
+uint64_t nas_arch_signal_user_sp(void) {
+    if(!live)nas_fail("RV64 signal return outside live trap");
+    return live->x[2];
+}
 void nas_arch_save_fpu(struct nas_task *task) {
     nas_rv_save_fp(task->arch.fp_regs);
 }
