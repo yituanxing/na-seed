@@ -127,8 +127,11 @@ uint64_t syscall_dispatch(const uint64_t *args) {
 
     if (nr == NAS_SC_wait4) {
         uint64_t ret = nas_process_wait4(args[1], args[2], args[3], args[4]);
+        /* WUNTRACED/WCONTINUED are real blocking wait selectors too.
+         * Do not treat them as unsupported when a selected child has
+         * not reached a reportable event yet. Keep WNOHANG nonblocking. */
         if ((int64_t)ret == -EOPNOTSUPP && args[4] == 0 &&
-            args[3] == 0)
+            !(args[3] & NAS_WAIT_NOHANG))
             return nas_task_block((uint64_t *)(uintptr_t)args, nr,
                               args[1], args[2], args[3], args[4]);
         return ret;
