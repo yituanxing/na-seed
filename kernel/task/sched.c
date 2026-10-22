@@ -41,7 +41,8 @@ static bool task_wait_ready(const struct nas_task *task) {
     for (unsigned slot = 0; slot < NAS_TASK_LIMIT; slot++) {
         struct nas_task *child = nas_task_child_at(task->pid, slot);
         if (!child) continue;
-        if (!nas_wait_pid_matches(desired,child->pid)) continue;
+        if (!nas_wait_pid_matches(desired,child->pid,
+                                  task->pgid,child->pgid)) continue;
         if (child->state == NAS_TASK_ZOMBIE) return true;
     }
     return false;

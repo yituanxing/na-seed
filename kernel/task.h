@@ -34,6 +34,9 @@ struct nas_fd_table {
 
 struct nas_task {
     uint64_t pid, ppid;
+    /* Linux process group + session identity, independent of CPU/VM. */
+    uint64_t pgid, sid;
+    bool execed; /* parent may not setpgid(child) after successful exec */
     enum nas_task_state state;
     uint32_t exit_code;
     uint32_t termination_signal; /* Linux wait4 WIFSIGNALED status */

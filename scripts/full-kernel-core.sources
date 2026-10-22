@@ -6,6 +6,7 @@ kernel/task/exec.c
 kernel/syscall/dispatch.c
 kernel/task.c
 kernel/task/process.c
+kernel/task/session.c
 kernel/task/sched.c
 kernel/bootfs.c
 kernel/tmpfs.c

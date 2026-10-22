@@ -114,6 +114,10 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
     tests/m13-init.c -o /tmp/naseed-m13-init
 [ "$(/tmp/naseed-m13-init --linux-oracle)" = m13-init-ok ]
 grep -Fq 'nas_task_adopt_orphans(child->pid)' kernel/task/sched.c
+# Standard C session/group ABI must pass Linux before QEMU kernel acceptance.
+cc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
+    tests/m14-groups.c -o /tmp/naseed-m14-groups
+[ "$(/tmp/naseed-m14-groups)" = m14-groups-ok ]
 grep -Fq 'BUSYBOX_EXTRA_DIR' scripts/stage-busybox-rootfs.sh
 
 # Compare our pinned Linux x86-64 syscall numbers against the host UAPI.

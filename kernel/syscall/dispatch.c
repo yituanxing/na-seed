@@ -13,6 +13,7 @@
 #include "../task/exec.h"
 #include "../task/process.h"
 #include "../task/wait_pid.h"
+#include "../task/session.h"
 #include "../task/sched.h"
 #include "../task/signal.h"
 #include "../task/user_stack.h"
@@ -126,14 +127,17 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_wait4) {
         uint64_t ret = nas_process_wait4(args[1], args[2], args[3], args[4]);
         if ((int64_t)ret == -EOPNOTSUPP && args[4] == 0 &&
-            args[3] == 0 && nas_wait_pid_supported(args[1]))
+            args[3] == 0)
             return nas_task_block((uint64_t *)(uintptr_t)args, nr,
                               args[1], args[2], args[3], args[4]);
         return ret;
     }
     if (nr == NAS_SC_execve) return nas_task_execve(args[1], args[2], args[3]);
-    if (nr == NAS_SC_getpgid) return args[1] == 0 || args[1] == TASK.pid ? TASK.pid : (uint64_t)-ESRCH;
-    if (nr == NAS_SC_getpgrp) return TASK.pid; /* one process group today */
+    if (nr == NAS_SC_getpgid) return nas_session_getpgid(args[1]);
+    if (nr == NAS_SC_getpgrp) return TASK.pgid;
+    if (nr == NAS_SC_getsid) return nas_session_getsid(args[1]);
+    if (nr == NAS_SC_setsid) return nas_session_setsid();
+    if (nr == NAS_SC_setpgid) return nas_session_setpgid(args[1],args[2]);
     if (nr == NAS_SC_exit || nr == NAS_SC_exit_group) { /* exit / exit_group */
         if (TASK.ppid) {
             nas_sched_child_exit((uint32_t)args[1], 0);
