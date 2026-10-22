@@ -1,0 +1,4 @@
+# New software capability profile: no BusyBox applet or shell.
+# The same guest ELF is first run under native Linux / QEMU-user.
+lua-vm	cpio	/tests/lua-vm.lua	lua-vm-ok	-	/bin/lua
+lua-io	cpio	/tests/lua-io.lua	lua-io-ok	-	/bin/lua

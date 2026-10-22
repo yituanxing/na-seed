@@ -11,6 +11,16 @@ on:
       - '.github/workflows/prune-historical-branches.yml'
       - 'scripts/prune-merged-branches.sh'
   pull_request:
+    # A Lua-only source/test update uses the focused three-ISA Lua workflow.
+    # Shared boot-harness or kernel changes still run the full BusyBox gates.
+    paths-ignore:
+      - 'docs/**'
+      - 'scripts/build-external-lua.sh'
+      - 'scripts/stage-external-lua-rootfs.sh'
+      - 'scripts/probe-external-lua.sh'
+      - 'scripts/lua-native-cases.tsv'
+      - 'tests/lua-*.lua'
+      - '.github/workflows/lua.yml'
 
 # Collapse superseded PR commits into a single expensive QEMU suite. Keep
 # pushed main regressions independent; only pull-request runs are canceled.
