@@ -32,15 +32,36 @@ uint64_t nas_signal_action(uint64_t signum,uint64_t incoming,
     if(size!=8 || signum<1 || signum>64)return (uint64_t)-EINVAL;
     if(incoming && (signum==NAS_SIGKILL || signum==NAS_SIGSTOP))
         return (uint64_t)-EINVAL;
-    uint64_t action[4];
-    /* Copy new disposition BEFORE touching current one, so overlapping
-     * user buffers or EFAULT cannot half-install a handler. */
+    uint64_t action[4]={0};
+    /* Linux asm-generic RV64 has NO sa_restorer field: kernel rt_sigaction
+     * is handler/flags/sigmask (24 bytes). x86/ARM64 have 4 words with
+     * a native restorer. Canonical in-kernel order remains H/F/R/M. */
+#if defined(__riscv) && __riscv_xlen==64
+    uint64_t rv_wire[3]={0};
+    if(incoming) {
+        if(!nas_user_read_bytes(incoming,(uint8_t *)rv_wire,sizeof(rv_wire)))
+            return (uint64_t)-EFAULT;
+        action[0]=rv_wire[0];action[1]=rv_wire[1];
+        action[2]=0;action[3]=rv_wire[2];
+    }
+    if(previous) {
+        uint64_t old[3]={
+            nas_current_task->signal_actions[signum][0],
+            nas_current_task->signal_actions[signum][1],
+            nas_current_task->signal_actions[signum][3],
+        };
+        if(!nas_user_write_bytes(previous,(const uint8_t *)old,sizeof(old)))
+            return (uint64_t)-EFAULT;
+    }
+#else
+    /* Copy before mutation to make overlapping userspace buffers safe. */
     if(incoming && !nas_user_read_bytes(incoming,(uint8_t *)action,32))
         return (uint64_t)-EFAULT;
     if(previous &&
        !nas_user_write_bytes(previous,
            (const uint8_t *)nas_current_task->signal_actions[signum],32))
         return (uint64_t)-EFAULT;
+#endif
     if(incoming) {
         for(unsigned i=0;i<4;i++)
             nas_current_task->signal_actions[signum][i]=action[i];
@@ -74,9 +95,7 @@ uint64_t nas_signal_procmask(uint64_t how,uint64_t set,
         for(unsigned sig=1;sig<=64;sig++) {
             if(!(unmasked & (1ULL<<(sig-1))))continue;
             if(task->signal_actions[sig][0]>1) {
-#if !defined(__x86_64__)
-                return (uint64_t)-EOPNOTSUPP;
-#endif
+                /* All supported ISAs now own a native frame provider. */
             }
         }
     }
@@ -151,9 +170,7 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
             if(t->state==NAS_TASK_ZOMBIE)continue;
             if((t->signal_actions[signal][0]>1) &&
                !(t->blocked_signals&(1ULL<<(signal-1)))) {
-#if !defined(__x86_64__)
-                return (uint64_t)-EOPNOTSUPP;
-#endif
+                /* All supported ISAs now own a native frame provider. */
             }
         }
     }
