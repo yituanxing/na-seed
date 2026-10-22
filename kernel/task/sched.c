@@ -58,6 +58,10 @@ static bool task_wait_ready(const struct nas_task *task) {
 static bool task_can_wake(const struct nas_task *task) {
     if (task->state != NAS_TASK_BLOCKED || !task->resume_valid ||
         !task->pending_valid) return false;
+    /* A pending caught signal interrupts an outstanding syscall. Signal
+     * frame creation is deferred until the target VM and user frame are
+     * selected, not while inspecting an unrelated blocked process. */
+    if (nas_signal_user_pending(task)) return true;
     /* A kernel-owned monotonic deadline can wake a task independently of
      * pipe/TTY events. No foreign userspace pointer is touched here. */
     if (task->deadline_active &&
@@ -77,6 +81,7 @@ static bool task_can_wake(const struct nas_task *task) {
 }
 static uint64_t task_replay(struct nas_task *task) {
     enum nas_syscall_op nr = (enum nas_syscall_op)task->blocked_op;
+    if (nas_signal_user_pending(task)) return (uint64_t)-EINTR;
     const uint64_t *a = task->blocked_args;
     /* Sleep input was validated and converted into task-owned absolute
      * deadline at the original syscall boundary; never restart a relative
