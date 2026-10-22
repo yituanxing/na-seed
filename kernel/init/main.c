@@ -13,6 +13,7 @@
 #include "../task/elf.h"
 #include "../task/user_stack.h"
 #include "main.h"
+#include "../fs/file_ops.h"
 #define TASK (*nas_current_task)
 #define descriptors TASK.fds.descriptors
 #define file_slot TASK.fds.file_slot
@@ -79,6 +80,7 @@ void nas_init_userspace(void) {
         descriptors[fd] = FD_UART;
         file_slot[fd] = (uint8_t)fd;
         file_refcount[fd] = 1;
+        nas_fd_file_ops[fd] = nas_fs_ops_for_kind(FD_UART);
         file_status_flags[fd] = fd == 0 ? 0 : 1; /* stdin R, stdout/err W */
     }
     if (!nas_build_linux_stack(running_bash, running_busybox, &stack_pointer))
