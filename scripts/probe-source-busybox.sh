@@ -44,6 +44,9 @@ if [ "$port" = amd64 ]; then
     cp "build/source-busybox/$port/m17-input" "$extra_dir/m17-input"
     cp tests/m28-preempt.sh "$extra_dir/m28-preempt"
 fi
+if [ "$port" != amd64 ]; then
+    cp tests/m28-preempt.sh "$extra_dir/m28-preempt"
+fi
 export BUSYBOX_EXTRA_DIR="$extra_dir"
 export BUSYBOX_PARITY_BINARY="$binary"
 export BUSYBOX_PARITY_MANIFEST=scripts/source-busybox-cases.tsv
@@ -86,5 +89,12 @@ else
     NASEED_INTERACTIVE_INIT=/bin/m25-tty-jobs \
       NASEED_INTERACTIVE_DRIVER=scripts/m25-serial-check.py \
       sh scripts/probe-m18-port-interactive.sh "$port"
+fi
+if [ "$port" = riscv64 ] || [ "$port" = arm64 ]; then
+    # The CPU hog never exits; port monitor requires actual IRQ-switch
+    # telemetry and original user output, not synthetic exit(0).
+    BUSYBOX_PARITY_MANIFEST=scripts/m28-port-preempt-cases.tsv \
+    BUSYBOX_PARITY_EXPECTED_COUNT=1 \
+      sh "scripts/probe-$(if [ "$port" = arm64 ]; then echo aarch64; else echo riscv64; fi)-busybox-matrix.sh"
 fi
 echo "[SOURCE BUSYBOX MATRIX PASS] $port: 16/16 native self-compiled workloads"
