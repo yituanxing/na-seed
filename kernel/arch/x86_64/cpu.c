@@ -170,6 +170,9 @@ static void nas_x86_enable_legacy_pit(void) {
 }
 /* Shared init contract: preserve all established x86 hardware operations. */
 void nas_arch_prepare_user_cpu(void) {
+    /* Firmware can leave IF set. Prevent IRQ0 from entering kernel C
+     * before the first explicit user IRET enables userspace interrupts. */
+    __asm__ volatile("cli" : : : "memory");
     nas_arch_cpu_tables_init();
     nas_arch_cpu_user_fp_init();
     if (!nas_task_kernel_stack_ok(nas_current_task)) nas_arch_halt();
