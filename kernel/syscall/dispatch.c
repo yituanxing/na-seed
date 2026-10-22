@@ -180,20 +180,43 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_munmap) return nas_vm_munmap(args[1], args[2]);
     if (nr == NAS_SC_brk) return nas_vm_brk(args[1]);
     if(nr==NAS_SC_poll || nr==NAS_SC_ppoll) {
+        /* Linux ppoll installs its temporary mask *before* checking both
+         * readiness and pending signals. Store the original mask inside
+         * the Task; the scheduler later restores it after EINTR/timeout.
+         * This never borrows a foreign user's sigset pointer. */
+        if(nr==NAS_SC_ppoll && args[4]) {
+            if(args[5]!=8ULL)return (uint64_t)-EINVAL;
+            uint64_t mask;
+            if(!nas_user_read_u64(args[4],&mask))
+                return (uint64_t)-EFAULT;
+            TASK.ppoll_saved_mask=TASK.blocked_signals;
+            TASK.ppoll_mask_active=true;
+            TASK.blocked_signals=mask & ~((1ULL<<8)|(1ULL<<18));
+        }
         uint64_t result=(nr==NAS_SC_poll ?
             nas_fs_poll(args[1],args[2],args[3]) :
             nas_fs_ppoll(args[1],args[2],args[3],args[4]));
         if((int64_t)result==-EAGAIN) {
+            if(nr==NAS_SC_ppoll && nas_signal_user_pending(&TASK)) {
+                nas_signal_ppoll_restore(&TASK,true);
+                return (uint64_t)-EINTR;
+            }
             /* Arm at most once: replay must retain the ORIGINAL absolute
              * deadline, not restart a relative timeout after every wake. */
             uint64_t rc=nas_time_poll_arm_deadline(nr,args);
-            if((int64_t)rc<0)return rc;
+            if((int64_t)rc<0) {
+                nas_signal_ppoll_restore(&TASK,false);
+                return rc;
+            }
             bool has_io=nas_fs_poll_arm(args[1],args[2]);
-            if(!has_io && !TASK.deadline_active)
+            if(!has_io && !TASK.deadline_active) {
+                nas_signal_ppoll_restore(&TASK,false);
                 return (uint64_t)-EOPNOTSUPP; /* no event/deadline source */
+            }
             return nas_task_block((uint64_t *)(uintptr_t)args,nr,
                                   args[1],args[2],args[3],args[4]);
         }
+        nas_signal_ppoll_restore(&TASK,false);
         return result;
     }
     /* True Linux controlling-terminal job policy is independent from
