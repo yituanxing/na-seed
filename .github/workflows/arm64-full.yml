@@ -18,6 +18,8 @@ on:
       - 'scripts/check-alpine-native-fixtures.sh'
       - 'scripts/busybox-static-fixtures.txt'
       - 'scripts/busybox-parity-cases.tsv'
+      - 'scripts/m31-date-cases.tsv'
+      - 'scripts/probe-m31-date.sh'
       - 'limine-aarch64-full.conf'
       - '.github/workflows/arm64-full.yml'
   push:
@@ -39,6 +41,8 @@ on:
       - 'scripts/check-alpine-native-fixtures.sh'
       - 'scripts/busybox-static-fixtures.txt'
       - 'scripts/busybox-parity-cases.tsv'
+      - 'scripts/m31-date-cases.tsv'
+      - 'scripts/probe-m31-date.sh'
       - 'limine-aarch64-full.conf'
       - '.github/workflows/arm64-full.yml'
 concurrency:
@@ -60,6 +64,8 @@ jobs:
         run: NASEED_ARM_FULL_TIMEOUT=25 sh scripts/probe-aarch64-full.sh
       - name: ARM64 — native Debian BusyBox canonical 17-case parity matrix
         run: sh scripts/probe-aarch64-busybox-matrix.sh
+      - name: M31 real CLOCK_REALTIME — native Debian date inside ARM64 kernel
+        run: sh scripts/probe-m31-date.sh arm64
       - name: Native Alpine AArch64 dynamic BusyBox seven-case parity (SHA256 pinned)
         run: sh scripts/probe-alpine-native-matrix.sh arm64
       - name: Upload real UART and semihosting evidence on failure
