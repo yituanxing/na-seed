@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include "elf_segments.h"
 #include "elf_format.h"
+#include "../lib/string.h"
 #define ELF_LOAD 1U
 #define ELF_DYNAMIC 2U
 #define ELF_INTERP 3U
@@ -11,12 +12,12 @@ static bool checked(uint64_t start,uint64_t count,uint64_t size) {
 }
 static bool same_text(const uint8_t *bytes,uint64_t size,const char *literal) {
     if (!literal) return false;
-    uint64_t n=0;
-    while(literal[n]) {
-        if(n>=size || bytes[n]!=(uint8_t)literal[n]) return false;
-        n++;
-    }
-    return n+1==size && bytes[n]==0;
+    size_t n = strlen(literal);
+    /* PT_INTERP is a bounded binary segment including exactly one NUL.
+     * Never invoke strcmp on ELF bytes, which are not independently
+     * guaranteed to be a terminated string. */
+    return n < size && size - n == 1 &&
+           bytes[n] == 0 && memcmp(bytes, literal, n) == 0;
 }
 static bool segment_bounds(const struct elf_phdr *p, uint64_t image_size,
                           const struct nas_elf_segment_policy *opt,
