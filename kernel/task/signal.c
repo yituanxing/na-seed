@@ -52,12 +52,12 @@ static bool signal_target_matches(const struct nas_task *target, int64_t pid,
  * target's VM MUST be active when clearing child_tid user memory.
  * The active caller's FPU, MMU and TLS are restored before continuing.
  * No kernel task stacks or architecture-specific process tables added. */
-static void signal_kill_other(struct nas_task *target) {
+static void signal_kill_other(struct nas_task *target,unsigned signal) {
     struct nas_task *sender = nas_current_task;
     nas_arch_save_fpu(sender);
     nas_current_task = target;
     nas_arch_restore_cpu(target);
-    nas_sched_child_exit(0, NAS_SIGKILL);
+    nas_sched_child_exit(0, signal);
     nas_current_task = sender;
     nas_arch_restore_cpu(sender);
 }
@@ -91,13 +91,14 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
         if (target==sender) { self=true; continue; }
         if (target->state==NAS_TASK_ZOMBIE) continue;
         if (signal==NAS_SIGKILL) {
-            signal_kill_other(target);
+            signal_kill_other(target,NAS_SIGKILL);
         } else if (signal==NAS_SIGSTOP) {
             if (target->state != NAS_TASK_STOPPED) {
                 target->stopped_from=target->state;
                 target->state=NAS_TASK_STOPPED;
                 target->stop_report_pending=true;
                 target->continue_report_pending=false;
+                target->stop_signal=NAS_SIGSTOP;
             }
         } else if (target->state==NAS_TASK_STOPPED) {
             target->state=target->stopped_from==NAS_TASK_BLOCKED
@@ -121,9 +122,44 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
             sender->state=NAS_TASK_STOPPED;
             sender->stop_report_pending=true;
             sender->continue_report_pending=false;
+            sender->stop_signal=NAS_SIGSTOP;
             return nas_task_schedule(frame);
         }
         /* SIGCONT to a running sender is a successful no-op. */
     }
     return 0;
+}
+
+/* Only default/ignored terminal signals; custom handlers require real
+ * cross-architecture user signal frames and blocked signals need queues.
+ * Reject the entire group atomically rather than claim partial delivery. */
+bool nas_signal_tty_event(uint64_t sid,uint64_t pgid,unsigned signum) {
+    if(!sid || !pgid || (signum!=NAS_SIGINT && signum!=NAS_SIGQUIT &&
+                         signum!=NAS_SIGTSTP))return false;
+    struct nas_task *targets[NAS_TASK_LIMIT];
+    unsigned count=0;
+    for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
+        struct nas_task *task=nas_task_at(i);
+        if(task->state==NAS_TASK_FREE || task->state==NAS_TASK_ZOMBIE ||
+           task->sid!=sid || task->pgid!=pgid || task->pid==1)continue;
+        if(task->signal_actions[signum][0]>1 ||
+           (task->blocked_signals&(1ULL<<(signum-1))))return false;
+        targets[count++]=task;
+    }
+    for(unsigned i=0;i<count;i++) {
+        struct nas_task *task=targets[i];
+        if(task->signal_actions[signum][0]==1)continue; /* ignored */
+        if(signum==NAS_SIGTSTP) {
+            if(task->state!=NAS_TASK_STOPPED) {
+                task->stopped_from=task->state;
+                task->state=NAS_TASK_STOPPED;
+                task->stop_report_pending=true;
+                task->continue_report_pending=false;
+                task->stop_signal=signum;
+            }
+        } else if(task==nas_current_task) {
+            nas_sched_child_exit(0,signum);
+        } else signal_kill_other(task,signum);
+    }
+    return true;
 }

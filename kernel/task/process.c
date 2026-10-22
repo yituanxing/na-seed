@@ -128,7 +128,7 @@ uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
             code = child->termination_signal ?
                 child->termination_signal : (child->exit_code & 255U)<<8;
         } else if (stopped) {
-            code = (19U<<8)|0x7fU; /* Linux SIGSTOP: WIFSTOPPED/WSTOPSIG */
+            code = ((child->stop_signal ? child->stop_signal : 19U)<<8)|0x7fU;
         } else {
             code = 0xffffU; /* WIFCONTINUED */
         }

@@ -45,6 +45,7 @@ struct nas_task {
      * SIGCONT restores READY (runnable) or BLOCKED (pending replay). */
     enum nas_task_state stopped_from;
     bool stop_report_pending, continue_report_pending;
+    uint32_t stop_signal;
     /* Saved syscall-boundary GPR frame in the exact arch.S push order.
      * The scheduler switches after unwinding the current syscall frame.
      */

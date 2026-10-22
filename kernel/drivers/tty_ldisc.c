@@ -23,11 +23,11 @@ enum nas_ldisc_event nas_ldisc_feed(struct nas_ldisc *ld,const struct nas_termio
         if(t->iflag&IGNCR)return NAS_LDISC_OK;
         if(t->iflag&ICRNL)b='\n';
     } else if(b=='\n'&&(t->iflag&INLCR))b='\r';
-    if((t->lflag&ISIG) &&
-       ((t->cc[VINTR]&&b==t->cc[VINTR])||
-        (t->cc[VQUIT]&&b==t->cc[VQUIT])||
-        (t->cc[VSUSP]&&b==t->cc[VSUSP])))
-        return NAS_LDISC_UNSUPPORTED_SIGNAL; /* never fake SIGINT/SIGTSTP */
+    if(t->lflag&ISIG) {
+        if(t->cc[VINTR]&&b==t->cc[VINTR])return NAS_LDISC_SIGNAL_INT;
+        if(t->cc[VQUIT]&&b==t->cc[VQUIT])return NAS_LDISC_SIGNAL_QUIT;
+        if(t->cc[VSUSP]&&b==t->cc[VSUSP])return NAS_LDISC_SIGNAL_STOP;
+    }
     if(t->lflag&ICANON) {
         unsigned remove=0;
         bool edit=false;
