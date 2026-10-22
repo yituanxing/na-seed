@@ -3,10 +3,10 @@
 #include "fd.h"
 #include <stddef.h>
 
-/* This is a real task registry, not a fabricated fork implementation.
- * The first (only running) task is PID 1. Other slots remain unallocated
- * until the arch switch and independent kernel stacks are implemented.
- */
+/* One shared process registry. PID 1 owns the first slot; other slots
+ * hold ready, blocked, running or zombie processes. A single kernel stack
+ * is shared across syscall-boundary cooperative switches. Task slots may
+ * be reused after wait4, but PIDs may not be recycled. */
 static struct nas_task task_table[NAS_TASK_LIMIT];
 static uint64_t next_pid = 2;
 struct nas_task *nas_current_task;
@@ -40,6 +40,7 @@ const struct nas_task *nas_task_find(uint64_t pid) {
  * shared open-file references are adjusted after a successful VM fork.
  */
 struct nas_task *nas_task_fork_slot(void) {
+    if (next_pid > UINT32_MAX) return NULL; /* Linux user-visible pid_t */
     for (unsigned i = 1; i < NAS_TASK_LIMIT; i++) {
         if (task_table[i].state != NAS_TASK_FREE) continue;
         struct nas_task *child = &task_table[i];
@@ -60,6 +61,15 @@ struct nas_task *nas_task_fork_slot(void) {
         return child;
     }
     return NULL;
+}
+void nas_task_adopt_orphans(uint64_t exiting_pid) {
+    if (exiting_pid <= 1 || task_table[0].pid != 1 ||
+        task_table[0].state == NAS_TASK_FREE) return;
+    for (unsigned i=1; i<NAS_TASK_LIMIT; ++i) {
+        struct nas_task *child=&task_table[i];
+        if (child->state != NAS_TASK_FREE &&
+            child->ppid == exiting_pid) child->ppid=1;
+    }
 }
 void nas_task_release(struct nas_task *task) {
     if (!task || task == nas_current_task) return;

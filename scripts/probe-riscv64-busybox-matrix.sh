@@ -64,7 +64,11 @@ boot_case() {
     # shell deadlocks to 30s per scenario so the *whole class* of five
     # shell tests produces diagnostics within the 10-minute CI budget.
     # Ordinary applet/cpio cases have a more generous 45s cap.
-    case "$name" in ash-*) time_budget=30 ;; *) time_budget=45 ;; esac
+    case "$name" in
+        ash-*) time_budget=30 ;;
+        process-capacity) time_budget=65 ;;
+        *) time_budget=45 ;;
+    esac
     set +e
     timeout "${time_budget}s" qemu-system-riscv64 \
         -machine virt,acpi=off -m 512M -smp 1 \

@@ -43,7 +43,8 @@ run_case() {
       --efi-boot boot/limine/limine-uefi-cd.bin \
       --efi-boot-part --efi-boot-image -o "$iso" "$stage" >/dev/null 2>&1
     rc=0
-    timeout 15s sh scripts/run.sh "$iso" > "$log" 2>&1 < /dev/null || rc=$?
+    case "$name" in process-capacity) budget=45 ;; *) budget=15 ;; esac
+    timeout "${budget}s" sh scripts/run.sh "$iso" > "$log" 2>&1 < /dev/null || rc=$?
     tr -d '\r' < "$log" > "$clean"
     if [ "$rc" -ne 1 ] ||
        ! grep -Fq "[CMDLINE] userspace argv from Limine: naseed.argv=/bin/busybox $args" "$clean" ||

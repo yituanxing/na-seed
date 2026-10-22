@@ -85,7 +85,11 @@ boot_case() {
     } > "$config"
     mcopy -i "$disk@@1048576" "$config" ::/boot/limine/limine.conf
     # No BusyBox result is assumed. A failure or timeout is a real failure.
-    case "$name" in ash-*) time_budget=22 ;; *) time_budget=28 ;; esac
+    case "$name" in
+        ash-*) time_budget=22 ;;
+        process-capacity) time_budget=65 ;;
+        *) time_budget=28 ;;
+    esac
     set +e
     timeout "${time_budget}s" qemu-system-aarch64 \
         -machine virt -cpu cortex-a57 -m 512M -smp 1 \

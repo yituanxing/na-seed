@@ -5,11 +5,12 @@
 #include "arch/context.h"
 #include "mm/anon_regions.h"
 
-/* NaOS-informed ownership boundaries for x86-64 user tasks.
- * A single kernel stack is shared, so cooperative switching occurs only
- * at the syscall boundary; each task retains its own user CPU/VM state.
+/* Common process registry across x86-64, RV64, and AArch64.
+ * One kernel stack is shared: cooperative switching occurs only at a
+ * syscall boundary; each task retains its own user CPU/VM state.
+ * Process slots are finite; exhaustion returns Linux EAGAIN from fork.
  */
-#define NAS_TASK_LIMIT 4
+#define NAS_TASK_LIMIT 16
 #define NAS_FD_LIMIT 64
 
 struct limine_file;
@@ -75,6 +76,9 @@ void nas_task_boot_init(void);
 struct nas_task *nas_task_current(void);
 struct nas_task *nas_task_fork_slot(void);
 void nas_task_release(struct nas_task *task);
+/* Linux orphan semantics: children of an exiting non-init task are adopted
+ * by PID 1 (which is responsible for eventually wait4-reaping zombies). */
+void nas_task_adopt_orphans(uint64_t exiting_pid);
 uint64_t nas_task_page_root(const struct nas_task *task);
 uint64_t nas_task_tls_base(const struct nas_task *task);
 void nas_task_set_root(struct nas_task *task, uint64_t root);
