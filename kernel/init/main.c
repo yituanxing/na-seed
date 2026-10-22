@@ -26,6 +26,11 @@
 void nas_init_userspace(void) {
     nas_print("[INIT] creating common task/VM and architecture user entry\n");
     nas_task_boot_init();
+    /* User console must be a hardware/firmware input backend BEFORE
+     * TIOCSCTTY enables terminal RX. x86 COM1 and RV SBI work early;
+     * ARM maps its real PL011 Device page into TTBR1 only after frame init. */
+    if (!nas_arch_console_enable_input())
+        nas_fail("native console physical RX/MMIO initialization failed");
     nas_tty_init(); /* SID/PGID from real PID1 */
     nas_arch_prepare_user_cpu();
     if (!nas_mmu_bootstrap()) nas_fail("architecture user VM bootstrap failed");
