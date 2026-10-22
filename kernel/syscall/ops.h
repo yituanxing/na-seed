@@ -33,6 +33,7 @@ enum nas_syscall_op {
     NAS_SC_gettid,
     NAS_SC_getuid,
     NAS_SC_ioctl,
+    NAS_SC_kill,
     NAS_SC_lseek,
     NAS_SC_lstat,
     NAS_SC_mkdir,
