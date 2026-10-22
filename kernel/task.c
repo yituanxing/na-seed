@@ -82,6 +82,8 @@ struct nas_task *nas_task_fork_slot(void) {
         child->resume_valid = false;
         child->blocked_op = 0;
         child->pending_valid = false;
+        child->deadline_active = false;
+        child->deadline_ns = 0;
         /* Fork creates a new thread-group / task identity. The parent's
          * clear_child_tid address belongs only to the parent's thread. */
         child->thread_clear_tid = 0;
