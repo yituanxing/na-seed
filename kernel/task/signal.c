@@ -684,3 +684,35 @@ uint64_t nas_signal_sigreturn(uint64_t *frame) {
     return nas_arch_saved_return(t);
 #endif
 }
+
+/* AArch64 and RV64 ABI hand the handler an executable signal-return
+ * address in LR/RA, not a guessed stack trampoline. The tiny mapped
+ * code page is read+exec from first map; user writes are forbidden.
+ * x86_64 obtains its SA_RESTORER from libc, so needs no kernel mapping. */
+bool nas_signal_install_trampoline(void) {
+#if defined(__riscv) && __riscv_xlen==64
+    static const uint32_t insns[]={
+        0x08b00893U, /* addi a7,zero,139 : __NR_rt_sigreturn */
+        0x00000073U, /* ecall */
+        0x00100073U, /* ebreak: unexpected return fails closed */
+    };
+#elif defined(__aarch64__)
+    static const uint32_t insns[]={
+        0xd2801168U, /* movz x8,#139 : __NR_rt_sigreturn */
+        0xd4000001U, /* svc #0 */
+        0xd4200000U, /* brk #0: unexpected return fails closed */
+    };
+#else
+    return true; /* native libc SA_RESTORER provides x86 restorer */
+#endif
+#if defined(__riscv) || defined(__aarch64__)
+    if(!nas_mmu_map_prot_page(NAS_SIGRETURN_TRAMPOLINE,5U))
+        return false;
+    if(!nas_user_copy_to_mapped(NAS_SIGRETURN_TRAMPOLINE,
+                               (const uint8_t *)insns,sizeof(insns))) {
+        (void)nas_mmu_unmap_page(NAS_SIGRETURN_TRAMPOLINE);
+        return false;
+    }
+    return true;
+#endif
+}
