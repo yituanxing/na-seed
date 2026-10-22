@@ -57,6 +57,13 @@ try:
     if proc.poll() is None:
         proc.kill()
     proc.wait(timeout=5)
+    # QEMU exits at guest debug-exit before the host drains its stdout pipe.
+    # Never mistake still-buffered final terminal/exit bytes for a kernel hang.
+    while True:
+        trailing = os.read(proc.stdout.fileno(), 65536)
+        if not trailing:
+            break
+        log.extend(trailing)
 finally:
     proc.stdout.close()
     proc.stdin.close()
