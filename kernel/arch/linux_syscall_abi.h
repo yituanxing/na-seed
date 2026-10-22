@@ -59,6 +59,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_getpid: return NAS_SC_getpid;
     case __NR_getppid: return NAS_SC_getppid;
     case __NR_gettid: return NAS_SC_gettid;
+    case __NR_gettimeofday: return NAS_SC_gettimeofday;
     case __NR_getuid: return NAS_SC_getuid;
     case __NR_ioctl: return NAS_SC_ioctl;
     case __NR_kill: return NAS_SC_kill;
@@ -100,6 +101,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
 #else
     case 73U: return NAS_SC_ppoll; /* asm-generic ppoll; poll absent */
     case 113U: return NAS_SC_clock_gettime;
+    case 169U: return NAS_SC_gettimeofday; /* asm-generic Linux */
     case 114U: return NAS_SC_clock_getres;
     case 115U: return NAS_SC_clock_nanosleep; /* asm-generic lacks nanosleep */
     case 63U: return NAS_SC_read;

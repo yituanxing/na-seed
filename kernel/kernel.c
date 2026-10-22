@@ -32,6 +32,11 @@ USED_REQUEST static volatile struct limine_memmap_request mmap_req = {
 USED_REQUEST static volatile struct limine_module_request module_req = {
     .id = LIMINE_MODULE_REQUEST_ID, .revision = 0
 };
+/* RTC-derived wall-clock calendar is an OPTIONAL Limine handoff.
+ * Never synthesize UNIX time from a monotonic hardware counter alone. */
+USED_REQUEST static volatile struct limine_date_at_boot_request date_req = {
+    .id = LIMINE_DATE_AT_BOOT_REQUEST_ID, .revision = 0
+};
 #if defined(NASEED_PORT_M0) && defined(__riscv)
 USED_REQUEST static volatile struct limine_paging_mode_request paging_req = {
     .id = LIMINE_PAGING_MODE_REQUEST_ID, .revision = 0,
@@ -148,4 +153,9 @@ const struct limine_file *nas_module(uint64_t index) {
 const struct limine_file *nas_user_module(void) { return nas_module(0); }
 const char *nas_cmdline(void) {
     return cmdline_req.response ? cmdline_req.response->cmdline : 0;
+}
+
+/* Boot protocol RTC seconds; unavailable is explicitly distinguishable. */
+int64_t nas_boot_date_at_boot(void) {
+    return date_req.response ? date_req.response->timestamp : -1;
 }

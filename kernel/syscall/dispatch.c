@@ -33,9 +33,9 @@
 #define running_alpine TASK.running_alpine
 #define saw_bash_hello TASK.saw_bash_hello
 
-/* Linux timespec64: two signed 64-bit fields for all three LP64 ISAs.
- * Keep clock errors honest: without an RTC we cannot supply CLOCK_REALTIME.
- * CLOCK_REALTIME *relative* sleeps still use elapsed monotonic duration. */
+/* One Linux timespec64 ABI on three LP64 ISAs.
+ * CLOCK_MONOTONIC remains independent of the boot RTC. CLOCK_REALTIME
+ * requires a validated boot epoch plus the same hardware clocksource. */
 static uint64_t nas_time_read_request(uint64_t addr,uint64_t *ns) {
     uint64_t sec,nsec;
     if(!addr || !nas_user_read_u64(addr,&sec) ||
@@ -44,15 +44,41 @@ static uint64_t nas_time_read_request(uint64_t addr,uint64_t *ns) {
     return nas_time_duration_ns(sec,nsec,ns) ? 0 : (uint64_t)-EINVAL;
 }
 static uint64_t nas_time_read_clock(uint64_t clockid,uint64_t dst,bool resolution) {
-    if(clockid!=1ULL)return (uint64_t)-EOPNOTSUPP; /* CLOCK_MONOTONIC only */
+    uint64_t now;
+    if(clockid==1ULL) {
+        now=resolution ? nas_arch_clock_resolution_ns() : nas_arch_monotonic_ns();
+    } else if(clockid==0ULL) {
+        if(!nas_time_realtime_available())return (uint64_t)-EOPNOTSUPP;
+        if(resolution) now=nas_arch_clock_resolution_ns();
+        else if(!nas_time_realtime_ns(&now))return (uint64_t)-EOPNOTSUPP;
+    } else return (uint64_t)-EINVAL;
     if(!dst && resolution)return 0; /* clock_getres accepts NULL */
-    uint64_t now=resolution ? nas_arch_clock_resolution_ns() : nas_arch_monotonic_ns();
     struct { int64_t sec,nsec; } ts={
         (int64_t)(now/NAS_NSEC_PER_SEC),
         (int64_t)(now%NAS_NSEC_PER_SEC)
     };
     return nas_user_write_bytes(dst,(const uint8_t *)&ts,sizeof(ts))
         ? 0 : (uint64_t)-EFAULT;
+}
+/* Obsolete timezone output follows Linux's UTC zero-value convention.
+ * Avoid returning invented timestamps when firmware omits the boot RTC. */
+static uint64_t nas_time_gettimeofday(uint64_t tv,uint64_t tz) {
+    uint64_t now;
+    if(!nas_time_realtime_ns(&now))return (uint64_t)-EOPNOTSUPP;
+    if(tv) {
+        struct { int64_t sec,usec; } value={
+            (int64_t)(now/NAS_NSEC_PER_SEC),
+            (int64_t)((now%NAS_NSEC_PER_SEC)/1000ULL)
+        };
+        if(!nas_user_write_bytes(tv,(const uint8_t *)&value,sizeof(value)))
+            return (uint64_t)-EFAULT;
+    }
+    if(tz) {
+        struct { int32_t minuteswest,dsttime; } utc={0,0};
+        if(!nas_user_write_bytes(tz,(const uint8_t *)&utc,sizeof(utc)))
+            return (uint64_t)-EFAULT;
+    }
+    return 0;
 }
 static uint64_t nas_time_sleep_syscall(uint64_t *frame,enum nas_syscall_op nr,
                                       const uint64_t *args) {
@@ -64,9 +90,13 @@ static uint64_t nas_time_sleep_syscall(uint64_t *frame,enum nas_syscall_op nr,
         const uint64_t clockid=args[1], flags=args[2];
         if(clockid!=0ULL && clockid!=1ULL)return (uint64_t)-EINVAL;
         if(flags&~1ULL)return (uint64_t)-EINVAL; /* TIMER_ABSTIME */
-        if((flags&1ULL) && clockid!=1ULL)
-            return (uint64_t)-EOPNOTSUPP; /* no absolute wall clock */
-        deadline=(flags&1ULL) ? duration : nas_time_add_deadline(now,duration);
+        if((flags&1ULL) && clockid==0ULL) {
+            uint64_t wall;
+            if(!nas_time_realtime_at(now,&wall))
+                return (uint64_t)-EOPNOTSUPP;
+            deadline=nas_time_add_deadline(now,duration>wall?duration-wall:0);
+        } else
+            deadline=(flags&1ULL) ? duration : nas_time_add_deadline(now,duration);
     } else deadline=nas_time_add_deadline(now,duration);
     if(nas_time_deadline_expired(now,deadline))return 0;
     TASK.deadline_ns=deadline;
@@ -174,6 +204,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         return nas_time_read_clock(args[1],args[2],false);
     if(nr==NAS_SC_clock_getres)
         return nas_time_read_clock(args[1],args[2],true);
+    if(nr==NAS_SC_gettimeofday)
+        return nas_time_gettimeofday(args[1],args[2]);
     if(nr==NAS_SC_nanosleep || nr==NAS_SC_clock_nanosleep)
         return nas_time_sleep_syscall((uint64_t *)(uintptr_t)args,nr,args);
     if (nr == NAS_SC_getuid || nr == NAS_SC_getgid || nr == NAS_SC_geteuid || nr == NAS_SC_getegid) return 0; /* root credentials */

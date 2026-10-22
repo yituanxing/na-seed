@@ -13,6 +13,7 @@
 #include "../task/elf.h"
 #include "../task/user_stack.h"
 #include "../task/signal.h"
+#include "../time/clock.h"
 #include "main.h"
 #include "../fs/file_ops.h"
 #define TASK (*nas_current_task)
@@ -34,6 +35,10 @@ void nas_init_userspace(void) {
         nas_fail("native console physical RX/MMIO initialization failed");
     nas_tty_init(); /* SID/PGID from real PID1 */
     nas_arch_prepare_user_cpu();
+    /* Hardware clocksource is now active; correlate boot RTC epoch once.
+     * The timekeeper is shared across all native Linux ISA backends. */
+    extern int64_t nas_boot_date_at_boot(void);
+    nas_timekeeper_init(nas_boot_date_at_boot());
     if (!nas_mmu_bootstrap()) nas_fail("architecture user VM bootstrap failed");
     nas_arch_enable_user_traps();
     /* Select the boot ELF with the very same argv[0] passed to userspace.

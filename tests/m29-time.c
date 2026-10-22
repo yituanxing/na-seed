@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <sys/time.h>
 #include <errno.h>
 
 /* One native Linux ELF on x86-64, RV64, and AArch64: real seconds must
@@ -62,6 +63,32 @@ int main(void) {
     ck(write(pair[1],"X",1)==1,"pipe ready data");
     ck(poll(&f,1,40)==1 && (f.revents&POLLIN),"ready pipe beats deadline");
     close(pair[0]);close(pair[1]);
+    /* M31: same genuine boot-RTC epoch and monotonic clocksource on 3 ISAs.
+     * The source is executed unchanged against host Linux, then the guest.
+     * Neither a fabricated 1970 date nor a per-syscall RTC reread passes. */
+    struct timespec realtime_start,realtime_after;
+    struct timeval wall_tv;
+    ck(clock_gettime(CLOCK_REALTIME,&realtime_start)==0 &&
+       realtime_start.tv_sec >= 946684800,"real UNIX boot epoch");
+    ck(gettimeofday(&wall_tv,NULL)==0 &&
+       wall_tv.tv_sec >= 946684800,"gettimeofday boot epoch");
+    uint64_t wall_ns=ns(&realtime_start);
+    uint64_t tv_ns=(uint64_t)wall_tv.tv_sec*1000000000ULL+
+                   (uint64_t)wall_tv.tv_usec*1000ULL;
+    ck(tv_ns>=wall_ns && tv_ns-wall_ns<2000000000ULL,
+       "gettimeofday agrees with realtime");
+    struct timespec realtime_deadline=realtime_start;
+    realtime_deadline.tv_nsec+=20000000L;
+    if(realtime_deadline.tv_nsec>=1000000000L) {
+        realtime_deadline.tv_nsec-=1000000000L;
+        realtime_deadline.tv_sec++;
+    }
+    ck(clock_nanosleep(CLOCK_REALTIME,TIMER_ABSTIME,
+                       &realtime_deadline,NULL)==0,
+       "absolute CLOCK_REALTIME sleep");
+    ck(clock_gettime(CLOCK_REALTIME,&realtime_after)==0 &&
+       ns(&realtime_after)>=ns(&realtime_deadline),
+       "realtime absolute deadline");
     puts("m29-time-ok");
     return 0;
 }
