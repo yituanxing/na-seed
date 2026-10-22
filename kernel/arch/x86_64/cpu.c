@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include "cpu.h"
 #include "../../task.h"
+#include "mmu.h"
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
 extern void nas_hex(uint64_t);
@@ -148,10 +149,46 @@ uint64_t nas_arch_cycle_counter(void) {
 bool nas_arch_nx_enabled(void) { return (rdmsr(0xc0000080) & (1ULL << 11)) != 0; }
 void nas_arch_set_user_tls(uint64_t address) { wrmsr(0xc0000100, address); }
 
-/* QEMU q35 PIT 8254 -> i8259 PIC IRQ0 at vector 0x20. All other
- * legacy PIC IRQs remain masked. Interrupts are disabled in kernel
- * syscall/trap C; user IRET restores IF from saved user flags.
- * Single-CPU bringup only; an APIC provider must supersede this later. */
+/* Limine base revision 6 deliberately masks BSP LAPIC LINT0 ExtINT.
+ * A PIT+PIC alone can never reach QEMU q35's CPU until its xAPIC
+ * virtual-wire receiver is explicitly unmasked. This is NOT a local APIC
+ * timer, only a correct single-CPU PIC -> LINT0 ExtINT route.
+ * The LAPIC physical page is mapped uncached by the MMU provider.
+ * Refuse x2APIC systems instead of performing invalid MMIO accesses.
+ */
+#define NAS_X86_LAPIC_VIRT UINT64_C(0xffffffffe1000000)
+static volatile uint32_t *const lapic =
+    (volatile uint32_t *)(uintptr_t)NAS_X86_LAPIC_VIRT;
+static void nas_x86_enable_virtual_wire(void) {
+    uint64_t apic_base=rdmsr(0x1b); /* IA32_APIC_BASE */
+    if (!(apic_base&(1ULL<<11)) || (apic_base&(1ULL<<10)) ||
+        !(apic_base&(1ULL<<8))) {
+        nas_print("[M28] unsupported x86 APIC mode=");
+        nas_hex(apic_base); nas_print("\n");
+        nas_arch_halt();
+    }
+    uint64_t phys=apic_base&UINT64_C(0x000ffffffffff000);
+    if (!nas_arch_x86_map_lapic_page(phys)) {
+        nas_print("[M28] cannot map xAPIC MMIO page\n");
+        nas_arch_halt();
+    }
+    /* Limine leaves LAPIC software-enabled with vector 0xff but
+     * LINT0 masked; set only the state we own. TPR=0 allows IRQ0.
+     * Intel MP Spec: virtual-wire ExtINT uses PIC EOI, not LAPIC EOI. */
+    lapic[0x80/4]=0;              /* Task Priority Register */
+    uint32_t svr=lapic[0xf0/4];
+    lapic[0xf0/4]=svr|0x100U;     /* software enable */
+    lapic[0x350/4]=0x700U;        /* LVT LINT0: ExtINT, edge, unmasked */
+    __asm__ volatile("mfence" : : : "memory");
+    if ((lapic[0x350/4]&0x10700U)!=0x700U) {
+        nas_print("[M28] LINT0 ExtINT did not become enabled\n");
+        nas_arch_halt();
+    }
+    nas_print("[M28] LAPIC BSP LINT0 ExtINT virtual-wire enabled\n");
+}
+/* PIT oscillator/8259 PIC: IRQ0 at vector 0x20. User IRET restores IF,
+ * kernel-mode syscall/interrupt gates always run with interrupts masked.
+ * Single CPU only; replace with real APIC timer/IOAPIC for portability. */
 static void nas_x86_enable_legacy_pit(void) {
     nas_arch_outb(0x20,0x11);
     nas_arch_outb(0xa0,0x11);
@@ -177,6 +214,7 @@ void nas_arch_prepare_user_cpu(void) {
     nas_arch_cpu_user_fp_init();
     if (!nas_task_kernel_stack_ok(nas_current_task)) nas_arch_halt();
     nas_arch_x86_set_kernel_stack(nas_current_task->kernel_stack_top);
+    nas_x86_enable_virtual_wire();
     nas_x86_enable_legacy_pit();
 }
 void nas_arch_enable_user_traps(void) {
