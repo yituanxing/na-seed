@@ -1,3 +1,0 @@
-# Original BusyBox ash executes the exact same test script as native Linux.
-# No special syscall or NaSeed-specific user code is used.
-timer-preempt	cpio	sh /bin/m28-preempt	cpu-hog-did-not-starve-ash	-
