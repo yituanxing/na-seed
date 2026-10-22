@@ -10,8 +10,11 @@ import subprocess
 import sys
 import time
 
-if len(sys.argv) != 2:
-    sys.exit("usage: m18-ash-serial.py ISO")
+if len(sys.argv) not in (2, 3):
+    sys.exit("usage: m18-ash-serial.py ISO [amd64|riscv64|arm64]")
+port = sys.argv[2] if len(sys.argv) == 3 else "amd64"
+if port not in ("amd64", "riscv64", "arm64"):
+    sys.exit("invalid native machine ISA")
 commands = [
     (b"echo m18-alpha\r", b"m18-alpha"),
     (b"echo x | wc -c\r", b"2"),
@@ -19,15 +22,18 @@ commands = [
     (b"echo m18-omega\r", b"m18-omega"),
     (b"exit\r", b"[PASS] cmdline userspace exit 0"),
 ]
+launcher = (["sh", "scripts/run.sh", sys.argv[1]]
+            if port == "amd64"
+            else ["sh", "scripts/m18-port-qemu.sh", port, sys.argv[1]])
 proc = subprocess.Popen(
-    ["sh", "scripts/run.sh", sys.argv[1]],
+    launcher,
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     bufsize=0,
 )
 log = bytearray()
 cursor = 0
 sent = 0
-deadline = time.monotonic() + 50
+deadline = time.monotonic() + (80 if port != "amd64" else 50)
 try:
     while time.monotonic() < deadline:
         readable, _, _ = select.select([proc.stdout], [], [], 0.04)
@@ -70,10 +76,16 @@ finally:
 result = bytes(log).replace(b"\r", b"")
 sys.stdout.buffer.write(result)
 sys.stdout.buffer.flush()
-if sent != len(commands) or proc.returncode != 1 or \
+# x86 exits through ISA debug-exit(1); RV/ARM print the native exit
+# marker, then WFI forever and are explicitly terminated by the host.
+exit_ok = (proc.returncode == 1 if port == "amd64" else
+           (b"[RV64] userspace debug-exit status=0" in result if port == "riscv64"
+            else b"[ARM64] userspace debug-exit status=0" in result))
+if sent != len(commands) or not exit_ok or \
    b"[PASS] cmdline userspace exit 0" not in result or \
    any(evidence not in result for _, evidence in commands) or \
    b"[FAIL]" in result or b"[DEADLOCK]" in result:
     sys.exit(f"[M18 REAL ASH FAIL] commands={sent}/{len(commands)} "
              f"QEMU_rc={proc.returncode}")
-print("[M18 REAL ASH PASS] native source BusyBox -i accepted 5 live serial commands")
+print("[M18 REAL ASH PASS] " + port +
+      " native source BusyBox -i accepted 5 live serial commands")

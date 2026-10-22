@@ -36,3 +36,26 @@ An interactive prompt and execution of commands are not full job control.
 SIGINT/SIGTSTP TTY signal delivery, saved handler frames, SIGTTIN/SIGTTOU,
 preemption, asynchronous RX wakeups and native receive drivers for RV/ARM
 are explicitly deferred; don't claim working Ctrl-C/Ctrl-Z.
+
+## M19 architecture parity (real bytes, no separate Shell)
+
+RISC-V QEMU virt's OpenSBI legacy getchar (SBI EID 2) and AArch64
+QEMU virt's actual PL011 at 0x09000000 now provide input to the SAME
+TTY and upstream BusyBox ash executable as x86. The PL011 page receives
+an explicit MAIR Device-nGnRnE kernel TTBR1 PTE; current Limine HHDM is
+restrictive and cannot be assumed to cover arbitrary MMIO.
+
+`probe-m18-port-interactive.sh` stages the source-profile CPIO into a
+real per-ISA UEFI disk. `m18-ash-serial.py` consumes actual UART
+data, responds only to genuine ash prompts, sends five live commands,
+then checks guest Linux syscall exit and ISA-specific kernel exit
+marker. ARM keeps semihosting for early boot before its PL011 mapping.
+No kernel interpreter or per-ISA Linux syscall shims are introduced.
+
+**Hardware qualification:** These are QEMU virt platform backends:
+OpenSBI legacy console requires platform firmware support; a future
+RV64 firmware without that deprecated extension needs DBCN read.
+The PL011 physical address is the QEMU virt board constant, not a
+discoverable universal ARM address. Other boards require DT/ACPI
+discovery and the established MMIO mapping service. No assertion of
+arbitrary ARM/RV board serial compatibility is made.

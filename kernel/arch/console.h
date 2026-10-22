@@ -2,6 +2,8 @@
 #define NASEED_ARCH_CONSOLE_H
 /* Platform-specific byte transport. The user of these functions is the
  * shared drivers/serial.c formatter, never FS/process/VM directly. */
+#include <stdbool.h>
+#include <stdint.h>
 void nas_arch_console_init(void);
 /* Late post-frame-allocation device RX init. Must not fake unmapped MMIO. */
 bool nas_arch_console_enable_input(void);
