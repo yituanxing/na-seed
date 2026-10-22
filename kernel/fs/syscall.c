@@ -19,6 +19,7 @@
 #include "../drivers/tty.h"
 #include "io.h"
 #include "syscall.h"
+#include "file_ops.h"
 /* Linux x86-64 filesystem syscall adapter. Backend state is already
  * task-local or refcounted via fd.c, pipe.c, bootfs.c and tmpfs.c.
  * The user ABI stat/dirent encodings are still x86-specific in v1. */
@@ -104,6 +105,7 @@ static uint64_t sys_pipe2(uint64_t user_pair, uint64_t flags) {
         descriptors[fd] = i ? FD_PIPE_W : FD_PIPE_R;
         file_slot[fd] = (uint8_t)slot;
         file_refcount[slot] = 1;
+        nas_fd_file_ops[slot] = nas_fs_ops_for_kind(descriptors[fd]);
         file_status_flags[slot] = (i ? 1ULL : 0ULL) | (flags & 0x800ULL);
         fd_cloexec[fd] = !!(flags & 0x80000ULL);
     }
@@ -163,8 +165,9 @@ static uint64_t pipe_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
 void nas_fs_close_fd(uint64_t fd) {
     unsigned final_slot=nas_fd_close(nas_current_task, (unsigned)fd);
     if (final_slot == NAS_FD_LIMIT) return;
-    nas_pipe_release_description(final_slot);
-    tmp_release_slot(final_slot);
+    const struct nas_file_ops *ops=nas_fd_file_ops[final_slot];
+    if(ops && ops->release)ops->release(final_slot);
+    nas_fd_file_ops[final_slot]=0;
 }
 static uint64_t fd_clone(uint64_t src, uint64_t dst, bool cloexec) {
     if (src >= NAS_FD_LIMIT || descriptors[src] == FD_CLOSED ||
@@ -392,6 +395,7 @@ static uint64_t sys_open_path(const char *path, uint64_t native_flags) {
             if ((kind == FD_TMP || kind == FD_TMP_DIR) && !tmp_file) return (uint64_t)-ENOENT;
             if (kind == FD_TMP && (flags & 0x200ULL)) tmp_file->size = 0;
             file_refcount[slot] = 1;
+            nas_fd_file_ops[slot] = nas_fs_ops_for_kind(kind);
             if (kind == FD_TMP || kind == FD_TMP_DIR)
                 tmp_bind_slot(slot, tmp_file);
             file_slot[fd] = (uint8_t)slot;
@@ -412,70 +416,152 @@ static uint64_t sys_open_device(uint64_t pathname, uint64_t flags) {
     uint64_t result = nas_fs_resolve_path((uint64_t)-100, pathname, path);
     return (int64_t)result < 0 ? result : sys_open_path(path, flags);
 }
-uint64_t nas_fs_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
-    if (fd >= 64 || descriptors[fd] == FD_CLOSED) return (uint64_t)-EBADF;
-    if ((file_status_flags[file_slot[fd]] & 3ULL) == 0)
-        return (uint64_t)-EBADF;
-    if (length > (1ULL << 20) ||
-        address >= USER_LIMIT || length > USER_LIMIT - address)
+
+/* NaOS-aligned idea: bind ops once to the shared open description; do not
+ * repeat a dispatch by FD kind in every userspace read/write/poll/ioctl. */
+static uint64_t vread_null(uint64_t fd,uint64_t addr,uint64_t n) {
+    (void)fd;(void)addr;(void)n;return 0;
+}
+static uint64_t vread_zero(uint64_t fd,uint64_t addr,uint64_t n) {
+    (void)fd;
+    if(addr>=USER_LIMIT || n>USER_LIMIT-addr)return (uint64_t)-EFAULT;
+    uint8_t zero=0;
+    for(uint64_t i=0;i<n;i++)
+        if(!nas_user_write_bytes(addr+i,&zero,1))
+            return i ? i : (uint64_t)-EFAULT;
+    return n;
+}
+static uint64_t vread_dir(uint64_t fd,uint64_t addr,uint64_t n) {
+    (void)fd;(void)addr;(void)n;return (uint64_t)-EISDIR;
+}
+static uint64_t vread_archive(uint64_t fd,uint64_t addr,uint64_t n) {
+    const struct bootfs_entry *entry=boot_entries[fd];
+    if(!entry)return (uint64_t)-EBADF;
+    uint64_t start=boot_file_offsets[file_slot[fd]];
+    if(start>=entry->size)return 0;
+    if(n>entry->size-start)n=entry->size-start;
+    if(!nas_user_write_bytes(addr,entry->data+start,n))
         return (uint64_t)-EFAULT;
-    if (descriptors[fd] == FD_NULL || descriptors[fd] == FD_ZERO) return length;
-    if (descriptors[fd] == FD_PIPE_W) return pipe_fd_write(fd, address, length);
-    if (descriptors[fd] == FD_TMP) return tmp_fd_write(fd, address, length);
-    if (descriptors[fd] == FD_BOOTFS || descriptors[fd] == FD_ARCHIVE ||
-        descriptors[fd] == FD_DIR) return (uint64_t)-EBADF; /* O_RDONLY */
-    if (descriptors[fd] != FD_UART && descriptors[fd] != FD_TTY)
-        return (uint64_t)-EBADF;
-    for (uint64_t i = 0; i < length; i++) {
-        uint8_t *p = nas_mmu_user_byte(address + i);
-        if (!p) return i ? i : (uint64_t)-EFAULT;
+    boot_file_offsets[file_slot[fd]]+=n;
+    return n;
+}
+static uint64_t vread_limine(uint64_t fd,uint64_t addr,uint64_t n) {
+    const struct limine_file *file=boot_files[fd];
+    if(!file || !file->address)return (uint64_t)-EBADF;
+    uint64_t start=boot_file_offsets[file_slot[fd]];
+    if(start>file->size)return 0;
+    if(n>file->size-start)n=file->size-start;
+    if(!nas_user_write_bytes(addr,(const uint8_t*)file->address+start,n))
+        return (uint64_t)-EFAULT;
+    boot_file_offsets[file_slot[fd]]+=n;
+    return n;
+}
+static uint64_t vread_tty(uint64_t fd,uint64_t addr,uint64_t n) {
+    return nas_tty_read(addr,n,(file_status_flags[file_slot[fd]]&0x800ULL)!=0);
+}
+static uint64_t vwrite_discard(uint64_t fd,uint64_t addr,uint64_t n) {
+    (void)fd;(void)addr;return n;
+}
+static uint64_t vwrite_tty(uint64_t fd,uint64_t addr,uint64_t n) {
+    for(uint64_t i=0;i<n;i++) {
+        uint8_t *p=nas_mmu_user_byte(addr+i);
+        if(!p)return i ? i : (uint64_t)-EFAULT;
         nas_tty_write_char(*p);
-        if (fd == 1 && (running_bash || running_busybox)) observe_stdout((char)*p);
+        if(fd==1 && (running_bash || running_busybox))
+            observe_stdout((char)*p);
     }
-    return length;
+    return n;
+}
+static uint16_t vpoll_always(uint64_t fd,uint16_t events) {
+    (void)fd;return events & 0x0005U;
+}
+static uint16_t vpoll_tty(uint64_t fd,uint16_t events) {
+    (void)fd;
+    uint16_t out=events & 0x0004U;
+    if((events & 0x0001U) && nas_tty_poll_readable())out|=0x0001U;
+    return out;
+}
+static uint16_t vpoll_pipe_read(uint64_t fd,uint16_t events) {
+    return nas_pipe_poll_readable(file_slot[fd]) ? (events & 0x0001U) : 0;
+}
+static uint16_t vpoll_pipe_write(uint64_t fd,uint16_t events) {
+    return nas_pipe_poll_writable(file_slot[fd]) ? (events & 0x0004U) : 0;
+}
+static void varmpipe_read(struct nas_task *t,uint64_t fd,uint16_t events) {
+    if(events & 0x0001U)t->poll_pipe_read|=1ULL<<file_slot[fd];
+}
+static void varmpipe_write(struct nas_task *t,uint64_t fd,uint16_t events) {
+    if(events & 0x0004U)t->poll_pipe_write|=1ULL<<file_slot[fd];
+}
+static void varmtty(struct nas_task *t,uint64_t fd,uint16_t events) {
+    (void)fd;
+    if((events & 0x0001U) && nas_tty_read_waitable())t->poll_tty_read=true;
+}
+static uint64_t vioctl_tty(uint64_t cmd,uint64_t arg) {
+    return nas_tty_ioctl(cmd,arg);
+}
+static uint64_t vioctl_uart(uint64_t cmd,uint64_t arg) {
+    return (cmd==0x540eULL || nas_tty_enabled())
+        ? nas_tty_ioctl(cmd,arg) : (uint64_t)-ENOTTY;
+}
+static void vrelease_pipe(unsigned slot){nas_pipe_release_description(slot);}
+static void vrelease_tmp(unsigned slot){tmp_release_slot(slot);}
+static const struct nas_file_ops ops_uart={
+    .read=vread_tty,.write=vwrite_tty,.poll=vpoll_tty,
+    .poll_arm=varmtty,.ioctl=vioctl_uart
+};
+static const struct nas_file_ops ops_tty={
+    .read=vread_tty,.write=vwrite_tty,.poll=vpoll_tty,
+    .poll_arm=varmtty,.ioctl=vioctl_tty
+};
+static const struct nas_file_ops ops_null={
+    .read=vread_null,.write=vwrite_discard,.poll=vpoll_always
+};
+static const struct nas_file_ops ops_zero={
+    .read=vread_zero,.write=vwrite_discard,.poll=vpoll_always
+};
+static const struct nas_file_ops ops_bootfs={.read=vread_limine,.poll=vpoll_always};
+static const struct nas_file_ops ops_archive={.read=vread_archive,.poll=vpoll_always};
+static const struct nas_file_ops ops_dir={.read=vread_dir,.poll=vpoll_always};
+static const struct nas_file_ops ops_pipe_read={
+    .read=pipe_fd_read,.poll=vpoll_pipe_read,
+    .poll_arm=varmpipe_read,.release=vrelease_pipe
+};
+static const struct nas_file_ops ops_pipe_write={
+    .write=pipe_fd_write,.poll=vpoll_pipe_write,
+    .poll_arm=varmpipe_write,.release=vrelease_pipe
+};
+static const struct nas_file_ops ops_tmp={
+    .read=tmp_fd_read,.write=tmp_fd_write,.poll=vpoll_always,
+    .release=vrelease_tmp
+};
+static const struct nas_file_ops ops_tmp_dir={
+    .read=vread_dir,.poll=vpoll_always,.release=vrelease_tmp
+};
+static const struct nas_file_ops *const ops_by_kind[]={
+    [FD_UART]=&ops_uart,[FD_TTY]=&ops_tty,[FD_NULL]=&ops_null,
+    [FD_ZERO]=&ops_zero,[FD_BOOTFS]=&ops_bootfs,[FD_ARCHIVE]=&ops_archive,
+    [FD_DIR]=&ops_dir,[FD_PIPE_R]=&ops_pipe_read,[FD_PIPE_W]=&ops_pipe_write,
+    [FD_TMP]=&ops_tmp,[FD_TMP_DIR]=&ops_tmp_dir
+};
+const struct nas_file_ops *nas_fs_ops_for_kind(uint8_t kind) {
+    return kind < sizeof(ops_by_kind)/sizeof(ops_by_kind[0])
+           ? ops_by_kind[kind] : 0;
+}
+
+uint64_t nas_fs_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
+    if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED)return (uint64_t)-EBADF;
+    if((file_status_flags[file_slot[fd]]&3ULL)==0)return (uint64_t)-EBADF;
+    if(length>(1ULL<<20) || address>=USER_LIMIT || length>USER_LIMIT-address)
+        return (uint64_t)-EFAULT;
+    const struct nas_file_ops *ops=nas_fd_file_ops[file_slot[fd]];
+    return ops && ops->write ? ops->write(fd,address,length) : (uint64_t)-EBADF;
 }
 uint64_t nas_fs_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
-    if (fd >= 64 || descriptors[fd] == FD_CLOSED) return (uint64_t)-EBADF;
-    if ((file_status_flags[file_slot[fd]] & 3ULL) == 1)
-        return (uint64_t)-EBADF;
-    if (descriptors[fd] == FD_NULL) return 0;
-    if (descriptors[fd] == FD_PIPE_R) return pipe_fd_read(fd, address, length);
-    if (descriptors[fd] == FD_TMP) return tmp_fd_read(fd, address, length);
-    if (descriptors[fd] == FD_DIR || descriptors[fd] == FD_TMP_DIR) return (uint64_t)-EISDIR;
-    if (descriptors[fd] == FD_ARCHIVE) {
-        const struct bootfs_entry *entry = boot_entries[fd];
-        if (!entry) return (uint64_t)-EBADF;
-        uint64_t start = boot_file_offsets[file_slot[fd]];
-        if (start >= entry->size) return 0;
-        uint64_t available = entry->size - start;
-        if (length > available) length = available;
-        if (!nas_user_write_bytes(address, entry->data + start, length))
-            return (uint64_t)-EFAULT;
-        boot_file_offsets[file_slot[fd]] += length;
-        return length;
-    }
-    if (descriptors[fd] == FD_BOOTFS) {
-        const struct limine_file *file = boot_files[fd];
-        if (!file || !file->address) return (uint64_t)-EBADF;
-        uint64_t start = boot_file_offsets[file_slot[fd]];
-        if (start > file->size) return 0;
-        uint64_t available = file->size - start;
-        if (length > available) length = available;
-        if (!nas_user_write_bytes(address, (const uint8_t *)file->address + start,
-                              length)) return (uint64_t)-EFAULT;
-        boot_file_offsets[file_slot[fd]] += length;
-        return length;
-    }
-    if(descriptors[fd]==FD_UART || descriptors[fd]==FD_TTY)
-        return nas_tty_read(address,length,
-             (file_status_flags[file_slot[fd]]&0x800ULL)!=0);
-    if (descriptors[fd] != FD_ZERO) return (uint64_t)-EBADF;
-    if (address >= USER_LIMIT || length > USER_LIMIT - address)
-        return (uint64_t)-EFAULT;
-    uint8_t zero = 0;
-    for (uint64_t i = 0; i < length; i++)
-        if (!nas_user_write_bytes(address + i, &zero, 1)) return i ? i : (uint64_t)-EFAULT;
-    return length;
+    if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED)return (uint64_t)-EBADF;
+    if((file_status_flags[file_slot[fd]]&3ULL)==1)return (uint64_t)-EBADF;
+    const struct nas_file_ops *ops=nas_fd_file_ops[file_slot[fd]];
+    return ops && ops->read ? ops->read(fd,address,length) : (uint64_t)-EBADF;
 }
 uint64_t nas_fs_fd_writev(uint64_t fd, uint64_t iov, uint64_t count) {
     if (count > 64) return (uint64_t)-EINVAL;
@@ -516,20 +602,8 @@ uint64_t nas_fs_poll(uint64_t address, uint64_t nfds, uint64_t timeout) {
             if (fd >= 64 || descriptors[(unsigned)fd] == FD_CLOSED)
                 revents = POLLNVAL;
             else {
-                uint8_t kind = descriptors[(unsigned)fd];
-                if (kind == FD_ARCHIVE || kind == FD_BOOTFS ||
-                    kind == FD_DIR || kind == FD_TMP_DIR || kind == FD_NULL || kind == FD_ZERO ||
-                    kind == FD_TMP)
-                    revents = events & (POLLIN | POLLOUT);
-                else if (kind == FD_UART || kind == FD_TTY) {
-                    revents = events & POLLOUT;
-                    if ((events & POLLIN) && nas_tty_poll_readable())
-                        revents |= POLLIN;
-                }
-                else if (kind == FD_PIPE_R && nas_pipe_poll_readable(file_slot[(unsigned)fd]))
-                    revents = events & POLLIN;
-                else if (kind == FD_PIPE_W && nas_pipe_poll_writable(file_slot[(unsigned)fd]))
-                    revents = events & POLLOUT;
+                const struct nas_file_ops *ops=nas_fd_file_ops[file_slot[(unsigned)fd]];
+                revents=ops && ops->poll ? ops->poll((uint64_t)(unsigned)fd,events) : 0;
             }
         }
         if (revents) ready++;
@@ -569,16 +643,10 @@ bool nas_fs_poll_arm(uint64_t address,uint64_t nfds) {
         int32_t fd=(int32_t)(uint32_t)raw;
         uint16_t events=(uint16_t)(raw>>32);
         if(fd<0 || fd>=NAS_FD_LIMIT || !events)continue;
-        uint8_t kind=descriptors[(unsigned)fd];
         unsigned slot=file_slot[(unsigned)fd];
         if(slot>=NAS_FD_LIMIT)continue;
-        if((events&0x0001U) && kind==FD_PIPE_R)
-            task->poll_pipe_read|=1ULL<<slot;
-        if((events&0x0004U) && kind==FD_PIPE_W)
-            task->poll_pipe_write|=1ULL<<slot;
-        if((events&0x0001U) && (kind==FD_TTY || kind==FD_UART) &&
-           nas_tty_read_waitable())
-            task->poll_tty_read=true;
+        const struct nas_file_ops *ops=nas_fd_file_ops[slot];
+        if(ops && ops->poll_arm)ops->poll_arm(task,(uint64_t)(unsigned)fd,events);
     }
     return task->poll_tty_read || task->poll_pipe_read || task->poll_pipe_write;
 }
@@ -902,14 +970,9 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
     case NAS_SC_ioctl:
         if (args[1] >= 64 || descriptors[args[1]] == FD_CLOSED)
             FS_RESULT((uint64_t)-EBADF);
-        /* Raw boot UART fd0/1/2 are diagnostic pipes, not interactive
-         * TTYs: BusyBox -c must not switch rm into confirmation mode.
-         * Real explicit /dev/tty opens get FD_TTY. A PID1 can still
-         * opt in to physical COM1 through TIOCSCTTY on raw stdin. */
-        FS_RESULT(descriptors[args[1]]==FD_TTY ||
-                  (descriptors[args[1]]==FD_UART &&
-                   (args[2]==0x540e || nas_tty_enabled())) ?
-                  nas_tty_ioctl(args[2],args[3]) : (uint64_t)-ENOTTY);
+        const struct nas_file_ops *fops=nas_fd_file_ops[file_slot[args[1]]];
+        FS_RESULT(fops && fops->ioctl ? fops->ioctl(args[2],args[3])
+                                     : (uint64_t)-ENOTTY);
     case NAS_SC_dup3:
         if (args[1] == args[2] || (args[3] & ~0x80000ULL))
             FS_RESULT((uint64_t)-EINVAL);
