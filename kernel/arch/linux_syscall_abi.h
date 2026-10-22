@@ -57,6 +57,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_gettid: return NAS_SC_gettid;
     case __NR_getuid: return NAS_SC_getuid;
     case __NR_ioctl: return NAS_SC_ioctl;
+    case __NR_kill: return NAS_SC_kill;
     case __NR_lseek: return NAS_SC_lseek;
     case __NR_lstat: return NAS_SC_lstat;
     case __NR_mkdir: return NAS_SC_mkdir;
@@ -108,6 +109,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 24U: return NAS_SC_dup3;
     case 49U: return NAS_SC_chdir;
     case 29U: return NAS_SC_ioctl;
+    case 129U: return NAS_SC_kill; /* Linux asm-generic kill */
     case 38U: return NAS_SC_renameat;
     case 276U: return NAS_SC_renameat2;
     case 34U: return NAS_SC_mkdirat;

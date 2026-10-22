@@ -119,6 +119,10 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
     tests/m14-groups.c -o /tmp/naseed-m14-groups
 [ "$(/tmp/naseed-m14-groups)" = m14-groups-ok ]
 grep -Fq 'BUSYBOX_EXTRA_DIR' scripts/stage-busybox-rootfs.sh
+# Independent Linux signal oracle: genuine fork, pipe, SIGKILL and waitpid.
+cc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
+    tests/m15-kill.c -o /tmp/naseed-m15-kill
+[ "$(/tmp/naseed-m15-kill)" = m15-kill-ok ]
 
 # Compare our pinned Linux x86-64 syscall numbers against the host UAPI.
 python3 scripts/check-syscall-nr.py

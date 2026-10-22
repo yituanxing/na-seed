@@ -11,20 +11,22 @@ sh scripts/build-m11-vm-test.sh "$port"
 sh scripts/build-m12-process-test.sh "$port"
 sh scripts/build-m13-init.sh "$port"
 sh scripts/build-m14-groups.sh "$port"
+sh scripts/build-m15-kill.sh "$port"
 extra_dir="build/source-busybox/$port/extra"
 mkdir -p "$extra_dir"
 cp "build/source-busybox/$port/m11-vm" "$extra_dir/m11-vm"
 cp "build/source-busybox/$port/m12-process" "$extra_dir/m12-process"
 cp "build/source-busybox/$port/m13-init" "$extra_dir/m13-init"
 cp "build/source-busybox/$port/m14-groups" "$extra_dir/m14-groups"
+cp "build/source-busybox/$port/m15-kill" "$extra_dir/m15-kill"
 export BUSYBOX_EXTRA_DIR="$extra_dir"
 export BUSYBOX_PARITY_BINARY="$binary"
 export BUSYBOX_PARITY_MANIFEST=scripts/source-busybox-cases.tsv
-export BUSYBOX_PARITY_EXPECTED_COUNT=10
+export BUSYBOX_PARITY_EXPECTED_COUNT=11
 case "$port" in
     amd64) sh scripts/probe-x86-busybox-parity.sh ;;
     riscv64) sh scripts/probe-riscv64-busybox-matrix.sh ;;
     arm64) sh scripts/probe-aarch64-busybox-matrix.sh ;;
     *) echo "unsupported target $port" >&2; exit 2 ;;
 esac
-echo "[SOURCE BUSYBOX MATRIX PASS] $port: 10/10 native self-compiled workloads"
+echo "[SOURCE BUSYBOX MATRIX PASS] $port: 11/11 native self-compiled workloads"

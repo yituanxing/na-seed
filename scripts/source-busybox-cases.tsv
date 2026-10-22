@@ -11,3 +11,4 @@ vm-lifetime	cpio	sh -c "/bin/m11-vm"	m11-vm-ok	-
 process-capacity	cpio	sh -c "/bin/m12-process --naseed-limit; echo process-parent-done"	m12-process-ok	-
 init-reaper	cpio	--naseed	m13-init-ok	-	/bin/m13-init
 session-groups	cpio	sh -c "/bin/m14-groups; echo m14-parent-done"	m14-groups-ok	-
+kill-groups	cpio	sh -c "/bin/m15-kill; echo m15-parent-done"	m15-kill-ok	-
