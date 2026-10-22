@@ -80,6 +80,13 @@ struct nas_task {
     uint64_t blocked_signals;
     uint64_t pending_signals; /* Linux per-task pending standard signals */
     uint64_t signal_actions[65][4];
+    /* While executing a caught handler, the original full CPU/FPU state
+     * remains kernel-owned until a checked rt_sigreturn from its restorer.
+     * This deliberately supports one handler frame; further signals
+     * remain pending until that frame returns. */
+    bool signal_frame_active;
+    uint64_t signal_frame_sp, signal_saved_mask;
+    struct nas_arch_context signal_saved_arch;
     char cwd[256];
     struct nas_fd_table fds;
 
