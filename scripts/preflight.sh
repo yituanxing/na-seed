@@ -132,6 +132,11 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
     tests/m17-tty.c -o /tmp/naseed-m17-tty
 script -q -e -c /tmp/naseed-m17-tty /dev/null | tr -d '\r' \
     | grep -Fxq m17-tty-ok
+# The real BusyBox PID1 launcher must also work with a genuine Linux PTY.
+cc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
+    tests/m18-ash-init.c -o /tmp/naseed-m18-ash-init
+script -q -e -c '/tmp/naseed-m18-ash-init --linux-pty-oracle' /dev/null \
+    | tr -d '\r' | grep -Fxq m18-linux-pty-ok
 
 # Compare our pinned Linux x86-64 syscall numbers against the host UAPI.
 python3 scripts/check-syscall-nr.py
