@@ -249,6 +249,8 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
      * No metadata is mutated until exec commits, so rollback remains exact. */
     nas_anon_reset(&TASK.anonymous);
     TASK.execed = true; /* fork parent may no longer setpgid after exec */
+    TASK.signal_frame_active = false;
+    TASK.signal_frame_sp = 0;
     thread_clear_tid = 0;
     nas_arch_context_set_tls(&TASK.arch, 0);
     nas_arch_set_user_tls(0); /* fresh musl/glibc TLS initialization */
