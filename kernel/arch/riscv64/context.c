@@ -4,6 +4,7 @@
 #include "../mmu.h"
 #include "../../task.h"
 #include "../../syscall/dispatch.h"
+#include "../../task/signal.h"
 #include "../../panic.h"
 #include "../../drivers/serial.h"
 #include "../../lib/string.h"
@@ -36,6 +37,7 @@ void nas_rv_full_trap_c(struct nas_rv_trap_frame *frame) {
     if(scause == (UINT64_C(1)<<63 | 5U) && !(frame->sstatus & 0x100U)) {
         live=frame;
         nas_rv_timer_handle(frame);
+        nas_signal_user_return((uint64_t *)(void *)frame);
         live=0;
         return;
     }
@@ -55,6 +57,7 @@ void nas_rv_full_trap_c(struct nas_rv_trap_frame *frame) {
     uint64_t result=syscall_dispatch(call);
     /* Scheduler may have replaced *frame* with another task's snapshot. */
     frame->x[10]=result;
+    nas_signal_user_return((uint64_t *)(void *)frame);
     live=0;
 }
 void nas_arch_restore_cpu(const struct nas_task *task) {
