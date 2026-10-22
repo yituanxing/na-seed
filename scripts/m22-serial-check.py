@@ -29,7 +29,14 @@ try:
                 p.stdin.flush()
                 time.sleep(0.012)
             sent=True
-        if b"[PASS] cmdline userspace exit 0" in log and sent:break
+        if sent and b"[PASS] cmdline userspace exit 0" in log:
+            # RV64/ARM64 QEMU stays in WFI after printing the hardware
+            # debug-exit marker. Killing at the earlier common PASS line
+            # races with physical UART bytes still in the firmware FIFO.
+            # Wait for the actual ISA exit marker BEFORE terminating QEMU.
+            if port=="amd64":break
+            if port=="riscv64" and b"[RV64] userspace debug-exit status=0" in log:break
+            if port=="arm64" and b"[ARM64] userspace debug-exit status=0" in log:break
         if p.poll() is not None:break
     if p.poll() is None:p.kill()
     p.wait(timeout=5)
