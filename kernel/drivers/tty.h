@@ -8,6 +8,7 @@ void nas_tty_init(void);
 bool nas_tty_controlling(void);
 bool nas_tty_enabled(void);
 bool nas_tty_onlcr(void);
+void nas_tty_write_char(uint8_t byte);
 uint64_t nas_tty_ioctl(uint64_t cmd,uint64_t arg);
 uint64_t nas_tty_read(uint64_t addr,uint64_t len,bool nonblock);
 #endif

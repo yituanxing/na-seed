@@ -433,8 +433,7 @@ uint64_t nas_fs_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     for (uint64_t i = 0; i < length; i++) {
         uint8_t *p = nas_mmu_user_byte(address + i);
         if (!p) return i ? i : (uint64_t)-EFAULT;
-        if(*p=='\n' && nas_tty_onlcr())nas_putchar('\r');
-        nas_putchar((char)*p);
+        nas_tty_write_char(*p);
         if (fd == 1 && (running_bash || running_busybox)) observe_stdout((char)*p);
     }
     return length;

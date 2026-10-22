@@ -25,3 +25,4 @@ kernel/task/signal.c
 kernel/fs/syscall.c
 kernel/mm/anon_regions.c
 kernel/drivers/tty.c
+kernel/drivers/tty_ldisc.c
