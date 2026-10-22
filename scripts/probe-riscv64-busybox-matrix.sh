@@ -34,7 +34,7 @@ sh scripts/stage-busybox-rootfs.sh "$binary" "$work"
 # analogous to the x86 initramfs tests. Command selection differs, kernel
 # ELF loader / FS and task runtime are identical.
 boot_case() {
-    name=$1 mode=$2 args=$3 expected=$4 extra=${5:-}
+    name=$1 mode=$2 args=$3 expected=$4 extra=${5:-} entry=${6:-/bin/busybox}
     disk="$work/$name.img"
     config="$work/$name.conf"
     log="$work/$name.serial.log"
@@ -55,7 +55,7 @@ boot_case() {
     {
         printf '%s\n' 'timeout: 0' '/NaSeed RV64 native BusyBox workload'
         printf '%s\n' '    protocol: limine' '    path: boot():/boot/kernel'
-        printf '    cmdline: naseed.argv=/bin/busybox %s\n' "$args"
+        printf '    cmdline: naseed.argv=%s %s\n' "$entry" "$args"
         printf '    module_path: boot():/boot/%s\n' "$module"
     } > "$config"
     mcopy -i "$disk@@1048576" "$config" ::/boot/limine/limine.conf
@@ -67,6 +67,7 @@ boot_case() {
     case "$name" in
         ash-*) time_budget=30 ;;
         process-capacity) time_budget=65 ;;
+        init-reaper) time_budget=130 ;;
         *) time_budget=45 ;;
     esac
     set +e
@@ -88,7 +89,7 @@ boot_case() {
     set -e
     tr -d '\r' < "$log" > "$clean"
     if [ "$monitor" -ne 0 ] || grep -Fq '[FAIL]' "$clean" || \
-       ! grep -Fq "[CMDLINE] userspace argv from Limine: naseed.argv=/bin/busybox $args" "$clean"; then
+       ! grep -Fq "[CMDLINE] userspace argv from Limine: naseed.argv=$entry $args" "$clean"; then
         echo "[RV64 BUSYBOX FAIL] real $mode BusyBox $args did not cleanly exit" >&2
         tail -110 "$clean" >&2
         return 1
@@ -102,6 +103,9 @@ boot_case() {
         echo '[RV64 BUSYBOX FAIL] CPIO mount marker missing' >&2
         tail -110 "$clean" >&2
         return 1
+    fi
+    if [ "$name" = init-reaper ]; then
+        sh scripts/check-m13-init-log.sh "$clean" || return 1
     fi
     case "$extra" in
         '') ;;
@@ -141,13 +145,13 @@ boot_case() {
 failures=0
 total=0
 tab=$(printf '\t')
-while IFS="$tab" read -r name mode args expected extra; do
+while IFS="$tab" read -r name mode args expected extra entry; do
     case "$name" in ''|\#*) continue ;; esac
     if [ -n "${BUSYBOX_PARITY_CASE:-}" ] &&
        [ "$name" != "$BUSYBOX_PARITY_CASE" ]; then continue; fi
     [ "$extra" = '-' ] && extra=''
     total=$((total+1))
-    if ! boot_case "$name" "$mode" "$args" "$expected" "$extra"; then
+    if ! boot_case "$name" "$mode" "$args" "$expected" "$extra" "$entry"; then
         failures=$((failures+1))
     fi
 done < "${BUSYBOX_PARITY_MANIFEST:-scripts/busybox-parity-cases.tsv}"
