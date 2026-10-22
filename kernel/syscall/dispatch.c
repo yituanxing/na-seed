@@ -117,6 +117,9 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
         nas_sched_child_exit(0, NAS_SIGPIPE);
         return nas_task_schedule(frame);
     }
+    if ((int64_t)ret == -EPIPE &&
+        (nr == NAS_SC_write || nr == NAS_SC_writev))
+        nas_signal_broken_pipe(fd);
     if (fd < NAS_FD_LIMIT && file_slot[fd] < NAS_FD_LIMIT &&
         !(nas_open_files[file_slot[fd]].status_flags & 0x800ULL)) {
         if ((int64_t)ret == -EOPNOTSUPP &&
