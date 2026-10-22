@@ -15,6 +15,7 @@ done
 sh scripts/check-klib.sh
 sh scripts/check-task-stacks.sh
 sh scripts/check-m28-timer.sh
+sh scripts/check-m28-port-timers.sh
 
 # Keep the M7 /tmp inode storage boundary intact. The syscall layer may
 # call the backend but must not own inode/description tables. The backend
