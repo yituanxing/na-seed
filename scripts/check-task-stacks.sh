@@ -25,7 +25,14 @@ for port in x86_64 riscv64 aarch64; do
             -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
             -I kernel -c "$src" -o "build/task-stacks/$port-$name.o"
     done
-    clang $flags -ffreestanding -fno-stack-protector -fno-pic -fno-pie \
+    # ARM64 common C uses -mgeneral-regs-only; its explicit trap.S saves
+    # full SIMD/FP state and therefore MUST assemble with FP enabled.
+    # Keep the same split as scripts/build-aarch64-full.sh.
+    case "$port" in
+        aarch64) asmflags='--target=aarch64-none-elf -march=armv8-a' ;;
+        *) asmflags=$flags ;;
+    esac
+    clang $asmflags -ffreestanding -fno-stack-protector -fno-pic -fno-pie \
         -c "$asm" -o "build/task-stacks/$port-trap.o"
     echo "[TASK STACK TARGET PASS] $port C/assembly trap and context objects"
 done
