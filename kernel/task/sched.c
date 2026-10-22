@@ -43,7 +43,7 @@ static bool task_wait_ready(const struct nas_task *task) {
         if (!child) continue;
         if (!nas_wait_pid_matches(desired,child->pid,
                                   task->pgid,child->pgid)) continue;
-        if (child->state == NAS_TASK_ZOMBIE) return true;
+        if (nas_process_waitable(child,task->blocked_args[2])) return true;
     }
     return false;
 }
@@ -86,6 +86,9 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     child->exit_code = code & 255U;
     child->termination_signal = signum;
     child->state = NAS_TASK_ZOMBIE;
+    child->stop_report_pending = false;
+    child->continue_report_pending = false;
+    child->stopped_from = NAS_TASK_FREE;
     child->pending_valid = false;
     child->blocked_op = 0;
     /* Reparent *both* living and already-zombie descendants to init.

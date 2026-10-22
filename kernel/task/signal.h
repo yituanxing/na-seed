@@ -2,6 +2,8 @@
 #define NASEED_TASK_SIGNAL_H
 #include <stdint.h>
 #define NAS_SIGKILL 9U
+#define NAS_SIGCONT 18U
+#define NAS_SIGSTOP 19U
 uint64_t nas_signal_action(uint64_t signum, uint64_t new_action,
                            uint64_t old_action, uint64_t size);
 uint64_t nas_signal_procmask(uint64_t how, uint64_t set,
