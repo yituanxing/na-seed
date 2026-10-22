@@ -13,6 +13,5 @@ struct nas_file_ops {
     uint64_t (*ioctl)(uint64_t cmd,uint64_t arg);
     void (*release)(unsigned slot);
 };
-extern const struct nas_file_ops *nas_fd_file_ops[NAS_FD_LIMIT];
 const struct nas_file_ops *nas_fs_ops_for_kind(uint8_t kind);
 #endif
