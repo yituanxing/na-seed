@@ -5,6 +5,11 @@
 #define PAGE 4096ULL
 #define USER_LIMIT 0x0000800000000000ULL
 bool nas_mmu_bootstrap(void);
+/* One supervisor-only, uncached MMIO page for xAPIC register access.
+ * Device MMIO is NOT guaranteed to live in Limine HHDM; never access
+ * APIC physical addresses via a direct HHDM cast. */
+bool nas_arch_x86_map_lapic_page(uint64_t physical);
+
 uint64_t nas_mmu_alloc_root(void);
 bool nas_mmu_reclaim_root(uint64_t root);
 void nas_mmu_switch_root(uint64_t root);
