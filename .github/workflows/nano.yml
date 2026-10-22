@@ -1,0 +1,46 @@
+name: NaSeed GNU nano native TTY
+on:
+  pull_request:
+    paths:
+      - 'scripts/build-external-nano.sh'
+      - 'scripts/stage-external-nano-rootfs.sh'
+      - 'scripts/probe-external-nano.sh'
+      - 'scripts/nano-pty-oracle.py'
+      - 'scripts/nano-serial-check.py'
+      - 'tests/nano-native-init.c'
+      - 'tests/nano-note.txt'
+      - '.github/workflows/nano.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  nano-x86:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Native gcc/ncurses + genuine UEFI QEMU
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y gcc make curl xz-utils libncurses-dev             ncurses-base binutils clang lld cpio xorriso qemu-system-x86 ovmf
+      - name: Cache SHA256-pinned upstream GNU nano release
+        uses: actions/cache@v4
+        with:
+          path: build/deps/external/nano-9.3.tar.xz
+          key: naseed-gnu-nano-9.3-a9affc52c9596ee0
+      - name: Linux PTY oracle plus unchanged GNU nano interactive QEMU
+        run: sh scripts/probe-external-nano.sh
+      - name: Preserve real native serial evidence when blocked
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naseed-nano-x86-log
+          path: |
+            build/external/nano/amd64/configure.log
+            build/external/nano/amd64/build.log
+            build/external/nano/amd64/serial.log
+            build/external/nano/amd64/nano.sha256
+          if-no-files-found: ignore
