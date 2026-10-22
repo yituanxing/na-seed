@@ -127,6 +127,11 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
 cc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
     tests/m16-stop.c -o /tmp/naseed-m16-stop
 [ "$(/tmp/naseed-m16-stop)" = m16-stop-ok ]
+# Host Linux PTY oracle; CI image has util-linux script.
+cc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
+    tests/m17-tty.c -o /tmp/naseed-m17-tty
+script -q -e -c /tmp/naseed-m17-tty /dev/null | tr -d '\r' \
+    | grep -Fxq m17-tty-ok
 
 # Compare our pinned Linux x86-64 syscall numbers against the host UAPI.
 python3 scripts/check-syscall-nr.py

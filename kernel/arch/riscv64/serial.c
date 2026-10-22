@@ -28,3 +28,7 @@ void nas_arch_console_putc(char c) {
 
 /* SBI console handles plain LF; raw stdout bytes remain unmodified. */
 void nas_arch_console_log_newline(void) { }
+
+/* No physical RX: never fabricate a serial keyboard. */
+bool nas_arch_console_has_rx(void) { return false; }
+bool nas_arch_console_getc(uint8_t *byte) { (void)byte;return false; }

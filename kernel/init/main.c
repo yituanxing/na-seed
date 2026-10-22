@@ -7,6 +7,7 @@
 #include "../arch/arch.h"
 #include "../arch/mmu.h"
 #include "../drivers/serial.h"
+#include "../drivers/tty.h"
 #include "../panic.h"
 #include "../task/elf.h"
 #include "../task/user_stack.h"
@@ -25,6 +26,7 @@
 void nas_init_userspace(void) {
     nas_print("[INIT] creating common task/VM and architecture user entry\n");
     nas_task_boot_init();
+    nas_tty_init(); /* SID/PGID from real PID1 */
     nas_arch_prepare_user_cpu();
     if (!nas_mmu_bootstrap()) nas_fail("architecture user VM bootstrap failed");
     nas_arch_enable_user_traps();
