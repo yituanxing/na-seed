@@ -31,4 +31,18 @@ for script in scripts/build-riscv64-full.sh scripts/build-aarch64-full.sh; do
         exit 1
     }
 done
-echo "[PASS] both full-kernel ISA builds share $count core TUs"
+# The common source manifest remains EXACTLY 27 TUs; signal-frame native
+# providers are architecture units, not duplicated copies of shared policy.
+for arch in riscv64 aarch64; do
+    script="scripts/build-$arch-full.sh"
+    provider="kernel/arch/$arch/signal_frame.c"
+    test -f "$provider" || { echo "[PORT SOURCES] missing $provider" >&2; exit 1; }
+    grep -Fq "$provider" "$script" || {
+        echo "[PORT SOURCES] $script omits native signal frame provider" >&2
+        exit 1
+    }
+done
+grep -Fq '$(OUT)/arch_signal_frame.o' Makefile || {
+    echo "[PORT SOURCES] x86 native signal frame not linked" >&2; exit 1;
+}
+echo "[PASS] three native signal-frame backends; both full-kernel ports share $count core TUs"

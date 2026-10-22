@@ -37,6 +37,15 @@ extern uint64_t syscall_user_rsp;
 void nas_arch_restore_cpu(const struct nas_task *);
 void nas_arch_save_fpu(struct nas_task *);
 void nas_arch_save_user_frame(struct nas_task *, const uint64_t *frame);
+/* Return the LIVE trap's userspace SP, never an ABI-normalized syscall
+ * argument array passed to common dispatch. */
+uint64_t nas_arch_signal_user_sp(void);
+/* ISA-native Linux rt_sigframe provider. Every ISA implements the same
+ * ownership boundary but NOT a shared opaque/restorer layout. */
+bool nas_arch_signal_install_handler(uint64_t *user_return_frame,
+                                      unsigned signum,const uint64_t action[4]);
+uint64_t nas_arch_signal_sigreturn(uint64_t *syscall_frame);
+bool nas_arch_signal_install_trampoline(void);
 void nas_arch_set_saved_return(struct nas_task *, uint64_t value);
 uint64_t nas_arch_saved_return(const struct nas_task *);
 void nas_arch_load_user_frame(const struct nas_task *, uint64_t *frame);

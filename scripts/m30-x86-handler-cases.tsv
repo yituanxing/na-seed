@@ -1,0 +1,3 @@
+# Three-ISA native handler + atomic ppoll signal-EINTR test; RV64/ARM64
+# run exactly the same Linux-native guest ELF and original BusyBox shell.
+m30-handlers	cpio	sh -c "/bin/m30-signal && echo m30-signal-shell-ok"	m30-signal-shell-ok	-

@@ -26,6 +26,7 @@ sh scripts/build-m23-signals.sh "$port"
 sh scripts/build-m24-signals.sh "$port"
 sh scripts/build-m25-tty-jobs.sh "$port"
 sh scripts/build-m29-time.sh "$port"
+sh scripts/build-m30-signal-handlers.sh "$port"
 extra_dir="build/source-busybox/$port/extra"
 mkdir -p "$extra_dir"
 cp "build/source-busybox/$port/m11-vm" "$extra_dir/m11-vm"
@@ -42,6 +43,7 @@ cp "build/source-busybox/$port/m23-signals" "$extra_dir/m23-signals"
 cp "build/source-busybox/$port/m24-signals" "$extra_dir/m24-signals"
 cp "build/source-busybox/$port/m25-tty-jobs" "$extra_dir/m25-tty-jobs"
 cp "build/source-busybox/$port/m29-time" "$extra_dir/m29-time"
+cp "build/source-busybox/$port/m30-signal" "$extra_dir/m30-signal"
 if [ "$port" = amd64 ]; then
     cp "build/source-busybox/$port/m17-input" "$extra_dir/m17-input"
     cp tests/m28-preempt.sh "$extra_dir/m28-preempt"
@@ -59,6 +61,15 @@ case "$port" in
     arm64) sh scripts/probe-aarch64-busybox-matrix.sh ;;
     *) echo "unsupported target $port" >&2; exit 2 ;;
 esac
+# M30 real signal-frame regression is common. A failed handler program
+# cannot be hidden by a shell echo: the test uses && and requires success.
+BUSYBOX_PARITY_MANIFEST=scripts/m30-x86-handler-cases.tsv \
+BUSYBOX_PARITY_EXPECTED_COUNT=1 \
+  sh "$(case "$port" in
+       amd64) echo scripts/probe-x86-busybox-parity.sh ;;
+       riscv64) echo scripts/probe-riscv64-busybox-matrix.sh ;;
+       arm64) echo scripts/probe-aarch64-busybox-matrix.sh ;;
+     esac)"
 if [ "$port" = amd64 ]; then
     sh scripts/probe-m17-interactive.sh
     sh scripts/probe-m18-ash-interactive.sh
@@ -99,4 +110,4 @@ if [ "$port" = riscv64 ] || [ "$port" = arm64 ]; then
     BUSYBOX_PARITY_EXPECTED_COUNT=1 \
       sh "scripts/probe-$(if [ "$port" = arm64 ]; then echo aarch64; else echo riscv64; fi)-busybox-matrix.sh"
 fi
-echo "[SOURCE BUSYBOX MATRIX PASS] $port: 18/18 native self-compiled workloads"
+echo "[SOURCE BUSYBOX MATRIX PASS] $port: 18/18 standard + 1 native M30 signal workload"

@@ -621,7 +621,8 @@ uint64_t nas_fs_poll(uint64_t address, uint64_t nfds, uint64_t timeout) {
  * Atomic temporary sigmask remains unsupported until signal frames exist. */
 uint64_t nas_fs_ppoll(uint64_t addr,uint64_t nfds,
                       uint64_t timeout_ptr,uint64_t sigmask_ptr) {
-    if(sigmask_ptr)return (uint64_t)-EOPNOTSUPP;
+    /* Temporary sigmask belongs to dispatcher/scheduler, not FS I/O. */
+    (void)sigmask_ptr;
     if(!timeout_ptr)return nas_fs_poll(addr,nfds,(uint64_t)-1);
     uint64_t secs,nsecs;
     if(!nas_user_read_u64(timeout_ptr,&secs) ||

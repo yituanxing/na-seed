@@ -80,6 +80,19 @@ struct nas_task {
     uint64_t blocked_signals;
     uint64_t pending_signals; /* Linux per-task pending standard signals */
     uint64_t signal_actions[65][4];
+    /* While executing a caught handler, the original full CPU/FPU state
+     * remains kernel-owned until a checked rt_sigreturn from its restorer.
+     * This deliberately supports one handler frame; further signals
+     * remain pending until that frame returns. */
+    bool signal_frame_active;
+    uint64_t signal_frame_sp, signal_saved_mask;
+    /* ppoll installs a temporary signal mask atomically for the wait.
+     * Its original mask is restored on ALL completion paths, but a
+     * pending caught signal must still be delivered after EINTR. */
+    uint64_t ppoll_saved_mask;
+    bool ppoll_mask_active;
+    uint64_t signal_force_deliver;
+    struct nas_arch_context signal_saved_arch;
     char cwd[256];
     struct nas_fd_table fds;
 

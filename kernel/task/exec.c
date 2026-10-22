@@ -16,6 +16,7 @@
 #include "user_stack.h"
 #include "../lib/string.h"
 #include "exec.h"
+#include "signal.h"
 #define TASK (*nas_current_task)
 #define root_phys TASK.root_phys
 #define heap_break TASK.heap_break
@@ -227,6 +228,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
              va < USER_STACK_TOP; va += PAGE)
             if (!nas_mmu_map_page(va, true)) { good = false; break; }
     }
+    if(good)good=nas_signal_install_trampoline();
     if (good)
         good = nas_build_user_stack(pending_exec.argv, pending_exec.argc,
                                 pending_exec.envp, pending_exec.envc,
@@ -249,6 +251,10 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
      * No metadata is mutated until exec commits, so rollback remains exact. */
     nas_anon_reset(&TASK.anonymous);
     TASK.execed = true; /* fork parent may no longer setpgid after exec */
+    TASK.signal_frame_active = false;
+    TASK.signal_frame_sp = 0;
+    TASK.ppoll_mask_active=false;
+    TASK.signal_force_deliver=0;
     thread_clear_tid = 0;
     nas_arch_context_set_tls(&TASK.arch, 0);
     nas_arch_set_user_tls(0); /* fresh musl/glibc TLS initialization */

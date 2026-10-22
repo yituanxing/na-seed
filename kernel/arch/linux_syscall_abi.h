@@ -86,6 +86,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_rt_sigaction: return NAS_SC_rt_sigaction;
     case __NR_rt_sigpending: return NAS_SC_rt_sigpending;
     case __NR_rt_sigprocmask: return NAS_SC_rt_sigprocmask;
+    case __NR_rt_sigreturn: return NAS_SC_rt_sigreturn;
     case __NR_setpgid: return NAS_SC_setpgid;
     case __NR_setsid: return NAS_SC_setsid;
     case __NR_set_tid_address: return NAS_SC_set_tid_address;
@@ -127,6 +128,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 134U: return NAS_SC_rt_sigaction;
     case 136U: return NAS_SC_rt_sigpending;
     case 135U: return NAS_SC_rt_sigprocmask;
+    case 139U: return NAS_SC_rt_sigreturn;
     case 160U: return NAS_SC_uname;
     case 96U: return NAS_SC_set_tid_address;
     case 172U: return NAS_SC_getpid;

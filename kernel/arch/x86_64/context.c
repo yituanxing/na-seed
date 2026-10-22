@@ -9,6 +9,7 @@ void nas_arch_restore_cpu(const struct nas_task *task) {
     nas_arch_set_user_tls(nas_task_tls_base(task));
     __asm__ volatile("fxrstor64 %0" : : "m"(task->arch.fpu_state) : "memory");
 }
+uint64_t nas_arch_signal_user_sp(void) { return syscall_user_rsp; }
 void nas_arch_save_fpu(struct nas_task *task) {
     __asm__ volatile("fxsave64 %0" : "=m"(task->arch.fpu_state) : : "memory");
 }
