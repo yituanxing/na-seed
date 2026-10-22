@@ -31,18 +31,27 @@ before in-kernel blocking can suspend an arbitrary C function.
 
 ## Dual reference tests
 
-`tests/m28-preempt.sh` is a **single identical POSIX shell script**.
-Native Linux runs it through the original upstream BusyBox 1.37.0
-`ash`; NaSeed runs precisely the same source script through the same
-pinned BusyBox binary and Kconfig. A child writes a real tmpfs file and
-then spins forever in the `:` builtin; the parent must get CPU time
-to kill it and print `cpu-hog-did-not-starve-ash`. The guest harness
-also demands actual `[M28] timer-preempt` telemetry from the native
-hardware IRQ handler, not just a successful syscall sequence.
+`tests/m28-preempt.sh` is the **identical POSIX shell program** under
+genuine upstream BusyBox ash on Linux and the x86 QEMU guest. A pipe
+producer writes one readiness line, then enters a **pure userspace CPU
+spin** in the `:` builtin. The consumer can only be forked after
+the first child voluntarily yields or a genuine PIT IRQ preempts it.
+The CPU loop makes voluntary yielding impossible. The script deliberately
+**never terminates**: both harnesses stop their isolated Linux process
+group or QEMU **only after** observing the user's progress marker
+`cpu-hog-did-not-starve-ash`. The QEMU test additionally requires actual
+`[M28] timer-preempt from=` output from the interrupt handler; timeout,
+a kernel panic, or a synthetic success fails acceptance.
 
-The script runs independently from 16/16 original source BusyBox cases,
-all Debian/Alpine profiles, and prior TTY/signal tests. The failure mode
-is a bounded QEMU timeout, not a CI job that hangs indefinitely.
+An initial background-job version used `&`; stock BusyBox ash opened
+`/dev/null` for its stdin and hit a different unsupported userland
+behavior before spinning. The pipeline test avoids that dependency
+without modifying BusyBox or pretending a timer worked. Its real
+pipe/fork/read behavior remains covered by the same Linux interface.
+
+The CPU-spin scenario runs separately from the mandatory existing
+16/16 source BusyBox cases, pinned Debian/Alpine profiles, and prior
+TTY/signal regressions.
 
 Fast preflight: `sh scripts/check-m28-timer.sh`.
 Full required acceptance: both CI workflows, original x86 CPU-hog
