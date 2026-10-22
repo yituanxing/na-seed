@@ -428,7 +428,6 @@ void nas_signal_user_return(uint64_t *frame) {
         if(!nas_arch_signal_install_handler(frame,sig,act))
             nas_fail("M30 cannot build native user signal frame");
 
-        if(!ok)nas_fail("M30 cannot build native user signal frame");
         t->pending_signals &= ~(1ULL<<(sig-1));
         t->signal_force_deliver &= ~(1ULL<<(sig-1));
         return;
