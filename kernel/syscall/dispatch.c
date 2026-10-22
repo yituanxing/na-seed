@@ -12,6 +12,7 @@
 #include "../mm/usercopy.h"
 #include "../task/exec.h"
 #include "../task/process.h"
+#include "../task/wait_pid.h"
 #include "../task/sched.h"
 #include "../task/signal.h"
 #include "../task/user_stack.h"
@@ -125,7 +126,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_wait4) {
         uint64_t ret = nas_process_wait4(args[1], args[2], args[3], args[4]);
         if ((int64_t)ret == -EOPNOTSUPP && args[4] == 0 &&
-            args[3] == 0 && ((int64_t)args[1] == -1 || (int64_t)args[1] > 0))
+            args[3] == 0 && nas_wait_pid_supported(args[1]))
             return nas_task_block((uint64_t *)(uintptr_t)args, nr,
                               args[1], args[2], args[3], args[4]);
         return ret;
