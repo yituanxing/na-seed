@@ -21,7 +21,8 @@ enum nas_task_state {
     NAS_TASK_READY,
     NAS_TASK_RUNNING,
     NAS_TASK_BLOCKED,
-    NAS_TASK_ZOMBIE
+    NAS_TASK_ZOMBIE,
+    NAS_TASK_STOPPED
 };
 
 struct nas_fd_table {
@@ -40,6 +41,10 @@ struct nas_task {
     enum nas_task_state state;
     uint32_t exit_code;
     uint32_t termination_signal; /* Linux wait4 WIFSIGNALED status */
+    /* Stop is orthogonal to an outstanding, parked syscall. Save whether
+     * SIGCONT restores READY (runnable) or BLOCKED (pending replay). */
+    enum nas_task_state stopped_from;
+    bool stop_report_pending, continue_report_pending;
     /* Saved syscall-boundary GPR frame in the exact arch.S push order.
      * The scheduler switches after unwinding the current syscall frame.
      */

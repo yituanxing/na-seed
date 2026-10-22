@@ -36,8 +36,9 @@ uint64_t nas_signal_procmask(uint64_t how, uint64_t set,
 }
 
 /* Linux pid_t is signed32 even in LP64 x86, RV64, and ARM64.
- * This milestone supports signal-zero and unconditional SIGKILL. Unknown
- * signal-delivery semantics cannot return success without a signal frame. */
+ * Signal-zero, unmaskable SIGKILL/SIGSTOP, and SIGCONT's compulsory
+ * continuation side effect are shared across the three Linux ABIs.
+ * Unknown signal-delivery semantics cannot fake a user-handler frame. */
 static bool signal_target_matches(const struct nas_task *target, int64_t pid,
                                    const struct nas_task *sender) {
     if (!target || target->state == NAS_TASK_FREE) return false;
@@ -63,7 +64,8 @@ static void signal_kill_other(struct nas_task *target) {
 uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
     int64_t pid = (int64_t)(int32_t)(uint32_t)raw_pid;
     if (signal > 64) return (uint64_t)-EINVAL;
-    if (signal && signal != NAS_SIGKILL)
+    if (signal && signal != NAS_SIGKILL && signal != NAS_SIGSTOP &&
+        signal != NAS_SIGCONT)
         return (uint64_t)-EOPNOTSUPP; /* no fake signal delivery */
     struct nas_task *sender = nas_current_task;
     struct nas_task *matches[NAS_TASK_LIMIT];
@@ -80,17 +82,48 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
     }
     if (!count) return (uint64_t)(protected_init ? -EPERM : -ESRCH);
     if (!signal) return 0;
-    /* Snapshot group before termination and do not skip zombie identity.
-     * Kill the caller LAST: it must never return to its former user RIP. */
+    /* Snapshot before state transitions. A STOPPED task preserves its
+     * previous READY/BLOCKED syscall resume contract. On CONT it must
+     * either become runnable or remain waiting on its original FD.
+     * No CPU-specific signal stack or fake success path is introduced. */
     for (unsigned i=0;i<count;i++) {
         struct nas_task *target=matches[i];
         if (target==sender) { self=true; continue; }
         if (target->state==NAS_TASK_ZOMBIE) continue;
-        signal_kill_other(target);
+        if (signal==NAS_SIGKILL) {
+            signal_kill_other(target);
+        } else if (signal==NAS_SIGSTOP) {
+            if (target->state != NAS_TASK_STOPPED) {
+                target->stopped_from=target->state;
+                target->state=NAS_TASK_STOPPED;
+                target->stop_report_pending=true;
+                target->continue_report_pending=false;
+            }
+        } else if (target->state==NAS_TASK_STOPPED) {
+            target->state=target->stopped_from==NAS_TASK_BLOCKED
+                ? NAS_TASK_BLOCKED : NAS_TASK_READY;
+            target->stopped_from=NAS_TASK_FREE;
+            target->stop_report_pending=false;
+            target->continue_report_pending=true;
+        }
     }
     if (self) {
-        nas_sched_child_exit(0,NAS_SIGKILL);
-        return nas_task_schedule(frame);
+        if (signal==NAS_SIGKILL) {
+            nas_sched_child_exit(0,NAS_SIGKILL);
+            return nas_task_schedule(frame);
+        }
+        if (signal==NAS_SIGSTOP && sender->state!=NAS_TASK_STOPPED) {
+            nas_arch_save_user_frame(sender,frame);
+            nas_arch_save_fpu(sender);
+            nas_arch_set_saved_return(sender,0);
+            sender->resume_valid=true;
+            sender->stopped_from=NAS_TASK_READY;
+            sender->state=NAS_TASK_STOPPED;
+            sender->stop_report_pending=true;
+            sender->continue_report_pending=false;
+            return nas_task_schedule(frame);
+        }
+        /* SIGCONT to a running sender is a successful no-op. */
     }
     return 0;
 }

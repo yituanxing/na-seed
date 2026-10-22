@@ -123,6 +123,10 @@ grep -Fq 'BUSYBOX_EXTRA_DIR' scripts/stage-busybox-rootfs.sh
 cc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
     tests/m15-kill.c -o /tmp/naseed-m15-kill
 [ "$(/tmp/naseed-m15-kill)" = m15-kill-ok ]
+# Native Linux oracle: real STOP/CONT job groups and waitpid events.
+cc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
+    tests/m16-stop.c -o /tmp/naseed-m16-stop
+[ "$(/tmp/naseed-m16-stop)" = m16-stop-ok ]
 
 # Compare our pinned Linux x86-64 syscall numbers against the host UAPI.
 python3 scripts/check-syscall-nr.py

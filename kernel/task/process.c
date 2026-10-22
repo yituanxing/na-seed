@@ -91,38 +91,67 @@ void nas_process_clear_tid_on_exit(void) {
     nas_current_task->thread_clear_tid=0;
 }
 
+/* Shared wait readiness used by both synchronous wait4 and the scheduler
+ * blocked-syscall wake predicate. Stop/continue notifications are one-shot;
+ * exit zombies take priority and are reclaimed only on successful wait4.
+ */
+bool nas_process_waitable(const struct nas_task *child, uint64_t options) {
+    if (child->state == NAS_TASK_ZOMBIE) return true;
+    if ((options & NAS_WAIT_UNTRACED) &&
+        child->state == NAS_TASK_STOPPED && child->stop_report_pending)
+        return true;
+    if ((options & NAS_WAIT_CONTINUED) && child->continue_report_pending)
+        return true;
+    return false;
+}
 uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
                            uint64_t options, uint64_t rusage) {
-    if (options & ~1ULL) return (uint64_t)-EINVAL;
+    if (options & ~(NAS_WAIT_NOHANG|NAS_WAIT_UNTRACED|NAS_WAIT_CONTINUED))
+        return (uint64_t)-EINVAL;
     if (rusage) return (uint64_t)-EOPNOTSUPP;
     bool have_child = false;
-    /* Linux pid_t is signed32. Select any child (-1), matching
-     * process group (0 or -pgid) or one explicit positive PID. */
-    for (unsigned slot = 0; slot < NAS_TASK_LIMIT; ++slot) {
-        struct nas_task *child = nas_task_child_at(nas_current_task->pid, slot);
+    for (unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
+        struct nas_task *child = nas_task_child_at(nas_current_task->pid,slot);
         if (!child) continue;
-        uint64_t pid = child->pid;
+        uint64_t pid=child->pid;
         if (!nas_wait_pid_matches(desired,pid,
                                   nas_current_task->pgid,child->pgid))
             continue;
-        have_child = true;
-        if (child->state != NAS_TASK_ZOMBIE) continue;
-        uint64_t code = child->termination_signal
-            ? child->termination_signal : (child->exit_code & 255U) << 8;
-        if (status_addr) {
-            uint8_t status_bytes[4] = {
-                (uint8_t)code, (uint8_t)(code >> 8), 0, 0
-            };
-            if (!nas_user_write_bytes(status_addr, status_bytes, 4))
-                return (uint64_t)-EFAULT;
+        have_child=true;
+        if (!nas_process_waitable(child,options)) continue;
+        bool zombie = child->state == NAS_TASK_ZOMBIE;
+        bool stopped = !zombie && child->state == NAS_TASK_STOPPED &&
+                       child->stop_report_pending &&
+                       (options & NAS_WAIT_UNTRACED);
+        uint32_t code;
+        if (zombie) {
+            code = child->termination_signal ?
+                child->termination_signal : (child->exit_code & 255U)<<8;
+        } else if (stopped) {
+            code = (19U<<8)|0x7fU; /* Linux SIGSTOP: WIFSTOPPED/WSTOPSIG */
+        } else {
+            code = 0xffffU; /* WIFCONTINUED */
         }
-        if (!nas_mmu_reclaim_root(nas_task_page_root(child)))
-            proc_fail("wait4 failed to reclaim child address space");
-        nas_print("[PROC] wait4 reaped pid="); nas_dec(pid);
-        nas_print(" status="); nas_dec(code); nas_print("\n");
-        nas_task_release(child);
+        if (status_addr) {
+            uint8_t bytes[4] = {(uint8_t)code,(uint8_t)(code>>8),
+                                (uint8_t)(code>>16),(uint8_t)(code>>24)};
+            if (!nas_user_write_bytes(status_addr,bytes,4))
+                return (uint64_t)-EFAULT; /* retain event on bad user buf */
+        }
+        if (zombie) {
+            if (!nas_mmu_reclaim_root(nas_task_page_root(child)))
+                proc_fail("wait4 failed to reclaim child address space");
+            nas_print("[PROC] wait4 reaped pid="); nas_dec(pid);
+            nas_print(" status="); nas_dec(code); nas_print("\n");
+            nas_task_release(child);
+        } else if (stopped) {
+            child->stop_report_pending=false;
+        } else {
+            child->continue_report_pending=false;
+        }
         return pid;
     }
-    return have_child ? ((options & 1) ? 0 : (uint64_t)-EOPNOTSUPP)
-                      : (uint64_t)-ECHILD;
+    return have_child
+        ? ((options & NAS_WAIT_NOHANG) ? 0 : (uint64_t)-EOPNOTSUPP)
+        : (uint64_t)-ECHILD;
 }
