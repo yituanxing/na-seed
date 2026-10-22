@@ -53,11 +53,17 @@ void nas_arch_prepare_user_cpu(void) {
 }
 extern void nas_rv_full_trap(void);
 extern char kernel_stack_top;
+extern void nas_rv_timer_start(void);
 void nas_arch_enable_user_traps(void) {
+    /* Prepare delegated timer IRQ while supervisor interrupts are
+     * globally masked. User sret restores SPIE=1 and receives STIP;
+     * ECALL traps clear SIE automatically while C holds live frames. */
+    __asm__ volatile("csrc sstatus,%0" : : "r"(2ULL) : "memory");
     uintptr_t addr=(uintptr_t)nas_rv_full_trap;
     uintptr_t stack=(uintptr_t)nas_current_task->kernel_stack_top;
     __asm__ volatile("csrw stvec,%0\ncsrw sscratch,%1"
                    : : "r"(addr),"r"(stack) : "memory");
+    nas_rv_timer_start();
 }
 uint64_t nas_arch_cycle_counter(void) {
     uint64_t cycles;
