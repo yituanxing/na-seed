@@ -115,6 +115,39 @@ int main(int argc,char **argv) {
     require(waitpid(child,&status,0)==child &&
             WIFEXITED(status) && WEXITSTATUS(status)==0,
             "interrupted child resumed and exited");
+    /* Asynchronous signal to a truly CPU-bound child: after the last
+     * readiness write, the child enters a user-only spin loop. Parent
+     * waits > one hardware timer quantum before kill(). The signal must
+     * be delivered from an IRQ user-return path, not from child syscalls.
+     * Existing M28 hardware preemption is an integral part of M30. */
+    int spin_gate[2];
+    require(pipe(spin_gate)==0,"CPU spin handshake pipe");
+    child=fork();
+    require(child>=0,"fork CPU spinner");
+    if(child==0) {
+        close(spin_gate[0]);
+        observed_usr1=0;
+        require(write(spin_gate[1],"R",1)==1,"spinner handshake");
+        close(spin_gate[1]);
+        while(!observed_usr1) {
+            __asm__ volatile("" ::: "memory");
+        }
+        require(observed_info==1,"SIGINFO handler in spinning child");
+        _exit(0);
+    }
+    close(spin_gate[1]);
+    ready=0;
+    require(read(spin_gate[0],&ready,1)==1 && ready=='R',
+            "CPU spinner entered user execution");
+    close(spin_gate[0]);
+    struct timespec interval={0,100000000L};
+    require(nanosleep(&interval,NULL)==0,
+            "allow CPU spinner a full timer quantum");
+    require(kill(child,SIGUSR1)==0,"signal CPU-bound child");
+    status=0;
+    require(waitpid(child,&status,0)==child &&
+            WIFEXITED(status) && WEXITSTATUS(status)==0,
+            "IRQ user-return delivered signal to CPU-bound process");
     puts("m30-signal-ok");
     return 0;
 }
