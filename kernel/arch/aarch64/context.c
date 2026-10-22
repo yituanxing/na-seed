@@ -88,6 +88,10 @@ void nas_arch_restore_cpu(const struct nas_task *task) {
     __asm__ volatile("msr tpidr_el0,%0" : : "r"(tls) : "memory");
     nas_arm_load_simd(task->arch.simd_regs);
 }
+uint64_t nas_arch_signal_user_sp(void) {
+    if(!live)nas_fail("ARM64 signal return outside live trap");
+    return live->sp_el0;
+}
 void nas_arch_save_fpu(struct nas_task *task) {
     nas_arm_save_simd(task->arch.simd_regs);
 }
