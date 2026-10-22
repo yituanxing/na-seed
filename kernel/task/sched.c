@@ -195,6 +195,8 @@ bool nas_sched_preempt_select(void) {
                     continue;
                 }
                 nas_arch_set_saved_return(next,result);
+                if(next->blocked_op==NAS_SC_ppoll)
+                    nas_signal_ppoll_restore(next,(int64_t)result==-EINTR);
                 next->pending_valid=false;
                 next->blocked_op=0;
                 next->deadline_active=false;
@@ -263,6 +265,8 @@ retry_schedule: ; /* label must precede a statement in C11 */
                     nas_arch_restore_cpu(previous);
                     continue;
                 }
+                if(next->blocked_op==NAS_SC_ppoll)
+                    nas_signal_ppoll_restore(next,(int64_t)result==-EINTR);
                 next->pending_valid = false;
                 next->blocked_op = 0;
                 next->deadline_active = false;
