@@ -20,6 +20,9 @@ commands = [
     (b"echo x | wc -c\r", b"2"),
     (b"pwd\r", b"/"),
     (b"echo m18-omega\r", b"m18-omega"),
+    (b"echo m20-bacX\x7fk\r", b"\nm20-back\n"),
+    (b"echo discarded\x15echo m20-clean\r", b"\nm20-clean\n"),
+    (b"echo wrong\x17m20-word\r", b"\nm20-word\n"),
     (b"exit\r", b"[PASS] cmdline userspace exit 0"),
 ]
 launcher = (["sh", "scripts/run.sh", sys.argv[1]]
@@ -88,4 +91,4 @@ if sent != len(commands) or not exit_ok or \
     sys.exit(f"[M18 REAL ASH FAIL] commands={sent}/{len(commands)} "
              f"QEMU_rc={proc.returncode}")
 print("[M18 REAL ASH PASS] " + port +
-      " native source BusyBox -i accepted 5 live serial commands")
+      " native source BusyBox -i accepted 8 live serial commands")
