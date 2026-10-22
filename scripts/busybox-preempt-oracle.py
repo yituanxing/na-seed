@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Real BusyBox ash pure-CPU fairness oracle on Linux.
 
-The test deliberately has no *userspace syscall* in the hot loop. A kernel
+The test writes ONE readiness line into a pipe, then executes a pure-CPU
+loop without syscalls. The second pipeline process waits to read that line,
+then prints a witness. On a cooperative kernel the hog never yields, so
+the witness cannot appear, regardless of pipeline process launch order. A kernel
 without timer-driven preemption cannot run the second runnable process.
 Launch in a fresh process group and unconditionally kill descendants so a
 passing host oracle never leaves an infinite loop behind.
@@ -20,7 +23,7 @@ import time
 binary = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "/usr/bin/busybox")
 if not os.path.isfile(binary):
     sys.exit(f"[PREEMPT ORACLE FAIL] BusyBox binary not found: {binary}")
-script = "(while :; do :; done) & echo cpu-hog-did-not-starve-ash"
+script = "(echo hog-started; while :; do :; done) | { read started; echo cpu-hog-did-not-starve-ash; }"
 p = subprocess.Popen([binary, "sh", "-c", script], stdout=subprocess.PIPE,
                      stderr=subprocess.PIPE, start_new_session=True)
 seen = b""
