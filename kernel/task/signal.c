@@ -5,13 +5,16 @@
 #include "signal.h"
 #include "../arch/arch.h"
 #include "../task/sched.h"
+#include "../lib/string.h"
+#include <stddef.h>
 
-/* Shared standard-signal state. Signal-handler trampolines and native
- * rt_sigreturn are NOT implemented: a delivery that would enter a custom
- * handler is rejected rather than fabricated. */
+/* Shared signal disposition/queue. Native caught handlers are enabled
+ * only when their ISA frame is real, not by pretending kill() ran a C
+ * callback on a kernel stack. Other ISA caught delivery stays explicit. */
 static bool terminating_default(unsigned sig) {
     return sig==NAS_SIGINT || sig==NAS_SIGQUIT || sig==NAS_SIGKILL ||
-           sig==NAS_SIGPIPE || sig==NAS_SIGTERM;
+           sig==NAS_SIGPIPE || sig==NAS_SIGTERM ||
+           sig==NAS_SIGUSR1 || sig==NAS_SIGUSR2;
 }
 static unsigned first_default_pending(const struct nas_task *task,
                                       uint64_t mask) {
@@ -68,8 +71,11 @@ uint64_t nas_signal_procmask(uint64_t how,uint64_t set,
         uint64_t unmasked=task->pending_signals & ~mask;
         for(unsigned sig=1;sig<=64;sig++) {
             if(!(unmasked & (1ULL<<(sig-1))))continue;
-            if(task->signal_actions[sig][0]>1)
+            if(task->signal_actions[sig][0]>1) {
+#if !defined(__x86_64__)
                 return (uint64_t)-EOPNOTSUPP;
+#endif
+            }
         }
     }
     if(previous && !nas_user_write_u64(previous,task->blocked_signals))
@@ -142,8 +148,11 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
             struct nas_task *t=matches[i];
             if(t->state==NAS_TASK_ZOMBIE)continue;
             if((t->signal_actions[signal][0]>1) &&
-               !(t->blocked_signals&(1ULL<<(signal-1))))
+               !(t->blocked_signals&(1ULL<<(signal-1)))) {
+#if !defined(__x86_64__)
                 return (uint64_t)-EOPNOTSUPP;
+#endif
+            }
         }
     }
     /* Snapshot before state transitions. A STOPPED task preserves its
@@ -153,6 +162,13 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
     for (unsigned i=0;i<count;i++) {
         struct nas_task *target=matches[i];
         if (target==sender) {
+            if (target->signal_actions[signal][0]>1 &&
+                !(target->blocked_signals&(1ULL<<(signal-1))) &&
+                signal!=NAS_SIGKILL && signal!=NAS_SIGSTOP &&
+                signal!=NAS_SIGCONT) {
+                target->pending_signals |= 1ULL<<(signal-1);
+                continue;
+            }
             self=true;
             if(terminating_default((unsigned)signal) &&
                signal!=NAS_SIGKILL &&
@@ -170,6 +186,13 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
                target->signal_actions[signal][0]==1)continue; /* SIG_IGN */
             if(signal!=NAS_SIGKILL &&
                (target->blocked_signals&(1ULL<<(signal-1)))) {
+                target->pending_signals |= 1ULL<<(signal-1);
+                continue;
+            }
+            if(target->signal_actions[signal][0]>1 &&
+               signal!=NAS_SIGKILL) {
+                /* Delivery waits until THIS task's page tables and user
+                 * return frame are selected. Do not write a foreign stack. */
                 target->pending_signals |= 1ULL<<(signal-1);
                 continue;
             }
@@ -325,4 +348,154 @@ uint64_t nas_signal_background_job(unsigned signum,uint64_t *frame,
      * An active background process must either STOP or get a true error. */
     *handled=true;
     return (uint64_t)-EIO;
+}
+
+/* Keep signal frames in a complete native user-return context. The single
+ * outstanding frame constraint is intentional until recursive SA_ONSTACK
+ * and untrusted multi-frame validation are complete. Other caught signals
+ * remain pending rather than corrupting a saved first handler frame. */
+bool nas_signal_user_pending(const struct nas_task *task) {
+    if(!task || task->signal_frame_active) return false;
+    uint64_t bits=task->pending_signals & ~task->blocked_signals;
+    for(unsigned sig=1;sig<=64;sig++)
+        if((bits & (1ULL<<(sig-1))) && task->signal_actions[sig][0]>1)
+            return true;
+    return false;
+}
+
+#if defined(__x86_64__)
+#include "../arch/x86_64/irq.h"
+#include "../arch/x86_64/context.h"
+/* Native Linux amd64 struct sigcontext; offsets agree with
+ * arch/x86/include/uapi/asm/sigcontext.h. No libc headers in the kernel. */
+struct x86_sigcontext {
+    uint64_t gpr[18];
+    uint16_t cs,gs,fs,ss;
+    uint64_t err,trapno,oldmask,cr2,fpstate,reserved[8];
+};
+struct x86_ucontext {
+    uint64_t flags,link;
+    struct { uint64_t sp; uint32_t flags,pad; uint64_t size; } stack;
+    struct x86_sigcontext sc;
+    uint64_t sigmask;
+};
+struct x86_rt_sigframe {
+    uint64_t pretcode;
+    struct x86_ucontext uc;
+    uint32_t info[32]; /* 128-byte native siginfo_t */
+};
+_Static_assert(sizeof(struct x86_sigcontext)==256,"Linux x86 sigcontext");
+_Static_assert(sizeof(struct x86_ucontext)==304,"Linux x86 ucontext header");
+_Static_assert(sizeof(struct x86_rt_sigframe)==440,"Linux x86 rt_sigframe");
+_Static_assert(offsetof(struct x86_rt_sigframe,info)==312,"Linux siginfo pointer");
+static bool x86_install_handler(uint64_t *regs,unsigned signo,
+                                const uint64_t *action) {
+    const uint64_t flags=action[1],restorer=action[2],handler=action[0];
+    if(!(flags & 0x04000000ULL) || !restorer || restorer>=USER_LIMIT ||
+       handler>=USER_LIMIT)return false; /* x86-64 SA_RESTORER required */
+    struct nas_task *t=nas_current_task;
+    struct nas_arch_context save=t->arch;
+    for(unsigned i=0;i<15;i++)save.resume_regs[i]=regs[i];
+    save.resume_user_rip=regs[15];
+    save.resume_user_rflags=regs[17];
+    save.resume_user_rsp=regs[18];
+    nas_arch_save_fpu(t);
+    for(unsigned i=0;i<sizeof(save.fpu_state);i++)
+        save.fpu_state[i]=t->arch.fpu_state[i];
+    /* Linux AMD64's 128-byte red zone must be preserved for an
+     * asynchronous signal even when a register-only leaf is interrupted. */
+    uint64_t sp=save.resume_user_rsp;
+    if(sp<128+512+440+24 || sp>=USER_LIMIT)return false;
+    uint64_t fpaddr=(sp-128-512)&~UINT64_C(15);
+    uint64_t frameaddr=((fpaddr-sizeof(struct x86_rt_sigframe))&
+                        ~UINT64_C(15))-8ULL;
+    struct x86_rt_sigframe uf={0};
+    uf.pretcode=restorer;
+    uf.uc.flags=0x6; /* UC_SIGCONTEXT_SS | UC_STRICT_RESTORE_SS */
+    uf.uc.sigmask=t->blocked_signals;
+    uf.uc.sc.gpr[0]=regs[5];  /* r8 */
+    uf.uc.sc.gpr[1]=regs[6];  /* r9 */
+    uf.uc.sc.gpr[2]=regs[4];  /* r10 */
+    uf.uc.sc.gpr[3]=regs[8];  /* r11 */
+    uf.uc.sc.gpr[4]=regs[11]; /* r12 */
+    uf.uc.sc.gpr[5]=regs[12]; /* r13 */
+    uf.uc.sc.gpr[6]=regs[13]; /* r14 */
+    uf.uc.sc.gpr[7]=regs[14]; /* r15 */
+    uf.uc.sc.gpr[8]=regs[1];  /* di */
+    uf.uc.sc.gpr[9]=regs[2];  /* si */
+    uf.uc.sc.gpr[10]=regs[10];/* bp */
+    uf.uc.sc.gpr[11]=regs[9]; /* bx */
+    uf.uc.sc.gpr[12]=regs[3]; /* dx */
+    uf.uc.sc.gpr[13]=regs[0]; /* ax */
+    uf.uc.sc.gpr[14]=regs[7]; /* cx */
+    uf.uc.sc.gpr[15]=regs[18];/* sp */
+    uf.uc.sc.gpr[16]=regs[15];/* ip */
+    uf.uc.sc.gpr[17]=regs[17];/* flags */
+    uf.uc.sc.cs=0x23U;
+    uf.uc.sc.ss=0x1bU;
+    uf.uc.sc.fpstate=fpaddr;
+    uf.info[0]=(uint32_t)signo; /* si_signo */
+    /* FP state is a real FXSAVE image from the exact selected task, not
+     * another task's stack. Written before modifying any saved CPU state. */
+    if(!nas_user_write_bytes(fpaddr,save.fpu_state,512) ||
+       !nas_user_write_bytes(frameaddr,(const uint8_t *)&uf,sizeof(uf)))
+        return false;
+    t->signal_saved_arch=save;
+    t->signal_saved_mask=t->blocked_signals;
+    t->signal_frame_sp=frameaddr;
+    t->signal_frame_active=true;
+    t->blocked_signals |= (1ULL<<(signo-1)) | action[3];
+    if(flags & 0x40000000ULL) t->signal_actions[signo][0]=0; /* SA_RESETHAND */
+    regs[0]=0;
+    regs[1]=signo;
+    regs[2]=frameaddr+offsetof(struct x86_rt_sigframe,info);
+    regs[3]=frameaddr+offsetof(struct x86_rt_sigframe,uc);
+    regs[15]=handler;
+    regs[18]=frameaddr;
+    return true;
+}
+#endif
+
+void nas_signal_user_return(uint64_t *frame) {
+#if defined(__x86_64__)
+    struct nas_task *t=nas_current_task;
+    if(t->signal_frame_active || !frame || !nas_signal_user_pending(t))
+        return;
+    uint64_t ready=t->pending_signals & ~t->blocked_signals;
+    for(unsigned sig=1;sig<=64;sig++) {
+        if(!(ready&(1ULL<<(sig-1))))continue;
+        const uint64_t *act=t->signal_actions[sig];
+        if(act[0]<=1)continue;
+        if(!x86_install_handler(frame,sig,act)) {
+            extern void nas_fail(const char *);
+            nas_fail("M30 cannot build native x86 signal frame");
+        }
+        t->pending_signals &= ~(1ULL<<(sig-1));
+        return;
+    }
+#else
+    (void)frame;
+#endif
+}
+
+uint64_t nas_signal_sigreturn(uint64_t *frame) {
+#if defined(__x86_64__)
+    struct nas_task *t=nas_current_task;
+    if(!t->signal_frame_active ||
+       syscall_user_rsp != t->signal_frame_sp+8)
+        return (uint64_t)-EFAULT;
+    /* The handler's untrusted user frame cannot inject privileged CS,
+     * SS or flags into IRET: restore the kernel-held full user snapshot.
+     * A future ucontext-mutation implementation will validate each field. */
+    t->arch=t->signal_saved_arch;
+    t->blocked_signals=t->signal_saved_mask;
+    t->signal_frame_active=false;
+    t->signal_frame_sp=0;
+    nas_arch_restore_cpu(t);
+    nas_arch_load_user_frame(t,frame);
+    return nas_arch_saved_return(t);
+#else
+    (void)frame;
+    return (uint64_t)-EOPNOTSUPP;
+#endif
 }
