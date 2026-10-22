@@ -32,8 +32,9 @@
    allow restoring privileged CPU bits or another Task's saved state.
 6. Standard signal coalescing, per-handler blocking, SA_NODEFER/RESETHAND,
    SIG_IGN, unmaskable SIGKILL/STOP and fork/exec inheritance must agree
-   with Linux. A signal caught during nanosleep/poll interrupts it with
-   EINTR rather than making it wait until the absolute deadline.
+   with Linux. A signal caught during nanosleep/poll/ppoll interrupts it with
+   EINTR rather than making it wait until the absolute deadline. ppoll's
+   temporary signal mask must be installed atomically and restored on exit.
 7. Hook delivery at *all* user return gates (including timer IRQ) so a
    spinning user process receiving a signal is not indefinitely starved.
    No user memory dereference while the target's page table is not live.
@@ -43,7 +44,8 @@
   native amd64, RV64, ARM64 Linux libc and executed on real Linux or
   qemu-user first. It checks SIGUSR1 SA_SIGINFO, SIGUSR2 ordinary handler,
   signal mask observed *inside* handler, standard coalescing, pending
-  unmask delivery, and caught signal interrupting a sleeping child.
+  unmask delivery, and a deterministic pipe-handshaked pending signal
+  interrupting ppoll while it atomically unblocks that signal.
 - Next integrate the same ELF in the existing original BusyBox full-kernel
   matrix with identical outputs; keep M23–29 unchanged regressions.
 - Any ISA without a complete native signal frame/return implementation
