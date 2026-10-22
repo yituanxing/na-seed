@@ -5,6 +5,7 @@
 #include "vm.h"
 #include "prot.h"
 #include "anon_regions.h"
+#include "../lib/string.h"
 #include "mmap_abi.h"
 #define TASK (*nas_current_task)
 #define heap_break TASK.heap_break
@@ -58,20 +59,13 @@ uint64_t nas_vm_munmap(uint64_t addr, uint64_t len) {
     /* Plan a possibly partial unmap on a metadata copy first. If splitting
      * requires a 65th entry, leave both the VMAs and PTEs unmodified. */
     struct nas_anon_regions updated;
-    /* Freestanding 64-entry metadata copy: do not require implicit libc
-     * memcpy on any ISA, and preserve the original until all edits succeed. */
-    for (unsigned i=0; i<NAS_ANON_REGION_LIMIT; ++i) {
-        updated.slots[i].start=TASK.anonymous.slots[i].start;
-        updated.slots[i].end=TASK.anonymous.slots[i].end;
-    }
+    /* Stage changes to VMA metadata before committing any page changes. */
+    memcpy(&updated, &TASK.anonymous, sizeof(updated));
     if (!nas_anon_forget(&updated,addr,count*PAGE))
         return (uint64_t)-ENOMEM;
     for (uint64_t i=0; i<count; ++i)
         if (!nas_mmu_unmap_page(addr+i*PAGE)) return (uint64_t)-EFAULT;
-    for (unsigned i=0; i<NAS_ANON_REGION_LIMIT; ++i) {
-        TASK.anonymous.slots[i].start=updated.slots[i].start;
-        TASK.anonymous.slots[i].end=updated.slots[i].end;
-    }
+    memcpy(&TASK.anonymous, &updated, sizeof(updated));
     return 0;
 }
 uint64_t nas_vm_brk(uint64_t want) {
