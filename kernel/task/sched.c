@@ -20,9 +20,10 @@ extern void nas_dec(uint64_t);
 #define blocked_signals TASK.blocked_signals
 static void sched_fail(const char *s) __attribute__((noreturn));
 static void sched_fail(const char *s) { nas_print("[FAIL] M1 "); nas_print(s); nas_print("\n"); nas_arch_halt(); }
-/* M6.4 syscall-boundary cooperative scheduler. All live syscalls unwind on
- * the same kernel stack. Parked syscalls are re-issued ONLY after a wake
- * condition is true and the task's own CR3 and FS state are restored.
+/* Cooperative syscall-boundary scheduler. Per-task entry stacks are
+ * distinct, but kernel C continuations are still unwound before switching.
+ * Parked syscalls are re-issued ONLY after their wake condition and after
+ * the task's own CR3/TLS/FPU state are restored.
  * Thus a switched task always receives the real read/write/wait4 result;
  * a fabricated success or USER RIP rewind would corrupt Linux userspace.
  */
