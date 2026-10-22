@@ -587,7 +587,7 @@ uint64_t nas_fs_fd_writev(uint64_t fd, uint64_t iov, uint64_t count) {
  * owning task's VM, scheduler tests only a kernel-owned interest snapshot.
  */
 uint64_t nas_fs_poll(uint64_t address, uint64_t nfds, uint64_t timeout) {
-    const uint16_t POLLIN = 0x0001, POLLOUT = 0x0004, POLLNVAL = 0x0020;
+    const uint16_t POLLNVAL = 0x0020;
     if (nfds > 64) return (uint64_t)-EINVAL;
     if (nfds && (address >= USER_LIMIT || nfds > (USER_LIMIT - address) / 8))
         return (uint64_t)-EFAULT;
