@@ -1,5 +1,6 @@
 #include "bootfs.h"
 #include "errno.h"
+#include "lib/string.h"
 #include <stddef.h>
 
 #define MAX_ENTRIES 96
@@ -13,14 +14,6 @@ static struct bootfs_entry entries[MAX_ENTRIES];
 static unsigned entry_count;
 static bool mounted;
 
-static bool equal(const char *a, const char *b) {
-    while (*a && *b && *a == *b) { ++a; ++b; }
-    return *a == *b;
-}
-static bool prefix(const char *a, const char *b) {
-    while (*b) if (*a++ != *b++) return false;
-    return true;
-}
 static bool hex8(const uint8_t *p, uint32_t *out) {
     uint32_t result = 0;
     for (unsigned i = 0; i < 8; ++i) {
@@ -82,7 +75,7 @@ bool bootfs_mount(const void *bytes, uint64_t size) {
     while (at < size) {
         if (size - at < NEWC_HEADER) return false;
         const uint8_t *h = base + at;
-        if (!prefix((const char *)h, "070701")) return false;
+        if (!memcmp(h, "070701", 6) == 0) return false;
         uint32_t file_size, name_size, mode;
         if (!hex8(h + 54, &file_size) ||
             !hex8(h + 94, &name_size) ||
@@ -96,7 +89,7 @@ bool bootfs_mount(const void *bytes, uint64_t size) {
             file_size > size - data_at) return false;
         uint64_t next;
         if (!aligned4(data_at + file_size, size, &next)) return false;
-        if (name_size == 11 && equal((const char *)name, "TRAILER!!!")) {
+        if (name_size == 11 && memcmp(name, "TRAILER!!!", 11) == 0) {
             if (file_size) return false;
             mounted = entry_count > 0 && bootfs_find("/") != 0;
             return mounted;
@@ -114,7 +107,7 @@ bool bootfs_mount(const void *bytes, uint64_t size) {
         struct bootfs_entry *entry = &entries[entry_count];
         if (!archive_name(entry, name, name_size)) return false;
         for (unsigned n = 0; n < entry_count; n++)
-            if (equal(entries[n].path, entry->path)) return false;
+            if (strcmp(entries[n].path, entry->path) == 0) return false;
         entry->mode = mode;
         entry->size = file_size;
         entry->data = base + data_at;
@@ -131,7 +124,7 @@ bool bootfs_is_link(const struct bootfs_entry *entry) {
 const struct bootfs_entry *bootfs_find(const char *absolute) {
     if (!absolute) return 0;
     for (unsigned i = 0; i < entry_count; ++i)
-        if (equal(entries[i].path, absolute)) return &entries[i];
+        if (strcmp(entries[i].path, absolute) == 0) return &entries[i];
     return 0;
 }
 bool bootfs_is_dir(const struct bootfs_entry *entry) {
@@ -141,11 +134,10 @@ const struct bootfs_entry *bootfs_child(const struct bootfs_entry *dir,
                                         unsigned ordinal) {
     if (!bootfs_is_dir(dir)) return 0;
     const char *parent = dir->path;
-    unsigned plen = 0;
-    while (parent[plen]) plen++;
+    size_t plen = strlen(parent);
     for (unsigned i = 0; i < entry_count; i++) {
         const char *candidate = entries[i].path;
-        if (!prefix(candidate, parent)) continue;
+        if (!strncmp(candidate, parent, plen) == 0) continue;
         const char *tail = candidate + plen;
         if (plen != 1) {
             if (*tail++ != '/') continue;
