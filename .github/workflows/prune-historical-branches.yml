@@ -70,4 +70,34 @@ jobs:
             core.summary.addHeading("Verified branch pruning")
               .addRaw(`Deleted ${deleted}, preserved/absent ${skipped}, errors ${errors}; open PR heads always protected.`)
               .write();
+            // One-time, separately audited historical branches. All heads were
+            // inspected against main, and useful unmatched design notes were
+            // carried into docs/historical in the same mainline commit.
+            // Never delete a moved branch: require the *exact* audited SHA.
+            const superseded = {
+              "design/arch-contract-v1": "18de8e33967dba721b96de0fd8dbd9afffe7e320",
+              "feature/vfs-open-file-ops-naos-alignment": "4ac6be4bf6ccc4a7eb627cfcdc9469858be9407b",
+              "port/m96-aarch64-el0-svc": "e8e46473fa46630e9639442b3d422c6a598da514",
+              "staging/m28-rv64-arm64-rebase": "784524671e120302ed1af9e6e954a1b104e60f34",
+              "work/m30-batched-signal-lifecycle": "c2672384692260f0aabbf2c237d669f7dfbee424",
+              "work/m30-native-frame-backends": "b38e5eb0f005db5255b65f030cac83131008c14c",
+            };
+            for (const [name, expectedSha] of Object.entries(superseded)) {
+              if (active.has(name) || name === defaultBranch) {
+                core.info(`PRESERVE ${name}: open PR or default branch`); skipped++; continue;
+              }
+              try {
+                const ref = await github.rest.git.getRef({owner,repo,ref:`heads/${name}`});
+                if (ref.data.object.sha !== expectedSha) {
+                  core.info(`PRESERVE ${name}: moved from audited ${expectedSha}`);
+                  skipped++; continue;
+                }
+                await github.rest.git.deleteRef({owner,repo,ref:`heads/${name}`});
+                core.info(`DELETE audited obsolete ${name} at ${expectedSha}`);
+                deleted++;
+              } catch (err) {
+                if (err.status === 404) { skipped++; continue; }
+                core.error(`cleanup failed ${name}: ${err.message}`); errors++;
+              }
+            }
             if(errors) core.setFailed(`Could not delete ${errors} verified branches`);
