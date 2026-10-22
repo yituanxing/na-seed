@@ -1,0 +1,3 @@
+# Same upstream BusyBox ash + exact POSIX shell script as Linux/x86.
+# Non-terminating producer, consumer progress and actual timer IRQ required.
+timer-preempt	cpio	sh /bin/m28-preempt	cpu-hog-did-not-starve-ash	-
