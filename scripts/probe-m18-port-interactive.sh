@@ -10,7 +10,12 @@ case "$port" in
     arm64) efi_name=BOOTAA64.EFI;fw=/usr/share/qemu-efi-aarch64 ;;
     *) exit 2 ;;
 esac
-dir="build/port-$port/full"
+# Native ELF toolchain calls this architecture arm64, but existing
+# Limine/QEMU port output uses the AArch64 ISA name.
+case "$port" in
+    arm64) dir=build/port-aarch64/full ;;
+    riscv64) dir=build/port-riscv64/full ;;
+esac
 work="$dir/matrix-source"
 disk="$work/m18-real-ash.img"
 efi="build/deps/limine-binary/$efi_name"
