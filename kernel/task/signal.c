@@ -356,6 +356,13 @@ uint64_t nas_signal_background_job(unsigned signum,uint64_t *frame,
  * outstanding frame constraint is intentional until recursive SA_ONSTACK
  * and untrusted multi-frame validation are complete. Other caught signals
  * remain pending rather than corrupting a saved first handler frame. */
+void nas_signal_ppoll_restore(struct nas_task *task,bool interrupted) {
+    if(!task || !task->ppoll_mask_active)return;
+    if(interrupted)task->signal_force_deliver |=
+        task->pending_signals & ~task->blocked_signals;
+    task->blocked_signals=task->ppoll_saved_mask;
+    task->ppoll_mask_active=false;
+}
 bool nas_signal_user_pending(const struct nas_task *task) {
     if(!task || task->signal_frame_active) return false;
     uint64_t bits=task->pending_signals &
