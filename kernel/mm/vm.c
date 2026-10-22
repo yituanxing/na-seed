@@ -4,35 +4,49 @@
 #include "../arch/arch.h"
 #include "vm.h"
 #include "prot.h"
+#include "anon_regions.h"
+#include "mmap_abi.h"
 #define TASK (*nas_current_task)
 #define heap_break TASK.heap_break
-#define mmap_cursor TASK.mmap_cursor
-/* M2: genuine Linux ABI semantics for single-process TLS + anonymous VM. */
+
+/* M11: eager, privately owned anonymous VM ranges. Existing PT_LOAD and
+ * heap/stack mappings stay in their established address domains. Releasing
+ * PTE frames without returning the virtual range would eventually exhaust
+ * the 0x20000000..0x60000000 window even with abundant free physical RAM.
+ * Fixed-count VMA records are per task: fork copies them and exec resets
+ * after the new ELF image commits. No COW/lazy fault pager is claimed.
+ */
 uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
-                              uint64_t prot, uint64_t flags,
-                              uint64_t fd, uint64_t offset) {
+                         uint64_t prot, uint64_t flags,
+                         uint64_t fd, uint64_t offset) {
     (void)hint;
-    /* MAP_PRIVATE|MAP_ANONYMOUS; no file/offset/map-fixed emulation. */
+    /* MAP_PRIVATE|MAP_ANONYMOUS. Linux ignores fd under MAP_ANONYMOUS:
+     * an x86-64 libc may pass int -1 zero-extended to 0x00000000ffffffff.
+     * Non-anonymous mappings and nonzero offsets remain explicitly refused. */
     if (!length || length > (64ULL << 20) || length > UINT64_MAX - PAGE)
         return (uint64_t)-EINVAL;
-    if ((flags & 0x22) != 0x22 || (flags & ~0x22ULL) || fd != UINT64_MAX || offset)
+    if (!nas_linux_anon_map_supported(flags,fd,offset))
         return (uint64_t)-ENOSYS;
     if (prot & ~7ULL) return (uint64_t)-EINVAL;
-    if (!prot) return (uint64_t)-ENOSYS; /* needs VMA, not a readable page */
+    if (!prot) return (uint64_t)-ENOSYS; /* needs inaccessible-VMA support */
     if (!nas_vm_prot_supported(prot)) return (uint64_t)-EOPNOTSUPP;
     if (!nas_arch_user_nx_supported()) return (uint64_t)-ENOSYS;
-    uint64_t count = (length + PAGE - 1) / PAGE;
-    if (count > mmap_cursor / PAGE) return (uint64_t)-ENOMEM;
-    uint64_t start = mmap_cursor - count * PAGE;
-    if (start < 0x20000000 || start >= USER_LIMIT) return (uint64_t)-ENOMEM;
-    uint64_t va = start;
-    for (; va < mmap_cursor; va += PAGE)
-        if (!nas_mmu_map_prot_page(va, prot)) break;
-    if (va < mmap_cursor) {
-        while (va > start) { va -= PAGE; nas_mmu_unmap_page(va); }
+    uint64_t pages = (length + PAGE - 1) / PAGE;
+    uint64_t bytes = pages * PAGE;
+    uint64_t start;
+    if (!nas_anon_find_gap(&TASK.anonymous, bytes, &start))
+        return (uint64_t)-ENOMEM;
+    uint64_t va=start;
+    for (; va < start+bytes; va+=PAGE)
+        if (!nas_mmu_map_prot_page(va,prot)) break;
+    if (va != start+bytes) {
+        while (va>start) { va-=PAGE; if (!nas_mmu_unmap_page(va)) nas_arch_halt(); }
         return (uint64_t)-ENOMEM;
     }
-    mmap_cursor = start;
+    /* A free metadata slot was checked by find_gap; this cannot fail
+     * without an internal allocator bug or unexpected PTE aliasing. */
+    if (!nas_anon_record(&TASK.anonymous,start,bytes))
+        nas_arch_halt();
     return start;
 }
 uint64_t nas_vm_munmap(uint64_t addr, uint64_t len) {
@@ -41,48 +55,57 @@ uint64_t nas_vm_munmap(uint64_t addr, uint64_t len) {
     uint64_t count = (len + PAGE - 1) / PAGE;
     if (addr >= USER_LIMIT || count > (USER_LIMIT - addr) / PAGE)
         return (uint64_t)-EINVAL;
-    for (uint64_t i = 0; i < count; i++)
-        if (!nas_mmu_unmap_page(addr + i * PAGE)) return (uint64_t)-EFAULT;
+    /* Plan a possibly partial unmap on a metadata copy first. If splitting
+     * requires a 65th entry, leave both the VMAs and PTEs unmodified. */
+    struct nas_anon_regions updated;
+    /* Freestanding 64-entry metadata copy: do not require implicit libc
+     * memcpy on any ISA, and preserve the original until all edits succeed. */
+    for (unsigned i=0; i<NAS_ANON_REGION_LIMIT; ++i) {
+        updated.slots[i].start=TASK.anonymous.slots[i].start;
+        updated.slots[i].end=TASK.anonymous.slots[i].end;
+    }
+    if (!nas_anon_forget(&updated,addr,count*PAGE))
+        return (uint64_t)-ENOMEM;
+    for (uint64_t i=0; i<count; ++i)
+        if (!nas_mmu_unmap_page(addr+i*PAGE)) return (uint64_t)-EFAULT;
+    for (unsigned i=0; i<NAS_ANON_REGION_LIMIT; ++i) {
+        TASK.anonymous.slots[i].start=updated.slots[i].start;
+        TASK.anonymous.slots[i].end=updated.slots[i].end;
+    }
     return 0;
 }
 uint64_t nas_vm_brk(uint64_t want) {
-    uint64_t base = heap_break;
+    uint64_t base=heap_break;
     if (!want) return heap_break;
     /* brk is a Linux special: failure returns the unchanged break. */
     if (want < 0x10000 || want >= 0x20000000) return base;
-    uint64_t before = (heap_break + PAGE - 1) & ~(PAGE - 1);
-    uint64_t after = (want + PAGE - 1) & ~(PAGE - 1);
-    if (after > before) {
-        uint64_t va = before;
-        for (; va < after; va += PAGE)
-            if (!nas_mmu_map_page(va, true)) break;
-        if (va != after) {
-            while (va > before) { va -= PAGE; nas_mmu_unmap_page(va); }
+    uint64_t before=(heap_break+PAGE-1)&~(PAGE-1);
+    uint64_t after=(want+PAGE-1)&~(PAGE-1);
+    if (after>before) {
+        uint64_t va=before;
+        for (;va<after;va+=PAGE)
+            if (!nas_mmu_map_page(va,true)) break;
+        if (va!=after) {
+            while (va>before) { va-=PAGE; if (!nas_mmu_unmap_page(va)) nas_arch_halt(); }
             return base;
         }
-    } else if (after < before) {
-        for (uint64_t va = after; va < before; va += PAGE)
+    } else if (after<before) {
+        for (uint64_t va=after;va<before;va+=PAGE)
             if (!nas_mmu_unmap_page(va)) return base;
     }
-    heap_break = want;
+    heap_break=want;
     return want;
 }
-
-/* VM protection semantics are shared; arch provider reports executable-disable enforcement. */
-uint64_t nas_vm_mprotect(uint64_t addr, uint64_t length, uint64_t prot) {
-    if (addr & (PAGE - 1) || (prot & ~7ULL) ||
-        length > UINT64_MAX - (PAGE - 1))
+uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
+    if (addr & (PAGE-1) || (prot & ~7ULL) ||
+        length > UINT64_MAX-(PAGE-1))
         return (uint64_t)-EINVAL;
     if (!length) return 0;
-    uint64_t pages = (length + PAGE - 1) / PAGE;
-    if (addr >= USER_LIMIT || pages > (USER_LIMIT - addr) / PAGE)
+    uint64_t pages=(length+PAGE-1)/PAGE;
+    if (addr>=USER_LIMIT || pages>(USER_LIMIT-addr)/PAGE)
         return (uint64_t)-ENOMEM;
-    if (!nas_arch_user_nx_supported()) {
-        /* Cannot claim executable permission enforcement without NXE. */
-        return (uint64_t)-ENOSYS;
-    }
-    if (!prot) return (uint64_t)-ENOSYS; /* PROT_NONE needs VMA semantics. */
+    if (!nas_arch_user_nx_supported()) return (uint64_t)-ENOSYS;
+    if (!prot) return (uint64_t)-ENOSYS; /* PROT_NONE needs VMA semantics */
     if (!nas_vm_prot_supported(prot)) return (uint64_t)-EOPNOTSUPP;
-    bool ok=nas_mmu_protect_pages(addr, pages, prot);
-    return ok ? 0 : (uint64_t)-ENOMEM;
+    return nas_mmu_protect_pages(addr,pages,prot)?0:(uint64_t)-ENOMEM;
 }

@@ -9,15 +9,15 @@ test -s "$config" && test -s "$cases"
 for applet in ASH SH_IS_ASH ECHO CAT LS WC MKDIR RMDIR RM STATIC; do
     grep -Fxq "CONFIG_$applet=y" "$config"
 done
-[ "$(grep -c -v '^#' "$cases")" -eq 6 ]
+[ "$(grep -c -v '^#' "$cases")" -eq 7 ]
 # BusyBox Kbuild requires a pre-existing O= directory even for allnoconfig.
 grep -Fq '"$target" "$obj"' scripts/build-source-busybox.sh
 grep -Fq 'sha256sum -c -' scripts/build-source-busybox.sh
-for id in echo ash-builtin ash-fork ash-pipe ash-tmp source-lifecycle; do
+for id in echo ash-builtin ash-fork ash-pipe ash-tmp source-lifecycle vm-lifetime; do
     [ "$(grep -c "^$id$(printf '\t')" "$cases")" -eq 1 ]
 done
 for filename in scripts/build-source-busybox.sh scripts/probe-source-busybox.sh \
-                scripts/check-source-busybox.sh; do
+                scripts/check-source-busybox.sh scripts/build-m11-vm-test.sh; do
     sh -n "$filename"
 done
 # Both 17-case and source-profile runners must consume the same manifest
@@ -28,4 +28,4 @@ for f in scripts/probe-x86-busybox-parity.sh \
     grep -Fq 'BUSYBOX_PARITY_MANIFEST' "$f"
     grep -Fq 'BUSYBOX_PARITY_BINARY' "$f"
 done
-echo '[PASS] controlled-source BusyBox config, six-case manifest and shared QEMU runners'
+echo '[PASS] controlled-source BusyBox config, seven-case manifest and shared QEMU runners'

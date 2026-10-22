@@ -109,6 +109,14 @@ fi
 python3 scripts/check-syscall-nr.py
 python3 scripts/check-syscall-errno.py
 
+cc -std=c11 -Wall -Wextra -Werror \
+    scripts/test-anon-regions.c kernel/mm/anon_regions.c \
+    -o /tmp/naseed-anon-regions
+/tmp/naseed-anon-regions
+sh scripts/check-full-kernel-sources.sh
+cc -std=c11 -Wall -Wextra -Werror scripts/test-mmap-abi.c \
+    -o /tmp/naseed-mmap-abi
+/tmp/naseed-mmap-abi
 make -j2 kernel
 test -s build/kernel.elf
 readelf -h build/kernel.elf > /dev/null
