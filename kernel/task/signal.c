@@ -6,6 +6,8 @@
 #include "../arch/arch.h"
 #include "../task/sched.h"
 #include "../lib/string.h"
+#include "../arch/mmu.h"
+#include "../panic.h"
 #include <stddef.h>
 
 /* Shared signal disposition/queue. Native caught handlers are enabled
@@ -467,7 +469,6 @@ void nas_signal_user_return(uint64_t *frame) {
         const uint64_t *act=t->signal_actions[sig];
         if(act[0]<=1)continue;
         if(!x86_install_handler(frame,sig,act)) {
-            extern void nas_fail(const char *);
             nas_fail("M30 cannot build native x86 signal frame");
         }
         t->pending_signals &= ~(1ULL<<(sig-1));
