@@ -59,6 +59,7 @@ struct nas_task *nas_task_fork_slot(void) {
         child->stopped_from = NAS_TASK_FREE;
         child->stop_report_pending = false;
         child->continue_report_pending = false;
+        child->stop_signal = 0;
         child->resume_valid = false;
         child->blocked_op = 0;
         child->pending_valid = false;
@@ -89,6 +90,7 @@ void nas_task_release(struct nas_task *task) {
     task->stopped_from = NAS_TASK_FREE;
     task->stop_report_pending = false;
     task->continue_report_pending = false;
+    task->stop_signal = 0;
 }
 struct nas_task *nas_task_by_pid(uint64_t pid) {
     for (unsigned i = 0; i < NAS_TASK_LIMIT; i++)

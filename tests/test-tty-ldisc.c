@@ -34,8 +34,11 @@ int main(void) {
     feed(&ld,&t,"z");expect(&ld,&t,"z",1);
     feed(&ld,&t,"xy");t.cc[6]=2;expect(&ld,&t,"xy",2);
     t.cc[6]=0;CK(nas_ldisc_readable(&ld,&t,16));
-    CK(nas_ldisc_feed(&ld,&t,3,echo_byte,0)==NAS_LDISC_UNSUPPORTED_SIGNAL);
-    CK(nas_ldisc_feed(&ld,&t,26,echo_byte,0)==NAS_LDISC_UNSUPPORTED_SIGNAL);
+    CK(nas_ldisc_feed(&ld,&t,3,echo_byte,0)==NAS_LDISC_SIGNAL_INT);
+    CK(nas_ldisc_feed(&ld,&t,26,echo_byte,0)==NAS_LDISC_SIGNAL_STOP);
+    CK(nas_ldisc_feed(&ld,&t,28,echo_byte,0)==NAS_LDISC_SIGNAL_QUIT);
+    t.lflag &= ~0000001;
+    CK(nas_ldisc_feed(&ld,&t,3,echo_byte,0)==NAS_LDISC_OK);
     puts("[PASS] N_TTY canonical/edit/echo/EOF/noncanonical/signal");
     return 0;
 }

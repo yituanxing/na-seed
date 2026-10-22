@@ -150,6 +150,13 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
 script -q -e -c '/tmp/naseed-m22-poll --linux-pty-oracle' /dev/null \
     | tr -d '\r' | grep -Fxq m22-linux-pty-ok
 
+# M23 standard Linux terminal/PGID ABI check; real UART group signaling
+# is exercised exclusively in the full three-ISA QEMU acceptance.
+cc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
+    tests/m23-signals.c -o /tmp/naseed-m23-signals
+script -q -e -c '/tmp/naseed-m23-signals --linux-pty-oracle' /dev/null \
+    | tr -d '\r' | grep -Fxq m23-linux-pty-ok
+
 # Compare our pinned Linux x86-64 syscall numbers against the host UAPI.
 python3 scripts/check-syscall-nr.py
 python3 scripts/check-syscall-errno.py

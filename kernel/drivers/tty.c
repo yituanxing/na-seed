@@ -16,12 +16,14 @@ static struct {
     struct nas_termios t;
     bool rx_enabled;
     bool unsupported_input;
+    unsigned pending_signum;
     struct nas_ldisc ldisc;
 } tty;
 void nas_tty_init(void) {
     tty.sid=nas_current_task->sid; tty.pgid=nas_current_task->pgid;
     tty.rx_enabled=false;
     tty.unsupported_input=false;
+    tty.pending_signum=0;
     nas_ldisc_reset(&tty.ldisc);
     /* Freestanding RV64/ARM64 kernel links no libc memcpy/memset.
      * Explicit field/CC initialization avoids compiler-emitted libc calls. */
@@ -80,6 +82,7 @@ uint64_t nas_tty_ioctl(uint64_t cmd,uint64_t arg) {
         if(cmd==0x5404) {
             nas_ldisc_reset(&tty.ldisc);
             tty.unsupported_input=false;
+            tty.pending_signum=0;
         }
         return 0;
     }
@@ -95,6 +98,7 @@ uint64_t nas_tty_ioctl(uint64_t cmd,uint64_t arg) {
             tty.sid=tty.pgid=0;tty.rx_enabled=false;
             nas_ldisc_reset(&tty.ldisc);
             tty.unsupported_input=false;
+            tty.pending_signum=0;
         }
         return 0;
     case 0x5429: /* TIOCGSID */
@@ -118,18 +122,28 @@ uint64_t nas_tty_ioctl(uint64_t cmd,uint64_t arg) {
     default:return (uint64_t)-ENOTTY;
     }
 }
+unsigned nas_tty_take_signal(uint64_t *sid,uint64_t *pgid) {
+    unsigned sig=tty.pending_signum;
+    if(sig) { *sid=tty.sid; *pgid=tty.pgid; tty.pending_signum=0; }
+    return sig;
+}
+void nas_tty_signal_unsupported(void) { tty.unsupported_input=true; }
 /* The bounded transport pump is the ONLY consumer of real console RX.
  * It runs at syscall boundaries and on scheduler/idle wake scans.
  * It never enters a task, uses a user address, or switches CPU context. */
 void nas_tty_pump(void) {
     if(!tty.rx_enabled || !nas_arch_console_has_rx() ||
-       tty.ldisc.ready || tty.unsupported_input) return;
+       tty.ldisc.ready || tty.unsupported_input || tty.pending_signum) return;
     for(unsigned i=0;i<32;i++) {
         uint8_t byte;
         if(!nas_arch_console_getc(&byte))break;
-        if(nas_ldisc_feed(&tty.ldisc,&tty.t,byte,tty_echo,0)
-           ==NAS_LDISC_UNSUPPORTED_SIGNAL) {
-            tty.unsupported_input=true;
+        enum nas_ldisc_event e=nas_ldisc_feed(&tty.ldisc,&tty.t,byte,tty_echo,0);
+        if(e!=NAS_LDISC_OK) {
+            /* Terminal event: do not send control byte to userspace.
+             * NOFLSH=0: discard incomplete canonical input on signal. */
+            nas_ldisc_reset(&tty.ldisc);
+            tty.pending_signum=e==NAS_LDISC_SIGNAL_INT?2U:
+                e==NAS_LDISC_SIGNAL_QUIT?3U:20U;
             break;
         }
         if(tty.ldisc.ready)break;
@@ -151,7 +165,7 @@ bool nas_tty_read_ready(uint64_t length) {
 bool nas_tty_poll_readable(void) {
     if(!tty.rx_enabled || !nas_arch_console_has_rx())return false;
     nas_tty_pump();
-    if(tty.unsupported_input)return true; /* syscall reports explicit error */
+    if(tty.unsupported_input || tty.pending_signum)return true;
     if(tty.t.lflag&0000002)return tty.ldisc.ready;
     /* MIN=0/TIME=0 read returns 0, but poll(POLLIN) must not report
      * a nonexistent byte. Minimum of one physical character for poll. */

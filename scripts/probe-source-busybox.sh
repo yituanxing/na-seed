@@ -17,6 +17,7 @@ sh scripts/build-m17-tty.sh "$port"
 sh scripts/build-m18-ash-init.sh "$port"
 sh scripts/build-m21-tty-sched.sh "$port"
 sh scripts/build-m22-poll.sh "$port"
+sh scripts/build-m23-signals.sh "$port"
 extra_dir="build/source-busybox/$port/extra"
 mkdir -p "$extra_dir"
 cp "build/source-busybox/$port/m11-vm" "$extra_dir/m11-vm"
@@ -29,6 +30,7 @@ cp "build/source-busybox/$port/m17-tty" "$extra_dir/m17-tty"
 cp "build/source-busybox/$port/m18-ash-init" "$extra_dir/m18-ash-init"
 cp "build/source-busybox/$port/m21-tty-sched" "$extra_dir/m21-tty-sched"
 cp "build/source-busybox/$port/m22-poll" "$extra_dir/m22-poll"
+cp "build/source-busybox/$port/m23-signals" "$extra_dir/m23-signals"
 if [ "$port" = amd64 ]; then
     cp "build/source-busybox/$port/m17-input" "$extra_dir/m17-input"
 fi
@@ -51,6 +53,9 @@ if [ "$port" = amd64 ]; then
     NASEED_INTERACTIVE_INIT=/bin/m22-poll \
       NASEED_INTERACTIVE_DRIVER=scripts/m22-serial-check.py \
       sh scripts/probe-m18-ash-interactive.sh
+    NASEED_INTERACTIVE_INIT=/bin/m23-signals \
+      NASEED_INTERACTIVE_DRIVER=scripts/m23-serial-check.py \
+      sh scripts/probe-m18-ash-interactive.sh
 else
     # Real firmware and PL011/SBI input are validated only on an actual
     # target machine, not under Linux QEMU-user or synthetic UART logs.
@@ -60,6 +65,9 @@ else
       sh scripts/probe-m18-port-interactive.sh "$port"
     NASEED_INTERACTIVE_INIT=/bin/m22-poll \
       NASEED_INTERACTIVE_DRIVER=scripts/m22-serial-check.py \
+      sh scripts/probe-m18-port-interactive.sh "$port"
+    NASEED_INTERACTIVE_INIT=/bin/m23-signals \
+      NASEED_INTERACTIVE_DRIVER=scripts/m23-serial-check.py \
       sh scripts/probe-m18-port-interactive.sh "$port"
 fi
 echo "[SOURCE BUSYBOX MATRIX PASS] $port: 13/13 native self-compiled workloads"

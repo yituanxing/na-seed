@@ -11,6 +11,7 @@
 #include "process.h"
 #include "sched.h"
 #include "wait_pid.h"
+#include "signal.h"
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
 #define TASK (*nas_current_task)
@@ -134,6 +135,10 @@ retry_schedule: ; /* label must precede a statement in C11 */
      * This allows ash to construct consumers after a producer fills its pipe.
      */
     nas_tty_pump(); /* physical RX progress even while other tasks run */
+    uint64_t tty_sid=0,tty_pgid=0;
+    unsigned tty_sig=nas_tty_take_signal(&tty_sid,&tty_pgid);
+    if(tty_sig && !nas_signal_tty_event(tty_sid,tty_pgid,tty_sig))
+        nas_tty_signal_unsupported();
     for (unsigned pass = 0; pass < 2; ++pass) {
         for (unsigned slot = 0; slot < NAS_TASK_LIMIT; ++slot) {
             struct nas_task *next = nas_task_at(slot);

@@ -60,7 +60,11 @@ try:
                 sent += 1
                 cursor = len(normalized)
         if b"[PASS] cmdline userspace exit 0" in normalized and sent == len(commands):
-            break
+            # Only an actual QEMU exit (x86) or guest ISA debug marker
+            # (RV/ARM WFI loops) completes the physical kernel test.
+            if port == "amd64" and proc.poll() is not None: break
+            if port == "riscv64" and b"[RV64] userspace debug-exit status=0" in normalized: break
+            if port == "arm64" and b"[ARM64] userspace debug-exit status=0" in normalized: break
         if proc.poll() is not None:
             break
     if proc.poll() is None:

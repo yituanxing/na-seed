@@ -15,6 +15,8 @@ void nas_tty_pump(void);
 bool nas_tty_read_waitable(void);
 bool nas_tty_read_ready(uint64_t length);
 bool nas_tty_poll_readable(void);
+unsigned nas_tty_take_signal(uint64_t *sid,uint64_t *pgid);
+void nas_tty_signal_unsupported(void);
 uint64_t nas_tty_ioctl(uint64_t cmd,uint64_t arg);
 uint64_t nas_tty_read(uint64_t addr,uint64_t len,bool nonblock);
 #endif

@@ -6,7 +6,7 @@
 #define NAS_LDISC_CAPACITY 256U
 /* Pure terminal byte policy: no MMU, syscall, scheduler or UART. */
 struct nas_ldisc { uint8_t bytes[NAS_LDISC_CAPACITY]; unsigned used,pos; bool ready,eof; };
-enum nas_ldisc_event { NAS_LDISC_OK, NAS_LDISC_UNSUPPORTED_SIGNAL };
+enum nas_ldisc_event { NAS_LDISC_OK, NAS_LDISC_SIGNAL_INT, NAS_LDISC_SIGNAL_QUIT, NAS_LDISC_SIGNAL_STOP };
 typedef void (*nas_ldisc_echo_fn)(void *context, uint8_t byte);
 void nas_ldisc_reset(struct nas_ldisc *ld);
 enum nas_ldisc_event nas_ldisc_feed(struct nas_ldisc *ld,const struct nas_termios *t,
