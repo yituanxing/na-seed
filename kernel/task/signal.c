@@ -660,8 +660,10 @@ uint64_t nas_signal_sigreturn(uint64_t *frame) {
     return nas_arch_saved_return(t);
 #elif defined(__riscv) && __riscv_xlen==64
     struct nas_task *t=nas_current_task;
-    struct nas_rv_trap_frame *tf=(struct nas_rv_trap_frame *)(void *)frame;
-    if(!t->signal_frame_active || tf->x[2]!=t->signal_frame_sp)
+    /* Dispatch passes an 8-word syscall ABI array, NOT a hardware
+     * trapframe. Inspect the live per-ISA user SP instead. */
+    if(!t->signal_frame_active ||
+       nas_arch_signal_user_sp()!=t->signal_frame_sp)
         return (uint64_t)-EFAULT;
     t->arch=t->signal_saved_arch;
     t->blocked_signals=t->signal_saved_mask;
@@ -672,8 +674,8 @@ uint64_t nas_signal_sigreturn(uint64_t *frame) {
     return nas_arch_saved_return(t);
 #elif defined(__aarch64__)
     struct nas_task *t=nas_current_task;
-    struct nas_arm_trap_frame *tf=(struct nas_arm_trap_frame *)(void *)frame;
-    if(!t->signal_frame_active || tf->sp_el0!=t->signal_frame_sp)
+    if(!t->signal_frame_active ||
+       nas_arch_signal_user_sp()!=t->signal_frame_sp)
         return (uint64_t)-EFAULT;
     t->arch=t->signal_saved_arch;
     t->blocked_signals=t->signal_saved_mask;
