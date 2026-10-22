@@ -44,11 +44,12 @@ Do **not** mistake this for full preemption or kernel threads:
 `python3 scripts/busybox-preempt-oracle.py /usr/bin/busybox` exercises
 an entirely standard stock BusyBox `ash` script on Linux:
 
-`(while :; do :; done) & echo cpu-hog-did-not-starve-ash`
+`(echo hog-started; while :; do :; done) | { read started; echo cpu-hog-did-not-starve-ash; }`
 
-The background child runs a **pure userspace CPU loop**. No syscall/pipe
-blocking lets a cooperative scheduler escape; a time-slice interrupt must
-let the parent print. The oracle launches a disposable process group and
+The producer writes one readiness line and then runs a **pure userspace
+CPU loop**. The consumer can print the witness only after reading it.
+The pipe handshake ensures that a cooperative scheduler cannot accidentally
+pass before the hog starts: a timer must preempt the spinning producer. The oracle launches a disposable process group and
 kills all descendants. Until timer IRQs are implemented and the same
 scenario completes under **real NaSeed QEMU**, do not label this acceptance
 as passed. No kernel special-case for the script is permitted.
