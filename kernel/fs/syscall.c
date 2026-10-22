@@ -325,7 +325,7 @@ static uint64_t sys_open_path(const char *path, uint64_t native_flags) {
     struct nas_tmp_file *tmp_file = 0;
     bool create_tmp = false;
     if(same_string(path,"/dev/tty") || same_string(path,"/dev/console") ||
-       same_string(path,"/dev/ttyS0"))kind=FD_UART;
+       same_string(path,"/dev/ttyS0"))kind=FD_TTY;
     else if (same_string(path, "/dev/null")) kind = FD_NULL;
     else if (same_string(path, "/dev/zero")) kind = FD_ZERO;
     else {
@@ -376,7 +376,7 @@ static uint64_t sys_open_path(const char *path, uint64_t native_flags) {
     if ((flags & 0xc0ULL) == 0xc0ULL &&
         (kind == FD_ARCHIVE || kind == FD_DIR || kind == FD_BOOTFS))
         return (uint64_t)-EEXIST;
-    if (kind != FD_NULL && kind != FD_ZERO && kind != FD_UART &&
+    if (kind != FD_NULL && kind != FD_ZERO && kind != FD_TTY &&
         kind != FD_TMP &&
         (flags & 0x200ULL))
         return (uint64_t)-EROFS;
@@ -428,7 +428,8 @@ uint64_t nas_fs_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     if (descriptors[fd] == FD_TMP) return tmp_fd_write(fd, address, length);
     if (descriptors[fd] == FD_BOOTFS || descriptors[fd] == FD_ARCHIVE ||
         descriptors[fd] == FD_DIR) return (uint64_t)-EBADF; /* O_RDONLY */
-    if (descriptors[fd] != FD_UART) return (uint64_t)-EBADF;
+    if (descriptors[fd] != FD_UART && descriptors[fd] != FD_TTY)
+        return (uint64_t)-EBADF;
     for (uint64_t i = 0; i < length; i++) {
         uint8_t *p = nas_mmu_user_byte(address + i);
         if (!p) return i ? i : (uint64_t)-EFAULT;
@@ -470,7 +471,7 @@ uint64_t nas_fs_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
         boot_file_offsets[file_slot[fd]] += length;
         return length;
     }
-    if(descriptors[fd]==FD_UART)
+    if(descriptors[fd]==FD_UART || descriptors[fd]==FD_TTY)
         return nas_tty_read(address,length,
              (file_status_flags[file_slot[fd]]&0x800ULL)!=0);
     if (descriptors[fd] != FD_ZERO) return (uint64_t)-EBADF;
@@ -524,7 +525,7 @@ static uint64_t sys_poll(uint64_t address, uint64_t nfds, uint64_t timeout) {
                     kind == FD_DIR || kind == FD_TMP_DIR || kind == FD_NULL || kind == FD_ZERO ||
                     kind == FD_TMP)
                     revents = events & (POLLIN | POLLOUT);
-                else if (kind == FD_UART)
+                else if (kind == FD_UART || kind == FD_TTY)
                     revents = events & POLLOUT;
                 else if (kind == FD_PIPE_R && nas_pipe_poll_readable(file_slot[(unsigned)fd]))
                     revents = events & POLLIN;
@@ -847,7 +848,13 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
     case NAS_SC_ioctl:
         if (args[1] >= 64 || descriptors[args[1]] == FD_CLOSED)
             FS_RESULT((uint64_t)-EBADF);
-        FS_RESULT(descriptors[args[1]]==FD_UART ?
+        /* Raw boot UART fd0/1/2 are diagnostic pipes, not interactive
+         * TTYs: BusyBox -c must not switch rm into confirmation mode.
+         * Real explicit /dev/tty opens get FD_TTY. A PID1 can still
+         * opt in to physical COM1 through TIOCSCTTY on raw stdin. */
+        FS_RESULT(descriptors[args[1]]==FD_TTY ||
+                  (descriptors[args[1]]==FD_UART &&
+                   (args[2]==0x540e || nas_tty_enabled())) ?
                   nas_tty_ioctl(args[2],args[3]) : (uint64_t)-ENOTTY);
     case NAS_SC_dup3:
         if (args[1] == args[2] || (args[3] & ~0x80000ULL))

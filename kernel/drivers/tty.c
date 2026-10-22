@@ -31,6 +31,7 @@ void nas_tty_init(void) {
     tty.t.lflag=0000001|0000002|0000010; /* ISIG|ICANON|ECHO */
     tty.t.cc[0]=3; tty.t.cc[2]=127; tty.t.cc[4]=4; tty.t.cc[6]=1;
 }
+bool nas_tty_enabled(void) { return tty.rx_enabled; }
 bool nas_tty_controlling(void) {
     return tty.sid && tty.sid==nas_current_task->sid;
 }

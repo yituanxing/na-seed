@@ -41,3 +41,15 @@ NaSeed full-kernel QEMU tests check SID equality. The Linux QEMU-user
 oracle still checks the ioctl success, other tty operations and child
 foreground process-group semantics; it selectively skips that single
 *host-emulator* copy-out comparison, not any NaSeed test.
+
+## Compatibility boundary for boot STDIO
+
+Found by authentic, unmodified BusyBox `rm` regression: treating the
+kernel's raw boot UART FDs (0/1/2) as an interactive TTY makes BusyBox
+ask permission to remove `/tmp` files, despite no interactive input.
+Preserve FD_UART as a raw diagnostic console and return ENOTTY from
+`isatty(0)` until PID1 explicitly calls `TIOCSCTTY`. Opening the real
+`/dev/tty`, `/dev/console` or `/dev/ttyS0` yields a separately typed
+FD_TTY with Linux terminal ioctl support and legitimate session checks.
+The Linux C oracle opens `/dev/tty` explicitly instead of promoting its
+ambient STDIN into a TTY. This fixes behavior, not a fragile log test.

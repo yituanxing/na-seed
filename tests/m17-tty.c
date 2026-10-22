@@ -16,15 +16,17 @@ static void ck(int ok,const char *s) {
     _exit(99);
 }
 int main(void) {
-    ck(isatty(STDIN_FILENO)==1,"real isatty(stdin)");
-    struct termios before,copy;
-    ck(tcgetattr(0,&before)==0,"TCGETS");
-    copy=before;
-    ck(tcsetattr(0,TCSANOW,&copy)==0,"TCSETS");
-    ck(tcgetattr(0,&copy)==0 && before.c_lflag==copy.c_lflag,
-       "termios roundtrip");
+    /* A real tty requires an explicit device: NaSeed boot stdout/stdin
+     * are intentionally raw UART, so existing noninteractive BusyBox
+     * does not start prompting for rm -i just because isatty(0) changed. */
     int tty=open("/dev/tty",O_RDWR);
-    ck(tty>=0,"open controlling /dev/tty");
+    ck(tty>=0 && isatty(tty)==1,"open real controlling /dev/tty");
+    struct termios before,copy;
+    ck(tcgetattr(tty,&before)==0,"TCGETS");
+    copy=before;
+    ck(tcsetattr(tty,TCSANOW,&copy)==0,"TCSETS");
+    ck(tcgetattr(tty,&copy)==0 && before.c_lflag==copy.c_lflag,
+       "termios roundtrip");
     int sid=-1;
     ck(ioctl(tty,TIOCGSID,&sid)==0,"TIOCGSID syscall");
     /* qemu-user Linux ioctl emulation does not copy the native TIOCGSID
