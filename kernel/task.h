@@ -55,6 +55,11 @@ struct nas_task {
      */
     uint64_t blocked_op, blocked_args[4];
     bool pending_valid; /* read(0) is a real pending syscall, not 'none' */
+    /* Snapshot poll interest when blocking. NEVER dereference a different
+     * task's user pollfd pointer during readiness checks. Each bit names a
+     * shared open-file-description slot (0..63). */
+    uint64_t poll_pipe_read, poll_pipe_write;
+    bool poll_tty_read;
 
     /* One independent VM mapping root and ELF/brk/mmap tracking per task. */
     uint64_t root_phys, heap_break;

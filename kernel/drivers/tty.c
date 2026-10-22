@@ -148,6 +148,17 @@ bool nas_tty_read_ready(uint64_t length) {
         NAS_LDISC_CAPACITY:(unsigned)length;
     return nas_ldisc_readable(&tty.ldisc,&tty.t,wanted);
 }
+bool nas_tty_poll_readable(void) {
+    if(!tty.rx_enabled || !nas_arch_console_has_rx())return false;
+    nas_tty_pump();
+    if(tty.unsupported_input)return true; /* syscall reports explicit error */
+    if(tty.t.lflag&0000002)return tty.ldisc.ready;
+    /* MIN=0/TIME=0 read returns 0, but poll(POLLIN) must not report
+     * a nonexistent byte. Minimum of one physical character for poll. */
+    if(tty.ldisc.used==tty.ldisc.pos)return false;
+    unsigned min=tty.t.cc[6] ? tty.t.cc[6] : 1;
+    return tty.ldisc.used-tty.ldisc.pos>=min;
+}
 uint64_t nas_tty_read(uint64_t dst,uint64_t len,bool nonblock) {
     if(!len)return 0;
     if(!tty.rx_enabled)return (uint64_t)-EAGAIN;

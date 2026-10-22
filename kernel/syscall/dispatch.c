@@ -116,6 +116,18 @@ uint64_t syscall_dispatch(const uint64_t *args) {
                                        args[4], args[5], args[6]);
     if (nr == NAS_SC_munmap) return nas_vm_munmap(args[1], args[2]);
     if (nr == NAS_SC_brk) return nas_vm_brk(args[1]);
+    if(nr==NAS_SC_poll || nr==NAS_SC_ppoll) {
+        uint64_t result=(nr==NAS_SC_poll ?
+            nas_fs_poll(args[1],args[2],args[3]) :
+            nas_fs_ppoll(args[1],args[2],args[3],args[4]));
+        if((int64_t)result==-EAGAIN) {
+            if(!nas_fs_poll_arm(args[1],args[2]))
+                return (uint64_t)-EOPNOTSUPP; /* no registered event source */
+            return nas_task_block((uint64_t *)(uintptr_t)args,nr,
+                                  args[1],args[2],args[3],args[4]);
+        }
+        return result;
+    }
     if (nr == NAS_SC_read) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
     if (nr == NAS_SC_write) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
     if (nr == NAS_SC_writev) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
