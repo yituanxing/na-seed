@@ -34,7 +34,7 @@ try:
             # debug-exit marker. Killing at the earlier common PASS line
             # races with physical UART bytes still in the firmware FIFO.
             # Wait for the actual ISA exit marker BEFORE terminating QEMU.
-            if port=="amd64":break
+            if port=="amd64" and p.poll() is not None:break
             if port=="riscv64" and b"[RV64] userspace debug-exit status=0" in log:break
             if port=="arm64" and b"[ARM64] userspace debug-exit status=0" in log:break
         if p.poll() is not None:break
