@@ -481,10 +481,144 @@ static bool x86_install_handler(uint64_t *regs,unsigned signo,
     regs[18]=frameaddr;
     return true;
 }
+
+#elif defined(__riscv) && __riscv_xlen==64
+#include "../arch/riscv64/context.h"
+/* Linux arch/riscv/include/uapi/asm/{ptrace,sigcontext,ucontext}.h.
+ * Native rt_sigframe is [siginfo:128][ucontext:960], 16-byte aligned.
+ * LP64D sigcontext starts at uc+176; the FP union reserves 528 bytes
+ * for future extensions even without vector support. */
+struct rv_sigcontext {
+    uint64_t pc,regs[31];
+    struct {
+        uint64_t fp[32];
+        uint32_t fcsr;
+        uint8_t reserved[528-32*8-4];
+    } __attribute__((aligned(16))) fp;
+};
+struct rv_ucontext {
+    uint64_t flags,link;
+    struct {uint64_t sp;uint32_t flags,pad;uint64_t size;} stack;
+    uint64_t sigmask;
+    uint8_t unused[120];
+    struct rv_sigcontext mc;
+};
+struct rv_sigframe {uint32_t info[32];struct rv_ucontext uc;};
+_Static_assert(sizeof(struct rv_sigcontext)==784,"Linux RV64 sigcontext");
+_Static_assert(offsetof(struct rv_ucontext,mc)==176,"Linux RV64 uc_mcontext");
+_Static_assert(sizeof(struct rv_ucontext)==960,"Linux RV64 ucontext");
+_Static_assert(sizeof(struct rv_sigframe)==1088,"Linux RV64 rt_sigframe");
+/* A tiny RX vDSO equivalent, mapped into EACH process address space on
+ * exec and initial boot. RA never points to a non-executable stack page. */
+#define NAS_SIGRETURN_TRAMPOLINE UINT64_C(0x6ff00000)
+static bool rv_install_handler(uint64_t *opaque,unsigned signo,
+                               const uint64_t *action) {
+    struct nas_rv_trap_frame *fr=(struct nas_rv_trap_frame *)(void *)opaque;
+    struct nas_task *t=nas_current_task;
+    uint64_t handler=action[0];
+    if(!handler || handler>=USER_LIMIT || (handler & 1U))return false;
+    nas_arch_save_user_frame(t,opaque);
+    nas_arch_save_fpu(t);
+    struct nas_arch_context saved=t->arch;
+    if(fr->x[2]<sizeof(struct rv_sigframe)+32 ||
+       fr->x[2]>=USER_LIMIT)return false;
+    uint64_t sp=(fr->x[2]-sizeof(struct rv_sigframe))&~UINT64_C(15);
+    struct rv_sigframe sf={0};
+    sf.info[0]=(uint32_t)signo;
+    sf.uc.sigmask=t->blocked_signals;
+    sf.uc.mc.pc=saved.user_pc;
+    for(unsigned i=1;i<32;i++)sf.uc.mc.regs[i-1]=saved.user_regs[i];
+    for(unsigned i=0;i<32;i++)sf.uc.mc.fp.fp[i]=saved.fp_regs[i];
+    sf.uc.mc.fp.fcsr=(uint32_t)saved.fp_fcsr;
+    if(!nas_user_write_bytes(sp,(const uint8_t *)&sf,sizeof(sf)))return false;
+    t->signal_saved_arch=saved;
+    t->signal_saved_mask=t->blocked_signals;
+    t->signal_frame_sp=sp;
+    t->signal_frame_active=true;
+    t->blocked_signals |= (1ULL<<(signo-1))|action[3];
+    if(action[1] & 0x40000000ULL)t->signal_actions[signo][0]=0;
+    fr->x[2]=sp;
+    fr->x[1]=NAS_SIGRETURN_TRAMPOLINE; /* return address, not user stack */
+    fr->x[10]=signo;
+    fr->x[11]=sp+offsetof(struct rv_sigframe,info);
+    fr->x[12]=sp+offsetof(struct rv_sigframe,uc);
+    fr->sepc=handler;
+    return true;
+}
+#elif defined(__aarch64__)
+#include "../arch/aarch64/context.h"
+/* Linux arm64 uapi sigcontext: 31 GPR, SP/PC/PSTATE, then 4KiB
+ * aligned extension buffer with FPSIMD_MAGIC, size=528 and null terminator. */
+struct arm_sigcontext {
+    uint64_t fault_address,regs[31],sp,pc,pstate;
+    uint8_t reserved[4096] __attribute__((aligned(16)));
+};
+struct arm_ucontext {
+    uint64_t flags,link;
+    struct {uint64_t sp;uint32_t flags,pad;uint64_t size;} stack;
+    uint64_t sigmask;
+    uint8_t unused[120];
+    struct arm_sigcontext mc;
+};
+struct arm_sigframe {uint32_t info[32];struct arm_ucontext uc;};
+struct arm_fpsimd {
+    uint32_t magic,size,fpsr,fpcr;
+    uint8_t regs[512] __attribute__((aligned(16)));
+};
+_Static_assert(offsetof(struct arm_sigcontext,reserved)==288,
+               "Linux ARM64 FPSIMD reserved offset");
+_Static_assert(sizeof(struct arm_sigcontext)==4384,
+               "Linux ARM64 sigcontext");
+_Static_assert(offsetof(struct arm_ucontext,mc)==176,
+               "Linux ARM64 uc_mcontext");
+_Static_assert(sizeof(struct arm_sigframe)==4688,
+               "Linux ARM64 rt_sigframe");
+_Static_assert(sizeof(struct arm_fpsimd)==528,
+               "Linux ARM64 fpsimd_context");
+#define NAS_SIGRETURN_TRAMPOLINE UINT64_C(0x6ff00000)
+static bool arm_install_handler(uint64_t *opaque,unsigned signo,
+                                const uint64_t *action) {
+    struct nas_arm_trap_frame *fr=(struct nas_arm_trap_frame *)(void *)opaque;
+    struct nas_task *t=nas_current_task;
+    uint64_t handler=action[0];
+    if(!handler || handler>=USER_LIMIT || (handler & 3U))return false;
+    nas_arch_save_user_frame(t,opaque);
+    nas_arch_save_fpu(t);
+    struct nas_arch_context saved=t->arch;
+    if(fr->sp_el0<sizeof(struct arm_sigframe)+32 ||
+       fr->sp_el0>=USER_LIMIT)return false;
+    uint64_t sp=(fr->sp_el0-sizeof(struct arm_sigframe))&~UINT64_C(15);
+    struct arm_sigframe sf={0};
+    sf.info[0]=(uint32_t)signo;
+    sf.uc.sigmask=t->blocked_signals;
+    for(unsigned i=0;i<31;i++)sf.uc.mc.regs[i]=saved.user_regs[i];
+    sf.uc.mc.sp=saved.user_sp;
+    sf.uc.mc.pc=saved.user_elr;
+    sf.uc.mc.pstate=saved.user_spsr;
+    struct arm_fpsimd *fp=(struct arm_fpsimd *)(void *)sf.uc.mc.reserved;
+    fp->magic=0x46508001U;
+    fp->size=sizeof(*fp);
+    fp->fpsr=(uint32_t)saved.fpsr;
+    fp->fpcr=(uint32_t)saved.fpcr;
+    for(unsigned i=0;i<512;i++)fp->regs[i]=saved.simd_regs[i];
+    if(!nas_user_write_bytes(sp,(const uint8_t *)&sf,sizeof(sf)))return false;
+    t->signal_saved_arch=saved;
+    t->signal_saved_mask=t->blocked_signals;
+    t->signal_frame_sp=sp;
+    t->signal_frame_active=true;
+    t->blocked_signals |= (1ULL<<(signo-1))|action[3];
+    if(action[1] & 0x40000000ULL)t->signal_actions[signo][0]=0;
+    fr->sp_el0=sp;
+    fr->x[30]=NAS_SIGRETURN_TRAMPOLINE; /* Linux rt_sigreturn via RX page */
+    fr->x[0]=signo;
+    fr->x[1]=sp+offsetof(struct arm_sigframe,info);
+    fr->x[2]=sp+offsetof(struct arm_sigframe,uc);
+    fr->elr_el1=handler;
+    return true;
+}
 #endif
 
 void nas_signal_user_return(uint64_t *frame) {
-#if defined(__x86_64__)
     struct nas_task *t=nas_current_task;
     if(t->signal_frame_active || !frame || !nas_signal_user_pending(t))
         return;
@@ -494,16 +628,18 @@ void nas_signal_user_return(uint64_t *frame) {
         if(!(ready&(1ULL<<(sig-1))))continue;
         const uint64_t *act=t->signal_actions[sig];
         if(act[0]<=1)continue;
-        if(!x86_install_handler(frame,sig,act)) {
-            nas_fail("M30 cannot build native x86 signal frame");
-        }
+#if defined(__x86_64__)
+        bool ok=x86_install_handler(frame,sig,act);
+#elif defined(__riscv) && __riscv_xlen==64
+        bool ok=rv_install_handler(frame,sig,act);
+#elif defined(__aarch64__)
+        bool ok=arm_install_handler(frame,sig,act);
+#endif
+        if(!ok)nas_fail("M30 cannot build native user signal frame");
         t->pending_signals &= ~(1ULL<<(sig-1));
         t->signal_force_deliver &= ~(1ULL<<(sig-1));
         return;
     }
-#else
-    (void)frame;
-#endif
 }
 
 uint64_t nas_signal_sigreturn(uint64_t *frame) {
@@ -522,8 +658,29 @@ uint64_t nas_signal_sigreturn(uint64_t *frame) {
     nas_arch_restore_cpu(t);
     nas_arch_load_user_frame(t,frame);
     return nas_arch_saved_return(t);
-#else
-    (void)frame;
-    return (uint64_t)-EOPNOTSUPP;
+#elif defined(__riscv) && __riscv_xlen==64
+    struct nas_task *t=nas_current_task;
+    struct nas_rv_trap_frame *tf=(struct nas_rv_trap_frame *)(void *)frame;
+    if(!t->signal_frame_active || tf->x[2]!=t->signal_frame_sp)
+        return (uint64_t)-EFAULT;
+    t->arch=t->signal_saved_arch;
+    t->blocked_signals=t->signal_saved_mask;
+    t->signal_frame_active=false;
+    t->signal_frame_sp=0;
+    nas_arch_restore_cpu(t);
+    nas_arch_load_user_frame(t,frame);
+    return nas_arch_saved_return(t);
+#elif defined(__aarch64__)
+    struct nas_task *t=nas_current_task;
+    struct nas_arm_trap_frame *tf=(struct nas_arm_trap_frame *)(void *)frame;
+    if(!t->signal_frame_active || tf->sp_el0!=t->signal_frame_sp)
+        return (uint64_t)-EFAULT;
+    t->arch=t->signal_saved_arch;
+    t->blocked_signals=t->signal_saved_mask;
+    t->signal_frame_active=false;
+    t->signal_frame_sp=0;
+    nas_arch_restore_cpu(t);
+    nas_arch_load_user_frame(t,frame);
+    return nas_arch_saved_return(t);
 #endif
 }
