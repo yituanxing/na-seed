@@ -30,6 +30,10 @@ void nas_signal_ppoll_restore(struct nas_task *task,bool interrupted);
 /* Emit SIGPIPE for caught or masked broken-pipe writes; default action is
  * handled by the scheduler before returning to userspace. */
 void nas_signal_broken_pipe(uint64_t fd);
+/* Called by the selected ISA's frame provider after saving the old mask.
+ * Correct SA_NODEFER/RESETHAND semantics are owned by the common core. */
+void nas_signal_handler_enter(struct nas_task *task,unsigned signum,
+                              const uint64_t action[4]);
 uint64_t nas_signal_pending(uint64_t destination,uint64_t size);
 /* Linux pid_t group selectors, nonmaskable SIGKILL and signal-zero probe. */
 uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame);
