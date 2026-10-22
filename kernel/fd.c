@@ -1,6 +1,7 @@
 #include "fd.h"
 #include "task.h"
 #include "errno.h"
+#include "fs/file_ops.h"
 
 /* One global open-description table shared across all task FD tables.
  * Backends are released by the syscall adapter only on final close;
@@ -9,12 +10,14 @@
 uint16_t nas_file_refcount[NAS_FD_LIMIT];
 uint64_t nas_file_status_flags[NAS_FD_LIMIT];
 uint64_t nas_boot_file_offsets[NAS_FD_LIMIT];
+const struct nas_file_ops *nas_fd_file_ops[NAS_FD_LIMIT];
 
 void nas_fd_system_init(void) {
     for (unsigned i=0;i<NAS_FD_LIMIT;i++) {
         nas_file_refcount[i]=0;
         nas_file_status_flags[i]=0;
         nas_boot_file_offsets[i]=0;
+        nas_fd_file_ops[i]=0;
     }
 }
 
