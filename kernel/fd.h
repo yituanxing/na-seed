@@ -36,5 +36,5 @@ struct nas_open_file {
     const struct limine_file *boot_file;
     const struct bootfs_entry *boot_entry;
 };
-extern struct nas_open_file nas_open_files[NAS_FD_LIMIT];
+extern struct nas_open_file nas_open_files[64];
 #endif
