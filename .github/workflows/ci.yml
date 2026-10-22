@@ -73,50 +73,6 @@ jobs:
         run: DEBIAN_REQUIRE_PASS=1 make debian-probe
       - name: x86 Debian static BusyBox — same 17 cases as RV64
         run: sh scripts/probe-x86-busybox-parity.sh
-      - name: Stage official Alpine prebuilt dynamic ELF and musl runtime
-        run: make alpine-fetch
-      - name: Diagnose real BusyBox producer early close and pipe lifecycle
-        run: make ash-lifecycle-probe
-      - name: Unmodified BusyBox bare PATH applets through real CPIO symlinks
-        run: make ash-symlinks-probe
-      - name: Authentic BusyBox shell scratch files and read-only CPIO boundary
-        run: make ash-tmp-probe
-      - name: BusyBox directory creation, removal, and open inode lifecycle
-        run: make ash-tree-probe
-      - name: Real Alpine BusyBox cp/mv, rename atomicity, and open inode lifecycle
-        run: make ash-rename-probe
-      - name: Real BusyBox FD inheritance, dup offsets and last-close lifecycle
-        run: make ash-fds-probe
-      - name: Real BusyBox pathname traversal, symlink and dotdot semantics
-        run: make ash-paths-probe
-      - name: Direct ring3 openat ABI flags and readonly CPIO error semantics
-        run: make path-abi-probe
-      - name: Pipe backend reuse and cascading original BusyBox pipelines
-        run: make ash-pipe-backend-probe
-      - name: Limine archive-only initramfs boot, default and explicit authentic BusyBox ELF
-        run: make boot-handoff-probe
-      - name: Repeated real BusyBox fork, wait, tmpfs tombstone, pipe and SIGPIPE lifecycle
-        run: make ash-resources-probe
-      - name: Native execve of real CPIO shebang scripts and BusyBox shell workflows
-        run: make shebang-abi-probe
-      - name: Real BusyBox ash pipeline pipe/pipe2 and EOF under QEMU
-        run: make ash-pipes-probe
-      - name: Boot genuine Alpine dynamic BusyBox and report ABI blockers
-        run: ALPINE_REQUIRE_PASS=1 make alpine-probe
-      - name: Verify multiple Alpine BusyBox applets via Limine cmdline
-        run: make alpine-argv-probe
-      - name: Real archive-backed Alpine BusyBox ls and cat under QEMU
-        run: make alpine-fs-probe
-      - name: Real Alpine BusyBox ELF loaded entirely from CPIO
-        run: make alpine-archive-probe
-      - name: Select between two authentic CPIO executables and reject invalid paths
-        run: make alpine-selector-probe
-      - name: Accept real BusyBox ash cwd/FD/readiness and diagnose process blockers
-        run: make ash-diagnostic
-      - name: Unmodified Alpine BusyBox ash execve CPIO process replacement
-        run: make ash-execve-probe
-      - name: Real BusyBox ash fork, execve, wait4 and parent continuation
-        run: make ash-fork-probe
       - name: Attach serial log on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -149,6 +105,99 @@ jobs:
             build/ash-shebang-*-serial.log
             build/path-abi-serial.log
           if-no-files-found: ignore
+
+  x86_fs:
+    name: x86 native BusyBox VFS / path / archive regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install x86 userland / QEMU dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang lld xorriso qemu-system-x86 ovmf musl-tools binutils cpio
+      - name: Build shared x86 kernel and stage authentic Alpine/musl binaries
+        run: |
+          make kernel
+          make alpine-fetch
+      - name: Unmodified BusyBox bare PATH applets through real CPIO symlinks
+        run: make ash-symlinks-probe
+      - name: Authentic BusyBox shell scratch files and read-only CPIO boundary
+        run: make ash-tmp-probe
+      - name: BusyBox directory creation, removal, and open inode lifecycle
+        run: make ash-tree-probe
+      - name: Real Alpine BusyBox cp/mv, rename atomicity, and open inode lifecycle
+        run: make ash-rename-probe
+      - name: Real BusyBox FD inheritance, dup offsets and last-close lifecycle
+        run: make ash-fds-probe
+      - name: Real BusyBox pathname traversal, symlink and dotdot semantics
+        run: make ash-paths-probe
+      - name: Direct ring3 openat ABI flags and readonly CPIO error semantics
+        run: make path-abi-probe
+      - name: Limine archive-only initramfs boot, default and explicit authentic BusyBox ELF
+        run: make boot-handoff-probe
+      - name: Native execve of real CPIO shebang scripts and BusyBox shell workflows
+        run: make shebang-abi-probe
+      - name: Real archive-backed Alpine BusyBox ls and cat under QEMU
+        run: make alpine-fs-probe
+      - name: Real Alpine BusyBox ELF loaded entirely from CPIO
+        run: make alpine-archive-probe
+      - name: Select between two authentic CPIO executables and reject invalid paths
+        run: make alpine-selector-probe
+      - name: Upload x86-fs serial evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naseed-x86-fs-serial
+          path: |
+            build/*.serial.log
+            build/**/*.serial.log
+            build/serial.log
+          if-no-files-found: ignore
+
+  x86_process:
+    name: x86 native BusyBox process / pipe / ABI regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install x86 userland / QEMU dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang lld xorriso qemu-system-x86 ovmf musl-tools binutils cpio
+      - name: Build shared x86 kernel and stage authentic Alpine/musl binaries
+        run: |
+          make kernel
+          make alpine-fetch
+      - name: Diagnose real BusyBox producer early close and pipe lifecycle
+        run: make ash-lifecycle-probe
+      - name: Pipe backend reuse and cascading original BusyBox pipelines
+        run: make ash-pipe-backend-probe
+      - name: Repeated real BusyBox fork, wait, tmpfs tombstone, pipe and SIGPIPE lifecycle
+        run: make ash-resources-probe
+      - name: Real BusyBox ash pipeline pipe/pipe2 and EOF under QEMU
+        run: make ash-pipes-probe
+      - name: Boot genuine Alpine dynamic BusyBox and report ABI blockers
+        run: ALPINE_REQUIRE_PASS=1 make alpine-probe
+      - name: Verify multiple Alpine BusyBox applets via Limine cmdline
+        run: make alpine-argv-probe
+      - name: Accept real BusyBox ash cwd/FD/readiness and diagnose process blockers
+        run: make ash-diagnostic
+      - name: Unmodified Alpine BusyBox ash execve CPIO process replacement
+        run: make ash-execve-probe
+      - name: Real BusyBox ash fork, execve, wait4 and parent continuation
+        run: make ash-fork-probe
+      - name: Upload x86-process serial evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naseed-x86-process-serial
+          path: |
+            build/*.serial.log
+            build/**/*.serial.log
+            build/serial.log
+          if-no-files-found: ignore
+
   riscv64_m0:
     name: RISC-V real Limine/OpenSBI boot
     runs-on: ubuntu-latest
