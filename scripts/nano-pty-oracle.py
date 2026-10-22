@@ -16,7 +16,7 @@ master, slave = pty.openpty()
 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
 env = {**os.environ, "TERM": "vt100", "LC_ALL": "C", "HOME": "/tmp"}
 process = subprocess.Popen(
-    [sys.argv[1], "-I", "tests/nano-note.txt"],
+    [sys.argv[1], "tests/nano-note.txt"],
     stdin=slave, stdout=slave, stderr=slave, env=env, start_new_session=True,
 )
 os.close(slave)
@@ -43,5 +43,5 @@ if process.poll() is None:
 process.wait(timeout=3)
 os.close(master)
 if not sent or process.returncode != 0:
-    sys.exit(f"[NANO LINUX PTY FAIL] rendered={sent} return={process.returncode} bytes={bytes(data)[-400:]!r}")
+    sys.exit(f"[NANO LINUX PTY FAIL] rendered={sent} return={process.returncode} bytes_head={bytes(data)[:800]!r} bytes_tail={bytes(data)[-400:]!r}")
 print("[NANO LINUX PTY PASS] original nano displayed real file and exited on Ctrl+X")

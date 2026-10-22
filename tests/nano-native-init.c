@@ -19,7 +19,7 @@ int main(void) {
     if (fd > 2) close(fd);
     struct termios t;
     if (tcgetattr(0, &t) != 0) { perror("[NANO] tcgetattr"); return 93; }
-    char *const argv[]={"/bin/nano","-I","/tests/note.txt",NULL};
+    char *const argv[]={"/bin/nano","/tests/note.txt",NULL};
     char *const envp[]={"TERM=vt100","TERMINFO=/usr/share/terminfo",
         "HOME=/tmp","PATH=/bin:/usr/bin","LC_ALL=C",NULL};
     puts("[NANO] starting genuine GNU nano in native controlling TTY");
