@@ -4,11 +4,27 @@
 #include "lib/string.h"
 #include <stddef.h>
 
-/* One shared process registry. PID 1 owns the first slot; other slots
- * hold ready, blocked, running or zombie processes. A single kernel stack
- * is shared across syscall-boundary cooperative switches. Task slots may
- * be reused after wait4, but PIDs may not be recycled. */
+/* Task-owned entry stacks. Cooperative syscall switching still unwinds
+ * every C frame; this is NOT yet a resumable kernel continuation. */
 static struct nas_task task_table[NAS_TASK_LIMIT];
+static _Alignas(16) uint8_t task_kernel_stacks[NAS_TASK_LIMIT][NAS_KERNEL_STACK_BYTES];
+#define NAS_KSTACK_SENTINEL UINT64_C(0x6e61736565646b73)
+static uint64_t stack_top(unsigned slot) {
+    return (uint64_t)(uintptr_t)&task_kernel_stacks[slot][NAS_KERNEL_STACK_BYTES];
+}
+static void stack_reset(unsigned slot) {
+    *(uint64_t *)(void *)task_kernel_stacks[slot] = NAS_KSTACK_SENTINEL;
+}
+bool nas_task_kernel_stack_ok(const struct nas_task *task) {
+    if (!task) return false;
+    uintptr_t base=(uintptr_t)&task_table[0];
+    uintptr_t end=(uintptr_t)&task_table[NAS_TASK_LIMIT];
+    uintptr_t ptr=(uintptr_t)task;
+    if (ptr < base || ptr >= end || (ptr-base)%sizeof(task_table[0])) return false;
+    unsigned slot=(unsigned)((ptr-base)/sizeof(task_table[0]));
+    return task->kernel_stack_top == stack_top(slot) &&
+        *(const uint64_t *)(const void *)task_kernel_stacks[slot] == NAS_KSTACK_SENTINEL;
+}
 static uint64_t next_pid = 2;
 struct nas_task *nas_current_task;
 
@@ -16,6 +32,8 @@ void nas_task_boot_init(void) {
     for (unsigned n = 0; n < NAS_TASK_LIMIT; n++) {
         struct nas_task *task = &task_table[n];
         memset(task, 0, sizeof(*task));
+        stack_reset(n);
+        task->kernel_stack_top = stack_top(n);
     }
     next_pid = 2;
     nas_fd_system_init();
@@ -47,6 +65,9 @@ struct nas_task *nas_task_fork_slot(void) {
         if (task_table[i].state != NAS_TASK_FREE) continue;
         struct nas_task *child = &task_table[i];
         memcpy(child, nas_current_task, sizeof(*child));
+        /* fork copies userspace state but NEVER the parent's stack owner. */
+        stack_reset(i);
+        child->kernel_stack_top = stack_top(i);
         child->pid = next_pid++;
         child->ppid = nas_current_task->pid;
         /* pgid and sid were inherited from parent; execed is per-fork. */

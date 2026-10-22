@@ -54,6 +54,11 @@ nas_arm_full_vectors:
 .global nas_arch_enter_user
 .balign 4
 nas_arch_enter_user:
+    /* No return into the calling C frame: install the task-owned EL1
+     * entry stack immediately before eret. Never change SP_EL1 inside C. */
+    adrp x9, nas_arm_entry_stack_top
+    ldr x9, [x9, :lo12:nas_arm_entry_stack_top]
+    mov sp, x9
     msr sp_el0,x1
     msr elr_el1,x0
     mov x2,#0x3c0       /* DAIF masked, EL0t */
@@ -99,6 +104,11 @@ nas_arm_lower_sync:
     str x0,[sp,#272]
     mov x0,sp
     bl nas_arm_full_trap_c
+    /* Return via the selected task's separate EL1 stack; all kernel C
+     * calls have unwound and only the saved EL0 trap frame is relocated. */
+    mov x0, sp
+    bl nas_arm_return_stack
+    mov sp, x0
     ldr x9,[sp,#248]
     msr sp_el0,x9
     ldr x9,[sp,#256]

@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "cpu.h"
+#include "../../task.h"
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
 extern void nas_hex(uint64_t);
@@ -9,6 +10,7 @@ extern void gdt_reload(const void *);
 extern void syscall_entry(void);
 extern void *exception_vectors[32];
 extern char kernel_stack_top;
+extern uint64_t nas_x86_kernel_stack_ptr;
 void nas_arch_outb(uint16_t port, uint8_t value) {
     __asm__ volatile ("outb %0, %1" : : "a"(value), "Nd"(port));
 }
@@ -55,6 +57,12 @@ void nas_arch_cpu_user_fp_init(void) {
     __asm__ volatile ("mov %0, %%cr0" : : "r"(cr0) : "memory");
     __asm__ volatile ("mov %0, %%cr4" : : "r"(cr4) : "memory");
     __asm__ volatile ("fninit");
+}
+void nas_arch_x86_set_kernel_stack(uint64_t top) {
+    /* syscall and hardware privilege transitions must select the same
+     * process-owned stack; never update while changing the live RSP. */
+    tss.rsp0 = top;
+    nas_x86_kernel_stack_ptr = top;
 }
 void nas_arch_cpu_tables_init(void) {
     tss.rsp0 = (uint64_t)(uintptr_t)&kernel_stack_top;
@@ -132,6 +140,8 @@ void nas_arch_set_user_tls(uint64_t address) { wrmsr(0xc0000100, address); }
 void nas_arch_prepare_user_cpu(void) {
     nas_arch_cpu_tables_init();
     nas_arch_cpu_user_fp_init();
+    if (!nas_task_kernel_stack_ok(nas_current_task)) nas_arch_halt();
+    nas_arch_x86_set_kernel_stack(nas_current_task->kernel_stack_top);
 }
 void nas_arch_enable_user_traps(void) {
     nas_arch_syscall_enable();

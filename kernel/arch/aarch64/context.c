@@ -7,7 +7,21 @@
 #include "../../syscall/dispatch.h"
 #include "../../panic.h"
 #include "../../drivers/serial.h"
+#include "../../lib/string.h"
 static struct nas_arm_trap_frame *live;
+uint64_t nas_arm_entry_stack_top;
+/* ARM trap.S reserves 288 bytes: 280-byte register image + 8 padding,
+ * keeping the active EL1 stack 16-byte aligned through all C calls. */
+uint64_t nas_arm_return_stack(const struct nas_arm_trap_frame *source) {
+    const struct nas_task *task=nas_current_task;
+    if (!nas_task_kernel_stack_ok(task))
+        nas_fail("ARM64 invalid task kernel stack at eret");
+    uint64_t dest=task->kernel_stack_top-288U;
+    if (dest != (uint64_t)(uintptr_t)source)
+        memcpy((void *)(uintptr_t)dest, source, sizeof(*source));
+    return dest;
+}
+
 extern void nas_arm_save_simd(void *);
 extern void nas_arm_load_simd(const void *);
 void nas_arm_full_trap_c(struct nas_arm_trap_frame *frame) {
@@ -55,6 +69,8 @@ void nas_arm_full_trap_c(struct nas_arm_trap_frame *frame) {
     live=0;
 }
 void nas_arch_restore_cpu(const struct nas_task *task) {
+    if (!nas_task_kernel_stack_ok(task)) nas_fail("ARM64 switching to invalid stack");
+    nas_arm_entry_stack_top = task->kernel_stack_top;
     nas_mmu_switch_root(task->root_phys);
     uint64_t tls=nas_task_tls_base(task);
     __asm__ volatile("msr tpidr_el0,%0" : : "r"(tls) : "memory");

@@ -39,7 +39,9 @@ syscall_entry:
      */
     cld
     movq %rsp, syscall_user_rsp(%rip)
-    leaq kernel_stack_top(%rip), %rsp
+    /* The active task owns this entry stack. Switched at a safe syscall
+     * return boundary with its TSS.rsp0 in nas_arch_x86_set_kernel_stack. */
+    movq nas_x86_kernel_stack_ptr(%rip), %rsp
     pushq %r15
     pushq %r14
     pushq %r13
@@ -273,6 +275,11 @@ exception_vectors:
     .quad isr29
     .quad isr30
     .quad isr31
+
+.section .data
+.balign 8
+.global nas_x86_kernel_stack_ptr
+nas_x86_kernel_stack_ptr: .quad kernel_stack_top
 
 .section .bss
 .balign 16

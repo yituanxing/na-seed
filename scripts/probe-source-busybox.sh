@@ -7,6 +7,10 @@ port=$1
 binary="build/source-busybox/$port/busybox"
 test -s "$binary" || sh scripts/build-source-busybox.sh "$port"
 test -s "$binary" && test -s "build/source-busybox/$port/verified.config"
+if [ "$port" = amd64 ]; then
+    # Exact upstream shell/echo/wc on native Linux BEFORE three real kernels.
+    sh scripts/check-kstack-busybox-oracle.sh "$binary"
+fi
 sh scripts/build-m11-vm-test.sh "$port"
 sh scripts/build-m12-process-test.sh "$port"
 sh scripts/build-m13-init.sh "$port"
@@ -41,7 +45,7 @@ fi
 export BUSYBOX_EXTRA_DIR="$extra_dir"
 export BUSYBOX_PARITY_BINARY="$binary"
 export BUSYBOX_PARITY_MANIFEST=scripts/source-busybox-cases.tsv
-export BUSYBOX_PARITY_EXPECTED_COUNT=14
+export BUSYBOX_PARITY_EXPECTED_COUNT=16
 case "$port" in
     amd64) sh scripts/probe-x86-busybox-parity.sh ;;
     riscv64) sh scripts/probe-riscv64-busybox-matrix.sh ;;
@@ -80,4 +84,4 @@ else
       NASEED_INTERACTIVE_DRIVER=scripts/m25-serial-check.py \
       sh scripts/probe-m18-port-interactive.sh "$port"
 fi
-echo "[SOURCE BUSYBOX MATRIX PASS] $port: 14/14 native self-compiled workloads"
+echo "[SOURCE BUSYBOX MATRIX PASS] $port: 16/16 native self-compiled workloads"

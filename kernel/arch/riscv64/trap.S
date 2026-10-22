@@ -8,7 +8,9 @@
 nas_arch_enter_user:
     la t0, nas_rv_full_trap
     csrw stvec, t0
-    la t0, kernel_stack_top
+    /* First entry and exec use the active task's assigned entry stack. */
+    la t0, nas_rv_entry_stack_top
+    ld t0, 0(t0)
     csrw sscratch, t0
     csrr t0, sstatus
     li t1, -259           /* clear SPP(8), SIE(1) */
@@ -66,6 +68,11 @@ nas_rv_full_trap:
     sd t0,264(sp)
     mv a0,sp
     call nas_rv_full_trap_c
+    /* Copy the finished trap snapshot to the selected task's private stack
+     * BEFORE restoring GPRs. No live kernel C frames cross this boundary. */
+    mv a0, sp
+    call nas_rv_return_stack
+    mv sp, a0
     ld t0,256(sp)
     csrw sepc,t0
     ld t0,264(sp)

@@ -6,10 +6,23 @@
 #include "../../syscall/dispatch.h"
 #include "../../panic.h"
 #include "../../drivers/serial.h"
+#include "../../lib/string.h"
 #include "context.h"
 extern void nas_rv_save_fp(uint64_t *);
 extern void nas_rv_restore_fp(const uint64_t *);
 static struct nas_rv_trap_frame *live;
+/* Used by first user entry and by an execve that replaces a process image. */
+uint64_t nas_rv_entry_stack_top;
+uint64_t nas_rv_return_stack(const struct nas_rv_trap_frame *source) {
+    const struct nas_task *task=nas_current_task;
+    if (!nas_task_kernel_stack_ok(task))
+        nas_fail("RV64 invalid task kernel stack at sret");
+    uint64_t dest=task->kernel_stack_top-sizeof(*source);
+    if (dest != (uint64_t)(uintptr_t)source)
+        memcpy((void *)(uintptr_t)dest, source, sizeof(*source));
+    return dest;
+}
+
 /* Architecture entry translates the full hardware register image to the
  * established 8-word Linux syscall contract used by the x86 kernel. */
 void nas_rv_full_trap_c(struct nas_rv_trap_frame *frame) {
@@ -35,6 +48,8 @@ void nas_rv_full_trap_c(struct nas_rv_trap_frame *frame) {
     live=0;
 }
 void nas_arch_restore_cpu(const struct nas_task *task) {
+    if (!nas_task_kernel_stack_ok(task)) nas_fail("RV64 switching to invalid stack");
+    nas_rv_entry_stack_top = task->kernel_stack_top;
     nas_mmu_switch_root(task->root_phys);
     if(live) live->x[4]=nas_task_tls_base(task);
     nas_rv_restore_fp(task->arch.fp_regs);
