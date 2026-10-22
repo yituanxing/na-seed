@@ -306,7 +306,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        port: [amd64, riscv64, arm64]
+        # ARM64 already has a separate native full-kernel/BusyBox parity gate
+        # on kernel PRs. Expensive source rebuilding is moved to a weekly or
+        # explicitly dispatched job so apt cross-toolchain downloads cannot
+        # repeatedly block otherwise complete feature acceptance.
+        port: [amd64, riscv64]
     steps:
       - uses: actions/checkout@v4
       - name: Install native cross toolchain and QEMU

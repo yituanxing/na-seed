@@ -1,0 +1,44 @@
+name: NaSeed original-source ARM64 BusyBox (extended)
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * 0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: naseed-extended-arm64-source
+  cancel-in-progress: false
+
+jobs:
+  arm64-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ARM64 cross-toolchain and genuine system QEMU
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y make gcc binutils curl bzip2 xorriso             clang lld cpio mtools gdisk qemu-user gcc-aarch64-linux-gnu             libc6-dev-arm64-cross qemu-system-arm qemu-efi-aarch64
+      - name: Source fixture and shared-kernel static checks
+        run: sh scripts/check-source-busybox.sh
+      - name: Cache the official pinned BusyBox release
+        uses: actions/cache@v4
+        with:
+          path: build/deps/source-busybox/busybox-1.37.0.tar.bz2
+          key: naseed-source-busybox-1.37.0-3311dff32e746499
+      - name: Compile genuine BusyBox 1.37.0 for ARM64
+        run: sh scripts/build-source-busybox.sh arm64
+      - name: Run the unchanged full original-source ARM64 QEMU matrix
+        run: sh scripts/probe-source-busybox.sh arm64
+      - name: Attach actual guest serial logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naseed-extended-arm64-source-logs
+          path: |
+            build/source-busybox/arm64/verified.config
+            build/source-busybox/arm64/artifacts.sha256
+            build/port-aarch64/full/matrix-source/*.serial.log
+          if-no-files-found: ignore
