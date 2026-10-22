@@ -13,6 +13,39 @@
 #define P_USER 4ULL
 #define PHYS_MASK 0x000ffffffffff000ULL
 extern void nas_print(const char *);
+/* Local APIC physical MMIO is not in Limine's RAM-only HHDM.
+ * Use a dedicated kernel high-VA leaf shared by every future user CR3.
+ * All intermediate pages come from the regular zeroing frame allocator.
+ * Never overwrite a firmware/kernel mapping or interpret a huge page as
+ * a next-level table. 0xffffffffe1000000 is outside our linked image.
+ */
+#define NAS_X86_LAPIC_VIRT UINT64_C(0xffffffffe1000000)
+bool nas_arch_x86_map_lapic_page(uint64_t phys) {
+    if (!phys || (phys & 4095U)) return false;
+    uint64_t root=nas_arch_current_page_root() & PHYS_MASK;
+    if (!root) return false;
+    for (unsigned level=3;level>0;--level) {
+        uint64_t *table=(uint64_t *)(uintptr_t)(nas_hhdm_offset()+root);
+        unsigned idx=(unsigned)((NAS_X86_LAPIC_VIRT>>(12+9*level))&511U);
+        uint64_t entry=table[idx];
+        if (!(entry&P_PRESENT)) {
+            root=nas_frame_alloc();
+            if (!root) return false;
+            table[idx]=root|P_PRESENT|P_RW;
+        } else {
+            if ((entry & P_USER) || (entry & (1ULL<<7))) return false;
+            root=entry&PHYS_MASK;
+            if (!root) return false;
+        }
+    }
+    uint64_t *pt=(uint64_t *)(uintptr_t)(nas_hhdm_offset()+root);
+    unsigned idx=(unsigned)((NAS_X86_LAPIC_VIRT>>12)&511U);
+    if (pt[idx]) return false;
+    /* Write-back caching on LAPIC MMIO is forbidden. PCD+PWT, NX, supervisor. */
+    pt[idx]=phys|P_PRESENT|P_RW|0x18ULL|(1ULL<<63);
+    nas_arch_invalidate_page(NAS_X86_LAPIC_VIRT);
+    return true;
+}
 /* User pages: read and amend existing Limine CR3 paging hierarchy. */
 static uint64_t *phys_table(uint64_t physical) {
     return (uint64_t *)(uintptr_t)(nas_hhdm_offset() + physical);
