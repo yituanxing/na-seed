@@ -9,6 +9,7 @@
 #include "../tmpfs.h"
 #include "../pipe.h"
 #include "../path.h"
+#include "../lib/string.h"
 #include "../mm/usercopy.h"
 #include "../arch/arch.h"
 #include "../arch/abi.h"
@@ -64,7 +65,6 @@ static void observe_stdout(char ch) {
  */
 extern void nas_putchar(char c);
 
-static bool same_string(const char *a, const char *b);
 /* Per-FD handles share a refcounted open-file description after dup().
  * All fd aliases must observe the same read/seek/directory cursor.
  */
@@ -196,17 +196,13 @@ static uint64_t sys_fcntl(uint64_t fd, uint64_t command, uint64_t arg) {
     }
 }
 static const struct limine_file *bootfs_lookup(const char *path) {
-    if (same_string(path, "/bin/busybox")) return nas_module(0);
-    if (same_string(path, NAS_ELF_INTERP) ||
-        same_string(path, NAS_ELF_LIBC_ALIAS))
+    if ((strcmp(path, "/bin/busybox") == 0)) return nas_module(0);
+    if ((strcmp(path, NAS_ELF_INTERP) == 0) ||
+        (strcmp(path, NAS_ELF_LIBC_ALIAS) == 0))
         return nas_module(1);
     return 0;
 }
 
-static bool same_string(const char *a, const char *b) {
-    for (; *a && *b; a++, b++) if (*a != *b) return false;
-    return *a == *b;
-}
 /* Lexically combine absolute, cwd-relative and dirfd-relative paths.
  * bootfs_resolve performs archive symlink traversal at the actual lookup.
  */
@@ -317,17 +313,17 @@ static uint64_t sys_open_path(const char *path, uint64_t native_flags) {
                                0x80ULL | /* O_EXCL */
                                0x40ULL | 0x200ULL | 0x400ULL;
     if (flags & ~permitted) return (uint64_t)-EINVAL;
-    if(same_string(path,"/dev/tty") && !nas_tty_controlling())
+    if((strcmp(path, "/dev/tty") == 0) && !nas_tty_controlling())
         return (uint64_t)-ENXIO;
     uint8_t kind = FD_CLOSED;
     const struct bootfs_entry *entry = 0;
     const struct limine_file *real_file = 0;
     struct nas_tmp_file *tmp_file = 0;
     bool create_tmp = false;
-    if(same_string(path,"/dev/tty") || same_string(path,"/dev/console") ||
-       same_string(path,"/dev/ttyS0"))kind=FD_TTY;
-    else if (same_string(path, "/dev/null")) kind = FD_NULL;
-    else if (same_string(path, "/dev/zero")) kind = FD_ZERO;
+    if((strcmp(path, "/dev/tty") == 0) || (strcmp(path, "/dev/console") == 0) ||
+       (strcmp(path, "/dev/ttyS0") == 0))kind=FD_TTY;
+    else if ((strcmp(path, "/dev/null") == 0)) kind = FD_NULL;
+    else if ((strcmp(path, "/dev/zero") == 0)) kind = FD_ZERO;
     else {
         if (bootfs_mounted()) {
             char actual[256];
@@ -818,7 +814,7 @@ static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
             struct nas_tmp_file *tparent = tmp_find(parent);
             ino = tparent ? 5000 + tmp_number(tparent) :
                   item ? item->ino : dirino;
-        } else if (same_string(dirpath, "/tmp") || tmpdir) {
+        } else if ((strcmp(dirpath, "/tmp") == 0) || tmpdir) {
             if (cursor - 2 >= TMP_FILE_COUNT) break;
             const struct nas_tmp_file *file =
                 tmp_child(dirpath, (unsigned)(cursor - 2));
