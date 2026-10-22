@@ -578,7 +578,7 @@ uint64_t nas_fs_fd_writev(uint64_t fd, uint64_t iov, uint64_t count) {
 }
 /* Kernel Linux pollfd ABI: int32 fd, int16 events, int16 revents.
  * The only supported blocking timeout is infinite; positive timeouts need
- * a real monotonic time source and cannot be reported as fake expiry.
+ * monotonic deadline ownership is provided by the Task scheduler.
  * Readiness and the snapshot are distinct: pollfd copy-out is in the
  * owning task's VM, scheduler tests only a kernel-owned interest snapshot.
  */
@@ -616,9 +616,9 @@ uint64_t nas_fs_poll(uint64_t address, uint64_t nfds, uint64_t timeout) {
     return (uint64_t)-EAGAIN; /* dispatcher arms actual I/O or timer wait */
 }
 /* Linux asm-generic supplies ppoll(73), not legacy poll(7).
- * A NULL timeout means infinity, zero timespec means immediate. Nonzero
- * timeout and atomic temporary sigmask require unimplemented facilities,
- * so they fail explicitly without a fabricated success. */
+ * A NULL timeout means infinity, zero timespec means immediate. A finite
+ * timeout is converted once by the dispatcher to an absolute Task deadline.
+ * Atomic temporary sigmask remains unsupported until signal frames exist. */
 uint64_t nas_fs_ppoll(uint64_t addr,uint64_t nfds,
                       uint64_t timeout_ptr,uint64_t sigmask_ptr) {
     if(sigmask_ptr)return (uint64_t)-EOPNOTSUPP;
