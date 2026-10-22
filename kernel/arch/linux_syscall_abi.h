@@ -71,6 +71,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_pipe: return NAS_SC_pipe;
     case __NR_pipe2: return NAS_SC_pipe2;
     case __NR_poll: return NAS_SC_poll;
+    case __NR_ppoll: return NAS_SC_ppoll;
     case __NR_read: return NAS_SC_read;
     case __NR_readlink: return NAS_SC_readlink;
     case __NR_readlinkat: return NAS_SC_readlinkat;
@@ -91,6 +92,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_write: return NAS_SC_write;
     case __NR_writev: return NAS_SC_writev;
 #else
+    case 73U: return NAS_SC_ppoll; /* asm-generic ppoll; poll absent */
     case 63U: return NAS_SC_read;
     case 64U: return NAS_SC_write;
     case 66U: return NAS_SC_writev;

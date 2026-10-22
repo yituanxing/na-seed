@@ -47,6 +47,7 @@ enum nas_syscall_op {
     NAS_SC_pipe,
     NAS_SC_pipe2,
     NAS_SC_poll,
+    NAS_SC_ppoll,
     NAS_SC_read,
     NAS_SC_readlink,
     NAS_SC_readlinkat,

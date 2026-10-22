@@ -498,12 +498,13 @@ uint64_t nas_fs_fd_writev(uint64_t fd, uint64_t iov, uint64_t count) {
     }
     return sent;
 }
-/* poll() readiness for real in-memory files and available output devices.
- * There is no scheduler/TTY RX yet: unsupported blocking waits return
- * -EOPNOTSUPP rather than pretending that a timeout elapsed.
- * Linux pollfd ABI: int32 fd, int16 events, int16 revents (8 bytes).
+/* Kernel Linux pollfd ABI: int32 fd, int16 events, int16 revents.
+ * The only supported blocking timeout is infinite; positive timeouts need
+ * a real monotonic time source and cannot be reported as fake expiry.
+ * Readiness and the snapshot are distinct: pollfd copy-out is in the
+ * owning task's VM, scheduler tests only a kernel-owned interest snapshot.
  */
-static uint64_t sys_poll(uint64_t address, uint64_t nfds, uint64_t timeout) {
+uint64_t nas_fs_poll(uint64_t address, uint64_t nfds, uint64_t timeout) {
     const uint16_t POLLIN = 0x0001, POLLOUT = 0x0004, POLLNVAL = 0x0020;
     if (nfds > 64) return (uint64_t)-EINVAL;
     if (nfds && (address >= USER_LIMIT || nfds > (USER_LIMIT - address) / 8))
@@ -524,8 +525,11 @@ static uint64_t sys_poll(uint64_t address, uint64_t nfds, uint64_t timeout) {
                     kind == FD_DIR || kind == FD_TMP_DIR || kind == FD_NULL || kind == FD_ZERO ||
                     kind == FD_TMP)
                     revents = events & (POLLIN | POLLOUT);
-                else if (kind == FD_UART || kind == FD_TTY)
+                else if (kind == FD_UART || kind == FD_TTY) {
                     revents = events & POLLOUT;
+                    if ((events & POLLIN) && nas_tty_poll_readable())
+                        revents |= POLLIN;
+                }
                 else if (kind == FD_PIPE_R && nas_pipe_poll_readable(file_slot[(unsigned)fd]))
                     revents = events & POLLIN;
                 else if (kind == FD_PIPE_W && nas_pipe_poll_writable(file_slot[(unsigned)fd]))
@@ -536,8 +540,62 @@ static uint64_t sys_poll(uint64_t address, uint64_t nfds, uint64_t timeout) {
         word = (word & 0x0000ffffffffffffULL) | ((uint64_t)revents << 48);
         if (!nas_user_write_u64(address + i * 8, word)) return (uint64_t)-EFAULT;
     }
-    if (ready || (int64_t)timeout == 0) return ready;
-    return (uint64_t)-EOPNOTSUPP; /* no scheduler-backed blocking poll */
+    int32_t ms=(int32_t)(uint32_t)timeout;
+    if(ready || ms==0)return ready;
+    if(ms>0)return (uint64_t)-EOPNOTSUPP; /* no timer, no fake expiry */
+    return (uint64_t)-EAGAIN; /* dispatcher may arm actual event sources */
+}
+/* Linux asm-generic supplies ppoll(73), not legacy poll(7).
+ * A NULL timeout means infinity, zero timespec means immediate. Nonzero
+ * timeout and atomic temporary sigmask require unimplemented facilities,
+ * so they fail explicitly without a fabricated success. */
+uint64_t nas_fs_ppoll(uint64_t addr,uint64_t nfds,
+                      uint64_t timeout_ptr,uint64_t sigmask_ptr) {
+    if(sigmask_ptr)return (uint64_t)-EOPNOTSUPP;
+    if(!timeout_ptr)return nas_fs_poll(addr,nfds,(uint64_t)-1);
+    uint64_t secs,nsecs;
+    if(!nas_user_read_u64(timeout_ptr,&secs) ||
+       timeout_ptr>UINT64_MAX-8 ||
+       !nas_user_read_u64(timeout_ptr+8,&nsecs))
+        return (uint64_t)-EFAULT;
+    if((int64_t)secs<0 || nsecs>=1000000000ULL)return (uint64_t)-EINVAL;
+    if(secs||nsecs)return (uint64_t)-EOPNOTSUPP;
+    return nas_fs_poll(addr,nfds,0);
+}
+bool nas_fs_poll_arm(uint64_t address,uint64_t nfds) {
+    struct nas_task *task=nas_current_task;
+    task->poll_pipe_read=task->poll_pipe_write=0;
+    task->poll_tty_read=false;
+    if(nfds>NAS_FD_LIMIT)return false; /* nas_fs_poll checked bounds */
+    for(uint64_t i=0;i<nfds;i++) {
+        uint64_t raw;
+        if(!nas_user_read_u64(address+i*8,&raw))return false;
+        int32_t fd=(int32_t)(uint32_t)raw;
+        uint16_t events=(uint16_t)(raw>>32);
+        if(fd<0 || fd>=NAS_FD_LIMIT || !events)continue;
+        uint8_t kind=descriptors[(unsigned)fd];
+        unsigned slot=file_slot[(unsigned)fd];
+        if(slot>=NAS_FD_LIMIT)continue;
+        if((events&0x0001U) && kind==FD_PIPE_R)
+            task->poll_pipe_read|=1ULL<<slot;
+        if((events&0x0004U) && kind==FD_PIPE_W)
+            task->poll_pipe_write|=1ULL<<slot;
+        if((events&0x0001U) && (kind==FD_TTY || kind==FD_UART) &&
+           nas_tty_read_waitable())
+            task->poll_tty_read=true;
+    }
+    return task->poll_tty_read || task->poll_pipe_read || task->poll_pipe_write;
+}
+bool nas_fs_poll_ready(const struct nas_task *task) {
+    if(task->poll_tty_read && nas_tty_poll_readable())return true;
+    for(unsigned slot=0;slot<NAS_FD_LIMIT;slot++) {
+        uint64_t bit=1ULL<<slot;
+        if((task->poll_pipe_read&bit) && nas_pipe_poll_readable(slot))
+            return true;
+        if((task->poll_pipe_write&bit) && nas_pipe_poll_writable(slot))
+            return true;
+    }
+    return false;
 }
 
 static uint64_t sys_getcwd_root(uint64_t buffer, uint64_t size) {
@@ -834,7 +892,8 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
     case NAS_SC_pipe: FS_RESULT(sys_pipe2(args[1], 0));
     case NAS_SC_pipe2: FS_RESULT(sys_pipe2(args[1], args[2]));
     case NAS_SC_fcntl: FS_RESULT(sys_fcntl(args[1], args[2], args[3]));
-    case NAS_SC_poll: FS_RESULT(sys_poll(args[1], args[2], args[3]));
+    case NAS_SC_poll: FS_RESULT(nas_fs_poll(args[1], args[2], args[3]));
+    case NAS_SC_ppoll: FS_RESULT(nas_fs_ppoll(args[1], args[2], args[3], args[4]));
     case NAS_SC_dup: FS_RESULT(fd_duplicate(args[1], 0, false));
     case NAS_SC_dup2: FS_RESULT(fd_clone(args[1], args[2], false));
     case NAS_SC_chdir: FS_RESULT(sys_chdir(args[1]));

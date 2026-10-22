@@ -56,6 +56,9 @@ static bool task_can_wake(const struct nas_task *task) {
     if (task->state != NAS_TASK_BLOCKED || !task->resume_valid ||
         !task->pending_valid) return false;
     if (task->blocked_op == NAS_SC_wait4) return task_wait_ready(task);
+    if (task->blocked_op == NAS_SC_poll ||
+        task->blocked_op == NAS_SC_ppoll)
+        return nas_fs_poll_ready(task);
     if (task->blocked_op == NAS_SC_read ||
         task->blocked_op == NAS_SC_write ||
         task->blocked_op == NAS_SC_writev)
@@ -69,6 +72,8 @@ static uint64_t task_replay(struct nas_task *task) {
     if (nr == NAS_SC_write) return nas_fs_fd_write(a[0], a[1], a[2]);
     if (nr == NAS_SC_writev) return nas_fs_fd_writev(a[0], a[1], a[2]);
     if (nr == NAS_SC_wait4) return nas_process_wait4(a[0], a[1], a[2], a[3]);
+    if (nr == NAS_SC_poll) return nas_fs_poll(a[0],a[1],a[2]);
+    if (nr == NAS_SC_ppoll) return nas_fs_ppoll(a[0],a[1],a[2],a[3]);
     sched_fail("scheduler unknown blocked syscall");
 }
 
@@ -161,7 +166,10 @@ retry_schedule: ; /* label must precede a statement in C11 */
                     (int64_t)result==-EAGAIN && nas_tty_read_waitable();
                 bool pipe_again=(int64_t)result==-EOPNOTSUPP &&
                     (replay_kind==FD_PIPE_R || replay_kind==FD_PIPE_W);
-                if (tty_again || pipe_again) {
+                bool poll_again=(next->blocked_op==NAS_SC_poll ||
+                                 next->blocked_op==NAS_SC_ppoll) &&
+                                 (int64_t)result==-EAGAIN;
+                if (tty_again || pipe_again || poll_again) {
                     next->state = NAS_TASK_BLOCKED;
                     nas_current_task = previous;
                     nas_arch_restore_cpu(previous);
@@ -187,8 +195,13 @@ retry_schedule: ; /* label must precede a statement in C11 */
      * implemented and must not be described as interrupt-driven. */
     for (unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
         const struct nas_task *t=nas_task_at(slot);
-        if (t->state != NAS_TASK_BLOCKED || !t->pending_valid ||
-            t->blocked_op != NAS_SC_read)continue;
+        if (t->state != NAS_TASK_BLOCKED || !t->pending_valid)continue;
+        if((t->blocked_op==NAS_SC_poll || t->blocked_op==NAS_SC_ppoll) &&
+           t->poll_tty_read) {
+            __asm__ volatile ("" ::: "memory");
+            goto retry_schedule;
+        }
+        if(t->blocked_op != NAS_SC_read)continue;
         uint8_t kind=nas_task_fd_kind(t,t->blocked_args[0]);
         if ((kind==FD_TTY || kind==FD_UART) && nas_tty_read_waitable()) {
             __asm__ volatile ("" ::: "memory");
