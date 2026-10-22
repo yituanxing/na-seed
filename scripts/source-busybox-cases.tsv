@@ -14,3 +14,4 @@ session-groups	cpio	sh -c "/bin/m14-groups; echo m14-parent-done"	m14-groups-ok	
 kill-groups	cpio	sh -c "/bin/m15-kill; echo m15-parent-done"	m15-kill-ok	-
 stop-continue	cpio	sh -c "/bin/m16-stop; echo m16-parent-done"	m16-stop-ok	-
 tty-session	cpio	sh -c "/bin/m17-tty; echo m17-parent-done"	m17-tty-ok	-
+standard-signals	cpio	sh -c "/bin/m24-signals; echo m24-parent-done"	m24-signals-ok	-
