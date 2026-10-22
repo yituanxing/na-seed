@@ -25,6 +25,7 @@ sh scripts/build-m22-poll.sh "$port"
 sh scripts/build-m23-signals.sh "$port"
 sh scripts/build-m24-signals.sh "$port"
 sh scripts/build-m25-tty-jobs.sh "$port"
+sh scripts/build-m29-time.sh "$port"
 extra_dir="build/source-busybox/$port/extra"
 mkdir -p "$extra_dir"
 cp "build/source-busybox/$port/m11-vm" "$extra_dir/m11-vm"
@@ -40,6 +41,7 @@ cp "build/source-busybox/$port/m22-poll" "$extra_dir/m22-poll"
 cp "build/source-busybox/$port/m23-signals" "$extra_dir/m23-signals"
 cp "build/source-busybox/$port/m24-signals" "$extra_dir/m24-signals"
 cp "build/source-busybox/$port/m25-tty-jobs" "$extra_dir/m25-tty-jobs"
+cp "build/source-busybox/$port/m29-time" "$extra_dir/m29-time"
 if [ "$port" = amd64 ]; then
     cp "build/source-busybox/$port/m17-input" "$extra_dir/m17-input"
     cp tests/m28-preempt.sh "$extra_dir/m28-preempt"
@@ -50,7 +52,7 @@ fi
 export BUSYBOX_EXTRA_DIR="$extra_dir"
 export BUSYBOX_PARITY_BINARY="$binary"
 export BUSYBOX_PARITY_MANIFEST=scripts/source-busybox-cases.tsv
-export BUSYBOX_PARITY_EXPECTED_COUNT=16
+export BUSYBOX_PARITY_EXPECTED_COUNT=18
 case "$port" in
     amd64) sh scripts/probe-x86-busybox-parity.sh ;;
     riscv64) sh scripts/probe-riscv64-busybox-matrix.sh ;;
@@ -97,4 +99,4 @@ if [ "$port" = riscv64 ] || [ "$port" = arm64 ]; then
     BUSYBOX_PARITY_EXPECTED_COUNT=1 \
       sh "scripts/probe-$(if [ "$port" = arm64 ]; then echo aarch64; else echo riscv64; fi)-busybox-matrix.sh"
 fi
-echo "[SOURCE BUSYBOX MATRIX PASS] $port: 16/16 native self-compiled workloads"
+echo "[SOURCE BUSYBOX MATRIX PASS] $port: 18/18 native self-compiled workloads"
