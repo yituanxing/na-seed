@@ -35,11 +35,12 @@ timeout: 0
 /NaSeed native interactive BusyBox ash
     protocol: limine
     path: boot():/boot/kernel
-    cmdline: naseed.argv=/bin/m18-ash-init
+    cmdline: naseed.argv=M18_INTERACTIVE_EXEC
     module_path: boot():/boot/rootfs.cpio
 CONF
+sed -i "s@M18_INTERACTIVE_EXEC@${NASEED_INTERACTIVE_INIT:-/bin/m18-ash-init}@g" "$config"
 mcopy -i "$disk@@1048576" "$config" ::/boot/limine/limine.conf
 if [ "$port" = riscv64 ]; then
     cp "$fw/RISCV_VIRT_VARS.fd" "${disk%.img}.vars.fd"
 fi
-python3 scripts/m18-ash-serial.py "$disk" "$port"
+python3 "${NASEED_INTERACTIVE_DRIVER:-scripts/m18-ash-serial.py}" "$disk" "$port"

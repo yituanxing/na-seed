@@ -138,6 +138,12 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
 script -q -e -c '/tmp/naseed-m18-ash-init --linux-pty-oracle' /dev/null \
     | tr -d '\r' | grep -Fxq m18-linux-pty-ok
 
+# M21 Linux ABI oracle: native static ELF with a real controlling PTY.
+cc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
+    tests/m21-tty-sched.c -o /tmp/naseed-m21-tty-sched
+script -q -e -c '/tmp/naseed-m21-tty-sched --linux-pty-oracle' /dev/null \
+    | tr -d '\r' | grep -Fxq m21-linux-pty-ok
+
 # Compare our pinned Linux x86-64 syscall numbers against the host UAPI.
 python3 scripts/check-syscall-nr.py
 python3 scripts/check-syscall-errno.py

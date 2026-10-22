@@ -19,10 +19,11 @@ timeout: 0
 /NaSeed genuine interactive BusyBox ash
     protocol: limine
     path: boot():/boot/kernel
-    cmdline: naseed.argv=/bin/m18-ash-init
+    cmdline: naseed.argv=M18_INTERACTIVE_EXEC
     module_path: boot():/boot/rootfs.cpio
 CONFIG
+sed -i "s@M18_INTERACTIVE_EXEC@${NASEED_INTERACTIVE_INIT:-/bin/m18-ash-init}@g" "$stage/boot/limine/limine.conf"
 xorriso -as mkisofs -R -r -J \
     --efi-boot boot/limine/limine-uefi-cd.bin \
     --efi-boot-part --efi-boot-image -o "$iso" "$stage" >/dev/null 2>&1
-python3 scripts/m18-ash-serial.py "$iso"
+python3 "${NASEED_INTERACTIVE_DRIVER:-scripts/m18-ash-serial.py}" "$iso"
