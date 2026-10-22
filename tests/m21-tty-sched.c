@@ -38,6 +38,7 @@ int main(int argc,char **argv) {
         ssize_t n=read(ttyfd,buf,sizeof buf);
         ck(n==5 && memcmp(buf,"wake\n",5)==0,"read parked UART");
         puts("[M21] child-tty-read-ok");
+        fflush(stdout); /* _exit skips stdio flushing on Linux */
         _exit(0);
     }
     close(startup[1]);
