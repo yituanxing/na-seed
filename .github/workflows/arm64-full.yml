@@ -2,24 +2,20 @@ name: NaSeed ARM64 full-kernel gate
 on:
   pull_request:
     paths:
-      # Full ARM64 BusyBox parity must run for changes in shared core too,
-      # not just AArch64 backend or test harness changes.
       - 'kernel/**'
       - 'scripts/full-kernel-core.sources'
       - 'scripts/check-full-kernel-sources.sh'
+      - 'scripts/check-linux-stat.c'
       - 'scripts/test-fcntl-abi.c'
-      - 'kernel/arch/aarch64/**'
-      - 'kernel/arch/arch.h'
-      - 'kernel/arch/abi.h'
-      - 'kernel/arch/user_pt.c'
-      - 'kernel/mm/mmu_bridge.c'
-      - 'kernel/mm/user_space.c'
-      - 'kernel/task/**'
-      - 'kernel/init/main.c'
-      - 'kernel/syscall/**'
       - 'scripts/build-aarch64-full.sh'
       - 'scripts/probe-aarch64-full.sh'
       - 'scripts/probe-aarch64-busybox-matrix.sh'
+      - 'scripts/fetch-alpine-native.sh'
+      - 'scripts/stage-alpine-native-rootfs.sh'
+      - 'scripts/probe-alpine-native-dynamic.sh'
+      - 'scripts/probe-alpine-native-matrix.sh'
+      - 'scripts/alpine-native-fixtures.txt'
+      - 'scripts/check-alpine-native-fixtures.sh'
       - 'scripts/busybox-static-fixtures.txt'
       - 'scripts/busybox-parity-cases.tsv'
       - 'limine-aarch64-full.conf'
@@ -28,16 +24,22 @@ on:
     branches: [main]
     paths:
       - 'kernel/**'
+      - 'scripts/full-kernel-core.sources'
+      - 'scripts/check-full-kernel-sources.sh'
+      - 'scripts/check-linux-stat.c'
+      - 'scripts/test-fcntl-abi.c'
+      - 'scripts/build-aarch64-full.sh'
+      - 'scripts/probe-aarch64-full.sh'
+      - 'scripts/probe-aarch64-busybox-matrix.sh'
       - 'scripts/fetch-alpine-native.sh'
       - 'scripts/stage-alpine-native-rootfs.sh'
       - 'scripts/probe-alpine-native-dynamic.sh'
       - 'scripts/probe-alpine-native-matrix.sh'
       - 'scripts/alpine-native-fixtures.txt'
       - 'scripts/check-alpine-native-fixtures.sh'
-      - 'kernel/arch/aarch64/**'
-      - 'kernel/task/**'
-      - 'scripts/build-aarch64-full.sh'
-      - 'scripts/probe-aarch64-full.sh'
+      - 'scripts/busybox-static-fixtures.txt'
+      - 'scripts/busybox-parity-cases.tsv'
+      - 'limine-aarch64-full.conf'
       - '.github/workflows/arm64-full.yml'
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
