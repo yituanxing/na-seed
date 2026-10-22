@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include "../arch/abi.h"
 #include <stdbool.h>
 #include "../errno.h"
 #include "../bootfs.h"
@@ -23,14 +24,13 @@
 #define loaded_main_entry TASK.loaded_main_entry
 #define loaded_interp_base TASK.loaded_interp_base
 #define thread_clear_tid TASK.thread_clear_tid
-#define user_fs_base TASK.arch.user_fs_base
 #define descriptors TASK.fds.descriptors
 #define fd_cloexec TASK.fds.fd_cloexec
 #define signal_actions TASK.signal_actions
 #define running_bash TASK.running_bash
 #define running_busybox TASK.running_busybox
 #define running_alpine TASK.running_alpine
-#define USER_STACK_TOP 0x0000000070000000ULL
+#define USER_STACK_TOP NAS_USER_STACK_TOP
 #define USER_STACK_PAGES 32
 
 /* Boot/exec program-name comparison. FD path matching lives in fs/syscall.c. */
@@ -200,7 +200,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
         main_img.data[0] != 0x7f || main_img.data[1] != 'E' ||
         main_img.data[2] != 'L' || main_img.data[3] != 'F')
         return (uint64_t)-ENOEXEC;
-    const struct bootfs_entry *loader = bootfs_find("/lib/ld-musl-x86_64.so.1");
+    const struct bootfs_entry *loader = bootfs_find(NAS_ELF_INTERP);
     struct elf_image interp_img = {0};
     const struct elf_image *interp = 0;
     if (loader && !bootfs_is_dir(loader)) {
@@ -223,7 +223,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     uint64_t old_entry = loaded_main_entry, old_interp = loaded_interp_base;
     nas_mmu_switch_root(new_root);
     heap_break = 0;
-    mmap_cursor = 0x60000000ULL;
+    mmap_cursor = NAS_TASK_MMAP_CURSOR;
     loaded_phdr = loaded_phnum = loaded_main_entry = loaded_interp_base = 0;
     uint64_t entry, sp = 0;
     bool good = nas_elf_load(&main_img, interp, &entry);
@@ -252,7 +252,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
         if (descriptors[fd] != FD_CLOSED && fd_cloexec[fd])
             nas_fs_close_fd(fd);
     thread_clear_tid = 0;
-    user_fs_base = 0;
+    nas_arch_context_set_tls(&TASK.arch, 0);
     nas_arch_set_user_tls(0); /* fresh musl/glibc TLS initialization */
     for (unsigned i = 0; i < 65; i++)
         for (unsigned j = 0; j < 4; j++)
@@ -274,5 +274,5 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     nas_print(pending_exec.filename);
     nas_print("\n");
     nas_arch_enter_user(entry, sp);
-    nas_fail("execve iretq returned unexpectedly");
+    nas_fail("architecture user-entry returned unexpectedly");
 }

@@ -1,0 +1,71 @@
+name: NaSeed ARM64 full-kernel gate
+on:
+  pull_request:
+    paths:
+      # Full ARM64 BusyBox parity must run for changes in shared core too,
+      # not just AArch64 backend or test harness changes.
+      - 'kernel/**'
+      - 'scripts/full-kernel-core.sources'
+      - 'scripts/check-full-kernel-sources.sh'
+      - 'scripts/test-fcntl-abi.c'
+      - 'kernel/arch/aarch64/**'
+      - 'kernel/arch/arch.h'
+      - 'kernel/arch/abi.h'
+      - 'kernel/arch/user_pt.c'
+      - 'kernel/mm/mmu_bridge.c'
+      - 'kernel/mm/user_space.c'
+      - 'kernel/task/**'
+      - 'kernel/init/main.c'
+      - 'kernel/syscall/**'
+      - 'scripts/build-aarch64-full.sh'
+      - 'scripts/probe-aarch64-full.sh'
+      - 'scripts/probe-aarch64-busybox-matrix.sh'
+      - 'scripts/busybox-static-fixtures.txt'
+      - 'scripts/busybox-parity-cases.tsv'
+      - 'limine-aarch64-full.conf'
+      - '.github/workflows/arm64-full.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'kernel/**'
+      - 'scripts/fetch-alpine-native.sh'
+      - 'scripts/stage-alpine-native-rootfs.sh'
+      - 'scripts/probe-alpine-native-dynamic.sh'
+      - 'scripts/probe-alpine-native-matrix.sh'
+      - 'scripts/alpine-native-fixtures.txt'
+      - 'scripts/check-alpine-native-fixtures.sh'
+      - 'kernel/arch/aarch64/**'
+      - 'kernel/task/**'
+      - 'scripts/build-aarch64-full.sh'
+      - 'scripts/probe-aarch64-full.sh'
+      - '.github/workflows/arm64-full.yml'
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  full:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native AArch64 EDK2, QEMU and cross-compile tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang lld binutils mtools gdisk cpio qemu-user qemu-system-arm qemu-efi-aarch64
+      - name: Verify pinned native Alpine fixture and exact test matrix
+        run: sh scripts/check-alpine-native-fixtures.sh
+      - name: Build and boot THE shared Task/ELF/FS/syscall kernel on real ARM64
+        run: NASEED_ARM_FULL_TIMEOUT=25 sh scripts/probe-aarch64-full.sh
+      - name: ARM64 — native Debian BusyBox canonical 17-case parity matrix
+        run: sh scripts/probe-aarch64-busybox-matrix.sh
+      - name: Native Alpine AArch64 dynamic BusyBox seven-case parity (SHA256 pinned)
+        run: sh scripts/probe-alpine-native-matrix.sh arm64
+      - name: Upload real UART and semihosting evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naseed-arm64-full-boot
+          path: |
+            build/port-aarch64/full/serial.log
+            build/port-aarch64/full/matrix/*.serial.log
+          if-no-files-found: ignore

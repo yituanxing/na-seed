@@ -5,6 +5,7 @@
 #include "../../task.h"
 #include "../../mm/frame.h"
 #include "mmu.h"
+#include "../../mm/prot.h"
 #define TASK (*nas_current_task)
 #define root_phys TASK.root_phys
 #define P_PRESENT 1ULL
@@ -142,6 +143,21 @@ bool nas_mmu_map_page(uint64_t va, bool writable) {
     uint64_t pa = nas_frame_alloc();
     if (!pa) return false;
     *entry = pa | P_PRESENT | P_USER | (writable ? P_RW : 0);
+    nas_arch_invalidate_page(va);
+    return true;
+}
+bool nas_mmu_map_prot_page(uint64_t va, uint64_t prot) {
+    /* First-set PTE permissions: do not transiently create executable
+     * anonymous RW data, and do not pretend W+X / PROT_NONE is supported. */
+    if (!nas_vm_prot_supported(prot) || !nas_arch_nx_enabled()) return false;
+    uint64_t *entry = user_leaf(va, true);
+    if (!entry || *entry) return false;
+    uint64_t pa = nas_frame_alloc();
+    if (!pa) return false;
+    const uint64_t nx = 1ULL << 63;
+    *entry = pa | P_PRESENT | P_USER |
+             ((prot & NAS_VM_WRITE) ? P_RW : 0) |
+             ((prot & NAS_VM_EXEC) ? 0 : nx);
     nas_arch_invalidate_page(va);
     return true;
 }

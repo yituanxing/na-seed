@@ -1,0 +1,19 @@
+# ONE canonical BusyBox workload table, identical native argv/rootfs/stdout/exit checks on amd64 and RV64.
+# Fields: case-id<TAB>mode<TAB>args<TAB>expected-stdout-exact-line<TAB>kernel-evidence-or--
+echo	direct	echo hello	hello	-
+uname	direct	uname -s	Linux	-
+pwd	direct	pwd	/	-
+id	direct	id -u	0	-
+true	direct	true	-	-
+printf	direct	printf rv-printf\\n	rv-printf	-
+root	cpio	ls -1 /	bin	-
+bin	cpio	ls -1 /bin	busybox	-
+cat	cpio	cat /etc/hostname	naseed	-
+head	cpio	head -n 1 /etc/hostname	naseed	-
+grep	cpio	grep -n naseed /etc/hostname	1:naseed	-
+wc	cpio	wc -c /etc/hostname	7 /etc/hostname	-
+ash-builtin	cpio	sh -c "echo shell-native"	shell-native	-
+ash-exec	cpio	sh -c "exec /bin/busybox cat /etc/hostname"	naseed	exec
+ash-fork	cpio	sh -c "/bin/busybox cat /etc/hostname; echo finished"	finished	fork
+ash-pipe	cpio	sh -c "echo abc | /bin/busybox wc -c"	4	pipe
+ash-tmp	cpio	sh -c "mkdir /tmp/work && echo hello > /tmp/work/test && cat /tmp/work/test && rm /tmp/work/test && rmdir /tmp/work && echo removed"	removed	tmp

@@ -14,11 +14,11 @@ done
 # Keep the M7 /tmp inode storage boundary intact. The syscall layer may
 # call the backend but must not own inode/description tables. The backend
 # must not dereference userspace addresses or decode syscall user pointers.
-if grep -Eq 'tmp_files\\[|tmp_slot_owner\\[' kernel/syscall/dispatch.c kernel/task/exec.c kernel/init/main.c; then
+if grep -Eq 'tmp_files\[|tmp_slot_owner\[' kernel/syscall/dispatch.c kernel/task/exec.c kernel/init/main.c; then
     echo '[PREFLIGHT] /tmp backend storage leaked into syscall layer' >&2
     exit 1
 fi
-if grep -Eq 'user_byte\\(|user_write_bytes\\(|resolve_path\\(' kernel/tmpfs.c; then
+if grep -Eq 'user_byte\(|user_write_bytes\(|resolve_path\(' kernel/tmpfs.c; then
     echo '[PREFLIGHT] /tmp backend uses user-copy/syscall pathname code' >&2
     exit 1
 fi
@@ -34,31 +34,31 @@ if grep -Eq 'pipe_release_description|tmp_release_slot|tmp_bind_slot' kernel/fd.
 fi
 
 # Kernel pathname logic must never reach into raw user memory or FD
-# tables. Only m1.c performs the syscall argument copying.
-if grep -Eq 'user_byte\\(|user_write_bytes\\(|nas_task_fd_|descriptors\\[' kernel/path.c; then
+# tables. Only syscall/FS ABI adapters perform the user argument copying.
+if grep -Eq 'user_byte\(|user_write_bytes\(|nas_task_fd_|descriptors\[' kernel/path.c; then
     echo '[PREFLIGHT] path.c reached into syscall user/FD layer' >&2
     exit 1
 fi
 
-# M7.3: bounded pipe data and ownership must not move back into m1.c.
+# M7.3: bounded pipe data and ownership must not move back into common dispatch.
 # Backend must not depend on user-copy, task switching or signal delivery.
-if grep -Eq 'pipe_table\\[|pipe_slot_owner\\[|struct nas_pipe[[:space:]]*\\{' kernel/syscall/dispatch.c kernel/task/exec.c kernel/init/main.c; then
+if grep -Eq 'pipe_table\[|pipe_slot_owner\[|struct nas_pipe[[:space:]]*\{' kernel/syscall/dispatch.c kernel/task/exec.c kernel/init/main.c; then
     echo '[PREFLIGHT] pipe backing leaked back into syscall layer' >&2
     exit 1
 fi
-if grep -Eq 'user_byte\\(|user_read_bytes\\(|user_write_bytes\\(|task_schedule\\(|signal_actions\\[' kernel/pipe.c; then
+if grep -Eq 'user_byte\(|user_read_bytes\(|user_write_bytes\(|task_schedule\(|signal_actions\[' kernel/pipe.c; then
     echo '[PREFLIGHT] pipe backend acquired syscall/task/user-copy dependencies' >&2
     exit 1
 fi
 
 # M7.4: a boot *image* selector, not an ELF loader, syscall table,
 # or a second CPIO filesystem; keep these dependencies outside boot_image.c.
-if grep -Eq 'user_byte\\(|user_write_bytes\\(|syscall_dispatch\\(|elf_load\\(|user_map\\(|alloc_user_root\\(' kernel/boot_image.c; then
+if grep -Eq 'user_byte\(|user_write_bytes\(|syscall_dispatch\(|elf_load\(|user_map\(|alloc_user_root\(' kernel/boot_image.c; then
     echo '[PREFLIGHT] boot_image.c acquired syscall/ELF VM responsibilities' >&2
     exit 1
 fi
-if grep -Eq 'bootfs_mount\\(|nas_user_module\\(' kernel/syscall/dispatch.c kernel/task/exec.c kernel/init/main.c; then
-    echo '[PREFLIGHT] Limine/CPIO boot selection leaked into m1.c' >&2
+if grep -Eq 'bootfs_mount\(|nas_user_module\(' kernel/syscall/dispatch.c kernel/task/exec.c kernel/init/main.c; then
+    echo '[PREFLIGHT] Limine/CPIO boot selection leaked into common init/exec/dispatcher' >&2
     exit 1
 fi
 
@@ -73,16 +73,16 @@ if grep -Eq 'syscall_dispatch|__NR_|nas_pipe_|nas_tmp_' kernel/mm/vm.c; then
 fi
 # M8.3: ELF parsing, user stack, usercopy and arch_prctl have owning modules.
 if grep -Eq 'struct __attribute__\(\(packed\)\) elf_hdr|static bool user_read_bytes\(|static uint64_t sys_arch_prctl\(|static uint64_t sys_sigaction\(' kernel/syscall/dispatch.c kernel/task/exec.c kernel/init/main.c; then
-    echo '[PREFLIGHT] old ELF/usercopy/syscall ABI implementation leaked into m1.c' >&2
+    echo '[PREFLIGHT] old ELF/usercopy/syscall ABI implementation leaked into common init/exec/dispatcher' >&2
     exit 1
 fi
 
 # M8.4: descriptor/path/stat/pipe syscall bodies reside with FS.
-if grep -Eq '^static uint64_t (sys_pipe2|sys_open_path|sys_fcntl|sys_fstat_boot|sys_getdents64|sys_poll)\\(' kernel/syscall/dispatch.c kernel/task/exec.c kernel/init/main.c; then
-    echo '[PREFLIGHT] FS syscall implementation leaked back into m1.c' >&2
+if grep -Eq '^static uint64_t (sys_pipe2|sys_open_path|sys_fcntl|sys_fstat_boot|sys_getdents64|sys_poll)\(' kernel/syscall/dispatch.c kernel/task/exec.c kernel/init/main.c; then
+    echo '[PREFLIGHT] FS syscall implementation leaked back into common dispatch' >&2
     exit 1
 fi
-if ! grep -q 'nas_fs_syscall(args)' kernel/syscall/dispatch.c kernel/task/exec.c kernel/init/main.c; then
+if ! grep -q 'nas_fs_syscall(nr, args)' kernel/syscall/dispatch.c kernel/task/exec.c kernel/init/main.c; then
     echo '[PREFLIGHT] common syscall dispatcher stopped forwarding FS calls' >&2
     exit 1
 fi
@@ -91,6 +91,17 @@ fi
 test ! -e kernel/m1.c
 if grep -Eq 'syscall_dispatch\(|__NR_' kernel/init/main.c kernel/task/exec.c; then
     echo '[PREFLIGHT] architecture syscall ABI leaked into init or exec' >&2
+    exit 1
+fi
+
+# Architecture syscall tables must be decoded before shared FS, process,
+# scheduler and VM; guard this deliberately during future ISA ports.
+if grep -Eq '__NR_[[:alnum:]_]+' kernel/syscall/dispatch.c kernel/fs/syscall.c kernel/task/sched.c; then
+    echo '[PREFLIGHT] raw ISA syscall numbers leaked into common core' >&2
+    exit 1
+fi
+if grep -Eq 'NASEED_PORT_M0' kernel/task/*.c kernel/fs/*.c kernel/mm/vm.c; then
+    echo '[PREFLIGHT] architecture-only M0 gate leaked into common kernel' >&2
     exit 1
 fi
 

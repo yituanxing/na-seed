@@ -10,7 +10,26 @@
 #error "NaSeed architecture backend not implemented"
 #endif
 struct nas_task;
+/* Shared mechanism API: these must be real, not silent stubs, before a
+ * non-x86 full-kernel binary may link. */
+/* Each ISA prepares its own exception/FPU and syscall entry protocol.
+ * Shared init never calls x86 GDT/IDT/TSS/MSR functions by name.
+ * RV/ARM full-kernel providers must be implemented before linking.
+ */
+void nas_arch_prepare_user_cpu(void);
+void nas_arch_enable_user_traps(void);
+void nas_arch_enter_user(uint64_t entry, uint64_t sp);
+uint64_t nas_arch_cycle_counter(void);
+void nas_arch_set_user_tls(uint64_t);
+/* True only when user mappings can enforce a non-executable protection. */
+#if defined(__x86_64__)
+static inline bool nas_arch_user_nx_supported(void) { return nas_arch_nx_enabled(); }
+#else
+bool nas_arch_user_nx_supported(void);
+#endif
+#if defined(__x86_64__)
 extern uint64_t syscall_user_rsp;
+#endif
 void nas_arch_restore_cpu(const struct nas_task *);
 void nas_arch_save_fpu(struct nas_task *);
 void nas_arch_save_user_frame(struct nas_task *, const uint64_t *frame);

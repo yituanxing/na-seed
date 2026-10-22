@@ -1,0 +1,8 @@
+# Debian 13 static BusyBox provenance: one source version/package recipe.
+# Columns: architecture | Debian package version | upstream version | SHA256 | ELF e_machine.
+# Update BOTH arch rows together when bumping the BusyBox workload fixture.
+# This does not by itself prove effective Kconfig values identical; see the
+# --list comparison test and the retained Debian source config provenance.
+amd64|1.37.0-6+b9|1.37.0|598a3fd92bdafc34cd81196b2952ad36e910e47a4ecf162f8ce5e8e262598e53|Advanced Micro Devices X86-64
+riscv64|1.37.0-6+b9|1.37.0|4add476d2b185c5b487c285b38d790f0881a7e4a8e2ddde835f917e770eb8633|RISC-V
+arm64|1.37.0-6+b9|1.37.0|c833be48abfa16bc19c4966ec93e289ff1ce5d2f1476cad3a57bd105378cd15c|AArch64

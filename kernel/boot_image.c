@@ -1,5 +1,6 @@
 #include "boot_image.h"
 #include "bootfs.h"
+#include "arch/abi.h"
 #include <limine.h>
 
 extern const struct limine_file *nas_user_module(void);
@@ -60,7 +61,7 @@ const char *nas_boot_prepare(const char *selected,
         out->image = app->data;
         out->size = app->size;
         const struct bootfs_entry *ldso =
-            bootfs_find("/lib/ld-musl-x86_64.so.1");
+            bootfs_find(NAS_ELF_INTERP);
         if (ldso && !bootfs_is_dir(ldso)) {
             out->interpreter = ldso->data;
             out->interpreter_size = ldso->size;

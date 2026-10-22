@@ -2,6 +2,7 @@
 #define NASEED_RISCV64_MMU_H
 #include <stdbool.h>
 #include <stdint.h>
+#include "../user_pt.h"
 
 /* A first genuine RV64 page-table backend. The caller owns mapped data
  * frames. init/destroy allocate and reclaim page-table frames only.
@@ -29,4 +30,8 @@ bool nas_rv_pt_translate(const struct nas_rv_page_table *pt, uint64_t user_va,
 bool nas_rv_pt_unmap(struct nas_rv_page_table *pt, uint64_t user_va);
 uint64_t nas_rv_pt_user_limit(unsigned levels);
 bool nas_rv_pt_smoke(void);
+/* Genuine native 4K PTE permission edits and lower-half user-only walk. */
+bool nas_rv_pt_protect(const struct nas_rv_page_table *, uint64_t va,
+                       unsigned access);
+bool nas_rv_pt_walk(const struct nas_rv_page_table *, nas_user_pt_visit, void *);
 #endif

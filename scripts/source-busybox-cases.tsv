@@ -1,0 +1,9 @@
+# Profile B: upstream BusyBox compiled by us from one pinned tarball/config.
+# This exercises the SAME full kernel and parity harness; do not replace
+# the official Debian/Alpine binary acceptance profile.
+echo	direct	echo hello	hello	-
+ash-builtin	cpio	sh -c "echo shell-native"	shell-native	-
+ash-fork	cpio	sh -c "/bin/busybox cat /etc/hostname; echo finished"	finished	fork
+ash-pipe	cpio	sh -c "echo abc | /bin/busybox wc -c"	4	pipe
+ash-tmp	cpio	sh -c "mkdir /tmp/work && echo hello > /tmp/work/test && cat /tmp/work/test && rm /tmp/work/test && rmdir /tmp/work && echo removed"	removed	tmp
+source-lifecycle	cpio	sh -c "i=0; while [ $i -lt 4 ]; do echo ping | /bin/busybox wc -c; i=$((i+1)); done; echo source-lifecycle-ok"	source-lifecycle-ok	pipe

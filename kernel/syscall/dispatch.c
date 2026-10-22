@@ -1,12 +1,13 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "dispatch.h"
-#include "../nr.h"
+#include "../syscall/ops.h"
+#include "../arch/linux_syscall_abi.h"
 #include "../errno.h"
 #include "../task.h"
 #include "../fd.h"
 #include "../arch/arch.h"
-#include "../arch/x86_64/syscall.h"
+#include "../arch/abi.h"
 #include "../mm/vm.h"
 #include "../mm/usercopy.h"
 #include "../task/exec.h"
@@ -36,8 +37,8 @@ static uint64_t sys_uname_naseed(uint64_t buffer) {
         char machine[65], domain[65];
     };
     static const struct uts data = {
-        "Linux", "naseed", "0.1", "NaSeed experimental x86_64",
-        "x86_64", "localdomain"
+        "Linux", "naseed", "0.1", "NaSeed experimental",
+        NAS_UTS_MACHINE, "localdomain"
     };
     return nas_user_write_bytes(buffer, (const uint8_t *)&data, sizeof(data))
         ? 0 : (uint64_t)-EFAULT;
@@ -47,11 +48,11 @@ static uint64_t sys_uname_naseed(uint64_t buffer) {
 static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
                              uint64_t fd, uint64_t buf, uint64_t count) {
     uint64_t ret;
-    if (nr == __NR_read) ret = nas_fs_fd_read(fd, buf, count);
-    else if (nr == __NR_write) ret = nas_fs_fd_write(fd, buf, count);
+    if (nr == NAS_SC_read) ret = nas_fs_fd_read(fd, buf, count);
+    else if (nr == NAS_SC_write) ret = nas_fs_fd_write(fd, buf, count);
     else ret = nas_fs_fd_writev(fd, buf, count);
     if ((int64_t)ret == -EPIPE &&
-        (nr == __NR_write || nr == __NR_writev) &&
+        (nr == NAS_SC_write || nr == NAS_SC_writev) &&
         nas_sched_sigpipe_default(fd)) {
         nas_sched_child_exit(0, NAS_SIGPIPE);
         return nas_task_schedule(frame);
@@ -65,7 +66,22 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
 
 /* Strict single-program ABI diagnostic dispatcher, for a real syscall gate. */
 uint64_t syscall_dispatch(const uint64_t *args) {
-    uint64_t nr = args[0];
+    const uint64_t raw_nr = args[0];
+    enum nas_syscall_op nr = nas_linux_decode_call(args);
+#if defined(__riscv) && __riscv_xlen == 64
+    /* Native BusyBox ash may invoke clone with Linux flags other than
+     * SIGCHLD. Do not pretend this is fork: show the actual ABI contract
+     * before implementing vfork/clone semantics in the existing task core. */
+    if (raw_nr == 220U && nr == NAS_SC_NONE) {
+        nas_print("[RV64 CLONE] unsupported flags=");
+        nas_hex(args[1]);
+        nas_print(" child_stack="); nas_hex(args[2]);
+        nas_print(" parent_tid="); nas_hex(args[3]);
+        nas_print(" tls="); nas_hex(args[4]);
+        nas_print(" child_tid="); nas_hex(args[5]);
+        nas_print("\n");
+    }
+#endif
     /* Real-program execution trace: syscall identity, callsite and args.
      * Capped to avoid serial storms; not needed in exception context.
      */
@@ -81,28 +97,32 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         nas_print("\n");
     }
 #endif
-    if (nr == __NR_arch_prctl) return nas_arch_prctl(args[1], args[2]);
-    if (nr == __NR_set_tid_address) { thread_clear_tid = args[1]; return TASK.pid; }
-    if (nr == __NR_getpid || nr == __NR_gettid) return TASK.pid;
-    if (nr == __NR_getppid) return TASK.ppid;
-    if (nr == __NR_getuid || nr == __NR_getgid || nr == __NR_geteuid || nr == __NR_getegid) return 0; /* root credentials */
-    if (nr == __NR_mprotect) return nas_vm_mprotect(args[1], args[2], args[3]);
-    if (nr == __NR_mmap) return nas_vm_anon_mmap(args[1], args[2], args[3],
+    if (nr == NAS_SC_arch_prctl) return nas_linux_arch_prctl(args[1], args[2]);
+    if (nr == NAS_SC_set_tid_address) { thread_clear_tid = args[1]; return TASK.pid; }
+    if (nr == NAS_SC_getpid || nr == NAS_SC_gettid) return TASK.pid;
+    if (nr == NAS_SC_getppid) return TASK.ppid;
+    if (nr == NAS_SC_getuid || nr == NAS_SC_getgid || nr == NAS_SC_geteuid || nr == NAS_SC_getegid) return 0; /* root credentials */
+    if (nr == NAS_SC_mprotect) return nas_vm_mprotect(args[1], args[2], args[3]);
+    if (nr == NAS_SC_mmap) return nas_vm_anon_mmap(args[1], args[2], args[3],
                                        args[4], args[5], args[6]);
-    if (nr == __NR_munmap) return nas_vm_munmap(args[1], args[2]);
-    if (nr == __NR_brk) return nas_vm_brk(args[1]);
-    if (nr == __NR_read) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
-    if (nr == __NR_write) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
-    if (nr == __NR_writev) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
-    struct nas_fs_result fs_result = nas_fs_syscall(args);
+    if (nr == NAS_SC_munmap) return nas_vm_munmap(args[1], args[2]);
+    if (nr == NAS_SC_brk) return nas_vm_brk(args[1]);
+    if (nr == NAS_SC_read) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
+    if (nr == NAS_SC_write) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
+    if (nr == NAS_SC_writev) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
+    struct nas_fs_result fs_result = nas_fs_syscall(nr, args);
     if (fs_result.handled) return fs_result.value;
-    if (nr == __NR_rt_sigaction) return nas_signal_action(args[1], args[2], args[3], args[4]);
-    if (nr == __NR_rt_sigprocmask) return nas_signal_procmask(args[1], args[2], args[3], args[4]);
-    if (nr == __NR_uname) return sys_uname_naseed(args[1]);
+    if (nr == NAS_SC_rt_sigaction) return nas_signal_action(args[1], args[2], args[3], args[4]);
+    if (nr == NAS_SC_rt_sigprocmask) return nas_signal_procmask(args[1], args[2], args[3], args[4]);
+    if (nr == NAS_SC_uname) return sys_uname_naseed(args[1]);
 
-    if (nr == __NR_fork) return nas_process_fork((uint64_t *)(uintptr_t)args);
+    if (nr == NAS_SC_fork)
+        return nas_process_fork((uint64_t *)(uintptr_t)args);
+    if (nr == NAS_SC_fork_child_tid)
+        return nas_process_fork_child_tid((uint64_t *)(uintptr_t)args,
+                                          nas_linux_clone_child_tid(args));
 
-    if (nr == __NR_wait4) {
+    if (nr == NAS_SC_wait4) {
         uint64_t ret = nas_process_wait4(args[1], args[2], args[3], args[4]);
         if ((int64_t)ret == -EOPNOTSUPP && args[4] == 0 &&
             args[3] == 0 && ((int64_t)args[1] == -1 || (int64_t)args[1] > 0))
@@ -110,14 +130,15 @@ uint64_t syscall_dispatch(const uint64_t *args) {
                               args[1], args[2], args[3], args[4]);
         return ret;
     }
-    if (nr == __NR_execve) return nas_task_execve(args[1], args[2], args[3]);
-    if (nr == __NR_getpgid) return args[1] == 0 || args[1] == TASK.pid ? TASK.pid : (uint64_t)-ESRCH;
-    if (nr == __NR_getpgrp) return TASK.pid; /* one process group today */
-    if (nr == __NR_exit || nr == __NR_exit_group) { /* exit / exit_group */
+    if (nr == NAS_SC_execve) return nas_task_execve(args[1], args[2], args[3]);
+    if (nr == NAS_SC_getpgid) return args[1] == 0 || args[1] == TASK.pid ? TASK.pid : (uint64_t)-ESRCH;
+    if (nr == NAS_SC_getpgrp) return TASK.pid; /* one process group today */
+    if (nr == NAS_SC_exit || nr == NAS_SC_exit_group) { /* exit / exit_group */
         if (TASK.ppid) {
             nas_sched_child_exit((uint32_t)args[1], 0);
             return nas_task_schedule((uint64_t *)(uintptr_t)args);
         }
+        nas_process_clear_tid_on_exit();
         TASK.exit_code = (uint32_t)(args[1] & 255ULL);
         TASK.termination_signal = 0;
         TASK.state = NAS_TASK_ZOMBIE;
@@ -155,9 +176,9 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         }
         nas_fail("user program exit was non-zero");
     }
-    if (nr >= sizeof(missing_count) / sizeof(missing_count[0]) ||
-        ++missing_count[nr] <= 3) {
-        nas_print("[MISS] syscall nr="); nas_dec(nr); nas_print("\n");
+    if (raw_nr >= sizeof(missing_count) / sizeof(missing_count[0]) ||
+        ++missing_count[raw_nr] <= 3) {
+        nas_print("[MISS] syscall nr="); nas_dec(raw_nr); nas_print("\n");
     }
     return (uint64_t)-ENOSYS;
 }

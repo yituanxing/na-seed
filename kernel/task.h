@@ -43,7 +43,7 @@ struct nas_task {
     /* Pending blocking syscall holds user pointers, but never kernel-stack
      * pointers. The task's private CR3 must be restored before replay.
      */
-    uint64_t blocked_nr, blocked_args[4];
+    uint64_t blocked_op, blocked_args[4];
     bool pending_valid; /* read(0) is a real pending syscall, not 'none' */
 
     /* One independent VM mapping root and ELF/brk/mmap tracking per task. */
