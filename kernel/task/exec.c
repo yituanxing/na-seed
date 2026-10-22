@@ -18,7 +18,6 @@
 #define TASK (*nas_current_task)
 #define root_phys TASK.root_phys
 #define heap_break TASK.heap_break
-#define mmap_cursor TASK.mmap_cursor
 #define loaded_phdr TASK.loaded_phdr
 #define loaded_phnum TASK.loaded_phnum
 #define loaded_main_entry TASK.loaded_main_entry
@@ -218,12 +217,11 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     uint64_t new_root = nas_mmu_alloc_root();
     if (!new_root) return (uint64_t)-ENOMEM;
     uint64_t previous_root = root_phys;
-    uint64_t old_heap = heap_break, old_cursor = mmap_cursor;
+    uint64_t old_heap = heap_break;
     uint64_t old_phdr = loaded_phdr, old_phnum = loaded_phnum;
     uint64_t old_entry = loaded_main_entry, old_interp = loaded_interp_base;
     nas_mmu_switch_root(new_root);
     heap_break = 0;
-    mmap_cursor = NAS_TASK_MMAP_CURSOR;
     loaded_phdr = loaded_phnum = loaded_main_entry = loaded_interp_base = 0;
     uint64_t entry, sp = 0;
     bool good = nas_elf_load(&main_img, interp, &entry);
@@ -240,7 +238,6 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
         nas_mmu_switch_root(previous_root);
         if (!nas_mmu_reclaim_root(new_root)) nas_fail("execve rollback page-table corruption");
         heap_break = old_heap;
-        mmap_cursor = old_cursor;
         loaded_phdr = old_phdr;
         loaded_phnum = old_phnum;
         loaded_main_entry = old_entry;
@@ -251,6 +248,9 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     for (unsigned fd = 0; fd < 64; fd++)
         if (descriptors[fd] != FD_CLOSED && fd_cloexec[fd])
             nas_fs_close_fd(fd);
+    /* Old anonymous ownership dies with the retired page-table root.
+     * No metadata is mutated until exec commits, so rollback remains exact. */
+    nas_anon_reset(&TASK.anonymous);
     thread_clear_tid = 0;
     nas_arch_context_set_tls(&TASK.arch, 0);
     nas_arch_set_user_tls(0); /* fresh musl/glibc TLS initialization */

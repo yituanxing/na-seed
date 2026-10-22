@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "arch/context.h"
+#include "mm/anon_regions.h"
 
 /* NaOS-informed ownership boundaries for x86-64 user tasks.
  * A single kernel stack is shared, so cooperative switching occurs only
@@ -47,7 +48,9 @@ struct nas_task {
     bool pending_valid; /* read(0) is a real pending syscall, not 'none' */
 
     /* One independent VM mapping root and ELF/brk/mmap tracking per task. */
-    uint64_t root_phys, heap_break, mmap_cursor;
+    uint64_t root_phys, heap_break;
+    /* Bounded eager anonymous VMA ownership; copied by value on fork. */
+    struct nas_anon_regions anonymous;
     uint64_t loaded_phdr, loaded_phnum;
     uint64_t loaded_main_entry, loaded_interp_base;
     uint64_t thread_clear_tid;
