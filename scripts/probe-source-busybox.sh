@@ -7,6 +7,10 @@ port=$1
 binary="build/source-busybox/$port/busybox"
 test -s "$binary" || sh scripts/build-source-busybox.sh "$port"
 test -s "$binary" && test -s "build/source-busybox/$port/verified.config"
+if [ "$port" = amd64 ]; then
+    # Exact upstream shell/echo/wc on native Linux BEFORE three real kernels.
+    sh scripts/check-kstack-busybox-oracle.sh "$binary"
+fi
 sh scripts/build-m11-vm-test.sh "$port"
 sh scripts/build-m12-process-test.sh "$port"
 sh scripts/build-m13-init.sh "$port"
