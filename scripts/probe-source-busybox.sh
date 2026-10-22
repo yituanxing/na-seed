@@ -14,6 +14,7 @@ sh scripts/build-m14-groups.sh "$port"
 sh scripts/build-m15-kill.sh "$port"
 sh scripts/build-m16-stop.sh "$port"
 sh scripts/build-m17-tty.sh "$port"
+sh scripts/build-m18-ash-init.sh "$port"
 extra_dir="build/source-busybox/$port/extra"
 mkdir -p "$extra_dir"
 cp "build/source-busybox/$port/m11-vm" "$extra_dir/m11-vm"
@@ -23,6 +24,7 @@ cp "build/source-busybox/$port/m14-groups" "$extra_dir/m14-groups"
 cp "build/source-busybox/$port/m15-kill" "$extra_dir/m15-kill"
 cp "build/source-busybox/$port/m16-stop" "$extra_dir/m16-stop"
 cp "build/source-busybox/$port/m17-tty" "$extra_dir/m17-tty"
+cp "build/source-busybox/$port/m18-ash-init" "$extra_dir/m18-ash-init"
 if [ "$port" = amd64 ]; then
     cp "build/source-busybox/$port/m17-input" "$extra_dir/m17-input"
 fi
@@ -36,5 +38,8 @@ case "$port" in
     arm64) sh scripts/probe-aarch64-busybox-matrix.sh ;;
     *) echo "unsupported target $port" >&2; exit 2 ;;
 esac
-if [ "$port" = amd64 ]; then sh scripts/probe-m17-interactive.sh; fi
+if [ "$port" = amd64 ]; then
+    sh scripts/probe-m17-interactive.sh
+    sh scripts/probe-m18-ash-interactive.sh
+fi
 echo "[SOURCE BUSYBOX MATRIX PASS] $port: 13/13 native self-compiled workloads"

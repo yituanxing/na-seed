@@ -31,7 +31,8 @@ for filename in scripts/build-source-busybox.sh scripts/probe-source-busybox.sh 
                 scripts/build-m12-process-test.sh scripts/build-m13-init.sh \
                 scripts/check-m13-init-log.sh scripts/build-m14-groups.sh \
                 scripts/build-m15-kill.sh scripts/build-m16-stop.sh scripts/build-m17-tty.sh \
-                scripts/probe-m17-interactive.sh; do
+                scripts/probe-m17-interactive.sh scripts/build-m18-ash-init.sh \
+                scripts/probe-m18-ash-interactive.sh; do
     sh -n "$filename"
 done
 # Both 17-case and source-profile runners must consume the same manifest
