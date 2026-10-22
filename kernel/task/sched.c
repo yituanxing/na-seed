@@ -7,6 +7,7 @@
 #include "../pipe.h"
 #include "../arch/arch.h"
 #include "../fs/io.h"
+#include "../drivers/tty.h"
 #include "process.h"
 #include "sched.h"
 #include "wait_pid.h"
@@ -29,8 +30,12 @@ static bool task_io_ready(const struct nas_task *task) {
     uint8_t kind = nas_task_fd_kind(task, fd);
     unsigned slot = nas_task_fd_slot(task, fd);
     if (slot >= NAS_FD_LIMIT) return true; /* replay to return EBADF */
-    if (task->blocked_op == NAS_SC_read)
-        return kind != FD_PIPE_R || nas_pipe_read_ready(slot);
+    if (task->blocked_op == NAS_SC_read) {
+        if(kind == FD_PIPE_R)return nas_pipe_read_ready(slot);
+        if(kind == FD_TTY || kind == FD_UART)
+            return nas_tty_read_ready(task->blocked_args[2]);
+        return true; /* replay and return actual fd error */
+    }
     if (task->blocked_op == NAS_SC_write ||
         task->blocked_op == NAS_SC_writev)
         return kind != FD_PIPE_W || nas_pipe_write_ready(slot);
@@ -123,10 +128,15 @@ retry_schedule: ; /* label must precede a statement in C11 */
     /* A READY task always gets one turn before re-evaluating blocked tasks.
      * This allows ash to construct consumers after a producer fills its pipe.
      */
+    nas_tty_pump(); /* physical RX progress even while other tasks run */
     for (unsigned pass = 0; pass < 2; ++pass) {
         for (unsigned slot = 0; slot < NAS_TASK_LIMIT; ++slot) {
             struct nas_task *next = nas_task_at(slot);
-            if (next == previous || !next->resume_valid) continue;
+            /* A blocked current task may wake when it is the LAST task.
+             * Never resume a RUNNING task from its own syscall frame. */
+            if (!next->resume_valid ||
+                (next == previous && next->state == NAS_TASK_RUNNING))
+                continue;
             if (pass == 0 && next->state != NAS_TASK_READY) continue;
             if (pass == 1 && !task_can_wake(next)) continue;
             nas_current_task = next;
@@ -141,10 +151,17 @@ retry_schedule: ; /* label must precede a statement in C11 */
                     nas_sched_child_exit(0, NAS_SIGPIPE);
                     goto retry_schedule; /* parent can now observe zombie */
                 }
-                if ((int64_t)result == -EOPNOTSUPP &&
-                    (next->blocked_op == NAS_SC_read ||
-                     next->blocked_op == NAS_SC_write ||
-                     next->blocked_op == NAS_SC_writev)) {
+                /* Recheck after another task consumed a ready pipe/TTY.
+                 * EAGAIN means physical tty RX is genuinely not ready.
+                 * EOPNOTSUPP remains the pipe's internal block sentinel,
+                 * but unsupported tty termios/ISIG must reach userspace. */
+                uint8_t replay_kind=nas_task_fd_kind(next,next->blocked_args[0]);
+                bool tty_again=next->blocked_op==NAS_SC_read &&
+                    (replay_kind==FD_TTY || replay_kind==FD_UART) &&
+                    (int64_t)result==-EAGAIN && nas_tty_read_waitable();
+                bool pipe_again=(int64_t)result==-EOPNOTSUPP &&
+                    (replay_kind==FD_PIPE_R || replay_kind==FD_PIPE_W);
+                if (tty_again || pipe_again) {
                     next->state = NAS_TASK_BLOCKED;
                     nas_current_task = previous;
                     nas_arch_restore_cpu(previous);
@@ -161,6 +178,21 @@ retry_schedule: ; /* label must precede a statement in C11 */
                 nas_print(" to="); nas_dec(next->pid); nas_print("\n");
             }
             return result;
+        }
+    }
+    /* Unlike pipe deadlock, a TTY read can be completed by future REAL
+     * external UART input even when the last task is blocked. Keep scanning
+     * actual device RX until a line or VMIN threshold arrives. This idle
+     * dispatcher polls hardware; IRQ-driven low-power waiting is not yet
+     * implemented and must not be described as interrupt-driven. */
+    for (unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
+        const struct nas_task *t=nas_task_at(slot);
+        if (t->state != NAS_TASK_BLOCKED || !t->pending_valid ||
+            t->blocked_op != NAS_SC_read)continue;
+        uint8_t kind=nas_task_fd_kind(t,t->blocked_args[0]);
+        if ((kind==FD_TTY || kind==FD_UART) && nas_tty_read_waitable()) {
+            __asm__ volatile ("" ::: "memory");
+            goto retry_schedule;
         }
     }
     /* Fatal deadlock diagnostic: dump who holds each pipe endpoint. */
