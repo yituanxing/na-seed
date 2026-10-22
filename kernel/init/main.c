@@ -17,8 +17,6 @@
 #define TASK (*nas_current_task)
 #define descriptors TASK.fds.descriptors
 #define file_slot TASK.fds.file_slot
-#define file_refcount nas_file_refcount
-#define file_status_flags nas_file_status_flags
 #define running_bash TASK.running_bash
 #define running_busybox TASK.running_busybox
 #define running_alpine TASK.running_alpine
@@ -79,9 +77,9 @@ void nas_init_userspace(void) {
     for (unsigned fd = 0; fd < 3; fd++) {
         descriptors[fd] = FD_UART;
         file_slot[fd] = (uint8_t)fd;
-        file_refcount[fd] = 1;
-        nas_fd_file_ops[fd] = nas_fs_ops_for_kind(FD_UART);
-        file_status_flags[fd] = fd == 0 ? 0 : 1; /* stdin R, stdout/err W */
+        nas_open_files[fd].refcount = 1;
+        nas_open_files[fd].ops = nas_fs_ops_for_kind(FD_UART);
+        nas_open_files[fd].status_flags = fd == 0 ? 0 : 1; /* stdin R, stdout/err W */
     }
     if (!nas_build_linux_stack(running_bash, running_busybox, &stack_pointer))
         nas_fail("cannot initialize Linux userspace stack");
