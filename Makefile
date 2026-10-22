@@ -249,8 +249,8 @@ $(OUT)/user_stack.o: kernel/task/user_stack.c kernel/task/user_stack.h kernel/ta
 
 
 $(OUT)/arch_signal_frame.o: kernel/arch/$(ARCH)/signal_frame.c kernel/task/signal.h kernel/arch/arch.h kernel/arch/$(ARCH)/context.h
-	@mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -c $< -o $@
+	mkdir -p $(dir $@)
+	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
 $(OUT)/signal.o: kernel/task/signal.c kernel/task/signal.h kernel/mm/usercopy.h kernel/task.h
 	mkdir -p $(dir $@)
