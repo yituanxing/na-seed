@@ -6,6 +6,7 @@
 #include "../arch/console.h"
 #include "../arch/mmu.h"
 #include "../mm/usercopy.h"
+#include "../lib/string.h"
 #include "serial.h"
 #include "tty.h"
 #include "tty_ldisc.h"
@@ -26,11 +27,8 @@ void nas_tty_init(void) {
     tty.unsupported_input=false;
     tty.pending_signum=0;
     nas_ldisc_reset(&tty.ldisc);
-    /* Freestanding RV64/ARM64 kernel links no libc memcpy/memset.
-     * Explicit field/CC initialization avoids compiler-emitted libc calls. */
-    tty.t.iflag=tty.t.oflag=tty.t.cflag=tty.t.lflag=0;
-    tty.t.line=0;
-    for(unsigned i=0;i<19;i++)tty.t.cc[i]=0;
+    /* Initialize native Linux termios with our shared freestanding klib. */
+    memset(&tty.t, 0, sizeof(tty.t));
     tty.t.iflag=0000400; /* ICRNL */
     tty.t.oflag=0000001|0000004; /* OPOST|ONLCR */
     tty.t.cflag=0000060|0000200|0004000|0000017; /* CS8|CREAD|CLOCAL|B38400 */
