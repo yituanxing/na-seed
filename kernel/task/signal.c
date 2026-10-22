@@ -358,7 +358,8 @@ uint64_t nas_signal_background_job(unsigned signum,uint64_t *frame,
  * remain pending rather than corrupting a saved first handler frame. */
 bool nas_signal_user_pending(const struct nas_task *task) {
     if(!task || task->signal_frame_active) return false;
-    uint64_t bits=task->pending_signals & ~task->blocked_signals;
+    uint64_t bits=task->pending_signals &
+        (~task->blocked_signals | task->signal_force_deliver);
     for(unsigned sig=1;sig<=64;sig++)
         if((bits & (1ULL<<(sig-1))) && task->signal_actions[sig][0]>1)
             return true;
@@ -463,7 +464,8 @@ void nas_signal_user_return(uint64_t *frame) {
     struct nas_task *t=nas_current_task;
     if(t->signal_frame_active || !frame || !nas_signal_user_pending(t))
         return;
-    uint64_t ready=t->pending_signals & ~t->blocked_signals;
+    uint64_t ready=t->pending_signals &
+        (~t->blocked_signals | t->signal_force_deliver);
     for(unsigned sig=1;sig<=64;sig++) {
         if(!(ready&(1ULL<<(sig-1))))continue;
         const uint64_t *act=t->signal_actions[sig];
@@ -472,6 +474,7 @@ void nas_signal_user_return(uint64_t *frame) {
             nas_fail("M30 cannot build native x86 signal frame");
         }
         t->pending_signals &= ~(1ULL<<(sig-1));
+        t->signal_force_deliver &= ~(1ULL<<(sig-1));
         return;
     }
 #else
