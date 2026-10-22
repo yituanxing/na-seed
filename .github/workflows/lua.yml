@@ -1,0 +1,59 @@
+name: NaSeed external Lua acceptance
+on:
+  pull_request:
+    paths:
+      - 'scripts/build-external-lua.sh'
+      - 'scripts/stage-external-lua-rootfs.sh'
+      - 'scripts/probe-external-lua.sh'
+      - 'scripts/lua-native-cases.tsv'
+      - 'tests/lua-*.lua'
+      - 'scripts/probe-x86-busybox-parity.sh'
+      - 'scripts/probe-riscv64-busybox-matrix.sh'
+      - 'scripts/probe-aarch64-busybox-matrix.sh'
+      - '.github/workflows/lua.yml'
+  workflow_dispatch:
+
+# Failures remain on the PR; don't rerun the whole legacy BusyBox suite per
+# Lua script edit. One lightweight real-program capability, three native ISAs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  lua:
+    name: Original Lua 5.4.8 / ${{ matrix.port }} Linux vs NaSeed
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native toolchain and real system QEMU
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y make gcc binutils curl gzip tar xorriso             clang lld cpio mtools gdisk qemu-user
+          case "${{ matrix.port }}" in
+            amd64) sudo apt-get install -y qemu-system-x86 ovmf ;;
+            riscv64) sudo apt-get install -y gcc-riscv64-linux-gnu libc6-dev-riscv64-cross               qemu-system-misc qemu-efi-riscv64 ;;
+            arm64) sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross               qemu-system-arm qemu-efi-aarch64 ;;
+          esac
+      - name: Cache official SHA256-pinned Lua release
+        uses: actions/cache@v4
+        with:
+          path: build/deps/external/lua-5.4.8.tar.gz
+          key: naseed-lua-5.4.8-4f18ddae154e793e
+      - name: Linux oracle then two native QEMU boots (no BusyBox executable)
+        run: sh scripts/probe-external-lua.sh ${{ matrix.port }}
+      - name: Preserve genuine guest log and source ELF evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naseed-lua-${{ matrix.port }}
+          path: |
+            build/external/lua/${{ matrix.port }}/lua.sha256
+            build/external/lua/${{ matrix.port }}/rootfs.cpio
+            build/busybox-source-parity-x86/lua-*.serial.log
+            build/port-riscv64/full/matrix-source/lua-*.serial.log
+            build/port-aarch64/full/matrix-source/lua-*.serial.log
+          if-no-files-found: ignore

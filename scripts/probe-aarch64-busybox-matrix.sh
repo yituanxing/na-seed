@@ -29,7 +29,14 @@ fw=/usr/share/qemu-efi-aarch64/QEMU_EFI.fd
 test -s "$fw"
 # The rootfs is built only from verified native BusyBox plus actual bytes
 # in the archive. The same kernel bootfs.c handles archive/file lookup.
-sh scripts/stage-busybox-rootfs.sh "$binary" "$work"
+# A non-BusyBox profile may provide its own exact CPIO archive.
+# Existing BusyBox runs still stage their unchanged canonical fixture.
+if [ -n "${NAS_ACCEPTANCE_CPIO:-}" ]; then
+    test -s "$NAS_ACCEPTANCE_CPIO"
+    cp "$NAS_ACCEPTANCE_CPIO" "$work/rootfs.cpio"
+else
+    sh scripts/stage-busybox-rootfs.sh "$binary" "$work"
+fi
 # Read exact guest program headers when a native ARM-only page access
 # differs from the same x86/RV64 ELF loader. This is evidence, not a
 # new architecture-specific loader or ELF transformation.

@@ -29,7 +29,14 @@ fw=/usr/share/qemu-efi-riscv64
 test -s "$fw/RISCV_VIRT_CODE.fd"
 # The rootfs is built only from verified native BusyBox plus actual bytes
 # in the archive. The same kernel bootfs.c handles archive/file lookup.
-sh scripts/stage-busybox-rootfs.sh "$binary" "$work"
+# A non-BusyBox profile may provide its own exact CPIO archive.
+# Existing BusyBox runs still stage their unchanged canonical fixture.
+if [ -n "${NAS_ACCEPTANCE_CPIO:-}" ]; then
+    test -s "$NAS_ACCEPTANCE_CPIO"
+    cp "$NAS_ACCEPTANCE_CPIO" "$work/rootfs.cpio"
+else
+    sh scripts/stage-busybox-rootfs.sh "$binary" "$work"
+fi
 # Two boot modes: real module first; and *archive-only* Limine handoff,
 # analogous to the x86 initramfs tests. Command selection differs, kernel
 # ELF loader / FS and task runtime are identical.

@@ -12,7 +12,14 @@ else
     mkdir -p "$dir"
     sh scripts/fetch-busybox-fixture.sh amd64 "$dir/busybox"
 fi
-sh scripts/stage-busybox-rootfs.sh "$dir/busybox" "$dir"
+# A non-BusyBox profile may provide its own exact CPIO archive.
+# Existing BusyBox runs still stage their unchanged canonical fixture.
+if [ -n "${NAS_ACCEPTANCE_CPIO:-}" ]; then
+    test -s "$NAS_ACCEPTANCE_CPIO"
+    cp "$NAS_ACCEPTANCE_CPIO" "$dir/rootfs.cpio"
+else
+    sh scripts/stage-busybox-rootfs.sh "$dir/busybox" "$dir"
+fi
 efi=build/deps/limine-binary/BOOTX64.EFI
 cdrom=build/deps/limine-binary/limine-uefi-cd.bin
 test -s "$efi" && test -s "$cdrom"
