@@ -24,9 +24,8 @@ static bool bash_module(const struct limine_file *file) {
 }
 static bool newc_archive(const struct limine_file *file) {
     if (!file || !file->address || file->size < 6) return false;
-    const uint8_t *p = (const uint8_t *)file->address;
-    return p[0]=='0' && p[1]=='7' && p[2]=='0' &&
-           p[3]=='7' && p[4]=='0' && p[5]=='1';
+    /* Header is binary data: length checked above, do not assume NUL. */
+    return memcmp(file->address, "070701", 6) == 0;
 }
 const char *nas_boot_prepare(const char *selected,
                              struct nas_boot_image *out) {
