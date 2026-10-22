@@ -75,7 +75,7 @@ bool bootfs_mount(const void *bytes, uint64_t size) {
     while (at < size) {
         if (size - at < NEWC_HEADER) return false;
         const uint8_t *h = base + at;
-        if (!memcmp(h, "070701", 6) == 0) return false;
+        if (memcmp(h, "070701", 6) != 0) return false;
         uint32_t file_size, name_size, mode;
         if (!hex8(h + 54, &file_size) ||
             !hex8(h + 94, &name_size) ||
@@ -137,7 +137,7 @@ const struct bootfs_entry *bootfs_child(const struct bootfs_entry *dir,
     size_t plen = strlen(parent);
     for (unsigned i = 0; i < entry_count; i++) {
         const char *candidate = entries[i].path;
-        if (!strncmp(candidate, parent, plen) == 0) continue;
+        if (strncmp(candidate, parent, plen) != 0) continue;
         const char *tail = candidate + plen;
         if (plen != 1) {
             if (*tail++ != '/') continue;
