@@ -96,18 +96,15 @@ uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
     if (options & ~1ULL) return (uint64_t)-EINVAL;
     if (rusage) return (uint64_t)-EOPNOTSUPP;
     bool have_child = false;
-    /* POSIX -1 waits for any child; direct positive PID is also valid.
-     * This first model only supports a single process group.
-     */
-    /* Linux wait4 pid_t is signed 32-bit, even on LP64. glibc may pass
-     * -1 zero-extended to 0x00000000ffffffff; do not treat it as PID. */
-    if (!nas_wait_pid_supported(desired))
-        return (uint64_t)-EOPNOTSUPP;
+    /* Linux pid_t is signed32. Select any child (-1), matching
+     * process group (0 or -pgid) or one explicit positive PID. */
     for (unsigned slot = 0; slot < NAS_TASK_LIMIT; ++slot) {
         struct nas_task *child = nas_task_child_at(nas_current_task->pid, slot);
         if (!child) continue;
         uint64_t pid = child->pid;
-        if (!nas_wait_pid_matches(desired,pid)) continue;
+        if (!nas_wait_pid_matches(desired,pid,
+                                  nas_current_task->pgid,child->pgid))
+            continue;
         have_child = true;
         if (child->state != NAS_TASK_ZOMBIE) continue;
         uint64_t code = child->termination_signal
