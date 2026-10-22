@@ -1,2 +1,3 @@
-# Native x86 handler test while generic64 native sigframes are pending.
-m30-handlers	cpio	sh -c "/bin/m30-signal --self-only; echo m30-basic-ok"	m30-basic-ok	-
+# Native x86 handler + atomic ppoll signal-EINTR test; RV64/ARM64
+# user signal frames remain explicitly unsupported until native ABI port.
+m30-handlers	cpio	sh -c "/bin/m30-signal; echo m30-signal-shell-ok"	m30-signal-shell-ok	-
