@@ -53,10 +53,17 @@ int main(int argc,char **argv) {
     ck(tcsetattr(ttyfd,TCSANOW,&term)==0,"enable ISIG canonical");
     int ready[2];
     ck(pipe(ready)==0,"create pipe");
+    /* A real job-control kernel MUST stop a child that reads /dev/tty
+     * while its PGID is still background. Gate reads until its parent
+     * has switched the controlling terminal to that process group.
+     * Previously a child-first scheduler could race tcsetpgrp(). */
+    int foreground_gate[2];
+    ck(pipe(foreground_gate)==0,"create foreground grant pipe");
     pid_t leader=fork();ck(leader>=0,"fork foreground leader");
     if(!leader) {
         ck(setpgid(0,0)==0,"leader setpgid");
         send('L',ready[1]);
+        take(foreground_gate[0],'G');
         block_tty(ttyfd);
     }
     take(ready[0],'L');
@@ -64,12 +71,15 @@ int main(int argc,char **argv) {
     if(!member) {
         ck(setpgid(0,leader)==0,"member joins leader PGID");
         send('M',ready[1]);
+        take(foreground_gate[0],'G');
         block_tty(ttyfd);
     }
     take(ready[0],'M');
     ck(getpgid(leader)==leader && getpgid(member)==leader,
        "two actual children in foreground group");
     ck(tcsetpgrp(ttyfd,leader)==0,"foreground group for SIGINT");
+    send('G',foreground_gate[1]);
+    send('G',foreground_gate[1]);
     puts("[M23] int-parent-ready");fflush(stdout);
     reaped(leader,SIGINT);
     reaped(member,SIGINT);
@@ -80,10 +90,12 @@ int main(int argc,char **argv) {
     if(!stopped) {
         ck(setpgid(0,0)==0,"suspend child PGID");
         send('S',ready[1]);
+        take(foreground_gate[0],'G');
         block_tty(ttyfd);
     }
     take(ready[0],'S');
     ck(tcsetpgrp(ttyfd,stopped)==0,"foreground group for SIGTSTP");
+    send('G',foreground_gate[1]);
     puts("[M23] stop-parent-ready");fflush(stdout);
     int status=0;
     ck(waitpid(stopped,&status,WUNTRACED)==stopped,"wait for terminal stop");
@@ -96,7 +108,9 @@ int main(int argc,char **argv) {
     ck(kill(stopped,SIGKILL)==0,"kill resumed child");
     reaped(stopped,SIGKILL);
     ck(tcsetpgrp(ttyfd,getpgrp())==0,"final parent foreground");
-    close(ready[0]);close(ready[1]);close(ttyfd);
+    close(ready[0]);close(ready[1]);
+    close(foreground_gate[0]);close(foreground_gate[1]);
+    close(ttyfd);
     puts("[M23] tty-signals-ok");
     return 0;
 }
