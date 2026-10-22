@@ -10,6 +10,7 @@ test -s "$binary" && test -s "build/source-busybox/$port/verified.config"
 if [ "$port" = amd64 ]; then
     # Exact upstream shell/echo/wc on native Linux BEFORE three real kernels.
     sh scripts/check-kstack-busybox-oracle.sh "$binary"
+    python3 scripts/check-m28-linux-oracle.py "$binary"
 fi
 sh scripts/build-m11-vm-test.sh "$port"
 sh scripts/build-m12-process-test.sh "$port"
@@ -41,6 +42,7 @@ cp "build/source-busybox/$port/m24-signals" "$extra_dir/m24-signals"
 cp "build/source-busybox/$port/m25-tty-jobs" "$extra_dir/m25-tty-jobs"
 if [ "$port" = amd64 ]; then
     cp "build/source-busybox/$port/m17-input" "$extra_dir/m17-input"
+    cp tests/m28-preempt.sh "$extra_dir/m28-preempt"
 fi
 export BUSYBOX_EXTRA_DIR="$extra_dir"
 export BUSYBOX_PARITY_BINARY="$binary"
@@ -67,6 +69,7 @@ if [ "$port" = amd64 ]; then
     NASEED_INTERACTIVE_INIT=/bin/m25-tty-jobs \
       NASEED_INTERACTIVE_DRIVER=scripts/m25-serial-check.py \
       sh scripts/probe-m18-ash-interactive.sh
+    sh scripts/probe-m28-x86-preempt.sh amd64
 else
     # Real firmware and PL011/SBI input are validated only on an actual
     # target machine, not under Linux QEMU-user or synthetic UART logs.

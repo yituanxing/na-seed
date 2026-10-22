@@ -128,6 +128,69 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     }
 }
 static unsigned schedule_count;
+
+/* Cooperative scheduling and timer IRQs must agree on eligible Tasks.
+ * IRQ callers have already snapshotted their interrupted user registers.
+ * We never save or transfer C stack continuations. Return false if no
+ * alternative Task can actually run; the original interrupted context
+ * remains valid and its CPU/MMU/FPU are restored after tentative replays.
+ */
+bool nas_sched_preempt_select(void) {
+    struct nas_task *from=nas_current_task;
+    if (!from || from->state != NAS_TASK_RUNNING) return false;
+    unsigned origin=NAS_TASK_LIMIT;
+    for (unsigned i=0;i<NAS_TASK_LIMIT;i++)
+        if (nas_task_at(i)==from) { origin=i; break; }
+    if (origin==NAS_TASK_LIMIT) sched_fail("timer task not registered");
+    for (unsigned pass=0;pass<2;pass++) {
+        for (unsigned offset=1;offset<NAS_TASK_LIMIT;offset++) {
+            struct nas_task *next=nas_task_at((origin+offset)%NAS_TASK_LIMIT);
+            if (!next->resume_valid) continue;
+            if (pass==0 && next->state != NAS_TASK_READY) continue;
+            if (pass==1 && !task_can_wake(next)) continue;
+            nas_current_task=next;
+            nas_arch_restore_cpu(next);
+            uint64_t result=nas_arch_saved_return(next);
+            if (next->pending_valid) {
+                result=task_replay(next);
+                if ((int64_t)result==-EPIPE &&
+                    (next->blocked_op==NAS_SC_write ||
+                     next->blocked_op==NAS_SC_writev) &&
+                    nas_sched_sigpipe_default(next->blocked_args[0])) {
+                    nas_sched_child_exit(0,NAS_SIGPIPE);
+                    nas_current_task=from;
+                    nas_arch_restore_cpu(from);
+                    continue;
+                }
+                uint8_t kind=nas_task_fd_kind(next,next->blocked_args[0]);
+                bool tty_again=next->blocked_op==NAS_SC_read &&
+                    (kind==FD_TTY || kind==FD_UART) &&
+                    (int64_t)result==-EAGAIN && nas_tty_read_waitable();
+                bool pipe_again=(int64_t)result==-EOPNOTSUPP &&
+                    (kind==FD_PIPE_R || kind==FD_PIPE_W);
+                bool poll_again=(next->blocked_op==NAS_SC_poll ||
+                                 next->blocked_op==NAS_SC_ppoll) &&
+                                 (int64_t)result==-EAGAIN;
+                if (tty_again || pipe_again || poll_again) {
+                    nas_current_task=from;
+                    nas_arch_restore_cpu(from);
+                    continue;
+                }
+                nas_arch_set_saved_return(next,result);
+                next->pending_valid=false;
+                next->blocked_op=0;
+            }
+            from->state=NAS_TASK_READY;
+            from->resume_valid=true;
+            next->state=NAS_TASK_RUNNING;
+            next->resume_valid=false;
+            return true;
+        }
+    }
+    nas_current_task=from;
+    return false;
+}
+
 uint64_t nas_task_schedule(uint64_t *frame) {
 retry_schedule: ; /* label must precede a statement in C11 */
     struct nas_task *previous = nas_current_task;

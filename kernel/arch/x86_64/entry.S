@@ -31,17 +31,19 @@ nas_arch_enter_user:
     xorq %rdx, %rdx
     iretq
 
+/* All userspace returns now use IRETQ. SYSRET overwrites RCX/R11 with
+ * syscall PC/RFLAGS and cannot restore an arbitrary asynchronous timer
+ * interrupt context. This 160-byte IRET stack image is compatible with
+ * both syscall and hardware IRQ. Single CPU, interrupts masked in C.
+ */
 .global syscall_entry
 syscall_entry:
-    /* The task switch is cooperative, at the syscall return boundary.
-     * Preserve *all* user GPRs: a different user process may execute
-     * before we restore the parent's saved SYSRET frame.
-     */
     cld
     movq %rsp, syscall_user_rsp(%rip)
-    /* The active task owns this entry stack. Switched at a safe syscall
-     * return boundary with its TSS.rsp0 in nas_arch_x86_set_kernel_stack. */
+    movq %rcx, nas_x86_syscall_return_rip(%rip)
+    movq %r11, nas_x86_syscall_return_flags(%rip)
     movq nas_x86_kernel_stack_ptr(%rip), %rsp
+    subq $40, %rsp         /* space for RIP/CS/FLAGS/RSP/SS */
     pushq %r15
     pushq %r14
     pushq %r13
@@ -57,10 +59,47 @@ syscall_entry:
     pushq %rsi
     pushq %rdi
     pushq %rax
-    subq $8, %rsp
-    leaq 8(%rsp), %rdi
+    /* Stack is now 16-byte aligned, as required before the C call. */
+    movq %rsp, %rdi
     call syscall_dispatch
-    addq $8, %rsp
+    movq %rax, 0(%rsp)   /* syscall return, potentially from another Task */
+    movq nas_x86_syscall_return_rip(%rip), %rax
+    movq %rax, 120(%rsp)
+    movq $0x23, 128(%rsp)
+    movq nas_x86_syscall_return_flags(%rip), %rax
+    movq %rax, 136(%rsp)
+    movq syscall_user_rsp(%rip), %rax
+    movq %rax, 144(%rsp)
+    movq $0x1b, 152(%rsp)
+    jmp nas_x86_iret_restore
+
+/* An x86 timer IRQ from Ring3 pushes the real IRET frame via TSS.rsp0.
+ * Save ALL 15 GPRs, including the true interrupted RCX/R11. */
+.global nas_x86_timer_isr
+nas_x86_timer_isr:
+    cld
+    pushq %r15
+    pushq %r14
+    pushq %r13
+    pushq %r12
+    pushq %rbp
+    pushq %rbx
+    pushq %r11
+    pushq %rcx
+    pushq %r9
+    pushq %r8
+    pushq %r10
+    pushq %rdx
+    pushq %rsi
+    pushq %rdi
+    pushq %rax
+    movq %rsp, %rdi
+    call nas_x86_timer_irq
+    jmp nas_x86_iret_restore
+
+nas_x86_iret_restore:
+    /* Same saved-GPR layout for syscall and interrupt. The frame's
+     * RIP/FLAGS/RSP is authoritative even after a scheduler task switch. */
     movq 8(%rsp), %rdi
     movq 16(%rsp), %rsi
     movq 24(%rsp), %rdx
@@ -75,8 +114,9 @@ syscall_entry:
     movq 96(%rsp), %r13
     movq 104(%rsp), %r14
     movq 112(%rsp), %r15
-    movq syscall_user_rsp(%rip), %rsp
-    sysretq
+    movq 0(%rsp), %rax
+    addq $120, %rsp
+    iretq
 
 .global exception_common
 exception_common:
@@ -282,6 +322,12 @@ exception_vectors:
 nas_x86_kernel_stack_ptr: .quad kernel_stack_top
 
 .section .bss
+.balign 16
+.global nas_x86_syscall_return_rip
+nas_x86_syscall_return_rip: .quad 0
+.global nas_x86_syscall_return_flags
+nas_x86_syscall_return_flags: .quad 0
+
 .balign 16
 .global syscall_user_rsp
 syscall_user_rsp: .quad 0

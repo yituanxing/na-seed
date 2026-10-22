@@ -14,6 +14,7 @@ done
 # One canonical kernel-only C runtime, checked on all real target triples.
 sh scripts/check-klib.sh
 sh scripts/check-task-stacks.sh
+sh scripts/check-m28-timer.sh
 
 # Keep the M7 /tmp inode storage boundary intact. The syscall layer may
 # call the backend but must not own inode/description tables. The backend

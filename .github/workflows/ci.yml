@@ -328,6 +328,7 @@ jobs:
             build/source-busybox/${{ matrix.port }}/verified.config
             build/source-busybox/${{ matrix.port }}/artifacts.sha256
             build/busybox-source-parity-x86/*.serial.log
+            build/m28-x86-preempt/preempt.serial.log
             build/port-riscv64/full/matrix-source/*.serial.log
             build/port-aarch64/full/matrix-source/*.serial.log
           if-no-files-found: ignore
