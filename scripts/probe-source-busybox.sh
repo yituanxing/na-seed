@@ -61,12 +61,16 @@ case "$port" in
     arm64) sh scripts/probe-aarch64-busybox-matrix.sh ;;
     *) echo "unsupported target $port" >&2; exit 2 ;;
 esac
+# M30 real signal-frame regression is common. A failed handler program
+# cannot be hidden by a shell echo: the test uses && and requires success.
+BUSYBOX_PARITY_MANIFEST=scripts/m30-x86-handler-cases.tsv \
+BUSYBOX_PARITY_EXPECTED_COUNT=1 \
+  sh "$(case "$port" in
+       amd64) echo scripts/probe-x86-busybox-parity.sh ;;
+       riscv64) echo scripts/probe-riscv64-busybox-matrix.sh ;;
+       arm64) echo scripts/probe-aarch64-busybox-matrix.sh ;;
+     esac)"
 if [ "$port" = amd64 ]; then
-    # M30: authentic Linux sigaction -> signal frame -> libc restorer,
-    # isolated until the RV64/ARM64 native frame backends are complete.
-    BUSYBOX_PARITY_MANIFEST=scripts/m30-x86-handler-cases.tsv \
-    BUSYBOX_PARITY_EXPECTED_COUNT=1 \
-      sh scripts/probe-x86-busybox-parity.sh
     sh scripts/probe-m17-interactive.sh
     sh scripts/probe-m18-ash-interactive.sh
     NASEED_INTERACTIVE_INIT=/bin/m21-tty-sched \
@@ -106,4 +110,4 @@ if [ "$port" = riscv64 ] || [ "$port" = arm64 ]; then
     BUSYBOX_PARITY_EXPECTED_COUNT=1 \
       sh "scripts/probe-$(if [ "$port" = arm64 ]; then echo aarch64; else echo riscv64; fi)-busybox-matrix.sh"
 fi
-echo "[SOURCE BUSYBOX MATRIX PASS] $port: 18/18 native self-compiled workloads"
+echo "[SOURCE BUSYBOX MATRIX PASS] $port: 18/18 standard + 1 native M30 signal workload"
