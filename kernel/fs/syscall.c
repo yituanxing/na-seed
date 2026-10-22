@@ -26,12 +26,7 @@
 #define TASK (*nas_current_task)
 #define descriptors TASK.fds.descriptors
 #define file_slot TASK.fds.file_slot
-#define file_refcount nas_file_refcount
 #define fd_cloexec TASK.fds.fd_cloexec
-#define file_status_flags nas_file_status_flags
-#define boot_files TASK.fds.boot_files
-#define boot_entries TASK.fds.boot_entries
-#define boot_file_offsets nas_boot_file_offsets
 #define current_workdir TASK.cwd
 #define running_bash TASK.running_bash
 #define running_busybox TASK.running_busybox
@@ -96,7 +91,7 @@ static uint64_t sys_pipe2(uint64_t user_pair, uint64_t flags) {
         if (descriptors[fd] == FD_CLOSED) fds[nfds++] = fd;
     if (nfds != 2) return (uint64_t)-EMFILE;
     for (unsigned slot = 0; slot < NAS_FD_LIMIT && nslots < 2; slot++)
-        if (!file_refcount[slot]) slots[nslots++] = slot;
+        if (!nas_open_files[slot].refcount) slots[nslots++] = slot;
     if (nslots != 2) return (uint64_t)-ENFILE;
     int result = nas_pipe_create(slots[0], slots[1]);
     if (result) return (uint64_t)(int64_t)result;
@@ -104,9 +99,9 @@ static uint64_t sys_pipe2(uint64_t user_pair, uint64_t flags) {
         unsigned fd = fds[i], slot = slots[i];
         descriptors[fd] = i ? FD_PIPE_W : FD_PIPE_R;
         file_slot[fd] = (uint8_t)slot;
-        file_refcount[slot] = 1;
-        nas_fd_file_ops[slot] = nas_fs_ops_for_kind(descriptors[fd]);
-        file_status_flags[slot] = (i ? 1ULL : 0ULL) | (flags & 0x800ULL);
+        nas_open_files[slot].refcount = 1;
+        nas_open_files[slot].ops = nas_fs_ops_for_kind(descriptors[fd]);
+        nas_open_files[slot].status_flags = (i ? 1ULL : 0ULL) | (flags & 0x800ULL);
         fd_cloexec[fd] = !!(flags & 0x80000ULL);
     }
     uint8_t output[8] = {0};
@@ -125,7 +120,7 @@ static uint64_t pipe_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
         return (uint64_t)-EFAULT;
     unsigned slot = file_slot[fd];
     int64_t available = nas_pipe_read_amount(
-        slot, length, !!(file_status_flags[slot] & 0x800ULL));
+        slot, length, !!(nas_open_files[slot].status_flags & 0x800ULL));
     if (available <= 0) return (uint64_t)available;
     unsigned count = (unsigned)available, n = 0;
     for (; n < count; n++)
@@ -145,7 +140,7 @@ static uint64_t pipe_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
         return (uint64_t)-EFAULT;
     unsigned slot = file_slot[fd];
     int64_t available = nas_pipe_write_amount(
-        slot, length, !!(file_status_flags[slot] & 0x800ULL));
+        slot, length, !!(nas_open_files[slot].status_flags & 0x800ULL));
     if (available <= 0) return (uint64_t)available;
     unsigned count = (unsigned)available, n = 0;
     for (; n < count; n++) {
@@ -165,9 +160,9 @@ static uint64_t pipe_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
 void nas_fs_close_fd(uint64_t fd) {
     unsigned final_slot=nas_fd_close(nas_current_task, (unsigned)fd);
     if (final_slot == NAS_FD_LIMIT) return;
-    const struct nas_file_ops *ops=nas_fd_file_ops[final_slot];
+    const struct nas_file_ops *ops=nas_open_files[final_slot].ops;
     if(ops && ops->release)ops->release(final_slot);
-    nas_fd_file_ops[final_slot]=0;
+    nas_open_files[final_slot]=(struct nas_open_file){0};
 }
 static uint64_t fd_clone(uint64_t src, uint64_t dst, bool cloexec) {
     if (src >= NAS_FD_LIMIT || descriptors[src] == FD_CLOSED ||
@@ -188,10 +183,10 @@ static uint64_t sys_fcntl(uint64_t fd, uint64_t command, uint64_t arg) {
     case 0: return fd_duplicate(fd, arg, false);  /* F_DUPFD */
     case 1: return fd_cloexec[fd];                 /* F_GETFD */
     case 2: fd_cloexec[fd] = (uint8_t)(arg & 1); return 0; /* F_SETFD */
-    case 3: return file_status_flags[slot];       /* F_GETFL */
+    case 3: return nas_open_files[slot].status_flags;       /* F_GETFL */
     case 4: /* F_SETFL: only the O_NONBLOCK/O_APPEND mutable subset */
-        file_status_flags[slot] =
-            (file_status_flags[slot] & ~(0x800ULL | 0x400ULL)) |
+        nas_open_files[slot].status_flags =
+            (nas_open_files[slot].status_flags & ~(0x800ULL | 0x400ULL)) |
             (arg & (0x800ULL | 0x400ULL));
         return 0;
     case 1030: return fd_duplicate(fd, arg, true); /* F_DUPFD_CLOEXEC */
@@ -235,9 +230,9 @@ uint64_t nas_fs_resolve_path(uint64_t dirfd, uint64_t pathname,
                 if (!dir) return (uint64_t)-EBADF;
                 base=dir->path;
             } else {
-                if (descriptors[dirfd]!=FD_DIR || !boot_entries[dirfd])
+                if (descriptors[dirfd]!=FD_DIR || !nas_open_files[file_slot[dirfd]].boot_entry)
                     return (uint64_t)-ENOTDIR;
-                base=boot_entries[dirfd]->path;
+                base=nas_open_files[file_slot[dirfd]].boot_entry->path;
             }
         }
     }
@@ -248,12 +243,12 @@ static uint64_t tmp_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     const struct nas_tmp_file *file = tmp_by_fd(fd);
     if (!file) return (uint64_t)-EBADF;
     if (!length) return 0;
-    uint64_t slot = file_slot[fd], offset = boot_file_offsets[slot];
+    uint64_t slot = file_slot[fd], offset = nas_open_files[slot].position;
     if (offset >= file->size) return 0;
     if (length > file->size - offset) length = file->size - offset;
     if (!nas_user_write_bytes(address, file->bytes + offset, length))
         return (uint64_t)-EFAULT;
-    boot_file_offsets[slot] += length;
+    nas_open_files[slot].position += length;
     return length;
 }
 static uint64_t tmp_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
@@ -263,8 +258,8 @@ static uint64_t tmp_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     if (!length) return 0;
     if (address >= USER_LIMIT || length > USER_LIMIT - address)
         return (uint64_t)-EFAULT;
-    uint64_t offset = (file_status_flags[slot] & 0x400ULL) ?
-                      file->size : boot_file_offsets[slot];
+    uint64_t offset = (nas_open_files[slot].status_flags & 0x400ULL) ?
+                      file->size : nas_open_files[slot].position;
     if (offset >= TMP_FILE_CAP) return (uint64_t)-ENOSPC;
     if (length > TMP_FILE_CAP - offset) length = TMP_FILE_CAP - offset;
     uint64_t n = 0;
@@ -277,7 +272,7 @@ static uint64_t tmp_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     for (uint64_t pos = file->size; pos < offset; pos++)
         file->bytes[pos] = 0;
     if (offset + n > file->size) file->size = offset + n;
-    boot_file_offsets[slot] = offset + n;
+    nas_open_files[slot].position = offset + n;
     return n;
 }
 /* Linux syscall decoders retain user-pointer validation and task-relative
@@ -387,24 +382,24 @@ static uint64_t sys_open_path(const char *path, uint64_t native_flags) {
     for (unsigned fd = 3; fd < 64; fd++) {
         if (descriptors[fd] != FD_CLOSED) continue;
         for (unsigned slot = 0; slot < 64; slot++) {
-            if (file_refcount[slot]) continue;
+            if (nas_open_files[slot].refcount) continue;
             if (create_tmp) {
                 tmp_file = tmp_create(path, false);
                 if (!tmp_file) return (uint64_t)-ENOSPC;
             }
             if ((kind == FD_TMP || kind == FD_TMP_DIR) && !tmp_file) return (uint64_t)-ENOENT;
             if (kind == FD_TMP && (flags & 0x200ULL)) tmp_file->size = 0;
-            file_refcount[slot] = 1;
-            nas_fd_file_ops[slot] = nas_fs_ops_for_kind(kind);
+            nas_open_files[slot].refcount = 1;
+            nas_open_files[slot].ops = nas_fs_ops_for_kind(kind);
             if (kind == FD_TMP || kind == FD_TMP_DIR)
                 tmp_bind_slot(slot, tmp_file);
             file_slot[fd] = (uint8_t)slot;
-            file_status_flags[slot] = flags & (3ULL | 0x800ULL | 0x400ULL);
+            nas_open_files[slot].status_flags = flags & (3ULL | 0x800ULL | 0x400ULL);
             fd_cloexec[fd] = !!(flags & 0x80000ULL);
-            boot_file_offsets[slot] = 0;
+            nas_open_files[slot].position = 0;
             descriptors[fd] = kind;
-            boot_files[fd] = real_file;
-            boot_entries[fd] = entry;
+            nas_open_files[file_slot[fd]].boot_file = real_file;
+            nas_open_files[file_slot[fd]].boot_entry = entry;
             return fd;
         }
         return (uint64_t)-ENFILE;
@@ -435,29 +430,29 @@ static uint64_t vread_dir(uint64_t fd,uint64_t addr,uint64_t n) {
     (void)fd;(void)addr;(void)n;return (uint64_t)-EISDIR;
 }
 static uint64_t vread_archive(uint64_t fd,uint64_t addr,uint64_t n) {
-    const struct bootfs_entry *entry=boot_entries[fd];
+    const struct bootfs_entry *entry=nas_open_files[file_slot[fd]].boot_entry;
     if(!entry)return (uint64_t)-EBADF;
-    uint64_t start=boot_file_offsets[file_slot[fd]];
+    uint64_t start=nas_open_files[file_slot[fd]].position;
     if(start>=entry->size)return 0;
     if(n>entry->size-start)n=entry->size-start;
     if(!nas_user_write_bytes(addr,entry->data+start,n))
         return (uint64_t)-EFAULT;
-    boot_file_offsets[file_slot[fd]]+=n;
+    nas_open_files[file_slot[fd]].position+=n;
     return n;
 }
 static uint64_t vread_limine(uint64_t fd,uint64_t addr,uint64_t n) {
-    const struct limine_file *file=boot_files[fd];
+    const struct limine_file *file=nas_open_files[file_slot[fd]].boot_file;
     if(!file || !file->address)return (uint64_t)-EBADF;
-    uint64_t start=boot_file_offsets[file_slot[fd]];
+    uint64_t start=nas_open_files[file_slot[fd]].position;
     if(start>file->size)return 0;
     if(n>file->size-start)n=file->size-start;
     if(!nas_user_write_bytes(addr,(const uint8_t*)file->address+start,n))
         return (uint64_t)-EFAULT;
-    boot_file_offsets[file_slot[fd]]+=n;
+    nas_open_files[file_slot[fd]].position+=n;
     return n;
 }
 static uint64_t vread_tty(uint64_t fd,uint64_t addr,uint64_t n) {
-    return nas_tty_read(addr,n,(file_status_flags[file_slot[fd]]&0x800ULL)!=0);
+    return nas_tty_read(addr,n,(nas_open_files[file_slot[fd]].status_flags&0x800ULL)!=0);
 }
 static uint64_t vwrite_discard(uint64_t fd,uint64_t addr,uint64_t n) {
     (void)fd;(void)addr;return n;
@@ -551,16 +546,16 @@ const struct nas_file_ops *nas_fs_ops_for_kind(uint8_t kind) {
 
 uint64_t nas_fs_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED)return (uint64_t)-EBADF;
-    if((file_status_flags[file_slot[fd]]&3ULL)==0)return (uint64_t)-EBADF;
+    if((nas_open_files[file_slot[fd]].status_flags&3ULL)==0)return (uint64_t)-EBADF;
     if(length>(1ULL<<20) || address>=USER_LIMIT || length>USER_LIMIT-address)
         return (uint64_t)-EFAULT;
-    const struct nas_file_ops *ops=nas_fd_file_ops[file_slot[fd]];
+    const struct nas_file_ops *ops=nas_open_files[file_slot[fd]].ops;
     return ops && ops->write ? ops->write(fd,address,length) : (uint64_t)-EBADF;
 }
 uint64_t nas_fs_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED)return (uint64_t)-EBADF;
-    if((file_status_flags[file_slot[fd]]&3ULL)==1)return (uint64_t)-EBADF;
-    const struct nas_file_ops *ops=nas_fd_file_ops[file_slot[fd]];
+    if((nas_open_files[file_slot[fd]].status_flags&3ULL)==1)return (uint64_t)-EBADF;
+    const struct nas_file_ops *ops=nas_open_files[file_slot[fd]].ops;
     return ops && ops->read ? ops->read(fd,address,length) : (uint64_t)-EBADF;
 }
 uint64_t nas_fs_fd_writev(uint64_t fd, uint64_t iov, uint64_t count) {
@@ -602,7 +597,7 @@ uint64_t nas_fs_poll(uint64_t address, uint64_t nfds, uint64_t timeout) {
             if (fd >= 64 || descriptors[(unsigned)fd] == FD_CLOSED)
                 revents = POLLNVAL;
             else {
-                const struct nas_file_ops *ops=nas_fd_file_ops[file_slot[(unsigned)fd]];
+                const struct nas_file_ops *ops=nas_open_files[file_slot[(unsigned)fd]].ops;
                 revents=ops && ops->poll ? ops->poll((uint64_t)(unsigned)fd,events) : 0;
             }
         }
@@ -645,7 +640,7 @@ bool nas_fs_poll_arm(uint64_t address,uint64_t nfds) {
         if(fd<0 || fd>=NAS_FD_LIMIT || !events)continue;
         unsigned slot=file_slot[(unsigned)fd];
         if(slot>=NAS_FD_LIMIT)continue;
-        const struct nas_file_ops *ops=nas_fd_file_ops[slot];
+        const struct nas_file_ops *ops=nas_open_files[slot].ops;
         if(ops && ops->poll_arm)ops->poll_arm(task,(uint64_t)(unsigned)fd,events);
     }
     return task->poll_tty_read || task->poll_pipe_read || task->poll_pipe_write;
@@ -699,9 +694,9 @@ static uint64_t sys_fchdir(uint64_t fd) {
         if (!dir || !dir->linked) return (uint64_t)-ENOENT;
         path = dir->path;
     } else {
-        if (descriptors[fd] != FD_DIR || !boot_entries[fd])
+        if (descriptors[fd] != FD_DIR || !nas_open_files[file_slot[fd]].boot_entry)
             return (uint64_t)-ENOTDIR;
-        path = boot_entries[fd]->path;
+        path = nas_open_files[file_slot[fd]].boot_entry->path;
     }
     unsigned i = 0;
     do { current_workdir[i] = path[i]; } while (path[i++]);
@@ -719,7 +714,7 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
     st.nlink = 1;
     st.blksize = PAGE;
     if (descriptors[fd] == FD_DIR || descriptors[fd] == FD_ARCHIVE) {
-        const struct bootfs_entry *entry = boot_entries[fd];
+        const struct bootfs_entry *entry = nas_open_files[file_slot[fd]].boot_entry;
         if (!entry) return (uint64_t)-EBADF;
         st.dev = 3; st.ino = entry->ino;
         st.mode = entry->mode;
@@ -738,7 +733,7 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
         st.dev = 4; st.ino = (uint64_t)file_slot[fd] + 1000;
         st.mode = 0010600; /* S_IFIFO | owner read/write */
     } else if (descriptors[fd] == FD_BOOTFS) {
-        const struct limine_file *file = boot_files[fd];
+        const struct limine_file *file = nas_open_files[file_slot[fd]].boot_file;
         if (!file) return (uint64_t)-EBADF;
         st.dev = 1; st.ino = fd + 100;
         st.mode = 0100555;
@@ -756,19 +751,19 @@ static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
     if (fd >= 64 || descriptors[fd] == FD_CLOSED)
         return (uint64_t)-EBADF;
     uint64_t size = 0;
-    if (descriptors[fd] == FD_BOOTFS && boot_files[fd])
-        size = boot_files[fd]->size;
-    else if (descriptors[fd] == FD_ARCHIVE && boot_entries[fd])
-        size = boot_entries[fd]->size;
+    if (descriptors[fd] == FD_BOOTFS && nas_open_files[file_slot[fd]].boot_file)
+        size = nas_open_files[file_slot[fd]].boot_file->size;
+    else if (descriptors[fd] == FD_ARCHIVE && nas_open_files[file_slot[fd]].boot_entry)
+        size = nas_open_files[file_slot[fd]].boot_entry->size;
     else if (descriptors[fd] == FD_TMP || descriptors[fd] == FD_TMP_DIR) {
         const struct nas_tmp_file *file = tmp_by_fd(fd);
         if (!file) return (uint64_t)-EBADF;
         size = file->size;
     }
-    else if (descriptors[fd] != FD_DIR || !boot_entries[fd])
+    else if (descriptors[fd] != FD_DIR || !nas_open_files[file_slot[fd]].boot_entry)
         return (uint64_t)-ESPIPE;
     uint64_t base = 0;
-    if (whence == 1) base = boot_file_offsets[file_slot[fd]];
+    if (whence == 1) base = nas_open_files[file_slot[fd]].position;
     else if (whence == 2 && descriptors[fd] != FD_DIR && descriptors[fd] != FD_TMP_DIR) base = size;
     else if (whence != 0) return (uint64_t)-EINVAL;
     int64_t signed_off = (int64_t)off;
@@ -780,7 +775,7 @@ static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
         if (base > UINT64_MAX - off) return (uint64_t)-EINVAL;
         base += off;
     }
-    boot_file_offsets[file_slot[fd]] = base;
+    nas_open_files[file_slot[fd]].position = base;
     return base;
 }
 static uint64_t sys_openat_boot(uint64_t dirfd, uint64_t pathname, uint64_t flags) {
@@ -851,17 +846,17 @@ static uint64_t sys_readlinkat_boot(uint64_t dirfd, uint64_t pathname,
 static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
     if (fd >= 64 || descriptors[fd] == FD_CLOSED) return (uint64_t)-EBADF;
     if (descriptors[fd] != FD_TMP_DIR &&
-        (descriptors[fd] != FD_DIR || !boot_entries[fd]))
+        (descriptors[fd] != FD_DIR || !nas_open_files[file_slot[fd]].boot_entry))
         return (uint64_t)-ENOTDIR;
     if (capacity < 24) return (uint64_t)-EINVAL;
     if (dst >= USER_LIMIT || capacity > USER_LIMIT - dst)
         return (uint64_t)-EFAULT;
-    const struct bootfs_entry *dir = boot_entries[fd];
+    const struct bootfs_entry *dir = nas_open_files[file_slot[fd]].boot_entry;
     const struct nas_tmp_file *tmpdir =
         descriptors[fd] == FD_TMP_DIR ? tmp_by_fd(fd) : 0;
     const char *dirpath = tmpdir ? tmpdir->path : dir->path;
     uint64_t dirino = tmpdir ? 5000 + tmp_number(tmpdir) : dir->ino;
-    uint64_t cursor = boot_file_offsets[file_slot[fd]];
+    uint64_t cursor = nas_open_files[file_slot[fd]].position;
     uint64_t written = 0;
     while (written + 24 <= capacity) {
         const struct bootfs_entry *item;
@@ -923,7 +918,7 @@ static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
             return written ? written : (uint64_t)-EFAULT;
         written += reclen;
         cursor++;
-        boot_file_offsets[file_slot[fd]] = cursor;
+        nas_open_files[file_slot[fd]].position = cursor;
     }
     return written;
 }
@@ -970,7 +965,7 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
     case NAS_SC_ioctl:
         if (args[1] >= 64 || descriptors[args[1]] == FD_CLOSED)
             FS_RESULT((uint64_t)-EBADF);
-        const struct nas_file_ops *fops=nas_fd_file_ops[file_slot[args[1]]];
+        const struct nas_file_ops *fops=nas_open_files[file_slot[args[1]]].ops;
         FS_RESULT(fops && fops->ioctl ? fops->ioctl(args[2],args[3])
                                      : (uint64_t)-ENOTTY);
     case NAS_SC_dup3:
