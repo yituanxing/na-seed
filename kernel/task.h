@@ -55,6 +55,10 @@ struct nas_task {
      */
     uint64_t blocked_op, blocked_args[4];
     bool pending_valid; /* read(0) is a real pending syscall, not 'none' */
+    /* Absolute monotonic deadline for sleep or timed I/O. Retained across
+     * syscall replay and owned by Task, never by a borrowed user pointer. */
+    uint64_t deadline_ns;
+    bool deadline_active;
     /* Snapshot poll interest when blocking. NEVER dereference a different
      * task's user pollfd pointer during readiness checks. Each bit names a
      * shared open-file-description slot (0..63). */
