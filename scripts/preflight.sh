@@ -144,6 +144,12 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
 script -q -e -c '/tmp/naseed-m21-tty-sched --linux-pty-oracle' /dev/null \
     | tr -d '\r' | grep -Fxq m21-linux-pty-ok
 
+# M22 Linux-standard pollfd oracle under a real controlling PTY.
+cc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
+    tests/m22-poll.c -o /tmp/naseed-m22-poll
+script -q -e -c '/tmp/naseed-m22-poll --linux-pty-oracle' /dev/null \
+    | tr -d '\r' | grep -Fxq m22-linux-pty-ok
+
 # Compare our pinned Linux x86-64 syscall numbers against the host UAPI.
 python3 scripts/check-syscall-nr.py
 python3 scripts/check-syscall-errno.py
