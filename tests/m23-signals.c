@@ -85,6 +85,11 @@ int main(int argc,char **argv) {
     reaped(member,SIGINT);
     puts("[M23] sigint-group-ok");fflush(stdout);
     ck(tcsetpgrp(ttyfd,getpgrp())==0,"restore owning shell foreground");
+    /* The SIGINT group may have been terminated while still waiting on
+     * its foreground-grant pipe. Discard ALL unused grant tokens: reusing
+     * the same pipe for the next stage can grant foreground too early. */
+    close(foreground_gate[0]);close(foreground_gate[1]);
+    ck(pipe(foreground_gate)==0,"fresh SIGTSTP foreground grant pipe");
 
     pid_t stopped=fork();ck(stopped>=0,"fork suspend child");
     if(!stopped) {
