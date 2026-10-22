@@ -29,7 +29,10 @@ try:
                 p.stdin.flush()
                 time.sleep(0.012)
             sent=True
-        if b"[PASS] cmdline userspace exit 0" in log and sent:break
+        if sent and b"[PASS] cmdline userspace exit 0" in log:
+            if port=="amd64" and p.poll() is not None: break
+            if port=="riscv64" and b"[RV64] userspace debug-exit status=0" in log: break
+            if port=="arm64" and b"[ARM64] userspace debug-exit status=0" in log: break
         if p.poll() is not None:break
     if p.poll() is None:p.kill()
     p.wait(timeout=5)
