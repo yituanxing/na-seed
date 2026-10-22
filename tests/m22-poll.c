@@ -64,11 +64,17 @@ int main(int argc,char **argv) {
        WEXITSTATUS(status)==0,"reap awakened tty child");
 
     int pipefd[2];ck(pipe(pipefd)==0,"poll pipe setup");
+    /* Hardware preemption permits the parent to run immediately after fork.
+     * Complete the child empty-pipe assertion BEFORE the producer writes. */
+    int ack[2];ck(pipe(ack)==0,"empty-poll readiness gate");
     pid_t pipe_child=fork();ck(pipe_child>=0,"fork pipe poll child");
     if(pipe_child==0) {
+        close(ack[0]);
         close(pipefd[1]);
         struct pollfd p={.fd=pipefd[0],.events=POLLIN};
         ck(poll(&p,1,0)==0,"empty pipe poll=0");
+        ck(write(ack[1],"R",1)==1,"child empty-poll verified");
+        close(ack[1]);
         ck(poll(&p,1,-1)==1 && (p.revents&POLLIN),"pipe blocking poll wake");
         char b=0;
         ck(read(pipefd[0],&b,1)==1 && b=='X',"actual pipe data after poll");
@@ -76,7 +82,12 @@ int main(int argc,char **argv) {
         fflush(stdout);
         _exit(0);
     }
+    close(ack[1]);
     close(pipefd[0]);
+    char poll_ready=0;
+    ck(read(ack[0],&poll_ready,1)==1 && poll_ready=='R',
+       "child empty-poll gate completed");
+    close(ack[0]);
     ck(write(pipefd[1],"X",1)==1,"parent pipe write");
     close(pipefd[1]);
     ck(waitpid(pipe_child,&status,0)==pipe_child && WIFEXITED(status) &&

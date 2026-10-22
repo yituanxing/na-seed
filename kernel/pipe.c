@@ -24,11 +24,11 @@ static struct nas_pipe *pipe_for_slot(unsigned slot) {
 }
 static bool pipe_has_reader(const struct nas_pipe *pipe) {
     return pipe->read_slot < NAS_FD_LIMIT &&
-           nas_file_refcount[pipe->read_slot] != 0;
+           nas_open_files[pipe->read_slot].refcount != 0;
 }
 static bool pipe_has_writer(const struct nas_pipe *pipe) {
     return pipe->write_slot < NAS_FD_LIMIT &&
-           nas_file_refcount[pipe->write_slot] != 0;
+           nas_open_files[pipe->write_slot].refcount != 0;
 }
 int nas_pipe_create(unsigned read_slot, unsigned write_slot) {
     if (read_slot >= NAS_FD_LIMIT || write_slot >= NAS_FD_LIMIT ||

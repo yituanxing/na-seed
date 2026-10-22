@@ -27,7 +27,6 @@
 #define thread_clear_tid TASK.thread_clear_tid
 #define descriptors TASK.fds.descriptors
 #define file_slot TASK.fds.file_slot
-#define file_status_flags nas_file_status_flags
 #define running_bash TASK.running_bash
 #define running_busybox TASK.running_busybox
 #define running_alpine TASK.running_alpine
@@ -61,7 +60,7 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
         return nas_task_schedule(frame);
     }
     if (fd < NAS_FD_LIMIT && file_slot[fd] < NAS_FD_LIMIT &&
-        !(file_status_flags[file_slot[fd]] & 0x800ULL)) {
+        !(nas_open_files[file_slot[fd]].status_flags & 0x800ULL)) {
         if ((int64_t)ret == -EOPNOTSUPP &&
             (descriptors[fd] == FD_PIPE_R || descriptors[fd] == FD_PIPE_W))
             return nas_task_block(frame,nr,fd,buf,count,0);
