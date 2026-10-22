@@ -10,9 +10,16 @@
 #include "../panic.h"
 #include <stddef.h>
 
-/* Shared signal disposition/queue. Native caught handlers are enabled
- * only when their ISA frame is real, not by pretending kill() ran a C
- * callback on a kernel stack. Other ISA caught delivery stays explicit. */
+/* Linux UAPI asm-generic signal.h constants for LP64. 0x40000000 is
+ * SA_NODEFER, NOT SA_RESETHAND (0x80000000). All three ISAs share them. */
+#define NAS_SA_NODEFER UINT64_C(0x40000000)
+#define NAS_SA_RESETHAND UINT64_C(0x80000000)
+#define NAS_SA_ONSTACK UINT64_C(0x08000000)
+#define NAS_UNMASKABLE ((1ULL<<8) | (1ULL<<18))
+
+/* Shared signal lifecycle. Hardware-specific sigframe assembly is confined
+ * to the three native backends below; disposition and mask decisions must
+ * agree across all user-visible entry, fork, TTY and pipe paths. */
 static bool terminating_default(unsigned sig) {
     return sig==NAS_SIGINT || sig==NAS_SIGQUIT || sig==NAS_SIGKILL ||
            sig==NAS_SIGPIPE || sig==NAS_SIGTERM ||
@@ -63,10 +70,16 @@ uint64_t nas_signal_action(uint64_t signum,uint64_t incoming,
         return (uint64_t)-EFAULT;
 #endif
     if(incoming) {
+        /* Do not silently advertise SA_ONSTACK while sigaltstack and
+         * nested native signal frames remain unsupported. */
+        if(action[1]&NAS_SA_ONSTACK)return (uint64_t)-EOPNOTSUPP;
+        action[3] &= ~NAS_UNMASKABLE;
         for(unsigned i=0;i<4;i++)
             nas_current_task->signal_actions[signum][i]=action[i];
-        if(action[0]==1) /* ignored signal drops any earlier pending copy */
+        if(action[0]==1) { /* ignored signal discards queued copies */
             nas_current_task->pending_signals &= ~(1ULL<<(signum-1));
+            nas_current_task->signal_force_deliver &= ~(1ULL<<(signum-1));
+        }
     }
     return 0;
 }
@@ -88,16 +101,7 @@ uint64_t nas_signal_procmask(uint64_t how,uint64_t set,
         else if(how==1)mask &= ~newbits; /* SIG_UNBLOCK */
         else if(how==2)mask=newbits; /* SIG_SETMASK */
         else return (uint64_t)-EINVAL;
-        mask &= ~((1ULL<<8)|(1ULL<<18)); /* SIGKILL, SIGSTOP unmaskable */
-        /* A pending caught signal needs a real user signal frame: do not
-         * claim success, nor lose the blocked pending signal. */
-        uint64_t unmasked=task->pending_signals & ~mask;
-        for(unsigned sig=1;sig<=64;sig++) {
-            if(!(unmasked & (1ULL<<(sig-1))))continue;
-            if(task->signal_actions[sig][0]>1) {
-                /* All supported ISAs now own a native frame provider. */
-            }
-        }
+        mask &= ~NAS_UNMASKABLE; /* SIGKILL, SIGSTOP unmaskable */
     }
     if(previous && !nas_user_write_u64(previous,task->blocked_signals))
         return (uint64_t)-EFAULT;
@@ -161,19 +165,6 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
     }
     if (!count) return (uint64_t)(protected_init ? -EPERM : -ESRCH);
     if (!signal) return 0;
-    /* A process-group kill must not partially terminate siblings if one
-     * requires a custom user handler that the kernel cannot deliver.
-     * SIGKILL/SIGSTOP remain unmaskable and uncatchable. */
-    if(signal!=NAS_SIGKILL && signal!=NAS_SIGSTOP && signal!=NAS_SIGCONT) {
-        for(unsigned i=0;i<count;i++) {
-            struct nas_task *t=matches[i];
-            if(t->state==NAS_TASK_ZOMBIE)continue;
-            if((t->signal_actions[signal][0]>1) &&
-               !(t->blocked_signals&(1ULL<<(signal-1)))) {
-                /* All supported ISAs now own a native frame provider. */
-            }
-        }
-    }
     /* Snapshot before state transitions. A STOPPED task preserves its
      * previous READY/BLOCKED syscall resume contract. On CONT it must
      * either become runnable or remain waiting on its original FD.
@@ -254,9 +245,10 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
     return 0;
 }
 
-/* Only default/ignored terminal signals; custom handlers require real
- * cross-architecture user signal frames and blocked signals need queues.
- * Reject the entire group atomically rather than claim partial delivery. */
+/* TTY ISIG acts on the foreground group, not on the running kernel Task.
+ * Caught or masked signals are queued and delivered on that member's own
+ * user-return boundary with its MMU context; default termination and stop
+ * reuse the existing Task lifecycle. */
 bool nas_signal_tty_event(uint64_t sid,uint64_t pgid,unsigned signum) {
     if(!sid || !pgid || (signum!=NAS_SIGINT && signum!=NAS_SIGQUIT &&
                          signum!=NAS_SIGTSTP))return false;
@@ -266,13 +258,21 @@ bool nas_signal_tty_event(uint64_t sid,uint64_t pgid,unsigned signum) {
         struct nas_task *task=nas_task_at(i);
         if(task->state==NAS_TASK_FREE || task->state==NAS_TASK_ZOMBIE ||
            task->sid!=sid || task->pgid!=pgid || task->pid==1)continue;
-        if(task->signal_actions[signum][0]>1 ||
+        /* A masked default SIGTSTP needs full delayed job-control STOP
+         * semantics; fail explicitly instead of silently losing it. */
+        if(signum==NAS_SIGTSTP &&
+           task->signal_actions[signum][0]==0 &&
            (task->blocked_signals&(1ULL<<(signum-1))))return false;
         targets[count++]=task;
     }
     for(unsigned i=0;i<count;i++) {
         struct nas_task *task=targets[i];
         if(task->signal_actions[signum][0]==1)continue; /* ignored */
+        if(task->signal_actions[signum][0]>1 ||
+           (task->blocked_signals&(1ULL<<(signum-1)))) {
+            task->pending_signals |= 1ULL<<(signum-1);
+            continue;
+        }
         if(signum==NAS_SIGTSTP) {
             if(task->state!=NAS_TASK_STOPPED) {
                 task->stopped_from=task->state;
@@ -367,6 +367,33 @@ uint64_t nas_signal_background_job(unsigned signum,uint64_t *frame,
      * An active background process must either STOP or get a true error. */
     *handled=true;
     return (uint64_t)-EIO;
+}
+
+/* Broken pipe needs a real pending SIGPIPE even when blocked, not only an
+ * EPIPE return. The default unblocked action remains the existing immediate
+ * termination path used by the scheduler; this only queues handler/masked
+ * instances for that same Task's subsequent user return. */
+void nas_signal_broken_pipe(uint64_t fd) {
+    struct nas_task *t=nas_current_task;
+    if(!t || !t->ppid || nas_task_fd_kind(t,fd)!=FD_PIPE_W) return;
+    uint64_t disp=t->signal_actions[NAS_SIGPIPE][0];
+    if(disp!=1 && (disp>1 ||
+                   (t->blocked_signals&(1ULL<<(NAS_SIGPIPE-1)))))
+        t->pending_signals |= 1ULL<<(NAS_SIGPIPE-1);
+}
+
+/* Linux automatic blocking and one-shot disposition reset are separate
+ * operations: SA_NODEFER controls the current signal's automatic mask,
+ * SA_RESETHAND resets all four saved action fields after frame creation.
+ * Explicit sa_mask always applies, excluding unmaskable KILL/STOP. */
+static void signal_handler_enter(struct nas_task *t,unsigned signo,
+                                 const uint64_t *act) {
+    uint64_t flags=act[1];
+    uint64_t bits=act[3]&~NAS_UNMASKABLE;
+    if(!(flags&NAS_SA_NODEFER))bits |= 1ULL<<(signo-1);
+    t->blocked_signals |= bits;
+    if(flags&NAS_SA_RESETHAND)
+        for(unsigned i=0;i<4;i++)t->signal_actions[signo][i]=0;
 }
 
 /* Keep signal frames in a complete native user-return context. The single
@@ -471,8 +498,7 @@ static bool x86_install_handler(uint64_t *regs,unsigned signo,
     t->signal_saved_mask=t->blocked_signals;
     t->signal_frame_sp=frameaddr;
     t->signal_frame_active=true;
-    t->blocked_signals |= (1ULL<<(signo-1)) | action[3];
-    if(flags & 0x40000000ULL) t->signal_actions[signo][0]=0; /* SA_RESETHAND */
+    signal_handler_enter(t,signo,action);
     regs[0]=0;
     regs[1]=signo;
     regs[2]=frameaddr+offsetof(struct x86_rt_sigframe,info);
@@ -535,8 +561,7 @@ static bool rv_install_handler(uint64_t *opaque,unsigned signo,
     t->signal_saved_mask=t->blocked_signals;
     t->signal_frame_sp=sp;
     t->signal_frame_active=true;
-    t->blocked_signals |= (1ULL<<(signo-1))|action[3];
-    if(action[1] & 0x40000000ULL)t->signal_actions[signo][0]=0;
+    signal_handler_enter(t,signo,action);
     fr->x[2]=sp;
     fr->x[1]=NAS_SIGRETURN_TRAMPOLINE; /* return address, not user stack */
     fr->x[10]=signo;
@@ -606,8 +631,7 @@ static bool arm_install_handler(uint64_t *opaque,unsigned signo,
     t->signal_saved_mask=t->blocked_signals;
     t->signal_frame_sp=sp;
     t->signal_frame_active=true;
-    t->blocked_signals |= (1ULL<<(signo-1))|action[3];
-    if(action[1] & 0x40000000ULL)t->signal_actions[signo][0]=0;
+    signal_handler_enter(t,signo,action);
     fr->sp_el0=sp;
     fr->x[30]=NAS_SIGRETURN_TRAMPOLINE; /* Linux rt_sigreturn via RX page */
     fr->x[0]=signo;
