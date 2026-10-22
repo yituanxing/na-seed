@@ -24,6 +24,7 @@ uint64_t nas_signal_procmask(uint64_t how, uint64_t set,
 void nas_signal_user_return(uint64_t *frame);
 uint64_t nas_signal_sigreturn(uint64_t *frame);
 bool nas_signal_user_pending(const struct nas_task *task);
+void nas_signal_ppoll_restore(struct nas_task *task,bool interrupted);
 uint64_t nas_signal_pending(uint64_t destination,uint64_t size);
 /* Linux pid_t group selectors, nonmaskable SIGKILL and signal-zero probe. */
 uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame);
