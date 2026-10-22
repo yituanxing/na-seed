@@ -156,7 +156,7 @@ void nas_arch_set_user_tls(uint64_t address) { wrmsr(0xc0000100, address); }
  * The LAPIC physical page is mapped uncached by the MMU provider.
  * Refuse x2APIC systems instead of performing invalid MMIO accesses.
  */
-#define NAS_X86_LAPIC_VIRT UINT64_C(0xffffffffe1000000)
+#define NAS_X86_LAPIC_VIRT UINT64_C(0xfffffe8000000000)
 static volatile uint32_t *const lapic =
     (volatile uint32_t *)(uintptr_t)NAS_X86_LAPIC_VIRT;
 static void nas_x86_enable_virtual_wire(void) {
