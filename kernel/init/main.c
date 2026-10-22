@@ -5,6 +5,7 @@
 #include "../fd.h"
 #include "../boot_image.h"
 #include "../arch/arch.h"
+#include "../arch/console.h"
 #include "../arch/mmu.h"
 #include "../drivers/serial.h"
 #include "../drivers/tty.h"
