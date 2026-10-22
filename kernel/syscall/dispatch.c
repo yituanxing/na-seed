@@ -128,6 +128,21 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         }
         return result;
     }
+    /* True Linux controlling-terminal job policy is independent from
+     * physical COM1/OpenSBI/PL011 transport. Use the common Signal/Task
+     * machinery to stop a background PGID, never fake successful I/O.
+     * Raw diagnostic FD_UART remains deliberately outside job control. */
+    if((nr==NAS_SC_read || nr==NAS_SC_write || nr==NAS_SC_writev ||
+        (nr==NAS_SC_ioctl && args[2]==0x5410ULL)) &&
+       nas_tty_background_fd(args[1])) {
+        unsigned sig=nr==NAS_SC_read ? NAS_SIGTTIN : NAS_SIGTTOU;
+        if(sig==NAS_SIGTTIN || nr==NAS_SC_ioctl || nas_tty_tostop()) {
+            bool handled=false;
+            uint64_t result=nas_signal_background_job(sig,
+                            (uint64_t *)(uintptr_t)args,&handled);
+            if(handled)return result;
+        }
+    }
     if (nr == NAS_SC_read) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
     if (nr == NAS_SC_write) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
     if (nr == NAS_SC_writev) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);

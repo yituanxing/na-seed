@@ -245,3 +245,84 @@ bool nas_signal_tty_event(uint64_t sid,uint64_t pgid,unsigned signum) {
     }
     return true;
 }
+
+/* Linux job control: reads by a non-foreground process group generate
+ * SIGTTIN; TOSTOP writes and TIOCSPGRP by background groups generate
+ * SIGTTOU. No hardware nor ISA-dependent policy is needed here.
+ *
+ * This cooperative kernel has one shared kernel stack. A running task
+ * cannot be stopped in-place and then "return" from a syscall: capture
+ * its live frame, mark STOPPED, and schedule its parent. SIGCONT resumes
+ * after the interrupted syscall with EINTR, which is a legitimate
+ * restartable user-space boundary. No imaginary signal handler runs. */
+uint64_t nas_signal_background_job(unsigned signum,uint64_t *frame,
+                                    bool *handled) {
+    *handled=false;
+    if(signum!=NAS_SIGTTIN && signum!=NAS_SIGTTOU)
+        return (uint64_t)-EINVAL;
+    struct nas_task *self=nas_current_task;
+    if(self->pid==1 || self->pgid==0 || self->sid==0)
+        return 0; /* protected init / no controlling session */
+    uint64_t bit=1ULL<<(signum-1);
+    if(self->signal_actions[signum][0]==1 ||
+       (self->blocked_signals&bit)) {
+        /* POSIX: background read without deliverable SIGTTIN fails EIO.
+         * SIGTTOU ignored/blocked permits a background writer. */
+        if(signum==NAS_SIGTTIN) {
+            *handled=true;
+            return (uint64_t)-EIO;
+        }
+        return 0;
+    }
+    struct nas_task *members[NAS_TASK_LIMIT];
+    unsigned count=0;
+    bool orphaned=true;
+    for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
+        struct nas_task *t=nas_task_at(i);
+        if(t->state==NAS_TASK_FREE || t->state==NAS_TASK_ZOMBIE ||
+           t->sid!=self->sid || t->pgid!=self->pgid)continue;
+        struct nas_task *parent=nas_task_by_pid(t->ppid);
+        if(parent && parent->sid==t->sid && parent->pgid!=t->pgid)
+            orphaned=false;
+        if(t->signal_actions[signum][0]>1 &&
+           !(t->blocked_signals&bit)) {
+            *handled=true;
+            return (uint64_t)-EOPNOTSUPP; /* requires real sigframe */
+        }
+        members[count++]=t;
+    }
+    if(orphaned || !count) {
+        *handled=true;
+        return (uint64_t)-EIO; /* POSIX orphaned process-group rule */
+    }
+    /* Validate all process-group members BEFORE stopping any. */
+    bool self_stopped=false;
+    for(unsigned i=0;i<count;i++) {
+        struct nas_task *t=members[i];
+        if(t->signal_actions[signum][0]==1 ||
+           (t->blocked_signals&bit) || t->state==NAS_TASK_STOPPED)
+            continue;
+        if(t==self) {
+            nas_arch_save_user_frame(t,frame);
+            nas_arch_save_fpu(t);
+            nas_arch_set_saved_return(t,(uint64_t)-EINTR);
+            t->resume_valid=true;
+            t->stopped_from=NAS_TASK_READY;
+            self_stopped=true;
+        } else {
+            t->stopped_from=t->state;
+        }
+        t->state=NAS_TASK_STOPPED;
+        t->stop_signal=signum;
+        t->stop_report_pending=true;
+        t->continue_report_pending=false;
+    }
+    if(self_stopped) {
+        *handled=true;
+        return nas_task_schedule(frame);
+    }
+    /* If the caller was already ignored or masked, we returned above.
+     * An active background process must either STOP or get a true error. */
+    *handled=true;
+    return (uint64_t)-EIO;
+}

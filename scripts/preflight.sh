@@ -162,6 +162,12 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
     tests/m24-signals.c -o /tmp/naseed-m24-signals
 /tmp/naseed-m24-signals --linux-oracle | grep -Fxq m24-signals-ok
 
+# M25 standard Linux controlling PTY / TOSTOP / foreground interface.
+cc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
+    tests/m25-tty-jobs.c -o /tmp/naseed-m25-tty-jobs
+script -q -e -c '/tmp/naseed-m25-tty-jobs --linux-pty-oracle' /dev/null \
+    | tr -d '\r' | grep -Fxq m25-linux-pty-ok
+
 # Compare our pinned Linux x86-64 syscall numbers against the host UAPI.
 python3 scripts/check-syscall-nr.py
 python3 scripts/check-syscall-errno.py

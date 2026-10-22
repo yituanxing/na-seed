@@ -7,6 +7,10 @@ _Static_assert(sizeof(struct nas_termios)==36,"native Linux TCGETS size");
 void nas_tty_init(void);
 bool nas_tty_controlling(void);
 bool nas_tty_enabled(void);
+/* TTY access policy for explicit /dev/tty open-file descriptions only;
+ * preserve the diagnostic raw boot serial contract. */
+bool nas_tty_background_fd(uint64_t fd);
+bool nas_tty_tostop(void);
 bool nas_tty_onlcr(void);
 void nas_tty_write_char(uint8_t byte);
 /* Hardware pump -> line discipline -> task wake predicate (no usercopy).

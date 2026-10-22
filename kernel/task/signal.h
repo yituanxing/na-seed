@@ -7,6 +7,8 @@
 #define NAS_SIGTERM 15U
 #define NAS_SIGQUIT 3U
 #define NAS_SIGTSTP 20U
+#define NAS_SIGTTIN 21U
+#define NAS_SIGTTOU 22U
 #define NAS_SIGKILL 9U
 #define NAS_SIGCONT 18U
 #define NAS_SIGSTOP 19U
@@ -18,4 +20,9 @@ uint64_t nas_signal_pending(uint64_t destination,uint64_t size);
 /* Linux pid_t group selectors, nonmaskable SIGKILL and signal-zero probe. */
 uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame);
 bool nas_signal_tty_event(uint64_t sid,uint64_t pgid,unsigned signum);
+/* A background job's TTY read/write/ioctl may STOP the whole process
+ * group; on SIGCONT the current syscall completes EINTR (caller retries).
+ * If handled is false, continue the underlying fd operation normally. */
+uint64_t nas_signal_background_job(unsigned signum,uint64_t *frame,
+                                    bool *handled);
 #endif
