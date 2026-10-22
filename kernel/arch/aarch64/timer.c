@@ -19,6 +19,21 @@ extern bool nas_arm_map_io_page(uint64_t phys, uint64_t virt);
 static volatile uint32_t *dist;
 static volatile uint32_t *iface;
 static uint64_t period;
+/* CNTVCT keeps increasing while IRQ delivery is masked, including while
+ * the last process is asleep in the syscall-boundary idle dispatcher. */
+uint64_t nas_arch_monotonic_ns(void) {
+    uint64_t ticks, hz;
+    __asm__ volatile("mrs %0,cntvct_el0" : "=r"(ticks));
+    __asm__ volatile("mrs %0,cntfrq_el0" : "=r"(hz));
+    if(!hz) nas_fail("ARM64 monotonic counter has no frequency");
+    return (ticks / hz) * 1000000000ULL +
+           (ticks % hz) * 1000000000ULL / hz;
+}
+uint64_t nas_arch_clock_resolution_ns(void) {
+    uint64_t hz;
+    __asm__ volatile("mrs %0,cntfrq_el0" : "=r"(hz));
+    return hz ? (1000000000ULL + hz - 1) / hz : 0;
+}
 static void rearm_timer(void) {
     uint64_t now;
     __asm__ volatile("mrs %0,cntvct_el0" : "=r"(now));
