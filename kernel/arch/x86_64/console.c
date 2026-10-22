@@ -25,4 +25,9 @@ static void raw_putc(char ch) {
     if (inb(COM1 + 5) & 0x20) outb(COM1, (uint8_t)ch);
 }
 void nas_arch_console_putc(char ch) { raw_putc(ch); }
+bool nas_arch_console_has_rx(void) { return true; }
+bool nas_arch_console_getc(uint8_t *byte) {
+    if(!(inb(COM1+5)&1U))return false;
+    *byte=inb(COM1);return true;
+}
 void nas_arch_console_log_newline(void) { raw_putc('\r'); }

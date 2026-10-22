@@ -15,6 +15,7 @@
 #include "../arch/linux_stat_abi.h"
 #include "../arch/linux_fcntl_abi.h"
 #include "../arch/mmu.h"
+#include "../drivers/tty.h"
 #include "io.h"
 #include "syscall.h"
 /* Linux x86-64 filesystem syscall adapter. Backend state is already
@@ -316,13 +317,16 @@ static uint64_t sys_open_path(const char *path, uint64_t native_flags) {
                                0x80ULL | /* O_EXCL */
                                0x40ULL | 0x200ULL | 0x400ULL;
     if (flags & ~permitted) return (uint64_t)-EINVAL;
-    if (same_string(path, "/dev/tty")) return (uint64_t)-ENXIO;
+    if(same_string(path,"/dev/tty") && !nas_tty_controlling())
+        return (uint64_t)-ENXIO;
     uint8_t kind = FD_CLOSED;
     const struct bootfs_entry *entry = 0;
     const struct limine_file *real_file = 0;
     struct nas_tmp_file *tmp_file = 0;
     bool create_tmp = false;
-    if (same_string(path, "/dev/null")) kind = FD_NULL;
+    if(same_string(path,"/dev/tty") || same_string(path,"/dev/console") ||
+       same_string(path,"/dev/ttyS0"))kind=FD_UART;
+    else if (same_string(path, "/dev/null")) kind = FD_NULL;
     else if (same_string(path, "/dev/zero")) kind = FD_ZERO;
     else {
         if (bootfs_mounted()) {
@@ -372,7 +376,8 @@ static uint64_t sys_open_path(const char *path, uint64_t native_flags) {
     if ((flags & 0xc0ULL) == 0xc0ULL &&
         (kind == FD_ARCHIVE || kind == FD_DIR || kind == FD_BOOTFS))
         return (uint64_t)-EEXIST;
-    if (kind != FD_NULL && kind != FD_ZERO && kind != FD_TMP &&
+    if (kind != FD_NULL && kind != FD_ZERO && kind != FD_UART &&
+        kind != FD_TMP &&
         (flags & 0x200ULL))
         return (uint64_t)-EROFS;
     if (kind == FD_BOOTFS && (flags & (0x40ULL | 0x400ULL)))
@@ -427,6 +432,7 @@ uint64_t nas_fs_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     for (uint64_t i = 0; i < length; i++) {
         uint8_t *p = nas_mmu_user_byte(address + i);
         if (!p) return i ? i : (uint64_t)-EFAULT;
+        if(*p=='\n' && nas_tty_onlcr())nas_putchar('\r');
         nas_putchar((char)*p);
         if (fd == 1 && (running_bash || running_busybox)) observe_stdout((char)*p);
     }
@@ -464,7 +470,9 @@ uint64_t nas_fs_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
         boot_file_offsets[file_slot[fd]] += length;
         return length;
     }
-    if (descriptors[fd] == FD_UART) return (uint64_t)-EAGAIN; /* no RX-ready: EAGAIN */
+    if(descriptors[fd]==FD_UART)
+        return nas_tty_read(address,length,
+             (file_status_flags[file_slot[fd]]&0x800ULL)!=0);
     if (descriptors[fd] != FD_ZERO) return (uint64_t)-EBADF;
     if (address >= USER_LIMIT || length > USER_LIMIT - address)
         return (uint64_t)-EFAULT;
@@ -839,7 +847,8 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
     case NAS_SC_ioctl:
         if (args[1] >= 64 || descriptors[args[1]] == FD_CLOSED)
             FS_RESULT((uint64_t)-EBADF);
-        FS_RESULT((uint64_t)-ENOTTY); /* No TTY driver. */
+        FS_RESULT(descriptors[args[1]]==FD_UART ?
+                  nas_tty_ioctl(args[2],args[3]) : (uint64_t)-ENOTTY);
     case NAS_SC_dup3:
         if (args[1] == args[2] || (args[3] & ~0x80000ULL))
             FS_RESULT((uint64_t)-EINVAL);

@@ -24,3 +24,4 @@ kernel/task/user_stack.c
 kernel/task/signal.c
 kernel/fs/syscall.c
 kernel/mm/anon_regions.c
+kernel/drivers/tty.c

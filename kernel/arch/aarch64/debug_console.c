@@ -15,3 +15,7 @@ void nas_arch_console_putc(char ch) {
 
 /* QEMU semihost log stream uses plain LF; no raw-output conversion. */
 void nas_arch_console_log_newline(void) { }
+
+/* No physical RX: never fabricate a serial keyboard. */
+bool nas_arch_console_has_rx(void) { return false; }
+bool nas_arch_console_getc(uint8_t *byte) { (void)byte;return false; }
