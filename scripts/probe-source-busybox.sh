@@ -26,6 +26,7 @@ sh scripts/build-m23-signals.sh "$port"
 sh scripts/build-m24-signals.sh "$port"
 sh scripts/build-m25-tty-jobs.sh "$port"
 sh scripts/build-m29-time.sh "$port"
+sh scripts/build-m30-signal-handlers.sh "$port"
 extra_dir="build/source-busybox/$port/extra"
 mkdir -p "$extra_dir"
 cp "build/source-busybox/$port/m11-vm" "$extra_dir/m11-vm"
@@ -42,6 +43,7 @@ cp "build/source-busybox/$port/m23-signals" "$extra_dir/m23-signals"
 cp "build/source-busybox/$port/m24-signals" "$extra_dir/m24-signals"
 cp "build/source-busybox/$port/m25-tty-jobs" "$extra_dir/m25-tty-jobs"
 cp "build/source-busybox/$port/m29-time" "$extra_dir/m29-time"
+cp "build/source-busybox/$port/m30-signal" "$extra_dir/m30-signal"
 if [ "$port" = amd64 ]; then
     cp "build/source-busybox/$port/m17-input" "$extra_dir/m17-input"
     cp tests/m28-preempt.sh "$extra_dir/m28-preempt"
@@ -60,6 +62,11 @@ case "$port" in
     *) echo "unsupported target $port" >&2; exit 2 ;;
 esac
 if [ "$port" = amd64 ]; then
+    # M30: authentic Linux sigaction -> signal frame -> libc restorer,
+    # isolated until the RV64/ARM64 native frame backends are complete.
+    BUSYBOX_PARITY_MANIFEST=scripts/m30-x86-handler-cases.tsv \
+    BUSYBOX_PARITY_EXPECTED_COUNT=1 \
+      sh scripts/probe-x86-busybox-parity.sh
     sh scripts/probe-m17-interactive.sh
     sh scripts/probe-m18-ash-interactive.sh
     NASEED_INTERACTIVE_INIT=/bin/m21-tty-sched \
