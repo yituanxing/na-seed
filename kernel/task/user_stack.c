@@ -6,6 +6,7 @@
 #include "../mm/frame.h"
 #include "../arch/mmu.h"
 #include "../mm/usercopy.h"
+#include "../lib/string.h"
 #include "elf.h"
 #include "user_stack.h"
 extern void nas_print(const char *);
@@ -18,13 +19,8 @@ extern void nas_print(const char *);
 #define USER_STACK_PAGES 32
 
 /* Shared Linux ELF64 argc/argv/envp/auxv stack builder, not argv spoofing. */
-static uint64_t cstr_len(const char *str) {
-    uint64_t n = 0;
-    while (str[n]) n++;
-    return n;
-}
 static bool put_stack_string(uint64_t *sp, const char *str, uint64_t *address) {
-    uint64_t size = cstr_len(str) + 1;
+    uint64_t size = strlen(str) + 1;
     if (*sp < USER_STACK_TOP - USER_STACK_PAGES * PAGE + size) return false;
     *sp -= size;
     if (!nas_user_copy_to_mapped(*sp, (const uint8_t *)str, size)) return false;
