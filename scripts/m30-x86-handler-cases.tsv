@@ -1,0 +1,2 @@
+# Native x86 handler test while generic64 native sigframes are pending.
+m30-handlers	cpio	sh -c "/bin/m30-signal --self-only; echo m30-basic-ok"	m30-basic-ok	-
