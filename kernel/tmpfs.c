@@ -14,7 +14,7 @@ static void tmp_try_reclaim(unsigned owner) {
     struct nas_tmp_file *node = &tmp_files[owner - 1];
     if (!node->used || node->linked) return;
     for (unsigned slot = 0; slot < NAS_FD_LIMIT; slot++)
-        if (tmp_slot_owner[slot] == owner && nas_file_refcount[slot])
+        if (tmp_slot_owner[slot] == owner && nas_open_files[slot].refcount)
             return;
     node->used = false;
 }
