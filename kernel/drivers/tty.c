@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "../task.h"
+#include "../fd.h"
 #include "../errno.h"
 #include "../arch/console.h"
 #include "../arch/mmu.h"
@@ -38,6 +39,14 @@ void nas_tty_init(void) {
     tty.t.cc[4]=4; tty.t.cc[6]=1; tty.t.cc[10]=26; tty.t.cc[14]=23;
 }
 bool nas_tty_enabled(void) { return tty.rx_enabled; }
+bool nas_tty_background_fd(uint64_t fd) {
+    return tty.rx_enabled && tty.sid &&
+        nas_current_task->sid==tty.sid &&
+        nas_current_task->pgid!=tty.pgid &&
+        fd<NAS_FD_LIMIT &&
+        nas_current_task->fds.descriptors[fd]==FD_TTY;
+}
+bool nas_tty_tostop(void) { return (tty.t.lflag&0000400U)!=0; }
 bool nas_tty_controlling(void) {
     return tty.sid && tty.sid==nas_current_task->sid;
 }
