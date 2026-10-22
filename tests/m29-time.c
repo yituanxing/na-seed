@@ -75,7 +75,16 @@ int main(void) {
     uint64_t wall_ns=ns(&realtime_start);
     uint64_t tv_ns=(uint64_t)wall_tv.tv_sec*1000000000ULL+
                    (uint64_t)wall_tv.tv_usec*1000ULL;
-    ck(tv_ns>=wall_ns && tv_ns-wall_ns<2000000000ULL,
+    /* CLOCK_REALTIME is adjustable by NTP. The two independent
+     * observations must agree, but Linux promises no ordering between
+     * consecutive clock_gettime and gettimeofday calls if wall time steps. */
+    uint64_t discrepancy=(tv_ns>=wall_ns)?(tv_ns-wall_ns):(wall_ns-tv_ns);
+    if(discrepancy>=2000000000ULL)
+        fprintf(stderr,"[M31] realtime mismatch clock=%llu gettimeofday=%llu diff=%llu ns\\n",
+                (unsigned long long)wall_ns,
+                (unsigned long long)tv_ns,
+                (unsigned long long)discrepancy);
+    ck(discrepancy<2000000000ULL,
        "gettimeofday agrees with realtime");
     struct timespec realtime_deadline=realtime_start;
     realtime_deadline.tv_nsec+=20000000L;
