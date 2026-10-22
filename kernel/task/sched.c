@@ -13,6 +13,7 @@
 #include "wait_pid.h"
 #include "signal.h"
 #include "../time/clock.h"
+#include "../mm/usercopy.h"
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
 #define TASK (*nas_current_task)
@@ -81,8 +82,26 @@ static bool task_can_wake(const struct nas_task *task) {
 }
 static uint64_t task_replay(struct nas_task *task) {
     enum nas_syscall_op nr = (enum nas_syscall_op)task->blocked_op;
-    if (nas_signal_user_pending(task)) return (uint64_t)-EINTR;
     const uint64_t *a = task->blocked_args;
+    if (nas_signal_user_pending(task)) {
+        /* Linux nanosleep and relative clock_nanosleep expose the REMAINING
+         * time, not a stale original duration. Replay runs with this exact
+         * Task's user page table restored, never a foreign userspace root. */
+        if(nr==NAS_SC_nanosleep || nr==NAS_SC_clock_nanosleep) {
+            uint64_t rem=nr==NAS_SC_nanosleep ? a[1] :
+                ((a[1]&1U) ? 0 : a[3]); /* TIMER_ABSTIME: no remainder */
+            if(rem) {
+                uint64_t current=nas_arch_monotonic_ns();
+                uint64_t left=task->deadline_ns>current ?
+                              task->deadline_ns-current : 0;
+                uint64_t ts[2]={left/NAS_NSEC_PER_SEC,
+                                left%NAS_NSEC_PER_SEC};
+                if(!nas_user_write_bytes(rem,(const uint8_t *)ts,sizeof(ts)))
+                    return (uint64_t)-EFAULT;
+            }
+        }
+        return (uint64_t)-EINTR;
+    }
     /* Sleep input was validated and converted into task-owned absolute
      * deadline at the original syscall boundary; never restart a relative
      * timeout or dereference its userspace timespec during replay. */
@@ -100,7 +119,8 @@ static uint64_t task_replay(struct nas_task *task) {
 /* Broken pipe generates SIGPIPE. POSIX/Linux default action terminates the
  * writer; returning EPIPE alone is insufficient (BusyBox yes retries forever).
  * Blocked or ignored SIGPIPE returns EPIPE to userspace as Linux does.
- * A custom userspace handler requires signal-frame delivery (not yet here).
+ * Caught/blocked SIGPIPE queues are handled by the signal producer after
+ * the default-termination fast path; a custom handler runs on user return.
  */
 bool nas_sched_sigpipe_default(uint64_t fd) {
     return TASK.ppid && fd < NAS_FD_LIMIT &&
@@ -180,6 +200,10 @@ bool nas_sched_preempt_select(void) {
                     nas_arch_restore_cpu(from);
                     continue;
                 }
+                if((int64_t)result==-EPIPE &&
+                   (next->blocked_op==NAS_SC_write ||
+                    next->blocked_op==NAS_SC_writev))
+                    nas_signal_broken_pipe(next->blocked_args[0]);
                 uint8_t kind=nas_task_fd_kind(next,next->blocked_args[0]);
                 bool tty_again=next->blocked_op==NAS_SC_read &&
                     (kind==FD_TTY || kind==FD_UART) &&
@@ -246,6 +270,10 @@ retry_schedule: ; /* label must precede a statement in C11 */
                     nas_sched_child_exit(0, NAS_SIGPIPE);
                     goto retry_schedule; /* parent can now observe zombie */
                 }
+                if((int64_t)result==-EPIPE &&
+                   (next->blocked_op==NAS_SC_write ||
+                    next->blocked_op==NAS_SC_writev))
+                    nas_signal_broken_pipe(next->blocked_args[0]);
                 /* Recheck after another task consumed a ready pipe/TTY.
                  * EAGAIN means physical tty RX is genuinely not ready.
                  * EOPNOTSUPP remains the pipe's internal block sentinel,
