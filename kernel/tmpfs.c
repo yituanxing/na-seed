@@ -3,15 +3,12 @@
 #include "fd.h"
 #include "bootfs.h"
 #include "errno.h"
+#include "lib/string.h"
 
 /* RAM /tmp data and descriptor bindings are owned only by this module.
  * Linux syscall argument decoding and userspace copy remain in m1.c. */
 static struct nas_tmp_file tmp_files[TMP_FILE_COUNT];
 static uint8_t tmp_slot_owner[NAS_FD_LIMIT]; /* 1-based inode index */
-static bool same_string(const char *a, const char *b) {
-    while (*a && *b && *a == *b) { a++; b++; }
-    return *a == *b;
-}
 static void tmp_try_reclaim(unsigned owner) {
     if (!owner || owner > TMP_FILE_COUNT) return;
     struct nas_tmp_file *node = &tmp_files[owner - 1];
@@ -47,13 +44,13 @@ bool tmp_parent(const char *path, char parent[256]) {
 struct nas_tmp_file *tmp_find(const char *path) {
     for (unsigned n=0;n<TMP_FILE_COUNT;n++)
         if (tmp_files[n].used && tmp_files[n].linked &&
-            same_string(tmp_files[n].path,path)) return &tmp_files[n];
+            strcmp(tmp_files[n].path,path)==0) return &tmp_files[n];
     return 0;
 }
 int tmp_parent_check(const char *path) {
     char parent[256];
     if (!tmp_parent(path,parent)) return -EROFS;
-    if (same_string(parent,"/tmp"))
+    if (strcmp(parent,"/tmp")==0)
         return bootfs_is_dir(bootfs_find("/tmp")) ? 0 : -ENOENT;
     struct nas_tmp_file *dir=tmp_find(parent);
     return !dir ? -ENOENT : dir->is_dir ? 0 : -ENOTDIR;
@@ -81,7 +78,7 @@ const struct nas_tmp_file *tmp_child(const char *parent,unsigned index) {
         const struct nas_tmp_file *file=&tmp_files[n];
         if (!file->used || !file->linked) continue;
         char dir[256];
-        if (!tmp_parent(file->path,dir) || !same_string(dir,parent))
+        if (!tmp_parent(file->path,dir) || strcmp(dir,parent)!=0)
             continue;
         if (!index) return file;
         index--;
@@ -137,7 +134,7 @@ int tmp_unlink(const char *path, uint64_t flags) {
         for (unsigned n=0;n<NAS_TASK_LIMIT;n++) {
             struct nas_task *task=nas_task_at(n);
             if (task && task->state != NAS_TASK_FREE &&
-                same_string(task->cwd,path)) return -EBUSY;
+                strcmp(task->cwd,path)==0) return -EBUSY;
         }
     }
     file->linked=false;
@@ -159,16 +156,11 @@ static bool tmp_under(const char *path, const char *directory) {
     }
     return path[n] == '/';
 }
-static unsigned tmp_strlen(const char *text) {
-    unsigned n = 0;
-    while (text[n]) n++;
-    return n;
-}
 static bool tmp_move_name(char dest[256], const char *newbase,
                           const char *oldbase, const char *existing) {
-    const unsigned base = tmp_strlen(newbase);
-    const unsigned cut = tmp_strlen(oldbase);
-    const unsigned suffix = tmp_strlen(existing + cut);
+    const unsigned base = strlen(newbase);
+    const unsigned cut = strlen(oldbase);
+    const unsigned suffix = strlen(existing + cut);
     if (base + suffix >= 256) return false;
     for (unsigned i = 0; i < base; i++) dest[i] = newbase[i];
     for (unsigned i = 0; i <= suffix; i++)
@@ -186,7 +178,7 @@ int tmp_rename(const char *oldpath, const char *newpath, uint64_t flags) {
         int parent = tmp_parent_check(oldpath);
         return parent ? parent : -ENOENT;
     }
-    if (same_string(oldpath, newpath)) return 0;
+    if (strcmp(oldpath, newpath)==0) return 0;
     int parent = tmp_parent_check(newpath);
     if (parent) return parent;
     if (source->is_dir && tmp_under(newpath, oldpath))
