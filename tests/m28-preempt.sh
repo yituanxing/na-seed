@@ -1,14 +1,12 @@
 #!/bin/sh
-# The EXACT same script runs with the unmodified upstream BusyBox ash
-# on host Linux and inside the NaSeed guest. No kernel-facing test hooks.
-# The child forks FIRST on NaSeed, writes a real tmpfs ready sentinel,
-# and enters a POSIX-shell builtin loop that issues no syscalls.
-ready=/tmp/m28-preempt-$$
-(printf ready > "$ready"; while :; do :; done) &
-hog=$!
-# A cooperative child-first scheduler cannot run this parent once the
-# child reaches its CPU loop. A real hardware timer must preempt it.
-while [ ! -f "$ready" ]; do :; done
-kill -9 "$hog" || exit 1
-rm -f "$ready" || exit 1
-echo cpu-hog-did-not-starve-ash
+# EXACTLY the same unmodified BusyBox ash script runs on host Linux and
+# NaSeed. A producer writes one pipe readiness line and then executes an
+# infinite pure-user builtin loop. The consumer cannot even be forked on
+# NaSeed's child-first cooperative scheduler without a real timer IRQ.
+# This program deliberately NEVER terminates: the test harness requires
+# real output and IRQ telemetry, then explicitly stops QEMU/process group.
+(printf 'ready\n'; while :; do :; done) | {
+    IFS= read -r started
+    [ "$started" = ready ] || exit 1
+    echo cpu-hog-did-not-starve-ash
+}
