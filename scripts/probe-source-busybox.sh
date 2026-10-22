@@ -41,7 +41,7 @@ fi
 export BUSYBOX_EXTRA_DIR="$extra_dir"
 export BUSYBOX_PARITY_BINARY="$binary"
 export BUSYBOX_PARITY_MANIFEST=scripts/source-busybox-cases.tsv
-export BUSYBOX_PARITY_EXPECTED_COUNT=14
+export BUSYBOX_PARITY_EXPECTED_COUNT=16
 case "$port" in
     amd64) sh scripts/probe-x86-busybox-parity.sh ;;
     riscv64) sh scripts/probe-riscv64-busybox-matrix.sh ;;
@@ -80,4 +80,4 @@ else
       NASEED_INTERACTIVE_DRIVER=scripts/m25-serial-check.py \
       sh scripts/probe-m18-port-interactive.sh "$port"
 fi
-echo "[SOURCE BUSYBOX MATRIX PASS] $port: 14/14 native self-compiled workloads"
+echo "[SOURCE BUSYBOX MATRIX PASS] $port: 16/16 native self-compiled workloads"
