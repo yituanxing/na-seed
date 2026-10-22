@@ -9,7 +9,7 @@ test -s "$config" && test -s "$cases"
 for applet in ASH SH_IS_ASH ECHO CAT LS WC MKDIR RMDIR RM STATIC; do
     grep -Fxq "CONFIG_$applet=y" "$config"
 done
-[ "$(grep -c -v '^#' "$cases")" -eq 13 ]
+[ "$(grep -c -v '^#' "$cases")" -eq 14 ]
 # BusyBox Kbuild requires a pre-existing O= directory even for allnoconfig.
 grep -Fq '"$target" "$obj"' scripts/build-source-busybox.sh
 grep -Fq 'sha256sum -c -' scripts/build-source-busybox.sh
@@ -23,7 +23,7 @@ grep -Fq 'm13-init' scripts/probe-source-busybox.sh
 # A single last command is tail-exec'd by ash, so it does NOT occupy a
 # second task slot; the final echo forces test execution as PID 2.
 grep -Fq 'm12-process --naseed-limit; echo process-parent-done' "$cases"
-for id in echo ash-builtin ash-fork ash-pipe ash-tmp source-lifecycle vm-lifetime process-capacity init-reaper session-groups kill-groups stop-continue tty-session; do
+for id in echo ash-builtin ash-fork ash-pipe ash-tmp source-lifecycle vm-lifetime process-capacity init-reaper session-groups kill-groups stop-continue tty-session standard-signals; do
     [ "$(grep -c "^$id$(printf '\t')" "$cases")" -eq 1 ]
 done
 for filename in scripts/build-source-busybox.sh scripts/probe-source-busybox.sh \
@@ -35,7 +35,7 @@ for filename in scripts/build-source-busybox.sh scripts/probe-source-busybox.sh 
                 scripts/probe-m18-ash-interactive.sh \
                 scripts/probe-m18-port-interactive.sh \
                 scripts/m18-port-qemu.sh scripts/build-m21-tty-sched.sh \
-                scripts/build-m22-poll.sh scripts/build-m23-signals.sh; do
+                scripts/build-m22-poll.sh scripts/build-m23-signals.sh scripts/build-m24-signals.sh; do
     sh -n "$filename"
 done
 # Both 17-case and source-profile runners must consume the same manifest
@@ -47,4 +47,4 @@ for f in scripts/probe-x86-busybox-parity.sh \
     grep -Fq 'BUSYBOX_PARITY_BINARY' "$f"
     grep -Fq 'entry; do' "$f"
 done
-echo '[PASS] controlled-source BusyBox config, thirteen-case manifest and shared QEMU runners'
+echo '[PASS] controlled-source BusyBox config, fourteen-case manifest and shared QEMU runners'
