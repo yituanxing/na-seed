@@ -1,5 +1,3 @@
-# Genuine upstream BusyBox ash (same pinned source/config as 16-case matrix).
-# A child writes a ready file, then spins exclusively in user mode.
-# The parent cannot run the kill and success marker until a real timer IRQ
-# preempts the child; a cooperative scheduler times out (QEMU 15s budget).
-timer-preempt	cpio	sh -c "(echo ready > /tmp/preempt-ready; while :; do :; done) & hog=$!; while [ ! -f /tmp/preempt-ready ]; do :; done; kill -9 $hog; echo cpu-hog-did-not-starve-ash"	cpu-hog-did-not-starve-ash	-
+# Original BusyBox ash executes the exact same test script as native Linux.
+# No special syscall or NaSeed-specific user code is used.
+timer-preempt	cpio	sh /bin/m28-preempt	cpu-hog-did-not-starve-ash	-
