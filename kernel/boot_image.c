@@ -1,5 +1,6 @@
 #include "boot_image.h"
 #include "bootfs.h"
+#include "lib/string.h"
 #include "arch/abi.h"
 #include <limine.h>
 
@@ -7,24 +8,18 @@ extern const struct limine_file *nas_user_module(void);
 extern const struct limine_file *nas_module(uint64_t index);
 extern void nas_print(const char *);
 
-static bool equal(const char *a, const char *b) {
-    while (*a && *b && *a == *b) { a++; b++; }
-    return *a == *b;
-}
 static const char *basename(const char *path) {
-    const char *tail = path;
-    for (const char *p = path; *p; p++)
-        if (*p == '/') tail = p + 1;
-    return tail;
+    const char *last = strrchr(path, '/');
+    return last ? last + 1 : path;
 }
 static bool busybox_module(const struct limine_file *file) {
-    return file && file->path && equal(basename(file->path), "busybox");
+    return file && file->path && strcmp(basename(file->path), "busybox") == 0;
 }
 static bool bash_module(const struct limine_file *file) {
     if (!file || !file->path) return false;
-    for (const char *p=file->path; *p; p++)
-        if (p[0]=='b' && p[1]=='a' && p[2]=='s' && p[3]=='h')
-            return true;
+    /* Match the original substring policy, without looking past the NUL. */
+    for (const char *p = file->path; *p; p++)
+        if (strncmp(p, "bash", 4) == 0) return true;
     return false;
 }
 static bool newc_archive(const struct limine_file *file) {
@@ -67,7 +62,7 @@ const char *nas_boot_prepare(const char *selected,
             out->interpreter_size = ldso->size;
             out->has_interpreter = true;
         }
-        out->busybox = equal(basename(path), "busybox");
+        out->busybox = strcmp(basename(path), "busybox") == 0;
         /* ELF64 little-endian e_type is at offset 16; an unmodified
          * Alpine ET_DYN is distinguished from a static Debian ET_EXEC.
          * Do not dereference an unvalidated/undersized ELF header.
