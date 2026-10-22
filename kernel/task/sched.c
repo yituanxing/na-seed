@@ -95,8 +95,14 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     for (unsigned fd = 0; fd < NAS_FD_LIMIT; fd++)
         if (descriptors[fd] != FD_CLOSED) nas_fs_close_fd(fd);
     if (signum) {
-        nas_print("[SIGNAL] default signal="); nas_dec(signum);
-        nas_print(" terminated pid=");
+        if (signum == NAS_SIGPIPE) {
+            /* Keep the observable SIGPIPE trace consumed by immutable
+             * original BusyBox pipe-lifecycle regression diagnostics. */
+            nas_print("[SIGNAL] default SIGPIPE terminated pid=");
+        } else {
+            nas_print("[SIGNAL] default signal="); nas_dec(signum);
+            nas_print(" terminated pid=");
+        }
         nas_dec(child->pid);
         nas_print("\n");
     } else {
