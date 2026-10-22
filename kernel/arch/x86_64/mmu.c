@@ -17,9 +17,10 @@ extern void nas_print(const char *);
  * Use a dedicated kernel high-VA leaf shared by every future user CR3.
  * All intermediate pages come from the regular zeroing frame allocator.
  * Never overwrite a firmware/kernel mapping or interpret a huge page as
- * a next-level table. 0xffffffffe1000000 is outside our linked image.
+ * a next-level table. 0xffffffffe1000000 is uses otherwise-unclaimed canonical PML4 slot 509, outside both the
+ * kernel image slot 511 and ordinary Limine HHDM slots.
  */
-#define NAS_X86_LAPIC_VIRT UINT64_C(0xffffffffe1000000)
+#define NAS_X86_LAPIC_VIRT UINT64_C(0xfffffe8000000000)
 bool nas_arch_x86_map_lapic_page(uint64_t phys) {
     if (!phys || (phys & 4095U)) return false;
     uint64_t root=nas_arch_current_page_root() & PHYS_MASK;
