@@ -71,6 +71,10 @@ syscall_entry:
     movq syscall_user_rsp(%rip), %rax
     movq %rax, 144(%rsp)
     movq $0x1b, 152(%rsp)
+    /* x86 catches are materialized only after the actual selected task
+     * has an IRET context and its own address space active. */
+    movq %rsp, %rdi
+    call nas_signal_user_return
     jmp nas_x86_iret_restore
 
 /* An x86 timer IRQ from Ring3 pushes the real IRET frame via TSS.rsp0.
@@ -95,6 +99,9 @@ nas_x86_timer_isr:
     pushq %rax
     movq %rsp, %rdi
     call nas_x86_timer_irq
+    /* Also deliver to a CPU-bound user process without any syscall. */
+    movq %rsp, %rdi
+    call nas_signal_user_return
     jmp nas_x86_iret_restore
 
 nas_x86_iret_restore:
