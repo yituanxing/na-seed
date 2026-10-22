@@ -216,6 +216,8 @@ void nas_arch_prepare_user_cpu(void) {
     nas_arch_x86_set_kernel_stack(nas_current_task->kernel_stack_top);
     nas_x86_enable_virtual_wire();
     nas_x86_enable_legacy_pit();
+    extern void nas_x86_clock_init(void);
+    nas_x86_clock_init();
 }
 void nas_arch_enable_user_traps(void) {
     nas_arch_syscall_enable();
