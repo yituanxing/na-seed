@@ -47,12 +47,15 @@ void nas_arch_prepare_user_cpu(void) {
      * and preserve user double-precision state across cooperative switches. */
     uint64_t fs=3ULL<<13;
     __asm__ volatile("csrs sstatus,%0" : : "r"(fs) : "memory");
+    extern uint64_t nas_rv_entry_stack_top;
+    if (!nas_task_kernel_stack_ok(nas_current_task)) nas_arch_halt();
+    nas_rv_entry_stack_top = nas_current_task->kernel_stack_top;
 }
 extern void nas_rv_full_trap(void);
 extern char kernel_stack_top;
 void nas_arch_enable_user_traps(void) {
     uintptr_t addr=(uintptr_t)nas_rv_full_trap;
-    uintptr_t stack=(uintptr_t)&kernel_stack_top;
+    uintptr_t stack=(uintptr_t)nas_current_task->kernel_stack_top;
     __asm__ volatile("csrw stvec,%0\ncsrw sscratch,%1"
                    : : "r"(addr),"r"(stack) : "memory");
 }
