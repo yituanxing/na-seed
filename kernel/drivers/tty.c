@@ -8,8 +8,8 @@
 #include "serial.h"
 #include "tty.h"
 /* One console TTY: POSIX session/foreground ownership and native Linux
- * TCGETS wire ABI are generic. Only x86 COM1 offers real physical RX now;
- * RV SBI and ARM semihost transports explicitly do not pretend input. */
+ * TCGETS wire ABI are common. x86 COM1, RV SBI firmware console_getchar
+ * and ARM PL011 provide actual RX bytes via the same nonblocking interface. */
 static struct {
     uint64_t sid,pgid;
     struct nas_termios t;

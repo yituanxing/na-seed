@@ -41,5 +41,9 @@ esac
 if [ "$port" = amd64 ]; then
     sh scripts/probe-m17-interactive.sh
     sh scripts/probe-m18-ash-interactive.sh
+else
+    # Real firmware and PL011/SBI input are validated only on an actual
+    # target machine, not under Linux QEMU-user or synthetic UART logs.
+    sh scripts/probe-m18-port-interactive.sh "$port"
 fi
 echo "[SOURCE BUSYBOX MATRIX PASS] $port: 13/13 native self-compiled workloads"

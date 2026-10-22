@@ -29,6 +29,17 @@ void nas_arch_console_putc(char c) {
 /* SBI console handles plain LF; raw stdout bytes remain unmodified. */
 void nas_arch_console_log_newline(void) { }
 
-/* No physical RX: never fabricate a serial keyboard. */
-bool nas_arch_console_has_rx(void) { return false; }
-bool nas_arch_console_getc(uint8_t *byte) { (void)byte;return false; }
+/* OpenSBI's real legacy SBI console getchar (EID 2) consumes the
+ * host character device backing QEMU virt's physical UART. No guessed
+ * UART MMIO translation; a0 returns -1 when no received byte is ready.
+ * This is an SBI firmware service, not a fabricated terminal stream.
+ * Platforms lacking legacy getchar need a DBCN physical-buffer reader. */
+bool nas_arch_console_enable_input(void) { return true; }
+bool nas_arch_console_has_rx(void) { return true; }
+bool nas_arch_console_getc(uint8_t *byte) {
+    if (!byte) return false;
+    struct sbi_ret r = call_sbi(2, 0, 0);
+    if (r.error < 0 || r.error > 255) return false;
+    *byte = (uint8_t)r.error;
+    return true;
+}
