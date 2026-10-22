@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include "../arch/abi.h"
 #include <stdbool.h>
 #include "../task.h"
 #include "../arch/arch.h"
@@ -13,10 +14,10 @@ extern void nas_print(const char *);
 #define loaded_phnum TASK.loaded_phnum
 #define loaded_main_entry TASK.loaded_main_entry
 #define loaded_interp_base TASK.loaded_interp_base
-#define USER_STACK_TOP 0x0000000070000000ULL
+#define USER_STACK_TOP NAS_USER_STACK_TOP
 #define USER_STACK_PAGES 32
 
-/* A real Linux x86-64 userspace entry stack, not argv spoofing in kernel. */
+/* Shared Linux ELF64 argc/argv/envp/auxv stack builder, not argv spoofing. */
 static uint64_t cstr_len(const char *str) {
     uint64_t n = 0;
     while (str[n]) n++;

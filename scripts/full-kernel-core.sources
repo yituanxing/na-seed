@@ -1,0 +1,24 @@
+# Shared full-kernel (non-M0) core translation units. Keep the same list
+# for RV64 and AArch64; each target supplies only hardware/ABI providers.
+kernel/kernel.c
+kernel/init/main.c
+kernel/task/exec.c
+kernel/syscall/dispatch.c
+kernel/task.c
+kernel/task/process.c
+kernel/task/sched.c
+kernel/bootfs.c
+kernel/tmpfs.c
+kernel/fd.c
+kernel/path.c
+kernel/pipe.c
+kernel/boot_image.c
+kernel/drivers/serial.c
+kernel/mm/frame.c
+kernel/mm/vm.c
+kernel/mm/usercopy.c
+kernel/task/elf.c
+kernel/task/elf_segments.c
+kernel/task/user_stack.c
+kernel/task/signal.c
+kernel/fs/syscall.c

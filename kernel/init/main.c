@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include "../arch/abi.h"
 #include <stdbool.h>
 #include "../task.h"
 #include "../fd.h"
@@ -18,16 +19,15 @@
 #define running_bash TASK.running_bash
 #define running_busybox TASK.running_busybox
 #define running_alpine TASK.running_alpine
-#define USER_STACK_TOP 0x0000000070000000ULL
+#define USER_STACK_TOP NAS_USER_STACK_TOP
 #define USER_STACK_PAGES 32
 
 void nas_init_userspace(void) {
-    nas_print("[M1] setting up GDT, TSS, IDT, syscall MSRs\n");
+    nas_print("[INIT] creating common task/VM and architecture user entry\n");
     nas_task_boot_init();
-    nas_arch_cpu_tables_init();
-    nas_arch_cpu_user_fp_init();
-    if (!nas_mmu_bootstrap()) nas_fail("requires four-level paging");
-    nas_arch_syscall_enable();
+    nas_arch_prepare_user_cpu();
+    if (!nas_mmu_bootstrap()) nas_fail("architecture user VM bootstrap failed");
+    nas_arch_enable_user_traps();
     /* Select the boot ELF with the very same argv[0] passed to userspace.
      * No shell, PATH lookup, or alternative program-name ABI is invented.
      * Legacy M0-M5 configurations without cmdline preserve their defaults.
@@ -81,5 +81,5 @@ void nas_init_userspace(void) {
     else if (running_busybox) nas_print("[M2] entering real BusyBox in ring 3\n");
     else nas_print("[M1] entering actual ring 3\n");
     nas_arch_enter_user(entry, stack_pointer);
-    nas_fail("iretq returned");
+    nas_fail("architecture user-entry unexpectedly returned");
 }

@@ -1,0 +1,7 @@
+# arch|alpine-package-version|sha256
+# Pinned to official Alpine v3.23 APK bytes, verified from independent
+# current GitHub Actions fetches across native RV64/ARM64 environments.
+aarch64|busybox-1.37.0-r30|d3c919f1f142e41ba83c7dbcc392388f23f840dda6867719e660ebb9cc681254
+aarch64|musl-1.2.5-r23|6a3edd924ead1fad88a69e28c5775809af3026b322f58428001cd02fedc5299e
+riscv64|busybox-1.37.0-r30|76b26b7cd90f494c2e9520d0b553c928cc70375852ea396e9ba51c1ca984aefb
+riscv64|musl-1.2.5-r23|149223dc8187f32427a5312eb07b64ecd23e011e24ce647632d00a0352d2d336

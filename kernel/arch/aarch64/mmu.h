@@ -1,6 +1,7 @@
 #ifndef NASEED_AARCH64_MMU_H
 #define NASEED_AARCH64_MMU_H
 #include <stdint.h>
+#include "../user_pt.h"
 #include <stdbool.h>
 
 /* Offline TTBR0 user mappings, stage-1 4KiB granule, 39/48 bit VAs.
@@ -26,4 +27,8 @@ bool nas_arm_pt_translate(const struct nas_arm_pt *, uint64_t va,
 bool nas_arm_pt_unmap(struct nas_arm_pt *, uint64_t va);
 void nas_arm_pt_destroy(struct nas_arm_pt *);
 bool nas_arm_pt_smoke(void);
+/* Genuine EL0 PTE permission edits and lower-half user-only walk. */
+bool nas_arm_pt_protect(const struct nas_arm_pt *, uint64_t va,
+                        unsigned access);
+bool nas_arm_pt_walk(const struct nas_arm_pt *, nas_user_pt_visit, void *);
 #endif

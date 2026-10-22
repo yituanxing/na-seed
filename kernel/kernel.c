@@ -13,6 +13,7 @@
 #endif
 #include "drivers/serial.h"
 #include "mm/frame.h"
+#include "mm/user_space.h"
 #include "init/main.h"
 
 /*
@@ -99,6 +100,11 @@ void kmain(void) {
         nas_arch_halt();
     }
     nas_print("[PASS] RV64 Sv39/Sv48/Sv57 user PTE map/query/unmap/reclaim\n");
+    if (!nas_space_regression()) {
+        nas_print("[FAIL] shared RV64 user VM clone/protect/free\n");
+        nas_arch_halt();
+    }
+    nas_print("[PASS] shared user VM clone/protect/unmap/reclaim RV64\n");
     nas_print("[PASS] riscv64 M0 Limine/SBI/frame allocator\n");
     const struct limine_file *app = nas_user_module();
     if (!app || !app->address || !app->size) {
@@ -119,6 +125,11 @@ void kmain(void) {
         nas_arch_halt();
     }
     nas_print("[PASS] AArch64 39/48-bit user PTE map/query/unmap/reclaim\n");
+    if (!nas_space_regression()) {
+        nas_print("[FAIL] shared AArch64 user VM clone/protect/free\n");
+        nas_arch_halt();
+    }
+    nas_print("[PASS] shared user VM clone/protect/unmap/reclaim AArch64\n");
     nas_print("[PASS] aarch64 M0 Limine/UEFI/semihost/frame allocator\n");
     nas_arch_halt();
 #else

@@ -1,4 +1,5 @@
 #include "task.h"
+#include "arch/abi.h"
 #include "fd.h"
 #include <stddef.h>
 
@@ -22,7 +23,7 @@ void nas_task_boot_init(void) {
     nas_current_task->pid = 1;
     nas_current_task->ppid = 0;
     nas_current_task->state = NAS_TASK_RUNNING;
-    nas_current_task->mmap_cursor = 0x60000000ULL;
+    nas_current_task->mmap_cursor = NAS_TASK_MMAP_CURSOR;
     nas_current_task->cwd[0] = '/';
     nas_current_task->cwd[1] = 0;
 }
@@ -52,8 +53,11 @@ struct nas_task *nas_task_fork_slot(void) {
         child->exit_code = 0;
         child->termination_signal = 0;
         child->resume_valid = false;
-        child->blocked_nr = 0;
+        child->blocked_op = 0;
         child->pending_valid = false;
+        /* Fork creates a new thread-group / task identity. The parent's
+         * clear_child_tid address belongs only to the parent's thread. */
+        child->thread_clear_tid = 0;
         return child;
     }
     return NULL;
@@ -75,7 +79,7 @@ uint64_t nas_task_page_root(const struct nas_task *task) {
     return task ? task->root_phys : 0;
 }
 uint64_t nas_task_tls_base(const struct nas_task *task) {
-    return task ? task->arch.user_fs_base : 0;
+    return task ? nas_arch_context_tls_base(&task->arch) : 0;
 }
 void nas_task_set_root(struct nas_task *task, uint64_t root) {
     if (task) task->root_phys = root;
