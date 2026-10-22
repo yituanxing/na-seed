@@ -1,6 +1,7 @@
 #include "task.h"
 #include "arch/abi.h"
 #include "fd.h"
+#include "lib/string.h"
 #include <stddef.h>
 
 /* One shared process registry. PID 1 owns the first slot; other slots
@@ -14,8 +15,7 @@ struct nas_task *nas_current_task;
 void nas_task_boot_init(void) {
     for (unsigned n = 0; n < NAS_TASK_LIMIT; n++) {
         struct nas_task *task = &task_table[n];
-        unsigned char *bytes = (unsigned char *)task;
-        for (unsigned j = 0; j < sizeof(*task); j++) bytes[j] = 0;
+        memset(task, 0, sizeof(*task));
     }
     next_pid = 2;
     nas_fd_system_init();
@@ -46,9 +46,7 @@ struct nas_task *nas_task_fork_slot(void) {
     for (unsigned i = 1; i < NAS_TASK_LIMIT; i++) {
         if (task_table[i].state != NAS_TASK_FREE) continue;
         struct nas_task *child = &task_table[i];
-        const unsigned char *src = (const unsigned char *)nas_current_task;
-        unsigned char *dst = (unsigned char *)child;
-        for (size_t j = 0; j < sizeof(*child); j++) dst[j] = src[j];
+        memcpy(child, nas_current_task, sizeof(*child));
         child->pid = next_pid++;
         child->ppid = nas_current_task->pid;
         /* pgid and sid were inherited from parent; execed is per-fork. */

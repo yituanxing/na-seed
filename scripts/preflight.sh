@@ -11,6 +11,9 @@ for script in scripts/*.sh; do
     sh -n "$script"
 done
 
+# One canonical kernel-only C runtime, checked on all real target triples.
+sh scripts/check-klib.sh
+
 # Keep the M7 /tmp inode storage boundary intact. The syscall layer may
 # call the backend but must not own inode/description tables. The backend
 # must not dereference userspace addresses or decode syscall user pointers.

@@ -14,6 +14,7 @@
 #include "../panic.h"
 #include "elf.h"
 #include "user_stack.h"
+#include "../lib/string.h"
 #include "exec.h"
 #define TASK (*nas_current_task)
 #define root_phys TASK.root_phys
@@ -33,10 +34,6 @@
 #define USER_STACK_PAGES 32
 
 /* Boot/exec program-name comparison. FD path matching lives in fs/syscall.c. */
-static bool same_string(const char *a, const char *b) {
-    for (; *a && *b; a++, b++) if (*a != *b) return false;
-    return *a == *b;
-}
 /* Single-process execve: replace this process's user image, not fork.
  * Snapshot ALL user pointers before changing CR3. The ELF and interpreter
  * bytes are immutable CPIO entries, so they remain valid after replacement.
@@ -266,8 +263,8 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     const char *basename = actual;
     for (const char *p = basename; *p; p++)
         if (*p == '/') basename = p + 1;
-    running_busybox = same_string(basename, "busybox");
-    running_bash = same_string(basename, "bash");
+    running_busybox = strcmp(basename, "busybox") == 0;
+    running_bash = strcmp(basename, "bash") == 0;
     running_alpine = running_busybox &&
         ((const struct elf_hdr *)main_img.data)->type == 3;
     if (scripted) {
