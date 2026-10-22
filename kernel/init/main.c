@@ -12,6 +12,7 @@
 #include "../panic.h"
 #include "../task/elf.h"
 #include "../task/user_stack.h"
+#include "../task/signal.h"
 #include "main.h"
 #include "../fs/file_ops.h"
 #define TASK (*nas_current_task)
@@ -73,6 +74,8 @@ void nas_init_userspace(void) {
          va < USER_STACK_TOP; va += PAGE) {
         if (!nas_mmu_map_page(va, true)) nas_fail("cannot map user stack");
     }
+    if(!nas_signal_install_trampoline())
+        nas_fail("cannot install native RX rt_sigreturn trampoline");
     uint64_t stack_pointer;
     for (unsigned fd = 0; fd < 3; fd++) {
         descriptors[fd] = FD_UART;
