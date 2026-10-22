@@ -6,12 +6,13 @@
 #include "mm/anon_regions.h"
 
 /* Common process registry across x86-64, RV64, and AArch64.
- * One kernel stack is shared: cooperative switching occurs only at a
+ * Each task has its own kernel entry stack; switching still occurs at a
  * syscall boundary; each task retains its own user CPU/VM state.
  * Process slots are finite; exhaustion returns Linux EAGAIN from fork.
  */
 #define NAS_TASK_LIMIT 16
 #define NAS_FD_LIMIT 64
+#define NAS_KERNEL_STACK_BYTES 16384U
 
 struct limine_file;
 struct bootfs_entry;
@@ -62,6 +63,9 @@ struct nas_task {
     uint64_t poll_pipe_read, poll_pipe_write;
     bool poll_tty_read;
 
+    /* Owned kernel entry stack. Kernel C continuations are NOT resumable
+     * yet; the syscall-boundary scheduler still unwinds before switching. */
+    uint64_t kernel_stack_top;
     /* One independent VM mapping root and ELF/brk/mmap tracking per task. */
     uint64_t root_phys, heap_break;
     /* Bounded eager anonymous VMA ownership; copied by value on fork. */
@@ -88,6 +92,7 @@ struct nas_task {
  */
 extern struct nas_task *nas_current_task;
 void nas_task_boot_init(void);
+bool nas_task_kernel_stack_ok(const struct nas_task *task);
 struct nas_task *nas_task_current(void);
 struct nas_task *nas_task_fork_slot(void);
 void nas_task_release(struct nas_task *task);
