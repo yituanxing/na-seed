@@ -5,32 +5,83 @@
 #include "signal.h"
 #include "../arch/arch.h"
 #include "../task/sched.h"
-/* Proper syscall-level rt_sigaction / sigprocmask structures, 8-byte sigset.
- * Delivery is intentionally not claimed until an actual signal path exists. */
-uint64_t nas_signal_action(uint64_t signum, uint64_t new_action,
-                              uint64_t old_action, uint64_t size) {
-    if (size != 8 || signum < 1 || signum > 64) return (uint64_t)-EINVAL;
-    if (new_action && (signum == 9 || signum == 19)) return (uint64_t)-EINVAL;
-    if (old_action &&
-        !nas_user_write_bytes(old_action, (const uint8_t *)nas_current_task->signal_actions[signum], 32))
-        return (uint64_t)-EFAULT;
-    if (new_action &&
-        !nas_user_read_bytes(new_action, (uint8_t *)nas_current_task->signal_actions[signum], 32))
-        return (uint64_t)-EFAULT;
+
+/* Shared standard-signal state. Signal-handler trampolines and native
+ * rt_sigreturn are NOT implemented: a delivery that would enter a custom
+ * handler is rejected rather than fabricated. */
+static bool terminating_default(unsigned sig) {
+    return sig==NAS_SIGINT || sig==NAS_SIGQUIT || sig==NAS_SIGKILL ||
+           sig==NAS_SIGPIPE || sig==NAS_SIGTERM;
+}
+static unsigned first_default_pending(const struct nas_task *task,
+                                      uint64_t mask) {
+    uint64_t ready=task->pending_signals & ~mask;
+    for(unsigned sig=1;sig<=64;sig++)
+        if((ready & (1ULL<<(sig-1))) && terminating_default(sig) &&
+           task->signal_actions[sig][0]==0)
+            return sig;
     return 0;
 }
-uint64_t nas_signal_procmask(uint64_t how, uint64_t set,
-                                uint64_t previous, uint64_t size) {
-    if (size != 8) return (uint64_t)-EINVAL;
-    uint64_t newmask = 0;
-    if (set && !nas_user_read_u64(set, &newmask)) return (uint64_t)-EFAULT;
-    if (previous && !nas_user_write_u64(previous, nas_current_task->blocked_signals)) return (uint64_t)-EFAULT;
-    if (set) {
-        if (how == 0) nas_current_task->blocked_signals |= newmask;        /* SIG_BLOCK */
-        else if (how == 1) nas_current_task->blocked_signals &= ~newmask;  /* SIG_UNBLOCK */
-        else if (how == 2) nas_current_task->blocked_signals = newmask;    /* SIG_SETMASK */
+uint64_t nas_signal_action(uint64_t signum,uint64_t incoming,
+                           uint64_t previous,uint64_t size) {
+    if(size!=8 || signum<1 || signum>64)return (uint64_t)-EINVAL;
+    if(incoming && (signum==NAS_SIGKILL || signum==NAS_SIGSTOP))
+        return (uint64_t)-EINVAL;
+    uint64_t action[4];
+    /* Copy new disposition BEFORE touching current one, so overlapping
+     * user buffers or EFAULT cannot half-install a handler. */
+    if(incoming && !nas_user_read_bytes(incoming,(uint8_t *)action,32))
+        return (uint64_t)-EFAULT;
+    if(previous &&
+       !nas_user_write_bytes(previous,
+           (const uint8_t *)nas_current_task->signal_actions[signum],32))
+        return (uint64_t)-EFAULT;
+    if(incoming) {
+        for(unsigned i=0;i<4;i++)
+            nas_current_task->signal_actions[signum][i]=action[i];
+        if(action[0]==1) /* ignored signal drops any earlier pending copy */
+            nas_current_task->pending_signals &= ~(1ULL<<(signum-1));
+    }
+    return 0;
+}
+uint64_t nas_signal_pending(uint64_t destination,uint64_t size) {
+    if(size!=8)return (uint64_t)-EINVAL;
+    return nas_user_write_u64(destination,
+        nas_current_task->pending_signals & nas_current_task->blocked_signals)
+        ? 0:(uint64_t)-EFAULT;
+}
+uint64_t nas_signal_procmask(uint64_t how,uint64_t set,
+                             uint64_t previous,uint64_t size,uint64_t *frame) {
+    if(size!=8)return (uint64_t)-EINVAL;
+    uint64_t newbits=0;
+    struct nas_task *task=nas_current_task;
+    if(set && !nas_user_read_u64(set,&newbits))return (uint64_t)-EFAULT;
+    uint64_t mask=task->blocked_signals;
+    if(set) {
+        if(how==0)mask |= newbits; /* SIG_BLOCK */
+        else if(how==1)mask &= ~newbits; /* SIG_UNBLOCK */
+        else if(how==2)mask=newbits; /* SIG_SETMASK */
         else return (uint64_t)-EINVAL;
-        nas_current_task->blocked_signals &= ~((1ULL << 8) | (1ULL << 18));
+        mask &= ~((1ULL<<8)|(1ULL<<18)); /* SIGKILL, SIGSTOP unmaskable */
+        /* A pending caught signal needs a real user signal frame: do not
+         * claim success, nor lose the blocked pending signal. */
+        uint64_t unmasked=task->pending_signals & ~mask;
+        for(unsigned sig=1;sig<=64;sig++) {
+            if(!(unmasked & (1ULL<<(sig-1))))continue;
+            if(task->signal_actions[sig][0]>1)
+                return (uint64_t)-EOPNOTSUPP;
+        }
+    }
+    if(previous && !nas_user_write_u64(previous,task->blocked_signals))
+        return (uint64_t)-EFAULT;
+    if(set) {
+        task->blocked_signals=mask;
+        unsigned signum=first_default_pending(task,mask);
+        if(signum) {
+            task->pending_signals &= ~(1ULL<<(signum-1));
+            nas_sched_child_exit(0,signum);
+            return nas_task_schedule(frame);
+        }
     }
     return 0;
 }
@@ -64,13 +115,14 @@ static void signal_kill_other(struct nas_task *target,unsigned signal) {
 uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
     int64_t pid = (int64_t)(int32_t)(uint32_t)raw_pid;
     if (signal > 64) return (uint64_t)-EINVAL;
-    if (signal && signal != NAS_SIGKILL && signal != NAS_SIGSTOP &&
-        signal != NAS_SIGCONT)
+    if(signal && signal!=NAS_SIGSTOP && signal!=NAS_SIGCONT &&
+       !terminating_default((unsigned)signal))
         return (uint64_t)-EOPNOTSUPP; /* no fake signal delivery */
     struct nas_task *sender = nas_current_task;
     struct nas_task *matches[NAS_TASK_LIMIT];
     unsigned count = 0;
     bool protected_init = false, self = false;
+    bool self_terminate = false;
     for (unsigned i=0;i<NAS_TASK_LIMIT;i++) {
         struct nas_task *target = nas_task_at(i);
         if (!signal_target_matches(target,pid,sender)) continue;
@@ -82,16 +134,46 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
     }
     if (!count) return (uint64_t)(protected_init ? -EPERM : -ESRCH);
     if (!signal) return 0;
+    /* A process-group kill must not partially terminate siblings if one
+     * requires a custom user handler that the kernel cannot deliver.
+     * SIGKILL/SIGSTOP remain unmaskable and uncatchable. */
+    if(signal!=NAS_SIGKILL && signal!=NAS_SIGSTOP && signal!=NAS_SIGCONT) {
+        for(unsigned i=0;i<count;i++) {
+            struct nas_task *t=matches[i];
+            if(t->state==NAS_TASK_ZOMBIE)continue;
+            if((t->signal_actions[signal][0]>1) &&
+               !(t->blocked_signals&(1ULL<<(signal-1))))
+                return (uint64_t)-EOPNOTSUPP;
+        }
+    }
     /* Snapshot before state transitions. A STOPPED task preserves its
      * previous READY/BLOCKED syscall resume contract. On CONT it must
      * either become runnable or remain waiting on its original FD.
      * No CPU-specific signal stack or fake success path is introduced. */
     for (unsigned i=0;i<count;i++) {
         struct nas_task *target=matches[i];
-        if (target==sender) { self=true; continue; }
+        if (target==sender) {
+            self=true;
+            if(terminating_default((unsigned)signal) &&
+               signal!=NAS_SIGKILL &&
+               (target->blocked_signals&(1ULL<<(signal-1))))
+                target->pending_signals |= 1ULL<<(signal-1);
+            else if(terminating_default((unsigned)signal) &&
+                    (signal==NAS_SIGKILL ||
+                     target->signal_actions[signal][0]!=1))
+                self_terminate=true;
+            continue;
+        }
         if (target->state==NAS_TASK_ZOMBIE) continue;
-        if (signal==NAS_SIGKILL) {
-            signal_kill_other(target,NAS_SIGKILL);
+        if(terminating_default((unsigned)signal)) {
+            if(signal!=NAS_SIGKILL &&
+               target->signal_actions[signal][0]==1)continue; /* SIG_IGN */
+            if(signal!=NAS_SIGKILL &&
+               (target->blocked_signals&(1ULL<<(signal-1)))) {
+                target->pending_signals |= 1ULL<<(signal-1);
+                continue;
+            }
+            signal_kill_other(target,(unsigned)signal);
         } else if (signal==NAS_SIGSTOP) {
             if (target->state != NAS_TASK_STOPPED) {
                 target->stopped_from=target->state;
@@ -109,8 +191,8 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
         }
     }
     if (self) {
-        if (signal==NAS_SIGKILL) {
-            nas_sched_child_exit(0,NAS_SIGKILL);
+        if(self_terminate) {
+            nas_sched_child_exit(0,(unsigned)signal);
             return nas_task_schedule(frame);
         }
         if (signal==NAS_SIGSTOP && sender->state!=NAS_TASK_STOPPED) {

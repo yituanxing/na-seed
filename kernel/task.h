@@ -72,6 +72,7 @@ struct nas_task {
 
     /* Per-process signal disposition/mask and filesystem context. */
     uint64_t blocked_signals;
+    uint64_t pending_signals; /* Linux per-task pending standard signals */
     uint64_t signal_actions[65][4];
     char cwd[256];
     struct nas_fd_table fds;

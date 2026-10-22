@@ -56,6 +56,7 @@ enum nas_syscall_op {
     NAS_SC_renameat2,
     NAS_SC_rmdir,
     NAS_SC_rt_sigaction,
+    NAS_SC_rt_sigpending,
     NAS_SC_rt_sigprocmask,
     NAS_SC_setpgid,
     NAS_SC_setsid,

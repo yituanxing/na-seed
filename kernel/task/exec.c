@@ -255,9 +255,12 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     thread_clear_tid = 0;
     nas_arch_context_set_tls(&TASK.arch, 0);
     nas_arch_set_user_tls(0); /* fresh musl/glibc TLS initialization */
-    for (unsigned i = 0; i < 65; i++)
-        for (unsigned j = 0; j < 4; j++)
-            signal_actions[i][j] = 0; /* exec resets user signal handlers */
+    /* Linux execve resets caught handlers to default but preserves ignored
+     * dispositions, the process signal mask and pending standard signals. */
+    for (unsigned i = 1; i < 65; i++) {
+        if (signal_actions[i][0] == 1) continue; /* SIG_IGN survives exec */
+        for (unsigned j = 0; j < 4; j++) signal_actions[i][j] = 0;
+    }
     if (!nas_mmu_reclaim_root(previous_root))
         nas_fail("execve stale address-space frame reclaim failure");
     const char *basename = actual;
