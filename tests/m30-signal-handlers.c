@@ -164,6 +164,42 @@ int main(int argc,char **argv) {
     require(waitpid(child,&status,0)==child &&
             WIFEXITED(status) && WEXITSTATUS(status)==0,
             "interrupted child resumed and exited");
+    /* Interruption of a relative sleep must return EINTR plus a bounded
+     * remaining timespec. This exercises M29 deadline ownership through
+     * M30's signal-driven blocked Task replay, not merely an I/O wait. */
+    int sleep_gate[2];
+    require(pipe(sleep_gate)==0,"sleep handshake pipe");
+    child=fork();
+    require(child>=0,"fork interrupted nanosleep");
+    if(child==0) {
+        close(sleep_gate[0]);
+        observed_usr2=0;
+        require(write(sleep_gate[1],"S",1)==1,"sleep child ready");
+        close(sleep_gate[1]);
+        struct timespec duration={1,0},rem={0,0};
+        errno=0;
+        int rc=nanosleep(&duration,&rem);
+        require(rc==-1 && errno==EINTR,"nanosleep caught EINTR");
+        require(observed_usr2==1,"nanosleep handler executed");
+        require(rem.tv_sec>=0 && rem.tv_nsec>=0 &&
+                rem.tv_nsec<1000000000L &&
+                (uint64_t)rem.tv_sec*1000000000ULL+
+                (uint64_t)rem.tv_nsec<1000000000ULL,
+                "nanosleep wrote bounded remaining timespec");
+        _exit(0);
+    }
+    close(sleep_gate[1]);
+    ready=0;
+    require(read(sleep_gate[0],&ready,1)==1 && ready=='S',
+            "nanosleep child handshake");
+    close(sleep_gate[0]);
+    struct timespec short_delay={0,150000000L};
+    require(nanosleep(&short_delay,NULL)==0,"parent sleep before interrupt");
+    require(kill(child,SIGUSR2)==0,"wake sleeping child with SIGUSR2");
+    status=0;
+    require(waitpid(child,&status,0)==child &&
+            WIFEXITED(status) && WEXITSTATUS(status)==0,
+            "nanosleep returned EINTR with remaining time");
     /* Asynchronous signal to a truly CPU-bound child: after the last
      * readiness write, the child enters a user-only spin loop. Parent
      * waits > one hardware timer quantum before kill(). The signal must
