@@ -42,9 +42,14 @@ void nas_arch_console_putc(char c) {
     if (!(uart_reg(REG_FR) & (1U << 5)))
         uart_set(REG_DR, (uint8_t)c);
 }
-/* Called after nas_frames_init() but before nas_mmu_bootstrap() copies
- * references to kernel tables. Also remains mapped in later TTBR0 roots. */
-bool nas_arch_console_enable_input(void) {
+/* Device-nGnRnE mapping of one supervisor-only MMIO page. Used by
+ * PL011 console and the QEMU virt GICv2 hardware timer controller.
+ * This shared implementation owns the MAIR and upper EL1 page walk;
+ * architecture-independent driver/TTY/scheduler code knows no PA/VA.
+ * Call only after nas_frames_init while kernel TTBR1 is live.
+ */
+bool nas_arm_map_io_page(uint64_t physical, uint64_t virt) {
+    if((physical & 4095U) || (virt & 4095U)) return false;
     uint64_t tcr, ttbr;
     __asm__ volatile ("mrs %0,tcr_el1" : "=r"(tcr));
     __asm__ volatile ("mrs %0,ttbr1_el1" : "=r"(ttbr));
@@ -58,7 +63,7 @@ bool nas_arch_console_enable_input(void) {
     uint64_t pa = root;
     for (unsigned level = levels; level > 1; level--) {
         unsigned shift = 12 + 9 * (level - 1);
-        unsigned index = (unsigned)((PL011_VIRT >> shift) & 511U);
+        unsigned index = (unsigned)((virt >> shift) & 511U);
         volatile uint64_t *table = (volatile uint64_t *)(uintptr_t)
                 (nas_hhdm_offset() + pa);
         uint64_t desc = table[index];
@@ -76,7 +81,7 @@ bool nas_arch_console_enable_input(void) {
     }
     volatile uint64_t *leaf = (volatile uint64_t *)(uintptr_t)
             (nas_hhdm_offset() + pa);
-    unsigned index = (unsigned)((PL011_VIRT >> 12) & 511U);
+    unsigned index = (unsigned)((virt >> 12) & 511U);
     if (leaf[index]) return false; /* never overwrite an existing mapping */
 
     /* MAIR index 6 is unused by Limine; map UART as Device-nGnRnE.
@@ -85,10 +90,15 @@ bool nas_arch_console_enable_input(void) {
     __asm__ volatile ("mrs %0,mair_el1" : "=r"(mair));
     mair &= ~(255ULL << (DEVICE_IDX * 8));
     __asm__ volatile ("msr mair_el1,%0" : : "r"(mair) : "memory");
-    leaf[index] = PL011_PHYS | 3ULL | (DEVICE_IDX << 2) |
+    leaf[index] = physical | 3ULL | (DEVICE_IDX << 2) |
                   (1ULL << 10) | (1ULL << 53) | (1ULL << 54);
     __asm__ volatile ("dsb ishst\n tlbi vmalle1is\n dsb ish\n isb"
                       : : : "memory");
+    return true;
+}
+/* The console remains a special case of the same kernel-only IO mapper. */
+bool nas_arch_console_enable_input(void) {
+    if(!nas_arm_map_io_page(PL011_PHYS,PL011_VIRT)) return false;
     uart = (volatile uint32_t *)(uintptr_t)PL011_VIRT;
     uint32_t cr = uart_reg(REG_CR);
     uart_set(REG_CR, cr | 0x301U); /* UARTEN | TXE | RXE */

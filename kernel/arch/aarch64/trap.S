@@ -46,7 +46,9 @@ nas_arm_full_vectors:
 .endr
     b nas_arm_lower_sync
     .balign 128
-.rept 7
+    b nas_arm_lower_irq
+    .balign 128
+.rept 6
     b nas_arm_unexpected_vector
     .balign 128
 .endr
@@ -61,7 +63,7 @@ nas_arch_enter_user:
     mov sp, x9
     msr sp_el0,x1
     msr elr_el1,x0
-    mov x2,#0x3c0       /* DAIF masked, EL0t */
+    mov x2,#0x340       /* D/A/F masked; IRQ unmasked in EL0t */
     msr spsr_el1,x2
     msr tpidr_el0,xzr
     /* Linux AArch64 ELF entry passes rtld_fini in x0.  A directly
@@ -74,9 +76,10 @@ nas_arch_enter_user:
     isb
     eret
 
-.global nas_arm_lower_sync
-.balign 4
-nas_arm_lower_sync:
+/* The architectural EL0 sync and IRQ both save the SAME complete
+ * trap frame. Emit one assembly macro instead of maintaining duplicate
+ * hand-coded register offset lists. EL1 IRQ masks PSTATE.I on entry. */
+.macro NAS_ARM_SAVE_EL0_FRAME
     sub sp,sp,#288
     stp x0,x1,[sp,#0]
     stp x2,x3,[sp,#16]
@@ -102,8 +105,24 @@ nas_arm_lower_sync:
     str x0,[sp,#264]
     mrs x0,tpidr_el0
     str x0,[sp,#272]
+.endm
+
+.global nas_arm_lower_sync
+.balign 4
+nas_arm_lower_sync:
+    NAS_ARM_SAVE_EL0_FRAME
     mov x0,sp
     bl nas_arm_full_trap_c
+    b nas_arm_trap_return
+
+.global nas_arm_lower_irq
+.balign 4
+nas_arm_lower_irq:
+    NAS_ARM_SAVE_EL0_FRAME
+    mov x0,sp
+    bl nas_arm_lower_irq_c
+
+nas_arm_trap_return:
     /* Return via the selected task's separate EL1 stack; all kernel C
      * calls have unwound and only the saved EL0 trap frame is relocated. */
     mov x0, sp

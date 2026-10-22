@@ -85,10 +85,12 @@ void nas_arch_prepare_user_cpu(void) {
     nas_print("[ARM64 CPU] TCR lower EL0 VA regime selected\n");
 }
 extern void nas_arm_full_vectors(void);
+extern void nas_arm_timer_start(void);
 void nas_arch_enable_user_traps(void) {
     uint64_t vbar=(uint64_t)(uintptr_t)nas_arm_full_vectors;
     __asm__ volatile("msr vbar_el1,%0\nisb"
                      : : "r"(vbar) : "memory");
+    nas_arm_timer_start();
 }
 uint64_t nas_arch_cycle_counter(void) {
     uint64_t count;

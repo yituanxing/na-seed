@@ -8,6 +8,7 @@
 #include "../../drivers/serial.h"
 #include "../../lib/string.h"
 #include "context.h"
+extern void nas_rv_timer_handle(struct nas_rv_trap_frame *frame);
 extern void nas_rv_save_fp(uint64_t *);
 extern void nas_rv_restore_fp(const uint64_t *);
 static struct nas_rv_trap_frame *live;
@@ -29,6 +30,15 @@ void nas_rv_full_trap_c(struct nas_rv_trap_frame *frame) {
     uint64_t scause, stval;
     __asm__ volatile("csrr %0, scause" : "=r"(scause));
     __asm__ volatile("csrr %0, stval" : "=r"(stval));
+    /* STIP is delegated by OpenSBI. It is a genuine asynchronous
+     * user interrupt, not an ECALL: sepc points to the interrupted
+     * instruction and MUST NOT be incremented. */
+    if(scause == (UINT64_C(1)<<63 | 5U) && !(frame->sstatus & 0x100U)) {
+        live=frame;
+        nas_rv_timer_handle(frame);
+        live=0;
+        return;
+    }
     if(scause != 8U || (frame->sstatus & 0x100U)) {
         nas_print("[RV64 FAULT] scause=");nas_hex(scause);
         nas_print(" sepc=");nas_hex(frame->sepc);

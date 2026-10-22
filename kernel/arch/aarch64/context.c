@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "context.h"
+extern void nas_arm_timer_irq_c(struct nas_arm_trap_frame *frame);
 #include "../arch.h"
 #include "../mmu.h"
 #include "../../task.h"
@@ -24,6 +25,14 @@ uint64_t nas_arm_return_stack(const struct nas_arm_trap_frame *source) {
 
 extern void nas_arm_save_simd(void *);
 extern void nas_arm_load_simd(const void *);
+/* Unlike SVC, IRQ does not modify ELR and must not fabricate x0. */
+void nas_arm_lower_irq_c(struct nas_arm_trap_frame *frame) {
+    if(frame->spsr_el1 & 15U)
+        nas_fail("ARM64 timer interrupted non-EL0 execution");
+    live=frame;
+    nas_arm_timer_irq_c(frame);
+    live=0;
+}
 void nas_arm_full_trap_c(struct nas_arm_trap_frame *frame) {
     uint64_t esr, far;
     __asm__ volatile("mrs %0, esr_el1" : "=r"(esr));

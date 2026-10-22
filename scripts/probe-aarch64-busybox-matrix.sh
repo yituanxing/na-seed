@@ -87,6 +87,7 @@ boot_case() {
     # No BusyBox result is assumed. A failure or timeout is a real failure.
     case "$name" in
         ash-*) time_budget=22 ;;
+        timer-preempt) time_budget=45 ;;
         process-capacity) time_budget=65 ;;
         init-reaper) time_budget=130 ;;
         *) time_budget=28 ;;
@@ -100,10 +101,16 @@ boot_case() {
         -drive if=none,id=esp,format=raw,file="$disk" \
         -device virtio-blk-device,drive=esp > "$log" 2>&1 < /dev/null &
     pid=$!
-    sh scripts/port-boot-until.sh "$log" "$pid" "$time_budget" \
-      '[INIT] creating common task/VM and architecture user entry' \
-      '[PASS] cmdline userspace exit 0' \
-      '[ARM64] userspace debug-exit status=0'
+    if [ "$name" = timer-preempt ]; then
+        sh scripts/port-boot-until.sh "$log" "$pid" "$time_budget" \
+          '[INIT] creating common task/VM and architecture user entry' \
+          '[M28] timer-preempt from=' 'cpu-hog-did-not-starve-ash'
+    else
+        sh scripts/port-boot-until.sh "$log" "$pid" "$time_budget" \
+          '[INIT] creating common task/VM and architecture user entry' \
+          '[PASS] cmdline userspace exit 0' \
+          '[ARM64] userspace debug-exit status=0'
+    fi
     monitor=$?
     kill "$pid" 2>/dev/null || :
     wait "$pid" 2>/dev/null || :
