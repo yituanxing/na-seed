@@ -1,5 +1,5 @@
 #!/bin/sh
-# One true upstream project, 11 independent .o objects + executable,
+# One true upstream project, 12 independent .o objects + executable,
 # designed to exceed the historical tmpfs 8-inode limit naturally.
 set -eu
 [ "$#" -eq 1 ] || exit 2
@@ -31,12 +31,13 @@ for file in adler32 crc32 deflate trees zutil inflate inftrees inffast compress 
     readelf -h "$work/$file.o" | grep -q 'REL (Relocatable file)'
     objs="$objs $work/$file.o"
 done
+run_tcc -Itests/m35-include -c tests/m35-rt.c -o "$work/rt.o"
 run_tcc -DZ_SOLO -I"$work/include" -I"$source" \
     -c tests/m36-zlib-check.c -o "$work/check.o"
 readelf -h "$work/check.o" | grep -q 'REL (Relocatable file)'
 # The shell splitting of $objs is intentional, each filename is fixed by
 # the script; never use eval and never accept a guest-controlled pathname.
-run_tcc -nostdlib -static -o "$work/zlib-check" $objs "$work/check.o"
+run_tcc -nostdlib -static -o "$work/zlib-check" $objs "$work/rt.o" "$work/check.o"
 readelf -h "$work/zlib-check" | grep -q 'EXEC (Executable file)'
 if readelf -l "$work/zlib-check" | grep -q INTERP; then
     echo "[M36 LINUX FAIL] $port wrong dynamic ELF" >&2
@@ -48,11 +49,11 @@ else
     "$work/zlib-check" > "$work/linux-deflate.log"
 fi
 grep -Fxq naseed-upstream-zlib-pass "$work/linux-deflate.log"
-echo "[M36 LINUX DEFLATE PASS] $port original 11 objects, real deflate/inflate and bytewise compare"
+echo "[M36 LINUX DEFLATE PASS] $port original 12 objects, real deflate/inflate and bytewise compare"
 sh scripts/stage-m36-zlib-rootfs.sh "$port"
 export BUSYBOX_PARITY_BINARY="$make"
 export NAS_ACCEPTANCE_CPIO="$work/rootfs.cpio"
 export BUSYBOX_PARITY_MANIFEST=scripts/m36-zlib-cases.tsv
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
 sh "$runner"
-echo "[M36 NASEED ZLIB PASS] $port unmodified upstream zlib, 12 new tmpfs inodes, native GNU Make/TCC build+exec"
+echo "[M36 NASEED ZLIB PASS] $port unmodified upstream zlib, 13 new tmpfs inodes, native GNU Make/TCC build+exec"
