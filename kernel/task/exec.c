@@ -4,6 +4,7 @@
 #include "../errno.h"
 #include "../bootfs.h"
 #include "../fs/lookup.h"
+#include "../tmpfs.h"
 #include "../task.h"
 #include "../fd.h"
 #include "../arch/arch.h"
@@ -53,6 +54,23 @@ static struct exec_snapshot {
     char shebang_path[256], shebang_arg[256];
 } pending_exec;
 
+/* The executable source is owned by its filesystem, not by an ISA-
+ * specific ELF loader. Immutable CPIO stays zero-copy, writable tmpfs is
+ * read through the same sparse inode API as normal file descriptors. */
+static bool tmp_elf_read(const void *context, uint64_t offset,
+                         uint8_t *destination, uint64_t length) {
+    const struct nas_tmp_file *file = (const struct nas_tmp_file *)context;
+    return tmp_read_at(file, offset, destination, length) == (int64_t)length;
+}
+static struct elf_image elf_from_fs_node(const struct nas_fs_node *node) {
+    struct elf_image image = {.data = node->data, .size = node->size};
+    if (node->backend == NAS_FS_TMPFS) {
+        image.read_at = tmp_elf_read;
+        image.context = node->tmp;
+    }
+    return image;
+}
+
 /* Linux binfmt_script: interpret a bounded CPIO #! line as an ELF
  * interpreter plus one optional argument. The script itself is NOT mapped
  * as ELF and argv[0] of the original caller is replaced by the interpreter.
@@ -60,37 +78,40 @@ static struct exec_snapshot {
  */
 static int read_shebang(const struct elf_image *image,
                         char interpreter[256], char option[256]) {
-    if (!image || image->size < 3 || image->data[0] != '#' ||
-        image->data[1] != '!') return -ENOEXEC;
+    uint8_t line[256];
+    if (!image || image->size < 3) return -ENOEXEC;
+    uint64_t nread = image->size < sizeof(line) ? image->size : sizeof(line);
+    if (!nas_elf_image_read(image, 0, line, nread) ||
+        line[0] != '#' || line[1] != '!') return -ENOEXEC;
     unsigned end = 2;
     while (end < image->size && end < 256 &&
-           image->data[end] != '\n' && image->data[end] != 0)
+           line[end] != '\n' && line[end] != 0)
         end++;
     /* Reject a truncated first line rather than guessing an interpreter. */
-    if (end == 256 || end == image->size || image->data[end] == 0)
+    if (end == 256 || end == image->size || line[end] == 0)
         return -ENOEXEC;
     unsigned i = 2;
-    while (i < end && (image->data[i] == ' ' || image->data[i] == '\t'))
+    while (i < end && (line[i] == ' ' || line[i] == '\t'))
         i++;
     unsigned start = i;
-    while (i < end && image->data[i] != ' ' && image->data[i] != '\t' &&
-           image->data[i] != '\r')
+    while (i < end && line[i] != ' ' && line[i] != '\t' &&
+           line[i] != '\r')
         i++;
-    if (i == start || image->data[start] != '/') return -ENOEXEC;
+    if (i == start || line[start] != '/') return -ENOEXEC;
     unsigned n = i - start;
     for (unsigned j = 0; j < n; j++)
-        interpreter[j] = (char)image->data[start + j];
+        interpreter[j] = (char)line[start + j];
     interpreter[n] = 0;
-    while (i < end && (image->data[i] == ' ' || image->data[i] == '\t'))
+    while (i < end && (line[i] == ' ' || line[i] == '\t'))
         i++;
     start = i;
-    while (end > start && (image->data[end - 1] == ' ' ||
-                            image->data[end - 1] == '\t' ||
-                            image->data[end - 1] == '\r'))
+    while (end > start && (line[end - 1] == ' ' ||
+                            line[end - 1] == '\t' ||
+                            line[end - 1] == '\r'))
         end--;
     n = end - start;
     for (unsigned j = 0; j < n; j++)
-        option[j] = (char)image->data[start + j];
+        option[j] = (char)line[start + j];
     option[n] = 0;
     return 0;
 }
@@ -168,9 +189,14 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     int err=nas_fs_lookup_node(pending_exec.filename,true,&app,actual);
     if(err)return (uint64_t)(int64_t)err;
     if(app.is_dir || !(app.mode&0111U))return (uint64_t)-EACCES;
-    struct elf_image main_img={app.data,app.size};
+    struct elf_image main_img=elf_from_fs_node(&app);
+    uint8_t magic[4] = {0};
+    uint64_t available = main_img.size < sizeof(magic) ?
+                         main_img.size : sizeof(magic);
+    if (!nas_elf_image_read(&main_img, 0, magic, available))
+        return (uint64_t)-ENOEXEC;
     bool scripted=false;
-    if(main_img.size>=2 && main_img.data[0]=='#' && main_img.data[1]=='!') {
+    if(main_img.size>=2 && magic[0]=='#' && magic[1]=='!') {
         err=read_shebang(&main_img,pending_exec.shebang_path,
                          pending_exec.shebang_arg);
         if(err)return (uint64_t)(int64_t)err;
@@ -180,7 +206,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
                                &bin,resolved_interpreter);
         if(err)return (uint64_t)(int64_t)err;
         if(bin.is_dir || !(bin.mode&0111U))return (uint64_t)-EACCES;
-        main_img=(struct elf_image){bin.data,bin.size};
+        main_img=elf_from_fs_node(&bin);
         app=bin; /* report the backend of the actual ELF interpreter */
         unsigned n=0;
         do { actual[n]=resolved_interpreter[n]; }
@@ -188,8 +214,16 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
         scripted=true;
     }
     if(main_img.size<sizeof(struct elf_hdr) ||
-       main_img.data[0]!=0x7f || main_img.data[1]!='E' ||
-       main_img.data[2]!='L' || main_img.data[3]!='F')
+       !nas_elf_image_read(&main_img, 0, magic, sizeof(magic)) ||
+       magic[0]!=0x7f || magic[1]!='E' ||
+       magic[2]!='L' || magic[3]!='F')
+        return (uint64_t)-ENOEXEC;
+    /* Do not consult main_img.data after exec: a sparse tmpfs ELF has no
+     * contiguous base pointer. Keep the validated header in kernel stack
+     * storage for the post-exec BusyBox/PIE accounting. */
+    struct elf_hdr executable_header;
+    if (!nas_elf_image_open(&main_img, NAS_ELF_MACHINE, true, 64,
+                            &executable_header))
         return (uint64_t)-ENOEXEC;
     struct nas_fs_node loader;
     char loader_path[256];
@@ -197,7 +231,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     const struct elf_image *interp=0;
     if(!nas_fs_lookup_node(NAS_ELF_INTERP,true,&loader,loader_path) &&
        !loader.is_dir) {
-        interp_img=(struct elf_image){loader.data,loader.size};
+        interp_img=elf_from_fs_node(&loader);
         interp=&interp_img;
     }
     result = copy_exec_vector(argv, false);
@@ -267,8 +301,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
         if (*p == '/') basename = p + 1;
     running_busybox = strcmp(basename, "busybox") == 0;
     running_bash = strcmp(basename, "bash") == 0;
-    running_alpine = running_busybox &&
-        ((const struct elf_hdr *)main_img.data)->type == 3;
+    running_alpine = running_busybox && executable_header.type == 3;
     if (scripted) {
         nas_print("[EXEC] CPIO #! interpreter: ");
         nas_print(pending_exec.shebang_path); nas_print("\n");

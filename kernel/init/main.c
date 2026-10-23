@@ -62,10 +62,10 @@ void nas_init_userspace(void) {
         nas_boot_argv_first(), &selected_image);
     if (boot_error) nas_fail(boot_error);
     struct elf_image main_image = {
-        selected_image.image, selected_image.size
+        .data = selected_image.image, .size = selected_image.size
     };
     struct elf_image interp_image = {
-        selected_image.interpreter, selected_image.interpreter_size
+        .data = selected_image.interpreter, .size = selected_image.interpreter_size
     };
     const struct elf_image *interpreter =
         selected_image.has_interpreter ? &interp_image : 0;

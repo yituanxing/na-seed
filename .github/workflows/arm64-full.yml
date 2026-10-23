@@ -18,6 +18,8 @@ on:
       - 'scripts/check-alpine-native-fixtures.sh'
       - 'scripts/busybox-static-fixtures.txt'
       - 'scripts/busybox-parity-cases.tsv'
+      - 'scripts/m32-paged-tmpfs-cases.tsv'
+      - 'scripts/probe-paged-tmpfs.sh'
       - 'scripts/m31-date-cases.tsv'
       - 'scripts/probe-m31-date.sh'
       - 'limine-aarch64-full.conf'
@@ -41,6 +43,8 @@ on:
       - 'scripts/check-alpine-native-fixtures.sh'
       - 'scripts/busybox-static-fixtures.txt'
       - 'scripts/busybox-parity-cases.tsv'
+      - 'scripts/m32-paged-tmpfs-cases.tsv'
+      - 'scripts/probe-paged-tmpfs.sh'
       - 'scripts/m31-date-cases.tsv'
       - 'scripts/probe-m31-date.sh'
       - 'limine-aarch64-full.conf'
@@ -66,6 +70,8 @@ jobs:
         run: sh scripts/probe-m31-date.sh arm64
       - name: ARM64 — native Debian BusyBox canonical 17-case parity matrix
         run: sh scripts/probe-aarch64-busybox-matrix.sh
+      - name: ARM64 original BusyBox copy and exec from sparse paged tmpfs
+        run: sh scripts/probe-paged-tmpfs.sh arm64
       - name: Native Alpine AArch64 dynamic BusyBox seven-case parity (SHA256 pinned)
         run: sh scripts/probe-alpine-native-matrix.sh arm64
       - name: Upload real UART and semihosting evidence on failure

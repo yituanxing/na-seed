@@ -22,6 +22,15 @@ static bool copy(void *ctx,uint64_t va,const uint8_t *src,uint64_t size) {
     memcpy(memory+va-0x10000,src,(size_t)size);
     return true;
 }
+/* Deliberately deny the ELF loader a whole-image pointer. This mirrors
+ * the sparse tmpfs read_at contract in all three kernel architectures. */
+static bool paged_read(const void *context, uint64_t offset,
+                       uint8_t *dst, uint64_t len) {
+    const uint8_t *image = (const uint8_t *)context;
+    if (offset > 4096 || len > 4096 - offset) return false;
+    memcpy(dst, image + offset, (size_t)len);
+    return true;
+}
 int main(void) {
     union { uint64_t align; uint8_t b[4096]; } image={0};
     struct elf_hdr *h=(struct elf_hdr *)(void *)image.b;
@@ -33,7 +42,7 @@ int main(void) {
     p->type=1;p->flags=5;p->offset=0x200;p->vaddr=0x10000;
     p->filesz=4;p->memsz=12;
     image.b[0x200]=42;
-    struct elf_image elf={image.b,sizeof(image.b)};
+    struct elf_image elf={.data=image.b,.size=sizeof(image.b)};
     struct nas_elf_segment_policy opt={
         .machine=243,.max_phnum=16,.min_va=0x10000,
         .max_va=0x14000,.max_segment=0x4000,.max_pages=4,
@@ -44,6 +53,16 @@ int main(void) {
     assert(nas_elf_segments_load(&elf,&opt,&ops,&out));
     assert(calls==1 && out.entry==0x10000 && out.phnum==1);
     assert(memory[0]==42 && memory[7]==0 && memory[11]==0);
+    calls=0;memset(mapped,0,sizeof(mapped));
+    memset(memory,0,sizeof(memory));
+    /* Header, PHDR and 1700 bytes of PT_LOAD all cross the read_at seam. */
+    struct elf_image paged={.size=sizeof(image.b),.read_at=paged_read,
+                            .context=image.b};
+    p->filesz=1700;p->memsz=1900;
+    assert(nas_elf_segments_load(&paged,&opt,&ops,&out));
+    assert(calls==1 && memory[0]==42 && memory[1699]==0 &&
+           memory[1899]==0);
+    p->filesz=4;p->memsz=12;
     calls=0;memset(mapped,0,sizeof(mapped));
     opt.machine=62;
     assert(!nas_elf_segments_load(&elf,&opt,&ops,&out) && calls==0);

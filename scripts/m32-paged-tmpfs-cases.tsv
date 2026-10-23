@@ -1,0 +1,5 @@
+# One original, pinned, native Linux BusyBox ELF copied and re-executed.
+# The initial /bin/busybox is read-only CPIO; /tmp/busybox does not
+# exist in the archive. The binary is >64 KiB on all three architectures.
+# Reproduces fixed-inode ENOSPC before page-backed tmpfs; no synthetic filler.
+tmpfs-paged-exec	cpio	sh -c "/bin/busybox cp /bin/busybox /tmp/busybox && /bin/busybox chmod 755 /tmp/busybox && /tmp/busybox echo naseed-paged-tmpfs-exec"	naseed-paged-tmpfs-exec	-

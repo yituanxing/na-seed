@@ -17,3 +17,4 @@ native-c: all
 native-run: all
 	@/bin/tcc -nostdlib -static -o /tmp/native-hello /tests/native-hello.c
 	@/bin/sh -c 'test -s /tmp/native-hello && chmod 755 /tmp/native-hello && /tmp/native-hello'
+	@/bin/sh -c '/bin/busybox cp /bin/busybox /tmp/busybox && /bin/busybox chmod 755 /tmp/busybox && /tmp/busybox echo naseed-paged-tmpfs-exec'

@@ -7,12 +7,18 @@
  * Transition seam: syscall/user memory remains with m1.c; namespace and
  * inode/open-description lifetimes belong here. */
 #define TMP_FILE_COUNT 8
-#define TMP_FILE_CAP 65536U /* fixed bounded kernel RAM per inode */
+/* Sparse, demand-allocated 4-KiB physical pages. Each indirect page has
+ * 512 data-frame references, so 16 index slots cover 32 MiB per inode.
+ * No 32-MiB kernel array is reserved when a file is created. */
+#define TMP_PAGE_SIZE 4096ULL
+#define TMP_PAGE_ENTRIES 512U
+#define TMP_INDEX_PAGES 16U
+#define TMP_FILE_CAP (TMP_PAGE_SIZE * TMP_PAGE_ENTRIES * TMP_INDEX_PAGES)
 
 struct nas_tmp_file {
     bool used, linked, is_dir;
     char path[256];
-    uint8_t bytes[TMP_FILE_CAP];
+    uint64_t index_pages[TMP_INDEX_PAGES]; /* physical index-frame addresses */
     uint64_t size;
     uint32_t mode;
 };
@@ -31,6 +37,14 @@ void tmp_bind_slot(unsigned slot, const struct nas_tmp_file *file);
 struct nas_tmp_file *tmp_by_slot(unsigned slot);
 void tmp_release_slot(unsigned slot);
 
+/* Kernel-buffer I/O, shared across Linux FD syscalls and ELF image reader.
+ * Read of sparse holes returns zero; write allocates pages only on demand.
+ * Negative errno only if no bytes were written. */
+int64_t tmp_read_at(const struct nas_tmp_file *file, uint64_t offset,
+                    uint8_t *dst, uint64_t count);
+int64_t tmp_write_at(struct nas_tmp_file *file, uint64_t offset,
+                     const uint8_t *src, uint64_t count);
+void tmp_truncate(struct nas_tmp_file *file);
 int tmp_chmod(struct nas_tmp_file *file, uint64_t mode);
 int tmp_mkdir(const char *path, uint64_t mode);
 int tmp_unlink(const char *path, uint64_t flags);

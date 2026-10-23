@@ -123,6 +123,8 @@ jobs:
         run: DEBIAN_REQUIRE_PASS=1 make debian-probe
       - name: x86 Debian static BusyBox — same 17 cases as RV64
         run: sh scripts/probe-x86-busybox-parity.sh
+      - name: x86 original BusyBox copy and exec from sparse paged tmpfs
+        run: sh scripts/probe-paged-tmpfs.sh amd64
       - name: Attach serial log on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -279,6 +281,8 @@ jobs:
         run: sh scripts/probe-riscv64-busybox.sh
       - name: Verify native RV64 BusyBox command and CPIO filesystem matrix
         run: sh scripts/probe-riscv64-busybox-matrix.sh
+      - name: RV64 original BusyBox copy and exec from sparse paged tmpfs
+        run: sh scripts/probe-paged-tmpfs.sh riscv64
       - name: Compile and boot genuine RV64 M0 kernel
         run: sh scripts/probe-riscv64-m0.sh
       - name: Native Alpine RV64 dynamic BusyBox seven-case parity (SHA256 pinned)
@@ -339,21 +343,61 @@ jobs:
         port: [amd64, riscv64]
     steps:
       - uses: actions/checkout@v4
-      - name: Install native cross toolchain and QEMU
+      - name: Install only missing headless cross toolchain and QEMU
+        timeout-minutes: 5
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends make gcc binutils curl bzip2 xorriso \
-            clang lld cpio mtools gdisk qemu-user
+          set -eu
+          # All three source-BusyBox shards need the same tests and images.
+          # Avoid repeatedly installing the runner's preinstalled GCC,
+          # Clang, Make and binutils. Keep apt signature verification on.
+          missing=''
+          for spec in 'make:make' 'gcc:gcc' 'readelf:binutils' \
+                      'curl:curl' 'bzip2:bzip2' 'xorriso:xorriso' \
+                      'clang:clang' 'ld.lld:lld' 'cpio:cpio' \
+                      'mformat:mtools' 'sgdisk:gdisk' \
+                      'qemu-riscv64:qemu-user'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            if ! command -v "$bin" >/dev/null 2>&1; then
+              missing="$missing $pkg"
+            fi
+          done
           case "${{ matrix.port }}" in
             amd64)
-              sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf ;;
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+                test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
             riscv64)
-              sudo apt-get install -y --no-install-recommends gcc-riscv64-linux-gnu libc6-dev-riscv64-cross \
-                qemu-system-misc qemu-efi-riscv64 ;;
+              command -v riscv64-linux-gnu-gcc >/dev/null || \
+                missing="$missing gcc-riscv64-linux-gnu libc6-dev-riscv64-cross"
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || \
+                missing="$missing qemu-efi-riscv64" ;;
             arm64)
-              sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
-                qemu-system-arm qemu-efi-aarch64 ;;
+              command -v aarch64-linux-gnu-gcc >/dev/null || \
+                missing="$missing gcc-aarch64-linux-gnu libc6-dev-arm64-cross"
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/AAVMF/AAVMF_CODE.fd || \
+                missing="$missing qemu-efi-aarch64" ;;
           esac
+          if [ -n "$missing" ]; then
+            # Hosted-runner Azure mirror has intermittently stalled even a
+            # small signed package. Prefer the identical signed Ubuntu
+            # archive over the independent network path used by Make gate.
+            if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
+                /etc/apt/sources.list.d/ubuntu.sources
+            fi
+            if [ -f /etc/apt/sources.list ]; then
+              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
+                /etc/apt/sources.list
+            fi
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 \
+              update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get \
+              -o Acquire::Retries=1 -o Acquire::http::Timeout=30 \
+              install -y --no-install-recommends $missing
+          fi
+          echo '[CI] required native cross compiler and headless QEMU verified'
       - name: Local Kconfig, fixture and shared-harness preflight
         run: sh scripts/check-source-busybox.sh
       - name: Cache SHA256-pinned upstream BusyBox source tarball

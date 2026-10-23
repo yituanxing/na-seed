@@ -13,6 +13,20 @@ static inline bool nas_elf_range_in_file(uint64_t offset, uint64_t count,
                                          uint64_t image_size) {
     return offset <= image_size && count <= image_size - offset;
 }
+static inline bool nas_elf_header_valid(const struct elf_hdr *h,
+                                         uint64_t size, uint16_t machine,
+                                         bool allow_dyn, unsigned max_phnum) {
+    return h && h->ident[0] == 0x7f && h->ident[1] == 'E' &&
+        h->ident[2] == 'L' && h->ident[3] == 'F' &&
+        h->ident[4] == 2 && h->ident[5] == 1 && h->ident[6] == 1 &&
+        (h->type == 2 || (allow_dyn && h->type == 3)) &&
+        h->machine == machine && h->version == 1 &&
+        h->phentsize == sizeof(struct elf_phdr) &&
+        h->phnum && h->phnum <= max_phnum &&
+        nas_elf_range_in_file(h->phoff,
+                              (uint64_t)h->phnum * sizeof(struct elf_phdr),
+                              size);
+}
 static inline bool nas_elf_open(struct nas_elf_view *view,
                                 const uint8_t *bytes, uint64_t size,
                                 uint16_t machine, bool allow_dyn,
@@ -21,16 +35,7 @@ static inline bool nas_elf_open(struct nas_elf_view *view,
     view->header = 0;
     view->phdrs = 0;
     const struct elf_hdr *h = (const struct elf_hdr *)(const void *)bytes;
-    if (h->ident[0] != 0x7f || h->ident[1] != 'E' ||
-        h->ident[2] != 'L' || h->ident[3] != 'F' ||
-        h->ident[4] != 2 || h->ident[5] != 1 || h->ident[6] != 1 ||
-        (h->type != 2 && (!allow_dyn || h->type != 3)) ||
-        h->machine != machine || h->version != 1 ||
-        h->phentsize != sizeof(struct elf_phdr) ||
-        !h->phnum || h->phnum > max_phnum ||
-        !nas_elf_range_in_file(h->phoff,
-                              (uint64_t)h->phnum * sizeof(struct elf_phdr),
-                              size))
+    if (!nas_elf_header_valid(h,size,machine,allow_dyn,max_phnum))
         return false;
     view->header = h;
     view->phdrs = (const struct elf_phdr *)(const void *)(bytes + h->phoff);

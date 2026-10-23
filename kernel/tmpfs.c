@@ -4,6 +4,7 @@
 #include "bootfs.h"
 #include "errno.h"
 #include "lib/string.h"
+#include "mm/frame.h"
 
 /* RAM /tmp data and descriptor bindings are owned only by this module.
  * Linux syscall argument decoding and userspace copy remain in m1.c. */
@@ -16,9 +17,92 @@ static void tmp_try_reclaim(unsigned owner) {
     for (unsigned slot = 0; slot < NAS_FD_LIMIT; slot++)
         if (tmp_slot_owner[slot] == owner && nas_open_files[slot].refcount)
             return;
+    tmp_truncate(node);
     node->used = false;
 }
 
+
+/* A single indirect frame contains 512 physical data-page addresses.
+ * All storage comes from the shared native page-frame provider: no arch
+ * switch, no reserved file-sized BSS arrays, no VFS-owned physical allocator.
+ * A physical frame address of zero always denotes an absent page. */
+static uint8_t *tmp_data_page(struct nas_tmp_file *file, uint64_t number,
+                              bool create) {
+    if (!file || number >= TMP_INDEX_PAGES * (uint64_t)TMP_PAGE_ENTRIES)
+        return 0;
+    unsigned outer = (unsigned)(number / TMP_PAGE_ENTRIES);
+    unsigned inner = (unsigned)(number % TMP_PAGE_ENTRIES);
+    uint64_t table_addr = file->index_pages[outer];
+    if (!table_addr && create) {
+        table_addr = nas_frame_alloc();
+        if (!table_addr) return 0;
+        file->index_pages[outer] = table_addr;
+    }
+    if (!table_addr) return 0;
+    uint64_t *table = (uint64_t *)(uintptr_t)(nas_hhdm_offset() + table_addr);
+    uint64_t data_addr = table[inner];
+    if (!data_addr && create) {
+        data_addr = nas_frame_alloc();
+        if (!data_addr) return 0;
+        table[inner] = data_addr;
+    }
+    return data_addr ? (uint8_t *)(uintptr_t)(nas_hhdm_offset() + data_addr) : 0;
+}
+int64_t tmp_read_at(const struct nas_tmp_file *const_file, uint64_t offset,
+                    uint8_t *dst, uint64_t count) {
+    if (!const_file || !const_file->used || !dst) return -EINVAL;
+    if (offset >= const_file->size) return 0;
+    if (count > const_file->size - offset) count = const_file->size - offset;
+    uint64_t done = 0;
+    /* A read does not allocate physical pages for sparse zero-filled holes. */
+    struct nas_tmp_file *file = (struct nas_tmp_file *)(uintptr_t)const_file;
+    while (done < count) {
+        uint64_t at = offset + done;
+        uint64_t length = TMP_PAGE_SIZE - at % TMP_PAGE_SIZE;
+        if (length > count - done) length = count - done;
+        uint8_t *page = tmp_data_page(file, at / TMP_PAGE_SIZE, false);
+        if (page) memcpy(dst + done, page + at % TMP_PAGE_SIZE, (size_t)length);
+        else memset(dst + done, 0, (size_t)length);
+        done += length;
+    }
+    return (int64_t)done;
+}
+int64_t tmp_write_at(struct nas_tmp_file *file, uint64_t offset,
+                     const uint8_t *src, uint64_t count) {
+    if (!file || !file->used || !src || file->is_dir) return -EINVAL;
+    if (!count) return 0;
+    if (offset >= TMP_FILE_CAP) return -ENOSPC;
+    if (count > TMP_FILE_CAP - offset) count = TMP_FILE_CAP - offset;
+    uint64_t done = 0;
+    while (done < count) {
+        uint64_t at = offset + done;
+        uint64_t length = TMP_PAGE_SIZE - at % TMP_PAGE_SIZE;
+        if (length > count - done) length = count - done;
+        uint8_t *page = tmp_data_page(file, at / TMP_PAGE_SIZE, true);
+        if (!page) return done ? (int64_t)done : -ENOMEM;
+        memcpy(page + at % TMP_PAGE_SIZE, src + done, (size_t)length);
+        done += length;
+        if (at + length > file->size) file->size = at + length;
+    }
+    return (int64_t)done;
+}
+void tmp_truncate(struct nas_tmp_file *file) {
+    if (!file) return;
+    for (unsigned outer = 0; outer < TMP_INDEX_PAGES; outer++) {
+        uint64_t frame = file->index_pages[outer];
+        if (!frame) continue;
+        uint64_t *table = (uint64_t *)(uintptr_t)(nas_hhdm_offset() + frame);
+        for (unsigned inner = 0; inner < TMP_PAGE_ENTRIES; inner++) {
+            if (table[inner]) {
+                (void)nas_frame_free(table[inner]);
+                table[inner] = 0;
+            }
+        }
+        (void)nas_frame_free(frame);
+        file->index_pages[outer] = 0;
+    }
+    file->size = 0;
+}
 
 /* Real CPIO /tmp mountpoint with a small volatile directory tree.
  * Unlinked entries keep their inode until every fork/dup FD releases it. */

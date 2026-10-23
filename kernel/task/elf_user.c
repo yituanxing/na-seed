@@ -32,7 +32,7 @@ bool nas_user_elf_load(struct nas_user_space *space,
        bytes>limits->max_image_bytes ||
        limits->min_va>=limits->max_va)
         return false;
-    const struct elf_image elf={image,bytes};
+    const struct elf_image elf={.data=image,.size=bytes};
     const struct nas_elf_segment_policy policy={
         .machine=NAS_ELF_MACHINE,
         .allow_dynamic_elf=limits->allow_dynamic,
