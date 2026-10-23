@@ -651,6 +651,85 @@ uint64_t nas_fs_ppoll(uint64_t addr,uint64_t nfds,
     if(!nas_time_duration_ns(secs,nsecs,&ns))return (uint64_t)-EINVAL;
     return nas_fs_poll(addr,nfds,ns ? (uint64_t)-1 : 0);
 }
+/* Native Linux pselect6 over the EXISTING file-ops poll providers.
+ * Like ppoll, only the owning Task touches userspace. No foreign address
+ * space is consulted while another task's pipe/jobserver wakes up.
+ * fd_set is an array of native unsigned-long words; our bounded 64-FD
+ * implementation validates and transfers exactly one 64-bit word.
+ * Input interests are preserved on EAGAIN for syscall-boundary replay. */
+static bool select_read_bits(uint64_t ptr,uint64_t *mask) {
+    *mask=0;
+    return !ptr || nas_user_read_u64(ptr,mask);
+}
+uint64_t nas_fs_pselect6(uint64_t nfds,uint64_t readfds,
+                         uint64_t writefds,uint64_t exceptfds,
+                         bool immediate) {
+    if(nfds>NAS_FD_LIMIT)return (uint64_t)-EINVAL;
+    uint64_t readset,writeset,exceptset;
+    if(!select_read_bits(readfds,&readset) ||
+       !select_read_bits(writefds,&writeset) ||
+       !select_read_bits(exceptfds,&exceptset))
+        return (uint64_t)-EFAULT;
+    const uint64_t limit=nfds==64?UINT64_MAX:((1ULL<<nfds)-1);
+    readset &= limit; writeset &= limit; exceptset &= limit;
+    uint64_t readready=0,writeready=0,exceptready=0;
+    uint64_t count=0;
+    for(unsigned fd=0;fd<nfds;fd++) {
+        uint64_t bit=1ULL<<fd;
+        uint16_t events=0;
+        if(readset&bit)events|=1U;      /* POLLIN */
+        if(writeset&bit)events|=4U;     /* POLLOUT */
+        if(exceptset&bit)events|=2U;    /* POLLPRI */
+        if(!events)continue;
+        if(descriptors[fd]==FD_CLOSED)return (uint64_t)-EBADF;
+        const struct nas_file_ops *ops=nas_open_files[file_slot[fd]].ops;
+        uint16_t revents=ops && ops->poll ? ops->poll(fd,events) : 0;
+        bool any=false;
+        if((readset&bit) && (revents&(1U|8U|16U))) {
+            readready|=bit;any=true;
+        }
+        if((writeset&bit) && (revents&(4U|8U|16U))) {
+            writeready|=bit;any=true;
+        }
+        if((exceptset&bit) && (revents&2U)) {
+            exceptready|=bit;any=true;
+        }
+        if(any)count++;
+    }
+    if(!count && !immediate &&
+       !(TASK.deadline_active &&
+         nas_time_deadline_expired(nas_arch_monotonic_ns(),TASK.deadline_ns)))
+        return (uint64_t)-EAGAIN;
+    if((readfds && !nas_user_write_u64(readfds,readready)) ||
+       (writefds && !nas_user_write_u64(writefds,writeready)) ||
+       (exceptfds && !nas_user_write_u64(exceptfds,exceptready)))
+        return (uint64_t)-EFAULT;
+    return count;
+}
+bool nas_fs_pselect_arm(uint64_t nfds,uint64_t readfds,
+                        uint64_t writefds,uint64_t exceptfds) {
+    struct nas_task *task=nas_current_task;
+    task->poll_pipe_read=task->poll_pipe_write=0;
+    task->poll_tty_read=false;
+    uint64_t readset,writeset,exceptset;
+    if(nfds>NAS_FD_LIMIT ||
+       !select_read_bits(readfds,&readset) ||
+       !select_read_bits(writefds,&writeset) ||
+       !select_read_bits(exceptfds,&exceptset))return false;
+    for(unsigned fd=0;fd<nfds;fd++) {
+        uint64_t bit=1ULL<<fd;
+        uint16_t events=0;
+        if(readset&bit)events|=1U;
+        if(writeset&bit)events|=4U;
+        if(exceptset&bit)events|=2U;
+        if(!events || descriptors[fd]==FD_CLOSED)continue;
+        unsigned slot=file_slot[fd];
+        if(slot>=NAS_FD_LIMIT)continue;
+        const struct nas_file_ops *ops=nas_open_files[slot].ops;
+        if(ops && ops->poll_arm)ops->poll_arm(task,fd,events);
+    }
+    return task->poll_tty_read || task->poll_pipe_read || task->poll_pipe_write;
+}
 bool nas_fs_poll_arm(uint64_t address,uint64_t nfds) {
     struct nas_task *task=nas_current_task;
     task->poll_pipe_read=task->poll_pipe_write=0;
