@@ -1,18 +1,68 @@
 #include "bootfs.h"
 #include "errno.h"
 #include "lib/string.h"
+#include "mm/frame.h"
 #include <stddef.h>
 
-#define MAX_ENTRIES 96
+#define BOOTFS_BUCKETS 8192U
+/* Explicit resource upper limit, no small fixed array of input files. */
+#define BOOTFS_ENTRY_LIMIT 65536U
 #define NEWC_HEADER 110ULL
 #define S_IFMT 0170000U
 #define S_IFREG 0100000U
 #define S_IFDIR 0040000U
 #define S_IFLNK 0120000U
 
-static struct bootfs_entry entries[MAX_ENTRIES];
+/* One frame per slab: stable entry pointers across grow, fork and lookup.
+ * The archive bytes themselves remain zero-copy and strictly read-only. */
+#define BOOTFS_ENTRIES_PER_SLAB \
+    ((4096U - sizeof(void *) - sizeof(unsigned)) / sizeof(struct bootfs_entry))
+struct bootfs_slab {
+    struct bootfs_slab *next;
+    unsigned used;
+    struct bootfs_entry entries[BOOTFS_ENTRIES_PER_SLAB];
+};
+_Static_assert(sizeof(struct bootfs_slab) <= 4096, "bootfs slab fits one page");
+_Static_assert(BOOTFS_ENTRIES_PER_SLAB > 0, "bootfs entry must fit one page");
+
+static struct bootfs_slab *slab_head, *slab_tail;
+static struct bootfs_entry *buckets[BOOTFS_BUCKETS];
 static unsigned entry_count;
 static bool mounted;
+
+static unsigned bootfs_bucket(const char *path) {
+    uint32_t hash = 2166136261U;
+    for (const unsigned char *p = (const unsigned char *)path; *p; ++p)
+        hash = (hash ^ *p) * 16777619U;
+    return hash & (BOOTFS_BUCKETS - 1);
+}
+static void bootfs_reset(void) {
+    struct bootfs_slab *slab = slab_head;
+    while (slab) {
+        struct bootfs_slab *next = slab->next;
+        (void)nas_frame_free((uint64_t)(uintptr_t)slab - nas_hhdm_offset());
+        slab = next;
+    }
+    slab_head = slab_tail = 0;
+    for (unsigned i = 0; i < BOOTFS_BUCKETS; ++i) buckets[i] = 0;
+    entry_count = 0;
+    mounted = false;
+}
+static struct bootfs_entry *bootfs_new_entry(void) {
+    if (entry_count >= BOOTFS_ENTRY_LIMIT) return 0;
+    if (!slab_tail || slab_tail->used == BOOTFS_ENTRIES_PER_SLAB) {
+        uint64_t physical = nas_frame_alloc();
+        if (!physical) return 0;
+        struct bootfs_slab *slab =
+            (struct bootfs_slab *)(uintptr_t)(physical + nas_hhdm_offset());
+        slab->next = 0;
+        slab->used = 0;
+        if (slab_tail) slab_tail->next = slab;
+        else slab_head = slab;
+        slab_tail = slab;
+    }
+    return &slab_tail->entries[slab_tail->used++];
+}
 
 static bool hex8(const uint8_t *p, uint32_t *out) {
     uint32_t result = 0;
@@ -67,8 +117,7 @@ static bool archive_name(struct bootfs_entry *entry,
     return true;
 }
 bool bootfs_mount(const void *bytes, uint64_t size) {
-    mounted = false;
-    entry_count = 0;
+    bootfs_reset();
     if (!bytes || size < NEWC_HEADER) return false;
     const uint8_t *base = (const uint8_t *)bytes;
     uint64_t at = 0;
@@ -95,7 +144,6 @@ bool bootfs_mount(const void *bytes, uint64_t size) {
             mounted = entry_count > 0 && bootfs_find("/") != 0;
             return mounted;
         }
-        if (entry_count >= MAX_ENTRIES) return false;
         unsigned type = mode & S_IFMT;
         if (type != S_IFREG && type != S_IFDIR && type != S_IFLNK) return false;
         if (type == S_IFDIR && file_size) return false;
@@ -105,15 +153,17 @@ bool bootfs_mount(const void *bytes, uint64_t size) {
             for (uint32_t n = 0; n < file_size; n++)
                 if (base[data_at + n] == 0) return false;
         }
-        struct bootfs_entry *entry = &entries[entry_count];
-        if (!archive_name(entry, name, name_size)) return false;
-        for (unsigned n = 0; n < entry_count; n++)
-            if (strcmp(entries[n].path, entry->path) == 0) return false;
+        struct bootfs_entry *entry = bootfs_new_entry();
+        if (!entry || !archive_name(entry, name, name_size) ||
+            bootfs_find(entry->path)) return false;
         entry->mode = mode;
         entry->mtime_sec = mtime;
         entry->size = file_size;
         entry->data = base + data_at;
         entry->ino = entry_count + 1;
+        unsigned bucket = bootfs_bucket(entry->path);
+        entry->hash_next = buckets[bucket];
+        buckets[bucket] = entry;
         entry_count++;
         at = next;
     }
@@ -125,8 +175,9 @@ bool bootfs_is_link(const struct bootfs_entry *entry) {
 }
 const struct bootfs_entry *bootfs_find(const char *absolute) {
     if (!absolute) return 0;
-    for (unsigned i = 0; i < entry_count; ++i)
-        if (strcmp(entries[i].path, absolute) == 0) return &entries[i];
+    for (struct bootfs_entry *entry = buckets[bootfs_bucket(absolute)];
+         entry; entry = entry->hash_next)
+        if (strcmp(entry->path, absolute) == 0) return entry;
     return 0;
 }
 bool bootfs_is_dir(const struct bootfs_entry *entry) {
@@ -137,19 +188,20 @@ const struct bootfs_entry *bootfs_child(const struct bootfs_entry *dir,
     if (!bootfs_is_dir(dir)) return 0;
     const char *parent = dir->path;
     size_t plen = strlen(parent);
-    for (unsigned i = 0; i < entry_count; i++) {
-        const char *candidate = entries[i].path;
-        if (strncmp(candidate, parent, plen) != 0) continue;
-        const char *tail = candidate + plen;
-        if (plen != 1) {
-            if (*tail++ != '/') continue;
+    for (const struct bootfs_slab *slab = slab_head; slab; slab = slab->next) {
+        for (unsigned i = 0; i < slab->used; ++i) {
+            const struct bootfs_entry *entry = &slab->entries[i];
+            const char *candidate = entry->path;
+            if (strncmp(candidate, parent, plen) != 0) continue;
+            const char *tail = candidate + plen;
+            if (plen != 1 && *tail++ != '/') continue;
+            if (!*tail) continue;
+            bool direct = true;
+            for (const char *p = tail; *p; ++p)
+                if (*p == '/') { direct = false; break; }
+            if (!direct) continue;
+            if (ordinal-- == 0) return entry;
         }
-        if (!*tail) continue;
-        bool direct = true;
-        for (const char *p = tail; *p; ++p)
-            if (*p == '/') { direct = false; break; }
-        if (!direct) continue;
-        if (ordinal-- == 0) return &entries[i];
     }
     return 0;
 }
