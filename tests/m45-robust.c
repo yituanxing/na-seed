@@ -144,7 +144,7 @@ __attribute__((naked)) static long spawn_thread(void *sp __attribute__((unused))
         "mov x8,#220\nsvc #0\ncbz x0,1f\nret\n1: b thread_body\n");
 #endif
 }
-void _start(void) {
+static __attribute__((used,noreturn)) void robust_main(void) {
     struct robust_head leader_head={0};
     u64 out_head=0,out_len=0;
     /* 1: registration is per TID, exactly 24 bytes for LP64 Linux;
@@ -181,3 +181,17 @@ void _start(void) {
      * freestanding ABI stress completes in the same native guest. */
     fail(0);
 }
+
+/* Linux's initial ELF user RSP is 16-byte aligned, but the C function
+ * calling convention expects the synthetic return slot (RSP % 16 = 8).
+ * A raw C _start compiled with SSE can otherwise #GP on movaps.  This
+ * tiny genuine user-space entry shim is NOT a kernel or app syscall hack. */
+#if defined(__x86_64__)
+__attribute__((naked,noreturn)) void _start(void) {
+    __asm__ volatile("and $-16,%rsp\ncall robust_main\nud2\n");
+}
+#else
+__attribute__((noreturn)) void _start(void) {
+    robust_main();
+}
+#endif
