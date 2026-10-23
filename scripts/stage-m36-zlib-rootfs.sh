@@ -12,7 +12,7 @@ work="build/external/m36-zlib/$port"
 root="$work/rootfs"
 test -s "$compiler" && test -s "$make" && test -s "$source/zlib.h"
 rm -rf "$root"
-mkdir -p "$root/bin" "$root/tests" "$root/tmp"
+mkdir -p "$root/bin" "$root/tests/include" "$root/tmp"
 cp "$compiler" "$root/bin/tcc"
 cp "$make" "$root/bin/gmake"
 sh scripts/fetch-busybox-fixture.sh "$port" "$work/busybox"
@@ -29,6 +29,7 @@ for file in adler32.c crc32.c deflate.c trees.c zutil.c compress.c uncompr.c \
 done
 cp "$source/zconf.h.in" "$root/tests/zconf.h"
 cmp "$source/zconf.h.in" "$root/tests/zconf.h"
+cp tests/m35-include/*.h "$root/tests/include/"
 cp tests/m35-rt.c "$root/tests/rt.c"
 cp tests/m36-zlib-check.c "$root/tests/check.c"
 cp tests/m36-zlib-native.mk "$root/tests/Makefile"
@@ -39,17 +40,19 @@ case "$port" in
 esac
 "$cc" -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
     tests/native-exec-init.c -o "$root/bin/native-init"
-chmod 755 "$root" "$root/bin" "$root/tests" \
+chmod 755 "$root" "$root/bin" "$root/tests" "$root/tests/include" \
     "$root/bin/gmake" "$root/bin/tcc" "$root/bin/busybox" "$root/bin/native-init"
 chmod 1777 "$root/tmp"
-chmod 644 "$root/tests/"*
+chmod 644 "$root/tests/"* "$root/tests/include/"*
 touch -t 197001010000 "$root" "$root/bin" "$root/tests" "$root/tmp" \
     "$root/bin/gmake" "$root/bin/tcc" "$root/bin/busybox" "$root/bin/native-init" \
-    "$root/tests/"*
+    "$root/tests/include" "$root/tests/include/"* "$root/tests/"*
 for applet in sh chmod; do touch -h -t 197001010000 "$root/bin/$applet"; done
 (
     cd "$root"
-    set -- . bin bin/gmake bin/tcc bin/busybox bin/sh bin/chmod bin/native-init tests
+    set -- . bin bin/gmake bin/tcc bin/busybox bin/sh bin/chmod bin/native-init tests \
+        tests/include tests/include/stdint.h tests/include/stddef.h \
+        tests/include/string.h
     for file in adler32.c crc32.c deflate.c trees.c zutil.c compress.c uncompr.c \
                 inflate.c inftrees.c inffast.c zlib.h zutil.h \
                 deflate.h trees.h crc32.h inftrees.h inflate.h \
