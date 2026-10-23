@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install missing genuine cross compiler and native QEMU
-        timeout-minutes: 6
+        timeout-minutes: 9
         run: |
           set -eu
           missing=''
@@ -75,7 +75,12 @@ jobs:
                 missing="$missing qemu-efi-aarch64" ;;
           esac
           if [ -n "$missing" ]; then
-            for file in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+            # GitHub runner's DEB822 sources may use
+            # "mirror+file:/etc/apt/apt-mirrors.txt"; changing the .sources
+            # URI alone leaves the slow Azure mirror selected via that file.
+            # Point both *signed* Ubuntu archive selectors at the official
+            # upstream mirror. No unauthenticated/insecure apt flags.
+            for file in /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
               if [ -f "$file" ]; then
                 sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' "$file"
               fi
