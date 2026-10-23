@@ -357,7 +357,18 @@ uint64_t syscall_dispatch(const uint64_t *args) {
                               args[1], args[2], args[3], args[4]);
         return ret;
     }
-    if (nr == NAS_SC_execve) return nas_task_execve(args[1], args[2], args[3]);
+    if (nr == NAS_SC_execve) {
+        uint64_t result=nas_task_execve(args[1],args[2],args[3]);
+        if ((int64_t)result < 0) {
+            static unsigned exec_fail_logs;
+            if (exec_fail_logs++ < 12) {
+                nas_print("[EXEC] Linux execve rejected errno=");
+                nas_dec((uint64_t)(-(int64_t)result));
+                nas_print("\n");
+            }
+        }
+        return result;
+    }
     if (nr == NAS_SC_getpgid) return nas_session_getpgid(args[1]);
     if (nr == NAS_SC_getpgrp) return TASK.pgid;
     if (nr == NAS_SC_getsid) return nas_session_getsid(args[1]);
