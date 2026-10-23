@@ -1,2 +1,2 @@
 # Original native GCC, binutils, musl headers/crt/libc, no guest package fetch
-m38-gcc	cpio	sh -c 'gcc -static /tests/hello.c -o /tmp/hello && chmod 755 /tmp/hello && /tmp/hello'	M38_GCC_PASS	-	/bin/busybox
+m38-gcc	cpio	sh -c 'cd /tmp && gcc -static /tests/hello.c -o hello && /bin/busybox chmod 755 hello && ./hello'	M38_GCC_PASS	-	/bin/busybox
