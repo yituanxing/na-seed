@@ -190,6 +190,11 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     }
 }
 static unsigned schedule_count;
+/* A producer repeatedly woken via futex must not starve later TID slots.
+ * Rotate task selection across READY and woken blocked tasks rather than
+ * always preferring the first task-table slot. Keep the same saved-frame
+ * switching mechanism and the READY-before-BLOCKED priority policy. */
+static unsigned schedule_cursor;
 
 /* Cooperative scheduling and timer IRQs must agree on eligible Tasks.
  * IRQ callers have already snapshotted their interrupted user registers.
@@ -276,7 +281,8 @@ retry_schedule: ; /* label must precede a statement in C11 */
     if(tty_sig && !nas_signal_tty_event(tty_sid,tty_pgid,tty_sig))
         nas_tty_signal_unsupported();
     for (unsigned pass = 0; pass < 2; ++pass) {
-        for (unsigned slot = 0; slot < NAS_TASK_LIMIT; ++slot) {
+        for (unsigned offset = 0; offset < NAS_TASK_LIMIT; ++offset) {
+            unsigned slot = (schedule_cursor + offset) % NAS_TASK_LIMIT;
             struct nas_task *next = nas_task_at(slot);
             /* A blocked current task may wake when it is the LAST task.
              * Never resume a RUNNING task from its own syscall frame. */
@@ -331,6 +337,7 @@ retry_schedule: ; /* label must precede a statement in C11 */
             }
             next->state = NAS_TASK_RUNNING;
             next->resume_valid = false;
+            schedule_cursor = (slot + 1) % NAS_TASK_LIMIT;
             nas_arch_load_user_frame(next, frame);
             /* The old thread's kernel stack is no longer active after the
              * syscall frame is transferred. Its TID slot can be recycled. */
@@ -398,6 +405,15 @@ retry_schedule: ; /* label must precede a statement in C11 */
         nas_print(" blocked_op="); nas_dec(task->blocked_op);
         nas_print(" fd="); nas_dec(task->blocked_args[0]);
         nas_print("\n");
+        if(task->blocked_op==NAS_SC_futex) {
+            nas_print("[DEADLOCK] futex tid=");nas_dec(task->pid);
+            nas_print(" tgid=");nas_dec(task->tgid);
+            nas_print(" addr=");nas_hex(task->futex_addr);
+            nas_print(" expected=");nas_hex(task->blocked_args[2]);
+            nas_print(" mask=");nas_hex(task->futex_mask);
+            nas_print(" signaled=");nas_dec(task->futex_woken);
+            nas_print("\n");
+        }
         for (unsigned fd = 0; fd < NAS_FD_LIMIT; fd++) {
             uint8_t kind = nas_task_fd_kind(task, fd);
             if (kind != FD_PIPE_R && kind != FD_PIPE_W) continue;
