@@ -16,6 +16,7 @@
 static struct {
     uint64_t sid,pgid;
     struct nas_termios t;
+    uint16_t ws_row,ws_col,ws_xpixel,ws_ypixel;
     bool rx_enabled;
     bool unsupported_input;
     unsigned pending_signum;
@@ -23,6 +24,7 @@ static struct {
 } tty;
 void nas_tty_init(void) {
     tty.sid=nas_current_task->sid; tty.pgid=nas_current_task->pgid;
+    tty.ws_row=24; tty.ws_col=80; tty.ws_xpixel=tty.ws_ypixel=0;
     tty.rx_enabled=false;
     tty.unsupported_input=false;
     tty.pending_signum=0;
@@ -91,6 +93,20 @@ uint64_t nas_tty_ioctl(uint64_t cmd,uint64_t arg) {
             tty.unsupported_input=false;
             tty.pending_signum=0;
         }
+        return 0;
+    }
+    case 0x5413: { /* TIOCGWINSZ: serial console conventional 80x24 default */
+        uint16_t ws[4]={tty.ws_row,tty.ws_col,tty.ws_xpixel,tty.ws_ypixel};
+        return nas_user_write_bytes(arg,(const uint8_t *)ws,sizeof(ws))
+            ? 0:(uint64_t)-EFAULT;
+    }
+    case 0x5414: { /* TIOCSWINSZ: set per-console terminal geometry */
+        uint16_t ws[4];
+        if(!nas_user_read_bytes(arg,(uint8_t *)ws,sizeof(ws)))
+            return (uint64_t)-EFAULT;
+        if(!ws[0]||!ws[1])return (uint64_t)-EINVAL;
+        tty.ws_row=ws[0];tty.ws_col=ws[1];
+        tty.ws_xpixel=ws[2];tty.ws_ypixel=ws[3];
         return 0;
     }
     case 0x540e: /* TIOCSCTTY: only owning session leader */

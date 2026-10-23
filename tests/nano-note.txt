@@ -1,0 +1,3 @@
+NaSeed nano editor
+This is a real file read by original GNU nano on our own OS.
+Exit with Ctrl+X; more interactive editing can follow later.

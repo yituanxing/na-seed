@@ -31,6 +31,9 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     switch (number) {
 #if defined(__x86_64__)
     case __NR_arch_prctl: return NAS_SC_arch_prctl;
+    case __NR_access: return NAS_SC_access;
+    case __NR_faccessat: return NAS_SC_faccessat;
+    case __NR_faccessat2: return NAS_SC_faccessat2;
     case __NR_brk: return NAS_SC_brk;
     case __NR_chdir: return NAS_SC_chdir;
     case __NR_clock_gettime: return NAS_SC_clock_gettime;
@@ -98,6 +101,8 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_write: return NAS_SC_write;
     case __NR_writev: return NAS_SC_writev;
 #else
+    case 48U: return NAS_SC_faccessat; /* Linux asm-generic */
+    case 439U: return NAS_SC_faccessat2; /* same Linux syscall ID */
     case 73U: return NAS_SC_ppoll; /* asm-generic ppoll; poll absent */
     case 113U: return NAS_SC_clock_gettime;
     case 114U: return NAS_SC_clock_getres;
