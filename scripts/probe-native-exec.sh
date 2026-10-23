@@ -19,9 +19,12 @@ if ! grep -Eq 'Type:.*EXEC' "$work/elf-header.log"; then
   echo '[NATIVE EXEC LINUX FAIL] TinyCC did not emit ET_EXEC' >&2
   cat "$work/elf-header.log" >&2; exit 1
 fi
-if ! grep -Fq '_start' "$work/elf-symbols.log"; then
-  echo '[NATIVE EXEC LINUX FAIL] missing _start symbol' >&2
-  cat "$work/elf-symbols.log" >&2; exit 1
+# TinyCC may strip the static ELF symbol table. A valid, nonzero entry
+# point and successful *execution* are the acceptance contract, not the
+# presence of a debugging symbol that the linker may omit.
+if ! grep -Eq 'Entry point address:[[:space:]]+0x[1-9a-fA-F][0-9a-fA-F]*' "$work/elf-header.log"; then
+  echo '[NATIVE EXEC LINUX FAIL] missing ELF entry address' >&2
+  cat "$work/elf-header.log" >&2; exit 1
 fi
 if readelf -l "$work/hello" | grep -q INTERP; then
   echo '[NATIVE EXEC] TinyCC generated dynamic interpreter unexpectedly' >&2

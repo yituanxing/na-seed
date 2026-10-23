@@ -181,6 +181,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
         if(err)return (uint64_t)(int64_t)err;
         if(bin.is_dir || !(bin.mode&0111U))return (uint64_t)-EACCES;
         main_img=(struct elf_image){bin.data,bin.size};
+        app=bin; /* report the backend of the actual ELF interpreter */
         unsigned n=0;
         do { actual[n]=resolved_interpreter[n]; }
         while(resolved_interpreter[n++]);
@@ -269,10 +270,13 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     running_alpine = running_busybox &&
         ((const struct elf_hdr *)main_img.data)->type == 3;
     if (scripted) {
-        nas_print("[EXEC] #! interpreter: ");
+        nas_print("[EXEC] CPIO #! interpreter: ");
         nas_print(pending_exec.shebang_path); nas_print("\n");
     }
-    nas_print("[EXEC] replaced process with filesystem ELF: ");
+    if(app.backend==NAS_FS_TMPFS)
+        nas_print("[EXEC] replaced process with tmpfs ELF: ");
+    else
+        nas_print("[EXEC] replaced process with CPIO ELF: ");
     nas_print(pending_exec.filename);
     nas_print("\n");
     nas_arch_enter_user(entry, sp);
