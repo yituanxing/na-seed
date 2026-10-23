@@ -6,6 +6,8 @@
 #include "prot.h"
 #include "anon_regions.h"
 #include "../lib/string.h"
+#include "../fs/io.h"
+#include "../arch/mmu.h"
 #include "mmap_abi.h"
 #define TASK (*nas_current_task)
 #define heap_break TASK.heap_break
@@ -48,6 +50,78 @@ uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
      * without an internal allocator bug or unexpected PTE aliasing. */
     if (!nas_anon_record(&TASK.anonymous,start,bytes))
         nas_arch_halt();
+    return start;
+}
+/* A CPIO/tmpfs regular file participates in genuine Linux MAP_PRIVATE.
+ * An initial mapping allocates owned, eager physical pages; a MAP_FIXED
+ * remap overlays only an already reserved VMA, as musl's DSO loader does.
+ * No mmap() call changes the shared FD's read/seek offset. */
+static bool vm_owned_pages(uint64_t start, uint64_t length) {
+    if (start < NAS_ANON_FLOOR || start > NAS_ANON_CEILING ||
+        length > NAS_ANON_CEILING-start) return false;
+    uint64_t end=start+length;
+    for (uint64_t va=start;va<end;va+=PAGE) {
+        bool covered=false;
+        for (unsigned i=0;i<NAS_ANON_REGION_LIMIT;i++) {
+            const struct nas_anon_region *r=&TASK.anonymous.slots[i];
+            if (r->end && va>=r->start && va<r->end) {
+                covered=true;
+                break;
+            }
+        }
+        if (!covered) return false;
+    }
+    return true;
+}
+uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
+                          uint64_t flags, uint64_t fd, uint64_t offset) {
+    const uint64_t MAP_PRIVATE=0x02ULL, MAP_FIXED=0x10ULL;
+    if (!length || length > (64ULL<<20) ||
+        length > UINT64_MAX-(PAGE-1) ||
+        (offset & (PAGE-1)) || offset > UINT64_MAX-length)
+        return (uint64_t)-EINVAL;
+    /* MAP_SHARED is NOT a private copy. Never silently write back/alias
+     * anonymous memory or fabricate success for unsupported semantics. */
+    if ((flags & ~(MAP_PRIVATE|MAP_FIXED)) || !(flags & MAP_PRIVATE))
+        return (uint64_t)-ENOSYS;
+    if (!prot || (prot & ~7ULL)) return (uint64_t)-ENOSYS;
+    if (!nas_vm_prot_supported(prot) || !nas_arch_user_nx_supported())
+        return (uint64_t)-EOPNOTSUPP;
+    int64_t valid=nas_fs_mmap_read(fd,offset,0,0);
+    if (valid<0) return (uint64_t)valid;
+    uint64_t count=(length+PAGE-1)/PAGE, bytes=count*PAGE;
+    uint64_t start;
+    if (flags & MAP_FIXED) {
+        if ((hint & (PAGE-1)) || hint>=USER_LIMIT) return (uint64_t)-EINVAL;
+        if (!vm_owned_pages(hint,bytes)) return (uint64_t)-ENOMEM;
+        start=hint;
+    } else {
+        start=nas_vm_anon_mmap(0,length,prot,0x22ULL,UINT64_MAX,0);
+        if ((int64_t)start<0) return start;
+    }
+    /* Seed every page from the actual FD, including zero-fill beyond EOF.
+     * Copy through the common HHDM translator; do NOT write via a user
+     * read-only mapping, or depend on an architecture-specific CPIO path. */
+    uint8_t page[PAGE];
+    for (uint64_t n=0;n<count;n++) {
+        uint64_t va=start+n*PAGE;
+        if (flags & MAP_FIXED) {
+            if (!nas_mmu_user_byte(va) &&
+                !nas_mmu_map_prot_page(va,prot))
+                return (uint64_t)-ENOMEM;
+        }
+        uint8_t *mapped=nas_mmu_user_byte(va);
+        if (!mapped) return (uint64_t)-EFAULT;
+        memset(page,0,sizeof(page));
+        uint64_t remaining=length-n*PAGE;
+        if (remaining>PAGE) remaining=PAGE;
+        int64_t rd=nas_fs_mmap_read(fd,offset+n*PAGE,page,remaining);
+        if (rd<0) return (uint64_t)rd;
+        memcpy(mapped,page,PAGE);
+        if ((flags & MAP_FIXED) &&
+            !nas_mmu_protect_pages(va,1,prot))
+            return (uint64_t)-ENOMEM;
+    }
     return start;
 }
 uint64_t nas_vm_munmap(uint64_t addr, uint64_t len) {

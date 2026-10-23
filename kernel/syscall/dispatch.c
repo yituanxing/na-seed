@@ -230,8 +230,13 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         return nas_time_sleep_syscall((uint64_t *)(uintptr_t)args,nr,args);
     if (nr == NAS_SC_getuid || nr == NAS_SC_getgid || nr == NAS_SC_geteuid || nr == NAS_SC_getegid) return 0; /* root credentials */
     if (nr == NAS_SC_mprotect) return nas_vm_mprotect(args[1], args[2], args[3]);
-    if (nr == NAS_SC_mmap) return nas_vm_anon_mmap(args[1], args[2], args[3],
-                                       args[4], args[5], args[6]);
+    if (nr == NAS_SC_mmap) {
+        if (args[4] & 0x20ULL) /* Linux MAP_ANONYMOUS */
+            return nas_vm_anon_mmap(args[1],args[2],args[3],
+                                    args[4],args[5],args[6]);
+        return nas_vm_file_mmap(args[1],args[2],args[3],
+                                args[4],args[5],args[6]);
+    }
     if (nr == NAS_SC_munmap) return nas_vm_munmap(args[1], args[2]);
     if (nr == NAS_SC_brk) return nas_vm_brk(args[1]);
     if(nr==NAS_SC_poll || nr==NAS_SC_ppoll || nr==NAS_SC_pselect6) {

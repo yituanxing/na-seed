@@ -79,6 +79,43 @@ static const struct nas_tmp_file *tmp_by_fd(uint64_t fd) {
     return tmp_by_slot(file_slot[fd]);
 }
 
+/* Same open-file-description source for read(), exec and private mmap.
+ * Do not expose kernel pointer paths or share mutable file offsets. */
+int64_t nas_fs_mmap_read(uint64_t fd, uint64_t offset,
+                        uint8_t *buffer, uint64_t length) {
+    if (fd >= NAS_FD_LIMIT || descriptors[fd] == FD_CLOSED)
+        return -EBADF;
+    unsigned slot = file_slot[fd];
+    if (slot >= NAS_FD_LIMIT || !nas_open_files[slot].refcount)
+        return -EBADF;
+    if ((nas_open_files[slot].status_flags & 3ULL) == 1ULL)
+        return -EACCES;
+    const uint8_t *bytes = 0;
+    uint64_t size = 0;
+    if (descriptors[fd] == FD_ARCHIVE) {
+        const struct bootfs_entry *entry = nas_open_files[slot].boot_entry;
+        if (!entry || bootfs_is_dir(entry)) return -ENODEV;
+        bytes = entry->data;
+        size = entry->size;
+    } else if (descriptors[fd] == FD_BOOTFS) {
+        const struct limine_file *file = nas_open_files[slot].boot_file;
+        if (!file || !file->address) return -EBADF;
+        bytes = (const uint8_t *)file->address;
+        size = file->size;
+    } else if (descriptors[fd] == FD_TMP) {
+        const struct nas_tmp_file *file = tmp_by_slot(slot);
+        if (!file || file->is_dir) return -ENODEV;
+        return tmp_read_at(file, offset, buffer, length);
+    } else {
+        return -ENODEV;
+    }
+    if (offset >= size) return 0;
+    if (length > size-offset) length = size-offset;
+    if (length && !buffer) return -EFAULT;
+    if (length) memcpy(buffer, bytes+offset, (size_t)length);
+    return (int64_t)length;
+}
+
 /* The two endpoints are one pipe object, with separate shared-description
  * slots. Allocation remains transactional until both FD/slot pairs are
  * available; only then is the backend created. */
