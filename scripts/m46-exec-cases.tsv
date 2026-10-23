@@ -1,0 +1,2 @@
+# True pthread leader/worker execve replacement, wait4 TGID, signed original zstd.
+m46-exec	cpio	sh -c '/bin/sh /tests/run-exec.sh'	M46_EXEC_AND_ZSTD_PASS	-	/bin/busybox
