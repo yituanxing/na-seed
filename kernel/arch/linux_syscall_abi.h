@@ -53,6 +53,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_fchdir: return NAS_SC_fchdir;
     case __NR_fcntl: return NAS_SC_fcntl;
     case __NR_fork: return NAS_SC_fork;
+    case __NR_vfork: return NAS_SC_vfork;
     case __NR_fstat: return NAS_SC_fstat;
     case __NR_getcwd: return NAS_SC_getcwd;
     case __NR_getdents64: return NAS_SC_getdents64;
@@ -197,7 +198,11 @@ static inline enum nas_syscall_op nas_linux_decode_call(const uint64_t *args) {
     const uint64_t clone_nr = 220U; /* Linux asm-generic __NR_clone */
 #endif
     if (args[0] == clone_nr) {
-        if (args[2] != 0U) return NAS_SC_NONE; /* no alternate user stack */
+        /* musl posix_spawn uses CLONE_VM|CLONE_VFORK|SIGCHLD with
+         * its own userspace child stack. Unsupported thread clones are ENOSYS. */
+        if (args[1] == (0x00000100ULL|0x00004000ULL|17ULL))
+            return NAS_SC_vfork;
+        if (args[2] != 0U) return NAS_SC_NONE; /* regular fork inherits sp */
         if (args[1] == 17U) return NAS_SC_fork;
         /* Fork with child TID set/clear, no shared VM or alternate stack.
          * Caller translates child_tid from architecture-specific registers. */

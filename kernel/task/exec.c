@@ -18,6 +18,7 @@
 #include "user_stack.h"
 #include "../lib/string.h"
 #include "exec.h"
+#include "process.h"
 #include "signal.h"
 #define TASK (*nas_current_task)
 #define root_phys TASK.root_phys
@@ -298,7 +299,11 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
         if (signal_actions[i][0] == 1) continue; /* SIG_IGN survives exec */
         for (unsigned j = 0; j < 4; j++) signal_actions[i][j] = 0;
     }
-    if (!nas_mmu_reclaim_root(previous_root))
+    /* A vfork child shared its old page table with its suspended parent.
+     * Its new ELF root has committed, but that old root remains parent-owned. */
+    if (TASK.vfork_shared_vm)
+        nas_process_vfork_release();
+    else if (!nas_mmu_reclaim_root(previous_root))
         nas_fail("execve stale address-space frame reclaim failure");
     const char *basename = actual;
     for (const char *p = basename; *p; p++)

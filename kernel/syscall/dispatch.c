@@ -328,6 +328,15 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_kill) return nas_signal_kill(args[1], args[2], (uint64_t *)(uintptr_t)args);
     if (nr == NAS_SC_uname) return sys_uname_naseed(args[1]);
 
+    if (nr == NAS_SC_vfork) {
+        /* Native x86-64 has a separate vfork() number (no child stack),
+         * while all three ISAs also support the common clone form. */
+        uint64_t child_stack=args[2];
+#if defined(__x86_64__)
+        if (raw_nr == __NR_vfork) child_stack=0;
+#endif
+        return nas_process_vfork((uint64_t *)(uintptr_t)args, child_stack);
+    }
     if (nr == NAS_SC_fork)
         return nas_process_fork((uint64_t *)(uintptr_t)args);
     if (nr == NAS_SC_fork_child_tid)

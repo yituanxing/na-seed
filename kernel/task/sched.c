@@ -135,6 +135,11 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     if (!child->ppid || !nas_task_by_pid(child->ppid))
         sched_fail("child termination without living parent");
     nas_process_clear_tid_on_exit();
+    if (child->vfork_shared_vm) {
+        nas_process_vfork_release();
+        /* Exit-before-exec must never let wait4 free parent's page table. */
+        nas_task_set_root(child, 0);
+    }
     child->exit_code = code & 255U;
     child->termination_signal = signum;
     child->state = NAS_TASK_ZOMBIE;
