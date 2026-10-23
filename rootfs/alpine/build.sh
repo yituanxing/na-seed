@@ -88,6 +88,11 @@ fi
 test -x "$root/bin/sh"
 test "$(readlink -f "$root/bin/sh")" = "$(readlink -f "$root/bin/busybox")"
 readelf -h "$root/usr/bin/gcc" | grep -Fq "$machine"
+# M39 is a separate user-level workload, not part of the baseline M38
+# rootfs. Use only original release-pinned upstream sources, no guest shims.
+if [ "${NAS_STAGE_M39:-0}" = 1 ]; then
+    sh scripts/stage-m39-upstream-sources.sh "$root"
+fi
 # Original layout, no handcrafted sysroot: /usr/include, /usr/lib,
 # /usr/libexec/gcc, etc. Exclude device nodes, retain symlinks.
 (

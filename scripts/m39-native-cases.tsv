@@ -1,0 +1,3 @@
+# Stock BusyBox /bin/sh executes two ORIGINAL upstream Makefile builds
+# inside the guest filesystem. Every syscall is the real shared Linux ABI.
+m39-upstream	cpio	sh -c '/bin/sh /tests/build-m39.sh'	M39_BUILD_PASS	-	/bin/busybox

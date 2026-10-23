@@ -50,8 +50,8 @@ run_case() {
       --efi-boot boot/limine/limine-uefi-cd.bin \
       --efi-boot-part --efi-boot-image -o "$iso" "$stage" >/dev/null 2>&1
     rc=0
-    case "$name" in m38-gcc) budget=300 ;; m37-incremental) budget=100 ;; process-capacity) budget=45 ;; init-reaper) budget=110 ;; *) budget=15 ;; esac
-    if [ "$name" = m38-gcc ]; then
+    case "$name" in m38-gcc|m39-upstream) budget=360 ;; m37-incremental) budget=100 ;; process-capacity) budget=45 ;; init-reaper) budget=110 ;; *) budget=15 ;; esac
+    if [ "$name" = m38-gcc ] || [ "$name" = m39-upstream ]; then
         # The full GCC gate is allowed a large success budget, but a real
         # kernel [FAIL] must not keep its headless QEMU alive for 300s.
         timeout "${budget}s" sh scripts/run.sh "$iso" > "$log" 2>&1 < /dev/null &
