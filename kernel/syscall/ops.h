@@ -77,6 +77,7 @@ enum nas_syscall_op {
     NAS_SC_uname,
     NAS_SC_unlink,
     NAS_SC_unlinkat,
+    NAS_SC_utimensat,
     NAS_SC_wait4,
     NAS_SC_write,
     NAS_SC_writev,
