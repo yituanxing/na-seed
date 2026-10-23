@@ -83,6 +83,8 @@ enum nas_syscall_op {
     NAS_SC_setpgid,
     NAS_SC_setsid,
     NAS_SC_set_tid_address,
+    NAS_SC_sched_getaffinity,
+    NAS_SC_sched_setaffinity,
     NAS_SC_stat,
     NAS_SC_sysinfo,
     NAS_SC_uname,

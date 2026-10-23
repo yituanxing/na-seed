@@ -89,6 +89,7 @@ int64_t nas_fs_mmap_read(uint64_t fd, uint64_t offset,
     unsigned slot = file_slot[fd];
     if (slot >= NAS_FD_LIMIT || !nas_open_files[slot].refcount)
         return -EBADF;
+    if(nas_open_files[slot].status_flags & NAS_LINUX_O_PATH)return -EBADF;
     if ((nas_open_files[slot].status_flags & 3ULL) == 1ULL)
         return -EACCES;
     const uint8_t *bytes = 0;
@@ -284,6 +285,8 @@ static uint64_t sys_fcntl(uint64_t fd, uint64_t command, uint64_t arg) {
     case 2: fd_cloexec[fd] = (uint8_t)(arg & 1); return 0; /* F_SETFD */
     case 3: return nas_open_files[slot].status_flags;       /* F_GETFL */
     case 4: /* F_SETFL: only the O_NONBLOCK/O_APPEND mutable subset */
+        if(nas_open_files[slot].status_flags&NAS_LINUX_O_PATH)
+            return (uint64_t)-EBADF;
         nas_open_files[slot].status_flags =
             (nas_open_files[slot].status_flags & ~(0x800ULL | 0x400ULL)) |
             (arg & (0x800ULL | 0x400ULL));
@@ -426,7 +429,8 @@ static uint64_t sys_open_path(const char *path, uint64_t native_flags,
                               uint64_t create_mode) {
     uint64_t flags;
     if (!nas_linux_open_flags(native_flags, &flags)) return (uint64_t)-EINVAL;
-    const uint64_t permitted = 3ULL | 0x800ULL | 0x8000ULL |
+    flags=nas_linux_path_only_flags(flags);
+    const uint64_t permitted = NAS_LINUX_O_PATH | 3ULL | 0x800ULL | 0x8000ULL |
                                0x10000ULL | 0x20000ULL | 0x80000ULL | 0x100ULL |
                                0x80ULL | /* O_EXCL */
                                0x40ULL | 0x200ULL | 0x400ULL;
@@ -448,7 +452,9 @@ static uint64_t sys_open_path(const char *path, uint64_t native_flags,
             int err = bootfs_resolve(path, !(flags & 0x20000ULL), actual);
             if (!err) {
                 entry = bootfs_find(actual);
-                if (bootfs_is_link(entry)) return (uint64_t)-ELOOP;
+                if (bootfs_is_link(entry) &&
+                    !((flags & NAS_LINUX_O_PATH) && (flags & 0x20000ULL)))
+                    return (uint64_t)-ELOOP;
                 kind = bootfs_is_dir(entry) ? FD_DIR : FD_ARCHIVE;
             } else if (err != -ENOENT) {
                 return (uint64_t)(int64_t)err;
@@ -515,7 +521,8 @@ static uint64_t sys_open_path(const char *path, uint64_t native_flags,
             if (kind == FD_TMP || kind == FD_TMP_DIR)
                 tmp_bind_slot(slot, tmp_file);
             file_slot[fd] = (uint8_t)slot;
-            nas_open_files[slot].status_flags = flags & (3ULL | 0x800ULL | 0x400ULL);
+            nas_open_files[slot].status_flags =
+                flags & (NAS_LINUX_O_PATH | 3ULL | 0x800ULL | 0x400ULL);
             fd_cloexec[fd] = !!(flags & 0x80000ULL);
             nas_open_files[slot].position = 0;
             descriptors[fd] = kind;
@@ -668,7 +675,8 @@ const struct nas_file_ops *nas_fs_ops_for_kind(uint8_t kind) {
 
 uint64_t nas_fs_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED)return (uint64_t)-EBADF;
-    if((nas_open_files[file_slot[fd]].status_flags&3ULL)==0)return (uint64_t)-EBADF;
+    if((nas_open_files[file_slot[fd]].status_flags & (NAS_LINUX_O_PATH|3ULL))==0)
+        return (uint64_t)-EBADF;
     if(length>(1ULL<<20) || address>=USER_LIMIT || length>USER_LIMIT-address)
         return (uint64_t)-EFAULT;
     const struct nas_file_ops *ops=nas_open_files[file_slot[fd]].ops;
@@ -676,7 +684,9 @@ uint64_t nas_fs_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
 }
 uint64_t nas_fs_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED)return (uint64_t)-EBADF;
-    if((nas_open_files[file_slot[fd]].status_flags&3ULL)==1)return (uint64_t)-EBADF;
+    if((nas_open_files[file_slot[fd]].status_flags&NAS_LINUX_O_PATH) ||
+       (nas_open_files[file_slot[fd]].status_flags&3ULL)==1)
+        return (uint64_t)-EBADF;
     const struct nas_file_ops *ops=nas_open_files[file_slot[fd]].ops;
     return ops && ops->read ? ops->read(fd,address,length) : (uint64_t)-EBADF;
 }
@@ -690,7 +700,8 @@ uint64_t nas_fs_fd_pread(uint64_t fd,uint64_t address,uint64_t count,
     if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED) return (uint64_t)-EBADF;
     unsigned slot=file_slot[fd];
     if(slot>=NAS_FD_LIMIT || !nas_open_files[slot].refcount) return (uint64_t)-EBADF;
-    if((nas_open_files[slot].status_flags&3ULL)==1ULL) return (uint64_t)-EBADF;
+    if((nas_open_files[slot].status_flags&NAS_LINUX_O_PATH) ||
+       (nas_open_files[slot].status_flags&3ULL)==1ULL) return (uint64_t)-EBADF;
     if(descriptors[fd]==FD_DIR || descriptors[fd]==FD_TMP_DIR) return (uint64_t)-EISDIR;
     if(descriptors[fd]!=FD_TMP && descriptors[fd]!=FD_ARCHIVE &&
        descriptors[fd]!=FD_BOOTFS) return (uint64_t)-ESPIPE;
@@ -717,7 +728,8 @@ uint64_t nas_fs_fd_pwrite(uint64_t fd,uint64_t address,uint64_t count,
     if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED) return (uint64_t)-EBADF;
     unsigned slot=file_slot[fd];
     if(slot>=NAS_FD_LIMIT || !nas_open_files[slot].refcount) return (uint64_t)-EBADF;
-    if((nas_open_files[slot].status_flags&3ULL)==0ULL) return (uint64_t)-EBADF;
+    if((nas_open_files[slot].status_flags&NAS_LINUX_O_PATH) ||
+       (nas_open_files[slot].status_flags&3ULL)==0ULL) return (uint64_t)-EBADF;
     if(descriptors[fd]==FD_DIR || descriptors[fd]==FD_TMP_DIR) return (uint64_t)-EISDIR;
     if(descriptors[fd]!=FD_TMP)return (uint64_t)-ESPIPE;
     if(offset>INT64_MAX || count>INT64_MAX-offset)return (uint64_t)-EINVAL;
@@ -1048,12 +1060,16 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
  * fsync/fdatasync return success only for actual open RAM inodes. */
 static uint64_t sys_sync_fd(uint64_t fd) {
     if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED)return (uint64_t)-EBADF;
+    if(nas_open_files[file_slot[fd]].status_flags&NAS_LINUX_O_PATH)
+        return (uint64_t)-EBADF;
     if(descriptors[fd]!=FD_TMP && descriptors[fd]!=FD_TMP_DIR)
         return (uint64_t)-EINVAL;
     return tmp_by_fd(fd) ? 0 : (uint64_t)-EBADF;
 }
 static uint64_t sys_resize_fd(uint64_t fd,uint64_t length) {
     if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED)return (uint64_t)-EBADF;
+    if(nas_open_files[file_slot[fd]].status_flags&NAS_LINUX_O_PATH)
+        return (uint64_t)-EBADF;
     if(descriptors[fd]==FD_ARCHIVE || descriptors[fd]==FD_BOOTFS)
         return (uint64_t)-EROFS;
     if(descriptors[fd]!=FD_TMP)return (uint64_t)-EINVAL;
@@ -1071,6 +1087,8 @@ static uint64_t sys_resize_path(uint64_t pathname,uint64_t length) {
 }
 static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
     if (fd >= 64 || descriptors[fd] == FD_CLOSED)
+        return (uint64_t)-EBADF;
+    if(nas_open_files[file_slot[fd]].status_flags&NAS_LINUX_O_PATH)
         return (uint64_t)-EBADF;
     uint64_t size = 0;
     if (descriptors[fd] == FD_BOOTFS && nas_open_files[file_slot[fd]].boot_file)

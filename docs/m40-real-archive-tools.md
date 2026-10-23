@@ -25,3 +25,17 @@ If a real GNU tar or xz invocation fails, diagnose the relevant complete
 Linux syscall/FS operation family and address the *shared* kernel code in
 one coherent batch before all three QEMU gates are rerun. No software
 specific compatibility shim. Merge only after original CI and M40 all green.
+
+## First real tool failure: metadata directory FDs and CPU affinity
+
+Original GNU tar -C fails across all three kernels with EINVAL while opening
+the existing CPIO directory /tests/archive-seed: the common VFS rejected
+Linux O_PATH. Implement metadata-only O_PATH file descriptions across
+x86-64/RV64/AArch64: permit true directory and fstat/fchdir operations,
+but forbid data IO, mmap, lseek and truncate; preserve O_CLOEXEC, O_DIRECTORY
+and O_NOFOLLOW and normalize ARM Linux O_DIRECTORY bits before lookup.
+
+XZ Utils queried sched_getaffinity (x86-64 204, generic64 123). Expose the
+actual single CPU online bit from the one-core scheduler to GET/SET affinity,
+reject nonexistent PIDs, malformed cpuset sizes/pointers and mask without
+CPU0. Do not return fake all-CPU success. Add host decoders and flag tests.

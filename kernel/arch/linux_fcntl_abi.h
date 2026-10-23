@@ -2,6 +2,14 @@
 #define NASEED_LINUX_FCNTL_ABI_H
 #include <stdbool.h>
 #include <stdint.h>
+#define NAS_LINUX_O_PATH 0x200000ULL
+/* Linux O_PATH ignores ordinary I/O flags, retaining metadata options. */
+static inline uint64_t nas_linux_path_only_flags(uint64_t flags) {
+    return (flags & NAS_LINUX_O_PATH) ?
+        flags & (NAS_LINUX_O_PATH|0x80000ULL|0x10000ULL|0x20000ULL)
+        : flags;
+}
+
 
 /* Linux user O_* flags are an ABI, not a filesystem-specific policy.
  * The shared FS consumes x86-64 / generic64 bit positions internally.

@@ -104,6 +104,8 @@ jobs:
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-vm-prot.c -o /tmp/naseed-vm-prot && /tmp/naseed-vm-prot
       - name: Linux open flags ABI regression (including ARM64 values)
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-fcntl-abi.c -o /tmp/naseed-fcntl-abi && /tmp/naseed-fcntl-abi
+      - name: Single CPU Linux affinity mask/size ABI
+        run: cc -std=c11 -Wall -Wextra -Werror scripts/test-cpu-affinity.c -o /tmp/naseed-affinity && /tmp/naseed-affinity
       - name: Process-owned POSIX record locks and overlapping ranges
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-posix-locks.c -o /tmp/naseed-posix-locks && /tmp/naseed-posix-locks
       - name: Linux umask/create-mode ABI semantics
