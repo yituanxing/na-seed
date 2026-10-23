@@ -53,3 +53,19 @@ An independent original BusyBox shell runs `test -s` before emitting
 and TinyCC binary produce a real ELF relocatable object whose
 `naseed_answer` symbol is checked with `readelf`. Linking and executing
 that generated object inside NaSeed are a further software-driven stage.
+
+## CI performance and syscall evidence (2026-10-23)
+
+One GitHub Actions run took over 14 minutes because apt downloaded 48.3 MB
+at only 59.6 kB/s and installed ~95 GUI/Spice and related packages as
+QEMU *recommendations*. The compiler and kernel portion took seconds.
+The focused acceptance now requests only missing **headless** QEMU/UEFI
+packages via `--no-install-recommends`, avoids reinstalling runner tools,
+and caps the dependency-install stage at six minutes. This bounds CI
+latency during mirror stalls; failure is reported, not silently ignored.
+
+The original GNU Make fails its first real guest recipe with
+`echo: Function not implemented` (ENOSYS). The new Linux oracle records
+actual clone/vfork/execve behavior with strace, before altering NaSeed's
+fork/clone semantics. The fix must belong in the Linux syscall adapter
+and shared Task/process core as appropriate, not in a Make-specific shim.

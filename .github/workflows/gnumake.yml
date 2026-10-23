@@ -21,11 +21,29 @@ jobs:
     timeout-minutes: 23
     steps:
       - uses: actions/checkout@v4
-      - name: Install normal GNU Linux and QEMU boot toolchain
+      - name: Install only headless x86 QEMU/UEFI prerequisites (no GUI/Spice)
+        timeout-minutes: 6
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y gcc make curl tar git binutils clang lld cpio \
-            xorriso qemu-system-x86 ovmf
+          set -eu
+          # Hosted Ubuntu already provides GCC, Clang, GNU Make, curl, tar,
+          # git and binutils. Only install what this headless QEMU test lacks.
+          missing=''
+          command -v cpio >/dev/null || missing="$missing cpio"
+          command -v xorriso >/dev/null || missing="$missing xorriso"
+          command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+          command -v strace >/dev/null || missing="$missing strace"
+          if [ ! -f /usr/share/OVMF/OVMF_CODE_4M.fd ] &&
+             [ ! -f /usr/share/OVMF/OVMF_CODE.fd ]; then
+            missing="$missing ovmf"
+          fi
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=45 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+              --no-install-recommends $missing
+          fi
+          command -v clang && command -v ld.lld && command -v readelf
+          command -v qemu-system-x86_64 && command -v xorriso
+          echo '[CI] x86 headless QEMU packages verified; no GUI packages requested'
       - name: Cache SHA256-pinned GNU Make release
         uses: actions/cache@v4
         with:
@@ -48,6 +66,8 @@ jobs:
             build/external/gnumake/amd64/build.log
             build/external/gnumake/amd64/linux-oracle.log
             build/external/gnumake/amd64/linux-native-build.log
+            build/external/gnumake/amd64/linux-process-oracle.log
+            build/external/gnumake/amd64/linux-process-syscalls.log
             build/external/gnumake/amd64/first.o
             build/external/gnumake/amd64/serial.log
           if-no-files-found: ignore

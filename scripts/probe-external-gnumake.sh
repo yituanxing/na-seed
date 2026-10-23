@@ -12,6 +12,17 @@ grep -Fxq 'naseed-compiled-object' "$work/linux-native-build.log"
 readelf -h "$work/first.o" | grep -q 'REL (Relocatable file)'
 readelf -s "$work/first.o" | grep -Fq naseed_answer
 echo '[GNUMAKE LINUX BUILD PASS] unmodified GNU Make drove original TinyCC'
+# Capture actual Linux process creation behavior (clone/vfork/execve).
+# Detect which general Linux ABI NaSeed lacks before writing kernel code.
+strace -f -qq -e trace=clone,clone3,vfork,fork,execve,execveat \
+  -o "$work/linux-process-syscalls.log" \
+  "$work/gmake" --no-print-directory -f tests/gnumake-real.mk \
+    TCC=build/external/tcc/amd64/tcc SOURCE=tests/tcc-first.c \
+    OBJECT="$work/second.o" native-c > "$work/linux-process-oracle.log" 2>&1
+grep -Fxq 'naseed-compiled-object' "$work/linux-process-oracle.log"
+readelf -h "$work/second.o" | grep -q 'REL (Relocatable file)'
+echo '[GNUMAKE LINUX SPAWN] real process creation/syscalls:'
+grep -E 'clone|vfork|fork|execve' "$work/linux-process-syscalls.log" | head -30 || :
 sh scripts/stage-external-gnumake-rootfs.sh
 make kernel build/deps/limine-binary/BOOTX64.EFI
 work=build/external/gnumake/amd64
