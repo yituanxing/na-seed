@@ -33,7 +33,7 @@ uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
     if (!fixed && !nas_linux_anon_map_supported(flags,fd,offset))
         return (uint64_t)-ENOSYS;
     if (prot & ~7ULL) return (uint64_t)-EINVAL;
-    if (!nas_vm_prot_supported(prot)) return (uint64_t)-EOPNOTSUPP;
+    if (prot && !nas_vm_prot_supported(prot)) return (uint64_t)-EOPNOTSUPP;
     if (!nas_arch_user_nx_supported()) return (uint64_t)-ENOSYS;
     uint64_t pages = (length + PAGE - 1) / PAGE;
     uint64_t bytes = pages * PAGE;
