@@ -12,7 +12,7 @@ int main(void) {
     errno=0;
     if(chmod("/tests/Makefile",0755)==0 || errno!=EROFS) return 92;
     char *const argv[]={"/bin/gmake","--no-print-directory",
-                         "--jobs=2","-f","/tests/Makefile","native-run",0};
+                         "--jobs=2","--jobserver-style=pipe","-f","/tests/Makefile","native-run",0};
     char *const envp[]={"PATH=/bin:/usr/bin","SHELL=/bin/sh",
                          "HOME=/tmp","LC_ALL=C","MAKEFLAGS=",0};
     puts("[M37] upstream zlib parallel GNU Make -j2 incremental rebuild");
