@@ -174,8 +174,8 @@ struct nas_task *nas_task_at(unsigned slot) {
     return slot < NAS_TASK_LIMIT ? &task_table[slot] : NULL;
 }
 uint8_t nas_task_fd_kind(const struct nas_task *task, uint64_t fd) {
-    return task && fd < NAS_FD_LIMIT ? task->fds.descriptors[fd] : 0;
+    return task && fd < NAS_FD_LIMIT ? task->fds->descriptors[fd] : 0;
 }
 unsigned nas_task_fd_slot(const struct nas_task *task, uint64_t fd) {
-    return task && fd < NAS_FD_LIMIT ? task->fds.file_slot[fd] : NAS_FD_LIMIT;
+    return task && fd < NAS_FD_LIMIT ? task->fds->file_slot[fd] : NAS_FD_LIMIT;
 }

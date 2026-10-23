@@ -20,6 +20,8 @@ case "$profile" in
              package_list=rootfs/alpine/packages-archive.txt ;;
     unix) work="build/external/m41-unix/$port"
           package_list=rootfs/alpine/packages-unix.txt ;;
+    pthread) work="build/external/m42-pthread/$port"
+             package_list=rootfs/alpine/packages-archive.txt ;;
     *) echo "[ALPINE] unknown profile $profile" >&2; exit 2 ;;
 esac
 root="$work/rootfs"
@@ -98,6 +100,19 @@ if [ "$profile" = archive ]; then
         done
         [ -n "$binary" ] || { echo "[M40] missing original packaged $program ($port)" >&2; exit 1; }
         readelf -h "$binary" | grep -Fq "$machine"
+    done
+elif [ "$profile" = pthread ]; then
+    # Host stages original signed Alpine XZ and 4 MiB test input. All
+    # actual multithreaded compression happens inside NaSeed's kernel.
+    dd if=/dev/zero of="$root/tests/m42-input.bin" bs=1048576 count=4 status=none
+    cp tests/m42-pthread-run.sh "$root/tests/run-pthread.sh"
+    for program in xz; do
+        for binary in "$root/usr/bin/$program" "$root/bin/$program"; do
+            if [ -x "$binary" ] && readelf -h "$binary" | grep -Fq "$machine"; then
+                break
+            fi
+        done
+        test -x "$binary" || exit 1
     done
 elif [ "$profile" = unix ]; then
     # One system acceptance: original ELF tools across fork/exec/pipe/tmpfs.

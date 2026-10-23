@@ -1,0 +1,2 @@
+# Original GNU XZ --threads=2, CLONE_THREAD/futex path on real QEMU.
+m42-pthread	cpio	sh -c '/bin/sh /tests/run-pthread.sh'	M42_PTHREAD_PASS	-	/bin/busybox
