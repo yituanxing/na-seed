@@ -22,3 +22,12 @@ we may run Make recipes that invoke the existing original TinyCC to
 compile C and eventually create and run a new binary within NaSeed.
 That next stage is driven by wanting to write C on our own machine,
 not by a synthetic syscall coverage target.
+
+## Real GNU Make optimization discovered
+
+GNU Make optimized the original simple `echo` recipe into a direct
+`execvp("echo")`. The tiny guest image had `/bin/sh` but not a separate
+`/bin/echo`; Linux distributions have both. This is real behavior, not
+an OS bug. The test Makefile now explicitly calls `/bin/sh -c`, exercising
+GNU Make's child lifecycle and the genuine original BusyBox POSIX shell.
+The test never patches GNU Make or returns simulated echo strings.

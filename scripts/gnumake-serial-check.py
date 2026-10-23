@@ -20,6 +20,10 @@ while time.monotonic() < deadline:
         if not chunk:
             break
         log.extend(chunk)
+    # The kernel correctly flags unsuccessful user programs; stop QEMU
+    # immediately rather than waiting the whole 70s budget after a FAIL.
+    if b"[FAIL]" in log:
+        break
     if p.poll() is not None:
         break
 if p.poll() is None:
