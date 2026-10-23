@@ -1,0 +1,3 @@
+# 9 actual TinyCC ET_REL objects + generated ELF; exact same native
+# upstream library and Make recipe on all three full system QEMU kernels.
+m36-zlib-native	cpio	--naseed	naseed-upstream-zlib-pass	-	/bin/native-init
