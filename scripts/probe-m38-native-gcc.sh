@@ -24,7 +24,7 @@ export NAS_ACCEPTANCE_QEMU_RAM=1024M
 export NAS_ACCEPTANCE_DISK_MB=768
 # Opt-in generic syscall trace when diagnosing the x86 native dynamic
 # toolchain. Never enable this on normal kernel or other ISA CI shards.
-if [ "$port" = amd64 ]; then export NAS_SYSCALL_TRACE=1; fi
+export NAS_SYSCALL_TRACE=1
 sh "$runner"
 test -s "$logs/m38-gcc.clean.log"
 grep -Fxq M38_GCC_PASS "$logs/m38-gcc.clean.log"

@@ -209,7 +209,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         nas_print("[TRACE] linux_nr="); nas_dec(raw_nr);
         nas_print(" decoded="); nas_dec(nr);
         nas_print(" rip="); nas_hex(args[7]);
-        nas_print(" rsp="); nas_hex(syscall_user_rsp);
+        nas_print(" rsp="); nas_hex(nas_arch_signal_user_sp());
         nas_print(" a1="); nas_hex(args[1]);
         nas_print(" a2="); nas_hex(args[2]);
         nas_print(" a3="); nas_hex(args[3]);
