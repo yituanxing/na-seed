@@ -86,3 +86,15 @@ build workflow. Linux `strace -f` must verify genuine fork-equivalent
 `clone(SIGCHLD)` and reject `clone3(CLONE_VM)` or vfork before entering
 the NaSeed guest. Real shared-VM `clone3` remains a future **general
 Task/VM feature**, not a fake fork alias and not a prerequisite for Make.
+
+### Disable `vfork` as well as `posix_spawn`
+
+Linux tracing of Make 4.4.1 showed that disabling posix_spawn alone
+fell back to glibc `vfork()`, **not** the independent-VM fork semantics
+provided by NaSeed. We now use the standard Autoconf portability overrides
+`ac_cv_func_vfork=no ac_cv_func_vfork_works=no` with GNU Make's
+`--disable-posix-spawn`; Autoconf remaps `vfork` to real `fork` in
+the generated upstream config header. Linux's actual trace must show
+fork-equivalent SIGCHLD children without CLONE_VM/CLONE_VFORK.
+This is standard compile-time portability configuration, not a kernel
+special case, source edit, or claim that NaSeed supports true vfork.

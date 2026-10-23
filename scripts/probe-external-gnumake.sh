@@ -23,12 +23,13 @@ grep -Fxq 'naseed-compiled-object' "$work/linux-process-oracle.log"
 readelf -h "$work/second.o" | grep -q 'REL (Relocatable file)'
 # This portability configuration must exercise normal fork semantics.
 # It MUST NOT silently return to posix_spawn/CLONE_VM/CLONE_VFORK.
-if grep -Eq 'clone3\\(|CLONE_VM|CLONE_VFORK|vfork\\(' "$work/linux-process-syscalls.log"; then
+if grep -F -e 'clone3(' -e 'CLONE_VM' -e 'CLONE_VFORK' \
+     -e 'vfork(' "$work/linux-process-syscalls.log"; then
   echo '[GNUMAKE LINUX SPAWN FAIL] expected normal fork/exec path' >&2
   tail -80 "$work/linux-process-syscalls.log" >&2
   exit 1
 fi
-grep -Eq 'clone\\([^)]*SIGCHLD|fork\\(' "$work/linux-process-syscalls.log" || {
+grep -F -e 'clone(' -e 'fork(' "$work/linux-process-syscalls.log" | grep -Fq 'SIGCHLD' || {
   echo '[GNUMAKE LINUX SPAWN FAIL] no fork-equivalent process creation' >&2
   tail -80 "$work/linux-process-syscalls.log" >&2
   exit 1

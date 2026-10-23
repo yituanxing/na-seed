@@ -20,6 +20,7 @@ test -f "$source/configure"
 (
     cd "$source"
     if [ ! -f Makefile ]; then
+      ac_cv_func_vfork=no ac_cv_func_vfork_works=no \
       ./configure --prefix=/usr --disable-nls --without-guile \
           --disable-posix-spawn \
           CC=gcc CFLAGS="-O2" LDFLAGS="-static -no-pie" \
@@ -40,9 +41,16 @@ fi
 "$work/gmake" --version | grep -Fq 'GNU Make 4.4.1'
 # Upstream-supported, documented portable fork/exec mode; do not
 # implement partial CLONE_VM/CLONE_VFORK semantics in the kernel.
-grep -Eq '^[[:space:]]*#[[:space:]]*define[[:space:]]+USE_POSIX_SPAWN[[:space:]]+1' "$source/src/config.h" && {
-    echo '[GNUMAKE] posix_spawn still enabled, refusing mismatched test' >&2; exit 1;
-} || :
+test -s "$source/src/config.h" || {
+    echo '[GNUMAKE] GNU Make config.h not generated' >&2; exit 1;
+}
+if grep -Eq '^#define (USE_POSIX_SPAWN|HAVE_WORKING_VFORK) 1' "$source/src/config.h"; then
+    echo '[GNUMAKE] shared-VM spawning still enabled' >&2; exit 1
+fi
+grep -Eq '^#define vfork fork' "$source/src/config.h" || {
+    echo '[GNUMAKE] GNU Make did not map vfork onto actual fork' >&2
+    exit 1
+}
 # Run the identical, normal GNU Make binary on Linux first.
 "$work/gmake" --no-print-directory -f tests/gnumake-real.mk all \
    > "$work/linux-oracle.log" 2>&1
