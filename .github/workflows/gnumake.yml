@@ -9,6 +9,9 @@ on:
       - 'tests/gnumake-native-init.c'
       - 'tests/gnumake-real.mk'
       - 'tests/tcc-first.c'
+      - 'tests/native-hello.c'
+      - 'tests/native-exec-init.c'
+      - 'scripts/probe-native-exec.sh'
       - 'scripts/build-external-tcc.sh'
       - '.github/workflows/gnumake.yml'
   workflow_dispatch:
@@ -81,6 +84,8 @@ jobs:
           key: naseed-tcc-0.9.27-de23af78fca90ce3
       - name: Linux oracle then real GNU Make compiling C with TinyCC inside NaSeed
         run: sh scripts/probe-external-gnumake.sh
+      - name: Compile and execute native-generated ELF from tmpfs under NaSeed
+        run: sh scripts/probe-native-exec.sh
       - name: Preserve genuine compiler and QEMU evidence on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -95,4 +100,7 @@ jobs:
             build/external/gnumake/amd64/linux-process-syscalls.log
             build/external/gnumake/amd64/first.o
             build/external/gnumake/amd64/serial.log
+            build/external/native-exec/amd64/hello
+            build/external/native-exec/amd64/linux-executed.log
+            build/external/native-exec/amd64/serial.log
           if-no-files-found: ignore
