@@ -1,0 +1,3 @@
+WARN gamma
+DEBUG ignored-two
+WARN beta
