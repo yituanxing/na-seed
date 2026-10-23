@@ -18,9 +18,9 @@ export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"
 export NAS_ACCEPTANCE_CPIO="$work/rootfs.cpio"
 export BUSYBOX_PARITY_MANIFEST=scripts/m42-pthread-cases.tsv
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
-export NAS_ACCEPTANCE_QEMU_RAM=512M
+export NAS_ACCEPTANCE_QEMU_RAM=1024M
 export NAS_ACCEPTANCE_DISK_MB=256
-export NAS_SYSCALL_TRACE=${NAS_SYSCALL_TRACE:-0}
+export NAS_SYSCALL_TRACE=${NAS_SYSCALL_TRACE:-1}
 sh "$runner"
 log="$logs/m42-pthread.clean.log"
 test -s "$log"
