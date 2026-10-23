@@ -30,7 +30,8 @@ log="$dir/serial.log"
 set +e
 timeout 90s qemu-system-aarch64 \
     -machine virt -cpu cortex-a57 -m 512M -smp 1 \
-    -display none -serial stdio -monitor none \
+    -display none -serial stdio -monitor none -nic none \
+
     -semihosting-config enable=on,target=native \
     -bios "$fw" \
     -drive if=none,id=esp,format=raw,file="$disk" \
