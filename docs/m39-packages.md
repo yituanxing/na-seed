@@ -48,3 +48,29 @@ leaving shared fd position unmodified, respect O_RDONLY/O_WRONLY, and reject
 incompatible fd kinds. tmpfs writes go through the same page-backed inode
 write path as normal write(); CPIO remains read-only. Keep the same three
 native package tests, rather than weakening the SQLite file-reopen oracle.
+
+## Second package-gate root cause: the SQLite file-storage ABI
+
+Lua VM/stdio and jq JSON parse already passed on three ISA. SQLite's first
+in-memory SQL expression also passed, but its filesystem-backed database
+reported I/O error. A pread64/pwrite64 implementation got past the initial
+ENOSYS. SQLite then required a **cohesive filesystem transaction class**:
+
+- Linux fsync/fdatasync: actual RAM-backed tmpfs writes are synchronous
+  by construction; a successful call requires a valid RAM inode FD.
+- Linux ftruncate/truncate: page-granular sparse grow, release on shrink,
+  zero truncated partial last page, preserve inode identity and fd offset.
+- Linux fcntl POSIX F_GETLK/F_SETLK: per-inode byte-range process-owned
+  advisory locks, distinguish shared/read and exclusive/write, reject
+  collisions, split locks transactionally on partial unlock, release upon
+  FD close and process exit; unknown and unsupported lock semantics never
+  return fake success. F_SETLKW conflicting waits need a future scheduler
+  wait registration; return EAGAIN rather than pretending a lock acquired.
+- Common x86/generic64 ABI: 74/75/77/76 vs 82/83/46/45 for
+  fsync/fdatasync/ftruncate/truncate. The in-kernel ownership and FD
+  lifetime logic is shared across all three architectures.
+
+This is a functional VFS class implementation, not a SQLite-specific
+syscall stub. A pure host oracle checks overlapping process lock ranges
+without starting QEMU. Genuine signed APK SQLite must still commit, close,
+and reopen a disk-style database inside the kernel on all three ISAs.

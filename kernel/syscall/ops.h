@@ -26,6 +26,10 @@ enum nas_syscall_op {
     NAS_SC_exit_group,
     NAS_SC_fchdir,
     NAS_SC_fcntl,
+    NAS_SC_fsync,
+    NAS_SC_fdatasync,
+    NAS_SC_ftruncate,
+    NAS_SC_truncate,
     NAS_SC_fork,
     /* Fork process with Linux child-set/clear-TID lifecycle. */
     NAS_SC_fork_child_tid,

@@ -28,6 +28,10 @@ int main(void) {
     assert(nas_linux_decode_syscall(166U)==NAS_SC_umask);
     assert(nas_linux_decode_syscall(67U)==NAS_SC_pread64);
     assert(nas_linux_decode_syscall(68U)==NAS_SC_pwrite64);
+    assert(nas_linux_decode_syscall(82U)==NAS_SC_fsync);
+    assert(nas_linux_decode_syscall(83U)==NAS_SC_fdatasync);
+    assert(nas_linux_decode_syscall(46U)==NAS_SC_ftruncate);
+    assert(nas_linux_decode_syscall(45U)==NAS_SC_truncate);
     call[0]=93U;
     assert(nas_linux_decode_call(call)==NAS_SC_exit);
     return 0;

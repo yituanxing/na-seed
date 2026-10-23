@@ -198,6 +198,12 @@ static uint64_t pipe_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
  * disappears. dup2 must close an existing destination through this hook.
  */
 void nas_fs_close_fd(uint64_t fd) {
+    /* Linux POSIX locks are PROCESS-owned and closing even one descriptor
+     * releases that process's locks for the whole inode (including dup). */
+    if(fd<NAS_FD_LIMIT && descriptors[fd]==FD_TMP) {
+        struct nas_tmp_file *file=tmp_by_fd(fd);
+        if(file)nas_locks_release(&file->posix_locks,TASK.pid);
+    }
     unsigned final_slot=nas_fd_close(nas_current_task, (unsigned)fd);
     if (final_slot == NAS_FD_LIMIT) return;
     const struct nas_file_ops *ops=nas_open_files[final_slot].ops;
@@ -215,6 +221,59 @@ static uint64_t fd_duplicate(uint64_t oldfd, uint64_t minimum,
                              bool cloexec) {
     return nas_fd_duplicate(nas_current_task, oldfd, minimum, cloexec);
 }
+/* Linux native 64-bit flock ABI (common to x86, arm64 and rv64):
+ * short type, short whence, pad32, s64 start, s64 len, s32 pid. */
+struct nas_flock64 { int16_t type,whence; uint32_t pad;
+                    int64_t start,length; int32_t pid; uint32_t reserved; };
+_Static_assert(sizeof(struct nas_flock64)==32,"Linux LP64 flock size");
+static uint64_t sys_fcntl_lock(uint64_t fd,uint64_t command,uint64_t user) {
+    if(descriptors[fd]!=FD_TMP)return (uint64_t)-EINVAL;
+    struct nas_tmp_file *inode=tmp_by_fd(fd);
+    if(!inode || inode->is_dir)return (uint64_t)-EBADF;
+    struct nas_flock64 lk={0};
+    if(!nas_user_read_bytes(user,(uint8_t *)&lk,sizeof(lk)))
+        return (uint64_t)-EFAULT;
+    if(lk.type<0 || lk.type>2 || lk.whence<0 || lk.whence>2)
+        return (uint64_t)-EINVAL;
+    uint64_t base=0,position=nas_open_files[file_slot[fd]].position;
+    if(lk.whence==1)base=position;
+    if(lk.whence==2)base=inode->size;
+    if(base>INT64_MAX)return (uint64_t)-EOVERFLOW;
+    /* POSIX permits negative l_len; this first fixed-range VFS refuses
+     * an unsupported range rather than corrupting another owner's locks. */
+    if(lk.length<0)return (uint64_t)-EINVAL;
+    if(lk.start<0 && (uint64_t)(-lk.start)>base)return (uint64_t)-EINVAL;
+    uint64_t start=lk.start<0 ? base-(uint64_t)(-lk.start) : base+(uint64_t)lk.start;
+    if(start>INT64_MAX)return (uint64_t)-EOVERFLOW;
+    uint64_t end=lk.length==0 ? UINT64_MAX : start+(uint64_t)lk.length;
+    if(end<start || end==start)return (uint64_t)-EOVERFLOW;
+    if(command!=5) {
+        unsigned access=(unsigned)(nas_open_files[file_slot[fd]].status_flags&3ULL);
+        if((lk.type==NAS_LOCK_READ && access==1) ||
+           (lk.type==NAS_LOCK_WRITE && access==0))return (uint64_t)-EBADF;
+    }
+    if(command==5) {
+        if(lk.type==NAS_LOCK_UNLOCK)return (uint64_t)-EINVAL;
+        int conflict=nas_locks_conflict(&inode->posix_locks,TASK.pid,
+                                     (uint16_t)lk.type,start,end);
+        if(conflict<0)lk.type=NAS_LOCK_UNLOCK;
+        else {
+            const struct nas_posix_lock *old=&inode->posix_locks.entries[conflict];
+            lk.type=(int16_t)old->type;
+            lk.whence=0;
+            lk.start=(int64_t)old->start;
+            lk.length=old->end==UINT64_MAX ? 0 : (int64_t)(old->end-old->start);
+            lk.pid=(int32_t)old->pid;
+        }
+        return nas_user_write_bytes(user,(uint8_t *)&lk,sizeof(lk)) ?
+               0 : (uint64_t)-EFAULT;
+    }
+    int rc=nas_locks_apply(&inode->posix_locks,TASK.pid,
+                           (uint16_t)lk.type,start,end);
+    if(rc==1)return (uint64_t)-EAGAIN; /* non-blocking lock conflict */
+    if(rc==2)return (uint64_t)-ENOLCK;
+    return rc ? (uint64_t)-EINVAL : 0;
+}
 static uint64_t sys_fcntl(uint64_t fd, uint64_t command, uint64_t arg) {
     if (fd >= 64 || descriptors[fd] == FD_CLOSED)
         return (uint64_t)-EBADF;
@@ -229,6 +288,8 @@ static uint64_t sys_fcntl(uint64_t fd, uint64_t command, uint64_t arg) {
             (nas_open_files[slot].status_flags & ~(0x800ULL | 0x400ULL)) |
             (arg & (0x800ULL | 0x400ULL));
         return 0;
+    case 5: case 6: case 7: /* F_GETLK / F_SETLK / F_SETLKW */
+        return sys_fcntl_lock(fd,command,arg);
     case 1030: return fd_duplicate(fd, arg, true); /* F_DUPFD_CLOEXEC */
     default: return (uint64_t)-EINVAL; /* unsupported fcntl cmd */
     }
@@ -983,6 +1044,31 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
         return (uint64_t)-EFAULT;
     return 0;
 }
+/* In a volatile tmpfs there is no asynchronous durable writeback.
+ * fsync/fdatasync return success only for actual open RAM inodes. */
+static uint64_t sys_sync_fd(uint64_t fd) {
+    if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED)return (uint64_t)-EBADF;
+    if(descriptors[fd]!=FD_TMP && descriptors[fd]!=FD_TMP_DIR)
+        return (uint64_t)-EINVAL;
+    return tmp_by_fd(fd) ? 0 : (uint64_t)-EBADF;
+}
+static uint64_t sys_resize_fd(uint64_t fd,uint64_t length) {
+    if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED)return (uint64_t)-EBADF;
+    if(descriptors[fd]==FD_ARCHIVE || descriptors[fd]==FD_BOOTFS)
+        return (uint64_t)-EROFS;
+    if(descriptors[fd]!=FD_TMP)return (uint64_t)-EINVAL;
+    if((nas_open_files[file_slot[fd]].status_flags&3ULL)==0)
+        return (uint64_t)-EINVAL;
+    return (uint64_t)(int64_t)tmp_resize(tmp_by_fd(fd),length);
+}
+static uint64_t sys_resize_path(uint64_t pathname,uint64_t length) {
+    char path[256];
+    uint64_t ret=nas_fs_resolve_path((uint64_t)-100,pathname,path);
+    if((int64_t)ret<0)return ret;
+    struct nas_tmp_file *file=tmp_find(path);
+    if(file)return (uint64_t)(int64_t)tmp_resize(file,length);
+    return bootfs_find(path) ? (uint64_t)-EROFS : (uint64_t)-ENOENT;
+}
 static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
     if (fd >= 64 || descriptors[fd] == FD_CLOSED)
         return (uint64_t)-EBADF;
@@ -1302,6 +1388,9 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
     case NAS_SC_stat: FS_RESULT(sys_fstatat_boot((uint64_t)-100, args[1], args[2], 0));
     case NAS_SC_lstat: FS_RESULT(sys_fstatat_boot((uint64_t)-100, args[1], args[2], 0x100ULL));
     case NAS_SC_lseek: FS_RESULT(sys_lseek_boot(args[1], args[2], args[3]));
+    case NAS_SC_fsync: case NAS_SC_fdatasync: FS_RESULT(sys_sync_fd(args[1]));
+    case NAS_SC_ftruncate: FS_RESULT(sys_resize_fd(args[1],args[2]));
+    case NAS_SC_truncate: FS_RESULT(sys_resize_path(args[1],args[2]));
     case NAS_SC_pread64: FS_RESULT(nas_fs_fd_pread(args[1],args[2],args[3],args[4]));
     case NAS_SC_pwrite64: FS_RESULT(nas_fs_fd_pwrite(args[1],args[2],args[3],args[4]));
     case NAS_SC_getdents64: FS_RESULT(sys_getdents64(args[1], args[2], args[3]));
