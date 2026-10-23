@@ -13,7 +13,7 @@ if [ "$(git -C "$source" rev-parse HEAD 2>/dev/null || :)" != "$revision" ]; the
     git -C "$source" checkout -q --detach FETCH_HEAD
 fi
 test "$(git -C "$source" rev-parse HEAD)" = "$revision"
-for file in adler32.c crc32.c deflate.c trees.c zutil.c \
+for file in adler32.c crc32.c deflate.c trees.c zutil.c compress.c uncompr.c \
             inflate.c inftrees.c inffast.c \
             zlib.h zconf.h.in zutil.h deflate.h trees.h crc32.h \
             inftrees.h inflate.h inffast.h inffixed.h; do
