@@ -2,7 +2,7 @@
 # executable are created *inside NaSeed* by unmodified GNU Make and TinyCC.
 # The original library source is never patched or linked on the host here.
 CC=/bin/tcc
-CFLAGS=-DZ_SOLO -I/tests
+CFLAGS=-DZ_SOLO -I/tests/include -I/tests
 CFILES=adler32 crc32 deflate trees zutil inflate inftrees inffast compress uncompr
 OBJECTS=$(addprefix /tmp/,$(addsuffix .o,$(CFILES))) /tmp/rt.o /tmp/check.o
 .PHONY: native-run
