@@ -8,14 +8,12 @@ root="$out/alpine"
 mkdir -p "$root/packages" "$root/unpack" "$root/bin" "$root/lib"
 for entry in busybox-1.37.0-r30 musl-1.2.5-r23; do
     apk="$root/packages/$entry.apk"
-    if [ ! -f "$apk" ]; then
-        curl -fLsS --retry 3 -o "$apk.tmp" "$base/$entry.apk"
-        mv "$apk.tmp" "$apk"
-    fi
     case "$entry" in
       busybox*) expected='2fea8c73710994099eaec6832b69a0f70163e0d6ee13848af3a5270a16d15c5c' ;;
       musl*) expected='4f3c4a7bf9f51d2c91007e333b17459362ffd881b4a343e8da07b6c50c4f4a0d' ;;
     esac
+    # CDN HTTP 404 must not silently alter pinned package provenance.
+    sh scripts/fetch-pinned-alpine-apk.sh x86_64 "$entry" "$expected" "$apk"
     printf '%s  %s\n' "$expected" "$apk" | sha256sum -c -
     echo "[ALPINE] verified upstream package $entry"
     case "$entry" in

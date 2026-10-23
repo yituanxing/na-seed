@@ -10,12 +10,6 @@ base="https://dl-cdn.alpinelinux.org/alpine/v3.23/main/$apk_arch"
 mkdir -p "$out/packages" "$out/unpack"
 for name in busybox-1.37.0-r30 musl-1.2.5-r23; do
     pkg="$out/packages/$name.apk"
-    if [ ! -s "$pkg" ]; then
-        curl -fLsS --retry 3 --retry-delay 1 -o "$pkg.tmp" "$base/$name.apk"
-        mv "$pkg.tmp" "$pkg"
-    fi
-    sum=$(sha256sum "$pkg" | cut -d ' ' -f 1)
-    printf '[ALPINE NATIVE SHA256] %s %s %s\n' "$apk_arch" "$name" "$sum"
     required=$(awk -F '|' -v a="$apk_arch" -v p="$name" \
         '$1==a && $2==p {print $3}' scripts/alpine-native-fixtures.txt)
     case "$required" in
@@ -24,7 +18,12 @@ for name in busybox-1.37.0-r30 musl-1.2.5-r23; do
         '-')
             echo '[ALPINE FIXTURE FAIL] unpinned Alpine package checksum' >&2
             exit 1 ;;
-        *) printf '%s  %s\n' "$required" "$pkg" | sha256sum -c - ;;
+        *)
+            sh scripts/fetch-pinned-alpine-apk.sh "$apk_arch" "$name" "$required" "$pkg"
+            sum=$(sha256sum "$pkg" | cut -d ' ' -f 1)
+            printf '[ALPINE NATIVE SHA256] %s %s %s\n' "$apk_arch" "$name" "$sum"
+            printf '%s  %s\n' "$required" "$pkg" | sha256sum -c - ;;
+
     esac
     case "$name" in busybox*) root="$out/unpack/busybox" ;; *) root="$out/unpack/musl" ;; esac
     mkdir -p "$root"
