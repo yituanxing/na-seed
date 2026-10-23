@@ -12,6 +12,7 @@
 #include "../mm/frame.h"
 #include "../mm/usercopy.h"
 #include "../task/exec.h"
+#include "../fs/mode.h"
 #include "../task/process.h"
 #include "../task/wait_pid.h"
 #include "../task/session.h"
@@ -392,6 +393,11 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_rt_sigprocmask) return nas_signal_procmask(args[1], args[2], args[3], args[4],
                                                                 (uint64_t *)(uintptr_t)args);
     if (nr == NAS_SC_kill) return nas_signal_kill(args[1], args[2], (uint64_t *)(uintptr_t)args);
+    if (nr == NAS_SC_umask) {
+        uint64_t previous=TASK.umask;
+        TASK.umask=nas_fs_umask(args[1]);
+        return previous;
+    }
     if (nr == NAS_SC_uname) return sys_uname_naseed(args[1]);
     if (nr == NAS_SC_sysinfo) return nas_sysinfo(args[1]);
 

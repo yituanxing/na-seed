@@ -81,6 +81,7 @@ enum nas_syscall_op {
     NAS_SC_stat,
     NAS_SC_sysinfo,
     NAS_SC_uname,
+    NAS_SC_umask,
     NAS_SC_unlink,
     NAS_SC_unlinkat,
     NAS_SC_utimensat,

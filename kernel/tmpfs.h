@@ -31,7 +31,7 @@ bool tmp_path(const char *path);
 bool tmp_parent(const char *path, char parent[256]);
 struct nas_tmp_file *tmp_find(const char *path);
 int tmp_parent_check(const char *path);
-struct nas_tmp_file *tmp_create(const char *path, bool dir);
+struct nas_tmp_file *tmp_create(const char *path, bool dir,uint32_t mode);
 uint64_t tmp_number(const struct nas_tmp_file *file);
 const struct nas_tmp_file *tmp_child(const char *parent, unsigned index);
 

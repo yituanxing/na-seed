@@ -1,4 +1,5 @@
 #include "task.h"
+#include "fs/mode.h"
 #include "arch/abi.h"
 #include "fd.h"
 #include "lib/string.h"
@@ -42,6 +43,7 @@ void nas_task_boot_init(void) {
     nas_current_task->ppid = 0;
     nas_current_task->pgid = 1;
     nas_current_task->sid = 1;
+    nas_current_task->umask = NAS_UMASK_DEFAULT;
     nas_current_task->state = NAS_TASK_RUNNING;
     nas_current_task->cwd[0] = '/';
     nas_current_task->cwd[1] = 0;
@@ -115,6 +117,7 @@ void nas_task_release(struct nas_task *task) {
     task->ppid = 0;
     task->pgid = 0;
     task->sid = 0;
+    task->umask = NAS_UMASK_DEFAULT;
     task->execed = false;
     task->stopped_from = NAS_TASK_FREE;
     task->stop_report_pending = false;

@@ -36,6 +36,7 @@ struct nas_task {
     uint64_t pid, ppid;
     /* Linux process group + session identity, independent of CPU/VM. */
     uint64_t pgid, sid;
+    uint32_t umask; /* inherited by fork/vfork; preserved by exec */
     bool execed; /* parent may not setpgid(child) after successful exec */
     enum nas_task_state state;
     uint32_t exit_code;

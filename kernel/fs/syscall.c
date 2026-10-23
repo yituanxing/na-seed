@@ -18,6 +18,7 @@
 #include "../arch/mmu.h"
 #include "../drivers/tty.h"
 #include "io.h"
+#include "mode.h"
 #include "syscall.h"
 #include "file_ops.h"
 #include "lookup.h"
@@ -338,7 +339,8 @@ static uint64_t sys_mkdirat_tmp(uint64_t dirfd, uint64_t pathname,
     char path[256];
     uint64_t ret = nas_fs_resolve_path(dirfd, pathname, path);
     return (int64_t)ret < 0 ? ret :
-        (uint64_t)(int64_t)tmp_mkdir(path, mode);
+        (uint64_t)(int64_t)tmp_mkdir(path,
+                            nas_fs_create_mode(mode,TASK.umask));
 }
 static uint64_t sys_unlinkat_tmp(uint64_t dirfd, uint64_t pathname,
                                  uint64_t flags) {
@@ -359,7 +361,8 @@ static uint64_t sys_renameat_tmp(uint64_t olddirfd, uint64_t oldptr,
     return (int64_t)ret < 0 ? ret :
         (uint64_t)(int64_t)tmp_rename(oldpath, newpath, flags);
 }
-static uint64_t sys_open_path(const char *path, uint64_t native_flags) {
+static uint64_t sys_open_path(const char *path, uint64_t native_flags,
+                              uint64_t create_mode) {
     uint64_t flags;
     if (!nas_linux_open_flags(native_flags, &flags)) return (uint64_t)-EINVAL;
     const uint64_t permitted = 3ULL | 0x800ULL | 0x8000ULL |
@@ -440,7 +443,8 @@ static uint64_t sys_open_path(const char *path, uint64_t native_flags) {
         for (unsigned slot = 0; slot < 64; slot++) {
             if (nas_open_files[slot].refcount) continue;
             if (create_tmp) {
-                tmp_file = tmp_create(path, false);
+                tmp_file = tmp_create(path,false,
+                            nas_fs_create_mode(create_mode,TASK.umask));
                 if (!tmp_file) return (uint64_t)-ENOSPC;
             }
             if ((kind == FD_TMP || kind == FD_TMP_DIR) && !tmp_file) return (uint64_t)-ENOENT;
@@ -462,10 +466,11 @@ static uint64_t sys_open_path(const char *path, uint64_t native_flags) {
     }
     return (uint64_t)-EMFILE;
 }
-static uint64_t sys_open_device(uint64_t pathname, uint64_t flags) {
+static uint64_t sys_open_device(uint64_t pathname, uint64_t flags,
+                                 uint64_t mode) {
     char path[256];
     uint64_t result = nas_fs_resolve_path((uint64_t)-100, pathname, path);
-    return (int64_t)result < 0 ? result : sys_open_path(path, flags);
+    return (int64_t)result < 0 ? result : sys_open_path(path,flags,mode);
 }
 
 /* NaOS-aligned idea: bind ops once to the shared open description; do not
@@ -1061,10 +1066,11 @@ static uint64_t sys_utimensat_file(uint64_t dirfd, uint64_t pathname,
     }
     return (uint64_t)(int64_t)tmp_utimens(file,ns[0],ns[1],set[0],set[1]);
 }
-static uint64_t sys_openat_boot(uint64_t dirfd, uint64_t pathname, uint64_t flags) {
+static uint64_t sys_openat_boot(uint64_t dirfd, uint64_t pathname,
+                                uint64_t flags,uint64_t mode) {
     char path[256];
     uint64_t result = nas_fs_resolve_path(dirfd, pathname, path);
-    return (int64_t)result < 0 ? result : sys_open_path(path, flags);
+    return (int64_t)result < 0 ? result : sys_open_path(path,flags,mode);
 }
 static uint64_t write_boot_stat(const struct bootfs_entry *entry, uint64_t dst) {
     struct nas_linux_stat st;
@@ -1101,7 +1107,7 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
         if (err != -ENOENT) return (uint64_t)(int64_t)err;
     }
     /* Legacy modules and character devices retain their existing fstat. */
-    result = sys_open_path(path, 0);
+    result = sys_open_path(path, 0, 0);
     if ((int64_t)result < 0) return result;
     uint64_t ret = sys_fstat_boot(result, statbuf);
     nas_fs_close_fd(result);
@@ -1230,8 +1236,8 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
     case NAS_SC_access: FS_RESULT(sys_access_path((uint64_t)-100,args[1],args[2],0));
     case NAS_SC_faccessat: FS_RESULT(sys_access_path(args[1],args[2],args[3],0));
     case NAS_SC_faccessat2: FS_RESULT(sys_access_path(args[1],args[2],args[3],args[4]));
-    case NAS_SC_open: FS_RESULT(sys_open_device(args[1], args[2]));
-    case NAS_SC_openat: FS_RESULT(sys_openat_boot(args[1], args[2], args[3]));
+    case NAS_SC_open: FS_RESULT(sys_open_device(args[1],args[2],args[3]));
+    case NAS_SC_openat: FS_RESULT(sys_openat_boot(args[1],args[2],args[3],args[4]));
     case NAS_SC_fstat: FS_RESULT(sys_fstat_boot(args[1], args[2]));
     case NAS_SC_newfstatat: FS_RESULT(sys_fstatat_boot(args[1], args[2], args[3], args[4]));
     case NAS_SC_stat: FS_RESULT(sys_fstatat_boot((uint64_t)-100, args[1], args[2], 0));
