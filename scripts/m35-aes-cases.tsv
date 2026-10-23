@@ -1,0 +1,3 @@
+# Original upstream 573-line AES implementation, 3 compiled objects,
+# original GNU Make+TinyCC, native generated ELF executed from paged tmpfs.
+m35-aes-build	cpio	--naseed	naseed-upstream-aes128-pass	-	/bin/native-init
