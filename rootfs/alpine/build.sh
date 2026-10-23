@@ -77,6 +77,15 @@ test -e "$root/usr/bin/gcc"
 test -e "$root/usr/bin/as"
 test -e "$root/usr/bin/ld"
 test -e "$root/bin/busybox"
+# apk --no-scripts is required for cross-ISA installs; Alpine's BusyBox
+# post-install trigger ordinarily creates /bin/sh. Materialize that standard
+# package link without executing an incompatible-architecture install hook.
+if [ ! -e "$root/bin/sh" ]; then
+    [ ! -L "$root/bin/sh" ] || { echo '[M38] broken distro /bin/sh link' >&2; exit 1; }
+    ln -s busybox "$root/bin/sh"
+fi
+test -x "$root/bin/sh"
+test "$(readlink -f "$root/bin/sh")" = "$(readlink -f "$root/bin/busybox")"
 readelf -h "$root/usr/bin/gcc" | grep -Fq "$machine"
 # Original layout, no handcrafted sysroot: /usr/include, /usr/lib,
 # /usr/libexec/gcc, etc. Exclude device nodes, retain symlinks.

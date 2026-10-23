@@ -74,3 +74,12 @@ stock BusyBox ash. This matches real OS boot and userspace behavior:
 process argv and compiler subprogram invocations come from libc/shell,
 not a bootloader test harness. Both the original GCC hello and the
 new readv test remain mandatory markers.
+
+## Signed Alpine package post-install behavior
+
+Foreign architecture apk installs deliberately use --no-scripts. Alpine's
+BusyBox post-install trigger normally creates /bin/sh, but scripts cannot
+run on the host for a foreign ISA. Stage that exact standard BusyBox link
+in the immutable rootfs, verify that it resolves to the authentic package
+binary, and continue executing stock sh rather than using an OS-side
+special-case or substituting a handcrafted shell.
