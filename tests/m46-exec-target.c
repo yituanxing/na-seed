@@ -33,7 +33,7 @@ static inline long sys3(long n,long a,long b,long c){
     return x0;
 #endif
 }
-static __attribute__((noreturn)) void target_main(void){
+static __attribute__((used,noreturn)) void target_main(void){
     long tid=sys3(NR_gettid,0,0,0),pid=sys3(NR_getpid,0,0,0);
     u64 head=1,length=0;
     long r=sys3(NR_getrobust,0,(long)&head,(long)&length);

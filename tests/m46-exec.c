@@ -115,7 +115,7 @@ static void one_child(int which) {
     (void)sys3(NR_futex,(long)&blockword,128,0);
     exitall(96); /* must not survive worker exec */
 }
-static __attribute__((noreturn)) void stress_main(void) {
+static __attribute__((used,noreturn)) void stress_main(void) {
     for(int which=1;which<=2;which++){
         long child=sys6(NR_clone,17,0,0,0,0,0);
         if(child<0)exitall(97);
