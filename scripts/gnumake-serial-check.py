@@ -6,8 +6,9 @@ import subprocess
 import sys
 import time
 
-if len(sys.argv) != 2:
-    sys.exit("usage: gnumake-serial-check.py ISO")
+if len(sys.argv) not in (2,3) or (len(sys.argv)==3 and sys.argv[2]!="native-exec"):
+    sys.exit("usage: gnumake-serial-check.py ISO [native-exec]")
+native_exec=len(sys.argv)==3
 p = subprocess.Popen(["sh", "scripts/run.sh", sys.argv[1]],
     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT, bufsize=0)
@@ -42,14 +43,22 @@ with open(work+"/serial.log","wb") as fd:
     fd.write(out)
 sys.stdout.buffer.write(out[-11000:])
 sys.stdout.buffer.flush()
-markers=[b"[GNUMAKE] exec original GNU Make",
-         b"naseed-make-recipe-one",
-         b"naseed-make-recipe-two",
-         b"naseed-compiled-object",
-         b"[PASS] cmdline userspace exit 0"]
+markers=([b"[NATIVE-EXEC] GNU Make builds, chmods and runs a TinyCC ELF",
+          b"naseed-make-recipe-one",
+          b"naseed-make-recipe-two",
+          b"naseed-native-tcc-elf-ran",
+          b"[PASS] cmdline userspace exit 0"]
+         if native_exec else
+         [b"[GNUMAKE] exec original GNU Make",
+          b"naseed-make-recipe-one",
+          b"naseed-make-recipe-two",
+          b"naseed-compiled-object",
+          b"[PASS] cmdline userspace exit 0"])
 if (p.returncode!=1 or any(x not in out for x in markers) or
     out.count(b"naseed-make-recipe-one")!=1 or
     out.count(b"naseed-make-recipe-two")!=1 or b"[FAIL]" in out):
     sys.exit(f"[GNUMAKE NASEED FAIL] qemu={p.returncode},"
              f"found={[x in out for x in markers]}; see serial.log")
-print("[GNUMAKE NASEED PASS] unmodified GNU Make ran real Linux shell recipes in NaSeed")
+print("[NATIVE EXEC NASEED PASS] original Make/TinyCC linked and ran tmpfs ELF"
+      if native_exec else
+      "[GNUMAKE NASEED PASS] unmodified GNU Make ran real Linux shell recipes in NaSeed")
