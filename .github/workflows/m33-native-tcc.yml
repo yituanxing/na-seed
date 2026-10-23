@@ -21,6 +21,15 @@ on:
       - 'tests/m35-aes-check.c'
       - 'tests/m35-native.mk'
       - 'tests/m35-include/**'
+      - 'scripts/fetch-m36-zlib.sh'
+      - 'scripts/stage-m36-zlib-rootfs.sh'
+      - 'scripts/probe-m36-zlib.sh'
+      - 'scripts/m36-zlib-cases.tsv'
+      - 'tests/m36-zlib-check.c'
+      - 'tests/m36-zlib-native.mk'
+      - 'kernel/tmpfs.c'
+      - 'kernel/tmpfs.h'
+      - 'kernel/fs/syscall.c'
       - 'tests/native-exec-init.c'
       - '.github/workflows/m33-native-tcc.yml'
   workflow_dispatch:
@@ -31,7 +40,7 @@ jobs:
   native-tcc:
     name: original upstream TinyCC / ${{ matrix.port }}
     runs-on: ubuntu-latest
-    timeout-minutes: 26
+    timeout-minutes: 34
     strategy:
       fail-fast: false
       matrix:
@@ -107,6 +116,9 @@ jobs:
       - name: Original upstream AES project multi-object Make build and NIST test in NaSeed
         timeout-minutes: 8
         run: sh scripts/probe-m35-aes.sh ${{ matrix.port }}
+      - name: Real zlib 1.3.1 ten-object build, deflate/inflate and dynamic tmpfs slab gate
+        timeout-minutes: 9
+        run: sh scripts/probe-m36-zlib.sh ${{ matrix.port }}
       - name: Attach upstream build, native ELF and serial diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
@@ -126,6 +138,12 @@ jobs:
             build/external/m35-aes/${{ matrix.port }}/linux-nist.log
             build/external/m35-aes/${{ matrix.port }}/aes.o
             build/external/m35-aes/${{ matrix.port }}/aes-check
+            build/external/m36-zlib/${{ matrix.port }}/linux-deflate.log
+            build/external/m36-zlib/${{ matrix.port }}/zlib-check
+            build/external/m36-zlib/${{ matrix.port }}/check.o
+            build/busybox-source-parity-x86/m36-*.serial.log
+            build/port-riscv64/full/matrix-source/m36-*.serial.log
+            build/port-aarch64/full/matrix-source/m36-*.serial.log
             build/busybox-source-parity-x86/m35-*.serial.log
             build/port-riscv64/full/matrix-source/m35-*.serial.log
             build/port-aarch64/full/matrix-source/m35-*.serial.log
