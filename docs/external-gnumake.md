@@ -31,3 +31,14 @@ GNU Make optimized the original simple `echo` recipe into a direct
 an OS bug. The test Makefile now explicitly calls `/bin/sh -c`, exercising
 GNU Make's child lifecycle and the genuine original BusyBox POSIX shell.
 The test never patches GNU Make or returns simulated echo strings.
+
+### Why the guest rootfs includes /bin/echo
+
+GNU Make's first recipe is the ordinary shell command `echo ...`.
+GNU Make legitimately optimizes a simple command by calling execve
+on `echo` directly; therefore a minimal Linux-like rootfs needs an
+actual command on PATH. A symlink to the **unmodified Debian BusyBox
+echo applet** supplies the real program, just as BusyBox distributions
+do. The second recipe explicitly executes the genuine `/bin/sh` to
+cover the shell path as well. No GNU Make patch, fake syscall or
+synthetic status output is used.

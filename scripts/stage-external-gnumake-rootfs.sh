@@ -9,6 +9,10 @@ cp "$work/gmake" "$root/bin/gmake"
 sh scripts/fetch-busybox-fixture.sh amd64 "$work/busybox"
 cp "$work/busybox" "$root/bin/busybox"
 ln -s busybox "$root/bin/sh"
+# GNU Make executes simple recipes directly (no shell). Real Linux
+# installations provide /bin/echo, and BusyBox's authentic echo applet
+# provides that command without any custom kernel or Make special case.
+ln -s busybox "$root/bin/echo"
 gcc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
     tests/gnumake-native-init.c -o "$root/bin/make-init"
 cp tests/gnumake-real.mk "$root/tests/Makefile"
@@ -20,9 +24,10 @@ touch -t 197001010000 "$root" "$root/bin" "$root/tests" "$root/tmp" \
     "$root/bin/gmake" "$root/bin/busybox" "$root/bin/make-init" \
     "$root/tests/Makefile"
 touch -h -t 197001010000 "$root/bin/sh"
+touch -h -t 197001010000 "$root/bin/echo"
 (
    cd "$root"
-   printf '%s\n' . bin bin/gmake bin/busybox bin/sh bin/make-init \
+   printf '%s\n' . bin bin/gmake bin/busybox bin/sh bin/echo bin/make-init \
        tests tests/Makefile tmp |
      cpio -o -H newc --quiet --owner=0:0
 ) > "$work/rootfs.cpio.tmp"
