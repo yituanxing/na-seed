@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Unmodified original GNU Make executes two actual shell processes in NaSeed."""
 import os
+import re
 import select
 import subprocess
 import sys
@@ -55,6 +56,13 @@ markers=([b"[NATIVE-EXEC] GNU Make builds, chmods and runs a TinyCC ELF",
           b"naseed-make-recipe-two",
           b"naseed-compiled-object",
           b"[PASS] cmdline userspace exit 0"])
+# Resolve native kernel faults to exact C function/file/line using the
+# *same* symbolized ELF that booted QEMU. No guessed address interpretation.
+fault = re.search(rb"\\[FAULT\\][^\\n]*\\brip=(0x[0-9a-fA-F]+)", out)
+if fault and os.path.exists("build/kernel.elf"):
+    print("[KERNEL FAULT SYMBOLS]", flush=True)
+    subprocess.run(["addr2line", "-f", "-C", "-e", "build/kernel.elf",
+                    fault.group(1).decode()], check=False)
 if (p.returncode!=1 or any(x not in out for x in markers) or
     out.count(b"naseed-make-recipe-one")!=1 or
     out.count(b"naseed-make-recipe-two")!=1 or b"[FAIL]" in out):
