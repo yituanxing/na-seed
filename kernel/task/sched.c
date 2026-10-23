@@ -149,6 +149,9 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     nas_task_adopt_orphans(child->pid);
     for (unsigned fd = 0; fd < NAS_FD_LIMIT; fd++)
         if (descriptors[fd] != FD_CLOSED) nas_fs_close_fd(fd);
+    /* All inherited jobserver pipe ends are closed before SIGCHLD is
+     * observed. Wake a caught parent signal, never fake a ready pipe. */
+    nas_signal_child_exit(child);
     if (signum) {
         if (signum == NAS_SIGPIPE) {
             /* Keep the observable SIGPIPE trace consumed by immutable
@@ -323,7 +326,9 @@ retry_schedule: ; /* label must precede a statement in C11 */
     for (unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
         const struct nas_task *t=nas_task_at(slot);
         if (t->state != NAS_TASK_BLOCKED || !t->pending_valid)continue;
-        if((t->blocked_op==NAS_SC_poll || t->blocked_op==NAS_SC_ppoll) &&
+        if((t->blocked_op==NAS_SC_poll ||
+             t->blocked_op==NAS_SC_ppoll ||
+             t->blocked_op==NAS_SC_pselect6) &&
            t->poll_tty_read) {
             __asm__ volatile ("" ::: "memory");
             goto retry_schedule;
