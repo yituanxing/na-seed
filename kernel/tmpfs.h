@@ -6,7 +6,7 @@
 /* Volatile, finite /tmp backend. This is not yet a generic Linux VFS.
  * Transition seam: syscall/user memory remains with m1.c; namespace and
  * inode/open-description lifetimes belong here. */
-/* Metadata is allocated in demand-paged inode slabs, not a fixed 
+/* Metadata is allocated in demand-paged inode slabs, not a fixed
  * global array of eight inodes. Memory exhaustion is reported by the
  * existing physical frame allocator, not an arbitrary source-level count. */
 /* Sparse, demand-allocated 4-KiB physical pages. Each indirect page has
