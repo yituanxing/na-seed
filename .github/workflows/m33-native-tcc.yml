@@ -13,6 +13,14 @@ on:
       - 'scripts/probe-m34-native-make.sh'
       - 'tests/m34-portable-hello.c'
       - 'tests/m34-native.mk'
+      - 'scripts/m35-aes-cases.tsv'
+      - 'scripts/fetch-m35-upstream-aes.sh'
+      - 'scripts/stage-m35-aes-rootfs.sh'
+      - 'scripts/probe-m35-aes.sh'
+      - 'tests/m35-rt.c'
+      - 'tests/m35-aes-check.c'
+      - 'tests/m35-native.mk'
+      - 'tests/m35-include/**'
       - 'tests/native-exec-init.c'
       - '.github/workflows/m33-native-tcc.yml'
   workflow_dispatch:
@@ -23,7 +31,7 @@ jobs:
   native-tcc:
     name: original upstream TinyCC / ${{ matrix.port }}
     runs-on: ubuntu-latest
-    timeout-minutes: 18
+    timeout-minutes: 26
     strategy:
       fail-fast: false
       matrix:
@@ -96,6 +104,9 @@ jobs:
       - name: Complete three-ISA original GNU Make + TinyCC + linked tmpfs ELF execution
         timeout-minutes: 9
         run: sh scripts/probe-m34-native-make.sh ${{ matrix.port }}
+      - name: Original upstream AES project multi-object Make build and NIST test in NaSeed
+        timeout-minutes: 8
+        run: sh scripts/probe-m35-aes.sh ${{ matrix.port }}
       - name: Attach upstream build, native ELF and serial diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
@@ -112,6 +123,12 @@ jobs:
             build/external/m34-gnumake/${{ matrix.port }}/linux-version.log
             build/external/m34-gnumake/${{ matrix.port }}/linux-generated-exec.log
             build/external/m34-gnumake/${{ matrix.port }}/native-hello
+            build/external/m35-aes/${{ matrix.port }}/linux-nist.log
+            build/external/m35-aes/${{ matrix.port }}/aes.o
+            build/external/m35-aes/${{ matrix.port }}/aes-check
+            build/busybox-source-parity-x86/m35-*.serial.log
+            build/port-riscv64/full/matrix-source/m35-*.serial.log
+            build/port-aarch64/full/matrix-source/m35-*.serial.log
             build/busybox-source-parity-x86/m34-*.serial.log
             build/port-riscv64/full/matrix-source/m34-*.serial.log
             build/port-aarch64/full/matrix-source/m34-*.serial.log
