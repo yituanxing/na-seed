@@ -1,5 +1,5 @@
 #!/bin/sh
-# One true upstream project, 9 independent .o objects + executable,
+# One true upstream project, 11 independent .o objects + executable,
 # designed to exceed the historical tmpfs 8-inode limit naturally.
 set -eu
 [ "$#" -eq 1 ] || exit 2
@@ -25,7 +25,7 @@ else
     run_tcc() { "$compiler" "$@"; }
 fi
 objs=''
-for file in adler32 crc32 deflate trees zutil inflate inftrees inffast; do
+for file in adler32 crc32 deflate trees zutil inflate inftrees inffast compress uncompr; do
     run_tcc -DZ_SOLO -I"$work/include" -I"$source" \
         -c "$source/$file.c" -o "$work/$file.o"
     readelf -h "$work/$file.o" | grep -q 'REL (Relocatable file)'
@@ -48,11 +48,11 @@ else
     "$work/zlib-check" > "$work/linux-deflate.log"
 fi
 grep -Fxq naseed-upstream-zlib-pass "$work/linux-deflate.log"
-echo "[M36 LINUX DEFLATE PASS] $port original 9 zlib objects, real deflate/inflate and bytewise compare"
+echo "[M36 LINUX DEFLATE PASS] $port original 11 objects, real deflate/inflate and bytewise compare"
 sh scripts/stage-m36-zlib-rootfs.sh "$port"
 export BUSYBOX_PARITY_BINARY="$make"
 export NAS_ACCEPTANCE_CPIO="$work/rootfs.cpio"
 export BUSYBOX_PARITY_MANIFEST=scripts/m36-zlib-cases.tsv
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
 sh "$runner"
-echo "[M36 NASEED ZLIB PASS] $port unmodified upstream zlib, 10 new tmpfs inodes, native GNU Make/TCC build+exec"
+echo "[M36 NASEED ZLIB PASS] $port unmodified upstream zlib, 12 new tmpfs inodes, native GNU Make/TCC build+exec"
