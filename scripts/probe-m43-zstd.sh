@@ -20,7 +20,7 @@ export BUSYBOX_PARITY_MANIFEST=scripts/m43-zstd-cases.tsv
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
 export NAS_ACCEPTANCE_QEMU_RAM=1024M
 export NAS_ACCEPTANCE_DISK_MB=256
-export NAS_SYSCALL_TRACE=${NAS_SYSCALL_TRACE:-0}
+export NAS_SYSCALL_TRACE=${NAS_SYSCALL_TRACE:-1}
 sh "$runner"
 log="$logs/m43-zstd.clean.log"
 test -s "$log"

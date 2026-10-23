@@ -12,6 +12,7 @@
 #include "sched.h"
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
+extern void nas_hex(uint64_t);
 static void proc_fail(const char *s) __attribute__((noreturn));
 static void proc_fail(const char *s) { nas_print("[FAIL] M1 "); nas_print(s); nas_print("\n"); nas_arch_halt(); }
 /* A cooperative child-first fork; parent remains READY while child runs.
@@ -288,6 +289,20 @@ uint64_t nas_process_clone_thread(uint64_t *frame,uint64_t stack,
     nas_print(" tgid=");nas_dec(child->tgid);nas_print("\n");
     return 0;
 }
+#ifdef NASEED_SYSCALL_TRACE
+static unsigned futex_trace_count;
+static void futex_debug(const char *act,uint64_t addr,uint64_t val,uint64_t ret) {
+    if(futex_trace_count++>700)return;
+    nas_print("[FUTEX] "); nas_print(act);
+    nas_print(" tid=");nas_dec(nas_current_task->pid);
+    nas_print(" addr=");nas_hex(addr);
+    nas_print(" val=");nas_hex(val);
+    nas_print(" result=");nas_dec(ret);
+    nas_print("\n");
+}
+#else
+#define futex_debug(a,b,c,d) ((void)0)
+#endif
 unsigned nas_process_futex_wake(uint64_t uaddr,unsigned max,uint32_t mask) {
     unsigned count=0;
     for(unsigned i=0;i<NAS_TASK_LIMIT && count<max;i++) {
@@ -299,6 +314,7 @@ unsigned nas_process_futex_wake(uint64_t uaddr,unsigned max,uint32_t mask) {
         t->futex_woken=true;
         count++;
     }
+    futex_debug("wake",uaddr,max,count);
     return count;
 }
 /* Linux futex word ABI is a native aligned 32-bit user value, on each ISA.
@@ -327,7 +343,8 @@ uint64_t nas_process_futex(uint64_t *frame,uint64_t addr,uint64_t op,
     if(!nas_user_read_bytes(addr,bytes,4))return (uint64_t)-EFAULT;
     uint32_t word=(uint32_t)bytes[0]|((uint32_t)bytes[1]<<8)|
                   ((uint32_t)bytes[2]<<16)|((uint32_t)bytes[3]<<24);
-    if(word!=(uint32_t)val)return (uint64_t)-EAGAIN;
+    if(word!=(uint32_t)val) {futex_debug("mismatch",addr,val,word);return (uint64_t)-EAGAIN;}
+    futex_debug("wait",addr,val,op);
     nas_current_task->deadline_active=false;
     if(timeout) {
         uint64_t sec,nsec,ns;

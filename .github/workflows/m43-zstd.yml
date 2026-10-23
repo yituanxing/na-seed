@@ -25,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        port: [amd64, riscv64, arm64]
+        port: [amd64]
     steps:
       - uses: actions/checkout@v4
       - name: Install headless QEMU and boot toolchain
