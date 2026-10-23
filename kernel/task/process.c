@@ -132,6 +132,32 @@ void nas_process_vfork_release(void) {
     nas_print("[PROC] vfork parent resumed pid="); nas_dec(parent->pid);
     nas_print("\n");
 }
+/* Linux rlimit64: report resource limits the kernel actually enforces.
+ * A limit update is NOT a no-op success: reject until the underlying
+ * resource scheduler/FD/VM policy can enforce mutable soft/hard values. */
+uint64_t nas_process_prlimit(uint64_t pid,uint64_t resource,
+                             uint64_t new_addr,uint64_t old_addr) {
+    if (pid && pid != nas_current_task->pid)
+        return nas_task_by_pid(pid) ? (uint64_t)-EPERM : (uint64_t)-ESRCH;
+    if (resource > 15) return (uint64_t)-EINVAL;
+    if (new_addr) return (uint64_t)-EOPNOTSUPP;
+    uint64_t soft=UINT64_MAX, hard=UINT64_MAX;
+    switch (resource) {
+    case 3: soft=hard=32ULL*4096ULL; break; /* RLIMIT_STACK */
+    case 4: soft=hard=0; break;             /* RLIMIT_CORE: no dumps */
+    case 6: soft=hard=NAS_TASK_LIMIT; break; /* RLIMIT_NPROC */
+    case 7: soft=hard=NAS_FD_LIMIT; break; /* RLIMIT_NOFILE */
+    case 8: soft=hard=0; break;             /* RLIMIT_MEMLOCK */
+    case 13: case 14: soft=hard=0; break;   /* NICE/RTPRIO */
+    default: break; /* No separate resource-limit policy. */
+    }
+    if (old_addr) {
+        const uint64_t pair[2]={soft,hard};
+        if (!nas_user_write_bytes(old_addr,(const uint8_t *)pair,sizeof(pair)))
+            return (uint64_t)-EFAULT;
+    }
+    return 0;
+}
 void nas_process_clear_tid_on_exit(void) {
     uint64_t tid_addr=nas_current_task->thread_clear_tid;
     if (!tid_addr) return;

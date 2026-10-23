@@ -220,6 +220,10 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_set_tid_address) { thread_clear_tid = args[1]; return TASK.pid; }
     if (nr == NAS_SC_getpid || nr == NAS_SC_gettid) return TASK.pid;
     if (nr == NAS_SC_getppid) return TASK.ppid;
+    if (nr == NAS_SC_getrlimit)
+        return nas_process_prlimit(0,args[1],0,args[2]);
+    if (nr == NAS_SC_prlimit64)
+        return nas_process_prlimit(args[1],args[2],args[3],args[4]);
     if(nr==NAS_SC_clock_gettime)
         return nas_time_read_clock(args[1],args[2],false);
     if(nr==NAS_SC_clock_getres)

@@ -7,6 +7,9 @@ struct nas_task;
 #define NAS_WAIT_NOHANG    1ULL
 #define NAS_WAIT_UNTRACED  2ULL
 #define NAS_WAIT_CONTINUED 8ULL
+/* Honest read-only Linux rlimit64 snapshot; changes remain unsupported. */
+uint64_t nas_process_prlimit(uint64_t pid,uint64_t resource,
+                             uint64_t new_addr,uint64_t old_addr);
 uint64_t nas_process_fork(uint64_t *syscall_frame);
 /* Exactly fork-equivalent CLONE_CHILD_SETTID|CHILD_CLEARTID|SIGCHLD
  * process creation. Child-address-space TID is initialized before entry.
