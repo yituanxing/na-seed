@@ -61,12 +61,10 @@ static bool elf_map_image(const struct elf_image *image,uint64_t bias,
 
 bool nas_elf_load(const struct elf_image *image,
                      const struct elf_image *interpreter, uint64_t *entry) {
-    if (!image || !image->data || image->size < sizeof(struct elf_hdr))
+    struct elf_hdr header;
+    if (!nas_elf_image_open(image, NAS_ELF_MACHINE, true, 64, &header))
         return false;
-    struct nas_elf_view view;
-    if (!nas_elf_open(&view, image->data, image->size,
-                      NAS_ELF_MACHINE, true, 64)) return false;
-    const struct elf_hdr *e = view.header;
+    const struct elf_hdr *e = &header;
     uint64_t bias = e->type == 3 ? ALPINE_APP_BASE : 0;
     bool has_interp = false;
     if (!elf_map_image(image, bias, true, &loaded_main_entry, &has_interp))
