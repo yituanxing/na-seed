@@ -11,6 +11,7 @@
 #include "mmap_abi.h"
 #define TASK (*nas_current_task)
 #define heap_break TASK.heap_break
+static bool vm_owned_pages(uint64_t start, uint64_t length);
 
 /* M11: eager, privately owned anonymous VM ranges. Existing PT_LOAD and
  * heap/stack mappings stay in their established address domains. Releasing
@@ -28,26 +29,42 @@ uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
      * Non-anonymous mappings and nonzero offsets remain explicitly refused. */
     if (!length || length > (64ULL << 20) || length > UINT64_MAX - PAGE)
         return (uint64_t)-EINVAL;
-    if (!nas_linux_anon_map_supported(flags,fd,offset))
+    bool fixed=nas_linux_anon_fixed_supported(flags,offset);
+    if (!fixed && !nas_linux_anon_map_supported(flags,fd,offset))
         return (uint64_t)-ENOSYS;
     if (prot & ~7ULL) return (uint64_t)-EINVAL;
-    if (!prot) return (uint64_t)-ENOSYS; /* needs inaccessible-VMA support */
     if (!nas_vm_prot_supported(prot)) return (uint64_t)-EOPNOTSUPP;
     if (!nas_arch_user_nx_supported()) return (uint64_t)-ENOSYS;
     uint64_t pages = (length + PAGE - 1) / PAGE;
     uint64_t bytes = pages * PAGE;
     uint64_t start;
-    if (!nas_anon_find_gap(&TASK.anonymous, bytes, &start))
-        return (uint64_t)-ENOMEM;
-    uint64_t va=start;
-    for (; va < start+bytes; va+=PAGE)
-        if (!nas_mmu_map_prot_page(va,prot)) break;
-    if (va != start+bytes) {
-        while (va>start) { va-=PAGE; if (!nas_mmu_unmap_page(va)) nas_arch_halt(); }
-        return (uint64_t)-ENOMEM;
+    if (fixed) {
+        /* MAP_FIXED must replace pages only in an existing reservation.
+         * Never trample kernel/ELF/stack mappings outside the VMA owner. */
+        if ((hint & (PAGE-1)) || !vm_owned_pages(hint,bytes))
+            return (uint64_t)-ENOMEM;
+        start=hint;
+        for (uint64_t va=start;va<start+bytes;va+=PAGE) {
+            if (nas_mmu_user_byte(va) && !nas_mmu_unmap_page(va))
+                return (uint64_t)-EFAULT;
+            if (prot && !nas_mmu_map_prot_page(va,prot))
+                return (uint64_t)-ENOMEM;
+        }
+        return start;
     }
-    /* A free metadata slot was checked by find_gap; this cannot fail
-     * without an internal allocator bug or unexpected PTE aliasing. */
+    if (!nas_anon_find_gap(&TASK.anonymous,bytes,&start))
+        return (uint64_t)-ENOMEM;
+    /* PROT_NONE is a real reserved virtual interval with no PTE or
+     * allocated physical page. musl can populate it later using MAP_FIXED. */
+    uint64_t va=start;
+    if (prot) {
+        for (;va<start+bytes;va+=PAGE)
+            if (!nas_mmu_map_prot_page(va,prot)) break;
+        if (va != start+bytes) {
+            while (va>start) { va-=PAGE; if (!nas_mmu_unmap_page(va)) nas_arch_halt(); }
+            return (uint64_t)-ENOMEM;
+        }
+    }
     if (!nas_anon_record(&TASK.anonymous,start,bytes))
         nas_arch_halt();
     return start;
@@ -137,8 +154,12 @@ uint64_t nas_vm_munmap(uint64_t addr, uint64_t len) {
     memcpy(&updated, &TASK.anonymous, sizeof(updated));
     if (!nas_anon_forget(&updated,addr,count*PAGE))
         return (uint64_t)-ENOMEM;
-    for (uint64_t i=0; i<count; ++i)
-        if (!nas_mmu_unmap_page(addr+i*PAGE)) return (uint64_t)-EFAULT;
+    for (uint64_t i=0; i<count; ++i) {
+        uint64_t va=addr+i*PAGE;
+        /* PROT_NONE reservations have intentionally absent PTEs. */
+        if (nas_mmu_user_byte(va) && !nas_mmu_unmap_page(va))
+            return (uint64_t)-EFAULT;
+    }
     memcpy(&TASK.anonymous, &updated, sizeof(updated));
     return 0;
 }

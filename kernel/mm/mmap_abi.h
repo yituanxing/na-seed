@@ -12,4 +12,10 @@ static inline bool nas_linux_anon_map_supported(uint64_t flags,
     return (flags & 0x22ULL)==0x22ULL &&
            !(flags & ~0x22ULL) && offset==0;
 }
+/* A MAP_FIXED anonymous remap is only admitted if VM already owns the
+ * whole virtual interval; ordinary base mmap flags remain unchanged. */
+static inline bool nas_linux_anon_fixed_supported(uint64_t flags,
+                                                   uint64_t offset) {
+    return flags == 0x32ULL && offset == 0; /* PRIVATE|ANON|FIXED */
+}
 #endif

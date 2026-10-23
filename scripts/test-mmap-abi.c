@@ -10,5 +10,9 @@ int main(void) {
     assert(!nas_linux_anon_map_supported(0x02,UINT64_MAX,0));
     assert(!nas_linux_anon_map_supported(0x23,UINT64_MAX,0));
     assert(!nas_linux_anon_map_supported(0x22,UINT64_MAX,4096));
+    assert(nas_linux_anon_fixed_supported(0x32,0));
+    assert(!nas_linux_anon_fixed_supported(0x22,0));
+    assert(!nas_linux_anon_fixed_supported(0x32,4096));
+    assert(!nas_linux_anon_fixed_supported(0x33,0));
     return 0;
 }
