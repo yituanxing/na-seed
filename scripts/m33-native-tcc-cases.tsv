@@ -1,0 +1,4 @@
+# Same two true native compiler actions on x86-64, RV64 and AArch64.
+# Entry is the compiled upstream TinyCC itself; the kernel is unchanged.
+tcc-preprocess	cpio	-E /tests/first.c	int naseed_answer = 42;	-	/bin/tcc
+tcc-compile	cpio	-c /tests/first.c -o /tmp/first.o	-	-	/bin/tcc
