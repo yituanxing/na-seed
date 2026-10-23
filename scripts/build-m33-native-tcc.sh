@@ -53,6 +53,13 @@ fi
     > "../configure.log" 2>&1 || {
       tail -100 ../configure.log >&2; exit 1;
     }
+  # TinyCC's upstream Makefile compiles c2str.exe using target CC, but
+  # immediately executes it to generate a host-side header. Cross builds
+  # must use the real host GCC for this *build tool*; the compiler proper
+  # and every guest ELF remain built with the selected native cross GCC.
+  if [ -n "$cross" ]; then
+    gcc -DC2STR conftest.c -o c2str.exe
+  fi
   make -s -j2 tcc > ../build.log 2>&1 || {
     tail -120 ../build.log >&2; exit 1;
   }
