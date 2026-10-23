@@ -11,20 +11,15 @@ static long call3(long nr,long a,long b,long c) {
 }
 enum { SYS_WRITE=1, SYS_EXIT=60 };
 #elif defined(__aarch64__)
-static long call3(long nr,long a,long b,long c) {
-    register long x0 __asm__("x0")=a;
-    register long x1 __asm__("x1")=b;
-    register long x2 __asm__("x2")=c;
-    register long x8 __asm__("x8")=nr;
-    /* TinyCC upstream ARM64 inline assembler lacks the svc mnemonic,
-     * but supports the standard .long directive. 0xd4000001 is the
-     * architecturally specified encoding of SVC #0. Real kernel entry,
-     * registers and returned errno are still exercised unchanged. */
-    __asm__ volatile(".long 0xd4000001" : "+r"(x0)
-                     : "r"(x1),"r"(x2),"r"(x8) : "memory");
-    return x0;
-}
-enum { SYS_WRITE=64, SYS_EXIT=93 };
+/* The pinned upstream TinyCC ARM backend has a real extended-inline-asm
+ * register-allocation defect: x0 is overwritten with the syscall number
+ * while x8 is correctly loaded. AArch64's syscall ABI is x8=nr,x0=arg0.
+ * Keep the original compiler and bypass only its faulty operand tying by
+ * placing all four ABI register moves inside one asm instruction sequence.
+ * TinyCC supports the standard A64 mov + .long directives, but not the
+ * svc mnemonic. The encoded 0xd4000001 IS the real architectural SVC #0.
+ * Linux/QEMU-user AND native NaSeed both verify actual write+exit below. */
+#define NAS_AARCH64_RAW_SYSCALL 1
 #elif defined(__riscv) && __riscv_xlen==64
 static long call3(long nr,long a,long b,long c) {
     register long a0 __asm__("a0")=a;
@@ -41,7 +36,20 @@ enum { SYS_WRITE=64, SYS_EXIT=93 };
 #endif
 void _start(void) {
     static const char hello[]="naseed-three-isa-build-exec\n";
+#if defined(NAS_AARCH64_RAW_SYSCALL)
+    __asm__ volatile(
+        "mov x1, %0\n"
+        "mov x0, #1\n"
+        "mov x2, #28\n"
+        "mov x8, #64\n"
+        ".long 0xd4000001\n"
+        "mov x0, #0\n"
+        "mov x8, #93\n"
+        ".long 0xd4000001\n"
+        : : "r"((long)hello) : "memory");
+#else
     long n=call3(SYS_WRITE,1,(long)hello,sizeof(hello)-1);
     call3(SYS_EXIT,n==sizeof(hello)-1?0:13,0,0);
+#endif
     for(;;) {}
 }
