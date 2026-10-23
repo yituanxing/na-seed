@@ -40,8 +40,10 @@ chmod 1777 "$root/tmp"
 chmod 644 "$root/tests/"*.c "$root/tests/"*.h "$root/tests/Makefile" \
  "$root/tests/include/"*.h
 touch -t 197001010000 "$root" "$root/bin" "$root/tests" \
- "$root/tests/include" "$root/tmp" "$root/bin/"{gmake,tcc,busybox,native-init} \
- "$root/tests/"{aes.c,aes.h,rt.c,check.c,Makefile} "$root/tests/include/"*.h
+ "$root/tests/include" "$root/tmp" \
+ "$root/bin/gmake" "$root/bin/tcc" "$root/bin/busybox" "$root/bin/native-init" \
+ "$root/tests/aes.c" "$root/tests/aes.h" "$root/tests/rt.c" \
+ "$root/tests/check.c" "$root/tests/Makefile" "$root/tests/include/"*.h
 for applet in sh chmod echo; do touch -h -t 197001010000 "$root/bin/$applet"; done
 ( cd "$root"
   printf '%s\n' . bin bin/gmake bin/tcc bin/busybox \
