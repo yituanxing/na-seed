@@ -6,16 +6,36 @@
 #include "lib/string.h"
 #include "mm/frame.h"
 
-/* RAM /tmp data and descriptor bindings are owned only by this module.
- * Linux syscall argument decoding and userspace copy remain in m1.c. */
-static struct nas_tmp_file tmp_files[TMP_FILE_COUNT];
-static uint8_t tmp_slot_owner[NAS_FD_LIMIT]; /* 1-based inode index */
-static void tmp_try_reclaim(unsigned owner) {
-    if (!owner || owner > TMP_FILE_COUNT) return;
-    struct nas_tmp_file *node = &tmp_files[owner - 1];
-    if (!node->used || node->linked) return;
+/* Metadata is itself demand-allocated from the common frame provider:
+ * one page holds several reusable inode records; a linked slab chain grows
+ * as large as available RAM allows instead of stopping after eight files.
+ * Crucially, pointers remain stable across growth and fork/dup/rename.
+ * Only the generic tmpfs owns slabs; no architecture-dependent allocator. */
+#define TMP_INODES_PER_SLAB ((4096U - sizeof(void *)) / sizeof(struct nas_tmp_file))
+struct tmp_inode_slab {
+    struct tmp_inode_slab *next;
+    struct nas_tmp_file nodes[TMP_INODES_PER_SLAB];
+};
+_Static_assert(sizeof(struct tmp_inode_slab) <= 4096, "tmp inode slab must fit one frame");
+_Static_assert(TMP_INODES_PER_SLAB >= 2, "tmp inode must fit slab");
+
+static struct tmp_inode_slab *tmp_slabs;
+static struct nas_tmp_file *tmp_slot_owner[NAS_FD_LIMIT];
+static uint64_t tmp_next_ino = 1;
+
+static struct tmp_inode_slab *tmp_new_slab(void) {
+    uint64_t frame = nas_frame_alloc();
+    if (!frame) return 0;
+    struct tmp_inode_slab *slab =
+        (struct tmp_inode_slab *)(uintptr_t)(nas_hhdm_offset() + frame);
+    slab->next = tmp_slabs;
+    tmp_slabs = slab;
+    return slab;
+}
+static void tmp_try_reclaim(struct nas_tmp_file *node) {
+    if (!node || !node->used || node->linked) return;
     for (unsigned slot = 0; slot < NAS_FD_LIMIT; slot++)
-        if (tmp_slot_owner[slot] == owner && nas_open_files[slot].refcount)
+        if (tmp_slot_owner[slot] == node && nas_open_files[slot].refcount)
             return;
     tmp_truncate(node);
     node->used = false;
@@ -126,9 +146,12 @@ bool tmp_parent(const char *path, char parent[256]) {
     return true;
 }
 struct nas_tmp_file *tmp_find(const char *path) {
-    for (unsigned n=0;n<TMP_FILE_COUNT;n++)
-        if (tmp_files[n].used && tmp_files[n].linked &&
-            strcmp(tmp_files[n].path,path)==0) return &tmp_files[n];
+    for (struct tmp_inode_slab *slab = tmp_slabs; slab; slab = slab->next)
+        for (unsigned n = 0; n < TMP_INODES_PER_SLAB; n++) {
+            struct nas_tmp_file *file = &slab->nodes[n];
+            if (file->used && file->linked && strcmp(file->path,path)==0)
+                return file;
+        }
     return 0;
 }
 int tmp_parent_check(const char *path) {
@@ -139,53 +162,57 @@ int tmp_parent_check(const char *path) {
     struct nas_tmp_file *dir=tmp_find(parent);
     return !dir ? -ENOENT : dir->is_dir ? 0 : -ENOTDIR;
 }
-struct nas_tmp_file *tmp_create(const char *path,bool dir) {
-    for (unsigned n=0;n<TMP_FILE_COUNT;n++) {
-        struct nas_tmp_file *file=&tmp_files[n];
-        if (file->used) continue;
-        unsigned i=0;
-        while (path[i] && i<255) { file->path[i]=path[i]; i++; }
-        file->path[i]=0;
-        file->size=0;
-        file->mode=dir ? 0040755U : 0100644U;
-        file->is_dir=dir;
-        file->linked=file->used=true;
-        return file;
-    }
-    return 0;
+static struct nas_tmp_file *tmp_init_node(struct nas_tmp_file *file,
+                                          const char *path, bool dir) {
+    unsigned i=0;
+    while (path[i] && i<255) { file->path[i]=path[i]; i++; }
+    file->path[i]=0;
+    file->size=0;
+    file->mode=dir ? 0040755U : 0100644U;
+    file->is_dir=dir;
+    file->ino=tmp_next_ino++;
+    file->linked=file->used=true;
+    return file;
 }
-unsigned tmp_number(const struct nas_tmp_file *file) {
-    return (unsigned)(file-tmp_files);
+struct nas_tmp_file *tmp_create(const char *path,bool dir) {
+    for (struct tmp_inode_slab *slab = tmp_slabs; slab; slab = slab->next)
+        for (unsigned n=0;n<TMP_INODES_PER_SLAB;n++)
+            if (!slab->nodes[n].used)
+                return tmp_init_node(&slab->nodes[n], path, dir);
+    struct tmp_inode_slab *slab = tmp_new_slab();
+    return slab ? tmp_init_node(&slab->nodes[0], path, dir) : 0;
+}
+uint64_t tmp_number(const struct nas_tmp_file *file) {
+    return file ? file->ino : 0;
 }
 const struct nas_tmp_file *tmp_child(const char *parent,unsigned index) {
-    for (unsigned n=0;n<TMP_FILE_COUNT;n++) {
-        const struct nas_tmp_file *file=&tmp_files[n];
-        if (!file->used || !file->linked) continue;
-        char dir[256];
-        if (!tmp_parent(file->path,dir) || strcmp(dir,parent)!=0)
-            continue;
-        if (!index) return file;
-        index--;
-    }
+    for (struct tmp_inode_slab *slab = tmp_slabs; slab; slab = slab->next)
+        for (unsigned n=0;n<TMP_INODES_PER_SLAB;n++) {
+            const struct nas_tmp_file *file = &slab->nodes[n];
+            if (!file->used || !file->linked) continue;
+            char dir[256];
+            if (!tmp_parent(file->path,dir) || strcmp(dir,parent)!=0)
+                continue;
+            if (!index) return file;
+            index--;
+        }
     return 0;
 }
 
 void tmp_bind_slot(unsigned slot, const struct nas_tmp_file *file) {
     if (slot >= NAS_FD_LIMIT || !file) return;
-    tmp_slot_owner[slot] = (uint8_t)(tmp_number(file) + 1);
+    tmp_slot_owner[slot] = (struct nas_tmp_file *)(uintptr_t)file;
 }
 struct nas_tmp_file *tmp_by_slot(unsigned slot) {
     if (slot >= NAS_FD_LIMIT) return 0;
-    unsigned owner=tmp_slot_owner[slot];
-    if (!owner || owner>TMP_FILE_COUNT) return 0;
-    struct nas_tmp_file *file=&tmp_files[owner-1];
-    return file->used ? file : 0;
+    struct nas_tmp_file *file=tmp_slot_owner[slot];
+    return file && file->used ? file : 0;
 }
 void tmp_release_slot(unsigned slot) {
     if (slot >= NAS_FD_LIMIT) return;
-    unsigned owner=tmp_slot_owner[slot];
+    struct nas_tmp_file *file=tmp_slot_owner[slot];
     tmp_slot_owner[slot]=0;
-    tmp_try_reclaim(owner);
+    tmp_try_reclaim(file);
 }
 /* These are actual Linux mkdir(83), rmdir(84), unlink(87) and
  * mkdirat/unlinkat entry points, not shell-command path rewrites.
@@ -229,7 +256,7 @@ int tmp_unlink(const char *path, uint64_t flags) {
         }
     }
     file->linked=false;
-    tmp_try_reclaim(tmp_number(file)+1);
+    tmp_try_reclaim(file);
     return 0;
 }
 /* M6.9: an inode rename is a namespace operation; open descriptions keep
@@ -290,8 +317,9 @@ int tmp_rename(const char *oldpath, const char *newpath, uint64_t flags) {
      */
     if (source->is_dir) {
         char candidate[256];
-        for (unsigned n = 0; n < TMP_FILE_COUNT; n++) {
-            const struct nas_tmp_file *entry = &tmp_files[n];
+        for (struct tmp_inode_slab *slab=tmp_slabs; slab; slab=slab->next)
+        for (unsigned n = 0; n < TMP_INODES_PER_SLAB; n++) {
+            const struct nas_tmp_file *entry = &slab->nodes[n];
             if (!entry->used || !entry->linked ||
                 !tmp_under(entry->path, oldpath)) continue;
             if (!tmp_move_name(candidate, newpath, oldpath, entry->path))
@@ -307,14 +335,14 @@ int tmp_rename(const char *oldpath, const char *newpath, uint64_t flags) {
     }
     /* Commit: remove destination pathname but preserve open inode contents. */
     if (target) {
-        unsigned owner = tmp_number(target) + 1;
         target->linked = false;
-        tmp_try_reclaim(owner);
+        tmp_try_reclaim(target);
     }
     if (source->is_dir) {
         char candidate[256];
-        for (unsigned n = 0; n < TMP_FILE_COUNT; n++) {
-            struct nas_tmp_file *entry = &tmp_files[n];
+        for (struct tmp_inode_slab *slab=tmp_slabs; slab; slab=slab->next)
+        for (unsigned n = 0; n < TMP_INODES_PER_SLAB; n++) {
+            struct nas_tmp_file *entry = &slab->nodes[n];
             if (!entry->used || !entry->linked ||
                 !tmp_under(entry->path, oldpath)) continue;
             if (!tmp_move_name(candidate, newpath, oldpath, entry->path))
