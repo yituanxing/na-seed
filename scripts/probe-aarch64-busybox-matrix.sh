@@ -98,7 +98,7 @@ boot_case() {
         process-capacity) time_budget=65 ;;
         init-reaper) time_budget=130 ;;
         m38-gcc) time_budget=360 ;;
-        m39-packages|m40-archives) time_budget=100 ;;
+        m39-packages|m40-archives|m41-unix) time_budget=100 ;;
         m37-incremental) time_budget=150 ;;
         *) time_budget=28 ;;
     esac

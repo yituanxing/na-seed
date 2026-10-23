@@ -1,0 +1,8 @@
+# Signed original Alpine 3.23 GNU userspace; native musl dependency closure.
+musl
+busybox
+findutils
+grep
+sed
+diffutils
+coreutils

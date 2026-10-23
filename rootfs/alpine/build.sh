@@ -18,6 +18,8 @@ case "$profile" in
              package_list=rootfs/alpine/packages-runtime.txt ;;
     archive) work="build/external/m40-archive/$port"
              package_list=rootfs/alpine/packages-archive.txt ;;
+    unix) work="build/external/m41-unix/$port"
+          package_list=rootfs/alpine/packages-unix.txt ;;
     *) echo "[ALPINE] unknown profile $profile" >&2; exit 2 ;;
 esac
 root="$work/rootfs"
@@ -96,6 +98,30 @@ if [ "$profile" = archive ]; then
         done
         [ -n "$binary" ] || { echo "[M40] missing original packaged $program ($port)" >&2; exit 1; }
         readelf -h "$binary" | grep -Fq "$machine"
+    done
+elif [ "$profile" = unix ]; then
+    # One system acceptance: original ELF tools across fork/exec/pipe/tmpfs.
+    mkdir -p "$root/tests/m41/raw/nested"
+    cp tests/m41-alpha.txt "$root/tests/m41/raw/a.txt"
+    cp tests/m41-beta.txt "$root/tests/m41/raw/nested/b.txt"
+    cp tests/m41-expected.txt "$root/tests/m41/expected.txt"
+    cp tests/m41-unix-run.sh "$root/tests/run-unix.sh"
+    for program in find grep sed sort diff cp mv sha256sum; do
+        binary=''
+        for location in "$root/usr/bin/$program" "$root/bin/$program"; do
+            if [ -x "$location" ]; then
+                candidate=$(readlink -f "$location")
+                if [ "$candidate" != "$(readlink -f "$root/bin/busybox")" ] &&
+                   readelf -h "$candidate" 2>/dev/null | grep -Fq "$machine"; then
+                    binary=$candidate
+                    break
+                fi
+            fi
+        done
+        [ -n "$binary" ] || {
+            echo "[M41] missing original native GNU $program ($port)" >&2
+            exit 1
+        }
     done
 elif [ "$profile" = runtime ]; then
     # These are original Alpine executables, *not* compiled in NaSeed.

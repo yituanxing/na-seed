@@ -1,0 +1,2 @@
+# One same-ISA GNU process + tmpfs pipeline, shell checked exact end state.
+m41-unix	cpio	sh -c '/bin/sh /tests/run-unix.sh'	M41_UNIX_PASS	-	/bin/busybox
