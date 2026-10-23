@@ -9,6 +9,7 @@
 #include "../arch/arch.h"
 #include "../arch/abi.h"
 #include "../mm/vm.h"
+#include "../mm/frame.h"
 #include "../mm/usercopy.h"
 #include "../task/exec.h"
 #include "../task/process.h"
@@ -135,6 +136,36 @@ static uint64_t nas_time_poll_arm_deadline(enum nas_syscall_op nr,
         TASK.deadline_active=true;
     }
     return 0;
+}
+
+
+/* Linux LP64 struct sysinfo, shared by x86-64, RV64 and AArch64.
+ * Report frame allocator accounting rather than invented guest RAM.
+ * No swap is provided, and kernel load averages are not yet sampled.
+ * mem_unit=4096 keeps physical counts representable without overflow. */
+struct nas_linux_sysinfo {
+    int64_t uptime;
+    uint64_t loads[3];
+    uint64_t totalram, freeram, sharedram, bufferram;
+    uint64_t totalswap, freeswap;
+    uint16_t procs, pad;
+    uint64_t totalhigh, freehigh;
+    uint32_t mem_unit;
+};
+_Static_assert(sizeof(struct nas_linux_sysinfo)==112,
+               "Linux LP64 sysinfo ABI size");
+static uint64_t nas_sysinfo(uint64_t addr) {
+    struct nas_linux_sysinfo info={0};
+    info.uptime=(int64_t)(nas_arch_monotonic_ns()/NAS_NSEC_PER_SEC);
+    info.totalram=nas_managed_frames();
+    info.freeram=nas_free_frames();
+    info.mem_unit=4096U;
+    for (unsigned i=0;i<NAS_TASK_LIMIT;i++) {
+        const struct nas_task *t=nas_task_at(i);
+        if (t && t->state!=NAS_TASK_FREE) info.procs++;
+    }
+    return nas_user_write_bytes(addr,(const uint8_t *)&info,sizeof(info))
+        ? 0 : (uint64_t)-EFAULT;
 }
 
 static uint32_t missing_count[512];
@@ -336,6 +367,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
                                                                 (uint64_t *)(uintptr_t)args);
     if (nr == NAS_SC_kill) return nas_signal_kill(args[1], args[2], (uint64_t *)(uintptr_t)args);
     if (nr == NAS_SC_uname) return sys_uname_naseed(args[1]);
+    if (nr == NAS_SC_sysinfo) return nas_sysinfo(args[1]);
 
     if (nr == NAS_SC_vfork)
         return nas_process_vfork((uint64_t *)(uintptr_t)args,

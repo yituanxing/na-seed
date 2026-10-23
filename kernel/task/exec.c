@@ -228,8 +228,18 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
      * storage for the post-exec BusyBox/PIE accounting. */
     struct elf_hdr executable_header;
     if (!nas_elf_image_open(&main_img, NAS_ELF_MACHINE, true, 64,
-                            &executable_header))
+                            &executable_header)) {
+        struct elf_hdr rejected={0};
+        nas_print("[ELF HEADER REJECT] "); nas_print(actual);
+        if (nas_elf_image_read(&main_img,0,&rejected,sizeof(rejected))) {
+            nas_print(" machine="); nas_hex(rejected.machine);
+            nas_print(" type="); nas_hex(rejected.type);
+            nas_print(" phnum="); nas_hex(rejected.phnum);
+            nas_print(" size="); nas_hex(main_img.size);
+        }
+        nas_print("\n");
         return (uint64_t)-ENOEXEC;
+    }
     struct nas_fs_node loader;
     char loader_path[256];
     struct elf_image interp_img={0};

@@ -1,2 +1,2 @@
 # Original native GCC, binutils, musl headers/crt/libc, no guest package fetch
-m38-gcc	cpio	sh -c 'cd /tmp && echo M38_COMPILER_START && /usr/bin/gcc --version && /usr/bin/gcc -static /tests/hello.c -o hello && echo M38_LINKED && /bin/busybox chmod 755 hello && ./hello'	M38_GCC_PASS	-	/bin/busybox
+m38-gcc	cpio	sh -c 'cd /tmp && echo M38_COMPILER_START && /usr/bin/gcc --version && /usr/bin/gcc -static /tests/hello.c -o hello && echo M38_LINKED && /bin/busybox ls -l /tmp && /bin/busybox stat /tmp/hello && /bin/busybox chmod 755 hello && ./hello'	M38_GCC_PASS	-	/bin/busybox
