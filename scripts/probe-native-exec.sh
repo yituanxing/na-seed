@@ -10,8 +10,19 @@ mkdir -p "$work"
 # freestanding source that the NaSeed guest will compile and execute.
 build/external/tcc/amd64/tcc -nostdlib -static \
     -o "$work/hello" tests/native-hello.c
-readelf -h "$work/hello" | grep -q 'EXEC (Executable file)'
-readelf -s "$work/hello" | grep -Fq '_start'
+# Print precise ELF metadata so a linker/format issue cannot masquerade
+# as a kernel failure. The guest will execute the *same* upstream-TCC output.
+readelf -h "$work/hello" > "$work/elf-header.log"
+readelf -s "$work/hello" > "$work/elf-symbols.log"
+cat "$work/elf-header.log" | grep -E 'Type:|Machine:|Entry point'
+if ! grep -Eq 'Type:.*EXEC' "$work/elf-header.log"; then
+  echo '[NATIVE EXEC LINUX FAIL] TinyCC did not emit ET_EXEC' >&2
+  cat "$work/elf-header.log" >&2; exit 1
+fi
+if ! grep -Fq '_start' "$work/elf-symbols.log"; then
+  echo '[NATIVE EXEC LINUX FAIL] missing _start symbol' >&2
+  cat "$work/elf-symbols.log" >&2; exit 1
+fi
 if readelf -l "$work/hello" | grep -q INTERP; then
   echo '[NATIVE EXEC] TinyCC generated dynamic interpreter unexpectedly' >&2
   exit 1
