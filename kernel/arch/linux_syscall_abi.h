@@ -190,6 +190,14 @@ static inline uint64_t nas_linux_clone_child_tid(const uint64_t *call) {
     return call[5];
 #endif
 }
+/* The x86 legacy vfork number has NO user stack argument; clone does.
+ * Keep this register-ABI decision out of the common process dispatcher. */
+static inline uint64_t nas_linux_vfork_child_stack(const uint64_t *call) {
+#if defined(__x86_64__)
+    if (call[0] == __NR_vfork) return 0;
+#endif
+    return call[2];
+}
 static inline enum nas_syscall_op nas_linux_decode_call(const uint64_t *args) {
     if (!args) return NAS_SC_NONE;
 #if defined(__x86_64__)
