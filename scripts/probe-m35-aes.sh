@@ -49,7 +49,7 @@ fi
 grep -Fxq naseed-upstream-aes128-pass "$work/linux-nist.log"
 echo "[M35 LINUX NIST PASS] $port upstream AES128 ECB/CBC/CTR via three TinyCC objects"
 sh scripts/stage-m35-aes-rootfs.sh "$port"
-export BUSYBOX_PARITY_BINARY="$work/gmake"
+export BUSYBOX_PARITY_BINARY="$make"
 export NAS_ACCEPTANCE_CPIO="$work/rootfs.cpio"
 export BUSYBOX_PARITY_MANIFEST=scripts/m35-aes-cases.tsv
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
