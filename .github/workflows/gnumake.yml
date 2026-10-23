@@ -42,6 +42,18 @@ jobs:
             missing="$missing ovmf"
           fi
           if [ -n "$missing" ]; then
+            # October 2026 GitHub hosted runner: Azure Ubuntu mirror stalled
+            # for >6min on a single 11MB QEMU .deb. The official Ubuntu
+            # archive is the same signed package origin with an independent
+            # network path. Keep apt signature checks, no insecure fallback.
+            if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
+                /etc/apt/sources.list.d/ubuntu.sources
+            fi
+            if [ -f /etc/apt/sources.list ]; then
+              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
+                /etc/apt/sources.list
+            fi
             sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=45 update -qq
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
               --no-install-recommends $missing
