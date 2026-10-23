@@ -247,7 +247,7 @@ static inline enum nas_syscall_op nas_linux_decode_call(const uint64_t *args) {
          * sysvsem, TLS, parent TID and child-clear TID. */
         if (args[1] == (0x100ULL|0x200ULL|0x400ULL|0x800ULL|
                         0x10000ULL|0x40000ULL|0x80000ULL|
-                        0x100000ULL|0x200000ULL))
+                        0x100000ULL|0x200000ULL|0x400000ULL))
             return NAS_SC_clone_thread;
         if (args[1] == (0x00000100ULL|0x00004000ULL|17ULL))
             return NAS_SC_vfork;
