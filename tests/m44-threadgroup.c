@@ -80,7 +80,7 @@ static void nap(void) {
 static volatile int role;
 static uint32_t ids[2];
 static __attribute__((aligned(16))) unsigned char stacks[2][65536];
-static __attribute__((noreturn)) void thread_entry(void) {
+static __attribute__((used,noreturn)) void thread_entry(void) {
     int what=role;
     if(what==1) {
         static volatile int lockword;
@@ -97,8 +97,9 @@ static __attribute__((noreturn)) void thread_entry(void) {
 }
 /* clone restarts at the next instruction but switches SP, so do not
  * return into a missing C caller frame on the CHILD stack. */
-__attribute__((naked)) static long launch_thread(void *sp,uint32_t *ptid,
-                                                  uint32_t *ctid) {
+__attribute__((naked)) static long launch_thread(void *sp __attribute__((unused)),
+                                                  uint32_t *ptid __attribute__((unused)),
+                                                  uint32_t *ctid __attribute__((unused))) {
 #if defined(__x86_64__)
     __asm__ volatile(
         "mov %rdx, %r10\n"

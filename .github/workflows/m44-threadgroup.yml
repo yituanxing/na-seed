@@ -3,14 +3,14 @@ on:
   pull_request:
     paths:
       - 'rootfs/alpine/**'
-      - 'scripts/probe-m44-group.sh'
+      - 'scripts/probe-m44-threadgroup.sh'
       - 'scripts/m44-group-cases.tsv'
       - 'tests/m44-group-run.sh'
       - 'tests/m44-threadgroup.c'
       - 'scripts/probe-x86-busybox-parity.sh'
       - 'scripts/probe-riscv64-busybox-matrix.sh'
       - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - '.github/workflows/m44-group.yml'
+      - '.github/workflows/m44-threadgroup.yml'
       - 'kernel/**'
       - '.github/workflows/arm64-full.yml'
   workflow_dispatch:
@@ -64,7 +64,7 @@ jobs:
         run: sh scripts/check-bootfs-scale.sh
       - name: Run original native multi-threaded thread-group lifecycle and Zstandard inside all three NaSeed QEMU targets
         timeout-minutes: 12
-        run: sh scripts/probe-m44-group.sh ${{ matrix.port }}
+        run: sh scripts/probe-m44-threadgroup.sh ${{ matrix.port }}
       - name: Preserve original package/ELF/serial evidence
         if: failure()
         uses: actions/upload-artifact@v4
