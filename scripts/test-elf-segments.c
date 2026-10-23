@@ -33,7 +33,7 @@ int main(void) {
     p->type=1;p->flags=5;p->offset=0x200;p->vaddr=0x10000;
     p->filesz=4;p->memsz=12;
     image.b[0x200]=42;
-    struct elf_image elf={image.b,sizeof(image.b)};
+    struct elf_image elf={.data=image.b,.size=sizeof(image.b)};
     struct nas_elf_segment_policy opt={
         .machine=243,.max_phnum=16,.min_va=0x10000,
         .max_va=0x14000,.max_segment=0x4000,.max_pages=4,
