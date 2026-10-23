@@ -15,7 +15,10 @@ if [ -s "$dest" ] && printf '%s  %s\n' "$expected" "$dest" | sha256sum -c - >/de
 fi
 # mirrors.alpinelinux.org lists these official/registered v3.23 transports.
 # Override only to inject offline fixtures in the self-contained CI test.
-mirrors=${NAS_ALPINE_MIRRORS:-'https://dl-cdn.alpinelinux.org/alpine https://mirror.math.princeton.edu/pub/alpinelinux https://mirrors.edge.kernel.org/alpine'}
+# Alpine v3.23 mirrors do not all retain superseded musl revisions.
+# Keep verified historical transports FIRST: the official rolling CDN now
+# serves musl-r24 whereas our tested runtime pin is musl-r23.
+mirrors=${NAS_ALPINE_MIRRORS:-'https://ftp.lysator.liu.se/pub/alpine https://download.nus.edu.sg/mirror/alpine https://mirrors.aliyun.com/alpine https://dl-cdn.alpinelinux.org/alpine https://mirror.math.princeton.edu/pub/alpinelinux'}
 tmp="$dest.tmp.$$"
 trap 'rm -f "$tmp"' EXIT
 for mirror in $mirrors; do
