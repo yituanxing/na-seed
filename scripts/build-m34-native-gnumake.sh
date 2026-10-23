@@ -29,7 +29,7 @@ if [ ! -s "$tarball" ]; then
     rm -f "$tarball.tmp"
     if curl -fLsS --connect-timeout 8 --max-time 45 \
        --retry 1 --retry-delay 1 -o "$tarball.tmp" "$url" &&
-       printf '%s  %s\\n' "$sha" "$tarball.tmp" | sha256sum -c - >/dev/null; then
+       printf '%s  %s\n' "$sha" "$tarball.tmp" | sha256sum -c - >/dev/null; then
       mv "$tarball.tmp" "$tarball"
       fetched=1
       break
