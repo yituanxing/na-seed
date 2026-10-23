@@ -1,0 +1,7 @@
+# Original signed Alpine v3.23 userland. No NaSeed-only libc ABI.
+musl
+musl-dev
+gcc
+binutils
+make
+busybox
