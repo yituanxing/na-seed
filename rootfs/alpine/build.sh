@@ -117,7 +117,7 @@ elif [ "$profile" = group ]; then
         arm64) target_triple=aarch64-linux-musl ;;
     esac
     clang --target="$target_triple" -O2 -std=c11 -Wall -Wextra -Werror \
-        -ffreestanding -fno-stack-protector -fno-builtin \
+        -ffreestanding -nostdinc -fno-stack-protector -fno-builtin \
         -fno-pic -fno-pie -nostdlib -static -fuse-ld=lld \
         -Wl,-e,_start -Wl,-z,max-page-size=4096 \
         tests/m44-threadgroup.c -o "$root/tests/m44-threadgroup"

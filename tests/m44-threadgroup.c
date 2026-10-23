@@ -1,8 +1,9 @@
 /* M44: freestanding, real three-ISA Linux syscall group-lifetime gate.
  * Built with the host's upstream LLVM; runs only in native NaSeed QEMU.
  * No fake libc, custom pthread shim or special kernel dispatch paths. */
-#include <stdint.h>
-#include <stddef.h>
+/* Freestanding LP64: no cross-libc headers required for raw syscalls. */
+typedef unsigned int uint32_t;
+typedef long int64_t;
 #if defined(__x86_64__)
 #define NR_read 0
 #define NR_write 1
