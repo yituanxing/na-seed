@@ -34,6 +34,9 @@ struct nas_fd_table {
 
 struct nas_task {
     uint64_t pid, ppid;
+    uint64_t tgid; /* getpid: thread group; pid remains unique gettid */
+    bool is_thread; /* CLONE_THREAD tasks are never wait4 children */
+    struct nas_task *vm_owner; /* shared address-space metadata owner */
     /* Linux process group + session identity, independent of CPU/VM. */
     uint64_t pgid, sid;
     uint32_t umask; /* inherited by fork/vfork; preserved by exec */
@@ -76,6 +79,9 @@ struct nas_task {
     uint64_t loaded_phdr, loaded_phnum;
     uint64_t loaded_main_entry, loaded_interp_base;
     uint64_t thread_clear_tid;
+    uint64_t futex_addr;
+    uint32_t futex_mask;
+    bool futex_woken;
     /* A vfork parent sleeps until exec/exit; child holds shared-VM root. */
     uint64_t vfork_child_pid, vfork_parent_pid;
     bool vfork_shared_vm;
@@ -98,7 +104,8 @@ struct nas_task {
     uint64_t signal_force_deliver;
     struct nas_arch_context signal_saved_arch;
     char cwd[256];
-    struct nas_fd_table fds;
+    struct nas_fd_table fds_owned;
+    struct nas_fd_table *fds; /* CLONE_FILES shares descriptor TABLE */
 
     /* Real user-thread lifecycle and per-task syscall-boundary state. */
     bool running_bash, running_busybox, running_alpine;

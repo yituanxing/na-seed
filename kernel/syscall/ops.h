@@ -33,6 +33,8 @@ enum nas_syscall_op {
     NAS_SC_fork,
     /* Fork process with Linux child-set/clear-TID lifecycle. */
     NAS_SC_fork_child_tid,
+    NAS_SC_clone_thread,
+    NAS_SC_futex,
     NAS_SC_vfork,
     NAS_SC_fstat,
     NAS_SC_getcwd,

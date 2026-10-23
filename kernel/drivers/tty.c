@@ -44,7 +44,7 @@ bool nas_tty_background_fd(uint64_t fd) {
         nas_current_task->sid==tty.sid &&
         nas_current_task->pgid!=tty.pgid &&
         fd<NAS_FD_LIMIT &&
-        nas_current_task->fds.descriptors[fd]==FD_TTY;
+        nas_current_task->fds->descriptors[fd]==FD_TTY;
 }
 bool nas_tty_tostop(void) { return (tty.t.lflag&0000400U)!=0; }
 bool nas_tty_controlling(void) {

@@ -17,7 +17,7 @@
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
 #define TASK (*nas_current_task)
-#define descriptors TASK.fds.descriptors
+#define descriptors TASK.fds->descriptors
 #define signal_actions TASK.signal_actions
 #define blocked_signals TASK.blocked_signals
 static void sched_fail(const char *s) __attribute__((noreturn));
@@ -71,6 +71,7 @@ static bool task_can_wake(const struct nas_task *task) {
         return true;
     if (task->blocked_op == NAS_SC_nanosleep ||
         task->blocked_op == NAS_SC_clock_nanosleep) return false;
+    if (task->blocked_op == NAS_SC_futex) return task->futex_woken;
     if (task->blocked_op == NAS_SC_wait4) return task_wait_ready(task);
     if (task->blocked_op == NAS_SC_poll ||
         (task->blocked_op == NAS_SC_ppoll ||
@@ -110,6 +111,7 @@ static uint64_t task_replay(struct nas_task *task) {
      * timeout or dereference its userspace timespec during replay. */
     if (nr == NAS_SC_nanosleep || nr == NAS_SC_clock_nanosleep)
         return 0;
+    if (nr == NAS_SC_futex) return task->futex_woken ? 0 : (uint64_t)-ETIMEDOUT;
     if (nr == NAS_SC_read) return nas_fs_fd_read(a[0], a[1], a[2]);
     if (nr == NAS_SC_readv) return nas_fs_fd_readv(a[0], a[1], a[2]);
     if (nr == NAS_SC_write) return nas_fs_fd_write(a[0], a[1], a[2]);
@@ -138,6 +140,15 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     if (!child->ppid || !nas_task_by_pid(child->ppid))
         sched_fail("child termination without living parent");
     nas_process_clear_tid_on_exit();
+    if (child->is_thread) {
+        /* Linux thread exit does not close CLONE_FILES or create wait4 zombies.
+         * The shared VM is owned by the surviving thread-group leader. */
+        child->state=NAS_TASK_ZOMBIE;
+        child->pending_valid=false;
+        child->blocked_op=0;
+        child->futex_addr=0;
+        return;
+    }
     if (child->vfork_shared_vm) {
         nas_process_vfork_release();
         /* Exit-before-exec must never let wait4 free parent's page table. */
@@ -321,6 +332,11 @@ retry_schedule: ; /* label must precede a statement in C11 */
             next->state = NAS_TASK_RUNNING;
             next->resume_valid = false;
             nas_arch_load_user_frame(next, frame);
+            /* The old thread's kernel stack is no longer active after the
+             * syscall frame is transferred. Its TID slot can be recycled. */
+            if (previous!=next && previous->is_thread &&
+                previous->state==NAS_TASK_ZOMBIE)
+                nas_task_release(previous);
             if (schedule_count++ < 48) {
                 nas_print("[SCHED] from="); nas_dec(previous_pid);
                 nas_print(" to="); nas_dec(next->pid); nas_print("\n");

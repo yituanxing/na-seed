@@ -8,6 +8,8 @@
 #include "../mm/usercopy.h"
 #include "process.h"
 #include "wait_pid.h"
+#include "../time/clock.h"
+#include "sched.h"
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
 static void proc_fail(const char *s) __attribute__((noreturn));
@@ -168,6 +170,7 @@ void nas_process_clear_tid_on_exit(void) {
     if (!nas_user_write_bytes(tid_addr,zero,sizeof(zero)))
         proc_fail("clone clear_child_tid unmapped before exit");
     nas_current_task->thread_clear_tid=0;
+    (void)nas_process_futex_wake(tid_addr,1,UINT32_MAX);
 }
 
 /* Shared wait readiness used by both synchronous wait4 and the scheduler
@@ -234,4 +237,123 @@ uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
     return have_child
         ? ((options & NAS_WAIT_NOHANG) ? 0 : (uint64_t)-EOPNOTSUPP)
         : (uint64_t)-ECHILD;
+}
+
+
+/* A bounded single-CPU Linux thread group: only musl's exact pthread clone
+ * flag set is accepted by the ISA decoder. The VM and FD table are truly
+ * shared, while user stack, TLS, TID and trap/FPU registers are task-local.
+ * No clone of another ISA backend or special application code exists. */
+uint64_t nas_process_clone_thread(uint64_t *frame,uint64_t stack,
+                                 uint64_t parent_tid,uint64_t child_tid,
+                                 uint64_t tls) {
+    struct nas_task *parent=nas_current_task;
+    if (!stack || stack>=USER_LIMIT || tls>=USER_LIMIT ||
+        !parent_tid || !child_tid || parent_tid>USER_LIMIT-4 ||
+        child_tid>USER_LIMIT-4 || stack<16 ||
+        !nas_mmu_user_writable(stack-8) ||
+        !nas_mmu_user_writable(parent_tid) ||
+        !nas_mmu_user_writable(parent_tid+3) ||
+        !nas_mmu_user_writable(child_tid) ||
+        !nas_mmu_user_writable(child_tid+3))return (uint64_t)-EFAULT;
+    nas_arch_save_user_frame(parent,frame);
+    nas_arch_save_fpu(parent);
+    struct nas_task *child=nas_task_fork_slot();
+    if (!child)return (uint64_t)-EAGAIN;
+    child->tgid=parent->tgid;
+    child->is_thread=true;
+    child->ppid=parent->ppid;
+    child->vm_owner=parent->vm_owner;
+    child->fds=parent->fds; /* CLONE_FILES: do NOT increase description refs */
+    nas_task_set_root(child,parent->root_phys);
+    nas_arch_context_set_user_sp(&child->arch,stack);
+    nas_arch_context_set_tls(&child->arch,tls);
+    child->thread_clear_tid=child_tid;
+    uint32_t tid=(uint32_t)child->pid;
+    uint8_t value[4]={(uint8_t)tid,(uint8_t)(tid>>8),
+                      (uint8_t)(tid>>16),(uint8_t)(tid>>24)};
+    if (!nas_user_write_bytes(parent_tid,value,sizeof(value)) ||
+        !nas_user_write_bytes(child_tid,value,sizeof(value)))
+        proc_fail("thread TID store failed after validation");
+    nas_arch_set_saved_return(parent,child->pid);
+    parent->resume_valid=true;
+    parent->pending_valid=false;
+    parent->blocked_op=0;
+    parent->state=NAS_TASK_READY;
+    child->state=NAS_TASK_RUNNING;
+    nas_current_task=child;
+    nas_arch_restore_cpu(child);
+    nas_arch_load_user_frame(child,frame);
+    nas_print("[THREAD] clone tid=");nas_dec(child->pid);
+    nas_print(" tgid=");nas_dec(child->tgid);nas_print("\n");
+    return 0;
+}
+unsigned nas_process_futex_wake(uint64_t uaddr,unsigned max,uint32_t mask) {
+    unsigned count=0;
+    for(unsigned i=0;i<NAS_TASK_LIMIT && count<max;i++) {
+        struct nas_task *t=nas_task_at(i);
+        if(t->state!=NAS_TASK_BLOCKED || !t->pending_valid ||
+           t->blocked_op!=NAS_SC_futex || t->futex_addr!=uaddr ||
+           t->vm_owner!=nas_current_task->vm_owner ||
+           !(t->futex_mask&mask))continue;
+        t->futex_woken=true;
+        count++;
+    }
+    return count;
+}
+/* Linux futex word ABI is a native aligned 32-bit user value, on each ISA.
+ * WAIT and WAIT_BITSET are truly blocking in shared single-CPU scheduler.
+ * Unsupported PI/requeue/robust operations return ENOSYS, never success. */
+uint64_t nas_process_futex(uint64_t *frame,uint64_t addr,uint64_t op,
+                           uint64_t val,uint64_t timeout,uint64_t addr2,
+                           uint64_t val3) {
+    (void)addr2;
+    if ((addr&3U) || addr>USER_LIMIT-4)return (uint64_t)-EINVAL;
+    uint64_t command=op&127U;
+    if(op & ~(uint64_t)(127U|128U|256U))return (uint64_t)-EINVAL;
+    if((op&256U) && command!=9U)return (uint64_t)-ENOSYS;
+    if(command==1U || command==10U) {
+        uint32_t mask=command==10U?(uint32_t)val3:UINT32_MAX;
+        if(!mask)return (uint64_t)-EINVAL;
+        if(!nas_mmu_user_byte(addr) || !nas_mmu_user_byte(addr+3))
+            return (uint64_t)-EFAULT;
+        unsigned n=val>NAS_TASK_LIMIT?NAS_TASK_LIMIT:(unsigned)val;
+        return nas_process_futex_wake(addr,n,mask);
+    }
+    if(command!=0U && command!=9U)return (uint64_t)-ENOSYS;
+    uint32_t mask=command==9U?(uint32_t)val3:UINT32_MAX;
+    if(!mask)return (uint64_t)-EINVAL;
+    uint8_t bytes[4];
+    if(!nas_user_read_bytes(addr,bytes,4))return (uint64_t)-EFAULT;
+    uint32_t word=(uint32_t)bytes[0]|((uint32_t)bytes[1]<<8)|
+                  ((uint32_t)bytes[2]<<16)|((uint32_t)bytes[3]<<24);
+    if(word!=(uint32_t)val)return (uint64_t)-EAGAIN;
+    nas_current_task->deadline_active=false;
+    if(timeout) {
+        uint64_t sec,nsec,ns;
+        if(timeout>USER_LIMIT-16 ||
+           !nas_user_read_u64(timeout,&sec) ||
+           !nas_user_read_u64(timeout+8,&nsec))
+            return (uint64_t)-EFAULT;
+        if(!nas_time_duration_ns(sec,nsec,&ns))return (uint64_t)-EINVAL;
+        uint64_t now=nas_arch_monotonic_ns();
+        if(command==9U) { /* absolute CLOCK_MONOTONIC / REALTIME */
+            if(op&256U) {
+                uint64_t epoch;
+                if(!nas_time_realtime_ns(&epoch))return (uint64_t)-EOPNOTSUPP;
+                ns=ns>epoch?ns-epoch:0;
+                ns=nas_time_add_deadline(now,ns);
+            }
+            if(ns<=now)return (uint64_t)-ETIMEDOUT;
+        }else{
+            if(!ns)return (uint64_t)-ETIMEDOUT;
+            ns=nas_time_add_deadline(now,ns);
+        }
+        nas_current_task->deadline_ns=ns;
+        nas_current_task->deadline_active=true;
+    }
+    nas_current_task->futex_addr=addr;
+    nas_current_task->futex_mask=mask;
+    nas_current_task->futex_woken=false;
+    return nas_task_block(frame,NAS_SC_futex,addr,op,val,timeout);
 }

@@ -57,6 +57,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_ftruncate: return NAS_SC_ftruncate;
     case __NR_truncate: return NAS_SC_truncate;
     case __NR_fork: return NAS_SC_fork;
+    case __NR_futex: return NAS_SC_futex;
     case __NR_vfork: return NAS_SC_vfork;
     case __NR_fstat: return NAS_SC_fstat;
     case __NR_getcwd: return NAS_SC_getcwd;
@@ -170,6 +171,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 166U: return NAS_SC_umask; /* Linux asm-generic */
     case 179U: return NAS_SC_sysinfo; /* Linux asm-generic sysinfo */
     case 96U: return NAS_SC_set_tid_address;
+    case 98U: return NAS_SC_futex;
     case 123U: return NAS_SC_sched_getaffinity;
     case 122U: return NAS_SC_sched_setaffinity;
     case 172U: return NAS_SC_getpid;
@@ -209,6 +211,13 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
  * x86-64:      flags,stack,parent_tid,child_tid,tls
  * asm-generic: flags,stack,parent_tid,tls,child_tid
  * Common process code must never guess the ABI-specific register slot. */
+static inline uint64_t nas_linux_clone_tls(const uint64_t *call) {
+#if defined(__x86_64__)
+    return call[5];
+#else
+    return call[4];
+#endif
+}
 static inline uint64_t nas_linux_clone_child_tid(const uint64_t *call) {
 #if defined(__x86_64__)
     return call[4];
@@ -234,6 +243,12 @@ static inline enum nas_syscall_op nas_linux_decode_call(const uint64_t *args) {
     if (args[0] == clone_nr) {
         /* musl posix_spawn uses CLONE_VM|CLONE_VFORK|SIGCHLD with
          * its own userspace child stack. Unsupported thread clones are ENOSYS. */
+        /* musl pthread_create: VM, FS, files, sighand, thread,
+         * sysvsem, TLS, parent TID and child-clear TID. */
+        if (args[1] == (0x100ULL|0x200ULL|0x400ULL|0x800ULL|
+                        0x10000ULL|0x40000ULL|0x80000ULL|
+                        0x100000ULL|0x200000ULL|0x400000ULL))
+            return NAS_SC_clone_thread;
         if (args[1] == (0x00000100ULL|0x00004000ULL|17ULL))
             return NAS_SC_vfork;
         if (args[2] != 0U) return NAS_SC_NONE; /* regular fork inherits sp */
