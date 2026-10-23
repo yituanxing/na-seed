@@ -86,6 +86,8 @@ jobs:
           sh scripts/ci-ubuntu-mirror.sh
           sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
           sudo apt-get install -y --no-install-recommends clang lld xorriso qemu-system-x86 ovmf musl-tools binutils cpio
+      - name: Shared scalable CPIO archive index regression (>1200 files)
+        run: sh scripts/check-bootfs-scale.sh
       - name: Shared ELF PT_LOAD loader regression (x86/RV64/ARM64)
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-elf-segments.c kernel/task/elf_segments.c -o /tmp/naseed-segments-test && /tmp/naseed-segments-test
       - name: Shared ELF64 structural regression (x86/RV64/ARM64)
