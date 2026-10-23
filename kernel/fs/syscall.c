@@ -962,7 +962,9 @@ static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
             ino = tparent ? 5000 + tmp_number(tparent) :
                   item ? item->ino : dirino;
         } else if ((strcmp(dirpath, "/tmp") == 0) || tmpdir) {
-            if (cursor - 2 >= TMP_FILE_COUNT) break;
+            /* tmpfs uses lazy metadata slabs: end of directory is the
+             * first missing child, never a global eight-inode bound. */
+            if (cursor - 2 > UINT32_MAX) break;
             const struct nas_tmp_file *file =
                 tmp_child(dirpath, (unsigned)(cursor - 2));
             if (!file) break;
