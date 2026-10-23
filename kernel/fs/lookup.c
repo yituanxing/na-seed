@@ -17,7 +17,7 @@ int nas_fs_lookup_node(const char *path, bool follow_final,
             unsigned i=0;
             do { resolved[i]=path[i]; } while(path[i++]);
             *result=(struct nas_fs_node){
-                .backend=NAS_FS_TMPFS,.data=tmp->bytes,.size=tmp->size,
+                .backend=NAS_FS_TMPFS,.data=0,.tmp=tmp,.size=tmp->size,
                 .mode=tmp->mode,.is_dir=tmp->is_dir
             };
             return 0;
