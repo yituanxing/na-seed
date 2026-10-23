@@ -20,15 +20,34 @@ command -v cpio >/dev/null
 command -v readelf >/dev/null
 target="$(pwd)/$root"
 packages="$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' rootfs/alpine/packages.txt)"
+# Alpine repository signing keys are ARCH-SPECIFIC. The amd64 container's
+# keyring correctly verifies amd64 but rejects the arm64/riscv64 indexes.
+# Obtain the official target release's keys, verify its minirootfs digest,
+# extract ONLY the public keys, then continue with signed APK installation.
+release=3.23.7
+name="alpine-minirootfs-$release-$arch.tar.gz"
+cache="build/deps/m38-alpine-release/$arch"
+mkdir -p "$cache"
+url="https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/$arch/$name"
+if [ ! -s "$cache/$name" ]; then
+    curl -fLsS --retry 2 --connect-timeout 10 --max-time 120 \
+        -o "$cache/$name.tmp" "$url"
+    mv "$cache/$name.tmp" "$cache/$name"
+fi
+curl -fLsS --retry 2 --connect-timeout 10 --max-time 30 \
+    -o "$cache/$name.sha256" "$url.sha256"
+( cd "$cache" && sha256sum -c "$name.sha256" )
+# GNU tar --no-anchored permits both 'etc/...' and './etc/...' layouts.
+tar -xzf "$cache/$name" -C "$root" \
+    --wildcards --no-anchored 'etc/apk/keys/*'
+test -n "$(find "$root/etc/apk/keys" -name '*.pub' -print -quit)"
 # Use Alpine's own keyring. No --allow-untrusted; disable foreign package
 # install scripts instead of executing incompatible target-ISA binaries.
 docker run --rm --volume "$target:/target" \
     --env APK_ARCH="$arch" --env APK_PACKAGES="$packages" \
     alpine:3.23 sh -ec '
-        # apk resolves its trust store under --root for foreign rootfs.
-        # Bootstrap Alpine official public keys from the verified base image.
-        mkdir -p /target/etc/apk/keys
-        cp -a /etc/apk/keys/. /target/etc/apk/keys/
+        # Target architecture's signed release keys were staged on host.
+        test -n "$(find /target/etc/apk/keys -name "*.pub" -print -quit)"
         apk --arch "$APK_ARCH" --root /target \
             --keys-dir /etc/apk/keys --initdb --no-scripts \
             -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main \
