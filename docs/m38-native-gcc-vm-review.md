@@ -63,3 +63,14 @@ assembler issue. Provide one vectored-read Linux ABI over the existing
 open-file-description offsets, VFS reader and Task pipe/TTY replay. Add
 a second unmodified-musl userspace program to the GCC acceptance gate
 that tests readv contents, EOF, and ordered offset advancement.
+
+## Stable end-to-end acceptance harness
+
+The first follow-on readv workload made Limine's small boot-time
+`naseed.argv` staging buffer exceed 256 bytes. Do not change the kernel
+argument parser to support an acceptance-only command string. Stage one
+real POSIX shell script into the original Alpine CPIO and run it via
+stock BusyBox ash. This matches real OS boot and userspace behavior:
+process argv and compiler subprogram invocations come from libc/shell,
+not a bootloader test harness. Both the original GCC hello and the
+new readv test remain mandatory markers.

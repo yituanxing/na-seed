@@ -28,4 +28,5 @@ export NAS_SYSCALL_TRACE=1
 sh "$runner"
 test -s "$logs/m38-gcc.clean.log"
 grep -Fxq M38_GCC_PASS "$logs/m38-gcc.clean.log"
+grep -Fxq M38_READV_PASS "$logs/m38-gcc.clean.log"
 echo "[M38 GCC PASS] $port original Alpine GCC + musl builds/links/runs Linux C ELF in NaSeed"

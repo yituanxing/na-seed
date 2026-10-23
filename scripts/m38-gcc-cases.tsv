@@ -1,2 +1,3 @@
-# Original native GCC, binutils, musl headers/crt/libc, no guest package fetch
-m38-gcc	cpio	sh -c 'cd /tmp && echo M38_COMPILER_START && /usr/bin/gcc --version && /usr/bin/gcc -static /tests/hello.c -o hello && echo M38_LINKED && /bin/busybox ls -l /tmp && /bin/busybox stat /tmp/hello && /bin/busybox chmod 755 hello && ./hello && /usr/bin/gcc -static /tests/readv.c -o readv && ./readv'	M38_READV_PASS	-	/bin/busybox
+# One original BusyBox shell script drives stock Alpine GCC, GNU as/ld and musl.
+# Keep the Limine boot selector short; the full real workload lives in CPIO.
+m38-gcc	cpio	sh -c '/bin/sh /tests/build.sh'	M38_READV_PASS	-	/bin/busybox

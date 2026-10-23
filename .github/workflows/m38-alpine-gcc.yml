@@ -10,6 +10,8 @@ on:
       - 'scripts/probe-m38-native-gcc.sh'
       - 'scripts/m38-gcc-cases.tsv'
       - 'tests/m38-gcc-hello.c'
+      - 'tests/m38-gcc-build.sh'
+      - 'tests/m38-readv.c'
       - 'scripts/probe-x86-busybox-parity.sh'
       - 'scripts/probe-riscv64-busybox-matrix.sh'
       - 'scripts/probe-aarch64-busybox-matrix.sh'
