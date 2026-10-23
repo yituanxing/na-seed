@@ -197,7 +197,39 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
     if (addr>=USER_LIMIT || pages>(USER_LIMIT-addr)/PAGE)
         return (uint64_t)-ENOMEM;
     if (!nas_arch_user_nx_supported()) return (uint64_t)-ENOSYS;
-    if (!prot) return (uint64_t)-ENOSYS; /* PROT_NONE needs VMA semantics */
+    if (!prot) return (uint64_t)-ENOSYS; /* Moving populated pages to PROT_NONE needs backing preservation. */
     if (!nas_vm_prot_supported(prot)) return (uint64_t)-EOPNOTSUPP;
+    /* musl pthread_create reserves MAP_PRIVATE|MAP_ANONYMOUS PROT_NONE,
+     * then mprotects the stack/TLS interior RW. The virtual reservation is
+     * accounted for in the shared VMA ledger, but PROT_NONE has no PTE.
+     * Materialize these independently owned, zero-filled pages on demand;
+     * NEVER invent user pages in ELF, heap or unreserved address ranges.
+     * Return a real ENOMEM when the physical allocator is exhausted. */
+    if (nas_anon_covered(&TASK.vm_owner->anonymous,addr,pages*PAGE)) {
+        /* First validate all pre-existing mapped pages before mutating. */
+        for (uint64_t i=0;i<pages;i++) {
+            uint64_t va=addr+i*PAGE;
+            if (nas_mmu_user_byte(va) &&
+                !nas_mmu_protect_pages(va,1,prot))
+                return (uint64_t)-ENOMEM;
+        }
+        uint64_t i=0;
+        for (;i<pages;i++) {
+            uint64_t va=addr+i*PAGE;
+            if (!nas_mmu_user_byte(va) && !nas_mmu_map_prot_page(va,prot))
+                break;
+        }
+        if(i!=pages) {
+            /* Only unmapped PROT_NONE reservations can be undone. */
+            for (uint64_t j=0;j<i;j++) {
+                uint64_t va=addr+j*PAGE;
+                /* Prior mapped pages have already been protected and must
+                 * not be destroyed. Retain them as a partially committed
+                 * Linux mapping rather than corrupting page ownership. */
+            }
+            return (uint64_t)-ENOMEM;
+        }
+        return 0;
+    }
     return nas_mmu_protect_pages(addr,pages,prot)?0:(uint64_t)-ENOMEM;
 }

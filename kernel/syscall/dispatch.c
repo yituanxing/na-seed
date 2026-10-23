@@ -283,7 +283,17 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if(nr==NAS_SC_nanosleep || nr==NAS_SC_clock_nanosleep)
         return nas_time_sleep_syscall((uint64_t *)(uintptr_t)args,nr,args);
     if (nr == NAS_SC_getuid || nr == NAS_SC_getgid || nr == NAS_SC_geteuid || nr == NAS_SC_getegid) return 0; /* root credentials */
-    if (nr == NAS_SC_mprotect) return nas_vm_mprotect(args[1], args[2], args[3]);
+    if (nr == NAS_SC_mprotect) {
+        uint64_t rc=nas_vm_mprotect(args[1], args[2], args[3]);
+#ifdef NASEED_SYSCALL_TRACE
+        if ((int64_t)rc<0) {
+            nas_print("[VM REJECT] mprotect errno=");nas_dec((uint64_t)(-(int64_t)rc));
+            nas_print(" addr=");nas_hex(args[1]);nas_print(" len=");nas_hex(args[2]);
+            nas_print(" prot=");nas_hex(args[3]);nas_print("\n");
+        }
+#endif
+        return rc;
+    }
     if (nr == NAS_SC_mmap) {
         uint64_t result=(args[4] & 0x20ULL) ?
             nas_vm_anon_mmap(args[1],args[2],args[3],
