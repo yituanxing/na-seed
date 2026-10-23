@@ -42,6 +42,13 @@ on:
       - 'scripts/2048-serial-check.py'
       - 'tests/2048-native-init.c'
       - '.github/workflows/game-2048.yml'
+      - 'scripts/build-external-gnumake.sh'
+      - 'scripts/stage-external-gnumake-rootfs.sh'
+      - 'scripts/probe-external-gnumake.sh'
+      - 'scripts/gnumake-serial-check.py'
+      - 'tests/gnumake-native-init.c'
+      - 'tests/gnumake-real.mk'
+      - '.github/workflows/gnumake.yml'
 
 # Collapse superseded PR commits into a single expensive QEMU suite. Keep
 # pushed main regressions independent; only pull-request runs are canceled.

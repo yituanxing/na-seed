@@ -1,0 +1,31 @@
+#!/bin/sh
+# Original GNU Make executes real BusyBox ash recipes in NaSeed user space.
+set -eu
+work=build/external/gnumake/amd64
+root="$work/rootfs"
+test -s "$work/gmake"
+mkdir -p "$root/bin" "$root/tests" "$root/tmp"
+cp "$work/gmake" "$root/bin/gmake"
+sh scripts/fetch-busybox-fixture.sh amd64 "$work/busybox"
+cp "$work/busybox" "$root/bin/busybox"
+ln -s busybox "$root/bin/sh"
+gcc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
+    tests/gnumake-native-init.c -o "$root/bin/make-init"
+cp tests/gnumake-real.mk "$root/tests/Makefile"
+chmod 755 "$root" "$root/bin" "$root/tests" \
+   "$root/bin/gmake" "$root/bin/busybox" "$root/bin/make-init"
+chmod 644 "$root/tests/Makefile"
+chmod 1777 "$root/tmp"
+touch -t 197001010000 "$root" "$root/bin" "$root/tests" "$root/tmp" \
+    "$root/bin/gmake" "$root/bin/busybox" "$root/bin/make-init" \
+    "$root/tests/Makefile"
+touch -h -t 197001010000 "$root/bin/sh"
+(
+   cd "$root"
+   printf '%s\n' . bin bin/gmake bin/busybox bin/sh bin/make-init \
+       tests tests/Makefile tmp |
+     cpio -o -H newc --quiet --owner=0:0
+) > "$work/rootfs.cpio.tmp"
+mv "$work/rootfs.cpio.tmp" "$work/rootfs.cpio"
+test -s "$work/rootfs.cpio"
+echo '[GNUMAKE ROOTFS] exact Linux GNU Make + original Debian BusyBox ash + real Makefile'

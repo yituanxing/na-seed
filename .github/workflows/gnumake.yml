@@ -1,0 +1,44 @@
+name: NaSeed genuine GNU Make and shell
+on:
+  pull_request:
+    paths:
+      - 'scripts/build-external-gnumake.sh'
+      - 'scripts/stage-external-gnumake-rootfs.sh'
+      - 'scripts/probe-external-gnumake.sh'
+      - 'scripts/gnumake-serial-check.py'
+      - 'tests/gnumake-native-init.c'
+      - 'tests/gnumake-real.mk'
+      - '.github/workflows/gnumake.yml'
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  original-make:
+    runs-on: ubuntu-latest
+    timeout-minutes: 23
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install normal GNU Linux and QEMU boot toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y gcc make curl tar git binutils clang lld cpio \
+            xorriso qemu-system-x86 ovmf
+      - name: Cache SHA256-pinned GNU Make release
+        uses: actions/cache@v4
+        with:
+          path: build/deps/external/make-4.4.1.tar.gz
+          key: naseed-gnu-make-4.4.1-dd16fb1d67bfab79
+      - name: Linux execution oracle then two actual Make recipes inside NaSeed
+        run: sh scripts/probe-external-gnumake.sh
+      - name: Preserve genuine compiler and QEMU evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naseed-native-gnumake
+          path: |
+            build/external/gnumake/amd64/configure.log
+            build/external/gnumake/amd64/build.log
+            build/external/gnumake/amd64/linux-oracle.log
+            build/external/gnumake/amd64/serial.log
+          if-no-files-found: ignore
