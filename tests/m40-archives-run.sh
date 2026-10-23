@@ -16,9 +16,12 @@ test -s /tmp/m40-sources.tar
 echo M40_TAR_CREATE_PASS
 
 # Use the real XZ decoder (and re-encode) on the complete binary tar file.
-"$xzcmd" -0 -c /tmp/m40-sources.tar > /tmp/m40-sources.tar.xz
+# The kernel currently has a single runnable hardware CPU and no POSIX
+# userspace threads; explicitly select XZ's genuine SINGLE-THREADED codec.
+# Testing implicit auto-threading would incorrectly test pthread_clone first.
+"$xzcmd" --threads=1 -0 -c /tmp/m40-sources.tar > /tmp/m40-sources.tar.xz
 test -s /tmp/m40-sources.tar.xz
-"$xzcmd" -dc /tmp/m40-sources.tar.xz > /tmp/m40-restored.tar
+"$xzcmd" --threads=1 -dc /tmp/m40-sources.tar.xz > /tmp/m40-restored.tar
 /bin/busybox cmp /tmp/m40-sources.tar /tmp/m40-restored.tar
 echo M40_XZ_PASS
 

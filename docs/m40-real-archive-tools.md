@@ -39,3 +39,15 @@ XZ Utils queried sched_getaffinity (x86-64 204, generic64 123). Expose the
 actual single CPU online bit from the one-core scheduler to GET/SET affinity,
 reject nonexistent PIDs, malformed cpuset sizes/pointers and mask without
 CPU0. Do not return fake all-CPU success. Add host decoders and flag tests.
+
+## Compression mode follows actual kernel capabilities
+
+Unmodified XZ Utils initially returned `Out of memory` on all three ISAs
+when asked to compress with auto-thread defaults. The native kernel
+currently implements one CPU and forked processes, not pthread clone
+(CLONE_VM shared-memory threads). Run the *original binary's* documented
+`--threads=1` mode to isolate real LZMA compression and VFS read/write
+from an unsupported thread subsystem. This is a valid upstream option,
+not a rebuilt binary or a kernel lie about pthread support. If it still
+reports allocation failure, inspect the common VM allocator and page
+ownership rather than replacing XZ.
