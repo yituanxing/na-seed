@@ -43,7 +43,8 @@ esac
 chmod 755 "$root" "$root/bin" "$root/tests" "$root/tests/include" \
     "$root/bin/gmake" "$root/bin/tcc" "$root/bin/busybox" "$root/bin/native-init"
 chmod 1777 "$root/tmp"
-chmod 644 "$root/tests/"* "$root/tests/include/"*
+chmod 644 "$root/tests/"*.c "$root/tests/"*.h "$root/tests/Makefile" \
+    "$root/tests/include/"*.h
 touch -t 197001010000 "$root" "$root/bin" "$root/tests" "$root/tmp" \
     "$root/bin/gmake" "$root/bin/tcc" "$root/bin/busybox" "$root/bin/native-init" \
     "$root/tests/include" "$root/tests/include/"* "$root/tests/"*
