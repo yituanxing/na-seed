@@ -310,7 +310,7 @@ unsigned nas_process_futex_wake(uint64_t uaddr,unsigned max,uint32_t mask) {
         if(t->state!=NAS_TASK_BLOCKED || !t->pending_valid ||
            t->blocked_op!=NAS_SC_futex || t->futex_addr!=uaddr ||
            t->vm_owner!=nas_current_task->vm_owner ||
-           !(t->futex_mask&mask))continue;
+           t->futex_woken || !(t->futex_mask&mask))continue;
         t->futex_woken=true;
         count++;
     }
