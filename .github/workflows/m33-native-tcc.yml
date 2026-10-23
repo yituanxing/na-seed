@@ -7,6 +7,13 @@ on:
       - 'scripts/m33-native-tcc-cases.tsv'
       - 'scripts/probe-m33-native-tcc.sh'
       - 'tests/tcc-first.c'
+      - 'scripts/m34-native-make-cases.tsv'
+      - 'scripts/build-m34-native-gnumake.sh'
+      - 'scripts/stage-m34-native-make-rootfs.sh'
+      - 'scripts/probe-m34-native-make.sh'
+      - 'tests/m34-portable-hello.c'
+      - 'tests/m34-native.mk'
+      - 'tests/native-exec-init.c'
       - '.github/workflows/m33-native-tcc.yml'
   workflow_dispatch:
 concurrency:
@@ -81,6 +88,9 @@ jobs:
           echo '[M33] upstream GCC, GNU tools and headless QEMU ready'
       - name: Linux oracle and real native NaSeed QEMU TinyCC
         run: sh scripts/probe-m33-native-tcc.sh ${{ matrix.port }}
+      - name: Complete three-ISA original GNU Make + TinyCC + linked tmpfs ELF execution
+        timeout-minutes: 9
+        run: sh scripts/probe-m34-native-make.sh ${{ matrix.port }}
       - name: Attach upstream build, native ELF and serial diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
@@ -92,6 +102,14 @@ jobs:
             build/external/m33-tcc/${{ matrix.port }}/linux-preprocess.log
             build/external/m33-tcc/${{ matrix.port }}/artifacts.sha256
             build/external/m33-tcc/${{ matrix.port }}/first.o
+            build/external/m34-gnumake/${{ matrix.port }}/configure.log
+            build/external/m34-gnumake/${{ matrix.port }}/build.log
+            build/external/m34-gnumake/${{ matrix.port }}/linux-version.log
+            build/external/m34-gnumake/${{ matrix.port }}/linux-generated-exec.log
+            build/external/m34-gnumake/${{ matrix.port }}/native-hello
+            build/busybox-source-parity-x86/m34-*.serial.log
+            build/port-riscv64/full/matrix-source/m34-*.serial.log
+            build/port-aarch64/full/matrix-source/m34-*.serial.log
             build/busybox-source-parity-x86/tcc-*.serial.log
             build/port-riscv64/full/matrix-source/tcc-*.serial.log
             build/port-aarch64/full/matrix-source/tcc-*.serial.log
