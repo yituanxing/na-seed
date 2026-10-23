@@ -40,6 +40,7 @@ on:
       - 'kernel/syscall/ops.h'
 
       - 'tests/native-exec-init.c'
+      - 'scripts/ci-ubuntu-mirror.sh'
       - '.github/workflows/m33-native-tcc.yml'
   workflow_dispatch:
 concurrency:
@@ -101,16 +102,7 @@ jobs:
                 missing="$missing qemu-efi-aarch64" ;;
           esac
           if [ -n "$missing" ]; then
-            # GitHub runner's DEB822 sources may use
-            # "mirror+file:/etc/apt/apt-mirrors.txt"; changing the .sources
-            # URI alone leaves the slow Azure mirror selected via that file.
-            # Point both *signed* Ubuntu archive selectors at the official
-            # upstream mirror. No unauthenticated/insecure apt flags.
-            for file in /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
-              if [ -f "$file" ]; then
-                sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' "$file"
-              fi
-            done
+            sh scripts/ci-ubuntu-mirror.sh
             sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
             sudo DEBIAN_FRONTEND=noninteractive apt-get \
               -o Acquire::Retries=1 -o Acquire::http::Timeout=30 \

@@ -10,6 +10,7 @@ on:
       - 'scripts/probe-x86-busybox-parity.sh'
       - 'scripts/probe-riscv64-busybox-matrix.sh'
       - 'scripts/probe-aarch64-busybox-matrix.sh'
+      - 'scripts/ci-ubuntu-mirror.sh'
       - '.github/workflows/lua.yml'
   workflow_dispatch:
 
@@ -31,7 +32,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install native toolchain and real system QEMU
         run: |
-          sudo apt-get update -qq
+          sh scripts/ci-ubuntu-mirror.sh
+          sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
           sudo apt-get install -y make gcc binutils curl gzip tar xorriso             clang lld cpio mtools gdisk qemu-user
           case "${{ matrix.port }}" in
             amd64) sudo apt-get install -y qemu-system-x86 ovmf ;;
