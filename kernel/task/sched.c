@@ -16,6 +16,7 @@
 #include "../mm/usercopy.h"
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
+extern void nas_hex(uint64_t);
 #define TASK (*nas_current_task)
 #define descriptors TASK.fds->descriptors
 #define signal_actions TASK.vm_owner->signal_actions
