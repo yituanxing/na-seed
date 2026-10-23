@@ -11,6 +11,7 @@ struct bootfs_entry {
     const uint8_t *data;
     uint64_t size;
     uint64_t ino;
+    uint64_t mtime_sec; /* literal newc c_mtime; immutable on CPIO */
     uint32_t mode;
 };
 bool bootfs_mount(const void *bytes, uint64_t size);
