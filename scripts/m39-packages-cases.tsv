@@ -1,0 +1,2 @@
+# No compilation: exact signed Alpine package ELFs execute directly under NaSeed.
+m39-packages	cpio	sh -c '/bin/sh /tests/run-packages.sh'	M39_PACKAGES_PASS	-	/bin/busybox

@@ -52,6 +52,10 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_exit_group: return NAS_SC_exit_group;
     case __NR_fchdir: return NAS_SC_fchdir;
     case __NR_fcntl: return NAS_SC_fcntl;
+    case __NR_fsync: return NAS_SC_fsync;
+    case __NR_fdatasync: return NAS_SC_fdatasync;
+    case __NR_ftruncate: return NAS_SC_ftruncate;
+    case __NR_truncate: return NAS_SC_truncate;
     case __NR_fork: return NAS_SC_fork;
     case __NR_vfork: return NAS_SC_vfork;
     case __NR_fstat: return NAS_SC_fstat;
@@ -88,6 +92,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_ppoll: return NAS_SC_ppoll;
     case __NR_pselect6: return NAS_SC_pselect6;
     case __NR_read: return NAS_SC_read;
+    case __NR_pread64: return NAS_SC_pread64;
     case __NR_readv: return NAS_SC_readv;
     case __NR_readlink: return NAS_SC_readlink;
     case __NR_readlinkat: return NAS_SC_readlinkat;
@@ -111,6 +116,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_utimensat: return NAS_SC_utimensat;
     case __NR_wait4: return NAS_SC_wait4;
     case __NR_write: return NAS_SC_write;
+    case __NR_pwrite64: return NAS_SC_pwrite64;
     case __NR_writev: return NAS_SC_writev;
 #else
     case 52U: return NAS_SC_fchmod;
@@ -124,6 +130,8 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 114U: return NAS_SC_clock_getres;
     case 115U: return NAS_SC_clock_nanosleep; /* asm-generic lacks nanosleep */
     case 63U: return NAS_SC_read;
+    case 67U: return NAS_SC_pread64; /* Linux asm-generic */
+    case 68U: return NAS_SC_pwrite64;
     case 65U: return NAS_SC_readv; /* Linux asm-generic readv */
     case 64U: return NAS_SC_write;
     case 66U: return NAS_SC_writev;
@@ -138,6 +146,10 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 17U: return NAS_SC_getcwd;
     case 59U: return NAS_SC_pipe2;
     case 25U: return NAS_SC_fcntl;
+    case 82U: return NAS_SC_fsync;
+    case 83U: return NAS_SC_fdatasync;
+    case 46U: return NAS_SC_ftruncate;
+    case 45U: return NAS_SC_truncate;
     case 23U: return NAS_SC_dup;
     case 24U: return NAS_SC_dup3;
     case 49U: return NAS_SC_chdir;

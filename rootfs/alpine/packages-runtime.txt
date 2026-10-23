@@ -1,0 +1,8 @@
+# Authentic prebuilt Alpine v3.23 executables and their signed dependencies.
+# All architectures share the SAME package names and user-space workloads.
+# Do not install GCC, GNU Make, binutils or source code into this profile.
+musl
+busybox
+lua5.4
+jq
+sqlite

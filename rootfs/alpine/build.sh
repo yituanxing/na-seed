@@ -10,8 +10,16 @@ case "$1" in
     *) exit 2 ;;
 esac
 port=$1
-work="build/external/m38-gcc/$port"
+profile=${NAS_ALPINE_PROFILE:-toolchain}
+case "$profile" in
+    toolchain) work="build/external/m38-gcc/$port"
+               package_list=rootfs/alpine/packages.txt ;;
+    runtime) work="build/external/m39-packages/$port"
+             package_list=rootfs/alpine/packages-runtime.txt ;;
+    *) echo "[ALPINE] unknown profile $profile" >&2; exit 2 ;;
+esac
 root="$work/rootfs"
+mkdir -p "$work"
 # Staged trees may contain root-owned APK metadata from Docker.
 if [ -e "$root" ]; then sudo rm -rf "$root"; fi
 mkdir -p "$root"
@@ -19,7 +27,7 @@ command -v docker >/dev/null
 command -v cpio >/dev/null
 command -v readelf >/dev/null
 target="$(pwd)/$root"
-packages="$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' rootfs/alpine/packages.txt)"
+packages="$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$package_list")"
 # Alpine repository signing keys are ARCH-SPECIFIC. The amd64 container's
 # keyring correctly verifies amd64 but rejects the arm64/riscv64 indexes.
 # Obtain the official target release's keys, verify its minirootfs digest,
@@ -66,18 +74,33 @@ echo "[M38 APK PASS] signed distro packages installed: $port"
 sudo chown -R "$(id -u):$(id -g)" "$root"
 mkdir -p "$root/tmp" "$root/tests"
 chmod 1777 "$root/tmp"
-cp tests/m38-gcc-hello.c "$root/tests/hello.c"
-cp tests/m38-gcc-build.sh "$root/tests/build.sh"
-cp tests/m38-readv.c "$root/tests/readv.c"
-cp tests/m38-fs-mode.c "$root/tests/fs-mode.c"
-printf '%s' 'abcdefghijklmn' > "$root/tests/readv.txt"
-test -s "$root/usr/include/stdio.h"
-test -s "$root/usr/include/stdlib.h"
-test -s "$root/usr/lib/libc.a"
-test -e "$root/usr/bin/gcc"
-test -e "$root/usr/bin/as"
-test -e "$root/usr/bin/ld"
 test -e "$root/bin/busybox"
+if [ "$profile" = runtime ]; then
+    # These are original Alpine executables, *not* compiled in NaSeed.
+    cp tests/lua-vm.lua tests/lua-io.lua "$root/tests/"
+    cp tests/m39-packages-run.sh "$root/tests/run-packages.sh"
+    cp tests/m39-jobs.json "$root/tests/jobs.json"
+    for program in lua5.4 jq sqlite3; do
+        test -x "$root/usr/bin/$program" || {
+            echo "[M39] missing original Alpine program: $program ($port)" >&2
+            exit 1
+        }
+        readelf -h "$root/usr/bin/$program" | grep -Fq "$machine"
+    done
+else
+    cp tests/m38-gcc-hello.c "$root/tests/hello.c"
+    cp tests/m38-gcc-build.sh "$root/tests/build.sh"
+    cp tests/m38-readv.c "$root/tests/readv.c"
+    cp tests/m38-fs-mode.c "$root/tests/fs-mode.c"
+    printf '%s' 'abcdefghijklmn' > "$root/tests/readv.txt"
+    test -s "$root/usr/include/stdio.h"
+    test -s "$root/usr/include/stdlib.h"
+    test -s "$root/usr/lib/libc.a"
+    test -e "$root/usr/bin/gcc"
+    test -e "$root/usr/bin/as"
+    test -e "$root/usr/bin/ld"
+    readelf -h "$root/usr/bin/gcc" | grep -Fq "$machine"
+fi
 # apk --no-scripts is required for cross-ISA installs; Alpine's BusyBox
 # post-install trigger ordinarily creates /bin/sh. Materialize that standard
 # package link without executing an incompatible-architecture install hook.
@@ -87,7 +110,6 @@ if [ ! -e "$root/bin/sh" ]; then
 fi
 test -x "$root/bin/sh"
 test "$(readlink -f "$root/bin/sh")" = "$(readlink -f "$root/bin/busybox")"
-readelf -h "$root/usr/bin/gcc" | grep -Fq "$machine"
 # Original layout, no handcrafted sysroot: /usr/include, /usr/lib,
 # /usr/libexec/gcc, etc. Exclude device nodes, retain symlinks.
 (
@@ -106,4 +128,4 @@ mv "$work/rootfs.cpio.tmp" "$work/rootfs.cpio"
 test -s "$work/rootfs.cpio"
 printf '%s\n' "$packages" > "$work/requested-packages.txt"
 du -h "$work/rootfs.cpio"
-echo "[M38 ROOTFS] $port signed apk -> real GCC + binutils + musl CPIO"
+echo "[ALPINE ROOTFS] $port profile=$profile signed APK binaries, original ELF and shared musl CPIO"

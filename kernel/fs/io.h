@@ -7,6 +7,9 @@ struct nas_task;
  * dispatcher and scheduler use this stable operation boundary. */
 uint64_t nas_fs_fd_read(uint64_t fd, uint64_t addr, uint64_t len);
 uint64_t nas_fs_fd_readv(uint64_t fd, uint64_t iov, uint64_t count);
+/* Linux positional regular-file I/O never advances shared FD position. */
+uint64_t nas_fs_fd_pread(uint64_t fd,uint64_t address,uint64_t count,uint64_t offset);
+uint64_t nas_fs_fd_pwrite(uint64_t fd,uint64_t address,uint64_t count,uint64_t offset);
 /* Kernel-buffer, position-independent file reads for MAP_PRIVATE.
  * A CPIO/tmpfs regular file is the source of truth; FD offsets are untouched.
  * Negative Linux errno on invalid or unsupported file kinds. */

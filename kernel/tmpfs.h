@@ -2,6 +2,7 @@
 #define NASEED_TMPFS_H
 #include <stdbool.h>
 #include <stdint.h>
+#include "fs/posix_locks.h"
 
 /* Volatile, finite /tmp backend. This is not yet a generic Linux VFS.
  * Transition seam: syscall/user memory remains with m1.c; namespace and
@@ -25,6 +26,7 @@ struct nas_tmp_file {
     uint64_t size;
     uint64_t atime_ns, mtime_ns, ctime_ns; /* UNIX realtime nanoseconds */
     uint32_t mode;
+    struct nas_posix_locks posix_locks; /* common Linux inode record locks */
 };
 
 bool tmp_path(const char *path);
@@ -49,6 +51,7 @@ int64_t tmp_read_at(const struct nas_tmp_file *file, uint64_t offset,
 int64_t tmp_write_at(struct nas_tmp_file *file, uint64_t offset,
                      const uint8_t *src, uint64_t count);
 void tmp_truncate(struct nas_tmp_file *file);
+int tmp_resize(struct nas_tmp_file *file,uint64_t size);
 int tmp_utimens(struct nas_tmp_file *file, uint64_t access_ns,
                 uint64_t modified_ns, bool set_access, bool set_modified);
 

@@ -142,6 +142,45 @@ void tmp_truncate(struct nas_tmp_file *file) {
         file->ctime_ns = file->mtime_ns;
     }
 }
+/* Linux ftruncate: grow as sparse zero-filled pages, shrink discards pages
+ * AND zeroes the partial final page, so later regrowth cannot expose
+ * truncated bytes. Inode identity and open-descriptor offset survive. */
+int tmp_resize(struct nas_tmp_file *file,uint64_t size) {
+    if(!file || !file->used)return -ENOENT;
+    if(file->is_dir)return -EISDIR;
+    if(size>TMP_FILE_CAP)return -EFBIG;
+    uint64_t old=file->size;
+    if(size==old)return 0;
+    if(size<old) {
+        if(size%TMP_PAGE_SIZE) {
+            uint8_t *last=tmp_data_page(file,size/TMP_PAGE_SIZE,false);
+            if(last)memset(last+size%TMP_PAGE_SIZE,0,
+                           (size_t)(TMP_PAGE_SIZE-size%TMP_PAGE_SIZE));
+        }
+        uint64_t first=(size+TMP_PAGE_SIZE-1)/TMP_PAGE_SIZE;
+        uint64_t oldpages=(old+TMP_PAGE_SIZE-1)/TMP_PAGE_SIZE;
+        for(uint64_t page=first;page<oldpages;page++) {
+            unsigned outer=(unsigned)(page/TMP_PAGE_ENTRIES);
+            uint64_t frame=file->index_pages[outer];
+            if(!frame)continue;
+            uint64_t *slots=(uint64_t *)(uintptr_t)(nas_hhdm_offset()+frame);
+            unsigned inner=(unsigned)(page%TMP_PAGE_ENTRIES);
+            if(slots[inner]) { (void)nas_frame_free(slots[inner]); slots[inner]=0; }
+        }
+        for(unsigned outer=0;outer<TMP_INDEX_PAGES;outer++) {
+            uint64_t frame=file->index_pages[outer];
+            if(!frame)continue;
+            uint64_t *slots=(uint64_t *)(uintptr_t)(nas_hhdm_offset()+frame);
+            bool any=false;
+            for(unsigned i=0;i<TMP_PAGE_ENTRIES;i++)if(slots[i]) { any=true; break; }
+            if(!any) { (void)nas_frame_free(frame); file->index_pages[outer]=0; }
+        }
+    }
+    file->size=size;
+    file->mtime_ns=tmp_next_mtime(file->mtime_ns);
+    file->ctime_ns=file->mtime_ns;
+    return 0;
+}
 int tmp_utimens(struct nas_tmp_file *file, uint64_t access_ns,
                 uint64_t modified_ns, bool set_access, bool set_modified) {
     if (!file || !file->used) return -ENOENT;
@@ -197,6 +236,7 @@ static struct nas_tmp_file *tmp_init_node(struct nas_tmp_file *file,
     while (path[i] && i<255) { file->path[i]=path[i]; i++; }
     file->path[i]=0;
     file->size=0;
+    file->posix_locks=(struct nas_posix_locks){0};
     file->mode=(dir ? 0040000U : 0100000U) | (mode & 07777U);
     file->is_dir=dir;
     file->ino=tmp_next_ino++;
