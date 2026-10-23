@@ -18,7 +18,7 @@ ln -s busybox "$root/bin/sh"
 ln -s busybox "$root/bin/echo"
 gcc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
     tests/gnumake-native-init.c -o "$root/bin/make-init"
-cp tests/gnumake-real.mk "$root/tests/Makefile" "$root/tests/first.c"
+cp tests/gnumake-real.mk "$root/tests/Makefile"
 chmod 755 "$root" "$root/bin" "$root/tests" \
    "$root/bin/gmake" "$root/bin/busybox" "$root/bin/tcc" "$root/bin/make-init"
 chmod 644 "$root/tests/Makefile" "$root/tests/first.c"
