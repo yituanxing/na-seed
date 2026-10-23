@@ -12,6 +12,7 @@
 #include "sched.h"
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
+extern void nas_hex(uint64_t);
 static void proc_fail(const char *s) __attribute__((noreturn));
 static void proc_fail(const char *s) { nas_print("[FAIL] M1 "); nas_print(s); nas_print("\n"); nas_arch_halt(); }
 /* A cooperative child-first fork; parent remains READY while child runs.
@@ -288,6 +289,20 @@ uint64_t nas_process_clone_thread(uint64_t *frame,uint64_t stack,
     nas_print(" tgid=");nas_dec(child->tgid);nas_print("\n");
     return 0;
 }
+#ifdef NASEED_SYSCALL_TRACE
+static unsigned futex_trace_count;
+static void futex_debug(const char *act,uint64_t addr,uint64_t val,uint64_t ret) {
+    if(futex_trace_count++>700)return;
+    nas_print("[FUTEX] "); nas_print(act);
+    nas_print(" tid=");nas_dec(nas_current_task->pid);
+    nas_print(" addr=");nas_hex(addr);
+    nas_print(" val=");nas_hex(val);
+    nas_print(" result=");nas_dec(ret);
+    nas_print("\n");
+}
+#else
+#define futex_debug(a,b,c,d) ((void)0)
+#endif
 unsigned nas_process_futex_wake(uint64_t uaddr,unsigned max,uint32_t mask) {
     unsigned count=0;
     for(unsigned i=0;i<NAS_TASK_LIMIT && count<max;i++) {
@@ -295,10 +310,11 @@ unsigned nas_process_futex_wake(uint64_t uaddr,unsigned max,uint32_t mask) {
         if(t->state!=NAS_TASK_BLOCKED || !t->pending_valid ||
            t->blocked_op!=NAS_SC_futex || t->futex_addr!=uaddr ||
            t->vm_owner!=nas_current_task->vm_owner ||
-           !(t->futex_mask&mask))continue;
+           t->futex_woken || !(t->futex_mask&mask))continue;
         t->futex_woken=true;
         count++;
     }
+    futex_debug("wake",uaddr,max,count);
     return count;
 }
 /* Linux futex word ABI is a native aligned 32-bit user value, on each ISA.
@@ -307,11 +323,44 @@ unsigned nas_process_futex_wake(uint64_t uaddr,unsigned max,uint32_t mask) {
 uint64_t nas_process_futex(uint64_t *frame,uint64_t addr,uint64_t op,
                            uint64_t val,uint64_t timeout,uint64_t addr2,
                            uint64_t val3) {
-    (void)addr2;
     if ((addr&3U) || addr>USER_LIMIT-4)return (uint64_t)-EINVAL;
     uint64_t command=op&127U;
     if(op & ~(uint64_t)(127U|128U|256U))return (uint64_t)-EINVAL;
     if((op&256U) && command!=9U)return (uint64_t)-ENOSYS;
+    /* Linux FUTEX_REQUEUE / FUTEX_CMP_REQUEUE: argument 4 is a COUNT,
+     * NOT a userspace timespec. musl's pthread condvar release uses
+     * FUTEX_REQUEUE|PRIVATE with (wake=0,requeue=1,target=mutex).
+     * A woken waiter completes its original WAIT with success; a
+     * transferred waiter stays parked until the target mutex wakes it.
+     * Non-PI queue transfer is process/VM scoped, not an invented wake. */
+    if(command==3U || command==4U) {
+        if((addr2&3U) || addr2>USER_LIMIT-4)return (uint64_t)-EINVAL;
+        if(!nas_mmu_user_byte(addr) || !nas_mmu_user_byte(addr+3) ||
+           !nas_mmu_user_byte(addr2) || !nas_mmu_user_byte(addr2+3))
+            return (uint64_t)-EFAULT;
+        if(command==4U) {
+            uint8_t current[4];
+            if(!nas_user_read_bytes(addr,current,4))return (uint64_t)-EFAULT;
+            uint32_t word=(uint32_t)current[0]|((uint32_t)current[1]<<8)|
+                          ((uint32_t)current[2]<<16)|((uint32_t)current[3]<<24);
+            if(word!=(uint32_t)val3)return (uint64_t)-EAGAIN;
+        }
+        unsigned nwake=val>NAS_TASK_LIMIT?NAS_TASK_LIMIT:(unsigned)val;
+        unsigned nmove=timeout>NAS_TASK_LIMIT?NAS_TASK_LIMIT:(unsigned)timeout;
+        unsigned woke=nas_process_futex_wake(addr,nwake,UINT32_MAX);
+        unsigned moved=0;
+        for(unsigned i=0;i<NAS_TASK_LIMIT && moved<nmove;i++) {
+            struct nas_task *t=nas_task_at(i);
+            if(t->state!=NAS_TASK_BLOCKED || !t->pending_valid ||
+               t->blocked_op!=NAS_SC_futex || t->futex_addr!=addr ||
+               t->vm_owner!=nas_current_task->vm_owner || t->futex_woken)
+                continue;
+            t->futex_addr=addr2;
+            moved++;
+        }
+        futex_debug("requeue",addr,addr2,((uint64_t)woke<<32)|moved);
+        return woke+moved;
+    }
     if(command==1U || command==10U) {
         uint32_t mask=command==10U?(uint32_t)val3:UINT32_MAX;
         if(!mask)return (uint64_t)-EINVAL;
@@ -327,7 +376,8 @@ uint64_t nas_process_futex(uint64_t *frame,uint64_t addr,uint64_t op,
     if(!nas_user_read_bytes(addr,bytes,4))return (uint64_t)-EFAULT;
     uint32_t word=(uint32_t)bytes[0]|((uint32_t)bytes[1]<<8)|
                   ((uint32_t)bytes[2]<<16)|((uint32_t)bytes[3]<<24);
-    if(word!=(uint32_t)val)return (uint64_t)-EAGAIN;
+    if(word!=(uint32_t)val) {futex_debug("mismatch",addr,val,word);return (uint64_t)-EAGAIN;}
+    futex_debug("wait",addr,val,op);
     nas_current_task->deadline_active=false;
     if(timeout) {
         uint64_t sec,nsec,ns;

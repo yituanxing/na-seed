@@ -22,6 +22,8 @@ case "$profile" in
           package_list=rootfs/alpine/packages-unix.txt ;;
     pthread) work="build/external/m42-pthread/$port"
              package_list=rootfs/alpine/packages-archive.txt ;;
+    zstd) work="build/external/m43-zstd/$port"
+          package_list=rootfs/alpine/packages-zstd.txt ;;
     *) echo "[ALPINE] unknown profile $profile" >&2; exit 2 ;;
 esac
 root="$work/rootfs"
@@ -101,6 +103,26 @@ if [ "$profile" = archive ]; then
         [ -n "$binary" ] || { echo "[M40] missing original packaged $program ($port)" >&2; exit 1; }
         readelf -h "$binary" | grep -Fq "$machine"
     done
+elif [ "$profile" = zstd ]; then
+    # Original signed Alpine multi-threaded Zstandard: no guest compilation.
+    # 12 MiB requires multiple compression input chunks at -T2; fixture
+    # contains distinct blocks (not only a trivial all-zero test).
+    dd if=/dev/zero of="$root/tests/m43-input.bin" bs=1048576 count=12 status=none
+    printf 'NaSeed signed Alpine zstd pthread invariant M43\\n' |
+        dd of="$root/tests/m43-input.bin" bs=1 conv=notrunc status=none
+    cp tests/m43-zstd-run.sh "$root/tests/run-zstd.sh"
+    original=''
+    for candidate in "$root/usr/bin/zstd" "$root/bin/zstd"; do
+        if [ -f "$candidate" ] && [ -x "$candidate" ] &&
+           readelf -h "$candidate" | grep -Fq "$machine"; then
+            original=$candidate
+            break
+        fi
+    done
+    [ -n "$original" ] || {
+        echo "[M43] missing signed original zstd ELF ($port)" >&2
+        exit 1
+    }
 elif [ "$profile" = pthread ]; then
     # Host stages original signed Alpine XZ and 4 MiB test input. All
     # actual multithreaded compression happens inside NaSeed's kernel.

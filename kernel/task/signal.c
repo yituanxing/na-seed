@@ -28,7 +28,7 @@ static unsigned first_default_pending(const struct nas_task *task,
     uint64_t ready=task->pending_signals & ~mask;
     for(unsigned sig=1;sig<=64;sig++)
         if((ready & (1ULL<<(sig-1))) && terminating_default(sig) &&
-           task->signal_actions[sig][0]==0)
+           task->vm_owner->signal_actions[sig][0]==0)
             return sig;
     return 0;
 }
@@ -51,9 +51,9 @@ uint64_t nas_signal_action(uint64_t signum,uint64_t incoming,
     }
     if(previous) {
         uint64_t old[3]={
-            nas_current_task->signal_actions[signum][0],
-            nas_current_task->signal_actions[signum][1],
-            nas_current_task->signal_actions[signum][3],
+            nas_current_task->vm_owner->signal_actions[signum][0],
+            nas_current_task->vm_owner->signal_actions[signum][1],
+            nas_current_task->vm_owner->signal_actions[signum][3],
         };
         if(!nas_user_write_bytes(previous,(const uint8_t *)old,sizeof(old)))
             return (uint64_t)-EFAULT;
@@ -64,7 +64,7 @@ uint64_t nas_signal_action(uint64_t signum,uint64_t incoming,
         return (uint64_t)-EFAULT;
     if(previous &&
        !nas_user_write_bytes(previous,
-           (const uint8_t *)nas_current_task->signal_actions[signum],32))
+           (const uint8_t *)nas_current_task->vm_owner->signal_actions[signum],32))
         return (uint64_t)-EFAULT;
 #endif
     if(incoming) {
@@ -73,7 +73,7 @@ uint64_t nas_signal_action(uint64_t signum,uint64_t incoming,
         if(action[1]&NAS_SA_ONSTACK)return (uint64_t)-EOPNOTSUPP;
         action[3] &= ~NAS_UNMASKABLE;
         for(unsigned i=0;i<4;i++)
-            nas_current_task->signal_actions[signum][i]=action[i];
+            nas_current_task->vm_owner->signal_actions[signum][i]=action[i];
         if(action[0]==1) { /* ignored signal discards queued copies */
             nas_current_task->pending_signals &= ~(1ULL<<(signum-1));
             nas_current_task->signal_force_deliver &= ~(1ULL<<(signum-1));
@@ -170,7 +170,7 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
     for (unsigned i=0;i<count;i++) {
         struct nas_task *target=matches[i];
         if (target==sender) {
-            if (target->signal_actions[signal][0]>1 &&
+            if (target->vm_owner->signal_actions[signal][0]>1 &&
                 !(target->blocked_signals&(1ULL<<(signal-1))) &&
                 signal!=NAS_SIGKILL && signal!=NAS_SIGSTOP &&
                 signal!=NAS_SIGCONT) {
@@ -184,20 +184,20 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
                 target->pending_signals |= 1ULL<<(signal-1);
             else if(terminating_default((unsigned)signal) &&
                     (signal==NAS_SIGKILL ||
-                     target->signal_actions[signal][0]!=1))
+                     target->vm_owner->signal_actions[signal][0]!=1))
                 self_terminate=true;
             continue;
         }
         if (target->state==NAS_TASK_ZOMBIE) continue;
         if(terminating_default((unsigned)signal)) {
             if(signal!=NAS_SIGKILL &&
-               target->signal_actions[signal][0]==1)continue; /* SIG_IGN */
+               target->vm_owner->signal_actions[signal][0]==1)continue; /* SIG_IGN */
             if(signal!=NAS_SIGKILL &&
                (target->blocked_signals&(1ULL<<(signal-1)))) {
                 target->pending_signals |= 1ULL<<(signal-1);
                 continue;
             }
-            if(target->signal_actions[signal][0]>1 &&
+            if(target->vm_owner->signal_actions[signal][0]>1 &&
                signal!=NAS_SIGKILL) {
                 /* Delivery waits until THIS task's page tables and user
                  * return frame are selected. Do not write a foreign stack. */
@@ -259,14 +259,14 @@ bool nas_signal_tty_event(uint64_t sid,uint64_t pgid,unsigned signum) {
         /* A masked default SIGTSTP needs full delayed job-control STOP
          * semantics; fail explicitly instead of silently losing it. */
         if(signum==NAS_SIGTSTP &&
-           task->signal_actions[signum][0]==0 &&
+           task->vm_owner->signal_actions[signum][0]==0 &&
            (task->blocked_signals&(1ULL<<(signum-1))))return false;
         targets[count++]=task;
     }
     for(unsigned i=0;i<count;i++) {
         struct nas_task *task=targets[i];
-        if(task->signal_actions[signum][0]==1)continue; /* ignored */
-        if(task->signal_actions[signum][0]>1 ||
+        if(task->vm_owner->signal_actions[signum][0]==1)continue; /* ignored */
+        if(task->vm_owner->signal_actions[signum][0]>1 ||
            (task->blocked_signals&(1ULL<<(signum-1)))) {
             task->pending_signals |= 1ULL<<(signum-1);
             continue;
@@ -304,7 +304,7 @@ uint64_t nas_signal_background_job(unsigned signum,uint64_t *frame,
     if(self->pid==1 || self->pgid==0 || self->sid==0)
         return 0; /* protected init / no controlling session */
     uint64_t bit=1ULL<<(signum-1);
-    if(self->signal_actions[signum][0]==1 ||
+    if(self->vm_owner->signal_actions[signum][0]==1 ||
        (self->blocked_signals&bit)) {
         /* POSIX: background read without deliverable SIGTTIN fails EIO.
          * SIGTTOU ignored/blocked permits a background writer. */
@@ -324,7 +324,7 @@ uint64_t nas_signal_background_job(unsigned signum,uint64_t *frame,
         struct nas_task *parent=nas_task_by_pid(t->ppid);
         if(parent && parent->sid==t->sid && parent->pgid!=t->pgid)
             orphaned=false;
-        if(t->signal_actions[signum][0]>1 &&
+        if(t->vm_owner->signal_actions[signum][0]>1 &&
            !(t->blocked_signals&bit)) {
             *handled=true;
             return (uint64_t)-EOPNOTSUPP; /* requires real sigframe */
@@ -339,7 +339,7 @@ uint64_t nas_signal_background_job(unsigned signum,uint64_t *frame,
     bool self_stopped=false;
     for(unsigned i=0;i<count;i++) {
         struct nas_task *t=members[i];
-        if(t->signal_actions[signum][0]==1 ||
+        if(t->vm_owner->signal_actions[signum][0]==1 ||
            (t->blocked_signals&bit) || t->state==NAS_TASK_STOPPED)
             continue;
         if(t==self) {
@@ -374,7 +374,7 @@ uint64_t nas_signal_background_job(unsigned signum,uint64_t *frame,
 void nas_signal_broken_pipe(uint64_t fd) {
     struct nas_task *t=nas_current_task;
     if(!t || !t->ppid || nas_task_fd_kind(t,fd)!=FD_PIPE_W) return;
-    uint64_t disp=t->signal_actions[NAS_SIGPIPE][0];
+    uint64_t disp=t->vm_owner->signal_actions[NAS_SIGPIPE][0];
     if(disp!=1 && (disp>1 ||
                    (t->blocked_signals&(1ULL<<(NAS_SIGPIPE-1)))))
         t->pending_signals |= 1ULL<<(NAS_SIGPIPE-1);
@@ -391,7 +391,7 @@ void nas_signal_handler_enter(struct nas_task *t,unsigned signo,
     if(!(flags&NAS_SA_NODEFER))bits |= 1ULL<<(signo-1);
     t->blocked_signals |= bits;
     if(flags&NAS_SA_RESETHAND)
-        for(unsigned i=0;i<4;i++)t->signal_actions[signo][i]=0;
+        for(unsigned i=0;i<4;i++)t->vm_owner->signal_actions[signo][i]=0;
 }
 
 /* Keep signal frames in a complete native user-return context. The single
@@ -409,7 +409,7 @@ void nas_signal_child_exit(const struct nas_task *child) {
     struct nas_task *parent=nas_task_by_pid(child->ppid);
     if (!parent || parent->state==NAS_TASK_FREE ||
         parent->state==NAS_TASK_ZOMBIE) return;
-    if (parent->signal_actions[NAS_SIGCHLD][0] > 1)
+    if (parent->vm_owner->signal_actions[NAS_SIGCHLD][0] > 1)
         parent->pending_signals |= 1ULL << (NAS_SIGCHLD-1);
 }
 void nas_signal_ppoll_restore(struct nas_task *task,bool interrupted) {
@@ -424,7 +424,7 @@ bool nas_signal_user_pending(const struct nas_task *task) {
     uint64_t bits=task->pending_signals &
         (~task->blocked_signals | task->signal_force_deliver);
     for(unsigned sig=1;sig<=64;sig++)
-        if((bits & (1ULL<<(sig-1))) && task->signal_actions[sig][0]>1)
+        if((bits & (1ULL<<(sig-1))) && task->vm_owner->signal_actions[sig][0]>1)
             return true;
     return false;
 }
@@ -437,7 +437,7 @@ void nas_signal_user_return(uint64_t *frame) {
         (~t->blocked_signals | t->signal_force_deliver);
     for(unsigned sig=1;sig<=64;sig++) {
         if(!(ready&(1ULL<<(sig-1))))continue;
-        const uint64_t *act=t->signal_actions[sig];
+        const uint64_t *act=t->vm_owner->signal_actions[sig];
         if(act[0]<=1)continue;
         if(!nas_arch_signal_install_handler(frame,sig,act))
             nas_fail("M30 cannot build native user signal frame");

@@ -1,0 +1,2 @@
+# Signed Alpine original zstd --threads=2 through native three-ISA QEMU.
+m43-zstd	cpio	sh -c '/bin/sh /tests/run-zstd.sh'	M43_THREADS_PASS	-	/bin/busybox

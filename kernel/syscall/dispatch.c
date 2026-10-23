@@ -420,8 +420,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
                                                                 (uint64_t *)(uintptr_t)args);
     if (nr == NAS_SC_kill) return nas_signal_kill(args[1], args[2], (uint64_t *)(uintptr_t)args);
     if (nr == NAS_SC_umask) {
-        uint64_t previous=TASK.umask;
-        TASK.umask=nas_fs_umask(args[1]);
+        uint64_t previous=TASK.vm_owner->umask;
+        TASK.vm_owner->umask=nas_fs_umask(args[1]);
         return previous;
     }
     if (nr == NAS_SC_uname) return sys_uname_naseed(args[1]);

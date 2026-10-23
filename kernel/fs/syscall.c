@@ -30,7 +30,7 @@
 #define descriptors TASK.fds->descriptors
 #define file_slot TASK.fds->file_slot
 #define fd_cloexec TASK.fds->fd_cloexec
-#define current_workdir TASK.cwd
+#define current_workdir TASK.vm_owner->cwd
 #define running_bash TASK.running_bash
 #define running_busybox TASK.running_busybox
 #define running_alpine TASK.running_alpine
@@ -404,7 +404,7 @@ static uint64_t sys_mkdirat_tmp(uint64_t dirfd, uint64_t pathname,
     uint64_t ret = nas_fs_resolve_path(dirfd, pathname, path);
     return (int64_t)ret < 0 ? ret :
         (uint64_t)(int64_t)tmp_mkdir(path,
-                            nas_fs_create_mode(mode,TASK.umask));
+                            nas_fs_create_mode(mode,TASK.vm_owner->umask));
 }
 static uint64_t sys_unlinkat_tmp(uint64_t dirfd, uint64_t pathname,
                                  uint64_t flags) {
@@ -511,7 +511,7 @@ static uint64_t sys_open_path(const char *path, uint64_t native_flags,
             if (nas_open_files[slot].refcount) continue;
             if (create_tmp) {
                 tmp_file = tmp_create(path,false,
-                            nas_fs_create_mode(create_mode,TASK.umask));
+                            nas_fs_create_mode(create_mode,TASK.vm_owner->umask));
                 if (!tmp_file) return (uint64_t)-ENOSPC;
             }
             if ((kind == FD_TMP || kind == FD_TMP_DIR) && !tmp_file) return (uint64_t)-ENOENT;
