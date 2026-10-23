@@ -23,6 +23,7 @@ struct nas_tmp_file {
     char path[256];
     uint64_t index_pages[TMP_INDEX_PAGES]; /* physical index-frame addresses */
     uint64_t size;
+    uint64_t atime_ns, mtime_ns, ctime_ns; /* UNIX realtime nanoseconds */
     uint32_t mode;
 };
 
@@ -48,6 +49,9 @@ int64_t tmp_read_at(const struct nas_tmp_file *file, uint64_t offset,
 int64_t tmp_write_at(struct nas_tmp_file *file, uint64_t offset,
                      const uint8_t *src, uint64_t count);
 void tmp_truncate(struct nas_tmp_file *file);
+int tmp_utimens(struct nas_tmp_file *file, uint64_t access_ns,
+                uint64_t modified_ns, bool set_access, bool set_modified);
+
 int tmp_chmod(struct nas_tmp_file *file, uint64_t mode);
 int tmp_mkdir(const char *path, uint64_t mode);
 int tmp_unlink(const char *path, uint64_t flags);
