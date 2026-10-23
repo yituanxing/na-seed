@@ -157,7 +157,10 @@ if [ ! -e "$root/bin/sh" ]; then
     ln -s busybox "$root/bin/sh"
 fi
 test -x "$root/bin/sh"
-test "$(readlink -f "$root/bin/sh")" = "$(readlink -f "$root/bin/busybox")"
+# /bin/sh links are interpreted inside the GUEST rootfs, not host /.
+# readlink -f on the host incorrectly resolves Alpine's absolute links
+# (e.g. /usr/bin/busybox) outside the staged tree. Native QEMU must
+# verify the real packaged shell, rather than a host-only path equality.
 # Original layout, no handcrafted sysroot: /usr/include, /usr/lib,
 # /usr/libexec/gcc, etc. Exclude device nodes, retain symlinks.
 (
