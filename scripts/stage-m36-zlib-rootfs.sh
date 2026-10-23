@@ -29,6 +29,7 @@ for file in adler32.c crc32.c deflate.c trees.c zutil.c compress.c uncompr.c \
 done
 cp "$source/zconf.h.in" "$root/tests/zconf.h"
 cmp "$source/zconf.h.in" "$root/tests/zconf.h"
+cp tests/m35-rt.c "$root/tests/rt.c"
 cp tests/m36-zlib-check.c "$root/tests/check.c"
 cp tests/m36-zlib-native.mk "$root/tests/Makefile"
 case "$port" in
@@ -52,7 +53,7 @@ for applet in sh chmod; do touch -h -t 197001010000 "$root/bin/$applet"; done
     for file in adler32.c crc32.c deflate.c trees.c zutil.c compress.c uncompr.c \
                 inflate.c inftrees.c inffast.c zlib.h zutil.h \
                 deflate.h trees.h crc32.h inftrees.h inflate.h \
-                inffast.h inffixed.h zconf.h check.c Makefile; do
+                inffast.h inffixed.h zconf.h check.c rt.c Makefile; do
         set -- "$@" "tests/$file"
     done
     set -- "$@" tmp
