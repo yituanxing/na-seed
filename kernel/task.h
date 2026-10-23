@@ -80,6 +80,7 @@ struct nas_task {
     uint64_t loaded_phdr, loaded_phnum;
     uint64_t loaded_main_entry, loaded_interp_base;
     uint64_t thread_clear_tid;
+    uint64_t robust_list_head; /* per-TID user robust_list_head, not inherited */
     uint64_t futex_addr;
     uint32_t futex_mask;
     bool futex_woken;

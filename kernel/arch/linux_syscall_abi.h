@@ -58,6 +58,8 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_truncate: return NAS_SC_truncate;
     case __NR_fork: return NAS_SC_fork;
     case __NR_futex: return NAS_SC_futex;
+    case __NR_set_robust_list: return NAS_SC_set_robust_list;
+    case __NR_get_robust_list: return NAS_SC_get_robust_list;
     case __NR_vfork: return NAS_SC_vfork;
     case __NR_fstat: return NAS_SC_fstat;
     case __NR_getcwd: return NAS_SC_getcwd;
@@ -172,6 +174,8 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 179U: return NAS_SC_sysinfo; /* Linux asm-generic sysinfo */
     case 96U: return NAS_SC_set_tid_address;
     case 98U: return NAS_SC_futex;
+    case 99U: return NAS_SC_set_robust_list; /* asm-generic Linux */
+    case 100U: return NAS_SC_get_robust_list;
     case 123U: return NAS_SC_sched_getaffinity;
     case 122U: return NAS_SC_sched_setaffinity;
     case 172U: return NAS_SC_getpid;

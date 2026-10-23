@@ -161,6 +161,101 @@ uint64_t nas_process_prlimit(uint64_t pid,uint64_t resource,
     }
     return 0;
 }
+
+/* Linux64 non-PI robust-futex linked-list ABI. Linux's own kernel
+ * documents these 3 native unsigned-long fields (list.next,
+ * signed futex_offset, list_op_pending). Userspace owns the list.
+ * No per-lock registration; no new ISA-specific implementation.
+ *
+ * Exit reads the dying thread's list inside the ACTIVE shared VM.
+ * Never trust user-provided pointers, offsets or cyclic link chains.
+ * This stage supports non-PI owner death; PI futex locking remains ENOSYS. */
+#define NAS_ROBUST_HEAD_BYTES 24U
+#define NAS_ROBUST_OWNER_MASK 0x3fffffffU
+#define NAS_ROBUST_WAITERS 0x80000000U
+#define NAS_ROBUST_OWNER_DIED 0x40000000U
+#define NAS_ROBUST_WALK_LIMIT 2048U
+uint64_t nas_process_set_robust_list(uint64_t head,uint64_t len) {
+    if(len != NAS_ROBUST_HEAD_BYTES)return (uint64_t)-EINVAL;
+    /* Linux stores a user pointer and validates the list when exiting.
+     * NULL unregisters the robust list for this thread. */
+    if(head>=USER_LIMIT && head)return (uint64_t)-EFAULT;
+    nas_current_task->robust_list_head=head;
+    return 0;
+}
+uint64_t nas_process_get_robust_list(uint64_t pid,uint64_t head_addr,
+                                     uint64_t len_addr) {
+    struct nas_task *task;
+    if(!pid) task=nas_current_task;
+    else {
+        if(pid>UINT32_MAX)return (uint64_t)-ESRCH;
+        task=nas_task_by_pid(pid);
+        if(!task)return (uint64_t)-ESRCH;
+        /* Only within-thread-group introspection is currently proven.
+         * Never expose another process's pointer with a fake ptrace check. */
+        if(task->tgid!=nas_current_task->tgid)return (uint64_t)-EPERM;
+    }
+    if(!head_addr || !len_addr || head_addr>USER_LIMIT-8 ||
+       len_addr>USER_LIMIT-8 ||
+       !nas_mmu_user_writable(head_addr) ||
+       !nas_mmu_user_writable(head_addr+7) ||
+       !nas_mmu_user_writable(len_addr) ||
+       !nas_mmu_user_writable(len_addr+7))
+        return (uint64_t)-EFAULT;
+    if(!nas_user_write_u64(head_addr,task->robust_list_head) ||
+       !nas_user_write_u64(len_addr,NAS_ROBUST_HEAD_BYTES))
+        return (uint64_t)-EFAULT;
+    return 0;
+}
+/* A raw node points at a robust_list.next field, NOT the futex word.
+ * A signed futex_offset may be negative (musl/glibc mutex layout).
+ * The low bit of a list link flags an unsupported PI entry: it must not
+ * be mistaken for a regular futex, nor permit invalid memory access. */
+static void robust_mark_owner_died(struct nas_task *thread,uint64_t node,
+                                    int64_t offset,bool is_pi) {
+    if(is_pi || !node)return;
+    uint64_t addr=node+(uint64_t)offset;
+    if((offset>=0 && addr<node) || (offset<0 && addr>node) ||
+       (addr&3U) || addr>USER_LIMIT-4)return;
+    uint8_t word_bytes[4];
+    if(!nas_user_read_bytes(addr,word_bytes,4))return;
+    uint32_t word=(uint32_t)word_bytes[0] |
+                 ((uint32_t)word_bytes[1]<<8) |
+                 ((uint32_t)word_bytes[2]<<16) |
+                 ((uint32_t)word_bytes[3]<<24);
+    if((word&NAS_ROBUST_OWNER_MASK)!=(uint32_t)thread->pid)return;
+    uint32_t changed=(word&NAS_ROBUST_WAITERS)|NAS_ROBUST_OWNER_DIED;
+    uint8_t updated[4]={(uint8_t)changed,(uint8_t)(changed>>8),
+                        (uint8_t)(changed>>16),(uint8_t)(changed>>24)};
+    if(!nas_user_write_bytes(addr,updated,4))return;
+    if(word&NAS_ROBUST_WAITERS)
+        (void)nas_process_futex_wake(addr,1,UINT32_MAX);
+}
+void nas_process_robust_exit(struct nas_task *thread) {
+    if(!thread || !thread->robust_list_head)return;
+    if(thread->vm_owner!=nas_current_task->vm_owner)
+        proc_fail("robust list exit from unrelated page table");
+    uint64_t head=thread->robust_list_head;
+    thread->robust_list_head=0; /* never walk twice after deferred leader exit */
+    uint64_t next=0,offbits=0,pending=0;
+    if(head>USER_LIMIT-NAS_ROBUST_HEAD_BYTES ||
+       !nas_user_read_u64(head,&next) ||
+       !nas_user_read_u64(head+8,&offbits) ||
+       !nas_user_read_u64(head+16,&pending))return;
+    int64_t offset=(int64_t)offbits;
+    uint64_t cursor=next;
+    for(unsigned i=0;i<NAS_ROBUST_WALK_LIMIT;i++) {
+        uint64_t node=cursor&~1ULL;
+        if(!node || node==head || node>USER_LIMIT-8)break;
+        uint64_t following=0;
+        if(!nas_user_read_u64(node,&following))break;
+        if(node!=(pending&~1ULL))
+            robust_mark_owner_died(thread,node,offset,(cursor&1U)!=0);
+        cursor=following;
+    }
+    if(pending)
+        robust_mark_owner_died(thread,pending&~1ULL,offset,(pending&1U)!=0);
+}
 void nas_process_clear_tid_for_exit(struct nas_task *thread) {
     if (!thread || !thread->thread_clear_tid) return;
     if (thread->vm_owner != nas_current_task->vm_owner)

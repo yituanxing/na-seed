@@ -430,6 +430,10 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_futex)
         return nas_process_futex((uint64_t *)(uintptr_t)args,args[1],args[2],
                                  args[3],args[4],args[5],args[6]);
+    if (nr == NAS_SC_set_robust_list)
+        return nas_process_set_robust_list(args[1],args[2]);
+    if (nr == NAS_SC_get_robust_list)
+        return nas_process_get_robust_list(args[1],args[2],args[3]);
     if (nr == NAS_SC_clone_thread)
         return nas_process_clone_thread((uint64_t *)(uintptr_t)args,
                                         args[2],args[3],
