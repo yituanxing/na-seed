@@ -266,14 +266,35 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_getuid || nr == NAS_SC_getgid || nr == NAS_SC_geteuid || nr == NAS_SC_getegid) return 0; /* root credentials */
     if (nr == NAS_SC_mprotect) return nas_vm_mprotect(args[1], args[2], args[3]);
     if (nr == NAS_SC_mmap) {
-        if (args[4] & 0x20ULL) /* Linux MAP_ANONYMOUS */
-            return nas_vm_anon_mmap(args[1],args[2],args[3],
-                                    args[4],args[5],args[6]);
-        return nas_vm_file_mmap(args[1],args[2],args[3],
-                                args[4],args[5],args[6]);
+        uint64_t result=(args[4] & 0x20ULL) ?
+            nas_vm_anon_mmap(args[1],args[2],args[3],
+                             args[4],args[5],args[6]) :
+            nas_vm_file_mmap(args[1],args[2],args[3],
+                             args[4],args[5],args[6]);
+#ifdef NASEED_SYSCALL_TRACE
+        if ((int64_t)result<0) {
+            nas_print("[VM REJECT] mmap errno="); nas_dec((uint64_t)(-(int64_t)result));
+            nas_print(" hint="); nas_hex(args[1]);
+            nas_print(" len="); nas_hex(args[2]);
+            nas_print(" prot="); nas_hex(args[3]);
+            nas_print(" flags="); nas_hex(args[4]);
+            nas_print(" fd="); nas_hex(args[5]);
+            nas_print(" offset="); nas_hex(args[6]); nas_print("\n");
+        }
+#endif
+        return result;
     }
     if (nr == NAS_SC_munmap) return nas_vm_munmap(args[1], args[2]);
-    if (nr == NAS_SC_brk) return nas_vm_brk(args[1]);
+    if (nr == NAS_SC_brk) {
+        uint64_t result=nas_vm_brk(args[1]);
+#ifdef NASEED_SYSCALL_TRACE
+        if (args[1] && args[1]!=result) {
+            nas_print("[VM REJECT] brk wanted="); nas_hex(args[1]);
+            nas_print(" retained="); nas_hex(result); nas_print("\n");
+        }
+#endif
+        return result;
+    }
     if(nr==NAS_SC_poll || nr==NAS_SC_ppoll || nr==NAS_SC_pselect6) {
         /* ppoll and pselect6 install one optional temporary signal mask.
          * pselect6's sixth argument points to {sigset_ptr, size_t}; the

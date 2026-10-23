@@ -195,6 +195,15 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     if(err)return (uint64_t)(int64_t)err;
     if(app.is_dir || !(app.mode&0111U))return (uint64_t)-EACCES;
     struct elf_image main_img=elf_from_fs_node(&app);
+#ifdef NASEED_SYSCALL_TRACE
+    static unsigned exec_images_logged;
+    if (exec_images_logged++ < 16) {
+        nas_print("[EXEC IMAGE] path="); nas_print(actual);
+        nas_print(" bytes="); nas_hex(main_img.size);
+        nas_print(" mode="); nas_hex(app.mode);
+        nas_print("\n");
+    }
+#endif
     uint8_t magic[4] = {0};
     uint64_t available = main_img.size < sizeof(magic) ?
                          main_img.size : sizeof(magic);
@@ -268,16 +277,33 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     loaded_phdr = loaded_phnum = loaded_main_entry = loaded_interp_base = 0;
     uint64_t entry, sp = 0;
     bool good = nas_elf_load(&main_img, interp, &entry);
+#ifdef NASEED_SYSCALL_TRACE
+    if (!good) { nas_print("[EXEC REJECT] failed ELF or interpreter load: "); nas_print(actual); nas_print("\n"); }
+#endif
     if (good) {
         for (uint64_t va = USER_STACK_TOP - USER_STACK_PAGES * PAGE;
              va < USER_STACK_TOP; va += PAGE)
-            if (!nas_mmu_map_page(va, true)) { good = false; break; }
+            if (!nas_mmu_map_page(va, true)) {
+#ifdef NASEED_SYSCALL_TRACE
+                nas_print("[EXEC REJECT] failed user stack map\n");
+#endif
+                good = false; break;
+            }
     }
-    if(good)good=nas_signal_install_trampoline();
-    if (good)
+    if (good) {
+        good=nas_signal_install_trampoline();
+#ifdef NASEED_SYSCALL_TRACE
+        if (!good) nas_print("[EXEC REJECT] failed signal trampoline\n");
+#endif
+    }
+    if (good) {
         good = nas_build_user_stack(pending_exec.argv, pending_exec.argc,
                                 pending_exec.envp, pending_exec.envc,
                                 pending_exec.filename, &sp);
+#ifdef NASEED_SYSCALL_TRACE
+        if (!good) nas_print("[EXEC REJECT] failed argv/env/auxv stack\n");
+#endif
+    }
     if (!good) {
         nas_mmu_switch_root(previous_root);
         if (!nas_mmu_reclaim_root(new_root)) nas_fail("execve rollback page-table corruption");
