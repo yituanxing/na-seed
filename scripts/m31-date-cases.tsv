@@ -1,0 +1,2 @@
+# M31 real Linux date applet must see wall clock, not a guessed epoch.
+m31-date	cpio	date -u +%s	-	-

@@ -21,8 +21,8 @@ while IFS= read -r path || [ -n "$path" ]; do
     seen="$seen$path "
     count=$((count+1))
 done < "$manifest"
-test "$count" -eq 27 || {
-    echo "[PORT SOURCES] expected 27 common TUs, got $count" >&2
+test "$count" -eq 28 || {
+    echo "[PORT SOURCES] expected 28 common TUs, got $count" >&2
     exit 1
 }
 for script in scripts/build-riscv64-full.sh scripts/build-aarch64-full.sh; do
