@@ -52,6 +52,16 @@ static uint64_t nas_time_read_clock(uint64_t clockid,uint64_t dst,bool resolutio
         if(resolution) now=nas_arch_clock_resolution_ns();
         else if(!nas_time_realtime_ns(&now))return (uint64_t)-EOPNOTSUPP;
     } else return (uint64_t)-EINVAL;
+    /* Compare the clocksource's actual Linux ABI seconds with unmodified
+     * libc/date; report only the first few wall-clock calls. */
+    if(clockid==0ULL && !resolution) {
+        static unsigned realtime_reports;
+        if(realtime_reports++ < 4) {
+            nas_print("[M31 ABI] CLOCK_REALTIME sec=");
+            nas_dec(now/NAS_NSEC_PER_SEC);
+            nas_print("\n");
+        }
+    }
     if(!dst && resolution)return 0; /* clock_getres accepts NULL */
     struct { int64_t sec,nsec; } ts={
         (int64_t)(now/NAS_NSEC_PER_SEC),

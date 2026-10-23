@@ -19,6 +19,22 @@ esac
 unset BUSYBOX_PARITY_CASE BUSYBOX_PARITY_BINARY NAS_ACCEPTANCE_CPIO
 export BUSYBOX_PARITY_MANIFEST=scripts/m31-date-cases.tsv
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
+# Run the same untouched Debian Linux ELF against real Linux syscalls first.
+# An actual Linux-time oracle differentiates an applet libc/ABI fault from
+# an invalid wall-clock epoch produced by the kernel.
+if [ "$1" = arm64 ]; then
+  native=build/port-aarch64/full/busybox
+  test -s "$native" || sh scripts/fetch-busybox-fixture.sh arm64 "$native"
+  command -v qemu-aarch64 >/dev/null
+  linux_result=$(qemu-aarch64 -strace "$native" date -u +%s \
+       2>build/port-aarch64/full/m31-date.linux-user.syscalls.log)
+  echo "[M31 LINUX DATE] $linux_result"
+  grep -E 'clock_gettime|clock_gettime64|gettimeofday|time\\(' \
+       build/port-aarch64/full/m31-date.linux-user.syscalls.log | tail -10 || :
+  case "$linux_result" in
+    ''|*[!0-9]*) echo '[M31 LINUX DATE FAIL] unexpected Linux output' >&2; exit 1;;
+  esac
+fi
 sh "$runner"
 test -s "$log"
 # A successful date process with a fabricated 1970 epoch is NOT a pass.

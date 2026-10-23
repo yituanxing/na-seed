@@ -62,10 +62,10 @@ jobs:
         run: sh scripts/check-alpine-native-fixtures.sh
       - name: Build and boot THE shared Task/ELF/FS/syscall kernel on real ARM64
         run: NASEED_ARM_FULL_TIMEOUT=25 sh scripts/probe-aarch64-full.sh
-      - name: ARM64 — native Debian BusyBox canonical 17-case parity matrix
-        run: sh scripts/probe-aarch64-busybox-matrix.sh
       - name: M31 real CLOCK_REALTIME — native Debian date inside ARM64 kernel
         run: sh scripts/probe-m31-date.sh arm64
+      - name: ARM64 — native Debian BusyBox canonical 17-case parity matrix
+        run: sh scripts/probe-aarch64-busybox-matrix.sh
       - name: Native Alpine AArch64 dynamic BusyBox seven-case parity (SHA256 pinned)
         run: sh scripts/probe-alpine-native-matrix.sh arm64
       - name: Upload real UART and semihosting evidence on failure
