@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include "../errno.h"
 #include "../bootfs.h"
+#include "../fs/lookup.h"
 #include "../task.h"
 #include "../fd.h"
 #include "../arch/arch.h"
@@ -35,12 +36,10 @@
 #define USER_STACK_PAGES 32
 
 /* Boot/exec program-name comparison. FD path matching lives in fs/syscall.c. */
-/* Single-process execve: replace this process's user image, not fork.
- * Snapshot ALL user pointers before changing CR3. The ELF and interpreter
- * bytes are immutable CPIO entries, so they remain valid after replacement.
- * Stage image in a fresh root, rollback if load fails; only on success
- * close CLOEXEC descriptors, release old user pages and re-enter Ring 3.
- */
+/* Snapshot all user pointers before changing CR3. ELF bytes are
+ * kernel-owned (immutable CPIO or tmpfs inode), valid across the staged
+ * root switch. Map through the existing shared ELF loader, commit only
+ * when successful, and roll back without invalidating the old process. */
 #define EXEC_STRING_MAX 256
 static struct exec_snapshot {
     char filename[256];
@@ -165,44 +164,40 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     uint64_t result = nas_fs_resolve_path((uint64_t)-100, pathname, pending_exec.filename);
     if ((int64_t)result < 0) return result;
     char actual[256];
-    int err = bootfs_resolve(pending_exec.filename, true, actual);
-    if (err) return (uint64_t)(int64_t)err;
-    const struct bootfs_entry *app = bootfs_find(actual);
-    if (bootfs_is_dir(app) || !(app->mode & 0111U))
-        return (uint64_t)-EACCES;
-    struct elf_image main_img = { app->data, app->size };
-    bool scripted = false;
-    if (main_img.size >= 2 && main_img.data[0] == '#' &&
-        main_img.data[1] == '!') {
-        err = read_shebang(&main_img, pending_exec.shebang_path,
-                           pending_exec.shebang_arg);
-        if (err) return (uint64_t)(int64_t)err;
+    struct nas_fs_node app;
+    int err=nas_fs_lookup_node(pending_exec.filename,true,&app,actual);
+    if(err)return (uint64_t)(int64_t)err;
+    if(app.is_dir || !(app.mode&0111U))return (uint64_t)-EACCES;
+    struct elf_image main_img={app.data,app.size};
+    bool scripted=false;
+    if(main_img.size>=2 && main_img.data[0]=='#' && main_img.data[1]=='!') {
+        err=read_shebang(&main_img,pending_exec.shebang_path,
+                         pending_exec.shebang_arg);
+        if(err)return (uint64_t)(int64_t)err;
         char resolved_interpreter[256];
-        err = bootfs_resolve(pending_exec.shebang_path, true,
-                             resolved_interpreter);
-        if (err) return (uint64_t)(int64_t)err;
-        const struct bootfs_entry *bin = bootfs_find(resolved_interpreter);
-        if (!bin) return (uint64_t)-ENOENT;
-        if (bootfs_is_dir(bin) || !(bin->mode & 0111U))
-            return (uint64_t)-EACCES;
-        main_img = (struct elf_image){ bin->data, bin->size };
-        unsigned n = 0;
-        do { actual[n] = resolved_interpreter[n]; }
-        while (resolved_interpreter[n++]);
-        scripted = true;
+        struct nas_fs_node bin;
+        err=nas_fs_lookup_node(pending_exec.shebang_path,true,
+                               &bin,resolved_interpreter);
+        if(err)return (uint64_t)(int64_t)err;
+        if(bin.is_dir || !(bin.mode&0111U))return (uint64_t)-EACCES;
+        main_img=(struct elf_image){bin.data,bin.size};
+        unsigned n=0;
+        do { actual[n]=resolved_interpreter[n]; }
+        while(resolved_interpreter[n++]);
+        scripted=true;
     }
-    /* Scripts are accepted only through an actual executable ELF
-     * interpreter; never claim a nested or invalid #! succeeds. */
-    if (main_img.size < sizeof(struct elf_hdr) ||
-        main_img.data[0] != 0x7f || main_img.data[1] != 'E' ||
-        main_img.data[2] != 'L' || main_img.data[3] != 'F')
+    if(main_img.size<sizeof(struct elf_hdr) ||
+       main_img.data[0]!=0x7f || main_img.data[1]!='E' ||
+       main_img.data[2]!='L' || main_img.data[3]!='F')
         return (uint64_t)-ENOEXEC;
-    const struct bootfs_entry *loader = bootfs_find(NAS_ELF_INTERP);
-    struct elf_image interp_img = {0};
-    const struct elf_image *interp = 0;
-    if (loader && !bootfs_is_dir(loader)) {
-        interp_img = (struct elf_image){loader->data, loader->size};
-        interp = &interp_img;
+    struct nas_fs_node loader;
+    char loader_path[256];
+    struct elf_image interp_img={0};
+    const struct elf_image *interp=0;
+    if(!nas_fs_lookup_node(NAS_ELF_INTERP,true,&loader,loader_path) &&
+       !loader.is_dir) {
+        interp_img=(struct elf_image){loader.data,loader.size};
+        interp=&interp_img;
     }
     result = copy_exec_vector(argv, false);
     if ((int64_t)result < 0) return result;
@@ -274,10 +269,10 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     running_alpine = running_busybox &&
         ((const struct elf_hdr *)main_img.data)->type == 3;
     if (scripted) {
-        nas_print("[EXEC] CPIO #! interpreter: ");
+        nas_print("[EXEC] #! interpreter: ");
         nas_print(pending_exec.shebang_path); nas_print("\n");
     }
-    nas_print("[EXEC] replaced process with CPIO ELF: ");
+    nas_print("[EXEC] replaced process with filesystem ELF: ");
     nas_print(pending_exec.filename);
     nas_print("\n");
     nas_arch_enter_user(entry, sp);
