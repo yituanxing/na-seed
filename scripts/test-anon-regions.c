@@ -42,5 +42,39 @@ int main(void) {
         assert(b.slots[i].start==snap.slots[i].start && b.slots[i].end==snap.slots[i].end);
     nas_anon_reset(&a);
     assert(nas_anon_find_gap(&a,3*P,&z) && z==x);
+    /* A realistic libc allocator reserves 128+ adjacent small chunks:
+     * only one VM ownership record must survive coalescing. */
+    nas_anon_reset(&a);
+    for (unsigned i=0;i<NAS_ANON_REGION_LIMIT*2;i++) {
+        assert(nas_anon_find_gap(&a,P,&x));
+        assert(nas_anon_record(&a,x,P));
+    }
+    assert(nas_anon_covered(&a,x,P));
+    assert(nas_anon_covered(&a,NAS_ANON_CEILING-NAS_ANON_REGION_LIMIT*2*P,
+                            NAS_ANON_REGION_LIMIT*2*P));
+    assert(!nas_anon_covered(&a,NAS_ANON_CEILING+P,P));
+    assert(!nas_anon_intersects(&a,NAS_ANON_FIXED_FLOOR,P));
+    /* MAP_FIXED outside the top-down mmap window is legal for user code;
+     * the lower brk/ELF domain can be overlaid without touching the stack. */
+    assert(nas_anon_overlay(&a,0x2e6f000,2*P));
+    assert(nas_anon_covered(&a,0x2e6f000,2*P));
+    assert(nas_anon_overlay(&a,0x2e70000,3*P));
+    assert(nas_anon_covered(&a,0x2e6f000,4*P));
+    assert(nas_anon_forget(&a,0x2e70000,P));
+    assert(!nas_anon_covered(&a,0x2e6f000,4*P));
+    assert(nas_anon_overlay(&a,0x2e70000,P));
+    assert(nas_anon_covered(&a,0x2e6f000,4*P));
+    assert(!nas_anon_overlay(&a,0x3000,P));
+    assert(!nas_anon_overlay(&a,NAS_ANON_CEILING-P,2*P));
+    /* Split budget failure must leave the owner map unchanged. */
+    nas_anon_reset(&b);
+    assert(nas_anon_record(&b,NAS_ANON_FIXED_FLOOR,3*P));
+    for (unsigned i=1;i<NAS_ANON_REGION_LIMIT;i++)
+        assert(nas_anon_record(&b,NAS_ANON_FLOOR+4*i*P,P));
+    snap=b;
+    assert(!nas_anon_overlay(&b,NAS_ANON_FIXED_FLOOR+P,P));
+    for (unsigned i=0;i<NAS_ANON_REGION_LIMIT;i++)
+        assert(b.slots[i].start==snap.slots[i].start &&
+               b.slots[i].end==snap.slots[i].end);
     return 0;
 }

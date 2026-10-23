@@ -11,7 +11,9 @@
 #include "mmap_abi.h"
 #define TASK (*nas_current_task)
 #define heap_break TASK.heap_break
-static bool vm_owned_pages(uint64_t start, uint64_t length);
+/* Ordinary anonymous allocation stays in the top-down window. Fixed
+ * mappings participate in the same per-task VM ownership ledger, including
+ * the lower program/heap address domain used by original GCC + musl. */
 
 /* M11: eager, privately owned anonymous VM ranges. Existing PT_LOAD and
  * heap/stack mappings stay in their established address domains. Releasing
@@ -23,7 +25,6 @@ static bool vm_owned_pages(uint64_t start, uint64_t length);
 uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
                          uint64_t prot, uint64_t flags,
                          uint64_t fd, uint64_t offset) {
-    (void)hint;
     /* MAP_PRIVATE|MAP_ANONYMOUS. Linux ignores fd under MAP_ANONYMOUS:
      * an x86-64 libc may pass int -1 zero-extended to 0x00000000ffffffff.
      * Non-anonymous mappings and nonzero offsets remain explicitly refused. */
@@ -39,9 +40,15 @@ uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
     uint64_t bytes = pages * PAGE;
     uint64_t start;
     if (fixed) {
-        /* MAP_FIXED must replace pages only in an existing reservation.
-         * Never trample kernel/ELF/stack mappings outside the VMA owner. */
-        if ((hint & (PAGE-1)) || !vm_owned_pages(hint,bytes))
+        if ((hint & (PAGE-1)) || hint<NAS_ANON_FIXED_FLOOR ||
+            hint>=NAS_ANON_CEILING || bytes>NAS_ANON_CEILING-hint)
+            return (uint64_t)-EINVAL;
+        /* Linux MAP_FIXED REPLACES a user mapping. It is not limited to
+         * one previously created mmap VMA: libc may protect the brk/ELF
+         * address domain, which is mapped by our existing shared loader.
+         * Stage ledger changes first, and keep all kernel/stack VAs out. */
+        struct nas_anon_regions planned=TASK.anonymous;
+        if (!nas_anon_overlay(&planned,hint,bytes))
             return (uint64_t)-ENOMEM;
         start=hint;
         for (uint64_t va=start;va<start+bytes;va+=PAGE) {
@@ -50,6 +57,7 @@ uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
             if (prot && !nas_mmu_map_prot_page(va,prot))
                 return (uint64_t)-ENOMEM;
         }
+        TASK.anonymous=planned;
         return start;
     }
     if (!nas_anon_find_gap(&TASK.anonymous,bytes,&start))
@@ -69,27 +77,9 @@ uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
         nas_arch_halt();
     return start;
 }
-/* A CPIO/tmpfs regular file participates in genuine Linux MAP_PRIVATE.
- * An initial mapping allocates owned, eager physical pages; a MAP_FIXED
- * remap overlays only an already reserved VMA, as musl's DSO loader does.
- * No mmap() call changes the shared FD's read/seek offset. */
-static bool vm_owned_pages(uint64_t start, uint64_t length) {
-    if (start < NAS_ANON_FLOOR || start > NAS_ANON_CEILING ||
-        length > NAS_ANON_CEILING-start) return false;
-    uint64_t end=start+length;
-    for (uint64_t va=start;va<end;va+=PAGE) {
-        bool covered=false;
-        for (unsigned i=0;i<NAS_ANON_REGION_LIMIT;i++) {
-            const struct nas_anon_region *r=&TASK.anonymous.slots[i];
-            if (r->end && va>=r->start && va<r->end) {
-                covered=true;
-                break;
-            }
-        }
-        if (!covered) return false;
-    }
-    return true;
-}
+/* CPIO/tmpfs MAP_PRIVATE eagerly copies bytes into owned frames.
+ * Fixed remaps may replace an existing ELF/heap user address range;
+ * anonymous and file mappings use the same metadata and page ownership. */
 uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
                           uint64_t flags, uint64_t fd, uint64_t offset) {
     const uint64_t MAP_PRIVATE=0x02ULL, MAP_FIXED=0x10ULL;
@@ -108,9 +98,13 @@ uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
     if (valid<0) return (uint64_t)valid;
     uint64_t count=(length+PAGE-1)/PAGE, bytes=count*PAGE;
     uint64_t start;
+    struct nas_anon_regions planned=TASK.anonymous;
     if (flags & MAP_FIXED) {
-        if ((hint & (PAGE-1)) || hint>=USER_LIMIT) return (uint64_t)-EINVAL;
-        if (!vm_owned_pages(hint,bytes)) return (uint64_t)-ENOMEM;
+        if ((hint & (PAGE-1)) || hint<NAS_ANON_FIXED_FLOOR ||
+            hint>=NAS_ANON_CEILING || bytes>NAS_ANON_CEILING-hint)
+            return (uint64_t)-EINVAL;
+        if (!nas_anon_overlay(&planned,hint,bytes))
+            return (uint64_t)-ENOMEM;
         start=hint;
     } else {
         start=nas_vm_anon_mmap(0,length,prot,0x22ULL,UINT64_MAX,0);
@@ -123,8 +117,9 @@ uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
     for (uint64_t n=0;n<count;n++) {
         uint64_t va=start+n*PAGE;
         if (flags & MAP_FIXED) {
-            if (!nas_mmu_user_byte(va) &&
-                !nas_mmu_map_prot_page(va,prot))
+            if (nas_mmu_user_byte(va) && !nas_mmu_unmap_page(va))
+                return (uint64_t)-EFAULT;
+            if (!nas_mmu_map_prot_page(va,prot))
                 return (uint64_t)-ENOMEM;
         }
         uint8_t *mapped=nas_mmu_user_byte(va);
@@ -139,6 +134,7 @@ uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
             !nas_mmu_protect_pages(va,1,prot))
             return (uint64_t)-ENOMEM;
     }
+    if (flags & MAP_FIXED) TASK.anonymous=planned;
     return start;
 }
 uint64_t nas_vm_munmap(uint64_t addr, uint64_t len) {
@@ -171,6 +167,10 @@ uint64_t nas_vm_brk(uint64_t want) {
     uint64_t before=(heap_break+PAGE-1)&~(PAGE-1);
     uint64_t after=(want+PAGE-1)&~(PAGE-1);
     if (after>before) {
+        /* A prior MAP_FIXED reservation must not be silently destroyed by
+         * a later brk expansion: heap pages and mmap pages are disjoint. */
+        if (nas_anon_intersects(&TASK.anonymous,before,after-before))
+            return base;
         uint64_t va=before;
         for (;va<after;va+=PAGE)
             if (!nas_mmu_map_page(va,true)) break;
@@ -179,8 +179,11 @@ uint64_t nas_vm_brk(uint64_t want) {
             return base;
         }
     } else if (after<before) {
+        struct nas_anon_regions planned=TASK.anonymous;
+        if (!nas_anon_forget(&planned,after,before-after)) return base;
         for (uint64_t va=after;va<before;va+=PAGE)
             if (!nas_mmu_unmap_page(va)) return base;
+        TASK.anonymous=planned;
     }
     heap_break=want;
     return want;
