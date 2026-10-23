@@ -75,6 +75,9 @@ struct nas_task {
     uint64_t loaded_phdr, loaded_phnum;
     uint64_t loaded_main_entry, loaded_interp_base;
     uint64_t thread_clear_tid;
+    /* A vfork parent sleeps until exec/exit; child holds shared-VM root. */
+    uint64_t vfork_child_pid, vfork_parent_pid;
+    bool vfork_shared_vm;
 
     /* Per-process signal disposition/mask and filesystem context. */
     uint64_t blocked_signals;

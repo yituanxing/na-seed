@@ -91,6 +91,9 @@ struct nas_task *nas_task_fork_slot(void) {
         /* Fork creates a new thread-group / task identity. The parent's
          * clear_child_tid address belongs only to the parent's thread. */
         child->thread_clear_tid = 0;
+        child->vfork_child_pid = 0;
+        child->vfork_parent_pid = 0;
+        child->vfork_shared_vm = false;
         child->pending_signals = 0; /* pending signals are NOT inherited by fork */
         return child;
     }
@@ -118,6 +121,8 @@ void nas_task_release(struct nas_task *task) {
     task->continue_report_pending = false;
     task->stop_signal = 0;
     task->pending_signals = 0;
+    task->vfork_child_pid = task->vfork_parent_pid = 0;
+    task->vfork_shared_vm = false;
 }
 struct nas_task *nas_task_by_pid(uint64_t pid) {
     for (unsigned i = 0; i < NAS_TASK_LIMIT; i++)

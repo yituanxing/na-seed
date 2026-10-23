@@ -13,6 +13,10 @@ uint64_t nas_process_fork(uint64_t *syscall_frame);
  * No shared-VM threads, CLONE_VFORK or alternate child stack are claimed. */
 uint64_t nas_process_fork_child_tid(uint64_t *syscall_frame,
                                     uint64_t child_tid);
+/* The Linux CLONE_VM|CLONE_VFORK|SIGCHLD subset of posix_spawn.
+ * Shared root and suspended parent until child execve/exit. */
+uint64_t nas_process_vfork(uint64_t *frame, uint64_t child_stack);
+void nas_process_vfork_release(void);
 void nas_process_clear_tid_on_exit(void);
 bool nas_process_waitable(const struct nas_task *child, uint64_t options);
 uint64_t nas_process_wait4(uint64_t pid, uint64_t status, uint64_t options, uint64_t rusage);
