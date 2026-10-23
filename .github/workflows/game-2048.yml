@@ -1,0 +1,42 @@
+name: NaSeed original 2048 terminal game
+on:
+  pull_request:
+    paths:
+      - 'scripts/build-external-2048.sh'
+      - 'scripts/stage-external-2048-rootfs.sh'
+      - 'scripts/probe-external-2048.sh'
+      - 'scripts/2048-pty-oracle.py'
+      - 'scripts/2048-serial-check.py'
+      - 'tests/2048-native-init.c'
+      - '.github/workflows/game-2048.yml'
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  original-game:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native Linux compiler and UEFI system QEMU
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y gcc git make curl binutils clang lld cpio \
+            xorriso qemu-system-x86 ovmf
+      - name: Cache immutable original source blob
+        uses: actions/cache@v4
+        with:
+          path: build/external/2048/amd64/2048.c
+          key: naseed-original-2048-90343eb209e84fa9
+      - name: Linux rules+PTY oracle then play exact ELF on NaSeed COM1
+        run: sh scripts/probe-external-2048.sh
+      - name: Preserve actual guest serial for inspection
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naseed-game-2048-x86-serial
+          path: |
+            build/external/2048/amd64/serial.log
+            build/external/2048/amd64/binary.sha256
+          if-no-files-found: ignore
