@@ -165,9 +165,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install x86 userland / QEMU dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends clang lld xorriso qemu-system-x86 ovmf musl-tools binutils cpio
+        timeout-minutes: 5
+        run: sh scripts/ci-install-x86-deps.sh
       - name: Build shared x86 kernel and stage authentic Alpine/musl binaries
         run: |
           make kernel
@@ -214,9 +213,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install x86 userland / QEMU dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends clang lld xorriso qemu-system-x86 ovmf musl-tools binutils cpio
+        timeout-minutes: 5
+        run: sh scripts/ci-install-x86-deps.sh
       - name: Build shared x86 kernel and stage authentic Alpine/musl binaries
         run: |
           make kernel
