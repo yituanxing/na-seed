@@ -51,3 +51,15 @@ from an unsupported thread subsystem. This is a valid upstream option,
 not a rebuilt binary or a kernel lie about pthread support. If it still
 reports allocation failure, inspect the common VM allocator and page
 ownership rather than replacing XZ.
+
+## CI performance follow-up: ARM64 full-kernel gate
+
+The full ARM64 gate repeatedly stalled at unconditional `apt-get update`
+and a redundant reinstall of large native cross/UEFI/QEMU dependencies,
+although identical QEMU acceptance completed in the dedicated M39/M40
+matrix and the previous full-kernel head was green. Reuse the already
+working Ubuntu archive mirror selector, skip installed commands, omit
+recommended GUI packages, bound HTTP retries and network timeout and
+enforce an eight-minute package provisioning cap; all seven original
+full ARM64 acceptance steps remain intact. The full-kernel workflow
+itself is re-triggered, as is the native M40 three-ISA gate.
