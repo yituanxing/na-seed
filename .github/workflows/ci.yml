@@ -123,6 +123,8 @@ jobs:
         run: DEBIAN_REQUIRE_PASS=1 make debian-probe
       - name: x86 Debian static BusyBox — same 17 cases as RV64
         run: sh scripts/probe-x86-busybox-parity.sh
+      - name: x86 original BusyBox copy and exec from sparse paged tmpfs
+        run: sh scripts/probe-paged-tmpfs.sh amd64
       - name: Attach serial log on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -279,6 +281,8 @@ jobs:
         run: sh scripts/probe-riscv64-busybox.sh
       - name: Verify native RV64 BusyBox command and CPIO filesystem matrix
         run: sh scripts/probe-riscv64-busybox-matrix.sh
+      - name: RV64 original BusyBox copy and exec from sparse paged tmpfs
+        run: sh scripts/probe-paged-tmpfs.sh riscv64
       - name: Compile and boot genuine RV64 M0 kernel
         run: sh scripts/probe-riscv64-m0.sh
       - name: Native Alpine RV64 dynamic BusyBox seven-case parity (SHA256 pinned)
