@@ -14,6 +14,11 @@ void nas_fs_close_fd(uint64_t fd);
 uint64_t nas_fs_poll(uint64_t pollfds,uint64_t nfds,uint64_t timeout_ms);
 uint64_t nas_fs_ppoll(uint64_t pollfds,uint64_t nfds,
                       uint64_t timeout_ptr,uint64_t sigmask_ptr);
+uint64_t nas_fs_pselect6(uint64_t nfds, uint64_t readfds,
+                        uint64_t writefds, uint64_t exceptfds,
+                        bool immediate);
+bool nas_fs_pselect_arm(uint64_t nfds, uint64_t readfds,
+                        uint64_t writefds, uint64_t exceptfds);
 bool nas_fs_poll_arm(uint64_t pollfds,uint64_t nfds);
 bool nas_fs_poll_ready(const struct nas_task *task);
 #endif

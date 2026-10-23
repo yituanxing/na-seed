@@ -39,7 +39,7 @@ jobs:
               if (pr.head.repo?.full_name !== `${owner}/${repo}`) continue;
               const name = pr.head.ref;
               if (name === defaultBranch || active.has(name)) continue;
-              if (!/^(feature|work|staging|port|design)\//.test(name)) continue;
+              if (!/^(feat|feature|work|staging|port|design)\//.test(name)) continue;
               if (!candidates.has(name)) candidates.set(name, []);
               candidates.get(name).push({pr:pr.number,sha:pr.head.sha});
             }

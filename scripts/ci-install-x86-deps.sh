@@ -15,11 +15,7 @@ if [ ! -f /usr/share/OVMF/OVMF_CODE_4M.fd ] &&
     missing="$missing ovmf"
 fi
 if [ -n "$missing" ]; then
-    for file in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
-        if [ -f "$file" ]; then
-            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' "$file"
-        fi
-    done
+    sh scripts/ci-ubuntu-mirror.sh
     sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
     sudo DEBIAN_FRONTEND=noninteractive apt-get \
        -o Acquire::Retries=1 -o Acquire::http::Timeout=30 \

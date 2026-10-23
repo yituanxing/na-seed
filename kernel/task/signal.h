@@ -7,6 +7,7 @@ struct nas_task;
 #define NAS_SIGUSR1 10U
 #define NAS_SIGUSR2 12U
 #define NAS_SIGPIPE 13U
+#define NAS_SIGCHLD 17U
 #define NAS_SIGTERM 15U
 #define NAS_SIGQUIT 3U
 #define NAS_SIGTSTP 20U
@@ -30,6 +31,9 @@ void nas_signal_ppoll_restore(struct nas_task *task,bool interrupted);
 /* Emit SIGPIPE for caught or masked broken-pipe writes; default action is
  * handled by the scheduler before returning to userspace. */
 void nas_signal_broken_pipe(uint64_t fd);
+/* A reaped child does not vanish when SIGCHLD is ignored: deliver a
+ * caught/blocked change notification separately from wait4 zombie state. */
+void nas_signal_child_exit(const struct nas_task *child);
 /* Called by the selected ISA's frame provider after saving the old mask.
  * Correct SA_NODEFER/RESETHAND semantics are owned by the common core. */
 void nas_signal_handler_enter(struct nas_task *task,unsigned signum,

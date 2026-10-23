@@ -27,10 +27,20 @@ on:
       - 'scripts/m36-zlib-cases.tsv'
       - 'tests/m36-zlib-check.c'
       - 'tests/m36-zlib-native.mk'
+      - 'tests/m37-incremental.mk'
+      - 'tests/m37-native-init.c'
+      - 'scripts/m37-incremental-cases.tsv'
+      - 'scripts/probe-m37-incremental.sh'
+      - 'kernel/bootfs.c'
+      - 'kernel/bootfs.h'
+      - 'kernel/fs/syscall.c'
       - 'kernel/tmpfs.c'
       - 'kernel/tmpfs.h'
-      - 'kernel/fs/syscall.c'
+      - 'kernel/arch/linux_syscall_abi.h'
+      - 'kernel/syscall/ops.h'
+
       - 'tests/native-exec-init.c'
+      - 'scripts/ci-ubuntu-mirror.sh'
       - '.github/workflows/m33-native-tcc.yml'
   workflow_dispatch:
 concurrency:
@@ -40,7 +50,7 @@ jobs:
   native-tcc:
     name: original upstream TinyCC / ${{ matrix.port }}
     runs-on: ubuntu-latest
-    timeout-minutes: 34
+    timeout-minutes: 42
     strategy:
       fail-fast: false
       matrix:
@@ -92,16 +102,7 @@ jobs:
                 missing="$missing qemu-efi-aarch64" ;;
           esac
           if [ -n "$missing" ]; then
-            # GitHub runner's DEB822 sources may use
-            # "mirror+file:/etc/apt/apt-mirrors.txt"; changing the .sources
-            # URI alone leaves the slow Azure mirror selected via that file.
-            # Point both *signed* Ubuntu archive selectors at the official
-            # upstream mirror. No unauthenticated/insecure apt flags.
-            for file in /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
-              if [ -f "$file" ]; then
-                sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' "$file"
-              fi
-            done
+            sh scripts/ci-ubuntu-mirror.sh
             sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
             sudo DEBIAN_FRONTEND=noninteractive apt-get \
               -o Acquire::Retries=1 -o Acquire::http::Timeout=30 \
@@ -110,6 +111,11 @@ jobs:
           echo '[M33] upstream GCC, GNU tools and headless QEMU ready'
       - name: Linux oracle and real native NaSeed QEMU TinyCC
         run: sh scripts/probe-m33-native-tcc.sh ${{ matrix.port }}
+      - name: Cache SHA256-pinned GNU Make 4.4.1 source tarball
+        uses: actions/cache@v4
+        with:
+          path: build/deps/external/make-4.4.1.tar.gz
+          key: naseed-gnu-make-4.4.1-dd16fb1d67bfab79a72f5e8390735c49
       - name: Complete three-ISA original GNU Make + TinyCC + linked tmpfs ELF execution
         timeout-minutes: 9
         run: sh scripts/probe-m34-native-make.sh ${{ matrix.port }}
@@ -119,6 +125,9 @@ jobs:
       - name: Real zlib 1.3.1 ten-object build, deflate/inflate and dynamic tmpfs slab gate
         timeout-minutes: 9
         run: sh scripts/probe-m36-zlib.sh ${{ matrix.port }}
+      - name: Upstream zlib native GNU Make -j2, stat, touch and selective relink
+        timeout-minutes: 12
+        run: sh scripts/probe-m37-incremental.sh ${{ matrix.port }}
       - name: Attach upstream build, native ELF and serial diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
@@ -141,6 +150,10 @@ jobs:
             build/external/m36-zlib/${{ matrix.port }}/linux-deflate.log
             build/external/m36-zlib/${{ matrix.port }}/zlib-check
             build/external/m36-zlib/${{ matrix.port }}/check.o
+            build/busybox-source-parity-x86/m37-incremental.serial.log
+            build/port-riscv64/full/matrix-source/m37-incremental.serial.log
+            build/port-aarch64/full/matrix-source/m37-incremental.serial.log
+
             build/busybox-source-parity-x86/m36-*.serial.log
             build/port-riscv64/full/matrix-source/m36-*.serial.log
             build/port-aarch64/full/matrix-source/m36-*.serial.log

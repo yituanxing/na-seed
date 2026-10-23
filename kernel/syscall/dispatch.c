@@ -121,9 +121,14 @@ static uint64_t nas_time_poll_arm_deadline(enum nas_syscall_op nr,
     if(nr==NAS_SC_poll) {
         int32_t ms=(int32_t)(uint32_t)args[3];
         if(ms>0)delta=(uint64_t)(unsigned)ms*1000000ULL;
-    } else if(args[3]) {
-        uint64_t rc=nas_time_read_request(args[3],&delta);
-        if((int64_t)rc<0)return rc;
+    } else {
+        /* pselect6's timespec is its fifth argument (Linux a5);
+         * ppoll uses its third. Reuse one monotonic scheduler deadline. */
+        uint64_t timespec=nr==NAS_SC_pselect6?args[5]:args[3];
+        if(timespec) {
+            uint64_t rc=nas_time_read_request(timespec,&delta);
+            if((int64_t)rc<0)return rc;
+        }
     }
     if(delta) {
         TASK.deadline_ns=nas_time_add_deadline(nas_arch_monotonic_ns(),delta);
@@ -229,39 +234,65 @@ uint64_t syscall_dispatch(const uint64_t *args) {
                                        args[4], args[5], args[6]);
     if (nr == NAS_SC_munmap) return nas_vm_munmap(args[1], args[2]);
     if (nr == NAS_SC_brk) return nas_vm_brk(args[1]);
-    if(nr==NAS_SC_poll || nr==NAS_SC_ppoll) {
-        /* Linux ppoll installs its temporary mask *before* checking both
-         * readiness and pending signals. Store the original mask inside
-         * the Task; the scheduler later restores it after EINTR/timeout.
-         * This never borrows a foreign user's sigset pointer. */
-        if(nr==NAS_SC_ppoll && args[4]) {
-            if(args[5]!=8ULL)return (uint64_t)-EINVAL;
+    if(nr==NAS_SC_poll || nr==NAS_SC_ppoll || nr==NAS_SC_pselect6) {
+        /* ppoll and pselect6 install one optional temporary signal mask.
+         * pselect6's sixth argument points to {sigset_ptr, size_t}; the
+         * syscall number and ABI argument locations are target-decoded. */
+        uint64_t sigmask=0, sigsize=0;
+        if(nr==NAS_SC_ppoll) {
+            sigmask=args[4];sigsize=args[5];
+        } else if(nr==NAS_SC_pselect6 && args[6]) {
+            if(!nas_user_read_u64(args[6],&sigmask) ||
+               args[6]>UINT64_MAX-8 ||
+               !nas_user_read_u64(args[6]+8,&sigsize))
+                return (uint64_t)-EFAULT;
+        }
+        if(sigmask) {
+            if(sigsize!=8ULL)return (uint64_t)-EINVAL;
             uint64_t mask;
-            if(!nas_user_read_u64(args[4],&mask))
+            if(!nas_user_read_u64(sigmask,&mask))
                 return (uint64_t)-EFAULT;
             TASK.ppoll_saved_mask=TASK.blocked_signals;
             TASK.ppoll_mask_active=true;
             TASK.blocked_signals=mask & ~((1ULL<<8)|(1ULL<<18));
         }
-        uint64_t result=(nr==NAS_SC_poll ?
+        bool immediate=false;
+        if(nr==NAS_SC_pselect6 && args[5]) {
+            uint64_t sec=0,nsec=0;
+            if(!nas_user_read_u64(args[5],&sec) ||
+               args[5]>UINT64_MAX-8 ||
+               !nas_user_read_u64(args[5]+8,&nsec)) {
+                nas_signal_ppoll_restore(&TASK,false);
+                return (uint64_t)-EFAULT;
+            }
+            uint64_t duration;
+            if(!nas_time_duration_ns(sec,nsec,&duration)) {
+                nas_signal_ppoll_restore(&TASK,false);
+                return (uint64_t)-EINVAL;
+            }
+            immediate=duration==0;
+        }
+        uint64_t result=nr==NAS_SC_poll ?
             nas_fs_poll(args[1],args[2],args[3]) :
-            nas_fs_ppoll(args[1],args[2],args[3],args[4]));
+            nr==NAS_SC_ppoll ?
+            nas_fs_ppoll(args[1],args[2],args[3],args[4]) :
+            nas_fs_pselect6(args[1],args[2],args[3],args[4],immediate);
         if((int64_t)result==-EAGAIN) {
-            if(nr==NAS_SC_ppoll && nas_signal_user_pending(&TASK)) {
+            if(nas_signal_user_pending(&TASK)) {
                 nas_signal_ppoll_restore(&TASK,true);
                 return (uint64_t)-EINTR;
             }
-            /* Arm at most once: replay must retain the ORIGINAL absolute
-             * deadline, not restart a relative timeout after every wake. */
             uint64_t rc=nas_time_poll_arm_deadline(nr,args);
             if((int64_t)rc<0) {
                 nas_signal_ppoll_restore(&TASK,false);
                 return rc;
             }
-            bool has_io=nas_fs_poll_arm(args[1],args[2]);
+            bool has_io=nr==NAS_SC_pselect6 ?
+                nas_fs_pselect_arm(args[1],args[2],args[3],args[4]) :
+                nas_fs_poll_arm(args[1],args[2]);
             if(!has_io && !TASK.deadline_active) {
                 nas_signal_ppoll_restore(&TASK,false);
-                return (uint64_t)-EOPNOTSUPP; /* no event/deadline source */
+                return (uint64_t)-EOPNOTSUPP;
             }
             return nas_task_block((uint64_t *)(uintptr_t)args,nr,
                                   args[1],args[2],args[3],args[4]);

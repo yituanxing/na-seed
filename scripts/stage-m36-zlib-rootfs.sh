@@ -32,14 +32,16 @@ cmp "$source/zconf.h.in" "$root/tests/zconf.h"
 cp tests/m35-include/*.h "$root/tests/include/"
 cp tests/m35-rt.c "$root/tests/rt.c"
 cp tests/m36-zlib-check.c "$root/tests/check.c"
-cp tests/m36-zlib-native.mk "$root/tests/Makefile"
+# M36 and M37 use one real-source CPIO stager, same third-party files
+# and libc bits. Only native Make contract and init argv differ.
+cp "${NAS_ZLIB_MAKEFILE:-tests/m36-zlib-native.mk}" "$root/tests/Makefile"
 case "$port" in
   amd64) cc=gcc ;;
   riscv64) cc=riscv64-linux-gnu-gcc ;;
   arm64) cc=aarch64-linux-gnu-gcc ;;
 esac
 "$cc" -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
-    tests/native-exec-init.c -o "$root/bin/native-init"
+    "${NAS_ZLIB_INIT_SOURCE:-tests/native-exec-init.c}" -o "$root/bin/native-init"
 chmod 755 "$root" "$root/bin" "$root/tests" "$root/tests/include" \
     "$root/bin/gmake" "$root/bin/tcc" "$root/bin/busybox" "$root/bin/native-init"
 chmod 1777 "$root/tmp"

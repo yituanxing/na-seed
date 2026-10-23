@@ -83,7 +83,8 @@ jobs:
           fetch-depth: 2
       - name: Install dependencies
         run: |
-          sudo apt-get update -qq
+          sh scripts/ci-ubuntu-mirror.sh
+          sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
           sudo apt-get install -y --no-install-recommends clang lld xorriso qemu-system-x86 ovmf musl-tools binutils cpio
       - name: Shared ELF PT_LOAD loader regression (x86/RV64/ARM64)
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-elf-segments.c kernel/task/elf_segments.c -o /tmp/naseed-segments-test && /tmp/naseed-segments-test
@@ -178,7 +179,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install x86 userland / QEMU dependencies
-        timeout-minutes: 5
+        timeout-minutes: 8
         run: sh scripts/ci-install-x86-deps.sh
       - name: Build shared x86 kernel and stage authentic Alpine/musl binaries
         run: |
@@ -226,7 +227,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install x86 userland / QEMU dependencies
-        timeout-minutes: 5
+        timeout-minutes: 8
         run: sh scripts/ci-install-x86-deps.sh
       - name: Build shared x86 kernel and stage authentic Alpine/musl binaries
         run: |
@@ -269,7 +270,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install cross-build and UEFI/QEMU tools
         run: |
-          sudo apt-get update -qq
+          sh scripts/ci-ubuntu-mirror.sh
+          sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
           sudo apt-get install -y --no-install-recommends clang lld binutils mtools gdisk cpio qemu-user \
             qemu-system-misc qemu-efi-riscv64
       - name: Shared ELF PT_LOAD loader host regression
@@ -317,7 +319,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install AArch64 UEFI/QEMU and cross-compiler tools
         run: |
-          sudo apt-get update -qq
+          sh scripts/ci-ubuntu-mirror.sh
+          sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
           sudo apt-get install -y --no-install-recommends clang lld binutils mtools gdisk \
             qemu-system-arm qemu-efi-aarch64
       - name: Verify asm-generic 64-bit stat layout (ARM64)
@@ -391,17 +394,7 @@ jobs:
                 missing="$missing qemu-efi-aarch64" ;;
           esac
           if [ -n "$missing" ]; then
-            # Hosted-runner Azure mirror has intermittently stalled even a
-            # small signed package. Prefer the identical signed Ubuntu
-            # archive over the independent network path used by Make gate.
-            if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
-              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
-                /etc/apt/sources.list.d/ubuntu.sources
-            fi
-            if [ -f /etc/apt/sources.list ]; then
-              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
-                /etc/apt/sources.list
-            fi
+            sh scripts/ci-ubuntu-mirror.sh
             sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 \
               update -qq
             sudo DEBIAN_FRONTEND=noninteractive apt-get \

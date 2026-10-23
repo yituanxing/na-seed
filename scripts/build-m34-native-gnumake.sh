@@ -19,9 +19,24 @@ tarball="build/deps/external/make-$version.tar.gz"
 source="$work/make-$version"
 mkdir -p "$work" "$(dirname "$tarball")"
 if [ ! -s "$tarball" ]; then
-  curl -fLsS --retry 3 --retry-delay 2 \
-    -o "$tarball.tmp" "https://ftp.gnu.org/gnu/make/make-$version.tar.gz"
-  mv "$tarball.tmp" "$tarball"
+  # First try two verified mirrors; the original ftp.gnu.org may stall on
+  # hosted runners. Bound every attempt instead of consuming a CI timeout.
+  fetched=0
+  for url in \
+    "https://mirrors.kernel.org/gnu/make/make-$version.tar.gz" \
+    "https://ftpmirror.gnu.org/make/make-$version.tar.gz" \
+    "https://ftp.gnu.org/gnu/make/make-$version.tar.gz"; do
+    rm -f "$tarball.tmp"
+    if curl -fLsS --connect-timeout 8 --max-time 45 \
+       --retry 1 --retry-delay 1 -o "$tarball.tmp" "$url" &&
+       printf '%s  %s\n' "$sha" "$tarball.tmp" | sha256sum -c - >/dev/null; then
+      mv "$tarball.tmp" "$tarball"
+      fetched=1
+      break
+    fi
+    echo "[M34] mirror unavailable or digest mismatch: $url" >&2
+  done
+  [ "$fetched" -eq 1 ] || { echo '[M34] all pinned GNU Make mirrors unavailable' >&2; exit 1; }
 fi
 printf '%s  %s\n' "$sha" "$tarball" | sha256sum -c -
 if [ ! -f "$source/configure" ]; then tar -xzf "$tarball" -C "$work"; fi

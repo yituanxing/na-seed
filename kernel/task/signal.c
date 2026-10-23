@@ -398,6 +398,20 @@ void nas_signal_handler_enter(struct nas_task *t,unsigned signo,
  * outstanding frame constraint is intentional until recursive SA_ONSTACK
  * and untrusted multi-frame validation are complete. Other caught signals
  * remain pending rather than corrupting a saved first handler frame. */
+/* Linux child-exit notification: the zombie and wait4 status remain owned
+ * by process.c. A caught SIGCHLD interrupts an actual pselect/ppoll wait
+ * so an event-driven parent can reap its children and replenish jobserver
+ * pipe tokens. Queue even if masked: pselect6 installs its own temporary
+ * signal mask and must observe the pending transition atomically.
+ * SIG_DFL/SIG_IGN SIGCHLD cause no signal delivery; wait4 still works. */
+void nas_signal_child_exit(const struct nas_task *child) {
+    if (!child || !child->ppid) return;
+    struct nas_task *parent=nas_task_by_pid(child->ppid);
+    if (!parent || parent->state==NAS_TASK_FREE ||
+        parent->state==NAS_TASK_ZOMBIE) return;
+    if (parent->signal_actions[NAS_SIGCHLD][0] > 1)
+        parent->pending_signals |= 1ULL << (NAS_SIGCHLD-1);
+}
 void nas_signal_ppoll_restore(struct nas_task *task,bool interrupted) {
     if(!task || !task->ppoll_mask_active)return;
     if(interrupted)task->signal_force_deliver |=

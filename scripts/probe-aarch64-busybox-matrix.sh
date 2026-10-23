@@ -97,6 +97,7 @@ boot_case() {
         timer-preempt) time_budget=45 ;;
         process-capacity) time_budget=65 ;;
         init-reaper) time_budget=130 ;;
+        m37-incremental) time_budget=150 ;;
         *) time_budget=28 ;;
     esac
     set +e

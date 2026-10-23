@@ -5,6 +5,8 @@
 #include "errno.h"
 #include "lib/string.h"
 #include "mm/frame.h"
+#include "time/clock.h"
+#include "arch/arch.h"
 
 /* Metadata is itself demand-allocated from the common frame provider:
  * one page holds several reusable inode records; a linked slab chain grows
@@ -19,6 +21,17 @@ struct tmp_inode_slab {
 _Static_assert(sizeof(struct tmp_inode_slab) <= 4096, "tmp inode slab must fit one frame");
 _Static_assert(TMP_INODES_PER_SLAB >= 2, "tmp inode must fit slab");
 
+/* Use the existing cross-ISA RTC-anchored timekeeper; if firmware has
+ * no valid RTC, monotonic nanoseconds still order writes within this boot.
+ * Never use synthetic always-equal timestamps for real GNU Make. */
+static uint64_t tmp_now_ns(void) {
+    uint64_t now = 0;
+    return nas_time_realtime_ns(&now) ? now : nas_arch_monotonic_ns();
+}
+static uint64_t tmp_next_mtime(uint64_t previous) {
+    uint64_t now = tmp_now_ns();
+    return now > previous ? now : previous + (previous < UINT64_MAX);
+}
 static struct tmp_inode_slab *tmp_slabs;
 static struct nas_tmp_file *tmp_slot_owner[NAS_FD_LIMIT];
 static uint64_t tmp_next_ino = 1;
@@ -103,6 +116,8 @@ int64_t tmp_write_at(struct nas_tmp_file *file, uint64_t offset,
         memcpy(page + at % TMP_PAGE_SIZE, src + done, (size_t)length);
         done += length;
         if (at + length > file->size) file->size = at + length;
+        file->mtime_ns = tmp_next_mtime(file->mtime_ns);
+        file->ctime_ns = file->mtime_ns;
     }
     return (int64_t)done;
 }
@@ -122,6 +137,19 @@ void tmp_truncate(struct nas_tmp_file *file) {
         file->index_pages[outer] = 0;
     }
     file->size = 0;
+    if (file->used) {
+        file->mtime_ns = tmp_next_mtime(file->mtime_ns);
+        file->ctime_ns = file->mtime_ns;
+    }
+}
+int tmp_utimens(struct nas_tmp_file *file, uint64_t access_ns,
+                uint64_t modified_ns, bool set_access, bool set_modified) {
+    if (!file || !file->used) return -ENOENT;
+    if (set_access) file->atime_ns = access_ns;
+    if (set_modified) file->mtime_ns = modified_ns;
+    if (set_access || set_modified) file->ctime_ns =
+        tmp_next_mtime(file->ctime_ns);
+    return 0;
 }
 
 /* Real CPIO /tmp mountpoint with a small volatile directory tree.
@@ -171,6 +199,7 @@ static struct nas_tmp_file *tmp_init_node(struct nas_tmp_file *file,
     file->mode=dir ? 0040755U : 0100644U;
     file->is_dir=dir;
     file->ino=tmp_next_ino++;
+    file->atime_ns=file->mtime_ns=file->ctime_ns=tmp_now_ns();
     file->linked=file->used=true;
     return file;
 }
@@ -223,6 +252,7 @@ void tmp_release_slot(unsigned slot) {
 int tmp_chmod(struct nas_tmp_file *file, uint64_t mode) {
     if(!file || !file->used)return -ENOENT;
     file->mode=(file->mode & 0170000U) | (uint32_t)(mode & 07777U);
+    file->ctime_ns=tmp_next_mtime(file->ctime_ns);
     return 0;
 }
 int tmp_mkdir(const char *path, uint64_t mode) {
@@ -362,5 +392,6 @@ int tmp_rename(const char *oldpath, const char *newpath, uint64_t flags) {
     }
     unsigned i = 0;
     do { source->path[i] = newpath[i]; } while (newpath[i++]);
+    source->ctime_ns=tmp_next_mtime(source->ctime_ns);
     return 0;
 }
