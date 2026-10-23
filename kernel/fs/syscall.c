@@ -241,17 +241,29 @@ uint64_t nas_fs_resolve_path(uint64_t dirfd, uint64_t pathname,
     return (uint64_t)(int64_t)nas_path_resolve(base,src,out);
 }
 
+/* A bounded adapter transfers user buffers to the shared page-backed tmpfs.
+ * Kernel filesystem storage knows nothing about user virtual addresses. */
 static uint64_t tmp_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     const struct nas_tmp_file *file = tmp_by_fd(fd);
     if (!file) return (uint64_t)-EBADF;
     if (!length) return 0;
-    uint64_t slot = file_slot[fd], offset = nas_open_files[slot].position;
-    if (offset >= file->size) return 0;
-    if (length > file->size - offset) length = file->size - offset;
-    if (!nas_user_write_bytes(address, file->bytes + offset, length))
+    if (address >= USER_LIMIT || length > USER_LIMIT - address)
         return (uint64_t)-EFAULT;
-    nas_open_files[slot].position += length;
-    return length;
+    unsigned slot = file_slot[fd];
+    uint64_t offset = nas_open_files[slot].position, done = 0;
+    uint8_t buffer[1024];
+    while (done < length) {
+        uint64_t n = length - done;
+        if (n > sizeof(buffer)) n = sizeof(buffer);
+        int64_t got = tmp_read_at(file, offset + done, buffer, n);
+        if (got < 0) return done ? done : (uint64_t)got;
+        if (!got) break;
+        if (!nas_user_write_bytes(address + done, buffer, (uint64_t)got))
+            return done ? done : (uint64_t)-EFAULT;
+        done += (uint64_t)got;
+    }
+    nas_open_files[slot].position += done;
+    return done;
 }
 static uint64_t tmp_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     unsigned slot = file_slot[fd];
@@ -262,20 +274,24 @@ static uint64_t tmp_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
         return (uint64_t)-EFAULT;
     uint64_t offset = (nas_open_files[slot].status_flags & 0x400ULL) ?
                       file->size : nas_open_files[slot].position;
-    if (offset >= TMP_FILE_CAP) return (uint64_t)-ENOSPC;
-    if (length > TMP_FILE_CAP - offset) length = TMP_FILE_CAP - offset;
-    uint64_t n = 0;
-    for (; n < length; n++) {
-        uint8_t *src = nas_mmu_user_byte(address + n);
-        if (!src) break;
-        file->bytes[offset + n] = *src;
+    uint64_t done = 0;
+    uint8_t buffer[1024];
+    while (done < length) {
+        uint64_t n = 0;
+        while (n < sizeof(buffer) && n < length - done) {
+            uint8_t *ptr = nas_mmu_user_byte(address + done + n);
+            if (!ptr) break;
+            buffer[n++] = *ptr;
+        }
+        if (!n) return done ? done : (uint64_t)-EFAULT;
+        int64_t written = tmp_write_at(file, offset + done, buffer, n);
+        if (written < 0) return done ? done : (uint64_t)written;
+        done += (uint64_t)written;
+        if ((uint64_t)written != n) break;
+        if (n < sizeof(buffer) && done < length) break; /* user fault */
     }
-    if (!n) return (uint64_t)-EFAULT;
-    for (uint64_t pos = file->size; pos < offset; pos++)
-        file->bytes[pos] = 0;
-    if (offset + n > file->size) file->size = offset + n;
-    nas_open_files[slot].position = offset + n;
-    return n;
+    nas_open_files[slot].position = offset + done;
+    return done;
 }
 /* Linux syscall decoders retain user-pointer validation and task-relative
  * path resolution; the RAM filesystem backend owns namespace operations. */
@@ -390,7 +406,7 @@ static uint64_t sys_open_path(const char *path, uint64_t native_flags) {
                 if (!tmp_file) return (uint64_t)-ENOSPC;
             }
             if ((kind == FD_TMP || kind == FD_TMP_DIR) && !tmp_file) return (uint64_t)-ENOENT;
-            if (kind == FD_TMP && (flags & 0x200ULL)) tmp_file->size = 0;
+            if (kind == FD_TMP && (flags & 0x200ULL)) tmp_truncate(tmp_file);
             nas_open_files[slot].refcount = 1;
             nas_open_files[slot].ops = nas_fs_ops_for_kind(kind);
             if (kind == FD_TMP || kind == FD_TMP_DIR)
