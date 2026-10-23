@@ -1,0 +1,2 @@
+# Linux thread-group exit from worker / early leader exit / real zstd pthreads.
+m44-group	cpio	sh -c '/bin/sh /tests/run-group.sh'	M44_REAL_ZSTD_AND_GROUP_PASS	-	/bin/busybox

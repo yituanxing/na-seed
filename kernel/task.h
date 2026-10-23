@@ -36,6 +36,7 @@ struct nas_task {
     uint64_t pid, ppid;
     uint64_t tgid; /* getpid: thread group; pid remains unique gettid */
     bool is_thread; /* CLONE_THREAD tasks are never wait4 children */
+    bool group_exit_pending; /* leader exited via SYS_exit; retain VM and FDs for peers */
     struct nas_task *vm_owner; /* shared address-space metadata owner */
     /* Linux process group + session identity, independent of CPU/VM. */
     uint64_t pgid, sid;

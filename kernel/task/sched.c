@@ -136,20 +136,59 @@ bool nas_sched_sigpipe_default(uint64_t fd) {
         signal_actions[NAS_SIGPIPE][0] == 0 &&
         !(blocked_signals & (1ULL << (NAS_SIGPIPE - 1)));
 }
+/* The leader is the stable Linux process identity, even after its
+ * SYS_exit while other threads are alive. Do not allow wait4 to reap its
+ * root or descriptor table until the LAST live member has terminated. */
+static bool group_has_live_workers(const struct nas_task *leader) {
+    for(unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
+        const struct nas_task *peer=nas_task_at(slot);
+        if(peer!=leader && peer->tgid==leader->tgid && peer->is_thread &&
+           peer->state!=NAS_TASK_FREE && peer->state!=NAS_TASK_ZOMBIE)
+            return true;
+    }
+    return false;
+}
 void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     struct nas_task *child = nas_current_task;
     if (!child->ppid || !nas_task_by_pid(child->ppid))
         sched_fail("child termination without living parent");
     nas_process_clear_tid_on_exit();
     if (child->is_thread) {
-        /* Linux thread exit does not close CLONE_FILES or create wait4 zombies.
-         * The shared VM is owned by the surviving thread-group leader. */
+        /* SYS_exit is thread-local. Preserve CLONE_FILES/VM while siblings
+         * run; release this task slot only after switching user frames. */
         child->state=NAS_TASK_ZOMBIE;
+        child->resume_valid=false;
         child->pending_valid=false;
         child->blocked_op=0;
         child->futex_addr=0;
+        struct nas_task *leader=child->vm_owner;
+        if(leader->group_exit_pending && !group_has_live_workers(leader)) {
+            /* Leader finished earlier: group becomes waitable NOW, only
+             * after the last worker has cleared its TID and stopped. */
+            struct nas_task *last=nas_current_task;
+            nas_current_task=leader;
+            nas_arch_restore_cpu(leader);
+            nas_sched_child_exit(leader->exit_code,leader->termination_signal);
+            nas_current_task=last;
+            nas_arch_restore_cpu(last);
+            nas_print("[THREAD GROUP] last worker finalized tgid=");
+            nas_dec(leader->tgid);nas_print("\n");
+        }
         return;
     }
+    child->exit_code=code&255U;
+    child->termination_signal=signum;
+    child->state=NAS_TASK_ZOMBIE;
+    child->resume_valid=false;
+    child->pending_valid=false;
+    child->blocked_op=0;
+    if(group_has_live_workers(child)) {
+        child->group_exit_pending=true;
+        nas_print("[THREAD GROUP] leader exit deferred tgid=");
+        nas_dec(child->tgid);nas_print("\n");
+        return;
+    }
+    child->group_exit_pending=false;
     if (child->vfork_shared_vm) {
         nas_process_vfork_release();
         /* Exit-before-exec must never let wait4 free parent's page table. */
@@ -189,6 +228,48 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
         nas_print("; parent pid="); nas_dec(child->ppid);
         nas_print("\n");
     }
+}
+/* Linux exit_group differs from exit: all threads (READY, BLOCKED,
+ * STOPPED, and already exited) are stopped, and shared FDs / address space
+ * are cleaned up ONCE by their stable process leader. All members share
+ * the active user root. Never reclaim the root before parent wait4. */
+void nas_sched_thread_group_exit(uint32_t code,uint32_t signum) {
+    struct nas_task *caller=nas_current_task;
+    struct nas_task *leader=caller->vm_owner;
+    if(!leader || leader->tgid!=caller->tgid || leader->is_thread)
+        sched_fail("exit_group invalid thread group owner");
+    for(unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
+        struct nas_task *peer=nas_task_at(slot);
+        if(peer==caller || peer==leader || peer->tgid!=leader->tgid ||
+           peer->state==NAS_TASK_FREE)continue;
+        if(!peer->is_thread) sched_fail("exit_group crossed process boundary");
+        nas_process_clear_tid_for_exit(peer);
+        peer->state=NAS_TASK_ZOMBIE;
+        peer->resume_valid=false;
+        peer->pending_valid=false;
+        peer->blocked_op=0;
+        peer->futex_addr=0;
+        nas_task_release(peer);
+    }
+    if(caller!=leader) {
+        nas_process_clear_tid_on_exit();
+        caller->state=NAS_TASK_ZOMBIE;
+        caller->resume_valid=false;
+        caller->pending_valid=false;
+        caller->blocked_op=0;
+        caller->futex_addr=0;
+        /* Temporarily take ownership of the common process FD cleanup
+         * as the group leader. Real CPU root/TLS are restored to caller
+         * before unwinding its syscall frame. */
+        nas_current_task=leader;
+        nas_arch_restore_cpu(leader);
+        nas_sched_child_exit(code,signum);
+        nas_current_task=caller;
+        nas_arch_restore_cpu(caller);
+    } else nas_sched_child_exit(code,signum);
+    nas_print("[THREAD GROUP] exit_group tgid=");
+    nas_dec(leader->tgid);nas_print(" code=");nas_dec(code&255U);
+    nas_print("\n");
 }
 static unsigned schedule_count;
 /* A producer repeatedly woken via futex must not starve later TID slots.

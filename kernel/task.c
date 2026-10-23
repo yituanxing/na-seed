@@ -86,6 +86,7 @@ struct nas_task *nas_task_fork_slot(void) {
         child->pid = next_pid++;
         child->tgid=child->pid;
         child->is_thread=false;
+        child->group_exit_pending=false;
         child->ppid = nas_current_task->pid;
         /* pgid and sid were inherited from parent; execed is per-fork. */
         child->execed = false;
@@ -134,6 +135,7 @@ void nas_task_release(struct nas_task *task) {
     task->pid = 0;
     task->tgid=0;
     task->is_thread=false;
+    task->group_exit_pending=false;
     task->vm_owner=task;
     task->fds=&task->fds_owned;
     task->futex_addr=0;
