@@ -4,10 +4,12 @@
 #include <stdbool.h>
 /* Kernel-owned, borrowed inode view independent of Linux syscall ABI and
  * ELF segment loader. Backends retain storage/namespace ownership. */
+struct nas_tmp_file;
 enum nas_fs_backend { NAS_FS_BOOTFS, NAS_FS_TMPFS };
 struct nas_fs_node {
     enum nas_fs_backend backend;
-    const uint8_t *data;
+    const uint8_t *data; /* direct read-only bootfs image, else NULL */
+    const struct nas_tmp_file *tmp; /* borrowed sparse inode */
     uint64_t size;
     uint32_t mode;
     bool is_dir;
