@@ -44,6 +44,12 @@ static uint64_t nas_time_read_request(uint64_t addr,uint64_t *ns) {
     return nas_time_duration_ns(sec,nsec,ns) ? 0 : (uint64_t)-EINVAL;
 }
 static uint64_t nas_time_read_clock(uint64_t clockid,uint64_t dst,bool resolution) {
+    static unsigned observed_clockid;
+    if(observed_clockid++<12) {
+        nas_print("[M31 ABI] clockid="); nas_dec(clockid);
+        nas_print(" getres="); nas_dec(resolution ? 1 : 0);
+        nas_print("\n");
+    }
     uint64_t now;
     if(clockid==1ULL) {
         now=resolution ? nas_arch_clock_resolution_ns() : nas_arch_monotonic_ns();
@@ -75,6 +81,12 @@ static uint64_t nas_time_read_clock(uint64_t clockid,uint64_t dst,bool resolutio
 static uint64_t nas_time_gettimeofday(uint64_t tv,uint64_t tz) {
     uint64_t now;
     if(!nas_time_realtime_ns(&now))return (uint64_t)-EOPNOTSUPP;
+    static unsigned observed_tv;
+    if(observed_tv++<4) {
+        nas_print("[M31 ABI] gettimeofday sec=");
+        nas_dec(now/NAS_NSEC_PER_SEC);
+        nas_print("\n");
+    }
     if(tv) {
         struct { int64_t sec,usec; } value={
             (int64_t)(now/NAS_NSEC_PER_SEC),

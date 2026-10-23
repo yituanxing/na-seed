@@ -29,8 +29,7 @@ if [ "$1" = arm64 ]; then
   linux_result=$(qemu-aarch64 -strace "$native" date -u +%s \
        2>build/port-aarch64/full/m31-date.linux-user.syscalls.log)
   echo "[M31 LINUX DATE] $linux_result"
-  grep -E 'clock_gettime|clock_gettime64|gettimeofday|time\\(' \
-       build/port-aarch64/full/m31-date.linux-user.syscalls.log | tail -10 || :
+  sed -n '1,90p' build/port-aarch64/full/m31-date.linux-user.syscalls.log | grep -E 'clock|gettimeofday|time|open' | tail -25 || :
   case "$linux_result" in
     ''|*[!0-9]*) echo '[M31 LINUX DATE FAIL] unexpected Linux output' >&2; exit 1;;
   esac
