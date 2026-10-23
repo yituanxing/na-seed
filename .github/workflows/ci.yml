@@ -104,6 +104,8 @@ jobs:
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-vm-prot.c -o /tmp/naseed-vm-prot && /tmp/naseed-vm-prot
       - name: Linux open flags ABI regression (including ARM64 values)
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-fcntl-abi.c -o /tmp/naseed-fcntl-abi && /tmp/naseed-fcntl-abi
+      - name: Linux umask/create-mode ABI semantics
+        run: cc -std=c11 -Wall -Wextra -Werror scripts/test-fs-mode-abi.c -o /tmp/naseed-fs-mode && /tmp/naseed-fs-mode
       - name: Verify one full-kernel core TU manifest across ISAs
         run: sh scripts/check-full-kernel-sources.sh
       - name: Verify native x86-64 stat layout

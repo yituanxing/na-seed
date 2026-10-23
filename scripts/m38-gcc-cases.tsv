@@ -1,3 +1,3 @@
 # One original BusyBox shell script drives stock Alpine GCC, GNU as/ld and musl.
 # Keep the Limine boot selector short; the full real workload lives in CPIO.
-m38-gcc	cpio	sh -c '/bin/sh /tests/build.sh'	M38_READV_PASS	-	/bin/busybox
+m38-gcc	cpio	sh -c '/bin/sh /tests/build.sh'	M38_FS_MODE_PASS	-	/bin/busybox

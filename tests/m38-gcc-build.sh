@@ -12,4 +12,8 @@ echo M38_LINKED
 /bin/busybox chmod 755 hello
 ./hello
 /usr/bin/gcc -static /tests/readv.c -o readv
+/bin/busybox chmod 755 readv
 ./readv
+/usr/bin/gcc -static /tests/fs-mode.c -o fs-mode
+/bin/busybox chmod 755 fs-mode
+./fs-mode

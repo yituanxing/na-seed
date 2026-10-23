@@ -25,6 +25,7 @@ int main(void) {
     call[1]=17U;
     call[5]=0;
     assert(nas_linux_decode_call(call)==NAS_SC_fork);
+    assert(nas_linux_decode_syscall(166U)==NAS_SC_umask);
     call[0]=93U;
     assert(nas_linux_decode_call(call)==NAS_SC_exit);
     return 0;

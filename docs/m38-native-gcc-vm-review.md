@@ -83,3 +83,17 @@ run on the host for a foreign ISA. Stage that exact standard BusyBox link
 in the immutable rootfs, verify that it resolves to the authentic package
 binary, and continue executing stock sh rather than using an OS-side
 special-case or substituting a handcrafted shell.
+
+## Linux filesystem creation mask and ABI acceptance
+
+Native original GCC+musl compiles and runs hello on all three ISAs, but
+its second GCC-built readv executable initially lacked its execute bit.
+An independent missing syscall appeared: umask (#95 x86; #166 RV64/ARM64).
+Implement one per-Task Linux umask (default 0022), inherited across
+fork/vfork, unchanged across exec, and clear on task slot reclamation.
+The native open/openat mode argument now reaches tmpfs inode creation,
+as does mkdir, with the process mask applied exactly once. chmod/fchmod
+remain mask-independent and execve still enforces actual inode X bits.
+A third GCC-built libc program verifies default mask, fstat/stat,
+fchmod/chmod, mkdir, per-child mask inheritance and parent isolation;
+require its marker alongside hello/readv on all three QEMU guests.
