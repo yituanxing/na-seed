@@ -109,6 +109,9 @@ uint64_t nas_process_vfork(uint64_t *frame, uint64_t child_stack) {
     child->state = NAS_TASK_RUNNING;
     nas_current_task = child;
     nas_arch_restore_cpu(child);
+    /* This path changes the child SP. Unlike fork with an inherited stack,
+     * the live trap frame must be replaced, not only the saved Task copy. */
+    nas_arch_load_user_frame(child, frame);
     nas_print("[PROC] vfork parent="); nas_dec(parent->pid);
     nas_print(" child="); nas_dec(child->pid);
     nas_print(" shared VM\n");
