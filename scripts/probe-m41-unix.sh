@@ -12,7 +12,7 @@ case "$1" in
   *) exit 2 ;;
 esac
 port=$1
-NAS_ALPINE_PROFILE=unix sh rootfs/alpine/build.sh "$port"
+NAS_ALPINE_PROFILE=unix sh -x rootfs/alpine/build.sh "$port"
 work="build/external/m41-unix/$port"
 export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"
 export NAS_ACCEPTANCE_CPIO="$work/rootfs.cpio"
