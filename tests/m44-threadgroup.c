@@ -12,7 +12,7 @@ typedef long int64_t;
 #define NR_exit 60
 #define NR_exit_group 231
 #define NR_futex 202
-#define NR_nanosleep 35
+#define NR_clock_nanosleep 230
 #elif defined(__riscv) || defined(__aarch64__)
 #define NR_read 63
 #define NR_write 64
@@ -21,7 +21,7 @@ typedef long int64_t;
 #define NR_exit 93
 #define NR_exit_group 94
 #define NR_futex 98
-#define NR_nanosleep 101
+#define NR_clock_nanosleep 115
 #else
 #error "M44 requires one of the three supported native Linux64 targets"
 #endif
@@ -79,7 +79,8 @@ static void nap(void) {
      * A short 20ms pause can expire before native ARM64 leader SYS_exit,
      * leaving the thread-group deferred-lifetime branch untested. */
     const struct timespec64 ts={1,0};
-    call3(NR_nanosleep,(long)&ts,0,0);
+    if (linux_call6(NR_clock_nanosleep,1,0,(long)&ts,0,0,0)!=0)
+        done(97); /* A missing sleep syscall must NEVER fake this race. */
 }
 static volatile int role;
 static uint32_t ids[2];
