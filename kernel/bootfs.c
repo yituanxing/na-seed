@@ -27,6 +27,7 @@ _Static_assert(BOOTFS_ENTRIES_PER_SLAB > 0, "bootfs entry must fit one page");
 
 static struct bootfs_slab *slab_head, *slab_tail;
 static struct bootfs_entry *buckets[BOOTFS_BUCKETS];
+static struct bootfs_entry *hardlinks[BOOTFS_BUCKETS];
 static unsigned entry_count;
 static bool mounted;
 
@@ -36,6 +37,35 @@ static unsigned bootfs_bucket(const char *path) {
         hash = (hash ^ *p) * 16777619U;
     return hash & (BOOTFS_BUCKETS - 1);
 }
+/* Only regular files participate in the separate hardlink table.
+ * Directories also report nlink>1 and MUST NOT be coalesced. */
+static unsigned hardlink_bucket(uint32_t ino,uint32_t major,uint32_t minor) {
+    uint32_t key=(ino*16777619U) ^ (major*2246822519U) ^
+                 (minor*3266489917U);
+    return key & (BOOTFS_BUCKETS-1);
+}
+static struct bootfs_entry *hardlink_find(uint32_t ino,
+                                          uint32_t major,uint32_t minor) {
+    unsigned key=hardlink_bucket(ino,major,minor);
+    for (struct bootfs_entry *e=hardlinks[key];e;e=e->hardlink_next)
+        if (e->cpio_ino==ino && e->cpio_major==major &&
+            e->cpio_minor==minor) return e;
+    return 0;
+}
+/* GNU newc stores each hardlinked regular file's content once.
+ * Subsequent/previous pathname records can have filesize=0. Fixup after
+ * the trailer keeps lookups O(1) without duplicating immutable bytes. */
+static void bootfs_finish_hardlinks(void) {
+    for (struct bootfs_slab *slab=slab_head;slab;slab=slab->next)
+        for (unsigned i=0;i<slab->used;i++) {
+            struct bootfs_entry *e=&slab->entries[i];
+            if (!e->hardlink_owner) continue;
+            const struct bootfs_entry *owner=e->hardlink_owner;
+            e->data=owner->data;
+            e->size=owner->size;
+            e->ino=owner->ino;
+        }
+}
 static void bootfs_reset(void) {
     struct bootfs_slab *slab = slab_head;
     while (slab) {
@@ -44,7 +74,10 @@ static void bootfs_reset(void) {
         slab = next;
     }
     slab_head = slab_tail = 0;
-    for (unsigned i = 0; i < BOOTFS_BUCKETS; ++i) buckets[i] = 0;
+    for (unsigned i = 0; i < BOOTFS_BUCKETS; ++i) {
+        buckets[i] = 0;
+        hardlinks[i] = 0;
+    }
     entry_count = 0;
     mounted = false;
 }
@@ -126,10 +159,15 @@ bool bootfs_mount(const void *bytes, uint64_t size) {
         const uint8_t *h = base + at;
         if (memcmp(h, "070701", 6) != 0) return false;
         uint32_t file_size, name_size, mode, mtime;
+        uint32_t ino,nlink,major,minor;
         if (!hex8(h + 54, &file_size) ||
             !hex8(h + 94, &name_size) ||
             !hex8(h + 14, &mode) ||
             !hex8(h + 46, &mtime) ||
+            !hex8(h + 6, &ino) ||
+            !hex8(h + 38, &nlink) ||
+            !hex8(h + 62, &major) ||
+            !hex8(h + 70, &minor) ||
             !name_size || name_size > 256) return false;
         uint64_t name_at = at + NEWC_HEADER;
         if (name_size > size - name_at) return false;
@@ -141,6 +179,7 @@ bool bootfs_mount(const void *bytes, uint64_t size) {
         if (!aligned4(data_at + file_size, size, &next)) return false;
         if (name_size == 11 && memcmp(name, "TRAILER!!!", 11) == 0) {
             if (file_size) return false;
+            bootfs_finish_hardlinks();
             mounted = entry_count > 0 && bootfs_find("/") != 0;
             return mounted;
         }
@@ -161,6 +200,32 @@ bool bootfs_mount(const void *bytes, uint64_t size) {
         entry->size = file_size;
         entry->data = base + data_at;
         entry->ino = entry_count + 1;
+        entry->cpio_ino = ino;
+        entry->cpio_major = major;
+        entry->cpio_minor = minor;
+        entry->nlink = nlink ? nlink : 1;
+        entry->hardlink_owner = 0;
+        entry->hardlink_next = 0;
+        if (type == S_IFREG && nlink > 1) {
+            struct bootfs_entry *owner=hardlink_find(ino,major,minor);
+            if (!owner) {
+                unsigned key=hardlink_bucket(ino,major,minor);
+                entry->hardlink_owner=entry;
+                entry->hardlink_next=hardlinks[key];
+                hardlinks[key]=entry;
+            } else {
+                /* A single inode's metadata must agree. Multiple nonempty
+                 * data records are ambiguous: reject malformed archives. */
+                if (owner->mode != mode || owner->nlink != nlink ||
+                    owner->mtime_sec != mtime ||
+                    (file_size && owner->size)) return false;
+                entry->hardlink_owner=owner;
+                if (file_size) {
+                    owner->data=entry->data;
+                    owner->size=file_size;
+                }
+            }
+        }
         unsigned bucket = bootfs_bucket(entry->path);
         entry->hash_next = buckets[bucket];
         buckets[bucket] = entry;

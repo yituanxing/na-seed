@@ -858,7 +858,7 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
         if (!entry) return (uint64_t)-EBADF;
         st.dev = 3; st.ino = entry->ino;
         st.mode = entry->mode;
-        st.nlink = bootfs_is_dir(entry) ? 2 : 1;
+        st.nlink = bootfs_is_dir(entry) ? 2 : entry->nlink;
         st.size = (int64_t)entry->size;
         st.blocks = (int64_t)((entry->size + 511) / 512);
         st.atime_sec = st.mtime_sec = st.ctime_sec = (int64_t)entry->mtime_sec;
@@ -1047,7 +1047,7 @@ static uint64_t write_boot_stat(const struct bootfs_entry *entry, uint64_t dst) 
     for (unsigned i = 0; i < sizeof(st); i++) p[i] = 0;
     st.dev = 3;
     st.ino = entry->ino;
-    st.nlink = bootfs_is_dir(entry) ? 2 : 1;
+    st.nlink = bootfs_is_dir(entry) ? 2 : entry->nlink;
     st.mode = entry->mode;
     st.blksize = PAGE;
     st.size = (int64_t)entry->size;
