@@ -187,6 +187,7 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
                              uint64_t fd, uint64_t buf, uint64_t count) {
     uint64_t ret;
     if (nr == NAS_SC_read) ret = nas_fs_fd_read(fd, buf, count);
+    else if (nr == NAS_SC_readv) ret = nas_fs_fd_readv(fd,buf,count);
     else if (nr == NAS_SC_write) ret = nas_fs_fd_write(fd, buf, count);
     else ret = nas_fs_fd_writev(fd, buf, count);
     if ((int64_t)ret == -EPIPE &&
@@ -203,7 +204,8 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
         if ((int64_t)ret == -EOPNOTSUPP &&
             (descriptors[fd] == FD_PIPE_R || descriptors[fd] == FD_PIPE_W))
             return nas_task_block(frame,nr,fd,buf,count,0);
-        if (nr == NAS_SC_read && (int64_t)ret == -EAGAIN &&
+        if ((nr == NAS_SC_read || nr == NAS_SC_readv) &&
+            (int64_t)ret == -EAGAIN &&
             (descriptors[fd] == FD_TTY || descriptors[fd] == FD_UART) &&
             nas_tty_read_waitable())
             return nas_task_block(frame,nr,fd,buf,count,0);
@@ -365,10 +367,12 @@ uint64_t syscall_dispatch(const uint64_t *args) {
      * physical COM1/OpenSBI/PL011 transport. Use the common Signal/Task
      * machinery to stop a background PGID, never fake successful I/O.
      * Raw diagnostic FD_UART remains deliberately outside job control. */
-    if((nr==NAS_SC_read || nr==NAS_SC_write || nr==NAS_SC_writev ||
+    if((nr==NAS_SC_read || nr==NAS_SC_readv ||
+        nr==NAS_SC_write || nr==NAS_SC_writev ||
         (nr==NAS_SC_ioctl && args[2]==0x5410ULL)) &&
        nas_tty_background_fd(args[1])) {
-        unsigned sig=nr==NAS_SC_read ? NAS_SIGTTIN : NAS_SIGTTOU;
+        unsigned sig=(nr==NAS_SC_read || nr==NAS_SC_readv)
+                     ? NAS_SIGTTIN : NAS_SIGTTOU;
         if(sig==NAS_SIGTTIN || nr==NAS_SC_ioctl || nas_tty_tostop()) {
             bool handled=false;
             uint64_t result=nas_signal_background_job(sig,
@@ -377,6 +381,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         }
     }
     if (nr == NAS_SC_read) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
+    if (nr == NAS_SC_readv) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
     if (nr == NAS_SC_write) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
     if (nr == NAS_SC_writev) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
     struct nas_fs_result fs_result = nas_fs_syscall(nr, args);

@@ -64,6 +64,7 @@ enum nas_syscall_op {
     NAS_SC_ppoll,
     NAS_SC_pselect6,
     NAS_SC_read,
+    NAS_SC_readv,
     NAS_SC_readlink,
     NAS_SC_readlinkat,
     NAS_SC_rename,

@@ -6,6 +6,7 @@ struct nas_task;
 /* FS/FD operations are implemented in fs/syscall.c; the shared syscall
  * dispatcher and scheduler use this stable operation boundary. */
 uint64_t nas_fs_fd_read(uint64_t fd, uint64_t addr, uint64_t len);
+uint64_t nas_fs_fd_readv(uint64_t fd, uint64_t iov, uint64_t count);
 /* Kernel-buffer, position-independent file reads for MAP_PRIVATE.
  * A CPIO/tmpfs regular file is the source of truth; FD offsets are untouched.
  * Negative Linux errno on invalid or unsupported file kinds. */

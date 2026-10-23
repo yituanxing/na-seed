@@ -53,3 +53,13 @@ Then run the original three-ISA Alpine GCC+musl cc1->as->ld->hello acceptance,
 plus original TinyCC, GNU Make, Lua, BusyBox and full kernel regressions.
 Do not merge M38 or delete any older test runtime until the complete gate
 has passed. Remove temporary traces only after native GCC has passed.
+
+## Real GCC assembler: readv as a shared Linux FD operation
+
+After the VM batch, cc1 compiled successfully on x86 and ARM64 and began
+executing upstream GNU binutils as. It failed with ENOSYS from readv
+(x86-64 syscall 19; RV64/AArch64 generic syscall 65). This is not an
+assembler issue. Provide one vectored-read Linux ABI over the existing
+open-file-description offsets, VFS reader and Task pipe/TTY replay. Add
+a second unmodified-musl userspace program to the GCC acceptance gate
+that tests readv contents, EOF, and ordered offset advancement.

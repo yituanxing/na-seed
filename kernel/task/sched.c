@@ -34,7 +34,8 @@ static bool task_io_ready(const struct nas_task *task) {
     uint8_t kind = nas_task_fd_kind(task, fd);
     unsigned slot = nas_task_fd_slot(task, fd);
     if (slot >= NAS_FD_LIMIT) return true; /* replay to return EBADF */
-    if (task->blocked_op == NAS_SC_read) {
+    if (task->blocked_op == NAS_SC_read ||
+        task->blocked_op == NAS_SC_readv) {
         if(kind == FD_PIPE_R)return nas_pipe_read_ready(slot);
         if(kind == FD_TTY || kind == FD_UART)
             return nas_tty_read_ready(task->blocked_args[2]);
@@ -76,6 +77,7 @@ static bool task_can_wake(const struct nas_task *task) {
          task->blocked_op == NAS_SC_pselect6))
         return nas_fs_poll_ready(task);
     if (task->blocked_op == NAS_SC_read ||
+        task->blocked_op == NAS_SC_readv ||
         task->blocked_op == NAS_SC_write ||
         task->blocked_op == NAS_SC_writev)
         return task_io_ready(task);
@@ -109,6 +111,7 @@ static uint64_t task_replay(struct nas_task *task) {
     if (nr == NAS_SC_nanosleep || nr == NAS_SC_clock_nanosleep)
         return 0;
     if (nr == NAS_SC_read) return nas_fs_fd_read(a[0], a[1], a[2]);
+    if (nr == NAS_SC_readv) return nas_fs_fd_readv(a[0], a[1], a[2]);
     if (nr == NAS_SC_write) return nas_fs_fd_write(a[0], a[1], a[2]);
     if (nr == NAS_SC_writev) return nas_fs_fd_writev(a[0], a[1], a[2]);
     if (nr == NAS_SC_wait4) return nas_process_wait4(a[0], a[1], a[2], a[3]);
@@ -215,7 +218,8 @@ bool nas_sched_preempt_select(void) {
                     next->blocked_op==NAS_SC_writev))
                     nas_signal_broken_pipe(next->blocked_args[0]);
                 uint8_t kind=nas_task_fd_kind(next,next->blocked_args[0]);
-                bool tty_again=next->blocked_op==NAS_SC_read &&
+                bool tty_again=(next->blocked_op==NAS_SC_read ||
+                                next->blocked_op==NAS_SC_readv) &&
                     (kind==FD_TTY || kind==FD_UART) &&
                     (int64_t)result==-EAGAIN && nas_tty_read_waitable();
                 bool pipe_again=(int64_t)result==-EOPNOTSUPP &&
@@ -291,7 +295,8 @@ retry_schedule: ; /* label must precede a statement in C11 */
                  * EOPNOTSUPP remains the pipe's internal block sentinel,
                  * but unsupported tty termios/ISIG must reach userspace. */
                 uint8_t replay_kind=nas_task_fd_kind(next,next->blocked_args[0]);
-                bool tty_again=next->blocked_op==NAS_SC_read &&
+                bool tty_again=(next->blocked_op==NAS_SC_read ||
+                                next->blocked_op==NAS_SC_readv) &&
                     (replay_kind==FD_TTY || replay_kind==FD_UART) &&
                     (int64_t)result==-EAGAIN && nas_tty_read_waitable();
                 bool pipe_again=(int64_t)result==-EOPNOTSUPP &&

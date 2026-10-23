@@ -614,6 +614,31 @@ uint64_t nas_fs_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     const struct nas_file_ops *ops=nas_open_files[file_slot[fd]].ops;
     return ops && ops->read ? ops->read(fd,address,length) : (uint64_t)-EBADF;
 }
+/* Linux readv LP64 iovec. All slices share the open description's offset.
+ * A partial transfer takes priority over an error. For an empty pipe the
+ * standard internal wait sentinel returns without touching any buffer;
+ * the blocked syscall is replayed only in its owner's user VM. */
+uint64_t nas_fs_fd_readv(uint64_t fd,uint64_t iov,uint64_t count) {
+    if (count > 64) return (uint64_t)-EINVAL;
+    if (count && (iov >= USER_LIMIT || count > (USER_LIMIT-iov)/16))
+        return (uint64_t)-EFAULT;
+    uint64_t total=0;
+    for (uint64_t n=0;n<count;n++) {
+        uint64_t address,bytes;
+        if (!nas_user_read_u64(iov+n*16,&address) ||
+            !nas_user_read_u64(iov+n*16+8,&bytes))
+            return total ? total : (uint64_t)-EFAULT;
+        if (bytes>INT64_MAX-total) return (uint64_t)-EINVAL;
+        if (!bytes) continue;
+        if (address>=USER_LIMIT || bytes>USER_LIMIT-address)
+            return total ? total : (uint64_t)-EFAULT;
+        uint64_t received=nas_fs_fd_read(fd,address,bytes);
+        if ((int64_t)received<0) return total ? total : received;
+        total+=received;
+        if (received!=bytes) break;
+    }
+    return total;
+}
 uint64_t nas_fs_fd_writev(uint64_t fd, uint64_t iov, uint64_t count) {
     if (count > 64) return (uint64_t)-EINVAL;
     if (count && (iov >= USER_LIMIT || count > (USER_LIMIT - iov) / 16))

@@ -29,7 +29,11 @@ int main(void) {
     struct nas_anon_regions snap=b;
     assert(!nas_anon_find_gap(&b,P,&z));
     assert(!nas_anon_forget(&b,NAS_ANON_FLOOR,P/2));
-    assert(!nas_anon_record(&b,NAS_ANON_FLOOR+P,P));
+    /* Full registry can merge its adjacent gap without a new slot. */
+    struct nas_anon_regions coalesced=b;
+    assert(nas_anon_record(&coalesced,NAS_ANON_FLOOR+P,P));
+    assert(nas_anon_covered(&coalesced,NAS_ANON_FLOOR,3*P));
+    assert(!nas_anon_record(&b,NAS_ANON_FLOOR+P/2,P));
     for (unsigned i=0;i<NAS_ANON_REGION_LIMIT;++i)
         assert(b.slots[i].start==snap.slots[i].start && b.slots[i].end==snap.slots[i].end);
     nas_anon_reset(&b);
@@ -72,7 +76,7 @@ int main(void) {
     for (unsigned i=1;i<NAS_ANON_REGION_LIMIT;i++)
         assert(nas_anon_record(&b,NAS_ANON_FLOOR+4*i*P,P));
     snap=b;
-    assert(!nas_anon_overlay(&b,NAS_ANON_FIXED_FLOOR+P,P));
+    assert(!nas_anon_overlay(&b,NAS_ANON_FIXED_FLOOR+4*P,P));
     for (unsigned i=0;i<NAS_ANON_REGION_LIMIT;i++)
         assert(b.slots[i].start==snap.slots[i].start &&
                b.slots[i].end==snap.slots[i].end);
