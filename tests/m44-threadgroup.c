@@ -116,7 +116,12 @@ __attribute__((naked)) static long launch_thread(void *sp __attribute__((unused)
         "test %rax, %rax\n"
         "jz 1f\n"
         "ret\n"
-        "1: jmp thread_entry\n");
+        /* Linux clone supplies a 16-aligned stack. The x86-64 SysV ABI
+         * requires RSP=8(mod16) on entry to a C function. A JMP rather
+         * than CALL does not push a return address; reserve it here or
+         * Clang's aligned SSE stack moves can trigger #GP. */
+        "1: sub $8, %rsp\n"
+        "jmp thread_entry\n");
 #elif defined(__riscv)
     __asm__ volatile(
         "mv a4,a2\n"
