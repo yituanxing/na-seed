@@ -43,16 +43,22 @@ tar -xzf "$cache/$name" -C "$root" \
 test -n "$(find "$root/etc/apk/keys" -name '*.pub' -print -quit)"
 # Use Alpine's own keyring. No --allow-untrusted; disable foreign package
 # install scripts instead of executing incompatible target-ISA binaries.
-docker run --rm --volume "$target:/target" \
+# Bound CI output; diagnostics are always saved and the last lines
+# surfaced on failure. Large package extraction can print thousands of lines.
+if ! docker run --rm --volume "$target:/target" \
     --env APK_ARCH="$arch" --env APK_PACKAGES="$packages" \
     alpine:3.23 sh -ec '
-        # Target architecture's signed release keys were staged on host.
         test -n "$(find /target/etc/apk/keys -name "*.pub" -print -quit)"
         apk --arch "$APK_ARCH" --root /target \
-            --keys-dir /etc/apk/keys --initdb --no-scripts \
+            --keys-dir /etc/apk/keys --initdb --no-scripts --quiet \
             -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main \
             add $APK_PACKAGES
-    '
+    ' > "$work/apk-install.log" 2>&1; then
+    echo "[M38 APK FAIL] $port" >&2
+    tail -90 "$work/apk-install.log" >&2
+    exit 1
+fi
+echo "[M38 APK PASS] signed distro packages installed: $port"
 sudo chown -R "$(id -u):$(id -g)" "$root"
 mkdir -p "$root/tmp" "$root/tests"
 chmod 1777 "$root/tmp"

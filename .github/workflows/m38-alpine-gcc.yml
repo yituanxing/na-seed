@@ -73,6 +73,7 @@ jobs:
         with:
           name: m38-native-alpine-gcc-${{ matrix.port }}
           path: |
+            build/external/m38-gcc/${{ matrix.port }}/apk-install.log
             build/external/m38-gcc/${{ matrix.port }}/requested-packages.txt
             build/external/m38-gcc/${{ matrix.port }}/rootfs/tests/hello.c
             build/busybox-source-parity-x86/m38-gcc.clean.log
