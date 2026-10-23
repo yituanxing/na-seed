@@ -72,6 +72,8 @@ int main(void) {
        realtime_start.tv_sec >= 946684800,"real UNIX boot epoch");
     ck(gettimeofday(&wall_tv,NULL)==0 &&
        wall_tv.tv_sec >= 946684800,"gettimeofday boot epoch");
+    fprintf(stderr,"[M31 DIAG] kernel clock_gettime realtime.sec=%lld tv.sec=%lld\\n",
+            (long long)realtime_start.tv_sec,(long long)wall_tv.tv_sec);
     uint64_t wall_ns=ns(&realtime_start);
     uint64_t tv_ns=(uint64_t)wall_tv.tv_sec*1000000000ULL+
                    (uint64_t)wall_tv.tv_usec*1000ULL;
