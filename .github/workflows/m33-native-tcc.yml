@@ -111,6 +111,11 @@ jobs:
           echo '[M33] upstream GCC, GNU tools and headless QEMU ready'
       - name: Linux oracle and real native NaSeed QEMU TinyCC
         run: sh scripts/probe-m33-native-tcc.sh ${{ matrix.port }}
+      - name: Cache SHA256-pinned GNU Make 4.4.1 source tarball
+        uses: actions/cache@v4
+        with:
+          path: build/deps/external/make-4.4.1.tar.gz
+          key: naseed-gnu-make-4.4.1-dd16fb1d67bfab79a72f5e8390735c49
       - name: Complete three-ISA original GNU Make + TinyCC + linked tmpfs ELF execution
         timeout-minutes: 9
         run: sh scripts/probe-m34-native-make.sh ${{ matrix.port }}
