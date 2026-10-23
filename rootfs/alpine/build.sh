@@ -50,7 +50,7 @@ if ! docker run --rm --volume "$target:/target" \
     alpine:3.23 sh -ec '
         test -n "$(find /target/etc/apk/keys -name "*.pub" -print -quit)"
         # apk2/apk3 differ in how --keys-dir interacts with --root.
-        # Seed BOTH views with the signed release's cross-ISA keys,
+        # Seed BOTH views with the signed release cross-ISA keys,
         # keeping signature verification strictly enabled.
         cp -a /target/etc/apk/keys/. /etc/apk/keys/
         apk --arch "$APK_ARCH" --root /target \
