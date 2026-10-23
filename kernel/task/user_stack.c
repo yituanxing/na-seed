@@ -100,7 +100,10 @@ bool nas_build_user_stack(const char *const *args, unsigned argc,
         if (!put_stack_string(&sp, args[i], &arg_ptrs[i])) return false;
 
     /* argc | argv[] NULL | envp[] NULL | auxv pairs | AT_NULL */
-    uint64_t words[96];
+    /* argc + argv[] + NULL + env[] + NULL + 14 ELF64 auxiliary pairs.
+     * Keeping this array tied to the ABI's validated vector capacities
+     * prevents corruption when genuine linker recipes exceed 12 args. */
+    uint64_t words[NAS_ARGV_MAX + NAS_ENV_MAX + 3 + 28];
     unsigned n = 0;
     words[n++] = argc;
     for (unsigned i = 0; i < argc; i++) words[n++] = arg_ptrs[i];
