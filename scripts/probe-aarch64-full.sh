@@ -30,7 +30,7 @@ limit=${NASEED_ARM_FULL_TIMEOUT:-45}
 set +e
 timeout "${limit}s" qemu-system-aarch64 \
     -machine virt -cpu cortex-a57 -m 512M -smp 1 \
-    -display none -serial stdio -monitor none \
+    -display none -serial stdio -monitor none -nic none \
     -semihosting-config enable=on,target=native -bios "$fw" \
     -drive if=none,id=esp,format=raw,file="$disk" \
     -device virtio-blk-device,drive=esp >"$log" 2>&1 < /dev/null &

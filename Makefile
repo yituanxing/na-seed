@@ -28,6 +28,11 @@ CFLAGS := --target=x86_64-unknown-none-elf -std=c11 -O2 -g -Wall -Wextra -Werror
  -ffreestanding -fno-builtin -fno-stack-protector -fno-stack-check \
  -fno-pic -fno-pie -mcmodel=kernel -mno-red-zone -mno-sse -mno-mmx \
  -I $(OUT)/deps -I kernel
+# Opt-in, generic Linux syscall tracing for focused real-program diagnoses.
+# Normal kernel and multi-ISA builds are unaffected.
+ifeq ($(NAS_SYSCALL_TRACE),1)
+CFLAGS += -DNASEED_SYSCALL_TRACE
+endif
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
  -z noexecstack -T kernel/arch/$(ARCH)/linker.ld
 

@@ -1,0 +1,98 @@
+name: NaSeed genuine GNU Make and shell
+on:
+  pull_request:
+    paths:
+      - 'scripts/build-external-gnumake.sh'
+      - 'scripts/stage-external-gnumake-rootfs.sh'
+      - 'scripts/probe-external-gnumake.sh'
+      - 'scripts/gnumake-serial-check.py'
+      - 'tests/gnumake-native-init.c'
+      - 'tests/gnumake-real.mk'
+      - 'tests/tcc-first.c'
+      - 'scripts/build-external-tcc.sh'
+      - '.github/workflows/gnumake.yml'
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  original-make:
+    runs-on: ubuntu-latest
+    timeout-minutes: 23
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install only headless x86 QEMU/UEFI prerequisites (no GUI/Spice)
+        timeout-minutes: 6
+        run: |
+          set -eu
+          # Hosted Ubuntu already provides GCC, Clang, GNU Make, curl, tar,
+          # git and binutils. Only install what this headless QEMU test lacks.
+          missing=''
+          command -v clang >/dev/null || missing="$missing clang"
+          command -v ld.lld >/dev/null || missing="$missing lld"
+          command -v readelf >/dev/null || missing="$missing binutils"
+          command -v gcc >/dev/null || missing="$missing gcc"
+          command -v make >/dev/null || missing="$missing make"
+          command -v cpio >/dev/null || missing="$missing cpio"
+          command -v xorriso >/dev/null || missing="$missing xorriso"
+          command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+          command -v strace >/dev/null || missing="$missing strace"
+          if [ ! -f /usr/share/OVMF/OVMF_CODE_4M.fd ] &&
+             [ ! -f /usr/share/OVMF/OVMF_CODE.fd ]; then
+            missing="$missing ovmf"
+          fi
+          if [ -n "$missing" ]; then
+            # October 2026 GitHub hosted runner: Azure Ubuntu mirror stalled
+            # for >6min on a single 11MB QEMU .deb. The official Ubuntu
+            # archive is the same signed package origin with an independent
+            # network path. Keep apt signature checks, no insecure fallback.
+            if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
+                /etc/apt/sources.list.d/ubuntu.sources
+            fi
+            if [ -f /etc/apt/sources.list ]; then
+              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
+                /etc/apt/sources.list
+            fi
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=45 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+              --no-install-recommends $missing
+          fi
+          # Fail closed if the **kernel linker** is missing.  GNU Make
+          # and GNU Make's own host GCC link do not need ld.lld, but NaSeed
+          # kernel does. Never hide a failed command behind a later echo.
+          for binary in clang ld.lld readelf gcc make cpio xorriso \
+                         qemu-system-x86_64 strace; do
+            command -v "$binary" >/dev/null || {
+              echo "[CI FAIL] missing $binary" >&2
+              exit 1
+            }
+          done
+          echo '[CI] x86 headless QEMU packages verified; no GUI packages requested'
+      - name: Cache SHA256-pinned GNU Make release
+        uses: actions/cache@v4
+        with:
+          path: build/deps/external/make-4.4.1.tar.gz
+          key: naseed-gnu-make-4.4.1-dd16fb1d67bfab79
+      - name: Cache pinned TinyCC source for native compiler build
+        uses: actions/cache@v4
+        with:
+          path: build/deps/external/tcc-0.9.27.tar.bz2
+          key: naseed-tcc-0.9.27-de23af78fca90ce3
+      - name: Linux oracle then real GNU Make compiling C with TinyCC inside NaSeed
+        run: sh scripts/probe-external-gnumake.sh
+      - name: Preserve genuine compiler and QEMU evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naseed-native-gnumake
+          path: |
+            build/external/gnumake/amd64/configure.log
+            build/external/gnumake/amd64/build.log
+            build/external/gnumake/amd64/linux-oracle.log
+            build/external/gnumake/amd64/linux-native-build.log
+            build/external/gnumake/amd64/linux-process-oracle.log
+            build/external/gnumake/amd64/linux-process-syscalls.log
+            build/external/gnumake/amd64/first.o
+            build/external/gnumake/amd64/serial.log
+          if-no-files-found: ignore

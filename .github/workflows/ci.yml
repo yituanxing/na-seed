@@ -42,6 +42,13 @@ on:
       - 'scripts/2048-serial-check.py'
       - 'tests/2048-native-init.c'
       - '.github/workflows/game-2048.yml'
+      - 'scripts/build-external-gnumake.sh'
+      - 'scripts/stage-external-gnumake-rootfs.sh'
+      - 'scripts/probe-external-gnumake.sh'
+      - 'scripts/gnumake-serial-check.py'
+      - 'tests/gnumake-native-init.c'
+      - 'tests/gnumake-real.mk'
+      - '.github/workflows/gnumake.yml'
 
 # Collapse superseded PR commits into a single expensive QEMU suite. Keep
 # pushed main regressions independent; only pull-request runs are canceled.
@@ -49,6 +56,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# GitHub runner already supplies most build tools. QEMU's suggested GUI,
+# SPICE and multimedia stack are unnecessary for the strictly headless
+# serial/UEFI regressions. Suppress recommends on all seven existing
+# acceptance shards; do not remove any of the actual tests or ISAs.
 jobs:
   smoke:
     runs-on: ubuntu-latest
@@ -60,7 +71,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y clang lld xorriso qemu-system-x86 ovmf musl-tools binutils cpio
+          sudo apt-get install -y --no-install-recommends clang lld xorriso qemu-system-x86 ovmf musl-tools binutils cpio
       - name: Shared ELF PT_LOAD loader regression (x86/RV64/ARM64)
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-elf-segments.c kernel/task/elf_segments.c -o /tmp/naseed-segments-test && /tmp/naseed-segments-test
       - name: Shared ELF64 structural regression (x86/RV64/ARM64)
@@ -154,7 +165,7 @@ jobs:
       - name: Install x86 userland / QEMU dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y clang lld xorriso qemu-system-x86 ovmf musl-tools binutils cpio
+          sudo apt-get install -y --no-install-recommends clang lld xorriso qemu-system-x86 ovmf musl-tools binutils cpio
       - name: Build shared x86 kernel and stage authentic Alpine/musl binaries
         run: |
           make kernel
@@ -203,7 +214,7 @@ jobs:
       - name: Install x86 userland / QEMU dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y clang lld xorriso qemu-system-x86 ovmf musl-tools binutils cpio
+          sudo apt-get install -y --no-install-recommends clang lld xorriso qemu-system-x86 ovmf musl-tools binutils cpio
       - name: Build shared x86 kernel and stage authentic Alpine/musl binaries
         run: |
           make kernel
@@ -246,7 +257,7 @@ jobs:
       - name: Install cross-build and UEFI/QEMU tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y clang lld binutils mtools gdisk cpio qemu-user \
+          sudo apt-get install -y --no-install-recommends clang lld binutils mtools gdisk cpio qemu-user \
             qemu-system-misc qemu-efi-riscv64
       - name: Shared ELF PT_LOAD loader host regression
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-elf-segments.c kernel/task/elf_segments.c -o /tmp/naseed-segments-test && /tmp/naseed-segments-test
@@ -292,7 +303,7 @@ jobs:
       - name: Install AArch64 UEFI/QEMU and cross-compiler tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y clang lld binutils mtools gdisk \
+          sudo apt-get install -y --no-install-recommends clang lld binutils mtools gdisk \
             qemu-system-arm qemu-efi-aarch64
       - name: Verify asm-generic 64-bit stat layout (ARM64)
         run: clang --target=aarch64-none-elf -march=armv8-a -std=c11 -Wall -Wextra -Werror -ffreestanding -fsyntax-only scripts/check-linux-stat.c
@@ -331,16 +342,16 @@ jobs:
       - name: Install native cross toolchain and QEMU
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y make gcc binutils curl bzip2 xorriso \
+          sudo apt-get install -y --no-install-recommends make gcc binutils curl bzip2 xorriso \
             clang lld cpio mtools gdisk qemu-user
           case "${{ matrix.port }}" in
             amd64)
-              sudo apt-get install -y qemu-system-x86 ovmf ;;
+              sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf ;;
             riscv64)
-              sudo apt-get install -y gcc-riscv64-linux-gnu libc6-dev-riscv64-cross \
+              sudo apt-get install -y --no-install-recommends gcc-riscv64-linux-gnu libc6-dev-riscv64-cross \
                 qemu-system-misc qemu-efi-riscv64 ;;
             arm64)
-              sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
+              sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
                 qemu-system-arm qemu-efi-aarch64 ;;
           esac
       - name: Local Kconfig, fixture and shared-harness preflight
