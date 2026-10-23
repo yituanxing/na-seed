@@ -112,6 +112,7 @@ struct nas_task *nas_task_fork_slot(void) {
         /* Fork creates a new thread-group / task identity. The parent's
          * clear_child_tid address belongs only to the parent's thread. */
         child->thread_clear_tid = 0;
+        child->robust_list_head = 0; /* clone/fork must register its own list */
         child->vfork_child_pid = 0;
         child->vfork_parent_pid = 0;
         child->vfork_shared_vm = false;
@@ -138,6 +139,7 @@ void nas_task_release(struct nas_task *task) {
     task->group_exit_pending=false;
     task->vm_owner=task;
     task->fds=&task->fds_owned;
+    task->robust_list_head=0;
     task->futex_addr=0;
     task->futex_mask=0;
     task->futex_woken=false;

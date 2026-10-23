@@ -152,6 +152,7 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     struct nas_task *child = nas_current_task;
     if (!child->ppid || !nas_task_by_pid(child->ppid))
         sched_fail("child termination without living parent");
+    nas_process_robust_exit(child);
     nas_process_clear_tid_on_exit();
     if (child->is_thread) {
         /* SYS_exit is thread-local. Preserve CLONE_FILES/VM while siblings
@@ -243,6 +244,7 @@ void nas_sched_thread_group_exit(uint32_t code,uint32_t signum) {
         if(peer==caller || peer==leader || peer->tgid!=leader->tgid ||
            peer->state==NAS_TASK_FREE)continue;
         if(!peer->is_thread) sched_fail("exit_group crossed process boundary");
+        nas_process_robust_exit(peer);
         nas_process_clear_tid_for_exit(peer);
         peer->state=NAS_TASK_ZOMBIE;
         peer->resume_valid=false;
@@ -252,6 +254,7 @@ void nas_sched_thread_group_exit(uint32_t code,uint32_t signum) {
         nas_task_release(peer);
     }
     if(caller!=leader) {
+        nas_process_robust_exit(caller);
         nas_process_clear_tid_on_exit();
         caller->state=NAS_TASK_ZOMBIE;
         caller->resume_valid=false;

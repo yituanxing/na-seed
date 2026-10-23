@@ -35,6 +35,8 @@ enum nas_syscall_op {
     NAS_SC_fork_child_tid,
     NAS_SC_clone_thread,
     NAS_SC_futex,
+    NAS_SC_set_robust_list,
+    NAS_SC_get_robust_list,
     NAS_SC_vfork,
     NAS_SC_fstat,
     NAS_SC_getcwd,

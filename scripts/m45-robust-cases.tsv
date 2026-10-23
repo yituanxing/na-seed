@@ -1,0 +1,2 @@
+# Native robust-futex thread death, pending lock recovery and genuine zstd -T2.
+m45-robust	cpio	sh -c '/bin/sh /tests/run-robust.sh'	M45_ROBUST_AND_ZSTD_PASS	-	/bin/busybox

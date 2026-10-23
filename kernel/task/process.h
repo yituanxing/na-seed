@@ -20,6 +20,10 @@ uint64_t nas_process_fork_child_tid(uint64_t *syscall_frame,
  * Shared root and suspended parent until child execve/exit. */
 uint64_t nas_process_vfork(uint64_t *frame, uint64_t child_stack);
 void nas_process_vfork_release(void);
+uint64_t nas_process_set_robust_list(uint64_t head,uint64_t len);
+uint64_t nas_process_get_robust_list(uint64_t pid,uint64_t head_addr,uint64_t len_addr);
+/* Called with exiting task's shared VM installed before clearing its TID. */
+void nas_process_robust_exit(struct nas_task *thread);
 void nas_process_clear_tid_on_exit(void);
 /* The caller's current VM must be identical to the target thread's VM. */
 void nas_process_clear_tid_for_exit(struct nas_task *thread);
