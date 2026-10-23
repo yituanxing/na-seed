@@ -45,7 +45,10 @@ jobs:
                 missing="$missing gcc-riscv64-linux-gnu libc6-dev-riscv64-cross"
               command -v qemu-riscv64 >/dev/null || missing="$missing qemu-user"
               command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
-              test -f /usr/share/qemu/efi-virtio.rom || missing="$missing qemu-system-data"
+              # The EFI virtio ROM is supplied by ipxe-qemu (Ubuntu package),
+              # not qemu-system-data. Without it QEMU cannot boot the
+              # native virtio disk even when the emulator is installed.
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu"
               command -v sgdisk >/dev/null || missing="$missing gdisk"
               command -v mformat >/dev/null || missing="$missing mtools"
               test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || \
@@ -55,7 +58,10 @@ jobs:
                 missing="$missing gcc-aarch64-linux-gnu libc6-dev-arm64-cross"
               command -v qemu-aarch64 >/dev/null || missing="$missing qemu-user"
               command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
-              test -f /usr/share/qemu/efi-virtio.rom || missing="$missing qemu-system-data"
+              # The EFI virtio ROM is supplied by ipxe-qemu (Ubuntu package),
+              # not qemu-system-data. Without it QEMU cannot boot the
+              # native virtio disk even when the emulator is installed.
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu"
               command -v sgdisk >/dev/null || missing="$missing gdisk"
               command -v mformat >/dev/null || missing="$missing mtools"
               test -f /usr/share/AAVMF/AAVMF_CODE.fd || \
