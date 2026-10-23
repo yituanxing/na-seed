@@ -7,7 +7,7 @@
  * Transition seam: syscall/user memory remains with m1.c; namespace and
  * inode/open-description lifetimes belong here. */
 #define TMP_FILE_COUNT 8
-#define TMP_FILE_CAP 16384U
+#define TMP_FILE_CAP 65536U /* fixed bounded kernel RAM per inode */
 
 struct nas_tmp_file {
     bool used, linked, is_dir;
@@ -31,6 +31,7 @@ void tmp_bind_slot(unsigned slot, const struct nas_tmp_file *file);
 struct nas_tmp_file *tmp_by_slot(unsigned slot);
 void tmp_release_slot(unsigned slot);
 
+int tmp_chmod(struct nas_tmp_file *file, uint64_t mode);
 int tmp_mkdir(const char *path, uint64_t mode);
 int tmp_unlink(const char *path, uint64_t flags);
 int tmp_rename(const char *oldpath, const char *newpath, uint64_t flags);

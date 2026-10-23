@@ -107,6 +107,13 @@ void tmp_release_slot(unsigned slot) {
  * mkdirat/unlinkat entry points, not shell-command path rewrites.
  * Read-only CPIO refuses mutations; only the /tmp overlay is writable.
  */
+/* Inode mode is shared by chmod/fchmod, access and execve.
+ * Preserve the file-type bits; CPIO remains strictly read-only. */
+int tmp_chmod(struct nas_tmp_file *file, uint64_t mode) {
+    if(!file || !file->used)return -ENOENT;
+    file->mode=(file->mode & 0170000U) | (uint32_t)(mode & 07777U);
+    return 0;
+}
 int tmp_mkdir(const char *path, uint64_t mode) {
     if (bootfs_find(path) || tmp_find(path)) return -EEXIST;
     if (!tmp_path(path) || !bootfs_mounted()) return -EROFS;

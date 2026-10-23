@@ -20,6 +20,7 @@
 #include "io.h"
 #include "syscall.h"
 #include "file_ops.h"
+#include "lookup.h"
 #include "../time/clock.h"
 /* Linux x86-64 filesystem syscall adapter. Backend state is already
  * task-local or refcounted via fd.c, pipe.c, bootfs.c and tmpfs.c.
@@ -802,27 +803,20 @@ static uint64_t sys_access_path(uint64_t dirfd,uint64_t pathname,
     uint32_t bits=0;
     bool writable=false;
     bool is_dir=false;
-    if(bootfs_mounted()) {
-        int err=bootfs_resolve(path,!(flags&AT_SYMLINK_NOFOLLOW),actual);
-        if(!err) {
-            const struct bootfs_entry *entry=bootfs_find(actual);
-            if(!entry)return (uint64_t)-ENOENT;
-            bits=entry->mode;
-            is_dir=bootfs_is_dir(entry);
-            writable=strcmp(actual,"/tmp")==0; /* mounted writable RAM subtree */
-        } else if(err!=-ENOENT) return (uint64_t)(int64_t)err;
-    }
-    if(!bits && tmp_path(path)) {
-        const struct nas_tmp_file *tmp=tmp_find(path);
-        if(tmp) {bits=tmp->mode;writable=true;is_dir=tmp->is_dir;}
-    }
+    struct nas_fs_node node;
+    int err=nas_fs_lookup_node(path,!(flags&AT_SYMLINK_NOFOLLOW),
+                               &node,actual);
+    if(!err) {
+        bits=node.mode;
+        is_dir=node.is_dir;
+        writable=node.backend==NAS_FS_TMPFS;
+    } else if(err!=-ENOENT)return (uint64_t)(int64_t)err;
     if(!bits && (!strcmp(path,"/dev/null") || !strcmp(path,"/dev/zero") ||
                  !strcmp(path,"/dev/console") || !strcmp(path,"/dev/ttyS0") ||
                  !strcmp(path,"/dev/tty"))) {
         if(!strcmp(path,"/dev/tty") && !nas_tty_controlling())
             return (uint64_t)-ENXIO;
-        bits=0020666U;
-        writable=true;
+        bits=0020666U; writable=true;
     }
     if(!bits)return (uint64_t)-ENOENT;
     if((mode & 1ULL) && !(bits & 0111U))return (uint64_t)-EACCES;
@@ -830,6 +824,26 @@ static uint64_t sys_access_path(uint64_t dirfd,uint64_t pathname,
     if((mode & 2ULL) && !is_dir && (bits&0170000U)==0040000U)
         return (uint64_t)-EACCES;
     return 0;
+}
+/* chmod operates on tmpfs inode identity (not FD pathname copies).
+ * Linux ABI/path and dirfd decoding stay in this syscall boundary. */
+static uint64_t sys_fchmod_fd(uint64_t fd,uint64_t mode) {
+    if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED)
+        return (uint64_t)-EBADF;
+    if(descriptors[fd]!=FD_TMP && descriptors[fd]!=FD_TMP_DIR)
+        return (uint64_t)-EROFS;
+    return (uint64_t)(int64_t)tmp_chmod((struct nas_tmp_file*)tmp_by_fd(fd),mode);
+}
+static uint64_t sys_chmod_path(uint64_t dirfd,uint64_t filename,
+                               uint64_t mode) {
+    char path[256], actual[256];
+    uint64_t ret=nas_fs_resolve_path(dirfd,filename,path);
+    if((int64_t)ret<0)return ret;
+    struct nas_fs_node node;
+    int err=nas_fs_lookup_node(path,true,&node,actual);
+    if(err)return (uint64_t)(int64_t)err;
+    if(node.backend!=NAS_FS_TMPFS)return (uint64_t)-EROFS;
+    return (uint64_t)(int64_t)tmp_chmod(tmp_find(actual),mode);
 }
 static uint64_t sys_openat_boot(uint64_t dirfd, uint64_t pathname, uint64_t flags) {
     char path[256];
@@ -990,6 +1004,9 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
     case NAS_SC_unlink: FS_RESULT(sys_unlinkat_tmp((uint64_t)-100, args[1], 0));
     case NAS_SC_rmdir: FS_RESULT(sys_unlinkat_tmp((uint64_t)-100, args[1], 0x200ULL));
     case NAS_SC_unlinkat: FS_RESULT(sys_unlinkat_tmp(args[1], args[2], args[3]));
+    case NAS_SC_chmod: FS_RESULT(sys_chmod_path((uint64_t)-100,args[1],args[2]));
+    case NAS_SC_fchmod: FS_RESULT(sys_fchmod_fd(args[1],args[2]));
+    case NAS_SC_fchmodat: FS_RESULT(sys_chmod_path(args[1],args[2],args[3]));
     case NAS_SC_access: FS_RESULT(sys_access_path((uint64_t)-100,args[1],args[2],0));
     case NAS_SC_faccessat: FS_RESULT(sys_access_path(args[1],args[2],args[3],0));
     case NAS_SC_faccessat2: FS_RESULT(sys_access_path(args[1],args[2],args[3],args[4]));
