@@ -41,7 +41,11 @@
  * kernel-owned (immutable CPIO or tmpfs inode), valid across the staged
  * root switch. Map through the existing shared ELF loader, commit only
  * when successful, and roll back without invalidating the old process. */
-#define EXEC_STRING_MAX 256
+/* Real GNU Make passes long shell -c command strings as a single argv.
+ * Limit one string to 1023 bytes; with NAS_ARGV_MAX=64 and NAS_ENV_MAX=32,
+ * the worst-case combined payload stays under the mapped 128-KiB stack.
+ * Reject larger strings with Linux E2BIG instead of silently truncating. */
+#define EXEC_STRING_MAX 1024
 static struct exec_snapshot {
     char filename[256];
     char argbuf[NAS_ARGV_MAX][EXEC_STRING_MAX];
