@@ -13,7 +13,7 @@ int main(void) {
     assert(nas_locks_conflict(&ls,200,NAS_LOCK_READ,13,14)>=0);
     assert(nas_locks_apply(&ls,200,NAS_LOCK_READ,14,16)==0);
     nas_locks_release(&ls,100);
-    assert(nas_locks_conflict(&ls,300,NAS_LOCK_WRITE,10,20)==-1);
+    assert(nas_locks_conflict(&ls,300,NAS_LOCK_WRITE,10,14)==-1);
     assert(nas_locks_conflict(&ls,300,NAS_LOCK_WRITE,14,16)>=0);
     nas_locks_release(&ls,200);
     assert(ls.count==0);

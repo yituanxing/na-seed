@@ -76,7 +76,7 @@ extern void nas_putchar(char c);
  */
 /* FD bookkeeping is syscall-local, but inode lifetime and slot identity now
  * live in the dedicated RAM /tmp backend, with shared file descriptions. */
-static const struct nas_tmp_file *tmp_by_fd(uint64_t fd) {
+static struct nas_tmp_file *tmp_by_fd(uint64_t fd) {
     return tmp_by_slot(file_slot[fd]);
 }
 
