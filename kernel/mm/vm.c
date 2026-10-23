@@ -219,14 +219,10 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
             if (!nas_mmu_user_byte(va) && !nas_mmu_map_prot_page(va,prot))
                 break;
         }
-        if(i!=pages) {
-            /* Only unmapped PROT_NONE reservations can be undone. */
-            for (uint64_t j=0;j<i;j++) {
-                uint64_t va=addr+j*PAGE;
-                /* Prior mapped pages have already been protected and must
-                 * not be destroyed. Retain them as a partially committed
-                 * Linux mapping rather than corrupting page ownership. */
-            }
+        if (i!=pages) {
+            /* A failed physical allocation leaves already-materialized
+             * pages owned by the original VMA. No page-table alias is
+             * created and the caller receives a genuine ENOMEM. */
             return (uint64_t)-ENOMEM;
         }
         return 0;
