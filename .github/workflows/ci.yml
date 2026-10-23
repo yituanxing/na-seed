@@ -49,6 +49,19 @@ on:
       - 'tests/gnumake-native-init.c'
       - 'tests/gnumake-real.mk'
       - '.github/workflows/gnumake.yml'
+      # One dedicated 3-ISA focused Make/TinyCC matrix owns these paths.
+      # Full main-branch regression still runs after the accepted squash.
+      - 'scripts/build-m33-native-tcc.sh'
+      - 'scripts/stage-m33-native-tcc-rootfs.sh'
+      - 'scripts/m33-native-tcc-cases.tsv'
+      - 'scripts/probe-m33-native-tcc.sh'
+      - 'scripts/build-m34-native-gnumake.sh'
+      - 'scripts/stage-m34-native-make-rootfs.sh'
+      - 'scripts/m34-native-make-cases.tsv'
+      - 'scripts/probe-m34-native-make.sh'
+      - 'tests/m34-portable-hello.c'
+      - 'tests/m34-native.mk'
+      - '.github/workflows/m33-native-tcc.yml'
 
 # Collapse superseded PR commits into a single expensive QEMU suite. Keep
 # pushed main regressions independent; only pull-request runs are canceled.
@@ -165,9 +178,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install x86 userland / QEMU dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends clang lld xorriso qemu-system-x86 ovmf musl-tools binutils cpio
+        timeout-minutes: 5
+        run: sh scripts/ci-install-x86-deps.sh
       - name: Build shared x86 kernel and stage authentic Alpine/musl binaries
         run: |
           make kernel
@@ -214,9 +226,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install x86 userland / QEMU dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends clang lld xorriso qemu-system-x86 ovmf musl-tools binutils cpio
+        timeout-minutes: 5
+        run: sh scripts/ci-install-x86-deps.sh
       - name: Build shared x86 kernel and stage authentic Alpine/musl binaries
         run: |
           make kernel

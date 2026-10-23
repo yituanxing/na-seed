@@ -1,0 +1,121 @@
+name: NaSeed three-ISA native TinyCC
+on:
+  pull_request:
+    paths:
+      - 'scripts/build-m33-native-tcc.sh'
+      - 'scripts/stage-m33-native-tcc-rootfs.sh'
+      - 'scripts/m33-native-tcc-cases.tsv'
+      - 'scripts/probe-m33-native-tcc.sh'
+      - 'tests/tcc-first.c'
+      - 'scripts/m34-native-make-cases.tsv'
+      - 'scripts/build-m34-native-gnumake.sh'
+      - 'scripts/stage-m34-native-make-rootfs.sh'
+      - 'scripts/probe-m34-native-make.sh'
+      - 'tests/m34-portable-hello.c'
+      - 'tests/m34-native.mk'
+      - 'tests/native-exec-init.c'
+      - '.github/workflows/m33-native-tcc.yml'
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  native-tcc:
+    name: original upstream TinyCC / ${{ matrix.port }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install missing genuine cross compiler and native QEMU
+        timeout-minutes: 9
+        run: |
+          set -eu
+          missing=''
+          for spec in 'git:git' 'gcc:gcc' 'make:make' 'readelf:binutils' \
+                      'nm:binutils' 'sha256sum:coreutils' 'tar:tar' \
+                      'clang:clang' 'ld.lld:lld' 'cpio:cpio' \
+                      'xorriso:xorriso'; do
+            binary=${spec%%:*}; package=${spec#*:}
+            command -v "$binary" >/dev/null 2>&1 || missing="$missing $package"
+          done
+          case "${{ matrix.port }}" in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+                test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
+            riscv64)
+              command -v riscv64-linux-gnu-gcc >/dev/null || \
+                missing="$missing gcc-riscv64-linux-gnu libc6-dev-riscv64-cross"
+              command -v qemu-riscv64 >/dev/null || missing="$missing qemu-user"
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              # The EFI virtio ROM is supplied by ipxe-qemu (Ubuntu package),
+              # not qemu-system-data. Without it QEMU cannot boot the
+              # native virtio disk even when the emulator is installed.
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu"
+              command -v sgdisk >/dev/null || missing="$missing gdisk"
+              command -v mformat >/dev/null || missing="$missing mtools"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || \
+                missing="$missing qemu-efi-riscv64" ;;
+            arm64)
+              command -v aarch64-linux-gnu-gcc >/dev/null || \
+                missing="$missing gcc-aarch64-linux-gnu libc6-dev-arm64-cross"
+              command -v qemu-aarch64 >/dev/null || missing="$missing qemu-user"
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              # The EFI virtio ROM is supplied by ipxe-qemu (Ubuntu package),
+              # not qemu-system-data. Without it QEMU cannot boot the
+              # native virtio disk even when the emulator is installed.
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu"
+              command -v sgdisk >/dev/null || missing="$missing gdisk"
+              command -v mformat >/dev/null || missing="$missing mtools"
+              test -f /usr/share/AAVMF/AAVMF_CODE.fd || \
+                missing="$missing qemu-efi-aarch64" ;;
+          esac
+          if [ -n "$missing" ]; then
+            # GitHub runner's DEB822 sources may use
+            # "mirror+file:/etc/apt/apt-mirrors.txt"; changing the .sources
+            # URI alone leaves the slow Azure mirror selected via that file.
+            # Point both *signed* Ubuntu archive selectors at the official
+            # upstream mirror. No unauthenticated/insecure apt flags.
+            for file in /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+              if [ -f "$file" ]; then
+                sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' "$file"
+              fi
+            done
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get \
+              -o Acquire::Retries=1 -o Acquire::http::Timeout=30 \
+              install -y --no-install-recommends $missing
+          fi
+          echo '[M33] upstream GCC, GNU tools and headless QEMU ready'
+      - name: Linux oracle and real native NaSeed QEMU TinyCC
+        run: sh scripts/probe-m33-native-tcc.sh ${{ matrix.port }}
+      - name: Complete three-ISA original GNU Make + TinyCC + linked tmpfs ELF execution
+        timeout-minutes: 9
+        run: sh scripts/probe-m34-native-make.sh ${{ matrix.port }}
+      - name: Attach upstream build, native ELF and serial diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m33-native-tcc-${{ matrix.port }}
+          path: |
+            build/external/m33-tcc/${{ matrix.port }}/configure.log
+            build/external/m33-tcc/${{ matrix.port }}/build.log
+            build/external/m33-tcc/${{ matrix.port }}/linux-preprocess.log
+            build/external/m33-tcc/${{ matrix.port }}/artifacts.sha256
+            build/external/m33-tcc/${{ matrix.port }}/first.o
+            build/external/m34-gnumake/${{ matrix.port }}/configure.log
+            build/external/m34-gnumake/${{ matrix.port }}/build.log
+            build/external/m34-gnumake/${{ matrix.port }}/linux-version.log
+            build/external/m34-gnumake/${{ matrix.port }}/linux-generated-exec.log
+            build/external/m34-gnumake/${{ matrix.port }}/native-hello
+            build/busybox-source-parity-x86/m34-*.serial.log
+            build/port-riscv64/full/matrix-source/m34-*.serial.log
+            build/port-aarch64/full/matrix-source/m34-*.serial.log
+            build/busybox-source-parity-x86/tcc-*.serial.log
+            build/port-riscv64/full/matrix-source/tcc-*.serial.log
+            build/port-aarch64/full/matrix-source/tcc-*.serial.log
+          if-no-files-found: ignore
