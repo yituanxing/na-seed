@@ -178,7 +178,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install x86 userland / QEMU dependencies
-        timeout-minutes: 5
+        timeout-minutes: 8
         run: sh scripts/ci-install-x86-deps.sh
       - name: Build shared x86 kernel and stage authentic Alpine/musl binaries
         run: |
@@ -226,7 +226,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install x86 userland / QEMU dependencies
-        timeout-minutes: 5
+        timeout-minutes: 8
         run: sh scripts/ci-install-x86-deps.sh
       - name: Build shared x86 kernel and stage authentic Alpine/musl binaries
         run: |

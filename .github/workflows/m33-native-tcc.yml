@@ -39,9 +39,6 @@ on:
       - 'kernel/arch/linux_syscall_abi.h'
       - 'kernel/syscall/ops.h'
 
-      - 'kernel/tmpfs.c'
-      - 'kernel/tmpfs.h'
-      - 'kernel/fs/syscall.c'
       - 'tests/native-exec-init.c'
       - '.github/workflows/m33-native-tcc.yml'
   workflow_dispatch:
