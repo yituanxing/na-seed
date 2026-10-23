@@ -76,6 +76,7 @@ jobs:
           done
           test -s /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || \
             missing="$missing qemu-efi-aarch64"
+          test -s /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu"
           if [ -n "$missing" ]; then
             sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
             sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
