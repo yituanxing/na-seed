@@ -7,6 +7,8 @@
 static uint8_t *bitmap;
 static uint64_t bitmap_paddr, bitmap_frame_count, frame_count, free_frames;
 static uint64_t cursor, hhdm;
+/* Allocatable memory measured once at boot; free_frames tracks live usage. */
+static uint64_t managed_frames;
 static const struct limine_memmap_response *memory_map;
 
 static bool region_end(uint64_t base, uint64_t length, uint64_t *end) {
@@ -85,6 +87,7 @@ static bool frames_init(const struct limine_memmap_response *map, uint64_t offse
     /* Reserve address zero: failure sentinel for future allocation calls. */
     if (!test_bit(0)) { mark(0); free_frames--; }
     cursor = 1;
+    managed_frames = free_frames;
     return true;
 }
 static uint64_t take_frame(uint64_t page) {
@@ -132,6 +135,7 @@ bool nas_frames_init(const struct limine_memmap_response *map, uint64_t off) {
     return frames_init(map, off);
 }
 uint64_t nas_free_frames(void) { return free_frames; }
+uint64_t nas_managed_frames(void) { return managed_frames; }
 uint64_t nas_frame_alloc(void) { return frame_alloc(); }
 bool nas_frame_free(uint64_t physical) { return frame_free(physical); }
 uint64_t nas_hhdm_offset(void) { return hhdm; }

@@ -191,25 +191,26 @@ int tmp_parent_check(const char *path) {
     return !dir ? -ENOENT : dir->is_dir ? 0 : -ENOTDIR;
 }
 static struct nas_tmp_file *tmp_init_node(struct nas_tmp_file *file,
-                                          const char *path, bool dir) {
+                                          const char *path, bool dir,
+                                          uint32_t mode) {
     unsigned i=0;
     while (path[i] && i<255) { file->path[i]=path[i]; i++; }
     file->path[i]=0;
     file->size=0;
-    file->mode=dir ? 0040755U : 0100644U;
+    file->mode=(dir ? 0040000U : 0100000U) | (mode & 07777U);
     file->is_dir=dir;
     file->ino=tmp_next_ino++;
     file->atime_ns=file->mtime_ns=file->ctime_ns=tmp_now_ns();
     file->linked=file->used=true;
     return file;
 }
-struct nas_tmp_file *tmp_create(const char *path,bool dir) {
+struct nas_tmp_file *tmp_create(const char *path,bool dir,uint32_t mode) {
     for (struct tmp_inode_slab *slab = tmp_slabs; slab; slab = slab->next)
         for (unsigned n=0;n<TMP_INODES_PER_SLAB;n++)
             if (!slab->nodes[n].used)
-                return tmp_init_node(&slab->nodes[n], path, dir);
+                return tmp_init_node(&slab->nodes[n],path,dir,mode);
     struct tmp_inode_slab *slab = tmp_new_slab();
-    return slab ? tmp_init_node(&slab->nodes[0], path, dir) : 0;
+    return slab ? tmp_init_node(&slab->nodes[0],path,dir,mode) : 0;
 }
 uint64_t tmp_number(const struct nas_tmp_file *file) {
     return file ? file->ino : 0;
@@ -260,10 +261,8 @@ int tmp_mkdir(const char *path, uint64_t mode) {
     if (!tmp_path(path) || !bootfs_mounted()) return -EROFS;
     int parent=tmp_parent_check(path);
     if (parent) return parent;
-    struct nas_tmp_file *dir=tmp_create(path,true);
-    if (!dir) return -ENOSPC;
-    dir->mode=0040000U | (uint32_t)(mode & 0777U);
-    return 0;
+    struct nas_tmp_file *dir=tmp_create(path,true,(uint32_t)mode);
+    return dir ? 0 : -ENOSPC;
 }
 int tmp_unlink(const char *path, uint64_t flags) {
     const uint64_t AT_REMOVEDIR=0x200ULL;

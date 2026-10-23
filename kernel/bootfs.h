@@ -13,6 +13,11 @@ struct bootfs_entry {
     uint64_t ino;
     uint64_t mtime_sec; /* literal newc c_mtime; immutable on CPIO */
     uint32_t mode;
+    /* Linux newc hardlinks share (ino, devmajor, devminor), not names.
+     * Their payload can appear AFTER zero-length placeholder entries. */
+    uint32_t cpio_ino, cpio_major, cpio_minor, nlink;
+    struct bootfs_entry *hardlink_owner, *hardlink_next;
+    struct bootfs_entry *hash_next; /* Private index link, stable slab address. */
 };
 bool bootfs_mount(const void *bytes, uint64_t size);
 bool bootfs_mounted(void);

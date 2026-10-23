@@ -71,7 +71,7 @@ boot_case() {
     config="$work/$name.conf"
     log="$work/$name.serial.log"
     clean="$work/$name.clean.log"
-    truncate -s 128M "$disk"
+    truncate -s "${NAS_ACCEPTANCE_DISK_MB:-128}M" "$disk"
     sgdisk --clear --new 1:2048:0 --typecode 1:ef00 "$disk" >/dev/null
     mformat -i "$disk@@1048576" -F ::
     mmd -i "$disk@@1048576" ::/EFI ::/EFI/BOOT ::/boot ::/boot/limine
@@ -97,12 +97,13 @@ boot_case() {
         timer-preempt) time_budget=45 ;;
         process-capacity) time_budget=65 ;;
         init-reaper) time_budget=130 ;;
+        m38-gcc) time_budget=360 ;;
         m37-incremental) time_budget=150 ;;
         *) time_budget=28 ;;
     esac
     set +e
     timeout "${time_budget}s" qemu-system-aarch64 \
-        -machine virt -cpu cortex-a57 -m 512M -smp 1 \
+        -machine virt -cpu cortex-a57 -m "${NAS_ACCEPTANCE_QEMU_RAM:-512M}" -smp 1 \
         -display none -serial stdio -monitor none \
         -semihosting-config enable=on,target=native -bios "$fw" \
         -d in_asm -dfilter 0x404700+0x180 -D "$work/$name.instructions.log" \

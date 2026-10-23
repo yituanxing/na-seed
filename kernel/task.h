@@ -36,6 +36,7 @@ struct nas_task {
     uint64_t pid, ppid;
     /* Linux process group + session identity, independent of CPU/VM. */
     uint64_t pgid, sid;
+    uint32_t umask; /* inherited by fork/vfork; preserved by exec */
     bool execed; /* parent may not setpgid(child) after successful exec */
     enum nas_task_state state;
     uint32_t exit_code;
@@ -75,6 +76,9 @@ struct nas_task {
     uint64_t loaded_phdr, loaded_phnum;
     uint64_t loaded_main_entry, loaded_interp_base;
     uint64_t thread_clear_tid;
+    /* A vfork parent sleeps until exec/exit; child holds shared-VM root. */
+    uint64_t vfork_child_pid, vfork_parent_pid;
+    bool vfork_shared_vm;
 
     /* Per-process signal disposition/mask and filesystem context. */
     uint64_t blocked_signals;

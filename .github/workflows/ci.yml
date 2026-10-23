@@ -86,6 +86,8 @@ jobs:
           sh scripts/ci-ubuntu-mirror.sh
           sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
           sudo apt-get install -y --no-install-recommends clang lld xorriso qemu-system-x86 ovmf musl-tools binutils cpio
+      - name: Shared scalable CPIO archive index regression (>1200 files)
+        run: sh scripts/check-bootfs-scale.sh
       - name: Shared ELF PT_LOAD loader regression (x86/RV64/ARM64)
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-elf-segments.c kernel/task/elf_segments.c -o /tmp/naseed-segments-test && /tmp/naseed-segments-test
       - name: Shared ELF64 structural regression (x86/RV64/ARM64)
@@ -102,12 +104,16 @@ jobs:
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-vm-prot.c -o /tmp/naseed-vm-prot && /tmp/naseed-vm-prot
       - name: Linux open flags ABI regression (including ARM64 values)
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-fcntl-abi.c -o /tmp/naseed-fcntl-abi && /tmp/naseed-fcntl-abi
+      - name: Linux umask/create-mode ABI semantics
+        run: cc -std=c11 -Wall -Wextra -Werror scripts/test-fs-mode-abi.c -o /tmp/naseed-fs-mode && /tmp/naseed-fs-mode
       - name: Verify one full-kernel core TU manifest across ISAs
         run: sh scripts/check-full-kernel-sources.sh
       - name: Verify native x86-64 stat layout
         run: cc -std=c11 -Wall -Wextra -Werror -c scripts/check-linux-stat.c -o /tmp/naseed-stat.o
       - name: Verify 4 original pinned Alpine dynamic native package digests
         run: sh scripts/check-alpine-native-fixtures.sh
+      - name: Offline pinned Alpine transport failover and digest regression
+        run: sh scripts/test-pinned-alpine-apk.sh
       - name: Verify one Debian BusyBox fixture for all architectures
         run: sh scripts/check-busybox-fixtures.sh
       - name: Verify real-QEMU marker monitor fails closed

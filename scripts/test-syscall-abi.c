@@ -9,6 +9,7 @@ int main(void) {
     assert(nas_linux_decode_syscall(__NR_fork) == NAS_SC_fork);
     assert(nas_linux_decode_syscall(__NR_execve) == NAS_SC_execve);
     assert(nas_linux_decode_syscall(__NR_exit) == NAS_SC_exit);
+    assert(nas_linux_decode_syscall(__NR_umask) == NAS_SC_umask);
     assert(nas_linux_decode_syscall(__NR_mmap) == NAS_SC_mmap);
     assert(nas_linux_decode_syscall(__NR_newfstatat) == NAS_SC_newfstatat);
     assert(nas_linux_decode_syscall(UINT64_MAX) == NAS_SC_NONE);

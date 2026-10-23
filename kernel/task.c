@@ -1,4 +1,5 @@
 #include "task.h"
+#include "fs/mode.h"
 #include "arch/abi.h"
 #include "fd.h"
 #include "lib/string.h"
@@ -42,6 +43,7 @@ void nas_task_boot_init(void) {
     nas_current_task->ppid = 0;
     nas_current_task->pgid = 1;
     nas_current_task->sid = 1;
+    nas_current_task->umask = NAS_UMASK_DEFAULT;
     nas_current_task->state = NAS_TASK_RUNNING;
     nas_current_task->cwd[0] = '/';
     nas_current_task->cwd[1] = 0;
@@ -91,6 +93,9 @@ struct nas_task *nas_task_fork_slot(void) {
         /* Fork creates a new thread-group / task identity. The parent's
          * clear_child_tid address belongs only to the parent's thread. */
         child->thread_clear_tid = 0;
+        child->vfork_child_pid = 0;
+        child->vfork_parent_pid = 0;
+        child->vfork_shared_vm = false;
         child->pending_signals = 0; /* pending signals are NOT inherited by fork */
         return child;
     }
@@ -112,12 +117,15 @@ void nas_task_release(struct nas_task *task) {
     task->ppid = 0;
     task->pgid = 0;
     task->sid = 0;
+    task->umask = NAS_UMASK_DEFAULT;
     task->execed = false;
     task->stopped_from = NAS_TASK_FREE;
     task->stop_report_pending = false;
     task->continue_report_pending = false;
     task->stop_signal = 0;
     task->pending_signals = 0;
+    task->vfork_child_pid = task->vfork_parent_pid = 0;
+    task->vfork_shared_vm = false;
 }
 struct nas_task *nas_task_by_pid(uint64_t pid) {
     for (unsigned i = 0; i < NAS_TASK_LIMIT; i++)

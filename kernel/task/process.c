@@ -79,6 +79,85 @@ uint64_t nas_process_fork_child_tid(uint64_t *frame,uint64_t child_tid) {
     if(!child_tid) return (uint64_t)-EFAULT;
     return fork_common(frame,child_tid);
 }
+/* Real shared root for CLONE_VM, parent suspended for CLONE_VFORK.
+ * The parent retains page-table ownership; the child never reclaims it. */
+uint64_t nas_process_vfork(uint64_t *frame, uint64_t child_stack) {
+    struct nas_task *parent = nas_current_task;
+    if (parent->vfork_child_pid) return (uint64_t)-EAGAIN;
+    if (child_stack &&
+        (child_stack >= USER_LIMIT || child_stack < 16 ||
+         !nas_mmu_user_writable(child_stack-1) ||
+         !nas_mmu_user_writable(child_stack-8)))
+        return (uint64_t)-EFAULT;
+    nas_arch_save_user_frame(parent, frame);
+    nas_arch_save_fpu(parent);
+    struct nas_task *child = nas_task_fork_slot();
+    if (!child) return (uint64_t)-EAGAIN;
+    nas_task_set_root(child, parent->root_phys);
+    child->vfork_parent_pid = parent->pid;
+    child->vfork_shared_vm = true;
+    if (child_stack)
+        nas_arch_context_set_user_sp(&child->arch, child_stack);
+    if (!nas_task_hold_files(child))
+        proc_fail("vfork dangling file description");
+    nas_arch_set_saved_return(parent, child->pid);
+    parent->vfork_child_pid = child->pid;
+    parent->resume_valid = true;
+    parent->pending_valid = false;
+    parent->blocked_op = 0;
+    parent->state = NAS_TASK_BLOCKED;
+    child->state = NAS_TASK_RUNNING;
+    nas_current_task = child;
+    nas_arch_restore_cpu(child);
+    /* This path changes the child SP. Unlike fork with an inherited stack,
+     * the live trap frame must be replaced, not only the saved Task copy. */
+    nas_arch_load_user_frame(child, frame);
+    nas_print("[PROC] vfork parent="); nas_dec(parent->pid);
+    nas_print(" child="); nas_dec(child->pid);
+    nas_print(" shared VM\n");
+    return 0;
+}
+void nas_process_vfork_release(void) {
+    struct nas_task *child = nas_current_task;
+    if (!child->vfork_parent_pid) return;
+    struct nas_task *parent = nas_task_by_pid(child->vfork_parent_pid);
+    if (!parent || parent->vfork_child_pid != child->pid ||
+        parent->state != NAS_TASK_BLOCKED ||
+        !parent->resume_valid || parent->pending_valid)
+        proc_fail("vfork parent ownership corrupted");
+    parent->vfork_child_pid = 0;
+    parent->state = NAS_TASK_READY;
+    child->vfork_parent_pid = 0;
+    child->vfork_shared_vm = false;
+    nas_print("[PROC] vfork parent resumed pid="); nas_dec(parent->pid);
+    nas_print("\n");
+}
+/* Linux rlimit64: report resource limits the kernel actually enforces.
+ * A limit update is NOT a no-op success: reject until the underlying
+ * resource scheduler/FD/VM policy can enforce mutable soft/hard values. */
+uint64_t nas_process_prlimit(uint64_t pid,uint64_t resource,
+                             uint64_t new_addr,uint64_t old_addr) {
+    if (pid && pid != nas_current_task->pid)
+        return nas_task_by_pid(pid) ? (uint64_t)-EPERM : (uint64_t)-ESRCH;
+    if (resource > 15) return (uint64_t)-EINVAL;
+    if (new_addr) return (uint64_t)-EOPNOTSUPP;
+    uint64_t soft=UINT64_MAX, hard=UINT64_MAX;
+    switch (resource) {
+    case 3: soft=hard=32ULL*4096ULL; break; /* RLIMIT_STACK */
+    case 4: soft=hard=0; break;             /* RLIMIT_CORE: no dumps */
+    case 6: soft=hard=NAS_TASK_LIMIT; break; /* RLIMIT_NPROC */
+    case 7: soft=hard=NAS_FD_LIMIT; break; /* RLIMIT_NOFILE */
+    case 8: soft=hard=0; break;             /* RLIMIT_MEMLOCK */
+    case 13: case 14: soft=hard=0; break;   /* NICE/RTPRIO */
+    default: break; /* No separate resource-limit policy. */
+    }
+    if (old_addr) {
+        const uint64_t pair[2]={soft,hard};
+        if (!nas_user_write_bytes(old_addr,(const uint8_t *)pair,sizeof(pair)))
+            return (uint64_t)-EFAULT;
+    }
+    return 0;
+}
 void nas_process_clear_tid_on_exit(void) {
     uint64_t tid_addr=nas_current_task->thread_clear_tid;
     if (!tid_addr) return;
@@ -139,7 +218,8 @@ uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
                 return (uint64_t)-EFAULT; /* retain event on bad user buf */
         }
         if (zombie) {
-            if (!nas_mmu_reclaim_root(nas_task_page_root(child)))
+            uint64_t owned_root = nas_task_page_root(child);
+            if (owned_root && !nas_mmu_reclaim_root(owned_root))
                 proc_fail("wait4 failed to reclaim child address space");
             nas_print("[PROC] wait4 reaped pid="); nas_dec(pid);
             nas_print(" status="); nas_dec(code); nas_print("\n");

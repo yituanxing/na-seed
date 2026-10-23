@@ -1,18 +1,101 @@
 #include "bootfs.h"
 #include "errno.h"
 #include "lib/string.h"
+#include "mm/frame.h"
 #include <stddef.h>
 
-#define MAX_ENTRIES 96
+#define BOOTFS_BUCKETS 8192U
+/* Explicit resource upper limit, no small fixed array of input files. */
+#define BOOTFS_ENTRY_LIMIT 65536U
 #define NEWC_HEADER 110ULL
 #define S_IFMT 0170000U
 #define S_IFREG 0100000U
 #define S_IFDIR 0040000U
 #define S_IFLNK 0120000U
 
-static struct bootfs_entry entries[MAX_ENTRIES];
+/* One frame per slab: stable entry pointers across grow, fork and lookup.
+ * The archive bytes themselves remain zero-copy and strictly read-only. */
+#define BOOTFS_ENTRIES_PER_SLAB \
+    ((4096U - sizeof(void *) - sizeof(unsigned)) / sizeof(struct bootfs_entry))
+struct bootfs_slab {
+    struct bootfs_slab *next;
+    unsigned used;
+    struct bootfs_entry entries[BOOTFS_ENTRIES_PER_SLAB];
+};
+_Static_assert(sizeof(struct bootfs_slab) <= 4096, "bootfs slab fits one page");
+_Static_assert(BOOTFS_ENTRIES_PER_SLAB > 0, "bootfs entry must fit one page");
+
+static struct bootfs_slab *slab_head, *slab_tail;
+static struct bootfs_entry *buckets[BOOTFS_BUCKETS];
+static struct bootfs_entry *hardlinks[BOOTFS_BUCKETS];
 static unsigned entry_count;
 static bool mounted;
+
+static unsigned bootfs_bucket(const char *path) {
+    uint32_t hash = 2166136261U;
+    for (const unsigned char *p = (const unsigned char *)path; *p; ++p)
+        hash = (hash ^ *p) * 16777619U;
+    return hash & (BOOTFS_BUCKETS - 1);
+}
+/* Only regular files participate in the separate hardlink table.
+ * Directories also report nlink>1 and MUST NOT be coalesced. */
+static unsigned hardlink_bucket(uint32_t ino,uint32_t major,uint32_t minor) {
+    uint32_t key=(ino*16777619U) ^ (major*2246822519U) ^
+                 (minor*3266489917U);
+    return key & (BOOTFS_BUCKETS-1);
+}
+static struct bootfs_entry *hardlink_find(uint32_t ino,
+                                          uint32_t major,uint32_t minor) {
+    unsigned key=hardlink_bucket(ino,major,minor);
+    for (struct bootfs_entry *e=hardlinks[key];e;e=e->hardlink_next)
+        if (e->cpio_ino==ino && e->cpio_major==major &&
+            e->cpio_minor==minor) return e;
+    return 0;
+}
+/* GNU newc stores each hardlinked regular file's content once.
+ * Subsequent/previous pathname records can have filesize=0. Fixup after
+ * the trailer keeps lookups O(1) without duplicating immutable bytes. */
+static void bootfs_finish_hardlinks(void) {
+    for (struct bootfs_slab *slab=slab_head;slab;slab=slab->next)
+        for (unsigned i=0;i<slab->used;i++) {
+            struct bootfs_entry *e=&slab->entries[i];
+            if (!e->hardlink_owner) continue;
+            const struct bootfs_entry *owner=e->hardlink_owner;
+            e->data=owner->data;
+            e->size=owner->size;
+            e->ino=owner->ino;
+        }
+}
+static void bootfs_reset(void) {
+    struct bootfs_slab *slab = slab_head;
+    while (slab) {
+        struct bootfs_slab *next = slab->next;
+        (void)nas_frame_free((uint64_t)(uintptr_t)slab - nas_hhdm_offset());
+        slab = next;
+    }
+    slab_head = slab_tail = 0;
+    for (unsigned i = 0; i < BOOTFS_BUCKETS; ++i) {
+        buckets[i] = 0;
+        hardlinks[i] = 0;
+    }
+    entry_count = 0;
+    mounted = false;
+}
+static struct bootfs_entry *bootfs_new_entry(void) {
+    if (entry_count >= BOOTFS_ENTRY_LIMIT) return 0;
+    if (!slab_tail || slab_tail->used == BOOTFS_ENTRIES_PER_SLAB) {
+        uint64_t physical = nas_frame_alloc();
+        if (!physical) return 0;
+        struct bootfs_slab *slab =
+            (struct bootfs_slab *)(uintptr_t)(physical + nas_hhdm_offset());
+        slab->next = 0;
+        slab->used = 0;
+        if (slab_tail) slab_tail->next = slab;
+        else slab_head = slab;
+        slab_tail = slab;
+    }
+    return &slab_tail->entries[slab_tail->used++];
+}
 
 static bool hex8(const uint8_t *p, uint32_t *out) {
     uint32_t result = 0;
@@ -67,8 +150,7 @@ static bool archive_name(struct bootfs_entry *entry,
     return true;
 }
 bool bootfs_mount(const void *bytes, uint64_t size) {
-    mounted = false;
-    entry_count = 0;
+    bootfs_reset();
     if (!bytes || size < NEWC_HEADER) return false;
     const uint8_t *base = (const uint8_t *)bytes;
     uint64_t at = 0;
@@ -77,10 +159,15 @@ bool bootfs_mount(const void *bytes, uint64_t size) {
         const uint8_t *h = base + at;
         if (memcmp(h, "070701", 6) != 0) return false;
         uint32_t file_size, name_size, mode, mtime;
+        uint32_t ino,nlink,major,minor;
         if (!hex8(h + 54, &file_size) ||
             !hex8(h + 94, &name_size) ||
             !hex8(h + 14, &mode) ||
             !hex8(h + 46, &mtime) ||
+            !hex8(h + 6, &ino) ||
+            !hex8(h + 38, &nlink) ||
+            !hex8(h + 62, &major) ||
+            !hex8(h + 70, &minor) ||
             !name_size || name_size > 256) return false;
         uint64_t name_at = at + NEWC_HEADER;
         if (name_size > size - name_at) return false;
@@ -92,10 +179,10 @@ bool bootfs_mount(const void *bytes, uint64_t size) {
         if (!aligned4(data_at + file_size, size, &next)) return false;
         if (name_size == 11 && memcmp(name, "TRAILER!!!", 11) == 0) {
             if (file_size) return false;
+            bootfs_finish_hardlinks();
             mounted = entry_count > 0 && bootfs_find("/") != 0;
             return mounted;
         }
-        if (entry_count >= MAX_ENTRIES) return false;
         unsigned type = mode & S_IFMT;
         if (type != S_IFREG && type != S_IFDIR && type != S_IFLNK) return false;
         if (type == S_IFDIR && file_size) return false;
@@ -105,15 +192,43 @@ bool bootfs_mount(const void *bytes, uint64_t size) {
             for (uint32_t n = 0; n < file_size; n++)
                 if (base[data_at + n] == 0) return false;
         }
-        struct bootfs_entry *entry = &entries[entry_count];
-        if (!archive_name(entry, name, name_size)) return false;
-        for (unsigned n = 0; n < entry_count; n++)
-            if (strcmp(entries[n].path, entry->path) == 0) return false;
+        struct bootfs_entry *entry = bootfs_new_entry();
+        if (!entry || !archive_name(entry, name, name_size) ||
+            bootfs_find(entry->path)) return false;
         entry->mode = mode;
         entry->mtime_sec = mtime;
         entry->size = file_size;
         entry->data = base + data_at;
         entry->ino = entry_count + 1;
+        entry->cpio_ino = ino;
+        entry->cpio_major = major;
+        entry->cpio_minor = minor;
+        entry->nlink = nlink ? nlink : 1;
+        entry->hardlink_owner = 0;
+        entry->hardlink_next = 0;
+        if (type == S_IFREG && nlink > 1) {
+            struct bootfs_entry *owner=hardlink_find(ino,major,minor);
+            if (!owner) {
+                unsigned key=hardlink_bucket(ino,major,minor);
+                entry->hardlink_owner=entry;
+                entry->hardlink_next=hardlinks[key];
+                hardlinks[key]=entry;
+            } else {
+                /* A single inode's metadata must agree. Multiple nonempty
+                 * data records are ambiguous: reject malformed archives. */
+                if (owner->mode != mode || owner->nlink != nlink ||
+                    owner->mtime_sec != mtime ||
+                    (file_size && owner->size)) return false;
+                entry->hardlink_owner=owner;
+                if (file_size) {
+                    owner->data=entry->data;
+                    owner->size=file_size;
+                }
+            }
+        }
+        unsigned bucket = bootfs_bucket(entry->path);
+        entry->hash_next = buckets[bucket];
+        buckets[bucket] = entry;
         entry_count++;
         at = next;
     }
@@ -125,8 +240,9 @@ bool bootfs_is_link(const struct bootfs_entry *entry) {
 }
 const struct bootfs_entry *bootfs_find(const char *absolute) {
     if (!absolute) return 0;
-    for (unsigned i = 0; i < entry_count; ++i)
-        if (strcmp(entries[i].path, absolute) == 0) return &entries[i];
+    for (struct bootfs_entry *entry = buckets[bootfs_bucket(absolute)];
+         entry; entry = entry->hash_next)
+        if (strcmp(entry->path, absolute) == 0) return entry;
     return 0;
 }
 bool bootfs_is_dir(const struct bootfs_entry *entry) {
@@ -137,19 +253,20 @@ const struct bootfs_entry *bootfs_child(const struct bootfs_entry *dir,
     if (!bootfs_is_dir(dir)) return 0;
     const char *parent = dir->path;
     size_t plen = strlen(parent);
-    for (unsigned i = 0; i < entry_count; i++) {
-        const char *candidate = entries[i].path;
-        if (strncmp(candidate, parent, plen) != 0) continue;
-        const char *tail = candidate + plen;
-        if (plen != 1) {
-            if (*tail++ != '/') continue;
+    for (const struct bootfs_slab *slab = slab_head; slab; slab = slab->next) {
+        for (unsigned i = 0; i < slab->used; ++i) {
+            const struct bootfs_entry *entry = &slab->entries[i];
+            const char *candidate = entry->path;
+            if (strncmp(candidate, parent, plen) != 0) continue;
+            const char *tail = candidate + plen;
+            if (plen != 1 && *tail++ != '/') continue;
+            if (!*tail) continue;
+            bool direct = true;
+            for (const char *p = tail; *p; ++p)
+                if (*p == '/') { direct = false; break; }
+            if (!direct) continue;
+            if (ordinal-- == 0) return entry;
         }
-        if (!*tail) continue;
-        bool direct = true;
-        for (const char *p = tail; *p; ++p)
-            if (*p == '/') { direct = false; break; }
-        if (!direct) continue;
-        if (ordinal-- == 0) return &entries[i];
     }
     return 0;
 }

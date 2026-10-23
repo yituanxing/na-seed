@@ -53,6 +53,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_fchdir: return NAS_SC_fchdir;
     case __NR_fcntl: return NAS_SC_fcntl;
     case __NR_fork: return NAS_SC_fork;
+    case __NR_vfork: return NAS_SC_vfork;
     case __NR_fstat: return NAS_SC_fstat;
     case __NR_getcwd: return NAS_SC_getcwd;
     case __NR_getdents64: return NAS_SC_getdents64;
@@ -63,6 +64,8 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_getpgrp: return NAS_SC_getpgrp;
     case __NR_getsid: return NAS_SC_getsid;
     case __NR_getpid: return NAS_SC_getpid;
+    case __NR_getrlimit: return NAS_SC_getrlimit;
+    case __NR_prlimit64: return NAS_SC_prlimit64;
     case __NR_getppid: return NAS_SC_getppid;
     case __NR_gettid: return NAS_SC_gettid;
     case __NR_gettimeofday: return NAS_SC_gettimeofday;
@@ -85,6 +88,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_ppoll: return NAS_SC_ppoll;
     case __NR_pselect6: return NAS_SC_pselect6;
     case __NR_read: return NAS_SC_read;
+    case __NR_readv: return NAS_SC_readv;
     case __NR_readlink: return NAS_SC_readlink;
     case __NR_readlinkat: return NAS_SC_readlinkat;
     case __NR_rename: return NAS_SC_rename;
@@ -99,7 +103,9 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_setsid: return NAS_SC_setsid;
     case __NR_set_tid_address: return NAS_SC_set_tid_address;
     case __NR_stat: return NAS_SC_stat;
+    case __NR_sysinfo: return NAS_SC_sysinfo;
     case __NR_uname: return NAS_SC_uname;
+    case __NR_umask: return NAS_SC_umask;
     case __NR_unlink: return NAS_SC_unlink;
     case __NR_unlinkat: return NAS_SC_unlinkat;
     case __NR_utimensat: return NAS_SC_utimensat;
@@ -118,6 +124,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 114U: return NAS_SC_clock_getres;
     case 115U: return NAS_SC_clock_nanosleep; /* asm-generic lacks nanosleep */
     case 63U: return NAS_SC_read;
+    case 65U: return NAS_SC_readv; /* Linux asm-generic readv */
     case 64U: return NAS_SC_write;
     case 66U: return NAS_SC_writev;
     case 56U: return NAS_SC_openat;
@@ -146,8 +153,12 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 135U: return NAS_SC_rt_sigprocmask;
     case 139U: return NAS_SC_rt_sigreturn;
     case 160U: return NAS_SC_uname;
+    case 166U: return NAS_SC_umask; /* Linux asm-generic */
+    case 179U: return NAS_SC_sysinfo; /* Linux asm-generic sysinfo */
     case 96U: return NAS_SC_set_tid_address;
     case 172U: return NAS_SC_getpid;
+    case 163U: return NAS_SC_getrlimit; /* Linux asm-generic */
+    case 261U: return NAS_SC_prlimit64; /* Linux asm-generic */
     case 173U: return NAS_SC_getppid;
     case 174U: return NAS_SC_getuid;
     case 175U: return NAS_SC_geteuid;
@@ -189,6 +200,14 @@ static inline uint64_t nas_linux_clone_child_tid(const uint64_t *call) {
     return call[5];
 #endif
 }
+/* The x86 legacy vfork number has NO user stack argument; clone does.
+ * Keep this register-ABI decision out of the common process dispatcher. */
+static inline uint64_t nas_linux_vfork_child_stack(const uint64_t *call) {
+#if defined(__x86_64__)
+    if (call[0] == __NR_vfork) return 0;
+#endif
+    return call[2];
+}
 static inline enum nas_syscall_op nas_linux_decode_call(const uint64_t *args) {
     if (!args) return NAS_SC_NONE;
 #if defined(__x86_64__)
@@ -197,7 +216,11 @@ static inline enum nas_syscall_op nas_linux_decode_call(const uint64_t *args) {
     const uint64_t clone_nr = 220U; /* Linux asm-generic __NR_clone */
 #endif
     if (args[0] == clone_nr) {
-        if (args[2] != 0U) return NAS_SC_NONE; /* no alternate user stack */
+        /* musl posix_spawn uses CLONE_VM|CLONE_VFORK|SIGCHLD with
+         * its own userspace child stack. Unsupported thread clones are ENOSYS. */
+        if (args[1] == (0x00000100ULL|0x00004000ULL|17ULL))
+            return NAS_SC_vfork;
+        if (args[2] != 0U) return NAS_SC_NONE; /* regular fork inherits sp */
         if (args[1] == 17U) return NAS_SC_fork;
         /* Fork with child TID set/clear, no shared VM or alternate stack.
          * Caller translates child_tid from architecture-specific registers. */

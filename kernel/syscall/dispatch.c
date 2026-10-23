@@ -9,8 +9,10 @@
 #include "../arch/arch.h"
 #include "../arch/abi.h"
 #include "../mm/vm.h"
+#include "../mm/frame.h"
 #include "../mm/usercopy.h"
 #include "../task/exec.h"
+#include "../fs/mode.h"
 #include "../task/process.h"
 #include "../task/wait_pid.h"
 #include "../task/session.h"
@@ -137,6 +139,36 @@ static uint64_t nas_time_poll_arm_deadline(enum nas_syscall_op nr,
     return 0;
 }
 
+
+/* Linux LP64 struct sysinfo, shared by x86-64, RV64 and AArch64.
+ * Report frame allocator accounting rather than invented guest RAM.
+ * No swap is provided, and kernel load averages are not yet sampled.
+ * mem_unit=4096 keeps physical counts representable without overflow. */
+struct nas_linux_sysinfo {
+    int64_t uptime;
+    uint64_t loads[3];
+    uint64_t totalram, freeram, sharedram, bufferram;
+    uint64_t totalswap, freeswap;
+    uint16_t procs, pad;
+    uint64_t totalhigh, freehigh;
+    uint32_t mem_unit;
+};
+_Static_assert(sizeof(struct nas_linux_sysinfo)==112,
+               "Linux LP64 sysinfo ABI size");
+static uint64_t nas_sysinfo(uint64_t addr) {
+    struct nas_linux_sysinfo info={0};
+    info.uptime=(int64_t)(nas_arch_monotonic_ns()/NAS_NSEC_PER_SEC);
+    info.totalram=nas_managed_frames();
+    info.freeram=nas_free_frames();
+    info.mem_unit=4096U;
+    for (unsigned i=0;i<NAS_TASK_LIMIT;i++) {
+        const struct nas_task *t=nas_task_at(i);
+        if (t && t->state!=NAS_TASK_FREE) info.procs++;
+    }
+    return nas_user_write_bytes(addr,(const uint8_t *)&info,sizeof(info))
+        ? 0 : (uint64_t)-EFAULT;
+}
+
 static uint32_t missing_count[512];
 static uint64_t sys_uname_naseed(uint64_t buffer) {
     struct uts {
@@ -156,6 +188,7 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
                              uint64_t fd, uint64_t buf, uint64_t count) {
     uint64_t ret;
     if (nr == NAS_SC_read) ret = nas_fs_fd_read(fd, buf, count);
+    else if (nr == NAS_SC_readv) ret = nas_fs_fd_readv(fd,buf,count);
     else if (nr == NAS_SC_write) ret = nas_fs_fd_write(fd, buf, count);
     else ret = nas_fs_fd_writev(fd, buf, count);
     if ((int64_t)ret == -EPIPE &&
@@ -172,7 +205,8 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
         if ((int64_t)ret == -EOPNOTSUPP &&
             (descriptors[fd] == FD_PIPE_R || descriptors[fd] == FD_PIPE_W))
             return nas_task_block(frame,nr,fd,buf,count,0);
-        if (nr == NAS_SC_read && (int64_t)ret == -EAGAIN &&
+        if ((nr == NAS_SC_read || nr == NAS_SC_readv) &&
+            (int64_t)ret == -EAGAIN &&
             (descriptors[fd] == FD_TTY || descriptors[fd] == FD_UART) &&
             nas_tty_read_waitable())
             return nas_task_block(frame,nr,fd,buf,count,0);
@@ -209,7 +243,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         nas_print("[TRACE] linux_nr="); nas_dec(raw_nr);
         nas_print(" decoded="); nas_dec(nr);
         nas_print(" rip="); nas_hex(args[7]);
-        nas_print(" rsp="); nas_hex(syscall_user_rsp);
+        nas_print(" rsp="); nas_hex(nas_arch_signal_user_sp());
         nas_print(" a1="); nas_hex(args[1]);
         nas_print(" a2="); nas_hex(args[2]);
         nas_print(" a3="); nas_hex(args[3]);
@@ -220,6 +254,10 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_set_tid_address) { thread_clear_tid = args[1]; return TASK.pid; }
     if (nr == NAS_SC_getpid || nr == NAS_SC_gettid) return TASK.pid;
     if (nr == NAS_SC_getppid) return TASK.ppid;
+    if (nr == NAS_SC_getrlimit)
+        return nas_process_prlimit(0,args[1],0,args[2]);
+    if (nr == NAS_SC_prlimit64)
+        return nas_process_prlimit(args[1],args[2],args[3],args[4]);
     if(nr==NAS_SC_clock_gettime)
         return nas_time_read_clock(args[1],args[2],false);
     if(nr==NAS_SC_clock_getres)
@@ -230,10 +268,36 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         return nas_time_sleep_syscall((uint64_t *)(uintptr_t)args,nr,args);
     if (nr == NAS_SC_getuid || nr == NAS_SC_getgid || nr == NAS_SC_geteuid || nr == NAS_SC_getegid) return 0; /* root credentials */
     if (nr == NAS_SC_mprotect) return nas_vm_mprotect(args[1], args[2], args[3]);
-    if (nr == NAS_SC_mmap) return nas_vm_anon_mmap(args[1], args[2], args[3],
-                                       args[4], args[5], args[6]);
+    if (nr == NAS_SC_mmap) {
+        uint64_t result=(args[4] & 0x20ULL) ?
+            nas_vm_anon_mmap(args[1],args[2],args[3],
+                             args[4],args[5],args[6]) :
+            nas_vm_file_mmap(args[1],args[2],args[3],
+                             args[4],args[5],args[6]);
+#ifdef NASEED_SYSCALL_TRACE
+        if ((int64_t)result<0) {
+            nas_print("[VM REJECT] mmap errno="); nas_dec((uint64_t)(-(int64_t)result));
+            nas_print(" hint="); nas_hex(args[1]);
+            nas_print(" len="); nas_hex(args[2]);
+            nas_print(" prot="); nas_hex(args[3]);
+            nas_print(" flags="); nas_hex(args[4]);
+            nas_print(" fd="); nas_hex(args[5]);
+            nas_print(" offset="); nas_hex(args[6]); nas_print("\n");
+        }
+#endif
+        return result;
+    }
     if (nr == NAS_SC_munmap) return nas_vm_munmap(args[1], args[2]);
-    if (nr == NAS_SC_brk) return nas_vm_brk(args[1]);
+    if (nr == NAS_SC_brk) {
+        uint64_t result=nas_vm_brk(args[1]);
+#ifdef NASEED_SYSCALL_TRACE
+        if (args[1] && args[1]!=result) {
+            nas_print("[VM REJECT] brk wanted="); nas_hex(args[1]);
+            nas_print(" retained="); nas_hex(result); nas_print("\n");
+        }
+#endif
+        return result;
+    }
     if(nr==NAS_SC_poll || nr==NAS_SC_ppoll || nr==NAS_SC_pselect6) {
         /* ppoll and pselect6 install one optional temporary signal mask.
          * pselect6's sixth argument points to {sigset_ptr, size_t}; the
@@ -304,10 +368,12 @@ uint64_t syscall_dispatch(const uint64_t *args) {
      * physical COM1/OpenSBI/PL011 transport. Use the common Signal/Task
      * machinery to stop a background PGID, never fake successful I/O.
      * Raw diagnostic FD_UART remains deliberately outside job control. */
-    if((nr==NAS_SC_read || nr==NAS_SC_write || nr==NAS_SC_writev ||
+    if((nr==NAS_SC_read || nr==NAS_SC_readv ||
+        nr==NAS_SC_write || nr==NAS_SC_writev ||
         (nr==NAS_SC_ioctl && args[2]==0x5410ULL)) &&
        nas_tty_background_fd(args[1])) {
-        unsigned sig=nr==NAS_SC_read ? NAS_SIGTTIN : NAS_SIGTTOU;
+        unsigned sig=(nr==NAS_SC_read || nr==NAS_SC_readv)
+                     ? NAS_SIGTTIN : NAS_SIGTTOU;
         if(sig==NAS_SIGTTIN || nr==NAS_SC_ioctl || nas_tty_tostop()) {
             bool handled=false;
             uint64_t result=nas_signal_background_job(sig,
@@ -316,6 +382,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         }
     }
     if (nr == NAS_SC_read) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
+    if (nr == NAS_SC_readv) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
     if (nr == NAS_SC_write) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
     if (nr == NAS_SC_writev) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
     struct nas_fs_result fs_result = nas_fs_syscall(nr, args);
@@ -326,8 +393,17 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_rt_sigprocmask) return nas_signal_procmask(args[1], args[2], args[3], args[4],
                                                                 (uint64_t *)(uintptr_t)args);
     if (nr == NAS_SC_kill) return nas_signal_kill(args[1], args[2], (uint64_t *)(uintptr_t)args);
+    if (nr == NAS_SC_umask) {
+        uint64_t previous=TASK.umask;
+        TASK.umask=nas_fs_umask(args[1]);
+        return previous;
+    }
     if (nr == NAS_SC_uname) return sys_uname_naseed(args[1]);
+    if (nr == NAS_SC_sysinfo) return nas_sysinfo(args[1]);
 
+    if (nr == NAS_SC_vfork)
+        return nas_process_vfork((uint64_t *)(uintptr_t)args,
+                                  nas_linux_vfork_child_stack(args));
     if (nr == NAS_SC_fork)
         return nas_process_fork((uint64_t *)(uintptr_t)args);
     if (nr == NAS_SC_fork_child_tid)
@@ -345,7 +421,18 @@ uint64_t syscall_dispatch(const uint64_t *args) {
                               args[1], args[2], args[3], args[4]);
         return ret;
     }
-    if (nr == NAS_SC_execve) return nas_task_execve(args[1], args[2], args[3]);
+    if (nr == NAS_SC_execve) {
+        uint64_t result=nas_task_execve(args[1],args[2],args[3]);
+        if ((int64_t)result < 0) {
+            static unsigned exec_fail_logs;
+            if (exec_fail_logs++ < 12) {
+                nas_print("[EXEC] Linux execve rejected errno=");
+                nas_dec((uint64_t)(-(int64_t)result));
+                nas_print("\n");
+            }
+        }
+        return result;
+    }
     if (nr == NAS_SC_getpgid) return nas_session_getpgid(args[1]);
     if (nr == NAS_SC_getpgrp) return TASK.pgid;
     if (nr == NAS_SC_getsid) return nas_session_getsid(args[1]);

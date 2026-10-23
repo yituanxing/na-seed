@@ -18,6 +18,7 @@
 #include "user_stack.h"
 #include "../lib/string.h"
 #include "exec.h"
+#include "process.h"
 #include "signal.h"
 #define TASK (*nas_current_task)
 #define root_phys TASK.root_phys
@@ -194,6 +195,15 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     if(err)return (uint64_t)(int64_t)err;
     if(app.is_dir || !(app.mode&0111U))return (uint64_t)-EACCES;
     struct elf_image main_img=elf_from_fs_node(&app);
+#ifdef NASEED_SYSCALL_TRACE
+    static unsigned exec_images_logged;
+    if (exec_images_logged++ < 16) {
+        nas_print("[EXEC IMAGE] path="); nas_print(actual);
+        nas_print(" bytes="); nas_hex(main_img.size);
+        nas_print(" mode="); nas_hex(app.mode);
+        nas_print("\n");
+    }
+#endif
     uint8_t magic[4] = {0};
     uint64_t available = main_img.size < sizeof(magic) ?
                          main_img.size : sizeof(magic);
@@ -227,8 +237,18 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
      * storage for the post-exec BusyBox/PIE accounting. */
     struct elf_hdr executable_header;
     if (!nas_elf_image_open(&main_img, NAS_ELF_MACHINE, true, 64,
-                            &executable_header))
+                            &executable_header)) {
+        struct elf_hdr rejected={0};
+        nas_print("[ELF HEADER REJECT] "); nas_print(actual);
+        if (nas_elf_image_read(&main_img,0,&rejected,sizeof(rejected))) {
+            nas_print(" machine="); nas_hex(rejected.machine);
+            nas_print(" type="); nas_hex(rejected.type);
+            nas_print(" phnum="); nas_hex(rejected.phnum);
+            nas_print(" size="); nas_hex(main_img.size);
+        }
+        nas_print("\n");
         return (uint64_t)-ENOEXEC;
+    }
     struct nas_fs_node loader;
     char loader_path[256];
     struct elf_image interp_img={0};
@@ -257,16 +277,33 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     loaded_phdr = loaded_phnum = loaded_main_entry = loaded_interp_base = 0;
     uint64_t entry, sp = 0;
     bool good = nas_elf_load(&main_img, interp, &entry);
+#ifdef NASEED_SYSCALL_TRACE
+    if (!good) { nas_print("[EXEC REJECT] failed ELF or interpreter load: "); nas_print(actual); nas_print("\n"); }
+#endif
     if (good) {
         for (uint64_t va = USER_STACK_TOP - USER_STACK_PAGES * PAGE;
              va < USER_STACK_TOP; va += PAGE)
-            if (!nas_mmu_map_page(va, true)) { good = false; break; }
+            if (!nas_mmu_map_page(va, true)) {
+#ifdef NASEED_SYSCALL_TRACE
+                nas_print("[EXEC REJECT] failed user stack map\n");
+#endif
+                good = false; break;
+            }
     }
-    if(good)good=nas_signal_install_trampoline();
-    if (good)
+    if (good) {
+        good=nas_signal_install_trampoline();
+#ifdef NASEED_SYSCALL_TRACE
+        if (!good) nas_print("[EXEC REJECT] failed signal trampoline\n");
+#endif
+    }
+    if (good) {
         good = nas_build_user_stack(pending_exec.argv, pending_exec.argc,
                                 pending_exec.envp, pending_exec.envc,
                                 pending_exec.filename, &sp);
+#ifdef NASEED_SYSCALL_TRACE
+        if (!good) nas_print("[EXEC REJECT] failed argv/env/auxv stack\n");
+#endif
+    }
     if (!good) {
         nas_mmu_switch_root(previous_root);
         if (!nas_mmu_reclaim_root(new_root)) nas_fail("execve rollback page-table corruption");
@@ -298,7 +335,11 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
         if (signal_actions[i][0] == 1) continue; /* SIG_IGN survives exec */
         for (unsigned j = 0; j < 4; j++) signal_actions[i][j] = 0;
     }
-    if (!nas_mmu_reclaim_root(previous_root))
+    /* A vfork child shared its old page table with its suspended parent.
+     * Its new ELF root has committed, but that old root remains parent-owned. */
+    if (TASK.vfork_shared_vm)
+        nas_process_vfork_release();
+    else if (!nas_mmu_reclaim_root(previous_root))
         nas_fail("execve stale address-space frame reclaim failure");
     const char *basename = actual;
     for (const char *p = basename; *p; p++)

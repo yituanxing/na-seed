@@ -25,4 +25,16 @@ static inline void nas_arch_context_set_tls(struct nas_arch_context *c, uint64_t
     c->user_tls_base = value;
 #endif
 }
+/* Linux clone() may supply an alternate userspace stack. Keep Task generic. */
+static inline void nas_arch_context_set_user_sp(struct nas_arch_context *c,
+                                                 uint64_t sp) {
+#if defined(__x86_64__)
+    c->resume_user_rsp = sp;
+#elif defined(__riscv) && __riscv_xlen == 64
+    c->user_sp = sp;
+    c->user_regs[2] = sp;
+#elif defined(__aarch64__)
+    c->user_sp = sp;
+#endif
+}
 #endif

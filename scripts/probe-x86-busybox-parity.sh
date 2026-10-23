@@ -50,8 +50,31 @@ run_case() {
       --efi-boot boot/limine/limine-uefi-cd.bin \
       --efi-boot-part --efi-boot-image -o "$iso" "$stage" >/dev/null 2>&1
     rc=0
-    case "$name" in m37-incremental) budget=100 ;; process-capacity) budget=45 ;; init-reaper) budget=110 ;; *) budget=15 ;; esac
-    timeout "${budget}s" sh scripts/run.sh "$iso" > "$log" 2>&1 < /dev/null || rc=$?
+    case "$name" in m38-gcc) budget=300 ;; m37-incremental) budget=100 ;; process-capacity) budget=45 ;; init-reaper) budget=110 ;; *) budget=15 ;; esac
+    if [ "$name" = m38-gcc ]; then
+        # The full GCC gate is allowed a large success budget, but a real
+        # kernel [FAIL] must not keep its headless QEMU alive for 300s.
+        timeout "${budget}s" sh scripts/run.sh "$iso" > "$log" 2>&1 < /dev/null &
+        guest_pid=$!
+        (
+            while :; do
+                if grep -Fq '[FAIL]' "$log" 2>/dev/null; then
+                    kill -TERM "$guest_pid" 2>/dev/null || :
+                    exit 0
+                fi
+                if grep -Fq '[PASS] cmdline userspace exit 0' "$log" 2>/dev/null; then
+                    exit 0
+                fi
+                sleep 0.5
+            done
+        ) &
+        monitor_pid=$!
+        wait "$guest_pid" || rc=$?
+        kill "$monitor_pid" 2>/dev/null || :
+        wait "$monitor_pid" 2>/dev/null || :
+    else
+        timeout "${budget}s" sh scripts/run.sh "$iso" > "$log" 2>&1 < /dev/null || rc=$?
+    fi
     tr -d '\r' < "$log" > "$clean"
     if [ "$rc" -ne 1 ] ||
        ! grep -Fq "[CMDLINE] userspace argv from Limine: naseed.argv=$entry $args" "$clean" ||
