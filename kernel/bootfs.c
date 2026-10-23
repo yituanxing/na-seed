@@ -76,10 +76,11 @@ bool bootfs_mount(const void *bytes, uint64_t size) {
         if (size - at < NEWC_HEADER) return false;
         const uint8_t *h = base + at;
         if (memcmp(h, "070701", 6) != 0) return false;
-        uint32_t file_size, name_size, mode;
+        uint32_t file_size, name_size, mode, mtime;
         if (!hex8(h + 54, &file_size) ||
             !hex8(h + 94, &name_size) ||
             !hex8(h + 14, &mode) ||
+            !hex8(h + 46, &mtime) ||
             !name_size || name_size > 256) return false;
         uint64_t name_at = at + NEWC_HEADER;
         if (name_size > size - name_at) return false;
@@ -109,6 +110,7 @@ bool bootfs_mount(const void *bytes, uint64_t size) {
         for (unsigned n = 0; n < entry_count; n++)
             if (strcmp(entries[n].path, entry->path) == 0) return false;
         entry->mode = mode;
+        entry->mtime_sec = mtime;
         entry->size = file_size;
         entry->data = base + data_at;
         entry->ino = entry_count + 1;
