@@ -745,6 +745,7 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
         st.nlink = bootfs_is_dir(entry) ? 2 : 1;
         st.size = (int64_t)entry->size;
         st.blocks = (int64_t)((entry->size + 511) / 512);
+        st.atime_sec = st.mtime_sec = st.ctime_sec = (int64_t)entry->mtime_sec;
     } else if (descriptors[fd] == FD_TMP || descriptors[fd] == FD_TMP_DIR) {
         const struct nas_tmp_file *file = tmp_by_fd(fd);
         if (!file) return (uint64_t)-EBADF;
@@ -753,6 +754,12 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
         st.nlink = file->linked ? (file->is_dir ? 2 : 1) : 0;
         st.size = (int64_t)file->size;
         st.blocks = (int64_t)((file->size + 511) / 512);
+        st.atime_sec = (int64_t)(file->atime_ns / NAS_NSEC_PER_SEC);
+        st.atime_nsec = file->atime_ns % NAS_NSEC_PER_SEC;
+        st.mtime_sec = (int64_t)(file->mtime_ns / NAS_NSEC_PER_SEC);
+        st.mtime_nsec = file->mtime_ns % NAS_NSEC_PER_SEC;
+        st.ctime_sec = (int64_t)(file->ctime_ns / NAS_NSEC_PER_SEC);
+        st.ctime_nsec = file->ctime_ns % NAS_NSEC_PER_SEC;
     } else if (descriptors[fd] == FD_PIPE_R || descriptors[fd] == FD_PIPE_W) {
         st.dev = 4; st.ino = (uint64_t)file_slot[fd] + 1000;
         st.mode = 0010600; /* S_IFIFO | owner read/write */
@@ -862,6 +869,57 @@ static uint64_t sys_chmod_path(uint64_t dirfd,uint64_t filename,
     if(node.backend!=NAS_FS_TMPFS)return (uint64_t)-EROFS;
     return (uint64_t)(int64_t)tmp_chmod(tmp_find(actual),mode);
 }
+/* Linux utimensat: native 64-bit timespec ABI common to all three ISAs.
+ * The VFS resolves one real inode; CPIO never becomes writable. None of
+ * this logic belongs in an architecture or GNU Make special-case handler.
+ * UTIME_NOW and UTIME_OMIT have their real Linux values. */
+static uint64_t sys_utimensat_file(uint64_t dirfd, uint64_t pathname,
+                                   uint64_t timesptr, uint64_t flags) {
+    const uint64_t AT_SYMLINK_NOFOLLOW=0x100ULL;
+    const uint64_t AT_EMPTY_PATH=0x1000ULL;
+    const uint64_t UTIME_NOW=0x3fffffffULL;
+    const uint64_t UTIME_OMIT=0x3ffffffeULL;
+    if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH))
+        return (uint64_t)-EINVAL;
+    struct nas_tmp_file *file=0;
+    if (!pathname) {
+        if (dirfd >= NAS_FD_LIMIT || descriptors[dirfd] == FD_CLOSED)
+            return (uint64_t)-EBADF;
+        if (descriptors[dirfd] != FD_TMP && descriptors[dirfd] != FD_TMP_DIR)
+            return (uint64_t)-EROFS;
+        file=tmp_by_slot(file_slot[dirfd]);
+    } else {
+        char path[256], actual[256];
+        uint64_t ret=nas_fs_resolve_path(dirfd,pathname,path);
+        if ((int64_t)ret<0) return ret;
+        struct nas_fs_node node;
+        int err=nas_fs_lookup_node(path,!(flags&AT_SYMLINK_NOFOLLOW),
+                                   &node,actual);
+        if (err) return (uint64_t)(int64_t)err;
+        if (node.backend!=NAS_FS_TMPFS) return (uint64_t)-EROFS;
+        file=(struct nas_tmp_file *)(uintptr_t)node.tmp;
+    }
+    if (!file) return (uint64_t)-ENOENT;
+    uint64_t now=0;
+    if (!nas_time_realtime_ns(&now)) now=nas_arch_monotonic_ns();
+    uint64_t ns[2]={now,now};
+    bool set[2]={true,true};
+    if (timesptr) {
+        int64_t raw[4];
+        if (!nas_user_read_bytes(timesptr,(uint8_t *)raw,sizeof(raw)))
+            return (uint64_t)-EFAULT;
+        for (unsigned i=0;i<2;i++) {
+            uint64_t nsec=(uint64_t)raw[i*2+1];
+            if (nsec==UTIME_OMIT) { set[i]=false; continue; }
+            if (nsec==UTIME_NOW) continue;
+            if (raw[i*2]<0 || raw[i*2]>INT64_MAX/(int64_t)NAS_NSEC_PER_SEC ||
+                raw[i*2+1]<0 || nsec>=NAS_NSEC_PER_SEC)
+                return (uint64_t)-EINVAL;
+            ns[i]=(uint64_t)raw[i*2]*NAS_NSEC_PER_SEC+nsec;
+        }
+    }
+    return (uint64_t)(int64_t)tmp_utimens(file,ns[0],ns[1],set[0],set[1]);
+}
 static uint64_t sys_openat_boot(uint64_t dirfd, uint64_t pathname, uint64_t flags) {
     char path[256];
     uint64_t result = nas_fs_resolve_path(dirfd, pathname, path);
@@ -878,6 +936,7 @@ static uint64_t write_boot_stat(const struct bootfs_entry *entry, uint64_t dst) 
     st.blksize = PAGE;
     st.size = (int64_t)entry->size;
     st.blocks = (int64_t)((entry->size + 511) / 512);
+    st.atime_sec = st.mtime_sec = st.ctime_sec = (int64_t)entry->mtime_sec;
     return nas_user_write_bytes(dst, (const uint8_t *)&st, sizeof(st))
         ? 0 : (uint64_t)-EFAULT;
 }
@@ -1026,6 +1085,7 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
     case NAS_SC_chmod: FS_RESULT(sys_chmod_path((uint64_t)-100,args[1],args[2]));
     case NAS_SC_fchmod: FS_RESULT(sys_fchmod_fd(args[1],args[2]));
     case NAS_SC_fchmodat: FS_RESULT(sys_chmod_path(args[1],args[2],args[3]));
+    case NAS_SC_utimensat: FS_RESULT(sys_utimensat_file(args[1],args[2],args[3],args[4]));
     case NAS_SC_access: FS_RESULT(sys_access_path((uint64_t)-100,args[1],args[2],0));
     case NAS_SC_faccessat: FS_RESULT(sys_access_path(args[1],args[2],args[3],0));
     case NAS_SC_faccessat2: FS_RESULT(sys_access_path(args[1],args[2],args[3],args[4]));
