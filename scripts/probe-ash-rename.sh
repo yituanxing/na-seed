@@ -32,8 +32,11 @@ for scenario in copy copylarge move replace pinned dirtree cwdmove noreplace rea
             args="sh -c 'echo keep > /tmp/from; mv /tmp/from /etc/target && echo wrong || echo readonly; cat /tmp/from; cat /etc/hostname'"
             expect=readonly; also=keep ;;
         quota)
-            args="sh -c 'for i in 1 2 3 4 5 6 7 8; do echo x > /tmp/file\$i || exit 1; done; echo fail > /tmp/overflow && echo wrong || echo full; cat /tmp/file1; echo quota-ok'"
-            expect=quota-ok; also=full ;;
+            # A real build needs >8 simultaneous inodes; verify that the
+            # ninth and sixteenth files succeed through a second slab.
+            # Keep the historical quota scenario name for CI stability.
+            args="sh -c 'for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do echo x > /tmp/file\$i || exit 1; done; cat /tmp/file1; cat /tmp/file16; echo grown; echo quota-ok'"
+            expect=quota-ok; also=grown ;;
     esac
     stage="build/ash-rename-$scenario-iso"
     iso="build/naseed-ash-rename-$scenario.iso"
@@ -81,7 +84,7 @@ for scenario in copy copylarge move replace pinned dirtree cwdmove noreplace rea
             } ;;
         quota)
             grep -Fxq x "$clean" || {
-                echo '[FAIL] ENOSPC destroyed a prior file' >&2
+                echo '[FAIL] demand-paged tmpfs inode slab lost the first or last file' >&2
                 exit 1
             } ;;
     esac
