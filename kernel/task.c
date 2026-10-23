@@ -74,6 +74,12 @@ struct nas_task *nas_task_fork_slot(void) {
         child->fds_owned=inherited;
         child->fds=&child->fds_owned;
         child->vm_owner=child;
+        /* A fork from a worker snapshots the LIVE CLONE_FS and
+         * CLONE_SIGHAND process state, not stale per-worker copies. */
+        child->umask=nas_current_task->vm_owner->umask;
+        memcpy(child->cwd,nas_current_task->vm_owner->cwd,sizeof(child->cwd));
+        memcpy(child->signal_actions,nas_current_task->vm_owner->signal_actions,
+               sizeof(child->signal_actions));
         /* fork copies userspace state but NEVER the parent's stack owner. */
         stack_reset(i);
         child->kernel_stack_top = stack_top(i);

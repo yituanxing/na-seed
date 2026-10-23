@@ -18,7 +18,7 @@ extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
 #define TASK (*nas_current_task)
 #define descriptors TASK.fds->descriptors
-#define signal_actions TASK.signal_actions
+#define signal_actions TASK.vm_owner->signal_actions
 #define blocked_signals TASK.blocked_signals
 static void sched_fail(const char *s) __attribute__((noreturn));
 static void sched_fail(const char *s) { nas_print("[FAIL] M1 "); nas_print(s); nas_print("\n"); nas_arch_halt(); }

@@ -1,0 +1,1 @@
+# Signed Alpine original zstd --threads=2 through native three-ISA QEMU.\nm43-zstd\tcpio\tsh -c '/bin/sh /tests/run-zstd.sh'\tM43_THREADS_PASS\t-\t/bin/busybox\n

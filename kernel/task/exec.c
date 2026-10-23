@@ -30,7 +30,7 @@
 #define thread_clear_tid TASK.thread_clear_tid
 #define descriptors TASK.fds->descriptors
 #define fd_cloexec TASK.fds->fd_cloexec
-#define signal_actions TASK.signal_actions
+#define signal_actions TASK.vm_owner->signal_actions
 #define running_bash TASK.running_bash
 #define running_busybox TASK.running_busybox
 #define running_alpine TASK.running_alpine
