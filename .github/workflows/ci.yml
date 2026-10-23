@@ -394,6 +394,13 @@ jobs:
             # Hosted-runner Azure mirror has intermittently stalled even a
             # small signed package. Prefer the identical signed Ubuntu
             # archive over the independent network path used by Make gate.
+            # Ubuntu hosted runners often reference an indirection file
+            # mirror+file:/etc/apt/apt-mirrors.txt; rewrite that actual
+            # mirror selector as well or apt silently keeps Azure anyway.
+            if [ -f /etc/apt/apt-mirrors.txt ]; then
+              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
+                /etc/apt/apt-mirrors.txt
+            fi
             if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
               sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
                 /etc/apt/sources.list.d/ubuntu.sources
