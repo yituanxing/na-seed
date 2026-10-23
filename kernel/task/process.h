@@ -21,6 +21,13 @@ uint64_t nas_process_fork_child_tid(uint64_t *syscall_frame,
 uint64_t nas_process_vfork(uint64_t *frame, uint64_t child_stack);
 void nas_process_vfork_release(void);
 void nas_process_clear_tid_on_exit(void);
+uint64_t nas_process_clone_thread(uint64_t *frame,uint64_t stack,
+                                 uint64_t parent_tid,uint64_t child_tid,
+                                 uint64_t tls);
+uint64_t nas_process_futex(uint64_t *frame,uint64_t uaddr,uint64_t op,
+                           uint64_t val,uint64_t timeout,uint64_t uaddr2,
+                           uint64_t val3);
+unsigned nas_process_futex_wake(uint64_t uaddr,unsigned n,uint32_t mask);
 bool nas_process_waitable(const struct nas_task *child, uint64_t options);
 uint64_t nas_process_wait4(uint64_t pid, uint64_t status, uint64_t options, uint64_t rusage);
 #endif

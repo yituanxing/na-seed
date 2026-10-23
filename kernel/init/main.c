@@ -17,8 +17,8 @@
 #include "main.h"
 #include "../fs/file_ops.h"
 #define TASK (*nas_current_task)
-#define descriptors TASK.fds.descriptors
-#define file_slot TASK.fds.file_slot
+#define descriptors TASK.fds->descriptors
+#define file_slot TASK.fds->file_slot
 #define running_bash TASK.running_bash
 #define running_busybox TASK.running_busybox
 #define running_alpine TASK.running_alpine

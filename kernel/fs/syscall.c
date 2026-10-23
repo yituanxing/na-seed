@@ -27,9 +27,9 @@
  * task-local or refcounted via fd.c, pipe.c, bootfs.c and tmpfs.c.
  * The user ABI stat/dirent encodings are still x86-specific in v1. */
 #define TASK (*nas_current_task)
-#define descriptors TASK.fds.descriptors
-#define file_slot TASK.fds.file_slot
-#define fd_cloexec TASK.fds.fd_cloexec
+#define descriptors TASK.fds->descriptors
+#define file_slot TASK.fds->file_slot
+#define fd_cloexec TASK.fds->fd_cloexec
 #define current_workdir TASK.cwd
 #define running_bash TASK.running_bash
 #define running_busybox TASK.running_busybox

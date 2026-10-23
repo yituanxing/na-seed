@@ -40,6 +40,9 @@ void nas_task_boot_init(void) {
     nas_fd_system_init();
     nas_current_task = &task_table[0];
     nas_current_task->pid = 1;
+    nas_current_task->tgid=1;
+    nas_current_task->vm_owner=nas_current_task;
+    nas_current_task->fds=&nas_current_task->fds_owned;
     nas_current_task->ppid = 0;
     nas_current_task->pgid = 1;
     nas_current_task->sid = 1;
@@ -66,11 +69,17 @@ struct nas_task *nas_task_fork_slot(void) {
     for (unsigned i = 1; i < NAS_TASK_LIMIT; i++) {
         if (task_table[i].state != NAS_TASK_FREE) continue;
         struct nas_task *child = &task_table[i];
+        struct nas_fd_table inherited=*nas_current_task->fds;
         memcpy(child, nas_current_task, sizeof(*child));
+        child->fds_owned=inherited;
+        child->fds=&child->fds_owned;
+        child->vm_owner=child;
         /* fork copies userspace state but NEVER the parent's stack owner. */
         stack_reset(i);
         child->kernel_stack_top = stack_top(i);
         child->pid = next_pid++;
+        child->tgid=child->pid;
+        child->is_thread=false;
         child->ppid = nas_current_task->pid;
         /* pgid and sid were inherited from parent; execed is per-fork. */
         child->execed = false;
@@ -84,6 +93,9 @@ struct nas_task *nas_task_fork_slot(void) {
         child->resume_valid = false;
         child->blocked_op = 0;
         child->pending_valid = false;
+        child->futex_addr=0;
+        child->futex_mask=0;
+        child->futex_woken=false;
         child->deadline_active = false;
         child->deadline_ns = 0;
         child->signal_frame_active = false;
@@ -114,6 +126,13 @@ void nas_task_release(struct nas_task *task) {
     if (!task || task == nas_current_task) return;
     task->state = NAS_TASK_FREE;
     task->pid = 0;
+    task->tgid=0;
+    task->is_thread=false;
+    task->vm_owner=task;
+    task->fds=&task->fds_owned;
+    task->futex_addr=0;
+    task->futex_mask=0;
+    task->futex_woken=false;
     task->ppid = 0;
     task->pgid = 0;
     task->sid = 0;
@@ -146,7 +165,7 @@ void nas_task_set_root(struct nas_task *task, uint64_t root) {
 struct nas_task *nas_task_child_at(uint64_t parent_pid, unsigned slot) {
     if (slot >= NAS_TASK_LIMIT || !parent_pid) return NULL;
     struct nas_task *task = &task_table[slot];
-    if (task->state == NAS_TASK_FREE || task->ppid != parent_pid)
+    if (task->state == NAS_TASK_FREE || (task->ppid != parent_pid || task->is_thread))
         return NULL;
     return task;
 }

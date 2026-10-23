@@ -29,8 +29,8 @@
 #include "../panic.h"
 #define TASK (*nas_current_task)
 #define thread_clear_tid TASK.thread_clear_tid
-#define descriptors TASK.fds.descriptors
-#define file_slot TASK.fds.file_slot
+#define descriptors TASK.fds->descriptors
+#define file_slot TASK.fds->file_slot
 #define running_bash TASK.running_bash
 #define running_busybox TASK.running_busybox
 #define running_alpine TASK.running_alpine
@@ -253,7 +253,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
 #endif
     if (nr == NAS_SC_arch_prctl) return nas_linux_arch_prctl(args[1], args[2]);
     if (nr == NAS_SC_set_tid_address) { thread_clear_tid = args[1]; return TASK.pid; }
-    if (nr == NAS_SC_getpid || nr == NAS_SC_gettid) return TASK.pid;
+    if (nr == NAS_SC_getpid) return TASK.tgid;
+    if (nr == NAS_SC_gettid) return TASK.pid;
     if(nr==NAS_SC_sched_getaffinity || nr==NAS_SC_sched_setaffinity) {
         uint64_t pid=args[1] ? args[1] : TASK.pid;
         if(!nas_task_by_pid(pid))return (uint64_t)-ESRCH;
@@ -416,6 +417,14 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_uname) return sys_uname_naseed(args[1]);
     if (nr == NAS_SC_sysinfo) return nas_sysinfo(args[1]);
 
+    if (nr == NAS_SC_futex)
+        return nas_process_futex((uint64_t *)(uintptr_t)args,args[1],args[2],
+                                 args[3],args[4],args[5],args[6]);
+    if (nr == NAS_SC_clone_thread)
+        return nas_process_clone_thread((uint64_t *)(uintptr_t)args,
+                                        args[2],args[3],
+                                        nas_linux_clone_child_tid(args),
+                                        nas_linux_clone_tls(args));
     if (nr == NAS_SC_vfork)
         return nas_process_vfork((uint64_t *)(uintptr_t)args,
                                   nas_linux_vfork_child_stack(args));

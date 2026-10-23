@@ -22,14 +22,14 @@
 #include "signal.h"
 #define TASK (*nas_current_task)
 #define root_phys TASK.root_phys
-#define heap_break TASK.heap_break
+#define heap_break TASK.vm_owner->heap_break
 #define loaded_phdr TASK.loaded_phdr
 #define loaded_phnum TASK.loaded_phnum
 #define loaded_main_entry TASK.loaded_main_entry
 #define loaded_interp_base TASK.loaded_interp_base
 #define thread_clear_tid TASK.thread_clear_tid
-#define descriptors TASK.fds.descriptors
-#define fd_cloexec TASK.fds.fd_cloexec
+#define descriptors TASK.fds->descriptors
+#define fd_cloexec TASK.fds->fd_cloexec
 #define signal_actions TASK.signal_actions
 #define running_bash TASK.running_bash
 #define running_busybox TASK.running_busybox
@@ -266,6 +266,13 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
         result = shebang_rewrite_args();
         if ((int64_t)result < 0) return result;
     }
+    /* No silent address-space replacement while other threads still share it. */
+    for (unsigned i=0;i<NAS_TASK_LIMIT;i++) {
+        struct nas_task *peer=nas_task_at(i);
+        if (peer!=nas_current_task && peer->state!=NAS_TASK_FREE &&
+            peer->is_thread && peer->tgid==TASK.tgid)
+            return (uint64_t)-EOPNOTSUPP;
+    }
     uint64_t new_root = nas_mmu_alloc_root();
     if (!new_root) return (uint64_t)-ENOMEM;
     uint64_t previous_root = root_phys;
@@ -320,7 +327,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
             nas_fs_close_fd(fd);
     /* Old anonymous ownership dies with the retired page-table root.
      * No metadata is mutated until exec commits, so rollback remains exact. */
-    nas_anon_reset(&TASK.anonymous);
+    nas_anon_reset(&TASK.vm_owner->anonymous);
     TASK.execed = true; /* fork parent may no longer setpgid after exec */
     TASK.signal_frame_active = false;
     TASK.signal_frame_sp = 0;
