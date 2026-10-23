@@ -47,6 +47,7 @@ markers=([b"[NATIVE-EXEC] GNU Make builds, chmods and runs a TinyCC ELF",
           b"naseed-make-recipe-one",
           b"naseed-make-recipe-two",
           b"naseed-native-tcc-elf-ran",
+          b"naseed-paged-tmpfs-exec",
           b"[PASS] cmdline userspace exit 0"]
          if native_exec else
          [b"[GNUMAKE] exec original GNU Make",
