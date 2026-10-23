@@ -16,7 +16,11 @@ static long call3(long nr,long a,long b,long c) {
     register long x1 __asm__("x1")=b;
     register long x2 __asm__("x2")=c;
     register long x8 __asm__("x8")=nr;
-    __asm__ volatile("svc #0" : "+r"(x0)
+    /* TinyCC upstream ARM64 inline assembler lacks the svc mnemonic,
+     * but supports the standard .long directive. 0xd4000001 is the
+     * architecturally specified encoding of SVC #0. Real kernel entry,
+     * registers and returned errno are still exercised unchanged. */
+    __asm__ volatile(".long 0xd4000001" : "+r"(x0)
                      : "r"(x1),"r"(x2),"r"(x8) : "memory");
     return x0;
 }
