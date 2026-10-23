@@ -25,6 +25,10 @@ packages="$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' rootfs/alpine/packages.txt)"
 docker run --rm --volume "$target:/target" \
     --env APK_ARCH="$arch" --env APK_PACKAGES="$packages" \
     alpine:3.23 sh -ec '
+        # apk resolves its trust store under --root for foreign rootfs.
+        # Bootstrap Alpine official public keys from the verified base image.
+        mkdir -p /target/etc/apk/keys
+        cp -a /etc/apk/keys/. /target/etc/apk/keys/
         apk --arch "$APK_ARCH" --root /target \
             --keys-dir /etc/apk/keys --initdb --no-scripts \
             -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main \
