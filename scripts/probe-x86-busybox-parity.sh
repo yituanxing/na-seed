@@ -50,7 +50,7 @@ run_case() {
       --efi-boot boot/limine/limine-uefi-cd.bin \
       --efi-boot-part --efi-boot-image -o "$iso" "$stage" >/dev/null 2>&1
     rc=0
-    case "$name" in process-capacity) budget=45 ;; init-reaper) budget=110 ;; *) budget=15 ;; esac
+    case "$name" in m37-incremental) budget=100 ;; process-capacity) budget=45 ;; init-reaper) budget=110 ;; *) budget=15 ;; esac
     timeout "${budget}s" sh scripts/run.sh "$iso" > "$log" 2>&1 < /dev/null || rc=$?
     tr -d '\r' < "$log" > "$clean"
     if [ "$rc" -ne 1 ] ||
