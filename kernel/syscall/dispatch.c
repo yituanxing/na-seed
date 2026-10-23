@@ -43,30 +43,26 @@ static uint64_t nas_time_read_request(uint64_t addr,uint64_t *ns) {
         return (uint64_t)-EFAULT;
     return nas_time_duration_ns(sec,nsec,ns) ? 0 : (uint64_t)-EINVAL;
 }
+/* Linux provides coarse realtime/monotonic views (IDs 5 and 6).
+ * glibc time() on AArch64 uses CLOCK_REALTIME_COARSE, discovered by
+ * comparing the unchanged Debian BusyBox date applet with Linux QEMU-user.
+ * Return an actual timekeeper reading rounded DOWN to 10ms, not a guessed
+ * clock value; report the tick-derived coarse clock resolution accurately.
+ */
 static uint64_t nas_time_read_clock(uint64_t clockid,uint64_t dst,bool resolution) {
-    static unsigned observed_clockid;
-    if(observed_clockid++<12) {
-        nas_print("[M31 ABI] clockid="); nas_dec(clockid);
-        nas_print(" getres="); nas_dec(resolution ? 1 : 0);
-        nas_print("\n");
-    }
+    const bool coarse=clockid==5ULL || clockid==6ULL;
+    const bool realtime=clockid==0ULL || clockid==5ULL;
     uint64_t now;
-    if(clockid==1ULL) {
+    if(clockid==1ULL || clockid==6ULL) {
         now=resolution ? nas_arch_clock_resolution_ns() : nas_arch_monotonic_ns();
-    } else if(clockid==0ULL) {
+    } else if(realtime) {
         if(!nas_time_realtime_available())return (uint64_t)-EOPNOTSUPP;
-        if(resolution) now=nas_arch_clock_resolution_ns();
+        if(resolution)now=nas_arch_clock_resolution_ns();
         else if(!nas_time_realtime_ns(&now))return (uint64_t)-EOPNOTSUPP;
     } else return (uint64_t)-EINVAL;
-    /* Compare the clocksource's actual Linux ABI seconds with unmodified
-     * libc/date; report only the first few wall-clock calls. */
-    if(clockid==0ULL && !resolution) {
-        static unsigned realtime_reports;
-        if(realtime_reports++ < 4) {
-            nas_print("[M31 ABI] CLOCK_REALTIME sec=");
-            nas_dec(now/NAS_NSEC_PER_SEC);
-            nas_print("\n");
-        }
+    if(coarse) {
+        const uint64_t period=10000000ULL; /* shared 100Hz clockevent */
+        now=resolution ? period : now - now%period;
     }
     if(!dst && resolution)return 0; /* clock_getres accepts NULL */
     struct { int64_t sec,nsec; } ts={
@@ -81,12 +77,6 @@ static uint64_t nas_time_read_clock(uint64_t clockid,uint64_t dst,bool resolutio
 static uint64_t nas_time_gettimeofday(uint64_t tv,uint64_t tz) {
     uint64_t now;
     if(!nas_time_realtime_ns(&now))return (uint64_t)-EOPNOTSUPP;
-    static unsigned observed_tv;
-    if(observed_tv++<4) {
-        nas_print("[M31 ABI] gettimeofday sec=");
-        nas_dec(now/NAS_NSEC_PER_SEC);
-        nas_print("\n");
-    }
     if(tv) {
         struct { int64_t sec,usec; } value={
             (int64_t)(now/NAS_NSEC_PER_SEC),

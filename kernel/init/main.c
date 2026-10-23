@@ -38,18 +38,7 @@ void nas_init_userspace(void) {
     /* Hardware clocksource is now active; correlate boot RTC epoch once.
      * The timekeeper is shared across all native Linux ISA backends. */
     extern int64_t nas_boot_date_at_boot(void);
-    int64_t boot_epoch=nas_boot_date_at_boot();
-    nas_print("[M31] Limine boot epoch=");
-    if(boot_epoch<0) nas_print("unavailable");
-    else nas_dec((uint64_t)boot_epoch);
-    nas_print("\n");
-    nas_timekeeper_init(boot_epoch);
-    uint64_t wall_ns=0;
-    if(nas_time_realtime_ns(&wall_ns)) {
-        nas_print("[M31] kernel realtime sec=");
-        nas_dec(wall_ns/NAS_NSEC_PER_SEC);
-        nas_print("\n");
-    }
+    nas_timekeeper_init(nas_boot_date_at_boot());
     if (!nas_mmu_bootstrap()) nas_fail("architecture user VM bootstrap failed");
     nas_arch_enable_user_traps();
     /* Select the boot ELF with the very same argv[0] passed to userspace.

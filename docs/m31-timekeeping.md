@@ -53,3 +53,20 @@ without duplicating architecture-specific code.
 Reference: Linux `Documentation/timers/timekeeping.rst`, `kernel/time/`,
 NaOS `kernel/src/drivers/rtc.c`, `kernel/src/drivers/deadline.h` and
 per-architecture timer/RTC drivers. NaOS code is a design reference only.
+
+## Real program that demanded the coarse clock
+
+Unmodified Debian AArch64 BusyBox `date -u +%s` initially printed a
+nonsensical negative timestamp although the Limine UTC anchor was valid.
+Comparison against the **same ELF** on Linux QEMU-user showed glibc
+`time()` requests `clock_gettime(CLOCK_REALTIME_COARSE, ...)` (clock 5),
+while NaSeed supported only clock IDs 0/1. A rejected clock call left
+software unable to obtain its wall time; no date-specific kernel bypass was
+added. The shared timekeeper now exposes Linux coarse clock IDs 5/6 using
+an existing monotonic clocksource, conservatively rounded to 100Hz
+(10ms) resolution. POSIX absolute sleeps still require precise IDs 0/1.
+
+The precise timekeeper and the coarse projections share the same
+boot epoch across x86-64, RV64 and AArch64. The native Linux-oracle
+check and real AArch64 BusyBox date must pass independently of existing
+monotonic, sleep and BusyBox process regressions.

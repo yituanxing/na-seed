@@ -72,8 +72,22 @@ int main(void) {
        realtime_start.tv_sec >= 946684800,"real UNIX boot epoch");
     ck(gettimeofday(&wall_tv,NULL)==0 &&
        wall_tv.tv_sec >= 946684800,"gettimeofday boot epoch");
-    fprintf(stderr,"[M31 DIAG] kernel clock_gettime realtime.sec=%lld tv.sec=%lld\\n",
-            (long long)realtime_start.tv_sec,(long long)wall_tv.tv_sec);
+    /* Original Linux date() may use coarse rather than precise realtime.
+     * Both clocks must have the same actual boot epoch, independent of
+     * 100Hz timer interrupt delivery; coarse truncates to tick precision. */
+    struct timespec coarse_rt,coarse_mono,coarse_res;
+    ck(clock_gettime(CLOCK_REALTIME_COARSE,&coarse_rt)==0 &&
+       coarse_rt.tv_sec>=946684800,"coarse realtime valid epoch");
+    ck(clock_gettime(CLOCK_MONOTONIC_COARSE,&coarse_mono)==0 &&
+       coarse_mono.tv_sec>=0,"coarse monotonic available");
+    ck(clock_getres(CLOCK_REALTIME_COARSE,&coarse_res)==0 &&
+       coarse_res.tv_sec==0 && coarse_res.tv_nsec>0 &&
+       coarse_res.tv_nsec<=100000000L,"coarse clock resolution");
+    uint64_t coarse_ns=ns(&coarse_rt);
+    uint64_t precise_ns=ns(&realtime_start);
+    ck(coarse_ns<=precise_ns+100000000ULL &&
+       (coarse_ns>precise_ns || precise_ns-coarse_ns<=100000000ULL),
+       "coarse realtime agrees with precise realtime");
     uint64_t wall_ns=ns(&realtime_start);
     uint64_t tv_ns=(uint64_t)wall_tv.tv_sec*1000000000ULL+
                    (uint64_t)wall_tv.tv_usec*1000ULL;
