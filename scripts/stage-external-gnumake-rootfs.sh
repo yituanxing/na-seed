@@ -4,6 +4,12 @@ set -eu
 work=build/external/gnumake/amd64
 root="$work/rootfs"
 test -s "$work/gmake"
+# Stage is called twice in the same focused CI job: first for ordinary
+# Make recipes, then for native compiler->ELF execution. Start from a
+# clean CPIO tree so symlinks and old inodes cannot leak between runs.
+# This constant path is intentionally fixed; never rm an arbitrary input.
+[ "$root" = build/external/gnumake/amd64/rootfs ] || exit 2
+rm -rf "$root"
 test -s build/external/tcc/amd64/tcc
 mkdir -p "$root/bin" "$root/tests" "$root/tmp"
 cp "$work/gmake" "$root/bin/gmake"
