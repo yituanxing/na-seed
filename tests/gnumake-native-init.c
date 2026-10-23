@@ -11,10 +11,10 @@ int main(void) {
         perror("[GNUMAKE] stat Makefile"); return 91;
     }
     char *const argv[] = {"/bin/gmake", "--no-print-directory",
-                          "-f", "/tests/Makefile", "all", 0};
+                          "-f", "/tests/Makefile", "native-c", 0};
     char *const envp[] = {"PATH=/bin:/usr/bin", "SHELL=/bin/sh",
                           "HOME=/tmp", "LC_ALL=C", "MAKEFLAGS=", 0};
-    puts("[GNUMAKE] exec original GNU Make and two genuine shell recipes");
+    puts("[GNUMAKE] exec original GNU Make, shell recipes and TinyCC build");
     fflush(stdout);
     execve(argv[0], argv, envp);
     perror("[GNUMAKE] execve");

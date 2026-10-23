@@ -2,6 +2,16 @@
 # First a genuinely working Linux Make, then *the same* ELF under native QEMU.
 set -eu
 sh scripts/build-external-gnumake.sh amd64
+sh scripts/build-external-tcc.sh amd64
+# Real Linux counterpart: identical GNU Make+TinyCC binaries+Makefile.
+work=build/external/gnumake/amd64
+"$work/gmake" --no-print-directory -f tests/gnumake-real.mk \
+  TCC=build/external/tcc/amd64/tcc SOURCE=tests/tcc-first.c \
+  OBJECT="$work/first.o" native-c > "$work/linux-native-build.log" 2>&1
+grep -Fxq 'naseed-compiled-object' "$work/linux-native-build.log"
+readelf -h "$work/first.o" | grep -q 'REL (Relocatable file)'
+readelf -s "$work/first.o" | grep -Fq naseed_answer
+echo '[GNUMAKE LINUX BUILD PASS] unmodified GNU Make drove original TinyCC'
 sh scripts/stage-external-gnumake-rootfs.sh
 make kernel build/deps/limine-binary/BOOTX64.EFI
 work=build/external/gnumake/amd64

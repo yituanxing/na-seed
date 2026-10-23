@@ -45,6 +45,7 @@ sys.stdout.buffer.flush()
 markers=[b"[GNUMAKE] exec original GNU Make",
          b"naseed-make-recipe-one",
          b"naseed-make-recipe-two",
+         b"naseed-compiled-object",
          b"[PASS] cmdline userspace exit 0"]
 if (p.returncode!=1 or any(x not in out for x in markers) or
     out.count(b"naseed-make-recipe-one")!=1 or

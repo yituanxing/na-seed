@@ -42,3 +42,14 @@ echo applet** supplies the real program, just as BusyBox distributions
 do. The second recipe explicitly executes the genuine `/bin/sh` to
 cover the shell path as well. No GNU Make patch, fake syscall or
 synthetic status output is used.
+
+## GNU Make + TinyCC as a genuine native build toolchain
+
+The unchanged GNU Make program processes a real Makefile, executes
+BusyBox echo/shell, and calls the original TinyCC Linux ELF to compile
+`/tests/first.c` into a nonempty `/tmp/first.o` via RAM-backed tmpfs.
+An independent original BusyBox shell runs `test -s` before emitting
+`naseed-compiled-object`. An identical Linux-run Makefile, Make binary
+and TinyCC binary produce a real ELF relocatable object whose
+`naseed_answer` symbol is checked with `readelf`. Linking and executing
+that generated object inside NaSeed are a further software-driven stage.

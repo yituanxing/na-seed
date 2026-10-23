@@ -8,6 +8,8 @@ on:
       - 'scripts/gnumake-serial-check.py'
       - 'tests/gnumake-native-init.c'
       - 'tests/gnumake-real.mk'
+      - 'tests/tcc-first.c'
+      - 'scripts/build-external-tcc.sh'
       - '.github/workflows/gnumake.yml'
   workflow_dispatch:
 concurrency:
@@ -29,7 +31,12 @@ jobs:
         with:
           path: build/deps/external/make-4.4.1.tar.gz
           key: naseed-gnu-make-4.4.1-dd16fb1d67bfab79
-      - name: Linux execution oracle then two actual Make recipes inside NaSeed
+      - name: Cache pinned TinyCC source for native compiler build
+        uses: actions/cache@v4
+        with:
+          path: build/deps/external/tcc-0.9.27.tar.bz2
+          key: naseed-tcc-0.9.27-de23af78fca90ce3
+      - name: Linux oracle then real GNU Make compiling C with TinyCC inside NaSeed
         run: sh scripts/probe-external-gnumake.sh
       - name: Preserve genuine compiler and QEMU evidence on failure
         if: failure()
@@ -40,5 +47,7 @@ jobs:
             build/external/gnumake/amd64/configure.log
             build/external/gnumake/amd64/build.log
             build/external/gnumake/amd64/linux-oracle.log
+            build/external/gnumake/amd64/linux-native-build.log
+            build/external/gnumake/amd64/first.o
             build/external/gnumake/amd64/serial.log
           if-no-files-found: ignore
