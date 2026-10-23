@@ -28,6 +28,11 @@ jobs:
           # Hosted Ubuntu already provides GCC, Clang, GNU Make, curl, tar,
           # git and binutils. Only install what this headless QEMU test lacks.
           missing=''
+          command -v clang >/dev/null || missing="$missing clang"
+          command -v ld.lld >/dev/null || missing="$missing lld"
+          command -v readelf >/dev/null || missing="$missing binutils"
+          command -v gcc >/dev/null || missing="$missing gcc"
+          command -v make >/dev/null || missing="$missing make"
           command -v cpio >/dev/null || missing="$missing cpio"
           command -v xorriso >/dev/null || missing="$missing xorriso"
           command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
@@ -41,8 +46,16 @@ jobs:
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
               --no-install-recommends $missing
           fi
-          command -v clang && command -v ld.lld && command -v readelf
-          command -v qemu-system-x86_64 && command -v xorriso
+          # Fail closed if the **kernel linker** is missing.  GNU Make
+          # and GNU Make's own host GCC link do not need ld.lld, but NaSeed
+          # kernel does. Never hide a failed command behind a later echo.
+          for binary in clang ld.lld readelf gcc make cpio xorriso \
+                         qemu-system-x86_64 strace; do
+            command -v "$binary" >/dev/null || {
+              echo "[CI FAIL] missing $binary" >&2
+              exit 1
+            }
+          done
           echo '[CI] x86 headless QEMU packages verified; no GUI packages requested'
       - name: Cache SHA256-pinned GNU Make release
         uses: actions/cache@v4
