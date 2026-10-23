@@ -218,6 +218,13 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
        magic[0]!=0x7f || magic[1]!='E' ||
        magic[2]!='L' || magic[3]!='F')
         return (uint64_t)-ENOEXEC;
+    /* Do not consult main_img.data after exec: a sparse tmpfs ELF has no
+     * contiguous base pointer. Keep the validated header in kernel stack
+     * storage for the post-exec BusyBox/PIE accounting. */
+    struct elf_hdr executable_header;
+    if (!nas_elf_image_open(&main_img, NAS_ELF_MACHINE, true, 64,
+                            &executable_header))
+        return (uint64_t)-ENOEXEC;
     struct nas_fs_node loader;
     char loader_path[256];
     struct elf_image interp_img={0};
@@ -294,8 +301,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
         if (*p == '/') basename = p + 1;
     running_busybox = strcmp(basename, "busybox") == 0;
     running_bash = strcmp(basename, "bash") == 0;
-    running_alpine = running_busybox &&
-        ((const struct elf_hdr *)main_img.data)->type == 3;
+    running_alpine = running_busybox && executable_header.type == 3;
     if (scripted) {
         nas_print("[EXEC] CPIO #! interpreter: ");
         nas_print(pending_exec.shebang_path); nas_print("\n");
