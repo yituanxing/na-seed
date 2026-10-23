@@ -72,7 +72,8 @@ static bool task_can_wake(const struct nas_task *task) {
         task->blocked_op == NAS_SC_clock_nanosleep) return false;
     if (task->blocked_op == NAS_SC_wait4) return task_wait_ready(task);
     if (task->blocked_op == NAS_SC_poll ||
-        task->blocked_op == NAS_SC_ppoll)
+        (task->blocked_op == NAS_SC_ppoll ||
+         task->blocked_op == NAS_SC_pselect6))
         return nas_fs_poll_ready(task);
     if (task->blocked_op == NAS_SC_read ||
         task->blocked_op == NAS_SC_write ||
@@ -113,6 +114,7 @@ static uint64_t task_replay(struct nas_task *task) {
     if (nr == NAS_SC_wait4) return nas_process_wait4(a[0], a[1], a[2], a[3]);
     if (nr == NAS_SC_poll) return nas_fs_poll(a[0],a[1],a[2]);
     if (nr == NAS_SC_ppoll) return nas_fs_ppoll(a[0],a[1],a[2],a[3]);
+    if (nr == NAS_SC_pselect6) return nas_fs_pselect6(a[0],a[1],a[2],a[3],false);
     sched_fail("scheduler unknown blocked syscall");
 }
 
@@ -211,7 +213,8 @@ bool nas_sched_preempt_select(void) {
                 bool pipe_again=(int64_t)result==-EOPNOTSUPP &&
                     (kind==FD_PIPE_R || kind==FD_PIPE_W);
                 bool poll_again=(next->blocked_op==NAS_SC_poll ||
-                                 next->blocked_op==NAS_SC_ppoll) &&
+                                 (next->blocked_op==NAS_SC_ppoll ||
+                                  next->blocked_op==NAS_SC_pselect6)) &&
                                  (int64_t)result==-EAGAIN;
                 if (tty_again || pipe_again || poll_again) {
                     nas_current_task=from;
@@ -219,7 +222,8 @@ bool nas_sched_preempt_select(void) {
                     continue;
                 }
                 nas_arch_set_saved_return(next,result);
-                if(next->blocked_op==NAS_SC_ppoll)
+                if((next->blocked_op==NAS_SC_ppoll ||
+                                  next->blocked_op==NAS_SC_pselect6))
                     nas_signal_ppoll_restore(next,(int64_t)result==-EINTR);
                 next->pending_valid=false;
                 next->blocked_op=0;
@@ -285,7 +289,8 @@ retry_schedule: ; /* label must precede a statement in C11 */
                 bool pipe_again=(int64_t)result==-EOPNOTSUPP &&
                     (replay_kind==FD_PIPE_R || replay_kind==FD_PIPE_W);
                 bool poll_again=(next->blocked_op==NAS_SC_poll ||
-                                 next->blocked_op==NAS_SC_ppoll) &&
+                                 (next->blocked_op==NAS_SC_ppoll ||
+                                  next->blocked_op==NAS_SC_pselect6)) &&
                                  (int64_t)result==-EAGAIN;
                 if (tty_again || pipe_again || poll_again) {
                     next->state = NAS_TASK_BLOCKED;
@@ -293,7 +298,8 @@ retry_schedule: ; /* label must precede a statement in C11 */
                     nas_arch_restore_cpu(previous);
                     continue;
                 }
-                if(next->blocked_op==NAS_SC_ppoll)
+                if((next->blocked_op==NAS_SC_ppoll ||
+                                  next->blocked_op==NAS_SC_pselect6))
                     nas_signal_ppoll_restore(next,(int64_t)result==-EINTR);
                 next->pending_valid = false;
                 next->blocked_op = 0;
