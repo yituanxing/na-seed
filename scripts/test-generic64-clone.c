@@ -26,6 +26,8 @@ int main(void) {
     call[5]=0;
     assert(nas_linux_decode_call(call)==NAS_SC_fork);
     assert(nas_linux_decode_syscall(166U)==NAS_SC_umask);
+    assert(nas_linux_decode_syscall(123U)==NAS_SC_sched_getaffinity);
+    assert(nas_linux_decode_syscall(122U)==NAS_SC_sched_setaffinity);
     assert(nas_linux_decode_syscall(67U)==NAS_SC_pread64);
     assert(nas_linux_decode_syscall(68U)==NAS_SC_pwrite64);
     assert(nas_linux_decode_syscall(82U)==NAS_SC_fsync);

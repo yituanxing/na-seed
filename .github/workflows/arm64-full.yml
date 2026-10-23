@@ -58,10 +58,30 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Install native AArch64 EDK2, QEMU and cross-compile tools
+      - name: Install only missing AArch64 EDK2/QEMU/native tools
+        timeout-minutes: 8
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y clang lld binutils mtools gdisk cpio qemu-user qemu-system-arm qemu-efi-aarch64
+          set -eu
+          # The former unbounded apt update/install stalled repeated M38 and
+          # M40 full-kernel jobs while unrelated native regression was green.
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for pair in 'clang:clang' 'ld.lld:lld' 'readelf:binutils' \
+                      'mformat:mtools' 'sgdisk:gdisk' 'cpio:cpio' \
+                      'qemu-aarch64:qemu-user' \
+                      'qemu-system-aarch64:qemu-system-arm'; do
+            bin=${pair%%:*}
+            pkg=${pair#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          test -s /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || \
+            missing="$missing qemu-efi-aarch64"
+          test -s /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu"
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+                 -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
       - name: Verify pinned native Alpine fixture and exact test matrix
         run: sh scripts/check-alpine-native-fixtures.sh
       - name: Build and boot THE shared Task/ELF/FS/syscall kernel on real ARM64

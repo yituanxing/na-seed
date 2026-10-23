@@ -1,0 +1,2 @@
+Nested original file for POSIX directory traversal and name lookup.
+The source is read-only, but the extracted copy must be readable from tmpfs.

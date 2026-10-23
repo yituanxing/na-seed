@@ -1,0 +1,4 @@
+NaSeed M40 archive semantics
+Source: original bootfs CPIO
+Payload: alpha file preserved verbatim through GNU tar and XZ Utils
+One shared native Linux ABI on x86-64, RV64 and AArch64

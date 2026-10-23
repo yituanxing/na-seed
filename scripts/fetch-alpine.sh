@@ -3,28 +3,25 @@
 # APK archives can contain concatenated gzip'd tar records.
 set -eu
 out="$1"
-base='https://dl-cdn.alpinelinux.org/alpine/v3.23/main/x86_64'
 root="$out/alpine"
 mkdir -p "$root/packages" "$root/unpack" "$root/bin" "$root/lib"
-for entry in busybox-1.37.0-r30 musl-1.2.5-r23; do
+for entry in busybox-1.37.0-r30; do
     apk="$root/packages/$entry.apk"
-    case "$entry" in
-      busybox*) expected='2fea8c73710994099eaec6832b69a0f70163e0d6ee13848af3a5270a16d15c5c' ;;
-      musl*) expected='4f3c4a7bf9f51d2c91007e333b17459362ffd881b4a343e8da07b6c50c4f4a0d' ;;
-    esac
+    expected='2fea8c73710994099eaec6832b69a0f70163e0d6ee13848af3a5270a16d15c5c'
     # CDN HTTP 404 must not silently alter pinned package provenance.
     sh scripts/fetch-pinned-alpine-apk.sh x86_64 "$entry" "$expected" "$apk"
     printf '%s  %s\n' "$expected" "$apk" | sha256sum -c -
     echo "[ALPINE] verified upstream package $entry"
-    case "$entry" in
-        busybox*) unpack="$root/unpack/busybox" ;;
-        musl*) unpack="$root/unpack/musl" ;;
-    esac
+    unpack="$root/unpack/busybox"
     mkdir -p "$unpack"
     # APK v2 may include a signature tar member before the actual content;
     # ignore tar EOF blocks between concatenated members.
     gzip -dc "$apk" | tar -xf - --ignore-zeros -C "$unpack"
 done
+# r23 was removed from all rolling v3.23 mirrors on 2026-10-21.
+# Retain the byte-pinned original BusyBox; obtain the current exact musl
+# through target-keyring-verified Alpine APK signature, not a fake loader.
+sh scripts/install-verified-alpine-musl.sh x86_64 "$root/unpack/musl"
 if [ ! -f "$root/unpack/busybox/bin/busybox" ]; then
     echo "[ALPINE] missing upstream /bin/busybox ELF" >&2
     exit 1

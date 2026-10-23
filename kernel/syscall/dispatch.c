@@ -17,6 +17,7 @@
 #include "../task/wait_pid.h"
 #include "../task/session.h"
 #include "../task/sched.h"
+#include "../task/cpu_affinity.h"
 #include "../time/clock.h"
 #include "../task/signal.h"
 #include "../task/user_stack.h"
@@ -253,6 +254,20 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_arch_prctl) return nas_linux_arch_prctl(args[1], args[2]);
     if (nr == NAS_SC_set_tid_address) { thread_clear_tid = args[1]; return TASK.pid; }
     if (nr == NAS_SC_getpid || nr == NAS_SC_gettid) return TASK.pid;
+    if(nr==NAS_SC_sched_getaffinity || nr==NAS_SC_sched_setaffinity) {
+        uint64_t pid=args[1] ? args[1] : TASK.pid;
+        if(!nas_task_by_pid(pid))return (uint64_t)-ESRCH;
+        if(!nas_cpu_affinity_valid_size(args[2]))return (uint64_t)-EINVAL;
+        if(nr==NAS_SC_sched_getaffinity) {
+            uint64_t online=NAS_CPU_AFFINITY_MASK;
+            return nas_user_write_bytes(args[3],(const uint8_t *)&online,
+                                        sizeof(online)) ?
+                   (uint64_t)sizeof(online) : (uint64_t)-EFAULT;
+        }
+        uint64_t requested=0;
+        if(!nas_user_read_u64(args[3],&requested))return (uint64_t)-EFAULT;
+        return nas_cpu_affinity_allowed(requested) ? 0 : (uint64_t)-EINVAL;
+    }
     if (nr == NAS_SC_getppid) return TASK.ppid;
     if (nr == NAS_SC_getrlimit)
         return nas_process_prlimit(0,args[1],0,args[2]);

@@ -22,6 +22,12 @@ int main(void) {
     assert(!nas_linux_arm64_open_flags(0200000ULL, &converted));
     assert(converted == 0xdeadbeefULL); /* reject, never quietly approximate */
     assert(!nas_linux_arm64_open_flags(0, 0));
+    assert(nas_linux_path_only_flags(NAS_LINUX_O_PATH | 0x80000ULL |
+       0x10000ULL | 0x40ULL | 0x200ULL | 1ULL)==
+       (NAS_LINUX_O_PATH | 0x80000ULL | 0x10000ULL));
+    assert(nas_linux_path_only_flags(0x40ULL|0x200ULL)==(0x40ULL|0x200ULL));
+    assert(nas_linux_arm64_open_flags(NAS_LINUX_O_PATH|040000ULL,&converted));
+    assert(nas_linux_path_only_flags(converted)==(NAS_LINUX_O_PATH|0x10000ULL));
 #if defined(__x86_64__)
     assert(nas_linux_open_flags(0x10000ULL | 0x80000ULL, &converted));
     assert(converted == (0x10000ULL | 0x80000ULL));
