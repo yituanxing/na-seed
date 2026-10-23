@@ -198,8 +198,11 @@ uint64_t syscall_dispatch(const uint64_t *args) {
      */
 #ifdef NASEED_SYSCALL_TRACE
     static unsigned trace_count;
-    if ((running_bash || running_busybox) && trace_count++ < 96) {
-        nas_print("[TRACE] nr="); nas_dec(nr);
+    /* Opt-in diagnostic for any real user process, not only BusyBox/Bash.
+     * Leave disabled in production; no extra kernel syscall paths. */
+    if (trace_count++ < 220) {
+        nas_print("[TRACE] linux_nr="); nas_dec(raw_nr);
+        nas_print(" decoded="); nas_dec(nr);
         nas_print(" rip="); nas_hex(args[7]);
         nas_print(" rsp="); nas_hex(syscall_user_rsp);
         nas_print(" a1="); nas_hex(args[1]);

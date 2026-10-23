@@ -24,7 +24,9 @@ readelf -h "$work/second.o" | grep -q 'REL (Relocatable file)'
 echo '[GNUMAKE LINUX SPAWN] real process creation/syscalls:'
 grep -E 'clone|vfork|fork|execve' "$work/linux-process-syscalls.log" | head -30 || :
 sh scripts/stage-external-gnumake-rootfs.sh
-make kernel build/deps/limine-binary/BOOTX64.EFI
+# Generic syscall diagnostics only for this focused guest acceptance.
+# Do not add GNU Make-dependent special branches inside the kernel.
+make NAS_SYSCALL_TRACE=1 kernel build/deps/limine-binary/BOOTX64.EFI
 work=build/external/gnumake/amd64
 stage="$work/stage"
 iso="$work/gnumake.iso"
