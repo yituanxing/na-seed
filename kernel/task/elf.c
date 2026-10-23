@@ -47,8 +47,31 @@ static bool elf_map_image(const struct elf_image *image,uint64_t bias,
         .ctx=0,.map_page=elf_kernel_map,.copy_bytes=elf_kernel_copy
     };
     struct nas_elf_segment_result result={0};
-    if(!nas_elf_segments_load(image,&options,&op,&result))
+    if(!nas_elf_segments_load(image,&options,&op,&result)) {
+        /* Rejected original ELF is never silently rewritten as another
+         * program. Emit bounded native ELF diagnostics on ALL ISAs. */
+        struct elf_hdr h;
+        if (nas_elf_image_open(image,NAS_ELF_MACHINE,true,64,&h)) {
+            nas_print("[ELF REJECT] load segments phnum="); nas_hex(h.phnum);
+            nas_print(" type="); nas_hex(h.type);
+            nas_print(" entry="); nas_hex(h.entry);
+            nas_print(" size="); nas_hex(image->size); nas_print("\n");
+            for (unsigned i=0;i<h.phnum;i++) {
+                struct elf_phdr ph;
+                if (!nas_elf_image_read(image,h.phoff+(uint64_t)i*sizeof(ph),
+                                        &ph,sizeof(ph))) break;
+                if (ph.type!=1U && ph.type!=3U) continue;
+                nas_print("[ELF REJECT] PH type="); nas_hex(ph.type);
+                nas_print(" flags="); nas_hex(ph.flags);
+                nas_print(" off="); nas_hex(ph.offset);
+                nas_print(" va="); nas_hex(ph.vaddr);
+                nas_print(" file="); nas_hex(ph.filesz);
+                nas_print(" mem="); nas_hex(ph.memsz);
+                nas_print("\n");
+            }
+        } else nas_print("[ELF REJECT] invalid header\n");
         return false;
+    }
     *entry=result.entry;
     *has_interp=result.has_interp;
     if(main_image) {
