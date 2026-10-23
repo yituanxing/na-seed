@@ -1,0 +1,6 @@
+# Alpine 3.23 original prebuilt archive tools, installed on host for each ISA.
+# Dependencies are resolved through signed apk indexes, no guest compilation.
+musl
+busybox
+tar
+xz

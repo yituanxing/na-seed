@@ -16,6 +16,8 @@ case "$profile" in
                package_list=rootfs/alpine/packages.txt ;;
     runtime) work="build/external/m39-packages/$port"
              package_list=rootfs/alpine/packages-runtime.txt ;;
+    archive) work="build/external/m40-archive/$port"
+             package_list=rootfs/alpine/packages-archive.txt ;;
     *) echo "[ALPINE] unknown profile $profile" >&2; exit 2 ;;
 esac
 root="$work/rootfs"
@@ -75,7 +77,27 @@ sudo chown -R "$(id -u):$(id -g)" "$root"
 mkdir -p "$root/tmp" "$root/tests"
 chmod 1777 "$root/tmp"
 test -e "$root/bin/busybox"
-if [ "$profile" = runtime ]; then
+if [ "$profile" = archive ]; then
+    # Original prebuilt GNU tar and XZ Utils — NEVER built inside NaSeed.
+    # Stage a small nested CPIO fixture; all archive creation/extraction,
+    # compression, decompression and verification happen in the guest.
+    mkdir -p "$root/tests/archive-seed/nested"
+    cp tests/m40-seed-alpha.txt "$root/tests/archive-seed/alpha.txt"
+    cp tests/m40-seed-beta.txt "$root/tests/archive-seed/nested/beta.txt"
+    cp tests/m40-archives-run.sh "$root/tests/run-archives.sh"
+    for program in tar xz; do
+        binary=''
+        for location in "$root/usr/bin/$program" "$root/bin/$program"; do
+            if [ -f "$location" ] && [ -x "$location" ] &&
+               [ ! -L "$location" ]; then
+                binary=$location
+                break
+            fi
+        done
+        [ -n "$binary" ] || { echo "[M40] missing original packaged $program ($port)" >&2; exit 1; }
+        readelf -h "$binary" | grep -Fq "$machine"
+    done
+elif [ "$profile" = runtime ]; then
     # These are original Alpine executables, *not* compiled in NaSeed.
     cp tests/lua-vm.lua tests/lua-io.lua "$root/tests/"
     cp tests/m39-packages-run.sh "$root/tests/run-packages.sh"

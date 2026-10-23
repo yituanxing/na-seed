@@ -1,0 +1,2 @@
+# Signed original GNU tar + xz binaries execute in guest, no compilation.
+m40-archives	cpio	sh -c '/bin/sh /tests/run-archives.sh'	M40_ARCHIVES_PASS	-	/bin/busybox
