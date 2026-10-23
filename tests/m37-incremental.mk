@@ -33,7 +33,11 @@ native-run: /tmp/zlib-check
 	@/bin/busybox touch /tmp/deflate.c
 	@/bin/sh -c '/bin/gmake --no-print-directory -q -f /tests/Makefile /tmp/zlib-check; test $$? -eq 1'
 	@/bin/busybox echo M37_DIRTY_DEPENDENCY
-	@/bin/gmake --no-print-directory -j2 -f /tests/Makefile /tmp/zlib-check
-	@/bin/gmake --no-print-directory -q -f /tests/Makefile /tmp/zlib-check
-	@/bin/sh -c 'test -s /tmp/deflate.o && /tmp/zlib-check'
+	# Recurse through the real GNU Make jobserver instead of forcing
+	# -j2 and accidentally recreating an unsupported FIFO jobserver.
+	+@$(MAKE) --no-print-directory --jobserver-style=pipe -f /tests/Makefile /tmp/zlib-check
+	+@$(MAKE) --no-print-directory -q -f /tests/Makefile /tmp/zlib-check
+	# A newly *relinked* ELF has creation mode 0644, not the previous
+	# executable inode's mode. Real POSIX chmod must be repeated.
+	@/bin/sh -c 'test -s /tmp/deflate.o && chmod 755 /tmp/zlib-check && /tmp/zlib-check'
 	@/bin/busybox echo M37_INCREMENTAL_COMPLETE
