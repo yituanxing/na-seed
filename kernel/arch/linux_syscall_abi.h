@@ -101,6 +101,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_uname: return NAS_SC_uname;
     case __NR_unlink: return NAS_SC_unlink;
     case __NR_unlinkat: return NAS_SC_unlinkat;
+    case __NR_utimensat: return NAS_SC_utimensat;
     case __NR_wait4: return NAS_SC_wait4;
     case __NR_write: return NAS_SC_write;
     case __NR_writev: return NAS_SC_writev;
@@ -137,6 +138,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 276U: return NAS_SC_renameat2;
     case 34U: return NAS_SC_mkdirat;
     case 35U: return NAS_SC_unlinkat;
+    case 88U: return NAS_SC_utimensat; /* Linux asm-generic */
     case 134U: return NAS_SC_rt_sigaction;
     case 136U: return NAS_SC_rt_sigpending;
     case 135U: return NAS_SC_rt_sigprocmask;
