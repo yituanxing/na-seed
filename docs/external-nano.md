@@ -22,3 +22,12 @@ wait for full Nano support or all ISAs before trying another program.
 
 A build or behavior failure is valid evidence of what's missing; fix
 the relevant *general* OS subsystem in batches, not one bypass per app.
+
+First actual native guest failure revealed unimplemented Linux `access(2)`
+used by the **real ncurses terminfo loader** (`Error opening terminal:
+vt100`). The follow-up implements ABI-aware access/faccessat/faccessat2
+namespace lookups and generic TTY TIOCGWINSZ/TIOCSWINSZ. The PID1 checks
+real terminfo read access, an absent file and kernel-reported winsize before
+execing unchanged nano. This is general filesystem/TTY behavior, not a nano
+shortcut. Terminal size defaults to 24x80 until real terminal negotiation;
+SIGWINCH-on-resize and a graphical console are outside this first stage.

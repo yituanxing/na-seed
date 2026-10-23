@@ -19,6 +19,19 @@ int main(void) {
     if (fd > 2) close(fd);
     struct termios t;
     if (tcgetattr(0, &t) != 0) { perror("[NANO] tcgetattr"); return 93; }
+    /* Probe the same real namespace/terminfo nano will use.  Errors are
+     * surfaced before exec, not bypassed by a patched editor. */
+    if (access("/usr/share/terminfo/v/vt100", R_OK) != 0) {
+        perror("[NANO] terminfo access"); return 95;
+    }
+    if (access("/tests/note.txt", R_OK) != 0 ||
+        access("/tests/missing.txt", F_OK) == 0) {
+        perror("[NANO] namespace access"); return 96;
+    }
+    struct winsize ws;
+    if (ioctl(0, TIOCGWINSZ, &ws) != 0 || ws.ws_row == 0 || ws.ws_col == 0) {
+        perror("[NANO] TIOCGWINSZ"); return 97;
+    }
     char *const argv[]={"/bin/nano","/tests/note.txt",NULL};
     char *const envp[]={"TERM=vt100","TERMINFO=/usr/share/terminfo",
         "HOME=/tmp","PATH=/bin:/usr/bin","LC_ALL=C",NULL};

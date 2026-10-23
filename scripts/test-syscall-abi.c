@@ -1,6 +1,9 @@
 #include <assert.h>
 #include "../kernel/arch/linux_syscall_abi.h"
 int main(void) {
+    assert(nas_linux_decode_syscall(__NR_access) == NAS_SC_access);
+    assert(nas_linux_decode_syscall(__NR_faccessat) == NAS_SC_faccessat);
+    assert(nas_linux_decode_syscall(__NR_faccessat2) == NAS_SC_faccessat2);
     assert(nas_linux_decode_syscall(__NR_read) == NAS_SC_read);
     assert(nas_linux_decode_syscall(__NR_write) == NAS_SC_write);
     assert(nas_linux_decode_syscall(__NR_fork) == NAS_SC_fork);

@@ -784,6 +784,53 @@ static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
     nas_open_files[file_slot[fd]].position = base;
     return base;
 }
+/* Linux access/faccessat/faccessat2: existence and permissions are
+ * checked against the actual CPIO /tmp/device namespace, not a fabricated
+ * "always exists" or "always readable" response.  Our current credentials
+ * are root: read/write bypass DAC bits, but execute needs at least one X bit.
+ * An immutable CPIO file cannot be written even by root (EROFS).
+ */
+static uint64_t sys_access_path(uint64_t dirfd,uint64_t pathname,
+                                uint64_t mode,uint64_t flags) {
+    const uint64_t AT_EACCESS=0x200ULL;
+    const uint64_t AT_SYMLINK_NOFOLLOW=0x100ULL;
+    if((mode & ~7ULL) || (flags & ~(AT_EACCESS|AT_SYMLINK_NOFOLLOW)))
+        return (uint64_t)-EINVAL;
+    char path[256], actual[256];
+    uint64_t rc=nas_fs_resolve_path(dirfd,pathname,path);
+    if((int64_t)rc<0) return rc;
+    uint32_t bits=0;
+    bool writable=false;
+    bool is_dir=false;
+    if(bootfs_mounted()) {
+        int err=bootfs_resolve(path,!(flags&AT_SYMLINK_NOFOLLOW),actual);
+        if(!err) {
+            const struct bootfs_entry *entry=bootfs_find(actual);
+            if(!entry)return (uint64_t)-ENOENT;
+            bits=entry->mode;
+            is_dir=bootfs_is_dir(entry);
+            writable=strcmp(actual,"/tmp")==0; /* mounted writable RAM subtree */
+        } else if(err!=-ENOENT) return (uint64_t)(int64_t)err;
+    }
+    if(!bits && tmp_path(path)) {
+        const struct nas_tmp_file *tmp=tmp_find(path);
+        if(tmp) {bits=tmp->mode;writable=true;is_dir=tmp->is_dir;}
+    }
+    if(!bits && (!strcmp(path,"/dev/null") || !strcmp(path,"/dev/zero") ||
+                 !strcmp(path,"/dev/console") || !strcmp(path,"/dev/ttyS0") ||
+                 !strcmp(path,"/dev/tty"))) {
+        if(!strcmp(path,"/dev/tty") && !nas_tty_controlling())
+            return (uint64_t)-ENXIO;
+        bits=0020666U;
+        writable=true;
+    }
+    if(!bits)return (uint64_t)-ENOENT;
+    if((mode & 1ULL) && !(bits & 0111U))return (uint64_t)-EACCES;
+    if((mode & 2ULL) && !writable)return (uint64_t)-EROFS;
+    if((mode & 2ULL) && !is_dir && (bits&0170000U)==0040000U)
+        return (uint64_t)-EACCES;
+    return 0;
+}
 static uint64_t sys_openat_boot(uint64_t dirfd, uint64_t pathname, uint64_t flags) {
     char path[256];
     uint64_t result = nas_fs_resolve_path(dirfd, pathname, path);
@@ -943,6 +990,9 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
     case NAS_SC_unlink: FS_RESULT(sys_unlinkat_tmp((uint64_t)-100, args[1], 0));
     case NAS_SC_rmdir: FS_RESULT(sys_unlinkat_tmp((uint64_t)-100, args[1], 0x200ULL));
     case NAS_SC_unlinkat: FS_RESULT(sys_unlinkat_tmp(args[1], args[2], args[3]));
+    case NAS_SC_access: FS_RESULT(sys_access_path((uint64_t)-100,args[1],args[2],0));
+    case NAS_SC_faccessat: FS_RESULT(sys_access_path(args[1],args[2],args[3],0));
+    case NAS_SC_faccessat2: FS_RESULT(sys_access_path(args[1],args[2],args[3],args[4]));
     case NAS_SC_open: FS_RESULT(sys_open_device(args[1], args[2]));
     case NAS_SC_openat: FS_RESULT(sys_openat_boot(args[1], args[2], args[3]));
     case NAS_SC_fstat: FS_RESULT(sys_fstat_boot(args[1], args[2]));

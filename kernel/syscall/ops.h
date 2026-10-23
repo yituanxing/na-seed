@@ -5,6 +5,9 @@
 enum nas_syscall_op {
     NAS_SC_NONE = 0,
     NAS_SC_arch_prctl,
+    NAS_SC_access,
+    NAS_SC_faccessat,
+    NAS_SC_faccessat2,
     NAS_SC_brk,
     NAS_SC_chdir,
     NAS_SC_clock_gettime,
