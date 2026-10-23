@@ -261,8 +261,8 @@ static uint64_t tmp_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
         if (!nas_user_write_bytes(address + done, buffer, (uint64_t)got))
             return done ? done : (uint64_t)-EFAULT;
         done += (uint64_t)got;
+        nas_open_files[slot].position = offset + done;
     }
-    nas_open_files[slot].position += done;
     return done;
 }
 static uint64_t tmp_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
@@ -287,6 +287,7 @@ static uint64_t tmp_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
         int64_t written = tmp_write_at(file, offset + done, buffer, n);
         if (written < 0) return done ? done : (uint64_t)written;
         done += (uint64_t)written;
+        nas_open_files[slot].position = offset + done;
         if ((uint64_t)written != n) break;
         if (n < sizeof(buffer) && done < length) break; /* user fault */
     }
