@@ -22,7 +22,7 @@ int main(void) {
     if (access("/bin/sh", X_OK) != 0) {
         perror("[GNUMAKE PREFLIGHT] /bin/sh X_OK"); return 95;
     }
-    printf("[GNUMAKE PREFLIGHT] /bin/echo mode=%o size=%lld\\n",
+    printf("[GNUMAKE PREFLIGHT] /bin/echo mode=%o size=%lld\n",
            (unsigned)st.st_mode,(long long)st.st_size);
     fflush(stdout);
     char *const argv[] = {"/bin/gmake", "--no-print-directory",
