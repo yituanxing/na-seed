@@ -109,13 +109,13 @@ elif [ "$profile" = unix ]; then
     for program in find grep sed sort diff cp mv sha256sum; do
         binary=''
         for location in "$root/usr/bin/$program" "$root/bin/$program"; do
-            if [ -x "$location" ]; then
-                candidate=$(readlink -f "$location")
-                if [ "$candidate" != "$(readlink -f "$root/bin/busybox")" ] &&
-                   readelf -h "$candidate" 2>/dev/null | grep -Fq "$machine"; then
-                    binary=$candidate
-                    break
-                fi
+            if [ -x "$location" ] &&
+               readelf -h "$location" 2>/dev/null | grep -Fq "$machine"; then
+                # ELF is checked in situ: readlink -f follows absolute
+                # *guest* symlinks in the host namespace and can silently
+                # fail under set -e. The guest also validates GNU banners.
+                binary=$location
+                break
             fi
         done
         [ -n "$binary" ] || {
