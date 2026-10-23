@@ -24,6 +24,8 @@ case "$profile" in
              package_list=rootfs/alpine/packages-archive.txt ;;
     zstd) work="build/external/m43-zstd/$port"
           package_list=rootfs/alpine/packages-zstd.txt ;;
+    group) work="build/external/m44-group/$port"
+           package_list=rootfs/alpine/packages-zstd.txt ;;
     *) echo "[ALPINE] unknown profile $profile" >&2; exit 2 ;;
 esac
 root="$work/rootfs"
@@ -103,6 +105,24 @@ if [ "$profile" = archive ]; then
         [ -n "$binary" ] || { echo "[M40] missing original packaged $program ($port)" >&2; exit 1; }
         readelf -h "$binary" | grep -Fq "$machine"
     done
+elif [ "$profile" = group ]; then
+    # Test binary built ON THE HOST by upstream LLVM for target Linux64,
+    # freestanding direct syscalls: no guest GCC, no fake test syscall.
+    cp tests/m44-group-run.sh "$root/tests/run-group.sh"
+    cp tests/m43-zstd-run.sh "$root/tests/run-zstd.sh"
+    dd if=/dev/zero of="$root/tests/m43-input.bin" bs=1048576 count=12 status=none
+    case "$port" in
+        amd64) target_triple=x86_64-linux-musl ;;
+        riscv64) target_triple=riscv64-linux-musl ;;
+        arm64) target_triple=aarch64-linux-musl ;;
+    esac
+    clang --target="$target_triple" -O2 -std=c11 -Wall -Wextra -Werror \
+        -ffreestanding -nostdinc -fno-stack-protector -fno-builtin \
+        -fno-pic -fno-pie -nostdlib -static -fuse-ld=lld \
+        -Wl,-e,_start -Wl,-z,max-page-size=4096 \
+        tests/m44-threadgroup.c -o "$root/tests/m44-threadgroup"
+    readelf -h "$root/tests/m44-threadgroup" | grep -Fq "$machine"
+    test -x "$root/tests/m44-threadgroup"
 elif [ "$profile" = zstd ]; then
     # Original signed Alpine multi-threaded Zstandard: no guest compilation.
     # 12 MiB requires multiple compression input chunks at -T2; fixture

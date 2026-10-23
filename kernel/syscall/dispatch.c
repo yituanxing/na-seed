@@ -474,7 +474,9 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_setpgid) return nas_session_setpgid(args[1],args[2]);
     if (nr == NAS_SC_exit || nr == NAS_SC_exit_group) { /* exit / exit_group */
         if (TASK.ppid) {
-            nas_sched_child_exit((uint32_t)args[1], 0);
+            if (nr == NAS_SC_exit_group)
+                nas_sched_thread_group_exit((uint32_t)args[1],0);
+            else nas_sched_child_exit((uint32_t)args[1], 0);
             return nas_task_schedule((uint64_t *)(uintptr_t)args);
         }
         nas_process_clear_tid_on_exit();

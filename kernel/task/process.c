@@ -161,17 +161,21 @@ uint64_t nas_process_prlimit(uint64_t pid,uint64_t resource,
     }
     return 0;
 }
-void nas_process_clear_tid_on_exit(void) {
-    uint64_t tid_addr=nas_current_task->thread_clear_tid;
-    if (!tid_addr) return;
-    /* For a forked process (separate VM), Linux clear_child_tid applies
-     * only to the child's VM. Wake-on-futex only matters for shared-VM
-     * threads, which this kernel does not claim to support. */
+void nas_process_clear_tid_for_exit(struct nas_task *thread) {
+    if (!thread || !thread->thread_clear_tid) return;
+    if (thread->vm_owner != nas_current_task->vm_owner)
+        proc_fail("cross-VM clear_child_tid on thread-group exit");
+    uint64_t tid_addr=thread->thread_clear_tid;
+    /* Linux CLONE_CHILD_CLEARTID stores zero before FUTEX_WAKE in the
+     * exiting group's shared userspace VM, including remote dying workers. */
     static const uint8_t zero[4]={0,0,0,0};
     if (!nas_user_write_bytes(tid_addr,zero,sizeof(zero)))
         proc_fail("clone clear_child_tid unmapped before exit");
-    nas_current_task->thread_clear_tid=0;
+    thread->thread_clear_tid=0;
     (void)nas_process_futex_wake(tid_addr,1,UINT32_MAX);
+}
+void nas_process_clear_tid_on_exit(void) {
+    nas_process_clear_tid_for_exit(nas_current_task);
 }
 
 /* Shared wait readiness used by both synchronous wait4 and the scheduler
@@ -179,7 +183,7 @@ void nas_process_clear_tid_on_exit(void) {
  * exit zombies take priority and are reclaimed only on successful wait4.
  */
 bool nas_process_waitable(const struct nas_task *child, uint64_t options) {
-    if (child->state == NAS_TASK_ZOMBIE) return true;
+    if (child->state == NAS_TASK_ZOMBIE) return !child->group_exit_pending;
     if ((options & NAS_WAIT_UNTRACED) &&
         child->state == NAS_TASK_STOPPED && child->stop_report_pending)
         return true;
