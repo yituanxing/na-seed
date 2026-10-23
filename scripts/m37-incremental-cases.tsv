@@ -1,0 +1,4 @@
+# GNU Make -j2 compiles full upstream zlib, checks no-op rebuild,
+# touches one *genuine* writable C source via real Linux utimensat,
+# rebuilds exactly one object and relinks the original zlib executable.
+m37-incremental	cpio	--naseed	M37_INCREMENTAL_COMPLETE	-	/bin/native-init
