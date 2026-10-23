@@ -64,6 +64,7 @@ enum nas_syscall_op {
     NAS_SC_ppoll,
     NAS_SC_pselect6,
     NAS_SC_read,
+    NAS_SC_pread64,
     NAS_SC_readv,
     NAS_SC_readlink,
     NAS_SC_readlinkat,
@@ -87,6 +88,7 @@ enum nas_syscall_op {
     NAS_SC_utimensat,
     NAS_SC_wait4,
     NAS_SC_write,
+    NAS_SC_pwrite64,
     NAS_SC_writev,
 };
 #endif

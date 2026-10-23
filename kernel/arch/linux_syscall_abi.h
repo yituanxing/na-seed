@@ -88,6 +88,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_ppoll: return NAS_SC_ppoll;
     case __NR_pselect6: return NAS_SC_pselect6;
     case __NR_read: return NAS_SC_read;
+    case __NR_pread64: return NAS_SC_pread64;
     case __NR_readv: return NAS_SC_readv;
     case __NR_readlink: return NAS_SC_readlink;
     case __NR_readlinkat: return NAS_SC_readlinkat;
@@ -111,6 +112,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_utimensat: return NAS_SC_utimensat;
     case __NR_wait4: return NAS_SC_wait4;
     case __NR_write: return NAS_SC_write;
+    case __NR_pwrite64: return NAS_SC_pwrite64;
     case __NR_writev: return NAS_SC_writev;
 #else
     case 52U: return NAS_SC_fchmod;
@@ -124,6 +126,8 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 114U: return NAS_SC_clock_getres;
     case 115U: return NAS_SC_clock_nanosleep; /* asm-generic lacks nanosleep */
     case 63U: return NAS_SC_read;
+    case 67U: return NAS_SC_pread64; /* Linux asm-generic */
+    case 68U: return NAS_SC_pwrite64;
     case 65U: return NAS_SC_readv; /* Linux asm-generic readv */
     case 64U: return NAS_SC_write;
     case 66U: return NAS_SC_writev;

@@ -33,3 +33,18 @@ The earlier M39 upstream zlib/Lua build experiment timed out after six
 minutes while GCC was still making progress. That experiment is abandoned,
 not accepted. M38 GCC, original TinyCC, Lua, BusyBox, ARM64/RV64 regression
 workflows remain mandatory and unchanged.
+
+## First real package failure: shared positional I/O
+
+The first three-ISA package run proved the untouched Alpine Lua 5.4 and jq
+binaries execute their real test workloads successfully. SQLite runs an
+in-memory SQL statement but creating a database in /tmp reported I/O error:
+x86-64 raw syscall 17, RV64/AArch64 raw syscall 67, both Linux pread64.
+The follow-on write-side ABI also requires pwrite64 (x86 18 / generic 68).
+
+Add the pair as common FS/FD operations, NOT as SQLite-specific shims.
+They read/write ordinary bootfs/tmpfs with caller-specified offset while
+leaving shared fd position unmodified, respect O_RDONLY/O_WRONLY, and reject
+incompatible fd kinds. tmpfs writes go through the same page-backed inode
+write path as normal write(); CPIO remains read-only. Keep the same three
+native package tests, rather than weakening the SQLite file-reopen oracle.

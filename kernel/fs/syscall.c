@@ -619,6 +619,65 @@ uint64_t nas_fs_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     const struct nas_file_ops *ops=nas_open_files[file_slot[fd]].ops;
     return ops && ops->read ? ops->read(fd,address,length) : (uint64_t)-EBADF;
 }
+/* The Linux positional I/O ABI is the same common VFS operation on all
+ * three architectures. Respect per-FD access mode and reject pipes,
+ * devices and directories with ESPIPE/EISDIR rather than pretending to
+ * read a regular file. Keep offset independent of fork/dup shared state.
+ * The same kernel-buffer regular-file reader already powers mmap. */
+uint64_t nas_fs_fd_pread(uint64_t fd,uint64_t address,uint64_t count,
+                         uint64_t offset) {
+    if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED) return (uint64_t)-EBADF;
+    unsigned slot=file_slot[fd];
+    if(slot>=NAS_FD_LIMIT || !nas_open_files[slot].refcount) return (uint64_t)-EBADF;
+    if((nas_open_files[slot].status_flags&3ULL)==1ULL) return (uint64_t)-EBADF;
+    if(descriptors[fd]==FD_DIR || descriptors[fd]==FD_TMP_DIR) return (uint64_t)-EISDIR;
+    if(descriptors[fd]!=FD_TMP && descriptors[fd]!=FD_ARCHIVE &&
+       descriptors[fd]!=FD_BOOTFS) return (uint64_t)-ESPIPE;
+    if(offset>INT64_MAX || count>INT64_MAX-offset) return (uint64_t)-EINVAL;
+    if(count && (address>=USER_LIMIT || count>USER_LIMIT-address))
+        return (uint64_t)-EFAULT;
+    uint8_t buffer[1024];
+    uint64_t done=0;
+    while(done<count) {
+        uint64_t take=count-done;
+        if(take>sizeof(buffer))take=sizeof(buffer);
+        int64_t got=nas_fs_mmap_read(fd,offset+done,buffer,take);
+        if(got<0)return done ? done : (uint64_t)got;
+        if(!got)break;
+        if(!nas_user_write_bytes(address+done,buffer,(uint64_t)got))
+            return done ? done : (uint64_t)-EFAULT;
+        done+=(uint64_t)got;
+        if((uint64_t)got<take)break;
+    }
+    return done;
+}
+uint64_t nas_fs_fd_pwrite(uint64_t fd,uint64_t address,uint64_t count,
+                          uint64_t offset) {
+    if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED) return (uint64_t)-EBADF;
+    unsigned slot=file_slot[fd];
+    if(slot>=NAS_FD_LIMIT || !nas_open_files[slot].refcount) return (uint64_t)-EBADF;
+    if((nas_open_files[slot].status_flags&3ULL)==0ULL) return (uint64_t)-EBADF;
+    if(descriptors[fd]==FD_DIR || descriptors[fd]==FD_TMP_DIR) return (uint64_t)-EISDIR;
+    if(descriptors[fd]!=FD_TMP)return (uint64_t)-ESPIPE;
+    if(offset>INT64_MAX || count>INT64_MAX-offset)return (uint64_t)-EINVAL;
+    if(count && (address>=USER_LIMIT || count>USER_LIMIT-address))
+        return (uint64_t)-EFAULT;
+    struct nas_tmp_file *file=tmp_by_slot(slot);
+    if(!file)return (uint64_t)-EBADF;
+    uint64_t done=0;
+    uint8_t buffer[1024];
+    while(done<count) {
+        uint64_t n=count-done;
+        if(n>sizeof(buffer))n=sizeof(buffer);
+        if(!nas_user_read_bytes(address+done,buffer,n))
+            return done ? done : (uint64_t)-EFAULT;
+        int64_t wrote=tmp_write_at(file,offset+done,buffer,n);
+        if(wrote<0)return done ? done : (uint64_t)wrote;
+        done+=(uint64_t)wrote;
+        if((uint64_t)wrote<n)break;
+    }
+    return done;
+}
 /* Linux readv LP64 iovec. All slices share the open description's offset.
  * A partial transfer takes priority over an error. For an empty pipe the
  * standard internal wait sentinel returns without touching any buffer;
@@ -1243,6 +1302,8 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
     case NAS_SC_stat: FS_RESULT(sys_fstatat_boot((uint64_t)-100, args[1], args[2], 0));
     case NAS_SC_lstat: FS_RESULT(sys_fstatat_boot((uint64_t)-100, args[1], args[2], 0x100ULL));
     case NAS_SC_lseek: FS_RESULT(sys_lseek_boot(args[1], args[2], args[3]));
+    case NAS_SC_pread64: FS_RESULT(nas_fs_fd_pread(args[1],args[2],args[3],args[4]));
+    case NAS_SC_pwrite64: FS_RESULT(nas_fs_fd_pwrite(args[1],args[2],args[3],args[4]));
     case NAS_SC_getdents64: FS_RESULT(sys_getdents64(args[1], args[2], args[3]));
     case NAS_SC_readlink: FS_RESULT(sys_readlinkat_boot((uint64_t)-100, args[1], args[2], args[3]));
     case NAS_SC_readlinkat: FS_RESULT(sys_readlinkat_boot(args[1], args[2], args[3], args[4]));
