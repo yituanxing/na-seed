@@ -206,3 +206,26 @@ builtin, and non-existent executable error preservation. This **does
 not implement fork/vfork/clone, wait, pipes, a task scheduler or
 arbitrary script execution**. Shell pipelines remain blocked for a
 separate milestone.
+
+## 2026-10-23 provenance migration for long-running native BusyBox CI
+
+The original M4 ELF acceptance really used busybox-1.37.0-r30 and
+musl-1.2.5-r23 at the then-pinned SHA256s. The old release stopped being
+available when Alpine v3.23 published musl-1.2.5-r24 on 2026-10-21;
+all five historical raw-APK mirror transports now return 404 for r23.
+This is an **upstream revision rotation**, not a NaSeed libc regression.
+
+Continue testing the identical original, SHA256-locked BusyBox bytes for
+each architecture. For the interpreter, stage the exact package release
+`musl=1.2.5-r24` using original Alpine `apk` on the Linux CI host with
+`--arch`, target-specific official release keyring obtained from SHA256
+checked Alpine 3.23.7 minirootfs, strict package/index signature
+verification, and `--no-scripts`. The library is an untouched real ELF
+and its ISA is checked with readelf; the host prints its exact ELF SHA256
+for audit. No `--allow-untrusted`, missing-file substitutions, guessed
+APK checksums or NaSeed guest-side compilation.
+
+Both the old x86 historical runtime suite and the RV64/AArch64 native
+dynamic acceptance share `scripts/install-verified-alpine-musl.sh`.
+The newer M38/M39/M40 signed app package matrix uses its existing rootfs
+builder and remains unchanged.

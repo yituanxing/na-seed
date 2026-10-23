@@ -114,7 +114,7 @@ jobs:
         run: sh scripts/check-full-kernel-sources.sh
       - name: Verify native x86-64 stat layout
         run: cc -std=c11 -Wall -Wextra -Werror -c scripts/check-linux-stat.c -o /tmp/naseed-stat.o
-      - name: Verify 4 original pinned Alpine dynamic native package digests
+      - name: Verify original SHA256 BusyBox and signed target-ISA musl provenance
         run: sh scripts/check-alpine-native-fixtures.sh
       - name: Offline pinned Alpine transport failover and digest regression
         run: sh scripts/test-pinned-alpine-apk.sh
