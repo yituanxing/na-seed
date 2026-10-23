@@ -1,0 +1,2 @@
+# Exact identical original Make + TinyCC + new ELF execution across ISAs.
+m34-make-run	cpio	--naseed	naseed-three-isa-build-exec	-	/bin/native-init
