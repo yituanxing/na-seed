@@ -83,6 +83,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_pipe2: return NAS_SC_pipe2;
     case __NR_poll: return NAS_SC_poll;
     case __NR_ppoll: return NAS_SC_ppoll;
+    case __NR_pselect6: return NAS_SC_pselect6;
     case __NR_read: return NAS_SC_read;
     case __NR_readlink: return NAS_SC_readlink;
     case __NR_readlinkat: return NAS_SC_readlinkat;
@@ -110,6 +111,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 53U: return NAS_SC_fchmodat;
     case 48U: return NAS_SC_faccessat; /* Linux asm-generic */
     case 439U: return NAS_SC_faccessat2; /* same Linux syscall ID */
+    case 72U: return NAS_SC_pselect6; /* asm-generic pselect6 */
     case 73U: return NAS_SC_ppoll; /* asm-generic ppoll; poll absent */
     case 113U: return NAS_SC_clock_gettime;
     case 169U: return NAS_SC_gettimeofday; /* asm-generic Linux */
