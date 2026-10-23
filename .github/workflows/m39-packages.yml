@@ -1,27 +1,25 @@
-name: NaSeed M39 native upstream zlib and Lua build
+name: NaSeed M39 prebuilt Alpine Lua jq SQLite applications
 on:
   pull_request:
     paths:
-      - 'scripts/fetch-m39-upstream-sources.sh'
-      - 'scripts/stage-m39-upstream-sources.sh'
-      - 'scripts/probe-m39-native-build.sh'
-      - 'scripts/m39-native-cases.tsv'
-      - 'tests/m39-native-build.sh'
+      - 'rootfs/alpine/**'
+      - 'scripts/probe-m39-packages.sh'
+      - 'scripts/m39-packages-cases.tsv'
+      - 'tests/m39-packages-run.sh'
+      - 'tests/m39-jobs.json'
       - 'tests/lua-vm.lua'
       - 'tests/lua-io.lua'
-      - 'rootfs/alpine/**'
-      - 'scripts/fetch-m36-zlib.sh'
       - 'scripts/probe-x86-busybox-parity.sh'
       - 'scripts/probe-riscv64-busybox-matrix.sh'
       - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - '.github/workflows/m39-native-upstream.yml'
+      - '.github/workflows/m39-packages.yml'
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
-  native-upstream:
-    name: real GCC + GNU Make compile upstream zlib and Lua inside NaSeed / ${{ matrix.port }}
+  installed-packages:
+    name: signed Alpine Lua jq SQLite original ELF packages on NaSeed / ${{ matrix.port }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     strategy:
@@ -64,19 +62,19 @@ jobs:
           command -v docker
       - name: Reject CPIO fixed-file-count regressions before expensive package fetch
         run: sh scripts/check-bootfs-scale.sh
-      - name: Compile upstream zlib and Lua using original GCC and Make inside native NaSeed
-        timeout-minutes: 26
-        run: sh scripts/probe-m39-native-build.sh ${{ matrix.port }}
+      - name: Run three genuine Alpine applications in native NaSeed QEMU
+        timeout-minutes: 12
+        run: sh scripts/probe-m39-packages.sh ${{ matrix.port }}
       - name: Preserve original package/ELF/serial evidence
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: m39-upstream-zlib-lua-${{ matrix.port }}
+          name: m39-packages-${{ matrix.port }}
           path: |
-            build/external/m38-gcc/${{ matrix.port }}/apk-install.log
-            build/external/m38-gcc/${{ matrix.port }}/requested-packages.txt
-            build/external/m38-gcc/${{ matrix.port }}/rootfs/tests/build-m39.sh
-            build/busybox-source-parity-x86/m39-upstream.clean.log
-            build/port-riscv64/full/matrix-source/m39-upstream.clean.log
-            build/port-aarch64/full/matrix-source/m39-upstream.clean.log
+            build/external/m39-packages/${{ matrix.port }}/apk-install.log
+            build/external/m39-packages/${{ matrix.port }}/requested-packages.txt
+            build/external/m39-packages/${{ matrix.port }}/rootfs/tests/run-packages.sh
+            build/busybox-source-parity-x86/m39-packages.clean.log
+            build/port-riscv64/full/matrix-source/m39-packages.clean.log
+            build/port-aarch64/full/matrix-source/m39-packages.clean.log
           if-no-files-found: ignore
