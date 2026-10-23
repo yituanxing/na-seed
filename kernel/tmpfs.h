@@ -6,7 +6,9 @@
 /* Volatile, finite /tmp backend. This is not yet a generic Linux VFS.
  * Transition seam: syscall/user memory remains with m1.c; namespace and
  * inode/open-description lifetimes belong here. */
-#define TMP_FILE_COUNT 8
+/* Metadata is allocated in demand-paged inode slabs, not a fixed 
+ * global array of eight inodes. Memory exhaustion is reported by the
+ * existing physical frame allocator, not an arbitrary source-level count. */
 /* Sparse, demand-allocated 4-KiB physical pages. Each indirect page has
  * 512 data-frame references, so 16 index slots cover 32 MiB per inode.
  * No 32-MiB kernel array is reserved when a file is created. */
@@ -17,6 +19,7 @@
 
 struct nas_tmp_file {
     bool used, linked, is_dir;
+    uint64_t ino; /* persistent inode identity, independent of slab address */
     char path[256];
     uint64_t index_pages[TMP_INDEX_PAGES]; /* physical index-frame addresses */
     uint64_t size;
@@ -28,7 +31,7 @@ bool tmp_parent(const char *path, char parent[256]);
 struct nas_tmp_file *tmp_find(const char *path);
 int tmp_parent_check(const char *path);
 struct nas_tmp_file *tmp_create(const char *path, bool dir);
-unsigned tmp_number(const struct nas_tmp_file *file);
+uint64_t tmp_number(const struct nas_tmp_file *file);
 const struct nas_tmp_file *tmp_child(const char *parent, unsigned index);
 
 /* Slot identity is shared across fork/dup; the caller owns the descriptor
