@@ -24,6 +24,10 @@ uint64_t nas_process_set_robust_list(uint64_t head,uint64_t len);
 uint64_t nas_process_get_robust_list(uint64_t pid,uint64_t head_addr,uint64_t len_addr);
 /* Called with exiting task's shared VM installed before clearing its TID. */
 void nas_process_robust_exit(struct nas_task *thread);
+/* Commit-phase only: the caller has an image ready, old VM active, and
+ * no other CPU may run a sibling before old page-table destruction.
+ * Does not touch the thread-group leader's task slot: exec.c adopts it. */
+void nas_process_exec_quiesce_siblings(void);
 void nas_process_clear_tid_on_exit(void);
 /* The caller's current VM must be identical to the target thread's VM. */
 void nas_process_clear_tid_for_exit(struct nas_task *thread);

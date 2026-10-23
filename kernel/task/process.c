@@ -269,6 +269,38 @@ void nas_process_clear_tid_for_exit(struct nas_task *thread) {
     thread->thread_clear_tid=0;
     (void)nas_process_futex_wake(tid_addr,1,UINT32_MAX);
 }
+/* execve succeeds atomically at the old-VM cleanup boundary. Threads
+ * that did not request exec cease to exist; unlike exit_group, we DO
+ * NOT signal the parent, close inherited files or create wait4 zombies.
+ * Robust owner death and clear_child_tid run while the OLD root remains
+ * installed. A replaced nonleader adopts the old TGID in exec.c. */
+void nas_process_exec_quiesce_siblings(void) {
+    struct nas_task *caller=nas_current_task;
+    struct nas_task *leader=caller->vm_owner;
+    if(!leader || leader->tgid!=caller->tgid || leader->is_thread)
+        proc_fail("execve thread-group owner invalid");
+    for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
+        struct nas_task *peer=nas_task_at(i);
+        if(peer==caller || peer==leader ||
+           peer->state==NAS_TASK_FREE || peer->tgid!=leader->tgid)
+            continue;
+        if(!peer->is_thread)proc_fail("execve crossed process boundary");
+        nas_process_robust_exit(peer);
+        nas_process_clear_tid_for_exit(peer);
+        peer->state=NAS_TASK_ZOMBIE;
+        peer->resume_valid=false;
+        peer->pending_valid=false;
+        peer->blocked_op=0;
+        peer->futex_addr=0;
+        nas_task_release(peer);
+    }
+    if(caller!=leader) {
+        /* The original leader is replaced by this worker. It is NEVER
+         * exposed as a zombie to parent wait4 during execve. */
+        nas_process_robust_exit(leader);
+        nas_process_clear_tid_for_exit(leader);
+    }
+}
 void nas_process_clear_tid_on_exit(void) {
     nas_process_clear_tid_for_exit(nas_current_task);
 }

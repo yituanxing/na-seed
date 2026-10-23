@@ -22,7 +22,6 @@
 #include "signal.h"
 #define TASK (*nas_current_task)
 #define root_phys TASK.root_phys
-#define heap_break TASK.vm_owner->heap_break
 #define loaded_phdr TASK.loaded_phdr
 #define loaded_phnum TASK.loaded_phnum
 #define loaded_main_entry TASK.loaded_main_entry
@@ -30,7 +29,6 @@
 #define thread_clear_tid TASK.thread_clear_tid
 #define descriptors TASK.fds->descriptors
 #define fd_cloexec TASK.fds->fd_cloexec
-#define signal_actions TASK.vm_owner->signal_actions
 #define running_bash TASK.running_bash
 #define running_busybox TASK.running_busybox
 #define running_alpine TASK.running_alpine
@@ -266,21 +264,18 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
         result = shebang_rewrite_args();
         if ((int64_t)result < 0) return result;
     }
-    /* No silent address-space replacement while other threads still share it. */
-    for (unsigned i=0;i<NAS_TASK_LIMIT;i++) {
-        struct nas_task *peer=nas_task_at(i);
-        if (peer!=nas_current_task && peer->state!=NAS_TASK_FREE &&
-            peer->is_thread && peer->tgid==TASK.tgid)
-            return (uint64_t)-EOPNOTSUPP;
-    }
+    /* Load and validate the complete new image FIRST. On a failed
+     * execve, every existing pthread, FD, robust list and VM must remain
+     * untouched; only the successful commit may terminate sibling tasks.
+     * The public syscall ABI is identical on all three architectures. */
     uint64_t new_root = nas_mmu_alloc_root();
     if (!new_root) return (uint64_t)-ENOMEM;
     uint64_t previous_root = root_phys;
-    uint64_t old_heap = heap_break;
+    uint64_t old_heap = TASK.vm_owner->heap_break;
     uint64_t old_phdr = loaded_phdr, old_phnum = loaded_phnum;
     uint64_t old_entry = loaded_main_entry, old_interp = loaded_interp_base;
     nas_mmu_switch_root(new_root);
-    heap_break = 0;
+    TASK.vm_owner->heap_break = 0;
     loaded_phdr = loaded_phnum = loaded_main_entry = loaded_interp_base = 0;
     uint64_t entry, sp = 0;
     bool good = nas_elf_load(&main_img, interp, &entry);
@@ -314,12 +309,59 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     if (!good) {
         nas_mmu_switch_root(previous_root);
         if (!nas_mmu_reclaim_root(new_root)) nas_fail("execve rollback page-table corruption");
-        heap_break = old_heap;
+        TASK.vm_owner->heap_break = old_heap;
         loaded_phdr = old_phdr;
         loaded_phnum = old_phnum;
         loaded_main_entry = old_entry;
         loaded_interp_base = old_interp;
         return (uint64_t)-ENOEXEC;
+    }
+    /* Image validated: unwind every other thread against OLD mappings
+     * before freeing the former root. This also marks abandoned robust
+     * mutexes OWNER_DIED and clears their child TIDs in the right VM.
+     * The new root is kept intact through this temporary switch. */
+    uint64_t committed_root = root_phys;
+    struct nas_task *exec_thread = nas_current_task;
+    struct nas_task *old_leader = exec_thread->vm_owner;
+    uint64_t inherited_tgid=old_leader->tgid;
+    bool worker_exec=exec_thread!=old_leader;
+    nas_mmu_switch_root(previous_root);
+    nas_process_exec_quiesce_siblings();
+    nas_mmu_switch_root(committed_root);
+
+    /* exec from CLONE_THREAD must look like the original *process* to
+     * parent wait4. Transfer the stable TGID to the surviving task slot,
+     * and make its owned FDs/VM metadata independent of the dead leader.
+     * File-description references are NOT duplicated: the old table and
+     * the worker both pointed to one CLONE_FILES object. The parent sees
+     * one child PID and precisely one eventual SIGCHLD. */
+    if(worker_exec) {
+        exec_thread->fds_owned=*old_leader->fds;
+        exec_thread->fds=&exec_thread->fds_owned;
+        exec_thread->umask=old_leader->umask;
+        memcpy(exec_thread->cwd,old_leader->cwd,sizeof(exec_thread->cwd));
+        memcpy(exec_thread->signal_actions,old_leader->signal_actions,
+               sizeof(exec_thread->signal_actions));
+        exec_thread->heap_break=old_leader->heap_break;
+        exec_thread->anonymous=old_leader->anonymous;
+        exec_thread->pid=inherited_tgid;
+        exec_thread->tgid=inherited_tgid;
+        exec_thread->ppid=old_leader->ppid;
+        exec_thread->pgid=old_leader->pgid;
+        exec_thread->sid=old_leader->sid;
+        exec_thread->vm_owner=exec_thread;
+        exec_thread->is_thread=false;
+        exec_thread->group_exit_pending=false;
+        exec_thread->vfork_parent_pid=0;
+        exec_thread->vfork_child_pid=0;
+        exec_thread->vfork_shared_vm=false;
+        nas_task_release(old_leader);
+        nas_print("[THREAD EXEC] worker adopted original process tgid=");
+        nas_dec(inherited_tgid);nas_print("\n");
+    } else {
+        exec_thread->group_exit_pending=false;
+        nas_print("[THREAD EXEC] leader reaped siblings tgid=");
+        nas_dec(inherited_tgid);nas_print("\n");
     }
     /* Commit: syscall can no longer return to old userspace RIP or RSP. */
     for (unsigned fd = 0; fd < 64; fd++)
@@ -340,8 +382,8 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     /* Linux execve resets caught handlers to default but preserves ignored
      * dispositions, the process signal mask and pending standard signals. */
     for (unsigned i = 1; i < 65; i++) {
-        if (signal_actions[i][0] == 1) continue; /* SIG_IGN survives exec */
-        for (unsigned j = 0; j < 4; j++) signal_actions[i][j] = 0;
+        if (TASK.vm_owner->signal_actions[i][0] == 1) continue; /* SIG_IGN survives exec */
+        for (unsigned j = 0; j < 4; j++) TASK.vm_owner->signal_actions[i][j] = 0;
     }
     /* A vfork child shared its old page table with its suspended parent.
      * Its new ELF root has committed, but that old root remains parent-owned. */
