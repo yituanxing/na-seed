@@ -75,7 +75,10 @@ static __attribute__((noreturn)) void finish_thread(int n) {
 }
 struct timespec64 { int64_t sec,nsec; };
 static void nap(void) {
-    const struct timespec64 ts={0,20000000};
+    /* Hold a genuine timed syscall-blocked worker until the leader exits.
+     * A short 20ms pause can expire before native ARM64 leader SYS_exit,
+     * leaving the thread-group deferred-lifetime branch untested. */
+    const struct timespec64 ts={1,0};
     call3(NR_nanosleep,(long)&ts,0,0);
 }
 static volatile int role;
