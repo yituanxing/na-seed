@@ -69,3 +69,20 @@ The original GNU Make fails its first real guest recipe with
 actual clone/vfork/execve behavior with strace, before altering NaSeed's
 fork/clone semantics. The fix must belong in the Linux syscall adapter
 and shared Task/process core as appropriate, not in a Make-specific shim.
+
+## Program configuration versus kernel VM architecture
+
+An actual Linux process trace found the unmodified default glibc build
+of GNU Make uses `posix_spawn`, internally `clone3(CLONE_VM | CLONE_VFORK
+| CLONE_CLEAR_SIGHAND)`. NaSeed has a tested **private address-space
+fork/exec/wait** path, but deliberately does not yet promise shared-VM
+vfork continuation or Linux thread stack semantics. Mapping these flags
+to ordinary fork would be an incorrect ABI shortcut.
+
+GNU Make 4.4.1 officially supports `./configure --disable-posix-spawn`,
+which compiles the upstream's existing **real fork+exec path** without
+source edits. Use that upstream option for our first useful native
+build workflow. Linux `strace -f` must verify genuine fork-equivalent
+`clone(SIGCHLD)` and reject `clone3(CLONE_VM)` or vfork before entering
+the NaSeed guest. Real shared-VM `clone3` remains a future **general
+Task/VM feature**, not a fake fork alias and not a prerequisite for Make.

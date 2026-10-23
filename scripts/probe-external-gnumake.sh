@@ -21,7 +21,19 @@ strace -f -qq -e trace=clone,clone3,vfork,fork,execve,execveat \
     OBJECT="$work/second.o" native-c > "$work/linux-process-oracle.log" 2>&1
 grep -Fxq 'naseed-compiled-object' "$work/linux-process-oracle.log"
 readelf -h "$work/second.o" | grep -q 'REL (Relocatable file)'
-echo '[GNUMAKE LINUX SPAWN] real process creation/syscalls:'
+# This portability configuration must exercise normal fork semantics.
+# It MUST NOT silently return to posix_spawn/CLONE_VM/CLONE_VFORK.
+if grep -Eq 'clone3\\(|CLONE_VM|CLONE_VFORK|vfork\\(' "$work/linux-process-syscalls.log"; then
+  echo '[GNUMAKE LINUX SPAWN FAIL] expected normal fork/exec path' >&2
+  tail -80 "$work/linux-process-syscalls.log" >&2
+  exit 1
+fi
+grep -Eq 'clone\\([^)]*SIGCHLD|fork\\(' "$work/linux-process-syscalls.log" || {
+  echo '[GNUMAKE LINUX SPAWN FAIL] no fork-equivalent process creation' >&2
+  tail -80 "$work/linux-process-syscalls.log" >&2
+  exit 1
+}
+echo '[GNUMAKE LINUX SPAWN] verified upstream fork/exec mode:'
 grep -E 'clone|vfork|fork|execve' "$work/linux-process-syscalls.log" | head -30 || :
 sh scripts/stage-external-gnumake-rootfs.sh
 # Generic syscall diagnostics only for this focused guest acceptance.

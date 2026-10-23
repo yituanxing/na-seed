@@ -21,6 +21,7 @@ test -f "$source/configure"
     cd "$source"
     if [ ! -f Makefile ]; then
       ./configure --prefix=/usr --disable-nls --without-guile \
+          --disable-posix-spawn \
           CC=gcc CFLAGS="-O2" LDFLAGS="-static -no-pie" \
           > ../configure.log 2>&1 || { tail -80 ../configure.log >&2; exit 1; }
     fi
@@ -37,6 +38,11 @@ if readelf -l "$work/gmake" | grep -q INTERP; then
   echo '[GNUMAKE] expected genuine static Linux ELF' >&2; exit 1
 fi
 "$work/gmake" --version | grep -Fq 'GNU Make 4.4.1'
+# Upstream-supported, documented portable fork/exec mode; do not
+# implement partial CLONE_VM/CLONE_VFORK semantics in the kernel.
+grep -Eq '^[[:space:]]*#[[:space:]]*define[[:space:]]+USE_POSIX_SPAWN[[:space:]]+1' "$source/src/config.h" && {
+    echo '[GNUMAKE] posix_spawn still enabled, refusing mismatched test' >&2; exit 1;
+} || :
 # Run the identical, normal GNU Make binary on Linux first.
 "$work/gmake" --no-print-directory -f tests/gnumake-real.mk all \
    > "$work/linux-oracle.log" 2>&1
