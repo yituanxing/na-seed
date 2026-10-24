@@ -38,6 +38,8 @@ case "$profile" in
               package_list=rootfs/alpine/packages-parallel.txt ;;
     git) work="build/external/m51-git/$port"
          package_list=rootfs/alpine/packages-git.txt ;;
+    python) work="build/external/m52-python/$port"
+            package_list=rootfs/alpine/packages-python.txt ;;
     *) echo "[ALPINE] unknown profile $profile" >&2; exit 2 ;;
 esac
 root="$work/rootfs"
@@ -97,7 +99,14 @@ sudo chown -R "$(id -u):$(id -g)" "$root"
 mkdir -p "$root/tmp" "$root/tests"
 chmod 1777 "$root/tmp"
 test -e "$root/bin/busybox"
-if [ "$profile" = git ]; then
+if [ "$profile" = python ]; then
+    # Original native signed CPython ELF and complete upstream stdlib.
+    cp tests/m52-python-run.sh "$root/tests/run-python.sh"
+    cp tests/m52-python-suite.py "$root/tests/m52-python-suite.py"
+    test -x "$root/usr/bin/python3"
+    readelf -h "$root/usr/bin/python3" | grep -Fq "$machine"
+    test -s "$root/usr/lib/python3.12/os.py"
+elif [ "$profile" = git ]; then
     # Original signed native Alpine Git and its installed library closure.
     cp tests/m51-git-run.sh "$root/tests/run-git.sh"
     test -x "$root/usr/bin/git" || { echo "[M51] missing Git ELF ($port)" >&2; exit 1; }
