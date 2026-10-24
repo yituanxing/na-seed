@@ -76,6 +76,7 @@ struct nas_task {
      * syscall replay and owned by Task, never by a borrowed user pointer. */
     uint64_t deadline_ns;
     bool deadline_active;
+    unsigned tty_observed_bytes; /* per blocked read interbyte VTIME */
     struct nas_posix_timer timers[NAS_POSIX_TIMERS];
     /* Snapshot poll interest when blocking. NEVER dereference a different
      * task's user pollfd pointer during readiness checks. Each bit names a

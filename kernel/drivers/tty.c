@@ -10,6 +10,8 @@
 #include "serial.h"
 #include "tty.h"
 #include "tty_ldisc.h"
+#include "../time/clock.h"
+#include "../arch/arch.h"
 /* One console TTY: POSIX session/foreground ownership and native Linux
  * TCGETS wire ABI are common. x86 COM1, RV SBI firmware console_getchar
  * and ARM PL011 provide actual RX bytes via the same nonblocking interface. */
@@ -172,18 +174,46 @@ void nas_tty_pump(void) {
         if(tty.ldisc.ready)break;
     }
 }
-bool nas_tty_read_waitable(void) {
-    return tty.rx_enabled && nas_arch_console_has_rx() &&
-           ((tty.t.lflag&0000002) || tty.t.cc[5]==0);
+void nas_tty_blocking_read_start(struct nas_task *task) {
+    task->tty_observed_bytes=0;
+    if(!(tty.t.lflag&0000002) && tty.t.cc[5]) {
+        unsigned available=tty.ldisc.used-tty.ldisc.pos;
+        if(!tty.t.cc[6] || available) {
+            task->tty_observed_bytes=available;
+            task->deadline_active=true;
+            task->deadline_ns=nas_time_add_deadline(nas_arch_monotonic_ns(),
+                         (uint64_t)tty.t.cc[5]*100000000ULL);
+        }
+    }
 }
-bool nas_tty_read_ready(uint64_t length) {
-    if(!length) return true;
-    if(!nas_tty_read_waitable())return true; /* replay a real error */
+bool nas_tty_read_waitable(void) {
+    /* Any supported TTY read may wait: the Task owns the monotonic timer,
+     * never the UART device or an unrelated user address space. */
+    return tty.rx_enabled && nas_arch_console_has_rx();
+}
+bool nas_tty_read_ready(struct nas_task *task,uint64_t length) {
+    if(!length || !nas_tty_read_waitable())return true;
     nas_tty_pump();
-    if(tty.unsupported_input)return true;
-    unsigned wanted=length>NAS_LDISC_CAPACITY?
-        NAS_LDISC_CAPACITY:(unsigned)length;
-    return nas_ldisc_readable(&tty.ldisc,&tty.t,wanted);
+    if(tty.unsupported_input || tty.pending_signum)return true;
+    unsigned available=tty.ldisc.used-tty.ldisc.pos;
+    if(tty.t.lflag&0000002)return tty.ldisc.ready;
+    unsigned need=tty.t.cc[6];
+    if(need>length)need=(unsigned)length;
+    if(need>NAS_LDISC_CAPACITY)need=NAS_LDISC_CAPACITY;
+    if(need==0)need=1;
+    if(available>=need)return true;
+    if(!tty.t.cc[5])return false;
+    /* VMIN=0: total deadline from initial read. VMIN>0: interbyte
+     * deadline starts at the first received byte, and resets on progress.
+     * 1 decisecond = 100,000,000 actual monotonic nanoseconds. */
+    if(tty.t.cc[6] && !available)return false;
+    if(!task->deadline_active || available>task->tty_observed_bytes) {
+        task->deadline_active=true;
+        task->deadline_ns=nas_time_add_deadline(nas_arch_monotonic_ns(),
+                    (uint64_t)tty.t.cc[5]*100000000ULL);
+        task->tty_observed_bytes=available;
+    }
+    return nas_time_deadline_expired(nas_arch_monotonic_ns(),task->deadline_ns);
 }
 bool nas_tty_poll_readable(void) {
     if(!tty.rx_enabled || !nas_arch_console_has_rx())return false;
@@ -200,10 +230,6 @@ uint64_t nas_tty_read(uint64_t dst,uint64_t len,bool nonblock) {
     if(!len)return 0;
     if(!tty.rx_enabled)return (uint64_t)-EAGAIN;
     if(!nas_arch_console_has_rx())return (uint64_t)-EOPNOTSUPP;
-    /* Timed noncanonical reads require a real clock and timeout source.
-     * Do not park an unsupported read or fabricate timeout success. */
-    if(!(tty.t.lflag&0000002)&&tty.t.cc[5])
-        return (uint64_t)-EOPNOTSUPP;
     if(dst>UINT64_MAX-len)return (uint64_t)-EFAULT;
     for(uint64_t i=0;i<len;i+=4096)
         if(!nas_mmu_user_writable(dst+i))return (uint64_t)-EFAULT;
@@ -215,15 +241,26 @@ uint64_t nas_tty_read(uint64_t dst,uint64_t len,bool nonblock) {
     }
     uint8_t bytes[NAS_LDISC_CAPACITY];
     unsigned wanted=len>NAS_LDISC_CAPACITY?NAS_LDISC_CAPACITY:(unsigned)len;
-    if(!nas_ldisc_readable(&tty.ldisc,&tty.t,wanted)) {
-        /* Noncanonical VMIN=0,VTIME=0 is an immediate 0-byte read.
-         * Nonblocking read follows Linux's EAGAIN behavior when empty. */
-        if(!(tty.t.lflag&0000002)&&tty.t.cc[6]==0)
+    bool noncanon=!(tty.t.lflag&0000002);
+    unsigned available=tty.ldisc.used-tty.ldisc.pos;
+    bool expired=nas_current_task->deadline_active &&
+        nas_time_deadline_expired(nas_arch_monotonic_ns(),
+                                  nas_current_task->deadline_ns);
+    struct nas_termios copy=tty.t;
+    if(noncanon && tty.t.cc[5]) {
+        /* Timed zero-minimum waits return on one byte or actual elapsed
+         * time; interbyte minimum reads return partial data on expiry. */
+        if(expired && available)copy.cc[6]=1;
+        if(!tty.t.cc[6] && available)copy.cc[6]=1;
+    }
+    if(!nas_ldisc_readable(&tty.ldisc,&copy,wanted)) {
+        if(noncanon && !tty.t.cc[6] && !tty.t.cc[5])
             return nonblock?(uint64_t)-EAGAIN:0;
-        return (uint64_t)-EAGAIN; /* dispatcher parks only blocking tty */
+        if(noncanon && tty.t.cc[5] && expired)return 0;
+        return (uint64_t)-EAGAIN;
     }
     if(tty.ldisc.eof) { nas_ldisc_reset(&tty.ldisc);return 0; }
-    unsigned n=nas_ldisc_peek(&tty.ldisc,&tty.t,bytes,wanted);
+    unsigned n=nas_ldisc_peek(&tty.ldisc,&copy,bytes,wanted);
     if(!nas_user_write_bytes(dst,bytes,n))return (uint64_t)-EFAULT;
     nas_ldisc_commit(&tty.ldisc,n);
     return n;

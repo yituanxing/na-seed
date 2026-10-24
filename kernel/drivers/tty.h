@@ -2,6 +2,7 @@
 #define NASEED_TTY_H
 #include <stdint.h>
 #include <stdbool.h>
+struct nas_task;
 struct nas_termios { uint32_t iflag,oflag,cflag,lflag; uint8_t line,cc[19]; };
 _Static_assert(sizeof(struct nas_termios)==36,"native Linux TCGETS size");
 void nas_tty_init(void);
@@ -17,7 +18,8 @@ void nas_tty_write_char(uint8_t byte);
  * Input is still polled on a real serial device until IRQ support lands. */
 void nas_tty_pump(void);
 bool nas_tty_read_waitable(void);
-bool nas_tty_read_ready(uint64_t length);
+void nas_tty_blocking_read_start(struct nas_task *task);
+bool nas_tty_read_ready(struct nas_task *task,uint64_t length);
 bool nas_tty_poll_readable(void);
 unsigned nas_tty_take_signal(uint64_t *sid,uint64_t *pgid);
 void nas_tty_signal_unsupported(void);

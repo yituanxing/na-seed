@@ -30,3 +30,14 @@ M53 adds **six** new real boot sessions (Ex + interactive for each ISA), while
 the existing 12 CI QEMU installer jobs remain unchanged in count. A single
 focused three-ISA M53 workflow is optional workflow_dispatch; exact-head
 six main workflows and all 12 QEMU job results must pass before merging.
+
+## Real cross-ISA kernel mechanism remediation
+
+The three original Vim interactive binaries have now exposed genuine
+POSIX timer and x86 select ABI gaps plus timed raw TTY reads. The shared
+clock/timekeeper owns a bounded process timer table, real monotonic or
+realtime expiration, signal events and remaining-time reporting. x86 legacy
+select reuses exactly the existing pselect6/poll file readiness and Task
+scheduler; RV/ARM64 retain their native generic pselect6. Raw TTY VMIN/
+VTIME now uses real task deadlines, not fake successful reads or ENOSYS.
+The same mechanism is independent of the application name and ISA.

@@ -222,8 +222,12 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
         if ((nr == NAS_SC_read || nr == NAS_SC_readv) &&
             (int64_t)ret == -EAGAIN &&
             (descriptors[fd] == FD_TTY || descriptors[fd] == FD_UART) &&
-            nas_tty_read_waitable())
+            nas_tty_read_waitable()) {
+            /* First timeout for MIN=0/TIME>0 starts at the syscall,
+             * before any task sleeps; interbyte MIN>0 starts on RX. */
+            nas_tty_blocking_read_start(&TASK);
             return nas_task_block(frame,nr,fd,buf,count,0);
+        }
     }
     return ret;
 }
