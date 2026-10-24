@@ -84,6 +84,10 @@ struct robust_case {
 };
 static struct robust_case tests[3];
 static volatile u32 tid_slots[3];
+/* Registration is a per-TID syscall: a freshly cloned sibling is NOT
+ * registered at the instant clone() returns in its parent. Synchronize
+ * using actual Linux FUTEX_WAIT/WAKE instead of scheduler timing guesses. */
+static volatile u32 registered[3], release_worker[3];
 static __attribute__((aligned(16))) unsigned char stacks[3][65536];
 static volatile int round_index;
 #define WAITERS 0x80000000U
@@ -120,6 +124,15 @@ static __attribute__((used,noreturn)) void thread_body(void) {
         r->head.next=(u64)&r->lock[0].next;
     }
     if(call2(N_SET_ROBUST,(long)&r->head,24)!=0)fail(75);
+    registered[i]=1;
+    if(call3(N_FUTEX,(long)&registered[i],129,1)<0)fail(79);
+    /* The parent must have read and validated our live list before we
+     * can exit. A 250ms timeout alone is inherently racy with host QEMU
+     * scheduling, particularly with simultaneous CI matrix guests. */
+    while(!release_worker[i]) {
+        long w=call3(N_FUTEX,(long)&release_worker[i],128,0);
+        if(w!=0 && w!=-11)fail(80); /* EAGAIN: raced with release */
+    }
     sleep_quarter(); /* scheduler switches back to main thread for FUTEX_WAIT */
     thread_exit();   /* owner death must wake the waiting main thread */
 }
@@ -162,6 +175,13 @@ static __attribute__((used,noreturn)) void robust_main(void) {
         long child=spawn_thread((void*)sp,&tid_slots[i],&tid_slots[i]);
         if(child<=0)fail(56);
         if((u32)child!=tid_slots[i])fail(57);
+        /* clone() only schedules the new TID; it does not imply that the
+         * worker has executed set_robust_list. Wait for the real futex
+         * registration acknowledgement before inspecting another TID. */
+        while(!registered[i]) {
+            long w=call3(N_FUTEX,(long)&registered[i],128,0);
+            if(w!=0 && w!=-11)fail(81);
+        }
         /* Each worker's registered list is discoverable while alive,
          * and must be distinct from the group leader's list. */
         out_head=0;out_len=0;
@@ -169,6 +189,8 @@ static __attribute__((used,noreturn)) void robust_main(void) {
         if(out_head!=(u64)&tests[i].head || out_len!=24)fail(59);
         u32 expected=(u32)child|WAITERS;
         if(tests[i].lock[0].futex!=expected)fail(60);
+        release_worker[i]=1;
+        if(call3(N_FUTEX,(long)&release_worker[i],129,1)<0)fail(82);
         long ret=call3(N_FUTEX,(long)&tests[i].lock[0].futex,0|128,expected);
         if(ret!=0)fail(61); /* MUST block and wake on genuine owner death */
         if(tests[i].lock[0].futex!=(OWNER_DIED|WAITERS))fail(62);

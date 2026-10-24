@@ -16,6 +16,18 @@
   is **not** needed. Keep ISA-specific CPU/MMU/context/IRQ providers below
   shared Task, scheduler, process, signal, VFS and ELF source policy.
 
+## Original M45 test race discovered by concurrent full-matrix CI
+
+The original strict robust-futex test did `clone()` followed immediately by
+`get_robust_list(worker_tid)`, assuming the worker had already run its
+`set_robust_list` syscall. Under 12 concurrent native CI QEMU jobs,
+RV64 correctly returned an **unregistered** per-TID list and the test
+exited 59. That is a **userspace test ordering bug**, not grounds to
+weaken the kernel's per-thread robust behavior. Fix once, across all
+architectures: real shared-memory FUTEX_WAIT/WAKE handshake after the
+worker registers and a second release barrier before it may exit. Keep
+all previous exact list-offset, owner-death and clear_child_tid checks.
+
 ## Architectural scope and CI consolidation
 
 The existing 12 original userland probes have **not been removed, weakened
