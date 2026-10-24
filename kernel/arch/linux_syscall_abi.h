@@ -100,6 +100,11 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_openat: return NAS_SC_openat;
     case __NR_pipe: return NAS_SC_pipe;
     case __NR_pipe2: return NAS_SC_pipe2;
+    case __NR_epoll_create1: return NAS_SC_epoll_create1;
+    case __NR_epoll_create: return NAS_SC_epoll_create;
+    case __NR_epoll_ctl: return NAS_SC_epoll_ctl;
+    case __NR_epoll_wait: return NAS_SC_epoll_wait;
+    case __NR_epoll_pwait: return NAS_SC_epoll_pwait;
     case __NR_poll: return NAS_SC_poll;
     case __NR_ppoll: return NAS_SC_ppoll;
     case __NR_pselect6: return NAS_SC_pselect6;
@@ -137,6 +142,9 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 53U: return NAS_SC_fchmodat;
     case 48U: return NAS_SC_faccessat; /* Linux asm-generic */
     case 439U: return NAS_SC_faccessat2; /* same Linux syscall ID */
+    case 20U: return NAS_SC_epoll_create1;
+    case 21U: return NAS_SC_epoll_ctl;
+    case 22U: return NAS_SC_epoll_pwait;
     case 72U: return NAS_SC_pselect6; /* asm-generic pselect6 */
     case 73U: return NAS_SC_ppoll; /* asm-generic ppoll; poll absent */
     case 113U: return NAS_SC_clock_gettime;

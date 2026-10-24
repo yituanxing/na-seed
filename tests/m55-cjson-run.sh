@@ -20,6 +20,15 @@ test -s "$src/CMakeLists.txt"
 test -s "$src/tests/unity/src/unity.c"
 echo M55_ORIGINAL_CMAKE_NINJA_CJSON_PASS
 
+phase=generic-event-loop-probe
+# Real, program-agnostic Linux epoll, pipe and deadline semantics used by
+# CMake/libuv. Build with the actual target GCC *in the NaSeed guest*.
+# Avoid another full CMake timeout without a failing syscall trace.
+/usr/bin/gcc -std=c11 -O2 -Wall -Wextra -Werror -static \
+    /tests/m55-epoll.c -o /tmp/m55-epoll
+/tmp/m55-epoll
+echo M55_LINUX_EPOLL_PIPE_WAIT_PASS
+
 phase=real-cmake-configure
 # CMake 4 removes older policy defaults. Supply the new policy floor via
 # a normal command-line option; NEVER patch upstream cJSON CMakeLists.

@@ -1,5 +1,15 @@
 # M55 — Native CMake + real Ninja, entire upstream cJSON 1.7.19 tests
 
+## Actual Linux compatibility finding
+CMake 4/libuv is the first accepted program requiring Linux epoll, not a
+niche-specific test shim. On all 3 ISAs the unchanged CMake emitted
+epoll_create1 ENOSYS (x86 nr=291, generic64 nr=20) and hung waiting on a
+real pipe. Implement a bounded shared open-file-descriptor epoll backend,
+including create/ctl/wait/pwait, checked 12-byte x86 versus 16-byte generic
+epoll_event ABI, real pipe/TTY readiness, task-owned timeout, CLOEXEC and
+last-close lifetime. Add a focused original target GCC-compiled native
+event-loop smoke before the expensive full CMake upstream build.
+
 Goal: move past toy CMake samples. Fetch an authentic immutable source
 snapshot from DaveGamble/cJSON commit
 `c859b25da02955fef659d658b8f324b5cde87be3` (upstream v1.7.19)

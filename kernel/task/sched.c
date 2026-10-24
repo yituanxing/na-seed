@@ -13,6 +13,7 @@
 #include "wait_pid.h"
 #include "signal.h"
 #include "../time/clock.h"
+#include "../fs/epoll.h"
 #include "../mm/usercopy.h"
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
@@ -74,6 +75,9 @@ static bool task_can_wake(const struct nas_task *task) {
         task->blocked_op == NAS_SC_clock_nanosleep) return false;
     if (task->blocked_op == NAS_SC_futex) return task->futex_woken;
     if (task->blocked_op == NAS_SC_wait4) return task_wait_ready(task);
+    if(task->blocked_op==NAS_SC_epoll_wait ||
+       task->blocked_op==NAS_SC_epoll_pwait)
+        return nas_epoll_task_ready(task);
     if (task->blocked_op == NAS_SC_poll ||
         (task->blocked_op == NAS_SC_ppoll ||
          (task->blocked_op == NAS_SC_pselect6 || task->blocked_op == NAS_SC_select)))
@@ -118,6 +122,8 @@ static uint64_t task_replay(struct nas_task *task) {
     if (nr == NAS_SC_write) return nas_fs_fd_write(a[0], a[1], a[2]);
     if (nr == NAS_SC_writev) return nas_fs_fd_writev(a[0], a[1], a[2]);
     if (nr == NAS_SC_wait4) return nas_process_wait4(a[0], a[1], a[2], a[3]);
+    if(nr==NAS_SC_epoll_wait || nr==NAS_SC_epoll_pwait)
+        return nas_epoll_wait(a[0],a[1],a[2],a[3]);
     if (nr == NAS_SC_poll) return nas_fs_poll(a[0],a[1],a[2]);
     if (nr == NAS_SC_ppoll) return nas_fs_ppoll(a[0],a[1],a[2],a[3]);
     if (nr == NAS_SC_pselect6 || nr == NAS_SC_select)
@@ -329,8 +335,13 @@ bool nas_sched_preempt_select(void) {
                     (kind==FD_PIPE_R || kind==FD_PIPE_W);
                 bool poll_again=(next->blocked_op==NAS_SC_poll ||
                                  (next->blocked_op==NAS_SC_ppoll ||
+                    next->blocked_op==NAS_SC_epoll_pwait ||
                                   ((next->blocked_op==NAS_SC_pselect6 || next->blocked_op==NAS_SC_select) || next->blocked_op==NAS_SC_select))) &&
                                  (int64_t)result==-EAGAIN;
+                poll_again=poll_again ||
+                    ((next->blocked_op==NAS_SC_epoll_wait ||
+                      next->blocked_op==NAS_SC_epoll_pwait) &&
+                     (int64_t)result==-EAGAIN);
                 if (tty_again || pipe_again || poll_again) {
                     nas_current_task=from;
                     nas_arch_restore_cpu(from);
@@ -338,6 +349,7 @@ bool nas_sched_preempt_select(void) {
                 }
                 nas_arch_set_saved_return(next,result);
                 if((next->blocked_op==NAS_SC_ppoll ||
+                    next->blocked_op==NAS_SC_epoll_pwait ||
                                   ((next->blocked_op==NAS_SC_pselect6 || next->blocked_op==NAS_SC_select) || next->blocked_op==NAS_SC_select)))
                     nas_signal_ppoll_restore(next,(int64_t)result==-EINTR);
                 next->pending_valid=false;
@@ -408,8 +420,13 @@ retry_schedule: ; /* label must precede a statement in C11 */
                     (replay_kind==FD_PIPE_R || replay_kind==FD_PIPE_W);
                 bool poll_again=(next->blocked_op==NAS_SC_poll ||
                                  (next->blocked_op==NAS_SC_ppoll ||
+                    next->blocked_op==NAS_SC_epoll_pwait ||
                                   ((next->blocked_op==NAS_SC_pselect6 || next->blocked_op==NAS_SC_select) || next->blocked_op==NAS_SC_select))) &&
                                  (int64_t)result==-EAGAIN;
+                poll_again=poll_again ||
+                    ((next->blocked_op==NAS_SC_epoll_wait ||
+                      next->blocked_op==NAS_SC_epoll_pwait) &&
+                     (int64_t)result==-EAGAIN);
                 if (tty_again || pipe_again || poll_again) {
                     next->state = NAS_TASK_BLOCKED;
                     nas_current_task = previous;
@@ -417,6 +434,7 @@ retry_schedule: ; /* label must precede a statement in C11 */
                     continue;
                 }
                 if((next->blocked_op==NAS_SC_ppoll ||
+                    next->blocked_op==NAS_SC_epoll_pwait ||
                                   ((next->blocked_op==NAS_SC_pselect6 || next->blocked_op==NAS_SC_select) || next->blocked_op==NAS_SC_select)))
                     nas_signal_ppoll_restore(next,(int64_t)result==-EINTR);
                 next->pending_valid = false;
@@ -447,6 +465,11 @@ retry_schedule: ; /* label must precede a statement in C11 */
     for (unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
         const struct nas_task *t=nas_task_at(slot);
         if (t->state != NAS_TASK_BLOCKED || !t->pending_valid)continue;
+        if((t->blocked_op==NAS_SC_epoll_wait ||
+             t->blocked_op==NAS_SC_epoll_pwait) && t->poll_tty_read) {
+            __asm__ volatile ("" ::: "memory");
+            goto retry_schedule;
+        }
         if((t->blocked_op==NAS_SC_poll ||
              t->blocked_op==NAS_SC_ppoll ||
              (t->blocked_op==NAS_SC_pselect6 || t->blocked_op==NAS_SC_select)) &&
@@ -477,6 +500,17 @@ retry_schedule: ; /* label must precede a statement in C11 */
     if(nas_time_timers_armed()) {
         __asm__ volatile ("" ::: "memory");
         goto retry_schedule;
+    }
+    /* A cross-process epoll_ctl or physical UART arrival may wake a
+     * blocked epoll waiter even if no timer is currently armed. */
+    for(unsigned slot=0;slot<NAS_TASK_LIMIT;slot++){
+        const struct nas_task *t=nas_task_at(slot);
+        if(t->state==NAS_TASK_BLOCKED && t->pending_valid &&
+           (t->blocked_op==NAS_SC_epoll_wait ||
+            t->blocked_op==NAS_SC_epoll_pwait)) {
+            __asm__ volatile ("" ::: "memory");
+            goto retry_schedule;
+        }
     }
     /* Fatal deadlock diagnostic: dump who holds each pipe endpoint. */
     for (unsigned i = 0; i < NAS_PIPE_COUNT; i++) {
