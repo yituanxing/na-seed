@@ -83,7 +83,12 @@ static uint8_t *tmp_data_page(struct nas_tmp_file *file, uint64_t number,
 }
 int64_t tmp_read_at(const struct nas_tmp_file *const_file, uint64_t offset,
                     uint8_t *dst, uint64_t count) {
-    if (!const_file || !const_file->used || !dst) return -EINVAL;
+    if (!const_file || !const_file->used || (!dst && count)) return -EINVAL;
+    /* A zero-byte read validates a regular inode without requiring a
+     * destination buffer. In particular, MAP_PRIVATE validates its file
+     * description with nas_fs_mmap_read(fd, offset, NULL, 0), even when
+     * the underlying file is a writable tmpfs inode (Git config/index). */
+    if (!count) return 0;
     if (offset >= const_file->size) return 0;
     if (count > const_file->size - offset) count = const_file->size - offset;
     uint64_t done = 0;
