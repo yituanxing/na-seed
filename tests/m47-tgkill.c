@@ -62,14 +62,20 @@ static inline long sys1(long n,long a){return sys6(n,a,0,0,0,0,0);}
 static __attribute__((noreturn)) void exitall(int n){
     sys1(NR_exit_group,n);for(;;){}
 }
-static volatile u32 clear_tid,blockword;
+static volatile u32 clear_tid,blockword,ready;
 static volatile int role;
 static __attribute__((aligned(16))) unsigned char stack[65536];
 static __attribute__((used,noreturn)) void worker_entry(void) {
     if(role==1) {
         const u64 sigmask=1ULL<<(10-1); /* SIGUSR1 */
         if(sys6(NR_sigprocmask,0,(long)&sigmask,0,8,0,0))exitall(71);
-        if(sys3(NR_futex,(long)&blockword,128,0)!=0)exitall(72);
+        /* Explicit release/acquire handshake prevents sending SIGUSR1
+         * before the worker has actually blocked it. Timer preemption
+         * is allowed between clone and the very first worker syscall. */
+        ready=1;
+        (void)sys3(NR_futex,(long)&ready,129,1);
+        long parked=sys3(NR_futex,(long)&blockword,128,0);
+        if(parked!=0 && parked!=-11)exitall(72);
         u64 pending=0;
         if(sys3(NR_sigpending,(long)&pending,8,0)!=0 ||
            (pending & sigmask)!=sigmask)exitall(73);
@@ -77,6 +83,8 @@ static __attribute__((used,noreturn)) void worker_entry(void) {
         sys1(NR_exit,0);
         for(;;){}
     }
+    ready=1;
+    (void)sys3(NR_futex,(long)&ready,129,1);
     (void)sys3(NR_futex,(long)&blockword,128,0);
     exitall(74); /* must not run after tgkill(SIGKILL) group termination */
 }
@@ -103,9 +111,14 @@ __attribute__((naked)) static long spawn(void *sp __attribute__((unused)),
 #endif
 }
 static __attribute__((noreturn)) void scenario(int mode) {
-    clear_tid=0;blockword=0;role=mode;
+    clear_tid=0;blockword=0;ready=0;role=mode;
     long tid=spawn((void*)(stack+sizeof(stack)),&clear_tid,&clear_tid);
     if(tid<=0 || (u32)tid!=clear_tid)exitall(80);
+    if(!ready) {
+        long r=sys3(NR_futex,(long)&ready,128,0);
+        if(r!=0 && r!=-11)exitall(79);
+    }
+    if(!ready)exitall(78);
     long group=sys1(NR_getpid,0);
     if(group<=0)exitall(81);
     if(sys3(NR_tgkill,group,tid,0)!=0 ||
@@ -119,10 +132,13 @@ static __attribute__((noreturn)) void scenario(int mode) {
         if(sys3(NR_sigpending,(long)&leader_pending,8,0)!=0 ||
            leader_pending!=0)exitall(84);
         blockword=1;
-        if(sys3(NR_futex,(long)&blockword,129,1)!=1)exitall(85);
+        long woken=sys3(NR_futex,(long)&blockword,129,1);
+        if(woken<0 || woken>1)exitall(85);
         /* Real CLONE_CHILD_CLEARTID wake, never an invented delay. */
-        if(clear_tid && sys3(NR_futex,(long)&clear_tid,128,(long)tid)!=0)
-            exitall(86);
+        if(clear_tid) {
+            long r=sys3(NR_futex,(long)&clear_tid,128,(long)tid);
+            if(r!=0 && r!=-11)exitall(86);
+        }
         if(clear_tid!=0 ||
            sys3(NR_tgkill,group,tid,0)!=-3)exitall(87);
         SAY("M47_TGID_TID_VALIDATION_PASS\n");
