@@ -1,7 +1,5 @@
 #define _GNU_SOURCE
-#include <errno.h>
 #include <fcntl.h>
-#include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
@@ -12,7 +10,10 @@
  * forks and execs original packaged Vim. After physical serial keystrokes,
  * verify the actual saved tmpfs bytes. No synthetic /dev/tty or kernel hook. */
 static int fail(const char *where) {
-    fprintf(stderr,"[M53 FAIL] %s errno=%d\n",where,errno);
+    const char prefix[]="[M53 FAIL] ";
+    (void)write(STDERR_FILENO,prefix,sizeof(prefix)-1);
+    (void)write(STDERR_FILENO,where,strlen(where));
+    (void)write(STDERR_FILENO,"\n",1);
     return 90;
 }
 int main(void) {
@@ -34,8 +35,8 @@ int main(void) {
     if(write(fd,source,sizeof(source)-1)!=(ssize_t)(sizeof(source)-1))
         return fail("write original file");
     if(close(fd)!=0)return fail("close real file");
-    puts("[M53] launching original native Vim over actual controlling UART");
-    fflush(stdout);
+    const char banner[]="[M53] launching original native Vim over actual controlling UART\n";
+    (void)write(STDOUT_FILENO,banner,sizeof(banner)-1);
     pid_t child=fork();
     if(child<0)return fail("fork");
     if(child==0) {
@@ -57,7 +58,7 @@ int main(void) {
     close(fd);
     if(count<0 || strstr(data,"M53-LIVE-EDIT M53 original Vim serial session")==NULL)
         return fail("real serial Vim editor did not save expected tmpfs bytes");
-    puts("M53_ORIGINAL_VIM_REAL_TTY_EDIT_SAVE_PASS");
-    fflush(stdout);
+    const char passed[]="M53_ORIGINAL_VIM_REAL_TTY_EDIT_SAVE_PASS\n";
+    (void)write(STDOUT_FILENO,passed,sizeof(passed)-1);
     return 0;
 }
