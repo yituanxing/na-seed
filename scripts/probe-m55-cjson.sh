@@ -20,7 +20,9 @@ export BUSYBOX_PARITY_MANIFEST=scripts/m55-cjson-cases.tsv
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
 export NAS_ACCEPTANCE_QEMU_RAM=1536M
 export NAS_ACCEPTANCE_DISK_MB=768
-export NAS_SYSCALL_TRACE=${NAS_SYSCALL_TRACE:-1}
+export NAS_SYSCALL_TRACE=1
+# Force diagnostic for one M55 failing guest until the real CMake wait is
+# characterized. Revert to no tracing before merging production CI.
 sh "$runner"
 log="$logs/m55-cjson.clean.log"
 test -s "$log"
