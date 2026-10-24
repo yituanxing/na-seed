@@ -8,6 +8,11 @@ export PATH
 /usr/bin/gcc --version | /bin/busybox grep -Fq 'gcc'
 echo M48_GNU_ORIGINAL_BINARIES_PASS
 
+# GCC's assembler uses temporary files in its current directory. The real
+# CPIO root is immutable, just like a read-only Linux root filesystem.
+# Build from the mounted writable tmpfs; Makefile targets remain absolute.
+cd /tmp
+
 # Must be truly concurrent and preserve the original GNU jobserver behavior,
 # each recipe starts a POSIX shell, invokes GNU GCC, as/ld, then exits.
 /usr/bin/make -j2 -f /tests/m48-parallel.mk all
