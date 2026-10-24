@@ -36,6 +36,8 @@ case "$profile" in
               package_list=rootfs/alpine/packages-parallel.txt ;;
     capacity) work="build/external/m49-capacity/$port"
               package_list=rootfs/alpine/packages-parallel.txt ;;
+    git) work="build/external/m51-git/$port"
+         package_list=rootfs/alpine/packages-git.txt ;;
     *) echo "[ALPINE] unknown profile $profile" >&2; exit 2 ;;
 esac
 root="$work/rootfs"
@@ -95,7 +97,12 @@ sudo chown -R "$(id -u):$(id -g)" "$root"
 mkdir -p "$root/tmp" "$root/tests"
 chmod 1777 "$root/tmp"
 test -e "$root/bin/busybox"
-if [ "$profile" = capacity ]; then
+if [ "$profile" = git ]; then
+    # Original signed native Alpine Git and its installed library closure.
+    cp tests/m51-git-run.sh "$root/tests/run-git.sh"
+    test -x "$root/usr/bin/git" || { echo "[M51] missing Git ELF ($port)" >&2; exit 1; }
+    readelf -h "$root/usr/bin/git" | grep -Fq "$machine"
+elif [ "$profile" = capacity ]; then
     # M49 runs only real packaged GNU Make/GCC/xargs and guest-built musl
     # binaries; no new syscall stubs, no precompiled fake guest executables.
     cp tests/m49-capacity-run.sh "$root/tests/run-capacity.sh"

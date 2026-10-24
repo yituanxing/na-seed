@@ -1,5 +1,5 @@
 #!/bin/sh
-# M50: same twelve strict native QEMU probes, amortize per-ISA dependency
+# M50+: preserve original native QEMU probes, amortize per-ISA dependency
 # install and kernel build. No synthetic or stubbed acceptance; any error
 # aborts the suite. Other suites continue independently in separate CI jobs.
 set -eu
@@ -7,7 +7,7 @@ set -eu
 suite=$1
 port=$2
 case "$suite" in
-  foundation) expected=4 ;;
+  foundation) expected=5 ;;
   pthread) expected=3 ;;
   lifecycle) expected=3 ;;
   parallel) expected=2 ;;
@@ -21,7 +21,7 @@ tab=$(printf '\t')
 while IFS="$tab" read -r name group probe; do
     case "$name" in ''|\#*) continue ;; esac
     [ "$group" = "$suite" ] || continue
-    case "$probe" in scripts/probe-m[34][0-9]-*.sh) ;; *)
+    case "$probe" in scripts/probe-m[34][0-9]-*.sh|scripts/probe-m51-*.sh) ;; *)
         echo "[M50 FAIL] noncanonical acceptance: $probe" >&2
         exit 1 ;;
     esac
