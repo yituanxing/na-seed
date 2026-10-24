@@ -1,3 +1,4 @@
+m54	foundation	scripts/probe-m54-dev.sh
 m53	foundation	scripts/probe-m53-vim.sh
 m52	foundation	scripts/probe-m52-python.sh
 # Milestone<TAB>suite<TAB>existing verified 3-ISA native QEMU probe.
