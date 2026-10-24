@@ -40,7 +40,7 @@ phase=eventfd-real-linux-guest
 echo M55_LINUX_EVENTFD_EPOLL_PASS
 
 phase=shared-main-stack-capacity
-/usr/bin/gcc -std=c11 -O2 -Wall -Wextra -Werror -static \\
+/usr/bin/gcc -std=c11 -O2 -Wall -Wextra -Werror -static \
     /tests/m55-stack.c -o /tmp/m55-stack
 /tmp/m55-stack
 echo M55_NATIVE_SHARED_STACK_CAPACITY_PASS
