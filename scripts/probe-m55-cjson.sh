@@ -20,9 +20,12 @@ export BUSYBOX_PARITY_MANIFEST=scripts/m55-cjson-cases.tsv
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
 export NAS_ACCEPTANCE_QEMU_RAM=1536M
 export NAS_ACCEPTANCE_DISK_MB=768
-export NAS_SYSCALL_TRACE=1
-# Force diagnostic for one M55 failing guest until the real CMake wait is
-# characterized. Revert to no tracing before merging production CI.
+# Full original CTest-enabled CMake/Ninja work is CPU-heavy under software
+# QEMU. Keep generic syscall tracing opt-in; failures retain serial evidence.
+export NAS_SYSCALL_TRACE=${NAS_SYSCALL_TRACE:-0}
+# The three probe drivers use this bounded budget only for M55. The boot
+# monitor terminates early on *verified* final PASS, never on partial markers.
+export NAS_M55_QEMU_TIMEOUT=${NAS_M55_QEMU_TIMEOUT:-2400}
 sh "$runner"
 log="$logs/m55-cjson.clean.log"
 test -s "$log"

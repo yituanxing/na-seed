@@ -71,3 +71,20 @@ before userspace entered. Move the two providers onto one common constant
 NAS_USER_SIGNAL_TRAMPOLINE=0x6fe00000, outside the entire main stack with
 an unmapped gap. Keep the x86 libc-provided SA_RESTORER unchanged. Do not
 weaken signal, TinyCC, Lua or other historical acceptance gates.
+
+## Full-build acceptance budget and diagnostic policy
+After shared FIONBIO, eventfd/epoll and 1-MiB main-stack fixes, the new
+three-ISA guest test reached real upstream CMake configure (x86-64 and ARM64)
+and Ninja's complete 45-action CTest-enabled build. The original 180/200s
+single-QEMU smoke budget cut off ordinary compiler subprocesses after only a
+few actions; the recorded logs show continuing GCC/ld/ar/ranlib progress, not
+a fatal kernel exception. RV64 was likewise still running GCC try_compile.
+
+M55 is now a *full guest build and test*, not a short smoke test: use a
+maximum 2400s per ISA (overridable with NAS_M55_QEMU_TIMEOUT), bounded
+within the existing 50-minute grouped CI job. The hardware marker monitor
+returns immediately on genuine successful completion and fails closed on
+[FAIL], QEMU termination and timeout. Run with NAS_SYSCALL_TRACE=0 in regular
+CI to avoid unnecessary UART spam; opt in with NAS_SYSCALL_TRACE=1 for a
+focused diagnosis. This change does not weaken expected upstream CTest,
+rebuild, or earlier acceptance markers.
