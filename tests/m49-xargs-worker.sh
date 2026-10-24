@@ -16,4 +16,4 @@ until test -e /tmp/m49-xargs-alpha-ready &&
   /bin/busybox sleep 1
 done
 "/tmp/m49-$name"
-echo "M49_XARGS_$name_PASS"
+echo "M49_XARGS_${name}_PASS"
