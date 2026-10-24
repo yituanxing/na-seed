@@ -248,10 +248,10 @@ uint64_t nas_tty_read(uint64_t dst,uint64_t len,bool nonblock) {
                                   nas_current_task->deadline_ns);
     struct nas_termios copy=tty.t;
     if(noncanon && tty.t.cc[5]) {
-        /* Timed zero-minimum waits return on one byte or actual elapsed
-         * time; interbyte minimum reads return partial data on expiry. */
-        if(expired && available)copy.cc[6]=1;
-        if(!tty.t.cc[6] && available)copy.cc[6]=1;
+        /* VMIN=0/VTIME>0 must NOT complete before the actual timeout.
+         * VMIN>0 may return partial input only after interbyte expiry. */
+        if(tty.t.cc[6]==0 || (expired && available))copy.cc[6]=1;
+        if(expired && !available)return 0;
     }
     if(!nas_ldisc_readable(&tty.ldisc,&copy,wanted)) {
         if(noncanon && !tty.t.cc[6] && !tty.t.cc[5])

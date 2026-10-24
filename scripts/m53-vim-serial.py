@@ -26,7 +26,7 @@ try:
             log.extend(chunk)
         # Must observe real Vim's rendering of the actual file, not merely
         # the PID1 launcher declaring that an editor will start.
-        if not sent and b"M53 original Vim serial session" in log:
+        if not sent and b'1L, 32B' in log and b'[EXEC] replaced process with CPIO ELF: /usr/bin/vim' in log:
             # Vim normal-mode start: gg0 -> insert literal bytes -> Escape ->
             # :write + quit. Each byte traverses physical UART and TTY.
             for byte in b"gg0iM53-LIVE-EDIT \x1b:wq\r":
