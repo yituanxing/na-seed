@@ -13,5 +13,12 @@ export PATH HOME LC_ALL PYTHONHOME PYTHONDONTWRITEBYTECODE PYTHONUNBUFFERED
 case "$(/usr/bin/python3 --version)" in 'Python 3.'*) ;; *) exit 1 ;; esac
 echo M52_ORIGINAL_SIGNED_PYTHON_PASS
 stage=python-stdlib
-/usr/bin/python3 -B /tests/m52-python-suite.py
+# Diagnostic: distinguish absent CPIO runtime files from VFS/import ABI.
+for f in /usr/lib/python3.12/encodings/__init__.py \
+         /usr/lib/python3.12/encodings/utf_8.py \
+         /usr/lib/python3.12/codecs.py; do
+    if [ ! -s "$f" ]; then echo "[M52 ERROR] guest cannot read $f" >&2; exit 1; fi
+done
+echo M52_GUEST_STDLIB_FILES_VISIBLE
+PYTHONVERBOSE=1 /usr/bin/python3 -v -B /tests/m52-python-suite.py
 echo M52_PYTHON_SUITE_PASS

@@ -106,6 +106,8 @@ if [ "$profile" = python ]; then
     test -x "$root/usr/bin/python3"
     readelf -h "$root/usr/bin/python3" | grep -Fq "$machine"
     test -s "$root/usr/lib/python3.12/os.py"
+    test -s "$root/usr/lib/python3.12/encodings/__init__.py"
+    test -s "$root/usr/lib/python3.12/encodings/utf_8.py"
 elif [ "$profile" = git ]; then
     # Original signed native Alpine Git and its installed library closure.
     cp tests/m51-git-run.sh "$root/tests/run-git.sh"
