@@ -62,3 +62,12 @@ Linux's on-demand grow-down stack; the latter requires deliberate exception
 handling, VM-area metadata, and per-architecture page-fault recovery and is
 tracked as future architecture work. The shared policy does not branch on
 program name or ISA.
+
+## Mandatory signal restorer layout invariant
+The 1-MiB main stack revealed an ABI layout collision: the old RV64/ARM64
+rt_sigreturn RX trampoline was pinned at 0x6ff00000, exactly the new bottom
+stack page. On both native ISAs boot failed to install the signal helper
+before userspace entered. Move the two providers onto one common constant
+NAS_USER_SIGNAL_TRAMPOLINE=0x6fe00000, outside the entire main stack with
+an unmapped gap. Keep the x86 libc-provided SA_RESTORER unchanged. Do not
+weaken signal, TinyCC, Lua or other historical acceptance gates.

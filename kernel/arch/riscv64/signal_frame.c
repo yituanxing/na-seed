@@ -9,6 +9,7 @@
 #include "../../task/signal.h"
 #include "../../mm/usercopy.h"
 #include "../arch.h"
+#include "../abi.h"
 #include "../mmu.h"
 #include "../../panic.h"
 #include "context.h"
@@ -39,7 +40,7 @@ _Static_assert(sizeof(struct rv_ucontext)==960,"Linux RV64 ucontext");
 _Static_assert(sizeof(struct rv_sigframe)==1088,"Linux RV64 rt_sigframe");
 /* A tiny RX vDSO equivalent, mapped into EACH process address space on
  * exec and initial boot. RA never points to a non-executable stack page. */
-#define NAS_SIGRETURN_TRAMPOLINE UINT64_C(0x6ff00000)
+#define NAS_SIGRETURN_TRAMPOLINE NAS_USER_SIGNAL_TRAMPOLINE
 bool nas_arch_signal_install_handler(uint64_t *opaque,unsigned signo,
                                const uint64_t *action) {
     struct nas_rv_trap_frame *fr=(struct nas_rv_trap_frame *)(void *)opaque;
