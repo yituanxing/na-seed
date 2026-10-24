@@ -47,3 +47,18 @@ CI remains 12 existing grouped QEMU jobs. All M38–M54 tests stay mandatory;
 one additional real upstream workload on each ISA. Focused M55
 workflow_dispatch is manual, not an extra PR job. Do NOT merge until all
 native QEMU M55 tests and existing six CI workflows finish green.
+
+## Subsequent real Ninja kernel fault
+After the generic FIONBIO (0x5421) and FIOCLEX/FIONCLEX ioctls were
+implemented at the shared descriptor layer, genuine CMake progressed through
+GCC 15 compiler identification and Ninja ABI try-compile. Ninja then produced
+a reproducible user stack page fault on x86-64 and ARM64 near 0x6ffdfxxx,
+below the former 0x6ffe0000 mapped floor. All boot/exec/auxv code had three
+duplicated 32-page (128-KiB) policies. Consolidate the per-process main stack
+mapping in one helper and provide a bounded 256-page (1-MiB) eager stack on
+all three ISAs. A separate target-GCC-built guard touches >128 KiB of real
+volatile stack before authentic CMake is run. This is **not** claimed to be
+Linux's on-demand grow-down stack; the latter requires deliberate exception
+handling, VM-area metadata, and per-architecture page-fault recovery and is
+tracked as future architecture work. The shared policy does not branch on
+program name or ISA.

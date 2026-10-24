@@ -39,6 +39,12 @@ phase=eventfd-real-linux-guest
 /tmp/m55-eventfd
 echo M55_LINUX_EVENTFD_EPOLL_PASS
 
+phase=shared-main-stack-capacity
+/usr/bin/gcc -std=c11 -O2 -Wall -Wextra -Werror -static \\
+    /tests/m55-stack.c -o /tmp/m55-stack
+/tmp/m55-stack
+echo M55_NATIVE_SHARED_STACK_CAPACITY_PASS
+
 phase=real-cmake-configure
 # CMake 4 removes older policy defaults. Supply the new policy floor via
 # a normal command-line option; NEVER patch upstream cJSON CMakeLists.
