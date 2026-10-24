@@ -66,6 +66,9 @@ int main(void) {
             fail("hashed payload lookup");
         if (bootfs_child(dir, i) != entry) fail("ordered direct children");
     }
+    /* These checks must still succeed past the old 96-entry getdents cap. */
+    for(unsigned i=95;i<1200;i+=101)
+        if(!bootfs_child(dir,i))fail("large sibling ordinal");
     const struct bootfs_entry *alias = bootfs_child(dir, 1200);
     if (!alias || !bootfs_is_link(alias) || bootfs_child(dir, 1201))
         fail("directory boundary/symlink");

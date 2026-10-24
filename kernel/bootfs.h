@@ -18,6 +18,9 @@ struct bootfs_entry {
     uint32_t cpio_ino, cpio_major, cpio_minor, nlink;
     struct bootfs_entry *hardlink_owner, *hardlink_next;
     struct bootfs_entry *hash_next; /* Private index link, stable slab address. */
+    /* Directory iteration is indexed once at mount, not rescanned over every
+     * archive node on each getdents64 entry. Stable slab pointers. */
+    struct bootfs_entry *first_child, *last_child, *next_sibling;
 };
 bool bootfs_mount(const void *bytes, uint64_t size);
 bool bootfs_mounted(void);

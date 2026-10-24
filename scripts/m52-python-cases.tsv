@@ -1,0 +1,2 @@
+# Full native Python program, not only --version.
+m52-python	cpio	sh -c '/bin/sh /tests/run-python.sh'	M52_PYTHON_SUITE_PASS	-	/bin/busybox

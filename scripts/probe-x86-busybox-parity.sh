@@ -50,8 +50,8 @@ run_case() {
       --efi-boot boot/limine/limine-uefi-cd.bin \
       --efi-boot-part --efi-boot-image -o "$iso" "$stage" >/dev/null 2>&1
     rc=0
-    case "$name" in m38-gcc) budget=300 ;; m39-packages|m40-archives|m41-unix|m42-pthread|m43-zstd|m44-group|m45-robust|m46-exec|m47-tgkill|m48-parallel|m49-capacity|m51-git) budget=150 ;; m37-incremental) budget=100 ;; process-capacity) budget=45 ;; init-reaper) budget=110 ;; *) budget=15 ;; esac
-    if [ "$name" = m38-gcc ] || [ "$name" = m39-packages ] || [ "$name" = m40-archives ] || [ "$name" = m41-unix ] || [ "$name" = m42-pthread ] || [ "$name" = m43-zstd ] || [ "$name" = m44-group ] || [ "$name" = m45-robust ] || [ "$name" = m46-exec ] || [ "$name" = m47-tgkill ] || [ "$name" = m48-parallel ] || [ "$name" = m49-capacity ] || [ "$name" = m51-git ]; then
+    case "$name" in m38-gcc) budget=300 ;; m39-packages|m40-archives|m41-unix|m42-pthread|m43-zstd|m44-group|m45-robust|m46-exec|m47-tgkill|m48-parallel|m49-capacity|m51-git|m52-python) budget=150 ;; m37-incremental) budget=100 ;; process-capacity) budget=45 ;; init-reaper) budget=110 ;; *) budget=15 ;; esac
+    if [ "$name" = m38-gcc ] || [ "$name" = m39-packages ] || [ "$name" = m40-archives ] || [ "$name" = m41-unix ] || [ "$name" = m42-pthread ] || [ "$name" = m43-zstd ] || [ "$name" = m44-group ] || [ "$name" = m45-robust ] || [ "$name" = m46-exec ] || [ "$name" = m47-tgkill ] || [ "$name" = m48-parallel ] || [ "$name" = m49-capacity ] || [ "$name" = m51-git ] || [ "$name" = m52-python ]; then
         # The full GCC gate is allowed a large success budget, but a real
         # kernel [FAIL] must not keep its headless QEMU alive for 300s.
         timeout "${budget}s" sh scripts/run.sh "$iso" > "$log" 2>&1 < /dev/null &

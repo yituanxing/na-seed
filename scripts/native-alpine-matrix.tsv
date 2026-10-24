@@ -1,3 +1,4 @@
+m52	foundation	scripts/probe-m52-python.sh
 # Milestone<TAB>suite<TAB>existing verified 3-ISA native QEMU probe.
 # Neither skip/reduce userland checks nor replace authentic distro ELF programs.
 m38	foundation	scripts/probe-m38-native-gcc.sh

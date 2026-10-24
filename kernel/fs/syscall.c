@@ -1343,7 +1343,7 @@ static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
             ino = 5000 + tmp_number(file);
             dtype = file->is_dir ? 4 : 8;
         } else {
-            if (cursor - 2 > 95) break;
+            if (cursor - 2 > UINT32_MAX) break;
             item = bootfs_child(dir, (unsigned)(cursor - 2));
             if (!item) break;
             name = item->path;

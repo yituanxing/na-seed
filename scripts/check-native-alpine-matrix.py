@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fail closed on any lost, duplicated or ISA-skipped authentic Linux workload.
 
-All 13 M38-M49 plus M51 probes must run on each of the 3 native ports. The
+All 14 M38-M49 plus M51-M52 probes must run on each of the 3 native ports. The
 existing individual workflows remain manually runnable for fault isolation.
 """
 from pathlib import Path
@@ -23,6 +23,7 @@ expected = {
     **{f"m{i}": "lifecycle" for i in range(45, 48)},
     **{f"m{i}": "parallel" for i in range(48, 50)},
     "m51": "foundation",
+    "m52": "foundation",
 }
 seen = {}
 for milestone, suite, path in rows:
@@ -30,7 +31,7 @@ for milestone, suite, path in rows:
         raise SystemExit(f"duplicate milestone: {milestone}")
     if milestone not in expected or expected[milestone] != suite:
         raise SystemExit(f"unexpected milestone or suite: {milestone}/{suite}")
-    if not re.fullmatch(r"scripts/probe-m(?:3[89]|4[0-9]|51)-[a-z0-9-]+\.sh", path):
+    if not re.fullmatch(r"scripts/probe-m(?:3[89]|4[0-9]|5[12])-[a-z0-9-]+\.sh", path):
         raise SystemExit(f"invalid original probe: {path}")
     if not (root / path).is_file():
         raise SystemExit(f"missing original probe: {path}")
