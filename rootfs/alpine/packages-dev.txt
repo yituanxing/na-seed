@@ -1,0 +1,13 @@
+# One signed Alpine v3.23 target-native userspace for a real local
+# self-contained command-line development session. No package scripts,
+# borrowed host binaries, network or persistent storage.
+musl
+musl-dev
+busybox
+gcc
+binutils
+make
+git
+vim
+ncurses-terminfo-base
+python3

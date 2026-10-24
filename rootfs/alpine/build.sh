@@ -42,6 +42,8 @@ case "$profile" in
             package_list=rootfs/alpine/packages-python.txt ;;
     vim) work="build/external/m53-vim/$port"
          package_list=rootfs/alpine/packages-vim.txt ;;
+    dev) work="build/external/m54-dev/$port"
+         package_list=rootfs/alpine/packages-dev.txt ;;
     *) echo "[ALPINE] unknown profile $profile" >&2; exit 2 ;;
 esac
 root="$work/rootfs"
@@ -101,7 +103,28 @@ sudo chown -R "$(id -u):$(id -g)" "$root"
 mkdir -p "$root/tmp" "$root/tests"
 chmod 1777 "$root/tmp"
 test -e "$root/bin/busybox"
-if [ "$profile" = vim ]; then
+if [ "$profile" = dev ]; then
+    # One rootfs with ORIGINAL native Alpine GNU GCC/Make, Vim, Git,
+    # CPython and BusyBox. Entire project lifecycle happens in guest.
+    cp tests/m54-dev-run.sh "$root/tests/run-dev.sh"
+    cp tests/m54-dev-check.py "$root/tests/dev-check.py"
+    mkdir -p "$root/tests/m54-src"
+    cp tests/m54-src/answer.c tests/m54-src/answer.h \
+       tests/m54-src/main.c tests/m54-src/Makefile \
+       tests/m54-src/.gitignore "$root/tests/m54-src/"
+    for program in gcc make git vim python3; do
+        candidate="$root/usr/bin/$program"
+        test -x "$candidate" || { echo "[M54] missing signed $program ($port)" >&2; exit 1; }
+        readelf -h "$candidate" | grep -Fq "$machine"
+    done
+    test -s "$root/usr/include/stdio.h"
+    test -s "$root/usr/lib/libc.a"
+    test -s "$root/usr/lib/python3.12/json/__init__.py"
+    if ! test -e "$root/etc/terminfo/v/vt100" && \
+       ! test -e "$root/usr/share/terminfo/v/vt100"; then
+        echo "[M54] original vt100 terminfo missing" >&2; exit 1
+    fi
+elif [ "$profile" = vim ]; then
     # Unmodified signed Alpine Vim and ncurses data. The launcher is a
     # generic Linux C user program, never a kernel test-specific syscall.
     cp tests/m53-vim-run.sh "$root/tests/m53-vim-run.sh"

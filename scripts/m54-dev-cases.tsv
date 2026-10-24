@@ -1,0 +1,2 @@
+# Original Alpine Git + Vim + GCC + GNU Make + Python in the SAME boot
+m54-dev	cpio	sh -c '/bin/sh /tests/run-dev.sh'	M54_DEV_FULL_LIFECYCLE_PASS	-	/bin/busybox
