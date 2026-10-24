@@ -12,9 +12,9 @@ export PATH HOME LC_ALL LANG
 src=/tmp/m55-upstream-cjson
 out=/tmp/m55-ninja
 phase=verify-upstream
-/bin/busybox cp -a /tests/m55-cjson "$src"
+/bin/busybox cp -R /tests/m55-cjson "$src"
 /usr/bin/cmake --version | /bin/busybox grep -Fq 'cmake version'
-/usr/bin/ninja --version | /bin/busybox grep -Eq '^1\\.[0-9]+'
+/usr/bin/ninja --version | /bin/busybox grep -Eq '^1[.][0-9]+'
 /usr/bin/gcc --version | /bin/busybox grep -Fq gcc
 test -s "$src/CMakeLists.txt"
 test -s "$src/tests/unity/src/unity.c"
