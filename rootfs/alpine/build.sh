@@ -116,10 +116,15 @@ if [ "$profile" = vim ]; then
         riscv64) triple=riscv64-linux-musl ;;
         arm64) triple=aarch64-linux-musl ;;
     esac
+    # The Clang driver would otherwise seek an unrelated host GCC runtime
+    # (crtbeginT/libgcc). Link using the *signed target musl* crt1 + libc
+    # directly, exactly the same architecture as the Alpine Vim runtime.
+    test -s "$root/usr/lib/crt1.o"
     clang --target="$triple" --sysroot="$root" -O2 -std=c11 -Wall -Wextra \
-        -Werror -static -fno-pie -fuse-ld=lld \
+        -Werror -static -fno-pie -nostdlib -fuse-ld=lld \
         -Wl,-z,max-page-size=4096 \
-        tests/m53-vim-init.c -o "$root/tests/m53-vim-init"
+        "$root/usr/lib/crt1.o" tests/m53-vim-init.c \
+        "$root/usr/lib/libc.a" -o "$root/tests/m53-vim-init"
     readelf -h "$root/tests/m53-vim-init" | grep -Fq "$machine"
     if readelf -l "$root/tests/m53-vim-init" | grep -q INTERP; then
         echo "[M53] launcher must be genuine native static Linux ELF" >&2
