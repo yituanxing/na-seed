@@ -1,25 +1,8 @@
 name: NaSeed native Alpine GCC and musl development rootfs
+# M50: retained as an opt-in single-milestone diagnostic. PR auto-validation
+# has moved to m50-alpine-matrix.yml: same twelve scripts/real QEMU checks,
+# grouped by native ISA and workload class to reuse installation and builds.
 on:
-  pull_request:
-    paths:
-      - 'rootfs/alpine/**'
-      - 'kernel/bootfs.c'
-      - 'kernel/bootfs.h'
-      - 'scripts/test-bootfs-scale.c'
-      - 'scripts/check-bootfs-scale.sh'
-      - 'scripts/probe-m38-native-gcc.sh'
-      - 'scripts/m38-gcc-cases.tsv'
-      - 'tests/m38-gcc-hello.c'
-      - 'tests/m38-gcc-build.sh'
-      - 'tests/m38-readv.c'
-      - 'tests/m38-fs-mode.c'
-      - 'scripts/test-fs-mode-abi.c'
-      - 'kernel/fs/mode.h'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'scripts/run.sh'
-      - '.github/workflows/m38-alpine-gcc.yml'
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

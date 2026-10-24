@@ -1,24 +1,8 @@
 name: NaSeed M48 original GNU Make -j2 / GNU xargs -P2 + GCC in three native kernels
+# M50: retained as an opt-in single-milestone diagnostic. PR auto-validation
+# has moved to m50-alpine-matrix.yml: same twelve scripts/real QEMU checks,
+# grouped by native ISA and workload class to reuse installation and builds.
 on:
-  pull_request:
-    paths:
-      - 'rootfs/alpine/**'
-      - 'kernel/bootfs.c'
-      - 'kernel/bootfs.h'
-      - 'scripts/test-bootfs-scale.c'
-      - 'scripts/check-bootfs-scale.sh'
-      - 'scripts/probe-m48-parallel.sh'
-      - 'scripts/m48-parallel-cases.tsv'
-      - 'scripts/test-fs-mode-abi.c'
-      - 'kernel/fs/mode.h'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'scripts/run.sh'
-      - 'tests/m48-parallel-run.sh'
-      - 'tests/m48-parallel-worker.sh'
-      - 'tests/m48-parallel.mk'
-      - '.github/workflows/m48-parallel.yml'
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

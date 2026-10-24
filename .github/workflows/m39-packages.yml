@@ -1,18 +1,8 @@
 name: NaSeed M39 prebuilt Alpine Lua jq SQLite applications
+# M50: retained as an opt-in single-milestone diagnostic. PR auto-validation
+# has moved to m50-alpine-matrix.yml: same twelve scripts/real QEMU checks,
+# grouped by native ISA and workload class to reuse installation and builds.
 on:
-  pull_request:
-    paths:
-      - 'rootfs/alpine/**'
-      - 'scripts/probe-m39-packages.sh'
-      - 'scripts/m39-packages-cases.tsv'
-      - 'tests/m39-packages-run.sh'
-      - 'tests/m39-jobs.json'
-      - 'tests/lua-vm.lua'
-      - 'tests/lua-io.lua'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - '.github/workflows/m39-packages.yml'
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

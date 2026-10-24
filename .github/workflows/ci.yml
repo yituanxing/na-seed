@@ -110,8 +110,8 @@ jobs:
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-posix-locks.c -o /tmp/naseed-posix-locks && /tmp/naseed-posix-locks
       - name: Linux umask/create-mode ABI semantics
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-fs-mode-abi.c -o /tmp/naseed-fs-mode && /tmp/naseed-fs-mode
-      - name: Verify one full-kernel core TU manifest across ISAs
-        run: sh scripts/check-full-kernel-sources.sh
+      - name: Verify all shared kernel objects are actually linked on x86, RV64 and ARM64
+        run: python3 scripts/check-three-isa-core.py && sh scripts/check-full-kernel-sources.sh
       - name: Verify native x86-64 stat layout
         run: cc -std=c11 -Wall -Wextra -Werror -c scripts/check-linux-stat.c -o /tmp/naseed-stat.o
       - name: Verify original SHA256 BusyBox and signed target-ISA musl provenance
