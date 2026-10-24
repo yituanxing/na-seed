@@ -94,12 +94,14 @@ void kmain(void) {
     }
     nas_print("[PASS] M0 memory allocator\n");
     nas_print("[PASS] M0 boot / serial / memory\n");
+#ifndef NASEED_PORT_M0
     bool entropy_ready = entropy_req.response &&
         nas_random_seed(entropy_req.response->values,
                         entropy_req.response->value_count);
     nas_print(entropy_ready ?
         "[RANDOM] Limine best-effort entropy seeded ChaCha20\n" :
         "[RANDOM] no usable boot entropy; getrandom returns ENOSYS\n");
+#endif
 #ifdef NASEED_PORT_M0
 #if defined(__riscv)
     /* Preserve the proven RV64 Limine + all three page-table depth tests. */

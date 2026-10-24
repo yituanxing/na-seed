@@ -45,3 +45,7 @@ best-effort feature explicitly does NOT guarantee cryptographically strong
 entropy: NaSeed is an experimental kernel, not a production security boundary.
 If no usable boot entropy is available, getrandom fails, rather than returning
 fabricated random data. Host checks independently verify a ChaCha20 vector.
+
+M0 architecture smoke kernels deliberately contain no Linux userspace,
+DRBG or syscall service. Only full-kernel builds initialise the shared RNG;
+this keeps the original minimal RV64/AArch64 M0 link intact.
