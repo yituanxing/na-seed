@@ -1,0 +1,2 @@
+# Pinned genuine upstream cJSON 1.7.19 full CMake/Ninja GCC + CTest.
+m55-cjson	cpio	sh -c '/bin/sh /tests/run-cjson.sh'	M55_CMAKE_NINJA_FULL_SUITE_PASS	-	/bin/busybox

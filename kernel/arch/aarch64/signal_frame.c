@@ -9,6 +9,7 @@
 #include "../../task/signal.h"
 #include "../../mm/usercopy.h"
 #include "../arch.h"
+#include "../abi.h"
 #include "../mmu.h"
 #include "../../panic.h"
 #include "context.h"
@@ -41,7 +42,7 @@ _Static_assert(sizeof(struct arm_sigframe)==4688,
                "Linux ARM64 rt_sigframe");
 _Static_assert(sizeof(struct arm_fpsimd)==528,
                "Linux ARM64 fpsimd_context");
-#define NAS_SIGRETURN_TRAMPOLINE UINT64_C(0x6ff00000)
+#define NAS_SIGRETURN_TRAMPOLINE NAS_USER_SIGNAL_TRAMPOLINE
 bool nas_arch_signal_install_handler(uint64_t *opaque,unsigned signo,
                                 const uint64_t *action) {
     struct nas_arm_trap_frame *fr=(struct nas_arm_trap_frame *)(void *)opaque;

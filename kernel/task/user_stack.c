@@ -17,12 +17,21 @@ extern void nas_print(const char *);
 #define loaded_main_entry TASK.loaded_main_entry
 #define loaded_interp_base TASK.loaded_interp_base
 #define USER_STACK_TOP NAS_USER_STACK_TOP
-#define USER_STACK_PAGES 32
+
+/* One architecture-neutral initial main-thread stack mapping policy.
+ * x86-64, RV64 and ARM64 use the SAME page owner and physical allocator.
+ * execve already owns a disposable new address-space root on failure. */
+bool nas_user_stack_map_initial(void) {
+    for(uint64_t va=USER_STACK_TOP-NAS_USER_STACK_PAGES*PAGE;
+        va<USER_STACK_TOP;va+=PAGE)
+        if(!nas_mmu_map_page(va,true))return false;
+    return true;
+}
 
 /* Shared Linux ELF64 argc/argv/envp/auxv stack builder, not argv spoofing. */
 static bool put_stack_string(uint64_t *sp, const char *str, uint64_t *address) {
     uint64_t size = strlen(str) + 1;
-    if (*sp < USER_STACK_TOP - USER_STACK_PAGES * PAGE + size) return false;
+    if (*sp < USER_STACK_TOP - NAS_USER_STACK_PAGES * PAGE + size) return false;
     *sp -= size;
     if (!nas_user_copy_to_mapped(*sp, (const uint8_t *)str, size)) return false;
     *address = *sp;
@@ -129,7 +138,7 @@ bool nas_build_user_stack(const char *const *args, unsigned argc,
     AUX(0, 0);                /* AT_NULL */
 #undef AUX
     uint64_t byte_count = n * sizeof(uint64_t);
-    if (sp < USER_STACK_TOP - USER_STACK_PAGES * PAGE + byte_count + 16)
+    if (sp < USER_STACK_TOP - NAS_USER_STACK_PAGES * PAGE + byte_count + 16)
         return false;
     sp = (sp - byte_count) & ~15ULL;
     if (!nas_user_copy_to_mapped(sp, (const uint8_t *)words, byte_count)) return false;

@@ -24,6 +24,7 @@
 #include "../task/user_stack.h"
 #include "../fs/io.h"
 #include "../fs/syscall.h"
+#include "../fs/epoll.h"
 #include "../platform/platform.h"
 #include "../drivers/serial.h"
 #include "../drivers/tty.h"
@@ -217,7 +218,8 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
     if (fd < NAS_FD_LIMIT && file_slot[fd] < NAS_FD_LIMIT &&
         !(nas_open_files[file_slot[fd]].status_flags & 0x800ULL)) {
         if ((int64_t)ret == -EOPNOTSUPP &&
-            (descriptors[fd] == FD_PIPE_R || descriptors[fd] == FD_PIPE_W))
+            (descriptors[fd] == FD_PIPE_R || descriptors[fd] == FD_PIPE_W ||
+             descriptors[fd] == FD_EVENTFD))
             return nas_task_block(frame,nr,fd,buf,count,0);
         if ((nr == NAS_SC_read || nr == NAS_SC_readv) &&
             (int64_t)ret == -EAGAIN &&
@@ -254,11 +256,16 @@ uint64_t syscall_dispatch(const uint64_t *args) {
      * Capped to avoid serial storms; not needed in exception context.
      */
 #ifdef NASEED_SYSCALL_TRACE
-    static unsigned trace_count;
-    /* Opt-in diagnostic for any real user process, not only BusyBox/Bash.
-     * Leave disabled in production; no extra kernel syscall paths. */
-    if (trace_count++ < 220) {
-        nas_print("[TRACE] linux_nr="); nas_dec(raw_nr);
+    static unsigned trace_count, uring_focus;
+    /* After a generic missing io_uring_setup request, capture a bounded
+     * sequence of *all* Linux syscalls to identify real libuv fallback
+     * I/O waits. Compiled only with the explicit trace flag. */
+    if(raw_nr==425)uring_focus=1; /* fresh bounded trace per attempt */
+    bool diagnostic=trace_count++<220 ||
+        (uring_focus && uring_focus++<1000);
+    if (diagnostic) {
+        nas_print("[TRACE] pid="); nas_dec(TASK.pid);
+        nas_print(" linux_nr="); nas_dec(raw_nr);
         nas_print(" decoded="); nas_dec(nr);
         nas_print(" rip="); nas_hex(args[7]);
         nas_print(" rsp="); nas_hex(nas_arch_signal_user_sp());
@@ -345,6 +352,36 @@ uint64_t syscall_dispatch(const uint64_t *args) {
             nas_print(" retained="); nas_hex(result); nas_print("\n");
         }
 #endif
+        return result;
+    }
+    if(nr==NAS_SC_epoll_wait || nr==NAS_SC_epoll_pwait) {
+        /* Linux epoll_pwait's optional signal mask is installed only for
+         * the wait, using the same common mechanism as ppoll/pselect6. */
+        if(nr==NAS_SC_epoll_pwait && args[5]) {
+            if(args[6]!=8ULL)return (uint64_t)-EINVAL;
+            uint64_t mask;
+            if(!nas_user_read_u64(args[5],&mask))return (uint64_t)-EFAULT;
+            TASK.ppoll_saved_mask=TASK.blocked_signals;
+            TASK.ppoll_mask_active=true;
+            TASK.blocked_signals=mask & ~((1ULL<<8)|(1ULL<<18));
+        }
+        uint64_t result=nas_epoll_wait(args[1],args[2],args[3],args[4]);
+        if((int64_t)result==-EAGAIN) {
+            if(nas_signal_user_pending(&TASK)) {
+                nas_signal_ppoll_restore(&TASK,true);
+                return (uint64_t)-EINTR;
+            }
+            int32_t ms=(int32_t)(uint32_t)args[4];
+            if(ms>0 && !TASK.deadline_active) {
+                TASK.deadline_ns=nas_time_add_deadline(
+                    nas_arch_monotonic_ns(),(uint64_t)(unsigned)ms*1000000ULL);
+                TASK.deadline_active=true;
+            }
+            nas_epoll_arm_current_task(args[1]);
+            return nas_task_block((uint64_t *)(uintptr_t)args,nr,
+                                  args[1],args[2],args[3],args[4]);
+        }
+        nas_signal_ppoll_restore(&TASK,false);
         return result;
     }
     if(nr==NAS_SC_poll || nr==NAS_SC_ppoll || nr==NAS_SC_pselect6 || nr==NAS_SC_select) {

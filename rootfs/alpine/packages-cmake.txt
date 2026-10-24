@@ -1,0 +1,11 @@
+# Official signed Alpine 3.23 native CMake 4.1 + original Ninja 1.13
+# (community repository only for Ninja). GCC, binutils and musl build the
+# authentic pinned cJSON 1.7.19 full upstream CTest suite IN NaSeed.
+musl
+musl-dev
+busybox
+gcc
+binutils
+cmake
+ninja-build
+ninja-is-really-ninja

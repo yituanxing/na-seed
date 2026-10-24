@@ -33,8 +33,6 @@
 #define running_bash TASK.running_bash
 #define running_busybox TASK.running_busybox
 #define running_alpine TASK.running_alpine
-#define USER_STACK_TOP NAS_USER_STACK_TOP
-#define USER_STACK_PAGES 32
 
 /* Boot/exec program-name comparison. FD path matching lives in fs/syscall.c. */
 /* Snapshot all user pointers before changing CR3. ELF bytes are
@@ -284,14 +282,10 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     if (!good) { nas_print("[EXEC REJECT] failed ELF or interpreter load: "); nas_print(actual); nas_print("\n"); }
 #endif
     if (good) {
-        for (uint64_t va = USER_STACK_TOP - USER_STACK_PAGES * PAGE;
-             va < USER_STACK_TOP; va += PAGE)
-            if (!nas_mmu_map_page(va, true)) {
+        good=nas_user_stack_map_initial();
 #ifdef NASEED_SYSCALL_TRACE
-                nas_print("[EXEC REJECT] failed user stack map\n");
+        if (!good) nas_print("[EXEC REJECT] failed user stack map\n");
 #endif
-                good = false; break;
-            }
     }
     if (good) {
         good=nas_signal_install_trampoline();

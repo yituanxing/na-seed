@@ -44,6 +44,8 @@ case "$profile" in
          package_list=rootfs/alpine/packages-vim.txt ;;
     dev) work="build/external/m54-dev/$port"
          package_list=rootfs/alpine/packages-dev.txt ;;
+    cmake) work="build/external/m55-cjson/$port"
+           package_list=rootfs/alpine/packages-cmake.txt ;;
     *) echo "[ALPINE] unknown profile $profile" >&2; exit 2 ;;
 esac
 root="$work/rootfs"
@@ -77,12 +79,19 @@ curl -fLsS --retry 2 --connect-timeout 10 --max-time 30 \
 tar -xzf "$cache/$name" -C "$root" \
     --wildcards --no-anchored 'etc/apk/keys/*'
 test -n "$(find "$root/etc/apk/keys" -name '*.pub' -print -quit)"
+# The *real Ninja* package (not a Samurai alias) lives in signed Alpine
+# community. Only the CMake workload needs this additional official index.
+extra_repository=''
+if [ "$profile" = cmake ]; then
+    extra_repository='-X https://dl-cdn.alpinelinux.org/alpine/v3.23/community'
+fi
 # Use Alpine's own keyring. No --allow-untrusted; disable foreign package
 # install scripts instead of executing incompatible target-ISA binaries.
 # Bound CI output; diagnostics are always saved and the last lines
 # surfaced on failure. Large package extraction can print thousands of lines.
 if ! docker run --rm --volume "$target:/target" \
     --env APK_ARCH="$arch" --env APK_PACKAGES="$packages" \
+    --env APK_EXTRA_REPOSITORY="$extra_repository" \
     alpine:3.23 sh -ec '
         test -n "$(find /target/etc/apk/keys -name "*.pub" -print -quit)"
         # apk2/apk3 differ in how --keys-dir interacts with --root.
@@ -92,7 +101,7 @@ if ! docker run --rm --volume "$target:/target" \
         apk --arch "$APK_ARCH" --root /target \
             --keys-dir /etc/apk/keys --initdb --no-scripts --quiet \
             -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main \
-            add $APK_PACKAGES
+            $APK_EXTRA_REPOSITORY add $APK_PACKAGES
     ' > "$work/apk-install.log" 2>&1; then
     echo "[M38 APK FAIL] $port" >&2
     tail -90 "$work/apk-install.log" >&2
@@ -103,7 +112,55 @@ sudo chown -R "$(id -u):$(id -g)" "$root"
 mkdir -p "$root/tmp" "$root/tests"
 chmod 1777 "$root/tmp"
 test -e "$root/bin/busybox"
-if [ "$profile" = dev ]; then
+if [ "$profile" = cmake ]; then
+    # Pinned genuine upstream cJSON 1.7.19 commit. The bytes of the CMake
+    # build scripts and code are verified against Git object hashes; no
+    # host-generated project or altered upstream source.
+    upstream_sha=c859b25da02955fef659d658b8f324b5cde87be3
+    archive="build/deps/m55-cjson-$upstream_sha.tar.gz"
+    mkdir -p build/deps
+    if [ ! -s "$archive" ]; then
+        curl -fLsS --retry 3 --connect-timeout 10 --max-time 120 \
+            -o "$archive.tmp" \
+            "https://codeload.github.com/DaveGamble/cJSON/tar.gz/$upstream_sha"
+        mv "$archive.tmp" "$archive"
+    fi
+    src="$root/tests/m55-cjson"
+    mkdir -p "$src"
+    tar -xzf "$archive" -C "$src" --strip-components=1
+    for entry in \
+        'CMakeLists.txt:c7ca27f09e628e2d786eb344ff4d04004d6c0d38' \
+        'cJSON.c:6e4fb0dd369cd905923da515be87ab06db6c1ee0' \
+        'cJSON.h:cab5feb427725f8e5c82287f7fe59481b609b9b5' \
+        'test.c:986fc6eb3e77fc29cca2980647c357bf1fe1b1fe' \
+        'tests/CMakeLists.txt:c7592213b91236600136e670c7be4d5834a6fbe1' \
+        'tests/unity/src/unity.c:eee6f965e72ce28f0be9a91ad5331ee25fe2c2f0'; do
+        relative=${entry%%:*}
+        expected=${entry#*:}
+        test "$(git hash-object "$src/$relative")" = "$expected" || {
+            echo "[M55 FAIL] upstream cJSON blob mismatch: $relative" >&2
+            exit 1
+        }
+    done
+    cp tests/m55-cjson-run.sh "$root/tests/run-cjson.sh"
+    cp tests/m55-epoll.c "$root/tests/m55-epoll.c"
+    cp tests/m55-eventfd.c "$root/tests/m55-eventfd.c"
+    cp tests/m55-stack.c "$root/tests/m55-stack.c"
+    for program in gcc cmake ctest ninja; do
+        test -x "$root/usr/bin/$program" || {
+            echo "[M55 FAIL] target native executable missing $program" >&2
+            exit 1
+        }
+    done
+    for program in gcc cmake ctest; do
+        readelf -h "$root/usr/bin/$program" | grep -Fq "$machine"
+    done
+    # Alpine Ninja's command is a packaged symlink into ninja-build/bin;
+    # validate its actual ELF directly (host readelf cannot resolve an
+    # absolute symlink in the guest rootfs).
+    readelf -h "$root/usr/lib/ninja-build/bin/ninja" | grep -Fq "$machine"
+    test -s "$root/usr/lib/libc.a"
+elif [ "$profile" = dev ]; then
     # One rootfs with ORIGINAL native Alpine GNU GCC/Make, Vim, Git,
     # CPython and BusyBox. Entire project lifecycle happens in guest.
     cp tests/m54-dev-run.sh "$root/tests/run-dev.sh"
