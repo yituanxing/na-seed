@@ -1,18 +1,8 @@
 name: NaSeed M45 native Linux robust-futex owner death and genuine pthread Zstandard
+# M50: retained as an opt-in single-milestone diagnostic. PR auto-validation
+# has moved to m50-alpine-matrix.yml: same twelve scripts/real QEMU checks,
+# grouped by native ISA and workload class to reuse installation and builds.
 on:
-  pull_request:
-    paths:
-      - 'rootfs/alpine/**'
-      - 'scripts/probe-m45-robust.sh'
-      - 'scripts/m45-robust-cases.tsv'
-      - 'tests/m45-robust-run.sh'
-      - 'tests/m45-robust.c'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - '.github/workflows/m45-robust.yml'
-      - 'kernel/**'
-      - '.github/workflows/arm64-full.yml'
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

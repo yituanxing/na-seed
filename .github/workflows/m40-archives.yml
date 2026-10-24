@@ -1,20 +1,8 @@
 name: NaSeed M40 prebuilt GNU tar + XZ Utils archive operations
+# M50: retained as an opt-in single-milestone diagnostic. PR auto-validation
+# has moved to m50-alpine-matrix.yml: same twelve scripts/real QEMU checks,
+# grouped by native ISA and workload class to reuse installation and builds.
 on:
-  pull_request:
-    paths:
-      - 'rootfs/alpine/**'
-      - 'scripts/probe-m40-archives.sh'
-      - 'scripts/m40-archives-cases.tsv'
-      - 'tests/m40-archives-run.sh'
-      - 'tests/m40-seed-alpha.txt'
-      - 'tests/m40-seed-beta.txt'
-      - 'tests/m40-seed-alpha.txt'
-      - 'tests/m40-seed-beta.txt'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - '.github/workflows/m40-archives.yml'
-      - '.github/workflows/arm64-full.yml'
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
