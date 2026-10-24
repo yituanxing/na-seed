@@ -117,7 +117,7 @@ if [ "$profile" = vim ]; then
         arm64) triple=aarch64-linux-musl ;;
     esac
     clang --target="$triple" --sysroot="$root" -O2 -std=c11 -Wall -Wextra \
-        -Werror -static -fno-pie -no-pie -fuse-ld=lld \
+        -Werror -static -fno-pie -fuse-ld=lld \
         -Wl,-z,max-page-size=4096 \
         tests/m53-vim-init.c -o "$root/tests/m53-vim-init"
     readelf -h "$root/tests/m53-vim-init" | grep -Fq "$machine"

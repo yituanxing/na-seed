@@ -1,3 +1,4 @@
+m53	foundation	scripts/probe-m53-vim.sh
 m52	foundation	scripts/probe-m52-python.sh
 # Milestone<TAB>suite<TAB>existing verified 3-ISA native QEMU probe.
 # Neither skip/reduce userland checks nor replace authentic distro ELF programs.
@@ -14,4 +15,3 @@ m47	lifecycle	scripts/probe-m47-tgkill.sh
 m48	parallel	scripts/probe-m48-parallel.sh
 m49	parallel	scripts/probe-m49-capacity.sh
 m51	foundation	scripts/probe-m51-git.sh
-m53	foundation	scripts/probe-m53-vim.sh
