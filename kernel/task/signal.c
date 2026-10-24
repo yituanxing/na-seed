@@ -108,11 +108,66 @@ uint64_t nas_signal_procmask(uint64_t how,uint64_t set,
         unsigned signum=first_default_pending(task,mask);
         if(signum) {
             task->pending_signals &= ~(1ULL<<(signum-1));
-            nas_sched_child_exit(0,signum);
+            nas_sched_thread_group_exit(0,signum);
             return nas_task_schedule(frame);
         }
     }
     return 0;
+}
+
+/* Thread-directed Linux signal ABI: exact TID targeting with TGID
+ * verification. Masked/caught signals are queued for ONLY that thread;
+ * default-fatal disposition terminates the WHOLE Linux thread group.
+ * Never inspect another task's userspace pointers before installing
+ * its actual page-table root, including futex/robust TID cleanup. */
+static uint64_t signal_send_thread(uint64_t raw_tgid,uint64_t raw_tid,
+                                    uint64_t signo,uint64_t *frame,
+                                    bool verify_tgid) {
+    int64_t tid=(int64_t)(int32_t)(uint32_t)raw_tid;
+    int64_t tgid=(int64_t)(int32_t)(uint32_t)raw_tgid;
+    if(tid<=0 || (verify_tgid && tgid<=0))return (uint64_t)-EINVAL;
+    if(signo>64)return (uint64_t)-EINVAL;
+    struct nas_task *target=nas_task_by_pid((uint64_t)tid);
+    if(!target || target->state==NAS_TASK_ZOMBIE ||
+       (verify_tgid && target->tgid!=(uint64_t)tgid))
+        return (uint64_t)-ESRCH;
+    if(!signo)return 0;
+    if(target->tgid==1)return (uint64_t)-EPERM;
+    if(signo!=NAS_SIGSTOP && signo!=NAS_SIGCONT &&
+       !terminating_default((unsigned)signo))
+        return (uint64_t)-EOPNOTSUPP;
+    if(signo==NAS_SIGSTOP || signo==NAS_SIGCONT)
+        return nas_signal_kill(target->tgid,signo,frame);
+    uint64_t disp=target->vm_owner->signal_actions[signo][0];
+    uint64_t bit=1ULL<<(signo-1);
+    if(signo!=NAS_SIGKILL) {
+        if(disp==1)return 0;
+        if(disp>1 || (target->blocked_signals&bit)) {
+            target->pending_signals|=bit;
+            return 0;
+        }
+    }
+    /* Delivery of an unhandled fatal *thread-directed* signal kills
+     * the whole group. Killing a thread must NOT leave its leader alive. */
+    if(nas_current_task->tgid==target->tgid) {
+        nas_sched_thread_group_exit(0,(uint32_t)signo);
+        return nas_task_schedule(frame);
+    }
+    struct nas_task *sender=nas_current_task;
+    nas_arch_save_fpu(sender);
+    nas_current_task=target;
+    nas_arch_restore_cpu(target);
+    nas_sched_thread_group_exit(0,(uint32_t)signo);
+    nas_current_task=sender;
+    nas_arch_restore_cpu(sender);
+    return 0;
+}
+uint64_t nas_signal_tkill(uint64_t raw_tid,uint64_t signo,uint64_t *frame) {
+    return signal_send_thread(0,raw_tid,signo,frame,false);
+}
+uint64_t nas_signal_tgkill(uint64_t raw_tgid,uint64_t raw_tid,
+                           uint64_t signo,uint64_t *frame) {
+    return signal_send_thread(raw_tgid,raw_tid,signo,frame,true);
 }
 
 /* Linux pid_t is signed32 even in LP64 x86, RV64, and ARM64.
@@ -121,8 +176,9 @@ uint64_t nas_signal_procmask(uint64_t how,uint64_t set,
  * Unknown signal-delivery semantics cannot fake a user-handler frame. */
 static bool signal_target_matches(const struct nas_task *target, int64_t pid,
                                    const struct nas_task *sender) {
-    if (!target || target->state == NAS_TASK_FREE) return false;
-    if (pid > 0) return target->pid == (uint64_t)pid;
+    if (!target || target->state == NAS_TASK_FREE || target->is_thread)
+        return false;
+    if (pid > 0) return target->tgid == (uint64_t)pid;
     if (pid == 0) return target->pgid == sender->pgid;
     if (pid == -1) return target != sender && target->pid != 1;
     return target->pgid == (uint64_t)-pid;
@@ -137,7 +193,7 @@ static void signal_kill_other(struct nas_task *target,unsigned signal) {
     nas_arch_save_fpu(sender);
     nas_current_task = target;
     nas_arch_restore_cpu(target);
-    nas_sched_child_exit(0, signal);
+    nas_sched_thread_group_exit(0, signal);
     nas_current_task = sender;
     nas_arch_restore_cpu(sender);
 }
@@ -188,7 +244,7 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
                 self_terminate=true;
             continue;
         }
-        if (target->state==NAS_TASK_ZOMBIE) continue;
+        if (target->state==NAS_TASK_ZOMBIE || target->state==NAS_TASK_FREE) continue;
         if(terminating_default((unsigned)signal)) {
             if(signal!=NAS_SIGKILL &&
                target->vm_owner->signal_actions[signal][0]==1)continue; /* SIG_IGN */
@@ -223,7 +279,7 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
     }
     if (self) {
         if(self_terminate) {
-            nas_sched_child_exit(0,(unsigned)signal);
+            nas_sched_thread_group_exit(0,(unsigned)signal);
             return nas_task_schedule(frame);
         }
         if (signal==NAS_SIGSTOP && sender->state!=NAS_TASK_STOPPED) {

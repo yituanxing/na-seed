@@ -1,0 +1,2 @@
+# Real x86-64/RV64/ARM64 Linux TID-directed signal stress plus signed original Alpine zstd.
+m47-tgkill	cpio	sh -c '/bin/sh /tests/run-tgkill.sh'	M47_SIGNALS_AND_ZSTD_PASS	-	/bin/busybox
