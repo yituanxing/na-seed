@@ -76,11 +76,11 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: m48-native-parallel-${{ matrix.port }}
+          name: m49-native-capacity-${{ matrix.port }}
           path: |
             build/external/m49-capacity/${{ matrix.port }}/apk-install.log
             build/external/m49-capacity/${{ matrix.port }}/requested-packages.txt
-            build/external/m49-capacity/${{ matrix.port }}/rootfs/tests/m49-capacity.mk
+            build/external/m49-capacity/${{ matrix.port }}/rootfs/tests/m49-parallel.mk
             build/busybox-source-parity-x86/m49-capacity.clean.log
             build/port-riscv64/full/matrix-source/m49-capacity.clean.log
             build/port-aarch64/full/matrix-source/m49-capacity.clean.log

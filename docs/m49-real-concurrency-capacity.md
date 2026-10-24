@@ -17,6 +17,12 @@ That final workload is necessarily impossible with the historical 16-slot
 task table even if parallel Make happens to underutilize slots.
 
 CI must preserve M38–M48 and full ARM64/native BusyBox tests on all ISAs.
+In addition, retain M12's deliberate EAGAIN saturation gate: 46 blocked
+children plus PID1 and their parent fill all 48 slots, a 47th child must
+return EAGAIN. Two waves must completely reclaim/reuse slots and maintain
+monotonically increasing PID identities. The strict preflight and source
+BusyBox manifest assertions must follow the one canonical bound.
+
 The current design remains bounded 48 user tasks, 64 global open file
 descriptions, no SMP, no general unbounded kernel task allocator. Resource
 and scheduling thresholds are not silently claimed to equal Linux.
