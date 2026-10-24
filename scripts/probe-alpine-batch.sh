@@ -7,7 +7,7 @@ set -eu
 suite=$1
 port=$2
 case "$suite" in
-  foundation) expected=8 ;;
+  foundation) expected=9 ;;
   pthread) expected=3 ;;
   lifecycle) expected=3 ;;
   parallel) expected=2 ;;
@@ -21,7 +21,7 @@ tab=$(printf '\t')
 while IFS="$tab" read -r name group probe; do
     case "$name" in ''|\#*) continue ;; esac
     [ "$group" = "$suite" ] || continue
-    case "$probe" in scripts/probe-m[34][0-9]-*.sh|scripts/probe-m5[1-4]-*.sh) ;; *)
+    case "$probe" in scripts/probe-m[34][0-9]-*.sh|scripts/probe-m5[1-5]-*.sh) ;; *)
         echo "[M50 FAIL] noncanonical acceptance: $probe" >&2
         exit 1 ;;
     esac
