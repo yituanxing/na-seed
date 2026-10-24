@@ -57,6 +57,6 @@ int main(void) {
     ck(!nas_task_kernel_stack_ok(reused),"stack sentinel overflow detected");
     *bottom=saved;
     ck(nas_task_kernel_stack_ok(reused),"restored sentinel accepted");
-    puts("[TASK STACK PASS] 16 disjoint stacks, fork ownership, reuse, overflow sentinel");
+    printf("[TASK STACK PASS] %u disjoint stacks, fork ownership, reuse, overflow sentinel\n", NAS_TASK_LIMIT);
     return 0;
 }

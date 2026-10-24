@@ -34,6 +34,8 @@ case "$profile" in
             package_list=rootfs/alpine/packages-zstd.txt ;;
     parallel) work="build/external/m48-parallel/$port"
               package_list=rootfs/alpine/packages-parallel.txt ;;
+    capacity) work="build/external/m49-capacity/$port"
+              package_list=rootfs/alpine/packages-parallel.txt ;;
     *) echo "[ALPINE] unknown profile $profile" >&2; exit 2 ;;
 esac
 root="$work/rootfs"
@@ -93,7 +95,37 @@ sudo chown -R "$(id -u):$(id -g)" "$root"
 mkdir -p "$root/tmp" "$root/tests"
 chmod 1777 "$root/tmp"
 test -e "$root/bin/busybox"
-if [ "$profile" = archive ]; then
+if [ "$profile" = capacity ]; then
+    # M49 runs only real packaged GNU Make/GCC/xargs and guest-built musl
+    # binaries; no new syscall stubs, no precompiled fake guest executables.
+    cp tests/m49-capacity-run.sh "$root/tests/run-capacity.sh"
+    cp tests/m49-parallel.mk "$root/tests/m49-parallel.mk"
+    cp tests/m49-xargs-worker.sh "$root/tests/m49-xargs-worker.sh"
+    cp tests/m49-fork-capacity.c "$root/tests/m49-fork-capacity.c"
+    for suffix in alpha beta gamma delta; do
+        case "$suffix" in
+          alpha|gamma) cp tests/m38-gcc-hello.c "$root/tests/m49-$suffix.c" ;;
+          beta|delta) cp tests/m38-readv.c "$root/tests/m49-$suffix.c" ;;
+        esac
+    done
+    printf '%s' 'abcdefghijklmn' > "$root/tests/readv.txt"
+    for program in make gcc xargs; do
+        valid=''
+        for candidate in "$root/usr/bin/$program" "$root/bin/$program"; do
+            if [ -x "$candidate" ] &&
+               readelf -h "$candidate" 2>/dev/null | grep -Fq "$machine"; then
+                valid=$candidate
+                break
+            fi
+        done
+        [ -n "$valid" ] || {
+            echo "[M49] missing signed native GNU $program ($port)" >&2
+            exit 1
+        }
+    done
+    test -s "$root/usr/include/stdio.h"
+    test -s "$root/usr/lib/libc.a"
+elif [ "$profile" = archive ]; then
     # Original prebuilt GNU tar and XZ Utils — NEVER built inside NaSeed.
     # Stage a small nested CPIO fixture; all archive creation/extraction,
     # compression, decompression and verification happen in the guest.

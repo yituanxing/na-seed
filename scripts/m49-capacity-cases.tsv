@@ -1,0 +1,2 @@
+# Native original GNU Make -j4, xargs -P4 and 24 concurrent guest-compiled POSIX fork children
+m49-capacity	cpio	sh -c '/bin/sh /tests/run-capacity.sh'	M49_NATIVE_CAPACITY_SUITE_PASS	-	/bin/busybox
