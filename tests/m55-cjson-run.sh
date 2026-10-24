@@ -25,7 +25,7 @@ phase=real-cmake-configure
 # a normal command-line option; NEVER patch upstream cJSON CMakeLists.
 # A real native configure uses guest compiler detection/try_compile,
 # filesystem metadata and process lifecycle. No fake CMake cache.
-mkdir -p "$out"
+/bin/busybox mkdir -p "$out"
 /usr/bin/cmake -S "$src" -B "$out" -G Ninja \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DCMAKE_C_COMPILER=/usr/bin/gcc \
