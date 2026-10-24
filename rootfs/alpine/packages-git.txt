@@ -1,0 +1,5 @@
+# Signed Alpine v3.23 Git, installed by apk with original dependency closure.
+# No network services, persistent block devices, or host-built Git binaries.
+musl
+busybox
+git

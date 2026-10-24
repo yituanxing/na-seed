@@ -4,6 +4,7 @@
 #include "../syscall/ops.h"
 #include "../arch/linux_syscall_abi.h"
 #include "../errno.h"
+#include "../random.h"
 #include "../task.h"
 #include "../fd.h"
 #include "../arch/arch.h"
@@ -252,6 +253,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     }
 #endif
     if (nr == NAS_SC_arch_prctl) return nas_linux_arch_prctl(args[1], args[2]);
+    if (nr == NAS_SC_getrandom) return nas_random_getrandom(args[1],args[2],args[3]);
     if (nr == NAS_SC_set_tid_address) { thread_clear_tid = args[1]; return TASK.pid; }
     if (nr == NAS_SC_getpid) return TASK.tgid;
     if (nr == NAS_SC_gettid) return TASK.pid;

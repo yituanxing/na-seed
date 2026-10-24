@@ -1,0 +1,2 @@
+# Original Git binaries from signed Alpine apk, run in native QEMU.
+m51-git	cpio	sh -c '/bin/sh /tests/run-git.sh'	M51_GIT_SUITE_PASS	-	/bin/busybox

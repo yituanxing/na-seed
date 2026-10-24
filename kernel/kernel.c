@@ -13,6 +13,7 @@
 #endif
 #include "drivers/serial.h"
 #include "mm/frame.h"
+#include "random.h"
 #include "mm/user_space.h"
 #include "init/main.h"
 
@@ -36,6 +37,10 @@ USED_REQUEST static volatile struct limine_module_request module_req = {
  * Never synthesize UNIX time from a monotonic hardware counter alone. */
 USED_REQUEST static volatile struct limine_date_at_boot_request date_req = {
     .id = LIMINE_DATE_AT_BOOT_REQUEST_ID, .revision = 0
+};
+/* Best-effort firmware seed; do not promise certified hardware entropy. */
+USED_REQUEST static volatile struct limine_entropy_request entropy_req = {
+    .id = LIMINE_ENTROPY_REQUEST_ID, .revision = 0, .value_count = 4
 };
 #if defined(NASEED_PORT_M0) && defined(__riscv)
 USED_REQUEST static volatile struct limine_paging_mode_request paging_req = {
@@ -89,6 +94,14 @@ void kmain(void) {
     }
     nas_print("[PASS] M0 memory allocator\n");
     nas_print("[PASS] M0 boot / serial / memory\n");
+#ifndef NASEED_PORT_M0
+    bool entropy_ready = entropy_req.response &&
+        nas_random_seed(entropy_req.response->values,
+                        entropy_req.response->value_count);
+    nas_print(entropy_ready ?
+        "[RANDOM] Limine best-effort entropy seeded ChaCha20\n" :
+        "[RANDOM] no usable boot entropy; getrandom returns ENOSYS\n");
+#endif
 #ifdef NASEED_PORT_M0
 #if defined(__riscv)
     /* Preserve the proven RV64 Limine + all three page-table depth tests. */

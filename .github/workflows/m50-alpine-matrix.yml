@@ -1,4 +1,4 @@
-name: NaSeed M50 bounded 4-suite original Alpine QEMU matrix — 12 x 3 ISA
+name: NaSeed grouped native Alpine QEMU acceptance — three ISA
 on:
   pull_request:
     paths:
