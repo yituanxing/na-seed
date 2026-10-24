@@ -1,0 +1,10 @@
+# M48 native prebuilt Linux GNU make and GNU findutils, GCC + musl.
+# Original signed Alpine APKs. All real compilation happens inside NaSeed.
+musl
+musl-dev
+gcc
+binutils
+make
+busybox
+findutils
+coreutils

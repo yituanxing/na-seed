@@ -1,0 +1,2 @@
+# Native signed GNU Make/GCC -j2 compilation then GNU xargs -P2 with real workers.
+m48-parallel	cpio	sh -c '/bin/sh /tests/run-parallel.sh'	M48_NATIVE_PARALLEL_SUITE_PASS	-	/bin/busybox
