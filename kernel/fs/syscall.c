@@ -302,6 +302,31 @@ static uint64_t sys_fcntl(uint64_t fd, uint64_t command, uint64_t arg) {
     default: return (uint64_t)-EINVAL; /* unsupported fcntl cmd */
     }
 }
+/* Linux FIONBIO is descriptor-independent: libuv/CMake sets it on
+ * both ends of pipes, even when pipe2(O_NONBLOCK) was already used.
+ * Preserve open-description semantics across dup/fork, as F_SETFL does.
+ * FIOCLEX/FIONCLEX, by contrast, belong to the individual descriptor. */
+static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
+    if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED)return (uint64_t)-EBADF;
+    unsigned slot=file_slot[fd];
+    if(cmd==0x5421ULL) { /* FIONBIO: pointer to native int */
+        if(nas_open_files[slot].status_flags&NAS_LINUX_O_PATH)
+            return (uint64_t)-EBADF;
+        uint32_t enabled=0;
+        if(!nas_user_read_bytes(arg,(uint8_t *)&enabled,sizeof(enabled)))
+            return (uint64_t)-EFAULT;
+        if(enabled)nas_open_files[slot].status_flags|=0x800ULL;
+        else nas_open_files[slot].status_flags&=~0x800ULL;
+        return 0;
+    }
+    if(cmd==0x5451ULL || cmd==0x5450ULL) { /* FIOCLEX / FIONCLEX */
+        fd_cloexec[fd]=(uint8_t)(cmd==0x5451ULL);
+        return 0;
+    }
+    const struct nas_file_ops *ops=nas_open_files[slot].ops;
+    return ops && ops->ioctl ? ops->ioctl(cmd,arg) : (uint64_t)-ENOTTY;
+}
+
 static const struct limine_file *bootfs_lookup(const char *path) {
     if ((strcmp(path, "/bin/busybox") == 0)) return nas_module(0);
     if ((strcmp(path, NAS_ELF_INTERP) == 0) ||
@@ -1459,11 +1484,7 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
         nas_fs_close_fd(args[1]);
         FS_RESULT(0);
     case NAS_SC_ioctl:
-        if (args[1] >= 64 || descriptors[args[1]] == FD_CLOSED)
-            FS_RESULT((uint64_t)-EBADF);
-        const struct nas_file_ops *fops=nas_open_files[file_slot[args[1]]].ops;
-        FS_RESULT(fops && fops->ioctl ? fops->ioctl(args[2],args[3])
-                                     : (uint64_t)-ENOTTY);
+        FS_RESULT(sys_ioctl_fd(args[1],args[2],args[3]));
     case NAS_SC_dup3:
         if (args[1] == args[2] || (args[3] & ~0x80000ULL))
             FS_RESULT((uint64_t)-EINVAL);

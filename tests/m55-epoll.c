@@ -6,6 +6,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/epoll.h>
+#include <sys/ioctl.h>
+#include <fcntl.h>
 
 /* Entirely normal Linux epoll/pipe semantics compiled and run by the
  * original target GCC in the NaSeed guest. Not a kernel-aware test hook. */
@@ -14,6 +16,23 @@ int main(void){
     assert(ep>=0);
     int pipefds[2]={-1,-1};
     assert(pipe(pipefds)==0);
+    /* FIONBIO is a generic Linux ioctl, not a TTY-specific command.
+     * It changes shared file status flags; FIOCLEX is per-FD instead. */
+    int on=1,off=0;
+    assert(ioctl(pipefds[0],FIONBIO,&on)==0);
+    assert(ioctl(pipefds[1],FIONBIO,&on)==0);
+    assert((fcntl(pipefds[0],F_GETFL)&O_NONBLOCK)!=0);
+    assert((fcntl(pipefds[1],F_GETFL)&O_NONBLOCK)!=0);
+    int alias=dup(pipefds[0]);
+    assert(alias>=0);
+    assert(ioctl(alias,FIONBIO,&off)==0);
+    assert((fcntl(pipefds[0],F_GETFL)&O_NONBLOCK)==0);
+    assert(ioctl(alias,FIOCLEX)==0);
+    assert((fcntl(alias,F_GETFD)&FD_CLOEXEC)!=0);
+    assert((fcntl(pipefds[0],F_GETFD)&FD_CLOEXEC)==0);
+    assert(ioctl(alias,FIONCLEX)==0);
+    assert((fcntl(alias,F_GETFD)&FD_CLOEXEC)==0);
+    assert(close(alias)==0);
     struct epoll_event ev={.events=EPOLLIN,.data.u64=UINT64_C(0x1234567812345678)};
     assert(epoll_ctl(ep,EPOLL_CTL_ADD,pipefds[0],&ev)==0);
     struct epoll_event got[2];
