@@ -113,7 +113,7 @@ fi
 
 # M12: process table bound and orphan adoption are common-Task mechanisms,
 # not ISA-specific or synthetic syscall fallbacks.
-grep -Fq '#define NAS_TASK_LIMIT 16' kernel/task.h
+grep -Fq '#define NAS_TASK_LIMIT 48' kernel/task.h
 # Standard C init PID1 gets a real Linux fork-exec-wait oracle even
 # before downloading BusyBox or booting any guest.
 cc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \

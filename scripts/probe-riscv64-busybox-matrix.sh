@@ -76,7 +76,7 @@ boot_case() {
         timer-preempt) time_budget=45 ;;
         process-capacity) time_budget=65 ;;
         init-reaper) time_budget=130 ;;
-        m38-gcc) time_budget=360 ;;
+        m38-gcc|m49-capacity) time_budget=360 ;;
         m39-packages|m40-archives|m41-unix|m42-pthread|m43-zstd|m44-group|m45-robust|m46-exec|m47-tgkill|m48-parallel) time_budget=160 ;;
         m37-incremental) time_budget=150 ;;
         *) time_budget=45 ;;

@@ -15,7 +15,7 @@ grep -Fq '"$target" "$obj"' scripts/build-source-busybox.sh
 grep -Fq 'sha256sum -c -' scripts/build-source-busybox.sh
 grep -Fq 'BUSYBOX_EXTRA_DIR' scripts/stage-busybox-rootfs.sh
 grep -Fq 'BUSYBOX_EXTRA_DIR' scripts/probe-source-busybox.sh
-grep -Fq '#define NAS_TASK_LIMIT 16' kernel/task.h
+grep -Fq '#define NAS_TASK_LIMIT 48' kernel/task.h
 # An optional per-case ELF entry is solely a boot-command choice.
 # Canonical distro workloads still start /bin/busybox.
 grep -Fq "$(printf 'init-reaper\tcpio\t--naseed\tm13-init-ok\t-\t/bin/m13-init')" "$cases"

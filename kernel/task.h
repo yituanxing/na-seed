@@ -9,8 +9,12 @@
  * Each task has its own kernel entry stack; switching still occurs at a
  * syscall boundary; each task retains its own user CPU/VM state.
  * Process slots are finite; exhaustion returns Linux EAGAIN from fork.
+ * A 48-task bounded registry supports GNU Make -j4, GNU xargs -P4 and
+ * 24+ concurrently parked fork children with independent 16 KiB stacks.
+ * Scheduler/exit/futex/group-signal loops follow this shared limit;
+ * open-file-description pool remains separately bounded at 64.
  */
-#define NAS_TASK_LIMIT 16
+#define NAS_TASK_LIMIT 48
 #define NAS_FD_LIMIT 64
 #define NAS_KERNEL_STACK_BYTES 16384U
 

@@ -7,8 +7,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 /* One portable libc workload. NaSeed mode additionally checks deliberate
- * 16-task capacity; the Linux oracle checks ordinary POSIX semantics. */
-#define WAVE_CHILDREN 14
+ * 48-task capacity; the Linux oracle checks ordinary POSIX semantics. */
+#define WAVE_CHILDREN 46
 #define WAVES 2
 static void fail(const char *why) {
     fprintf(stderr,"m12 process error: %s errno=%d\n",why,errno);
@@ -109,8 +109,8 @@ static void orphan(void) {
 }
 int main(int argc,char **argv) {
     int limit=argc>1 && strcmp(argv[1],"--naseed-limit")==0;
-    /* BusyBox ash tail-execs a single final command. To test all 16
-     * slots (PID1 shell + this task + 14 children), the wrapper shell
+    /* BusyBox ash tail-execs a single final command. To test all 48
+     * slots (PID1 shell + this task + 46 children), the wrapper shell
      * must remain alive as PID1. Never lower the saturation condition. */
     if (limit && getppid()!=1)
         fail("M12 requires a persistent PID1 shell parent");
