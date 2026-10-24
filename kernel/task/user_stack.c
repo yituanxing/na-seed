@@ -4,6 +4,7 @@
 #include "../task.h"
 #include "../arch/arch.h"
 #include "../mm/frame.h"
+#include "../random.h"
 #include "../arch/mmu.h"
 #include "../mm/usercopy.h"
 #include "../lib/string.h"
@@ -89,6 +90,9 @@ bool nas_build_user_stack(const char *const *args, unsigned argc,
         tsc ^ (uint64_t)(uintptr_t)&nas_build_user_stack,
         (tsc << 17) ^ nas_hhdm_offset()
     };
+    /* Improve AT_RANDOM with the same boot-seeded stream when available;
+     * the documented insecure legacy fallback is not getrandom success. */
+    (void)nas_random_bytes((uint8_t *)random_bytes,sizeof(random_bytes));
     sp -= sizeof(random_bytes);
     if (!nas_user_copy_to_mapped(sp, (const uint8_t *)random_bytes,
                       sizeof(random_bytes))) return false;

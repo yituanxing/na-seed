@@ -63,6 +63,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_vfork: return NAS_SC_vfork;
     case __NR_fstat: return NAS_SC_fstat;
     case __NR_getcwd: return NAS_SC_getcwd;
+    case __NR_getrandom: return NAS_SC_getrandom;
     case __NR_getdents64: return NAS_SC_getdents64;
     case __NR_getegid: return NAS_SC_getegid;
     case __NR_geteuid: return NAS_SC_geteuid;
@@ -151,6 +152,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 78U: return NAS_SC_readlinkat;
     case 50U: return NAS_SC_fchdir;
     case 17U: return NAS_SC_getcwd;
+    case 278U: return NAS_SC_getrandom; /* asm-generic Linux */
     case 59U: return NAS_SC_pipe2;
     case 25U: return NAS_SC_fcntl;
     case 82U: return NAS_SC_fsync;

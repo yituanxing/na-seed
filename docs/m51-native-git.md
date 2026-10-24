@@ -32,3 +32,16 @@ three-ISA diagnostic is available via manual workflow_dispatch.
 
 This milestone remains a **candidate** until exact-head native Git and
 all historical regression gates complete successfully.
+
+## Genuine new Linux ABI failures
+
+The exact three-ISA run found two common problems, not Git-specific ISA defects:
+- Git init hit a tmpfs read validation bug on a zero-length read for MAP_PRIVATE.
+- Git add needs getrandom: x86 number 318, generic64 number 278.
+
+Provide real shared Linux getrandom via bootloader-entropy-seeded ChaCha20,
+and upgrade ELF AT_RANDOM when the same stream is available. Limine's
+best-effort feature explicitly does NOT guarantee cryptographically strong
+entropy: NaSeed is an experimental kernel, not a production security boundary.
+If no usable boot entropy is available, getrandom fails, rather than returning
+fabricated random data. Host checks independently verify a ChaCha20 vector.

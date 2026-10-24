@@ -1,6 +1,7 @@
 # Shared full-kernel (non-M0) core translation units. Keep the same list
 # for RV64 and AArch64; each target supplies only hardware/ABI providers.
 kernel/kernel.c
+kernel/random.c
 kernel/init/main.c
 kernel/time/clock.c
 kernel/task/exec.c
