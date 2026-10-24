@@ -105,6 +105,8 @@ struct nas_task *nas_task_fork_slot(void) {
         child->futex_woken=false;
         child->deadline_active = false;
         child->deadline_ns = 0;
+        /* POSIX timers are not inherited across fork. */
+        for(unsigned n=0;n<NAS_POSIX_TIMERS;n++)child->timers[n]=(struct nas_posix_timer){0};
         child->signal_frame_active = false;
         child->signal_frame_sp = 0;
         child->ppoll_mask_active=false;
