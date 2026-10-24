@@ -175,8 +175,13 @@ uint64_t nas_signal_tgkill(uint64_t raw_tgid,uint64_t raw_tid,
  * continuation side effect are shared across the three Linux ABIs.
  * Unknown signal-delivery semantics cannot fake a user-handler frame. */
 static bool signal_target_matches(const struct nas_task *target, int64_t pid,
-                                   const struct nas_task *sender) {
-    if (!target || target->state == NAS_TASK_FREE || target->is_thread)
+                                   const struct nas_task *sender,
+                                   bool include_threads) {
+    /* kill(pid,SIGKILL) selects process leaders, never raw pthread TIDs.
+     * Job-control STOP/CONT, by contrast, stop/resume every live TID in
+     * the selected process group, not just the group leader. */
+    if (!target || target->state == NAS_TASK_FREE ||
+        (target->is_thread && !include_threads))
         return false;
     if (pid > 0) return target->tgid == (uint64_t)pid;
     if (pid == 0) return target->pgid == sender->pgid;
@@ -210,7 +215,8 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
     bool self_terminate = false;
     for (unsigned i=0;i<NAS_TASK_LIMIT;i++) {
         struct nas_task *target = nas_task_at(i);
-        if (!signal_target_matches(target,pid,sender)) continue;
+        if (!signal_target_matches(target,pid,sender,
+                signal==NAS_SIGSTOP || signal==NAS_SIGCONT)) continue;
         if (signal && target->pid==1) {
             protected_init=true; /* never terminate the OS supervisor */
             continue;
