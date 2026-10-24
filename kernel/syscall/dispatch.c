@@ -260,7 +260,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     /* After a generic missing io_uring_setup request, capture a bounded
      * sequence of *all* Linux syscalls to identify real libuv fallback
      * I/O waits. Compiled only with the explicit trace flag. */
-    if(raw_nr==425 && !uring_focus)uring_focus=1;
+    if(raw_nr==425)uring_focus=1; /* fresh bounded trace per attempt */
     bool diagnostic=trace_count++<220 ||
         (uring_focus && uring_focus++<1000);
     if (diagnostic) {
