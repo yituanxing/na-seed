@@ -256,11 +256,16 @@ uint64_t syscall_dispatch(const uint64_t *args) {
      * Capped to avoid serial storms; not needed in exception context.
      */
 #ifdef NASEED_SYSCALL_TRACE
-    static unsigned trace_count;
-    /* Opt-in diagnostic for any real user process, not only BusyBox/Bash.
-     * Leave disabled in production; no extra kernel syscall paths. */
-    if (trace_count++ < 220) {
-        nas_print("[TRACE] linux_nr="); nas_dec(raw_nr);
+    static unsigned trace_count, uring_focus;
+    /* After a generic missing io_uring_setup request, capture a bounded
+     * sequence of *all* Linux syscalls to identify real libuv fallback
+     * I/O waits. Compiled only with the explicit trace flag. */
+    if(raw_nr==425 && !uring_focus)uring_focus=1;
+    bool diagnostic=trace_count++<220 ||
+        (uring_focus && uring_focus++<1000);
+    if (diagnostic) {
+        nas_print("[TRACE] pid="); nas_dec(TASK.pid);
+        nas_print(" linux_nr="); nas_dec(raw_nr);
         nas_print(" decoded="); nas_dec(nr);
         nas_print(" rip="); nas_hex(args[7]);
         nas_print(" rsp="); nas_hex(nas_arch_signal_user_sp());

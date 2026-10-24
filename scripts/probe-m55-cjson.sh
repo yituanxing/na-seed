@@ -20,7 +20,7 @@ export BUSYBOX_PARITY_MANIFEST=scripts/m55-cjson-cases.tsv
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
 export NAS_ACCEPTANCE_QEMU_RAM=1536M
 export NAS_ACCEPTANCE_DISK_MB=768
-export NAS_SYSCALL_TRACE=${NAS_SYSCALL_TRACE:-0}
+export NAS_SYSCALL_TRACE=${NAS_SYSCALL_TRACE:-1}
 sh "$runner"
 log="$logs/m55-cjson.clean.log"
 test -s "$log"
