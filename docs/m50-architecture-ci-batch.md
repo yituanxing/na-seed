@@ -24,14 +24,18 @@ and all its previous required PASS markers, signing and executable provenance.
 New `scripts/native-alpine-matrix.tsv` is the *single ownership roster*:
 
 - foundation: M38 real GCC/musl, M39 Lua/jq/SQLite, M40 tar/xz, M41 GNU pipes;
-- threads: M42 XZ pthread, M43 Zstd pthread, M44 exit_group,
-  M45 Robust Futex, M46 execve in pthread group, M47 tkill/tgkill;
+- pthread: M42 XZ pthread, M43 Zstd pthread, M44 exit_group;
+- lifecycle: M45 Robust Futex, M46 execve in pthread group, M47 tkill/tgkill;
 - parallel: M48 original GNU Make -j2/xargs -P2 and M49 Make -j4/xargs
   -P4 with 24 true live fork children.
 
-Each of the 3 ISAs has one CI job per suite: 9 total QEMU installer jobs
+Each of the 3 ISAs has one CI job per suite: **12 total QEMU installer jobs**
 instead of 36, *36 unchanged actual native QEMU acceptance workloads*.
-Each job reuses its tool installation and kernel build. All historical
+Each job reuses its tool installation and kernel build. First integrated run
+proved 9/9 jobs succeeded but RV64's six sequential pthread/lifecycle tests
+controlled the PR's critical path (~9.5 minutes). Splitting just that
+slow suite into three-workload groups preserves all 36 tests and accelerates
+wall-clock feedback at a modest increase from 9 to 12 reused-install jobs. All historical
 12 focused workflows retain explicit `workflow_dispatch` for diagnostics
 but no longer auto-trigger PR-wide. The new matrix triggers on any shared
 kernel, program fixture, runner, base-image or CI change so M38–M41 now

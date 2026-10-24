@@ -1,4 +1,4 @@
-name: NaSeed M50 consolidated original Alpine QEMU workloads — 12 x 3 ISA
+name: NaSeed M50 bounded 4-suite original Alpine QEMU matrix — 12 x 3 ISA
 on:
   pull_request:
     paths:
@@ -21,7 +21,7 @@ jobs:
       fail-fast: false
       matrix:
         port: [amd64, riscv64, arm64]
-        suite: [foundation, threads, parallel]
+        suite: [foundation, pthread, lifecycle, parallel]
     steps:
       - uses: actions/checkout@v4
       - name: Static shared-kernel parity, exact 12 original milestones and 3 ISA coverage

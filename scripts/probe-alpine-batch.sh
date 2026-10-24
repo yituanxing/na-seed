@@ -3,12 +3,13 @@
 # install and kernel build. No synthetic or stubbed acceptance; any error
 # aborts the suite. Other suites continue independently in separate CI jobs.
 set -eu
-[ "$#" -eq 2 ] || { echo 'usage: probe-alpine-batch.sh foundation|threads|parallel amd64|riscv64|arm64' >&2; exit 2; }
+[ "$#" -eq 2 ] || { echo 'usage: probe-alpine-batch.sh foundation|pthread|lifecycle|parallel amd64|riscv64|arm64' >&2; exit 2; }
 suite=$1
 port=$2
 case "$suite" in
   foundation) expected=4 ;;
-  threads) expected=6 ;;
+  pthread) expected=3 ;;
+  lifecycle) expected=3 ;;
   parallel) expected=2 ;;
   *) echo "[M50 BAD SUITE] $suite" >&2; exit 2 ;;
 esac

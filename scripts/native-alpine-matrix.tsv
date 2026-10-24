@@ -4,11 +4,11 @@ m38	foundation	scripts/probe-m38-native-gcc.sh
 m39	foundation	scripts/probe-m39-packages.sh
 m40	foundation	scripts/probe-m40-archives.sh
 m41	foundation	scripts/probe-m41-unix.sh
-m42	threads	scripts/probe-m42-pthread.sh
-m43	threads	scripts/probe-m43-zstd.sh
-m44	threads	scripts/probe-m44-threadgroup.sh
-m45	threads	scripts/probe-m45-robust.sh
-m46	threads	scripts/probe-m46-exec.sh
-m47	threads	scripts/probe-m47-tgkill.sh
+m42	pthread	scripts/probe-m42-pthread.sh
+m43	pthread	scripts/probe-m43-zstd.sh
+m44	pthread	scripts/probe-m44-threadgroup.sh
+m45	lifecycle	scripts/probe-m45-robust.sh
+m46	lifecycle	scripts/probe-m46-exec.sh
+m47	lifecycle	scripts/probe-m47-tgkill.sh
 m48	parallel	scripts/probe-m48-parallel.sh
 m49	parallel	scripts/probe-m49-capacity.sh

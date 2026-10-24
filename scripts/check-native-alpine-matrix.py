@@ -19,7 +19,8 @@ for lineno, line in enumerate((root / "scripts/native-alpine-matrix.tsv").read_t
     rows.append((milestone, suite, path))
 expected = {
     **{f"m{i}": "foundation" for i in range(38, 42)},
-    **{f"m{i}": "threads" for i in range(42, 48)},
+    **{f"m{i}": "pthread" for i in range(42, 45)},
+    **{f"m{i}": "lifecycle" for i in range(45, 48)},
     **{f"m{i}": "parallel" for i in range(48, 50)},
 }
 seen = {}
@@ -42,7 +43,7 @@ for milestone, suite, path in rows:
 if set(seen) != set(expected):
     raise SystemExit(f"lost probes: {sorted(set(expected)-set(seen))}")
 w = (root / ".github/workflows/m50-alpine-matrix.yml").read_text()
-for suite in ("foundation", "threads", "parallel"):
+for suite in ("foundation", "pthread", "lifecycle", "parallel"):
     if suite not in w:
         raise SystemExit(f"new CI does not select suite: {suite}")
 for port in ("amd64", "riscv64", "arm64"):
