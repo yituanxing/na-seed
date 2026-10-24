@@ -333,24 +333,22 @@ bool nas_sched_preempt_select(void) {
                     (int64_t)result==-EAGAIN && nas_tty_read_waitable();
                 bool pipe_again=(int64_t)result==-EOPNOTSUPP &&
                     (kind==FD_PIPE_R || kind==FD_PIPE_W);
-                bool poll_again=(next->blocked_op==NAS_SC_poll ||
-                                 (next->blocked_op==NAS_SC_ppoll ||
-                    next->blocked_op==NAS_SC_epoll_pwait ||
-                                  ((next->blocked_op==NAS_SC_pselect6 || next->blocked_op==NAS_SC_select) || next->blocked_op==NAS_SC_select))) &&
-                                 (int64_t)result==-EAGAIN;
-                poll_again=poll_again ||
-                    ((next->blocked_op==NAS_SC_epoll_wait ||
-                      next->blocked_op==NAS_SC_epoll_pwait) &&
-                     (int64_t)result==-EAGAIN);
+                bool poll_again=(int64_t)result==-EAGAIN &&
+                    (next->blocked_op==NAS_SC_poll ||
+                     next->blocked_op==NAS_SC_ppoll ||
+                     next->blocked_op==NAS_SC_pselect6 ||
+                     next->blocked_op==NAS_SC_select ||
+                     next->blocked_op==NAS_SC_epoll_wait ||
+                     next->blocked_op==NAS_SC_epoll_pwait);
                 if (tty_again || pipe_again || poll_again) {
                     nas_current_task=from;
                     nas_arch_restore_cpu(from);
                     continue;
                 }
                 nas_arch_set_saved_return(next,result);
-                if((next->blocked_op==NAS_SC_ppoll ||
-                    next->blocked_op==NAS_SC_epoll_pwait ||
-                                  ((next->blocked_op==NAS_SC_pselect6 || next->blocked_op==NAS_SC_select) || next->blocked_op==NAS_SC_select)))
+                if(next->blocked_op==NAS_SC_ppoll ||
+                   next->blocked_op==NAS_SC_pselect6 ||
+                   next->blocked_op==NAS_SC_epoll_pwait)
                     nas_signal_ppoll_restore(next,(int64_t)result==-EINTR);
                 next->pending_valid=false;
                 next->blocked_op=0;
@@ -418,24 +416,22 @@ retry_schedule: ; /* label must precede a statement in C11 */
                     (int64_t)result==-EAGAIN && nas_tty_read_waitable();
                 bool pipe_again=(int64_t)result==-EOPNOTSUPP &&
                     (replay_kind==FD_PIPE_R || replay_kind==FD_PIPE_W);
-                bool poll_again=(next->blocked_op==NAS_SC_poll ||
-                                 (next->blocked_op==NAS_SC_ppoll ||
-                    next->blocked_op==NAS_SC_epoll_pwait ||
-                                  ((next->blocked_op==NAS_SC_pselect6 || next->blocked_op==NAS_SC_select) || next->blocked_op==NAS_SC_select))) &&
-                                 (int64_t)result==-EAGAIN;
-                poll_again=poll_again ||
-                    ((next->blocked_op==NAS_SC_epoll_wait ||
-                      next->blocked_op==NAS_SC_epoll_pwait) &&
-                     (int64_t)result==-EAGAIN);
+                bool poll_again=(int64_t)result==-EAGAIN &&
+                    (next->blocked_op==NAS_SC_poll ||
+                     next->blocked_op==NAS_SC_ppoll ||
+                     next->blocked_op==NAS_SC_pselect6 ||
+                     next->blocked_op==NAS_SC_select ||
+                     next->blocked_op==NAS_SC_epoll_wait ||
+                     next->blocked_op==NAS_SC_epoll_pwait);
                 if (tty_again || pipe_again || poll_again) {
                     next->state = NAS_TASK_BLOCKED;
                     nas_current_task = previous;
                     nas_arch_restore_cpu(previous);
                     continue;
                 }
-                if((next->blocked_op==NAS_SC_ppoll ||
-                    next->blocked_op==NAS_SC_epoll_pwait ||
-                                  ((next->blocked_op==NAS_SC_pselect6 || next->blocked_op==NAS_SC_select) || next->blocked_op==NAS_SC_select)))
+                if(next->blocked_op==NAS_SC_ppoll ||
+                   next->blocked_op==NAS_SC_pselect6 ||
+                   next->blocked_op==NAS_SC_epoll_pwait)
                     nas_signal_ppoll_restore(next,(int64_t)result==-EINTR);
                 next->pending_valid = false;
                 next->blocked_op = 0;

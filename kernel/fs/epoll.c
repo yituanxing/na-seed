@@ -6,6 +6,7 @@
 #include "../pipe.h"
 #include "../drivers/tty.h"
 #include "../arch/arch.h"
+#include "../arch/mmu.h"
 #include "../mm/usercopy.h"
 #include "../time/clock.h"
 #include "../lib/string.h"
