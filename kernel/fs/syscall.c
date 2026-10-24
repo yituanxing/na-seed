@@ -433,7 +433,7 @@ static uint64_t sys_open_path(const char *path, uint64_t native_flags,
     static unsigned traced_open_requests;
     if (traced_open_requests++ < 300) {
         nas_print("[VFS OPEN] "); nas_print(path);
-        nas_print(" flags="); nas_hex(native_flags); nas_print("\n");
+        nas_print(" flags="); nas_dec(native_flags); nas_print("\n");
     }
 #endif
     uint64_t flags;
