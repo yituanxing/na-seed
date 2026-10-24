@@ -22,7 +22,7 @@ struct nas_posix_timer {
     int32_t overrun;
     uint8_t notify;
     bool used,armed;
-}
+};
 #define NAS_FD_LIMIT 64
 #define NAS_KERNEL_STACK_BYTES 16384U
 
