@@ -21,6 +21,10 @@ test -s "$src/tests/unity/src/unity.c"
 echo M55_ORIGINAL_CMAKE_NINJA_CJSON_PASS
 
 phase=generic-event-loop-probe
+# GCC itself creates temporary assembly/output files in its current directory.
+# The boot shell starts at the read-only CPIO '/', so compile FROM writable
+# tmpfs; do not patch GCC or invent writable archive semantics.
+cd /tmp
 # Real, program-agnostic Linux epoll, pipe and deadline semantics used by
 # CMake/libuv. Build with the actual target GCC *in the NaSeed guest*.
 # Avoid another full CMake timeout without a failing syscall trace.
