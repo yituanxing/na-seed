@@ -15,6 +15,14 @@
  * open-file-description pool remains separately bounded at 64.
  */
 #define NAS_TASK_LIMIT 48
+#define NAS_POSIX_TIMERS 8
+struct nas_posix_timer {
+    uint64_t deadline_ns,interval_ns,thread_tid;
+    uint32_t clockid,signum;
+    int32_t overrun;
+    uint8_t notify;
+    bool used,armed;
+};
 #define NAS_FD_LIMIT 64
 #define NAS_KERNEL_STACK_BYTES 16384U
 
@@ -68,6 +76,8 @@ struct nas_task {
      * syscall replay and owned by Task, never by a borrowed user pointer. */
     uint64_t deadline_ns;
     bool deadline_active;
+    unsigned tty_observed_bytes; /* per blocked read interbyte VTIME */
+    struct nas_posix_timer timers[NAS_POSIX_TIMERS];
     /* Snapshot poll interest when blocking. NEVER dereference a different
      * task's user pollfd pointer during readiness checks. Each bit names a
      * shared open-file-description slot (0..63). */

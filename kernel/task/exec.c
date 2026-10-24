@@ -18,6 +18,7 @@
 #include "user_stack.h"
 #include "../lib/string.h"
 #include "exec.h"
+#include "../time/clock.h"
 #include "process.h"
 #include "signal.h"
 #define TASK (*nas_current_task)
@@ -370,6 +371,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     /* Old anonymous ownership dies with the retired page-table root.
      * No metadata is mutated until exec commits, so rollback remains exact. */
     nas_anon_reset(&TASK.vm_owner->anonymous);
+    nas_time_timers_drop(); /* POSIX timers never survive execve. */
     TASK.execed = true; /* fork parent may no longer setpgid after exec */
     TASK.signal_frame_active = false;
     TASK.signal_frame_sp = 0;

@@ -39,7 +39,7 @@ static bool task_io_ready(const struct nas_task *task) {
         task->blocked_op == NAS_SC_readv) {
         if(kind == FD_PIPE_R)return nas_pipe_read_ready(slot);
         if(kind == FD_TTY || kind == FD_UART)
-            return nas_tty_read_ready(task->blocked_args[2]);
+            return nas_tty_read_ready((struct nas_task *)task,task->blocked_args[2]);
         return true; /* replay and return actual fd error */
     }
     if (task->blocked_op == NAS_SC_write ||
@@ -76,7 +76,7 @@ static bool task_can_wake(const struct nas_task *task) {
     if (task->blocked_op == NAS_SC_wait4) return task_wait_ready(task);
     if (task->blocked_op == NAS_SC_poll ||
         (task->blocked_op == NAS_SC_ppoll ||
-         task->blocked_op == NAS_SC_pselect6))
+         (task->blocked_op == NAS_SC_pselect6 || task->blocked_op == NAS_SC_select)))
         return nas_fs_poll_ready(task);
     if (task->blocked_op == NAS_SC_read ||
         task->blocked_op == NAS_SC_readv ||
@@ -120,7 +120,8 @@ static uint64_t task_replay(struct nas_task *task) {
     if (nr == NAS_SC_wait4) return nas_process_wait4(a[0], a[1], a[2], a[3]);
     if (nr == NAS_SC_poll) return nas_fs_poll(a[0],a[1],a[2]);
     if (nr == NAS_SC_ppoll) return nas_fs_ppoll(a[0],a[1],a[2],a[3]);
-    if (nr == NAS_SC_pselect6) return nas_fs_pselect6(a[0],a[1],a[2],a[3],false);
+    if (nr == NAS_SC_pselect6 || nr == NAS_SC_select)
+        return nas_fs_pselect6(a[0],a[1],a[2],a[3],false);
     sched_fail("scheduler unknown blocked syscall");
 }
 
@@ -288,6 +289,7 @@ static unsigned schedule_cursor;
  * remains valid and its CPU/MMU/FPU are restored after tentative replays.
  */
 bool nas_sched_preempt_select(void) {
+    nas_time_timers_tick();
     struct nas_task *from=nas_current_task;
     if (!from || from->state != NAS_TASK_RUNNING) return false;
     unsigned origin=NAS_TASK_LIMIT;
@@ -327,7 +329,7 @@ bool nas_sched_preempt_select(void) {
                     (kind==FD_PIPE_R || kind==FD_PIPE_W);
                 bool poll_again=(next->blocked_op==NAS_SC_poll ||
                                  (next->blocked_op==NAS_SC_ppoll ||
-                                  next->blocked_op==NAS_SC_pselect6)) &&
+                                  ((next->blocked_op==NAS_SC_pselect6 || next->blocked_op==NAS_SC_select) || next->blocked_op==NAS_SC_select))) &&
                                  (int64_t)result==-EAGAIN;
                 if (tty_again || pipe_again || poll_again) {
                     nas_current_task=from;
@@ -336,7 +338,7 @@ bool nas_sched_preempt_select(void) {
                 }
                 nas_arch_set_saved_return(next,result);
                 if((next->blocked_op==NAS_SC_ppoll ||
-                                  next->blocked_op==NAS_SC_pselect6))
+                                  ((next->blocked_op==NAS_SC_pselect6 || next->blocked_op==NAS_SC_select) || next->blocked_op==NAS_SC_select)))
                     nas_signal_ppoll_restore(next,(int64_t)result==-EINTR);
                 next->pending_valid=false;
                 next->blocked_op=0;
@@ -355,6 +357,7 @@ bool nas_sched_preempt_select(void) {
 
 uint64_t nas_task_schedule(uint64_t *frame) {
 retry_schedule: ; /* label must precede a statement in C11 */
+    nas_time_timers_tick();
     struct nas_task *previous = nas_current_task;
     uint64_t previous_pid = previous->pid; /* zombie may be reaped on replay */
     /* A READY task always gets one turn before re-evaluating blocked tasks.
@@ -405,7 +408,7 @@ retry_schedule: ; /* label must precede a statement in C11 */
                     (replay_kind==FD_PIPE_R || replay_kind==FD_PIPE_W);
                 bool poll_again=(next->blocked_op==NAS_SC_poll ||
                                  (next->blocked_op==NAS_SC_ppoll ||
-                                  next->blocked_op==NAS_SC_pselect6)) &&
+                                  ((next->blocked_op==NAS_SC_pselect6 || next->blocked_op==NAS_SC_select) || next->blocked_op==NAS_SC_select))) &&
                                  (int64_t)result==-EAGAIN;
                 if (tty_again || pipe_again || poll_again) {
                     next->state = NAS_TASK_BLOCKED;
@@ -414,7 +417,7 @@ retry_schedule: ; /* label must precede a statement in C11 */
                     continue;
                 }
                 if((next->blocked_op==NAS_SC_ppoll ||
-                                  next->blocked_op==NAS_SC_pselect6))
+                                  ((next->blocked_op==NAS_SC_pselect6 || next->blocked_op==NAS_SC_select) || next->blocked_op==NAS_SC_select)))
                     nas_signal_ppoll_restore(next,(int64_t)result==-EINTR);
                 next->pending_valid = false;
                 next->blocked_op = 0;
@@ -446,7 +449,7 @@ retry_schedule: ; /* label must precede a statement in C11 */
         if (t->state != NAS_TASK_BLOCKED || !t->pending_valid)continue;
         if((t->blocked_op==NAS_SC_poll ||
              t->blocked_op==NAS_SC_ppoll ||
-             t->blocked_op==NAS_SC_pselect6) &&
+             (t->blocked_op==NAS_SC_pselect6 || t->blocked_op==NAS_SC_select)) &&
            t->poll_tty_read) {
             __asm__ volatile ("" ::: "memory");
             goto retry_schedule;
@@ -470,6 +473,10 @@ retry_schedule: ; /* label must precede a statement in C11 */
             __asm__ volatile ("" ::: "memory");
             goto retry_schedule;
         }
+    }
+    if(nas_time_timers_armed()) {
+        __asm__ volatile ("" ::: "memory");
+        goto retry_schedule;
     }
     /* Fatal deadlock diagnostic: dump who holds each pipe endpoint. */
     for (unsigned i = 0; i < NAS_PIPE_COUNT; i++) {

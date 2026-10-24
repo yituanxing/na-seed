@@ -42,6 +42,12 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_clock_gettime: return NAS_SC_clock_gettime;
     case __NR_clock_getres: return NAS_SC_clock_getres;
     case __NR_clock_nanosleep: return NAS_SC_clock_nanosleep;
+    case __NR_timer_create: return NAS_SC_timer_create;
+    case __NR_timer_settime: return NAS_SC_timer_settime;
+    case __NR_timer_gettime: return NAS_SC_timer_gettime;
+    case __NR_timer_getoverrun: return NAS_SC_timer_getoverrun;
+    case __NR_timer_delete: return NAS_SC_timer_delete;
+    case __NR_select: return NAS_SC_select;
     case __NR_nanosleep: return NAS_SC_nanosleep;
     case __NR_close: return NAS_SC_close;
     case __NR_dup: return NAS_SC_dup;
@@ -136,7 +142,12 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 113U: return NAS_SC_clock_gettime;
     case 169U: return NAS_SC_gettimeofday; /* asm-generic Linux */
     case 114U: return NAS_SC_clock_getres;
-    case 115U: return NAS_SC_clock_nanosleep; /* asm-generic lacks nanosleep */
+    case 115U: return NAS_SC_clock_nanosleep;
+    case 107U: return NAS_SC_timer_create;
+    case 110U: return NAS_SC_timer_settime;
+    case 108U: return NAS_SC_timer_gettime;
+    case 109U: return NAS_SC_timer_getoverrun;
+    case 111U: return NAS_SC_timer_delete; /* asm-generic lacks nanosleep */
     case 63U: return NAS_SC_read;
     case 67U: return NAS_SC_pread64; /* Linux asm-generic */
     case 68U: return NAS_SC_pwrite64;

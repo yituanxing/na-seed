@@ -1,0 +1,2 @@
+# Original signed Alpine Vim must perform a real Ex edit and write.
+m53-vim	cpio	sh -c '/bin/sh /tests/m53-vim-run.sh'	M53_VIM_EX_SUITE_PASS	-	/bin/busybox

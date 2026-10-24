@@ -5,6 +5,15 @@
 /* Common Linux timespec64 arithmetic. A duration always fits in uint64 ns
  * before it is added to the monotonic hardware clock. No fake wall clock. */
 #define NAS_NSEC_PER_SEC UINT64_C(1000000000)
+/* Shared process-owned Linux POSIX timers: all Linux 64-bit targets. */
+uint64_t nas_time_timer_create(uint64_t clock,uint64_t event,uint64_t out);
+uint64_t nas_time_timer_settime(uint64_t id,uint64_t flags,uint64_t req,uint64_t old);
+uint64_t nas_time_timer_gettime(uint64_t id,uint64_t out);
+uint64_t nas_time_timer_getoverrun(uint64_t id);
+uint64_t nas_time_timer_delete(uint64_t id);
+void nas_time_timers_tick(void);
+bool nas_time_timers_armed(void);
+void nas_time_timers_drop(void);
 /* UNIX RTC epoch is optional. Monotonic time does not depend on it. */
 void nas_timekeeper_init(int64_t boot_epoch_seconds);
 bool nas_time_realtime_available(void);

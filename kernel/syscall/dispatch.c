@@ -122,7 +122,19 @@ static uint64_t nas_time_sleep_syscall(uint64_t *frame,enum nas_syscall_op nr,
 static uint64_t nas_time_poll_arm_deadline(enum nas_syscall_op nr,
                                            const uint64_t *args) {
     uint64_t delta=0;
-    if(nr==NAS_SC_poll) {
+    if(nr==NAS_SC_select) {
+        /* Legacy x86 select timeval uses usec, pselect6 uses nsec. */
+        if(args[5]){
+            uint64_t sec,usec;
+            if(!nas_user_read_u64(args[5],&sec) ||
+               args[5]>UINT64_MAX-8 ||
+               !nas_user_read_u64(args[5]+8,&usec))
+                return (uint64_t)-EFAULT;
+            if((int64_t)sec<0 || usec>=1000000ULL ||
+               sec>UINT64_MAX/NAS_NSEC_PER_SEC)return (uint64_t)-EINVAL;
+            delta=sec*NAS_NSEC_PER_SEC+usec*1000ULL;
+        }
+    } else if(nr==NAS_SC_poll) {
         int32_t ms=(int32_t)(uint32_t)args[3];
         if(ms>0)delta=(uint64_t)(unsigned)ms*1000000ULL;
     } else {
@@ -210,8 +222,12 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
         if ((nr == NAS_SC_read || nr == NAS_SC_readv) &&
             (int64_t)ret == -EAGAIN &&
             (descriptors[fd] == FD_TTY || descriptors[fd] == FD_UART) &&
-            nas_tty_read_waitable())
+            nas_tty_read_waitable()) {
+            /* First timeout for MIN=0/TIME>0 starts at the syscall,
+             * before any task sleeps; interbyte MIN>0 starts on RX. */
+            nas_tty_blocking_read_start(&TASK);
             return nas_task_block(frame,nr,fd,buf,count,0);
+        }
     }
     return ret;
 }
@@ -280,6 +296,11 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         return nas_time_read_clock(args[1],args[2],false);
     if(nr==NAS_SC_clock_getres)
         return nas_time_read_clock(args[1],args[2],true);
+    if(nr==NAS_SC_timer_create)return nas_time_timer_create(args[1],args[2],args[3]);
+    if(nr==NAS_SC_timer_settime)return nas_time_timer_settime(args[1],args[2],args[3],args[4]);
+    if(nr==NAS_SC_timer_gettime)return nas_time_timer_gettime(args[1],args[2]);
+    if(nr==NAS_SC_timer_getoverrun)return nas_time_timer_getoverrun(args[1]);
+    if(nr==NAS_SC_timer_delete)return nas_time_timer_delete(args[1]);
     if(nr==NAS_SC_gettimeofday)
         return nas_time_gettimeofday(args[1],args[2]);
     if(nr==NAS_SC_nanosleep || nr==NAS_SC_clock_nanosleep)
@@ -326,7 +347,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
 #endif
         return result;
     }
-    if(nr==NAS_SC_poll || nr==NAS_SC_ppoll || nr==NAS_SC_pselect6) {
+    if(nr==NAS_SC_poll || nr==NAS_SC_ppoll || nr==NAS_SC_pselect6 || nr==NAS_SC_select) {
         /* ppoll and pselect6 install one optional temporary signal mask.
          * pselect6's sixth argument points to {sigset_ptr, size_t}; the
          * syscall number and ABI argument locations are target-decoded. */
@@ -349,6 +370,18 @@ uint64_t syscall_dispatch(const uint64_t *args) {
             TASK.blocked_signals=mask & ~((1ULL<<8)|(1ULL<<18));
         }
         bool immediate=false;
+        if(nr==NAS_SC_select && args[5]){
+            uint64_t sec,usec;
+            if(!nas_user_read_u64(args[5],&sec) ||
+               args[5]>UINT64_MAX-8 ||
+               !nas_user_read_u64(args[5]+8,&usec)){
+                nas_signal_ppoll_restore(&TASK,false);return (uint64_t)-EFAULT;
+            }
+            if((int64_t)sec<0 || usec>=1000000ULL){
+                nas_signal_ppoll_restore(&TASK,false);return (uint64_t)-EINVAL;
+            }
+            immediate=!sec && !usec;
+        }
         if(nr==NAS_SC_pselect6 && args[5]) {
             uint64_t sec=0,nsec=0;
             if(!nas_user_read_u64(args[5],&sec) ||
@@ -379,7 +412,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
                 nas_signal_ppoll_restore(&TASK,false);
                 return rc;
             }
-            bool has_io=nr==NAS_SC_pselect6 ?
+            bool has_io=(nr==NAS_SC_pselect6 || nr==NAS_SC_select) ?
                 nas_fs_pselect_arm(args[1],args[2],args[3],args[4]) :
                 nas_fs_poll_arm(args[1],args[2]);
             if(!has_io && !TASK.deadline_active) {

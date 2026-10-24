@@ -1,0 +1,8 @@
+# All packages signed by official Alpine 3.23 target-ISA keys.
+# One real upstream Vim with ncurses terminfo, plus native musl-dev
+# solely to link the POSIX TTY test launcher's original Linux syscalls.
+musl
+musl-dev
+busybox
+vim
+ncurses-terminfo-base
