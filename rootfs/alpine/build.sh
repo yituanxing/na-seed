@@ -40,6 +40,8 @@ case "$profile" in
          package_list=rootfs/alpine/packages-git.txt ;;
     python) work="build/external/m52-python/$port"
             package_list=rootfs/alpine/packages-python.txt ;;
+    vim) work="build/external/m53-vim/$port"
+         package_list=rootfs/alpine/packages-vim.txt ;;
     *) echo "[ALPINE] unknown profile $profile" >&2; exit 2 ;;
 esac
 root="$work/rootfs"
@@ -99,7 +101,36 @@ sudo chown -R "$(id -u):$(id -g)" "$root"
 mkdir -p "$root/tmp" "$root/tests"
 chmod 1777 "$root/tmp"
 test -e "$root/bin/busybox"
-if [ "$profile" = python ]; then
+if [ "$profile" = vim ]; then
+    # Unmodified signed Alpine Vim and ncurses data. The launcher is a
+    # generic Linux C user program, never a kernel test-specific syscall.
+    cp tests/m53-vim-run.sh "$root/tests/m53-vim-run.sh"
+    test -x "$root/usr/bin/vim" || { echo "[M53] missing native Vim" >&2; exit 1; }
+    readelf -h "$root/usr/bin/vim" | grep -Fq "$machine"
+    test -s "$root/usr/include/stdio.h"
+    test -s "$root/usr/lib/libc.a"
+    # Compile against target Alpine musl with the same host LLVM on each ISA.
+    # No glibc cross-system is borrowed from a different Linux distro.
+    case "$port" in
+        amd64) triple=x86_64-linux-musl ;;
+        riscv64) triple=riscv64-linux-musl ;;
+        arm64) triple=aarch64-linux-musl ;;
+    esac
+    clang --target="$triple" --sysroot="$root" -O2 -std=c11 -Wall -Wextra \
+        -Werror -static -fno-pie -no-pie -fuse-ld=lld \
+        -Wl,-z,max-page-size=4096 \
+        tests/m53-vim-init.c -o "$root/tests/m53-vim-init"
+    readelf -h "$root/tests/m53-vim-init" | grep -Fq "$machine"
+    if readelf -l "$root/tests/m53-vim-init" | grep -q INTERP; then
+        echo "[M53] launcher must be genuine native static Linux ELF" >&2
+        exit 1
+    fi
+    if ! test -e "$root/etc/terminfo/v/vt100" && \
+       ! test -e "$root/usr/share/terminfo/v/vt100"; then
+        echo "[M53] signed vt100 terminfo missing" >&2
+        exit 1
+    fi
+elif [ "$profile" = python ]; then
     # Original native signed CPython ELF and complete upstream stdlib.
     cp tests/m52-python-run.sh "$root/tests/run-python.sh"
     cp tests/m52-python-suite.py "$root/tests/m52-python-suite.py"
