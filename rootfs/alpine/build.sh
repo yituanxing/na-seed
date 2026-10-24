@@ -30,6 +30,8 @@ case "$profile" in
             package_list=rootfs/alpine/packages-zstd.txt ;;
     exec) work="build/external/m46-exec/$port"
           package_list=rootfs/alpine/packages-zstd.txt ;;
+    tgkill) work="build/external/m47-tgkill/$port"
+            package_list=rootfs/alpine/packages-zstd.txt ;;
     *) echo "[ALPINE] unknown profile $profile" >&2; exit 2 ;;
 esac
 root="$work/rootfs"
@@ -109,6 +111,22 @@ if [ "$profile" = archive ]; then
         [ -n "$binary" ] || { echo "[M40] missing original packaged $program ($port)" >&2; exit 1; }
         readelf -h "$binary" | grep -Fq "$machine"
     done
+elif [ "$profile" = tgkill ]; then
+    cp tests/m47-tgkill-run.sh "$root/tests/run-tgkill.sh"
+    cp tests/m43-zstd-run.sh "$root/tests/run-zstd.sh"
+    dd if=/dev/zero of="$root/tests/m43-input.bin" bs=1048576 count=12 status=none
+    case "$port" in
+        amd64) target_triple=x86_64-linux-musl ;;
+        riscv64) target_triple=riscv64-linux-musl ;;
+        arm64) target_triple=aarch64-linux-musl ;;
+    esac
+    clang --target="$target_triple" -O2 -std=c11 -Wall -Wextra -Werror \
+        -ffreestanding -nostdinc -fno-stack-protector -fno-builtin \
+        -fno-pic -fno-pie -nostdlib -static -fuse-ld=lld \
+        -Wl,-e,_start -Wl,-z,max-page-size=4096 \
+        tests/m47-tgkill.c -o "$root/tests/m47-tgkill"
+    readelf -h "$root/tests/m47-tgkill" | grep -Fq "$machine"
+    test -x "$root/tests/m47-tgkill"
 elif [ "$profile" = exec ]; then
     # Host builds the freestanding syscall corner-case pair for each ISA.
     # Authentic unmodified signed Alpine musl/zstd remains the regression.

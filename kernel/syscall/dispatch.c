@@ -419,6 +419,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_rt_sigprocmask) return nas_signal_procmask(args[1], args[2], args[3], args[4],
                                                                 (uint64_t *)(uintptr_t)args);
     if (nr == NAS_SC_kill) return nas_signal_kill(args[1], args[2], (uint64_t *)(uintptr_t)args);
+    if (nr == NAS_SC_tkill) return nas_signal_tkill(args[1],args[2],(uint64_t *)(uintptr_t)args);
+    if (nr == NAS_SC_tgkill) return nas_signal_tgkill(args[1],args[2],args[3],(uint64_t *)(uintptr_t)args);
     if (nr == NAS_SC_umask) {
         uint64_t previous=TASK.vm_owner->umask;
         TASK.vm_owner->umask=nas_fs_umask(args[1]);
