@@ -32,6 +32,8 @@ case "$profile" in
           package_list=rootfs/alpine/packages-zstd.txt ;;
     tgkill) work="build/external/m47-tgkill/$port"
             package_list=rootfs/alpine/packages-zstd.txt ;;
+    parallel) work="build/external/m48-parallel/$port"
+              package_list=rootfs/alpine/packages-parallel.txt ;;
     *) echo "[ALPINE] unknown profile $profile" >&2; exit 2 ;;
 esac
 root="$work/rootfs"
@@ -111,6 +113,32 @@ if [ "$profile" = archive ]; then
         [ -n "$binary" ] || { echo "[M40] missing original packaged $program ($port)" >&2; exit 1; }
         readelf -h "$binary" | grep -Fq "$machine"
     done
+elif [ "$profile" = parallel ]; then
+    # Official GNU Make, GNU Findutils xargs -P and GNU GCC from signed
+    # Alpine APKs. Host only stages source/Makefile. Compilation and
+    # executable output are verified inside NaSeed's real QEMU guest.
+    cp tests/m48-parallel-run.sh "$root/tests/run-parallel.sh"
+    cp tests/m48-parallel.mk "$root/tests/m48-parallel.mk"
+    cp tests/m48-parallel-worker.sh "$root/tests/m48-parallel-worker.sh"
+    cp tests/m38-gcc-hello.c "$root/tests/m48-alpha.c"
+    cp tests/m38-readv.c "$root/tests/m48-beta.c"
+    printf '%s' 'abcdefghijklmn' > "$root/tests/readv.txt"
+    for program in make gcc xargs; do
+        valid=''
+        for candidate in "$root/usr/bin/$program" "$root/bin/$program"; do
+            if [ -x "$candidate" ] &&
+               readelf -h "$candidate" 2>/dev/null | grep -Fq "$machine"; then
+                valid=$candidate
+                break
+            fi
+        done
+        [ -n "$valid" ] || {
+            echo "[M48] missing original distro $program ($port)" >&2
+            exit 1
+        }
+    done
+    test -s "$root/usr/include/stdio.h"
+    test -s "$root/usr/lib/libc.a"
 elif [ "$profile" = tgkill ]; then
     cp tests/m47-tgkill-run.sh "$root/tests/run-tgkill.sh"
     cp tests/m43-zstd-run.sh "$root/tests/run-zstd.sh"
