@@ -55,6 +55,36 @@ static struct bootfs_entry *hardlink_find(uint32_t ino,
 /* GNU newc stores each hardlinked regular file's content once.
  * Subsequent/previous pathname records can have filesize=0. Fixup after
  * the trailer keeps lookups O(1) without duplicating immutable bytes. */
+/* Resolve all parent directories only AFTER parsing: CPIO order is not a
+ * directory-tree order. Hash lookup yields O(1) expected parent resolution.
+ * Child insertion follows original archive order, preserving old readdir.
+ * Missing parents are deliberately left unlinked as in the old scan path. */
+static void bootfs_index_children(void) {
+    for (struct bootfs_slab *slab=slab_head;slab;slab=slab->next)
+        for (unsigned i=0;i<slab->used;i++) {
+            struct bootfs_entry *e=&slab->entries[i];
+            e->first_child=e->last_child=e->next_sibling=0;
+        }
+    for (struct bootfs_slab *slab=slab_head;slab;slab=slab->next)
+        for (unsigned i=0;i<slab->used;i++) {
+            struct bootfs_entry *e=&slab->entries[i];
+            if (strcmp(e->path,"/")==0) continue;
+            char parent[256];
+            unsigned end=0;
+            while (e->path[end]) end++;
+            while (end>0 && e->path[end-1]!='/') end--;
+            if (end==0) continue;
+            unsigned len=end==1?1:end-1;
+            for (unsigned j=0;j<len;j++)parent[j]=e->path[j];
+            parent[len]=0;
+            struct bootfs_entry *dir=(struct bootfs_entry*)bootfs_find(parent);
+            if (!dir || !bootfs_is_dir(dir)) continue;
+            if (dir->last_child)dir->last_child->next_sibling=e;
+            else dir->first_child=e;
+            dir->last_child=e;
+        }
+}
+
 static void bootfs_finish_hardlinks(void) {
     for (struct bootfs_slab *slab=slab_head;slab;slab=slab->next)
         for (unsigned i=0;i<slab->used;i++) {
@@ -180,6 +210,7 @@ bool bootfs_mount(const void *bytes, uint64_t size) {
         if (name_size == 11 && memcmp(name, "TRAILER!!!", 11) == 0) {
             if (file_size) return false;
             bootfs_finish_hardlinks();
+            bootfs_index_children();
             mounted = entry_count > 0 && bootfs_find("/") != 0;
             return mounted;
         }
@@ -251,24 +282,12 @@ bool bootfs_is_dir(const struct bootfs_entry *entry) {
 const struct bootfs_entry *bootfs_child(const struct bootfs_entry *dir,
                                         unsigned ordinal) {
     if (!bootfs_is_dir(dir)) return 0;
-    const char *parent = dir->path;
-    size_t plen = strlen(parent);
-    for (const struct bootfs_slab *slab = slab_head; slab; slab = slab->next) {
-        for (unsigned i = 0; i < slab->used; ++i) {
-            const struct bootfs_entry *entry = &slab->entries[i];
-            const char *candidate = entry->path;
-            if (strncmp(candidate, parent, plen) != 0) continue;
-            const char *tail = candidate + plen;
-            if (plen != 1 && *tail++ != '/') continue;
-            if (!*tail) continue;
-            bool direct = true;
-            for (const char *p = tail; *p; ++p)
-                if (*p == '/') { direct = false; break; }
-            if (!direct) continue;
-            if (ordinal-- == 0) return entry;
-        }
+    const struct bootfs_entry *item=dir->first_child;
+    while (item && ordinal) {
+        item=item->next_sibling;
+        ordinal--;
     }
-    return 0;
+    return item;
 }
 
 /* Resolve real CPIO symlinks, including relative targets and intermediate

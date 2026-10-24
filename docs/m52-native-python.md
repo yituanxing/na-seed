@@ -22,3 +22,18 @@ Before modifying the shared VFS, assert the signed encoding sources exist
 in the staged CPIO, assert BusyBox can read them inside the native guest,
 then enable original Python's verbose import messages on the actual failing
 execution. Never replace stdlib modules or special-case Python in the kernel.
+
+## Root cause confirmed by real three-ISA guest traces
+
+CPython FileFinder uses directory enumeration to discover encodings/utf_8.py,
+not a direct open. All three ISAs successfully opened encodings/__init__.py
+and aliases.py, but never attempted opening utf_8.py: common
+sys_getdents64 forcibly truncated every read-only archive directory after
+96 direct children, despite BootFS storing 65,536 entries and its host
+scale test verifying 1,200 children. The encodings directory is larger
+than this old arbitrary cap, so CPython's directory cache omitted utf_8.
+
+Remove the 96-entry truncate rather than insert program-specific imports;
+also index CPIO direct children once after mount in original archive order,
+avoiding O(archive-entry-count * directory-size) repeated scans. The common
+VFS remains ISA-neutral; no new syscall or kernel-lock requirement.

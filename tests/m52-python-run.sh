@@ -20,5 +20,5 @@ for f in /usr/lib/python3.12/encodings/__init__.py \
     if [ ! -s "$f" ]; then echo "[M52 ERROR] guest cannot read $f" >&2; exit 1; fi
 done
 echo M52_GUEST_STDLIB_FILES_VISIBLE
-PYTHONVERBOSE=1 PYTHONPYCACHEPREFIX=/tmp/m52-source-cache /usr/bin/python3 -v -B /tests/m52-python-suite.py
+/usr/bin/python3 -B /tests/m52-python-suite.py
 echo M52_PYTHON_SUITE_PASS

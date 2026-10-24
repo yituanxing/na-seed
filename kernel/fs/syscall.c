@@ -427,15 +427,6 @@ static uint64_t sys_renameat_tmp(uint64_t olddirfd, uint64_t oldptr,
 }
 static uint64_t sys_open_path(const char *path, uint64_t native_flags,
                               uint64_t create_mode) {
-#ifdef NASEED_SYSCALL_TRACE
-    /* Generic opt-in path diagnostics: real FS requests, never synthetic
-     * Python-specific behaviour or fabricated successful open results. */
-    static unsigned traced_open_requests;
-    if (traced_open_requests++ < 300) {
-        nas_print("[VFS OPEN] "); nas_print(path);
-        nas_print(" flags="); nas_dec(native_flags); nas_print("\n");
-    }
-#endif
     uint64_t flags;
     if (!nas_linux_open_flags(native_flags, &flags)) return (uint64_t)-EINVAL;
     flags=nas_linux_path_only_flags(flags);
@@ -1352,7 +1343,7 @@ static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
             ino = 5000 + tmp_number(file);
             dtype = file->is_dir ? 4 : 8;
         } else {
-            if (cursor - 2 > 95) break;
+            if (cursor - 2 > UINT32_MAX) break;
             item = bootfs_child(dir, (unsigned)(cursor - 2));
             if (!item) break;
             name = item->path;
