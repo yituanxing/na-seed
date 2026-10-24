@@ -14,6 +14,7 @@
 #include "signal.h"
 #include "../time/clock.h"
 #include "../fs/epoll.h"
+#include "../fs/eventfd.h"
 #include "../mm/usercopy.h"
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
@@ -39,13 +40,15 @@ static bool task_io_ready(const struct nas_task *task) {
     if (task->blocked_op == NAS_SC_read ||
         task->blocked_op == NAS_SC_readv) {
         if(kind == FD_PIPE_R)return nas_pipe_read_ready(slot);
+        if(kind == FD_EVENTFD)return nas_eventfd_ready(slot,false);
         if(kind == FD_TTY || kind == FD_UART)
             return nas_tty_read_ready((struct nas_task *)task,task->blocked_args[2]);
         return true; /* replay and return actual fd error */
     }
     if (task->blocked_op == NAS_SC_write ||
         task->blocked_op == NAS_SC_writev)
-        return kind != FD_PIPE_W || nas_pipe_write_ready(slot);
+        return kind == FD_EVENTFD ? nas_eventfd_ready(slot,true) :
+               kind != FD_PIPE_W || nas_pipe_write_ready(slot);
     return true;
 }
 static bool task_wait_ready(const struct nas_task *task) {
@@ -332,7 +335,7 @@ bool nas_sched_preempt_select(void) {
                     (kind==FD_TTY || kind==FD_UART) &&
                     (int64_t)result==-EAGAIN && nas_tty_read_waitable();
                 bool pipe_again=(int64_t)result==-EOPNOTSUPP &&
-                    (kind==FD_PIPE_R || kind==FD_PIPE_W);
+                    (kind==FD_PIPE_R || kind==FD_PIPE_W || kind==FD_EVENTFD);
                 bool poll_again=(int64_t)result==-EAGAIN &&
                     (next->blocked_op==NAS_SC_poll ||
                      next->blocked_op==NAS_SC_ppoll ||
@@ -415,7 +418,7 @@ retry_schedule: ; /* label must precede a statement in C11 */
                     (replay_kind==FD_TTY || replay_kind==FD_UART) &&
                     (int64_t)result==-EAGAIN && nas_tty_read_waitable();
                 bool pipe_again=(int64_t)result==-EOPNOTSUPP &&
-                    (replay_kind==FD_PIPE_R || replay_kind==FD_PIPE_W);
+                    (replay_kind==FD_PIPE_R || replay_kind==FD_PIPE_W || replay_kind==FD_EVENTFD);
                 bool poll_again=(int64_t)result==-EAGAIN &&
                     (next->blocked_op==NAS_SC_poll ||
                      next->blocked_op==NAS_SC_ppoll ||

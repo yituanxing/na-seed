@@ -12,6 +12,7 @@
 #include "../lib/string.h"
 #include "file_ops.h"
 #include "epoll.h"
+#include "eventfd.h"
 
 /* Open-description-owned bounded epoll instances, not process-specific
  * syscall aliases. fd slot identity is shared across fork() and dup().
@@ -78,6 +79,9 @@ static uint16_t ready_now(const struct ep_watch *w){
     case FD_TTY: case FD_UART:
         if((requested&EP_IN) && nas_tty_poll_readable())result|=EP_IN;
         if(requested&EP_OUT)result|=EP_OUT;
+        break;
+    case FD_EVENTFD:
+        result=nas_eventfd_poll_slot(w->slot,requested);
         break;
     case FD_EPOLL: return 0; /* reject nested epoll in ctl */
     default:

@@ -10,6 +10,15 @@ epoll_event ABI, real pipe/TTY readiness, task-owned timeout, CLOEXEC and
 last-close lifetime. Add a focused original target GCC-compiled native
 event-loop smoke before the expensive full CMake upstream build.
 
+After the first real epoll/pipe test passed, CMake 4 still hung on all ISAs.
+Guest logs show missing eventfd2 (x86 nr=290, generic64 nr=19). Add a
+shared eventfd object with real EFD_NONBLOCK, EFD_SEMAPHORE and EFD_CLOEXEC,
+validated counter read/write and integration into poll, epoll and task-wake.
+io_uring_setup (nr=425) remains deliberately ENOSYS for normal Linux
+fallback. Eventfd is a likely missing prerequisite, not a proven root cause
+until real CMake passes. Validate with a GCC guest-compiled eventfd test
+before the full upstream configure to get rapid fail-closed evidence.
+
 Goal: move past toy CMake samples. Fetch an authentic immutable source
 snapshot from DaveGamble/cJSON commit
 `c859b25da02955fef659d658b8f324b5cde87be3` (upstream v1.7.19)

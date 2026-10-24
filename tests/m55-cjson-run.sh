@@ -33,6 +33,12 @@ cd /tmp
 /tmp/m55-epoll
 echo M55_LINUX_EPOLL_PIPE_WAIT_PASS
 
+phase=eventfd-real-linux-guest
+/usr/bin/gcc -std=c11 -O2 -Wall -Wextra -Werror -static \
+    /tests/m55-eventfd.c -o /tmp/m55-eventfd
+/tmp/m55-eventfd
+echo M55_LINUX_EVENTFD_EPOLL_PASS
+
 phase=real-cmake-configure
 # CMake 4 removes older policy defaults. Supply the new policy floor via
 # a normal command-line option; NEVER patch upstream cJSON CMakeLists.

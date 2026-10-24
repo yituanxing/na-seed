@@ -144,6 +144,7 @@ if [ "$profile" = cmake ]; then
     done
     cp tests/m55-cjson-run.sh "$root/tests/run-cjson.sh"
     cp tests/m55-epoll.c "$root/tests/m55-epoll.c"
+    cp tests/m55-eventfd.c "$root/tests/m55-eventfd.c"
     for program in gcc cmake ctest ninja; do
         test -x "$root/usr/bin/$program" || {
             echo "[M55 FAIL] target native executable missing $program" >&2
