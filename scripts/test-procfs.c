@@ -115,9 +115,17 @@ int main(void) {
     assert(nas_proc_lookup("/proc/23",&entry));
     assert(nas_proc_dir_path(entry,dirpath) && !strcmp(dirpath,"/proc/23"));
     char name[32];
-    assert(nas_proc_child(root,8,name,&entry) && !strcmp(name,"1"));
-    assert(nas_proc_child(root,9,name,&entry) && !strcmp(name,"23"));
-    assert(!nas_proc_child(root,10,name,&entry));
+    /* The root /proc static entries can grow: find the first real PID
+     * without assuming an obsolete, fixed root getdents64 index. */
+    unsigned root_pid_index=0;
+    for(;root_pid_index<64;root_pid_index++) {
+        assert(nas_proc_child(root,root_pid_index,name,&entry));
+        if(!strcmp(name,"1"))break;
+    }
+    assert(root_pid_index<64);
+    assert(nas_proc_child(root,root_pid_index+1,name,&entry) &&
+           !strcmp(name,"23"));
+    assert(!nas_proc_child(root,root_pid_index+2,name,&entry));
     assert(nas_proc_lookup("/proc/23",&entry));
     assert(nas_proc_child(entry,1,name,&root) && !strcmp(name,"status"));
     /* Native ptrace -f requires this genuine Task-backed traversal:
