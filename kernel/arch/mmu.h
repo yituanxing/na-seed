@@ -11,6 +11,9 @@
  */
 typedef bool (*nas_mmu_user_visit)(uint64_t va,unsigned access,void *ctx);
 bool nas_mmu_walk_user_mapping(uint64_t root_phys,nas_mmu_user_visit visit,void *ctx);
+/* A chosen VM owner (not the executing task). Output PA includes offset. */
+bool nas_mmu_resolve_user_address(uint64_t selected_root,uint64_t user_va,
+                                  uint64_t *physical,unsigned *access);
 #if defined(__x86_64__)
 #include "x86_64/mmu.h"
 #elif defined(__riscv) && __riscv_xlen == 64

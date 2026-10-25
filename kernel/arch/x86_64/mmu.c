@@ -73,6 +73,27 @@ static bool nas_x86_walk_level(uint64_t pa,unsigned level,uint64_t base,
     }
     return true;
 }
+bool nas_mmu_resolve_user_address(uint64_t selected_root,uint64_t user_va,
+                                  uint64_t *physical,unsigned *access) {
+    if(!selected_root || (selected_root&(PAGE-1)) ||
+       !physical || user_va>=USER_LIMIT)return false;
+    uint64_t pa=selected_root;
+    for(unsigned level=3;level>0;--level) {
+        const uint64_t *tab=phys_table(pa);
+        unsigned slot=(unsigned)((user_va>>(12U+9U*level))&511ULL);
+        uint64_t entry=tab[slot];
+        if((entry&(P_PRESENT|P_USER))!=(P_PRESENT|P_USER) ||
+           (entry&(1ULL<<7)))return false;
+        pa=entry&PHYS_MASK;
+        if(!pa)return false;
+    }
+    uint64_t leaf=phys_table(pa)[(user_va>>12)&511ULL];
+    if((leaf&(P_PRESENT|P_USER))!=(P_PRESENT|P_USER))return false;
+    *physical=(leaf&PHYS_MASK)|(user_va&(PAGE-1));
+    if(access)*access=NAS_UP_READ|((leaf&P_RW)?NAS_UP_WRITE:0)|
+                      ((leaf&(1ULL<<63))?0:NAS_UP_EXEC);
+    return true;
+}
 bool nas_mmu_walk_user_mapping(uint64_t target_root,
                                 nas_mmu_user_visit cb,void *arg) {
     if(!target_root || (target_root&(PAGE-1)) || !cb)return false;

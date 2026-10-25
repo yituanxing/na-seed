@@ -24,6 +24,11 @@ cc -std=c11 -Wall -Wextra -Werror -fno-builtin -I kernel \
     scripts/test-task-accounting.c kernel/task/accounting.c \
     -o /tmp/naseed-task-accounting
 /tmp/naseed-task-accounting
+# M71: selected VM root, noncontiguous physical pages, fault bounds.
+cc -std=c11 -Wall -Wextra -Werror -fno-builtin -I kernel \
+  scripts/test-remote-task-read.c kernel/mm/remote_copy.c \
+  -o /tmp/naseed-remote-task-read
+/tmp/naseed-remote-task-read
 sh scripts/check-m28-timer.sh
 sh scripts/check-m28-port-timers.sh
 

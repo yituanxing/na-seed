@@ -23,6 +23,7 @@ kernel/drivers/serial.c
 kernel/mm/frame.c
 kernel/mm/vm.c
 kernel/mm/usercopy.c
+kernel/mm/remote_copy.c
 kernel/task/elf.c
 kernel/task/elf_segments.c
 kernel/task/user_stack.c
