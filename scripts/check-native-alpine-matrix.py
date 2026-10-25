@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Fail closed on any lost, duplicated or ISA-skipped authentic Linux workload.
 
-All 17 M38-M49 plus M51-M55 probes must run on each of the 3 native ports. The
-existing individual workflows remain manually runnable for fault isolation.
+All 17 M38-M49 plus M51-M55 probes remain in the full matrix for each native
+ISA. The ordinary PR gate runs 12 source-free prebuilt/ABI workloads; five
+original guest source-build cases remain in the opt-in full mode.
 """
 from pathlib import Path
 import re
@@ -64,5 +65,24 @@ for path in seen.values():
     if not any(suffix in wf.read_text() and "workflow_dispatch:" in wf.read_text()
                and "pull_request:" not in wf.read_text() for wf in matching):
         raise SystemExit(f"old standalone manual diagnostic unavailable: {path}")
-print(f"[M50 CI MATRIX PASS] {len(seen)} original real Linux workloads x 3 ISAs, "
-      "no omitted/duplicate profiles and opt-in focused workflows")
+# Guard the two-track contract: no historical probe removed; none of the
+# costly guest builds silently run on the normal, fast PR path.
+batch = (root / "scripts/probe-alpine-batch.sh").read_text()
+for mode in ("fast", "full"):
+    if f"{mode}:foundation" not in batch or f"{mode}:parallel" not in batch:
+        raise SystemExit(f"batch does not define required {mode} suite counts")
+for milestone in ("m38", "m48", "m49", "m54", "m55"):
+    if milestone not in batch:
+        raise SystemExit(f"guest source-build gating missing {milestone}")
+if "NAS_NATIVE_MODE" not in batch or "[M50 DEEP DEFERRED]" not in batch:
+    raise SystemExit("fast/full gate owner missing from batch script")
+if "NAS_NATIVE_MODE:" not in w or "inputs.mode" not in w or "default: full" not in w:
+    raise SystemExit("CI cannot select complete original source-build mode")
+if "fromJSON(" not in w or "foundation" not in w or "parallel" not in w:
+    raise SystemExit("PR fast gate suite expansion missing")
+for name in ("m56-native-busybox", "m57-native-sqlite"):
+    workflow = (root / ".github/workflows" / f"{name}.yml").read_text()
+    if "workflow_dispatch:" not in workflow or "pull_request:" in workflow:
+        raise SystemExit(f"{name} must remain explicitly runnable, not auto guest-build on PR")
+print(f"[M50 CI MATRIX PASS] {len(seen)} original workloads x 3 ISAs retained; "
+      "12 prebuilt/ABI fast PR cases and 5 opt-in genuine guest source builds")

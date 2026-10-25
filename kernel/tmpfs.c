@@ -55,21 +55,32 @@ static void tmp_try_reclaim(struct nas_tmp_file *node) {
 }
 
 
-/* A single indirect frame contains 512 physical data-page addresses.
- * All storage comes from the shared native page-frame provider: no arch
- * switch, no reserved file-sized BSS arrays, no VFS-owned physical allocator.
- * A physical frame address of zero always denotes an absent page. */
+/* An optional root frame indexes 512 indirect pages; each indirect page
+ * indexes 512 independently allocated 4-KiB file data pages. The common
+ * frame allocator and HHDM supply all storage; no ISA-specific fast path. */
 static uint8_t *tmp_data_page(struct nas_tmp_file *file, uint64_t number,
                               bool create) {
-    if (!file || number >= TMP_INDEX_PAGES * (uint64_t)TMP_PAGE_ENTRIES)
+    if (!file || number >= TMP_INDEX_ROOT_ENTRIES * (uint64_t)TMP_PAGE_ENTRIES)
         return 0;
+    if (!file->index_root) {
+        if (!create) return 0;
+        uint64_t root_addr = nas_frame_alloc();
+        if (!root_addr) return 0;
+        memset((void *)(uintptr_t)(nas_hhdm_offset() + root_addr),
+               0, (size_t)TMP_PAGE_SIZE);
+        file->index_root = root_addr;
+    }
+    uint64_t *root = (uint64_t *)(uintptr_t)(
+        nas_hhdm_offset() + file->index_root);
     unsigned outer = (unsigned)(number / TMP_PAGE_ENTRIES);
     unsigned inner = (unsigned)(number % TMP_PAGE_ENTRIES);
-    uint64_t table_addr = file->index_pages[outer];
+    uint64_t table_addr = root[outer];
     if (!table_addr && create) {
         table_addr = nas_frame_alloc();
         if (!table_addr) return 0;
-        file->index_pages[outer] = table_addr;
+        memset((void *)(uintptr_t)(nas_hhdm_offset() + table_addr),
+               0, (size_t)TMP_PAGE_SIZE);
+        root[outer] = table_addr;
     }
     if (!table_addr) return 0;
     uint64_t *table = (uint64_t *)(uintptr_t)(nas_hhdm_offset() + table_addr);
@@ -77,6 +88,8 @@ static uint8_t *tmp_data_page(struct nas_tmp_file *file, uint64_t number,
     if (!data_addr && create) {
         data_addr = nas_frame_alloc();
         if (!data_addr) return 0;
+        memset((void *)(uintptr_t)(nas_hhdm_offset() + data_addr),
+               0, (size_t)TMP_PAGE_SIZE);
         table[inner] = data_addr;
     }
     return data_addr ? (uint8_t *)(uintptr_t)(nas_hhdm_offset() + data_addr) : 0;
@@ -128,18 +141,20 @@ int64_t tmp_write_at(struct nas_tmp_file *file, uint64_t offset,
 }
 void tmp_truncate(struct nas_tmp_file *file) {
     if (!file) return;
-    for (unsigned outer = 0; outer < TMP_INDEX_PAGES; outer++) {
-        uint64_t frame = file->index_pages[outer];
-        if (!frame) continue;
-        uint64_t *table = (uint64_t *)(uintptr_t)(nas_hhdm_offset() + frame);
-        for (unsigned inner = 0; inner < TMP_PAGE_ENTRIES; inner++) {
-            if (table[inner]) {
-                (void)nas_frame_free(table[inner]);
-                table[inner] = 0;
+    if (file->index_root) {
+        uint64_t *root = (uint64_t *)(uintptr_t)(
+            nas_hhdm_offset() + file->index_root);
+        for (unsigned outer = 0; outer < TMP_INDEX_ROOT_ENTRIES; outer++) {
+            uint64_t frame = root[outer];
+            if (!frame) continue;
+            uint64_t *table = (uint64_t *)(uintptr_t)(nas_hhdm_offset() + frame);
+            for (unsigned inner = 0; inner < TMP_PAGE_ENTRIES; inner++) {
+                if (table[inner]) (void)nas_frame_free(table[inner]);
             }
+            (void)nas_frame_free(frame);
         }
-        (void)nas_frame_free(frame);
-        file->index_pages[outer] = 0;
+        (void)nas_frame_free(file->index_root);
+        file->index_root = 0;
     }
     file->size = 0;
     if (file->used) {
@@ -150,40 +165,58 @@ void tmp_truncate(struct nas_tmp_file *file) {
 /* Linux ftruncate: grow as sparse zero-filled pages, shrink discards pages
  * AND zeroes the partial final page, so later regrowth cannot expose
  * truncated bytes. Inode identity and open-descriptor offset survive. */
-int tmp_resize(struct nas_tmp_file *file,uint64_t size) {
-    if(!file || !file->used)return -ENOENT;
-    if(file->is_dir)return -EISDIR;
-    if(size>TMP_FILE_CAP)return -EFBIG;
-    uint64_t old=file->size;
-    if(size==old)return 0;
-    if(size<old) {
-        if(size%TMP_PAGE_SIZE) {
-            uint8_t *last=tmp_data_page(file,size/TMP_PAGE_SIZE,false);
-            if(last)memset(last+size%TMP_PAGE_SIZE,0,
-                           (size_t)(TMP_PAGE_SIZE-size%TMP_PAGE_SIZE));
+int tmp_resize(struct nas_tmp_file *file, uint64_t size) {
+    if (!file || !file->used) return -ENOENT;
+    if (file->is_dir) return -EISDIR;
+    if (size > TMP_FILE_CAP) return -EFBIG;
+    uint64_t old = file->size;
+    if (size == old) return 0;
+    if (size < old) {
+        if (size % TMP_PAGE_SIZE) {
+            uint8_t *last = tmp_data_page(file, size / TMP_PAGE_SIZE, false);
+            if (last) memset(last + size % TMP_PAGE_SIZE, 0,
+                             (size_t)(TMP_PAGE_SIZE - size % TMP_PAGE_SIZE));
         }
-        uint64_t first=(size+TMP_PAGE_SIZE-1)/TMP_PAGE_SIZE;
-        uint64_t oldpages=(old+TMP_PAGE_SIZE-1)/TMP_PAGE_SIZE;
-        for(uint64_t page=first;page<oldpages;page++) {
-            unsigned outer=(unsigned)(page/TMP_PAGE_ENTRIES);
-            uint64_t frame=file->index_pages[outer];
-            if(!frame)continue;
-            uint64_t *slots=(uint64_t *)(uintptr_t)(nas_hhdm_offset()+frame);
-            unsigned inner=(unsigned)(page%TMP_PAGE_ENTRIES);
-            if(slots[inner]) { (void)nas_frame_free(slots[inner]); slots[inner]=0; }
-        }
-        for(unsigned outer=0;outer<TMP_INDEX_PAGES;outer++) {
-            uint64_t frame=file->index_pages[outer];
-            if(!frame)continue;
-            uint64_t *slots=(uint64_t *)(uintptr_t)(nas_hhdm_offset()+frame);
-            bool any=false;
-            for(unsigned i=0;i<TMP_PAGE_ENTRIES;i++)if(slots[i]) { any=true; break; }
-            if(!any) { (void)nas_frame_free(frame); file->index_pages[outer]=0; }
+        if (file->index_root) {
+            uint64_t *root = (uint64_t *)(uintptr_t)(
+                nas_hhdm_offset() + file->index_root);
+            uint64_t first = (size + TMP_PAGE_SIZE - 1) / TMP_PAGE_SIZE;
+            uint64_t oldpages = (old + TMP_PAGE_SIZE - 1) / TMP_PAGE_SIZE;
+            for (uint64_t page = first; page < oldpages; page++) {
+                unsigned outer = (unsigned)(page / TMP_PAGE_ENTRIES);
+                uint64_t frame = root[outer];
+                if (!frame) continue;
+                uint64_t *slots = (uint64_t *)(uintptr_t)(
+                    nas_hhdm_offset() + frame);
+                unsigned inner = (unsigned)(page % TMP_PAGE_ENTRIES);
+                if (slots[inner]) {
+                    (void)nas_frame_free(slots[inner]);
+                    slots[inner] = 0;
+                }
+            }
+            bool root_has_index = false;
+            for (unsigned outer = 0; outer < TMP_INDEX_ROOT_ENTRIES; outer++) {
+                uint64_t frame = root[outer];
+                if (!frame) continue;
+                uint64_t *slots = (uint64_t *)(uintptr_t)(
+                    nas_hhdm_offset() + frame);
+                bool any = false;
+                for (unsigned i = 0; i < TMP_PAGE_ENTRIES; i++)
+                    if (slots[i]) { any = true; break; }
+                if (!any) {
+                    (void)nas_frame_free(frame);
+                    root[outer] = 0;
+                } else root_has_index = true;
+            }
+            if (!root_has_index) {
+                (void)nas_frame_free(file->index_root);
+                file->index_root = 0;
+            }
         }
     }
-    file->size=size;
-    file->mtime_ns=tmp_next_mtime(file->mtime_ns);
-    file->ctime_ns=file->mtime_ns;
+    file->size = size;
+    file->mtime_ns = tmp_next_mtime(file->mtime_ns);
+    file->ctime_ns = file->mtime_ns;
     return 0;
 }
 int tmp_utimens(struct nas_tmp_file *file, uint64_t access_ns,
@@ -241,6 +274,7 @@ static struct nas_tmp_file *tmp_init_node(struct nas_tmp_file *file,
     while (path[i] && i<255) { file->path[i]=path[i]; i++; }
     file->path[i]=0;
     file->size=0;
+    file->index_root=0;
     file->posix_locks=(struct nas_posix_locks){0};
     file->mode=(dir ? 0040000U : 0100000U) | (mode & 07777U);
     file->is_dir=dir;
@@ -255,7 +289,8 @@ struct nas_tmp_file *tmp_create(const char *path,bool dir,uint32_t mode) {
             if (!slab->nodes[n].used)
                 return tmp_init_node(&slab->nodes[n],path,dir,mode);
     struct tmp_inode_slab *slab = tmp_new_slab();
-    return slab ? tmp_init_node(&slab->nodes[0],path,dir,mode) : 0;
+    if (!slab) return 0;
+    return tmp_init_node(&slab->nodes[0],path,dir,mode);
 }
 uint64_t tmp_number(const struct nas_tmp_file *file) {
     return file ? file->ino : 0;

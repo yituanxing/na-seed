@@ -65,3 +65,34 @@ after the new matrix and unchanged full userspace/ARM64 gates all pass.
 Limits: does not consolidate or remove independent source BusyBox,
 ARM64 hardware/TTY gates or core target-ISA QEMU tests. Nor does it claim
 the kernel has SMP, arbitrary process count or complete Linux ABI.
+
+## 2026-10-25: normal PR fast gate versus explicit full source-build gate
+
+Previous M50 grouped foundation inadvertently included M55 CMake/Ninja's
+40–55-minute *guest-side* build on **every** PR, while focused M56 and M57
+also rebuilt BusyBox/SQLite on kernel/common-rootfs edits. This defeated
+the normal userland prebuilt-binary workflow. Recent exact-head M57 M55
+foundation stalled at guest GNU ld on all three ISAs, and M56 Kbuild stalled
+or hit a runner shutdown. Neither result is evidence that original prebuilt
+ELFs stopped running or that a particular kernel syscall is broken.
+
+The immutable `native-alpine-matrix.tsv` still records **all 17** original
+M38–M49/M51–M55 milestone probes. Normal PR CI runs the **12 source-free
+prebuilt/ABI probes** on each of x86-64, RV64 and AArch64 (36 real guest
+runs), reusing the original runner, serial assertions and build caches.
+The original guest-source programs M38/M48/M49/M54/M55 are deferred only
+in `NAS_NATIVE_MODE=fast`. The grouped `workflow_dispatch` input
+`mode=full` (default for manual dispatch) executes **all 17** unchanged
+probes on each ISA (51 actual system-QEMU workloads). M56 and M57 original
+in-guest BusyBox/SQLite workflows similarly remain unchanged and explicitly
+manually runnable, but no longer auto-trigger on ordinary PRs. M55 also
+keeps its focused manual workflow. No program, stage marker, historic
+source-build scenario or source-code assertion has been deleted.
+
+This scheduling split **does not certify slow guest-source milestones** that
+failed earlier: M55/Ninja full rebuild and M56 BusyBox Kbuild remain known
+unresolved deep-suite failures until a complete native full run says otherwise.
+For future heavy kernel/ABI changes choose and run full manually as a merge
+gate; ordinary prebuilt-package changes get rapid cross-ISA ABI feedback
+without 40-minute source builds. The original slow milestones are not
+replaced with fake/prebuilt surrogate acceptance.
