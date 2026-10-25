@@ -118,3 +118,26 @@ continues to use architecture-specific monotonic clocks for durations.
 Without the optional parameter it still falls back to Limine RTC.
 All three actual QEMU launch scripts now provide the host's real UTC clock.
 No dependency edges, CTest requirements or up-to-date semantics are bypassed.
+
+## Native RV64 original EDK2 RTC varstore A/B — actual guest PASS
+
+Original unmodified `RISCV_VIRT_CODE.fd`, genuine RV64 QEMU, Limine,
+NaSeed with **no** `naseed.realtime` kernel injection, and original
+Debian BusyBox `date +%s`, isolated Actions run **40153814096**:
+
+- Baseline fresh `RISCV_VIRT_VARS.fd`: guest epoch `1790594873`, host
+  `1792894613..1792894633`: **2,299,740 seconds behind**.
+- Initialize exactly `RtcEpochSeconds` with the actual EFI runtime driver's
+  `gEfiCallerIdGuid=B336F62D-4135-4A55-AE4E-4971BBF0885D`,
+  NV+BS+RT attributes, little-endian UINTN using pinned `virt-fw-vars`.
+  Real variable roundtrip: `1792894635`.
+- Reboot with unmodified CODE/bootloader/kernel, no kernel time override:
+  guest `1792894641`, host range `1792894633..1792894645`. **PASS**.
+
+This proves the previously stale RV64 firmware GetTime is caused by
+initializing fresh UEFI variables from a template lacking current RTC epoch;
+it is fixed without forking EDK2 or adding ISA-specific kernel code.
+The full M55 RV64 guest now explicitly uses this genuine varstore path
+(while all older historical RV64 suites retain their existing boot contract).
+A/B test is independent of upstream cJSON acceptance; do not conflate a
+`date` PASS with full CMake/Ninja/CTest/rebuild PASS.

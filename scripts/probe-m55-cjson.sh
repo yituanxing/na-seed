@@ -12,6 +12,15 @@ case "$1" in
  *) exit 2 ;;
 esac
 port=$1
+# RV64 QEMU's original EDK2 VirtualRealTimeClockLib defaults to its old
+# compile-time epoch when booting a freshly copied UEFI varstore. The real
+# A/B test has proven that pre-seeding RtcEpochSeconds fixes UEFI GetTime()
+# without changing EDK2, Limine, or NaSeed. M55 deliberately disables the
+# temporary kernel cmdline wall-clock override, exercising firmware RTC.
+if [ "$port" = riscv64 ]; then
+    export NAS_RV64_RTC_VAR_SEED=1
+    export NAS_RV64_RTC_TEST_FIRMWARE=1
+fi
 NAS_ALPINE_PROFILE=cmake sh rootfs/alpine/build.sh "$port"
 work=build/external/m55-cjson/"$port"
 export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"

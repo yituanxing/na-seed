@@ -44,6 +44,10 @@ jobs:
               -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
           fi
           command -v docker
+          if [ "${{ matrix.port }}" = riscv64 ]; then
+            python3 -m pip install --user --break-system-packages --disable-pip-version-check 'virt-firmware==26.5.4'
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          fi
       - name: Native real upstream cJSON configure/build/CTests/rebuild
         timeout-minutes: 42
         run: sh scripts/probe-m55-cjson.sh ${{ matrix.port }}
