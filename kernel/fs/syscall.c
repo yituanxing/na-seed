@@ -725,7 +725,12 @@ uint64_t nas_fs_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED)return (uint64_t)-EBADF;
     if((nas_open_files[file_slot[fd]].status_flags & (NAS_LINUX_O_PATH|3ULL))==0)
         return (uint64_t)-EBADF;
-    if(length>(1ULL<<20) || address>=USER_LIMIT || length>USER_LIMIT-address)
+    /* Linux bounds one regular write to MAX_RW_COUNT (INT_MAX rounded down
+     * to the page size), not a kernel-private 1-MiB limit. GNU binutils
+     * legitimately calls writev() with a single multi-megabyte iovec.
+     * The file/device ops still copy in bounded chunks and may short-write. */
+    if(length>0x7ffff000ULL)length=0x7ffff000ULL;
+    if(address>=USER_LIMIT || length>USER_LIMIT-address)
         return (uint64_t)-EFAULT;
     const struct nas_file_ops *ops=nas_open_files[file_slot[fd]].ops;
     return ops && ops->write ? ops->write(fd,address,length) : (uint64_t)-EBADF;
@@ -834,10 +839,16 @@ uint64_t nas_fs_fd_writev(uint64_t fd, uint64_t iov, uint64_t count) {
         if (!nas_user_read_u64(iov + n * 16, &address) ||
             !nas_user_read_u64(iov + n * 16 + 8, &bytes))
             return sent ? sent : (uint64_t)-EFAULT;
-        uint64_t r = nas_fs_fd_write(fd, address, bytes);
+        /* The Linux total transfer limit applies across the entire iovec,
+         * and the shared write path enforces pointer/FD validity. */
+        uint64_t allowed = bytes;
+        if (allowed > 0x7ffff000ULL - sent)
+            allowed = 0x7ffff000ULL - sent;
+        if (!allowed) break;
+        uint64_t r = nas_fs_fd_write(fd, address, allowed);
         if ((int64_t)r < 0) return sent ? sent : r;
         sent += r;
-        if (r != bytes) break;
+        if (r != allowed || allowed != bytes) break;
     }
     return sent;
 }

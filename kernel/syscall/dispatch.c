@@ -630,7 +630,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
                    op == NAS_SC_lseek;
     bool capacity_error = signed_result == -ENOSPC ||
                           signed_result == -EFBIG ||
-                          signed_result == -ENOMEM ||
+                          (signed_result == -ENOMEM && op != NAS_SC_munmap) ||
                           signed_result == -EFAULT ||
                           signed_result == -EIO;
     static unsigned audit_count;

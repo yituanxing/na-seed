@@ -48,3 +48,16 @@ SQLite native link still returns ENOSPC even with the larger file limit and
 4 GiB guest budget, so generic dispatch and frame-allocation failure
 instrumentation is added; do NOT attribute this second issue to the
 32 MiB cap without the exact syscall result. This PR remains Draft.
+
+## Real GNU toolchain syscall finding (three-ISA full log)
+
+The source-stage and native configure pass on all three ISAs, but GNU as/ld
+currently fails during final output. **Exact syscall tracing on x86-64 and
+RV64 found `writev` returning `EFAULT` (14)** for the output FD, despite the
+user-facing GNU error saying ENOSPC. The previous common VFS
+`nas_fs_fd_write` rejected any transfer larger than 1 MiB as `EFAULT`;
+`writev` forwards an iovec through that same function. M57 now accepts
+Linux's per-call `MAX_RW_COUNT` instead and verifies both real >2MiB
+`writev` and `write` through the native guest. No upstream source patched.
+ARM64 also exposes repeated `munmap` ENOMEM in native cc1; this remains a
+separately tracked generic VMA concern, not proof of an SQLite defect.
