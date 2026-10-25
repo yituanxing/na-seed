@@ -9,19 +9,29 @@ on:
       - 'Makefile'
       - '.github/workflows/**'
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'fast runs prebuilt ELF workloads; full also runs every original in-guest source build'
+        type: choice
+        required: true
+        default: full
+        options: [fast, full]
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   native-alpine:
     name: ${{ matrix.port }} / ${{ matrix.suite }} / original Linux ELF QEMU
+    # Parallel guest GCC/Make suite exists only in explicit full dispatch.
     runs-on: ubuntu-latest
     timeout-minutes: 75
+    env:
+      NAS_NATIVE_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'fast' }}
     strategy:
       fail-fast: false
       matrix:
         port: [amd64, riscv64, arm64]
-        suite: [foundation, pthread, lifecycle, parallel]
+        suite: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.mode == 'full' && '["foundation","pthread","lifecycle","parallel"]' || '["foundation","pthread","lifecycle"]') }}
     steps:
       - uses: actions/checkout@v4
       - name: Static shared-kernel parity, exact 12 original milestones and 3 ISA coverage
@@ -69,7 +79,7 @@ jobs:
           fi
       - name: Reject hardcoded CPIO file limit regressions before costly native QEMU
         run: sh scripts/check-bootfs-scale.sh
-      - name: Run every original workload in this ISA and suite (zero suppressed failures)
+      - name: Run declared fast or full original workloads in this ISA (zero suppressed failures)
         timeout-minutes: 65
         run: sh scripts/probe-alpine-batch.sh ${{ matrix.suite }} ${{ matrix.port }}
       - name: Retain original Alpine package/ELF/serial evidence after any failure

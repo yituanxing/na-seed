@@ -1,14 +1,7 @@
 name: NaSeed M57 official SQLite 3.54.1 native configure/Make/SQL — three ISAs
+# Genuine guest GCC/Make source build: deliberately diagnostic-only. Do not
+# automatically rebuild large originals during prebuilt-program PRs.
 on:
-  pull_request:
-    paths:
-      - 'tests/m57-*'
-      - 'scripts/probe-m57-native-sqlite.sh'
-      - 'scripts/m57-native-sqlite-cases.tsv'
-      - 'rootfs/alpine/build.sh'
-      - 'rootfs/alpine/packages-native-busybox.txt'
-      - 'kernel/**'
-      - '.github/workflows/m57-native-sqlite.yml'
   workflow_dispatch:
 jobs:
   native-build:

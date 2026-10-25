@@ -1,15 +1,7 @@
 name: NaSeed M56 genuine upstream BusyBox in-guest Kbuild — three ISAs
+# Genuine guest GCC/Make source build: deliberately diagnostic-only. Do not
+# automatically rebuild large originals during prebuilt-program PRs.
 on:
-  pull_request:
-    paths:
-      - 'tests/m56-*'
-      - 'scripts/probe-m56-native-busybox.sh'
-      - 'scripts/m56-native-busybox-cases.tsv'
-      - 'scripts/source-busybox.config'
-      - 'rootfs/alpine/build.sh'
-      - 'rootfs/alpine/packages-native-busybox.txt'
-      - 'kernel/**'
-      - '.github/workflows/m56-native-busybox.yml'
   workflow_dispatch:
 jobs:
   native-build:
