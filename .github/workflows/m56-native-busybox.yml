@@ -12,7 +12,7 @@ on:
       - '.github/workflows/m56-native-busybox.yml'
   workflow_dispatch:
 jobs:
-  cmake:
+  native-build:
     name: original upstream BusyBox built inside NaSeed / ${{ matrix.port }}
     runs-on: ubuntu-latest
     timeout-minutes: 90

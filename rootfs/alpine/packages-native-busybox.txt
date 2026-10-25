@@ -5,3 +5,10 @@ busybox
 gcc
 binutils
 make
+# Kbuild calls POSIX/GNU text processing tools by their original names.
+# APK --no-scripts does not generate BusyBox applet symlinks: use the
+# signed real distro packages rather than manually creating fake applets.
+sed
+gawk
+coreutils
+findutils

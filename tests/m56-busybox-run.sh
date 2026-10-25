@@ -20,6 +20,13 @@ for tool in /usr/bin/gcc /usr/bin/make /usr/bin/as /usr/bin/ld /usr/bin/readelf;
 done
 echo M56_GENUINE_NATIVE_ALPINE_TOOLCHAIN_PASS
 
+# True guest execve regression: previous 1024-byte fixed argument buffer
+# rejected ordinary upstream Make shell commands. Do not fake shell output.
+stage=linux-execve-long-shell-argument
+long=$(/bin/busybox printf '%02048d' 0)
+/bin/sh -c 'test "${#1}" -eq 2048' m56-argv "$long"
+echo M56_LINUX_LONG_EXECVE_ARG_PASS
+
 stage=copy-pinned-upstream-to-writable-tmpfs
 # Immutable bootfs cannot be modified by GNU Make. In the guest, copy the
 # genuine source tree into writable tmpfs, including its directory layout.

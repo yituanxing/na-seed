@@ -39,11 +39,16 @@
  * kernel-owned (immutable CPIO or tmpfs inode), valid across the staged
  * root switch. Map through the existing shared ELF loader, commit only
  * when successful, and roll back without invalidating the old process. */
-/* Real GNU Make passes long shell -c command strings as a single argv.
- * Limit one string to 1023 bytes; with NAS_ARGV_MAX=64 and NAS_ENV_MAX=32,
- * the worst-case combined payload stays under the mapped 128-KiB stack.
- * Reject larger strings with Linux E2BIG instead of silently truncating. */
-#define EXEC_STRING_MAX 1024
+/* Real upstream BusyBox Kbuild invokes /bin/sh -c with command strings
+ * exceeding the former 1023-byte bound on every ISA; the native GNU Make
+ * and shell were spuriously rejected with E2BIG.
+ *
+ * Keep an explicit, uniform per-string cap (8191 bytes), max 64 argv and
+ * 32 env entries. At worst, 96 * 8192 = 768 KiB plus pointers and auxv,
+ * within our current 1-MiB eagerly mapped userspace stack. This is a
+ * bounded interim Linux ABI, not Linux's full ARG_MAX support.
+ * Exec snapshots remain kernel-owned until the new VM is committed. */
+#define EXEC_STRING_MAX 8192
 static struct exec_snapshot {
     char filename[256];
     char argbuf[NAS_ARGV_MAX][EXEC_STRING_MAX];
@@ -137,11 +142,25 @@ static uint64_t shebang_rewrite_args(void) {
 
 static uint64_t copy_exec_string(uint64_t addr, char dst[EXEC_STRING_MAX]) {
     if (addr >= USER_LIMIT) return (uint64_t)-EFAULT;
-    for (unsigned i = 0; i < EXEC_STRING_MAX; i++) {
-        uint8_t ch;
-        if (!nas_user_read_bytes(addr + i, &ch, 1)) return (uint64_t)-EFAULT;
-        dst[i] = (char)ch;
-        if (!ch) return 0;
+    /* Only ONE page-table lookup for each 4-KiB user page. As with the
+     * generic usercopy implementation, HHDM memory is contiguous within
+     * one translated leaf, never across adjacent user virtual pages.
+     * We still validate every page and NUL-terminate before exec commit. */
+    uint64_t available = USER_LIMIT - addr;
+    for (unsigned i = 0; i < EXEC_STRING_MAX;) {
+        if ((uint64_t)i >= available) return (uint64_t)-EFAULT;
+        uint64_t at = addr + i;
+        const uint8_t *source = nas_mmu_user_byte(at);
+        if (!source) return (uint64_t)-EFAULT;
+        unsigned chunk = (unsigned)(PAGE - (at & (PAGE - 1)));
+        if (chunk > EXEC_STRING_MAX - i) chunk = EXEC_STRING_MAX - i;
+        if ((uint64_t)chunk > available - i) chunk = (unsigned)(available - i);
+        for (unsigned j = 0; j < chunk; j++) {
+            char byte = (char)source[j];
+            dst[i + j] = byte;
+            if (!byte) return 0;
+        }
+        i += chunk;
     }
     return (uint64_t)-E2BIG;
 }

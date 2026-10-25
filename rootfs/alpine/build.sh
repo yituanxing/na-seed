@@ -138,6 +138,12 @@ if [ "$profile" = native-busybox ]; then
     test ! -e "$root/tests/m56-source/.config"
     cp scripts/source-busybox.config "$root/tests/m56.config"
     cp tests/m56-busybox-run.sh "$root/tests/run-m56.sh"
+    for program in sed awk find xargs; do
+        test -x "$root/usr/bin/$program" || {
+            echo "[M56 FAIL] original Alpine tool missing: $program" >&2
+            exit 1
+        }
+    done
     for program in make gcc as ld readelf; do
         test -x "$root/usr/bin/$program" || {
             echo "[M56 FAIL] missing native tool: $program" >&2
