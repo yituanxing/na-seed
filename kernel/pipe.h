@@ -13,6 +13,9 @@
 
 /* Bind two already-reserved open-description slots; no user addresses. */
 int nas_pipe_create(unsigned read_slot, unsigned write_slot);
+/* A Unix stream socketpair is two opposing pipe channels with the same two
+ * refcounted open descriptions. Both endpoints support read and write. */
+int nas_pipe_create_socketpair(unsigned first_slot, unsigned second_slot);
 void nas_pipe_release_description(unsigned slot);
 
 /* Readiness reports also include EOF (read side) and the EPIPE condition

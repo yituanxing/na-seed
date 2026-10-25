@@ -435,7 +435,9 @@ uint64_t nas_signal_background_job(unsigned signum,uint64_t *frame,
  * instances for that same Task's subsequent user return. */
 void nas_signal_broken_pipe(uint64_t fd) {
     struct nas_task *t=nas_current_task;
-    if(!t || !t->ppid || nas_task_fd_kind(t,fd)!=FD_PIPE_W) return;
+    if(!t || !t->ppid)return;
+    uint8_t kind=nas_task_fd_kind(t,fd);
+    if(kind!=FD_PIPE_W && kind!=FD_SOCKET)return;
     uint64_t disp=t->vm_owner->signal_actions[NAS_SIGPIPE][0];
     if(disp!=1 && (disp>1 ||
                    (t->blocked_signals&(1ULL<<(NAS_SIGPIPE-1)))))

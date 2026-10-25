@@ -219,6 +219,7 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
         !(nas_open_files[file_slot[fd]].status_flags & 0x800ULL)) {
         if ((int64_t)ret == -EOPNOTSUPP &&
             (descriptors[fd] == FD_PIPE_R || descriptors[fd] == FD_PIPE_W ||
+             descriptors[fd] == FD_SOCKET ||
              descriptors[fd] == FD_EVENTFD))
             return nas_task_block(frame,nr,fd,buf,count,0);
         if ((nr == NAS_SC_read || nr == NAS_SC_readv) &&

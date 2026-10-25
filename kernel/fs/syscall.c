@@ -123,8 +123,8 @@ int64_t nas_fs_mmap_read(uint64_t fd, uint64_t offset,
 /* The two endpoints are one pipe object, with separate shared-description
  * slots. Allocation remains transactional until both FD/slot pairs are
  * available; only then is the backend created. */
-static uint64_t sys_pipe2(uint64_t user_pair, uint64_t flags) {
-    if (flags & ~(0x800ULL | 0x80000ULL)) return (uint64_t)-EINVAL;
+static uint64_t sys_channel_pair(uint64_t user_pair, uint64_t flags,
+                                 bool stream_socket) {
     if (user_pair >= USER_LIMIT || user_pair > USER_LIMIT - 8)
         return (uint64_t)-EFAULT;
     for (unsigned i = 0; i < 8; i++)
@@ -139,15 +139,19 @@ static uint64_t sys_pipe2(uint64_t user_pair, uint64_t flags) {
         nas_fd_report_exhaustion("pipe2");
         return (uint64_t)-ENFILE;
     }
-    int result = nas_pipe_create(slots[0], slots[1]);
+    int result = stream_socket ?
+        nas_pipe_create_socketpair(slots[0], slots[1]) :
+        nas_pipe_create(slots[0], slots[1]);
     if (result) return (uint64_t)(int64_t)result;
     for (unsigned i = 0; i < 2; i++) {
         unsigned fd = fds[i], slot = slots[i];
-        descriptors[fd] = i ? FD_PIPE_W : FD_PIPE_R;
+        descriptors[fd] = stream_socket ? FD_SOCKET :
+                          i ? FD_PIPE_W : FD_PIPE_R;
         file_slot[fd] = (uint8_t)slot;
         nas_open_files[slot].refcount = 1;
         nas_open_files[slot].ops = nas_fs_ops_for_kind(descriptors[fd]);
-        nas_open_files[slot].status_flags = (i ? 1ULL : 0ULL) | (flags & 0x800ULL);
+        nas_open_files[slot].status_flags = (stream_socket ? 2ULL :
+                            i ? 1ULL : 0ULL) | (flags & 0x800ULL);
         fd_cloexec[fd] = !!(flags & 0x80000ULL);
     }
     uint8_t output[8] = {0};
@@ -156,9 +160,25 @@ static uint64_t sys_pipe2(uint64_t user_pair, uint64_t flags) {
             output[i * 4 + j] = (uint8_t)(fds[i] >> (j * 8));
     if (!nas_user_write_bytes(user_pair, output, sizeof(output)))
         nas_fs_fail("pipe2 validated destination became inaccessible");
-    nas_print("[PIPE] created read="); nas_dec(fds[0]);
-    nas_print(" write="); nas_dec(fds[1]); nas_print("\n");
+    nas_print(stream_socket ? "[SOCKETPAIR] created a=" : "[PIPE] created read=");
+    nas_dec(fds[0]);
+    nas_print(stream_socket ? " b=" : " write=");
+    nas_dec(fds[1]); nas_print("\n");
     return 0;
+}
+static uint64_t sys_pipe2(uint64_t user_pair,uint64_t flags) {
+    if(flags & ~(0x800ULL|0x80000ULL))return (uint64_t)-EINVAL;
+    return sys_channel_pair(user_pair,flags,false);
+}
+static uint64_t sys_socketpair(uint64_t domain,uint64_t type,
+                               uint64_t protocol,uint64_t user_pair) {
+    /* Real AF_UNIX SOCK_STREAM IPC only; never claim generic networking.
+     * SOCK_NONBLOCK/SOCK_CLOEXEC share the existing open-file semantics. */
+    if(domain!=1)return (uint64_t)-EAFNOSUPPORT;
+    if((type & 15U)!=1U || (type & ~(15ULL|0x800ULL|0x80000ULL)))
+        return (uint64_t)-ESOCKTNOSUPPORT;
+    if(protocol)return (uint64_t)-EPROTONOSUPPORT;
+    return sys_channel_pair(user_pair,type & (0x800ULL|0x80000ULL),true);
 }
 static uint64_t pipe_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     if (!length) return 0;
@@ -713,6 +733,17 @@ static const struct nas_file_ops ops_pipe_write={
     .write=pipe_fd_write,.poll=vpoll_pipe_write,
     .poll_arm=varmpipe_write,.release=vrelease_pipe
 };
+static uint16_t vpoll_socket(uint64_t fd,uint16_t events) {
+    return vpoll_pipe_read(fd,events) | vpoll_pipe_write(fd,events);
+}
+static void varm_socket(struct nas_task *t,uint64_t fd,uint16_t events) {
+    varmpipe_read(t,fd,events);
+    varmpipe_write(t,fd,events);
+}
+static const struct nas_file_ops ops_socket={
+    .read=pipe_fd_read,.write=pipe_fd_write,.poll=vpoll_socket,
+    .poll_arm=varm_socket,.release=vrelease_pipe
+};
 static const struct nas_file_ops ops_tmp={
     .read=tmp_fd_read,.write=tmp_fd_write,.poll=vpoll_always,
     .release=vrelease_tmp
@@ -738,7 +769,7 @@ static const struct nas_file_ops *const ops_by_kind[]={
     [FD_DIR]=&ops_dir,[FD_PIPE_R]=&ops_pipe_read,[FD_PIPE_W]=&ops_pipe_write,
     [FD_TMP]=&ops_tmp,[FD_TMP_DIR]=&ops_tmp_dir,
     [FD_EPOLL]=&ops_epoll,
-    [FD_EVENTFD]=&ops_eventfd
+    [FD_EVENTFD]=&ops_eventfd,[FD_SOCKET]=&ops_socket
 };
 const struct nas_file_ops *nas_fs_ops_for_kind(uint8_t kind) {
     return kind < sizeof(ops_by_kind)/sizeof(ops_by_kind[0])
@@ -1139,9 +1170,11 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
         const struct nas_tmp_file *file = tmp_by_fd(fd);
         if (!file) return (uint64_t)-EBADF;
         fill_tmp_stat(&st,file);
-    } else if (descriptors[fd] == FD_PIPE_R || descriptors[fd] == FD_PIPE_W) {
+    } else if (descriptors[fd] == FD_PIPE_R || descriptors[fd] == FD_PIPE_W ||
+               descriptors[fd] == FD_SOCKET) {
         st.dev = 4; st.ino = (uint64_t)file_slot[fd] + 1000;
-        st.mode = 0010600; /* S_IFIFO | owner read/write */
+        st.mode = descriptors[fd] == FD_SOCKET ? 0140777 : 0010600;
+        /* Linux presents socketpair as S_IFSOCK, pipe as S_IFIFO. */
     } else if (descriptors[fd] == FD_BOOTFS) {
         const struct limine_file *file = nas_open_files[file_slot[fd]].boot_file;
         if (!file) return (uint64_t)-EBADF;
@@ -1541,6 +1574,7 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
     case NAS_SC_getcwd: FS_RESULT(sys_getcwd_root(args[1], args[2]));
     case NAS_SC_pipe: FS_RESULT(sys_pipe2(args[1], 0));
     case NAS_SC_pipe2: FS_RESULT(sys_pipe2(args[1], args[2]));
+    case NAS_SC_socketpair: FS_RESULT(sys_socketpair(args[1],args[2],args[3],args[4]));
     case NAS_SC_fcntl: FS_RESULT(sys_fcntl(args[1], args[2], args[3]));
     case NAS_SC_eventfd:
         FS_RESULT(nas_eventfd_create(args[1],0));

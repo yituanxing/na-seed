@@ -92,6 +92,7 @@ enum nas_syscall_op {
     NAS_SC_readv,
     NAS_SC_readlink,
     NAS_SC_readlinkat,
+    NAS_SC_socketpair,
     NAS_SC_symlink,
     NAS_SC_symlinkat,
     NAS_SC_rename,

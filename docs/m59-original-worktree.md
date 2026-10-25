@@ -35,6 +35,15 @@ preserve `lstat`/`readlink`/directory-entry `DT_LNK` behavior. All three
 architectures share those semantics; the syscall number is decoded through
 each architecture's existing ABI boundary.
 
+The next real rsync invocation then reached its local sender/receiver IPC and
+revealed missing `socketpair(AF_UNIX, SOCK_STREAM)`. The kernel now uses two
+opposing real pipe channels for a full-duplex local socketpair, sharing
+existing open-file-description refcounts, fork/dup/close, scheduler blocking,
+poll/select/epoll readiness and SIGPIPE. Unsupported network sockets are **not**
+claimed implemented. Both fixes are generic POSIX capabilities exposed by a
+single real program, and are rechecked under all three native architecture
+ports before M59 acceptance is claimed.
+
 ## Common host packaging, no guest compilation
 
 M58's proved signed Alpine APK overlay was moved into the single shared
