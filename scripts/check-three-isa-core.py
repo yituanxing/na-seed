@@ -9,7 +9,7 @@ import re
 root=Path(__file__).resolve().parent.parent
 srcs=[line.strip() for line in (root/"scripts/full-kernel-core.sources").read_text().splitlines()
       if line.strip() and not line.startswith("#")]
-assert len(srcs)==len(set(srcs))==34, "common kernel TU manifest drift"
+assert len(srcs)==len(set(srcs))==36, "common kernel TU manifest drift"
 make=(root/"Makefile").read_text()
 defs={}
 for line in make.splitlines():
@@ -40,5 +40,13 @@ for port in ("aarch64","riscv64"):
         raise SystemExit(f"native {port} bypassed shared kernel TU manifest")
     if "kernel/arch/" not in script:
         raise SystemExit(f"native {port} missing actual CPU/MMU providers")
+# Ensure syscall-ABI owners remain separate from the historical FS dispatcher.
+fs_dispatch = (root/"kernel/fs/syscall.c").read_text()
+for path, symbol in (("kernel/fs/namespace_syscall.c", "nas_fs_resolve_path"),
+                     ("kernel/fs/socket_syscall.c", "sys_unix_sendmsg")):
+    if symbol not in (root/path).read_text():
+        raise SystemExit(f"lost dedicated FS owner {path}: {symbol}")
+    if symbol in fs_dispatch:
+        raise SystemExit(f"FS syscall implementation leaked back into monolith: {symbol}")
 print(f"[M50 ARCH PASS] all {len(srcs)} actual shared kernel TUs are linked on x86 "
       "and built on RV64/AArch64; hardware providers remain ISA-specific")

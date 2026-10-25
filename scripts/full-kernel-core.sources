@@ -27,6 +27,8 @@ kernel/task/signal.c
 kernel/lib/string.c
 kernel/fs/lookup.c
 kernel/fs/syscall.c
+kernel/fs/namespace_syscall.c
+kernel/fs/socket_syscall.c
 kernel/fs/epoll.c
 kernel/fs/eventfd.c
 kernel/fs/unix_socket.c
