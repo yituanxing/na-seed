@@ -61,6 +61,7 @@ struct nas_open_file {
     const struct limine_file *boot_file;
     const struct bootfs_entry *boot_entry;
     uint64_t proc_pid;
+    uint64_t proc_tgid; /* procfs /proc/<TGID>/task/<TID> ownership */
     uint8_t proc_kind;
 };
 extern struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];

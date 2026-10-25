@@ -519,6 +519,7 @@ uint64_t nas_fs_open_path(const char *path, uint64_t native_flags,
     if(kind==FD_PROC_FILE || kind==FD_PROC_DIR) {
         nas_open_files[slot].proc_kind=proc_node.kind;
         nas_open_files[slot].proc_pid=proc_node.pid;
+        nas_open_files[slot].proc_tgid=proc_node.tgid;
     }
     return fd;
 }
@@ -536,7 +537,8 @@ static uint64_t vread_proc(uint64_t fd,uint64_t addr,uint64_t n) {
         return (uint64_t)-EBADF;
     unsigned slot=TASK.fds->entries[fd].slot;
     struct nas_proc_node node={nas_open_files[slot].proc_kind,
-                               nas_open_files[slot].proc_pid};
+                               nas_open_files[slot].proc_pid,
+                               nas_open_files[slot].proc_tgid};
     uint8_t bytes[256];
     uint64_t done=0;
     while(done<n) {

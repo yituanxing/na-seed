@@ -1,0 +1,4 @@
+usr/bin/pstree
+usr/bin/ps
+usr/bin/taskset
+usr/bin/prlimit

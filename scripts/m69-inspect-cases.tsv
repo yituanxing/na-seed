@@ -1,0 +1,2 @@
+# Genuine signed psmisc pstree, procps ps -eL, util-linux taskset/prlimit.
+m69-inspect	cpio	sh -c '/bin/sh /tests/m69-trace-prep-run.sh'	M69_TRACE_PREP_FULL_PASS	-	/bin/busybox
