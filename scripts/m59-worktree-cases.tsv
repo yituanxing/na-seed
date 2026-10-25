@@ -1,0 +1,2 @@
+# Real Alpine rsync + GNU diffutils + GNU patch + file/libmagic, one boot.
+m59-worktree	cpio	sh -c '/bin/sh /tests/run-m59.sh'	M59_FULL_PASS	-	/bin/busybox

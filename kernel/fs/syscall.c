@@ -123,8 +123,8 @@ int64_t nas_fs_mmap_read(uint64_t fd, uint64_t offset,
 /* The two endpoints are one pipe object, with separate shared-description
  * slots. Allocation remains transactional until both FD/slot pairs are
  * available; only then is the backend created. */
-static uint64_t sys_pipe2(uint64_t user_pair, uint64_t flags) {
-    if (flags & ~(0x800ULL | 0x80000ULL)) return (uint64_t)-EINVAL;
+static uint64_t sys_channel_pair(uint64_t user_pair, uint64_t flags,
+                                 bool stream_socket) {
     if (user_pair >= USER_LIMIT || user_pair > USER_LIMIT - 8)
         return (uint64_t)-EFAULT;
     for (unsigned i = 0; i < 8; i++)
@@ -139,15 +139,19 @@ static uint64_t sys_pipe2(uint64_t user_pair, uint64_t flags) {
         nas_fd_report_exhaustion("pipe2");
         return (uint64_t)-ENFILE;
     }
-    int result = nas_pipe_create(slots[0], slots[1]);
+    int result = stream_socket ?
+        nas_pipe_create_socketpair(slots[0], slots[1]) :
+        nas_pipe_create(slots[0], slots[1]);
     if (result) return (uint64_t)(int64_t)result;
     for (unsigned i = 0; i < 2; i++) {
         unsigned fd = fds[i], slot = slots[i];
-        descriptors[fd] = i ? FD_PIPE_W : FD_PIPE_R;
+        descriptors[fd] = stream_socket ? FD_SOCKET :
+                          i ? FD_PIPE_W : FD_PIPE_R;
         file_slot[fd] = (uint8_t)slot;
         nas_open_files[slot].refcount = 1;
         nas_open_files[slot].ops = nas_fs_ops_for_kind(descriptors[fd]);
-        nas_open_files[slot].status_flags = (i ? 1ULL : 0ULL) | (flags & 0x800ULL);
+        nas_open_files[slot].status_flags = (stream_socket ? 2ULL :
+                            i ? 1ULL : 0ULL) | (flags & 0x800ULL);
         fd_cloexec[fd] = !!(flags & 0x80000ULL);
     }
     uint8_t output[8] = {0};
@@ -156,9 +160,25 @@ static uint64_t sys_pipe2(uint64_t user_pair, uint64_t flags) {
             output[i * 4 + j] = (uint8_t)(fds[i] >> (j * 8));
     if (!nas_user_write_bytes(user_pair, output, sizeof(output)))
         nas_fs_fail("pipe2 validated destination became inaccessible");
-    nas_print("[PIPE] created read="); nas_dec(fds[0]);
-    nas_print(" write="); nas_dec(fds[1]); nas_print("\n");
+    nas_print(stream_socket ? "[SOCKETPAIR] created a=" : "[PIPE] created read=");
+    nas_dec(fds[0]);
+    nas_print(stream_socket ? " b=" : " write=");
+    nas_dec(fds[1]); nas_print("\n");
     return 0;
+}
+static uint64_t sys_pipe2(uint64_t user_pair,uint64_t flags) {
+    if(flags & ~(0x800ULL|0x80000ULL))return (uint64_t)-EINVAL;
+    return sys_channel_pair(user_pair,flags,false);
+}
+static uint64_t sys_socketpair(uint64_t domain,uint64_t type,
+                               uint64_t protocol,uint64_t user_pair) {
+    /* Real AF_UNIX SOCK_STREAM IPC only; never claim generic networking.
+     * SOCK_NONBLOCK/SOCK_CLOEXEC share the existing open-file semantics. */
+    if(domain!=1)return (uint64_t)-EAFNOSUPPORT;
+    if((type & 15U)!=1U || (type & ~(15ULL|0x800ULL|0x80000ULL)))
+        return (uint64_t)-ESOCKTNOSUPPORT;
+    if(protocol)return (uint64_t)-EPROTONOSUPPORT;
+    return sys_channel_pair(user_pair,type & (0x800ULL|0x80000ULL),true);
 }
 static uint64_t pipe_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     if (!length) return 0;
@@ -458,6 +478,22 @@ static uint64_t sys_renameat_tmp(uint64_t olddirfd, uint64_t oldptr,
     return (int64_t)ret < 0 ? ret :
         (uint64_t)(int64_t)tmp_rename(oldpath, newpath, flags);
 }
+static uint64_t sys_symlinkat_tmp(uint64_t targetptr,uint64_t dirfd,
+                                  uint64_t linkptr) {
+    char target[256], linkpath[256];
+    if (targetptr>=USER_LIMIT) return (uint64_t)-EFAULT;
+    unsigned i=0;
+    for (;i<sizeof(target);i++) {
+        uint8_t *p=nas_mmu_user_byte(targetptr+i);
+        if (!p) return (uint64_t)-EFAULT;
+        target[i]=(char)*p;
+        if (!target[i]) break;
+    }
+    if (i==sizeof(target)) return (uint64_t)-ENAMETOOLONG;
+    uint64_t ret=nas_fs_resolve_path(dirfd,linkptr,linkpath);
+    return (int64_t)ret<0 ? ret :
+        (uint64_t)(int64_t)tmp_symlink(target,linkpath);
+}
 static uint64_t sys_open_path(const char *path, uint64_t native_flags,
                               uint64_t create_mode) {
     uint64_t flags;
@@ -482,13 +518,21 @@ static uint64_t sys_open_path(const char *path, uint64_t native_flags,
     else {
         if (bootfs_mounted()) {
             char actual[256];
-            int err = bootfs_resolve(path, !(flags & 0x20000ULL), actual);
+            int err = nas_fs_resolve_existing(path, !(flags & 0x20000ULL), actual);
             if (!err) {
-                entry = bootfs_find(actual);
-                if (bootfs_is_link(entry) &&
-                    !((flags & NAS_LINUX_O_PATH) && (flags & 0x20000ULL)))
-                    return (uint64_t)-ELOOP;
-                kind = bootfs_is_dir(entry) ? FD_DIR : FD_ARCHIVE;
+                tmp_file=tmp_find(actual);
+                if (tmp_file) {
+                    if (tmp_is_link(tmp_file) &&
+                        !((flags & NAS_LINUX_O_PATH) && (flags & 0x20000ULL)))
+                        return (uint64_t)-ELOOP;
+                    kind=tmp_file->is_dir ? FD_TMP_DIR : FD_TMP;
+                } else {
+                    entry = bootfs_find(actual);
+                    if (bootfs_is_link(entry) &&
+                        !((flags & NAS_LINUX_O_PATH) && (flags & 0x20000ULL)))
+                        return (uint64_t)-ELOOP;
+                    kind = bootfs_is_dir(entry) ? FD_DIR : FD_ARCHIVE;
+                }
             } else if (err != -ENOENT) {
                 return (uint64_t)(int64_t)err;
             }
@@ -689,6 +733,17 @@ static const struct nas_file_ops ops_pipe_write={
     .write=pipe_fd_write,.poll=vpoll_pipe_write,
     .poll_arm=varmpipe_write,.release=vrelease_pipe
 };
+static uint16_t vpoll_socket(uint64_t fd,uint16_t events) {
+    return vpoll_pipe_read(fd,events) | vpoll_pipe_write(fd,events);
+}
+static void varm_socket(struct nas_task *t,uint64_t fd,uint16_t events) {
+    varmpipe_read(t,fd,events);
+    varmpipe_write(t,fd,events);
+}
+static const struct nas_file_ops ops_socket={
+    .read=pipe_fd_read,.write=pipe_fd_write,.poll=vpoll_socket,
+    .poll_arm=varm_socket,.release=vrelease_pipe
+};
 static const struct nas_file_ops ops_tmp={
     .read=tmp_fd_read,.write=tmp_fd_write,.poll=vpoll_always,
     .release=vrelease_tmp
@@ -714,7 +769,7 @@ static const struct nas_file_ops *const ops_by_kind[]={
     [FD_DIR]=&ops_dir,[FD_PIPE_R]=&ops_pipe_read,[FD_PIPE_W]=&ops_pipe_write,
     [FD_TMP]=&ops_tmp,[FD_TMP_DIR]=&ops_tmp_dir,
     [FD_EPOLL]=&ops_epoll,
-    [FD_EVENTFD]=&ops_eventfd
+    [FD_EVENTFD]=&ops_eventfd,[FD_SOCKET]=&ops_socket
 };
 const struct nas_file_ops *nas_fs_ops_for_kind(uint8_t kind) {
     return kind < sizeof(ops_by_kind)/sizeof(ops_by_kind[0])
@@ -1036,13 +1091,20 @@ static uint64_t sys_chdir(uint64_t pathname) {
     uint64_t ret = nas_fs_resolve_path((uint64_t)-100, pathname, path);
     if ((int64_t)ret < 0) return ret;
     char actual[256];
-    int err = bootfs_resolve(path, true, actual);
+    int err = nas_fs_resolve_existing(path, true, actual);
     if (err) {
         struct nas_tmp_file *t = tmp_find(path);
         if (!t) return (uint64_t)(int64_t)err;
         if (!t->is_dir) return (uint64_t)-ENOTDIR;
         unsigned n = 0;
         do { current_workdir[n] = path[n]; } while (path[n++]);
+        return 0;
+    }
+    const struct nas_tmp_file *tmp=tmp_find(actual);
+    if (tmp) {
+        if (!tmp->is_dir) return (uint64_t)-ENOTDIR;
+        unsigned j=0;
+        do { current_workdir[j]=actual[j]; } while (actual[j++]);
         return 0;
     }
     const struct bootfs_entry *entry = bootfs_find(actual);
@@ -1069,6 +1131,22 @@ static uint64_t sys_fchdir(uint64_t fd) {
     return 0;
 }
 
+/* Same inode metadata for both fstat() and path-based stat/lstat; critical
+ * for a symlink's S_IFLNK type, target length, and nofollow distinction. */
+static void fill_tmp_stat(struct nas_linux_stat *st,
+                          const struct nas_tmp_file *file) {
+    st->dev = 5; st->ino = 5000 + tmp_number(file);
+    st->mode = file->mode;
+    st->nlink = file->linked ? (file->is_dir ? 2 : 1) : 0;
+    st->size = (int64_t)file->size;
+    st->blocks = (int64_t)((file->size + 511) / 512);
+    st->atime_sec = (int64_t)(file->atime_ns / NAS_NSEC_PER_SEC);
+    st->atime_nsec = file->atime_ns % NAS_NSEC_PER_SEC;
+    st->mtime_sec = (int64_t)(file->mtime_ns / NAS_NSEC_PER_SEC);
+    st->mtime_nsec = file->mtime_ns % NAS_NSEC_PER_SEC;
+    st->ctime_sec = (int64_t)(file->ctime_ns / NAS_NSEC_PER_SEC);
+    st->ctime_nsec = file->ctime_ns % NAS_NSEC_PER_SEC;
+}
 /* Linux x86-64 struct stat layout, 144 bytes. File size is actual module.
  * Device entries have character-device type; mounted files are regular.
  */
@@ -1091,20 +1169,12 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
     } else if (descriptors[fd] == FD_TMP || descriptors[fd] == FD_TMP_DIR) {
         const struct nas_tmp_file *file = tmp_by_fd(fd);
         if (!file) return (uint64_t)-EBADF;
-        st.dev = 5; st.ino = 5000 + tmp_number(file);
-        st.mode = file->mode;
-        st.nlink = file->linked ? (file->is_dir ? 2 : 1) : 0;
-        st.size = (int64_t)file->size;
-        st.blocks = (int64_t)((file->size + 511) / 512);
-        st.atime_sec = (int64_t)(file->atime_ns / NAS_NSEC_PER_SEC);
-        st.atime_nsec = file->atime_ns % NAS_NSEC_PER_SEC;
-        st.mtime_sec = (int64_t)(file->mtime_ns / NAS_NSEC_PER_SEC);
-        st.mtime_nsec = file->mtime_ns % NAS_NSEC_PER_SEC;
-        st.ctime_sec = (int64_t)(file->ctime_ns / NAS_NSEC_PER_SEC);
-        st.ctime_nsec = file->ctime_ns % NAS_NSEC_PER_SEC;
-    } else if (descriptors[fd] == FD_PIPE_R || descriptors[fd] == FD_PIPE_W) {
+        fill_tmp_stat(&st,file);
+    } else if (descriptors[fd] == FD_PIPE_R || descriptors[fd] == FD_PIPE_W ||
+               descriptors[fd] == FD_SOCKET) {
         st.dev = 4; st.ino = (uint64_t)file_slot[fd] + 1000;
-        st.mode = 0010600; /* S_IFIFO | owner read/write */
+        st.mode = descriptors[fd] == FD_SOCKET ? 0140777 : 0010600;
+        /* Linux presents socketpair as S_IFSOCK, pipe as S_IFIFO. */
     } else if (descriptors[fd] == FD_BOOTFS) {
         const struct limine_file *file = nas_open_files[file_slot[fd]].boot_file;
         if (!file) return (uint64_t)-EBADF;
@@ -1314,6 +1384,13 @@ static uint64_t write_boot_stat(const struct bootfs_entry *entry, uint64_t dst) 
     return nas_user_write_bytes(dst, (const uint8_t *)&st, sizeof(st))
         ? 0 : (uint64_t)-EFAULT;
 }
+static uint64_t write_tmp_stat(const struct nas_tmp_file *file,uint64_t dst) {
+    struct nas_linux_stat st={0};
+    st.blksize=PAGE;
+    fill_tmp_stat(&st,file);
+    return nas_user_write_bytes(dst,(const uint8_t *)&st,sizeof(st)) ?
+           0 : (uint64_t)-EFAULT;
+}
 static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
                                  uint64_t statbuf, uint64_t flags) {
     const uint64_t AT_SYMLINK_NOFOLLOW = 0x100ULL;
@@ -1329,8 +1406,12 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
     if ((int64_t)result < 0) return result;
     if (bootfs_mounted()) {
         char actual[256];
-        int err = bootfs_resolve(path, !(flags & AT_SYMLINK_NOFOLLOW), actual);
-        if (!err) return write_boot_stat(bootfs_find(actual), statbuf);
+        int err = nas_fs_resolve_existing(path, !(flags & AT_SYMLINK_NOFOLLOW), actual);
+        if (!err) {
+            const struct nas_tmp_file *tmp=tmp_find(actual);
+            if (tmp) return write_tmp_stat(tmp,statbuf);
+            return write_boot_stat(bootfs_find(actual),statbuf);
+        }
         if (err != -ENOENT) return (uint64_t)(int64_t)err;
     }
     /* Legacy modules and character devices retain their existing fstat. */
@@ -1352,8 +1433,18 @@ static uint64_t sys_readlinkat_boot(uint64_t dirfd, uint64_t pathname,
     char path[256], actual[256];
     uint64_t r = nas_fs_resolve_path(dirfd, pathname, path);
     if ((int64_t)r < 0) return r;
-    int err = bootfs_resolve(path, false, actual);
+    int err = nas_fs_resolve_existing(path, false, actual);
     if (err) return (uint64_t)(int64_t)err;
+    const struct nas_tmp_file *tmp=tmp_find(actual);
+    if (tmp) {
+        if (!tmp_is_link(tmp)) return (uint64_t)-EINVAL;
+        uint8_t content[256];
+        int64_t got=tmp_read_at(tmp,0,content,
+                     tmp->size<capacity?tmp->size:capacity);
+        if (got<0) return (uint64_t)got;
+        return nas_user_write_bytes(dst,content,(uint64_t)got) ?
+               (uint64_t)got : (uint64_t)-EFAULT;
+    }
     const struct bootfs_entry *entry = bootfs_find(actual);
     if (!bootfs_is_link(entry)) return (uint64_t)-EINVAL;
     uint64_t len = entry->size < capacity ? entry->size : capacity;
@@ -1405,7 +1496,7 @@ static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
             for (const char *p = file->path; *p; p++)
                 if (*p == '/') name = p + 1;
             ino = 5000 + tmp_number(file);
-            dtype = file->is_dir ? 4 : 8;
+            dtype = file->is_dir ? 4 : tmp_is_link(file) ? 10 : 8;
         } else {
             if (cursor - 2 > UINT32_MAX) break;
             item = bootfs_child(dir, (unsigned)(cursor - 2));
@@ -1451,6 +1542,8 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
     case NAS_SC_rename: FS_RESULT(sys_renameat_tmp((uint64_t)-100, args[1], (uint64_t)-100, args[2], 0));
     case NAS_SC_renameat: FS_RESULT(sys_renameat_tmp(args[1], args[2], args[3], args[4], 0));
     case NAS_SC_renameat2: FS_RESULT(sys_renameat_tmp(args[1], args[2], args[3], args[4], args[5]));
+    case NAS_SC_symlink: FS_RESULT(sys_symlinkat_tmp(args[1], (uint64_t)-100, args[2]));
+    case NAS_SC_symlinkat: FS_RESULT(sys_symlinkat_tmp(args[1], args[2], args[3]));
     case NAS_SC_mkdir: FS_RESULT(sys_mkdirat_tmp((uint64_t)-100, args[1], args[2]));
     case NAS_SC_mkdirat: FS_RESULT(sys_mkdirat_tmp(args[1], args[2], args[3]));
     case NAS_SC_unlink: FS_RESULT(sys_unlinkat_tmp((uint64_t)-100, args[1], 0));
@@ -1481,6 +1574,7 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
     case NAS_SC_getcwd: FS_RESULT(sys_getcwd_root(args[1], args[2]));
     case NAS_SC_pipe: FS_RESULT(sys_pipe2(args[1], 0));
     case NAS_SC_pipe2: FS_RESULT(sys_pipe2(args[1], args[2]));
+    case NAS_SC_socketpair: FS_RESULT(sys_socketpair(args[1],args[2],args[3],args[4]));
     case NAS_SC_fcntl: FS_RESULT(sys_fcntl(args[1], args[2], args[3]));
     case NAS_SC_eventfd:
         FS_RESULT(nas_eventfd_create(args[1],0));

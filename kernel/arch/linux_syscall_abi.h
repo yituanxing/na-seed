@@ -115,6 +115,9 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_readv: return NAS_SC_readv;
     case __NR_readlink: return NAS_SC_readlink;
     case __NR_readlinkat: return NAS_SC_readlinkat;
+    case __NR_symlink: return NAS_SC_symlink;
+    case __NR_symlinkat: return NAS_SC_symlinkat;
+    case __NR_socketpair: return NAS_SC_socketpair;
     case __NR_rename: return NAS_SC_rename;
     case __NR_renameat: return NAS_SC_renameat;
     case __NR_renameat2: return NAS_SC_renameat2;
@@ -173,6 +176,8 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 79U: return NAS_SC_newfstatat;
     case 61U: return NAS_SC_getdents64;
     case 78U: return NAS_SC_readlinkat;
+    case 36U: return NAS_SC_symlinkat;
+    case 199U: return NAS_SC_socketpair;
     case 50U: return NAS_SC_fchdir;
     case 17U: return NAS_SC_getcwd;
     case 278U: return NAS_SC_getrandom; /* asm-generic Linux */

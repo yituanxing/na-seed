@@ -76,6 +76,10 @@ static uint16_t ready_now(const struct ep_watch *w){
     case FD_PIPE_W:
         if((requested&EP_OUT) && nas_pipe_poll_writable(w->slot))result|=EP_OUT;
         break;
+    case FD_SOCKET:
+        if((requested&EP_IN) && nas_pipe_poll_readable(w->slot))result|=EP_IN;
+        if((requested&EP_OUT) && nas_pipe_poll_writable(w->slot))result|=EP_OUT;
+        break;
     case FD_TTY: case FD_UART:
         if((requested&EP_IN) && nas_tty_poll_readable())result|=EP_IN;
         if(requested&EP_OUT)result|=EP_OUT;
@@ -215,9 +219,11 @@ void nas_epoll_arm_current_task(uint64_t epfd){
     for(unsigned i=0;i<NAS_EPOLL_EVENTS_MAX;i++){
         struct ep_watch *w=&epolls[slot].watches[i];
         if(!w->used || w->disabled)continue;
-        if(w->kind==FD_PIPE_R && (w->events&EP_IN))
+        if((w->kind==FD_PIPE_R || w->kind==FD_SOCKET) &&
+           (w->events&EP_IN))
             nas_slot_mask_set(&task->poll_pipe_read,w->slot);
-        if(w->kind==FD_PIPE_W && (w->events&EP_OUT))
+        if((w->kind==FD_PIPE_W || w->kind==FD_SOCKET) &&
+           (w->events&EP_OUT))
             nas_slot_mask_set(&task->poll_pipe_write,w->slot);
         if((w->kind==FD_TTY || w->kind==FD_UART) &&
            (w->events&EP_IN))task->poll_tty_read=true;

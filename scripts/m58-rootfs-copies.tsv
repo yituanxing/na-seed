@@ -1,0 +1,3 @@
+tests/m58-runtime-run.sh	tests/run-m58.sh
+tests/m58-bash-suite.sh	tests/m58-bash-suite.sh
+tests/m58-tcl-suite.tcl	tests/m58-tcl-suite.tcl

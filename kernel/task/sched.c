@@ -39,7 +39,8 @@ static bool task_io_ready(const struct nas_task *task) {
     if (slot >= NAS_OPEN_FILE_LIMIT) return true; /* replay to return EBADF */
     if (task->blocked_op == NAS_SC_read ||
         task->blocked_op == NAS_SC_readv) {
-        if(kind == FD_PIPE_R)return nas_pipe_read_ready(slot);
+        if(kind == FD_PIPE_R || kind == FD_SOCKET)
+            return nas_pipe_read_ready(slot);
         if(kind == FD_EVENTFD)return nas_eventfd_ready(slot,false);
         if(kind == FD_TTY || kind == FD_UART)
             return nas_tty_read_ready((struct nas_task *)task,task->blocked_args[2]);
@@ -48,7 +49,8 @@ static bool task_io_ready(const struct nas_task *task) {
     if (task->blocked_op == NAS_SC_write ||
         task->blocked_op == NAS_SC_writev)
         return kind == FD_EVENTFD ? nas_eventfd_ready(slot,true) :
-               kind != FD_PIPE_W || nas_pipe_write_ready(slot);
+               (kind != FD_PIPE_W && kind != FD_SOCKET) ||
+               nas_pipe_write_ready(slot);
     return true;
 }
 static bool task_wait_ready(const struct nas_task *task) {
@@ -142,7 +144,7 @@ static uint64_t task_replay(struct nas_task *task) {
  */
 bool nas_sched_sigpipe_default(uint64_t fd) {
     return TASK.ppid && fd < NAS_FD_LIMIT &&
-        descriptors[fd] == FD_PIPE_W &&
+        (descriptors[fd] == FD_PIPE_W || descriptors[fd] == FD_SOCKET) &&
         signal_actions[NAS_SIGPIPE][0] == 0 &&
         !(blocked_signals & (1ULL << (NAS_SIGPIPE - 1)));
 }
@@ -335,7 +337,8 @@ bool nas_sched_preempt_select(void) {
                     (kind==FD_TTY || kind==FD_UART) &&
                     (int64_t)result==-EAGAIN && nas_tty_read_waitable();
                 bool pipe_again=(int64_t)result==-EOPNOTSUPP &&
-                    (kind==FD_PIPE_R || kind==FD_PIPE_W || kind==FD_EVENTFD);
+                    (kind==FD_PIPE_R || kind==FD_PIPE_W ||
+                     kind==FD_SOCKET || kind==FD_EVENTFD);
                 bool poll_again=(int64_t)result==-EAGAIN &&
                     (next->blocked_op==NAS_SC_poll ||
                      next->blocked_op==NAS_SC_ppoll ||
@@ -418,7 +421,8 @@ retry_schedule: ; /* label must precede a statement in C11 */
                     (replay_kind==FD_TTY || replay_kind==FD_UART) &&
                     (int64_t)result==-EAGAIN && nas_tty_read_waitable();
                 bool pipe_again=(int64_t)result==-EOPNOTSUPP &&
-                    (replay_kind==FD_PIPE_R || replay_kind==FD_PIPE_W || replay_kind==FD_EVENTFD);
+                    (replay_kind==FD_PIPE_R || replay_kind==FD_PIPE_W ||
+                     replay_kind==FD_SOCKET || replay_kind==FD_EVENTFD);
                 bool poll_again=(int64_t)result==-EAGAIN &&
                     (next->blocked_op==NAS_SC_poll ||
                      next->blocked_op==NAS_SC_ppoll ||
@@ -541,7 +545,8 @@ retry_schedule: ; /* label must precede a statement in C11 */
         }
         for (unsigned fd = 0; fd < NAS_FD_LIMIT; fd++) {
             uint8_t kind = nas_task_fd_kind(task, fd);
-            if (kind != FD_PIPE_R && kind != FD_PIPE_W) continue;
+            if (kind != FD_PIPE_R && kind != FD_PIPE_W &&
+                kind != FD_SOCKET) continue;
             unsigned slot = nas_task_fd_slot(task, fd);
             nas_print("[DEADLOCK] holder pid="); nas_dec(task->pid);
             nas_print(" fd="); nas_dec(fd);
