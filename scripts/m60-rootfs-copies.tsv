@@ -1,0 +1,3 @@
+tests/m60-terminals-run.sh	tests/run-m60.sh
+tests/m60-less.sh	tests/m60-less.sh
+tests/m60-tmux.sh	tests/m60-tmux.sh
