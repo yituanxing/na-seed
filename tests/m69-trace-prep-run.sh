@@ -19,7 +19,7 @@ else
  echo "[M69 FAIL] real Task-backed /proc/TGID/task/TID" >&2
  fails=$((fails+1))
 fi
-if /usr/bin/ps -eL -o pid,lwp,comm > /tmp/m69-ps-threads 2>&1 &&
+if /bin/ps -eL -o pid,lwp,comm > /tmp/m69-ps-threads 2>&1 &&
    /bin/busybox grep -Eq '^[[:space:]]*1[[:space:]]+1[[:space:]]+' /tmp/m69-ps-threads &&
    /bin/busybox grep -Eq "^[[:space:]]*$pid[[:space:]]+$pid[[:space:]]+" /tmp/m69-ps-threads; then
  echo M69_ORIGINAL_PROCPS_THREADS_PASS
