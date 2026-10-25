@@ -47,8 +47,8 @@ for path, symbol in (("kernel/fs/namespace_syscall.c", "nas_fs_resolve_path"),
     if symbol not in (root/path).read_text():
         raise SystemExit(f"lost dedicated FS owner {path}: {symbol}")
     import re
-    if re.search(r"^(?:static\\s+)?(?:uint64_t|int64_t|int|bool)\\s+"
-                 + re.escape(symbol) + r"\\s*\\(", fs_dispatch, re.M):
+    if re.search(r"^(?:static\s+)?(?:uint64_t|int64_t|int|bool)\s+"
+                 + re.escape(symbol) + r"\s*\(", fs_dispatch, re.M):
         raise SystemExit(f"FS syscall owner definition leaked back into monolith: {symbol}")
 print(f"[M50 ARCH PASS] all {len(srcs)} actual shared kernel TUs are linked on x86 "
       "and built on RV64/AArch64; hardware providers remain ISA-specific")
