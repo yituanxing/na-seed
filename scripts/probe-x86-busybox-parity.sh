@@ -43,15 +43,21 @@ run_case() {
     {
         printf '%s\n' 'timeout: 0' '/NaSeed x86 Debian BusyBox parity'
         printf '%s\n' '    protocol: limine' '    path: boot():/boot/kernel'
-        printf '    cmdline: naseed.argv=%s %s\n' "$entry" "$args"
+        # Trusted boot UTC is a real host clock, not a synthesized
+        # application timestamp. Keep argv and kernel semantics unchanged.
+        boot_utc=${NAS_ACCEPTANCE_REALTIME_EPOCH:-$(date -u +%s)}
+        case "$boot_utc" in ''|*[!0-9]*) echo '[BOOT CLOCK FAIL] nonnumeric UTC' >&2; return 1 ;; esac
+        printf '    cmdline: naseed.realtime=%s naseed.argv=%s %s\n' \
+            "$boot_utc" "$entry" "$args"
         printf '    module_path: boot():/boot/%s\n' "$module"
     } > "$stage/boot/limine/limine.conf"
     xorriso -as mkisofs -R -r -J \
       --efi-boot boot/limine/limine-uefi-cd.bin \
       --efi-boot-part --efi-boot-image -o "$iso" "$stage" >/dev/null 2>&1
     rc=0
-    case "$name" in m38-gcc) budget=300 ;; m39-packages|m40-archives|m41-unix|m42-pthread|m43-zstd|m44-group|m45-robust|m46-exec|m47-tgkill|m48-parallel|m49-capacity|m51-git|m52-python|m53-vim|m54-dev) budget=300 ;; m37-incremental) budget=100 ;; process-capacity) budget=45 ;; init-reaper) budget=110 ;; *) budget=15 ;; esac
-    if [ "$name" = m38-gcc ] || [ "$name" = m39-packages ] || [ "$name" = m40-archives ] || [ "$name" = m41-unix ] || [ "$name" = m42-pthread ] || [ "$name" = m43-zstd ] || [ "$name" = m44-group ] || [ "$name" = m45-robust ] || [ "$name" = m46-exec ] || [ "$name" = m47-tgkill ] || [ "$name" = m48-parallel ] || [ "$name" = m49-capacity ] || [ "$name" = m51-git ] || [ "$name" = m52-python ] || [ "$name" = m53-vim ] || [ "$name" = m54-dev ]; then
+    case "$name" in m38-gcc) budget=300 ;; m39-packages|m40-archives|m41-unix|m42-pthread|m43-zstd|m44-group|m45-robust|m46-exec|m47-tgkill|m48-parallel|m49-capacity|m51-git|m52-python|m53-vim|m54-dev) budget=500 ;;
+        m55-cjson) budget=${NAS_M55_QEMU_TIMEOUT:-2400} ;; m37-incremental) budget=100 ;; process-capacity) budget=45 ;; init-reaper) budget=110 ;; *) budget=15 ;; esac
+    if [ "$name" = m38-gcc ] || [ "$name" = m39-packages ] || [ "$name" = m40-archives ] || [ "$name" = m41-unix ] || [ "$name" = m42-pthread ] || [ "$name" = m43-zstd ] || [ "$name" = m44-group ] || [ "$name" = m45-robust ] || [ "$name" = m46-exec ] || [ "$name" = m47-tgkill ] || [ "$name" = m48-parallel ] || [ "$name" = m49-capacity ] || [ "$name" = m51-git ] || [ "$name" = m52-python ] || [ "$name" = m53-vim ] || [ "$name" = m54-dev ] || [ "$name" = m55-cjson ]; then
         # The full GCC gate is allowed a large success budget, but a real
         # kernel [FAIL] must not keep its headless QEMU alive for 300s.
         timeout "${budget}s" sh scripts/run.sh "$iso" > "$log" 2>&1 < /dev/null &

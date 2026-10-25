@@ -16,7 +16,7 @@ jobs:
   native-alpine:
     name: ${{ matrix.port }} / ${{ matrix.suite }} / original Linux ELF QEMU
     runs-on: ubuntu-latest
-    timeout-minutes: 65
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -61,10 +61,16 @@ jobs:
               -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
           fi
           command -v docker
+          if [ "${{ matrix.port }}" = riscv64 ] && [ "${{ matrix.suite }}" = foundation ]; then
+            # Only M55 needs native EDK2 UEFI varstore seeding. Pin the
+            # version proven by the independent real-guest RTC A/B gate.
+            python3 -m pip install --user --break-system-packages --disable-pip-version-check 'virt-firmware==26.5.4'
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          fi
       - name: Reject hardcoded CPIO file limit regressions before costly native QEMU
         run: sh scripts/check-bootfs-scale.sh
       - name: Run every original workload in this ISA and suite (zero suppressed failures)
-        timeout-minutes: 50
+        timeout-minutes: 65
         run: sh scripts/probe-alpine-batch.sh ${{ matrix.suite }} ${{ matrix.port }}
       - name: Retain original Alpine package/ELF/serial evidence after any failure
         if: failure()

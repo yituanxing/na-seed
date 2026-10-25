@@ -22,8 +22,6 @@
 #define running_bash TASK.running_bash
 #define running_busybox TASK.running_busybox
 #define running_alpine TASK.running_alpine
-#define USER_STACK_TOP NAS_USER_STACK_TOP
-#define USER_STACK_PAGES 32
 
 void nas_init_userspace(void) {
     nas_print("[INIT] creating common task/VM and architecture user entry\n");
@@ -75,10 +73,7 @@ void nas_init_userspace(void) {
     uint64_t entry = 0;
     if (!nas_elf_load(&main_image, interpreter, &entry))
         nas_fail("invalid or unmappable userspace ELF");
-    for (uint64_t va = USER_STACK_TOP - USER_STACK_PAGES * PAGE;
-         va < USER_STACK_TOP; va += PAGE) {
-        if (!nas_mmu_map_page(va, true)) nas_fail("cannot map user stack");
-    }
+    if (!nas_user_stack_map_initial()) nas_fail("cannot map user stack");
     if(!nas_signal_install_trampoline())
         nas_fail("cannot install native RX rt_sigreturn trampoline");
     uint64_t stack_pointer;

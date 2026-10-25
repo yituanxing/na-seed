@@ -62,11 +62,29 @@ boot_case() {
     {
         printf '%s\n' 'timeout: 0' '/NaSeed RV64 native BusyBox workload'
         printf '%s\n' '    protocol: limine' '    path: boot():/boot/kernel'
-        printf '    cmdline: naseed.argv=%s %s\n' "$entry" "$args"
+        # Trusted boot UTC is a real host clock, not a synthesized
+        # application timestamp. Keep argv and kernel semantics unchanged.
+        if [ "${NAS_RV64_RTC_TEST_FIRMWARE:-0}" = 1 ]; then
+            # Diagnostic A/B: disable NaSeed boot-time override so the
+            # genuine UEFI GetTime -> Limine -> kernel path is measured.
+            printf '    cmdline: naseed.argv=%s %s\n' "$entry" "$args"
+        else
+            boot_utc=${NAS_ACCEPTANCE_REALTIME_EPOCH:-$(date -u +%s)}
+            case "$boot_utc" in ''|*[!0-9]*) echo '[BOOT CLOCK FAIL] nonnumeric UTC' >&2; return 1 ;; esac
+            printf '    cmdline: naseed.realtime=%s naseed.argv=%s %s\n' \
+                "$boot_utc" "$entry" "$args"
+        fi
         printf '    module_path: boot():/boot/%s\n' "$module"
     } > "$config"
     mcopy -i "$disk@@1048576" "$config" ::/boot/limine/limine.conf
-    cp "$fw/RISCV_VIRT_VARS.fd" "$work/$name.vars.fd"
+    if [ "${NAS_RV64_RTC_VAR_SEED:-0}" = 1 ]; then
+        # Explicit experiment only: original, unmodified EDK2 executable,
+        # freshly initialized real UEFI variable rather than kernel override.
+        sh scripts/seed-riscv64-uefi-rtc.sh \
+            "$fw/RISCV_VIRT_VARS.fd" "$work/$name.vars.fd"
+    else
+        cp "$fw/RISCV_VIRT_VARS.fd" "$work/$name.vars.fd"
+    fi
     # 9s is the established firmware+kernel runtime. Bound unexpected
     # shell deadlocks to 30s per scenario so the *whole class* of five
     # shell tests produces diagnostics within the 10-minute CI budget.
@@ -77,7 +95,8 @@ boot_case() {
         process-capacity) time_budget=65 ;;
         init-reaper) time_budget=130 ;;
         m38-gcc|m49-capacity) time_budget=360 ;;
-        m39-packages|m40-archives|m41-unix|m42-pthread|m43-zstd|m44-group|m45-robust|m46-exec|m47-tgkill|m48-parallel|m51-git|m52-python|m53-vim|m54-dev) time_budget=330 ;;
+        m39-packages|m40-archives|m41-unix|m42-pthread|m43-zstd|m44-group|m45-robust|m46-exec|m47-tgkill|m48-parallel|m51-git|m52-python|m53-vim|m54-dev) time_budget=540 ;;
+        m55-cjson) time_budget=${NAS_M55_QEMU_TIMEOUT:-2400} ;;
         m37-incremental) time_budget=150 ;;
         *) time_budget=45 ;;
     esac

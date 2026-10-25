@@ -1,0 +1,39 @@
+name: NaSeed RV64 UEFI RTC varstore A/B (isolated diagnostic)
+on:
+  pull_request:
+    paths:
+      - 'scripts/seed-riscv64-uefi-rtc.sh'
+      - 'scripts/probe-riscv64-rtc-vars.sh'
+      - 'scripts/rtc-vars-case.tsv'
+      - 'scripts/probe-riscv64-busybox-matrix.sh'
+      - '.github/workflows/rv64-rtc-varstore.yml'
+  workflow_dispatch:
+jobs:
+  original-uefi-rtc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install genuine RISC-V QEMU and virt-fw-vars
+        run: |
+          set -eu
+          sh scripts/ci-ubuntu-mirror.sh
+          sudo apt-get -o Acquire::Retries=1 update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 install -y --no-install-recommends \
+            clang lld binutils cpio xorriso mtools gdisk qemu-user qemu-system-misc \
+            qemu-efi-riscv64 python3-pip
+          python3 -m pip install --user --break-system-packages --disable-pip-version-check 'virt-firmware==26.5.4'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Compare unmodified EDK2 virtual RTC before and after variable seed
+        timeout-minutes: 14
+        run: sh scripts/probe-riscv64-rtc-vars.sh
+      - name: Retain actual guest serial and UEFI varstore metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rv64-original-edk2-rtc-ab
+          path: |
+            build/port-riscv64/full/matrix/rtc-*.clean.log
+            build/port-riscv64/full/matrix/rtc-epoch.vars.fd.seed.json
+            build/port-riscv64/full/matrix/rtc-epoch.vars.fd.readback.json
+          if-no-files-found: ignore

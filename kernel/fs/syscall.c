@@ -21,6 +21,8 @@
 #include "mode.h"
 #include "syscall.h"
 #include "file_ops.h"
+#include "epoll.h"
+#include "eventfd.h"
 #include "lookup.h"
 #include "../time/clock.h"
 /* Linux x86-64 filesystem syscall adapter. Backend state is already
@@ -207,6 +209,9 @@ void nas_fs_close_fd(uint64_t fd) {
     }
     unsigned final_slot=nas_fd_close(nas_current_task, (unsigned)fd);
     if (final_slot == NAS_FD_LIMIT) return;
+    /* Closing the LAST alias unregisters epoll interest in the released
+     * open description, preserving the open-file lifetime rule. */
+    nas_epoll_target_final_close(final_slot);
     const struct nas_file_ops *ops=nas_open_files[final_slot].ops;
     if(ops && ops->release)ops->release(final_slot);
     nas_open_files[final_slot]=(struct nas_open_file){0};
@@ -297,6 +302,31 @@ static uint64_t sys_fcntl(uint64_t fd, uint64_t command, uint64_t arg) {
     default: return (uint64_t)-EINVAL; /* unsupported fcntl cmd */
     }
 }
+/* Linux FIONBIO is descriptor-independent: libuv/CMake sets it on
+ * both ends of pipes, even when pipe2(O_NONBLOCK) was already used.
+ * Preserve open-description semantics across dup/fork, as F_SETFL does.
+ * FIOCLEX/FIONCLEX, by contrast, belong to the individual descriptor. */
+static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
+    if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED)return (uint64_t)-EBADF;
+    unsigned slot=file_slot[fd];
+    if(cmd==0x5421ULL) { /* FIONBIO: pointer to native int */
+        if(nas_open_files[slot].status_flags&NAS_LINUX_O_PATH)
+            return (uint64_t)-EBADF;
+        uint32_t enabled=0;
+        if(!nas_user_read_bytes(arg,(uint8_t *)&enabled,sizeof(enabled)))
+            return (uint64_t)-EFAULT;
+        if(enabled)nas_open_files[slot].status_flags|=0x800ULL;
+        else nas_open_files[slot].status_flags&=~0x800ULL;
+        return 0;
+    }
+    if(cmd==0x5451ULL || cmd==0x5450ULL) { /* FIOCLEX / FIONCLEX */
+        fd_cloexec[fd]=(uint8_t)(cmd==0x5451ULL);
+        return 0;
+    }
+    const struct nas_file_ops *ops=nas_open_files[slot].ops;
+    return ops && ops->ioctl ? ops->ioctl(cmd,arg) : (uint64_t)-ENOTTY;
+}
+
 static const struct limine_file *bootfs_lookup(const char *path) {
     if ((strcmp(path, "/bin/busybox") == 0)) return nas_module(0);
     if ((strcmp(path, NAS_ELF_INTERP) == 0) ||
@@ -662,11 +692,25 @@ static const struct nas_file_ops ops_tmp={
 static const struct nas_file_ops ops_tmp_dir={
     .read=vread_dir,.poll=vpoll_always,.release=vrelease_tmp
 };
+static uint16_t vpoll_epoll(uint64_t fd,uint16_t events){
+    return nas_epoll_fd_poll(fd,events);
+}
+static void vrelease_epoll(unsigned slot){nas_epoll_release(slot);}
+static void vrelease_eventfd(unsigned slot){nas_eventfd_release(slot);}
+static const struct nas_file_ops ops_epoll={
+    .poll=vpoll_epoll,.release=vrelease_epoll
+};
+static const struct nas_file_ops ops_eventfd={
+    .read=nas_eventfd_read,.write=nas_eventfd_write,
+    .poll=nas_eventfd_poll,.release=vrelease_eventfd
+};
 static const struct nas_file_ops *const ops_by_kind[]={
     [FD_UART]=&ops_uart,[FD_TTY]=&ops_tty,[FD_NULL]=&ops_null,
     [FD_ZERO]=&ops_zero,[FD_BOOTFS]=&ops_bootfs,[FD_ARCHIVE]=&ops_archive,
     [FD_DIR]=&ops_dir,[FD_PIPE_R]=&ops_pipe_read,[FD_PIPE_W]=&ops_pipe_write,
-    [FD_TMP]=&ops_tmp,[FD_TMP_DIR]=&ops_tmp_dir
+    [FD_TMP]=&ops_tmp,[FD_TMP_DIR]=&ops_tmp_dir,
+    [FD_EPOLL]=&ops_epoll,
+    [FD_EVENTFD]=&ops_eventfd
 };
 const struct nas_file_ops *nas_fs_ops_for_kind(uint8_t kind) {
     return kind < sizeof(ops_by_kind)/sizeof(ops_by_kind[0])
@@ -1418,6 +1462,16 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
     case NAS_SC_pipe: FS_RESULT(sys_pipe2(args[1], 0));
     case NAS_SC_pipe2: FS_RESULT(sys_pipe2(args[1], args[2]));
     case NAS_SC_fcntl: FS_RESULT(sys_fcntl(args[1], args[2], args[3]));
+    case NAS_SC_eventfd:
+        FS_RESULT(nas_eventfd_create(args[1],0));
+    case NAS_SC_eventfd2:
+        FS_RESULT(nas_eventfd_create(args[1],args[2]));
+    case NAS_SC_epoll_create1:
+        FS_RESULT(nas_epoll_create1(args[1]));
+    case NAS_SC_epoll_create:
+        FS_RESULT(args[1] ? nas_epoll_create1(0) : (uint64_t)-EINVAL);
+    case NAS_SC_epoll_ctl:
+        FS_RESULT(nas_epoll_ctl(args[1],args[2],args[3],args[4]));
     case NAS_SC_poll: FS_RESULT(nas_fs_poll(args[1], args[2], args[3]));
     case NAS_SC_ppoll: FS_RESULT(nas_fs_ppoll(args[1], args[2], args[3], args[4]));
     case NAS_SC_dup: FS_RESULT(fd_duplicate(args[1], 0, false));
@@ -1430,11 +1484,7 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
         nas_fs_close_fd(args[1]);
         FS_RESULT(0);
     case NAS_SC_ioctl:
-        if (args[1] >= 64 || descriptors[args[1]] == FD_CLOSED)
-            FS_RESULT((uint64_t)-EBADF);
-        const struct nas_file_ops *fops=nas_open_files[file_slot[args[1]]].ops;
-        FS_RESULT(fops && fops->ioctl ? fops->ioctl(args[2],args[3])
-                                     : (uint64_t)-ENOTTY);
+        FS_RESULT(sys_ioctl_fd(args[1],args[2],args[3]));
     case NAS_SC_dup3:
         if (args[1] == args[2] || (args[3] & ~0x80000ULL))
             FS_RESULT((uint64_t)-EINVAL);
