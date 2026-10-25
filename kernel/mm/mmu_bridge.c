@@ -24,6 +24,12 @@ bool nas_mmu_walk_user_mapping(uint64_t root_phys,
     struct nas_vm_pt_ctx c={cb,arg};
     return nas_arch_pt_walk(&s,nas_vm_pt_cb,&c);
 }
+bool nas_mmu_resolve_user_address(uint64_t selected_root,uint64_t va,
+                                  uint64_t *physical,unsigned *access) {
+    if(!selected_root || !physical || va>=USER_LIMIT)return false;
+    struct nas_user_space s={selected_root,nas_arch_pt_active_levels()};
+    return nas_arch_pt_lookup(&s,va,physical,access);
+}
 static struct nas_user_space current(void) {
     return (struct nas_user_space){nas_current_task->root_phys,
                                   nas_arch_pt_active_levels()};
