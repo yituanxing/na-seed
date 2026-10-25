@@ -13,6 +13,7 @@
 #include "../arch/mmu.h"
 #include "../arch/linux_fcntl_abi.h"
 #include "io.h"
+#include "file_ops.h"
 #define TASK (*nas_current_task)
 #define descriptors TASK.fds->descriptors
 #define file_slot TASK.fds->file_slot

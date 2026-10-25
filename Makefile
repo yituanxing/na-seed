@@ -301,7 +301,7 @@ $(OUT)/fs_socket_syscall.o: kernel/fs/socket_syscall.c kernel/fs/socket_syscall.
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
-$(OUT)/fs_file_io.o: kernel/fs/file_io.c kernel/fs/io.h kernel/fd.h kernel/tmpfs.h
+$(OUT)/fs_file_io.o: kernel/fs/file_io.c kernel/fs/io.h kernel/fs/file_ops.h kernel/fd.h kernel/tmpfs.h
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
