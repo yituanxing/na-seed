@@ -15,6 +15,27 @@ extern void nas_dec(uint64_t);
 extern void nas_hex(uint64_t);
 static void proc_fail(const char *s) __attribute__((noreturn));
 static void proc_fail(const char *s) { nas_print("[FAIL] M1 "); nas_print(s); nas_print("\n"); nas_arch_halt(); }
+/* Linux task name is exactly 16 bytes including its NUL terminator.
+ * Other prctl options must not quietly report success: they have separate
+ * process-control semantics which are not yet implemented. */
+uint64_t nas_process_prctl(uint64_t option,uint64_t arg) {
+    struct nas_task *task=nas_current_task;
+    if(option==15ULL) { /* PR_SET_NAME */
+        char name[16]={0};
+        for(unsigned i=0;i<15;i++) {
+            uint8_t c;
+            if(!nas_user_read_bytes(arg+i,&c,1))return (uint64_t)-EFAULT;
+            name[i]=(char)c;
+            if(!c)break;
+        }
+        for(unsigned i=0;i<16;i++)task->comm[i]=name[i];
+        return 0;
+    }
+    if(option==16ULL) /* PR_GET_NAME */
+        return nas_user_write_bytes(arg,(const uint8_t *)task->comm,16)
+            ? 0:(uint64_t)-EFAULT;
+    return (uint64_t)-EINVAL;
+}
 /* A cooperative child-first fork; parent remains READY while child runs.
  * Once a child blocks on a pipe, another READY task runs and the blocked
  * syscall is completed later in its owner's address space. No timer

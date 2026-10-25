@@ -29,6 +29,8 @@ kernel/fs/lookup.c
 kernel/fs/syscall.c
 kernel/fs/epoll.c
 kernel/fs/eventfd.c
+kernel/fs/unix_socket.c
 kernel/mm/anon_regions.c
 kernel/drivers/tty.c
+kernel/drivers/pty.c
 kernel/drivers/tty_ldisc.c

@@ -29,6 +29,9 @@ struct nas_tmp_file {
     uint64_t atime_ns, mtime_ns, ctime_ns; /* UNIX realtime nanoseconds */
     uint32_t mode;
     struct nas_posix_locks posix_locks; /* common Linux inode record locks */
+    /* flock is open-description-owned, separate from process POSIX locks. */
+    unsigned flock_exclusive; /* owning slot + 1, or zero */
+    uint64_t flock_shared[2]; /* NAS_OPEN_FILE_LIMIT slots */
 };
 
 bool tmp_path(const char *path);
@@ -47,6 +50,7 @@ const struct nas_tmp_file *tmp_child(const char *parent, unsigned index);
 void tmp_bind_slot(unsigned slot, const struct nas_tmp_file *file);
 struct nas_tmp_file *tmp_by_slot(unsigned slot);
 void tmp_release_slot(unsigned slot);
+int tmp_flock(unsigned slot,unsigned operation);
 
 /* Kernel-buffer I/O, shared across Linux FD syscalls and ELF image reader.
  * Read of sparse holes returns zero; write allocates pages only on demand.

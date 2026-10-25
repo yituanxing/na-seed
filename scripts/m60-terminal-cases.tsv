@@ -1,0 +1,2 @@
+# Real original signed Linux tmux and less, host staged, real full-system native QEMU.
+m60-terminal	cpio	sh -c '/bin/sh /tests/run-m60.sh'	M60_FULL_PASS	-	/bin/busybox

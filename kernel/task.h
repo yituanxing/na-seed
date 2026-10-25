@@ -74,6 +74,7 @@ struct nas_task {
     struct nas_task *vm_owner; /* shared address-space metadata owner */
     /* Linux process group + session identity, independent of CPU/VM. */
     uint64_t pgid, sid;
+    char comm[16]; /* Linux per-thread PR_SET_NAME, inherited at fork. */
     uint32_t umask; /* inherited by fork/vfork; preserved by exec */
     bool execed; /* parent may not setpgid(child) after successful exec */
     enum nas_task_state state;

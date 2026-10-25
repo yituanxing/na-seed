@@ -17,6 +17,9 @@ int nas_pipe_create(unsigned read_slot, unsigned write_slot);
  * refcounted open descriptions. Both endpoints support read and write. */
 int nas_pipe_create_socketpair(unsigned first_slot, unsigned second_slot);
 void nas_pipe_release_description(unsigned slot);
+/* Return the opposing receive-description of a connected AF_UNIX stream.
+ * Used for genuine SCM_RIGHTS delivery, never a process-local FD number. */
+int nas_pipe_peer_slot(unsigned writing_slot);
 
 /* Readiness reports also include EOF (read side) and the EPIPE condition
  * (write side) so a blocked syscall can resume to return the real result.

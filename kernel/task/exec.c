@@ -428,6 +428,12 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     const char *basename = actual;
     for (const char *p = basename; *p; p++)
         if (*p == '/') basename = p + 1;
+    /* A successful exec resets Linux's task comm to the executable name;
+     * a failed exec must leave the old name untouched. */
+    unsigned name_len=0;
+    while(name_len<15 && basename[name_len])name_len++;
+    memset(TASK.comm,0,sizeof(TASK.comm));
+    memcpy(TASK.comm,basename,name_len);
     running_busybox = strcmp(basename, "busybox") == 0;
     running_bash = strcmp(basename, "bash") == 0;
     running_alpine = running_busybox && executable_header.type == 3;

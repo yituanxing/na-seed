@@ -1,25 +1,32 @@
-name: NaSeed M58/M59 original prebuilt seven-app suite — three native ISAs
+name: NaSeed M58/M59/M60 original prebuilt terminal suite — three native ISAs
 on:
   pull_request:
     paths:
       - 'tests/m58-*'
       - 'tests/m59-*'
+      - 'tests/m60-*'
       - 'scripts/m58-runtime-cases.tsv'
       - 'scripts/m59-worktree-cases.tsv'
+      - 'scripts/m60-terminal-cases.tsv'
       - 'scripts/probe-m58-runtime.sh'
       - 'scripts/probe-m59-worktree.sh'
+      - 'scripts/probe-m60-terminals.sh'
       - 'scripts/stage-m58-prebuilt.sh'
       - 'scripts/stage-m59-prebuilt.sh'
+      - 'scripts/stage-m60-prebuilt.sh'
       - 'scripts/stage-alpine-prebuilt-overlay.sh'
       - 'scripts/m58-original-elfs.txt'
       - 'scripts/m58-rootfs-copies.tsv'
       - 'scripts/m59-original-elfs.txt'
       - 'scripts/m59-rootfs-copies.tsv'
+      - 'scripts/m60-original-elfs.txt'
+      - 'scripts/m60-rootfs-copies.tsv'
       - 'scripts/probe-x86-busybox-parity.sh'
       - 'scripts/probe-riscv64-busybox-matrix.sh'
       - 'scripts/probe-aarch64-busybox-matrix.sh'
       - 'rootfs/alpine/packages-m58-runtime.txt'
       - 'rootfs/alpine/packages-m59-worktree.txt'
+      - 'rootfs/alpine/packages-m60-terminal.txt'
       - 'kernel/**'
       - '.github/workflows/m58-original-runtime.yml'
   workflow_dispatch:
@@ -28,7 +35,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   real-programs:
-    name: signed Bash/Tcl/OpenSSL + rsync/diff/patch/file / ${{ matrix.port }}
+    name: signed original Bash/Tcl/OpenSSL + worktree + less/tmux / ${{ matrix.port }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
     strategy:
@@ -42,6 +49,7 @@ jobs:
           set -eu
           sh -n scripts/stage-alpine-prebuilt-overlay.sh scripts/stage-m58-prebuilt.sh scripts/probe-m58-runtime.sh tests/m58-runtime-run.sh
           sh -n scripts/stage-m59-prebuilt.sh scripts/probe-m59-worktree.sh tests/m59-*.sh
+          sh -n scripts/stage-m60-prebuilt.sh scripts/probe-m60-terminals.sh tests/m60-*.sh
           bash -n tests/m58-bash-suite.sh
           python3 scripts/check-three-isa-core.py
       - name: Install native QEMU and host rootfs tools
@@ -76,9 +84,12 @@ jobs:
               -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
           fi
           command -v docker
-      - name: Host-stage signed ELF and run seven real programs across two native QEMU boots
+      - name: Host-stage signed ELF and run original real programs across three native QEMU boots
         timeout-minutes: 24
         run: |
+          # Current frontier first: avoid two unrelated QEMU boots when M60 fails.
+          # A successful M60 run still gates on BOTH preserved M58 and M59 suites.
+          sh scripts/probe-m60-terminals.sh ${{ matrix.port }}
           sh scripts/probe-m58-runtime.sh ${{ matrix.port }}
           sh scripts/probe-m59-worktree.sh ${{ matrix.port }}
       - name: Preserve full guest evidence on failure
@@ -92,10 +103,15 @@ jobs:
             build/external/m58-runtime/${{ matrix.port }}/requested-packages.txt
             build/external/m59-worktree/${{ matrix.port }}/apk-install.log
             build/external/m59-worktree/${{ matrix.port }}/requested-packages.txt
+            build/external/m60-terminal/${{ matrix.port }}/apk-install.log
+            build/external/m60-terminal/${{ matrix.port }}/requested-packages.txt
             build/busybox-source-parity-x86/m58-runtime.clean.log
             build/port-riscv64/full/matrix-source/m58-runtime.clean.log
             build/port-aarch64/full/matrix-source/m58-runtime.clean.log
             build/busybox-source-parity-x86/m59-worktree.clean.log
             build/port-riscv64/full/matrix-source/m59-worktree.clean.log
             build/port-aarch64/full/matrix-source/m59-worktree.clean.log
+            build/busybox-source-parity-x86/m60-terminal.clean.log
+            build/port-riscv64/full/matrix-source/m60-terminal.clean.log
+            build/port-aarch64/full/matrix-source/m60-terminal.clean.log
           if-no-files-found: ignore
