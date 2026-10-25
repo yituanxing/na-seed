@@ -88,6 +88,3 @@ bool nas_task_wait_ready(const struct nas_task *task) {
     return false;
 }
 
-void nas_task_wait_reset(struct nas_task *task) {
-    if(task)task->wait=(struct nas_task_wait){0};
-}
