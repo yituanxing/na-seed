@@ -48,6 +48,10 @@ echo M55_NATIVE_SHARED_STACK_CAPACITY_PASS
 phase=real-cmake-configure
 # CMake 4 removes older policy defaults. Supply the new policy floor via
 # a normal command-line option; NEVER patch upstream cJSON CMakeLists.
+# Use normal GCC/musl dynamic executable linkage. The previous forced
+# -static test-executable flag multiplied the 20+ dependent relink cost
+# after cJSON.c changes under software-emulated RV64; full upstream builds
+# and both CTest suites remain mandatory.
 # A real native configure uses guest compiler detection/try_compile,
 # filesystem metadata and process lifecycle. No fake CMake cache.
 /bin/busybox mkdir -p "$out"
@@ -55,11 +59,6 @@ phase=real-cmake-configure
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DCMAKE_C_COMPILER=/usr/bin/gcc \
     -DCMAKE_MAKE_PROGRAM=/usr/bin/ninja \
-    # Use the original CMake/GCC default musl dynamic executable linkage.
-    # Forcing -static had made every cJSON.c touch relink the whole static
-    # musl C runtime into 20+ test executables under single-core RV64 QEMU.
-    # This is NOT a dependency skip: the same original full build + all
-    # dependent relinks + two complete CTest runs remain mandatory.
     -DBUILD_SHARED_LIBS=OFF \
     -DENABLE_CJSON_TEST=ON \
     -DENABLE_CJSON_UTILS=OFF \
