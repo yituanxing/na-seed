@@ -97,7 +97,7 @@ static uint64_t sys_channel_pair(uint64_t user_pair, uint64_t flags,
     for (unsigned i = 0; i < 8; i++)
         if (!nas_mmu_user_byte(user_pair + i)) return (uint64_t)-EFAULT;
     unsigned fds[2], slots[2];
-    int capacity=nas_fd_reserve(nas_current_task,3,2,fds,slots,
+    int capacity=nas_fd_reserve(nas_current_task,0,2,fds,slots,
                                 stream_socket ? "socketpair" : "pipe2");
     if(capacity)return (uint64_t)(int64_t)capacity;
     int result = stream_socket ?
@@ -489,7 +489,7 @@ uint64_t nas_fs_open_path(const char *path, uint64_t native_flags,
         return kind == FD_DIR ? (uint64_t)-EISDIR : (uint64_t)-EROFS;
     if (kind == FD_BOOTFS && (flags & 3ULL)) return (uint64_t)-EACCES;
     unsigned fds[2],slots[2];
-    int capacity=nas_fd_reserve(nas_current_task,3,1,fds,slots,"openat");
+    int capacity=nas_fd_reserve(nas_current_task,0,1,fds,slots,"openat");
     if(capacity)return (uint64_t)(int64_t)capacity;
     const unsigned fd=fds[0],slot=slots[0];
     if(create_tmp) {
