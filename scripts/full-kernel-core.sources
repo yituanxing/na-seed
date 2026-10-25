@@ -10,6 +10,7 @@ kernel/task.c
 kernel/task/process.c
 kernel/task/session.c
 kernel/task/sched.c
+kernel/task/wait.c
 kernel/bootfs.c
 kernel/tmpfs.c
 kernel/fs/tmp_namespace.c

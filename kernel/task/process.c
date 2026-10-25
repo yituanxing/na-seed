@@ -73,8 +73,8 @@ static uint64_t fork_common(uint64_t *frame, uint64_t child_tid) {
     if (!nas_task_hold_files(child)) proc_fail("fork dangling open-file slot");
     nas_arch_set_saved_return(parent, child->pid);
     parent->resume_valid = true;
-    parent->blocked_op = 0;
-    parent->pending_valid = false;
+    parent->wait.blocked_op = 0;
+    parent->wait.pending_valid = false;
     parent->state = NAS_TASK_READY;
     child->state = NAS_TASK_RUNNING;
     nas_current_task = child;
@@ -127,8 +127,8 @@ uint64_t nas_process_vfork(uint64_t *frame, uint64_t child_stack) {
     nas_arch_set_saved_return(parent, child->pid);
     parent->vfork_child_pid = child->pid;
     parent->resume_valid = true;
-    parent->pending_valid = false;
-    parent->blocked_op = 0;
+    parent->wait.pending_valid = false;
+    parent->wait.blocked_op = 0;
     parent->state = NAS_TASK_BLOCKED;
     child->state = NAS_TASK_RUNNING;
     nas_current_task = child;
@@ -147,7 +147,7 @@ void nas_process_vfork_release(void) {
     struct nas_task *parent = nas_task_by_pid(child->vfork_parent_pid);
     if (!parent || parent->vfork_child_pid != child->pid ||
         parent->state != NAS_TASK_BLOCKED ||
-        !parent->resume_valid || parent->pending_valid)
+        !parent->resume_valid || parent->wait.pending_valid)
         proc_fail("vfork parent ownership corrupted");
     parent->vfork_child_pid = 0;
     parent->state = NAS_TASK_READY;
@@ -310,9 +310,9 @@ void nas_process_exec_quiesce_siblings(void) {
         nas_process_clear_tid_for_exit(peer);
         peer->state=NAS_TASK_ZOMBIE;
         peer->resume_valid=false;
-        peer->pending_valid=false;
-        peer->blocked_op=0;
-        peer->futex_addr=0;
+        peer->wait.pending_valid=false;
+        peer->wait.blocked_op=0;
+        peer->wait.futex_addr=0;
         nas_task_release(peer);
     }
     if(caller!=leader) {
@@ -430,8 +430,8 @@ uint64_t nas_process_clone_thread(uint64_t *frame,uint64_t stack,
         proc_fail("thread TID store failed after validation");
     nas_arch_set_saved_return(parent,child->pid);
     parent->resume_valid=true;
-    parent->pending_valid=false;
-    parent->blocked_op=0;
+    parent->wait.pending_valid=false;
+    parent->wait.blocked_op=0;
     parent->state=NAS_TASK_READY;
     child->state=NAS_TASK_RUNNING;
     nas_current_task=child;
@@ -459,11 +459,11 @@ unsigned nas_process_futex_wake(uint64_t uaddr,unsigned max,uint32_t mask) {
     unsigned count=0;
     for(unsigned i=0;i<NAS_TASK_LIMIT && count<max;i++) {
         struct nas_task *t=nas_task_at(i);
-        if(t->state!=NAS_TASK_BLOCKED || !t->pending_valid ||
-           t->blocked_op!=NAS_SC_futex || t->futex_addr!=uaddr ||
+        if(t->state!=NAS_TASK_BLOCKED || !t->wait.pending_valid ||
+           t->wait.blocked_op!=NAS_SC_futex || t->wait.futex_addr!=uaddr ||
            t->vm_owner!=nas_current_task->vm_owner ||
-           t->futex_woken || !(t->futex_mask&mask))continue;
-        t->futex_woken=true;
+           t->wait.futex_woken || !(t->wait.futex_mask&mask))continue;
+        t->wait.futex_woken=true;
         count++;
     }
     futex_debug("wake",uaddr,max,count);
@@ -503,11 +503,11 @@ uint64_t nas_process_futex(uint64_t *frame,uint64_t addr,uint64_t op,
         unsigned moved=0;
         for(unsigned i=0;i<NAS_TASK_LIMIT && moved<nmove;i++) {
             struct nas_task *t=nas_task_at(i);
-            if(t->state!=NAS_TASK_BLOCKED || !t->pending_valid ||
-               t->blocked_op!=NAS_SC_futex || t->futex_addr!=addr ||
-               t->vm_owner!=nas_current_task->vm_owner || t->futex_woken)
+            if(t->state!=NAS_TASK_BLOCKED || !t->wait.pending_valid ||
+               t->wait.blocked_op!=NAS_SC_futex || t->wait.futex_addr!=addr ||
+               t->vm_owner!=nas_current_task->vm_owner || t->wait.futex_woken)
                 continue;
-            t->futex_addr=addr2;
+            t->wait.futex_addr=addr2;
             moved++;
         }
         futex_debug("requeue",addr,addr2,((uint64_t)woke<<32)|moved);
@@ -530,7 +530,7 @@ uint64_t nas_process_futex(uint64_t *frame,uint64_t addr,uint64_t op,
                   ((uint32_t)bytes[2]<<16)|((uint32_t)bytes[3]<<24);
     if(word!=(uint32_t)val) {futex_debug("mismatch",addr,val,word);return (uint64_t)-EAGAIN;}
     futex_debug("wait",addr,val,op);
-    nas_current_task->deadline_active=false;
+    nas_current_task->wait.deadline_active=false;
     if(timeout) {
         uint64_t sec,nsec,ns;
         if(timeout>USER_LIMIT-16 ||
@@ -551,11 +551,11 @@ uint64_t nas_process_futex(uint64_t *frame,uint64_t addr,uint64_t op,
             if(!ns)return (uint64_t)-ETIMEDOUT;
             ns=nas_time_add_deadline(now,ns);
         }
-        nas_current_task->deadline_ns=ns;
-        nas_current_task->deadline_active=true;
+        nas_current_task->wait.deadline_ns=ns;
+        nas_current_task->wait.deadline_active=true;
     }
-    nas_current_task->futex_addr=addr;
-    nas_current_task->futex_mask=mask;
-    nas_current_task->futex_woken=false;
+    nas_current_task->wait.futex_addr=addr;
+    nas_current_task->wait.futex_mask=mask;
+    nas_current_task->wait.futex_woken=false;
     return nas_task_block(frame,NAS_SC_futex,addr,op,val,timeout);
 }

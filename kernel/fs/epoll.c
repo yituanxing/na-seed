@@ -200,8 +200,8 @@ uint64_t nas_epoll_wait(uint64_t epfd,uint64_t out,uint64_t maximum,uint64_t tim
     }
     if(done)return done;
     if((int32_t)(uint32_t)timeout==0 ||
-       (task->deadline_active &&
-        nas_time_deadline_expired(nas_arch_monotonic_ns(),task->deadline_ns)))
+       (task->wait.deadline_active &&
+        nas_time_deadline_expired(nas_arch_monotonic_ns(),task->wait.deadline_ns)))
         return 0;
     return (uint64_t)-EAGAIN;
 }
@@ -213,27 +213,27 @@ uint16_t nas_epoll_fd_poll(uint64_t fd,uint16_t interests){
 void nas_epoll_arm_current_task(uint64_t epfd){
     unsigned slot;
     struct nas_task *task=nas_current_task;
-    nas_slot_mask_clear(&task->poll_pipe_read);
-    nas_slot_mask_clear(&task->poll_pipe_write);
-    task->poll_tty_read=false;
+    nas_slot_mask_clear(&task->wait.poll_pipe_read);
+    nas_slot_mask_clear(&task->wait.poll_pipe_write);
+    task->wait.poll_tty_read=false;
     if(!instance_slot(task,epfd,&slot))return;
     for(unsigned i=0;i<NAS_EPOLL_EVENTS_MAX;i++){
         struct ep_watch *w=&epolls[slot].watches[i];
         if(!w->used || w->disabled)continue;
         if((w->kind==FD_PIPE_R || w->kind==FD_SOCKET) &&
            (w->events&EP_IN))
-            nas_slot_mask_set(&task->poll_pipe_read,w->slot);
+            nas_slot_mask_set(&task->wait.poll_pipe_read,w->slot);
         if((w->kind==FD_PIPE_W || w->kind==FD_SOCKET) &&
            (w->events&EP_OUT))
-            nas_slot_mask_set(&task->poll_pipe_write,w->slot);
+            nas_slot_mask_set(&task->wait.poll_pipe_write,w->slot);
         if((w->kind==FD_TTY || w->kind==FD_UART) &&
-           (w->events&EP_IN))task->poll_tty_read=true;
+           (w->events&EP_IN))task->wait.poll_tty_read=true;
     }
 }
 bool nas_epoll_task_ready(const struct nas_task *task){
-    if(!task || task->blocked_args[0]>=NAS_FD_LIMIT ||
-       task->fds->entries[task->blocked_args[0]].kind!=FD_EPOLL)return true;
-    unsigned slot=task->fds->entries[task->blocked_args[0]].slot;
+    if(!task || task->wait.blocked_args[0]>=NAS_FD_LIMIT ||
+       task->fds->entries[task->wait.blocked_args[0]].kind!=FD_EPOLL)return true;
+    unsigned slot=task->fds->entries[task->wait.blocked_args[0]].slot;
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)return true;
     return instance_ready(slot);
 }

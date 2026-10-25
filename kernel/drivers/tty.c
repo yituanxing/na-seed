@@ -175,13 +175,13 @@ void nas_tty_pump(void) {
     }
 }
 void nas_tty_blocking_read_start(struct nas_task *task) {
-    task->tty_observed_bytes=0;
+    task->wait.tty_observed_bytes=0;
     if(!(tty.t.lflag&0000002) && tty.t.cc[5]) {
         unsigned available=tty.ldisc.used-tty.ldisc.pos;
         if(!tty.t.cc[6] || available) {
-            task->tty_observed_bytes=available;
-            task->deadline_active=true;
-            task->deadline_ns=nas_time_add_deadline(nas_arch_monotonic_ns(),
+            task->wait.tty_observed_bytes=available;
+            task->wait.deadline_active=true;
+            task->wait.deadline_ns=nas_time_add_deadline(nas_arch_monotonic_ns(),
                          (uint64_t)tty.t.cc[5]*100000000ULL);
         }
     }
@@ -207,13 +207,13 @@ bool nas_tty_read_ready(struct nas_task *task,uint64_t length) {
      * deadline starts at the first received byte, and resets on progress.
      * 1 decisecond = 100,000,000 actual monotonic nanoseconds. */
     if(tty.t.cc[6] && !available)return false;
-    if(!task->deadline_active || available>task->tty_observed_bytes) {
-        task->deadline_active=true;
-        task->deadline_ns=nas_time_add_deadline(nas_arch_monotonic_ns(),
+    if(!task->wait.deadline_active || available>task->wait.tty_observed_bytes) {
+        task->wait.deadline_active=true;
+        task->wait.deadline_ns=nas_time_add_deadline(nas_arch_monotonic_ns(),
                     (uint64_t)tty.t.cc[5]*100000000ULL);
-        task->tty_observed_bytes=available;
+        task->wait.tty_observed_bytes=available;
     }
-    return nas_time_deadline_expired(nas_arch_monotonic_ns(),task->deadline_ns);
+    return nas_time_deadline_expired(nas_arch_monotonic_ns(),task->wait.deadline_ns);
 }
 bool nas_tty_poll_readable(void) {
     if(!tty.rx_enabled || !nas_arch_console_has_rx())return false;
@@ -243,9 +243,9 @@ uint64_t nas_tty_read(uint64_t dst,uint64_t len,bool nonblock) {
     unsigned wanted=len>NAS_LDISC_CAPACITY?NAS_LDISC_CAPACITY:(unsigned)len;
     bool noncanon=!(tty.t.lflag&0000002);
     unsigned available=tty.ldisc.used-tty.ldisc.pos;
-    bool expired=nas_current_task->deadline_active &&
+    bool expired=nas_current_task->wait.deadline_active &&
         nas_time_deadline_expired(nas_arch_monotonic_ns(),
-                                  nas_current_task->deadline_ns);
+                                  nas_current_task->wait.deadline_ns);
     struct nas_termios copy=tty.t;
     if(noncanon && tty.t.cc[5]) {
         /* VMIN=0/VTIME>0 must NOT complete before the actual timeout.

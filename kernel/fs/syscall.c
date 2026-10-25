@@ -586,14 +586,14 @@ static uint16_t vpoll_pipe_write(uint64_t fd,uint16_t events) {
     return nas_pipe_poll_writable(TASK.fds->entries[fd].slot) ? (events & 0x0004U) : 0;
 }
 static void varmpipe_read(struct nas_task *t,uint64_t fd,uint16_t events) {
-    if(events & 0x0001U)nas_slot_mask_set(&t->poll_pipe_read,TASK.fds->entries[fd].slot);
+    if(events & 0x0001U)nas_slot_mask_set(&t->wait.poll_pipe_read,TASK.fds->entries[fd].slot);
 }
 static void varmpipe_write(struct nas_task *t,uint64_t fd,uint16_t events) {
-    if(events & 0x0004U)nas_slot_mask_set(&t->poll_pipe_write,TASK.fds->entries[fd].slot);
+    if(events & 0x0004U)nas_slot_mask_set(&t->wait.poll_pipe_write,TASK.fds->entries[fd].slot);
 }
 static void varmtty(struct nas_task *t,uint64_t fd,uint16_t events) {
     (void)fd;
-    if((events & 0x0001U) && nas_tty_read_waitable())t->poll_tty_read=true;
+    if((events & 0x0001U) && nas_tty_read_waitable())t->wait.poll_tty_read=true;
 }
 static uint64_t vioctl_tty(uint64_t fd,uint64_t cmd,uint64_t arg) {
     (void)fd;
@@ -652,8 +652,8 @@ static uint16_t vpoll_pty(uint64_t fd,uint16_t events) {
     return nas_pty_poll(TASK.fds->entries[fd].slot,events);
 }
 static void varm_pty(struct nas_task *task,uint64_t fd,uint16_t events) {
-    if(events&1U)nas_slot_mask_set(&task->poll_pipe_read,TASK.fds->entries[fd].slot);
-    if(events&4U)nas_slot_mask_set(&task->poll_pipe_write,TASK.fds->entries[fd].slot);
+    if(events&1U)nas_slot_mask_set(&task->wait.poll_pipe_read,TASK.fds->entries[fd].slot);
+    if(events&4U)nas_slot_mask_set(&task->wait.poll_pipe_write,TASK.fds->entries[fd].slot);
 }
 static void vrelease_pty(unsigned slot){nas_pty_release(slot);}
 static const struct nas_file_ops ops_pty={
