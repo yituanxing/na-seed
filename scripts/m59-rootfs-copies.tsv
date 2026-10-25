@@ -1,0 +1,4 @@
+tests/m59-runtime-run.sh	tests/run-m59.sh
+tests/m59-rsync.sh	tests/m59-rsync.sh
+tests/m59-patch.sh	tests/m59-patch.sh
+tests/m59-file.sh	tests/m59-file.sh

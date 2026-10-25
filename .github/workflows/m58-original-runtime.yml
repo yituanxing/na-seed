@@ -1,15 +1,25 @@
-name: NaSeed M58 prebuilt Bash Tcl OpenSSL — three native ISAs
+name: NaSeed M58/M59 original prebuilt seven-app suite — three native ISAs
 on:
   pull_request:
     paths:
       - 'tests/m58-*'
+      - 'tests/m59-*'
       - 'scripts/m58-runtime-cases.tsv'
+      - 'scripts/m59-worktree-cases.tsv'
       - 'scripts/probe-m58-runtime.sh'
+      - 'scripts/probe-m59-worktree.sh'
       - 'scripts/stage-m58-prebuilt.sh'
+      - 'scripts/stage-m59-prebuilt.sh'
+      - 'scripts/stage-alpine-prebuilt-overlay.sh'
+      - 'scripts/m58-original-elfs.txt'
+      - 'scripts/m58-rootfs-copies.tsv'
+      - 'scripts/m59-original-elfs.txt'
+      - 'scripts/m59-rootfs-copies.tsv'
       - 'scripts/probe-x86-busybox-parity.sh'
       - 'scripts/probe-riscv64-busybox-matrix.sh'
       - 'scripts/probe-aarch64-busybox-matrix.sh'
       - 'rootfs/alpine/packages-m58-runtime.txt'
+      - 'rootfs/alpine/packages-m59-worktree.txt'
       - 'kernel/**'
       - '.github/workflows/m58-original-runtime.yml'
   workflow_dispatch:
@@ -18,7 +28,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   real-programs:
-    name: signed Bash + Tcl + OpenSSL / ${{ matrix.port }}
+    name: signed Bash/Tcl/OpenSSL + rsync/diff/patch/file / ${{ matrix.port }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
     strategy:
@@ -30,7 +40,8 @@ jobs:
       - name: Validate guest test scripts and shared ISA architecture contract
         run: |
           set -eu
-          sh -n scripts/stage-m58-prebuilt.sh scripts/probe-m58-runtime.sh tests/m58-runtime-run.sh
+          sh -n scripts/stage-alpine-prebuilt-overlay.sh scripts/stage-m58-prebuilt.sh scripts/probe-m58-runtime.sh tests/m58-runtime-run.sh
+          sh -n scripts/stage-m59-prebuilt.sh scripts/probe-m59-worktree.sh tests/m59-*.sh
           bash -n tests/m58-bash-suite.sh
           python3 scripts/check-three-isa-core.py
       - name: Install native QEMU and host rootfs tools
@@ -65,9 +76,11 @@ jobs:
               -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
           fi
           command -v docker
-      - name: Host-stage signed ELF and run three real programs inside NaSeed
+      - name: Host-stage signed ELF and run seven real programs across two native QEMU boots
         timeout-minutes: 24
-        run: sh scripts/probe-m58-runtime.sh ${{ matrix.port }}
+        run: |
+          sh scripts/probe-m58-runtime.sh ${{ matrix.port }}
+          sh scripts/probe-m59-worktree.sh ${{ matrix.port }}
       - name: Preserve full guest evidence on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -77,7 +90,12 @@ jobs:
             build/external/m39-packages/${{ matrix.port }}/apk-install.log
             build/external/m58-runtime/${{ matrix.port }}/apk-install.log
             build/external/m58-runtime/${{ matrix.port }}/requested-packages.txt
+            build/external/m59-worktree/${{ matrix.port }}/apk-install.log
+            build/external/m59-worktree/${{ matrix.port }}/requested-packages.txt
             build/busybox-source-parity-x86/m58-runtime.clean.log
             build/port-riscv64/full/matrix-source/m58-runtime.clean.log
             build/port-aarch64/full/matrix-source/m58-runtime.clean.log
+            build/busybox-source-parity-x86/m59-worktree.clean.log
+            build/port-riscv64/full/matrix-source/m59-worktree.clean.log
+            build/port-aarch64/full/matrix-source/m59-worktree.clean.log
           if-no-files-found: ignore

@@ -95,7 +95,7 @@ boot_case() {
         process-capacity) time_budget=65 ;;
         init-reaper) time_budget=130 ;;
         m38-gcc|m49-capacity) time_budget=360 ;;
-        m39-packages|m40-archives|m41-unix|m42-pthread|m43-zstd|m44-group|m45-robust|m46-exec|m47-tgkill|m48-parallel|m51-git|m52-python|m53-vim|m54-dev|m58-runtime) time_budget=540 ;;
+        m39-packages|m40-archives|m41-unix|m42-pthread|m43-zstd|m44-group|m45-robust|m46-exec|m47-tgkill|m48-parallel|m51-git|m52-python|m53-vim|m54-dev|m58-runtime|m59-worktree) time_budget=540 ;;
         m55-cjson) time_budget=${NAS_M55_QEMU_TIMEOUT:-2400} ;;
         m56-busybox) time_budget=${NAS_M56_QEMU_TIMEOUT:-3600} ;;
         m57-sqlite) time_budget=${NAS_M57_QEMU_TIMEOUT:-3600} ;;

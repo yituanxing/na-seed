@@ -55,3 +55,8 @@ applications. A small host-only APK overlay keeps the old trusted package
 path and avoids redundant nested Guest compilation. Actual M58 failures
 will be grouped by common Task, VFS, MM, TTY or syscall ownership before
 kernel modifications; the exact-head original suites remain merge gates.
+
+The M59 follow-on extracted this already-proven signed host packaging into
+`scripts/stage-alpine-prebuilt-overlay.sh`. The M58 and M59 wrappers retain
+their independent original executable lists, runtime scripts, marker sets
+and full-system QEMU results. Neither package suite compiles under NaSeed.

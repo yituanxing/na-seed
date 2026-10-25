@@ -1,0 +1,6 @@
+# Four authentic Alpine v3.23 original binaries and their signed libraries.
+# Installed only by the host; no NaSeed guest compilation or APK install.
+rsync
+diffutils
+patch
+file
