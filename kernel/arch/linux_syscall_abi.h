@@ -58,6 +58,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_exit_group: return NAS_SC_exit_group;
     case __NR_fchdir: return NAS_SC_fchdir;
     case __NR_fcntl: return NAS_SC_fcntl;
+    case __NR_flock: return NAS_SC_flock;
     case __NR_fsync: return NAS_SC_fsync;
     case __NR_fdatasync: return NAS_SC_fdatasync;
     case __NR_ftruncate: return NAS_SC_ftruncate;
@@ -203,6 +204,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 211U: return NAS_SC_sendmsg;
     case 212U: return NAS_SC_recvmsg;
     case 50U: return NAS_SC_fchdir;
+    case 32U: return NAS_SC_flock; /* asm-generic flock */
     case 17U: return NAS_SC_getcwd;
     case 278U: return NAS_SC_getrandom; /* asm-generic Linux */
     case 59U: return NAS_SC_pipe2;

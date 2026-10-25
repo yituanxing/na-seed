@@ -16,7 +16,7 @@ enum { FD_CLOSED = 0, FD_UART = 1, FD_NULL = 2, FD_ZERO = 3,
        FD_BOOTFS = 4, FD_ARCHIVE = 5, FD_DIR = 6,
        FD_PIPE_R = 7, FD_PIPE_W = 8, FD_TMP = 9, FD_TMP_DIR = 10,
        FD_TTY = 11, FD_EPOLL = 12, FD_EVENTFD = 13,
-       FD_SOCKET = 14 };
+       FD_SOCKET = 14, FD_PTY_MASTER = 15, FD_PTY_SLAVE = 16 };
 void nas_fd_system_init(void);
 void nas_fd_report_exhaustion(const char *operation);
 unsigned nas_fd_close(struct nas_task *task, unsigned fd);

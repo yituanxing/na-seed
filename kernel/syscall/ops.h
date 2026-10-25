@@ -31,6 +31,7 @@ enum nas_syscall_op {
     NAS_SC_exit_group,
     NAS_SC_fchdir,
     NAS_SC_fcntl,
+    NAS_SC_flock,
     NAS_SC_fsync,
     NAS_SC_fdatasync,
     NAS_SC_ftruncate,

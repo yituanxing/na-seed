@@ -5,6 +5,7 @@
 #include "../fd.h"
 #include "../pipe.h"
 #include "../drivers/tty.h"
+#include "../drivers/pty.h"
 #include "../arch/arch.h"
 #include "../arch/mmu.h"
 #include "../mm/usercopy.h"
@@ -88,6 +89,9 @@ static uint16_t ready_now(const struct ep_watch *w){
     case FD_TTY: case FD_UART:
         if((requested&EP_IN) && nas_tty_poll_readable())result|=EP_IN;
         if(requested&EP_OUT)result|=EP_OUT;
+        break;
+    case FD_PTY_MASTER:case FD_PTY_SLAVE:
+        result=nas_pty_poll(w->slot,requested);
         break;
     case FD_EVENTFD:
         result=nas_eventfd_poll_slot(w->slot,requested);
