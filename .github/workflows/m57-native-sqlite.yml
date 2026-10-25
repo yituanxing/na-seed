@@ -61,7 +61,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: m56-genuine-guest-busybox-${{ matrix.port }}
+          name: m57-native-sqlite-${{ matrix.port }}
           path: |
             build/external/m57-native-sqlite/${{ matrix.port }}/apk-install.log
             build/external/m57-native-sqlite/${{ matrix.port }}/requested-packages.txt

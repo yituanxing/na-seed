@@ -8,6 +8,10 @@
 #include "time/clock.h"
 #include "arch/arch.h"
 
+/* Generic capacity diagnostics only on actual tmpfs allocation failure. */
+extern void nas_print(const char *);
+extern void nas_dec(uint64_t);
+
 /* Metadata is itself demand-allocated from the common frame provider:
  * one page holds several reusable inode records; a linked slab chain grows
  * as large as available RAM allows instead of stopping after eight files.
@@ -122,7 +126,14 @@ int64_t tmp_write_at(struct nas_tmp_file *file, uint64_t offset,
                      const uint8_t *src, uint64_t count) {
     if (!file || !file->used || !src || file->is_dir) return -EINVAL;
     if (!count) return 0;
-    if (offset >= TMP_FILE_CAP) return -ENOSPC;
+    if (offset >= TMP_FILE_CAP) {
+        nas_print("[TMPFS FILE CAP] path="); nas_print(file->path);
+        nas_print(" offset="); nas_dec(offset);
+        nas_print(" cap="); nas_dec(TMP_FILE_CAP);
+        nas_print(" free_frames="); nas_dec(nas_free_frames());
+        nas_print("\n");
+        return -ENOSPC;
+    }
     if (count > TMP_FILE_CAP - offset) count = TMP_FILE_CAP - offset;
     uint64_t done = 0;
     while (done < count) {
@@ -289,7 +300,13 @@ struct nas_tmp_file *tmp_create(const char *path,bool dir,uint32_t mode) {
             if (!slab->nodes[n].used)
                 return tmp_init_node(&slab->nodes[n],path,dir,mode);
     struct tmp_inode_slab *slab = tmp_new_slab();
-    return slab ? tmp_init_node(&slab->nodes[0],path,dir,mode) : 0;
+    if (!slab) {
+        nas_print("[TMPFS INODE ENOSPC] path="); nas_print(path);
+        nas_print(" free_frames="); nas_dec(nas_free_frames());
+        nas_print("\n");
+        return 0;
+    }
+    return tmp_init_node(&slab->nodes[0],path,dir,mode);
 }
 uint64_t tmp_number(const struct nas_tmp_file *file) {
     return file ? file->ino : 0;

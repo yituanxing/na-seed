@@ -16,6 +16,9 @@ Status: draft; NOT accepted until all exact-head CI evidence is green.
   inode with a demand-paged two-level indirect root (up to 1 GiB/file),
   and compile/run a real 64 MiB sparse pwrite/pread/truncate/reclaim probe
   IN the native guest before SQLite link. This is shared x86/RV64/ARM64 code.
+- Diagnostic: emit a generic tmpfs path/offset/free-frame report only when
+  file size or inode metadata allocation really fails; M57 gets a 4 GiB
+  QEMU RAM budget to distinguish physical memory pressure from file limits.
 - Filesystem workload: native sqlite3 creates a real tmpfs DB in normal
   rollback-journal mode, performs explicit BEGIN/COMMIT, then a **new
   process** opens the same DB and checks rows; a second transaction
