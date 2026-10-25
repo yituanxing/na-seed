@@ -43,10 +43,10 @@
  * exceeding the former 1023-byte bound on every ISA; the native GNU Make
  * and shell were spuriously rejected with E2BIG.
  *
- * Keep an explicit, uniform per-string cap (8191 bytes), max 64 argv and
- * 32 env entries. At worst, 96 * 8192 = 768 KiB plus pointers and auxv,
- * within our current 1-MiB eagerly mapped userspace stack. This is a
- * bounded interim Linux ABI, not Linux's full ARG_MAX support.
+ * Keep an explicit per-string cap (8191 bytes), max 64 argv and
+ * 128 env entries. Actual strings and pointers are checked against the
+ * same 1-MiB mapped exec stack in nas_build_user_stack; these are bounded
+ * interim Linux ABI limits, not a claim of full Linux ARG_MAX support.
  * Exec snapshots remain kernel-owned until the new VM is committed. */
 #define EXEC_STRING_MAX 8192
 static struct exec_snapshot {

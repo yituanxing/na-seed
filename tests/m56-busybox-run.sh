@@ -27,6 +27,20 @@ long=$(/bin/busybox printf '%02048d' 0)
 /bin/sh -c 'test "${#1}" -eq 2048' m56-argv "$long"
 echo M56_LINUX_LONG_EXECVE_ARG_PASS
 
+stage=linux-execve-many-env-vars
+# GNU Make/Kbuild exports >32 environment entries to shells and recursive
+# make. The original kernel returned E2BIG for these legitimate Linux execs.
+# Use an actual distro /usr/bin/env and genuine /bin/sh; no shell-only stub.
+set --
+n=0
+while [ "$n" -lt 48 ]; do
+    set -- "$@" "M56_ENV_$n=$n"
+    n=$((n+1))
+done
+/usr/bin/env "$@" /bin/sh -c 'test "$M56_ENV_47" = 47'
+set --
+echo M56_LINUX_MAKE_ENV_CAPACITY_PASS
+
 stage=copy-pinned-upstream-to-writable-tmpfs
 # Immutable bootfs cannot be modified by GNU Make. In the guest, copy the
 # genuine source tree into writable tmpfs, including its directory layout.
