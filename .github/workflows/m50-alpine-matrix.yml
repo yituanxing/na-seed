@@ -71,8 +71,8 @@ jobs:
               -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
           fi
           command -v docker
-          if [ "${{ matrix.port }}" = riscv64 ] && [ "${{ matrix.suite }}" = foundation ]; then
-            # Only M55 needs native EDK2 UEFI varstore seeding. Pin the
+          if [ "${{ matrix.port }}" = riscv64 ] && [ "${{ matrix.suite }}" = foundation ] && [ "$NAS_NATIVE_MODE" = full ]; then
+            # Only the opt-in full M55 source build needs EDK2 varstore seeding. Pin the
             # version proven by the independent real-guest RTC A/B gate.
             python3 -m pip install --user --break-system-packages --disable-pip-version-check 'virt-firmware==26.5.4'
             echo "$HOME/.local/bin" >> "$GITHUB_PATH"
