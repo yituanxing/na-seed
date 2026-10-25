@@ -1,0 +1,2 @@
+# Guest launches two distinct real BusyBox process PIDs and drives signals.
+m67-control	cpio	sh -c '/bin/sh /tests/m67-control-run.sh'	M67_PROCPS_CONTROL_FULL_PASS	-	/bin/busybox

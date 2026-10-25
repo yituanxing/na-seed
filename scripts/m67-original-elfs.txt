@@ -1,0 +1,3 @@
+usr/bin/pgrep
+usr/bin/pkill
+usr/bin/tmux
