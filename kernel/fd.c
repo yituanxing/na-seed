@@ -7,10 +7,25 @@
  * Backends are released by the syscall adapter only on final close;
  * the generic description layer has no dependency on /tmp or pipes.
  */
-struct nas_open_file nas_open_files[NAS_FD_LIMIT];
+struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
+extern void nas_print(const char *);
+extern void nas_dec(uint64_t);
+
+/* Diagnostics are emitted only on a genuine global capacity failure.
+ * Separate this from per-process EMFILE and the independent pipe pool. */
+void nas_fd_report_exhaustion(const char *operation) {
+    unsigned occupied=0;
+    for (unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++)
+        if (nas_open_files[i].refcount) occupied++;
+    nas_print("[FD CAP] operation="); nas_print(operation);
+    nas_print(" open="); nas_dec(occupied);
+    nas_print(" capacity="); nas_dec(NAS_OPEN_FILE_LIMIT);
+    nas_print("\n");
+}
+
 
 void nas_fd_system_init(void) {
-    for (unsigned i=0;i<NAS_FD_LIMIT;i++) {
+    for (unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++) {
         nas_open_files[i]=(struct nas_open_file){0};
     }
 }
@@ -21,8 +36,9 @@ void nas_fd_system_init(void) {
  */
 unsigned nas_fd_close(struct nas_task *task, unsigned fd) {
     if (!task || fd>=NAS_FD_LIMIT ||
-        !task->fds->descriptors[fd]) return NAS_FD_LIMIT;
+        !task->fds->descriptors[fd]) return NAS_OPEN_FILE_LIMIT;
     const unsigned slot=task->fds->file_slot[fd];
+    if (slot>=NAS_OPEN_FILE_LIMIT) return NAS_OPEN_FILE_LIMIT;
     bool last=false;
     if (nas_open_files[slot].refcount) {
         nas_open_files[slot].refcount--;
@@ -31,7 +47,7 @@ unsigned nas_fd_close(struct nas_task *task, unsigned fd) {
     task->fds->descriptors[fd]=0;
     task->fds->file_slot[fd]=0;
     task->fds->fd_cloexec[fd]=0;
-    return last ? slot : NAS_FD_LIMIT;
+    return last ? slot : NAS_OPEN_FILE_LIMIT;
 }
 
 /* Same open description, independent descriptor-local CLOEXEC bit. */
@@ -42,7 +58,7 @@ uint64_t nas_fd_clone(struct nas_task *task, uint64_t src, uint64_t dst,
     if (src==dst) return dst;
     if (task->fds->descriptors[dst]) return (uint64_t)-EBUSY;
     unsigned slot=task->fds->file_slot[src];
-    if (!nas_open_files[slot].refcount) return (uint64_t)-EBADF;
+    if (slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount) return (uint64_t)-EBADF;
     task->fds->descriptors[dst]=task->fds->descriptors[src];
     task->fds->file_slot[dst]=(uint8_t)slot;
     task->fds->fd_cloexec[dst]=cloexec ? 1 : 0;
@@ -66,7 +82,8 @@ bool nas_task_hold_files(const struct nas_task *task) {
     if (!task) return false;
     for (unsigned fd=0;fd<NAS_FD_LIMIT;fd++)
         if (task->fds->descriptors[fd] &&
-            !nas_open_files[task->fds->file_slot[fd]].refcount) return false;
+            (task->fds->file_slot[fd]>=NAS_OPEN_FILE_LIMIT ||
+              !nas_open_files[task->fds->file_slot[fd]].refcount)) return false;
     for (unsigned fd=0;fd<NAS_FD_LIMIT;fd++)
         if (task->fds->descriptors[fd])
             nas_open_files[task->fds->file_slot[fd]].refcount++;

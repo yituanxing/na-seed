@@ -17,3 +17,4 @@ findutils
 bzip2
 diffutils
 gzip
+grep

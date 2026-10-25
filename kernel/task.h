@@ -2,6 +2,7 @@
 #define NASEED_TASK_H
 #include <stdint.h>
 #include <stdbool.h>
+#include "fd.h"
 #include "arch/context.h"
 #include "mm/anon_regions.h"
 
@@ -12,7 +13,7 @@
  * A 48-task bounded registry supports GNU Make -j4, GNU xargs -P4 and
  * 24+ concurrently parked fork children with independent 16 KiB stacks.
  * Scheduler/exit/futex/group-signal loops follow this shared limit;
- * open-file-description pool remains separately bounded at 64.
+ * open-file-description pool has its own independent capacity.
  */
 #define NAS_TASK_LIMIT 48
 #define NAS_POSIX_TIMERS 8
@@ -25,6 +26,27 @@ struct nas_posix_timer {
 };
 #define NAS_FD_LIMIT 64
 #define NAS_KERNEL_STACK_BYTES 16384U
+
+/* Blocked I/O watches system-wide open-description slots, not process FDs.
+ * Word-indexed masks preserve correct readiness above slot 63. */
+#define NAS_SLOT_MASK_WORDS ((NAS_OPEN_FILE_LIMIT + 63U) / 64U)
+struct nas_slot_mask { uint64_t word[NAS_SLOT_MASK_WORDS]; };
+static inline void nas_slot_mask_clear(struct nas_slot_mask *mask) {
+    for (unsigned i=0; i<NAS_SLOT_MASK_WORDS; i++) mask->word[i]=0;
+}
+static inline void nas_slot_mask_set(struct nas_slot_mask *mask,unsigned slot) {
+    if (slot<NAS_OPEN_FILE_LIMIT) mask->word[slot/64U] |= 1ULL<<(slot%64U);
+}
+static inline bool nas_slot_mask_test(const struct nas_slot_mask *mask,unsigned slot) {
+    return slot<NAS_OPEN_FILE_LIMIT &&
+        (mask->word[slot/64U] & (1ULL<<(slot%64U)))!=0;
+}
+static inline bool nas_slot_mask_any(const struct nas_slot_mask *mask) {
+    for (unsigned i=0; i<NAS_SLOT_MASK_WORDS; i++)
+        if (mask->word[i]) return true;
+    return false;
+}
+
 
 struct limine_file;
 struct bootfs_entry;
@@ -80,8 +102,8 @@ struct nas_task {
     struct nas_posix_timer timers[NAS_POSIX_TIMERS];
     /* Snapshot poll interest when blocking. NEVER dereference a different
      * task's user pollfd pointer during readiness checks. Each bit names a
-     * shared open-file-description slot (0..63). */
-    uint64_t poll_pipe_read, poll_pipe_write;
+     * shared open-file-description slot (0..NAS_OPEN_FILE_LIMIT-1). */
+    struct nas_slot_mask poll_pipe_read, poll_pipe_write;
     bool poll_tty_read;
 
     /* Owned kernel entry stack. Kernel C continuations are NOT resumable

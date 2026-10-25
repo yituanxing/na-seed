@@ -33,7 +33,7 @@ static uint64_t tmp_next_mtime(uint64_t previous) {
     return now > previous ? now : previous + (previous < UINT64_MAX);
 }
 static struct tmp_inode_slab *tmp_slabs;
-static struct nas_tmp_file *tmp_slot_owner[NAS_FD_LIMIT];
+static struct nas_tmp_file *tmp_slot_owner[NAS_OPEN_FILE_LIMIT];
 static uint64_t tmp_next_ino = 1;
 
 static struct tmp_inode_slab *tmp_new_slab(void) {
@@ -47,7 +47,7 @@ static struct tmp_inode_slab *tmp_new_slab(void) {
 }
 static void tmp_try_reclaim(struct nas_tmp_file *node) {
     if (!node || !node->used || node->linked) return;
-    for (unsigned slot = 0; slot < NAS_FD_LIMIT; slot++)
+    for (unsigned slot = 0; slot < NAS_OPEN_FILE_LIMIT; slot++)
         if (tmp_slot_owner[slot] == node && nas_open_files[slot].refcount)
             return;
     tmp_truncate(node);
@@ -275,16 +275,16 @@ const struct nas_tmp_file *tmp_child(const char *parent,unsigned index) {
 }
 
 void tmp_bind_slot(unsigned slot, const struct nas_tmp_file *file) {
-    if (slot >= NAS_FD_LIMIT || !file) return;
+    if (slot >= NAS_OPEN_FILE_LIMIT || !file) return;
     tmp_slot_owner[slot] = (struct nas_tmp_file *)(uintptr_t)file;
 }
 struct nas_tmp_file *tmp_by_slot(unsigned slot) {
-    if (slot >= NAS_FD_LIMIT) return 0;
+    if (slot >= NAS_OPEN_FILE_LIMIT) return 0;
     struct nas_tmp_file *file=tmp_slot_owner[slot];
     return file && file->used ? file : 0;
 }
 void tmp_release_slot(unsigned slot) {
-    if (slot >= NAS_FD_LIMIT) return;
+    if (slot >= NAS_OPEN_FILE_LIMIT) return;
     struct nas_tmp_file *file=tmp_slot_owner[slot];
     tmp_slot_owner[slot]=0;
     tmp_try_reclaim(file);

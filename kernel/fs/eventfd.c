@@ -16,13 +16,13 @@
 #define EFD_MAX (UINT64_MAX-1ULL)
 #define EFD_IN 1U
 #define EFD_OUT 4U
-static uint64_t counters[NAS_FD_LIMIT];
-static bool semaphore_mode[NAS_FD_LIMIT];
+static uint64_t counters[NAS_OPEN_FILE_LIMIT];
+static bool semaphore_mode[NAS_OPEN_FILE_LIMIT];
 static bool eventfd_slot(uint64_t fd,unsigned *slot){
     if(fd>=NAS_FD_LIMIT ||
        nas_current_task->fds->descriptors[fd]!=FD_EVENTFD)return false;
     unsigned s=nas_current_task->fds->file_slot[fd];
-    if(s>=NAS_FD_LIMIT || !nas_open_files[s].refcount)return false;
+    if(s>=NAS_OPEN_FILE_LIMIT || !nas_open_files[s].refcount)return false;
     *slot=s;
     return true;
 }
@@ -32,7 +32,7 @@ uint64_t nas_eventfd_create(uint64_t init,uint64_t flags){
     struct nas_task *t=nas_current_task;
     for(unsigned fd=0;fd<NAS_FD_LIMIT;fd++){
         if(t->fds->descriptors[fd]!=FD_CLOSED)continue;
-        for(unsigned slot=0;slot<NAS_FD_LIMIT;slot++){
+        for(unsigned slot=0;slot<NAS_OPEN_FILE_LIMIT;slot++){
             if(nas_open_files[slot].refcount)continue;
             counters[slot]=(uint32_t)init;
             semaphore_mode[slot]=(flags&EFD_SEMAPHORE)!=0;
@@ -45,6 +45,7 @@ uint64_t nas_eventfd_create(uint64_t init,uint64_t flags){
             t->fds->fd_cloexec[fd]=(flags&EFD_CLOEXEC)!=0;
             return fd;
         }
+        nas_fd_report_exhaustion("eventfd2");
         return (uint64_t)-ENFILE;
     }
     return (uint64_t)-EMFILE;
@@ -75,11 +76,11 @@ uint64_t nas_eventfd_write(uint64_t fd,uint64_t addr,uint64_t count){
     return 8;
 }
 bool nas_eventfd_ready(unsigned slot,bool writing){
-    if(slot>=NAS_FD_LIMIT || !nas_open_files[slot].refcount)return true;
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)return true;
     return writing?counters[slot]<EFD_MAX:counters[slot]!=0;
 }
 uint16_t nas_eventfd_poll_slot(unsigned slot,uint16_t events){
-    if(slot>=NAS_FD_LIMIT || !nas_open_files[slot].refcount)return 0;
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)return 0;
     uint16_t v=0;
     if((events&EFD_IN) && counters[slot])v|=EFD_IN;
     if((events&EFD_OUT) && counters[slot]<EFD_MAX)v|=EFD_OUT;
@@ -90,5 +91,5 @@ uint16_t nas_eventfd_poll(uint64_t fd,uint16_t events){
     return eventfd_slot(fd,&slot)?nas_eventfd_poll_slot(slot,events):0;
 }
 void nas_eventfd_release(unsigned slot){
-    if(slot<NAS_FD_LIMIT){counters[slot]=0;semaphore_mode[slot]=false;}
+    if(slot<NAS_OPEN_FILE_LIMIT){counters[slot]=0;semaphore_mode[slot]=false;}
 }

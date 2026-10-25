@@ -6,15 +6,18 @@
 /* Per-task descriptor entry and global shared open-description lifetime.
  * Descriptor table fields stay in nas_task; offset/status and reference
  * identity are shared by fork and dup, not copied per descriptor.
- * A return value of NAS_FD_LIMIT means no final description was released.
+ * A return value of NAS_OPEN_FILE_LIMIT means no final description was released.
  */
 struct nas_task;
+/* System-wide open descriptions, independent of per-process FD count. */
+#define NAS_OPEN_FILE_LIMIT 128
 /* Shared FD kind identities until the file-object refactor. */
 enum { FD_CLOSED = 0, FD_UART = 1, FD_NULL = 2, FD_ZERO = 3,
        FD_BOOTFS = 4, FD_ARCHIVE = 5, FD_DIR = 6,
        FD_PIPE_R = 7, FD_PIPE_W = 8, FD_TMP = 9, FD_TMP_DIR = 10,
        FD_TTY = 11, FD_EPOLL = 12, FD_EVENTFD = 13 };
 void nas_fd_system_init(void);
+void nas_fd_report_exhaustion(const char *operation);
 unsigned nas_fd_close(struct nas_task *task, unsigned fd);
 uint64_t nas_fd_clone(struct nas_task *task, uint64_t src, uint64_t dst,
                       bool cloexec); /* caller must close dst beforehand */
@@ -36,5 +39,5 @@ struct nas_open_file {
     const struct limine_file *boot_file;
     const struct bootfs_entry *boot_entry;
 };
-extern struct nas_open_file nas_open_files[64];
+extern struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
 #endif

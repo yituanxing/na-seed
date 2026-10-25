@@ -20,8 +20,8 @@ for tool in /usr/bin/gcc /usr/bin/make /usr/bin/as /usr/bin/ld /usr/bin/readelf;
 done
 # Check all known upstream generation tools before a long native build.
 # mkconfigs uses bzip2; generate_BUFSIZ uses diff; gen_build_files uses
-# cmp; Kbuild's compression recipes may invoke gzip.
-for tool in bzip2 diff cmp gzip; do
+# cmp; usage_compressed requires grep; compression recipes may invoke gzip.
+for tool in bzip2 diff cmp gzip grep; do
     command -v "$tool" >/dev/null || {
         echo "[M56 FAIL] original Kbuild requires $tool" >&2
         exit 1
@@ -109,7 +109,9 @@ echo M56_REAL_UPSTREAM_KBUILD_BEGIN
 /usr/bin/make -j2 HOSTCC=/usr/bin/gcc CC=/usr/bin/gcc busybox
 test -s "$src/busybox"
 test -x "$src/busybox"
-/usr/bin/readelf -h "$src/busybox" | /bin/busybox grep -Fq 'EXEC (Executable file)'
+# Linux executes both classic ET_EXEC and interpreter-free static PIE ET_DYN.
+# Require a valid executable ELF type, then reject PT_INTERP below.
+/usr/bin/readelf -h "$src/busybox" | /bin/busybox grep -Eq 'Type:.*(EXEC|DYN)'
 if /usr/bin/readelf -l "$src/busybox" | /bin/busybox grep -Fq INTERP; then
     echo '[M56 FAIL] pinned static BusyBox unexpectedly requires a dynamic interpreter'
     exit 1

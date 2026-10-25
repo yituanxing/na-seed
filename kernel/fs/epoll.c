@@ -40,7 +40,7 @@ struct ep_watch {
     uint64_t data;
 };
 struct ep_state {struct ep_watch watches[NAS_EPOLL_EVENTS_MAX];};
-static struct ep_state epolls[NAS_FD_LIMIT];
+static struct ep_state epolls[NAS_OPEN_FILE_LIMIT];
 
 #if defined(__x86_64__)
 #define EP_EVENT_BYTES 12U
@@ -54,7 +54,7 @@ static struct ep_state epolls[NAS_FD_LIMIT];
 static bool valid_fd_task(const struct nas_task *task,uint64_t fd){
     return task && fd<NAS_FD_LIMIT &&
         task->fds->descriptors[fd]!=FD_CLOSED &&
-        task->fds->file_slot[fd]<NAS_FD_LIMIT &&
+        task->fds->file_slot[fd]<NAS_OPEN_FILE_LIMIT &&
         nas_open_files[task->fds->file_slot[fd]].refcount;
 }
 static bool instance_slot(const struct nas_task *task,uint64_t fd,
@@ -66,7 +66,7 @@ static bool instance_slot(const struct nas_task *task,uint64_t fd,
 }
 static uint16_t ready_now(const struct ep_watch *w){
     if(!w->used || w->disabled ||
-       w->slot>=NAS_FD_LIMIT || !nas_open_files[w->slot].refcount)return 0;
+       w->slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[w->slot].refcount)return 0;
     uint16_t requested=(uint16_t)(w->events & (EP_IN|EP_PRI|EP_OUT|EP_RDHUP));
     uint16_t result=0;
     switch(w->kind){
@@ -105,7 +105,7 @@ uint64_t nas_epoll_create1(uint64_t flags){
     struct nas_task *task=nas_current_task;
     for(unsigned fd=0;fd<NAS_FD_LIMIT;fd++){
         if(task->fds->descriptors[fd]!=FD_CLOSED)continue;
-        for(unsigned slot=0;slot<NAS_FD_LIMIT;slot++){
+        for(unsigned slot=0;slot<NAS_OPEN_FILE_LIMIT;slot++){
             if(nas_open_files[slot].refcount)continue;
             epolls[slot]=(struct ep_state){0};
             nas_open_files[slot]=(struct nas_open_file){0};
@@ -116,6 +116,7 @@ uint64_t nas_epoll_create1(uint64_t flags){
             task->fds->fd_cloexec[fd]=(flags&EP_CLOEXEC)!=0;
             return fd;
         }
+        nas_fd_report_exhaustion("epoll_create1");
         return (uint64_t)-ENFILE;
     }
     return (uint64_t)-EMFILE;
@@ -207,17 +208,17 @@ uint16_t nas_epoll_fd_poll(uint64_t fd,uint16_t interests){
 void nas_epoll_arm_current_task(uint64_t epfd){
     unsigned slot;
     struct nas_task *task=nas_current_task;
-    task->poll_pipe_read=task->poll_pipe_write=0;
+    nas_slot_mask_clear(&task->poll_pipe_read);
+    nas_slot_mask_clear(&task->poll_pipe_write);
     task->poll_tty_read=false;
     if(!instance_slot(task,epfd,&slot))return;
     for(unsigned i=0;i<NAS_EPOLL_EVENTS_MAX;i++){
         struct ep_watch *w=&epolls[slot].watches[i];
         if(!w->used || w->disabled)continue;
-        uint64_t bit=1ULL<<w->slot;
         if(w->kind==FD_PIPE_R && (w->events&EP_IN))
-            task->poll_pipe_read|=bit;
+            nas_slot_mask_set(&task->poll_pipe_read,w->slot);
         if(w->kind==FD_PIPE_W && (w->events&EP_OUT))
-            task->poll_pipe_write|=bit;
+            nas_slot_mask_set(&task->poll_pipe_write,w->slot);
         if((w->kind==FD_TTY || w->kind==FD_UART) &&
            (w->events&EP_IN))task->poll_tty_read=true;
     }
@@ -226,11 +227,11 @@ bool nas_epoll_task_ready(const struct nas_task *task){
     if(!task || task->blocked_args[0]>=NAS_FD_LIMIT ||
        task->fds->descriptors[task->blocked_args[0]]!=FD_EPOLL)return true;
     unsigned slot=task->fds->file_slot[task->blocked_args[0]];
-    if(slot>=NAS_FD_LIMIT || !nas_open_files[slot].refcount)return true;
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)return true;
     return instance_ready(slot);
 }
 void nas_epoll_target_final_close(unsigned target){
-    for(unsigned i=0;i<NAS_FD_LIMIT;i++){
+    for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++){
         if(!nas_open_files[i].refcount)continue;
         for(unsigned j=0;j<NAS_EPOLL_EVENTS_MAX;j++){
             struct ep_watch *w=&epolls[i].watches[j];
@@ -239,5 +240,5 @@ void nas_epoll_target_final_close(unsigned target){
     }
 }
 void nas_epoll_release(unsigned slot){
-    if(slot<NAS_FD_LIMIT)epolls[slot]=(struct ep_state){0};
+    if(slot<NAS_OPEN_FILE_LIMIT)epolls[slot]=(struct ep_state){0};
 }
