@@ -17,14 +17,16 @@ else
  failures=$((failures+1))
 fi
 if /usr/bin/free -k > /tmp/m65-free &&
-   /bin/busybox grep -q 'Mem:' /tmp/m65-free; then
+   /bin/busybox grep -Eq '^Mem:[[:space:]]+[1-9][0-9]*' /tmp/m65-free; then
+ /bin/busybox cat /tmp/m65-free
  echo M65_PROCPS_FREE_PASS
 else
  echo "[M65 FREE FAIL] original procps-ng free" >&2
  failures=$((failures+1))
 fi
 if /bin/ps -eo pid,ppid,comm,state > /tmp/m65-ps &&
-   /bin/busybox grep -q 'PID' /tmp/m65-ps; then
+   /bin/busybox grep -Eq '^[[:space:]]*1[[:space:]]+0[[:space:]]+[^[:space:]]+[[:space:]]+[A-Z]' /tmp/m65-ps; then
+ /bin/busybox cat /tmp/m65-ps
  echo M65_PROCPS_PS_PASS
 else
  echo "[M65 PS FAIL] original procps-ng ps" >&2
