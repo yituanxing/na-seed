@@ -124,9 +124,27 @@ if [ "$profile" = native-busybox ]; then
     upstream="build/deps/source-busybox/busybox-$version.tar.bz2"
     mkdir -p "$(dirname "$upstream")"
     if [ ! -s "$upstream" ]; then
-        curl -fLsS --retry 3 --retry-delay 2 --connect-timeout 10 --max-time 120 \
-            -o "$upstream.tmp" "https://busybox.net/downloads/busybox-$version.tar.bz2"
-        mv "$upstream.tmp" "$upstream"
+        # The publisher occasionally times out in GitHub-hosted CI.
+        # These are byte-for-byte original upstream release mirrors, NOT
+        # re-packed git archives. Verify the SAME pinned official SHA256
+        # separately for every attempted download, never allow untrusted
+        # or changed BusyBox source into the NaSeed guest.
+        for url in \
+            "https://sources.buildroot.net/busybox/busybox-$version.tar.bz2" \
+            "https://mirrors.nju.edu.cn/buildroot/busybox/busybox-$version.tar.bz2" \
+            "https://busybox.net/downloads/busybox-$version.tar.bz2"; do
+            rm -f "$upstream.tmp"
+            if curl -fLsS --retry 1 --retry-delay 1 \
+                    --connect-timeout 8 --max-time 45 \
+                    -o "$upstream.tmp" "$url" &&
+               printf '%s  %s\n' "$expected_sha" "$upstream.tmp" |
+                    sha256sum -c -; then
+                mv "$upstream.tmp" "$upstream"
+                echo "[M56 SOURCE] original SHA256 verified via $url"
+                break
+            fi
+        done
+        test -s "$upstream" || { echo '[M56 SOURCE FAIL] no trusted pinned archive reachable' >&2; exit 1; }
     fi
     printf '%s  %s\n' "$expected_sha" "$upstream" | sha256sum -c -
     mkdir -p "$root/tests/m56-source"
