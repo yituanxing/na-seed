@@ -1,0 +1,2 @@
+# Original signed procps-ng on actual NaSeed kernel/QEMU, no guest build.
+m65-procfs	cpio	sh -c '/bin/sh /tests/m65-procfs-run.sh'	M65_PROCPS_FULL_PASS	-	/bin/busybox

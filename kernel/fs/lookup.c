@@ -1,6 +1,7 @@
 #include "lookup.h"
 #include "../bootfs.h"
 #include "../tmpfs.h"
+#include "procfs.h"
 #include "../errno.h"
 #include "../lib/string.h"
 
@@ -41,13 +42,15 @@ int nas_fs_resolve_existing(const char *path,bool follow_final,char out[256]) {
             if(used!=1)resolved[used++]='/';
             for(unsigned i=0;i<len;i++)resolved[used++]=pending[start+i];
             resolved[used]=0;
-            const struct bootfs_entry *entry=bootfs_find(resolved);
-            const struct nas_tmp_file *tmp=entry?0:tmp_find(resolved);
-            if(!entry && !tmp)return -ENOENT;
+            struct nas_proc_node virtual_node;
+            bool virtual_proc=nas_proc_lookup(resolved,&virtual_node);
+            const struct bootfs_entry *entry=virtual_proc?0:bootfs_find(resolved);
+            const struct nas_tmp_file *tmp=(entry || virtual_proc)?0:tmp_find(resolved);
+            if(!entry && !tmp && !virtual_proc)return -ENOENT;
             unsigned tail=pos;
             while(pending[tail]=='/')tail++;
             bool last=!pending[tail];
-            if((bootfs_is_link(entry) || tmp_is_link(tmp)) &&
+            if(!virtual_proc && (bootfs_is_link(entry) || tmp_is_link(tmp)) &&
                (!last || follow_final)) {
                 if(++links>8)return -ELOOP;
                 char expanded[256],target_buf[256];
@@ -76,7 +79,8 @@ int nas_fs_resolve_existing(const char *path,bool follow_final,char out[256]) {
                 restart=true;
                 break;
             }
-            if(!last && !(entry?bootfs_is_dir(entry):tmp->is_dir))return -ENOTDIR;
+            if(!last && !(virtual_proc?nas_proc_is_dir(virtual_node):
+                           entry?bootfs_is_dir(entry):tmp->is_dir))return -ENOTDIR;
         }
         if(restart)continue;
         for(unsigned i=0;i<=used;i++)out[i]=resolved[i];
@@ -93,6 +97,15 @@ int nas_fs_lookup_node(const char *path, bool follow_final,
     if(path[0]!='/')return -EINVAL;
     int err=nas_fs_resolve_existing(path,follow_final,resolved);
     if(err)return err;
+    struct nas_proc_node virtual_node;
+    if(nas_proc_lookup(resolved,&virtual_node)) {
+        *result=(struct nas_fs_node){
+            .backend=NAS_FS_PROCFS,.data=0,.tmp=0,.size=0,
+            .mode=nas_proc_mode(virtual_node),
+            .is_dir=nas_proc_is_dir(virtual_node)
+        };
+        return 0;
+    }
     struct nas_tmp_file *tmp=tmp_find(resolved);
     if(tmp) {
         *result=(struct nas_fs_node){

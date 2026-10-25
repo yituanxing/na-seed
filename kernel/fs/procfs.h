@@ -1,0 +1,23 @@
+#ifndef NASEED_FS_PROCFS_H
+#define NASEED_FS_PROCFS_H
+#include <stdint.h>
+#include <stdbool.h>
+/* Kernel Task/VM statistics exposed through a read-only, volatile namespace.
+ * No private FD table or program-name special cases. */
+enum nas_proc_kind {
+    NAS_PROC_NONE=0, NAS_PROC_ROOT, NAS_PROC_PID_DIR,
+    NAS_PROC_MEMINFO, NAS_PROC_UPTIME, NAS_PROC_VERSION, NAS_PROC_CPUINFO,
+    NAS_PROC_PID_STAT, NAS_PROC_PID_STATUS, NAS_PROC_PID_COMM,
+    NAS_PROC_PID_CMDLINE
+};
+struct nas_proc_node {uint8_t kind;uint64_t pid;};
+bool nas_proc_lookup(const char *path,struct nas_proc_node *out);
+bool nas_proc_is_dir(struct nas_proc_node node);
+uint32_t nas_proc_mode(struct nas_proc_node node);
+bool nas_proc_dir_path(struct nas_proc_node node,char path[256]);
+uint64_t nas_proc_ino(struct nas_proc_node node);
+bool nas_proc_child(struct nas_proc_node directory,unsigned index,
+                    char name[32],struct nas_proc_node *node);
+int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
+                      uint8_t *output,unsigned size);
+#endif

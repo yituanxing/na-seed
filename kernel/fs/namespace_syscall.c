@@ -15,6 +15,7 @@
 #include "mode.h"
 #include "syscall.h"
 #include "lookup.h"
+#include "procfs.h"
 #include "namespace_syscall.h"
 #define TASK (*nas_current_task)
 #define current_workdir TASK.vm_owner->cwd
@@ -38,12 +39,19 @@ uint64_t nas_fs_resolve_path(uint64_t dirfd, uint64_t pathname,
     if (n==sizeof(src)) return (uint64_t)-ENAMETOOLONG;
     if (!n) return (uint64_t)-ENOENT;
     const char *base=0;
+    char proc_base[256];
     if (src[0]!='/') {
         if (dirfd==(uint64_t)-100) base=current_workdir;
         else {
             if (dirfd>=NAS_FD_LIMIT || TASK.fds->entries[dirfd].kind==FD_CLOSED)
                 return (uint64_t)-EBADF;
-            if (TASK.fds->entries[dirfd].kind==FD_TMP_DIR) {
+            if (TASK.fds->entries[dirfd].kind==FD_PROC_DIR) {
+                unsigned slot=TASK.fds->entries[dirfd].slot;
+                struct nas_proc_node node={nas_open_files[slot].proc_kind,
+                                           nas_open_files[slot].proc_pid};
+                if(!nas_proc_dir_path(node,proc_base))return (uint64_t)-ENOENT;
+                base=proc_base;
+            } else if (TASK.fds->entries[dirfd].kind==FD_TMP_DIR) {
                 const struct nas_tmp_file *dir=tmp_by_slot(TASK.fds->entries[dirfd].slot);
                 if (!dir) return (uint64_t)-EBADF;
                 base=tmp_name(dir);
@@ -148,6 +156,13 @@ static uint64_t sys_chdir(uint64_t pathname) {
         do { current_workdir[n] = path[n]; } while (path[n++]);
         return 0;
     }
+    struct nas_proc_node proc;
+    if(nas_proc_lookup(actual,&proc)) {
+        if(!nas_proc_is_dir(proc))return (uint64_t)-ENOTDIR;
+        unsigned j=0;
+        do {current_workdir[j]=actual[j];}while(actual[j++]);
+        return 0;
+    }
     const struct nas_tmp_file *tmp=tmp_find(actual);
     if (tmp) {
         if (!tmp->is_dir) return (uint64_t)-ENOTDIR;
@@ -165,7 +180,14 @@ static uint64_t sys_fchdir(uint64_t fd) {
     if (fd >= 64 || TASK.fds->entries[fd].kind == FD_CLOSED)
         return (uint64_t)-EBADF;
     const char *path;
-    if (TASK.fds->entries[fd].kind == FD_TMP_DIR) {
+    char proc_base[256];
+    if (TASK.fds->entries[fd].kind == FD_PROC_DIR) {
+        unsigned slot=TASK.fds->entries[fd].slot;
+        struct nas_proc_node node={nas_open_files[slot].proc_kind,
+                                   nas_open_files[slot].proc_pid};
+        if(!nas_proc_dir_path(node,proc_base))return (uint64_t)-ENOENT;
+        path=proc_base;
+    } else if (TASK.fds->entries[fd].kind == FD_TMP_DIR) {
         const struct nas_tmp_file *dir = tmp_by_slot(TASK.fds->entries[fd].slot);
         if (!dir) return (uint64_t)-ENOENT;
         path=tmp_name(dir);
