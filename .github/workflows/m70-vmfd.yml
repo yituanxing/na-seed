@@ -29,10 +29,10 @@ jobs:
       - name: Shared kernel architecture and host procfs owner
         run: |
           set -eu
-          sh -n scripts/stage-m70-prebuilt.sh scripts/probe-m70-vmfd.sh tests/m69-trace-prep-run.sh
+          sh -n scripts/stage-m70-prebuilt.sh scripts/probe-m70-vmfd.sh tests/m70-vmfd-run.sh
           python3 scripts/check-three-isa-core.py
-          cc -std=c11 -Wall -Wextra -Werror -fno-builtin -I kernel scripts/test-procfs.c kernel/fs/procfs.c kernel/lib/string.c -o /tmp/nas-m69-procfs
-          /tmp/nas-m69-procfs
+          cc -std=c11 -Wall -Wextra -Werror -fno-builtin -I kernel scripts/test-procfs.c kernel/fs/procfs.c kernel/lib/string.c -o /tmp/nas-m70-procfs
+          /tmp/nas-m70-procfs
       - name: Install native QEMU and host rootfs tools
         timeout-minutes: 12
         run: |
