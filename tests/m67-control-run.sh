@@ -6,6 +6,12 @@ LC_ALL=C
 export PATH LC_ALL
 failures=0
 a=0 b=0
+if /bin/busybox cat < /dev/null > /tmp/m67-null; then
+    echo M67_STD_DEVICE_NULL_PASS
+else
+    echo "[M67 FAIL] standard /dev/null open for shell redirection" >&2
+    failures=$((failures+1))
+fi
 /bin/busybox sleep 137 &
 a=$!
 /bin/busybox sleep 139 &

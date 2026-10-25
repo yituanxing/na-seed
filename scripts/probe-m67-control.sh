@@ -22,14 +22,14 @@ export NAS_ACCEPTANCE_DISK_MB=512
 sh "$runner"
 log="$logs/m67-control.clean.log"
 test -s "$log"
-for marker in M67_ORIGINAL_PGREP_CMDLINE_PASS M67_ORIGINAL_PGREP_COMM_PASS \
+for marker in M67_STD_DEVICE_NULL_PASS M67_ORIGINAL_PGREP_CMDLINE_PASS M67_ORIGINAL_PGREP_COMM_PASS \
               M67_ORIGINAL_PKILL_STOP_CONT_PASS \
               M67_ORIGINAL_PKILL_TERM_WAIT_PASS \
               M67_ORIGINAL_PKILL_KILL_WAIT_PASS \
               M67_ORIGINAL_PGREP_REAPED_PASS M67_PROCPS_CONTROL_FULL_PASS; do
  if ! grep -Fxq "$marker" "$log"; then
   echo "[M67 FAIL] $port missing $marker" >&2
-  tail -160 "$log" >&2
+  tail -480 "$log" >&2
   exit 1
  fi
 done
