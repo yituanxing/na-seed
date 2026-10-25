@@ -2,7 +2,7 @@
 # Bash itself interprets this file; this is not an emulated or translated test.
 set -euo pipefail
 export PATH=/usr/bin:/bin
-mkdir -p /tmp/m58-bash
+/bin/busybox mkdir -p /tmp/m58-bash
 printf 'alpha\nbeta\ngamma\n' > /tmp/m58-bash/input.txt
 out=$(/bin/busybox cat /tmp/m58-bash/input.txt | /bin/busybox grep -E 'a$' | /bin/busybox wc -l)
 [[ "${out//[[:space:]]/}" == 3 ]]
