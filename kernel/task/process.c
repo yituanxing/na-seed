@@ -161,8 +161,14 @@ void nas_process_vfork_release(void) {
  * resource scheduler/FD/VM policy can enforce mutable soft/hard values. */
 uint64_t nas_process_prlimit(uint64_t pid,uint64_t resource,
                              uint64_t new_addr,uint64_t old_addr) {
-    if (pid && pid != nas_current_task->pid)
-        return nas_task_by_pid(pid) ? (uint64_t)-EPERM : (uint64_t)-ESRCH;
+    /* All current NaSeed userspace tasks share the one real root UID.
+     * The enforced resource limits below are kernel-wide constants:
+     * read-only prlimit64 of an existing external PID exposes no private
+     * mutable state. Linux permits this same-credential observation.
+     * Once UID/ptrace access policy exists, centralize the new check there,
+     * not in per-program syscall special cases. */
+    if (pid && (pid>UINT32_MAX || !nas_task_by_pid(pid)))
+        return (uint64_t)-ESRCH;
     if (resource > 15) return (uint64_t)-EINVAL;
     if (new_addr) return (uint64_t)-EOPNOTSUPP;
     uint64_t soft=UINT64_MAX, hard=UINT64_MAX;

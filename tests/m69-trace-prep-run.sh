@@ -5,6 +5,7 @@ PATH=/usr/bin:/bin
 LC_ALL=C
 export PATH LC_ALL
 fails=0
+failed_sections=''
 pid=$$
 echo "[M69] actual shell PID=$pid"
 if /bin/busybox ls "/proc/$pid/task" > /tmp/m69-tasks &&
@@ -25,6 +26,7 @@ if /bin/ps -eL -o pid,lwp,comm > /tmp/m69-ps-threads 2>&1 &&
  echo M69_ORIGINAL_PROCPS_THREADS_PASS
 else
  echo '[M69 FAIL] original procps-ng ps -eL' >&2
+ failed_sections="$failed_sections ps-threads"
  /bin/busybox head -c 1100 /tmp/m69-ps-threads 2>/dev/null || :
  fails=$((fails+1))
 fi
@@ -34,6 +36,7 @@ if /usr/bin/pstree -p 1 > /tmp/m69-pstree 2>&1 &&
  echo M69_ORIGINAL_PSTREE_PASS
 else
  echo '[M69 FAIL] original psmisc pstree -p 1' >&2
+ failed_sections="$failed_sections pstree"
  /bin/busybox head -c 1200 /tmp/m69-pstree 2>/dev/null || :
  fails=$((fails+1))
 fi
@@ -42,6 +45,7 @@ if /usr/bin/taskset -p "$pid" > /tmp/m69-taskset 2>&1 &&
  echo M69_ORIGINAL_TASKSET_AFFINITY_PASS
 else
  echo '[M69 FAIL] original util-linux taskset -p' >&2
+ failed_sections="$failed_sections taskset"
  /bin/busybox head -c 1000 /tmp/m69-taskset 2>/dev/null || :
  fails=$((fails+1))
 fi
@@ -50,10 +54,11 @@ if /usr/bin/prlimit -p "$pid" --nofile > /tmp/m69-prlimit 2>&1 &&
  echo M69_ORIGINAL_PRLIMIT_PASS
 else
  echo '[M69 FAIL] original util-linux prlimit --nofile' >&2
+ failed_sections="$failed_sections prlimit"
  /bin/busybox head -c 1000 /tmp/m69-prlimit 2>/dev/null || :
  fails=$((fails+1))
 fi
-echo "[M69 SUMMARY] independent failed=$fails"
+echo "[M69 SUMMARY] independent failed=$fails sections=$failed_sections"
 for file in /tmp/m69-tasks /tmp/m69-thread-status /tmp/m69-ps-threads /tmp/m69-pstree /tmp/m69-taskset /tmp/m69-prlimit; do
  if test -s "$file"; then
   echo "[M69 DIAG] $file"
