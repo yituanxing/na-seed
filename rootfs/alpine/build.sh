@@ -48,6 +48,8 @@ case "$profile" in
            package_list=rootfs/alpine/packages-cmake.txt ;;
     native-busybox) work="build/external/m56-native-busybox/$port"
            package_list=rootfs/alpine/packages-native-busybox.txt ;;
+    sqlite) work="build/external/m57-native-sqlite/$port"
+            package_list=rootfs/alpine/packages-native-busybox.txt ;;
     *) echo "[ALPINE] unknown profile $profile" >&2; exit 2 ;;
 esac
 root="$work/rootfs"
@@ -183,6 +185,67 @@ if [ "$profile" = native-busybox ]; then
     test -s "$root/usr/lib/libc.a"
     test -s "$root/usr/include/stdio.h"
     echo "[M56 SOURCE PASS] original SHA256-pinned BusyBox $version + native GNU toolchain staged for genuine guest build"
+elif [ "$profile" = sqlite ]; then
+    # Official SQLite 3.54.1 AUTOCONF release, not the Alpine sqlite package.
+    # Verify the publisher's SHA3-256 before extracting the untouched source.
+    # Native ./configure, Makefile, GCC and resulting SQLite CLI run INSIDE
+    # the NaSeed guest. Host extraction only populates immutable bootfs.
+    version=3540100
+    expected_sha3=b6ced585c750916b1052667239a12c25a7ff34e7f06e1e6e01ecb0427657d9c4
+    archive="build/deps/m57-sqlite/sqlite-autoconf-$version.tar.gz"
+    mkdir -p "$(dirname "$archive")"
+    if [ ! -s "$archive" ]; then
+        for mirror in www.sqlite.org www2.sqlite.org www3.sqlite.org; do
+            if curl -fLsS --retry 2 --connect-timeout 10 --max-time 120 \
+                    -o "$archive.tmp" \
+                    "https://$mirror/2026/sqlite-autoconf-$version.tar.gz" &&
+               [ "$(openssl dgst -sha3-256 "$archive.tmp" | awk '{print $NF}')" = "$expected_sha3" ]; then
+                mv "$archive.tmp" "$archive"
+                echo "[M57 SOURCE] official SQLite SHA3-256 verified via $mirror"
+                break
+            fi
+        done
+        test -s "$archive" || {
+            echo '[M57 FAIL] official pinned SQLite archive unavailable' >&2
+            exit 1
+        }
+    fi
+    [ "$(openssl dgst -sha3-256 "$archive" | awk '{print $NF}')" = "$expected_sha3" ] || {
+        echo '[M57 FAIL] official SQLite SHA3-256 mismatch' >&2
+        exit 1
+    }
+    src="$root/tests/m57-source"
+    mkdir -p "$src"
+    tar -xzf "$archive" -C "$src" --strip-components=1
+    for file in configure Makefile.in sqlite3.c sqlite3.h shell.c; do
+        test -s "$src/$file" || {
+            echo "[M57 FAIL] upstream SQLite source missing $file" >&2
+            exit 1
+        }
+    done
+    test ! -e "$src/sqlite3"
+    cp tests/m57-sqlite-run.sh "$root/tests/run-sqlite.sh"
+    for program in gcc make as ld readelf; do
+        test -x "$root/usr/bin/$program"
+        readelf -h "$root/usr/bin/$program" | grep -Fq "$machine"
+    done
+    for program in sed awk grep; do
+        candidate=''
+        for location in "$root/bin/$program" "$root/usr/bin/$program"; do
+            if [ -x "$location" ] &&
+               readelf -h "$location" | grep -Fq "$machine"; then
+                candidate=$location
+                break
+            fi
+        done
+        test -n "$candidate" || {
+            echo "[M57 FAIL] missing native SQLite configure tool: $program" >&2
+            exit 1
+        }
+    done
+    test -s "$root/usr/lib/libc.a"
+    test -s "$root/usr/include/stdio.h"
+    echo "[M57 SOURCE PASS] official SQLite 3.54.1 SHA3-256 source, native GNU toolchain"
 elif [ "$profile" = cmake ]; then
     # Pinned genuine upstream cJSON 1.7.19 commit. The bytes of the CMake
     # build scripts and code are verified against Git object hashes; no

@@ -1,0 +1,2 @@
+# Genuine official SQLite 3.54.1 guest configure/Make/GCC + real tmpfs SQL transactions.
+m57-sqlite	cpio	sh -c '/bin/sh /tests/run-sqlite.sh'	M57_NATIVE_SQLITE_FULL_PASS	-	/bin/busybox
