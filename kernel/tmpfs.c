@@ -141,7 +141,13 @@ int64_t tmp_write_at(struct nas_tmp_file *file, uint64_t offset,
         uint64_t length = TMP_PAGE_SIZE - at % TMP_PAGE_SIZE;
         if (length > count - done) length = count - done;
         uint8_t *page = tmp_data_page(file, at / TMP_PAGE_SIZE, true);
-        if (!page) return done ? (int64_t)done : -ENOMEM;
+        if (!page) {
+            nas_print("[TMPFS PAGE ENOMEM] path="); nas_print(file->path);
+            nas_print(" offset="); nas_dec(at);
+            nas_print(" free_frames="); nas_dec(nas_free_frames());
+            nas_print("\n");
+            return done ? (int64_t)done : -ENOMEM;
+        }
         memcpy(page + at % TMP_PAGE_SIZE, src + done, (size_t)length);
         done += length;
         if (at + length > file->size) file->size = at + length;

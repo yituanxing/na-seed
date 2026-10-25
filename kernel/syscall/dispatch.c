@@ -206,6 +206,12 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
     else if (nr == NAS_SC_readv) ret = nas_fs_fd_readv(fd,buf,count);
     else if (nr == NAS_SC_write) ret = nas_fs_fd_write(fd, buf, count);
     else ret = nas_fs_fd_writev(fd, buf, count);
+    if ((int64_t)ret == -ENOSPC) {
+        nas_print("[LINUX ABI ENOSPC] pipe/io op="); nas_dec((uint64_t)nr);
+        nas_print(" fd="); nas_dec(fd);
+        nas_print(" free_frames="); nas_dec(nas_free_frames());
+        nas_print("\n");
+    }
     if ((int64_t)ret == -EPIPE &&
         (nr == NAS_SC_write || nr == NAS_SC_writev) &&
         nas_sched_sigpipe_default(fd)) {
@@ -484,7 +490,17 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_write) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
     if (nr == NAS_SC_writev) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
     struct nas_fs_result fs_result = nas_fs_syscall(nr, args);
-    if (fs_result.handled) return fs_result.value;
+    if (fs_result.handled) {
+        if ((int64_t)fs_result.value == -ENOSPC) {
+            nas_print("[LINUX ABI ENOSPC] fs op=");
+            nas_dec((uint64_t)nr);
+            nas_print(" arg1="); nas_dec(args[1]);
+            nas_print(" arg2="); nas_dec(args[2]);
+            nas_print(" free_frames="); nas_dec(nas_free_frames());
+            nas_print("\n");
+        }
+        return fs_result.value;
+    }
     if (nr == NAS_SC_rt_sigaction) return nas_signal_action(args[1], args[2], args[3], args[4]);
     if (nr == NAS_SC_rt_sigpending) return nas_signal_pending(args[1], args[2]);
     if (nr == NAS_SC_rt_sigreturn) return nas_signal_sigreturn((uint64_t *)(uintptr_t)args);

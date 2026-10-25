@@ -39,3 +39,12 @@ The initial M57 target is rollback journal, **not WAL**: SQLite WAL uses
 file-backed MAP_SHARED/-shm, which must remain a separate generic VFS/MM
 milestone. Native pthread/concurrent SQLite locking requires separate
 real contention evidence, not an assumption from one successful process.
+
+## Capacity investigation (exact-head evidence)
+
+M57 in all three native QEMU guests exceeds original 32 MiB inode ceiling;
+64 MiB sparse pwrite/pread/shrink/regrow proves the new two-level index.
+SQLite native link still returns ENOSPC even with the larger file limit and
+4 GiB guest budget, so generic dispatch and frame-allocation failure
+instrumentation is added; do NOT attribute this second issue to the
+32 MiB cap without the exact syscall result. This PR remains Draft.
