@@ -87,4 +87,3 @@ bool nas_task_wait_ready(const struct nas_task *task) {
         return task_io_ready(task);
     return false;
 }
-
