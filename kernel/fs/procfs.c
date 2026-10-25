@@ -173,7 +173,7 @@ bool nas_proc_child(struct nas_proc_node directory,unsigned index,
             if(!t || t->state==NAS_TASK_FREE || t->is_thread)continue;
             if(found++!=index-(sizeof(root)/sizeof(root[0])))continue;
             number_name(t->pid,name);
-            *node=(struct nas_proc_node){NAS_PROC_PID_DIR,t->pid,0};
+            *node=(struct nas_proc_node){NAS_PROC_PID_DIR,t->pid,0,0};
             return true;
         }
         return false;
@@ -205,7 +205,7 @@ bool nas_proc_child(struct nas_proc_node directory,unsigned index,
                 continue;
             if(found++!=index)continue;
             number_name(t->pid,name);
-            *node=(struct nas_proc_node){NAS_PROC_TID_DIR,t->pid,directory.pid};
+            *node=(struct nas_proc_node){NAS_PROC_TID_DIR,t->pid,directory.pid,0};
             return true;
         }
         return false;
@@ -228,7 +228,7 @@ bool nas_proc_child(struct nas_proc_node directory,unsigned index,
                     NAS_PROC_PID_MAPS};
     *node=(struct nas_proc_node){kind[index],directory.pid,
         directory.kind==NAS_PROC_TID_DIR?directory.tgid:
-        (kind[index]==NAS_PROC_TASK_DIR?directory.pid:0)};
+        (kind[index]==NAS_PROC_TASK_DIR?directory.pid:0),0};
     return true;
 }
 /* Collect only the VM ranges tracked by the shared anonymous VMA ledger.
