@@ -4,6 +4,7 @@
 #include "../tmpfs.h"
 #include "../bootfs.h"
 #include "../errno.h"
+#include "../task.h"
 #include "../lib/string.h"
 #include "file_ops.h"
 
@@ -16,6 +17,8 @@ enum { SOCK_FREE=0,SOCK_NEW,SOCK_BOUND,SOCK_LISTEN,SOCK_CONNECTED };
 struct local_socket {
     unsigned state;
     uint64_t inode;
+    uint32_t owner_pid,peer_pid,peer_uid,peer_gid;
+    bool has_peer;
     unsigned first,count,queue[NAS_UNIX_BACKLOG];
     char name[256];
 };
@@ -85,7 +88,19 @@ unsigned nas_unix_rights_receive(unsigned receiver,uint8_t *kinds,
 
 void nas_unix_socket_init(unsigned slot) {
     if(slot<NAS_OPEN_FILE_LIMIT)
-        sockets[slot]=(struct local_socket){.state=SOCK_NEW};
+        sockets[slot]=(struct local_socket){
+            .state=SOCK_NEW,.owner_pid=(uint32_t)nas_current_task->tgid
+        };
+}
+void nas_unix_socket_pair_ready(unsigned first,unsigned second) {
+    /* Both ends of socketpair() are owned by the creating process. */
+    uint32_t pid=(uint32_t)nas_current_task->tgid;
+    sockets[first]=(struct local_socket){
+        .state=SOCK_CONNECTED,.owner_pid=pid,.peer_pid=pid,.has_peer=true
+    };
+    sockets[second]=(struct local_socket){
+        .state=SOCK_CONNECTED,.owner_pid=pid,.peer_pid=pid,.has_peer=true
+    };
 }
 void nas_unix_socket_release(unsigned slot) {
     if(slot>=NAS_OPEN_FILE_LIMIT)return;
@@ -123,6 +138,7 @@ int nas_unix_socket_listen(unsigned slot,unsigned backlog) {
         return -EINVAL;
     if(!backlog)return -EINVAL;
     sockets[slot].state=SOCK_LISTEN;
+    sockets[slot].owner_pid=(uint32_t)nas_current_task->tgid;
     return 0;
 }
 int nas_unix_socket_connect(unsigned slot,const char *path) {
@@ -150,8 +166,16 @@ int nas_unix_socket_connect(unsigned slot,const char *path) {
         .refcount=1,.status_flags=2,
         .ops=nas_fs_ops_for_kind(FD_SOCKET)
     };
-    sockets[peer]=(struct local_socket){.state=SOCK_CONNECTED};
+    uint32_t client_pid=(uint32_t)nas_current_task->tgid;
+    sockets[peer]=(struct local_socket){
+        .state=SOCK_CONNECTED,.owner_pid=s->owner_pid,
+        .peer_pid=client_pid,.has_peer=true
+    };
     sockets[slot].state=SOCK_CONNECTED;
+    sockets[slot].peer_pid=s->owner_pid;
+    sockets[slot].peer_uid=0;
+    sockets[slot].peer_gid=0;
+    sockets[slot].has_peer=true;
     s->queue[(s->first+s->count)%NAS_UNIX_BACKLOG]=peer;
     s->count++;
     return 0;
@@ -176,4 +200,12 @@ const char *nas_unix_socket_name(unsigned slot) {
     return slot<NAS_OPEN_FILE_LIMIT &&
         (sockets[slot].state==SOCK_BOUND ||
          sockets[slot].state==SOCK_LISTEN) ? sockets[slot].name : 0;
+}
+int nas_unix_socket_peercred(unsigned slot,uint32_t credentials[3]) {
+    if(slot>=NAS_OPEN_FILE_LIMIT || !sockets[slot].has_peer)
+        return -ENOTCONN;
+    credentials[0]=sockets[slot].peer_pid;
+    credentials[1]=sockets[slot].peer_uid;
+    credentials[2]=sockets[slot].peer_gid;
+    return 0;
 }

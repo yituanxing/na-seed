@@ -145,6 +145,7 @@ static uint64_t sys_channel_pair(uint64_t user_pair, uint64_t flags,
         nas_pipe_create_socketpair(slots[0], slots[1]) :
         nas_pipe_create(slots[0], slots[1]);
     if (result) return (uint64_t)(int64_t)result;
+    if (stream_socket) nas_unix_socket_pair_ready(slots[0],slots[1]);
     for (unsigned i = 0; i < 2; i++) {
         unsigned fd = fds[i], slot = slots[i];
         descriptors[fd] = stream_socket ? FD_SOCKET :
@@ -305,6 +306,16 @@ static uint64_t sys_unix_getsockopt(uint64_t fd,uint64_t level,
     uint32_t size;
     if(!nas_user_read_bytes(size_ptr,(uint8_t *)&size,4))
         return (uint64_t)-EFAULT;
+    if(opt==17) { /* SO_PEERCRED: Linux struct ucred {pid,uid,gid}. */
+        uint32_t credentials[3];
+        int rc=nas_unix_socket_peercred(file_slot[fd],credentials);
+        if(rc)return (uint64_t)(int64_t)rc;
+        if(size<sizeof(credentials))return (uint64_t)-EINVAL;
+        size=sizeof(credentials);
+        return nas_user_write_bytes(address,(const uint8_t *)credentials,size) &&
+               nas_user_write_bytes(size_ptr,(const uint8_t *)&size,4)
+             ? 0:(uint64_t)-EFAULT;
+    }
     if(size<4)return (uint64_t)-EINVAL;
     uint32_t value;
     if(opt==3)value=1; /* SO_TYPE: stream */
