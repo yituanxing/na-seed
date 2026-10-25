@@ -1,0 +1,2 @@
+# Original signed top/htop on full native x86/RV64/ARM64 QEMU.
+m66-monitor	cpio	sh -c '/bin/sh /tests/m66-monitor-run.sh'	M66_MONITOR_FULL_PASS	-	/bin/busybox
