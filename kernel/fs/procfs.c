@@ -53,6 +53,7 @@ bool nas_proc_lookup(const char *path,struct nas_proc_node *out) {
     if(!strcmp(path,"/proc/stat")) {out->kind=NAS_PROC_STAT;return true;}
     if(!strcmp(path,"/proc/loadavg")) {out->kind=NAS_PROC_LOADAVG;return true;}
     if(!strcmp(path,"/proc/vmstat")) {out->kind=NAS_PROC_VMSTAT;return true;}
+    if(!strcmp(path,"/proc/mounts")) {out->kind=NAS_PROC_MOUNTS;return true;}
     if(strncmp(path,"/proc/",6))return false;
     const char *p=path+6;
     uint64_t pid=0;
@@ -109,6 +110,7 @@ bool nas_proc_lookup(const char *path,struct nas_proc_node *out) {
     else if(!strcmp(p,"/cmdline"))out->kind=NAS_PROC_PID_CMDLINE;
     else if(!strcmp(p,"/statm"))out->kind=NAS_PROC_PID_STATM;
     else if(!strcmp(p,"/maps"))out->kind=NAS_PROC_PID_MAPS;
+    else if(!strcmp(p,"/mounts"))out->kind=NAS_PROC_MOUNTS;
     else return false;
     return true;
 }
@@ -155,8 +157,9 @@ uint64_t nas_proc_ino(struct nas_proc_node node) {
 }
 bool nas_proc_child(struct nas_proc_node directory,unsigned index,
                     char name[32],struct nas_proc_node *node) {
-    static const char *const root[]={"self","meminfo","uptime","version","cpuinfo","stat","loadavg","vmstat"};
-    static const char *const process[]={"stat","status","comm","cmdline","statm","task","fd","fdinfo","maps"};
+    static const char *const root[]={"self","meminfo","uptime","version","cpuinfo","stat","loadavg","vmstat",
+                                    "mounts"};
+    static const char *const process[]={"stat","status","comm","cmdline","statm","task","fd","fdinfo","maps","mounts"};
     if(!name || !node)return false;
     if(directory.kind==NAS_PROC_ROOT) {
         if(index<sizeof(root)/sizeof(root[0])) {
@@ -225,7 +228,7 @@ bool nas_proc_child(struct nas_proc_node directory,unsigned index,
                     NAS_PROC_PID_COMM,NAS_PROC_PID_CMDLINE,
                     NAS_PROC_PID_STATM,NAS_PROC_TASK_DIR,
                     NAS_PROC_FD_DIR,NAS_PROC_FDINFO_DIR,
-                    NAS_PROC_PID_MAPS};
+                    NAS_PROC_PID_MAPS,NAS_PROC_MOUNTS};
     *node=(struct nas_proc_node){kind[index],directory.pid,
         directory.kind==NAS_PROC_TID_DIR?directory.tgid:
         (kind[index]==NAS_PROC_TASK_DIR?directory.pid:0),0};
@@ -417,6 +420,14 @@ int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
         ch(&w,' ');decimal(&w,run);ch(&w,'/');decimal(&w,total);
         ch(&w,' ');decimal(&w,last);ch(&w,'\n');break;
     }
+    case NAS_PROC_MOUNTS:
+        /* Genuine NaSeed rootfs is immutable initramfs, /tmp is the
+         * currently mutable tmpfs and /proc is this read-only provider.
+         * No fictional block device or persistent disk mount. */
+        word(&w,"rootfs / rootfs ro 0 0\n");
+        word(&w,"tmpfs /tmp tmpfs rw 0 0\n");
+        word(&w,"proc /proc proc ro 0 0\n");
+        break;
     case NAS_PROC_VMSTAT:
         word(&w,"nr_free_pages ");decimal(&w,nas_free_frames());ch(&w,'\n');break;
     case NAS_PROC_VERSION: word(&w,"NaSeed experimental kernel\n");break;

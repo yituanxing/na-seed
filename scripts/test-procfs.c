@@ -101,6 +101,8 @@ int main(void) {
     check_file("/proc/stat","btime 1760000000");
     check_file("/proc/loadavg","1.00 0.50 0.25");
     check_file("/proc/vmstat","nr_free_pages 512");
+    check_file("/proc/mounts","rootfs / rootfs ro");
+    check_file("/proc/23/mounts","proc /proc proc ro");
     check_file("/proc/23/statm"," 0 0 0 0 0 0");
     tasks[1].commandline_bytes=12;
     memcpy(tasks[1].commandline,"sleep\0three\0",12);
