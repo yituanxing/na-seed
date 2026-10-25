@@ -139,8 +139,19 @@ if [ "$profile" = native-busybox ]; then
     cp scripts/source-busybox.config "$root/tests/m56.config"
     cp tests/m56-busybox-run.sh "$root/tests/run-m56.sh"
     for program in sed awk find xargs; do
-        test -x "$root/usr/bin/$program" || {
+        # Signed Alpine packages install their original utilities in /bin
+        # OR /usr/bin (e.g. GNU sed is /bin/sed). Never conflate a host
+        # filesystem path with the guest's standard PATH.
+        found=''
+        for candidate in "$root/usr/bin/$program" "$root/bin/$program"; do
+            if [ -x "$candidate" ]; then found=$candidate; break; fi
+        done
+        [ -n "$found" ] || {
             echo "[M56 FAIL] original Alpine tool missing: $program" >&2
+            exit 1
+        }
+        readelf -h "$found" | grep -Fq "$machine" || {
+            echo "[M56 FAIL] wrong-ISA tool: $program" >&2
             exit 1
         }
     done
