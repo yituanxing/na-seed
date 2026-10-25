@@ -16,7 +16,7 @@ jobs:
   native-alpine:
     name: ${{ matrix.port }} / ${{ matrix.suite }} / original Linux ELF QEMU
     runs-on: ubuntu-latest
-    timeout-minutes: 65
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -70,7 +70,7 @@ jobs:
       - name: Reject hardcoded CPIO file limit regressions before costly native QEMU
         run: sh scripts/check-bootfs-scale.sh
       - name: Run every original workload in this ISA and suite (zero suppressed failures)
-        timeout-minutes: 50
+        timeout-minutes: 65
         run: sh scripts/probe-alpine-batch.sh ${{ matrix.suite }} ${{ matrix.port }}
       - name: Retain original Alpine package/ELF/serial evidence after any failure
         if: failure()

@@ -100,6 +100,14 @@ phase=real-source-rebuild
 # without changing *any* upstream source bytes.
 /bin/busybox sleep 1
 /bin/busybox touch "$src/cJSON.c"
+echo M55_REAL_SOURCE_REBUILD_BEGIN
+# Inspect the genuine dependent build graph before starting slow RV64
+# software-QEMU GCC and linker processes. This stays diagnostic only.
+# No no-op shortcut: the full native rebuild and CTest remain required.
+/usr/bin/ninja -C "$out" -n -d explain > /tmp/m55-rebuild-plan.txt 2>&1
+echo M55_REAL_SOURCE_REBUILD_PLAN_BEGIN
+/bin/busybox cat /tmp/m55-rebuild-plan.txt
+echo M55_REAL_SOURCE_REBUILD_PLAN_END
 /usr/bin/ninja -C "$out" -d explain -j2 > /tmp/m55-rebuild.txt 2>&1
 /bin/busybox grep -Fq 'cJSON.c' /tmp/m55-rebuild.txt
 test -s "$out/libcjson.a"

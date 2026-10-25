@@ -34,7 +34,16 @@ export NAS_ACCEPTANCE_DISK_MB=768
 export NAS_SYSCALL_TRACE=${NAS_SYSCALL_TRACE:-0}
 # The three probe drivers use this bounded budget only for M55. The boot
 # monitor terminates early on *verified* final PASS, never on partial markers.
-export NAS_M55_QEMU_TIMEOUT=${NAS_M55_QEMU_TIMEOUT:-2400}
+# The native RV64 guest under single-core software QEMU already passes
+# 45/45 original GCC/Ninja actions, 19/19 CTests, and the genuine no-op gate.
+# Actual dependent relinks after touching cJSON.c exceed the former 2400s
+# ceiling. Allow the remaining original upstream rebuild and second CTest to
+# finish; do not skip jobs, shorten CTest, or suppress failures.
+if [ "$port" = riscv64 ]; then
+    export NAS_M55_QEMU_TIMEOUT=${NAS_M55_QEMU_TIMEOUT:-3300}
+else
+    export NAS_M55_QEMU_TIMEOUT=${NAS_M55_QEMU_TIMEOUT:-2400}
+fi
 sh "$runner"
 log="$logs/m55-cjson.clean.log"
 test -s "$log"
