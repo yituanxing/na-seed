@@ -11,7 +11,9 @@
  * all 64 argv and 128 env strings are exactly 8191 bytes.
  * One owner for this same stack extent in boot, exec and auxv creation. */
 #define NAS_USER_STACK_PAGES 256U
-#define NAS_ARGV_MAX 64
+/* Genuine upstream Kbuild expands hundreds of source filenames into sed
+ * argv. Bound aggregate exec strings separately from the vector count. */
+#define NAS_ARGV_MAX 2048
 #define NAS_ENV_MAX 128
 bool nas_user_stack_map_initial(void);
 bool nas_parse_boot_argv(const char *cmdline, const char *const **args, unsigned *argc);

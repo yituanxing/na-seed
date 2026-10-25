@@ -28,6 +28,14 @@ bool nas_user_stack_map_initial(void) {
     return true;
 }
 
+/* Share one kernel-BSS argument pointer staging area. A 2048-argument
+ * stack must never allocate tens of KiB on the privileged kernel stack.
+ * Current kernel syscall execution is serialized on its one CPU. */
+static struct {
+    uint64_t arg_ptrs[NAS_ARGV_MAX];
+    uint64_t env_ptrs[NAS_ENV_MAX];
+    uint64_t words[NAS_ARGV_MAX + NAS_ENV_MAX + 3 + 28];
+} nas_exec_stack_scratch;
 /* Shared Linux ELF64 argc/argv/envp/auxv stack builder, not argv spoofing. */
 static bool put_stack_string(uint64_t *sp, const char *str, uint64_t *address) {
     uint64_t size = strlen(str) + 1;
@@ -90,7 +98,8 @@ bool nas_build_user_stack(const char *const *args, unsigned argc,
                              const char *const *vars, unsigned envc,
                              const char *execfn, uint64_t *out_sp) {
     uint64_t sp = USER_STACK_TOP;
-    uint64_t arg_ptrs[NAS_ARGV_MAX], env_ptrs[NAS_ENV_MAX];
+    uint64_t *arg_ptrs = nas_exec_stack_scratch.arg_ptrs;
+    uint64_t *env_ptrs = nas_exec_stack_scratch.env_ptrs;
     uint64_t execfn_ptr;
     if (argc > NAS_ARGV_MAX || envc > NAS_ENV_MAX) return false;
     uint64_t tsc = nas_arch_cycle_counter();
@@ -116,7 +125,7 @@ bool nas_build_user_stack(const char *const *args, unsigned argc,
     /* argc + argv[] + NULL + env[] + NULL + 14 ELF64 auxiliary pairs.
      * Keeping this array tied to the ABI's validated vector capacities
      * prevents corruption when genuine linker recipes exceed 12 args. */
-    uint64_t words[NAS_ARGV_MAX + NAS_ENV_MAX + 3 + 28];
+    uint64_t *words = nas_exec_stack_scratch.words;
     unsigned n = 0;
     words[n++] = argc;
     for (unsigned i = 0; i < argc; i++) words[n++] = arg_ptrs[i];

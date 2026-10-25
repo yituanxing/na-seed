@@ -41,6 +41,19 @@ done
 set --
 echo M56_LINUX_MAKE_ENV_CAPACITY_PASS
 
+stage=linux-execve-large-source-argv
+# Test the same generic argument-vector shape the ORIGINAL BusyBox
+# gen_build_files.sh passes to sed: hundreds of separate source paths.
+set --
+n=0
+while [ "$n" -lt 320 ]; do
+    set -- "$@" "/tmp/m56-source-path-$n.c"
+    n=$((n + 1))
+done
+/bin/sh -c 'test "$#" -eq 320 && test "$1" = /tmp/m56-source-path-0.c && test "${320}" = /tmp/m56-source-path-319.c' m56-large-argv "$@"
+set --
+echo M56_LINUX_LARGE_ARGV_VECTOR_PASS
+
 stage=copy-pinned-upstream-to-writable-tmpfs
 # Immutable bootfs cannot be modified by GNU Make. In the guest, copy the
 # genuine source tree into writable tmpfs, including its directory layout.
