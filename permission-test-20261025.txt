@@ -1,0 +1,1 @@
+GitHub permission persistence test after reconnect, 2026-10-25.
