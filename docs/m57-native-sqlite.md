@@ -12,6 +12,10 @@ Status: draft; NOT accepted until all exact-head CI evidence is green.
 - Guest: copy source to tmpfs, run original `./configure`, original
   `make -j2 sqlite3`, execute **that very guest-built ELF**, assert
   SQLite 3.54.1 and expression 42.
+- Common tmpfs capacity: replace the old fixed 16-index-page (32 MiB/file)
+  inode with a demand-paged two-level indirect root (up to 1 GiB/file),
+  and compile/run a real 64 MiB sparse pwrite/pread/truncate/reclaim probe
+  IN the native guest before SQLite link. This is shared x86/RV64/ARM64 code.
 - Filesystem workload: native sqlite3 creates a real tmpfs DB in normal
   rollback-journal mode, performs explicit BEGIN/COMMIT, then a **new
   process** opens the same DB and checks rows; a second transaction

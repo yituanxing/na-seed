@@ -10,19 +10,21 @@
 /* Metadata is allocated in demand-paged inode slabs, not a fixed
  * global array of eight inodes. Memory exhaustion is reported by the
  * existing physical frame allocator, not an arbitrary source-level count. */
-/* Sparse, demand-allocated 4-KiB physical pages. Each indirect page has
- * 512 data-frame references, so 16 index slots cover 32 MiB per inode.
- * No 32-MiB kernel array is reserved when a file is created. */
+/* Sparse, demand-allocated two-level indirect 4-KiB page index.
+ * Each file has ONE optional root frame of 512 index-frame addresses;
+ * each index frame has 512 data-frame addresses. No 1-GiB BSS allocation:
+ * root, index and data frames are allocated only on first write.
+ * Reclaimed on truncate, unlink/close and partial shrinking. */
 #define TMP_PAGE_SIZE 4096ULL
 #define TMP_PAGE_ENTRIES 512U
-#define TMP_INDEX_PAGES 16U
-#define TMP_FILE_CAP (TMP_PAGE_SIZE * TMP_PAGE_ENTRIES * TMP_INDEX_PAGES)
+#define TMP_INDEX_ROOT_ENTRIES 512U
+#define TMP_FILE_CAP (TMP_PAGE_SIZE * (uint64_t)TMP_PAGE_ENTRIES * TMP_INDEX_ROOT_ENTRIES)
 
 struct nas_tmp_file {
     bool used, linked, is_dir;
     uint64_t ino; /* persistent inode identity, independent of slab address */
     char path[256];
-    uint64_t index_pages[TMP_INDEX_PAGES]; /* physical index-frame addresses */
+    uint64_t index_root; /* physical address of optional 512-entry root frame */
     uint64_t size;
     uint64_t atime_ns, mtime_ns, ctime_ns; /* UNIX realtime nanoseconds */
     uint32_t mode;

@@ -20,6 +20,15 @@ for tool in /usr/bin/gcc /usr/bin/make /usr/bin/as /usr/bin/ld /usr/bin/readelf;
 done
 echo M57_GENUINE_UPSTREAM_SOURCE_PASS
 
+stage=large-regular-file-abi
+# A real 64-MiB sparse tmpfs offset exercises the common inode index,
+# pwrite/pread and shrink/regrow guarantees before expensive SQLite linking.
+cd /tmp
+/usr/bin/gcc -O2 -std=c11 -Wall -Wextra -Werror -static \
+    /tests/m57-largefile.c -o /tmp/m57-largefile
+/tmp/m57-largefile
+echo M57_LINUX_LARGE_TMPFS_INODE_PASS
+
 stage=copy-upstream-to-tmpfs
 /bin/busybox cp -R "$original" "$src"
 test -s "$src/configure"

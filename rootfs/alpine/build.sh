@@ -225,6 +225,7 @@ elif [ "$profile" = sqlite ]; then
     done
     test ! -e "$src/sqlite3"
     cp tests/m57-sqlite-run.sh "$root/tests/run-sqlite.sh"
+    cp tests/m57-largefile.c "$root/tests/m57-largefile.c"
     for program in gcc make as ld readelf; do
         test -x "$root/usr/bin/$program"
         readelf -h "$root/usr/bin/$program" | grep -Fq "$machine"
