@@ -88,3 +88,16 @@ returns immediately on genuine successful completion and fails closed on
 CI to avoid unnecessary UART spam; opt in with NAS_SYSCALL_TRACE=1 for a
 focused diagnosis. This change does not weaken expected upstream CTest,
 rebuild, or earlier acceptance markers.
+
+## Latest exact-head matrix evidence (24706a4)
+All six PR workflows finished; five passed and grouped native acceptance
+reached 11/12 QEMU jobs. Crucially, M55 FULL cJSON acceptance passed on
+both x86-64 and ARM64, including real CTest + Ninja no-op + true rebuild.
+The only failing job was RV64 foundation: actual guest CMake configured,
+Ninja completed all 45 compile/link actions, and original CTest finished
+**19/19 PASS**. Its first dry-run Ninja returned exit 0 but the shell
+assertion did NOT find 'no work to do' in redirected stdout, so the test
+stopped before the source-touch rebuild. This is **not** a QEMU timeout
+or a CTest failure. Preserve the strict no-op criterion. The next native
+RV64 run captures original Ninja '-n -d explain' output and filesystem
+mtimes in the serial log so the actual dirty-edge cause can be fixed.

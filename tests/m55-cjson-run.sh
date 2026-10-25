@@ -77,8 +77,22 @@ phase=full-upstream-ctest
 echo M55_UPSTREAM_CJSON_CTEST_PASS
 
 phase=incremental-noop
-/usr/bin/ninja -C "$out" -n > /tmp/m55-noop.txt
-/bin/busybox grep -Fq 'no work to do' /tmp/m55-noop.txt
+# Preserve unmodified Ninja's real dirty-edge explanations. This is a
+# semantic zero-action assertion, not an exception for a specific ISA.
+# The original RV64 guest built all 45 targets and passed 19/19 CTests,
+# yet the post-build -n check scheduled work. Record WHY before exiting.
+/usr/bin/ninja -C "$out" -n -d explain > /tmp/m55-noop.txt 2>&1
+echo M55_NINJA_NOOP_OUTPUT_BEGIN
+/bin/busybox cat /tmp/m55-noop.txt
+echo M55_NINJA_NOOP_OUTPUT_END
+if ! /bin/busybox grep -Fq 'no work to do' /tmp/m55-noop.txt; then
+    echo "[M55 DIAG] native Ninja found dirty edges after first complete build"
+    /bin/busybox stat -c '%n %y %s' \
+        "$src/CMakeLists.txt" "$src/cJSON.c" \
+        "$out/build.ninja" "$out/CMakeFiles/rules.ninja" \
+        "$out/libcjson.a" "$out/.ninja_log" || :
+    exit 1
+fi
 echo M55_NINJA_INCREMENTAL_NOOP_PASS
 
 phase=real-source-rebuild
