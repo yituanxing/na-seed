@@ -62,4 +62,3 @@ void nas_task_cpu_account_snapshot(uint64_t *busy,uint64_t *idle,
     if(load)for(unsigned i=0;i<3;i++)load[i]=load_q16[i];
     if(switches)*switches=cpu_switches;
 }
-
