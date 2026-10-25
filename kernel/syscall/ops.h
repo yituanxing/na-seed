@@ -103,6 +103,8 @@ enum nas_syscall_op {
     NAS_SC_getpeername,
     NAS_SC_getsockopt,
     NAS_SC_setsockopt,
+    NAS_SC_sendmsg,
+    NAS_SC_recvmsg,
     NAS_SC_symlink,
     NAS_SC_symlinkat,
     NAS_SC_rename,

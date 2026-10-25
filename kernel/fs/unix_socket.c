@@ -20,6 +20,68 @@ struct local_socket {
     char name[256];
 };
 static struct local_socket sockets[NAS_OPEN_FILE_LIMIT];
+struct socket_rights {
+    unsigned count;
+    uint8_t kinds[NAS_UNIX_MAX_RIGHTS],slots[NAS_UNIX_MAX_RIGHTS];
+};
+static struct socket_rights pending_rights[NAS_OPEN_FILE_LIMIT];
+/* A queued SCM_RIGHTS ref lives in a kernel message, not in the sender's
+ * FD table. Dispose of undelivered descriptions on socket final close. */
+static void dispose_rights(unsigned slot) {
+    struct socket_rights *r=&pending_rights[slot];
+    for(unsigned i=0;i<r->count;i++) {
+        unsigned owned=r->slots[i];
+        if(owned>=NAS_OPEN_FILE_LIMIT || !nas_open_files[owned].refcount)
+            continue;
+        if(--nas_open_files[owned].refcount)continue;
+        const struct nas_file_ops *ops=nas_open_files[owned].ops;
+        if(ops && ops->release)ops->release(owned);
+        nas_open_files[owned]=(struct nas_open_file){0};
+    }
+    *r=(struct socket_rights){0};
+}
+bool nas_unix_rights_available(unsigned sender,unsigned count) {
+    int peer=nas_pipe_peer_slot(sender);
+    return peer>=0 && count<=NAS_UNIX_MAX_RIGHTS &&
+           pending_rights[peer].count==0;
+}
+int nas_unix_rights_send(unsigned sender,const uint8_t *kinds,
+                         const uint8_t *slots,unsigned count) {
+    if(!count)return 0;
+    if(!nas_unix_rights_available(sender,count))return -EAGAIN;
+    int peer=nas_pipe_peer_slot(sender);
+    struct socket_rights *r=&pending_rights[peer];
+    for(unsigned i=0;i<count;i++) {
+        if(slots[i]>=NAS_OPEN_FILE_LIMIT ||
+           !nas_open_files[slots[i]].refcount)return -EBADF;
+    }
+    for(unsigned i=0;i<count;i++) {
+        r->kinds[i]=kinds[i];r->slots[i]=slots[i];
+        nas_open_files[slots[i]].refcount++;
+    }
+    r->count=count;
+    return 0;
+}
+unsigned nas_unix_rights_count(unsigned receiver) {
+    return receiver<NAS_OPEN_FILE_LIMIT ? pending_rights[receiver].count : 0;
+}
+unsigned nas_unix_rights_receive(unsigned receiver,uint8_t *kinds,
+                                 uint8_t *slots,unsigned max_count) {
+    if(receiver>=NAS_OPEN_FILE_LIMIT)return 0;
+    struct socket_rights *r=&pending_rights[receiver];
+    unsigned count=r->count<max_count?r->count:max_count;
+    for(unsigned i=0;i<count;i++) {
+        kinds[i]=r->kinds[i];slots[i]=r->slots[i];
+    }
+    /* Transferred refs for delivered descriptors are now process-owned.
+     * Any excess rights remain kernel-owned until socket teardown. */
+    for(unsigned i=count;i<r->count;i++) {
+        r->slots[i-count]=r->slots[i];
+        r->kinds[i-count]=r->kinds[i];
+    }
+    r->count-=count;
+    return count;
+}
 
 void nas_unix_socket_init(unsigned slot) {
     if(slot<NAS_OPEN_FILE_LIMIT)
@@ -27,6 +89,7 @@ void nas_unix_socket_init(unsigned slot) {
 }
 void nas_unix_socket_release(unsigned slot) {
     if(slot>=NAS_OPEN_FILE_LIMIT)return;
+    dispose_rights(slot);
     struct local_socket *s=&sockets[slot];
     /* Close pending accepted endpoints only when final listener description
      * is closed, preserving the same refcount lifecycle as fork and dup. */

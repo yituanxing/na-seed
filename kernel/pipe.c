@@ -32,6 +32,11 @@ static bool pipe_has_reader(const struct nas_pipe *pipe) {
     return pipe->read_slot < NAS_OPEN_FILE_LIMIT &&
            nas_open_files[pipe->read_slot].refcount != 0;
 }
+int nas_pipe_peer_slot(unsigned writing_slot) {
+    const struct nas_pipe *pipe=pipe_for_slot(writing_slot,true);
+    if(!pipe || !pipe_has_reader(pipe))return -ENOTCONN;
+    return (int)pipe->read_slot;
+}
 static bool pipe_has_writer(const struct nas_pipe *pipe) {
     return pipe->write_slot < NAS_OPEN_FILE_LIMIT &&
            nas_open_files[pipe->write_slot].refcount != 0;

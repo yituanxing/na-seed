@@ -314,6 +314,128 @@ static uint64_t sys_unix_getsockopt(uint64_t fd,uint64_t level,
            nas_user_write_bytes(size_ptr,(const uint8_t *)&size,4)
          ? 0:(uint64_t)-EFAULT;
 }
+/* The three Linux LP64 ISAs share the 56-byte msghdr/iovec wire layout.
+ * Ancillary SCM_RIGHTS preserves open-description identity across processes,
+ * including FD flags and pipe/PTY lifetime. Unknown cmsgs are rejected. */
+struct nas_msghdr {
+    uint64_t name;
+    uint32_t namelen,pad;
+    uint64_t iov,iovlen,control,controllen;
+    uint32_t flags,pad2;
+};
+struct nas_iovec { uint64_t base,length; };
+_Static_assert(sizeof(struct nas_msghdr)==56,"native Linux msghdr ABI");
+static uint64_t unix_msgiov(uint64_t fd,const struct nas_msghdr *msg,
+                            bool writing) {
+    if(msg->iovlen>32)return (uint64_t)-EMSGSIZE;
+    uint64_t total=0;
+    for(unsigned i=0;i<msg->iovlen;i++) {
+        struct nas_iovec v;
+        if(msg->iov>UINT64_MAX-(uint64_t)i*sizeof(v) ||
+           !nas_user_read_bytes(msg->iov+(uint64_t)i*sizeof(v),
+                                (uint8_t *)&v,sizeof(v)))
+            return total?total:(uint64_t)-EFAULT;
+        if(!v.length)continue;
+        uint64_t done=writing?nas_fs_fd_write(fd,v.base,v.length):
+                              nas_fs_fd_read(fd,v.base,v.length);
+        if((int64_t)done<0)return total?total:done;
+        total+=done;
+        if(done<v.length)break;
+    }
+    return total;
+}
+static uint64_t sys_unix_sendmsg(uint64_t fd,uint64_t address,uint64_t flags) {
+    if(!unix_fd(fd))return (uint64_t)-EBADF;
+    if(flags & ~(0x4000ULL|0x40ULL))return (uint64_t)-EOPNOTSUPP;
+    struct nas_msghdr msg;
+    if(!nas_user_read_bytes(address,(uint8_t *)&msg,sizeof(msg)))
+        return (uint64_t)-EFAULT;
+    if(msg.name)return (uint64_t)-EISCONN;
+    uint8_t kinds[NAS_UNIX_MAX_RIGHTS],slots[NAS_UNIX_MAX_RIGHTS];
+    unsigned rights_count=0;
+    if(msg.controllen) {
+        uint8_t control[16+NAS_UNIX_MAX_RIGHTS*4];
+        if(!msg.control || msg.controllen<16 || msg.controllen>sizeof(control) ||
+           !nas_user_read_bytes(msg.control,control,msg.controllen))
+            return (uint64_t)-EINVAL;
+        uint64_t cmsglen;
+        memcpy(&cmsglen,control,8);
+        uint32_t level,type;
+        memcpy(&level,control+8,4);memcpy(&type,control+12,4);
+        if(cmsglen<16 || cmsglen>msg.controllen || level!=1 || type!=1 ||
+           (cmsglen-16)%4)return (uint64_t)-EOPNOTSUPP;
+        rights_count=(unsigned)((cmsglen-16)/4);
+        if(!rights_count || rights_count>NAS_UNIX_MAX_RIGHTS)
+            return (uint64_t)-EINVAL;
+        for(unsigned i=0;i<rights_count;i++) {
+            int32_t transferred;
+            memcpy(&transferred,control+16+i*4,4);
+            if(transferred<0 || transferred>=NAS_FD_LIMIT ||
+               descriptors[transferred]==FD_CLOSED)return (uint64_t)-EBADF;
+            kinds[i]=descriptors[transferred];
+            slots[i]=file_slot[transferred];
+        }
+        if(!nas_unix_rights_available(file_slot[fd],rights_count))
+            return (uint64_t)-EAGAIN;
+    }
+    uint64_t wrote=unix_msgiov(fd,&msg,true);
+    if((int64_t)wrote<0)return wrote;
+    if(rights_count && wrote) {
+        int rc=nas_unix_rights_send(file_slot[fd],kinds,slots,rights_count);
+        if(rc)return (uint64_t)(int64_t)rc;
+    }
+    return wrote;
+}
+static uint64_t sys_unix_recvmsg(uint64_t fd,uint64_t address,uint64_t flags) {
+    if(!unix_fd(fd))return (uint64_t)-EBADF;
+    if(flags & ~(0x40000000ULL|0x40ULL|0x2ULL))
+        return (uint64_t)-EOPNOTSUPP; /* CMSG_CLOEXEC/DONTWAIT/PEEK */
+    if(flags&0x2ULL)return (uint64_t)-EOPNOTSUPP;
+    struct nas_msghdr msg;
+    if(!nas_user_read_bytes(address,(uint8_t *)&msg,sizeof(msg)))
+        return (uint64_t)-EFAULT;
+    if(msg.iovlen>32)return (uint64_t)-EMSGSIZE;
+    unsigned pending=nas_unix_rights_count(file_slot[fd]);
+    unsigned deliver=0;
+    if(msg.control && msg.controllen>=20)
+        deliver=(unsigned)((msg.controllen-16)/4);
+    if(deliver>pending)deliver=pending;
+    if(deliver>NAS_UNIX_MAX_RIGHTS)deliver=NAS_UNIX_MAX_RIGHTS;
+    unsigned free_fd=0;
+    for(unsigned i=3;i<NAS_FD_LIMIT;i++)
+        if(descriptors[i]==FD_CLOSED)free_fd++;
+    if(deliver>free_fd)return (uint64_t)-EMFILE;
+    uint64_t received=unix_msgiov(fd,&msg,false);
+    if((int64_t)received<0)return received;
+    msg.namelen=0;
+    msg.flags=pending>deliver ? 0x8U : 0U; /* MSG_CTRUNC */
+    msg.controllen=0;
+    if(deliver && received) {
+        uint8_t kinds[NAS_UNIX_MAX_RIGHTS],slots[NAS_UNIX_MAX_RIGHTS];
+        unsigned count=nas_unix_rights_receive(file_slot[fd],kinds,slots,deliver);
+        uint8_t control[16+NAS_UNIX_MAX_RIGHTS*4]={0};
+        uint64_t clen=16+(uint64_t)count*4;
+        uint32_t level=1,type=1;
+        memcpy(control,&clen,8);
+        memcpy(control+8,&level,4);memcpy(control+12,&type,4);
+        unsigned done=0;
+        for(unsigned i=3;i<NAS_FD_LIMIT && done<count;i++) {
+            if(descriptors[i]!=FD_CLOSED)continue;
+            descriptors[i]=kinds[done];
+            file_slot[i]=slots[done];
+            fd_cloexec[i]=(flags&0x40000000ULL)!=0;
+            int32_t number=(int32_t)i;
+            memcpy(control+16+done*4,&number,4);
+            done++;
+        }
+        msg.controllen=(clen+7ULL)&~7ULL;
+        if(!nas_user_write_bytes(msg.control,control,(size_t)clen))
+            nas_fs_fail("recvmsg validated control became inaccessible");
+    }
+    if(!nas_user_write_bytes(address,(const uint8_t *)&msg,sizeof(msg)))
+        return (uint64_t)-EFAULT;
+    return received;
+}
 static uint64_t pipe_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     if (!length) return 0;
     if (address >= USER_LIMIT || length > USER_LIMIT - address)
@@ -1732,6 +1854,8 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
     case NAS_SC_getsockopt:
         FS_RESULT(sys_unix_getsockopt(args[1],args[2],args[3],args[4],args[5]));
     case NAS_SC_setsockopt: FS_RESULT((uint64_t)-ENOPROTOOPT);
+    case NAS_SC_sendmsg: FS_RESULT(sys_unix_sendmsg(args[1],args[2],args[3]));
+    case NAS_SC_recvmsg: FS_RESULT(sys_unix_recvmsg(args[1],args[2],args[3]));
     case NAS_SC_fcntl: FS_RESULT(sys_fcntl(args[1], args[2], args[3]));
     case NAS_SC_eventfd:
         FS_RESULT(nas_eventfd_create(args[1],0));

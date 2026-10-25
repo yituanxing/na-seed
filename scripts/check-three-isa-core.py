@@ -21,6 +21,9 @@ for line in make.splitlines():
 linked=re.search(r"^\$\(KERNEL\):\s+([^\n]+)",make,re.M)
 if not linked:
     raise SystemExit("x86 kernel has no object linkage dependency rule")
+actual_link=re.search(r"^\s*ld\.lld \$\(LDFLAGS\)\s+([^\n]+)",make,re.M)
+if not actual_link:
+    raise SystemExit("x86 kernel has no actual ld.lld link recipe")
 for source in srcs:
     if not (root/source).is_file():
         raise SystemExit(f"missing shared source: {source}")
@@ -29,6 +32,8 @@ for source in srcs:
         raise SystemExit(f"x86 kernel missing exact common compilation rule: {source}")
     if f"$(OUT)/{obj}" not in linked.group(1).split():
         raise SystemExit(f"x86 kernel linker omits common object {obj} ({source})")
+    if f"$(OUT)/{obj}" not in actual_link.group(1).split():
+        raise SystemExit(f"x86 actual ld.lld command omits common object {obj} ({source})")
 for port in ("aarch64","riscv64"):
     script=(root/f"scripts/build-{port}-full.sh").read_text()
     if 'scripts/full-kernel-core.sources' not in script or 'for f in $common $arch' not in script:

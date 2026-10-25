@@ -128,6 +128,8 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_getpeername: return NAS_SC_getpeername;
     case __NR_getsockopt: return NAS_SC_getsockopt;
     case __NR_setsockopt: return NAS_SC_setsockopt;
+    case __NR_sendmsg: return NAS_SC_sendmsg;
+    case __NR_recvmsg: return NAS_SC_recvmsg;
     case __NR_rename: return NAS_SC_rename;
     case __NR_renameat: return NAS_SC_renameat;
     case __NR_renameat2: return NAS_SC_renameat2;
@@ -198,6 +200,8 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 205U: return NAS_SC_getpeername;
     case 209U: return NAS_SC_getsockopt;
     case 208U: return NAS_SC_setsockopt;
+    case 211U: return NAS_SC_sendmsg;
+    case 212U: return NAS_SC_recvmsg;
     case 50U: return NAS_SC_fchdir;
     case 17U: return NAS_SC_getcwd;
     case 278U: return NAS_SC_getrandom; /* asm-generic Linux */
