@@ -23,7 +23,7 @@ jobs:
   native-alpine:
     name: ${{ matrix.port }} / ${{ matrix.suite }} / original Linux ELF QEMU
     # Parallel guest GCC/Make suite exists only in explicit full dispatch.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 75
     env:
       NAS_NATIVE_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'fast' }}

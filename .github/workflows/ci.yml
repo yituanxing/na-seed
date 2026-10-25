@@ -74,8 +74,12 @@ concurrency:
 # serial/UEFI regressions. Suppress recommends on all seven existing
 # acceptance shards; do not remove any of the actual tests or ISAs.
 jobs:
+  # Preserve all seven known-good QEMU tests on the previously validated
+  # Ubuntu 24.04 image. On M61, ubuntu-latest switched to 26.04 and
+  # legacy QEMU startup/timeout behavior regressed (unrelated to C rebuild).
+  # Requalify 26.04 with full native QEMU before migrating this gate.
   smoke:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -188,7 +192,7 @@ jobs:
 
   x86_fs:
     name: x86 native BusyBox VFS / path / archive regressions
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -236,7 +240,7 @@ jobs:
 
   x86_process:
     name: x86 native BusyBox process / pipe / ABI regressions
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -278,7 +282,7 @@ jobs:
 
   riscv64_m0:
     name: RISC-V real Limine/OpenSBI boot
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -327,7 +331,7 @@ jobs:
           if-no-files-found: ignore
   aarch64_m0:
     name: AArch64 real UEFI/Limine boot
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -359,7 +363,7 @@ jobs:
 
   source_busybox:
     name: Controlled source BusyBox / ${{ matrix.port }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
       fail-fast: false
