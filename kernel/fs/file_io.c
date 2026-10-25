@@ -15,16 +15,14 @@
 #include "io.h"
 #include "file_ops.h"
 #define TASK (*nas_current_task)
-#define descriptors TASK.fds->descriptors
-#define file_slot TASK.fds->file_slot
 
 /* Same open-file-description source for read(), exec and private mmap.
  * Do not expose kernel pointer paths or share mutable file offsets. */
 int64_t nas_fs_mmap_read(uint64_t fd, uint64_t offset,
                         uint8_t *buffer, uint64_t length) {
-    if (fd >= NAS_FD_LIMIT || descriptors[fd] == FD_CLOSED)
+    if (fd >= NAS_FD_LIMIT || TASK.fds->entries[fd].kind == FD_CLOSED)
         return -EBADF;
-    unsigned slot = file_slot[fd];
+    unsigned slot = TASK.fds->entries[fd].slot;
     if (slot >= NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
         return -EBADF;
     if(nas_open_files[slot].status_flags & NAS_LINUX_O_PATH)return -EBADF;
@@ -32,17 +30,17 @@ int64_t nas_fs_mmap_read(uint64_t fd, uint64_t offset,
         return -EACCES;
     const uint8_t *bytes = 0;
     uint64_t size = 0;
-    if (descriptors[fd] == FD_ARCHIVE) {
+    if (TASK.fds->entries[fd].kind == FD_ARCHIVE) {
         const struct bootfs_entry *entry = nas_open_files[slot].boot_entry;
         if (!entry || bootfs_is_dir(entry)) return -ENODEV;
         bytes = entry->data;
         size = entry->size;
-    } else if (descriptors[fd] == FD_BOOTFS) {
+    } else if (TASK.fds->entries[fd].kind == FD_BOOTFS) {
         const struct limine_file *file = nas_open_files[slot].boot_file;
         if (!file || !file->address) return -EBADF;
         bytes = (const uint8_t *)file->address;
         size = file->size;
-    } else if (descriptors[fd] == FD_TMP) {
+    } else if (TASK.fds->entries[fd].kind == FD_TMP) {
         const struct nas_tmp_file *file = tmp_by_slot(slot);
         if (!file || file->is_dir) return -ENODEV;
         return tmp_read_at(file, offset, buffer, length);
@@ -57,8 +55,8 @@ int64_t nas_fs_mmap_read(uint64_t fd, uint64_t offset,
 }
 
 uint64_t nas_fs_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
-    if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED)return (uint64_t)-EBADF;
-    if((nas_open_files[file_slot[fd]].status_flags & (NAS_LINUX_O_PATH|3ULL))==0)
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)return (uint64_t)-EBADF;
+    if((nas_open_files[TASK.fds->entries[fd].slot].status_flags & (NAS_LINUX_O_PATH|3ULL))==0)
         return (uint64_t)-EBADF;
     /* Linux bounds one regular write to MAX_RW_COUNT (INT_MAX rounded down
      * to the page size), not a kernel-private 1-MiB limit. GNU binutils
@@ -67,15 +65,15 @@ uint64_t nas_fs_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     if(length>0x7ffff000ULL)length=0x7ffff000ULL;
     if(address>=USER_LIMIT || length>USER_LIMIT-address)
         return (uint64_t)-EFAULT;
-    const struct nas_file_ops *ops=nas_open_files[file_slot[fd]].ops;
+    const struct nas_file_ops *ops=nas_open_files[TASK.fds->entries[fd].slot].ops;
     return ops && ops->write ? ops->write(fd,address,length) : (uint64_t)-EBADF;
 }
 uint64_t nas_fs_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
-    if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED)return (uint64_t)-EBADF;
-    if((nas_open_files[file_slot[fd]].status_flags&NAS_LINUX_O_PATH) ||
-       (nas_open_files[file_slot[fd]].status_flags&3ULL)==1)
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)return (uint64_t)-EBADF;
+    if((nas_open_files[TASK.fds->entries[fd].slot].status_flags&NAS_LINUX_O_PATH) ||
+       (nas_open_files[TASK.fds->entries[fd].slot].status_flags&3ULL)==1)
         return (uint64_t)-EBADF;
-    const struct nas_file_ops *ops=nas_open_files[file_slot[fd]].ops;
+    const struct nas_file_ops *ops=nas_open_files[TASK.fds->entries[fd].slot].ops;
     return ops && ops->read ? ops->read(fd,address,length) : (uint64_t)-EBADF;
 }
 /* The Linux positional I/O ABI is the same common VFS operation on all
@@ -85,14 +83,14 @@ uint64_t nas_fs_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
  * The same kernel-buffer regular-file reader already powers mmap. */
 uint64_t nas_fs_fd_pread(uint64_t fd,uint64_t address,uint64_t count,
                          uint64_t offset) {
-    if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED) return (uint64_t)-EBADF;
-    unsigned slot=file_slot[fd];
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED) return (uint64_t)-EBADF;
+    unsigned slot=TASK.fds->entries[fd].slot;
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount) return (uint64_t)-EBADF;
     if((nas_open_files[slot].status_flags&NAS_LINUX_O_PATH) ||
        (nas_open_files[slot].status_flags&3ULL)==1ULL) return (uint64_t)-EBADF;
-    if(descriptors[fd]==FD_DIR || descriptors[fd]==FD_TMP_DIR) return (uint64_t)-EISDIR;
-    if(descriptors[fd]!=FD_TMP && descriptors[fd]!=FD_ARCHIVE &&
-       descriptors[fd]!=FD_BOOTFS) return (uint64_t)-ESPIPE;
+    if(TASK.fds->entries[fd].kind==FD_DIR || TASK.fds->entries[fd].kind==FD_TMP_DIR) return (uint64_t)-EISDIR;
+    if(TASK.fds->entries[fd].kind!=FD_TMP && TASK.fds->entries[fd].kind!=FD_ARCHIVE &&
+       TASK.fds->entries[fd].kind!=FD_BOOTFS) return (uint64_t)-ESPIPE;
     if(offset>INT64_MAX || count>INT64_MAX-offset) return (uint64_t)-EINVAL;
     if(count && (address>=USER_LIMIT || count>USER_LIMIT-address))
         return (uint64_t)-EFAULT;
@@ -113,13 +111,13 @@ uint64_t nas_fs_fd_pread(uint64_t fd,uint64_t address,uint64_t count,
 }
 uint64_t nas_fs_fd_pwrite(uint64_t fd,uint64_t address,uint64_t count,
                           uint64_t offset) {
-    if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED) return (uint64_t)-EBADF;
-    unsigned slot=file_slot[fd];
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED) return (uint64_t)-EBADF;
+    unsigned slot=TASK.fds->entries[fd].slot;
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount) return (uint64_t)-EBADF;
     if((nas_open_files[slot].status_flags&NAS_LINUX_O_PATH) ||
        (nas_open_files[slot].status_flags&3ULL)==0ULL) return (uint64_t)-EBADF;
-    if(descriptors[fd]==FD_DIR || descriptors[fd]==FD_TMP_DIR) return (uint64_t)-EISDIR;
-    if(descriptors[fd]!=FD_TMP)return (uint64_t)-ESPIPE;
+    if(TASK.fds->entries[fd].kind==FD_DIR || TASK.fds->entries[fd].kind==FD_TMP_DIR) return (uint64_t)-EISDIR;
+    if(TASK.fds->entries[fd].kind!=FD_TMP)return (uint64_t)-ESPIPE;
     if(offset>INT64_MAX || count>INT64_MAX-offset)return (uint64_t)-EINVAL;
     if(count && (address>=USER_LIMIT || count>USER_LIMIT-address))
         return (uint64_t)-EFAULT;

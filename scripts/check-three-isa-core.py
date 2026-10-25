@@ -50,5 +50,18 @@ for path, symbol in (("kernel/fs/namespace_syscall.c", "nas_fs_resolve_path"),
     if re.search(r"^(?:static\s+)?(?:uint64_t|int64_t|int|bool)\s+"
                  + re.escape(symbol) + r"\s*\(", fs_dispatch, re.M):
         raise SystemExit(f"FS syscall owner definition leaked back into monolith: {symbol}")
+# One actual FD entry per descriptor: reject parallel arrays reappearing.
+task_h=(root/"kernel/task.h").read_text()
+fd_h=(root/"kernel/fd.h").read_text()
+assert "struct nas_fd_entry entries[NAS_FD_LIMIT]" in task_h
+for old in ("descriptors[NAS_FD_LIMIT]", "file_slot[NAS_FD_LIMIT]", "fd_cloexec[NAS_FD_LIMIT]"):
+    assert old not in task_h, f"parallel descriptor storage returned: {old}"
+for name in ("kind", "slot", "cloexec"):
+    assert f"uint8_t {name};" in fd_h
+for source in (root/"kernel").rglob("*"):
+    if source.suffix not in (".c", ".h"): continue
+    data=source.read_text()
+    for old in ("descriptors[", "file_slot[", "fd_cloexec["):
+        if old in data: raise SystemExit(f"old FD storage escaped in {source}: {old}")
 print(f"[M50 ARCH PASS] all {len(srcs)} actual shared kernel TUs are linked on x86 "
       "and built on RV64/AArch64; hardware providers remain ISA-specific")

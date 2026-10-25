@@ -22,7 +22,6 @@ extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
 extern void nas_hex(uint64_t);
 #define TASK (*nas_current_task)
-#define descriptors TASK.fds->descriptors
 #define signal_actions TASK.vm_owner->signal_actions
 #define blocked_signals TASK.blocked_signals
 static void sched_fail(const char *s) __attribute__((noreturn));
@@ -151,7 +150,7 @@ static uint64_t task_replay(struct nas_task *task) {
  */
 bool nas_sched_sigpipe_default(uint64_t fd) {
     return TASK.ppid && fd < NAS_FD_LIMIT &&
-        (descriptors[fd] == FD_PIPE_W || descriptors[fd] == FD_SOCKET) &&
+        (TASK.fds->entries[fd].kind == FD_PIPE_W || TASK.fds->entries[fd].kind == FD_SOCKET) &&
         signal_actions[NAS_SIGPIPE][0] == 0 &&
         !(blocked_signals & (1ULL << (NAS_SIGPIPE - 1)));
 }
@@ -227,7 +226,7 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
      * PID 1 owns future wait4 and is responsible for reaping orphans. */
     nas_task_adopt_orphans(child->pid);
     for (unsigned fd = 0; fd < NAS_FD_LIMIT; fd++)
-        if (descriptors[fd] != FD_CLOSED) nas_fs_close_fd(fd);
+        if (TASK.fds->entries[fd].kind != FD_CLOSED) nas_fs_close_fd(fd);
     /* All inherited jobserver pipe ends are closed before SIGCHLD is
      * observed. Wake a caught parent signal, never fake a ready pipe. */
     nas_signal_child_exit(child);

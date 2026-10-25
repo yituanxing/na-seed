@@ -35,9 +35,6 @@
  * task-local or refcounted via fd.c, pipe.c, bootfs.c and tmpfs.c.
  * The user ABI stat/dirent encodings are still x86-specific in v1. */
 #define TASK (*nas_current_task)
-#define descriptors TASK.fds->descriptors
-#define file_slot TASK.fds->file_slot
-#define fd_cloexec TASK.fds->fd_cloexec
 #define current_workdir TASK.vm_owner->cwd
 #define running_bash TASK.running_bash
 #define running_busybox TASK.running_busybox
@@ -85,7 +82,7 @@ extern void nas_putchar(char c);
 /* FD bookkeeping is syscall-local, but inode lifetime and slot identity now
  * live in the dedicated RAM /tmp backend, with shared file descriptions. */
 static struct nas_tmp_file *tmp_by_fd(uint64_t fd) {
-    return tmp_by_slot(file_slot[fd]);
+    return tmp_by_slot(TASK.fds->entries[fd].slot);
 }
 
 /* mmap regular file reads live in file_io.c */
@@ -98,16 +95,10 @@ static uint64_t sys_channel_pair(uint64_t user_pair, uint64_t flags,
         return (uint64_t)-EFAULT;
     for (unsigned i = 0; i < 8; i++)
         if (!nas_mmu_user_byte(user_pair + i)) return (uint64_t)-EFAULT;
-    unsigned fds[2], slots[2], nfds = 0, nslots = 0;
-    for (unsigned fd = 3; fd < NAS_FD_LIMIT && nfds < 2; fd++)
-        if (descriptors[fd] == FD_CLOSED) fds[nfds++] = fd;
-    if (nfds != 2) return (uint64_t)-EMFILE;
-    for (unsigned slot = 0; slot < NAS_OPEN_FILE_LIMIT && nslots < 2; slot++)
-        if (!nas_open_files[slot].refcount) slots[nslots++] = slot;
-    if (nslots != 2) {
-        nas_fd_report_exhaustion("pipe2");
-        return (uint64_t)-ENFILE;
-    }
+    unsigned fds[2], slots[2];
+    int capacity=nas_fd_reserve(nas_current_task,3,2,fds,slots,
+                                stream_socket ? "socketpair" : "pipe2");
+    if(capacity)return (uint64_t)(int64_t)capacity;
     int result = stream_socket ?
         nas_pipe_create_socketpair(slots[0], slots[1]) :
         nas_pipe_create(slots[0], slots[1]);
@@ -115,14 +106,12 @@ static uint64_t sys_channel_pair(uint64_t user_pair, uint64_t flags,
     if (stream_socket) nas_unix_socket_pair_ready(slots[0],slots[1]);
     for (unsigned i = 0; i < 2; i++) {
         unsigned fd = fds[i], slot = slots[i];
-        descriptors[fd] = stream_socket ? FD_SOCKET :
-                          i ? FD_PIPE_W : FD_PIPE_R;
-        file_slot[fd] = (uint8_t)slot;
-        nas_open_files[slot].refcount = 1;
-        nas_open_files[slot].ops = nas_fs_ops_for_kind(descriptors[fd]);
-        nas_open_files[slot].status_flags = (stream_socket ? 2ULL :
-                            i ? 1ULL : 0ULL) | (flags & 0x800ULL);
-        fd_cloexec[fd] = !!(flags & 0x80000ULL);
+        uint8_t kind=stream_socket ? FD_SOCKET : i ? FD_PIPE_W : FD_PIPE_R;
+        uint64_t status=(stream_socket ? 2ULL : i ? 1ULL : 0ULL) |
+                        (flags & 0x800ULL);
+        if(!nas_fd_install_new(nas_current_task,fd,slot,kind,status,
+                               !!(flags & 0x80000ULL)))
+            nas_fs_fail("reserved pipe/socket FD was occupied");
     }
     uint8_t output[8] = {0};
     for (unsigned i = 0; i < 2; i++)
@@ -155,7 +144,7 @@ static uint64_t pipe_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     if (!length) return 0;
     if (address >= USER_LIMIT || length > USER_LIMIT - address)
         return (uint64_t)-EFAULT;
-    unsigned slot = file_slot[fd];
+    unsigned slot = TASK.fds->entries[fd].slot;
     int64_t available = nas_pipe_read_amount(
         slot, length, !!(nas_open_files[slot].status_flags & 0x800ULL));
     if (available <= 0) return (uint64_t)available;
@@ -175,7 +164,7 @@ static uint64_t pipe_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     if (!length) return 0;
     if (address >= USER_LIMIT || length > USER_LIMIT - address)
         return (uint64_t)-EFAULT;
-    unsigned slot = file_slot[fd];
+    unsigned slot = TASK.fds->entries[fd].slot;
     int64_t available = nas_pipe_write_amount(
         slot, length, !!(nas_open_files[slot].status_flags & 0x800ULL));
     if (available <= 0) return (uint64_t)available;
@@ -197,7 +186,7 @@ static uint64_t pipe_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
 void nas_fs_close_fd(uint64_t fd) {
     /* Linux POSIX locks are PROCESS-owned and closing even one descriptor
      * releases that process's locks for the whole inode (including dup). */
-    if(fd<NAS_FD_LIMIT && descriptors[fd]==FD_TMP) {
+    if(fd<NAS_FD_LIMIT && TASK.fds->entries[fd].kind==FD_TMP) {
         struct nas_tmp_file *file=tmp_by_fd(fd);
         if(file)nas_locks_release(&file->posix_locks,TASK.pid);
     }
@@ -211,7 +200,7 @@ void nas_fs_close_fd(uint64_t fd) {
     nas_open_files[final_slot]=(struct nas_open_file){0};
 }
 static uint64_t fd_clone(uint64_t src, uint64_t dst, bool cloexec) {
-    if (src >= NAS_FD_LIMIT || descriptors[src] == FD_CLOSED ||
+    if (src >= NAS_FD_LIMIT || TASK.fds->entries[src].kind == FD_CLOSED ||
         dst >= NAS_FD_LIMIT) return (uint64_t)-EBADF;
     if (src == dst) return dst;
     nas_fs_close_fd(dst);
@@ -227,7 +216,7 @@ struct nas_flock64 { int16_t type,whence; uint32_t pad;
                     int64_t start,length; int32_t pid; uint32_t reserved; };
 _Static_assert(sizeof(struct nas_flock64)==32,"Linux LP64 flock size");
 static uint64_t sys_fcntl_lock(uint64_t fd,uint64_t command,uint64_t user) {
-    if(descriptors[fd]!=FD_TMP)return (uint64_t)-EINVAL;
+    if(TASK.fds->entries[fd].kind!=FD_TMP)return (uint64_t)-EINVAL;
     struct nas_tmp_file *inode=tmp_by_fd(fd);
     if(!inode || inode->is_dir)return (uint64_t)-EBADF;
     struct nas_flock64 lk={0};
@@ -235,7 +224,7 @@ static uint64_t sys_fcntl_lock(uint64_t fd,uint64_t command,uint64_t user) {
         return (uint64_t)-EFAULT;
     if(lk.type<0 || lk.type>2 || lk.whence<0 || lk.whence>2)
         return (uint64_t)-EINVAL;
-    uint64_t base=0,position=nas_open_files[file_slot[fd]].position;
+    uint64_t base=0,position=nas_open_files[TASK.fds->entries[fd].slot].position;
     if(lk.whence==1)base=position;
     if(lk.whence==2)base=inode->size;
     if(base>INT64_MAX)return (uint64_t)-EOVERFLOW;
@@ -248,7 +237,7 @@ static uint64_t sys_fcntl_lock(uint64_t fd,uint64_t command,uint64_t user) {
     uint64_t end=lk.length==0 ? UINT64_MAX : start+(uint64_t)lk.length;
     if(end<start || end==start)return (uint64_t)-EOVERFLOW;
     if(command!=5) {
-        unsigned access=(unsigned)(nas_open_files[file_slot[fd]].status_flags&3ULL);
+        unsigned access=(unsigned)(nas_open_files[TASK.fds->entries[fd].slot].status_flags&3ULL);
         if((lk.type==NAS_LOCK_READ && access==1) ||
            (lk.type==NAS_LOCK_WRITE && access==0))return (uint64_t)-EBADF;
     }
@@ -275,13 +264,13 @@ static uint64_t sys_fcntl_lock(uint64_t fd,uint64_t command,uint64_t user) {
     return rc ? (uint64_t)-EINVAL : 0;
 }
 static uint64_t sys_fcntl(uint64_t fd, uint64_t command, uint64_t arg) {
-    if (fd >= 64 || descriptors[fd] == FD_CLOSED)
+    if (fd >= 64 || TASK.fds->entries[fd].kind == FD_CLOSED)
         return (uint64_t)-EBADF;
-    unsigned slot = file_slot[fd];
+    unsigned slot = TASK.fds->entries[fd].slot;
     switch (command) {
     case 0: return fd_duplicate(fd, arg, false);  /* F_DUPFD */
-    case 1: return fd_cloexec[fd];                 /* F_GETFD */
-    case 2: fd_cloexec[fd] = (uint8_t)(arg & 1); return 0; /* F_SETFD */
+    case 1: return TASK.fds->entries[fd].cloexec;                 /* F_GETFD */
+    case 2: TASK.fds->entries[fd].cloexec = (uint8_t)(arg & 1); return 0; /* F_SETFD */
     case 3: return nas_open_files[slot].status_flags;       /* F_GETFL */
     case 4: /* F_SETFL: only the O_NONBLOCK/O_APPEND mutable subset */
         if(nas_open_files[slot].status_flags&NAS_LINUX_O_PATH)
@@ -301,13 +290,13 @@ static uint64_t sys_fcntl(uint64_t fd, uint64_t command, uint64_t arg) {
  * Preserve open-description semantics across dup/fork, as F_SETFL does.
  * FIOCLEX/FIONCLEX, by contrast, belong to the individual descriptor. */
 static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
-    if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED)return (uint64_t)-EBADF;
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)return (uint64_t)-EBADF;
     /* Linux ioctl _IOC commands occupy 32 bits even on LP64. Musl may
      * sign-extend an _IOR command (for example TIOCGPTN=0x80045430) when
      * passing it through the 64-bit syscall register on ALL three ISAs.
      * The semantic request is its low 32 bits, not the sign extension. */
     cmd=(uint32_t)cmd;
-    unsigned slot=file_slot[fd];
+    unsigned slot=TASK.fds->entries[fd].slot;
     if(cmd==0x5421ULL) { /* FIONBIO: pointer to native int */
         if(nas_open_files[slot].status_flags&NAS_LINUX_O_PATH)
             return (uint64_t)-EBADF;
@@ -319,7 +308,7 @@ static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
         return 0;
     }
     if(cmd==0x5451ULL || cmd==0x5450ULL) { /* FIOCLEX / FIONCLEX */
-        fd_cloexec[fd]=(uint8_t)(cmd==0x5451ULL);
+        TASK.fds->entries[fd].cloexec=(uint8_t)(cmd==0x5451ULL);
         return 0;
     }
     const struct nas_file_ops *ops=nas_open_files[slot].ops;
@@ -343,7 +332,7 @@ static uint64_t tmp_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     if (!length) return 0;
     if (address >= USER_LIMIT || length > USER_LIMIT - address)
         return (uint64_t)-EFAULT;
-    unsigned slot = file_slot[fd];
+    unsigned slot = TASK.fds->entries[fd].slot;
     uint64_t offset = nas_open_files[slot].position, done = 0;
     uint8_t buffer[1024];
     while (done < length) {
@@ -360,7 +349,7 @@ static uint64_t tmp_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     return done;
 }
 static uint64_t tmp_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
-    unsigned slot = file_slot[fd];
+    unsigned slot = TASK.fds->entries[fd].slot;
     struct nas_tmp_file *file = tmp_by_slot(slot);
     if (!file) return (uint64_t)-EBADF;
     if (!length) return 0;
@@ -489,44 +478,35 @@ uint64_t nas_fs_open_path(const char *path, uint64_t native_flags,
     if ((kind == FD_ARCHIVE || kind == FD_DIR) && (flags & 3ULL))
         return kind == FD_DIR ? (uint64_t)-EISDIR : (uint64_t)-EROFS;
     if (kind == FD_BOOTFS && (flags & 3ULL)) return (uint64_t)-EACCES;
-    for (unsigned fd = 3; fd < NAS_FD_LIMIT; fd++) {
-        if (descriptors[fd] != FD_CLOSED) continue;
-        for (unsigned slot = 0; slot < NAS_OPEN_FILE_LIMIT; slot++) {
-            if (nas_open_files[slot].refcount) continue;
-            if (create_tmp) {
-                tmp_file = tmp_create(path,false,
-                            nas_fs_create_mode(create_mode,TASK.vm_owner->umask));
-                if (!tmp_file) return (uint64_t)-ENOSPC;
-            }
-            if ((kind == FD_TMP || kind == FD_TMP_DIR) && !tmp_file) return (uint64_t)-ENOENT;
-            if (kind == FD_TMP && (flags & 0x200ULL)) tmp_truncate(tmp_file);
-            if (kind == FD_PTY_MASTER) {
-                int err=nas_pty_new(slot);
-                if(err)return (uint64_t)(int64_t)err;
-            } else if (kind == FD_PTY_SLAVE) {
-                int err=pty_number>=0 ?
-                    nas_pty_attach((unsigned)pty_number,slot) :
-                    nas_pty_attach_controlling(slot);
-                if(err)return (uint64_t)(int64_t)err;
-            }
-            nas_open_files[slot].refcount = 1;
-            nas_open_files[slot].ops = nas_fs_ops_for_kind(kind);
-            if (kind == FD_TMP || kind == FD_TMP_DIR)
-                tmp_bind_slot(slot, tmp_file);
-            file_slot[fd] = (uint8_t)slot;
-            nas_open_files[slot].status_flags =
-                flags & (NAS_LINUX_O_PATH | 3ULL | 0x800ULL | 0x400ULL);
-            fd_cloexec[fd] = !!(flags & 0x80000ULL);
-            nas_open_files[slot].position = 0;
-            descriptors[fd] = kind;
-            nas_open_files[file_slot[fd]].boot_file = real_file;
-            nas_open_files[file_slot[fd]].boot_entry = entry;
-            return fd;
-        }
-        nas_fd_report_exhaustion("openat");
-        return (uint64_t)-ENFILE;
+    unsigned fds[2],slots[2];
+    int capacity=nas_fd_reserve(nas_current_task,3,1,fds,slots,"openat");
+    if(capacity)return (uint64_t)(int64_t)capacity;
+    const unsigned fd=fds[0],slot=slots[0];
+    if(create_tmp) {
+        tmp_file=tmp_create(path,false,
+                 nas_fs_create_mode(create_mode,TASK.vm_owner->umask));
+        if(!tmp_file)return (uint64_t)-ENOSPC;
     }
-    return (uint64_t)-EMFILE;
+    if((kind==FD_TMP || kind==FD_TMP_DIR) && !tmp_file)
+        return (uint64_t)-ENOENT;
+    if(kind==FD_TMP && (flags & 0x200ULL))tmp_truncate(tmp_file);
+    if(kind==FD_PTY_MASTER) {
+        int err=nas_pty_new(slot);
+        if(err)return (uint64_t)(int64_t)err;
+    } else if(kind==FD_PTY_SLAVE) {
+        int err=pty_number>=0 ?
+            nas_pty_attach((unsigned)pty_number,slot) :
+            nas_pty_attach_controlling(slot);
+        if(err)return (uint64_t)(int64_t)err;
+    }
+    if(!nas_fd_install_new(nas_current_task,fd,slot,kind,
+                           flags & (NAS_LINUX_O_PATH | 3ULL | 0x800ULL | 0x400ULL),
+                           !!(flags & 0x80000ULL)))
+        nas_fs_fail("reserved openat description was occupied");
+    if(kind==FD_TMP || kind==FD_TMP_DIR)tmp_bind_slot(slot,tmp_file);
+    nas_open_files[slot].boot_file=real_file;
+    nas_open_files[slot].boot_entry=entry;
+    return fd;
 }
 static uint64_t sys_open_device(uint64_t pathname, uint64_t flags,
                                  uint64_t mode) {
@@ -553,29 +533,29 @@ static uint64_t vread_dir(uint64_t fd,uint64_t addr,uint64_t n) {
     (void)fd;(void)addr;(void)n;return (uint64_t)-EISDIR;
 }
 static uint64_t vread_archive(uint64_t fd,uint64_t addr,uint64_t n) {
-    const struct bootfs_entry *entry=nas_open_files[file_slot[fd]].boot_entry;
+    const struct bootfs_entry *entry=nas_open_files[TASK.fds->entries[fd].slot].boot_entry;
     if(!entry)return (uint64_t)-EBADF;
-    uint64_t start=nas_open_files[file_slot[fd]].position;
+    uint64_t start=nas_open_files[TASK.fds->entries[fd].slot].position;
     if(start>=entry->size)return 0;
     if(n>entry->size-start)n=entry->size-start;
     if(!nas_user_write_bytes(addr,entry->data+start,n))
         return (uint64_t)-EFAULT;
-    nas_open_files[file_slot[fd]].position+=n;
+    nas_open_files[TASK.fds->entries[fd].slot].position+=n;
     return n;
 }
 static uint64_t vread_limine(uint64_t fd,uint64_t addr,uint64_t n) {
-    const struct limine_file *file=nas_open_files[file_slot[fd]].boot_file;
+    const struct limine_file *file=nas_open_files[TASK.fds->entries[fd].slot].boot_file;
     if(!file || !file->address)return (uint64_t)-EBADF;
-    uint64_t start=nas_open_files[file_slot[fd]].position;
+    uint64_t start=nas_open_files[TASK.fds->entries[fd].slot].position;
     if(start>file->size)return 0;
     if(n>file->size-start)n=file->size-start;
     if(!nas_user_write_bytes(addr,(const uint8_t*)file->address+start,n))
         return (uint64_t)-EFAULT;
-    nas_open_files[file_slot[fd]].position+=n;
+    nas_open_files[TASK.fds->entries[fd].slot].position+=n;
     return n;
 }
 static uint64_t vread_tty(uint64_t fd,uint64_t addr,uint64_t n) {
-    return nas_tty_read(addr,n,(nas_open_files[file_slot[fd]].status_flags&0x800ULL)!=0);
+    return nas_tty_read(addr,n,(nas_open_files[TASK.fds->entries[fd].slot].status_flags&0x800ULL)!=0);
 }
 static uint64_t vwrite_discard(uint64_t fd,uint64_t addr,uint64_t n) {
     (void)fd;(void)addr;return n;
@@ -600,16 +580,16 @@ static uint16_t vpoll_tty(uint64_t fd,uint16_t events) {
     return out;
 }
 static uint16_t vpoll_pipe_read(uint64_t fd,uint16_t events) {
-    return nas_pipe_poll_readable(file_slot[fd]) ? (events & 0x0001U) : 0;
+    return nas_pipe_poll_readable(TASK.fds->entries[fd].slot) ? (events & 0x0001U) : 0;
 }
 static uint16_t vpoll_pipe_write(uint64_t fd,uint16_t events) {
-    return nas_pipe_poll_writable(file_slot[fd]) ? (events & 0x0004U) : 0;
+    return nas_pipe_poll_writable(TASK.fds->entries[fd].slot) ? (events & 0x0004U) : 0;
 }
 static void varmpipe_read(struct nas_task *t,uint64_t fd,uint16_t events) {
-    if(events & 0x0001U)nas_slot_mask_set(&t->poll_pipe_read,file_slot[fd]);
+    if(events & 0x0001U)nas_slot_mask_set(&t->poll_pipe_read,TASK.fds->entries[fd].slot);
 }
 static void varmpipe_write(struct nas_task *t,uint64_t fd,uint16_t events) {
-    if(events & 0x0004U)nas_slot_mask_set(&t->poll_pipe_write,file_slot[fd]);
+    if(events & 0x0004U)nas_slot_mask_set(&t->poll_pipe_write,TASK.fds->entries[fd].slot);
 }
 static void varmtty(struct nas_task *t,uint64_t fd,uint16_t events) {
     (void)fd;
@@ -656,8 +636,8 @@ static const struct nas_file_ops ops_pipe_write={
     .poll_arm=varmpipe_write,.release=vrelease_pipe
 };
 static uint16_t vpoll_socket(uint64_t fd,uint16_t events) {
-    if(nas_unix_socket_listening(file_slot[fd]))
-        return nas_unix_socket_readable(file_slot[fd]) ? (events&1U) : 0;
+    if(nas_unix_socket_listening(TASK.fds->entries[fd].slot))
+        return nas_unix_socket_readable(TASK.fds->entries[fd].slot) ? (events&1U) : 0;
     return vpoll_pipe_read(fd,events) | vpoll_pipe_write(fd,events);
 }
 static void varm_socket(struct nas_task *t,uint64_t fd,uint16_t events) {
@@ -669,11 +649,11 @@ static const struct nas_file_ops ops_socket={
     .poll_arm=varm_socket,.release=vrelease_socket
 };
 static uint16_t vpoll_pty(uint64_t fd,uint16_t events) {
-    return nas_pty_poll(file_slot[fd],events);
+    return nas_pty_poll(TASK.fds->entries[fd].slot,events);
 }
 static void varm_pty(struct nas_task *task,uint64_t fd,uint16_t events) {
-    if(events&1U)nas_slot_mask_set(&task->poll_pipe_read,file_slot[fd]);
-    if(events&4U)nas_slot_mask_set(&task->poll_pipe_write,file_slot[fd]);
+    if(events&1U)nas_slot_mask_set(&task->poll_pipe_read,TASK.fds->entries[fd].slot);
+    if(events&4U)nas_slot_mask_set(&task->poll_pipe_write,TASK.fds->entries[fd].slot);
 }
 static void vrelease_pty(unsigned slot){nas_pty_release(slot);}
 static const struct nas_file_ops ops_pty={
@@ -745,9 +725,9 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
     case NAS_SC_socketpair: FS_RESULT(sys_socketpair(args[1],args[2],args[3],args[4]));
     case NAS_SC_fcntl: FS_RESULT(sys_fcntl(args[1], args[2], args[3]));
     case NAS_SC_flock:
-        if(args[1]>=NAS_FD_LIMIT || descriptors[args[1]]!=FD_TMP)
+        if(args[1]>=NAS_FD_LIMIT || TASK.fds->entries[args[1]].kind!=FD_TMP)
             FS_RESULT((uint64_t)-EBADF);
-        FS_RESULT((uint64_t)(int64_t)tmp_flock(file_slot[args[1]],
+        FS_RESULT((uint64_t)(int64_t)tmp_flock(TASK.fds->entries[args[1]].slot,
                                               (unsigned)args[2]));
     case NAS_SC_eventfd:
         FS_RESULT(nas_eventfd_create(args[1],0));
@@ -764,7 +744,7 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
     case NAS_SC_dup: FS_RESULT(fd_duplicate(args[1], 0, false));
     case NAS_SC_dup2: FS_RESULT(fd_clone(args[1], args[2], false));
     case NAS_SC_close:
-        if (args[1] >= 64 || descriptors[args[1]] == FD_CLOSED)
+        if (args[1] >= 64 || TASK.fds->entries[args[1]].kind == FD_CLOSED)
             FS_RESULT((uint64_t)-EBADF);
         nas_fs_close_fd(args[1]);
         FS_RESULT(0);

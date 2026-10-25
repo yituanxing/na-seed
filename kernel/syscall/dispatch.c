@@ -31,8 +31,6 @@
 #include "../panic.h"
 #define TASK (*nas_current_task)
 #define thread_clear_tid TASK.thread_clear_tid
-#define descriptors TASK.fds->descriptors
-#define file_slot TASK.fds->file_slot
 #define running_bash TASK.running_bash
 #define running_busybox TASK.running_busybox
 #define running_alpine TASK.running_alpine
@@ -215,16 +213,16 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
     if ((int64_t)ret == -EPIPE &&
         (nr == NAS_SC_write || nr == NAS_SC_writev))
         nas_signal_broken_pipe(fd);
-    if (fd < NAS_FD_LIMIT && file_slot[fd] < NAS_OPEN_FILE_LIMIT &&
-        !(nas_open_files[file_slot[fd]].status_flags & 0x800ULL)) {
+    if (fd < NAS_FD_LIMIT && TASK.fds->entries[fd].slot < NAS_OPEN_FILE_LIMIT &&
+        !(nas_open_files[TASK.fds->entries[fd].slot].status_flags & 0x800ULL)) {
         if ((int64_t)ret == -EOPNOTSUPP &&
-            (descriptors[fd] == FD_PIPE_R || descriptors[fd] == FD_PIPE_W ||
-             descriptors[fd] == FD_SOCKET ||
-             descriptors[fd] == FD_EVENTFD))
+            (TASK.fds->entries[fd].kind == FD_PIPE_R || TASK.fds->entries[fd].kind == FD_PIPE_W ||
+             TASK.fds->entries[fd].kind == FD_SOCKET ||
+             TASK.fds->entries[fd].kind == FD_EVENTFD))
             return nas_task_block(frame,nr,fd,buf,count,0);
         if ((nr == NAS_SC_read || nr == NAS_SC_readv) &&
             (int64_t)ret == -EAGAIN &&
-            (descriptors[fd] == FD_TTY || descriptors[fd] == FD_UART) &&
+            (TASK.fds->entries[fd].kind == FD_TTY || TASK.fds->entries[fd].kind == FD_UART) &&
             nas_tty_read_waitable()) {
             /* First timeout for MIN=0/TIME>0 starts at the syscall,
              * before any task sleeps; interbyte MIN>0 starts on RX. */

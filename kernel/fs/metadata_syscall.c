@@ -22,8 +22,6 @@
 #include "open_path.h"
 #include "metadata_syscall.h"
 #define TASK (*nas_current_task)
-#define descriptors TASK.fds->descriptors
-#define file_slot TASK.fds->file_slot
 
 /* Same inode metadata for both fstat() and path-based stat/lstat; critical
  * for a symlink's S_IFLNK type, target length, and nofollow distinction. */
@@ -45,14 +43,14 @@ static void fill_tmp_stat(struct nas_linux_stat *st,
  * Device entries have character-device type; mounted files are regular.
  */
 static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
-    if (fd >= 64 || !descriptors[fd]) return (uint64_t)-EBADF;
+    if (fd >= 64 || !TASK.fds->entries[fd].kind) return (uint64_t)-EBADF;
     struct nas_linux_stat st;
     volatile uint8_t *bytes = (volatile uint8_t *)&st;
     for (unsigned i = 0; i < sizeof(st); i++) bytes[i] = 0;
     st.nlink = 1;
     st.blksize = PAGE;
-    if (descriptors[fd] == FD_DIR || descriptors[fd] == FD_ARCHIVE) {
-        const struct bootfs_entry *entry = nas_open_files[file_slot[fd]].boot_entry;
+    if (TASK.fds->entries[fd].kind == FD_DIR || TASK.fds->entries[fd].kind == FD_ARCHIVE) {
+        const struct bootfs_entry *entry = nas_open_files[TASK.fds->entries[fd].slot].boot_entry;
         if (!entry) return (uint64_t)-EBADF;
         st.dev = 3; st.ino = entry->ino;
         st.mode = entry->mode;
@@ -60,21 +58,21 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
         st.size = (int64_t)entry->size;
         st.blocks = (int64_t)((entry->size + 511) / 512);
         st.atime_sec = st.mtime_sec = st.ctime_sec = (int64_t)entry->mtime_sec;
-    } else if (descriptors[fd] == FD_TMP || descriptors[fd] == FD_TMP_DIR) {
-        const struct nas_tmp_file *file = tmp_by_slot(file_slot[fd]);
+    } else if (TASK.fds->entries[fd].kind == FD_TMP || TASK.fds->entries[fd].kind == FD_TMP_DIR) {
+        const struct nas_tmp_file *file = tmp_by_slot(TASK.fds->entries[fd].slot);
         if (!file) return (uint64_t)-EBADF;
         fill_tmp_stat(&st,file);
-    } else if (descriptors[fd] == FD_PTY_MASTER ||
-               descriptors[fd] == FD_PTY_SLAVE) {
-        st.dev=6;st.ino=2000+nas_pty_number(file_slot[fd]);
+    } else if (TASK.fds->entries[fd].kind == FD_PTY_MASTER ||
+               TASK.fds->entries[fd].kind == FD_PTY_SLAVE) {
+        st.dev=6;st.ino=2000+nas_pty_number(TASK.fds->entries[fd].slot);
         st.mode=0020620; /* real PTY character device */
-    } else if (descriptors[fd] == FD_PIPE_R || descriptors[fd] == FD_PIPE_W ||
-               descriptors[fd] == FD_SOCKET) {
-        st.dev = 4; st.ino = (uint64_t)file_slot[fd] + 1000;
-        st.mode = descriptors[fd] == FD_SOCKET ? 0140777 : 0010600;
+    } else if (TASK.fds->entries[fd].kind == FD_PIPE_R || TASK.fds->entries[fd].kind == FD_PIPE_W ||
+               TASK.fds->entries[fd].kind == FD_SOCKET) {
+        st.dev = 4; st.ino = (uint64_t)TASK.fds->entries[fd].slot + 1000;
+        st.mode = TASK.fds->entries[fd].kind == FD_SOCKET ? 0140777 : 0010600;
         /* Linux presents socketpair as S_IFSOCK, pipe as S_IFIFO. */
-    } else if (descriptors[fd] == FD_BOOTFS) {
-        const struct limine_file *file = nas_open_files[file_slot[fd]].boot_file;
+    } else if (TASK.fds->entries[fd].kind == FD_BOOTFS) {
+        const struct limine_file *file = nas_open_files[TASK.fds->entries[fd].slot].boot_file;
         if (!file) return (uint64_t)-EBADF;
         st.dev = 1; st.ino = fd + 100;
         st.mode = 0100555;
@@ -91,23 +89,23 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
 /* In a volatile tmpfs there is no asynchronous durable writeback.
  * fsync/fdatasync return success only for actual open RAM inodes. */
 static uint64_t sys_sync_fd(uint64_t fd) {
-    if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED)return (uint64_t)-EBADF;
-    if(nas_open_files[file_slot[fd]].status_flags&NAS_LINUX_O_PATH)
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)return (uint64_t)-EBADF;
+    if(nas_open_files[TASK.fds->entries[fd].slot].status_flags&NAS_LINUX_O_PATH)
         return (uint64_t)-EBADF;
-    if(descriptors[fd]!=FD_TMP && descriptors[fd]!=FD_TMP_DIR)
+    if(TASK.fds->entries[fd].kind!=FD_TMP && TASK.fds->entries[fd].kind!=FD_TMP_DIR)
         return (uint64_t)-EINVAL;
-    return tmp_by_slot(file_slot[fd]) ? 0 : (uint64_t)-EBADF;
+    return tmp_by_slot(TASK.fds->entries[fd].slot) ? 0 : (uint64_t)-EBADF;
 }
 static uint64_t sys_resize_fd(uint64_t fd,uint64_t length) {
-    if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED)return (uint64_t)-EBADF;
-    if(nas_open_files[file_slot[fd]].status_flags&NAS_LINUX_O_PATH)
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)return (uint64_t)-EBADF;
+    if(nas_open_files[TASK.fds->entries[fd].slot].status_flags&NAS_LINUX_O_PATH)
         return (uint64_t)-EBADF;
-    if(descriptors[fd]==FD_ARCHIVE || descriptors[fd]==FD_BOOTFS)
+    if(TASK.fds->entries[fd].kind==FD_ARCHIVE || TASK.fds->entries[fd].kind==FD_BOOTFS)
         return (uint64_t)-EROFS;
-    if(descriptors[fd]!=FD_TMP)return (uint64_t)-EINVAL;
-    if((nas_open_files[file_slot[fd]].status_flags&3ULL)==0)
+    if(TASK.fds->entries[fd].kind!=FD_TMP)return (uint64_t)-EINVAL;
+    if((nas_open_files[TASK.fds->entries[fd].slot].status_flags&3ULL)==0)
         return (uint64_t)-EINVAL;
-    return (uint64_t)(int64_t)tmp_resize(tmp_by_slot(file_slot[fd]),length);
+    return (uint64_t)(int64_t)tmp_resize(tmp_by_slot(TASK.fds->entries[fd].slot),length);
 }
 static uint64_t sys_resize_path(uint64_t pathname,uint64_t length) {
     char path[256];
@@ -118,25 +116,25 @@ static uint64_t sys_resize_path(uint64_t pathname,uint64_t length) {
     return bootfs_find(path) ? (uint64_t)-EROFS : (uint64_t)-ENOENT;
 }
 static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
-    if (fd >= 64 || descriptors[fd] == FD_CLOSED)
+    if (fd >= 64 || TASK.fds->entries[fd].kind == FD_CLOSED)
         return (uint64_t)-EBADF;
-    if(nas_open_files[file_slot[fd]].status_flags&NAS_LINUX_O_PATH)
+    if(nas_open_files[TASK.fds->entries[fd].slot].status_flags&NAS_LINUX_O_PATH)
         return (uint64_t)-EBADF;
     uint64_t size = 0;
-    if (descriptors[fd] == FD_BOOTFS && nas_open_files[file_slot[fd]].boot_file)
-        size = nas_open_files[file_slot[fd]].boot_file->size;
-    else if (descriptors[fd] == FD_ARCHIVE && nas_open_files[file_slot[fd]].boot_entry)
-        size = nas_open_files[file_slot[fd]].boot_entry->size;
-    else if (descriptors[fd] == FD_TMP || descriptors[fd] == FD_TMP_DIR) {
-        const struct nas_tmp_file *file = tmp_by_slot(file_slot[fd]);
+    if (TASK.fds->entries[fd].kind == FD_BOOTFS && nas_open_files[TASK.fds->entries[fd].slot].boot_file)
+        size = nas_open_files[TASK.fds->entries[fd].slot].boot_file->size;
+    else if (TASK.fds->entries[fd].kind == FD_ARCHIVE && nas_open_files[TASK.fds->entries[fd].slot].boot_entry)
+        size = nas_open_files[TASK.fds->entries[fd].slot].boot_entry->size;
+    else if (TASK.fds->entries[fd].kind == FD_TMP || TASK.fds->entries[fd].kind == FD_TMP_DIR) {
+        const struct nas_tmp_file *file = tmp_by_slot(TASK.fds->entries[fd].slot);
         if (!file) return (uint64_t)-EBADF;
         size = file->size;
     }
-    else if (descriptors[fd] != FD_DIR || !nas_open_files[file_slot[fd]].boot_entry)
+    else if (TASK.fds->entries[fd].kind != FD_DIR || !nas_open_files[TASK.fds->entries[fd].slot].boot_entry)
         return (uint64_t)-ESPIPE;
     uint64_t base = 0;
-    if (whence == 1) base = nas_open_files[file_slot[fd]].position;
-    else if (whence == 2 && descriptors[fd] != FD_DIR && descriptors[fd] != FD_TMP_DIR) base = size;
+    if (whence == 1) base = nas_open_files[TASK.fds->entries[fd].slot].position;
+    else if (whence == 2 && TASK.fds->entries[fd].kind != FD_DIR && TASK.fds->entries[fd].kind != FD_TMP_DIR) base = size;
     else if (whence != 0) return (uint64_t)-EINVAL;
     int64_t signed_off = (int64_t)off;
     if (signed_off < 0) {
@@ -147,7 +145,7 @@ static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
         if (base > UINT64_MAX - off) return (uint64_t)-EINVAL;
         base += off;
     }
-    nas_open_files[file_slot[fd]].position = base;
+    nas_open_files[TASK.fds->entries[fd].slot].position = base;
     return base;
 }
 /* Linux access/faccessat/faccessat2: existence and permissions are
@@ -197,11 +195,11 @@ static uint64_t sys_access_path(uint64_t dirfd,uint64_t pathname,
 /* chmod operates on tmpfs inode identity (not FD pathname copies).
  * Linux ABI/path and dirfd decoding stay in this syscall boundary. */
 static uint64_t sys_fchmod_fd(uint64_t fd,uint64_t mode) {
-    if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED)
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
         return (uint64_t)-EBADF;
-    if(descriptors[fd]!=FD_TMP && descriptors[fd]!=FD_TMP_DIR)
+    if(TASK.fds->entries[fd].kind!=FD_TMP && TASK.fds->entries[fd].kind!=FD_TMP_DIR)
         return (uint64_t)-EROFS;
-    return (uint64_t)(int64_t)tmp_chmod((struct nas_tmp_file*)tmp_by_slot(file_slot[fd]),mode);
+    return (uint64_t)(int64_t)tmp_chmod((struct nas_tmp_file*)tmp_by_slot(TASK.fds->entries[fd].slot),mode);
 }
 static uint64_t sys_chmod_path(uint64_t dirfd,uint64_t filename,
                                uint64_t mode) {
@@ -228,11 +226,11 @@ static uint64_t sys_utimensat_file(uint64_t dirfd, uint64_t pathname,
         return (uint64_t)-EINVAL;
     struct nas_tmp_file *file=0;
     if (!pathname) {
-        if (dirfd >= NAS_FD_LIMIT || descriptors[dirfd] == FD_CLOSED)
+        if (dirfd >= NAS_FD_LIMIT || TASK.fds->entries[dirfd].kind == FD_CLOSED)
             return (uint64_t)-EBADF;
-        if (descriptors[dirfd] != FD_TMP && descriptors[dirfd] != FD_TMP_DIR)
+        if (TASK.fds->entries[dirfd].kind != FD_TMP && TASK.fds->entries[dirfd].kind != FD_TMP_DIR)
             return (uint64_t)-EROFS;
-        file=tmp_by_slot(file_slot[dirfd]);
+        file=tmp_by_slot(TASK.fds->entries[dirfd].slot);
     } else {
         char path[256], actual[256];
         uint64_t ret=nas_fs_resolve_path(dirfd,pathname,path);
@@ -357,19 +355,19 @@ static uint64_t sys_readlinkat_boot(uint64_t dirfd, uint64_t pathname,
 }
 
 static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
-    if (fd >= 64 || descriptors[fd] == FD_CLOSED) return (uint64_t)-EBADF;
-    if (descriptors[fd] != FD_TMP_DIR &&
-        (descriptors[fd] != FD_DIR || !nas_open_files[file_slot[fd]].boot_entry))
+    if (fd >= 64 || TASK.fds->entries[fd].kind == FD_CLOSED) return (uint64_t)-EBADF;
+    if (TASK.fds->entries[fd].kind != FD_TMP_DIR &&
+        (TASK.fds->entries[fd].kind != FD_DIR || !nas_open_files[TASK.fds->entries[fd].slot].boot_entry))
         return (uint64_t)-ENOTDIR;
     if (capacity < 24) return (uint64_t)-EINVAL;
     if (dst >= USER_LIMIT || capacity > USER_LIMIT - dst)
         return (uint64_t)-EFAULT;
-    const struct bootfs_entry *dir = nas_open_files[file_slot[fd]].boot_entry;
+    const struct bootfs_entry *dir = nas_open_files[TASK.fds->entries[fd].slot].boot_entry;
     const struct nas_tmp_file *tmpdir =
-        descriptors[fd] == FD_TMP_DIR ? tmp_by_slot(file_slot[fd]) : 0;
+        TASK.fds->entries[fd].kind == FD_TMP_DIR ? tmp_by_slot(TASK.fds->entries[fd].slot) : 0;
     const char *dirpath = tmpdir ? tmpdir->path : dir->path;
     uint64_t dirino = tmpdir ? 5000 + tmp_number(tmpdir) : dir->ino;
-    uint64_t cursor = nas_open_files[file_slot[fd]].position;
+    uint64_t cursor = nas_open_files[TASK.fds->entries[fd].slot].position;
     uint64_t written = 0;
     while (written + 24 <= capacity) {
         const struct bootfs_entry *item;
@@ -434,7 +432,7 @@ static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
             return written ? written : (uint64_t)-EFAULT;
         written += reclen;
         cursor++;
-        nas_open_files[file_slot[fd]].position = cursor;
+        nas_open_files[TASK.fds->entries[fd].slot].position = cursor;
     }
     return written;
 }

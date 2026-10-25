@@ -60,10 +60,9 @@ enum nas_task_state {
     NAS_TASK_STOPPED
 };
 
+/* Copy on fork, share pointer under CLONE_FILES. No parallel FD arrays. */
 struct nas_fd_table {
-    uint8_t descriptors[NAS_FD_LIMIT];
-    uint8_t file_slot[NAS_FD_LIMIT];
-    uint8_t fd_cloexec[NAS_FD_LIMIT];
+    struct nas_fd_entry entries[NAS_FD_LIMIT];
 };
 
 struct nas_task {

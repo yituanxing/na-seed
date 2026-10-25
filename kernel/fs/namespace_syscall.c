@@ -17,8 +17,6 @@
 #include "lookup.h"
 #include "namespace_syscall.h"
 #define TASK (*nas_current_task)
-#define descriptors TASK.fds->descriptors
-#define file_slot TASK.fds->file_slot
 #define current_workdir TASK.vm_owner->cwd
 
 /* Lexically combine absolute, cwd-relative and dirfd-relative paths.
@@ -43,16 +41,16 @@ uint64_t nas_fs_resolve_path(uint64_t dirfd, uint64_t pathname,
     if (src[0]!='/') {
         if (dirfd==(uint64_t)-100) base=current_workdir;
         else {
-            if (dirfd>=NAS_FD_LIMIT || descriptors[dirfd]==FD_CLOSED)
+            if (dirfd>=NAS_FD_LIMIT || TASK.fds->entries[dirfd].kind==FD_CLOSED)
                 return (uint64_t)-EBADF;
-            if (descriptors[dirfd]==FD_TMP_DIR) {
-                const struct nas_tmp_file *dir=tmp_by_slot(file_slot[dirfd]);
+            if (TASK.fds->entries[dirfd].kind==FD_TMP_DIR) {
+                const struct nas_tmp_file *dir=tmp_by_slot(TASK.fds->entries[dirfd].slot);
                 if (!dir) return (uint64_t)-EBADF;
                 base=dir->path;
             } else {
-                if (descriptors[dirfd]!=FD_DIR || !nas_open_files[file_slot[dirfd]].boot_entry)
+                if (TASK.fds->entries[dirfd].kind!=FD_DIR || !nas_open_files[TASK.fds->entries[dirfd].slot].boot_entry)
                     return (uint64_t)-ENOTDIR;
-                base=nas_open_files[file_slot[dirfd]].boot_entry->path;
+                base=nas_open_files[TASK.fds->entries[dirfd].slot].boot_entry->path;
             }
         }
     }
@@ -141,17 +139,17 @@ static uint64_t sys_chdir(uint64_t pathname) {
     return 0;
 }
 static uint64_t sys_fchdir(uint64_t fd) {
-    if (fd >= 64 || descriptors[fd] == FD_CLOSED)
+    if (fd >= 64 || TASK.fds->entries[fd].kind == FD_CLOSED)
         return (uint64_t)-EBADF;
     const char *path;
-    if (descriptors[fd] == FD_TMP_DIR) {
-        const struct nas_tmp_file *dir = tmp_by_slot(file_slot[fd]);
+    if (TASK.fds->entries[fd].kind == FD_TMP_DIR) {
+        const struct nas_tmp_file *dir = tmp_by_slot(TASK.fds->entries[fd].slot);
         if (!dir || !dir->linked) return (uint64_t)-ENOENT;
         path = dir->path;
     } else {
-        if (descriptors[fd] != FD_DIR || !nas_open_files[file_slot[fd]].boot_entry)
+        if (TASK.fds->entries[fd].kind != FD_DIR || !nas_open_files[TASK.fds->entries[fd].slot].boot_entry)
             return (uint64_t)-ENOTDIR;
-        path = nas_open_files[file_slot[fd]].boot_entry->path;
+        path = nas_open_files[TASK.fds->entries[fd].slot].boot_entry->path;
     }
     unsigned i = 0;
     do { current_workdir[i] = path[i]; } while (path[i++]);

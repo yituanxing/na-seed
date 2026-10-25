@@ -28,8 +28,6 @@
 #define loaded_main_entry TASK.loaded_main_entry
 #define loaded_interp_base TASK.loaded_interp_base
 #define thread_clear_tid TASK.thread_clear_tid
-#define descriptors TASK.fds->descriptors
-#define fd_cloexec TASK.fds->fd_cloexec
 #define running_bash TASK.running_bash
 #define running_busybox TASK.running_busybox
 #define running_alpine TASK.running_alpine
@@ -398,7 +396,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     }
     /* Commit: syscall can no longer return to old userspace RIP or RSP. */
     for (unsigned fd = 0; fd < 64; fd++)
-        if (descriptors[fd] != FD_CLOSED && fd_cloexec[fd])
+        if (TASK.fds->entries[fd].kind != FD_CLOSED && TASK.fds->entries[fd].cloexec)
             nas_fs_close_fd(fd);
     /* Old anonymous ownership dies with the retired page-table root.
      * No metadata is mutated until exec commits, so rollback remains exact. */
