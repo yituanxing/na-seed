@@ -458,6 +458,22 @@ static uint64_t sys_renameat_tmp(uint64_t olddirfd, uint64_t oldptr,
     return (int64_t)ret < 0 ? ret :
         (uint64_t)(int64_t)tmp_rename(oldpath, newpath, flags);
 }
+static uint64_t sys_symlinkat_tmp(uint64_t targetptr,uint64_t dirfd,
+                                  uint64_t linkptr) {
+    char target[256], linkpath[256];
+    if (targetptr>=USER_LIMIT) return (uint64_t)-EFAULT;
+    unsigned i=0;
+    for (;i<sizeof(target);i++) {
+        uint8_t *p=nas_mmu_user_byte(targetptr+i);
+        if (!p) return (uint64_t)-EFAULT;
+        target[i]=(char)*p;
+        if (!target[i]) break;
+    }
+    if (i==sizeof(target)) return (uint64_t)-ENAMETOOLONG;
+    uint64_t ret=nas_fs_resolve_path(dirfd,linkptr,linkpath);
+    return (int64_t)ret<0 ? ret :
+        (uint64_t)(int64_t)tmp_symlink(target,linkpath);
+}
 static uint64_t sys_open_path(const char *path, uint64_t native_flags,
                               uint64_t create_mode) {
     uint64_t flags;
@@ -484,11 +500,19 @@ static uint64_t sys_open_path(const char *path, uint64_t native_flags,
             char actual[256];
             int err = bootfs_resolve(path, !(flags & 0x20000ULL), actual);
             if (!err) {
-                entry = bootfs_find(actual);
-                if (bootfs_is_link(entry) &&
-                    !((flags & NAS_LINUX_O_PATH) && (flags & 0x20000ULL)))
-                    return (uint64_t)-ELOOP;
-                kind = bootfs_is_dir(entry) ? FD_DIR : FD_ARCHIVE;
+                tmp_file=tmp_find(actual);
+                if (tmp_file) {
+                    if (tmp_is_link(tmp_file) &&
+                        !((flags & NAS_LINUX_O_PATH) && (flags & 0x20000ULL)))
+                        return (uint64_t)-ELOOP;
+                    kind=tmp_file->is_dir ? FD_TMP_DIR : FD_TMP;
+                } else {
+                    entry = bootfs_find(actual);
+                    if (bootfs_is_link(entry) &&
+                        !((flags & NAS_LINUX_O_PATH) && (flags & 0x20000ULL)))
+                        return (uint64_t)-ELOOP;
+                    kind = bootfs_is_dir(entry) ? FD_DIR : FD_ARCHIVE;
+                }
             } else if (err != -ENOENT) {
                 return (uint64_t)(int64_t)err;
             }
@@ -1045,6 +1069,13 @@ static uint64_t sys_chdir(uint64_t pathname) {
         do { current_workdir[n] = path[n]; } while (path[n++]);
         return 0;
     }
+    const struct nas_tmp_file *tmp=tmp_find(actual);
+    if (tmp) {
+        if (!tmp->is_dir) return (uint64_t)-ENOTDIR;
+        unsigned j=0;
+        do { current_workdir[j]=actual[j]; } while (actual[j++]);
+        return 0;
+    }
     const struct bootfs_entry *entry = bootfs_find(actual);
     if (!bootfs_is_dir(entry)) return (uint64_t)-ENOTDIR;
     unsigned i = 0;
@@ -1069,6 +1100,22 @@ static uint64_t sys_fchdir(uint64_t fd) {
     return 0;
 }
 
+/* Same inode metadata for both fstat() and path-based stat/lstat; critical
+ * for a symlink's S_IFLNK type, target length, and nofollow distinction. */
+static void fill_tmp_stat(struct nas_linux_stat *st,
+                          const struct nas_tmp_file *file) {
+    st->dev = 5; st->ino = 5000 + tmp_number(file);
+    st->mode = file->mode;
+    st->nlink = file->linked ? (file->is_dir ? 2 : 1) : 0;
+    st->size = (int64_t)file->size;
+    st->blocks = (int64_t)((file->size + 511) / 512);
+    st->atime_sec = (int64_t)(file->atime_ns / NAS_NSEC_PER_SEC);
+    st->atime_nsec = file->atime_ns % NAS_NSEC_PER_SEC;
+    st->mtime_sec = (int64_t)(file->mtime_ns / NAS_NSEC_PER_SEC);
+    st->mtime_nsec = file->mtime_ns % NAS_NSEC_PER_SEC;
+    st->ctime_sec = (int64_t)(file->ctime_ns / NAS_NSEC_PER_SEC);
+    st->ctime_nsec = file->ctime_ns % NAS_NSEC_PER_SEC;
+}
 /* Linux x86-64 struct stat layout, 144 bytes. File size is actual module.
  * Device entries have character-device type; mounted files are regular.
  */
@@ -1091,17 +1138,7 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
     } else if (descriptors[fd] == FD_TMP || descriptors[fd] == FD_TMP_DIR) {
         const struct nas_tmp_file *file = tmp_by_fd(fd);
         if (!file) return (uint64_t)-EBADF;
-        st.dev = 5; st.ino = 5000 + tmp_number(file);
-        st.mode = file->mode;
-        st.nlink = file->linked ? (file->is_dir ? 2 : 1) : 0;
-        st.size = (int64_t)file->size;
-        st.blocks = (int64_t)((file->size + 511) / 512);
-        st.atime_sec = (int64_t)(file->atime_ns / NAS_NSEC_PER_SEC);
-        st.atime_nsec = file->atime_ns % NAS_NSEC_PER_SEC;
-        st.mtime_sec = (int64_t)(file->mtime_ns / NAS_NSEC_PER_SEC);
-        st.mtime_nsec = file->mtime_ns % NAS_NSEC_PER_SEC;
-        st.ctime_sec = (int64_t)(file->ctime_ns / NAS_NSEC_PER_SEC);
-        st.ctime_nsec = file->ctime_ns % NAS_NSEC_PER_SEC;
+        fill_tmp_stat(&st,file);
     } else if (descriptors[fd] == FD_PIPE_R || descriptors[fd] == FD_PIPE_W) {
         st.dev = 4; st.ino = (uint64_t)file_slot[fd] + 1000;
         st.mode = 0010600; /* S_IFIFO | owner read/write */
@@ -1314,6 +1351,13 @@ static uint64_t write_boot_stat(const struct bootfs_entry *entry, uint64_t dst) 
     return nas_user_write_bytes(dst, (const uint8_t *)&st, sizeof(st))
         ? 0 : (uint64_t)-EFAULT;
 }
+static uint64_t write_tmp_stat(const struct nas_tmp_file *file,uint64_t dst) {
+    struct nas_linux_stat st={0};
+    st.blksize=PAGE;
+    fill_tmp_stat(&st,file);
+    return nas_user_write_bytes(dst,(const uint8_t *)&st,sizeof(st)) ?
+           0 : (uint64_t)-EFAULT;
+}
 static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
                                  uint64_t statbuf, uint64_t flags) {
     const uint64_t AT_SYMLINK_NOFOLLOW = 0x100ULL;
@@ -1330,7 +1374,11 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
     if (bootfs_mounted()) {
         char actual[256];
         int err = bootfs_resolve(path, !(flags & AT_SYMLINK_NOFOLLOW), actual);
-        if (!err) return write_boot_stat(bootfs_find(actual), statbuf);
+        if (!err) {
+            const struct nas_tmp_file *tmp=tmp_find(actual);
+            if (tmp) return write_tmp_stat(tmp,statbuf);
+            return write_boot_stat(bootfs_find(actual),statbuf);
+        }
         if (err != -ENOENT) return (uint64_t)(int64_t)err;
     }
     /* Legacy modules and character devices retain their existing fstat. */
@@ -1354,6 +1402,16 @@ static uint64_t sys_readlinkat_boot(uint64_t dirfd, uint64_t pathname,
     if ((int64_t)r < 0) return r;
     int err = bootfs_resolve(path, false, actual);
     if (err) return (uint64_t)(int64_t)err;
+    const struct nas_tmp_file *tmp=tmp_find(actual);
+    if (tmp) {
+        if (!tmp_is_link(tmp)) return (uint64_t)-EINVAL;
+        uint8_t content[256];
+        int64_t got=tmp_read_at(tmp,0,content,
+                     tmp->size<capacity?tmp->size:capacity);
+        if (got<0) return (uint64_t)got;
+        return nas_user_write_bytes(dst,content,(uint64_t)got) ?
+               (uint64_t)got : (uint64_t)-EFAULT;
+    }
     const struct bootfs_entry *entry = bootfs_find(actual);
     if (!bootfs_is_link(entry)) return (uint64_t)-EINVAL;
     uint64_t len = entry->size < capacity ? entry->size : capacity;
@@ -1405,7 +1463,7 @@ static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
             for (const char *p = file->path; *p; p++)
                 if (*p == '/') name = p + 1;
             ino = 5000 + tmp_number(file);
-            dtype = file->is_dir ? 4 : 8;
+            dtype = file->is_dir ? 4 : tmp_is_link(file) ? 10 : 8;
         } else {
             if (cursor - 2 > UINT32_MAX) break;
             item = bootfs_child(dir, (unsigned)(cursor - 2));
@@ -1451,6 +1509,8 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
     case NAS_SC_rename: FS_RESULT(sys_renameat_tmp((uint64_t)-100, args[1], (uint64_t)-100, args[2], 0));
     case NAS_SC_renameat: FS_RESULT(sys_renameat_tmp(args[1], args[2], args[3], args[4], 0));
     case NAS_SC_renameat2: FS_RESULT(sys_renameat_tmp(args[1], args[2], args[3], args[4], args[5]));
+    case NAS_SC_symlink: FS_RESULT(sys_symlinkat_tmp(args[1], (uint64_t)-100, args[2]));
+    case NAS_SC_symlinkat: FS_RESULT(sys_symlinkat_tmp(args[1], args[2], args[3]));
     case NAS_SC_mkdir: FS_RESULT(sys_mkdirat_tmp((uint64_t)-100, args[1], args[2]));
     case NAS_SC_mkdirat: FS_RESULT(sys_mkdirat_tmp(args[1], args[2], args[3]));
     case NAS_SC_unlink: FS_RESULT(sys_unlinkat_tmp((uint64_t)-100, args[1], 0));

@@ -259,6 +259,41 @@ struct nas_tmp_file *tmp_find(const char *path) {
         }
     return 0;
 }
+bool tmp_is_link(const struct nas_tmp_file *file) {
+    return file && (file->mode & 0170000U) == 0120000U;
+}
+/* A volatile symlink is a real tmpfs inode. Its literal target (including
+ * relative path segments) is stored in the same bounded sparse-page data
+ * backend as file data, so rename/unlink follow existing inode ownership. */
+int tmp_link_target(const struct nas_tmp_file *file, char target[256]) {
+    if (!tmp_is_link(file)) return -EINVAL;
+    if (file->size >= 256) return -ENAMETOOLONG;
+    int64_t copied = tmp_read_at(file, 0, (uint8_t *)target, file->size);
+    if (copied < 0) return (int)copied;
+    if ((uint64_t)copied != file->size) return -EIO;
+    target[file->size] = 0;
+    return 0;
+}
+int tmp_symlink(const char *target, const char *path) {
+    if (!target || !target[0]) return -ENOENT;
+    unsigned length=0;
+    while (target[length]) {
+        if (++length >= 256) return -ENAMETOOLONG;
+    }
+    if (bootfs_find(path) || tmp_find(path)) return -EEXIST;
+    if (!tmp_path(path) || !bootfs_mounted()) return -EROFS;
+    int rc=tmp_parent_check(path);
+    if (rc) return rc;
+    struct nas_tmp_file *node=tmp_create(path,false,0777U);
+    if (!node) return -ENOSPC;
+    node->mode=0120000U | 0777U;
+    if (tmp_write_at(node,0,(const uint8_t *)target,length)!=(int64_t)length) {
+        node->linked=false;
+        tmp_try_reclaim(node);
+        return -ENOMEM;
+    }
+    return 0;
+}
 int tmp_parent_check(const char *path) {
     char parent[256];
     if (!tmp_parent(path,parent)) return -EROFS;

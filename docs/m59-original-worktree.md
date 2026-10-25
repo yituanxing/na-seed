@@ -23,6 +23,18 @@ in a single QEMU boot, collecting their failures before returning failure.
 Host acceptance refuses to pass unless all ten exact markers are present.
 No application-name syscall stubs or architecture-specific kernel bypasses.
 
+## Real syscall contract surfaced by the first three-ISA run
+
+The original rsync executable started successfully but BusyBox `ln -s`
+returned `ENOSYS` because NaSeed had not implemented creation of volatile
+symlinks. The change is deliberately at the common VFS/tmpfs and Linux syscall
+boundary, not in rsync's test or a CPU-specific dispatcher: add Linux native
+`symlink`/`symlinkat`, store symbolic link targets in actual tmpfs inodes,
+resolve tmpfs and immutable CPIO links in the same bounded pathwalk, and
+preserve `lstat`/`readlink`/directory-entry `DT_LNK` behavior. All three
+architectures share those semantics; the syscall number is decoded through
+each architecture's existing ABI boundary.
+
 ## Common host packaging, no guest compilation
 
 M58's proved signed Alpine APK overlay was moved into the single shared

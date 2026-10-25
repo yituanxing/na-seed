@@ -11,20 +11,16 @@ int nas_fs_lookup_node(const char *path, bool follow_final,
                        struct nas_fs_node *result, char resolved[256]) {
     if(!path || !result || !resolved || !bootfs_mounted())return -ENOENT;
     if(path[0]!='/')return -EINVAL;
-    if(tmp_path(path)) {
-        struct nas_tmp_file *tmp=tmp_find(path);
-        if(tmp) {
-            unsigned i=0;
-            do { resolved[i]=path[i]; } while(path[i++]);
-            *result=(struct nas_fs_node){
-                .backend=NAS_FS_TMPFS,.data=0,.tmp=tmp,.size=tmp->size,
-                .mode=tmp->mode,.is_dir=tmp->is_dir
-            };
-            return 0;
-        }
-    }
     int err=bootfs_resolve(path,follow_final,resolved);
     if(err)return err;
+    struct nas_tmp_file *tmp=tmp_find(resolved);
+    if(tmp) {
+        *result=(struct nas_fs_node){
+            .backend=NAS_FS_TMPFS,.data=0,.tmp=tmp,.size=tmp->size,
+            .mode=tmp->mode,.is_dir=tmp->is_dir
+        };
+        return 0;
+    }
     const struct bootfs_entry *entry=bootfs_find(resolved);
     if(!entry)return -ENOENT;
     *result=(struct nas_fs_node){
