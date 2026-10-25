@@ -42,7 +42,6 @@
 #define matched_chars TASK.matched_chars
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
-extern void nas_hex(uint64_t);
 extern void nas_putchar(char);
 extern const struct limine_file *nas_module(uint64_t);
 static void nas_fs_fail(const char *msg) __attribute__((noreturn));
@@ -589,6 +588,11 @@ static uint64_t sys_fcntl(uint64_t fd, uint64_t command, uint64_t arg) {
  * FIOCLEX/FIONCLEX, by contrast, belong to the individual descriptor. */
 static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
     if(fd>=NAS_FD_LIMIT || descriptors[fd]==FD_CLOSED)return (uint64_t)-EBADF;
+    /* Linux ioctl _IOC commands occupy 32 bits even on LP64. Musl may
+     * sign-extend an _IOR command (for example TIOCGPTN=0x80045430) when
+     * passing it through the 64-bit syscall register on ALL three ISAs.
+     * The semantic request is its low 32 bits, not the sign extension. */
+    cmd=(uint32_t)cmd;
     unsigned slot=file_slot[fd];
     if(cmd==0x5421ULL) { /* FIONBIO: pointer to native int */
         if(nas_open_files[slot].status_flags&NAS_LINUX_O_PATH)
@@ -605,20 +609,7 @@ static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
         return 0;
     }
     const struct nas_file_ops *ops=nas_open_files[slot].ops;
-    uint64_t result=ops && ops->ioctl ? ops->ioctl(fd,cmd,arg) :
-                    (uint64_t)-ENOTTY;
-    /* Native musl openpty/login_tty traversal: report the precise device
-     * and command only on failure, never an application-name special case. */
-    if((int64_t)result<0 || descriptors[fd]==FD_PTY_MASTER ||
-       descriptors[fd]==FD_PTY_SLAVE) {
-        nas_print("[IOCTL TRACE] fd=");nas_dec(fd);
-        nas_print(" kind=");nas_dec(descriptors[fd]);
-        nas_print(" slot=");nas_dec(slot);
-        nas_print(" cmd=");nas_hex(cmd);
-        nas_print(" result=");nas_hex(result);
-        nas_print("\n");
-    }
-    return result;
+    return ops && ops->ioctl ? ops->ioctl(fd,cmd,arg) : (uint64_t)-ENOTTY;
 }
 
 static const struct limine_file *bootfs_lookup(const char *path) {
