@@ -118,6 +118,16 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_symlink: return NAS_SC_symlink;
     case __NR_symlinkat: return NAS_SC_symlinkat;
     case __NR_socketpair: return NAS_SC_socketpair;
+    case __NR_socket: return NAS_SC_socket;
+    case __NR_bind: return NAS_SC_bind;
+    case __NR_listen: return NAS_SC_listen;
+    case __NR_connect: return NAS_SC_connect;
+    case __NR_accept: return NAS_SC_accept;
+    case __NR_accept4: return NAS_SC_accept4;
+    case __NR_getsockname: return NAS_SC_getsockname;
+    case __NR_getpeername: return NAS_SC_getpeername;
+    case __NR_getsockopt: return NAS_SC_getsockopt;
+    case __NR_setsockopt: return NAS_SC_setsockopt;
     case __NR_rename: return NAS_SC_rename;
     case __NR_renameat: return NAS_SC_renameat;
     case __NR_renameat2: return NAS_SC_renameat2;
@@ -178,6 +188,16 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 78U: return NAS_SC_readlinkat;
     case 36U: return NAS_SC_symlinkat;
     case 199U: return NAS_SC_socketpair;
+    case 198U: return NAS_SC_socket;
+    case 200U: return NAS_SC_bind;
+    case 201U: return NAS_SC_listen;
+    case 203U: return NAS_SC_connect;
+    case 202U: return NAS_SC_accept;
+    case 242U: return NAS_SC_accept4;
+    case 204U: return NAS_SC_getsockname;
+    case 205U: return NAS_SC_getpeername;
+    case 209U: return NAS_SC_getsockopt;
+    case 208U: return NAS_SC_setsockopt;
     case 50U: return NAS_SC_fchdir;
     case 17U: return NAS_SC_getcwd;
     case 278U: return NAS_SC_getrandom; /* asm-generic Linux */

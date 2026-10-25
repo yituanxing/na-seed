@@ -15,6 +15,7 @@
 #include "../time/clock.h"
 #include "../fs/epoll.h"
 #include "../fs/eventfd.h"
+#include "../fs/unix_socket.h"
 #include "../mm/usercopy.h"
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
@@ -40,7 +41,8 @@ static bool task_io_ready(const struct nas_task *task) {
     if (task->blocked_op == NAS_SC_read ||
         task->blocked_op == NAS_SC_readv) {
         if(kind == FD_PIPE_R || kind == FD_SOCKET)
-            return nas_pipe_read_ready(slot);
+            return nas_unix_socket_listening(slot) ?
+                   nas_unix_socket_readable(slot) : nas_pipe_read_ready(slot);
         if(kind == FD_EVENTFD)return nas_eventfd_ready(slot,false);
         if(kind == FD_TTY || kind == FD_UART)
             return nas_tty_read_ready((struct nas_task *)task,task->blocked_args[2]);

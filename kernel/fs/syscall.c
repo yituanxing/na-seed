@@ -23,6 +23,7 @@
 #include "file_ops.h"
 #include "epoll.h"
 #include "eventfd.h"
+#include "unix_socket.h"
 #include "lookup.h"
 #include "../time/clock.h"
 /* Linux x86-64 filesystem syscall adapter. Backend state is already
@@ -179,6 +180,139 @@ static uint64_t sys_socketpair(uint64_t domain,uint64_t type,
         return (uint64_t)-ESOCKTNOSUPPORT;
     if(protocol)return (uint64_t)-EPROTONOSUPPORT;
     return sys_channel_pair(user_pair,type & (0x800ULL|0x80000ULL),true);
+}
+/* AF_UNIX SOCK_STREAM: same global refcounted open descriptions as pipe2
+ * and socketpair. A listener owns pending accepted slots, never a task-local
+ * FD until accept transfers ownership. All ISA-specific numbers are decoded
+ * above this shared implementation. */
+static bool unix_fd(uint64_t fd) {
+    return fd<NAS_FD_LIMIT && descriptors[fd]==FD_SOCKET &&
+           file_slot[fd]<NAS_OPEN_FILE_LIMIT;
+}
+static uint64_t sys_socket(uint64_t domain,uint64_t type,uint64_t protocol) {
+    if(domain!=1)return (uint64_t)-EAFNOSUPPORT;
+    if((type&15U)!=1U || (type&~(15ULL|0x800ULL|0x80000ULL)))
+        return (uint64_t)-ESOCKTNOSUPPORT;
+    if(protocol)return (uint64_t)-EPROTONOSUPPORT;
+    unsigned fd=NAS_FD_LIMIT,slot=NAS_OPEN_FILE_LIMIT;
+    for(unsigned i=3;i<NAS_FD_LIMIT;i++)
+        if(descriptors[i]==FD_CLOSED) {fd=i;break;}
+    if(fd==NAS_FD_LIMIT)return (uint64_t)-EMFILE;
+    for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++)
+        if(!nas_open_files[i].refcount) {slot=i;break;}
+    if(slot==NAS_OPEN_FILE_LIMIT)return (uint64_t)-ENFILE;
+    nas_unix_socket_init(slot);
+    nas_open_files[slot]=(struct nas_open_file){
+        .refcount=1,.status_flags=2ULL|(type&0x800ULL),
+        .ops=nas_fs_ops_for_kind(FD_SOCKET)
+    };
+    descriptors[fd]=FD_SOCKET;
+    file_slot[fd]=(uint8_t)slot;
+    fd_cloexec[fd]=(type&0x80000ULL)!=0;
+    return fd;
+}
+/* Linux sockaddr_un has a native two-byte family followed by the pathname.
+ * This first backend supports Linux pathname sockets, not abstract names. */
+static int unix_address(uint64_t addr,uint64_t length,char out[256]) {
+    uint8_t buffer[110];
+    if(length<3 || length>sizeof(buffer))return -EINVAL;
+    if(!nas_user_read_bytes(addr,buffer,length))return -EFAULT;
+    if(buffer[0]!=1 || buffer[1])return -EAFNOSUPPORT;
+    if(!buffer[2])return -EOPNOTSUPP;
+    char input[109];
+    unsigned n=0;
+    for(;n<length-2 && buffer[n+2] && n<sizeof(input)-1;n++)
+        input[n]=(char)buffer[n+2];
+    input[n]=0;
+    return nas_path_resolve(input[0]=='/' ? 0 : current_workdir,input,out);
+}
+static uint64_t sys_unix_bind(uint64_t fd,uint64_t address,uint64_t size) {
+    if(!unix_fd(fd))return (uint64_t)-EBADF;
+    char path[256];int err=unix_address(address,size,path);
+    if(err)return (uint64_t)(int64_t)err;
+    return (uint64_t)(int64_t)nas_unix_socket_bind(
+        file_slot[fd],path,0777U & ~(uint32_t)TASK.vm_owner->umask);
+}
+static uint64_t sys_unix_listen(uint64_t fd,uint64_t backlog) {
+    if(!unix_fd(fd))return (uint64_t)-EBADF;
+    return (uint64_t)(int64_t)nas_unix_socket_listen(file_slot[fd],
+                                                 backlog>16?16U:(unsigned)backlog);
+}
+static uint64_t sys_unix_connect(uint64_t fd,uint64_t address,uint64_t size) {
+    if(!unix_fd(fd))return (uint64_t)-EBADF;
+    char path[256];int err=unix_address(address,size,path);
+    if(err)return (uint64_t)(int64_t)err;
+    return (uint64_t)(int64_t)nas_unix_socket_connect(file_slot[fd],path);
+}
+static uint64_t sys_unix_accept(uint64_t fd,uint64_t address,
+                                 uint64_t length_ptr,uint64_t flags) {
+    if(!unix_fd(fd))return (uint64_t)-EBADF;
+    if(flags & ~(0x800ULL|0x80000ULL))return (uint64_t)-EINVAL;
+    if((address&&!length_ptr)||(!address&&length_ptr))return (uint64_t)-EFAULT;
+    uint32_t length=0;
+    if(length_ptr && !nas_user_read_bytes(length_ptr,(uint8_t *)&length,4))
+        return (uint64_t)-EFAULT;
+    if(address && length && (!nas_mmu_user_byte(address) ||
+                             (length>1 && !nas_mmu_user_byte(address+1))))
+        return (uint64_t)-EFAULT;
+    unsigned nextfd=NAS_FD_LIMIT;
+    for(unsigned i=3;i<NAS_FD_LIMIT;i++)
+        if(descriptors[i]==FD_CLOSED) {nextfd=i;break;}
+    if(nextfd==NAS_FD_LIMIT)return (uint64_t)-EMFILE;
+    unsigned slot;
+    int rc=nas_unix_socket_accept(file_slot[fd],&slot);
+    if(rc)return (uint64_t)(int64_t)rc;
+    descriptors[nextfd]=FD_SOCKET;
+    file_slot[nextfd]=(uint8_t)slot;
+    fd_cloexec[nextfd]=(flags&0x80000ULL)!=0;
+    nas_open_files[slot].status_flags|=flags&0x800ULL;
+    if(length_ptr) {
+        uint32_t actual=2;
+        uint8_t family[2]={1,0};
+        if((length && !nas_user_write_bytes(address,family,length>2?2:length)) ||
+           !nas_user_write_bytes(length_ptr,(const uint8_t *)&actual,4))
+            nas_fs_fail("validated accept address became inaccessible");
+    }
+    return nextfd;
+}
+static uint64_t sys_unix_name(uint64_t fd,uint64_t address,
+                              uint64_t length_ptr,bool peer) {
+    if(!unix_fd(fd))return (uint64_t)-EBADF;
+    if(!address || !length_ptr)return (uint64_t)-EFAULT;
+    uint32_t size;
+    if(!nas_user_read_bytes(length_ptr,(uint8_t *)&size,4))
+        return (uint64_t)-EFAULT;
+    uint8_t output[110]={1,0};
+    const char *path=peer ? 0 : nas_unix_socket_name(file_slot[fd]);
+    uint32_t actual=2;
+    if(path) {
+        unsigned n=(unsigned)strnlen(path,107);
+        memcpy(output+2,path,n);
+        output[n+2]=0;
+        actual=n+3;
+    }
+    if(size>actual)size=actual;
+    return nas_user_write_bytes(address,output,size) &&
+           nas_user_write_bytes(length_ptr,(const uint8_t *)&actual,4)
+         ? 0:(uint64_t)-EFAULT;
+}
+static uint64_t sys_unix_getsockopt(uint64_t fd,uint64_t level,
+                                    uint64_t opt,uint64_t address,
+                                    uint64_t size_ptr) {
+    if(!unix_fd(fd))return (uint64_t)-EBADF;
+    if(level!=1)return (uint64_t)-ENOPROTOOPT;
+    uint32_t size;
+    if(!nas_user_read_bytes(size_ptr,(uint8_t *)&size,4))
+        return (uint64_t)-EFAULT;
+    if(size<4)return (uint64_t)-EINVAL;
+    uint32_t value;
+    if(opt==3)value=1; /* SO_TYPE: stream */
+    else if(opt==4)value=0; /* SO_ERROR: no pending asynchronous error */
+    else return (uint64_t)-ENOPROTOOPT;
+    size=4;
+    return nas_user_write_bytes(address,(const uint8_t *)&value,4) &&
+           nas_user_write_bytes(size_ptr,(const uint8_t *)&size,4)
+         ? 0:(uint64_t)-EFAULT;
 }
 static uint64_t pipe_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     if (!length) return 0;
@@ -552,6 +686,10 @@ static uint64_t sys_open_path(const char *path, uint64_t native_flags,
     }
     if (!kind) return (flags & 0x40ULL) && bootfs_mounted()
         ? (uint64_t)-EROFS : (uint64_t)-ENOENT;
+    /* Unix pathname sockets have genuine S_IFSOCK in tmpfs, but unlike a
+     * regular inode cannot be opened as a byte file (O_PATH may inspect). */
+    if(tmp_file && (tmp_file->mode&0170000U)==0140000U &&
+       !(flags&NAS_LINUX_O_PATH))return (uint64_t)-ENXIO;
     if ((flags & 0x10000ULL) && kind != FD_DIR && kind != FD_TMP_DIR)
         return (uint64_t)-ENOTDIR;
     if (kind == FD_TMP_DIR && ((flags & 3ULL) || (flags & 0x200ULL)))
@@ -707,6 +845,10 @@ static uint64_t vioctl_uart(uint64_t cmd,uint64_t arg) {
         ? nas_tty_ioctl(cmd,arg) : (uint64_t)-ENOTTY;
 }
 static void vrelease_pipe(unsigned slot){nas_pipe_release_description(slot);}
+static void vrelease_socket(unsigned slot){
+    nas_unix_socket_release(slot);
+    nas_pipe_release_description(slot);
+}
 static void vrelease_tmp(unsigned slot){tmp_release_slot(slot);}
 static const struct nas_file_ops ops_uart={
     .read=vread_tty,.write=vwrite_tty,.poll=vpoll_tty,
@@ -734,6 +876,8 @@ static const struct nas_file_ops ops_pipe_write={
     .poll_arm=varmpipe_write,.release=vrelease_pipe
 };
 static uint16_t vpoll_socket(uint64_t fd,uint16_t events) {
+    if(nas_unix_socket_listening(file_slot[fd]))
+        return nas_unix_socket_readable(file_slot[fd]) ? (events&1U) : 0;
     return vpoll_pipe_read(fd,events) | vpoll_pipe_write(fd,events);
 }
 static void varm_socket(struct nas_task *t,uint64_t fd,uint16_t events) {
@@ -742,7 +886,7 @@ static void varm_socket(struct nas_task *t,uint64_t fd,uint16_t events) {
 }
 static const struct nas_file_ops ops_socket={
     .read=pipe_fd_read,.write=pipe_fd_write,.poll=vpoll_socket,
-    .poll_arm=varm_socket,.release=vrelease_pipe
+    .poll_arm=varm_socket,.release=vrelease_socket
 };
 static const struct nas_file_ops ops_tmp={
     .read=tmp_fd_read,.write=tmp_fd_write,.poll=vpoll_always,
@@ -1070,7 +1214,8 @@ bool nas_fs_poll_arm(uint64_t address,uint64_t nfds) {
 bool nas_fs_poll_ready(const struct nas_task *task) {
     if(task->poll_tty_read && nas_tty_poll_readable())return true;
     for(unsigned slot=0;slot<NAS_OPEN_FILE_LIMIT;slot++) {
-        if(nas_slot_mask_test(&task->poll_pipe_read,slot) && nas_pipe_poll_readable(slot))
+        if(nas_slot_mask_test(&task->poll_pipe_read,slot) &&
+           (nas_pipe_poll_readable(slot) || nas_unix_socket_readable(slot)))
             return true;
         if(nas_slot_mask_test(&task->poll_pipe_write,slot) && nas_pipe_poll_writable(slot))
             return true;
@@ -1496,7 +1641,8 @@ static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
             for (const char *p = file->path; *p; p++)
                 if (*p == '/') name = p + 1;
             ino = 5000 + tmp_number(file);
-            dtype = file->is_dir ? 4 : tmp_is_link(file) ? 10 : 8;
+            dtype = file->is_dir ? 4 : tmp_is_link(file) ? 10 :
+                    (file->mode&0170000U)==0140000U ? 12 : 8;
         } else {
             if (cursor - 2 > UINT32_MAX) break;
             item = bootfs_child(dir, (unsigned)(cursor - 2));
@@ -1575,6 +1721,17 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
     case NAS_SC_pipe: FS_RESULT(sys_pipe2(args[1], 0));
     case NAS_SC_pipe2: FS_RESULT(sys_pipe2(args[1], args[2]));
     case NAS_SC_socketpair: FS_RESULT(sys_socketpair(args[1],args[2],args[3],args[4]));
+    case NAS_SC_socket: FS_RESULT(sys_socket(args[1],args[2],args[3]));
+    case NAS_SC_bind: FS_RESULT(sys_unix_bind(args[1],args[2],args[3]));
+    case NAS_SC_listen: FS_RESULT(sys_unix_listen(args[1],args[2]));
+    case NAS_SC_connect: FS_RESULT(sys_unix_connect(args[1],args[2],args[3]));
+    case NAS_SC_accept: FS_RESULT(sys_unix_accept(args[1],args[2],args[3],0));
+    case NAS_SC_accept4: FS_RESULT(sys_unix_accept(args[1],args[2],args[3],args[4]));
+    case NAS_SC_getsockname: FS_RESULT(sys_unix_name(args[1],args[2],args[3],false));
+    case NAS_SC_getpeername: FS_RESULT(sys_unix_name(args[1],args[2],args[3],true));
+    case NAS_SC_getsockopt:
+        FS_RESULT(sys_unix_getsockopt(args[1],args[2],args[3],args[4],args[5]));
+    case NAS_SC_setsockopt: FS_RESULT((uint64_t)-ENOPROTOOPT);
     case NAS_SC_fcntl: FS_RESULT(sys_fcntl(args[1], args[2], args[3]));
     case NAS_SC_eventfd:
         FS_RESULT(nas_eventfd_create(args[1],0));

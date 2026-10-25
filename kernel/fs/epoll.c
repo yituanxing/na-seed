@@ -12,6 +12,7 @@
 #include "../lib/string.h"
 #include "file_ops.h"
 #include "epoll.h"
+#include "unix_socket.h"
 #include "eventfd.h"
 
 /* Open-description-owned bounded epoll instances, not process-specific
@@ -77,8 +78,12 @@ static uint16_t ready_now(const struct ep_watch *w){
         if((requested&EP_OUT) && nas_pipe_poll_writable(w->slot))result|=EP_OUT;
         break;
     case FD_SOCKET:
-        if((requested&EP_IN) && nas_pipe_poll_readable(w->slot))result|=EP_IN;
-        if((requested&EP_OUT) && nas_pipe_poll_writable(w->slot))result|=EP_OUT;
+        if(nas_unix_socket_listening(w->slot)) {
+            if((requested&EP_IN) && nas_unix_socket_readable(w->slot))result|=EP_IN;
+        } else {
+            if((requested&EP_IN) && nas_pipe_poll_readable(w->slot))result|=EP_IN;
+            if((requested&EP_OUT) && nas_pipe_poll_writable(w->slot))result|=EP_OUT;
+        }
         break;
     case FD_TTY: case FD_UART:
         if((requested&EP_IN) && nas_tty_poll_readable())result|=EP_IN;
