@@ -300,6 +300,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         return nas_process_prlimit(0,args[1],0,args[2]);
     if (nr == NAS_SC_prlimit64)
         return nas_process_prlimit(args[1],args[2],args[3],args[4]);
+    if (nr == NAS_SC_prctl)
+        return nas_process_prctl(args[1],args[2]);
     if(nr==NAS_SC_clock_gettime)
         return nas_time_read_clock(args[1],args[2],false);
     if(nr==NAS_SC_clock_getres)

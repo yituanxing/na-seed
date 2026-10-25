@@ -10,6 +10,8 @@ struct nas_task;
 /* Honest read-only Linux rlimit64 snapshot; changes remain unsupported. */
 uint64_t nas_process_prlimit(uint64_t pid,uint64_t resource,
                              uint64_t new_addr,uint64_t old_addr);
+/* Linux PR_SET_NAME / PR_GET_NAME operate on the calling thread. */
+uint64_t nas_process_prctl(uint64_t option,uint64_t arg);
 uint64_t nas_process_fork(uint64_t *syscall_frame);
 /* Exactly fork-equivalent CLONE_CHILD_SETTID|CHILD_CLEARTID|SIGCHLD
  * process creation. Child-address-space TID is initialized before entry.

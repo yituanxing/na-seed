@@ -46,6 +46,7 @@ void nas_task_boot_init(void) {
     nas_current_task->ppid = 0;
     nas_current_task->pgid = 1;
     nas_current_task->sid = 1;
+    memcpy(nas_current_task->comm,"init",5);
     nas_current_task->umask = NAS_UMASK_DEFAULT;
     nas_current_task->state = NAS_TASK_RUNNING;
     nas_current_task->cwd[0] = '/';

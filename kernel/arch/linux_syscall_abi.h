@@ -81,6 +81,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_getpid: return NAS_SC_getpid;
     case __NR_getrlimit: return NAS_SC_getrlimit;
     case __NR_prlimit64: return NAS_SC_prlimit64;
+    case __NR_prctl: return NAS_SC_prctl;
     case __NR_getppid: return NAS_SC_getppid;
     case __NR_gettid: return NAS_SC_gettid;
     case __NR_gettimeofday: return NAS_SC_gettimeofday;
@@ -241,6 +242,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 172U: return NAS_SC_getpid;
     case 163U: return NAS_SC_getrlimit; /* Linux asm-generic */
     case 261U: return NAS_SC_prlimit64; /* Linux asm-generic */
+    case 167U: return NAS_SC_prctl; /* Linux asm-generic prctl */
     case 173U: return NAS_SC_getppid;
     case 174U: return NAS_SC_getuid;
     case 175U: return NAS_SC_geteuid;
