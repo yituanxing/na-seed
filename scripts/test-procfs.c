@@ -7,6 +7,7 @@
 #include "../kernel/task.h"
 #include "../kernel/fs/procfs.h"
 #include "../kernel/mm/vm.h"
+#include "../kernel/arch/user_pt.h"
 static struct nas_task tasks[3];
 struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
 struct nas_task *nas_current_task=&tasks[0];
