@@ -162,3 +162,29 @@ and the full upstream CTest suite runs twice. The test also prints live
 Ninja progress to QEMU serial instead of swallowing it in an unobserved
 private tmpfs file; archive mtime must increase across a source-touch build.
 Retain ample timeout only as a hard failure bound, not a performance fix.
+
+## Shared usercopy page-granularity optimization: real RV64 GCC experiment
+
+The shared kernel's `nas_user_copy_to_mapped` (also user read/write) formerly
+looked up the user PTE **once per byte**, even when the virtual region and
+physical page were unchanged. All three real ISA page-table backends expose
+contiguous HHDM memory within each 4096-byte leaf, but **not** between two
+adjacent virtual pages. Replace redundant per-byte lookups with one
+mapping lookup per page and the existing kernel freestanding `memcpy` for the
+bounded within-page chunk. Keep write's full-range permission validation
+before mutating any byte, and preserve RX ELF bootstrap semantics.
+
+Independent **true RV64 QEMU/NaSeed/Alpine GCC M38** A/B run
+https://github.com/yituanxing/na-seed/actions/runs/40157932114:
+baseline kernel **70 s / 69 s**, page-granularity kernel **14 s / 16 s**,
+averages **69.5 s vs 15.0 s, 4.63x faster** on that exact original GCC
+workload (not a general OS benchmark). Four genuine guest compilations,
+links and executions all passed original M38 markers. Separately, six
+QEMU TCG cache A/B trials saw no useful improvement:
+https://github.com/yituanxing/na-seed/actions/runs/40156782510 .
+Do not mistake full host-harness wall time for QEMU/JIT throughput.
+
+This is a *shared kernel* change: the isolated RV64 performance result alone
+does not establish x86 and AArch64 regressions. The standard grouped 12/12,
+all other exact-head CI and focused host-side cross-page/permission tests
+must pass before merging.
