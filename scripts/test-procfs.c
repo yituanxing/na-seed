@@ -16,6 +16,10 @@ struct nas_task *nas_task_by_pid(uint64_t pid) {
 uint64_t nas_managed_frames(void){return 1024;}
 uint64_t nas_free_frames(void){return 512;}
 uint64_t nas_arch_monotonic_ns(void){return 12500000000ULL;}
+bool nas_time_boot_epoch_seconds(uint64_t *out) {
+    if(!out)return false;
+    *out=1760000000ULL;return true;
+}
 void nas_task_cpu_account_snapshot(uint64_t *busy,uint64_t *idle,
                                    uint64_t loads[3],uint64_t *switches) {
     if(busy)*busy=1500000000ULL;
@@ -52,6 +56,7 @@ int main(void) {
     check_file("/proc/meminfo","MemTotal:       4096 kB");
     check_file("/proc/uptime","12.50");
     check_file("/proc/stat","cpu  0 0 150 1100");
+    check_file("/proc/stat","btime 1760000000");
     check_file("/proc/loadavg","1.00 0.50 0.25");
     check_file("/proc/vmstat","nr_free_pages 512");
     check_file("/proc/23/statm"," 0 0 0 0 0 0");

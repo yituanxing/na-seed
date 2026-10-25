@@ -178,6 +178,10 @@ int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
             decimal(&w,it);word(&w," 0 0 0 0 0 0\n");
         }
         word(&w,"ctxt ");decimal(&w,switches);ch(&w,'\n');
+        uint64_t boot_epoch=0;
+        if(nas_time_boot_epoch_seconds(&boot_epoch)) {
+            word(&w,"btime ");decimal(&w,boot_epoch);ch(&w,'\n');
+        }
         unsigned run=0,blocked=0;
         for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
             const struct nas_task *t=nas_task_at(i);

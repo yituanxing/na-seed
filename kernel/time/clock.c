@@ -23,6 +23,12 @@ void nas_timekeeper_init(int64_t boot_epoch_seconds) {
     realtime_ready=true;
 }
 
+bool nas_time_boot_epoch_seconds(uint64_t *out) {
+    if(!out || !realtime_ready || realtime_anchor_ns<mono_anchor_ns)
+        return false;
+    *out=(realtime_anchor_ns-mono_anchor_ns)/NAS_NSEC_PER_SEC;
+    return true;
+}
 bool nas_time_realtime_available(void) {
     return realtime_ready;
 }
