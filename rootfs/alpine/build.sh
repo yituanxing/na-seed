@@ -46,6 +46,8 @@ case "$profile" in
          package_list=rootfs/alpine/packages-dev.txt ;;
     cmake) work="build/external/m55-cjson/$port"
            package_list=rootfs/alpine/packages-cmake.txt ;;
+    native-busybox) work="build/external/m56-native-busybox/$port"
+           package_list=rootfs/alpine/packages-native-busybox.txt ;;
     *) echo "[ALPINE] unknown profile $profile" >&2; exit 2 ;;
 esac
 root="$work/rootfs"
@@ -112,7 +114,41 @@ sudo chown -R "$(id -u):$(id -g)" "$root"
 mkdir -p "$root/tmp" "$root/tests"
 chmod 1777 "$root/tmp"
 test -e "$root/bin/busybox"
-if [ "$profile" = cmake ]; then
+if [ "$profile" = native-busybox ]; then
+    # Stage ONLY a pinned, ORIGINAL upstream source tree. No host-produced
+    # BusyBox binary, generated .config, Makefile rewriting or host build.
+    # All Kconfig HOSTCC, target GCC, GNU Make, link and execution occur
+    # under the actual NaSeed kernel in QEMU.
+    version=1.37.0
+    expected_sha=3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4
+    upstream="build/deps/source-busybox/busybox-$version.tar.bz2"
+    mkdir -p "$(dirname "$upstream")"
+    if [ ! -s "$upstream" ]; then
+        curl -fLsS --retry 3 --retry-delay 2 --connect-timeout 10 --max-time 120 \
+            -o "$upstream.tmp" "https://busybox.net/downloads/busybox-$version.tar.bz2"
+        mv "$upstream.tmp" "$upstream"
+    fi
+    printf '%s  %s\n' "$expected_sha" "$upstream" | sha256sum -c -
+    mkdir -p "$root/tests/m56-source"
+    tar -xjf "$upstream" -C "$root/tests/m56-source" --strip-components=1
+    test -s "$root/tests/m56-source/Makefile"
+    test -s "$root/tests/m56-source/Config.in"
+    # No generated executable or preconfigured project is permitted.
+    test ! -e "$root/tests/m56-source/busybox"
+    test ! -e "$root/tests/m56-source/.config"
+    cp scripts/source-busybox.config "$root/tests/m56.config"
+    cp tests/m56-busybox-run.sh "$root/tests/run-m56.sh"
+    for program in make gcc as ld readelf; do
+        test -x "$root/usr/bin/$program" || {
+            echo "[M56 FAIL] missing native tool: $program" >&2
+            exit 1
+        }
+        readelf -h "$root/usr/bin/$program" | grep -Fq "$machine"
+    done
+    test -s "$root/usr/lib/libc.a"
+    test -s "$root/usr/include/stdio.h"
+    echo "[M56 SOURCE PASS] original SHA256-pinned BusyBox $version + native GNU toolchain staged for genuine guest build"
+elif [ "$profile" = cmake ]; then
     # Pinned genuine upstream cJSON 1.7.19 commit. The bytes of the CMake
     # build scripts and code are verified against Git object hashes; no
     # host-generated project or altered upstream source.
