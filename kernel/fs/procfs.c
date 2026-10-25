@@ -63,6 +63,23 @@ bool nas_proc_lookup(const char *path,struct nas_proc_node *out) {
     }
     if(!living(pid))return false;
     out->pid=pid;
+    if(!strcmp(p,"/task")) {
+        out->kind=NAS_PROC_TASK_DIR;
+        out->tgid=pid;
+        return true;
+    }
+    if(!strncmp(p,"/task/",6)) {
+        uint64_t tid=0;
+        const char *suffix=0;
+        if(!numeric(p+6,&tid,&suffix))return false;
+        const struct nas_task *thread=living(tid);
+        if(!thread || thread->tgid!=pid)return false;
+        out->pid=tid;
+        out->tgid=pid;
+        p=suffix;
+        if(!*p){out->kind=NAS_PROC_TID_DIR;return true;}
+        /* Thread-local /proc status/stat/comm are regular files. */
+    }
     if(!*p)out->kind=NAS_PROC_PID_DIR;
     else if(!strcmp(p,"/stat"))out->kind=NAS_PROC_PID_STAT;
     else if(!strcmp(p,"/status"))out->kind=NAS_PROC_PID_STATUS;
@@ -76,27 +93,40 @@ bool nas_proc_dir_path(struct nas_proc_node node,char path[256]) {
     if(!path || !nas_proc_is_dir(node))return false;
     const char *prefix="/proc";unsigned p=0;
     while(prefix[p]){path[p]=prefix[p];p++;}
-    if(node.kind==NAS_PROC_PID_DIR) {
-        if(!living(node.pid))return false;
-        path[p++]='/';char number[32];number_name(node.pid,number);
-        unsigned i=0;while(number[i])path[p++]=number[i++];
+    if(node.kind!=NAS_PROC_ROOT) {
+        uint64_t leader=node.tgid?node.tgid:node.pid;
+        if(!living(leader))return false;
+        path[p++]='/';char number[32];number_name(leader,number);
+        for(unsigned i=0;number[i];i++)path[p++]=number[i];
+        if(node.kind==NAS_PROC_TASK_DIR || node.kind==NAS_PROC_TID_DIR) {
+            const char *suffix="/task";
+            for(unsigned i=0;suffix[i];i++)path[p++]=suffix[i];
+            if(node.kind==NAS_PROC_TID_DIR) {
+                if(!living(node.pid) || living(node.pid)->tgid!=leader)return false;
+                path[p++]='/';number_name(node.pid,number);
+                for(unsigned i=0;number[i];i++)path[p++]=number[i];
+            }
+        }
     }
     path[p]=0;return true;
 }
 bool nas_proc_is_dir(struct nas_proc_node node) {
-    return node.kind==NAS_PROC_ROOT || node.kind==NAS_PROC_PID_DIR;
+    return node.kind==NAS_PROC_ROOT || node.kind==NAS_PROC_PID_DIR ||
+           node.kind==NAS_PROC_TASK_DIR || node.kind==NAS_PROC_TID_DIR;
 }
 uint32_t nas_proc_mode(struct nas_proc_node node) {
     return nas_proc_is_dir(node) ? 0040555U : 0100444U;
 }
 uint64_t nas_proc_ino(struct nas_proc_node node) {
-    return node.pid ? 80000U+node.pid*16U+(uint64_t)node.kind :
-           70000U+(uint64_t)node.kind;
+    /* Per-task inode identity is distinct from the process-level name;
+     * retain stable inodes across dup/fork/readdir and TID traversal. */
+    return node.pid ? 80000U+node.pid*128U+(uint64_t)node.kind +
+           (node.tgid ? 64U : 0U) : 70000U+(uint64_t)node.kind;
 }
 bool nas_proc_child(struct nas_proc_node directory,unsigned index,
                     char name[32],struct nas_proc_node *node) {
     static const char *const root[]={"self","meminfo","uptime","version","cpuinfo","stat","loadavg","vmstat"};
-    static const char *const process[]={"stat","status","comm","cmdline","statm"};
+    static const char *const process[]={"stat","status","comm","cmdline","statm","task"};
     if(!name || !node)return false;
     if(directory.kind==NAS_PROC_ROOT) {
         if(index<sizeof(root)/sizeof(root[0])) {
@@ -113,18 +143,43 @@ bool nas_proc_child(struct nas_proc_node directory,unsigned index,
             if(!t || t->state==NAS_TASK_FREE || t->is_thread)continue;
             if(found++!=index-(sizeof(root)/sizeof(root[0])))continue;
             number_name(t->pid,name);
-            *node=(struct nas_proc_node){NAS_PROC_PID_DIR,t->pid};
+            *node=(struct nas_proc_node){NAS_PROC_PID_DIR,t->pid,0};
             return true;
         }
         return false;
     }
-    if(directory.kind!=NAS_PROC_PID_DIR || !living(directory.pid) ||
-       index>=sizeof(process)/sizeof(process[0]))return false;
+    if(directory.kind==NAS_PROC_TASK_DIR) {
+        const struct nas_task *leader=living(directory.pid);
+        if(!leader || leader->is_thread)return false;
+        unsigned found=0;
+        for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
+            const struct nas_task *t=nas_task_at(i);
+            if(!t || t->state==NAS_TASK_FREE || t->tgid!=directory.pid)
+                continue;
+            if(found++!=index)continue;
+            number_name(t->pid,name);
+            *node=(struct nas_proc_node){NAS_PROC_TID_DIR,t->pid,directory.pid};
+            return true;
+        }
+        return false;
+    }
+    if(directory.kind!=NAS_PROC_PID_DIR && directory.kind!=NAS_PROC_TID_DIR)
+        return false;
+    const struct nas_task *task=living(directory.pid);
+    if(!task || (directory.kind==NAS_PROC_TID_DIR &&
+                 task->tgid!=directory.tgid))return false;
+    unsigned count=directory.kind==NAS_PROC_PID_DIR ?
+        sizeof(process)/sizeof(process[0]) :
+        sizeof(process)/sizeof(process[0])-1;
+    if(index>=count)return false;
     const char *s=process[index];unsigned i=0;
     do{name[i]=s[i];}while(s[i++]);
     uint8_t kind[]={NAS_PROC_PID_STAT,NAS_PROC_PID_STATUS,
-                    NAS_PROC_PID_COMM,NAS_PROC_PID_CMDLINE,NAS_PROC_PID_STATM};
-    *node=(struct nas_proc_node){kind[index],directory.pid};
+                    NAS_PROC_PID_COMM,NAS_PROC_PID_CMDLINE,
+                    NAS_PROC_PID_STATM,NAS_PROC_TASK_DIR};
+    *node=(struct nas_proc_node){kind[index],directory.pid,
+        directory.kind==NAS_PROC_TID_DIR?directory.tgid:
+        (kind[index]==NAS_PROC_TASK_DIR?directory.pid:0)};
     return true;
 }
 /* Collect only the VM ranges tracked by the shared anonymous VMA ledger.
@@ -151,6 +206,7 @@ int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
     char data[LIMIT];struct writer w={data,0,LIMIT};
     const struct nas_task *t=node.pid ? living(node.pid) : 0;
     if(node.pid && !t)return -ENOENT;
+    if(node.tgid && (!t || t->tgid!=node.tgid))return -ENOENT;
     switch(node.kind) {
     case NAS_PROC_MEMINFO:
         word(&w,"MemTotal:       ");decimal(&w,nas_managed_frames()*4U);word(&w," kB\n");

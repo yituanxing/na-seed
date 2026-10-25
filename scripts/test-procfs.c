@@ -76,6 +76,36 @@ int main(void) {
     assert(!nas_proc_child(root,10,name,&entry));
     assert(nas_proc_lookup("/proc/23",&entry));
     assert(nas_proc_child(entry,1,name,&root) && !strcmp(name,"status"));
+    /* Native ptrace -f requires this genuine Task-backed traversal:
+     * threads never appear as separate top-level processes. */
+    struct nas_proc_node group={0},thread={0},threadfile={0};
+    assert(nas_proc_lookup("/proc/23/task",&group) && nas_proc_is_dir(group));
+    assert(group.pid==23 && group.tgid==23);
+    assert(nas_proc_child(group,0,name,&thread) && !strcmp(name,"23"));
+    assert(thread.kind==NAS_PROC_TID_DIR && thread.pid==23 && thread.tgid==23);
+    assert(nas_proc_child(group,1,name,&thread) && !strcmp(name,"24"));
+    assert(thread.kind==NAS_PROC_TID_DIR && thread.pid==24 && thread.tgid==23);
+    assert(!nas_proc_child(group,2,name,&thread));
+    assert(!nas_proc_lookup("/proc/1/task/24",&thread));
+    assert(nas_proc_lookup("/proc/23/task/24",&thread));
+    assert(nas_proc_dir_path(group,dirpath) &&
+           !strcmp(dirpath,"/proc/23/task"));
+    assert(nas_proc_dir_path(thread,dirpath) &&
+           !strcmp(dirpath,"/proc/23/task/24"));
+    assert(nas_proc_child(thread,0,name,&threadfile) && !strcmp(name,"stat"));
+    assert(threadfile.pid==24 && threadfile.tgid==23);
+    assert(nas_proc_lookup("/proc/23/task/24/stat",&threadfile));
+    uint8_t record[128]={0};
+    assert(nas_proc_read(threadfile,0,record,sizeof(record)-1)>0);
+    assert(strstr((char *)record,"24 (worker) R 1"));
+    assert(nas_proc_lookup("/proc/self/task/1/status",&threadfile));
+    assert(threadfile.pid==1 && threadfile.tgid==1);
+    assert(nas_proc_lookup("/proc/23/task/24/comm",&threadfile));
+    assert(nas_proc_read(threadfile,0,record,sizeof(record)-1)==7);
+    assert(!memcmp(record,"worker\n",7));
+    tasks[2].state=NAS_TASK_FREE;
+    assert(!nas_proc_lookup("/proc/23/task/24",&thread));
+    assert(!nas_proc_lookup("/proc/23/task/24/stat",&threadfile));
     puts("[M65 PROCFS PASS] dynamic per-task namespace, short reads, uptime/memory, thread groups");
     return 0;
 }

@@ -67,7 +67,8 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
                TASK.fds->entries[fd].kind == FD_PROC_DIR) {
         unsigned slot=TASK.fds->entries[fd].slot;
         struct nas_proc_node node={nas_open_files[slot].proc_kind,
-                                   nas_open_files[slot].proc_pid};
+                                   nas_open_files[slot].proc_pid,
+                                   nas_open_files[slot].proc_tgid};
         st.dev=7;st.ino=nas_proc_ino(node);
         st.mode=nas_proc_mode(node);
         st.nlink=nas_proc_is_dir(node)?2:1;
@@ -387,7 +388,8 @@ static uint64_t proc_getdents64(uint64_t fd,uint64_t dst,uint64_t capacity) {
     if(nas_open_files[slot].status_flags&NAS_LINUX_O_PATH)
         return (uint64_t)-EBADF;
     struct nas_proc_node dir={nas_open_files[slot].proc_kind,
-                              nas_open_files[slot].proc_pid};
+                              nas_open_files[slot].proc_pid,
+                                   nas_open_files[slot].proc_tgid};
     uint64_t cursor=nas_open_files[slot].position,written=0;
     while(written+24<=capacity) {
         char name[32];

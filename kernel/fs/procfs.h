@@ -9,9 +9,13 @@ enum nas_proc_kind {
     NAS_PROC_MEMINFO, NAS_PROC_UPTIME, NAS_PROC_VERSION, NAS_PROC_CPUINFO,
     NAS_PROC_PID_STAT, NAS_PROC_PID_STATUS, NAS_PROC_PID_COMM,
     NAS_PROC_PID_CMDLINE, NAS_PROC_STAT, NAS_PROC_LOADAVG,
-    NAS_PROC_VMSTAT, NAS_PROC_PID_STATM
+    NAS_PROC_VMSTAT, NAS_PROC_PID_STATM,
+    NAS_PROC_TASK_DIR, NAS_PROC_TID_DIR
 };
-struct nas_proc_node {uint8_t kind;uint64_t pid;};
+/* pid identifies the actual TID for task/<tid>; tgid records the
+ * parent process directory. The same node is owned by the shared FD.
+ * Neither a second task registry nor a per-app synthetic /proc overlay. */
+struct nas_proc_node {uint8_t kind;uint64_t pid,tgid;};
 bool nas_proc_lookup(const char *path,struct nas_proc_node *out);
 bool nas_proc_is_dir(struct nas_proc_node node);
 uint32_t nas_proc_mode(struct nas_proc_node node);
