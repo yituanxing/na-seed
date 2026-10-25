@@ -32,6 +32,8 @@ int main(void) {
     assert(nas_linux_decode_syscall(__NR_timer_gettime) == NAS_SC_timer_gettime);
     assert(nas_linux_decode_syscall(__NR_timer_getoverrun) == NAS_SC_timer_getoverrun);
     assert(nas_linux_decode_syscall(__NR_timer_delete) == NAS_SC_timer_delete);
+    assert(nas_linux_decode_syscall(__NR_nanosleep) == NAS_SC_nanosleep);
+    assert(nas_linux_decode_syscall(__NR_clock_nanosleep) == NAS_SC_clock_nanosleep);
     assert(nas_linux_decode_syscall(__NR_select) == NAS_SC_select);
     assert(nas_linux_decode_syscall(UINT64_MAX) == NAS_SC_NONE);
     uint64_t clone_args[7] = {__NR_clone, 17, 0, 0, 0, 0, 0};

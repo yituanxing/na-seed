@@ -25,6 +25,11 @@ int main(void) {
     call[1]=17U;
     call[5]=0;
     assert(nas_linux_decode_call(call)==NAS_SC_fork);
+    /* Real RV64/AArch64 BusyBox Kconfig make invokes native /bin/sleep.
+     * Linux asm-generic syscall 101 was already supported by the common
+     * deadline scheduler, but missing from this architecture decoder. */
+    assert(nas_linux_decode_syscall(101U)==NAS_SC_nanosleep);
+    assert(nas_linux_decode_syscall(115U)==NAS_SC_clock_nanosleep);
     assert(nas_linux_decode_syscall(166U)==NAS_SC_umask);
     assert(nas_linux_decode_syscall(123U)==NAS_SC_sched_getaffinity);
     assert(nas_linux_decode_syscall(122U)==NAS_SC_sched_setaffinity);
