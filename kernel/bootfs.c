@@ -1,5 +1,4 @@
 #include "bootfs.h"
-#include "tmpfs.h"
 #include "errno.h"
 #include "lib/string.h"
 #include "mm/frame.h"
@@ -291,9 +290,9 @@ const struct bootfs_entry *bootfs_child(const struct bootfs_entry *dir,
     return item;
 }
 
-/* Resolve real CPIO and volatile /tmp symlinks in one pathwalk, including
- * relative targets and intermediate directory links. No heap and no fake
- * namespace. All expansions are bounded to 256 bytes and eight traversals.
+/* Resolve real CPIO symlinks, including relative targets and intermediate
+ * directory links. No heap, no VFS, no writable state. All expansions are
+ * bounded to the 256-byte pathname ABI and at most eight traversals.
  * Dot segments are applied AFTER each expansion, not to the link target
  * before locating the link (e.g. /bin/link/../file).
  */
@@ -335,24 +334,15 @@ int bootfs_resolve(const char *absolute, bool follow_final, char out[256]) {
                 resolved[used++] = pending[start + i];
             resolved[used] = 0;
             const struct bootfs_entry *entry = bootfs_find(resolved);
-            const struct nas_tmp_file *tmp = entry ? 0 : tmp_find(resolved);
-            if (!entry && !tmp) return -ENOENT;
+            if (!entry) return -ENOENT;
             unsigned tail = pos;
             while (pending[tail] == '/') tail++;
             bool last = !pending[tail];
-            if ((bootfs_is_link(entry) || tmp_is_link(tmp)) &&
-                (!last || follow_final)) {
+            if (bootfs_is_link(entry) && (!last || follow_final)) {
                 if (++links > 8) return -ELOOP;
                 char expanded[256];
-                char volatile_target[256];
-                const uint8_t *target=entry ? entry->data : (const uint8_t *)volatile_target;
-                uint64_t target_length=entry ? entry->size : tmp->size;
-                if (tmp) {
-                    int error=tmp_link_target(tmp,volatile_target);
-                    if (error) return error;
-                }
                 unsigned size = 0;
-                if (target[0] != '/') {
+                if (entry->data[0] != '/') {
                     /* Relative links use the symlink's owning directory. */
                     unsigned parent = used - len;
                     if (parent > 1 && resolved[parent - 1] == '/') parent--;
@@ -360,10 +350,10 @@ int bootfs_resolve(const char *absolute, bool follow_final, char out[256]) {
                         expanded[size++] = resolved[i];
                     if (size > 1) expanded[size++] = '/';
                 }
-                if (size + target_length >= sizeof(expanded))
+                if (size + entry->size >= sizeof(expanded))
                     return -ENAMETOOLONG;
-                for (uint64_t i = 0; i < target_length; i++)
-                    expanded[size++] = (char)target[i];
+                for (uint64_t i = 0; i < entry->size; i++)
+                    expanded[size++] = (char)entry->data[i];
                 for (unsigned i = pos; pending[i]; i++) {
                     if (size >= sizeof(expanded) - 1)
                         return -ENAMETOOLONG;
@@ -375,8 +365,7 @@ int bootfs_resolve(const char *absolute, bool follow_final, char out[256]) {
                 restart = true;
                 break;
             }
-            if (!last && !(entry ? bootfs_is_dir(entry) : tmp->is_dir))
-                return -ENOTDIR;
+            if (!last && !bootfs_is_dir(entry)) return -ENOTDIR;
         }
         if (restart) continue;
         for (unsigned i = 0; i <= used; i++) out[i] = resolved[i];

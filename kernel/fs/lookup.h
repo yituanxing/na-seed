@@ -14,6 +14,9 @@ struct nas_fs_node {
     uint32_t mode;
     bool is_dir;
 };
+/* Runtime namespace walk across immutable CPIO and volatile tmpfs. Keep the
+ * bootfs-only resolver independently testable without a writable FS link. */
+int nas_fs_resolve_existing(const char *path,bool follow_final,char out[256]);
 int nas_fs_lookup_node(const char *path, bool follow_final,
                        struct nas_fs_node *result, char resolved[256]);
 #endif

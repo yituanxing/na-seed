@@ -35,6 +35,12 @@ preserve `lstat`/`readlink`/directory-entry `DT_LNK` behavior. All three
 architectures share those semantics; the syscall number is decoded through
 each architecture's existing ABI boundary.
 
+The independent 1,200-file bootfs scale test caught an ownership regression:
+the first version wired tmpfs into the otherwise pure bootfs module. The
+overlay pathwalk now belongs to common `fs/lookup.c`; `bootfs.c` remains
+strictly immutable and independently linkable. The exact original standalone
+archive scale test was rerun on the host and passed before pushing.
+
 The next real rsync invocation then reached its local sender/receiver IPC and
 revealed missing `socketpair(AF_UNIX, SOCK_STREAM)`. The kernel now uses two
 opposing real pipe channels for a full-duplex local socketpair, sharing

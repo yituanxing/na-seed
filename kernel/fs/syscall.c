@@ -518,7 +518,7 @@ static uint64_t sys_open_path(const char *path, uint64_t native_flags,
     else {
         if (bootfs_mounted()) {
             char actual[256];
-            int err = bootfs_resolve(path, !(flags & 0x20000ULL), actual);
+            int err = nas_fs_resolve_existing(path, !(flags & 0x20000ULL), actual);
             if (!err) {
                 tmp_file=tmp_find(actual);
                 if (tmp_file) {
@@ -1091,7 +1091,7 @@ static uint64_t sys_chdir(uint64_t pathname) {
     uint64_t ret = nas_fs_resolve_path((uint64_t)-100, pathname, path);
     if ((int64_t)ret < 0) return ret;
     char actual[256];
-    int err = bootfs_resolve(path, true, actual);
+    int err = nas_fs_resolve_existing(path, true, actual);
     if (err) {
         struct nas_tmp_file *t = tmp_find(path);
         if (!t) return (uint64_t)(int64_t)err;
@@ -1406,7 +1406,7 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
     if ((int64_t)result < 0) return result;
     if (bootfs_mounted()) {
         char actual[256];
-        int err = bootfs_resolve(path, !(flags & AT_SYMLINK_NOFOLLOW), actual);
+        int err = nas_fs_resolve_existing(path, !(flags & AT_SYMLINK_NOFOLLOW), actual);
         if (!err) {
             const struct nas_tmp_file *tmp=tmp_find(actual);
             if (tmp) return write_tmp_stat(tmp,statbuf);
@@ -1433,7 +1433,7 @@ static uint64_t sys_readlinkat_boot(uint64_t dirfd, uint64_t pathname,
     char path[256], actual[256];
     uint64_t r = nas_fs_resolve_path(dirfd, pathname, path);
     if ((int64_t)r < 0) return r;
-    int err = bootfs_resolve(path, false, actual);
+    int err = nas_fs_resolve_existing(path, false, actual);
     if (err) return (uint64_t)(int64_t)err;
     const struct nas_tmp_file *tmp=tmp_find(actual);
     if (tmp) {
