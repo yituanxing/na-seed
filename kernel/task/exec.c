@@ -162,6 +162,7 @@ static uint64_t copy_exec_string(uint64_t addr, char dst[EXEC_STRING_MAX]) {
         }
         i += chunk;
     }
+    nas_print("[EXEC ARG LIMIT] single argv/env string exceeded 8191 bytes\n");
     return (uint64_t)-E2BIG;
 }
 static uint64_t copy_exec_vector(uint64_t user_array, bool environment) {
@@ -192,7 +193,13 @@ static uint64_t copy_exec_vector(uint64_t user_array, bool environment) {
             }
             return 0;
         }
-        if (i == limit) return (uint64_t)-E2BIG;
+        if (i == limit) {
+            nas_print("[EXEC ARG LIMIT] ");
+            nas_print(environment ? "environment count=" : "argv count=");
+            nas_dec(limit);
+            nas_print("\n");
+            return (uint64_t)-E2BIG;
+        }
         char *storage = environment ? pending_exec.envbuf[i] : pending_exec.argbuf[i];
         uint64_t ret = copy_exec_string(value, storage);
         if ((int64_t)ret < 0) return ret;
