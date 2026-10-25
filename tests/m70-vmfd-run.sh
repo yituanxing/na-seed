@@ -4,7 +4,7 @@ PATH=/usr/bin:/bin
 LC_ALL=C
 export PATH LC_ALL
 fails=0
-pid=$
+pid=$$
 echo "[M70] shell PID=$pid"
 if /bin/busybox stat /dev > /tmp/m70-devstat &&
    /bin/busybox stat /dev/null > /tmp/m70-nullstat;then
