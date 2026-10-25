@@ -241,7 +241,7 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
 }
 
 /* Strict single-program ABI diagnostic dispatcher, for a real syscall gate. */
-uint64_t syscall_dispatch(const uint64_t *args) {
+static uint64_t syscall_dispatch_inner(const uint64_t *args) {
     const uint64_t raw_nr = args[0];
     enum nas_syscall_op nr = nas_linux_decode_call(args);
 #if defined(__riscv) && __riscv_xlen == 64
@@ -616,4 +616,35 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         nas_print("[MISS] syscall nr="); nas_dec(raw_nr); nas_print("\n");
     }
     return (uint64_t)-ENOSYS;
+}
+
+/* Common Linux syscall result audit: only unexpected I/O or capacity errors.
+ * Keep this at the ABI exit, including VM/process and file/pipe syscall paths;
+ * diagnostics do not alter the result or depend on the calling application. */
+uint64_t syscall_dispatch(const uint64_t *args) {
+    uint64_t result = syscall_dispatch_inner(args);
+    int64_t signed_result = (int64_t)result;
+    enum nas_syscall_op op = nas_linux_decode_call(args);
+    bool data_io = op == NAS_SC_write || op == NAS_SC_writev ||
+                   op == NAS_SC_pwrite64 || op == NAS_SC_ftruncate ||
+                   op == NAS_SC_lseek;
+    bool capacity_error = signed_result == -ENOSPC ||
+                          signed_result == -EFBIG ||
+                          signed_result == -ENOMEM ||
+                          signed_result == -EFAULT ||
+                          signed_result == -EIO;
+    static unsigned audit_count;
+    if ((capacity_error || (data_io && signed_result < 0 &&
+                             signed_result >= -4095)) &&
+        audit_count++ < 400) {
+        nas_print("[LINUX SYSCALL AUDIT] pid="); nas_dec(TASK.pid);
+        nas_print(" raw="); nas_dec(args[0]);
+        nas_print(" op="); nas_dec((uint64_t)op);
+        nas_print(" errno="); nas_dec((uint64_t)(-signed_result));
+        nas_print(" fd="); nas_dec(args[1]);
+        nas_print(" count="); nas_dec(args[3]);
+        nas_print(" frames="); nas_dec(nas_free_frames());
+        nas_print("\n");
+    }
+    return result;
 }
