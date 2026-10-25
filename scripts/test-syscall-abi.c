@@ -5,7 +5,7 @@ int main(void) {
     assert(nas_linux_decode_syscall(__NR_faccessat) == NAS_SC_faccessat);
     assert(nas_linux_decode_syscall(__NR_faccessat2) == NAS_SC_faccessat2);
     assert(nas_linux_decode_syscall(__NR_read) == NAS_SC_read);
-    assert(nas_linux_decode_syscall(__NR_rt_sigsuspend) == NAS_SC_rt_sigsuspend;
+    assert(nas_linux_decode_syscall(__NR_rt_sigsuspend) == NAS_SC_rt_sigsuspend);
     assert(nas_linux_decode_syscall(__NR_sched_getaffinity) == NAS_SC_sched_getaffinity);
     assert(nas_linux_decode_syscall(__NR_sched_setaffinity) == NAS_SC_sched_setaffinity);
     assert(nas_linux_decode_syscall(__NR_pread64) == NAS_SC_pread64);
