@@ -19,6 +19,11 @@ cc -std=c11 -Wall -Wextra -Werror -fno-builtin -I kernel \
     scripts/test-procfs.c kernel/fs/procfs.c kernel/lib/string.c \
     -o /tmp/naseed-procfs-test
 /tmp/naseed-procfs-test
+# M66: account actual clock differences using the common Task mechanism.
+cc -std=c11 -Wall -Wextra -Werror -fno-builtin -I kernel \
+    scripts/test-task-accounting.c kernel/task/accounting.c \
+    -o /tmp/naseed-task-accounting
+/tmp/naseed-task-accounting
 sh scripts/check-m28-timer.sh
 sh scripts/check-m28-port-timers.sh
 

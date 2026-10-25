@@ -28,6 +28,25 @@ bool nas_task_kernel_stack_ok(const struct nas_task *task) {
         *(const uint64_t *)(const void *)task_kernel_stacks[slot] == NAS_KSTACK_SENTINEL;
 }
 static uint64_t next_pid = 2;
+void nas_task_set_commandline(struct nas_task *task,
+                              const char *const *argv,unsigned argc) {
+    if(!task)return;
+    unsigned used=0;
+    if(!argv || !argc){task->commandline_bytes=0;return;}
+    for(unsigned i=0;i<argc;i++) {
+        const char *arg=argv[i];
+        if(!arg){task->commandline_bytes=0;return;}
+        unsigned n=0;while(arg[n] && n<sizeof(task->commandline))n++;
+        if(n==sizeof(task->commandline) ||
+           n+1U>sizeof(task->commandline)-used) {
+            task->commandline_bytes=0;
+            return;
+        }
+        memcpy(task->commandline+used,arg,n+1U);
+        used+=n+1U;
+    }
+    task->commandline_bytes=(uint16_t)used;
+}
 struct nas_task *nas_current_task;
 
 void nas_task_boot_init(void) {
@@ -93,6 +112,7 @@ struct nas_task *nas_task_fork_slot(void) {
         /* pgid and sid were inherited from parent; execed is per-fork. */
         child->execed = false;
         child->state = NAS_TASK_READY;
+        child->cpu_runtime_ns=0;
         child->exit_code = 0;
         child->termination_signal = 0;
         child->stopped_from = NAS_TASK_FREE;

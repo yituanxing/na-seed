@@ -235,6 +235,7 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
 
 /* Strict single-program ABI diagnostic dispatcher, for a real syscall gate. */
 uint64_t syscall_dispatch(const uint64_t *args) {
+    nas_task_cpu_account_switch(nas_current_task);
     const uint64_t raw_nr = args[0];
     enum nas_syscall_op nr = nas_linux_decode_call(args);
 #if defined(__riscv) && __riscv_xlen == 64

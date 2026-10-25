@@ -91,6 +91,13 @@ struct nas_task {
     char comm[16]; /* Linux per-thread PR_SET_NAME, inherited at fork. */
     uint32_t umask; /* inherited by fork/vfork; preserved by exec */
     bool execed; /* parent may not setpgid(child) after successful exec */
+    /* Immutable executable argv snapshot; incomplete overlong vectors
+     * are not exposed as fabricated procfs command lines. */
+    char commandline[1024];
+    uint16_t commandline_bytes;
+    /* Single-CPU elapsed Task occupancy, including syscall kernel time;
+     * does not pretend to separate user/system CPU instructions. */
+    uint64_t cpu_runtime_ns;
     enum nas_task_state state;
     uint32_t exit_code;
     uint32_t termination_signal; /* Linux wait4 WIFSIGNALED status */
@@ -162,6 +169,10 @@ struct nas_task {
  */
 extern struct nas_task *nas_current_task;
 void nas_task_boot_init(void);
+void nas_task_set_commandline(struct nas_task *,const char *const *,unsigned);
+void nas_task_cpu_account_switch(struct nas_task *);
+void nas_task_cpu_account_snapshot(uint64_t *busy_ns,uint64_t *idle_ns,
+                                   uint64_t load_q16[3],uint64_t *switches);
 bool nas_task_kernel_stack_ok(const struct nas_task *task);
 struct nas_task *nas_task_current(void);
 struct nas_task *nas_task_fork_slot(void);

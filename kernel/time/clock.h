@@ -17,6 +17,8 @@ void nas_time_timers_drop(void);
 /* UNIX RTC epoch is optional. Monotonic time does not depend on it. */
 void nas_timekeeper_init(int64_t boot_epoch_seconds);
 bool nas_time_realtime_available(void);
+/* UTC seconds corresponding to the original monotonic clock epoch. */
+bool nas_time_boot_epoch_seconds(uint64_t *out);
 bool nas_time_realtime_at(uint64_t monotonic_ns, uint64_t *realtime_ns);
 bool nas_time_realtime_ns(uint64_t *realtime_ns);
 static inline bool nas_time_duration_ns(uint64_t sec,uint64_t nsec,uint64_t *ns) {
