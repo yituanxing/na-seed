@@ -1,0 +1,2 @@
+# Unmodified signed Alpine Bash, Tcl and OpenSSL: real native ELF in QEMU.
+m58-runtime	cpio	sh -c '/bin/sh /tests/run-m58.sh'	M58_RUNTIME_FULL_PASS	-	/bin/busybox
