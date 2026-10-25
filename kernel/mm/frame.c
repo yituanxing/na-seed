@@ -2,8 +2,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "frame.h"
-extern void nas_print(const char *);
-extern void nas_dec(uint64_t);
 /* Bitmap: bit 1 = unavailable, 0 = free. */
 #define FRAME_BYTES 4096ULL
 static uint8_t *bitmap;
@@ -102,17 +100,7 @@ static uint64_t take_frame(uint64_t page) {
     return paddr;
 }
 static uint64_t frame_alloc(void) {
-    if (!bitmap || !free_frames) {
-        static unsigned reported;
-        if (bitmap && reported++ < 8) {
-            nas_print("[FRAME OOM] free_frames=");
-            nas_dec(free_frames);
-            nas_print(" managed_frames=");
-            nas_dec(managed_frames);
-            nas_print("\n");
-        }
-        return 0;
-    }
+    if (!bitmap || !free_frames) return 0;
     for (uint64_t p = cursor; p < frame_count; p++)
         if (!test_bit(p)) return take_frame(p);
     for (uint64_t p = 1; p < cursor && p < frame_count; p++)

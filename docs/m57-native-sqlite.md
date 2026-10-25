@@ -16,9 +16,9 @@ Status: draft; NOT accepted until all exact-head CI evidence is green.
   inode with a demand-paged two-level indirect root (up to 1 GiB/file),
   and compile/run a real 64 MiB sparse pwrite/pread/truncate/reclaim probe
   IN the native guest before SQLite link. This is shared x86/RV64/ARM64 code.
-- Diagnostic: emit a generic tmpfs path/offset/free-frame report only when
-  file size or inode metadata allocation really fails; M57 gets a 4 GiB
-  QEMU RAM budget to distinguish physical memory pressure from file limits.
+- Capacity investigation used temporary kernel diagnostics and a 4 GiB RAM
+  budget; both were withdrawn after the shared writev ABI bug was proven.
+  Final CI runs at the prior normal 2 GiB QEMU guest memory budget.
 - Filesystem workload: native sqlite3 creates a real tmpfs DB in normal
   rollback-journal mode, performs explicit BEGIN/COMMIT, then a **new
   process** opens the same DB and checks rows; a second transaction
@@ -40,24 +40,25 @@ file-backed MAP_SHARED/-shm, which must remain a separate generic VFS/MM
 milestone. Native pthread/concurrent SQLite locking requires separate
 real contention evidence, not an assumption from one successful process.
 
-## Capacity investigation (exact-head evidence)
+## Verified bottleneck and latest acceptance
 
-M57 in all three native QEMU guests exceeds original 32 MiB inode ceiling;
-64 MiB sparse pwrite/pread/shrink/regrow proves the new two-level index.
-SQLite native link still returns ENOSPC even with the larger file limit and
-4 GiB guest budget, so generic dispatch and frame-allocation failure
-instrumentation is added; do NOT attribute this second issue to the
-32 MiB cap without the exact syscall result. This PR remains Draft.
+The first M57 run exposed a 32 MiB tmpfs file ceiling; the common two-level
+sparse page index now passes the real 64 MiB pwrite/pread/truncate probe.
+A second failure reported by GNU as/ld as ENOSPC was definitively traced
+through the common syscall dispatcher: real x86-64 and RV64 GNU `writev`
+returned **EFAULT (14)** for a single vector larger than the old private
+1 MiB `nas_fs_fd_write` limit. All three ISAs now share Linux's
+`MAX_RW_COUNT` handling and a real >2 MiB `write()`/`writev()` round-trip
+probe in the native guest. No SQLite, GCC, binutils or Make source patches.
 
-## Real GNU toolchain syscall finding (three-ISA full log)
+Exact-head `3a8d4713` M57 official SQLite 3.54.1 original configure, native
+GCC/Make/link, sqlite3 CLI, file transaction/reopen/rollback/index/JOIN and
+integrity acceptance passed x86-64, RV64 and AArch64 (3/3). This subsequent
+cleanup commit removes temporary error-tracing wrappers and restores the
+normal 2 GiB guest RAM budget; re-run all exact-head CI before merging.
 
-The source-stage and native configure pass on all three ISAs, but GNU as/ld
-currently fails during final output. **Exact syscall tracing on x86-64 and
-RV64 found `writev` returning `EFAULT` (14)** for the output FD, despite the
-user-facing GNU error saying ENOSPC. The previous common VFS
-`nas_fs_fd_write` rejected any transfer larger than 1 MiB as `EFAULT`;
-`writev` forwards an iovec through that same function. M57 now accepts
-Linux's per-call `MAX_RW_COUNT` instead and verifies both real >2MiB
-`writev` and `write` through the native guest. No upstream source patched.
-ARM64 also exposes repeated `munmap` ENOMEM in native cc1; this remains a
-separately tracked generic VMA concern, not proof of an SQLite defect.
+Independently, the ARM64 GNU cc1 trace showed repeated `munmap` returning
+ENOMEM from the bounded VMA ledger. That did not block M57 functional
+acceptance, but it is a real Linux MM compatibility limitation to investigate
+under a separate generic workload-driven change; no success is claimed for
+arbitrary VMA fragmentation or SQLite WAL/MAP_SHARED.
