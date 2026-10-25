@@ -38,3 +38,16 @@ work: improve these with their own genuine regression fixtures, not blind
 search-and-replace. The original M58/M59/M60 real Bash, rsync and tmux
 three-ISA workflows are the primary regression gate; always retain the
 previous native grouped, ARM64 and userspace test suites.
+
+## GitHub Actions runner image drift observed during exact-head testing
+
+During M61 review, `ubuntu-latest` switched between the previously accepted
+Ubuntu 24.04 and Ubuntu 26.04 images even on successive commits with identical
+kernel C source. The new 26.04 image generated QEMU spawn errors on RV64
+(`timeout: failed to execute process: No such file or directory`) and the
+legacy x86 `isa-debug-exit`/early-close test timed out after genuine kernel
+PASS markers. Native grouped 9/9 and M58–60 original programs passed with the
+same functional refactor on the prior 24.04 runner. This is **not** a kernel
+syscall fix: pin all five routine PR workflows to the previously verified
+Ubuntu 24.04 environment and leave future 26.04 qualification separate.
+Never treat a runner failure as either a kernel defect or successful acceptance.
