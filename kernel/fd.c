@@ -30,6 +30,61 @@ void nas_fd_system_init(void) {
     }
 }
 
+/* Task-local FD indices are disjoint from global open descriptions.
+ * Probing is non-mutating, so failure cannot leak a backend or a partial FD. */
+unsigned nas_fd_first_unused(const struct nas_task *task, unsigned minimum) {
+    if (!task || !task->fds) return NAS_FD_LIMIT;
+    for (unsigned fd=minimum;fd<NAS_FD_LIMIT;fd++)
+        if (task->fds->entries[fd].kind==FD_CLOSED) return fd;
+    return NAS_FD_LIMIT;
+}
+
+int nas_fd_reserve(const struct nas_task *task, unsigned minimum, unsigned count,
+                   unsigned fds[2], unsigned slots[2], const char *operation) {
+    if (!task || !task->fds || !fds || !slots || !count || count>2)
+        return -EINVAL;
+    unsigned nfds=0,nslots=0;
+    for(unsigned fd=minimum;fd<NAS_FD_LIMIT && nfds<count;fd++)
+        if(task->fds->entries[fd].kind==FD_CLOSED) fds[nfds++]=fd;
+    if(nfds<count) return -EMFILE;
+    for(unsigned slot=0;slot<NAS_OPEN_FILE_LIMIT && nslots<count;slot++)
+        if(!nas_open_files[slot].refcount)slots[nslots++]=slot;
+    if(nslots<count) {
+        if(operation)nas_fd_report_exhaustion(operation);
+        return -ENFILE;
+    }
+    return 0;
+}
+
+/* The caller hands off one already-accounted backend description reference.
+ * This must NOT increment it: accept() and SCM_RIGHTS transfer ownership. */
+bool nas_fd_attach_owned(struct nas_task *task, unsigned fd, unsigned slot,
+                         uint8_t kind, bool cloexec) {
+    if(!task || !task->fds || fd>=NAS_FD_LIMIT ||
+       slot>=NAS_OPEN_FILE_LIMIT || kind==FD_CLOSED ||
+       task->fds->entries[fd].kind!=FD_CLOSED ||
+       !nas_open_files[slot].refcount) return false;
+    task->fds->entries[fd]=(struct nas_fd_entry){
+        .kind=kind,.slot=(uint8_t)slot,.cloexec=cloexec ? 1U : 0U
+    };
+    return true;
+}
+
+/* Allocate one shared file description and publish one task-local FD.
+ * Backend setup is completed by the caller before exposing the entry. */
+bool nas_fd_install_new(struct nas_task *task, unsigned fd, unsigned slot,
+                        uint8_t kind, uint64_t status_flags, bool cloexec) {
+    if(!task || !task->fds || fd>=NAS_FD_LIMIT ||
+       slot>=NAS_OPEN_FILE_LIMIT || kind==FD_CLOSED ||
+       task->fds->entries[fd].kind!=FD_CLOSED ||
+       nas_open_files[slot].refcount) return false;
+    nas_open_files[slot]=(struct nas_open_file){
+        .refcount=1,.status_flags=status_flags,
+        .ops=nas_fs_ops_for_kind(kind)
+    };
+    return nas_fd_attach_owned(task,fd,slot,kind,cloexec);
+}
+
 /* Called when the owning task's FD entry is closed. Detach exactly one
  * descriptor and tell the caller whether a shared open-description became
  * unreachable; it must then tear down the backend before slot reuse.

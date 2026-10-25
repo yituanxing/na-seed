@@ -116,23 +116,15 @@ static bool instance_ready(unsigned slot){
 uint64_t nas_epoll_create1(uint64_t flags){
     if(flags&~EP_CLOEXEC)return (uint64_t)-EINVAL;
     struct nas_task *task=nas_current_task;
-    for(unsigned fd=0;fd<NAS_FD_LIMIT;fd++){
-        if(task->fds->entries[fd].kind!=FD_CLOSED)continue;
-        for(unsigned slot=0;slot<NAS_OPEN_FILE_LIMIT;slot++){
-            if(nas_open_files[slot].refcount)continue;
-            epolls[slot]=(struct ep_state){0};
-            nas_open_files[slot]=(struct nas_open_file){0};
-            nas_open_files[slot].refcount=1;
-            nas_open_files[slot].ops=nas_fs_ops_for_kind(FD_EPOLL);
-            task->fds->entries[fd].kind=FD_EPOLL;
-            task->fds->entries[fd].slot=(uint8_t)slot;
-            task->fds->entries[fd].cloexec=(flags&EP_CLOEXEC)!=0;
-            return fd;
-        }
-        nas_fd_report_exhaustion("epoll_create1");
-        return (uint64_t)-ENFILE;
-    }
-    return (uint64_t)-EMFILE;
+    unsigned fds[2],slots[2];
+    int rc=nas_fd_reserve(task,0,1,fds,slots,"epoll_create1");
+    if(rc)return (uint64_t)(int64_t)rc;
+    unsigned fd=fds[0],slot=slots[0];
+    epolls[slot]=(struct ep_state){0};
+    if(!nas_fd_install_new(task,fd,slot,FD_EPOLL,0,
+                           (flags&EP_CLOEXEC)!=0))
+        return (uint64_t)-EBADF;
+    return fd;
 }
 static bool decode_event(uint64_t addr,uint32_t *events,uint64_t *data){
     uint8_t bytes[EP_EVENT_BYTES];

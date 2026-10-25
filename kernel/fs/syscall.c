@@ -95,16 +95,10 @@ static uint64_t sys_channel_pair(uint64_t user_pair, uint64_t flags,
         return (uint64_t)-EFAULT;
     for (unsigned i = 0; i < 8; i++)
         if (!nas_mmu_user_byte(user_pair + i)) return (uint64_t)-EFAULT;
-    unsigned fds[2], slots[2], nfds = 0, nslots = 0;
-    for (unsigned fd = 3; fd < NAS_FD_LIMIT && nfds < 2; fd++)
-        if (TASK.fds->entries[fd].kind == FD_CLOSED) fds[nfds++] = fd;
-    if (nfds != 2) return (uint64_t)-EMFILE;
-    for (unsigned slot = 0; slot < NAS_OPEN_FILE_LIMIT && nslots < 2; slot++)
-        if (!nas_open_files[slot].refcount) slots[nslots++] = slot;
-    if (nslots != 2) {
-        nas_fd_report_exhaustion("pipe2");
-        return (uint64_t)-ENFILE;
-    }
+    unsigned fds[2], slots[2];
+    int capacity=nas_fd_reserve(nas_current_task,3,2,fds,slots,
+                                stream_socket ? "socketpair" : "pipe2");
+    if(capacity)return (uint64_t)(int64_t)capacity;
     int result = stream_socket ?
         nas_pipe_create_socketpair(slots[0], slots[1]) :
         nas_pipe_create(slots[0], slots[1]);
@@ -112,14 +106,12 @@ static uint64_t sys_channel_pair(uint64_t user_pair, uint64_t flags,
     if (stream_socket) nas_unix_socket_pair_ready(slots[0],slots[1]);
     for (unsigned i = 0; i < 2; i++) {
         unsigned fd = fds[i], slot = slots[i];
-        TASK.fds->entries[fd].kind = stream_socket ? FD_SOCKET :
-                          i ? FD_PIPE_W : FD_PIPE_R;
-        TASK.fds->entries[fd].slot = (uint8_t)slot;
-        nas_open_files[slot].refcount = 1;
-        nas_open_files[slot].ops = nas_fs_ops_for_kind(TASK.fds->entries[fd].kind);
-        nas_open_files[slot].status_flags = (stream_socket ? 2ULL :
-                            i ? 1ULL : 0ULL) | (flags & 0x800ULL);
-        TASK.fds->entries[fd].cloexec = !!(flags & 0x80000ULL);
+        uint8_t kind=stream_socket ? FD_SOCKET : i ? FD_PIPE_W : FD_PIPE_R;
+        uint64_t status=(stream_socket ? 2ULL : i ? 1ULL : 0ULL) |
+                        (flags & 0x800ULL);
+        if(!nas_fd_install_new(nas_current_task,fd,slot,kind,status,
+                               !!(flags & 0x80000ULL)))
+            nas_fs_fail("reserved pipe/socket FD was occupied");
     }
     uint8_t output[8] = {0};
     for (unsigned i = 0; i < 2; i++)
@@ -486,44 +478,35 @@ uint64_t nas_fs_open_path(const char *path, uint64_t native_flags,
     if ((kind == FD_ARCHIVE || kind == FD_DIR) && (flags & 3ULL))
         return kind == FD_DIR ? (uint64_t)-EISDIR : (uint64_t)-EROFS;
     if (kind == FD_BOOTFS && (flags & 3ULL)) return (uint64_t)-EACCES;
-    for (unsigned fd = 3; fd < NAS_FD_LIMIT; fd++) {
-        if (TASK.fds->entries[fd].kind != FD_CLOSED) continue;
-        for (unsigned slot = 0; slot < NAS_OPEN_FILE_LIMIT; slot++) {
-            if (nas_open_files[slot].refcount) continue;
-            if (create_tmp) {
-                tmp_file = tmp_create(path,false,
-                            nas_fs_create_mode(create_mode,TASK.vm_owner->umask));
-                if (!tmp_file) return (uint64_t)-ENOSPC;
-            }
-            if ((kind == FD_TMP || kind == FD_TMP_DIR) && !tmp_file) return (uint64_t)-ENOENT;
-            if (kind == FD_TMP && (flags & 0x200ULL)) tmp_truncate(tmp_file);
-            if (kind == FD_PTY_MASTER) {
-                int err=nas_pty_new(slot);
-                if(err)return (uint64_t)(int64_t)err;
-            } else if (kind == FD_PTY_SLAVE) {
-                int err=pty_number>=0 ?
-                    nas_pty_attach((unsigned)pty_number,slot) :
-                    nas_pty_attach_controlling(slot);
-                if(err)return (uint64_t)(int64_t)err;
-            }
-            nas_open_files[slot].refcount = 1;
-            nas_open_files[slot].ops = nas_fs_ops_for_kind(kind);
-            if (kind == FD_TMP || kind == FD_TMP_DIR)
-                tmp_bind_slot(slot, tmp_file);
-            TASK.fds->entries[fd].slot = (uint8_t)slot;
-            nas_open_files[slot].status_flags =
-                flags & (NAS_LINUX_O_PATH | 3ULL | 0x800ULL | 0x400ULL);
-            TASK.fds->entries[fd].cloexec = !!(flags & 0x80000ULL);
-            nas_open_files[slot].position = 0;
-            TASK.fds->entries[fd].kind = kind;
-            nas_open_files[TASK.fds->entries[fd].slot].boot_file = real_file;
-            nas_open_files[TASK.fds->entries[fd].slot].boot_entry = entry;
-            return fd;
-        }
-        nas_fd_report_exhaustion("openat");
-        return (uint64_t)-ENFILE;
+    unsigned fds[2],slots[2];
+    int capacity=nas_fd_reserve(nas_current_task,3,1,fds,slots,"openat");
+    if(capacity)return (uint64_t)(int64_t)capacity;
+    const unsigned fd=fds[0],slot=slots[0];
+    if(create_tmp) {
+        tmp_file=tmp_create(path,false,
+                 nas_fs_create_mode(create_mode,TASK.vm_owner->umask));
+        if(!tmp_file)return (uint64_t)-ENOSPC;
     }
-    return (uint64_t)-EMFILE;
+    if((kind==FD_TMP || kind==FD_TMP_DIR) && !tmp_file)
+        return (uint64_t)-ENOENT;
+    if(kind==FD_TMP && (flags & 0x200ULL))tmp_truncate(tmp_file);
+    if(kind==FD_PTY_MASTER) {
+        int err=nas_pty_new(slot);
+        if(err)return (uint64_t)(int64_t)err;
+    } else if(kind==FD_PTY_SLAVE) {
+        int err=pty_number>=0 ?
+            nas_pty_attach((unsigned)pty_number,slot) :
+            nas_pty_attach_controlling(slot);
+        if(err)return (uint64_t)(int64_t)err;
+    }
+    if(!nas_fd_install_new(nas_current_task,fd,slot,kind,
+                           flags & (NAS_LINUX_O_PATH | 3ULL | 0x800ULL | 0x400ULL),
+                           !!(flags & 0x80000ULL)))
+        nas_fs_fail("reserved openat description was occupied");
+    if(kind==FD_TMP || kind==FD_TMP_DIR)tmp_bind_slot(slot,tmp_file);
+    nas_open_files[slot].boot_file=real_file;
+    nas_open_files[slot].boot_entry=entry;
+    return fd;
 }
 static uint64_t sys_open_device(uint64_t pathname, uint64_t flags,
                                  uint64_t mode) {

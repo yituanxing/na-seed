@@ -33,21 +33,14 @@ static uint64_t sys_socket(uint64_t domain,uint64_t type,uint64_t protocol) {
     if((type&15U)!=1U || (type&~(15ULL|0x800ULL|0x80000ULL)))
         return (uint64_t)-ESOCKTNOSUPPORT;
     if(protocol)return (uint64_t)-EPROTONOSUPPORT;
-    unsigned fd=NAS_FD_LIMIT,slot=NAS_OPEN_FILE_LIMIT;
-    for(unsigned i=3;i<NAS_FD_LIMIT;i++)
-        if(TASK.fds->entries[i].kind==FD_CLOSED) {fd=i;break;}
-    if(fd==NAS_FD_LIMIT)return (uint64_t)-EMFILE;
-    for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++)
-        if(!nas_open_files[i].refcount) {slot=i;break;}
-    if(slot==NAS_OPEN_FILE_LIMIT)return (uint64_t)-ENFILE;
+    unsigned fds[2],slots[2];
+    int capacity=nas_fd_reserve(nas_current_task,3,1,fds,slots,"socket");
+    if(capacity)return (uint64_t)(int64_t)capacity;
+    unsigned fd=fds[0],slot=slots[0];
     nas_unix_socket_init(slot);
-    nas_open_files[slot]=(struct nas_open_file){
-        .refcount=1,.status_flags=2ULL|(type&0x800ULL),
-        .ops=nas_fs_ops_for_kind(FD_SOCKET)
-    };
-    TASK.fds->entries[fd].kind=FD_SOCKET;
-    TASK.fds->entries[fd].slot=(uint8_t)slot;
-    TASK.fds->entries[fd].cloexec=(type&0x80000ULL)!=0;
+    if(!nas_fd_install_new(nas_current_task,fd,slot,FD_SOCKET,
+                           2ULL|(type&0x800ULL),(type&0x80000ULL)!=0))
+        nas_fail("reserved socket descriptor became occupied");
     return fd;
 }
 /* Linux sockaddr_un has a native two-byte family followed by the pathname.
@@ -94,16 +87,14 @@ static uint64_t sys_unix_accept(uint64_t fd,uint64_t address,
     if(address && length && (!nas_mmu_user_byte(address) ||
                              (length>1 && !nas_mmu_user_byte(address+1))))
         return (uint64_t)-EFAULT;
-    unsigned nextfd=NAS_FD_LIMIT;
-    for(unsigned i=3;i<NAS_FD_LIMIT;i++)
-        if(TASK.fds->entries[i].kind==FD_CLOSED) {nextfd=i;break;}
+    unsigned nextfd=nas_fd_first_unused(nas_current_task,3);
     if(nextfd==NAS_FD_LIMIT)return (uint64_t)-EMFILE;
     unsigned slot;
     int rc=nas_unix_socket_accept(TASK.fds->entries[fd].slot,&slot);
     if(rc)return (uint64_t)(int64_t)rc;
-    TASK.fds->entries[nextfd].kind=FD_SOCKET;
-    TASK.fds->entries[nextfd].slot=(uint8_t)slot;
-    TASK.fds->entries[nextfd].cloexec=(flags&0x80000ULL)!=0;
+    if(!nas_fd_attach_owned(nas_current_task,nextfd,slot,FD_SOCKET,
+                            (flags&0x80000ULL)!=0))
+        nas_fail("accepted socket ownership transfer violated FD invariant");
     nas_open_files[slot].status_flags|=flags&0x800ULL;
     if(length_ptr) {
         uint32_t actual=2;
@@ -270,9 +261,9 @@ static uint64_t sys_unix_recvmsg(uint64_t fd,uint64_t address,uint64_t flags) {
         unsigned done=0;
         for(unsigned i=3;i<NAS_FD_LIMIT && done<count;i++) {
             if(TASK.fds->entries[i].kind!=FD_CLOSED)continue;
-            TASK.fds->entries[i].kind=kinds[done];
-            TASK.fds->entries[i].slot=slots[done];
-            TASK.fds->entries[i].cloexec=(flags&0x40000000ULL)!=0;
+            if(!nas_fd_attach_owned(nas_current_task,i,slots[done],
+                                    kinds[done],(flags&0x40000000ULL)!=0))
+                nas_fail("received SCM_RIGHTS slot violated FD invariant");
             int32_t number=(int32_t)i;
             memcpy(control+16+done*4,&number,4);
             done++;

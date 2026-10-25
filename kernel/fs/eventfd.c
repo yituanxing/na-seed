@@ -30,25 +30,17 @@ uint64_t nas_eventfd_create(uint64_t init,uint64_t flags){
     if(flags&~(EFD_SEMAPHORE|EFD_NONBLOCK|EFD_CLOEXEC))
         return (uint64_t)-EINVAL;
     struct nas_task *t=nas_current_task;
-    for(unsigned fd=0;fd<NAS_FD_LIMIT;fd++){
-        if(t->fds->entries[fd].kind!=FD_CLOSED)continue;
-        for(unsigned slot=0;slot<NAS_OPEN_FILE_LIMIT;slot++){
-            if(nas_open_files[slot].refcount)continue;
-            counters[slot]=(uint32_t)init;
-            semaphore_mode[slot]=(flags&EFD_SEMAPHORE)!=0;
-            nas_open_files[slot]=(struct nas_open_file){0};
-            nas_open_files[slot].refcount=1;
-            nas_open_files[slot].status_flags=2ULL|(flags&EFD_NONBLOCK);
-            nas_open_files[slot].ops=nas_fs_ops_for_kind(FD_EVENTFD);
-            t->fds->entries[fd].kind=FD_EVENTFD;
-            t->fds->entries[fd].slot=(uint8_t)slot;
-            t->fds->entries[fd].cloexec=(flags&EFD_CLOEXEC)!=0;
-            return fd;
-        }
-        nas_fd_report_exhaustion("eventfd2");
-        return (uint64_t)-ENFILE;
-    }
-    return (uint64_t)-EMFILE;
+    unsigned fds[2],slots[2];
+    int rc=nas_fd_reserve(t,0,1,fds,slots,"eventfd2");
+    if(rc)return (uint64_t)(int64_t)rc;
+    unsigned fd=fds[0],slot=slots[0];
+    counters[slot]=(uint32_t)init;
+    semaphore_mode[slot]=(flags&EFD_SEMAPHORE)!=0;
+    if(!nas_fd_install_new(t,fd,slot,FD_EVENTFD,
+                           2ULL|(flags&EFD_NONBLOCK),
+                           (flags&EFD_CLOEXEC)!=0))
+        return (uint64_t)-EBADF;
+    return fd;
 }
 uint64_t nas_eventfd_read(uint64_t fd,uint64_t addr,uint64_t count){
     unsigned slot;

@@ -76,11 +76,9 @@ void nas_init_userspace(void) {
         nas_fail("cannot install native RX rt_sigreturn trampoline");
     uint64_t stack_pointer;
     for (unsigned fd = 0; fd < 3; fd++) {
-        TASK.fds->entries[fd].kind = FD_UART;
-        TASK.fds->entries[fd].slot = (uint8_t)fd;
-        nas_open_files[fd].refcount = 1;
-        nas_open_files[fd].ops = nas_fs_ops_for_kind(FD_UART);
-        nas_open_files[fd].status_flags = fd == 0 ? 0 : 1; /* stdin R, stdout/err W */
+        if(!nas_fd_install_new(nas_current_task,fd,fd,FD_UART,
+                               fd==0 ? 0 : 1,false))
+            nas_fail("cannot install initial Linux console descriptor");
     }
     if (!nas_build_linux_stack(running_bash, running_busybox, &stack_pointer))
         nas_fail("cannot initialize Linux userspace stack");

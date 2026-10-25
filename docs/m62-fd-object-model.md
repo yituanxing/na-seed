@@ -37,3 +37,12 @@ Future direction: make open-description slot reservation/installation a
 central FD operation, and then make file/inode identity independent of
 pathname-only tmpfs metadata. Persistent storage and mount namespace remain
 out of scope, as do fake Linux syscall success paths.
+
+## M62 owner-consolidation batch
+
+The new `fd.c` functions `nas_fd_reserve`, `nas_fd_install_new`,
+`nas_fd_attach_owned` and `nas_fd_first_unused` centralize exactly-once
+placement and description reference accounting. Callers reserve before
+creating tmpfs/PTY/pipe backend state, install only on success, and transfer
+already-owned AF_UNIX accept/SCM_RIGHTS slots without another reference.
+The common fd.c layer does not import any backend lifetime logic.

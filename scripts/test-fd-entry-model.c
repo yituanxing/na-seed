@@ -9,6 +9,11 @@
 
 void nas_print(const char *s) { (void)s; }
 void nas_dec(uint64_t n) { (void)n; }
+/* fd.c owns placement; this test supplies a minimal inert ops provider. */
+const struct nas_file_ops *nas_fs_ops_for_kind(uint8_t kind) {
+    (void)kind; return 0;
+}
+
 
 int main(void) {
     _Static_assert(sizeof(struct nas_fd_entry) == 3, "stable small FD entry");
