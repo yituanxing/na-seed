@@ -55,15 +55,15 @@ static struct ep_state epolls[NAS_OPEN_FILE_LIMIT];
 
 static bool valid_fd_task(const struct nas_task *task,uint64_t fd){
     return task && fd<NAS_FD_LIMIT &&
-        task->fds->descriptors[fd]!=FD_CLOSED &&
-        task->fds->file_slot[fd]<NAS_OPEN_FILE_LIMIT &&
-        nas_open_files[task->fds->file_slot[fd]].refcount;
+        task->fds->entries[fd].kind!=FD_CLOSED &&
+        task->fds->entries[fd].slot<NAS_OPEN_FILE_LIMIT &&
+        nas_open_files[task->fds->entries[fd].slot].refcount;
 }
 static bool instance_slot(const struct nas_task *task,uint64_t fd,
                           unsigned *slot){
-    if(!valid_fd_task(task,fd) || task->fds->descriptors[fd]!=FD_EPOLL)
+    if(!valid_fd_task(task,fd) || task->fds->entries[fd].kind!=FD_EPOLL)
         return false;
-    *slot=task->fds->file_slot[fd];
+    *slot=task->fds->entries[fd].slot;
     return true;
 }
 static uint16_t ready_now(const struct ep_watch *w){
@@ -117,16 +117,16 @@ uint64_t nas_epoll_create1(uint64_t flags){
     if(flags&~EP_CLOEXEC)return (uint64_t)-EINVAL;
     struct nas_task *task=nas_current_task;
     for(unsigned fd=0;fd<NAS_FD_LIMIT;fd++){
-        if(task->fds->descriptors[fd]!=FD_CLOSED)continue;
+        if(task->fds->entries[fd].kind!=FD_CLOSED)continue;
         for(unsigned slot=0;slot<NAS_OPEN_FILE_LIMIT;slot++){
             if(nas_open_files[slot].refcount)continue;
             epolls[slot]=(struct ep_state){0};
             nas_open_files[slot]=(struct nas_open_file){0};
             nas_open_files[slot].refcount=1;
             nas_open_files[slot].ops=nas_fs_ops_for_kind(FD_EPOLL);
-            task->fds->descriptors[fd]=FD_EPOLL;
-            task->fds->file_slot[fd]=(uint8_t)slot;
-            task->fds->fd_cloexec[fd]=(flags&EP_CLOEXEC)!=0;
+            task->fds->entries[fd].kind=FD_EPOLL;
+            task->fds->entries[fd].slot=(uint8_t)slot;
+            task->fds->entries[fd].cloexec=(flags&EP_CLOEXEC)!=0;
             return fd;
         }
         nas_fd_report_exhaustion("epoll_create1");
@@ -147,9 +147,9 @@ uint64_t nas_epoll_ctl(uint64_t epfd,uint64_t op,uint64_t fd,uint64_t event){
     if(!instance_slot(task,epfd,&slot))return (uint64_t)-EBADF;
     if(op<1 || op>3)return (uint64_t)-EINVAL;
     if(!valid_fd_task(task,fd))return (uint64_t)-EBADF;
-    if(task->fds->descriptors[fd]==FD_EPOLL)return (uint64_t)-ELOOP;
+    if(task->fds->entries[fd].kind==FD_EPOLL)return (uint64_t)-ELOOP;
     if(epfd==fd)return (uint64_t)-EINVAL;
-    const unsigned target_slot=task->fds->file_slot[fd];
+    const unsigned target_slot=task->fds->entries[fd].slot;
     struct ep_watch *slot_found=0,*free_watch=0;
     for(unsigned i=0;i<NAS_EPOLL_EVENTS_MAX;i++){
         struct ep_watch *w=&epolls[slot].watches[i];
@@ -172,7 +172,7 @@ uint64_t nas_epoll_ctl(uint64_t epfd,uint64_t op,uint64_t fd,uint64_t event){
         free_watch->used=true;
         free_watch->fd=(uint16_t)fd;
         free_watch->slot=(uint8_t)target_slot;
-        free_watch->kind=task->fds->descriptors[fd];
+        free_watch->kind=task->fds->entries[fd].kind;
         slot_found=free_watch;
     }else if(!slot_found)return (uint64_t)-ENOENT;
     slot_found->events=events;
@@ -240,8 +240,8 @@ void nas_epoll_arm_current_task(uint64_t epfd){
 }
 bool nas_epoll_task_ready(const struct nas_task *task){
     if(!task || task->blocked_args[0]>=NAS_FD_LIMIT ||
-       task->fds->descriptors[task->blocked_args[0]]!=FD_EPOLL)return true;
-    unsigned slot=task->fds->file_slot[task->blocked_args[0]];
+       task->fds->entries[task->blocked_args[0]].kind!=FD_EPOLL)return true;
+    unsigned slot=task->fds->entries[task->blocked_args[0]].slot;
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)return true;
     return instance_ready(slot);
 }

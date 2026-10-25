@@ -148,7 +148,7 @@ uint16_t nas_pty_poll(unsigned slot,uint16_t events) {
 }
 uint64_t nas_pty_read(uint64_t fd,uint64_t dst,uint64_t count) {
     if(fd>=NAS_FD_LIMIT || !count)return 0;
-    unsigned slot=nas_current_task->fds->file_slot[fd];
+    unsigned slot=nas_current_task->fds->entries[fd].slot;
     struct pty *p=get(slot);
     if(!p)return (uint64_t)-EBADF;
     bool master=slot_is_master[slot]!=0;
@@ -179,7 +179,7 @@ uint64_t nas_pty_read(uint64_t fd,uint64_t dst,uint64_t count) {
 }
 uint64_t nas_pty_write(uint64_t fd,uint64_t src,uint64_t count) {
     if(fd>=NAS_FD_LIMIT || !count)return 0;
-    unsigned slot=nas_current_task->fds->file_slot[fd];
+    unsigned slot=nas_current_task->fds->entries[fd].slot;
     struct pty *p=get(slot);
     if(!p)return (uint64_t)-EBADF;
     bool master=slot_is_master[slot]!=0;
@@ -211,7 +211,7 @@ static uint64_t copy_u32(uint64_t ptr,uint32_t value) {
 }
 uint64_t nas_pty_ioctl(uint64_t fd,uint64_t cmd,uint64_t arg) {
     if(fd>=NAS_FD_LIMIT)return (uint64_t)-EBADF;
-    unsigned slot=nas_current_task->fds->file_slot[fd];
+    unsigned slot=nas_current_task->fds->entries[fd].slot;
     struct pty *p=get(slot);
     if(!p)return (uint64_t)-EBADF;
     bool master=slot_is_master[slot]!=0;

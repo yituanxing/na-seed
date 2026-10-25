@@ -17,8 +17,6 @@
 #include "main.h"
 #include "../fs/file_ops.h"
 #define TASK (*nas_current_task)
-#define descriptors TASK.fds->descriptors
-#define file_slot TASK.fds->file_slot
 #define running_bash TASK.running_bash
 #define running_busybox TASK.running_busybox
 #define running_alpine TASK.running_alpine
@@ -78,8 +76,8 @@ void nas_init_userspace(void) {
         nas_fail("cannot install native RX rt_sigreturn trampoline");
     uint64_t stack_pointer;
     for (unsigned fd = 0; fd < 3; fd++) {
-        descriptors[fd] = FD_UART;
-        file_slot[fd] = (uint8_t)fd;
+        TASK.fds->entries[fd].kind = FD_UART;
+        TASK.fds->entries[fd].slot = (uint8_t)fd;
         nas_open_files[fd].refcount = 1;
         nas_open_files[fd].ops = nas_fs_ops_for_kind(FD_UART);
         nas_open_files[fd].status_flags = fd == 0 ? 0 : 1; /* stdin R, stdout/err W */

@@ -20,8 +20,6 @@
 #include "file_ops.h"
 #include "unix_socket.h"
 #define TASK (*nas_current_task)
-#define descriptors TASK.fds->descriptors
-#define file_slot TASK.fds->file_slot
 
 /* Kernel Linux pollfd ABI: int32 fd, int16 events, int16 revents.
  * The only supported blocking timeout is infinite; positive timeouts need
@@ -42,10 +40,10 @@ uint64_t nas_fs_poll(uint64_t address, uint64_t nfds, uint64_t timeout) {
         uint16_t events = (uint16_t)(word >> 32);
         uint16_t revents = 0;
         if (fd >= 0) {
-            if (fd >= 64 || descriptors[(unsigned)fd] == FD_CLOSED)
+            if (fd >= 64 || TASK.fds->entries[(unsigned)fd].kind == FD_CLOSED)
                 revents = POLLNVAL;
             else {
-                const struct nas_file_ops *ops=nas_open_files[file_slot[(unsigned)fd]].ops;
+                const struct nas_file_ops *ops=nas_open_files[TASK.fds->entries[(unsigned)fd].slot].ops;
                 revents=ops && ops->poll ? ops->poll((uint64_t)(unsigned)fd,events) : 0;
             }
         }
@@ -110,8 +108,8 @@ uint64_t nas_fs_pselect6(uint64_t nfds,uint64_t readfds,
         if(writeset&bit)events|=4U;     /* POLLOUT */
         if(exceptset&bit)events|=2U;    /* POLLPRI */
         if(!events)continue;
-        if(descriptors[fd]==FD_CLOSED)return (uint64_t)-EBADF;
-        const struct nas_file_ops *ops=nas_open_files[file_slot[fd]].ops;
+        if(TASK.fds->entries[fd].kind==FD_CLOSED)return (uint64_t)-EBADF;
+        const struct nas_file_ops *ops=nas_open_files[TASK.fds->entries[fd].slot].ops;
         uint16_t revents=ops && ops->poll ? ops->poll(fd,events) : 0;
         bool any=false;
         if((readset&bit) && (revents&(1U|8U|16U))) {
@@ -152,8 +150,8 @@ bool nas_fs_pselect_arm(uint64_t nfds,uint64_t readfds,
         if(readset&bit)events|=1U;
         if(writeset&bit)events|=4U;
         if(exceptset&bit)events|=2U;
-        if(!events || descriptors[fd]==FD_CLOSED)continue;
-        unsigned slot=file_slot[fd];
+        if(!events || TASK.fds->entries[fd].kind==FD_CLOSED)continue;
+        unsigned slot=TASK.fds->entries[fd].slot;
         if(slot>=NAS_OPEN_FILE_LIMIT)continue;
         const struct nas_file_ops *ops=nas_open_files[slot].ops;
         if(ops && ops->poll_arm)ops->poll_arm(task,fd,events);
@@ -174,7 +172,7 @@ bool nas_fs_poll_arm(uint64_t address,uint64_t nfds) {
         int32_t fd=(int32_t)(uint32_t)raw;
         uint16_t events=(uint16_t)(raw>>32);
         if(fd<0 || fd>=NAS_FD_LIMIT || !events)continue;
-        unsigned slot=file_slot[(unsigned)fd];
+        unsigned slot=TASK.fds->entries[(unsigned)fd].slot;
         if(slot>=NAS_OPEN_FILE_LIMIT)continue;
         const struct nas_file_ops *ops=nas_open_files[slot].ops;
         if(ops && ops->poll_arm)ops->poll_arm(task,(uint64_t)(unsigned)fd,events);
