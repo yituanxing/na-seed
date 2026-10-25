@@ -1,0 +1,2 @@
+# Actual native Alpine procps pmap and lsof on Task-owned procfs.
+m70-vmfd	cpio	sh -c '/bin/sh /tests/m70-vmfd-run.sh'	M70_VMFD_FULL_PASS	-	/bin/busybox
