@@ -51,3 +51,17 @@ same functional refactor on the prior 24.04 runner. This is **not** a kernel
 syscall fix: pin all five routine PR workflows to the previously verified
 Ubuntu 24.04 environment and leave future 26.04 qualification separate.
 Never treat a runner failure as either a kernel defect or successful acceptance.
+
+## Second large ownership batch
+
+* `fs/file_io.c`: read/write, positional and vectored I/O, mmap file bytes.
+* `fs/poll_syscall.c`: shared poll/ppoll/select, wait-state readiness.
+* `fs/metadata_syscall.c`: stat/chmod/access, directories, timestamps, sync and truncate.
+* `fs/namespace_syscall.c`: directory changes, CWD and namespace mutations.
+* `fs/syscall.c` retains generic open, FD allocation, backend vtables,
+  fcntl/ioctl and common dispatch; its internal open-path helper is exposed
+  for current legacy fstatat fallback only.
+
+All 39 core C translation units link on x86 and build on RV64/AArch64
+through the canonical manifest. No storage ABI, error semantics, inode
+cache, mount model or architecture code is altered in this batch.

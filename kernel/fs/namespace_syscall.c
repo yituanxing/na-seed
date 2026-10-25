@@ -14,6 +14,7 @@
 #include "../arch/mmu.h"
 #include "mode.h"
 #include "syscall.h"
+#include "lookup.h"
 #include "namespace_syscall.h"
 #define TASK (*nas_current_task)
 #define descriptors TASK.fds->descriptors
@@ -104,10 +105,67 @@ static uint64_t sys_symlinkat_tmp(uint64_t targetptr,uint64_t dirfd,
         (uint64_t)(int64_t)tmp_symlink(target,linkpath);
 }
 
+static uint64_t sys_getcwd_root(uint64_t buffer, uint64_t size) {
+    uint64_t length = 0;
+    while (current_workdir[length]) length++;
+    length++; /* Linux raw getcwd includes NUL in returned length. */
+    if (size < length) return (uint64_t)-ERANGE;
+    return nas_user_write_bytes(buffer, (const uint8_t *)current_workdir, length)
+        ? length : (uint64_t)-EFAULT;
+}
+static uint64_t sys_chdir(uint64_t pathname) {
+    char path[256];
+    uint64_t ret = nas_fs_resolve_path((uint64_t)-100, pathname, path);
+    if ((int64_t)ret < 0) return ret;
+    char actual[256];
+    int err = nas_fs_resolve_existing(path, true, actual);
+    if (err) {
+        struct nas_tmp_file *t = tmp_find(path);
+        if (!t) return (uint64_t)(int64_t)err;
+        if (!t->is_dir) return (uint64_t)-ENOTDIR;
+        unsigned n = 0;
+        do { current_workdir[n] = path[n]; } while (path[n++]);
+        return 0;
+    }
+    const struct nas_tmp_file *tmp=tmp_find(actual);
+    if (tmp) {
+        if (!tmp->is_dir) return (uint64_t)-ENOTDIR;
+        unsigned j=0;
+        do { current_workdir[j]=actual[j]; } while (actual[j++]);
+        return 0;
+    }
+    const struct bootfs_entry *entry = bootfs_find(actual);
+    if (!bootfs_is_dir(entry)) return (uint64_t)-ENOTDIR;
+    unsigned i = 0;
+    do { current_workdir[i] = actual[i]; } while (actual[i++]);
+    return 0;
+}
+static uint64_t sys_fchdir(uint64_t fd) {
+    if (fd >= 64 || descriptors[fd] == FD_CLOSED)
+        return (uint64_t)-EBADF;
+    const char *path;
+    if (descriptors[fd] == FD_TMP_DIR) {
+        const struct nas_tmp_file *dir = tmp_by_slot(file_slot[fd]);
+        if (!dir || !dir->linked) return (uint64_t)-ENOENT;
+        path = dir->path;
+    } else {
+        if (descriptors[fd] != FD_DIR || !nas_open_files[file_slot[fd]].boot_entry)
+            return (uint64_t)-ENOTDIR;
+        path = nas_open_files[file_slot[fd]].boot_entry->path;
+    }
+    unsigned i = 0;
+    do { current_workdir[i] = path[i]; } while (path[i++]);
+    return 0;
+}
+
+
 #define NAMESPACE_RESULT(expr) return (struct nas_fs_result){ .handled=true, .value=(expr) }
 struct nas_fs_result nas_fs_namespace_syscall(enum nas_syscall_op op,
                                             const uint64_t *args) {
     switch (op) {
+    case NAS_SC_getcwd: NAMESPACE_RESULT(sys_getcwd_root(args[1], args[2]));
+    case NAS_SC_chdir: NAMESPACE_RESULT(sys_chdir(args[1]));
+    case NAS_SC_fchdir: NAMESPACE_RESULT(sys_fchdir(args[1]));
     case NAS_SC_rename: NAMESPACE_RESULT(sys_renameat_tmp((uint64_t)-100, args[1], (uint64_t)-100, args[2], 0));
     case NAS_SC_renameat: NAMESPACE_RESULT(sys_renameat_tmp(args[1], args[2], args[3], args[4], 0));
     case NAS_SC_renameat2: NAMESPACE_RESULT(sys_renameat_tmp(args[1], args[2], args[3], args[4], args[5]));
