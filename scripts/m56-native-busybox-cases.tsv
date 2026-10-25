@@ -1,0 +1,2 @@
+# Same exact native-original upstream BusyBox Kconfig on each ISA.
+m56-busybox	cpio	sh -c '/bin/sh /tests/run-m56.sh'	M56_REAL_GUEST_BUSYBOX_FULL_PASS	-	/bin/busybox

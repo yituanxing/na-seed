@@ -39,15 +39,17 @@
  * kernel-owned (immutable CPIO or tmpfs inode), valid across the staged
  * root switch. Map through the existing shared ELF loader, commit only
  * when successful, and roll back without invalidating the old process. */
-/* Real GNU Make passes long shell -c command strings as a single argv.
- * Limit one string to 1023 bytes; with NAS_ARGV_MAX=64 and NAS_ENV_MAX=32,
- * the worst-case combined payload stays under the mapped 128-KiB stack.
- * Reject larger strings with Linux E2BIG instead of silently truncating. */
-#define EXEC_STRING_MAX 1024
+/* Real upstream Kbuild passes hundreds of C source paths to native sed.
+ * Linux's 64-argv cap was our own artificial limit, not a Kbuild error.
+ * Keep a bounded 512-KiB aggregate pool (within the existing 1-MiB
+ * initial mapped user stack), NOT 2048 fixed 8-KiB strings in BSS.
+ * This is an interim documented capacity, not full Linux ARG_MAX. */
+#define EXEC_STRING_MAX 8192
+#define EXEC_POOL_BYTES (512U * 1024U)
 static struct exec_snapshot {
     char filename[256];
-    char argbuf[NAS_ARGV_MAX][EXEC_STRING_MAX];
-    char envbuf[NAS_ENV_MAX][EXEC_STRING_MAX];
+    char strings[EXEC_POOL_BYTES];
+    unsigned used;
     const char *argv[NAS_ARGV_MAX];
     const char *envp[NAS_ENV_MAX];
     unsigned argc, envc;
@@ -123,36 +125,61 @@ static uint64_t shebang_rewrite_args(void) {
     unsigned original = pending_exec.argc;
     if (original + 1 + (option ? 1U : 0U) > NAS_ARGV_MAX)
         return (uint64_t)-E2BIG;
-    const char *rebuilt[NAS_ARGV_MAX];
-    unsigned n = 0;
-    rebuilt[n++] = pending_exec.shebang_path;
-    if (option) rebuilt[n++] = pending_exec.shebang_arg;
-    rebuilt[n++] = pending_exec.filename;
-    for (unsigned i = 1; i < original; i++)
-        rebuilt[n++] = pending_exec.argv[i];
-    for (unsigned i = 0; i < n; i++) pending_exec.argv[i] = rebuilt[i];
-    pending_exec.argc = n;
+    /* Shift pointers in place; do not allocate 2048 pointers on the
+     * privileged kernel stack just to rewrite a #! exec argument vector. */
+    unsigned shift = 1U + (option ? 1U : 0U);
+    for (unsigned i = original; i > 1U;) {
+        --i;
+        pending_exec.argv[i + shift] = pending_exec.argv[i];
+    }
+    pending_exec.argv[0] = pending_exec.shebang_path;
+    if (option) pending_exec.argv[1] = pending_exec.shebang_arg;
+    pending_exec.argv[shift] = pending_exec.filename;
+    pending_exec.argc = original + shift;
     return 0;
 }
 
-static uint64_t copy_exec_string(uint64_t addr, char dst[EXEC_STRING_MAX]) {
+static uint64_t copy_exec_string(uint64_t addr, const char **result) {
     if (addr >= USER_LIMIT) return (uint64_t)-EFAULT;
-    for (unsigned i = 0; i < EXEC_STRING_MAX; i++) {
-        uint8_t ch;
-        if (!nas_user_read_bytes(addr + i, &ch, 1)) return (uint64_t)-EFAULT;
-        dst[i] = (char)ch;
-        if (!ch) return 0;
+    unsigned start = pending_exec.used;
+    if (start >= EXEC_POOL_BYTES) return (uint64_t)-E2BIG;
+    unsigned max = EXEC_POOL_BYTES - start;
+    if (max > EXEC_STRING_MAX) max = EXEC_STRING_MAX;
+    uint64_t available = USER_LIMIT - addr;
+    char *dst = pending_exec.strings + start;
+    /* Resolve one PTE per page, never assume two adjacent virtual pages
+     * have contiguous physical HHDM backing. */
+    for (unsigned i = 0; i < max;) {
+        if ((uint64_t)i >= available) return (uint64_t)-EFAULT;
+        uint64_t at = addr + i;
+        const uint8_t *src = nas_mmu_user_byte(at);
+        if (!src) return (uint64_t)-EFAULT;
+        unsigned chunk = (unsigned)(PAGE - (at & (PAGE - 1)));
+        if (chunk > max - i) chunk = max - i;
+        if ((uint64_t)chunk > available - i) chunk = (unsigned)(available - i);
+        for (unsigned j = 0; j < chunk; j++) {
+            char byte = (char)src[j];
+            dst[i + j] = byte;
+            if (!byte) {
+                pending_exec.used = start + i + j + 1;
+                *result = dst;
+                return 0;
+            }
+        }
+        i += chunk;
     }
+    nas_print("[EXEC ARG LIMIT] single string over 8191 bytes or total exec strings over 512 KiB\n");
     return (uint64_t)-E2BIG;
 }
 static uint64_t copy_exec_vector(uint64_t user_array, bool environment) {
     unsigned limit = environment ? NAS_ENV_MAX : NAS_ARGV_MAX;
     if (!user_array) {
         if (!environment) {
-            pending_exec.argv[0] = pending_exec.argbuf[0];
-            pending_exec.argbuf[0][0] = 0;
-            pending_exec.argc = 1; /* argc>=1 Linux compatibility */
-        }
+            pending_exec.strings[0] = 0;
+            pending_exec.used = 1;
+            pending_exec.argv[0] = pending_exec.strings;
+            pending_exec.argc = 1;
+        } else pending_exec.envc = 0;
         return 0;
     }
     for (unsigned i = 0; i <= limit; i++) {
@@ -166,19 +193,26 @@ static uint64_t copy_exec_vector(uint64_t user_array, bool environment) {
             else {
                 pending_exec.argc = i;
                 if (!i) {
+                    if (pending_exec.used >= EXEC_POOL_BYTES) return (uint64_t)-E2BIG;
+                    pending_exec.strings[pending_exec.used] = 0;
+                    pending_exec.argv[0] = pending_exec.strings + pending_exec.used++;
                     pending_exec.argc = 1;
-                    pending_exec.argv[0] = pending_exec.argbuf[0];
-                    pending_exec.argbuf[0][0] = 0;
                 }
             }
             return 0;
         }
-        if (i == limit) return (uint64_t)-E2BIG;
-        char *storage = environment ? pending_exec.envbuf[i] : pending_exec.argbuf[i];
-        uint64_t ret = copy_exec_string(value, storage);
+        if (i == limit) {
+            nas_print("[EXEC ARG LIMIT] ");
+            nas_print(environment ? "environment count=" : "argv count=");
+            nas_dec(limit);
+            nas_print("\n");
+            return (uint64_t)-E2BIG;
+        }
+        const char *stored = 0;
+        uint64_t ret = copy_exec_string(value, &stored);
         if ((int64_t)ret < 0) return ret;
-        if (environment) pending_exec.envp[i] = storage;
-        else pending_exec.argv[i] = storage;
+        if (environment) pending_exec.envp[i] = stored;
+        else pending_exec.argv[i] = stored;
     }
     return (uint64_t)-E2BIG;
 }
@@ -255,6 +289,10 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
         interp_img=elf_from_fs_node(&loader);
         interp=&interp_img;
     }
+    /* Reset the compact pool on EVERY new exec, including retry after
+     * failed syscall; do not retain stale pointers from prior attempts. */
+    pending_exec.used = 0;
+    pending_exec.argc = pending_exec.envc = 0;
     result = copy_exec_vector(argv, false);
     if ((int64_t)result < 0) return result;
     result = copy_exec_vector(envp, true);

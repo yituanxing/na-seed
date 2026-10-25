@@ -36,7 +36,7 @@ static bool task_io_ready(const struct nas_task *task) {
     uint64_t fd = task->blocked_args[0];
     uint8_t kind = nas_task_fd_kind(task, fd);
     unsigned slot = nas_task_fd_slot(task, fd);
-    if (slot >= NAS_FD_LIMIT) return true; /* replay to return EBADF */
+    if (slot >= NAS_OPEN_FILE_LIMIT) return true; /* replay to return EBADF */
     if (task->blocked_op == NAS_SC_read ||
         task->blocked_op == NAS_SC_readv) {
         if(kind == FD_PIPE_R)return nas_pipe_read_ready(slot);

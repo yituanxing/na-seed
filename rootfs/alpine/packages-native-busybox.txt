@@ -1,0 +1,20 @@
+# Original signed Alpine 3.23 native development toolchain; no host-built BusyBox.
+musl
+musl-dev
+busybox
+gcc
+binutils
+make
+# Kbuild calls POSIX/GNU text processing tools by their original names.
+# APK --no-scripts does not generate BusyBox applet symlinks: use the
+# signed real distro packages rather than manually creating fake applets.
+sed
+gawk
+coreutils
+findutils
+# Original Kbuild generators and link rules use bzip2, diff/cmp, and gzip.
+# Preserve the upstream commands; stage their genuine signed distro tools.
+bzip2
+diffutils
+gzip
+grep

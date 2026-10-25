@@ -8,7 +8,7 @@
  * this API; syscall/FD decoding, user copying, SIGPIPE and task scheduling
  * stay in the callers. Two endpoint slots have independent refcounts.
  */
-#define NAS_PIPE_COUNT 8
+#define NAS_PIPE_COUNT 32
 #define NAS_PIPE_CAP 4096U
 
 /* Bind two already-reserved open-description slots; no user addresses. */

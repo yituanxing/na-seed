@@ -2,6 +2,8 @@
 #include "fd.h"
 #include "task.h"
 #include "errno.h"
+extern void nas_print(const char *);
+extern void nas_dec(uint64_t);
 
 /* Pipe ring/object lifetime belongs here, not in syscall dispatch.
  * The open-file-description layer owns the endpoint reference counts.
@@ -13,31 +15,35 @@ struct nas_pipe {
     unsigned head, count, read_slot, write_slot;
 };
 static struct nas_pipe pipe_table[NAS_PIPE_COUNT];
-static uint8_t pipe_slot_owner[NAS_FD_LIMIT]; /* one-based pipe index */
+static uint8_t pipe_slot_owner[NAS_OPEN_FILE_LIMIT]; /* one-based pipe index */
 
 static struct nas_pipe *pipe_for_slot(unsigned slot) {
-    if (slot >= NAS_FD_LIMIT) return 0;
+    if (slot >= NAS_OPEN_FILE_LIMIT) return 0;
     unsigned owner = pipe_slot_owner[slot];
     if (!owner || owner > NAS_PIPE_COUNT) return 0;
     struct nas_pipe *pipe = &pipe_table[owner - 1];
     return pipe->used ? pipe : 0;
 }
 static bool pipe_has_reader(const struct nas_pipe *pipe) {
-    return pipe->read_slot < NAS_FD_LIMIT &&
+    return pipe->read_slot < NAS_OPEN_FILE_LIMIT &&
            nas_open_files[pipe->read_slot].refcount != 0;
 }
 static bool pipe_has_writer(const struct nas_pipe *pipe) {
-    return pipe->write_slot < NAS_FD_LIMIT &&
+    return pipe->write_slot < NAS_OPEN_FILE_LIMIT &&
            nas_open_files[pipe->write_slot].refcount != 0;
 }
 int nas_pipe_create(unsigned read_slot, unsigned write_slot) {
-    if (read_slot >= NAS_FD_LIMIT || write_slot >= NAS_FD_LIMIT ||
+    if (read_slot >= NAS_OPEN_FILE_LIMIT || write_slot >= NAS_OPEN_FILE_LIMIT ||
         read_slot == write_slot || pipe_slot_owner[read_slot] ||
         pipe_slot_owner[write_slot]) return -EINVAL;
     unsigned index = NAS_PIPE_COUNT;
     for (unsigned i = 0; i < NAS_PIPE_COUNT; i++)
         if (!pipe_table[i].used) { index = i; break; }
-    if (index == NAS_PIPE_COUNT) return -ENFILE;
+    if (index == NAS_PIPE_COUNT) {
+        nas_print("[PIPE CAP] active-pipes="); nas_dec(NAS_PIPE_COUNT);
+        nas_print(" capacity="); nas_dec(NAS_PIPE_COUNT); nas_print("\n");
+        return -ENFILE;
+    }
     struct nas_pipe *pipe = &pipe_table[index];
     pipe->used = true;
     pipe->head = pipe->count = 0;
@@ -53,8 +59,8 @@ void nas_pipe_release_description(unsigned slot) {
     /* Forget the endpoint BEFORE the global slot is reused. A new FD
      * referencing this same slot must never revive an old pipe's writer.
      */
-    if (slot == pipe->read_slot) pipe->read_slot = NAS_FD_LIMIT;
-    if (slot == pipe->write_slot) pipe->write_slot = NAS_FD_LIMIT;
+    if (slot == pipe->read_slot) pipe->read_slot = NAS_OPEN_FILE_LIMIT;
+    if (slot == pipe->write_slot) pipe->write_slot = NAS_OPEN_FILE_LIMIT;
     pipe_slot_owner[slot] = 0;
     if (!pipe_has_reader(pipe) && !pipe_has_writer(pipe)) {
         pipe->used = false;
