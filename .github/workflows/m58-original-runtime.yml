@@ -87,9 +87,11 @@ jobs:
       - name: Host-stage signed ELF and run original real programs across three native QEMU boots
         timeout-minutes: 24
         run: |
+          # Current frontier first: avoid two unrelated QEMU boots when M60 fails.
+          # A successful M60 run still gates on BOTH preserved M58 and M59 suites.
+          sh scripts/probe-m60-terminals.sh ${{ matrix.port }}
           sh scripts/probe-m58-runtime.sh ${{ matrix.port }}
           sh scripts/probe-m59-worktree.sh ${{ matrix.port }}
-          sh scripts/probe-m60-terminals.sh ${{ matrix.port }}
       - name: Preserve full guest evidence on failure
         if: failure()
         uses: actions/upload-artifact@v4

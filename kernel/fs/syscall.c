@@ -609,13 +609,13 @@ static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
                     (uint64_t)-ENOTTY;
     /* Native musl openpty/login_tty traversal: report the precise device
      * and command only on failure, never an application-name special case. */
-    if((int64_t)result<0 &&
-       (cmd==0x80045430ULL || cmd==0x40045431ULL || cmd==0x540eULL)) {
-        nas_print("[PTY IOCTL FAIL] fd=");nas_dec(fd);
+    if((int64_t)result<0 || descriptors[fd]==FD_PTY_MASTER ||
+       descriptors[fd]==FD_PTY_SLAVE) {
+        nas_print("[IOCTL TRACE] fd=");nas_dec(fd);
         nas_print(" kind=");nas_dec(descriptors[fd]);
         nas_print(" slot=");nas_dec(slot);
         nas_print(" cmd=");nas_hex(cmd);
-        nas_print(" errno=");nas_dec((uint64_t)(-(int64_t)result));
+        nas_print(" result=");nas_hex(result);
         nas_print("\n");
     }
     return result;
