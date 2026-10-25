@@ -21,6 +21,7 @@
 #include "io.h"
 #include "mode.h"
 #include "syscall.h"
+#include "procfs.h"
 #include "file_ops.h"
 #include "epoll.h"
 #include "eventfd.h"
@@ -397,7 +398,10 @@ uint64_t nas_fs_open_path(const char *path, uint64_t native_flags,
     struct nas_tmp_file *tmp_file = 0;
     bool create_tmp = false;
     int pty_number=nas_pty_path_number(path);
-    if(!strcmp(path,"/dev/ptmx"))kind=FD_PTY_MASTER;
+    struct nas_proc_node proc_node={0};
+    if(nas_proc_lookup(path,&proc_node))
+        kind=nas_proc_is_dir(proc_node) ? FD_PROC_DIR : FD_PROC_FILE;
+    else if(!strcmp(path,"/dev/ptmx"))kind=FD_PTY_MASTER;
     else if(pty_number>=0 && nas_pty_present((unsigned)pty_number))
         kind=FD_PTY_SLAVE;
     else if(!strcmp(path,"/dev/tty") && nas_pty_controlling())
@@ -447,8 +451,11 @@ uint64_t nas_fs_open_path(const char *path, uint64_t native_flags,
      * regular inode cannot be opened as a byte file (O_PATH may inspect). */
     if(tmp_file && (tmp_file->mode&0170000U)==0140000U &&
        !(flags&NAS_LINUX_O_PATH))return (uint64_t)-ENXIO;
-    if ((flags & 0x10000ULL) && kind != FD_DIR && kind != FD_TMP_DIR)
+    if ((flags & 0x10000ULL) && kind != FD_DIR && kind != FD_TMP_DIR &&
+        kind != FD_PROC_DIR)
         return (uint64_t)-ENOTDIR;
+    if (kind == FD_PROC_DIR && ((flags & 3ULL) || (flags & 0x200ULL)))
+        return (uint64_t)-EISDIR;
     if (kind == FD_TMP_DIR && ((flags & 3ULL) || (flags & 0x200ULL)))
         return (uint64_t)-EISDIR;
     if (kind == FD_TMP) {
@@ -466,7 +473,8 @@ uint64_t nas_fs_open_path(const char *path, uint64_t native_flags,
      * O_CREAT|O_EXCL must refuse an existing name with EEXIST.
      */
     if ((flags & 0xc0ULL) == 0xc0ULL &&
-        (kind == FD_ARCHIVE || kind == FD_DIR || kind == FD_BOOTFS))
+        (kind == FD_ARCHIVE || kind == FD_DIR || kind == FD_BOOTFS ||
+         kind == FD_PROC_FILE || kind == FD_PROC_DIR))
         return (uint64_t)-EEXIST;
     if (kind != FD_NULL && kind != FD_ZERO && kind != FD_TTY &&
         kind != FD_PTY_MASTER && kind != FD_PTY_SLAVE &&
@@ -474,6 +482,8 @@ uint64_t nas_fs_open_path(const char *path, uint64_t native_flags,
         (flags & 0x200ULL))
         return (uint64_t)-EROFS;
     if (kind == FD_BOOTFS && (flags & (0x40ULL | 0x400ULL)))
+        return (uint64_t)-EROFS;
+    if ((kind == FD_PROC_FILE || kind == FD_PROC_DIR) && (flags & 3ULL))
         return (uint64_t)-EROFS;
     if ((kind == FD_ARCHIVE || kind == FD_DIR) && (flags & 3ULL))
         return kind == FD_DIR ? (uint64_t)-EISDIR : (uint64_t)-EROFS;
@@ -506,6 +516,10 @@ uint64_t nas_fs_open_path(const char *path, uint64_t native_flags,
     if(kind==FD_TMP || kind==FD_TMP_DIR)tmp_bind_slot(slot,tmp_file);
     nas_open_files[slot].boot_file=real_file;
     nas_open_files[slot].boot_entry=entry;
+    if(kind==FD_PROC_FILE || kind==FD_PROC_DIR) {
+        nas_open_files[slot].proc_kind=proc_node.kind;
+        nas_open_files[slot].proc_pid=proc_node.pid;
+    }
     return fd;
 }
 static uint64_t sys_open_device(uint64_t pathname, uint64_t flags,
@@ -517,6 +531,27 @@ static uint64_t sys_open_device(uint64_t pathname, uint64_t flags,
 
 /* NaOS-aligned idea: bind ops once to the shared open description; do not
  * repeat a dispatch by FD kind in every userspace read/write/poll/ioctl. */
+static uint64_t vread_proc(uint64_t fd,uint64_t addr,uint64_t n) {
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind!=FD_PROC_FILE)
+        return (uint64_t)-EBADF;
+    unsigned slot=TASK.fds->entries[fd].slot;
+    struct nas_proc_node node={nas_open_files[slot].proc_kind,
+                               nas_open_files[slot].proc_pid};
+    uint8_t bytes[256];
+    uint64_t done=0;
+    while(done<n) {
+        unsigned take=(n-done)>sizeof(bytes)?sizeof(bytes):(unsigned)(n-done);
+        int64_t got=nas_proc_read(node,nas_open_files[slot].position,bytes,take);
+        if(got<0)return done ? done : (uint64_t)got;
+        if(!got)break;
+        if(!nas_user_write_bytes(addr+done,bytes,(uint64_t)got))
+            return done ? done : (uint64_t)-EFAULT;
+        nas_open_files[slot].position+=(uint64_t)got;
+        done+=(uint64_t)got;
+        if((unsigned)got<take)break;
+    }
+    return done;
+}
 static uint64_t vread_null(uint64_t fd,uint64_t addr,uint64_t n) {
     (void)fd;(void)addr;(void)n;return 0;
 }
@@ -627,6 +662,8 @@ static const struct nas_file_ops ops_zero={
 static const struct nas_file_ops ops_bootfs={.read=vread_limine,.poll=vpoll_always};
 static const struct nas_file_ops ops_archive={.read=vread_archive,.poll=vpoll_always};
 static const struct nas_file_ops ops_dir={.read=vread_dir,.poll=vpoll_always};
+static const struct nas_file_ops ops_proc_file={.read=vread_proc,.poll=vpoll_always};
+static const struct nas_file_ops ops_proc_dir={.read=vread_dir,.poll=vpoll_always};
 static const struct nas_file_ops ops_pipe_read={
     .read=pipe_fd_read,.poll=vpoll_pipe_read,
     .poll_arm=varmpipe_read,.release=vrelease_pipe
@@ -686,7 +723,8 @@ static const struct nas_file_ops *const ops_by_kind[]={
     [FD_TMP]=&ops_tmp,[FD_TMP_DIR]=&ops_tmp_dir,
     [FD_EPOLL]=&ops_epoll,
     [FD_EVENTFD]=&ops_eventfd,[FD_SOCKET]=&ops_socket,
-    [FD_PTY_MASTER]=&ops_pty,[FD_PTY_SLAVE]=&ops_pty
+    [FD_PTY_MASTER]=&ops_pty,[FD_PTY_SLAVE]=&ops_pty,
+    [FD_PROC_FILE]=&ops_proc_file,[FD_PROC_DIR]=&ops_proc_dir
 };
 const struct nas_file_ops *nas_fs_ops_for_kind(uint8_t kind) {
     return kind < sizeof(ops_by_kind)/sizeof(ops_by_kind[0])

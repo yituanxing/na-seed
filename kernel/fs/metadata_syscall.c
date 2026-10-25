@@ -18,6 +18,7 @@
 #include "../drivers/pty.h"
 #include "../time/clock.h"
 #include "lookup.h"
+#include "procfs.h"
 #include "syscall.h"
 #include "open_path.h"
 #include "metadata_syscall.h"
@@ -62,6 +63,14 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
         const struct nas_tmp_file *file = tmp_by_slot(TASK.fds->entries[fd].slot);
         if (!file) return (uint64_t)-EBADF;
         fill_tmp_stat(&st,file);
+    } else if (TASK.fds->entries[fd].kind == FD_PROC_FILE ||
+               TASK.fds->entries[fd].kind == FD_PROC_DIR) {
+        unsigned slot=TASK.fds->entries[fd].slot;
+        struct nas_proc_node node={nas_open_files[slot].proc_kind,
+                                   nas_open_files[slot].proc_pid};
+        st.dev=7;st.ino=nas_proc_ino(node);
+        st.mode=nas_proc_mode(node);
+        st.nlink=nas_proc_is_dir(node)?2:1;
     } else if (TASK.fds->entries[fd].kind == FD_PTY_MASTER ||
                TASK.fds->entries[fd].kind == FD_PTY_SLAVE) {
         st.dev=6;st.ino=2000+nas_pty_number(TASK.fds->entries[fd].slot);
@@ -130,11 +139,16 @@ static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
         if (!file) return (uint64_t)-EBADF;
         size = file->size;
     }
+    else if (TASK.fds->entries[fd].kind == FD_PROC_DIR ||
+             TASK.fds->entries[fd].kind == FD_PROC_FILE)
+        size=0; /* dynamic proc files report zero st_size, as Linux does */
     else if (TASK.fds->entries[fd].kind != FD_DIR || !nas_open_files[TASK.fds->entries[fd].slot].boot_entry)
         return (uint64_t)-ESPIPE;
     uint64_t base = 0;
     if (whence == 1) base = nas_open_files[TASK.fds->entries[fd].slot].position;
-    else if (whence == 2 && TASK.fds->entries[fd].kind != FD_DIR && TASK.fds->entries[fd].kind != FD_TMP_DIR) base = size;
+    else if (whence == 2 && TASK.fds->entries[fd].kind != FD_DIR &&
+             TASK.fds->entries[fd].kind != FD_TMP_DIR &&
+             TASK.fds->entries[fd].kind != FD_PROC_DIR) base = size;
     else if (whence != 0) return (uint64_t)-EINVAL;
     int64_t signed_off = (int64_t)off;
     if (signed_off < 0) {
@@ -285,6 +299,16 @@ static uint64_t write_tmp_stat(const struct nas_tmp_file *file,uint64_t dst) {
     return nas_user_write_bytes(dst,(const uint8_t *)&st,sizeof(st)) ?
            0 : (uint64_t)-EFAULT;
 }
+static uint64_t write_proc_stat(struct nas_proc_node node,uint64_t dst) {
+    struct nas_linux_stat st={0};
+    st.dev=7;
+    st.ino=nas_proc_ino(node);
+    st.mode=nas_proc_mode(node);
+    st.nlink=nas_proc_is_dir(node)?2:1;
+    st.blksize=PAGE;
+    return nas_user_write_bytes(dst,(const uint8_t *)&st,sizeof(st))
+        ? 0:(uint64_t)-EFAULT;
+}
 static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
                                  uint64_t statbuf, uint64_t flags) {
     const uint64_t AT_SYMLINK_NOFOLLOW = 0x100ULL;
@@ -298,6 +322,8 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
     char path[256];
     uint64_t result = nas_fs_resolve_path(dirfd, pathname, path);
     if ((int64_t)result < 0) return result;
+    struct nas_proc_node proc;
+    if(nas_proc_lookup(path,&proc))return write_proc_stat(proc,statbuf);
     if(!strcmp(path,"/dev/ptmx") ||
        (nas_pty_path_number(path)>=0 &&
         nas_pty_present((unsigned)nas_pty_path_number(path)))) {
@@ -354,8 +380,54 @@ static uint64_t sys_readlinkat_boot(uint64_t dirfd, uint64_t pathname,
     return nas_user_write_bytes(dst, entry->data, len) ? len : (uint64_t)-EFAULT;
 }
 
+static uint64_t proc_getdents64(uint64_t fd,uint64_t dst,uint64_t capacity) {
+    if(capacity<24)return (uint64_t)-EINVAL;
+    if(dst>=USER_LIMIT || capacity>USER_LIMIT-dst)return (uint64_t)-EFAULT;
+    unsigned slot=TASK.fds->entries[fd].slot;
+    if(nas_open_files[slot].status_flags&NAS_LINUX_O_PATH)
+        return (uint64_t)-EBADF;
+    struct nas_proc_node dir={nas_open_files[slot].proc_kind,
+                              nas_open_files[slot].proc_pid};
+    uint64_t cursor=nas_open_files[slot].position,written=0;
+    while(written+24<=capacity) {
+        char name[32];
+        struct nas_proc_node child={0};
+        unsigned dtype=4;
+        uint64_t ino=nas_proc_ino(dir);
+        if(cursor==0){name[0]='.';name[1]=0;}
+        else if(cursor==1){name[0]='.';name[1]='.';name[2]=0;}
+        else {
+            if(cursor-2>UINT32_MAX ||
+               !nas_proc_child(dir,(unsigned)(cursor-2),name,&child))break;
+            dtype=nas_proc_is_dir(child)?4:8;
+            ino=nas_proc_ino(child);
+        }
+        unsigned len=0;while(name[len])len++;
+        unsigned reclen=(19+len+1+7)&~7U;
+        if(reclen>capacity-written) {
+            if(!written)return (uint64_t)-EINVAL;
+            break;
+        }
+        uint8_t record[64]={0};
+        for(unsigned i=0;i<8;i++) {
+            record[i]=(uint8_t)(ino>>(i*8));
+            record[8+i]=(uint8_t)((cursor+1)>>(i*8));
+        }
+        record[16]=(uint8_t)reclen;
+        record[17]=(uint8_t)(reclen>>8);
+        record[18]=(uint8_t)dtype;
+        for(unsigned i=0;i<len;i++)record[19+i]=(uint8_t)name[i];
+        if(!nas_user_write_bytes(dst+written,record,reclen))
+            return written?written:(uint64_t)-EFAULT;
+        written+=reclen;cursor++;
+        nas_open_files[slot].position=cursor;
+    }
+    return written;
+}
 static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
     if (fd >= 64 || TASK.fds->entries[fd].kind == FD_CLOSED) return (uint64_t)-EBADF;
+    if(TASK.fds->entries[fd].kind==FD_PROC_DIR)
+        return proc_getdents64(fd,dst,capacity);
     if (TASK.fds->entries[fd].kind != FD_TMP_DIR &&
         (TASK.fds->entries[fd].kind != FD_DIR || !nas_open_files[TASK.fds->entries[fd].slot].boot_entry))
         return (uint64_t)-ENOTDIR;
