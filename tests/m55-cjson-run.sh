@@ -55,7 +55,11 @@ phase=real-cmake-configure
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DCMAKE_C_COMPILER=/usr/bin/gcc \
     -DCMAKE_MAKE_PROGRAM=/usr/bin/ninja \
-    -DCMAKE_EXE_LINKER_FLAGS=-static \
+    # Use the original CMake/GCC default musl dynamic executable linkage.
+    # Forcing -static had made every cJSON.c touch relink the whole static
+    # musl C runtime into 20+ test executables under single-core RV64 QEMU.
+    # This is NOT a dependency skip: the same original full build + all
+    # dependent relinks + two complete CTest runs remain mandatory.
     -DBUILD_SHARED_LIBS=OFF \
     -DENABLE_CJSON_TEST=ON \
     -DENABLE_CJSON_UTILS=OFF \
@@ -108,8 +112,15 @@ echo M55_REAL_SOURCE_REBUILD_BEGIN
 echo M55_REAL_SOURCE_REBUILD_PLAN_BEGIN
 /bin/busybox cat /tmp/m55-rebuild-plan.txt
 echo M55_REAL_SOURCE_REBUILD_PLAN_END
-/usr/bin/ninja -C "$out" -d explain -j2 > /tmp/m55-rebuild.txt 2>&1
-/bin/busybox grep -Fq 'cJSON.c' /tmp/m55-rebuild.txt
+/bin/busybox grep -Fq 'cJSON.c' /tmp/m55-rebuild-plan.txt
+# Native progress MUST remain visible on the QEMU serial log. Previously
+# redirecting Ninja to a private /tmp file made 20+ authentic relinks appear
+# to hang, though kernel traces showed GCC/collect2/ld progressing.
+before_archive=$(/bin/busybox stat -c %Y "$out/libcjson.a")
+echo M55_REAL_SOURCE_REBUILD_NINJA_BEGIN
+/usr/bin/ninja -C "$out" -d explain -j2
+after_archive=$(/bin/busybox stat -c %Y "$out/libcjson.a")
+test "$after_archive" -gt "$before_archive"
 test -s "$out/libcjson.a"
 echo M55_NINJA_TRUE_SOURCE_REBUILD_PASS
 

@@ -141,3 +141,24 @@ The full M55 RV64 guest now explicitly uses this genuine varstore path
 (while all older historical RV64 suites retain their existing boot contract).
 A/B test is independent of upstream cJSON acceptance; do not conflate a
 `date` PASS with full CMake/Ninja/CTest/rebuild PASS.
+
+## M55 CI performance diagnosis — original GCC/ld activity is not a deadlock
+
+The prior exact-head RV64 serial artifact (grouped run 40151032367,
+sha `699f59c`) reached the genuine 45/45 Ninja build, 19/19 CTest and
+`M55_NINJA_INCREMENTAL_NOOP_PASS`, but then spent the remaining 40-minute
+QEMU budget launching genuine `gcc -> collect2 -> ld` processes for the
+second build after `touch cJSON.c`. The original script had set
+`CMAKE_EXE_LINKER_FLAGS=-static`: this needlessly **relinks the full musl
+static runtime into every upstream cJSON test executable** on each shared
+library source change under RV64 software TCG. It is not a kernel hang.
+
+Use *normal upstream-compatible GCC/musl dynamic executable linking*
+instead, leaving `BUILD_SHARED_LIBS=OFF` (original `libcjson.a` remains
+static). Unmodified CMake, Ninja, GCC, original cJSON.c and all upstream
+CTest cases are still used. The first full build and every affected target
+on `touch cJSON.c` are still rebuilt; Ninja no-op remains strictly checked
+and the full upstream CTest suite runs twice. The test also prints live
+Ninja progress to QEMU serial instead of swallowing it in an unobserved
+private tmpfs file; archive mtime must increase across a source-touch build.
+Retain ample timeout only as a hard failure bound, not a performance fix.
