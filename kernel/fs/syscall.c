@@ -739,14 +739,7 @@ static uint64_t sys_openat_boot(uint64_t dirfd, uint64_t pathname,
                                 uint64_t flags,uint64_t mode) {
     char path[256];
     uint64_t result = nas_fs_resolve_path(dirfd, pathname, path);
-    if ((int64_t)result < 0) return result;
-    uint64_t rc=nas_fs_open_path(path,flags,mode);
-    if(!strcmp(path,"/dev/null") && (int64_t)rc<0) {
-        nas_print("[DEVNULL OPEN REJECT] flags=");nas_dec(flags);
-        nas_print(" err=");nas_dec((uint64_t)(-(int64_t)rc));
-        nas_print(" pid=");nas_dec(TASK.pid);nas_print("\n");
-    }
-    return rc;
+    return (int64_t)result < 0 ? result : nas_fs_open_path(path,flags,mode);
 }
 /* directory enumeration/stat lookup live in metadata_syscall.c */
 /* A known filesystem operation returns its genuine Linux ABI result.

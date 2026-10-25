@@ -20,3 +20,10 @@ and preserve existing grouped 9/9 and other standard regressions.
 Do **not** label ptrace or strace supported: those additionally need
 tracer ownership, syscall enter/exit stops, register/memory access and
 waitpid event semantics, plus per-ISA register ABI work.
+
+The M67 fixture launches actual foreground sleepers on two M60-verified genuine
+`tmux` PTY sessions; no mocked PID or fixed sleep process is used. Earlier
+first-probe shell `sleep &` found a **separate BusyBox ash background redirection
+failure** (`can't open /dev/null` in post-fork shell) on all three ISAs, despite
+normal direct `/dev/null` redirection passing. That is tracked independently:
+M67 does not claim all `ash &` semantics are fully compatible.

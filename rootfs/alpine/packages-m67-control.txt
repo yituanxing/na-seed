@@ -2,3 +2,4 @@
 musl
 busybox
 procps-ng
+tmux
