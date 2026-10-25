@@ -46,7 +46,7 @@ TMUX_TMPDIR=/tmp
 export TMUX_TMPDIR
 /bin/busybox mkdir -p /tmp/m66-tmux
 if /usr/bin/tmux -L m66 -f /dev/null new-session -d -s m66 \
-     'sh -c "htop -d 10; echo htop-exited > /tmp/m66-tmux/exited; sleep 2"' &&
+     'sh -c "htop -d 10 2>/tmp/m66-tmux/htop-stderr; status=$?; echo $status > /tmp/m66-tmux/htop-status; if [ $status = 0 ]; then echo htop-exited > /tmp/m66-tmux/exited; fi; sleep 6"' &&
    /bin/busybox sleep 2 &&
    /usr/bin/tmux -L m66 capture-pane -p -t m66:0.0 > /tmp/m66-capture &&
    /bin/busybox grep -Eq 'Tasks|CPU|Mem|PID|Load average' /tmp/m66-capture &&
@@ -60,5 +60,13 @@ else
  failed=$((failed+1))
 fi
 /usr/bin/tmux -L m66 kill-server 2>/dev/null || :
+echo "[M66 SUMMARY] independent failed=$failed"
+for filename in /tmp/m66-top /tmp/m66-uptime /tmp/m66-tmux/htop-stderr /tmp/m66-tmux/htop-status; do
+  if test -s "$filename"; then
+    echo "[M66 DIAG] $filename:"
+    /bin/busybox head -c 700 "$filename" || :
+    echo
+  fi
+done
 test "$failed" -eq 0 || exit 1
 echo M66_MONITOR_FULL_PASS
