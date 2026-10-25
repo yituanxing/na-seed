@@ -432,6 +432,9 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
     while(name_len<15 && basename[name_len])name_len++;
     memset(TASK.comm,0,sizeof(TASK.comm));
     memcpy(TASK.comm,basename,name_len);
+    /* Exact post-shebang argv, preserved only AFTER successful ELF commit.
+     * No pre-commit failure is allowed to mutate inherited /proc/cmdline. */
+    nas_task_set_commandline(&TASK,pending_exec.argv,pending_exec.argc);
     running_busybox = strcmp(basename, "busybox") == 0;
     running_bash = strcmp(basename, "bash") == 0;
     running_alpine = running_busybox && executable_header.type == 3;

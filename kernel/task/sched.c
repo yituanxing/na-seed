@@ -305,6 +305,7 @@ bool nas_sched_preempt_select(void) {
             from->resume_valid=true;
             next->state=NAS_TASK_RUNNING;
             next->resume_valid=false;
+            nas_task_cpu_account_switch(next);
             return true;
         }
     }
@@ -387,6 +388,7 @@ retry_schedule: ; /* label must precede a statement in C11 */
             }
             next->state = NAS_TASK_RUNNING;
             next->resume_valid = false;
+            nas_task_cpu_account_switch(next);
             schedule_cursor = (slot + 1) % NAS_TASK_LIMIT;
             nas_arch_load_user_frame(next, frame);
             /* The old thread's kernel stack is no longer active after the
@@ -401,6 +403,9 @@ retry_schedule: ; /* label must precede a statement in C11 */
             return result;
         }
     }
+    /* No user Task occupies the CPU while the no-runnable-task dispatcher
+     * polls TTY/device readiness. Meter this as idle until a Task resumes. */
+    nas_task_cpu_account_switch(0);
     /* Unlike pipe deadlock, a TTY read can be completed by future REAL
      * external UART input even when the last task is blocked. Keep scanning
      * actual device RX until a line or VMIN threshold arrives. This idle

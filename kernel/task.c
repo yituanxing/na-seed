@@ -1,6 +1,7 @@
 #include "task.h"
 #include "fs/mode.h"
 #include "arch/abi.h"
+#include "arch/arch.h"
 #include "fd.h"
 #include "task/wait.h"
 #include "lib/string.h"
@@ -28,9 +29,91 @@ bool nas_task_kernel_stack_ok(const struct nas_task *task) {
         *(const uint64_t *)(const void *)task_kernel_stacks[slot] == NAS_KSTACK_SENTINEL;
 }
 static uint64_t next_pid = 2;
+/* Monotonic single-CPU accounting shared by all architecture syscall and
+ * scheduler entrypoints. We account elapsed time for the currently executing
+ * Task, irrespective of whether it executes user instructions or kernel C.
+ * This is a real duration sample, NOT precise hardware CPU usage. */
+static struct nas_task *cpu_account_active;
+static uint64_t cpu_last_ns,cpu_busy_ns,cpu_idle_ns,cpu_switches;
+static uint64_t load_q16[3];
+static bool cpu_clock_started;
+static uint64_t load_last_ns;
+static void cpu_account_sample(uint64_t now) {
+    if(!cpu_clock_started) {
+        cpu_last_ns=load_last_ns=now;
+        cpu_clock_started=true;
+        return;
+    }
+    if(now<cpu_last_ns)return;
+    uint64_t delta=now-cpu_last_ns;
+    if(cpu_account_active && cpu_account_active->state!=NAS_TASK_FREE) {
+        struct nas_task *t=cpu_account_active;
+        if(UINT64_MAX-t->cpu_runtime_ns<delta)t->cpu_runtime_ns=UINT64_MAX;
+        else t->cpu_runtime_ns+=delta;
+        if(UINT64_MAX-cpu_busy_ns<delta)cpu_busy_ns=UINT64_MAX;
+        else cpu_busy_ns+=delta;
+    } else {
+        if(UINT64_MAX-cpu_idle_ns<delta)cpu_idle_ns=UINT64_MAX;
+        else cpu_idle_ns+=delta;
+    }
+    cpu_last_ns=now;
+    if(now>=load_last_ns && now-load_last_ns>=1000000ULL) {
+        uint64_t run=0;
+        for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
+            const struct nas_task *t=nas_task_at(i);
+            if(t && (t->state==NAS_TASK_RUNNING || t->state==NAS_TASK_READY))run++;
+        }
+        const uint64_t windows[3]={60000000000ULL,300000000000ULL,900000000000ULL};
+        uint64_t dt=now-load_last_ns;
+        if(dt>900000000000ULL)dt=900000000000ULL;
+        for(unsigned i=0;i<3;i++) {
+            uint64_t target=run*65536ULL;
+            if(target>=load_q16[i])
+                load_q16[i]+=(target-load_q16[i])*dt/(windows[i]+dt);
+            else
+                load_q16[i]-=(load_q16[i]-target)*dt/(windows[i]+dt);
+        }
+        load_last_ns=now;
+    }
+}
+void nas_task_cpu_account_switch(struct nas_task *next) {
+    cpu_account_sample(nas_arch_monotonic_ns());
+    if(next!=cpu_account_active)cpu_switches++;
+    cpu_account_active=next;
+}
+void nas_task_cpu_account_snapshot(uint64_t *busy,uint64_t *idle,
+                                   uint64_t load[3],uint64_t *switches) {
+    cpu_account_sample(nas_arch_monotonic_ns());
+    if(busy)*busy=cpu_busy_ns;
+    if(idle)*idle=cpu_idle_ns;
+    if(load)for(unsigned i=0;i<3;i++)load[i]=load_q16[i];
+    if(switches)*switches=cpu_switches;
+}
+void nas_task_set_commandline(struct nas_task *task,
+                              const char *const *argv,unsigned argc) {
+    if(!task)return;
+    unsigned used=0;
+    if(!argv || !argc){task->commandline_bytes=0;return;}
+    for(unsigned i=0;i<argc;i++) {
+        const char *arg=argv[i];
+        if(!arg){task->commandline_bytes=0;return;}
+        unsigned n=0;while(arg[n] && n<sizeof(task->commandline))n++;
+        if(n==sizeof(task->commandline) ||
+           n+1U>sizeof(task->commandline)-used) {
+            task->commandline_bytes=0;
+            return;
+        }
+        memcpy(task->commandline+used,arg,n+1U);
+        used+=n+1U;
+    }
+    task->commandline_bytes=(uint16_t)used;
+}
 struct nas_task *nas_current_task;
 
 void nas_task_boot_init(void) {
+    cpu_account_active=0;cpu_last_ns=cpu_busy_ns=cpu_idle_ns=0;
+    cpu_clock_started=false;cpu_switches=load_last_ns=0;
+    for(unsigned i=0;i<3;i++)load_q16[i]=0;
     for (unsigned n = 0; n < NAS_TASK_LIMIT; n++) {
         struct nas_task *task = &task_table[n];
         memset(task, 0, sizeof(*task));
@@ -93,6 +176,7 @@ struct nas_task *nas_task_fork_slot(void) {
         /* pgid and sid were inherited from parent; execed is per-fork. */
         child->execed = false;
         child->state = NAS_TASK_READY;
+        child->cpu_runtime_ns=0;
         child->exit_code = 0;
         child->termination_signal = 0;
         child->stopped_from = NAS_TASK_FREE;
@@ -131,6 +215,7 @@ void nas_task_adopt_orphans(uint64_t exiting_pid) {
 }
 void nas_task_release(struct nas_task *task) {
     if (!task || task == nas_current_task) return;
+    if(cpu_account_active==task)nas_task_cpu_account_switch(0);
     task->state = NAS_TASK_FREE;
     task->pid = 0;
     task->tgid=0;

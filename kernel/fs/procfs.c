@@ -5,6 +5,7 @@
 #include "../mm/frame.h"
 #include "../arch/arch.h"
 #include "../time/clock.h"
+#include "../task/user_stack.h"
 #include "../lib/string.h"
 #include "../errno.h"
 #include <stdint.h>
@@ -47,6 +48,9 @@ bool nas_proc_lookup(const char *path,struct nas_proc_node *out) {
     if(!strcmp(path,"/proc/uptime")) {out->kind=NAS_PROC_UPTIME;return true;}
     if(!strcmp(path,"/proc/version")) {out->kind=NAS_PROC_VERSION;return true;}
     if(!strcmp(path,"/proc/cpuinfo")) {out->kind=NAS_PROC_CPUINFO;return true;}
+    if(!strcmp(path,"/proc/stat")) {out->kind=NAS_PROC_STAT;return true;}
+    if(!strcmp(path,"/proc/loadavg")) {out->kind=NAS_PROC_LOADAVG;return true;}
+    if(!strcmp(path,"/proc/vmstat")) {out->kind=NAS_PROC_VMSTAT;return true;}
     if(strncmp(path,"/proc/",6))return false;
     const char *p=path+6;
     uint64_t pid=0;
@@ -64,6 +68,7 @@ bool nas_proc_lookup(const char *path,struct nas_proc_node *out) {
     else if(!strcmp(p,"/status"))out->kind=NAS_PROC_PID_STATUS;
     else if(!strcmp(p,"/comm"))out->kind=NAS_PROC_PID_COMM;
     else if(!strcmp(p,"/cmdline"))out->kind=NAS_PROC_PID_CMDLINE;
+    else if(!strcmp(p,"/statm"))out->kind=NAS_PROC_PID_STATM;
     else return false;
     return true;
 }
@@ -90,8 +95,8 @@ uint64_t nas_proc_ino(struct nas_proc_node node) {
 }
 bool nas_proc_child(struct nas_proc_node directory,unsigned index,
                     char name[32],struct nas_proc_node *node) {
-    static const char *const root[]={"self","meminfo","uptime","version","cpuinfo"};
-    static const char *const process[]={"stat","status","comm","cmdline"};
+    static const char *const root[]={"self","meminfo","uptime","version","cpuinfo","stat","loadavg","vmstat"};
+    static const char *const process[]={"stat","status","comm","cmdline","statm"};
     if(!name || !node)return false;
     if(directory.kind==NAS_PROC_ROOT) {
         if(index<sizeof(root)/sizeof(root[0])) {
@@ -118,9 +123,26 @@ bool nas_proc_child(struct nas_proc_node directory,unsigned index,
     const char *s=process[index];unsigned i=0;
     do{name[i]=s[i];}while(s[i++]);
     uint8_t kind[]={NAS_PROC_PID_STAT,NAS_PROC_PID_STATUS,
-                    NAS_PROC_PID_COMM,NAS_PROC_PID_CMDLINE};
+                    NAS_PROC_PID_COMM,NAS_PROC_PID_CMDLINE,NAS_PROC_PID_STATM};
     *node=(struct nas_proc_node){kind[index],directory.pid};
     return true;
+}
+/* Collect only the VM ranges tracked by the shared anonymous VMA ledger.
+ * The kernel currently cannot report full ELF/stack resident PTE counts. */
+static uint64_t anon_pages(const struct nas_task *t) {
+    const struct nas_task *owner=t->vm_owner?t->vm_owner:t;
+    uint64_t n=0;
+    for(unsigned i=0;i<NAS_ANON_REGION_LIMIT;i++) {
+        uint64_t start=owner->anonymous.slots[i].start;
+        uint64_t end=owner->anonymous.slots[i].end;
+        if(end>start)n+=(end-start)/4096ULL;
+    }
+    return n;
+}
+static void load_print(struct writer *w,uint64_t q16) {
+    decimal(w,q16/65536ULL);ch(w,'.');
+    unsigned cent=(unsigned)((q16%65536ULL)*100ULL/65536ULL);
+    ch(w,(char)('0'+cent/10U));ch(w,(char)('0'+cent%10U));
 }
 int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
                       uint8_t *output,unsigned size) {
@@ -134,6 +156,7 @@ int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
         word(&w,"MemTotal:       ");decimal(&w,nas_managed_frames()*4U);word(&w," kB\n");
         word(&w,"MemFree:        ");decimal(&w,nas_free_frames()*4U);word(&w," kB\n");
         word(&w,"MemAvailable:   ");decimal(&w,nas_free_frames()*4U);word(&w," kB\n");
+        word(&w,"Buffers:        0 kB\nCached:         0 kB\nSwapTotal:      0 kB\nSwapFree:       0 kB\n");
         break;
     case NAS_PROC_UPTIME: {
         uint64_t tns=nas_arch_monotonic_ns();
@@ -143,6 +166,45 @@ int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
         ch(&w,(char)('0'+hundredths%10U));
         word(&w," 0.00\n");break;
     }
+    case NAS_PROC_STAT: {
+        uint64_t busy=0,idle=0,switches=0;
+        nas_task_cpu_account_snapshot(&busy,&idle,0,&switches);
+        uint64_t bt=busy/10000000ULL,it=idle/10000000ULL;
+        /* Monotonic single-CPU task occupancy, 100 ticks/sec. This is
+         * coarse elapsed CPU time, not precise user/kernel cycle sampling. */
+        for(unsigned row=0;row<2;row++) {
+            word(&w,row?"cpu0  ":"cpu  ");
+            word(&w,"0 0 ");decimal(&w,bt);ch(&w,' ');
+            decimal(&w,it);word(&w," 0 0 0 0 0 0\n");
+        }
+        word(&w,"ctxt ");decimal(&w,switches);ch(&w,'\n');
+        unsigned run=0,blocked=0;
+        for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
+            const struct nas_task *t=nas_task_at(i);
+            if(!t || t->state==NAS_TASK_FREE)continue;
+            if(t->state==NAS_TASK_RUNNING || t->state==NAS_TASK_READY)run++;
+            if(t->state==NAS_TASK_BLOCKED)blocked++;
+        }
+        word(&w,"procs_running ");decimal(&w,run);ch(&w,'\n');
+        word(&w,"procs_blocked ");decimal(&w,blocked);ch(&w,'\n');
+        break;
+    }
+    case NAS_PROC_LOADAVG: {
+        uint64_t q16[3]={0};
+        nas_task_cpu_account_snapshot(0,0,q16,0);
+        for(unsigned i=0;i<3;i++){if(i)ch(&w,' ');load_print(&w,q16[i]);}
+        unsigned run=0,total=0;uint64_t last=0;
+        for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
+            const struct nas_task *t=nas_task_at(i);
+            if(!t || t->state==NAS_TASK_FREE)continue;
+            if(t->state==NAS_TASK_READY || t->state==NAS_TASK_RUNNING)run++;
+            total++;if(t->pid>last)last=t->pid;
+        }
+        ch(&w,' ');decimal(&w,run);ch(&w,'/');decimal(&w,total);
+        ch(&w,' ');decimal(&w,last);ch(&w,'\n');break;
+    }
+    case NAS_PROC_VMSTAT:
+        word(&w,"nr_free_pages ");decimal(&w,nas_free_frames());ch(&w,'\n');break;
     case NAS_PROC_VERSION: word(&w,"NaSeed experimental kernel\n");break;
     case NAS_PROC_CPUINFO:
 #if defined(__x86_64__)
@@ -156,7 +218,12 @@ int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
     case NAS_PROC_PID_COMM:
         word(&w,t->comm);ch(&w,'\n');break;
     case NAS_PROC_PID_CMDLINE:
-        /* argv is not retained by the Task model; never invent arguments. */
+        for(unsigned i=0;i<t->commandline_bytes && i<sizeof(t->commandline);i++)
+            ch(&w,t->commandline[i]);
+        break;
+    case NAS_PROC_PID_STATM:
+        decimal(&w,anon_pages(t)+NAS_USER_STACK_PAGES);
+        word(&w," 0 0 0 0 0 0\n"); /* resident pages not measured */
         break;
     case NAS_PROC_PID_STATUS: {
         word(&w,"Name:\t");word(&w,t->comm);
@@ -186,6 +253,7 @@ int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
             if(field==4)decimal(&w,t->ppid);
             else if(field==5)decimal(&w,t->pgid);
             else if(field==6)decimal(&w,t->sid);
+            else if(field==14)decimal(&w,t->cpu_runtime_ns/10000000ULL);
             else if(field==20) {
                 unsigned threads=0;
                 for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
@@ -193,7 +261,8 @@ int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
                     if(other && other->state!=NAS_TASK_FREE && other->tgid==t->tgid)threads++;
                 }
                 decimal(&w,threads);
-            }else decimal(&w,0);
+            }else if(field==23)decimal(&w,(anon_pages(t)+NAS_USER_STACK_PAGES)*4096ULL);
+            else decimal(&w,0);
         }
         ch(&w,'\n');break;
     }

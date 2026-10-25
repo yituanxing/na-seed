@@ -178,7 +178,10 @@ bool nas_build_linux_stack(bool bash, bool busybox, uint64_t *out_sp) {
         nas_print(cmdline);
         nas_print("\n");
     }
-    return nas_build_user_stack(args, argc, vars, 4, args[0], out_sp);
+    if(!nas_build_user_stack(args, argc, vars, 4, args[0], out_sp))
+        return false;
+    nas_task_set_commandline(nas_current_task,args,argc);
+    return true;
 }
 bool nas_boot_argv_enabled(void) { return boot_argv_override; }
 const char *nas_boot_argv_first(void) { return boot_argv_override ? boot_argv[0] : 0; }

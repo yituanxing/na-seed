@@ -8,7 +8,8 @@ enum nas_proc_kind {
     NAS_PROC_NONE=0, NAS_PROC_ROOT, NAS_PROC_PID_DIR,
     NAS_PROC_MEMINFO, NAS_PROC_UPTIME, NAS_PROC_VERSION, NAS_PROC_CPUINFO,
     NAS_PROC_PID_STAT, NAS_PROC_PID_STATUS, NAS_PROC_PID_COMM,
-    NAS_PROC_PID_CMDLINE
+    NAS_PROC_PID_CMDLINE, NAS_PROC_STAT, NAS_PROC_LOADAVG,
+    NAS_PROC_VMSTAT, NAS_PROC_PID_STATM
 };
 struct nas_proc_node {uint8_t kind;uint64_t pid;};
 bool nas_proc_lookup(const char *path,struct nas_proc_node *out);

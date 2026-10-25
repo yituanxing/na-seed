@@ -16,6 +16,13 @@ struct nas_task *nas_task_by_pid(uint64_t pid) {
 uint64_t nas_managed_frames(void){return 1024;}
 uint64_t nas_free_frames(void){return 512;}
 uint64_t nas_arch_monotonic_ns(void){return 12500000000ULL;}
+void nas_task_cpu_account_snapshot(uint64_t *busy,uint64_t *idle,
+                                   uint64_t loads[3],uint64_t *switches) {
+    if(busy)*busy=1500000000ULL;
+    if(idle)*idle=11000000000ULL;
+    if(loads){loads[0]=65536;loads[1]=32768;loads[2]=16384;}
+    if(switches)*switches=12;
+}
 static void check_file(const char *path,const char *wanted) {
     struct nas_proc_node node={0};
     assert(nas_proc_lookup(path,&node) && !nas_proc_is_dir(node));
@@ -44,14 +51,24 @@ int main(void) {
     check_file("/proc/23/stat","23 (sleep) S 1");
     check_file("/proc/meminfo","MemTotal:       4096 kB");
     check_file("/proc/uptime","12.50");
+    check_file("/proc/stat","cpu  0 0 150 1100");
+    check_file("/proc/loadavg","1.00 0.50 0.25");
+    check_file("/proc/vmstat","nr_free_pages 512");
+    check_file("/proc/23/statm"," 0 0 0 0 0 0");
+    tasks[1].commandline_bytes=12;
+    memcpy(tasks[1].commandline,"sleep\0three\0",12);
+    assert(nas_proc_lookup("/proc/23/cmdline",&entry));
+    uint8_t cmdline[32]={0};
+    assert(nas_proc_read(entry,0,cmdline,32)==12);
+    assert(!memcmp(cmdline,"sleep\0three\0",12));
     char dirpath[256]={0};
     assert(nas_proc_dir_path(root,dirpath) && !strcmp(dirpath,"/proc"));
     assert(nas_proc_lookup("/proc/23",&entry));
     assert(nas_proc_dir_path(entry,dirpath) && !strcmp(dirpath,"/proc/23"));
     char name[32];
-    assert(nas_proc_child(root,5,name,&entry) && !strcmp(name,"1"));
-    assert(nas_proc_child(root,6,name,&entry) && !strcmp(name,"23"));
-    assert(!nas_proc_child(root,7,name,&entry));
+    assert(nas_proc_child(root,8,name,&entry) && !strcmp(name,"1"));
+    assert(nas_proc_child(root,9,name,&entry) && !strcmp(name,"23"));
+    assert(!nas_proc_child(root,10,name,&entry));
     assert(nas_proc_lookup("/proc/23",&entry));
     assert(nas_proc_child(entry,1,name,&root) && !strcmp(name,"status"));
     puts("[M65 PROCFS PASS] dynamic per-task namespace, short reads, uptime/memory, thread groups");
