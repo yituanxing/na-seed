@@ -40,31 +40,56 @@ else
  /bin/busybox cat /tmp/m66-htop-version || :
  failed=$((failed+1))
 fi
-# Not an htop --version smoke: genuine curses app on the already-proven
-# tmux PTY backend. Capture what it drew, send q, verify clean exit.
+# Genuine interactive htop inside a tmux-backed PTY. Keep the child
+# shell in a separate stage script so variables are not expanded by an outer
+# shell and do not mistake an empty status for a clean program exit.
 TMUX_TMPDIR=/tmp
 export TMUX_TMPDIR
 /bin/busybox mkdir -p /tmp/m66-tmux
 if /usr/bin/tmux -L m66 -f /dev/null new-session -d -s m66 \
-     'sh -c "htop -d 10 2>/tmp/m66-tmux/htop-stderr; status=$?; echo $status > /tmp/m66-tmux/htop-status; if [ $status = 0 ]; then echo htop-exited > /tmp/m66-tmux/exited; fi; sleep 6"' &&
-   /bin/busybox sleep 2 &&
-   /usr/bin/tmux -L m66 capture-pane -p -t m66:0.0 > /tmp/m66-capture &&
-   /bin/busybox grep -Eq 'Tasks|CPU|Mem|PID|Load average' /tmp/m66-capture &&
-   /usr/bin/tmux -L m66 send-keys -t m66:0.0 q &&
-   /bin/busybox sleep 1 &&
-   test -s /tmp/m66-tmux/exited; then
- echo M66_ORIGINAL_HTOP_PTY_PASS
+     '/bin/sh /tests/m66-htop-pty.sh'; then
+ echo '[M66 PTY] tmux server and child started'
+ /bin/busybox sleep 1
+ if /usr/bin/tmux -L m66 capture-pane -p -t m66:0.0 > /tmp/m66-capture; then
+   echo '[M66 PTY] terminal capture acquired'
+   if /bin/busybox grep -Eq 'Tasks|CPU|Mem|PID|Load average|Uptime' /tmp/m66-capture; then
+      echo '[M66 PTY] actual htop interface drawn'
+      if /usr/bin/tmux -L m66 send-keys -t m66:0.0 q; then
+         echo '[M66 PTY] q delivered'
+         for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+           test -s /tmp/m66-tmux/htop-status && break
+           /bin/busybox sleep 0.2
+         done
+         if test -f /tmp/m66-tmux/exited &&
+            test "$(/bin/busybox cat /tmp/m66-tmux/htop-status)" = 0; then
+             echo M66_ORIGINAL_HTOP_PTY_PASS
+         else
+             echo '[M66 HTOP FAIL] exited marker absent or nonzero' >&2
+             failed=$((failed+1))
+         fi
+      else
+         echo '[M66 HTOP FAIL] could not send q into PTY' >&2
+         failed=$((failed+1))
+      fi
+   else
+      echo '[M66 HTOP FAIL] curses screen absent' >&2
+      failed=$((failed+1))
+   fi
+ else
+   echo '[M66 HTOP FAIL] tmux pane capture failed' >&2
+   failed=$((failed+1))
+ fi
 else
- echo '[M66 HTOP PTY FAIL]' >&2
- /bin/busybox head -c 2200 /tmp/m66-capture 2>/dev/null || :
+ echo '[M66 HTOP FAIL] tmux server launch failed' >&2
  failed=$((failed+1))
 fi
 /usr/bin/tmux -L m66 kill-server 2>/dev/null || :
 echo "[M66 SUMMARY] independent failed=$failed"
-for filename in /tmp/m66-top /tmp/m66-uptime /tmp/m66-tmux/htop-stderr /tmp/m66-tmux/htop-status; do
+for filename in /tmp/m66-top /tmp/m66-uptime /tmp/m66-capture \
+                /tmp/m66-tmux/htop-stderr /tmp/m66-tmux/htop-status; do
   if test -s "$filename"; then
     echo "[M66 DIAG] $filename:"
-    /bin/busybox head -c 700 "$filename" || :
+    /bin/busybox head -c 1100 "$filename" || :
     echo
   fi
 done
