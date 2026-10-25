@@ -490,6 +490,24 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_rt_sigaction) return nas_signal_action(args[1], args[2], args[3], args[4]);
     if (nr == NAS_SC_rt_sigpending) return nas_signal_pending(args[1], args[2]);
     if (nr == NAS_SC_rt_sigreturn) return nas_signal_sigreturn((uint64_t *)(uintptr_t)args);
+    if (nr == NAS_SC_rt_sigsuspend) {
+        /* Temporary, atomic replacement of the caller's mask while asleep.
+         * The existing Task wait/replay + signal trampoline own wakeup;
+         * never return success, never poll or fake a child-exit event.
+         * Reuse the one temporary-mask owner also used by ppoll/pselect6. */
+        if (args[2]!=8ULL) return (uint64_t)-EINVAL;
+        uint64_t mask=0;
+        if (!nas_user_read_u64(args[1],&mask)) return (uint64_t)-EFAULT;
+        if(TASK.ppoll_mask_active)return (uint64_t)-EINVAL;
+        TASK.ppoll_saved_mask=TASK.blocked_signals;
+        TASK.ppoll_mask_active=true;
+        TASK.blocked_signals=mask & ~((1ULL<<8)|(1ULL<<18));
+        if(nas_signal_user_pending(&TASK)) {
+            nas_signal_ppoll_restore(&TASK,true);
+            return (uint64_t)-EINTR;
+        }
+        return nas_task_block((uint64_t *)(uintptr_t)args,nr,0,0,0,0);
+    }
     if (nr == NAS_SC_rt_sigprocmask) return nas_signal_procmask(args[1], args[2], args[3], args[4],
                                                                 (uint64_t *)(uintptr_t)args);
     if (nr == NAS_SC_kill) return nas_signal_kill(args[1], args[2], (uint64_t *)(uintptr_t)args);

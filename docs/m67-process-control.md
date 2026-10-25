@@ -47,3 +47,20 @@ to test closed standard descriptors and two-FD capacity, and require
 three native-QEMU gates from original BusyBox: background sleep/wait, FD0
 close-reopen, and background pipeline output. M67 original pgrep/pkill and
 all existing CI acceptance gates must remain green.
+
+## M68 additional real blocker: rt_sigsuspend / caught SIGCHLD
+
+The first exact-head QEMU rerun proved the earlier `/dev/null` error was
+gone and the background child **did run and exit 0**, but BusyBox ash
+then blocked in `rt_sigsuspend`, previously unimplemented (raw Linux
+x86 syscall 130, asm-generic RV64/ARM64 syscall 133). It was not a pipe
+or /dev/null error: the actual serial trace showed
+`[MISS] syscall nr=130` in the waiting shell.
+
+Add common `NAS_SC_rt_sigsuspend` decoding on all three ABIs and enter the
+existing Task wait owner with an atomic temporary signal mask. The actual
+caught pending SIGCHLD alone interrupts the syscall, wakes the task with
+`-EINTR`, restores its saved mask and installs the real ISA signal
+handler on user return. No synthetic successful signal syscall, no
+scheduler busy loop, and no alternate task registry. The real unmodified
+ash `&`/wait regression is an exact-head merge gate on all three ISAs.
