@@ -42,6 +42,7 @@
 #define matched_chars TASK.matched_chars
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
+extern void nas_hex(uint64_t);
 extern void nas_putchar(char);
 extern const struct limine_file *nas_module(uint64_t);
 static void nas_fs_fail(const char *msg) __attribute__((noreturn));
@@ -604,7 +605,20 @@ static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
         return 0;
     }
     const struct nas_file_ops *ops=nas_open_files[slot].ops;
-    return ops && ops->ioctl ? ops->ioctl(fd,cmd,arg) : (uint64_t)-ENOTTY;
+    uint64_t result=ops && ops->ioctl ? ops->ioctl(fd,cmd,arg) :
+                    (uint64_t)-ENOTTY;
+    /* Native musl openpty/login_tty traversal: report the precise device
+     * and command only on failure, never an application-name special case. */
+    if((int64_t)result<0 &&
+       (cmd==0x80045430ULL || cmd==0x40045431ULL || cmd==0x540eULL)) {
+        nas_print("[PTY IOCTL FAIL] fd=");nas_dec(fd);
+        nas_print(" kind=");nas_dec(descriptors[fd]);
+        nas_print(" slot=");nas_dec(slot);
+        nas_print(" cmd=");nas_hex(cmd);
+        nas_print(" errno=");nas_dec((uint64_t)(-(int64_t)result));
+        nas_print("\n");
+    }
+    return result;
 }
 
 static const struct limine_file *bootfs_lookup(const char *path) {
