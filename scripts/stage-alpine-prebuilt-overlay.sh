@@ -17,7 +17,7 @@ case "$port" in
     arm64) arch=aarch64; machine='AArch64' ;;
     *) exit 2 ;;
 esac
-case "$profile" in m58-runtime|m59-worktree|m60-terminal|m65-observe|m66-monitor|m67-control|m69-inspect) ;; *) exit 2 ;; esac
+case "$profile" in m58-runtime|m59-worktree|m60-terminal|m65-observe|m66-monitor|m67-control|m69-inspect|m70-vmfd) ;; *) exit 2 ;; esac
 for manifest in "$package_file" "$elf_file" "$copies_file"; do
     test -s "$manifest" || exit 1
 done
@@ -28,6 +28,9 @@ work="build/external/$profile/$port"
 mkdir -p "$work"
 cp -a "$base/rootfs" "$work/rootfs"
 root="$work/rootfs"
+# Every Linux rootfs requires the parent device directory even when its
+# device nodes are supplied virtually by the kernel, not host mknod.
+mkdir -p "$root/dev"
 target="$(pwd)/$root"
 packages="$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$package_file")"
 test -n "$packages"

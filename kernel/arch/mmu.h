@@ -9,6 +9,8 @@
  * mm/mmu_bridge.c over the shared user_space.c lifecycle and native PTEs.
  * All three link and execute the full kernel; this is not an M0 stub.
  */
+typedef bool (*nas_mmu_user_visit)(uint64_t va,unsigned access,void *ctx);
+bool nas_mmu_walk_user_mapping(uint64_t root_phys,nas_mmu_user_visit visit,void *ctx);
 #if defined(__x86_64__)
 #include "x86_64/mmu.h"
 #elif defined(__riscv) && __riscv_xlen == 64

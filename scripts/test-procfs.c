@@ -6,7 +6,10 @@
 #include <stdio.h>
 #include "../kernel/task.h"
 #include "../kernel/fs/procfs.h"
+#include "../kernel/mm/vm.h"
+#include "../kernel/arch/user_pt.h"
 static struct nas_task tasks[3];
+struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
 struct nas_task *nas_current_task=&tasks[0];
 struct nas_task *nas_task_at(unsigned n) {return n<3?&tasks[n]:0;}
 struct nas_task *nas_task_by_pid(uint64_t pid) {
@@ -16,6 +19,13 @@ struct nas_task *nas_task_by_pid(uint64_t pid) {
 uint64_t nas_managed_frames(void){return 1024;}
 uint64_t nas_free_frames(void){return 512;}
 uint64_t nas_arch_monotonic_ns(void){return 12500000000ULL;}
+bool nas_vm_walk_task_pages(const struct nas_task *task,
+                            nas_mmu_user_visit callback,void *ctx) {
+    (void)task;
+    return callback(0x1000,NAS_UP_READ|NAS_UP_EXEC,ctx) &&
+           callback(0x2000,NAS_UP_READ|NAS_UP_EXEC,ctx) &&
+           callback(0x4000,NAS_UP_READ|NAS_UP_WRITE,ctx);
+}
 bool nas_time_boot_epoch_seconds(uint64_t *out) {
     if(!out)return false;
     *out=1760000000ULL;return true;
@@ -40,6 +50,12 @@ static void check_file(const char *path,const char *wanted) {
 }
 int main(void) {
     tasks[0].state=NAS_TASK_RUNNING;tasks[0].pid=1;tasks[0].tgid=1;
+    tasks[0].fds=&tasks[0].fds_owned;
+    tasks[0].fds->entries[1]=(struct nas_fd_entry){FD_NULL,4,0};
+    nas_open_files[4].refcount=1;
+    strcpy(nas_open_files[4].origin_path,"/dev/null");
+    nas_open_files[4].position=27;
+    nas_open_files[4].status_flags=0;
     tasks[0].ppid=0;strcpy(tasks[0].comm,"init");
     tasks[1].state=NAS_TASK_BLOCKED;tasks[1].pid=23;tasks[1].tgid=23;
     tasks[1].ppid=1;strcpy(tasks[1].comm,"sleep");
@@ -50,15 +66,43 @@ int main(void) {
     assert(!nas_proc_lookup("/procmeminfo",&entry));
     assert(!nas_proc_lookup("/proc/999/status",&entry));
     assert(nas_proc_lookup("/proc/self",&entry) && entry.pid==1);
+    struct nas_proc_node fd_dir={0},fd_info={0};
+    char fd_path[256];
+    assert(nas_proc_lookup("/proc/1/fd",&fd_dir) && nas_proc_is_dir(fd_dir));
+    assert(nas_proc_dir_path(fd_dir,fd_path) && !strcmp(fd_path,"/proc/1/fd"));
+    assert(nas_proc_child(fd_dir,0,fd_path,&fd_info) &&
+           !strcmp(fd_path,"1") && fd_info.kind==NAS_PROC_FD_LINK);
+    assert(nas_proc_lookup("/proc/self/fd/1",&fd_info));
+    char link[64]={0};
+    assert(nas_proc_readlink(fd_info,link,sizeof(link))==9);
+    assert(!memcmp(link,"/dev/null",9));
+    assert(nas_proc_lookup("/proc/1/fdinfo/1",&fd_info));
+    uint8_t info[128]={0};
+    assert(nas_proc_read(fd_info,0,info,sizeof(info)-1)>0);
+    assert(strstr((char *)info,"pos:\t27"));
+    assert(strstr((char *)info,"flags:\t0"));
+    tasks[0].fds->entries[1].kind=FD_CLOSED;
+    assert(!nas_proc_lookup("/proc/1/fd/1",&fd_info));
     assert(nas_proc_lookup("/proc/self/status",&entry) && entry.pid==1);
     check_file("/proc/23/status","Threads:\t2");
     check_file("/proc/23/stat","23 (sleep) S 1");
+    check_file("/proc/23/maps","0000000000001000-0000000000003000 r-xp");
+    check_file("/proc/23/maps","0000000000004000-0000000000005000 rw-p");
+    struct nas_proc_node mapnode={0};
+    assert(nas_proc_lookup("/proc/23/maps",&mapnode));
+    uint8_t allmaps[256]={0},half[256]={0};
+    int64_t mapslen=nas_proc_read(mapnode,0,allmaps,sizeof(allmaps));
+    assert(mapslen>60);
+    assert(nas_proc_read(mapnode,25,half,sizeof(half))==mapslen-25);
+    assert(!memcmp(half,allmaps+25,(size_t)(mapslen-25)));
     check_file("/proc/meminfo","MemTotal:       4096 kB");
     check_file("/proc/uptime","12.50");
     check_file("/proc/stat","cpu  0 0 150 1100");
     check_file("/proc/stat","btime 1760000000");
     check_file("/proc/loadavg","1.00 0.50 0.25");
     check_file("/proc/vmstat","nr_free_pages 512");
+    check_file("/proc/mounts","rootfs / rootfs ro");
+    check_file("/proc/23/mounts","proc /proc proc ro");
     check_file("/proc/23/statm"," 0 0 0 0 0 0");
     tasks[1].commandline_bytes=12;
     memcpy(tasks[1].commandline,"sleep\0three\0",12);
@@ -71,9 +115,17 @@ int main(void) {
     assert(nas_proc_lookup("/proc/23",&entry));
     assert(nas_proc_dir_path(entry,dirpath) && !strcmp(dirpath,"/proc/23"));
     char name[32];
-    assert(nas_proc_child(root,8,name,&entry) && !strcmp(name,"1"));
-    assert(nas_proc_child(root,9,name,&entry) && !strcmp(name,"23"));
-    assert(!nas_proc_child(root,10,name,&entry));
+    /* The root /proc static entries can grow: find the first real PID
+     * without assuming an obsolete, fixed root getdents64 index. */
+    unsigned root_pid_index=0;
+    for(;root_pid_index<64;root_pid_index++) {
+        assert(nas_proc_child(root,root_pid_index,name,&entry));
+        if(!strcmp(name,"1"))break;
+    }
+    assert(root_pid_index<64);
+    assert(nas_proc_child(root,root_pid_index+1,name,&entry) &&
+           !strcmp(name,"23"));
+    assert(!nas_proc_child(root,root_pid_index+2,name,&entry));
     assert(nas_proc_lookup("/proc/23",&entry));
     assert(nas_proc_child(entry,1,name,&root) && !strcmp(name,"status"));
     /* Native ptrace -f requires this genuine Task-backed traversal:

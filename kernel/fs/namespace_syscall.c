@@ -49,7 +49,8 @@ uint64_t nas_fs_resolve_path(uint64_t dirfd, uint64_t pathname,
                 unsigned slot=TASK.fds->entries[dirfd].slot;
                 struct nas_proc_node node={nas_open_files[slot].proc_kind,
                                            nas_open_files[slot].proc_pid,
-                                           nas_open_files[slot].proc_tgid};
+                                           nas_open_files[slot].proc_tgid,
+                                           nas_open_files[slot].proc_fd};
                 if(!nas_proc_dir_path(node,proc_base))return (uint64_t)-ENOENT;
                 base=proc_base;
             } else if (TASK.fds->entries[dirfd].kind==FD_TMP_DIR) {
@@ -186,7 +187,8 @@ static uint64_t sys_fchdir(uint64_t fd) {
         unsigned slot=TASK.fds->entries[fd].slot;
         struct nas_proc_node node={nas_open_files[slot].proc_kind,
                                    nas_open_files[slot].proc_pid,
-                                           nas_open_files[slot].proc_tgid};
+                                           nas_open_files[slot].proc_tgid,
+                                           nas_open_files[slot].proc_fd};
         if(!nas_proc_dir_path(node,proc_base))return (uint64_t)-ENOENT;
         path=proc_base;
     } else if (TASK.fds->entries[fd].kind == FD_TMP_DIR) {

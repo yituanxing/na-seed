@@ -63,6 +63,9 @@ struct nas_open_file {
     uint64_t proc_pid;
     uint64_t proc_tgid; /* procfs /proc/<TGID>/task/<TID> ownership */
     uint8_t proc_kind;
+    uint16_t proc_fd;
+    /* Canonical path of the open description, shared by dup/fork. */
+    char origin_path[256];
 };
 extern struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
 #endif

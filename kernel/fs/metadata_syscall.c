@@ -68,7 +68,8 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
         unsigned slot=TASK.fds->entries[fd].slot;
         struct nas_proc_node node={nas_open_files[slot].proc_kind,
                                    nas_open_files[slot].proc_pid,
-                                   nas_open_files[slot].proc_tgid};
+                                   nas_open_files[slot].proc_tgid,
+                                   nas_open_files[slot].proc_fd};
         st.dev=7;st.ino=nas_proc_ino(node);
         st.mode=nas_proc_mode(node);
         st.nlink=nas_proc_is_dir(node)?2:1;
@@ -363,6 +364,16 @@ static uint64_t sys_readlinkat_boot(uint64_t dirfd, uint64_t pathname,
     char path[256], actual[256];
     uint64_t r = nas_fs_resolve_path(dirfd, pathname, path);
     if ((int64_t)r < 0) return r;
+    struct nas_proc_node proc_node={0};
+    if(nas_proc_lookup(path,&proc_node) &&
+       proc_node.kind==NAS_PROC_FD_LINK) {
+        char target[256];
+        int64_t got=nas_proc_readlink(proc_node,target,sizeof(target));
+        if(got<0)return (uint64_t)got;
+        uint64_t n=(uint64_t)got<capacity?(uint64_t)got:capacity;
+        return nas_user_write_bytes(dst,(const uint8_t *)target,n) ?
+               n:(uint64_t)-EFAULT;
+    }
     int err = nas_fs_resolve_existing(path, false, actual);
     if (err) return (uint64_t)(int64_t)err;
     const struct nas_tmp_file *tmp=tmp_find(actual);
@@ -389,7 +400,8 @@ static uint64_t proc_getdents64(uint64_t fd,uint64_t dst,uint64_t capacity) {
         return (uint64_t)-EBADF;
     struct nas_proc_node dir={nas_open_files[slot].proc_kind,
                               nas_open_files[slot].proc_pid,
-                                   nas_open_files[slot].proc_tgid};
+                                   nas_open_files[slot].proc_tgid,
+                                   nas_open_files[slot].proc_fd};
     uint64_t cursor=nas_open_files[slot].position,written=0;
     while(written+24<=capacity) {
         char name[32];
@@ -401,7 +413,8 @@ static uint64_t proc_getdents64(uint64_t fd,uint64_t dst,uint64_t capacity) {
         else {
             if(cursor-2>UINT32_MAX ||
                !nas_proc_child(dir,(unsigned)(cursor-2),name,&child))break;
-            dtype=nas_proc_is_dir(child)?4:8;
+            dtype=nas_proc_is_dir(child)?4:
+                  child.kind==NAS_PROC_FD_LINK?10:8;
             ino=nas_proc_ino(child);
         }
         unsigned len=0;while(name[len])len++;

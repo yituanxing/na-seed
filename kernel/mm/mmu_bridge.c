@@ -11,6 +11,19 @@
 /* Same API already consumed by existing ELF/exec/FS/fork/usercopy modules.
  * root_phys is per task; levels is derived from the actual boot CPU mode.
  * No alternate miniature kernel, new ELF implementation or FS. */
+struct nas_vm_pt_ctx {nas_mmu_user_visit cb;void *ctx;};
+static bool nas_vm_pt_cb(uint64_t va,uint64_t pa,unsigned access,void *arg) {
+    (void)pa;
+    struct nas_vm_pt_ctx *s=(struct nas_vm_pt_ctx*)arg;
+    return s->cb(va,access,s->ctx);
+}
+bool nas_mmu_walk_user_mapping(uint64_t root_phys,
+                                nas_mmu_user_visit cb,void *arg) {
+    if(!root_phys || !cb)return false;
+    struct nas_user_space s={root_phys,nas_arch_pt_active_levels()};
+    struct nas_vm_pt_ctx c={cb,arg};
+    return nas_arch_pt_walk(&s,nas_vm_pt_cb,&c);
+}
 static struct nas_user_space current(void) {
     return (struct nas_user_space){nas_current_task->root_phys,
                                   nas_arch_pt_active_levels()};
