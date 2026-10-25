@@ -87,7 +87,12 @@ boot_case() {
     {
         printf '%s\n' 'timeout: 0' '/NaSeed ARM64 native BusyBox workload'
         printf '%s\n' '    protocol: limine' '    path: boot():/boot/kernel'
-        printf '    cmdline: naseed.argv=%s %s\n' "$entry" "$args"
+        # Trusted boot UTC is a real host clock, not a synthesized
+        # application timestamp. Keep argv and kernel semantics unchanged.
+        boot_utc=${NAS_ACCEPTANCE_REALTIME_EPOCH:-$(date -u +%s)}
+        case "$boot_utc" in ''|*[!0-9]*) echo '[BOOT CLOCK FAIL] nonnumeric UTC' >&2; return 1 ;; esac
+        printf '    cmdline: naseed.realtime=%s naseed.argv=%s %s\n' \
+            "$boot_utc" "$entry" "$args"
         printf '    module_path: boot():/boot/%s\n' "$module"
     } > "$config"
     mcopy -i "$disk@@1048576" "$config" ::/boot/limine/limine.conf

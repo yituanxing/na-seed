@@ -101,3 +101,20 @@ stopped before the source-touch rebuild. This is **not** a QEMU timeout
 or a CTest failure. Preserve the strict no-op criterion. The next native
 RV64 run captures original Ninja '-n -d explain' output and filesystem
 mtimes in the serial log so the actual dirty-edge cause can be fixed.
+
+## RV64 incremental-build root cause and UTC bootstrap
+On exact head c631528 the genuine RV64 guest built all 45 upstream Ninja
+actions and passed **19/19 CTests**, yet Ninja correctly found every object
+older than `/usr/include/stdc-predef.h`. The unmodified Alpine header
+mtime was **2026-10-21 16:00:02 UTC**, whereas new guest compiler outputs
+were dated **2026-09-28**: virtual RV64 firmware's Limine RTC calendar was
+stale. This was NOT a syscall, cJSON or CTest defect.
+
+Fix the general Linux CLOCK_REALTIME bootstrap, not Ninja or package files:
+provide optional `naseed.realtime=<actual UTC epoch>` before `naseed.argv`
+in the trusted Limine cmdline; remove it before normal user argv parsing,
+preserving all existing serial/argv checks. The unified Linux timekeeper
+continues to use architecture-specific monotonic clocks for durations.
+Without the optional parameter it still falls back to Limine RTC.
+All three actual QEMU launch scripts now provide the host's real UTC clock.
+No dependency edges, CTest requirements or up-to-date semantics are bypassed.

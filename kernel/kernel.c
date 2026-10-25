@@ -164,11 +164,53 @@ const struct limine_file *nas_module(uint64_t index) {
     return module_req.response->modules[index];
 }
 const struct limine_file *nas_user_module(void) { return nas_module(0); }
+/* RTC may be unavailable/stale on virtual firmware. An OPTIONAL trusted
+ * Limine boot UTC clock lets the launcher supply real UNIX wall time:
+ *
+ *   naseed.realtime=<UTC epoch seconds> naseed.argv=<program> [args...]
+ *
+ * This prefix is boot metadata, not a userspace argument. With no prefix,
+ * preserve the original firmware RTC handoff. Malformed prefixes remain
+ * unstripped so the existing argv parser fails closed. All ISA share this. */
+static const char *boot_cmdline_and_time(int64_t *epoch) {
+    const char *cmd = cmdline_req.response ? cmdline_req.response->cmdline : 0;
+    static const char key[] = "naseed.realtime=";
+    static const char argv_key[] = "naseed.argv=";
+    if (!cmd) return 0;
+    unsigned i = 0;
+    while (key[i] && cmd[i] == key[i]) ++i;
+    if (key[i]) return cmd;
+    const char *p = cmd + i;
+    uint64_t value = 0;
+    unsigned digits = 0;
+    while (*p >= '0' && *p <= '9') {
+        uint64_t digit = (uint64_t)(*p++ - '0');
+        if (value > (UINT64_C(4102444800) - digit) / 10) return cmd;
+        value = value * 10 + digit;
+        ++digits;
+    }
+    if (!digits || value < UINT64_C(946684800) || *p != ' ')
+        return cmd;
+    while (*p == ' ') ++p;
+    i = 0;
+    while (argv_key[i] && p[i] == argv_key[i]) ++i;
+    if (argv_key[i]) return cmd;
+    if (epoch) *epoch = (int64_t)value;
+    return p;
+}
 const char *nas_cmdline(void) {
-    return cmdline_req.response ? cmdline_req.response->cmdline : 0;
+    return boot_cmdline_and_time(0);
 }
 
-/* Boot protocol RTC seconds; unavailable is explicitly distinguishable. */
+/* Shared monotonic timekeeper anchors to either launcher UTC or Limine RTC. */
 int64_t nas_boot_date_at_boot(void) {
+    int64_t epoch = -1;
+    (void)boot_cmdline_and_time(&epoch);
+    if (epoch >= 0) {
+        nas_print("[CLOCK] trusted boot UTC epoch=");
+        nas_dec((uint64_t)epoch);
+        nas_print("\n");
+        return epoch;
+    }
     return date_req.response ? date_req.response->timestamp : -1;
 }
