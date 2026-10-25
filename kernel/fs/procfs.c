@@ -63,6 +63,26 @@ bool nas_proc_lookup(const char *path,struct nas_proc_node *out) {
     }
     if(!living(pid))return false;
     out->pid=pid;
+    if(!strcmp(p,"/fd")) {
+        if(living(pid)->is_thread)return false;
+        out->kind=NAS_PROC_FD_DIR;return true;
+    }
+    if(!strcmp(p,"/fdinfo")) {
+        if(living(pid)->is_thread)return false;
+        out->kind=NAS_PROC_FDINFO_DIR;return true;
+    }
+    if(!strncmp(p,"/fd/",4) || !strncmp(p,"/fdinfo/",8)) {
+        const bool info=!strncmp(p,"/fdinfo/",8);
+        const char *suffix=p+(info?8:4);
+        uint64_t fd=0;
+        if(*suffix=='0' && suffix[1]==0){fd=0;suffix++;}
+        else if(!numeric(suffix,&fd,&suffix))return false;
+        if(*suffix ||
+           fd>=NAS_FD_LIMIT || !living(pid)->fds ||
+           living(pid)->fds->entries[fd].kind==FD_CLOSED)return false;
+        out->kind=info?NAS_PROC_FDINFO_FILE:NAS_PROC_FD_LINK;
+        out->fd=(uint16_t)fd;return true;
+    }
     if(!strcmp(p,"/task")) {
         out->kind=NAS_PROC_TASK_DIR;
         out->tgid=pid;
@@ -98,6 +118,10 @@ bool nas_proc_dir_path(struct nas_proc_node node,char path[256]) {
         if(!living(leader))return false;
         path[p++]='/';char number[32];number_name(leader,number);
         for(unsigned i=0;number[i];i++)path[p++]=number[i];
+        if(node.kind==NAS_PROC_FD_DIR || node.kind==NAS_PROC_FDINFO_DIR) {
+            const char *suffix=node.kind==NAS_PROC_FD_DIR?"/fd":"/fdinfo";
+            for(unsigned i=0;suffix[i];i++)path[p++]=suffix[i];
+        }
         if(node.kind==NAS_PROC_TASK_DIR || node.kind==NAS_PROC_TID_DIR) {
             const char *suffix="/task";
             for(unsigned i=0;suffix[i];i++)path[p++]=suffix[i];
@@ -112,21 +136,24 @@ bool nas_proc_dir_path(struct nas_proc_node node,char path[256]) {
 }
 bool nas_proc_is_dir(struct nas_proc_node node) {
     return node.kind==NAS_PROC_ROOT || node.kind==NAS_PROC_PID_DIR ||
-           node.kind==NAS_PROC_TASK_DIR || node.kind==NAS_PROC_TID_DIR;
+           node.kind==NAS_PROC_TASK_DIR || node.kind==NAS_PROC_TID_DIR ||
+           node.kind==NAS_PROC_FD_DIR || node.kind==NAS_PROC_FDINFO_DIR;
 }
 uint32_t nas_proc_mode(struct nas_proc_node node) {
+    if(node.kind==NAS_PROC_FD_LINK)return 0120777U;
     return nas_proc_is_dir(node) ? 0040555U : 0100444U;
 }
 uint64_t nas_proc_ino(struct nas_proc_node node) {
     /* Per-task inode identity is distinct from the process-level name;
      * retain stable inodes across dup/fork/readdir and TID traversal. */
-    return node.pid ? 80000U+node.pid*128U+(uint64_t)node.kind +
-           (node.tgid ? 64U : 0U) : 70000U+(uint64_t)node.kind;
+    return node.pid ? 80000U+node.pid*2048U+
+           (uint64_t)node.fd*16U+(uint64_t)node.kind +
+           (node.tgid ? 1024U : 0U) : 70000U+(uint64_t)node.kind;
 }
 bool nas_proc_child(struct nas_proc_node directory,unsigned index,
                     char name[32],struct nas_proc_node *node) {
     static const char *const root[]={"self","meminfo","uptime","version","cpuinfo","stat","loadavg","vmstat"};
-    static const char *const process[]={"stat","status","comm","cmdline","statm","task"};
+    static const char *const process[]={"stat","status","comm","cmdline","statm","task","fd","fdinfo"};
     if(!name || !node)return false;
     if(directory.kind==NAS_PROC_ROOT) {
         if(index<sizeof(root)/sizeof(root[0])) {
@@ -144,6 +171,23 @@ bool nas_proc_child(struct nas_proc_node directory,unsigned index,
             if(found++!=index-(sizeof(root)/sizeof(root[0])))continue;
             number_name(t->pid,name);
             *node=(struct nas_proc_node){NAS_PROC_PID_DIR,t->pid,0};
+            return true;
+        }
+        return false;
+    }
+    if(directory.kind==NAS_PROC_FD_DIR ||
+       directory.kind==NAS_PROC_FDINFO_DIR) {
+        const struct nas_task *target=living(directory.pid);
+        if(!target || !target->fds)return false;
+        unsigned found=0;
+        for(unsigned fd=0;fd<NAS_FD_LIMIT;fd++) {
+            if(target->fds->entries[fd].kind==FD_CLOSED)continue;
+            if(found++!=index)continue;
+            number_name(fd,name);
+            *node=(struct nas_proc_node){
+                directory.kind==NAS_PROC_FD_DIR?NAS_PROC_FD_LINK:
+                                                    NAS_PROC_FDINFO_FILE,
+                directory.pid,0,(uint16_t)fd};
             return true;
         }
         return false;
@@ -170,13 +214,14 @@ bool nas_proc_child(struct nas_proc_node directory,unsigned index,
                  task->tgid!=directory.tgid))return false;
     unsigned count=directory.kind==NAS_PROC_PID_DIR ?
         sizeof(process)/sizeof(process[0]) :
-        sizeof(process)/sizeof(process[0])-1;
+        5U; /* TID-local stat/status/comm/cmdline/statm only */
     if(index>=count)return false;
     const char *s=process[index];unsigned i=0;
     do{name[i]=s[i];}while(s[i++]);
     uint8_t kind[]={NAS_PROC_PID_STAT,NAS_PROC_PID_STATUS,
                     NAS_PROC_PID_COMM,NAS_PROC_PID_CMDLINE,
-                    NAS_PROC_PID_STATM,NAS_PROC_TASK_DIR};
+                    NAS_PROC_PID_STATM,NAS_PROC_TASK_DIR,
+                    NAS_PROC_FD_DIR,NAS_PROC_FDINFO_DIR};
     *node=(struct nas_proc_node){kind[index],directory.pid,
         directory.kind==NAS_PROC_TID_DIR?directory.tgid:
         (kind[index]==NAS_PROC_TASK_DIR?directory.pid:0)};
@@ -199,6 +244,42 @@ static void load_print(struct writer *w,uint64_t q16) {
     unsigned cent=(unsigned)((q16%65536ULL)*100ULL/65536ULL);
     ch(w,(char)('0'+cent/10U));ch(w,(char)('0'+cent%10U));
 }
+/* A procfd link follows the target process's *live* FD ownership.
+ * Open-description identity is preserved by dup/fork, never copied into
+ * independent per-process pathname records. A pseudo target does not
+ * pretend to be a reopenable regular file. */
+int64_t nas_proc_readlink(struct nas_proc_node node,char *out,unsigned cap) {
+    if(node.kind!=NAS_PROC_FD_LINK)return -EINVAL;
+    const struct nas_task *task=living(node.pid);
+    if(!task || !task->fds || node.fd>=NAS_FD_LIMIT)return -ENOENT;
+    struct nas_fd_entry e=task->fds->entries[node.fd];
+    if(e.kind==FD_CLOSED || e.slot>=NAS_OPEN_FILE_LIMIT)return -ENOENT;
+    const struct nas_open_file *f=&nas_open_files[e.slot];
+    const char *path=f->origin_path;
+    char temporary[64];
+    if(!path[0]) {
+        switch(e.kind) {
+        case FD_UART: case FD_TTY: path="/dev/console";break;
+        case FD_NULL:path="/dev/null";break;
+        case FD_ZERO:path="/dev/zero";break;
+        case FD_PIPE_R:case FD_PIPE_W:path="pipe:[";break;
+        case FD_SOCKET:path="socket:[";break;
+        case FD_EPOLL:path="anon_inode:[eventpoll]";break;
+        case FD_EVENTFD:path="anon_inode:[eventfd]";break;
+        case FD_PTY_MASTER:path="/dev/ptmx";break;
+        case FD_PTY_SLAVE:path="/dev/pts/0";break;
+        default:path="anon_inode:[unknown]";break;
+        }
+    }
+    if(!strcmp(path,"pipe:[") || !strcmp(path,"socket:[")) {
+        struct writer w={temporary,0,sizeof(temporary)-1};
+        word(&w,path);decimal(&w,e.slot+1U);ch(&w,']');
+        temporary[w.length]=0;path=temporary;
+    }
+    unsigned n=0;
+    while(path[n] && n<cap){if(out)out[n]=path[n];n++;}
+    return n;
+}
 int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
                       uint8_t *output,unsigned size) {
     if(nas_proc_is_dir(node))return -EISDIR;
@@ -207,6 +288,23 @@ int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
     const struct nas_task *t=node.pid ? living(node.pid) : 0;
     if(node.pid && !t)return -ENOENT;
     if(node.tgid && (!t || t->tgid!=node.tgid))return -ENOENT;
+    if(node.kind==NAS_PROC_FD_LINK) return -EINVAL;
+    if(node.kind==NAS_PROC_FDINFO_FILE) {
+        if(!t || !t->fds || node.fd>=NAS_FD_LIMIT ||
+           t->fds->entries[node.fd].kind==FD_CLOSED)return -ENOENT;
+        unsigned slot=t->fds->entries[node.fd].slot;
+        word(&w,"pos:\t");decimal(&w,nas_open_files[slot].position);ch(&w,'\n');
+        word(&w,"flags:\t");
+        uint64_t flags=nas_open_files[slot].status_flags |
+                       (t->fds->entries[node.fd].cloexec?02000000ULL:0ULL);
+        char digits[25];unsigned count=0;
+        do {digits[count++]=(char)('0'+(flags&7U));flags>>=3;}while(flags && count<sizeof(digits));
+        while(count)ch(&w,digits[--count]);
+        ch(&w,'\n');
+        word(&w,"mnt_id:\t0\nino:\t");
+        decimal(&w,slot+1U);ch(&w,'\n');
+        goto done;
+    }
     switch(node.kind) {
     case NAS_PROC_MEMINFO:
         word(&w,"MemTotal:       ");decimal(&w,nas_managed_frames()*4U);word(&w," kB\n");
@@ -328,6 +426,7 @@ int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
     }
     default:return -ENOENT;
     }
+done:
     if(offset>=w.length)return 0;
     uint64_t n=w.length-offset;
     if(n>size)n=size;

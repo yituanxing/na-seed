@@ -520,7 +520,16 @@ uint64_t nas_fs_open_path(const char *path, uint64_t native_flags,
         nas_open_files[slot].proc_kind=proc_node.kind;
         nas_open_files[slot].proc_pid=proc_node.pid;
         nas_open_files[slot].proc_tgid=proc_node.tgid;
+        nas_open_files[slot].proc_fd=proc_node.fd;
     }
+    /* A description is a real owned kernel object; do not copy on dup
+     * or fork. Retain pathname here rather than a second FD index. */
+    unsigned path_len=0;
+    while(path[path_len] && path_len<sizeof(nas_open_files[slot].origin_path)-1U) {
+        nas_open_files[slot].origin_path[path_len]=path[path_len];
+        path_len++;
+    }
+    nas_open_files[slot].origin_path[path_len]=0;
     return fd;
 }
 static uint64_t sys_open_device(uint64_t pathname, uint64_t flags,
@@ -538,7 +547,8 @@ static uint64_t vread_proc(uint64_t fd,uint64_t addr,uint64_t n) {
     unsigned slot=TASK.fds->entries[fd].slot;
     struct nas_proc_node node={nas_open_files[slot].proc_kind,
                                nas_open_files[slot].proc_pid,
-                               nas_open_files[slot].proc_tgid};
+                               nas_open_files[slot].proc_tgid,
+                               nas_open_files[slot].proc_fd};
     uint8_t bytes[256];
     uint64_t done=0;
     while(done<n) {
