@@ -1,0 +1,6 @@
+# Add ONLY these three original signed Alpine v3.23 packages to the existing
+# M39 runtime rootfs (which already provides musl and BusyBox). APK installs
+# their genuine dynamically linked dependency closure; no compiler tools.
+bash
+tcl
+openssl
