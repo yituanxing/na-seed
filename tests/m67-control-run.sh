@@ -111,5 +111,37 @@ for f in /tmp/m67-a /tmp/m67-b /tmp/m67-comm /tmp/m67-negative; do
         echo
     fi
 done
+# M68: real BusyBox ash background commands always redirect stdin to
+# /dev/null when job control is disabled. Linux open/openat MUST recycle fd0
+# after ash closes it; reserving descriptor >=3 causes errno-zero shell errors.
+# Validate the actual inherited-fd fork/exec path, not a dedicated syscall shim.
+if /bin/sh -c '/bin/busybox sleep 0.2 & p=$!; wait "$p" && echo m68-bg-wait-ok' \
+        > /tmp/m68-bg-wait.log 2>&1 &&
+   /bin/busybox grep -Fxq m68-bg-wait-ok /tmp/m68-bg-wait.log &&
+   ! /bin/busybox grep -Fq "can't open" /tmp/m68-bg-wait.log; then
+    echo M68_ASH_BACKGROUND_WAIT_PASS
+else
+    echo '[M68 FAIL] original BusyBox ash background sleep/FD0' >&2
+    /bin/busybox cat /tmp/m68-bg-wait.log || :
+    failures=$((failures+1))
+fi
+if /bin/sh -c 'exec 0<&-; exec </dev/null; /bin/busybox cat <&0; echo m68-reopen-zero-ok' \
+        > /tmp/m68-reopen.log 2>&1 &&
+   /bin/busybox grep -Fxq m68-reopen-zero-ok /tmp/m68-reopen.log; then
+    echo M68_ASH_FD0_REOPEN_PASS
+else
+    echo '[M68 FAIL] ash explicit close(0) / reopen' >&2
+    /bin/busybox cat /tmp/m68-reopen.log || :
+    failures=$((failures+1))
+fi
+if /bin/sh -c '/bin/busybox echo m68-pipe-payload | /bin/busybox cat > /tmp/m68-pipe.txt & p=$!; wait "$p"' \
+       > /tmp/m68-pipe.log 2>&1 &&
+   /bin/busybox grep -Fxq m68-pipe-payload /tmp/m68-pipe.txt; then
+    echo M68_ASH_BACKGROUND_PIPE_PASS
+else
+    echo '[M68 FAIL] real ash background pipe FD lifecycle' >&2
+    /bin/busybox cat /tmp/m68-pipe.log || :
+    failures=$((failures+1))
+fi
 test "$failures" -eq 0 || exit 1
 echo M67_PROCPS_CONTROL_FULL_PASS

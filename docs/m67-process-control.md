@@ -27,3 +27,40 @@ first-probe shell `sleep &` found a **separate BusyBox ash background redirectio
 failure** (`can't open /dev/null` in post-fork shell) on all three ISAs, despite
 normal direct `/dev/null` redirection passing. That is tracked independently:
 M67 does not claim all `ash &` semantics are fully compatible.
+
+## M68 root-cause repair — Linux lowest-free FD contract
+
+Original native BusyBox ash `command &` failed opening `/dev/null` while
+foreground redirected reads were fine. **Root cause:** the M62 FD object
+adapters for `open/openat`, `pipe/pipe2/socketpair`, `socket`, and
+`accept/accept4` explicitly searched from descriptor 3, even when fd0/1/2
+were closed. Linux allocates the **lowest available descriptor from 0**;
+the shell background child closes stdin and expects its subsequent
+`open("/dev/null", O_RDONLY)` to become **fd0**. It instead became fd3,
+producing the shell's `No error information` message (errno remained 0
+because the syscall had succeeded).
+
+Correct the existing shared ownership layer callers, not the shell or a
+per-program syscall branch. `fcntl(F_DUPFD)` is unchanged because its
+caller supplies an explicit minimum. Augment the production FD host model
+to test closed standard descriptors and two-FD capacity, and require
+three native-QEMU gates from original BusyBox: background sleep/wait, FD0
+close-reopen, and background pipeline output. M67 original pgrep/pkill and
+all existing CI acceptance gates must remain green.
+
+## M68 additional real blocker: rt_sigsuspend / caught SIGCHLD
+
+The first exact-head QEMU rerun proved the earlier `/dev/null` error was
+gone and the background child **did run and exit 0**, but BusyBox ash
+then blocked in `rt_sigsuspend`, previously unimplemented (raw Linux
+x86 syscall 130, asm-generic RV64/ARM64 syscall 133). It was not a pipe
+or /dev/null error: the actual serial trace showed
+`[MISS] syscall nr=130` in the waiting shell.
+
+Add common `NAS_SC_rt_sigsuspend` decoding on all three ABIs and enter the
+existing Task wait owner with an atomic temporary signal mask. The actual
+caught pending SIGCHLD alone interrupts the syscall, wakes the task with
+`-EINTR`, restores its saved mask and installs the real ISA signal
+handler on user return. No synthetic successful signal syscall, no
+scheduler busy loop, and no alternate task registry. The real unmodified
+ash `&`/wait regression is an exact-head merge gate on all three ISAs.

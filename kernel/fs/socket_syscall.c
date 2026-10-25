@@ -34,7 +34,7 @@ static uint64_t sys_socket(uint64_t domain,uint64_t type,uint64_t protocol) {
         return (uint64_t)-ESOCKTNOSUPPORT;
     if(protocol)return (uint64_t)-EPROTONOSUPPORT;
     unsigned fds[2],slots[2];
-    int capacity=nas_fd_reserve(nas_current_task,3,1,fds,slots,"socket");
+    int capacity=nas_fd_reserve(nas_current_task,0,1,fds,slots,"socket");
     if(capacity)return (uint64_t)(int64_t)capacity;
     unsigned fd=fds[0],slot=slots[0];
     nas_unix_socket_init(slot);
@@ -87,7 +87,7 @@ static uint64_t sys_unix_accept(uint64_t fd,uint64_t address,
     if(address && length && (!nas_mmu_user_byte(address) ||
                              (length>1 && !nas_mmu_user_byte(address+1))))
         return (uint64_t)-EFAULT;
-    unsigned nextfd=nas_fd_first_unused(nas_current_task,3);
+    unsigned nextfd=nas_fd_first_unused(nas_current_task,0);
     if(nextfd==NAS_FD_LIMIT)return (uint64_t)-EMFILE;
     unsigned slot;
     int rc=nas_unix_socket_accept(TASK.fds->entries[fd].slot,&slot);

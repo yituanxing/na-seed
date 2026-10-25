@@ -24,6 +24,24 @@ int main(void) {
     child.fds = &child.fds_owned;
     sibling.fds = &sibling.fds_owned;
     nas_fd_system_init();
+    /* Linux open/pipe/socket/accept allocate the smallest free fd,
+     * including stdin/stdout/stderr after close. These are only initially
+     * reserved by convention, not by the FD allocator. */
+    unsigned chosen[2], slots[2];
+    assert(nas_fd_reserve(&p,0,2,chosen,slots,"paired-low-fd")==0);
+    assert(chosen[0]==0 && chosen[1]==1 && slots[0]!=slots[1]);
+    assert(nas_fd_install_new(&p,0,slots[0],FD_NULL,0,false));
+    assert(nas_fd_install_new(&p,1,slots[1],FD_NULL,0,false));
+    assert(nas_fd_reserve(&p,0,2,chosen,slots,"paired-low-fd")==0);
+    assert(chosen[0]==2 && chosen[1]==3);
+    assert(nas_fd_install_new(&p,2,slots[0],FD_NULL,0,false));
+    assert(nas_fd_first_unused(&p,0)==3);
+    assert(nas_fd_close(&p,0)<NAS_OPEN_FILE_LIMIT);
+    assert(nas_fd_reserve(&p,0,2,chosen,slots,"paired-low-fd")==0);
+    assert(chosen[0]==0 && chosen[1]==3);
+    assert(nas_fd_close(&p,1)<NAS_OPEN_FILE_LIMIT);
+    assert(nas_fd_close(&p,2)<NAS_OPEN_FILE_LIMIT);
+    assert(nas_fd_first_unused(&p,0)==0);
     p.fds->entries[3] = (struct nas_fd_entry){FD_TMP, 120, 1};
     nas_open_files[120].refcount = 1;
     nas_open_files[120].position = 43;

@@ -68,6 +68,7 @@ static uint64_t task_replay(struct nas_task *task) {
     if (nr == NAS_SC_write) return nas_fs_fd_write(a[0], a[1], a[2]);
     if (nr == NAS_SC_writev) return nas_fs_fd_writev(a[0], a[1], a[2]);
     if (nr == NAS_SC_wait4) return nas_process_wait4(a[0], a[1], a[2], a[3]);
+    if (nr == NAS_SC_rt_sigsuspend) return (uint64_t)-EINTR; /* only a caught signal wakes it */
     if(nr==NAS_SC_epoll_wait || nr==NAS_SC_epoll_pwait)
         return nas_epoll_wait(a[0],a[1],a[2],a[3]);
     if (nr == NAS_SC_poll) return nas_fs_poll(a[0],a[1],a[2]);
@@ -295,7 +296,8 @@ bool nas_sched_preempt_select(void) {
                 nas_arch_set_saved_return(next,result);
                 if(next->wait.blocked_op==NAS_SC_ppoll ||
                    next->wait.blocked_op==NAS_SC_pselect6 ||
-                   next->wait.blocked_op==NAS_SC_epoll_pwait)
+                   next->wait.blocked_op==NAS_SC_epoll_pwait ||
+                   next->wait.blocked_op==NAS_SC_rt_sigsuspend)
                     nas_signal_ppoll_restore(next,(int64_t)result==-EINTR);
                 next->wait.pending_valid=false;
                 next->wait.blocked_op=0;
@@ -380,7 +382,8 @@ retry_schedule: ; /* label must precede a statement in C11 */
                 }
                 if(next->wait.blocked_op==NAS_SC_ppoll ||
                    next->wait.blocked_op==NAS_SC_pselect6 ||
-                   next->wait.blocked_op==NAS_SC_epoll_pwait)
+                   next->wait.blocked_op==NAS_SC_epoll_pwait ||
+                   next->wait.blocked_op==NAS_SC_rt_sigsuspend)
                     nas_signal_ppoll_restore(next,(int64_t)result==-EINTR);
                 next->wait.pending_valid = false;
                 next->wait.blocked_op = 0;
