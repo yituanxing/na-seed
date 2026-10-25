@@ -4,8 +4,15 @@ PATH=/usr/bin:/bin
 LC_ALL=C
 export PATH LC_ALL
 fails=0
-pid=$$
+pid=$
 echo "[M70] shell PID=$pid"
+if /bin/busybox stat /dev > /tmp/m70-devstat &&
+   /bin/busybox stat /dev/null > /tmp/m70-nullstat;then
+ echo M70_DEV_NAMESPACE_PASS
+else
+ echo '[M70 FAIL] real dev directory and null node stat' >&2
+ fails=$((fails+1))
+fi
 if /bin/busybox ls "/proc/$pid/fd" >/tmp/m70-fd-list &&
    /bin/busybox ls "/proc/$pid/fdinfo" >/tmp/m70-fdinfo-list &&
    /bin/busybox readlink "/proc/$pid/fd/1" >/tmp/m70-stdout &&

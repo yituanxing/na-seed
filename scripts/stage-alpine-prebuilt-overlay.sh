@@ -28,6 +28,9 @@ work="build/external/$profile/$port"
 mkdir -p "$work"
 cp -a "$base/rootfs" "$work/rootfs"
 root="$work/rootfs"
+# Every Linux rootfs requires the parent device directory even when its
+# device nodes are supplied virtually by the kernel, not host mknod.
+mkdir -p "$root/dev"
 target="$(pwd)/$root"
 packages="$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$package_file")"
 test -n "$packages"

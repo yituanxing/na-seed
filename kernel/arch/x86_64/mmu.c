@@ -73,10 +73,10 @@ static bool nas_x86_walk_level(uint64_t pa,unsigned level,uint64_t base,
     }
     return true;
 }
-bool nas_mmu_walk_user_mapping(uint64_t root_phys,
+bool nas_mmu_walk_user_mapping(uint64_t target_root,
                                 nas_mmu_user_visit cb,void *arg) {
-    if(!root_phys || (root_phys&(PAGE-1)) || !cb)return false;
-    return nas_x86_walk_level(root_phys,3,0,256,cb,arg);
+    if(!target_root || (target_root&(PAGE-1)) || !cb)return false;
+    return nas_x86_walk_level(target_root,3,0,256,cb,arg);
 }
 bool nas_mmu_bootstrap(void) {
     uint64_t cr3 = nas_arch_current_page_root();
