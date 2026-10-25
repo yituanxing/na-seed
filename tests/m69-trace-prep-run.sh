@@ -13,7 +13,7 @@ if /bin/busybox ls "/proc/$pid/task" > /tmp/m69-tasks &&
    /bin/busybox cat "/proc/$pid/task/$pid/status" > /tmp/m69-thread-status &&
    /bin/busybox grep -Eq "^Tgid:[[:space:]]+$pid" /tmp/m69-thread-status &&
    /bin/busybox grep -Eq "^Pid:[[:space:]]+$pid" /tmp/m69-thread-status &&
-   /bin/busybox cat "/proc/self/task/$pid/stat" > /tmp/m69-thread-stat &&
+   /bin/busybox cat "/proc/$pid/task/$pid/stat" > /tmp/m69-thread-stat &&
    /bin/busybox grep -Eq "^$pid \(" /tmp/m69-thread-stat; then
  echo M69_PROC_THREAD_NAMESPACE_PASS
 else

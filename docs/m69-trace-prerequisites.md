@@ -39,3 +39,14 @@ of an existing PID when only reading limits; unknown PIDs still return
 `ESRCH` and mutable resource limits remain `EOPNOTSUPP`. When a real
 credential/access subsystem exists, its centralized authorization will
 replace this simplified all-root policy. No fabricated limit modification.
+
+## Shell /proc/self testcase ownership correction
+
+Real userland tests run `/bin/busybox cat` as a separate child. Linux
+`/proc/self` always resolves to **that child**, not the parent shell's
+`$$` PID. So `cat /proc/self/task/$$/stat` is an invalid test: it
+requests an unrelated parent's TID under the cat child's task group.
+The correct cross-process enumeration test uses
+`cat /proc/$parent_pid/task/$parent_pid/stat`. The host Task fixture
+separately verifies same-caller `/proc/self/task/TID/status` resolution.
+All kernel semantics remain unchanged and fail-closed.
