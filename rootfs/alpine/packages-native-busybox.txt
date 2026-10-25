@@ -12,3 +12,5 @@ sed
 gawk
 coreutils
 findutils
+# Upstream scripts/mkconfigs invokes bzip2 during the original GNU Kbuild.
+bzip2

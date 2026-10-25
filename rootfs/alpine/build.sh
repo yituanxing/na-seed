@@ -156,7 +156,7 @@ if [ "$profile" = native-busybox ]; then
     test ! -e "$root/tests/m56-source/.config"
     cp scripts/source-busybox.config "$root/tests/m56.config"
     cp tests/m56-busybox-run.sh "$root/tests/run-m56.sh"
-    for program in sed awk find xargs; do
+    for program in sed awk find xargs bzip2; do
         # Signed Alpine packages install their original utilities in /bin
         # OR /usr/bin (e.g. GNU sed is /bin/sed). Never conflate a host
         # filesystem path with the guest's standard PATH.

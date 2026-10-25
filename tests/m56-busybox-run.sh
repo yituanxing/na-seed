@@ -2,7 +2,7 @@
 # Genuine pinned upstream BusyBox Kbuild IN a running NaSeed Linux-ABI guest.
 # No prebuilt BusyBox substituted after boot. Guest tools are original Alpine.
 set -eu
-stage=init
+stage=verify-native-toolchain
 trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "[FAIL] M56 stage=$stage rc=$rc" >&2; fi' EXIT
 PATH=/usr/bin:/bin
 HOME=/tmp
@@ -18,6 +18,11 @@ test ! -e "$original/.config"
 for tool in /usr/bin/gcc /usr/bin/make /usr/bin/as /usr/bin/ld /usr/bin/readelf; do
     test -x "$tool"
 done
+# Genuine upstream scripts/mkconfigs requires a native bzip2 executable.
+command -v bzip2 >/dev/null || {
+    echo '[M56 FAIL] original scripts/mkconfigs requires bzip2' >&2
+    exit 1
+}
 echo M56_GENUINE_NATIVE_ALPINE_TOOLCHAIN_PASS
 
 # True guest execve regression: previous 1024-byte fixed argument buffer
