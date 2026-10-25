@@ -6,6 +6,8 @@
 #include "../../mm/frame.h"
 #include "mmu.h"
 #include "../../mm/prot.h"
+#include "../user_pt.h"
+#include "../mmu.h"
 #define TASK (*nas_current_task)
 #define root_phys TASK.root_phys
 #define P_PRESENT 1ULL
@@ -50,6 +52,31 @@ bool nas_arch_x86_map_lapic_page(uint64_t phys) {
 /* User pages: read and amend existing Limine CR3 paging hierarchy. */
 static uint64_t *phys_table(uint64_t physical) {
     return (uint64_t *)(uintptr_t)(nas_hhdm_offset() + physical);
+}
+
+/* Read-only walk of the *selected task's* user PTEs; no CR3 switch.
+ * Always bound the root to lower 256 PML4 entries; refuse huge user pages. */
+static bool nas_x86_walk_level(uint64_t pa,unsigned level,uint64_t base,
+                               unsigned entries,nas_mmu_user_visit cb,void *arg){
+    const uint64_t *t=phys_table(pa);
+    for(unsigned i=0;i<entries;i++) {
+        uint64_t e=t[i];
+        if(!(e&P_PRESENT))continue;
+        if(!(e&P_USER) || (e&(1ULL<<7)))return false;
+        uint64_t va=base+((uint64_t)i<<(12U+9U*level));
+        if(level==0) {
+            unsigned access=NAS_UP_READ | ((e&P_RW)?NAS_UP_WRITE:0) |
+                            ((e&(1ULL<<63))?0:NAS_UP_EXEC);
+            if(!cb(va,access,arg))return false;
+        } else if(!nas_x86_walk_level(e&PHYS_MASK,level-1,va,512,cb,arg))
+            return false;
+    }
+    return true;
+}
+bool nas_mmu_walk_user_mapping(uint64_t root_phys,
+                                nas_mmu_user_visit cb,void *arg) {
+    if(!root_phys || (root_phys&(PAGE-1)) || !cb)return false;
+    return nas_x86_walk_level(root_phys,3,0,256,cb,arg);
 }
 bool nas_mmu_bootstrap(void) {
     uint64_t cr3 = nas_arch_current_page_root();

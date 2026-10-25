@@ -12,4 +12,8 @@ uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
 uint64_t nas_vm_munmap(uint64_t addr, uint64_t length);
 uint64_t nas_vm_brk(uint64_t want);
 uint64_t nas_vm_mprotect(uint64_t addr, uint64_t length, uint64_t prot);
+struct nas_task;
+/* Actual present user PTEs from selected task: no fabricated permissions. */
+bool nas_vm_walk_task_pages(const struct nas_task *task,
+                             nas_mmu_user_visit callback,void *ctx);
 #endif

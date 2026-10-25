@@ -17,6 +17,13 @@ struct nas_task *nas_task_by_pid(uint64_t pid) {
 uint64_t nas_managed_frames(void){return 1024;}
 uint64_t nas_free_frames(void){return 512;}
 uint64_t nas_arch_monotonic_ns(void){return 12500000000ULL;}
+bool nas_vm_walk_task_pages(const struct nas_task *task,
+                            nas_mmu_user_visit callback,void *ctx) {
+    (void)task;
+    return callback(0x1000,NAS_UP_READ|NAS_UP_EXEC,ctx) &&
+           callback(0x2000,NAS_UP_READ|NAS_UP_EXEC,ctx) &&
+           callback(0x4000,NAS_UP_READ|NAS_UP_WRITE,ctx);
+}
 bool nas_time_boot_epoch_seconds(uint64_t *out) {
     if(!out)return false;
     *out=1760000000ULL;return true;
@@ -77,6 +84,15 @@ int main(void) {
     assert(nas_proc_lookup("/proc/self/status",&entry) && entry.pid==1);
     check_file("/proc/23/status","Threads:\t2");
     check_file("/proc/23/stat","23 (sleep) S 1");
+    check_file("/proc/23/maps","0000000000001000-0000000000003000 r-xp");
+    check_file("/proc/23/maps","0000000000004000-0000000000005000 rw-p");
+    struct nas_proc_node mapnode={0};
+    assert(nas_proc_lookup("/proc/23/maps",&mapnode));
+    uint8_t allmaps[256]={0},half[256]={0};
+    int64_t mapslen=nas_proc_read(mapnode,0,allmaps,sizeof(allmaps));
+    assert(mapslen>60);
+    assert(nas_proc_read(mapnode,25,half,sizeof(half))==mapslen-25);
+    assert(!memcmp(half,allmaps+25,(size_t)(mapslen-25)));
     check_file("/proc/meminfo","MemTotal:       4096 kB");
     check_file("/proc/uptime","12.50");
     check_file("/proc/stat","cpu  0 0 150 1100");

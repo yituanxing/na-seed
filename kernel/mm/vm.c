@@ -9,6 +9,12 @@
 #include "../fs/io.h"
 #include "../arch/mmu.h"
 #include "mmap_abi.h"
+bool nas_vm_walk_task_pages(const struct nas_task *task,
+                             nas_mmu_user_visit callback,void *ctx) {
+    if(!task || !callback || task->state==NAS_TASK_FREE)return false;
+    const struct nas_task *owner=task->vm_owner?task->vm_owner:task;
+    return nas_mmu_walk_user_mapping(owner->root_phys,callback,ctx);
+}
 #define TASK (*nas_current_task)
 #define heap_break TASK.vm_owner->heap_break
 /* Ordinary anonymous allocation stays in the top-down window. Fixed

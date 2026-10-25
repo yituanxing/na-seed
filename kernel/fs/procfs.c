@@ -6,6 +6,8 @@
 #include "../arch/arch.h"
 #include "../time/clock.h"
 #include "../task/user_stack.h"
+#include "../mm/vm.h"
+#include "../arch/user_pt.h"
 #include "../lib/string.h"
 #include "../errno.h"
 #include <stdint.h>
@@ -106,6 +108,7 @@ bool nas_proc_lookup(const char *path,struct nas_proc_node *out) {
     else if(!strcmp(p,"/comm"))out->kind=NAS_PROC_PID_COMM;
     else if(!strcmp(p,"/cmdline"))out->kind=NAS_PROC_PID_CMDLINE;
     else if(!strcmp(p,"/statm"))out->kind=NAS_PROC_PID_STATM;
+    else if(!strcmp(p,"/maps"))out->kind=NAS_PROC_PID_MAPS;
     else return false;
     return true;
 }
@@ -153,7 +156,7 @@ uint64_t nas_proc_ino(struct nas_proc_node node) {
 bool nas_proc_child(struct nas_proc_node directory,unsigned index,
                     char name[32],struct nas_proc_node *node) {
     static const char *const root[]={"self","meminfo","uptime","version","cpuinfo","stat","loadavg","vmstat"};
-    static const char *const process[]={"stat","status","comm","cmdline","statm","task","fd","fdinfo"};
+    static const char *const process[]={"stat","status","comm","cmdline","statm","task","fd","fdinfo","maps"};
     if(!name || !node)return false;
     if(directory.kind==NAS_PROC_ROOT) {
         if(index<sizeof(root)/sizeof(root[0])) {
@@ -221,7 +224,8 @@ bool nas_proc_child(struct nas_proc_node directory,unsigned index,
     uint8_t kind[]={NAS_PROC_PID_STAT,NAS_PROC_PID_STATUS,
                     NAS_PROC_PID_COMM,NAS_PROC_PID_CMDLINE,
                     NAS_PROC_PID_STATM,NAS_PROC_TASK_DIR,
-                    NAS_PROC_FD_DIR,NAS_PROC_FDINFO_DIR};
+                    NAS_PROC_FD_DIR,NAS_PROC_FDINFO_DIR,
+                    NAS_PROC_PID_MAPS};
     *node=(struct nas_proc_node){kind[index],directory.pid,
         directory.kind==NAS_PROC_TID_DIR?directory.tgid:
         (kind[index]==NAS_PROC_TASK_DIR?directory.pid:0)};
@@ -280,6 +284,56 @@ int64_t nas_proc_readlink(struct nas_proc_node node,char *out,unsigned cap) {
     while(path[n] && n<cap){if(out)out[n]=path[n];n++;}
     return n;
 }
+/* Stream true resident user leaf PTEs instead of copying thousands of
+ * pages into the small procfs scratch buffer. Every read(offset) rewalks
+ * the selected process VM root, as a dynamic Linux procfs file should.
+ * PROT_NONE virtual reservations have no PTE yet and are not fabricated. */
+struct nas_map_stream {
+    uint64_t skip,position,start,end;
+    unsigned access,produced,cap;
+    uint8_t *output;
+    bool active;
+};
+static void map_ch(struct nas_map_stream *s,char c) {
+    if(s->position>=s->skip && s->produced<s->cap)
+        s->output[s->produced++]=(uint8_t)c;
+    s->position++;
+}
+static void map_word(struct nas_map_stream *s,const char *p) {
+    while(*p)map_ch(s,*p++);
+}
+static void map_hex(struct nas_map_stream *s,uint64_t n) {
+    for(unsigned i=0;i<16;i++) {
+        unsigned j=(unsigned)((n>>((15U-i)*4U))&15ULL);
+        map_ch(s,(char)(j<10?'0'+j:'a'+j-10));
+    }
+}
+static void map_flush(struct nas_map_stream *s) {
+    if(!s->active)return;
+    map_hex(s,s->start);map_ch(s,'-');map_hex(s,s->end);
+    map_ch(s,' ');
+    map_ch(s,(s->access&NAS_UP_READ)?'r':'-');
+    map_ch(s,(s->access&NAS_UP_WRITE)?'w':'-');
+    map_ch(s,(s->access&NAS_UP_EXEC)?'x':'-');
+    map_word(s,"p 00000000 00:00 0\n");
+    s->active=false;
+}
+static bool map_visit(uint64_t va,unsigned access,void *ctx) {
+    struct nas_map_stream *s=(struct nas_map_stream*)ctx;
+    if(s->active && va==s->end && s->access==access){
+        s->end+=4096ULL;return true;
+    }
+    map_flush(s);
+    s->start=va;s->end=va+4096ULL;s->access=access;s->active=true;
+    return true;
+}
+static int64_t proc_maps_read(const struct nas_task *task,uint64_t offset,
+                              uint8_t *output,unsigned capacity) {
+    struct nas_map_stream s={.skip=offset,.output=output,.cap=capacity};
+    if(!nas_vm_walk_task_pages(task,map_visit,&s))return -EIO;
+    map_flush(&s);
+    return (int64_t)s.produced;
+}
 int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
                       uint8_t *output,unsigned size) {
     if(nas_proc_is_dir(node))return -EISDIR;
@@ -288,6 +342,8 @@ int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
     const struct nas_task *t=node.pid ? living(node.pid) : 0;
     if(node.pid && !t)return -ENOENT;
     if(node.tgid && (!t || t->tgid!=node.tgid))return -ENOENT;
+    if(node.kind==NAS_PROC_PID_MAPS)
+        return proc_maps_read(t,offset,output,size);
     if(node.kind==NAS_PROC_FD_LINK) return -EINVAL;
     if(node.kind==NAS_PROC_FDINFO_FILE) {
         if(!t || !t->fds || node.fd>=NAS_FD_LIMIT ||
