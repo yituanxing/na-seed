@@ -64,14 +64,27 @@ boot_case() {
         printf '%s\n' '    protocol: limine' '    path: boot():/boot/kernel'
         # Trusted boot UTC is a real host clock, not a synthesized
         # application timestamp. Keep argv and kernel semantics unchanged.
-        boot_utc=${NAS_ACCEPTANCE_REALTIME_EPOCH:-$(date -u +%s)}
-        case "$boot_utc" in ''|*[!0-9]*) echo '[BOOT CLOCK FAIL] nonnumeric UTC' >&2; return 1 ;; esac
-        printf '    cmdline: naseed.realtime=%s naseed.argv=%s %s\n' \
-            "$boot_utc" "$entry" "$args"
+        if [ "${NAS_RV64_RTC_TEST_FIRMWARE:-0}" = 1 ]; then
+            # Diagnostic A/B: disable NaSeed boot-time override so the
+            # genuine UEFI GetTime -> Limine -> kernel path is measured.
+            printf '    cmdline: naseed.argv=%s %s\n' "$entry" "$args"
+        else
+            boot_utc=${NAS_ACCEPTANCE_REALTIME_EPOCH:-$(date -u +%s)}
+            case "$boot_utc" in ''|*[!0-9]*) echo '[BOOT CLOCK FAIL] nonnumeric UTC' >&2; return 1 ;; esac
+            printf '    cmdline: naseed.realtime=%s naseed.argv=%s %s\n' \
+                "$boot_utc" "$entry" "$args"
+        fi
         printf '    module_path: boot():/boot/%s\n' "$module"
     } > "$config"
     mcopy -i "$disk@@1048576" "$config" ::/boot/limine/limine.conf
-    cp "$fw/RISCV_VIRT_VARS.fd" "$work/$name.vars.fd"
+    if [ "${NAS_RV64_RTC_VAR_SEED:-0}" = 1 ]; then
+        # Explicit experiment only: original, unmodified EDK2 executable,
+        # freshly initialized real UEFI variable rather than kernel override.
+        sh scripts/seed-riscv64-uefi-rtc.sh \
+            "$fw/RISCV_VIRT_VARS.fd" "$work/$name.vars.fd"
+    else
+        cp "$fw/RISCV_VIRT_VARS.fd" "$work/$name.vars.fd"
+    fi
     # 9s is the established firmware+kernel runtime. Bound unexpected
     # shell deadlocks to 30s per scenario so the *whole class* of five
     # shell tests produces diagnostics within the 10-minute CI budget.
