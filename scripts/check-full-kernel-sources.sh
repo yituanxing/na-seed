@@ -21,8 +21,8 @@ while IFS= read -r path || [ -n "$path" ]; do
     seen="$seen$path "
     count=$((count+1))
 done < "$manifest"
-test "$count" -eq 40 || {
-    echo "[PORT SOURCES] expected 40 common TUs, got $count" >&2
+test "$count" -eq 41 || {
+    echo "[PORT SOURCES] expected 41 common TUs, got $count" >&2
     exit 1
 }
 for script in scripts/build-riscv64-full.sh scripts/build-aarch64-full.sh; do
@@ -31,7 +31,7 @@ for script in scripts/build-riscv64-full.sh scripts/build-aarch64-full.sh; do
         exit 1
     }
 done
-# The common source manifest contains 40 TUs; signal-frame native
+# The common source manifest contains 41 TUs; signal-frame native
 # providers are architecture units, not duplicated copies of shared policy.
 for arch in riscv64 aarch64; do
     script="scripts/build-$arch-full.sh"

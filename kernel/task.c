@@ -2,6 +2,7 @@
 #include "fs/mode.h"
 #include "arch/abi.h"
 #include "fd.h"
+#include "task/wait.h"
 #include "lib/string.h"
 #include <stddef.h>
 
@@ -99,13 +100,8 @@ struct nas_task *nas_task_fork_slot(void) {
         child->continue_report_pending = false;
         child->stop_signal = 0;
         child->resume_valid = false;
-        child->blocked_op = 0;
-        child->pending_valid = false;
-        child->futex_addr=0;
-        child->futex_mask=0;
-        child->futex_woken=false;
-        child->deadline_active = false;
-        child->deadline_ns = 0;
+        /* Fork inherits resources, never pending waits or device watches. */
+        nas_task_wait_reset(child);
         /* POSIX timers are not inherited across fork. */
         for(unsigned n=0;n<NAS_POSIX_TIMERS;n++)child->timers[n]=(struct nas_posix_timer){0};
         child->signal_frame_active = false;
@@ -143,9 +139,7 @@ void nas_task_release(struct nas_task *task) {
     task->vm_owner=task;
     task->fds=&task->fds_owned;
     task->robust_list_head=0;
-    task->futex_addr=0;
-    task->futex_mask=0;
-    task->futex_woken=false;
+    nas_task_wait_reset(task);
     task->ppid = 0;
     task->pgid = 0;
     task->sid = 0;

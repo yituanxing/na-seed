@@ -65,6 +65,21 @@ struct nas_fd_table {
     struct nas_fd_entry entries[NAS_FD_LIMIT];
 };
 
+/* An executing thread owns ALL transient blocking state, never process VM.
+ * The scheduler cannot keep kernel C frames and must replay after VM restore. */
+struct nas_task_wait {
+    uint64_t blocked_op, blocked_args[4];
+    bool pending_valid;
+    uint64_t deadline_ns;
+    bool deadline_active;
+    unsigned tty_observed_bytes;
+    struct nas_slot_mask poll_pipe_read, poll_pipe_write;
+    bool poll_tty_read;
+    uint64_t futex_addr;
+    uint32_t futex_mask;
+    bool futex_woken;
+};
+
 struct nas_task {
     uint64_t pid, ppid;
     uint64_t tgid; /* getpid: thread group; pid remains unique gettid */
@@ -92,19 +107,12 @@ struct nas_task {
     /* Pending blocking syscall holds user pointers, but never kernel-stack
      * pointers. The task's private CR3 must be restored before replay.
      */
-    uint64_t blocked_op, blocked_args[4];
-    bool pending_valid; /* read(0) is a real pending syscall, not 'none' */
-    /* Absolute monotonic deadline for sleep or timed I/O. Retained across
-     * syscall replay and owned by Task, never by a borrowed user pointer. */
-    uint64_t deadline_ns;
-    bool deadline_active;
-    unsigned tty_observed_bytes; /* per blocked read interbyte VTIME */
+    struct nas_task_wait wait; /* thread-local blocked syscall/deadline/I/O */
     struct nas_posix_timer timers[NAS_POSIX_TIMERS];
     /* Snapshot poll interest when blocking. NEVER dereference a different
      * task's user pollfd pointer during readiness checks. Each bit names a
      * shared open-file-description slot (0..NAS_OPEN_FILE_LIMIT-1). */
-    struct nas_slot_mask poll_pipe_read, poll_pipe_write;
-    bool poll_tty_read;
+    /* Poll interest snapshots live in wait, not CPU context. */
 
     /* Owned kernel entry stack. Kernel C continuations are NOT resumable
      * yet; the syscall-boundary scheduler still unwinds before switching. */
@@ -117,9 +125,7 @@ struct nas_task {
     uint64_t loaded_main_entry, loaded_interp_base;
     uint64_t thread_clear_tid;
     uint64_t robust_list_head; /* per-TID user robust_list_head, not inherited */
-    uint64_t futex_addr;
-    uint32_t futex_mask;
-    bool futex_woken;
+    /* Futex wait ownership lives in task.wait. */
     /* A vfork parent sleeps until exec/exit; child holds shared-VM root. */
     uint64_t vfork_child_pid, vfork_parent_pid;
     bool vfork_shared_vm;

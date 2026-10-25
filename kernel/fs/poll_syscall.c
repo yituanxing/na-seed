@@ -55,8 +55,8 @@ uint64_t nas_fs_poll(uint64_t address, uint64_t nfds, uint64_t timeout) {
     if(ready || ms==0)return ready;
     /* Deadline belongs to the current Task and survives syscall replay;
      * zero return is reached only after the hardware clock truly advances. */
-    if(TASK.deadline_active &&
-       nas_time_deadline_expired(nas_arch_monotonic_ns(),TASK.deadline_ns))
+    if(TASK.wait.deadline_active &&
+       nas_time_deadline_expired(nas_arch_monotonic_ns(),TASK.wait.deadline_ns))
         return 0;
     return (uint64_t)-EAGAIN; /* dispatcher arms actual I/O or timer wait */
 }
@@ -124,8 +124,8 @@ uint64_t nas_fs_pselect6(uint64_t nfds,uint64_t readfds,
         if(any)count++;
     }
     if(!count && !immediate &&
-       !(TASK.deadline_active &&
-         nas_time_deadline_expired(nas_arch_monotonic_ns(),TASK.deadline_ns)))
+       !(TASK.wait.deadline_active &&
+         nas_time_deadline_expired(nas_arch_monotonic_ns(),TASK.wait.deadline_ns)))
         return (uint64_t)-EAGAIN;
     if((readfds && !nas_user_write_u64(readfds,readready)) ||
        (writefds && !nas_user_write_u64(writefds,writeready)) ||
@@ -136,9 +136,9 @@ uint64_t nas_fs_pselect6(uint64_t nfds,uint64_t readfds,
 bool nas_fs_pselect_arm(uint64_t nfds,uint64_t readfds,
                         uint64_t writefds,uint64_t exceptfds) {
     struct nas_task *task=nas_current_task;
-    nas_slot_mask_clear(&task->poll_pipe_read);
-    nas_slot_mask_clear(&task->poll_pipe_write);
-    task->poll_tty_read=false;
+    nas_slot_mask_clear(&task->wait.poll_pipe_read);
+    nas_slot_mask_clear(&task->wait.poll_pipe_write);
+    task->wait.poll_tty_read=false;
     uint64_t readset,writeset,exceptset;
     if(nfds>NAS_FD_LIMIT ||
        !select_read_bits(readfds,&readset) ||
@@ -156,15 +156,15 @@ bool nas_fs_pselect_arm(uint64_t nfds,uint64_t readfds,
         const struct nas_file_ops *ops=nas_open_files[slot].ops;
         if(ops && ops->poll_arm)ops->poll_arm(task,fd,events);
     }
-    return task->poll_tty_read ||
-        nas_slot_mask_any(&task->poll_pipe_read) ||
-        nas_slot_mask_any(&task->poll_pipe_write);
+    return task->wait.poll_tty_read ||
+        nas_slot_mask_any(&task->wait.poll_pipe_read) ||
+        nas_slot_mask_any(&task->wait.poll_pipe_write);
 }
 bool nas_fs_poll_arm(uint64_t address,uint64_t nfds) {
     struct nas_task *task=nas_current_task;
-    nas_slot_mask_clear(&task->poll_pipe_read);
-    nas_slot_mask_clear(&task->poll_pipe_write);
-    task->poll_tty_read=false;
+    nas_slot_mask_clear(&task->wait.poll_pipe_read);
+    nas_slot_mask_clear(&task->wait.poll_pipe_write);
+    task->wait.poll_tty_read=false;
     if(nfds>NAS_FD_LIMIT)return false; /* nas_fs_poll checked bounds */
     for(uint64_t i=0;i<nfds;i++) {
         uint64_t raw;
@@ -177,18 +177,18 @@ bool nas_fs_poll_arm(uint64_t address,uint64_t nfds) {
         const struct nas_file_ops *ops=nas_open_files[slot].ops;
         if(ops && ops->poll_arm)ops->poll_arm(task,(uint64_t)(unsigned)fd,events);
     }
-    return task->poll_tty_read ||
-        nas_slot_mask_any(&task->poll_pipe_read) ||
-        nas_slot_mask_any(&task->poll_pipe_write);
+    return task->wait.poll_tty_read ||
+        nas_slot_mask_any(&task->wait.poll_pipe_read) ||
+        nas_slot_mask_any(&task->wait.poll_pipe_write);
 }
 bool nas_fs_poll_ready(const struct nas_task *task) {
-    if(task->poll_tty_read && nas_tty_poll_readable())return true;
+    if(task->wait.poll_tty_read && nas_tty_poll_readable())return true;
     for(unsigned slot=0;slot<NAS_OPEN_FILE_LIMIT;slot++) {
-        if(nas_slot_mask_test(&task->poll_pipe_read,slot) &&
+        if(nas_slot_mask_test(&task->wait.poll_pipe_read,slot) &&
            (nas_pipe_poll_readable(slot) || nas_unix_socket_readable(slot) ||
             (nas_pty_number(slot)<NAS_PTY_LIMIT && nas_pty_read_ready(slot))))
             return true;
-        if(nas_slot_mask_test(&task->poll_pipe_write,slot) &&
+        if(nas_slot_mask_test(&task->wait.poll_pipe_write,slot) &&
            (nas_pipe_poll_writable(slot) ||
             (nas_pty_number(slot)<NAS_PTY_LIMIT && nas_pty_write_ready(slot))))
             return true;

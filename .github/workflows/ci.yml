@@ -92,6 +92,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends clang lld xorriso qemu-system-x86 ovmf musl-tools binutils cpio
       - name: Boot-seeded ChaCha20 known-answer and getrandom ABI regression
         run: cc -std=c11 -Wall -Wextra -Werror -I kernel scripts/test-random.c kernel/random.c -o /tmp/naseed-random-test && /tmp/naseed-random-test
+      - name: M64 real wait-owner reset and per-thread isolation regression
+        run: cc -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -I kernel scripts/test-task-wait-owner.c kernel/task/wait.c -o /tmp/naseed-task-wait && /tmp/naseed-task-wait
       - name: M63 real tmpfs inode-dentry and hardlink lifetime regression
         run: cc -std=c11 -Wall -Wextra -Werror -I kernel scripts/test-tmp-namespace.c kernel/tmpfs.c kernel/fs/tmp_namespace.c -o /tmp/naseed-tmp-namespace && /tmp/naseed-tmp-namespace
       - name: Shared scalable CPIO archive index regression (>1200 files)

@@ -9,7 +9,7 @@ import re
 root=Path(__file__).resolve().parent.parent
 srcs=[line.strip() for line in (root/"scripts/full-kernel-core.sources").read_text().splitlines()
       if line.strip() and not line.startswith("#")]
-assert len(srcs)==len(set(srcs))==40, "common kernel TU manifest drift"
+assert len(srcs)==len(set(srcs))==41, "common kernel TU manifest drift"
 make=(root/"Makefile").read_text()
 defs={}
 for line in make.splitlines():
@@ -76,5 +76,17 @@ for text in ("int tmp_link(", "int tmp_rename(", "tmp_child_entry(", "tmp_remove
     if text not in tmp_ns: raise SystemExit(f"lost dentry namespace behavior: {text}")
 for text in ("int tmp_link(", "int tmp_rename(", "struct nas_tmp_file *tmp_find("):
     if text in tmp_c: raise SystemExit(f"inode backend acquired pathname owner: {text}")
+# M64: one per-thread wait snapshot owns all parked syscall readiness state.
+task_wait=(root/"kernel/task/wait.c").read_text()
+sched=(root/"kernel/task/sched.c").read_text()
+assert "struct nas_task_wait wait;" in task_h
+assert "nas_task_wait_reset(child);" in (root/"kernel/task.c").read_text()
+assert "bool nas_task_wait_ready(" in task_wait
+assert "nas_task_wait_ready(" in sched
+for old in ("static bool task_io_ready(", "static bool task_wait_ready(",
+            "static bool task_can_wake("):
+    if old in sched: raise SystemExit(f"scheduler still owns device wake policy: {old}")
+for symbol in ("nas_pipe_read_ready(", "nas_eventfd_ready(", "nas_pty_read_ready("):
+    if symbol not in task_wait: raise SystemExit(f"lost native readiness provider: {symbol}")
 print(f"[M50 ARCH PASS] all {len(srcs)} actual shared kernel TUs are linked on x86 "
       "and built on RV64/AArch64; hardware providers remain ISA-specific")

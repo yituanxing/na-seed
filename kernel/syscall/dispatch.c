@@ -114,8 +114,8 @@ static uint64_t nas_time_sleep_syscall(uint64_t *frame,enum nas_syscall_op nr,
             deadline=(flags&1ULL) ? duration : nas_time_add_deadline(now,duration);
     } else deadline=nas_time_add_deadline(now,duration);
     if(nas_time_deadline_expired(now,deadline))return 0;
-    TASK.deadline_ns=deadline;
-    TASK.deadline_active=true;
+    TASK.wait.deadline_ns=deadline;
+    TASK.wait.deadline_active=true;
     return nas_task_block(frame,nr,args[1],args[2],args[3],args[4]);
 }
 static uint64_t nas_time_poll_arm_deadline(enum nas_syscall_op nr,
@@ -146,8 +146,8 @@ static uint64_t nas_time_poll_arm_deadline(enum nas_syscall_op nr,
         }
     }
     if(delta) {
-        TASK.deadline_ns=nas_time_add_deadline(nas_arch_monotonic_ns(),delta);
-        TASK.deadline_active=true;
+        TASK.wait.deadline_ns=nas_time_add_deadline(nas_arch_monotonic_ns(),delta);
+        TASK.wait.deadline_active=true;
     }
     return 0;
 }
@@ -373,10 +373,10 @@ uint64_t syscall_dispatch(const uint64_t *args) {
                 return (uint64_t)-EINTR;
             }
             int32_t ms=(int32_t)(uint32_t)args[4];
-            if(ms>0 && !TASK.deadline_active) {
-                TASK.deadline_ns=nas_time_add_deadline(
+            if(ms>0 && !TASK.wait.deadline_active) {
+                TASK.wait.deadline_ns=nas_time_add_deadline(
                     nas_arch_monotonic_ns(),(uint64_t)(unsigned)ms*1000000ULL);
-                TASK.deadline_active=true;
+                TASK.wait.deadline_active=true;
             }
             nas_epoll_arm_current_task(args[1]);
             return nas_task_block((uint64_t *)(uintptr_t)args,nr,
@@ -453,7 +453,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
             bool has_io=(nr==NAS_SC_pselect6 || nr==NAS_SC_select) ?
                 nas_fs_pselect_arm(args[1],args[2],args[3],args[4]) :
                 nas_fs_poll_arm(args[1],args[2]);
-            if(!has_io && !TASK.deadline_active) {
+            if(!has_io && !TASK.wait.deadline_active) {
                 nas_signal_ppoll_restore(&TASK,false);
                 return (uint64_t)-EOPNOTSUPP;
             }
