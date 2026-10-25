@@ -12,5 +12,8 @@ sed
 gawk
 coreutils
 findutils
-# Upstream scripts/mkconfigs invokes bzip2 during the original GNU Kbuild.
+# Original Kbuild generators and link rules use bzip2, diff/cmp, and gzip.
+# Preserve the upstream commands; stage their genuine signed distro tools.
 bzip2
+diffutils
+gzip

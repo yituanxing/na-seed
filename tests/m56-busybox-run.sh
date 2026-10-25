@@ -18,11 +18,15 @@ test ! -e "$original/.config"
 for tool in /usr/bin/gcc /usr/bin/make /usr/bin/as /usr/bin/ld /usr/bin/readelf; do
     test -x "$tool"
 done
-# Genuine upstream scripts/mkconfigs requires a native bzip2 executable.
-command -v bzip2 >/dev/null || {
-    echo '[M56 FAIL] original scripts/mkconfigs requires bzip2' >&2
-    exit 1
-}
+# Check all known upstream generation tools before a long native build.
+# mkconfigs uses bzip2; generate_BUFSIZ uses diff; gen_build_files uses
+# cmp; Kbuild's compression recipes may invoke gzip.
+for tool in bzip2 diff cmp gzip; do
+    command -v "$tool" >/dev/null || {
+        echo "[M56 FAIL] original Kbuild requires $tool" >&2
+        exit 1
+    }
+done
 echo M56_GENUINE_NATIVE_ALPINE_TOOLCHAIN_PASS
 
 # True guest execve regression: previous 1024-byte fixed argument buffer
