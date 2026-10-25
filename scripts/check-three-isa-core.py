@@ -9,7 +9,7 @@ import re
 root=Path(__file__).resolve().parent.parent
 srcs=[line.strip() for line in (root/"scripts/full-kernel-core.sources").read_text().splitlines()
       if line.strip() and not line.startswith("#")]
-assert len(srcs)==len(set(srcs))==39, "common kernel TU manifest drift"
+assert len(srcs)==len(set(srcs))==40, "common kernel TU manifest drift"
 make=(root/"Makefile").read_text()
 defs={}
 for line in make.splitlines():
@@ -63,5 +63,18 @@ for source in (root/"kernel").rglob("*"):
     data=source.read_text()
     for old in ("descriptors[", "file_slot[", "fd_cloexec["):
         if old in data: raise SystemExit(f"old FD storage escaped in {source}: {old}")
+# M63: path references live ONLY in namespace dentries, not sparse inodes.
+tmp_h=(root/"kernel/tmpfs.h").read_text()
+tmp_c=(root/"kernel/tmpfs.c").read_text()
+tmp_ns=(root/"kernel/fs/tmp_namespace.c").read_text()
+if "char path[256];" not in tmp_h or "struct nas_tmp_dentry" not in tmp_h:
+    raise SystemExit("lost namespace-owned dentry")
+inode_part=tmp_h.split("struct nas_tmp_file {")[1].split("};")[0]
+if "char path[" in inode_part or " linked" in inode_part:
+    raise SystemExit("name/link boolean leaked back into tmpfs inode")
+for text in ("int tmp_link(", "int tmp_rename(", "tmp_child_entry(", "tmp_remove_entry("):
+    if text not in tmp_ns: raise SystemExit(f"lost dentry namespace behavior: {text}")
+for text in ("int tmp_link(", "int tmp_rename(", "struct nas_tmp_file *tmp_find("):
+    if text in tmp_c: raise SystemExit(f"inode backend acquired pathname owner: {text}")
 print(f"[M50 ARCH PASS] all {len(srcs)} actual shared kernel TUs are linked on x86 "
       "and built on RV64/AArch64; hardware providers remain ISA-specific")

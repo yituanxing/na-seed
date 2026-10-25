@@ -29,7 +29,7 @@ static void fill_tmp_stat(struct nas_linux_stat *st,
                           const struct nas_tmp_file *file) {
     st->dev = 5; st->ino = 5000 + tmp_number(file);
     st->mode = file->mode;
-    st->nlink = file->linked ? (file->is_dir ? 2 : 1) : 0;
+    st->nlink = file->nlink ? (file->is_dir ? 2 : file->nlink) : 0;
     st->size = (int64_t)file->size;
     st->blocks = (int64_t)((file->size + 511) / 512);
     st->atime_sec = (int64_t)(file->atime_ns / NAS_NSEC_PER_SEC);
@@ -365,7 +365,8 @@ static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
     const struct bootfs_entry *dir = nas_open_files[TASK.fds->entries[fd].slot].boot_entry;
     const struct nas_tmp_file *tmpdir =
         TASK.fds->entries[fd].kind == FD_TMP_DIR ? tmp_by_slot(TASK.fds->entries[fd].slot) : 0;
-    const char *dirpath = tmpdir ? tmpdir->path : dir->path;
+    const char *dirpath = tmpdir ? tmp_name(tmpdir) : dir->path;
+    if(!dirpath)return (uint64_t)-ENOENT;
     uint64_t dirino = tmpdir ? 5000 + tmp_number(tmpdir) : dir->ino;
     uint64_t cursor = nas_open_files[TASK.fds->entries[fd].slot].position;
     uint64_t written = 0;
@@ -392,11 +393,12 @@ static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
             /* tmpfs uses lazy metadata slabs: end of directory is the
              * first missing child, never a global eight-inode bound. */
             if (cursor - 2 > UINT32_MAX) break;
-            const struct nas_tmp_file *file =
-                tmp_child(dirpath, (unsigned)(cursor - 2));
-            if (!file) break;
-            name = file->path;
-            for (const char *p = file->path; *p; p++)
+            const struct nas_tmp_dentry *d =
+                tmp_child_entry(dirpath, (unsigned)(cursor - 2));
+            if (!d) break;
+            const struct nas_tmp_file *file=d->inode;
+            name = d->path;
+            for (const char *p = d->path; *p; p++)
                 if (*p == '/') name = p + 1;
             ino = 5000 + tmp_number(file);
             dtype = file->is_dir ? 4 : tmp_is_link(file) ? 10 :
