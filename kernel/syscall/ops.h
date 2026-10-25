@@ -67,6 +67,8 @@ enum nas_syscall_op {
     NAS_SC_tkill,
     NAS_SC_tgkill,
     NAS_SC_lseek,
+    NAS_SC_link,
+    NAS_SC_linkat,
     NAS_SC_lstat,
     NAS_SC_mkdir,
     NAS_SC_mkdirat,

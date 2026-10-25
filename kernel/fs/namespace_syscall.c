@@ -46,7 +46,8 @@ uint64_t nas_fs_resolve_path(uint64_t dirfd, uint64_t pathname,
             if (TASK.fds->entries[dirfd].kind==FD_TMP_DIR) {
                 const struct nas_tmp_file *dir=tmp_by_slot(TASK.fds->entries[dirfd].slot);
                 if (!dir) return (uint64_t)-EBADF;
-                base=dir->path;
+                base=tmp_name(dir);
+                if(!base)return (uint64_t)-ENOENT;
             } else {
                 if (TASK.fds->entries[dirfd].kind!=FD_DIR || !nas_open_files[TASK.fds->entries[dirfd].slot].boot_entry)
                     return (uint64_t)-ENOTDIR;
@@ -103,6 +104,28 @@ static uint64_t sys_symlinkat_tmp(uint64_t targetptr,uint64_t dirfd,
         (uint64_t)(int64_t)tmp_symlink(target,linkpath);
 }
 
+/* Hardlinks reuse the same tmpfs inode: no copies, no fake CPIO writes.
+ * AT_SYMLINK_FOLLOW applies only to the old endpoint of linkat(). */
+static uint64_t sys_linkat_tmp(uint64_t olddirfd,uint64_t oldptr,
+                               uint64_t newdirfd,uint64_t newptr,
+                               uint64_t flags) {
+    const uint64_t AT_SYMLINK_FOLLOW=0x400ULL;
+    if(flags & ~AT_SYMLINK_FOLLOW)return (uint64_t)-EINVAL;
+    char oldpath[256],newpath[256];
+    uint64_t ret=nas_fs_resolve_path(olddirfd,oldptr,oldpath);
+    if((int64_t)ret<0)return ret;
+    if(flags & AT_SYMLINK_FOLLOW) {
+        char actual[256];
+        int err=nas_fs_resolve_existing(oldpath,true,actual);
+        if(err)return (uint64_t)(int64_t)err;
+        unsigned i=0;
+        do{oldpath[i]=actual[i];}while(actual[i++]);
+    }
+    ret=nas_fs_resolve_path(newdirfd,newptr,newpath);
+    return (int64_t)ret<0 ? ret :
+        (uint64_t)(int64_t)tmp_link(oldpath,newpath);
+}
+
 static uint64_t sys_getcwd_root(uint64_t buffer, uint64_t size) {
     uint64_t length = 0;
     while (current_workdir[length]) length++;
@@ -144,8 +167,9 @@ static uint64_t sys_fchdir(uint64_t fd) {
     const char *path;
     if (TASK.fds->entries[fd].kind == FD_TMP_DIR) {
         const struct nas_tmp_file *dir = tmp_by_slot(TASK.fds->entries[fd].slot);
-        if (!dir || !dir->linked) return (uint64_t)-ENOENT;
-        path = dir->path;
+        if (!dir) return (uint64_t)-ENOENT;
+        path=tmp_name(dir);
+        if(!path)return (uint64_t)-ENOENT;
     } else {
         if (TASK.fds->entries[fd].kind != FD_DIR || !nas_open_files[TASK.fds->entries[fd].slot].boot_entry)
             return (uint64_t)-ENOTDIR;
@@ -164,6 +188,8 @@ struct nas_fs_result nas_fs_namespace_syscall(enum nas_syscall_op op,
     case NAS_SC_getcwd: NAMESPACE_RESULT(sys_getcwd_root(args[1], args[2]));
     case NAS_SC_chdir: NAMESPACE_RESULT(sys_chdir(args[1]));
     case NAS_SC_fchdir: NAMESPACE_RESULT(sys_fchdir(args[1]));
+    case NAS_SC_link: NAMESPACE_RESULT(sys_linkat_tmp((uint64_t)-100,args[1],(uint64_t)-100,args[2],0));
+    case NAS_SC_linkat: NAMESPACE_RESULT(sys_linkat_tmp(args[1],args[2],args[3],args[4],args[5]));
     case NAS_SC_rename: NAMESPACE_RESULT(sys_renameat_tmp((uint64_t)-100, args[1], (uint64_t)-100, args[2], 0));
     case NAS_SC_renameat: NAMESPACE_RESULT(sys_renameat_tmp(args[1], args[2], args[3], args[4], 0));
     case NAS_SC_renameat2: NAMESPACE_RESULT(sys_renameat_tmp(args[1], args[2], args[3], args[4], args[5]));

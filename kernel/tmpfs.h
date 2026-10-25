@@ -21,9 +21,9 @@
 #define TMP_FILE_CAP (TMP_PAGE_SIZE * (uint64_t)TMP_PAGE_ENTRIES * TMP_INDEX_ROOT_ENTRIES)
 
 struct nas_tmp_file {
-    bool used, linked, is_dir;
-    uint64_t ino; /* persistent inode identity, independent of slab address */
-    char path[256];
+    bool used, is_dir;
+    uint32_t nlink; /* directory-entry references, not open FD references */
+    uint64_t ino; /* stable object identity, never derived from a pathname */
     uint64_t index_root; /* physical address of optional 512-entry root frame */
     uint64_t size;
     uint64_t atime_ns, mtime_ns, ctime_ns; /* UNIX realtime nanoseconds */
@@ -36,6 +36,21 @@ struct nas_tmp_file {
 
 bool tmp_path(const char *path);
 bool tmp_parent(const char *path, char parent[256]);
+/* A dentry names an inode. Multiple dentries may reference one regular file.
+ * Only namespace code owns and mutates path strings. */
+struct nas_tmp_dentry {
+    bool used;
+    char path[256];
+    struct nas_tmp_file *inode;
+};
+const char *tmp_name(const struct nas_tmp_file *file);
+const struct nas_tmp_dentry *tmp_child_entry(const char *parent,unsigned index);
+struct nas_tmp_file *tmp_inode_alloc(bool dir,uint32_t mode);
+void tmp_inode_link(struct nas_tmp_file *file);
+void tmp_inode_unlink(struct nas_tmp_file *file);
+void tmp_inode_discard(struct nas_tmp_file *file);
+void tmp_inode_touch(struct nas_tmp_file *file);
+int tmp_link(const char *oldpath,const char *newpath);
 struct nas_tmp_file *tmp_find(const char *path);
 int tmp_parent_check(const char *path);
 struct nas_tmp_file *tmp_create(const char *path, bool dir,uint32_t mode);
@@ -43,7 +58,6 @@ bool tmp_is_link(const struct nas_tmp_file *file);
 int tmp_symlink(const char *target, const char *path);
 int tmp_link_target(const struct nas_tmp_file *file, char target[256]);
 uint64_t tmp_number(const struct nas_tmp_file *file);
-const struct nas_tmp_file *tmp_child(const char *parent, unsigned index);
 
 /* Slot identity is shared across fork/dup; the caller owns the descriptor
  * refcount and calls tmp_release_slot only after its final decrement. */

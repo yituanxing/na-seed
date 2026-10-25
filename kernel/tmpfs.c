@@ -41,12 +41,13 @@ static struct tmp_inode_slab *tmp_new_slab(void) {
     if (!frame) return 0;
     struct tmp_inode_slab *slab =
         (struct tmp_inode_slab *)(uintptr_t)(nas_hhdm_offset() + frame);
+    memset(slab,0,4096);
     slab->next = tmp_slabs;
     tmp_slabs = slab;
     return slab;
 }
 static void tmp_try_reclaim(struct nas_tmp_file *node) {
-    if (!node || !node->used || node->linked) return;
+    if (!node || !node->used || node->nlink) return;
     for (unsigned slot = 0; slot < NAS_OPEN_FILE_LIMIT; slot++)
         if (tmp_slot_owner[slot] == node && nas_open_files[slot].refcount)
             return;
@@ -229,36 +230,7 @@ int tmp_utimens(struct nas_tmp_file *file, uint64_t access_ns,
     return 0;
 }
 
-/* Real CPIO /tmp mountpoint with a small volatile directory tree.
- * Unlinked entries keep their inode until every fork/dup FD releases it. */
-bool tmp_path(const char *path) {
-    return path[0]=='/' && path[1]=='t' && path[2]=='m' &&
-           path[3]=='p' && path[4]=='/' && path[5];
-}
-bool tmp_parent(const char *path, char parent[256]) {
-    if (!tmp_path(path)) return false;
-    unsigned n = 0, slash = 0;
-    for (; path[n] && n < 255; n++)
-        if (path[n] == '/') slash = n;
-    if (path[n] || slash < 4 || !path[slash+1]) return false;
-    if (slash == 4) {
-        parent[0]='/'; parent[1]='t'; parent[2]='m'; parent[3]='p';
-        parent[4]=0;
-    } else {
-        for (unsigned i=0;i<slash;i++) parent[i]=path[i];
-        parent[slash]=0;
-    }
-    return true;
-}
-struct nas_tmp_file *tmp_find(const char *path) {
-    for (struct tmp_inode_slab *slab = tmp_slabs; slab; slab = slab->next)
-        for (unsigned n = 0; n < TMP_INODES_PER_SLAB; n++) {
-            struct nas_tmp_file *file = &slab->nodes[n];
-            if (file->used && file->linked && strcmp(file->path,path)==0)
-                return file;
-        }
-    return 0;
-}
+/* Path-to-inode bindings live in fs/tmp_namespace.c. */
 bool tmp_is_link(const struct nas_tmp_file *file) {
     return file && (file->mode & 0170000U) == 0120000U;
 }
@@ -274,76 +246,48 @@ int tmp_link_target(const struct nas_tmp_file *file, char target[256]) {
     target[file->size] = 0;
     return 0;
 }
-int tmp_symlink(const char *target, const char *path) {
-    if (!target || !target[0]) return -ENOENT;
-    unsigned length=0;
-    while (target[length]) {
-        if (++length >= 256) return -ENAMETOOLONG;
+/* Namespace owns symlink names and writable inode creation. */
+/* Inode storage identity is independent from namespace name/link count.
+ * The namespace owner publishes a dentry only AFTER successful allocation. */
+struct nas_tmp_file *tmp_inode_alloc(bool dir,uint32_t mode) {
+    struct nas_tmp_file *file=0;
+    for (struct tmp_inode_slab *slab=tmp_slabs;slab && !file;slab=slab->next)
+        for(unsigned n=0;n<TMP_INODES_PER_SLAB;n++)
+            if(!slab->nodes[n].used) {file=&slab->nodes[n];break;}
+    if(!file) {
+        struct tmp_inode_slab *slab=tmp_new_slab();
+        if(!slab)return 0;
+        file=&slab->nodes[0];
     }
-    if (bootfs_find(path) || tmp_find(path)) return -EEXIST;
-    if (!tmp_path(path) || !bootfs_mounted()) return -EROFS;
-    int rc=tmp_parent_check(path);
-    if (rc) return rc;
-    struct nas_tmp_file *node=tmp_create(path,false,0777U);
-    if (!node) return -ENOSPC;
-    node->mode=0120000U | 0777U;
-    if (tmp_write_at(node,0,(const uint8_t *)target,length)!=(int64_t)length) {
-        node->linked=false;
-        tmp_try_reclaim(node);
-        return -ENOMEM;
-    }
-    return 0;
-}
-int tmp_parent_check(const char *path) {
-    char parent[256];
-    if (!tmp_parent(path,parent)) return -EROFS;
-    if (strcmp(parent,"/tmp")==0)
-        return bootfs_is_dir(bootfs_find("/tmp")) ? 0 : -ENOENT;
-    struct nas_tmp_file *dir=tmp_find(parent);
-    return !dir ? -ENOENT : dir->is_dir ? 0 : -ENOTDIR;
-}
-static struct nas_tmp_file *tmp_init_node(struct nas_tmp_file *file,
-                                          const char *path, bool dir,
-                                          uint32_t mode) {
-    unsigned i=0;
-    while (path[i] && i<255) { file->path[i]=path[i]; i++; }
-    file->path[i]=0;
-    file->size=0;
-    file->index_root=0;
-    file->posix_locks=(struct nas_posix_locks){0};
-    file->mode=(dir ? 0040000U : 0100000U) | (mode & 07777U);
-    file->is_dir=dir;
+    *file=(struct nas_tmp_file){0};
+    file->used=true;
     file->ino=tmp_next_ino++;
+    file->mode=(dir?0040000U:0100000U)|(mode&07777U);
+    file->is_dir=dir;
     file->atime_ns=file->mtime_ns=file->ctime_ns=tmp_now_ns();
-    file->linked=file->used=true;
     return file;
 }
-struct nas_tmp_file *tmp_create(const char *path,bool dir,uint32_t mode) {
-    for (struct tmp_inode_slab *slab = tmp_slabs; slab; slab = slab->next)
-        for (unsigned n=0;n<TMP_INODES_PER_SLAB;n++)
-            if (!slab->nodes[n].used)
-                return tmp_init_node(&slab->nodes[n],path,dir,mode);
-    struct tmp_inode_slab *slab = tmp_new_slab();
-    if (!slab) return 0;
-    return tmp_init_node(&slab->nodes[0],path,dir,mode);
+void tmp_inode_link(struct nas_tmp_file *file) {
+    if(!file || !file->used)return;
+    file->nlink++;
+    file->ctime_ns=tmp_next_mtime(file->ctime_ns);
+}
+void tmp_inode_unlink(struct nas_tmp_file *file) {
+    if(!file || !file->used || !file->nlink)return;
+    file->nlink--;
+    file->ctime_ns=tmp_next_mtime(file->ctime_ns);
+    tmp_try_reclaim(file);
+}
+void tmp_inode_discard(struct nas_tmp_file *file) {
+    tmp_try_reclaim(file);
+}
+void tmp_inode_touch(struct nas_tmp_file *file) {
+    if(file && file->used)file->ctime_ns=tmp_next_mtime(file->ctime_ns);
 }
 uint64_t tmp_number(const struct nas_tmp_file *file) {
     return file ? file->ino : 0;
 }
-const struct nas_tmp_file *tmp_child(const char *parent,unsigned index) {
-    for (struct tmp_inode_slab *slab = tmp_slabs; slab; slab = slab->next)
-        for (unsigned n=0;n<TMP_INODES_PER_SLAB;n++) {
-            const struct nas_tmp_file *file = &slab->nodes[n];
-            if (!file->used || !file->linked) continue;
-            char dir[256];
-            if (!tmp_parent(file->path,dir) || strcmp(dir,parent)!=0)
-                continue;
-            if (!index) return file;
-            index--;
-        }
-    return 0;
-}
-
+/* Directory entries live in fs/tmp_namespace.c. */
 void tmp_bind_slot(unsigned slot, const struct nas_tmp_file *file) {
     if (slot >= NAS_OPEN_FILE_LIMIT || !file) return;
     tmp_slot_owner[slot] = (struct nas_tmp_file *)(uintptr_t)file;
@@ -394,141 +338,4 @@ int tmp_chmod(struct nas_tmp_file *file, uint64_t mode) {
     file->ctime_ns=tmp_next_mtime(file->ctime_ns);
     return 0;
 }
-int tmp_mkdir(const char *path, uint64_t mode) {
-    if (bootfs_find(path) || tmp_find(path)) return -EEXIST;
-    if (!tmp_path(path) || !bootfs_mounted()) return -EROFS;
-    int parent=tmp_parent_check(path);
-    if (parent) return parent;
-    struct nas_tmp_file *dir=tmp_create(path,true,(uint32_t)mode);
-    return dir ? 0 : -ENOSPC;
-}
-int tmp_unlink(const char *path, uint64_t flags) {
-    const uint64_t AT_REMOVEDIR=0x200ULL;
-    if (flags & ~AT_REMOVEDIR) return -EINVAL;
-    if (!tmp_path(path) || !bootfs_mounted()) return -EROFS;
-    struct nas_tmp_file *file=tmp_find(path);
-    if (!file) {
-        int parent=tmp_parent_check(path);
-        if (parent) return parent;
-        return -ENOENT;
-    }
-    if (file->is_dir && !(flags & AT_REMOVEDIR)) return -EISDIR;
-    if (!file->is_dir && (flags & AT_REMOVEDIR)) return -ENOTDIR;
-    if (file->is_dir) {
-        if (tmp_child(path,0)) return -ENOTEMPTY;
-        for (unsigned n=0;n<NAS_TASK_LIMIT;n++) {
-            struct nas_task *task=nas_task_at(n);
-            if (task && task->state != NAS_TASK_FREE &&
-                strcmp(task->cwd,path)==0) return -EBUSY;
-        }
-    }
-    file->linked=false;
-    tmp_try_reclaim(file);
-    return 0;
-}
-/* M6.9: an inode rename is a namespace operation; open descriptions keep
- * referencing the same inode regardless of the old/new pathname. A replaced
- * inode stays alive while inherited or duplicated descriptors hold it.
- *
- * Single-core cooperative syscall dispatch makes preflight+commit atomic.
- * No CPIO mutation or cross-mount fake copy/rename is permitted.
- */
-static bool tmp_under(const char *path, const char *directory) {
-    unsigned n = 0;
-    while (directory[n]) {
-        if (path[n] != directory[n]) return false;
-        n++;
-    }
-    return path[n] == '/';
-}
-static bool tmp_move_name(char dest[256], const char *newbase,
-                          const char *oldbase, const char *existing) {
-    const unsigned base = strlen(newbase);
-    const unsigned cut = strlen(oldbase);
-    const unsigned suffix = strlen(existing + cut);
-    if (base + suffix >= 256) return false;
-    for (unsigned i = 0; i < base; i++) dest[i] = newbase[i];
-    for (unsigned i = 0; i <= suffix; i++)
-        dest[base + i] = existing[cut + i];
-    return true;
-}
-int tmp_rename(const char *oldpath, const char *newpath, uint64_t flags) {
-    /* Linux renameat2 RENAME_NOREPLACE only; others refuse execution. */
-    if (flags & ~1ULL) return -EINVAL;
-    const bool oldtmp = tmp_path(oldpath), newtmp = tmp_path(newpath);
-    if (oldtmp != newtmp) return -EXDEV;
-    if (!oldtmp || !bootfs_mounted()) return -EROFS;
-    struct nas_tmp_file *source = tmp_find(oldpath);
-    if (!source) {
-        int parent = tmp_parent_check(oldpath);
-        return parent ? parent : -ENOENT;
-    }
-    if (strcmp(oldpath, newpath)==0) return 0;
-    int parent = tmp_parent_check(newpath);
-    if (parent) return parent;
-    if (source->is_dir && tmp_under(newpath, oldpath))
-        return -EINVAL; /* cannot move a directory into itself */
-    struct nas_tmp_file *target = tmp_find(newpath);
-    if (target) {
-        if (flags & 1ULL) return -EEXIST;
-        if (source->is_dir && !target->is_dir)
-            return -ENOTDIR;
-        if (!source->is_dir && target->is_dir)
-            return -EISDIR;
-        if (target->is_dir && tmp_child(newpath, 0))
-            return -ENOTEMPTY;
-    }
-    /* Check every descendant and task cwd before touching the namespace.
-     * When moving directory trees, the cwd is an inode identity, so its
-     * printable path must move too. All results fit fixed-sized buffers.
-     */
-    if (source->is_dir) {
-        char candidate[256];
-        for (struct tmp_inode_slab *slab=tmp_slabs; slab; slab=slab->next)
-        for (unsigned n = 0; n < TMP_INODES_PER_SLAB; n++) {
-            const struct nas_tmp_file *entry = &slab->nodes[n];
-            if (!entry->used || !entry->linked ||
-                !tmp_under(entry->path, oldpath)) continue;
-            if (!tmp_move_name(candidate, newpath, oldpath, entry->path))
-                return -ENAMETOOLONG;
-        }
-        for (unsigned n = 0; n < NAS_TASK_LIMIT; n++) {
-            const struct nas_task *task = nas_task_at(n);
-            if (task->state == NAS_TASK_FREE ||
-                !tmp_under(task->cwd, oldpath)) continue;
-            if (!tmp_move_name(candidate, newpath, oldpath, task->cwd))
-                return -ENAMETOOLONG;
-        }
-    }
-    /* Commit: remove destination pathname but preserve open inode contents. */
-    if (target) {
-        target->linked = false;
-        tmp_try_reclaim(target);
-    }
-    if (source->is_dir) {
-        char candidate[256];
-        for (struct tmp_inode_slab *slab=tmp_slabs; slab; slab=slab->next)
-        for (unsigned n = 0; n < TMP_INODES_PER_SLAB; n++) {
-            struct nas_tmp_file *entry = &slab->nodes[n];
-            if (!entry->used || !entry->linked ||
-                !tmp_under(entry->path, oldpath)) continue;
-            if (!tmp_move_name(candidate, newpath, oldpath, entry->path))
-                return -ENAMETOOLONG; /* unreachable after preflight */
-            unsigned i = 0;
-            do { entry->path[i] = candidate[i]; } while (candidate[i++]);
-        }
-        for (unsigned n = 0; n < NAS_TASK_LIMIT; n++) {
-            struct nas_task *task = nas_task_at(n);
-            if (task->state == NAS_TASK_FREE ||
-                !tmp_under(task->cwd, oldpath)) continue;
-            if (!tmp_move_name(candidate, newpath, oldpath, task->cwd))
-                return -ENAMETOOLONG; /* unreachable after preflight */
-            unsigned i = 0;
-            do { task->cwd[i] = candidate[i]; } while (candidate[i++]);
-        }
-    }
-    unsigned i = 0;
-    do { source->path[i] = newpath[i]; } while (newpath[i++]);
-    source->ctime_ns=tmp_next_mtime(source->ctime_ns);
-    return 0;
-}
+/* Namespace mutations are implemented by fs/tmp_namespace.c. */
