@@ -196,26 +196,24 @@ bool nas_sched_preempt_select(void) {
     for (unsigned i=0;i<NAS_TASK_LIMIT;i++)
         if (nas_task_at(i)==from) { origin=i; break; }
     if (origin==NAS_TASK_LIMIT) sched_fail("timer task not registered");
-    for (unsigned pass=0;pass<2;pass++) {
-        for (unsigned offset=1;offset<NAS_TASK_LIMIT;offset++) {
-            struct nas_task *next=nas_task_at((origin+offset)%NAS_TASK_LIMIT);
-            if(!nas_sched_user_eligible(next,from,pass))continue;
-            nas_current_task=next;
-            nas_arch_restore_cpu(next);
-            uint64_t result=nas_arch_saved_return(next);
-            enum nas_blocked_completion outcome=nas_blocked_complete(next,&result);
-            if(outcome!=NAS_BLOCKED_COMPLETE) {
-                nas_current_task=from;
-                nas_arch_restore_cpu(from);
-                continue;
-            }
-            from->state=NAS_TASK_READY;
-            from->resume_valid=true;
-            next->state=NAS_TASK_RUNNING;
-            next->resume_valid=false;
-            nas_task_cpu_account_switch(next);
-            return true;
+    struct nas_sched_scan scan;
+    nas_sched_scan_init(&scan,from,(origin+1U)%NAS_TASK_LIMIT,
+                        NAS_TASK_LIMIT-1U);
+    struct nas_task *next;
+    while((next=nas_sched_scan_next(&scan,0))!=0) {
+        nas_current_task=next;
+        nas_arch_restore_cpu(next);
+        uint64_t result=nas_arch_saved_return(next);
+        enum nas_blocked_completion outcome=nas_blocked_complete(next,&result);
+        if(outcome!=NAS_BLOCKED_COMPLETE) {
+            nas_current_task=from;
+            nas_arch_restore_cpu(from);
+            continue;
         }
+        if(!nas_sched_user_commit(from,next,true))
+            sched_fail("timer committed invalid task state");
+        nas_task_cpu_account_switch(next);
+        return true;
     }
     nas_current_task=from;
     return false;
@@ -235,41 +233,37 @@ retry_schedule: ; /* label must precede a statement in C11 */
     unsigned tty_sig=nas_tty_take_signal(&tty_sid,&tty_pgid);
     if(tty_sig && !nas_signal_tty_event(tty_sid,tty_pgid,tty_sig))
         nas_tty_signal_unsupported();
-    for (unsigned pass = 0; pass < 2; ++pass) {
-        for (unsigned offset = 0; offset < NAS_TASK_LIMIT; ++offset) {
-            unsigned slot = (schedule_cursor + offset) % NAS_TASK_LIMIT;
-            struct nas_task *next = nas_task_at(slot);
-            /* A blocked current task may wake when it is the LAST task.
-             * Never resume a RUNNING task from its own syscall frame. */
-            if(!nas_sched_user_eligible(next,previous,pass))continue;
-            nas_current_task = next;
-            nas_arch_restore_cpu(next);
-            uint64_t result=nas_arch_saved_return(next);
-            enum nas_blocked_completion outcome=nas_blocked_complete(next,&result);
-            if(outcome!=NAS_BLOCKED_COMPLETE) {
-                nas_current_task=previous;
-                nas_arch_restore_cpu(previous);
-                if(outcome==NAS_BLOCKED_TERMINATED ||
-                   outcome==NAS_BLOCKED_PTRACE_STOP)
-                    goto retry_schedule;
-                continue;
-            }
-            next->state = NAS_TASK_RUNNING;
-            next->resume_valid = false;
-            nas_task_cpu_account_switch(next);
-            schedule_cursor = (slot + 1) % NAS_TASK_LIMIT;
-            nas_arch_load_user_frame(next, frame);
-            /* The old thread's kernel stack is no longer active after the
-             * syscall frame is transferred. Its TID slot can be recycled. */
-            if (previous!=next && previous->is_thread &&
-                previous->state==NAS_TASK_ZOMBIE)
-                nas_task_release(previous);
-            if (schedule_count++ < 48) {
-                nas_print("[SCHED] from="); nas_dec(previous_pid);
-                nas_print(" to="); nas_dec(next->pid); nas_print("\n");
-            }
-            return result;
+    struct nas_sched_scan scan;
+    nas_sched_scan_init(&scan,previous,schedule_cursor,NAS_TASK_LIMIT);
+    unsigned slot=0;
+    struct nas_task *next;
+    while((next=nas_sched_scan_next(&scan,&slot))!=0) {
+        nas_current_task=next;
+        nas_arch_restore_cpu(next);
+        uint64_t result=nas_arch_saved_return(next);
+        enum nas_blocked_completion outcome=nas_blocked_complete(next,&result);
+        if(outcome!=NAS_BLOCKED_COMPLETE) {
+            nas_current_task=previous;
+            nas_arch_restore_cpu(previous);
+            if(outcome==NAS_BLOCKED_TERMINATED ||
+               outcome==NAS_BLOCKED_PTRACE_STOP)
+                goto retry_schedule;
+            continue;
         }
+        if(!nas_sched_user_commit(previous,next,false))
+            sched_fail("syscall committed invalid task state");
+        nas_task_cpu_account_switch(next);
+        schedule_cursor=(slot+1U)%NAS_TASK_LIMIT;
+        nas_arch_load_user_frame(next,frame);
+        /* No active C continuation can keep a stale last-exit thread slot. */
+        if(previous!=next && previous->is_thread &&
+           previous->state==NAS_TASK_ZOMBIE)
+            nas_task_release(previous);
+        if(schedule_count++<48) {
+            nas_print("[SCHED] from=");nas_dec(previous_pid);
+            nas_print(" to=");nas_dec(next->pid);nas_print("\n");
+        }
+        return result;
     }
     /* No user Task occupies the CPU while the no-runnable-task dispatcher
      * polls TTY/device readiness. Meter this as idle until a Task resumes. */

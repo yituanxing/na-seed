@@ -39,5 +39,40 @@ int main(void) {
     assert(!nas_sched_has_ready_users());
     running->state=NAS_TASK_READY; /* can be re-enqueued after preemption */
     assert(nas_sched_has_ready_users());
+    /* M99: Both IRQ and syscall selection share exactly this iterator,
+     * including wraparound, READY preference, deadline wake, and a
+     * non-preemptible RUNNING current frame. */
+    struct nas_sched_scan scan;
+    unsigned slot=NAS_TASK_LIMIT;
+    running->state=NAS_TASK_RUNNING;running->resume_valid=true;
+    ready->state=NAS_TASK_READY;ready->resume_valid=true;
+    blocked->state=NAS_TASK_BLOCKED;blocked->resume_valid=true;
+    blocked->wait.futex_woken=true;
+    nas_sched_scan_init(&scan,running,1,NAS_TASK_LIMIT-1);
+    assert(nas_sched_scan_next(&scan,&slot)==ready && slot==1);
+    assert(nas_sched_scan_next(&scan,&slot)==blocked && slot==2);
+    assert(!nas_sched_scan_next(&scan,&slot));
+    assert(nas_sched_user_commit(running,ready,true));
+    assert(running->state==NAS_TASK_READY && running->resume_valid);
+    assert(ready->state==NAS_TASK_RUNNING && !ready->resume_valid);
+    assert(!nas_sched_user_commit(running,blocked,true));
+    /* Cooperative scheduling never changes a sleeping/retired previous. */
+    running->state=NAS_TASK_BLOCKED;
+    blocked->state=NAS_TASK_BLOCKED;
+    blocked->resume_valid=true;
+    assert(nas_sched_user_commit(running,blocked,false));
+    assert(running->state==NAS_TASK_BLOCKED &&
+           blocked->state==NAS_TASK_RUNNING && !blocked->resume_valid);
+    blocked->state=NAS_TASK_ZOMBIE;blocked->resume_valid=true;
+    assert(!nas_sched_user_commit(ready,blocked,false));
+    ready->state=NAS_TASK_READY;ready->resume_valid=true;
+    nas_sched_scan_init(&scan,0,NAS_TASK_LIMIT-1,NAS_TASK_LIMIT);
+    assert(nas_sched_scan_next(&scan,&slot)==ready && slot==1);
+    assert(!nas_sched_scan_next(&scan,&slot));
+    /* A STOPPED task stays excluded even if it carries a saved frame. */
+    ready->state=NAS_TASK_STOPPED;
+    nas_sched_scan_init(&scan,0,0,NAS_TASK_LIMIT);
+    assert(!nas_sched_scan_next(&scan,&slot));
+    puts("[M99 SCHED PASS] common IRQ/syscall two-pass walk, wrap, commit and exclusion");
     puts("[M98 SCHED PASS] shared IRQ/syscall candidate rules, kernel/user RR fairness, stopped exclusion");
 }

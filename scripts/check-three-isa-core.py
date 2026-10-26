@@ -138,8 +138,10 @@ if "nas_task_wake_ready(t)" not in (root/"kernel/task/futex_wait.c").read_text()
     raise SystemExit("futex producer no longer publishes runnable tasks")
 if sched.count("nas_sched_service_kernel();")!=2:
     raise SystemExit("both syscall and timer scheduler must service native kernel workers")
-if sched.count("nas_sched_user_eligible(next,")!=2:
-    raise SystemExit("native IRQ and syscall selected different user-task readiness policies")
+if sched.count("nas_sched_scan_next(&scan,")!=2:
+    raise SystemExit("IRQ and syscall task selection bypassed shared scheduler walk")
+if sched.count("nas_sched_user_commit(")!=2:
+    raise SystemExit("IRQ and syscall Task state publication diverged")
 if "nas_sched_allow_kernel_slice(" not in (root/"kernel/task/scheduler_service.c").read_text():
     raise SystemExit("kernel worker dispatch bypassed shared domain fairness policy")
 if "nas_sched_service_kernel();" not in sched:
