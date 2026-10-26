@@ -502,6 +502,20 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
             }
             return 0;
         default:
+#if defined(__aarch64__)
+            {
+                static unsigned unknown_reports;
+                if(unknown_reports++<15) {
+                    extern void nas_print(const char *);
+                    extern void nas_dec(uint64_t);
+                    nas_print("[M75 ARM64 UNSUPPORTED PTRACE] request=");
+                    nas_dec(request);
+                    nas_print(" pid=");nas_dec(raw_pid);
+                    nas_print(" data=");nas_dec(data);
+                    nas_print("\n");
+                }
+            }
+#endif
             return (uint64_t)-EOPNOTSUPP;
     }
 }
