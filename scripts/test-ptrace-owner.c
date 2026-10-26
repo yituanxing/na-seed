@@ -5,6 +5,9 @@
 #include "../kernel/errno.h"
 
 static struct nas_task tracer, tracee, stranger;
+/* M73 ptrace bounded diagnostics are suppressed under the host owner test. */
+void nas_print(const char *s){(void)s;}
+void nas_dec(uint64_t n){(void)n;}
 uint64_t nas_arch_signal_user_sp(void){return 0;}
 void nas_arch_save_user_frame(struct nas_task *t,const uint64_t *f){(void)t;(void)f;}
 void nas_arch_save_fpu(struct nas_task *t){(void)t;}
