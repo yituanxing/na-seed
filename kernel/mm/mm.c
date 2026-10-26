@@ -25,12 +25,21 @@ struct nas_mm *nas_mm_fork_eager(const struct nas_mm *source) {
     if (!source || !source->users) nas_fail("MM fork: invalid source");
     struct nas_mm *dest=nas_mm_new();
     if (!dest) return 0;
-    uint64_t root=nas_mmu_fork_root();
+    uint64_t root=nas_mmu_fork_root(source->root_phys);
     if (!root) { nas_mm_put(dest); return 0; }
     dest->root_phys=root;
     dest->heap_break=source->heap_break;
     dest->anonymous=source->anonymous;
     return dest;
+}
+bool nas_mm_walk_pages(const struct nas_mm *mm,nas_mm_page_visit visit,void *ctx) {
+    if(!mm || !mm->users || !mm->root_phys || !visit)return false;
+    return nas_mmu_walk_user_mapping(mm->root_phys,visit,ctx);
+}
+bool nas_mm_resolve_user(const struct nas_mm *mm,uint64_t va,
+                         uint64_t *physical,unsigned *access) {
+    if(!mm || !mm->users || !mm->root_phys || !physical)return false;
+    return nas_mmu_resolve_user_address(mm->root_phys,va,physical,access);
 }
 struct nas_mm *nas_mm_get(struct nas_mm *mm) {
     if (!mm || !mm->users || mm->users==UINT32_MAX)

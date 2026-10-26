@@ -12,8 +12,7 @@
 bool nas_vm_walk_task_pages(const struct nas_task *task,
                              nas_mmu_user_visit callback,void *ctx) {
     if(!task || !callback || task->state==NAS_TASK_FREE)return false;
-    return nas_mmu_walk_user_mapping(task->mm?task->mm->root_phys:0,
-                                     callback,ctx);
+    return nas_mm_walk_pages(task->mm,callback,ctx);
 }
 #define TASK (*nas_current_task)
 #define heap_break TASK.mm->heap_break

@@ -12,7 +12,28 @@ void nas_print(const char *msg) { fputs(msg, stderr); }
 __attribute__((noreturn)) void nas_arch_halt(void) { abort(); }
 static uint64_t fork_root=0x3000;
 static unsigned reclaimed;
-uint64_t nas_mmu_fork_root(void) { return fork_root; }
+static uint64_t seen_source_root;
+uint64_t nas_mmu_fork_root(uint64_t source_root) {
+    seen_source_root=source_root;
+    return source_root==0x2000 ? fork_root : 0;
+}
+bool nas_mmu_resolve_user_address(uint64_t source_root,uint64_t va,
+                                  uint64_t *physical,unsigned *access) {
+    if(source_root!=0x2000 || va!=0x4008 || !physical)return false;
+    *physical=0x9008;
+    if(access)*access=1;
+    return true;
+}
+bool nas_mmu_walk_user_mapping(uint64_t source_root,
+                               bool (*visit)(uint64_t,unsigned,void *),void *ctx) {
+    return source_root==0x2000 && visit(0x4000,1,ctx);
+}
+static bool see_page(uint64_t va,unsigned prot,void *opaque) {
+    uint64_t *count=opaque;
+    if(va!=0x4000 || prot!=1)return false;
+    ++*count;
+    return true;
+}
 bool nas_mmu_reclaim_root(uint64_t root) {
     if (root!=fork_root) abort();
     reclaimed++;
@@ -36,11 +57,21 @@ int main(void) {
     ck(init->mm->users==2,"MM get adds one owner");
     nas_mm_put(init->mm);
     ck(init->mm->users==1,"MM put preserves active owner");
+    init->mm->root_phys=0x2000;
+    uint64_t pa=0,count=0;
+    unsigned prot=0;
+    ck(nas_mm_resolve_user(init->mm,0x4008,&pa,&prot) &&
+       pa==0x9008 && prot==1,"MM explicit lookup selects its own root");
+    ck(nas_mm_walk_pages(init->mm,see_page,&count) && count==1,
+       "MM page walk is independent of Task leader");
+    ck(!nas_mm_resolve_user(init->mm,0x5000,&pa,&prot),
+       "MM cannot claim an absent PTE");
     init->mm->heap_break=0x12345000ULL;
     init->mm->anonymous.slots[0].start=0x20000000ULL;
     init->mm->anonymous.slots[0].end=0x20001000ULL;
     struct nas_mm *forked_mm=nas_mm_fork_eager(init->mm);
     ck(forked_mm && forked_mm!=init->mm &&
+       seen_source_root==init->mm->root_phys &&
        forked_mm->root_phys==fork_root &&
        forked_mm->heap_break==init->mm->heap_break &&
        forked_mm->anonymous.slots[0].end==0x20001000ULL,

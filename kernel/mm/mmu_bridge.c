@@ -54,8 +54,10 @@ void nas_mmu_switch_root(uint64_t pa) {
     if (!nas_arch_pt_install(&s)) nas_arch_halt();
     nas_current_task->mm->root_phys=pa;
 }
-uint64_t nas_mmu_fork_root(void) {
-    struct nas_user_space source=current(), dest={0};
+uint64_t nas_mmu_fork_root(uint64_t source_root) {
+    if(!source_root)return 0;
+    struct nas_user_space source={source_root,nas_arch_pt_active_levels()};
+    struct nas_user_space dest={0};
     return nas_space_clone(&dest,&source)?dest.root_pa:0;
 }
 bool nas_mmu_map_page(uint64_t va,bool writable) {

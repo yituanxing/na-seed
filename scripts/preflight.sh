@@ -14,6 +14,7 @@ done
 # One canonical kernel-only C runtime, checked on all real target triples.
 sh scripts/check-klib.sh
 sh scripts/check-task-stacks.sh
+sh scripts/check-frame-refs.sh
 # M65: native procfs owner host regression (not a simulated guest PASS).
 cc -std=c11 -Wall -Wextra -Werror -fno-builtin -I kernel \
     scripts/test-procfs.c kernel/fs/procfs.c kernel/lib/string.c \
@@ -25,8 +26,9 @@ cc -std=c11 -Wall -Wextra -Werror -fno-builtin -I kernel \
     -o /tmp/naseed-task-accounting
 /tmp/naseed-task-accounting
 # M71: selected VM root, noncontiguous physical pages, fault bounds.
-cc -std=c11 -Wall -Wextra -Werror -fno-builtin -I kernel \
-  scripts/test-remote-task-read.c kernel/mm/remote_copy.c \
+cc -std=c11 -Wall -Wextra -Werror -fno-builtin \
+  -ffunction-sections -fdata-sections -Wl,--gc-sections -I kernel \
+  scripts/test-remote-task-read.c kernel/mm/remote_copy.c kernel/mm/mm.c \
   -o /tmp/naseed-remote-task-read
 /tmp/naseed-remote-task-read
 sh scripts/check-m28-timer.sh
