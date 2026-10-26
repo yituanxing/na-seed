@@ -65,7 +65,7 @@ int64_t nas_vm_write_task_bytes(const struct nas_task *task,uint64_t va,
          * will execute through its EL0 alias. Clean data to PoU, then
          * invalidate ALL local I-cache aliases (single-core kernel). */
         for(uint64_t p=(uint64_t)(uintptr_t)dst &~63ULL;
-            p<((uint64_t)(uintptr_t)dst+n+63ULL)&~63ULL;p+=64)
+            p<(((uint64_t)(uintptr_t)dst+n+63ULL)&~63ULL);p+=64)
             __asm__ volatile("dc cvau, %0"::"r"(p):"memory");
         __asm__ volatile("dsb ish; ic iallu; dsb ish; isb":::"memory");
 #elif defined(__riscv) && __riscv_xlen==64
