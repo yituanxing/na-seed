@@ -110,6 +110,10 @@ uint64_t nas_arch_signal_sigreturn(uint64_t *frame) {
     /* The handler's untrusted user frame cannot inject privileged CS,
      * SS or flags into IRET: restore the kernel-held full user snapshot.
      * A future ucontext-mutation implementation will validate each field. */
+    /* A successful sigreturn restores the ENTIRE previous user context,
+     * including RIP/RFLAGS independent of user RCX/R11. These restored
+     * return values, not the raw rt_sigreturn syscall GPR image, must
+     * remain authoritative if ptrace schedules the same kernel frame. */
     t->arch=t->signal_saved_arch;
     t->blocked_signals=t->signal_saved_mask;
     t->signal_frame_active=false;

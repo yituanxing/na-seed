@@ -21,8 +21,13 @@ void nas_arch_save_fpu(struct nas_task *task) {
 void nas_arch_save_user_frame(struct nas_task *task, const uint64_t *frame) {
     for (unsigned i=0;i<15;i++) task->arch.resume_regs[i] = frame[i];
     task->arch.resume_user_rsp = syscall_user_rsp;
-    task->arch.resume_user_rip = frame[7];
-    task->arch.resume_user_rflags = frame[8];
+    /* After an rt_sigreturn (or a ptrace stop resumed in the original
+     * native syscall C frame), frame[7]/frame[8] are the user's restored
+     * RCX/R11 registers, not necessarily the kernel's IRET RIP/RFLAGS.
+     * The syscall-entry assembly and context-restore owner explicitly
+     * maintain these return registers independently. */
+    task->arch.resume_user_rip = nas_x86_syscall_return_rip;
+    task->arch.resume_user_rflags = nas_x86_syscall_return_flags;
 }
 void nas_arch_set_saved_return(struct nas_task *task, uint64_t value) {
     task->arch.resume_regs[0] = value;

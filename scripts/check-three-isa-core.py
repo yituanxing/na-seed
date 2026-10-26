@@ -134,6 +134,10 @@ if "nas_futex_wait_cancel(task)" not in (root/"kernel/task/blocked_completion.c"
     raise SystemExit("legacy blocked completion must release futex waiter exactly once")
 if "task_replay(" in sched:
     raise SystemExit("syscall replay leaked back into scheduler core")
+x86_context=(root/"kernel/arch/x86_64/context.c").read_text()
+if "task->arch.resume_user_rip = nas_x86_syscall_return_rip;" not in x86_context or \
+   "task->arch.resume_user_rflags = nas_x86_syscall_return_flags;" not in x86_context:
+    raise SystemExit("x86 kernel IRET PC/FLAGS must not be decoded from arbitrary restored RCX/R11")
 if "nas_arch_kernel_swap(&self->kernel_exec.cpu,&scheduler_cpu)" not in sched:
     raise SystemExit("Task does not park its native C continuation")
 if "nas_arch_kernel_swap(&scheduler_cpu,&next->kernel_exec.cpu)" not in sched:
