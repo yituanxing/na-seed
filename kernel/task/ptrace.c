@@ -257,8 +257,53 @@ static uint64_t ptrace_syscall_info(const struct nas_task *task,
         return (uint64_t)-EFAULT;
     return available;
 }
+/* Linux AArch64 NT_PRFPREG (2): user_fpsimd_state is exactly
+ * 32 x 128-bit V registers, FPSR, FPCR, and two reserved u32 values.
+ * The Task-owned SIMD snapshot is saved on the real trap boundary.
+ * Do NOT invent generic floating point register behavior on x86/RV64. */
+#if defined(__aarch64__)
+#define NAS_NT_PRFPREG 2ULL
+struct nas_linux_arm_fpsimd {
+    uint8_t vregs[512];
+    uint32_t fpsr,fpcr,reserved[2];
+};
+_Static_assert(sizeof(struct nas_linux_arm_fpsimd)==528,
+               "Linux AArch64 NT_PRFPREG ABI");
+static uint64_t ptrace_arm_fpsimd(struct nas_task *task,uint64_t req,
+                                  uint64_t data) {
+    uint64_t iov[2];
+    if(!nas_user_read_bytes(data,(uint8_t *)iov,sizeof(iov)))
+        return (uint64_t)-EFAULT;
+    struct nas_linux_arm_fpsimd state={0};
+    if(req==PTRACE_GETREGSET) {
+        memcpy(state.vregs,task->arch.simd_regs,sizeof(state.vregs));
+        state.fpsr=(uint32_t)task->arch.fpsr;
+        state.fpcr=(uint32_t)task->arch.fpcr;
+        uint64_t n=iov[1]<sizeof(state)?iov[1]:sizeof(state);
+        if(n && !nas_user_write_bytes(iov[0],(const uint8_t *)&state,n))
+            return (uint64_t)-EFAULT;
+        return nas_user_write_u64(data+8,n)?0:(uint64_t)-EFAULT;
+    }
+    if(req==PTRACE_SETREGSET) {
+        if(iov[1]<sizeof(state))return (uint64_t)-EINVAL;
+        if(!nas_user_read_bytes(iov[0],(uint8_t *)&state,sizeof(state)))
+            return (uint64_t)-EFAULT;
+        if(!nas_user_write_u64(data+8,sizeof(state)))
+            return (uint64_t)-EFAULT;
+        memcpy(task->arch.simd_regs,state.vregs,sizeof(state.vregs));
+        task->arch.fpsr=state.fpsr;
+        task->arch.fpcr=state.fpcr;
+        return 0;
+    }
+    return (uint64_t)-EOPNOTSUPP;
+}
+#endif
 static uint64_t ptrace_gprs(const struct nas_task *task,
                            uint64_t request,uint64_t addr,uint64_t data) {
+#if defined(__aarch64__)
+    if(request==PTRACE_GETREGSET && addr==NAS_NT_PRFPREG)
+        return ptrace_arm_fpsimd((struct nas_task *)task,request,data);
+#endif
     uint64_t words[34]={0};
     unsigned n=nas_arch_ptrace_gpr_words(task,words);
     uint64_t len=n*8ULL;
@@ -281,6 +326,10 @@ static uint64_t ptrace_gprs(const struct nas_task *task,
 }
 static uint64_t ptrace_set_gprs(struct nas_task *task,
                               uint64_t req,uint64_t addr,uint64_t data) {
+#if defined(__aarch64__)
+    if(req==PTRACE_SETREGSET && addr==NAS_NT_PRFPREG)
+        return ptrace_arm_fpsimd(task,req,data);
+#endif
     uint64_t words[34]={0};
     unsigned n=nas_arch_ptrace_gpr_words(task,words);
     uint64_t len=(uint64_t)n*8;
