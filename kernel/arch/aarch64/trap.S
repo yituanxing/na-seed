@@ -238,3 +238,10 @@ nas_arm_load_simd:
     ldr x1,[x0,#520]
     msr fpsr,x1
     ret
+
+/* Enter a READY Task with its own EL0 return image on its private stack. */
+.global nas_arm_user_resume_frame
+.balign 4
+nas_arm_user_resume_frame:
+    mov sp,x0
+    b nas_arm_trap_return

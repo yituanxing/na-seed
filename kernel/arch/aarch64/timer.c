@@ -77,6 +77,9 @@ void nas_arm_timer_irq_c(struct nas_arm_trap_frame *frame) {
         nas_fail("ARM64 timer invalid Task");
     nas_arch_save_user_frame(from,0);
     nas_arch_save_fpu(from);
+    /* EOI before parking this IRQ C continuation, never afterwards. */
+    iface[0x10/4]=id;
+    __asm__ volatile("dsb sy" : : : "memory");
     if(nas_sched_preempt_select()) {
         nas_arch_load_user_frame(nas_current_task,0);
         static unsigned observed;
@@ -89,7 +92,5 @@ void nas_arm_timer_irq_c(struct nas_arm_trap_frame *frame) {
             nas_print("\n");
         }
     }
-    iface[0x10/4]=id;
-    __asm__ volatile("dsb sy" : : : "memory");
     (void)frame;
 }

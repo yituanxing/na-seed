@@ -35,6 +35,10 @@ bool nas_arch_user_nx_supported(void);
 extern uint64_t syscall_user_rsp;
 #endif
 void nas_arch_restore_cpu(const struct nas_task *);
+/* Native Task scheduler restores the selected Task's trap-frame identity. */
+void nas_arch_pin_live_trap(struct nas_task *);
+void nas_arch_bind_live_trap(const struct nas_task *);
+_Noreturn void nas_arch_resume_saved_user(void);
 void nas_arch_save_fpu(struct nas_task *);
 void nas_arch_save_user_frame(struct nas_task *, const uint64_t *frame);
 /* Return the LIVE trap's userspace SP, never an ABI-normalized syscall

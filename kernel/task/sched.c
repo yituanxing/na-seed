@@ -166,192 +166,130 @@ void nas_sched_thread_group_exit(uint32_t code,uint32_t signum) {
     nas_dec(leader->tgid);nas_print(" code=");nas_dec(code&255U);
     nas_print("\n");
 }
-static unsigned schedule_count;
-/* A producer repeatedly woken via futex must not starve later TID slots.
- * Rotate task selection across READY and woken blocked tasks rather than
- * always preferring the first task-table slot. Keep the same saved-frame
- * switching mechanism and the READY-before-BLOCKED priority policy. */
-static unsigned schedule_cursor;
 
-/* Both syscall-boundary switches and timer preemption use the same
- * candidate activation boundary. A blocked syscall must execute only after
- * its own MM/TLS/FPU have been restored; on retry/stop/exit, restore the
- * caller before visiting another Task. Neither path may transfer a live
- * kernel C continuation while trap entry still owns the current stack. */
-static enum nas_blocked_completion sched_prepare_candidate(
-    struct nas_task *from,struct nas_task *next,uint64_t *result) {
-    nas_current_task=next;
-    nas_arch_restore_cpu(next);
-    *result=nas_arch_saved_return(next);
-    enum nas_blocked_completion outcome=nas_blocked_complete(next,result);
-    if(outcome!=NAS_BLOCKED_COMPLETE) {
-        nas_current_task=from;
-        nas_arch_restore_cpu(from);
-    }
-    return outcome;
+/* A dedicated scheduler continuation is independent of all user kernel stacks.
+ * A blocked syscall keeps its C call chain alive and resumes in its own MM.
+ * Fresh fork/ptrace Tasks use per-slot bootstrap stacks and native user
+ * register images: we must not copy another Task's live trap return frame. */
+#define NAS_SCHED_STACK_BYTES 32768U
+#define NAS_TASK_BOOTSTRAP_BYTES 8192U
+static _Alignas(16) uint8_t scheduler_stack[NAS_SCHED_STACK_BYTES];
+static _Alignas(16) uint8_t task_bootstrap[NAS_TASK_LIMIT][NAS_TASK_BOOTSTRAP_BYTES];
+static struct nas_kernel_context scheduler_cpu;
+static bool scheduler_ready;
+static unsigned native_cursor;
+static void native_dispatcher(void);
+static void native_ensure_scheduler(void) {
+    if(scheduler_ready)return;
+    if(!nas_kernel_context_prepare(&scheduler_cpu,scheduler_stack,
+                                   sizeof(scheduler_stack),native_dispatcher))
+        sched_fail("native scheduler context initialization");
+    scheduler_ready=true;
 }
-
-/* Cooperative scheduling and timer IRQs must agree on eligible Tasks.
- * IRQ callers have already snapshotted their interrupted user registers.
- * We never save or transfer C stack continuations. Return false if no
- * alternative Task can actually run; the original interrupted context
- * remains valid and its CPU/MMU/FPU are restored after tentative replays.
- */
-bool nas_sched_preempt_select(void) {
-    nas_time_timers_tick();
-    nas_sched_service_kernel();
-    struct nas_task *from=nas_current_task;
-    if (!from || from->state != NAS_TASK_RUNNING) return false;
-    unsigned origin=NAS_TASK_LIMIT;
-    for (unsigned i=0;i<NAS_TASK_LIMIT;i++)
-        if (nas_task_at(i)==from) { origin=i; break; }
-    if (origin==NAS_TASK_LIMIT) sched_fail("timer task not registered");
-    struct nas_sched_scan scan;
-    nas_sched_scan_init(&scan,from,(origin+1U)%NAS_TASK_LIMIT,
-                        NAS_TASK_LIMIT-1U);
-    struct nas_task *next;
-    while((next=nas_sched_scan_next(&scan,0))!=0) {
-        uint64_t result=0;
-        if(sched_prepare_candidate(from,next,&result)!=NAS_BLOCKED_COMPLETE)
+static void native_park(struct nas_task *self) {
+    if(!self || self!=nas_current_task)
+        sched_fail("native park without current Task");
+    native_ensure_scheduler();
+    nas_arch_pin_live_trap(self);
+    nas_arch_kernel_swap(&self->kernel_exec.cpu,&scheduler_cpu);
+    if(nas_current_task!=self)
+        sched_fail("native continuation restored foreign Task");
+    /* The resumed C frame now owns the live stack, not a parked frame. */
+    self->kernel_exec.cpu.saved_sp=0;
+}
+static void native_first_user(void) {
+    nas_arch_resume_saved_user();
+}
+static void native_dispatcher(void) {
+    for(;;) {
+        nas_time_timers_tick();
+        nas_sched_service_kernel();
+        nas_tty_pump();
+        uint64_t sid=0,pgid=0;
+        unsigned sig=nas_tty_take_signal(&sid,&pgid);
+        if(sig && !nas_signal_tty_event(sid,pgid,sig))
+            nas_tty_signal_unsupported();
+        struct nas_sched_scan scan;
+        nas_sched_scan_init(&scan,0,native_cursor,NAS_TASK_LIMIT);
+        unsigned slot=0;
+        struct nas_task *next=nas_sched_scan_next(&scan,&slot);
+        if(next) {
+            if(!next->resume_valid ||
+               (next->state!=NAS_TASK_READY &&
+                (next->state!=NAS_TASK_BLOCKED ||
+                 !nas_task_wait_ready(next))))
+                sched_fail("invalid native schedule candidate");
+            if(next->state==NAS_TASK_BLOCKED &&
+               !next->kernel_exec.cpu.saved_sp)
+                sched_fail("blocked Task lost native C continuation");
+            next->state=NAS_TASK_RUNNING;
+            next->resume_valid=false;
+            nas_current_task=next;
+            native_cursor=(slot+1U)%NAS_TASK_LIMIT;
+            nas_arch_bind_live_trap(next);
+            nas_arch_restore_cpu(next);
+            if(!next->kernel_exec.cpu.saved_sp) {
+                if(!nas_kernel_context_prepare(&next->kernel_exec.cpu,
+                    task_bootstrap[slot],NAS_TASK_BOOTSTRAP_BYTES,
+                    native_first_user))
+                    sched_fail("native Task bootstrap allocation");
+            }
+            nas_arch_kernel_swap(&scheduler_cpu,&next->kernel_exec.cpu);
             continue;
-        if(!nas_sched_user_commit(from,next,true))
-            sched_fail("timer committed invalid task state");
-        nas_task_cpu_account_switch(next);
-        return true;
+        }
+        /* The IRQ-safe idle sleeping transition requires a separate
+         * interrupt ownership change; never WFI/HLT with IRQs masked. */
+        nas_task_cpu_account_switch(0);
+        bool external=nas_time_timers_armed() ||
+            nas_kthread_deadlines_armed() || nas_kthread_runnable();
+        for(unsigned i=0;i<NAS_TASK_LIMIT && !external;i++)
+            external=nas_task_wait_needs_idle_poll(nas_task_at(i));
+        if(!external)sched_fail("native scheduler deadlock");
     }
-    nas_current_task=from;
-    return false;
 }
-
 uint64_t nas_task_schedule(uint64_t *frame) {
-retry_schedule: ; /* label must precede a statement in C11 */
-    nas_time_timers_tick();
-    nas_sched_service_kernel();
-    struct nas_task *previous = nas_current_task;
-    uint64_t previous_pid = previous->pid; /* zombie may be reaped on replay */
-    /* A READY task always gets one turn before re-evaluating blocked tasks.
-     * This allows ash to construct consumers after a producer fills its pipe.
-     */
-    nas_tty_pump(); /* physical RX progress even while other tasks run */
-    uint64_t tty_sid=0,tty_pgid=0;
-    unsigned tty_sig=nas_tty_take_signal(&tty_sid,&tty_pgid);
-    if(tty_sig && !nas_signal_tty_event(tty_sid,tty_pgid,tty_sig))
-        nas_tty_signal_unsupported();
-    struct nas_sched_scan scan;
-    nas_sched_scan_init(&scan,previous,schedule_cursor,NAS_TASK_LIMIT);
-    unsigned slot=0;
-    struct nas_task *next;
-    while((next=nas_sched_scan_next(&scan,&slot))!=0) {
-        uint64_t result=0;
-        enum nas_blocked_completion outcome=
-            sched_prepare_candidate(previous,next,&result);
-        if(outcome!=NAS_BLOCKED_COMPLETE) {
-            if(outcome==NAS_BLOCKED_TERMINATED ||
-               outcome==NAS_BLOCKED_PTRACE_STOP)
-                goto retry_schedule;
-            continue;
-        }
-        if(!nas_sched_user_commit(previous,next,false))
-            sched_fail("syscall committed invalid task state");
-        nas_task_cpu_account_switch(next);
-        schedule_cursor=(slot+1U)%NAS_TASK_LIMIT;
-        nas_arch_load_user_frame(next,frame);
-        /* No active C continuation can keep a stale last-exit thread slot. */
-        if(previous!=next && previous->is_thread &&
-           previous->state==NAS_TASK_ZOMBIE)
-            nas_task_release(previous);
-        if(schedule_count++<48) {
-            nas_print("[SCHED] from=");nas_dec(previous_pid);
-            nas_print(" to=");nas_dec(next->pid);nas_print("\n");
-        }
-        return result;
+    struct nas_task *self=nas_current_task;
+    if(!self)sched_fail("native yield without Task");
+    if(self->state==NAS_TASK_RUNNING) {
+        nas_arch_save_user_frame(self,frame);
+        nas_arch_save_fpu(self);
+        self->resume_valid=true;
+        self->state=NAS_TASK_READY;
     }
-    /* No user Task occupies the CPU while the no-runnable-task dispatcher
-     * polls TTY/device readiness. Meter this as idle until a Task resumes. */
-    nas_task_cpu_account_switch(0);
-    /* Unlike pipe deadlock, a TTY read can be completed by future REAL
-     * external UART input even when the last task is blocked. Keep scanning
-     * actual device RX until a line or VMIN threshold arrives. This idle
-     * dispatcher polls hardware; IRQ-driven low-power waiting is not yet
-     * implemented and must not be described as interrupt-driven. */
-    /* IRQ-driven idle is not implemented. Keep the polling fallback in one
-     * place, but delegate device/syscall-specific progress policy to Wait.
-     * This preserves live TTY, epoll, timer and worker wakeups without
-     * embedding syscall decoding in the CPU scheduler. */
-    bool externally_wakeable=nas_time_timers_armed() ||
-        nas_kthread_deadlines_armed() || nas_kthread_runnable();
-    for(unsigned slot=0;slot<NAS_TASK_LIMIT && !externally_wakeable;slot++)
-        externally_wakeable=nas_task_wait_needs_idle_poll(nas_task_at(slot));
-    if(externally_wakeable) {
-        __asm__ volatile ("" ::: "memory");
-        goto retry_schedule;
-    }
-    /* Fatal deadlock diagnostic: dump who holds each pipe endpoint. */
-    for (unsigned i = 0; i < NAS_PIPE_COUNT; i++) {
-        unsigned count = 0;
-        bool readers = false, writers = false;
-        if (!nas_pipe_snapshot(i, &count, &readers, &writers)) continue;
-        nas_print("[DEADLOCK] pipe="); nas_dec(i);
-        nas_print(" bytes="); nas_dec(count);
-        nas_print(" readers="); nas_dec(readers);
-        nas_print(" writers="); nas_dec(writers);
-        nas_print("\n");
-    }
-    for (unsigned i = 0; i < NAS_TASK_LIMIT; i++) {
-        struct nas_task *task = nas_task_at(i);
-        if (task->state == NAS_TASK_FREE) continue;
-        nas_print("[DEADLOCK] pid="); nas_dec(task->pid);
-        nas_print(" state="); nas_dec(task->state);
-        nas_print(" blocked_op="); nas_dec(task->wait.blocked_op);
-        nas_print(" trace_parent=");nas_dec(task->ptrace_tracer_pid);
-        nas_print(" ptrace_phase=");nas_dec(task->ptrace_phase);
-        nas_print(" ptrace_sig=");nas_dec(task->stop_signal);
-        nas_print(" report=");nas_dec(task->stop_report_pending);
-        nas_print(" wait_target=");nas_dec(task->wait.blocked_args[0]);
-        nas_print(" wait_flags=");nas_hex(task->wait.blocked_args[2]);
-        nas_print(" fd="); nas_dec(task->wait.blocked_args[0]);
-        nas_print("\n");
-        if(task->wait.blocked_op==NAS_SC_futex) {
-            nas_print("[DEADLOCK] futex tid=");nas_dec(task->pid);
-            nas_print(" tgid=");nas_dec(task->tgid);
-            nas_print(" addr=");nas_hex(task->wait.futex_addr);
-            nas_print(" expected=");nas_hex(task->wait.blocked_args[2]);
-            nas_print(" mask=");nas_hex(task->wait.futex_mask);
-            nas_print(" signaled=");nas_dec(task->wait.futex_woken);
-            nas_print("\n");
-        }
-        for (unsigned fd = 0; fd < NAS_FD_LIMIT; fd++) {
-            uint8_t kind = nas_task_fd_kind(task, fd);
-            if (kind != FD_PIPE_R && kind != FD_PIPE_W &&
-                kind != FD_SOCKET) continue;
-            unsigned slot = nas_task_fd_slot(task, fd);
-            nas_print("[DEADLOCK] holder pid="); nas_dec(task->pid);
-            nas_print(" fd="); nas_dec(fd);
-            nas_print(" kind="); nas_dec(kind);
-            nas_print(" slot="); nas_dec(slot);
-            nas_print("\n");
-        }
-    }
-    sched_fail("scheduler deadlock: all live tasks blocked; no ready process");
+    native_park(self);
+    return nas_arch_saved_return(self);
 }
-uint64_t nas_task_block(uint64_t *frame, enum nas_syscall_op nr,
-                           uint64_t a, uint64_t b, uint64_t c,
-                           uint64_t d) {
-    struct nas_task *task = nas_current_task;
-    nas_arch_save_user_frame(task, frame);
-    task->resume_valid = true;
-    task->wait.blocked_op = nr;
-    task->wait.pending_valid = true;
-    task->ptrace_blocked_exit_pending=task->ptrace_trace_syscalls && task->ptrace_tracer_pid;
-    task->wait.blocked_args[0] = a;
-    task->wait.blocked_args[1] = b;
-    task->wait.blocked_args[2] = c;
-    task->wait.blocked_args[3] = d;
-    task->state = NAS_TASK_BLOCKED;
-    nas_arch_save_fpu(task);
-    if (schedule_count < 48) {
-        nas_print("[SCHED] blocked pid="); nas_dec(task->pid);
-        nas_print(" syscall="); nas_dec(nr); nas_print("\n");
+bool nas_sched_preempt_select(void) {
+    struct nas_task *self=nas_current_task;
+    if(!self || self->state!=NAS_TASK_RUNNING)return false;
+    self->resume_valid=true;
+    self->state=NAS_TASK_READY;
+    native_park(self);
+    return false; /* original IRQ frame resumes on its own Task stack */
+}
+uint64_t nas_task_block(uint64_t *frame,enum nas_syscall_op nr,
+                        uint64_t a,uint64_t b,uint64_t c,uint64_t d) {
+    struct nas_task *self=nas_current_task;
+    nas_arch_save_user_frame(self,frame);
+    nas_arch_save_fpu(self);
+    self->resume_valid=true;
+    self->wait.blocked_op=nr;
+    self->wait.pending_valid=true;
+    self->ptrace_blocked_exit_pending=
+        self->ptrace_trace_syscalls && self->ptrace_tracer_pid;
+    self->wait.blocked_args[0]=a;
+    self->wait.blocked_args[1]=b;
+    self->wait.blocked_args[2]=c;
+    self->wait.blocked_args[3]=d;
+    self->state=NAS_TASK_BLOCKED;
+    for(;;) {
+        native_park(self);
+        uint64_t result=nas_arch_saved_return(self);
+        enum nas_blocked_completion outcome=nas_blocked_complete(self,&result);
+        if(outcome==NAS_BLOCKED_COMPLETE)return result;
+        if(outcome==NAS_BLOCKED_TERMINATED)
+            sched_fail("terminated Task resumed native continuation");
+        self->resume_valid=true;
+        if(outcome==NAS_BLOCKED_RETRY)self->state=NAS_TASK_BLOCKED;
     }
-    return nas_task_schedule(frame);
 }

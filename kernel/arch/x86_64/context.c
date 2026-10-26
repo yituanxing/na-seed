@@ -1,10 +1,15 @@
 #include "../arch.h"
 #include "../../task.h"
+#include "../../task/signal.h"
+#include "../../panic.h"
 #include "irq.h"
 extern void nas_arch_x86_set_kernel_stack(uint64_t);
 void nas_arch_restore_cpu(const struct nas_task *task) {
     if (!nas_task_kernel_stack_ok(task)) nas_arch_halt();
     nas_arch_x86_set_kernel_stack(task->kernel_stack_top);
+    syscall_user_rsp=task->arch.resume_user_rsp;
+    nas_x86_syscall_return_rip=task->arch.resume_user_rip;
+    nas_x86_syscall_return_flags=task->arch.resume_user_rflags;
     nas_arch_switch_page_root(nas_task_page_root(task));
     nas_arch_set_user_tls(nas_task_tls_base(task));
     __asm__ volatile("fxrstor64 %0" : : "m"(task->arch.fpu_state) : "memory");
@@ -30,4 +35,22 @@ void nas_arch_load_user_frame(const struct nas_task *task, uint64_t *frame) {
     syscall_user_rsp = task->arch.resume_user_rsp;
     nas_x86_syscall_return_rip = task->arch.resume_user_rip;
     nas_x86_syscall_return_flags = task->arch.resume_user_rflags;
+}
+
+/* First dispatch starts on a private bootstrap stack, then IRET resumes
+ * exactly the saved Linux user-register context on the Task entry stack. */
+void nas_arch_pin_live_trap(struct nas_task *t) { (void)t; }
+void nas_arch_bind_live_trap(const struct nas_task *t) { (void)t; }
+extern _Noreturn void nas_x86_user_resume_frame(uint64_t *);
+_Noreturn void nas_arch_resume_saved_user(void) {
+    struct nas_task *t=nas_current_task;
+    if(!t || !nas_task_kernel_stack_ok(t))nas_fail("x86 native resume invalid Task");
+    uint64_t *frame=(uint64_t *)(uintptr_t)(t->kernel_stack_top-160U);
+    for(unsigned i=0;i<15;i++)frame[i]=t->arch.resume_regs[i];
+    frame[15]=t->arch.resume_user_rip;frame[16]=0x33;
+    frame[17]=t->arch.resume_user_rflags;
+    frame[18]=t->arch.resume_user_rsp;frame[19]=0x2b;
+    nas_signal_user_return(frame);
+    t->kernel_exec.cpu.saved_sp=0;
+    nas_x86_user_resume_frame(frame);
 }

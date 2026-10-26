@@ -372,3 +372,10 @@ syscall_user_rsp: .quad 0
 kernel_stack: .skip 16384
 .global kernel_stack_top
 kernel_stack_top:
+
+/* First scheduler dispatch of a saved x86 Linux user context. */
+.text
+.global nas_x86_user_resume_frame
+nas_x86_user_resume_frame:
+    movq %rdi,%rsp
+    jmp nas_x86_iret_restore

@@ -125,6 +125,7 @@ struct nas_task *nas_task_fork_slot(void) {
         /* fork memcpy may copy a live parent saved SP/queue link. Both
          * belong to the old executing thread and must be reset together. */
         nas_kernel_execution_reset(&child->kernel_exec);
+        child->native_trap_frame=0;
         child->pid = next_pid++;
         child->tgid=child->pid;
         child->is_thread=false;

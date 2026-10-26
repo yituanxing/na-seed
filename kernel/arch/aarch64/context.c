@@ -182,3 +182,28 @@ void nas_arch_load_user_frame(const struct nas_task *task,uint64_t *args) {
     live->spsr_el1=task->arch.user_spsr;
     live->tpidr_el0=nas_task_tls_base(task);
 }
+
+/* Bind the real EL1 frame to the Task whose C context is resumed. */
+void nas_arch_pin_live_trap(struct nas_task *t) {
+    if(!t || !live)nas_fail("ARM64 native park without trap");
+    t->native_trap_frame=(uint64_t)(uintptr_t)live;
+}
+void nas_arch_bind_live_trap(const struct nas_task *t) {
+    live=t && t->native_trap_frame ?
+         (struct nas_arm_trap_frame *)(uintptr_t)t->native_trap_frame : 0;
+}
+extern _Noreturn void nas_arm_user_resume_frame(struct nas_arm_trap_frame *);
+_Noreturn void nas_arch_resume_saved_user(void) {
+    struct nas_task *t=nas_current_task;
+    if(!t || !nas_task_kernel_stack_ok(t))nas_fail("ARM64 native resume invalid Task");
+    struct nas_arm_trap_frame *f=(struct nas_arm_trap_frame *)(uintptr_t)
+        (t->kernel_stack_top-288U);
+    for(unsigned i=0;i<31;i++)f->x[i]=t->arch.user_regs[i];
+    f->sp_el0=t->arch.user_sp;f->elr_el1=t->arch.user_elr;
+    f->spsr_el1=t->arch.user_spsr;f->tpidr_el0=t->arch.user_tls_base;
+    live=f;
+    nas_signal_user_return((uint64_t *)(void *)f);
+    t->kernel_exec.cpu.saved_sp=0;
+    live=0;
+    nas_arm_user_resume_frame(f);
+}

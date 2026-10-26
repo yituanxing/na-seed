@@ -69,6 +69,9 @@ void nas_x86_timer_irq(struct nas_x86_user_irq_frame *frame) {
     if (!from || !nas_task_kernel_stack_ok(from))
         nas_fail("x86 timer without a valid running task");
     irq_ticks++;
+    /* A native switch can suspend this entire IRQ C stack, so EOI
+     * must be sent before we switch or subsequent ticks are blocked. */
+    nas_arch_outb(0x20,0x20);
     if (from->state == NAS_TASK_RUNNING) {
         for (unsigned i=0;i<15;i++)
             from->arch.resume_regs[i]=frame->regs[i];
@@ -99,6 +102,5 @@ void nas_x86_timer_irq(struct nas_x86_user_irq_frame *frame) {
             frame->ss=0x2bU;
         }
     }
-    /* PIC EOI after all MMU and Task changes; IF remains disabled until IRET. */
-    nas_arch_outb(0x20,0x20);
+    /* PIC acknowledged before the possible native stack switch. */
 }

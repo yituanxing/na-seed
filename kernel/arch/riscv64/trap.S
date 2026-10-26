@@ -73,6 +73,7 @@ nas_rv_full_trap:
     mv a0, sp
     call nas_rv_return_stack
     mv sp, a0
+nas_rv_resume_restore:
     ld t0,256(sp)
     csrw sepc,t0
     ld t0,264(sp)
@@ -202,3 +203,11 @@ nas_rv_restore_fp:
 .global kernel_stack_top
 kernel_stack: .skip 16384
 kernel_stack_top:
+
+/* First dispatcher entry: resume authentic saved RV64 U-mode registers. */
+.section .text,"ax",@progbits
+.p2align 2
+.global nas_rv_user_resume_frame
+nas_rv_user_resume_frame:
+    mv sp,a0
+    j nas_rv_resume_restore

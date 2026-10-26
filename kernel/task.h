@@ -157,6 +157,8 @@ struct nas_task {
     /* Shared native continuation/queue ownership layout also used by
      * kernel workers. User syscall continuation activation remains pending. */
     struct nas_kernel_execution kernel_exec;
+    /* Saved live exception frame while the Task's kernel C stack is parked. */
+    uint64_t native_trap_frame;
     /* Independently reference-counted address space (CLONE_VM / vfork). */
     struct nas_mm *mm;
     uint64_t loaded_phdr, loaded_phnum;
