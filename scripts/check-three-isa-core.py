@@ -83,7 +83,7 @@ sched=(root/"kernel/task/sched.c").read_text()
 assert "struct nas_task_wait wait;" in task_h
 assert "nas_task_wait_reset(child);" in (root/"kernel/task.c").read_text()
 assert "bool nas_task_wait_ready(" in task_wait
-assert "nas_task_wait_ready(" in sched
+assert "nas_task_wait_ready(" in (root/"kernel/task/sched_core.c").read_text()
 for old in ("static bool task_io_ready(", "static bool task_wait_ready(",
             "static bool task_can_wake("):
     if old in sched: raise SystemExit(f"scheduler still owns device wake policy: {old}")
