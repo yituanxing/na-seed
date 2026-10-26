@@ -78,6 +78,21 @@ static void ptrace_stop(struct nas_task *task,uint8_t phase) {
      * event alone is NOT enough when its thread is blocked in poll. */
     nas_signal_ptrace_stop(task);
 }
+bool nas_ptrace_user_exception(struct nas_task *task,unsigned signo,
+                                uint64_t user_pc,uint64_t user_sp) {
+    if(!ptrace_owner_valid(task) || task->state!=NAS_TASK_RUNNING ||
+       (signo!=NAS_SIGTRAP && signo!=11U))
+        return false;
+    task->ptrace_ip=user_pc;
+    task->ptrace_sp=user_sp;
+    task->ptrace_result=0;
+    ptrace_stop(task,0);
+    /* The debug/trap event is a SIGTRAP or SIGSEGV signal-delivery stop,
+     * not a syscall-entry stop, ptrace event or guessed errno. Preserve
+     * the hardware PC verbatim (x86 INT3 already advances by one). */
+    task->stop_signal=signo;
+    return true;
+}
 bool nas_ptrace_syscall_enter(struct nas_task *task,const uint64_t *call) {
     if(!task)return false;
     if(task->ptrace_skip_entry_once) {

@@ -99,5 +99,15 @@ int main(void) {
     assert(stranger.ptrace_blocked_exit_pending);
     assert(nas_ptrace_request(17,3,0,0)==0);
     assert(stranger.state==NAS_TASK_BLOCKED && stranger.wait.pending_valid);
+    /* Real CPU breakpoint must report through the same authenticated
+     * STOP / SIGCHLD event path; a syscall event must not be invented. */
+    assert(nas_ptrace_request(16,3,0,0)==0);
+    assert(nas_ptrace_request(7,3,0,0)==0);
+    stranger.state=NAS_TASK_RUNNING;
+    stranger.resume_valid=false;
+    assert(nas_ptrace_user_exception(&stranger,5,0x1020,0x3000));
+    assert(stranger.state==NAS_TASK_STOPPED && stranger.stop_signal==5);
+    assert(stranger.ptrace_ip==0x1020 && stranger.ptrace_sp==0x3000);
+    assert(stranger.ptrace_phase==0 && stranger.stop_report_pending);
     return 0;
 }
