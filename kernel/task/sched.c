@@ -12,6 +12,11 @@
 #include "process.h"
 #include "sched.h"
 #include "wait.h"
+#include "futex_wait.h"
+#include "blocked_completion.h"
+#include "kthread.h"
+#include "scheduler_service.h"
+#include "sched_core.h"
 #include "wait_pid.h"
 #include "signal.h"
 #include "ptrace.h"
@@ -28,69 +33,6 @@ extern void nas_hex(uint64_t);
 #define blocked_signals TASK.blocked_signals
 static void sched_fail(const char *s) __attribute__((noreturn));
 static void sched_fail(const char *s) { nas_print("[FAIL] M1 "); nas_print(s); nas_print("\n"); nas_arch_halt(); }
-/* Cooperative syscall-boundary scheduler. Per-task entry stacks are
- * distinct, but kernel C continuations are still unwound before switching.
- * Parked syscalls are re-issued ONLY after their wake condition and after
- * the task's own CR3/TLS/FPU state are restored.
- * Thus a switched task always receives the real read/write/wait4 result;
- * a fabricated success or USER RIP rewind would corrupt Linux userspace.
- */
-/* Kernel-owned I/O/child/futex readiness is in task/wait.c. */
-static uint64_t task_replay(struct nas_task *task) {
-    enum nas_syscall_op nr = (enum nas_syscall_op)task->wait.blocked_op;
-    const uint64_t *a = task->wait.blocked_args;
-    if (nas_signal_user_pending(task)) {
-        /* Linux nanosleep and relative clock_nanosleep expose the REMAINING
-         * time, not a stale original duration. Replay runs with this exact
-         * Task's user page table restored, never a foreign userspace root. */
-        if(nr==NAS_SC_nanosleep || nr==NAS_SC_clock_nanosleep) {
-            uint64_t rem=nr==NAS_SC_nanosleep ? a[1] :
-                ((a[1]&1U) ? 0 : a[3]); /* TIMER_ABSTIME: no remainder */
-            if(rem) {
-                uint64_t current=nas_arch_monotonic_ns();
-                uint64_t left=task->wait.deadline_ns>current ?
-                              task->wait.deadline_ns-current : 0;
-                uint64_t ts[2]={left/NAS_NSEC_PER_SEC,
-                                left%NAS_NSEC_PER_SEC};
-                if(!nas_user_write_bytes(rem,(const uint8_t *)ts,sizeof(ts)))
-                    return (uint64_t)-EFAULT;
-            }
-        }
-        return (uint64_t)-EINTR;
-    }
-    /* Sleep input was validated and converted into task-owned absolute
-     * deadline at the original syscall boundary; never restart a relative
-     * timeout or dereference its userspace timespec during replay. */
-    if (nr == NAS_SC_nanosleep || nr == NAS_SC_clock_nanosleep)
-        return 0;
-    if (nr == NAS_SC_futex) return task->wait.futex_woken ? 0 : (uint64_t)-ETIMEDOUT;
-    if (nr == NAS_SC_read) return nas_fs_fd_read(a[0], a[1], a[2]);
-    if (nr == NAS_SC_readv) return nas_fs_fd_readv(a[0], a[1], a[2]);
-    if (nr == NAS_SC_write) return nas_fs_fd_write(a[0], a[1], a[2]);
-    if (nr == NAS_SC_writev) return nas_fs_fd_writev(a[0], a[1], a[2]);
-    if (nr == NAS_SC_wait4) return nas_process_wait4(a[0], a[1], a[2], a[3]);
-    if (nr == NAS_SC_rt_sigsuspend) return (uint64_t)-EINTR; /* only a caught signal wakes it */
-    if(nr==NAS_SC_epoll_wait || nr==NAS_SC_epoll_pwait)
-        return nas_epoll_wait(a[0],a[1],a[2],a[3]);
-    if (nr == NAS_SC_poll) return nas_fs_poll(a[0],a[1],a[2]);
-    if (nr == NAS_SC_ppoll) return nas_fs_ppoll(a[0],a[1],a[2],a[3]);
-    if (nr == NAS_SC_pselect6 || nr == NAS_SC_select)
-        return nas_fs_pselect6(a[0],a[1],a[2],a[3],false);
-    sched_fail("scheduler unknown blocked syscall");
-}
-
-/* Broken pipe generates SIGPIPE. POSIX/Linux default action terminates the
- * writer; returning EPIPE alone is insufficient (BusyBox yes retries forever).
- * Blocked or ignored SIGPIPE returns EPIPE to userspace as Linux does.
- * Caught/blocked SIGPIPE queues are handled by the signal producer after
- * the default-termination fast path; a custom handler runs on user return.
- */
-bool nas_sched_sigpipe_default(uint64_t fd) {
-    return TASK.ppid && fd < NAS_FD_LIMIT &&
-        (TASK.fds->entries[fd].kind == FD_PIPE_W || TASK.fds->entries[fd].kind == FD_SOCKET) &&
-        signal_actions[NAS_SIGPIPE][0] == 0 &&
-        !(blocked_signals & (1ULL << (NAS_SIGPIPE - 1)));
-}
 /* The leader is the stable Linux process identity, even after its
  * SYS_exit while other threads are alive. Do not allow wait4 to reap its
  * root or descriptor table until the LAST live member has terminated. */
@@ -107,6 +49,7 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     struct nas_task *child = nas_current_task;
     if (!child->ppid || !nas_task_by_pid(child->ppid))
         sched_fail("child termination without living parent");
+    nas_futex_wait_cancel(child);
     nas_process_robust_exit(child);
     nas_process_clear_tid_on_exit();
     if (child->is_thread) {
@@ -200,6 +143,7 @@ void nas_sched_thread_group_exit(uint32_t code,uint32_t signum) {
         if(peer==caller || peer==leader || peer->tgid!=leader->tgid ||
            peer->state==NAS_TASK_FREE)continue;
         if(!peer->is_thread) sched_fail("exit_group crossed process boundary");
+        nas_futex_wait_cancel(peer);
         nas_process_robust_exit(peer);
         nas_process_clear_tid_for_exit(peer);
         peer->state=NAS_TASK_ZOMBIE;
@@ -245,78 +189,31 @@ static unsigned schedule_cursor;
  */
 bool nas_sched_preempt_select(void) {
     nas_time_timers_tick();
+    nas_sched_service_kernel();
     struct nas_task *from=nas_current_task;
     if (!from || from->state != NAS_TASK_RUNNING) return false;
     unsigned origin=NAS_TASK_LIMIT;
     for (unsigned i=0;i<NAS_TASK_LIMIT;i++)
         if (nas_task_at(i)==from) { origin=i; break; }
     if (origin==NAS_TASK_LIMIT) sched_fail("timer task not registered");
-    for (unsigned pass=0;pass<2;pass++) {
-        for (unsigned offset=1;offset<NAS_TASK_LIMIT;offset++) {
-            struct nas_task *next=nas_task_at((origin+offset)%NAS_TASK_LIMIT);
-            if (!next->resume_valid) continue;
-            if (pass==0 && next->state != NAS_TASK_READY) continue;
-            if (pass==1 && !nas_task_wait_ready(next)) continue;
-            nas_current_task=next;
-            nas_arch_restore_cpu(next);
-            uint64_t result=nas_arch_saved_return(next);
-            if (next->wait.pending_valid) {
-                result=task_replay(next);
-                if ((int64_t)result==-EPIPE &&
-                    (next->wait.blocked_op==NAS_SC_write ||
-                     next->wait.blocked_op==NAS_SC_writev) &&
-                    nas_sched_sigpipe_default(next->wait.blocked_args[0])) {
-                    nas_sched_child_exit(0,NAS_SIGPIPE);
-                    nas_current_task=from;
-                    nas_arch_restore_cpu(from);
-                    continue;
-                }
-                if((int64_t)result==-EPIPE &&
-                   (next->wait.blocked_op==NAS_SC_write ||
-                    next->wait.blocked_op==NAS_SC_writev))
-                    nas_signal_broken_pipe(next->wait.blocked_args[0]);
-                uint8_t kind=nas_task_fd_kind(next,next->wait.blocked_args[0]);
-                bool tty_again=(next->wait.blocked_op==NAS_SC_read ||
-                                next->wait.blocked_op==NAS_SC_readv) &&
-                    (kind==FD_TTY || kind==FD_UART) &&
-                    (int64_t)result==-EAGAIN && nas_tty_read_waitable();
-                bool pipe_again=(int64_t)result==-EOPNOTSUPP &&
-                    (kind==FD_PIPE_R || kind==FD_PIPE_W ||
-                     kind==FD_SOCKET || kind==FD_EVENTFD);
-                bool poll_again=(int64_t)result==-EAGAIN &&
-                    (next->wait.blocked_op==NAS_SC_poll ||
-                     next->wait.blocked_op==NAS_SC_ppoll ||
-                     next->wait.blocked_op==NAS_SC_pselect6 ||
-                     next->wait.blocked_op==NAS_SC_select ||
-                     next->wait.blocked_op==NAS_SC_epoll_wait ||
-                     next->wait.blocked_op==NAS_SC_epoll_pwait);
-                if (tty_again || pipe_again || poll_again) {
-                    nas_current_task=from;
-                    nas_arch_restore_cpu(from);
-                    continue;
-                }
-                nas_arch_set_saved_return(next,result);
-                if(next->wait.blocked_op==NAS_SC_ppoll ||
-                   next->wait.blocked_op==NAS_SC_pselect6 ||
-                   next->wait.blocked_op==NAS_SC_epoll_pwait ||
-                   next->wait.blocked_op==NAS_SC_rt_sigsuspend)
-                    nas_signal_ppoll_restore(next,(int64_t)result==-EINTR);
-                next->wait.pending_valid=false;
-                next->wait.blocked_op=0;
-                next->wait.deadline_active=false;
-                if(nas_ptrace_blocked_completed(next,result)) {
-                    nas_current_task=from;
-                    nas_arch_restore_cpu(from);
-                    continue;
-                }
-            }
-            from->state=NAS_TASK_READY;
-            from->resume_valid=true;
-            next->state=NAS_TASK_RUNNING;
-            next->resume_valid=false;
-            nas_task_cpu_account_switch(next);
-            return true;
+    struct nas_sched_scan scan;
+    nas_sched_scan_init(&scan,from,(origin+1U)%NAS_TASK_LIMIT,
+                        NAS_TASK_LIMIT-1U);
+    struct nas_task *next;
+    while((next=nas_sched_scan_next(&scan,0))!=0) {
+        nas_current_task=next;
+        nas_arch_restore_cpu(next);
+        uint64_t result=nas_arch_saved_return(next);
+        enum nas_blocked_completion outcome=nas_blocked_complete(next,&result);
+        if(outcome!=NAS_BLOCKED_COMPLETE) {
+            nas_current_task=from;
+            nas_arch_restore_cpu(from);
+            continue;
         }
+        if(!nas_sched_user_commit(from,next,true))
+            sched_fail("timer committed invalid task state");
+        nas_task_cpu_account_switch(next);
+        return true;
     }
     nas_current_task=from;
     return false;
@@ -325,6 +222,7 @@ bool nas_sched_preempt_select(void) {
 uint64_t nas_task_schedule(uint64_t *frame) {
 retry_schedule: ; /* label must precede a statement in C11 */
     nas_time_timers_tick();
+    nas_sched_service_kernel();
     struct nas_task *previous = nas_current_task;
     uint64_t previous_pid = previous->pid; /* zombie may be reaped on replay */
     /* A READY task always gets one turn before re-evaluating blocked tasks.
@@ -335,93 +233,37 @@ retry_schedule: ; /* label must precede a statement in C11 */
     unsigned tty_sig=nas_tty_take_signal(&tty_sid,&tty_pgid);
     if(tty_sig && !nas_signal_tty_event(tty_sid,tty_pgid,tty_sig))
         nas_tty_signal_unsupported();
-    for (unsigned pass = 0; pass < 2; ++pass) {
-        for (unsigned offset = 0; offset < NAS_TASK_LIMIT; ++offset) {
-            unsigned slot = (schedule_cursor + offset) % NAS_TASK_LIMIT;
-            struct nas_task *next = nas_task_at(slot);
-            /* A blocked current task may wake when it is the LAST task.
-             * Never resume a RUNNING task from its own syscall frame. */
-            if (!next->resume_valid ||
-                (next == previous && next->state == NAS_TASK_RUNNING))
-                continue;
-            if (pass == 0 && next->state != NAS_TASK_READY) continue;
-            if (pass == 1 && !nas_task_wait_ready(next)) continue;
-            nas_current_task = next;
-            nas_arch_restore_cpu(next);
-            uint64_t result = nas_arch_saved_return(next);
-            if (next->wait.pending_valid) {
-                result = task_replay(next);
-                if ((int64_t)result == -EPIPE &&
-                    (next->wait.blocked_op == NAS_SC_write ||
-                     next->wait.blocked_op == NAS_SC_writev) &&
-                    nas_sched_sigpipe_default(next->wait.blocked_args[0])) {
-                    nas_sched_child_exit(0, NAS_SIGPIPE);
-                    goto retry_schedule; /* parent can now observe zombie */
-                }
-                if((int64_t)result==-EPIPE &&
-                   (next->wait.blocked_op==NAS_SC_write ||
-                    next->wait.blocked_op==NAS_SC_writev))
-                    nas_signal_broken_pipe(next->wait.blocked_args[0]);
-                /* Recheck after another task consumed a ready pipe/TTY.
-                 * EAGAIN means physical tty RX is genuinely not ready.
-                 * EOPNOTSUPP remains the pipe's internal block sentinel,
-                 * but unsupported tty termios/ISIG must reach userspace. */
-                uint8_t replay_kind=nas_task_fd_kind(next,next->wait.blocked_args[0]);
-                bool tty_again=(next->wait.blocked_op==NAS_SC_read ||
-                                next->wait.blocked_op==NAS_SC_readv) &&
-                    (replay_kind==FD_TTY || replay_kind==FD_UART) &&
-                    (int64_t)result==-EAGAIN && nas_tty_read_waitable();
-                bool pipe_again=(int64_t)result==-EOPNOTSUPP &&
-                    (replay_kind==FD_PIPE_R || replay_kind==FD_PIPE_W ||
-                     replay_kind==FD_SOCKET || replay_kind==FD_EVENTFD);
-                bool poll_again=(int64_t)result==-EAGAIN &&
-                    (next->wait.blocked_op==NAS_SC_poll ||
-                     next->wait.blocked_op==NAS_SC_ppoll ||
-                     next->wait.blocked_op==NAS_SC_pselect6 ||
-                     next->wait.blocked_op==NAS_SC_select ||
-                     next->wait.blocked_op==NAS_SC_epoll_wait ||
-                     next->wait.blocked_op==NAS_SC_epoll_pwait);
-                if (tty_again || pipe_again || poll_again) {
-                    next->state = NAS_TASK_BLOCKED;
-                    nas_current_task = previous;
-                    nas_arch_restore_cpu(previous);
-                    continue;
-                }
-                if(next->wait.blocked_op==NAS_SC_ppoll ||
-                   next->wait.blocked_op==NAS_SC_pselect6 ||
-                   next->wait.blocked_op==NAS_SC_epoll_pwait ||
-                   next->wait.blocked_op==NAS_SC_rt_sigsuspend)
-                    nas_signal_ppoll_restore(next,(int64_t)result==-EINTR);
-                next->wait.pending_valid = false;
-                next->wait.blocked_op = 0;
-                next->wait.deadline_active = false;
-                if(nas_ptrace_blocked_completed(next,result)) {
-                    nas_arch_set_saved_return(next,result);
-                    nas_current_task=previous;
-                    nas_arch_restore_cpu(previous);
-                    /* The completing tracee is STOPPED now and may have
-                     * just made a blocked tracer wait4 READY. Restart
-                     * selection: a linear scan may have passed the tracer
-                     * earlier, otherwise falsely reporting deadlock. */
-                    goto retry_schedule;
-                }
-            }
-            next->state = NAS_TASK_RUNNING;
-            next->resume_valid = false;
-            nas_task_cpu_account_switch(next);
-            schedule_cursor = (slot + 1) % NAS_TASK_LIMIT;
-            nas_arch_load_user_frame(next, frame);
-            /* The old thread's kernel stack is no longer active after the
-             * syscall frame is transferred. Its TID slot can be recycled. */
-            if (previous!=next && previous->is_thread &&
-                previous->state==NAS_TASK_ZOMBIE)
-                nas_task_release(previous);
-            if (schedule_count++ < 48) {
-                nas_print("[SCHED] from="); nas_dec(previous_pid);
-                nas_print(" to="); nas_dec(next->pid); nas_print("\n");
-            }
-            return result;
+    struct nas_sched_scan scan;
+    nas_sched_scan_init(&scan,previous,schedule_cursor,NAS_TASK_LIMIT);
+    unsigned slot=0;
+    struct nas_task *next;
+    while((next=nas_sched_scan_next(&scan,&slot))!=0) {
+        nas_current_task=next;
+        nas_arch_restore_cpu(next);
+        uint64_t result=nas_arch_saved_return(next);
+        enum nas_blocked_completion outcome=nas_blocked_complete(next,&result);
+        if(outcome!=NAS_BLOCKED_COMPLETE) {
+            nas_current_task=previous;
+            nas_arch_restore_cpu(previous);
+            if(outcome==NAS_BLOCKED_TERMINATED ||
+               outcome==NAS_BLOCKED_PTRACE_STOP)
+                goto retry_schedule;
+            continue;
         }
+        if(!nas_sched_user_commit(previous,next,false))
+            sched_fail("syscall committed invalid task state");
+        nas_task_cpu_account_switch(next);
+        schedule_cursor=(slot+1U)%NAS_TASK_LIMIT;
+        nas_arch_load_user_frame(next,frame);
+        /* No active C continuation can keep a stale last-exit thread slot. */
+        if(previous!=next && previous->is_thread &&
+           previous->state==NAS_TASK_ZOMBIE)
+            nas_task_release(previous);
+        if(schedule_count++<48) {
+            nas_print("[SCHED] from=");nas_dec(previous_pid);
+            nas_print(" to=");nas_dec(next->pid);nas_print("\n");
+        }
+        return result;
     }
     /* No user Task occupies the CPU while the no-runnable-task dispatcher
      * polls TTY/device readiness. Meter this as idle until a Task resumes. */
@@ -480,6 +322,13 @@ retry_schedule: ; /* label must precede a statement in C11 */
             __asm__ volatile ("" ::: "memory");
             goto retry_schedule;
         }
+    }
+    /* A native kernel continuation with a finite deadline must not cause a
+     * false user-only deadlock. The current IRQ-masked idle dispatcher polls
+     * the hardware clock; true interruptible idle will replace this path. */
+    if(nas_kthread_deadlines_armed() || nas_kthread_runnable()) {
+        __asm__ volatile ("" ::: "memory");
+        goto retry_schedule;
     }
     /* Fatal deadlock diagnostic: dump who holds each pipe endpoint. */
     for (unsigned i = 0; i < NAS_PIPE_COUNT; i++) {

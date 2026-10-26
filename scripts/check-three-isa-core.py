@@ -9,7 +9,7 @@ import re
 root=Path(__file__).resolve().parent.parent
 srcs=[line.strip() for line in (root/"scripts/full-kernel-core.sources").read_text().splitlines()
       if line.strip() and not line.startswith("#")]
-assert len(srcs)==len(set(srcs))==50, "common kernel TU manifest drift"
+assert len(srcs)==len(set(srcs))==59, "common kernel TU manifest drift"
 make=(root/"Makefile").read_text()
 defs={}
 for line in make.splitlines():
@@ -83,7 +83,7 @@ sched=(root/"kernel/task/sched.c").read_text()
 assert "struct nas_task_wait wait;" in task_h
 assert "nas_task_wait_reset(child);" in (root/"kernel/task.c").read_text()
 assert "bool nas_task_wait_ready(" in task_wait
-assert "nas_task_wait_ready(" in sched
+assert "nas_task_wait_ready(" in (root/"kernel/task/sched_core.c").read_text()
 for old in ("static bool task_io_ready(", "static bool task_wait_ready(",
             "static bool task_can_wake("):
     if old in sched: raise SystemExit(f"scheduler still owns device wake policy: {old}")
@@ -122,6 +122,45 @@ for arch in ("riscv64","aarch64"):
     script=(root/f"scripts/build-{arch}-full.sh").read_text()
     for needle in (f"kernel/arch/{arch}/kernel_switch.S",'"$out/kernel_switch.o"'):
         if needle not in script: raise SystemExit(f"{arch} kernel omits continuation {needle}")
+if "nas_wait_queue_wake(&wait_test_queue" not in (root/"kernel/task/kernel_context.c").read_text():
+    raise SystemExit("native boot lost M92 real continuation wake test")
+if "child->kernel_wait=(struct nas_wait_entry){0};" not in (root/"kernel/task.c").read_text():
+    raise SystemExit("fork must not inherit a queued kernel wait entry")
+if "nas_futex_wait_arm(nas_current_task)" not in (root/"kernel/task/process.c").read_text():
+    raise SystemExit("futex syscall is not using generic kernel wait queues")
+if "nas_futex_wait_cancel(task)" not in (root/"kernel/task/blocked_completion.c").read_text():
+    raise SystemExit("legacy blocked completion must release futex waiter exactly once")
+if "task_replay(" in sched:
+    raise SystemExit("syscall replay leaked back into scheduler core")
+if "nas_blocked_complete(next,&result)" not in sched:
+    raise SystemExit("scheduler lost shared IRQ/syscall completion adapter")
+if "nas_task_wake_ready(t)" not in (root/"kernel/task/futex_wait.c").read_text():
+    raise SystemExit("futex producer no longer publishes runnable tasks")
+if sched.count("nas_sched_service_kernel();")!=2:
+    raise SystemExit("both syscall and timer scheduler must service native kernel workers")
+if sched.count("nas_sched_scan_next(&scan,")!=2:
+    raise SystemExit("IRQ and syscall task selection bypassed shared scheduler walk")
+if sched.count("nas_sched_user_commit(")!=2:
+    raise SystemExit("IRQ and syscall Task state publication diverged")
+if "nas_sched_allow_kernel_slice(" not in (root/"kernel/task/scheduler_service.c").read_text():
+    raise SystemExit("kernel worker dispatch bypassed shared domain fairness policy")
+if "nas_sched_service_kernel();" not in sched:
+    raise SystemExit("syscall and timer schedule stopped servicing native kernel waits")
+if "nas_kthread_timers_tick" not in (root/"kernel/task/scheduler_service.c").read_text():
+    raise SystemExit("native kernel timeout progress not integrated with scheduler")
+if "sync_boot_test();" not in (root/"kernel/task/kthread_boot.c").read_text():
+    raise SystemExit("real native kernel sync producer/consumer is not boot-tested")
+if "nas_kthread_park_until(&sem->waiters" not in (root/"kernel/task/k_sync.c").read_text():
+    raise SystemExit("kernel semaphore bypassed common native wait queue")
+if "scheduled_after_user_entry" not in (root/"kernel/task/kthread_boot.c").read_text():
+    raise SystemExit("native kernel worker is not resumed by real user scheduler")
+if "nas_kthread_boot_selftest();" not in (root/"kernel/init/main.c").read_text():
+    raise SystemExit("three-ISA native boot no longer exercises real kernel workers")
+signal_src=(root/"kernel/task/signal.c").read_text()
+if "nas_sched_thread_group_exit(0,NAS_SIGSEGV);" not in signal_src or "nas_arch_load_user_frame(nas_current_task,frame);" not in signal_src:
+    raise SystemExit("broken userspace sigframe once again panics or fabricates a user return")
+if 'nas_fail("M30 cannot build native user signal frame")' in signal_src:
+    raise SystemExit("kernel-wide panic returned for an invalid user signal stack")
 if "nas_kernel_context_boot_selftest();" not in (root/"kernel/init/main.c").read_text():
     raise SystemExit("native QEMU kernels no longer test real kernel C resume")
 print(f"[M50 ARCH PASS] all {len(srcs)} actual shared kernel TUs are linked on x86 "

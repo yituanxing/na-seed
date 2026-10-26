@@ -5,6 +5,7 @@
 #include "fd.h"
 #include "arch/context.h"
 #include "task/kernel_context.h"
+#include "task/wait_queue.h"
 #include "mm/mm.h"
 #include "task/resources.h"
 
@@ -153,6 +154,9 @@ struct nas_task {
     /* Native kernel continuation, never copied across fork/clone.
      * The current syscall replay scheduler does not yet park C frames. */
     struct nas_kernel_context kernel_context;
+    /* Single outstanding native kernel-continuation sleep registration.
+     * Replay waits remain separate until the scheduler contract migrates. */
+    struct nas_wait_entry kernel_wait;
     /* Independently reference-counted address space (CLONE_VM / vfork). */
     struct nas_mm *mm;
     uint64_t loaded_phdr, loaded_phnum;

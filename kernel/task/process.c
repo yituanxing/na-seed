@@ -10,6 +10,7 @@
 #include "wait_pid.h"
 #include "../time/clock.h"
 #include "sched.h"
+#include "futex_wait.h"
 #include "ptrace.h"
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
@@ -493,18 +494,9 @@ static void futex_debug(const char *act,uint64_t addr,uint64_t val,uint64_t ret)
 #define futex_debug(a,b,c,d) ((void)0)
 #endif
 unsigned nas_process_futex_wake(uint64_t uaddr,unsigned max,uint32_t mask) {
-    unsigned count=0;
-    for(unsigned i=0;i<NAS_TASK_LIMIT && count<max;i++) {
-        struct nas_task *t=nas_task_at(i);
-        if(t->state!=NAS_TASK_BLOCKED || !t->wait.pending_valid ||
-           t->wait.blocked_op!=NAS_SC_futex || t->wait.futex_addr!=uaddr ||
-           t->mm!=nas_current_task->mm ||
-           t->wait.futex_woken || !(t->wait.futex_mask&mask))continue;
-        t->wait.futex_woken=true;
-        count++;
-    }
-    futex_debug("wake",uaddr,max,count);
-    return count;
+    unsigned n=nas_futex_wait_wake(nas_current_task->mm,uaddr,max,mask);
+    futex_debug("wake",uaddr,max,n);
+    return n;
 }
 /* Linux futex word ABI is a native aligned 32-bit user value, on each ISA.
  * WAIT and WAIT_BITSET are truly blocking in shared single-CPU scheduler.
@@ -537,16 +529,8 @@ uint64_t nas_process_futex(uint64_t *frame,uint64_t addr,uint64_t op,
         unsigned nwake=val>NAS_TASK_LIMIT?NAS_TASK_LIMIT:(unsigned)val;
         unsigned nmove=timeout>NAS_TASK_LIMIT?NAS_TASK_LIMIT:(unsigned)timeout;
         unsigned woke=nas_process_futex_wake(addr,nwake,UINT32_MAX);
-        unsigned moved=0;
-        for(unsigned i=0;i<NAS_TASK_LIMIT && moved<nmove;i++) {
-            struct nas_task *t=nas_task_at(i);
-            if(t->state!=NAS_TASK_BLOCKED || !t->wait.pending_valid ||
-               t->wait.blocked_op!=NAS_SC_futex || t->wait.futex_addr!=addr ||
-               t->mm!=nas_current_task->mm || t->wait.futex_woken)
-                continue;
-            t->wait.futex_addr=addr2;
-            moved++;
-        }
+        unsigned moved=nas_futex_wait_requeue(nas_current_task->mm,
+                                               addr,addr2,nmove);
         futex_debug("requeue",addr,addr2,((uint64_t)woke<<32)|moved);
         return woke+moved;
     }
@@ -594,5 +578,6 @@ uint64_t nas_process_futex(uint64_t *frame,uint64_t addr,uint64_t op,
     nas_current_task->wait.futex_addr=addr;
     nas_current_task->wait.futex_mask=mask;
     nas_current_task->wait.futex_woken=false;
+    if(!nas_futex_wait_arm(nas_current_task))return (uint64_t)-ENOMEM;
     return nas_task_block(frame,NAS_SC_futex,addr,op,val,timeout);
 }
