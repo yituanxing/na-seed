@@ -36,7 +36,7 @@ if ! /bin/busybox grep -Eq 'process [0-9]+' /tmp/m77-gdb.stdout ||
    ! /bin/busybox grep -q 'Breakpoint 1, m77_compute' /tmp/m77-gdb.stdout ||
    ! /bin/busybox grep -Eq '\\$1 = 17' /tmp/m77-gdb.stdout ||
    ! /bin/busybox grep -Eq '\\$2 = 94' /tmp/m77-gdb.stdout ||
-   ! /bin/busybox grep -q 'Detaching from program' /tmp/m77-gdb.stdout; then
+   ! /bin/busybox grep -q 'Inferior 1 (process' /tmp/m77-gdb.stdout; then
   echo '[M77 FAIL] missing real attach, breakpoint, live DWARF mutation or detach'
   /bin/busybox head -c 12000 /tmp/m77-gdb.stdout || :
   /bin/busybox head -c 8000 /tmp/m77-gdb.stderr || :
