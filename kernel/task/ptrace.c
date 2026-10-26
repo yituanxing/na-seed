@@ -301,8 +301,54 @@ static uint64_t ptrace_arm_fpsimd(struct nas_task *task,uint64_t req,
     return (uint64_t)-EOPNOTSUPP;
 }
 #endif
+/* Linux RV64 NT_PRFPREG uses 32 double-precision f-registers and
+ * a 32-bit FCSR (+ ABI padding). The kernel already saves this genuine
+ * native state on traps and scheduling; GDB uses this regset to identify
+ * the target hard-float width (flen=8), not a fabricated zero regset. */
+#if defined(__riscv) && __riscv_xlen == 64
+#define NAS_NT_PRFPREG 2ULL
+struct nas_linux_rv_fpregs {
+    uint64_t f[32];
+    uint32_t fcsr;
+    uint32_t reserved;
+};
+_Static_assert(sizeof(struct nas_linux_rv_fpregs)==264,
+               "Linux RV64 NT_PRFPREG layout");
+static uint64_t ptrace_rv_fpregs(struct nas_task *task,uint64_t req,
+                                  uint64_t data) {
+    uint64_t iov[2];
+    if(!nas_user_read_bytes(data,(uint8_t *)iov,sizeof(iov)))
+        return (uint64_t)-EFAULT;
+    if(req==PTRACE_GETREGSET) {
+        struct nas_linux_rv_fpregs state={0};
+        for(unsigned i=0;i<32;i++)state.f[i]=task->arch.fp_regs[i];
+        state.fcsr=(uint32_t)task->arch.fp_fcsr;
+        uint64_t n=iov[1]<sizeof(state)?iov[1]:sizeof(state);
+        if(n && !nas_user_write_bytes(iov[0],(const uint8_t *)&state,n))
+            return (uint64_t)-EFAULT;
+        return nas_user_write_u64(data+8,n)?0:(uint64_t)-EFAULT;
+    }
+    if(req==PTRACE_SETREGSET) {
+        struct nas_linux_rv_fpregs state={0};
+        if(iov[1]<sizeof(state))return (uint64_t)-EINVAL;
+        if(!nas_user_read_bytes(iov[0],(uint8_t *)&state,sizeof(state)))
+            return (uint64_t)-EFAULT;
+        /* fcsr has only accrued exception flags (5) and frm (3).
+         * Protect privileged/synthetic bits from debugger writes. */
+        if(state.fcsr & ~0xffU)return (uint64_t)-EINVAL;
+        for(unsigned i=0;i<32;i++)task->arch.fp_regs[i]=state.f[i];
+        task->arch.fp_fcsr=state.fcsr;
+        return nas_user_write_u64(data+8,sizeof(state))?0:(uint64_t)-EFAULT;
+    }
+    return (uint64_t)-EOPNOTSUPP;
+}
+#endif
 static uint64_t ptrace_gprs(const struct nas_task *task,
                            uint64_t request,uint64_t addr,uint64_t data) {
+#if defined(__riscv) && __riscv_xlen == 64
+    if(request==PTRACE_GETREGSET && addr==NAS_NT_PRFPREG)
+        return ptrace_rv_fpregs((struct nas_task *)task,request,data);
+#endif
 #if defined(__aarch64__)
     if(request==PTRACE_GETREGSET && addr==NAS_NT_PRFPREG)
         return ptrace_arm_fpsimd((struct nas_task *)task,request,data);
@@ -329,6 +375,10 @@ static uint64_t ptrace_gprs(const struct nas_task *task,
 }
 static uint64_t ptrace_set_gprs(struct nas_task *task,
                               uint64_t req,uint64_t addr,uint64_t data) {
+#if defined(__riscv) && __riscv_xlen == 64
+    if(req==PTRACE_SETREGSET && addr==NAS_NT_PRFPREG)
+        return ptrace_rv_fpregs(task,req,data);
+#endif
 #if defined(__aarch64__)
     if(req==PTRACE_SETREGSET && addr==NAS_NT_PRFPREG)
         return ptrace_arm_fpsimd(task,req,data);
@@ -460,7 +510,9 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
              * hardware watchpoint support: only zero write accepted. */
             if(addr&7ULL)return (uint64_t)-EIO;
             if(addr>=848ULL && addr<912ULL) {
-                if(request==PTRACE_PEEKUSER)return 0;
+                if(request==PTRACE_PEEKUSER)
+                    return nas_user_write_u64(data,0)
+                        ?0:(uint64_t)-EFAULT;
                 return data==0?0:(uint64_t)-EIO;
             }
             if(addr>=27ULL*8ULL)return (uint64_t)-EIO;

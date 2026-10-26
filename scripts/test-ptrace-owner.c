@@ -89,6 +89,9 @@ int main(void) {
     assert(nas_ptrace_request(3,2,17*8,(uint64_t)(uintptr_t)&peek_result)==0);
     assert(peek_result==0x33); /* Real x86-64 userspace CS selector. */
     assert((int64_t)nas_ptrace_request(3,2,17*8,0)==-EFAULT);
+    peek_result=UINT64_C(0x1234);
+    assert(nas_ptrace_request(3,2,848,(uint64_t)(uintptr_t)&peek_result)==0);
+    assert(peek_result==0); /* DR0 probe must initialize output, not merely return zero. */
 #endif
     assert(nas_ptrace_request(24,2,0,0)==0);
     assert(tracee.state==NAS_TASK_READY && tracee.ptrace_trace_syscalls);

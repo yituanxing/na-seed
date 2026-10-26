@@ -105,7 +105,11 @@ void nas_arch_cpu_tables_init(void) {
         idt[i].offset_high = addr >> 32;
         idt[i].selector = 0x08;
         idt[i].ist = 0;
-        idt[i].type = 0x8e;
+        /* INT3 executes in CPL3 and uses vector 3 via the IDT. The
+         * Linux debug ABI requires DPL=3 on the *real* #BP gate;
+         * DPL=0 raises #GP(0x1a) instead of a ptrace SIGTRAP.
+         * Keep every other exception gate privileged (DPL=0). */
+        idt[i].type = i==3 ? 0xee : 0x8e;
         idt[i].reserved = 0;
     }
 
