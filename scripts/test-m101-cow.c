@@ -27,6 +27,7 @@ static alignas(4096) uint8_t memory[NFRAMES*P];
 static uint32_t refs[NFRAMES];
 static unsigned get_calls,fail_get_on;
 struct nas_task *nas_current_task;
+void nas_print(const char *msg){(void)msg;}
 __attribute__((noreturn))void nas_arch_halt(void) {abort();}
 uint64_t nas_hhdm_offset(void){return (uint64_t)(uintptr_t)memory;}
 uint64_t nas_frame_alloc(void) {
