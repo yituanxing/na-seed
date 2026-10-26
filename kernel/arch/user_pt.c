@@ -86,7 +86,7 @@ bool nas_arch_pt_install(const struct nas_user_space *s) {
     return true;
 }
 void nas_arch_pt_flush(uint64_t va) {
-    __asm__ volatile("sfence.vma %0,zero" : : "r"(va) : "memory");
+    __asm__ volatile("sfence.vma %0,zero\n fence.i" : : "r"(va) : "memory");
 }
 #elif defined(__aarch64__)
 #include "aarch64/mmu.h"
@@ -122,8 +122,23 @@ bool nas_arch_pt_prepare(const struct nas_user_space *s,uint64_t va) {
 }
 bool nas_arch_pt_exchange(const struct nas_user_space *s,uint64_t va,
                            uint64_t new_pa,unsigned access,uint64_t *old_pa) {
+    if(!old_pa)return false;
     struct nas_arm_pt p=native_pt(s);
-    return nas_arm_pt_exchange(&p,va,new_pa,access,old_pa);
+    /* ARMv8 requires break-before-make for valid-to-valid changes of
+     * physical output address or memory attributes. Removing old leaf,
+     * invalidating the local TLB and only THEN installing the fresh leaf
+     * prevents architecturally UNPREDICTABLE valid-descriptor rewrites.
+     * Single CPU MM ownership guarantees no other writer during exchange. */
+    uint64_t previous=0;
+    if(!nas_arm_pt_exchange(&p,va,0,0,&previous))return false;
+    if(previous)nas_arch_pt_flush(va);
+    if(new_pa) {
+        uint64_t replaced=0;
+        if(!nas_arm_pt_exchange(&p,va,new_pa,access,&replaced) || replaced)
+            return false;
+    }
+    *old_pa=previous;
+    return true;
 }
 bool nas_arch_pt_map(const struct nas_user_space *s,uint64_t va,
                      uint64_t pa,unsigned access) {
