@@ -132,7 +132,8 @@ int main(void) {
     stranger.wait.pending_valid=true;
     stranger.wait.blocked_op=NAS_SC_nanosleep;
     assert(nas_ptrace_request(16,3,0,0)==0);
-    assert(stranger.ptrace_blocked_exit_pending);
+    /* Attach preserves the original blocked syscall's C continuation. */
+    assert(stranger.wait.pending_valid && stranger.state==NAS_TASK_STOPPED);
     assert(nas_ptrace_request(17,3,0,0)==0);
     assert(stranger.state==NAS_TASK_BLOCKED && stranger.wait.pending_valid);
     /* Real CPU breakpoint must report through the same authenticated

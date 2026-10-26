@@ -290,17 +290,6 @@ bool nas_ptrace_fork_created(struct nas_task *parent,struct nas_task *child,
     parent->ptrace_fork_pending_exit=true;
     return true;
 }
-/* A parked syscall was replayed under the selected Task's real MMU.
- * Its saved native registers remain authoritative: never interpret
- * another Task's current live trap frame as the completing call. */
-bool nas_ptrace_blocked_completed(struct nas_task *task,uint64_t value) {
-    if(!task->ptrace_blocked_exit_pending)return false;
-    task->ptrace_blocked_exit_pending=false;
-    if(!task->ptrace_trace_syscalls || !ptrace_owner_valid(task))return false;
-    task->ptrace_result=value;
-    ptrace_stop(task,SYSINFO_EXIT);
-    return true;
-}
 static uint64_t ptrace_syscall_info(const struct nas_task *task,
                                     uint64_t len,uint64_t dest) {
     struct nas_sysinfo {
@@ -549,8 +538,6 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
         target->ptrace_result=0;
         target->ptrace_ip=nas_arch_ptrace_saved_ip(&target->arch);
         target->ptrace_sp=nas_arch_ptrace_saved_sp(&target->arch);
-        target->ptrace_blocked_exit_pending=target->state==NAS_TASK_BLOCKED &&
-                                            target->wait.pending_valid;
         target->stopped_from=target->state;
         target->state=NAS_TASK_STOPPED;
         /* Linux PTRACE_ATTACH delivers an actual SIGSTOP wait event.

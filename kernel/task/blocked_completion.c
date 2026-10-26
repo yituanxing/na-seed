@@ -125,7 +125,5 @@ enum nas_blocked_completion nas_blocked_complete(struct nas_task *task,
     nas_task_wait_reset(task);
     nas_arch_set_saved_return(task,rc);
     *result=rc;
-    if(nas_ptrace_blocked_completed(task,rc))
-        return NAS_BLOCKED_PTRACE_STOP;
     return NAS_BLOCKED_COMPLETE;
 }

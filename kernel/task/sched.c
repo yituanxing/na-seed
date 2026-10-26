@@ -279,8 +279,6 @@ uint64_t nas_task_block(uint64_t *frame,enum nas_syscall_op nr,
     self->resume_valid=true;
     self->wait.blocked_op=nr;
     self->wait.pending_valid=true;
-    self->ptrace_blocked_exit_pending=
-        self->ptrace_trace_syscalls && self->ptrace_tracer_pid;
     self->wait.blocked_args[0]=a;
     self->wait.blocked_args[1]=b;
     self->wait.blocked_args[2]=c;

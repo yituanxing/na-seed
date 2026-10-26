@@ -119,7 +119,6 @@ struct nas_task {
     bool ptrace_exec_pending_exit,ptrace_exit_event_sent;
     /* Traced child creation and true sleeping syscall completions. */
     bool ptrace_child_initial_stop,ptrace_fork_pending_exit;
-    bool ptrace_blocked_exit_pending;
     /* One hardware user instruction per request; not inherited by fork. */
     bool ptrace_single_step;
 #if defined(__riscv) && __riscv_xlen==64

@@ -124,10 +124,15 @@ uint64_t nas_process_vfork(uint64_t *frame, uint64_t child_stack) {
     parent->vfork_child_pid=child->pid;
     parent->resume_valid=true;
     parent->state=NAS_TASK_BLOCKED;
+    /* A ptrace vfork event cannot complete the parent's syscall until
+     * the child exits or execs, even if the tracer resumes the parent. */
     if(nas_ptrace_fork_created(parent,child,NAS_PTRACE_EVENT_VFORK,frame))
-        return nas_task_schedule(frame);
-    /* Parent must keep its syscall C frame until child execs or exits. */
-    (void)nas_task_schedule(frame);
+        (void)nas_task_schedule(frame);
+    while(parent->vfork_child_pid) {
+        parent->state=NAS_TASK_BLOCKED;
+        parent->resume_valid=true;
+        (void)nas_task_schedule(frame);
+    }
     nas_print("[PROC] vfork parent="); nas_dec(parent->pid);
     nas_print(" child="); nas_dec(child->pid);
     nas_print(" shared VM\n");
