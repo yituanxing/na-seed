@@ -9,7 +9,7 @@ import re
 root=Path(__file__).resolve().parent.parent
 srcs=[line.strip() for line in (root/"scripts/full-kernel-core.sources").read_text().splitlines()
       if line.strip() and not line.startswith("#")]
-assert len(srcs)==len(set(srcs))==58, "common kernel TU manifest drift"
+assert len(srcs)==len(set(srcs))==59, "common kernel TU manifest drift"
 make=(root/"Makefile").read_text()
 defs={}
 for line in make.splitlines():
@@ -138,6 +138,10 @@ if "nas_task_wake_ready(t)" not in (root/"kernel/task/futex_wait.c").read_text()
     raise SystemExit("futex producer no longer publishes runnable tasks")
 if sched.count("nas_sched_service_kernel();")!=2:
     raise SystemExit("both syscall and timer scheduler must service native kernel workers")
+if sched.count("nas_sched_user_eligible(next,")!=2:
+    raise SystemExit("native IRQ and syscall selected different user-task readiness policies")
+if "nas_sched_allow_kernel_slice(" not in (root/"kernel/task/scheduler_service.c").read_text():
+    raise SystemExit("kernel worker dispatch bypassed shared domain fairness policy")
 if "nas_sched_service_kernel();" not in sched:
     raise SystemExit("syscall and timer schedule stopped servicing native kernel waits")
 if "nas_kthread_timers_tick" not in (root/"kernel/task/scheduler_service.c").read_text():

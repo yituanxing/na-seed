@@ -16,6 +16,7 @@
 #include "blocked_completion.h"
 #include "kthread.h"
 #include "scheduler_service.h"
+#include "sched_core.h"
 #include "wait_pid.h"
 #include "signal.h"
 #include "ptrace.h"
@@ -198,9 +199,7 @@ bool nas_sched_preempt_select(void) {
     for (unsigned pass=0;pass<2;pass++) {
         for (unsigned offset=1;offset<NAS_TASK_LIMIT;offset++) {
             struct nas_task *next=nas_task_at((origin+offset)%NAS_TASK_LIMIT);
-            if (!next->resume_valid) continue;
-            if (pass==0 && next->state != NAS_TASK_READY) continue;
-            if (pass==1 && !nas_task_wait_ready(next)) continue;
+            if(!nas_sched_user_eligible(next,from,pass))continue;
             nas_current_task=next;
             nas_arch_restore_cpu(next);
             uint64_t result=nas_arch_saved_return(next);
@@ -242,11 +241,7 @@ retry_schedule: ; /* label must precede a statement in C11 */
             struct nas_task *next = nas_task_at(slot);
             /* A blocked current task may wake when it is the LAST task.
              * Never resume a RUNNING task from its own syscall frame. */
-            if (!next->resume_valid ||
-                (next == previous && next->state == NAS_TASK_RUNNING))
-                continue;
-            if (pass == 0 && next->state != NAS_TASK_READY) continue;
-            if (pass == 1 && !nas_task_wait_ready(next)) continue;
+            if(!nas_sched_user_eligible(next,previous,pass))continue;
             nas_current_task = next;
             nas_arch_restore_cpu(next);
             uint64_t result=nas_arch_saved_return(next);
