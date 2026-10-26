@@ -17,6 +17,7 @@ struct nas_kthread {
     void (*entry)(void *);
     void *argument;
     enum worker_state state;
+    uint64_t generation;
     _Alignas(16) uint8_t stack[NAS_KTHREAD_STACK];
 };
 static struct nas_kthread workers[NAS_KTHREAD_LIMIT];
@@ -50,21 +51,27 @@ void nas_kthread_system_init(void) {
     nas_kernel_context_reset(&caller_context);
     next_slot=0;
 }
-struct nas_kthread *nas_kthread_spawn(void (*run)(void *),void *argument) {
-    if(!run || active)return 0; /* do not recycle from inside active worker */
+bool nas_kthread_spawn(void (*run)(void *),void *argument,
+                       struct nas_kthread_handle *handle) {
+    if(!run || !handle || active)return false; /* must not race active worker */
+    *handle=(struct nas_kthread_handle){0};
     for(unsigned i=0;i<NAS_KTHREAD_LIMIT;i++) {
         struct nas_kthread *w=&workers[i];
         if(w->state!=KTHREAD_FREE)continue;
         nas_wait_entry_reset(&w->waiting);
+        if(w->generation==UINT64_MAX)return false; /* fail closed on reuse wrap */
         if(!nas_kernel_context_prepare(&w->context,w->stack,
                                        sizeof(w->stack),kthread_start))
-            return 0;
+            return false;
+        w->generation++;
         w->entry=run;
         w->argument=argument;
         w->state=KTHREAD_READY;
-        return w;
+        handle->slot=i;
+        handle->generation=w->generation;
+        return true;
     }
-    return 0;
+    return false;
 }
 static void return_to_dispatch(void) {
     struct nas_kthread *self=active;
@@ -96,10 +103,27 @@ bool nas_kthread_park(struct nas_wait_queue *queue) {
     if(self->waiting.queue)nas_fail("M95 resumed queued kernel worker");
     return true;
 }
-bool nas_kthread_wake(struct nas_kthread *w) {
+static struct nas_kthread *handle_lookup(struct nas_kthread_handle h) {
+    if(h.slot>=NAS_KTHREAD_LIMIT || !h.generation)return 0;
+    struct nas_kthread *w=&workers[h.slot];
+    return w->generation==h.generation ? w : 0;
+}
+bool nas_kthread_wake(struct nas_kthread_handle handle) {
+    struct nas_kthread *w=handle_lookup(handle);
     if(!w || w->state!=KTHREAD_WAITING)return false;
     (void)nas_wait_queue_remove(&w->waiting);
     w->state=KTHREAD_READY;
+    return true;
+}
+bool nas_kthread_cancel(struct nas_kthread_handle handle) {
+    struct nas_kthread *w=handle_lookup(handle);
+    if(!w || (w->state!=KTHREAD_WAITING && w->state!=KTHREAD_READY))
+        return false;
+    (void)nas_wait_queue_remove(&w->waiting);
+    nas_kernel_context_reset(&w->context);
+    w->entry=0;
+    w->argument=0;
+    w->state=KTHREAD_FREE;
     return true;
 }
 unsigned nas_kthread_run(unsigned budget) {

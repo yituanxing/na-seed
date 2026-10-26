@@ -29,7 +29,9 @@ static void producer(void *argument) {
 void nas_kthread_boot_selftest(void) {
     nas_wait_queue_init(&boot_queue);
     boot_phases=0;
-    if(!nas_kthread_spawn(waiter,0) || !nas_kthread_spawn(producer,0))
+    struct nas_kthread_handle a,b;
+    if(!nas_kthread_spawn(waiter,0,&a) ||
+       !nas_kthread_spawn(producer,0,&b))
         nas_fail("M95 cannot create kernel workers");
     if(nas_kthread_run(1)!=1 || boot_phases!=1 || boot_queue.count!=1)
         nas_fail("M95 kernel waiter never suspended");
