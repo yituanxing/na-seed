@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include "../kernel/task.h"
 #include "../kernel/task/ptrace.h"
+#include "../kernel/syscall/ops.h"
 #include "../kernel/errno.h"
 
 static struct nas_task tracer, tracee, stranger;
@@ -66,5 +67,30 @@ int main(void) {
     tracee.stopped_from=NAS_TASK_BLOCKED;
     assert(nas_ptrace_request(17,2,0,0)==0);
     assert(tracee.state==NAS_TASK_BLOCKED && !tracee.ptrace_tracer_pid);
+    /* A tracer attaches to a distinct READY sibling; real parent remains
+     * unchanged and wait4 gets one real SIGSTOP report. */
+    nas_current_task=&tracer;
+    stranger.state=NAS_TASK_READY;
+    stranger.ppid=19;
+    stranger.tgid=3;
+    stranger.resume_valid=true;
+    tracer.tgid=1;
+    assert(nas_ptrace_request(16,3,0,0)==0);
+    assert(stranger.ppid==19 && stranger.ptrace_tracer_pid==1);
+    assert(stranger.state==NAS_TASK_STOPPED &&
+           stranger.stopped_from==NAS_TASK_READY &&
+           stranger.stop_signal==19 && stranger.stop_report_pending);
+    assert((int64_t)nas_ptrace_request(16,3,0,0)==-EPERM);
+    assert(nas_ptrace_request(17,3,0,0)==0);
+    assert(stranger.state==NAS_TASK_READY && !stranger.ptrace_tracer_pid);
+    /* An existing blocked Task may be attached and resumed without
+     * executing or discarding its original pending syscall. */
+    stranger.state=NAS_TASK_BLOCKED;
+    stranger.wait.pending_valid=true;
+    stranger.wait.blocked_op=NAS_SC_nanosleep;
+    assert(nas_ptrace_request(16,3,0,0)==0);
+    assert(stranger.ptrace_blocked_exit_pending);
+    assert(nas_ptrace_request(17,3,0,0)==0);
+    assert(stranger.state==NAS_TASK_BLOCKED && stranger.wait.pending_valid);
     return 0;
 }

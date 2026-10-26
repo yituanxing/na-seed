@@ -55,7 +55,7 @@ static bool task_wait_ready(const struct nas_task *task) {
              child->ptrace_tracer_pid==task->pid))continue;
         if (!nas_wait_pid_matches(desired,child->pid,
                                   task->pgid,child->pgid)) continue;
-        if (nas_process_waitable(child,task->wait.blocked_args[2])) return true;
+        if (nas_process_waitable(child,task->wait.blocked_args[2],task->pid)) return true;
     }
     return false;
 }

@@ -1,0 +1,1 @@
+m74-attach	cpio	sh -c '/bin/sh /tests/m74-strace-run.sh'	M74_ATTACH_REAL_TRACE_PASS	-	/bin/busybox
