@@ -14,6 +14,7 @@ echo M75_ORIGINAL_GDB_LOAD_PASS
 if ! /usr/bin/gdb -nx -q -batch \
    -ex 'set pagination off' \
    -ex 'set confirm off' \
+   -ex 'set startup-with-shell off' \
    -ex 'starti' \
    -ex 'info registers' \
    -ex 'continue' \
@@ -24,8 +25,10 @@ if ! /usr/bin/gdb -nx -q -batch \
   /bin/busybox head -c 6000 /tmp/m75-gdb.stderr || :
   exit 1
 fi
-if ! /bin/busybox grep -Eq 'Program stopped|Temporary breakpoint|Breakpoint 1' /tmp/m75-gdb.stdout ||
-   ! /bin/busybox grep -Eq 'rip|pc|sp' /tmp/m75-gdb.stdout ||
+# 'starti' must have selected a real stopped inferior: this is the only
+# time original GDB can read its native nonzero PC/RIP register. The status
+# phrasing differs by ISA; do not key success to its English wording.
+if ! /bin/busybox grep -Eq '^(pc|rip)[[:space:]]+0x[0-9a-fA-F]*[1-9a-fA-F][0-9a-fA-F]*' /tmp/m75-gdb.stdout ||
    ! /bin/busybox grep -Eq 'exited normally|exited with code 0' /tmp/m75-gdb.stdout; then
   echo '[M75 FAIL] GDB returned 0 without a genuine inferior stop and registers'
   /bin/busybox head -c 6000 /tmp/m75-gdb.stdout || :
