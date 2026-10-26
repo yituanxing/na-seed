@@ -17,6 +17,7 @@ sh scripts/check-task-stacks.sh
 sh scripts/check-frame-refs.sh
 sh scripts/check-m86-txn.sh
 sh scripts/check-m88-exceptions.sh
+sh scripts/check-m89-poll.sh
 # M65: native procfs owner host regression (not a simulated guest PASS).
 cc -std=c11 -Wall -Wextra -Werror -fno-builtin -I kernel \
     scripts/test-procfs.c kernel/fs/procfs.c kernel/lib/string.c \
