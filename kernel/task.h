@@ -117,6 +117,9 @@ struct nas_task {
     uint8_t ptrace_event; /* Linux PTRACE_EVENT_*; zero when no event */
     uint64_t ptrace_event_message;
     bool ptrace_exec_pending_exit,ptrace_exit_event_sent;
+    /* Traced child creation and true sleeping syscall completions. */
+    bool ptrace_child_initial_stop,ptrace_fork_pending_exit;
+    bool ptrace_blocked_exit_pending;
     uint32_t stop_signal;
     /* Saved syscall-boundary GPR frame in the exact arch.S push order.
      * The scheduler switches after unwinding the current syscall frame.

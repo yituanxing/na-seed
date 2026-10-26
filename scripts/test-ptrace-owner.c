@@ -43,6 +43,9 @@ int main(void) {
     assert(nas_ptrace_request(0x4200,2,0,1)==0);
     assert(tracee.ptrace_options==1);
     assert(nas_ptrace_request(0x4200,2,0,0x51)==0);
+    assert(nas_ptrace_request(0x4200,2,0,0x5f)==0);
+    assert(tracee.ptrace_options==0x5f);
+    assert(nas_ptrace_request(0x4200,2,0,0x51)==0);
     assert(tracee.ptrace_options==0x51);
     assert((int64_t)nas_ptrace_request(0x4200,2,0,0x40000000ULL)==-EINVAL);
     assert(tracee.ptrace_options==0x51);

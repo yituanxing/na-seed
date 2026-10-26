@@ -25,6 +25,14 @@
 #define PTRACE_GETREGSET 0x4204ULL
 #define PTRACE_GET_SYSCALL_INFO 0x420eULL
 #define PTRACE_O_TRACESYSGOOD 1ULL
+#define PTRACE_O_TRACEFORK 2ULL
+#define PTRACE_O_TRACEVFORK 4ULL
+#define PTRACE_O_TRACECLONE 8ULL
+#define PTRACE_O_TRACESECCOMP 0x80ULL
+#define PTRACE_O_EXITKILL 0x100000ULL
+#define PTRACE_EVENT_FORK 1U
+#define PTRACE_EVENT_VFORK 2U
+#define PTRACE_EVENT_CLONE 3U
 #define PTRACE_O_TRACEEXEC 0x10ULL
 #define PTRACE_O_TRACEEXIT 0x40ULL
 #define PTRACE_EVENT_EXEC 4U
@@ -117,6 +125,53 @@ bool nas_ptrace_exit_event(struct nas_task *task,const uint64_t *call,
     task->stop_signal=NAS_SIGTRAP | (PTRACE_EVENT_EXIT<<8);
     task->ptrace_event_message=(exit_status&255ULL)<<8;
     task->ptrace_exit_event_sent=true;
+    return true;
+}
+/* A successful child creation has two real saved native Task images.
+ * Hold parent and new child before the child executes a single user
+ * instruction. Existing wait4 passes the event to the original tracer.
+ * Never replace the child's actual parent identity with its tracer. */
+bool nas_ptrace_fork_created(struct nas_task *parent,struct nas_task *child,
+                              unsigned event,const uint64_t *call) {
+    if(!ptrace_owner_valid(parent))return false;
+    uint64_t opt=event==PTRACE_EVENT_FORK?PTRACE_O_TRACEFORK:
+        event==PTRACE_EVENT_VFORK?PTRACE_O_TRACEVFORK:
+        event==PTRACE_EVENT_CLONE?PTRACE_O_TRACECLONE:0ULL;
+    if(!(parent->ptrace_options&opt))return false;
+    child->ptrace_tracer_pid=parent->ptrace_tracer_pid;
+    child->ptrace_options=parent->ptrace_options;
+    child->ptrace_trace_syscalls=parent->ptrace_trace_syscalls;
+    child->ptrace_child_initial_stop=true;
+    child->ptrace_phase=0;
+    child->ptrace_event=0;
+    child->ptrace_skip_entry_once=false;
+    child->resume_valid=true;
+    nas_arch_set_saved_return(child,0);
+    child->stopped_from=NAS_TASK_READY;
+    child->state=NAS_TASK_STOPPED;
+    child->stop_report_pending=true;
+    child->stop_signal=NAS_SIGSTOP;
+    child->continue_report_pending=false;
+
+    parent->ptrace_result=child->pid;
+    parent->ptrace_ip=call[7];
+    parent->ptrace_sp=nas_arch_signal_user_sp();
+    ptrace_stop(parent,0);
+    parent->ptrace_event=(uint8_t)event;
+    parent->ptrace_event_message=child->pid;
+    parent->stop_signal=NAS_SIGTRAP | (event<<8);
+    parent->ptrace_fork_pending_exit=true;
+    return true;
+}
+/* A parked syscall was replayed under the selected Task's real MMU.
+ * Its saved native registers remain authoritative: never interpret
+ * another Task's current live trap frame as the completing call. */
+bool nas_ptrace_blocked_completed(struct nas_task *task,uint64_t value) {
+    if(!task->ptrace_blocked_exit_pending)return false;
+    task->ptrace_blocked_exit_pending=false;
+    if(!task->ptrace_trace_syscalls || !ptrace_owner_valid(task))return false;
+    task->ptrace_result=value;
+    ptrace_stop(task,SYSINFO_EXIT);
     return true;
 }
 static uint64_t ptrace_syscall_info(const struct nas_task *task,
@@ -217,7 +272,10 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
             /* No fake TRACEFORK/TRACEEXEC/EXITKILL: those events must
              * actually be produced before advertising their options. */
             if(data & ~(PTRACE_O_TRACESYSGOOD|PTRACE_O_TRACEEXEC|
-                        PTRACE_O_TRACEEXIT))return (uint64_t)-EINVAL;
+                        PTRACE_O_TRACEEXIT|PTRACE_O_TRACEFORK|
+                        PTRACE_O_TRACEVFORK|PTRACE_O_TRACECLONE|
+                        PTRACE_O_TRACESECCOMP|PTRACE_O_EXITKILL))
+                return (uint64_t)-EINVAL;
             target->ptrace_options=data;
             return 0;
         case PTRACE_GETEVENTMSG:
@@ -241,6 +299,14 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
         case PTRACE_DETACH:
             if(data)return (uint64_t)-EOPNOTSUPP; /* signal injection */
             target->ptrace_trace_syscalls=request==PTRACE_SYSCALL;
+            target->ptrace_child_initial_stop=false;
+            if(target->ptrace_fork_pending_exit) {
+                target->ptrace_fork_pending_exit=false;
+                if(request==PTRACE_SYSCALL) {
+                    ptrace_stop(target,SYSINFO_EXIT);
+                    return 0;
+                }
+            }
             if(target->ptrace_exec_pending_exit) {
                 target->ptrace_exec_pending_exit=false;
                 if(request==PTRACE_SYSCALL) {

@@ -10,6 +10,7 @@
 #include "wait_pid.h"
 #include "../time/clock.h"
 #include "sched.h"
+#include "ptrace.h"
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
 extern void nas_hex(uint64_t);
@@ -76,6 +77,8 @@ static uint64_t fork_common(uint64_t *frame, uint64_t child_tid) {
     parent->wait.blocked_op = 0;
     parent->wait.pending_valid = false;
     parent->state = NAS_TASK_READY;
+    if(nas_ptrace_fork_created(parent,child,NAS_PTRACE_EVENT_FORK,frame))
+        return nas_task_schedule(frame);
     child->state = NAS_TASK_RUNNING;
     nas_current_task = child;
     nas_arch_restore_cpu(child);
@@ -130,6 +133,8 @@ uint64_t nas_process_vfork(uint64_t *frame, uint64_t child_stack) {
     parent->wait.pending_valid = false;
     parent->wait.blocked_op = 0;
     parent->state = NAS_TASK_BLOCKED;
+    if(nas_ptrace_fork_created(parent,child,NAS_PTRACE_EVENT_VFORK,frame))
+        return nas_task_schedule(frame);
     child->state = NAS_TASK_RUNNING;
     nas_current_task = child;
     nas_arch_restore_cpu(child);
@@ -352,8 +357,11 @@ uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
     if (rusage) return (uint64_t)-EOPNOTSUPP;
     bool have_child = false;
     for (unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
-        struct nas_task *child = nas_task_child_at(nas_current_task->pid,slot);
-        if (!child) continue;
+        struct nas_task *child=nas_task_at(slot);
+        if(child->state==NAS_TASK_FREE)continue;
+        bool actual_child=child->ppid==nas_current_task->pid && !child->is_thread;
+        bool traced_child=child->ptrace_tracer_pid==nas_current_task->pid;
+        if(!actual_child && !traced_child)continue;
         uint64_t pid=child->pid;
         if (!nas_wait_pid_matches(desired,pid,
                                   nas_current_task->pgid,child->pgid))
@@ -381,11 +389,16 @@ uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
         }
         if (zombie) {
             uint64_t owned_root = nas_task_page_root(child);
-            if (owned_root && !nas_mmu_reclaim_root(owned_root))
+            if(child->ppid==nas_current_task->pid && !child->is_thread &&
+               owned_root && !nas_mmu_reclaim_root(owned_root))
                 proc_fail("wait4 failed to reclaim child address space");
             nas_print("[PROC] wait4 reaped pid="); nas_dec(pid);
             nas_print(" status="); nas_dec(code); nas_print("\n");
-            nas_task_release(child);
+            /* Tracer may wait for a descendant that is not its real
+             * child. Preserve zombie for the real parent to reap. */
+            if(child->ppid!=nas_current_task->pid || child->is_thread)
+                child->ptrace_tracer_pid=0;
+            else nas_task_release(child);
         } else if (stopped) {
             child->stop_report_pending=false;
         } else {
@@ -439,6 +452,8 @@ uint64_t nas_process_clone_thread(uint64_t *frame,uint64_t stack,
     parent->wait.pending_valid=false;
     parent->wait.blocked_op=0;
     parent->state=NAS_TASK_READY;
+    if(nas_ptrace_fork_created(parent,child,NAS_PTRACE_EVENT_CLONE,frame))
+        return nas_task_schedule(frame);
     child->state=NAS_TASK_RUNNING;
     nas_current_task=child;
     nas_arch_restore_cpu(child);

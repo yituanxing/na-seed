@@ -14,6 +14,7 @@
 #include "wait.h"
 #include "wait_pid.h"
 #include "signal.h"
+#include "ptrace.h"
 #include "../time/clock.h"
 #include "../fs/epoll.h"
 #include "../fs/eventfd.h"
@@ -302,6 +303,11 @@ bool nas_sched_preempt_select(void) {
                 next->wait.pending_valid=false;
                 next->wait.blocked_op=0;
                 next->wait.deadline_active=false;
+                if(nas_ptrace_blocked_completed(next,result)) {
+                    nas_current_task=from;
+                    nas_arch_restore_cpu(from);
+                    continue;
+                }
             }
             from->state=NAS_TASK_READY;
             from->resume_valid=true;
@@ -388,6 +394,12 @@ retry_schedule: ; /* label must precede a statement in C11 */
                 next->wait.pending_valid = false;
                 next->wait.blocked_op = 0;
                 next->wait.deadline_active = false;
+                if(nas_ptrace_blocked_completed(next,result)) {
+                    nas_arch_set_saved_return(next,result);
+                    nas_current_task=previous;
+                    nas_arch_restore_cpu(previous);
+                    continue;
+                }
             }
             next->state = NAS_TASK_RUNNING;
             next->resume_valid = false;
@@ -514,6 +526,7 @@ uint64_t nas_task_block(uint64_t *frame, enum nas_syscall_op nr,
     task->resume_valid = true;
     task->wait.blocked_op = nr;
     task->wait.pending_valid = true;
+    task->ptrace_blocked_exit_pending=task->ptrace_trace_syscalls && task->ptrace_tracer_pid;
     task->wait.blocked_args[0] = a;
     task->wait.blocked_args[1] = b;
     task->wait.blocked_args[2] = c;
