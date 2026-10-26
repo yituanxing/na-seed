@@ -10,7 +10,7 @@
 extern void nas_print(const char *);
 extern void nas_hex(uint64_t);
 #define TASK (*nas_current_task)
-#define heap_break TASK.vm_owner->heap_break
+#define heap_break TASK.mm->heap_break
 #define loaded_phdr TASK.loaded_phdr
 #define loaded_phnum TASK.loaded_phnum
 #define loaded_main_entry TASK.loaded_main_entry

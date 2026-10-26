@@ -11,6 +11,7 @@
 struct nas_task;
 /* System-wide open descriptions, independent of per-process FD count. */
 #define NAS_OPEN_FILE_LIMIT 128
+#define NAS_FD_LIMIT 64
 /* Shared FD kind identities until the file-object refactor. */
 enum { FD_CLOSED = 0, FD_UART = 1, FD_NULL = 2, FD_ZERO = 3,
        FD_BOOTFS = 4, FD_ARCHIVE = 5, FD_DIR = 6,
@@ -26,6 +27,17 @@ struct nas_fd_entry {
     uint8_t cloexec;
 };
 _Static_assert(sizeof(struct nas_fd_entry) == 3, "FD entry must be 3 bytes");
+struct nas_fd_table {
+    struct nas_fd_entry entries[NAS_FD_LIMIT];
+};
+struct nas_files {
+    unsigned refs;
+    struct nas_fd_table table;
+};
+struct nas_files *nas_files_new(void);
+struct nas_files *nas_files_copy(const struct nas_files *);
+struct nas_files *nas_files_get(struct nas_files *);
+void nas_files_put(struct nas_files *);
 void nas_fd_system_init(void);
 void nas_fd_report_exhaustion(const char *operation);
 /* Ownership-preserving placement API, shared by boot, regular files,

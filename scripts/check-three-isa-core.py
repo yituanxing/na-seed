@@ -9,7 +9,7 @@ import re
 root=Path(__file__).resolve().parent.parent
 srcs=[line.strip() for line in (root/"scripts/full-kernel-core.sources").read_text().splitlines()
       if line.strip() and not line.startswith("#")]
-assert len(srcs)==len(set(srcs))==45, "common kernel TU manifest drift"
+assert len(srcs)==len(set(srcs))==47, "common kernel TU manifest drift"
 make=(root/"Makefile").read_text()
 defs={}
 for line in make.splitlines():
@@ -53,7 +53,8 @@ for path, symbol in (("kernel/fs/namespace_syscall.c", "nas_fs_resolve_path"),
 # One actual FD entry per descriptor: reject parallel arrays reappearing.
 task_h=(root/"kernel/task.h").read_text()
 fd_h=(root/"kernel/fd.h").read_text()
-assert "struct nas_fd_entry entries[NAS_FD_LIMIT]" in task_h
+assert "struct nas_fd_entry entries[NAS_FD_LIMIT]" in fd_h
+assert "fds_owned" not in task_h
 for old in ("descriptors[NAS_FD_LIMIT]", "file_slot[NAS_FD_LIMIT]", "fd_cloexec[NAS_FD_LIMIT]"):
     assert old not in task_h, f"parallel descriptor storage returned: {old}"
 for name in ("kind", "slot", "cloexec"):

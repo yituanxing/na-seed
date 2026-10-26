@@ -4,6 +4,7 @@
 #include "fd.h"
 #include "task/wait.h"
 #include "lib/string.h"
+#include "panic.h"
 #include <stddef.h>
 
 /* Task-owned entry stacks. Cooperative syscall switching still unwinds
@@ -57,20 +58,27 @@ void nas_task_boot_init(void) {
         task->kernel_stack_top = stack_top(n);
     }
     next_pid = 2;
+    nas_mm_system_init();
+    nas_resources_system_init();
     nas_fd_system_init();
     nas_current_task = &task_table[0];
     nas_current_task->pid = 1;
     nas_current_task->tgid=1;
     nas_current_task->vm_owner=nas_current_task;
-    nas_current_task->fds=&nas_current_task->fds_owned;
+    nas_current_task->mm=nas_mm_new();
+    if (!nas_current_task->mm) nas_fail("cannot allocate init MM");
+    nas_current_task->files=nas_files_new();
+    if(!nas_current_task->files)nas_fail("cannot allocate init files");
+    nas_current_task->fds=&nas_current_task->files->table;
     nas_current_task->ppid = 0;
     nas_current_task->pgid = 1;
     nas_current_task->sid = 1;
     memcpy(nas_current_task->comm,"init",5);
-    nas_current_task->umask = NAS_UMASK_DEFAULT;
+    nas_current_task->fs=nas_fs_context_new();
+    nas_current_task->sighand=nas_sighand_new();
+    if(!nas_current_task->fs || !nas_current_task->sighand)
+        nas_fail("cannot allocate init process resources");
     nas_current_task->state = NAS_TASK_RUNNING;
-    nas_current_task->cwd[0] = '/';
-    nas_current_task->cwd[1] = 0;
 }
 struct nas_task *nas_task_current(void) { return nas_current_task; }
 const struct nas_task *nas_task_find(uint64_t pid) {
@@ -90,17 +98,27 @@ struct nas_task *nas_task_fork_slot(void) {
     for (unsigned i = 1; i < NAS_TASK_LIMIT; i++) {
         if (task_table[i].state != NAS_TASK_FREE) continue;
         struct nas_task *child = &task_table[i];
-        struct nas_fd_table inherited=*nas_current_task->fds;
+        struct nas_fs_context *child_fs=nas_fs_context_copy(nas_current_task->fs);
+        if(!child_fs) return NULL;
+        struct nas_sighand *child_sighand=nas_sighand_copy(nas_current_task->sighand);
+        if(!child_sighand) { nas_fs_context_put(child_fs); return NULL; }
+        struct nas_files *child_files=nas_files_copy(nas_current_task->files);
+        if(!child_files) {
+            nas_fs_context_put(child_fs);
+            nas_sighand_put(child_sighand);
+            return NULL;
+        }
         memcpy(child, nas_current_task, sizeof(*child));
-        child->fds_owned=inherited;
-        child->fds=&child->fds_owned;
+        child->files=child_files;
+        child->fds=&child_files->table;
         child->vm_owner=child;
+        child->fs=child_fs;
+        child->sighand=child_sighand;
+        /* memcpy must never transfer a reference without incrementing it. */
+        child->mm=0;
         /* A fork from a worker snapshots the LIVE CLONE_FS and
          * CLONE_SIGHAND process state, not stale per-worker copies. */
-        child->umask=nas_current_task->vm_owner->umask;
-        memcpy(child->cwd,nas_current_task->vm_owner->cwd,sizeof(child->cwd));
-        memcpy(child->signal_actions,nas_current_task->vm_owner->signal_actions,
-               sizeof(child->signal_actions));
+
         /* fork copies userspace state but NEVER the parent's stack owner. */
         stack_reset(i);
         child->kernel_stack_top = stack_top(i);
@@ -184,19 +202,23 @@ void nas_task_adopt_orphans(uint64_t exiting_pid) {
 }
 void nas_task_release(struct nas_task *task) {
     if (!task || task == nas_current_task) return;
+    /* Releases an independently owned MM reference, including on thread exit. */
+    if (task->mm) { nas_mm_put(task->mm); task->mm=0; }
+    if (task->fs) { nas_fs_context_put(task->fs); task->fs=0; }
+    if (task->sighand) { nas_sighand_put(task->sighand); task->sighand=0; }
+    if (task->files) { nas_files_put(task->files); task->files=0; }
     task->state = NAS_TASK_FREE;
     task->pid = 0;
     task->tgid=0;
     task->is_thread=false;
     task->group_exit_pending=false;
     task->vm_owner=task;
-    task->fds=&task->fds_owned;
+    task->fds=0;
     task->robust_list_head=0;
     nas_task_wait_reset(task);
     task->ppid = 0;
     task->pgid = 0;
     task->sid = 0;
-    task->umask = NAS_UMASK_DEFAULT;
     task->execed = false;
     task->stopped_from = NAS_TASK_FREE;
     task->stop_report_pending = false;
@@ -227,13 +249,10 @@ struct nas_task *nas_task_by_pid(uint64_t pid) {
 }
 
 uint64_t nas_task_page_root(const struct nas_task *task) {
-    return task ? task->root_phys : 0;
+    return task && task->mm ? task->mm->root_phys : 0;
 }
 uint64_t nas_task_tls_base(const struct nas_task *task) {
     return task ? nas_arch_context_tls_base(&task->arch) : 0;
-}
-void nas_task_set_root(struct nas_task *task, uint64_t root) {
-    if (task) task->root_phys = root;
 }
 struct nas_task *nas_task_child_at(uint64_t parent_pid, unsigned slot) {
     if (slot >= NAS_TASK_LIMIT || !parent_pid) return NULL;

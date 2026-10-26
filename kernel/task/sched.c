@@ -24,7 +24,7 @@ extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
 extern void nas_hex(uint64_t);
 #define TASK (*nas_current_task)
-#define signal_actions TASK.vm_owner->signal_actions
+#define signal_actions TASK.sighand->actions
 #define blocked_signals TASK.blocked_signals
 static void sched_fail(const char *s) __attribute__((noreturn));
 static void sched_fail(const char *s) { nas_print("[FAIL] M1 "); nas_print(s); nas_print("\n"); nas_arch_halt(); }
@@ -147,8 +147,8 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     child->group_exit_pending=false;
     if (child->vfork_shared_vm) {
         nas_process_vfork_release();
-        /* Exit-before-exec must never let wait4 free parent's page table. */
-        nas_task_set_root(child, 0);
+        /* The child has a separate MM reference; final put leaves
+         * the parent-owned shared address space alive. */
     }
     child->exit_code = code & 255U;
     child->termination_signal = signum;

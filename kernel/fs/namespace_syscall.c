@@ -18,7 +18,7 @@
 #include "procfs.h"
 #include "namespace_syscall.h"
 #define TASK (*nas_current_task)
-#define current_workdir TASK.vm_owner->cwd
+#define current_workdir TASK.fs->cwd
 
 /* Lexically combine absolute, cwd-relative and dirfd-relative paths.
  * bootfs_resolve performs archive symlink traversal at the actual lookup.
@@ -76,7 +76,7 @@ static uint64_t sys_mkdirat_tmp(uint64_t dirfd, uint64_t pathname,
     uint64_t ret = nas_fs_resolve_path(dirfd, pathname, path);
     return (int64_t)ret < 0 ? ret :
         (uint64_t)(int64_t)tmp_mkdir(path,
-                            nas_fs_create_mode(mode,TASK.vm_owner->umask));
+                            nas_fs_create_mode(mode,TASK.fs->umask));
 }
 static uint64_t sys_unlinkat_tmp(uint64_t dirfd, uint64_t pathname,
                                  uint64_t flags) {

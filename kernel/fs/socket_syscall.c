@@ -18,7 +18,7 @@
 #include "syscall.h"
 #include "socket_syscall.h"
 #define TASK (*nas_current_task)
-#define current_workdir TASK.vm_owner->cwd
+#define current_workdir TASK.fs->cwd
 
 /* AF_UNIX SOCK_STREAM: same global refcounted open descriptions as pipe2
  * and socketpair. A listener owns pending accepted slots, never a task-local
@@ -63,7 +63,7 @@ static uint64_t sys_unix_bind(uint64_t fd,uint64_t address,uint64_t size) {
     char path[256];int err=unix_address(address,size,path);
     if(err)return (uint64_t)(int64_t)err;
     return (uint64_t)(int64_t)nas_unix_socket_bind(
-        TASK.fds->entries[fd].slot,path,0777U & ~(uint32_t)TASK.vm_owner->umask);
+        TASK.fds->entries[fd].slot,path,0777U & ~(uint32_t)TASK.fs->umask);
 }
 static uint64_t sys_unix_listen(uint64_t fd,uint64_t backlog) {
     if(!unix_fd(fd))return (uint64_t)-EBADF;

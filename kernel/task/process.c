@@ -65,12 +65,8 @@ static uint64_t fork_common(uint64_t *frame, uint64_t child_tid) {
     nas_arch_save_fpu(parent);
     struct nas_task *child = nas_task_fork_slot();
     if (!child) return (uint64_t)-EAGAIN;
-    uint64_t new_root = nas_mmu_fork_root();
-    if (!new_root) {
-        nas_task_release(child);
-        return (uint64_t)-ENOMEM;
-    }
-    nas_task_set_root(child, new_root);
+    child->mm=nas_mm_fork_eager(parent->mm);
+    if (!child->mm) { nas_task_release(child); return (uint64_t)-ENOMEM; }
     if (!nas_task_hold_files(child)) proc_fail("fork dangling open-file slot");
     nas_arch_set_saved_return(parent, child->pid);
     parent->resume_valid = true;
@@ -120,7 +116,7 @@ uint64_t nas_process_vfork(uint64_t *frame, uint64_t child_stack) {
     nas_arch_save_fpu(parent);
     struct nas_task *child = nas_task_fork_slot();
     if (!child) return (uint64_t)-EAGAIN;
-    nas_task_set_root(child, parent->root_phys);
+    child->mm=nas_mm_get(parent->mm);
     child->vfork_parent_pid = parent->pid;
     child->vfork_shared_vm = true;
     if (child_stack)
@@ -265,7 +261,7 @@ static void robust_mark_owner_died(struct nas_task *thread,uint64_t node,
 }
 void nas_process_robust_exit(struct nas_task *thread) {
     if(!thread || !thread->robust_list_head)return;
-    if(thread->vm_owner!=nas_current_task->vm_owner)
+    if(thread->mm!=nas_current_task->mm)
         proc_fail("robust list exit from unrelated page table");
     uint64_t head=thread->robust_list_head;
     thread->robust_list_head=0; /* never walk twice after deferred leader exit */
@@ -290,7 +286,7 @@ void nas_process_robust_exit(struct nas_task *thread) {
 }
 void nas_process_clear_tid_for_exit(struct nas_task *thread) {
     if (!thread || !thread->thread_clear_tid) return;
-    if (thread->vm_owner != nas_current_task->vm_owner)
+    if (thread->mm != nas_current_task->mm)
         proc_fail("cross-VM clear_child_tid on thread-group exit");
     uint64_t tid_addr=thread->thread_clear_tid;
     /* Linux CLONE_CHILD_CLEARTID stores zero before FUTEX_WAKE in the
@@ -405,10 +401,6 @@ uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
                 return (uint64_t)-EFAULT; /* retain event on bad user buf */
         }
         if (zombie) {
-            uint64_t owned_root = nas_task_page_root(child);
-            if(child->ppid==nas_current_task->pid && !child->is_thread &&
-               owned_root && !nas_mmu_reclaim_root(owned_root))
-                proc_fail("wait4 failed to reclaim child address space");
             nas_print("[PROC] wait4 reaped pid="); nas_dec(pid);
             nas_print(" status="); nas_dec(code); nas_print("\n");
             /* Tracer may wait for a descendant that is not its real
@@ -453,8 +445,15 @@ uint64_t nas_process_clone_thread(uint64_t *frame,uint64_t stack,
     child->is_thread=true;
     child->ppid=parent->ppid;
     child->vm_owner=parent->vm_owner;
-    child->fds=parent->fds; /* CLONE_FILES: do NOT increase description refs */
-    nas_task_set_root(child,parent->root_phys);
+    nas_files_put(child->files); /* cloned table never held description refs */
+    child->files=nas_files_get(parent->files);
+    child->fds=&child->files->table;
+    child->mm=nas_mm_get(parent->mm);
+    /* musl pthread CLONE_FS and CLONE_SIGHAND share resource identities. */
+    nas_fs_context_put(child->fs);
+    child->fs=nas_fs_context_get(parent->fs);
+    nas_sighand_put(child->sighand);
+    child->sighand=nas_sighand_get(parent->sighand);
     nas_arch_context_set_user_sp(&child->arch,stack);
     nas_arch_context_set_tls(&child->arch,tls);
     child->thread_clear_tid=child_tid;
@@ -499,7 +498,7 @@ unsigned nas_process_futex_wake(uint64_t uaddr,unsigned max,uint32_t mask) {
         struct nas_task *t=nas_task_at(i);
         if(t->state!=NAS_TASK_BLOCKED || !t->wait.pending_valid ||
            t->wait.blocked_op!=NAS_SC_futex || t->wait.futex_addr!=uaddr ||
-           t->vm_owner!=nas_current_task->vm_owner ||
+           t->mm!=nas_current_task->mm ||
            t->wait.futex_woken || !(t->wait.futex_mask&mask))continue;
         t->wait.futex_woken=true;
         count++;
@@ -543,7 +542,7 @@ uint64_t nas_process_futex(uint64_t *frame,uint64_t addr,uint64_t op,
             struct nas_task *t=nas_task_at(i);
             if(t->state!=NAS_TASK_BLOCKED || !t->wait.pending_valid ||
                t->wait.blocked_op!=NAS_SC_futex || t->wait.futex_addr!=addr ||
-               t->vm_owner!=nas_current_task->vm_owner || t->wait.futex_woken)
+               t->mm!=nas_current_task->mm || t->wait.futex_woken)
                 continue;
             t->wait.futex_addr=addr2;
             moved++;

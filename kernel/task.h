@@ -4,7 +4,8 @@
 #include <stdbool.h>
 #include "fd.h"
 #include "arch/context.h"
-#include "mm/anon_regions.h"
+#include "mm/mm.h"
+#include "task/resources.h"
 
 /* Common process registry across x86-64, RV64, and AArch64.
  * Each task has its own kernel entry stack; switching still occurs at a
@@ -24,7 +25,6 @@ struct nas_posix_timer {
     uint8_t notify;
     bool used,armed;
 };
-#define NAS_FD_LIMIT 64
 #define NAS_KERNEL_STACK_BYTES 16384U
 
 /* Blocked I/O watches system-wide open-description slots, not process FDs.
@@ -60,11 +60,6 @@ enum nas_task_state {
     NAS_TASK_STOPPED
 };
 
-/* Copy on fork, share pointer under CLONE_FILES. No parallel FD arrays. */
-struct nas_fd_table {
-    struct nas_fd_entry entries[NAS_FD_LIMIT];
-};
-
 /* An executing thread owns ALL transient blocking state, never process VM.
  * The scheduler cannot keep kernel C frames and must replay after VM restore. */
 struct nas_task_wait {
@@ -85,11 +80,10 @@ struct nas_task {
     uint64_t tgid; /* getpid: thread group; pid remains unique gettid */
     bool is_thread; /* CLONE_THREAD tasks are never wait4 children */
     bool group_exit_pending; /* leader exited via SYS_exit; retain VM and FDs for peers */
-    struct nas_task *vm_owner; /* shared address-space metadata owner */
+    struct nas_task *vm_owner; /* legacy thread-group leader identity; NOT MM/FS/files/sighand owner */
     /* Linux process group + session identity, independent of CPU/VM. */
     uint64_t pgid, sid;
     char comm[16]; /* Linux per-thread PR_SET_NAME, inherited at fork. */
-    uint32_t umask; /* inherited by fork/vfork; preserved by exec */
     bool execed; /* parent may not setpgid(child) after successful exec */
     /* Immutable executable argv snapshot; incomplete overlong vectors
      * are not exposed as fabricated procfs command lines. */
@@ -152,10 +146,8 @@ struct nas_task {
     /* Owned kernel entry stack. Kernel C continuations are NOT resumable
      * yet; the syscall-boundary scheduler still unwinds before switching. */
     uint64_t kernel_stack_top;
-    /* One independent VM mapping root and ELF/brk/mmap tracking per task. */
-    uint64_t root_phys, heap_break;
-    /* Bounded eager anonymous VMA ownership; copied by value on fork. */
-    struct nas_anon_regions anonymous;
+    /* Independently reference-counted address space (CLONE_VM / vfork). */
+    struct nas_mm *mm;
     uint64_t loaded_phdr, loaded_phnum;
     uint64_t loaded_main_entry, loaded_interp_base;
     uint64_t thread_clear_tid;
@@ -165,10 +157,10 @@ struct nas_task {
     uint64_t vfork_child_pid, vfork_parent_pid;
     bool vfork_shared_vm;
 
-    /* Per-process signal disposition/mask and filesystem context. */
+    /* Signal dispositions, signal mask, and FS context have distinct lifetimes. */
     uint64_t blocked_signals;
     uint64_t pending_signals; /* Linux per-task pending standard signals */
-    uint64_t signal_actions[65][4];
+    struct nas_sighand *sighand; /* CLONE_SIGHAND shares this owner */
     /* While executing a caught handler, the original full CPU/FPU state
      * remains kernel-owned until a checked rt_sigreturn from its restorer.
      * This deliberately supports one handler frame; further signals
@@ -182,9 +174,9 @@ struct nas_task {
     bool ppoll_mask_active;
     uint64_t signal_force_deliver;
     struct nas_arch_context signal_saved_arch;
-    char cwd[256];
-    struct nas_fd_table fds_owned;
-    struct nas_fd_table *fds; /* CLONE_FILES shares descriptor TABLE */
+    struct nas_fs_context *fs; /* CLONE_FS shares this owner */
+    struct nas_files *files; /* CLONE_FILES owns or shares this resource */
+    struct nas_fd_table *fds; /* borrowed compatibility view */
 
     /* Real user-thread lifecycle and per-task syscall-boundary state. */
     bool running_bash, running_busybox, running_alpine;
@@ -210,7 +202,6 @@ void nas_task_release(struct nas_task *task);
 void nas_task_adopt_orphans(uint64_t exiting_pid);
 uint64_t nas_task_page_root(const struct nas_task *task);
 uint64_t nas_task_tls_base(const struct nas_task *task);
-void nas_task_set_root(struct nas_task *task, uint64_t root);
 struct nas_task *nas_task_by_pid(uint64_t pid);
 struct nas_task *nas_task_child_at(uint64_t parent_pid, unsigned slot);
 struct nas_task *nas_task_at(unsigned slot);

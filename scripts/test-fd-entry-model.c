@@ -9,6 +9,7 @@
 
 void nas_print(const char *s) { (void)s; }
 void nas_dec(uint64_t n) { (void)n; }
+__attribute__((noreturn)) void nas_arch_halt(void) { assert(0 && "host FD owner panic"); __builtin_trap(); }
 /* fd.c owns placement; this test supplies a minimal inert ops provider. */
 const struct nas_file_ops *nas_fs_ops_for_kind(uint8_t kind) {
     (void)kind; return 0;
@@ -20,10 +21,10 @@ int main(void) {
     _Static_assert(sizeof(struct nas_fd_table) == NAS_FD_LIMIT * 3,
                    "FD table contains no parallel arrays");
     static struct nas_task p, child, sibling;
-    p.fds = &p.fds_owned;
-    child.fds = &child.fds_owned;
-    sibling.fds = &sibling.fds_owned;
     nas_fd_system_init();
+    p.files=nas_files_new();
+    assert(p.files && p.files->refs==1);
+    p.fds=&p.files->table;
     /* Linux open/pipe/socket/accept allocate the smallest free fd,
      * including stdin/stdout/stderr after close. These are only initially
      * reserved by convention, not by the FD allocator. */
@@ -59,7 +60,9 @@ int main(void) {
     assert(nas_fd_clone(&p, 3, 4, false) == (uint64_t)-EBUSY);
 
     /* A fork copies the descriptor table and holds each alias once. */
-    child.fds_owned = *p.fds;
+    child.files=nas_files_copy(p.files);
+    assert(child.files && child.files!=p.files);
+    child.fds=&child.files->table;
     assert(nas_task_hold_files(&child));
     assert(nas_open_files[120].refcount == 6);
     assert(child.fds->entries[3].cloexec == 1);
@@ -70,10 +73,14 @@ int main(void) {
     assert(nas_open_files[child.fds->entries[4].slot].position == 69);
 
     /* CLONE_FILES shares the TABLE, so it is not a fork hold. */
-    sibling.fds = p.fds;
+    sibling.files=nas_files_get(p.files);
+    sibling.fds=&sibling.files->table;
+    assert(p.files->refs==2);
     sibling.fds->entries[4].cloexec = 1;
     assert(p.fds->entries[4].cloexec == 1);
     assert(nas_open_files[120].refcount == 6);
+    nas_files_put(sibling.files);
+    assert(p.files->refs==1);
 
     assert(nas_fd_close(&child, 0) == NAS_OPEN_FILE_LIMIT);
     assert(nas_fd_close(&child, 3) == NAS_OPEN_FILE_LIMIT);

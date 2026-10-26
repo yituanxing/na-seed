@@ -115,7 +115,7 @@ void nas_arm_full_trap_c(struct nas_arm_trap_frame *frame) {
 void nas_arch_restore_cpu(const struct nas_task *task) {
     if (!nas_task_kernel_stack_ok(task)) nas_fail("ARM64 switching to invalid stack");
     nas_arm_entry_stack_top = task->kernel_stack_top;
-    nas_mmu_switch_root(task->root_phys);
+    nas_mmu_switch_root(nas_task_page_root(task));
     uint64_t tls=nas_task_tls_base(task);
     __asm__ volatile("msr tpidr_el0,%0" : : "r"(tls) : "memory");
     nas_arm_load_simd(task->arch.simd_regs);

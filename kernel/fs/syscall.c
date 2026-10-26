@@ -36,7 +36,7 @@
  * task-local or refcounted via fd.c, pipe.c, bootfs.c and tmpfs.c.
  * The user ABI stat/dirent encodings are still x86-specific in v1. */
 #define TASK (*nas_current_task)
-#define current_workdir TASK.vm_owner->cwd
+#define current_workdir TASK.fs->cwd
 #define running_bash TASK.running_bash
 #define running_busybox TASK.running_busybox
 #define running_alpine TASK.running_alpine
@@ -494,7 +494,7 @@ uint64_t nas_fs_open_path(const char *path, uint64_t native_flags,
     const unsigned fd=fds[0],slot=slots[0];
     if(create_tmp) {
         tmp_file=tmp_create(path,false,
-                 nas_fs_create_mode(create_mode,TASK.vm_owner->umask));
+                 nas_fs_create_mode(create_mode,TASK.fs->umask));
         if(!tmp_file)return (uint64_t)-ENOSPC;
     }
     if((kind==FD_TMP || kind==FD_TMP_DIR) && !tmp_file)

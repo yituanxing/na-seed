@@ -2,12 +2,44 @@
 #include "task.h"
 #include "errno.h"
 #include "fs/file_ops.h"
+#include "panic.h"
+#include "lib/string.h"
 
 /* One global open-description table shared across all task FD tables.
  * Backends are released by the syscall adapter only on final close;
  * the generic description layer has no dependency on /tmp or pipes.
  */
 struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
+/* Fixed pool implements the allocator only; identity is not a Task slot. */
+static struct nas_files files_pool[NAS_TASK_LIMIT * 2U];
+struct nas_files *nas_files_new(void) {
+    for(unsigned i=0;i<NAS_TASK_LIMIT*2U;i++) {
+        struct nas_files *f=&files_pool[i];
+        if(f->refs)continue;
+        memset(f,0,sizeof(*f));
+        f->refs=1;
+        return f;
+    }
+    return 0;
+}
+struct nas_files *nas_files_copy(const struct nas_files *source) {
+    if(!source || !source->refs) nas_fail("files copy without owner");
+    struct nas_files *f=nas_files_new();
+    if(!f)return 0;
+    f->table=source->table; /* fork holds descriptions after successful VM copy */
+    return f;
+}
+struct nas_files *nas_files_get(struct nas_files *f) {
+    if(!f || !f->refs || f->refs==UINT32_MAX)
+        nas_fail("files invalid get");
+    ++f->refs;
+    return f;
+}
+void nas_files_put(struct nas_files *f) {
+    if(!f || !f->refs) nas_fail("files invalid put");
+    if(!--f->refs)memset(f,0,sizeof(*f));
+}
+
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
 
@@ -25,6 +57,7 @@ void nas_fd_report_exhaustion(const char *operation) {
 
 
 void nas_fd_system_init(void) {
+    memset(files_pool,0,sizeof(files_pool));
     for (unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++) {
         nas_open_files[i]=(struct nas_open_file){0};
     }
