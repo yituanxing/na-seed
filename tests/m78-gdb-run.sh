@@ -1,5 +1,5 @@
 #!/bin/sh
-# Genuine original GNU GDB: two distinct CPU PTRACE_SINGLESTEP user traps.
+# Genuine original GNU GDB: two CPU single steps, a source next and finish.
 set -eu
 PATH=/usr/bin:/bin
 LC_ALL=C
@@ -16,6 +16,9 @@ if ! /usr/bin/gdb -nx -q -batch \
    -ex 'print/x $pc' \
    -ex 'stepi' \
    -ex 'print/x $pc' \
+   -ex 'next' \
+   -ex 'print local' \
+   -ex 'finish' \
    -ex 'continue' \
    --args /tests/m78-inferior \
    > /tmp/m78-gdb.stdout 2>/tmp/m78-gdb.stderr; then
@@ -29,6 +32,7 @@ if ! /bin/busybox grep -q 'Breakpoint 1, m78_compute' /tmp/m78-gdb.stdout ||
    ! /bin/busybox grep -Eq '\$2 = 0x[0-9a-f]+' /tmp/m78-gdb.stdout ||
    ! /bin/busybox grep -Eq '\$3 = 0x[0-9a-f]+' /tmp/m78-gdb.stdout ||
    ! /bin/busybox grep -Eq '\$4 = 0x[0-9a-f]+' /tmp/m78-gdb.stdout ||
+   ! /bin/busybox grep -Eq '\$5 = 22' /tmp/m78-gdb.stdout ||
    ! /bin/busybox grep -q 'M78_C_VARIABLE_CHANGED_PASS' /tmp/m78-gdb.stdout ||
    ! /bin/busybox grep -Eq 'exited normally|exited with code 0' /tmp/m78-gdb.stdout; then
   echo '[M78 FAIL] no genuine source PC steps and successful C output'
