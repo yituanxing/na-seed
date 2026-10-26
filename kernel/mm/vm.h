@@ -2,6 +2,7 @@
 #define NASEED_MM_VM_H
 #include <stdint.h>
 #include "../arch/mmu.h"
+#include "anon_regions.h"
 uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
                           uint64_t prot, uint64_t flags,
                           uint64_t fd, uint64_t offset);
@@ -13,7 +14,10 @@ uint64_t nas_vm_munmap(uint64_t addr, uint64_t length);
 uint64_t nas_vm_brk(uint64_t want);
 uint64_t nas_vm_mprotect(uint64_t addr, uint64_t length, uint64_t prot);
 struct nas_task;
-/* Actual present user PTEs from selected task: no fabricated permissions. */
+/* Logical VMA enumeration includes reserved PROT_NONE and nonresident pages.
+ * Callers must check target Task lifetime/authorization first. */
+bool nas_vm_walk_task_vmas(const struct nas_task *,nas_vma_visit,void *ctx);
+/* Low-level resident PTE traversal retained for diagnostics only. */
 bool nas_vm_walk_task_pages(const struct nas_task *task,
                              nas_mmu_user_visit callback,void *ctx);
 /* INTERNAL, unprivileged callers forbidden until ptrace authorization.

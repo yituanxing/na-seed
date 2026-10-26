@@ -72,6 +72,26 @@ static bool elf_map_image(const struct elf_image *image,uint64_t bias,
         } else nas_print("[ELF REJECT] invalid header\n");
         return false;
     }
+    /* PT_LOAD VMAs are logical mappings, not resident-PTE snapshots.
+     * Stage these after the validated eager load; exec discards the whole
+     * new MM on failure, so no damaged process can observe partial state. */
+    struct elf_hdr hdr;
+    if(!nas_elf_image_read(image,0,&hdr,sizeof(hdr)))return false;
+    for(unsigned i=0;i<hdr.phnum;i++) {
+        struct elf_phdr ph;
+        if(!nas_elf_image_read(image,hdr.phoff+(uint64_t)i*sizeof(ph),
+                               &ph,sizeof(ph)))return false;
+        if(ph.type!=1U || !ph.memsz)continue;
+        uint64_t begin=ph.vaddr+bias;
+        uint64_t first=begin&~(PAGE-1);
+        uint64_t end=(begin+ph.memsz+PAGE-1)&~(PAGE-1);
+        unsigned prot=((ph.flags&4U)?1U:0U) |
+                      ((ph.flags&2U)?2U:0U) |
+                      ((ph.flags&1U)?4U:0U);
+        if(!nas_vma_replace(&TASK.mm->mmap_vmas,first,end-first,prot,
+                            NAS_VMA_ELF_PRIVATE_SNAPSHOT,ph.offset))
+            return false;
+    }
     *entry=result.entry;
     *has_interp=result.has_interp;
     if(main_image) {

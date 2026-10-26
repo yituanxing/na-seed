@@ -21,12 +21,21 @@ struct nas_task *nas_task_by_pid(uint64_t pid) {
 uint64_t nas_managed_frames(void){return 1024;}
 uint64_t nas_free_frames(void){return 512;}
 uint64_t nas_arch_monotonic_ns(void){return 12500000000ULL;}
-bool nas_vm_walk_task_pages(const struct nas_task *task,
-                            nas_mmu_user_visit callback,void *ctx) {
+bool nas_vm_walk_task_vmas(const struct nas_task *task,
+                            nas_vma_visit callback,void *ctx) {
     (void)task;
-    return callback(0x1000,NAS_UP_READ|NAS_UP_EXEC,ctx) &&
-           callback(0x2000,NAS_UP_READ|NAS_UP_EXEC,ctx) &&
-           callback(0x4000,NAS_UP_READ|NAS_UP_WRITE,ctx);
+    const struct nas_anon_region text={
+        .start=0x1000,.end=0x3000,.prot=5,
+        .kind=NAS_VMA_ELF_PRIVATE_SNAPSHOT
+    };
+    const struct nas_anon_region data={
+        .start=0x4000,.end=0x5000,.prot=3,.kind=NAS_VMA_HEAP
+    };
+    const struct nas_anon_region reserved={
+        .start=0x6000,.end=0x7000,.prot=0,.kind=NAS_VMA_ANON_PRIVATE
+    };
+    return callback(&text,ctx) && callback(&data,ctx) &&
+           callback(&reserved,ctx);
 }
 bool nas_time_boot_epoch_seconds(uint64_t *out) {
     if(!out)return false;
@@ -95,6 +104,7 @@ int main(void) {
     check_file("/proc/23/stat","23 (sleep) S 1");
     check_file("/proc/23/maps","0000000000001000-0000000000003000 r-xp");
     check_file("/proc/23/maps","0000000000004000-0000000000005000 rw-p");
+    check_file("/proc/23/maps","0000000000006000-0000000000007000 ---p");
     struct nas_proc_node mapnode={0};
     assert(nas_proc_lookup("/proc/23/maps",&mapnode));
     uint8_t allmaps[256]={0},half[256]={0};

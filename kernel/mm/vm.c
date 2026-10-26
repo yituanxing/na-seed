@@ -9,6 +9,11 @@
 #include "../fs/io.h"
 #include "../arch/mmu.h"
 #include "mmap_abi.h"
+bool nas_vm_walk_task_vmas(const struct nas_task *task,
+                            nas_vma_visit callback,void *ctx) {
+    return task && task->state!=NAS_TASK_FREE && task->mm &&
+           task->mm->users && nas_vma_walk(&task->mm->mmap_vmas,callback,ctx);
+}
 bool nas_vm_walk_task_pages(const struct nas_task *task,
                              nas_mmu_user_visit callback,void *ctx) {
     if(!task || !callback || task->state==NAS_TASK_FREE)return false;
@@ -193,6 +198,10 @@ uint64_t nas_vm_brk(uint64_t want) {
          * a later brk expansion: heap pages and mmap pages are disjoint. */
         if (nas_anon_intersects(&TASK.mm->mmap_vmas,before,after-before))
             return base;
+        /* Heap VMA creation must be representable before physical mapping. */
+        struct nas_anon_regions planned=TASK.mm->mmap_vmas;
+        if(!nas_vma_record(&planned,before,after-before,3,NAS_VMA_HEAP,0))
+            return base;
         uint64_t va=before;
         for (;va<after;va+=PAGE)
             if (!nas_mmu_map_page(va,true)) break;
@@ -200,6 +209,7 @@ uint64_t nas_vm_brk(uint64_t want) {
             while (va>before) { va-=PAGE; if (!nas_mmu_unmap_page(va)) nas_arch_halt(); }
             return base;
         }
+        TASK.mm->mmap_vmas=planned;
     } else if (after<before) {
         struct nas_anon_regions planned=TASK.mm->mmap_vmas;
         if (!nas_anon_forget(&planned,after,before-after)) return base;

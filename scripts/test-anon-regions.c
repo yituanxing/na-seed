@@ -128,5 +128,17 @@ int main(void) {
                a.slots[i].end==stable.slots[i].end &&
                a.slots[i].prot==stable.slots[i].prot &&
                a.slots[i].file_offset==stable.slots[i].file_offset);
+    /* M85-B: one typed ledger covers mappings outside the allocator
+     * window, including the fixed user stack and the ISA trampoline. */
+    assert(nas_vma_record(&a,0x6ff00000,4*P,3,NAS_VMA_STACK,0));
+    assert(nas_vma_record(&a,0x6fe00000,P,5,NAS_VMA_SIGNAL_TRAMPOLINE,0));
+    assert(nas_vma_record(&a,0x10000000,2*P,5,
+                          NAS_VMA_ELF_PRIVATE_SNAPSHOT,0x1000));
+    assert(nas_vma_find(&a,0x6ff00000)->kind==NAS_VMA_STACK);
+    assert(nas_vma_find(&a,0x6fe00000)->prot==5);
+    assert(nas_vma_find(&a,0x10000000)->kind==NAS_VMA_ELF_PRIVATE_SNAPSHOT);
+    assert(!nas_anon_overlay(&a,NAS_ANON_CEILING-P,2*P));
+    uint64_t top_seen=0;
+    assert(nas_vma_walk(&a,ordered,&top_seen) && top_seen==0x6ff04000);
     return 0;
 }

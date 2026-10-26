@@ -6,11 +6,21 @@
 #define NAS_ANON_FIXED_FLOOR 0x00010000ULL
 #define NAS_ANON_FLOOR 0x20000000ULL
 #define NAS_ANON_CEILING 0x60000000ULL
+/* ELF, stack and signal pages are outside the mmap allocator window. */
+#define NAS_VMA_ADDRESS_LIMIT 0x70000000ULL
 /* Policy records for mmap-owned private user VMAs, independent of resident
  * pages and PTE permissions. PROT_NONE is a VMA even with no resident PTE.
  * File snapshots are eagerly private; no durable file backing yet.
- * ELF/brk/stack still require integration before this is a complete VMA map. */
-enum nas_vma_kind { NAS_VMA_ANON_PRIVATE=0, NAS_VMA_FILE_PRIVATE_SNAPSHOT=1 };
+ * ELF, heap, stack and signal helper ranges use this same MM-owned map.
+ * Eager snapshot mappings have no live backing file references yet. */
+enum nas_vma_kind {
+    NAS_VMA_ANON_PRIVATE=0,
+    NAS_VMA_FILE_PRIVATE_SNAPSHOT=1,
+    NAS_VMA_ELF_PRIVATE_SNAPSHOT=2,
+    NAS_VMA_HEAP=3,
+    NAS_VMA_STACK=4,
+    NAS_VMA_SIGNAL_TRAMPOLINE=5
+};
 struct nas_anon_region {
     uint64_t start,end;
     uint64_t file_offset; /* meaningful for eagerly copied file mappings */
