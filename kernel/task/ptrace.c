@@ -91,6 +91,23 @@ bool nas_ptrace_user_exception(struct nas_task *task,unsigned signo,
     nas_arm_debug_brk_seen++;
 #endif
     ptrace_stop(task,0);
+#if defined(__aarch64__)
+    extern void nas_print(const char *);
+    extern void nas_dec(uint64_t);
+    for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
+        struct nas_task *candidate=nas_task_at(i);
+        if(candidate->tgid!=task->ptrace_tracer_pid ||
+           candidate->state==NAS_TASK_FREE)continue;
+        nas_print("[M75 PTRSIG] tid=");nas_dec(candidate->pid);
+        nas_print(" state=");nas_dec(candidate->state);
+        nas_print(" waitop=");nas_dec(candidate->wait.blocked_op);
+        nas_print(" sigaction=");nas_dec(candidate->vm_owner->signal_actions[NAS_SIGCHLD][0]);
+        nas_print(" pending=");nas_dec(candidate->pending_signals);
+        nas_print(" blocked=");nas_dec(candidate->blocked_signals);
+        nas_print(" frame=");nas_dec(candidate->signal_frame_active);
+        nas_print("\n");
+    }
+#endif
     /* The debug/trap event is a SIGTRAP or SIGSEGV signal-delivery stop,
      * not a syscall-entry stop, ptrace event or guessed errno. Preserve
      * the hardware PC verbatim (x86 INT3 already advances by one). */
