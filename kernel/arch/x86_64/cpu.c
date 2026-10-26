@@ -144,6 +144,20 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
         exception.kind==NAS_EXC_MEMORY && tracee ?
         nas_exception_dispatch(&exception,tracee->mm) :
         (struct nas_exception_outcome){0};
+    /* Page-fault diagnostics are a permanent fail-closed user MM signal
+     * breadcrumb, never a synthetic fault fixup. A native C-stack switch
+     * must not conceal the actual user RIP, fault VA or PTE fault flags. */
+    if(vector==14U && outcome.action==NAS_EXC_SIGNAL && tracee) {
+        static unsigned user_fault_reports;
+        if(user_fault_reports++<16U) {
+            nas_print("[USERPF] pid=");nas_dec(tracee->pid);
+            nas_print(" rip=");nas_hex(user_rip);
+            nas_print(" va=");nas_hex(fault_addr);
+            nas_print(" error=");nas_hex(frame[16]);
+            nas_print(" rsp=");nas_hex(user_sp);
+            nas_print("\n");
+        }
+    }
     if(outcome.action==NAS_EXC_RETRY) {
         /* Hardware #PF has vector/error in front of its IRET image.
          * A successful MM fixup retries the EXACT faulting user PC. */
