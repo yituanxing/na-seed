@@ -4,3 +4,6 @@ build/m76-inferior	tests/m76-inferior
 tests/m77-gdb-run.sh	tests/m77-gdb-run.sh
 tests/m77-inferior.c	tests/m77-inferior.c
 build/m77-inferior	tests/m77-inferior
+tests/m78-gdb-run.sh	tests/m78-gdb-run.sh
+tests/m78-inferior.c	tests/m78-inferior.c
+build/m78-inferior	tests/m78-inferior
