@@ -301,6 +301,13 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
  * park BEFORE entering the real syscall, then observe the ACTUAL result. */
 uint64_t nas_ptrace_syscall_dispatch(uint64_t *args) {
     struct nas_task *original=nas_current_task;
+    /* A stop inside a syscall that started untraced (notably TRACEME's
+     * raise(SIGSTOP)) may cause the tracer to enable PTRACE_SYSCALL before
+     * this SAME native C continuation returns. Do not manufacture an exit
+     * stop without a corresponding entry event: it shifts strace's syscall
+     * entry/exit pairing for the rest of the trace. */
+    const bool trace_at_entry=original && original->ptrace_trace_syscalls &&
+                              original->ptrace_tracer_pid;
     if(nas_ptrace_syscall_enter(original,args)) {
         /* Native continuation resumes the SAME syscall C stack. An entry
          * trace stop must re-enter userspace at the saved, rewound opcode
@@ -311,7 +318,8 @@ uint64_t nas_ptrace_syscall_dispatch(uint64_t *args) {
         return nas_arch_saved_return(original);
     }
     uint64_t result=syscall_dispatch(args);
-    if(nas_current_task==original && original->state==NAS_TASK_RUNNING &&
+    if(trace_at_entry && nas_current_task==original &&
+       original->state==NAS_TASK_RUNNING &&
        nas_ptrace_syscall_exit(original,args,result)) {
         /* Exit stop resumes after the actual syscall, preserving any GPR
          * changes made by the tracer while retaining this original frame. */
