@@ -3,6 +3,8 @@
 #include "arch/abi.h"
 #include "fd.h"
 #include "task/wait.h"
+#include "task/ptrace.h"
+#include "task/signal.h"
 #include "lib/string.h"
 #include <stddef.h>
 
@@ -164,7 +166,17 @@ void nas_task_adopt_orphans(uint64_t exiting_pid) {
          * of leaving a permanently stopped task without an owner. */
         if (child->state!=NAS_TASK_FREE &&
             child->ptrace_tracer_pid==exiting_pid) {
+            /* Linux EXITKILL is observable: the exit of a tracer with
+             * this option terminates each traced thread group, rather
+             * than silently leaving tracees running. The existing
+             * single-CPU Linux signal/group-exit mechanism owns cleanup. */
+            bool kill_on_exit=(child->ptrace_options&NAS_PTRACE_OPT_EXITKILL)!=0;
+            uint64_t group_pid=child->tgid;
             child->ptrace_tracer_pid=0;
+            if(kill_on_exit && child->state!=NAS_TASK_ZOMBIE) {
+                (void)nas_signal_kill(group_pid,NAS_SIGKILL,0);
+                continue;
+            }
             child->ptrace_options=0;
             child->ptrace_trace_syscalls=false;
             if(child->state==NAS_TASK_STOPPED &&
