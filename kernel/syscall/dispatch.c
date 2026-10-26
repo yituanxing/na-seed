@@ -239,14 +239,24 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
  * park BEFORE entering the real syscall, then observe the ACTUAL result. */
 uint64_t nas_ptrace_syscall_dispatch(uint64_t *args) {
     struct nas_task *original=nas_current_task;
-    if(nas_ptrace_syscall_enter(original,args))
-        return nas_task_schedule(args);
+    if(nas_ptrace_syscall_enter(original,args)) {
+        /* Native continuation resumes the SAME syscall C stack. An entry
+         * trace stop must re-enter userspace at the saved, rewound opcode
+         * so tracer-modified registers/nr are actually decoded by hardware.
+         * The one-shot skip-entry guard prevents a duplicate ptrace stop. */
+        (void)nas_task_schedule(args);
+        nas_arch_load_user_frame(original,args);
+        return nas_arch_saved_return(original);
+    }
     uint64_t result=syscall_dispatch(args);
-    /* A blocking syscall may switch to a different Task. Never attribute
-     * its scheduler return value to the tracee whose syscall parked. */
     if(nas_current_task==original && original->state==NAS_TASK_RUNNING &&
-       nas_ptrace_syscall_exit(original,args,result))
-        return nas_task_schedule(args);
+       nas_ptrace_syscall_exit(original,args,result)) {
+        /* Exit stop resumes after the actual syscall, preserving any GPR
+         * changes made by the tracer while retaining this original frame. */
+        (void)nas_task_schedule(args);
+        nas_arch_load_user_frame(original,args);
+        return nas_arch_saved_return(original);
+    }
     return result;
 }
 

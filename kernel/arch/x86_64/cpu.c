@@ -181,8 +181,13 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
              * the offending process group, not the entire kernel. */
             if(!traced)nas_sched_thread_group_exit(0,outcome.signo);
             uint64_t resumed=nas_task_schedule(frame);
-            /* The interrupted debugger may have been blocked in poll:
-             * return the REAL EINTR/readiness outcome via selected RAX. */
+            /* A native traced exception returns to the SAME Task C frame.
+             * Restore debugger-edited saved GPRs before constructing IRET;
+             * unlike the old copy-frame scheduler this is not a new Task. */
+            if(traced) {
+                nas_arch_load_user_frame(nas_current_task,frame);
+                resumed=nas_arch_saved_return(nas_current_task);
+            }
             frame[0]=resumed;
             /* C scheduler selected a real Task/MMU and wrote the live
              * 15-GPR snapshot. Convert the exception's two metadata

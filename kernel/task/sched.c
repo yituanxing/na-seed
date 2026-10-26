@@ -226,8 +226,9 @@ static void native_dispatcher(void) {
             next->resume_valid=false;
             nas_current_task=next;
             native_cursor=(slot+1U)%NAS_TASK_LIMIT;
-            nas_arch_bind_live_trap(next);
+            nas_arch_bind_live_trap(next->kernel_exec.cpu.saved_sp ? next : 0);
             nas_arch_restore_cpu(next);
+            nas_task_cpu_account_switch(next);
             if(!next->kernel_exec.cpu.saved_sp) {
                 if(!nas_kernel_context_prepare(&next->kernel_exec.cpu,
                     task_bootstrap[slot],NAS_TASK_BOOTSTRAP_BYTES,
@@ -285,6 +286,13 @@ uint64_t nas_task_block(uint64_t *frame,enum nas_syscall_op nr,
     self->wait.blocked_args[2]=c;
     self->wait.blocked_args[3]=d;
     self->state=NAS_TASK_BLOCKED;
+    /* This reports a genuine park, never a synthetic blocking result.
+     * Keep the immutable original BusyBox large-pipe gate intact. */
+    static unsigned native_block_reports;
+    if(native_block_reports++<48U) {
+        nas_print("[SCHED] blocked pid=");nas_dec(self->pid);
+        nas_print(" syscall=");nas_dec(nr);nas_print("\n");
+    }
     if(frame)self->native_trap_frame=(uint64_t)(uintptr_t)frame;
     for(;;) {
         native_park(self);

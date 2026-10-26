@@ -163,7 +163,8 @@ void nas_arch_pin_live_trap(struct nas_task *t) {
 }
 void nas_arch_bind_live_trap(const struct nas_task *t) {
     live=t && t->native_trap_frame ?
-         (struct nas_rv_trap_frame *)(uintptr_t)t->native_trap_frame : 0;    if(live)nas_arch_load_user_frame(t,0);
+         (struct nas_rv_trap_frame *)(uintptr_t)t->native_trap_frame : 0;
+    if(live)nas_arch_load_user_frame(t,0);
 }
 extern _Noreturn void nas_rv_user_resume_frame(struct nas_rv_trap_frame *);
 _Noreturn void nas_arch_resume_saved_user(void) {

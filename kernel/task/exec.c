@@ -445,8 +445,14 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
         nas_print("[EXEC] replaced process with CPIO ELF: ");
     nas_print(pending_exec.filename);
     nas_print("\n");
-    if(nas_ptrace_exec_commit(nas_current_task,entry,sp))
-        return nas_task_schedule(syscall_frame);
+    if(nas_ptrace_exec_commit(nas_current_task,entry,sp)) {
+        /* The ptrace stop parks the original kernel stack; after the
+         * tracer resumes, install the committed NEW ELF user image into
+         * the live return frame. Never return to the old execve opcode. */
+        (void)nas_task_schedule(syscall_frame);
+        nas_arch_load_user_frame(nas_current_task,syscall_frame);
+        return nas_arch_saved_return(nas_current_task);
+    }
     nas_arch_enter_user(entry, sp);
     nas_fail("architecture user-entry returned unexpectedly");
 }
