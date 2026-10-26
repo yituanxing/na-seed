@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include "../kernel/task.h"
 #include "../kernel/task/ptrace.h"
+#include "../kernel/syscall/ops.h"
 #include "../kernel/errno.h"
 
 static struct nas_task tracer, tracee, stranger;
