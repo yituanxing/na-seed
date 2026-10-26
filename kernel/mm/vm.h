@@ -20,4 +20,8 @@ bool nas_vm_walk_task_pages(const struct nas_task *task,
  * Returns bytes copied, -EFAULT with zero progress, -ESRCH for dead Task. */
 int64_t nas_vm_read_task_bytes(const struct nas_task *task,uint64_t va,
                                uint8_t *dst,uint64_t length);
+/* Internal only: caller must prove ptrace authorization + STOPPED state.
+ * A full preflight is performed before mutating any user page. */
+int64_t nas_vm_write_task_bytes(const struct nas_task *task,uint64_t va,
+                                const uint8_t *src,uint64_t length);
 #endif

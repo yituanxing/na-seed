@@ -14,6 +14,9 @@
 #define PTRACE_ATTACH 16ULL
 #define PTRACE_PEEKTEXT 1ULL
 #define PTRACE_PEEKDATA 2ULL
+#define PTRACE_POKETEXT 4ULL
+#define PTRACE_POKEDATA 5ULL
+#define PTRACE_SETREGS 13ULL
 #define PTRACE_CONT 7ULL
 #define PTRACE_GETREGS 12ULL
 #define PTRACE_DETACH 17ULL
@@ -23,6 +26,7 @@
 #define PTRACE_SEIZE 0x4206ULL
 #define PTRACE_INTERRUPT 0x4207ULL
 #define PTRACE_GETREGSET 0x4204ULL
+#define PTRACE_SETREGSET 0x4205ULL
 #define PTRACE_GET_SYSCALL_INFO 0x420eULL
 #define PTRACE_O_TRACESYSGOOD 1ULL
 #define PTRACE_O_TRACEFORK 2ULL
@@ -258,6 +262,34 @@ static uint64_t ptrace_gprs(const struct nas_task *task,
 #endif
     return (uint64_t)-EOPNOTSUPP;
 }
+static uint64_t ptrace_set_gprs(struct nas_task *task,
+                              uint64_t req,uint64_t addr,uint64_t data) {
+    uint64_t words[34]={0};
+    unsigned n=nas_arch_ptrace_gpr_words(task,words);
+    uint64_t len=(uint64_t)n*8;
+    if(req==PTRACE_SETREGSET) {
+        if(addr!=NT_PRSTATUS)return (uint64_t)-EINVAL;
+        uint64_t iov[2];
+        if(!nas_user_read_bytes(data,(uint8_t *)iov,sizeof(iov)))
+            return (uint64_t)-EFAULT;
+        if(iov[1]<len)return (uint64_t)-EINVAL;
+        if(!nas_user_read_bytes(iov[0],(uint8_t *)words,len))
+            return (uint64_t)-EFAULT;
+        /* Linux SETREGSET may shorten iov_len on successful requests. */
+        if(!nas_arch_ptrace_set_gpr_words(task,words,n))
+            return (uint64_t)-EINVAL;
+        return nas_user_write_u64(data+8,len)?0:(uint64_t)-EFAULT;
+    }
+#if defined(__x86_64__)
+    if(req==PTRACE_SETREGS) {
+        if(!nas_user_read_bytes(data,(uint8_t *)words,len))
+            return (uint64_t)-EFAULT;
+        return nas_arch_ptrace_set_gpr_words(task,words,n)
+            ?0:(uint64_t)-EINVAL;
+    }
+#endif
+    return (uint64_t)-EOPNOTSUPP;
+}
 uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
                              uint64_t addr,uint64_t data) {
     struct nas_task *self=nas_current_task;
@@ -342,9 +374,21 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
                 ? 0:(uint64_t)-EFAULT;
         case PTRACE_GET_SYSCALL_INFO:
             return ptrace_syscall_info(target,addr,data);
+        case PTRACE_SETREGSET:
+        case PTRACE_SETREGS:
+            return ptrace_set_gprs(target,request,addr,data);
         case PTRACE_GETREGSET:
         case PTRACE_GETREGS:
             return ptrace_gprs(target,request,addr,data);
+        case PTRACE_POKETEXT:
+        case PTRACE_POKEDATA: {
+            /* Linux ptrace word writes use DATA as the actual 64-bit value,
+             * not a tracer pointer. Required for software breakpoints. */
+            int64_t n=nas_vm_write_task_bytes(target,addr,
+                                               (const uint8_t *)&data,8);
+            if(n<0)return (uint64_t)n;
+            return n==8?0:(uint64_t)-EFAULT;
+        }
         case PTRACE_PEEKDATA:
         case PTRACE_PEEKTEXT: {
             uint64_t word=0;
