@@ -44,23 +44,31 @@ bool nas_wait_queue_remove(struct nas_wait_entry *e) {
     e->armed_generation=0;
     return true;
 }
-unsigned nas_wait_queue_wake(struct nas_wait_queue *q,unsigned max_count) {
-    if(!q)return 0;
-    unsigned budget=q->count;
-    unsigned maximum=max_count ? max_count : UINT_MAX;
+static bool match_all(const struct nas_wait_entry *e,void *arg) {
+    (void)e;(void)arg;return true;
+}
+unsigned nas_wait_queue_wake_if(struct nas_wait_queue *q,unsigned maximum,
+                                nas_wait_match_fn match,void *argument) {
+    if(!q || !match)return 0;
+    const unsigned limit=maximum?maximum:UINT_MAX;
     unsigned woken=0;
-    /* Increment once per wake batch. An entry enqueued by a callback carries
-     * this generation, and may not be reawakened in the same iteration. */
     if(++q->generation==0)++q->generation;
-    while(q->first && budget && woken<maximum) {
+    const uint64_t pass=q->generation;
+    while(woken<limit) {
+        /* Callbacks can cancel/rearm any node: never hold a stale 'next'. */
         struct nas_wait_entry *e=q->first;
-        if(e->armed_generation==q->generation)break;
+        while(e && e->armed_generation==pass)e=e->next;
+        if(!e)break;
+        e->armed_generation=pass;
+        if(!match(e,argument))continue;
         void (*notify)(struct nas_wait_entry *,void *)=e->notify;
         void *opaque=e->opaque;
-        nas_wait_queue_remove(e); /* unlink BEFORE invoking callback */
-        --budget;
+        (void)nas_wait_queue_remove(e);
         ++woken;
         notify(e,opaque);
     }
     return woken;
+}
+unsigned nas_wait_queue_wake(struct nas_wait_queue *q,unsigned maximum) {
+    return nas_wait_queue_wake_if(q,maximum,match_all,0);
 }

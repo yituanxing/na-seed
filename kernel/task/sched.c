@@ -12,6 +12,7 @@
 #include "process.h"
 #include "sched.h"
 #include "wait.h"
+#include "futex_wait.h"
 #include "wait_pid.h"
 #include "signal.h"
 #include "ptrace.h"
@@ -107,6 +108,7 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     struct nas_task *child = nas_current_task;
     if (!child->ppid || !nas_task_by_pid(child->ppid))
         sched_fail("child termination without living parent");
+    nas_futex_wait_cancel(child);
     nas_process_robust_exit(child);
     nas_process_clear_tid_on_exit();
     if (child->is_thread) {
@@ -200,6 +202,7 @@ void nas_sched_thread_group_exit(uint32_t code,uint32_t signum) {
         if(peer==caller || peer==leader || peer->tgid!=leader->tgid ||
            peer->state==NAS_TASK_FREE)continue;
         if(!peer->is_thread) sched_fail("exit_group crossed process boundary");
+        nas_futex_wait_cancel(peer);
         nas_process_robust_exit(peer);
         nas_process_clear_tid_for_exit(peer);
         peer->state=NAS_TASK_ZOMBIE;
@@ -301,6 +304,7 @@ bool nas_sched_preempt_select(void) {
                    next->wait.blocked_op==NAS_SC_epoll_pwait ||
                    next->wait.blocked_op==NAS_SC_rt_sigsuspend)
                     nas_signal_ppoll_restore(next,(int64_t)result==-EINTR);
+                nas_futex_wait_cancel(next);
                 next->wait.pending_valid=false;
                 next->wait.blocked_op=0;
                 next->wait.deadline_active=false;
@@ -392,6 +396,7 @@ retry_schedule: ; /* label must precede a statement in C11 */
                    next->wait.blocked_op==NAS_SC_epoll_pwait ||
                    next->wait.blocked_op==NAS_SC_rt_sigsuspend)
                     nas_signal_ppoll_restore(next,(int64_t)result==-EINTR);
+                nas_futex_wait_cancel(next);
                 next->wait.pending_valid = false;
                 next->wait.blocked_op = 0;
                 next->wait.deadline_active = false;

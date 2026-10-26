@@ -123,7 +123,8 @@ struct nas_task *nas_task_fork_slot(void) {
         stack_reset(i);
         child->kernel_stack_top = stack_top(i);
         nas_kernel_context_reset(&child->kernel_context);
-        nas_wait_entry_reset(&child->kernel_wait);
+        /* fork memcpy may copy a live parent queue link: clear by value. */
+        child->kernel_wait=(struct nas_wait_entry){0};
         child->pid = next_pid++;
         child->tgid=child->pid;
         child->is_thread=false;

@@ -31,4 +31,7 @@ bool nas_wait_queue_remove(struct nas_wait_entry *);
 /* max_count=0 means all waiters present at wake entry. Callbacks may enqueue
  * new waiters; those registrations are NOT notified by the same wake pass. */
 unsigned nas_wait_queue_wake(struct nas_wait_queue *, unsigned max_count);
+typedef bool (*nas_wait_match_fn)(const struct nas_wait_entry *,void *);
+unsigned nas_wait_queue_wake_if(struct nas_wait_queue *,unsigned max_count,
+                                nas_wait_match_fn match,void *argument);
 #endif

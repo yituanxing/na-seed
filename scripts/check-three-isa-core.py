@@ -9,7 +9,7 @@ import re
 root=Path(__file__).resolve().parent.parent
 srcs=[line.strip() for line in (root/"scripts/full-kernel-core.sources").read_text().splitlines()
       if line.strip() and not line.startswith("#")]
-assert len(srcs)==len(set(srcs))==51, "common kernel TU manifest drift"
+assert len(srcs)==len(set(srcs))==52, "common kernel TU manifest drift"
 make=(root/"Makefile").read_text()
 defs={}
 for line in make.splitlines():
@@ -124,8 +124,12 @@ for arch in ("riscv64","aarch64"):
         if needle not in script: raise SystemExit(f"{arch} kernel omits continuation {needle}")
 if "nas_wait_queue_wake(&wait_test_queue" not in (root/"kernel/task/kernel_context.c").read_text():
     raise SystemExit("native boot lost M92 real continuation wake test")
-if "nas_wait_entry_reset(&child->kernel_wait)" not in (root/"kernel/task.c").read_text():
+if "child->kernel_wait=(struct nas_wait_entry){0};" not in (root/"kernel/task.c").read_text():
     raise SystemExit("fork must not inherit a queued kernel wait entry")
+if "nas_futex_wait_arm(nas_current_task)" not in (root/"kernel/task/process.c").read_text():
+    raise SystemExit("futex syscall is not using generic kernel wait queues")
+if "nas_futex_wait_cancel(next)" not in sched:
+    raise SystemExit("futex waiter may survive replay completion")
 if "nas_kernel_context_boot_selftest();" not in (root/"kernel/init/main.c").read_text():
     raise SystemExit("native QEMU kernels no longer test real kernel C resume")
 print(f"[M50 ARCH PASS] all {len(srcs)} actual shared kernel TUs are linked on x86 "
