@@ -21,12 +21,12 @@ export NAS_ACCEPTANCE_QEMU_RAM=768M
 export NAS_ACCEPTANCE_DISK_MB=512
 # An independent evidence log is retained on each native ISA failure.
 if ! sh "$runner"; then
-  log="$logs/m73-strace.clean.log"
+  log="$logs/m73-follow.clean.log"
   echo "[M73 FAIL] $port original strace could not trace the original process" >&2
   test ! -s "$log" || tail -360 "$log" >&2
   exit 1
 fi
-log="$logs/m73-strace.clean.log"
+log="$logs/m73-follow.clean.log"
 test -s "$log"
 for marker in M73_BLOCKED_SYSCALL_PASS; do
   if ! grep -Fxq "$marker" "$log"; then

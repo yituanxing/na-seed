@@ -75,7 +75,7 @@ jobs:
           path: |
             build/external/m73-strace/${{ matrix.port }}/apk-install.log
             build/external/m73-strace/${{ matrix.port }}/requested-packages.txt
-            build/busybox-source-parity-x86/m73-strace.clean.log
-            build/port-riscv64/full/matrix-source/m73-strace.clean.log
-            build/port-aarch64/full/matrix-source/m73-strace.clean.log
+            build/busybox-source-parity-x86/m73-follow.clean.log
+            build/port-riscv64/full/matrix-source/m73-follow.clean.log
+            build/port-aarch64/full/matrix-source/m73-follow.clean.log
           if-no-files-found: ignore
