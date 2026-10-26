@@ -67,7 +67,9 @@ void nas_task_boot_init(void) {
     nas_current_task->vm_owner=nas_current_task;
     nas_current_task->mm=nas_mm_new();
     if (!nas_current_task->mm) nas_fail("cannot allocate init MM");
-    nas_current_task->fds=&nas_current_task->fds_owned;
+    nas_current_task->files=nas_files_new();
+    if(!nas_current_task->files)nas_fail("cannot allocate init files");
+    nas_current_task->fds=&nas_current_task->files->table;
     nas_current_task->ppid = 0;
     nas_current_task->pgid = 1;
     nas_current_task->sid = 1;
@@ -100,10 +102,15 @@ struct nas_task *nas_task_fork_slot(void) {
         if(!child_fs) return NULL;
         struct nas_sighand *child_sighand=nas_sighand_copy(nas_current_task->sighand);
         if(!child_sighand) { nas_fs_context_put(child_fs); return NULL; }
-        struct nas_fd_table inherited=*nas_current_task->fds;
+        struct nas_files *child_files=nas_files_copy(nas_current_task->files);
+        if(!child_files) {
+            nas_fs_context_put(child_fs);
+            nas_sighand_put(child_sighand);
+            return NULL;
+        }
         memcpy(child, nas_current_task, sizeof(*child));
-        child->fds_owned=inherited;
-        child->fds=&child->fds_owned;
+        child->files=child_files;
+        child->fds=&child_files->table;
         child->vm_owner=child;
         child->fs=child_fs;
         child->sighand=child_sighand;
@@ -199,13 +206,14 @@ void nas_task_release(struct nas_task *task) {
     if (task->mm) { nas_mm_put(task->mm); task->mm=0; }
     if (task->fs) { nas_fs_context_put(task->fs); task->fs=0; }
     if (task->sighand) { nas_sighand_put(task->sighand); task->sighand=0; }
+    if (task->files) { nas_files_put(task->files); task->files=0; }
     task->state = NAS_TASK_FREE;
     task->pid = 0;
     task->tgid=0;
     task->is_thread=false;
     task->group_exit_pending=false;
     task->vm_owner=task;
-    task->fds=&task->fds_owned;
+    task->fds=0;
     task->robust_list_head=0;
     nas_task_wait_reset(task);
     task->ppid = 0;

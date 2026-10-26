@@ -369,7 +369,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
 
     /* exec from CLONE_THREAD must look like the original *process* to
      * parent wait4. Transfer the stable TGID to the surviving task slot,
-     * and make its owned FDs/VM metadata independent of the dead leader.
+     * without transferring any MM, FD, FS or signal backing storage from the dead leader.
      * File-description references are NOT duplicated: the old table and
      * the worker both pointed to one CLONE_FILES object. The parent sees
      * one child PID and precisely one eventual SIGCHLD. */

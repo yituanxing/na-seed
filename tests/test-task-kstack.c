@@ -8,7 +8,6 @@
 
 /* Exercise the real MM ownership implementation. Only hardware page-table
  * primitives and FD bootstrap are replaced in this CPU-independent test. */
-void nas_fd_system_init(void) {}
 void nas_print(const char *msg) { fputs(msg, stderr); }
 __attribute__((noreturn)) void nas_arch_halt(void) { abort(); }
 static uint64_t fork_root=0x3000;
@@ -27,6 +26,8 @@ int main(void) {
     struct nas_task *init=nas_task_current();
     ck(init==nas_task_at(0) && init->pid==1,"PID1 owner");
     ck(init->mm && init->mm->users==1,"init owns a live independent MM");
+    ck(init->files && init->files->refs==1 && init->fds==&init->files->table,
+       "init owns independent files object");
     ck(init->fs && init->fs->refs==1 && init->sighand && init->sighand->refs==1,
        "init owns independent FS and signal resources");
     init->fs->umask=027U;
@@ -72,6 +73,8 @@ int main(void) {
            child->kernel_stack_top!=init->kernel_stack_top,"no inherited stack");
         ck(nas_task_kernel_stack_ok(child),"fork stack intact");
         ck(child->mm==0,"new Task slot cannot inherit a borrowed MM pointer");
+        ck(child->files && child->files!=init->files && child->fds==&child->files->table,
+           "fork gives a new table owned by files object");
         ck(child->fs && child->fs!=init->fs && child->fs->umask==027U,
            "fork copies FS context, never a leader pointer");
         ck(child->sighand && child->sighand!=init->sighand &&

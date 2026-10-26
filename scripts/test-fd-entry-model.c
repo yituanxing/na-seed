@@ -9,6 +9,7 @@
 
 void nas_print(const char *s) { (void)s; }
 void nas_dec(uint64_t n) { (void)n; }
+__attribute__((noreturn)) void nas_arch_halt(void) { assert(0 && "host FD owner panic"); __builtin_trap(); }
 /* fd.c owns placement; this test supplies a minimal inert ops provider. */
 const struct nas_file_ops *nas_fs_ops_for_kind(uint8_t kind) {
     (void)kind; return 0;

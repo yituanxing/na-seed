@@ -9,6 +9,7 @@
 #include "../kernel/mm/vm.h"
 #include "../kernel/arch/user_pt.h"
 static struct nas_task tasks[3];
+static struct nas_files files_fixture;
 static struct nas_mm address_spaces[2];
 struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
 struct nas_task *nas_current_task=&tasks[0];
@@ -54,7 +55,9 @@ int main(void) {
     tasks[0].mm=&address_spaces[0];
     tasks[1].mm=&address_spaces[1];
     tasks[2].mm=&address_spaces[1]; /* worker shares process MM */
-    tasks[0].fds=&tasks[0].fds_owned;
+    files_fixture.refs=1;
+    tasks[0].files=&files_fixture;
+    tasks[0].fds=&files_fixture.table;
     tasks[0].fds->entries[1]=(struct nas_fd_entry){FD_NULL,4,0};
     nas_open_files[4].refcount=1;
     strcpy(nas_open_files[4].origin_path,"/dev/null");

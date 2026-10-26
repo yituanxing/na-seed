@@ -86,7 +86,7 @@ struct nas_task {
     uint64_t tgid; /* getpid: thread group; pid remains unique gettid */
     bool is_thread; /* CLONE_THREAD tasks are never wait4 children */
     bool group_exit_pending; /* leader exited via SYS_exit; retain VM and FDs for peers */
-    struct nas_task *vm_owner; /* shared address-space metadata owner */
+    struct nas_task *vm_owner; /* legacy thread-group leader identity; NOT MM/FS/files/sighand owner */
     /* Linux process group + session identity, independent of CPU/VM. */
     uint64_t pgid, sid;
     char comm[16]; /* Linux per-thread PR_SET_NAME, inherited at fork. */
@@ -163,7 +163,7 @@ struct nas_task {
     uint64_t vfork_child_pid, vfork_parent_pid;
     bool vfork_shared_vm;
 
-    /* Per-process signal disposition/mask and filesystem context. */
+    /* Signal dispositions, signal mask, and FS context have distinct lifetimes. */
     uint64_t blocked_signals;
     uint64_t pending_signals; /* Linux per-task pending standard signals */
     struct nas_sighand *sighand; /* CLONE_SIGHAND shares this owner */
