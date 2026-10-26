@@ -144,7 +144,7 @@ if "nas_kthread_timers_tick" not in (root/"kernel/task/scheduler_service.c").rea
     raise SystemExit("native kernel timeout progress not integrated with scheduler")
 if "sync_boot_test();" not in (root/"kernel/task/kthread_boot.c").read_text():
     raise SystemExit("real native kernel sync producer/consumer is not boot-tested")
-if "nas_kthread_park(&sem->waiters)" not in (root/"kernel/task/k_sync.c").read_text():
+if "nas_kthread_park_until(&sem->waiters" not in (root/"kernel/task/k_sync.c").read_text():
     raise SystemExit("kernel semaphore bypassed common native wait queue")
 if "scheduled_after_user_entry" not in (root/"kernel/task/kthread_boot.c").read_text():
     raise SystemExit("native kernel worker is not resumed by real user scheduler")
