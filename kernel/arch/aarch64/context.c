@@ -51,6 +51,13 @@ void nas_arm_full_trap_c(struct nas_arm_trap_frame *frame) {
         nas_arch_save_fpu(tracee);
         if(nas_ptrace_user_exception(tracee,NAS_SIGTRAP,
                                       frame->elr_el1,frame->sp_el0)) {
+            static unsigned brk_reports;
+            if(brk_reports++<15) {
+                nas_print("[M75 ARM64 BRK] pid=");nas_dec(tracee->pid);
+                nas_print(" pc=");nas_hex(frame->elr_el1);
+                nas_print(" tracer=");nas_dec(tracee->ptrace_tracer_pid);
+                nas_print("\n");
+            }
             (void)nas_task_schedule((uint64_t *)(void *)frame);
             nas_signal_user_return((uint64_t *)(void *)frame);
             live=0;
