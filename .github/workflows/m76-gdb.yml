@@ -1,4 +1,4 @@
-name: NaSeed M76/M77 original GNU GDB source and live attach on three ISAs
+name: NaSeed M76/M77/M78 GNU GDB source attach and genuine instruction stepping
 on:
   pull_request:
     paths:
@@ -8,6 +8,8 @@ on:
       - 'scripts/m76-*'
       - 'tests/m76-*'
       - 'tests/m77-*'
+      - 'tests/m78-*'
+      - 'scripts/test-rv64-ptrace-step.c'
       - 'rootfs/alpine/packages-m76-gdb.txt'
       - 'scripts/stage-alpine-prebuilt-overlay.sh'
       - '.github/workflows/m76-gdb.yml'
@@ -17,7 +19,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   original-inspection:
-    name: original GNU GDB source mutation plus live PID attach/detach / ${{ matrix.port }}
+    name: original GNU GDB source, live attach and step / ${{ matrix.port }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     strategy:
@@ -29,8 +31,10 @@ jobs:
       - name: Shared kernel architecture and host procfs owner
         run: |
           set -eu
-          sh -n scripts/stage-m76-prebuilt.sh scripts/probe-m76-gdb.sh tests/m76-gdb-run.sh tests/m77-gdb-run.sh
+          sh -n scripts/stage-m76-prebuilt.sh scripts/probe-m76-gdb.sh tests/m76-gdb-run.sh tests/m77-gdb-run.sh tests/m78-gdb-run.sh
           python3 scripts/check-three-isa-core.py
+          cc -std=c11 -Wall -Wextra -Werror -I kernel scripts/test-rv64-ptrace-step.c -o /tmp/nas-rv64-ptrace-step
+          /tmp/nas-rv64-ptrace-step
           cc -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -I kernel scripts/test-ptrace-owner.c kernel/task/ptrace.c -o /tmp/nas-m76-ptrace-owner
           /tmp/nas-m76-ptrace-owner
           cc -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -I kernel scripts/test-ptrace-wait-ownership.c kernel/task/process.c -o /tmp/nas-m76-ptrace-wait
@@ -69,7 +73,7 @@ jobs:
               -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
           fi
           command -v docker
-      - name: Original GNU GDB source and live attach/detach in genuine QEMU
+      - name: Original GNU GDB source attach and real CPU stepping in native QEMU
         timeout-minutes: 24
         run: sh scripts/probe-m76-gdb.sh ${{ matrix.port }}
       - name: Retain all actual QEMU and apk failure evidence
@@ -82,8 +86,11 @@ jobs:
             build/external/m76-gdb/${{ matrix.port }}/requested-packages.txt
             build/busybox-source-parity-x86/m76-source.clean.log
             build/busybox-source-parity-x86/m77-attach.clean.log
+            build/busybox-source-parity-x86/m78-step.clean.log
             build/port-riscv64/full/matrix-source/m76-source.clean.log
             build/port-riscv64/full/matrix-source/m77-attach.clean.log
+            build/port-riscv64/full/matrix-source/m78-step.clean.log
             build/port-aarch64/full/matrix-source/m76-source.clean.log
             build/port-aarch64/full/matrix-source/m77-attach.clean.log
+            build/port-aarch64/full/matrix-source/m78-step.clean.log
           if-no-files-found: ignore
