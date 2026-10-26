@@ -108,6 +108,12 @@ struct nas_task {
     /* ptrace ownership is TASK-local; not inherited by fork or CLONE_THREAD.
      * A tracer sees real SIGSTOP events through its existing wait4 owner. */
     uint64_t ptrace_tracer_pid;
+    uint64_t ptrace_options;
+    uint64_t ptrace_call[7]; /* raw native Linux nr + six register args */
+    uint64_t ptrace_ip,ptrace_sp,ptrace_result;
+    /* phase: 0=signal/other, 1=syscall entry, 2=syscall exit. */
+    uint8_t ptrace_phase;
+    bool ptrace_trace_syscalls,ptrace_skip_entry_once;
     uint32_t stop_signal;
     /* Saved syscall-boundary GPR frame in the exact arch.S push order.
      * The scheduler switches after unwinding the current syscall frame.

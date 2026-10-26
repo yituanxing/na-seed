@@ -5,6 +5,14 @@
 #include "../kernel/errno.h"
 
 static struct nas_task tracer, tracee, stranger;
+uint64_t nas_arch_signal_user_sp(void){return 0;}
+void nas_arch_save_user_frame(struct nas_task *t,const uint64_t *f){(void)t;(void)f;}
+void nas_arch_save_fpu(struct nas_task *t){(void)t;}
+int64_t nas_vm_read_task_bytes(const struct nas_task *t,uint64_t va,uint8_t *dst,uint64_t n){(void)t;(void)va;(void)dst;(void)n;return -EFAULT;}
+bool nas_user_read_bytes(uint64_t a,uint8_t *d,uint64_t n){(void)a;(void)d;(void)n;return false;}
+bool nas_user_write_bytes(uint64_t a,const uint8_t *s,uint64_t n){(void)a;(void)s;(void)n;return false;}
+bool nas_user_write_u64(uint64_t a,uint64_t v){(void)a;(void)v;return false;}
+
 struct nas_task *nas_current_task;
 struct nas_task *nas_task_by_pid(uint64_t pid) {
     if(pid==tracer.pid)return &tracer;

@@ -120,6 +120,10 @@ struct nas_task *nas_task_fork_slot(void) {
         child->continue_report_pending = false;
         child->stop_signal = 0;
         child->ptrace_tracer_pid = 0;
+        child->ptrace_options=0;
+        child->ptrace_phase=0;
+        child->ptrace_trace_syscalls=false;
+        child->ptrace_skip_entry_once=false;
         child->resume_valid = false;
         /* Fork inherits resources, never pending waits or device watches. */
         nas_task_wait_reset(child);
@@ -171,6 +175,10 @@ void nas_task_release(struct nas_task *task) {
     task->continue_report_pending = false;
     task->stop_signal = 0;
     task->ptrace_tracer_pid = 0;
+    task->ptrace_options=0;
+    task->ptrace_phase=0;
+    task->ptrace_trace_syscalls=false;
+    task->ptrace_skip_entry_once=false;
     task->pending_signals = 0;
     task->vfork_child_pid = task->vfork_parent_pid = 0;
     task->vfork_shared_vm = false;

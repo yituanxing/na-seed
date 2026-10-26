@@ -234,6 +234,22 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
     return ret;
 }
 
+/* Both ISA-normalized call arguments and the live hardware user trap belong
+ * to the current task until the kernel scheduler switches. ptrace must
+ * park BEFORE entering the real syscall, then observe the ACTUAL result. */
+uint64_t nas_ptrace_syscall_dispatch(uint64_t *args) {
+    struct nas_task *original=nas_current_task;
+    if(nas_ptrace_syscall_enter(original,args))
+        return nas_task_schedule(args);
+    uint64_t result=syscall_dispatch(args);
+    /* A blocking syscall may switch to a different Task. Never attribute
+     * its scheduler return value to the tracee whose syscall parked. */
+    if(nas_current_task==original && original->state==NAS_TASK_RUNNING &&
+       nas_ptrace_syscall_exit(original,args,result))
+        return nas_task_schedule(args);
+    return result;
+}
+
 /* Strict single-program ABI diagnostic dispatcher, for a real syscall gate. */
 uint64_t syscall_dispatch(const uint64_t *args) {
     nas_task_cpu_account_switch(nas_current_task);

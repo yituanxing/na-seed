@@ -37,4 +37,16 @@ static inline void nas_arch_context_set_user_sp(struct nas_arch_context *c,
     c->user_sp = sp;
 #endif
 }
+/* ptrace observes an actual pre-syscall stop. This kernel cannot park a
+ * live C continuation, so resume re-executes the identical user SYSCALL,
+ * ECALL or SVC instruction once, using a per-Task replay guard. */
+static inline void nas_arch_ptrace_rewind_syscall(struct nas_arch_context *c) {
+#if defined(__x86_64__)
+    c->resume_user_rip -= 2; /* syscall opcode 0F 05 */
+#elif defined(__riscv) && __riscv_xlen == 64
+    c->user_pc -= 4; /* ECALL always 32-bit */
+#elif defined(__aarch64__)
+    c->user_elr -= 4; /* SVC always 32-bit */
+#endif
+}
 #endif
