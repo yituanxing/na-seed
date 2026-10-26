@@ -49,8 +49,10 @@ static bool task_io_ready(const struct nas_task *task) {
 static bool task_wait_ready(const struct nas_task *task) {
     uint64_t desired = task->wait.blocked_args[0];
     for (unsigned slot = 0; slot < NAS_TASK_LIMIT; slot++) {
-        struct nas_task *child = nas_task_child_at(task->pid, slot);
-        if (!child) continue;
+        struct nas_task *child=nas_task_at(slot);
+        if(child->state==NAS_TASK_FREE)continue;
+        if(!((child->ppid==task->pid && !child->is_thread) ||
+             child->ptrace_tracer_pid==task->pid))continue;
         if (!nas_wait_pid_matches(desired,child->pid,
                                   task->pgid,child->pgid)) continue;
         if (nas_process_waitable(child,task->wait.blocked_args[2])) return true;

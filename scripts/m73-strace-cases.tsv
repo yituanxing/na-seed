@@ -1,0 +1,2 @@
+# Two true NaSeed QEMU scenarios in one original userspace script. Both markers required.
+m73-follow	cpio	sh -c '/bin/sh /tests/m73-strace-run.sh'	M73_BLOCKED_SYSCALL_PASS	-	/bin/busybox

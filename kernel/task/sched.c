@@ -14,6 +14,7 @@
 #include "wait.h"
 #include "wait_pid.h"
 #include "signal.h"
+#include "ptrace.h"
 #include "../time/clock.h"
 #include "../fs/epoll.h"
 #include "../fs/eventfd.h"
@@ -160,6 +161,7 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     /* Reparent *both* living and already-zombie descendants to init.
      * Task identity (PID) and physical page ownership remain unchanged.
      * PID 1 owns future wait4 and is responsible for reaping orphans. */
+    nas_ptrace_tracer_exit(child->pid);
     nas_task_adopt_orphans(child->pid);
     for (unsigned fd = 0; fd < NAS_FD_LIMIT; fd++)
         if (TASK.fds->entries[fd].kind != FD_CLOSED) nas_fs_close_fd(fd);
@@ -302,6 +304,11 @@ bool nas_sched_preempt_select(void) {
                 next->wait.pending_valid=false;
                 next->wait.blocked_op=0;
                 next->wait.deadline_active=false;
+                if(nas_ptrace_blocked_completed(next,result)) {
+                    nas_current_task=from;
+                    nas_arch_restore_cpu(from);
+                    continue;
+                }
             }
             from->state=NAS_TASK_READY;
             from->resume_valid=true;
@@ -388,6 +395,16 @@ retry_schedule: ; /* label must precede a statement in C11 */
                 next->wait.pending_valid = false;
                 next->wait.blocked_op = 0;
                 next->wait.deadline_active = false;
+                if(nas_ptrace_blocked_completed(next,result)) {
+                    nas_arch_set_saved_return(next,result);
+                    nas_current_task=previous;
+                    nas_arch_restore_cpu(previous);
+                    /* The completing tracee is STOPPED now and may have
+                     * just made a blocked tracer wait4 READY. Restart
+                     * selection: a linear scan may have passed the tracer
+                     * earlier, otherwise falsely reporting deadlock. */
+                    goto retry_schedule;
+                }
             }
             next->state = NAS_TASK_RUNNING;
             next->resume_valid = false;
@@ -481,6 +498,12 @@ retry_schedule: ; /* label must precede a statement in C11 */
         nas_print("[DEADLOCK] pid="); nas_dec(task->pid);
         nas_print(" state="); nas_dec(task->state);
         nas_print(" blocked_op="); nas_dec(task->wait.blocked_op);
+        nas_print(" trace_parent=");nas_dec(task->ptrace_tracer_pid);
+        nas_print(" ptrace_phase=");nas_dec(task->ptrace_phase);
+        nas_print(" ptrace_sig=");nas_dec(task->stop_signal);
+        nas_print(" report=");nas_dec(task->stop_report_pending);
+        nas_print(" wait_target=");nas_dec(task->wait.blocked_args[0]);
+        nas_print(" wait_flags=");nas_hex(task->wait.blocked_args[2]);
         nas_print(" fd="); nas_dec(task->wait.blocked_args[0]);
         nas_print("\n");
         if(task->wait.blocked_op==NAS_SC_futex) {
@@ -514,6 +537,7 @@ uint64_t nas_task_block(uint64_t *frame, enum nas_syscall_op nr,
     task->resume_valid = true;
     task->wait.blocked_op = nr;
     task->wait.pending_valid = true;
+    task->ptrace_blocked_exit_pending=task->ptrace_trace_syscalls && task->ptrace_tracer_pid;
     task->wait.blocked_args[0] = a;
     task->wait.blocked_args[1] = b;
     task->wait.blocked_args[2] = c;

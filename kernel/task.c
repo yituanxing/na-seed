@@ -128,6 +128,9 @@ struct nas_task *nas_task_fork_slot(void) {
         child->ptrace_event_message=0;
         child->ptrace_exec_pending_exit=false;
         child->ptrace_exit_event_sent=false;
+        child->ptrace_child_initial_stop=false;
+        child->ptrace_fork_pending_exit=false;
+        child->ptrace_blocked_exit_pending=false;
         child->resume_valid = false;
         /* Fork inherits resources, never pending waits or device watches. */
         nas_task_wait_reset(child);
@@ -164,12 +167,17 @@ void nas_task_adopt_orphans(uint64_t exiting_pid) {
             child->ptrace_tracer_pid=0;
             child->ptrace_options=0;
             child->ptrace_trace_syscalls=false;
-            if(child->state==NAS_TASK_STOPPED && child->ptrace_phase) {
+            if(child->state==NAS_TASK_STOPPED &&
+               (child->ptrace_phase || child->ptrace_child_initial_stop || child->ptrace_event)) {
                 child->state=NAS_TASK_READY;
                 child->stopped_from=NAS_TASK_FREE;
                 child->stop_report_pending=false;
             }
             child->ptrace_phase=0;
+            child->ptrace_event=0;
+            child->ptrace_child_initial_stop=false;
+            child->ptrace_fork_pending_exit=false;
+            child->ptrace_blocked_exit_pending=false;
         }
     }
 }
@@ -202,6 +210,9 @@ void nas_task_release(struct nas_task *task) {
     task->ptrace_event_message=0;
     task->ptrace_exec_pending_exit=false;
     task->ptrace_exit_event_sent=false;
+    task->ptrace_child_initial_stop=false;
+    task->ptrace_fork_pending_exit=false;
+    task->ptrace_blocked_exit_pending=false;
     task->pending_signals = 0;
     task->vfork_child_pid = task->vfork_parent_pid = 0;
     task->vfork_shared_vm = false;
