@@ -337,6 +337,7 @@ uint64_t nas_ptrace_syscall_dispatch(uint64_t *args) {
 
 /* Strict single-program ABI diagnostic dispatcher, for a real syscall gate. */
 #if defined(__x86_64__)
+extern uint64_t nas_x86_syscall_return_rip;
 /* Bounded read-only diagnostic of exact native syscall arguments.
  * The tracer PID can crash after receiving an invalid ptrace/wait result;
  * record which native syscall was actually entered, not a guessed Linux ABI.
