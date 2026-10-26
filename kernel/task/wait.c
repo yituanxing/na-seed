@@ -14,6 +14,7 @@
 #include "signal.h"
 #include "../time/clock.h"
 #include "../fs/epoll.h"
+#include "../fs/file_ops.h"
 #include "../fs/eventfd.h"
 #include "../fs/unix_socket.h"
 #include "wait.h"
@@ -27,23 +28,15 @@ static bool task_io_ready(const struct nas_task *task) {
     if (slot >= NAS_OPEN_FILE_LIMIT) return true; /* replay to return EBADF */
     if (task->wait.blocked_op == NAS_SC_read ||
         task->wait.blocked_op == NAS_SC_readv) {
-        if(kind == FD_PIPE_R || kind == FD_SOCKET)
-            return nas_unix_socket_listening(slot) ?
-                   nas_unix_socket_readable(slot) : nas_pipe_read_ready(slot);
-        if(kind == FD_EVENTFD)return nas_eventfd_ready(slot,false);
-        if(kind == FD_PTY_MASTER || kind == FD_PTY_SLAVE)
-            return nas_pty_read_ready(slot);
+        /* Canonical/echo TTY has per-waiter observations beyond POLLIN. */
         if(kind == FD_TTY || kind == FD_UART)
-            return nas_tty_read_ready((struct nas_task *)task,task->wait.blocked_args[2]);
-        return true; /* replay and return actual fd error */
+            return nas_tty_read_ready((struct nas_task *)task,
+                                       task->wait.blocked_args[2]);
+        return (nas_fs_poll_description(slot,0x0001U)&0x0001U)!=0;
     }
     if (task->wait.blocked_op == NAS_SC_write ||
         task->wait.blocked_op == NAS_SC_writev)
-        return kind == FD_EVENTFD ? nas_eventfd_ready(slot,true) :
-               (kind == FD_PTY_MASTER || kind == FD_PTY_SLAVE) ?
-               nas_pty_write_ready(slot) :
-               (kind != FD_PIPE_W && kind != FD_SOCKET) ||
-               nas_pipe_write_ready(slot);
+        return (nas_fs_poll_description(slot,0x0004U)&0x0004U)!=0;
     return true;
 }
 static bool task_wait_ready(const struct nas_task *task) {
