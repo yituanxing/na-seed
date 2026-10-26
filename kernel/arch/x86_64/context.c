@@ -23,14 +23,20 @@ void nas_arch_save_fpu(struct nas_task *task) {
 }
 void nas_arch_save_user_frame(struct nas_task *task, const uint64_t *frame) {
     for (unsigned i=0;i<15;i++) task->arch.resume_regs[i] = frame[i];
-    task->arch.resume_user_rsp = syscall_user_rsp;
-    /* After an rt_sigreturn (or a ptrace stop resumed in the original
-     * native syscall C frame), frame[7]/frame[8] are the user's restored
-     * RCX/R11 registers, not necessarily the kernel's IRET RIP/RFLAGS.
-     * The syscall-entry assembly and context-restore owner explicitly
-     * maintain these return registers independently. */
-    task->arch.resume_user_rip = nas_x86_syscall_return_rip;
-    task->arch.resume_user_rflags = nas_x86_syscall_return_flags;
+    /* Syscall entry materializes its full IRET image BEFORE the C call.
+     * Capture return RIP/RFLAGS/RSP from this Task's OWN live stack, not
+     * from per-CPU scratch state that another runnable Task may overwrite.
+     * The exception vector/error frame deliberately does not have this
+     * layout; that path records its native IRET fields explicitly. */
+    if(frame[16]==0x33U && frame[19]==0x2bU) {
+        task->arch.resume_user_rsp=frame[18];
+        task->arch.resume_user_rip=frame[15];
+        task->arch.resume_user_rflags=frame[17];
+    } else {
+        task->arch.resume_user_rsp=syscall_user_rsp;
+        task->arch.resume_user_rip=nas_x86_syscall_return_rip;
+        task->arch.resume_user_rflags=nas_x86_syscall_return_flags;
+    }
     if(task->arch.resume_user_rip<4096U) {
         nas_print("[X86CTX SAVE_BAD] pid=");nas_dec(task->pid);
         nas_print(" global_pc=");nas_hex(nas_x86_syscall_return_rip);

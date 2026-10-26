@@ -222,6 +222,18 @@ static void native_dispatcher(void) {
             if(next->state==NAS_TASK_BLOCKED &&
                !next->kernel_exec.cpu.saved_sp)
                 sched_fail("blocked Task lost native C continuation");
+            /* Publish a REAL native Task handoff, not the retired
+             * scheduler's frame-copy "to" result. Pipeline acceptance
+             * requires proof that producer and consumer both ran. */
+            struct nas_task *previous=nas_current_task;
+            if(previous && previous!=next) {
+                static unsigned native_switch_reports;
+                if(native_switch_reports++<64U) {
+                    nas_print("[SCHED] from=");nas_dec(previous->pid);
+                    nas_print(" to=");nas_dec(next->pid);
+                    nas_print("\n");
+                }
+            }
             next->state=NAS_TASK_RUNNING;
             next->resume_valid=false;
             nas_current_task=next;

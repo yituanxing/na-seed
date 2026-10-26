@@ -178,7 +178,7 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
     }
     if((frame[18]&3U)==3U && tracee &&
        tracee->state==NAS_TASK_RUNNING &&
-       (vector==1 || vector==3 ||
+       (vector==1 || vector==3 || vector==13 ||
         (vector==14 && outcome.action==NAS_EXC_SIGNAL))) {
         for(unsigned i=0;i<15;i++)tracee->arch.resume_regs[i]=frame[i];
         tracee->arch.resume_user_rip=user_rip;
@@ -201,10 +201,25 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
         }
         bool traced=nas_ptrace_user_exception(tracee,signo,si_code,user_rip,
                                                user_sp,signal_addr);
-        if(traced || (vector==14 && outcome.action==NAS_EXC_SIGNAL)) {
-            /* For an untraced user #PF, default SIGSEGV terminates only
-             * the offending process group, not the entire kernel. */
-            if(!traced)nas_sched_thread_group_exit(0,outcome.signo);
+        if(traced || vector==13 ||
+           (vector==14 && outcome.action==NAS_EXC_SIGNAL)) {
+            /* Linux delivers user-origin #GP as SIGSEGV/SI_KERNEL.
+             * Kernel #GP remains fatal, but a bad user task must NEVER
+             * take down unrelated applications or the scheduler. */
+            if(vector==13) {
+                static unsigned gp_reports;
+                if(gp_reports++<12U) {
+                    nas_print("[USERGP] pid=");nas_dec(tracee->pid);
+                    nas_print(" rip=");nas_hex(user_rip);
+                    nas_print(" rsp=");nas_hex(user_sp);
+                    nas_print(" saved_rip=");nas_hex(tracee->arch.resume_user_rip);
+                    nas_print(" tls=");nas_hex(nas_task_tls_base(tracee));
+                    nas_print("\n");
+                }
+            }
+            if(!traced)
+                nas_sched_thread_group_exit(0,
+                    vector==13 ? 11U : outcome.signo);
             uint64_t resumed=nas_task_schedule(frame);
             /* A native traced exception returns to the SAME Task C frame.
              * Restore debugger-edited saved GPRs before constructing IRET;

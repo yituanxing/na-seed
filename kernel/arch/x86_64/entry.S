@@ -59,6 +59,19 @@ syscall_entry:
     pushq %rsi
     pushq %rdi
     pushq %rax
+    /* The complete syscall return image must exist on this Task's ENTRY
+     * stack before entering C: a native scheduler can park this kernel
+     * continuation and enter a different Task long before this call returns.
+     * Never infer the parked Task's IRET provenance from CPU-global scratch
+     * registers that may have belonged to another Task in the meantime. */
+    movq nas_x86_syscall_return_rip(%rip), %rax
+    movq %rax, 120(%rsp)
+    movq $0x33, 128(%rsp)
+    movq nas_x86_syscall_return_flags(%rip), %rax
+    movq %rax, 136(%rsp)
+    movq syscall_user_rsp(%rip), %rax
+    movq %rax, 144(%rsp)
+    movq $0x2b, 152(%rsp)
     /* Stack is now 16-byte aligned, as required before the C call. */
     movq %rsp, %rdi
     call nas_ptrace_syscall_dispatch
@@ -228,7 +241,9 @@ isr12:
 .global isr13
 isr13:
     pushq $13
-    jmp exception_common
+    /* Userspace #GP (bad selector/alignment/etc.) is a real task fault,
+     * not a kernel panic. Kernel-origin #GP still fails closed in C. */
+    jmp nas_x86_traced_exception_entry
 .global isr14
 isr14:
     pushq $14
