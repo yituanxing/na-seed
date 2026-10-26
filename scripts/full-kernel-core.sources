@@ -22,6 +22,8 @@ kernel/task/wait_queue.c
 kernel/task/futex_wait.c
 kernel/task/run_state.c
 kernel/task/blocked_completion.c
+kernel/task/kthread.c
+kernel/task/kthread_boot.c
 kernel/bootfs.c
 kernel/tmpfs.c
 kernel/fs/tmp_namespace.c

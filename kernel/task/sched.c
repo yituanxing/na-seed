@@ -14,6 +14,7 @@
 #include "wait.h"
 #include "futex_wait.h"
 #include "blocked_completion.h"
+#include "kthread.h"
 #include "wait_pid.h"
 #include "signal.h"
 #include "ptrace.h"
@@ -186,6 +187,7 @@ static unsigned schedule_cursor;
  */
 bool nas_sched_preempt_select(void) {
     nas_time_timers_tick();
+    (void)nas_kthread_run(2);
     struct nas_task *from=nas_current_task;
     if (!from || from->state != NAS_TASK_RUNNING) return false;
     unsigned origin=NAS_TASK_LIMIT;
@@ -222,6 +224,7 @@ bool nas_sched_preempt_select(void) {
 uint64_t nas_task_schedule(uint64_t *frame) {
 retry_schedule: ; /* label must precede a statement in C11 */
     nas_time_timers_tick();
+    (void)nas_kthread_run(2);
     struct nas_task *previous = nas_current_task;
     uint64_t previous_pid = previous->pid; /* zombie may be reaped on replay */
     /* A READY task always gets one turn before re-evaluating blocked tasks.

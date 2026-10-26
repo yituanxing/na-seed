@@ -9,7 +9,7 @@ import re
 root=Path(__file__).resolve().parent.parent
 srcs=[line.strip() for line in (root/"scripts/full-kernel-core.sources").read_text().splitlines()
       if line.strip() and not line.startswith("#")]
-assert len(srcs)==len(set(srcs))==54, "common kernel TU manifest drift"
+assert len(srcs)==len(set(srcs))==56, "common kernel TU manifest drift"
 make=(root/"Makefile").read_text()
 defs={}
 for line in make.splitlines():
@@ -136,6 +136,10 @@ if "nas_blocked_complete(next,&result)" not in sched:
     raise SystemExit("scheduler lost shared IRQ/syscall completion adapter")
 if "nas_task_wake_ready(t)" not in (root/"kernel/task/futex_wait.c").read_text():
     raise SystemExit("futex producer no longer publishes runnable tasks")
+if "nas_kthread_run(2)" not in sched:
+    raise SystemExit("native C worker service is not in production scheduler")
+if "nas_kthread_boot_selftest();" not in (root/"kernel/init/main.c").read_text():
+    raise SystemExit("three-ISA native boot no longer exercises real kernel workers")
 if "nas_kernel_context_boot_selftest();" not in (root/"kernel/init/main.c").read_text():
     raise SystemExit("native QEMU kernels no longer test real kernel C resume")
 print(f"[M50 ARCH PASS] all {len(srcs)} actual shared kernel TUs are linked on x86 "

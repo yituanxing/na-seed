@@ -13,6 +13,7 @@
 #include "../task/elf.h"
 #include "../task/user_stack.h"
 #include "../task/signal.h"
+#include "../task/kthread.h"
 #include "../time/clock.h"
 #include "main.h"
 #include "../fs/file_ops.h"
@@ -27,6 +28,8 @@ void nas_init_userspace(void) {
     /* Native QEMU hardware acceptance: resume live kernel C frames twice,
      * distinct from the existing user syscall replay scheduler. */
     nas_kernel_context_boot_selftest();
+    nas_kthread_system_init();
+    nas_kthread_boot_selftest();
     /* User console must be a hardware/firmware input backend BEFORE
      * TIOCSCTTY enables terminal RX. x86 COM1 and RV SBI work early;
      * ARM maps its real PL011 Device page into TTBR1 only after frame init. */
