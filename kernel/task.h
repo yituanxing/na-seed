@@ -120,6 +120,8 @@ struct nas_task {
     /* Traced child creation and true sleeping syscall completions. */
     bool ptrace_child_initial_stop,ptrace_fork_pending_exit;
     bool ptrace_blocked_exit_pending;
+    /* One hardware user instruction per request; not inherited by fork. */
+    bool ptrace_single_step;
     uint32_t stop_signal;
     /* Saved syscall-boundary GPR frame in the exact arch.S push order.
      * The scheduler switches after unwinding the current syscall frame.

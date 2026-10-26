@@ -44,8 +44,14 @@ void nas_arm_full_trap_c(struct nas_arm_trap_frame *frame) {
     /* EC 0x3c is a real AArch64 user BRK instruction (GDB software
      * breakpoint), not an unexpected kernel fault. The ELR points to
      * the BRK instruction itself and MUST NOT be advanced. */
-    if ((esr>>26)==0x3cULL && !(frame->spsr_el1&15U)) {
+    if (((esr>>26)==0x3cULL || (esr>>26)==0x32ULL) &&
+        !(frame->spsr_el1&15U)) {
         struct nas_task *tracee=nas_current_task;
+        if((esr>>26)==0x32ULL) {
+            /* Native one-instruction step completed, not a syscall. */
+            tracee->ptrace_single_step=false;
+            frame->spsr_el1=(frame->spsr_el1&~(1ULL<<21))|(1ULL<<9);
+        }
         live=frame;
         nas_arch_save_user_frame(tracee,0);
         nas_arch_save_fpu(tracee);
@@ -111,6 +117,14 @@ void nas_arch_restore_cpu(const struct nas_task *task) {
     uint64_t tls=nas_task_tls_base(task);
     __asm__ volatile("msr tpidr_el0,%0" : : "r"(tls) : "memory");
     nas_arm_load_simd(task->arch.simd_regs);
+    /* Program hardware software-step for the selected Task only.
+     * MDSCR_EL1.SS + SPSR_EL1.SS causes a real EL0 debug exception;
+     * every other Task clears this PE-global enable. */
+    uint64_t mdscr;
+    __asm__ volatile("mrs %0,mdscr_el1" : "=r"(mdscr));
+    if(task->ptrace_single_step)mdscr|=1ULL;
+    else mdscr&=~1ULL;
+    __asm__ volatile("msr mdscr_el1,%0\n\tisb" : : "r"(mdscr) : "memory");
 }
 uint64_t nas_arch_signal_user_sp(void) {
     if(!live)nas_fail("ARM64 signal return outside live trap");

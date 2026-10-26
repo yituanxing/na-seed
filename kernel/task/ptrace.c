@@ -18,6 +18,7 @@
 #define PTRACE_POKEDATA 5ULL
 #define PTRACE_SETREGS 13ULL
 #define PTRACE_CONT 7ULL
+#define PTRACE_SINGLESTEP 9ULL
 #define PTRACE_GETREGS 12ULL
 #define PTRACE_DETACH 17ULL
 #define PTRACE_SYSCALL 24ULL
@@ -463,10 +464,26 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
             if(count<0)return (uint64_t)count;
             return count==(int64_t)sizeof(word)?word:(uint64_t)-EFAULT;
         }
+        case PTRACE_SINGLESTEP:
+#if !defined(__aarch64__)
+            return (uint64_t)-EOPNOTSUPP; /* no pretend software emulation */
+#endif
         case PTRACE_CONT:
         case PTRACE_SYSCALL:
         case PTRACE_DETACH:
             if(data)return (uint64_t)-EOPNOTSUPP; /* signal injection */
+#if defined(__aarch64__)
+            if(request==PTRACE_SINGLESTEP &&
+               target->stopped_from==NAS_TASK_BLOCKED)
+                return (uint64_t)-EBUSY;
+            target->ptrace_single_step=request==PTRACE_SINGLESTEP;
+            if(target->ptrace_single_step)
+                target->arch.user_spsr=
+                    (target->arch.user_spsr&~(1ULL<<9))|(1ULL<<21);
+            else
+                target->arch.user_spsr=
+                    (target->arch.user_spsr&~(1ULL<<21))|(1ULL<<9);
+#endif
             target->ptrace_trace_syscalls=request==PTRACE_SYSCALL;
             target->ptrace_child_initial_stop=false;
             if(target->ptrace_fork_pending_exit) {
@@ -502,20 +519,6 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
             }
             return 0;
         default:
-#if defined(__aarch64__)
-            {
-                static unsigned unknown_reports;
-                if(unknown_reports++<15) {
-                    extern void nas_print(const char *);
-                    extern void nas_dec(uint64_t);
-                    nas_print("[M75 ARM64 UNSUPPORTED PTRACE] request=");
-                    nas_dec(request);
-                    nas_print(" pid=");nas_dec(raw_pid);
-                    nas_print(" data=");nas_dec(data);
-                    nas_print("\n");
-                }
-            }
-#endif
             return (uint64_t)-EOPNOTSUPP;
     }
 }
