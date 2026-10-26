@@ -86,28 +86,9 @@ bool nas_ptrace_user_exception(struct nas_task *task,unsigned signo,
     task->ptrace_ip=user_pc;
     task->ptrace_sp=user_sp;
     task->ptrace_result=0;
-#if defined(__aarch64__)
-    extern unsigned nas_arm_debug_brk_seen;
-    nas_arm_debug_brk_seen++;
-#endif
+
     ptrace_stop(task,0);
-#if defined(__aarch64__)
-    extern void nas_print(const char *);
-    extern void nas_dec(uint64_t);
-    for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
-        struct nas_task *candidate=nas_task_at(i);
-        if(candidate->tgid!=task->ptrace_tracer_pid ||
-           candidate->state==NAS_TASK_FREE)continue;
-        nas_print("[M75 PTRSIG] tid=");nas_dec(candidate->pid);
-        nas_print(" state=");nas_dec(candidate->state);
-        nas_print(" waitop=");nas_dec(candidate->wait.blocked_op);
-        nas_print(" sigaction=");nas_dec(candidate->vm_owner->signal_actions[NAS_SIGCHLD][0]);
-        nas_print(" pending=");nas_dec(candidate->pending_signals);
-        nas_print(" blocked=");nas_dec(candidate->blocked_signals);
-        nas_print(" frame=");nas_dec(candidate->signal_frame_active);
-        nas_print("\n");
-    }
-#endif
+
     /* The debug/trap event is a SIGTRAP or SIGSEGV signal-delivery stop,
      * not a syscall-entry stop, ptrace event or guessed errno. Preserve
      * the hardware PC verbatim (x86 INT3 already advances by one). */
@@ -326,7 +307,7 @@ static uint64_t ptrace_set_gprs(struct nas_task *task,
 #endif
     return (uint64_t)-EOPNOTSUPP;
 }
-static uint64_t ptrace_request_impl(uint64_t request,uint64_t raw_pid,
+uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
                              uint64_t addr,uint64_t data) {
     struct nas_task *self=nas_current_task;
     /* Unlike a supported operation on a tracee we do not own, these
@@ -478,26 +459,3 @@ static uint64_t ptrace_request_impl(uint64_t request,uint64_t raw_pid,
 
 /* Bounded ARM64 debug only while diagnosing the real GNU GDB monitor path.
  * No synthetic event, no change to ptrace syscall result. */
-#if defined(__aarch64__)
-unsigned nas_arm_debug_brk_seen;
-#endif
-uint64_t nas_ptrace_request(uint64_t request,uint64_t pid,
-                             uint64_t addr,uint64_t data) {
-    uint64_t result=ptrace_request_impl(request,pid,addr,data);
-#if defined(__aarch64__)
-    static unsigned report;
-    if(nas_arm_debug_brk_seen && report++<150) {
-        extern void nas_print(const char *);
-        extern void nas_dec(uint64_t);
-        nas_print("[M75 PTRACE] caller=");nas_dec(nas_current_task?nas_current_task->pid:0);
-        nas_print(" target=");nas_dec(pid);
-        nas_print(" req=");nas_dec(request);
-        nas_print(" ret=");nas_dec(result);
-        struct nas_task *t=nas_task_by_pid(pid);
-        nas_print(" state=");nas_dec(t?t->state:0);
-        nas_print(" stop=");nas_dec(t?t->stop_report_pending:0);
-        nas_print("\n");
-    }
-#endif
-    return result;
-}

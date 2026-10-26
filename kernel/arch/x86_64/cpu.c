@@ -132,7 +132,10 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
         tracee->arch.resume_user_rsp=user_sp;
         nas_arch_save_fpu(tracee);
         if(nas_ptrace_user_exception(tracee,signo,user_rip,user_sp)) {
-            (void)nas_task_schedule(frame);
+            uint64_t resumed=nas_task_schedule(frame);
+            /* The interrupted debugger may have been blocked in poll:
+             * return the REAL EINTR/readiness outcome via selected RAX. */
+            frame[0]=resumed;
             /* C scheduler selected a real Task/MMU and wrote the live
              * 15-GPR snapshot. Convert the exception's two metadata
              * words into the new Task's authentic five-word IRET frame. */
