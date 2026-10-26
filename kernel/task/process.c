@@ -66,7 +66,7 @@ static uint64_t fork_common(uint64_t *frame, uint64_t child_tid) {
     nas_arch_save_fpu(parent);
     struct nas_task *child = nas_task_fork_slot();
     if (!child) return (uint64_t)-EAGAIN;
-    child->mm=nas_mm_fork_eager(parent->mm);
+    child->mm=nas_mm_fork_cow(parent->mm);
     if (!child->mm) { nas_task_release(child); return (uint64_t)-ENOMEM; }
     if (!nas_task_hold_files(child)) proc_fail("fork dangling open-file slot");
     nas_arch_set_saved_return(parent, child->pid);

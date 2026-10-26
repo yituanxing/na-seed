@@ -3,6 +3,12 @@
 #include "../arch/mmu.h"
 #include "../lib/string.h"
 #include "usercopy.h"
+#include "mm.h"
+#include "fault.h"
+#include "frame.h"
+#include "../task.h"
+#include "../arch/user_pt.h"
+#include "prot.h"
 /* Every NaSeed user page is a 4-KiB base page across all three backends.
  * A resolved HHDM pointer is physically contiguous only until the page
  * boundary; do not confuse adjacent user VAs with adjacent frames. */
@@ -31,7 +37,14 @@ bool nas_user_read_bytes(uint64_t addr, uint8_t *dst, uint64_t len) {
     for (uint64_t done = 0; done < len;) {
         uint64_t at = addr + done;
         uint8_t *src = nas_mmu_user_byte(at);
-        if (!src) return false;
+        if (!src) {
+            if(!nas_current_task || !nas_current_task->mm ||
+               nas_mm_handle_fault(nas_current_task->mm,at,
+                                   NAS_UP_READ,false)!=NAS_MM_FAULT_RESOLVED)
+                return false;
+            src=nas_mmu_user_byte(at);
+            if(!src)return false;
+        }
         uint64_t n = page_chunk(at, len - done);
         memcpy(dst + done, src, (size_t)n);
         done += n;
@@ -44,7 +57,21 @@ bool nas_user_write_bytes(uint64_t addr, const uint8_t *src, uint64_t len) {
      * page before modifying ANY byte of the target range. */
     for (uint64_t checked = 0; checked < len;) {
         uint64_t at = addr + checked;
-        if (!nas_mmu_user_writable(at)) return false;
+        if(!nas_current_task || !nas_current_task->mm)return false;
+        struct nas_mm *mm=nas_current_task->mm;
+        const struct nas_anon_region *v=nas_vma_find(&mm->mmap_vmas,at);
+        if(v && !(v->prot&NAS_VM_WRITE))return false;
+        uint64_t pa=0;
+        unsigned access=0;
+        if(!nas_mm_resolve_user(mm,at,&pa,&access)) {
+            if(nas_mm_handle_fault(mm,at,NAS_UP_WRITE,false)!=
+               NAS_MM_FAULT_RESOLVED)return false;
+        } else if(!(access&NAS_UP_WRITE)) {
+            if(nas_mm_handle_fault(mm,at,NAS_UP_WRITE,true)!=
+               NAS_MM_FAULT_RESOLVED)return false;
+        } else if(nas_frame_refs(pa&~UINT64_C(4095))>1 &&
+                  !nas_mm_break_cow(mm,at,access,false))return false;
+        if(!nas_mmu_user_writable(at))return false;
         checked += page_chunk(at, len - checked);
     }
     for (uint64_t done = 0; done < len;) {

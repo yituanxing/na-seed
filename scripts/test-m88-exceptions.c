@@ -15,6 +15,9 @@
 static struct nas_mm space={.users=1,.root_phys=ROOT};
 static uint64_t present_va,present_pa;
 static unsigned present_access,frames,freed;
+static uint8_t dummy_ram[8192];
+uint64_t nas_hhdm_offset(void){return (uint64_t)(uintptr_t)dummy_ram;}
+uint32_t nas_frame_refs(uint64_t pa){(void)pa;return 1;}
 static bool fail_alloc,fail_prepare;
 uint64_t nas_frame_alloc(void) {
     if(fail_alloc)return 0;
@@ -61,11 +64,11 @@ int main(void) {
     x.addr=BASE+6*PAGE;
     out=nas_exception_dispatch(&x,&space);
     assert(out.action==NAS_EXC_SIGNAL && out.si_code==2);
-    /* COW is NOT silently treated as a fault to be made writable. */
+    /* A logically writable resident page resolves COW without aliasing. */
     x.addr=BASE;present_access=NAS_UP_READ;
     out=nas_exception_dispatch(&x,&space);
-    assert(out.action==NAS_EXC_UNHANDLED &&
-           nas_mm_handle_fault(&space,BASE,NAS_UP_WRITE,false)==NAS_MM_FAULT_NEEDS_COW);
+    assert(out.action==NAS_EXC_RETRY &&
+           (present_access&NAS_UP_WRITE));
     present_access=NAS_UP_READ|NAS_UP_WRITE;
     x.addr=BASE+4*PAGE;x.access=NAS_EXC_READ;
     assert(nas_mm_handle_fault(&space,x.addr,NAS_UP_READ,false)==NAS_MM_FAULT_NEEDS_BACKING);

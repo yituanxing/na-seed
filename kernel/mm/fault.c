@@ -25,9 +25,15 @@ enum nas_mm_fault_result nas_mm_handle_fault(struct nas_mm *mm,uint64_t addr,
     uint64_t pa=0;
     unsigned hw=0;
     if(nas_mm_resolve_user(mm,addr,&pa,&hw)) {
-        if((access&hw)!=access)
-            return (access&NAS_UP_WRITE)?NAS_MM_FAULT_NEEDS_COW:
-                                         NAS_MM_FAULT_ACCERR;
+        if((access&hw)!=access) {
+            /* Only a logically writable private VMA can resolve a write-
+             * protected resident page. Physical refcount decides whether
+             * to copy or upgrade the sole remaining owner's leaf. */
+            if(!(access&NAS_UP_WRITE) || (access&NAS_UP_EXEC))
+                return NAS_MM_FAULT_ACCERR;
+            return nas_mm_break_cow(mm,addr,vma->prot,false) ?
+                NAS_MM_FAULT_RESOLVED : NAS_MM_FAULT_OOM;
+        }
         return NAS_MM_FAULT_INVARIANT; /* HW fault with usable user PTE */
     }
     if(hardware_protection_fault)return NAS_MM_FAULT_INVARIANT;

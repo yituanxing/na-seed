@@ -3,6 +3,9 @@
 #include "../panic.h"
 #include "../lib/string.h"
 #include "../task.h"
+#include "frame.h"
+#include "prot.h"
+#include "../arch/user_pt.h"
 
 /* Single-CPU fixed-capacity owner pool. Allocation policy is private to
  * the MM subsystem; Task must never become the storage owner again. */
@@ -21,16 +24,113 @@ struct nas_mm *nas_mm_new(void) {
     }
     return 0;
 }
-struct nas_mm *nas_mm_fork_eager(const struct nas_mm *source) {
-    if (!source || !source->users) nas_fail("MM fork: invalid source");
-    struct nas_mm *dest=nas_mm_new();
-    if (!dest) return 0;
-    uint64_t root=nas_mmu_fork_root(source->root_phys);
-    if (!root) { nas_mm_put(dest); return 0; }
-    dest->root_phys=root;
-    dest->heap_break=source->heap_break;
-    dest->mmap_vmas=source->mmap_vmas;
-    return dest;
+/* The platform page tables are private; only ordinary user DATA frames
+ * become shared. A missing VMA on a writable mapping is legacy/boot state:
+ * copy it eagerly rather than creating a page that cannot handle COW faults.
+ * Do not change ANY parent PTE until the full child walk succeeds. */
+struct cow_fork_ctx {
+    struct nas_mm *dst;
+    const struct nas_mm *src;
+};
+static unsigned access_prot(unsigned access) {
+    return NAS_VM_READ|((access&NAS_UP_WRITE)?NAS_VM_WRITE:0)|
+                       ((access&NAS_UP_EXEC)?NAS_VM_EXEC:0);
+}
+static bool cow_clone_mapping(uint64_t va,unsigned access,void *opaque) {
+    struct cow_fork_ctx *ctx=opaque;
+    uint64_t pa=0;
+    if(!nas_mm_resolve_user(ctx->src,va,&pa,0))return false;
+    pa &= ~UINT64_C(4095);
+    const struct nas_anon_region *v=nas_vma_find(&ctx->src->mmap_vmas,va);
+    bool legacy_private=(access&NAS_UP_WRITE) &&
+                        (!v || !(v->prot&NAS_VM_WRITE));
+    uint64_t mapping=pa;
+    if(legacy_private) {
+        mapping=nas_frame_alloc();
+        if(!mapping)return false;
+        memcpy((void *)(uintptr_t)(nas_hhdm_offset()+mapping),
+               (const void *)(uintptr_t)(nas_hhdm_offset()+pa),4096);
+    } else if(!nas_frame_get(pa))return false;
+    unsigned prot=access_prot(access);
+    if(!legacy_private)prot&=~NAS_VM_WRITE;
+    if(!nas_mmu_prepare_leaf_at(ctx->dst->root_phys,va)) {
+        (void)nas_frame_put(mapping);
+        return false;
+    }
+    uint64_t prior=0;
+    if(!nas_mmu_exchange_leaf_at(ctx->dst->root_phys,va,mapping,prot,&prior)) {
+        (void)nas_frame_put(mapping);
+        return false;
+    }
+    if(prior)nas_fail("COW fork: child page already mapped");
+    return true;
+}
+static bool cow_protect_parent(uint64_t va,unsigned access,void *opaque) {
+    const struct nas_mm *src=opaque;
+    if(!(access&NAS_UP_WRITE))return true;
+    const struct nas_anon_region *v=nas_vma_find(&src->mmap_vmas,va);
+    if(!v || !(v->prot&NAS_VM_WRITE))return true; /* eagerly cloned legacy */
+    uint64_t pa=0;
+    if(!nas_mm_resolve_user(src,va,&pa,0))return false;
+    pa &= ~UINT64_C(4095);
+    uint64_t old=0;
+    if(!nas_mmu_exchange_leaf_at(src->root_phys,va,pa,
+                                 access_prot(access)&~NAS_VM_WRITE,&old) ||
+       old!=pa) return false;
+    return true; /* same data frame; ownership unchanged */
+}
+struct nas_mm *nas_mm_fork_cow(const struct nas_mm *source) {
+    if(!source || !source->users || !source->root_phys)
+        nas_fail("COW fork: invalid source");
+    struct nas_mm *dst=nas_mm_new();
+    if(!dst)return 0;
+    dst->root_phys=nas_mmu_alloc_root();
+    if(!dst->root_phys){nas_mm_put(dst);return 0;}
+    dst->heap_break=source->heap_break;
+    dst->mmap_vmas=source->mmap_vmas;
+    struct cow_fork_ctx ctx={dst,source};
+    if(!nas_mm_walk_pages(source,cow_clone_mapping,&ctx)) {
+        nas_mm_put(dst); /* decrement acquired frame refs, parent untouched */
+        return 0;
+    }
+    /* No allocation or rollback can fail after this commit barrier: source
+     * mappings were walked and the parent PTE paths were already present.
+     * A failed exchange now is a genuine kernel invariant violation. */
+    if(!nas_mm_walk_pages(source,cow_protect_parent,(void *)source))
+        nas_fail("COW fork: parent write-protection invariant");
+    return dst;
+}
+/* Kernel/ptrace writes must privatize a shared page even when its user
+ * mapping is RX, without silently granting WRITE permission to userspace.
+ * A page with a single remaining owner can be promoted in-place. */
+bool nas_mm_break_cow(struct nas_mm *mm,uint64_t va,
+                      unsigned logical_prot,bool preserve_perm) {
+    uint64_t pa=0;
+    unsigned access=0;
+    if(!nas_mm_resolve_user(mm,va,&pa,&access))return false;
+    uint64_t old_frame=pa&~UINT64_C(4095);
+    uint32_t refs=nas_frame_refs(old_frame);
+    if(!refs)return false;
+    unsigned prot=preserve_perm ? access_prot(access) : logical_prot;
+    if(refs==1) {
+        if(preserve_perm || (access&NAS_UP_WRITE))return true;
+        uint64_t old=0;
+        return nas_mmu_exchange_leaf_at(mm->root_phys,va&~UINT64_C(4095),
+                                        old_frame,prot,&old) && old==old_frame;
+    }
+    uint64_t copy=nas_frame_alloc();
+    if(!copy)return false;
+    memcpy((void *)(uintptr_t)(nas_hhdm_offset()+copy),
+           (const void *)(uintptr_t)(nas_hhdm_offset()+old_frame),4096);
+    uint64_t old=0;
+    if(!nas_mmu_exchange_leaf_at(mm->root_phys,va&~UINT64_C(4095),
+                                 copy,prot,&old)) {
+        (void)nas_frame_put(copy);
+        return false;
+    }
+    if(old!=old_frame || !nas_frame_put(old))
+        nas_fail("COW: mapping/frame refcount ownership mismatch");
+    return true;
 }
 bool nas_mm_walk_pages(const struct nas_mm *mm,nas_mm_page_visit visit,void *ctx) {
     if(!mm || !mm->users || !mm->root_phys || !visit)return false;

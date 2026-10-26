@@ -37,6 +37,7 @@ bool nas_frame_put(uint64_t pa){
     owners[pa/P]--;return true;
 }
 bool nas_frame_free(uint64_t pa){return nas_frame_put(pa);}
+uint32_t nas_frame_refs(uint64_t pa){return pa/P<NP?owners[pa/P]:0;}
 static unsigned living(void){
     unsigned n=0;for(unsigned i=1;i<NP;i++)n+=owners[i];return n;
 }

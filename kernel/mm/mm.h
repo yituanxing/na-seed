@@ -16,9 +16,15 @@ struct nas_mm {
 
 void nas_mm_system_init(void);
 struct nas_mm *nas_mm_new(void); /* one owned reference, empty root */
-/* Duplicate current executing MM with independent private physical pages.
- * Baseline eager-fork implementation: COW can later replace just this policy. */
-struct nas_mm *nas_mm_fork_eager(const struct nas_mm *source);
+/* Fork shares private data frames read-only, not page tables. Parent PTEs
+ * become read-only only after the complete child is built; failure keeps
+ * parent register/MM/layout, mappings and refcounts unchanged. */
+struct nas_mm *nas_mm_fork_cow(const struct nas_mm *source);
+/* Explicit COW break. Ptrace can pass preserve_perm=true to make an RX
+ * breakpoint mapping private without upgrading its user permissions.
+ * All operations refer to a selected MM, not the current Task's CR3. */
+bool nas_mm_break_cow(struct nas_mm *mm,uint64_t va,
+                      unsigned logical_prot,bool preserve_perm);
 /* Explicit source-MM access independent of executing Task/root register.
  * Return false for absent address space, PTE or invalid userspace VA. */
 typedef bool (*nas_mm_page_visit)(uint64_t va,unsigned access,void *ctx);
