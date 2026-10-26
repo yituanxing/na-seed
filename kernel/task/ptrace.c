@@ -86,6 +86,10 @@ bool nas_ptrace_user_exception(struct nas_task *task,unsigned signo,
     task->ptrace_ip=user_pc;
     task->ptrace_sp=user_sp;
     task->ptrace_result=0;
+#if defined(__aarch64__)
+    extern unsigned nas_arm_debug_brk_seen;
+    nas_arm_debug_brk_seen++;
+#endif
     ptrace_stop(task,0);
     /* The debug/trap event is a SIGTRAP or SIGSEGV signal-delivery stop,
      * not a syscall-entry stop, ptrace event or guessed errno. Preserve
@@ -457,12 +461,15 @@ static uint64_t ptrace_request_impl(uint64_t request,uint64_t raw_pid,
 
 /* Bounded ARM64 debug only while diagnosing the real GNU GDB monitor path.
  * No synthetic event, no change to ptrace syscall result. */
+#if defined(__aarch64__)
+unsigned nas_arm_debug_brk_seen;
+#endif
 uint64_t nas_ptrace_request(uint64_t request,uint64_t pid,
                              uint64_t addr,uint64_t data) {
     uint64_t result=ptrace_request_impl(request,pid,addr,data);
 #if defined(__aarch64__)
     static unsigned report;
-    if(report++<72) {
+    if(nas_arm_debug_brk_seen && report++<150) {
         extern void nas_print(const char *);
         extern void nas_dec(uint64_t);
         nas_print("[M75 PTRACE] caller=");nas_dec(nas_current_task?nas_current_task->pid:0);
