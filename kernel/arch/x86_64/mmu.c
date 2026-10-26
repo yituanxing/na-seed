@@ -9,7 +9,6 @@
 #include "../user_pt.h"
 #include "../mmu.h"
 #define TASK (*nas_current_task)
-#define root_phys TASK.mm->root_phys
 #define P_PRESENT 1ULL
 #define P_RW 2ULL
 #define P_USER 4ULL
@@ -105,13 +104,13 @@ bool nas_mmu_bootstrap(void) {
     /* Separate userspace CR3: copy supervisor upper half, zero the lower half. */
     uint64_t boot_root = cr3 & PHYS_MASK;
     if (!boot_root) return false;
-    root_phys = nas_frame_alloc();
-    if (!root_phys) return false;
+    TASK.mm->root_phys = nas_frame_alloc();
+    if (!TASK.mm->root_phys) return false;
     uint64_t *old = phys_table(boot_root);
-    uint64_t *fresh = phys_table(root_phys);
+    uint64_t *fresh = phys_table(TASK.mm->root_phys);
     for (unsigned i = 256; i < 512; i++)
         fresh[i] = old[i] & ~P_USER;
-    nas_arch_switch_page_root(root_phys);
+    nas_arch_switch_page_root(TASK.mm->root_phys);
     return true;
 }
 /* Every execve owns a fresh user page-table root; the supervisor upper
@@ -122,7 +121,7 @@ bool nas_mmu_bootstrap(void) {
 uint64_t nas_mmu_alloc_root(void) {
     uint64_t pa = nas_frame_alloc();
     if (!pa) return 0;
-    uint64_t *fresh = phys_table(pa), *current = phys_table(root_phys);
+    uint64_t *fresh = phys_table(pa), *current = phys_table(TASK.mm->root_phys);
     for (unsigned i = 256; i < 512; i++)
         fresh[i] = current[i] & ~P_USER;
     return pa;
@@ -154,7 +153,7 @@ bool nas_mmu_reclaim_root(uint64_t pa) {
     return nas_frame_free(pa);
 }
 void nas_mmu_switch_root(uint64_t pa) {
-    root_phys = pa;
+    TASK.mm->root_phys = pa;
     nas_arch_switch_page_root(pa);
 }
 
@@ -189,14 +188,14 @@ static bool clone_user_level(uint64_t source_pa, uint64_t dest_pa,
 uint64_t nas_mmu_fork_root(void) {
     uint64_t destination = nas_mmu_alloc_root();
     if (!destination) return 0;
-    if (clone_user_level(root_phys, destination, 3, 256)) return destination;
+    if (clone_user_level(TASK.mm->root_phys, destination, 3, 256)) return destination;
     if (!nas_mmu_reclaim_root(destination))
         { nas_print("[FAIL] M1 fork private page rollback corrupted\n"); nas_arch_halt(); }
     return 0;
 }
 static uint64_t *user_leaf(uint64_t va, bool allocate_tables) {
     if (va < PAGE || va >= USER_LIMIT || (va & (PAGE - 1))) return 0;
-    uint64_t table = root_phys;
+    uint64_t table = TASK.mm->root_phys;
     for (int level = 3; level >= 1; --level) {
         unsigned index = (va >> (12 + (unsigned)level * 9)) & 511;
         uint64_t *entries = phys_table(table);

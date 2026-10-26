@@ -6,13 +6,13 @@
 
 /* Single-CPU fixed-capacity owner pool. Allocation policy is private to
  * the MM subsystem; Task must never become the storage owner again. */
-static struct nas_mm mm_pool[NAS_TASK_LIMIT];
+static struct nas_mm mm_pool[NAS_TASK_LIMIT * 2U]; /* spare replacement MMs during exec */
 
 void nas_mm_system_init(void) {
     memset(mm_pool, 0, sizeof(mm_pool));
 }
 struct nas_mm *nas_mm_new(void) {
-    for (unsigned n=0; n<NAS_TASK_LIMIT; ++n) {
+    for (unsigned n=0; n<NAS_TASK_LIMIT * 2U; ++n) {
         struct nas_mm *mm=&mm_pool[n];
         if (mm->users) continue;
         memset(mm, 0, sizeof(*mm));

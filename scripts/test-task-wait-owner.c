@@ -12,7 +12,8 @@ int main(void) {
     struct nas_task parent={0}, child={0};
     parent.pid=42;
     parent.tgid=42;
-    parent.root_phys=0x1234000ULL;
+    struct nas_mm mm={.root_phys=0x1234000ULL};
+    parent.mm=&mm;
     parent.wait.blocked_op=NAS_SC_ppoll;
     parent.wait.blocked_args[0]=7;
     parent.wait.pending_valid=true;
@@ -29,10 +30,11 @@ int main(void) {
     assert(nas_slot_mask_test(&parent.wait.poll_pipe_write,126));
     /* Fork clones persistent resource state, but never parked waits. */
     child=parent;
+    child.mm=0; /* Real nas_task_fork_slot clears inherited MM pointer. */
     child.pid=43;
     nas_task_wait_reset(&child);
     assert(child.pid==43 && child.tgid==42);
-    assert(child.root_phys==0x1234000ULL);
+    assert(child.mm==0 && parent.mm->root_phys==0x1234000ULL);
     assert(!child.wait.pending_valid && !child.wait.blocked_op);
     assert(!child.wait.blocked_args[0] && !child.wait.deadline_active);
     assert(!child.wait.deadline_ns && !child.wait.futex_addr);

@@ -24,7 +24,6 @@
 #include "ptrace.h"
 #include "sched.h"
 #define TASK (*nas_current_task)
-#define root_phys TASK.mm->root_phys
 #define loaded_phdr TASK.loaded_phdr
 #define loaded_phnum TASK.loaded_phnum
 #define loaded_main_entry TASK.loaded_main_entry
@@ -357,7 +356,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
      * before freeing the former root. This also marks abandoned robust
      * mutexes OWNER_DIED and clears their child TIDs in the right VM.
      * The new root is kept intact through this temporary switch. */
-    uint64_t committed_root = root_phys;
+    uint64_t committed_root = TASK.mm->root_phys;
     struct nas_task *exec_thread = nas_current_task;
     struct nas_task *old_leader = exec_thread->vm_owner;
     uint64_t inherited_tgid=old_leader->tgid;
