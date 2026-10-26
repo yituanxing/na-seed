@@ -18,7 +18,7 @@ static bool reject_bad;
 void nas_arch_halt(void) {++system_panics;assert(0 && "kernel panic forbidden");}
 void nas_print(const char *s){(void)s;}
 bool nas_arch_signal_install_handler(uint64_t *frame,unsigned sig,
-                                     const uint64_t *action) {
+                                     const uint64_t action[4]) {
     (void)frame;(void)action;
     ++failures;
     if(nas_current_task==&bad && reject_bad)return false;

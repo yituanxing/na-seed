@@ -451,7 +451,7 @@ void nas_signal_broken_pipe(uint64_t fd) {
  * SA_RESETHAND resets all four saved action fields after frame creation.
  * Explicit sa_mask always applies, excluding unmaskable KILL/STOP. */
 void nas_signal_handler_enter(struct nas_task *t,unsigned signo,
-                                 const uint64_t *act) {
+                                 const uint64_t act[4]) {
     uint64_t flags=act[1];
     uint64_t bits=act[3]&~NAS_UNMASKABLE;
     if(!(flags&NAS_SA_NODEFER))bits |= 1ULL<<(signo-1);
