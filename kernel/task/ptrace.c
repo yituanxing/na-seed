@@ -119,7 +119,9 @@ void nas_ptrace_tracer_exit(uint64_t tracer_pid) {
     if(!tracer_pid)return;
     for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
         struct nas_task *tracee=nas_task_at(i);
-        if(tracee->ptrace_tracer_pid==tracer_pid) {
+        if(tracee->ptrace_tracer_pid==tracer_pid &&
+           tracee->state!=NAS_TASK_FREE &&
+           tracee->state!=NAS_TASK_ZOMBIE) {
 #if defined(__riscv) && __riscv_xlen==64
             rv_step_restore(tracee); /* tracer exit cannot strand EBREAK */
 #endif
