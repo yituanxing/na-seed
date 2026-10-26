@@ -60,6 +60,22 @@ uint64_t nas_mmu_fork_root(uint64_t source_root) {
     struct nas_user_space dest={0};
     return nas_space_clone(&dest,&source)?dest.root_pa:0;
 }
+bool nas_mmu_prepare_leaf(uint64_t va) {
+    if((va&(PAGE-1)) || va<PAGE || va>=USER_LIMIT)return false;
+    struct nas_user_space s=current();
+    return nas_arch_pt_prepare(&s,va);
+}
+bool nas_mmu_exchange_leaf(uint64_t va,uint64_t new_pa,unsigned prot,
+                           uint64_t *old_pa) {
+    if(!old_pa || (va&(PAGE-1)) || va<PAGE || va>=USER_LIMIT ||
+       (new_pa && !nas_vm_prot_supported(prot)) ||
+       (!new_pa && prot))return false;
+    struct nas_user_space s=current();
+    unsigned access=new_pa?(NAS_UP_READ|(prot&6U)):0;
+    if(!nas_arch_pt_exchange(&s,va,new_pa,access,old_pa))return false;
+    nas_arch_pt_flush(va);
+    return true;
+}
 bool nas_mmu_map_page(uint64_t va,bool writable) {
     struct nas_user_space s=current();
     return nas_space_map_page(&s,va,writable);

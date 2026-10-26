@@ -22,6 +22,17 @@ bool nas_arm_pt_smoke(void) {
             got != data + 0x123 || flags != user_data) return false;
         if (!nas_arm_pt_translate(&p, va2 + 0x456, &got, &flags) ||
             got != code + 0x456 || flags != user_code) return false;
+        uint64_t transient=nas_frame_alloc(), removed=0;
+        const uint64_t candidate=0x400000ULL;
+        if(!transient || !nas_arm_pt_prepare(&p,candidate) ||
+           !nas_arm_pt_exchange(&p,candidate,transient,
+                                NAS_UP_READ|NAS_UP_WRITE,&removed) ||
+           removed || !nas_arm_pt_translate(&p,candidate,&got,0) ||
+           got!=transient ||
+           !nas_arm_pt_exchange(&p,candidate,0,0,&removed) ||
+           removed!=transient ||
+           nas_arm_pt_translate(&p,candidate,&got,0) ||
+           !nas_frame_free(removed))return false;
         if (nas_arm_pt_map(&p, va1, code, user_data) ||
             nas_arm_pt_map(&p, va1 + 1, code, user_data) ||
             nas_arm_pt_map(&p, va2 + NAS_ARM_PAGE_SIZE, code,

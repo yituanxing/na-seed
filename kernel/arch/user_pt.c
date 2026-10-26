@@ -33,6 +33,15 @@ void nas_arch_pt_destroy(struct nas_user_space *s) {
     nas_rv_pt_destroy(&pt);
     s->root_pa=pt.root_pa; s->levels=pt.levels;
 }
+bool nas_arch_pt_prepare(const struct nas_user_space *s,uint64_t va) {
+    struct nas_rv_page_table p=native_pt(s);
+    return nas_rv_pt_prepare(&p,va);
+}
+bool nas_arch_pt_exchange(const struct nas_user_space *s,uint64_t va,
+                           uint64_t new_pa,unsigned access,uint64_t *old_pa) {
+    struct nas_rv_page_table p=native_pt(s);
+    return nas_rv_pt_exchange(&p,va,new_pa,access,old_pa);
+}
 bool nas_arch_pt_map(const struct nas_user_space *s,uint64_t va,
                      uint64_t pa,unsigned access) {
     struct nas_rv_page_table p=native_pt(s);
@@ -106,6 +115,15 @@ void nas_arch_pt_destroy(struct nas_user_space *s) {
     struct nas_arm_pt pt=native_pt(s);
     nas_arm_pt_destroy(&pt);
     s->root_pa=pt.root_pa; s->levels=pt.levels;
+}
+bool nas_arch_pt_prepare(const struct nas_user_space *s,uint64_t va) {
+    struct nas_arm_pt p=native_pt(s);
+    return nas_arm_pt_prepare(&p,va);
+}
+bool nas_arch_pt_exchange(const struct nas_user_space *s,uint64_t va,
+                           uint64_t new_pa,unsigned access,uint64_t *old_pa) {
+    struct nas_arm_pt p=native_pt(s);
+    return nas_arm_pt_exchange(&p,va,new_pa,access,old_pa);
 }
 bool nas_arch_pt_map(const struct nas_user_space *s,uint64_t va,
                      uint64_t pa,unsigned access) {

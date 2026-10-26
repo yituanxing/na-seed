@@ -23,6 +23,9 @@ struct nas_rv_page_table {
  * separate one-way architectural SATP switch test. */
 bool nas_rv_pt_init(struct nas_rv_page_table *pt, unsigned levels);
 void nas_rv_pt_destroy(struct nas_rv_page_table *pt);
+bool nas_rv_pt_prepare(const struct nas_rv_page_table *,uint64_t va);
+bool nas_rv_pt_exchange(const struct nas_rv_page_table *,
+                       uint64_t va,uint64_t new_pa,unsigned access,uint64_t *old_pa);
 bool nas_rv_pt_map(struct nas_rv_page_table *pt, uint64_t user_va,
                    uint64_t pa, uint64_t perms);
 bool nas_rv_pt_translate(const struct nas_rv_page_table *pt, uint64_t user_va,
