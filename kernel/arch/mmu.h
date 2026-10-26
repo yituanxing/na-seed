@@ -19,6 +19,15 @@ bool nas_mmu_resolve_user_address(uint64_t selected_root,uint64_t user_va,
  * physical-frame ownership to/from the PTE; caller releases old_pa.
  * The TLB is invalidated before a successful exchange returns.
  * For a PROT_NONE replacement pass new_pa=0 and prot=0. */
+/* Explicit address-space identity for VM mutations. root_phys belongs to
+ * the MM owner, NOT the currently installed CPU page-table register.
+ * The caller retains physical-frame ownership until exchange succeeds.
+ * Per-ISA backends handle required TLB invalidation. */
+bool nas_mmu_prepare_leaf_at(uint64_t root_phys,uint64_t va);
+bool nas_mmu_exchange_leaf_at(uint64_t root_phys,uint64_t va,
+                              uint64_t new_pa,unsigned prot,
+                              uint64_t *old_pa);
+/* Transitional current-MM helpers for existing syscall/loader paths. */
 bool nas_mmu_prepare_leaf(uint64_t va);
 bool nas_mmu_exchange_leaf(uint64_t va,uint64_t new_pa,unsigned prot,
                            uint64_t *old_pa);

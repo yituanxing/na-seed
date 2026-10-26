@@ -11,6 +11,7 @@
 #include "mmap_abi.h"
 
 #include "frame.h"
+#define TASK (*nas_current_task)
 /* M86 page replacement transaction. Stage new 4-KiB data frames outside
  * the live VM, followed by all required page-table directories.  Directory
  * preparation is allowed to allocate but must not change leaf mappings.
@@ -94,7 +95,7 @@ static uint64_t stage_replace_pages(uint64_t start,uint64_t pages,
      * allocate directories for empty virtual reservations. */
     for(uint64_t i=0;i<pages;i++) {
         uint64_t va=start+i*PAGE;
-        if(prot && !nas_mmu_prepare_leaf(va)) {
+        if(prot && !nas_mmu_prepare_leaf_at(TASK.mm->root_phys,va)) {
             stage_release(&staged,true);
             return (uint64_t)-ENOMEM;
         }
@@ -109,7 +110,7 @@ static uint64_t stage_replace_pages(uint64_t start,uint64_t pages,
              * no materialized page. No need to manufacture directories. */
             if(!nas_mmu_user_byte(va))continue;
         }
-        if(!nas_mmu_exchange_leaf(va,next_pa,prot,&old_pa))
+        if(!nas_mmu_exchange_leaf_at(TASK.mm->root_phys,va,next_pa,prot,&old_pa))
             nas_arch_halt(); /* violated the successful PT preflight */
         if(old_pa && !nas_frame_put(old_pa))nas_arch_halt();
     }
@@ -126,7 +127,6 @@ bool nas_vm_walk_task_pages(const struct nas_task *task,
     if(!task || !callback || task->state==NAS_TASK_FREE)return false;
     return nas_mm_walk_pages(task->mm,callback,ctx);
 }
-#define TASK (*nas_current_task)
 #define heap_break TASK.mm->heap_break
 /* Ordinary anonymous allocation stays in the top-down window. Fixed
  * mappings participate in the same per-task VM ownership ledger, including

@@ -22,6 +22,7 @@ struct mapping {uint64_t va,pa;unsigned prot;};
 static struct mapping maps[96];
 static struct nas_task current;
 static struct nas_mm space;
+#define SELECTED_ROOT 0xabc000ULL
 struct nas_task *nas_current_task=&current;
 uint64_t nas_hhdm_offset(void){return (uint64_t)(uintptr_t)ram;}
 uint64_t nas_frame_alloc(void){
@@ -46,11 +47,14 @@ static struct mapping *slot(uint64_t va,bool create){
     }
     return 0;
 }
-bool nas_mmu_prepare_leaf(uint64_t va){
+bool nas_mmu_prepare_leaf_at(uint64_t root_phys,uint64_t va){
     (void)va;
+    if(root_phys!=SELECTED_ROOT)return false;
     return !(prepare_fail_at && ++prepare_count==prepare_fail_at);
 }
-bool nas_mmu_exchange_leaf(uint64_t va,uint64_t pa,unsigned prot,uint64_t *old){
+bool nas_mmu_exchange_leaf_at(uint64_t root_phys,uint64_t va,
+                              uint64_t pa,unsigned prot,uint64_t *old){
+    if(root_phys!=SELECTED_ROOT)return false;
     struct mapping *p=slot(va,pa!=0);
     if(!old || !p)return false;
     *old=p->pa;p->pa=pa;p->prot=prot;
@@ -81,7 +85,7 @@ int64_t nas_fs_mmap_read(uint64_t fd,uint64_t off,uint8_t *dst,uint64_t n){
     return (int64_t)n;
 }
 static void initialize(void){
-    current.mm=&space;space.users=1;
+    current.mm=&space;space.users=1;space.root_phys=SELECTED_ROOT;
     assert(nas_vma_record(&space.mmap_vmas,BASE,2*P,3,
                           NAS_VMA_ANON_PRIVATE,0));
     for(unsigned i=0;i<2;i++){

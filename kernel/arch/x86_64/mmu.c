@@ -152,8 +152,9 @@ bool nas_mmu_reclaim_root(uint64_t pa) {
     }
     return nas_frame_free(pa);
 }
+/* Installing CR3 changes CPU execution state, not MM ownership.
+ * In particular, a shared CLONE_VM MM must never be silently rewritten. */
 void nas_mmu_switch_root(uint64_t pa) {
-    TASK.mm->root_phys = pa;
     nas_arch_switch_page_root(pa);
 }
 
@@ -194,9 +195,11 @@ uint64_t nas_mmu_fork_root(uint64_t source_root) {
         { nas_print("[FAIL] M1 fork private page rollback corrupted\n"); nas_arch_halt(); }
     return 0;
 }
-static uint64_t *user_leaf(uint64_t va, bool allocate_tables) {
-    if (va < PAGE || va >= USER_LIMIT || (va & (PAGE - 1))) return 0;
-    uint64_t table = TASK.mm->root_phys;
+static uint64_t *user_leaf_at(uint64_t root_phys,uint64_t va,
+                              bool allocate_tables) {
+    if (!root_phys || (root_phys&(PAGE-1)) ||
+        va < PAGE || va >= USER_LIMIT || (va & (PAGE - 1))) return 0;
+    uint64_t table = root_phys;
     for (int level = 3; level >= 1; --level) {
         unsigned index = (va >> (12 + (unsigned)level * 9)) & 511;
         uint64_t *entries = phys_table(table);
@@ -213,16 +216,23 @@ static uint64_t *user_leaf(uint64_t va, bool allocate_tables) {
     }
     return &phys_table(table)[(va >> 12) & 511];
 }
-bool nas_mmu_prepare_leaf(uint64_t va) {
-    uint64_t *pte=user_leaf(va,true);
+static uint64_t *user_leaf(uint64_t va,bool allocate_tables) {
+    return user_leaf_at(TASK.mm->root_phys,va,allocate_tables);
+}
+bool nas_mmu_prepare_leaf_at(uint64_t root_phys,uint64_t va) {
+    uint64_t *pte=user_leaf_at(root_phys,va,true);
     return pte && (!*pte || ((*pte&(P_PRESENT|P_USER))==(P_PRESENT|P_USER)));
 }
-bool nas_mmu_exchange_leaf(uint64_t va,uint64_t new_pa,unsigned prot,
-                           uint64_t *old_pa) {
+bool nas_mmu_prepare_leaf(uint64_t va) {
+    return nas_mmu_prepare_leaf_at(TASK.mm->root_phys,va);
+}
+bool nas_mmu_exchange_leaf_at(uint64_t root_phys,uint64_t va,
+                              uint64_t new_pa,unsigned prot,
+                              uint64_t *old_pa) {
     if(!old_pa || (new_pa && ((new_pa&(PAGE-1)) ||
        !nas_vm_prot_supported(prot) || !nas_arch_nx_enabled())) ||
        (!new_pa && prot))return false;
-    uint64_t *pte=user_leaf(va,false);
+    uint64_t *pte=user_leaf_at(root_phys,va,false);
     if(!pte || (*pte && ((*pte&(P_PRESENT|P_USER))!=(P_PRESENT|P_USER))))
         return false;
     uint64_t previous=*pte;
@@ -232,6 +242,10 @@ bool nas_mmu_exchange_leaf(uint64_t va,uint64_t new_pa,unsigned prot,
     nas_arch_invalidate_page(va);
     *old_pa=(previous&P_PRESENT)?(previous&PHYS_MASK):0;
     return true;
+}
+bool nas_mmu_exchange_leaf(uint64_t va,uint64_t new_pa,unsigned prot,
+                           uint64_t *old_pa) {
+    return nas_mmu_exchange_leaf_at(TASK.mm->root_phys,va,new_pa,prot,old_pa);
 }
 bool nas_mmu_map_page(uint64_t va, bool writable) {
     uint64_t *entry = user_leaf(va, true);
