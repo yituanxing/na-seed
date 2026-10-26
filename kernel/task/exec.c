@@ -374,8 +374,6 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
      * the worker both pointed to one CLONE_FILES object. The parent sees
      * one child PID and precisely one eventual SIGCHLD. */
     if(worker_exec) {
-        exec_thread->fds_owned=*old_leader->fds;
-        exec_thread->fds=&exec_thread->fds_owned;
         exec_thread->pid=inherited_tgid;
         exec_thread->tgid=inherited_tgid;
         exec_thread->ppid=old_leader->ppid;

@@ -25,7 +25,6 @@ struct nas_posix_timer {
     uint8_t notify;
     bool used,armed;
 };
-#define NAS_FD_LIMIT 64
 #define NAS_KERNEL_STACK_BYTES 16384U
 
 /* Blocked I/O watches system-wide open-description slots, not process FDs.
@@ -59,11 +58,6 @@ enum nas_task_state {
     NAS_TASK_BLOCKED,
     NAS_TASK_ZOMBIE,
     NAS_TASK_STOPPED
-};
-
-/* Copy on fork, share pointer under CLONE_FILES. No parallel FD arrays. */
-struct nas_fd_table {
-    struct nas_fd_entry entries[NAS_FD_LIMIT];
 };
 
 /* An executing thread owns ALL transient blocking state, never process VM.
@@ -181,8 +175,8 @@ struct nas_task {
     uint64_t signal_force_deliver;
     struct nas_arch_context signal_saved_arch;
     struct nas_fs_context *fs; /* CLONE_FS shares this owner */
-    struct nas_fd_table fds_owned;
-    struct nas_fd_table *fds; /* CLONE_FILES shares descriptor TABLE */
+    struct nas_files *files; /* CLONE_FILES owns or shares this resource */
+    struct nas_fd_table *fds; /* borrowed compatibility view */
 
     /* Real user-thread lifecycle and per-task syscall-boundary state. */
     bool running_bash, running_busybox, running_alpine;
