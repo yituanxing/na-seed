@@ -5,7 +5,9 @@
 /* Bitmap: bit 1 = unavailable, 0 = free. */
 #define FRAME_BYTES 4096ULL
 static uint8_t *bitmap;
-static uint64_t bitmap_paddr, bitmap_frame_count, frame_count, free_frames;
+static uint32_t *frame_refs;
+/* Bitmap and owner references are pinned in one physical metadata range. */
+static uint64_t bitmap_paddr, metadata_frame_count, frame_count, free_frames;
 static uint64_t cursor, hhdm;
 /* Allocatable memory measured once at boot; free_frames tracks live usage. */
 static uint64_t managed_frames;
@@ -42,9 +44,19 @@ static bool frames_init(const struct limine_memmap_response *map, uint64_t offse
     if (frame_count > UINT64_MAX - 7) return false;
     uint64_t bitmap_bytes = (frame_count + 7) / 8;
     if (bitmap_bytes > UINT64_MAX - (FRAME_BYTES - 1)) return false;
-    bitmap_frame_count = page_align_up(bitmap_bytes) / FRAME_BYTES;
-    if (bitmap_frame_count > UINT64_MAX / FRAME_BYTES) return false;
-    uint64_t reserve_bytes = bitmap_frame_count * FRAME_BYTES;
+    /* One reference counter per addressable 4 KiB frame (including holes).
+     * The two metadata arrays may share a reserved physical frame, but
+     * their bytes must never overlap. */
+    if (bitmap_bytes > UINT64_MAX-3) return false;
+    uint64_t refs_offset=(bitmap_bytes+3)&~3ULL;
+    if (frame_count>UINT64_MAX/sizeof(uint32_t)) return false;
+    uint64_t refs_bytes=frame_count*sizeof(uint32_t);
+    if (refs_offset>UINT64_MAX-refs_bytes) return false;
+    uint64_t required=refs_offset+refs_bytes;
+    if (required>UINT64_MAX-(FRAME_BYTES-1))return false;
+    metadata_frame_count=page_align_up(required)/FRAME_BYTES;
+    if (metadata_frame_count>UINT64_MAX/FRAME_BYTES)return false;
+    uint64_t reserve_bytes=metadata_frame_count*FRAME_BYTES;
 
     bool found = false;
     for (uint64_t i = 0; i < map->entry_count; i++) {
@@ -65,7 +77,9 @@ static bool frames_init(const struct limine_memmap_response *map, uint64_t offse
     hhdm = offset;
     memory_map = map;
     bitmap = (uint8_t *)(uintptr_t)(hhdm + bitmap_paddr);
-    for (uint64_t n = 0; n < reserve_bytes; n++) bitmap[n] = 0xff;
+    frame_refs=(uint32_t *)(void *)(bitmap+refs_offset);
+    for (uint64_t n=0; n<reserve_bytes; n++) bitmap[n]=0xff;
+    for (uint64_t p=0; p<frame_count; p++)frame_refs[p]=0;
 
     free_frames = 0;
     for (uint64_t i = 0; i < map->entry_count; i++) {
@@ -81,7 +95,7 @@ static bool frames_init(const struct limine_memmap_response *map, uint64_t offse
         }
     }
     uint64_t first_bitmap_page = bitmap_paddr / FRAME_BYTES;
-    for (uint64_t p = first_bitmap_page; p < first_bitmap_page + bitmap_frame_count; p++) {
+    for (uint64_t p = first_bitmap_page; p < first_bitmap_page + metadata_frame_count; p++) {
         if (!test_bit(p)) { mark(p); free_frames--; }
     }
     /* Reserve address zero: failure sentinel for future allocation calls. */
@@ -91,7 +105,9 @@ static bool frames_init(const struct limine_memmap_response *map, uint64_t offse
     return true;
 }
 static uint64_t take_frame(uint64_t page) {
+    if(frame_refs[page])return 0; /* bitmap/free-list reference invariant */
     mark(page);
+    frame_refs[page]=1;
     free_frames--;
     cursor = page + 1;
     uint64_t paddr = page * FRAME_BYTES;
@@ -112,7 +128,8 @@ static bool frame_free(uint64_t paddr) {
     uint64_t p = paddr / FRAME_BYTES;
     if (p >= frame_count || !test_bit(p)) return false;
     uint64_t first = bitmap_paddr / FRAME_BYTES;
-    if (p >= first && p - first < bitmap_frame_count) return false;
+    if (p >= first && p - first < metadata_frame_count) return false;
+    if (!frame_refs[p])return false;
     bool is_ram = false;
     for (uint64_t i = 0; i < memory_map->entry_count; i++) {
         const struct limine_memmap_entry *e = memory_map->entries[i];
@@ -125,6 +142,8 @@ static bool frame_free(uint64_t paddr) {
         }
     }
     if (!is_ram) return false;
+    /* nas_frame_free is a legacy put, not an unconditional physical free. */
+    if (--frame_refs[p])return true;
     unmark(p);
     free_frames++;
     if (p < cursor) cursor = p;
@@ -138,4 +157,18 @@ uint64_t nas_free_frames(void) { return free_frames; }
 uint64_t nas_managed_frames(void) { return managed_frames; }
 uint64_t nas_frame_alloc(void) { return frame_alloc(); }
 bool nas_frame_free(uint64_t physical) { return frame_free(physical); }
+bool nas_frame_put(uint64_t physical) { return frame_free(physical); }
+uint32_t nas_frame_refs(uint64_t physical) {
+    if (!bitmap || !frame_refs || !physical || (physical%FRAME_BYTES) ||
+        physical/FRAME_BYTES>=frame_count)return 0;
+    return frame_refs[physical/FRAME_BYTES];
+}
+bool nas_frame_get(uint64_t physical) {
+    if (!bitmap || !frame_refs || !physical || (physical%FRAME_BYTES))return false;
+    uint64_t p=physical/FRAME_BYTES;
+    if(p>=frame_count || !test_bit(p) || !frame_refs[p] ||
+       frame_refs[p]==UINT32_MAX)return false;
+    frame_refs[p]++;
+    return true;
+}
 uint64_t nas_hhdm_offset(void) { return hhdm; }
