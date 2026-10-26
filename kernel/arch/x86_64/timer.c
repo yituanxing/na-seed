@@ -95,8 +95,8 @@ void nas_x86_timer_irq(struct nas_x86_user_irq_frame *frame) {
             frame->rip=to->arch.resume_user_rip;
             frame->rflags=to->arch.resume_user_rflags;
             frame->rsp=to->arch.resume_user_rsp;
-            frame->cs=0x23U;
-            frame->ss=0x1bU;
+            frame->cs=0x33U;
+            frame->ss=0x2bU;
         }
     }
     /* PIC EOI after all MMU and Task changes; IF remains disabled until IRET. */

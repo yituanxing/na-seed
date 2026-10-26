@@ -48,7 +48,7 @@ struct __attribute__((packed)) idt_entry {
     uint32_t offset_high, reserved;
 };
 static struct x86_tss tss;
-static uint64_t gdt[7] __attribute__((aligned(16)));
+static uint64_t gdt[9] __attribute__((aligned(16)));
 static struct idt_entry idt[256];
 
 void nas_arch_cpu_user_fp_init(void) {
@@ -79,17 +79,24 @@ void nas_arch_cpu_tables_init(void) {
     gdt[0] = 0;
     gdt[1] = 0x00af9a000000ffffULL; /* kernel code: 0x08 */
     gdt[2] = 0x00cf92000000ffffULL; /* kernel data: 0x10 */
-    gdt[3] = 0x00cff2000000ffffULL; /* user data: 0x1b */
-    gdt[4] = 0x00affa000000ffffULL; /* user code: 0x23 */
+    /* Preserve Linux x86-64 ELF CS=0x33 / SS=0x2b, not the
+     * historical NaSeed CS=0x23 selector that GNU GDB correctly
+     * classifies as 32-bit i386 compatibility mode. These must be
+     * real hardware GDT descriptors, NOT fabricated ptrace register
+     * values. Indices 3/4 are reserved for future compat segments. */
+    gdt[3] = 0;
+    gdt[4] = 0;
+    gdt[5] = 0x00cff2000000ffffULL; /* user data: 0x2b */
+    gdt[6] = 0x00affa000000ffffULL; /* user64 code: 0x33 */
     uint64_t base = (uint64_t)(uintptr_t)&tss;
     uint64_t limit = sizeof(tss) - 1;
-    gdt[5] = (limit & 0xffff) | ((base & 0xffffff) << 16)
+    gdt[7] = (limit & 0xffff) | ((base & 0xffffff) << 16)
         | (0x89ULL << 40) | (((limit >> 16) & 15) << 48)
         | (((base >> 24) & 0xff) << 56);
-    gdt[6] = base >> 32;
+    gdt[8] = base >> 32;
     struct table_pointer gdtr = { sizeof(gdt) - 1, (uint64_t)(uintptr_t)gdt };
     gdt_reload(&gdtr);
-    uint16_t tr = 0x28;
+    uint16_t tr = 0x38;
     __asm__ volatile ("ltr %0" : : "r"(tr));
     for (unsigned i = 0; i < 32; i++) {
         uint64_t addr = (uint64_t)(uintptr_t)exception_vectors[i];
@@ -149,10 +156,10 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
              * words into the new Task's authentic five-word IRET frame. */
             const struct nas_task *selected=nas_current_task;
             frame[15]=selected->arch.resume_user_rip;
-            frame[16]=0x23U;
+            frame[16]=0x33U;
             frame[17]=selected->arch.resume_user_rflags;
             frame[18]=selected->arch.resume_user_rsp;
-            frame[19]=0x1bU;
+            frame[19]=0x2bU;
             nas_signal_user_return(frame);
             return;
         }
@@ -176,7 +183,7 @@ void exception_report(const uint64_t *frame) {
 void nas_arch_syscall_enable(void) {
     uint64_t efer = rdmsr(0xc0000080);
     wrmsr(0xc0000080, efer | 1); /* EFER.SCE */
-    wrmsr(0xc0000081, (0x10ULL << 48) | (0x08ULL << 32)); /* STAR */
+    wrmsr(0xc0000081, (0x20ULL << 48) | (0x08ULL << 32)); /* STAR */
     wrmsr(0xc0000082, (uint64_t)(uintptr_t)syscall_entry); /* LSTAR */
     wrmsr(0xc0000084, (1ULL << 9) | (1ULL << 10)); /* FMASK IF|DF */
 }

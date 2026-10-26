@@ -16,13 +16,13 @@ gdt_reload:
 .global nas_arch_enter_user
 nas_arch_enter_user:
     cli
-    movw $0x1b, %ax
+    movw $0x2b, %ax
     movw %ax, %ds
     movw %ax, %es
-    pushq $0x1b
+    pushq $0x2b
     pushq %rsi
     pushq $0x202
-    pushq $0x23
+    pushq $0x33
     pushq %rdi
     /* Linux ELF _start ABI: RDX is rtld_fini. A static executable has no
      * dynamic linker destructor, so the finalizer must be NULL.
@@ -65,12 +65,12 @@ syscall_entry:
     movq %rax, 0(%rsp)   /* syscall return, potentially from another Task */
     movq nas_x86_syscall_return_rip(%rip), %rax
     movq %rax, 120(%rsp)
-    movq $0x23, 128(%rsp)
+    movq $0x33, 128(%rsp)
     movq nas_x86_syscall_return_flags(%rip), %rax
     movq %rax, 136(%rsp)
     movq syscall_user_rsp(%rip), %rax
     movq %rax, 144(%rsp)
-    movq $0x1b, 152(%rsp)
+    movq $0x2b, 152(%rsp)
     /* x86 catches are materialized only after the actual selected task
      * has an IRET context and its own address space active. */
     movq %rsp, %rdi

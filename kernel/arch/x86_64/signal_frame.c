@@ -79,8 +79,8 @@ bool nas_arch_signal_install_handler(uint64_t *regs,unsigned signo,
     uf.uc.sc.gpr[15]=regs[18];/* sp */
     uf.uc.sc.gpr[16]=regs[15];/* ip */
     uf.uc.sc.gpr[17]=regs[17];/* flags */
-    uf.uc.sc.cs=0x23U;
-    uf.uc.sc.ss=0x1bU;
+    uf.uc.sc.cs=0x33U;
+    uf.uc.sc.ss=0x2bU;
     uf.uc.sc.fpstate=fpaddr;
     uf.info[0]=(uint32_t)signo; /* si_signo */
     /* FP state is a real FXSAVE image from the exact selected task, not

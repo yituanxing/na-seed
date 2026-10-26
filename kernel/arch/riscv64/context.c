@@ -7,6 +7,7 @@
 #include "../../task/signal.h"
 #include "../../task/ptrace.h"
 #include "../../task/sched.h"
+#include "../../mm/vm.h"
 #include "../../panic.h"
 #include "../../drivers/serial.h"
 #include "../../lib/string.h"
@@ -65,6 +66,16 @@ void nas_rv_full_trap_c(struct nas_rv_trap_frame *frame) {
         nas_print("[RV64 FAULT] scause=");nas_hex(scause);
         nas_print(" sepc=");nas_hex(frame->sepc);
         nas_print(" stval=");nas_hex(stval);
+        /* True invalid instruction diagnostic in the user VM. A
+         * ptrace POKETEXT may have written a zero/invalid encoding;
+         * distinguish target code clobber from missing ISA support. */
+        if(scause==2U && nas_current_task) {
+            uint32_t insn=0;
+            int64_t bytes=nas_vm_read_task_bytes(nas_current_task,
+                frame->sepc,(uint8_t *)(void *)&insn,4);
+            nas_print(" insn=");nas_hex(insn);
+            nas_print(" readable=");nas_dec(bytes==4);
+        }
         nas_print(" tp=");nas_hex(frame->x[4]);
         nas_print(" sp=");nas_hex(frame->x[2]);
         nas_print("\n");
