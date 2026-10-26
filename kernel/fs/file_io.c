@@ -15,6 +15,16 @@
 #include "io.h"
 #include "file_ops.h"
 #define TASK (*nas_current_task)
+/* Owner-independent readiness. No Task pointer, process FD number or
+ * userspace memory access is needed to poll a live open-file description.
+ * Each backend may implement its own readiness semantics. */
+uint16_t nas_fs_poll_description(unsigned slot,uint16_t events) {
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+        return 0;
+    const struct nas_file_ops *ops=nas_open_files[slot].ops;
+    return ops && ops->poll_description ?
+           ops->poll_description(slot,events) : 0;
+}
 
 /* Same open-file-description source for read(), exec and private mmap.
  * Do not expose kernel pointer paths or share mutable file offsets. */

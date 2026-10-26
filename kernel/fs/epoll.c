@@ -68,41 +68,13 @@ static bool instance_slot(const struct nas_task *task,uint64_t fd,
 }
 static uint16_t ready_now(const struct ep_watch *w){
     if(!w->used || w->disabled ||
-       w->slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[w->slot].refcount)return 0;
-    uint16_t requested=(uint16_t)(w->events & (EP_IN|EP_PRI|EP_OUT|EP_RDHUP));
-    uint16_t result=0;
-    switch(w->kind){
-    case FD_PIPE_R:
-        if((requested&EP_IN) && nas_pipe_poll_readable(w->slot))result|=EP_IN;
-        break;
-    case FD_PIPE_W:
-        if((requested&EP_OUT) && nas_pipe_poll_writable(w->slot))result|=EP_OUT;
-        break;
-    case FD_SOCKET:
-        if(nas_unix_socket_listening(w->slot)) {
-            if((requested&EP_IN) && nas_unix_socket_readable(w->slot))result|=EP_IN;
-        } else {
-            if((requested&EP_IN) && nas_pipe_poll_readable(w->slot))result|=EP_IN;
-            if((requested&EP_OUT) && nas_pipe_poll_writable(w->slot))result|=EP_OUT;
-        }
-        break;
-    case FD_TTY: case FD_UART:
-        if((requested&EP_IN) && nas_tty_poll_readable())result|=EP_IN;
-        if(requested&EP_OUT)result|=EP_OUT;
-        break;
-    case FD_PTY_MASTER:case FD_PTY_SLAVE:
-        result=nas_pty_poll(w->slot,requested);
-        break;
-    case FD_EVENTFD:
-        result=nas_eventfd_poll_slot(w->slot,requested);
-        break;
-    case FD_EPOLL: return 0; /* reject nested epoll in ctl */
-    default:
-        /* Regular file descriptors always satisfy read/write readiness. */
-        result=requested&(EP_IN|EP_OUT);
-        break;
-    }
-    return result;
+       w->slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[w->slot].refcount)
+        return 0;
+    /* All kinds share one open-description operation. Future AF_INET,
+     * block devices and filesystems only need to implement their own
+     * poll_description callback; epoll never learns the backend type. */
+    return nas_fs_poll_description(w->slot,
+        (uint16_t)(w->events & (EP_IN|EP_PRI|EP_OUT|EP_RDHUP)));
 }
 static bool instance_ready(unsigned slot){
     for(unsigned i=0;i<NAS_EPOLL_EVENTS_MAX;i++){
@@ -205,10 +177,15 @@ uint64_t nas_epoll_wait(uint64_t epfd,uint64_t out,uint64_t maximum,uint64_t tim
         return 0;
     return (uint64_t)-EAGAIN;
 }
+uint16_t nas_epoll_description_poll(unsigned slot,uint16_t interests) {
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+        return 0;
+    return instance_ready(slot)?(interests&EP_IN):0;
+}
 uint16_t nas_epoll_fd_poll(uint64_t fd,uint16_t interests){
     unsigned slot;
     if(!instance_slot(nas_current_task,fd,&slot))return 0;
-    return instance_ready(slot)?(interests&EP_IN):0;
+    return nas_epoll_description_poll(slot,interests);
 }
 void nas_epoll_arm_current_task(uint64_t epfd){
     unsigned slot;

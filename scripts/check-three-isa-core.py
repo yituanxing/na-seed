@@ -87,7 +87,18 @@ assert "nas_task_wait_ready(" in sched
 for old in ("static bool task_io_ready(", "static bool task_wait_ready(",
             "static bool task_can_wake("):
     if old in sched: raise SystemExit(f"scheduler still owns device wake policy: {old}")
-for symbol in ("nas_pipe_read_ready(", "nas_eventfd_ready(", "nas_pty_read_ready("):
-    if symbol not in task_wait: raise SystemExit(f"lost native readiness provider: {symbol}")
+# M89: blocked I/O and epoll use an open-description operation rather
+# than hardcoded pipe/socket/device kinds. A new provider must not cause
+# another scheduler or epoll backend-specific switch.
+epoll=(root/"kernel/fs/epoll.c").read_text()
+fsops=(root/"kernel/fs/file_ops.h").read_text()
+file_io=(root/"kernel/fs/file_io.c").read_text()
+for name,body in (("blocked I/O",task_wait),("epoll",epoll)):
+    if "nas_fs_poll_description(" not in body:
+        raise SystemExit(f"{name} lost description-owned readiness")
+if "switch(w->kind)" in epoll or "nas_pipe_poll_readable(" in epoll:
+    raise SystemExit("epoll reintroduced backend-kind readiness switch")
+if "poll_description" not in fsops or "nas_fs_poll_description(" not in file_io:
+    raise SystemExit("lost open-description readiness operation")
 print(f"[M50 ARCH PASS] all {len(srcs)} actual shared kernel TUs are linked on x86 "
       "and built on RV64/AArch64; hardware providers remain ISA-specific")
