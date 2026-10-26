@@ -399,7 +399,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
             nas_fs_close_fd(fd);
     /* Old anonymous ownership dies with the retired page-table root.
      * No metadata is mutated until exec commits, so rollback remains exact. */
-    nas_anon_reset(&TASK.mm->anonymous);
+    nas_anon_reset(&TASK.mm->mmap_vmas);
     nas_time_timers_drop(); /* POSIX timers never survive execve. */
     TASK.execed = true; /* fork parent may no longer setpgid after exec */
     TASK.signal_frame_active = false;

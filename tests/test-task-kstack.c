@@ -67,14 +67,14 @@ int main(void) {
     ck(!nas_mm_resolve_user(init->mm,0x5000,&pa,&prot),
        "MM cannot claim an absent PTE");
     init->mm->heap_break=0x12345000ULL;
-    init->mm->anonymous.slots[0].start=0x20000000ULL;
-    init->mm->anonymous.slots[0].end=0x20001000ULL;
+    init->mm->mmap_vmas.slots[0].start=0x20000000ULL;
+    init->mm->mmap_vmas.slots[0].end=0x20001000ULL;
     struct nas_mm *forked_mm=nas_mm_fork_eager(init->mm);
     ck(forked_mm && forked_mm!=init->mm &&
        seen_source_root==init->mm->root_phys &&
        forked_mm->root_phys==fork_root &&
        forked_mm->heap_break==init->mm->heap_break &&
-       forked_mm->anonymous.slots[0].end==0x20001000ULL,
+       forked_mm->mmap_vmas.slots[0].end==0x20001000ULL,
        "eager fork owns a distinct MM and copied layout");
     nas_mm_put(forked_mm);
     ck(reclaimed==1 && init->mm->users==1,
