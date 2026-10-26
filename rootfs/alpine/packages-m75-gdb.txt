@@ -1,0 +1,5 @@
+# Original signed Alpine v3.23 gdb + distro dependencies, staged on host.
+# GDB is unmodified, and no guest compiler is needed.
+musl
+busybox
+gdb
