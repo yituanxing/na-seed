@@ -100,5 +100,14 @@ if "switch(w->kind)" in epoll or "nas_pipe_poll_readable(" in epoll:
     raise SystemExit("epoll reintroduced backend-kind readiness switch")
 if "poll_description" not in fsops or "nas_fs_poll_description(" not in file_io:
     raise SystemExit("lost open-description readiness operation")
+# M90: wait ownership and poll/select/epoll arming use one generic
+# description-slot subscription; backend callbacks may not register waiters.
+poll=(root/"kernel/fs/poll_syscall.c").read_text()
+wait_header=(root/"kernel/task/wait.h").read_text()
+fs_syscall=(root/"kernel/fs/syscall.c").read_text()
+if "nas_wait_io_arm(" not in wait_header or "nas_wait_io_arm(" not in poll or "nas_wait_io_arm(" not in epoll:
+    raise SystemExit("generic Task-owned multi-fd wait interest lost")
+if "nas_fs_poll_description(" not in poll or "poll_arm" in fsops or ".poll_arm=" in fs_syscall:
+    raise SystemExit("FS reintroduced backend-specific poll wait registration")
 print(f"[M50 ARCH PASS] all {len(srcs)} actual shared kernel TUs are linked on x86 "
       "and built on RV64/AArch64; hardware providers remain ISA-specific")
