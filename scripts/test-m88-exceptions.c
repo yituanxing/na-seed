@@ -45,6 +45,17 @@ bool nas_mmu_exchange_leaf_at(uint64_t root,uint64_t va,uint64_t newpa,
                    ((prot&4)?NAS_UP_EXEC:0);
     return true;
 }
+/* M88 tests the policy using simulated PTEs; the integrated M101 test
+ * links the real MM COW implementation and real usercopy/ptrace callers. */
+bool nas_mm_break_cow(struct nas_mm *mm,uint64_t va,
+                      unsigned logical_prot,bool preserve_perm) {
+    assert(mm==&space);
+    (void)preserve_perm;
+    uint64_t prior=0;
+    return nas_mmu_exchange_leaf_at(ROOT,va&~(PAGE-1),
+                                     present_pa,logical_prot,&prior) &&
+           prior==present_pa;
+}
 static void unmap_mock(void){present_pa=present_va=0;present_access=0;}
 int main(void) {
     assert(nas_vma_record(&space.mmap_vmas,BASE,2*PAGE,3,
