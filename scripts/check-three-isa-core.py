@@ -9,7 +9,7 @@ import re
 root=Path(__file__).resolve().parent.parent
 srcs=[line.strip() for line in (root/"scripts/full-kernel-core.sources").read_text().splitlines()
       if line.strip() and not line.startswith("#")]
-assert len(srcs)==len(set(srcs))==49, "common kernel TU manifest drift"
+assert len(srcs)==len(set(srcs))==50, "common kernel TU manifest drift"
 make=(root/"Makefile").read_text()
 defs={}
 for line in make.splitlines():
@@ -109,5 +109,20 @@ if "nas_wait_io_arm(" not in wait_header or "nas_wait_io_arm(" not in poll or "n
     raise SystemExit("generic Task-owned multi-fd wait interest lost")
 if "nas_fs_poll_description(" not in poll or "poll_arm" in fsops or ".poll_arm=" in fs_syscall:
     raise SystemExit("FS reintroduced backend-specific poll wait registration")
+# M91: all three kernel assembly context-switch providers are explicitly
+# linked in production ELF, and a real QEMU boot exercises stack resume.
+for arch in ("x86_64","riscv64","aarch64"):
+    asm=root/f"kernel/arch/{arch}/kernel_switch.S"
+    if not asm.is_file() or "nas_arch_kernel_swap:" not in asm.read_text():
+        raise SystemExit(f"missing native kernel context switch on {arch}")
+for needle in ("$(OUT)/arch_kernel_switch.o", "$(OUT)/task_kernel_context.o"):
+    if needle not in linked.group(1).split() or needle not in actual_link.group(1).split():
+        raise SystemExit(f"x86 kernel fails to LINK continuation {needle}")
+for arch in ("riscv64","aarch64"):
+    script=(root/f"scripts/build-{arch}-full.sh").read_text()
+    for needle in (f"kernel/arch/{arch}/kernel_switch.S",'"$out/kernel_switch.o"'):
+        if needle not in script: raise SystemExit(f"{arch} kernel omits continuation {needle}")
+if "nas_kernel_context_boot_selftest();" not in (root/"kernel/init/main.c").read_text():
+    raise SystemExit("native QEMU kernels no longer test real kernel C resume")
 print(f"[M50 ARCH PASS] all {len(srcs)} actual shared kernel TUs are linked on x86 "
       "and built on RV64/AArch64; hardware providers remain ISA-specific")

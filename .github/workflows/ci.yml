@@ -112,6 +112,8 @@ jobs:
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-wait-pid-abi.c -o /tmp/naseed-wait-pid && /tmp/naseed-wait-pid
       - name: Linux anonymous mmap ABI ignored fd including x86 zero-extended -1
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-mmap-abi.c -o /tmp/naseed-mmap-abi && /tmp/naseed-mmap-abi
+      - name: M91 native kernel C continuations and 3-ISA assembly
+        run: sh scripts/check-m91-kcontext.sh
       - name: M90 generic multi-fd wait registration and readiness regression
         run: sh scripts/check-m90-io-wait.sh
       - name: M89 owner-independent open-file description readiness regression
