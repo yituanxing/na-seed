@@ -135,9 +135,28 @@ if "nas_futex_wait_cancel(task)" not in (root/"kernel/task/blocked_completion.c"
 if "task_replay(" in sched:
     raise SystemExit("syscall replay leaked back into scheduler core")
 x86_context=(root/"kernel/arch/x86_64/context.c").read_text()
-if "task->arch.resume_user_rip = nas_x86_syscall_return_rip;" not in x86_context or \
-   "task->arch.resume_user_rflags = nas_x86_syscall_return_flags;" not in x86_context:
-    raise SystemExit("x86 kernel IRET PC/FLAGS must not be decoded from arbitrary restored RCX/R11")
+x86_entry=(root/"kernel/arch/x86_64/entry.S").read_text()
+# Accept only the established CPU scratch/ABI fallback or the stricter
+# native continuation contract: syscall_entry constructs RIP/CS/FLAGS/RSP/SS
+# on its own Task entry stack BEFORE entering resumable kernel C code.
+# The user RCX/R11 saved as GPRs are NEVER substitutes for IRET metadata.
+original_pc=("task->arch.resume_user_rip = nas_x86_syscall_return_rip;" in x86_context and
+             "task->arch.resume_user_rflags = nas_x86_syscall_return_flags;" in x86_context)
+pinned_pc=all(needle in x86_context for needle in (
+    "frame[16]==0x33U && frame[19]==0x2bU",
+    "task->arch.resume_user_rip=frame[15];",
+    "task->arch.resume_user_rflags=frame[17];",
+    "task->arch.resume_user_rsp=frame[18];")) and all(
+    needle in x86_entry for needle in (
+        "movq %rax, 120(%rsp)",
+        "movq $0x33, 128(%rsp)",
+        "movq %rax, 136(%rsp)",
+        "movq %rax, 144(%rsp)",
+        "movq $0x2b, 152(%rsp)"))
+if not (original_pc or pinned_pc):
+    raise SystemExit("x86 IRET PC/RFLAGS must use the Task's own frame or explicit CPU scratch state")
+if "resume_user_rip=frame[7]" in x86_context or "resume_user_rflags=frame[8]" in x86_context:
+    raise SystemExit("x86 IRET metadata incorrectly decoded from user RCX/R11")
 if "nas_arch_kernel_swap(&self->kernel_exec.cpu,&scheduler_cpu)" not in sched:
     raise SystemExit("Task does not park its native C continuation")
 if "nas_arch_kernel_swap(&scheduler_cpu,&next->kernel_exec.cpu)" not in sched:
