@@ -185,10 +185,11 @@ static bool clone_user_level(uint64_t source_pa, uint64_t dest_pa,
     }
     return true;
 }
-uint64_t nas_mmu_fork_root(void) {
+uint64_t nas_mmu_fork_root(uint64_t source_root) {
+    if(!source_root || (source_root & (PAGE-1)))return 0;
     uint64_t destination = nas_mmu_alloc_root();
     if (!destination) return 0;
-    if (clone_user_level(TASK.mm->root_phys, destination, 3, 256)) return destination;
+    if (clone_user_level(source_root, destination, 3, 256)) return destination;
     if (!nas_mmu_reclaim_root(destination))
         { nas_print("[FAIL] M1 fork private page rollback corrupted\n"); nas_arch_halt(); }
     return 0;

@@ -20,7 +20,7 @@ int64_t nas_vm_read_task_bytes(const struct nas_task *task,uint64_t va,
     uint64_t count=0;
     while(count<length) {
         uint64_t at=va+count,pa=0;
-        if(!nas_mmu_resolve_user_address(mm->root_phys,at,&pa,0))
+        if(!nas_mm_resolve_user(mm,at,&pa,0))
             return count?(int64_t)count:-EFAULT;
         uint64_t room=4096ULL-(at&4095ULL);
         uint64_t n=length-count;
@@ -46,7 +46,7 @@ int64_t nas_vm_write_task_bytes(const struct nas_task *task,uint64_t va,
     if(!src || va>=USER_LIMIT || length>USER_LIMIT-va)return -EFAULT;
     for(uint64_t count=0;count<length;) {
         uint64_t at=va+count,pa=0;
-        if(!nas_mmu_resolve_user_address(mm->root_phys,at,&pa,0))
+        if(!nas_mm_resolve_user(mm,at,&pa,0))
             return -EFAULT; /* must not leave a partial breakpoint */
         uint64_t n=4096ULL-(at&4095ULL);
         if(n>length-count)n=length-count;
@@ -54,7 +54,7 @@ int64_t nas_vm_write_task_bytes(const struct nas_task *task,uint64_t va,
     }
     for(uint64_t count=0;count<length;) {
         uint64_t at=va+count,pa=0;
-        if(!nas_mmu_resolve_user_address(mm->root_phys,at,&pa,0))
+        if(!nas_mm_resolve_user(mm,at,&pa,0))
             return -EFAULT; /* single-core: preflight remains valid */
         uint64_t n=4096ULL-(at&4095ULL);
         if(n>length-count)n=length-count;
