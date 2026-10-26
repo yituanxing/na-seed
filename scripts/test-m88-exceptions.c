@@ -67,7 +67,7 @@ int main(void) {
     assert(out.action==NAS_EXC_UNHANDLED &&
            nas_mm_handle_fault(&space,BASE,NAS_UP_WRITE)==NAS_MM_FAULT_NEEDS_COW);
     present_access=NAS_UP_READ|NAS_UP_WRITE;
-    x.addr=BASE+4*PAGE;
+    x.addr=BASE+4*PAGE;x.access=NAS_EXC_READ;
     assert(nas_mm_handle_fault(&space,x.addr,NAS_UP_READ)==NAS_MM_FAULT_NEEDS_BACKING);
     out=nas_exception_dispatch(&x,&space);
     assert(out.action==NAS_EXC_UNHANDLED);
