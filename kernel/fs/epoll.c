@@ -12,6 +12,7 @@
 #include "../time/clock.h"
 #include "../lib/string.h"
 #include "file_ops.h"
+#include "../task/wait.h"
 #include "epoll.h"
 #include "unix_socket.h"
 #include "eventfd.h"
@@ -190,21 +191,19 @@ uint16_t nas_epoll_fd_poll(uint64_t fd,uint16_t interests){
 void nas_epoll_arm_current_task(uint64_t epfd){
     unsigned slot;
     struct nas_task *task=nas_current_task;
-    nas_slot_mask_clear(&task->wait.poll_pipe_read);
-    nas_slot_mask_clear(&task->wait.poll_pipe_write);
-    task->wait.poll_tty_read=false;
+    nas_wait_io_clear(task);
     if(!instance_slot(task,epfd,&slot))return;
     for(unsigned i=0;i<NAS_EPOLL_EVENTS_MAX;i++){
         struct ep_watch *w=&epolls[slot].watches[i];
         if(!w->used || w->disabled)continue;
-        if((w->kind==FD_PIPE_R || w->kind==FD_SOCKET) &&
-           (w->events&EP_IN))
-            nas_slot_mask_set(&task->wait.poll_pipe_read,w->slot);
-        if((w->kind==FD_PIPE_W || w->kind==FD_SOCKET) &&
-           (w->events&EP_OUT))
-            nas_slot_mask_set(&task->wait.poll_pipe_write,w->slot);
-        if((w->kind==FD_TTY || w->kind==FD_UART) &&
-           (w->events&EP_IN))task->wait.poll_tty_read=true;
+        /* Register ANY watched open description (including eventfd and
+         * future network/device providers). No type switch in epoll.
+         * TTY's external-RX pump is a separate scheduler responsibility. */
+        uint16_t interest=0;
+        if(w->events&(EP_IN|EP_PRI|EP_RDHUP))interest|=EP_IN;
+        if(w->events&EP_OUT)interest|=EP_OUT;
+        nas_wait_io_arm(task,w->slot,interest,
+                        (w->kind==FD_TTY || w->kind==FD_UART));
     }
 }
 bool nas_epoll_task_ready(const struct nas_task *task){

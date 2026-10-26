@@ -42,6 +42,10 @@ int main(void) {
     assert(!child.wait.tty_observed_bytes && !child.wait.poll_tty_read);
     assert(!nas_slot_mask_any(&child.wait.poll_pipe_read));
     assert(!nas_slot_mask_any(&child.wait.poll_pipe_write));
+    nas_wait_io_arm(&child,126,4,false);
+    assert(nas_wait_io_has_interest(&child));
+    nas_wait_io_clear(&child);
+    assert(!nas_wait_io_has_interest(&child));
     assert(parent.wait.pending_valid && parent.wait.deadline_active);
     assert(nas_slot_mask_test(&parent.wait.poll_pipe_read,3));
     assert(nas_slot_mask_test(&parent.wait.poll_pipe_write,126));

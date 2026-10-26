@@ -68,6 +68,9 @@ struct nas_task_wait {
     uint64_t deadline_ns;
     bool deadline_active;
     unsigned tty_observed_bytes;
+    /* Interest sets contain OPEN-DESCRIPTION slots, independent of the
+     * backing provider (pipe/socket/PTY/eventfd/regular file). Keep the
+     * legacy member spelling until remaining scheduler adapters migrate. */
     struct nas_slot_mask poll_pipe_read, poll_pipe_write;
     bool poll_tty_read;
     uint64_t futex_addr;

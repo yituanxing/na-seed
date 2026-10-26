@@ -18,6 +18,7 @@
 #include "../drivers/tty.h"
 #include "../drivers/pty.h"
 #include "file_ops.h"
+#include "../task/wait.h"
 #include "unix_socket.h"
 #define TASK (*nas_current_task)
 
@@ -136,9 +137,7 @@ uint64_t nas_fs_pselect6(uint64_t nfds,uint64_t readfds,
 bool nas_fs_pselect_arm(uint64_t nfds,uint64_t readfds,
                         uint64_t writefds,uint64_t exceptfds) {
     struct nas_task *task=nas_current_task;
-    nas_slot_mask_clear(&task->wait.poll_pipe_read);
-    nas_slot_mask_clear(&task->wait.poll_pipe_write);
-    task->wait.poll_tty_read=false;
+    nas_wait_io_clear(task);
     uint64_t readset,writeset,exceptset;
     if(nfds>NAS_FD_LIMIT ||
        !select_read_bits(readfds,&readset) ||
@@ -153,18 +152,16 @@ bool nas_fs_pselect_arm(uint64_t nfds,uint64_t readfds,
         if(!events || TASK.fds->entries[fd].kind==FD_CLOSED)continue;
         unsigned slot=TASK.fds->entries[fd].slot;
         if(slot>=NAS_OPEN_FILE_LIMIT)continue;
-        const struct nas_file_ops *ops=nas_open_files[slot].ops;
-        if(ops && ops->poll_arm)ops->poll_arm(task,fd,events);
+        nas_wait_io_arm(task,slot,events,
+                        (TASK.fds->entries[fd].kind==FD_TTY ||
+                         TASK.fds->entries[fd].kind==FD_UART) &&
+                        nas_tty_read_waitable());
     }
-    return task->wait.poll_tty_read ||
-        nas_slot_mask_any(&task->wait.poll_pipe_read) ||
-        nas_slot_mask_any(&task->wait.poll_pipe_write);
+    return nas_wait_io_has_interest(task);
 }
 bool nas_fs_poll_arm(uint64_t address,uint64_t nfds) {
     struct nas_task *task=nas_current_task;
-    nas_slot_mask_clear(&task->wait.poll_pipe_read);
-    nas_slot_mask_clear(&task->wait.poll_pipe_write);
-    task->wait.poll_tty_read=false;
+    nas_wait_io_clear(task);
     if(nfds>NAS_FD_LIMIT)return false; /* nas_fs_poll checked bounds */
     for(uint64_t i=0;i<nfds;i++) {
         uint64_t raw;
@@ -172,26 +169,29 @@ bool nas_fs_poll_arm(uint64_t address,uint64_t nfds) {
         int32_t fd=(int32_t)(uint32_t)raw;
         uint16_t events=(uint16_t)(raw>>32);
         if(fd<0 || fd>=NAS_FD_LIMIT || !events)continue;
+        uint8_t kind=TASK.fds->entries[(unsigned)fd].kind;
+        if(kind==FD_CLOSED)continue;
         unsigned slot=TASK.fds->entries[(unsigned)fd].slot;
-        if(slot>=NAS_OPEN_FILE_LIMIT)continue;
-        const struct nas_file_ops *ops=nas_open_files[slot].ops;
-        if(ops && ops->poll_arm)ops->poll_arm(task,(uint64_t)(unsigned)fd,events);
+        if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+            continue;
+        nas_wait_io_arm(task,slot,events,
+                        (kind==FD_TTY || kind==FD_UART) &&
+                        nas_tty_read_waitable());
     }
-    return task->wait.poll_tty_read ||
-        nas_slot_mask_any(&task->wait.poll_pipe_read) ||
-        nas_slot_mask_any(&task->wait.poll_pipe_write);
+    return nas_wait_io_has_interest(task);
 }
 bool nas_fs_poll_ready(const struct nas_task *task) {
+    if(!task)return false;
     if(task->wait.poll_tty_read && nas_tty_poll_readable())return true;
     for(unsigned slot=0;slot<NAS_OPEN_FILE_LIMIT;slot++) {
-        if(nas_slot_mask_test(&task->wait.poll_pipe_read,slot) &&
-           (nas_pipe_poll_readable(slot) || nas_unix_socket_readable(slot) ||
-            (nas_pty_number(slot)<NAS_PTY_LIMIT && nas_pty_read_ready(slot))))
-            return true;
-        if(nas_slot_mask_test(&task->wait.poll_pipe_write,slot) &&
-           (nas_pipe_poll_writable(slot) ||
-            (nas_pty_number(slot)<NAS_PTY_LIMIT && nas_pty_write_ready(slot))))
-            return true;
+        uint16_t events=0;
+        if(nas_slot_mask_test(&task->wait.poll_pipe_read,slot))events|=1U;
+        if(nas_slot_mask_test(&task->wait.poll_pipe_write,slot))events|=4U;
+        if(!events)continue;
+        /* ERR/HUP must wake waiters even if the original requested
+         * direction cannot make forward progress (EPIPE/EOF on replay). */
+        uint16_t ready=nas_fs_poll_description(slot,events);
+        if(ready&(events|0x0018U))return true;
     }
     return false;
 }
