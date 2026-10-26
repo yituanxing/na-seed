@@ -20,8 +20,8 @@ bool nas_mmu_resolve_user_address(uint64_t root,uint64_t va,
 }
 int main(void){
     struct nas_task main_task={0},thread={0},dead={0};
-    struct nas_mm mm={.root_phys=0x7000};
-    struct nas_mm unrelated_mm={.root_phys=0x8888};
+    struct nas_mm mm={.users=1,.root_phys=0x7000};
+    struct nas_mm unrelated_mm={.users=1,.root_phys=0x8888};
     main_task.pid=22;main_task.mm=&mm;
     main_task.state=NAS_TASK_RUNNING;
     thread.pid=23;thread.mm=&mm; /* CLONE_VM shares MM, not leader Task */

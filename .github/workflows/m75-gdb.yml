@@ -34,7 +34,7 @@ jobs:
           /tmp/nas-m75-ptrace-owner
           cc -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -I kernel scripts/test-ptrace-wait-ownership.c kernel/task/process.c -o /tmp/nas-m75-ptrace-wait
           /tmp/nas-m75-ptrace-wait
-          cc -std=c11 -Wall -Wextra -Werror -I kernel scripts/test-remote-task-read.c kernel/mm/remote_copy.c -o /tmp/nas-m75-remote
+          cc -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -I kernel scripts/test-remote-task-read.c kernel/mm/remote_copy.c kernel/mm/mm.c -o /tmp/nas-m75-remote
           /tmp/nas-m75-remote
       - name: Install native QEMU and host rootfs tools
         timeout-minutes: 12
