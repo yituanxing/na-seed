@@ -3,7 +3,7 @@ set -eu
 mkdir -p build/m91-kcontext
 cc -std=c11 -O2 -Wall -Wextra -Werror -fno-omit-frame-pointer -fno-builtin \
     -I kernel scripts/test-m91-kcontext.c kernel/task/kernel_context.c \
-    kernel/arch/x86_64/kernel_switch.S -o build/m91-kcontext/host
+    kernel/task/wait_queue.c kernel/arch/x86_64/kernel_switch.S -o build/m91-kcontext/host
 build/m91-kcontext/host
 for arch in riscv64 aarch64; do
     case "$arch" in

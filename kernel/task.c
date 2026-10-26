@@ -123,6 +123,7 @@ struct nas_task *nas_task_fork_slot(void) {
         stack_reset(i);
         child->kernel_stack_top = stack_top(i);
         nas_kernel_context_reset(&child->kernel_context);
+        nas_wait_entry_reset(&child->kernel_wait);
         child->pid = next_pid++;
         child->tgid=child->pid;
         child->is_thread=false;
@@ -203,6 +204,8 @@ void nas_task_adopt_orphans(uint64_t exiting_pid) {
 }
 void nas_task_release(struct nas_task *task) {
     if (!task || task == nas_current_task) return;
+    /* An abandoned kernel continuation must never leave a dangling waiter. */
+    (void)nas_wait_queue_remove(&task->kernel_wait);
     /* Releases an independently owned MM reference, including on thread exit. */
     if (task->mm) { nas_mm_put(task->mm); task->mm=0; }
     if (task->fs) { nas_fs_context_put(task->fs); task->fs=0; }
@@ -218,6 +221,7 @@ void nas_task_release(struct nas_task *task) {
     task->robust_list_head=0;
     nas_task_wait_reset(task);
     nas_kernel_context_reset(&task->kernel_context);
+    nas_wait_entry_reset(&task->kernel_wait);
     task->ppid = 0;
     task->pgid = 0;
     task->sid = 0;

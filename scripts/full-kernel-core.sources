@@ -18,6 +18,7 @@ kernel/task/session.c
 kernel/task/sched.c
 kernel/task/wait.c
 kernel/task/kernel_context.c
+kernel/task/wait_queue.c
 kernel/bootfs.c
 kernel/tmpfs.c
 kernel/fs/tmp_namespace.c
