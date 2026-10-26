@@ -398,7 +398,11 @@ retry_schedule: ; /* label must precede a statement in C11 */
                     nas_arch_set_saved_return(next,result);
                     nas_current_task=previous;
                     nas_arch_restore_cpu(previous);
-                    continue;
+                    /* The completing tracee is STOPPED now and may have
+                     * just made a blocked tracer wait4 READY. Restart
+                     * selection: a linear scan may have passed the tracer
+                     * earlier, otherwise falsely reporting deadlock. */
+                    goto retry_schedule;
                 }
             }
             next->state = NAS_TASK_RUNNING;
