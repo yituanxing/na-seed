@@ -36,6 +36,8 @@ static inline unsigned nas_arch_ptrace_gpr_words(const struct nas_task *task,
     for(unsigned i=0;i<31;i++)words[i]=c->user_regs[i];
     words[31]=c->user_sp;words[32]=c->user_elr;words[33]=c->user_spsr;
     return 34;
+#endif
+}
 /* Symmetric NT_PRSTATUS writeback to ONLY the stopped Task snapshot.
  * No privileged status/segment bits, no kernel/invalid user PC or stack. */
 static inline bool nas_arch_ptrace_set_gpr_words(struct nas_task *task,
@@ -44,7 +46,8 @@ static inline bool nas_arch_ptrace_set_gpr_words(struct nas_task *task,
 #if defined(__x86_64__)
     if(n!=27 || words[16]>=USER_LIMIT || words[19]>=USER_LIMIT ||
        words[17]!=0x23 || words[20]!=0x1b ||
-       (words[18]&(3ULL<<12)) || !(words[18]&2ULL))
+       (words[18]&(3ULL<<12)) || !(words[18]&2ULL) ||
+       words[21]>=USER_LIMIT)
         return false;
     const unsigned indices[15]={14,13,12,11,10,9,8,4,6,5,0,7,3,2,1};
     for(unsigned i=0;i<15;i++) c->resume_regs[indices[i]]=words[i];
@@ -53,7 +56,6 @@ static inline bool nas_arch_ptrace_set_gpr_words(struct nas_task *task,
     c->resume_user_rflags=words[18];
     c->resume_user_rsp=words[19];
     /* fsbase is a real user-visible GDB register, not arbitrary SS/CS. */
-    if(words[21]>=USER_LIMIT)return false;
     c->user_fs_base=words[21];
     return true;
 #elif defined(__riscv) && __riscv_xlen==64
@@ -74,8 +76,6 @@ static inline bool nas_arch_ptrace_set_gpr_words(struct nas_task *task,
     c->user_spsr=(c->user_spsr&~UINT64_C(0xf0000000)) |
                  (words[33]&UINT64_C(0xf0000000));
     return true;
-#endif
-}
 #endif
 }
 #endif
