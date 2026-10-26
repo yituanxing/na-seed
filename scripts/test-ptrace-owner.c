@@ -35,8 +35,16 @@ int main(void) {
     tracee.state=NAS_TASK_STOPPED;
     tracee.stopped_from=NAS_TASK_READY;
     tracee.stop_report_pending=true;
-    assert((int64_t)nas_ptrace_request(24,2,0,0)==-EOPNOTSUPP);
-    assert(tracee.state==NAS_TASK_STOPPED);
+    /* Linux ptrace options own only actually implemented event semantics. */
+    assert(nas_ptrace_request(0x4200,2,0,1)==0);
+    assert(tracee.ptrace_options==1);
+    assert((int64_t)nas_ptrace_request(0x4200,2,0,0x40000000ULL)==-EINVAL);
+    assert(tracee.ptrace_options==1);
+    assert(nas_ptrace_request(24,2,0,0)==0);
+    assert(tracee.state==NAS_TASK_READY && tracee.ptrace_trace_syscalls);
+    tracee.state=NAS_TASK_STOPPED;
+    tracee.stopped_from=NAS_TASK_READY;
+    tracee.stop_report_pending=true;
     assert(nas_ptrace_request(7,2,0,0)==0);
     assert(tracee.state==NAS_TASK_READY && !tracee.stop_report_pending);
     tracee.state=NAS_TASK_STOPPED;
