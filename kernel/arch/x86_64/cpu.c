@@ -121,13 +121,21 @@ void nas_arch_cpu_tables_init(void) {
  * be stopped; never mask a kernel exception as a user SIGTRAP. */
 void nas_x86_traced_exception_c(uint64_t *frame) {
     unsigned vector=(unsigned)frame[15];
-    unsigned signo=vector==3?NAS_SIGTRAP:11U; /* Linux SIGSEGV */
+    unsigned signo=(vector==1||vector==3)?NAS_SIGTRAP:11U;
     uint64_t user_rip=frame[17],user_flags=frame[19],user_sp=frame[20];
     struct nas_task *tracee=nas_current_task;
     if((frame[18]&3U)==3U && tracee &&
-       tracee->state==NAS_TASK_RUNNING && (vector==3 || vector==14)) {
+       tracee->state==NAS_TASK_RUNNING &&
+       (vector==1 || vector==3 || vector==14)) {
         for(unsigned i=0;i<15;i++)tracee->arch.resume_regs[i]=frame[i];
         tracee->arch.resume_user_rip=user_rip;
+        /* A genuine #DB after one CPU instruction ends that step.
+         * It is not a software breakpoint (#BP), and the user TF must
+         * clear before the debugger next resumes with PTRACE_CONT. */
+        if(vector==1 && tracee->ptrace_single_step) {
+            tracee->ptrace_single_step=false;
+            user_flags&=~(1ULL<<8);
+        }
         tracee->arch.resume_user_rflags=user_flags;
         tracee->arch.resume_user_rsp=user_sp;
         nas_arch_save_fpu(tracee);

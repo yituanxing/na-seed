@@ -173,7 +173,7 @@ isr0:
 isr1:
     pushq $0
     pushq $1
-    jmp exception_common
+    jmp nas_x86_traced_exception_entry
 .global isr2
 isr2:
     pushq $0

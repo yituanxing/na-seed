@@ -14,6 +14,8 @@
 #define PTRACE_ATTACH 16ULL
 #define PTRACE_PEEKTEXT 1ULL
 #define PTRACE_PEEKDATA 2ULL
+#define PTRACE_PEEKUSER 3ULL
+#define PTRACE_POKEUSER 6ULL
 #define PTRACE_POKETEXT 4ULL
 #define PTRACE_POKEDATA 5ULL
 #define PTRACE_SETREGS 13ULL
@@ -447,6 +449,31 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
         case PTRACE_GETREGSET:
         case PTRACE_GETREGS:
             return ptrace_gprs(target,request,addr,data);
+#if defined(__x86_64__)
+        case PTRACE_PEEKUSER:
+        case PTRACE_POKEUSER: {
+            /* Linux x86-64 <sys/user.h>: user_regs_struct at offset 0,
+             * 27 x u64, debug registers at byte 848..911. Only the
+             * stopped Task register image is mutable; no kernel state
+             * is exposed by PEEKUSER. GDB probes DR0..DR7 even when
+             * only software breakpoints are in use. No fabricated
+             * hardware watchpoint support: only zero write accepted. */
+            if(addr&7ULL)return (uint64_t)-EIO;
+            if(addr>=848ULL && addr<912ULL) {
+                if(request==PTRACE_PEEKUSER)return 0;
+                return data==0?0:(uint64_t)-EIO;
+            }
+            if(addr>=27ULL*8ULL)return (uint64_t)-EIO;
+            uint64_t words[34]={0};
+            unsigned count=nas_arch_ptrace_gpr_words(target,words);
+            if(count!=27)return (uint64_t)-EIO;
+            unsigned idx=(unsigned)(addr/8ULL);
+            if(request==PTRACE_PEEKUSER)return words[idx];
+            words[idx]=data;
+            return nas_arch_ptrace_set_gpr_words(target,words,count)
+                ?0:(uint64_t)-EIO;
+        }
+#endif
         case PTRACE_POKETEXT:
         case PTRACE_POKEDATA: {
             /* Linux ptrace word writes use DATA as the actual 64-bit value,
@@ -465,13 +492,23 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
             return count==(int64_t)sizeof(word)?word:(uint64_t)-EFAULT;
         }
         case PTRACE_SINGLESTEP:
-#if !defined(__aarch64__)
-            return (uint64_t)-EOPNOTSUPP; /* no pretend software emulation */
+#if !defined(__aarch64__) && !defined(__x86_64__)
+            return (uint64_t)-EOPNOTSUPP; /* no native HW step facility */
 #endif
         case PTRACE_CONT:
         case PTRACE_SYSCALL:
         case PTRACE_DETACH:
             if(data)return (uint64_t)-EOPNOTSUPP; /* signal injection */
+#if defined(__x86_64__)
+            if(request==PTRACE_SINGLESTEP &&
+               target->stopped_from==NAS_TASK_BLOCKED)
+                return (uint64_t)-EBUSY;
+            target->ptrace_single_step=request==PTRACE_SINGLESTEP;
+            if(target->ptrace_single_step)
+                target->arch.resume_user_rflags|=(1ULL<<8); /* TF */
+            else
+                target->arch.resume_user_rflags&=~(1ULL<<8);
+#endif
 #if defined(__aarch64__)
             if(request==PTRACE_SINGLESTEP &&
                target->stopped_from==NAS_TASK_BLOCKED)
