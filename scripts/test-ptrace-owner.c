@@ -42,8 +42,10 @@ int main(void) {
     /* Linux ptrace options own only actually implemented event semantics. */
     assert(nas_ptrace_request(0x4200,2,0,1)==0);
     assert(tracee.ptrace_options==1);
+    assert(nas_ptrace_request(0x4200,2,0,0x51)==0);
+    assert(tracee.ptrace_options==0x51);
     assert((int64_t)nas_ptrace_request(0x4200,2,0,0x40000000ULL)==-EINVAL);
-    assert(tracee.ptrace_options==1);
+    assert(tracee.ptrace_options==0x51);
     assert(nas_ptrace_request(24,2,0,0)==0);
     assert(tracee.state==NAS_TASK_READY && tracee.ptrace_trace_syscalls);
     tracee.state=NAS_TASK_STOPPED;

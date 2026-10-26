@@ -114,6 +114,9 @@ struct nas_task {
     /* phase: 0=signal/other, 1=syscall entry, 2=syscall exit. */
     uint8_t ptrace_phase;
     bool ptrace_trace_syscalls,ptrace_skip_entry_once;
+    uint8_t ptrace_event; /* Linux PTRACE_EVENT_*; zero when no event */
+    uint64_t ptrace_event_message;
+    bool ptrace_exec_pending_exit,ptrace_exit_event_sent;
     uint32_t stop_signal;
     /* Saved syscall-boundary GPR frame in the exact arch.S push order.
      * The scheduler switches after unwinding the current syscall frame.

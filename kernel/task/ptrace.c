@@ -19,11 +19,16 @@
 #define PTRACE_DETACH 17ULL
 #define PTRACE_SYSCALL 24ULL
 #define PTRACE_SETOPTIONS 0x4200ULL
+#define PTRACE_GETEVENTMSG 0x4201ULL
 #define PTRACE_SEIZE 0x4206ULL
 #define PTRACE_INTERRUPT 0x4207ULL
 #define PTRACE_GETREGSET 0x4204ULL
 #define PTRACE_GET_SYSCALL_INFO 0x420eULL
 #define PTRACE_O_TRACESYSGOOD 1ULL
+#define PTRACE_O_TRACEEXEC 0x10ULL
+#define PTRACE_O_TRACEEXIT 0x40ULL
+#define PTRACE_EVENT_EXEC 4U
+#define PTRACE_EVENT_EXIT 6U
 #define NT_PRSTATUS 1ULL
 #define SYSINFO_ENTRY 1U
 #define SYSINFO_EXIT 2U
@@ -33,6 +38,7 @@ static bool ptrace_owner_valid(const struct nas_task *task) {
 }
 static void ptrace_stop(struct nas_task *task,uint8_t phase) {
     task->ptrace_phase=phase;
+    task->ptrace_event=0;
     task->resume_valid=true;
     task->stopped_from=NAS_TASK_READY;
     task->state=NAS_TASK_STOPPED;
@@ -77,6 +83,40 @@ bool nas_ptrace_syscall_exit(struct nas_task *task,const uint64_t *call,
     task->ptrace_ip=call[7];
     task->ptrace_sp=nas_arch_signal_user_sp();
     ptrace_stop(task,SYSINFO_EXIT);
+    return true;
+}
+/* A successful exec replaced the old VM. Park a real new-image context:
+ * the old user's syscall instruction must NEVER be replayed. */
+bool nas_ptrace_exec_commit(struct nas_task *task,uint64_t entry,
+                              uint64_t stack) {
+    if(!ptrace_owner_valid(task))return false;
+    nas_arch_context_exec(&task->arch,entry,stack);
+    task->ptrace_ip=entry;
+    task->ptrace_sp=stack;
+    task->ptrace_result=0;
+    ptrace_stop(task,0);
+    task->ptrace_event=(task->ptrace_options&PTRACE_O_TRACEEXEC)
+        ?PTRACE_EVENT_EXEC:0;
+    task->stop_signal=NAS_SIGTRAP | ((uint32_t)task->ptrace_event<<8);
+    task->ptrace_event_message=task->pid;
+    task->ptrace_exec_pending_exit=true;
+    return true;
+}
+bool nas_ptrace_exit_event(struct nas_task *task,const uint64_t *call,
+                            uint64_t exit_status) {
+    if(!ptrace_owner_valid(task) ||
+       !(task->ptrace_options&PTRACE_O_TRACEEXIT) ||
+       task->ptrace_exit_event_sent)return false;
+    nas_arch_save_user_frame(task,call);
+    nas_arch_save_fpu(task);
+    nas_arch_ptrace_rewind_syscall(&task->arch);
+    task->ptrace_ip=call[7];
+    task->ptrace_sp=nas_arch_signal_user_sp();
+    ptrace_stop(task,0);
+    task->ptrace_event=PTRACE_EVENT_EXIT;
+    task->stop_signal=NAS_SIGTRAP | (PTRACE_EVENT_EXIT<<8);
+    task->ptrace_event_message=(exit_status&255ULL)<<8;
+    task->ptrace_exit_event_sent=true;
     return true;
 }
 static uint64_t ptrace_syscall_info(const struct nas_task *task,
@@ -176,9 +216,13 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
         case PTRACE_SETOPTIONS:
             /* No fake TRACEFORK/TRACEEXEC/EXITKILL: those events must
              * actually be produced before advertising their options. */
-            if(data & ~PTRACE_O_TRACESYSGOOD)return (uint64_t)-EINVAL;
+            if(data & ~(PTRACE_O_TRACESYSGOOD|PTRACE_O_TRACEEXEC|
+                        PTRACE_O_TRACEEXIT))return (uint64_t)-EINVAL;
             target->ptrace_options=data;
             return 0;
+        case PTRACE_GETEVENTMSG:
+            return nas_user_write_u64(data,target->ptrace_event_message)
+                ? 0:(uint64_t)-EFAULT;
         case PTRACE_GET_SYSCALL_INFO:
             return ptrace_syscall_info(target,addr,data);
         case PTRACE_GETREGSET:
@@ -197,9 +241,21 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
         case PTRACE_DETACH:
             if(data)return (uint64_t)-EOPNOTSUPP; /* signal injection */
             target->ptrace_trace_syscalls=request==PTRACE_SYSCALL;
-            if(target->ptrace_phase==SYSINFO_ENTRY)
+            if(target->ptrace_exec_pending_exit) {
+                target->ptrace_exec_pending_exit=false;
+                if(request==PTRACE_SYSCALL) {
+                    /* Real execve has committed: expose exit-stop before
+                     * the new ELF executes a single user instruction. */
+                    ptrace_stop(target,SYSINFO_EXIT);
+                    target->ptrace_result=0;
+                    return 0;
+                }
+            }
+            if(target->ptrace_phase==SYSINFO_ENTRY ||
+               target->ptrace_event==PTRACE_EVENT_EXIT)
                 target->ptrace_skip_entry_once=true;
             target->ptrace_phase=0;
+            target->ptrace_event=0;
             target->state=target->stopped_from==NAS_TASK_BLOCKED
                 ? NAS_TASK_BLOCKED : NAS_TASK_READY;
             target->stopped_from=NAS_TASK_FREE;

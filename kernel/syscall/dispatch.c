@@ -572,7 +572,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         return ret;
     }
     if (nr == NAS_SC_execve) {
-        uint64_t result=nas_task_execve(args[1],args[2],args[3]);
+        uint64_t result=nas_task_execve(args[1],args[2],args[3],
+                                        (uint64_t *)(uintptr_t)args);
         if ((int64_t)result < 0) {
             static unsigned exec_fail_logs;
             if (exec_fail_logs++ < 12) {
@@ -589,6 +590,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_setsid) return nas_session_setsid();
     if (nr == NAS_SC_setpgid) return nas_session_setpgid(args[1],args[2]);
     if (nr == NAS_SC_exit || nr == NAS_SC_exit_group) { /* exit / exit_group */
+        if (TASK.ppid && nas_ptrace_exit_event(nas_current_task,args,args[1]))
+            return nas_task_schedule((uint64_t *)(uintptr_t)args);
         if (TASK.ppid) {
             if (nr == NAS_SC_exit_group)
                 nas_sched_thread_group_exit((uint32_t)args[1],0);

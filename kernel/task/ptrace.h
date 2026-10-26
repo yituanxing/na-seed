@@ -9,4 +9,7 @@ struct nas_task;
 bool nas_ptrace_syscall_enter(struct nas_task *task,const uint64_t *args);
 bool nas_ptrace_syscall_exit(struct nas_task *task,const uint64_t *args,
                               uint64_t result);
+/* Events are only emitted after successful exec or immediately before exit. */
+bool nas_ptrace_exec_commit(struct nas_task *,uint64_t entry,uint64_t sp);
+bool nas_ptrace_exit_event(struct nas_task *,const uint64_t *call,uint64_t status);
 #endif
