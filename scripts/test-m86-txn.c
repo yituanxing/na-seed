@@ -74,6 +74,23 @@ bool nas_mmu_unmap_page(uint64_t va){
     if(!p || !p->pa)return true;
     uint64_t pa=p->pa;p->pa=0;return nas_frame_put(pa);
 }
+bool nas_mmu_resolve_user_address(uint64_t root,uint64_t va,
+                                   uint64_t *physical,unsigned *access){
+    if(root!=SELECTED_ROOT || !physical)return false;
+    struct mapping *p=slot(va&~(P-1),false);
+    if(!p || !p->pa)return false;
+    *physical=p->pa+(va&(P-1));
+    if(access)*access=p->prot;
+    return true;
+}
+bool nas_mmu_protect_pages(uint64_t va,uint64_t pages,uint64_t prot){
+    for(uint64_t i=0;i<pages;i++){
+        struct mapping *p=slot(va+i*P,false);
+        if(!p || !p->pa)return false;
+    }
+    for(uint64_t i=0;i<pages;i++)slot(va+i*P,false)->prot=(unsigned)prot;
+    return true;
+}
 bool nas_arch_nx_enabled(void){return true;}
 __attribute__((noreturn)) void nas_arch_halt(void){abort();}
 int64_t nas_fs_mmap_read(uint64_t fd,uint64_t off,uint8_t *dst,uint64_t n){
@@ -136,8 +153,36 @@ int main(void){
     assert(!nas_mmu_user_byte(BASE) && !nas_mmu_user_byte(BASE+P));
     assert(nas_vma_find(&space.mmap_vmas,BASE)->prot==0);
     assert(living()==0);
+    /* A mixed resident + reserved range must NOT partially change the
+     * existing page's permissions when the new page fails to allocate. */
+    assert(nas_mmu_map_prot_page(BASE,1));
+    uint64_t retained=slot(BASE,false)->pa;
+    assert(retained);
+    ram[retained]=0x7b;
+    alloc_count=0;alloc_fail_at=1;
+    assert((int64_t)nas_vm_mprotect(BASE,2*P,3)==-12);
+    alloc_fail_at=0;
+    assert(slot(BASE,false)->pa==retained &&
+           slot(BASE,false)->prot==1 &&
+           !nas_mmu_user_byte(BASE+P) &&
+           nas_vma_find(&space.mmap_vmas,BASE)->prot==0 &&
+           ram[retained]==0x7b && living()==1);
+    prepare_count=0;prepare_fail_at=1;
+    assert((int64_t)nas_vm_mprotect(BASE,2*P,3)==-12);
+    prepare_fail_at=0;
+    assert(slot(BASE,false)->pa==retained &&
+           slot(BASE,false)->prot==1 &&
+           !nas_mmu_user_byte(BASE+P) && living()==1);
+    assert(nas_vm_mprotect(BASE,2*P,3)==0);
+    assert(slot(BASE,false)->pa==retained &&
+           slot(BASE,false)->prot==3 &&
+           slot(BASE+P,false)->pa &&
+           nas_vma_find(&space.mmap_vmas,BASE)->prot==3 &&
+           ram[retained]==0x7b && living()==2);
+    assert(nas_vm_munmap(BASE,2*P)==0);
+    assert(living()==0 && !nas_vma_find(&space.mmap_vmas,BASE));
     assert(nas_vm_file_mmap(0,P,1,2,4,0)>0);
     assert(living()==1); /* one resident data frame; staging metadata freed */
-    puts("[M86 TXN PASS] OOM/read/PT faults keep original leaves and VMA; commit releases old owners");
+    puts("[M87 MM TXN PASS] MAP_FIXED and mprotect OOM/PT faults preserve VMA/PTE and frame ownership");
     return 0;
 }

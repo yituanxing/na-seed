@@ -320,29 +320,54 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
         struct nas_anon_regions planned=TASK.mm->mmap_vmas;
         if(!nas_vma_protect(&planned,addr,pages*PAGE,(unsigned)prot))
             return (uint64_t)-ENOMEM;
-        /* First validate all pre-existing mapped pages before mutating. */
-        for (uint64_t i=0;i<pages;i++) {
-            uint64_t va=addr+i*PAGE;
-            if (nas_mmu_user_byte(va) &&
-                !nas_mmu_protect_pages(va,1,prot))
+        /* M87-B: a permission change must be all-or-nothing even when a
+         * PROT_NONE reservation has never acquired physical pages. Stage
+         * *only* missing data frames; preserve present frames and their
+         * identity. Nothing may fail after the first visible PTE edit. */
+        const uint64_t root=TASK.mm->root_phys;
+        struct nas_vm_stage staged={0};
+        for(uint64_t i=0;i<pages;i++) {
+            const uint64_t va=addr+i*PAGE;
+            uint64_t pa=0;
+            if(nas_mmu_resolve_user_address(root,va,&pa,0))continue;
+            uint64_t fresh=nas_frame_alloc();
+            if(!fresh) {
+                stage_release(&staged,true);
                 return (uint64_t)-ENOMEM;
+            }
+            if(!stage_add(&staged,fresh)) {
+                (void)nas_frame_put(fresh);
+                stage_release(&staged,true);
+                return (uint64_t)-ENOMEM;
+            }
+            if(!nas_mmu_prepare_leaf_at(root,va)) {
+                stage_release(&staged,true);
+                return (uint64_t)-ENOMEM;
+            }
         }
-        uint64_t i=0;
-        for (;i<pages;i++) {
-            uint64_t va=addr+i*PAGE;
-            if (!nas_mmu_user_byte(va) && !nas_mmu_map_prot_page(va,prot))
-                break;
+        struct nas_vm_stage_cursor cursor={
+            .metadata=staged.first,.index=0
+        };
+        for(uint64_t i=0;i<pages;i++) {
+            const uint64_t va=addr+i*PAGE;
+            uint64_t pa=0;
+            if(nas_mmu_resolve_user_address(root,va,&pa,0)) {
+                /* Present PTEs and supported prot were prevalidated. A
+                 * failure here means corruption, not recoverable ENOMEM. */
+                if(!nas_mmu_protect_pages(va,1,prot))
+                    nas_arch_halt();
+            } else {
+                uint64_t old=0;
+                if(!nas_mmu_exchange_leaf_at(root,va,stage_next(&cursor),
+                                              (unsigned)prot,&old) || old)
+                    nas_arch_halt();
+            }
         }
-        if (i!=pages) {
-            /* A failed physical allocation leaves already-materialized
-             * pages owned by the original VMA. No page-table alias is
-             * created and the caller receives a genuine ENOMEM. */
-            return (uint64_t)-ENOMEM;
-        }
+        stage_release(&staged,false); /* Each new PTE owns its data frame. */
         TASK.mm->mmap_vmas=planned;
         return 0;
     }
-    /* ELF/heap/stack are not yet represented by typed mmap VMA records.
-     * Retain their proven PTE-only mprotect behavior until M85-B. */
+    /* Legacy physical-only mappings still use the original PTE path.
+     * They must be migrated to the logical VMA policy before COW. */
     return nas_mmu_protect_pages(addr,pages,prot)?0:(uint64_t)-ENOMEM;
 }
