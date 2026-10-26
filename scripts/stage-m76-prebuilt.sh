@@ -10,6 +10,7 @@ case "$port" in
 esac
 # Native Linux freestanding executable with real C and real DWARF.
 # Compiler/linker run on GitHub host, NEVER in NaSeed.
+mkdir -p build
 clang --target="$target" -std=c11 -O0 -g -gdwarf-4 \
   -fno-stack-protector -fno-omit-frame-pointer -fno-pic \
   -nostdlib -static -fuse-ld=lld -Wl,--no-dynamic-linker \

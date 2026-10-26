@@ -11,7 +11,7 @@ case "$port" in
         logs=build/port-aarch64/full/matrix-source ;;
  *) exit 2 ;;
 esac
-sh scripts/stage-m75-prebuilt.sh "$port"
+sh scripts/stage-m76-prebuilt.sh "$port"
 work="build/external/m76-gdb/$port"
 export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"
 export NAS_ACCEPTANCE_CPIO="$work/rootfs.cpio"
@@ -22,7 +22,7 @@ export NAS_ACCEPTANCE_DISK_MB=768
 # An independent evidence log is retained on each native ISA failure.
 if ! sh "$runner"; then
   log="$logs/m76-source.clean.log"
-  echo "[M76 FAIL] $port original GDB could not trace the original process" >&2
+  echo "[M76 FAIL] $port original GDB could not debug real source-level C inferior" >&2
   test ! -s "$log" || tail -360 "$log" >&2
   exit 1
 fi

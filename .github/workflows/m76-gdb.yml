@@ -3,7 +3,7 @@ on:
   pull_request:
     paths:
       - 'kernel/**'
-      - 'scripts/stage-m75-prebuilt.sh'
+      - 'scripts/stage-m76-prebuilt.sh'
       - 'scripts/probe-m76-gdb.sh'
       - 'scripts/m76-*'
       - 'tests/m76-*'
@@ -28,14 +28,14 @@ jobs:
       - name: Shared kernel architecture and host procfs owner
         run: |
           set -eu
-          sh -n scripts/stage-m75-prebuilt.sh scripts/probe-m76-gdb.sh tests/m76-gdb-run.sh
+          sh -n scripts/stage-m76-prebuilt.sh scripts/probe-m76-gdb.sh tests/m76-gdb-run.sh
           python3 scripts/check-three-isa-core.py
           cc -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -I kernel scripts/test-ptrace-owner.c kernel/task/ptrace.c -o /tmp/nas-m76-ptrace-owner
           /tmp/nas-m76-ptrace-owner
           cc -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -I kernel scripts/test-ptrace-wait-ownership.c kernel/task/process.c -o /tmp/nas-m76-ptrace-wait
           /tmp/nas-m76-ptrace-wait
-          cc -std=c11 -Wall -Wextra -Werror -I kernel scripts/test-remote-task-read.c kernel/mm/remote_copy.c -o /tmp/nas-m75-remote
-          /tmp/nas-m75-remote
+          cc -std=c11 -Wall -Wextra -Werror -I kernel scripts/test-remote-task-read.c kernel/mm/remote_copy.c -o /tmp/nas-m76-remote
+          /tmp/nas-m76-remote
       - name: Install native QEMU and host rootfs tools
         timeout-minutes: 12
         run: |
@@ -79,7 +79,7 @@ jobs:
           path: |
             build/external/m76-gdb/${{ matrix.port }}/apk-install.log
             build/external/m76-gdb/${{ matrix.port }}/requested-packages.txt
-            build/busybox-source-parity-x86/m75-attach.clean.log
-            build/port-riscv64/full/matrix-source/m75-attach.clean.log
-            build/port-aarch64/full/matrix-source/m75-attach.clean.log
+            build/busybox-source-parity-x86/m76-source.clean.log
+            build/port-riscv64/full/matrix-source/m76-source.clean.log
+            build/port-aarch64/full/matrix-source/m76-source.clean.log
           if-no-files-found: ignore
