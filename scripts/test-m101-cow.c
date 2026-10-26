@@ -155,12 +155,14 @@ int main(void) {
     assert(nas_frame_refs(initial)==2);
     assert(phys(parent,X,0)==phys(child,X,0) && nas_frame_refs(code)==2);
     assert(nas_vma_find(&child->mmap_vmas,A)->prot==3);
+    assert(nas_user_address_writable(A) && !nas_user_address_writable(X));
     assert(nas_mm_handle_fault(parent,A,NAS_UP_WRITE,true)==NAS_MM_FAULT_RESOLVED);
     uint64_t parent_copy=phys(parent,A,&access);
     assert(parent_copy!=initial && access==(NAS_UP_READ|NAS_UP_WRITE));
     assert(nas_frame_refs(parent_copy)==1 && nas_frame_refs(initial)==1);
     struct nas_task kid={0};kid.mm=child;kid.state=NAS_TASK_STOPPED;
     nas_current_task=&kid;
+    assert(nas_user_address_writable(A) && !nas_user_address_writable(X));
     uint8_t values[4]={1,2,3,4};
     assert(nas_user_write_bytes(A+9,values,sizeof(values)));
     assert(phys(child,A,&access)==initial && (access&NAS_UP_WRITE));

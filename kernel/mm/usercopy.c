@@ -51,6 +51,18 @@ bool nas_user_read_bytes(uint64_t addr, uint8_t *dst, uint64_t len) {
     }
     return true;
 }
+bool nas_user_address_writable(uint64_t addr) {
+    if(addr>=USER_LIMIT || !nas_current_task || !nas_current_task->mm)
+        return false;
+    const struct nas_mm *mm=nas_current_task->mm;
+    const struct nas_anon_region *v=nas_vma_find(&mm->mmap_vmas,addr);
+    if(v)return (v->prot&NAS_VM_WRITE)!=0;
+    unsigned hw=0;
+    /* Legacy resident mappings without a canonical VMA may only pass if
+     * truly writable; never invent a permission for an unmapped user VA. */
+    uint64_t pa=0;
+    return nas_mm_resolve_user(mm,addr,&pa,&hw) && (hw&NAS_UP_WRITE);
+}
 bool nas_user_write_bytes(uint64_t addr, const uint8_t *src, uint64_t len) {
     if (addr >= USER_LIMIT || len > USER_LIMIT - addr) return false;
     /* Keep original two-phase semantics: reject any unmapped/read-only
