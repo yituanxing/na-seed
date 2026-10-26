@@ -27,6 +27,10 @@ int main(void) {
     struct nas_task *init=nas_task_current();
     ck(init==nas_task_at(0) && init->pid==1,"PID1 owner");
     ck(init->mm && init->mm->users==1,"init owns a live independent MM");
+    ck(init->fs && init->fs->refs==1 && init->sighand && init->sighand->refs==1,
+       "init owns independent FS and signal resources");
+    init->fs->umask=027U;
+    init->sighand->actions[10][0]=123U;
     nas_mm_get(init->mm);
     ck(init->mm->users==2,"MM get adds one owner");
     nas_mm_put(init->mm);
@@ -68,6 +72,11 @@ int main(void) {
            child->kernel_stack_top!=init->kernel_stack_top,"no inherited stack");
         ck(nas_task_kernel_stack_ok(child),"fork stack intact");
         ck(child->mm==0,"new Task slot cannot inherit a borrowed MM pointer");
+        ck(child->fs && child->fs!=init->fs && child->fs->umask==027U,
+           "fork copies FS context, never a leader pointer");
+        ck(child->sighand && child->sighand!=init->sighand &&
+           child->sighand->actions[10][0]==123U,
+           "fork copies live dispositions into independent resource");
         uint64_t *near_top=(uint64_t *)(uintptr_t)(tops[i]-64);
         *near_top=(uint64_t)(i*0x10203U); /* stack payload cannot alias */
     }

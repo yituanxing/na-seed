@@ -50,13 +50,15 @@ bool bootfs_is_dir(const struct bootfs_entry *e) {
 }
 struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
 static struct nas_task cwd_task;
+static struct nas_fs_context cwd_fs;
 struct nas_task *nas_task_at(unsigned n) {
     return n==0 ? &cwd_task : 0;
 }
 static void putcwd(const char *path) {
     size_t size=strlen(path)+1;
-    assert(size<=sizeof(cwd_task.cwd));
-    memcpy(cwd_task.cwd,path,size);
+    assert(size<=sizeof(cwd_fs.cwd));
+    memcpy(cwd_fs.cwd,path,size);
+    cwd_task.fs=&cwd_fs;
     cwd_task.state=NAS_TASK_RUNNING;
 }
 int main(void) {
@@ -91,7 +93,7 @@ int main(void) {
     assert(!tmp_find("/tmp/tree/file"));
     assert(tmp_find("/tmp/moved/file")==file);
     assert(tmp_find("/tmp/alias")==file);
-    assert(!strcmp(cwd_task.cwd,"/tmp/moved/sub"));
+    assert(!strcmp(cwd_fs.cwd,"/tmp/moved/sub"));
     assert(!strcmp(tmp_name(dir),"/tmp/moved"));
     const struct nas_tmp_dentry *child=tmp_child_entry("/tmp/moved",0);
     assert(child && child->inode && child->path[0]=='/');

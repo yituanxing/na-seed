@@ -5,6 +5,7 @@
 #include "fd.h"
 #include "arch/context.h"
 #include "mm/mm.h"
+#include "task/resources.h"
 
 /* Common process registry across x86-64, RV64, and AArch64.
  * Each task has its own kernel entry stack; switching still occurs at a
@@ -89,7 +90,6 @@ struct nas_task {
     /* Linux process group + session identity, independent of CPU/VM. */
     uint64_t pgid, sid;
     char comm[16]; /* Linux per-thread PR_SET_NAME, inherited at fork. */
-    uint32_t umask; /* inherited by fork/vfork; preserved by exec */
     bool execed; /* parent may not setpgid(child) after successful exec */
     /* Immutable executable argv snapshot; incomplete overlong vectors
      * are not exposed as fabricated procfs command lines. */
@@ -166,7 +166,7 @@ struct nas_task {
     /* Per-process signal disposition/mask and filesystem context. */
     uint64_t blocked_signals;
     uint64_t pending_signals; /* Linux per-task pending standard signals */
-    uint64_t signal_actions[65][4];
+    struct nas_sighand *sighand; /* CLONE_SIGHAND shares this owner */
     /* While executing a caught handler, the original full CPU/FPU state
      * remains kernel-owned until a checked rt_sigreturn from its restorer.
      * This deliberately supports one handler frame; further signals
@@ -180,7 +180,7 @@ struct nas_task {
     bool ppoll_mask_active;
     uint64_t signal_force_deliver;
     struct nas_arch_context signal_saved_arch;
-    char cwd[256];
+    struct nas_fs_context *fs; /* CLONE_FS shares this owner */
     struct nas_fd_table fds_owned;
     struct nas_fd_table *fds; /* CLONE_FILES shares descriptor TABLE */
 

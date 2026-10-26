@@ -175,7 +175,7 @@ void nas_time_timers_tick(void){
             if(dst && dst->state!=NAS_TASK_FREE &&
                dst->state!=NAS_TASK_ZOMBIE &&
                dst->tgid==p->tgid &&
-               p->signal_actions[t->signum][0]!=1)
+               p->sighand->actions[t->signum][0]!=1)
                 dst->pending_signals|=1ULL<<(t->signum-1);
         }
     }

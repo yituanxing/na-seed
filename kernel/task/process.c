@@ -447,6 +447,11 @@ uint64_t nas_process_clone_thread(uint64_t *frame,uint64_t stack,
     child->vm_owner=parent->vm_owner;
     child->fds=parent->fds; /* CLONE_FILES: do NOT increase description refs */
     child->mm=nas_mm_get(parent->mm);
+    /* musl pthread CLONE_FS and CLONE_SIGHAND share resource identities. */
+    nas_fs_context_put(child->fs);
+    child->fs=nas_fs_context_get(parent->fs);
+    nas_sighand_put(child->sighand);
+    child->sighand=nas_sighand_get(parent->sighand);
     nas_arch_context_set_user_sp(&child->arch,stack);
     nas_arch_context_set_tls(&child->arch,tls);
     child->thread_clear_tid=child_tid;

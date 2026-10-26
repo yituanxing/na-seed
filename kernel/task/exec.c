@@ -376,10 +376,6 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
     if(worker_exec) {
         exec_thread->fds_owned=*old_leader->fds;
         exec_thread->fds=&exec_thread->fds_owned;
-        exec_thread->umask=old_leader->umask;
-        memcpy(exec_thread->cwd,old_leader->cwd,sizeof(exec_thread->cwd));
-        memcpy(exec_thread->signal_actions,old_leader->signal_actions,
-               sizeof(exec_thread->signal_actions));
         exec_thread->pid=inherited_tgid;
         exec_thread->tgid=inherited_tgid;
         exec_thread->ppid=old_leader->ppid;
@@ -419,8 +415,8 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
     /* Linux execve resets caught handlers to default but preserves ignored
      * dispositions, the process signal mask and pending standard signals. */
     for (unsigned i = 1; i < 65; i++) {
-        if (TASK.vm_owner->signal_actions[i][0] == 1) continue; /* SIG_IGN survives exec */
-        for (unsigned j = 0; j < 4; j++) TASK.vm_owner->signal_actions[i][j] = 0;
+        if (TASK.sighand->actions[i][0] == 1) continue; /* SIG_IGN survives exec */
+        for (unsigned j = 0; j < 4; j++) TASK.sighand->actions[i][j] = 0;
     }
     /* A vfork child shared its old page table with its suspended parent.
      * Its new ELF root has committed, but that old root remains parent-owned. */

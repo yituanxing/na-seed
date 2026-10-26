@@ -8,6 +8,7 @@ kernel/task/exec.c
 kernel/syscall/dispatch.c
 kernel/task.c
 kernel/mm/mm.c
+kernel/task/resources.c
 kernel/task/accounting.c
 kernel/task/process.c
 kernel/task/ptrace.c
