@@ -6,6 +6,7 @@
 #include "../../task/ptrace.h"
 #include "../../task/sched.h"
 #include "../../task/signal.h"
+#include "../../exception/exception.h"
 #include "../../panic.h"
 #include "irq.h"
 #include "../arch.h"
@@ -134,10 +135,26 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
     unsigned vector=(unsigned)frame[15];
     unsigned signo=(vector==1||vector==3)?NAS_SIGTRAP:11U;
     uint64_t user_rip=frame[17],user_flags=frame[19],user_sp=frame[20];
+    uint64_t fault_addr=0;
+    if(vector==14U)__asm__ volatile("mov %%cr2,%0":"=r"(fault_addr));
+    struct nas_exception exception=nas_exception_x86(vector,frame[16],
+                                          fault_addr,user_rip,frame[18]);
     struct nas_task *tracee=nas_current_task;
+    struct nas_exception_outcome outcome=
+        exception.kind==NAS_EXC_MEMORY && tracee ?
+        nas_exception_dispatch(&exception,tracee->mm) :
+        (struct nas_exception_outcome){0};
+    if(outcome.action==NAS_EXC_RETRY) {
+        /* Hardware #PF has vector/error in front of its IRET image.
+         * A successful MM fixup retries the EXACT faulting user PC. */
+        for(unsigned i=0;i<5;i++)frame[15+i]=frame[17+i];
+        nas_signal_user_return(frame);
+        return;
+    }
     if((frame[18]&3U)==3U && tracee &&
        tracee->state==NAS_TASK_RUNNING &&
-       (vector==1 || vector==3 || vector==14)) {
+       (vector==1 || vector==3 ||
+        (vector==14 && outcome.action==NAS_EXC_SIGNAL))) {
         for(unsigned i=0;i<15;i++)tracee->arch.resume_regs[i]=frame[i];
         tracee->arch.resume_user_rip=user_rip;
         /* A genuine #DB after one CPU instruction ends that step.
@@ -154,11 +171,15 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
         int32_t si_code=vector==1?2:0x80; /* #DB TRACE, #BP SI_KERNEL */
         if(vector==3)signal_addr=user_rip-1; /* INT3 advances RIP */
         if(vector==14) {
-            __asm__ volatile("mov %%cr2,%0":"=r"(signal_addr));
-            si_code=(frame[16]&1U)?2:1; /* SEGV_ACCERR / SEGV_MAPERR */
+            signal_addr=fault_addr;
+            si_code=outcome.si_code; /* VMA-first MAPERR/ACCERR */
         }
-        if(nas_ptrace_user_exception(tracee,signo,si_code,user_rip,
-                                      user_sp,signal_addr)) {
+        bool traced=nas_ptrace_user_exception(tracee,signo,si_code,user_rip,
+                                               user_sp,signal_addr);
+        if(traced || (vector==14 && outcome.action==NAS_EXC_SIGNAL)) {
+            /* For an untraced user #PF, default SIGSEGV terminates only
+             * the offending process group, not the entire kernel. */
+            if(!traced)nas_sched_thread_group_exit(0,outcome.signo);
             uint64_t resumed=nas_task_schedule(frame);
             /* The interrupted debugger may have been blocked in poll:
              * return the REAL EINTR/readiness outcome via selected RAX. */
