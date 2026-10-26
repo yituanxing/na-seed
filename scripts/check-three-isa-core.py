@@ -128,8 +128,8 @@ if "child->kernel_wait=(struct nas_wait_entry){0};" not in (root/"kernel/task.c"
     raise SystemExit("fork must not inherit a queued kernel wait entry")
 if "nas_futex_wait_arm(nas_current_task)" not in (root/"kernel/task/process.c").read_text():
     raise SystemExit("futex syscall is not using generic kernel wait queues")
-if "nas_futex_wait_cancel(next)" not in sched:
-    raise SystemExit("futex waiter may survive replay completion")
+if "nas_futex_wait_cancel(task)" not in (root/"kernel/task/blocked_completion.c").read_text():
+    raise SystemExit("legacy blocked completion must release futex waiter exactly once")
 if "task_replay(" in sched:
     raise SystemExit("syscall replay leaked back into scheduler core")
 if "nas_blocked_complete(next,&result)" not in sched:
