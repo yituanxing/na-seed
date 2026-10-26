@@ -1,0 +1,3 @@
+tests/m76-gdb-run.sh	tests/m76-gdb-run.sh
+tests/m76-inferior.c	tests/m76-inferior.c
+build/m76-inferior	tests/m76-inferior

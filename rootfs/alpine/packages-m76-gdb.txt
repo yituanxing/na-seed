@@ -1,0 +1,4 @@
+# Signed Alpine 3.23 GNU GDB, host-installed only. C inferior host-cross-built with DWARF.
+musl
+busybox
+gdb
