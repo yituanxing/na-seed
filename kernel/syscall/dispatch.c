@@ -336,7 +336,40 @@ uint64_t nas_ptrace_syscall_dispatch(uint64_t *args) {
 }
 
 /* Strict single-program ABI diagnostic dispatcher, for a real syscall gate. */
+#if defined(__x86_64__)
+/* Bounded read-only diagnostic of exact native syscall arguments.
+ * The tracer PID can crash after receiving an invalid ptrace/wait result;
+ * record which native syscall was actually entered, not a guessed Linux ABI.
+ * No guest synthetic success data is injected. */
+struct nas_x86_call_history {
+    uint64_t pid,nr,arg1,arg2,arg3,entry_pc;
+};
+static struct nas_x86_call_history nas_x86_call_ring[64];
+static unsigned nas_x86_call_next;
+void nas_x86_debug_recent_syscalls(uint64_t pid) {
+    const unsigned end=nas_x86_call_next;
+    unsigned shown=0;
+    for(unsigned i=0;i<64 && shown<16;i++) {
+        const struct nas_x86_call_history *c=
+            &nas_x86_call_ring[(end-1U-i)%64U];
+        if(c->pid!=pid)continue;
+        nas_print("[X86_CALL] pid=");nas_dec(c->pid);
+        nas_print(" nr=");nas_dec(c->nr);
+        nas_print(" arg1=");nas_hex(c->arg1);
+        nas_print(" arg2=");nas_hex(c->arg2);
+        nas_print(" arg3=");nas_hex(c->arg3);
+        nas_print(" pc=");nas_hex(c->entry_pc);nas_print("\n");
+        shown++;
+    }
+}
+#endif
 uint64_t syscall_dispatch(const uint64_t *args) {
+#if defined(__x86_64__)
+    struct nas_x86_call_history *h=&nas_x86_call_ring[nas_x86_call_next++%64U];
+    h->pid=nas_current_task?nas_current_task->pid:0;
+    h->nr=args[0];h->arg1=args[1];h->arg2=args[2];h->arg3=args[3];
+    h->entry_pc=nas_x86_syscall_return_rip;
+#endif
     nas_task_cpu_account_switch(nas_current_task);
     const uint64_t raw_nr = args[0];
     enum nas_syscall_op nr = nas_linux_decode_call(args);

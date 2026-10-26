@@ -159,7 +159,14 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
             nas_print(" ret_rip=");nas_hex(nas_x86_syscall_return_rip);
             nas_print(" sigactive=");nas_dec(tracee->signal_frame_active);
             nas_print(" ptrace=");nas_dec(tracee->ptrace_tracer_pid);
+            nas_print(" rax=");nas_hex(frame[0]);
+            nas_print(" rcx=");nas_hex(frame[7]);
+            nas_print(" rdx=");nas_hex(frame[3]);
+            nas_print(" rdi=");nas_hex(frame[1]);
+            nas_print(" rbx=");nas_hex(frame[9]);
             nas_print("\n");
+            extern void nas_x86_debug_recent_syscalls(uint64_t);
+            nas_x86_debug_recent_syscalls(tracee->pid);
         }
     }
     if(outcome.action==NAS_EXC_RETRY) {
