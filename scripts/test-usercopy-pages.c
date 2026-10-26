@@ -16,7 +16,7 @@ enum { PGSZ = 4096, COUNT = 4 };
 #define BASE 0x40000ULL
 static uint8_t phys[COUNT][PGSZ];
 static bool mapped[COUNT], writable[COUNT];
-static unsigned lookups, checks;
+static unsigned lookups, checks, mm_checks;
 /* The historical usercopy test owns a simulated isolated VM. New COW/lazy
  * logic is tested with actual MM/fault code in M101; this fixture retains
  * deliberately noncontiguous user-byte and permission-provider mocks. */
@@ -30,6 +30,7 @@ const struct nas_anon_region *nas_vma_find(const struct nas_anon_regions *vmas,
 bool nas_mm_resolve_user(const struct nas_mm *mm,uint64_t va,
                          uint64_t *pa,unsigned *access) {
     assert(mm==&mock_mm);
+    ++mm_checks;
     if(va<BASE || va-BASE>=(uint64_t)COUNT*PGSZ)return false;
     unsigned index=(unsigned)((va-BASE)/PGSZ);
     if(!mapped[index])return false;
@@ -71,7 +72,7 @@ static void reset(void) {
         mapped[p] = writable[p] = true;
         memset(phys[p], 0xcc, PGSZ);
     }
-    lookups = checks = 0;
+    lookups = checks = mm_checks = 0;
 }
 int main(void) {
     reset();
@@ -97,7 +98,9 @@ int main(void) {
     /* Any read-only page must reject the ENTIRE write before mutation. */
     writable[1] = false;
     assert(!nas_user_write_bytes(BASE + PGSZ - 16, small, sizeof(small)));
-    assert(checks == 2 && lookups == 0);
+    /* The new MM-aware path checks both pages' logical/PTE rights,
+     * but rejects the RO second page before calling writable() on it. */
+    assert(mm_checks == 2 && checks == 1 && lookups == 0);
     for (unsigned i = 0; i < 16; i++) {
         assert(phys[0][PGSZ - 16 + i] == 0xcc);
         assert(phys[1][i] == 0xcc);
