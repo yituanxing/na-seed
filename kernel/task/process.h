@@ -7,6 +7,11 @@ struct nas_task;
 #define NAS_WAIT_NOHANG    1ULL
 #define NAS_WAIT_UNTRACED  2ULL
 #define NAS_WAIT_CONTINUED 8ULL
+/* Linux __WALL is valid for wait4 and is used by strace even before attach.
+ * The current child registry is still process-only; traced-TID waiting
+ * belongs to the ptrace Task owner, not to a flag-only workaround. */
+#define NAS_WAIT_ALL       0x40000000ULL
+#define NAS_WAIT_SUPPORTED (NAS_WAIT_NOHANG|NAS_WAIT_UNTRACED|NAS_WAIT_CONTINUED|NAS_WAIT_ALL)
 /* Honest read-only Linux rlimit64 snapshot; changes remain unsupported. */
 uint64_t nas_process_prlimit(uint64_t pid,uint64_t resource,
                              uint64_t new_addr,uint64_t old_addr);

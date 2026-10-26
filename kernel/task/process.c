@@ -347,7 +347,7 @@ bool nas_process_waitable(const struct nas_task *child, uint64_t options) {
 }
 uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
                            uint64_t options, uint64_t rusage) {
-    if (options & ~(NAS_WAIT_NOHANG|NAS_WAIT_UNTRACED|NAS_WAIT_CONTINUED))
+    if (options & ~NAS_WAIT_SUPPORTED)
         return (uint64_t)-EINVAL;
     if (rusage) return (uint64_t)-EOPNOTSUPP;
     bool have_child = false;
