@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include "../kernel/task/kernel_context.h"
-__attribute__((noreturn)) void nas_fail(const char *str){fputs(str,stderr);abort();}
+__attribute__((noreturn)) void nas_arch_halt(void){abort();}
 void nas_print(const char *str){fputs(str,stdout);}
 static struct nas_kernel_context main_context,a_context,b_context;
 static _Alignas(16) unsigned char a_stack[8192],b_stack[8192];

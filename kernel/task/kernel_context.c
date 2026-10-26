@@ -1,4 +1,5 @@
 #include "kernel_context.h"
+#include "../panic.h"
 #include <stdint.h>
 #include <stdbool.h>
 /* Set up the exact callee-saved frame that the ISA-native swap restores.
@@ -38,7 +39,6 @@ bool nas_kernel_context_prepare(struct nas_kernel_context *ctx,void *stack,
 }
 /* Actual native QEMU boot test of suspended/resumed live kernel C frames;
  * the syscall-boundary scheduler stays unchanged during this stage. */
-extern void nas_fail(const char *) __attribute__((noreturn));
 extern void nas_print(const char *);
 static struct nas_kernel_context boot_main_ctx,boot_worker_ctx;
 static _Alignas(16) uint8_t boot_worker_stack[8192];
