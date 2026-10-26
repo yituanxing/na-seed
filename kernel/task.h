@@ -105,6 +105,9 @@ struct nas_task {
      * SIGCONT restores READY (runnable) or BLOCKED (pending replay). */
     enum nas_task_state stopped_from;
     bool stop_report_pending, continue_report_pending;
+    /* ptrace ownership is TASK-local; not inherited by fork or CLONE_THREAD.
+     * A tracer sees real SIGSTOP events through its existing wait4 owner. */
+    uint64_t ptrace_tracer_pid;
     uint32_t stop_signal;
     /* Saved syscall-boundary GPR frame in the exact arch.S push order.
      * The scheduler switches after unwinding the current syscall frame.

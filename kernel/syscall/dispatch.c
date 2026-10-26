@@ -15,6 +15,7 @@
 #include "../task/exec.h"
 #include "../fs/mode.h"
 #include "../task/process.h"
+#include "../task/ptrace.h"
 #include "../task/wait_pid.h"
 #include "../task/session.h"
 #include "../task/sched.h"
@@ -275,6 +276,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         nas_print("\n");
     }
 #endif
+    if (nr == NAS_SC_ptrace) return nas_ptrace_request(args[1],args[2],args[3],args[4]);
     if (nr == NAS_SC_arch_prctl) return nas_linux_arch_prctl(args[1], args[2]);
     if (nr == NAS_SC_getrandom) return nas_random_getrandom(args[1],args[2],args[3]);
     if (nr == NAS_SC_set_tid_address) { thread_clear_tid = args[1]; return TASK.pid; }
