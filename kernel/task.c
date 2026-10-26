@@ -4,6 +4,7 @@
 #include "fd.h"
 #include "task/wait.h"
 #include "lib/string.h"
+#include "panic.h"
 #include <stddef.h>
 
 /* Task-owned entry stacks. Cooperative syscall switching still unwinds
@@ -57,11 +58,14 @@ void nas_task_boot_init(void) {
         task->kernel_stack_top = stack_top(n);
     }
     next_pid = 2;
+    nas_mm_system_init();
     nas_fd_system_init();
     nas_current_task = &task_table[0];
     nas_current_task->pid = 1;
     nas_current_task->tgid=1;
     nas_current_task->vm_owner=nas_current_task;
+    nas_current_task->mm=nas_mm_new();
+    if (!nas_current_task->mm) nas_fail("cannot allocate init MM");
     nas_current_task->fds=&nas_current_task->fds_owned;
     nas_current_task->ppid = 0;
     nas_current_task->pgid = 1;
@@ -95,6 +99,8 @@ struct nas_task *nas_task_fork_slot(void) {
         child->fds_owned=inherited;
         child->fds=&child->fds_owned;
         child->vm_owner=child;
+        /* memcpy must never transfer a reference without incrementing it. */
+        child->mm=0;
         /* A fork from a worker snapshots the LIVE CLONE_FS and
          * CLONE_SIGHAND process state, not stale per-worker copies. */
         child->umask=nas_current_task->vm_owner->umask;
@@ -184,6 +190,8 @@ void nas_task_adopt_orphans(uint64_t exiting_pid) {
 }
 void nas_task_release(struct nas_task *task) {
     if (!task || task == nas_current_task) return;
+    /* Releases an independently owned MM reference, including on thread exit. */
+    if (task->mm) { nas_mm_put(task->mm); task->mm=0; }
     task->state = NAS_TASK_FREE;
     task->pid = 0;
     task->tgid=0;
@@ -227,13 +235,10 @@ struct nas_task *nas_task_by_pid(uint64_t pid) {
 }
 
 uint64_t nas_task_page_root(const struct nas_task *task) {
-    return task ? task->root_phys : 0;
+    return task && task->mm ? task->mm->root_phys : 0;
 }
 uint64_t nas_task_tls_base(const struct nas_task *task) {
     return task ? nas_arch_context_tls_base(&task->arch) : 0;
-}
-void nas_task_set_root(struct nas_task *task, uint64_t root) {
-    if (task) task->root_phys = root;
 }
 struct nas_task *nas_task_child_at(uint64_t parent_pid, unsigned slot) {
     if (slot >= NAS_TASK_LIMIT || !parent_pid) return NULL;

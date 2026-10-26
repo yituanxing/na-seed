@@ -24,7 +24,7 @@
 #include "ptrace.h"
 #include "sched.h"
 #define TASK (*nas_current_task)
-#define root_phys TASK.root_phys
+#define root_phys TASK.mm->root_phys
 #define loaded_phdr TASK.loaded_phdr
 #define loaded_phnum TASK.loaded_phnum
 #define loaded_main_entry TASK.loaded_main_entry
@@ -306,14 +306,17 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
      * execve, every existing pthread, FD, robust list and VM must remain
      * untouched; only the successful commit may terminate sibling tasks.
      * The public syscall ABI is identical on all three architectures. */
-    uint64_t new_root = nas_mmu_alloc_root();
-    if (!new_root) return (uint64_t)-ENOMEM;
-    uint64_t previous_root = root_phys;
-    uint64_t old_heap = TASK.vm_owner->heap_break;
+    struct nas_mm *new_mm=nas_mm_new();
+    if (!new_mm) return (uint64_t)-ENOMEM;
+    uint64_t new_root=nas_mmu_alloc_root();
+    if (!new_root) { nas_mm_put(new_mm); return (uint64_t)-ENOMEM; }
+    new_mm->root_phys=new_root;
+    struct nas_mm *previous_mm=TASK.mm;
+    uint64_t previous_root=previous_mm->root_phys;
     uint64_t old_phdr = loaded_phdr, old_phnum = loaded_phnum;
     uint64_t old_entry = loaded_main_entry, old_interp = loaded_interp_base;
+    TASK.mm=new_mm;
     nas_mmu_switch_root(new_root);
-    TASK.vm_owner->heap_break = 0;
     loaded_phdr = loaded_phnum = loaded_main_entry = loaded_interp_base = 0;
     uint64_t entry, sp = 0;
     bool good = nas_elf_load(&main_img, interp, &entry);
@@ -341,9 +344,9 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
 #endif
     }
     if (!good) {
+        TASK.mm=previous_mm;
         nas_mmu_switch_root(previous_root);
-        if (!nas_mmu_reclaim_root(new_root)) nas_fail("execve rollback page-table corruption");
-        TASK.vm_owner->heap_break = old_heap;
+        nas_mm_put(new_mm);
         loaded_phdr = old_phdr;
         loaded_phnum = old_phnum;
         loaded_main_entry = old_entry;
@@ -359,8 +362,10 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
     struct nas_task *old_leader = exec_thread->vm_owner;
     uint64_t inherited_tgid=old_leader->tgid;
     bool worker_exec=exec_thread!=old_leader;
+    TASK.mm=previous_mm;
     nas_mmu_switch_root(previous_root);
     nas_process_exec_quiesce_siblings();
+    TASK.mm=new_mm;
     nas_mmu_switch_root(committed_root);
 
     /* exec from CLONE_THREAD must look like the original *process* to
@@ -376,8 +381,6 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
         memcpy(exec_thread->cwd,old_leader->cwd,sizeof(exec_thread->cwd));
         memcpy(exec_thread->signal_actions,old_leader->signal_actions,
                sizeof(exec_thread->signal_actions));
-        exec_thread->heap_break=old_leader->heap_break;
-        exec_thread->anonymous=old_leader->anonymous;
         exec_thread->pid=inherited_tgid;
         exec_thread->tgid=inherited_tgid;
         exec_thread->ppid=old_leader->ppid;
@@ -403,7 +406,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
             nas_fs_close_fd(fd);
     /* Old anonymous ownership dies with the retired page-table root.
      * No metadata is mutated until exec commits, so rollback remains exact. */
-    nas_anon_reset(&TASK.vm_owner->anonymous);
+    nas_anon_reset(&TASK.mm->anonymous);
     nas_time_timers_drop(); /* POSIX timers never survive execve. */
     TASK.execed = true; /* fork parent may no longer setpgid after exec */
     TASK.signal_frame_active = false;
@@ -422,10 +425,8 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
     }
     /* A vfork child shared its old page table with its suspended parent.
      * Its new ELF root has committed, but that old root remains parent-owned. */
-    if (TASK.vfork_shared_vm)
-        nas_process_vfork_release();
-    else if (!nas_mmu_reclaim_root(previous_root))
-        nas_fail("execve stale address-space frame reclaim failure");
+    if (TASK.vfork_shared_vm) nas_process_vfork_release();
+    nas_mm_put(previous_mm);
     const char *basename = actual;
     for (const char *p = basename; *p; p++)
         if (*p == '/') basename = p + 1;

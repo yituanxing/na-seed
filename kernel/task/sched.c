@@ -147,8 +147,8 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     child->group_exit_pending=false;
     if (child->vfork_shared_vm) {
         nas_process_vfork_release();
-        /* Exit-before-exec must never let wait4 free parent's page table. */
-        nas_task_set_root(child, 0);
+        /* The child has a separate MM reference; final put leaves
+         * the parent-owned shared address space alive. */
     }
     child->exit_code = code & 255U;
     child->termination_signal = signum;

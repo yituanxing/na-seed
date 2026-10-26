@@ -98,7 +98,7 @@ void nas_rv_full_trap_c(struct nas_rv_trap_frame *frame) {
 void nas_arch_restore_cpu(const struct nas_task *task) {
     if (!nas_task_kernel_stack_ok(task)) nas_fail("RV64 switching to invalid stack");
     nas_rv_entry_stack_top = task->kernel_stack_top;
-    nas_mmu_switch_root(task->root_phys);
+    nas_mmu_switch_root(nas_task_page_root(task));
     if(live) live->x[4]=nas_task_tls_base(task);
     nas_rv_restore_fp(task->arch.fp_regs);
 }

@@ -9,7 +9,7 @@
 #include "../user_pt.h"
 #include "../mmu.h"
 #define TASK (*nas_current_task)
-#define root_phys TASK.root_phys
+#define root_phys TASK.mm->root_phys
 #define P_PRESENT 1ULL
 #define P_RW 2ULL
 #define P_USER 4ULL

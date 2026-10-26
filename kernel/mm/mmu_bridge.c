@@ -9,7 +9,7 @@
 #error "Use proven native x86 MMU; this bridge is for RV64 and AArch64."
 #endif
 /* Same API already consumed by existing ELF/exec/FS/fork/usercopy modules.
- * root_phys is per task; levels is derived from the actual boot CPU mode.
+ * root_phys is owned by the selected MM; levels come from the boot CPU mode.
  * No alternate miniature kernel, new ELF implementation or FS. */
 struct nas_vm_pt_ctx {nas_mmu_user_visit cb;void *ctx;};
 static bool nas_vm_pt_cb(uint64_t va,uint64_t pa,unsigned access,void *arg) {
@@ -31,14 +31,14 @@ bool nas_mmu_resolve_user_address(uint64_t selected_root,uint64_t va,
     return nas_arch_pt_lookup(&s,va,physical,access);
 }
 static struct nas_user_space current(void) {
-    return (struct nas_user_space){nas_current_task->root_phys,
+    return (struct nas_user_space){nas_current_task->mm->root_phys,
                                   nas_arch_pt_active_levels()};
 }
 bool nas_mmu_bootstrap(void) {
     struct nas_user_space s={0};
     if (!nas_current_task || !nas_space_new(&s,nas_arch_pt_active_levels()))
         return false;
-    nas_current_task->root_phys=s.root_pa;
+    nas_current_task->mm->root_phys=s.root_pa;
     return nas_arch_pt_install(&s);
 }
 uint64_t nas_mmu_alloc_root(void) {
@@ -52,7 +52,7 @@ bool nas_mmu_reclaim_root(uint64_t pa) {
 void nas_mmu_switch_root(uint64_t pa) {
     struct nas_user_space s={pa,nas_arch_pt_active_levels()};
     if (!nas_arch_pt_install(&s)) nas_arch_halt();
-    nas_current_task->root_phys=pa;
+    nas_current_task->mm->root_phys=pa;
 }
 uint64_t nas_mmu_fork_root(void) {
     struct nas_user_space source=current(), dest={0};

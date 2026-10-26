@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include "fd.h"
 #include "arch/context.h"
-#include "mm/anon_regions.h"
+#include "mm/mm.h"
 
 /* Common process registry across x86-64, RV64, and AArch64.
  * Each task has its own kernel entry stack; switching still occurs at a
@@ -152,10 +152,8 @@ struct nas_task {
     /* Owned kernel entry stack. Kernel C continuations are NOT resumable
      * yet; the syscall-boundary scheduler still unwinds before switching. */
     uint64_t kernel_stack_top;
-    /* One independent VM mapping root and ELF/brk/mmap tracking per task. */
-    uint64_t root_phys, heap_break;
-    /* Bounded eager anonymous VMA ownership; copied by value on fork. */
-    struct nas_anon_regions anonymous;
+    /* Independently reference-counted address space (CLONE_VM / vfork). */
+    struct nas_mm *mm;
     uint64_t loaded_phdr, loaded_phnum;
     uint64_t loaded_main_entry, loaded_interp_base;
     uint64_t thread_clear_tid;
@@ -210,7 +208,6 @@ void nas_task_release(struct nas_task *task);
 void nas_task_adopt_orphans(uint64_t exiting_pid);
 uint64_t nas_task_page_root(const struct nas_task *task);
 uint64_t nas_task_tls_base(const struct nas_task *task);
-void nas_task_set_root(struct nas_task *task, uint64_t root);
 struct nas_task *nas_task_by_pid(uint64_t pid);
 struct nas_task *nas_task_child_at(uint64_t parent_pid, unsigned slot);
 struct nas_task *nas_task_at(unsigned slot);
