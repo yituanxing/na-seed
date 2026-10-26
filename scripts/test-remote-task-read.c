@@ -5,11 +5,33 @@
 #include <stdio.h>
 #include <string.h>
 #include "../kernel/mm/vm.h"
+#include "../kernel/mm/fault.h"
 #include "../kernel/task.h"
 #define PAGE 4096ULL
 static uint8_t physical[0x10000];
 static uint64_t last_root;
 uint64_t nas_hhdm_offset(void){return (uint64_t)(uintptr_t)physical;}
+/* The M71/M75 remote-copy fixture has immutable, independently owned
+ * frames and no VMAs. The M101 fixture tests the ACTUAL COW allocator,
+ * PTE exchange, refcount and write-fault policy. Here a unique frame must
+ * never be cloned merely because ptrace writes RX instructions. */
+uint32_t nas_frame_refs(uint64_t pa) {
+    return pa==0x2000 || pa==0x9000 ? 1 : 0;
+}
+uint64_t nas_frame_alloc(void){assert(!"unique fixture page unexpectedly COW copied");return 0;}
+bool nas_frame_put(uint64_t pa){(void)pa;assert(!"unexpected COW put");return false;}
+bool nas_mmu_exchange_leaf_at(uint64_t root,uint64_t va,uint64_t pa,
+                              unsigned prot,uint64_t *old){
+    (void)root;(void)va;(void)pa;(void)prot;(void)old;
+    assert(!"unique fixture page unexpectedly remapped");return false;
+}
+void nas_print(const char *s){(void)s;}
+__attribute__((noreturn))void nas_arch_halt(void){assert(0);__builtin_trap();}
+enum nas_mm_fault_result nas_mm_handle_fault(struct nas_mm *mm,uint64_t va,
+                                              unsigned access,bool protection){
+    (void)mm;(void)va;(void)access;(void)protection;
+    return NAS_MM_FAULT_MAPERR; /* unmapped foreign user VA is still EFAULT */
+}
 bool nas_mmu_resolve_user_address(uint64_t root,uint64_t va,
                                   uint64_t *pa,unsigned *access) {
     last_root=root;

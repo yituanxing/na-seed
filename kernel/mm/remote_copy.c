@@ -8,6 +8,8 @@
 #include "../arch/mmu.h"
 #include "frame.h"
 #include "vm.h"
+#include "fault.h"
+#include "../arch/user_pt.h"
 #include "../lib/string.h"
 int64_t nas_vm_read_task_bytes(const struct nas_task *task,uint64_t va,
                                uint8_t *dst,uint64_t length) {
@@ -20,8 +22,12 @@ int64_t nas_vm_read_task_bytes(const struct nas_task *task,uint64_t va,
     uint64_t count=0;
     while(count<length) {
         uint64_t at=va+count,pa=0;
-        if(!nas_mm_resolve_user(mm,at,&pa,0))
-            return count?(int64_t)count:-EFAULT;
+        if(!nas_mm_resolve_user(mm,at,&pa,0)) {
+            if(nas_mm_handle_fault((struct nas_mm *)mm,at,NAS_UP_READ,false)!=
+               NAS_MM_FAULT_RESOLVED ||
+               !nas_mm_resolve_user(mm,at,&pa,0))
+                return count?(int64_t)count:-EFAULT;
+        }
         uint64_t room=4096ULL-(at&4095ULL);
         uint64_t n=length-count;
         if(n>room)n=room;
@@ -48,6 +54,17 @@ int64_t nas_vm_write_task_bytes(const struct nas_task *task,uint64_t va,
         uint64_t at=va+count,pa=0;
         if(!nas_mm_resolve_user(mm,at,&pa,0))
             return -EFAULT; /* must not leave a partial breakpoint */
+        uint64_t n=4096ULL-(at&4095ULL);
+        if(n>length-count)n=length-count;
+        count+=n;
+    }
+    /* Separate shared data frames before ANY breakpoint bytes are written.
+     * A later OOM can leave newly private PTEs but never half-written user
+     * instructions, maintaining ptrace's two-phase data mutation contract. */
+    for(uint64_t count=0;count<length;) {
+        uint64_t at=va+count;
+        if(!nas_mm_break_cow((struct nas_mm *)mm,at,0,true))
+            return -EFAULT;
         uint64_t n=4096ULL-(at&4095ULL);
         if(n>length-count)n=length-count;
         count+=n;

@@ -354,7 +354,11 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
             if(nas_mmu_resolve_user_address(root,va,&pa,0)) {
                 /* Present PTEs and supported prot were prevalidated. A
                  * failure here means corruption, not recoverable ENOMEM. */
-                if(!nas_mmu_protect_pages(va,1,prot))
+                unsigned hw_prot=(unsigned)prot;
+                if((prot&NAS_VM_WRITE) &&
+                   nas_frame_refs(pa&~UINT64_C(4095))>1)
+                    hw_prot &= ~NAS_VM_WRITE;
+                if(!nas_mmu_protect_pages(va,1,hw_prot))
                     nas_arch_halt();
             } else {
                 uint64_t old=0;

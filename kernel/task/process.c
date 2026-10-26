@@ -52,8 +52,8 @@ static uint64_t fork_common(uint64_t *frame, uint64_t child_tid) {
      * in the parent. Check both ends in case of a page boundary. */
     if (child_tid &&
         (child_tid > UINT64_MAX-3 ||
-         !nas_mmu_user_writable(child_tid) ||
-         !nas_mmu_user_writable(child_tid+3)))
+         !nas_user_address_writable(child_tid) ||
+         !nas_user_address_writable(child_tid+3)))
         return (uint64_t)-EFAULT;
     struct nas_task *parent = nas_current_task;
     /* The child slot is copied from the parent, including its ARCH context.
@@ -66,7 +66,7 @@ static uint64_t fork_common(uint64_t *frame, uint64_t child_tid) {
     nas_arch_save_fpu(parent);
     struct nas_task *child = nas_task_fork_slot();
     if (!child) return (uint64_t)-EAGAIN;
-    child->mm=nas_mm_fork_eager(parent->mm);
+    child->mm=nas_mm_fork_cow(parent->mm);
     if (!child->mm) { nas_task_release(child); return (uint64_t)-ENOMEM; }
     if (!nas_task_hold_files(child)) proc_fail("fork dangling open-file slot");
     nas_arch_set_saved_return(parent, child->pid);
@@ -110,8 +110,8 @@ uint64_t nas_process_vfork(uint64_t *frame, uint64_t child_stack) {
     if (parent->vfork_child_pid) return (uint64_t)-EAGAIN;
     if (child_stack &&
         (child_stack >= USER_LIMIT || child_stack < 16 ||
-         !nas_mmu_user_writable(child_stack-1) ||
-         !nas_mmu_user_writable(child_stack-8)))
+         !nas_user_address_writable(child_stack-1) ||
+         !nas_user_address_writable(child_stack-8)))
         return (uint64_t)-EFAULT;
     nas_arch_save_user_frame(parent, frame);
     nas_arch_save_fpu(parent);
@@ -226,10 +226,10 @@ uint64_t nas_process_get_robust_list(uint64_t pid,uint64_t head_addr,
     }
     if(!head_addr || !len_addr || head_addr>USER_LIMIT-8 ||
        len_addr>USER_LIMIT-8 ||
-       !nas_mmu_user_writable(head_addr) ||
-       !nas_mmu_user_writable(head_addr+7) ||
-       !nas_mmu_user_writable(len_addr) ||
-       !nas_mmu_user_writable(len_addr+7))
+       !nas_user_address_writable(head_addr) ||
+       !nas_user_address_writable(head_addr+7) ||
+       !nas_user_address_writable(len_addr) ||
+       !nas_user_address_writable(len_addr+7))
         return (uint64_t)-EFAULT;
     if(!nas_user_write_u64(head_addr,task->robust_list_head) ||
        !nas_user_write_u64(len_addr,NAS_ROBUST_HEAD_BYTES))
@@ -433,11 +433,11 @@ uint64_t nas_process_clone_thread(uint64_t *frame,uint64_t stack,
     if (!stack || stack>=USER_LIMIT || tls>=USER_LIMIT ||
         !parent_tid || !child_tid || parent_tid>USER_LIMIT-4 ||
         child_tid>USER_LIMIT-4 || stack<16 ||
-        !nas_mmu_user_writable(stack-8) ||
-        !nas_mmu_user_writable(parent_tid) ||
-        !nas_mmu_user_writable(parent_tid+3) ||
-        !nas_mmu_user_writable(child_tid) ||
-        !nas_mmu_user_writable(child_tid+3))return (uint64_t)-EFAULT;
+        !nas_user_address_writable(stack-8) ||
+        !nas_user_address_writable(parent_tid) ||
+        !nas_user_address_writable(parent_tid+3) ||
+        !nas_user_address_writable(child_tid) ||
+        !nas_user_address_writable(child_tid+3))return (uint64_t)-EFAULT;
     nas_arch_save_user_frame(parent,frame);
     nas_arch_save_fpu(parent);
     struct nas_task *child=nas_task_fork_slot();

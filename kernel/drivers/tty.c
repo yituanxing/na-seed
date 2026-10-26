@@ -231,9 +231,13 @@ uint64_t nas_tty_read(uint64_t dst,uint64_t len,bool nonblock) {
     if(!tty.rx_enabled)return (uint64_t)-EAGAIN;
     if(!nas_arch_console_has_rx())return (uint64_t)-EOPNOTSUPP;
     if(dst>UINT64_MAX-len)return (uint64_t)-EFAULT;
+    /* M102: fork COW clears a hardware write bit while the VMA is still
+     * logically writable. Terminal reads must not reject that buffer.
+     * nas_user_write_bytes() will materialize/break COW atomically BEFORE
+     * consuming the canonical input, preserving replay and terminal bytes. */
     for(uint64_t i=0;i<len;i+=4096)
-        if(!nas_mmu_user_writable(dst+i))return (uint64_t)-EFAULT;
-    if(!nas_mmu_user_writable(dst+len-1))return (uint64_t)-EFAULT;
+        if(!nas_user_address_writable(dst+i))return (uint64_t)-EFAULT;
+    if(!nas_user_address_writable(dst+len-1))return (uint64_t)-EFAULT;
     nas_tty_pump();
     if(tty.unsupported_input) {
         tty.unsupported_input=false;

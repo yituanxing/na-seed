@@ -8,11 +8,49 @@
 #include <stdio.h>
 #include <string.h>
 #include "../kernel/mm/usercopy.h"
+#include "../kernel/mm/mm.h"
+#include "../kernel/mm/fault.h"
+#include "../kernel/task.h"
+#include "../kernel/arch/user_pt.h"
 enum { PGSZ = 4096, COUNT = 4 };
 #define BASE 0x40000ULL
 static uint8_t phys[COUNT][PGSZ];
 static bool mapped[COUNT], writable[COUNT];
-static unsigned lookups, checks;
+static unsigned lookups, checks, mm_checks;
+/* The historical usercopy test owns a simulated isolated VM. New COW/lazy
+ * logic is tested with actual MM/fault code in M101; this fixture retains
+ * deliberately noncontiguous user-byte and permission-provider mocks. */
+static struct nas_mm mock_mm={.users=1,.root_phys=0x7000};
+static struct nas_task mock_task;
+struct nas_task *nas_current_task=&mock_task;
+const struct nas_anon_region *nas_vma_find(const struct nas_anon_regions *vmas,
+                                            uint64_t va) {
+    (void)vmas;(void)va;return 0;
+}
+bool nas_mm_resolve_user(const struct nas_mm *mm,uint64_t va,
+                         uint64_t *pa,unsigned *access) {
+    assert(mm==&mock_mm);
+    ++mm_checks;
+    if(va<BASE || va-BASE>=(uint64_t)COUNT*PGSZ)return false;
+    unsigned index=(unsigned)((va-BASE)/PGSZ);
+    if(!mapped[index])return false;
+    if(pa)*pa=(index+1U)*PGSZ+(va&(PGSZ-1));
+    if(access)*access=NAS_UP_READ|(writable[index]?NAS_UP_WRITE:0);
+    return true;
+}
+enum nas_mm_fault_result nas_mm_handle_fault(struct nas_mm *mm,uint64_t va,
+                                             unsigned access,bool protection) {
+    (void)mm;(void)va;(void)access;(void)protection;
+    return NAS_MM_FAULT_MAPERR;
+}
+uint32_t nas_frame_refs(uint64_t pa){(void)pa;return 1;}
+bool nas_mm_break_cow(struct nas_mm *mm,uint64_t va,
+                       unsigned prot,bool preserve_perm) {
+    (void)mm;(void)va;(void)prot;(void)preserve_perm;
+    assert(!"unique usercopy fixture page must not need COW");
+    return false;
+}
+
 static int index_of(uint64_t va) {
     if (va < BASE || va - BASE >= (uint64_t)COUNT * PGSZ) return -1;
     return (int)((va - BASE) / PGSZ);
@@ -29,11 +67,12 @@ bool nas_mmu_user_writable(uint64_t va) {
     return idx >= 0 && mapped[idx] && writable[idx];
 }
 static void reset(void) {
+    mock_task.mm=&mock_mm;
     for (unsigned p = 0; p < COUNT; p++) {
         mapped[p] = writable[p] = true;
         memset(phys[p], 0xcc, PGSZ);
     }
-    lookups = checks = 0;
+    lookups = checks = mm_checks = 0;
 }
 int main(void) {
     reset();
@@ -59,7 +98,9 @@ int main(void) {
     /* Any read-only page must reject the ENTIRE write before mutation. */
     writable[1] = false;
     assert(!nas_user_write_bytes(BASE + PGSZ - 16, small, sizeof(small)));
-    assert(checks == 2 && lookups == 0);
+    /* The new MM-aware path checks both pages' logical/PTE rights,
+     * but rejects the RO second page before calling writable() on it. */
+    assert(mm_checks == 2 && checks == 1 && lookups == 0);
     for (unsigned i = 0; i < 16; i++) {
         assert(phys[0][PGSZ - 16 + i] == 0xcc);
         assert(phys[1][i] == 0xcc);

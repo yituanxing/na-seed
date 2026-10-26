@@ -154,6 +154,18 @@ if "nas_kthread_park_until(&sem->waiters" not in (root/"kernel/task/k_sync.c").r
     raise SystemExit("kernel semaphore bypassed common native wait queue")
 if "scheduled_after_user_entry" not in (root/"kernel/task/kthread_boot.c").read_text():
     raise SystemExit("native kernel worker is not resumed by real user scheduler")
+tty=(root/"kernel/drivers/tty.c").read_text()
+if "nas_mmu_user_writable(" in tty or "nas_user_address_writable(dst+i)" not in tty:
+    raise SystemExit("TTY is checking hardware PTE WRITE instead of the logical COW VMA right")
+cow=(root/"kernel/mm/mm.c").read_text()
+if "nas_mm_fork_cow(parent->mm)" not in (root/"kernel/task/process.c").read_text():
+    raise SystemExit("fork is not using refcounted, shared-frame private COW")
+if "nas_mm_break_cow(mm,addr,vma->prot,false)" not in (root/"kernel/mm/fault.c").read_text():
+    raise SystemExit("write faults bypassed MM COW ownership and private copy")
+if "nas_mm_break_cow((struct nas_mm *)mm,at,0,true)" not in (root/"kernel/mm/remote_copy.c").read_text():
+    raise SystemExit("ptrace silently mutates shared COW frame")
+if "nas_frame_get(pa)" not in cow or "cow_protect_parent" not in cow:
+    raise SystemExit("MM private fork no longer shares refs and downgrades parent PTEs")
 if "nas_kthread_boot_selftest();" not in (root/"kernel/init/main.c").read_text():
     raise SystemExit("three-ISA native boot no longer exercises real kernel workers")
 signal_src=(root/"kernel/task/signal.c").read_text()

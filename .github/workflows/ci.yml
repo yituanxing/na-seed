@@ -112,6 +112,10 @@ jobs:
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-wait-pid-abi.c -o /tmp/naseed-wait-pid && /tmp/naseed-wait-pid
       - name: Linux anonymous mmap ABI ignored fd including x86 zero-extended -1
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-mmap-abi.c -o /tmp/naseed-mmap-abi && /tmp/naseed-mmap-abi
+      - name: M102 real TTY/COW fork and interactive ash buffer permission isolation
+        run: sh scripts/check-m102-tty-cow.sh
+      - name: M101 real COW fork, MM fault resolution and ptrace memory isolation
+        run: sh scripts/check-m101-cow.sh
       - name: M100 failed user signal frame isolated from whole-kernel failure
         run: sh scripts/check-m100-signal-failure.sh
       - name: M99 canonical user run selection, saved-frame commit and IRQ parity
