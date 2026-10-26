@@ -16,26 +16,26 @@ work="build/external/m76-gdb/$port"
 export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"
 export NAS_ACCEPTANCE_CPIO="$work/rootfs.cpio"
 export BUSYBOX_PARITY_MANIFEST=scripts/m76-gdb-cases.tsv
-export BUSYBOX_PARITY_EXPECTED_COUNT=2
+export BUSYBOX_PARITY_EXPECTED_COUNT=3
 export NAS_ACCEPTANCE_QEMU_RAM=1024M
 export NAS_ACCEPTANCE_DISK_MB=768
 # An independent evidence log is retained on each native ISA failure.
 if ! sh "$runner"; then
-  echo "[M76/M77 FAIL] $port original GDB source/attach gate failed" >&2
-  for case_log in m76-source m77-attach; do
+  echo "[M76/M77/M78 FAIL] $port original GDB source/attach gate failed" >&2
+  for case_log in m76-source m77-attach m78-step; do
     log="$logs/$case_log.clean.log"
     test ! -s "$log" || tail -360 "$log" >&2
   done
   exit 1
 fi
-for pair in 'm76-source:M76_C_SOURCE_DEBUG_PASS' 'm77-attach:M77_GDB_ATTACH_PASS'; do
+for pair in 'm76-source:M76_C_SOURCE_DEBUG_PASS' 'm77-attach:M77_GDB_ATTACH_PASS' 'm78-step:M78_REAL_STEPI_PASS'; do
   case_name=${pair%%:*}
   marker=${pair#*:}
   log="$logs/$case_name.clean.log"
   if ! test -s "$log" || ! grep -Fxq "$marker" "$log"; then
-    echo "[M76/M77 FAIL] $port $case_name missing $marker" >&2
+    echo "[M76/M77/M78 FAIL] $port $case_name missing $marker" >&2
     test ! -s "$log" || tail -360 "$log" >&2
     exit 1
   fi
 done
-echo "[M76/M77 PASS] $port original GDB source mutation and live PID attach/break/detach"
+echo "[M76/M77/M78 PASS] $port original GDB source mutation and live PID attach/break/detach and CPU instruction steps"

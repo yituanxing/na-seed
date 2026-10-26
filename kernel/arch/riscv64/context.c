@@ -52,7 +52,11 @@ void nas_rv_full_trap_c(struct nas_rv_trap_frame *frame) {
         live=frame;
         nas_arch_save_user_frame(tracee,0);
         nas_arch_save_fpu(tracee);
-        if(nas_ptrace_user_exception(tracee,NAS_SIGTRAP,1,
+        /* The trap at the *actual decoded next PC* completes exactly
+         * one user instruction. Restore old instruction before GDB can
+         * read memory, and report TRAP_TRACE, not a normal BRKPT. */
+        bool stepped=nas_ptrace_rv_step_hit(tracee,frame->sepc);
+        if(nas_ptrace_user_exception(tracee,NAS_SIGTRAP,stepped?2:1,
                                       frame->sepc,frame->x[2],frame->sepc)) {
             uint64_t resumed=nas_task_schedule((uint64_t *)(void *)frame);
             frame->x[10]=resumed;

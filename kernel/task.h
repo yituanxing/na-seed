@@ -122,6 +122,13 @@ struct nas_task {
     bool ptrace_blocked_exit_pending;
     /* One hardware user instruction per request; not inherited by fork. */
     bool ptrace_single_step;
+#if defined(__riscv) && __riscv_xlen==64
+    /* Single-core RV64 software single-step: one temp instruction in the
+     * stopped tracee's owned VM, restored BEFORE reporting SIGTRAP. */
+    uint64_t ptrace_step_addr;
+    uint32_t ptrace_step_saved;
+    uint8_t ptrace_step_width;
+#endif
     uint32_t stop_signal;
     /* Native CPU exception siginfo for ptrace GETSIGINFO. Zeroed at
      * non-exception stops; actual #BP/#DB/BRK/EBREAK supply Linux si_code. */
