@@ -516,6 +516,17 @@ void nas_signal_user_return(uint64_t *frame) {
         if(!(ready&(1ULL<<(sig-1))))continue;
         const uint64_t *act=t->vm_owner->signal_actions[sig];
         if(act[0]<=1)continue;
+#if defined(__aarch64__)
+        if(sig==NAS_SIGCHLD) {
+            extern void nas_print(const char *);
+            extern void nas_dec(uint64_t);
+            nas_print("[M75 SIGFRAME] tid=");nas_dec(t->pid);
+            nas_print(" handler=");nas_dec(act[0]);
+            nas_print(" waitop=");nas_dec(t->wait.blocked_op);
+            nas_print(" pending=");nas_dec(t->pending_signals);
+            nas_print("\n");
+        }
+#endif
         if(!nas_arch_signal_install_handler(frame,sig,act))
             nas_fail("M30 cannot build native user signal frame");
 
