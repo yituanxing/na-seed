@@ -20,8 +20,9 @@ for f in $common $arch; do
     obj="$obj $target"
 done
 clang $flags -c kernel/arch/riscv64/trap.S -o "$out/trap.o"
+clang $flags -c kernel/arch/riscv64/kernel_switch.S -o "$out/kernel_switch.o"
 ld.lld -m elf64lriscv -nostdlib -static --no-relax -z max-page-size=0x1000 \
-  -T kernel/arch/riscv64/linker.ld $obj "$out/trap.o" -o "$out/kernel.elf"
+  -T kernel/arch/riscv64/linker.ld $obj "$out/trap.o" "$out/kernel_switch.o" -o "$out/kernel.elf"
 clang --target=riscv64-unknown-elf -march=rv64gc -mabi=lp64 -mno-relax \
   -c user/riscv64/hello.S -o "$out/hello.o"
 ld.lld -m elf64lriscv -nostdlib -static --no-relax -z max-page-size=0x1000 \

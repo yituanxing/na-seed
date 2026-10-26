@@ -24,8 +24,10 @@ done
 # FP/SIMD save/restore provider with the architecture's native FP ISA.
 clang --target=aarch64-none-elf -march=armv8-a -g -c \
   kernel/arch/aarch64/trap.S -o "$out/trap.o"
+clang --target=aarch64-none-elf -march=armv8-a -g -c \
+  kernel/arch/aarch64/kernel_switch.S -o "$out/kernel_switch.o"
 ld.lld -m aarch64elf -nostdlib -static -e nas_arm64_bootstrap \
-  -z max-page-size=0x1000 -T kernel/arch/aarch64/linker.ld $obj "$out/trap.o" -o "$out/kernel.elf"
+  -z max-page-size=0x1000 -T kernel/arch/aarch64/linker.ld $obj "$out/trap.o" "$out/kernel_switch.o" -o "$out/kernel.elf"
 clang --target=aarch64-none-elf -march=armv8-a \
   -c user/aarch64/hello.S -o "$out/hello.o"
 ld.lld -m aarch64elf -nostdlib -static -z max-page-size=0x1000 \
