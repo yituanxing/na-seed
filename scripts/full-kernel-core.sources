@@ -9,6 +9,7 @@ kernel/syscall/dispatch.c
 kernel/task.c
 kernel/task/accounting.c
 kernel/task/process.c
+kernel/task/ptrace.c
 kernel/task/session.c
 kernel/task/sched.c
 kernel/task/wait.c

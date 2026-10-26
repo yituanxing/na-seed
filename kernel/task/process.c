@@ -338,7 +338,7 @@ void nas_process_clear_tid_on_exit(void) {
  */
 bool nas_process_waitable(const struct nas_task *child, uint64_t options) {
     if (child->state == NAS_TASK_ZOMBIE) return !child->group_exit_pending;
-    if ((options & NAS_WAIT_UNTRACED) &&
+    if (((options & NAS_WAIT_UNTRACED) || child->ptrace_tracer_pid) &&
         child->state == NAS_TASK_STOPPED && child->stop_report_pending)
         return true;
     if ((options & NAS_WAIT_CONTINUED) && child->continue_report_pending)
@@ -347,7 +347,7 @@ bool nas_process_waitable(const struct nas_task *child, uint64_t options) {
 }
 uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
                            uint64_t options, uint64_t rusage) {
-    if (options & ~(NAS_WAIT_NOHANG|NAS_WAIT_UNTRACED|NAS_WAIT_CONTINUED))
+    if (options & ~NAS_WAIT_SUPPORTED)
         return (uint64_t)-EINVAL;
     if (rusage) return (uint64_t)-EOPNOTSUPP;
     bool have_child = false;
@@ -363,7 +363,7 @@ uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
         bool zombie = child->state == NAS_TASK_ZOMBIE;
         bool stopped = !zombie && child->state == NAS_TASK_STOPPED &&
                        child->stop_report_pending &&
-                       (options & NAS_WAIT_UNTRACED);
+                       ((options & NAS_WAIT_UNTRACED) || child->ptrace_tracer_pid);
         uint32_t code;
         if (zombie) {
             code = child->termination_signal ?

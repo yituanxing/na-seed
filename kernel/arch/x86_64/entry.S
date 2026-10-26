@@ -61,7 +61,7 @@ syscall_entry:
     pushq %rax
     /* Stack is now 16-byte aligned, as required before the C call. */
     movq %rsp, %rdi
-    call syscall_dispatch
+    call nas_ptrace_syscall_dispatch
     movq %rax, 0(%rsp)   /* syscall return, potentially from another Task */
     movq nas_x86_syscall_return_rip(%rip), %rax
     movq %rax, 120(%rsp)

@@ -1,0 +1,2 @@
+# MUST fail until genuine original strace observes kernel ptrace syscall stops.
+m72-strace	cpio	sh -c '/bin/sh /tests/m72-strace-run.sh'	M72_GENUINE_PTRACE_PASS	-	/bin/busybox

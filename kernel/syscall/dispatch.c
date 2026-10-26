@@ -15,6 +15,7 @@
 #include "../task/exec.h"
 #include "../fs/mode.h"
 #include "../task/process.h"
+#include "../task/ptrace.h"
 #include "../task/wait_pid.h"
 #include "../task/session.h"
 #include "../task/sched.h"
@@ -233,6 +234,22 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
     return ret;
 }
 
+/* Both ISA-normalized call arguments and the live hardware user trap belong
+ * to the current task until the kernel scheduler switches. ptrace must
+ * park BEFORE entering the real syscall, then observe the ACTUAL result. */
+uint64_t nas_ptrace_syscall_dispatch(uint64_t *args) {
+    struct nas_task *original=nas_current_task;
+    if(nas_ptrace_syscall_enter(original,args))
+        return nas_task_schedule(args);
+    uint64_t result=syscall_dispatch(args);
+    /* A blocking syscall may switch to a different Task. Never attribute
+     * its scheduler return value to the tracee whose syscall parked. */
+    if(nas_current_task==original && original->state==NAS_TASK_RUNNING &&
+       nas_ptrace_syscall_exit(original,args,result))
+        return nas_task_schedule(args);
+    return result;
+}
+
 /* Strict single-program ABI diagnostic dispatcher, for a real syscall gate. */
 uint64_t syscall_dispatch(const uint64_t *args) {
     nas_task_cpu_account_switch(nas_current_task);
@@ -275,6 +292,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         nas_print("\n");
     }
 #endif
+    if (nr == NAS_SC_ptrace) return nas_ptrace_request(args[1],args[2],args[3],args[4]);
     if (nr == NAS_SC_arch_prctl) return nas_linux_arch_prctl(args[1], args[2]);
     if (nr == NAS_SC_getrandom) return nas_random_getrandom(args[1],args[2],args[3]);
     if (nr == NAS_SC_set_tid_address) { thread_clear_tid = args[1]; return TASK.pid; }
@@ -554,7 +572,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         return ret;
     }
     if (nr == NAS_SC_execve) {
-        uint64_t result=nas_task_execve(args[1],args[2],args[3]);
+        uint64_t result=nas_task_execve(args[1],args[2],args[3],
+                                        (uint64_t *)(uintptr_t)args);
         if ((int64_t)result < 0) {
             static unsigned exec_fail_logs;
             if (exec_fail_logs++ < 12) {
@@ -571,6 +590,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_setsid) return nas_session_setsid();
     if (nr == NAS_SC_setpgid) return nas_session_setpgid(args[1],args[2]);
     if (nr == NAS_SC_exit || nr == NAS_SC_exit_group) { /* exit / exit_group */
+        if (TASK.ppid && nas_ptrace_exit_event(nas_current_task,args,args[1]))
+            return nas_task_schedule((uint64_t *)(uintptr_t)args);
         if (TASK.ppid) {
             if (nr == NAS_SC_exit_group)
                 nas_sched_thread_group_exit((uint32_t)args[1],0);

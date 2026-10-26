@@ -4,6 +4,7 @@
 #include <stdbool.h>
 struct nas_task;
 #define NAS_SIGINT 2U
+#define NAS_SIGTRAP 5U
 #define NAS_SIGUSR1 10U
 #define NAS_SIGUSR2 12U
 #define NAS_SIGPIPE 13U

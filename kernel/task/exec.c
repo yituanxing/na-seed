@@ -21,6 +21,8 @@
 #include "../time/clock.h"
 #include "process.h"
 #include "signal.h"
+#include "ptrace.h"
+#include "sched.h"
 #define TASK (*nas_current_task)
 #define root_phys TASK.root_phys
 #define loaded_phdr TASK.loaded_phdr
@@ -214,7 +216,8 @@ static uint64_t copy_exec_vector(uint64_t user_array, bool environment) {
     }
     return (uint64_t)-E2BIG;
 }
-uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
+uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
+                          uint64_t *syscall_frame) {
     if (!bootfs_mounted()) return (uint64_t)-ENOENT;
     uint64_t result = nas_fs_resolve_path((uint64_t)-100, pathname, pending_exec.filename);
     if ((int64_t)result < 0) return result;
@@ -448,6 +451,8 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp) {
         nas_print("[EXEC] replaced process with CPIO ELF: ");
     nas_print(pending_exec.filename);
     nas_print("\n");
+    if(nas_ptrace_exec_commit(nas_current_task,entry,sp))
+        return nas_task_schedule(syscall_frame);
     nas_arch_enter_user(entry, sp);
     nas_fail("architecture user-entry returned unexpectedly");
 }

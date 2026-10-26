@@ -119,6 +119,15 @@ struct nas_task *nas_task_fork_slot(void) {
         child->stop_report_pending = false;
         child->continue_report_pending = false;
         child->stop_signal = 0;
+        child->ptrace_tracer_pid = 0;
+        child->ptrace_options=0;
+        child->ptrace_phase=0;
+        child->ptrace_trace_syscalls=false;
+        child->ptrace_skip_entry_once=false;
+        child->ptrace_event=0;
+        child->ptrace_event_message=0;
+        child->ptrace_exec_pending_exit=false;
+        child->ptrace_exit_event_sent=false;
         child->resume_valid = false;
         /* Fork inherits resources, never pending waits or device watches. */
         nas_task_wait_reset(child);
@@ -147,6 +156,21 @@ void nas_task_adopt_orphans(uint64_t exiting_pid) {
         struct nas_task *child=&task_table[i];
         if (child->state != NAS_TASK_FREE &&
             child->ppid == exiting_pid) child->ppid=1;
+        /* ptrace is a *tracer* relationship, not inherited by init:
+         * when tracer dies, detach and restore runnable tracees instead
+         * of leaving a permanently stopped task without an owner. */
+        if (child->state!=NAS_TASK_FREE &&
+            child->ptrace_tracer_pid==exiting_pid) {
+            child->ptrace_tracer_pid=0;
+            child->ptrace_options=0;
+            child->ptrace_trace_syscalls=false;
+            if(child->state==NAS_TASK_STOPPED && child->ptrace_phase) {
+                child->state=NAS_TASK_READY;
+                child->stopped_from=NAS_TASK_FREE;
+                child->stop_report_pending=false;
+            }
+            child->ptrace_phase=0;
+        }
     }
 }
 void nas_task_release(struct nas_task *task) {
@@ -169,6 +193,15 @@ void nas_task_release(struct nas_task *task) {
     task->stop_report_pending = false;
     task->continue_report_pending = false;
     task->stop_signal = 0;
+    task->ptrace_tracer_pid = 0;
+    task->ptrace_options=0;
+    task->ptrace_phase=0;
+    task->ptrace_trace_syscalls=false;
+    task->ptrace_skip_entry_once=false;
+    task->ptrace_event=0;
+    task->ptrace_event_message=0;
+    task->ptrace_exec_pending_exit=false;
+    task->ptrace_exit_event_sent=false;
     task->pending_signals = 0;
     task->vfork_child_pid = task->vfork_parent_pid = 0;
     task->vfork_shared_vm = false;

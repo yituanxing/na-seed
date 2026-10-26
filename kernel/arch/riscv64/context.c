@@ -54,7 +54,7 @@ void nas_rv_full_trap_c(struct nas_rv_trap_frame *frame) {
     uint64_t call[15]={frame->x[17],frame->x[10],frame->x[11],
         frame->x[12],frame->x[13],frame->x[14],frame->x[15],frame->sepc};
     live=frame;
-    uint64_t result=syscall_dispatch(call);
+    uint64_t result=nas_ptrace_syscall_dispatch(call);
     /* Scheduler may have replaced *frame* with another task's snapshot. */
     frame->x[10]=result;
     nas_signal_user_return((uint64_t *)(void *)frame);

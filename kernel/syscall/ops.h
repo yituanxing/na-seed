@@ -58,6 +58,7 @@ enum nas_syscall_op {
     NAS_SC_getrlimit,
     NAS_SC_prlimit64,
     NAS_SC_prctl,
+    NAS_SC_ptrace,
     NAS_SC_getppid,
     NAS_SC_gettid,
     NAS_SC_gettimeofday,

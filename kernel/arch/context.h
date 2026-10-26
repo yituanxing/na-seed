@@ -37,4 +37,38 @@ static inline void nas_arch_context_set_user_sp(struct nas_arch_context *c,
     c->user_sp = sp;
 #endif
 }
+/* ptrace observes an actual pre-syscall stop. This kernel cannot park a
+ * live C continuation, so resume re-executes the identical user SYSCALL,
+ * ECALL or SVC instruction once, using a per-Task replay guard. */
+/* Construct true ELF entry registers for ptrace-stopped execve. */
+static inline void nas_arch_context_exec(struct nas_arch_context *c,
+                                          uint64_t entry,uint64_t sp) {
+#if defined(__x86_64__)
+    for(unsigned i=0;i<15;i++)c->resume_regs[i]=0;
+    c->resume_user_rsp=sp;
+    c->resume_user_rip=entry;
+    c->resume_user_rflags=0x202;
+    c->user_fs_base=0;
+#elif defined(__riscv) && __riscv_xlen == 64
+    for(unsigned i=0;i<32;i++)c->user_regs[i]=0;
+    c->user_sp=sp;c->user_regs[2]=sp;
+    c->user_pc=entry;
+    c->user_status=(c->user_status & 0x6000ULL)|0x20ULL;
+    c->user_tls_base=0;
+#elif defined(__aarch64__)
+    for(unsigned i=0;i<31;i++)c->user_regs[i]=0;
+    c->user_sp=sp;c->user_elr=entry;
+    c->user_spsr=0x340ULL;
+    c->user_tls_base=0;
+#endif
+}
+static inline void nas_arch_ptrace_rewind_syscall(struct nas_arch_context *c) {
+#if defined(__x86_64__)
+    c->resume_user_rip -= 2; /* syscall opcode 0F 05 */
+#elif defined(__riscv) && __riscv_xlen == 64
+    c->user_pc -= 4; /* ECALL always 32-bit */
+#elif defined(__aarch64__)
+    c->user_elr -= 4; /* SVC always 32-bit */
+#endif
+}
 #endif

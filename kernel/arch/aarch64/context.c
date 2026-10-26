@@ -69,7 +69,7 @@ void nas_arm_full_trap_c(struct nas_arm_trap_frame *frame) {
     nas_print("\n");
 #endif
     live=frame;
-    uint64_t result=syscall_dispatch(call);
+    uint64_t result=nas_ptrace_syscall_dispatch(call);
     frame->x[0]=result;
     nas_signal_user_return((uint64_t *)(void *)frame);
 #ifdef NASEED_TRACE_ARCH_SYSCALL
