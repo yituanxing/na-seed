@@ -5,6 +5,8 @@
 #include "../kernel/task/kthread.h"
 #include "../kernel/task/wait_queue.h"
 void nas_print(const char *s){fputs(s,stdout);}
+uint64_t nas_arch_monotonic_ns(void){return 0;}
+
 __attribute__((noreturn)) void nas_arch_halt(void){abort();}
 static struct nas_wait_queue q;
 static unsigned seen;

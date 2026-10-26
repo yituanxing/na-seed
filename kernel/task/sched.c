@@ -15,6 +15,7 @@
 #include "futex_wait.h"
 #include "blocked_completion.h"
 #include "kthread.h"
+#include "scheduler_service.h"
 #include "wait_pid.h"
 #include "signal.h"
 #include "ptrace.h"
@@ -187,7 +188,7 @@ static unsigned schedule_cursor;
  */
 bool nas_sched_preempt_select(void) {
     nas_time_timers_tick();
-    (void)nas_kthread_run(2);
+    nas_sched_service_kernel();
     struct nas_task *from=nas_current_task;
     if (!from || from->state != NAS_TASK_RUNNING) return false;
     unsigned origin=NAS_TASK_LIMIT;
@@ -224,7 +225,7 @@ bool nas_sched_preempt_select(void) {
 uint64_t nas_task_schedule(uint64_t *frame) {
 retry_schedule: ; /* label must precede a statement in C11 */
     nas_time_timers_tick();
-    (void)nas_kthread_run(2);
+    nas_sched_service_kernel();
     struct nas_task *previous = nas_current_task;
     uint64_t previous_pid = previous->pid; /* zombie may be reaped on replay */
     /* A READY task always gets one turn before re-evaluating blocked tasks.
@@ -332,6 +333,13 @@ retry_schedule: ; /* label must precede a statement in C11 */
             __asm__ volatile ("" ::: "memory");
             goto retry_schedule;
         }
+    }
+    /* A native kernel continuation with a finite deadline must not cause a
+     * false user-only deadlock. The current IRQ-masked idle dispatcher polls
+     * the hardware clock; true interruptible idle will replace this path. */
+    if(nas_kthread_deadlines_armed() || nas_kthread_runnable()) {
+        __asm__ volatile ("" ::: "memory");
+        goto retry_schedule;
     }
     /* Fatal deadlock diagnostic: dump who holds each pipe endpoint. */
     for (unsigned i = 0; i < NAS_PIPE_COUNT; i++) {

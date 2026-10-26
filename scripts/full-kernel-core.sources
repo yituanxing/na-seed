@@ -25,6 +25,7 @@ kernel/task/blocked_completion.c
 kernel/task/kthread.c
 kernel/task/kthread_boot.c
 kernel/task/k_sync.c
+kernel/task/scheduler_service.c
 kernel/bootfs.c
 kernel/tmpfs.c
 kernel/fs/tmp_namespace.c

@@ -23,12 +23,18 @@ bool nas_ksem_trywait(struct nas_ksem *sem) {
     --sem->tokens;
     return true;
 }
-bool nas_ksem_wait(struct nas_ksem *sem) {
-    if(!sem)return false;
+enum nas_kwait_result nas_ksem_wait_until(struct nas_ksem *sem,
+                                          uint64_t deadline_ns) {
+    if(!sem)return NAS_KWAIT_INVALID;
     while(!nas_ksem_trywait(sem)) {
-        if(!nas_kthread_park(&sem->waiters))return false;
+        enum nas_kwait_result r=nas_kthread_park_until(&sem->waiters,
+                                                       deadline_ns);
+        if(r!=NAS_KWAIT_READY)return r;
     }
-    return true;
+    return NAS_KWAIT_READY;
+}
+bool nas_ksem_wait(struct nas_ksem *sem) {
+    return nas_ksem_wait_until(sem,0)==NAS_KWAIT_READY;
 }
 void nas_kmailbox_init(struct nas_kmailbox *box) {
     if(!box)return;
@@ -44,12 +50,18 @@ bool nas_kmailbox_try_send(struct nas_kmailbox *box,void *message) {
     (void)nas_wait_queue_wake(&box->readable,1);
     return true;
 }
-bool nas_kmailbox_send(struct nas_kmailbox *box,void *message) {
-    if(!box)return false;
+enum nas_kwait_result nas_kmailbox_send_until(struct nas_kmailbox *box,
+                                               void *message,uint64_t deadline_ns) {
+    if(!box)return NAS_KWAIT_INVALID;
     while(!nas_kmailbox_try_send(box,message)) {
-        if(!nas_kthread_park(&box->writable))return false;
+        enum nas_kwait_result r=nas_kthread_park_until(&box->writable,
+                                                       deadline_ns);
+        if(r!=NAS_KWAIT_READY)return r;
     }
-    return true;
+    return NAS_KWAIT_READY;
+}
+bool nas_kmailbox_send(struct nas_kmailbox *box,void *message) {
+    return nas_kmailbox_send_until(box,message,0)==NAS_KWAIT_READY;
 }
 bool nas_kmailbox_try_recv(struct nas_kmailbox *box,void **message) {
     if(!box || !message || !box->count)return false;
@@ -60,10 +72,16 @@ bool nas_kmailbox_try_recv(struct nas_kmailbox *box,void **message) {
     (void)nas_wait_queue_wake(&box->writable,1);
     return true;
 }
-bool nas_kmailbox_recv(struct nas_kmailbox *box,void **message) {
-    if(!box || !message)return false;
+enum nas_kwait_result nas_kmailbox_recv_until(struct nas_kmailbox *box,
+                                               void **message,uint64_t deadline_ns) {
+    if(!box || !message)return NAS_KWAIT_INVALID;
     while(!nas_kmailbox_try_recv(box,message)) {
-        if(!nas_kthread_park(&box->readable))return false;
+        enum nas_kwait_result r=nas_kthread_park_until(&box->readable,
+                                                       deadline_ns);
+        if(r!=NAS_KWAIT_READY)return r;
     }
-    return true;
+    return NAS_KWAIT_READY;
+}
+bool nas_kmailbox_recv(struct nas_kmailbox *box,void **message) {
+    return nas_kmailbox_recv_until(box,message,0)==NAS_KWAIT_READY;
 }

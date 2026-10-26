@@ -8,6 +8,8 @@ static struct nas_ksem sem;
 static struct nas_kmailbox box;
 static unsigned stage;
 void nas_print(const char *s){fputs(s,stdout);}
+uint64_t nas_arch_monotonic_ns(void){return 0;}
+
 __attribute__((noreturn)) void nas_arch_halt(void){abort();}
 static void consumer(void *ignored){
     (void)ignored;

@@ -112,6 +112,8 @@ jobs:
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-wait-pid-abi.c -o /tmp/naseed-wait-pid && /tmp/naseed-wait-pid
       - name: Linux anonymous mmap ABI ignored fd including x86 zero-extended -1
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-mmap-abi.c -o /tmp/naseed-mmap-abi && /tmp/naseed-mmap-abi
+      - name: M97 timed native waits and centralized kernel scheduling service
+        run: sh scripts/check-m97-k-timeouts.sh
       - name: M96 native semaphore and bounded mailbox blocking synchronization
         run: sh scripts/check-m96-k-sync.sh
       - name: M95 native kernel workers, real suspended C frames and event wake

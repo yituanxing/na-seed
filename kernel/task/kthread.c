@@ -2,6 +2,8 @@
 #include "kernel_context.h"
 #include "wait_queue.h"
 #include "../panic.h"
+#include "../arch/arch.h"
+#include "../time/clock.h"
 #include <stdint.h>
 #include <stdbool.h>
 /* No heap allocation, stack memcpy, floating point or user MM switching.
@@ -18,6 +20,9 @@ struct nas_kthread {
     void *argument;
     enum worker_state state;
     uint64_t generation;
+    uint64_t deadline_ns;
+    bool deadline_active;
+    bool timed_out;
     _Alignas(16) uint8_t stack[NAS_KTHREAD_STACK];
 };
 static struct nas_kthread workers[NAS_KTHREAD_LIMIT];
@@ -47,6 +52,9 @@ void nas_kthread_system_init(void) {
         nas_wait_entry_reset(&workers[i].waiting);
         workers[i].entry=0;
         workers[i].argument=0;
+        workers[i].deadline_ns=0;
+        workers[i].deadline_active=false;
+        workers[i].timed_out=false;
     }
     nas_kernel_context_reset(&caller_context);
     next_slot=0;
@@ -64,6 +72,9 @@ bool nas_kthread_spawn(void (*run)(void *),void *argument,
                                        sizeof(w->stack),kthread_start))
             return false;
         w->generation++;
+        w->deadline_ns=0;
+        w->deadline_active=false;
+        w->timed_out=false;
         w->entry=run;
         w->argument=argument;
         w->state=KTHREAD_READY;
@@ -91,17 +102,64 @@ static void queued_wakeup(struct nas_wait_entry *entry,void *argument) {
     if(!w || entry!=&w->waiting || entry->queue ||
        w->state!=KTHREAD_WAITING)
         nas_fail("M95 invalid kernel worker wake ownership");
+    w->deadline_active=false;
+    w->deadline_ns=0;
     w->state=KTHREAD_READY;
 }
-bool nas_kthread_park(struct nas_wait_queue *queue) {
+enum nas_kwait_result nas_kthread_park_until(struct nas_wait_queue *queue,
+                                             uint64_t deadline_ns) {
     struct nas_kthread *self=active;
-    if(!self || self->state!=KTHREAD_RUNNING || !queue)return false;
+    if(!self || self->state!=KTHREAD_RUNNING || !queue)
+        return NAS_KWAIT_INVALID;
+    if(deadline_ns && nas_time_deadline_expired(nas_arch_monotonic_ns(),
+                                                deadline_ns))
+        return NAS_KWAIT_TIMED_OUT;
     if(!nas_wait_queue_enqueue(queue,&self->waiting,queued_wakeup,self))
-        return false;
+        return NAS_KWAIT_INVALID;
+    self->deadline_active=deadline_ns!=0;
+    self->deadline_ns=deadline_ns;
+    self->timed_out=false;
     self->state=KTHREAD_WAITING;
     return_to_dispatch();
-    if(self->waiting.queue)nas_fail("M95 resumed queued kernel worker");
-    return true;
+    if(self->waiting.queue)nas_fail("M97 resumed still-queued kernel worker");
+    enum nas_kwait_result result=self->timed_out ?
+        NAS_KWAIT_TIMED_OUT : NAS_KWAIT_READY;
+    self->timed_out=false;
+    self->deadline_active=false;
+    self->deadline_ns=0;
+    return result;
+}
+bool nas_kthread_park(struct nas_wait_queue *queue) {
+    return nas_kthread_park_until(queue,0)==NAS_KWAIT_READY;
+}
+/* IRQ-safe producer phase: detach expired waiters but NEVER resume C stacks.
+ * The normal task/kthread scheduling phase executes the ready continuations. */
+unsigned nas_kthread_timers_tick(uint64_t now) {
+    unsigned expired=0;
+    for(unsigned i=0;i<NAS_KTHREAD_LIMIT;i++) {
+        struct nas_kthread *w=&workers[i];
+        if(w->state!=KTHREAD_WAITING || !w->deadline_active ||
+           !nas_time_deadline_expired(now,w->deadline_ns))
+            continue;
+        (void)nas_wait_queue_remove(&w->waiting);
+        w->deadline_active=false;
+        w->deadline_ns=0;
+        w->timed_out=true;
+        w->state=KTHREAD_READY;
+        ++expired;
+    }
+    return expired;
+}
+bool nas_kthread_deadlines_armed(void) {
+    for(unsigned i=0;i<NAS_KTHREAD_LIMIT;i++)
+        if(workers[i].state==KTHREAD_WAITING &&
+           workers[i].deadline_active)return true;
+    return false;
+}
+bool nas_kthread_runnable(void) {
+    for(unsigned i=0;i<NAS_KTHREAD_LIMIT;i++)
+        if(workers[i].state==KTHREAD_READY)return true;
+    return false;
 }
 static struct nas_kthread *handle_lookup(struct nas_kthread_handle h) {
     if(h.slot>=NAS_KTHREAD_LIMIT || !h.generation)return 0;
@@ -112,6 +170,9 @@ bool nas_kthread_wake(struct nas_kthread_handle handle) {
     struct nas_kthread *w=handle_lookup(handle);
     if(!w || w->state!=KTHREAD_WAITING)return false;
     (void)nas_wait_queue_remove(&w->waiting);
+    w->deadline_active=false;
+    w->deadline_ns=0;
+    w->timed_out=false;
     w->state=KTHREAD_READY;
     return true;
 }
@@ -121,6 +182,9 @@ bool nas_kthread_cancel(struct nas_kthread_handle handle) {
         return false;
     (void)nas_wait_queue_remove(&w->waiting);
     nas_kernel_context_reset(&w->context);
+    w->deadline_active=false;
+    w->deadline_ns=0;
+    w->timed_out=false;
     w->entry=0;
     w->argument=0;
     w->state=KTHREAD_FREE;
@@ -153,6 +217,9 @@ unsigned nas_kthread_run(unsigned budget) {
             if(chosen->waiting.queue)
                 nas_fail("M95 freeing queued worker");
             chosen->state=KTHREAD_FREE;
+            chosen->deadline_active=false;
+            chosen->deadline_ns=0;
+            chosen->timed_out=false;
             nas_kernel_context_reset(&chosen->context);
             chosen->entry=0;
             chosen->argument=0;

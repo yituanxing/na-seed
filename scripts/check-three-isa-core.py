@@ -9,7 +9,7 @@ import re
 root=Path(__file__).resolve().parent.parent
 srcs=[line.strip() for line in (root/"scripts/full-kernel-core.sources").read_text().splitlines()
       if line.strip() and not line.startswith("#")]
-assert len(srcs)==len(set(srcs))==57, "common kernel TU manifest drift"
+assert len(srcs)==len(set(srcs))==58, "common kernel TU manifest drift"
 make=(root/"Makefile").read_text()
 defs={}
 for line in make.splitlines():
@@ -138,6 +138,10 @@ if "nas_task_wake_ready(t)" not in (root/"kernel/task/futex_wait.c").read_text()
     raise SystemExit("futex producer no longer publishes runnable tasks")
 if "nas_kthread_run(2)" not in sched:
     raise SystemExit("native C worker service is not in production scheduler")
+if "nas_sched_service_kernel();" not in sched:
+    raise SystemExit("syscall and timer schedule stopped servicing native kernel waits")
+if "nas_kthread_timers_tick" not in (root/"kernel/task/scheduler_service.c").read_text():
+    raise SystemExit("native kernel timeout progress not integrated with scheduler")
 if "sync_boot_test();" not in (root/"kernel/task/kthread_boot.c").read_text():
     raise SystemExit("real native kernel sync producer/consumer is not boot-tested")
 if "nas_kthread_park(&sem->waiters)" not in (root/"kernel/task/k_sync.c").read_text():
