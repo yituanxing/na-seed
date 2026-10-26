@@ -10,6 +10,19 @@
 #include "../mm/usercopy.h"
 #include "../mm/vm.h"
 #include "../lib/string.h"
+extern void nas_print(const char *);
+extern void nas_dec(uint64_t);
+static unsigned nas_ptrace_debug_count;
+static void ptrace_debug(const char *what,const struct nas_task *t,uint64_t event) {
+    if(nas_ptrace_debug_count++>=140)return;
+    nas_print("[PTRDBG] ");nas_print(what);
+    nas_print(" pid=");nas_dec(t?t->pid:0);
+    nas_print(" tracer=");nas_dec(t?t->ptrace_tracer_pid:0);
+    nas_print(" event=");nas_dec(event);
+    nas_print(" stop_report=");nas_dec(t?t->stop_report_pending:0);
+    nas_print(" state=");nas_dec(t?t->state:0);
+    nas_print("\n");
+}
 
 #define PTRACE_TRACEME 0ULL
 #define PTRACE_PEEKTEXT 1ULL
@@ -54,6 +67,7 @@ static void ptrace_stop(struct nas_task *task,uint8_t phase) {
         ((task->ptrace_options&PTRACE_O_TRACESYSGOOD)?0x80U:0U);
     task->stop_report_pending=true;
     task->continue_report_pending=false;
+    if(phase==0)ptrace_debug("stop event",task,task->ptrace_event);
 }
 bool nas_ptrace_syscall_enter(struct nas_task *task,const uint64_t *call) {
     if(!task)return false;
@@ -108,6 +122,7 @@ bool nas_ptrace_exec_commit(struct nas_task *task,uint64_t entry,
     task->stop_signal=NAS_SIGTRAP | ((uint32_t)task->ptrace_event<<8);
     task->ptrace_event_message=task->pid;
     task->ptrace_exec_pending_exit=true;
+    ptrace_debug("exec-stop",task,task->ptrace_event);
     return true;
 }
 bool nas_ptrace_exit_event(struct nas_task *task,const uint64_t *call,
@@ -161,6 +176,8 @@ bool nas_ptrace_fork_created(struct nas_task *parent,struct nas_task *child,
     parent->ptrace_event_message=child->pid;
     parent->stop_signal=NAS_SIGTRAP | (event<<8);
     parent->ptrace_fork_pending_exit=true;
+    ptrace_debug("fork parent",parent,event);
+    ptrace_debug("fork child",child,event);
     return true;
 }
 /* A parked syscall was replayed under the selected Task's real MMU.
@@ -297,6 +314,7 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
         case PTRACE_CONT:
         case PTRACE_SYSCALL:
         case PTRACE_DETACH:
+            ptrace_debug("resume",target,request);
             if(data)return (uint64_t)-EOPNOTSUPP; /* signal injection */
             target->ptrace_trace_syscalls=request==PTRACE_SYSCALL;
             target->ptrace_child_initial_stop=false;

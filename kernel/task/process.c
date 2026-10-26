@@ -401,6 +401,14 @@ uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
             else nas_task_release(child);
         } else if (stopped) {
             child->stop_report_pending=false;
+            static unsigned ptr_wait_debug;
+            if(child->ptrace_tracer_pid && ptr_wait_debug++<45){
+                nas_print("[PTRDBG] wait stop pid=");nas_dec(pid);
+                nas_print(" tracer=");nas_dec(nas_current_task->pid);
+                nas_print(" sig=");nas_dec(child->stop_signal);
+                nas_print(" event=");nas_dec(child->ptrace_event);
+                nas_print("\n");
+            }
         } else {
             child->continue_report_pending=false;
         }
