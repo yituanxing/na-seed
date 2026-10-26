@@ -358,7 +358,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
      * The new root is kept intact through this temporary switch. */
     uint64_t committed_root = TASK.mm->root_phys;
     struct nas_task *exec_thread = nas_current_task;
-    struct nas_task *old_leader = exec_thread->vm_owner;
+    struct nas_task *old_leader = exec_thread->group_leader;
     uint64_t inherited_tgid=old_leader->tgid;
     bool worker_exec=exec_thread!=old_leader;
     TASK.mm=previous_mm;
@@ -379,7 +379,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
         exec_thread->ppid=old_leader->ppid;
         exec_thread->pgid=old_leader->pgid;
         exec_thread->sid=old_leader->sid;
-        exec_thread->vm_owner=exec_thread;
+        exec_thread->group_leader=exec_thread;
         exec_thread->is_thread=false;
         exec_thread->group_exit_pending=false;
         exec_thread->vfork_parent_pid=0;

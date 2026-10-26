@@ -64,7 +64,7 @@ void nas_task_boot_init(void) {
     nas_current_task = &task_table[0];
     nas_current_task->pid = 1;
     nas_current_task->tgid=1;
-    nas_current_task->vm_owner=nas_current_task;
+    nas_current_task->group_leader=nas_current_task;
     nas_current_task->mm=nas_mm_new();
     if (!nas_current_task->mm) nas_fail("cannot allocate init MM");
     nas_current_task->files=nas_files_new();
@@ -111,7 +111,7 @@ struct nas_task *nas_task_fork_slot(void) {
         memcpy(child, nas_current_task, sizeof(*child));
         child->files=child_files;
         child->fds=&child_files->table;
-        child->vm_owner=child;
+        child->group_leader=child;
         child->fs=child_fs;
         child->sighand=child_sighand;
         /* memcpy must never transfer a reference without incrementing it. */
@@ -122,9 +122,9 @@ struct nas_task *nas_task_fork_slot(void) {
         /* fork copies userspace state but NEVER the parent's stack owner. */
         stack_reset(i);
         child->kernel_stack_top = stack_top(i);
-        nas_kernel_context_reset(&child->kernel_context);
-        /* fork memcpy may copy a live parent queue link: clear by value. */
-        child->kernel_wait=(struct nas_wait_entry){0};
+        /* fork memcpy may copy a live parent saved SP/queue link. Both
+         * belong to the old executing thread and must be reset together. */
+        nas_kernel_execution_reset(&child->kernel_exec);
         child->pid = next_pid++;
         child->tgid=child->pid;
         child->is_thread=false;
@@ -206,7 +206,7 @@ void nas_task_adopt_orphans(uint64_t exiting_pid) {
 void nas_task_release(struct nas_task *task) {
     if (!task || task == nas_current_task) return;
     /* An abandoned kernel continuation must never leave a dangling waiter. */
-    (void)nas_wait_queue_remove(&task->kernel_wait);
+    (void)nas_wait_queue_remove(&task->kernel_exec.wait);
     /* Releases an independently owned MM reference, including on thread exit. */
     if (task->mm) { nas_mm_put(task->mm); task->mm=0; }
     if (task->fs) { nas_fs_context_put(task->fs); task->fs=0; }
@@ -217,12 +217,11 @@ void nas_task_release(struct nas_task *task) {
     task->tgid=0;
     task->is_thread=false;
     task->group_exit_pending=false;
-    task->vm_owner=task;
+    task->group_leader=task;
     task->fds=0;
     task->robust_list_head=0;
     nas_task_wait_reset(task);
-    nas_kernel_context_reset(&task->kernel_context);
-    nas_wait_entry_reset(&task->kernel_wait);
+    nas_kernel_execution_reset(&task->kernel_exec);
     task->ppid = 0;
     task->pgid = 0;
     task->sid = 0;

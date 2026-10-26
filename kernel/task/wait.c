@@ -84,3 +84,24 @@ bool nas_task_wait_ready(const struct nas_task *task) {
         return task_io_ready(task);
     return false;
 }
+
+/* Single owner for the transitional IRQ-masked idle policy. This is not
+ * readiness: it answers whether a future device event/deadline can change
+ * progress even though there is no runnable user Task right now. */
+bool nas_task_wait_needs_idle_poll(const struct nas_task *task) {
+    if(!task || task->state!=NAS_TASK_BLOCKED ||
+       !task->wait.pending_valid)return false;
+    if(task->wait.deadline_active)return true;
+    const enum nas_syscall_op nr=(enum nas_syscall_op)task->wait.blocked_op;
+    if(nr==NAS_SC_epoll_wait || nr==NAS_SC_epoll_pwait)
+        return true; /* cross-process epoll_ctl may change readiness */
+    if(nr==NAS_SC_poll || nr==NAS_SC_ppoll ||
+       nr==NAS_SC_pselect6 || nr==NAS_SC_select)
+        return task->wait.poll_tty_read;
+    if(nr==NAS_SC_read || nr==NAS_SC_readv) {
+        uint8_t kind=nas_task_fd_kind(task,task->wait.blocked_args[0]);
+        return (kind==FD_TTY || kind==FD_UART) &&
+               nas_tty_read_waitable();
+    }
+    return false;
+}

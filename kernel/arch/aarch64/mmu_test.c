@@ -32,7 +32,7 @@ bool nas_arm_pt_smoke(void) {
            !nas_arm_pt_exchange(&p,candidate,0,0,&removed) ||
            removed!=transient ||
            nas_arm_pt_translate(&p,candidate,&got,0) ||
-           !nas_frame_free(removed))return false;
+           !nas_frame_put(removed))return false;
         if (nas_arm_pt_map(&p, va1, code, user_data) ||
             nas_arm_pt_map(&p, va1 + 1, code, user_data) ||
             nas_arm_pt_map(&p, va2 + NAS_ARM_PAGE_SIZE, code,
@@ -48,8 +48,8 @@ bool nas_arm_pt_smoke(void) {
             nas_arm_pt_translate(&p, va1, &got, 0) ||
             nas_arm_pt_unmap(&p, va1)) return false;
         nas_arm_pt_destroy(&p);
-        if (p.root_pa || p.levels || !nas_frame_free(data) ||
-            !nas_frame_free(code) || nas_free_frames() != initial)
+        if (p.root_pa || p.levels || !nas_frame_put(data) ||
+            !nas_frame_put(code) || nas_free_frames() != initial)
             return false;
     }
     return true;

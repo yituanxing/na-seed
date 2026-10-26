@@ -47,7 +47,7 @@ int main(void){
     main_task.pid=22;main_task.mm=&mm;
     main_task.state=NAS_TASK_RUNNING;
     thread.pid=23;thread.mm=&mm; /* CLONE_VM shares MM, not leader Task */
-    thread.vm_owner=&main_task;thread.state=NAS_TASK_BLOCKED;
+    thread.group_leader=&main_task;thread.state=NAS_TASK_BLOCKED;
     dead.state=NAS_TASK_FREE;dead.mm=&unrelated_mm;
     for(unsigned n=0;n<PAGE;n++){
         physical[0x2000+n]=(uint8_t)(n*13U+7U);

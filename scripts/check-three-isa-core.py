@@ -62,6 +62,8 @@ for name in ("kind", "slot", "cloexec"):
 for source in (root/"kernel").rglob("*"):
     if source.suffix not in (".c", ".h"): continue
     data=source.read_text()
+    if "nas_frame_free" in data:
+        raise SystemExit(f"obsolete ambiguous page release API in {source}; use frame_put")
     for old in ("descriptors[", "file_slot[", "fd_cloexec["):
         if old in data: raise SystemExit(f"old FD storage escaped in {source}: {old}")
 # M63: path references live ONLY in namespace dentries, not sparse inodes.
@@ -124,7 +126,7 @@ for arch in ("riscv64","aarch64"):
         if needle not in script: raise SystemExit(f"{arch} kernel omits continuation {needle}")
 if "nas_wait_queue_wake(&wait_test_queue" not in (root/"kernel/task/kernel_context.c").read_text():
     raise SystemExit("native boot lost M92 real continuation wake test")
-if "child->kernel_wait=(struct nas_wait_entry){0};" not in (root/"kernel/task.c").read_text():
+if "nas_kernel_execution_reset(&child->kernel_exec);" not in (root/"kernel/task.c").read_text():
     raise SystemExit("fork must not inherit a queued kernel wait entry")
 if "nas_futex_wait_arm(nas_current_task)" not in (root/"kernel/task/process.c").read_text():
     raise SystemExit("futex syscall is not using generic kernel wait queues")
@@ -132,14 +134,16 @@ if "nas_futex_wait_cancel(task)" not in (root/"kernel/task/blocked_completion.c"
     raise SystemExit("legacy blocked completion must release futex waiter exactly once")
 if "task_replay(" in sched:
     raise SystemExit("syscall replay leaked back into scheduler core")
-if "nas_blocked_complete(next,&result)" not in sched:
-    raise SystemExit("scheduler lost shared IRQ/syscall completion adapter")
+if sched.count("sched_prepare_candidate(")!=3 or sched.count("nas_blocked_complete(next,result)")!=1:
+    raise SystemExit("IRQ and syscall scheduling bypassed the single candidate activation boundary")
 if "nas_task_wake_ready(t)" not in (root/"kernel/task/futex_wait.c").read_text():
     raise SystemExit("futex producer no longer publishes runnable tasks")
 if sched.count("nas_sched_service_kernel();")!=2:
     raise SystemExit("both syscall and timer scheduler must service native kernel workers")
 if sched.count("nas_sched_scan_next(&scan,")!=2:
     raise SystemExit("IRQ and syscall task selection bypassed shared scheduler walk")
+if "-include $(wildcard $(OUT)/*.d)" not in make:
+    raise SystemExit("kernel build must track dependency files for every generated object")
 if sched.count("nas_sched_user_commit(")!=2:
     raise SystemExit("IRQ and syscall Task state publication diverged")
 if "nas_sched_allow_kernel_slice(" not in (root/"kernel/task/scheduler_service.c").read_text():

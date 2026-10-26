@@ -123,7 +123,7 @@ static uint64_t frame_alloc(void) {
         if (!test_bit(p)) return take_frame(p);
     return 0;
 }
-static bool frame_free(uint64_t paddr) {
+static bool frame_put(uint64_t paddr) {
     if (!bitmap || paddr == 0 || paddr % FRAME_BYTES) return false;
     uint64_t p = paddr / FRAME_BYTES;
     if (p >= frame_count || !test_bit(p)) return false;
@@ -142,7 +142,7 @@ static bool frame_free(uint64_t paddr) {
         }
     }
     if (!is_ram) return false;
-    /* nas_frame_free is a legacy put, not an unconditional physical free. */
+    /* Release only this owner's reference. A shared COW page stays live. */
     if (--frame_refs[p])return true;
     unmark(p);
     free_frames++;
@@ -156,8 +156,7 @@ bool nas_frames_init(const struct limine_memmap_response *map, uint64_t off) {
 uint64_t nas_free_frames(void) { return free_frames; }
 uint64_t nas_managed_frames(void) { return managed_frames; }
 uint64_t nas_frame_alloc(void) { return frame_alloc(); }
-bool nas_frame_free(uint64_t physical) { return frame_free(physical); }
-bool nas_frame_put(uint64_t physical) { return frame_free(physical); }
+bool nas_frame_put(uint64_t physical) { return frame_put(physical); }
 uint32_t nas_frame_refs(uint64_t physical) {
     if (!bitmap || !frame_refs || !physical || (physical%FRAME_BYTES) ||
         physical/FRAME_BYTES>=frame_count)return 0;

@@ -6,7 +6,7 @@ This architecture cleanup follows the M61–M63 file-object refactors.
 nas_task
  ├── identity/session/thread group
  ├── arch CPU context + private kernel stack
- ├── VM root & ELF/heap state; shared group resources via vm_owner
+ ├── VM root & ELF/heap state; group leader via group_leader
  ├── FD table (fork copies; CLONE_FILES shares), shared nas_open_file objects
  └── wait (per-thread, never inherited when forking)
        ├── blocked syscall ID + four saved arguments + pending

@@ -1,12 +1,10 @@
 #ifndef NASEED_USER_SPACE_H
 #define NASEED_USER_SPACE_H
 #include "../arch/user_pt.h"
-/* One implementation for mapping, page ownership, cloning and rollback
- * across RV64/ARM64. No user-visible kernel ABI or separate ELF loader. */
+/* One low-level page-table implementation across RV64/ARM64.
+ * Production fork and COW policy belong exclusively to mm.c. */
 bool nas_space_new(struct nas_user_space *space, unsigned levels);
 bool nas_space_delete(struct nas_user_space *space);
-bool nas_space_clone(struct nas_user_space *dest,
-                     const struct nas_user_space *source);
 bool nas_space_map_page(struct nas_user_space *space, uint64_t va, bool writable);
 /* Exact leaf permissions for ELF segment backends, no anonymous W+X. */
 bool nas_space_map_access(struct nas_user_space *space, uint64_t va,

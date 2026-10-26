@@ -3,6 +3,31 @@
 #include "frame.h"
 #include "user_space.h"
 #include "../arch/mmu.h"
+#define PAGE_BYTES 4096ULL
+/* The historical eager-copy oracle remains a boot-only page-table test.
+ * It is intentionally not linked into the production MM fork API: all
+ * running processes fork through nas_mm_fork_cow(). */
+struct clone_test_ctx { struct nas_user_space *dest; };
+static bool clone_test_leaf(uint64_t va,uint64_t pa,unsigned access,void *opaque) {
+    struct clone_test_ctx *ctx=opaque;
+    uint64_t copy=nas_frame_alloc();
+    if(!copy)return false;
+    volatile uint64_t *src=(volatile uint64_t *)(uintptr_t)(nas_hhdm_offset()+pa);
+    volatile uint64_t *dst=(volatile uint64_t *)(uintptr_t)(nas_hhdm_offset()+copy);
+    for(unsigned i=0;i<PAGE_BYTES/8;i++)dst[i]=src[i];
+    if(nas_arch_pt_map(ctx->dest,va,copy,access))return true;
+    (void)nas_frame_put(copy);
+    return false;
+}
+static bool clone_test_snapshot(struct nas_user_space *dest,
+                                const struct nas_user_space *source) {
+    if(!dest || !source || !source->root_pa || dest==source)return false;
+    if(!nas_space_new(dest,source->levels))return false;
+    struct clone_test_ctx ctx={dest};
+    if(nas_arch_pt_walk(source,clone_test_leaf,&ctx))return true;
+    (void)nas_space_delete(dest);
+    return false;
+}
 /* Real physical frame allocator and real ISA PTEs exercised by QEMU
  * BEFORE any one-way U-mode transition. Shared implementation and test
  * runs on RV64 and AArch64; no hand-waved off-line mock. */
@@ -42,7 +67,7 @@ bool nas_space_regression(void) {
     uint8_t *first = nas_space_user_byte(&a, va+19);
     if (!first) return false;
     *first=0x47;
-    if (!nas_space_clone(&b,&a)) return false;
+    if (!clone_test_snapshot(&b,&a)) return false;
     uint8_t *high_b=nas_space_user_byte(&b,high+71);
     if(!high_b || *high_b!=0x5a || high_b==high_a) return false;
     *high_b=0x33;

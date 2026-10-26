@@ -18,7 +18,7 @@ uint64_t nas_frame_alloc(void) {
     memset(p, 0, 4096);
     return (uint64_t)(uintptr_t)p;
 }
-bool nas_frame_free(uint64_t address) {
+bool nas_frame_put(uint64_t address) {
     free((void *)(uintptr_t)address);
     return true;
 }

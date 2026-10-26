@@ -10,6 +10,7 @@
 #include "wait_pid.h"
 #include "../time/clock.h"
 #include "sched.h"
+#include "wait.h"
 #include "futex_wait.h"
 #include "ptrace.h"
 extern void nas_print(const char *);
@@ -71,8 +72,7 @@ static uint64_t fork_common(uint64_t *frame, uint64_t child_tid) {
     if (!nas_task_hold_files(child)) proc_fail("fork dangling open-file slot");
     nas_arch_set_saved_return(parent, child->pid);
     parent->resume_valid = true;
-    parent->wait.blocked_op = 0;
-    parent->wait.pending_valid = false;
+    nas_task_wait_reset(parent);
     parent->state = NAS_TASK_READY;
     if(nas_ptrace_fork_created(parent,child,NAS_PTRACE_EVENT_FORK,frame))
         return nas_task_schedule(frame);
@@ -127,8 +127,7 @@ uint64_t nas_process_vfork(uint64_t *frame, uint64_t child_stack) {
     nas_arch_set_saved_return(parent, child->pid);
     parent->vfork_child_pid = child->pid;
     parent->resume_valid = true;
-    parent->wait.pending_valid = false;
-    parent->wait.blocked_op = 0;
+    nas_task_wait_reset(parent);
     parent->state = NAS_TASK_BLOCKED;
     if(nas_ptrace_fork_created(parent,child,NAS_PTRACE_EVENT_VFORK,frame))
         return nas_task_schedule(frame);
@@ -305,7 +304,7 @@ void nas_process_clear_tid_for_exit(struct nas_task *thread) {
  * installed. A replaced nonleader adopts the old TGID in exec.c. */
 void nas_process_exec_quiesce_siblings(void) {
     struct nas_task *caller=nas_current_task;
-    struct nas_task *leader=caller->vm_owner;
+    struct nas_task *leader=caller->group_leader;
     if(!leader || leader->tgid!=caller->tgid || leader->is_thread)
         proc_fail("execve thread-group owner invalid");
     for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
@@ -318,9 +317,7 @@ void nas_process_exec_quiesce_siblings(void) {
         nas_process_clear_tid_for_exit(peer);
         peer->state=NAS_TASK_ZOMBIE;
         peer->resume_valid=false;
-        peer->wait.pending_valid=false;
-        peer->wait.blocked_op=0;
-        peer->wait.futex_addr=0;
+        nas_task_wait_reset(peer);
         nas_task_release(peer);
     }
     if(caller!=leader) {
@@ -445,7 +442,7 @@ uint64_t nas_process_clone_thread(uint64_t *frame,uint64_t stack,
     child->tgid=parent->tgid;
     child->is_thread=true;
     child->ppid=parent->ppid;
-    child->vm_owner=parent->vm_owner;
+    child->group_leader=parent->group_leader;
     nas_files_put(child->files); /* cloned table never held description refs */
     child->files=nas_files_get(parent->files);
     child->fds=&child->files->table;
@@ -466,8 +463,7 @@ uint64_t nas_process_clone_thread(uint64_t *frame,uint64_t stack,
         proc_fail("thread TID store failed after validation");
     nas_arch_set_saved_return(parent,child->pid);
     parent->resume_valid=true;
-    parent->wait.pending_valid=false;
-    parent->wait.blocked_op=0;
+    nas_task_wait_reset(parent);
     parent->state=NAS_TASK_READY;
     if(nas_ptrace_fork_created(parent,child,NAS_PTRACE_EVENT_CLONE,frame))
         return nas_task_schedule(frame);

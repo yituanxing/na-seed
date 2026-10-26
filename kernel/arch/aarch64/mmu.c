@@ -49,7 +49,7 @@ bool nas_arm_pt_init(struct nas_arm_pt *pt, unsigned levels) {
     pt->root_pa = 0; pt->levels = 0;
     uint64_t root = nas_frame_alloc();
     if (!frame_pa(root)) {
-        if (root) (void)nas_frame_free(root);
+        if (root) (void)nas_frame_put(root);
         return false;
     }
     pt->root_pa = root;
@@ -65,7 +65,7 @@ bool nas_arm_pt_prepare(const struct nas_arm_pt *pt,uint64_t va) {
         uint64_t *slot=&tab[IDX(va,level)];
         if(!*slot) {
             uint64_t pa=nas_frame_alloc();
-            if(!frame_pa(pa)) {if(pa)(void)nas_frame_free(pa);goto fail;}
+            if(!frame_pa(pa)) {if(pa)(void)nas_frame_put(pa);goto fail;}
             *slot=pa|DESCRIPTOR;
             parents[made]=slot;made_pa[made]=pa;made++;
         }else if(!is_table(*slot))goto fail;
@@ -75,7 +75,7 @@ bool nas_arm_pt_prepare(const struct nas_arm_pt *pt,uint64_t va) {
     if(!leaf || ((leaf&3)==DESCRIPTOR && (leaf&AF) &&
                  (leaf&AP_EL0)))return true;
 fail:
-    while(made){--made;*parents[made]=0;(void)nas_frame_free(made_pa[made]);}
+    while(made){--made;*parents[made]=0;(void)nas_frame_put(made_pa[made]);}
     return false;
 }
 bool nas_arm_pt_exchange(const struct nas_arm_pt *pt,uint64_t va,
@@ -115,7 +115,7 @@ bool nas_arm_pt_map(struct nas_arm_pt *pt, uint64_t va,
         if (!*e) {
             child = nas_frame_alloc();
             if (!frame_pa(child)) {
-                if (child) (void)nas_frame_free(child);
+                if (child) (void)nas_frame_put(child);
                 goto rollback;
             }
             *e = child | DESCRIPTOR;
@@ -137,7 +137,7 @@ rollback:
     while (made) {
         made--;
         *made_entry[made] = 0;
-        (void)nas_frame_free(made_pa[made]);
+        (void)nas_frame_put(made_pa[made]);
     }
     return false;
 }
@@ -177,7 +177,7 @@ bool nas_arm_pt_unmap(struct nas_arm_pt *pt, uint64_t va) {
     *leaf = 0;
     for (unsigned idx = 0; idx < pt->levels - 1; idx++) {
         if (!empty(p)) break;
-        if (!nas_frame_free(frames[idx])) return false;
+        if (!nas_frame_put(frames[idx])) return false;
         *ancestors[idx] = 0;
         p = (idx + 1 == pt->levels - 1) ?
             table(pt->root_pa) : table(frames[idx + 1]);
@@ -191,14 +191,14 @@ static void destroy_descendants(uint64_t pa, unsigned levels_down) {
         if (is_table(p[i])) {
             uint64_t child = p[i] & PA_MASK;
             destroy_descendants(child, levels_down - 1);
-            (void)nas_frame_free(child);
+            (void)nas_frame_put(child);
         }
     }
 }
 void nas_arm_pt_destroy(struct nas_arm_pt *pt) {
     if (!pt || !frame_pa(pt->root_pa) || !valid_levels(pt->levels)) return;
     destroy_descendants(pt->root_pa, pt->levels - 1);
-    (void)nas_frame_free(pt->root_pa);
+    (void)nas_frame_put(pt->root_pa);
     pt->root_pa = 0; pt->levels = 0;
 }
 

@@ -36,7 +36,6 @@ bool nas_frame_put(uint64_t pa){
     if(!pa || (pa&(P-1)) || pa/P>=NP || !owners[pa/P])return false;
     owners[pa/P]--;return true;
 }
-bool nas_frame_free(uint64_t pa){return nas_frame_put(pa);}
 uint32_t nas_frame_refs(uint64_t pa){return pa/P<NP?owners[pa/P]:0;}
 static unsigned living(void){
     unsigned n=0;for(unsigned i=1;i<NP;i++)n+=owners[i];return n;
@@ -184,6 +183,14 @@ int main(void){
     assert(living()==0 && !nas_vma_find(&space.mmap_vmas,BASE));
     assert(nas_vm_file_mmap(0,P,1,2,4,0)>0);
     assert(living()==1); /* one resident data frame; staging metadata freed */
+    /* A hardware-only leaf must not regain write permission through the
+     * old mprotect bypass when no corresponding VMA owns the address. */
+    assert(nas_mmu_map_prot_page(BASE+4*P,1));
+    uint64_t orphan=slot(BASE+4*P,false)->pa;
+    assert((int64_t)nas_vm_mprotect(BASE+4*P,P,3)==-12);
+    assert(slot(BASE+4*P,false)->pa==orphan &&
+           slot(BASE+4*P,false)->prot==1);
+    assert(nas_mmu_unmap_page(BASE+4*P));
     puts("[M87 MM TXN PASS] MAP_FIXED and mprotect OOM/PT faults preserve VMA/PTE and frame ownership");
     return 0;
 }

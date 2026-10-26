@@ -17,19 +17,19 @@ static unsigned hash(const struct nas_mm *mm,uint64_t addr) {
 }
 static void notify(struct nas_wait_entry *e,void *opaque) {
     struct nas_task *t=opaque;
-    if(t && &t->kernel_wait==e) {
+    if(t && &t->kernel_exec.wait==e) {
         t->wait.futex_woken=true;
         (void)nas_task_wake_ready(t);
     }
 }
 bool nas_futex_wait_arm(struct nas_task *t) {
     if(!t || !t->mm || !t->wait.futex_mask ||
-       t->wait.futex_woken || t->kernel_wait.queue)return false;
+       t->wait.futex_woken || t->kernel_exec.wait.queue)return false;
     return nas_wait_queue_enqueue(&queues[hash(t->mm,t->wait.futex_addr)],
-                                  &t->kernel_wait,notify,t);
+                                  &t->kernel_exec.wait,notify,t);
 }
 void nas_futex_wait_cancel(struct nas_task *t) {
-    if(t)(void)nas_wait_queue_remove(&t->kernel_wait);
+    if(t)(void)nas_wait_queue_remove(&t->kernel_exec.wait);
 }
 struct key {struct nas_mm *mm;uint64_t addr;uint32_t mask;};
 static bool matches(const struct nas_wait_entry *e,void *opaque) {

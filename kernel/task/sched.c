@@ -57,10 +57,8 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
          * run; release this task slot only after switching user frames. */
         child->state=NAS_TASK_ZOMBIE;
         child->resume_valid=false;
-        child->wait.pending_valid=false;
-        child->wait.blocked_op=0;
-        child->wait.futex_addr=0;
-        struct nas_task *leader=child->vm_owner;
+        nas_task_wait_reset(child);
+        struct nas_task *leader=child->group_leader;
         if(leader->group_exit_pending && !group_has_live_workers(leader)) {
             /* Leader finished earlier: group becomes waitable NOW, only
              * after the last worker has cleared its TID and stopped. */
@@ -79,8 +77,7 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     child->termination_signal=signum;
     child->state=NAS_TASK_ZOMBIE;
     child->resume_valid=false;
-    child->wait.pending_valid=false;
-    child->wait.blocked_op=0;
+    nas_task_wait_reset(child);
     if(group_has_live_workers(child)) {
         child->group_exit_pending=true;
         nas_print("[THREAD GROUP] leader exit deferred tgid=");
@@ -99,8 +96,7 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     child->stop_report_pending = false;
     child->continue_report_pending = false;
     child->stopped_from = NAS_TASK_FREE;
-    child->wait.pending_valid = false;
-    child->wait.blocked_op = 0;
+    nas_task_wait_reset(child);
     /* Reparent *both* living and already-zombie descendants to init.
      * Task identity (PID) and physical page ownership remain unchanged.
      * PID 1 owns future wait4 and is responsible for reaping orphans. */
@@ -135,7 +131,7 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
  * the active user root. Never reclaim the root before parent wait4. */
 void nas_sched_thread_group_exit(uint32_t code,uint32_t signum) {
     struct nas_task *caller=nas_current_task;
-    struct nas_task *leader=caller->vm_owner;
+    struct nas_task *leader=caller->group_leader;
     if(!leader || leader->tgid!=caller->tgid || leader->is_thread)
         sched_fail("exit_group invalid thread group owner");
     for(unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
@@ -148,9 +144,7 @@ void nas_sched_thread_group_exit(uint32_t code,uint32_t signum) {
         nas_process_clear_tid_for_exit(peer);
         peer->state=NAS_TASK_ZOMBIE;
         peer->resume_valid=false;
-        peer->wait.pending_valid=false;
-        peer->wait.blocked_op=0;
-        peer->wait.futex_addr=0;
+        nas_task_wait_reset(peer);
         nas_task_release(peer);
     }
     if(caller!=leader) {
@@ -158,9 +152,7 @@ void nas_sched_thread_group_exit(uint32_t code,uint32_t signum) {
         nas_process_clear_tid_on_exit();
         caller->state=NAS_TASK_ZOMBIE;
         caller->resume_valid=false;
-        caller->wait.pending_valid=false;
-        caller->wait.blocked_op=0;
-        caller->wait.futex_addr=0;
+        nas_task_wait_reset(caller);
         /* Temporarily take ownership of the common process FD cleanup
          * as the group leader. Real CPU root/TLS are restored to caller
          * before unwinding its syscall frame. */
@@ -180,6 +172,24 @@ static unsigned schedule_count;
  * always preferring the first task-table slot. Keep the same saved-frame
  * switching mechanism and the READY-before-BLOCKED priority policy. */
 static unsigned schedule_cursor;
+
+/* Both syscall-boundary switches and timer preemption use the same
+ * candidate activation boundary. A blocked syscall must execute only after
+ * its own MM/TLS/FPU have been restored; on retry/stop/exit, restore the
+ * caller before visiting another Task. Neither path may transfer a live
+ * kernel C continuation while trap entry still owns the current stack. */
+static enum nas_blocked_completion sched_prepare_candidate(
+    struct nas_task *from,struct nas_task *next,uint64_t *result) {
+    nas_current_task=next;
+    nas_arch_restore_cpu(next);
+    *result=nas_arch_saved_return(next);
+    enum nas_blocked_completion outcome=nas_blocked_complete(next,result);
+    if(outcome!=NAS_BLOCKED_COMPLETE) {
+        nas_current_task=from;
+        nas_arch_restore_cpu(from);
+    }
+    return outcome;
+}
 
 /* Cooperative scheduling and timer IRQs must agree on eligible Tasks.
  * IRQ callers have already snapshotted their interrupted user registers.
@@ -201,15 +211,9 @@ bool nas_sched_preempt_select(void) {
                         NAS_TASK_LIMIT-1U);
     struct nas_task *next;
     while((next=nas_sched_scan_next(&scan,0))!=0) {
-        nas_current_task=next;
-        nas_arch_restore_cpu(next);
-        uint64_t result=nas_arch_saved_return(next);
-        enum nas_blocked_completion outcome=nas_blocked_complete(next,&result);
-        if(outcome!=NAS_BLOCKED_COMPLETE) {
-            nas_current_task=from;
-            nas_arch_restore_cpu(from);
+        uint64_t result=0;
+        if(sched_prepare_candidate(from,next,&result)!=NAS_BLOCKED_COMPLETE)
             continue;
-        }
         if(!nas_sched_user_commit(from,next,true))
             sched_fail("timer committed invalid task state");
         nas_task_cpu_account_switch(next);
@@ -238,13 +242,10 @@ retry_schedule: ; /* label must precede a statement in C11 */
     unsigned slot=0;
     struct nas_task *next;
     while((next=nas_sched_scan_next(&scan,&slot))!=0) {
-        nas_current_task=next;
-        nas_arch_restore_cpu(next);
-        uint64_t result=nas_arch_saved_return(next);
-        enum nas_blocked_completion outcome=nas_blocked_complete(next,&result);
+        uint64_t result=0;
+        enum nas_blocked_completion outcome=
+            sched_prepare_candidate(previous,next,&result);
         if(outcome!=NAS_BLOCKED_COMPLETE) {
-            nas_current_task=previous;
-            nas_arch_restore_cpu(previous);
             if(outcome==NAS_BLOCKED_TERMINATED ||
                outcome==NAS_BLOCKED_PTRACE_STOP)
                 goto retry_schedule;
@@ -273,60 +274,15 @@ retry_schedule: ; /* label must precede a statement in C11 */
      * actual device RX until a line or VMIN threshold arrives. This idle
      * dispatcher polls hardware; IRQ-driven low-power waiting is not yet
      * implemented and must not be described as interrupt-driven. */
-    for (unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
-        const struct nas_task *t=nas_task_at(slot);
-        if (t->state != NAS_TASK_BLOCKED || !t->wait.pending_valid)continue;
-        if((t->wait.blocked_op==NAS_SC_epoll_wait ||
-             t->wait.blocked_op==NAS_SC_epoll_pwait) && t->wait.poll_tty_read) {
-            __asm__ volatile ("" ::: "memory");
-            goto retry_schedule;
-        }
-        if((t->wait.blocked_op==NAS_SC_poll ||
-             t->wait.blocked_op==NAS_SC_ppoll ||
-             (t->wait.blocked_op==NAS_SC_pselect6 || t->wait.blocked_op==NAS_SC_select)) &&
-           t->wait.poll_tty_read) {
-            __asm__ volatile ("" ::: "memory");
-            goto retry_schedule;
-        }
-        if(t->wait.blocked_op != NAS_SC_read)continue;
-        uint8_t kind=nas_task_fd_kind(t,t->wait.blocked_args[0]);
-        if ((kind==FD_TTY || kind==FD_UART) && nas_tty_read_waitable()) {
-            __asm__ volatile ("" ::: "memory");
-            goto retry_schedule;
-        }
-    }
-    /* All runnable Tasks may be asleep or waiting for a finite I/O
-     * deadline. Poll the real hardware monotonic counter with IRQs masked;
-     * no interrupt is delivered into non-preemptible kernel C frames.
-     * This is an intentional bounded-feature busy idle, not tick-based
-     * fake advancement or a premature interruptible kernel scheduler. */
-    for (unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
-        const struct nas_task *t=nas_task_at(slot);
-        if(t->state==NAS_TASK_BLOCKED && t->wait.pending_valid &&
-           t->wait.deadline_active) {
-            __asm__ volatile ("" ::: "memory");
-            goto retry_schedule;
-        }
-    }
-    if(nas_time_timers_armed()) {
-        __asm__ volatile ("" ::: "memory");
-        goto retry_schedule;
-    }
-    /* A cross-process epoll_ctl or physical UART arrival may wake a
-     * blocked epoll waiter even if no timer is currently armed. */
-    for(unsigned slot=0;slot<NAS_TASK_LIMIT;slot++){
-        const struct nas_task *t=nas_task_at(slot);
-        if(t->state==NAS_TASK_BLOCKED && t->wait.pending_valid &&
-           (t->wait.blocked_op==NAS_SC_epoll_wait ||
-            t->wait.blocked_op==NAS_SC_epoll_pwait)) {
-            __asm__ volatile ("" ::: "memory");
-            goto retry_schedule;
-        }
-    }
-    /* A native kernel continuation with a finite deadline must not cause a
-     * false user-only deadlock. The current IRQ-masked idle dispatcher polls
-     * the hardware clock; true interruptible idle will replace this path. */
-    if(nas_kthread_deadlines_armed() || nas_kthread_runnable()) {
+    /* IRQ-driven idle is not implemented. Keep the polling fallback in one
+     * place, but delegate device/syscall-specific progress policy to Wait.
+     * This preserves live TTY, epoll, timer and worker wakeups without
+     * embedding syscall decoding in the CPU scheduler. */
+    bool externally_wakeable=nas_time_timers_armed() ||
+        nas_kthread_deadlines_armed() || nas_kthread_runnable();
+    for(unsigned slot=0;slot<NAS_TASK_LIMIT && !externally_wakeable;slot++)
+        externally_wakeable=nas_task_wait_needs_idle_poll(nas_task_at(slot));
+    if(externally_wakeable) {
         __asm__ volatile ("" ::: "memory");
         goto retry_schedule;
     }

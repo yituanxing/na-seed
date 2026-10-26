@@ -23,11 +23,11 @@ int main(void) {
     parent.wait.futex_mask=0x40U;
     parent.wait.futex_woken=true;
     parent.wait.tty_observed_bytes=9;
-    nas_slot_mask_set(&parent.wait.poll_pipe_read,3);
-    nas_slot_mask_set(&parent.wait.poll_pipe_write,126);
+    nas_slot_mask_set(&parent.wait.poll_interest_read,3);
+    nas_slot_mask_set(&parent.wait.poll_interest_write,126);
     parent.wait.poll_tty_read=true;
-    assert(nas_slot_mask_any(&parent.wait.poll_pipe_write));
-    assert(nas_slot_mask_test(&parent.wait.poll_pipe_write,126));
+    assert(nas_slot_mask_any(&parent.wait.poll_interest_write));
+    assert(nas_slot_mask_test(&parent.wait.poll_interest_write,126));
     /* Fork clones persistent resource state, but never parked waits. */
     child=parent;
     child.mm=0; /* Real nas_task_fork_slot clears inherited MM pointer. */
@@ -40,15 +40,15 @@ int main(void) {
     assert(!child.wait.deadline_ns && !child.wait.futex_addr);
     assert(!child.wait.futex_mask && !child.wait.futex_woken);
     assert(!child.wait.tty_observed_bytes && !child.wait.poll_tty_read);
-    assert(!nas_slot_mask_any(&child.wait.poll_pipe_read));
-    assert(!nas_slot_mask_any(&child.wait.poll_pipe_write));
+    assert(!nas_slot_mask_any(&child.wait.poll_interest_read));
+    assert(!nas_slot_mask_any(&child.wait.poll_interest_write));
     nas_wait_io_arm(&child,126,4,false);
     assert(nas_wait_io_has_interest(&child));
     nas_wait_io_clear(&child);
     assert(!nas_wait_io_has_interest(&child));
     assert(parent.wait.pending_valid && parent.wait.deadline_active);
-    assert(nas_slot_mask_test(&parent.wait.poll_pipe_read,3));
-    assert(nas_slot_mask_test(&parent.wait.poll_pipe_write,126));
+    assert(nas_slot_mask_test(&parent.wait.poll_interest_read,3));
+    assert(nas_slot_mask_test(&parent.wait.poll_interest_write,126));
     /* Blocked syscall 0 is valid when pending=true, not "no syscall". */
     parent.wait.blocked_op=0;
     assert(parent.wait.pending_valid);

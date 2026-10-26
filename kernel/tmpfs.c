@@ -150,11 +150,11 @@ void tmp_truncate(struct nas_tmp_file *file) {
             if (!frame) continue;
             uint64_t *table = (uint64_t *)(uintptr_t)(nas_hhdm_offset() + frame);
             for (unsigned inner = 0; inner < TMP_PAGE_ENTRIES; inner++) {
-                if (table[inner]) (void)nas_frame_free(table[inner]);
+                if (table[inner]) (void)nas_frame_put(table[inner]);
             }
-            (void)nas_frame_free(frame);
+            (void)nas_frame_put(frame);
         }
-        (void)nas_frame_free(file->index_root);
+        (void)nas_frame_put(file->index_root);
         file->index_root = 0;
     }
     file->size = 0;
@@ -191,7 +191,7 @@ int tmp_resize(struct nas_tmp_file *file, uint64_t size) {
                     nas_hhdm_offset() + frame);
                 unsigned inner = (unsigned)(page % TMP_PAGE_ENTRIES);
                 if (slots[inner]) {
-                    (void)nas_frame_free(slots[inner]);
+                    (void)nas_frame_put(slots[inner]);
                     slots[inner] = 0;
                 }
             }
@@ -205,12 +205,12 @@ int tmp_resize(struct nas_tmp_file *file, uint64_t size) {
                 for (unsigned i = 0; i < TMP_PAGE_ENTRIES; i++)
                     if (slots[i]) { any = true; break; }
                 if (!any) {
-                    (void)nas_frame_free(frame);
+                    (void)nas_frame_put(frame);
                     root[outer] = 0;
                 } else root_has_index = true;
             }
             if (!root_has_index) {
-                (void)nas_frame_free(file->index_root);
+                (void)nas_frame_put(file->index_root);
                 file->index_root = 0;
             }
         }

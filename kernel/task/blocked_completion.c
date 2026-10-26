@@ -15,6 +15,7 @@
 #include "signal.h"
 #include "ptrace.h"
 #include "futex_wait.h"
+#include "wait.h"
 #include "blocked_completion.h"
 #include "../time/clock.h"
 #define TASK (*nas_current_task)
@@ -125,9 +126,7 @@ enum nas_blocked_completion nas_blocked_complete(struct nas_task *task,
        nr==NAS_SC_epoll_pwait || nr==NAS_SC_rt_sigsuspend)
         nas_signal_ppoll_restore(task,(int64_t)rc==-EINTR);
     nas_futex_wait_cancel(task);
-    task->wait.pending_valid=false;
-    task->wait.blocked_op=0;
-    task->wait.deadline_active=false;
+    nas_task_wait_reset(task);
     nas_arch_set_saved_return(task,rc);
     *result=rc;
     if(nas_ptrace_blocked_completed(task,rc))

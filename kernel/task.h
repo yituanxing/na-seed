@@ -70,10 +70,9 @@ struct nas_task_wait {
     uint64_t deadline_ns;
     bool deadline_active;
     unsigned tty_observed_bytes;
-    /* Interest sets contain OPEN-DESCRIPTION slots, independent of the
-     * backing provider (pipe/socket/PTY/eventfd/regular file). Keep the
-     * legacy member spelling until remaining scheduler adapters migrate. */
-    struct nas_slot_mask poll_pipe_read, poll_pipe_write;
+    /* Poll interest records OPEN-DESCRIPTION slots, not pipe numbers or
+     * Task-local FDs. All providers use this one readiness representation. */
+    struct nas_slot_mask poll_interest_read, poll_interest_write;
     bool poll_tty_read;
     uint64_t futex_addr;
     uint32_t futex_mask;
@@ -85,7 +84,9 @@ struct nas_task {
     uint64_t tgid; /* getpid: thread group; pid remains unique gettid */
     bool is_thread; /* CLONE_THREAD tasks are never wait4 children */
     bool group_exit_pending; /* leader exited via SYS_exit; retain VM and FDs for peers */
-    struct nas_task *vm_owner; /* legacy thread-group leader identity; NOT MM/FS/files/sighand owner */
+    /* Stable thread-group leader identity. Address-space ownership is mm,
+     * while FS, files and signal dispositions have independent owners. */
+    struct nas_task *group_leader;
     /* Linux process group + session identity, independent of CPU/VM. */
     uint64_t pgid, sid;
     char comm[16]; /* Linux per-thread PR_SET_NAME, inherited at fork. */
@@ -153,10 +154,9 @@ struct nas_task {
     uint64_t kernel_stack_top;
     /* Native kernel continuation, never copied across fork/clone.
      * The current syscall replay scheduler does not yet park C frames. */
-    struct nas_kernel_context kernel_context;
-    /* Single outstanding native kernel-continuation sleep registration.
-     * Replay waits remain separate until the scheduler contract migrates. */
-    struct nas_wait_entry kernel_wait;
+    /* Shared native continuation/queue ownership layout also used by
+     * kernel workers. User syscall continuation activation remains pending. */
+    struct nas_kernel_execution kernel_exec;
     /* Independently reference-counted address space (CLONE_VM / vfork). */
     struct nas_mm *mm;
     uint64_t loaded_phdr, loaded_phnum;

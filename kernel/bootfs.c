@@ -100,7 +100,7 @@ static void bootfs_reset(void) {
     struct bootfs_slab *slab = slab_head;
     while (slab) {
         struct bootfs_slab *next = slab->next;
-        (void)nas_frame_free((uint64_t)(uintptr_t)slab - nas_hhdm_offset());
+        (void)nas_frame_put((uint64_t)(uintptr_t)slab - nas_hhdm_offset());
         slab = next;
     }
     slab_head = slab_tail = 0;

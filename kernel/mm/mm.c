@@ -24,9 +24,10 @@ struct nas_mm *nas_mm_new(void) {
     }
     return 0;
 }
-/* The platform page tables are private; only ordinary user DATA frames
- * become shared. A missing VMA on a writable mapping is legacy/boot state:
- * copy it eagerly rather than creating a page that cannot handle COW faults.
+/* The platform page tables are private; only ordinary user data frames
+ * become shared. Every user leaf must have a logical VMA owner. Reject an
+ * orphan leaf rather than silently reviving the old eager-fork fallback:
+ * such a child could never resolve a later permission/COW fault correctly.
  * Do not change ANY parent PTE until the full child walk succeeds. */
 struct cow_fork_ctx {
     struct nas_mm *dst;
@@ -42,24 +43,16 @@ static bool cow_clone_mapping(uint64_t va,unsigned access,void *opaque) {
     if(!nas_mm_resolve_user(ctx->src,va,&pa,0))return false;
     pa &= ~UINT64_C(4095);
     const struct nas_anon_region *v=nas_vma_find(&ctx->src->mmap_vmas,va);
-    bool legacy_private=(access&NAS_UP_WRITE) &&
-                        (!v || !(v->prot&NAS_VM_WRITE));
-    uint64_t mapping=pa;
-    if(legacy_private) {
-        mapping=nas_frame_alloc();
-        if(!mapping)return false;
-        memcpy((void *)(uintptr_t)(nas_hhdm_offset()+mapping),
-               (const void *)(uintptr_t)(nas_hhdm_offset()+pa),4096);
-    } else if(!nas_frame_get(pa))return false;
-    unsigned prot=access_prot(access);
-    if(!legacy_private)prot&=~NAS_VM_WRITE;
+    if(!v || ((access&NAS_UP_WRITE) && !(v->prot&NAS_VM_WRITE)))return false;
+    if(!nas_frame_get(pa))return false;
+    unsigned prot=access_prot(access)&~NAS_VM_WRITE;
     if(!nas_mmu_prepare_leaf_at(ctx->dst->root_phys,va)) {
-        (void)nas_frame_put(mapping);
+        (void)nas_frame_put(pa);
         return false;
     }
     uint64_t prior=0;
-    if(!nas_mmu_exchange_leaf_at(ctx->dst->root_phys,va,mapping,prot,&prior)) {
-        (void)nas_frame_put(mapping);
+    if(!nas_mmu_exchange_leaf_at(ctx->dst->root_phys,va,pa,prot,&prior)) {
+        (void)nas_frame_put(pa);
         return false;
     }
     if(prior)nas_fail("COW fork: child page already mapped");
@@ -69,7 +62,7 @@ static bool cow_protect_parent(uint64_t va,unsigned access,void *opaque) {
     const struct nas_mm *src=opaque;
     if(!(access&NAS_UP_WRITE))return true;
     const struct nas_anon_region *v=nas_vma_find(&src->mmap_vmas,va);
-    if(!v || !(v->prot&NAS_VM_WRITE))return true; /* eagerly cloned legacy */
+    if(!v || !(v->prot&NAS_VM_WRITE))return false;
     uint64_t pa=0;
     if(!nas_mm_resolve_user(src,va,&pa,0))return false;
     pa &= ~UINT64_C(4095);

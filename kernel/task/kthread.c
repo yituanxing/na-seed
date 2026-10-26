@@ -14,8 +14,7 @@
 enum worker_state { KTHREAD_FREE, KTHREAD_READY, KTHREAD_RUNNING,
                     KTHREAD_WAITING, KTHREAD_DONE };
 struct nas_kthread {
-    struct nas_kernel_context context;
-    struct nas_wait_entry waiting;
+    struct nas_kernel_execution exec;
     void (*entry)(void *);
     void *argument;
     enum worker_state state;
@@ -35,21 +34,20 @@ static void kthread_start(void) {
     if(!self || self->state!=KTHREAD_RUNNING || !self->entry)
         nas_fail("M95 kernel worker trampoline without active owner");
     self->entry(self->argument);
-    if(self->waiting.queue)
+    if(self->exec.wait.queue)
         nas_fail("M95 worker returned while still queued");
     self->state=KTHREAD_DONE;
-    nas_arch_kernel_swap(&self->context,&caller_context);
+    nas_arch_kernel_swap(&self->exec.cpu,&caller_context);
     nas_fail("M95 returned to finished kernel worker");
 }
 void nas_kthread_system_init(void) {
     if(in_dispatch || active)
         nas_fail("M95 cannot reinitialize running kernel workers");
     for(unsigned i=0;i<NAS_KTHREAD_LIMIT;i++) {
-        if(workers[i].waiting.queue)
+        if(workers[i].exec.wait.queue)
             nas_fail("M95 cannot reinitialize armed kernel worker");
         workers[i].state=KTHREAD_FREE;
-        nas_kernel_context_reset(&workers[i].context);
-        nas_wait_entry_reset(&workers[i].waiting);
+        nas_kernel_execution_reset(&workers[i].exec);
         workers[i].entry=0;
         workers[i].argument=0;
         workers[i].deadline_ns=0;
@@ -66,9 +64,9 @@ bool nas_kthread_spawn(void (*run)(void *),void *argument,
     for(unsigned i=0;i<NAS_KTHREAD_LIMIT;i++) {
         struct nas_kthread *w=&workers[i];
         if(w->state!=KTHREAD_FREE)continue;
-        nas_wait_entry_reset(&w->waiting);
+        nas_kernel_execution_reset(&w->exec);
         if(w->generation==UINT64_MAX)return false; /* fail closed on reuse wrap */
-        if(!nas_kernel_context_prepare(&w->context,w->stack,
+        if(!nas_kernel_context_prepare(&w->exec.cpu,w->stack,
                                        sizeof(w->stack),kthread_start))
             return false;
         w->generation++;
@@ -87,7 +85,7 @@ bool nas_kthread_spawn(void (*run)(void *),void *argument,
 static void return_to_dispatch(void) {
     struct nas_kthread *self=active;
     if(!self || !in_dispatch)nas_fail("M95 kernel worker outside dispatcher");
-    nas_arch_kernel_swap(&self->context,&caller_context);
+    nas_arch_kernel_swap(&self->exec.cpu,&caller_context);
     if(active!=self || self->state!=KTHREAD_RUNNING)
         nas_fail("M95 invalid kernel worker resumption");
 }
@@ -99,7 +97,7 @@ bool nas_kthread_yield(void) {
 }
 static void queued_wakeup(struct nas_wait_entry *entry,void *argument) {
     struct nas_kthread *w=argument;
-    if(!w || entry!=&w->waiting || entry->queue ||
+    if(!w || entry!=&w->exec.wait || entry->queue ||
        w->state!=KTHREAD_WAITING)
         nas_fail("M95 invalid kernel worker wake ownership");
     w->deadline_active=false;
@@ -114,14 +112,14 @@ enum nas_kwait_result nas_kthread_park_until(struct nas_wait_queue *queue,
     if(deadline_ns && nas_time_deadline_expired(nas_arch_monotonic_ns(),
                                                 deadline_ns))
         return NAS_KWAIT_TIMED_OUT;
-    if(!nas_wait_queue_enqueue(queue,&self->waiting,queued_wakeup,self))
+    if(!nas_wait_queue_enqueue(queue,&self->exec.wait,queued_wakeup,self))
         return NAS_KWAIT_INVALID;
     self->deadline_active=deadline_ns!=0;
     self->deadline_ns=deadline_ns;
     self->timed_out=false;
     self->state=KTHREAD_WAITING;
     return_to_dispatch();
-    if(self->waiting.queue)nas_fail("M97 resumed still-queued kernel worker");
+    if(self->exec.wait.queue)nas_fail("M97 resumed still-queued kernel worker");
     enum nas_kwait_result result=self->timed_out ?
         NAS_KWAIT_TIMED_OUT : NAS_KWAIT_READY;
     self->timed_out=false;
@@ -141,7 +139,7 @@ unsigned nas_kthread_timers_tick(uint64_t now) {
         if(w->state!=KTHREAD_WAITING || !w->deadline_active ||
            !nas_time_deadline_expired(now,w->deadline_ns))
             continue;
-        (void)nas_wait_queue_remove(&w->waiting);
+        (void)nas_wait_queue_remove(&w->exec.wait);
         w->deadline_active=false;
         w->deadline_ns=0;
         w->timed_out=true;
@@ -169,7 +167,7 @@ static struct nas_kthread *handle_lookup(struct nas_kthread_handle h) {
 bool nas_kthread_wake(struct nas_kthread_handle handle) {
     struct nas_kthread *w=handle_lookup(handle);
     if(!w || w->state!=KTHREAD_WAITING)return false;
-    (void)nas_wait_queue_remove(&w->waiting);
+    (void)nas_wait_queue_remove(&w->exec.wait);
     w->deadline_active=false;
     w->deadline_ns=0;
     w->timed_out=false;
@@ -180,8 +178,8 @@ bool nas_kthread_cancel(struct nas_kthread_handle handle) {
     struct nas_kthread *w=handle_lookup(handle);
     if(!w || (w->state!=KTHREAD_WAITING && w->state!=KTHREAD_READY))
         return false;
-    (void)nas_wait_queue_remove(&w->waiting);
-    nas_kernel_context_reset(&w->context);
+    (void)nas_wait_queue_remove(&w->exec.wait);
+    nas_kernel_execution_reset(&w->exec);
     w->deadline_active=false;
     w->deadline_ns=0;
     w->timed_out=false;
@@ -209,18 +207,18 @@ unsigned nas_kthread_run(unsigned budget) {
         chosen->state=KTHREAD_RUNNING;
         /* The caller's interrupt state and selected MM are unchanged:
          * this only swaps a kernel C stack, never a user return frame. */
-        nas_arch_kernel_swap(&caller_context,&chosen->context);
+        nas_arch_kernel_swap(&caller_context,&chosen->exec.cpu);
         if(active!=chosen || chosen->state==KTHREAD_RUNNING)
             nas_fail("M95 kernel worker resumed without yielding");
         active=0;
         if(chosen->state==KTHREAD_DONE) {
-            if(chosen->waiting.queue)
+            if(chosen->exec.wait.queue)
                 nas_fail("M95 freeing queued worker");
             chosen->state=KTHREAD_FREE;
             chosen->deadline_active=false;
             chosen->deadline_ns=0;
             chosen->timed_out=false;
-            nas_kernel_context_reset(&chosen->context);
+            nas_kernel_execution_reset(&chosen->exec);
             chosen->entry=0;
             chosen->argument=0;
         }

@@ -22,7 +22,7 @@ bool nas_space_lookup(const struct nas_user_space *space, uint64_t va,
 static bool release_user_frame(uint64_t va, uint64_t pa,
                                unsigned permissions, void *ctx) {
     (void)va; (void)permissions; (void)ctx;
-    return nas_frame_free(pa);
+    return nas_frame_put(pa);
 }
 bool nas_space_delete(struct nas_user_space *space) {
     if (!space || !space->root_pa) return false;
@@ -41,7 +41,7 @@ bool nas_space_map_access(struct nas_user_space *space,uint64_t va,
     uint64_t pa=nas_frame_alloc();
     if(!pa) return false;
     if(!nas_arch_pt_map(space,va,pa,access)) {
-        (void)nas_frame_free(pa);
+        (void)nas_frame_put(pa);
         return false;
     }
     nas_arch_pt_flush(va);
@@ -71,7 +71,7 @@ bool nas_space_unmap_page(struct nas_user_space *space, uint64_t va) {
         return true; /* Preserve baseline Linux munmap of an empty page. */
     if (!nas_arch_pt_unmap(space, va)) return false;
     nas_arch_pt_flush(va);
-    return nas_frame_free(pa & ~(PAGE_BYTES-1));
+    return nas_frame_put(pa & ~(PAGE_BYTES-1));
 }
 bool nas_space_protect(struct nas_user_space *space, uint64_t va,
                        uint64_t pages, unsigned prot) {
@@ -98,31 +98,4 @@ uint8_t *nas_space_user_byte(const struct nas_user_space *space, uint64_t va) {
     uint64_t pa;
     if (!nas_arch_pt_lookup(space, va, &pa, 0)) return 0;
     return (uint8_t *)(uintptr_t)(nas_hhdm_offset() + pa);
-}
-struct clone_ctx { struct nas_user_space *dest; };
-static bool clone_leaf(uint64_t va, uint64_t pa, unsigned access, void *opaque) {
-    struct clone_ctx *ctx = (struct clone_ctx *)opaque;
-    uint64_t copy_pa = nas_frame_alloc();
-    if (!copy_pa) return false;
-    volatile uint64_t *src = (volatile uint64_t *)(uintptr_t)(nas_hhdm_offset()+pa);
-    volatile uint64_t *dst = (volatile uint64_t *)(uintptr_t)(nas_hhdm_offset()+copy_pa);
-    for (unsigned n=0; n<PAGE_BYTES/8; n++) dst[n]=src[n];
-    if (!nas_arch_pt_map(ctx->dest, va, copy_pa, access)) {
-        (void)nas_frame_free(copy_pa);
-        return false;
-    }
-    return true;
-}
-bool nas_space_clone(struct nas_user_space *dest,
-                     const struct nas_user_space *source) {
-    if (!dest || !source || !source->root_pa || dest == source) return false;
-    if (!nas_space_new(dest, source->levels)) return false;
-    struct clone_ctx ctx = { dest };
-    if (nas_arch_pt_walk(source, clone_leaf, &ctx)) return true;
-    if (!nas_space_delete(dest)) {
-        /* An inconsistent page-table walk is a kernel invariant violation;
-         * never report a successful fork with aliased/corrupt frames. */
-        return false;
-    }
-    return false;
 }
