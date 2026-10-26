@@ -2,7 +2,7 @@
 set -eu
 mkdir -p build/m93-futex
 cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
-    scripts/test-m93-futex-queues.c kernel/task/futex_wait.c kernel/task/wait_queue.c \
+    scripts/test-m93-futex-queues.c kernel/task/futex_wait.c kernel/task/wait_queue.c kernel/task/run_state.c \
     -o build/m93-futex/host
 build/m93-futex/host
 for arch in riscv64 aarch64; do

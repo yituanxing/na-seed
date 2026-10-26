@@ -9,7 +9,7 @@ import re
 root=Path(__file__).resolve().parent.parent
 srcs=[line.strip() for line in (root/"scripts/full-kernel-core.sources").read_text().splitlines()
       if line.strip() and not line.startswith("#")]
-assert len(srcs)==len(set(srcs))==52, "common kernel TU manifest drift"
+assert len(srcs)==len(set(srcs))==54, "common kernel TU manifest drift"
 make=(root/"Makefile").read_text()
 defs={}
 for line in make.splitlines():
@@ -130,6 +130,12 @@ if "nas_futex_wait_arm(nas_current_task)" not in (root/"kernel/task/process.c").
     raise SystemExit("futex syscall is not using generic kernel wait queues")
 if "nas_futex_wait_cancel(next)" not in sched:
     raise SystemExit("futex waiter may survive replay completion")
+if "task_replay(" in sched:
+    raise SystemExit("syscall replay leaked back into scheduler core")
+if "nas_blocked_complete(next,&result)" not in sched:
+    raise SystemExit("scheduler lost shared IRQ/syscall completion adapter")
+if "nas_task_wake_ready(t)" not in (root/"kernel/task/futex_wait.c").read_text():
+    raise SystemExit("futex producer no longer publishes runnable tasks")
 if "nas_kernel_context_boot_selftest();" not in (root/"kernel/init/main.c").read_text():
     raise SystemExit("native QEMU kernels no longer test real kernel C resume")
 print(f"[M50 ARCH PASS] all {len(srcs)} actual shared kernel TUs are linked on x86 "

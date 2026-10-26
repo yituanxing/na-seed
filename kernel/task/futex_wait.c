@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include "futex_wait.h"
 #include "wait_queue.h"
+#include "run_state.h"
 #include "../task.h"
 #include "../syscall/ops.h"
 
@@ -16,7 +17,10 @@ static unsigned hash(const struct nas_mm *mm,uint64_t addr) {
 }
 static void notify(struct nas_wait_entry *e,void *opaque) {
     struct nas_task *t=opaque;
-    if(t && &t->kernel_wait==e)t->wait.futex_woken=true;
+    if(t && &t->kernel_wait==e) {
+        t->wait.futex_woken=true;
+        (void)nas_task_wake_ready(t);
+    }
 }
 bool nas_futex_wait_arm(struct nas_task *t) {
     if(!t || !t->mm || !t->wait.futex_mask ||

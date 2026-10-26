@@ -12,6 +12,7 @@ static void arm(struct nas_task *t,struct nas_mm *mm,uint64_t va,uint32_t mask) 
     assert(nas_futex_wait_arm(t));
     t->wait.pending_valid=true;t->wait.blocked_op=NAS_SC_futex;
     t->state=NAS_TASK_BLOCKED;
+    t->resume_valid=true;
 }
 int main(void) {
     arm(&a,&mm1,0x1000,1);arm(&b,&mm1,0x1000,2);
@@ -19,15 +20,18 @@ int main(void) {
     arm(&e,&mm1,0x2000,1);
     assert(!nas_futex_wait_arm(&a));
     assert(nas_futex_wait_wake(&mm1,0x1000,1,2)==1);
-    assert(b.wait.futex_woken && !a.wait.futex_woken && !c.wait.futex_woken);
+    assert(b.wait.futex_woken && b.state==NAS_TASK_READY &&
+           a.state==NAS_TASK_BLOCKED && !c.wait.futex_woken);
     assert(!b.kernel_wait.queue);
     assert(nas_futex_wait_wake(&mm1,0x1000,0,~0U)==0);
     assert(nas_futex_wait_requeue(&mm1,0x1000,0x2000,1)==1);
     assert(a.wait.futex_addr==0x2000);
     assert(nas_futex_wait_wake(&mm1,0x1000,4,1)==1);
-    assert(c.wait.futex_woken && !d.wait.futex_woken);
+    assert(c.wait.futex_woken && c.state==NAS_TASK_READY &&
+           !d.wait.futex_woken && d.state==NAS_TASK_BLOCKED);
     assert(nas_futex_wait_wake(&mm1,0x2000,4,1)==2);
-    assert(a.wait.futex_woken && e.wait.futex_woken);
+    assert(a.wait.futex_woken && e.wait.futex_woken &&
+           a.state==NAS_TASK_READY && e.state==NAS_TASK_READY);
     assert(nas_futex_wait_wake(&mm2,0x1000,4,1)==1);
     assert(d.wait.futex_woken);
     arm(&a,&mm1,0x4000,1);arm(&c,&mm1,0x4000,1);
