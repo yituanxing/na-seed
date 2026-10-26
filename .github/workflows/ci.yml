@@ -112,7 +112,7 @@ jobs:
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-wait-pid-abi.c -o /tmp/naseed-wait-pid && /tmp/naseed-wait-pid
       - name: Linux anonymous mmap ABI ignored fd including x86 zero-extended -1
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-mmap-abi.c -o /tmp/naseed-mmap-abi && /tmp/naseed-mmap-abi
-      - name: M93 keyed futex wait queues: wake, requeue and cancel
+      - name: M93 keyed futex wait queues (wake, requeue, cancel)
         run: sh scripts/check-m93-futex-queues.sh
       - name: M92 generic wait queues, cancellation and 3-ISA compilation
         run: sh scripts/check-m92-wait-queue.sh
