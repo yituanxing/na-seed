@@ -16,7 +16,7 @@ static void a(void){
     nas_arch_kernel_swap(&a_context,&b_context);
     assert(token==UINT64_C(0x123456789a) && ++phase==3);
     nas_arch_kernel_swap(&a_context,&main_context);
-    nas_fail("A resumed after finished");
+    abort();
 }
 static void b(void){
     volatile uint64_t token=UINT64_C(0xfedcba9876);
@@ -24,7 +24,7 @@ static void b(void){
     nas_arch_kernel_swap(&b_context,&a_context);
     assert(token==UINT64_C(0xfedcba9876) && ++phase==4);
     nas_arch_kernel_swap(&b_context,&main_context);
-    nas_fail("B resumed after finished");
+    abort();
 }
 int main(void){
     assert(!nas_kernel_context_prepare(0,a_stack,sizeof(a_stack),a));
