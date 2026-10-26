@@ -633,13 +633,19 @@ static uint16_t vpoll_tty(uint64_t fd,uint16_t events) {
     (void)fd;return dpoll_tty(0,events);
 }
 static uint16_t dpoll_pipe_read(unsigned slot,uint16_t events) {
-    return nas_pipe_poll_readable(slot) ? (events & 0x0001U) : 0;
+    if(nas_pipe_poll_readable(slot))return events & 0x0001U;
+    /* A disappeared backend must wake blocked readers to report EBADF.
+     * A normally closed writer is already readable as EOF above. */
+    return nas_pipe_read_ready(slot)?0x0018U:0;
 }
 static uint16_t vpoll_pipe_read(uint64_t fd,uint16_t events) {
     return dpoll_pipe_read(TASK.fds->entries[fd].slot,events);
 }
 static uint16_t dpoll_pipe_write(unsigned slot,uint16_t events) {
-    return nas_pipe_poll_writable(slot) ? (events & 0x0004U) : 0;
+    if(nas_pipe_poll_writable(slot))return events & 0x0004U;
+    /* A full pipe must remain blocked, but no readers means EPIPE and
+     * a blocked writer MUST wake, regardless of requested POLLOUT. */
+    return nas_pipe_write_ready(slot)?0x0018U:0;
 }
 static uint16_t vpoll_pipe_write(uint64_t fd,uint16_t events) {
     return dpoll_pipe_write(TASK.fds->entries[fd].slot,events);
