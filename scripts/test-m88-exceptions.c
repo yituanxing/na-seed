@@ -65,19 +65,19 @@ int main(void) {
     x.addr=BASE;present_access=NAS_UP_READ;
     out=nas_exception_dispatch(&x,&space);
     assert(out.action==NAS_EXC_UNHANDLED &&
-           nas_mm_handle_fault(&space,BASE,NAS_UP_WRITE)==NAS_MM_FAULT_NEEDS_COW);
+           nas_mm_handle_fault(&space,BASE,NAS_UP_WRITE,false)==NAS_MM_FAULT_NEEDS_COW);
     present_access=NAS_UP_READ|NAS_UP_WRITE;
     x.addr=BASE+4*PAGE;x.access=NAS_EXC_READ;
-    assert(nas_mm_handle_fault(&space,x.addr,NAS_UP_READ)==NAS_MM_FAULT_NEEDS_BACKING);
+    assert(nas_mm_handle_fault(&space,x.addr,NAS_UP_READ,false)==NAS_MM_FAULT_NEEDS_BACKING);
     out=nas_exception_dispatch(&x,&space);
     assert(out.action==NAS_EXC_UNHANDLED);
     unmap_mock();
     x.addr=BASE+PAGE;
     fail_alloc=true;
-    assert(nas_mm_handle_fault(&space,x.addr,NAS_UP_WRITE)==NAS_MM_FAULT_OOM);
+    assert(nas_mm_handle_fault(&space,x.addr,NAS_UP_WRITE,false)==NAS_MM_FAULT_OOM);
     fail_alloc=false;fail_prepare=true;
     unsigned before=freed;
-    assert(nas_mm_handle_fault(&space,x.addr,NAS_UP_WRITE)==NAS_MM_FAULT_OOM);
+    assert(nas_mm_handle_fault(&space,x.addr,NAS_UP_WRITE,false)==NAS_MM_FAULT_OOM);
     assert(freed==before+1 && !present_pa);
     fail_prepare=false;
     x.user=false;

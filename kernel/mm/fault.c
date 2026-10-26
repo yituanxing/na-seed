@@ -10,7 +10,7 @@
  * File/private snapshot faults MUST NOT be replaced with zero-filled data;
  * write-protected resident pages MUST NOT have COW bypassed. */
 enum nas_mm_fault_result nas_mm_handle_fault(struct nas_mm *mm,uint64_t addr,
-                                             unsigned access) {
+                                             unsigned access,bool hardware_protection_fault) {
     if(!mm || !mm->users || !mm->root_phys || addr>=USER_LIMIT ||
        !(access&(NAS_UP_READ|NAS_UP_WRITE|NAS_UP_EXEC)) ||
        (access&~(NAS_UP_READ|NAS_UP_WRITE|NAS_UP_EXEC)))
@@ -30,6 +30,7 @@ enum nas_mm_fault_result nas_mm_handle_fault(struct nas_mm *mm,uint64_t addr,
                                          NAS_MM_FAULT_ACCERR;
         return NAS_MM_FAULT_INVARIANT; /* HW fault with usable user PTE */
     }
+    if(hardware_protection_fault)return NAS_MM_FAULT_INVARIANT;
     if(vma->kind!=NAS_VMA_ANON_PRIVATE &&
        vma->kind!=NAS_VMA_HEAP && vma->kind!=NAS_VMA_STACK)
         return NAS_MM_FAULT_NEEDS_BACKING;

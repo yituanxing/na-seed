@@ -7,7 +7,7 @@ struct nas_exception nas_exception_x86(unsigned vector,uint64_t error,
                                        uint64_t cr2,uint64_t pc,uint64_t cs) {
     struct nas_exception e={.pc=pc,.addr=cr2,.user=(cs&3U)==3U};
     if(vector==14U){
-        e.kind=NAS_EXC_MEMORY;
+        e.kind=(error&8U)?NAS_EXC_OTHER:NAS_EXC_MEMORY;
         e.present=(error&1U)!=0;
         e.access=(error&16U)?NAS_EXC_EXEC:((error&2U)?NAS_EXC_WRITE:NAS_EXC_READ);
     } else if(vector==1U)e.kind=NAS_EXC_SINGLE_STEP;
@@ -37,8 +37,10 @@ struct nas_exception nas_exception_arm64(uint64_t esr,uint64_t spsr,
     if(ec==0x3cU){e.kind=NAS_EXC_BREAKPOINT;return e;}
     if(ec==0x32U){e.kind=NAS_EXC_SINGLE_STEP;return e;}
     if(ec==0x20U||ec==0x21U||ec==0x24U||ec==0x25U){
-        e.kind=NAS_EXC_MEMORY;
-        e.present=(((unsigned)esr&0x3cU)==0x0cU);
+        unsigned fsc=(unsigned)esr&63U;
+        e.kind=fsc==0x21U?NAS_EXC_ALIGNMENT:
+               (fsc>=4U&&fsc<=15U)?NAS_EXC_MEMORY:NAS_EXC_OTHER;
+        e.present=(fsc>=12U&&fsc<=15U);
         e.access=(ec==0x20U||ec==0x21U)?NAS_EXC_EXEC:
                  ((esr&0x40U)?NAS_EXC_WRITE:NAS_EXC_READ);
     } else if(ec==0x22U||ec==0x26U)e.kind=NAS_EXC_ALIGNMENT;
@@ -51,7 +53,7 @@ struct nas_exception_outcome nas_exception_dispatch(const struct nas_exception *
      * a user signal from a kernel-mode fault would hide kernel corruption. */
     if(!e || !e->user)return out;
     if(e->kind==NAS_EXC_MEMORY){
-        enum nas_mm_fault_result status=nas_mm_handle_fault(mm,e->addr,e->access);
+        enum nas_mm_fault_result status=nas_mm_handle_fault(mm,e->addr,e->access,e->present);
         if(status==NAS_MM_FAULT_RESOLVED){out.action=NAS_EXC_RETRY;return out;}
         if(status==NAS_MM_FAULT_MAPERR||status==NAS_MM_FAULT_ACCERR){
             out.action=NAS_EXC_SIGNAL;
