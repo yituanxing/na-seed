@@ -1,0 +1,5 @@
+# Host-installed original Alpine 3.23 signed binaries and dependencies.
+# libdw/elfutils and libmusl dependencies are installed by apk, not mocked.
+musl
+busybox
+strace
