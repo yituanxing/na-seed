@@ -56,6 +56,48 @@ bool nas_arm_pt_init(struct nas_arm_pt *pt, unsigned levels) {
     pt->levels = levels;
     return true;
 }
+
+bool nas_arm_pt_prepare(const struct nas_arm_pt *pt,uint64_t va) {
+    if(!valid_user(pt,va) || (va&OFF_MASK))return false;
+    uint64_t *tab=table(pt->root_pa);
+    uint64_t *parents[3];uint64_t made_pa[3];unsigned made=0;
+    for(unsigned level=pt->levels-1;level>0;level--) {
+        uint64_t *slot=&tab[IDX(va,level)];
+        if(!*slot) {
+            uint64_t pa=nas_frame_alloc();
+            if(!frame_pa(pa)) {if(pa)(void)nas_frame_free(pa);goto fail;}
+            *slot=pa|DESCRIPTOR;
+            parents[made]=slot;made_pa[made]=pa;made++;
+        }else if(!is_table(*slot))goto fail;
+        tab=table(*slot&PA_MASK);
+    }
+    uint64_t leaf=tab[IDX(va,0)];
+    if(!leaf || ((leaf&3)==DESCRIPTOR && (leaf&AF) &&
+                 (leaf&AP_EL0)))return true;
+fail:
+    while(made){--made;*parents[made]=0;(void)nas_frame_free(made_pa[made]);}
+    return false;
+}
+bool nas_arm_pt_exchange(const struct nas_arm_pt *pt,uint64_t va,
+                         uint64_t new_pa,unsigned access,uint64_t *old_pa) {
+    if(!old_pa || !valid_user(pt,va) || (va&OFF_MASK) ||
+       (new_pa && (!frame_pa(new_pa) || !(access&NAS_UP_READ) ||
+                   (access&~7U))) || (!new_pa && access))return false;
+    uint64_t *tab=table(pt->root_pa);
+    for(unsigned level=pt->levels-1;level>0;level--) {
+        uint64_t entry=tab[IDX(va,level)];
+        if(!is_table(entry))return false;
+        tab=table(entry&PA_MASK);
+    }
+    uint64_t *leaf=&tab[IDX(va,0)];uint64_t prev=*leaf;
+    if(prev && ((prev&3)!=DESCRIPTOR || !(prev&AF) ||
+                !(prev&AP_EL0)))return false;
+    *leaf=new_pa ? new_pa|DESCRIPTOR|ATTR_NORMAL|AP_EL0|SH_INNER|AF|PXN|
+          ((access&NAS_UP_WRITE)?0:AP_RO)|
+          ((access&NAS_UP_EXEC)?0:UXN) : 0;
+    *old_pa=prev?(prev&PA_MASK):0;
+    return true;
+}
 bool nas_arm_pt_map(struct nas_arm_pt *pt, uint64_t va,
                     uint64_t pa, uint64_t access) {
     /* First user-stage contract: readable EL0 page, optional write/execute.

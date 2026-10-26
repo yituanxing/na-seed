@@ -213,6 +213,26 @@ static uint64_t *user_leaf(uint64_t va, bool allocate_tables) {
     }
     return &phys_table(table)[(va >> 12) & 511];
 }
+bool nas_mmu_prepare_leaf(uint64_t va) {
+    uint64_t *pte=user_leaf(va,true);
+    return pte && (!*pte || ((*pte&(P_PRESENT|P_USER))==(P_PRESENT|P_USER)));
+}
+bool nas_mmu_exchange_leaf(uint64_t va,uint64_t new_pa,unsigned prot,
+                           uint64_t *old_pa) {
+    if(!old_pa || (new_pa && ((new_pa&(PAGE-1)) ||
+       !nas_vm_prot_supported(prot) || !nas_arch_nx_enabled())) ||
+       (!new_pa && prot))return false;
+    uint64_t *pte=user_leaf(va,false);
+    if(!pte || (*pte && ((*pte&(P_PRESENT|P_USER))!=(P_PRESENT|P_USER))))
+        return false;
+    uint64_t previous=*pte;
+    const uint64_t nx=1ULL<<63;
+    *pte=new_pa ? new_pa|P_PRESENT|P_USER|
+        ((prot&NAS_VM_WRITE)?P_RW:0)|((prot&NAS_VM_EXEC)?0:nx) : 0;
+    nas_arch_invalidate_page(va);
+    *old_pa=(previous&P_PRESENT)?(previous&PHYS_MASK):0;
+    return true;
+}
 bool nas_mmu_map_page(uint64_t va, bool writable) {
     uint64_t *entry = user_leaf(va, true);
     if (!entry) return false;

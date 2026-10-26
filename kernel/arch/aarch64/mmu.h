@@ -20,6 +20,9 @@ struct nas_arm_pt {
 };
 uint64_t nas_arm_pt_user_limit(unsigned levels);
 bool nas_arm_pt_init(struct nas_arm_pt *, unsigned levels);
+bool nas_arm_pt_prepare(const struct nas_arm_pt *,uint64_t va);
+bool nas_arm_pt_exchange(const struct nas_arm_pt *,
+                       uint64_t va,uint64_t new_pa,unsigned access,uint64_t *old_pa);
 bool nas_arm_pt_map(struct nas_arm_pt *, uint64_t va,
                     uint64_t pa, uint64_t access);
 bool nas_arm_pt_translate(const struct nas_arm_pt *, uint64_t va,

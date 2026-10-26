@@ -19,6 +19,11 @@ typedef bool (*nas_user_pt_visit)(uint64_t va, uint64_t pa,
 unsigned nas_arch_pt_active_levels(void);
 bool nas_arch_pt_new(struct nas_user_space *space, unsigned levels);
 void nas_arch_pt_destroy(struct nas_user_space *space);
+/* Prepare missing PT directories without creating a leaf; exchange may
+ * replace a present page or install/clear a leaf without allocating. */
+bool nas_arch_pt_prepare(const struct nas_user_space *,uint64_t va);
+bool nas_arch_pt_exchange(const struct nas_user_space *,uint64_t va,
+                           uint64_t new_pa,unsigned access,uint64_t *old_pa);
 bool nas_arch_pt_map(const struct nas_user_space *space, uint64_t va,
                      uint64_t pa, unsigned access);
 bool nas_arch_pt_lookup(const struct nas_user_space *space, uint64_t va,

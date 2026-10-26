@@ -25,6 +25,18 @@ bool nas_rv_pt_smoke(void) {
         if (!nas_rv_pt_translate(&pt, second + 0x456, &pa, &perms) ||
             pa != data_b + 0x456 || (perms & NAS_RV_PTE_W) ||
             !(perms & NAS_RV_PTE_X)) return false;
+        /* M86: preallocate directories, exchange leaf without allocation,
+         * return displaced owner to caller, and remove without freeing data. */
+        uint64_t transient=nas_frame_alloc(), removed=0;
+        const uint64_t candidate=0x00400000ULL;
+        if(!transient || !nas_rv_pt_prepare(&pt,candidate) ||
+           !nas_rv_pt_exchange(&pt,candidate,transient,
+                NAS_UP_READ|NAS_UP_WRITE,&removed) || removed ||
+           !nas_rv_pt_translate(&pt,candidate,&pa,0) || pa!=transient ||
+           !nas_rv_pt_exchange(&pt,candidate,0,0,&removed) ||
+           removed!=transient ||
+           nas_rv_pt_translate(&pt,candidate,&pa,0) ||
+           !nas_frame_free(removed))return false;
         if (nas_rv_pt_map(&pt, first, data_b, NAS_RV_PTE_R | NAS_RV_PTE_U))
             return false; /* no destructive remap */
         if (nas_rv_pt_map(&pt, nas_rv_pt_user_limit(levels), data_a,

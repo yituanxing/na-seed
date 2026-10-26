@@ -14,6 +14,14 @@ bool nas_mmu_walk_user_mapping(uint64_t root_phys,nas_mmu_user_visit visit,void 
 /* A chosen VM owner (not the executing task). Output PA includes offset. */
 bool nas_mmu_resolve_user_address(uint64_t selected_root,uint64_t user_va,
                                   uint64_t *physical,unsigned *access);
+/* M86 transaction contract: prepare allocates any missing intermediate tables
+ * without installing a user leaf. Exchange allocates nothing and transfers
+ * physical-frame ownership to/from the PTE; caller releases old_pa.
+ * The TLB is invalidated before a successful exchange returns.
+ * For a PROT_NONE replacement pass new_pa=0 and prot=0. */
+bool nas_mmu_prepare_leaf(uint64_t va);
+bool nas_mmu_exchange_leaf(uint64_t va,uint64_t new_pa,unsigned prot,
+                           uint64_t *old_pa);
 #if defined(__x86_64__)
 #include "x86_64/mmu.h"
 #elif defined(__riscv) && __riscv_xlen == 64

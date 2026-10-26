@@ -63,6 +63,51 @@ bool nas_rv_pt_init(struct nas_rv_page_table *pt, unsigned levels) {
     pt->levels = levels;
     return true;
 }
+
+/* Precreate only directory frames. Roll back freshly allocated directories
+ * if preparation fails; do not touch existing leaf entries or data frames. */
+bool nas_rv_pt_prepare(const struct nas_rv_page_table *pt,uint64_t va) {
+    if(!good_user_va(pt,va) || (va&PAGE_MASK))return false;
+    uint64_t *tab=table_at(pt->root_pa);
+    uint64_t *parents[4];uint64_t made_pa[4];unsigned made=0;
+    for(unsigned level=pt->levels-1;level>0;level--) {
+        uint64_t *slot=&tab[(va>>(12+9*level))&511];
+        if(!*slot) {
+            uint64_t pa=nas_frame_alloc();
+            if(!good_page_pa(pa)) {if(pa)(void)nas_frame_free(pa);goto fail;}
+            *slot=((pa>>12)<<10)|V;
+            parents[made]=slot;made_pa[made]=pa;made++;
+        } else if(!table_entry(*slot))goto fail;
+        tab=table_at(entry_pa(*slot));
+    }
+    uint64_t leaf=tab[(va>>12)&511];
+    if(!leaf || ((leaf&V)&&(leaf&U)&&(leaf&(R|X))&&
+                  !((leaf&W)&&!(leaf&R))))return true;
+fail:
+    while(made) {--made;*parents[made]=0;(void)nas_frame_free(made_pa[made]);}
+    return false;
+}
+bool nas_rv_pt_exchange(const struct nas_rv_page_table *pt,uint64_t va,
+                        uint64_t new_pa,unsigned access,uint64_t *old_pa) {
+    if(!old_pa || !good_user_va(pt,va) || (va&PAGE_MASK) ||
+       (new_pa && (!good_page_pa(new_pa) || !(access&NAS_UP_READ) ||
+                   (access&~7U))) || (!new_pa && access))return false;
+    uint64_t *tab=table_at(pt->root_pa);
+    for(unsigned level=pt->levels-1;level>0;level--) {
+        uint64_t entry=tab[(va>>(12+9*level))&511];
+        if(!table_entry(entry))return false;
+        tab=table_at(entry_pa(entry));
+    }
+    uint64_t *leaf=&tab[(va>>12)&511];
+    uint64_t prev=*leaf;
+    if(prev && (!(prev&V)||!(prev&U)||!(prev&(R|X))))return false;
+    uint64_t flags=U|R|((access&NAS_UP_WRITE)?W:0)|
+                   ((access&NAS_UP_EXEC)?X:0);
+    *leaf=new_pa ? ((new_pa>>12)<<10)|V|flags|A|
+            ((flags&W)?D:0) : 0;
+    *old_pa=prev?entry_pa(prev):0;
+    return true;
+}
 bool nas_rv_pt_map(struct nas_rv_page_table *pt, uint64_t va,
                    uint64_t pa, uint64_t perms) {
     if (!good_user_va(pt, va) || (va & PAGE_MASK) ||
