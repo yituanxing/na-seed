@@ -527,6 +527,7 @@ retry_schedule: ; /* label must precede a statement in C11 */
             nas_print("\n");
         }
     }
+    nas_ptrace_dump_debug();
     sched_fail("scheduler deadlock: all live tasks blocked; no ready process");
 }
 uint64_t nas_task_block(uint64_t *frame, enum nas_syscall_op nr,

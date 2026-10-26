@@ -10,6 +10,25 @@
 #include "../mm/usercopy.h"
 #include "../mm/vm.h"
 #include "../lib/string.h"
+extern void nas_print(const char *);
+extern void nas_dec(uint64_t);
+static struct ptrace_req_debug {uint64_t req,pid,signal,ret,state,report;} ptrace_history[32];
+static unsigned ptrace_hist_idx;
+void nas_ptrace_dump_debug(void) {
+    nas_print("[PTRACE DIAG] latest requests:\n");
+    unsigned count=ptrace_hist_idx<32?ptrace_hist_idx:32;
+    for(unsigned j=0;j<count;j++){
+        const struct ptrace_req_debug *d=&ptrace_history[(ptrace_hist_idx-count+j)%32];
+        nas_print("[PTRACE DIAG] req=");nas_dec(d->req);
+        nas_print(" pid=");nas_dec(d->pid);
+        nas_print(" sig=");nas_dec(d->signal);
+        nas_print(" ret=");nas_dec(d->ret);
+        nas_print(" state=");nas_dec(d->state);
+        nas_print(" report=");nas_dec(d->report);
+        nas_print("\n");
+    }
+}
+
 
 #define PTRACE_TRACEME 0ULL
 #define PTRACE_ATTACH 16ULL
@@ -255,7 +274,7 @@ static uint64_t ptrace_gprs(const struct nas_task *task,
 #endif
     return (uint64_t)-EOPNOTSUPP;
 }
-uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
+static uint64_t nas_ptrace_request_inner(uint64_t request,uint64_t raw_pid,
                              uint64_t addr,uint64_t data) {
     struct nas_task *self=nas_current_task;
     /* Unlike a supported operation on a tracee we do not own, these
@@ -390,4 +409,15 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
         default:
             return (uint64_t)-EOPNOTSUPP;
     }
+}
+
+uint64_t nas_ptrace_request(uint64_t request,uint64_t pid,
+                             uint64_t addr,uint64_t data) {
+    uint64_t result=nas_ptrace_request_inner(request,pid,addr,data);
+    struct ptrace_req_debug *d=&ptrace_history[ptrace_hist_idx++%32];
+    d->req=request;d->pid=pid;d->signal=data;d->ret=result;
+    struct nas_task *t=nas_task_by_pid(pid);
+    d->state=t?t->state:0;
+    d->report=t?t->stop_report_pending:0;
+    return result;
 }

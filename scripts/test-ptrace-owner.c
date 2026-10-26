@@ -6,6 +6,8 @@
 #include "../kernel/errno.h"
 
 static struct nas_task tracer, tracee, stranger;
+void nas_print(const char *s){(void)s;}
+void nas_dec(uint64_t n){(void)n;}
 uint64_t nas_signal_kill(uint64_t pid,uint64_t signo,uint64_t *frame){
     (void)pid;(void)signo;(void)frame;return 0;
 }

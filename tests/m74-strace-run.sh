@@ -19,7 +19,7 @@ if ! /usr/bin/strace -p "$target" -o /tmp/m74-attach.trace \
 fi
 wait "$target"
 if ! /bin/busybox grep -q 'm74-target-exited' /tmp/m74-target.stdout ||
-   ! /bin/busybox grep -Eq '(wait4|clone|execve|exit_group)\\(' /tmp/m74-attach.trace; then
+   ! /bin/busybox grep -Eq '(wait4|clone|execve|exit_group)\(' /tmp/m74-attach.trace; then
   echo '[M74 FAIL] no true target activity observed by attached strace'
   /bin/busybox cat /tmp/m74-strace.stderr || :
   /bin/busybox head -c 5000 /tmp/m74-attach.trace || :
