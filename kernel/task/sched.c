@@ -256,7 +256,10 @@ uint64_t nas_task_schedule(uint64_t *frame) {
         self->resume_valid=true;
         self->state=NAS_TASK_READY;
     }
+    if(frame) self->native_trap_frame=(uint64_t)(uintptr_t)frame;
     native_park(self);
+    /* Ptrace may have modified the parked Task's register snapshot. */
+    nas_arch_load_user_frame(self,frame);
     return nas_arch_saved_return(self);
 }
 bool nas_sched_preempt_select(void) {
@@ -282,13 +285,17 @@ uint64_t nas_task_block(uint64_t *frame,enum nas_syscall_op nr,
     self->wait.blocked_args[2]=c;
     self->wait.blocked_args[3]=d;
     self->state=NAS_TASK_BLOCKED;
+    if(frame)self->native_trap_frame=(uint64_t)(uintptr_t)frame;
     for(;;) {
         native_park(self);
+        nas_arch_load_user_frame(self,frame);
         uint64_t result=nas_arch_saved_return(self);
         enum nas_blocked_completion outcome=nas_blocked_complete(self,&result);
         if(outcome==NAS_BLOCKED_COMPLETE)return result;
-        if(outcome==NAS_BLOCKED_TERMINATED)
+        if(outcome==NAS_BLOCKED_TERMINATED) {
+            native_park(self);
             sched_fail("terminated Task resumed native continuation");
+        }
         self->resume_valid=true;
         if(outcome==NAS_BLOCKED_RETRY)self->state=NAS_TASK_BLOCKED;
     }

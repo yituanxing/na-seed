@@ -39,8 +39,13 @@ void nas_arch_load_user_frame(const struct nas_task *task, uint64_t *frame) {
 
 /* First dispatch starts on a private bootstrap stack, then IRET resumes
  * exactly the saved Linux user-register context on the Task entry stack. */
-void nas_arch_pin_live_trap(struct nas_task *t) { (void)t; }
-void nas_arch_bind_live_trap(const struct nas_task *t) { (void)t; }
+void nas_arch_pin_live_trap(struct nas_task *t) {
+    if(!t)nas_fail("x86 native park missing Task");
+}
+void nas_arch_bind_live_trap(const struct nas_task *t) {
+    if(t && t->native_trap_frame)
+        nas_arch_load_user_frame(t,(uint64_t *)(uintptr_t)t->native_trap_frame);
+}
 extern _Noreturn void nas_x86_user_resume_frame(uint64_t *);
 _Noreturn void nas_arch_resume_saved_user(void) {
     struct nas_task *t=nas_current_task;

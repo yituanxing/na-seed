@@ -122,7 +122,7 @@ void nas_arch_restore_cpu(const struct nas_task *task) {
     if (!nas_task_kernel_stack_ok(task)) nas_fail("RV64 switching to invalid stack");
     nas_rv_entry_stack_top = task->kernel_stack_top;
     nas_mmu_switch_root(nas_task_page_root(task));
-    if(live) live->x[4]=nas_task_tls_base(task);
+    /* Never write to another suspended Task's live trap image. */
     nas_rv_restore_fp(task->arch.fp_regs);
 }
 uint64_t nas_arch_signal_user_sp(void) {
@@ -163,7 +163,7 @@ void nas_arch_pin_live_trap(struct nas_task *t) {
 }
 void nas_arch_bind_live_trap(const struct nas_task *t) {
     live=t && t->native_trap_frame ?
-         (struct nas_rv_trap_frame *)(uintptr_t)t->native_trap_frame : 0;
+         (struct nas_rv_trap_frame *)(uintptr_t)t->native_trap_frame : 0;    if(live)nas_arch_load_user_frame(t,0);
 }
 extern _Noreturn void nas_rv_user_resume_frame(struct nas_rv_trap_frame *);
 _Noreturn void nas_arch_resume_saved_user(void) {

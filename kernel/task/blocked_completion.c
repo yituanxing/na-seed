@@ -21,15 +21,11 @@
 #define TASK (*nas_current_task)
 #define signal_actions TASK.sighand->actions
 #define blocked_signals TASK.blocked_signals
-/* Cooperative syscall-boundary scheduler. Per-task entry stacks are
- * distinct, but kernel C continuations are still unwound before switching.
- * Parked syscalls are re-issued ONLY after their wake condition and after
- * the task's own CR3/TLS/FPU state are restored.
- * Thus a switched task always receives the real read/write/wait4 result;
- * a fabricated success or USER RIP rewind would corrupt Linux userspace.
- */
+/* The blocked syscall's original C call chain resumes on its own Task
+ * kernel stack before a genuine I/O retry. This is no longer a scheduler
+ * replay of an abandoned syscall frame. */
 /* Kernel-owned I/O/child/futex readiness is in task/wait.c. */
-static uint64_t task_replay(struct nas_task *task) {
+static uint64_t task_retry_in_resumed_context(struct nas_task *task) {
     enum nas_syscall_op nr = (enum nas_syscall_op)task->wait.blocked_op;
     const uint64_t *a = task->wait.blocked_args;
     if (nas_signal_user_pending(task)) {
@@ -95,7 +91,7 @@ enum nas_blocked_completion nas_blocked_complete(struct nas_task *task,
     if(!task->wait.pending_valid)return NAS_BLOCKED_COMPLETE;
     const enum nas_syscall_op nr=(enum nas_syscall_op)task->wait.blocked_op;
     const uint64_t fd=task->wait.blocked_args[0];
-    const uint64_t rc=task_replay(task);
+    const uint64_t rc=task_retry_in_resumed_context(task);
     const bool writing=nr==NAS_SC_write || nr==NAS_SC_writev;
     if((int64_t)rc==-EPIPE && writing) {
         if(nas_sched_sigpipe_default(fd)) {

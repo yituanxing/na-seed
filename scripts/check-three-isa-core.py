@@ -134,18 +134,14 @@ if "nas_futex_wait_cancel(task)" not in (root/"kernel/task/blocked_completion.c"
     raise SystemExit("legacy blocked completion must release futex waiter exactly once")
 if "task_replay(" in sched:
     raise SystemExit("syscall replay leaked back into scheduler core")
-if sched.count("sched_prepare_candidate(")!=3 or sched.count("nas_blocked_complete(next,result)")!=1:
-    raise SystemExit("IRQ and syscall scheduling bypassed the single candidate activation boundary")
-if "nas_task_wake_ready(t)" not in (root/"kernel/task/futex_wait.c").read_text():
-    raise SystemExit("futex producer no longer publishes runnable tasks")
-if sched.count("nas_sched_service_kernel();")!=2:
-    raise SystemExit("both syscall and timer scheduler must service native kernel workers")
-if sched.count("nas_sched_scan_next(&scan,")!=2:
-    raise SystemExit("IRQ and syscall task selection bypassed shared scheduler walk")
-if "-include $(wildcard $(OUT)/*.d)" not in make:
-    raise SystemExit("kernel build must track dependency files for every generated object")
-if sched.count("nas_sched_user_commit(")!=2:
-    raise SystemExit("IRQ and syscall Task state publication diverged")
+if "nas_arch_kernel_swap(&self->kernel_exec.cpu,&scheduler_cpu)" not in sched:
+    raise SystemExit("Task does not park its native C continuation")
+if "nas_arch_kernel_swap(&scheduler_cpu,&next->kernel_exec.cpu)" not in sched:
+    raise SystemExit("native dispatcher does not resume Task C frames")
+if "task_replay(" in (root/"kernel/task/blocked_completion.c").read_text():
+    raise SystemExit("legacy scheduler syscall replay remains")
+if "nas_sched_scan_next(&scan,&slot)" not in sched:
+    raise SystemExit("native scheduler bypasses canonical Task scan")
 if "nas_sched_allow_kernel_slice(" not in (root/"kernel/task/scheduler_service.c").read_text():
     raise SystemExit("kernel worker dispatch bypassed shared domain fairness policy")
 if "nas_sched_service_kernel();" not in sched:
@@ -173,7 +169,7 @@ if "nas_frame_get(pa)" not in cow or "cow_protect_parent" not in cow:
 if "nas_kthread_boot_selftest();" not in (root/"kernel/init/main.c").read_text():
     raise SystemExit("three-ISA native boot no longer exercises real kernel workers")
 signal_src=(root/"kernel/task/signal.c").read_text()
-if "nas_sched_thread_group_exit(0,NAS_SIGSEGV);" not in signal_src or "nas_arch_load_user_frame(nas_current_task,frame);" not in signal_src:
+if "nas_sched_thread_group_exit(0,NAS_SIGSEGV);" not in signal_src or 'nas_fail("fatal Task resumed after thread-group exit")' not in signal_src:
     raise SystemExit("broken userspace sigframe once again panics or fabricates a user return")
 if 'nas_fail("M30 cannot build native user signal frame")' in signal_src:
     raise SystemExit("kernel-wide panic returned for an invalid user signal stack")

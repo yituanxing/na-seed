@@ -6,6 +6,7 @@
 #include "../arch/mmu.h"
 #include "../fd.h"
 #include "../mm/usercopy.h"
+#include "../mm/vm.h"
 #include "process.h"
 #include "wait_pid.h"
 #include "../time/clock.h"
@@ -70,31 +71,24 @@ static uint64_t fork_common(uint64_t *frame, uint64_t child_tid) {
     child->mm=nas_mm_fork_cow(parent->mm);
     if (!child->mm) { nas_task_release(child); return (uint64_t)-ENOMEM; }
     if (!nas_task_hold_files(child)) proc_fail("fork dangling open-file slot");
-    nas_arch_set_saved_return(parent, child->pid);
-    parent->resume_valid = true;
-    nas_task_wait_reset(parent);
-    parent->state = NAS_TASK_READY;
-    if(nas_ptrace_fork_created(parent,child,NAS_PTRACE_EVENT_FORK,frame))
-        return nas_task_schedule(frame);
-    child->state = NAS_TASK_RUNNING;
-    nas_current_task = child;
-    nas_arch_restore_cpu(child);
-    if (child_tid) {
-        /* Entire 4-byte write uses the child CR3/satp copy. Parent's
-         * memory must retain its independent old contents. */
+    nas_arch_set_saved_return(parent,child->pid);
+    nas_arch_set_saved_return(child,0);
+    child->resume_valid=true;
+    /* The parent still owns its live kernel C stack. New child begins
+     * later via its independent native first-dispatch context. */
+    if(child_tid) {
         uint32_t tid=(uint32_t)child->pid;
         uint8_t bytes[4]={(uint8_t)tid,(uint8_t)(tid>>8),
-                          (uint8_t)(tid>>16),(uint8_t)(tid>>24)};
-        if (!nas_user_write_bytes(child_tid,bytes,sizeof(bytes)))
-            proc_fail("clone child_tid write failed after writable validation");
+                           (uint8_t)(tid>>16),(uint8_t)(tid>>24)};
+        if(nas_vm_write_task_bytes(child,child_tid,bytes,sizeof(bytes))!=4)
+            proc_fail("child TID failed in child's independently owned MM");
         child->thread_clear_tid=child_tid;
-        nas_print("[PROC] clone child TID initialized pid=");
-        nas_dec(child->pid);
-        nas_print("\n");
     }
+    if(nas_ptrace_fork_created(parent,child,NAS_PTRACE_EVENT_FORK,frame))
+        return nas_task_schedule(frame);
     nas_print("[PROC] fork parent="); nas_dec(parent->pid);
     nas_print(" child="); nas_dec(child->pid); nas_print("\n");
-    return 0; /* shared syscall decoder sees zero in new child */
+    return child->pid;
 }
 uint64_t nas_process_fork(uint64_t *frame) {
     return fork_common(frame,0);
@@ -124,23 +118,20 @@ uint64_t nas_process_vfork(uint64_t *frame, uint64_t child_stack) {
         nas_arch_context_set_user_sp(&child->arch, child_stack);
     if (!nas_task_hold_files(child))
         proc_fail("vfork dangling file description");
-    nas_arch_set_saved_return(parent, child->pid);
-    parent->vfork_child_pid = child->pid;
-    parent->resume_valid = true;
-    nas_task_wait_reset(parent);
-    parent->state = NAS_TASK_BLOCKED;
+    nas_arch_set_saved_return(parent,child->pid);
+    nas_arch_set_saved_return(child,0);
+    child->resume_valid=true;
+    parent->vfork_child_pid=child->pid;
+    parent->resume_valid=true;
+    parent->state=NAS_TASK_BLOCKED;
     if(nas_ptrace_fork_created(parent,child,NAS_PTRACE_EVENT_VFORK,frame))
         return nas_task_schedule(frame);
-    child->state = NAS_TASK_RUNNING;
-    nas_current_task = child;
-    nas_arch_restore_cpu(child);
-    /* This path changes the child SP. Unlike fork with an inherited stack,
-     * the live trap frame must be replaced, not only the saved Task copy. */
-    nas_arch_load_user_frame(child, frame);
+    /* Parent must keep its syscall C frame until child execs or exits. */
+    (void)nas_task_schedule(frame);
     nas_print("[PROC] vfork parent="); nas_dec(parent->pid);
     nas_print(" child="); nas_dec(child->pid);
     nas_print(" shared VM\n");
-    return 0;
+    return child->pid;
 }
 void nas_process_vfork_release(void) {
     struct nas_task *child = nas_current_task;
@@ -462,18 +453,13 @@ uint64_t nas_process_clone_thread(uint64_t *frame,uint64_t stack,
         !nas_user_write_bytes(child_tid,value,sizeof(value)))
         proc_fail("thread TID store failed after validation");
     nas_arch_set_saved_return(parent,child->pid);
-    parent->resume_valid=true;
-    nas_task_wait_reset(parent);
-    parent->state=NAS_TASK_READY;
+    nas_arch_set_saved_return(child,0);
+    child->resume_valid=true;
     if(nas_ptrace_fork_created(parent,child,NAS_PTRACE_EVENT_CLONE,frame))
         return nas_task_schedule(frame);
-    child->state=NAS_TASK_RUNNING;
-    nas_current_task=child;
-    nas_arch_restore_cpu(child);
-    nas_arch_load_user_frame(child,frame);
     nas_print("[THREAD] clone tid=");nas_dec(child->pid);
     nas_print(" tgid=");nas_dec(child->tgid);nas_print("\n");
-    return 0;
+    return child->pid;
 }
 #ifdef NASEED_SYSCALL_TRACE
 static unsigned futex_trace_count;

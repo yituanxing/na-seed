@@ -535,14 +535,8 @@ void nas_signal_user_return(uint64_t *frame) {
                 /* Do not attempt to construct a second sigframe on the
                  * same broken user stack or re-deliver a corrupt handler. */
                 nas_sched_thread_group_exit(0,NAS_SIGSEGV);
-                uint64_t resumed=nas_task_schedule(frame);
-                if(!nas_current_task || nas_current_task==t ||
-                   nas_current_task->state!=NAS_TASK_RUNNING)
-                    nas_fail("M100 fatal signal did not switch user Task");
-                nas_arch_set_saved_return(nas_current_task,resumed);
-                nas_arch_load_user_frame(nas_current_task,frame);
-                restarted=true;
-                break;
+                (void)nas_task_schedule(frame);
+                nas_fail("fatal Task resumed after thread-group exit");
             }
             t->pending_signals &= ~(1ULL<<(sig-1));
             t->signal_force_deliver &= ~(1ULL<<(sig-1));
