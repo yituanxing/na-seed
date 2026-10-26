@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdint.h>
+#include <string.h>
 #include "../kernel/task.h"
 #include "../kernel/task/ptrace.h"
 #include "../kernel/syscall/ops.h"
@@ -7,6 +8,7 @@
 
 static struct nas_task tracer, tracee, stranger;
 static unsigned ptrace_notifications;
+static uint64_t peek_result;
 void nas_signal_ptrace_stop(const struct nas_task *tracee){
     if(tracee && tracee->ptrace_tracer_pid && tracee->stop_report_pending)
         ptrace_notifications++;
@@ -20,11 +22,20 @@ struct nas_task *nas_task_at(unsigned slot){
 uint64_t nas_arch_signal_user_sp(void){return 0;}
 void nas_arch_save_user_frame(struct nas_task *t,const uint64_t *f){(void)t;(void)f;}
 void nas_arch_save_fpu(struct nas_task *t){(void)t;}
-int64_t nas_vm_read_task_bytes(const struct nas_task *t,uint64_t va,uint8_t *dst,uint64_t n){(void)t;(void)va;(void)dst;(void)n;return -EFAULT;}
+int64_t nas_vm_read_task_bytes(const struct nas_task *t,uint64_t va,uint8_t *dst,uint64_t n){
+    if(t!=&tracee || va!=0x1000 || n!=8)return -EFAULT;
+    const uint64_t expected=UINT64_C(0xf0e1d2c3b4a59687);
+    memcpy(dst,&expected,8);
+    return 8;
+}
 int64_t nas_vm_write_task_bytes(const struct nas_task *t,uint64_t va,const uint8_t *src,uint64_t n){(void)t;(void)va;(void)src;(void)n;return -EFAULT;}
 bool nas_user_read_bytes(uint64_t a,uint8_t *d,uint64_t n){(void)a;(void)d;(void)n;return false;}
 bool nas_user_write_bytes(uint64_t a,const uint8_t *s,uint64_t n){(void)a;(void)s;(void)n;return false;}
-bool nas_user_write_u64(uint64_t a,uint64_t v){(void)a;(void)v;return false;}
+bool nas_user_write_u64(uint64_t a,uint64_t v){
+    if(a!=(uint64_t)(uintptr_t)&peek_result)return false;
+    peek_result=v;
+    return true;
+}
 
 struct nas_task *nas_current_task;
 struct nas_task *nas_task_by_pid(uint64_t pid) {
@@ -62,6 +73,23 @@ int main(void) {
     assert(tracee.ptrace_options==0x51);
     assert((int64_t)nas_ptrace_request(0x4200,2,0,0x40000000ULL)==-EINVAL);
     assert(tracee.ptrace_options==0x51);
+    /* Exercise the *raw kernel* Linux ptrace PEEK ABI (libc wrappers
+     * translate this output pointer into a returned word). Reading real
+     * tracee memory must not leak the word as a syscall result. */
+    peek_result=0;
+    assert(nas_ptrace_request(2,2,0x1000,(uint64_t)(uintptr_t)&peek_result)==0);
+    assert(peek_result==UINT64_C(0xf0e1d2c3b4a59687));
+    peek_result=0;
+    assert(nas_ptrace_request(1,2,0x1000,(uint64_t)(uintptr_t)&peek_result)==0);
+    assert(peek_result==UINT64_C(0xf0e1d2c3b4a59687));
+    assert((int64_t)nas_ptrace_request(2,2,0x1000,0)==-EFAULT);
+    assert((int64_t)nas_ptrace_request(2,2,0xdead,(uint64_t)(uintptr_t)&peek_result)==-EFAULT);
+#if defined(__x86_64__)
+    peek_result=0;
+    assert(nas_ptrace_request(3,2,17*8,(uint64_t)(uintptr_t)&peek_result)==0);
+    assert(peek_result==0x33); /* Real x86-64 userspace CS selector. */
+    assert((int64_t)nas_ptrace_request(3,2,17*8,0)==-EFAULT);
+#endif
     assert(nas_ptrace_request(24,2,0,0)==0);
     assert(tracee.state==NAS_TASK_READY && tracee.ptrace_trace_syscalls);
     tracee.state=NAS_TASK_STOPPED;
