@@ -12,7 +12,9 @@ done
 [[ -n "$BASH_VERSION" ]]
 [[ "$(/usr/bin/git --version)" == git\ version\ * ]]
 [[ "$(/usr/bin/python3 --version)" == Python\ 3.* ]]
-/usr/bin/vim --version | /bin/busybox grep -Fq 'VIM - Vi IMproved'
+# Consume the complete producer stream: grep -q exits early and causes a real
+# SIGPIPE in Vim under pipefail; scheduling makes that probe nondeterministic.
+/usr/bin/vim --version | /bin/busybox grep -F 'VIM - Vi IMproved' >/dev/null
 echo M79_ORIGINAL_TOOLS_PASS
 
 root=/tmp/m79-project
