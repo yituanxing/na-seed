@@ -1,2 +1,3 @@
 m76-source	cpio	sh -c '/bin/sh /tests/m76-gdb-run.sh'	M76_C_SOURCE_DEBUG_PASS	-	/bin/busybox
 m77-attach	cpio	sh -c '/bin/sh /tests/m77-gdb-run.sh'	M77_GDB_ATTACH_PASS	-	/bin/busybox
+m78-step	cpio	sh -c '/bin/sh /tests/m78-gdb-run.sh'	M78_REAL_STEPI_PASS	-	/bin/busybox
