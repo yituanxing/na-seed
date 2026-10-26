@@ -150,7 +150,15 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
         tracee->arch.resume_user_rflags=user_flags;
         tracee->arch.resume_user_rsp=user_sp;
         nas_arch_save_fpu(tracee);
-        if(nas_ptrace_user_exception(tracee,signo,user_rip,user_sp)) {
+        uint64_t signal_addr=user_rip;
+        int32_t si_code=vector==1?2:0x80; /* #DB TRACE, #BP SI_KERNEL */
+        if(vector==3)signal_addr=user_rip-1; /* INT3 advances RIP */
+        if(vector==14) {
+            __asm__ volatile("mov %%cr2,%0":"=r"(signal_addr));
+            si_code=(frame[16]&1U)?2:1; /* SEGV_ACCERR / SEGV_MAPERR */
+        }
+        if(nas_ptrace_user_exception(tracee,signo,si_code,user_rip,
+                                      user_sp,signal_addr)) {
             uint64_t resumed=nas_task_schedule(frame);
             /* The interrupted debugger may have been blocked in poll:
              * return the REAL EINTR/readiness outcome via selected RAX. */

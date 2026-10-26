@@ -9,6 +9,7 @@
 static struct nas_task tracer, tracee, stranger;
 static unsigned ptrace_notifications;
 static uint64_t peek_result;
+static uint8_t signal_result[128];
 void nas_signal_ptrace_stop(const struct nas_task *tracee){
     if(tracee && tracee->ptrace_tracer_pid && tracee->stop_report_pending)
         ptrace_notifications++;
@@ -30,7 +31,11 @@ int64_t nas_vm_read_task_bytes(const struct nas_task *t,uint64_t va,uint8_t *dst
 }
 int64_t nas_vm_write_task_bytes(const struct nas_task *t,uint64_t va,const uint8_t *src,uint64_t n){(void)t;(void)va;(void)src;(void)n;return -EFAULT;}
 bool nas_user_read_bytes(uint64_t a,uint8_t *d,uint64_t n){(void)a;(void)d;(void)n;return false;}
-bool nas_user_write_bytes(uint64_t a,const uint8_t *s,uint64_t n){(void)a;(void)s;(void)n;return false;}
+bool nas_user_write_bytes(uint64_t a,const uint8_t *s,uint64_t n){
+    if(a!=(uint64_t)(uintptr_t)signal_result || n!=sizeof(signal_result))return false;
+    memcpy(signal_result,s,(size_t)n);
+    return true;
+}
 bool nas_user_write_u64(uint64_t a,uint64_t v){
     if(a!=(uint64_t)(uintptr_t)&peek_result)return false;
     peek_result=v;
@@ -136,9 +141,18 @@ int main(void) {
     assert(nas_ptrace_request(7,3,0,0)==0);
     stranger.state=NAS_TASK_RUNNING;
     stranger.resume_valid=false;
-    assert(nas_ptrace_user_exception(&stranger,5,0x1020,0x3000));
+    assert(nas_ptrace_user_exception(&stranger,5,0x80,0x1021,0x3000,0x1020));
     assert(stranger.state==NAS_TASK_STOPPED && stranger.stop_signal==5);
-    assert(stranger.ptrace_ip==0x1020 && stranger.ptrace_sp==0x3000);
+    assert(stranger.ptrace_ip==0x1021 && stranger.ptrace_sp==0x3000);
     assert(stranger.ptrace_phase==0 && stranger.stop_report_pending);
+    nas_current_task=&tracer;
+    assert(nas_ptrace_request(0x4202,3,0,(uint64_t)(uintptr_t)signal_result)==0);
+    int32_t code,signo;
+    uint64_t address;
+    memcpy(&signo,signal_result,4);
+    memcpy(&code,signal_result+8,4);
+    memcpy(&address,signal_result+16,8);
+    assert(signo==5 && code==0x80 && address==0x1020);
+    assert((int64_t)nas_ptrace_request(0x4202,3,0,0)==-EFAULT);
     return 0;
 }

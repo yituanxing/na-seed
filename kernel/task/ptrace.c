@@ -26,6 +26,7 @@
 #define PTRACE_SYSCALL 24ULL
 #define PTRACE_SETOPTIONS 0x4200ULL
 #define PTRACE_GETEVENTMSG 0x4201ULL
+#define PTRACE_GETSIGINFO 0x4202ULL
 #define PTRACE_SEIZE 0x4206ULL
 #define PTRACE_INTERRUPT 0x4207ULL
 #define PTRACE_GETREGSET 0x4204ULL
@@ -70,6 +71,8 @@ static bool ptrace_owner_valid(const struct nas_task *task) {
 static void ptrace_stop(struct nas_task *task,uint8_t phase) {
     task->ptrace_phase=phase;
     task->ptrace_event=0;
+    task->ptrace_signal_code=0;
+    task->ptrace_signal_addr=0;
     task->resume_valid=true;
     task->stopped_from=NAS_TASK_READY;
     task->state=NAS_TASK_STOPPED;
@@ -82,7 +85,8 @@ static void ptrace_stop(struct nas_task *task,uint8_t phase) {
     nas_signal_ptrace_stop(task);
 }
 bool nas_ptrace_user_exception(struct nas_task *task,unsigned signo,
-                                uint64_t user_pc,uint64_t user_sp) {
+                                int32_t si_code,uint64_t user_pc,
+                                uint64_t user_sp,uint64_t signal_addr) {
     if(!ptrace_owner_valid(task) || task->state!=NAS_TASK_RUNNING ||
        (signo!=NAS_SIGTRAP && signo!=11U))
         return false;
@@ -96,6 +100,8 @@ bool nas_ptrace_user_exception(struct nas_task *task,unsigned signo,
      * not a syscall-entry stop, ptrace event or guessed errno. Preserve
      * the hardware PC verbatim (x86 INT3 already advances by one). */
     task->stop_signal=signo;
+    task->ptrace_signal_code=si_code;
+    task->ptrace_signal_addr=signal_addr;
     return true;
 }
 bool nas_ptrace_syscall_enter(struct nas_task *task,const uint64_t *call) {
@@ -323,7 +329,11 @@ static uint64_t ptrace_rv_fpregs(struct nas_task *task,uint64_t req,
         struct nas_linux_rv_fpregs state={0};
         for(unsigned i=0;i<32;i++)state.f[i]=task->arch.fp_regs[i];
         state.fcsr=(uint32_t)task->arch.fp_fcsr;
-        uint64_t n=iov[1]<sizeof(state)?iov[1]:sizeof(state);
+        /* Native GDB probes FLEN=4 then 8 via exact 33*flen reads.
+         * Linux rejects a wrong FPR regset size. If a short 132-byte
+         * read succeeds, GDB falsely identifies the D FPU as FLEN=4. */
+        if(iov[1]!=sizeof(state))return (uint64_t)-EINVAL;
+        uint64_t n=sizeof(state);
         if(n && !nas_user_write_bytes(iov[0],(const uint8_t *)&state,n))
             return (uint64_t)-EFAULT;
         return nas_user_write_u64(data+8,n)?0:(uint64_t)-EFAULT;
@@ -491,6 +501,19 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
         case PTRACE_GETEVENTMSG:
             return nas_user_write_u64(data,target->ptrace_event_message)
                 ? 0:(uint64_t)-EFAULT;
+        case PTRACE_GETSIGINFO: {
+            /* Linux siginfo_t is 128 bytes with signo/errno/code at 0,
+             * and sigfault.si_addr at 16. Preserve actual CPU stop type:
+             * Linux GDB requires SI_KERNEL for x86 INT3, TRAP_TRACE for #DB. */
+            uint8_t info[128]={0};
+            int32_t signo=(int32_t)(target->stop_signal&0x7fU);
+            int32_t code=target->ptrace_signal_code;
+            memcpy(info,&signo,sizeof(signo));
+            memcpy(info+8,&code,sizeof(code));
+            memcpy(info+16,&target->ptrace_signal_addr,sizeof(uint64_t));
+            return nas_user_write_bytes(data,info,sizeof(info))
+                ?0:(uint64_t)-EFAULT;
+        }
         case PTRACE_GET_SYSCALL_INFO:
             return ptrace_syscall_info(target,addr,data);
         case PTRACE_SETREGSET:

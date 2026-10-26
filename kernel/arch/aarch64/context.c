@@ -56,7 +56,9 @@ void nas_arm_full_trap_c(struct nas_arm_trap_frame *frame) {
         nas_arch_save_user_frame(tracee,0);
         nas_arch_save_fpu(tracee);
         if(nas_ptrace_user_exception(tracee,NAS_SIGTRAP,
-                                      frame->elr_el1,frame->sp_el0)) {
+                                      (esr>>26)==0x3cULL?1:2,
+                                      frame->elr_el1,frame->sp_el0,
+                                      frame->elr_el1)) {
             /* An exception stop can wake a tracer BLOCKED in ppoll/wait.
              * task_schedule returns that resumed syscall's genuine
              * result. Failing to write x0 silently turns EINTR into the
