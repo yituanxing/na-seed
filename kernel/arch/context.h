@@ -62,6 +62,27 @@ static inline void nas_arch_context_exec(struct nas_arch_context *c,
     c->user_tls_base=0;
 #endif
 }
+/* A ptrace attach can happen while the target is READY or blocked on a
+ * pending replay. The target's saved CPU image is the only legitimate
+ * source; no foreign trap frame can be inspected in the tracer context. */
+static inline uint64_t nas_arch_ptrace_saved_ip(const struct nas_arch_context *c) {
+#if defined(__x86_64__)
+    return c->resume_user_rip;
+#elif defined(__riscv) && __riscv_xlen == 64
+    return c->user_pc;
+#elif defined(__aarch64__)
+    return c->user_elr;
+#endif
+}
+static inline uint64_t nas_arch_ptrace_saved_sp(const struct nas_arch_context *c) {
+#if defined(__x86_64__)
+    return c->resume_user_rsp;
+#elif defined(__riscv) && __riscv_xlen == 64
+    return c->user_sp;
+#elif defined(__aarch64__)
+    return c->user_sp;
+#endif
+}
 static inline void nas_arch_ptrace_rewind_syscall(struct nas_arch_context *c) {
 #if defined(__x86_64__)
     c->resume_user_rip -= 2; /* syscall opcode 0F 05 */

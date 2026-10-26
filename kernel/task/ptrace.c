@@ -12,6 +12,7 @@
 #include "../lib/string.h"
 
 #define PTRACE_TRACEME 0ULL
+#define PTRACE_ATTACH 16ULL
 #define PTRACE_PEEKTEXT 1ULL
 #define PTRACE_PEEKDATA 2ULL
 #define PTRACE_CONT 7ULL
@@ -280,6 +281,44 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
     struct nas_task *target=nas_task_by_pid(raw_pid);
     if(!target || target->state==NAS_TASK_FREE ||
        target->state==NAS_TASK_ZOMBIE)return (uint64_t)-ESRCH;
+    if(request==PTRACE_ATTACH) {
+        /* All NaSeed user processes currently share the single real
+         * unprivileged UID. Deny same-thread-group self attachment, init,
+         * non-task/scheduler state, and simultaneous tracing. Tracer is
+         * NOT made target's real parent; wait4 handles traced descendants
+         * with distinct ptrace ownership. */
+        if(target==self || target->tgid==self->tgid ||
+           target->pid==1 || target->ptrace_tracer_pid ||
+           target->group_exit_pending)
+            return (uint64_t)-EPERM;
+        if(!target->resume_valid ||
+           (target->state!=NAS_TASK_READY &&
+            target->state!=NAS_TASK_BLOCKED))
+            return (uint64_t)-EBUSY;
+        target->ptrace_tracer_pid=self->pid;
+        target->ptrace_options=0;
+        target->ptrace_trace_syscalls=false;
+        target->ptrace_phase=0;
+        target->ptrace_event=0;
+        target->ptrace_event_message=0;
+        target->ptrace_exec_pending_exit=false;
+        target->ptrace_fork_pending_exit=false;
+        target->ptrace_exit_event_sent=false;
+        target->ptrace_skip_entry_once=false;
+        target->ptrace_result=0;
+        target->ptrace_ip=nas_arch_ptrace_saved_ip(&target->arch);
+        target->ptrace_sp=nas_arch_ptrace_saved_sp(&target->arch);
+        target->ptrace_blocked_exit_pending=target->state==NAS_TASK_BLOCKED &&
+                                            target->wait.pending_valid;
+        target->stopped_from=target->state;
+        target->state=NAS_TASK_STOPPED;
+        /* Linux PTRACE_ATTACH delivers an actual SIGSTOP wait event.
+         * This is NOT a syscall-entry or exit stop. */
+        target->stop_signal=NAS_SIGSTOP;
+        target->stop_report_pending=true;
+        target->continue_report_pending=false;
+        return 0;
+    }
     if(target->ptrace_tracer_pid!=self->pid)return (uint64_t)-EPERM;
     if(target->state!=NAS_TASK_STOPPED ||
        target->stopped_from==NAS_TASK_FREE)return (uint64_t)-ESRCH;
