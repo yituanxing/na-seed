@@ -136,8 +136,8 @@ if "nas_blocked_complete(next,&result)" not in sched:
     raise SystemExit("scheduler lost shared IRQ/syscall completion adapter")
 if "nas_task_wake_ready(t)" not in (root/"kernel/task/futex_wait.c").read_text():
     raise SystemExit("futex producer no longer publishes runnable tasks")
-if "nas_kthread_run(2)" not in sched:
-    raise SystemExit("native C worker service is not in production scheduler")
+if sched.count("nas_sched_service_kernel();")!=2:
+    raise SystemExit("both syscall and timer scheduler must service native kernel workers")
 if "nas_sched_service_kernel();" not in sched:
     raise SystemExit("syscall and timer schedule stopped servicing native kernel waits")
 if "nas_kthread_timers_tick" not in (root/"kernel/task/scheduler_service.c").read_text():
