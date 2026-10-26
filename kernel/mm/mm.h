@@ -11,7 +11,7 @@ struct nas_mm {
     unsigned users;
     uint64_t root_phys;
     uint64_t heap_break;
-    struct nas_anon_regions anonymous;
+    struct nas_anon_regions mmap_vmas; /* typed VMAs for mmap-owned ranges */
 };
 
 void nas_mm_system_init(void);

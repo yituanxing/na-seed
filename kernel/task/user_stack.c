@@ -25,7 +25,9 @@ bool nas_user_stack_map_initial(void) {
     for(uint64_t va=USER_STACK_TOP-NAS_USER_STACK_PAGES*PAGE;
         va<USER_STACK_TOP;va+=PAGE)
         if(!nas_mmu_map_page(va,true))return false;
-    return true;
+    return nas_vma_record(&TASK.mm->mmap_vmas,
+                          USER_STACK_TOP-NAS_USER_STACK_PAGES*PAGE,
+                          NAS_USER_STACK_PAGES*PAGE,3,NAS_VMA_STACK,0);
 }
 
 /* Share one kernel-BSS argument pointer staging area. A 2048-argument

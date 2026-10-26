@@ -234,14 +234,14 @@ bool nas_proc_child(struct nas_proc_node directory,unsigned index,
         (kind[index]==NAS_PROC_TASK_DIR?directory.pid:0),0};
     return true;
 }
-/* Collect only the VM ranges tracked by the shared anonymous VMA ledger.
+/* Sum registered ELF/heap/stack/mmap VMAs, including uncommitted PROT_NONE.
  * The kernel currently cannot report full ELF/stack resident PTE counts. */
 static uint64_t anon_pages(const struct nas_task *t) {
     const struct nas_mm *mm=t->mm;
     uint64_t n=0;
     for(unsigned i=0;i<NAS_ANON_REGION_LIMIT;i++) {
-        uint64_t start=mm->anonymous.slots[i].start;
-        uint64_t end=mm->anonymous.slots[i].end;
+        uint64_t start=mm->mmap_vmas.slots[i].start;
+        uint64_t end=mm->mmap_vmas.slots[i].end;
         if(end>start)n+=(end-start)/4096ULL;
     }
     return n;
@@ -287,10 +287,10 @@ int64_t nas_proc_readlink(struct nas_proc_node node,char *out,unsigned cap) {
     while(path[n] && n<cap){if(out)out[n]=path[n];n++;}
     return n;
 }
-/* Stream true resident user leaf PTEs instead of copying thousands of
- * pages into the small procfs scratch buffer. Every read(offset) rewalks
- * the selected process VM root, as a dynamic Linux procfs file should.
- * PROT_NONE virtual reservations have no PTE yet and are not fabricated. */
+/* Linux /proc/pid/maps reports logical VMA ranges, not only present
+ * physical PTEs. A PROT_NONE reservation belongs here; COW/demand paging
+ * will not change the output merely because pages are nonresident.
+ * Every read(offset) traverses the selected Task's actual MM metadata. */
 struct nas_map_stream {
     uint64_t skip,position,start,end;
     unsigned access,produced,cap;
@@ -321,19 +321,19 @@ static void map_flush(struct nas_map_stream *s) {
     map_word(s,"p 00000000 00:00 0\n");
     s->active=false;
 }
-static bool map_visit(uint64_t va,unsigned access,void *ctx) {
+static bool map_visit_vma(const struct nas_anon_region *vma,void *ctx) {
     struct nas_map_stream *s=(struct nas_map_stream*)ctx;
-    if(s->active && va==s->end && s->access==access){
-        s->end+=4096ULL;return true;
-    }
     map_flush(s);
-    s->start=va;s->end=va+4096ULL;s->access=access;s->active=true;
+    s->start=vma->start;
+    s->end=vma->end;
+    s->access=vma->prot;
+    s->active=true;
     return true;
 }
 static int64_t proc_maps_read(const struct nas_task *task,uint64_t offset,
                               uint8_t *output,unsigned capacity) {
     struct nas_map_stream s={.skip=offset,.output=output,.cap=capacity};
-    if(!nas_vm_walk_task_pages(task,map_visit,&s))return -EIO;
+    if(!nas_vm_walk_task_vmas(task,map_visit_vma,&s))return -EIO;
     map_flush(&s);
     return (int64_t)s.produced;
 }
@@ -447,7 +447,7 @@ int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
             ch(&w,t->commandline[i]);
         break;
     case NAS_PROC_PID_STATM:
-        decimal(&w,anon_pages(t)+NAS_USER_STACK_PAGES);
+        decimal(&w,anon_pages(t));
         word(&w," 0 0 0 0 0 0\n"); /* resident pages not measured */
         break;
     case NAS_PROC_PID_STATUS: {

@@ -5,6 +5,8 @@
 #include "../mm/usercopy.h"
 #include "signal.h"
 #include "../arch/arch.h"
+#include "../arch/mmu.h"
+#include "../arch/abi.h"
 #include "../task/sched.h"
 #include "../panic.h"
 
@@ -532,5 +534,11 @@ uint64_t nas_signal_sigreturn(uint64_t *frame) {
 }
 
 bool nas_signal_install_trampoline(void) {
-    return nas_arch_signal_install_trampoline();
+    if(!nas_arch_signal_install_trampoline())return false;
+    /* x86 uses SA_RESTORER from libc and does not map a helper page.
+     * Native RV64/ARM64 install an actual RX user trampoline. */
+    if(!nas_mmu_user_byte(NAS_USER_SIGNAL_TRAMPOLINE))return true;
+    return nas_vma_record(&nas_current_task->mm->mmap_vmas,
+                          NAS_USER_SIGNAL_TRAMPOLINE,4096,5,
+                          NAS_VMA_SIGNAL_TRAMPOLINE,0);
 }

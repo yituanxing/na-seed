@@ -2,6 +2,12 @@
 #include <stdint.h>
 #include "../kernel/mm/anon_regions.h"
 #define P 4096ULL
+static bool ordered(const struct nas_anon_region *r,void *ctx) {
+    uint64_t *previous=(uint64_t *)ctx;
+    assert(r->start>=*previous && r->end>r->start);
+    *previous=r->end;
+    return true;
+}
 int main(void) {
     struct nas_anon_regions a={0},b={0};
     uint64_t x=0,y=0,z=0;
@@ -80,5 +86,59 @@ int main(void) {
     for (unsigned i=0;i<NAS_ANON_REGION_LIMIT;i++)
         assert(b.slots[i].start==snap.slots[i].start &&
                b.slots[i].end==snap.slots[i].end);
+    /* M85: logical mmap VMAs are independent of PTEs. PROT_NONE reserves
+     * a range even when no physical frame is allocated. */
+    nas_anon_reset(&a);
+    const uint64_t base=NAS_ANON_FLOOR+0x100000;
+    assert(nas_vma_record(&a,base,6*P,0,NAS_VMA_ANON_PRIVATE,0));
+    const struct nas_anon_region *v=nas_vma_find(&a,base+2*P);
+    assert(v && v->start==base && v->end==base+6*P &&
+           v->kind==NAS_VMA_ANON_PRIVATE && v->prot==0);
+    assert(nas_vma_protect(&a,base+P,2*P,3));
+    v=nas_vma_find(&a,base+P);
+    assert(v && v->start==base+P && v->end==base+3*P &&
+           v->prot==3);
+    assert(nas_vma_find(&a,base)->prot==0);
+    assert(nas_vma_find(&a,base+3*P)->prot==0);
+    /* Same kind but differing rights never gets merged. */
+    assert(nas_vma_record(&a,base+6*P,P,5,NAS_VMA_ANON_PRIVATE,0));
+    assert(nas_vma_find(&a,base+6*P)->prot==5);
+    /* MAP_FIXED snapshot overwrites only the selected subinterval. */
+    assert(nas_vma_replace(&a,base+2*P,2*P,1,
+                           NAS_VMA_FILE_PRIVATE_SNAPSHOT,0x9000));
+    v=nas_vma_find(&a,base+2*P);
+    assert(v && v->start==base+2*P && v->end==base+4*P &&
+           v->prot==1 && v->kind==NAS_VMA_FILE_PRIVATE_SNAPSHOT &&
+           v->file_offset==0x9000);
+    assert(nas_anon_forget(&a,base+2*P,P));
+    v=nas_vma_find(&a,base+3*P);
+    assert(v && v->start==base+3*P &&
+           v->file_offset==0xa000 && v->end==base+4*P);
+    assert(nas_vma_protect(&a,base+3*P,P,3));
+    assert(nas_vma_find(&a,base+3*P)->prot==3 &&
+           nas_vma_find(&a,base+3*P)->file_offset==0xa000);
+    uint64_t cursor=0;
+    assert(nas_vma_walk(&a,ordered,&cursor) && cursor>=base+7*P);
+    assert(!nas_vma_find(&a,base+2*P));
+    /* Reprotecting an unreserved range is not a PTE allocation request. */
+    struct nas_anon_regions stable=a;
+    assert(!nas_vma_protect(&a,base+2*P,P,1));
+    for(unsigned i=0;i<NAS_ANON_REGION_LIMIT;i++)
+        assert(a.slots[i].start==stable.slots[i].start &&
+               a.slots[i].end==stable.slots[i].end &&
+               a.slots[i].prot==stable.slots[i].prot &&
+               a.slots[i].file_offset==stable.slots[i].file_offset);
+    /* M85-B: one typed ledger covers mappings outside the allocator
+     * window, including the fixed user stack and the ISA trampoline. */
+    assert(nas_vma_record(&a,0x6ff00000,4*P,3,NAS_VMA_STACK,0));
+    assert(nas_vma_record(&a,0x6fe00000,P,5,NAS_VMA_SIGNAL_TRAMPOLINE,0));
+    assert(nas_vma_record(&a,0x10000000,2*P,5,
+                          NAS_VMA_ELF_PRIVATE_SNAPSHOT,0x1000));
+    assert(nas_vma_find(&a,0x6ff00000)->kind==NAS_VMA_STACK);
+    assert(nas_vma_find(&a,0x6fe00000)->prot==5);
+    assert(nas_vma_find(&a,0x10000000)->kind==NAS_VMA_ELF_PRIVATE_SNAPSHOT);
+    assert(!nas_anon_overlay(&a,NAS_ANON_CEILING-P,2*P));
+    uint64_t top_seen=0;
+    assert(nas_vma_walk(&a,ordered,&top_seen) && top_seen==0x6ff04000);
     return 0;
 }

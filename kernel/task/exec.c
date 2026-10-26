@@ -397,9 +397,9 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
     for (unsigned fd = 0; fd < 64; fd++)
         if (TASK.fds->entries[fd].kind != FD_CLOSED && TASK.fds->entries[fd].cloexec)
             nas_fs_close_fd(fd);
-    /* Old anonymous ownership dies with the retired page-table root.
-     * No metadata is mutated until exec commits, so rollback remains exact. */
-    nas_anon_reset(&TASK.mm->anonymous);
+    /* The freshly prepared MM ALREADY owns its ELF, stack and signal
+     * VMAs. Never clear them during exec commit; the old MM's policy is
+     * released by nas_mm_put(previous_mm) after the root switch. */
     nas_time_timers_drop(); /* POSIX timers never survive execve. */
     TASK.execed = true; /* fork parent may no longer setpgid after exec */
     TASK.signal_frame_active = false;

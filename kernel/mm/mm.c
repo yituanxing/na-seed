@@ -29,7 +29,7 @@ struct nas_mm *nas_mm_fork_eager(const struct nas_mm *source) {
     if (!root) { nas_mm_put(dest); return 0; }
     dest->root_phys=root;
     dest->heap_break=source->heap_break;
-    dest->anonymous=source->anonymous;
+    dest->mmap_vmas=source->mmap_vmas;
     return dest;
 }
 bool nas_mm_walk_pages(const struct nas_mm *mm,nas_mm_page_visit visit,void *ctx) {
