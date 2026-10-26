@@ -12,7 +12,7 @@ if ! /usr/bin/strace -f -o /tmp/m73-follow.trace /bin/busybox sh -c   '/bin/busy
 fi
 /bin/busybox grep -q 'follow-ok' /tmp/m73-follow.stdout
 # Need a child pid and syscall record, not merely the -f flag accepted.
-if ! /bin/busybox grep -Eq '(clone|fork|vfork)\\(' /tmp/m73-follow.trace ||
+if ! /bin/busybox grep -Eq '(clone|fork|vfork)\(' /tmp/m73-follow.trace ||
    ! /bin/busybox grep -q 'wait4(' /tmp/m73-follow.trace ||
    ! /bin/busybox grep -q 'nanosleep(' /tmp/m73-follow.trace; then
   echo '[M73 FAIL] original strace missed fork, wait4 or sleep'

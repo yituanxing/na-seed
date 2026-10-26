@@ -14,13 +14,16 @@ extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
 static unsigned nas_ptrace_debug_count;
 static void ptrace_debug(const char *what,const struct nas_task *t,uint64_t event) {
-    if(nas_ptrace_debug_count++>=140)return;
+    if(t && t->pid==4){ if(nas_ptrace_debug_count++>18)return; }
+    else {static unsigned child_prints; if(child_prints++>180)return;}
     nas_print("[PTRDBG] ");nas_print(what);
     nas_print(" pid=");nas_dec(t?t->pid:0);
     nas_print(" tracer=");nas_dec(t?t->ptrace_tracer_pid:0);
     nas_print(" event=");nas_dec(event);
     nas_print(" stop_report=");nas_dec(t?t->stop_report_pending:0);
     nas_print(" state=");nas_dec(t?t->state:0);
+    nas_print(" phase=");nas_dec(t?t->ptrace_phase:0);
+    nas_print(" sig=");nas_dec(t?t->stop_signal:0);
     nas_print("\n");
 }
 

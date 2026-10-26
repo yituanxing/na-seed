@@ -493,6 +493,12 @@ retry_schedule: ; /* label must precede a statement in C11 */
         nas_print("[DEADLOCK] pid="); nas_dec(task->pid);
         nas_print(" state="); nas_dec(task->state);
         nas_print(" blocked_op="); nas_dec(task->wait.blocked_op);
+        nas_print(" trace_parent=");nas_dec(task->ptrace_tracer_pid);
+        nas_print(" ptrace_phase=");nas_dec(task->ptrace_phase);
+        nas_print(" ptrace_sig=");nas_dec(task->stop_signal);
+        nas_print(" report=");nas_dec(task->stop_report_pending);
+        nas_print(" wait_target=");nas_dec(task->wait.blocked_args[0]);
+        nas_print(" wait_flags=");nas_hex(task->wait.blocked_args[2]);
         nas_print(" fd="); nas_dec(task->wait.blocked_args[0]);
         nas_print("\n");
         if(task->wait.blocked_op==NAS_SC_futex) {
