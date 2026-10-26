@@ -10,6 +10,10 @@
 #include "../mm/usercopy.h"
 #include "../mm/vm.h"
 #include "../lib/string.h"
+#if defined(__riscv) && __riscv_xlen==64
+#include "../arch/riscv64/ptrace_step_decode.h"
+#include "../panic.h"
+#endif
 #define PTRACE_TRACEME 0ULL
 #define PTRACE_ATTACH 16ULL
 #define PTRACE_PEEKTEXT 1ULL
@@ -48,6 +52,66 @@
 #define NT_PRSTATUS 1ULL
 #define SYSINFO_ENTRY 1U
 #define SYSINFO_EXIT 2U
+#if defined(__riscv) && __riscv_xlen==64
+/* RV64 has no generic trace flag or MDSCR.SS. The only honest way to honor
+ * PTRACE_SINGLESTEP is plant a *temporary* software breakpoint at the
+ * actually decoded successor of this one instruction. No fake SIGTRAP,
+ * no replaying a syscall, no breakpoint installed in another Task's VM. */
+static void rv_step_restore(struct nas_task *t) {
+    if(!t->ptrace_step_width)return;
+    unsigned len=t->ptrace_step_width;
+    int64_t count=nas_vm_write_task_bytes(t,t->ptrace_step_addr,
+                         (const uint8_t *)&t->ptrace_step_saved,len);
+    if(count!=(int64_t)len)
+        nas_fail("RV64 ptrace temporary breakpoint restoration failed");
+    t->ptrace_step_addr=0;
+    t->ptrace_step_width=0;
+    t->ptrace_single_step=false;
+}
+static uint64_t rv_step_arm(struct nas_task *t) {
+    if(t->ptrace_single_step || t->ptrace_step_width)
+        return (uint64_t)-EBUSY;
+    uint64_t pc=t->arch.user_pc;
+    uint32_t insn=0;
+    if(nas_vm_read_task_bytes(t,pc,(uint8_t *)&insn,2)!=2)
+        return (uint64_t)-EFAULT;
+    if((insn&3U)==3U &&
+       nas_vm_read_task_bytes(t,pc,(uint8_t *)&insn,4)!=4)
+        return (uint64_t)-EFAULT;
+    uint64_t target=0;
+    if(!nas_rv_step_next_pc(pc,insn,t->arch.user_regs,&target))
+        return (uint64_t)-EOPNOTSUPP;
+    uint32_t old=0;
+    if(nas_vm_read_task_bytes(t,target,(uint8_t *)&old,2)!=2)
+        return (uint64_t)-EFAULT;
+    unsigned len=(old&3U)==3U?4U:2U;
+    if(len==4U && nas_vm_read_task_bytes(t,target,
+                                        (uint8_t *)&old,4)!=4)
+        return (uint64_t)-EFAULT;
+    /* Never overwrite a debugger-owned original breakpoint or a genuine
+     * ebreak instruction: without knowing its owner it cannot be restored
+     * or signaled correctly. Fail safely before changing any code. */
+    if((len==2U && (uint16_t)old==0x9002U) ||
+       (len==4U && old==0x00100073U))
+        return (uint64_t)-EBUSY;
+    uint32_t breakpoint=len==2U?0x9002U:0x00100073U;
+    int64_t wrote=nas_vm_write_task_bytes(t,target,
+                                  (const uint8_t *)&breakpoint,len);
+    if(wrote!=(int64_t)len)
+        return wrote<0?(uint64_t)wrote:(uint64_t)-EFAULT;
+    t->ptrace_step_addr=target;
+    t->ptrace_step_saved=old;
+    t->ptrace_step_width=(uint8_t)len;
+    t->ptrace_single_step=true;
+    return 0;
+}
+bool nas_ptrace_rv_step_hit(struct nas_task *t,uint64_t pc) {
+    if(!t || !t->ptrace_single_step || pc!=t->ptrace_step_addr)
+        return false;
+    rv_step_restore(t);
+    return true;
+}
+#endif
 /* EXITKILL policy belongs to ptrace/task lifetime, not generic Task slot
  * administration. Reuse the real signal/group-exit mechanism; Task core
  * therefore does not gain a hidden dependency on signal service. */
@@ -55,6 +119,11 @@ void nas_ptrace_tracer_exit(uint64_t tracer_pid) {
     if(!tracer_pid)return;
     for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
         struct nas_task *tracee=nas_task_at(i);
+        if(tracee->ptrace_tracer_pid==tracer_pid) {
+#if defined(__riscv) && __riscv_xlen==64
+            rv_step_restore(tracee); /* tracer exit cannot strand EBREAK */
+#endif
+        }
         if(tracee->ptrace_tracer_pid!=tracer_pid ||
            tracee->state==NAS_TASK_FREE || tracee->state==NAS_TASK_ZOMBIE ||
            !(tracee->ptrace_options&NAS_PTRACE_OPT_EXITKILL))continue;
@@ -147,6 +216,12 @@ bool nas_ptrace_syscall_exit(struct nas_task *task,const uint64_t *call,
 bool nas_ptrace_exec_commit(struct nas_task *task,uint64_t entry,
                               uint64_t stack) {
     if(!ptrace_owner_valid(task))return false;
+#if defined(__riscv) && __riscv_xlen==64
+    /* execve has discarded the previous instruction mapping. */
+    task->ptrace_single_step=false;
+    task->ptrace_step_width=0;
+    task->ptrace_step_addr=0;
+#endif
     nas_arch_context_exec(&task->arch,entry,stack);
     task->ptrace_ip=entry;
     task->ptrace_sp=stack;
@@ -578,13 +653,18 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
             return nas_user_write_u64(data,word)?0:(uint64_t)-EFAULT;
         }
         case PTRACE_SINGLESTEP:
-#if !defined(__aarch64__) && !defined(__x86_64__)
-            return (uint64_t)-EOPNOTSUPP; /* no native HW step facility */
-#endif
         case PTRACE_CONT:
         case PTRACE_SYSCALL:
         case PTRACE_DETACH:
             if(data)return (uint64_t)-EOPNOTSUPP; /* signal injection */
+#if defined(__riscv) && __riscv_xlen==64
+            if(request==PTRACE_SINGLESTEP) {
+                if(target->stopped_from==NAS_TASK_BLOCKED)
+                    return (uint64_t)-EBUSY;
+                uint64_t armed=rv_step_arm(target);
+                if(armed)return armed;
+            } else rv_step_restore(target);
+#endif
 #if defined(__x86_64__)
             if(request==PTRACE_SINGLESTEP &&
                target->stopped_from==NAS_TASK_BLOCKED)
