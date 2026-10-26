@@ -96,6 +96,66 @@ static uint64_t nas_time_gettimeofday(uint64_t tv,uint64_t tz) {
     }
     return 0;
 }
+/* Provider-owned completion. A parked syscall's original C stack resumes
+ * here; no syscall-number switch, replay, or device policy in scheduler. */
+static uint64_t finish_sleep(struct nas_task *task) {
+    (void)task;
+    return 0; /* expired monotonic deadline, signal checked by wait adapter */
+}
+static uint64_t finish_read(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_fs_fd_read(a[0],a[1],a[2]);
+}
+static uint64_t finish_readv(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_fs_fd_readv(a[0],a[1],a[2]);
+}
+static uint64_t finish_write(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_fs_fd_write(a[0],a[1],a[2]);
+}
+static uint64_t finish_writev(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_fs_fd_writev(a[0],a[1],a[2]);
+}
+static nas_wait_finish_fn finish_io_provider(enum nas_syscall_op nr) {
+    if(nr==NAS_SC_read) return finish_read;
+    if(nr==NAS_SC_readv) return finish_readv;
+    if(nr==NAS_SC_write) return finish_write;
+    if(nr==NAS_SC_writev) return finish_writev;
+    return 0;
+}
+static uint64_t finish_epoll(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_epoll_wait(a[0],a[1],a[2],a[3]);
+}
+static uint64_t finish_poll(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_fs_poll(a[0],a[1],a[2]);
+}
+static uint64_t finish_ppoll(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_fs_ppoll(a[0],a[1],a[2],a[3]);
+}
+static uint64_t finish_select(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_fs_pselect6(a[0],a[1],a[2],a[3],false);
+}
+static nas_wait_finish_fn finish_poll_provider(enum nas_syscall_op nr) {
+    if(nr==NAS_SC_poll) return finish_poll;
+    if(nr==NAS_SC_ppoll) return finish_ppoll;
+    if(nr==NAS_SC_select || nr==NAS_SC_pselect6) return finish_select;
+    return 0;
+}
+static uint64_t finish_wait4(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_process_wait4(a[0],a[1],a[2],a[3]);
+}
+static uint64_t finish_sigsuspend(struct nas_task *task) {
+    (void)task;
+    return (uint64_t)-EINTR;
+}
+
 static uint64_t nas_time_sleep_syscall(uint64_t *frame,enum nas_syscall_op nr,
                                       const uint64_t *args) {
     uint64_t request=nr==NAS_SC_nanosleep ? args[1] : args[3];
@@ -117,7 +177,7 @@ static uint64_t nas_time_sleep_syscall(uint64_t *frame,enum nas_syscall_op nr,
     if(nas_time_deadline_expired(now,deadline))return 0;
     TASK.wait.deadline_ns=deadline;
     TASK.wait.deadline_active=true;
-    return nas_task_block(frame,nr,args[1],args[2],args[3],args[4]);
+    return nas_task_block(frame,nr,args[1],args[2],args[3],args[4],finish_sleep);
 }
 static uint64_t nas_time_poll_arm_deadline(enum nas_syscall_op nr,
                                            const uint64_t *args) {
@@ -220,7 +280,8 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
             (TASK.fds->entries[fd].kind == FD_PIPE_R || TASK.fds->entries[fd].kind == FD_PIPE_W ||
              TASK.fds->entries[fd].kind == FD_SOCKET ||
              TASK.fds->entries[fd].kind == FD_EVENTFD))
-            return nas_task_block(frame,nr,fd,buf,count,0);
+            return nas_task_block(frame,nr,fd,buf,count,0,
+                                   finish_io_provider((enum nas_syscall_op)nr));
         if ((nr == NAS_SC_read || nr == NAS_SC_readv) &&
             (int64_t)ret == -EAGAIN &&
             (TASK.fds->entries[fd].kind == FD_TTY || TASK.fds->entries[fd].kind == FD_UART) &&
@@ -228,7 +289,8 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
             /* First timeout for MIN=0/TIME>0 starts at the syscall,
              * before any task sleeps; interbyte MIN>0 starts on RX. */
             nas_tty_blocking_read_start(&TASK);
-            return nas_task_block(frame,nr,fd,buf,count,0);
+            return nas_task_block(frame,nr,fd,buf,count,0,
+                                   finish_io_provider((enum nas_syscall_op)nr));
         }
     }
     return ret;
@@ -409,7 +471,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
             }
             nas_epoll_arm_current_task(args[1]);
             return nas_task_block((uint64_t *)(uintptr_t)args,nr,
-                                  args[1],args[2],args[3],args[4]);
+                                  args[1],args[2],args[3],args[4],finish_epoll);
         }
         nas_signal_ppoll_restore(&TASK,false);
         return result;
@@ -487,7 +549,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
                 return (uint64_t)-EOPNOTSUPP;
             }
             return nas_task_block((uint64_t *)(uintptr_t)args,nr,
-                                  args[1],args[2],args[3],args[4]);
+                                  args[1],args[2],args[3],args[4],finish_poll_provider(nr));
         }
         nas_signal_ppoll_restore(&TASK,false);
         return result;
@@ -534,7 +596,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
             nas_signal_ppoll_restore(&TASK,true);
             return (uint64_t)-EINTR;
         }
-        return nas_task_block((uint64_t *)(uintptr_t)args,nr,0,0,0,0);
+        return nas_task_block((uint64_t *)(uintptr_t)args,nr,0,0,0,0,
+                               finish_sigsuspend);
     }
     if (nr == NAS_SC_rt_sigprocmask) return nas_signal_procmask(args[1], args[2], args[3], args[4],
                                                                 (uint64_t *)(uintptr_t)args);
@@ -578,7 +641,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         if ((int64_t)ret == -EOPNOTSUPP && args[4] == 0 &&
             !(args[3] & NAS_WAIT_NOHANG))
             return nas_task_block((uint64_t *)(uintptr_t)args, nr,
-                              args[1], args[2], args[3], args[4]);
+                              args[1], args[2], args[3], args[4],finish_wait4);
         return ret;
     }
     if (nr == NAS_SC_execve) {

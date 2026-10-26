@@ -62,11 +62,14 @@ enum nas_task_state {
     NAS_TASK_STOPPED
 };
 
-/* An executing thread owns ALL transient blocking state, never process VM.
- * The scheduler cannot keep kernel C frames and must replay after VM restore. */
+/* A parked Task retains its original kernel C stack and provider callback.
+ * The scheduler must never re-dispatch a syscall from a foreign C frame. */
+struct nas_task;
+typedef uint64_t (*nas_wait_finish_fn)(struct nas_task *);
 struct nas_task_wait {
     uint64_t blocked_op, blocked_args[4];
     bool pending_valid;
+    nas_wait_finish_fn finish; /* static callback owned by issuing syscall */
     uint64_t deadline_ns;
     bool deadline_active;
     unsigned tty_observed_bytes;

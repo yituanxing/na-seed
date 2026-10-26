@@ -21,24 +21,20 @@
 #define TASK (*nas_current_task)
 #define signal_actions TASK.sighand->actions
 #define blocked_signals TASK.blocked_signals
-/* The blocked syscall's original C call chain resumes on its own Task
- * kernel stack before a genuine I/O retry. This is no longer a scheduler
- * replay of an abandoned syscall frame. */
-/* Kernel-owned I/O/child/futex readiness is in task/wait.c. */
-static uint64_t task_retry_in_resumed_context(struct nas_task *task) {
-    enum nas_syscall_op nr = (enum nas_syscall_op)task->wait.blocked_op;
-    const uint64_t *a = task->wait.blocked_args;
-    if (nas_signal_user_pending(task)) {
-        /* Linux nanosleep and relative clock_nanosleep expose the REMAINING
-         * time, not a stale original duration. Replay runs with this exact
-         * Task's user page table restored, never a foreign userspace root. */
+/* Native Task continuation: invoke the originating provider after wake,
+ * rather than decoding and replaying the syscall in the scheduler. Only
+ * Linux EINTR's optional sleep-remainder copy is shared ABI policy. */
+static uint64_t task_resume_syscall(struct nas_task *task) {
+    const enum nas_syscall_op nr=(enum nas_syscall_op)task->wait.blocked_op;
+    const uint64_t *a=task->wait.blocked_args;
+    if(nas_signal_user_pending(task)) {
         if(nr==NAS_SC_nanosleep || nr==NAS_SC_clock_nanosleep) {
             uint64_t rem=nr==NAS_SC_nanosleep ? a[1] :
-                ((a[1]&1U) ? 0 : a[3]); /* TIMER_ABSTIME: no remainder */
+                ((a[1]&1U) ? 0 : a[3]);
             if(rem) {
-                uint64_t current=nas_arch_monotonic_ns();
-                uint64_t left=task->wait.deadline_ns>current ?
-                              task->wait.deadline_ns-current : 0;
+                uint64_t now=nas_arch_monotonic_ns();
+                uint64_t left=task->wait.deadline_ns>now ?
+                              task->wait.deadline_ns-now : 0;
                 uint64_t ts[2]={left/NAS_NSEC_PER_SEC,
                                 left%NAS_NSEC_PER_SEC};
                 if(!nas_user_write_bytes(rem,(const uint8_t *)ts,sizeof(ts)))
@@ -47,25 +43,9 @@ static uint64_t task_retry_in_resumed_context(struct nas_task *task) {
         }
         return (uint64_t)-EINTR;
     }
-    /* Sleep input was validated and converted into task-owned absolute
-     * deadline at the original syscall boundary; never restart a relative
-     * timeout or dereference its userspace timespec during replay. */
-    if (nr == NAS_SC_nanosleep || nr == NAS_SC_clock_nanosleep)
-        return 0;
-    if (nr == NAS_SC_futex) return task->wait.futex_woken ? 0 : (uint64_t)-ETIMEDOUT;
-    if (nr == NAS_SC_read) return nas_fs_fd_read(a[0], a[1], a[2]);
-    if (nr == NAS_SC_readv) return nas_fs_fd_readv(a[0], a[1], a[2]);
-    if (nr == NAS_SC_write) return nas_fs_fd_write(a[0], a[1], a[2]);
-    if (nr == NAS_SC_writev) return nas_fs_fd_writev(a[0], a[1], a[2]);
-    if (nr == NAS_SC_wait4) return nas_process_wait4(a[0], a[1], a[2], a[3]);
-    if (nr == NAS_SC_rt_sigsuspend) return (uint64_t)-EINTR; /* only a caught signal wakes it */
-    if(nr==NAS_SC_epoll_wait || nr==NAS_SC_epoll_pwait)
-        return nas_epoll_wait(a[0],a[1],a[2],a[3]);
-    if (nr == NAS_SC_poll) return nas_fs_poll(a[0],a[1],a[2]);
-    if (nr == NAS_SC_ppoll) return nas_fs_ppoll(a[0],a[1],a[2],a[3]);
-    if (nr == NAS_SC_pselect6 || nr == NAS_SC_select)
-        return nas_fs_pselect6(a[0],a[1],a[2],a[3],false);
-    nas_fail("M94 unknown blocked syscall");
+    if(!task->wait.finish)
+        nas_fail("native blocked continuation lost completion provider");
+    return task->wait.finish(task);
 }
 
 /* Broken pipe generates SIGPIPE. POSIX/Linux default action terminates the
@@ -81,8 +61,8 @@ bool nas_sched_sigpipe_default(uint64_t fd) {
         !(blocked_signals & (1ULL << (NAS_SIGPIPE - 1)));
 }
 
-/* Completion owner: scheduler selects and restores a task; the syscall ABI
- * adapter owns replay, restart conditions, signal and ptrace transitions.
+/* The resumed kernel C frame owns syscall completion and retry; this
+ * adapter retains common signal and ptrace outcome publication.
  * State changes are published only after actual syscall completion. */
 enum nas_blocked_completion nas_blocked_complete(struct nas_task *task,
                                                   uint64_t *result) {
@@ -91,7 +71,7 @@ enum nas_blocked_completion nas_blocked_complete(struct nas_task *task,
     if(!task->wait.pending_valid)return NAS_BLOCKED_COMPLETE;
     const enum nas_syscall_op nr=(enum nas_syscall_op)task->wait.blocked_op;
     const uint64_t fd=task->wait.blocked_args[0];
-    const uint64_t rc=task_retry_in_resumed_context(task);
+    const uint64_t rc=task_resume_syscall(task);
     const bool writing=nr==NAS_SC_write || nr==NAS_SC_writev;
     if((int64_t)rc==-EPIPE && writing) {
         if(nas_sched_sigpipe_default(fd)) {

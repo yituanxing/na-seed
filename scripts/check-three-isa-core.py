@@ -138,8 +138,13 @@ if "nas_arch_kernel_swap(&self->kernel_exec.cpu,&scheduler_cpu)" not in sched:
     raise SystemExit("Task does not park its native C continuation")
 if "nas_arch_kernel_swap(&scheduler_cpu,&next->kernel_exec.cpu)" not in sched:
     raise SystemExit("native dispatcher does not resume Task C frames")
-if "task_replay(" in (root/"kernel/task/blocked_completion.c").read_text():
-    raise SystemExit("legacy scheduler syscall replay remains")
+completion=(root/"kernel/task/blocked_completion.c").read_text()
+if "task_retry_in_resumed_context" in completion or "task_replay(" in completion:
+    raise SystemExit("legacy syscall dispatch switch survived native C continuation")
+if "return task->wait.finish(task);" not in completion or "self->wait.finish=finish;" not in sched:
+    raise SystemExit("resumed kernel C stack does not invoke owning syscall provider")
+if "finish_io_provider(" not in (root/"kernel/syscall/dispatch.c").read_text():
+    raise SystemExit("blocking I/O providers must own their retry, not Task scheduler")
 if "nas_sched_scan_next(&scan,&slot)" not in sched:
     raise SystemExit("native scheduler bypasses canonical Task scan")
 if "nas_sched_allow_kernel_slice(" not in (root/"kernel/task/scheduler_service.c").read_text():

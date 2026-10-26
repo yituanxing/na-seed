@@ -488,6 +488,10 @@ unsigned nas_process_futex_wake(uint64_t uaddr,unsigned max,uint32_t mask) {
 /* Linux futex word ABI is a native aligned 32-bit user value, on each ISA.
  * WAIT and WAIT_BITSET are truly blocking in shared single-CPU scheduler.
  * Unsupported PI/requeue/robust operations return ENOSYS, never success. */
+/* Original futex wait C continuation resumes here after wake or timeout. */
+static uint64_t futex_wait_finish(struct nas_task *task) {
+    return task->wait.futex_woken ? 0 : (uint64_t)-ETIMEDOUT;
+}
 uint64_t nas_process_futex(uint64_t *frame,uint64_t addr,uint64_t op,
                            uint64_t val,uint64_t timeout,uint64_t addr2,
                            uint64_t val3) {
@@ -566,5 +570,6 @@ uint64_t nas_process_futex(uint64_t *frame,uint64_t addr,uint64_t op,
     nas_current_task->wait.futex_mask=mask;
     nas_current_task->wait.futex_woken=false;
     if(!nas_futex_wait_arm(nas_current_task))return (uint64_t)-ENOMEM;
-    return nas_task_block(frame,NAS_SC_futex,addr,op,val,timeout);
+    return nas_task_block(frame,NAS_SC_futex,addr,op,val,timeout,
+                          futex_wait_finish);
 }

@@ -272,13 +272,16 @@ bool nas_sched_preempt_select(void) {
     return false; /* original IRQ frame resumes on its own Task stack */
 }
 uint64_t nas_task_block(uint64_t *frame,enum nas_syscall_op nr,
-                        uint64_t a,uint64_t b,uint64_t c,uint64_t d) {
+                        uint64_t a,uint64_t b,uint64_t c,uint64_t d,
+                        uint64_t (*finish)(struct nas_task *)) {
     struct nas_task *self=nas_current_task;
+    if(!finish)sched_fail("native Task blocked without completion provider");
     nas_arch_save_user_frame(self,frame);
     nas_arch_save_fpu(self);
     self->resume_valid=true;
     self->wait.blocked_op=nr;
     self->wait.pending_valid=true;
+    self->wait.finish=finish;
     self->wait.blocked_args[0]=a;
     self->wait.blocked_args[1]=b;
     self->wait.blocked_args[2]=c;

@@ -7,7 +7,10 @@ uint64_t nas_task_schedule(uint64_t *frame);
 /* Called only from a fully saved user-mode timer IRQ. Caller owns all
  * register/FPU capture and final architecture return-frame reconstruction. */
 bool nas_sched_preempt_select(void);
-uint64_t nas_task_block(uint64_t *frame, enum nas_syscall_op nr, uint64_t a, uint64_t b, uint64_t c, uint64_t d);
+struct nas_task;
+uint64_t nas_task_block(uint64_t *frame, enum nas_syscall_op nr,
+                        uint64_t a, uint64_t b, uint64_t c, uint64_t d,
+                        uint64_t (*finish)(struct nas_task *));
 bool nas_sched_sigpipe_default(uint64_t fd);
 void nas_sched_child_exit(uint32_t code, uint32_t signal);
 /* Linux exit_group terminates EVERY member, including blocked pthreads. */
