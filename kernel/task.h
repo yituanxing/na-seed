@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include "fd.h"
 #include "arch/context.h"
+#include "task/kernel_context.h"
 #include "mm/mm.h"
 #include "task/resources.h"
 
@@ -149,6 +150,9 @@ struct nas_task {
     /* Owned kernel entry stack. Kernel C continuations are NOT resumable
      * yet; the syscall-boundary scheduler still unwinds before switching. */
     uint64_t kernel_stack_top;
+    /* Native kernel continuation, never copied across fork/clone.
+     * The current syscall replay scheduler does not yet park C frames. */
+    struct nas_kernel_context kernel_context;
     /* Independently reference-counted address space (CLONE_VM / vfork). */
     struct nas_mm *mm;
     uint64_t loaded_phdr, loaded_phnum;

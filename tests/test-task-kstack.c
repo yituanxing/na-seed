@@ -94,6 +94,8 @@ int main(void) {
         }
     }
     ck(!nas_task_kernel_stack_ok(NULL),"null rejected");
+    /* A fork must not inherit a parent's live kernel continuation SP. */
+    init->kernel_context.saved_sp=tops[0]-128;
     struct nas_task fake={0};
     fake.kernel_stack_top=tops[0];
     ck(!nas_task_kernel_stack_ok(&fake),"foreign task rejected");
@@ -103,6 +105,8 @@ int main(void) {
         ck(child->kernel_stack_top==tops[i] &&
            child->kernel_stack_top!=init->kernel_stack_top,"no inherited stack");
         ck(nas_task_kernel_stack_ok(child),"fork stack intact");
+        ck(child->kernel_context.saved_sp==0,
+           "fork must not inherit parent kernel continuation");
         ck(child->mm==0,"new Task slot cannot inherit a borrowed MM pointer");
         ck(child->files && child->files!=init->files && child->fds==&child->files->table,
            "fork gives a new table owned by files object");
@@ -118,7 +122,10 @@ int main(void) {
     for (unsigned i=1;i<NAS_TASK_LIMIT;i++) {
         uint64_t *near_top=(uint64_t *)(uintptr_t)(tops[i]-64);
         ck(*near_top==(uint64_t)(i*0x10203U),"stack payload isolated");
+        nas_task_at(i)->kernel_context.saved_sp=tops[i]-128;
         nas_task_release(nas_task_at(i));
+        ck(nas_task_at(i)->kernel_context.saved_sp==0,
+           "recycled TID must not retain parked SP");
     }
     struct nas_task *reused=nas_task_fork_slot();
     ck(reused==nas_task_at(1) && reused->kernel_stack_top==tops[1] &&

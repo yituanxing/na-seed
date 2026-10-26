@@ -24,6 +24,9 @@
 void nas_init_userspace(void) {
     nas_print("[INIT] creating common task/VM and architecture user entry\n");
     nas_task_boot_init();
+    /* Native QEMU hardware acceptance: resume live kernel C frames twice,
+     * distinct from the existing user syscall replay scheduler. */
+    nas_kernel_context_boot_selftest();
     /* User console must be a hardware/firmware input backend BEFORE
      * TIOCSCTTY enables terminal RX. x86 COM1 and RV SBI work early;
      * ARM maps its real PL011 Device page into TTBR1 only after frame init. */

@@ -122,6 +122,7 @@ struct nas_task *nas_task_fork_slot(void) {
         /* fork copies userspace state but NEVER the parent's stack owner. */
         stack_reset(i);
         child->kernel_stack_top = stack_top(i);
+        nas_kernel_context_reset(&child->kernel_context);
         child->pid = next_pid++;
         child->tgid=child->pid;
         child->is_thread=false;
@@ -216,6 +217,7 @@ void nas_task_release(struct nas_task *task) {
     task->fds=0;
     task->robust_list_head=0;
     nas_task_wait_reset(task);
+    nas_kernel_context_reset(&task->kernel_context);
     task->ppid = 0;
     task->pgid = 0;
     task->sid = 0;
