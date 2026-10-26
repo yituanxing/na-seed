@@ -17,14 +17,14 @@ static inline unsigned nas_arch_ptrace_gpr_words(const struct nas_task *task,
     for(unsigned i=0;i<15;i++) words[i]=c->resume_regs[indices[i]];
     words[15]=task->ptrace_call[0];
     words[16]=c->resume_user_rip;
-    words[17]=0x23;
+    words[17]=0x33;
     words[18]=c->resume_user_rflags;
     words[19]=c->resume_user_rsp;
-    words[20]=0x1b;
+    words[20]=0x2b;
     words[21]=c->user_fs_base;
     words[22]=0; /* user GS base is not set by NaSeed */
-    words[23]=0x1b;words[24]=0x1b;
-    words[25]=0x1b;words[26]=0;
+    words[23]=0x2b;words[24]=0x2b;
+    words[25]=0x2b;words[26]=0;
     return 27;
 #elif defined(__riscv) && __riscv_xlen == 64
     /* Linux user_regs_struct starts pc followed by ra..t6 (x1..x31). */
@@ -45,7 +45,7 @@ static inline bool nas_arch_ptrace_set_gpr_words(struct nas_task *task,
     struct nas_arch_context *c=&task->arch;
 #if defined(__x86_64__)
     if(n!=27 || words[16]>=USER_LIMIT || words[19]>=USER_LIMIT ||
-       words[17]!=0x23 || words[20]!=0x1b ||
+       words[17]!=0x33 || words[20]!=0x2b ||
        (words[18]&(3ULL<<12)) || !(words[18]&2ULL) ||
        words[21]>=USER_LIMIT)
         return false;

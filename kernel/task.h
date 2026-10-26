@@ -123,6 +123,10 @@ struct nas_task {
     /* One hardware user instruction per request; not inherited by fork. */
     bool ptrace_single_step;
     uint32_t stop_signal;
+    /* Native CPU exception siginfo for ptrace GETSIGINFO. Zeroed at
+     * non-exception stops; actual #BP/#DB/BRK/EBREAK supply Linux si_code. */
+    int32_t ptrace_signal_code;
+    uint64_t ptrace_signal_addr;
     /* Saved syscall-boundary GPR frame in the exact arch.S push order.
      * The scheduler switches after unwinding the current syscall frame.
      */

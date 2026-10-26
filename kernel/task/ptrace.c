@@ -14,6 +14,8 @@
 #define PTRACE_ATTACH 16ULL
 #define PTRACE_PEEKTEXT 1ULL
 #define PTRACE_PEEKDATA 2ULL
+#define PTRACE_PEEKUSER 3ULL
+#define PTRACE_POKEUSER 6ULL
 #define PTRACE_POKETEXT 4ULL
 #define PTRACE_POKEDATA 5ULL
 #define PTRACE_SETREGS 13ULL
@@ -24,6 +26,7 @@
 #define PTRACE_SYSCALL 24ULL
 #define PTRACE_SETOPTIONS 0x4200ULL
 #define PTRACE_GETEVENTMSG 0x4201ULL
+#define PTRACE_GETSIGINFO 0x4202ULL
 #define PTRACE_SEIZE 0x4206ULL
 #define PTRACE_INTERRUPT 0x4207ULL
 #define PTRACE_GETREGSET 0x4204ULL
@@ -68,6 +71,8 @@ static bool ptrace_owner_valid(const struct nas_task *task) {
 static void ptrace_stop(struct nas_task *task,uint8_t phase) {
     task->ptrace_phase=phase;
     task->ptrace_event=0;
+    task->ptrace_signal_code=0;
+    task->ptrace_signal_addr=0;
     task->resume_valid=true;
     task->stopped_from=NAS_TASK_READY;
     task->state=NAS_TASK_STOPPED;
@@ -80,7 +85,8 @@ static void ptrace_stop(struct nas_task *task,uint8_t phase) {
     nas_signal_ptrace_stop(task);
 }
 bool nas_ptrace_user_exception(struct nas_task *task,unsigned signo,
-                                uint64_t user_pc,uint64_t user_sp) {
+                                int32_t si_code,uint64_t user_pc,
+                                uint64_t user_sp,uint64_t signal_addr) {
     if(!ptrace_owner_valid(task) || task->state!=NAS_TASK_RUNNING ||
        (signo!=NAS_SIGTRAP && signo!=11U))
         return false;
@@ -94,6 +100,8 @@ bool nas_ptrace_user_exception(struct nas_task *task,unsigned signo,
      * not a syscall-entry stop, ptrace event or guessed errno. Preserve
      * the hardware PC verbatim (x86 INT3 already advances by one). */
     task->stop_signal=signo;
+    task->ptrace_signal_code=si_code;
+    task->ptrace_signal_addr=signal_addr;
     return true;
 }
 bool nas_ptrace_syscall_enter(struct nas_task *task,const uint64_t *call) {
@@ -299,8 +307,58 @@ static uint64_t ptrace_arm_fpsimd(struct nas_task *task,uint64_t req,
     return (uint64_t)-EOPNOTSUPP;
 }
 #endif
+/* Linux RV64 NT_PRFPREG uses 32 double-precision f-registers and
+ * a 32-bit FCSR (+ ABI padding). The kernel already saves this genuine
+ * native state on traps and scheduling; GDB uses this regset to identify
+ * the target hard-float width (flen=8), not a fabricated zero regset. */
+#if defined(__riscv) && __riscv_xlen == 64
+#define NAS_NT_PRFPREG 2ULL
+struct nas_linux_rv_fpregs {
+    uint64_t f[32];
+    uint32_t fcsr;
+    uint32_t reserved;
+};
+_Static_assert(sizeof(struct nas_linux_rv_fpregs)==264,
+               "Linux RV64 NT_PRFPREG layout");
+static uint64_t ptrace_rv_fpregs(struct nas_task *task,uint64_t req,
+                                  uint64_t data) {
+    uint64_t iov[2];
+    if(!nas_user_read_bytes(data,(uint8_t *)iov,sizeof(iov)))
+        return (uint64_t)-EFAULT;
+    if(req==PTRACE_GETREGSET) {
+        struct nas_linux_rv_fpregs state={0};
+        for(unsigned i=0;i<32;i++)state.f[i]=task->arch.fp_regs[i];
+        state.fcsr=(uint32_t)task->arch.fp_fcsr;
+        /* Native GDB probes FLEN=4 then 8 via exact 33*flen reads.
+         * Linux rejects a wrong FPR regset size. If a short 132-byte
+         * read succeeds, GDB falsely identifies the D FPU as FLEN=4. */
+        if(iov[1]!=sizeof(state))return (uint64_t)-EINVAL;
+        uint64_t n=sizeof(state);
+        if(n && !nas_user_write_bytes(iov[0],(const uint8_t *)&state,n))
+            return (uint64_t)-EFAULT;
+        return nas_user_write_u64(data+8,n)?0:(uint64_t)-EFAULT;
+    }
+    if(req==PTRACE_SETREGSET) {
+        struct nas_linux_rv_fpregs state={0};
+        if(iov[1]<sizeof(state))return (uint64_t)-EINVAL;
+        if(!nas_user_read_bytes(iov[0],(uint8_t *)&state,sizeof(state)))
+            return (uint64_t)-EFAULT;
+        /* fcsr has only accrued exception flags (5) and frm (3).
+         * Protect privileged/synthetic bits from debugger writes. */
+        if(state.fcsr & ~0xffU)return (uint64_t)-EINVAL;
+        for(unsigned i=0;i<32;i++)task->arch.fp_regs[i]=state.f[i];
+        task->arch.fp_fcsr=state.fcsr;
+        return nas_user_write_u64(data+8,sizeof(state))?0:(uint64_t)-EFAULT;
+    }
+    return (uint64_t)-EOPNOTSUPP;
+}
+#endif
 static uint64_t ptrace_gprs(const struct nas_task *task,
                            uint64_t request,uint64_t addr,uint64_t data) {
+#if defined(__riscv) && __riscv_xlen == 64
+    if(request==PTRACE_GETREGSET && addr==NAS_NT_PRFPREG)
+        return ptrace_rv_fpregs((struct nas_task *)task,request,data);
+#endif
 #if defined(__aarch64__)
     if(request==PTRACE_GETREGSET && addr==NAS_NT_PRFPREG)
         return ptrace_arm_fpsimd((struct nas_task *)task,request,data);
@@ -327,6 +385,10 @@ static uint64_t ptrace_gprs(const struct nas_task *task,
 }
 static uint64_t ptrace_set_gprs(struct nas_task *task,
                               uint64_t req,uint64_t addr,uint64_t data) {
+#if defined(__riscv) && __riscv_xlen == 64
+    if(req==PTRACE_SETREGSET && addr==NAS_NT_PRFPREG)
+        return ptrace_rv_fpregs(task,req,data);
+#endif
 #if defined(__aarch64__)
     if(req==PTRACE_SETREGSET && addr==NAS_NT_PRFPREG)
         return ptrace_arm_fpsimd(task,req,data);
@@ -439,6 +501,19 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
         case PTRACE_GETEVENTMSG:
             return nas_user_write_u64(data,target->ptrace_event_message)
                 ? 0:(uint64_t)-EFAULT;
+        case PTRACE_GETSIGINFO: {
+            /* Linux siginfo_t is 128 bytes with signo/errno/code at 0,
+             * and sigfault.si_addr at 16. Preserve actual CPU stop type:
+             * Linux GDB requires SI_KERNEL for x86 INT3, TRAP_TRACE for #DB. */
+            uint8_t info[128]={0};
+            int32_t signo=(int32_t)(target->stop_signal&0x7fU);
+            int32_t code=target->ptrace_signal_code;
+            memcpy(info,&signo,sizeof(signo));
+            memcpy(info+8,&code,sizeof(code));
+            memcpy(info+16,&target->ptrace_signal_addr,sizeof(uint64_t));
+            return nas_user_write_bytes(data,info,sizeof(info))
+                ?0:(uint64_t)-EFAULT;
+        }
         case PTRACE_GET_SYSCALL_INFO:
             return ptrace_syscall_info(target,addr,data);
         case PTRACE_SETREGSET:
@@ -447,6 +522,39 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
         case PTRACE_GETREGSET:
         case PTRACE_GETREGS:
             return ptrace_gprs(target,request,addr,data);
+#if defined(__x86_64__)
+        case PTRACE_PEEKUSER:
+        case PTRACE_POKEUSER: {
+            /* Linux x86-64 <sys/user.h>: user_regs_struct at offset 0,
+             * 27 x u64, debug registers at byte 848..911. Only the
+             * stopped Task register image is mutable; no kernel state
+             * is exposed by PEEKUSER. GDB probes DR0..DR7 even when
+             * only software breakpoints are in use. No fabricated
+             * hardware watchpoint support: only zero write accepted. */
+            if(addr&7ULL)return (uint64_t)-EIO;
+            if(addr>=848ULL && addr<912ULL) {
+                if(request==PTRACE_PEEKUSER)
+                    return nas_user_write_u64(data,0)
+                        ?0:(uint64_t)-EFAULT;
+                return data==0?0:(uint64_t)-EIO;
+            }
+            if(addr>=27ULL*8ULL)return (uint64_t)-EIO;
+            uint64_t words[34]={0};
+            unsigned count=nas_arch_ptrace_gpr_words(target,words);
+            if(count!=27)return (uint64_t)-EIO;
+            unsigned idx=(unsigned)(addr/8ULL);
+            /* The raw Linux ptrace syscall writes PEEKUSER through its DATA
+             * pointer; libc's ptrace() wrapper converts this into the
+             * returned word. Never return the peeked value as the syscall
+             * result (GDB then sees uninitialized memory). */
+            if(request==PTRACE_PEEKUSER)
+                return nas_user_write_u64(data,words[idx])
+                    ?0:(uint64_t)-EFAULT;
+            words[idx]=data;
+            return nas_arch_ptrace_set_gpr_words(target,words,count)
+                ?0:(uint64_t)-EIO;
+        }
+#endif
         case PTRACE_POKETEXT:
         case PTRACE_POKEDATA: {
             /* Linux ptrace word writes use DATA as the actual 64-bit value,
@@ -462,16 +570,31 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
             int64_t count=nas_vm_read_task_bytes(target,addr,
                                                   (uint8_t *)&word,sizeof(word));
             if(count<0)return (uint64_t)count;
-            return count==(int64_t)sizeof(word)?word:(uint64_t)-EFAULT;
+            /* Linux's kernel ABI writes PEEKTEXT/PEEKDATA into the tracer's
+             * DATA pointer and returns zero. The libc wrapper, not the
+             * kernel, turns that stored word into ptrace()'s result.
+             * A direct syscall consumer must see the same convention. */
+            if(count!=(int64_t)sizeof(word))return (uint64_t)-EFAULT;
+            return nas_user_write_u64(data,word)?0:(uint64_t)-EFAULT;
         }
         case PTRACE_SINGLESTEP:
-#if !defined(__aarch64__)
-            return (uint64_t)-EOPNOTSUPP; /* no pretend software emulation */
+#if !defined(__aarch64__) && !defined(__x86_64__)
+            return (uint64_t)-EOPNOTSUPP; /* no native HW step facility */
 #endif
         case PTRACE_CONT:
         case PTRACE_SYSCALL:
         case PTRACE_DETACH:
             if(data)return (uint64_t)-EOPNOTSUPP; /* signal injection */
+#if defined(__x86_64__)
+            if(request==PTRACE_SINGLESTEP &&
+               target->stopped_from==NAS_TASK_BLOCKED)
+                return (uint64_t)-EBUSY;
+            target->ptrace_single_step=request==PTRACE_SINGLESTEP;
+            if(target->ptrace_single_step)
+                target->arch.resume_user_rflags|=(1ULL<<8); /* TF */
+            else
+                target->arch.resume_user_rflags&=~(1ULL<<8);
+#endif
 #if defined(__aarch64__)
             if(request==PTRACE_SINGLESTEP &&
                target->stopped_from==NAS_TASK_BLOCKED)

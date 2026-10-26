@@ -25,5 +25,6 @@ void nas_ptrace_tracer_exit(uint64_t tracer_pid);
  * syscalls. Caller must save the complete hardware register image and
  * FPU before invoking, then enter the ordinary Task scheduler. */
 bool nas_ptrace_user_exception(struct nas_task *task,unsigned signo,
-                                uint64_t user_pc,uint64_t user_sp);
+                                int32_t si_code,uint64_t user_pc,
+                                uint64_t user_sp,uint64_t signal_addr);
 #endif

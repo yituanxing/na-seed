@@ -48,7 +48,7 @@ struct __attribute__((packed)) idt_entry {
     uint32_t offset_high, reserved;
 };
 static struct x86_tss tss;
-static uint64_t gdt[7] __attribute__((aligned(16)));
+static uint64_t gdt[9] __attribute__((aligned(16)));
 static struct idt_entry idt[256];
 
 void nas_arch_cpu_user_fp_init(void) {
@@ -79,17 +79,24 @@ void nas_arch_cpu_tables_init(void) {
     gdt[0] = 0;
     gdt[1] = 0x00af9a000000ffffULL; /* kernel code: 0x08 */
     gdt[2] = 0x00cf92000000ffffULL; /* kernel data: 0x10 */
-    gdt[3] = 0x00cff2000000ffffULL; /* user data: 0x1b */
-    gdt[4] = 0x00affa000000ffffULL; /* user code: 0x23 */
+    /* Preserve Linux x86-64 ELF CS=0x33 / SS=0x2b, not the
+     * historical NaSeed CS=0x23 selector that GNU GDB correctly
+     * classifies as 32-bit i386 compatibility mode. These must be
+     * real hardware GDT descriptors, NOT fabricated ptrace register
+     * values. Indices 3/4 are reserved for future compat segments. */
+    gdt[3] = 0;
+    gdt[4] = 0;
+    gdt[5] = 0x00cff2000000ffffULL; /* user data: 0x2b */
+    gdt[6] = 0x00affa000000ffffULL; /* user64 code: 0x33 */
     uint64_t base = (uint64_t)(uintptr_t)&tss;
     uint64_t limit = sizeof(tss) - 1;
-    gdt[5] = (limit & 0xffff) | ((base & 0xffffff) << 16)
+    gdt[7] = (limit & 0xffff) | ((base & 0xffffff) << 16)
         | (0x89ULL << 40) | (((limit >> 16) & 15) << 48)
         | (((base >> 24) & 0xff) << 56);
-    gdt[6] = base >> 32;
+    gdt[8] = base >> 32;
     struct table_pointer gdtr = { sizeof(gdt) - 1, (uint64_t)(uintptr_t)gdt };
     gdt_reload(&gdtr);
-    uint16_t tr = 0x28;
+    uint16_t tr = 0x38;
     __asm__ volatile ("ltr %0" : : "r"(tr));
     for (unsigned i = 0; i < 32; i++) {
         uint64_t addr = (uint64_t)(uintptr_t)exception_vectors[i];
@@ -98,7 +105,11 @@ void nas_arch_cpu_tables_init(void) {
         idt[i].offset_high = addr >> 32;
         idt[i].selector = 0x08;
         idt[i].ist = 0;
-        idt[i].type = 0x8e;
+        /* INT3 executes in CPL3 and uses vector 3 via the IDT. The
+         * Linux debug ABI requires DPL=3 on the *real* #BP gate;
+         * DPL=0 raises #GP(0x1a) instead of a ptrace SIGTRAP.
+         * Keep every other exception gate privileged (DPL=0). */
+        idt[i].type = i==3 ? 0xee : 0x8e;
         idt[i].reserved = 0;
     }
 
@@ -121,17 +132,33 @@ void nas_arch_cpu_tables_init(void) {
  * be stopped; never mask a kernel exception as a user SIGTRAP. */
 void nas_x86_traced_exception_c(uint64_t *frame) {
     unsigned vector=(unsigned)frame[15];
-    unsigned signo=vector==3?NAS_SIGTRAP:11U; /* Linux SIGSEGV */
+    unsigned signo=(vector==1||vector==3)?NAS_SIGTRAP:11U;
     uint64_t user_rip=frame[17],user_flags=frame[19],user_sp=frame[20];
     struct nas_task *tracee=nas_current_task;
     if((frame[18]&3U)==3U && tracee &&
-       tracee->state==NAS_TASK_RUNNING && (vector==3 || vector==14)) {
+       tracee->state==NAS_TASK_RUNNING &&
+       (vector==1 || vector==3 || vector==14)) {
         for(unsigned i=0;i<15;i++)tracee->arch.resume_regs[i]=frame[i];
         tracee->arch.resume_user_rip=user_rip;
+        /* A genuine #DB after one CPU instruction ends that step.
+         * It is not a software breakpoint (#BP), and the user TF must
+         * clear before the debugger next resumes with PTRACE_CONT. */
+        if(vector==1 && tracee->ptrace_single_step) {
+            tracee->ptrace_single_step=false;
+            user_flags&=~(1ULL<<8);
+        }
         tracee->arch.resume_user_rflags=user_flags;
         tracee->arch.resume_user_rsp=user_sp;
         nas_arch_save_fpu(tracee);
-        if(nas_ptrace_user_exception(tracee,signo,user_rip,user_sp)) {
+        uint64_t signal_addr=user_rip;
+        int32_t si_code=vector==1?2:0x80; /* #DB TRACE, #BP SI_KERNEL */
+        if(vector==3)signal_addr=user_rip-1; /* INT3 advances RIP */
+        if(vector==14) {
+            __asm__ volatile("mov %%cr2,%0":"=r"(signal_addr));
+            si_code=(frame[16]&1U)?2:1; /* SEGV_ACCERR / SEGV_MAPERR */
+        }
+        if(nas_ptrace_user_exception(tracee,signo,si_code,user_rip,
+                                      user_sp,signal_addr)) {
             uint64_t resumed=nas_task_schedule(frame);
             /* The interrupted debugger may have been blocked in poll:
              * return the REAL EINTR/readiness outcome via selected RAX. */
@@ -141,10 +168,10 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
              * words into the new Task's authentic five-word IRET frame. */
             const struct nas_task *selected=nas_current_task;
             frame[15]=selected->arch.resume_user_rip;
-            frame[16]=0x23U;
+            frame[16]=0x33U;
             frame[17]=selected->arch.resume_user_rflags;
             frame[18]=selected->arch.resume_user_rsp;
-            frame[19]=0x1bU;
+            frame[19]=0x2bU;
             nas_signal_user_return(frame);
             return;
         }
@@ -168,7 +195,7 @@ void exception_report(const uint64_t *frame) {
 void nas_arch_syscall_enable(void) {
     uint64_t efer = rdmsr(0xc0000080);
     wrmsr(0xc0000080, efer | 1); /* EFER.SCE */
-    wrmsr(0xc0000081, (0x10ULL << 48) | (0x08ULL << 32)); /* STAR */
+    wrmsr(0xc0000081, (0x20ULL << 48) | (0x08ULL << 32)); /* STAR */
     wrmsr(0xc0000082, (uint64_t)(uintptr_t)syscall_entry); /* LSTAR */
     wrmsr(0xc0000084, (1ULL << 9) | (1ULL << 10)); /* FMASK IF|DF */
 }
