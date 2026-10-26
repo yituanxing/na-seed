@@ -152,6 +152,7 @@ struct nas_task *nas_task_fork_slot(void) {
         child->ptrace_exit_event_sent=false;
         child->ptrace_child_initial_stop=false;
         child->ptrace_fork_pending_exit=false;
+        child->ptrace_event_exit_published=false;
         child->ptrace_single_step=false;
         child->resume_valid = false;
         /* Fork inherits resources, never pending waits or device watches. */
@@ -240,6 +241,7 @@ void nas_task_release(struct nas_task *task) {
     task->ptrace_exit_event_sent=false;
     task->ptrace_child_initial_stop=false;
     task->ptrace_fork_pending_exit=false;
+    task->ptrace_event_exit_published=false;
     task->ptrace_single_step=false;
     task->pending_signals = 0;
     task->vfork_child_pid = task->vfork_parent_pid = 0;

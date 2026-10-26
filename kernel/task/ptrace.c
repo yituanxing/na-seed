@@ -681,6 +681,7 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
             if(target->ptrace_fork_pending_exit) {
                 target->ptrace_fork_pending_exit=false;
                 if(request==PTRACE_SYSCALL) {
+                    target->ptrace_event_exit_published=true;
                     ptrace_stop(target,SYSINFO_EXIT);
                     return 0;
                 }
@@ -689,7 +690,10 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
                 target->ptrace_exec_pending_exit=false;
                 if(request==PTRACE_SYSCALL) {
                     /* Real execve has committed: expose exit-stop before
-                     * the new ELF executes a single user instruction. */
+                     * the new ELF executes a single user instruction.
+                     * The native resumed syscall C frame must not emit it
+                     * again after this explicit ptrace transition. */
+                    target->ptrace_event_exit_published=true;
                     ptrace_stop(target,SYSINFO_EXIT);
                     target->ptrace_result=0;
                     return 0;

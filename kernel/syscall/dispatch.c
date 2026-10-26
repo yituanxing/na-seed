@@ -318,8 +318,13 @@ uint64_t nas_ptrace_syscall_dispatch(uint64_t *args) {
         return nas_arch_saved_return(original);
     }
     uint64_t result=syscall_dispatch(args);
-    if(trace_at_entry && nas_current_task==original &&
-       original->state==NAS_TASK_RUNNING &&
+    /* ptrace fork/exec event logic has already emitted its required
+     * syscall-exit stop. The suspended native C continuation now returns
+     * through this original gate: do not manufacture a second exit stop. */
+    bool event_exit_published=original->ptrace_event_exit_published;
+    original->ptrace_event_exit_published=false;
+    if(trace_at_entry && !event_exit_published &&
+       nas_current_task==original && original->state==NAS_TASK_RUNNING &&
        nas_ptrace_syscall_exit(original,args,result)) {
         /* Exit stop resumes after the actual syscall, preserving any GPR
          * changes made by the tracer while retaining this original frame. */
