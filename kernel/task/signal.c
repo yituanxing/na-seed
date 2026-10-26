@@ -5,6 +5,8 @@
 #include "../mm/usercopy.h"
 #include "signal.h"
 #include "../arch/arch.h"
+#include "../arch/mmu.h"
+#include "../arch/abi.h"
 #include "../task/sched.h"
 #include "../panic.h"
 
