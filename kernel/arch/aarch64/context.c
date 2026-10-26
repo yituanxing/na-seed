@@ -9,6 +9,7 @@ extern void nas_arm_timer_irq_c(struct nas_arm_trap_frame *frame);
 #include "../../task/signal.h"
 #include "../../task/ptrace.h"
 #include "../../task/sched.h"
+#include "../../exception/exception.h"
 #include "../../panic.h"
 #include "../../drivers/serial.h"
 #include "../../lib/string.h"
@@ -41,6 +42,8 @@ void nas_arm_full_trap_c(struct nas_arm_trap_frame *frame) {
     uint64_t esr, far;
     __asm__ volatile("mrs %0, esr_el1" : "=r"(esr));
     __asm__ volatile("mrs %0, far_el1" : "=r"(far));
+    struct nas_exception exception=nas_exception_arm64(esr,frame->spsr_el1,
+                                                       far,frame->elr_el1);
     /* EC 0x3c is a real AArch64 user BRK instruction (GDB software
      * breakpoint), not an unexpected kernel fault. The ELR points to
      * the BRK instruction itself and MUST NOT be advanced. */
@@ -70,6 +73,26 @@ void nas_arm_full_trap_c(struct nas_arm_trap_frame *frame) {
             return;
         }
         live=0;
+    }
+    if(exception.kind==NAS_EXC_MEMORY && exception.user &&
+       nas_current_task && nas_current_task->state==NAS_TASK_RUNNING) {
+        struct nas_exception_outcome outcome=
+            nas_exception_dispatch(&exception,nas_current_task->mm);
+        if(outcome.action==NAS_EXC_RETRY)return; /* unchanged faulting ELR */
+        if(outcome.action==NAS_EXC_SIGNAL) {
+            struct nas_task *tracee=nas_current_task;
+            live=frame;
+            nas_arch_save_user_frame(tracee,0);
+            nas_arch_save_fpu(tracee);
+            bool traced=nas_ptrace_user_exception(tracee,outcome.signo,
+                         outcome.si_code,frame->elr_el1,frame->sp_el0,far);
+            if(!traced)nas_sched_thread_group_exit(0,outcome.signo);
+            uint64_t resumed=nas_task_schedule((uint64_t *)(void *)frame);
+            frame->x[0]=resumed;
+            nas_signal_user_return((uint64_t *)(void *)frame);
+            live=0;
+            return;
+        }
     }
     /* EC=0x15 is AArch64 EL0 SVC, otherwise use the genuine fault
      * report rather than manufacturing a successful syscall. */

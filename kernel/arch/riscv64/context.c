@@ -7,6 +7,7 @@
 #include "../../task/signal.h"
 #include "../../task/ptrace.h"
 #include "../../task/sched.h"
+#include "../../exception/exception.h"
 #include "../../mm/vm.h"
 #include "../../panic.h"
 #include "../../drivers/serial.h"
@@ -34,6 +35,8 @@ void nas_rv_full_trap_c(struct nas_rv_trap_frame *frame) {
     uint64_t scause, stval;
     __asm__ volatile("csrr %0, scause" : "=r"(scause));
     __asm__ volatile("csrr %0, stval" : "=r"(stval));
+    struct nas_exception exception=nas_exception_rv64(scause,frame->sstatus,
+                                                       stval,frame->sepc);
     /* STIP is delegated by OpenSBI. It is a genuine asynchronous
      * user interrupt, not an ECALL: sepc points to the interrupted
      * instruction and MUST NOT be incremented. */
@@ -65,6 +68,26 @@ void nas_rv_full_trap_c(struct nas_rv_trap_frame *frame) {
             return;
         }
         live=0;
+    }
+    if(exception.kind==NAS_EXC_MEMORY && exception.user &&
+       nas_current_task && nas_current_task->state==NAS_TASK_RUNNING) {
+        struct nas_exception_outcome outcome=
+            nas_exception_dispatch(&exception,nas_current_task->mm);
+        if(outcome.action==NAS_EXC_RETRY)return; /* retry unchanged SEPC */
+        if(outcome.action==NAS_EXC_SIGNAL) {
+            struct nas_task *tracee=nas_current_task;
+            live=frame;
+            nas_arch_save_user_frame(tracee,0);
+            nas_arch_save_fpu(tracee);
+            bool traced=nas_ptrace_user_exception(tracee,outcome.signo,
+                         outcome.si_code,frame->sepc,frame->x[2],stval);
+            if(!traced)nas_sched_thread_group_exit(0,outcome.signo);
+            uint64_t resumed=nas_task_schedule((uint64_t *)(void *)frame);
+            frame->x[10]=resumed;
+            nas_signal_user_return((uint64_t *)(void *)frame);
+            live=0;
+            return;
+        }
     }
     if(scause != 8U || (frame->sstatus & 0x100U)) {
         nas_print("[RV64 FAULT] scause=");nas_hex(scause);
