@@ -40,6 +40,22 @@
 #define NT_PRSTATUS 1ULL
 #define SYSINFO_ENTRY 1U
 #define SYSINFO_EXIT 2U
+/* EXITKILL policy belongs to ptrace/task lifetime, not generic Task slot
+ * administration. Reuse the real signal/group-exit mechanism; Task core
+ * therefore does not gain a hidden dependency on signal service. */
+void nas_ptrace_tracer_exit(uint64_t tracer_pid) {
+    if(!tracer_pid)return;
+    for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
+        struct nas_task *tracee=nas_task_at(i);
+        if(tracee->ptrace_tracer_pid!=tracer_pid ||
+           tracee->state==NAS_TASK_FREE || tracee->state==NAS_TASK_ZOMBIE ||
+           !(tracee->ptrace_options&NAS_PTRACE_OPT_EXITKILL))continue;
+        /* One SIGKILL per thread group is enough. At this point the
+         * tracer is exiting, so the target cannot reenter ptrace. */
+        tracee->ptrace_tracer_pid=0;
+        (void)nas_signal_kill(tracee->tgid,NAS_SIGKILL,0);
+    }
+}
 static bool ptrace_owner_valid(const struct nas_task *task) {
     return task && task->ptrace_tracer_pid &&
         nas_task_by_pid(task->ptrace_tracer_pid)!=0;

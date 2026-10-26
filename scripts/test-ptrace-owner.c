@@ -5,6 +5,12 @@
 #include "../kernel/errno.h"
 
 static struct nas_task tracer, tracee, stranger;
+uint64_t nas_signal_kill(uint64_t pid,uint64_t signo,uint64_t *frame){
+    (void)pid;(void)signo;(void)frame;return 0;
+}
+struct nas_task *nas_task_at(unsigned slot){
+    return slot==0?&tracer:slot==1?&tracee:slot==2?&stranger:0;
+}
 uint64_t nas_arch_signal_user_sp(void){return 0;}
 void nas_arch_save_user_frame(struct nas_task *t,const uint64_t *f){(void)t;(void)f;}
 void nas_arch_save_fpu(struct nas_task *t){(void)t;}

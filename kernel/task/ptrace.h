@@ -20,4 +20,5 @@ bool nas_ptrace_exit_event(struct nas_task *,const uint64_t *call,uint64_t statu
 bool nas_ptrace_fork_created(struct nas_task *parent,struct nas_task *child,
                              unsigned event,const uint64_t *call);
 bool nas_ptrace_blocked_completed(struct nas_task *task,uint64_t result);
+void nas_ptrace_tracer_exit(uint64_t tracer_pid);
 #endif
