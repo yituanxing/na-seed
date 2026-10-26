@@ -38,7 +38,7 @@ __attribute__((noinline,used)) int m77_compute(int bonus) {
  * An external GDB process MUST attach by PID, plant a breakpoint in this
  * existing live task, modify the DWARF local, detach and let it finish. */
 __attribute__((noreturn,used)) void _start(void) {
-    static const char ready[]="M77_INFERIOR_READY\\n";
+    static const char ready[]="M77_INFERIOR_READY\n";
 #if defined(__x86_64__)
     (void)linux_call3(1,1,(long)ready,sizeof(ready)-1);
     const long sleep_nr=35, exit_nr=60;
@@ -51,7 +51,7 @@ __attribute__((noreturn,used)) void _start(void) {
         (void)linux_call3(sleep_nr,(long)&delay,0,0);
         int result=m77_compute(5);
         if(result==99 && m77_observed==99) {
-            static const char ok[]="M77_ATTACH_MUTATION_PASS\\n";
+            static const char ok[]="M77_ATTACH_MUTATION_PASS\n";
 #if defined(__x86_64__)
             (void)linux_call3(1,1,(long)ok,sizeof(ok)-1);
 #else
@@ -61,7 +61,7 @@ __attribute__((noreturn,used)) void _start(void) {
             for(;;){}
         }
     }
-    static const char bad[]="M77_ATTACH_MUTATION_TIMEOUT_FAIL\\n";
+    static const char bad[]="M77_ATTACH_MUTATION_TIMEOUT_FAIL\n";
 #if defined(__x86_64__)
     (void)linux_call3(1,1,(long)bad,sizeof(bad)-1);
 #else
