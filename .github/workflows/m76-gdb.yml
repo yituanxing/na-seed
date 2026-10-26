@@ -1,4 +1,4 @@
-name: NaSeed M76 original GNU GDB C DWARF source debug on native three ISAs
+name: NaSeed M76/M77 original GNU GDB source and live attach on three ISAs
 on:
   pull_request:
     paths:
@@ -7,6 +7,7 @@ on:
       - 'scripts/probe-m76-gdb.sh'
       - 'scripts/m76-*'
       - 'tests/m76-*'
+      - 'tests/m77-*'
       - 'rootfs/alpine/packages-m76-gdb.txt'
       - 'scripts/stage-alpine-prebuilt-overlay.sh'
       - '.github/workflows/m76-gdb.yml'
@@ -16,7 +17,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   original-inspection:
-    name: original GDB C breakpoint, local write, native resume on NaSeed / ${{ matrix.port }}
+    name: original GNU GDB source mutation plus live PID attach/detach / ${{ matrix.port }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     strategy:
@@ -28,7 +29,7 @@ jobs:
       - name: Shared kernel architecture and host procfs owner
         run: |
           set -eu
-          sh -n scripts/stage-m76-prebuilt.sh scripts/probe-m76-gdb.sh tests/m76-gdb-run.sh
+          sh -n scripts/stage-m76-prebuilt.sh scripts/probe-m76-gdb.sh tests/m76-gdb-run.sh tests/m77-gdb-run.sh
           python3 scripts/check-three-isa-core.py
           cc -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -I kernel scripts/test-ptrace-owner.c kernel/task/ptrace.c -o /tmp/nas-m76-ptrace-owner
           /tmp/nas-m76-ptrace-owner
@@ -68,7 +69,7 @@ jobs:
               -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
           fi
           command -v docker
-      - name: Original GNU GDB genuine C source DWARF debugging in QEMU
+      - name: Original GNU GDB source and live attach/detach in genuine QEMU
         timeout-minutes: 24
         run: sh scripts/probe-m76-gdb.sh ${{ matrix.port }}
       - name: Retain all actual QEMU and apk failure evidence
@@ -80,6 +81,9 @@ jobs:
             build/external/m76-gdb/${{ matrix.port }}/apk-install.log
             build/external/m76-gdb/${{ matrix.port }}/requested-packages.txt
             build/busybox-source-parity-x86/m76-source.clean.log
+            build/busybox-source-parity-x86/m77-attach.clean.log
             build/port-riscv64/full/matrix-source/m76-source.clean.log
+            build/port-riscv64/full/matrix-source/m77-attach.clean.log
             build/port-aarch64/full/matrix-source/m76-source.clean.log
+            build/port-aarch64/full/matrix-source/m77-attach.clean.log
           if-no-files-found: ignore
