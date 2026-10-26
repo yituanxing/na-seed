@@ -17,7 +17,7 @@ case "$port" in
     arm64) arch=aarch64; machine='AArch64' ;;
     *) exit 2 ;;
 esac
-case "$profile" in m58-runtime|m59-worktree|m60-terminal|m65-observe|m66-monitor|m67-control|m69-inspect|m70-vmfd|m72-strace|m73-strace|m74-strace|m75-gdb|m76-gdb) ;; *) exit 2 ;; esac
+case "$profile" in m58-runtime|m59-worktree|m60-terminal|m65-observe|m66-monitor|m67-control|m69-inspect|m70-vmfd|m72-strace|m73-strace|m74-strace|m75-gdb|m76-gdb|m79-workflow) ;; *) exit 2 ;; esac
 for manifest in "$package_file" "$elf_file" "$copies_file"; do
     test -s "$manifest" || exit 1
 done

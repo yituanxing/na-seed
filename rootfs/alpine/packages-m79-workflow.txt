@@ -1,0 +1,10 @@
+# Official Alpine v3.23 signed, target-native packages only.
+# Original Bash, Vim, Git and Python execute together inside NaSeed.
+# No in-guest compiler/Make/build toolchain or package scripts.
+musl
+busybox
+bash
+git
+vim
+ncurses-terminfo-base
+python3

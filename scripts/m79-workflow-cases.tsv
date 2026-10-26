@@ -1,0 +1,2 @@
+# One genuine interconnected four-program workflow in each native NaSeed boot.
+m79-workflow	cpio	sh -c '/bin/sh /tests/m79-workflow-run.sh'	M79_FOUR_ORIGINAL_PROGRAMS_PASS	-	/bin/busybox
