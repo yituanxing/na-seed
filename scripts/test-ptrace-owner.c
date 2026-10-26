@@ -29,6 +29,10 @@ int main(void) {
     assert(tracee.ptrace_tracer_pid==tracer.pid);
     assert((int64_t)nas_ptrace_request(0,0,0,0)==-EPERM);
     nas_current_task=&stranger;
+    /* A legacy ptrace-only kernel must reject SEIZE with EIO, NOT
+     * EPERM: upstream strace interprets EPERM as supporting SEIZE. */
+    assert((int64_t)nas_ptrace_request(0x4206,3,0,0)==-EIO);
+    assert((int64_t)nas_ptrace_request(0x4207,3,0,0)==-EIO);
     assert((int64_t)nas_ptrace_request(7,2,0,0)==-EPERM);
     nas_current_task=&tracer;
     assert((int64_t)nas_ptrace_request(7,2,0,0)==-ESRCH);

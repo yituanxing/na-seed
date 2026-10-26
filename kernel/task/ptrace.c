@@ -19,6 +19,8 @@
 #define PTRACE_DETACH 17ULL
 #define PTRACE_SYSCALL 24ULL
 #define PTRACE_SETOPTIONS 0x4200ULL
+#define PTRACE_SEIZE 0x4206ULL
+#define PTRACE_INTERRUPT 0x4207ULL
 #define PTRACE_GETREGSET 0x4204ULL
 #define PTRACE_GET_SYSCALL_INFO 0x420eULL
 #define PTRACE_O_TRACESYSGOOD 1ULL
@@ -144,6 +146,13 @@ static uint64_t ptrace_gprs(const struct nas_task *task,
 uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
                              uint64_t addr,uint64_t data) {
     struct nas_task *self=nas_current_task;
+    /* Unlike a supported operation on a tracee we do not own, these
+     * commands are entirely unimplemented. Linux before PTRACE_SEIZE
+     * existed returned EIO: crucially NOT EPERM (which strace uses as
+     * evidence of modern SEIZE support when probing ptrace(self)).
+     * Correct unsupported-operation semantics select legacy TRACEME. */
+    if(request==PTRACE_SEIZE || request==PTRACE_INTERRUPT)
+        return (uint64_t)-EIO;
     if(request==PTRACE_TRACEME) {
         if(!self || self->pid==1 || self->ptrace_tracer_pid || !self->ppid)
             return (uint64_t)-EPERM;

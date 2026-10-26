@@ -152,6 +152,21 @@ void nas_task_adopt_orphans(uint64_t exiting_pid) {
         struct nas_task *child=&task_table[i];
         if (child->state != NAS_TASK_FREE &&
             child->ppid == exiting_pid) child->ppid=1;
+        /* ptrace is a *tracer* relationship, not inherited by init:
+         * when tracer dies, detach and restore runnable tracees instead
+         * of leaving a permanently stopped task without an owner. */
+        if (child->state!=NAS_TASK_FREE &&
+            child->ptrace_tracer_pid==exiting_pid) {
+            child->ptrace_tracer_pid=0;
+            child->ptrace_options=0;
+            child->ptrace_trace_syscalls=false;
+            if(child->state==NAS_TASK_STOPPED && child->ptrace_phase) {
+                child->state=NAS_TASK_READY;
+                child->stopped_from=NAS_TASK_FREE;
+                child->stop_report_pending=false;
+            }
+            child->ptrace_phase=0;
+        }
     }
 }
 void nas_task_release(struct nas_task *task) {
