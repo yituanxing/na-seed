@@ -18,7 +18,8 @@ if ! /usr/bin/gdb -nx -q -batch \
    -ex 'set confirm off' \
    -ex "file /tests/m77-inferior" \
    -ex "attach $child" \
-   -ex 'break m77_compute' \
+   -ex 'info inferiors' \
+   -ex 'break m77-inferior.c:33' \
    -ex 'continue' \
    -ex 'print local' \
    -ex 'set variable local=94' \
@@ -31,7 +32,7 @@ if ! /usr/bin/gdb -nx -q -batch \
   /bin/busybox head -c 2000 /tmp/m77-inferior.stdout || :
   exit 1
 fi
-if ! /bin/busybox grep -q 'Attaching to process' /tmp/m77-gdb.stdout ||
+if ! /bin/busybox grep -Eq 'process [0-9]+' /tmp/m77-gdb.stdout ||
    ! /bin/busybox grep -q 'Breakpoint 1, m77_compute' /tmp/m77-gdb.stdout ||
    ! /bin/busybox grep -Eq '\\$1 = 17' /tmp/m77-gdb.stdout ||
    ! /bin/busybox grep -Eq '\\$2 = 94' /tmp/m77-gdb.stdout ||
