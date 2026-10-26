@@ -6,6 +6,11 @@
 #include "../kernel/errno.h"
 
 static struct nas_task tracer, tracee, stranger;
+static unsigned ptrace_notifications;
+void nas_signal_ptrace_stop(const struct nas_task *tracee){
+    if(tracee && tracee->ptrace_tracer_pid && tracee->stop_report_pending)
+        ptrace_notifications++;
+}
 uint64_t nas_signal_kill(uint64_t pid,uint64_t signo,uint64_t *frame){
     (void)pid;(void)signo;(void)frame;return 0;
 }
@@ -80,6 +85,7 @@ int main(void) {
     assert(stranger.state==NAS_TASK_STOPPED &&
            stranger.stopped_from==NAS_TASK_READY &&
            stranger.stop_signal==19 && stranger.stop_report_pending);
+    assert(ptrace_notifications==1);
     assert((int64_t)nas_ptrace_request(16,3,0,0)==-EPERM);
     assert(nas_ptrace_request(17,3,0,0)==0);
     assert(stranger.state==NAS_TASK_READY && !stranger.ptrace_tracer_pid);

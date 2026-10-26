@@ -1,4 +1,4 @@
-name: NaSeed M75 signed original GDB native debug native three-ISA gate
+name: NaSeed M75 original GNU GDB native three-ISA debug gate
 on:
   pull_request:
     paths:
@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   original-inspection:
-    name: original original GDB actual inferior stop and resume on NaSeed / ${{ matrix.port }}
+    name: original GDB actual inferior stop and resume on NaSeed / ${{ matrix.port }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     strategy:
@@ -66,7 +66,7 @@ jobs:
               -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
           fi
           command -v docker
-      - name: Original Alpine strace real syscall-stop in native QEMU
+      - name: Original Alpine GDB actual inferior in native QEMU
         timeout-minutes: 24
         run: sh scripts/probe-m75-gdb.sh ${{ matrix.port }}
       - name: Retain all actual QEMU and apk failure evidence

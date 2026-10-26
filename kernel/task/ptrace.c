@@ -70,6 +70,9 @@ static void ptrace_stop(struct nas_task *task,uint8_t phase) {
         ((task->ptrace_options&PTRACE_O_TRACESYSGOOD)?0x80U:0U);
     task->stop_report_pending=true;
     task->continue_report_pending=false;
+    /* Real event-driven GDB uses a SIGCHLD handler/self-pipe. A wait4
+     * event alone is NOT enough when its thread is blocked in poll. */
+    nas_signal_ptrace_stop(task);
 }
 bool nas_ptrace_syscall_enter(struct nas_task *task,const uint64_t *call) {
     if(!task)return false;
@@ -168,6 +171,7 @@ bool nas_ptrace_fork_created(struct nas_task *parent,struct nas_task *child,
     child->stop_report_pending=true;
     child->stop_signal=NAS_SIGSTOP;
     child->continue_report_pending=false;
+    nas_signal_ptrace_stop(child);
 
     parent->ptrace_result=child->pid;
     parent->ptrace_ip=call[7];
@@ -316,6 +320,7 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
         target->stop_signal=NAS_SIGSTOP;
         target->stop_report_pending=true;
         target->continue_report_pending=false;
+        nas_signal_ptrace_stop(target);
         return 0;
     }
     if(target->ptrace_tracer_pid!=self->pid)return (uint64_t)-EPERM;
