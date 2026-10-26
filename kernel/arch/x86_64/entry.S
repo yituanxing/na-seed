@@ -104,6 +104,34 @@ nas_x86_timer_isr:
     call nas_signal_user_return
     jmp nas_x86_iret_restore
 
+
+/* Real userspace #BP and #PF enter with two words (vector,error)
+ * prepended to the hardware IRET frame. Save exactly the same 15 GPRs
+ * as syscall/IRQ; C validates CPL3 and ptrace ownership before stopping.
+ * The selected Task's native IRET return frame overwrites vector/error
+ * below those saved registers; no fake syscall can be replayed. */
+.global nas_x86_traced_exception_entry
+nas_x86_traced_exception_entry:
+    cld
+    pushq %r15
+    pushq %r14
+    pushq %r13
+    pushq %r12
+    pushq %rbp
+    pushq %rbx
+    pushq %r11
+    pushq %rcx
+    pushq %r9
+    pushq %r8
+    pushq %r10
+    pushq %rdx
+    pushq %rsi
+    pushq %rdi
+    pushq %rax
+    movq %rsp,%rdi
+    call nas_x86_traced_exception_c
+    jmp nas_x86_iret_restore
+
 nas_x86_iret_restore:
     /* Same saved-GPR layout for syscall and interrupt. The frame's
      * RIP/FLAGS/RSP is authoritative even after a scheduler task switch. */
@@ -155,7 +183,7 @@ isr2:
 isr3:
     pushq $0
     pushq $3
-    jmp exception_common
+    jmp nas_x86_traced_exception_entry
 .global isr4
 isr4:
     pushq $0
@@ -204,7 +232,7 @@ isr13:
 .global isr14
 isr14:
     pushq $14
-    jmp exception_common
+    jmp nas_x86_traced_exception_entry
 .global isr15
 isr15:
     pushq $0

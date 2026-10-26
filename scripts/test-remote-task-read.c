@@ -42,6 +42,24 @@ int main(void){
     assert(nas_vm_read_task_bytes(&dead,0x10000,data,8)==-3);
     assert(nas_vm_read_task_bytes(&main_task,UINT64_MAX,data,8)==-14);
     assert(nas_vm_read_task_bytes(&main_task,0x10000,0,8)==-14);
+
+    /* Debugger breakpoint writes must cross noncontiguous frames and
+     * preserve every byte when any later page fails preflight. */
+    uint8_t patch[80];
+    for(unsigned i=0;i<80;i++)patch[i]=(uint8_t)(i+0x30U);
+    assert(nas_vm_write_task_bytes(&thread,0x10fe1,patch,80)==80);
+    assert(last_root==main_task.root_phys);
+    assert(!memcmp(physical+0x2000+PAGE-31,patch,31));
+    assert(!memcmp(physical+0x9000,patch+31,49));
+    uint8_t original[8];
+    memcpy(original,physical+0x9000+PAGE-8,8);
+    assert(nas_vm_write_task_bytes(&thread,0x11ff8,patch,16)==-14);
+    assert(!memcmp(physical+0x9000+PAGE-8,original,8));
+    assert(nas_vm_write_task_bytes(&thread,0x11000,patch,8)==8);
+    assert(nas_vm_write_task_bytes(&dead,0x10000,patch,8)==-3);
+    assert(nas_vm_write_task_bytes(&thread,UINT64_MAX,patch,8)==-14);
+    assert(nas_vm_write_task_bytes(&thread,0x11000,0,8)==-14);
+    puts("[M75 REMOTE WRITE PASS] 3 ISA common Task VM, nonadjacent frames, atomic preflight and EFAULT");
     puts("[M71 REMOTE VM PASS] selected Task owner, 4K noncontiguous frames, partial reads, EFAULT ESRCH");
     return 0;
 }

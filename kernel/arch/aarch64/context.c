@@ -7,6 +7,8 @@ extern void nas_arm_timer_irq_c(struct nas_arm_trap_frame *frame);
 #include "../../task.h"
 #include "../../syscall/dispatch.h"
 #include "../../task/signal.h"
+#include "../../task/ptrace.h"
+#include "../../task/sched.h"
 #include "../../panic.h"
 #include "../../drivers/serial.h"
 #include "../../lib/string.h"
@@ -39,8 +41,36 @@ void nas_arm_full_trap_c(struct nas_arm_trap_frame *frame) {
     uint64_t esr, far;
     __asm__ volatile("mrs %0, esr_el1" : "=r"(esr));
     __asm__ volatile("mrs %0, far_el1" : "=r"(far));
-    /* EC=0x15 is the AArch64 EL0 SVC instruction; other exceptions
-     * are real hardware failures, not a pretend syscall success. */
+    /* EC 0x3c is a real AArch64 user BRK instruction (GDB software
+     * breakpoint), not an unexpected kernel fault. The ELR points to
+     * the BRK instruction itself and MUST NOT be advanced. */
+    if (((esr>>26)==0x3cULL || (esr>>26)==0x32ULL) &&
+        !(frame->spsr_el1&15U)) {
+        struct nas_task *tracee=nas_current_task;
+        if((esr>>26)==0x32ULL) {
+            /* Native one-instruction step completed, not a syscall. */
+            tracee->ptrace_single_step=false;
+            frame->spsr_el1=(frame->spsr_el1&~(1ULL<<21))|(1ULL<<9);
+        }
+        live=frame;
+        nas_arch_save_user_frame(tracee,0);
+        nas_arch_save_fpu(tracee);
+        if(nas_ptrace_user_exception(tracee,NAS_SIGTRAP,
+                                      frame->elr_el1,frame->sp_el0)) {
+            /* An exception stop can wake a tracer BLOCKED in ppoll/wait.
+             * task_schedule returns that resumed syscall's genuine
+             * result. Failing to write x0 silently turns EINTR into the
+             * tracer's stale argument/return and breaks its event loop. */
+            uint64_t resumed=nas_task_schedule((uint64_t *)(void *)frame);
+            frame->x[0]=resumed;
+            nas_signal_user_return((uint64_t *)(void *)frame);
+            live=0;
+            return;
+        }
+        live=0;
+    }
+    /* EC=0x15 is AArch64 EL0 SVC, otherwise use the genuine fault
+     * report rather than manufacturing a successful syscall. */
     if ((esr>>26) != 0x15ULL || (frame->spsr_el1 & 15U)) {
         nas_print("[ARM64 FAULT] esr="); nas_hex(esr);
         nas_print(" elr="); nas_hex(frame->elr_el1);
@@ -87,6 +117,14 @@ void nas_arch_restore_cpu(const struct nas_task *task) {
     uint64_t tls=nas_task_tls_base(task);
     __asm__ volatile("msr tpidr_el0,%0" : : "r"(tls) : "memory");
     nas_arm_load_simd(task->arch.simd_regs);
+    /* Program hardware software-step for the selected Task only.
+     * MDSCR_EL1.SS + SPSR_EL1.SS causes a real EL0 debug exception;
+     * every other Task clears this PE-global enable. */
+    uint64_t mdscr;
+    __asm__ volatile("mrs %0,mdscr_el1" : "=r"(mdscr));
+    if(task->ptrace_single_step)mdscr|=1ULL;
+    else mdscr&=~1ULL;
+    __asm__ volatile("msr mdscr_el1,%0\n\tisb" : : "r"(mdscr) : "memory");
 }
 uint64_t nas_arch_signal_user_sp(void) {
     if(!live)nas_fail("ARM64 signal return outside live trap");

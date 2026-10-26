@@ -14,7 +14,11 @@
 #define PTRACE_ATTACH 16ULL
 #define PTRACE_PEEKTEXT 1ULL
 #define PTRACE_PEEKDATA 2ULL
+#define PTRACE_POKETEXT 4ULL
+#define PTRACE_POKEDATA 5ULL
+#define PTRACE_SETREGS 13ULL
 #define PTRACE_CONT 7ULL
+#define PTRACE_SINGLESTEP 9ULL
 #define PTRACE_GETREGS 12ULL
 #define PTRACE_DETACH 17ULL
 #define PTRACE_SYSCALL 24ULL
@@ -23,6 +27,7 @@
 #define PTRACE_SEIZE 0x4206ULL
 #define PTRACE_INTERRUPT 0x4207ULL
 #define PTRACE_GETREGSET 0x4204ULL
+#define PTRACE_SETREGSET 0x4205ULL
 #define PTRACE_GET_SYSCALL_INFO 0x420eULL
 #define PTRACE_O_TRACESYSGOOD 1ULL
 #define PTRACE_O_TRACEFORK 2ULL
@@ -70,6 +75,26 @@ static void ptrace_stop(struct nas_task *task,uint8_t phase) {
         ((task->ptrace_options&PTRACE_O_TRACESYSGOOD)?0x80U:0U);
     task->stop_report_pending=true;
     task->continue_report_pending=false;
+    /* Real event-driven GDB uses a SIGCHLD handler/self-pipe. A wait4
+     * event alone is NOT enough when its thread is blocked in poll. */
+    nas_signal_ptrace_stop(task);
+}
+bool nas_ptrace_user_exception(struct nas_task *task,unsigned signo,
+                                uint64_t user_pc,uint64_t user_sp) {
+    if(!ptrace_owner_valid(task) || task->state!=NAS_TASK_RUNNING ||
+       (signo!=NAS_SIGTRAP && signo!=11U))
+        return false;
+    task->ptrace_ip=user_pc;
+    task->ptrace_sp=user_sp;
+    task->ptrace_result=0;
+
+    ptrace_stop(task,0);
+
+    /* The debug/trap event is a SIGTRAP or SIGSEGV signal-delivery stop,
+     * not a syscall-entry stop, ptrace event or guessed errno. Preserve
+     * the hardware PC verbatim (x86 INT3 already advances by one). */
+    task->stop_signal=signo;
+    return true;
 }
 bool nas_ptrace_syscall_enter(struct nas_task *task,const uint64_t *call) {
     if(!task)return false;
@@ -168,6 +193,7 @@ bool nas_ptrace_fork_created(struct nas_task *parent,struct nas_task *child,
     child->stop_report_pending=true;
     child->stop_signal=NAS_SIGSTOP;
     child->continue_report_pending=false;
+    nas_signal_ptrace_stop(child);
 
     parent->ptrace_result=child->pid;
     parent->ptrace_ip=call[7];
@@ -232,8 +258,53 @@ static uint64_t ptrace_syscall_info(const struct nas_task *task,
         return (uint64_t)-EFAULT;
     return available;
 }
+/* Linux AArch64 NT_PRFPREG (2): user_fpsimd_state is exactly
+ * 32 x 128-bit V registers, FPSR, FPCR, and two reserved u32 values.
+ * The Task-owned SIMD snapshot is saved on the real trap boundary.
+ * Do NOT invent generic floating point register behavior on x86/RV64. */
+#if defined(__aarch64__)
+#define NAS_NT_PRFPREG 2ULL
+struct nas_linux_arm_fpsimd {
+    uint8_t vregs[512];
+    uint32_t fpsr,fpcr,reserved[2];
+};
+_Static_assert(sizeof(struct nas_linux_arm_fpsimd)==528,
+               "Linux AArch64 NT_PRFPREG ABI");
+static uint64_t ptrace_arm_fpsimd(struct nas_task *task,uint64_t req,
+                                  uint64_t data) {
+    uint64_t iov[2];
+    if(!nas_user_read_bytes(data,(uint8_t *)iov,sizeof(iov)))
+        return (uint64_t)-EFAULT;
+    struct nas_linux_arm_fpsimd state={0};
+    if(req==PTRACE_GETREGSET) {
+        memcpy(state.vregs,task->arch.simd_regs,sizeof(state.vregs));
+        state.fpsr=(uint32_t)task->arch.fpsr;
+        state.fpcr=(uint32_t)task->arch.fpcr;
+        uint64_t n=iov[1]<sizeof(state)?iov[1]:sizeof(state);
+        if(n && !nas_user_write_bytes(iov[0],(const uint8_t *)&state,n))
+            return (uint64_t)-EFAULT;
+        return nas_user_write_u64(data+8,n)?0:(uint64_t)-EFAULT;
+    }
+    if(req==PTRACE_SETREGSET) {
+        if(iov[1]<sizeof(state))return (uint64_t)-EINVAL;
+        if(!nas_user_read_bytes(iov[0],(uint8_t *)&state,sizeof(state)))
+            return (uint64_t)-EFAULT;
+        if(!nas_user_write_u64(data+8,sizeof(state)))
+            return (uint64_t)-EFAULT;
+        memcpy(task->arch.simd_regs,state.vregs,sizeof(state.vregs));
+        task->arch.fpsr=state.fpsr;
+        task->arch.fpcr=state.fpcr;
+        return 0;
+    }
+    return (uint64_t)-EOPNOTSUPP;
+}
+#endif
 static uint64_t ptrace_gprs(const struct nas_task *task,
                            uint64_t request,uint64_t addr,uint64_t data) {
+#if defined(__aarch64__)
+    if(request==PTRACE_GETREGSET && addr==NAS_NT_PRFPREG)
+        return ptrace_arm_fpsimd((struct nas_task *)task,request,data);
+#endif
     uint64_t words[34]={0};
     unsigned n=nas_arch_ptrace_gpr_words(task,words);
     uint64_t len=n*8ULL;
@@ -251,6 +322,38 @@ static uint64_t ptrace_gprs(const struct nas_task *task,
     if(request==PTRACE_GETREGS)
         return nas_user_write_bytes(data,(const uint8_t *)words,len)
             ?0:(uint64_t)-EFAULT;
+#endif
+    return (uint64_t)-EOPNOTSUPP;
+}
+static uint64_t ptrace_set_gprs(struct nas_task *task,
+                              uint64_t req,uint64_t addr,uint64_t data) {
+#if defined(__aarch64__)
+    if(req==PTRACE_SETREGSET && addr==NAS_NT_PRFPREG)
+        return ptrace_arm_fpsimd(task,req,data);
+#endif
+    uint64_t words[34]={0};
+    unsigned n=nas_arch_ptrace_gpr_words(task,words);
+    uint64_t len=(uint64_t)n*8;
+    if(req==PTRACE_SETREGSET) {
+        if(addr!=NT_PRSTATUS)return (uint64_t)-EINVAL;
+        uint64_t iov[2];
+        if(!nas_user_read_bytes(data,(uint8_t *)iov,sizeof(iov)))
+            return (uint64_t)-EFAULT;
+        if(iov[1]<len)return (uint64_t)-EINVAL;
+        if(!nas_user_read_bytes(iov[0],(uint8_t *)words,len))
+            return (uint64_t)-EFAULT;
+        /* Linux SETREGSET may shorten iov_len on successful requests. */
+        if(!nas_arch_ptrace_set_gpr_words(task,words,n))
+            return (uint64_t)-EINVAL;
+        return nas_user_write_u64(data+8,len)?0:(uint64_t)-EFAULT;
+    }
+#if defined(__x86_64__)
+    if(req==PTRACE_SETREGS) {
+        if(!nas_user_read_bytes(data,(uint8_t *)words,len))
+            return (uint64_t)-EFAULT;
+        return nas_arch_ptrace_set_gpr_words(task,words,n)
+            ?0:(uint64_t)-EINVAL;
+    }
 #endif
     return (uint64_t)-EOPNOTSUPP;
 }
@@ -316,6 +419,7 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
         target->stop_signal=NAS_SIGSTOP;
         target->stop_report_pending=true;
         target->continue_report_pending=false;
+        nas_signal_ptrace_stop(target);
         return 0;
     }
     if(target->ptrace_tracer_pid!=self->pid)return (uint64_t)-EPERM;
@@ -337,9 +441,21 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
                 ? 0:(uint64_t)-EFAULT;
         case PTRACE_GET_SYSCALL_INFO:
             return ptrace_syscall_info(target,addr,data);
+        case PTRACE_SETREGSET:
+        case PTRACE_SETREGS:
+            return ptrace_set_gprs(target,request,addr,data);
         case PTRACE_GETREGSET:
         case PTRACE_GETREGS:
             return ptrace_gprs(target,request,addr,data);
+        case PTRACE_POKETEXT:
+        case PTRACE_POKEDATA: {
+            /* Linux ptrace word writes use DATA as the actual 64-bit value,
+             * not a tracer pointer. Required for software breakpoints. */
+            int64_t n=nas_vm_write_task_bytes(target,addr,
+                                               (const uint8_t *)&data,8);
+            if(n<0)return (uint64_t)n;
+            return n==8?0:(uint64_t)-EFAULT;
+        }
         case PTRACE_PEEKDATA:
         case PTRACE_PEEKTEXT: {
             uint64_t word=0;
@@ -348,10 +464,26 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
             if(count<0)return (uint64_t)count;
             return count==(int64_t)sizeof(word)?word:(uint64_t)-EFAULT;
         }
+        case PTRACE_SINGLESTEP:
+#if !defined(__aarch64__)
+            return (uint64_t)-EOPNOTSUPP; /* no pretend software emulation */
+#endif
         case PTRACE_CONT:
         case PTRACE_SYSCALL:
         case PTRACE_DETACH:
             if(data)return (uint64_t)-EOPNOTSUPP; /* signal injection */
+#if defined(__aarch64__)
+            if(request==PTRACE_SINGLESTEP &&
+               target->stopped_from==NAS_TASK_BLOCKED)
+                return (uint64_t)-EBUSY;
+            target->ptrace_single_step=request==PTRACE_SINGLESTEP;
+            if(target->ptrace_single_step)
+                target->arch.user_spsr=
+                    (target->arch.user_spsr&~(1ULL<<9))|(1ULL<<21);
+            else
+                target->arch.user_spsr=
+                    (target->arch.user_spsr&~(1ULL<<21))|(1ULL<<9);
+#endif
             target->ptrace_trace_syscalls=request==PTRACE_SYSCALL;
             target->ptrace_child_initial_stop=false;
             if(target->ptrace_fork_pending_exit) {
@@ -390,3 +522,6 @@ uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
             return (uint64_t)-EOPNOTSUPP;
     }
 }
+
+/* Bounded ARM64 debug only while diagnosing the real GNU GDB monitor path.
+ * No synthetic event, no change to ptrace syscall result. */

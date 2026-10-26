@@ -468,6 +468,19 @@ void nas_signal_handler_enter(struct nas_task *t,unsigned signo,
  * pipe tokens. Queue even if masked: pselect6 installs its own temporary
  * signal mask and must observe the pending transition atomically.
  * SIG_DFL/SIG_IGN SIGCHLD cause no signal delivery; wait4 still works. */
+void nas_signal_ptrace_stop(const struct nas_task *tracee) {
+    if(!tracee || !tracee->ptrace_tracer_pid ||
+       !tracee->stop_report_pending)return;
+    struct nas_task *tracer=nas_task_by_pid(tracee->ptrace_tracer_pid);
+    if(!tracer || tracer->state==NAS_TASK_FREE ||
+       tracer->state==NAS_TASK_ZOMBIE)return;
+    /* Linux SIGCHLD is pending only if a handler is installed. The
+     * waitable ptrace-stop remains independent of this signal, and the
+     * signal disposition belongs to the tracer's real process group. */
+    const struct nas_task *owner=tracer->vm_owner?tracer->vm_owner:tracer;
+    if(owner->signal_actions[NAS_SIGCHLD][0]>1)
+        tracer->pending_signals|=1ULL<<(NAS_SIGCHLD-1);
+}
 void nas_signal_child_exit(const struct nas_task *child) {
     if (!child || !child->ppid) return;
     struct nas_task *parent=nas_task_by_pid(child->ppid);

@@ -21,4 +21,9 @@ bool nas_ptrace_fork_created(struct nas_task *parent,struct nas_task *child,
                              unsigned event,const uint64_t *call);
 bool nas_ptrace_blocked_completed(struct nas_task *task,uint64_t result);
 void nas_ptrace_tracer_exit(uint64_t tracer_pid);
+/* CPU debug/fault trap feeds the SAME Task ptrace wait/stop owner as
+ * syscalls. Caller must save the complete hardware register image and
+ * FPU before invoking, then enter the ordinary Task scheduler. */
+bool nas_ptrace_user_exception(struct nas_task *task,unsigned signo,
+                                uint64_t user_pc,uint64_t user_sp);
 #endif

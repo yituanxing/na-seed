@@ -1,0 +1,1 @@
+m75-debug	cpio	sh -c '/bin/sh /tests/m75-gdb-run.sh'	M75_REAL_GDB_INFERIOR_PASS	-	/bin/busybox

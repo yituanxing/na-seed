@@ -3,6 +3,13 @@
 #include <stdbool.h>
 #include "cpu.h"
 #include "../../task.h"
+#include "../../task/ptrace.h"
+#include "../../task/sched.h"
+#include "../../task/signal.h"
+#include "../../panic.h"
+#include "irq.h"
+#include "../arch.h"
+void exception_report(const uint64_t *frame);
 #include "mmu.h"
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
@@ -107,6 +114,45 @@ void nas_arch_cpu_tables_init(void) {
     idt[0x20].reserved=0;
     struct table_pointer idtr = { sizeof(idt) - 1, (uint64_t)(uintptr_t)idt };
     __asm__ volatile ("lidt %0" : : "m"(idtr));
+}
+/* Saved 15 GPRs + exception vector/error + original hardware IRET
+ * frame. Exception and syscall share the already-verified selected Task
+ * return path. Only user #BP / user #PF with an actual ptrace owner can
+ * be stopped; never mask a kernel exception as a user SIGTRAP. */
+void nas_x86_traced_exception_c(uint64_t *frame) {
+    unsigned vector=(unsigned)frame[15];
+    unsigned signo=vector==3?NAS_SIGTRAP:11U; /* Linux SIGSEGV */
+    uint64_t user_rip=frame[17],user_flags=frame[19],user_sp=frame[20];
+    struct nas_task *tracee=nas_current_task;
+    if((frame[18]&3U)==3U && tracee &&
+       tracee->state==NAS_TASK_RUNNING && (vector==3 || vector==14)) {
+        for(unsigned i=0;i<15;i++)tracee->arch.resume_regs[i]=frame[i];
+        tracee->arch.resume_user_rip=user_rip;
+        tracee->arch.resume_user_rflags=user_flags;
+        tracee->arch.resume_user_rsp=user_sp;
+        nas_arch_save_fpu(tracee);
+        if(nas_ptrace_user_exception(tracee,signo,user_rip,user_sp)) {
+            uint64_t resumed=nas_task_schedule(frame);
+            /* The interrupted debugger may have been blocked in poll:
+             * return the REAL EINTR/readiness outcome via selected RAX. */
+            frame[0]=resumed;
+            /* C scheduler selected a real Task/MMU and wrote the live
+             * 15-GPR snapshot. Convert the exception's two metadata
+             * words into the new Task's authentic five-word IRET frame. */
+            const struct nas_task *selected=nas_current_task;
+            frame[15]=selected->arch.resume_user_rip;
+            frame[16]=0x23U;
+            frame[17]=selected->arch.resume_user_rflags;
+            frame[18]=selected->arch.resume_user_rsp;
+            frame[19]=0x1bU;
+            nas_signal_user_return(frame);
+            return;
+        }
+    }
+    /* Fatal, unsupported or kernel fault: leave the precise original
+     * hardware RIP, CS, CR2 and error visible to the existing reporter. */
+    exception_report(frame+15);
+    nas_fail("unhandled x86 exception (not traced user debug event)");
 }
 void exception_report(const uint64_t *frame) {
     uint64_t cr2;

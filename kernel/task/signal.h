@@ -35,6 +35,10 @@ void nas_signal_broken_pipe(uint64_t fd);
 /* A reaped child does not vanish when SIGCHLD is ignored: deliver a
  * caught/blocked change notification separately from wait4 zombie state. */
 void nas_signal_child_exit(const struct nas_task *child);
+/* A ptrace STOP, unlike a normal job STOP, notifies the AUTHORIZED tracer.
+ * The real parent remains unchanged; a caught SIGCHLD must interrupt the
+ * tracer's blocking poll/epoll so a debugger can run waitpid/__WALL. */
+void nas_signal_ptrace_stop(const struct nas_task *tracee);
 /* Called by the selected ISA's frame provider after saving the old mask.
  * Correct SA_NODEFER/RESETHAND semantics are owned by the common core. */
 void nas_signal_handler_enter(struct nas_task *task,unsigned signum,

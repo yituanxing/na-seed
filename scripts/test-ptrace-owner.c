@@ -6,6 +6,11 @@
 #include "../kernel/errno.h"
 
 static struct nas_task tracer, tracee, stranger;
+static unsigned ptrace_notifications;
+void nas_signal_ptrace_stop(const struct nas_task *tracee){
+    if(tracee && tracee->ptrace_tracer_pid && tracee->stop_report_pending)
+        ptrace_notifications++;
+}
 uint64_t nas_signal_kill(uint64_t pid,uint64_t signo,uint64_t *frame){
     (void)pid;(void)signo;(void)frame;return 0;
 }
@@ -16,6 +21,7 @@ uint64_t nas_arch_signal_user_sp(void){return 0;}
 void nas_arch_save_user_frame(struct nas_task *t,const uint64_t *f){(void)t;(void)f;}
 void nas_arch_save_fpu(struct nas_task *t){(void)t;}
 int64_t nas_vm_read_task_bytes(const struct nas_task *t,uint64_t va,uint8_t *dst,uint64_t n){(void)t;(void)va;(void)dst;(void)n;return -EFAULT;}
+int64_t nas_vm_write_task_bytes(const struct nas_task *t,uint64_t va,const uint8_t *src,uint64_t n){(void)t;(void)va;(void)src;(void)n;return -EFAULT;}
 bool nas_user_read_bytes(uint64_t a,uint8_t *d,uint64_t n){(void)a;(void)d;(void)n;return false;}
 bool nas_user_write_bytes(uint64_t a,const uint8_t *s,uint64_t n){(void)a;(void)s;(void)n;return false;}
 bool nas_user_write_u64(uint64_t a,uint64_t v){(void)a;(void)v;return false;}
@@ -80,6 +86,7 @@ int main(void) {
     assert(stranger.state==NAS_TASK_STOPPED &&
            stranger.stopped_from==NAS_TASK_READY &&
            stranger.stop_signal==19 && stranger.stop_report_pending);
+    assert(ptrace_notifications==1);
     assert((int64_t)nas_ptrace_request(16,3,0,0)==-EPERM);
     assert(nas_ptrace_request(17,3,0,0)==0);
     assert(stranger.state==NAS_TASK_READY && !stranger.ptrace_tracer_pid);
@@ -92,5 +99,15 @@ int main(void) {
     assert(stranger.ptrace_blocked_exit_pending);
     assert(nas_ptrace_request(17,3,0,0)==0);
     assert(stranger.state==NAS_TASK_BLOCKED && stranger.wait.pending_valid);
+    /* Real CPU breakpoint must report through the same authenticated
+     * STOP / SIGCHLD event path; a syscall event must not be invented. */
+    assert(nas_ptrace_request(16,3,0,0)==0);
+    assert(nas_ptrace_request(7,3,0,0)==0);
+    stranger.state=NAS_TASK_RUNNING;
+    stranger.resume_valid=false;
+    assert(nas_ptrace_user_exception(&stranger,5,0x1020,0x3000));
+    assert(stranger.state==NAS_TASK_STOPPED && stranger.stop_signal==5);
+    assert(stranger.ptrace_ip==0x1020 && stranger.ptrace_sp==0x3000);
+    assert(stranger.ptrace_phase==0 && stranger.stop_report_pending);
     return 0;
 }
