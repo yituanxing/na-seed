@@ -8,6 +8,8 @@
 #include "../../task/signal.h"
 #include "../../panic.h"
 #include "irq.h"
+#include "../arch.h"
+void exception_report(const uint64_t *frame);
 #include "mmu.h"
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
