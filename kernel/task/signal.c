@@ -509,21 +509,46 @@ bool nas_signal_user_pending(const struct nas_task *task) {
 }
 
 void nas_signal_user_return(uint64_t *frame) {
-    struct nas_task *t=nas_current_task;
-    if(t->signal_frame_active || !frame || !nas_signal_user_pending(t))
-        return;
-    uint64_t ready=t->pending_signals &
-        (~t->blocked_signals | t->signal_force_deliver);
-    for(unsigned sig=1;sig<=64;sig++) {
-        if(!(ready&(1ULL<<(sig-1))))continue;
-        const uint64_t *act=t->sighand->actions[sig];
-        if(act[0]<=1)continue;
-        if(!nas_arch_signal_install_handler(frame,sig,act))
-            nas_fail("M30 cannot build native user signal frame");
-
-        t->pending_signals &= ~(1ULL<<(sig-1));
-        t->signal_force_deliver &= ~(1ULL<<(sig-1));
-        return;
+    if(!frame)return;
+    /* This is the LAST gate before native IRET/SRET/ERET. A malformed
+     * USER stack or restorer may prevent sigframe construction; that is a
+     * fault of the chosen userspace process, NEVER a kernel-wide panic.
+     *
+     * On failure terminate the thread group (as with a fatal SIGSEGV) and
+     * schedule a different real Task on this SAME architecture trap frame.
+     * The returned syscall result MUST be installed into the new Task's
+     * genuine native return image before its other pending signals run.
+     * Loop rather than recurse if another Task also has a bad user stack.
+     */
+    for(;;) {
+        struct nas_task *t=nas_current_task;
+        if(!t || t->signal_frame_active || !nas_signal_user_pending(t))
+            return;
+        uint64_t ready=t->pending_signals &
+            (~t->blocked_signals | t->signal_force_deliver);
+        bool restarted=false;
+        for(unsigned sig=1;sig<=64;sig++) {
+            if(!(ready&(1ULL<<(sig-1))))continue;
+            const uint64_t *act=t->sighand->actions[sig];
+            if(act[0]<=1)continue;
+            if(!nas_arch_signal_install_handler(frame,sig,act)) {
+                /* Do not attempt to construct a second sigframe on the
+                 * same broken user stack or re-deliver a corrupt handler. */
+                nas_sched_thread_group_exit(0,NAS_SIGSEGV);
+                uint64_t resumed=nas_task_schedule(frame);
+                if(!nas_current_task || nas_current_task==t ||
+                   nas_current_task->state!=NAS_TASK_RUNNING)
+                    nas_fail("M100 fatal signal did not switch user Task");
+                nas_arch_set_saved_return(nas_current_task,resumed);
+                nas_arch_load_user_frame(nas_current_task,frame);
+                restarted=true;
+                break;
+            }
+            t->pending_signals &= ~(1ULL<<(sig-1));
+            t->signal_force_deliver &= ~(1ULL<<(sig-1));
+            return;
+        }
+        if(!restarted)return;
     }
 }
 

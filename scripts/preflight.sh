@@ -19,6 +19,7 @@ sh scripts/check-m95-kthread.sh
 sh scripts/check-m96-k-sync.sh
 sh scripts/check-m97-k-timeouts.sh
 sh scripts/check-m98-sched-core.sh
+sh scripts/check-m100-signal-failure.sh
 sh scripts/check-frame-refs.sh
 sh scripts/check-m86-txn.sh
 sh scripts/check-m88-exceptions.sh

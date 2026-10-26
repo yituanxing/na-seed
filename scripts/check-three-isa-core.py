@@ -156,6 +156,11 @@ if "scheduled_after_user_entry" not in (root/"kernel/task/kthread_boot.c").read_
     raise SystemExit("native kernel worker is not resumed by real user scheduler")
 if "nas_kthread_boot_selftest();" not in (root/"kernel/init/main.c").read_text():
     raise SystemExit("three-ISA native boot no longer exercises real kernel workers")
+signal_src=(root/"kernel/task/signal.c").read_text()
+if "nas_sched_thread_group_exit(0,NAS_SIGSEGV);" not in signal_src or "nas_arch_load_user_frame(nas_current_task,frame);" not in signal_src:
+    raise SystemExit("broken userspace sigframe once again panics or fabricates a user return")
+if 'nas_fail("M30 cannot build native user signal frame")' in signal_src:
+    raise SystemExit("kernel-wide panic returned for an invalid user signal stack")
 if "nas_kernel_context_boot_selftest();" not in (root/"kernel/init/main.c").read_text():
     raise SystemExit("native QEMU kernels no longer test real kernel C resume")
 print(f"[M50 ARCH PASS] all {len(srcs)} actual shared kernel TUs are linked on x86 "
