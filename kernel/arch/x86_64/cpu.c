@@ -155,6 +155,10 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
             nas_print(" va=");nas_hex(fault_addr);
             nas_print(" error=");nas_hex(frame[16]);
             nas_print(" rsp=");nas_hex(user_sp);
+            nas_print(" arch_rip=");nas_hex(tracee->arch.resume_user_rip);
+            nas_print(" ret_rip=");nas_hex(nas_x86_syscall_return_rip);
+            nas_print(" sigactive=");nas_dec(tracee->signal_frame_active);
+            nas_print(" ptrace=");nas_dec(tracee->ptrace_tracer_pid);
             nas_print("\n");
         }
     }

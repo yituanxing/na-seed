@@ -3,6 +3,9 @@
 #include "../../task/signal.h"
 #include "../../panic.h"
 #include "irq.h"
+extern void nas_print(const char *);
+extern void nas_dec(uint64_t);
+extern void nas_hex(uint64_t);
 extern void nas_arch_x86_set_kernel_stack(uint64_t);
 void nas_arch_restore_cpu(const struct nas_task *task) {
     if (!nas_task_kernel_stack_ok(task)) nas_arch_halt();
@@ -28,6 +31,12 @@ void nas_arch_save_user_frame(struct nas_task *task, const uint64_t *frame) {
      * maintain these return registers independently. */
     task->arch.resume_user_rip = nas_x86_syscall_return_rip;
     task->arch.resume_user_rflags = nas_x86_syscall_return_flags;
+    if(task->arch.resume_user_rip<4096U) {
+        nas_print("[X86CTX SAVE_BAD] pid=");nas_dec(task->pid);
+        nas_print(" global_pc=");nas_hex(nas_x86_syscall_return_rip);
+        nas_print(" raw_rcx=");nas_hex(frame[7]);
+        nas_print(" raw_r11=");nas_hex(frame[8]);nas_print("\n");
+    }
 }
 void nas_arch_set_saved_return(struct nas_task *task, uint64_t value) {
     task->arch.resume_regs[0] = value;
@@ -37,6 +46,11 @@ uint64_t nas_arch_saved_return(const struct nas_task *task) {
 }
 void nas_arch_load_user_frame(const struct nas_task *task, uint64_t *frame) {
     for (unsigned i=0;i<15;i++) frame[i] = task->arch.resume_regs[i];
+    if(task->arch.resume_user_rip<4096U) {
+        nas_print("[X86CTX LOAD_BAD] pid=");nas_dec(task->pid);
+        nas_print(" rip=");nas_hex(task->arch.resume_user_rip);
+        nas_print(" frame_rcx=");nas_hex(frame[7]);nas_print("\n");
+    }
     syscall_user_rsp = task->arch.resume_user_rsp;
     nas_x86_syscall_return_rip = task->arch.resume_user_rip;
     nas_x86_syscall_return_flags = task->arch.resume_user_rflags;
