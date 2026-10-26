@@ -1,0 +1,3 @@
+tests/m79-workflow-run.sh	tests/m79-workflow-run.sh
+tests/m79-workflow.bash	tests/m79-workflow.bash
+tests/m79-validate.py	tests/m79-validate.py
