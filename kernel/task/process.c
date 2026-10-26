@@ -341,13 +341,27 @@ void nas_process_clear_tid_on_exit(void) {
  * blocked-syscall wake predicate. Stop/continue notifications are one-shot;
  * exit zombies take priority and are reclaimed only on successful wait4.
  */
-bool nas_process_waitable(const struct nas_task *child, uint64_t options) {
-    if (child->state == NAS_TASK_ZOMBIE) return !child->group_exit_pending;
-    if (((options & NAS_WAIT_UNTRACED) || child->ptrace_tracer_pid) &&
-        child->state == NAS_TASK_STOPPED && child->stop_report_pending)
-        return true;
-    if ((options & NAS_WAIT_CONTINUED) && child->continue_report_pending)
-        return true;
+bool nas_process_waitable(const struct nas_task *child, uint64_t options,
+                          uint64_t waiter_pid) {
+    bool is_tracer=child->ptrace_tracer_pid==waiter_pid;
+    bool is_parent=child->ppid==waiter_pid && !child->is_thread;
+    if(child->state==NAS_TASK_ZOMBIE) {
+        /* While a foreign tracer is attached, only that tracer receives
+         * the first death observation. The real parent reaps later,
+         * after the tracer has detached: otherwise its wait4 would
+         * destroy the tracee slot before strace can inspect the exit. */
+        if(child->ptrace_tracer_pid && !is_tracer)return false;
+        return !child->group_exit_pending && (is_tracer||is_parent);
+    }
+    if(child->state==NAS_TASK_STOPPED && child->stop_report_pending) {
+        /* An attached tracee's ptrace stop is PRIVATE to its tracer.
+         * The original parent (even with WUNTRACED) must not steal
+         * the event, which would leave the tracer blocked forever. */
+        if(child->ptrace_tracer_pid)return is_tracer;
+        return is_parent && (options&NAS_WAIT_UNTRACED)!=0;
+    }
+    if((options&NAS_WAIT_CONTINUED) && child->continue_report_pending)
+        return is_parent;
     return false;
 }
 uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
@@ -367,11 +381,14 @@ uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
                                   nas_current_task->pgid,child->pgid))
             continue;
         have_child=true;
-        if (!nas_process_waitable(child,options)) continue;
+        if (!nas_process_waitable(child,options,nas_current_task->pid)) continue;
         bool zombie = child->state == NAS_TASK_ZOMBIE;
         bool stopped = !zombie && child->state == NAS_TASK_STOPPED &&
                        child->stop_report_pending &&
-                       ((options & NAS_WAIT_UNTRACED) || child->ptrace_tracer_pid);
+                       (child->ptrace_tracer_pid==nas_current_task->pid ||
+                        (!child->ptrace_tracer_pid &&
+                         child->ppid==nas_current_task->pid &&
+                         (options & NAS_WAIT_UNTRACED)));
         uint32_t code;
         if (zombie) {
             code = child->termination_signal ?

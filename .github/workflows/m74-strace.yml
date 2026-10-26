@@ -32,6 +32,8 @@ jobs:
           python3 scripts/check-three-isa-core.py
           cc -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -I kernel scripts/test-ptrace-owner.c kernel/task/ptrace.c -o /tmp/nas-m74-ptrace-owner
           /tmp/nas-m74-ptrace-owner
+          cc -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -I kernel scripts/test-ptrace-wait-ownership.c kernel/task/process.c -o /tmp/nas-m74-ptrace-wait
+          /tmp/nas-m74-ptrace-wait
       - name: Install native QEMU and host rootfs tools
         timeout-minutes: 12
         run: |
