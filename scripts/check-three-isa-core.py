@@ -138,6 +138,8 @@ if "nas_task_wake_ready(t)" not in (root/"kernel/task/futex_wait.c").read_text()
     raise SystemExit("futex producer no longer publishes runnable tasks")
 if "nas_kthread_run(2)" not in sched:
     raise SystemExit("native C worker service is not in production scheduler")
+if "scheduled_after_user_entry" not in (root/"kernel/task/kthread_boot.c").read_text():
+    raise SystemExit("native kernel worker is not resumed by real user scheduler")
 if "nas_kthread_boot_selftest();" not in (root/"kernel/init/main.c").read_text():
     raise SystemExit("three-ISA native boot no longer exercises real kernel workers")
 if "nas_kernel_context_boot_selftest();" not in (root/"kernel/init/main.c").read_text():
