@@ -28,11 +28,11 @@ if ! sh "$runner"; then
 fi
 log="$logs/m74-attach.clean.log"
 test -s "$log"
-for marker in M74_BLOCKED_SYSCALL_PASS; do
+for marker in M74_ATTACH_REAL_TRACE_PASS; do
   if ! grep -Fxq "$marker" "$log"; then
     echo "[M74 FAIL] $port missing $marker" >&2
     tail -360 "$log" >&2
     exit 1
   fi
 done
-echo "[M74 PASS] $port genuine original Alpine strace multi-task observations"
+echo "[M74 PASS] $port original Alpine strace truly attached and traced a separate process"
