@@ -154,6 +154,9 @@ if "nas_kthread_park_until(&sem->waiters" not in (root/"kernel/task/k_sync.c").r
     raise SystemExit("kernel semaphore bypassed common native wait queue")
 if "scheduled_after_user_entry" not in (root/"kernel/task/kthread_boot.c").read_text():
     raise SystemExit("native kernel worker is not resumed by real user scheduler")
+tty=(root/"kernel/drivers/tty.c").read_text()
+if "nas_mmu_user_writable(" in tty or "nas_user_address_writable(dst+i)" not in tty:
+    raise SystemExit("TTY is checking hardware PTE WRITE instead of the logical COW VMA right")
 cow=(root/"kernel/mm/mm.c").read_text()
 if "nas_mm_fork_cow(parent->mm)" not in (root/"kernel/task/process.c").read_text():
     raise SystemExit("fork is not using refcounted, shared-frame private COW")
