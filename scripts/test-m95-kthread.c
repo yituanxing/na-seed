@@ -36,7 +36,7 @@ int main(void) {
     assert(nas_kthread_spawn(b,0,&y));
     assert(nas_kthread_live()==2);
     assert(nas_kthread_run(1)==1 && seen==1 && q.count==1);
-    assert(!nas_kthread_wake(0));
+    assert(!nas_kthread_wake((struct nas_kthread_handle){0}));
     assert(nas_kthread_run(1)==1 && seen==3 && q.count==0);
     assert(!nas_kthread_wake(x)); /* producer already notified */
     assert(nas_kthread_run(2)==2 && seen==5 && !nas_kthread_live());
