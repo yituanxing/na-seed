@@ -181,8 +181,20 @@ if "return task->wait.finish(task);" not in completion or "self->wait.finish=fin
     raise SystemExit("resumed kernel C stack does not invoke owning syscall provider")
 if "finish_io_provider(" not in (root/"kernel/syscall/dispatch.c").read_text():
     raise SystemExit("blocking I/O providers must own their retry, not Task scheduler")
-if "nas_sched_scan_next(&scan,&slot)" not in sched:
-    raise SystemExit("native scheduler bypasses canonical Task scan")
+if "nas_sched_scan_next(&scan,&slot)" not in sched or \
+   "nas_sched_scan_init(&scan,native_cursor)" not in sched:
+    raise SystemExit("native scheduler bypasses canonical complete-ring scan")
+sched_core=(root/"kernel/task/sched_core.c").read_text()
+sched_core_h=(root/"kernel/task/sched_core.h").read_text()
+if "nas_sched_user_commit" in sched_core or "nas_sched_user_commit" in sched_core_h or \
+   "visit_limit" in sched_core or "scan->exclude" in sched_core or \
+   "task_replay(" in sched:
+    raise SystemExit("obsolete frame-copy commit or partial/excluded scan returned")
+if "nas_task_wait_needs_idle_poll" in sched or \
+   "nas_task_wait_needs_idle_poll" in task_wait or \
+   "nas_task_wait_has_external_wake_source(" not in sched or \
+   "nas_task_wait_has_external_wake_source(" not in task_wait:
+    raise SystemExit("old busy-poll idle predicate escaped native interrupt-aware refactor")
 # IRQ-masked busy polling is not an acceptable native idle implementation.
 # Require ISA-specific privileged interrupt handling, never a user-only IRQ
 # path or an unconditional WFI/HLT executed with interrupts still disabled.

@@ -25,8 +25,8 @@
 void nas_init_userspace(void) {
     nas_print("[INIT] creating common task/VM and architecture user entry\n");
     nas_task_boot_init();
-    /* Native QEMU hardware acceptance: resume live kernel C frames twice,
-     * distinct from the existing user syscall replay scheduler. */
+    /* Native QEMU hardware acceptance: exercise real kernel C contexts
+     * before user syscalls begin using the same continuation mechanism. */
     nas_kernel_context_boot_selftest();
     nas_kthread_system_init();
     nas_kthread_boot_selftest();

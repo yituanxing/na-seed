@@ -90,13 +90,11 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
         /* The child has a separate MM reference; final put leaves
          * the parent-owned shared address space alive. */
     }
-    child->exit_code = code & 255U;
-    child->termination_signal = signum;
-    child->state = NAS_TASK_ZOMBIE;
+    /* Exit code, ZOMBIE publication and wait reset were committed above,
+     * before the deferred thread-group test. Never publish them twice. */
     child->stop_report_pending = false;
     child->continue_report_pending = false;
     child->stopped_from = NAS_TASK_FREE;
-    nas_task_wait_reset(child);
     /* Reparent *both* living and already-zombie descendants to init.
      * Task identity (PID) and physical page ownership remain unchanged.
      * PID 1 owns future wait4 and is responsible for reaping orphans. */
@@ -144,7 +142,7 @@ void nas_sched_thread_group_exit(uint32_t code,uint32_t signum) {
         nas_process_clear_tid_for_exit(peer);
         peer->state=NAS_TASK_ZOMBIE;
         peer->resume_valid=false;
-        nas_task_wait_reset(peer);
+        /* release owns its queued-wait cancellation and wait reset. */
         nas_task_release(peer);
     }
     if(caller!=leader) {
@@ -214,7 +212,7 @@ static void native_dispatcher(void) {
         if(sig && !nas_signal_tty_event(sid,pgid,sig))
             nas_tty_signal_unsupported();
         struct nas_sched_scan scan;
-        nas_sched_scan_init(&scan,0,native_cursor,NAS_TASK_LIMIT);
+        nas_sched_scan_init(&scan,native_cursor);
         unsigned slot=0;
         struct nas_task *next=nas_sched_scan_next(&scan,&slot);
         if(next) {
@@ -281,7 +279,7 @@ static void native_dispatcher(void) {
         bool external=nas_time_timers_armed() ||
             nas_kthread_deadlines_armed() || nas_kthread_runnable();
         for(unsigned i=0;i<NAS_TASK_LIMIT && !external;i++)
-            external=nas_task_wait_needs_idle_poll(nas_task_at(i));
+            external=nas_task_wait_has_external_wake_source(nas_task_at(i));
         if(!external)sched_fail("native scheduler deadlock");
         /* The timer is periodic and remains armed even without a user
          * process. Spurious returns are fine: rerun readiness and clocks.

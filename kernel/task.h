@@ -139,14 +139,12 @@ struct nas_task {
      * non-exception stops; actual #BP/#DB/BRK/EBREAK supply Linux si_code. */
     int32_t ptrace_signal_code;
     uint64_t ptrace_signal_addr;
-    /* Saved syscall-boundary GPR frame in the exact arch.S push order.
-     * The scheduler switches after unwinding the current syscall frame.
-     */
+    /* Task-owned user register snapshot. ISA-specific entry code owns its
+     * live return frame; the scheduler parks the entire kernel C stack. */
     struct nas_arch_context arch;
     bool resume_valid;
-    /* Pending blocking syscall holds user pointers, but never kernel-stack
-     * pointers. The task's private CR3 must be restored before replay.
-     */
+    /* A blocked syscall retains its arguments and originating completion
+     * provider. Its saved kernel continuation runs only in its own MM. */
     struct nas_task_wait wait; /* thread-local blocked syscall/deadline/I/O */
     struct nas_posix_timer timers[NAS_POSIX_TIMERS];
     /* Snapshot poll interest when blocking. NEVER dereference a different
@@ -154,13 +152,12 @@ struct nas_task {
      * shared open-file-description slot (0..NAS_OPEN_FILE_LIMIT-1). */
     /* Poll interest snapshots live in wait, not CPU context. */
 
-    /* Owned kernel entry stack. Kernel C continuations are NOT resumable
-     * yet; the syscall-boundary scheduler still unwinds before switching. */
+    /* Owned kernel entry stack and native C continuation. Fork/clone
+     * must reset all saved SP and wait links rather than inheriting the
+     * parent's active kernel call chain. */
     uint64_t kernel_stack_top;
-    /* Native kernel continuation, never copied across fork/clone.
-     * The current syscall replay scheduler does not yet park C frames. */
-    /* Shared native continuation/queue ownership layout also used by
-     * kernel workers. User syscall continuation activation remains pending. */
+    /* Same underlying context/queue contract as native kernel workers;
+     * no replay scheduler or foreign-Task frame copying remains. */
     struct nas_kernel_execution kernel_exec;
     /* Saved live exception frame while the Task's kernel C stack is parked. */
     uint64_t native_trap_frame;

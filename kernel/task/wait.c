@@ -85,10 +85,11 @@ bool nas_task_wait_ready(const struct nas_task *task) {
     return false;
 }
 
-/* Single owner for the transitional IRQ-masked idle policy. This is not
- * readiness: it answers whether a future device event/deadline can change
- * progress even though there is no runnable user Task right now. */
-bool nas_task_wait_needs_idle_poll(const struct nas_task *task) {
+/* Distinct from immediate readiness: only identify blocked Tasks with a
+ * potential external wake or timer deadline when the native scheduler has
+ * no runnable continuation. Actual idle runs with IRQs enabled via the ISA
+ * boundary; this policy never polls or switches C stacks. */
+bool nas_task_wait_has_external_wake_source(const struct nas_task *task) {
     if(!task || task->state!=NAS_TASK_BLOCKED ||
        !task->wait.pending_valid)return false;
     if(task->wait.deadline_active)return true;

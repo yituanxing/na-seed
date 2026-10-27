@@ -7,8 +7,8 @@
 #include "panic.h"
 #include <stddef.h>
 
-/* Task-owned entry stacks. Cooperative syscall switching still unwinds
- * every C frame; this is NOT yet a resumable kernel continuation. */
+/* Task-owned entry stacks: blocked native syscalls retain their live
+ * kernel C frames and resume on the same Task stack. */
 static struct nas_task task_table[NAS_TASK_LIMIT];
 static _Alignas(16) uint8_t task_kernel_stacks[NAS_TASK_LIMIT][NAS_KERNEL_STACK_BYTES];
 #define NAS_KSTACK_SENTINEL UINT64_C(0x6e61736565646b73)
