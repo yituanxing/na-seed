@@ -4,6 +4,8 @@ on:
     paths:
       - 'third_party/lwext4/**'
       - 'kernel/block/**'
+      - 'kernel/drivers/block/**'
+      - 'kernel/platform/aarch64_virtio.c'
       - 'ports/lwext4/**'
       - 'kernel/fs/vfs*'
       - 'kernel/fs/metadata_syscall.c'
@@ -13,6 +15,8 @@ on:
       - 'user/ext4-guest-rw-x86.ld'
       - 'user/**/ext4-rw-syscall.S'
       - 'scripts/build-lwext4-native-rw-probes.sh'
+      - 'scripts/build-aarch64-full.sh'
+      - 'scripts/build-lwext4-guest.sh'
       - 'scripts/probe-riscv64-full.sh'
       - 'scripts/probe-aarch64-full.sh'
       - 'scripts/probe-lwext4-writable-x86.sh'
@@ -69,3 +73,12 @@ jobs:
           NAS_LWEXT4_RW_PROBE=build/lwext4-native-rw/x86_64/probe.elf sh scripts/probe-lwext4-writable-x86.sh
           NAS_ENABLE_LWEXT4=1 NAS_LWEXT4_TEST_IMAGE=build/external/lwext4/ext4.img NAS_LWEXT4_RW_PROBE=build/lwext4-native-rw/riscv64/probe.elf sh scripts/probe-riscv64-full.sh
           NAS_ENABLE_LWEXT4=1 NAS_LWEXT4_TEST_IMAGE=build/external/lwext4/ext4.img NAS_LWEXT4_RW_PROBE=build/lwext4-native-rw/aarch64/probe.elf sh scripts/probe-aarch64-full.sh
+      - name: Genuine AArch64 VirtIO-MMIO disk driver, independent ext4 image persistence and e2fsck
+        run: |
+          cp build/external/lwext4/ext4.img build/external/lwext4/virtio-persistent.img
+          NAS_ENABLE_LWEXT4=1 NAS_ENABLE_VIRTIO_BLK=1 sh scripts/build-aarch64-full.sh
+          NAS_ENABLE_LWEXT4=1 NAS_ENABLE_VIRTIO_BLK=1 NAS_LWEXT4_RW_PROBE=build/lwext4-native-rw/aarch64/probe.elf NAS_VIRTIO_BLK_IMAGE=build/external/lwext4/virtio-persistent.img sh scripts/probe-aarch64-full.sh
+          e2fsck -fn build/external/lwext4/virtio-persistent.img
+          debugfs -R 'cat /sandbox/cross-isa-created' build/external/lwext4/virtio-persistent.img > build/external/lwext4/virtio-persisted-content.txt
+          grep -Fq 'NaSeed one portable Linux ELF for x86 RV64 AArch64 ext4 RW' build/external/lwext4/virtio-persisted-content.txt
+          echo '[VIRTIO-BLK HOST PERSISTENCE PASS] hardware driver ext4 bytes survived QEMU'

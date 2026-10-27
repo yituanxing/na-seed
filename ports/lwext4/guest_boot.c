@@ -8,6 +8,10 @@
 #include <limine.h>
 #include <stdint.h>
 #include <stdbool.h>
+#ifdef NAS_ENABLE_VIRTIO_BLK
+#include "../../kernel/block/device.h"
+extern int nas_arm_virtio_blk_probe(void);
+#endif
 
 extern const struct limine_file *nas_module(uint64_t index);
 extern void nas_print(const char *);
@@ -39,21 +43,54 @@ bool nas_lwext4_guest_boot_mount(void) {
             file=next;
         }
     }
-    if(!file)return true; /* Opt-in kernel still boots without a disk. */
-    bool ram_rw=ephemeral_rw_module(file);
-    int rc=nas_lwext4_ramdisk_mount_mode(&boot_mount,"limine-ext4",
-                                         "limine-ext4-dev","/mnt",
-                                         file->address,file->size,ram_rw);
-    if(rc)return false;
+    if(file) {
+        bool ram_rw=ephemeral_rw_module(file);
+        int rc=nas_lwext4_ramdisk_mount_mode(&boot_mount,"limine-ext4",
+                                             "limine-ext4-dev","/mnt",
+                                             file->address,file->size,ram_rw);
+        if(rc)return false;
+        nas_print("[LWEXT4 GUEST] actual Limine ext4 image mounted at /mnt\n");
+        if(ram_rw)
+            nas_print("[LWEXT4 GUEST] explicit ephemeral RW RamDisk only; NOT persistent storage\n");
+    } else {
+#ifdef NAS_ENABLE_VIRTIO_BLK
+        /* Bus/transport discovery happens below the FS, not via a
+         * syscall/backend-specific path. The EFI ESP is also VirtIO-Blk
+         * but is FAT; select the *actual ext4 superblock* from each disk. */
+        int disks=nas_arm_virtio_blk_probe();
+        if(disks<0)return false;
+        unsigned found=0;
+        for(int i=0;i<disks;i++){
+            char block_name[]="virtio0";
+            block_name[6]=(char)('0'+i);
+            struct nas_block_device *block=nas_block_get(block_name);
+            if(!block)return false;
+            uint8_t bytes[512];
+            bool ext4=block->sectors>=4 &&
+                nas_block_read(block,2,1,bytes)==0 &&
+                bytes[56]==0x53 && bytes[57]==0xef;
+            bool writable=!block->read_only;
+            nas_block_put(block);
+            if(!ext4)continue;
+            if(found++)return false; /* ambiguous multi-volume boot */
+            if(nas_lwext4_device_mount(&boot_mount,block_name,
+                                       "virtio-ext4","/mnt",writable))
+                return false;
+        }
+        if(!found)return true; /* legitimate boot with no ext4 disk */
+        nas_print("[LWEXT4 GUEST] real external VirtIO-Blk ext4 disk mounted at /mnt\n");
+        if(!boot_mount.mount.read_only)
+            nas_print("[VIRTIO-BLK] persistent block device write+flush enabled\n");
+#else
+        return true; /* No boot RAM image and physical driver not enabled */
+#endif
+    }
     char path[256];
     struct nas_fs_node node;
-    /* This is the actual kernel mount table, pathwalk and upstream lookup. */
+    /* Same VFS pathwalk whether the provider owns a RAM module or real disk. */
     if(nas_fs_lookup_node("/mnt",true,&node,path) || !node.is_dir ||
        !node.filesystem || strcmp(node.filesystem->name,"lwext4"))
         return false;
-    nas_print("[LWEXT4 GUEST] actual Limine ext4 image mounted at /mnt\n");
-    if(ram_rw)
-        nas_print("[LWEXT4 GUEST] explicit ephemeral RW RamDisk only; NOT persistent storage\n");
 
     /* The acceptance fixture is optional for arbitrary user-supplied disks.
      * A separate real-QEMU gate requires this marker from the known image. */

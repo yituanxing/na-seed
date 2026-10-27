@@ -33,7 +33,9 @@ fi
 objects=
 for source in $sources; do
     obj="$out/$(printf '%s' "$source" | tr '/' '_').o"
-    clang --target="$triple" $archflags -std=c11 -O2 -ffreestanding \
+    virt_flags=
+    [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ] && virt_flags=-DNAS_ENABLE_VIRTIO_BLK=1
+    clang --target="$triple" $archflags $virt_flags -std=c11 -O2 -ffreestanding \
         -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
         -Werror=implicit-function-declaration -Werror=incompatible-pointer-types \
         -I "$port/include" -I "$vendor/include" -I kernel -I build/deps \
@@ -52,7 +54,7 @@ else
     # Strong common symbols belong to the kernel, not a duplicate in lwext4.
     for symbol in $undefined; do
         case "$symbol" in
-            memcpy|memmove|memset|memcmp|strlen|strnlen|strcmp|strncmp|strchr|strrchr|nas_block_get|nas_block_put|nas_block_read|nas_block_write|nas_block_flush|nas_ramdisk_attach|nas_ramdisk_detach|nas_vfs_register_mount|nas_vfs_unregister_mount|nas_fs_lookup_node|nas_vfs_read_at|nas_vfs_node_size|nas_print|nas_module) ;;
+            memcpy|memmove|memset|memcmp|strlen|strnlen|strcmp|strncmp|strchr|strrchr|nas_block_get|nas_block_put|nas_block_read|nas_block_write|nas_block_flush|nas_ramdisk_attach|nas_ramdisk_detach|nas_vfs_register_mount|nas_vfs_unregister_mount|nas_fs_lookup_node|nas_vfs_read_at|nas_vfs_node_size|nas_print|nas_module|nas_arm_virtio_blk_probe) ;;
             *) echo "[LWEXT4 KERNEL LINK FAIL] undefined: $symbol" >&2; exit 1 ;;
         esac
     done
