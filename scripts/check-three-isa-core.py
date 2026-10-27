@@ -157,6 +157,15 @@ if not (original_pc or pinned_pc):
     raise SystemExit("x86 IRET PC/RFLAGS must use the Task's own frame or explicit CPU scratch state")
 if "resume_user_rip=frame[7]" in x86_context or "resume_user_rflags=frame[8]" in x86_context:
     raise SystemExit("x86 IRET metadata incorrectly decoded from user RCX/R11")
+x86_return=(root/"kernel/arch/x86_64/entry.S").read_text()
+if x86_return.count("movq nas_x86_syscall_return_rip(%rip), %rax")!=1:
+    raise SystemExit("syscall epilogue must not re-read another Task's global IRET PC")
+if "frame[15]=task->arch.resume_user_rip;" not in x86_context or \
+   "frame[17]=task->arch.resume_user_rflags;" not in x86_context or \
+   "frame[18]=task->arch.resume_user_rsp;" not in x86_context:
+    raise SystemExit("native x86 signal/ptrace return did not restore Task-owned IRET")
+if "void nas_sched_preempt_select(void)" not in sched:
+    raise SystemExit("native scheduler still exposes a foreign-Task IRQ frame copy API")
 if "nas_arch_kernel_swap(&self->kernel_exec.cpu,&scheduler_cpu)" not in sched:
     raise SystemExit("Task does not park its native C continuation")
 if "nas_arch_kernel_swap(&scheduler_cpu,&next->kernel_exec.cpu)" not in sched:

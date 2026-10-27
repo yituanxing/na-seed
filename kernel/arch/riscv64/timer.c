@@ -58,17 +58,8 @@ void nas_rv_timer_handle(struct nas_rv_trap_frame *frame) {
     if(!from || !nas_task_kernel_stack_ok(from)) nas_fail("RV64 timer invalid task");
     nas_arch_save_user_frame(from,0);
     nas_arch_save_fpu(from);
-    if(nas_sched_preempt_select()) {
-        nas_arch_load_user_frame(nas_current_task,0);
-        static unsigned observed;
-        if(observed++<8) {
-            extern void nas_print(const char*);
-            extern void nas_dec(uint64_t);
-            nas_print("[M28] timer-preempt from=");
-            nas_dec(from->pid);
-            nas_print(" to=");nas_dec(nas_current_task->pid);
-            nas_print("\n");
-        }
-    }
+    /* The native scheduler parks this IRQ C stack and restores precisely
+     * this Task's original SRET frame, never a foreign user-frame copy. */
+    nas_sched_preempt_select();
     (void)frame;
 }

@@ -275,13 +275,14 @@ uint64_t nas_task_schedule(uint64_t *frame) {
     nas_arch_load_user_frame(self,frame);
     return nas_arch_saved_return(self);
 }
-bool nas_sched_preempt_select(void) {
+void nas_sched_preempt_select(void) {
     struct nas_task *self=nas_current_task;
-    if(!self || self->state!=NAS_TASK_RUNNING)return false;
+    if(!self || self->state!=NAS_TASK_RUNNING)return;
     self->resume_valid=true;
     self->state=NAS_TASK_READY;
     native_park(self);
-    return false; /* original IRQ frame resumes on its own Task stack */
+    /* The IRQ stack remains owned by the same Task. Return directly to
+     * its saved exception frame, after ordinary pending-signal delivery. */
 }
 uint64_t nas_task_block(uint64_t *frame,enum nas_syscall_op nr,
                         uint64_t a,uint64_t b,uint64_t c,uint64_t d,

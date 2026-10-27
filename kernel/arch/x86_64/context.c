@@ -52,6 +52,15 @@ uint64_t nas_arch_saved_return(const struct nas_task *task) {
 }
 void nas_arch_load_user_frame(const struct nas_task *task, uint64_t *frame) {
     for (unsigned i=0;i<15;i++) frame[i] = task->arch.resume_regs[i];
+    /* Both native syscall and IRQ frames have the same 160-byte IRET
+     * layout. An exception frame includes vector/error instead; its
+     * IRET fields are owned by the exception handler and must not be
+     * accidentally overwritten from syscall state. */
+    if(frame[16]==0x33U && frame[19]==0x2bU) {
+        frame[15]=task->arch.resume_user_rip;
+        frame[17]=task->arch.resume_user_rflags;
+        frame[18]=task->arch.resume_user_rsp;
+    }
     if(task->arch.resume_user_rip<4096U) {
         nas_print("[X86CTX LOAD_BAD] pid=");nas_dec(task->pid);
         nas_print(" rip=");nas_hex(task->arch.resume_user_rip);

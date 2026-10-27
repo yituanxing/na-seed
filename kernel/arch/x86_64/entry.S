@@ -75,15 +75,11 @@ syscall_entry:
     /* Stack is now 16-byte aligned, as required before the C call. */
     movq %rsp, %rdi
     call nas_ptrace_syscall_dispatch
-    movq %rax, 0(%rsp)   /* syscall return, potentially from another Task */
-    movq nas_x86_syscall_return_rip(%rip), %rax
-    movq %rax, 120(%rsp)
-    movq $0x33, 128(%rsp)
-    movq nas_x86_syscall_return_flags(%rip), %rax
-    movq %rax, 136(%rsp)
-    movq syscall_user_rsp(%rip), %rax
-    movq %rax, 144(%rsp)
-    movq $0x2b, 152(%rsp)
+    /* A parked syscall resumed on THIS Task's original C/IRET stack.
+     * Never rewrite its return RIP/RFLAGS/RSP from CPU-global scratch after
+     * dispatch: another Task may have run in the meantime. rt_sigreturn and
+     * ptrace restore the selected Task's IRET fields through load_user_frame. */
+    movq %rax, 0(%rsp)
     /* x86 catches are materialized only after the actual selected task
      * has an IRET context and its own address space active. */
     movq %rsp, %rdi

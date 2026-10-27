@@ -80,17 +80,8 @@ void nas_arm_timer_irq_c(struct nas_arm_trap_frame *frame) {
     /* EOI before parking this IRQ C continuation, never afterwards. */
     iface[0x10/4]=id;
     __asm__ volatile("dsb sy" : : : "memory");
-    if(nas_sched_preempt_select()) {
-        nas_arch_load_user_frame(nas_current_task,0);
-        static unsigned observed;
-        if(observed++<8) {
-            extern void nas_print(const char *);
-            extern void nas_dec(uint64_t);
-            nas_print("[M28] timer-preempt from=");
-            nas_dec(from->pid);
-            nas_print(" to=");nas_dec(nas_current_task->pid);
-            nas_print("\n");
-        }
-    }
+    /* Native ERET resumes this exact interrupted Task; there is no
+     * second frame-copy path after the dispatcher selects another Task. */
+    nas_sched_preempt_select();
     (void)frame;
 }
