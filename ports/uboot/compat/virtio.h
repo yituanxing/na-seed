@@ -17,5 +17,5 @@ int virtio_find_vqs(struct udevice *,int,struct virtqueue **);
 int virtio_reset(struct udevice *);
 void nas_uboot_virtio_cread(struct udevice *,size_t,size_t,void *);
 #define virtio_cread(dev,type,field,dst) \
- nas_uboot_virtio_cread((dev),offsetof(type,field),sizeof(*(dst)),(dst))
+ do { *(dst)=0; nas_uboot_virtio_cread((dev),offsetof(type,field),sizeof(*(dst)),(dst)); } while(0)
 #endif
