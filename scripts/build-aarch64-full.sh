@@ -19,6 +19,10 @@ for f in $common $arch; do
     clang $flags -c "$f" -o "$target"
     obj="$obj $target"
 done
+if [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ]; then
+    sh scripts/build-lwext4-guest.sh aarch64 "$out" kernel
+    obj="$obj $out/lwext4_guest.o"
+fi
 # Clang -mgeneral-regs-only deliberately forbids SIMD opcodes even in
 # hand-written .S. Keep it for ALL common C, but assemble the explicit
 # FP/SIMD save/restore provider with the architecture's native FP ISA.

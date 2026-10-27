@@ -109,3 +109,12 @@ ISA ABIs. It rejects unresolved libc and compiler runtime symbols. This is
 actual guest-target link compatibility, **not yet** attaching and mounting
 ext4 in a booted NaSeed kernel. The single relocatable object can be passed
 to the native kernel link when its VFS provider and mount lifecycle are ready.
+
+### Real kernel ELF linkage, opt-in
+Set `NAS_ENABLE_LWEXT4=1` to link full upstream lwext4 into the actual
+NaSeed kernel ELF for x86-64, RV64 or AArch64. The central build script is
+`scripts/build-lwext4-guest.sh`; its `kernel` mode EXCLUDES the common
+`string.c` and `block/device.c` implementations, preventing duplicate
+symbols/registries. Default CI remains unchanged until the actual guest
+VFS mount and syscall workflows are proven. A successful native kernel ELF
+link **does not** establish a successful booted ext4 mount.

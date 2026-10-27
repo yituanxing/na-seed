@@ -26,3 +26,13 @@ jobs:
           sudo apt-get -o Acquire::Retries=1 update -qq
           sudo apt-get -y install --no-install-recommends lld
           sh scripts/check-lwext4-guest-link.sh
+      - name: Link real NaSeed kernel ELF with opt-in lwext4 on all supported ISAs
+        run: |
+          make -j2 NAS_ENABLE_LWEXT4=1 kernel
+          NAS_ENABLE_LWEXT4=1 sh scripts/build-riscv64-full.sh
+          NAS_ENABLE_LWEXT4=1 sh scripts/build-aarch64-full.sh
+          test -s build/kernel.elf
+          test -s build/port-riscv64/full/kernel.elf
+          test -s build/port-aarch64/full/kernel.elf
+          echo '[LWEXT4 OPT-IN KERNEL LINK PASS] x86-64 / RV64 / AArch64'
+

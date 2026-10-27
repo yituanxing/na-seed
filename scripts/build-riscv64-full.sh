@@ -19,6 +19,10 @@ for f in $common $arch; do
     clang $flags -c "$f" -o "$target"
     obj="$obj $target"
 done
+if [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ]; then
+    sh scripts/build-lwext4-guest.sh riscv64 "$out" kernel
+    obj="$obj $out/lwext4_guest.o"
+fi
 clang $flags -c kernel/arch/riscv64/trap.S -o "$out/trap.o"
 clang $flags -c kernel/arch/riscv64/kernel_switch.S -o "$out/kernel_switch.o"
 ld.lld -m elf64lriscv -nostdlib -static --no-relax -z max-page-size=0x1000 \
