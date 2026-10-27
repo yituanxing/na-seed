@@ -66,6 +66,9 @@ int main(void) {
     assert(dev.driver==NULL && nas_block_get("portedbus")==NULL);
     /* Prove one and the same block driver can bind a second PCI
      * transport with no architecture-specific storage implementation. */
+    /* The MMIO source disappears before a separate PCI instance appears,
+     * otherwise rescan would correctly rebind the old MMIO device first. */
+    assert(nas_bus_device_unregister(&dev)==0);
     unused.vendor_id=0x1af4;unused.device_id=2;
     assert(nas_bus_rescan()==0);
     assert(unused.driver==&fake && probe_count==2);
@@ -76,7 +79,6 @@ int main(void) {
     assert(nas_bus_driver_unregister(&fake)==0);
     assert(nas_bus_rescan()==0 && !dev.driver && !unused.driver);
     assert(nas_bus_driver_unregister(&pci)==0);
-    assert(nas_bus_device_unregister(&dev)==0);
     assert(nas_bus_device_unregister(&unused)==0);
     puts("[DRIVER BUS PASS] late binding, SAME driver MMIO+PCI, busy mounts, unbind, unregister");
     return 0;

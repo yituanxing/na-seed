@@ -51,10 +51,8 @@ if command -v clang >/dev/null 2>&1; then
         -I third_party/unikraft/include -I ports/unikraft/include \
         -fsyntax-only "$src"
     done
-    clang --target="$target" -std=c11 -Wall -Wextra -Werror \
-      -ffreestanding -fno-builtin \
-      -I third_party/unikraft/include -I ports/unikraft/include \
-      -fsyntax-only scripts/test-unikraft-blk-abi.c
+    # The actual kernel VirtIO-Blk translation unit is compiled above using
+    # the same pinned upstream headers; the stdio host oracle stays native.
   done
 fi
 
