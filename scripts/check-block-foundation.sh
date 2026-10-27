@@ -115,3 +115,24 @@ if command -v clang >/dev/null 2>&1; then
       -fsyntax-only ports/nuttx/virtio_blk.c
   done
 fi
+
+# U-Boot *original* GPL-2.0+ VirtIO-Blk source, byte-identical to pinned upstream:
+test "$(git hash-object third_party/uboot/drivers/virtio/virtio_blk.c)" = "7b1d891cdcbb5d5795ee64f0094ad4c64bb12c52"
+test "$(git hash-object third_party/uboot/drivers/virtio/virtio_blk.h)" = "b37ba264df4b6ab6d7ed4c2cbfe580a58710799e"
+cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin \
+  -I ports/uboot/compat -I kernel -I third_party/unikraft/include \
+  -I ports/unikraft/include \
+  scripts/test-uboot-original-virtio-blk-port.c ports/uboot/blk_port.c \
+  ports/unikraft/split_queue.c kernel/drivers/virtio/transport.c \
+  kernel/drivers/port/dma.c kernel/drivers/port/block.c \
+  kernel/block/device.c kernel/lib/string.c \
+  -o build/block-foundation/test-uboot-original-port
+build/block-foundation/test-uboot-original-port
+if command -v clang >/dev/null 2>&1; then
+  for target in x86_64-unknown-none-elf riscv64-unknown-elf aarch64-none-elf; do
+    clang --target="$target" -std=c11 -Wall -Wextra -Werror \
+      -ffreestanding -fno-builtin -I ports/uboot/compat -I kernel \
+      -I third_party/unikraft/include -I ports/unikraft/include \
+      -fsyntax-only ports/uboot/blk_port.c ports/uboot/virtio_bus.c
+  done
+fi

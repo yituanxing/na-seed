@@ -300,3 +300,21 @@ print the `clean upstream unmount and durable flush` marker.
 and textual metadata/accounting inconsistencies, before verifying the
 original persisted payload using `debugfs`. **Do not mark this complete
 until the exact-head real QEMU job is green.**
+
+## 2026-10-28: first source-preserving driver switch (NaOS-inspired design)
+
+After auditing NaOS's entire VirtIO bus, MMIO, PCI, split queue, driver
+module and BlockDevice paths, the working AArch64/RV64 production opt-in
+uses **exact original U-Boot GPL-2.0+ VirtIO-Blk C source**, not our old
+NuttX-inspired rewritten read/write driver. U-Boot's original source is
+compiled into ports/uboot/blk_port.c. The NaSeed compatibility implementation
+handles the stable device model, transport, bounce DMA and VirtIO queue
+hook, plus a small fsync-required flush adapter. NaOS source itself cannot
+be assumed directly reusable under its repository-level GPLv3 while
+the linked upstream lwext4 files use GPLv2. See
+`docs/virtio-upstream-provenance.md`.
+
+This is a **controlled driver replacement** behind the same hardware
+discovery, block ABI, ext4, VFS and userspace: no filesystem/architecture
+special cases are allowed. Retain the legacy alternative only for host
+comparison until physical QEMU + strict e2fsck success proves the new code.
