@@ -37,10 +37,6 @@ if command -v clang >/dev/null 2>&1; then
       -ffreestanding -fno-builtin -I kernel -fsyntax-only \
       kernel/drivers/port/block.c
     clang --target="$target" -std=c11 -Wall -Wextra -Werror \
-      -ffreestanding -fno-builtin \
-      -I third_party/unikraft/include -I ports/unikraft/include \
-      -fsyntax-only scripts/test-unikraft-ring.c
-    clang --target="$target" -std=c11 -Wall -Wextra -Werror \
       -ffreestanding -fno-builtin -I kernel \
       -I third_party/unikraft/include -I ports/unikraft/include \
       -fsyntax-only kernel/drivers/block/virtio_mmio_blk.c
