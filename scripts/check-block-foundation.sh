@@ -32,7 +32,7 @@ build/block-foundation/test-unikraft-blk-abi
 build/block-foundation/test-unikraft-ring
 
 # Third-party driver ports are not another block registry: the real
-# current VirtIO-MMIO driver also uses this adapter in native AArch64.
+# the actual upstream driver remains to be integrated.
 cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
   scripts/test-block-driver-port.c kernel/drivers/port/block.c \
   kernel/block/device.c kernel/lib/string.c \
@@ -44,15 +44,13 @@ if command -v clang >/dev/null 2>&1; then
       -ffreestanding -fno-builtin -I kernel -fsyntax-only \
       kernel/drivers/port/block.c
     for src in kernel/drivers/virtio/transport.c \
-               kernel/drivers/virtio/mmio.c \
-               kernel/drivers/block/virtio_mmio_blk.c; do
+               kernel/drivers/virtio/mmio.c; do
       clang --target="$target" -std=c11 -Wall -Wextra -Werror \
         -ffreestanding -fno-builtin -I kernel \
         -I third_party/unikraft/include -I ports/unikraft/include \
         -fsyntax-only "$src"
     done
-    # The actual kernel VirtIO-Blk translation unit is compiled above using
-    # the same pinned upstream headers; the stdio host oracle stays native.
+    # Shared transport is verified; this is NOT a live upstream driver port.
   done
 fi
 
@@ -75,18 +73,9 @@ if command -v clang >/dev/null 2>&1; then
   done
 fi
 
-# The real VirtIO-Blk backend uses this shared transport API, not MMIO regs.
+# Transport API unit tests do not claim a block driver is installed.
 cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
   scripts/test-virtio-transport.c kernel/drivers/virtio/transport.c \
   kernel/drivers/virtio/mmio.c -o build/block-foundation/test-virtio-transport
 build/block-foundation/test-virtio-transport
 
-# Actual driver lifecycle, not only a mock bus or wire-protocol unit test.
-cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
-  -I third_party/unikraft/include -I ports/unikraft/include \
-  scripts/test-virtio-block-lifecycle.c \
-  kernel/drivers/block/virtio_mmio_blk.c kernel/drivers/core/bus.c \
-  kernel/drivers/port/block.c kernel/drivers/virtio/transport.c \
-  kernel/block/device.c kernel/lib/string.c \
-  -o build/block-foundation/test-virtio-block-lifecycle
-build/block-foundation/test-virtio-block-lifecycle

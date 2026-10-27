@@ -33,9 +33,7 @@ fi
 objects=
 for source in $sources; do
     obj="$out/$(printf '%s' "$source" | tr '/' '_').o"
-    virt_flags=
-    [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ] && virt_flags=-DNAS_ENABLE_VIRTIO_BLK=1
-    clang --target="$triple" $archflags $virt_flags -std=c11 -O2 -ffreestanding \
+    clang --target="$triple" $archflags -std=c11 -O2 -ffreestanding \
         -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
         -Werror=implicit-function-declaration -Werror=incompatible-pointer-types \
         -I "$port/include" -I "$vendor/include" -I kernel -I build/deps \
