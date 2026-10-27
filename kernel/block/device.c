@@ -65,7 +65,7 @@ static int check_io(struct nas_block_device *dev, uint64_t sector,
         return -EINVAL;
     if ((uint64_t)count > SIZE_MAX / dev->sector_bytes) return -EOVERFLOW;
     if (write && dev->read_only) return -EROFS;
-    if (!dev->ops || !(write ? dev->ops->write : dev->ops->read))
+    if (!dev->ops || (write ? !dev->ops->write : !dev->ops->read))
         return -EOPNOTSUPP;
     return 0;
 }
