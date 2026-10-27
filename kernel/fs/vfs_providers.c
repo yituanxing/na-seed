@@ -69,9 +69,9 @@ static const struct nas_vfs_type proc_type={
     .name="procfs",.exec_source_label="procfs",.lookup=proc_lookup_node,.read_only=true
 };
 static const struct nas_vfs_mount defaults[]={
-    {.mountpoint="/",.type=&boot_type},
-    {.mountpoint="/tmp",.type=&tmp_type,.fallback_on_miss=true},
-    {.mountpoint="/proc",.type=&proc_type,.fallback_on_miss=true}
+    {.mountpoint="/",.type=&boot_type,.permanent=true},
+    {.mountpoint="/tmp",.type=&tmp_type,.fallback_on_miss=true,.permanent=true},
+    {.mountpoint="/proc",.type=&proc_type,.fallback_on_miss=true,.permanent=true}
 };
 void nas_vfs_register_default_mounts(void) {
     for(unsigned i=0;i<sizeof(defaults)/sizeof(defaults[0]);i++)

@@ -123,6 +123,17 @@ int main(void) {
     assert(mounted_lookups!=0);
     assert(nas_fs_lookup_node("/mnt/no",true,&n,resolved)==-ENOENT);
     assert(nas_fs_lookup_node("/mnt2",true,&n,resolved)==-ENOENT);
+    assert(nas_fs_lookup_node("/mnt/hello",true,&n,resolved)==0);
+    assert(nas_vfs_node_pin(&n)==0);
+    assert(nas_vfs_node_pin(&n)==0);
+    assert(nas_vfs_unregister_mount(&ext_mount)==-EBUSY);
+    assert(nas_vfs_node_unpin(&n)==0);
+    assert(nas_vfs_unregister_mount(&ext_mount)==-EBUSY);
+    assert(nas_vfs_node_unpin(&n)==0);
+    assert(nas_vfs_unregister_mount(&ext_mount)==0);
+    assert(nas_fs_lookup_node("/mnt/hello",true,&n,resolved)==-ENOENT);
+    assert(nas_vfs_unregister_mount(&ext_mount)==-ENOENT);
+    assert(nas_vfs_register_mount(&ext_mount)==0);
     puts("[VFS PROVIDER PASS] real mount dispatch, pathwalk, CPIO/tmp/proc, symlinks, kernel read, inode ops");
     return 0;
 }

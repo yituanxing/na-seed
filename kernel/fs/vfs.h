@@ -25,7 +25,12 @@ struct nas_vfs_mount {
     /* Legacy /tmp overlay can still expose CPIO descendants; real disk
      * mounts must never use this compatibility fallback. */
     bool fallback_on_miss;
+    bool permanent; /* bootstrap filesystem mounts cannot be detached */
 };
+/* A shared OPEN File pins its mount exactly once, not once per FD alias. */
+int nas_vfs_unregister_mount(const struct nas_vfs_mount *mount);
+int nas_vfs_node_pin(const struct nas_fs_node *node);
+int nas_vfs_node_unpin(const struct nas_fs_node *node);
 int nas_vfs_register_mount(const struct nas_vfs_mount *mount);
 int nas_vfs_lookup(const char *absolute, struct nas_fs_node *node);
 int nas_vfs_readlink(const struct nas_fs_node *node, char target[256]);

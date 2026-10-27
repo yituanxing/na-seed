@@ -2,6 +2,7 @@
 #define NASEED_FD_H
 #include <stdbool.h>
 #include <stdint.h>
+#include "fs/lookup.h"
 
 /* Per-task descriptor entry and global shared open-description lifetime.
  * Descriptor table fields stay in nas_task; offset/status and reference
@@ -70,6 +71,10 @@ struct nas_open_file {
     uint64_t status_flags;
     uint64_t position;
     const struct nas_file_ops *ops;
+    /* Provider inode + mount pin owned by shared file description; pipes
+     * and sockets leave these empty. fork/dup do not copy the inode view. */
+    struct nas_fs_node vnode;
+    bool vnode_pinned;
     const struct limine_file *boot_file;
     const struct bootfs_entry *boot_entry;
     uint64_t proc_pid;

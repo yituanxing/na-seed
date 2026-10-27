@@ -7,6 +7,7 @@
  * leak into common pathwalk, ELF loader or future ext4 integration. */
 struct nas_fs_node {
     const struct nas_vfs_type *filesystem;
+    const struct nas_vfs_mount *mount; /* origin mount, borrowed until pinned */
     const void *inode;
     const uint8_t *data;  /* optional zero-copy immutable data */
     uint64_t size;

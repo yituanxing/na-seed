@@ -4,7 +4,8 @@
 #include "../lib/string.h"
 #include <stddef.h>
 #define NAS_VFS_MOUNT_LIMIT 16U
-static const struct nas_vfs_mount *mounts[NAS_VFS_MOUNT_LIMIT];
+struct mount_slot {const struct nas_vfs_mount *mount;uint32_t open_refs;};
+static struct mount_slot mounts[NAS_VFS_MOUNT_LIMIT];
 static unsigned count;
 static bool defaults_ready;
 void nas_vfs_register_default_mounts(void);
@@ -27,9 +28,9 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
     if (!len || len>=256 || (len>1 && mount->mountpoint[len-1]=='/'))
         return -EINVAL;
     for (unsigned i=0;i<count;i++)
-        if (!strcmp(mounts[i]->mountpoint,mount->mountpoint))return -EEXIST;
+        if (!strcmp(mounts[i].mount->mountpoint,mount->mountpoint))return -EEXIST;
     if (count==NAS_VFS_MOUNT_LIMIT)return -ENOSPC;
-    mounts[count++]=mount;return 0;
+    mounts[count++]=(struct mount_slot){.mount=mount};return 0;
 }
 int nas_vfs_lookup(const char *absolute,struct nas_fs_node *out) {
     if (!absolute || !out || absolute[0]!='/')return -EINVAL;
@@ -43,7 +44,7 @@ int nas_vfs_lookup(const char *absolute,struct nas_fs_node *out) {
         unsigned index=0;
         for(unsigned i=0;i<count;i++) {
             if (seen & (1U<<i))continue;
-            const struct nas_vfs_mount *m=mounts[i];
+            const struct nas_vfs_mount *m=mounts[i].mount;
             if (!mount_matches(m->mountpoint,absolute))continue;
             size_t n=strlen(m->mountpoint);
             if (!best || n>longest) {best=m;index=i;longest=n;}
@@ -52,7 +53,7 @@ int nas_vfs_lookup(const char *absolute,struct nas_fs_node *out) {
         seen|=1U<<index;
         *out=(struct nas_fs_node){0};
         int rc=best->type->lookup(absolute,out);
-        if(!rc) {out->filesystem=best->type;return 0;}
+        if(!rc) {out->filesystem=best->type;out->mount=best;return 0;}
         if(rc!=-ENOENT || !best->fallback_on_miss)return rc;
     }
     return -ENOENT;
@@ -85,4 +86,44 @@ int nas_vfs_utimens(const struct nas_fs_node *node,uint64_t atime,
     if(node->filesystem->read_only)return -EROFS;
     if(!node->filesystem->utimens)return -EOPNOTSUPP;
     return node->filesystem->utimens(node,atime,mtime,set_atime,set_mtime);
+}
+
+/* Mount table and File pins follow a single-CPU kernel policy. A registered
+ * mount descriptor is owned by the caller; unregister rejects live Files and
+ * descendants, preventing use-after-unmount for open descriptions. */
+int nas_vfs_unregister_mount(const struct nas_vfs_mount *mount) {
+    if(!mount)return -EINVAL;
+    ensure_defaults();
+    unsigned at=count;
+    for(unsigned i=0;i<count;i++)if(mounts[i].mount==mount)at=i;
+    if(at==count)return -ENOENT;
+    if(mount->permanent || mounts[at].open_refs)return -EBUSY;
+    size_t n=strlen(mount->mountpoint);
+    for(unsigned i=0;i<count;i++) {
+        if(i==at)continue;
+        const char *p=mounts[i].mount->mountpoint;
+        if((n==1 && mount->mountpoint[0]=='/') ||
+           (!strncmp(mount->mountpoint,p,n) && p[n]=='/'))return -EBUSY;
+    }
+    for(unsigned i=at;i+1<count;i++)mounts[i]=mounts[i+1];
+    mounts[--count]=(struct mount_slot){0};
+    return 0;
+}
+int nas_vfs_node_pin(const struct nas_fs_node *node) {
+    if(!node || !node->mount || node->filesystem!=node->mount->type)return -EINVAL;
+    ensure_defaults();
+    for(unsigned i=0;i<count;i++)if(mounts[i].mount==node->mount) {
+        if(mounts[i].open_refs==UINT32_MAX)return -EMFILE;
+        ++mounts[i].open_refs;return 0;
+    }
+    return -ENODEV;
+}
+int nas_vfs_node_unpin(const struct nas_fs_node *node) {
+    if(!node || !node->mount)return -EINVAL;
+    ensure_defaults();
+    for(unsigned i=0;i<count;i++)if(mounts[i].mount==node->mount) {
+        if(!mounts[i].open_refs)return -EINVAL;
+        --mounts[i].open_refs;return 0;
+    }
+    return -ENODEV;
 }
