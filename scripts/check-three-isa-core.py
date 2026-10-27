@@ -214,7 +214,7 @@ if not all(s in arm_timer for s in ('msr daifclr,#2', 'msr daifset,#2', 'nas_arm
     raise SystemExit("ARM64 idle needs EL1h IRQ entry with in-place kernel ERET")
 # Both ARM64 exception classes need separate return boundaries: EL0 timer
 # resumes the Task's canonical frame, EL1h idle resumes its kernel frame.
-if 'bl nas_arm_lower_irq_c\\n    b nas_arm_trap_return' not in arm_trap:
+if 'bl nas_arm_lower_irq_c\n    b nas_arm_trap_return' not in arm_trap:
     raise SystemExit("ARM64 EL0 timer IRQ incorrectly falls into EL1h idle vector")
 arm_context=(root/"kernel/arch/aarch64/context.c").read_text()
 if 'source->spsr_el1 & 15U' not in arm_context:

@@ -354,8 +354,8 @@ bool nas_signal_tty_event(uint64_t sid,uint64_t pgid,unsigned signum) {
  * SIGTTIN; TOSTOP writes and TIOCSPGRP by background groups generate
  * SIGTTOU. No hardware nor ISA-dependent policy is needed here.
  *
- * This cooperative kernel has one shared kernel stack. A running task
- * cannot be stopped in-place and then "return" from a syscall: capture
+ * A Task now owns its kernel C continuation. A running task
+ * cannot be stopped in-place and then return directly to user code: capture
  * its live frame, mark STOPPED, and schedule its parent. SIGCONT resumes
  * after the interrupted syscall with EINTR, which is a legitimate
  * restartable user-space boundary. No imaginary signal handler runs. */

@@ -313,7 +313,8 @@ void nas_process_exec_quiesce_siblings(void) {
         nas_process_clear_tid_for_exit(peer);
         peer->state=NAS_TASK_ZOMBIE;
         peer->resume_valid=false;
-        nas_task_wait_reset(peer);
+        /* release cancels the kernel wait entry, resets pending syscall
+         * state and drops this Task's MM/files/sighand/FS references. */
         nas_task_release(peer);
     }
     if(caller!=leader) {
