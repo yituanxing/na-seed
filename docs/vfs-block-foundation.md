@@ -253,3 +253,19 @@ All three ISA C targets share this port and compile it in syntax-only mode.
 **This does not establish a booted kernel, physical VirtIO-Blk or ext4 on a
 real QEMU drive.** Discovery/transport mapping, guest link, physical disk
 read/write persistence and e2fsck must still pass before enabling by default.
+
+## Opt-in AArch64 physical guest integration
+
+Restored the previously proven QEMU virt modern MMIO device *discovery* and
+actual ext4-superblock volume selection, but the removed handwritten block
+request engine stays deleted. The bus now binds `ports/nuttx/virtio_bus.c`
+which calls the same NuttX-derived generic C request port used by the
+host tests. The same `kernel/block` and `ports/lwext4` mount path serves
+RAM and physical disks. No transport address enters filesystem code.
+Only `NAS_ENABLE_VIRTIO_BLK=1` opts into the hardware provider; default
+native x86/RV/ARM regressions remain unchanged.
+
+Acceptance requires the existing **real AArch64 QEMU** VirtIO-MMIO guest
+stage to run a genuine userspace ext4 write and flush and for host `e2fsck`
+and `debugfs` to verify the persisted bytes afterwards. Source link alone
+is not acceptance. No x86 PCI or RV64 MMIO hardware provider claim yet.
