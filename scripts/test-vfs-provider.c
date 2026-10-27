@@ -80,6 +80,10 @@ int tmp_utimens(struct nas_tmp_file *f,uint64_t a,uint64_t m,bool sa,bool sm){
     return 0;
 }
 bool nas_proc_lookup(const char *path,struct nas_proc_node *out){
+    if(!strcmp(path,"/proc/self/fd")) {
+        *out=(struct nas_proc_node){.kind=NAS_PROC_FD_DIR,.pid=1};
+        return true;
+    }
     if(!strcmp(path,"/proc/self/fd/3")) {
         *out=(struct nas_proc_node){.kind=NAS_PROC_FD_LINK,.pid=1,.fd=3};
         return true;

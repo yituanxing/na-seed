@@ -128,10 +128,18 @@ static int ext_unlink_path(const char *path,uint64_t flags) {
 }
 static int ext_rename_path(const char *from,const char *to,uint64_t flags) {
     if(flags)return -EINVAL; /* no unimplemented atomic rename flags */
-    struct nas_fs_node node={0};
-    int rc=nas_vfs_lookup(from,&node);
-    if(rc)return rc;
-    return node.is_dir ? -ext4_dir_mv(from,to) : -ext4_frename(from,to);
+    /* Classify through the upstream directory API itself. Keep the ext4
+     * guest adapter linkable alone without depending on VFS dispatcher
+     * symbols (the kernel owns registration and mount selection). */
+    ext4_dir dir={0};
+    int rc=ext4_dir_open(&dir,from);
+    if(!rc) {
+        int close=ext4_dir_close(&dir);
+        if(close)return -close;
+        return -ext4_dir_mv(from,to);
+    }
+    if(rc!=ENOTDIR)return -rc;
+    return -ext4_frename(from,to);
 }
 static int ext_link_path(const char *from,const char *to) {
     return -ext4_flink(from,to);
