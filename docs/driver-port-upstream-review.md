@@ -153,3 +153,21 @@ DMA page validation now permits bus_address=0 for valid IOMMU mappings
 provided the CPU mapping and page size are valid. The QEMU provider still
 reserves physical address 0, while separate providers may use valid DMA
 address zero. Regression tests verify that invariant.
+
+## Same driver matches both transports; pinned full upstream source
+
+`nas_bus_driver.bus_mask` supports multiple bus transports per ONE
+driver instance; a VirtIO-Blk implementation is no longer registered
+once for MMIO and a second time for PCI. The exact same driver callback
+is tested against both discovered MMIO and PCI *mock devices*; real
+PCI enumeration and physical PCI disk persistence remain incomplete.
+
+The genuine existing VirtIO-Blk request code now uses byte-identical
+upstream `struct virtio_blk_outhdr`, `VIRTIO_BLK_T_*`,
+`VIRTIO_BLK_F_*` and `VIRTIO_ID_BLOCK`; no duplicate device-wire
+structs or private protocol opcode constants remain. The original full
+Unikraft `virtio_blk.c` is vendored and hash-pinned for detailed
+dependency extraction, but is NOT LINKED: it requires Unikraft's blkdev,
+sglist, queue, alloc and IRQ interfaces. This explicitly is NOT a claim
+that mature external request implementation has replaced the proven
+fallback. Independent boot/durable fsck remains the acceptance criterion.

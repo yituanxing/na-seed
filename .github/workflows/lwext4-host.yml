@@ -16,6 +16,7 @@ on:
       - 'ports/unikraft/**'
       - 'third_party/unikraft/**'
       - 'scripts/test-unikraft-ring.c'
+      - 'scripts/test-unikraft-blk-abi.c'
       - 'scripts/check-block-foundation.sh'
       - 'scripts/test-block-driver-port.c'
       - 'kernel/platform/aarch64_virtio.c'

@@ -12,7 +12,7 @@ static int bind(struct nas_bus_device *dev) {
     if (dev->driver) return 0;
     for (unsigned i = 0; i < NAS_BUS_DRIVER_LIMIT; ++i) {
         const struct nas_bus_driver *drv = drivers[i];
-        if (!drv || drv->bus != dev->bus ||
+        if (!drv || !(drv->bus_mask & (1U << dev->bus)) ||
             (drv->match && !drv->match(dev))) continue;
         int rc = drv->probe(dev);
         if (rc == 0) { dev->driver = drv; return 0; }
@@ -30,8 +30,9 @@ int nas_bus_rescan(void) {
     return first;
 }
 int nas_bus_driver_register(const struct nas_bus_driver *drv) {
-    if (!drv || !valid_bus(drv->bus) || !drv->name || !drv->name[0] ||
-        !drv->probe) return -EINVAL;
+    if (!drv || !(drv->bus_mask & NAS_BUS_MASK_ALL) ||
+        (drv->bus_mask & ~NAS_BUS_MASK_ALL) ||
+        !drv->name || !drv->name[0] || !drv->probe) return -EINVAL;
     unsigned vacant = NAS_BUS_DRIVER_LIMIT;
     for (unsigned i = 0; i < NAS_BUS_DRIVER_LIMIT; ++i) {
         if (drivers[i] == drv) return -EEXIST;

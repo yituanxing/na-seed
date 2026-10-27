@@ -17,7 +17,7 @@ extern bool nas_arm_map_io_page(uint64_t physical,uint64_t virtual_addr);
 static struct nas_bus_device mmio_devices[VIRTIO_MMIO_SLOTS];
 static struct nas_virtio_transport mmio_transports[VIRTIO_MMIO_SLOTS];
 int nas_arm_virtio_blk_probe(void){
-    int driver_rc=nas_virtio_mmio_blk_driver_register();
+    int driver_rc=nas_virtio_blk_driver_register();
     if(driver_rc<0)return driver_rc;
     for(unsigned page=0;page<4;page++)
         if(!nas_arm_map_io_page(VIRTIO_MMIO_BASE+page*4096U,
@@ -47,7 +47,7 @@ int nas_arm_virtio_blk_probe(void){
     nas_print("[VIRTIO-BLK] hardware transport modern=");
     nas_dec(modern);nas_print(" legacy=");nas_dec(legacy);nas_print("\n");
     nas_print("[VIRTIO-BLK] real modern MMIO devices=");
-    nas_dec(nas_virtio_mmio_blk_count());
+    nas_dec(nas_virtio_blk_count());
     nas_print("\n");
-    return (int)nas_virtio_mmio_blk_count();
+    return (int)nas_virtio_blk_count();
 }

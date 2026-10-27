@@ -5,6 +5,6 @@
  * The platform discovers devices, bus performs driver match/probe.
  */
 int nas_virtio_blk_attach(struct nas_virtio_transport *);
-unsigned nas_virtio_mmio_blk_count(void);
-int nas_virtio_mmio_blk_driver_register(void);
+unsigned nas_virtio_blk_count(void);
+int nas_virtio_blk_driver_register(void);
 #endif

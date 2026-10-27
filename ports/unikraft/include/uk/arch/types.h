@@ -7,6 +7,10 @@ typedef uint8_t __u8;
 typedef uint16_t __u16;
 typedef uint32_t __u32;
 typedef uint64_t __u64;
+/* Unikraft's verbatim Linux UAPI virtio_blk_config uses __packed. */
+#ifndef __packed
+#define __packed __attribute__((__packed__))
+#endif
 #ifndef __may_alias
 #define __may_alias __attribute__((__may_alias__))
 #endif

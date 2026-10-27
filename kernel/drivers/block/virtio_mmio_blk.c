@@ -10,6 +10,7 @@
 #include "../core/bus.h"
 #include "../virtio/transport.h"
 #include <virtio/virtio_ring.h>
+#include <virtio/virtio_blk.h>
 #include "../../mm/frame.h"
 #include "../../errno.h"
 #include "../../lib/string.h"
@@ -20,13 +21,9 @@
 #define MAX_DISKS 4U
 #define QUEUE_SIZE 8U
 #define MAX_TRANSFER 4096U
-#define DEVICE_BLK 2U
-#define FEAT_RO    (UINT64_C(1)<<5)
-#define FEAT_FLUSH (UINT64_C(1)<<9)
-#define REQ_IN         0U
-#define REQ_OUT        1U
-#define REQ_FLUSH      4U
-struct virtio_header {uint32_t type,reserved;uint64_t sector;};
+/* Use upstream Linux/Unikraft wire definitions, never a local redefinition. */
+#define FEAT_RO    (UINT64_C(1)<<VIRTIO_BLK_F_RO)
+#define FEAT_FLUSH (UINT64_C(1)<<VIRTIO_BLK_F_FLUSH)
 struct virt_blk {
     struct nas_port_block port;
     struct vring vr;
@@ -53,27 +50,27 @@ static int virtio_submit(struct virt_blk *d,uint32_t type,
                          uint64_t sector,void *data,uint32_t bytes) {
     if(!d || d->failed || !d->queue.cpu || bytes>MAX_TRANSFER)
         return -EIO;
-    if((type==REQ_FLUSH && bytes) ||
-       (type!=REQ_FLUSH && (!bytes || !data)))return -EINVAL;
+    if((type==VIRTIO_BLK_T_FLUSH && bytes) ||
+       (type!=VIRTIO_BLK_T_FLUSH && (!bytes || !data)))return -EINVAL;
     /* Actual upstream Unikraft/Linux BSD virtqueue layout; no NaSeed-only
      * duplicated ring structs or magic avail/used address offsets. */
     struct vring_desc *desc=d->vr.desc;
     volatile struct vring_avail *avail=d->vr.avail;
     volatile struct vring_used *used=d->vr.used;
-    struct virtio_header *hdr=(struct virtio_header *)d->request.cpu;
+    struct virtio_blk_outhdr *hdr=(struct virtio_blk_outhdr *)d->request.cpu;
     volatile uint8_t *status=(volatile uint8_t *)
                               (uint8_t *)d->request.cpu+0x20U;
-    hdr->type=type;hdr->reserved=0;hdr->sector=sector;
+    hdr->type=type;hdr->ioprio=0;hdr->sector=sector;
     *status=0xffU;
-    if(type==REQ_OUT)memcpy(d->payload.cpu,data,bytes);
+    if(type==VIRTIO_BLK_T_OUT)memcpy(d->payload.cpu,data,bytes);
     desc[0]=(struct vring_desc){
         .addr=d->request.bus_address,.len=sizeof(*hdr),
-        .flags=VRING_DESC_F_NEXT,.next=type==REQ_FLUSH?2U:1U
+        .flags=VRING_DESC_F_NEXT,.next=type==VIRTIO_BLK_T_FLUSH?2U:1U
     };
-    if(type!=REQ_FLUSH)
+    if(type!=VIRTIO_BLK_T_FLUSH)
         desc[1]=(struct vring_desc){
             .addr=d->payload.bus_address,.len=bytes,
-            .flags=VRING_DESC_F_NEXT|(type==REQ_IN?VRING_DESC_F_WRITE:0U),.next=2U
+            .flags=VRING_DESC_F_NEXT|(type==VIRTIO_BLK_T_IN?VRING_DESC_F_WRITE:0U),.next=2U
         };
     desc[2]=(struct vring_desc){
         .addr=d->request.bus_address+0x20U,.len=1,.flags=VRING_DESC_F_WRITE
@@ -85,7 +82,7 @@ static int virtio_submit(struct virt_blk *d,uint32_t type,
      * queue entries and DMA frames are physical and have stable lifetimes. */
     /* DMA request header and outgoing payload precede queue publication. */
     if(nas_dma_sync(d->dma,&d->request,0,64U,NAS_DMA_TO_DEVICE) ||
-       (bytes && type==REQ_OUT &&
+       (bytes && type==VIRTIO_BLK_T_OUT &&
         nas_dma_sync(d->dma,&d->payload,0,bytes,NAS_DMA_TO_DEVICE))) return -EIO;
     uint16_t submit_index=avail->idx;
     avail->ring[submit_index%QUEUE_SIZE]=0;
@@ -110,29 +107,30 @@ static int virtio_submit(struct virt_blk *d,uint32_t type,
     barrier();
     if(nas_dma_sync(d->dma,&d->queue,0,4096U,NAS_DMA_FROM_DEVICE) ||
        nas_dma_sync(d->dma,&d->request,0,64U,NAS_DMA_FROM_DEVICE) ||
-       (bytes && type==REQ_IN &&
+       (bytes && type==VIRTIO_BLK_T_IN &&
         nas_dma_sync(d->dma,&d->payload,0,bytes,NAS_DMA_FROM_DEVICE))) return -EIO;
     unsigned item=d->used_index%QUEUE_SIZE;
     uint32_t id=used->ring[item].id;
     d->used_index++;
-    if(id!=0 || *status!=0)return *status==2?-EOPNOTSUPP:-EIO;
-    if(type==REQ_IN)memcpy(data,d->payload.cpu,bytes);
+    if(id!=0 || *status!=VIRTIO_BLK_S_OK)
+        return *status==2?-EOPNOTSUPP:-EIO;
+    if(type==VIRTIO_BLK_T_IN)memcpy(data,d->payload.cpu,bytes);
     return 0;
 }
 static int64_t blk_read(void *backend,uint64_t sector,
                          uint32_t count,void *dst){
     struct virt_blk *d=(struct virt_blk *)backend;
     if(count>MAX_TRANSFER/512U)return -EINVAL;
-    return virtio_submit(d,REQ_IN,sector,dst,count*512U);
+    return virtio_submit(d,VIRTIO_BLK_T_IN,sector,dst,count*512U);
 }
 static int64_t blk_write(void *backend,uint64_t sector,
                           uint32_t count,const void *src){
     struct virt_blk *d=(struct virt_blk *)backend;
     if(count>MAX_TRANSFER/512U)return -EINVAL;
-    return virtio_submit(d,REQ_OUT,sector,(void *)src,count*512U);
+    return virtio_submit(d,VIRTIO_BLK_T_OUT,sector,(void *)src,count*512U);
 }
 static int blk_flush(void *backend){
-    return virtio_submit((struct virt_blk *)backend,REQ_FLUSH,0,0,0);
+    return virtio_submit((struct virt_blk *)backend,VIRTIO_BLK_T_FLUSH,0,0,0);
 }
 static const struct nas_port_block_ops disk_ops={
     .read=blk_read,.write=blk_write,.flush=blk_flush
@@ -183,21 +181,21 @@ int nas_virtio_blk_attach(struct nas_virtio_transport *transport) {
     disk_count++;
     return 1;
 }
-unsigned nas_virtio_mmio_blk_count(void){return disk_count;}
+unsigned nas_virtio_blk_count(void){return disk_count;}
 
 /* Registration is transport-independent: scanning may discover any modern
  * VirtIO device, while the bus binds only matching block devices. */
 static bool virtio_blk_match(const struct nas_bus_device *dev) {
-    return dev->device_id==DEVICE_BLK && dev->context!=NULL;
+    return dev->device_id==VIRTIO_ID_BLOCK && dev->context!=NULL;
 }
 static int virtio_blk_probe(struct nas_bus_device *dev) {
     int rc=nas_virtio_blk_attach((struct nas_virtio_transport *)dev->context);
     return rc==1 ? 0 : (rc==0 ? -ENODEV : rc);
 }
-static const struct nas_bus_driver virtio_blk_mmio_driver={
-    .name="virtio-blk",.bus=NAS_BUS_VIRTIO_MMIO,
+static const struct nas_bus_driver virtio_blk_driver={
+    .name="virtio-blk",.bus_mask=NAS_BUS_MASK_ALL,
     .match=virtio_blk_match,.probe=virtio_blk_probe
 };
-int nas_virtio_mmio_blk_driver_register(void) {
-    return nas_bus_driver_register(&virtio_blk_mmio_driver);
+int nas_virtio_blk_driver_register(void) {
+    return nas_bus_driver_register(&virtio_blk_driver);
 }

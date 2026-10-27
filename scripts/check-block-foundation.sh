@@ -19,9 +19,16 @@ fi
 # Verify the pinned upstream source is byte-identical to the imported blobs.
 test "$(git hash-object third_party/unikraft/include/virtio/virtio_ring.h)" = "9909bcc1f175d7bead456005adf57d4c75d7a2f3"
 test "$(git hash-object third_party/unikraft/include/virtio/virtio_types.h)" = "f71be56b7ad839e0ef40d31963882351ee584f78"
+test "$(git hash-object third_party/unikraft/include/virtio/virtio_blk.h)" = "7f09b3d55b2cc492105beaf73dc99f08b20f9d4f"
+test "$(git hash-object third_party/unikraft/include/virtio/virtio_ids.h)" = "7fa6166980bca4a61ec666cef40f4fce4112b512"
+test "$(git hash-object third_party/unikraft/drivers/virtio_blk.c)" = "81eb5e284f418c78f5023b17142fc679114f3908"
 cc -std=c11 -O2 -Wall -Wextra -Werror \
   -I third_party/unikraft/include -I ports/unikraft/include \
   scripts/test-unikraft-ring.c -o build/block-foundation/test-unikraft-ring
+cc -std=c11 -O2 -Wall -Wextra -Werror \
+  -I third_party/unikraft/include -I ports/unikraft/include \
+  scripts/test-unikraft-blk-abi.c -o build/block-foundation/test-unikraft-blk-abi
+build/block-foundation/test-unikraft-blk-abi
 build/block-foundation/test-unikraft-ring
 
 # Third-party driver ports are not another block registry: the real
@@ -44,6 +51,10 @@ if command -v clang >/dev/null 2>&1; then
         -I third_party/unikraft/include -I ports/unikraft/include \
         -fsyntax-only "$src"
     done
+    clang --target="$target" -std=c11 -Wall -Wextra -Werror \
+      -ffreestanding -fno-builtin \
+      -I third_party/unikraft/include -I ports/unikraft/include \
+      -fsyntax-only scripts/test-unikraft-blk-abi.c
   done
 fi
 

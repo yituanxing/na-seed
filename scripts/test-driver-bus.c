@@ -39,9 +39,9 @@ static int remove_cb(struct nas_bus_device *dev) {
 }
 static int ignored(struct nas_bus_device *dev) {(void)dev;fallback_count++;return -ENODEV;}
 static const struct nas_bus_driver fake={.name="virtio-blk-upstream",
-    .bus=NAS_BUS_VIRTIO_MMIO,.match=match,.probe=probe,.remove=remove_cb};
+    .bus_mask=NAS_BUS_MASK_ALL,.match=match,.probe=probe,.remove=remove_cb};
 static const struct nas_bus_driver pci={.name="pci-unclaimed",
-    .bus=NAS_BUS_PCI,.probe=ignored};
+    .bus_mask=NAS_BUS_MASK_PCI,.probe=ignored};
 static struct nas_bus_device dev={.bus=NAS_BUS_VIRTIO_MMIO,
     .vendor_id=0x1af4,.device_id=2,.resource=(volatile void*)0x1000};
 static struct nas_bus_device unused={.bus=NAS_BUS_PCI,
@@ -64,11 +64,20 @@ int main(void) {
     nas_block_put(pin);
     assert(nas_bus_device_unbind(&dev)==0);
     assert(dev.driver==NULL && nas_block_get("portedbus")==NULL);
+    /* Prove one and the same block driver can bind a second PCI
+     * transport with no architecture-specific storage implementation. */
+    unused.vendor_id=0x1af4;unused.device_id=2;
+    assert(nas_bus_rescan()==0);
+    assert(unused.driver==&fake && probe_count==2);
+    struct nas_block_device *other=nas_block_get("portedbus");
+    assert(other==&port.block);
+    nas_block_put(other);
+    assert(nas_bus_device_unbind(&unused)==0);
     assert(nas_bus_driver_unregister(&fake)==0);
-    assert(nas_bus_rescan()==0 && !dev.driver);
+    assert(nas_bus_rescan()==0 && !dev.driver && !unused.driver);
     assert(nas_bus_driver_unregister(&pci)==0);
     assert(nas_bus_device_unregister(&dev)==0);
     assert(nas_bus_device_unregister(&unused)==0);
-    puts("[DRIVER BUS PASS] delayed binding, PCI isolation, shared BlockDevice lifetime, unbind, unregister");
+    puts("[DRIVER BUS PASS] late binding, SAME driver MMIO+PCI, busy mounts, unbind, unregister");
     return 0;
 }
