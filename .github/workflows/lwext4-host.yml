@@ -8,6 +8,8 @@ on:
       - 'kernel/fs/vfs*'
       - 'kernel/fs/metadata_syscall.c'
       - 'user/ext4-guest-read.S'
+      - 'user/ext4-guest-write.S'
+      - 'scripts/probe-lwext4-writable-x86.sh'
       - 'scripts/probe-lwext4-syscall-x86.sh'
       - 'scripts/probe-lwext4-busybox-x86.sh'
       - 'kernel/mm/heap.*'
@@ -46,6 +48,8 @@ jobs:
           sh scripts/probe-lwext4-guest-x86.sh
       - name: Actual Linux openat and read on ext4 from x86 ring3 ELF
         run: sh scripts/probe-lwext4-syscall-x86.sh
+      - name: Real ring3 Linux openat/write/fsync/lseek/read/reopen against explicitly writable ephemeral ext4
+        run: sh scripts/probe-lwext4-writable-x86.sh
       - name: Original pinned Debian BusyBox reads and enumerates ext4 through Linux VFS
         run: sh scripts/probe-lwext4-busybox-x86.sh
       - name: Boot the exact same real ext4 image through native RV64 and AArch64 QEMU

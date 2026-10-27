@@ -20,6 +20,15 @@ static bool ext4_module(const struct limine_file *file) {
     /* On-disk ext superblock magic at 1024+0x38, not a module filename. */
     return data[1080]==0x53 && data[1081]==0xef;
 }
+/* The boot loader's module basename is an explicit RAM-only RW opt-in.
+ * No physical drive or persistent-disk write capability is implied.
+ * Ordinary "ext4.img" boot modules stay strictly read-only. */
+static bool ephemeral_rw_module(const struct limine_file *file) {
+    if(!file || !file->path)return false;
+    const char *last=strrchr(file->path,'/');
+    const char *name=last ? last+1 : file->path;
+    return !strcmp(name,"naseed-ram-rw.ext4");
+}
 bool nas_lwext4_guest_boot_mount(void) {
     const struct limine_file *file=NULL;
     for(uint64_t i=1;i<64;i++) {
@@ -31,9 +40,10 @@ bool nas_lwext4_guest_boot_mount(void) {
         }
     }
     if(!file)return true; /* Opt-in kernel still boots without a disk. */
-    int rc=nas_lwext4_ramdisk_mount(&boot_mount,"limine-ext4",
-                                    "limine-ext4-dev","/mnt",
-                                    file->address,file->size);
+    bool ram_rw=ephemeral_rw_module(file);
+    int rc=nas_lwext4_ramdisk_mount_mode(&boot_mount,"limine-ext4",
+                                         "limine-ext4-dev","/mnt",
+                                         file->address,file->size,ram_rw);
     if(rc)return false;
     char path[256];
     struct nas_fs_node node;
@@ -42,6 +52,8 @@ bool nas_lwext4_guest_boot_mount(void) {
        !node.filesystem || strcmp(node.filesystem->name,"lwext4"))
         return false;
     nas_print("[LWEXT4 GUEST] actual Limine ext4 image mounted at /mnt\n");
+    if(ram_rw)
+        nas_print("[LWEXT4 GUEST] explicit ephemeral RW RamDisk only; NOT persistent storage\n");
 
     /* The acceptance fixture is optional for arbitrary user-supplied disks.
      * A separate real-QEMU gate requires this marker from the known image. */
