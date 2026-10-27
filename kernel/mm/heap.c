@@ -10,7 +10,7 @@
 #define NAS_HEAP_ARENAS 16U
 #define NAS_HEAP_ALIGN ((size_t)_Alignof(max_align_t))
 struct heap_block {
-    struct heap_block *next;
+    alignas(max_align_t) struct heap_block *next;
     size_t size;
     bool available;
 };
