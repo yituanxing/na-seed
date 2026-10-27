@@ -74,6 +74,8 @@ int main(int argc,char **argv) {
                              (uint64_t)count,entries,8)>=0);
     assert(nas_vfs_read_dir(&node,"/mnt/sandbox",0,entries,8)==-ENOTDIR);
     assert(nas_vfs_mkdir("/",0755)==-EEXIST);
+    assert(nas_vfs_mkdir("/mnt",0755)==-EEXIST);
+    assert(nas_vfs_mkdir("/mnt/sandbox",0755)==-EEXIST);
     assert(nas_vfs_mkdir("/mnt/create",0755)==-EROFS);
     assert(nas_vfs_unlink("/mnt/sandbox/hardlink",0)==-EROFS);
     assert(nas_vfs_rename("/mnt/sandbox/hardlink","/mnt/sandbox/new",0)==-EROFS);

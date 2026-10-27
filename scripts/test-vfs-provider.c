@@ -206,6 +206,9 @@ int main(void) {
     assert(nas_vfs_link("/tmp/demo","/tmp/linked")==0);
     assert(nas_vfs_symlink("../target","/tmp/newlink")==0);
     assert(nas_vfs_mkdir("/",0755)==-EEXIST);
+    assert(nas_vfs_mkdir("/tmp",0755)==-EEXIST);
+    assert(nas_vfs_mkdir("/bin",0755)==-EEXIST);
+    assert(nas_vfs_mkdir("/tmp/demo",0755)==-EEXIST);
     assert(nas_vfs_mkdir("/tmp/alias/new",0755)==0);
     assert(nas_vfs_unlink("/tmp/alias/demo",0)==0);
     assert(nas_vfs_rename("/tmp/alias/demo","/tmp/alias/other",0)==0);
@@ -240,6 +243,7 @@ int main(void) {
     bad_mount.mountpoint="/mnt/x/";
     assert(nas_vfs_register_mount(&bad_mount)==-EINVAL);
     assert(nas_vfs_register_mount(&ext_mount)==0);
+    assert(nas_vfs_mkdir("/mnt",0755)==-EEXIST);
     assert(nas_vfs_register_mount(&ext_mount)==-EEXIST);
     assert(nas_fs_lookup_node("/mnt/hello",true,&n,resolved)==0);
     assert(!strcmp(n.filesystem->name,"ext-mount-mock"));

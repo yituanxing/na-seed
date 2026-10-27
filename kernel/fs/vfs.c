@@ -145,9 +145,18 @@ static int vfs_mutable_parent(const char *path,struct nas_fs_node *parent,
     return nas_vfs_can_write(parent) ? 0 : -EROFS;
 }
 int nas_vfs_mkdir(const char *path,uint64_t mode) {
-    if(path && !strcmp(path,"/"))return -EEXIST;
+    if(!path || path[0]!='/')return -EINVAL;
+    if(!strcmp(path,"/"))return -EEXIST;
+    /* POSIX mkdir(existing) is EEXIST, even for a read-only mountpoint.
+     * Inspect namei before deciding whether the new parent's mount can
+     * accept a mutation; this is essential for BusyBox mkdir -p. */
+    struct nas_fs_node existing;
+    char existing_path[256];
+    int rc=nas_fs_lookup_node(path,false,&existing,existing_path);
+    if(!rc)return -EEXIST;
+    if(rc!=-ENOENT)return rc;
     struct nas_fs_node parent;char canonical[256];
-    int rc=vfs_mutable_parent(path,&parent,canonical);
+    rc=vfs_mutable_parent(path,&parent,canonical);
     if(rc)return rc;
     return parent.filesystem->mkdir ? parent.filesystem->mkdir(canonical,mode) : -EOPNOTSUPP;
 }
