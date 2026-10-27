@@ -111,7 +111,10 @@ bool nas_lwext4_guest_boot_mount(void) {
  * Without ext4_umount, the journal/superblock free counters can lag even
  * after fsync and block-cache flush; QEMU termination is not an unmount. */
 bool nas_lwext4_guest_boot_shutdown(void) {
-    if (!boot_mount.mounted) return true;
+    if (!boot_mount.mounted || boot_mount.mount.read_only) return true;
+    /* A read-only image cannot have dirty metadata to commit and some
+     * upstream read-only close paths refuse redundant writeback. Only a
+     * writable filesystem requires final ext4 superblock commit. */
     if (nas_lwext4_unmount(&boot_mount)) return false;
     nas_print("[LWEXT4 GUEST] clean upstream unmount and durable flush\n");
     return true;
