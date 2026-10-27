@@ -94,7 +94,7 @@ static int ext_read_directory(const struct nas_fs_node *node,
         if(!entry->inode)continue;
         if(scanned++<cursor)continue;
         struct nas_vfs_dirent *dst=&out[copied];
-        if(!entry->name_length || entry->name_length>=sizeof(dst->name)) {
+        if(!entry->name_length) {
             error=EIO;break;
         }
         dst->ino=entry->inode;

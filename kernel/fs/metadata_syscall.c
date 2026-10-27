@@ -494,7 +494,7 @@ static uint64_t vfs_getdents64(uint64_t fd,uint64_t user,uint64_t capacity) {
         for(int i=0;i<count;i++) {
             const struct nas_vfs_dirent *e=&batch[i];
             unsigned length=e->name_len;
-            if(!e->ino || !length || length>=sizeof(e->name) ||
+            if(!e->ino || !length ||
                e->name[length]!=0)return written?written:(uint64_t)-EIO;
             unsigned record_bytes=(19+length+1+7)&~7U;
             if(record_bytes>280)return written?written:(uint64_t)-EIO;
