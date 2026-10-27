@@ -20,7 +20,7 @@ arch="kernel/arch/aarch64/cpu.c kernel/arch/aarch64/mmu.c kernel/arch/aarch64/co
 if [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ]; then
     [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ] ||
       { echo '[VIRTIO] lwext4 gate required' >&2; exit 1; }
-    arch="$arch kernel/drivers/block/virtio_mmio_blk.c kernel/platform/aarch64_virtio.c"
+    arch="$arch kernel/drivers/port/block.c kernel/drivers/block/virtio_mmio_blk.c kernel/platform/aarch64_virtio.c"
 fi
 obj=
 for f in $common $arch; do

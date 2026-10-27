@@ -7,7 +7,7 @@
  * The command and status, payload, and ring each own separate 4 KiB frames.
  */
 #include "virtio_mmio_blk.h"
-#include "../../block/device.h"
+#include "../port/block.h"
 #include "../../mm/frame.h"
 #include "../../errno.h"
 #include "../../lib/string.h"
@@ -76,7 +76,7 @@ struct vq_used {
 };
 struct virtio_header {uint32_t type,reserved;uint64_t sector;};
 struct virt_blk {
-    struct nas_block_device block;
+    struct nas_port_block port;
     volatile uint32_t *regs;
     uint64_t queue_pa,request_pa,payload_pa;
     uint16_t used_index;
@@ -155,22 +155,22 @@ static int virtio_submit(struct virt_blk *d,uint32_t type,
     if(type==REQ_IN)memcpy(data,cpu_alias(d->payload_pa),bytes);
     return 0;
 }
-static int blk_read(struct nas_block_device *dev,uint64_t sector,
-                     uint32_t count,void *dst){
-    struct virt_blk *d=(struct virt_blk *)dev->context;
+static int64_t blk_read(void *backend,uint64_t sector,
+                         uint32_t count,void *dst){
+    struct virt_blk *d=(struct virt_blk *)backend;
     if(count>MAX_TRANSFER/512U)return -EINVAL;
     return virtio_submit(d,REQ_IN,sector,dst,count*512U);
 }
-static int blk_write(struct nas_block_device *dev,uint64_t sector,
-                      uint32_t count,const void *src){
-    struct virt_blk *d=(struct virt_blk *)dev->context;
+static int64_t blk_write(void *backend,uint64_t sector,
+                          uint32_t count,const void *src){
+    struct virt_blk *d=(struct virt_blk *)backend;
     if(count>MAX_TRANSFER/512U)return -EINVAL;
     return virtio_submit(d,REQ_OUT,sector,(void *)src,count*512U);
 }
-static int blk_flush(struct nas_block_device *dev){
-    return virtio_submit((struct virt_blk *)dev->context,REQ_FLUSH,0,0,0);
+static int blk_flush(void *backend){
+    return virtio_submit((struct virt_blk *)backend,REQ_FLUSH,0,0,0);
 }
-static const struct nas_block_ops disk_ops={
+static const struct nas_port_block_ops disk_ops={
     .read=blk_read,.write=blk_write,.flush=blk_flush
 };
 static int configure(struct virt_blk *d) {
@@ -209,13 +209,10 @@ static int configure(struct virt_blk *d) {
                       ((uint64_t)MMIO_READ(d,R_CAPACITY_HI)<<32);
     if(!sectors)return -ENODEV;
     bool writable=!(low&FEAT_RO) && (low&FEAT_FLUSH);
-    d->block=(struct nas_block_device){
-        .name=names[disk_count],.sectors=sectors,.sector_bytes=512U,
-        .max_sectors_per_io=MAX_TRANSFER/512U,
-        .read_only=!writable,.ops=&disk_ops,.context=d
-    };
     MMIO_WRITE(d,R_STATUS,STATUS_ACK|STATUS_DRIVER|STATUS_FEAT_OK|STATUS_READY);
-    return nas_block_register(&d->block);
+    return nas_port_block_attach(&d->port,names[disk_count],d,sectors,512U,
+                                 MAX_TRANSFER/512U,!writable,
+                                 NAS_PORT_BLOCK_ZERO,&disk_ops);
 }
 int nas_virtio_mmio_blk_attach(volatile uint32_t *regs) {
     if(!regs || regs[R_MAGIC/4]!=MAGIC ||
