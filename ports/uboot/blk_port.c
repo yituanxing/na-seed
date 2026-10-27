@@ -48,7 +48,12 @@ void virtio_driver_features_init(struct virtio_dev_priv *p,
  const u32 *f,size_t count,const u32 *x,size_t n) {
  (void)x;(void)n;
  if(!p)return;
- for(size_t i=0;i<count;i++)if(f[i]<64)p->offered |= FEATURE(f[i]);
+ /* The unchanged U-Boot backend has an erase entrypoint, but NaSeed's
+  * bounded adapter only supports IN, OUT and FLUSH. Do not advertise a
+  * WRITE_ZEROES command that virtqueue_add would reject. */
+ for(size_t i=0;i<count;i++)
+     if(f[i]<64 && f[i]!=VIRTIO_BLK_F_WRITE_ZEROES)
+         p->offered |= FEATURE(f[i]);
  /* Filesystem fsync needs the standard VirtIO flush command. */
  p->offered |= FEATURE(VIRTIO_BLK_F_FLUSH) |
                FEATURE(VIRTIO_BLK_F_RO);
@@ -97,6 +102,9 @@ int virtqueue_add(struct virtqueue *v,struct virtio_sg **sgs,
  if(!hdr||!stat||hdr->length!=sizeof(struct virtio_blk_outhdr) ||
     stat->length!=1U || !hdr->addr || !stat->addr)return -EINVAL;
  struct virtio_blk_outhdr h=*(struct virtio_blk_outhdr *)hdr->addr;
+ /* Upstream initializes type and sector but leaves ioprio unspecified.
+  * Never DMA an uninitialized kernel-stack field to a device. */
+ h.ioprio=0;
  bool flush=h.type==VIRTIO_BLK_T_FLUSH;
  if(flush != (n==2))return -EINVAL;
  struct virtio_sg *data=(n==3)?sgs[1]:NULL;
@@ -157,6 +165,18 @@ void *virtqueue_get_buf(struct virtqueue *v,unsigned *used_len) {
                  NAS_UBOOT_STATUS_BYTE,1U,NAS_DMA_FROM_DEVICE);
  if(rc){poison(v);v->pending=false;return v;}
  uint8_t status=*((uint8_t*)b->header_dma.cpu+NAS_UBOOT_STATUS_BYTE);
+ /* A successful read must have written every payload byte plus status;
+  * writes and flushes only return the status byte. A short success must
+  * not expose stale bounce-buffer contents as valid filesystem data.
+  * A failed read is allowed to transfer fewer bytes. */
+ uint32_t expected=1U;
+ if(v->sg_out && v->in_count==2)expected+=v->sg_out->length;
+ if(written>expected || (status==VIRTIO_BLK_S_OK && written!=expected)){
+     poison(v);
+     *(uint8_t*)v->sg_in->addr=VIRTIO_BLK_S_IOERR;
+     v->pending=false;
+     return v;
+ }
  *(uint8_t*)v->sg_in->addr=status;
  if(status==VIRTIO_BLK_S_OK && v->sg_out && v->in_count==2){
      rc=nas_dma_sync(b->transport.dma,&b->payload_dma,0,

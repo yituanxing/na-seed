@@ -66,3 +66,18 @@ The original two upstream source blobs match the pinned Git object hashes.
 bounce adapter, PCI transport discovery and native block/VFS mounting glue
 are still first-party code. The U-Boot driver is upstream original; the
 complete storage stack is NOT claimed to be 100% upstream unmodified.
+
+## Completion integrity audit (next exact-head gate)
+
+The unchanged U-Boot request code initializes `type` and `sector` of
+`virtio_blk_outhdr` but not its `ioprio` member. The NaSeed adapter
+canonicalizes `ioprio=0` before handing any header to DMA. Only IN/OUT/FLUSH
+are accepted by the bounded adapter, so WRITE_ZEROES is not negotiated even
+when the underlying device advertises it. After polling, an OK read must
+account for the full payload plus the status byte in the used-ring length;
+OK writes and flushes must report exactly the status byte. A short successful
+read, oversized successful write, or timeout poisons/resets the transport and
+returns EIO, never stale filesystem contents. A failed read may write only a
+status byte. Host emulation exercises these malformed completions without
+editing pinned upstream sources. This is not proof of IRQ-driven concurrency,
+PCI hardware discovery, or general-purpose physical-device readiness.
