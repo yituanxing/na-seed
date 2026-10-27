@@ -52,16 +52,17 @@ int nas_vfs_lookup(const char *absolute,struct nas_fs_node *out) {
         if (!best)break;
         seen|=1U<<index;
         *out=(struct nas_fs_node){0};
-        int rc=best->type->lookup(absolute,out);
+        int rc=best->type->lookup(best,absolute,out);
         if(!rc) {out->filesystem=best->type;out->mount=best;return 0;}
         if(rc!=-ENOENT || !best->fallback_on_miss)return rc;
     }
     return -ENOENT;
 }
-int nas_vfs_readlink(const struct nas_fs_node *node,char target[256]) {
+int nas_vfs_readlink(const struct nas_fs_node *node,
+                      const char *absolute,char target[256]) {
     if (!node || !node->filesystem || !node->is_symlink ||
         !node->filesystem->readlink)return -EINVAL;
-    return node->filesystem->readlink(node,target);
+    return node->filesystem->readlink(node,absolute,target);
 }
 int64_t nas_vfs_read_at(const struct nas_fs_node *node,uint64_t offset,
                         uint8_t *dst,uint64_t length) {
@@ -72,18 +73,19 @@ int64_t nas_vfs_read_at(const struct nas_fs_node *node,uint64_t offset,
     return node->filesystem->read_at(node,offset,dst,length);
 }
 bool nas_vfs_can_write(const struct nas_fs_node *node) {
-    return node && node->filesystem && !node->filesystem->read_only;
+    return node && node->filesystem && node->mount &&
+           !node->filesystem->read_only && !node->mount->read_only;
 }
 int nas_vfs_chmod(const struct nas_fs_node *node,uint64_t mode) {
     if(!node || !node->filesystem)return -EINVAL;
-    if(node->filesystem->read_only)return -EROFS;
+    if(node->filesystem->read_only || (node->mount && node->mount->read_only))return -EROFS;
     if(!node->filesystem->chmod)return -EOPNOTSUPP;
     return node->filesystem->chmod(node,mode);
 }
 int nas_vfs_utimens(const struct nas_fs_node *node,uint64_t atime,
                     uint64_t mtime,bool set_atime,bool set_mtime) {
     if(!node || !node->filesystem)return -EINVAL;
-    if(node->filesystem->read_only)return -EROFS;
+    if(node->filesystem->read_only || (node->mount && node->mount->read_only))return -EROFS;
     if(!node->filesystem->utimens)return -EOPNOTSUPP;
     return node->filesystem->utimens(node,atime,mtime,set_atime,set_mtime);
 }

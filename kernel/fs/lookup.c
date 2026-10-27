@@ -41,7 +41,7 @@ int nas_fs_resolve_existing(const char *path,bool follow_final,char out[256]) {
             if(inode.is_symlink && (!last || follow_final)) {
                 if(++links>8)return -ELOOP;
                 char expanded[256],target[256];
-                int nr=nas_vfs_readlink(&inode,target);
+                int nr=nas_vfs_readlink(&inode,resolved,target);
                 if(nr<0)return nr;
                 unsigned size=0;
                 if(target[0]!='/') {

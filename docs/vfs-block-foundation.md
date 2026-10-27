@@ -118,3 +118,16 @@ NaSeed kernel ELF for x86-64, RV64 or AArch64. The central build script is
 symbols/registries. Default CI remains unchanged until the actual guest
 VFS mount and syscall workflows are proven. A successful native kernel ELF
 link **does not** establish a successful booted ext4 mount.
+
+### Real ext4 VFS provider (same code on host and kernel)
+`ports/lwext4/guest_vfs.[ch]` now binds a real ext4 image to the registered
+VFS mount model, supplies inode-number-based positional reads and Linux inode
+mode/size, and supports readlink via the current dentry pathname. Mount
+operations get explicit instance state from `mount->private_data`, not a
+global singleton or an if/else filesystem type branch.
+The first registration is **intentionally read-only** until the generic VFS
+write/create/unlink File operations and lifetime are fully migrated.
+The host ext4 acceptance now exercises `nas_fs_lookup_node` and
+`nas_vfs_read_at` over real ext4 blocks and validates busy unmount. The
+optional kernel link includes this provider, but a booted guest ext4 mount
+and Linux syscall workload still require a separate exact-head run.

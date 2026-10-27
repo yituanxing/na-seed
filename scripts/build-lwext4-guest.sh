@@ -24,6 +24,9 @@ port=ports/lwext4/freestanding
 mkdir -p "$out"
 sources="$vendor"/src/*.c
 sources="$sources $port/compat.c kernel/mm/heap.c ports/lwext4/lwext4_block.c"
+if [ "$mode" = kernel ]; then
+    sources="$sources ports/lwext4/guest_vfs.c"
+fi
 if [ "$mode" = closed ]; then
     sources="$sources kernel/lib/string.c kernel/block/device.c"
 fi
@@ -49,7 +52,7 @@ else
     # Strong common symbols belong to the kernel, not a duplicate in lwext4.
     for symbol in $undefined; do
         case "$symbol" in
-            memcpy|memmove|memset|memcmp|strlen|strnlen|strcmp|strncmp|strchr|strrchr|nas_block_get|nas_block_put|nas_block_read|nas_block_write|nas_block_flush) ;;
+            memcpy|memmove|memset|memcmp|strlen|strnlen|strcmp|strncmp|strchr|strrchr|nas_block_get|nas_block_put|nas_block_read|nas_block_write|nas_block_flush|nas_ramdisk_attach|nas_ramdisk_detach|nas_vfs_register_mount|nas_vfs_unregister_mount) ;;
             *) echo "[LWEXT4 KERNEL LINK FAIL] undefined: $symbol" >&2; exit 1 ;;
         esac
     done

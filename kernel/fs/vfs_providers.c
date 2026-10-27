@@ -6,14 +6,18 @@
 #include "../errno.h"
 #include "../lib/string.h"
 #include <stddef.h>
-static int boot_lookup(const char *path,struct nas_fs_node *out) {
+static int boot_lookup(const struct nas_vfs_mount *mount,
+                       const char *path,struct nas_fs_node *out) {
+    (void)mount;
     const struct bootfs_entry *e=bootfs_find(path);
     if(!e)return -ENOENT;
     *out=(struct nas_fs_node){.inode=e,.data=e->data,.size=e->size,
       .mode=e->mode,.is_dir=bootfs_is_dir(e),.is_symlink=bootfs_is_link(e)};
     return 0;
 }
-static int boot_readlink(const struct nas_fs_node *node,char target[256]) {
+static int boot_readlink(const struct nas_fs_node *node,const char *path,
+                         char target[256]) {
+    (void)path;
     const struct bootfs_entry *e=node->inode;
     if(!e || !e->data || e->size>=256)return -ENAMETOOLONG;
     memcpy(target,e->data,(size_t)e->size);target[e->size]=0;
@@ -31,14 +35,18 @@ static const struct nas_vfs_type boot_type={
     .name="bootfs",.exec_source_label="CPIO",.lookup=boot_lookup,.readlink=boot_readlink,
     .read_at=boot_read,.read_only=true
 };
-static int tmp_lookup(const char *path,struct nas_fs_node *out) {
+static int tmp_lookup(const struct nas_vfs_mount *mount,
+                       const char *path,struct nas_fs_node *out) {
+    (void)mount;
     struct nas_tmp_file *f=tmp_find(path);
     if(!f)return -ENOENT;
     *out=(struct nas_fs_node){.inode=f,.size=f->size,
       .mode=f->mode,.is_dir=f->is_dir,.is_symlink=tmp_is_link(f)};
     return 0;
 }
-static int tmp_readlink(const struct nas_fs_node *node,char target[256]) {
+static int tmp_readlink(const struct nas_fs_node *node,const char *path,
+                         char target[256]) {
+    (void)path;
     const struct nas_tmp_file *f=node->inode;
     if(!f || f->size>=256)return -ENAMETOOLONG;
     int rc=tmp_link_target(f,target);
@@ -59,7 +67,9 @@ static const struct nas_vfs_type tmp_type={
     .name="tmpfs",.exec_source_label="tmpfs",.lookup=tmp_lookup,.readlink=tmp_readlink,
     .read_at=tmp_read,.chmod=tmp_chmod_node,.utimens=tmp_utimens_node
 };
-static int proc_lookup_node(const char *path,struct nas_fs_node *out) {
+static int proc_lookup_node(const struct nas_vfs_mount *mount,
+                       const char *path,struct nas_fs_node *out) {
+    (void)mount;
     struct nas_proc_node p;
     if(!nas_proc_lookup(path,&p))return -ENOENT;
     *out=(struct nas_fs_node){.mode=nas_proc_mode(p),.is_dir=nas_proc_is_dir(p)};

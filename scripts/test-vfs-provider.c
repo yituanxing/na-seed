@@ -74,7 +74,9 @@ bool nas_proc_lookup(const char *path,struct nas_proc_node *out){
 uint32_t nas_proc_mode(struct nas_proc_node node){(void)node;return 0040555U;}
 bool nas_proc_is_dir(struct nas_proc_node node){(void)node;return true;}
 static unsigned mounted_lookups;
-static int ext_mock_lookup(const char *path,struct nas_fs_node *node){
+static int ext_mock_lookup(const struct nas_vfs_mount *mount,
+                           const char *path,struct nas_fs_node *node){
+    (void)mount;
     mounted_lookups++;
     if(strcmp(path,"/mnt/hello") && strcmp(path,"/mnt"))return -ENOENT;
     *node=!strcmp(path,"/mnt")
