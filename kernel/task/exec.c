@@ -251,8 +251,8 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
                                &bin,resolved_interpreter);
         if(err)return (uint64_t)(int64_t)err;
         if(bin.is_dir || !(bin.mode&0111U))return (uint64_t)-EACCES;
-        main_img=elf_from_fs_node(&bin);
-        app=bin; /* report the backend of the actual ELF interpreter */
+        app=bin; /* stable inode view survives the shebang local scope */
+        main_img=elf_from_fs_node(&app);
         unsigned n=0;
         do { actual[n]=resolved_interpreter[n]; }
         while(resolved_interpreter[n++]);

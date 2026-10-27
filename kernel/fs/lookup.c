@@ -1,10 +1,9 @@
 #include "lookup.h"
-#include "../bootfs.h"
 #include "../errno.h"
 /* Generic namei over mounted filesystem callbacks. Retains existing bounded
  * path/symlink policy, but never calls any concrete filesystem directly. */
 int nas_fs_resolve_existing(const char *path,bool follow_final,char out[256]) {
-    if(!bootfs_mounted() || !path || path[0]!='/')return -ENOENT;
+    if(!path || path[0]!='/')return -ENOENT;
     char pending[256];unsigned length=0;
     while(path[length]) {
         if(length>=255)return -ENAMETOOLONG;
@@ -71,7 +70,7 @@ int nas_fs_resolve_existing(const char *path,bool follow_final,char out[256]) {
 }
 int nas_fs_lookup_node(const char *path,bool follow_final,
                        struct nas_fs_node *result,char resolved[256]) {
-    if(!path || !result || !resolved || !bootfs_mounted())return -ENOENT;
+    if(!path || !result || !resolved)return -ENOENT;
     if(path[0]!='/')return -EINVAL;
     int err=nas_fs_resolve_existing(path,follow_final,resolved);
     return err ? err : nas_vfs_lookup(resolved,result);
