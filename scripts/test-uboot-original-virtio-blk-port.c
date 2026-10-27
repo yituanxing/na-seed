@@ -166,7 +166,9 @@ int main(void) {
         assert(nas_uboot_block_attach(&port,&t,"timed-disk")==0);
         struct nas_block_device *blk=nas_block_get("timed-disk");
         uint8_t data[512];
-        assert(nas_block_read(blk,0,1,data)==-ETIMEDOUT);
+        /* U-Boot's original read API collapses transport timeout to -EIO; it
+         * must remain a negative failure and poison the backend. */
+        assert(nas_block_read(blk,0,1,data)==-EIO);
         assert(port.poisoned && stalled.resets>=2);
         assert(nas_block_read(blk,0,1,data)==-EIO);
         nas_block_put(blk);
