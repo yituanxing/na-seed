@@ -96,3 +96,22 @@ if command -v clang >/dev/null 2>&1; then
       -fsyntax-only ports/unikraft/split_queue.c
   done
 fi
+
+# NuttX (Apache-2.0) request-model port: actual block callbacks/registration,
+# transport+DMA+Unikraft wire format; simulated controller, NOT physical QEMU.
+cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
+  -I third_party/unikraft/include -I ports/unikraft/include \
+  scripts/test-nuttx-virtio-blk-port.c ports/nuttx/virtio_blk.c \
+  ports/unikraft/split_queue.c kernel/drivers/virtio/transport.c \
+  kernel/drivers/port/dma.c kernel/drivers/port/block.c \
+  kernel/block/device.c kernel/lib/string.c \
+  -o build/block-foundation/test-nuttx-virtio-blk-port
+build/block-foundation/test-nuttx-virtio-blk-port
+if command -v clang >/dev/null 2>&1; then
+  for target in x86_64-unknown-none-elf riscv64-unknown-elf aarch64-none-elf; do
+    clang --target="$target" -std=c11 -Wall -Wextra -Werror \
+      -ffreestanding -fno-builtin -I kernel \
+      -I third_party/unikraft/include -I ports/unikraft/include \
+      -fsyntax-only ports/nuttx/virtio_blk.c
+  done
+fi

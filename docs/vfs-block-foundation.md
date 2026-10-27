@@ -231,3 +231,25 @@ BlockDevice/transport, three-ISA RamDisk ext4, and userspace QEMU gates
 must continue to pass while the mature driver is properly integrated.
 A future driver must prove real request dispatch, flush/power-off image
 persistence, and exact-head native acceptance before merging the PR.
+
+## NuttX Apache-2.0 VirtIO-Blk C request-port (2026-10-27)
+
+Pinned reference: Apache NuttX `drivers/virtio/virtio-blk.c` at
+`0884a521e587198fa303611c5f13a154b6f6d196`.
+`ports/nuttx/virtio_blk.c` is explicitly a NaSeed **adaptation**, NOT the
+original unmodified NuttX driver. It carries Apache-2.0 attribution.
+The NuttX request flow (header/data/status, sectors, RO, flush) runs on
+NaSeed's one BlockDevice, shared VirtIO transport, upstream Unikraft wire
+headers/split ring and coherent QEMU DMA provider. No new VFS/ISA syscall,
+parallel device registry or bespoke MMIO request engine was added.
+The kernel buffer is bounced through one DMA page with an independent
+header/status page; 512/1024/4096 logical block sizes share the same code.
+
+The host mock dispatches and completes the **actual** port's descriptor
+requests against a byte array, verifying real BlockDevice read/write/flush,
+read-only refusal, I/O error propagation, attach/detach mount pins,
+unsupported writable flush rejection and bounded timeout/reset.
+All three ISA C targets share this port and compile it in syntax-only mode.
+**This does not establish a booted kernel, physical VirtIO-Blk or ext4 on a
+real QEMU drive.** Discovery/transport mapping, guest link, physical disk
+read/write persistence and e2fsck must still pass before enabling by default.
