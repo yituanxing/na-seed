@@ -14,17 +14,17 @@
 static const uint8_t elf_bytes[]={0x7f,'E','L','F','v','f','s'};
 static const uint8_t abs_link[]="/bin/demo";
 static struct bootfs_entry entries[]={
-    {.path="/",.mode=0040755},
-    {.path="/bin",.mode=0040755},
-    {.path="/bin/demo",.mode=0100755,.data=elf_bytes,.size=sizeof(elf_bytes)},
-    {.path="/tmp",.mode=0041777},
-    {.path="/proc",.mode=0040555},
-    {.path="/mnt",.mode=0040755},
-    {.path="/tmp/archive",.mode=0100444,.data=elf_bytes,.size=sizeof(elf_bytes)},
-    {.path="/shortcut",.mode=0120777,.data=abs_link,.size=sizeof(abs_link)-1}
+    {.path="/",.mode=0040755,.ino=1},
+    {.path="/bin",.mode=0040755,.ino=2},
+    {.path="/bin/demo",.mode=0100755,.ino=3,.data=elf_bytes,.size=sizeof(elf_bytes)},
+    {.path="/tmp",.mode=0041777,.ino=4},
+    {.path="/proc",.mode=0040555,.ino=5},
+    {.path="/mnt",.mode=0040755,.ino=6},
+    {.path="/tmp/archive",.mode=0100444,.ino=7,.data=elf_bytes,.size=sizeof(elf_bytes)},
+    {.path="/shortcut",.mode=0120777,.ino=8,.data=abs_link,.size=sizeof(abs_link)-1}
 };
-static struct nas_tmp_file tmp_demo={.used=true,.mode=0100644,.size=4};
-static struct nas_tmp_file fixture_symlink={.used=true,.mode=0120777,.size=9};
+static struct nas_tmp_file tmp_demo={.used=true,.mode=0100644,.size=4,.ino=101};
+static struct nas_tmp_file fixture_symlink={.used=true,.mode=0120777,.size=9,.ino=102};
 bool bootfs_mounted(void){return true;}
 const struct bootfs_entry *bootfs_find(const char *path){
     for(unsigned i=0;i<sizeof(entries)/sizeof(entries[0]);i++)
@@ -73,6 +73,39 @@ bool nas_proc_lookup(const char *path,struct nas_proc_node *out){
 }
 uint32_t nas_proc_mode(struct nas_proc_node node){(void)node;return 0040555U;}
 bool nas_proc_is_dir(struct nas_proc_node node){(void)node;return true;}
+
+const struct bootfs_entry *bootfs_child(const struct bootfs_entry *dir,
+                                        unsigned index) {
+    if(dir==&entries[0]) {
+        static const unsigned root_children[]={1,3,4,5,7};
+        return index<sizeof(root_children)/sizeof(root_children[0])
+            ? &entries[root_children[index]]:NULL;
+    }
+    if(dir==&entries[1])return index==0?&entries[2]:NULL;
+    if(dir==&entries[3])return index==0?&entries[6]:NULL;
+    return NULL;
+}
+uint64_t tmp_number(const struct nas_tmp_file *file) {return file->ino;}
+static const struct nas_tmp_dentry demo_dentry={
+    .used=true,.path="/tmp/demo",.inode=&tmp_demo
+};
+static const struct nas_tmp_dentry link_dentry={
+    .used=true,.path="/tmp/link",.inode=&fixture_symlink
+};
+const struct nas_tmp_dentry *tmp_child_entry(const char *path,unsigned index) {
+    if(strcmp(path,"/tmp"))return NULL;
+    return index==0?&demo_dentry:index==1?&link_dentry:NULL;
+}
+uint64_t nas_proc_ino(struct nas_proc_node p) {(void)p;return 7000;}
+bool nas_proc_child(struct nas_proc_node directory,unsigned index,
+                    char name[32],struct nas_proc_node *child) {
+    (void)directory;
+    if(index)return false;
+    memcpy(name,"self",5);
+    *child=(struct nas_proc_node){.kind=NAS_PROC_ROOT};
+    return true;
+}
+
 static unsigned mounted_lookups;
 static int ext_mock_lookup(const struct nas_vfs_mount *mount,
                            const char *path,struct nas_fs_node *node){
@@ -105,6 +138,28 @@ int main(void) {
     assert(nas_vfs_chmod(&n,0600)==0 && tmp_demo.mode==0100600U);
     assert(nas_vfs_utimens(&n,123,456,true,true)==0);
     assert(tmp_demo.atime_ns==123 && tmp_demo.mtime_ns==456);
+    struct nas_vfs_dirent records[8];
+    assert(nas_fs_lookup_node("/",true,&n,resolved)==0);
+    assert(nas_vfs_read_dir(&n,"/",0,records,8)==7);
+    assert(!strcmp(records[0].name,".") && records[0].ino==1);
+    assert(!strcmp(records[1].name,"..") && records[1].ino==1);
+    assert(!strcmp(records[2].name,"bin") && records[2].ino==2);
+    assert(records[2].dtype==4);
+    assert(nas_vfs_read_dir(&n,"/",7,records,8)==0);
+    assert(nas_fs_lookup_node("/bin",true,&n,resolved)==0);
+    assert(nas_vfs_read_dir(&n,"/bin",0,records,8)==3);
+    assert(records[2].ino==3 && !strcmp(records[2].name,"demo"));
+    assert(nas_fs_lookup_node("/tmp",true,&n,resolved)==0);
+    assert(!strcmp(n.filesystem->name,"tmpfs"));
+    assert(nas_vfs_read_dir(&n,"/tmp",0,records,8)==4);
+    assert(!strcmp(records[2].name,"demo") && records[2].ino==5101);
+    assert(!strcmp(records[3].name,"link") && records[3].dtype==10);
+    assert(nas_vfs_read_dir(&n,"/tmp",2,records,1)==1);
+    assert(!strcmp(records[0].name,"demo"));
+    assert(nas_fs_lookup_node("/proc",true,&n,resolved)==0);
+    assert(nas_vfs_read_dir(&n,"/proc",0,records,8)==3);
+    assert(!strcmp(records[2].name,"self") && records[2].dtype==4);
+    assert(nas_vfs_read_dir(&n,"/proc",3,records,8)==0);
     assert(nas_fs_lookup_node("/tmp/archive",true,&n,resolved)==0);
     assert(!strcmp(n.filesystem->name,"bootfs")); /* legacy mount fallthrough */
     assert(nas_fs_lookup_node("/proc/self",true,&n,resolved)==0);

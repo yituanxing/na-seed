@@ -195,3 +195,7 @@ SHA256-protected multi-architecture fixture, against the mounted ext4 image:
 This exercises actual library/system-call expectations and directory
 enumeration via Linux `getdents64` and file metadata; the image and BusyBox
 were not built inside NaSeed. Legacy 3-ISA tests remain unchanged.
+
+## One VFS directory data path for all four providers
+
+The read_dir operation is now supplied by bootfs, tmpfs (including the legacy /tmp overlay root), procfs and lwext4. The syscall module has exactly one Linux getdents64 translation; providers only produce bounded kernel-owned dirents and no longer write Linux user memory. Existing `/tmp` archive fallback is explicitly kept for namei, with tmpfs-only directory listing as before. Shared open-description cursors keep fork/dup offsets consistent. The host fixture exercises all providers, child types and pagination. This batch does not claim writable ext4 or a fully refcounted dentry tree.

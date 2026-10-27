@@ -422,53 +422,6 @@ static uint64_t sys_readlinkat_boot(uint64_t dirfd, uint64_t pathname,
         ? size:(uint64_t)-EFAULT;
 }
 
-static uint64_t proc_getdents64(uint64_t fd,uint64_t dst,uint64_t capacity) {
-    if(capacity<24)return (uint64_t)-EINVAL;
-    if(dst>=USER_LIMIT || capacity>USER_LIMIT-dst)return (uint64_t)-EFAULT;
-    unsigned slot=TASK.fds->entries[fd].slot;
-    if(nas_open_files[slot].status_flags&NAS_LINUX_O_PATH)
-        return (uint64_t)-EBADF;
-    struct nas_proc_node dir={nas_open_files[slot].proc_kind,
-                              nas_open_files[slot].proc_pid,
-                                   nas_open_files[slot].proc_tgid,
-                                   nas_open_files[slot].proc_fd};
-    uint64_t cursor=nas_open_files[slot].position,written=0;
-    while(written+24<=capacity) {
-        char name[32];
-        struct nas_proc_node child={0};
-        unsigned dtype=4;
-        uint64_t ino=nas_proc_ino(dir);
-        if(cursor==0){name[0]='.';name[1]=0;}
-        else if(cursor==1){name[0]='.';name[1]='.';name[2]=0;}
-        else {
-            if(cursor-2>UINT32_MAX ||
-               !nas_proc_child(dir,(unsigned)(cursor-2),name,&child))break;
-            dtype=nas_proc_is_dir(child)?4:
-                  child.kind==NAS_PROC_FD_LINK?10:8;
-            ino=nas_proc_ino(child);
-        }
-        unsigned len=0;while(name[len])len++;
-        unsigned reclen=(19+len+1+7)&~7U;
-        if(reclen>capacity-written) {
-            if(!written)return (uint64_t)-EINVAL;
-            break;
-        }
-        uint8_t record[64]={0};
-        for(unsigned i=0;i<8;i++) {
-            record[i]=(uint8_t)(ino>>(i*8));
-            record[8+i]=(uint8_t)((cursor+1)>>(i*8));
-        }
-        record[16]=(uint8_t)reclen;
-        record[17]=(uint8_t)(reclen>>8);
-        record[18]=(uint8_t)dtype;
-        for(unsigned i=0;i<len;i++)record[19+i]=(uint8_t)name[i];
-        if(!nas_user_write_bytes(dst+written,record,reclen))
-            return written?written:(uint64_t)-EFAULT;
-        written+=reclen;cursor++;
-        nas_open_files[slot].position=cursor;
-    }
-    return written;
-}
 /* Translate any mounted provider readdir callback to Linux dirent64,
  * without exposing host/ext4 structures or accessing user memory in drivers.
  * The logical cookie resides in the shared open File, not in a task FD. */
@@ -512,98 +465,15 @@ static uint64_t vfs_getdents64(uint64_t fd,uint64_t user,uint64_t capacity) {
     }
     return written;
 }
-static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
-    if (fd >= 64 || TASK.fds->entries[fd].kind == FD_CLOSED) return (uint64_t)-EBADF;
-    if(TASK.fds->entries[fd].kind==FD_PROC_DIR)
-        return proc_getdents64(fd,dst,capacity);
-    /* First-class mounted providers before the legacy CPIO/tmpfs adapter. */
-    const struct nas_open_file *open=&nas_open_files[TASK.fds->entries[fd].slot];
-    if(open->vnode_pinned && open->vnode.filesystem &&
-       open->vnode.filesystem->read_dir)
-        return vfs_getdents64(fd,dst,capacity);
-    if (TASK.fds->entries[fd].kind != FD_TMP_DIR &&
-        (TASK.fds->entries[fd].kind != FD_DIR || !nas_open_files[TASK.fds->entries[fd].slot].boot_entry))
+static uint64_t sys_getdents64(uint64_t fd,uint64_t dst,uint64_t capacity) {
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
+        return (uint64_t)-EBADF;
+    const struct nas_open_file *file=
+        &nas_open_files[TASK.fds->entries[fd].slot];
+    if(!file->vnode_pinned || !file->vnode.is_dir)
         return (uint64_t)-ENOTDIR;
-    if (capacity < 24) return (uint64_t)-EINVAL;
-    if (dst >= USER_LIMIT || capacity > USER_LIMIT - dst)
-        return (uint64_t)-EFAULT;
-    const struct bootfs_entry *dir = nas_open_files[TASK.fds->entries[fd].slot].boot_entry;
-    const struct nas_tmp_file *tmpdir =
-        TASK.fds->entries[fd].kind == FD_TMP_DIR ? tmp_by_slot(TASK.fds->entries[fd].slot) : 0;
-    const char *dirpath = tmpdir ? tmp_name(tmpdir) : dir->path;
-    if(!dirpath)return (uint64_t)-ENOENT;
-    uint64_t dirino = tmpdir ? 5000 + tmp_number(tmpdir) : dir->ino;
-    uint64_t cursor = nas_open_files[TASK.fds->entries[fd].slot].position;
-    uint64_t written = 0;
-    while (written + 24 <= capacity) {
-        const struct bootfs_entry *item;
-        const char *name;
-        uint64_t ino;
-        unsigned dtype;
-        if (cursor == 0) {
-            name = "."; ino = dirino; dtype = 4;
-        } else if (cursor == 1) {
-            name = ".."; dtype = 4;
-            char parent[256];
-            unsigned len = 0;
-            while (dirpath[len]) { parent[len] = dirpath[len]; len++; }
-            while (len > 1 && parent[len - 1] != '/') len--;
-            if (len > 1) len--;
-            parent[len] = 0;
-            item = bootfs_find(parent);
-            struct nas_tmp_file *tparent = tmp_find(parent);
-            ino = tparent ? 5000 + tmp_number(tparent) :
-                  item ? item->ino : dirino;
-        } else if ((strcmp(dirpath, "/tmp") == 0) || tmpdir) {
-            /* tmpfs uses lazy metadata slabs: end of directory is the
-             * first missing child, never a global eight-inode bound. */
-            if (cursor - 2 > UINT32_MAX) break;
-            const struct nas_tmp_dentry *d =
-                tmp_child_entry(dirpath, (unsigned)(cursor - 2));
-            if (!d) break;
-            const struct nas_tmp_file *file=d->inode;
-            name = d->path;
-            for (const char *p = d->path; *p; p++)
-                if (*p == '/') name = p + 1;
-            ino = 5000 + tmp_number(file);
-            dtype = file->is_dir ? 4 : tmp_is_link(file) ? 10 :
-                    (file->mode&0170000U)==0140000U ? 12 : 8;
-        } else {
-            if (cursor - 2 > UINT32_MAX) break;
-            item = bootfs_child(dir, (unsigned)(cursor - 2));
-            if (!item) break;
-            name = item->path;
-            for (const char *p = item->path; *p; p++)
-                if (*p == '/') name = p + 1;
-            ino = item->ino;
-            dtype = bootfs_is_dir(item) ? 4 : bootfs_is_link(item) ? 10 : 8;
-        }
-        unsigned len = 0;
-        while (name[len]) len++;
-        unsigned reclen = (19 + len + 1 + 7) & ~7U;
-        if (reclen > capacity - written) {
-            if (!written) return (uint64_t)-EINVAL;
-            break;
-        }
-        uint8_t record[280];
-        for (unsigned i = 0; i < reclen; i++) record[i] = 0;
-        for (unsigned i = 0; i < 8; i++) {
-            record[i] = (uint8_t)(ino >> (i * 8));
-            record[8 + i] = (uint8_t)((cursor + 1) >> (i * 8));
-        }
-        record[16] = (uint8_t)reclen;
-        record[17] = (uint8_t)(reclen >> 8);
-        record[18] = (uint8_t)dtype;
-        for (unsigned i = 0; i < len; i++) record[19 + i] = (uint8_t)name[i];
-        if (!nas_user_write_bytes(dst + written, record, reclen))
-            return written ? written : (uint64_t)-EFAULT;
-        written += reclen;
-        cursor++;
-        nas_open_files[TASK.fds->entries[fd].slot].position = cursor;
-    }
-    return written;
+    return vfs_getdents64(fd,dst,capacity);
 }
-
 
 #define METADATA_RESULT(expr) return (struct nas_fs_result){ .handled=true, .value=(expr) }
 struct nas_fs_result nas_fs_metadata_syscall(enum nas_syscall_op op,
