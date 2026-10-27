@@ -90,9 +90,12 @@ static void short_nap(void) {
     if(linux_call6(NR_clock_nanosleep,1,0,(long)&ts,0,0,0)!=0)
         done(98);
 }
+static long reap(long pid);
 static volatile int role;
 static volatile unsigned churn_exited;
 static volatile long worker_fork_pid;
+static volatile long sibling_wait_pid,sibling_wait_status;
+static volatile unsigned sibling_wait_done;
 static uint32_t ids[2];
 static __attribute__((aligned(16))) unsigned char stacks[2][65536];
 static __attribute__((used,noreturn)) void thread_entry(void) {
@@ -119,6 +122,11 @@ static __attribute__((used,noreturn)) void thread_entry(void) {
         if(child<0)finish_thread(94);
         if(child==0)done(0); /* new PROCESS, original process PPID */
         worker_fork_pid=child;
+        finish_thread(0);
+    }
+    if(what==7) {
+        sibling_wait_status=reap(sibling_wait_pid);
+        sibling_wait_done=1;
         finish_thread(0);
     }
     if(what==6) {
@@ -265,6 +273,17 @@ void _start(void) {
         short_nap();
     if(worker_fork_pid<=0 || reap(worker_fork_pid)!=0)done(85);
     MSG("M44_WORKER_FORK_PARENT_PASS\n");
+    /* Reverse ownership: group leader forks and a sibling TID blocks in
+     * wait4; it must observe, wake and reap that PROCESS child. */
+    sibling_wait_done=0;sibling_wait_status=-1;
+    long sibling_child=fork_child();
+    if(sibling_child<0)done(88);
+    if(sibling_child==0){short_nap();short_nap();done(0);}
+    sibling_wait_pid=sibling_child;
+    spawn(0,7);
+    for(unsigned tries=0;!sibling_wait_done && tries<200U;tries++)short_nap();
+    if(!sibling_wait_done || sibling_wait_status!=0)done(89);
+    MSG("M44_SIBLING_WAIT4_PASS\n");
     MSG("M44_THREAD_GROUP_PASS\n");
     done(0);
 }

@@ -199,6 +199,11 @@ struct nas_task {
     unsigned matched_chars;
 };
 
+/* Process-owned operations (wait4, fcntl, sessions) use TGID.
+ * ptrace and thread-directed operations continue to use the exact TID. */
+static inline uint64_t nas_task_process_pid(const struct nas_task *t) {
+    return t ? t->tgid : 0;
+}
 /* Called before paging_init. get_current is non-null afterwards.
  * Shared open-file-description state and hold-on-fork live in fd.h.
  */

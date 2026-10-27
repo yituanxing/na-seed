@@ -184,21 +184,31 @@ static uint64_t pipe_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
  * Release the pipe and RAM-inode backends only after the last reference
  * disappears. dup2 must close an existing destination through this hook.
  */
+/* Canonical backend finalization: process closes AND kernel-owned rights. */
+void nas_fs_description_final_close(unsigned slot) {
+    if(slot>=NAS_OPEN_FILE_LIMIT || nas_open_files[slot].refcount)
+        nas_fs_fail("closing nonfinal open description");
+    nas_epoll_target_final_close(slot);
+    const struct nas_file_ops *ops=nas_open_files[slot].ops;
+    if(ops && ops->release)ops->release(slot);
+    nas_open_files[slot]=(struct nas_open_file){0};
+}
+void nas_fs_drop_kernel_description(unsigned slot) {
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+        nas_fs_fail("kernel description refcount corrupted");
+    if(!--nas_open_files[slot].refcount)
+        nas_fs_description_final_close(slot);
+}
 void nas_fs_close_fd(uint64_t fd) {
     /* Linux POSIX locks are PROCESS-owned and closing even one descriptor
      * releases that process's locks for the whole inode (including dup). */
     if(fd<NAS_FD_LIMIT && TASK.fds->entries[fd].kind==FD_TMP) {
         struct nas_tmp_file *file=tmp_by_fd(fd);
-        if(file)nas_locks_release(&file->posix_locks,TASK.pid);
+        if(file)nas_locks_release(&file->posix_locks,nas_task_process_pid(nas_current_task));
     }
     unsigned final_slot=nas_fd_close(nas_current_task, (unsigned)fd);
     if (final_slot == NAS_OPEN_FILE_LIMIT) return;
-    /* Closing the LAST alias unregisters epoll interest in the released
-     * open description, preserving the open-file lifetime rule. */
-    nas_epoll_target_final_close(final_slot);
-    const struct nas_file_ops *ops=nas_open_files[final_slot].ops;
-    if(ops && ops->release)ops->release(final_slot);
-    nas_open_files[final_slot]=(struct nas_open_file){0};
+    nas_fs_description_final_close(final_slot);
 }
 static uint64_t fd_clone(uint64_t src, uint64_t dst, bool cloexec) {
     if (src >= NAS_FD_LIMIT || TASK.fds->entries[src].kind == FD_CLOSED ||
@@ -244,7 +254,7 @@ static uint64_t sys_fcntl_lock(uint64_t fd,uint64_t command,uint64_t user) {
     }
     if(command==5) {
         if(lk.type==NAS_LOCK_UNLOCK)return (uint64_t)-EINVAL;
-        int conflict=nas_locks_conflict(&inode->posix_locks,TASK.pid,
+        int conflict=nas_locks_conflict(&inode->posix_locks,nas_task_process_pid(nas_current_task),
                                      (uint16_t)lk.type,start,end);
         if(conflict<0)lk.type=NAS_LOCK_UNLOCK;
         else {
@@ -258,7 +268,7 @@ static uint64_t sys_fcntl_lock(uint64_t fd,uint64_t command,uint64_t user) {
         return nas_user_write_bytes(user,(uint8_t *)&lk,sizeof(lk)) ?
                0 : (uint64_t)-EFAULT;
     }
-    int rc=nas_locks_apply(&inode->posix_locks,TASK.pid,
+    int rc=nas_locks_apply(&inode->posix_locks,nas_task_process_pid(nas_current_task),
                            (uint16_t)lk.type,start,end);
     if(rc==1)return (uint64_t)-EAGAIN; /* non-blocking lock conflict */
     if(rc==2)return (uint64_t)-ENOLCK;

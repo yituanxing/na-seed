@@ -11,7 +11,9 @@ static int64_t pid32(uint64_t raw) {
 static struct nas_task *target(uint64_t raw) {
     int64_t pid=pid32(raw);
     if (pid<0) return 0;
-    return pid==0 ? nas_current_task : nas_task_by_pid((uint64_t)pid);
+    struct nas_task *t=pid==0 ? nas_current_task->group_leader :
+                                     nas_task_by_pid((uint64_t)pid);
+    return t && !t->is_thread ? t : 0;
 }
 uint64_t nas_session_getpgid(uint64_t raw_pid) {
     struct nas_task *task=target(raw_pid);
@@ -21,27 +23,36 @@ uint64_t nas_session_getsid(uint64_t raw_pid) {
     struct nas_task *task=target(raw_pid);
     return task ? task->sid : (uint64_t)-ESRCH;
 }
+/* PGID and SID describe a process; every live sibling sees one identity. */
+static void publish_groups(uint64_t tgid,uint64_t pgid,uint64_t sid) {
+    for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
+        struct nas_task *member=nas_task_at(i);
+        if(member && member->state!=NAS_TASK_FREE && member->tgid==tgid) {
+            member->pgid=pgid;
+            member->sid=sid;
+        }
+    }
+}
 uint64_t nas_session_setsid(void) {
     struct nas_task *self=nas_current_task;
-    if (self->pid==self->pgid) return (uint64_t)-EPERM;
-    /* No other live process group can have our PID as its group ID
-     * without us having become group leader first. */
-    self->pgid=self->pid;
-    self->sid=self->pid;
-    return self->sid;
+    uint64_t pid=nas_task_process_pid(self);
+    if(pid==self->pgid)return (uint64_t)-EPERM;
+    publish_groups(pid,pid,pid);
+    return pid;
 }
 uint64_t nas_session_setpgid(uint64_t raw_pid,uint64_t raw_pgid) {
     int64_t pid=pid32(raw_pid), group=pid32(raw_pgid);
     if (pid<0 || group<0) return (uint64_t)-EINVAL;
     struct nas_task *self=nas_current_task;
     struct nas_task *task=target(raw_pid);
-    if (!task || (task!=self && task->ppid!=self->pid))
+    if (!task || (task->tgid!=self->tgid &&
+                  task->ppid!=nas_task_process_pid(self)))
         return (uint64_t)-ESRCH;
     if (task->sid!=self->sid) return (uint64_t)-EPERM;
-    if (task!=self && task->execed) return (uint64_t)-EACCES;
-    if (task->sid==task->pid) return (uint64_t)-EPERM;
-    uint64_t new_group=group ? (uint64_t)group : task->pid;
-    if (new_group!=task->pid) {
+    if (task->tgid!=self->tgid && task->execed) return (uint64_t)-EACCES;
+    if (task->sid==nas_task_process_pid(task)) return (uint64_t)-EPERM;
+    uint64_t new_group=group ? (uint64_t)group : nas_task_process_pid(task);
+    if (new_group!=nas_task_process_pid(task)) {
         /* Existing group in the SAME session is mandatory. A group
          * can't be invented with the PID of a different process. */
         bool exists=false;
@@ -55,6 +66,6 @@ uint64_t nas_session_setpgid(uint64_t raw_pid,uint64_t raw_pgid) {
         }
         if (!exists) return (uint64_t)-EPERM;
     }
-    task->pgid=new_group;
+    publish_groups(task->tgid,new_group,task->sid);
     return 0;
 }

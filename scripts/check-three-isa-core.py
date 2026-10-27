@@ -218,6 +218,19 @@ dispatch=(root/"kernel/syscall/dispatch.c").read_text()
 if "const bool init_shutdown = TASK.tgid==1 &&" not in dispatch or \
    "TASK.pid==1 || nr==NAS_SC_exit_group" not in dispatch:
     raise SystemExit("PID 1 worker SYS_exit misclassified as system shutdown")
+process_src=(root/"kernel/task/process.c").read_text()
+wait_src=(root/"kernel/task/wait.c").read_text()
+fd_src=(root/"kernel/fs/syscall.c").read_text()
+socket_src=(root/"kernel/fs/unix_socket.c").read_text()
+if "nas_process_wait_owner(child,nas_current_task)" not in process_src or \
+   "nas_process_wait_owner(child,task)" not in wait_src or \
+   "nas_task_process_pid(waiter)" not in process_src:
+    raise SystemExit("parent TGID and ptrace TID wait owner drifted apart")
+if "nas_locks_apply(&inode->posix_locks,TASK.pid" in fd_src:
+    raise SystemExit("POSIX locks owned by worker TID rather than group")
+if "nas_fs_drop_kernel_description(pending);" not in socket_src or \
+   "nas_fs_drop_kernel_description(held.slots[i]);" not in socket_src:
+    raise SystemExit("AF_UNIX pending accept or SCM_RIGHTS bypasses finalizer")
 if "if(child->is_thread) {" not in (root/"kernel/task/process.c").read_text():
     raise SystemExit("ptrace wait4 cannot reap a consumed nonleader exit")
 x86_timer=(root/"kernel/arch/x86_64/timer.c").read_text()

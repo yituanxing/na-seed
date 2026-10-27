@@ -25,7 +25,8 @@ log="$logs/m44-group.clean.log"
 test -s "$log"
 for marker in M44_WORKER_EXIT_GROUP_PASS M44_WORKER_SURVIVED_LEADER \
               M44_LEADER_DEFER_PASS M44_THREAD_REAP_PASS \
-              M44_WORKER_FORK_PARENT_PASS M44_THREAD_GROUP_PASS \
+              M44_WORKER_FORK_PARENT_PASS M44_SIBLING_WAIT4_PASS \
+              M44_THREAD_GROUP_PASS \
               M43_THREADS_PASS M44_REAL_ZSTD_AND_GROUP_PASS; do
   if ! grep -Fxq "$marker" "$log"; then
     echo "[M44 FAIL] missing $marker ($port)" >&2
