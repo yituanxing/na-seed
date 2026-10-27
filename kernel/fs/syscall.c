@@ -426,7 +426,9 @@ uint64_t nas_fs_open_path(const char *path, uint64_t native_flags,
     else if ((strcmp(path, "/dev/null") == 0)) kind = FD_NULL;
     else if ((strcmp(path, "/dev/zero") == 0)) kind = FD_ZERO;
     else {
-        if (bootfs_mounted()) {
+        /* VFS mounts may exist with a direct-ELF Limine boot and no CPIO.
+         * Do not gate the generic mount namei on bootfs being present. */
+        {
             char actual[256];
             int err = nas_fs_resolve_existing(path, !(flags & 0x20000ULL), actual);
             if (!err) {
