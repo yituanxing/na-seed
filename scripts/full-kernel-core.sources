@@ -29,6 +29,8 @@ kernel/task/scheduler_service.c
 kernel/task/sched_core.c
 kernel/bootfs.c
 kernel/tmpfs.c
+kernel/block/device.c
+kernel/block/ramdisk.c
 kernel/fs/tmp_namespace.c
 kernel/fd.c
 kernel/path.c

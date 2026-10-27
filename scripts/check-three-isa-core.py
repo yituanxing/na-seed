@@ -9,7 +9,7 @@ import re
 root=Path(__file__).resolve().parent.parent
 srcs=[line.strip() for line in (root/"scripts/full-kernel-core.sources").read_text().splitlines()
       if line.strip() and not line.startswith("#")]
-assert len(srcs)==len(set(srcs))==59, "common kernel TU manifest drift"
+assert len(srcs)==len(set(srcs))==61, "common kernel TU manifest drift"
 make=(root/"Makefile").read_text()
 defs={}
 for line in make.splitlines():
@@ -40,6 +40,12 @@ for port in ("aarch64","riscv64"):
         raise SystemExit(f"native {port} bypassed shared kernel TU manifest")
     if "kernel/arch/" not in script:
         raise SystemExit(f"native {port} missing actual CPU/MMU providers")
+# Block layer/ramdisk must be linked on all ISAs and remain kernel only.
+for source in ("kernel/block/device.c", "kernel/block/ramdisk.c"):
+    data=(root/source).read_text()
+    for forbidden in ("user_byte(", "nas_user_write_bytes(", "__NR_", "nas_fs_syscall("):
+        if forbidden in data:
+            raise SystemExit(f"BlockDevice acquired syscall/user address policy: {source}")
 # Ensure syscall-ABI owners remain separate from the historical FS dispatcher.
 fs_dispatch = (root/"kernel/fs/syscall.c").read_text()
 for path, symbol in (("kernel/fs/namespace_syscall.c", "nas_fs_resolve_path"),
