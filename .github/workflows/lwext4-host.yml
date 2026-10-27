@@ -43,6 +43,6 @@ jobs:
         run: sh scripts/probe-lwext4-syscall-x86.sh
       - name: Boot the exact same real ext4 image through native RV64 and AArch64 QEMU
         run: |
-          sudo apt-get -y install --no-install-recommends qemu-system-misc qemu-efi-aarch64 qemu-efi-riscv64 gdisk mtools
+          sudo apt-get -y install --no-install-recommends qemu-system-misc qemu-system-arm qemu-efi-aarch64 qemu-efi-riscv64 gdisk mtools
           NAS_ENABLE_LWEXT4=1 NAS_LWEXT4_TEST_IMAGE=build/external/lwext4/ext4.img sh scripts/probe-riscv64-full.sh
           NAS_ENABLE_LWEXT4=1 NAS_LWEXT4_TEST_IMAGE=build/external/lwext4/ext4.img sh scripts/probe-aarch64-full.sh
