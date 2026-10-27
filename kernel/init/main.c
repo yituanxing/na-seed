@@ -39,16 +39,16 @@ void nas_init_process_terminated(uint32_t code,uint32_t signal) {
         nas_platform_debug_exit(0);
         nas_fail("QEMU debug exit returned unexpectedly");
     }
-    if(TASK.running_busybox) {
+    if(running_busybox) {
         if(code==0 && TASK.saw_bash_hello) {
-            if(TASK.running_alpine)
+            if(running_alpine)
                 nas_print("[PASS] M4 Alpine dynamic BusyBox echo hello\n");
             else nas_print("[PASS] M2 Debian BusyBox echo hello\n");
             nas_platform_debug_exit(0);
         }
         nas_fail("real BusyBox exited without stdout hello and status 0");
     }
-    if(TASK.running_bash) {
+    if(running_bash) {
         if(code==0 && TASK.saw_bash_hello) {
             nas_print("[PASS] M2 real GNU Bash -c echo hello\n");
             nas_platform_debug_exit(0);
