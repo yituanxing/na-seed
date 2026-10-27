@@ -35,14 +35,19 @@ struct nas_vfs_type {
                    uint64_t mtime, bool set_atime, bool set_mtime);
     /* Namespace mutations operate on kernel paths, never user pointers.
      * Only providers implement data operations; no backend-specific syscall. */
-    int (*create)(const char *absolute,uint64_t mode);
+    /* Namespace dispatch carries the selected mount/superblock explicitly.
+     * Never infer the current filesystem from global paths or ISA branches. */
+    int (*create)(const struct nas_vfs_mount *,const char *absolute,uint64_t mode);
     int64_t (*write_at)(const struct nas_fs_node *,uint64_t offset,
                         const uint8_t *kernel_source,uint64_t length);
-    int (*mkdir)(const char *absolute,uint64_t mode);
-    int (*unlink)(const char *absolute,uint64_t flags);
-    int (*rename)(const char *old_absolute,const char *new_absolute,uint64_t flags);
-    int (*link)(const char *old_absolute,const char *new_absolute);
-    int (*symlink)(const char *target,const char *link_absolute);
+    int (*mkdir)(const struct nas_vfs_mount *,const char *absolute,uint64_t mode);
+    int (*unlink)(const struct nas_vfs_mount *,const char *absolute,uint64_t flags);
+    int (*rename)(const struct nas_vfs_mount *,const char *old_absolute,
+                  const char *new_absolute,uint64_t flags);
+    int (*link)(const struct nas_vfs_mount *,const char *old_absolute,
+                const char *new_absolute);
+    int (*symlink)(const struct nas_vfs_mount *,const char *target,
+                   const char *link_absolute);
     bool read_only;
 };
 struct nas_vfs_mount {

@@ -140,7 +140,8 @@ static int64_t tmp_read(const struct nas_fs_node *node,uint64_t offset,
                         uint8_t *dst,uint64_t length) {
     return tmp_read_at(node->inode,offset,dst,length);
 }
-static int tmp_create_node(const char *path,uint64_t mode) {
+static int tmp_create_node(const struct nas_vfs_mount *mount,const char *path,uint64_t mode) {
+    (void)mount;
     return tmp_create(path,false,mode) ? 0 : -ENOSPC;
 }
 static int64_t tmp_write_node(const struct nas_fs_node *node,uint64_t off,
@@ -192,11 +193,30 @@ static int tmp_read_dir(const struct nas_fs_node *node,const char *path,
     return (int)count;
 }
 
+static int tmp_mkdir_node(const struct nas_vfs_mount *mount,const char *p,uint64_t m) {
+    (void)mount;return tmp_mkdir(p,m);
+}
+static int tmp_unlink_node(const struct nas_vfs_mount *mount,const char *p,uint64_t f) {
+    (void)mount;return tmp_unlink(p,f);
+}
+static int tmp_rename_node(const struct nas_vfs_mount *mount,
+                           const char *old,const char *new_path,uint64_t f) {
+    (void)mount;return tmp_rename(old,new_path,f);
+}
+static int tmp_link_node(const struct nas_vfs_mount *mount,
+                         const char *old,const char *new_path) {
+    (void)mount;return tmp_link(old,new_path);
+}
+static int tmp_symlink_node(const struct nas_vfs_mount *mount,
+                            const char *target,const char *path) {
+    (void)mount;return tmp_symlink(target,path);
+}
 static const struct nas_vfs_type tmp_type={
     .name="tmpfs",.exec_source_label="tmpfs",.lookup=tmp_lookup,.readlink=tmp_readlink,
     .read_at=tmp_read,.read_dir=tmp_read_dir,.chmod=tmp_chmod_node,.utimens=tmp_utimens_node,
     .create=tmp_create_node,.write_at=tmp_write_node,
-    .mkdir=tmp_mkdir,.unlink=tmp_unlink,.rename=tmp_rename,.link=tmp_link,.symlink=tmp_symlink
+    .mkdir=tmp_mkdir_node,.unlink=tmp_unlink_node,.rename=tmp_rename_node,
+    .link=tmp_link_node,.symlink=tmp_symlink_node
 };
 static int proc_lookup_node(const struct nas_vfs_mount *mount,
                        const char *path,struct nas_fs_node *out) {

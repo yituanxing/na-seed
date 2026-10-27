@@ -91,7 +91,8 @@ static int64_t ext_write_inode(const struct nas_fs_node *node,uint64_t offset,
     int rc=ext4_fwrite(&file,src,(size_t)length,&written);
     return rc ? -rc : (int64_t)written;
 }
-static int ext_create_path(const char *path,uint64_t mode) {
+static int ext_create_path(const struct nas_vfs_mount *mount,const char *path,uint64_t mode) {
+    (void)mount;
     ext4_file f={0};
     int rc=ext4_fopen(&f,path,"w");
     if(rc)return -rc;
@@ -100,13 +101,15 @@ static int ext_create_path(const char *path,uint64_t mode) {
     rc=ext4_mode_set(path,(uint32_t)mode&07777U);
     return rc ? -rc : 0;
 }
-static int ext_mkdir_path(const char *path,uint64_t mode) {
+static int ext_mkdir_path(const struct nas_vfs_mount *mount,const char *path,uint64_t mode) {
+    (void)mount;
     int rc=ext4_dir_mk(path);
     if(rc)return -rc;
     rc=ext4_mode_set(path,(uint32_t)mode&07777U);
     return rc ? -rc : 0;
 }
-static int ext_unlink_path(const char *path,uint64_t flags) {
+static int ext_unlink_path(const struct nas_vfs_mount *mount,const char *path,uint64_t flags) {
+    (void)mount;
     if(flags&~0x200ULL)return -EINVAL; /* AT_REMOVEDIR */
     if(!(flags&0x200ULL))return -ext4_fremove(path);
     /* Upstream ext4_dir_rm is recursive; never expose that to rmdir.
@@ -126,25 +129,27 @@ static int ext_unlink_path(const char *path,uint64_t flags) {
     if(rc)return -rc;
     return nonempty ? -ENOTEMPTY : -ext4_dir_rm(path);
 }
-static int ext_rename_path(const char *from,const char *to,uint64_t flags) {
+static int ext_rename_path(const struct nas_vfs_mount *mount,
+                            const char *from,const char *to,uint64_t flags) {
     if(flags)return -EINVAL; /* no unimplemented atomic rename flags */
-    /* Classify through the upstream directory API itself. Keep the ext4
-     * guest adapter linkable alone without depending on VFS dispatcher
-     * symbols (the kernel owns registration and mount selection). */
-    ext4_dir dir={0};
-    int rc=ext4_dir_open(&dir,from);
-    if(!rc) {
-        int close=ext4_dir_close(&dir);
-        if(close)return -close;
-        return -ext4_dir_mv(from,to);
-    }
-    if(rc!=ENOTDIR)return -rc;
-    return -ext4_frename(from,to);
+    if(!mount || !mount->private_data)return -ENODEV;
+    struct nas_lwext4_mount *ctx=mount->private_data;
+    if(!ctx->mounted || !ctx->upstream_super)return -ENODEV;
+    struct ext4_inode inode;
+    uint32_t number=0;
+    int rc=ext4_raw_inode_fill(from,&number,&inode);
+    if(rc)return -rc;
+    if(!number)return -EIO;
+    uint32_t mode=ext4_inode_get_mode(ctx->upstream_super,&inode);
+    return (mode&0170000U)==0040000U ?
+           -ext4_dir_mv(from,to) : -ext4_frename(from,to);
 }
-static int ext_link_path(const char *from,const char *to) {
+static int ext_link_path(const struct nas_vfs_mount *mount,const char *from,const char *to) {
+    (void)mount;
     return -ext4_flink(from,to);
 }
-static int ext_symlink_path(const char *target,const char *path) {
+static int ext_symlink_path(const struct nas_vfs_mount *mount,const char *target,const char *path) {
+    (void)mount;
     return -ext4_fsymlink(target,path);
 }
 /* A bounded directory view through upstream lwext4. Each call
