@@ -45,7 +45,7 @@ struct nas_tmp_file *tmp_find(const char *path){
 bool tmp_is_link(const struct nas_tmp_file *f){
     return f && (f->mode&0170000U)==0120000U;
 }
-int fixture_symlink_target(const struct nas_tmp_file *f,char target[256]){
+int tmp_link_target(const struct nas_tmp_file *f,char target[256]){
     if(f!=&fixture_symlink)return -EINVAL;
     memcpy(target,abs_link,sizeof(abs_link));return 0;
 }
