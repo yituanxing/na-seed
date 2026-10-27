@@ -37,5 +37,7 @@ jobs:
           echo '[LWEXT4 OPT-IN KERNEL LINK PASS] x86-64 / RV64 / AArch64'
       - name: Boot the real x86 kernel with the ext4 image as a Limine module
         run: |
-          sudo apt-get -y install --no-install-recommends ovmf qemu-system-x86 xorriso
+          sudo apt-get -y install --no-install-recommends ovmf qemu-system-x86 xorriso cpio
           sh scripts/probe-lwext4-guest-x86.sh
+      - name: Actual Linux openat and read on ext4 from x86 ring3 ELF
+        run: sh scripts/probe-lwext4-syscall-x86.sh
