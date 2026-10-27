@@ -49,7 +49,7 @@ LWEXT4_EXTRA :=
 ifeq ($(NAS_ENABLE_LWEXT4),1)
 LWEXT4_EXTRA := $(OUT)/lwext4_guest.o
 endif
-$(OUT)/lwext4_guest.o: scripts/build-lwext4-guest.sh ports/lwext4/freestanding/platform.h kernel/mm/heap.c
+$(OUT)/lwext4_guest.o: scripts/build-lwext4-guest.sh ports/lwext4/freestanding/platform.h kernel/mm/heap.c $(HDR)
 	sh scripts/build-lwext4-guest.sh x86_64 $(OUT) kernel
 
 

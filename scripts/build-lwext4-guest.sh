@@ -36,7 +36,7 @@ for source in $sources; do
     clang --target="$triple" $archflags -std=c11 -O2 -ffreestanding \
         -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
         -Werror=implicit-function-declaration -Werror=incompatible-pointer-types \
-        -I "$port/include" -I "$vendor/include" -I kernel \
+        -I "$port/include" -I "$vendor/include" -I kernel -I build/deps \
         -include "$port/platform.h" -c "$source" -o "$obj"
     objects="$objects $obj"
 done
