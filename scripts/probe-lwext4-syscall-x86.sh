@@ -13,7 +13,7 @@ clang --target=x86_64-unknown-none-elf -c user/ext4-guest-read.S \
     -o "$root/probe.o"
 ld.lld -m elf_x86_64 -nostdlib -static -T user/linker.ld \
     "$root/probe.o" -o "$root/rootfs/bin/ext4-probe"
-(cd "$root/rootfs" && find . -print | cpio -q -o -H newc) \
+(cd "$root/rootfs" && find . -print | cpio -o -H newc) \
     > "$root/rootfs.cpio"
 cp build/kernel.elf "$root/stage/boot/kernel"
 cp build/deps/limine-binary/BOOTX64.EFI \
