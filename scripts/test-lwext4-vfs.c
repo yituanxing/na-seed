@@ -103,8 +103,19 @@ int main(int argc,char **argv) {
         assert(nas_vfs_resize(&created,10)==0);
         assert(nas_fs_lookup_node("/mnt/sandbox/vfs-created",true,&created,actual)==0 && created.size==10);
         assert(nas_vfs_resize(&created,sizeof(persisted)-1)==0);
+        /* Upstream shrink-only truncate must NOT be misreported as growth.
+         * Verify the real inode has already expanded with zero bytes
+         * BEFORE restoring the known content through VFS write_at. */
+        struct nas_fs_node grown;
+        assert(nas_fs_lookup_node("/mnt/sandbox/vfs-created",true,&grown,actual)==0);
+        assert(grown.size==sizeof(persisted)-1);
+        uint8_t zero_tail[sizeof(persisted)]={0};
+        assert(nas_vfs_read_at(&grown,10,zero_tail,sizeof(persisted)-11)==(int64_t)sizeof(persisted)-11);
+        for(unsigned i=0;i<sizeof(persisted)-11;i++)assert(zero_tail[i]==0);
         assert(nas_vfs_write_at(&created,10,persisted+10,sizeof(persisted)-11)==(int64_t)sizeof(persisted)-11);
         assert(nas_vfs_sync(&created)==0);
+        assert(nas_fs_lookup_node("/mnt/sandbox/vfs-created",true,&created,actual)==0);
+        assert(created.size==sizeof(persisted)-1);
         /* Two independent pinned Files: the reader carries an OLD inode
          * snapshot but must observe writer growth, truncate and regrowth. */
         struct nas_fs_node stale_reader=created;

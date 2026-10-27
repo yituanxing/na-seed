@@ -102,8 +102,31 @@ static int ext_resize_inode(const struct nas_fs_node *node,uint64_t length) {
     ext4_file f={.mp=ctx->upstream_mount,
                  .inode=(uint32_t)(uintptr_t)node->inode,
                  .fsize=node->size,.flags=O_RDWR};
-    int rc=ext4_ftruncate(&f,length);
-    return rc ? -rc : 0;
+    /* Upstream ext4_ftruncate is shrink-only: it returns EOK without
+     * extending i_size. Linux ftruncate(grow) MUST expose zero-filled
+     * bytes and the requested new length. Materialize zeros through the
+     * same inode-relative upstream write API until sparse allocation is
+     * provided by the filesystem; never lie to VFS about persisted size. */
+    uint64_t old_size=nas_vfs_node_size(node);
+    if(length<=old_size) {
+        int rc=ext4_ftruncate(&f,length);
+        return rc ? -rc : 0;
+    }
+    static const uint8_t zeros[1024]={0};
+    uint64_t offset=old_size;
+    while(offset<length) {
+        uint64_t take=length-offset;
+        if(take>sizeof(zeros))take=sizeof(zeros);
+        ext4_file writer={.mp=ctx->upstream_mount,
+            .inode=(uint32_t)(uintptr_t)node->inode,
+            .fsize=old_size,.fpos=offset,.flags=O_WRONLY};
+        size_t written=0;
+        int rc=ext4_fwrite(&writer,zeros,(size_t)take,&written);
+        if(rc)return -rc;
+        if(!written)return -EIO;
+        offset+=(uint64_t)written;
+    }
+    return 0;
 }
 static int ext_sync_inode(const struct nas_fs_node *node) {
     if(!node || !node->mount || !node->mount->private_data)return -EINVAL;
