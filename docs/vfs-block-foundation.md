@@ -176,3 +176,13 @@ kernel-owned bounded batches with shared File cursor ownership and Linux ABI
 validation at the syscall boundary. x86 ring3 acceptance verifies the real
 hardlink name returned through the ext4 mount. The existing bootfs/tmpfs and
 procfs listing adapters remain pending migration to the same read_dir callback.
+
+### Mounted directory navigation and link resolution
+The common path namespace resolves `chdir` via VFS namei, and supports
+dirfd-relative `openat` and `fchdir` on an opened mount-backed directory
+whose open description retains its VFS inode and canonical path. Linux
+`readlinkat` likewise asks the inode's VFS readlink operation, preserving
+procfs /proc/self/fd dynamic link handling. `lseek` accepts VFS directory
+descriptions (SEEK_SET/SEEK_CUR) rather than assuming CPIO ownership.
+The real ring3 ext4 reader exercises both dirfd-relative and fchdir-relative
+openat, alongside getdents64.

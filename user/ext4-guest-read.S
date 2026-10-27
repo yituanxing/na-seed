@@ -58,6 +58,41 @@ _start:
     test %rax, %rax
     js fail
     mov %rax, %r12
+    /* dirfd-relative openat and fchdir use a generic mounted File, not
+     * a CPIO directory. Both were previously unavailable on ext4. */
+    mov $__NR_openat, %rax
+    mov %r12, %rdi
+    lea guest_relative(%rip), %rsi
+    xor %rdx, %rdx
+    xor %r10, %r10
+    syscall
+    test %rax, %rax
+    js fail
+    mov %rax, %r13
+    mov $__NR_close, %rax
+    mov %r13, %rdi
+    syscall
+    test %rax, %rax
+    jne fail
+    mov $__NR_fchdir, %rax
+    mov %r12, %rdi
+    syscall
+    test %rax, %rax
+    jne fail
+    mov $__NR_openat, %rax
+    mov $-100, %rdi
+    lea guest_relative(%rip), %rsi
+    xor %rdx, %rdx
+    xor %r10, %r10
+    syscall
+    test %rax, %rax
+    js fail
+    mov %rax, %r13
+    mov $__NR_close, %rax
+    mov %r13, %rdi
+    syscall
+    test %rax, %rax
+    jne fail
     sub $512, %rsp
 dir_next:
     mov $__NR_getdents64, %rax
@@ -111,6 +146,8 @@ fail:
     syscall
 guest_directory:
     .asciz "/mnt/sandbox"
+guest_relative:
+    .asciz "hardlink"
 dir_ok:
     .ascii "[PASS] real ext4 getdents64 via VFS\n"
 dir_ok_end:

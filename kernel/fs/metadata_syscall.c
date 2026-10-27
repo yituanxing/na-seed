@@ -160,7 +160,8 @@ static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
     uint64_t size = 0;
     if (TASK.fds->entries[fd].kind == FD_BOOTFS && nas_open_files[TASK.fds->entries[fd].slot].boot_file)
         size = nas_open_files[TASK.fds->entries[fd].slot].boot_file->size;
-    else if (TASK.fds->entries[fd].kind == FD_ARCHIVE &&
+    else if ((TASK.fds->entries[fd].kind == FD_ARCHIVE ||
+              TASK.fds->entries[fd].kind == FD_DIR) &&
              nas_open_files[TASK.fds->entries[fd].slot].vnode_pinned)
         size = nas_open_files[TASK.fds->entries[fd].slot].vnode.size;
     else if (TASK.fds->entries[fd].kind == FD_TMP || TASK.fds->entries[fd].kind == FD_TMP_DIR) {
@@ -409,22 +410,16 @@ static uint64_t sys_readlinkat_boot(uint64_t dirfd, uint64_t pathname,
         return nas_user_write_bytes(dst,(const uint8_t *)target,n) ?
                n:(uint64_t)-EFAULT;
     }
-    int err = nas_fs_resolve_existing(path, false, actual);
-    if (err) return (uint64_t)(int64_t)err;
-    const struct nas_tmp_file *tmp=tmp_find(actual);
-    if (tmp) {
-        if (!tmp_is_link(tmp)) return (uint64_t)-EINVAL;
-        uint8_t content[256];
-        int64_t got=tmp_read_at(tmp,0,content,
-                     tmp->size<capacity?tmp->size:capacity);
-        if (got<0) return (uint64_t)got;
-        return nas_user_write_bytes(dst,content,(uint64_t)got) ?
-               (uint64_t)got : (uint64_t)-EFAULT;
-    }
-    const struct bootfs_entry *entry = bootfs_find(actual);
-    if (!bootfs_is_link(entry)) return (uint64_t)-EINVAL;
-    uint64_t len = entry->size < capacity ? entry->size : capacity;
-    return nas_user_write_bytes(dst, entry->data, len) ? len : (uint64_t)-EFAULT;
+    struct nas_fs_node node={0};
+    int error=nas_fs_lookup_node(path,false,&node,actual);
+    if(error)return (uint64_t)(int64_t)error;
+    if(!node.is_symlink)return (uint64_t)-EINVAL;
+    char target[256];
+    int got=nas_vfs_readlink(&node,actual,target);
+    if(got<0)return (uint64_t)(int64_t)got;
+    uint64_t size=(uint64_t)got<capacity?(uint64_t)got:capacity;
+    return nas_user_write_bytes(dst,(const uint8_t *)target,size)
+        ? size:(uint64_t)-EFAULT;
 }
 
 static uint64_t proc_getdents64(uint64_t fd,uint64_t dst,uint64_t capacity) {

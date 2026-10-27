@@ -59,9 +59,17 @@ uint64_t nas_fs_resolve_path(uint64_t dirfd, uint64_t pathname,
                 base=tmp_name(dir);
                 if(!base)return (uint64_t)-ENOENT;
             } else {
-                if (TASK.fds->entries[dirfd].kind!=FD_DIR || !nas_open_files[TASK.fds->entries[dirfd].slot].boot_entry)
+                const struct nas_open_file *opened=
+                    &nas_open_files[TASK.fds->entries[dirfd].slot];
+                if(TASK.fds->entries[dirfd].kind==FD_DIR &&
+                   !opened->boot_entry && opened->vnode_pinned &&
+                   opened->vnode.is_dir && opened->origin_path[0]) {
+                    base=opened->origin_path;
+                } else {
+                if (TASK.fds->entries[dirfd].kind!=FD_DIR || !opened->boot_entry)
                     return (uint64_t)-ENOTDIR;
-                base=nas_open_files[TASK.fds->entries[dirfd].slot].boot_entry->path;
+                base=opened->boot_entry->path;
+                }
             }
         }
     }
@@ -144,38 +152,18 @@ static uint64_t sys_getcwd_root(uint64_t buffer, uint64_t size) {
     return nas_user_write_bytes(buffer, (const uint8_t *)current_workdir, length)
         ? length : (uint64_t)-EFAULT;
 }
+/* cwd stores a lexical path until mount+dentry refs are introduced.
+ * Resolve through the one VFS namei implementation, never a filesystem
+ * provider enumeration. This handles arbitrary mounted filesystems. */
 static uint64_t sys_chdir(uint64_t pathname) {
-    char path[256];
-    uint64_t ret = nas_fs_resolve_path((uint64_t)-100, pathname, path);
-    if ((int64_t)ret < 0) return ret;
-    char actual[256];
-    int err = nas_fs_resolve_existing(path, true, actual);
-    if (err) {
-        struct nas_tmp_file *t = tmp_find(path);
-        if (!t) return (uint64_t)(int64_t)err;
-        if (!t->is_dir) return (uint64_t)-ENOTDIR;
-        unsigned n = 0;
-        do { current_workdir[n] = path[n]; } while (path[n++]);
-        return 0;
-    }
-    struct nas_proc_node proc;
-    if(nas_proc_lookup(actual,&proc)) {
-        if(!nas_proc_is_dir(proc))return (uint64_t)-ENOTDIR;
-        unsigned j=0;
-        do {current_workdir[j]=actual[j];}while(actual[j++]);
-        return 0;
-    }
-    const struct nas_tmp_file *tmp=tmp_find(actual);
-    if (tmp) {
-        if (!tmp->is_dir) return (uint64_t)-ENOTDIR;
-        unsigned j=0;
-        do { current_workdir[j]=actual[j]; } while (actual[j++]);
-        return 0;
-    }
-    const struct bootfs_entry *entry = bootfs_find(actual);
-    if (!bootfs_is_dir(entry)) return (uint64_t)-ENOTDIR;
-    unsigned i = 0;
-    do { current_workdir[i] = actual[i]; } while (actual[i++]);
+    char path[256],resolved[256];
+    uint64_t rc=nas_fs_resolve_path((uint64_t)-100,pathname,path);
+    if((int64_t)rc<0)return rc;
+    struct nas_fs_node node;
+    int error=nas_fs_lookup_node(path,true,&node,resolved);
+    if(error)return (uint64_t)(int64_t)error;
+    if(!node.is_dir)return (uint64_t)-ENOTDIR;
+    memcpy(current_workdir,resolved,strlen(resolved)+1);
     return 0;
 }
 static uint64_t sys_fchdir(uint64_t fd) {
@@ -197,9 +185,13 @@ static uint64_t sys_fchdir(uint64_t fd) {
         path=tmp_name(dir);
         if(!path)return (uint64_t)-ENOENT;
     } else {
-        if (TASK.fds->entries[fd].kind != FD_DIR || !nas_open_files[TASK.fds->entries[fd].slot].boot_entry)
-            return (uint64_t)-ENOTDIR;
-        path = nas_open_files[TASK.fds->entries[fd].slot].boot_entry->path;
+        const struct nas_open_file *opened=
+            &nas_open_files[TASK.fds->entries[fd].slot];
+        if(TASK.fds->entries[fd].kind!=FD_DIR)return (uint64_t)-ENOTDIR;
+        if(opened->boot_entry)path=opened->boot_entry->path;
+        else if(opened->vnode_pinned && opened->vnode.is_dir &&
+                opened->origin_path[0])path=opened->origin_path;
+        else return (uint64_t)-ENOTDIR;
     }
     unsigned i = 0;
     do { current_workdir[i] = path[i]; } while (path[i++]);
