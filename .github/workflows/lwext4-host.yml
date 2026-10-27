@@ -23,4 +23,6 @@ jobs:
           command -v e2fsck
           sh scripts/check-lwext4-ramdisk.sh
           sh scripts/check-lwext4-freestanding.sh
+          sudo apt-get -o Acquire::Retries=1 update -qq
+          sudo apt-get -y install --no-install-recommends lld
           sh scripts/check-lwext4-guest-link.sh
