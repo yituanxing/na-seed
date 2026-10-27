@@ -15,14 +15,12 @@ int main(void) {
     running->state=NAS_TASK_RUNNING;running->resume_valid=true;
     ready->state=NAS_TASK_READY;ready->resume_valid=true;
     blocked->state=NAS_TASK_BLOCKED;blocked->resume_valid=true;
-    assert(!nas_sched_user_eligible(running,running,0));
-    assert(nas_sched_user_eligible(ready,running,0));
-    assert(!nas_sched_user_eligible(blocked,running,0));
-    assert(!nas_sched_user_eligible(blocked,running,1));
+    assert(!nas_sched_user_eligible(running,running));
+    assert(nas_sched_user_eligible(ready,running));
+    assert(!nas_sched_user_eligible(blocked,running));
     blocked->wait.futex_woken=true;
-    assert(nas_sched_user_eligible(blocked,running,1));
-    assert(!nas_sched_user_eligible(ready,running,1));
-    assert(!nas_sched_user_eligible(ready,running,2));
+    assert(nas_sched_user_eligible(blocked,running));
+    assert(nas_sched_user_eligible(ready,running));
     assert(nas_sched_has_ready_users());
     assert(nas_sched_allow_kernel_slice(true,true));
     assert(!nas_sched_allow_kernel_slice(true,true));
@@ -34,14 +32,17 @@ int main(void) {
     assert(!nas_sched_allow_kernel_slice(false,false));
     assert(nas_sched_allow_kernel_slice(true,true));
     ready->state=NAS_TASK_STOPPED;
+    /* A woken I/O waiter counts as runnable user work, even without a
+     * task already marked READY. Kernel workers must not steal its slice. */
+    assert(nas_sched_has_ready_users());
+    blocked->wait.futex_woken=false;
     assert(!nas_sched_has_ready_users());
     ready->state=NAS_TASK_ZOMBIE;
     assert(!nas_sched_has_ready_users());
     running->state=NAS_TASK_READY; /* can be re-enqueued after preemption */
     assert(nas_sched_has_ready_users());
-    /* M99: Both IRQ and syscall selection share exactly this iterator,
-     * including wraparound, READY preference, deadline wake, and a
-     * non-preemptible RUNNING current frame. */
+    /* M99: IRQ and syscall use the same rotating eligibility iterator;
+     * a woken BLOCKED Task must not starve behind a READY worker. */
     struct nas_sched_scan scan;
     unsigned slot=NAS_TASK_LIMIT;
     running->state=NAS_TASK_RUNNING;running->resume_valid=true;
@@ -51,6 +52,12 @@ int main(void) {
     nas_sched_scan_init(&scan,running,1,NAS_TASK_LIMIT-1);
     assert(nas_sched_scan_next(&scan,&slot)==ready && slot==1);
     assert(nas_sched_scan_next(&scan,&slot)==blocked && slot==2);
+    assert(!nas_sched_scan_next(&scan,&slot));
+    /* Previously READY-first pass returned slot1 ahead of slot2
+     * even though the cursor stood exactly at awakened slot2. */
+    nas_sched_scan_init(&scan,running,2,NAS_TASK_LIMIT);
+    assert(nas_sched_scan_next(&scan,&slot)==blocked && slot==2);
+    assert(nas_sched_scan_next(&scan,&slot)==ready && slot==1);
     assert(!nas_sched_scan_next(&scan,&slot));
     assert(nas_sched_user_commit(running,ready,true));
     assert(running->state==NAS_TASK_READY && running->resume_valid);
@@ -73,6 +80,6 @@ int main(void) {
     ready->state=NAS_TASK_STOPPED;
     nas_sched_scan_init(&scan,0,0,NAS_TASK_LIMIT);
     assert(!nas_sched_scan_next(&scan,&slot));
-    puts("[M99 SCHED PASS] common IRQ/syscall two-pass walk, wrap, commit and exclusion");
+    puts("[M99 SCHED PASS] common IRQ/syscall circular fairness, I/O wake no-starvation, commit and exclusion");
     puts("[M98 SCHED PASS] shared IRQ/syscall candidate rules, kernel/user RR fairness, stopped exclusion");
 }

@@ -11,10 +11,7 @@
 #include "tty.h"
 #include "tty_ldisc.h"
 #include "../time/clock.h"
-extern void nas_print(const char *);
-extern void nas_hex(uint64_t);
-extern void nas_dec(uint64_t);
-#include "../arch/arch.h"
+ #include "../arch/arch.h"
 /* One console TTY: POSIX session/foreground ownership and native Linux
  * TCGETS wire ABI are common. x86 COM1, RV SBI firmware console_getchar
  * and ARM PL011 provide actual RX bytes via the same nonblocking interface.
@@ -181,16 +178,7 @@ void nas_tty_pump(void) {
     for(unsigned i=0;i<32 && tty.rx_count<NAS_TTY_RX_QUEUE_CAP;i++) {
         uint8_t byte;
         if(!nas_arch_console_getc(&byte))break;
-        /* Bounded actual UART RX provenance: diagnose original Vim's
-         * physical stdin loss without synthesizing events or weakening
-         * the genuine QEMU interactive assertion. */
-        static unsigned rx_reports;
-        if(rx_reports++<28U) {
-            nas_print("[TTY RX] byte=");nas_hex(byte);
-            nas_print(" mode=");nas_dec(!!(tty.t.lflag&0000002U));
-            nas_print("\n");
-        }
-        tty.rx_queue[(tty.rx_head+tty.rx_count)%NAS_TTY_RX_QUEUE_CAP]=byte;
+         tty.rx_queue[(tty.rx_head+tty.rx_count)%NAS_TTY_RX_QUEUE_CAP]=byte;
         tty.rx_count++;
     }
     for(unsigned i=0;i<32 && tty.rx_count &&
@@ -303,11 +291,5 @@ uint64_t nas_tty_read(uint64_t dst,uint64_t len,bool nonblock) {
     unsigned n=nas_ldisc_peek(&tty.ldisc,&copy,bytes,wanted);
     if(!nas_user_write_bytes(dst,bytes,n))return (uint64_t)-EFAULT;
     nas_ldisc_commit(&tty.ldisc,n);
-    static unsigned read_reports;
-    if(read_reports++<28U) {
-        nas_print("[TTY READ] bytes=");nas_dec(n);
-        nas_print(" remain=");nas_dec(tty.ldisc.used-tty.ldisc.pos);
-        nas_print("\n");
-    }
-    return n;
+     return n;
 }

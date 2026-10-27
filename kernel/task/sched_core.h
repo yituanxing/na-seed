@@ -3,15 +3,15 @@
 #include <stdbool.h>
 #include <stdint.h>
 struct nas_task;
-/* One scan for both timer-preemption and syscall-boundary selection:
- * first READY tasks, then eligible blocked waiters. Scan starts at a
- * validated Task slot and wraps, never holds an MM or borrowed stack. */
+/* One fairness-preserving ring scan for timer IRQ and syscall dispatch:
+ * READY users and awakened BLOCKED syscall continuations are peers.
+ * Scan starts at the native_cursor and visits each slot once; a permanently
+ * READY worker must never starve an awakened I/O waiter. */
 struct nas_sched_scan {
     const struct nas_task *exclude;
     unsigned start_slot;
     unsigned visit_limit;
     unsigned offset;
-    unsigned pass;
 };
 void nas_sched_scan_init(struct nas_sched_scan *,const struct nas_task *exclude,
                           unsigned start_slot,unsigned visit_limit);
@@ -25,7 +25,7 @@ bool nas_sched_user_commit(struct nas_task *previous,
  * Callers still own architecture trap-frame and MM/TLS/FPU transitions;
  * this deliberately does not synthesize kernel continuations for users. */
 bool nas_sched_user_eligible(const struct nas_task *candidate,
-                             const struct nas_task *running,unsigned pass);
+                             const struct nas_task *running);
 /* Domain fairness: bound native kernel work while user Tasks are runnable.
  * The actual C-stack swap remains in the kernel worker provider. */
 bool nas_sched_allow_kernel_slice(bool user_ready,bool kernel_ready);
