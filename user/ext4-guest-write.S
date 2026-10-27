@@ -4,6 +4,9 @@
 .text
 .global _start
 _start:
+    /* user/linker.ld deliberately maps only RX text; all syscall
+     * destinations MUST use the genuine writable Linux user stack. */
+    sub $512, %rsp
     mov $1, %r15d
     mov $__NR_openat, %rax
     mov $-100, %rdi
@@ -39,13 +42,13 @@ _start:
     mov $5, %r15d
     mov $__NR_read, %rax
     mov %r12, %rdi
-    lea result_buffer(%rip), %rsi
+    mov %rsp, %rsi
     mov $(payload_end-payload), %rdx
     syscall
     cmp $(payload_end-payload), %rax
     jne fail
     mov $6, %r15d
-    lea result_buffer(%rip), %rsi
+    mov %rsp, %rsi
     lea payload(%rip), %rdi
     mov $(payload_end-payload), %rcx
     repe cmpsb
@@ -70,13 +73,13 @@ _start:
     mov $9, %r15d
     mov $__NR_read, %rax
     mov %r12, %rdi
-    lea result_buffer(%rip), %rsi
+    mov %rsp, %rsi
     mov $(payload_end-payload), %rdx
     syscall
     cmp $(payload_end-payload), %rax
     jne fail
     mov $10, %r15d
-    lea result_buffer(%rip), %rsi
+    mov %rsp, %rsi
     lea payload(%rip), %rdi
     mov $(payload_end-payload), %rcx
     repe cmpsb
@@ -99,33 +102,34 @@ _start:
     xor %rdi, %rdi
     syscall
 fail:
-    /* Report which syscall phase failed, without hiding guest failures. */
+    /* On failure use actual writable user stack, not RX ELF .data. */
+    sub $16, %rsp
     mov %r15d, %eax
     xor %edx, %edx
     mov $10, %esi
     div %esi
     add $48, %al
-    mov %al, stage_tens(%rip)
+    mov %al, 0(%rsp)
     add $48, %dl
-    mov %dl, stage_ones(%rip)
+    mov %dl, 1(%rsp)
+    movb $10, 2(%rsp)
     mov $__NR_write, %rax
     mov $1, %rdi
     lea diagnostic(%rip), %rsi
     mov $(diagnostic_end-diagnostic), %rdx
     syscall
+    mov $__NR_write, %rax
+    mov $1, %rdi
+    mov %rsp, %rsi
+    mov $3, %rdx
+    syscall
     mov $__NR_exit, %rax
     mov $1, %rdi
     syscall
-.data
+.section .rodata
 diagnostic:
     .ascii "[LWEXT4 GUEST RW DIAG] stage="
-stage_tens:
-    .byte 48
-stage_ones:
-    .byte 48
-    .byte 10
 diagnostic_end:
-.section .rodata
 guest_path:
     .asciz "/mnt/sandbox/guest-created"
 payload:
@@ -134,7 +138,3 @@ payload_end:
 message:
     .ascii "[PASS] guest ext4 RAM RW openat/write/fsync/lseek/read/close/reopen\n"
 message_end:
-.bss
-.align 16
-result_buffer:
-    .skip 256
