@@ -164,6 +164,16 @@ static long reap(long pid) {
     if(got!=pid)return -1;
     return status;
 }
+/* Linux enters ELF _start with RSP 16-byte aligned, NOT through a
+ * SysV CALL (which would have pushed an 8-byte return address). This test
+ * deliberately uses C as the ELF entry without crt1; tell clang that its
+ * incoming stack may have either alignment. Otherwise it may compile an
+ * aligned MOVAPS store to an 8-mod-16 stack location and #GP before testing
+ * the kernel's actual clone/thread-group behavior. The Linux ABI and every
+ * test assertion remain unchanged. */
+#if defined(__x86_64__)
+__attribute__((force_align_arg_pointer))
+#endif
 void _start(void) {
     /* Three rounds detect zombie TID slots, shared fd over-release, and
      * premature freeing of the leader's shared page-table root. */

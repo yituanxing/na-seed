@@ -201,6 +201,7 @@ static void native_first_user(void) {
     nas_arch_resume_saved_user();
 }
 static void native_dispatcher(void) {
+    uint64_t last_idle_report=0;
     for(;;) {
         nas_time_timers_tick();
         nas_sched_service_kernel();
@@ -253,6 +254,28 @@ static void native_dispatcher(void) {
         /* The IRQ-safe idle sleeping transition requires a separate
          * interrupt ownership change; never WFI/HLT with IRQs masked. */
         nas_task_cpu_account_switch(0);
+        /* Inspect genuine stalled Task snapshots at most once every two
+         * monotonic seconds, NOT every busy-poll iteration. Permanent
+         * scheduler invariants and the fail-closed no-progress gate remain. */
+        uint64_t idle_now=nas_arch_monotonic_ns();
+        if(idle_now>=last_idle_report &&
+           idle_now-last_idle_report>=2ULL*1000000000ULL) {
+            static unsigned idle_reports;
+            if(idle_reports++<6U) {
+                nas_print("[SCHED IDLE] active waiters");
+                for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
+                    const struct nas_task *t=nas_task_at(i);
+                    if(t && t->state==NAS_TASK_BLOCKED && t->wait.pending_valid) {
+                        nas_print(" pid=");nas_dec(t->pid);
+                        nas_print(" op=");nas_dec(t->wait.blocked_op);
+                        nas_print(" ext=");nas_dec(nas_task_wait_needs_idle_poll(t));
+                        nas_print(" deadline=");nas_dec(t->wait.deadline_active);
+                    }
+                }
+                nas_print("\n");
+            }
+            last_idle_report=idle_now;
+        }
         bool external=nas_time_timers_armed() ||
             nas_kthread_deadlines_armed() || nas_kthread_runnable();
         for(unsigned i=0;i<NAS_TASK_LIMIT && !external;i++)
