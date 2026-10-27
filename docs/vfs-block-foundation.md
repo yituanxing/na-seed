@@ -318,3 +318,17 @@ This is a **controlled driver replacement** behind the same hardware
 discovery, block ABI, ext4, VFS and userspace: no filesystem/architecture
 special cases are allowed. Retain the legacy alternative only for host
 comparison until physical QEMU + strict e2fsck success proves the new code.
+
+## Clean-up of superseded handwritten block request logic (2026-10-28)
+
+After real AArch64 and RV64 QEMU verified the unchanged U-Boot GPL-2.0+
+request handler and clean ext4 persistence, the previously linked custom
+NuttX-inspired VirtIO-Blk source and its isolated host test were removed.
+The unlinked Unikraft blk .c port candidate was also removed; the wire
+header and vring layout actually used by the queue remain pinned unchanged.
+
+Both actual QEMU block boots now compile exactly one original upstream
+VirtIO-Blk read/write engine. Common NaSeed BlockDevice, VFS, lwext4,
+VirtIO transport, DMA and split-ring adapter are unchanged, so the test
+controls the *driver implementation* variable against an independently
+maintained codebase, as required by the NaOS-style architecture review.

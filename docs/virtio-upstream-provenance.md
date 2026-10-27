@@ -44,10 +44,25 @@ This is an explicit correctness subset rather than an unbounded approximate
 port of all U-Boot features. For multi-segment hardware size constraints,
 attach returns unsupported until an upstream-compliant extension exists.
 
-The old NuttX-*inspired* hand-written block engine remains as a host-only
-reference/test, and MUST NOT be linked to the production opt-in kernel.
-Remove it after original source acceptance and all regressions are green.
+The superseded NuttX-*inspired* hand-written block engine and its tests
+have now been **deleted** after original upstream source passed the real
+AArch64/RV64 physical QEMU ext4 write/fsync/clean-e2fsck acceptance. No
+parallel bespoke VirtIO-Blk request backend remains in the repository.
 
 **Acceptance:** exact-head host + 3 ISA compile, real AArch64 and RV64 QEMU
 physical disks, true userspace ext4 write/fsync/reopen, final clean unmount,
 strict host fsck, and persisted bytes. If any fails, do not claim completion.
+
+## Post-integration native evidence (2026-10-28)
+
+Exact-head `a5b8ca627d8cefde4b87ffb5e579b67888994c44`:
+[NaSeed lwext4 workflow #40602875005](https://github.com/yituanxing/na-seed/actions/runs/40602875005)
+passed original U-Boot host API tests, three-ISA target compilation,
+actual ARM64/RV64 QEMU physical VirtIO-MMIO disks, Linux ELF ext4
+write/fsync/reopen, strict `e2fsck -fn` and host `debugfs` persisted data.
+The original two upstream source blobs match the pinned Git object hashes.
+
+**Remaining source ownership:** the NaSeed split-queue lifecycle and DMA
+bounce adapter, PCI transport discovery and native block/VFS mounting glue
+are still first-party code. The U-Boot driver is upstream original; the
+complete storage stack is NOT claimed to be 100% upstream unmodified.

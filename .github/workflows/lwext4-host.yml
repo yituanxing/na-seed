@@ -27,7 +27,6 @@ on:
       - 'kernel/platform/riscv64_virtio.c'
       - 'kernel/platform/virtio_mmio_qemu.*'
       - 'kernel/arch/riscv64/io.c'
-      - 'ports/nuttx/**'
       - 'ports/lwext4/**'
       - 'scripts/check-ext4-fsck-clean.sh'
       - 'kernel/fs/vfs*'
