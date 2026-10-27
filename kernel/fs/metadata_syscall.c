@@ -129,28 +129,34 @@ static uint64_t sys_sync_fd(uint64_t fd) {
     if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)return (uint64_t)-EBADF;
     if(nas_open_files[TASK.fds->entries[fd].slot].status_flags&NAS_LINUX_O_PATH)
         return (uint64_t)-EBADF;
-    if(TASK.fds->entries[fd].kind!=FD_TMP && TASK.fds->entries[fd].kind!=FD_TMP_DIR)
-        return (uint64_t)-EINVAL;
-    return tmp_by_slot(TASK.fds->entries[fd].slot) ? 0 : (uint64_t)-EBADF;
+    const struct nas_open_file *opened=&nas_open_files[TASK.fds->entries[fd].slot];
+    if(!opened->vnode_pinned)return (uint64_t)-EINVAL;
+    return (uint64_t)(int64_t)nas_vfs_sync(&opened->vnode);
 }
 static uint64_t sys_resize_fd(uint64_t fd,uint64_t length) {
     if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)return (uint64_t)-EBADF;
     if(nas_open_files[TASK.fds->entries[fd].slot].status_flags&NAS_LINUX_O_PATH)
         return (uint64_t)-EBADF;
-    if(TASK.fds->entries[fd].kind==FD_ARCHIVE || TASK.fds->entries[fd].kind==FD_BOOTFS)
-        return (uint64_t)-EROFS;
-    if(TASK.fds->entries[fd].kind!=FD_TMP)return (uint64_t)-EINVAL;
-    if((nas_open_files[TASK.fds->entries[fd].slot].status_flags&3ULL)==0)
-        return (uint64_t)-EINVAL;
-    return (uint64_t)(int64_t)tmp_resize(tmp_by_slot(TASK.fds->entries[fd].slot),length);
+    if(TASK.fds->entries[fd].kind==FD_BOOTFS)return (uint64_t)-EROFS;
+    if(TASK.fds->entries[fd].kind!=FD_TMP &&
+       TASK.fds->entries[fd].kind!=FD_ARCHIVE)return (uint64_t)-EINVAL;
+    unsigned slot=TASK.fds->entries[fd].slot;
+    struct nas_open_file *opened=&nas_open_files[slot];
+    if((opened->status_flags&3ULL)==0)return (uint64_t)-EINVAL;
+    if(!opened->vnode_pinned)return (uint64_t)-EBADF;
+    int rc=nas_vfs_resize(&opened->vnode,length);
+    if(!rc)opened->vnode.size=length;
+    return (uint64_t)(int64_t)rc;
 }
 static uint64_t sys_resize_path(uint64_t pathname,uint64_t length) {
     char path[256];
     uint64_t ret=nas_fs_resolve_path((uint64_t)-100,pathname,path);
     if((int64_t)ret<0)return ret;
-    struct nas_tmp_file *file=tmp_find(path);
-    if(file)return (uint64_t)(int64_t)tmp_resize(file,length);
-    return bootfs_find(path) ? (uint64_t)-EROFS : (uint64_t)-ENOENT;
+    char resolved[256];
+    struct nas_fs_node node;
+    int rc=nas_fs_lookup_node(path,true,&node,resolved);
+    return rc ? (uint64_t)(int64_t)rc :
+           (uint64_t)(int64_t)nas_vfs_resize(&node,length);
 }
 static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
     if (fd >= 64 || TASK.fds->entries[fd].kind == FD_CLOSED)

@@ -107,6 +107,10 @@ struct nas_tmp_file *tmp_create(const char *path,bool dir,uint32_t mode) {
     fixture_created_length=1;fixture_created.size=1;
     return &fixture_created;
 }
+int tmp_resize(struct nas_tmp_file *file,uint64_t size) {
+    if(file!=&fixture_created || size>sizeof(fixture_created_bytes))return -EINVAL;
+    fixture_created_length=(unsigned)size;file->size=size;return 0;
+}
 int64_t tmp_write_at(struct nas_tmp_file *file,uint64_t off,
                      const uint8_t *source,uint64_t count) {
     if(file!=&fixture_created || off+count>sizeof(fixture_created_bytes))
@@ -233,6 +237,10 @@ int main(void) {
     assert(nas_vfs_write_at(&n,0,(const uint8_t *)"xyz",3)==3);
     assert(nas_fs_lookup_node("/tmp/newfile",true,&n,resolved)==0);
     assert(nas_vfs_read_at(&n,0,(uint8_t *)data,3)==3 && !memcmp(data,"xyz",3));
+    assert(nas_vfs_resize(&n,2)==0 && fixture_created.size==2);
+    assert(nas_vfs_sync(&n)==0);
+    assert(nas_vfs_create("/bin/new",0644)==-EROFS);
+    assert(nas_vfs_resize(&n,3)==0);
     assert(nas_vfs_mkdir("/tmp/new",0755)==0);
     assert(nas_vfs_unlink("/tmp/demo",0)==0);
     assert(nas_vfs_rename("/tmp/demo","/tmp/other",0)==0);

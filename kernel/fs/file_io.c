@@ -122,12 +122,14 @@ uint64_t nas_fs_fd_pwrite(uint64_t fd,uint64_t address,uint64_t count,
     if((nas_open_files[slot].status_flags&NAS_LINUX_O_PATH) ||
        (nas_open_files[slot].status_flags&3ULL)==0ULL) return (uint64_t)-EBADF;
     if(TASK.fds->entries[fd].kind==FD_DIR || TASK.fds->entries[fd].kind==FD_TMP_DIR) return (uint64_t)-EISDIR;
-    if(TASK.fds->entries[fd].kind!=FD_TMP)return (uint64_t)-ESPIPE;
+    if(TASK.fds->entries[fd].kind!=FD_TMP &&
+       TASK.fds->entries[fd].kind!=FD_ARCHIVE)return (uint64_t)-ESPIPE;
     if(offset>INT64_MAX || count>INT64_MAX-offset)return (uint64_t)-EINVAL;
     if(count && (address>=USER_LIMIT || count>USER_LIMIT-address))
         return (uint64_t)-EFAULT;
-    struct nas_tmp_file *file=tmp_by_slot(slot);
-    if(!file)return (uint64_t)-EBADF;
+    struct nas_open_file *opened=&nas_open_files[slot];
+    if(!opened->vnode_pinned)return (uint64_t)-EBADF;
+    if(!nas_vfs_can_write(&opened->vnode))return (uint64_t)-EROFS;
     uint64_t done=0;
     uint8_t buffer[1024];
     while(done<count) {
@@ -135,9 +137,10 @@ uint64_t nas_fs_fd_pwrite(uint64_t fd,uint64_t address,uint64_t count,
         if(n>sizeof(buffer))n=sizeof(buffer);
         if(!nas_user_read_bytes(address+done,buffer,n))
             return done ? done : (uint64_t)-EFAULT;
-        int64_t wrote=tmp_write_at(file,offset+done,buffer,n);
+        int64_t wrote=nas_vfs_write_at(&opened->vnode,offset+done,buffer,n);
         if(wrote<0)return done ? done : (uint64_t)wrote;
         done+=(uint64_t)wrote;
+        if(offset+done>opened->vnode.size)opened->vnode.size=offset+done;
         if((uint64_t)wrote<n)break;
     }
     return done;

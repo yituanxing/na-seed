@@ -81,6 +81,7 @@ int main(int argc,char **argv) {
     if(!write) {
         assert(nas_vfs_create("/mnt/sandbox/new-file",0644)==-EROFS);
         assert(nas_vfs_write_at(&node,0,(const uint8_t *)"x",1)==-EROFS);
+        assert(nas_vfs_resize(&node,0)==-EROFS);
         assert(nas_vfs_mkdir("/mnt/create",0755)==-EROFS);
         assert(nas_vfs_unlink("/mnt/sandbox/hardlink",0)==-EROFS);
         assert(nas_vfs_rename("/mnt/sandbox/hardlink","/mnt/sandbox/new",0)==-EROFS);
@@ -99,6 +100,15 @@ int main(int argc,char **argv) {
         assert(created.size==sizeof(persisted)-1);
         assert(nas_vfs_read_at(&created,0,(uint8_t *)buffer,sizeof(buffer))==(int64_t)created.size);
         assert(!memcmp(buffer,persisted,sizeof(persisted)-1));
+        assert(nas_vfs_resize(&created,10)==0);
+        assert(nas_fs_lookup_node("/mnt/sandbox/vfs-created",true,&created,actual)==0 && created.size==10);
+        assert(nas_vfs_resize(&created,sizeof(persisted)-1)==0);
+        assert(nas_vfs_write_at(&created,10,persisted+10,sizeof(persisted)-11)==(int64_t)sizeof(persisted)-11);
+        assert(nas_vfs_sync(&created)==0);
+        assert(nas_fs_lookup_node("/mnt/sandbox/vfs-created",true,&created,actual)==0);
+        assert(created.size==sizeof(persisted)-1);
+        assert(nas_vfs_read_at(&created,0,(uint8_t *)buffer,created.size)==(int64_t)created.size);
+        assert(!memcmp(buffer,persisted,created.size));
         assert(nas_vfs_mkdir("/mnt/sandbox/vfs-directory",0750)==0);
         assert(nas_vfs_create("/mnt/sandbox/vfs-directory/child",0600)==0);
         assert(nas_vfs_unlink("/mnt/sandbox/vfs-directory",0x200ULL)==-ENOTEMPTY);

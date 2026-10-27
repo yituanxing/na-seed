@@ -149,6 +149,12 @@ static int64_t tmp_write_node(const struct nas_fs_node *node,uint64_t off,
     return tmp_write_at((struct nas_tmp_file *)(uintptr_t)node->inode,
                         off,src,count);
 }
+static int tmp_resize_node(const struct nas_fs_node *node,uint64_t size) {
+    return tmp_resize((struct nas_tmp_file *)(uintptr_t)node->inode,size);
+}
+static int tmp_sync_node(const struct nas_fs_node *node) {
+    (void)node;return 0; /* Volatile memory is the final data store. */
+}
 static int tmp_chmod_node(const struct nas_fs_node *node,uint64_t mode) {
     return tmp_chmod((struct nas_tmp_file *)(uintptr_t)node->inode,mode);
 }
@@ -215,6 +221,7 @@ static const struct nas_vfs_type tmp_type={
     .name="tmpfs",.exec_source_label="tmpfs",.lookup=tmp_lookup,.readlink=tmp_readlink,
     .read_at=tmp_read,.read_dir=tmp_read_dir,.chmod=tmp_chmod_node,.utimens=tmp_utimens_node,
     .create=tmp_create_node,.write_at=tmp_write_node,
+    .resize=tmp_resize_node,.sync=tmp_sync_node,
     .mkdir=tmp_mkdir_node,.unlink=tmp_unlink_node,.rename=tmp_rename_node,
     .link=tmp_link_node,.symlink=tmp_symlink_node
 };

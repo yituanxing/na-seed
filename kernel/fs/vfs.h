@@ -40,6 +40,8 @@ struct nas_vfs_type {
     int (*create)(const struct nas_vfs_mount *,const char *absolute,uint64_t mode);
     int64_t (*write_at)(const struct nas_fs_node *,uint64_t offset,
                         const uint8_t *kernel_source,uint64_t length);
+    int (*resize)(const struct nas_fs_node *,uint64_t size);
+    int (*sync)(const struct nas_fs_node *);
     int (*mkdir)(const struct nas_vfs_mount *,const char *absolute,uint64_t mode);
     int (*unlink)(const struct nas_vfs_mount *,const char *absolute,uint64_t flags);
     int (*rename)(const struct nas_vfs_mount *,const char *old_absolute,
@@ -82,6 +84,8 @@ bool nas_vfs_can_write(const struct nas_fs_node *node);
 int nas_vfs_create(const char *absolute,uint64_t mode);
 int64_t nas_vfs_write_at(const struct nas_fs_node *node,uint64_t offset,
                          const uint8_t *source,uint64_t count);
+int nas_vfs_resize(const struct nas_fs_node *node,uint64_t length);
+int nas_vfs_sync(const struct nas_fs_node *node);
 int nas_vfs_mkdir(const char *absolute,uint64_t mode);
 int nas_vfs_unlink(const char *absolute,uint64_t flags);
 int nas_vfs_rename(const char *old_absolute,const char *new_absolute,uint64_t flags);

@@ -91,6 +91,23 @@ static int64_t ext_write_inode(const struct nas_fs_node *node,uint64_t offset,
     int rc=ext4_fwrite(&file,src,(size_t)length,&written);
     return rc ? -rc : (int64_t)written;
 }
+static int ext_resize_inode(const struct nas_fs_node *node,uint64_t length) {
+    if(!node || !node->mount || !node->mount->private_data)return -EINVAL;
+    struct nas_lwext4_mount *ctx=node->mount->private_data;
+    if(!ctx->mounted || !ctx->upstream_mount)return -ENODEV;
+    ext4_file f={.mp=ctx->upstream_mount,
+                 .inode=(uint32_t)(uintptr_t)node->inode,
+                 .fsize=node->size,.flags=O_RDWR};
+    int rc=ext4_ftruncate(&f,length);
+    return rc ? -rc : 0;
+}
+static int ext_sync_inode(const struct nas_fs_node *node) {
+    if(!node || !node->mount || !node->mount->private_data)return -EINVAL;
+    struct nas_lwext4_mount *ctx=node->mount->private_data;
+    if(!ctx->mounted)return -ENODEV;
+    int rc=ext4_cache_flush(ctx->upstream_prefix);
+    return rc ? -rc : 0;
+}
 static int ext_create_path(const struct nas_vfs_mount *mount,const char *path,uint64_t mode) {
     (void)mount;
     ext4_file f={0};
@@ -204,6 +221,7 @@ static const struct nas_vfs_type ext_type={
     .readlink=ext_readlink_node,
     .read_at=ext_read_inode,
     .write_at=ext_write_inode,
+    .resize=ext_resize_inode,.sync=ext_sync_inode,
     .read_dir=ext_read_directory,
     .create=ext_create_path,.mkdir=ext_mkdir_path,
     .unlink=ext_unlink_path,.rename=ext_rename_path,

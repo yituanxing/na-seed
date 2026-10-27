@@ -167,6 +167,18 @@ int64_t nas_vfs_write_at(const struct nas_fs_node *node,uint64_t offset,
     return node->filesystem->write_at ?
            node->filesystem->write_at(node,offset,src,length) : -EOPNOTSUPP;
 }
+int nas_vfs_resize(const struct nas_fs_node *node,uint64_t length) {
+    if(!node || !node->filesystem)return -EINVAL;
+    if(node->is_dir)return -EISDIR;
+    if(length>INT64_MAX)return -EFBIG;
+    if(!nas_vfs_can_write(node))return -EROFS;
+    return node->filesystem->resize ? node->filesystem->resize(node,length) : -EOPNOTSUPP;
+}
+int nas_vfs_sync(const struct nas_fs_node *node) {
+    if(!node || !node->filesystem)return -EINVAL;
+    if(!node->filesystem->sync)return node->filesystem->read_only ? 0 : -EOPNOTSUPP;
+    return node->filesystem->sync(node);
+}
 int nas_vfs_mkdir(const char *path,uint64_t mode) {
     if(!path || path[0]!='/')return -EINVAL;
     if(!strcmp(path,"/"))return -EEXIST;
