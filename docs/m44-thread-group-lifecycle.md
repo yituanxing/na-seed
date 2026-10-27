@@ -7,14 +7,25 @@ ABI stress fixture solely to force two otherwise timing-dependent edge cases.
 1. Nonleader `exit_group(37)` must terminate every READY/BLOCKED worker,
    clear worker TIDs and futex-wake in the correct VM, close the descriptor
    table exactly once, leave exactly one waitable process-group leader,
-   and allow the parent to read wait4 status 37. Repeat THREE times to
-   expose task slot exhaustion and accidental root double free.
+   and allow the parent to read wait4 status 37. Repeat three times for
+   group-exit semantics, then execute 72 consecutive thread-local exits
+   to prove the 48-slot Task table and shared MM/FD owners are reclaimed
+   only after switching off each terminating native kernel C stack.
 2. Group leader `exit(23)` must NOT terminate its worker or close shared
    open files, nor let the parent wait4 prematurely reclaim the VM. An
    independent worker performs a real nanosleep, then writes an immutable
    marker to stdout, uses thread-local `exit(0)`, and causes the group's
    original waitable leader to appear with preserved status 23.
-3. After both cases, run the *unchanged* signed Alpine original zstd -T2
+3. Fork from a nonleader thread and let it exit before the new process:
+   the stable group leader must successfully wait4 the process using its
+   TGID-based PPID, not the worker's now-retired TID.
+4. Boot the **same** freestanding native ELF directly as PID 1, not as a
+   shell child: its CLONE_THREAD workers inherit PPID 0. Eight worker-local
+   SYS_exit operations must leave the PID 1 leader alive for subsequent
+   work. Another worker then issues exit_group(0), which alone shuts down
+   the PID 1 process. Both independent native stdout markers are required
+   before any harness-reported kernel exit PASS.
+5. After those cases, run the *unchanged* signed Alpine original zstd -T2
    two-pass compression and byte comparison on amd64, RV64, and ARM64.
 
 The VM owner (leader) survives while live threads exist. Group teardown

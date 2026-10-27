@@ -96,6 +96,66 @@ static uint64_t nas_time_gettimeofday(uint64_t tv,uint64_t tz) {
     }
     return 0;
 }
+/* Provider-owned completion. A parked syscall's original C stack resumes
+ * here; no syscall-number switch, replay, or device policy in scheduler. */
+static uint64_t finish_sleep(struct nas_task *task) {
+    (void)task;
+    return 0; /* expired monotonic deadline, signal checked by wait adapter */
+}
+static uint64_t finish_read(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_fs_fd_read(a[0],a[1],a[2]);
+}
+static uint64_t finish_readv(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_fs_fd_readv(a[0],a[1],a[2]);
+}
+static uint64_t finish_write(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_fs_fd_write(a[0],a[1],a[2]);
+}
+static uint64_t finish_writev(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_fs_fd_writev(a[0],a[1],a[2]);
+}
+static nas_wait_finish_fn finish_io_provider(enum nas_syscall_op nr) {
+    if(nr==NAS_SC_read) return finish_read;
+    if(nr==NAS_SC_readv) return finish_readv;
+    if(nr==NAS_SC_write) return finish_write;
+    if(nr==NAS_SC_writev) return finish_writev;
+    return 0;
+}
+static uint64_t finish_epoll(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_epoll_wait(a[0],a[1],a[2],a[3]);
+}
+static uint64_t finish_poll(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_fs_poll(a[0],a[1],a[2]);
+}
+static uint64_t finish_ppoll(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_fs_ppoll(a[0],a[1],a[2],a[3]);
+}
+static uint64_t finish_select(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_fs_pselect6(a[0],a[1],a[2],a[3],false);
+}
+static nas_wait_finish_fn finish_poll_provider(enum nas_syscall_op nr) {
+    if(nr==NAS_SC_poll) return finish_poll;
+    if(nr==NAS_SC_ppoll) return finish_ppoll;
+    if(nr==NAS_SC_select || nr==NAS_SC_pselect6) return finish_select;
+    return 0;
+}
+static uint64_t finish_wait4(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_process_wait4(a[0],a[1],a[2],a[3]);
+}
+static uint64_t finish_sigsuspend(struct nas_task *task) {
+    (void)task;
+    return (uint64_t)-EINTR;
+}
+
 static uint64_t nas_time_sleep_syscall(uint64_t *frame,enum nas_syscall_op nr,
                                       const uint64_t *args) {
     uint64_t request=nr==NAS_SC_nanosleep ? args[1] : args[3];
@@ -117,7 +177,7 @@ static uint64_t nas_time_sleep_syscall(uint64_t *frame,enum nas_syscall_op nr,
     if(nas_time_deadline_expired(now,deadline))return 0;
     TASK.wait.deadline_ns=deadline;
     TASK.wait.deadline_active=true;
-    return nas_task_block(frame,nr,args[1],args[2],args[3],args[4]);
+    return nas_task_block(frame,nr,args[1],args[2],args[3],args[4],finish_sleep);
 }
 static uint64_t nas_time_poll_arm_deadline(enum nas_syscall_op nr,
                                            const uint64_t *args) {
@@ -220,7 +280,8 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
             (TASK.fds->entries[fd].kind == FD_PIPE_R || TASK.fds->entries[fd].kind == FD_PIPE_W ||
              TASK.fds->entries[fd].kind == FD_SOCKET ||
              TASK.fds->entries[fd].kind == FD_EVENTFD))
-            return nas_task_block(frame,nr,fd,buf,count,0);
+            return nas_task_block(frame,nr,fd,buf,count,0,
+                                   finish_io_provider((enum nas_syscall_op)nr));
         if ((nr == NAS_SC_read || nr == NAS_SC_readv) &&
             (int64_t)ret == -EAGAIN &&
             (TASK.fds->entries[fd].kind == FD_TTY || TASK.fds->entries[fd].kind == FD_UART) &&
@@ -228,7 +289,8 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
             /* First timeout for MIN=0/TIME>0 starts at the syscall,
              * before any task sleeps; interbyte MIN>0 starts on RX. */
             nas_tty_blocking_read_start(&TASK);
-            return nas_task_block(frame,nr,fd,buf,count,0);
+            return nas_task_block(frame,nr,fd,buf,count,0,
+                                   finish_io_provider((enum nas_syscall_op)nr));
         }
     }
     return ret;
@@ -239,19 +301,76 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
  * park BEFORE entering the real syscall, then observe the ACTUAL result. */
 uint64_t nas_ptrace_syscall_dispatch(uint64_t *args) {
     struct nas_task *original=nas_current_task;
-    if(nas_ptrace_syscall_enter(original,args))
-        return nas_task_schedule(args);
+    /* A stop inside a syscall that started untraced (notably TRACEME's
+     * raise(SIGSTOP)) may cause the tracer to enable PTRACE_SYSCALL before
+     * this SAME native C continuation returns. Do not manufacture an exit
+     * stop without a corresponding entry event: it shifts strace's syscall
+     * entry/exit pairing for the rest of the trace. */
+    const bool trace_at_entry=original && original->ptrace_trace_syscalls &&
+                              original->ptrace_tracer_pid;
+    if(nas_ptrace_syscall_enter(original,args)) {
+        /* Native continuation resumes the SAME syscall C stack. An entry
+         * trace stop must re-enter userspace at the saved, rewound opcode
+         * so tracer-modified registers/nr are actually decoded by hardware.
+         * The one-shot skip-entry guard prevents a duplicate ptrace stop. */
+        (void)nas_task_schedule(args);
+        nas_arch_load_user_frame(original,args);
+        return nas_arch_saved_return(original);
+    }
     uint64_t result=syscall_dispatch(args);
-    /* A blocking syscall may switch to a different Task. Never attribute
-     * its scheduler return value to the tracee whose syscall parked. */
-    if(nas_current_task==original && original->state==NAS_TASK_RUNNING &&
-       nas_ptrace_syscall_exit(original,args,result))
-        return nas_task_schedule(args);
+    /* ptrace fork/exec event logic has already emitted its required
+     * syscall-exit stop. The suspended native C continuation now returns
+     * through this original gate: do not manufacture a second exit stop. */
+    bool event_exit_published=original->ptrace_event_exit_published;
+    original->ptrace_event_exit_published=false;
+    if(trace_at_entry && !event_exit_published &&
+       nas_current_task==original && original->state==NAS_TASK_RUNNING &&
+       nas_ptrace_syscall_exit(original,args,result)) {
+        /* Exit stop resumes after the actual syscall, preserving any GPR
+         * changes made by the tracer while retaining this original frame. */
+        (void)nas_task_schedule(args);
+        nas_arch_load_user_frame(original,args);
+        return nas_arch_saved_return(original);
+    }
     return result;
 }
 
 /* Strict single-program ABI diagnostic dispatcher, for a real syscall gate. */
+#if defined(__x86_64__)
+extern uint64_t nas_x86_syscall_return_rip;
+/* Bounded read-only diagnostic of exact native syscall arguments.
+ * The tracer PID can crash after receiving an invalid ptrace/wait result;
+ * record which native syscall was actually entered, not a guessed Linux ABI.
+ * No guest synthetic success data is injected. */
+struct nas_x86_call_history {
+    uint64_t pid,nr,arg1,arg2,arg3,entry_pc;
+};
+static struct nas_x86_call_history nas_x86_call_ring[64];
+static unsigned nas_x86_call_next;
+void nas_x86_debug_recent_syscalls(uint64_t pid) {
+    const unsigned end=nas_x86_call_next;
+    unsigned shown=0;
+    for(unsigned i=0;i<64 && shown<16;i++) {
+        const struct nas_x86_call_history *c=
+            &nas_x86_call_ring[(end-1U-i)%64U];
+        if(c->pid!=pid)continue;
+        nas_print("[X86_CALL] pid=");nas_dec(c->pid);
+        nas_print(" nr=");nas_dec(c->nr);
+        nas_print(" arg1=");nas_hex(c->arg1);
+        nas_print(" arg2=");nas_hex(c->arg2);
+        nas_print(" arg3=");nas_hex(c->arg3);
+        nas_print(" pc=");nas_hex(c->entry_pc);nas_print("\n");
+        shown++;
+    }
+}
+#endif
 uint64_t syscall_dispatch(const uint64_t *args) {
+#if defined(__x86_64__)
+    struct nas_x86_call_history *h=&nas_x86_call_ring[nas_x86_call_next++%64U];
+    h->pid=nas_current_task?nas_current_task->pid:0;
+    h->nr=args[0];h->arg1=args[1];h->arg2=args[2];h->arg3=args[3];
+    h->entry_pc=nas_x86_syscall_return_rip;
+#endif
     nas_task_cpu_account_switch(nas_current_task);
     const uint64_t raw_nr = args[0];
     enum nas_syscall_op nr = nas_linux_decode_call(args);
@@ -399,7 +518,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
             }
             nas_epoll_arm_current_task(args[1]);
             return nas_task_block((uint64_t *)(uintptr_t)args,nr,
-                                  args[1],args[2],args[3],args[4]);
+                                  args[1],args[2],args[3],args[4],finish_epoll);
         }
         nas_signal_ppoll_restore(&TASK,false);
         return result;
@@ -477,7 +596,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
                 return (uint64_t)-EOPNOTSUPP;
             }
             return nas_task_block((uint64_t *)(uintptr_t)args,nr,
-                                  args[1],args[2],args[3],args[4]);
+                                  args[1],args[2],args[3],args[4],finish_poll_provider(nr));
         }
         nas_signal_ppoll_restore(&TASK,false);
         return result;
@@ -524,7 +643,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
             nas_signal_ppoll_restore(&TASK,true);
             return (uint64_t)-EINTR;
         }
-        return nas_task_block((uint64_t *)(uintptr_t)args,nr,0,0,0,0);
+        return nas_task_block((uint64_t *)(uintptr_t)args,nr,0,0,0,0,
+                               finish_sigsuspend);
     }
     if (nr == NAS_SC_rt_sigprocmask) return nas_signal_procmask(args[1], args[2], args[3], args[4],
                                                                 (uint64_t *)(uintptr_t)args);
@@ -568,7 +688,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         if ((int64_t)ret == -EOPNOTSUPP && args[4] == 0 &&
             !(args[3] & NAS_WAIT_NOHANG))
             return nas_task_block((uint64_t *)(uintptr_t)args, nr,
-                              args[1], args[2], args[3], args[4]);
+                              args[1], args[2], args[3], args[4],finish_wait4);
         return ret;
     }
     if (nr == NAS_SC_execve) {
@@ -590,9 +710,15 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_setsid) return nas_session_setsid();
     if (nr == NAS_SC_setpgid) return nas_session_setpgid(args[1],args[2]);
     if (nr == NAS_SC_exit || nr == NAS_SC_exit_group) { /* exit / exit_group */
-        if (TASK.ppid && nas_ptrace_exit_event(nas_current_task,args,args[1]))
+        /* A PID 1 WORKER has ppid=0, just like its leader, but SYS_exit
+         * must terminate only that thread. Conversely, exit_group from
+         * any member of PID 1 ends the entire boot process and uses the
+         * established host-observable system-shutdown acceptance. */
+        const bool init_shutdown = TASK.tgid==1 &&
+            (TASK.pid==1 || nr==NAS_SC_exit_group);
+        if (!init_shutdown && nas_ptrace_exit_event(nas_current_task,args,args[1]))
             return nas_task_schedule((uint64_t *)(uintptr_t)args);
-        if (TASK.ppid) {
+        if (!init_shutdown) {
             if (nr == NAS_SC_exit_group)
                 nas_sched_thread_group_exit((uint32_t)args[1],0);
             else nas_sched_child_exit((uint32_t)args[1], 0);

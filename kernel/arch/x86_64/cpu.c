@@ -144,6 +144,31 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
         exception.kind==NAS_EXC_MEMORY && tracee ?
         nas_exception_dispatch(&exception,tracee->mm) :
         (struct nas_exception_outcome){0};
+    /* Page-fault diagnostics are a permanent fail-closed user MM signal
+     * breadcrumb, never a synthetic fault fixup. A native C-stack switch
+     * must not conceal the actual user RIP, fault VA or PTE fault flags. */
+    if(vector==14U && outcome.action==NAS_EXC_SIGNAL && tracee) {
+        static unsigned user_fault_reports;
+        if(user_fault_reports++<16U) {
+            nas_print("[USERPF] pid=");nas_dec(tracee->pid);
+            nas_print(" rip=");nas_hex(user_rip);
+            nas_print(" va=");nas_hex(fault_addr);
+            nas_print(" error=");nas_hex(frame[16]);
+            nas_print(" rsp=");nas_hex(user_sp);
+            nas_print(" arch_rip=");nas_hex(tracee->arch.resume_user_rip);
+            nas_print(" ret_rip=");nas_hex(nas_x86_syscall_return_rip);
+            nas_print(" sigactive=");nas_dec(tracee->signal_frame_active);
+            nas_print(" ptrace=");nas_dec(tracee->ptrace_tracer_pid);
+            nas_print(" rax=");nas_hex(frame[0]);
+            nas_print(" rcx=");nas_hex(frame[7]);
+            nas_print(" rdx=");nas_hex(frame[3]);
+            nas_print(" rdi=");nas_hex(frame[1]);
+            nas_print(" rbx=");nas_hex(frame[9]);
+            nas_print("\n");
+            extern void nas_x86_debug_recent_syscalls(uint64_t);
+            nas_x86_debug_recent_syscalls(tracee->pid);
+        }
+    }
     if(outcome.action==NAS_EXC_RETRY) {
         /* Hardware #PF has vector/error in front of its IRET image.
          * A successful MM fixup retries the EXACT faulting user PC. */
@@ -153,7 +178,7 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
     }
     if((frame[18]&3U)==3U && tracee &&
        tracee->state==NAS_TASK_RUNNING &&
-       (vector==1 || vector==3 ||
+       (vector==1 || vector==3 || vector==13 ||
         (vector==14 && outcome.action==NAS_EXC_SIGNAL))) {
         for(unsigned i=0;i<15;i++)tracee->arch.resume_regs[i]=frame[i];
         tracee->arch.resume_user_rip=user_rip;
@@ -176,13 +201,33 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
         }
         bool traced=nas_ptrace_user_exception(tracee,signo,si_code,user_rip,
                                                user_sp,signal_addr);
-        if(traced || (vector==14 && outcome.action==NAS_EXC_SIGNAL)) {
-            /* For an untraced user #PF, default SIGSEGV terminates only
-             * the offending process group, not the entire kernel. */
-            if(!traced)nas_sched_thread_group_exit(0,outcome.signo);
+        if(traced || vector==13 ||
+           (vector==14 && outcome.action==NAS_EXC_SIGNAL)) {
+            /* Linux delivers user-origin #GP as SIGSEGV/SI_KERNEL.
+             * Kernel #GP remains fatal, but a bad user task must NEVER
+             * take down unrelated applications or the scheduler. */
+            if(vector==13) {
+                static unsigned gp_reports;
+                if(gp_reports++<12U) {
+                    nas_print("[USERGP] pid=");nas_dec(tracee->pid);
+                    nas_print(" rip=");nas_hex(user_rip);
+                    nas_print(" rsp=");nas_hex(user_sp);
+                    nas_print(" saved_rip=");nas_hex(tracee->arch.resume_user_rip);
+                    nas_print(" tls=");nas_hex(nas_task_tls_base(tracee));
+                    nas_print("\n");
+                }
+            }
+            if(!traced)
+                nas_sched_thread_group_exit(0,
+                    vector==13 ? 11U : outcome.signo);
             uint64_t resumed=nas_task_schedule(frame);
-            /* The interrupted debugger may have been blocked in poll:
-             * return the REAL EINTR/readiness outcome via selected RAX. */
+            /* A native traced exception returns to the SAME Task C frame.
+             * Restore debugger-edited saved GPRs before constructing IRET;
+             * unlike the old copy-frame scheduler this is not a new Task. */
+            if(traced) {
+                nas_arch_load_user_frame(nas_current_task,frame);
+                resumed=nas_arch_saved_return(nas_current_task);
+            }
             frame[0]=resumed;
             /* C scheduler selected a real Task/MMU and wrote the live
              * 15-GPR snapshot. Convert the exception's two metadata

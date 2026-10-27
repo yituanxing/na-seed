@@ -8,6 +8,7 @@ typedef long int64_t;
 #define NR_read 0
 #define NR_write 1
 #define NR_clone 56
+#define NR_getpid 39
 #define NR_wait4 61
 #define NR_exit 60
 #define NR_exit_group 231
@@ -17,6 +18,7 @@ typedef long int64_t;
 #define NR_read 63
 #define NR_write 64
 #define NR_clone 220
+#define NR_getpid 172
 #define NR_wait4 260
 #define NR_exit 93
 #define NR_exit_group 94
@@ -65,6 +67,7 @@ static inline long call1(long n,long a) {
     return linux_call6(n,a,0,0,0,0,0);
 }
 #define MSG(s) (void)call3(NR_write,1,(long)(s),sizeof(s)-1)
+#define NAS_TASK_LIMIT_STRESS 72U
 static __attribute__((noreturn)) void done(int n) {
     call1(NR_exit_group,n);
     for(;;){}
@@ -82,7 +85,14 @@ static void nap(void) {
     if (linux_call6(NR_clock_nanosleep,1,0,(long)&ts,0,0,0)!=0)
         done(97); /* A missing sleep syscall must NEVER fake this race. */
 }
+static void short_nap(void) {
+    const struct timespec64 ts={0,5000000}; /* 5ms monotonic */
+    if(linux_call6(NR_clock_nanosleep,1,0,(long)&ts,0,0,0)!=0)
+        done(98);
+}
 static volatile int role;
+static volatile unsigned churn_exited;
+static volatile long worker_fork_pid;
 static uint32_t ids[2];
 static __attribute__((aligned(16))) unsigned char stacks[2][65536];
 static __attribute__((used,noreturn)) void thread_entry(void) {
@@ -97,6 +107,25 @@ static __attribute__((used,noreturn)) void thread_entry(void) {
         nap(); /* Leader must exit(23) and keep our shared FD usable. */
         MSG("M44_WORKER_SURVIVED_LEADER\n");
         finish_thread(0); /* Last worker finally makes leader waitable. */
+    }
+    if(what==4) {
+        /* Detached CLONE_THREAD death must release its Task slot AFTER
+         * the native scheduler switches away from this exact C stack. */
+        ++churn_exited;
+        finish_thread(0);
+    }
+    if(what==5) {
+        long child=linux_call6(NR_clone,17,0,0,0,0,0);
+        if(child<0)finish_thread(94);
+        if(child==0)done(0); /* new PROCESS, original process PPID */
+        worker_fork_pid=child;
+        finish_thread(0);
+    }
+    if(what==6) {
+        /* A nonleader of the actual PID 1 group requests process-wide
+         * shutdown; this MUST be different from thread-local SYS_exit. */
+        MSG("M44_PID1_GROUP_EXIT_PASS\n");
+        done(0);
     }
     done(96);
 }
@@ -164,7 +193,36 @@ static long reap(long pid) {
     if(got!=pid)return -1;
     return status;
 }
+/* Linux enters ELF _start with RSP 16-byte aligned, NOT through a
+ * SysV CALL (which would have pushed an 8-byte return address). This test
+ * deliberately uses C as the ELF entry without crt1; tell clang that its
+ * incoming stack may have either alignment. Otherwise it may compile an
+ * aligned MOVAPS store to an 8-mod-16 stack location and #GP before testing
+ * the kernel's actual clone/thread-group behavior. The Linux ABI and every
+ * test assertion remain unchanged. */
+#if defined(__x86_64__)
+__attribute__((force_align_arg_pointer))
+#endif
 void _start(void) {
+    if(call1(NR_getpid,0)==1) {
+        /* Genuine direct PID 1 ELF, not a subprocess of an Alpine shell.
+         * Its CLONE_THREAD children inherit PPID=0. A worker calling
+         * SYS_exit must NOT be mistaken for PID 1 system shutdown; the
+         * real leader must continue running, create more threads, and
+         * then let a different worker call exit_group for clean shutdown.
+         * Any early poweroff misses BOTH expected user markers. */
+        for(unsigned k=0;k<8U;k++) {
+            spawn(0,4);
+            for(unsigned tries=0;churn_exited!=k+1U && tries<200U;tries++)
+                short_nap();
+            if(churn_exited!=k+1U)done(86);
+            short_nap();
+        }
+        if(call1(NR_getpid,0)!=1)done(87);
+        MSG("M44_PID1_WORKER_EXIT_PASS\n");
+        spawn(0,6);
+        for(;;)short_nap(); /* the worker must shutdown PID 1 group */
+    }
     /* Three rounds detect zombie TID slots, shared fd over-release, and
      * premature freeing of the leader's shared page-table root. */
     for(int k=0;k<3;k++) {
@@ -188,6 +246,25 @@ void _start(void) {
     }
     if(reap(pid)!=(23<<8))done(83);
     MSG("M44_LEADER_DEFER_PASS\n");
+    /* More than the 48-slot limit, serially. A leaked ZOMBIE nonleader
+     * or its stale shared-file/MM owner exhausts the real Task table. */
+    for(unsigned k=0;k<NAS_TASK_LIMIT_STRESS;k++) {
+        unsigned want=k+1U;
+        spawn(0,4);
+        for(unsigned tries=0;churn_exited!=want && tries<200U;tries++)
+            short_nap();
+        if(churn_exited!=want)done(84);
+        short_nap(); /* allow worker's actual SYS_exit + scheduler reap */
+    }
+    MSG("M44_THREAD_REAP_PASS\n");
+    /* Fork from a nonleader: wait4 must find it under the GROUP parent.
+     * The worker can exit before its child; no dangling worker-TID PPID. */
+    worker_fork_pid=0;
+    spawn(0,5);
+    for(unsigned tries=0;!worker_fork_pid && tries<200U;tries++)
+        short_nap();
+    if(worker_fork_pid<=0 || reap(worker_fork_pid)!=0)done(85);
+    MSG("M44_WORKER_FORK_PARENT_PASS\n");
     MSG("M44_THREAD_GROUP_PASS\n");
     done(0);
 }

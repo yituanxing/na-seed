@@ -6,7 +6,7 @@
 /* Address space has independent identity and reference lifetime.
  * CLONE_VM/vfork share one MM, fork creates a different MM.  The
  * user virtual layout belongs to this object, never a thread leader.
- * Physical user frames remain eagerly private until page refcounts/COW. */
+ * Fork shares resident private frames through refcounted COW leaves. */
 struct nas_mm {
     unsigned users;
     uint64_t root_phys;

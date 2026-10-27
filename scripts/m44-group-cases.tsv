@@ -1,2 +1,4 @@
-# Linux thread-group exit from worker / early leader exit / real zstd pthreads.
+# Original Alpine shell process child: real group lifecycle + signed zstd.
 m44-group	cpio	sh -c '/bin/sh /tests/run-group.sh'	M44_REAL_ZSTD_AND_GROUP_PASS	-	/bin/busybox
+# Independent boot of the same upstream LLVM ELF AS PID 1, never as shell child.
+m44-pid1	cpio	pid1	M44_PID1_GROUP_EXIT_PASS	-	/tests/m44-threadgroup

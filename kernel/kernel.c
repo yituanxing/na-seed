@@ -87,7 +87,7 @@ void kmain(void) {
     nas_dec(before);
     nas_print("\n");
     uint64_t a = nas_frame_alloc(), b = nas_frame_alloc();
-    if (!a || !b || a == b || !nas_frame_free(a) || !nas_frame_free(b) ||
+    if (!a || !b || a == b || !nas_frame_put(a) || !nas_frame_put(b) ||
         nas_free_frames() != before) {
         nas_print("[FAIL] frame allocator smoke\n");
         nas_arch_halt();

@@ -3,6 +3,7 @@
  * retire only the faulty userspace Task and resume an unaffected Task with
  * an authentic saved-register return value. */
 #include <assert.h>
+#include <setjmp.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -14,6 +15,7 @@ static struct nas_sighand bad_sighand,good_sighand;
 struct nas_task *nas_current_task;
 static unsigned failures,group_kills,system_panics;
 static uint64_t delivered,returned;
+static jmp_buf terminated_task_park;
 static bool reject_bad;
 void nas_arch_halt(void) {++system_panics;assert(0 && "kernel panic forbidden");}
 void nas_print(const char *s){(void)s;}
@@ -33,10 +35,10 @@ void nas_sched_thread_group_exit(uint32_t code,uint32_t sig) {
 }
 uint64_t nas_task_schedule(uint64_t *frame) {
     assert(bad.state==NAS_TASK_ZOMBIE && nas_current_task==&bad);
-    nas_current_task=&good;
-    good.state=NAS_TASK_RUNNING;
-    frame[0]=0; /* old syscall's rax must not leak to the next Task */
-    return 77;
+    (void)frame;
+    /* The real native scheduler parks this terminated C stack forever.
+     * A host nonlocal jump verifies there is NO foreign Task-frame return. */
+    longjmp(terminated_task_park,1);
 }
 void nas_arch_set_saved_return(struct nas_task *t,uint64_t result) {
     assert(t==&good); returned=result;
@@ -61,16 +63,25 @@ int main(void) {
     good_sighand.actions[NAS_SIGUSR2][0]=0x5678;
     nas_current_task=&bad;
     reject_bad=true;
+    if(setjmp(terminated_task_park)==0) {
+        nas_signal_user_return(frame);
+        assert(0 && "terminated Task returned into its old C continuation");
+    }
+    assert(nas_current_task==&bad && bad.state==NAS_TASK_ZOMBIE);
+    assert(group_kills==1 && system_panics==0 && failures==1);
+    /* The other Task runs later in its OWN native user trap/stack context,
+     * never by copying its state into the terminated Task's IRET frame. */
+    nas_current_task=&good;
+    good.state=NAS_TASK_RUNNING;
     nas_signal_user_return(frame);
-    assert(nas_current_task==&good && bad.state==NAS_TASK_ZOMBIE);
-    assert(group_kills==1 && system_panics==0 && failures==2);
-    assert(delivered==NAS_SIGUSR2 && frame[0]==77);
+    assert(failures==2);
+    assert(delivered==NAS_SIGUSR2 && frame[0]==0);
     assert(!(good.pending_signals&(1ULL<<(NAS_SIGUSR2-1U))));
     /* No Task with a pending handler: must not switch or touch any frame. */
     nas_signal_user_return(frame);
     assert(group_kills==1 && failures==2);
     nas_signal_user_return(0);
     assert(group_kills==1);
-    puts("[M100 SIGFRAME PASS] failed user signal frame kills only its Task, native return resumes a second Task");
+    puts("[M100 SIGFRAME PASS] fatal Task C continuation never returns; another Task delivers its own user signal");
     return 0;
 }

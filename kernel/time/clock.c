@@ -48,7 +48,7 @@ bool nas_time_realtime_ns(uint64_t *out) {
 /* POSIX process timers in the existing shared timekeeper: serialised by
  * today's single-CPU non-preemptible kernel. CLOCK_MONOTONIC and REALTIME
  * use their actual independent clocks. No timer-specific ISA shortcuts. */
-static struct nas_task *timer_owner(void){return nas_current_task->vm_owner;}
+static struct nas_task *timer_owner(void){return nas_current_task->group_leader;}
 static bool timer_now(uint32_t clock,uint64_t *out){
     if(clock==1){*out=nas_arch_monotonic_ns();return true;}
     return clock==0 && nas_time_realtime_ns(out);

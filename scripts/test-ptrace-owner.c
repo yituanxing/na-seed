@@ -132,7 +132,8 @@ int main(void) {
     stranger.wait.pending_valid=true;
     stranger.wait.blocked_op=NAS_SC_nanosleep;
     assert(nas_ptrace_request(16,3,0,0)==0);
-    assert(stranger.ptrace_blocked_exit_pending);
+    /* Attach preserves the original blocked syscall's C continuation. */
+    assert(stranger.wait.pending_valid && stranger.state==NAS_TASK_STOPPED);
     assert(nas_ptrace_request(17,3,0,0)==0);
     assert(stranger.state==NAS_TASK_BLOCKED && stranger.wait.pending_valid);
     /* Real CPU breakpoint must report through the same authenticated
@@ -154,5 +155,22 @@ int main(void) {
     memcpy(&address,signal_result+16,8);
     assert(signo==5 && code==0x80 && address==0x1020);
     assert((int64_t)nas_ptrace_request(0x4202,3,0,0)==-EFAULT);
+    /* A traced fork/exec has its own synthetic syscall EXIT stop. On
+     * native C continuation resume, the enclosing gate consumes this bit
+     * instead of reporting an unmatched duplicate syscall-exit event. */
+    stranger.ptrace_trace_syscalls=true;
+    stranger.ptrace_fork_pending_exit=true;
+    stranger.state=NAS_TASK_STOPPED;
+    stranger.stopped_from=NAS_TASK_READY;
+    stranger.ptrace_event_exit_published=false;
+    assert(nas_ptrace_request(24,3,0,0)==0);
+    assert(stranger.ptrace_event_exit_published);
+    assert(stranger.state==NAS_TASK_STOPPED);
+    stranger.ptrace_event_exit_published=false;
+    stranger.ptrace_exec_pending_exit=true;
+    stranger.state=NAS_TASK_STOPPED;
+    stranger.stopped_from=NAS_TASK_READY;
+    assert(nas_ptrace_request(24,3,0,0)==0);
+    assert(stranger.ptrace_event_exit_published);
     return 0;
 }

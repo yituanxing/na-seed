@@ -772,4 +772,7 @@ run: $(ISO)
 clean:
 	rm -rf $(OUT)
 
--include $(OUT)/session.d $(OUT)/kernel.d $(OUT)/m1.d $(OUT)/bootfs.d $(OUT)/fd.d $(OUT)/path.d $(OUT)/pipe.d $(OUT)/boot_image.d $(OUT)/task.d
+# Every native object emits an -MMD dependency file. An explicit short list
+# silently reused stale C objects after common Task/MM header edits and could
+# report a false local PASS. Pick up all generated dependencies instead.
+-include $(wildcard $(OUT)/*.d)

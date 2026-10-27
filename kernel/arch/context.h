@@ -37,9 +37,9 @@ static inline void nas_arch_context_set_user_sp(struct nas_arch_context *c,
     c->user_sp = sp;
 #endif
 }
-/* ptrace observes an actual pre-syscall stop. This kernel cannot park a
- * live C continuation, so resume re-executes the identical user SYSCALL,
- * ECALL or SVC instruction once, using a per-Task replay guard. */
+/* Ptrace observes native syscall-entry stops. A stopped Task resumes its
+ * own C continuation, while explicit PC rewind remains Linux ABI behavior
+ * only when a traced entry must be reissued to userspace. */
 /* Construct true ELF entry registers for ptrace-stopped execve. */
 static inline void nas_arch_context_exec(struct nas_arch_context *c,
                                           uint64_t entry,uint64_t sp) {

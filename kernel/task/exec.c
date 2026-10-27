@@ -358,7 +358,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
      * The new root is kept intact through this temporary switch. */
     uint64_t committed_root = TASK.mm->root_phys;
     struct nas_task *exec_thread = nas_current_task;
-    struct nas_task *old_leader = exec_thread->vm_owner;
+    struct nas_task *old_leader = exec_thread->group_leader;
     uint64_t inherited_tgid=old_leader->tgid;
     bool worker_exec=exec_thread!=old_leader;
     TASK.mm=previous_mm;
@@ -379,7 +379,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
         exec_thread->ppid=old_leader->ppid;
         exec_thread->pgid=old_leader->pgid;
         exec_thread->sid=old_leader->sid;
-        exec_thread->vm_owner=exec_thread;
+        exec_thread->group_leader=exec_thread;
         exec_thread->is_thread=false;
         exec_thread->group_exit_pending=false;
         exec_thread->vfork_parent_pid=0;
@@ -445,8 +445,14 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
         nas_print("[EXEC] replaced process with CPIO ELF: ");
     nas_print(pending_exec.filename);
     nas_print("\n");
-    if(nas_ptrace_exec_commit(nas_current_task,entry,sp))
-        return nas_task_schedule(syscall_frame);
+    if(nas_ptrace_exec_commit(nas_current_task,entry,sp)) {
+        /* The ptrace stop parks the original kernel stack; after the
+         * tracer resumes, install the committed NEW ELF user image into
+         * the live return frame. Never return to the old execve opcode. */
+        (void)nas_task_schedule(syscall_frame);
+        nas_arch_load_user_frame(nas_current_task,syscall_frame);
+        return nas_arch_saved_return(nas_current_task);
+    }
     nas_arch_enter_user(entry, sp);
     nas_fail("architecture user-entry returned unexpectedly");
 }

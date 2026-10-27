@@ -8,11 +8,10 @@ uint64_t nas_free_frames(void);
 uint64_t nas_managed_frames(void);
 uint64_t nas_frame_alloc(void);
 /* Allocate grants one owner; get increments; put drops only one reference.
- * The final put returns the 4 KiB frame to the free bitmap.
- * nas_frame_free remains the compatibility alias for put. */
+ * The final put returns the 4 KiB frame to the free bitmap. No separate
+ * unconditional 'free' API exists: mapped pages can have multiple owners. */
 bool nas_frame_get(uint64_t);
 bool nas_frame_put(uint64_t);
 uint32_t nas_frame_refs(uint64_t);
-bool nas_frame_free(uint64_t);
 uint64_t nas_hhdm_offset(void);
 #endif

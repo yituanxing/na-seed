@@ -25,7 +25,7 @@ uint64_t nas_frame_alloc(void) {
         }
     return 0;
 }
-bool nas_frame_free(uint64_t phys) {
+bool nas_frame_put(uint64_t phys) {
     for(unsigned i=0;i<FRAMES;i++)
         if(phys==(uint64_t)(uintptr_t)&frames[i][0] && busy[i]) {
             busy[i]=false;frame_freed++;return true;

@@ -198,7 +198,20 @@ int main(void) {
     assert(total_refs()==before && nas_frame_refs(phys(rollback,A,&access))==1);
     assert(access==(NAS_UP_READ|NAS_UP_WRITE)); /* parent never downgraded */
     nas_mm_put(rollback);
+    /* A physical leaf without a logical VMA was allowed by the old eager
+     * fork fallback. It must now fail without leaking refs or write-
+     * protecting the parent: there is no policy for a later COW fault. */
+    struct nas_mm *orphan=nas_mm_new();assert(orphan);
+    orphan->root_phys=nas_mmu_alloc_root();assert(orphan->root_phys);
+    map(orphan,A,3,0x51);
+    uint64_t orphan_frame=phys(orphan,A,0);
+    before=total_refs();
+    assert(!nas_mm_fork_cow(orphan));
+    assert(total_refs()==before && nas_frame_refs(orphan_frame)==1);
+    assert(phys(orphan,A,&access)==orphan_frame &&
+           access==(NAS_UP_READ|NAS_UP_WRITE));
+    nas_mm_put(orphan);
     nas_mm_put(parent);
     assert(total_refs()==0);
-    puts("[M101 COW PASS] rollback, shared fork, COW write, singleton promotion, RX ptrace isolation and lazy usercopy");
+    puts("[M101 COW PASS] rollback, no orphan PTE fork, shared fork, COW write, singleton promotion, RX ptrace isolation and lazy usercopy");
 }

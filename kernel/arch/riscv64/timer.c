@@ -52,23 +52,38 @@ void nas_rv_timer_start(void) {
     __asm__ volatile("csrs sie,%0" : : "r"(stie) : "memory");
     arm_next_tick();
 }
+/* For the IRQ-masked native scheduler only. This temporary S-mode stvec
+ * never swaps sscratch/sp or captures a user Task frame. The SBI timer
+ * continuously rearms, so each wake forces a fresh Task readiness scan. */
+extern void nas_rv_idle_trap(void);
+extern void nas_rv_full_trap(void);
+void nas_arch_idle_wait(void) {
+    __asm__ volatile(
+        "la t0,nas_rv_idle_trap\n"
+        "csrw stvec,t0\n"
+        "csrsi sstatus,2\n"  /* SIE */
+        "wfi\n"
+        "csrci sstatus,2\n"
+        "la t0,nas_rv_full_trap\n"
+        "csrw stvec,t0\n"
+        : : : "t0","memory");
+}
+void nas_rv_idle_irq_c(void) {
+    uint64_t cause, status;
+    __asm__ volatile("csrr %0,scause" : "=r"(cause));
+    __asm__ volatile("csrr %0,sstatus" : "=r"(status));
+    if(cause != (UINT64_C(1)<<63 | 5U) || !(status & (1ULL<<8)))
+        nas_fail("RV64 idle received non-supervisor timer trap");
+    arm_next_tick();
+}
 void nas_rv_timer_handle(struct nas_rv_trap_frame *frame) {
     arm_next_tick(); /* OpenSBI clears the pending STIP when rearmed. */
     struct nas_task *from=nas_current_task;
     if(!from || !nas_task_kernel_stack_ok(from)) nas_fail("RV64 timer invalid task");
     nas_arch_save_user_frame(from,0);
     nas_arch_save_fpu(from);
-    if(nas_sched_preempt_select()) {
-        nas_arch_load_user_frame(nas_current_task,0);
-        static unsigned observed;
-        if(observed++<8) {
-            extern void nas_print(const char*);
-            extern void nas_dec(uint64_t);
-            nas_print("[M28] timer-preempt from=");
-            nas_dec(from->pid);
-            nas_print(" to=");nas_dec(nas_current_task->pid);
-            nas_print("\n");
-        }
-    }
+    /* The native scheduler parks this IRQ C stack and restores precisely
+     * this Task's original SRET frame, never a foreign user-frame copy. */
+    nas_sched_preempt_select();
     (void)frame;
 }

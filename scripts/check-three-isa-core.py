@@ -62,6 +62,8 @@ for name in ("kind", "slot", "cloexec"):
 for source in (root/"kernel").rglob("*"):
     if source.suffix not in (".c", ".h"): continue
     data=source.read_text()
+    if "nas_frame_free" in data:
+        raise SystemExit(f"obsolete ambiguous page release API in {source}; use frame_put")
     for old in ("descriptors[", "file_slot[", "fd_cloexec["):
         if old in data: raise SystemExit(f"old FD storage escaped in {source}: {old}")
 # M63: path references live ONLY in namespace dentries, not sparse inodes.
@@ -124,7 +126,7 @@ for arch in ("riscv64","aarch64"):
         if needle not in script: raise SystemExit(f"{arch} kernel omits continuation {needle}")
 if "nas_wait_queue_wake(&wait_test_queue" not in (root/"kernel/task/kernel_context.c").read_text():
     raise SystemExit("native boot lost M92 real continuation wake test")
-if "child->kernel_wait=(struct nas_wait_entry){0};" not in (root/"kernel/task.c").read_text():
+if "nas_kernel_execution_reset(&child->kernel_exec);" not in (root/"kernel/task.c").read_text():
     raise SystemExit("fork must not inherit a queued kernel wait entry")
 if "nas_futex_wait_arm(nas_current_task)" not in (root/"kernel/task/process.c").read_text():
     raise SystemExit("futex syscall is not using generic kernel wait queues")
@@ -132,16 +134,111 @@ if "nas_futex_wait_cancel(task)" not in (root/"kernel/task/blocked_completion.c"
     raise SystemExit("legacy blocked completion must release futex waiter exactly once")
 if "task_replay(" in sched:
     raise SystemExit("syscall replay leaked back into scheduler core")
-if "nas_blocked_complete(next,&result)" not in sched:
-    raise SystemExit("scheduler lost shared IRQ/syscall completion adapter")
-if "nas_task_wake_ready(t)" not in (root/"kernel/task/futex_wait.c").read_text():
-    raise SystemExit("futex producer no longer publishes runnable tasks")
-if sched.count("nas_sched_service_kernel();")!=2:
-    raise SystemExit("both syscall and timer scheduler must service native kernel workers")
-if sched.count("nas_sched_scan_next(&scan,")!=2:
-    raise SystemExit("IRQ and syscall task selection bypassed shared scheduler walk")
-if sched.count("nas_sched_user_commit(")!=2:
-    raise SystemExit("IRQ and syscall Task state publication diverged")
+x86_context=(root/"kernel/arch/x86_64/context.c").read_text()
+x86_entry=(root/"kernel/arch/x86_64/entry.S").read_text()
+# Accept only the established CPU scratch/ABI fallback or the stricter
+# native continuation contract: syscall_entry constructs RIP/CS/FLAGS/RSP/SS
+# on its own Task entry stack BEFORE entering resumable kernel C code.
+# The user RCX/R11 saved as GPRs are NEVER substitutes for IRET metadata.
+original_pc=("task->arch.resume_user_rip = nas_x86_syscall_return_rip;" in x86_context and
+             "task->arch.resume_user_rflags = nas_x86_syscall_return_flags;" in x86_context)
+pinned_pc=all(needle in x86_context for needle in (
+    "frame[16]==0x33U && frame[19]==0x2bU",
+    "task->arch.resume_user_rip=frame[15];",
+    "task->arch.resume_user_rflags=frame[17];",
+    "task->arch.resume_user_rsp=frame[18];")) and all(
+    needle in x86_entry for needle in (
+        "movq %rax, 120(%rsp)",
+        "movq $0x33, 128(%rsp)",
+        "movq %rax, 136(%rsp)",
+        "movq %rax, 144(%rsp)",
+        "movq $0x2b, 152(%rsp)"))
+if not (original_pc or pinned_pc):
+    raise SystemExit("x86 IRET PC/RFLAGS must use the Task's own frame or explicit CPU scratch state")
+if "resume_user_rip=frame[7]" in x86_context or "resume_user_rflags=frame[8]" in x86_context:
+    raise SystemExit("x86 IRET metadata incorrectly decoded from user RCX/R11")
+x86_return=(root/"kernel/arch/x86_64/entry.S").read_text()
+if x86_return.count("movq nas_x86_syscall_return_rip(%rip), %rax")!=1:
+    raise SystemExit("syscall epilogue must not re-read another Task's global IRET PC")
+if "frame[15]=task->arch.resume_user_rip;" not in x86_context or \
+   "frame[17]=task->arch.resume_user_rflags;" not in x86_context or \
+   "frame[18]=task->arch.resume_user_rsp;" not in x86_context:
+    raise SystemExit("native x86 signal/ptrace return did not restore Task-owned IRET")
+if "void nas_sched_preempt_select(void)" not in sched:
+    raise SystemExit("native scheduler still exposes a foreign-Task IRQ frame copy API")
+if "native_irq_preempt_source=self;" not in sched or \
+   "interrupted!=next" not in sched or \
+   'nas_print("[M28] timer-preempt from=")' not in sched:
+    raise SystemExit("M28 native IRQ acceptance must prove actual distinct-Task preemption")
+if "nas_arch_kernel_swap(&self->kernel_exec.cpu,&scheduler_cpu)" not in sched:
+    raise SystemExit("Task does not park its native C continuation")
+if "nas_arch_kernel_swap(&scheduler_cpu,&next->kernel_exec.cpu)" not in sched:
+    raise SystemExit("native dispatcher does not resume Task C frames")
+completion=(root/"kernel/task/blocked_completion.c").read_text()
+if "task_retry_in_resumed_context" in completion or "task_replay(" in completion:
+    raise SystemExit("legacy syscall dispatch switch survived native C continuation")
+if "return task->wait.finish(task);" not in completion or "self->wait.finish=finish;" not in sched:
+    raise SystemExit("resumed kernel C stack does not invoke owning syscall provider")
+if "finish_io_provider(" not in (root/"kernel/syscall/dispatch.c").read_text():
+    raise SystemExit("blocking I/O providers must own their retry, not Task scheduler")
+if "nas_sched_scan_next(&scan,&slot)" not in sched or \
+   "nas_sched_scan_init(&scan,native_cursor)" not in sched:
+    raise SystemExit("native scheduler bypasses canonical complete-ring scan")
+sched_core=(root/"kernel/task/sched_core.c").read_text()
+sched_core_h=(root/"kernel/task/sched_core.h").read_text()
+if "nas_sched_user_commit" in sched_core or "nas_sched_user_commit" in sched_core_h or \
+   "visit_limit" in sched_core or "scan->exclude" in sched_core or \
+   "task_replay(" in sched:
+    raise SystemExit("obsolete frame-copy commit or partial/excluded scan returned")
+if "nas_task_wait_needs_idle_poll" in sched or \
+   "nas_task_wait_has_external_wake_source" in sched or \
+   "nas_task_wait_has_external_wake_source" in task_wait or \
+   "native scheduler deadlock" in sched or \
+   "nas_kthread_deadlines_armed(" in sched:
+
+    raise SystemExit("obsolete syscall-based idle deadlock gate returned")
+# IRQ-masked busy polling is not an acceptable native idle implementation.
+# Require ISA-specific privileged interrupt handling, never a user-only IRQ
+# path or an unconditional WFI/HLT executed with interrupts still disabled.
+if "nas_arch_idle_wait();" not in sched or "void nas_arch_idle_wait(void);" not in (root/"kernel/arch/arch.h").read_text():
+    raise SystemExit("native scheduler lost shared IRQ-aware idle boundary")
+task_src=(root/"kernel/task.c").read_text()
+release=task_src.split("void nas_task_release(",1)[1].split("struct nas_task *nas_task_by_pid",1)[0]
+if "task->native_trap_frame=0;" not in release or "task->resume_valid=false;" not in release:
+    raise SystemExit("retired Task still exposes a parked user/kernel continuation")
+if "child->ppid = nas_current_task->tgid;" not in task_src:
+    raise SystemExit("worker fork silently reintroduced TID-based process parenthood")
+if "struct nas_task *init=nas_task_by_pid(1);" not in task_src:
+    raise SystemExit("orphan reparenting assumes PID 1 never execs from worker")
+if "native_reap_exited_threads();" not in sched or \
+   "nas_arch_restore_cpu(init);" not in sched or \
+   "dead->state==NAS_TASK_ZOMBIE && !dead->ptrace_tracer_pid" not in sched:
+    raise SystemExit("exited pthread Task/MM lifetime not reclaimed from scheduler stack")
+dispatch=(root/"kernel/syscall/dispatch.c").read_text()
+if "const bool init_shutdown = TASK.tgid==1 &&" not in dispatch or \
+   "TASK.pid==1 || nr==NAS_SC_exit_group" not in dispatch:
+    raise SystemExit("PID 1 worker SYS_exit misclassified as system shutdown")
+if "if(child->is_thread) {" not in (root/"kernel/task/process.c").read_text():
+    raise SystemExit("ptrace wait4 cannot reap a consumed nonleader exit")
+x86_timer=(root/"kernel/arch/x86_64/timer.c").read_text()
+if 'sti; hlt; cli' not in x86_timer or 'if ((frame->cs & 3U) == 0U)' not in x86_timer or    'jz nas_x86_iret_restore' not in x86_entry:
+    raise SystemExit("x86 kernel PIT idle IRQ must restore CPL0 IRET without user signals")
+rv_timer=(root/"kernel/arch/riscv64/timer.c").read_text()
+rv_trap=(root/"kernel/arch/riscv64/trap.S").read_text()
+if not all(s in rv_timer for s in ('nas_rv_idle_trap', 'csrsi sstatus,2', 'csrci sstatus,2', 'nas_rv_idle_irq_c')) or    'nas_rv_idle_trap:' not in rv_trap or 'call nas_rv_idle_irq_c' not in rv_trap:
+    raise SystemExit("RV64 idle must handle S-mode IRQ without sscratch stack swap")
+arm_timer=(root/"kernel/arch/aarch64/timer.c").read_text()
+arm_trap=(root/"kernel/arch/aarch64/trap.S").read_text()
+if not all(s in arm_timer for s in ('msr daifclr,#2', 'msr daifset,#2', 'nas_arm_timer_idle_irq_c')) or    'b nas_arm_upper_irq' not in arm_trap or 'nas_arm_upper_irq:' not in arm_trap or    'b nas_arm_restore_frame' not in arm_trap or \
+   'if((id & 0x3ffU)==1023U)return 0;' not in arm_timer:
+    raise SystemExit("ARM64 idle needs EL1h IRQ entry with in-place kernel ERET")
+# Both ARM64 exception classes need separate return boundaries: EL0 timer
+# resumes the Task's canonical frame, EL1h idle resumes its kernel frame.
+if 'bl nas_arm_lower_irq_c\n    b nas_arm_trap_return' not in arm_trap:
+    raise SystemExit("ARM64 EL0 timer IRQ incorrectly falls into EL1h idle vector")
+arm_context=(root/"kernel/arch/aarch64/context.c").read_text()
+if 'source->spsr_el1 & 15U' not in arm_context:
+    raise SystemExit("ARM64 user-return stack has no EL0 privilege guard")
 if "nas_sched_allow_kernel_slice(" not in (root/"kernel/task/scheduler_service.c").read_text():
     raise SystemExit("kernel worker dispatch bypassed shared domain fairness policy")
 if "nas_sched_service_kernel();" not in sched:
@@ -169,7 +266,7 @@ if "nas_frame_get(pa)" not in cow or "cow_protect_parent" not in cow:
 if "nas_kthread_boot_selftest();" not in (root/"kernel/init/main.c").read_text():
     raise SystemExit("three-ISA native boot no longer exercises real kernel workers")
 signal_src=(root/"kernel/task/signal.c").read_text()
-if "nas_sched_thread_group_exit(0,NAS_SIGSEGV);" not in signal_src or "nas_arch_load_user_frame(nas_current_task,frame);" not in signal_src:
+if "nas_sched_thread_group_exit(0,NAS_SIGSEGV);" not in signal_src or 'nas_fail("fatal Task resumed after thread-group exit")' not in signal_src:
     raise SystemExit("broken userspace sigframe once again panics or fabricates a user return")
 if 'nas_fail("M30 cannot build native user signal frame")' in signal_src:
     raise SystemExit("kernel-wide panic returned for an invalid user signal stack")

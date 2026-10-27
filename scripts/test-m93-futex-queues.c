@@ -22,7 +22,7 @@ int main(void) {
     assert(nas_futex_wait_wake(&mm1,0x1000,1,2)==1);
     assert(b.wait.futex_woken && b.state==NAS_TASK_READY &&
            a.state==NAS_TASK_BLOCKED && !c.wait.futex_woken);
-    assert(!b.kernel_wait.queue);
+    assert(!b.kernel_exec.wait.queue);
     assert(nas_futex_wait_wake(&mm1,0x1000,0,~0U)==0);
     assert(nas_futex_wait_requeue(&mm1,0x1000,0x2000,1)==1);
     assert(a.wait.futex_addr==0x2000);
@@ -39,7 +39,7 @@ int main(void) {
     assert(nas_futex_wait_requeue(&mm1,0x4000,0x4040,2)==2);
     assert(a.wait.futex_addr==0x4040 && c.wait.futex_addr==0x4040);
     nas_futex_wait_cancel(&a);
-    assert(!a.kernel_wait.queue);
+    assert(!a.kernel_exec.wait.queue);
     assert(nas_futex_wait_wake(&mm1,0x4040,2,1)==1);
     assert(c.wait.futex_woken && !a.wait.futex_woken);
     puts("[M93 FUTEX PASS] mm-keyed, masked wake, requeue and cancellation");

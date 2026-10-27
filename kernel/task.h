@@ -62,18 +62,20 @@ enum nas_task_state {
     NAS_TASK_STOPPED
 };
 
-/* An executing thread owns ALL transient blocking state, never process VM.
- * The scheduler cannot keep kernel C frames and must replay after VM restore. */
+/* A parked Task retains its original kernel C stack and provider callback.
+ * The scheduler must never re-dispatch a syscall from a foreign C frame. */
+struct nas_task;
+typedef uint64_t (*nas_wait_finish_fn)(struct nas_task *);
 struct nas_task_wait {
     uint64_t blocked_op, blocked_args[4];
     bool pending_valid;
+    nas_wait_finish_fn finish; /* static callback owned by issuing syscall */
     uint64_t deadline_ns;
     bool deadline_active;
     unsigned tty_observed_bytes;
-    /* Interest sets contain OPEN-DESCRIPTION slots, independent of the
-     * backing provider (pipe/socket/PTY/eventfd/regular file). Keep the
-     * legacy member spelling until remaining scheduler adapters migrate. */
-    struct nas_slot_mask poll_pipe_read, poll_pipe_write;
+    /* Poll interest records OPEN-DESCRIPTION slots, not pipe numbers or
+     * Task-local FDs. All providers use this one readiness representation. */
+    struct nas_slot_mask poll_interest_read, poll_interest_write;
     bool poll_tty_read;
     uint64_t futex_addr;
     uint32_t futex_mask;
@@ -85,7 +87,9 @@ struct nas_task {
     uint64_t tgid; /* getpid: thread group; pid remains unique gettid */
     bool is_thread; /* CLONE_THREAD tasks are never wait4 children */
     bool group_exit_pending; /* leader exited via SYS_exit; retain VM and FDs for peers */
-    struct nas_task *vm_owner; /* legacy thread-group leader identity; NOT MM/FS/files/sighand owner */
+    /* Stable thread-group leader identity. Address-space ownership is mm,
+     * while FS, files and signal dispositions have independent owners. */
+    struct nas_task *group_leader;
     /* Linux process group + session identity, independent of CPU/VM. */
     uint64_t pgid, sid;
     char comm[16]; /* Linux per-thread PR_SET_NAME, inherited at fork. */
@@ -118,7 +122,9 @@ struct nas_task {
     bool ptrace_exec_pending_exit,ptrace_exit_event_sent;
     /* Traced child creation and true sleeping syscall completions. */
     bool ptrace_child_initial_stop,ptrace_fork_pending_exit;
-    bool ptrace_blocked_exit_pending;
+    /* A traced exec/fork may publish a synthetic syscall-exit event before
+     * the suspended native C frame returns. Never publish that exit twice. */
+    bool ptrace_event_exit_published;
     /* One hardware user instruction per request; not inherited by fork. */
     bool ptrace_single_step;
 #if defined(__riscv) && __riscv_xlen==64
@@ -133,14 +139,12 @@ struct nas_task {
      * non-exception stops; actual #BP/#DB/BRK/EBREAK supply Linux si_code. */
     int32_t ptrace_signal_code;
     uint64_t ptrace_signal_addr;
-    /* Saved syscall-boundary GPR frame in the exact arch.S push order.
-     * The scheduler switches after unwinding the current syscall frame.
-     */
+    /* Task-owned user register snapshot. ISA-specific entry code owns its
+     * live return frame; the scheduler parks the entire kernel C stack. */
     struct nas_arch_context arch;
     bool resume_valid;
-    /* Pending blocking syscall holds user pointers, but never kernel-stack
-     * pointers. The task's private CR3 must be restored before replay.
-     */
+    /* A blocked syscall retains its arguments and originating completion
+     * provider. Its saved kernel continuation runs only in its own MM. */
     struct nas_task_wait wait; /* thread-local blocked syscall/deadline/I/O */
     struct nas_posix_timer timers[NAS_POSIX_TIMERS];
     /* Snapshot poll interest when blocking. NEVER dereference a different
@@ -148,15 +152,15 @@ struct nas_task {
      * shared open-file-description slot (0..NAS_OPEN_FILE_LIMIT-1). */
     /* Poll interest snapshots live in wait, not CPU context. */
 
-    /* Owned kernel entry stack. Kernel C continuations are NOT resumable
-     * yet; the syscall-boundary scheduler still unwinds before switching. */
+    /* Owned kernel entry stack and native C continuation. Fork/clone
+     * must reset all saved SP and wait links rather than inheriting the
+     * parent's active kernel call chain. */
     uint64_t kernel_stack_top;
-    /* Native kernel continuation, never copied across fork/clone.
-     * The current syscall replay scheduler does not yet park C frames. */
-    struct nas_kernel_context kernel_context;
-    /* Single outstanding native kernel-continuation sleep registration.
-     * Replay waits remain separate until the scheduler contract migrates. */
-    struct nas_wait_entry kernel_wait;
+    /* Same underlying context/queue contract as native kernel workers;
+     * no replay scheduler or foreign-Task frame copying remains. */
+    struct nas_kernel_execution kernel_exec;
+    /* Saved live exception frame while the Task's kernel C stack is parked. */
+    uint64_t native_trap_frame;
     /* Independently reference-counted address space (CLONE_VM / vfork). */
     struct nas_mm *mm;
     uint64_t loaded_phdr, loaded_phnum;

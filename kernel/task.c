@@ -7,8 +7,8 @@
 #include "panic.h"
 #include <stddef.h>
 
-/* Task-owned entry stacks. Cooperative syscall switching still unwinds
- * every C frame; this is NOT yet a resumable kernel continuation. */
+/* Task-owned entry stacks: blocked native syscalls retain their live
+ * kernel C frames and resume on the same Task stack. */
 static struct nas_task task_table[NAS_TASK_LIMIT];
 static _Alignas(16) uint8_t task_kernel_stacks[NAS_TASK_LIMIT][NAS_KERNEL_STACK_BYTES];
 #define NAS_KSTACK_SENTINEL UINT64_C(0x6e61736565646b73)
@@ -64,7 +64,7 @@ void nas_task_boot_init(void) {
     nas_current_task = &task_table[0];
     nas_current_task->pid = 1;
     nas_current_task->tgid=1;
-    nas_current_task->vm_owner=nas_current_task;
+    nas_current_task->group_leader=nas_current_task;
     nas_current_task->mm=nas_mm_new();
     if (!nas_current_task->mm) nas_fail("cannot allocate init MM");
     nas_current_task->files=nas_files_new();
@@ -82,12 +82,8 @@ void nas_task_boot_init(void) {
 }
 struct nas_task *nas_task_current(void) { return nas_current_task; }
 const struct nas_task *nas_task_find(uint64_t pid) {
-    if (!pid) return 0;
-    for (unsigned i = 0; i < NAS_TASK_LIMIT; i++)
-        if (task_table[i].state != NAS_TASK_FREE &&
-            task_table[i].pid == pid)
-            return &task_table[i];
-    return 0;
+    /* All callers share the single mutable/const PID lookup owner. */
+    return nas_task_by_pid(pid);
 }
 
 /* Reuse slots, NEVER PID identities. FD tables are copied, but
@@ -111,7 +107,7 @@ struct nas_task *nas_task_fork_slot(void) {
         memcpy(child, nas_current_task, sizeof(*child));
         child->files=child_files;
         child->fds=&child_files->table;
-        child->vm_owner=child;
+        child->group_leader=child;
         child->fs=child_fs;
         child->sighand=child_sighand;
         /* memcpy must never transfer a reference without incrementing it. */
@@ -122,14 +118,18 @@ struct nas_task *nas_task_fork_slot(void) {
         /* fork copies userspace state but NEVER the parent's stack owner. */
         stack_reset(i);
         child->kernel_stack_top = stack_top(i);
-        nas_kernel_context_reset(&child->kernel_context);
-        /* fork memcpy may copy a live parent queue link: clear by value. */
-        child->kernel_wait=(struct nas_wait_entry){0};
+        /* fork memcpy may copy a live parent saved SP/queue link. Both
+         * belong to the old executing thread and must be reset together. */
+        nas_kernel_execution_reset(&child->kernel_exec);
+        child->native_trap_frame=0;
         child->pid = next_pid++;
         child->tgid=child->pid;
         child->is_thread=false;
         child->group_exit_pending=false;
-        child->ppid = nas_current_task->pid;
+        /* Linux fork/vfork parenthood belongs to the calling PROCESS,
+         * not the worker TID. CLONE_THREAD overrides this with the
+         * inherited external PPID in nas_process_clone_thread. */
+        child->ppid = nas_current_task->tgid;
         /* pgid and sid were inherited from parent; execed is per-fork. */
         child->execed = false;
         child->state = NAS_TASK_READY;
@@ -151,7 +151,7 @@ struct nas_task *nas_task_fork_slot(void) {
         child->ptrace_exit_event_sent=false;
         child->ptrace_child_initial_stop=false;
         child->ptrace_fork_pending_exit=false;
-        child->ptrace_blocked_exit_pending=false;
+        child->ptrace_event_exit_published=false;
         child->ptrace_single_step=false;
         child->resume_valid = false;
         /* Fork inherits resources, never pending waits or device watches. */
@@ -175,10 +175,14 @@ struct nas_task *nas_task_fork_slot(void) {
     return NULL;
 }
 void nas_task_adopt_orphans(uint64_t exiting_pid) {
-    if (exiting_pid <= 1 || task_table[0].pid != 1 ||
-        task_table[0].state == NAS_TASK_FREE) return;
-    for (unsigned i=1; i<NAS_TASK_LIMIT; ++i) {
+    /* execve from a nonleader can relocate PID 1 to another Task slot.
+     * Orphan adoption follows the PID identity, not boot-time slot 0. */
+    struct nas_task *init=nas_task_by_pid(1);
+    if (exiting_pid <= 1 || !init ||
+        init->state == NAS_TASK_FREE) return;
+    for (unsigned i=0; i<NAS_TASK_LIMIT; ++i) {
         struct nas_task *child=&task_table[i];
+        if(child==init)continue;
         if (child->state != NAS_TASK_FREE &&
             child->ppid == exiting_pid) child->ppid=1;
         /* ptrace is a *tracer* relationship, not inherited by init:
@@ -199,14 +203,13 @@ void nas_task_adopt_orphans(uint64_t exiting_pid) {
             child->ptrace_event=0;
             child->ptrace_child_initial_stop=false;
             child->ptrace_fork_pending_exit=false;
-            child->ptrace_blocked_exit_pending=false;
         }
     }
 }
 void nas_task_release(struct nas_task *task) {
     if (!task || task == nas_current_task) return;
     /* An abandoned kernel continuation must never leave a dangling waiter. */
-    (void)nas_wait_queue_remove(&task->kernel_wait);
+    (void)nas_wait_queue_remove(&task->kernel_exec.wait);
     /* Releases an independently owned MM reference, including on thread exit. */
     if (task->mm) { nas_mm_put(task->mm); task->mm=0; }
     if (task->fs) { nas_fs_context_put(task->fs); task->fs=0; }
@@ -217,12 +220,13 @@ void nas_task_release(struct nas_task *task) {
     task->tgid=0;
     task->is_thread=false;
     task->group_exit_pending=false;
-    task->vm_owner=task;
+    task->group_leader=task;
     task->fds=0;
     task->robust_list_head=0;
     nas_task_wait_reset(task);
-    nas_kernel_context_reset(&task->kernel_context);
-    nas_wait_entry_reset(&task->kernel_wait);
+    nas_kernel_execution_reset(&task->kernel_exec);
+    task->native_trap_frame=0; /* the freed Task owns no live trap stack */
+    task->resume_valid=false;
     task->ppid = 0;
     task->pgid = 0;
     task->sid = 0;
@@ -242,7 +246,7 @@ void nas_task_release(struct nas_task *task) {
     task->ptrace_exit_event_sent=false;
     task->ptrace_child_initial_stop=false;
     task->ptrace_fork_pending_exit=false;
-    task->ptrace_blocked_exit_pending=false;
+    task->ptrace_event_exit_published=false;
     task->ptrace_single_step=false;
     task->pending_signals = 0;
     task->vfork_child_pid = task->vfork_parent_pid = 0;

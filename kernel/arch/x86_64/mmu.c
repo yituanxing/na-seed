@@ -113,11 +113,9 @@ bool nas_mmu_bootstrap(void) {
     nas_arch_switch_page_root(TASK.mm->root_phys);
     return true;
 }
-/* Every execve owns a fresh user page-table root; the supervisor upper
- * half is inherited without allocating or freeing its boot mappings.
- * The retired root is reclaimed ONLY after CR3 switches successfully.
- * User pages are private: NaSeed has no fork/COW or shared mappings yet.
- */
+/* Every execve owns a fresh page-table root; the supervisor upper half is
+ * inherited without transferring ownership of its boot mappings. The old
+ * root is reclaimed only after CR3 switches. Fork/COW is owned by MM. */
 uint64_t nas_mmu_alloc_root(void) {
     uint64_t pa = nas_frame_alloc();
     if (!pa) return 0;
@@ -135,7 +133,7 @@ static bool free_user_tree(uint64_t table_pa, unsigned depth) {
         uint64_t pa = e & PHYS_MASK;
         if (depth && !free_user_tree(pa, depth - 1)) return false;
         table[i] = 0;
-        if (!nas_frame_free(pa)) return false;
+        if (!nas_frame_put(pa)) return false;
     }
     return true;
 }
@@ -148,9 +146,9 @@ bool nas_mmu_reclaim_root(uint64_t pa) {
         uint64_t child = e & PHYS_MASK;
         if (!free_user_tree(child, 2)) return false;
         root[i] = 0;
-        if (!nas_frame_free(child)) return false;
+        if (!nas_frame_put(child)) return false;
     }
-    return nas_frame_free(pa);
+    return nas_frame_put(pa);
 }
 /* Installing CR3 changes CPU execution state, not MM ownership.
  * In particular, a shared CLONE_VM MM must never be silently rewritten. */
@@ -159,42 +157,6 @@ void nas_mmu_switch_root(uint64_t pa) {
 }
 
 
-/* Copy every PRESENT user page into independent physical frames.
- * This is eager fork, not COW: parent/child writes must not alias.
- * Lower-half mappings are 4K; huge user mappings are not implemented.
- * On partial OOM, nas_mmu_reclaim_root() frees exactly the created tree.
- */
-static bool clone_user_level(uint64_t source_pa, uint64_t dest_pa,
-                             unsigned depth, unsigned entries) {
-    uint64_t *source = phys_table(source_pa);
-    uint64_t *dest = phys_table(dest_pa);
-    for (unsigned i = 0; i < entries; ++i) {
-        uint64_t e = source[i];
-        if (!(e & P_PRESENT)) continue;
-        if (!(e & P_USER) || (e & (1ULL << 7))) return false;
-        uint64_t child_pa = nas_frame_alloc();
-        if (!child_pa) return false;
-        dest[i] = child_pa | (e & ~PHYS_MASK);
-        if (depth) {
-            if (!clone_user_level(e & PHYS_MASK, child_pa, depth - 1, 512))
-                return false;
-        } else {
-            uint64_t *from = phys_table(e & PHYS_MASK);
-            uint64_t *to = phys_table(child_pa);
-            for (unsigned n = 0; n < PAGE / 8; n++) to[n] = from[n];
-        }
-    }
-    return true;
-}
-uint64_t nas_mmu_fork_root(uint64_t source_root) {
-    if(!source_root || (source_root & (PAGE-1)))return 0;
-    uint64_t destination = nas_mmu_alloc_root();
-    if (!destination) return 0;
-    if (clone_user_level(source_root, destination, 3, 256)) return destination;
-    if (!nas_mmu_reclaim_root(destination))
-        { nas_print("[FAIL] M1 fork private page rollback corrupted\n"); nas_arch_halt(); }
-    return 0;
-}
 static uint64_t *user_leaf_at(uint64_t root_phys,uint64_t va,
                               bool allocate_tables) {
     if (!root_phys || (root_phys&(PAGE-1)) ||
@@ -295,7 +257,7 @@ bool nas_mmu_unmap_page(uint64_t va) {
     uint64_t pa = *pte & PHYS_MASK;
     *pte = 0;
     nas_arch_invalidate_page(va);
-    return nas_frame_free(pa);
+    return nas_frame_put(pa);
 }
 
 

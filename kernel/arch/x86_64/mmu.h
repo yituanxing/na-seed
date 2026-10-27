@@ -13,7 +13,6 @@ bool nas_arch_x86_map_lapic_page(uint64_t physical);
 uint64_t nas_mmu_alloc_root(void);
 bool nas_mmu_reclaim_root(uint64_t root);
 void nas_mmu_switch_root(uint64_t root);
-uint64_t nas_mmu_fork_root(uint64_t source_root);
 bool nas_mmu_prepare_leaf(uint64_t va);
 bool nas_mmu_exchange_leaf(uint64_t va,uint64_t new_pa,unsigned prot,
                            uint64_t *old_pa);

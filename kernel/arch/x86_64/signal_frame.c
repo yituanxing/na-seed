@@ -13,6 +13,10 @@
 #include "../../panic.h"
 #include "context.h"
 #include "irq.h"
+extern void nas_print(const char *);
+extern void nas_dec(uint64_t);
+extern void nas_hex(uint64_t);
+static unsigned x86_signal_trace;
 
 /* Native Linux amd64 struct sigcontext; offsets agree with
  * arch/x86/include/uapi/asm/sigcontext.h. No libc headers in the kernel. */
@@ -42,6 +46,13 @@ bool nas_arch_signal_install_handler(uint64_t *regs,unsigned signo,
     if(!(flags & 0x04000000ULL) || !restorer || restorer>=USER_LIMIT ||
        handler>=USER_LIMIT)return false; /* x86-64 SA_RESTORER required */
     struct nas_task *t=nas_current_task;
+    if(x86_signal_trace++<32U) {
+        nas_print("[X86SIG INSTALL] pid=");nas_dec(t->pid);
+        nas_print(" sig=");nas_dec(signo);
+        nas_print(" rip=");nas_hex(regs[15]);
+        nas_print(" rsp=");nas_hex(regs[18]);
+        nas_print(" handler=");nas_hex(handler);nas_print("\n");
+    }
     struct nas_arch_context save=t->arch;
     for(unsigned i=0;i<15;i++)save.resume_regs[i]=regs[i];
     save.resume_user_rip=regs[15];
@@ -110,6 +121,18 @@ uint64_t nas_arch_signal_sigreturn(uint64_t *frame) {
     /* The handler's untrusted user frame cannot inject privileged CS,
      * SS or flags into IRET: restore the kernel-held full user snapshot.
      * A future ucontext-mutation implementation will validate each field. */
+    /* A successful sigreturn restores the ENTIRE previous user context,
+     * including RIP/RFLAGS independent of user RCX/R11. These restored
+     * return values, not the raw rt_sigreturn syscall GPR image, must
+     * remain authoritative if ptrace schedules the same kernel frame. */
+    if(x86_signal_trace++<64U) {
+        nas_print("[X86SIG RESTORE] pid=");nas_dec(t->pid);
+        nas_print(" rip=");nas_hex(t->signal_saved_arch.resume_user_rip);
+        nas_print(" rcx=");nas_hex(t->signal_saved_arch.resume_regs[7]);
+        nas_print(" rsp=");nas_hex(t->signal_saved_arch.resume_user_rsp);
+        nas_print(" userpc_before=");nas_hex(t->arch.resume_user_rip);
+        nas_print("\n");
+    }
     t->arch=t->signal_saved_arch;
     t->blocked_signals=t->signal_saved_mask;
     t->signal_frame_active=false;

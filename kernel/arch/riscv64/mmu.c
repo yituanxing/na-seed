@@ -56,7 +56,7 @@ bool nas_rv_pt_init(struct nas_rv_page_table *pt, unsigned levels) {
     pt->levels = 0;
     uint64_t root = nas_frame_alloc();
     if (!good_page_pa(root)) {
-        if (root) (void)nas_frame_free(root);
+        if (root) (void)nas_frame_put(root);
         return false;
     }
     pt->root_pa = root;
@@ -74,7 +74,7 @@ bool nas_rv_pt_prepare(const struct nas_rv_page_table *pt,uint64_t va) {
         uint64_t *slot=&tab[(va>>(12+9*level))&511];
         if(!*slot) {
             uint64_t pa=nas_frame_alloc();
-            if(!good_page_pa(pa)) {if(pa)(void)nas_frame_free(pa);goto fail;}
+            if(!good_page_pa(pa)) {if(pa)(void)nas_frame_put(pa);goto fail;}
             *slot=((pa>>12)<<10)|V;
             parents[made]=slot;made_pa[made]=pa;made++;
         } else if(!table_entry(*slot))goto fail;
@@ -84,7 +84,7 @@ bool nas_rv_pt_prepare(const struct nas_rv_page_table *pt,uint64_t va) {
     if(!leaf || ((leaf&V)&&(leaf&U)&&(leaf&(R|X))&&
                   !((leaf&W)&&!(leaf&R))))return true;
 fail:
-    while(made) {--made;*parents[made]=0;(void)nas_frame_free(made_pa[made]);}
+    while(made) {--made;*parents[made]=0;(void)nas_frame_put(made_pa[made]);}
     return false;
 }
 bool nas_rv_pt_exchange(const struct nas_rv_page_table *pt,uint64_t va,
@@ -124,7 +124,7 @@ bool nas_rv_pt_map(struct nas_rv_page_table *pt, uint64_t va,
         if (!*slot) {
             child = nas_frame_alloc();
             if (!good_page_pa(child)) {
-                if (child) (void)nas_frame_free(child);
+                if (child) (void)nas_frame_put(child);
                 goto rollback;
             }
             *slot = ((child >> 12) << 10) | V;
@@ -146,7 +146,7 @@ rollback:
     while (created) {
         created--;
         *new_parent[created] = 0;
-        (void)nas_frame_free(new_page[created]);
+        (void)nas_frame_put(new_page[created]);
     }
     return false;
 }
@@ -185,7 +185,7 @@ bool nas_rv_pt_unmap(struct nas_rv_page_table *pt, uint64_t va) {
      * parents[] pointers reside in the higher-level tables. */
     for (unsigned idx = 0; idx < pt->levels - 1; idx++) {
         if (!table_empty(table)) break;
-        if (!nas_frame_free(children[idx])) return false;
+        if (!nas_frame_put(children[idx])) return false;
         *parents[idx] = 0;
         table = (idx + 1 == pt->levels - 1) ?
                 table_at(pt->root_pa) : table_at(children[idx + 1]);
@@ -200,14 +200,14 @@ static void release_children(uint64_t pa, unsigned level) {
         if (table_entry(e)) {
             uint64_t child = entry_pa(e);
             release_children(child, level - 1);
-            (void)nas_frame_free(child);
+            (void)nas_frame_put(child);
         }
     }
 }
 void nas_rv_pt_destroy(struct nas_rv_page_table *pt) {
     if (!pt || !pt->root_pa || !valid_levels(pt->levels)) return;
     release_children(pt->root_pa, pt->levels - 1);
-    (void)nas_frame_free(pt->root_pa);
+    (void)nas_frame_put(pt->root_pa);
     pt->root_pa = 0;
     pt->levels = 0;
 }

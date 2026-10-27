@@ -54,12 +54,6 @@ void nas_mmu_switch_root(uint64_t pa) {
     struct nas_user_space s={pa,nas_arch_pt_active_levels()};
     if (!nas_arch_pt_install(&s)) nas_arch_halt();
 }
-uint64_t nas_mmu_fork_root(uint64_t source_root) {
-    if(!source_root)return 0;
-    struct nas_user_space source={source_root,nas_arch_pt_active_levels()};
-    struct nas_user_space dest={0};
-    return nas_space_clone(&dest,&source)?dest.root_pa:0;
-}
 bool nas_mmu_prepare_leaf_at(uint64_t root_phys,uint64_t va) {
     if(!root_phys || (root_phys&(PAGE-1)) ||
        (va&(PAGE-1)) || va<PAGE || va>=USER_LIMIT)return false;

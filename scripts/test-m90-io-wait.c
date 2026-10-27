@@ -26,8 +26,8 @@ int main(void) {
     nas_wait_io_arm(&task,3,1,false);
     nas_wait_io_arm(&task,126,4,false);
     assert(nas_wait_io_has_interest(&task));
-    assert(nas_slot_mask_test(&task.wait.poll_pipe_read,3));
-    assert(nas_slot_mask_test(&task.wait.poll_pipe_write,126));
+    assert(nas_slot_mask_test(&task.wait.poll_interest_read,3));
+    assert(nas_slot_mask_test(&task.wait.poll_interest_write,126));
     assert(!nas_fs_poll_ready(&task));
     state[126]=4;
     assert(nas_fs_poll_ready(&task) && calls[126]);

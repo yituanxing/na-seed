@@ -135,12 +135,26 @@ bool nas_pty_read_ready(unsigned slot) {
 }
 bool nas_pty_write_ready(unsigned slot) {
     struct pty *p=get(slot);
-    if(!p)return true;
-    if(slot_is_master[slot])return !p->slave_descriptions ||
-                                      p->slave_input.count<PTY_RING_CAP;
+    if(!p)return true; /* wake a blocked writer to report EBADF */
+    if(slot_is_master[slot]) {
+        if(!p->slave_descriptions)return true; /* wake to report EIO */
+        /* Canonical input is owned by N_TTY, not the raw slave ring.
+         * A completed line waits for its reader and must not silently
+         * consume further master writes or advertise false POLLOUT. */
+        if(p->termios.lflag&0000002)
+            return !p->input.ready && p->input.used<NAS_LDISC_CAPACITY;
+        return p->slave_input.count<PTY_RING_CAP-2;
+    }
     return !p->master_open || p->master_input.count<PTY_RING_CAP-2;
 }
 uint16_t nas_pty_poll(unsigned slot,uint16_t events) {
+    struct pty *p=get(slot);
+    if(!p)return 0x0020U; /* POLLNVAL, not a permanently asleep waiter */
+    bool peer_closed=slot_is_master[slot] ?
+        !p->slave_descriptions : !p->master_open;
+    /* Linux poll reports HUP/ERR even when the caller requested only
+     * POLLIN/POLLOUT. A disconnected peer is not a writable stream. */
+    if(peer_closed)return 0x0018U; /* POLLERR | POLLHUP */
     uint16_t ready=0;
     if((events&1U) && nas_pty_read_ready(slot))ready|=1U;
     if((events&4U) && nas_pty_write_ready(slot))ready|=4U;
@@ -192,7 +206,9 @@ uint64_t nas_pty_write(uint64_t fd,uint64_t src,uint64_t count) {
         if(!nas_user_read_bytes(src+done,&value,1))
             return done?done:(uint64_t)-EFAULT;
         if(master && (p->termios.lflag&0000002)) {
-            if(p->input.used==NAS_LDISC_CAPACITY)break;
+            /* nas_ldisc_feed() intentionally rejects input after a full
+             * canonical line. Do not count a rejected byte as written. */
+            if(p->input.ready || p->input.used==NAS_LDISC_CAPACITY)break;
             enum nas_ldisc_event ev=nas_ldisc_feed(&p->input,&p->termios,
                                                     value,pty_echo,p);
             if(ev!=NAS_LDISC_OK)nas_ldisc_reset(&p->input);

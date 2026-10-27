@@ -28,7 +28,7 @@ int main(void) {
     assert(nas_frame_get(pa) && nas_frame_refs(pa)==2);
     assert(nas_frame_get(pa) && nas_frame_refs(pa)==3);
     assert(nas_frame_put(pa) && nas_frame_refs(pa)==2);
-    assert(nas_frame_free(pa) && nas_frame_refs(pa)==1);
+    assert(nas_frame_put(pa) && nas_frame_refs(pa)==1);
     assert(nas_free_frames()==baseline-1);
     assert(nas_frame_put(pa) && nas_frame_refs(pa)==0);
     assert(nas_free_frames()==baseline);

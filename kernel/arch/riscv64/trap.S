@@ -73,6 +73,7 @@ nas_rv_full_trap:
     mv a0, sp
     call nas_rv_return_stack
     mv sp, a0
+nas_rv_resume_restore:
     ld t0,256(sp)
     csrw sepc,t0
     ld t0,264(sp)
@@ -118,6 +119,50 @@ nas_rv_full_trap:
     ld x5,40(sp)
     addi sp,sp,272
     csrrw sp,sscratch,sp
+    sret
+
+/* Only active while the scheduler is waiting on its dedicated stack.
+ * Preserve the asynchronous ABI-clobbered registers; C preserves s0-s11.
+ * Unlike user traps, sp is ALREADY a valid supervisor stack and sscratch
+ * still belongs to a suspended Task: never swap them here. */
+.p2align 2
+.global nas_rv_idle_trap
+nas_rv_idle_trap:
+    addi sp,sp,-128
+    sd ra,0(sp)
+    sd t0,8(sp)
+    sd t1,16(sp)
+    sd t2,24(sp)
+    sd a0,32(sp)
+    sd a1,40(sp)
+    sd a2,48(sp)
+    sd a3,56(sp)
+    sd a4,64(sp)
+    sd a5,72(sp)
+    sd a6,80(sp)
+    sd a7,88(sp)
+    sd t3,96(sp)
+    sd t4,104(sp)
+    sd t5,112(sp)
+    sd t6,120(sp)
+    call nas_rv_idle_irq_c
+    ld ra,0(sp)
+    ld t0,8(sp)
+    ld t1,16(sp)
+    ld t2,24(sp)
+    ld a0,32(sp)
+    ld a1,40(sp)
+    ld a2,48(sp)
+    ld a3,56(sp)
+    ld a4,64(sp)
+    ld a5,72(sp)
+    ld a6,80(sp)
+    ld a7,88(sp)
+    ld t3,96(sp)
+    ld t4,104(sp)
+    ld t5,112(sp)
+    ld t6,120(sp)
+    addi sp,sp,128
     sret
 
 .p2align 2
@@ -202,3 +247,11 @@ nas_rv_restore_fp:
 .global kernel_stack_top
 kernel_stack: .skip 16384
 kernel_stack_top:
+
+/* First dispatcher entry: resume authentic saved RV64 U-mode registers. */
+.section .text,"ax",@progbits
+.p2align 2
+.global nas_rv_user_resume_frame
+nas_rv_user_resume_frame:
+    mv sp,a0
+    j nas_rv_resume_restore

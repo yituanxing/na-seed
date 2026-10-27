@@ -371,7 +371,8 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
         TASK.mm->mmap_vmas=planned;
         return 0;
     }
-    /* Legacy physical-only mappings still use the original PTE path.
-     * They must be migrated to the logical VMA policy before COW. */
-    return nas_mmu_protect_pages(addr,pages,prot)?0:(uint64_t)-ENOMEM;
+    /* Never grant hardware write access to a leaf outside MM's VMA ledger.
+     * Such a mapping has no recoverable COW/fault policy; keeping the old
+     * PTE-only fallback would make mprotect an ownership bypass. */
+    return (uint64_t)-ENOMEM;
 }

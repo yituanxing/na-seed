@@ -36,7 +36,7 @@ bool nas_rv_pt_smoke(void) {
            !nas_rv_pt_exchange(&pt,candidate,0,0,&removed) ||
            removed!=transient ||
            nas_rv_pt_translate(&pt,candidate,&pa,0) ||
-           !nas_frame_free(removed))return false;
+           !nas_frame_put(removed))return false;
         if (nas_rv_pt_map(&pt, first, data_b, NAS_RV_PTE_R | NAS_RV_PTE_U))
             return false; /* no destructive remap */
         if (nas_rv_pt_map(&pt, nas_rv_pt_user_limit(levels), data_a,
@@ -58,7 +58,7 @@ bool nas_rv_pt_smoke(void) {
         /* Release second PTE via destroy: caller still owns the data frames. */
         nas_rv_pt_destroy(&pt);
         if (pt.root_pa || pt.levels) return false;
-        if (!nas_frame_free(data_a) || !nas_frame_free(data_b) ||
+        if (!nas_frame_put(data_a) || !nas_frame_put(data_b) ||
             nas_free_frames() != initial) return false;
     }
     return true;

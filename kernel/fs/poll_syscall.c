@@ -185,8 +185,8 @@ bool nas_fs_poll_ready(const struct nas_task *task) {
     if(task->wait.poll_tty_read && nas_tty_poll_readable())return true;
     for(unsigned slot=0;slot<NAS_OPEN_FILE_LIMIT;slot++) {
         uint16_t events=0;
-        if(nas_slot_mask_test(&task->wait.poll_pipe_read,slot))events|=1U;
-        if(nas_slot_mask_test(&task->wait.poll_pipe_write,slot))events|=4U;
+        if(nas_slot_mask_test(&task->wait.poll_interest_read,slot))events|=1U;
+        if(nas_slot_mask_test(&task->wait.poll_interest_write,slot))events|=4U;
         if(!events)continue;
         /* ERR/HUP must wake waiters even if the original requested
          * direction cannot make forward progress (EPIPE/EOF on replay). */

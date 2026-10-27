@@ -67,29 +67,49 @@ void nas_arm_timer_start(void) {
 /* Handler runs with PSTATE.I=1; user context fully saved in trap.S.
  * IAR/EOIR must be paired even when the scheduler chooses another Task.
  */
-void nas_arm_timer_irq_c(struct nas_arm_trap_frame *frame) {
+/* EL1h IRQ from the sleeping scheduler is NOT an EL0 trap. The dedicated
+ * vector keeps the kernel stack, acknowledges PPI27, and returns via its
+ * original kernel ELR/SPSR, without Task register capture or a handoff. */
+void nas_arch_idle_wait(void) {
+    __asm__ volatile("msr daifclr,#2\n\twfi\n\tmsr daifset,#2"
+                     : : : "memory");
+}
+/* GICv2 IAR may legitimately report 1023 on an IRQ signal that has
+ * deasserted before acknowledgement. It has NOT acknowledged an IRQ in
+ * that case: never write EOIR(1023) or panic the entire kernel.
+ * Any other unexpected ID remains a hard error, with a numeric trace. */
+static uint32_t arm_timer_ack_id(void) {
     uint32_t id=iface[0x0c/4];
-    if((id & 0x3ffU) != ARM_VTIMER_PPI)
+    if((id & 0x3ffU)==1023U)return 0;
+    if((id & 0x3ffU) != ARM_VTIMER_PPI) {
+        extern void nas_print(const char *);
+        extern void nas_hex(uint64_t);
+        nas_print("[ARM64 GIC] unexpected IAR=");nas_hex(id);nas_print("\n");
         nas_fail("ARM64 unexpected GIC interrupt ID");
+    }
+    return id;
+}
+static void arm_timer_complete_irq(uint32_t id) {
     rearm_timer();
+    iface[0x10/4]=id;
+    __asm__ volatile("dsb sy" : : : "memory");
+}
+void nas_arm_timer_idle_irq_c(void) {
+    uint32_t id=arm_timer_ack_id();
+    if(id)arm_timer_complete_irq(id);
+}
+void nas_arm_timer_irq_c(struct nas_arm_trap_frame *frame) {
+    uint32_t id=arm_timer_ack_id();
+    if(!id)return;
     struct nas_task *from=nas_current_task;
     if(!from || !nas_task_kernel_stack_ok(from))
         nas_fail("ARM64 timer invalid Task");
     nas_arch_save_user_frame(from,0);
     nas_arch_save_fpu(from);
-    if(nas_sched_preempt_select()) {
-        nas_arch_load_user_frame(nas_current_task,0);
-        static unsigned observed;
-        if(observed++<8) {
-            extern void nas_print(const char *);
-            extern void nas_dec(uint64_t);
-            nas_print("[M28] timer-preempt from=");
-            nas_dec(from->pid);
-            nas_print(" to=");nas_dec(nas_current_task->pid);
-            nas_print("\n");
-        }
-    }
-    iface[0x10/4]=id;
-    __asm__ volatile("dsb sy" : : : "memory");
+    /* EOI before parking this IRQ C continuation, never afterwards. */
+    arm_timer_complete_irq(id);
+    /* Native ERET resumes this exact interrupted Task; there is no
+     * second frame-copy path after the dispatcher selects another Task. */
+    nas_sched_preempt_select();
     (void)frame;
 }

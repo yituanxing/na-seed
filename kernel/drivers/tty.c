@@ -11,10 +11,13 @@
 #include "tty.h"
 #include "tty_ldisc.h"
 #include "../time/clock.h"
-#include "../arch/arch.h"
+ #include "../arch/arch.h"
 /* One console TTY: POSIX session/foreground ownership and native Linux
  * TCGETS wire ABI are common. x86 COM1, RV SBI firmware console_getchar
- * and ARM PL011 provide actual RX bytes via the same nonblocking interface. */
+ * and ARM PL011 provide actual RX bytes via the same nonblocking interface.
+ * Independent RX staging is the device counterpart of Linux's N_TTY
+ * flip buffers: readiness of a canonical line never blocks draining UART. */
+#define NAS_TTY_RX_QUEUE_CAP 512U
 static struct {
     uint64_t sid,pgid;
     struct nas_termios t;
@@ -23,6 +26,8 @@ static struct {
     bool unsupported_input;
     unsigned pending_signum;
     struct nas_ldisc ldisc;
+    uint8_t rx_queue[NAS_TTY_RX_QUEUE_CAP];
+    unsigned rx_head,rx_count;
 } tty;
 void nas_tty_init(void) {
     tty.sid=nas_current_task->sid; tty.pgid=nas_current_task->pgid;
@@ -31,6 +36,7 @@ void nas_tty_init(void) {
     tty.unsupported_input=false;
     tty.pending_signum=0;
     nas_ldisc_reset(&tty.ldisc);
+    tty.rx_head=tty.rx_count=0;
     /* Initialize native Linux termios with our shared freestanding klib. */
     memset(&tty.t, 0, sizeof(tty.t));
     tty.t.iflag=0000400; /* ICRNL */
@@ -86,12 +92,22 @@ uint64_t nas_tty_ioctl(uint64_t cmd,uint64_t arg) {
         if(!nas_user_read_bytes(arg,(uint8_t *)&t,36))
             return (uint64_t)-EFAULT;
         if(t.line) return (uint64_t)-EINVAL;
+        bool old_canon=(tty.t.lflag&0000002U)!=0;
         tty.t.iflag=t.iflag;tty.t.oflag=t.oflag;
         tty.t.cflag=t.cflag;tty.t.lflag=t.lflag;
         tty.t.line=t.line;
         for(unsigned i=0;i<19;i++)tty.t.cc[i]=t.cc[i];
+        /* Switching canonical -> raw must expose already buffered bytes;
+         * the old completed-line flag must not hold the hardware RX queue
+         * hostage after a Vim/tmux termios transition. */
+        if(old_canon && !(tty.t.lflag&0000002U)) {
+            tty.ldisc.ready=false;
+            tty.ldisc.eof=false;
+        }
         if(cmd==0x5404) {
+            /* TCSETSF flushes pending transport bytes as well as N_TTY. */
             nas_ldisc_reset(&tty.ldisc);
+            tty.rx_head=tty.rx_count=0;
             tty.unsupported_input=false;
             tty.pending_signum=0;
         }
@@ -122,6 +138,7 @@ uint64_t nas_tty_ioctl(uint64_t cmd,uint64_t arg) {
         if(self->pid==self->sid) {
             tty.sid=tty.pgid=0;tty.rx_enabled=false;
             nas_ldisc_reset(&tty.ldisc);
+            tty.rx_head=tty.rx_count=0;
             tty.unsupported_input=false;
             tty.pending_signum=0;
         }
@@ -153,25 +170,32 @@ unsigned nas_tty_take_signal(uint64_t *sid,uint64_t *pgid) {
     return sig;
 }
 void nas_tty_signal_unsupported(void) { tty.unsupported_input=true; }
-/* The bounded transport pump is the ONLY consumer of real console RX.
- * It runs at syscall boundaries and on scheduler/idle wake scans.
- * It never enters a task, uses a user address, or switches CPU context. */
+/* Physical RX owns this bounded staging FIFO, not the canonical reader.
+ * Continue draining the actual UART after one line is ready for userspace.
+ * This kernel-only pump never copies user memory or switches Task context. */
 void nas_tty_pump(void) {
-    if(!tty.rx_enabled || !nas_arch_console_has_rx() ||
-       tty.ldisc.ready || tty.unsupported_input || tty.pending_signum) return;
-    for(unsigned i=0;i<32;i++) {
+    if(!tty.rx_enabled || !nas_arch_console_has_rx())return;
+    for(unsigned i=0;i<32 && tty.rx_count<NAS_TTY_RX_QUEUE_CAP;i++) {
         uint8_t byte;
         if(!nas_arch_console_getc(&byte))break;
+         tty.rx_queue[(tty.rx_head+tty.rx_count)%NAS_TTY_RX_QUEUE_CAP]=byte;
+        tty.rx_count++;
+    }
+    for(unsigned i=0;i<32 && tty.rx_count &&
+        !tty.ldisc.ready && !tty.unsupported_input && !tty.pending_signum;i++) {
+        uint8_t byte=tty.rx_queue[tty.rx_head];
+        tty.rx_head=(tty.rx_head+1)%NAS_TTY_RX_QUEUE_CAP;
+        tty.rx_count--;
         enum nas_ldisc_event e=nas_ldisc_feed(&tty.ldisc,&tty.t,byte,tty_echo,0);
         if(e!=NAS_LDISC_OK) {
-            /* Terminal event: do not send control byte to userspace.
-             * NOFLSH=0: discard incomplete canonical input on signal. */
+            /* NOFLSH=0: discard queued canonical and transport input
+             * after terminal-generated signals, preserving Linux behavior. */
             nas_ldisc_reset(&tty.ldisc);
+            tty.rx_head=tty.rx_count=0;
             tty.pending_signum=e==NAS_LDISC_SIGNAL_INT?2U:
                 e==NAS_LDISC_SIGNAL_QUIT?3U:20U;
             break;
         }
-        if(tty.ldisc.ready)break;
     }
 }
 void nas_tty_blocking_read_start(struct nas_task *task) {
@@ -267,5 +291,5 @@ uint64_t nas_tty_read(uint64_t dst,uint64_t len,bool nonblock) {
     unsigned n=nas_ldisc_peek(&tty.ldisc,&copy,bytes,wanted);
     if(!nas_user_write_bytes(dst,bytes,n))return (uint64_t)-EFAULT;
     nas_ldisc_commit(&tty.ldisc,n);
-    return n;
+     return n;
 }
