@@ -19,6 +19,10 @@ uint64_t nas_arm_entry_stack_top;
  * keeping the active EL1 stack 16-byte aligned through all C calls. */
 uint64_t nas_arm_return_stack(const struct nas_arm_trap_frame *source) {
     const struct nas_task *task=nas_current_task;
+    /* EL0 return must never accept an EL1h exception frame. A spurious
+     * fallthrough would otherwise convert a kernel ELR to a user PC. */
+    if (!source || (source->spsr_el1 & 15U) != 0U)
+        nas_fail("ARM64 user return tried to restore privileged SPSR");
     if (!nas_task_kernel_stack_ok(task))
         nas_fail("ARM64 invalid task kernel stack at eret");
     uint64_t dest=task->kernel_stack_top-288U;

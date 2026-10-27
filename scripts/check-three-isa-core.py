@@ -212,6 +212,13 @@ arm_trap=(root/"kernel/arch/aarch64/trap.S").read_text()
 if not all(s in arm_timer for s in ('msr daifclr,#2', 'msr daifset,#2', 'nas_arm_timer_idle_irq_c')) or    'b nas_arm_upper_irq' not in arm_trap or 'nas_arm_upper_irq:' not in arm_trap or    'b nas_arm_restore_frame' not in arm_trap or \
    'if((id & 0x3ffU)==1023U)return 0;' not in arm_timer:
     raise SystemExit("ARM64 idle needs EL1h IRQ entry with in-place kernel ERET")
+# Both ARM64 exception classes need separate return boundaries: EL0 timer
+# resumes the Task's canonical frame, EL1h idle resumes its kernel frame.
+if 'bl nas_arm_lower_irq_c\\n    b nas_arm_trap_return' not in arm_trap:
+    raise SystemExit("ARM64 EL0 timer IRQ incorrectly falls into EL1h idle vector")
+arm_context=(root/"kernel/arch/aarch64/context.c").read_text()
+if 'source->spsr_el1 & 15U' not in arm_context:
+    raise SystemExit("ARM64 user-return stack has no EL0 privilege guard")
 if "nas_sched_allow_kernel_slice(" not in (root/"kernel/task/scheduler_service.c").read_text():
     raise SystemExit("kernel worker dispatch bypassed shared domain fairness policy")
 if "nas_sched_service_kernel();" not in sched:

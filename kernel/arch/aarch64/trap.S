@@ -128,7 +128,11 @@ nas_arm_lower_sync:
 nas_arm_lower_irq:
     NAS_ARM_SAVE_EL0_FRAME
     mov x0,sp
+    /* A lower-EL IRQ must RETURN through the Task-owned EL0 stack path.
+     * Without an explicit branch the next EL1h IRQ handler would save
+     * a second frame, leak SP_EL1 and ERET with corrupt Task provenance. */
     bl nas_arm_lower_irq_c
+    b nas_arm_trap_return
 
 /* Preserve and restore the actual scheduler EL1h frame in place.
  * Do not copy it into a selected Task's EL0 stack or send user signals. */
