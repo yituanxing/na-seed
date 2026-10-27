@@ -10,19 +10,30 @@ mkdir -p "$work"
 sh scripts/fetch-busybox-fixture.sh amd64 "$work/busybox"
 sh scripts/stage-busybox-rootfs.sh "$work/busybox" "$work"
 make NAS_ENABLE_LWEXT4=1 kernel build/deps/limine-binary/BOOTX64.EFI
-for case_name in cat ls; do
+for case_name in cat ls mutate; do
     stage="$work/$case_name/iso"
     mkdir -p "$stage/EFI/BOOT" "$stage/boot/limine"
     cp build/kernel.elf "$stage/boot/kernel"
     cp build/deps/limine-binary/BOOTX64.EFI "$stage/EFI/BOOT/BOOTX64.EFI"
     cp build/deps/limine-binary/limine-uefi-cd.bin "$stage/boot/limine/"
     cp "$work/rootfs.cpio" "$stage/boot/rootfs.cpio"
-    cp "$image" "$stage/boot/ext4.img"
+    ext4_module=ext4.img
+    if [ "$case_name" = mutate ]; then
+        # Explicitly volatile writable image; default cases are still RO.
+        ext4_module=naseed-ram-rw.ext4
+    fi
+    cp "$image" "$stage/boot/$ext4_module"
     case "$case_name" in
         cat) args='cat /mnt/sandbox/hardlink'
              expected='NaSeed VFS and BlockDevice real lwext4 data' ;;
         ls) args='ls -l /mnt/sandbox'
             expected='hardlink' ;;
+        mutate)
+            # Original UNMODIFIED pinned Debian BusyBox + shell, not test
+            # assembly. All operations must run in ONE live kernel mount.
+            # File contents are verified by genuine cmp, not log invention.
+            args="sh -c 'mkdir /mnt/sandbox/bb-dir && cp /mnt/sandbox/hardlink /mnt/sandbox/bb-dir/copied && cmp /mnt/sandbox/hardlink /mnt/sandbox/bb-dir/copied && mv /mnt/sandbox/bb-dir/copied /mnt/sandbox/bb-renamed && cmp /mnt/sandbox/hardlink /mnt/sandbox/bb-renamed && ln /mnt/sandbox/bb-renamed /mnt/sandbox/bb-hard && cmp /mnt/sandbox/hardlink /mnt/sandbox/bb-hard && rm /mnt/sandbox/bb-renamed /mnt/sandbox/bb-hard && rmdir /mnt/sandbox/bb-dir && echo NASEED_BUSYBOX_EXT4_RAM_RW_PASS'"
+            expected='NASEED_BUSYBOX_EXT4_RAM_RW_PASS' ;;
     esac
     cat >"$stage/boot/limine/limine.conf" <<CFG
 timeout: 0
@@ -31,7 +42,7 @@ timeout: 0
     path: boot():/boot/kernel
     cmdline: naseed.argv=/bin/busybox $args
     module_path: boot():/boot/rootfs.cpio
-    module_path: boot():/boot/ext4.img
+    module_path: boot():/boot/$ext4_module
 CFG
     iso="$work/$case_name/test.iso"
     log="$work/$case_name/serial.log"
@@ -46,6 +57,7 @@ CFG
        ! grep -Fq '[LWEXT4 GUEST] actual Limine ext4 image mounted at /mnt' "$clean" ||
        ! grep -Fq '[PASS] cmdline userspace exit 0' "$clean" ||
        ! grep -Fq "$expected" "$clean" ||
+       { [ "$case_name" = mutate ] && ! grep -Fq '[LWEXT4 GUEST] explicit ephemeral RW RamDisk only; NOT persistent storage' "$clean"; } ||
        grep -Eq '\[FAIL\]|\[FAULT\]|\[DEADLOCK\]' "$clean"; then
         echo "[LWEXT4 REAL BUSYBOX FAIL] case=$case_name rc=$rc" >&2
         tail -130 "$clean" >&2
