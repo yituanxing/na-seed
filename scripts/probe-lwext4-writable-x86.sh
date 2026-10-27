@@ -8,9 +8,16 @@ test -s "$image"
 make NAS_ENABLE_LWEXT4=1 kernel build/deps/limine-binary/BOOTX64.EFI
 mkdir -p "$root/rootfs/bin" "$root/rootfs/mnt"
 mkdir -p "$root/stage/boot/limine" "$root/stage/EFI/BOOT"
-clang --target=x86_64-unknown-none-elf -c user/ext4-guest-write.S -o "$root/probe.o"
-ld.lld -m elf_x86_64 -nostdlib -static -T user/linker.ld \
-    "$root/probe.o" -o "$root/rootfs/bin/ext4-write-probe"
+if [ -n "${NAS_LWEXT4_RW_PROBE:-}" ]; then
+    test -s "$NAS_LWEXT4_RW_PROBE"
+    cp "$NAS_LWEXT4_RW_PROBE" "$root/rootfs/bin/ext4-write-probe"
+    expected='[PASS] common VFS ext4 RAM RW native Linux ELF'
+else
+    clang --target=x86_64-unknown-none-elf -c user/ext4-guest-write.S -o "$root/probe.o"
+    ld.lld -m elf_x86_64 -nostdlib -static -T user/linker.ld \
+        "$root/probe.o" -o "$root/rootfs/bin/ext4-write-probe"
+    expected='[PASS] guest ext4 RAM RW openat/write/fsync/lseek/read/close/reopen'
+fi
 (cd "$root/rootfs" && find . -print | cpio -o -H newc) > "$root/rootfs.cpio"
 cp build/kernel.elf "$root/stage/boot/kernel"
 cp build/deps/limine-binary/BOOTX64.EFI "$root/stage/EFI/BOOT/BOOTX64.EFI"
@@ -37,7 +44,7 @@ tr -d '\r' < "$log" > "$root/clean.log"
 clean="$root/clean.log"
 if [ "$rc" -ne 1 ] ||
    ! grep -Fq '[LWEXT4 GUEST] explicit ephemeral RW RamDisk only; NOT persistent storage' "$clean" ||
-   ! grep -Fxq '[PASS] guest ext4 RAM RW openat/write/fsync/lseek/read/close/reopen' "$clean" ||
+   ! grep -Fxq "$expected" "$clean" ||
    ! grep -Fq '[PASS] cmdline userspace exit 0' "$clean" ||
    grep -Eq '\[FAIL\]|\[FAULT\]|\[DEADLOCK\]' "$clean"; then
     echo "[LWEXT4 REAL GUEST RW FAIL] x86 QEMU exit=$rc" >&2

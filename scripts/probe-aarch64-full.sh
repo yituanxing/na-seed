@@ -26,7 +26,22 @@ mmd -i "$disk@@1048576" ::/EFI ::/EFI/BOOT ::/boot ::/boot/limine
 mcopy -i "$disk@@1048576" "$efi" ::/EFI/BOOT/BOOTAA64.EFI
 mcopy -i "$disk@@1048576" "$dir/kernel.elf" ::/boot/kernel
 mcopy -i "$disk@@1048576" "$dir/user-hello.elf" ::/boot/user-hello.elf
-if [ -n "${NAS_LWEXT4_TEST_IMAGE:-}" ]; then
+if [ -n "${NAS_LWEXT4_RW_PROBE:-}" ]; then
+    test -s "$NAS_LWEXT4_TEST_IMAGE"
+    test -s "$NAS_LWEXT4_RW_PROBE"
+    mcopy -i "$disk@@1048576" "$NAS_LWEXT4_RW_PROBE" ::/boot/ext4-write-probe.elf
+    mcopy -i "$disk@@1048576" "$NAS_LWEXT4_TEST_IMAGE" ::/boot/naseed-ram-rw.ext4
+    cat > "$dir/lwext4-guest.conf" <<'RW_CFG'
+timeout: 0
+/NaSeed shared portable ELF via genuine native ext4 RAM write
+    protocol: limine
+    path: boot():/boot/kernel
+    cmdline: naseed.argv=/bin/ext4-write-probe
+    module_path: boot():/boot/ext4-write-probe.elf
+    module_path: boot():/boot/naseed-ram-rw.ext4
+RW_CFG
+    mcopy -i "$disk@@1048576" "$dir/lwext4-guest.conf" ::/boot/limine/limine.conf
+elif [ -n "${NAS_LWEXT4_TEST_IMAGE:-}" ]; then
     test -s "$NAS_LWEXT4_TEST_IMAGE"
     mcopy -i "$disk@@1048576" "$NAS_LWEXT4_TEST_IMAGE" ::/boot/ext4.img
     { cat limine-aarch64-full.conf
@@ -48,22 +63,36 @@ timeout "${limit}s" qemu-system-aarch64 \
     -drive if=none,id=esp,format=raw,file="$disk" \
     -device virtio-blk-device,drive=esp >"$log" 2>&1 < /dev/null &
 pid=$!
-sh scripts/port-boot-until.sh "$log" "$pid" "$limit" \
+if [ -n "${NAS_LWEXT4_RW_PROBE:-}" ]; then
+    sh scripts/port-boot-until.sh "$log" "$pid" "$limit" \
+      '[INIT] creating common task/VM and architecture user entry' \
+      '[PASS] common VFS ext4 RAM RW native Linux ELF' \
+      '[PASS] cmdline userspace exit 0' \
+      '[ARM64] userspace debug-exit status=0'
+else
+    sh scripts/port-boot-until.sh "$log" "$pid" "$limit" \
  '[INIT] creating common task/VM and architecture user entry' \
  '[PASS] M1 ELF / ring3 / syscall write / ENOSYS / exit' \
  '[ARM64] userspace debug-exit status=0'
+fi
 monitor=$?
 kill "$pid" 2>/dev/null || :
 wait "$pid" 2>/dev/null || :
 set -e
 if [ "$monitor" -ne 0 ] || grep -Fq '[FAIL]' "$log" ||
+   { [ -n "${NAS_LWEXT4_RW_PROBE:-}" ] &&
+     ! grep -Fq '[LWEXT4 GUEST] explicit ephemeral RW RamDisk only; NOT persistent storage' "$log"; } ||
    { [ -n "${NAS_LWEXT4_TEST_IMAGE:-}" ] &&
      ! grep -Fq '[PASS] LWEXT4 guest VFS real ext4 inode read' "$log"; }; then
     echo '[ARM64 FULL FAIL] common ELF/Task/syscall usermode did not execute' >&2
     tail -100 "$log" >&2
     exit 1
 fi
-echo '[PASS] AArch64 real EL0 full shared-kernel native user hello'
+if [ -n "${NAS_LWEXT4_RW_PROBE:-}" ]; then
+    echo '[LWEXT4 COMMON NATIVE RW PASS] ARM64 actual unprivileged Linux ELF'
+else
+    echo '[PASS] AArch64 real EL0 full shared-kernel native user hello'
+fi
 if [ -n "${NAS_LWEXT4_TEST_IMAGE:-}" ]; then
     echo '[LWEXT4 REAL GUEST PASS] aarch64 Limine ext4 image -> common VFS -> upstream lwext4'
 fi

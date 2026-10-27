@@ -9,6 +9,12 @@ on:
       - 'kernel/fs/metadata_syscall.c'
       - 'user/ext4-guest-read.S'
       - 'user/ext4-guest-write.S'
+      - 'user/ext4-guest-rw.c'
+      - 'user/ext4-guest-rw-x86.ld'
+      - 'user/**/ext4-rw-syscall.S'
+      - 'scripts/build-lwext4-native-rw-probes.sh'
+      - 'scripts/probe-riscv64-full.sh'
+      - 'scripts/probe-aarch64-full.sh'
       - 'scripts/probe-lwext4-writable-x86.sh'
       - 'scripts/probe-lwext4-syscall-x86.sh'
       - 'scripts/probe-lwext4-busybox-x86.sh'
@@ -57,3 +63,9 @@ jobs:
           sudo apt-get -y install --no-install-recommends qemu-system-misc qemu-system-arm qemu-efi-aarch64 qemu-efi-riscv64 gdisk mtools
           NAS_ENABLE_LWEXT4=1 NAS_LWEXT4_TEST_IMAGE=build/external/lwext4/ext4.img sh scripts/probe-riscv64-full.sh
           NAS_ENABLE_LWEXT4=1 NAS_LWEXT4_TEST_IMAGE=build/external/lwext4/ext4.img sh scripts/probe-aarch64-full.sh
+      - name: One source Linux ext4 RW syscalls in genuine x86-64 RV64 AArch64 QEMU
+        run: |
+          sh scripts/build-lwext4-native-rw-probes.sh
+          NAS_LWEXT4_RW_PROBE=build/lwext4-native-rw/x86_64/probe.elf sh scripts/probe-lwext4-writable-x86.sh
+          NAS_ENABLE_LWEXT4=1 NAS_LWEXT4_TEST_IMAGE=build/external/lwext4/ext4.img NAS_LWEXT4_RW_PROBE=build/lwext4-native-rw/riscv64/probe.elf sh scripts/probe-riscv64-full.sh
+          NAS_ENABLE_LWEXT4=1 NAS_LWEXT4_TEST_IMAGE=build/external/lwext4/ext4.img NAS_LWEXT4_RW_PROBE=build/lwext4-native-rw/aarch64/probe.elf sh scripts/probe-aarch64-full.sh
