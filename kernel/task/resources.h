@@ -1,6 +1,8 @@
 #ifndef NASEED_PROCESS_RESOURCES_H
 #define NASEED_PROCESS_RESOURCES_H
 #include <stdint.h>
+#include <stdbool.h>
+#include "../fs/lookup.h"
 
 /* Independently owned process resources, shared by explicit get/put.
  * Task leadership is never an allocation or lifetime owner. */
@@ -8,6 +10,9 @@ struct nas_fs_context {
     unsigned refs;
     uint32_t umask;
     char cwd[256];
+    /* CLONE_FS shares the mount ref; fork duplicates it. */
+    struct nas_fs_node cwd_node;
+    bool cwd_pinned;
 };
 struct nas_sighand {
     unsigned refs;

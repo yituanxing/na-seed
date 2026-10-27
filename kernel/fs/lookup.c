@@ -10,6 +10,8 @@ int nas_fs_resolve_existing(const char *path,bool follow_final,char out[256]) {
         pending[length]=path[length];length++;
     }
     pending[length]=0;
+    /* Linux requires the terminal slash to resolve to a directory. */
+    const bool trailing_slash=length>1 && pending[length-1]=='/';
     unsigned links=0;
     for(;;) {
         char resolved[256];
@@ -38,11 +40,14 @@ int nas_fs_resolve_existing(const char *path,bool follow_final,char out[256]) {
             unsigned tail=pos;
             while(pending[tail]=='/')tail++;
             bool last=!pending[tail];
-            if(inode.is_symlink && (!last || follow_final)) {
+            if(inode.is_symlink && (!last || follow_final || trailing_slash)) {
                 if(++links>8)return -ELOOP;
                 char expanded[256],target[256];
                 int nr=nas_vfs_readlink(&inode,resolved,target);
                 if(nr<0)return nr;
+                if(!nr)return -ENOENT;
+                if(nr>255)return -ENAMETOOLONG;
+                for(int k=0;k<nr;k++)if(!target[k])return -EINVAL;
                 unsigned size=0;
                 if(target[0]!='/') {
                     unsigned parent=used-len;
@@ -61,7 +66,7 @@ int nas_fs_resolve_existing(const char *path,bool follow_final,char out[256]) {
                 for(unsigned i=0;i<=size;i++)pending[i]=expanded[i];
                 restart=true;break;
             }
-            if(!last && !inode.is_dir)return -ENOTDIR;
+            if((!last || trailing_slash) && !inode.is_dir)return -ENOTDIR;
         }
         if(restart)continue;
         for(unsigned i=0;i<=used;i++)out[i]=resolved[i];

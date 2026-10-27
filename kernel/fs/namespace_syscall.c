@@ -152,19 +152,29 @@ static uint64_t sys_getcwd_root(uint64_t buffer, uint64_t size) {
     return nas_user_write_bytes(buffer, (const uint8_t *)current_workdir, length)
         ? length : (uint64_t)-EFAULT;
 }
-/* cwd stores a lexical path until mount+dentry refs are introduced.
- * Resolve through the one VFS namei implementation, never a filesystem
- * provider enumeration. This handles arbitrary mounted filesystems. */
-static uint64_t sys_chdir(uint64_t pathname) {
-    char path[256],resolved[256];
-    uint64_t rc=nas_fs_resolve_path((uint64_t)-100,pathname,path);
-    if((int64_t)rc<0)return rc;
+/* FS-context-owned cwd ref: no extra ISA/provider-specific unmount checks. */
+static uint64_t set_cwd_from_path(const char *path) {
+    char resolved[256];
     struct nas_fs_node node;
-    int error=nas_fs_lookup_node(path,true,&node,resolved);
-    if(error)return (uint64_t)(int64_t)error;
+    int rc=nas_fs_lookup_node(path,true,&node,resolved);
+    if(rc)return (uint64_t)(int64_t)rc;
     if(!node.is_dir)return (uint64_t)-ENOTDIR;
+    rc=nas_vfs_node_pin(&node);
+    if(rc)return (uint64_t)(int64_t)rc;
+    struct nas_fs_context *fs=TASK.fs;
+    if(fs->cwd_pinned && nas_vfs_node_unpin(&fs->cwd_node)) {
+        (void)nas_vfs_node_unpin(&node);
+        return (uint64_t)-EIO;
+    }
     memcpy(current_workdir,resolved,strlen(resolved)+1);
+    fs->cwd_node=node;
+    fs->cwd_pinned=true;
     return 0;
+}
+static uint64_t sys_chdir(uint64_t pathname) {
+    char path[256];
+    uint64_t rc=nas_fs_resolve_path((uint64_t)-100,pathname,path);
+    return (int64_t)rc<0 ? rc : set_cwd_from_path(path);
 }
 static uint64_t sys_fchdir(uint64_t fd) {
     if (fd >= 64 || TASK.fds->entries[fd].kind == FD_CLOSED)
@@ -193,9 +203,7 @@ static uint64_t sys_fchdir(uint64_t fd) {
                 opened->origin_path[0])path=opened->origin_path;
         else return (uint64_t)-ENOTDIR;
     }
-    unsigned i = 0;
-    do { current_workdir[i] = path[i]; } while (path[i++]);
-    return 0;
+    return set_cwd_from_path(path);
 }
 
 

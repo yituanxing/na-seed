@@ -45,7 +45,8 @@ struct nas_vfs_mount {
     bool read_only;  /* per-mount restriction */
     void *private_data; /* owning superblock/device adapter */
 };
-/* A shared OPEN File pins its mount exactly once, not once per FD alias. */
+/* An owned File or FS cwd context pins a mount once per owner.
+ * Dup/CLONE_FS share their owner; normal fork copies the pin. */
 int nas_vfs_unregister_mount(const struct nas_vfs_mount *mount);
 int nas_vfs_node_pin(const struct nas_fs_node *node);
 int nas_vfs_node_unpin(const struct nas_fs_node *node);

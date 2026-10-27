@@ -15,6 +15,23 @@ static void ensure_defaults(void) {
     defaults_ready = true;
     nas_vfs_register_default_mounts();
 }
+/* Canonical components keep longest-prefix lookup and busy-unmount coherent. */
+static bool canonical_mountpoint(const char *path) {
+    if(!path || path[0]!='/')return false;
+    size_t n=strlen(path);
+    if(n==1)return true;
+    if(n<2 || n>=256 || path[n-1]=='/')return false;
+    size_t start=1;
+    for(size_t i=1;i<=n;i++) {
+        if(i<n && path[i]!='/')continue;
+        size_t length=i-start;
+        if(!length || (length==1 && path[start]=='.') ||
+           (length==2 && path[start]=='.' && path[start+1]=='.'))
+            return false;
+        start=i+1;
+    }
+    return true;
+}
 static bool mount_matches(const char *prefix, const char *path) {
     size_t n = strlen(prefix);
     if (n==1 && prefix[0]=='/') return path[0]=='/';
@@ -23,10 +40,7 @@ static bool mount_matches(const char *prefix, const char *path) {
 int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
     ensure_defaults();
     if (!mount || !mount->type || !mount->type->lookup ||
-        !mount->type->name || !mount->mountpoint ||
-        mount->mountpoint[0]!='/') return -EINVAL;
-    size_t len=strlen(mount->mountpoint);
-    if (!len || len>=256 || (len>1 && mount->mountpoint[len-1]=='/'))
+        !mount->type->name || !canonical_mountpoint(mount->mountpoint))
         return -EINVAL;
     for (unsigned i=0;i<count;i++)
         if (!strcmp(mounts[i].mount->mountpoint,mount->mountpoint))return -EEXIST;

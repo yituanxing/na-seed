@@ -4,11 +4,14 @@
 #include "../kernel/fs/vfs.h"
 #include "../ports/lwext4/guest_vfs.h"
 #include "../kernel/errno.h"
+#include "../kernel/task/resources.h"
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+void nas_print(const char *s) { fputs(s,stderr); }
+void nas_arch_halt(void) { abort(); }
 static int root_lookup(const struct nas_vfs_mount *mount,const char *path,
                        struct nas_fs_node *node) {
     (void)mount;
@@ -70,9 +73,22 @@ int main(int argc,char **argv) {
     assert(nas_vfs_read_dir(&directory,"/mnt/sandbox",
                              (uint64_t)count,entries,8)>=0);
     assert(nas_vfs_read_dir(&node,"/mnt/sandbox",0,entries,8)==-ENOTDIR);
+    assert(nas_fs_lookup_node("/mnt/sandbox/hardlink/",true,&node,actual)==-ENOTDIR);
     assert(nas_vfs_node_pin(&node)==0);
     assert(nas_lwext4_ramdisk_unmount(&mounted)==-EBUSY);
     assert(nas_vfs_node_unpin(&node)==0);
+    struct nas_fs_context *cwd=nas_fs_context_new();
+    assert(cwd);
+    assert(nas_vfs_node_pin(&directory)==0);
+    cwd->cwd_node=directory;
+    cwd->cwd_pinned=true;
+    memcpy(cwd->cwd,"/mnt/sandbox",sizeof("/mnt/sandbox"));
+    struct nas_fs_context *forked=nas_fs_context_copy(cwd);
+    assert(forked && forked->cwd_pinned);
+    assert(nas_lwext4_ramdisk_unmount(&mounted)==-EBUSY);
+    nas_fs_context_put(cwd);
+    assert(nas_lwext4_ramdisk_unmount(&mounted)==-EBUSY);
+    nas_fs_context_put(forked);
     assert(nas_lwext4_ramdisk_unmount(&mounted)==0);
     assert(nas_fs_lookup_node("/mnt/sandbox/hardlink",true,&node,actual)==-ENOENT);
     free(image);
