@@ -73,12 +73,58 @@ static int64_t ext_read_inode(const struct nas_fs_node *node,
     int e=ext4_fread(&file,dst,(size_t)length,&obtained);
     return e ? -e : (int64_t)obtained;
 }
+/* A bounded immutable directory view through upstream lwext4. Each call
+ * reopens and scans the directory; later mutable dirs need owned iterator
+ * state per shared File, but no backend-specific syscall ABI dispatch. */
+static int ext_read_directory(const struct nas_fs_node *node,
+                              const char *absolute,uint64_t cursor,
+                              struct nas_vfs_dirent *out,unsigned maximum) {
+    if(!node || !node->mount || !node->mount->private_data ||
+       !absolute || !out || !maximum)return -EINVAL;
+    if(!node->is_dir)return -ENOTDIR;
+    struct nas_lwext4_mount *ctx=node->mount->private_data;
+    if(!ctx->mounted)return -ENODEV;
+    ext4_dir dir={0};
+    int error=ext4_dir_open(&dir,path_for(ctx,absolute));
+    if(error)return -error;
+    unsigned copied=0;
+    uint64_t scanned=0;
+    const ext4_direntry *entry;
+    while((entry=ext4_dir_entry_next(&dir))) {
+        if(!entry->inode)continue;
+        if(scanned++<cursor)continue;
+        struct nas_vfs_dirent *dst=&out[copied];
+        if(!entry->name_length || entry->name_length>=sizeof(dst->name)) {
+            error=EIO;break;
+        }
+        dst->ino=entry->inode;
+        dst->name_len=entry->name_length;
+        memcpy(dst->name,entry->name,entry->name_length);
+        dst->name[entry->name_length]=0;
+        switch(entry->inode_type) {
+            case EXT4_DE_REG_FILE: dst->dtype=8;break;
+            case EXT4_DE_DIR: dst->dtype=4;break;
+            case EXT4_DE_CHRDEV: dst->dtype=2;break;
+            case EXT4_DE_BLKDEV: dst->dtype=6;break;
+            case EXT4_DE_FIFO: dst->dtype=1;break;
+            case EXT4_DE_SOCK: dst->dtype=12;break;
+            case EXT4_DE_SYMLINK: dst->dtype=10;break;
+            default: dst->dtype=0;break;
+        }
+        if(++copied==maximum)break;
+    }
+    int close_error=ext4_dir_close(&dir);
+    if(error)return -error;
+    if(close_error)return -close_error;
+    return (int)copied;
+}
 static const struct nas_vfs_type ext_type={
     .name="lwext4",
     .exec_source_label="lwext4",
     .lookup=ext_lookup,
     .readlink=ext_readlink_node,
     .read_at=ext_read_inode,
+    .read_dir=ext_read_directory,
     .read_only=true /* No generic namespace/write contract exposed yet. */
 };
 static bool copy_name(char *out,size_t capacity,const char *src) {

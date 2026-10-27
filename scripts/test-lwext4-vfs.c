@@ -55,6 +55,21 @@ int main(int argc,char **argv) {
     assert(nas_vfs_read_at(&node,7,(uint8_t *)buffer,12)==12);
     assert(!memcmp(expected+7,buffer,12));
     assert(nas_vfs_read_at(&node,node.size,(uint8_t *)buffer,1)==0);
+    struct nas_fs_node directory;
+    assert(nas_fs_lookup_node("/mnt/sandbox",true,&directory,actual)==0);
+    assert(directory.is_dir);
+    struct nas_vfs_dirent entries[8]={0};
+    int count=nas_vfs_read_dir(&directory,"/mnt/sandbox",0,entries,8);
+    assert(count>=3); /* . .. hardlink, from actual ext4 */
+    bool found=false;
+    for(int i=0;i<count;i++)if(!strcmp(entries[i].name,"hardlink")) {
+        assert(entries[i].ino==node.ino && entries[i].dtype==8);
+        found=true;
+    }
+    assert(found);
+    assert(nas_vfs_read_dir(&directory,"/mnt/sandbox",
+                             (uint64_t)count,entries,8)>=0);
+    assert(nas_vfs_read_dir(&node,"/mnt/sandbox",0,entries,8)==-ENOTDIR);
     assert(nas_vfs_node_pin(&node)==0);
     assert(nas_lwext4_ramdisk_unmount(&mounted)==-EBUSY);
     assert(nas_vfs_node_unpin(&node)==0);

@@ -163,3 +163,10 @@ while `NAS_ENABLE_LWEXT4=1` links the common port. Both runners demand the
 in-guest VFS inode-read marker plus their original Linux userspace ELF
 exit markers. Normal non-ext4 runs remain unchanged. Does not constitute
 `getdents64` or writable ext4 syscall acceptance yet.
+
+### Generic directory operation and real ext4 enumeration
+The kernel now defines `nas_vfs_dirent` plus a `read_dir` provider operation
+independent of Linux dirent64 bytes. The real upstream ext4 iterator yields
+inode numbers and file types for children, with logical cursor units shared
+by open descriptions. It is a batched immutable-directory implementation,
+not yet an inode-based rename-safe iterator for future writable mounts.

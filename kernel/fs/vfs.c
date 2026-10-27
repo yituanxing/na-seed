@@ -75,6 +75,15 @@ int64_t nas_vfs_read_at(const struct nas_fs_node *node,uint64_t offset,
     if(!node->filesystem->read_at)return -EOPNOTSUPP;
     return node->filesystem->read_at(node,offset,dst,length);
 }
+int nas_vfs_read_dir(const struct nas_fs_node *node,const char *path,
+                     uint64_t cursor,struct nas_vfs_dirent *entries,
+                     unsigned maximum) {
+    if(!node || !node->filesystem || !path || !entries || !maximum)
+        return -EINVAL;
+    if(!node->is_dir)return -ENOTDIR;
+    if(!node->filesystem->read_dir)return -EOPNOTSUPP;
+    return node->filesystem->read_dir(node,path,cursor,entries,maximum);
+}
 bool nas_vfs_can_write(const struct nas_fs_node *node) {
     return node && node->filesystem && node->mount &&
            !node->filesystem->read_only && !node->mount->read_only;
