@@ -65,7 +65,7 @@ the NaSeed repo's declared project license. Do not blindly copy NaOS files.
 - Pinned exact upstream commit: `58bcf89a121b72d4fb66334f1693d3b30e4cb9c5`.
 - Kept intact under `third_party/lwext4/{include,src,blockdev}`, **never
   flattened into kernel/fs or edited as if our own native VFS code**.
-- NaSeed's translation boundary is `kernel/fs/ext4/lwext4_block.[ch]`;
+- NaSeed's translation boundary is `ports/lwext4/lwext4_block.[ch]`;
   block drivers do not call ext4 APIs.
 - Host test compiles this vendored upstream **offline**; no shallow runtime
   Git clone of a moving upstream branch.
@@ -75,3 +75,16 @@ the NaSeed repo's declared project license. Do not blindly copy NaOS files.
   distribution-license compatibility of a linked NaSeed kernel BEFORE
   landing any guest-side lwext4 integration, and do not copy NaOS GPL-3
   source into the same combined work without resolving compatibility.
+
+### Freestanding build boundary
+The upstream-to-NaSeed ABI adapter resides in `ports/lwext4/`. This is a
+permanent **port** directory, not extra code that the kernel-wide compilation
+glob should opportunistically pull in before a guest kernel allocator and the
+lwext4 filesystem implementation are linked. Host integration builds this
+port directly. Guest kernel integration must explicitly add the port and the
+required lwext4 source targets at the same time, on all architectures.
+
+The vendored original files retain their exact bytes, including upstream
+whitespace. Git checks are disabled *only for this isolated vendor subtree*
+by `.gitattributes`; all first-party source retains strict whitespace
+checks.

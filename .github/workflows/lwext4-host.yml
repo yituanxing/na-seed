@@ -4,7 +4,7 @@ on:
     paths:
       - 'third_party/lwext4/**'
       - 'kernel/block/**'
-      - 'kernel/fs/ext4/**'
+      - 'ports/lwext4/**'
       - 'scripts/check-lwext4-ramdisk.sh'
       - 'scripts/test-lwext4-ramdisk.c'
       - '.github/workflows/lwext4-host.yml'

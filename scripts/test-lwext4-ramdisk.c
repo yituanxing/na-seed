@@ -1,7 +1,7 @@
 /* A real upstream lwext4 + NaSeed BlockDevice + RAM-backed ext4 image test.
  * A second invocation verifies persistent bytes after a fresh mount. */
 #include <ext4.h>
-#include "../kernel/fs/ext4/lwext4_block.h"
+#include "../ports/lwext4/lwext4_block.h"
 #include "../kernel/block/ramdisk.h"
 #include <assert.h>
 #include <stdio.h>

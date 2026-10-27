@@ -4,7 +4,7 @@ Unmodified upstream source selection from https://github.com/gkostka/lwext4
 at exactly commit `58bcf89a121b72d4fb66334f1693d3b30e4cb9c5`.
 
 Sources kept under upstream `include/`, `src/`, `blockdev/`; NaSeed
-specific callbacks belong in `kernel/fs/ext4/lwext4_block.[ch]`.
+specific callbacks belong in `ports/lwext4/lwext4_block.[ch]`.
 
 To refresh, review upstream changes and licenses separately, copy the full
 source set, update `UPSTREAM_REVISION`, and run

@@ -3,7 +3,7 @@
 /* Exact upstream ABI, not a second hand-written ext4 block definition.
  * Build with pinned lwext4 include paths from the dependency manifest. */
 #include <ext4_blockdev.h>
-#include "../../block/device.h"
+#include "../../kernel/block/device.h"
 #include <stdbool.h>
 #include <stdint.h>
 struct nas_lwext4_device {

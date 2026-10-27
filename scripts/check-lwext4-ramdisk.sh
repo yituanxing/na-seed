@@ -16,7 +16,7 @@ cmake -S "$vendor" -B "$root/host" -DLIB_ONLY=ON -DCMAKE_BUILD_TYPE=Release >/de
 cmake --build "$root/host" --target lwext4 -j 4 >/dev/null
 cc -std=c11 -O2 -Wall -Wextra -Werror -I "$vendor/include" \
     -I "$root/host/include" -I kernel \
-    scripts/test-lwext4-ramdisk.c kernel/fs/ext4/lwext4_block.c \
+    scripts/test-lwext4-ramdisk.c ports/lwext4/lwext4_block.c \
     kernel/block/device.c kernel/block/ramdisk.c kernel/lib/string.c \
     "$root/host/src/liblwext4.a" -o "$root/ramdisk-test"
 truncate -s 32M "$root/ext4.img"

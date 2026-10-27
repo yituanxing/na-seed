@@ -3,8 +3,8 @@
  * Upstream lwext4 returns POSITIVE error numbers, NaSeed negative errno. */
 #include "lwext4_block.h"
 #include <ext4.h>
-#include "../../errno.h"
-#include "../../lib/string.h"
+#include "../../kernel/errno.h"
+#include "../../kernel/lib/string.h"
 #include <stddef.h>
 #include <stdint.h>
 static struct nas_lwext4_device *bridge(struct ext4_blockdev *bd) {
