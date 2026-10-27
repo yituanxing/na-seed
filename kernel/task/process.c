@@ -400,9 +400,14 @@ uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
             nas_print(" status="); nas_dec(code); nas_print("\n");
             /* Tracer may wait for a descendant that is not its real
              * child. Preserve zombie for the real parent to reap. */
-            if(child->ppid!=nas_current_task->pid || child->is_thread)
+            if(child->is_thread) {
+                /* No process parent can reap a CLONE_THREAD zombie.
+                 * The tracer has now consumed its final death event,
+                 * and the thread is parked on its own inactive stack. */
+                nas_task_release(child);
+            } else if(child->ppid!=nas_current_task->pid) {
                 child->ptrace_tracer_pid=0;
-            else nas_task_release(child);
+            } else nas_task_release(child);
         } else if (stopped) {
             child->stop_report_pending=false;
         } else {

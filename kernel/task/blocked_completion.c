@@ -55,7 +55,7 @@ static uint64_t task_resume_syscall(struct nas_task *task) {
  * the default-termination fast path; a custom handler runs on user return.
  */
 bool nas_sched_sigpipe_default(uint64_t fd) {
-    return TASK.ppid && fd < NAS_FD_LIMIT &&
+    return TASK.pid!=1 && fd < NAS_FD_LIMIT &&
         (TASK.fds->entries[fd].kind == FD_PIPE_W || TASK.fds->entries[fd].kind == FD_SOCKET) &&
         signal_actions[NAS_SIGPIPE][0] == 0 &&
         !(blocked_signals & (1ULL << (NAS_SIGPIPE - 1)));

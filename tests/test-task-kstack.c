@@ -167,6 +167,29 @@ int main(void) {
     ck(!nas_task_kernel_stack_ok(reused),"stack sentinel overflow detected");
     *bottom=saved;
     ck(nas_task_kernel_stack_ok(reused),"restored sentinel accepted");
+    /* A worker-created PROCESS is parented to TGID, not the caller's
+     * transient TID. It remains wait4-owned after that worker exits. */
+    struct nas_task *worker=reused;
+    worker->is_thread=true;
+    worker->tgid=init->tgid;
+    worker->group_leader=init;
+    worker->ppid=init->ppid;
+    nas_current_task=worker;
+    struct nas_task *grandchild=nas_task_fork_slot();
+    ck(grandchild && grandchild->ppid==init->pid &&
+       grandchild->pid!=worker->pid && !grandchild->is_thread,
+       "worker fork process must have group leader PID as PPID");
+    nas_current_task=init;
+    grandchild->native_trap_frame=grandchild->kernel_stack_top-160U;
+    grandchild->resume_valid=true;
+    nas_task_release(grandchild);
+    ck(!grandchild->native_trap_frame && !grandchild->resume_valid &&
+       !grandchild->kernel_exec.cpu.saved_sp,
+       "reclaimed task must have no stale kernel/user continuation");
+    nas_task_release(worker);
+    ck(init->pid==1 && init->mm->users==1,
+       "worker/child reclamation preserves the init MM owner");
+    printf("[TASK LIFETIME PASS] worker fork parent identity, detached slot cleanup\n");
     printf("[TASK STACK PASS] %u disjoint stacks, fork ownership, reuse, overflow sentinel\n", NAS_TASK_LIMIT);
     return 0;
 }

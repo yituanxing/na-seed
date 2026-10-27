@@ -206,6 +206,20 @@ task_src=(root/"kernel/task.c").read_text()
 release=task_src.split("void nas_task_release(",1)[1].split("struct nas_task *nas_task_by_pid",1)[0]
 if "task->native_trap_frame=0;" not in release or "task->resume_valid=false;" not in release:
     raise SystemExit("retired Task still exposes a parked user/kernel continuation")
+if "child->ppid = nas_current_task->tgid;" not in task_src:
+    raise SystemExit("worker fork silently reintroduced TID-based process parenthood")
+if "struct nas_task *init=nas_task_by_pid(1);" not in task_src:
+    raise SystemExit("orphan reparenting assumes PID 1 never execs from worker")
+if "native_reap_exited_threads();" not in sched or \
+   "nas_arch_restore_cpu(init);" not in sched or \
+   "dead->state==NAS_TASK_ZOMBIE && !dead->ptrace_tracer_pid" not in sched:
+    raise SystemExit("exited pthread Task/MM lifetime not reclaimed from scheduler stack")
+dispatch=(root/"kernel/syscall/dispatch.c").read_text()
+if "const bool init_shutdown = TASK.tgid==1 &&" not in dispatch or \
+   "TASK.pid==1 || nr==NAS_SC_exit_group" not in dispatch:
+    raise SystemExit("PID 1 worker SYS_exit misclassified as system shutdown")
+if "if(child->is_thread) {" not in (root/"kernel/task/process.c").read_text():
+    raise SystemExit("ptrace wait4 cannot reap a consumed nonleader exit")
 x86_timer=(root/"kernel/arch/x86_64/timer.c").read_text()
 if 'sti; hlt; cli' not in x86_timer or 'if ((frame->cs & 3U) == 0U)' not in x86_timer or    'jz nas_x86_iret_restore' not in x86_entry:
     raise SystemExit("x86 kernel PIT idle IRQ must restore CPL0 IRET without user signals")

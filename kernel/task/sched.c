@@ -46,8 +46,18 @@ static bool group_has_live_workers(const struct nas_task *leader) {
 }
 void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     struct nas_task *child = nas_current_task;
-    if (!child->ppid || !nas_task_by_pid(child->ppid))
+    /* A CLONE_THREAD child inherits the leader's external PPID, which
+     * is legitimately zero for a PID 1 worker. Validate its GROUP owner,
+     * not the (unrelated) process-parent relationship. */
+    if (child->is_thread) {
+        if (!child->group_leader ||
+            child->group_leader->state==NAS_TASK_FREE ||
+            child->group_leader->is_thread ||
+            child->group_leader->tgid!=child->tgid)
+            sched_fail("exiting thread lost its group leader");
+    } else if (!child->ppid || !nas_task_by_pid(child->ppid)) {
         sched_fail("child termination without living parent");
+    }
     nas_futex_wait_cancel(child);
     nas_process_robust_exit(child);
     nas_process_clear_tid_on_exit();
@@ -201,8 +211,40 @@ static void native_park(struct nas_task *self) {
 static void native_first_user(void) {
     nas_arch_resume_saved_user();
 }
+/* A dead nonleader is not wait4-owned. Its final syscall/IRQ C frame
+ * remains on its private stack until native_park() transfers control to
+ * scheduler_stack. Only this dispatcher may release that stack and its MM.
+ *
+ * Ptrace-attached zombies remain observable by their tracer's wait4;
+ * detached zombies have no consumer and must not exhaust the Task pool.
+ */
+static void native_reap_exited_threads(void) {
+    struct nas_task *departed=nas_current_task;
+    if(departed && departed->is_thread &&
+       departed->state==NAS_TASK_ZOMBIE) {
+        /* Do not free a root while the CPU still executes under it.
+         * PID 1 can move to another slot after exec from a nonleader:
+         * use its identity, NEVER assume a permanent slot zero. */
+        struct nas_task *init=nas_task_by_pid(1);
+        if(!init || init==departed || !nas_task_kernel_stack_ok(init) ||
+           !init->mm || init->state==NAS_TASK_FREE)
+            sched_fail("dead thread has no stable reaper CPU/MM");
+        nas_arch_restore_cpu(init);
+        nas_current_task=init;
+    }
+    for(unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
+        struct nas_task *dead=nas_task_at(slot);
+        if(dead && dead!=nas_current_task && dead->is_thread &&
+           dead->state==NAS_TASK_ZOMBIE && !dead->ptrace_tracer_pid) {
+            if(!nas_task_kernel_stack_ok(dead))
+                sched_fail("dead thread lost owned stack before reclamation");
+            nas_task_release(dead);
+        }
+    }
+}
 static void native_dispatcher(void) {
     for(;;) {
+        native_reap_exited_threads();
         nas_time_timers_tick();
         nas_sched_service_kernel();
         nas_tty_pump();

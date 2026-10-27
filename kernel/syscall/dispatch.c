@@ -710,9 +710,15 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_setsid) return nas_session_setsid();
     if (nr == NAS_SC_setpgid) return nas_session_setpgid(args[1],args[2]);
     if (nr == NAS_SC_exit || nr == NAS_SC_exit_group) { /* exit / exit_group */
-        if (TASK.ppid && nas_ptrace_exit_event(nas_current_task,args,args[1]))
+        /* A PID 1 WORKER has ppid=0, just like its leader, but SYS_exit
+         * must terminate only that thread. Conversely, exit_group from
+         * any member of PID 1 ends the entire boot process and uses the
+         * established host-observable system-shutdown acceptance. */
+        const bool init_shutdown = TASK.tgid==1 &&
+            (TASK.pid==1 || nr==NAS_SC_exit_group);
+        if (!init_shutdown && nas_ptrace_exit_event(nas_current_task,args,args[1]))
             return nas_task_schedule((uint64_t *)(uintptr_t)args);
-        if (TASK.ppid) {
+        if (!init_shutdown) {
             if (nr == NAS_SC_exit_group)
                 nas_sched_thread_group_exit((uint32_t)args[1],0);
             else nas_sched_child_exit((uint32_t)args[1], 0);

@@ -126,7 +126,10 @@ struct nas_task *nas_task_fork_slot(void) {
         child->tgid=child->pid;
         child->is_thread=false;
         child->group_exit_pending=false;
-        child->ppid = nas_current_task->pid;
+        /* Linux fork/vfork parenthood belongs to the calling PROCESS,
+         * not the worker TID. CLONE_THREAD overrides this with the
+         * inherited external PPID in nas_process_clone_thread. */
+        child->ppid = nas_current_task->tgid;
         /* pgid and sid were inherited from parent; execed is per-fork. */
         child->execed = false;
         child->state = NAS_TASK_READY;
@@ -172,10 +175,14 @@ struct nas_task *nas_task_fork_slot(void) {
     return NULL;
 }
 void nas_task_adopt_orphans(uint64_t exiting_pid) {
-    if (exiting_pid <= 1 || task_table[0].pid != 1 ||
-        task_table[0].state == NAS_TASK_FREE) return;
-    for (unsigned i=1; i<NAS_TASK_LIMIT; ++i) {
+    /* execve from a nonleader can relocate PID 1 to another Task slot.
+     * Orphan adoption follows the PID identity, not boot-time slot 0. */
+    struct nas_task *init=nas_task_by_pid(1);
+    if (exiting_pid <= 1 || !init ||
+        init->state == NAS_TASK_FREE) return;
+    for (unsigned i=0; i<NAS_TASK_LIMIT; ++i) {
         struct nas_task *child=&task_table[i];
+        if(child==init)continue;
         if (child->state != NAS_TASK_FREE &&
             child->ppid == exiting_pid) child->ppid=1;
         /* ptrace is a *tracer* relationship, not inherited by init:
