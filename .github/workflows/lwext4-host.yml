@@ -9,6 +9,7 @@ on:
       - 'kernel/fs/metadata_syscall.c'
       - 'user/ext4-guest-read.S'
       - 'scripts/probe-lwext4-syscall-x86.sh'
+      - 'scripts/probe-lwext4-busybox-x86.sh'
       - 'kernel/mm/heap.*'
       - 'scripts/check-lwext4-ramdisk.sh'
       - 'scripts/test-lwext4-ramdisk.c'
@@ -45,6 +46,8 @@ jobs:
           sh scripts/probe-lwext4-guest-x86.sh
       - name: Actual Linux openat and read on ext4 from x86 ring3 ELF
         run: sh scripts/probe-lwext4-syscall-x86.sh
+      - name: Original pinned Debian BusyBox reads and enumerates ext4 through Linux VFS
+        run: sh scripts/probe-lwext4-busybox-x86.sh
       - name: Boot the exact same real ext4 image through native RV64 and AArch64 QEMU
         run: |
           sudo apt-get -y install --no-install-recommends qemu-system-misc qemu-system-arm qemu-efi-aarch64 qemu-efi-riscv64 gdisk mtools

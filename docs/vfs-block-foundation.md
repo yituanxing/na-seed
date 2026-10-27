@@ -186,3 +186,12 @@ procfs /proc/self/fd dynamic link handling. `lseek` accepts VFS directory
 descriptions (SEEK_SET/SEEK_CUR) rather than assuming CPIO ownership.
 The real ring3 ext4 reader exercises both dirfd-relative and fchdir-relative
 openat, alongside getdents64.
+
+### Authentic application-based ext4 acceptance
+The specialized x86 UEFI QEMU gate additionally executes the **original**
+Debian 13 BusyBox 1.37.0-6+b9 static ELF from the repository's existing
+SHA256-protected multi-architecture fixture, against the mounted ext4 image:
+`busybox cat /mnt/sandbox/hardlink` and `busybox ls -l /mnt/sandbox`.
+This exercises actual library/system-call expectations and directory
+enumeration via Linux `getdents64` and file metadata; the image and BusyBox
+were not built inside NaSeed. Legacy 3-ISA tests remain unchanged.
