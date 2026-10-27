@@ -7,6 +7,7 @@
 #include "../task.h"
 #include "../lib/string.h"
 #include "file_ops.h"
+#include "syscall.h"
 
 /* A listener owns not-yet-accepted open descriptions. Connect allocates
  * BOTH real stream directions before success, so a client can write before
@@ -31,17 +32,11 @@ static struct socket_rights pending_rights[NAS_OPEN_FILE_LIMIT];
 /* A queued SCM_RIGHTS ref lives in a kernel message, not in the sender's
  * FD table. Dispose of undelivered descriptions on socket final close. */
 static void dispose_rights(unsigned slot) {
-    struct socket_rights *r=&pending_rights[slot];
-    for(unsigned i=0;i<r->count;i++) {
-        unsigned owned=r->slots[i];
-        if(owned>=NAS_OPEN_FILE_LIMIT || !nas_open_files[owned].refcount)
-            continue;
-        if(--nas_open_files[owned].refcount)continue;
-        const struct nas_file_ops *ops=nas_open_files[owned].ops;
-        if(ops && ops->release)ops->release(owned);
-        nas_open_files[owned]=(struct nas_open_file){0};
-    }
-    *r=(struct socket_rights){0};
+    /* Clear queue before recursive final puts to avoid double disposal. */
+    struct socket_rights held=pending_rights[slot];
+    pending_rights[slot]=(struct socket_rights){0};
+    for(unsigned i=0;i<held.count;i++)
+        nas_fs_drop_kernel_description(held.slots[i]);
 }
 bool nas_unix_rights_available(unsigned sender,unsigned count) {
     int peer=nas_pipe_peer_slot(sender);
@@ -111,9 +106,10 @@ void nas_unix_socket_release(unsigned slot) {
     for(unsigned i=0;i<s->count;i++) {
         unsigned pending=s->queue[(s->first+i)%NAS_UNIX_BACKLOG];
         if(pending>=NAS_OPEN_FILE_LIMIT)continue;
-        nas_pipe_release_description(pending);
-        sockets[pending]=(struct local_socket){0};
-        nas_open_files[pending]=(struct nas_open_file){0};
+        /* Pending accept endpoint has one kernel reference and may
+         * contain undelivered SCM_RIGHTS; its full backend finalizer owns
+         * both transport and message references. */
+        nas_fs_drop_kernel_description(pending);
     }
     *s=(struct local_socket){0};
 }

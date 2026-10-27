@@ -1,5 +1,6 @@
 #include <assert.h>
 #include "../kernel/fs/posix_locks.h"
+#include "../kernel/task.h"
 int main(void) {
     struct nas_posix_locks ls={0};
     assert(nas_locks_apply(&ls,100,NAS_LOCK_READ,10,20)==0);
@@ -19,5 +20,11 @@ int main(void) {
     assert(ls.count==0);
     assert(nas_locks_apply(&ls,1,NAS_LOCK_READ,0,UINT64_MAX)==0);
     assert(nas_locks_conflict(&ls,2,NAS_LOCK_WRITE,INT64_MAX,UINT64_MAX)>=0);
+    struct nas_task leader={.pid=701,.tgid=701},worker={.pid=702,.tgid=701};
+    struct nas_posix_locks group={0};
+    assert(nas_locks_apply(&group,nas_task_process_pid(&leader),NAS_LOCK_WRITE,1,3)==0);
+    assert(nas_locks_conflict(&group,nas_task_process_pid(&worker),NAS_LOCK_WRITE,1,3)==-1);
+    nas_locks_release(&group,nas_task_process_pid(&worker));
+    assert(group.count==0);
     return 0;
 }

@@ -45,7 +45,10 @@ uint64_t nas_process_futex(uint64_t *frame,uint64_t uaddr,uint64_t op,
                            uint64_t val,uint64_t timeout,uint64_t uaddr2,
                            uint64_t val3);
 unsigned nas_process_futex_wake(uint64_t uaddr,unsigned n,uint32_t mask);
-bool nas_process_waitable(const struct nas_task *child, uint64_t options,
-                          uint64_t waiter_pid);
+/* Parent wait ownership is process-wide, tracer ownership is TID-local. */
+bool nas_process_wait_owner(const struct nas_task *child,
+                            const struct nas_task *waiter);
+bool nas_process_waitable(const struct nas_task *child,uint64_t options,
+                          const struct nas_task *waiter);
 uint64_t nas_process_wait4(uint64_t pid, uint64_t status, uint64_t options, uint64_t rusage);
 #endif
