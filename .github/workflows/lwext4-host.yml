@@ -13,7 +13,7 @@ on:
 jobs:
   lwext4-real-ext4-host:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Build pinned upstream lwext4 and exercise real ext4 via NaSeed RamDisk
@@ -41,3 +41,8 @@ jobs:
           sh scripts/probe-lwext4-guest-x86.sh
       - name: Actual Linux openat and read on ext4 from x86 ring3 ELF
         run: sh scripts/probe-lwext4-syscall-x86.sh
+      - name: Boot the exact same real ext4 image through native RV64 and AArch64 QEMU
+        run: |
+          sudo apt-get -y install --no-install-recommends qemu-system-misc qemu-efi-aarch64 qemu-efi-riscv64 gdisk mtools
+          NAS_ENABLE_LWEXT4=1 NAS_LWEXT4_TEST_IMAGE=build/external/lwext4/ext4.img sh scripts/probe-riscv64-full.sh
+          NAS_ENABLE_LWEXT4=1 NAS_LWEXT4_TEST_IMAGE=build/external/lwext4/ext4.img sh scripts/probe-aarch64-full.sh

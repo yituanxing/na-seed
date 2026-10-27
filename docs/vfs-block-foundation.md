@@ -153,3 +153,13 @@ its real bytes to the UART via `write`, closes, then exits 0. The CI
 script demands both the expected file content and native PID1 completion
 marker. It does NOT count a successful kernel-only ext4 read as syscall
 acceptance.
+
+### Native RV64/AArch64 guest acceptance
+The same optional Limine ext4 module, VFS and upstream lwext4 guest bootstrap
+now run in the existing **real** UEFI/OpenSBI RV64 and EL1/EL0 AArch64 QEMU
+launchers. No cloned filesystem probe or separate target-specific algorithm:
+`NAS_LWEXT4_TEST_IMAGE=...` appends the authentic host-generated disk image,
+while `NAS_ENABLE_LWEXT4=1` links the common port. Both runners demand the
+in-guest VFS inode-read marker plus their original Linux userspace ELF
+exit markers. Normal non-ext4 runs remain unchanged. Does not constitute
+`getdents64` or writable ext4 syscall acceptance yet.

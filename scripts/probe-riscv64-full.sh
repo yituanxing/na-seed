@@ -2,7 +2,13 @@
 # Boot the whole RV64 kernel through the SAME task/ELF/FS/syscall path as x86.
 # Fail unless actual U-mode ELF executes write("hello\\n") and exit(0).
 set -eu
-sh scripts/build-riscv64-full.sh
+# A specialized gate can reuse the exact opt-in kernel ELF already built
+# in the earlier CI step. Normal native CI retains its fresh-build policy.
+if [ -n "${NAS_LWEXT4_TEST_IMAGE:-}" ] && [ -s build/port-riscv64/full/kernel.elf ]; then
+    [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ] || { echo '[LWEXT4 RV64] opt-in required' >&2; exit 1; }
+else
+    sh scripts/build-riscv64-full.sh
+fi
 dir=build/port-riscv64/full
 archive=build/deps/limine-binary.tar.gz
 if [ ! -s "$archive" ]; then
@@ -21,7 +27,16 @@ mmd -i "$disk@@1048576" ::/EFI ::/EFI/BOOT ::/boot ::/boot/limine
 mcopy -i "$disk@@1048576" "$efi" ::/EFI/BOOT/BOOTRISCV64.EFI
 mcopy -i "$disk@@1048576" "$dir/kernel.elf" ::/boot/kernel
 mcopy -i "$disk@@1048576" "$dir/user-hello.elf" ::/boot/user-hello.elf
-mcopy -i "$disk@@1048576" limine-riscv64-full.conf ::/boot/limine/limine.conf
+if [ -n "${NAS_LWEXT4_TEST_IMAGE:-}" ]; then
+    test -s "$NAS_LWEXT4_TEST_IMAGE"
+    mcopy -i "$disk@@1048576" "$NAS_LWEXT4_TEST_IMAGE" ::/boot/ext4.img
+    { cat limine-riscv64-full.conf
+      printf '    module_path: boot():/boot/ext4.img\n'
+    } > "$dir/lwext4-guest.conf"
+    mcopy -i "$disk@@1048576" "$dir/lwext4-guest.conf" ::/boot/limine/limine.conf
+else
+    mcopy -i "$disk@@1048576" limine-riscv64-full.conf ::/boot/limine/limine.conf
+fi
 firmware=/usr/share/qemu-efi-riscv64
 test -s "$firmware/RISCV_VIRT_CODE.fd"
 cp "$firmware/RISCV_VIRT_VARS.fd" "$dir/vars.fd"
@@ -42,9 +57,14 @@ monitor=$?
 kill "$pid" 2>/dev/null || :
 wait "$pid" 2>/dev/null || :
 set -e
-if [ "$monitor" -ne 0 ] || grep -Fq '[FAIL]' "$log"; then
+if [ "$monitor" -ne 0 ] || grep -Fq '[FAIL]' "$log" ||
+   { [ -n "${NAS_LWEXT4_TEST_IMAGE:-}" ] &&
+     ! grep -Fq '[PASS] LWEXT4 guest VFS real ext4 inode read' "$log"; }; then
     echo '[RV64 FULL FAIL] full kernel userland execution failed' >&2
     tail -100 "$log" >&2
     exit 1
 fi
 echo '[PASS] RV64 full common ELF/task/FS/syscall kernel real QEMU user hello'
+if [ -n "${NAS_LWEXT4_TEST_IMAGE:-}" ]; then
+    echo '[LWEXT4 REAL GUEST PASS] riscv64 Limine ext4 image -> common VFS -> upstream lwext4'
+fi

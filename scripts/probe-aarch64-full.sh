@@ -2,7 +2,11 @@
 # The complete existing ELF/exec/Task/VM/FS/syscall implementation under
 # AArch64 real QEMU EL0, not a stand-alone EL0 smoke mini-kernel.
 set -eu
-sh scripts/build-aarch64-full.sh
+if [ -n "${NAS_LWEXT4_TEST_IMAGE:-}" ] && [ -s build/port-aarch64/full/kernel.elf ]; then
+    [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ] || { echo '[LWEXT4 ARM64] opt-in required' >&2; exit 1; }
+else
+    sh scripts/build-aarch64-full.sh
+fi
 dir=build/port-aarch64/full
 mkdir -p "$dir"
 archive=build/deps/limine-binary.tar.gz
@@ -22,7 +26,16 @@ mmd -i "$disk@@1048576" ::/EFI ::/EFI/BOOT ::/boot ::/boot/limine
 mcopy -i "$disk@@1048576" "$efi" ::/EFI/BOOT/BOOTAA64.EFI
 mcopy -i "$disk@@1048576" "$dir/kernel.elf" ::/boot/kernel
 mcopy -i "$disk@@1048576" "$dir/user-hello.elf" ::/boot/user-hello.elf
-mcopy -i "$disk@@1048576" limine-aarch64-full.conf ::/boot/limine/limine.conf
+if [ -n "${NAS_LWEXT4_TEST_IMAGE:-}" ]; then
+    test -s "$NAS_LWEXT4_TEST_IMAGE"
+    mcopy -i "$disk@@1048576" "$NAS_LWEXT4_TEST_IMAGE" ::/boot/ext4.img
+    { cat limine-aarch64-full.conf
+      printf '    module_path: boot():/boot/ext4.img\n'
+    } > "$dir/lwext4-guest.conf"
+    mcopy -i "$disk@@1048576" "$dir/lwext4-guest.conf" ::/boot/limine/limine.conf
+else
+    mcopy -i "$disk@@1048576" limine-aarch64-full.conf ::/boot/limine/limine.conf
+fi
 fw=/usr/share/qemu-efi-aarch64/QEMU_EFI.fd
 test -s "$fw"
 log="$dir/serial.log"
@@ -43,9 +56,14 @@ monitor=$?
 kill "$pid" 2>/dev/null || :
 wait "$pid" 2>/dev/null || :
 set -e
-if [ "$monitor" -ne 0 ] || grep -Fq '[FAIL]' "$log"; then
+if [ "$monitor" -ne 0 ] || grep -Fq '[FAIL]' "$log" ||
+   { [ -n "${NAS_LWEXT4_TEST_IMAGE:-}" ] &&
+     ! grep -Fq '[PASS] LWEXT4 guest VFS real ext4 inode read' "$log"; }; then
     echo '[ARM64 FULL FAIL] common ELF/Task/syscall usermode did not execute' >&2
     tail -100 "$log" >&2
     exit 1
 fi
 echo '[PASS] AArch64 real EL0 full shared-kernel native user hello'
+if [ -n "${NAS_LWEXT4_TEST_IMAGE:-}" ]; then
+    echo '[LWEXT4 REAL GUEST PASS] aarch64 Limine ext4 image -> common VFS -> upstream lwext4'
+fi
