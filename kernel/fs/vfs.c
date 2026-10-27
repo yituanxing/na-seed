@@ -167,6 +167,17 @@ static int vfs_parent(const char *path,struct nas_fs_node *parent,
     canonical[prefix+basename_len]=0;
     return 0;
 }
+/* A namespace mutation must not remove, rename or replace an active
+ * mountpoint. Even an empty mounted directory is BUSY in Linux; choosing
+ * the underlying provider by its parent would otherwise bypass the VFS
+ * mount tree and corrupt a different filesystem's directory. */
+static bool active_mountpoint(const char *path) {
+    if(!path)return false;
+    ensure_defaults();
+    for(unsigned i=0;i<count;i++)
+        if(!strcmp(mounts[i].mount->mountpoint,path))return true;
+    return false;
+}
 static int vfs_mutable_parent(const char *path,struct nas_fs_node *parent,
                               char canonical[256]) {
     int rc=vfs_parent(path,parent,canonical);
@@ -234,6 +245,7 @@ int nas_vfs_unlink(const char *path,uint64_t flags) {
     struct nas_fs_node parent;char canonical[256];
     int rc=vfs_mutable_parent(path,&parent,canonical);
     if(rc)return rc;
+    if(active_mountpoint(canonical))return -EBUSY;
     return parent.filesystem->unlink ? parent.filesystem->unlink(parent.mount,canonical,flags) : -EOPNOTSUPP;
 }
 int nas_vfs_rename(const char *oldpath,const char *newpath,uint64_t flags) {
@@ -243,6 +255,8 @@ int nas_vfs_rename(const char *oldpath,const char *newpath,uint64_t flags) {
     if(rc)return rc;
     rc=vfs_parent(newpath,&new_parent,new_canonical);
     if(rc)return rc;
+    if(active_mountpoint(old_canonical) || active_mountpoint(new_canonical))
+        return -EBUSY;
     if(old_parent.mount!=new_parent.mount)return -EXDEV;
     if(!nas_vfs_can_write(&old_parent))return -EROFS;
     return old_parent.filesystem->rename ?

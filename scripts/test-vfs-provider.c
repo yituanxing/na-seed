@@ -291,6 +291,9 @@ int main(void) {
     assert(nas_vfs_register_mount(&bad_mount)==-EINVAL);
     assert(nas_vfs_register_mount(&ext_mount)==0);
     assert(nas_vfs_mkdir("/mnt",0755)==-EEXIST);
+    assert(nas_vfs_unlink("/mnt",0x200ULL)==-EBUSY);
+    assert(nas_vfs_rename("/mnt","/tmp/renamed",0)==-EBUSY);
+    assert(nas_vfs_rename("/tmp/demo","/mnt",0)==-EBUSY);
     assert(nas_vfs_register_mount(&ext_mount)==-EEXIST);
     assert(nas_fs_lookup_node("/mnt/hello",true,&n,resolved)==0);
     assert(!strcmp(n.filesystem->name,"ext-mount-mock"));

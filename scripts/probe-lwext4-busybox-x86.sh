@@ -10,13 +10,39 @@ mkdir -p "$work"
 sh scripts/fetch-busybox-fixture.sh amd64 "$work/busybox"
 sh scripts/stage-busybox-rootfs.sh "$work/busybox" "$work"
 make NAS_ENABLE_LWEXT4=1 kernel build/deps/limine-binary/BOOTX64.EFI
+# Generate a *real guest-owned* shell script for the multi-applet case,
+# not an overlong quoted Limine argv. Its bootstrap argv stays within
+# nas_parse_boot_argv's documented 256-byte limit.
+cat > "$work/rootfs/etc/ext4-mutate.sh" <<'MUTATE_SCRIPT'
+#!/bin/sh
+set -e
+/bin/busybox mkdir /mnt/sandbox/bb-dir
+/bin/busybox cp /mnt/sandbox/hardlink /mnt/sandbox/bb-dir/copied
+/bin/busybox cmp /mnt/sandbox/hardlink /mnt/sandbox/bb-dir/copied
+/bin/busybox mv /mnt/sandbox/bb-dir/copied /mnt/sandbox/bb-renamed
+/bin/busybox cmp /mnt/sandbox/hardlink /mnt/sandbox/bb-renamed
+/bin/busybox ln /mnt/sandbox/bb-renamed /mnt/sandbox/bb-hard
+/bin/busybox cmp /mnt/sandbox/hardlink /mnt/sandbox/bb-hard
+/bin/busybox rm /mnt/sandbox/bb-renamed /mnt/sandbox/bb-hard
+/bin/busybox rmdir /mnt/sandbox/bb-dir
+/bin/busybox echo NASEED_BUSYBOX_EXT4_RAM_RW_PASS
+MUTATE_SCRIPT
+chmod 755 "$work/rootfs/etc/ext4-mutate.sh"
+(
+    cd "$work/rootfs"
+    find . -print | LC_ALL=C sort | cpio -o -H newc --quiet --owner=0:0
+) > "$work/rootfs-mutate.cpio"
 for case_name in cat ls mutate; do
     stage="$work/$case_name/iso"
     mkdir -p "$stage/EFI/BOOT" "$stage/boot/limine"
     cp build/kernel.elf "$stage/boot/kernel"
     cp build/deps/limine-binary/BOOTX64.EFI "$stage/EFI/BOOT/BOOTX64.EFI"
     cp build/deps/limine-binary/limine-uefi-cd.bin "$stage/boot/limine/"
-    cp "$work/rootfs.cpio" "$stage/boot/rootfs.cpio"
+    if [ "$case_name" = mutate ]; then
+        cp "$work/rootfs-mutate.cpio" "$stage/boot/rootfs.cpio"
+    else
+        cp "$work/rootfs.cpio" "$stage/boot/rootfs.cpio"
+    fi
     ext4_module=ext4.img
     if [ "$case_name" = mutate ]; then
         # Explicitly volatile writable image; default cases are still RO.
@@ -29,10 +55,9 @@ for case_name in cat ls mutate; do
         ls) args='ls -l /mnt/sandbox'
             expected='hardlink' ;;
         mutate)
-            # Original UNMODIFIED pinned Debian BusyBox + shell, not test
-            # assembly. All operations must run in ONE live kernel mount.
-            # File contents are verified by genuine cmp, not log invention.
-            args="sh -c 'mkdir /mnt/sandbox/bb-dir && cp /mnt/sandbox/hardlink /mnt/sandbox/bb-dir/copied && cmp /mnt/sandbox/hardlink /mnt/sandbox/bb-dir/copied && mv /mnt/sandbox/bb-dir/copied /mnt/sandbox/bb-renamed && cmp /mnt/sandbox/hardlink /mnt/sandbox/bb-renamed && ln /mnt/sandbox/bb-renamed /mnt/sandbox/bb-hard && cmp /mnt/sandbox/hardlink /mnt/sandbox/bb-hard && rm /mnt/sandbox/bb-renamed /mnt/sandbox/bb-hard && rmdir /mnt/sandbox/bb-dir && echo NASEED_BUSYBOX_EXT4_RAM_RW_PASS'"
+            # Boot parser accepts bounded vectors, not long shell source.
+            # The executable remains the unmodified pinned Debian BusyBox.
+            args='sh /etc/ext4-mutate.sh'
             expected='NASEED_BUSYBOX_EXT4_RAM_RW_PASS' ;;
     esac
     cat >"$stage/boot/limine/limine.conf" <<CFG
