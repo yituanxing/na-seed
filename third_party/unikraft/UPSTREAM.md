@@ -40,3 +40,19 @@ for the upstream public block-wire header; platform VirtIO operations use
 NaSeed's existing transport code, not fake Unikraft config/IRQ providers.
 License notices on all imported files are unchanged; file-level notices
 must be kept if the full implementation is eventually ported.
+
+## Split queue adapter (2026-10-27)
+
+The *original upstream* vring layout and algorithms in `virtio_ring.h`
+remain byte-identical. NaSeed's single `ports/unikraft/split_queue.[ch]`
+is a minimal allocation/submit/completion bridge to the existing transport
+and DMA ABI. It rejects non-coherent devices for now rather than pretending
+to support cache maintenance. Failures poison the queue; close resets the
+transport before freeing DMA memory.
+
+The host regression uses the actual upstream layout, tests descriptor
+chains, 1024 completion/index wraps, out-of-order completion, malicious
+used-ring IDs, and DMA cleanup. Three ISAs compile the same source.
+These are MOCK device completions; **no real VirtIO-Blk implementation
+is linked or claimed**, and physical-disk/ext4 tests must stay red until
+a mature upstream block driver is actually integrated and QEMU tested.

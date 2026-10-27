@@ -79,3 +79,20 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
   kernel/drivers/virtio/mmio.c -o build/block-foundation/test-virtio-transport
 build/block-foundation/test-virtio-transport
 
+
+# Shared split-virtqueue adapter uses upstream Unikraft ring layout without
+# importing a fake storage driver. It is a prerequisite, NOT disk acceptance.
+cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
+  -I third_party/unikraft/include -I ports/unikraft/include \
+  scripts/test-virtio-split-queue.c ports/unikraft/split_queue.c \
+  kernel/drivers/port/dma.c kernel/drivers/virtio/transport.c \
+  kernel/lib/string.c -o build/block-foundation/test-virtio-split-queue
+build/block-foundation/test-virtio-split-queue
+if command -v clang >/dev/null 2>&1; then
+  for target in x86_64-unknown-none-elf riscv64-unknown-elf aarch64-none-elf; do
+    clang --target="$target" -std=c11 -Wall -Wextra -Werror \
+      -ffreestanding -fno-builtin -I kernel \
+      -I third_party/unikraft/include -I ports/unikraft/include \
+      -fsyntax-only ports/unikraft/split_queue.c
+  done
+fi
