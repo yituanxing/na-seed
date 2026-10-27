@@ -166,6 +166,10 @@ if "frame[15]=task->arch.resume_user_rip;" not in x86_context or \
     raise SystemExit("native x86 signal/ptrace return did not restore Task-owned IRET")
 if "void nas_sched_preempt_select(void)" not in sched:
     raise SystemExit("native scheduler still exposes a foreign-Task IRQ frame copy API")
+if "native_irq_preempt_source=self;" not in sched or \
+   "interrupted!=next" not in sched or \
+   'nas_print("[M28] timer-preempt from=")' not in sched:
+    raise SystemExit("M28 native IRQ acceptance must prove actual distinct-Task preemption")
 if "nas_arch_kernel_swap(&self->kernel_exec.cpu,&scheduler_cpu)" not in sched:
     raise SystemExit("Task does not park its native C continuation")
 if "nas_arch_kernel_swap(&scheduler_cpu,&next->kernel_exec.cpu)" not in sched:

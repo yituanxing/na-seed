@@ -178,6 +178,10 @@ static _Alignas(16) uint8_t task_bootstrap[NAS_TASK_LIMIT][NAS_TASK_BOOTSTRAP_BY
 static struct nas_kernel_context scheduler_cpu;
 static bool scheduler_ready;
 static unsigned native_cursor;
+/* Single CPU, masked inside the IRQ-to-scheduler C continuation. A timer
+ * preemption has a real Task owner until the dispatcher commits its next
+ * native context; it is NOT equivalent to any cooperative syscall yield. */
+static struct nas_task *native_irq_preempt_source;
 static void native_dispatcher(void);
 static void native_ensure_scheduler(void) {
     if(scheduler_ready)return;
@@ -247,13 +251,32 @@ static void native_dispatcher(void) {
                     native_first_user))
                     sched_fail("native Task bootstrap allocation");
             }
+            /* The old frame-copy API emitted the M28 timer IRQ evidence
+             * only when two distinct user tasks actually switched.
+             * Keep that same fail-closed observable contract after moving
+             * to native stacks: a cooperative switch may NOT masquerade
+             * as an IRQ preemption. Record after target context validation
+             * and CPU/MM binding, immediately before the true stack swap. */
+            if(native_irq_preempt_source) {
+                struct nas_task *interrupted=native_irq_preempt_source;
+                native_irq_preempt_source=0;
+                if(interrupted!=next) {
+                    static unsigned native_irq_reports;
+                    if(native_irq_reports++<32U) {
+                        nas_print("[M28] timer-preempt from=");
+                        nas_dec(interrupted->pid);
+                        nas_print(" to=");nas_dec(next->pid);
+                        nas_print("\n");
+                    }
+                }
+            }
             nas_arch_kernel_swap(&scheduler_cpu,&next->kernel_exec.cpu);
             continue;
         }
         /* The IRQ-safe idle sleeping transition requires a separate
          * interrupt ownership change; never WFI/HLT with IRQs masked. */
         nas_task_cpu_account_switch(0);
-         bool external=nas_time_timers_armed() ||
+        bool external=nas_time_timers_armed() ||
             nas_kthread_deadlines_armed() || nas_kthread_runnable();
         for(unsigned i=0;i<NAS_TASK_LIMIT && !external;i++)
             external=nas_task_wait_needs_idle_poll(nas_task_at(i));
@@ -280,6 +303,9 @@ void nas_sched_preempt_select(void) {
     if(!self || self->state!=NAS_TASK_RUNNING)return;
     self->resume_valid=true;
     self->state=NAS_TASK_READY;
+    if(native_irq_preempt_source)
+        sched_fail("nested native IRQ preempt ownership");
+    native_irq_preempt_source=self;
     native_park(self);
     /* The IRQ stack remains owned by the same Task. Return directly to
      * its saved exception frame, after ordinary pending-signal delivery. */
