@@ -47,6 +47,7 @@ __attribute__((noreturn)) void guest_main(void) {
     guest_syscall(OP_EXIT,0,0,0,0);
     for(;;){}
 fail:
+    ; /* C11 requires a statement immediately after a label. */
     char digits[3];
     digits[0]=(char)('0'+stage/10);
     digits[1]=(char)('0'+stage%10);
