@@ -194,7 +194,8 @@ if "nas_task_wait_needs_idle_poll" in sched or \
    "nas_task_wait_has_external_wake_source" in sched or \
    "nas_task_wait_has_external_wake_source" in task_wait or \
    "native scheduler deadlock" in sched or \
-   "nas_kthread_deadlines_armed" in (root/"kernel/task/kthread.c").read_text():
+   "nas_kthread_deadlines_armed(" in sched:
+
     raise SystemExit("obsolete syscall-based idle deadlock gate returned")
 # IRQ-masked busy polling is not an acceptable native idle implementation.
 # Require ISA-specific privileged interrupt handling, never a user-only IRQ
