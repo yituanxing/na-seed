@@ -25,6 +25,7 @@ static struct bootfs_entry entries[]={
 };
 static struct nas_tmp_file tmp_demo={.used=true,.mode=0100644,.size=4,.ino=101};
 static struct nas_tmp_file fixture_symlink={.used=true,.mode=0120777,.size=9,.ino=102};
+static struct nas_tmp_file fixture_dir_link={.used=true,.mode=0120777,.size=4,.ino=103};
 bool bootfs_mounted(void){return true;}
 const struct bootfs_entry *bootfs_find(const char *path){
     for(unsigned i=0;i<sizeof(entries)/sizeof(entries[0]);i++)
@@ -40,12 +41,14 @@ bool bootfs_is_link(const struct bootfs_entry *e){
 struct nas_tmp_file *tmp_find(const char *path){
     if(!strcmp(path,"/tmp/demo"))return &tmp_demo;
     if(!strcmp(path,"/tmp/link"))return &fixture_symlink;
+    if(!strcmp(path,"/tmp/alias"))return &fixture_dir_link;
     return NULL;
 }
 bool tmp_is_link(const struct nas_tmp_file *f){
     return f && (f->mode&0170000U)==0120000U;
 }
 int tmp_link_target(const struct nas_tmp_file *f,char target[256]){
+    if(f==&fixture_dir_link){memcpy(target,"/tmp",5);return 0;}
     if(f!=&fixture_symlink)return -EINVAL;
     memcpy(target,abs_link,sizeof(abs_link));return 0;
 }
@@ -202,6 +205,12 @@ int main(void) {
     assert(nas_vfs_rename("/tmp/demo","/tmp/other",0)==0);
     assert(nas_vfs_link("/tmp/demo","/tmp/linked")==0);
     assert(nas_vfs_symlink("../target","/tmp/newlink")==0);
+    assert(nas_vfs_mkdir("/",0755)==-EEXIST);
+    assert(nas_vfs_mkdir("/tmp/alias/new",0755)==0);
+    assert(nas_vfs_unlink("/tmp/alias/demo",0)==0);
+    assert(nas_vfs_rename("/tmp/alias/demo","/tmp/alias/other",0)==0);
+    assert(nas_vfs_link("/tmp/alias/demo","/tmp/alias/linked")==0);
+    assert(nas_vfs_symlink("../target","/tmp/alias/newlink")==0);
     assert(nas_vfs_mkdir("/bin/new",0755)==-EROFS);
     assert(nas_vfs_unlink("/bin/demo",0)==-EROFS);
     assert(nas_vfs_rename("/tmp/demo","/bin/other",0)==-EXDEV);
