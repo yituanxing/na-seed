@@ -7,4 +7,5 @@
  * negative errno for a broken virtio-blk device. */
 int nas_virtio_mmio_blk_attach(volatile uint32_t *registers);
 unsigned nas_virtio_mmio_blk_count(void);
+int nas_virtio_mmio_blk_driver_register(void);
 #endif

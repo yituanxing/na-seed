@@ -42,3 +42,22 @@ if command -v clang >/dev/null 2>&1; then
       -fsyntax-only kernel/drivers/block/virtio_mmio_blk.c
   done
 fi
+
+# Hardware-provider-independent bus matching, backend binding and lifetime.
+cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
+  scripts/test-driver-bus.c kernel/drivers/core/bus.c \
+  kernel/drivers/port/block.c kernel/block/device.c kernel/lib/string.c \
+  -o build/block-foundation/test-driver-bus
+build/block-foundation/test-driver-bus
+cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
+  scripts/test-driver-dma.c kernel/drivers/port/dma.c \
+  -o build/block-foundation/test-driver-dma
+build/block-foundation/test-driver-dma
+if command -v clang >/dev/null 2>&1; then
+  for target in x86_64-unknown-none-elf riscv64-unknown-elf aarch64-none-elf; do
+    for source in kernel/drivers/core/bus.c kernel/drivers/port/dma.c; do
+      clang --target="$target" -std=c11 -Wall -Wextra -Werror \
+        -ffreestanding -fno-builtin -I kernel -fsyntax-only "$source"
+    done
+  done
+fi

@@ -75,3 +75,37 @@ depends on `ukblkdev`, `uksglist`, VirtIO bus, PCI/MMIO and other uk APIs;
 a full source-port must preserve original algorithms and only adapt
 platform hooks in `ports/unikraft`. Do not claim the source is fully
 integrated until it links and passes the same persistent QEMU guest tests.
+
+## Cross-driver bus binding and DMA boundary (second implementation batch)
+
+The kernel now owns a **single** `nas_bus_device`/`nas_bus_driver`
+registry in `kernel/drivers/core/bus.[ch]`. Transport/platform discovery
+publishes persistent device descriptors, drivers register match/probe and
+optional removal, and the bus binds them. Unmatched device types stay
+available for late driver registration. No VFS calls or syscall knowledge
+enter the bus. Busy mounts prevent BlockDevice removal; bus unbind
+also respects driver-controlled removal. Hot removal of the initial legacy
+VirtIO-MMIO fallback is deliberately unsupported (no .remove), never
+pretends to have safely detached DMA.
+
+The first live consumer is **AArch64 QEMU VirtIO-MMIO**: the platform
+enumerates valid modern MMIO slots, registers generic bus devices, and
+the VirtIO-Blk driver binds type=2. A second VirtIO device can be
+registered later without extending the platform's if/else chain.
+`NAS_BUS_PCI` is declared for future physical PCI discovery but is
+**not** evidence that PCI probing works today.
+
+The DMA API `kernel/drivers/port/dma.[ch]` makes device DMA address,
+CPU alias, allocation, synchronization and release separate from the driver.
+The initial provider explicitly declares QEMU **identity, coherent** memory.
+Unprovided noncoherent sync fails closed; a future real-hardware provider
+must supply cache maintenance and, if necessary, IOMMU mappings.
+The genuine VirtIO submit path allocates three pages through this API,
+programs bus addresses and synchronizes ownership at request boundaries.
+
+Host regression tests drive this bus with a second synthetic driver,
+verify late binding, failed busy unbind and explicit removal. DMA tests
+verify allocation/release/bounds and refusal of unsupported noncoherent
+sync. The full original AArch64 physical QEMU disk write, FLUSH, and
+host e2fsck remain the acceptance gate. No new third-party full driver
+has been claimed.

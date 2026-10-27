@@ -8,6 +8,8 @@
  */
 #include "virtio_mmio_blk.h"
 #include "../port/block.h"
+#include "../port/dma.h"
+#include "../core/bus.h"
 #include <virtio/virtio_ring.h>
 #include "../../mm/frame.h"
 #include "../../errno.h"
@@ -62,7 +64,8 @@ struct virt_blk {
     struct nas_port_block port;
     struct vring vr;
     volatile uint32_t *regs;
-    uint64_t queue_pa,request_pa,payload_pa;
+    const struct nas_dma_provider *dma;
+    struct nas_dma_page queue,request,payload;
     uint16_t used_index;
     bool failed;
 };
@@ -74,17 +77,14 @@ static unsigned disk_count;
 static void barrier(void) {
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
 }
-static void *cpu_alias(uint64_t pa) {
-    return (void *)(uintptr_t)(nas_hhdm_offset()+pa);
-}
 static void release_pages(struct virt_blk *d) {
-    if(d->payload_pa){(void)nas_frame_put(d->payload_pa);d->payload_pa=0;}
-    if(d->request_pa){(void)nas_frame_put(d->request_pa);d->request_pa=0;}
-    if(d->queue_pa){(void)nas_frame_put(d->queue_pa);d->queue_pa=0;}
+    if (d->payload.cpu) (void)nas_dma_free_page(d->dma,&d->payload);
+    if (d->request.cpu) (void)nas_dma_free_page(d->dma,&d->request);
+    if (d->queue.cpu) (void)nas_dma_free_page(d->dma,&d->queue);
 }
 static int virtio_submit(struct virt_blk *d,uint32_t type,
                          uint64_t sector,void *data,uint32_t bytes) {
-    if(!d || d->failed || !d->queue_pa || bytes>MAX_TRANSFER)
+    if(!d || d->failed || !d->queue.cpu || bytes>MAX_TRANSFER)
         return -EIO;
     if((type==REQ_FLUSH && bytes) ||
        (type!=REQ_FLUSH && (!bytes || !data)))return -EINVAL;
@@ -93,26 +93,30 @@ static int virtio_submit(struct virt_blk *d,uint32_t type,
     struct vring_desc *desc=d->vr.desc;
     volatile struct vring_avail *avail=d->vr.avail;
     volatile struct vring_used *used=d->vr.used;
-    struct virtio_header *hdr=(struct virtio_header *)cpu_alias(d->request_pa);
+    struct virtio_header *hdr=(struct virtio_header *)d->request.cpu;
     volatile uint8_t *status=(volatile uint8_t *)
-                              cpu_alias(d->request_pa+0x20U);
+                              (uint8_t *)d->request.cpu+0x20U;
     hdr->type=type;hdr->reserved=0;hdr->sector=sector;
     *status=0xffU;
-    if(type==REQ_OUT)memcpy(cpu_alias(d->payload_pa),data,bytes);
+    if(type==REQ_OUT)memcpy(d->payload.cpu,data,bytes);
     desc[0]=(struct vring_desc){
-        .addr=d->request_pa,.len=sizeof(*hdr),
+        .addr=d->request.bus_address,.len=sizeof(*hdr),
         .flags=VRING_DESC_F_NEXT,.next=type==REQ_FLUSH?2U:1U
     };
     if(type!=REQ_FLUSH)
         desc[1]=(struct vring_desc){
-            .addr=d->payload_pa,.len=bytes,
+            .addr=d->payload.bus_address,.len=bytes,
             .flags=VRING_DESC_F_NEXT|(type==REQ_IN?VRING_DESC_F_WRITE:0U),.next=2U
         };
     desc[2]=(struct vring_desc){
-        .addr=d->request_pa+0x20U,.len=1,.flags=VRING_DESC_F_WRITE
+        .addr=d->request.bus_address+0x20U,.len=1,.flags=VRING_DESC_F_WRITE
     };
     /* A single inflight chain is serialized on the kernel CPU. All split
      * queue entries and DMA frames are physical and have stable lifetimes. */
+    if(nas_dma_sync(d->dma,&d->request,0,64U,NAS_DMA_TO_DEVICE) ||
+       nas_dma_sync(d->dma,&d->queue,0,4096U,NAS_DMA_TO_DEVICE) ||
+       (bytes && type==REQ_OUT &&
+        nas_dma_sync(d->dma,&d->payload,0,bytes,NAS_DMA_TO_DEVICE))) return -EIO;
     uint16_t submit_index=avail->idx;
     avail->ring[submit_index%QUEUE_SIZE]=0;
     barrier();
@@ -132,11 +136,15 @@ static int virtio_submit(struct virt_blk *d,uint32_t type,
         return -EIO;
     }
     barrier();
+    if(nas_dma_sync(d->dma,&d->queue,0,4096U,NAS_DMA_FROM_DEVICE) ||
+       nas_dma_sync(d->dma,&d->request,0,64U,NAS_DMA_FROM_DEVICE) ||
+       (bytes && type==REQ_IN &&
+        nas_dma_sync(d->dma,&d->payload,0,bytes,NAS_DMA_FROM_DEVICE))) return -EIO;
     unsigned item=d->used_index%QUEUE_SIZE;
     uint32_t id=used->ring[item].id;
     d->used_index++;
     if(id!=0 || *status!=0)return *status==2?-EOPNOTSUPP:-EIO;
-    if(type==REQ_IN)memcpy(data,cpu_alias(d->payload_pa),bytes);
+    if(type==REQ_IN)memcpy(data,d->payload.cpu,bytes);
     return 0;
 }
 static int64_t blk_read(void *backend,uint64_t sector,
@@ -176,23 +184,23 @@ static int configure(struct virt_blk *d) {
     MMIO_WRITE(d,R_QUEUE_SEL,0);
     if(MMIO_READ(d,R_QUEUE_READY)||MMIO_READ(d,R_QUEUE_MAX)<QUEUE_SIZE)
         return -EOPNOTSUPP;
-    d->queue_pa=nas_frame_alloc();
-    d->request_pa=nas_frame_alloc();
-    d->payload_pa=nas_frame_alloc();
-    if(!d->queue_pa||!d->request_pa||!d->payload_pa)return -ENOMEM;
+    d->dma=&nas_dma_qemu_coherent;
+    if(nas_dma_alloc_page(d->dma,&d->queue) ||
+       nas_dma_alloc_page(d->dma,&d->request) ||
+       nas_dma_alloc_page(d->dma,&d->payload)) return -ENOMEM;
     /* Use upstream vring_init / vring_size for descriptor, driver and used
      * positions. One preallocated DMA frame still holds the whole split ring. */
     if(vring_size(QUEUE_SIZE,256U)>4096U)return -EOVERFLOW;
-    void *queue_va=cpu_alias(d->queue_pa);
+    void *queue_va=d->queue.cpu;
     memset(queue_va,0,4096U);
     vring_init(&d->vr,QUEUE_SIZE,queue_va,256U);
-    uint64_t avail_pa=d->queue_pa+
+    uint64_t avail_pa=d->queue.bus_address+
             (uint64_t)((uintptr_t)d->vr.avail-(uintptr_t)queue_va);
-    uint64_t used_pa=d->queue_pa+
+    uint64_t used_pa=d->queue.bus_address+
             (uint64_t)((uintptr_t)d->vr.used-(uintptr_t)queue_va);
     MMIO_WRITE(d,R_QUEUE_NUM,QUEUE_SIZE);
-    MMIO_WRITE(d,R_DESC_LO,(uint32_t)d->queue_pa);
-    MMIO_WRITE(d,R_DESC_HI,(uint32_t)(d->queue_pa>>32));
+    MMIO_WRITE(d,R_DESC_LO,(uint32_t)d->queue.bus_address);
+    MMIO_WRITE(d,R_DESC_HI,(uint32_t)(d->queue.bus_address>>32));
     MMIO_WRITE(d,R_DRIVER_LO,(uint32_t)avail_pa);
     MMIO_WRITE(d,R_DRIVER_HI,(uint32_t)(avail_pa>>32));
     MMIO_WRITE(d,R_DEVICE_LO,(uint32_t)used_pa);
@@ -226,3 +234,20 @@ int nas_virtio_mmio_blk_attach(volatile uint32_t *regs) {
     return 1;
 }
 unsigned nas_virtio_mmio_blk_count(void){return disk_count;}
+
+/* Registration is transport-independent: scanning may discover any modern
+ * VirtIO device, while the bus binds only matching block devices. */
+static bool virtio_blk_match(const struct nas_bus_device *dev) {
+    return dev->device_id==DEVICE_BLK;
+}
+static int virtio_blk_probe(struct nas_bus_device *dev) {
+    int rc=nas_virtio_mmio_blk_attach((volatile uint32_t *)dev->resource);
+    return rc==1 ? 0 : (rc==0 ? -ENODEV : rc);
+}
+static const struct nas_bus_driver virtio_blk_driver={
+    .name="virtio-blk",.bus=NAS_BUS_VIRTIO_MMIO,
+    .match=virtio_blk_match,.probe=virtio_blk_probe
+};
+int nas_virtio_mmio_blk_driver_register(void) {
+    return nas_bus_driver_register(&virtio_blk_driver);
+}

@@ -27,7 +27,7 @@ ISO := $(OUT)/naseed.iso
 CFLAGS := --target=x86_64-unknown-none-elf -std=c11 -O2 -g -Wall -Wextra -Werror \
  -ffreestanding -fno-builtin -fno-stack-protector -fno-stack-check \
  -fno-pic -fno-pie -mcmodel=kernel -mno-red-zone -mno-sse -mno-mmx \
- -I $(OUT)/deps -I kernel
+ -I $(OUT)/deps -I kernel -I third_party/unikraft/include -I ports/unikraft/include
 # Opt-in, generic Linux syscall tracing for focused real-program diagnoses.
 # Normal kernel and multi-ISA builds are unaffected.
 ifeq ($(NAS_SYSCALL_TRACE),1)
