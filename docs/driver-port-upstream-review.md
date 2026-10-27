@@ -58,3 +58,20 @@
 4. Replace the fallback **only after** actual AArch64 physical-image
    write+flush+e2fsck, then RV64 and x86-64 PCI, passing the same
    exact-head native application and filesystem CI. No merge before that.
+
+## First real upstream code in the AArch64 driver
+
+Pinned commit `359307a2a4cc9c1feb22683d841650902b799e4d` provides byte-for-byte imported upstream
+`virtio_ring.h` and `virtio_types.h` (BSD-3-Clause with original notices).
+The existing real QEMU driver now constructs and uses their vring layouts
+via the original `vring_init` and `vring_size` helpers; its local
+duplicate descriptor/ring type declarations and magic queue offsets are gone.
+The upstream blob Git SHAs are verified by CI. Architecture typedefs remain
+in a separate NaSeed port shim; lwext4 and VFS interfaces are unchanged.
+
+This stage is explicitly **upstream queue ABI adoption**, not a full
+Unikraft `virtio_blk.c` transplant. The upstream full driver currently
+depends on `ukblkdev`, `uksglist`, VirtIO bus, PCI/MMIO and other uk APIs;
+a full source-port must preserve original algorithms and only adapt
+platform hooks in `ports/unikraft`. Do not claim the source is fully
+integrated until it links and passes the same persistent QEMU guest tests.

@@ -16,6 +16,14 @@ if command -v clang >/dev/null 2>&1; then
   done
 fi
 
+# Verify the pinned upstream source is byte-identical to the imported blobs.
+test "$(git hash-object third_party/unikraft/include/virtio/virtio_ring.h)" = "9909bcc1f175d7bead456005adf57d4c75d7a2f3"
+test "$(git hash-object third_party/unikraft/include/virtio/virtio_types.h)" = "f71be56b7ad839e0ef40d31963882351ee584f78"
+cc -std=c11 -O2 -Wall -Wextra -Werror \
+  -I third_party/unikraft/include -I ports/unikraft/include \
+  scripts/test-unikraft-ring.c -o build/block-foundation/test-unikraft-ring
+build/block-foundation/test-unikraft-ring
+
 # Third-party driver ports are not another block registry: the real
 # current VirtIO-MMIO driver also uses this adapter in native AArch64.
 cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
@@ -29,7 +37,12 @@ if command -v clang >/dev/null 2>&1; then
       -ffreestanding -fno-builtin -I kernel -fsyntax-only \
       kernel/drivers/port/block.c
     clang --target="$target" -std=c11 -Wall -Wextra -Werror \
-      -ffreestanding -fno-builtin -I kernel -fsyntax-only \
-      kernel/drivers/block/virtio_mmio_blk.c
+      -ffreestanding -fno-builtin \
+      -I third_party/unikraft/include -I ports/unikraft/include \
+      -fsyntax-only scripts/test-unikraft-ring.c
+    clang --target="$target" -std=c11 -Wall -Wextra -Werror \
+      -ffreestanding -fno-builtin -I kernel \
+      -I third_party/unikraft/include -I ports/unikraft/include \
+      -fsyntax-only kernel/drivers/block/virtio_mmio_blk.c
   done
 fi

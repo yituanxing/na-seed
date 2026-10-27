@@ -8,6 +8,7 @@
  */
 #include "virtio_mmio_blk.h"
 #include "../port/block.h"
+#include <virtio/virtio_ring.h>
 #include "../../mm/frame.h"
 #include "../../errno.h"
 #include "../../lib/string.h"
@@ -50,33 +51,16 @@
 #define FEAT_RO        (1U<<5)
 #define FEAT_FLUSH     (1U<<9)
 #define FEAT_VERSION1  1U
-#define DESC_NEXT      1U
-#define DESC_WRITE     2U
 #define REQ_IN         0U
 #define REQ_OUT        1U
 #define REQ_FLUSH      4U
 #define MMIO_READ(d,off) ((d)->regs[(off)/4U])
 #define MMIO_WRITE(d,off,val) ((d)->regs[(off)/4U]=(uint32_t)(val))
 
-struct vq_desc {
-    uint64_t addr;
-    uint32_t len;
-    uint16_t flags,next;
-};
-struct vq_avail {
-    volatile uint16_t flags,idx;
-    volatile uint16_t ring[QUEUE_SIZE];
-    volatile uint16_t used_event;
-};
-struct vq_used_entry { uint32_t id,len; };
-struct vq_used {
-    volatile uint16_t flags,idx;
-    volatile struct vq_used_entry ring[QUEUE_SIZE];
-    volatile uint16_t avail_event;
-};
 struct virtio_header {uint32_t type,reserved;uint64_t sector;};
 struct virt_blk {
     struct nas_port_block port;
+    struct vring vr;
     volatile uint32_t *regs;
     uint64_t queue_pa,request_pa,payload_pa;
     uint16_t used_index;
@@ -104,28 +88,28 @@ static int virtio_submit(struct virt_blk *d,uint32_t type,
         return -EIO;
     if((type==REQ_FLUSH && bytes) ||
        (type!=REQ_FLUSH && (!bytes || !data)))return -EINVAL;
-    struct vq_desc *desc=(struct vq_desc *)cpu_alias(d->queue_pa);
-    volatile struct vq_avail *avail=(volatile struct vq_avail *)
-                                   cpu_alias(d->queue_pa+0x100U);
-    volatile struct vq_used *used=(volatile struct vq_used *)
-                                 cpu_alias(d->queue_pa+0x200U);
+    /* Actual upstream Unikraft/Linux BSD virtqueue layout; no NaSeed-only
+     * duplicated ring structs or magic avail/used address offsets. */
+    struct vring_desc *desc=d->vr.desc;
+    volatile struct vring_avail *avail=d->vr.avail;
+    volatile struct vring_used *used=d->vr.used;
     struct virtio_header *hdr=(struct virtio_header *)cpu_alias(d->request_pa);
     volatile uint8_t *status=(volatile uint8_t *)
                               cpu_alias(d->request_pa+0x20U);
     hdr->type=type;hdr->reserved=0;hdr->sector=sector;
     *status=0xffU;
     if(type==REQ_OUT)memcpy(cpu_alias(d->payload_pa),data,bytes);
-    desc[0]=(struct vq_desc){
+    desc[0]=(struct vring_desc){
         .addr=d->request_pa,.len=sizeof(*hdr),
-        .flags=DESC_NEXT,.next=type==REQ_FLUSH?2U:1U
+        .flags=VRING_DESC_F_NEXT,.next=type==REQ_FLUSH?2U:1U
     };
     if(type!=REQ_FLUSH)
-        desc[1]=(struct vq_desc){
+        desc[1]=(struct vring_desc){
             .addr=d->payload_pa,.len=bytes,
-            .flags=DESC_NEXT|(type==REQ_IN?DESC_WRITE:0U),.next=2U
+            .flags=VRING_DESC_F_NEXT|(type==REQ_IN?VRING_DESC_F_WRITE:0U),.next=2U
         };
-    desc[2]=(struct vq_desc){
-        .addr=d->request_pa+0x20U,.len=1,.flags=DESC_WRITE
+    desc[2]=(struct vring_desc){
+        .addr=d->request_pa+0x20U,.len=1,.flags=VRING_DESC_F_WRITE
     };
     /* A single inflight chain is serialized on the kernel CPU. All split
      * queue entries and DMA frames are physical and have stable lifetimes. */
@@ -196,13 +180,23 @@ static int configure(struct virt_blk *d) {
     d->request_pa=nas_frame_alloc();
     d->payload_pa=nas_frame_alloc();
     if(!d->queue_pa||!d->request_pa||!d->payload_pa)return -ENOMEM;
+    /* Use upstream vring_init / vring_size for descriptor, driver and used
+     * positions. One preallocated DMA frame still holds the whole split ring. */
+    if(vring_size(QUEUE_SIZE,256U)>4096U)return -EOVERFLOW;
+    void *queue_va=cpu_alias(d->queue_pa);
+    memset(queue_va,0,4096U);
+    vring_init(&d->vr,QUEUE_SIZE,queue_va,256U);
+    uint64_t avail_pa=d->queue_pa+
+            (uint64_t)((uintptr_t)d->vr.avail-(uintptr_t)queue_va);
+    uint64_t used_pa=d->queue_pa+
+            (uint64_t)((uintptr_t)d->vr.used-(uintptr_t)queue_va);
     MMIO_WRITE(d,R_QUEUE_NUM,QUEUE_SIZE);
-    MMIO_WRITE(d,R_DESC_LO,(uint32_t)(d->queue_pa+0U));
-    MMIO_WRITE(d,R_DESC_HI,(uint32_t)((d->queue_pa+0U)>>32));
-    MMIO_WRITE(d,R_DRIVER_LO,(uint32_t)(d->queue_pa+0x100U));
-    MMIO_WRITE(d,R_DRIVER_HI,(uint32_t)((d->queue_pa+0x100U)>>32));
-    MMIO_WRITE(d,R_DEVICE_LO,(uint32_t)(d->queue_pa+0x200U));
-    MMIO_WRITE(d,R_DEVICE_HI,(uint32_t)((d->queue_pa+0x200U)>>32));
+    MMIO_WRITE(d,R_DESC_LO,(uint32_t)d->queue_pa);
+    MMIO_WRITE(d,R_DESC_HI,(uint32_t)(d->queue_pa>>32));
+    MMIO_WRITE(d,R_DRIVER_LO,(uint32_t)avail_pa);
+    MMIO_WRITE(d,R_DRIVER_HI,(uint32_t)(avail_pa>>32));
+    MMIO_WRITE(d,R_DEVICE_LO,(uint32_t)used_pa);
+    MMIO_WRITE(d,R_DEVICE_HI,(uint32_t)(used_pa>>32));
     barrier();
     MMIO_WRITE(d,R_QUEUE_READY,1);
     uint64_t sectors=(uint64_t)MMIO_READ(d,R_CAPACITY_LO)|
