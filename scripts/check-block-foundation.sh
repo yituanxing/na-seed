@@ -116,3 +116,17 @@ if command -v clang >/dev/null 2>&1; then
       -fsyntax-only ports/uboot/blk_port.c ports/uboot/virtio_bus.c
   done
 fi
+
+# Modern PCI transport is a real independent backend behind the SAME
+# nas_virtio_transport_ops; host checks capability bounds and queue MMIO.
+cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
+  scripts/test-virtio-pci.c kernel/drivers/virtio/pci.c \
+  -o build/block-foundation/test-virtio-pci
+build/block-foundation/test-virtio-pci
+if command -v clang >/dev/null 2>&1; then
+  for target in x86_64-unknown-none-elf riscv64-unknown-elf aarch64-none-elf; do
+    clang --target="$target" -std=c11 -Wall -Wextra -Werror \
+      -ffreestanding -fno-builtin -I kernel -fsyntax-only \
+      kernel/drivers/virtio/pci.c
+  done
+fi

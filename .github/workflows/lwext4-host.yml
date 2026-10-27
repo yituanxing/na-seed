@@ -8,6 +8,7 @@ on:
       - 'kernel/drivers/port/**'
       - 'kernel/drivers/core/**'
       - 'kernel/drivers/virtio/**'
+      - 'scripts/test-virtio-pci.c'
       - 'scripts/test-virtio-transport.c'
       - 'scripts/check-shared-kernel-build.sh'
       - 'scripts/test-driver-bus.c'

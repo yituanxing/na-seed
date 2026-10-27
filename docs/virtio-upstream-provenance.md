@@ -81,3 +81,21 @@ returns EIO, never stale filesystem contents. A failed read may write only a
 status byte. Host emulation exercises these malformed completions without
 editing pinned upstream sources. This is not proof of IRQ-driven concurrency,
 PCI hardware discovery, or general-purpose physical-device readiness.
+
+## Modern PCI transport implementation (host-first)
+
+Modern PCI capability parsing and common/notify/device BAR operations now
+have a **separate transport backend**, not a new block request engine:
+`kernel/drivers/virtio/pci.[ch]`. The platform must supply a 256-byte PCI
+configuration snapshot and bounds-checked, mapped MMIO BAR resources. The
+common VirtIO ops are shared with MMIO and can bind the exact same original
+U-Boot block driver. It validates capability chains (including loops),
+required capabilities, BAR ranges, queue size/enable, 64-bit DMA addresses,
+and the device-provided queue notification multiplier. Host mock checks
+cover malformed PCI capabilities and queue control; cross-ISA freestanding
+syntax checks enforce an architecture-independent source.
+
+**Not yet PCI hardware acceptance:** NaSeed's x86 PCI enumerator, BAR MMIO
+mapping and real QEMU PCI disk/persistence gate remain to be connected and
+run. The existing ARM/RV MMIO acceptance is unchanged. PCI transport is not
+a promise of IRQ completion or concurrent queue requests.
