@@ -136,3 +136,20 @@ vendor and port header search paths. Before this fix it failed while the
 individual opt-in AArch64 ext4 test was green, exposing a real full-matrix
 regression. The full driver transplant is still pending: no copied
 Unikraft `virtio_blk.c` implementation is claimed.
+
+## Regression and interface correctness audit
+
+The native userspace preflight previously flagged a legitimate upstream
+`third_party/unikraft/COPYING.md` Markdown `=======` heading as a
+Git conflict marker. Preflight now applies `git diff --check` to first-party
+paths only; the pinned byte-exact upstream hashes remain checked by the
+driver gate. This fixes the false-positive without editing any upstream file.
+
+Modern VirtIO-Blk now requests the optional RO property alongside FLUSH;
+writable block devices are never advertised when a device negotiated
+`VIRTIO_BLK_F_RO`. Driver transport host regression covers the RO bit.
+
+DMA page validation now permits bus_address=0 for valid IOMMU mappings
+provided the CPU mapping and page size are valid. The QEMU provider still
+reserves physical address 0, while separate providers may use valid DMA
+address zero. Regression tests verify that invariant.

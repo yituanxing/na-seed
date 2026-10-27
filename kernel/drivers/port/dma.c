@@ -33,7 +33,9 @@ int nas_dma_alloc_page(const struct nas_dma_provider *provider,
         *page = (struct nas_dma_page){0};
         return rc;
     }
-    if (!page->cpu || !page->bus_address || page->bytes != NAS_DMA_PAGE_BYTES) {
+    /* DMA bus address 0 is valid with some IOMMU mappings; the CPU
+     * alias and mapped size, not a zero sentinel, establish validity. */
+    if (!page->cpu || page->bytes != NAS_DMA_PAGE_BYTES) {
         (void)provider->release_page(provider->context, page);
         *page = (struct nas_dma_page){0};
         return -EIO;

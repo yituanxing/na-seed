@@ -49,6 +49,12 @@ int main(void){
     assert(mock.status&NAS_VIRTIO_STATUS_DRIVER_OK);
     nas_virtio_notify(&t,0);assert(mock.notify==1);
     assert(nas_virtio_config32(&t,0)==8192);
+    /* RO is a negotiated device property, not permission to write!
+     * Any imported storage driver must propagate it to BlockDevice. */
+    mock.supported |= UINT64_C(1)<<5;
+    assert(nas_virtio_negotiate(&t,0,(UINT64_C(1)<<9)|
+                               (UINT64_C(1)<<5),&got)==0);
+    assert((got&(UINT64_C(1)<<5))!=0);
     mock.supported=UINT64_C(1)<<9;
     assert(nas_virtio_negotiate(&t,0,UINT64_C(1)<<9,&got)==-EOPNOTSUPP);
     assert(mock.status&NAS_VIRTIO_STATUS_FAILED);

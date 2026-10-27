@@ -139,7 +139,7 @@ static const struct nas_port_block_ops disk_ops={
 };
 static int configure(struct virt_blk *d) {
     uint64_t negotiated=0;
-    int rc=nas_virtio_negotiate(d->transport,0,FEAT_FLUSH,&negotiated);
+    int rc=nas_virtio_negotiate(d->transport,0,FEAT_RO|FEAT_FLUSH,&negotiated);
     if(rc)return rc;
     d->dma=d->transport->dma;
     if(vring_size(QUEUE_SIZE,256U)>NAS_DMA_PAGE_BYTES)return -EOVERFLOW;

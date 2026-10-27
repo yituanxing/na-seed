@@ -25,6 +25,11 @@ static int fake_alloc(void *ctx, struct nas_dma_page *p){
 static int fake_free(void *ctx, struct nas_dma_page *p){
     (void)ctx;(void)p;return 0;
 }
+static int zero_dma_alloc(void *ctx, struct nas_dma_page *p){
+    (void)ctx;
+    p->cpu=pages[0];p->bus_address=0;p->bytes=NAS_DMA_PAGE_BYTES;
+    return 0;
+}
 int main(void) {
     struct nas_dma_page q={0},r={0},f={0};
     assert(nas_dma_alloc_page(&nas_dma_qemu_coherent,&q)==0);
@@ -42,6 +47,12 @@ int main(void) {
         .coherent=false,.alloc_page=fake_alloc,.release_page=fake_free
     };
     assert(nas_dma_alloc_page(&not_coherent,&f)==-EINVAL);
+    const struct nas_dma_provider iommu_zero={
+        .coherent=true,.alloc_page=zero_dma_alloc,.release_page=fake_free
+    };
+    assert(nas_dma_alloc_page(&iommu_zero,&f)==0);
+    assert(f.bus_address==0 && f.cpu!=NULL);
+    assert(nas_dma_free_page(&iommu_zero,&f)==0);
     puts("[DRIVER DMA PASS] identity/coherent page allocation, release, directional sync, bounds and noncoherent fail-closed");
     return 0;
 }

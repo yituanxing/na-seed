@@ -3,9 +3,13 @@
 set -eu
 
 # GitHub checkout uses fetch-depth: 2, so the parent commit is available.
-git diff --check HEAD^ HEAD
-git diff --check
-git diff --cached --check
+# Vendored upstream bytes are verified against pinned Git blobs by the
+# block driver gate; README/LICENSE files can legitimately begin with
+# Markdown '=======' headings (which Git flags as conflict markers).
+# Keep strict whitespace and conflict checks for ALL first-party code.
+git diff --check HEAD^ HEAD -- . ':(exclude)third_party/**'
+git diff --check -- . ':(exclude)third_party/**'
+git diff --cached --check -- . ':(exclude)third_party/**'
 
 for script in scripts/*.sh; do
     sh -n "$script"
