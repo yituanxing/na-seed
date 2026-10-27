@@ -105,6 +105,22 @@ int main(int argc,char **argv) {
         assert(nas_vfs_resize(&created,sizeof(persisted)-1)==0);
         assert(nas_vfs_write_at(&created,10,persisted+10,sizeof(persisted)-11)==(int64_t)sizeof(persisted)-11);
         assert(nas_vfs_sync(&created)==0);
+        /* Two independent pinned Files: the reader carries an OLD inode
+         * snapshot but must observe writer growth, truncate and regrowth. */
+        struct nas_fs_node stale_reader=created;
+        assert(nas_vfs_node_pin(&created)==0);
+        assert(nas_vfs_node_pin(&stale_reader)==0);
+        assert(nas_vfs_node_size(&stale_reader)==sizeof(persisted)-1);
+        assert(nas_vfs_resize(&created,6)==0);
+        assert(nas_vfs_node_size(&stale_reader)==6);
+        assert(nas_vfs_read_at(&stale_reader,6,(uint8_t *)buffer,1)==0);
+        assert(nas_vfs_resize(&created,sizeof(persisted)-1)==0);
+        assert(nas_vfs_write_at(&created,6,persisted+6,sizeof(persisted)-7)==(int64_t)sizeof(persisted)-7);
+        assert(nas_vfs_node_size(&stale_reader)==sizeof(persisted)-1);
+        assert(nas_vfs_read_at(&stale_reader,0,(uint8_t *)buffer,sizeof(persisted)-1)==(int64_t)sizeof(persisted)-1);
+        assert(!memcmp(buffer,persisted,sizeof(persisted)-1));
+        assert(nas_vfs_node_unpin(&stale_reader)==0);
+        assert(nas_vfs_node_unpin(&created)==0);
         assert(nas_fs_lookup_node("/mnt/sandbox/vfs-created",true,&created,actual)==0);
         assert(created.size==sizeof(persisted)-1);
         assert(nas_vfs_read_at(&created,0,(uint8_t *)buffer,created.size)==(int64_t)created.size);

@@ -237,7 +237,13 @@ int main(void) {
     assert(nas_vfs_write_at(&n,0,(const uint8_t *)"xyz",3)==3);
     assert(nas_fs_lookup_node("/tmp/newfile",true,&n,resolved)==0);
     assert(nas_vfs_read_at(&n,0,(uint8_t *)data,3)==3 && !memcmp(data,"xyz",3));
+    assert(nas_vfs_node_pin(&n)==0);
+    struct nas_fs_node other_open=n;
+    assert(nas_vfs_node_pin(&other_open)==0);
     assert(nas_vfs_resize(&n,2)==0 && fixture_created.size==2);
+    assert(nas_vfs_node_size(&other_open)==2);
+    assert(nas_vfs_node_unpin(&other_open)==0);
+    assert(nas_vfs_node_unpin(&n)==0);
     assert(nas_vfs_sync(&n)==0);
     assert(nas_vfs_create("/bin/new",0644)==-EROFS);
     assert(nas_vfs_resize(&n,3)==0);

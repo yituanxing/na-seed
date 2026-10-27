@@ -68,6 +68,9 @@ int nas_vfs_unregister_mount(const struct nas_vfs_mount *mount);
 int nas_vfs_node_pin(const struct nas_fs_node *node);
 int nas_vfs_node_unpin(const struct nas_fs_node *node);
 uint64_t nas_vfs_node_device(const struct nas_fs_node *node);
+/* Live size shared by independently opened Files for the same mount+inode.
+ * Unlike borrowed pathname snapshots this survives rename and dup/fork. */
+uint64_t nas_vfs_node_size(const struct nas_fs_node *node);
 int nas_vfs_register_mount(const struct nas_vfs_mount *mount);
 int nas_vfs_lookup(const char *absolute, struct nas_fs_node *node);
 int nas_vfs_readlink(const struct nas_fs_node *node,const char *absolute,

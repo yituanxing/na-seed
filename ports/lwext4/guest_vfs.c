@@ -57,9 +57,13 @@ static int64_t ext_read_inode(const struct nas_fs_node *node,
     if(node->is_dir)return -EISDIR;
     struct nas_lwext4_mount *ctx=node->mount->private_data;
     if(!ctx->mounted || !ctx->upstream_mount)return -ENODEV;
-    if(offset>=node->size || !length)return 0;
+    if(!length)return 0;
     if(!dst || offset>INT64_MAX)return -EINVAL;
-    if(length>node->size-offset)length=node->size-offset;
+    /* Read against live mount+inode size, NOT the pathname lookup snapshot:
+     * a second independently opened File may have grown or truncated it. */
+    uint64_t size=nas_vfs_node_size(node);
+    if(offset>=size)return 0;
+    if(length>size-offset)length=size-offset;
     if(length>SIZE_MAX)length=SIZE_MAX;
     /* ext4_fread uses the live inode ID and upstream mount. The temporary
      * handle is positional: no shared File offset and NO reopening a path
@@ -67,7 +71,7 @@ static int64_t ext_read_inode(const struct nas_fs_node *node,
     ext4_file file={
         .mp=ctx->upstream_mount,
         .inode=(uint32_t)(uintptr_t)node->inode,
-        .fsize=node->size,.fpos=offset,.flags=O_RDONLY
+        .fsize=size,.fpos=offset,.flags=O_RDONLY
     };
     size_t obtained=0;
     int e=ext4_fread(&file,dst,(size_t)length,&obtained);

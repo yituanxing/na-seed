@@ -17,6 +17,18 @@ _start:
     test %rax, %rax
     js fail
     mov %rax, %r12
+    /* A second O_RDONLY open captures an intentionally stale zero-length
+     * inode snapshot BEFORE the first description grows the file. */
+    mov $13, %r15d
+    mov $__NR_openat, %rax
+    mov $-100, %rdi
+    lea guest_path(%rip), %rsi
+    xor %rdx, %rdx
+    xor %r10, %r10
+    syscall
+    test %rax, %rax
+    js fail
+    mov %rax, %r14
     mov $2, %r15d
     mov $__NR_write, %rax
     mov %r12, %rdi
@@ -28,6 +40,25 @@ _start:
     mov $3, %r15d
     mov $__NR_fsync, %rax
     mov %r12, %rdi
+    syscall
+    test %rax, %rax
+    jne fail
+    mov $14, %r15d
+    mov $__NR_read, %rax
+    mov %r14, %rdi
+    mov %rsp, %rsi
+    mov $(payload_end-payload), %rdx
+    syscall
+    cmp $(payload_end-payload), %rax
+    jne fail
+    mov $15, %r15d
+    lea payload(%rip), %rdi
+    mov %rsp, %rsi
+    mov $(payload_end-payload), %rcx
+    repe cmpsb
+    jne fail
+    mov $__NR_close, %rax
+    mov %r14, %rdi
     syscall
     test %rax, %rax
     jne fail

@@ -52,8 +52,9 @@ static uint64_t write_mounted_stat(const struct nas_fs_node *node,
     st.ino=node->ino;st.mode=node->mode;
     st.nlink=node->nlink ? node->nlink : (node->is_dir ? 2 : 1);
     st.uid=node->uid;st.gid=node->gid;
-    st.size=(int64_t)node->size;
-    st.blocks=(int64_t)((node->size+511)/512);
+    uint64_t live_size=nas_vfs_node_size(node);
+    st.size=(int64_t)live_size;
+    st.blocks=(int64_t)((live_size+511)/512);
     st.blksize=PAGE;
     st.atime_sec=(int64_t)node->atime_sec;
     st.mtime_sec=(int64_t)node->mtime_sec;
@@ -169,7 +170,7 @@ static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
     else if ((TASK.fds->entries[fd].kind == FD_ARCHIVE ||
               TASK.fds->entries[fd].kind == FD_DIR) &&
              nas_open_files[TASK.fds->entries[fd].slot].vnode_pinned)
-        size = nas_open_files[TASK.fds->entries[fd].slot].vnode.size;
+        size = nas_vfs_node_size(&nas_open_files[TASK.fds->entries[fd].slot].vnode);
     else if (TASK.fds->entries[fd].kind == FD_TMP || TASK.fds->entries[fd].kind == FD_TMP_DIR) {
         const struct nas_tmp_file *file = tmp_by_slot(TASK.fds->entries[fd].slot);
         if (!file) return (uint64_t)-EBADF;

@@ -374,9 +374,7 @@ static uint64_t vwrite_regular(uint64_t fd, uint64_t address, uint64_t length) {
         return (uint64_t)-EFAULT;
     /* tmpfs has a live inode size; all other descriptors own a shared
      * inode snapshot, updated after successful writes. */
-    uint64_t size=opened->vnode.size;
-    struct nas_tmp_file *tmp=tmp_by_slot(slot);
-    if(tmp)size=tmp->size;
+    uint64_t size=nas_vfs_node_size(&opened->vnode);
     uint64_t offset=(opened->status_flags & 0x400ULL) ?
                     size : opened->position;
     uint64_t done = 0;

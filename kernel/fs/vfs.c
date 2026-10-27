@@ -4,6 +4,35 @@
 #include "../lib/string.h"
 #include <stddef.h>
 #define NAS_VFS_MOUNT_LIMIT 16U
+#define NAS_VFS_LIVE_INODES 256U
+/* A bounded, refcounted inode-size identity table. Owned File and cwd
+ * mount pins acquire an inode lease; dup/fork share the owning File.
+ * No File/Task syscall kind is embedded in VFS, and no stale pathname is
+ * reopened after rename. VFS is single-CPU, matching mount ref policy. */
+struct inode_size_lease {
+    const struct nas_vfs_mount *mount;
+    uint64_t ino;
+    uint64_t size;
+    uint32_t refs;
+};
+static struct inode_size_lease live_inodes[NAS_VFS_LIVE_INODES];
+static struct inode_size_lease *inode_lease(const struct nas_fs_node *node) {
+    if(!node || !node->mount)return NULL;
+    for(unsigned i=0;i<NAS_VFS_LIVE_INODES;i++)
+        if(live_inodes[i].refs &&
+           live_inodes[i].mount==node->mount &&
+           live_inodes[i].ino==node->ino)return &live_inodes[i];
+    return NULL;
+}
+uint64_t nas_vfs_node_size(const struct nas_fs_node *node) {
+    if(!node)return 0;
+    struct inode_size_lease *lease=inode_lease(node);
+    return lease ? lease->size : node->size;
+}
+static void publish_inode_size(const struct nas_fs_node *node,uint64_t size) {
+    struct inode_size_lease *lease=inode_lease(node);
+    if(lease)lease->size=size;
+}
 struct mount_slot {const struct nas_vfs_mount *mount;uint32_t open_refs;uint64_t device_id;};
 static uint64_t next_device_id=8;
 static struct mount_slot mounts[NAS_VFS_MOUNT_LIMIT];
@@ -164,15 +193,21 @@ int64_t nas_vfs_write_at(const struct nas_fs_node *node,uint64_t offset,
     if(node->is_dir)return -EISDIR;
     if(!src && length)return -EFAULT;
     if(offset>INT64_MAX || length>INT64_MAX-offset)return -EFBIG;
-    return node->filesystem->write_at ?
-           node->filesystem->write_at(node,offset,src,length) : -EOPNOTSUPP;
+    if(!node->filesystem->write_at)return -EOPNOTSUPP;
+    int64_t written=node->filesystem->write_at(node,offset,src,length);
+    if(written>0 && offset+(uint64_t)written>nas_vfs_node_size(node))
+        publish_inode_size(node,offset+(uint64_t)written);
+    return written;
 }
 int nas_vfs_resize(const struct nas_fs_node *node,uint64_t length) {
     if(!node || !node->filesystem)return -EINVAL;
     if(node->is_dir)return -EISDIR;
     if(length>INT64_MAX)return -EFBIG;
     if(!nas_vfs_can_write(node))return -EROFS;
-    return node->filesystem->resize ? node->filesystem->resize(node,length) : -EOPNOTSUPP;
+    if(!node->filesystem->resize)return -EOPNOTSUPP;
+    int rc=node->filesystem->resize(node,length);
+    if(!rc)publish_inode_size(node,length);
+    return rc;
 }
 int nas_vfs_sync(const struct nas_fs_node *node) {
     if(!node || !node->filesystem)return -EINVAL;
@@ -273,6 +308,22 @@ int nas_vfs_node_pin(const struct nas_fs_node *node) {
     ensure_defaults();
     for(unsigned i=0;i<count;i++)if(mounts[i].mount==node->mount) {
         if(mounts[i].open_refs==UINT32_MAX)return -EMFILE;
+        struct inode_size_lease *lease=inode_lease(node);
+        if(lease) {
+            if(lease->refs==UINT32_MAX)return -EMFILE;
+            ++lease->refs;
+        } else {
+            for(unsigned n=0;n<NAS_VFS_LIVE_INODES;n++)
+                if(!live_inodes[n].refs) {
+                    lease=&live_inodes[n];
+                    *lease=(struct inode_size_lease){
+                        .mount=node->mount,.ino=node->ino,
+                        .size=node->size,.refs=1
+                    };
+                    break;
+                }
+            if(!lease)return -ENFILE;
+        }
         ++mounts[i].open_refs;return 0;
     }
     return -ENODEV;
@@ -282,7 +333,11 @@ int nas_vfs_node_unpin(const struct nas_fs_node *node) {
     ensure_defaults();
     for(unsigned i=0;i<count;i++)if(mounts[i].mount==node->mount) {
         if(!mounts[i].open_refs)return -EINVAL;
-        --mounts[i].open_refs;return 0;
+        struct inode_size_lease *lease=inode_lease(node);
+        if(!lease || !lease->refs)return -EINVAL;
+        --mounts[i].open_refs;
+        if(!--lease->refs)*lease=(struct inode_size_lease){0};
+        return 0;
     }
     return -ENODEV;
 }
