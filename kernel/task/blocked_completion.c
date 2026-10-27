@@ -87,9 +87,18 @@ enum nas_blocked_completion nas_blocked_complete(struct nas_task *task,
     const bool tty_again=(nr==NAS_SC_read || nr==NAS_SC_readv) &&
         (kind==FD_TTY || kind==FD_UART) &&
         (int64_t)rc==-EAGAIN && nas_tty_read_waitable();
-    const bool io_again=(int64_t)rc==-EOPNOTSUPP &&
-        (kind==FD_PIPE_R || kind==FD_PIPE_W ||
-         kind==FD_SOCKET || kind==FD_EVENTFD);
+    /* A blocking syscall already owns this live kernel C continuation.
+     * Providers are allowed to return either -EAGAIN or our internal
+     * -EOPNOTSUPP when readiness raced with another consumer. Never
+     * return that transient error to the caller as if O_NONBLOCK had been
+     * requested; PTY/socket/eventfd share the same provider contract. */
+    const bool rw_op=nr==NAS_SC_read || nr==NAS_SC_readv ||
+                     nr==NAS_SC_write || nr==NAS_SC_writev;
+    const bool io_kind=kind==FD_PIPE_R || kind==FD_PIPE_W ||
+                       kind==FD_SOCKET || kind==FD_EVENTFD ||
+                       kind==FD_PTY_MASTER || kind==FD_PTY_SLAVE;
+    const bool io_again=rw_op && io_kind &&
+        ((int64_t)rc==-EOPNOTSUPP || (int64_t)rc==-EAGAIN);
     const bool poll_again=(int64_t)rc==-EAGAIN &&
         (nr==NAS_SC_poll || nr==NAS_SC_ppoll ||
          nr==NAS_SC_pselect6 || nr==NAS_SC_select ||
