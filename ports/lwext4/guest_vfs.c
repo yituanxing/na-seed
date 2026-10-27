@@ -73,7 +73,73 @@ static int64_t ext_read_inode(const struct nas_fs_node *node,
     int e=ext4_fread(&file,dst,(size_t)length,&obtained);
     return e ? -e : (int64_t)obtained;
 }
-/* A bounded immutable directory view through upstream lwext4. Each call
+/* Inode-relative write: no pathname reopen after rename. The VFS enforces
+ * per-mount write policy. Guest boot remains read-only by default. */
+static int64_t ext_write_inode(const struct nas_fs_node *node,uint64_t offset,
+                               const uint8_t *src,uint64_t length) {
+    if(!node || !node->mount || !node->mount->private_data)return -EINVAL;
+    struct nas_lwext4_mount *ctx=node->mount->private_data;
+    if(!ctx->mounted || !ctx->upstream_mount)return -ENODEV;
+    if(node->is_dir)return -EISDIR;
+    if(!src && length)return -EFAULT;
+    if(length>SIZE_MAX || offset>INT64_MAX)return -EFBIG;
+    ext4_file file={
+        .mp=ctx->upstream_mount,.inode=(uint32_t)(uintptr_t)node->inode,
+        .fsize=node->size,.fpos=offset,.flags=O_WRONLY
+    };
+    size_t written=0;
+    int rc=ext4_fwrite(&file,src,(size_t)length,&written);
+    return rc ? -rc : (int64_t)written;
+}
+static int ext_create_path(const char *path,uint64_t mode) {
+    ext4_file f={0};
+    int rc=ext4_fopen(&f,path,"w");
+    if(rc)return -rc;
+    int close_rc=ext4_fclose(&f);
+    if(close_rc)return -close_rc;
+    rc=ext4_mode_set(path,(uint32_t)mode&07777U);
+    return rc ? -rc : 0;
+}
+static int ext_mkdir_path(const char *path,uint64_t mode) {
+    int rc=ext4_dir_mk(path);
+    if(rc)return -rc;
+    rc=ext4_mode_set(path,(uint32_t)mode&07777U);
+    return rc ? -rc : 0;
+}
+static int ext_unlink_path(const char *path,uint64_t flags) {
+    if(flags&~0x200ULL)return -EINVAL; /* AT_REMOVEDIR */
+    if(!(flags&0x200ULL))return -ext4_fremove(path);
+    /* Upstream ext4_dir_rm is recursive; never expose that to rmdir.
+     * Reject any child except dot/dotdot under single-CPU VFS policy. */
+    ext4_dir dir={0};
+    int rc=ext4_dir_open(&dir,path);
+    if(rc)return -rc;
+    bool nonempty=false;
+    const ext4_direntry *e;
+    while((e=ext4_dir_entry_next(&dir))) {
+        if(!e->inode)continue;
+        if(e->name_length==1 && e->name[0]=='.')continue;
+        if(e->name_length==2 && e->name[0]=='.' && e->name[1]=='.')continue;
+        nonempty=true;break;
+    }
+    rc=ext4_dir_close(&dir);
+    if(rc)return -rc;
+    return nonempty ? -ENOTEMPTY : -ext4_dir_rm(path);
+}
+static int ext_rename_path(const char *from,const char *to,uint64_t flags) {
+    if(flags)return -EINVAL; /* no unimplemented atomic rename flags */
+    struct nas_fs_node node={0};
+    int rc=nas_vfs_lookup(from,&node);
+    if(rc)return rc;
+    return node.is_dir ? -ext4_dir_mv(from,to) : -ext4_frename(from,to);
+}
+static int ext_link_path(const char *from,const char *to) {
+    return -ext4_flink(from,to);
+}
+static int ext_symlink_path(const char *target,const char *path) {
+    return -ext4_fsymlink(target,path);
+}
+/* A bounded directory view through upstream lwext4. Each call
  * reopens and scans the directory; later mutable dirs need owned iterator
  * state per shared File, but no backend-specific syscall ABI dispatch. */
 static int ext_read_directory(const struct nas_fs_node *node,
@@ -124,8 +190,13 @@ static const struct nas_vfs_type ext_type={
     .lookup=ext_lookup,
     .readlink=ext_readlink_node,
     .read_at=ext_read_inode,
+    .write_at=ext_write_inode,
     .read_dir=ext_read_directory,
-    .read_only=true /* No generic namespace/write contract exposed yet. */
+    .create=ext_create_path,.mkdir=ext_mkdir_path,
+    .unlink=ext_unlink_path,.rename=ext_rename_path,
+    .link=ext_link_path,.symlink=ext_symlink_path,
+    /* Capability is mount-specific; default guest mount remains RO. */
+    .read_only=false
 };
 static bool copy_name(char *out,size_t capacity,const char *src) {
     if(!src || !src[0])return false;
@@ -134,10 +205,10 @@ static bool copy_name(char *out,size_t capacity,const char *src) {
     memcpy(out,src,length+1);
     return true;
 }
-int nas_lwext4_ramdisk_mount(struct nas_lwext4_mount *ctx,
+int nas_lwext4_ramdisk_mount_mode(struct nas_lwext4_mount *ctx,
                              const char *block_name,const char *dev_name,
                              const char *mount_point,void *image,
-                             uint64_t image_bytes) {
+                             uint64_t image_bytes,bool writable) {
     if(!ctx || !image || ctx->mounted)return -EINVAL;
     if(!copy_name(ctx->block_name,sizeof(ctx->block_name),block_name) ||
        !copy_name(ctx->device_name,sizeof(ctx->device_name),dev_name) ||
@@ -151,11 +222,11 @@ int nas_lwext4_ramdisk_mount(struct nas_lwext4_mount *ctx,
     ctx->upstream_prefix[length]='/';
     ctx->upstream_prefix[length+1]=0;
     int rc=nas_ramdisk_attach(&ctx->ramdisk,ctx->block_name,image,
-                              image_bytes,512,false);
+                              image_bytes,512,writable);
     if(rc)return rc;
     rc=nas_lwext4_device_attach(&ctx->device,ctx->block_name,ctx->device_name);
     if(rc)goto FailDisk;
-    rc=ext4_mount(ctx->device_name,ctx->upstream_prefix,true);
+    rc=ext4_mount(ctx->device_name,ctx->upstream_prefix,!writable);
     if(rc) {rc=-rc;goto FailDevice;}
     rc=ext4_get_sblock(ctx->upstream_prefix,&ctx->upstream_super);
     if(rc) {rc=-rc;goto FailMount;}
@@ -169,7 +240,7 @@ int nas_lwext4_ramdisk_mount(struct nas_lwext4_mount *ctx,
     ctx->mount=(struct nas_vfs_mount){
         .mountpoint=ctx->mount_point,
         .type=&ext_type,
-        .read_only=true,
+        .read_only=!writable,
         .private_data=ctx
     };
     ctx->mounted=true; /* lookup may run during VFS mount registration */
@@ -185,6 +256,13 @@ FailDisk:
     ctx->upstream_mount=NULL;
     ctx->upstream_super=NULL;
     return rc;
+}
+int nas_lwext4_ramdisk_mount(struct nas_lwext4_mount *ctx,
+                             const char *block_name,const char *dev_name,
+                             const char *mount_point,void *image,
+                             uint64_t image_bytes) {
+    return nas_lwext4_ramdisk_mount_mode(ctx,block_name,dev_name,
+                                        mount_point,image,image_bytes,false);
 }
 int nas_lwext4_ramdisk_unmount(struct nas_lwext4_mount *ctx) {
     if(!ctx || !ctx->mounted)return -EINVAL;

@@ -26,6 +26,9 @@ static struct bootfs_entry entries[]={
 static struct nas_tmp_file tmp_demo={.used=true,.mode=0100644,.size=4,.ino=101};
 static struct nas_tmp_file fixture_symlink={.used=true,.mode=0120777,.size=9,.ino=102};
 static struct nas_tmp_file fixture_dir_link={.used=true,.mode=0120777,.size=4,.ino=103};
+static struct nas_tmp_file fixture_created={.used=true,.mode=0100640,.ino=104};
+static uint8_t fixture_created_bytes[32];
+static unsigned fixture_created_length;
 bool bootfs_mounted(void){return true;}
 const struct bootfs_entry *bootfs_find(const char *path){
     for(unsigned i=0;i<sizeof(entries)/sizeof(entries[0]);i++)
@@ -42,6 +45,7 @@ struct nas_tmp_file *tmp_find(const char *path){
     if(!strcmp(path,"/tmp/demo"))return &tmp_demo;
     if(!strcmp(path,"/tmp/link"))return &fixture_symlink;
     if(!strcmp(path,"/tmp/alias"))return &fixture_dir_link;
+    if(!strcmp(path,"/tmp/newfile") && fixture_created_length)return &fixture_created;
     return NULL;
 }
 bool tmp_is_link(const struct nas_tmp_file *f){
@@ -54,6 +58,11 @@ int tmp_link_target(const struct nas_tmp_file *f,char target[256]){
 }
 int64_t tmp_read_at(const struct nas_tmp_file *file,uint64_t off,uint8_t *buf,uint64_t len){
     static const char value[]="DATA";
+    if(file==&fixture_created) {
+        if(off>=fixture_created_length)return 0;
+        if(len>fixture_created_length-off)len=fixture_created_length-off;
+        memcpy(buf,fixture_created_bytes+off,(size_t)len);return (int64_t)len;
+    }
     if(file!=&tmp_demo)return -EINVAL;
     if(off>=4)return 0;
     if(len>4-off)len=4-off;
@@ -88,6 +97,20 @@ int64_t nas_proc_readlink(struct nas_proc_node node,char *target,unsigned cap) {
     if(cap<sizeof(name)-1)return -ENAMETOOLONG;
     memcpy(target,name,sizeof(name)-1);
     return (int64_t)sizeof(name)-1;
+}
+struct nas_tmp_file *tmp_create(const char *path,bool dir,uint32_t mode) {
+    if(strcmp(path,"/tmp/newfile") || dir || mode!=0640)return NULL;
+    fixture_created_length=1;fixture_created.size=1;
+    return &fixture_created;
+}
+int64_t tmp_write_at(struct nas_tmp_file *file,uint64_t off,
+                     const uint8_t *source,uint64_t count) {
+    if(file!=&fixture_created || off+count>sizeof(fixture_created_bytes))
+        return -EINVAL;
+    memcpy(fixture_created_bytes+off,source,(size_t)count);
+    fixture_created_length=(unsigned)(off+count);
+    fixture_created.size=fixture_created_length;
+    return (int64_t)count;
 }
 int tmp_mkdir(const char *path,uint64_t mode) {
     return !strcmp(path,"/tmp/new") && mode==0755 ? 0 : -EINVAL;
@@ -200,6 +223,12 @@ int main(void) {
     char fd_target[256]={0};
     assert(nas_vfs_readlink(&n,resolved,fd_target)==9);
     assert(!memcmp(fd_target,"pipe:[42]",9));
+    assert(nas_vfs_create("/tmp/newfile",0640)==0);
+    assert(nas_vfs_create("/tmp/newfile",0640)==-EEXIST);
+    assert(nas_fs_lookup_node("/tmp/newfile",true,&n,resolved)==0);
+    assert(nas_vfs_write_at(&n,0,(const uint8_t *)"xyz",3)==3);
+    assert(nas_fs_lookup_node("/tmp/newfile",true,&n,resolved)==0);
+    assert(nas_vfs_read_at(&n,0,(uint8_t *)data,3)==3 && !memcmp(data,"xyz",3));
     assert(nas_vfs_mkdir("/tmp/new",0755)==0);
     assert(nas_vfs_unlink("/tmp/demo",0)==0);
     assert(nas_vfs_rename("/tmp/demo","/tmp/other",0)==0);

@@ -144,6 +144,29 @@ static int vfs_mutable_parent(const char *path,struct nas_fs_node *parent,
     if(rc)return rc;
     return nas_vfs_can_write(parent) ? 0 : -EROFS;
 }
+int nas_vfs_create(const char *path,uint64_t mode) {
+    if(!path || path[0]!='/')return -EINVAL;
+    struct nas_fs_node existing;
+    char resolved[256];
+    int rc=nas_fs_lookup_node(path,false,&existing,resolved);
+    if(!rc)return -EEXIST;
+    if(rc!=-ENOENT)return rc;
+    struct nas_fs_node parent;char canonical[256];
+    rc=vfs_mutable_parent(path,&parent,canonical);
+    if(rc)return rc;
+    return parent.filesystem->create ?
+           parent.filesystem->create(canonical,mode) : -EOPNOTSUPP;
+}
+int64_t nas_vfs_write_at(const struct nas_fs_node *node,uint64_t offset,
+                         const uint8_t *src,uint64_t length) {
+    if(!node || !node->filesystem)return -EINVAL;
+    if(!nas_vfs_can_write(node))return -EROFS;
+    if(node->is_dir)return -EISDIR;
+    if(!src && length)return -EFAULT;
+    if(offset>INT64_MAX || length>INT64_MAX-offset)return -EFBIG;
+    return node->filesystem->write_at ?
+           node->filesystem->write_at(node,offset,src,length) : -EOPNOTSUPP;
+}
 int nas_vfs_mkdir(const char *path,uint64_t mode) {
     if(!path || path[0]!='/')return -EINVAL;
     if(!strcmp(path,"/"))return -EEXIST;

@@ -29,8 +29,11 @@ void nas_vfs_register_default_mounts(void) {
     assert(nas_vfs_register_mount(&root_mount)==0);
 }
 int main(int argc,char **argv) {
-    assert(argc==2);
-    FILE *disk=fopen(argv[1],"rb");
+    assert(argc==2 || argc==3);
+    const bool write=argc==3 && !strcmp(argv[2],"write");
+    const bool verify=argc==3 && !strcmp(argv[2],"verify");
+    assert(argc==2 || write || verify);
+    FILE *disk=fopen(argv[1],write?"rb+":"rb");
     assert(disk);
     assert(!fseek(disk,0,SEEK_END));
     long n=ftell(disk);
@@ -39,16 +42,15 @@ int main(int argc,char **argv) {
     uint8_t *image=malloc((size_t)n);
     assert(image);
     assert(fread(image,1,(size_t)n,disk)==(size_t)n);
-    assert(!fclose(disk));
     static struct nas_lwext4_mount mounted;
-    assert(nas_lwext4_ramdisk_mount(&mounted,"vfs-test-ram","vfs-test-ext",
-                                    "/mnt",image,(uint64_t)n)==0);
+    assert(nas_lwext4_ramdisk_mount_mode(&mounted,"vfs-test-ram","vfs-test-ext",
+                                    "/mnt",image,(uint64_t)n,write)==0);
     char actual[256],buffer[128]={0};
     struct nas_fs_node node;
     assert(nas_fs_lookup_node("/mnt/sandbox/hardlink",true,&node,actual)==0);
     assert(!strcmp(node.filesystem->name,"lwext4"));
     assert(!strcmp(actual,"/mnt/sandbox/hardlink"));
-    assert(!node.is_dir && !node.is_symlink && !nas_vfs_can_write(&node));
+    assert(!node.is_dir && !node.is_symlink && nas_vfs_can_write(&node)==write);
     assert(node.ino>=11 && node.nlink>=1);
     assert(nas_vfs_node_device(&node)>=8);
     static const char expected[]="NaSeed VFS and BlockDevice real lwext4 data\n";
@@ -76,11 +78,50 @@ int main(int argc,char **argv) {
     assert(nas_vfs_mkdir("/",0755)==-EEXIST);
     assert(nas_vfs_mkdir("/mnt",0755)==-EEXIST);
     assert(nas_vfs_mkdir("/mnt/sandbox",0755)==-EEXIST);
-    assert(nas_vfs_mkdir("/mnt/create",0755)==-EROFS);
-    assert(nas_vfs_unlink("/mnt/sandbox/hardlink",0)==-EROFS);
-    assert(nas_vfs_rename("/mnt/sandbox/hardlink","/mnt/sandbox/new",0)==-EROFS);
-    assert(nas_vfs_link("/mnt/sandbox/hardlink","/mnt/sandbox/alias")==-EROFS);
-    assert(nas_vfs_symlink("hardlink","/mnt/sandbox/symlink")==-EROFS);
+    if(!write) {
+        assert(nas_vfs_create("/mnt/sandbox/new-file",0644)==-EROFS);
+        assert(nas_vfs_write_at(&node,0,(const uint8_t *)"x",1)==-EROFS);
+        assert(nas_vfs_mkdir("/mnt/create",0755)==-EROFS);
+        assert(nas_vfs_unlink("/mnt/sandbox/hardlink",0)==-EROFS);
+        assert(nas_vfs_rename("/mnt/sandbox/hardlink","/mnt/sandbox/new",0)==-EROFS);
+        assert(nas_vfs_link("/mnt/sandbox/hardlink","/mnt/sandbox/alias")==-EROFS);
+        assert(nas_vfs_symlink("hardlink","/mnt/sandbox/symlink")==-EROFS);
+    }
+    static const uint8_t persisted[]="NaSeed writable VFS ext4 inode storage";
+    if(write) {
+        assert(nas_vfs_create("/mnt/sandbox/vfs-created",0640)==0);
+        assert(nas_vfs_create("/mnt/sandbox/vfs-created",0640)==-EEXIST);
+        struct nas_fs_node created;
+        assert(nas_fs_lookup_node("/mnt/sandbox/vfs-created",true,&created,actual)==0);
+        assert(nas_vfs_can_write(&created) && (created.mode&0777U)==0640U);
+        assert(nas_vfs_write_at(&created,0,persisted,sizeof(persisted)-1)==(int64_t)sizeof(persisted)-1);
+        assert(nas_fs_lookup_node("/mnt/sandbox/vfs-created",true,&created,actual)==0);
+        assert(created.size==sizeof(persisted)-1);
+        assert(nas_vfs_read_at(&created,0,(uint8_t *)buffer,sizeof(buffer))==(int64_t)created.size);
+        assert(!memcmp(buffer,persisted,sizeof(persisted)-1));
+        assert(nas_vfs_mkdir("/mnt/sandbox/vfs-directory",0750)==0);
+        assert(nas_vfs_create("/mnt/sandbox/vfs-directory/child",0600)==0);
+        assert(nas_vfs_unlink("/mnt/sandbox/vfs-directory",0x200ULL)==-ENOTEMPTY);
+        assert(nas_vfs_unlink("/mnt/sandbox/vfs-directory/child",0)==0);
+        assert(nas_vfs_unlink("/mnt/sandbox/vfs-directory",0x200ULL)==0);
+        assert(nas_vfs_symlink("vfs-created","/mnt/sandbox/vfs-link")==0);
+        assert(nas_fs_lookup_node("/mnt/sandbox/vfs-link",true,&created,actual)==0);
+        assert(created.size==sizeof(persisted)-1);
+        assert(nas_vfs_unlink("/mnt/sandbox/vfs-link",0)==0);
+        assert(nas_vfs_link("/mnt/sandbox/vfs-created","/mnt/sandbox/vfs-alias")==0);
+        assert(nas_vfs_rename("/mnt/sandbox/vfs-alias","/mnt/sandbox/vfs-persist",0)==0);
+        assert(nas_vfs_unlink("/mnt/sandbox/vfs-created",0)==0);
+        assert(nas_fs_lookup_node("/mnt/sandbox/vfs-persist",true,&created,actual)==0);
+        assert(nas_vfs_read_at(&created,0,(uint8_t *)buffer,sizeof(buffer))==(int64_t)created.size);
+        assert(!memcmp(buffer,persisted,sizeof(persisted)-1));
+    }
+    if(verify) {
+        struct nas_fs_node persisted_node;
+        assert(nas_fs_lookup_node("/mnt/sandbox/vfs-persist",true,&persisted_node,actual)==0);
+        assert(persisted_node.size==sizeof(persisted)-1);
+        assert(nas_vfs_read_at(&persisted_node,0,(uint8_t *)buffer,sizeof(buffer))==(int64_t)persisted_node.size);
+        assert(!memcmp(buffer,persisted,sizeof(persisted)-1));
+    }
     assert(nas_fs_lookup_node("/mnt/sandbox/hardlink/",true,&node,actual)==-ENOTDIR);
     assert(nas_vfs_node_pin(&node)==0);
     assert(nas_lwext4_ramdisk_unmount(&mounted)==-EBUSY);
@@ -99,7 +140,15 @@ int main(int argc,char **argv) {
     nas_fs_context_put(forked);
     assert(nas_lwext4_ramdisk_unmount(&mounted)==0);
     assert(nas_fs_lookup_node("/mnt/sandbox/hardlink",true,&node,actual)==-ENOENT);
+    if(write) {
+        rewind(disk);
+        assert(fwrite(image,1,(size_t)n,disk)==(size_t)n);
+        assert(!fflush(disk));
+    }
+    assert(!fclose(disk));
     free(image);
-    puts("[LWEXT4 VFS PASS] real registered mount, inode lookup/read, positional IO, RO policy, busy unmount");
+    puts(write?"[LWEXT4 VFS RW PASS] actual generic VFS namespace, inode I/O, persistence":
+         verify?"[LWEXT4 VFS REMOUNT PASS] persisted writable ext4 tree verified read-only":
+         "[LWEXT4 VFS PASS] real registered mount, inode lookup/read, positional IO, RO policy, busy unmount");
     return 0;
 }

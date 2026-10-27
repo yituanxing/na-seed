@@ -140,6 +140,14 @@ static int64_t tmp_read(const struct nas_fs_node *node,uint64_t offset,
                         uint8_t *dst,uint64_t length) {
     return tmp_read_at(node->inode,offset,dst,length);
 }
+static int tmp_create_node(const char *path,uint64_t mode) {
+    return tmp_create(path,false,mode) ? 0 : -ENOSPC;
+}
+static int64_t tmp_write_node(const struct nas_fs_node *node,uint64_t off,
+                              const uint8_t *src,uint64_t count) {
+    return tmp_write_at((struct nas_tmp_file *)(uintptr_t)node->inode,
+                        off,src,count);
+}
 static int tmp_chmod_node(const struct nas_fs_node *node,uint64_t mode) {
     return tmp_chmod((struct nas_tmp_file *)(uintptr_t)node->inode,mode);
 }
@@ -187,6 +195,7 @@ static int tmp_read_dir(const struct nas_fs_node *node,const char *path,
 static const struct nas_vfs_type tmp_type={
     .name="tmpfs",.exec_source_label="tmpfs",.lookup=tmp_lookup,.readlink=tmp_readlink,
     .read_at=tmp_read,.read_dir=tmp_read_dir,.chmod=tmp_chmod_node,.utimens=tmp_utimens_node,
+    .create=tmp_create_node,.write_at=tmp_write_node,
     .mkdir=tmp_mkdir,.unlink=tmp_unlink,.rename=tmp_rename,.link=tmp_link,.symlink=tmp_symlink
 };
 static int proc_lookup_node(const struct nas_vfs_mount *mount,

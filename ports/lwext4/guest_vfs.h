@@ -24,9 +24,12 @@ struct nas_lwext4_mount {
     char device_name[32];
     bool mounted;
 };
-/* Initial guest filesystem implementation is READ-ONLY until generic
- * VFS writes, namespace mutations and unlink-open semantics are available.
- * The underlying lwext4 upstream itself is tested read/write separately. */
+/* Default guest mount is RO. Explicit write mode is opt-in for host
+ * VFS integration; guest unlink-open durability needs more lifecycle work. */
+int nas_lwext4_ramdisk_mount_mode(struct nas_lwext4_mount *mount,
+                             const char *block_name,const char *device_name,
+                             const char *mount_point,void *image,
+                             uint64_t image_bytes,bool writable);
 int nas_lwext4_ramdisk_mount(struct nas_lwext4_mount *mount,
                              const char *block_name,const char *device_name,
                              const char *mount_point,void *image,
