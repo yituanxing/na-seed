@@ -74,27 +74,40 @@ void nas_arch_idle_wait(void) {
     __asm__ volatile("msr daifclr,#2\n\twfi\n\tmsr daifset,#2"
                      : : : "memory");
 }
-void nas_arm_timer_idle_irq_c(void) {
+/* GICv2 IAR may legitimately report 1023 on an IRQ signal that has
+ * deasserted before acknowledgement. It has NOT acknowledged an IRQ in
+ * that case: never write EOIR(1023) or panic the entire kernel.
+ * Any other unexpected ID remains a hard error, with a numeric trace. */
+static uint32_t arm_timer_ack_id(void) {
     uint32_t id=iface[0x0c/4];
-    if((id & 0x3ffU) != ARM_VTIMER_PPI)
-        nas_fail("ARM64 idle unexpected GIC interrupt ID");
+    if((id & 0x3ffU)==1023U)return 0;
+    if((id & 0x3ffU) != ARM_VTIMER_PPI) {
+        extern void nas_print(const char *);
+        extern void nas_hex(uint64_t);
+        nas_print("[ARM64 GIC] unexpected IAR=");nas_hex(id);nas_print("\n");
+        nas_fail("ARM64 unexpected GIC interrupt ID");
+    }
+    return id;
+}
+static void arm_timer_complete_irq(uint32_t id) {
     rearm_timer();
     iface[0x10/4]=id;
     __asm__ volatile("dsb sy" : : : "memory");
 }
+void nas_arm_timer_idle_irq_c(void) {
+    uint32_t id=arm_timer_ack_id();
+    if(id)arm_timer_complete_irq(id);
+}
 void nas_arm_timer_irq_c(struct nas_arm_trap_frame *frame) {
-    uint32_t id=iface[0x0c/4];
-    if((id & 0x3ffU) != ARM_VTIMER_PPI)
-        nas_fail("ARM64 unexpected GIC interrupt ID");
-    rearm_timer();
+    uint32_t id=arm_timer_ack_id();
+    if(!id)return;
     struct nas_task *from=nas_current_task;
     if(!from || !nas_task_kernel_stack_ok(from))
         nas_fail("ARM64 timer invalid Task");
     nas_arch_save_user_frame(from,0);
     nas_arch_save_fpu(from);
     /* EOI before parking this IRQ C continuation, never afterwards. */
-    iface[0x10/4]=id;
-    __asm__ volatile("dsb sy" : : : "memory");
+    arm_timer_complete_irq(id);
     /* Native ERET resumes this exact interrupted Task; there is no
      * second frame-copy path after the dispatcher selects another Task. */
     nas_sched_preempt_select();

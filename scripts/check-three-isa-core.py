@@ -197,7 +197,8 @@ if not all(s in rv_timer for s in ('nas_rv_idle_trap', 'csrsi sstatus,2', 'csrci
     raise SystemExit("RV64 idle must handle S-mode IRQ without sscratch stack swap")
 arm_timer=(root/"kernel/arch/aarch64/timer.c").read_text()
 arm_trap=(root/"kernel/arch/aarch64/trap.S").read_text()
-if not all(s in arm_timer for s in ('msr daifclr,#2', 'msr daifset,#2', 'nas_arm_timer_idle_irq_c')) or    'b nas_arm_upper_irq' not in arm_trap or 'nas_arm_upper_irq:' not in arm_trap or    'b nas_arm_restore_frame' not in arm_trap:
+if not all(s in arm_timer for s in ('msr daifclr,#2', 'msr daifset,#2', 'nas_arm_timer_idle_irq_c')) or    'b nas_arm_upper_irq' not in arm_trap or 'nas_arm_upper_irq:' not in arm_trap or    'b nas_arm_restore_frame' not in arm_trap or \
+   'if((id & 0x3ffU)==1023U)return 0;' not in arm_timer:
     raise SystemExit("ARM64 idle needs EL1h IRQ entry with in-place kernel ERET")
 if "nas_sched_allow_kernel_slice(" not in (root/"kernel/task/scheduler_service.c").read_text():
     raise SystemExit("kernel worker dispatch bypassed shared domain fairness policy")
