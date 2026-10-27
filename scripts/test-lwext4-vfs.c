@@ -150,6 +150,26 @@ int main(int argc,char **argv) {
     nas_fs_context_put(forked);
     assert(nas_lwext4_ramdisk_unmount(&mounted)==0);
     assert(nas_fs_lookup_node("/mnt/sandbox/hardlink",true,&node,actual)==-ENOENT);
+    /* Same authentic ext4 bytes, but this mount never creates a RamDisk.
+     * The driver registers and owns its BlockDevice; the FS pins it and
+     * the driver's premature detach MUST fail while mounted. This proves
+     * a future VirtIO-Blk adapter needs zero ext4/VFS special cases. */
+    struct nas_ramdisk external={0};
+    assert(nas_ramdisk_attach(&external,"external-block-driver",image,(uint64_t)n,512,false)==0);
+    static struct nas_lwext4_mount external_mount;
+    assert(nas_lwext4_device_mount(&external_mount,"external-block-driver",
+                                   "external-ext4-dev","/mnt",true)==-EROFS);
+    assert(nas_lwext4_device_mount(&external_mount,"external-block-driver",
+                                   "external-ext4-dev","/mnt",false)==0);
+    assert(nas_ramdisk_detach(&external)==-EBUSY);
+    struct nas_fs_node external_node;
+    assert(nas_fs_lookup_node("/mnt/sandbox/hardlink",true,&external_node,actual)==0);
+    assert(!strcmp(external_node.filesystem->name,"lwext4"));
+    assert(nas_vfs_read_at(&external_node,0,(uint8_t *)buffer,sizeof(buffer))==(int64_t)external_node.size);
+    assert(!memcmp(expected,buffer,sizeof(expected)-1));
+    assert(nas_vfs_write_at(&external_node,0,(const uint8_t *)"x",1)==-EROFS);
+    assert(nas_lwext4_unmount(&external_mount)==0);
+    assert(nas_ramdisk_detach(&external)==0);
     if(write) {
         rewind(disk);
         assert(fwrite(image,1,(size_t)n,disk)==(size_t)n);

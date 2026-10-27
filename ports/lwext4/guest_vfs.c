@@ -236,11 +236,18 @@ static bool copy_name(char *out,size_t capacity,const char *src) {
     memcpy(out,src,length+1);
     return true;
 }
-int nas_lwext4_ramdisk_mount_mode(struct nas_lwext4_mount *ctx,
-                             const char *block_name,const char *dev_name,
-                             const char *mount_point,void *image,
-                             uint64_t image_bytes,bool writable) {
-    if(!ctx || !image || ctx->mounted)return -EINVAL;
+/* Generic FS mount consumes a previously registered BlockDevice (e.g.
+ * VirtIO-Blk, NVMe or RAM). It never owns, probes or dereferences any
+ * driver's storage. The device remains pinned until final unmount. */
+int nas_lwext4_device_mount(struct nas_lwext4_mount *ctx,
+                            const char *block_name,const char *dev_name,
+                            const char *mount_point,bool writable) {
+    if(!ctx || ctx->mounted || ctx->device.registered)return -EINVAL;
+    struct nas_block_device *block=nas_block_get(block_name);
+    if(!block)return -ENODEV;
+    bool forbidden=writable && block->read_only;
+    nas_block_put(block);
+    if(forbidden)return -EROFS;
     if(!copy_name(ctx->block_name,sizeof(ctx->block_name),block_name) ||
        !copy_name(ctx->device_name,sizeof(ctx->device_name),dev_name) ||
        !copy_name(ctx->mount_point,sizeof(ctx->mount_point),mount_point))
@@ -252,11 +259,8 @@ int nas_lwext4_ramdisk_mount_mode(struct nas_lwext4_mount *ctx,
     memcpy(ctx->upstream_prefix,ctx->mount_point,length);
     ctx->upstream_prefix[length]='/';
     ctx->upstream_prefix[length+1]=0;
-    int rc=nas_ramdisk_attach(&ctx->ramdisk,ctx->block_name,image,
-                              image_bytes,512,writable);
+    int rc=nas_lwext4_device_attach(&ctx->device,ctx->block_name,ctx->device_name);
     if(rc)return rc;
-    rc=nas_lwext4_device_attach(&ctx->device,ctx->block_name,ctx->device_name);
-    if(rc)goto FailDisk;
     rc=ext4_mount(ctx->device_name,ctx->upstream_prefix,!writable);
     if(rc) {rc=-rc;goto FailDevice;}
     rc=ext4_get_sblock(ctx->upstream_prefix,&ctx->upstream_super);
@@ -282,11 +286,27 @@ FailMount:
     (void)ext4_umount(ctx->upstream_prefix);
 FailDevice:
     (void)nas_lwext4_device_detach(&ctx->device,ctx->device_name);
-FailDisk:
-    (void)nas_ramdisk_detach(&ctx->ramdisk);
     ctx->upstream_mount=NULL;
     ctx->upstream_super=NULL;
     return rc;
+}
+/* RAM-backed boot-module path is an adapter, not the only mount path.
+ * The root mount/unmount logic above/below does not know a driver kind. */
+int nas_lwext4_ramdisk_mount_mode(struct nas_lwext4_mount *ctx,
+                             const char *block_name,const char *dev_name,
+                             const char *mount_point,void *image,
+                             uint64_t image_bytes,bool writable) {
+    if(!ctx || !image || ctx->mounted || ctx->ramdisk.block.registered)
+        return -EINVAL;
+    int rc=nas_ramdisk_attach(&ctx->ramdisk,block_name,image,image_bytes,512,writable);
+    if(rc)return rc;
+    rc=nas_lwext4_device_mount(ctx,block_name,dev_name,mount_point,writable);
+    if(rc) {
+        (void)nas_ramdisk_detach(&ctx->ramdisk);
+        return rc;
+    }
+    ctx->owns_ramdisk=true;
+    return 0;
 }
 int nas_lwext4_ramdisk_mount(struct nas_lwext4_mount *ctx,
                              const char *block_name,const char *dev_name,
@@ -295,7 +315,7 @@ int nas_lwext4_ramdisk_mount(struct nas_lwext4_mount *ctx,
     return nas_lwext4_ramdisk_mount_mode(ctx,block_name,dev_name,
                                         mount_point,image,image_bytes,false);
 }
-int nas_lwext4_ramdisk_unmount(struct nas_lwext4_mount *ctx) {
+int nas_lwext4_unmount(struct nas_lwext4_mount *ctx) {
     if(!ctx || !ctx->mounted)return -EINVAL;
     int rc=nas_vfs_unregister_mount(&ctx->mount);
     if(rc)return rc;
@@ -307,7 +327,14 @@ int nas_lwext4_ramdisk_unmount(struct nas_lwext4_mount *ctx) {
     ctx->mounted=false;
     rc=nas_lwext4_device_detach(&ctx->device,ctx->device_name);
     if(rc)return rc;
-    rc=nas_ramdisk_detach(&ctx->ramdisk);
+    if(ctx->owns_ramdisk) {
+        rc=nas_ramdisk_detach(&ctx->ramdisk);
+        if(rc)return rc;
+        ctx->owns_ramdisk=false;
+    }
     ctx->upstream_mount=NULL;ctx->upstream_super=NULL;
-    return rc;
+    return 0;
+}
+int nas_lwext4_ramdisk_unmount(struct nas_lwext4_mount *ctx) {
+    return nas_lwext4_unmount(ctx);
 }

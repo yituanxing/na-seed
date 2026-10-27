@@ -23,9 +23,17 @@ struct nas_lwext4_mount {
     char block_name[32];
     char device_name[32];
     bool mounted;
+    bool owns_ramdisk; /* Only the optional Limine/host RAM image adapter. */
 };
-/* Default guest mount is RO. Explicit write mode is opt-in for host
- * VFS integration; guest unlink-open durability needs more lifecycle work. */
+/* The generic mount consumes ANY existing BlockDevice: driver ownership,
+ * DMA, discovery and interrupt completion stay below BlockDevice.
+ * Default guest mount stays RO; writable mounts are explicit. */
+int nas_lwext4_device_mount(struct nas_lwext4_mount *mount,
+                            const char *block_name,const char *device_name,
+                            const char *mount_point,bool writable);
+int nas_lwext4_unmount(struct nas_lwext4_mount *mount);
+/* Convenience image adapter, using exactly the same generic mount logic.
+ * Guest unlink-open and physical durability still require later contracts. */
 int nas_lwext4_ramdisk_mount_mode(struct nas_lwext4_mount *mount,
                              const char *block_name,const char *device_name,
                              const char *mount_point,void *image,
