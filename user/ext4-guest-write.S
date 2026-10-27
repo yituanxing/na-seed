@@ -99,41 +99,14 @@ _start:
     xor %rdi, %rdi
     syscall
 fail:
-    /* All future guest file operations report a stable failing stage.
-     * Do not silently exit 1 and force someone to replay 17 workflows. */
+    /* Report which syscall phase failed, without hiding guest failures. */
     mov %r15d, %eax
     xor %edx, %edx
     mov $10, %esi
     div %esi
-    add 
-guest_path:
-    .asciz "/mnt/sandbox/guest-created"
-payload:
-    .ascii "NaSeed genuine guest RW ext4 via common File and BlockDevice\n"
-payload_end:
-message:
-    .ascii "[PASS] guest ext4 RAM RW openat/write/fsync/lseek/read/close/reopen\n"
-message_end:
-.bss
-.align 16
-result_buffer:
-    .skip 256
-0', %al
+    add $48, %al
     mov %al, stage_tens(%rip)
-    add 
-guest_path:
-    .asciz "/mnt/sandbox/guest-created"
-payload:
-    .ascii "NaSeed genuine guest RW ext4 via common File and BlockDevice\n"
-payload_end:
-message:
-    .ascii "[PASS] guest ext4 RAM RW openat/write/fsync/lseek/read/close/reopen\n"
-message_end:
-.bss
-.align 16
-result_buffer:
-    .skip 256
-0', %dl
+    add $48, %dl
     mov %dl, stage_ones(%rip)
     mov $__NR_write, %rax
     mov $1, %rdi
@@ -147,9 +120,9 @@ result_buffer:
 diagnostic:
     .ascii "[LWEXT4 GUEST RW DIAG] stage="
 stage_tens:
-    .ascii "0"
+    .byte 48
 stage_ones:
-    .ascii "0"
+    .byte 48
     .byte 10
 diagnostic_end:
 .section .rodata
