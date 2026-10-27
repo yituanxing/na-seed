@@ -194,8 +194,7 @@ static int proc_lookup_node(const struct nas_vfs_mount *mount,
     struct nas_proc_node p;
     if(!nas_proc_lookup(path,&p))return -ENOENT;
     *out=(struct nas_fs_node){.ino=nas_proc_ino(p),.nlink=nas_proc_is_dir(p)?2:1,
-      .mode=nas_proc_mode(p),.is_dir=nas_proc_is_dir(p),
-      .is_symlink=p.kind==NAS_PROC_FD_LINK};
+      .mode=nas_proc_mode(p),.is_dir=nas_proc_is_dir(p)};
     return 0;
 }
 
