@@ -512,6 +512,16 @@ elif [ "$profile" = group ]; then
         tests/m44-threadgroup.c -o "$root/tests/m44-threadgroup"
     readelf -h "$root/tests/m44-threadgroup" | grep -Fq "$machine"
     test -x "$root/tests/m44-threadgroup"
+    # Same upstream-LLVM source, independently started as PID 1 with
+    # leader-first SYS_exit (NOT worker exit_group or a test-mode syscall).
+    clang --target="$target_triple" -O2 -std=c11 -Wall -Wextra -Werror \
+        -DM44_INIT_LEADER_FIRST \
+        -ffreestanding -nostdinc -fno-stack-protector -fno-builtin \
+        -fno-pic -fno-pie -nostdlib -static -fuse-ld=lld \
+        -Wl,-e,_start -Wl,-z,max-page-size=4096 \
+        tests/m44-threadgroup.c -o "$root/tests/m44-pid1-leader"
+    readelf -h "$root/tests/m44-pid1-leader" | grep -Fq "$machine"
+    test -x "$root/tests/m44-pid1-leader"
 elif [ "$profile" = zstd ]; then
     # Original signed Alpine multi-threaded Zstandard: no guest compilation.
     # 12 MiB requires multiple compression input chunks at -T2; fixture

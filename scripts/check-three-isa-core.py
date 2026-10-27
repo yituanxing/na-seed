@@ -215,9 +215,13 @@ if "native_reap_exited_threads();" not in sched or \
    "dead->state==NAS_TASK_ZOMBIE && !dead->ptrace_tracer_pid" not in sched:
     raise SystemExit("exited pthread Task/MM lifetime not reclaimed from scheduler stack")
 dispatch=(root/"kernel/syscall/dispatch.c").read_text()
-if "const bool init_shutdown = TASK.tgid==1 &&" not in dispatch or \
-   "TASK.pid==1 || nr==NAS_SC_exit_group" not in dispatch:
-    raise SystemExit("PID 1 worker SYS_exit misclassified as system shutdown")
+if "const bool init_shutdown =" in dispatch or \
+   "nas_sched_child_exit((uint32_t)args[1],0)" not in dispatch or \
+   "nas_sched_thread_group_exit((uint32_t)args[1],0)" not in dispatch:
+    raise SystemExit("init worker/leader syscall exits bypass Task group lifetime")
+if "nas_init_process_terminated(child->exit_code,child->termination_signal)" not in sched or \
+   "nas_init_process_terminated(uint32_t code,uint32_t signal)" not in (root/"kernel/init/main.c").read_text():
+    raise SystemExit("PID1 boot policy observer bypasses group-finalization contract")
 process_src=(root/"kernel/task/process.c").read_text()
 wait_src=(root/"kernel/task/wait.c").read_text()
 fd_src=(root/"kernel/fs/syscall.c").read_text()

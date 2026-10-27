@@ -124,6 +124,13 @@ static __attribute__((used,noreturn)) void thread_entry(void) {
         worker_fork_pid=child;
         finish_thread(0);
     }
+    if(what==8) {
+        /* The real PID 1 leader has executed SYS_exit already. Worker
+         * stdout and final SYS_exit must still work before host shutdown. */
+        short_nap();short_nap();
+        MSG("M44_PID1_WORKER_AFTER_LEADER_PASS\n");
+        finish_thread(0);
+    }
     if(what==7) {
         sibling_wait_status=reap(sibling_wait_pid);
         sibling_wait_done=1;
@@ -212,6 +219,14 @@ static long reap(long pid) {
 __attribute__((force_align_arg_pointer))
 #endif
 void _start(void) {
+#if defined(M44_INIT_LEADER_FIRST)
+    /* Variant of the SAME real Linux syscall source, booted as PID1.
+     * Distinguishes leader-local SYS_exit from process-wide exit_group. */
+    if(call1(NR_getpid,0)!=1)done(90);
+    MSG("M44_PID1_LEADER_EXIT_REQUEST\n");
+    spawn(0,8);
+    finish_thread(0);
+#endif
     if(call1(NR_getpid,0)==1) {
         /* Genuine direct PID 1 ELF, not a subprocess of an Alpine shell.
          * Its CLONE_THREAD children inherit PPID=0. A worker calling

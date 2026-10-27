@@ -17,10 +17,50 @@
 #include "../time/clock.h"
 #include "main.h"
 #include "../fs/file_ops.h"
+#include "../platform/platform.h"
 #define TASK (*nas_current_task)
 #define running_bash TASK.running_bash
 #define running_busybox TASK.running_busybox
 #define running_alpine TASK.running_alpine
+
+/* Only a FULLY terminated PID 1 process may drive the host test exit.
+ * The scheduler publishes its group-finalization event; the boot policy
+ * stays here, never in an ISA trap or the syscall dispatch hot path. */
+void nas_init_process_terminated(uint32_t code,uint32_t signal) {
+    if(!nas_current_task || nas_current_task->pid!=1 ||
+       nas_current_task->state!=NAS_TASK_ZOMBIE ||
+       nas_current_task->group_exit_pending)
+        nas_fail("PID1 test completion before final thread exit");
+    if(signal)nas_fail("init terminated by default fatal signal");
+    nas_print("[EXIT] user status=");nas_dec(code);nas_print("\n");
+    if(nas_boot_argv_enabled()) {
+        if(code)nas_fail("cmdline userspace exited nonzero");
+        nas_print("[PASS] cmdline userspace exit 0\n");
+        nas_platform_debug_exit(0);
+        nas_fail("QEMU debug exit returned unexpectedly");
+    }
+    if(TASK.running_busybox) {
+        if(code==0 && TASK.saw_bash_hello) {
+            if(TASK.running_alpine)
+                nas_print("[PASS] M4 Alpine dynamic BusyBox echo hello\n");
+            else nas_print("[PASS] M2 Debian BusyBox echo hello\n");
+            nas_platform_debug_exit(0);
+        }
+        nas_fail("real BusyBox exited without stdout hello and status 0");
+    }
+    if(TASK.running_bash) {
+        if(code==0 && TASK.saw_bash_hello) {
+            nas_print("[PASS] M2 real GNU Bash -c echo hello\n");
+            nas_platform_debug_exit(0);
+        }
+        nas_fail("real Bash exited without exact hello and status zero");
+    }
+    if(code==0) {
+        nas_print("[PASS] M1 ELF / ring3 / syscall write / ENOSYS / exit\n");
+        nas_platform_debug_exit(0);
+    }
+    nas_fail("user program exit was non-zero");
+}
 
 void nas_init_userspace(void) {
     nas_print("[INIT] creating common task/VM and architecture user entry\n");

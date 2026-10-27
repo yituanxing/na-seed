@@ -16,7 +16,7 @@ work="build/external/m44-group/$port"
 export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"
 export NAS_ACCEPTANCE_CPIO="$work/rootfs.cpio"
 export BUSYBOX_PARITY_MANIFEST=scripts/m44-group-cases.tsv
-export BUSYBOX_PARITY_EXPECTED_COUNT=2
+export BUSYBOX_PARITY_EXPECTED_COUNT=3
 export NAS_ACCEPTANCE_QEMU_RAM=1024M
 export NAS_ACCEPTANCE_DISK_MB=256
 export NAS_SYSCALL_TRACE=0
@@ -53,4 +53,19 @@ if grep -Fq '[FAIL]' "$pid1_log"; then
   echo "[M44 PID1 FAIL] kernel rejected direct-init worker test" >&2
   exit 1
 fi
-echo "[M44 PASS] $port Linux group lifetime + direct PID1 workers + original zstd pthreads"
+leader_log="$logs/m44-pid1-leader.clean.log"
+test -s "$leader_log"
+for marker in M44_PID1_LEADER_EXIT_REQUEST M44_PID1_WORKER_AFTER_LEADER_PASS; do
+  if ! grep -Fxq "$marker" "$leader_log"; then
+    echo "[M44 PID1 LEADER FAIL] missing $marker ($port)" >&2
+    tail -140 "$leader_log" >&2
+    exit 1
+  fi
+done
+grep -Fq '[THREAD GROUP] leader exit deferred tgid=1' "$leader_log"
+grep -Fq '[PASS] cmdline userspace exit 0' "$leader_log"
+if grep -Fq '[FAIL]' "$leader_log"; then
+  echo "[M44 PID1 LEADER FAIL] guest reported kernel failure" >&2
+  exit 1
+fi
+echo "[M44 PASS] $port Linux group lifetime + both PID1 exit orders + original zstd pthreads"

@@ -710,57 +710,17 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_setsid) return nas_session_setsid();
     if (nr == NAS_SC_setpgid) return nas_session_setpgid(args[1],args[2]);
     if (nr == NAS_SC_exit || nr == NAS_SC_exit_group) { /* exit / exit_group */
-        /* A PID 1 WORKER has ppid=0, just like its leader, but SYS_exit
-         * must terminate only that thread. Conversely, exit_group from
-         * any member of PID 1 ends the entire boot process and uses the
-         * established host-observable system-shutdown acceptance. */
-        const bool init_shutdown = TASK.tgid==1 &&
-            (TASK.pid==1 || nr==NAS_SC_exit_group);
-        if (!init_shutdown && nas_ptrace_exit_event(nas_current_task,args,args[1]))
+        /* PID1 is a process, not a syscall special case: all exits now
+         * pass through Task/FD/group ownership cleanup. Its final group
+         * completion is observed by the boot-policy owner in init/main.c. */
+        if (TASK.tgid!=1 &&
+            nas_ptrace_exit_event(nas_current_task,args,args[1]))
             return nas_task_schedule((uint64_t *)(uintptr_t)args);
-        if (!init_shutdown) {
-            if (nr == NAS_SC_exit_group)
-                nas_sched_thread_group_exit((uint32_t)args[1],0);
-            else nas_sched_child_exit((uint32_t)args[1], 0);
-            return nas_task_schedule((uint64_t *)(uintptr_t)args);
-        }
-        nas_process_clear_tid_on_exit();
-        TASK.exit_code = (uint32_t)(args[1] & 255ULL);
-        TASK.termination_signal = 0;
-        TASK.state = NAS_TASK_ZOMBIE;
-        nas_print("[EXIT] user status="); nas_dec(args[1]); nas_print("\n");
-        /* In cmdline-driven tests, the host verifies real stdout and status.
-         * Do not encode applet-specific success checks into the kernel.
-         * Legacy M0-M4 tests keep their strict hello-specific acceptance.
-         */
-        if (nas_boot_argv_enabled()) {
-            if (args[1] != 0) nas_fail("cmdline userspace exited nonzero");
-            nas_print("[PASS] cmdline userspace exit 0\n");
-            nas_platform_debug_exit(0);
-            nas_fail("QEMU debug exit returned unexpectedly");
-        }
-        if (running_busybox) {
-            if (args[1] == 0 && saw_bash_hello) {
-                if (running_alpine)
-                    nas_print("[PASS] M4 Alpine dynamic BusyBox echo hello\n");
-                else
-                    nas_print("[PASS] M2 Debian BusyBox echo hello\n");
-                nas_platform_debug_exit(0);
-            }
-            nas_fail("real BusyBox exited without stdout hello and status 0");
-        }
-        if (running_bash) {
-            if (args[1] == 0 && saw_bash_hello) {
-                nas_print("[PASS] M2 real GNU Bash -c echo hello\n");
-                nas_platform_debug_exit(0);
-            }
-            nas_fail("real Bash exited without exact hello and status zero");
-        }
-        if (args[1] == 0) {
-            nas_print("[PASS] M1 ELF / ring3 / syscall write / ENOSYS / exit\n");
-            nas_platform_debug_exit(0);
-        }
-        nas_fail("user program exit was non-zero");
+        if(nr==NAS_SC_exit_group)
+            nas_sched_thread_group_exit((uint32_t)args[1],0);
+        else
+            nas_sched_child_exit((uint32_t)args[1],0);
+        return nas_task_schedule((uint64_t *)(uintptr_t)args);
     }
     if (raw_nr >= sizeof(missing_count) / sizeof(missing_count[0]) ||
         ++missing_count[raw_nr] <= 3) {

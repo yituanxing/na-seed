@@ -2,3 +2,5 @@
 m44-group	cpio	sh -c '/bin/sh /tests/run-group.sh'	M44_REAL_ZSTD_AND_GROUP_PASS	-	/bin/busybox
 # Independent boot of the same upstream LLVM ELF AS PID 1, never as shell child.
 m44-pid1	cpio	pid1	M44_PID1_GROUP_EXIT_PASS	-	/tests/m44-threadgroup
+# Same native source, direct PID1 leader exits before the final worker.
+m44-pid1-leader	cpio	pid1	M44_PID1_WORKER_AFTER_LEADER_PASS	-	/tests/m44-pid1-leader
