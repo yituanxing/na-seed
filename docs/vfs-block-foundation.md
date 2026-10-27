@@ -269,3 +269,15 @@ Acceptance requires the existing **real AArch64 QEMU** VirtIO-MMIO guest
 stage to run a genuine userspace ext4 write and flush and for host `e2fsck`
 and `debugfs` to verify the persisted bytes afterwards. Source link alone
 is not acceptance. No x86 PCI or RV64 MMIO hardware provider claim yet.
+
+## QEMU virt MMIO bus layout — physical RV64 regression correction
+
+Hardware gate 40593565455 verified original 3-ISA RAM-ext4 and genuine AArch64
+physical disk persistence, then reported RV64 `scause=5` at the *second*
+virtual MMIO slot (virt+0x200): an unmapped QEMU device-register region,
+not a generic VFS or block protocol error. ARM QEMU virt exposes 32 modern
+MMIO slots at **0x200 stride**; RISC-V virt exposes **8 slots at 0x1000
+stride**. The common scanner now takes platform-supplied stride/count and
+maps the complete device window. No architecture check is added to the
+shared VirtIO request engine, VFS, or block layer. The RV64 QEMU test
+remains red until its exact-head re-run passes real persistence/e2fsck.
