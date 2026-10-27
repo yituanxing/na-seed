@@ -191,15 +191,20 @@ if "nas_sched_user_commit" in sched_core or "nas_sched_user_commit" in sched_cor
    "task_replay(" in sched:
     raise SystemExit("obsolete frame-copy commit or partial/excluded scan returned")
 if "nas_task_wait_needs_idle_poll" in sched or \
-   "nas_task_wait_needs_idle_poll" in task_wait or \
-   "nas_task_wait_has_external_wake_source(" not in sched or \
-   "nas_task_wait_has_external_wake_source(" not in task_wait:
-    raise SystemExit("old busy-poll idle predicate escaped native interrupt-aware refactor")
+   "nas_task_wait_has_external_wake_source" in sched or \
+   "nas_task_wait_has_external_wake_source" in task_wait or \
+   "native scheduler deadlock" in sched or \
+   "nas_kthread_deadlines_armed" in (root/"kernel/task/kthread.c").read_text():
+    raise SystemExit("obsolete syscall-based idle deadlock gate returned")
 # IRQ-masked busy polling is not an acceptable native idle implementation.
 # Require ISA-specific privileged interrupt handling, never a user-only IRQ
 # path or an unconditional WFI/HLT executed with interrupts still disabled.
 if "nas_arch_idle_wait();" not in sched or "void nas_arch_idle_wait(void);" not in (root/"kernel/arch/arch.h").read_text():
     raise SystemExit("native scheduler lost shared IRQ-aware idle boundary")
+task_src=(root/"kernel/task.c").read_text()
+release=task_src.split("void nas_task_release(",1)[1].split("struct nas_task *nas_task_by_pid",1)[0]
+if "task->native_trap_frame=0;" not in release or "task->resume_valid=false;" not in release:
+    raise SystemExit("retired Task still exposes a parked user/kernel continuation")
 x86_timer=(root/"kernel/arch/x86_64/timer.c").read_text()
 if 'sti; hlt; cli' not in x86_timer or 'if ((frame->cs & 3U) == 0U)' not in x86_timer or    'jz nas_x86_iret_restore' not in x86_entry:
     raise SystemExit("x86 kernel PIT idle IRQ must restore CPL0 IRET without user signals")

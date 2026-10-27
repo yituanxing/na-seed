@@ -28,7 +28,6 @@ bool nas_kthread_park(struct nas_wait_queue *queue);
 enum nas_kwait_result nas_kthread_park_until(struct nas_wait_queue *queue,
                                              uint64_t deadline_ns);
 unsigned nas_kthread_timers_tick(uint64_t monotonic_ns);
-bool nas_kthread_deadlines_armed(void);
 bool nas_kthread_runnable(void);
 bool nas_kthread_wake(struct nas_kthread_handle handle);
 bool nas_kthread_cancel(struct nas_kthread_handle handle);

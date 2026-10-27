@@ -4,9 +4,6 @@
 #include <stdint.h>
 #include "../task.h"
 bool nas_task_wait_ready(const struct nas_task *task);
-/* Whether a blocked Task has a potential external wake/deadline while the
- * scheduler has no runnable continuation. This never spins or reads user VM. */
-bool nas_task_wait_has_external_wake_source(const struct nas_task *task);
 /* Per-Task interest registration, never per user-FD ownership. Tasks may
  * subscribe to multiple descriptions in a single poll/select/epoll.
  * Poll readiness is evaluated by each open-description's own callback. */

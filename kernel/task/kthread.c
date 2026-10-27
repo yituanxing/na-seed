@@ -148,12 +148,6 @@ unsigned nas_kthread_timers_tick(uint64_t now) {
     }
     return expired;
 }
-bool nas_kthread_deadlines_armed(void) {
-    for(unsigned i=0;i<NAS_KTHREAD_LIMIT;i++)
-        if(workers[i].state==KTHREAD_WAITING &&
-           workers[i].deadline_active)return true;
-    return false;
-}
 bool nas_kthread_runnable(void) {
     for(unsigned i=0;i<NAS_KTHREAD_LIMIT;i++)
         if(workers[i].state==KTHREAD_READY)return true;

@@ -84,25 +84,3 @@ bool nas_task_wait_ready(const struct nas_task *task) {
         return task_io_ready(task);
     return false;
 }
-
-/* Distinct from immediate readiness: only identify blocked Tasks with a
- * potential external wake or timer deadline when the native scheduler has
- * no runnable continuation. Actual idle runs with IRQs enabled via the ISA
- * boundary; this policy never polls or switches C stacks. */
-bool nas_task_wait_has_external_wake_source(const struct nas_task *task) {
-    if(!task || task->state!=NAS_TASK_BLOCKED ||
-       !task->wait.pending_valid)return false;
-    if(task->wait.deadline_active)return true;
-    const enum nas_syscall_op nr=(enum nas_syscall_op)task->wait.blocked_op;
-    if(nr==NAS_SC_epoll_wait || nr==NAS_SC_epoll_pwait)
-        return true; /* cross-process epoll_ctl may change readiness */
-    if(nr==NAS_SC_poll || nr==NAS_SC_ppoll ||
-       nr==NAS_SC_pselect6 || nr==NAS_SC_select)
-        return task->wait.poll_tty_read;
-    if(nr==NAS_SC_read || nr==NAS_SC_readv) {
-        uint8_t kind=nas_task_fd_kind(task,task->wait.blocked_args[0]);
-        return (kind==FD_TTY || kind==FD_UART) &&
-               nas_tty_read_waitable();
-    }
-    return false;
-}

@@ -82,12 +82,8 @@ void nas_task_boot_init(void) {
 }
 struct nas_task *nas_task_current(void) { return nas_current_task; }
 const struct nas_task *nas_task_find(uint64_t pid) {
-    if (!pid) return 0;
-    for (unsigned i = 0; i < NAS_TASK_LIMIT; i++)
-        if (task_table[i].state != NAS_TASK_FREE &&
-            task_table[i].pid == pid)
-            return &task_table[i];
-    return 0;
+    /* All callers share the single mutable/const PID lookup owner. */
+    return nas_task_by_pid(pid);
 }
 
 /* Reuse slots, NEVER PID identities. FD tables are copied, but
@@ -222,6 +218,8 @@ void nas_task_release(struct nas_task *task) {
     task->robust_list_head=0;
     nas_task_wait_reset(task);
     nas_kernel_execution_reset(&task->kernel_exec);
+    task->native_trap_frame=0; /* the freed Task owns no live trap stack */
+    task->resume_valid=false;
     task->ppid = 0;
     task->pgid = 0;
     task->sid = 0;

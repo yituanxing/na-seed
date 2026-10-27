@@ -14,7 +14,6 @@
 #include "wait.h"
 #include "futex_wait.h"
 #include "blocked_completion.h"
-#include "kthread.h"
 #include "scheduler_service.h"
 #include "sched_core.h"
 #include "wait_pid.h"
@@ -271,19 +270,12 @@ static void native_dispatcher(void) {
             nas_arch_kernel_swap(&scheduler_cpu,&next->kernel_exec.cpu);
             continue;
         }
-        /* All Task C continuations are parked on their own stacks.
-         * The shared scheduler remains on scheduler_stack, with IRQs
-         * masked on entry/return. Each ISA owns its EL1/S-mode/CPL0 IRQ
-         * boundary: never deliver a timer tick through a user trap image. */
+        /* No runnable Task is a legitimate OS state, including indefinite
+         * futex/pipe waits with no pre-registered external producer.
+         * The scheduler owns no active Task C frame, and every architecture
+         * sleeps on its privileged IRQ-safe idle path until a real tick,
+         * device event or spurious interrupt calls for another scan. */
         nas_task_cpu_account_switch(0);
-        bool external=nas_time_timers_armed() ||
-            nas_kthread_deadlines_armed() || nas_kthread_runnable();
-        for(unsigned i=0;i<NAS_TASK_LIMIT && !external;i++)
-            external=nas_task_wait_has_external_wake_source(nas_task_at(i));
-        if(!external)sched_fail("native scheduler deadlock");
-        /* The timer is periodic and remains armed even without a user
-         * process. Spurious returns are fine: rerun readiness and clocks.
-         * Never loop here with IRQs masked and a runnable external waiter. */
         nas_arch_idle_wait();
     }
 }

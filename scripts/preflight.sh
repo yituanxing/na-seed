@@ -27,10 +27,6 @@ sh scripts/check-m86-txn.sh
 sh scripts/check-m88-exceptions.sh
 sh scripts/check-m89-poll.sh
 sh scripts/check-m90-io-wait.sh
-cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin \
-    -ffunction-sections -fdata-sections -Wl,--gc-sections -I kernel \
-    scripts/test-wait-idle.c kernel/task/wait.c -o /tmp/naseed-wait-idle
-/tmp/naseed-wait-idle
 # M65: native procfs owner host regression (not a simulated guest PASS).
 cc -std=c11 -Wall -Wextra -Werror -fno-builtin -I kernel \
     scripts/test-procfs.c kernel/fs/procfs.c kernel/lib/string.c \
