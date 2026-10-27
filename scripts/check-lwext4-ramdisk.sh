@@ -3,19 +3,15 @@
 # Large third-party source is built externally, never inside NaSeed/QEMU.
 set -eu
 revision=58bcf89a121b72d4fb66334f1693d3b30e4cb9c5
-for cmd in git cmake cc mke2fs e2fsck truncate; do command -v "$cmd" >/dev/null; done
+for cmd in cmake cc mke2fs e2fsck truncate; do command -v "$cmd" >/dev/null; done
 root=build/external/lwext4
-vendor="$root/upstream"
-if [ ! -d "$vendor/.git" ]; then
-    mkdir -p "$root"
-    git init -q "$vendor"
-    git -C "$vendor" remote add origin https://github.com/gkostka/lwext4.git
-fi
-if [ "$(git -C "$vendor" rev-parse HEAD 2>/dev/null || true)" != "$revision" ]; then
-    git -C "$vendor" fetch -q --depth=1 origin "$revision"
-    git -C "$vendor" -c advice.detachedHead=false checkout -q --detach "$revision"
-fi
-test "$(git -C "$vendor" rev-parse HEAD)" = "$revision"
+# The pinned audited upstream source is part of THIS repository, not an
+# opportunistic network clone on every developer machine or CI run.
+vendor=third_party/lwext4
+test -f "$vendor/LICENSE"
+test -f "$vendor/src/ext4.c"
+test -f "$vendor/include/ext4.h"
+grep -Fxq "$revision" "$vendor/UPSTREAM_REVISION"
 cmake -S "$vendor" -B "$root/host" -DLIB_ONLY=ON -DCMAKE_BUILD_TYPE=Release >/dev/null
 cmake --build "$root/host" --target lwext4 -j 4 >/dev/null
 cc -std=c11 -O2 -Wall -Wextra -Werror -I "$vendor/include" \

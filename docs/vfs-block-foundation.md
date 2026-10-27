@@ -60,3 +60,18 @@ the NaSeed repo's declared project license. Do not blindly copy NaOS files.
   exception.
 - Unregister refuses pinned or parent mounts; bootstrap mounts permanent.
   Full superblock/dentry/inode caches and concurrent umount remain TODO.
+
+## Vendored upstream lwext4 (source owned by third-party authors)
+- Pinned exact upstream commit: `58bcf89a121b72d4fb66334f1693d3b30e4cb9c5`.
+- Kept intact under `third_party/lwext4/{include,src,blockdev}`, **never
+  flattened into kernel/fs or edited as if our own native VFS code**.
+- NaSeed's translation boundary is `kernel/fs/ext4/lwext4_block.[ch]`;
+  block drivers do not call ext4 APIs.
+- Host test compiles this vendored upstream **offline**; no shallow runtime
+  Git clone of a moving upstream branch.
+- License caveat: upstream contains GPL-2.0-only `ext4_xattr.c` and
+  `ext4_extent.c` as well as BSD-3-Clause files. Its exact original
+  `LICENSE` and file-level headers must be retained. Check the
+  distribution-license compatibility of a linked NaSeed kernel BEFORE
+  landing any guest-side lwext4 integration, and do not copy NaOS GPL-3
+  source into the same combined work without resolving compatibility.
