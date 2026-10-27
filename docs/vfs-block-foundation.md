@@ -143,3 +143,13 @@ independent original M1 userspace exit. Not a host-native simulation.
 
 Other ISAs compile/link the same port; QEMU boot execution on RV64/AArch64
 and Linux syscall openat/read/getdents on mounted ext4 remain separate gates.
+
+### Real ring-3 ext4 syscall acceptance
+`user/ext4-reader.S` is a real separate ELF loaded by Limine PID1 in
+the opt-in x86 kernel. It opens `/mnt/sandbox/hardlink` via Linux
+`openat`, checks `fstat` length, reads bytes via Linux `read`, resets
+position with `lseek`, verifies the same content after re-read, sends
+its real bytes to the UART via `write`, closes, then exits 0. The CI
+script demands both the expected file content and native PID1 completion
+marker. It does NOT count a successful kernel-only ext4 read as syscall
+acceptance.
