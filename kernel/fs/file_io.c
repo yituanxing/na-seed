@@ -14,6 +14,7 @@
 #include "../arch/linux_fcntl_abi.h"
 #include "io.h"
 #include "file_ops.h"
+#include "vfs.h"
 #define TASK (*nas_current_task)
 /* Owner-independent readiness. No Task pointer, process FD number or
  * userspace memory access is needed to poll a live open-file description.
@@ -38,29 +39,23 @@ int64_t nas_fs_mmap_read(uint64_t fd, uint64_t offset,
     if(nas_open_files[slot].status_flags & NAS_LINUX_O_PATH)return -EBADF;
     if ((nas_open_files[slot].status_flags & 3ULL) == 1ULL)
         return -EACCES;
-    const uint8_t *bytes = 0;
-    uint64_t size = 0;
-    if (TASK.fds->entries[fd].kind == FD_ARCHIVE) {
-        const struct bootfs_entry *entry = nas_open_files[slot].boot_entry;
-        if (!entry || bootfs_is_dir(entry)) return -ENODEV;
-        bytes = entry->data;
-        size = entry->size;
-    } else if (TASK.fds->entries[fd].kind == FD_BOOTFS) {
-        const struct limine_file *file = nas_open_files[slot].boot_file;
-        if (!file || !file->address) return -EBADF;
-        bytes = (const uint8_t *)file->address;
-        size = file->size;
-    } else if (TASK.fds->entries[fd].kind == FD_TMP) {
-        const struct nas_tmp_file *file = tmp_by_slot(slot);
-        if (!file || file->is_dir) return -ENODEV;
-        return tmp_read_at(file, offset, buffer, length);
-    } else {
-        return -ENODEV;
+    const struct nas_open_file *opened=&nas_open_files[slot];
+    if(opened->vnode_pinned) {
+        const struct nas_fs_node *node=&opened->vnode;
+        if(node->is_dir || !node->filesystem || !node->filesystem->read_at)
+            return -ENODEV;
+        if(!buffer && length)return -EFAULT;
+        return nas_vfs_read_at(node,offset,buffer,length);
     }
-    if (offset >= size) return 0;
-    if (length > size-offset) length = size-offset;
-    if (length && !buffer) return -EFAULT;
-    if (length) memcpy(buffer, bytes+offset, (size_t)length);
+    /* Legacy non-VFS Limine module FD only; migrated mounted providers
+     * never branch by backend in the kernel-buffer data path. */
+    if(TASK.fds->entries[fd].kind!=FD_BOOTFS)return -ENODEV;
+    const struct limine_file *file=opened->boot_file;
+    if(!file || !file->address)return -EBADF;
+    if(offset>=file->size)return 0;
+    if(length>file->size-offset)length=file->size-offset;
+    if(!buffer && length)return -EFAULT;
+    if(length)memcpy(buffer,(const uint8_t *)file->address+offset,(size_t)length);
     return (int64_t)length;
 }
 

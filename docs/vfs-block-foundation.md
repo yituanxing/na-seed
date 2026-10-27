@@ -49,3 +49,14 @@ the NaSeed repo's declared project license. Do not blindly copy NaOS files.
 - This is **not** yet a fully refcounted Linux dentry/superblock/mount tree;
   no claim of safe unmount/open-FD lifetime, ext4 disk execution or complete
   FD migration. Those require a later batch and real workload acceptance.
+
+## Shared open File/mount ownership extension
+- Mounted provider inode views are attached to the existing reference-counted
+  nas_open_file, rather than each task-local FD. dup/fork/SCM_RIGHTS aliases
+  share identity and one mount pin. Final File release returns exactly one pin.
+- CPIO and tmpfs positional read, streaming read and MAP_PRIVATE now reuse
+  VFS kernel-buffer read_at. Unlink/rename cannot retarget opened inodes.
+  Raw Limine module descriptors remain a documented temporary compatibility
+  exception.
+- Unregister refuses pinned or parent mounts; bootstrap mounts permanent.
+  Full superblock/dentry/inode caches and concurrent umount remain TODO.

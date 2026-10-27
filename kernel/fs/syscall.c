@@ -31,6 +31,7 @@
 #include "metadata_syscall.h"
 #include "open_path.h"
 #include "lookup.h"
+#include "vfs.h"
 #include "../time/clock.h"
 /* Linux x86-64 filesystem syscall adapter. Backend state is already
  * task-local or refcounted via fd.c, pipe.c, bootfs.c and tmpfs.c.
@@ -191,6 +192,9 @@ void nas_fs_description_final_close(unsigned slot) {
     nas_epoll_target_final_close(slot);
     const struct nas_file_ops *ops=nas_open_files[slot].ops;
     if(ops && ops->release)ops->release(slot);
+    if(nas_open_files[slot].vnode_pinned &&
+       nas_vfs_node_unpin(&nas_open_files[slot].vnode))
+        nas_fs_fail("File mount pin corrupted at final close");
     nas_open_files[slot]=(struct nas_open_file){0};
 }
 void nas_fs_drop_kernel_description(unsigned slot) {
@@ -337,25 +341,26 @@ static const struct limine_file *bootfs_lookup(const char *path) {
 /* Pathname / dirfd user-address adapter lives in namespace_syscall.c. */
 /* A bounded adapter transfers user buffers to the shared page-backed tmpfs.
  * Kernel filesystem storage knows nothing about user virtual addresses. */
-static uint64_t tmp_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
-    const struct nas_tmp_file *file = tmp_by_fd(fd);
-    if (!file) return (uint64_t)-EBADF;
-    if (!length) return 0;
-    if (address >= USER_LIMIT || length > USER_LIMIT - address)
+/* One provider-backed read for every mounted regular File. The filename
+ * is resolved at open; seek offsets live in the shared open description. */
+static uint64_t vread_regular(uint64_t fd,uint64_t address,uint64_t length) {
+    if(!length)return 0;
+    if(address>=USER_LIMIT || length>USER_LIMIT-address)
         return (uint64_t)-EFAULT;
-    unsigned slot = TASK.fds->entries[fd].slot;
-    uint64_t offset = nas_open_files[slot].position, done = 0;
+    unsigned slot=TASK.fds->entries[fd].slot;
+    uint64_t start=nas_open_files[slot].position,done=0;
     uint8_t buffer[1024];
-    while (done < length) {
-        uint64_t n = length - done;
-        if (n > sizeof(buffer)) n = sizeof(buffer);
-        int64_t got = tmp_read_at(file, offset + done, buffer, n);
-        if (got < 0) return done ? done : (uint64_t)got;
-        if (!got) break;
-        if (!nas_user_write_bytes(address + done, buffer, (uint64_t)got))
+    while(done<length) {
+        uint64_t take=length-done;
+        if(take>sizeof(buffer))take=sizeof(buffer);
+        int64_t got=nas_fs_mmap_read(fd,start+done,buffer,take);
+        if(got<0)return done ? done : (uint64_t)got;
+        if(!got)break;
+        if(!nas_user_write_bytes(address+done,buffer,(uint64_t)got))
             return done ? done : (uint64_t)-EFAULT;
-        done += (uint64_t)got;
-        nas_open_files[slot].position = offset + done;
+        done+=(uint64_t)got;
+        nas_open_files[slot].position=start+done;
+        if((uint64_t)got<take)break;
     }
     return done;
 }
@@ -510,6 +515,21 @@ uint64_t nas_fs_open_path(const char *path, uint64_t native_flags,
     if((kind==FD_TMP || kind==FD_TMP_DIR) && !tmp_file)
         return (uint64_t)-ENOENT;
     if(kind==FD_TMP && (flags & 0x200ULL))tmp_truncate(tmp_file);
+    /* Resolve inode identity before exposing FD. Shared open descriptions,
+     * not task-local FD numbers, own the mount pin. A later unlink or rename
+     * must NOT turn read, pread or MAP_PRIVATE into pathname relookup. */
+    struct nas_fs_node opened_node={0};
+    bool has_node=kind==FD_ARCHIVE || kind==FD_DIR ||
+                  kind==FD_TMP || kind==FD_TMP_DIR ||
+                  kind==FD_PROC_FILE || kind==FD_PROC_DIR;
+    if(has_node) {
+        char resolved[256];
+        int rc=nas_fs_lookup_node(path,!(flags&0x20000ULL),
+                                  &opened_node,resolved);
+        if(rc)return (uint64_t)(int64_t)rc;
+        rc=nas_vfs_node_pin(&opened_node);
+        if(rc)return (uint64_t)(int64_t)rc;
+    }
     if(kind==FD_PTY_MASTER) {
         int err=nas_pty_new(slot);
         if(err)return (uint64_t)(int64_t)err;
@@ -524,6 +544,10 @@ uint64_t nas_fs_open_path(const char *path, uint64_t native_flags,
                            !!(flags & 0x80000ULL)))
         nas_fs_fail("reserved openat description was occupied");
     if(kind==FD_TMP || kind==FD_TMP_DIR)tmp_bind_slot(slot,tmp_file);
+    if(has_node) {
+        nas_open_files[slot].vnode=opened_node;
+        nas_open_files[slot].vnode_pinned=true;
+    }
     nas_open_files[slot].boot_file=real_file;
     nas_open_files[slot].boot_entry=entry;
     if(kind==FD_PROC_FILE || kind==FD_PROC_DIR) {
@@ -588,17 +612,6 @@ static uint64_t vread_zero(uint64_t fd,uint64_t addr,uint64_t n) {
 }
 static uint64_t vread_dir(uint64_t fd,uint64_t addr,uint64_t n) {
     (void)fd;(void)addr;(void)n;return (uint64_t)-EISDIR;
-}
-static uint64_t vread_archive(uint64_t fd,uint64_t addr,uint64_t n) {
-    const struct bootfs_entry *entry=nas_open_files[TASK.fds->entries[fd].slot].boot_entry;
-    if(!entry)return (uint64_t)-EBADF;
-    uint64_t start=nas_open_files[TASK.fds->entries[fd].slot].position;
-    if(start>=entry->size)return 0;
-    if(n>entry->size-start)n=entry->size-start;
-    if(!nas_user_write_bytes(addr,entry->data+start,n))
-        return (uint64_t)-EFAULT;
-    nas_open_files[TASK.fds->entries[fd].slot].position+=n;
-    return n;
 }
 static uint64_t vread_limine(uint64_t fd,uint64_t addr,uint64_t n) {
     const struct limine_file *file=nas_open_files[TASK.fds->entries[fd].slot].boot_file;
@@ -690,7 +703,7 @@ static const struct nas_file_ops ops_zero={
     .read=vread_zero,.write=vwrite_discard,.poll=vpoll_always,.poll_description=dpoll_always
 };
 static const struct nas_file_ops ops_bootfs={.read=vread_limine,.poll=vpoll_always,.poll_description=dpoll_always};
-static const struct nas_file_ops ops_archive={.read=vread_archive,.poll=vpoll_always,.poll_description=dpoll_always};
+static const struct nas_file_ops ops_archive={.read=vread_regular,.poll=vpoll_always,.poll_description=dpoll_always};
 static const struct nas_file_ops ops_dir={.read=vread_dir,.poll=vpoll_always,.poll_description=dpoll_always};
 static const struct nas_file_ops ops_proc_file={.read=vread_proc,.poll=vpoll_always,.poll_description=dpoll_always};
 static const struct nas_file_ops ops_proc_dir={.read=vread_dir,.poll=vpoll_always,.poll_description=dpoll_always};
@@ -726,7 +739,7 @@ static const struct nas_file_ops ops_pty={
     .ioctl=nas_pty_ioctl,.release=vrelease_pty
 };
 static const struct nas_file_ops ops_tmp={
-    .read=tmp_fd_read,.write=tmp_fd_write,.poll=vpoll_always,.poll_description=dpoll_always,
+    .read=vread_regular,.write=tmp_fd_write,.poll=vpoll_always,.poll_description=dpoll_always,
     .release=vrelease_tmp
 };
 static const struct nas_file_ops ops_tmp_dir={
