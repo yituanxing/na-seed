@@ -46,6 +46,8 @@ int main(int argc,char **argv) {
     assert(!strcmp(node.filesystem->name,"lwext4"));
     assert(!strcmp(actual,"/mnt/sandbox/hardlink"));
     assert(!node.is_dir && !node.is_symlink && !nas_vfs_can_write(&node));
+    assert(node.ino>=11 && node.nlink>=1);
+    assert(nas_vfs_node_device(&node)>=8);
     static const char expected[]="NaSeed VFS and BlockDevice real lwext4 data\n";
     assert(node.size==sizeof(expected)-1);
     assert(nas_vfs_read_at(&node,0,(uint8_t *)buffer,sizeof(buffer))==(int64_t)node.size);

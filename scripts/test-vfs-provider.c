@@ -126,6 +126,7 @@ int main(void) {
     assert(nas_fs_lookup_node("/mnt/no",true,&n,resolved)==-ENOENT);
     assert(nas_fs_lookup_node("/mnt2",true,&n,resolved)==-ENOENT);
     assert(nas_fs_lookup_node("/mnt/hello",true,&n,resolved)==0);
+    assert(nas_vfs_node_device(&n)>=8);
     assert(nas_vfs_node_pin(&n)==0);
     assert(nas_vfs_node_pin(&n)==0);
     assert(nas_vfs_unregister_mount(&ext_mount)==-EBUSY);

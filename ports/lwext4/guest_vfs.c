@@ -27,6 +27,11 @@ static int ext_lookup(const struct nas_vfs_mount *vfs,
     uint32_t mode=ext4_inode_get_mode(ctx->upstream_super,&raw);
     *out=(struct nas_fs_node){
         .inode=(const void *)(uintptr_t)number,
+        .ino=number,.nlink=ext4_inode_get_links_cnt(&raw),
+        .uid=ext4_inode_get_uid(&raw),.gid=ext4_inode_get_gid(&raw),
+        .atime_sec=ext4_inode_get_access_time(&raw),
+        .mtime_sec=ext4_inode_get_modif_time(&raw),
+        .ctime_sec=ext4_inode_get_change_inode_time(&raw),
         .mode=mode,
         .size=ext4_inode_get_size(ctx->upstream_super,&raw),
         .is_dir=(mode & 0170000U)==0040000U,

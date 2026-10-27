@@ -4,7 +4,8 @@
 #include "../lib/string.h"
 #include <stddef.h>
 #define NAS_VFS_MOUNT_LIMIT 16U
-struct mount_slot {const struct nas_vfs_mount *mount;uint32_t open_refs;};
+struct mount_slot {const struct nas_vfs_mount *mount;uint32_t open_refs;uint64_t device_id;};
+static uint64_t next_device_id=8;
 static struct mount_slot mounts[NAS_VFS_MOUNT_LIMIT];
 static unsigned count;
 static bool defaults_ready;
@@ -30,7 +31,9 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
     for (unsigned i=0;i<count;i++)
         if (!strcmp(mounts[i].mount->mountpoint,mount->mountpoint))return -EEXIST;
     if (count==NAS_VFS_MOUNT_LIMIT)return -ENOSPC;
-    mounts[count++]=(struct mount_slot){.mount=mount};return 0;
+    if(next_device_id==UINT64_MAX)return -ENOSPC;
+    mounts[count++]=(struct mount_slot){.mount=mount,.device_id=next_device_id++};
+    return 0;
 }
 int nas_vfs_lookup(const char *absolute,struct nas_fs_node *out) {
     if (!absolute || !out || absolute[0]!='/')return -EINVAL;
@@ -128,4 +131,14 @@ int nas_vfs_node_unpin(const struct nas_fs_node *node) {
         --mounts[i].open_refs;return 0;
     }
     return -ENODEV;
+}
+
+/* Stable during a mount's lifetime even if preceding mount table entries
+ * are removed. Device ID 0 is always invalid; no kernel-address leak. */
+uint64_t nas_vfs_node_device(const struct nas_fs_node *node) {
+    if(!node || !node->mount)return 0;
+    ensure_defaults();
+    for(unsigned i=0;i<count;i++)
+        if(mounts[i].mount==node->mount)return mounts[i].device_id;
+    return 0;
 }

@@ -18,6 +18,7 @@
 #include "../drivers/pty.h"
 #include "../time/clock.h"
 #include "lookup.h"
+#include "vfs.h"
 #include "procfs.h"
 #include "syscall.h"
 #include "open_path.h"
@@ -39,6 +40,26 @@ static void fill_tmp_stat(struct nas_linux_stat *st,
     st->mtime_nsec = file->mtime_ns % NAS_NSEC_PER_SEC;
     st->ctime_sec = (int64_t)(file->ctime_ns / NAS_NSEC_PER_SEC);
     st->ctime_nsec = file->ctime_ns % NAS_NSEC_PER_SEC;
+}
+/* Generic inode stat comes from the filesystem lookup result, never a
+ * fixed ext4-only number or an exported kernel pointer. */
+static uint64_t write_mounted_stat(const struct nas_fs_node *node,
+                                   uint64_t destination) {
+    if(!node || !node->filesystem || !node->ino)return (uint64_t)-EINVAL;
+    struct nas_linux_stat st={0};
+    st.dev=nas_vfs_node_device(node);
+    if(!st.dev)return (uint64_t)-ENODEV;
+    st.ino=node->ino;st.mode=node->mode;
+    st.nlink=node->nlink ? node->nlink : (node->is_dir ? 2 : 1);
+    st.uid=node->uid;st.gid=node->gid;
+    st.size=(int64_t)node->size;
+    st.blocks=(int64_t)((node->size+511)/512);
+    st.blksize=PAGE;
+    st.atime_sec=(int64_t)node->atime_sec;
+    st.mtime_sec=(int64_t)node->mtime_sec;
+    st.ctime_sec=(int64_t)node->ctime_sec;
+    return nas_user_write_bytes(destination,(const uint8_t *)&st,sizeof(st))
+        ? 0:(uint64_t)-EFAULT;
 }
 /* Linux x86-64 struct stat layout, 144 bytes. File size is actual module.
  * Device entries have character-device type; mounted files are regular.
@@ -62,11 +83,7 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
             /* A generic mounted inode is not a bootfs archive record. */
             const struct nas_open_file *open=&nas_open_files[TASK.fds->entries[fd].slot];
             if(!open->vnode_pinned)return (uint64_t)-EBADF;
-            const struct nas_fs_node *node=&open->vnode;
-            st.dev=8;st.ino=(uint64_t)(uintptr_t)node->inode;
-            st.mode=node->mode;st.nlink=node->is_dir?2:1;
-            st.size=(int64_t)node->size;
-            st.blocks=(int64_t)((node->size+511)/512);
+            return write_mounted_stat(&open->vnode,address);
         }
     } else if (TASK.fds->entries[fd].kind == FD_TMP || TASK.fds->entries[fd].kind == FD_TMP_DIR) {
         const struct nas_tmp_file *file = tmp_by_slot(TASK.fds->entries[fd].slot);
@@ -359,13 +376,7 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
             const struct bootfs_entry *entry=bootfs_find(actual);
             if(entry && node.inode==(const void *)entry)
                 return write_boot_stat(entry,statbuf);
-            struct nas_linux_stat st={0};
-            st.dev=8;st.ino=(uint64_t)(uintptr_t)node.inode;
-            st.nlink=node.is_dir?2:1;st.mode=node.mode;
-            st.blksize=PAGE;st.size=(int64_t)node.size;
-            st.blocks=(int64_t)((node.size+511)/512);
-            return nas_user_write_bytes(statbuf,(const uint8_t *)&st,
-                       sizeof(st))?0:(uint64_t)-EFAULT;
+            return write_mounted_stat(&node,statbuf);
         }
         if (err != -ENOENT) return (uint64_t)(int64_t)err;
     }

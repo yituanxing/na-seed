@@ -36,6 +36,7 @@ struct nas_vfs_mount {
 int nas_vfs_unregister_mount(const struct nas_vfs_mount *mount);
 int nas_vfs_node_pin(const struct nas_fs_node *node);
 int nas_vfs_node_unpin(const struct nas_fs_node *node);
+uint64_t nas_vfs_node_device(const struct nas_fs_node *node);
 int nas_vfs_register_mount(const struct nas_vfs_mount *mount);
 int nas_vfs_lookup(const char *absolute, struct nas_fs_node *node);
 int nas_vfs_readlink(const struct nas_fs_node *node,const char *absolute,

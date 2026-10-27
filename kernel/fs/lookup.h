@@ -9,6 +9,12 @@ struct nas_fs_node {
     const struct nas_vfs_type *filesystem;
     const struct nas_vfs_mount *mount; /* origin mount, borrowed until pinned */
     const void *inode;
+    /* Filesystem-supplied stable inode/stat identity. VFS never exports
+     * a provider pointer as st_ino. Zero means metadata unavailable. */
+    uint64_t ino;
+    uint64_t nlink;
+    uint32_t uid,gid;
+    uint64_t atime_sec,mtime_sec,ctime_sec;
     const uint8_t *data;  /* optional zero-copy immutable data */
     uint64_t size;
     uint32_t mode;
