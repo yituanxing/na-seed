@@ -25,7 +25,7 @@ int main(int argc,char **argv) {
     assert(fread(image,1,(size_t)bytes,disk)==(size_t)bytes);
     struct nas_ramdisk rd={0};
     struct nas_lwext4_device device={0};
-    check(nas_ramdisk_attach(&rd,"image0",image,(uint64_t)bytes,512,false==write),
+    check(nas_ramdisk_attach(&rd,"image0",image,(uint64_t)bytes,512,write),
           "attach memory device");
     check(nas_lwext4_device_attach(&device,"image0","ext-test"),
           "register upstream lwext4 device");
