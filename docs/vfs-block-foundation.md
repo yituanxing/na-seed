@@ -100,3 +100,12 @@ All 21 real upstream C units and the port compile on x86-64, RV64 and ARM64
 with the permanent freestanding headers; the host test exercises actual
 allocator allocation, double-free, realloc, merging and arena extension.
 This compilation gate is **not** yet guest lwext4 mount/link evidence.
+
+### Full cross-target guest linkage gate
+`scripts/check-lwext4-guest-link.sh` compiles and **links** every vendored
+lwext4 source file, NaSeed BlockDevice bridge, heap and freestanding C
+compatibility source as one *relocatable* object for each of the three actual
+ISA ABIs. It rejects unresolved libc and compiler runtime symbols. This is
+actual guest-target link compatibility, **not yet** attaching and mounting
+ext4 in a booted NaSeed kernel. The single relocatable object can be passed
+to the native kernel link when its VFS provider and mount lifecycle are ready.

@@ -23,3 +23,4 @@ jobs:
           command -v e2fsck
           sh scripts/check-lwext4-ramdisk.sh
           sh scripts/check-lwext4-freestanding.sh
+          sh scripts/check-lwext4-guest-link.sh
