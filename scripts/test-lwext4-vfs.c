@@ -3,6 +3,7 @@
 #include "../kernel/fs/lookup.h"
 #include "../kernel/fs/vfs.h"
 #include "../ports/lwext4/guest_vfs.h"
+#include "../kernel/block/device.h"
 #include "../kernel/errno.h"
 #include "../kernel/task/resources.h"
 #include <assert.h>
@@ -10,6 +11,42 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+/* Traced driver backend: identical registered BlockDevice contract as any
+ * VirtIO/PCI transport, with real ext4 bytes and fault-injectable hardware
+ * cache completion. A successful lwext4 metadata flush alone is not fsync. */
+struct traced_disk {
+    struct nas_block_device dev;
+    uint8_t *image;
+    unsigned reads,writes,flushes;
+    bool fail_flush;
+};
+static int trace_read(struct nas_block_device *dev,uint64_t sector,
+                      uint32_t count,void *destination) {
+    struct traced_disk *t=dev->context;
+    ++t->reads;
+    memcpy(destination,t->image+sector*dev->sector_bytes,
+           (size_t)count*dev->sector_bytes);
+    return 0;
+}
+static int trace_write(struct nas_block_device *dev,uint64_t sector,
+                       uint32_t count,const void *source) {
+    struct traced_disk *t=dev->context;
+    ++t->writes;
+    memcpy(t->image+sector*dev->sector_bytes,source,
+           (size_t)count*dev->sector_bytes);
+    return 0;
+}
+static int trace_flush(struct nas_block_device *dev) {
+    struct traced_disk *t=dev->context;
+    ++t->flushes;
+    return t->fail_flush ? -EIO : 0;
+}
+static const struct nas_block_ops trace_ops={
+    .read=trace_read,.write=trace_write,.flush=trace_flush
+};
+static const struct nas_block_ops trace_no_flush_ops={
+    .read=trace_read,.write=trace_write
+};
 void nas_print(const char *s) { fputs(s,stderr); }
 void nas_arch_halt(void) { abort(); }
 static int root_lookup(const struct nas_vfs_mount *mount,const char *path,
@@ -201,6 +238,59 @@ int main(int argc,char **argv) {
     assert(nas_vfs_write_at(&external_node,0,(const uint8_t *)"x",1)==-EROFS);
     assert(nas_lwext4_unmount(&external_mount)==0);
     assert(nas_ramdisk_detach(&external)==0);
+    if(write) {
+        /* Physical durability contract: an externally driver-owned,
+         * writable block device with an explicit, fault-injectable flush.
+         * Never substitute a VFS marker for the real upstream filesystem. */
+        struct traced_disk trace={.image=image};
+        trace.dev=(struct nas_block_device){
+            .name="traced-disk-driver",.sectors=(uint64_t)n/512U,
+            .sector_bytes=512,.max_sectors_per_io=16,
+            .ops=&trace_ops,.context=&trace
+        };
+        assert(nas_block_register(&trace.dev)==0);
+        static struct nas_lwext4_mount traced_mount;
+        trace.dev.ops=&trace_no_flush_ops;
+        assert(nas_lwext4_device_mount(&traced_mount,"traced-disk-driver",
+                                       "traced-ext4","/mnt",true)==-EOPNOTSUPP);
+        trace.dev.ops=&trace_ops;
+        assert(nas_lwext4_device_mount(&traced_mount,"traced-disk-driver",
+                                       "traced-ext4","/mnt",true)==0);
+        assert(nas_block_unregister(&trace.dev)==-EBUSY);
+        assert(nas_vfs_create("/mnt/sandbox/durable-file",0600)==0);
+        struct nas_fs_node durable;
+        assert(nas_fs_lookup_node("/mnt/sandbox/durable-file",true,&durable,actual)==0);
+        static const uint8_t data[]="driver-flushed ext4, not just VFS buffered\n";
+        assert(nas_vfs_write_at(&durable,0,data,sizeof(data)-1)==(int64_t)sizeof(data)-1);
+        assert(trace.reads>0 && trace.writes>0);
+        trace.fail_flush=true;
+        unsigned before=trace.flushes;
+        assert(nas_vfs_sync(&durable)==-EIO);
+        assert(trace.flushes==before+1);
+        /* A rejected final flush must NOT orphan a still-live mount. */
+        assert(nas_lwext4_unmount(&traced_mount)==-EIO);
+        assert(nas_fs_lookup_node("/mnt/sandbox/durable-file",true,&durable,actual)==0);
+        trace.fail_flush=false;
+        assert(nas_vfs_sync(&durable)==0);
+        assert(trace.flushes>=before+3);
+        assert(nas_lwext4_unmount(&traced_mount)==0);
+        assert(nas_block_unregister(&trace.dev)==0);
+        /* Fresh read-only mount after actual physical flush must recover
+         * the bytes, proving that a failed flush did not fake persistence. */
+        assert(nas_block_register(&trace.dev)==0);
+        static struct nas_lwext4_mount traced_verify;
+        assert(nas_lwext4_device_mount(&traced_verify,"traced-disk-driver",
+                                       "traced-verify","/mnt",false)==0);
+        struct nas_fs_node restored;
+        assert(nas_fs_lookup_node("/mnt/sandbox/durable-file",true,&restored,actual)==0);
+        assert(restored.size==sizeof(data)-1);
+        assert(nas_vfs_read_at(&restored,0,(uint8_t *)buffer,sizeof(buffer))==
+               (int64_t)sizeof(data)-1);
+        assert(!memcmp(data,buffer,sizeof(data)-1));
+        assert(nas_lwext4_unmount(&traced_verify)==0);
+        assert(nas_block_unregister(&trace.dev)==0);
+        puts("[LWEXT4 DRIVER FLUSH PASS] real filesystem fsync/umount propagate physical EIO, remount verified");
+    }
     if(write) {
         rewind(disk);
         assert(fwrite(image,1,(size_t)n,disk)==(size_t)n);

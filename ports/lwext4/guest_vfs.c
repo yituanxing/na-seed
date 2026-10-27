@@ -128,12 +128,20 @@ static int ext_resize_inode(const struct nas_fs_node *node,uint64_t length) {
     }
     return 0;
 }
+/* Linux fsync durability ordering:
+ *  1. write back dirty ext4 metadata/data through the BlockDevice bridge;
+ *  2. issue the owning DRIVER's cache flush, not just an lwext4 buffer flush.
+ * A transport that has no flush contract cannot claim a durable fsync.
+ * Common VFS/ABI never enumerates RAM/PCI/ISA drivers. */
+static int ext_sync_mount(struct nas_lwext4_mount *ctx) {
+    if(!ctx || !ctx->mounted || !ctx->device.storage)return -ENODEV;
+    int rc=ext4_cache_flush(ctx->upstream_prefix);
+    if(rc)return -rc;
+    return nas_block_flush(ctx->device.storage);
+}
 static int ext_sync_inode(const struct nas_fs_node *node) {
     if(!node || !node->mount || !node->mount->private_data)return -EINVAL;
-    struct nas_lwext4_mount *ctx=node->mount->private_data;
-    if(!ctx->mounted)return -ENODEV;
-    int rc=ext4_cache_flush(ctx->upstream_prefix);
-    return rc ? -rc : 0;
+    return ext_sync_mount(node->mount->private_data);
 }
 static int ext_create_path(const struct nas_vfs_mount *mount,const char *path,uint64_t mode) {
     (void)mount;
@@ -273,8 +281,12 @@ int nas_lwext4_device_mount(struct nas_lwext4_mount *ctx,
     struct nas_block_device *block=nas_block_get(block_name);
     if(!block)return -ENODEV;
     bool forbidden=writable && block->read_only;
+    bool no_flush=writable && (!block->ops || !block->ops->flush);
     nas_block_put(block);
     if(forbidden)return -EROFS;
+    /* Fail closed rather than mounting a writable, apparently 'durable'
+     * filesystem over a transport that cannot confirm a cache flush. */
+    if(no_flush)return -EOPNOTSUPP;
     if(!copy_name(ctx->block_name,sizeof(ctx->block_name),block_name) ||
        !copy_name(ctx->device_name,sizeof(ctx->device_name),dev_name) ||
        !copy_name(ctx->mount_point,sizeof(ctx->mount_point),mount_point))
@@ -344,7 +356,11 @@ int nas_lwext4_ramdisk_mount(struct nas_lwext4_mount *ctx,
 }
 int nas_lwext4_unmount(struct nas_lwext4_mount *ctx) {
     if(!ctx || !ctx->mounted)return -EINVAL;
-    int rc=nas_vfs_unregister_mount(&ctx->mount);
+    /* A failed physical flush must leave mount and inode ownership
+     * untouched. Never unregister the VFS mount before checking durability. */
+    int rc=ext_sync_mount(ctx);
+    if(rc)return rc;
+    rc=nas_vfs_unregister_mount(&ctx->mount);
     if(rc)return rc;
     int e=ext4_umount(ctx->upstream_prefix);
     if(e) {
