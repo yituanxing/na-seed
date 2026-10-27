@@ -5,6 +5,8 @@
 #include <stdbool.h>
 #include "../drivers/block/virtio_mmio_blk.h"
 #include "../drivers/core/bus.h"
+#include "../drivers/virtio/mmio.h"
+#include "../drivers/port/dma.h"
 #include "../drivers/serial.h"
 
 extern bool nas_arm_map_io_page(uint64_t physical,uint64_t virtual_addr);
@@ -13,6 +15,7 @@ extern bool nas_arm_map_io_page(uint64_t physical,uint64_t virtual_addr);
 #define VIRTIO_MMIO_STRIDE 0x200U
 #define VIRTIO_MMIO_SLOTS 32U
 static struct nas_bus_device mmio_devices[VIRTIO_MMIO_SLOTS];
+static struct nas_virtio_transport mmio_transports[VIRTIO_MMIO_SLOTS];
 int nas_arm_virtio_blk_probe(void){
     int driver_rc=nas_virtio_mmio_blk_driver_register();
     if(driver_rc<0)return driver_rc;
@@ -31,9 +34,12 @@ int nas_arm_virtio_blk_probe(void){
         /* The platform publishes devices, never selects a storage driver.
          * Other drivers (net, vsock, GPU, ...) may bind to these slots. */
         if(reg[0]!=0x74726976U || reg[1]!=2U || !reg[2])continue;
+        int trc=nas_virtio_mmio_transport_init(&mmio_transports[slot],
+                                                reg,&nas_dma_qemu_coherent);
+        if(trc<0)return trc;
         mmio_devices[slot]=(struct nas_bus_device){
             .bus=NAS_BUS_VIRTIO_MMIO,.device_id=reg[2],
-            .vendor_id=reg[3],.resource=reg
+            .vendor_id=reg[3],.resource=reg,.context=&mmio_transports[slot]
         };
         int rc=nas_bus_device_register(&mmio_devices[slot]);
         if(rc<0)return rc;

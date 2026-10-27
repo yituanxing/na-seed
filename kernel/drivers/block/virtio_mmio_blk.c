@@ -1,15 +1,14 @@
-/* VirtIO v1.2 modern MMIO split queue -> NaSeed BlockDevice.
- * One synchronous request/queue, polled completion (IRQ wiring is future).
- * All queue/sector logic is ISA-agnostic; platform discovers and maps MMIO.
- *
- * DMA is ONLY from the frame allocator: physical addresses in virtqueue,
- * kernel HHDM aliases for CPU access. Never cast device MMIO to HHDM.
- * The command and status, payload, and ring each own separate 4 KiB frames.
+/* VirtIO v1.2 block request engine -> NaSeed BlockDevice.
+ * One synchronous polled split queue is retained as the proven fallback.
+ * Transport operations, MMIO register layout, DMA and bus discovery are
+ * independent so a pinned mature third-party driver can replace this
+ * backend without changing VFS, filesystem or PCI/MMIO platform code.
  */
 #include "virtio_mmio_blk.h"
 #include "../port/block.h"
 #include "../port/dma.h"
 #include "../core/bus.h"
+#include "../virtio/transport.h"
 #include <virtio/virtio_ring.h>
 #include "../../mm/frame.h"
 #include "../../errno.h"
@@ -21,49 +20,17 @@
 #define MAX_DISKS 4U
 #define QUEUE_SIZE 8U
 #define MAX_TRANSFER 4096U
-#define R_MAGIC        0x000U
-#define R_VERSION      0x004U
-#define R_DEVICE_ID    0x008U
-#define R_FEATURES     0x010U
-#define R_FEATURE_SEL  0x014U
-#define R_DRIVER_FEAT  0x020U
-#define R_DRIVER_SEL   0x024U
-#define R_QUEUE_SEL    0x030U
-#define R_QUEUE_MAX    0x034U
-#define R_QUEUE_NUM    0x038U
-#define R_QUEUE_READY  0x044U
-#define R_QUEUE_NOTIFY 0x050U
-#define R_STATUS       0x070U
-#define R_DESC_LO      0x080U
-#define R_DESC_HI      0x084U
-#define R_DRIVER_LO    0x090U
-#define R_DRIVER_HI    0x094U
-#define R_DEVICE_LO    0x0a0U
-#define R_DEVICE_HI    0x0a4U
-#define R_CAPACITY_LO  0x100U
-#define R_CAPACITY_HI  0x104U
-#define MAGIC          0x74726976U
-#define VERSION        2U
-#define DEVICE_BLK     2U
-#define STATUS_ACK     1U
-#define STATUS_DRIVER  2U
-#define STATUS_READY   4U
-#define STATUS_FEAT_OK 8U
-#define STATUS_FAILED  128U
-#define FEAT_RO        (1U<<5)
-#define FEAT_FLUSH     (1U<<9)
-#define FEAT_VERSION1  1U
+#define DEVICE_BLK 2U
+#define FEAT_RO    (UINT64_C(1)<<5)
+#define FEAT_FLUSH (UINT64_C(1)<<9)
 #define REQ_IN         0U
 #define REQ_OUT        1U
 #define REQ_FLUSH      4U
-#define MMIO_READ(d,off) ((d)->regs[(off)/4U])
-#define MMIO_WRITE(d,off,val) ((d)->regs[(off)/4U]=(uint32_t)(val))
-
 struct virtio_header {uint32_t type,reserved;uint64_t sector;};
 struct virt_blk {
     struct nas_port_block port;
     struct vring vr;
-    volatile uint32_t *regs;
+    struct nas_virtio_transport *transport;
     const struct nas_dma_provider *dma;
     struct nas_dma_page queue,request,payload;
     uint16_t used_index;
@@ -111,18 +78,23 @@ static int virtio_submit(struct virt_blk *d,uint32_t type,
     desc[2]=(struct vring_desc){
         .addr=d->request.bus_address+0x20U,.len=1,.flags=VRING_DESC_F_WRITE
     };
+    /* This polled fallback needs coherent memory; future IRQ/uncached
+     * backends can implement a noncoherent completion protocol independently. */
+    if(!d->dma->coherent)return -EOPNOTSUPP;
     /* A single inflight chain is serialized on the kernel CPU. All split
      * queue entries and DMA frames are physical and have stable lifetimes. */
+    /* DMA request header and outgoing payload precede queue publication. */
     if(nas_dma_sync(d->dma,&d->request,0,64U,NAS_DMA_TO_DEVICE) ||
-       nas_dma_sync(d->dma,&d->queue,0,4096U,NAS_DMA_TO_DEVICE) ||
        (bytes && type==REQ_OUT &&
         nas_dma_sync(d->dma,&d->payload,0,bytes,NAS_DMA_TO_DEVICE))) return -EIO;
     uint16_t submit_index=avail->idx;
     avail->ring[submit_index%QUEUE_SIZE]=0;
     barrier();
     avail->idx=(uint16_t)(submit_index+1);
+    if(nas_dma_sync(d->dma,&d->queue,0,NAS_DMA_PAGE_BYTES,
+                    NAS_DMA_TO_DEVICE)) return -EIO;
     barrier();
-    MMIO_WRITE(d,R_QUEUE_NOTIFY,0);
+    nas_virtio_notify(d->transport,0);
     bool completed=false;
     for(unsigned spin=0;spin<30000000U;spin++) {
         barrier();
@@ -132,7 +104,7 @@ static int virtio_submit(struct virt_blk *d,uint32_t type,
     }
     if(!completed){
         d->failed=true;
-        MMIO_WRITE(d,R_STATUS,MMIO_READ(d,R_STATUS)|STATUS_FAILED);
+        nas_virtio_fail(d->transport);
         return -EIO;
     }
     barrier();
@@ -166,68 +138,46 @@ static const struct nas_port_block_ops disk_ops={
     .read=blk_read,.write=blk_write,.flush=blk_flush
 };
 static int configure(struct virt_blk *d) {
-    MMIO_WRITE(d,R_STATUS,0);
-    MMIO_WRITE(d,R_STATUS,STATUS_ACK|STATUS_DRIVER);
-    MMIO_WRITE(d,R_FEATURE_SEL,0);
-    uint32_t low=MMIO_READ(d,R_FEATURES);
-    MMIO_WRITE(d,R_FEATURE_SEL,1);
-    uint32_t high=MMIO_READ(d,R_FEATURES);
-    if(!(high&FEAT_VERSION1))return -EOPNOTSUPP;
-    /* Explicitly negotiate only modern transport and FLUSH; no packed ring,
-     * indirect descriptors, ACCESS_PLATFORM or unsupported blk extensions. */
-    MMIO_WRITE(d,R_DRIVER_SEL,0);
-    MMIO_WRITE(d,R_DRIVER_FEAT,low&FEAT_FLUSH);
-    MMIO_WRITE(d,R_DRIVER_SEL,1);
-    MMIO_WRITE(d,R_DRIVER_FEAT,FEAT_VERSION1);
-    MMIO_WRITE(d,R_STATUS,STATUS_ACK|STATUS_DRIVER|STATUS_FEAT_OK);
-    if(!(MMIO_READ(d,R_STATUS)&STATUS_FEAT_OK))return -EOPNOTSUPP;
-    MMIO_WRITE(d,R_QUEUE_SEL,0);
-    if(MMIO_READ(d,R_QUEUE_READY)||MMIO_READ(d,R_QUEUE_MAX)<QUEUE_SIZE)
-        return -EOPNOTSUPP;
-    d->dma=&nas_dma_qemu_coherent;
+    uint64_t negotiated=0;
+    int rc=nas_virtio_negotiate(d->transport,0,FEAT_FLUSH,&negotiated);
+    if(rc)return rc;
+    d->dma=d->transport->dma;
+    if(vring_size(QUEUE_SIZE,256U)>NAS_DMA_PAGE_BYTES)return -EOVERFLOW;
     if(nas_dma_alloc_page(d->dma,&d->queue) ||
        nas_dma_alloc_page(d->dma,&d->request) ||
-       nas_dma_alloc_page(d->dma,&d->payload)) return -ENOMEM;
-    /* Use upstream vring_init / vring_size for descriptor, driver and used
-     * positions. One preallocated DMA frame still holds the whole split ring. */
-    if(vring_size(QUEUE_SIZE,256U)>4096U)return -EOVERFLOW;
+       nas_dma_alloc_page(d->dma,&d->payload))return -ENOMEM;
+    /* Preserve byte-identical upstream Unikraft split ring layout. */
     void *queue_va=d->queue.cpu;
-    memset(queue_va,0,4096U);
+    memset(queue_va,0,NAS_DMA_PAGE_BYTES);
     vring_init(&d->vr,QUEUE_SIZE,queue_va,256U);
     uint64_t avail_pa=d->queue.bus_address+
-            (uint64_t)((uintptr_t)d->vr.avail-(uintptr_t)queue_va);
+        (uint64_t)((uintptr_t)d->vr.avail-(uintptr_t)queue_va);
     uint64_t used_pa=d->queue.bus_address+
-            (uint64_t)((uintptr_t)d->vr.used-(uintptr_t)queue_va);
-    MMIO_WRITE(d,R_QUEUE_NUM,QUEUE_SIZE);
-    MMIO_WRITE(d,R_DESC_LO,(uint32_t)d->queue.bus_address);
-    MMIO_WRITE(d,R_DESC_HI,(uint32_t)(d->queue.bus_address>>32));
-    MMIO_WRITE(d,R_DRIVER_LO,(uint32_t)avail_pa);
-    MMIO_WRITE(d,R_DRIVER_HI,(uint32_t)(avail_pa>>32));
-    MMIO_WRITE(d,R_DEVICE_LO,(uint32_t)used_pa);
-    MMIO_WRITE(d,R_DEVICE_HI,(uint32_t)(used_pa>>32));
-    barrier();
-    MMIO_WRITE(d,R_QUEUE_READY,1);
-    uint64_t sectors=(uint64_t)MMIO_READ(d,R_CAPACITY_LO)|
-                      ((uint64_t)MMIO_READ(d,R_CAPACITY_HI)<<32);
+        (uint64_t)((uintptr_t)d->vr.used-(uintptr_t)queue_va);
+    rc=nas_virtio_setup_queue(d->transport,0,QUEUE_SIZE,
+                              d->queue.bus_address,avail_pa,used_pa);
+    if(rc)return rc;
+    uint64_t sectors=(uint64_t)nas_virtio_config32(d->transport,0) |
+                     ((uint64_t)nas_virtio_config32(d->transport,4)<<32);
     if(!sectors)return -ENODEV;
-    bool writable=!(low&FEAT_RO) && (low&FEAT_FLUSH);
-    MMIO_WRITE(d,R_STATUS,STATUS_ACK|STATUS_DRIVER|STATUS_FEAT_OK|STATUS_READY);
+    bool writable=!(negotiated&FEAT_RO) && (negotiated&FEAT_FLUSH);
+    rc=nas_virtio_activate(d->transport);
+    if(rc)return rc;
     return nas_port_block_attach(&d->port,names[disk_count],d,sectors,512U,
                                  MAX_TRANSFER/512U,!writable,
                                  NAS_PORT_BLOCK_ZERO,&disk_ops);
 }
-int nas_virtio_mmio_blk_attach(volatile uint32_t *regs) {
-    if(!regs || regs[R_MAGIC/4]!=MAGIC ||
-       regs[R_VERSION/4]!=VERSION || regs[R_DEVICE_ID/4]!=DEVICE_BLK)
-        return 0;
+int nas_virtio_blk_attach(struct nas_virtio_transport *transport) {
+    if(!transport||!transport->ops||!transport->dma)return -EINVAL;
     if(disk_count>=MAX_DISKS)return -ENOSPC;
     struct virt_blk *d=&disks[disk_count];
-    d->regs=regs;d->used_index=0;d->failed=false;
+    d->transport=transport;d->dma=transport->dma;
+    d->used_index=0;d->failed=false;
     int rc=configure(d);
     if(rc){
-        MMIO_WRITE(d,R_STATUS,STATUS_FAILED);
+        nas_virtio_fail(transport);
         release_pages(d);
-        d->regs=NULL;
+        d->transport=NULL;
         return rc;
     }
     disk_count++;
@@ -238,16 +188,16 @@ unsigned nas_virtio_mmio_blk_count(void){return disk_count;}
 /* Registration is transport-independent: scanning may discover any modern
  * VirtIO device, while the bus binds only matching block devices. */
 static bool virtio_blk_match(const struct nas_bus_device *dev) {
-    return dev->device_id==DEVICE_BLK;
+    return dev->device_id==DEVICE_BLK && dev->context!=NULL;
 }
 static int virtio_blk_probe(struct nas_bus_device *dev) {
-    int rc=nas_virtio_mmio_blk_attach((volatile uint32_t *)dev->resource);
+    int rc=nas_virtio_blk_attach((struct nas_virtio_transport *)dev->context);
     return rc==1 ? 0 : (rc==0 ? -ENODEV : rc);
 }
-static const struct nas_bus_driver virtio_blk_driver={
+static const struct nas_bus_driver virtio_blk_mmio_driver={
     .name="virtio-blk",.bus=NAS_BUS_VIRTIO_MMIO,
     .match=virtio_blk_match,.probe=virtio_blk_probe
 };
 int nas_virtio_mmio_blk_driver_register(void) {
-    return nas_bus_driver_register(&virtio_blk_driver);
+    return nas_bus_driver_register(&virtio_blk_mmio_driver);
 }

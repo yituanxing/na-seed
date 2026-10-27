@@ -109,3 +109,30 @@ verify allocation/release/bounds and refusal of unsupported noncoherent
 sync. The full original AArch64 physical QEMU disk write, FLUSH, and
 host e2fsck remain the acceptance gate. No new third-party full driver
 has been claimed.
+
+## Transport abstraction — replacement boundary (third batch)
+
+One generic `nas_virtio_transport_ops` API now owns status transitions,
+64-bit feature negotiation (including modern VERSION_1), queue assignment,
+per-device configuration and notifications. `kernel/drivers/virtio/mmio.c`
+is the only code that manipulates VirtIO-MMIO registers. This distinguishes:
+- a device's *bus* and discovery/lifetime (`kernel/drivers/core/bus`);
+- its *transport* protocol (MMIO now, PCI later);
+- its *device class* request driver (VirtIO-Blk fallback, eventual upstream);
+- its *DMA* provider/capabilities (coherent QEMU now, real hardware later);
+- its *OS-visible* block interface (unchanged BlockDevice/VFS/lwext4).
+
+The AArch64 platform instantiates stable generic transport structures for
+every discovered modern VirtIO device. The live block backend now accepts
+transport callbacks through `nas_bus_device.context`: no MMIO register
+constants or direct frame allocation in the block implementation. Vendor
+Unikraft headers remain byte-identical and the split queue layout is still
+upstream. The current polled fallback explicitly requires coherent DMA;
+it must not pretend non-coherent hardware is supported without correct
+completion/IRQ synchronization.
+
+The *all-kernel* RV64/AArch64 source syntax checker now includes the pinned
+vendor and port header search paths. Before this fix it failed while the
+individual opt-in AArch64 ext4 test was green, exposing a real full-matrix
+regression. The full driver transplant is still pending: no copied
+Unikraft `virtio_blk.c` implementation is claimed.

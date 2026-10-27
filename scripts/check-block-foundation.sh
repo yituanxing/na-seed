@@ -36,10 +36,14 @@ if command -v clang >/dev/null 2>&1; then
     clang --target="$target" -std=c11 -Wall -Wextra -Werror \
       -ffreestanding -fno-builtin -I kernel -fsyntax-only \
       kernel/drivers/port/block.c
-    clang --target="$target" -std=c11 -Wall -Wextra -Werror \
-      -ffreestanding -fno-builtin -I kernel \
-      -I third_party/unikraft/include -I ports/unikraft/include \
-      -fsyntax-only kernel/drivers/block/virtio_mmio_blk.c
+    for src in kernel/drivers/virtio/transport.c \
+               kernel/drivers/virtio/mmio.c \
+               kernel/drivers/block/virtio_mmio_blk.c; do
+      clang --target="$target" -std=c11 -Wall -Wextra -Werror \
+        -ffreestanding -fno-builtin -I kernel \
+        -I third_party/unikraft/include -I ports/unikraft/include \
+        -fsyntax-only "$src"
+    done
   done
 fi
 
@@ -61,3 +65,9 @@ if command -v clang >/dev/null 2>&1; then
     done
   done
 fi
+
+# The real VirtIO-Blk backend uses this shared transport API, not MMIO regs.
+cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
+  scripts/test-virtio-transport.c kernel/drivers/virtio/transport.c \
+  kernel/drivers/virtio/mmio.c -o build/block-foundation/test-virtio-transport
+build/block-foundation/test-virtio-transport
