@@ -22,13 +22,16 @@ extern void nas_print(const char *);
  * kernel image slot 511 and ordinary Limine HHDM slots.
  */
 #define NAS_X86_LAPIC_VIRT UINT64_C(0xfffffe8000000000)
-bool nas_arch_x86_map_lapic_page(uint64_t phys) {
-    if (!phys || (phys & 4095U)) return false;
+/* Generic supervisor-only, uncached device PTE. The same MMU primitive
+ * handles LAPIC and PCI BARs; never create a per-device page walker. */
+bool nas_arch_x86_map_device_page(uint64_t phys,uint64_t virt) {
+    if (!phys || (phys & 4095U) || (virt & 4095U) ||
+        virt < UINT64_C(0xffff800000000000)) return false;
     uint64_t root=nas_arch_current_page_root() & PHYS_MASK;
     if (!root) return false;
     for (unsigned level=3;level>0;--level) {
         uint64_t *table=(uint64_t *)(uintptr_t)(nas_hhdm_offset()+root);
-        unsigned idx=(unsigned)((NAS_X86_LAPIC_VIRT>>(12+9*level))&511U);
+        unsigned idx=(unsigned)((virt>>(12+9*level))&511U);
         uint64_t entry=table[idx];
         if (!(entry&P_PRESENT)) {
             root=nas_frame_alloc();
@@ -41,12 +44,15 @@ bool nas_arch_x86_map_lapic_page(uint64_t phys) {
         }
     }
     uint64_t *pt=(uint64_t *)(uintptr_t)(nas_hhdm_offset()+root);
-    unsigned idx=(unsigned)((NAS_X86_LAPIC_VIRT>>12)&511U);
+    unsigned idx=(unsigned)((virt>>12)&511U);
     if (pt[idx]) return false;
     /* Write-back caching on LAPIC MMIO is forbidden. PCD+PWT, NX, supervisor. */
     pt[idx]=phys|P_PRESENT|P_RW|0x18ULL|(1ULL<<63);
-    nas_arch_invalidate_page(NAS_X86_LAPIC_VIRT);
+    nas_arch_invalidate_page(virt);
     return true;
+}
+bool nas_arch_x86_map_lapic_page(uint64_t phys) {
+    return nas_arch_x86_map_device_page(phys,NAS_X86_LAPIC_VIRT);
 }
 /* User pages: read and amend existing Limine CR3 paging hierarchy. */
 static uint64_t *phys_table(uint64_t physical) {

@@ -99,3 +99,20 @@ syntax checks enforce an architecture-independent source.
 mapping and real QEMU PCI disk/persistence gate remain to be connected and
 run. The existing ARM/RV MMIO acceptance is unchanged. PCI transport is not
 a promise of IRQ completion or concurrent queue requests.
+
+## x86-64 PCI physical-device gate
+
+New opt-in root-bus QEMU q35 PCI mechanism-1 discovery maps real BAR MMIO
+through the same supervisor-only, uncached, NX PTE helper as x86 LAPIC. BAR
+size probes disable memory decode before restoring firmware-assigned values;
+no BAR allocations or ISA-specific VirtIO requests are introduced. The PCI
+capability transport binds to the same U-Boot block bus driver, split queue,
+DMA and BlockDevice used by ARM/RV MMIO. This is an intentionally bounded
+**QEMU root bus 0** implementation, not a claim of general ACPI/PCIe bridges,
+IOMMU, MSI-X, hotplug or native physical hardware coverage.
+
+`scripts/probe-lwext4-virtio-pci-x86.sh` supplies a separate raw ext4 PCI disk
+(not a Limine module), runs unmodified native Linux ELF ext4 write/fsync,
+and requires clean guest unmount + host e2fsck/debugfs persistence. This is
+release-gating until the exact-head CI proves it; neither the new code nor
+syntax checks alone establish a passing hardware acceptance.
