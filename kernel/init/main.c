@@ -6,6 +6,7 @@
 #include "../boot_image.h"
 #ifdef NAS_ENABLE_LWEXT4
 extern bool nas_lwext4_guest_boot_mount(void);
+extern bool nas_lwext4_guest_boot_shutdown(void);
 #endif
 #include "../arch/arch.h"
 #include "../arch/console.h"
@@ -38,6 +39,14 @@ void nas_init_process_terminated(uint32_t code,uint32_t signal) {
     nas_print("[EXIT] user status=");nas_dec(code);nas_print("\n");
     if(nas_boot_argv_enabled()) {
         if(code)nas_fail("cmdline userspace exited nonzero");
+#ifdef NAS_ENABLE_LWEXT4
+        /* A successful fsync is NOT a clean filesystem shutdown. Keep the
+         * ext4 mount and BlockDevice alive until PID1's final Files have
+         * been closed, then run upstream ext4_umount and durable disk flush.
+         * Applies to both RAM and hardware devices, no ISA branches. */
+        if (!nas_lwext4_guest_boot_shutdown())
+            nas_fail("lwext4 final unmount/durable device flush failed");
+#endif
         nas_print("[PASS] cmdline userspace exit 0\n");
         nas_platform_debug_exit(0);
         nas_fail("QEMU debug exit returned unexpectedly");

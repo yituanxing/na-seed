@@ -281,3 +281,22 @@ stride**. The common scanner now takes platform-supplied stride/count and
 maps the complete device window. No architecture check is added to the
 shared VirtIO request engine, VFS, or block layer. The RV64 QEMU test
 remains red until its exact-head re-run passes real persistence/e2fsck.
+
+## PID1 clean-unmount and strict on-disk fsck (2026-10-28)
+
+Earlier hardware runs proved persisted file bytes, but raw `e2fsck -fn`
+also emitted free-block and free-inode count mismatches; the step had
+previously only checked the tool's exit code. Those passes **did not prove
+clean ext4 metadata**.
+
+The native boot-test exit now invokes the existing `nas_lwext4_unmount`
+after PID1's last Files are closed. This calls upstream `ext4_umount` and,
+critically, a **second hardware BlockDevice flush** after ext4's final
+superblock/bitmap writes, before releasing the drive. The same code
+handles RAM or physical disks and all CPUs. Physical-disk QEMU logs must
+print the `clean upstream unmount and durable flush` marker.
+
+`scripts/check-ext4-fsck-clean.sh` now rejects both nonzero `e2fsck -fn`
+and textual metadata/accounting inconsistencies, before verifying the
+original persisted payload using `debugfs`. **Do not mark this complete
+until the exact-head real QEMU job is green.**

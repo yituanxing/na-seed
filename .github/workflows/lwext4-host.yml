@@ -25,6 +25,7 @@ on:
       - 'kernel/arch/riscv64/io.c'
       - 'ports/nuttx/**'
       - 'ports/lwext4/**'
+      - 'scripts/check-ext4-fsck-clean.sh'
       - 'kernel/fs/vfs*'
       - 'kernel/fs/metadata_syscall.c'
       - 'user/ext4-guest-read.S'
@@ -98,7 +99,7 @@ jobs:
           cp build/external/lwext4/ext4.img build/external/lwext4/virtio-persistent.img
           NAS_ENABLE_LWEXT4=1 NAS_ENABLE_VIRTIO_BLK=1 sh scripts/build-aarch64-full.sh
           NAS_ENABLE_LWEXT4=1 NAS_ENABLE_VIRTIO_BLK=1 NAS_LWEXT4_RW_PROBE=build/lwext4-native-rw/aarch64/probe.elf NAS_VIRTIO_BLK_IMAGE=build/external/lwext4/virtio-persistent.img sh scripts/probe-aarch64-full.sh
-          e2fsck -fn build/external/lwext4/virtio-persistent.img
+          sh scripts/check-ext4-fsck-clean.sh build/external/lwext4/virtio-persistent.img
           debugfs -R 'cat /sandbox/cross-isa-created' build/external/lwext4/virtio-persistent.img > build/external/lwext4/virtio-persisted-content.txt
           grep -Fq 'NaSeed one portable Linux ELF for x86 RV64 AArch64 ext4 RW' build/external/lwext4/virtio-persisted-content.txt
           echo '[VIRTIO-BLK HOST PERSISTENCE PASS] hardware driver ext4 bytes survived QEMU'
@@ -107,7 +108,7 @@ jobs:
           cp build/external/lwext4/ext4.img build/external/lwext4/virtio-persistent-rv.img
           NAS_ENABLE_LWEXT4=1 NAS_ENABLE_VIRTIO_BLK=1 sh scripts/build-riscv64-full.sh
           NAS_ENABLE_LWEXT4=1 NAS_ENABLE_VIRTIO_BLK=1 NAS_LWEXT4_RW_PROBE=build/lwext4-native-rw/riscv64/probe.elf NAS_VIRTIO_BLK_IMAGE=build/external/lwext4/virtio-persistent-rv.img sh scripts/probe-riscv64-full.sh
-          e2fsck -fn build/external/lwext4/virtio-persistent-rv.img
+          sh scripts/check-ext4-fsck-clean.sh build/external/lwext4/virtio-persistent-rv.img
           debugfs -R 'cat /sandbox/cross-isa-created' build/external/lwext4/virtio-persistent-rv.img > build/external/lwext4/virtio-rv-content.txt
           grep -Fq 'NaSeed one portable Linux ELF for x86 RV64 AArch64 ext4 RW' build/external/lwext4/virtio-rv-content.txt
           echo '[VIRTIO-BLK RV64 HOST PERSISTENCE PASS] hardware driver ext4 bytes survived QEMU'

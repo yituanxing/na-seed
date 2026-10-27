@@ -367,7 +367,12 @@ int nas_lwext4_unmount(struct nas_lwext4_mount *ctx) {
         (void)nas_vfs_register_mount(&ctx->mount);
         return -e;
     }
+    /* Upstream ext4_umount updates on-disk superblock/counters AFTER the
+     * preceding data-cache flush. Flush its final metadata writes through
+     * the actual storage controller before releasing BlockDevice ownership. */
+    int final_sync=nas_block_flush(ctx->device.storage);
     ctx->mounted=false;
+    if(final_sync)return final_sync;
     rc=nas_lwext4_device_detach(&ctx->device,ctx->device_name);
     if(rc)return rc;
     if(ctx->owns_ramdisk) {

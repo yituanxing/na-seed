@@ -105,3 +105,14 @@ bool nas_lwext4_guest_boot_mount(void) {
     }
     return true;
 }
+
+/* The real guest shutdown path after PID1 has exited and closed its Files.
+ * Preserve the same generic VFS->lwext4->BlockDevice unmount on all ISAs.
+ * Without ext4_umount, the journal/superblock free counters can lag even
+ * after fsync and block-cache flush; QEMU termination is not an unmount. */
+bool nas_lwext4_guest_boot_shutdown(void) {
+    if (!boot_mount.mounted) return true;
+    if (nas_lwext4_unmount(&boot_mount)) return false;
+    nas_print("[LWEXT4 GUEST] clean upstream unmount and durable flush\n");
+    return true;
+}
