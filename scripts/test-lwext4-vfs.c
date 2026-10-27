@@ -73,6 +73,11 @@ int main(int argc,char **argv) {
     assert(nas_vfs_read_dir(&directory,"/mnt/sandbox",
                              (uint64_t)count,entries,8)>=0);
     assert(nas_vfs_read_dir(&node,"/mnt/sandbox",0,entries,8)==-ENOTDIR);
+    assert(nas_vfs_mkdir("/mnt/create",0755)==-EROFS);
+    assert(nas_vfs_unlink("/mnt/sandbox/hardlink",0)==-EROFS);
+    assert(nas_vfs_rename("/mnt/sandbox/hardlink","/mnt/sandbox/new",0)==-EROFS);
+    assert(nas_vfs_link("/mnt/sandbox/hardlink","/mnt/sandbox/alias")==-EROFS);
+    assert(nas_vfs_symlink("hardlink","/mnt/sandbox/symlink")==-EROFS);
     assert(nas_fs_lookup_node("/mnt/sandbox/hardlink/",true,&node,actual)==-ENOTDIR);
     assert(nas_vfs_node_pin(&node)==0);
     assert(nas_lwext4_ramdisk_unmount(&mounted)==-EBUSY);

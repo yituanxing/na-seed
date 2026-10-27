@@ -33,6 +33,13 @@ struct nas_vfs_type {
     int (*chmod)(const struct nas_fs_node *, uint64_t mode);
     int (*utimens)(const struct nas_fs_node *, uint64_t atime,
                    uint64_t mtime, bool set_atime, bool set_mtime);
+    /* Namespace mutations operate on kernel paths, never user pointers.
+     * Only providers implement data operations; no backend-specific syscall. */
+    int (*mkdir)(const char *absolute,uint64_t mode);
+    int (*unlink)(const char *absolute,uint64_t flags);
+    int (*rename)(const char *old_absolute,const char *new_absolute,uint64_t flags);
+    int (*link)(const char *old_absolute,const char *new_absolute);
+    int (*symlink)(const char *target,const char *link_absolute);
     bool read_only;
 };
 struct nas_vfs_mount {
@@ -64,4 +71,9 @@ int nas_vfs_chmod(const struct nas_fs_node *node, uint64_t mode);
 int nas_vfs_utimens(const struct nas_fs_node *node, uint64_t atime,
                     uint64_t mtime, bool set_atime, bool set_mtime);
 bool nas_vfs_can_write(const struct nas_fs_node *node);
+int nas_vfs_mkdir(const char *absolute,uint64_t mode);
+int nas_vfs_unlink(const char *absolute,uint64_t flags);
+int nas_vfs_rename(const char *old_absolute,const char *new_absolute,uint64_t flags);
+int nas_vfs_link(const char *old_absolute,const char *new_absolute);
+int nas_vfs_symlink(const char *target,const char *absolute);
 #endif

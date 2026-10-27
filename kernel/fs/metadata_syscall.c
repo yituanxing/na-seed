@@ -400,20 +400,10 @@ static uint64_t sys_readlinkat_boot(uint64_t dirfd, uint64_t pathname,
     char path[256], actual[256];
     uint64_t r = nas_fs_resolve_path(dirfd, pathname, path);
     if ((int64_t)r < 0) return r;
-    struct nas_proc_node proc_node={0};
-    if(nas_proc_lookup(path,&proc_node) &&
-       proc_node.kind==NAS_PROC_FD_LINK) {
-        char target[256];
-        int64_t got=nas_proc_readlink(proc_node,target,sizeof(target));
-        if(got<0)return (uint64_t)got;
-        uint64_t n=(uint64_t)got<capacity?(uint64_t)got:capacity;
-        return nas_user_write_bytes(dst,(const uint8_t *)target,n) ?
-               n:(uint64_t)-EFAULT;
-    }
     struct nas_fs_node node={0};
     int error=nas_fs_lookup_node(path,false,&node,actual);
     if(error)return (uint64_t)(int64_t)error;
-    if(!node.is_symlink)return (uint64_t)-EINVAL;
+    if((node.mode&0170000U)!=0120000U)return (uint64_t)-EINVAL;
     char target[256];
     int got=nas_vfs_readlink(&node,actual,target);
     if(got<0)return (uint64_t)(int64_t)got;

@@ -77,7 +77,11 @@ int nas_vfs_lookup(const char *absolute,struct nas_fs_node *out) {
 }
 int nas_vfs_readlink(const struct nas_fs_node *node,
                       const char *absolute,char target[256]) {
-    if (!node || !node->filesystem || !node->is_symlink ||
+    /* Dynamic procfd entries have S_IFLNK metadata but deliberately do not
+     * opt into generic namei-follow: opening a procfd requires FD semantics,
+     * not blindly reopening printable targets such as pipe:[N]. */
+    if (!node || !node->filesystem ||
+        (node->mode&0170000U)!=0120000U ||
         !node->filesystem->readlink)return -EINVAL;
     return node->filesystem->readlink(node,absolute,target);
 }
@@ -101,6 +105,73 @@ int nas_vfs_read_dir(const struct nas_fs_node *node,const char *path,
 bool nas_vfs_can_write(const struct nas_fs_node *node) {
     return node && node->filesystem && node->mount &&
            !node->filesystem->read_only && !node->mount->read_only;
+}
+/* A namespace operation always resolves the actual mounted PARENT first.
+ * A new pathname has no inode to look up, so selecting by its own lookup
+ * would accidentally fall through to an unrelated underlying mount. */
+static int vfs_parent(const char *path,struct nas_fs_node *parent) {
+    if(!path || path[0]!='/' || !parent)return -EINVAL;
+    size_t len=strlen(path);
+    if(!len || len>=256)return -ENAMETOOLONG;
+    if(len==1)return -EBUSY;
+    if(path[len-1]=='/')return -ENOTDIR;
+    size_t split=len;
+    while(split>0 && path[split-1]!='/')--split;
+    if(split==0)return -EINVAL;
+    char dir[256],resolved[256];
+    size_t size=split==1?1:split-1;
+    memcpy(dir,path,size);dir[size]=0;
+    int rc=nas_fs_lookup_node(dir,true,parent,resolved);
+    if(rc)return rc;
+    return parent->is_dir ? 0 : -ENOTDIR;
+}
+static int vfs_mutable_parent(const char *path,struct nas_fs_node *parent) {
+    int rc=vfs_parent(path,parent);
+    if(rc)return rc;
+    return nas_vfs_can_write(parent) ? 0 : -EROFS;
+}
+int nas_vfs_mkdir(const char *path,uint64_t mode) {
+    struct nas_fs_node parent;
+    int rc=vfs_mutable_parent(path,&parent);
+    if(rc)return rc;
+    return parent.filesystem->mkdir ? parent.filesystem->mkdir(path,mode) : -EOPNOTSUPP;
+}
+int nas_vfs_unlink(const char *path,uint64_t flags) {
+    struct nas_fs_node parent;
+    int rc=vfs_mutable_parent(path,&parent);
+    if(rc)return rc;
+    return parent.filesystem->unlink ? parent.filesystem->unlink(path,flags) : -EOPNOTSUPP;
+}
+int nas_vfs_rename(const char *oldpath,const char *newpath,uint64_t flags) {
+    struct nas_fs_node old_parent,new_parent;
+    int rc=vfs_parent(oldpath,&old_parent);
+    if(rc)return rc;
+    rc=vfs_parent(newpath,&new_parent);
+    if(rc)return rc;
+    if(old_parent.mount!=new_parent.mount)return -EXDEV;
+    if(!nas_vfs_can_write(&old_parent))return -EROFS;
+    return old_parent.filesystem->rename ?
+           old_parent.filesystem->rename(oldpath,newpath,flags) : -EOPNOTSUPP;
+}
+int nas_vfs_link(const char *oldpath,const char *newpath) {
+    char resolved[256];
+    struct nas_fs_node source,parent;
+    int rc=nas_fs_lookup_node(oldpath,false,&source,resolved);
+    if(rc)return rc;
+    rc=vfs_parent(newpath,&parent);
+    if(rc)return rc;
+    if(source.mount!=parent.mount)return -EXDEV;
+    if(!nas_vfs_can_write(&parent))return -EROFS;
+    return parent.filesystem->link ?
+           parent.filesystem->link(oldpath,newpath) : -EOPNOTSUPP;
+}
+int nas_vfs_symlink(const char *target,const char *path) {
+    if(!target)return -EINVAL;
+    struct nas_fs_node parent;
+    int rc=vfs_mutable_parent(path,&parent);
+    if(rc)return rc;
+    return parent.filesystem->symlink ?
+           parent.filesystem->symlink(target,path) : -EOPNOTSUPP;
 }
 int nas_vfs_chmod(const struct nas_fs_node *node,uint64_t mode) {
     if(!node || !node->filesystem)return -EINVAL;

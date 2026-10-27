@@ -186,7 +186,8 @@ static int tmp_read_dir(const struct nas_fs_node *node,const char *path,
 
 static const struct nas_vfs_type tmp_type={
     .name="tmpfs",.exec_source_label="tmpfs",.lookup=tmp_lookup,.readlink=tmp_readlink,
-    .read_at=tmp_read,.read_dir=tmp_read_dir,.chmod=tmp_chmod_node,.utimens=tmp_utimens_node
+    .read_at=tmp_read,.read_dir=tmp_read_dir,.chmod=tmp_chmod_node,.utimens=tmp_utimens_node,
+    .mkdir=tmp_mkdir,.unlink=tmp_unlink,.rename=tmp_rename,.link=tmp_link,.symlink=tmp_symlink
 };
 static int proc_lookup_node(const struct nas_vfs_mount *mount,
                        const char *path,struct nas_fs_node *out) {
@@ -198,6 +199,18 @@ static int proc_lookup_node(const struct nas_vfs_mount *mount,
     return 0;
 }
 
+/* /proc/<pid>/fd/<n> text is a dynamic link supplied by the process FD
+ * owner. Do not mark it namei-followable until open-through-fd is supported. */
+static int proc_readlink_node(const struct nas_fs_node *node,const char *path,
+                              char target[256]) {
+    (void)node;
+    struct nas_proc_node proc;
+    if(!nas_proc_lookup(path,&proc) || proc.kind!=NAS_PROC_FD_LINK)
+        return -EINVAL;
+    int64_t n=nas_proc_readlink(proc,target,256);
+    if(n<0)return (int)n;
+    return n>256 ? -ENAMETOOLONG : (int)n;
+}
 static int proc_read_dir(const struct nas_fs_node *node,const char *path,
                          uint64_t cursor,struct nas_vfs_dirent *out,
                          unsigned maximum) {
@@ -225,7 +238,8 @@ static int proc_read_dir(const struct nas_fs_node *node,const char *path,
 }
 
 static const struct nas_vfs_type proc_type={
-    .name="procfs",.exec_source_label="procfs",.lookup=proc_lookup_node,.read_dir=proc_read_dir,.read_only=true
+    .name="procfs",.exec_source_label="procfs",.lookup=proc_lookup_node,
+    .readlink=proc_readlink_node,.read_dir=proc_read_dir,.read_only=true
 };
 static const struct nas_vfs_mount defaults[]={
     {.mountpoint="/",.type=&boot_type,.permanent=true},

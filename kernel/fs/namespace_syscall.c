@@ -1,6 +1,5 @@
-/* Pathname resolution and writable namespace Linux ABI adapter.
- * The same path normalization and mount-limited CPIO/tmpfs model is used
- * for every ISA. This is not yet a mount-aware or dentry-based VFS. */
+/* Pathname and namespace Linux ABI adapter. No filesystem-specific
+ * mutation dispatch: VFS selects the real parent mount and its provider. */
 #include <stdint.h>
 #include <stdbool.h>
 #include "../errno.h"
@@ -15,6 +14,7 @@
 #include "mode.h"
 #include "syscall.h"
 #include "lookup.h"
+#include "vfs.h"
 #include "procfs.h"
 #include "namespace_syscall.h"
 #define TASK (*nas_current_task)
@@ -83,7 +83,7 @@ static uint64_t sys_mkdirat_tmp(uint64_t dirfd, uint64_t pathname,
     char path[256];
     uint64_t ret = nas_fs_resolve_path(dirfd, pathname, path);
     return (int64_t)ret < 0 ? ret :
-        (uint64_t)(int64_t)tmp_mkdir(path,
+        (uint64_t)(int64_t)nas_vfs_mkdir(path,
                             nas_fs_create_mode(mode,TASK.fs->umask));
 }
 static uint64_t sys_unlinkat_tmp(uint64_t dirfd, uint64_t pathname,
@@ -91,7 +91,7 @@ static uint64_t sys_unlinkat_tmp(uint64_t dirfd, uint64_t pathname,
     char path[256];
     uint64_t ret = nas_fs_resolve_path(dirfd, pathname, path);
     return (int64_t)ret < 0 ? ret :
-        (uint64_t)(int64_t)tmp_unlink(path, flags);
+        (uint64_t)(int64_t)nas_vfs_unlink(path, flags);
 }
 static uint64_t sys_renameat_tmp(uint64_t olddirfd, uint64_t oldptr,
                                  uint64_t newdirfd, uint64_t newptr,
@@ -103,7 +103,7 @@ static uint64_t sys_renameat_tmp(uint64_t olddirfd, uint64_t oldptr,
     if ((int64_t)ret < 0) return ret;
     ret = nas_fs_resolve_path(newdirfd, newptr, newpath);
     return (int64_t)ret < 0 ? ret :
-        (uint64_t)(int64_t)tmp_rename(oldpath, newpath, flags);
+        (uint64_t)(int64_t)nas_vfs_rename(oldpath, newpath, flags);
 }
 static uint64_t sys_symlinkat_tmp(uint64_t targetptr,uint64_t dirfd,
                                   uint64_t linkptr) {
@@ -119,7 +119,7 @@ static uint64_t sys_symlinkat_tmp(uint64_t targetptr,uint64_t dirfd,
     if (i==sizeof(target)) return (uint64_t)-ENAMETOOLONG;
     uint64_t ret=nas_fs_resolve_path(dirfd,linkptr,linkpath);
     return (int64_t)ret<0 ? ret :
-        (uint64_t)(int64_t)tmp_symlink(target,linkpath);
+        (uint64_t)(int64_t)nas_vfs_symlink(target,linkpath);
 }
 
 /* Hardlinks reuse the same tmpfs inode: no copies, no fake CPIO writes.
@@ -141,7 +141,7 @@ static uint64_t sys_linkat_tmp(uint64_t olddirfd,uint64_t oldptr,
     }
     ret=nas_fs_resolve_path(newdirfd,newptr,newpath);
     return (int64_t)ret<0 ? ret :
-        (uint64_t)(int64_t)tmp_link(oldpath,newpath);
+        (uint64_t)(int64_t)nas_vfs_link(oldpath,newpath);
 }
 
 static uint64_t sys_getcwd_root(uint64_t buffer, uint64_t size) {

@@ -68,11 +68,39 @@ int tmp_utimens(struct nas_tmp_file *f,uint64_t a,uint64_t m,bool sa,bool sm){
     return 0;
 }
 bool nas_proc_lookup(const char *path,struct nas_proc_node *out){
+    if(!strcmp(path,"/proc/self/fd/3")) {
+        *out=(struct nas_proc_node){.kind=NAS_PROC_FD_LINK,.pid=1,.fd=3};
+        return true;
+    }
     if(strcmp(path,"/proc") && strcmp(path,"/proc/self"))return false;
     *out=(struct nas_proc_node){.kind=NAS_PROC_ROOT};return true;
 }
-uint32_t nas_proc_mode(struct nas_proc_node node){(void)node;return 0040555U;}
-bool nas_proc_is_dir(struct nas_proc_node node){(void)node;return true;}
+uint32_t nas_proc_mode(struct nas_proc_node node){
+    return node.kind==NAS_PROC_FD_LINK ? 0120777U : 0040555U;
+}
+bool nas_proc_is_dir(struct nas_proc_node node){return node.kind!=NAS_PROC_FD_LINK;}
+int64_t nas_proc_readlink(struct nas_proc_node node,char *target,unsigned cap) {
+    static const char name[]="pipe:[42]";
+    if(node.kind!=NAS_PROC_FD_LINK || node.fd!=3)return -EINVAL;
+    if(cap<sizeof(name)-1)return -ENAMETOOLONG;
+    memcpy(target,name,sizeof(name)-1);
+    return (int64_t)sizeof(name)-1;
+}
+int tmp_mkdir(const char *path,uint64_t mode) {
+    return !strcmp(path,"/tmp/new") && mode==0755 ? 0 : -EINVAL;
+}
+int tmp_unlink(const char *path,uint64_t flags) {
+    return !strcmp(path,"/tmp/demo") && flags==0 ? 0 : -EINVAL;
+}
+int tmp_rename(const char *oldpath,const char *newpath,uint64_t flags) {
+    return !strcmp(oldpath,"/tmp/demo") && !strcmp(newpath,"/tmp/other") && flags==0 ? 0 : -EINVAL;
+}
+int tmp_link(const char *oldpath,const char *newpath) {
+    return !strcmp(oldpath,"/tmp/demo") && !strcmp(newpath,"/tmp/linked") ? 0 : -EINVAL;
+}
+int tmp_symlink(const char *target,const char *linkpath) {
+    return !strcmp(target,"../target") && !strcmp(linkpath,"/tmp/newlink") ? 0 : -EINVAL;
+}
 
 const struct bootfs_entry *bootfs_child(const struct bootfs_entry *dir,
                                         unsigned index) {
@@ -164,6 +192,21 @@ int main(void) {
     assert(!strcmp(n.filesystem->name,"bootfs")); /* legacy mount fallthrough */
     assert(nas_fs_lookup_node("/proc/self",true,&n,resolved)==0);
     assert(!strcmp(n.filesystem->name,"procfs") && n.is_dir);
+    assert(nas_fs_lookup_node("/proc/self/fd/3",false,&n,resolved)==0);
+    assert((n.mode&0170000U)==0120000U && !n.is_symlink);
+    char fd_target[256]={0};
+    assert(nas_vfs_readlink(&n,resolved,fd_target)==9);
+    assert(!memcmp(fd_target,"pipe:[42]",9));
+    assert(nas_vfs_mkdir("/tmp/new",0755)==0);
+    assert(nas_vfs_unlink("/tmp/demo",0)==0);
+    assert(nas_vfs_rename("/tmp/demo","/tmp/other",0)==0);
+    assert(nas_vfs_link("/tmp/demo","/tmp/linked")==0);
+    assert(nas_vfs_symlink("../target","/tmp/newlink")==0);
+    assert(nas_vfs_mkdir("/bin/new",0755)==-EROFS);
+    assert(nas_vfs_unlink("/bin/demo",0)==-EROFS);
+    assert(nas_vfs_rename("/tmp/demo","/bin/other",0)==-EXDEV);
+    assert(nas_vfs_link("/bin/demo","/tmp/copy")==-EXDEV);
+    assert(nas_vfs_mkdir("/tmp/demo/sub",0755)==-ENOTDIR);
     assert(nas_fs_lookup_node("/shortcut",false,&n,resolved)==0 && n.is_symlink);
     assert(nas_fs_lookup_node("/shortcut",true,&n,resolved)==0);
     assert(!strcmp(resolved,"/bin/demo"));
