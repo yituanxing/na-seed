@@ -80,3 +80,13 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
   scripts/test-virtio-transport.c kernel/drivers/virtio/transport.c \
   kernel/drivers/virtio/mmio.c -o build/block-foundation/test-virtio-transport
 build/block-foundation/test-virtio-transport
+
+# Actual driver lifecycle, not only a mock bus or wire-protocol unit test.
+cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
+  -I third_party/unikraft/include -I ports/unikraft/include \
+  scripts/test-virtio-block-lifecycle.c \
+  kernel/drivers/block/virtio_mmio_blk.c kernel/drivers/core/bus.c \
+  kernel/drivers/port/block.c kernel/drivers/virtio/transport.c \
+  kernel/block/device.c kernel/lib/string.c \
+  -o build/block-foundation/test-virtio-block-lifecycle
+build/block-foundation/test-virtio-block-lifecycle

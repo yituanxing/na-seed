@@ -41,10 +41,23 @@ static unsigned disk_count;
 static void barrier(void) {
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
 }
-static void release_pages(struct virt_blk *d) {
-    if (d->payload.cpu) (void)nas_dma_free_page(d->dma,&d->payload);
-    if (d->request.cpu) (void)nas_dma_free_page(d->dma,&d->request);
-    if (d->queue.cpu) (void)nas_dma_free_page(d->dma,&d->queue);
+/* Keep failed DMA releases owned and retryable; never recycle an
+ * incompletely released transport slot. */
+static int release_pages(struct virt_blk *d) {
+    int first=0,rc;
+    if(d->payload.cpu) {
+        rc=nas_dma_free_page(d->dma,&d->payload);
+        if(rc && !first)first=rc;
+    }
+    if(d->request.cpu) {
+        rc=nas_dma_free_page(d->dma,&d->request);
+        if(rc && !first)first=rc;
+    }
+    if(d->queue.cpu) {
+        rc=nas_dma_free_page(d->dma,&d->queue);
+        if(rc && !first)first=rc;
+    }
+    return first;
 }
 static int virtio_submit(struct virt_blk *d,uint32_t type,
                          uint64_t sector,void *data,uint32_t bytes) {
@@ -135,7 +148,7 @@ static int blk_flush(void *backend){
 static const struct nas_port_block_ops disk_ops={
     .read=blk_read,.write=blk_write,.flush=blk_flush
 };
-static int configure(struct virt_blk *d) {
+static int configure(struct virt_blk *d,unsigned index) {
     uint64_t negotiated=0;
     int rc=nas_virtio_negotiate(d->transport,0,FEAT_RO|FEAT_FLUSH,&negotiated);
     if(rc)return rc;
@@ -161,27 +174,61 @@ static int configure(struct virt_blk *d) {
     bool writable=!(negotiated&FEAT_RO) && (negotiated&FEAT_FLUSH);
     rc=nas_virtio_activate(d->transport);
     if(rc)return rc;
-    return nas_port_block_attach(&d->port,names[disk_count],d,sectors,512U,
+    return nas_port_block_attach(&d->port,names[index],d,sectors,512U,
                                  MAX_TRANSFER/512U,!writable,
                                  NAS_PORT_BLOCK_ZERO,&disk_ops);
 }
 int nas_virtio_blk_attach(struct nas_virtio_transport *transport) {
     if(!transport||!transport->ops||!transport->dma)return -EINVAL;
-    if(disk_count>=MAX_DISKS)return -ENOSPC;
-    struct virt_blk *d=&disks[disk_count];
+    /* Slots may be reused after safe removal; disk_count counts ACTIVE
+     * disks, not the highest slot index. */
+    unsigned slot=MAX_DISKS;
+    for(unsigned i=0;i<MAX_DISKS;i++) {
+        if(disks[i].transport==transport)return -EEXIST;
+        if(!disks[i].transport && slot==MAX_DISKS)slot=i;
+    }
+    if(slot==MAX_DISKS)return -ENOSPC;
+    struct virt_blk *d=&disks[slot];
     d->transport=transport;d->dma=transport->dma;
     d->used_index=0;d->failed=false;
-    int rc=configure(d);
-    if(rc){
+    int rc=configure(d,slot);
+    if(rc) {
         nas_virtio_fail(transport);
-        release_pages(d);
-        d->transport=NULL;
+        int cleanup=release_pages(d);
+        if(cleanup) {
+            d->failed=true; /* Do not reassign still-mapped DMA. */
+            return cleanup;
+        }
+        *d=(struct virt_blk){0};
         return rc;
     }
     disk_count++;
     return 1;
 }
 unsigned nas_virtio_blk_count(void){return disk_count;}
+
+/* Unbind only after all mounts release their BlockDevice pins; stop device
+ * DMA before returning its queue and payload pages to the allocator. */
+int nas_virtio_blk_detach(struct nas_virtio_transport *transport) {
+    if(!transport)return -EINVAL;
+    for(unsigned i=0;i<MAX_DISKS;i++) {
+        struct virt_blk *d=&disks[i];
+        if(d->transport!=transport)continue;
+        if(d->port.block.registered) {
+            int rc=nas_port_block_detach(&d->port);
+            if(rc)return rc;
+            if(transport->ops && transport->ops->reset)
+                transport->ops->reset(transport->context);
+        }
+        int rc=release_pages(d);
+        if(rc) {d->failed=true;return rc;}
+        *d=(struct virt_blk){0};
+        if(!disk_count)return -EIO;
+        --disk_count;
+        return 0;
+    }
+    return -ENODEV;
+}
 
 /* Registration is transport-independent: scanning may discover any modern
  * VirtIO device, while the bus binds only matching block devices. */
@@ -192,9 +239,13 @@ static int virtio_blk_probe(struct nas_bus_device *dev) {
     int rc=nas_virtio_blk_attach((struct nas_virtio_transport *)dev->context);
     return rc==1 ? 0 : (rc==0 ? -ENODEV : rc);
 }
+static int virtio_blk_remove(struct nas_bus_device *dev) {
+    return nas_virtio_blk_detach((struct nas_virtio_transport *)dev->context);
+}
 static const struct nas_bus_driver virtio_blk_driver={
     .name="virtio-blk",.bus_mask=NAS_BUS_MASK_ALL,
-    .match=virtio_blk_match,.probe=virtio_blk_probe
+    .match=virtio_blk_match,.probe=virtio_blk_probe,
+    .remove=virtio_blk_remove
 };
 int nas_virtio_blk_driver_register(void) {
     return nas_bus_driver_register(&virtio_blk_driver);

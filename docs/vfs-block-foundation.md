@@ -2,9 +2,11 @@
 
 Baseline: NaSeed `main@9bed1c3a` after the Task/MM architecture consolidation.
 Historical reference: NaOS `98fa26a2` ("移植lwext4"), later Linux-style VFS.
-This change adds actual linked BlockDevice and RamDisk implementations. It
-**does not** claim ext4 is mounted, a VirtIO driver exists or that VFS has
-already been migrated. Those require separate evidence.
+BlockDevice and RamDisk are linked; the pinned lwext4 port and shared VFS
+have booted read/write ext4 on all three ISAs. A real AArch64 VirtIO-MMIO
+disk has passed durable QEMU write+flush with external e2fsck verification.
+PCI discovery and complete Linux-style dentry/superblock lifetimes are
+NOT yet verified.
 
 ## Architectural invariants
 - BlockDevice owns geometry, write policy and driver I/O callbacks, **not**
@@ -199,3 +201,14 @@ were not built inside NaSeed. Legacy 3-ISA tests remain unchanged.
 ## One VFS directory data path for all four providers
 
 The read_dir operation is now supplied by bootfs, tmpfs (including the legacy /tmp overlay root), procfs and lwext4. The syscall module has exactly one Linux getdents64 translation; providers only produce bounded kernel-owned dirents and no longer write Linux user memory. Existing `/tmp` archive fallback is explicitly kept for namei, with tmpfs-only directory listing as before. Shared open-description cursors keep fork/dup offsets consistent. The host fixture exercises all providers, child types and pagination. This batch does not claim writable ext4 or a fully refcounted dentry tree.
+
+## Real VirtIO-Blk driver lifetime (single shared bus model)
+The fallback VirtIO-Blk backend now implements real bus remove/unbind, in
+addition to attach: device pins prevent removal, the transport is reset
+before its DMA resources are freed, and a freed stable `virtioN` slot can
+be reused across MMIO and PCI without changing VFS or BlockDevice.
+DMA release failures preserve ownership and permit an explicit retry.
+A host test drives the *actual* VirtIO-Blk descriptor engine through a
+deterministic device emulator, including read/write/flush, failed setup,
+mount pins, removal and slot reuse. Hardware PCI discovery and production
+IRQ-driven device hotplug are not claimed.
