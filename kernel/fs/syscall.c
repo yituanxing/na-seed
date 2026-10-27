@@ -502,7 +502,10 @@ uint64_t nas_fs_open_path(const char *path, uint64_t native_flags,
      * immutable CPIO regular file can be opened O_RDONLY|O_CREAT.
      * O_CREAT|O_EXCL must refuse an existing name with EEXIST.
      */
-    if ((flags & 0xc0ULL) == 0xc0ULL &&
+    /* A newly created VFS inode had no preexisting dentry. Returning
+     * EEXIST for its provisional FD_ARCHIVE identity breaks O_EXCL locks
+     * used by real Git and Tcl, on all ISA targets. */
+    if ((flags & 0xc0ULL) == 0xc0ULL && !create_vfs &&
         (kind == FD_ARCHIVE || kind == FD_DIR || kind == FD_BOOTFS ||
          kind == FD_PROC_FILE || kind == FD_PROC_DIR))
         return (uint64_t)-EEXIST;
