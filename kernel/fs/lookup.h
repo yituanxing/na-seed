@@ -2,21 +2,18 @@
 #define NASEED_FS_LOOKUP_H
 #include <stdint.h>
 #include <stdbool.h>
-/* Kernel-owned, borrowed inode view independent of Linux syscall ABI and
- * ELF segment loader. Backends retain storage/namespace ownership. */
-struct nas_tmp_file;
-enum nas_fs_backend { NAS_FS_BOOTFS, NAS_FS_TMPFS, NAS_FS_PROCFS };
+#include "vfs.h"
+/* Borrowed inode view. No concrete bootfs/tmpfs/procfs variants or pointers
+ * leak into common pathwalk, ELF loader or future ext4 integration. */
 struct nas_fs_node {
-    enum nas_fs_backend backend;
-    const uint8_t *data; /* direct read-only bootfs image, else NULL */
-    const struct nas_tmp_file *tmp; /* borrowed sparse inode */
+    const struct nas_vfs_type *filesystem;
+    const void *inode;
+    const uint8_t *data;  /* optional zero-copy immutable data */
     uint64_t size;
     uint32_t mode;
-    bool is_dir;
+    bool is_dir, is_symlink;
 };
-/* Runtime namespace walk across immutable CPIO and volatile tmpfs. Keep the
- * bootfs-only resolver independently testable without a writable FS link. */
 int nas_fs_resolve_existing(const char *path,bool follow_final,char out[256]);
-int nas_fs_lookup_node(const char *path, bool follow_final,
-                       struct nas_fs_node *result, char resolved[256]);
+int nas_fs_lookup_node(const char *path,bool follow_final,
+                       struct nas_fs_node *result,char resolved[256]);
 #endif

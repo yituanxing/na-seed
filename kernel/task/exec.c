@@ -60,16 +60,16 @@ static struct exec_snapshot {
 /* The executable source is owned by its filesystem, not by an ISA-
  * specific ELF loader. Immutable CPIO stays zero-copy, writable tmpfs is
  * read through the same sparse inode API as normal file descriptors. */
-static bool tmp_elf_read(const void *context, uint64_t offset,
+static bool vfs_elf_read(const void *context, uint64_t offset,
                          uint8_t *destination, uint64_t length) {
-    const struct nas_tmp_file *file = (const struct nas_tmp_file *)context;
-    return tmp_read_at(file, offset, destination, length) == (int64_t)length;
+    const struct nas_fs_node *node = context;
+    return nas_vfs_read_at(node, offset, destination, length) == (int64_t)length;
 }
 static struct elf_image elf_from_fs_node(const struct nas_fs_node *node) {
     struct elf_image image = {.data = node->data, .size = node->size};
-    if (node->backend == NAS_FS_TMPFS) {
-        image.read_at = tmp_elf_read;
-        image.context = node->tmp;
+    if (!node->data) {
+        image.read_at = vfs_elf_read;
+        image.context = node;
     }
     return image;
 }
@@ -439,10 +439,9 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
         nas_print("[EXEC] CPIO #! interpreter: ");
         nas_print(pending_exec.shebang_path); nas_print("\n");
     }
-    if(app.backend==NAS_FS_TMPFS)
-        nas_print("[EXEC] replaced process with tmpfs ELF: ");
-    else
-        nas_print("[EXEC] replaced process with CPIO ELF: ");
+    nas_print("[EXEC] replaced process with VFS ELF (");
+    nas_print(app.filesystem ? app.filesystem->name : "unknown");
+    nas_print("): ");
     nas_print(pending_exec.filename);
     nas_print("\n");
     if(nas_ptrace_exec_commit(nas_current_task,entry,sp)) {

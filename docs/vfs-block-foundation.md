@@ -38,3 +38,14 @@ already been migrated. Those require separate evidence.
 Upstream lwext4 includes mixed BSD-3-Clause and GPLv2 sources. Before
 vendoring, pin an exact revision and audit license compatibility against
 the NaSeed repo's declared project license. Do not blindly copy NaOS files.
+
+## Registered VFS provider milestone
+- Common pathwalk now asks longest-prefix registered filesystem mounts for
+  inode views. Its symlink walk, ELF kernel-buffer reader and path metadata
+  calls use provider operations, not a bootfs/tmpfs/procfs kind enum.
+- bootfs, tmpfs and procfs are registered together; /tmp and /proc retain a
+  documented temporary read-through to immutable CPIO for old initramfs
+  compatibility. New persistent filesystems must use strict mount semantics.
+- This is **not** yet a fully refcounted Linux dentry/superblock/mount tree;
+  no claim of safe unmount/open-FD lifetime, ext4 disk execution or complete
+  FD migration. Those require a later batch and real workload acceptance.

@@ -14,6 +14,7 @@ done
 # One canonical kernel-only C runtime, checked on all real target triples.
 sh scripts/check-klib.sh
 sh scripts/check-block-foundation.sh
+sh scripts/check-vfs-provider.sh
 sh scripts/check-task-stacks.sh
 sh scripts/check-m91-kcontext.sh
 sh scripts/check-m95-kthread.sh

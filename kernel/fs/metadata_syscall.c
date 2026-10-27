@@ -188,7 +188,7 @@ static uint64_t sys_access_path(uint64_t dirfd,uint64_t pathname,
     if(!err) {
         bits=node.mode;
         is_dir=node.is_dir;
-        writable=node.backend==NAS_FS_TMPFS;
+        writable=nas_vfs_can_write(&node);
     } else if(err!=-ENOENT)return (uint64_t)(int64_t)err;
     if(!bits && (!strcmp(path,"/dev/ptmx") ||
                  (nas_pty_path_number(path)>=0 &&
@@ -225,8 +225,7 @@ static uint64_t sys_chmod_path(uint64_t dirfd,uint64_t filename,
     struct nas_fs_node node;
     int err=nas_fs_lookup_node(path,true,&node,actual);
     if(err)return (uint64_t)(int64_t)err;
-    if(node.backend!=NAS_FS_TMPFS)return (uint64_t)-EROFS;
-    return (uint64_t)(int64_t)tmp_chmod(tmp_find(actual),mode);
+    return (uint64_t)(int64_t)nas_vfs_chmod(&node,mode);
 }
 /* Linux utimensat: native 64-bit timespec ABI common to all three ISAs.
  * The VFS resolves one real inode; CPIO never becomes writable. None of
@@ -241,24 +240,24 @@ static uint64_t sys_utimensat_file(uint64_t dirfd, uint64_t pathname,
     if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH))
         return (uint64_t)-EINVAL;
     struct nas_tmp_file *file=0;
+    struct nas_fs_node vnode={0};
     if (!pathname) {
         if (dirfd >= NAS_FD_LIMIT || TASK.fds->entries[dirfd].kind == FD_CLOSED)
             return (uint64_t)-EBADF;
-        if (TASK.fds->entries[dirfd].kind != FD_TMP && TASK.fds->entries[dirfd].kind != FD_TMP_DIR)
+        if (TASK.fds->entries[dirfd].kind != FD_TMP &&
+            TASK.fds->entries[dirfd].kind != FD_TMP_DIR)
             return (uint64_t)-EROFS;
         file=tmp_by_slot(TASK.fds->entries[dirfd].slot);
+        if (!file) return (uint64_t)-ENOENT;
     } else {
         char path[256], actual[256];
         uint64_t ret=nas_fs_resolve_path(dirfd,pathname,path);
         if ((int64_t)ret<0) return ret;
-        struct nas_fs_node node;
         int err=nas_fs_lookup_node(path,!(flags&AT_SYMLINK_NOFOLLOW),
-                                   &node,actual);
+                                   &vnode,actual);
         if (err) return (uint64_t)(int64_t)err;
-        if (node.backend!=NAS_FS_TMPFS) return (uint64_t)-EROFS;
-        file=(struct nas_tmp_file *)(uintptr_t)node.tmp;
+        if (!nas_vfs_can_write(&vnode)) return (uint64_t)-EROFS;
     }
-    if (!file) return (uint64_t)-ENOENT;
     uint64_t now=0;
     if (!nas_time_realtime_ns(&now)) now=nas_arch_monotonic_ns();
     uint64_t ns[2]={now,now};
@@ -277,7 +276,9 @@ static uint64_t sys_utimensat_file(uint64_t dirfd, uint64_t pathname,
             ns[i]=(uint64_t)raw[i*2]*NAS_NSEC_PER_SEC+nsec;
         }
     }
-    return (uint64_t)(int64_t)tmp_utimens(file,ns[0],ns[1],set[0],set[1]);
+    return (uint64_t)(int64_t)(pathname
+        ? nas_vfs_utimens(&vnode,ns[0],ns[1],set[0],set[1])
+        : tmp_utimens(file,ns[0],ns[1],set[0],set[1]));
 }
 static uint64_t write_boot_stat(const struct bootfs_entry *entry, uint64_t dst) {
     struct nas_linux_stat st;
