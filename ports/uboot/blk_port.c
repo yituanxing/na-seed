@@ -13,7 +13,12 @@
 
 /* This include compiles the exact pinned upstream C driver into the kernel.
  * Only U-Boot's device model, virtqueue and allocation APIs are adapted. */
+/* Upstream contains a conditional expression mixing signed errno and ulong.
+ * Suppress that upstream-only diagnostic without editing upstream bytes. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-compare"
 #include "../../third_party/uboot/drivers/virtio/virtio_blk.c"
+#pragma GCC diagnostic pop
 
 #define NAS_UBOOT_POLL_BUDGET 20000000U
 #define NAS_UBOOT_STATUS_BYTE 64U
