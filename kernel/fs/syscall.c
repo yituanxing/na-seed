@@ -430,19 +430,25 @@ uint64_t nas_fs_open_path(const char *path, uint64_t native_flags,
             char actual[256];
             int err = nas_fs_resolve_existing(path, !(flags & 0x20000ULL), actual);
             if (!err) {
+                struct nas_fs_node source={0};
+                err=nas_vfs_lookup(actual,&source);
+                if(err)return (uint64_t)(int64_t)err;
+                /* Namei chose the *mounted* filesystem. A bootfs entry
+                 * at the same pathname must not override the mount. */
                 tmp_file=tmp_find(actual);
-                if (tmp_file) {
-                    if (tmp_is_link(tmp_file) &&
-                        !((flags & NAS_LINUX_O_PATH) && (flags & 0x20000ULL)))
-                        return (uint64_t)-ELOOP;
-                    kind=tmp_file->is_dir ? FD_TMP_DIR : FD_TMP;
-                } else {
-                    entry = bootfs_find(actual);
-                    if (bootfs_is_link(entry) &&
-                        !((flags & NAS_LINUX_O_PATH) && (flags & 0x20000ULL)))
-                        return (uint64_t)-ELOOP;
-                    kind = bootfs_is_dir(entry) ? FD_DIR : FD_ARCHIVE;
+                if(tmp_file && source.inode!=(const void *)tmp_file)
+                    tmp_file=NULL;
+                if(tmp_file)
+                    kind=source.is_dir ? FD_TMP_DIR : FD_TMP;
+                else {
+                    entry=bootfs_find(actual);
+                    if(entry && source.inode!=(const void *)entry)
+                        entry=NULL;
+                    kind=source.is_dir ? FD_DIR : FD_ARCHIVE;
                 }
+                if(source.is_symlink &&
+                   !((flags & NAS_LINUX_O_PATH) && (flags & 0x20000ULL)))
+                    return (uint64_t)-ELOOP;
             } else if (err != -ENOENT) {
                 return (uint64_t)(int64_t)err;
             }

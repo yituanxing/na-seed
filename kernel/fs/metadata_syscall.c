@@ -52,13 +52,22 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
     st.blksize = PAGE;
     if (TASK.fds->entries[fd].kind == FD_DIR || TASK.fds->entries[fd].kind == FD_ARCHIVE) {
         const struct bootfs_entry *entry = nas_open_files[TASK.fds->entries[fd].slot].boot_entry;
-        if (!entry) return (uint64_t)-EBADF;
-        st.dev = 3; st.ino = entry->ino;
-        st.mode = entry->mode;
-        st.nlink = bootfs_is_dir(entry) ? 2 : entry->nlink;
-        st.size = (int64_t)entry->size;
-        st.blocks = (int64_t)((entry->size + 511) / 512);
-        st.atime_sec = st.mtime_sec = st.ctime_sec = (int64_t)entry->mtime_sec;
+        if(entry) {
+            st.dev=3;st.ino=entry->ino;st.mode=entry->mode;
+            st.nlink=bootfs_is_dir(entry)?2:entry->nlink;
+            st.size=(int64_t)entry->size;
+            st.blocks=(int64_t)((entry->size+511)/512);
+            st.atime_sec=st.mtime_sec=st.ctime_sec=(int64_t)entry->mtime_sec;
+        } else {
+            /* A generic mounted inode is not a bootfs archive record. */
+            const struct nas_open_file *open=&nas_open_files[TASK.fds->entries[fd].slot];
+            if(!open->vnode_pinned)return (uint64_t)-EBADF;
+            const struct nas_fs_node *node=&open->vnode;
+            st.dev=8;st.ino=(uint64_t)(uintptr_t)node->inode;
+            st.mode=node->mode;st.nlink=node->is_dir?2:1;
+            st.size=(int64_t)node->size;
+            st.blocks=(int64_t)((node->size+511)/512);
+        }
     } else if (TASK.fds->entries[fd].kind == FD_TMP || TASK.fds->entries[fd].kind == FD_TMP_DIR) {
         const struct nas_tmp_file *file = tmp_by_slot(TASK.fds->entries[fd].slot);
         if (!file) return (uint64_t)-EBADF;
@@ -134,8 +143,9 @@ static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
     uint64_t size = 0;
     if (TASK.fds->entries[fd].kind == FD_BOOTFS && nas_open_files[TASK.fds->entries[fd].slot].boot_file)
         size = nas_open_files[TASK.fds->entries[fd].slot].boot_file->size;
-    else if (TASK.fds->entries[fd].kind == FD_ARCHIVE && nas_open_files[TASK.fds->entries[fd].slot].boot_entry)
-        size = nas_open_files[TASK.fds->entries[fd].slot].boot_entry->size;
+    else if (TASK.fds->entries[fd].kind == FD_ARCHIVE &&
+             nas_open_files[TASK.fds->entries[fd].slot].vnode_pinned)
+        size = nas_open_files[TASK.fds->entries[fd].slot].vnode.size;
     else if (TASK.fds->entries[fd].kind == FD_TMP || TASK.fds->entries[fd].kind == FD_TMP_DIR) {
         const struct nas_tmp_file *file = tmp_by_slot(TASK.fds->entries[fd].slot);
         if (!file) return (uint64_t)-EBADF;
@@ -340,9 +350,22 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
         char actual[256];
         int err = nas_fs_resolve_existing(path, !(flags & AT_SYMLINK_NOFOLLOW), actual);
         if (!err) {
+            struct nas_fs_node node={0};
+            int rc=nas_vfs_lookup(actual,&node);
+            if(rc)return (uint64_t)(int64_t)rc;
             const struct nas_tmp_file *tmp=tmp_find(actual);
-            if (tmp) return write_tmp_stat(tmp,statbuf);
-            return write_boot_stat(bootfs_find(actual),statbuf);
+            if(tmp && node.inode==(const void *)tmp)
+                return write_tmp_stat(tmp,statbuf);
+            const struct bootfs_entry *entry=bootfs_find(actual);
+            if(entry && node.inode==(const void *)entry)
+                return write_boot_stat(entry,statbuf);
+            struct nas_linux_stat st={0};
+            st.dev=8;st.ino=(uint64_t)(uintptr_t)node.inode;
+            st.nlink=node.is_dir?2:1;st.mode=node.mode;
+            st.blksize=PAGE;st.size=(int64_t)node.size;
+            st.blocks=(int64_t)((node.size+511)/512);
+            return nas_user_write_bytes(statbuf,(const uint8_t *)&st,
+                       sizeof(st))?0:(uint64_t)-EFAULT;
         }
         if (err != -ENOENT) return (uint64_t)(int64_t)err;
     }
