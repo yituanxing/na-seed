@@ -7,6 +7,9 @@
 struct nas_fs_node;
 struct nas_vfs_type {
     const char *name;
+    /* Human-readable source label for stable exec acceptance diagnostics;
+     * does not participate in dispatch or inode ownership. */
+    const char *exec_source_label;
     int (*lookup)(const char *absolute, struct nas_fs_node *);
     int (*readlink)(const struct nas_fs_node *, char target[256]);
     int64_t (*read_at)(const struct nas_fs_node *, uint64_t offset,

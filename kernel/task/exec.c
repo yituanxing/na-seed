@@ -439,9 +439,10 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
         nas_print("[EXEC] CPIO #! interpreter: ");
         nas_print(pending_exec.shebang_path); nas_print("\n");
     }
-    nas_print("[EXEC] replaced process with VFS ELF (");
-    nas_print(app.filesystem ? app.filesystem->name : "unknown");
-    nas_print("): ");
+    nas_print("[EXEC] replaced process with ");
+    nas_print(app.filesystem && app.filesystem->exec_source_label
+              ? app.filesystem->exec_source_label : "VFS");
+    nas_print(" ELF: ");
     nas_print(pending_exec.filename);
     nas_print("\n");
     if(nas_ptrace_exec_commit(nas_current_task,entry,sp)) {

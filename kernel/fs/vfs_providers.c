@@ -28,7 +28,7 @@ static int64_t boot_read(const struct nas_fs_node *node,uint64_t offset,
     return (int64_t)length;
 }
 static const struct nas_vfs_type boot_type={
-    .name="bootfs",.lookup=boot_lookup,.readlink=boot_readlink,
+    .name="bootfs",.exec_source_label="CPIO",.lookup=boot_lookup,.readlink=boot_readlink,
     .read_at=boot_read,.read_only=true
 };
 static int tmp_lookup(const char *path,struct nas_fs_node *out) {
@@ -56,7 +56,7 @@ static int tmp_utimens_node(const struct nas_fs_node *node,uint64_t a,
     return tmp_utimens((struct nas_tmp_file *)(uintptr_t)node->inode,a,m,sa,sm);
 }
 static const struct nas_vfs_type tmp_type={
-    .name="tmpfs",.lookup=tmp_lookup,.readlink=tmp_readlink,
+    .name="tmpfs",.exec_source_label="tmpfs",.lookup=tmp_lookup,.readlink=tmp_readlink,
     .read_at=tmp_read,.chmod=tmp_chmod_node,.utimens=tmp_utimens_node
 };
 static int proc_lookup_node(const char *path,struct nas_fs_node *out) {
@@ -66,7 +66,7 @@ static int proc_lookup_node(const char *path,struct nas_fs_node *out) {
     return 0;
 }
 static const struct nas_vfs_type proc_type={
-    .name="procfs",.lookup=proc_lookup_node,.read_only=true
+    .name="procfs",.exec_source_label="procfs",.lookup=proc_lookup_node,.read_only=true
 };
 static const struct nas_vfs_mount defaults[]={
     {.mountpoint="/",.type=&boot_type},
