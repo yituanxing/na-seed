@@ -33,6 +33,9 @@ CFLAGS := --target=x86_64-unknown-none-elf -std=c11 -O2 -g -Wall -Wextra -Werror
 ifeq ($(NAS_SYSCALL_TRACE),1)
 CFLAGS += -DNASEED_SYSCALL_TRACE
 endif
+ifeq ($(NAS_ENABLE_LWEXT4),1)
+CFLAGS += -DNAS_ENABLE_LWEXT4=1
+endif
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
  -z noexecstack -T kernel/arch/$(ARCH)/linker.ld
 

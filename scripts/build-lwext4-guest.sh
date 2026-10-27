@@ -25,7 +25,7 @@ mkdir -p "$out"
 sources="$vendor"/src/*.c
 sources="$sources $port/compat.c kernel/mm/heap.c ports/lwext4/lwext4_block.c"
 if [ "$mode" = kernel ]; then
-    sources="$sources ports/lwext4/guest_vfs.c"
+    sources="$sources ports/lwext4/guest_vfs.c ports/lwext4/guest_boot.c"
 fi
 if [ "$mode" = closed ]; then
     sources="$sources kernel/lib/string.c kernel/block/device.c"

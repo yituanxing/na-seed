@@ -35,3 +35,7 @@ jobs:
           test -s build/port-riscv64/full/kernel.elf
           test -s build/port-aarch64/full/kernel.elf
           echo '[LWEXT4 OPT-IN KERNEL LINK PASS] x86-64 / RV64 / AArch64'
+      - name: Boot the real x86 kernel with the ext4 image as a Limine module
+        run: |
+          sudo apt-get -y install --no-install-recommends ovmf qemu-system-x86 xorriso
+          sh scripts/probe-lwext4-guest-x86.sh

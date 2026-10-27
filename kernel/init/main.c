@@ -4,6 +4,9 @@
 #include "../task.h"
 #include "../fd.h"
 #include "../boot_image.h"
+#ifdef NAS_ENABLE_LWEXT4
+extern bool nas_lwext4_guest_boot_mount(void);
+#endif
 #include "../arch/arch.h"
 #include "../arch/console.h"
 #include "../arch/mmu.h"
@@ -103,6 +106,13 @@ void nas_init_userspace(void) {
     const char *boot_error = nas_boot_prepare(
         nas_boot_argv_first(), &selected_image);
     if (boot_error) nas_fail(boot_error);
+#ifdef NAS_ENABLE_LWEXT4
+    /* After the archive is indexed and before the actual userspace ELF
+     * starts, attach any separately loaded on-disk ext4 image. No syscall
+     * or architecture-specific mount dispatch is introduced here. */
+    if (!nas_lwext4_guest_boot_mount())
+        nas_fail("opt-in lwext4 Limine module/VFS mount failed");
+#endif
     struct elf_image main_image = {
         .data = selected_image.image, .size = selected_image.size
     };

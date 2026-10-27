@@ -131,3 +131,15 @@ The host ext4 acceptance now exercises `nas_fs_lookup_node` and
 `nas_vfs_read_at` over real ext4 blocks and validates busy unmount. The
 optional kernel link includes this provider, but a booted guest ext4 mount
 and Linux syscall workload still require a separate exact-head run.
+
+### First actual guest boot acceptance (x86-64)
+With `NAS_ENABLE_LWEXT4=1`, the real `nas_init_userspace()` stage
+discovers a separately supplied Limine module with an on-disk ext4
+superblock, registers a RamDisk and the same VFS mount at `/mnt`,
+resolves a real directory and optionally reads the pinned real-ext4 fixture.
+The dedicated QEMU script builds an actual UEFI ISO with a guest userspace
+ELF plus ext4 image and requires both a real guest VFS read marker and the
+independent original M1 userspace exit. Not a host-native simulation.
+
+Other ISAs compile/link the same port; QEMU boot execution on RV64/AArch64
+and Linux syscall openat/read/getdents on mounted ext4 remain separate gates.
