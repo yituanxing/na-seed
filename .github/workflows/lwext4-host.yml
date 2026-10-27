@@ -5,6 +5,9 @@ on:
       - 'third_party/lwext4/**'
       - 'kernel/block/**'
       - 'kernel/drivers/block/**'
+      - 'kernel/drivers/port/**'
+      - 'scripts/check-block-foundation.sh'
+      - 'scripts/test-block-driver-port.c'
       - 'kernel/platform/aarch64_virtio.c'
       - 'ports/lwext4/**'
       - 'kernel/fs/vfs*'
@@ -33,6 +36,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: Verify real BlockDevice and third-party driver port (host and 3 ISAs)
+        run: sh scripts/check-block-foundation.sh
       - name: Build pinned upstream lwext4 and exercise real ext4 via NaSeed RamDisk
         run: |
           command -v cmake
