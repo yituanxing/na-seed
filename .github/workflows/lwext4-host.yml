@@ -5,6 +5,7 @@ on:
       - 'third_party/lwext4/**'
       - 'kernel/block/**'
       - 'ports/lwext4/**'
+      - 'kernel/mm/heap.*'
       - 'scripts/check-lwext4-ramdisk.sh'
       - 'scripts/test-lwext4-ramdisk.c'
       - '.github/workflows/lwext4-host.yml'
@@ -21,3 +22,4 @@ jobs:
           command -v mke2fs
           command -v e2fsck
           sh scripts/check-lwext4-ramdisk.sh
+          sh scripts/check-lwext4-freestanding.sh

@@ -88,3 +88,15 @@ The vendored original files retain their exact bytes, including upstream
 whitespace. Git checks are disabled *only for this isolated vendor subtree*
 by `.gitattributes`; all first-party source retains strict whitespace
 checks.
+
+### Freestanding lwext4 runtime bridge (this batch)
+The upstream library is compiled with a separate, explicit configuration
+in `ports/lwext4/freestanding/platform.h` (OWN_ERRNO, user malloc, no
+host libc printf). `compat.c` forwards allocation to the new general-purpose
+kernel heap, and provides the only missing C helpers. The heap supports
+non-overlapping additional arenas without changing the allocator API.
+
+All 21 real upstream C units and the port compile on x86-64, RV64 and ARM64
+with the permanent freestanding headers; the host test exercises actual
+allocator allocation, double-free, realloc, merging and arena extension.
+This compilation gate is **not** yet guest lwext4 mount/link evidence.
