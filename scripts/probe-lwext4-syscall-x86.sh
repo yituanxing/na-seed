@@ -43,10 +43,11 @@ clean="$root/clean.log"
 if [ "$rc" -ne 1 ] ||
    ! grep -Fq '[LWEXT4 GUEST] actual Limine ext4 image mounted at /mnt' "$clean" ||
    ! grep -Fxq 'NaSeed VFS and BlockDevice real lwext4 data' "$clean" ||
+   ! grep -Fxq '[PASS] real ext4 getdents64 via VFS' "$clean" ||
    ! grep -Fq '[PASS] cmdline userspace exit 0' "$clean" ||
    grep -Eq '\[FAIL\]|\[FAULT\]|\[DEADLOCK\]' "$clean"; then
     echo "[LWEXT4 SYSCALL GUEST FAIL] x86 QEMU exit=$rc" >&2
     tail -130 "$clean" >&2
     exit 1
 fi
-echo '[LWEXT4 GUEST SYSCALL PASS] x86 UEFI: ELF openat/fstatat/read/close -> VFS -> real ext4'
+echo '[LWEXT4 GUEST SYSCALL PASS] x86 UEFI: ELF openat/fstatat/read/getdents64/close -> VFS -> real ext4'

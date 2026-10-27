@@ -474,10 +474,58 @@ static uint64_t proc_getdents64(uint64_t fd,uint64_t dst,uint64_t capacity) {
     }
     return written;
 }
+/* Translate any mounted provider readdir callback to Linux dirent64,
+ * without exposing host/ext4 structures or accessing user memory in drivers.
+ * The logical cookie resides in the shared open File, not in a task FD. */
+static uint64_t vfs_getdents64(uint64_t fd,uint64_t user,uint64_t capacity) {
+    struct nas_open_file *opened=&nas_open_files[TASK.fds->entries[fd].slot];
+    if(opened->status_flags&NAS_LINUX_O_PATH)return (uint64_t)-EBADF;
+    if(!opened->vnode.is_dir)return (uint64_t)-ENOTDIR;
+    if(capacity<24)return (uint64_t)-EINVAL;
+    if(user>=USER_LIMIT || capacity>USER_LIMIT-user)return (uint64_t)-EFAULT;
+    uint64_t cursor=opened->position,written=0;
+    struct nas_vfs_dirent batch[8];
+    while(capacity-written>=24) {
+        int count=nas_vfs_read_dir(&opened->vnode,opened->origin_path,
+                                   cursor,batch,8);
+        if(count<0)return written?written:(uint64_t)(int64_t)count;
+        if(!count)break;
+        if(count>8)return written?written:(uint64_t)-EIO;
+        for(int i=0;i<count;i++) {
+            const struct nas_vfs_dirent *e=&batch[i];
+            unsigned length=e->name_len;
+            if(!e->ino || !length || length>=sizeof(e->name) ||
+               e->name[length]!=0)return written?written:(uint64_t)-EIO;
+            unsigned record_bytes=(19+length+1+7)&~7U;
+            if(record_bytes>280)return written?written:(uint64_t)-EIO;
+            if(record_bytes>capacity-written)
+                return written?written:(uint64_t)-EINVAL;
+            uint8_t raw[280]={0};
+            for(unsigned b=0;b<8;b++) {
+                raw[b]=(uint8_t)(e->ino>>(b*8));
+                raw[8+b]=(uint8_t)((cursor+1)>>(b*8));
+            }
+            raw[16]=(uint8_t)record_bytes;
+            raw[17]=(uint8_t)(record_bytes>>8);
+            raw[18]=e->dtype;
+            memcpy(raw+19,e->name,length);
+            if(!nas_user_write_bytes(user+written,raw,record_bytes))
+                return written?written:(uint64_t)-EFAULT;
+            written+=record_bytes;
+            opened->position=++cursor;
+        }
+    }
+    return written;
+}
 static uint64_t sys_getdents64(uint64_t fd, uint64_t dst, uint64_t capacity) {
     if (fd >= 64 || TASK.fds->entries[fd].kind == FD_CLOSED) return (uint64_t)-EBADF;
     if(TASK.fds->entries[fd].kind==FD_PROC_DIR)
         return proc_getdents64(fd,dst,capacity);
+    /* First-class mounted providers before the legacy CPIO/tmpfs adapter. */
+    const struct nas_open_file *open=&nas_open_files[TASK.fds->entries[fd].slot];
+    if(open->vnode_pinned && open->vnode.filesystem &&
+       open->vnode.filesystem->read_dir)
+        return vfs_getdents64(fd,dst,capacity);
     if (TASK.fds->entries[fd].kind != FD_TMP_DIR &&
         (TASK.fds->entries[fd].kind != FD_DIR || !nas_open_files[TASK.fds->entries[fd].slot].boot_entry))
         return (uint64_t)-ENOTDIR;

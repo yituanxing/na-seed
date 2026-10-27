@@ -170,3 +170,9 @@ independent of Linux dirent64 bytes. The real upstream ext4 iterator yields
 inode numbers and file types for children, with logical cursor units shared
 by open descriptions. It is a batched immutable-directory implementation,
 not yet an inode-based rename-safe iterator for future writable mounts.
+
+Linux `getdents64` now formats provider-supplied directory entries in
+kernel-owned bounded batches with shared File cursor ownership and Linux ABI
+validation at the syscall boundary. x86 ring3 acceptance verifies the real
+hardlink name returned through the ext4 mount. The existing bootfs/tmpfs and
+procfs listing adapters remain pending migration to the same read_dir callback.
