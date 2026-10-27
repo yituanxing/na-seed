@@ -73,12 +73,14 @@ dir_scan:
     cmp %r14, %rbx
     jae dir_next
     movzwl 16(%rsp,%rbx), %r13d
-    cmp $32, %r13d
+    cmp $24, %r13d
     jb fail
     mov %rbx, %r15
     add %r13, %r15
     cmp %r14, %r15
     ja fail
+    cmp $32, %r13d
+    jb dir_skip
     cmpl $0x64726168, 19(%rsp,%rbx)
     jne dir_skip
     cmpl $0x6b6e696c, 23(%rsp,%rbx)
