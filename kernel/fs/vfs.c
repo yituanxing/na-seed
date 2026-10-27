@@ -174,8 +174,12 @@ static int vfs_parent(const char *path,struct nas_fs_node *parent,
 static bool active_mountpoint(const char *path) {
     if(!path)return false;
     ensure_defaults();
-    for(unsigned i=0;i<count;i++)
-        if(!strcmp(mounts[i].mount->mountpoint,path))return true;
+    for(unsigned i=0;i<count;i++) {
+        /* A mounted subtree pins its ancestor against rename/rmdir as
+         * well: removing /a while /a/b is mounted would orphan /a/b.
+         * mount_matches compares whole path components, not raw prefixes. */
+        if(mount_matches(path,mounts[i].mount->mountpoint))return true;
+    }
     return false;
 }
 static int vfs_mutable_parent(const char *path,struct nas_fs_node *parent,
@@ -242,11 +246,17 @@ int nas_vfs_mkdir(const char *path,uint64_t mode) {
     return parent.filesystem->mkdir ? parent.filesystem->mkdir(parent.mount,canonical,mode) : -EOPNOTSUPP;
 }
 int nas_vfs_unlink(const char *path,uint64_t flags) {
+    if(flags&~0x200ULL)return -EINVAL; /* Linux AT_REMOVEDIR only */
     struct nas_fs_node parent;char canonical[256];
-    int rc=vfs_mutable_parent(path,&parent,canonical);
+    /* Mount-tree identity takes precedence over the parent filesystem's
+     * writable flag: rmdir(/mnt) is EBUSY even if /mnt lives below an
+     * immutable bootfs directory. Read-only policy applies afterward. */
+    int rc=vfs_parent(path,&parent,canonical);
     if(rc)return rc;
     if(active_mountpoint(canonical))return -EBUSY;
-    return parent.filesystem->unlink ? parent.filesystem->unlink(parent.mount,canonical,flags) : -EOPNOTSUPP;
+    if(!nas_vfs_can_write(&parent))return -EROFS;
+    return parent.filesystem->unlink ?
+           parent.filesystem->unlink(parent.mount,canonical,flags) : -EOPNOTSUPP;
 }
 int nas_vfs_rename(const char *oldpath,const char *newpath,uint64_t flags) {
     struct nas_fs_node old_parent,new_parent;
@@ -267,6 +277,9 @@ int nas_vfs_link(const char *oldpath,const char *newpath) {
     struct nas_fs_node source,parent;
     int rc=nas_fs_lookup_node(oldpath,false,&source,resolved);
     if(rc)return rc;
+    /* Linux hardlinks cannot target directories, regardless of backend.
+     * Don't defer directory link restrictions to an arbitrary filesystem. */
+    if(source.is_dir)return -EPERM;
     rc=vfs_parent(newpath,&parent,canonical);
     if(rc)return rc;
     if(source.mount!=parent.mount)return -EXDEV;

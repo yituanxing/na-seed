@@ -78,6 +78,8 @@ int main(int argc,char **argv) {
     assert(nas_vfs_mkdir("/",0755)==-EEXIST);
     assert(nas_vfs_mkdir("/mnt",0755)==-EEXIST);
     assert(nas_vfs_unlink("/mnt",0x200ULL)==-EBUSY);
+    assert(nas_vfs_unlink("/mnt",0x800ULL)==-EINVAL);
+    assert(nas_vfs_link("/mnt/sandbox","/mnt/sandbox/dir-hardlink")==-EPERM);
     assert(nas_vfs_rename("/mnt","/new-mount",0)==-EBUSY);
     assert(nas_vfs_mkdir("/mnt/sandbox",0755)==-EEXIST);
     if(!write) {
