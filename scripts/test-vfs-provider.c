@@ -24,7 +24,7 @@ static struct bootfs_entry entries[]={
     {.path="/shortcut",.mode=0120777,.data=abs_link,.size=sizeof(abs_link)-1}
 };
 static struct nas_tmp_file tmp_demo={.used=true,.mode=0100644,.size=4};
-static struct nas_tmp_file tmp_link={.used=true,.mode=0120777,.size=9};
+static struct nas_tmp_file fixture_symlink={.used=true,.mode=0120777,.size=9};
 bool bootfs_mounted(void){return true;}
 const struct bootfs_entry *bootfs_find(const char *path){
     for(unsigned i=0;i<sizeof(entries)/sizeof(entries[0]);i++)
@@ -39,14 +39,14 @@ bool bootfs_is_link(const struct bootfs_entry *e){
 }
 struct nas_tmp_file *tmp_find(const char *path){
     if(!strcmp(path,"/tmp/demo"))return &tmp_demo;
-    if(!strcmp(path,"/tmp/link"))return &tmp_link;
+    if(!strcmp(path,"/tmp/link"))return &fixture_symlink;
     return NULL;
 }
 bool tmp_is_link(const struct nas_tmp_file *f){
     return f && (f->mode&0170000U)==0120000U;
 }
-int tmp_link_target(const struct nas_tmp_file *f,char target[256]){
-    if(f!=&tmp_link)return -EINVAL;
+int fixture_symlink_target(const struct nas_tmp_file *f,char target[256]){
+    if(f!=&fixture_symlink)return -EINVAL;
     memcpy(target,abs_link,sizeof(abs_link));return 0;
 }
 int64_t tmp_read_at(const struct nas_tmp_file *file,uint64_t off,uint8_t *buf,uint64_t len){
