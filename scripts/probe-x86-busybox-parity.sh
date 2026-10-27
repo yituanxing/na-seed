@@ -55,7 +55,7 @@ run_case() {
       --efi-boot boot/limine/limine-uefi-cd.bin \
       --efi-boot-part --efi-boot-image -o "$iso" "$stage" >/dev/null 2>&1
     rc=0
-    case "$name" in m38-gcc) budget=300 ;; m39-packages|m40-archives|m41-unix|m42-pthread|m43-zstd|m44-group|m45-robust|m46-exec|m47-tgkill|m48-parallel|m49-capacity|m51-git|m52-python|m53-vim|m54-dev|m58-runtime|m59-worktree) budget=500 ;;
+    case "$name" in m44-pid1) budget=120 ;; m38-gcc) budget=300 ;; m39-packages|m40-archives|m41-unix|m42-pthread|m43-zstd|m44-group|m45-robust|m46-exec|m47-tgkill|m48-parallel|m49-capacity|m51-git|m52-python|m53-vim|m54-dev|m58-runtime|m59-worktree) budget=500 ;;
         m55-cjson) budget=${NAS_M55_QEMU_TIMEOUT:-2400} ;; m56-busybox) budget=${NAS_M56_QEMU_TIMEOUT:-3600} ;; m57-sqlite) budget=${NAS_M57_QEMU_TIMEOUT:-3600} ;; m37-incremental) budget=100 ;; process-capacity) budget=45 ;; init-reaper) budget=110 ;; *) budget=15 ;; esac
     if [ "$name" = m38-gcc ] || [ "$name" = m39-packages ] || [ "$name" = m40-archives ] || [ "$name" = m41-unix ] || [ "$name" = m42-pthread ] || [ "$name" = m43-zstd ] || [ "$name" = m44-group ] || [ "$name" = m45-robust ] || [ "$name" = m46-exec ] || [ "$name" = m47-tgkill ] || [ "$name" = m48-parallel ] || [ "$name" = m49-capacity ] || [ "$name" = m51-git ] || [ "$name" = m52-python ] || [ "$name" = m53-vim ] || [ "$name" = m54-dev ] || [ "$name" = m55-cjson ] || [ "$name" = m56-busybox ] || [ "$name" = m57-sqlite ] || [ "$name" = m58-runtime ] || [ "$name" = m59-worktree ]; then
         # The full GCC gate is allowed a large success budget, but a real

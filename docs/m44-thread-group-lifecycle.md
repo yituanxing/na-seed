@@ -19,7 +19,13 @@ ABI stress fixture solely to force two otherwise timing-dependent edge cases.
 3. Fork from a nonleader thread and let it exit before the new process:
    the stable group leader must successfully wait4 the process using its
    TGID-based PPID, not the worker's now-retired TID.
-4. After those cases, run the *unchanged* signed Alpine original zstd -T2
+4. Boot the **same** freestanding native ELF directly as PID 1, not as a
+   shell child: its CLONE_THREAD workers inherit PPID 0. Eight worker-local
+   SYS_exit operations must leave the PID 1 leader alive for subsequent
+   work. Another worker then issues exit_group(0), which alone shuts down
+   the PID 1 process. Both independent native stdout markers are required
+   before any harness-reported kernel exit PASS.
+5. After those cases, run the *unchanged* signed Alpine original zstd -T2
    two-pass compression and byte comparison on amd64, RV64, and ARM64.
 
 The VM owner (leader) survives while live threads exist. Group teardown

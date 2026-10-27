@@ -8,6 +8,7 @@ typedef long int64_t;
 #define NR_read 0
 #define NR_write 1
 #define NR_clone 56
+#define NR_getpid 39
 #define NR_wait4 61
 #define NR_exit 60
 #define NR_exit_group 231
@@ -17,6 +18,7 @@ typedef long int64_t;
 #define NR_read 63
 #define NR_write 64
 #define NR_clone 220
+#define NR_getpid 172
 #define NR_wait4 260
 #define NR_exit 93
 #define NR_exit_group 94
@@ -119,6 +121,12 @@ static __attribute__((used,noreturn)) void thread_entry(void) {
         worker_fork_pid=child;
         finish_thread(0);
     }
+    if(what==6) {
+        /* A nonleader of the actual PID 1 group requests process-wide
+         * shutdown; this MUST be different from thread-local SYS_exit. */
+        MSG("M44_PID1_GROUP_EXIT_PASS\n");
+        done(0);
+    }
     done(96);
 }
 /* clone restarts at the next instruction but switches SP, so do not
@@ -196,6 +204,25 @@ static long reap(long pid) {
 __attribute__((force_align_arg_pointer))
 #endif
 void _start(void) {
+    if(call1(NR_getpid,0)==1) {
+        /* Genuine direct PID 1 ELF, not a subprocess of an Alpine shell.
+         * Its CLONE_THREAD children inherit PPID=0. A worker calling
+         * SYS_exit must NOT be mistaken for PID 1 system shutdown; the
+         * real leader must continue running, create more threads, and
+         * then let a different worker call exit_group for clean shutdown.
+         * Any early poweroff misses BOTH expected user markers. */
+        for(unsigned k=0;k<8U;k++) {
+            spawn(0,4);
+            for(unsigned tries=0;churn_exited!=k+1U && tries<200U;tries++)
+                short_nap();
+            if(churn_exited!=k+1U)done(86);
+            short_nap();
+        }
+        if(call1(NR_getpid,0)!=1)done(87);
+        MSG("M44_PID1_WORKER_EXIT_PASS\n");
+        spawn(0,6);
+        for(;;)short_nap(); /* the worker must shutdown PID 1 group */
+    }
     /* Three rounds detect zombie TID slots, shared fd over-release, and
      * premature freeing of the leader's shared page-table root. */
     for(int k=0;k<3;k++) {
