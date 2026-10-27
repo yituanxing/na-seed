@@ -40,7 +40,15 @@ nas_arm_early_c: .ascii "C"
 .balign 2048
 .global nas_arm_full_vectors
 nas_arm_full_vectors:
-.rept 8
+/* 0..3 = current EL using SP_EL0; 4..7 = current EL using SP_EL1.
+ * Index 5 is EL1h IRQ: it must NOT take the EL0 return-stack path. */
+.rept 5
+    b nas_arm_unexpected_vector
+    .balign 128
+.endr
+    b nas_arm_upper_irq
+    .balign 128
+.rept 2
     b nas_arm_unexpected_vector
     .balign 128
 .endr
@@ -122,12 +130,21 @@ nas_arm_lower_irq:
     mov x0,sp
     bl nas_arm_lower_irq_c
 
+/* Preserve and restore the actual scheduler EL1h frame in place.
+ * Do not copy it into a selected Task's EL0 stack or send user signals. */
+.global nas_arm_upper_irq
+nas_arm_upper_irq:
+    NAS_ARM_SAVE_EL0_FRAME
+    bl nas_arm_timer_idle_irq_c
+    b nas_arm_restore_frame
+
 nas_arm_trap_return:
     /* Return via the selected task's separate EL1 stack; all kernel C
      * calls have unwound and only the saved EL0 trap frame is relocated. */
     mov x0, sp
     bl nas_arm_return_stack
     mov sp, x0
+nas_arm_restore_frame:
     ldr x9,[sp,#248]
     msr sp_el0,x9
     ldr x9,[sp,#256]

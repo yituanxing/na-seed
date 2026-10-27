@@ -273,14 +273,20 @@ static void native_dispatcher(void) {
             nas_arch_kernel_swap(&scheduler_cpu,&next->kernel_exec.cpu);
             continue;
         }
-        /* The IRQ-safe idle sleeping transition requires a separate
-         * interrupt ownership change; never WFI/HLT with IRQs masked. */
+        /* All Task C continuations are parked on their own stacks.
+         * The shared scheduler remains on scheduler_stack, with IRQs
+         * masked on entry/return. Each ISA owns its EL1/S-mode/CPL0 IRQ
+         * boundary: never deliver a timer tick through a user trap image. */
         nas_task_cpu_account_switch(0);
         bool external=nas_time_timers_armed() ||
             nas_kthread_deadlines_armed() || nas_kthread_runnable();
         for(unsigned i=0;i<NAS_TASK_LIMIT && !external;i++)
             external=nas_task_wait_needs_idle_poll(nas_task_at(i));
         if(!external)sched_fail("native scheduler deadlock");
+        /* The timer is periodic and remains armed even without a user
+         * process. Spurious returns are fine: rerun readiness and clocks.
+         * Never loop here with IRQs masked and a runnable external waiter. */
+        nas_arch_idle_wait();
     }
 }
 uint64_t nas_task_schedule(uint64_t *frame) {

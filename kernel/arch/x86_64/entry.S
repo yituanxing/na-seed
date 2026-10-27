@@ -108,6 +108,10 @@ nas_x86_timer_isr:
     pushq %rax
     movq %rsp, %rdi
     call nas_x86_timer_irq
+    /* CPL0's hardware frame has RIP/CS/RFLAGS but NO user RSP/SS.
+     * Never pass it to signal delivery, which assumes a user IRET. */
+    testb $3, 128(%rsp)
+    jz nas_x86_iret_restore
     /* Also deliver to a CPU-bound user process without any syscall. */
     movq %rsp, %rdi
     call nas_signal_user_return

@@ -67,6 +67,21 @@ void nas_arm_timer_start(void) {
 /* Handler runs with PSTATE.I=1; user context fully saved in trap.S.
  * IAR/EOIR must be paired even when the scheduler chooses another Task.
  */
+/* EL1h IRQ from the sleeping scheduler is NOT an EL0 trap. The dedicated
+ * vector keeps the kernel stack, acknowledges PPI27, and returns via its
+ * original kernel ELR/SPSR, without Task register capture or a handoff. */
+void nas_arch_idle_wait(void) {
+    __asm__ volatile("msr daifclr,#2\n\twfi\n\tmsr daifset,#2"
+                     : : : "memory");
+}
+void nas_arm_timer_idle_irq_c(void) {
+    uint32_t id=iface[0x0c/4];
+    if((id & 0x3ffU) != ARM_VTIMER_PPI)
+        nas_fail("ARM64 idle unexpected GIC interrupt ID");
+    rearm_timer();
+    iface[0x10/4]=id;
+    __asm__ volatile("dsb sy" : : : "memory");
+}
 void nas_arm_timer_irq_c(struct nas_arm_trap_frame *frame) {
     uint32_t id=iface[0x0c/4];
     if((id & 0x3ffU) != ARM_VTIMER_PPI)

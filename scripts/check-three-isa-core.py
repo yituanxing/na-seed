@@ -183,6 +183,22 @@ if "finish_io_provider(" not in (root/"kernel/syscall/dispatch.c").read_text():
     raise SystemExit("blocking I/O providers must own their retry, not Task scheduler")
 if "nas_sched_scan_next(&scan,&slot)" not in sched:
     raise SystemExit("native scheduler bypasses canonical Task scan")
+# IRQ-masked busy polling is not an acceptable native idle implementation.
+# Require ISA-specific privileged interrupt handling, never a user-only IRQ
+# path or an unconditional WFI/HLT executed with interrupts still disabled.
+if "nas_arch_idle_wait();" not in sched or "void nas_arch_idle_wait(void);" not in (root/"kernel/arch/arch.h").read_text():
+    raise SystemExit("native scheduler lost shared IRQ-aware idle boundary")
+x86_timer=(root/"kernel/arch/x86_64/timer.c").read_text()
+if 'sti; hlt; cli' not in x86_timer or 'if ((frame->cs & 3U) == 0U)' not in x86_timer or    'jz nas_x86_iret_restore' not in x86_entry:
+    raise SystemExit("x86 kernel PIT idle IRQ must restore CPL0 IRET without user signals")
+rv_timer=(root/"kernel/arch/riscv64/timer.c").read_text()
+rv_trap=(root/"kernel/arch/riscv64/trap.S").read_text()
+if not all(s in rv_timer for s in ('nas_rv_idle_trap', 'csrsi sstatus,2', 'csrci sstatus,2', 'nas_rv_idle_irq_c')) or    'nas_rv_idle_trap:' not in rv_trap or 'call nas_rv_idle_irq_c' not in rv_trap:
+    raise SystemExit("RV64 idle must handle S-mode IRQ without sscratch stack swap")
+arm_timer=(root/"kernel/arch/aarch64/timer.c").read_text()
+arm_trap=(root/"kernel/arch/aarch64/trap.S").read_text()
+if not all(s in arm_timer for s in ('msr daifclr,#2', 'msr daifset,#2', 'nas_arm_timer_idle_irq_c')) or    'b nas_arm_upper_irq' not in arm_trap or 'nas_arm_upper_irq:' not in arm_trap or    'b nas_arm_restore_frame' not in arm_trap:
+    raise SystemExit("ARM64 idle needs EL1h IRQ entry with in-place kernel ERET")
 if "nas_sched_allow_kernel_slice(" not in (root/"kernel/task/scheduler_service.c").read_text():
     raise SystemExit("kernel worker dispatch bypassed shared domain fairness policy")
 if "nas_sched_service_kernel();" not in sched:

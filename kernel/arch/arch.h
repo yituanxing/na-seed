@@ -24,6 +24,10 @@ uint64_t nas_arch_cycle_counter(void);
 uint64_t nas_arch_monotonic_ns(void);
 /* Report real hardware resolution (rounded up). */
 uint64_t nas_arch_clock_resolution_ns(void);
+/* Called only from the CPU-local, IRQ-masked scheduler stack with no
+ * active Task C continuation. Returns with interrupts masked on every ISA.
+ * IRQ entry during this interval must not treat it as a user trap. */
+void nas_arch_idle_wait(void);
 void nas_arch_set_user_tls(uint64_t);
 /* True only when user mappings can enforce a non-executable protection. */
 #if defined(__x86_64__)

@@ -52,6 +52,30 @@ void nas_rv_timer_start(void) {
     __asm__ volatile("csrs sie,%0" : : "r"(stie) : "memory");
     arm_next_tick();
 }
+/* For the IRQ-masked native scheduler only. This temporary S-mode stvec
+ * never swaps sscratch/sp or captures a user Task frame. The SBI timer
+ * continuously rearms, so each wake forces a fresh Task readiness scan. */
+extern void nas_rv_idle_trap(void);
+extern void nas_rv_full_trap(void);
+void nas_arch_idle_wait(void) {
+    __asm__ volatile(
+        "la t0,nas_rv_idle_trap\n"
+        "csrw stvec,t0\n"
+        "csrsi sstatus,2\n"  /* SIE */
+        "wfi\n"
+        "csrci sstatus,2\n"
+        "la t0,nas_rv_full_trap\n"
+        "csrw stvec,t0\n"
+        : : : "t0","memory");
+}
+void nas_rv_idle_irq_c(void) {
+    uint64_t cause, status;
+    __asm__ volatile("csrr %0,scause" : "=r"(cause));
+    __asm__ volatile("csrr %0,sstatus" : "=r"(status));
+    if(cause != (UINT64_C(1)<<63 | 5U) || !(status & (1ULL<<8)))
+        nas_fail("RV64 idle received non-supervisor timer trap");
+    arm_next_tick();
+}
 void nas_rv_timer_handle(struct nas_rv_trap_frame *frame) {
     arm_next_tick(); /* OpenSBI clears the pending STIP when rearmed. */
     struct nas_task *from=nas_current_task;

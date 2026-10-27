@@ -62,9 +62,22 @@ uint64_t nas_arch_monotonic_ns(void) {
 uint64_t nas_arch_clock_resolution_ns(void) {
     return 1000000ULL; /* conservative millisecond accuracy after PIT sync */
 }
+/* sti;hlt is one architecturally race-safe sleep transition: a pending
+ * IRQ is serviced rather than lost between unmask and HLT. CPL0 IRQs run
+ * on the scheduler stack and do not have a user SS/RSP IRET image. */
+void nas_arch_idle_wait(void) {
+    __asm__ volatile("sti; hlt; cli" : : : "memory");
+}
 void nas_x86_timer_irq(struct nas_x86_user_irq_frame *frame) {
+    if ((frame->cs & 3U) == 0U) {
+        /* Kernel-origin PIT wake: no Task register or FPU snapshots.
+         * The common ISR restores its exact three-word kernel IRET frame. */
+        irq_ticks++;
+        nas_arch_outb(0x20,0x20);
+        return;
+    }
     if ((frame->cs & 3U) != 3U)
-        nas_fail("x86 timer interrupted kernel C code before IRQ-safe scheduling");
+        nas_fail("x86 timer returned with invalid privilege level");
     struct nas_task *from=nas_current_task;
     if (!from || !nas_task_kernel_stack_ok(from))
         nas_fail("x86 timer without a valid running task");
