@@ -25,7 +25,13 @@ ABI stress fixture solely to force two otherwise timing-dependent edge cases.
    work. Another worker then issues exit_group(0), which alone shuts down
    the PID 1 process. Both independent native stdout markers are required
    before any harness-reported kernel exit PASS.
-5. After those cases, run the *unchanged* signed Alpine original zstd -T2
+5. Boot a second variant of the same ELF directly as PID 1: its leader
+   calls SYS_exit(0) while another pthread is sleeping in a REAL
+   nanosleep. The kernel must defer process-finalization until the worker
+   wakes, prints `M44_PID1_WORKER_AFTER_LEADER_PASS`, then exits itself.
+   Only the last worker may drive clean QEMU shutdown (with its leader's
+   preserved status); premature host debug-exit is a test failure.
+6. After those cases, run the *unchanged* signed Alpine original zstd -T2
    two-pass compression and byte comparison on amd64, RV64, and ARM64.
 
 The VM owner (leader) survives while live threads exist. Group teardown

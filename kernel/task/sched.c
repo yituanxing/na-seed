@@ -24,6 +24,7 @@
 #include "../fs/eventfd.h"
 #include "../fs/unix_socket.h"
 #include "../mm/usercopy.h"
+#include "../init/main.h"
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
 extern void nas_hex(uint64_t);
@@ -55,7 +56,8 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
             child->group_leader->is_thread ||
             child->group_leader->tgid!=child->tgid)
             sched_fail("exiting thread lost its group leader");
-    } else if (!child->ppid || !nas_task_by_pid(child->ppid)) {
+    } else if (child->pid!=1 &&
+               (!child->ppid || !nas_task_by_pid(child->ppid))) {
         sched_fail("child termination without living parent");
     }
     nas_futex_wait_cancel(child);
@@ -131,6 +133,11 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
         nas_print("; parent pid="); nas_dec(child->ppid);
         nas_print("\n");
     }
+    /* PID1's group-leader SYS_exit may have parked here earlier, waiting
+     * for its final worker. Only final group teardown may notify the
+     * boot-policy owner. No premature QEMU success / leaked FD references. */
+    if(child->pid==1)
+        nas_init_process_terminated(child->exit_code,child->termination_signal);
 }
 /* Linux exit_group differs from exit: all threads (READY, BLOCKED,
  * STOPPED, and already exited) are stopped, and shared FDs / address space
