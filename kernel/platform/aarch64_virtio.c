@@ -16,12 +16,19 @@ int nas_arm_virtio_blk_probe(void){
         if(!nas_arm_map_io_page(VIRTIO_MMIO_BASE+page*4096U,
                                  VIRTIO_IO_VIRT+page*4096U))
             return -1;
+    unsigned modern=0,legacy=0;
     for(unsigned slot=0;slot<VIRTIO_MMIO_SLOTS;slot++){
         volatile uint32_t *reg=(volatile uint32_t *)(uintptr_t)
              (VIRTIO_IO_VIRT+slot*VIRTIO_MMIO_STRIDE);
+        if(reg[0]==0x74726976U && reg[2]==2U) {
+            if(reg[1]==2U)modern++;
+            else legacy++;
+        }
         int rc=nas_virtio_mmio_blk_attach(reg);
         if(rc<0)return rc;
     }
+    nas_print("[VIRTIO-BLK] hardware transport modern=");
+    nas_dec(modern);nas_print(" legacy=");nas_dec(legacy);nas_print("\n");
     nas_print("[VIRTIO-BLK] real modern MMIO devices=");
     nas_dec(nas_virtio_mmio_blk_count());
     nas_print("\n");

@@ -73,7 +73,8 @@ limit=${NASEED_ARM_FULL_TIMEOUT:-45}
 # virtio-mmio block transport alongside the firmware boot ESP.
 set --
 if [ -n "${NAS_VIRTIO_BLK_IMAGE:-}" ]; then
-    set -- -drive "if=none,id=ext4disk,format=raw,file=$NAS_VIRTIO_BLK_IMAGE" \
+    set -- -global virtio-mmio.force-legacy=false \
+           -drive "if=none,id=ext4disk,format=raw,file=$NAS_VIRTIO_BLK_IMAGE" \
            -device virtio-blk-device,drive=ext4disk
 fi
 set +e
