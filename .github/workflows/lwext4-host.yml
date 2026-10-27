@@ -35,4 +35,3 @@ jobs:
           test -s build/port-riscv64/full/kernel.elf
           test -s build/port-aarch64/full/kernel.elf
           echo '[LWEXT4 OPT-IN KERNEL LINK PASS] x86-64 / RV64 / AArch64'
-
