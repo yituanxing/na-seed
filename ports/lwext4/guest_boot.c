@@ -10,7 +10,7 @@
 #include <stdbool.h>
 #ifdef NAS_ENABLE_VIRTIO_BLK
 #include "../../kernel/block/device.h"
-extern int nas_arm_virtio_blk_probe(void);
+extern int nas_platform_virtio_blk_probe(void);
 #endif
 
 extern const struct limine_file *nas_module(uint64_t index);
@@ -57,7 +57,7 @@ bool nas_lwext4_guest_boot_mount(void) {
         /* Bus/transport discovery happens below the FS, not via a
          * syscall/backend-specific path. The EFI ESP is also VirtIO-Blk
          * but is FAT; select the *actual ext4 superblock* from each disk. */
-        int disks=nas_arm_virtio_blk_probe();
+        int disks=nas_platform_virtio_blk_probe();
         if(disks<0)return false;
         unsigned found=0;
         for(int i=0;i<disks;i++){
