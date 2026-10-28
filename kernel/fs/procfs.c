@@ -179,7 +179,11 @@ bool nas_proc_node_from_ino(uint64_t ino,struct nas_proc_node *out) {
 }
 bool nas_proc_directory_from_ino(uint64_t dir_ino,
                                  struct nas_proc_node *out) {
-    return nas_proc_node_from_ino(dir_ino,out) && nas_proc_is_dir(*out);
+    if(!out)return false;
+    struct nas_proc_node candidate;
+    if(!nas_proc_node_from_ino(dir_ino,&candidate) ||
+       !nas_proc_is_dir(candidate))return false;
+    *out=candidate;return true;
 }
 bool nas_proc_find_child(uint64_t dir_ino,const char *name,
                          struct nas_proc_node *out) {
@@ -196,8 +200,11 @@ bool nas_proc_find_child(uint64_t dir_ino,const char *name,
     return false;
 }
 bool nas_proc_fd_link_from_ino(uint64_t ino,struct nas_proc_node *out) {
-    return nas_proc_node_from_ino(ino,out) &&
-           out->kind==NAS_PROC_FD_LINK;
+    if(!out)return false;
+    struct nas_proc_node candidate;
+    if(!nas_proc_node_from_ino(ino,&candidate) ||
+       candidate.kind!=NAS_PROC_FD_LINK)return false;
+    *out=candidate;return true;
 }
 bool nas_proc_dir_path(struct nas_proc_node node,char path[256]) {
     if(!path || !nas_proc_is_dir(node))return false;

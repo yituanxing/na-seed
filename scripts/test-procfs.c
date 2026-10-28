@@ -100,6 +100,13 @@ int main(void) {
     assert(fd_by_ino.pid==1);
     nas_current_task=&tasks[0];
     assert(!nas_proc_fd_link_from_ino(owned_link_ino+1,&fd_by_ino));
+    /* Failed typed inode decodes cannot change an already-owned path
+     * identity. Particularly, FDINFO has the neighboring inode number. */
+    assert(fd_by_ino.kind==NAS_PROC_FD_LINK &&
+           fd_by_ino.pid==1 && fd_by_ino.fd==1);
+    assert(!nas_proc_directory_from_ino(owned_link_ino,&fd_by_ino));
+    assert(fd_by_ino.kind==NAS_PROC_FD_LINK &&
+           fd_by_ino.pid==1 && fd_by_ino.fd==1);
     char link[64]={0};
     assert(nas_proc_readlink(fd_by_ino,link,sizeof(link))==9);
     assert(!memcmp(link,"/dev/null",9));

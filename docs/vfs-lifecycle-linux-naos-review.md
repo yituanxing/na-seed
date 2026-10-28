@@ -88,3 +88,8 @@ second hardcoded syscall-only proc reader. The common positional I/O adapter
 now dispatches using the opened provider's read/write capability rather
 than enumerating tmpfs/archive/bootfs kind labels. Original legacy Limine
 module files remain an explicit non-VFS compatibility exception.
+
+Decoder contract: the typed `nas_proc_directory_from_ino` and
+`nas_proc_fd_link_from_ino` wrappers validate into a temporary, and
+publish only after kind validation. Failed typed lookups must never overwrite
+a live open inode view (e.g. the neighboring fdinfo inode of a procfd link).
