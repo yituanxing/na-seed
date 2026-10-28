@@ -16,6 +16,9 @@
 #include "file_ops.h"
 #include "vfs.h"
 #define TASK (*nas_current_task)
+/* Linux MAX_RW_COUNT: apply one transfer ceiling consistently to scalar
+ * and vector read/write, pread/pwrite, independent of filesystem kind. */
+#define NAS_MAX_RW_COUNT 0x7ffff000ULL
 /* Owner-independent readiness. No Task pointer, process FD number or
  * userspace memory access is needed to poll a live open-file description.
  * Each backend may implement its own readiness semantics. */
@@ -67,7 +70,7 @@ uint64_t nas_fs_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
      * to the page size), not a kernel-private 1-MiB limit. GNU binutils
      * legitimately calls writev() with a single multi-megabyte iovec.
      * The file/device ops still copy in bounded chunks and may short-write. */
-    if(length>0x7ffff000ULL)length=0x7ffff000ULL;
+    if(length>NAS_MAX_RW_COUNT)length=NAS_MAX_RW_COUNT;
     if(address>=USER_LIMIT || length>USER_LIMIT-address)
         return (uint64_t)-EFAULT;
     const struct nas_file_ops *ops=nas_open_files[TASK.fds->entries[fd].slot].ops;
@@ -78,6 +81,9 @@ uint64_t nas_fs_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     if((nas_open_files[TASK.fds->entries[fd].slot].status_flags&NAS_LINUX_O_PATH) ||
        (nas_open_files[TASK.fds->entries[fd].slot].status_flags&3ULL)==1)
         return (uint64_t)-EBADF;
+    if(length>NAS_MAX_RW_COUNT)length=NAS_MAX_RW_COUNT;
+    if(length && (address>=USER_LIMIT || length>USER_LIMIT-address))
+        return (uint64_t)-EFAULT;
     const struct nas_file_ops *ops=nas_open_files[TASK.fds->entries[fd].slot].ops;
     return ops && ops->read ? ops->read(fd,address,length) : (uint64_t)-EBADF;
 }
@@ -102,7 +108,9 @@ uint64_t nas_fs_fd_pread(uint64_t fd,uint64_t address,uint64_t count,
            !read_open->vnode.filesystem->read_at)return (uint64_t)-ESPIPE;
     } else if(TASK.fds->entries[fd].kind!=FD_BOOTFS)
         return (uint64_t)-ESPIPE;
-    if(offset>INT64_MAX || count>INT64_MAX-offset) return (uint64_t)-EINVAL;
+    if(offset>INT64_MAX)return (uint64_t)-EINVAL;
+    if(count>NAS_MAX_RW_COUNT)count=NAS_MAX_RW_COUNT;
+    if(count>INT64_MAX-offset)return (uint64_t)-EINVAL;
     if(count && (address>=USER_LIMIT || count>USER_LIMIT-address))
         return (uint64_t)-EFAULT;
     uint8_t buffer[1024];
@@ -132,7 +140,9 @@ uint64_t nas_fs_fd_pwrite(uint64_t fd,uint64_t address,uint64_t count,
     if(write_open->vnode.is_dir)return (uint64_t)-EISDIR;
     if(!write_open->vnode.filesystem ||
        !write_open->vnode.filesystem->write_at)return (uint64_t)-ESPIPE;
-    if(offset>INT64_MAX || count>INT64_MAX-offset)return (uint64_t)-EINVAL;
+    if(offset>INT64_MAX)return (uint64_t)-EINVAL;
+    if(count>NAS_MAX_RW_COUNT)count=NAS_MAX_RW_COUNT;
+    if(count>INT64_MAX-offset)return (uint64_t)-EINVAL;
     if(count && (address>=USER_LIMIT || count>USER_LIMIT-address))
         return (uint64_t)-EFAULT;
     struct nas_open_file *opened=&nas_open_files[slot];
@@ -169,12 +179,18 @@ uint64_t nas_fs_fd_readv(uint64_t fd,uint64_t iov,uint64_t count) {
             return total ? total : (uint64_t)-EFAULT;
         if (bytes>INT64_MAX-total) return (uint64_t)-EINVAL;
         if (!bytes) continue;
-        if (address>=USER_LIMIT || bytes>USER_LIMIT-address)
+        /* A vector's aggregate result, not just each read(), is capped.
+         * Stop after the cap without issuing another usercopy/provider IO. */
+        if(total==NAS_MAX_RW_COUNT)break;
+        uint64_t allowed=bytes;
+        if(allowed>NAS_MAX_RW_COUNT-total)
+            allowed=NAS_MAX_RW_COUNT-total;
+        if (address>=USER_LIMIT || allowed>USER_LIMIT-address)
             return total ? total : (uint64_t)-EFAULT;
-        uint64_t received=nas_fs_fd_read(fd,address,bytes);
+        uint64_t received=nas_fs_fd_read(fd,address,allowed);
         if ((int64_t)received<0) return total ? total : received;
         total+=received;
-        if (received!=bytes) break;
+        if (received!=allowed || allowed!=bytes) break;
     }
     return total;
 }
@@ -191,8 +207,8 @@ uint64_t nas_fs_fd_writev(uint64_t fd, uint64_t iov, uint64_t count) {
         /* The Linux total transfer limit applies across the entire iovec,
          * and the shared write path enforces pointer/FD validity. */
         uint64_t allowed = bytes;
-        if (allowed > 0x7ffff000ULL - sent)
-            allowed = 0x7ffff000ULL - sent;
+        if (allowed > NAS_MAX_RW_COUNT - sent)
+            allowed = NAS_MAX_RW_COUNT - sent;
         if (!allowed) break;
         uint64_t r = nas_fs_fd_write(fd, address, allowed);
         if ((int64_t)r < 0) return sent ? sent : r;
