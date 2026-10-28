@@ -50,6 +50,8 @@ on:
       - 'kernel/init/main.c'
       - 'scripts/check-ext4-fsck-clean.sh'
       - 'scripts/probe-vfs-busybox-physical.sh'
+      - 'scripts/probe-vfs-exec-no-cpio-x86.sh'
+      - 'scripts/vfs-rootless-exec-cases.tsv'
       - 'scripts/vfs-busybox-disk-cases.tsv'
       - 'tests/vfs-busybox-disk-workload'
       - 'scripts/probe-x86-busybox-parity.sh'
@@ -140,6 +142,8 @@ jobs:
           debugfs -R 'cat /sandbox/cross-isa-created' build/external/lwext4/virtio-persistent-x86.img > build/external/lwext4/virtio-x86-content.txt
           grep -Fq 'NaSeed one portable Linux ELF for x86 RV64 AArch64 ext4 RW' build/external/lwext4/virtio-x86-content.txt
           echo '[VIRTIO-BLK PCI HOST PERSISTENCE PASS] x86 real hardware disk bytes survived QEMU'
+      - name: 'Rootless direct-ELF bootstrap: execute original Debian BusyBox from real ext4 disk without CPIO'
+        run: sh scripts/probe-vfs-exec-no-cpio-x86.sh
       - name: Genuine AArch64 VirtIO-MMIO disk driver, independent ext4 image persistence and e2fsck
         run: |
           cp build/external/lwext4/ext4.img build/external/lwext4/virtio-persistent.img

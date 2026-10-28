@@ -185,3 +185,23 @@ not present-tense feature claims.
 **Rollout rule:** no unverified cross-subsystem "big bang". Review the
 entire dependency graph once; implement multiple *related* changes in one
 batch, compare exact HEAD and refuse merge on any failed acceptance.
+
+## Real boot/runtime separation acceptance — original program
+
+`scripts/probe-vfs-exec-no-cpio-x86.sh` is a separate **native x86-64
+QEMU gate**, not a host mock. It boots the existing VirtIO-PCI/lwext4
+kernel with a pinned original Debian BusyBox as a direct Limine ELF
+module, **without any CPIO initramfs**. It places the exact same static
+BusyBox ELF on a real independently attached ext4 raw drive, then uses
+the initial BusyBox shell to `execve("/mnt/busybox")`. The guest must
+log VFS provenance `lwext4 ELF`, exact stdout/exit zero and physical
+VirtIO device discovery; the host compares both complete ELF byte
+streams before/after boot, checks clean e2fsck and rejects any CPIO
+mount marker. The test is invoked after the physical x86 VirtIO kernel
+has been built, from the existing lwext4 acceptance workflow. 
+This gate checks the structural decoupling without claiming the full
+disk-root PID1, pivot_root or a generic Linux mount(2) interface.
+
+The manifest `scripts/vfs-rootless-exec-cases.tsv` preserves all original
+Linux guest pass checks, and its direct-module mode is deliberately
+different from the existing CPIO BusyBox test suites.
