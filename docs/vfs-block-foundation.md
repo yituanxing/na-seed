@@ -429,3 +429,19 @@ FD still maps to the new name (and NOT the recycled directory). Common
 `nas_vfs_directory_path` independently validates the final mount+inode.
 This enables shared `openat`, `fchdir`, cwd and getcwd to follow ext4
 renames just like native tmpfs; no ISA/syscall knowledge in lwext4.
+
+## 2026-10-28 — genuine one-source three-ISA Linux dirfd inode lifetime regression
+
+The existing **same** `user/ext4-guest-rw.c` unprivileged Linux ELF now
+exercises the full VFS directory lifetime across x86-64, RV64 and AArch64,
+including the real physical VirtIO ext4 disk (not just an isolated host
+fixture). It mkdirat()s a new directory, opens an O_DIRECTORY FD, renames
+the directory, *recreates the old path as a different inode*, performs
+openat(dirfd, relative O_CREAT) and fsync, reopens at its moved absolute
+path, then fchdir(dirfd), closes the directory FD and validates getcwd()
+is the **new** name via an independently pinned cwd inode. The syscall ABI
+operation-number tables only extend existing Linux wrappers; all previous
+operation indices remain unchanged. Native ARM64 O_DIRECTORY uses the
+previously tested target-UAPI flag, not x86 flag magic. Same content and
+checks execute on all three native QEMU kernels for both volatile RamDisk
+and actual VirtIO ext4 as part of the existing full integration suite.
