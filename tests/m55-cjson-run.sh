@@ -9,6 +9,7 @@ HOME=/tmp
 LC_ALL=C
 LANG=C
 export PATH HOME LC_ALL LANG
+. /tests/native-perf-clock.sh
 src=/tmp/m55-upstream-cjson
 out=/tmp/m55-ninja
 phase=verify-upstream
@@ -55,6 +56,7 @@ phase=real-cmake-configure
 # A real native configure uses guest compiler detection/try_compile,
 # filesystem metadata and process lifecycle. No fake CMake cache.
 /bin/busybox mkdir -p "$out"
+nas_perf_begin m55
 /usr/bin/cmake -S "$src" -B "$out" -G Ninja \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DCMAKE_C_COMPILER=/usr/bin/gcc \
@@ -65,18 +67,23 @@ phase=real-cmake-configure
     -DENABLE_CUSTOM_COMPILER_FLAGS=OFF \
     -DENABLE_LOCALES=OFF \
     -DENABLE_TARGET_EXPORT=OFF
+nas_perf_phase cmake_configure
 test -s "$out/build.ninja"
 test -s "$out/CMakeCache.txt"
 echo M55_CMAKE_REAL_CONFIGURE_PASS
 
 phase=real-parallel-ninja-gcc
+nas_perf_begin m55
 /usr/bin/cmake --build "$out" --parallel 2
+nas_perf_phase ninja_build
 test -s "$out/libcjson.a"
 test -x "$out/cJSON_test"
 echo M55_NINJA_REAL_GCC_COMPILE_LINK_PASS
 
 phase=full-upstream-ctest
+nas_perf_begin m55
 /usr/bin/ctest --test-dir "$out" --output-on-failure --parallel 2
+nas_perf_phase ctest_first
 echo M55_UPSTREAM_CJSON_CTEST_PASS
 
 phase=incremental-noop
@@ -84,7 +91,9 @@ phase=incremental-noop
 # semantic zero-action assertion, not an exception for a specific ISA.
 # The original RV64 guest built all 45 targets and passed 19/19 CTests,
 # yet the post-build -n check scheduled work. Record WHY before exiting.
+nas_perf_begin m55
 /usr/bin/ninja -C "$out" -n -d explain > /tmp/m55-noop.txt 2>&1
+nas_perf_phase ninja_noop
 echo M55_NINJA_NOOP_OUTPUT_BEGIN
 /bin/busybox cat /tmp/m55-noop.txt
 echo M55_NINJA_NOOP_OUTPUT_END
@@ -117,13 +126,17 @@ echo M55_REAL_SOURCE_REBUILD_PLAN_END
 # to hang, though kernel traces showed GCC/collect2/ld progressing.
 before_archive=$(/bin/busybox stat -c %Y "$out/libcjson.a")
 echo M55_REAL_SOURCE_REBUILD_NINJA_BEGIN
+nas_perf_begin m55
 /usr/bin/ninja -C "$out" -d explain -j2
+nas_perf_phase ninja_rebuild
 after_archive=$(/bin/busybox stat -c %Y "$out/libcjson.a")
 test "$after_archive" -gt "$before_archive"
 test -s "$out/libcjson.a"
 echo M55_NINJA_TRUE_SOURCE_REBUILD_PASS
 
 phase=post-rebuild-upstream-tests
+nas_perf_begin m55
 /usr/bin/ctest --test-dir "$out" --output-on-failure --parallel 2
+nas_perf_phase ctest_second
 echo M55_UPSTREAM_CJSON_RETEST_PASS
 echo M55_CMAKE_NINJA_FULL_SUITE_PASS

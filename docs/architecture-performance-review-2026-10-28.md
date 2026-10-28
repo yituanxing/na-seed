@@ -112,3 +112,43 @@ count and rejects a direct symlink alias.
 `check-architecture-boundaries.py`, `check-three-isa-core.py`,
 `check-block-foundation.sh`, `check-full-kernel-sources.sh` pass.
 These host/static checks do **not** prove latest-head QEMU or complete CI.
+
+## Source-build timing harness added after the first VFS optimization
+
+The three **unchanged genuine application commands** now emit bounded,
+read-only phase measurements from NaSeed's `/proc/uptime` (architecture
+monotonic clock, hundredths of seconds), through one shared helper in
+`tests/native-perf-clock.sh`:
+
+| Real guest source workload | Measured phases |
+| --- | --- |
+| M38 original Alpine GCC | `gcc_hello`, `gcc_readv`, `gcc_fs_mode` |
+| M55 original CMake/Ninja/cJSON | `cmake_configure`, `ninja_build`, `ctest_first`, `ninja_noop`, `ninja_rebuild`, `ctest_second` |
+| M56 original BusyBox Kbuild | `source_copy`, `kconfig`, `kbuild` |
+
+Each successful phase emits one `NAS_PERF_PHASE workload=m55
+phase=ninja_build elapsed_cs=...` line, with no per-syscall serial output.
+A missing or invalid clock emits **no measurement**, never a fabricated
+zero or a PASS. The original exact success/failure markers remain mandatory.
+Host parser tests deliberately reject incomplete runs, kernel `[FAIL]`,
+missing/duplicate phases and malformed values. The existing native QEMU
+workflows retain these logs as downloadable artifacts for explicit full
+source-build runs; normal fast PRs do not upload bulky source-build logs.
+
+To compare real repeated QEMU runs of one ISA with the **same original
+rootfs, QEMU configuration, toolchain, guest source and cache state**:
+
+```sh
+python3 scripts/native-perf-report.py \
+  --workload m56 --port riscv64 \
+  --baseline-ref <exact-old-sha> --candidate-ref <exact-new-sha> \
+  --baseline old-run-1.clean.log old-run-2.clean.log \
+  --candidate new-run-1.clean.log new-run-2.clean.log
+```
+
+`m38`, `m55` and `m56` select different required phase/acceptance sets.
+The tool only compares actual **completed** guest runs. It does not
+estimate missing QEMU data, infer kernel speedup from host build duration,
+or claim statistical validity for a one-shot comparison. QEMU and Clang
+were unavailable in the initial local environment, so cross-ISA guest A/B
+timings remain **pending real CI execution**.

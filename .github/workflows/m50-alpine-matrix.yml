@@ -82,6 +82,20 @@ jobs:
       - name: Run declared fast or full original workloads in this ISA (zero suppressed failures)
         timeout-minutes: 65
         run: sh scripts/probe-alpine-batch.sh ${{ matrix.suite }} ${{ matrix.port }}
+      - name: Preserve genuine GCC/CMake source-build phase timings in explicit full gate
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'full' && matrix.suite == 'foundation'
+        uses: actions/upload-artifact@v4
+        with:
+          name: m50-source-perf-${{ matrix.port }}
+          path: |
+            build/busybox-source-parity-x86/m38-gcc.clean.log
+            build/busybox-source-parity-x86/m55-cjson.clean.log
+            build/port-riscv64/full/matrix-source/m38-gcc.clean.log
+            build/port-riscv64/full/matrix-source/m55-cjson.clean.log
+            build/port-aarch64/full/matrix-source/m38-gcc.clean.log
+            build/port-aarch64/full/matrix-source/m55-cjson.clean.log
+          retention-days: 14
+          if-no-files-found: ignore
       - name: Retain original Alpine package/ELF/serial evidence after any failure
         if: failure()
         uses: actions/upload-artifact@v4

@@ -10,6 +10,7 @@ LC_ALL=C
 LANG=C
 KCONFIG_NOTIMESTAMP=1
 export PATH HOME LC_ALL LANG KCONFIG_NOTIMESTAMP
+. /tests/native-perf-clock.sh
 original=/tests/m56-source
 src=/tmp/m56-source
 test -s "$original/Makefile"
@@ -68,13 +69,16 @@ stage=copy-pinned-upstream-to-writable-tmpfs
 # genuine source tree into writable tmpfs, including its directory layout.
 # Do not replace sources, generated scripts or Kconfig.
 test ! -e "$src"
+nas_perf_begin m56
 /bin/busybox cp -R "$original" "$src"
+nas_perf_phase source_copy
 test -s "$src/Makefile"
 test -s "$src/Config.in"
 echo M56_UPSTREAM_SOURCE_IN_TMPFS_PASS
 
 stage=original-guest-kconfig
 cd "$src"
+nas_perf_begin m56
 /usr/bin/make HOSTCC=/usr/bin/gcc CC=/usr/bin/gcc allnoconfig
 test -s .config
 # Reuse *exact* same verified feature set as host source-BusyBox oracle;
@@ -99,6 +103,7 @@ while IFS= read -r setting || [ -n "$setting" ]; do
         exit 1
     }
 done < /tests/m56.config
+nas_perf_phase kconfig
 echo M56_NATIVE_KCONFIG_PINNED_OPTIONS_PASS
 
 stage=real-native-gnu-make-gcc-link
@@ -106,7 +111,9 @@ stage=real-native-gnu-make-gcc-link
 # In-tree build avoids depending on a tmpfs symlink feature for O=.
 # No fabricated build logs or precompiled objects.
 echo M56_REAL_UPSTREAM_KBUILD_BEGIN
+nas_perf_begin m56
 /usr/bin/make -j2 HOSTCC=/usr/bin/gcc CC=/usr/bin/gcc busybox
+nas_perf_phase kbuild
 test -s "$src/busybox"
 test -x "$src/busybox"
 # Linux executes both classic ET_EXEC and interpreter-free static PIE ET_DYN.
