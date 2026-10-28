@@ -15,8 +15,12 @@ build/littlefs-block/real-littlefs
 # source built against hosted libc has passed a guest kernel integration.
 if command -v clang >/dev/null 2>&1; then
   for target in x86_64-unknown-none-elf riscv64-unknown-elf aarch64-none-elf; do
-    clang --target="$target" -std=c11 -Wall -Wextra -Werror -ffreestanding \
-      -fno-builtin -I kernel -I third_party/littlefs -fsyntax-only \
-      ports/littlefs/block_adapter.c
+    for source in ports/littlefs/block_adapter.c third_party/littlefs/lfs.c third_party/littlefs/lfs_util.c; do
+      clang --target="$target" -std=c11 -Wall -Wextra -Werror \
+        -ffreestanding -fno-builtin -DLFS_NO_MALLOC -DLFS_NO_DEBUG \
+        -DLFS_NO_WARN -DLFS_NO_ERROR -DLFS_NO_ASSERT \
+        -I ports/littlefs/freestanding/include -I kernel \
+        -I third_party/littlefs -fsyntax-only "$source"
+    done
   done
 fi
