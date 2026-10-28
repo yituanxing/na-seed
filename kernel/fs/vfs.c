@@ -111,8 +111,9 @@ uint64_t nas_vfs_node_size(const struct nas_fs_node *node) {
     return lease && !lease_conflicts(lease,node) ? lease->size : node->size;
 }
 int nas_vfs_getattr(const struct nas_fs_node *node,struct nas_fs_node *out) {
-    if(!node || !out || !node->filesystem || !node->mount ||
-       node->mount->type!=node->filesystem)return -EINVAL;
+    if(!out)return -EINVAL;
+    int status=vfs_node_status(node);
+    if(status)return status;
     struct inode_size_lease *lease=inode_lease(node);
     if(lease_conflicts(lease,node))return -ESTALE;
     *out=*node;
@@ -152,6 +153,21 @@ static void ensure_defaults(void) {
     if (defaults_ready) return;
     defaults_ready = true;
     nas_vfs_register_default_mounts();
+}
+/* Every inode data/control operation validates the SAME live mount and
+ * incarnation that File/open, stat and the refcounted lease table own.
+ * A borrowed snapshot from a detached mount must never call into a
+ * destroyed device adapter. A recycled ino with a different backend
+ * identity must not reach any provider before the final old File closes. */
+static int vfs_node_status(const struct nas_fs_node *node) {
+    if(!node || !node->filesystem || !node->mount ||
+       node->filesystem!=node->mount->type)return -EINVAL;
+    ensure_defaults();
+    bool attached=false;
+    for(unsigned i=0;i<count;i++)
+        if(mounts[i].mount==node->mount) {attached=true;break;}
+    if(!attached)return -ENODEV;
+    return lease_conflicts(inode_lease(node),node) ? -ESTALE : 0;
 }
 /* Canonical components keep longest-prefix lookup and busy-unmount coherent. */
 static bool canonical_mountpoint(const char *path) {
@@ -229,7 +245,13 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
         struct nas_fs_node covered;
         int covered_rc=nas_fs_lookup_node(mount->mountpoint,true,
                                            &covered,resolved);
-        if(!covered_rc && !covered.is_dir)return -ENOTDIR;
+        if(!covered_rc) {
+            if(!covered.is_dir)return -ENOTDIR;
+            /* The target itself can be a symlink, not just its parent.
+             * Reject a spelling that resolves elsewhere until a counted
+             * dentry attachment can represent Linux's actual mountpoint. */
+            if(strcmp(resolved,mount->mountpoint))return -EINVAL;
+        }
         if(covered_rc && covered_rc!=-ENOENT)return covered_rc;
     }
     if (count==NAS_VFS_MOUNT_LIMIT)return -ENOSPC;
@@ -360,13 +382,15 @@ int nas_vfs_readlink(const struct nas_fs_node *node,char target[256]) {
     if (!node || !node->filesystem ||
         (node->mode&0170000U)!=0120000U ||
         !node->filesystem->readlink)return -EINVAL;
-    if(!target || !node->mount ||
-       node->mount->type!=node->filesystem)return -EINVAL;
+    if(!target)return -EINVAL;
+    int status=vfs_node_status(node);
+    if(status)return status;
     return node->filesystem->readlink(node,target);
 }
 int64_t nas_vfs_read_at(const struct nas_fs_node *node,uint64_t offset,
                         uint8_t *dst,uint64_t length) {
-    if(!node || !node->filesystem)return -EINVAL;
+    int status=vfs_node_status(node);
+    if(status)return status;
     if(node->is_dir)return -EISDIR;
     if(!dst && length)return -EINVAL;
     if(!node->filesystem->read_at)return -EOPNOTSUPP;
@@ -377,6 +401,8 @@ int nas_vfs_directory_path(const struct nas_fs_node *node,
     if(!node || !node->filesystem || !node->mount || !absolute)
         return -EINVAL;
     if(!node->is_dir)return -ENOTDIR;
+    int status=vfs_node_status(node);
+    if(status)return status;
     /* An inode number of zero cannot identify an owned open directory.
      * Refuse path-based operations rather than accidentally authorizing
      * an unrelated re-used pathname under the same mount. */
@@ -402,7 +428,8 @@ int nas_vfs_directory_path(const struct nas_fs_node *node,
      * perform openat/unlinkat relative to a different directory. */
     if(rc== -ENAMETOOLONG)return rc;
     if(rc || current.mount!=node->mount ||
-       current.ino!=node->ino || !current.is_dir)return -ESTALE;
+       current.ino!=node->ino || current.inode!=node->inode ||
+       !current.is_dir)return -ESTALE;
     size_t len=strlen(canonical);
     memcpy(absolute,canonical,len+1);
     return 0;
@@ -414,6 +441,8 @@ int nas_vfs_read_dir(const struct nas_fs_node *node,
        node->mount->type!=node->filesystem || !entries || !maximum)
         return -EINVAL;
     if(!node->is_dir)return -ENOTDIR;
+    int status=vfs_node_status(node);
+    if(status)return status;
     if(!node->filesystem->read_dir)return -EOPNOTSUPP;
     return node->filesystem->read_dir(node,cursor,entries,maximum);
 }
@@ -522,13 +551,18 @@ int nas_vfs_open_inode(const char *path,
        !nas_vfs_can_write(&node))return -EROFS;
     if(options->truncate && !options->access && !options->path_only)
         return -EINVAL;
-    if(options->truncate && !options->path_only) {
-        rc=nas_vfs_resize(&node,0);
-        if(rc)return rc;
-        node.size=0;
-    }
+    /* Acquire inode ownership BEFORE a potentially destructive truncate:
+     * stale incarnation, ENFILE or mount limits must not erase data. */
     rc=nas_vfs_node_pin(&node);
     if(rc)return rc;
+    if(options->truncate && !options->path_only) {
+        rc=nas_vfs_resize(&node,0);
+        if(rc) {
+            (void)nas_vfs_node_unpin(&node);
+            return rc;
+        }
+        node.size=0;
+    }
     *owned=node; /* transfer the unique pin to its shared File owner */
     return 0;
 }
@@ -547,19 +581,22 @@ int nas_vfs_create(const char *path,uint64_t mode) {
 }
 int64_t nas_vfs_write_at(const struct nas_fs_node *node,uint64_t offset,
                          const uint8_t *src,uint64_t length) {
-    if(!node || !node->filesystem)return -EINVAL;
+    int status=vfs_node_status(node);
+    if(status)return status;
     if(!nas_vfs_can_write(node))return -EROFS;
     if(node->is_dir)return -EISDIR;
     if(!src && length)return -EFAULT;
     if(offset>INT64_MAX || length>INT64_MAX-offset)return -EFBIG;
     if(!node->filesystem->write_at)return -EOPNOTSUPP;
     int64_t written=node->filesystem->write_at(node,offset,src,length);
+    if(written>0 && (uint64_t)written>length)return -EIO;
     if(written>0 && offset+(uint64_t)written>nas_vfs_node_size(node))
         publish_inode_size(node,offset+(uint64_t)written);
     return written;
 }
 int nas_vfs_resize(const struct nas_fs_node *node,uint64_t length) {
-    if(!node || !node->filesystem)return -EINVAL;
+    int status=vfs_node_status(node);
+    if(status)return status;
     if(node->is_dir)return -EISDIR;
     if(length>INT64_MAX)return -EFBIG;
     if(!nas_vfs_can_write(node))return -EROFS;
@@ -569,7 +606,8 @@ int nas_vfs_resize(const struct nas_fs_node *node,uint64_t length) {
     return rc;
 }
 int nas_vfs_sync(const struct nas_fs_node *node) {
-    if(!node || !node->filesystem)return -EINVAL;
+    int status=vfs_node_status(node);
+    if(status)return status;
     if(!node->filesystem->sync)return node->filesystem->read_only ? 0 : -EOPNOTSUPP;
     return node->filesystem->sync(node);
 }
@@ -686,14 +724,16 @@ int nas_vfs_symlink(const char *target,const char *path) {
            parent.filesystem->symlink(&parent,vfs_leaf(canonical),target) : -EOPNOTSUPP;
 }
 int nas_vfs_chmod(const struct nas_fs_node *node,uint64_t mode) {
-    if(!node || !node->filesystem)return -EINVAL;
+    int status=vfs_node_status(node);
+    if(status)return status;
     if(node->filesystem->read_only || (node->mount && node->mount->read_only))return -EROFS;
     if(!node->filesystem->chmod)return -EOPNOTSUPP;
     return node->filesystem->chmod(node,mode);
 }
 int nas_vfs_utimens(const struct nas_fs_node *node,uint64_t atime,
                     uint64_t mtime,bool set_atime,bool set_mtime) {
-    if(!node || !node->filesystem)return -EINVAL;
+    int status=vfs_node_status(node);
+    if(status)return status;
     if(node->filesystem->read_only || (node->mount && node->mount->read_only))return -EROFS;
     if(!node->filesystem->utimens)return -EOPNOTSUPP;
     return node->filesystem->utimens(node,atime,mtime,set_atime,set_mtime);
