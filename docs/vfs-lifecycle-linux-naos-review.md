@@ -93,3 +93,16 @@ Decoder contract: the typed `nas_proc_directory_from_ino` and
 `nas_proc_fd_link_from_ino` wrappers validate into a temporary, and
 publish only after kind validation. Failed typed lookups must never overwrite
 a live open inode view (e.g. the neighboring fdinfo inode of a procfd link).
+
+### Generic directory-owner path API for procfs, tmpfs, ext4 and bootfs
+
+The syscall namespace adapter no longer branches by `FD_PROC_DIR`,
+`FD_TMP_DIR` or `FD_DIR` for relative directory lookup or fchdir.
+Procfs now provides the same `directory_path(inode)` callback and
+identity revalidation as every mounted directory provider. `fchdir(fd)`
+takes a NEW inode+mount lease from the already opened File before dropping
+the old FS cwd lease; it must never reopen its origin name after rename.
+`/proc/self` is normalized to the PID inode's stable directory path.
+This change is common to all three ISAs and keeps the original filesystems
+untouched. The interim live-directory-to-string reconstruction remains and
+will disappear when counted dentries and mount path objects become owners.

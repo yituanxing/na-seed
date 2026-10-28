@@ -233,6 +233,11 @@ const struct nas_tmp_dentry *tmp_child_entry(const char *path,unsigned index) {
     return index==0?&demo_dentry:index==1?&link_dentry:NULL;
 }
 uint64_t nas_proc_ino(struct nas_proc_node p) {(void)p;return 7000;}
+bool nas_proc_dir_path(struct nas_proc_node node,char path[256]) {
+    if(node.kind!=NAS_PROC_ROOT)return false;
+    memcpy(path,"/proc",6);
+    return true;
+}
 bool nas_proc_directory_from_ino(uint64_t ino,struct nas_proc_node *out) {
     if(ino!=7000 || !out)return false;
     *out=(struct nas_proc_node){.kind=NAS_PROC_ROOT};
@@ -343,6 +348,8 @@ int main(void) {
     assert(!strcmp(n.filesystem->name,"bootfs")); /* legacy mount fallthrough */
     assert(nas_fs_lookup_node("/proc/self",true,&n,resolved)==0);
     assert(!strcmp(n.filesystem->name,"procfs") && n.is_dir);
+    assert(nas_vfs_directory_path(&n,"/proc/self",path_from_inode)==0);
+    assert(!strcmp(path_from_inode,"/proc"));
     assert(nas_fs_lookup_node("/proc/self/fd/3",false,&n,resolved)==0);
     assert((n.mode&0170000U)==0120000U && !n.is_symlink);
     char fd_target[256]={0};

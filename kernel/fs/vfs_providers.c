@@ -426,9 +426,19 @@ static int64_t proc_read_inode(const struct nas_fs_node *node,uint64_t offset,
     if(length>UINT32_MAX)length=UINT32_MAX;
     return nas_proc_read(proc,offset,dst,(unsigned)length);
 }
+/* Reverse the *owned directory inode* into its live namespace location.
+ * /proc/self is a lookup alias, never a directory object's identity.
+ * Shared cwd/openat/fchdir use exactly the same VFS directory callback. */
+static int proc_directory_path(const struct nas_fs_node *node,char path[256]) {
+    if(!node || !node->is_dir || !path)return -ENOTDIR;
+    struct nas_proc_node proc;
+    if(!nas_proc_directory_from_ino(node->ino,&proc))return -ESTALE;
+    return nas_proc_dir_path(proc,path) ? 0 : -ESTALE;
+}
 static const struct nas_vfs_type proc_type={
     .name="procfs",.exec_source_label="procfs",
     .root=proc_root,.lookup_child=proc_child,
+    .directory_path=proc_directory_path,
     .readlink=proc_readlink_node,.read_at=proc_read_inode,
     .read_dir=proc_read_dir,.read_only=true
 };

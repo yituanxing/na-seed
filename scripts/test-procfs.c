@@ -161,6 +161,17 @@ int main(void) {
     assert(nas_proc_dir_path(root,dirpath) && !strcmp(dirpath,"/proc"));
     assert(nas_proc_lookup("/proc/23",&entry));
     assert(nas_proc_dir_path(entry,dirpath) && !strcmp(dirpath,"/proc/23"));
+    /* The stable PID directory identity is inherited even if the
+     * caller's /proc/self alias changes to the child process. */
+    struct nas_proc_node from_inode={0};
+    assert(nas_proc_directory_from_ino(nas_proc_ino(entry),&from_inode));
+    nas_current_task=&tasks[0];
+    assert(nas_proc_dir_path(from_inode,dirpath) &&
+           !strcmp(dirpath,"/proc/23"));
+    nas_current_task=&tasks[1];
+    assert(nas_proc_dir_path(from_inode,dirpath) &&
+           !strcmp(dirpath,"/proc/23"));
+    nas_current_task=&tasks[0];
     char name[32];
     /* The root /proc static entries can grow: find the first real PID
      * without assuming an obsolete, fixed root getdents64 index. */

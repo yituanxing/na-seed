@@ -91,10 +91,10 @@ uint64_t nas_fs_resolve_path(uint64_t dirfd, uint64_t pathname,
     }
     if (n==sizeof(src)) return (uint64_t)-ENAMETOOLONG;
     if (!n) return (uint64_t)-ENOENT;
-    const char *base=0;
-    char proc_base[256],inode_base[256];
-    if (src[0]!='/') {
-        if (dirfd==(uint64_t)-100) {
+    const char *base=NULL;
+    char inode_base[256];
+    if(src[0]!='/') {
+        if(dirfd==(uint64_t)-100) {
             if(TASK.fs->cwd_pinned) {
                 int err=nas_vfs_directory_path(&TASK.fs->cwd_node,
                                                 current_workdir,inode_base);
@@ -102,29 +102,19 @@ uint64_t nas_fs_resolve_path(uint64_t dirfd, uint64_t pathname,
                 base=inode_base;
             } else base=current_workdir;
         } else {
-            if (dirfd>=NAS_FD_LIMIT || TASK.fds->entries[dirfd].kind==FD_CLOSED)
+            if(dirfd>=NAS_FD_LIMIT ||
+               TASK.fds->entries[dirfd].kind==FD_CLOSED)
                 return (uint64_t)-EBADF;
-            if (TASK.fds->entries[dirfd].kind==FD_PROC_DIR) {
-                unsigned slot=TASK.fds->entries[dirfd].slot;
-                struct nas_proc_node node={nas_open_files[slot].proc_kind,
-                                           nas_open_files[slot].proc_pid,
-                                           nas_open_files[slot].proc_tgid,
-                                           nas_open_files[slot].proc_fd};
-                if(!nas_proc_dir_path(node,proc_base))return (uint64_t)-ENOENT;
-                base=proc_base;
-            } else {
-                uint8_t kind=TASK.fds->entries[dirfd].kind;
-                if(kind!=FD_DIR && kind!=FD_TMP_DIR)
-                    return (uint64_t)-ENOTDIR;
-                const struct nas_open_file *opened=
-                    &nas_open_files[TASK.fds->entries[dirfd].slot];
-                if(!opened->vnode_pinned || !opened->vnode.is_dir)
-                    return (uint64_t)-ENOTDIR;
-                int err=nas_vfs_directory_path(&opened->vnode,
-                                                opened->origin_path,inode_base);
-                if(err)return (uint64_t)(int64_t)err;
-                base=inode_base;
-            }
+            const struct nas_open_file *opened=
+                &nas_open_files[TASK.fds->entries[dirfd].slot];
+            /* Linux openat(dirfd) uses the file's owned directory path.
+             * No procfs/tmpfs/archive FD type is privileged here. */
+            if(!opened->vnode_pinned || !opened->vnode.is_dir)
+                return (uint64_t)-ENOTDIR;
+            int err=nas_vfs_directory_path(&opened->vnode,
+                                            opened->origin_path,inode_base);
+            if(err)return (uint64_t)(int64_t)err;
+            base=inode_base;
         }
     }
     return (uint64_t)(int64_t)resolve_component_path(base,src,out);
@@ -212,24 +202,33 @@ static uint64_t sys_getcwd_root(uint64_t buffer, uint64_t size) {
     return nas_user_write_bytes(buffer, (const uint8_t *)current_workdir, length)
         ? length : (uint64_t)-EFAULT;
 }
-/* FS-context-owned cwd ref: no extra ISA/provider-specific unmount checks. */
+/* One FS-context ownership transfer, shared by chdir and fchdir:
+ * acquire a NEW mount+inode pin before releasing the old one. The FD path
+ * never reopens/relooks up an owned inode after rename or hardlinking. */
+static uint64_t set_cwd_from_node(const struct nas_fs_node *node,
+                                  const char *hint) {
+    if(!node || !node->is_dir)return (uint64_t)-ENOTDIR;
+    char live[256];
+    int rc=nas_vfs_directory_path(node,hint,live);
+    if(rc)return (uint64_t)(int64_t)rc;
+    rc=nas_vfs_node_pin(node);
+    if(rc)return (uint64_t)(int64_t)rc;
+    struct nas_fs_context *fs=TASK.fs;
+    if(fs->cwd_pinned && nas_vfs_node_unpin(&fs->cwd_node)) {
+        (void)nas_vfs_node_unpin(node);
+        return (uint64_t)-EIO;
+    }
+    memcpy(current_workdir,live,strlen(live)+1);
+    fs->cwd_node=*node;
+    fs->cwd_pinned=true;
+    return 0;
+}
 static uint64_t set_cwd_from_path(const char *path) {
     char resolved[256];
     struct nas_fs_node node;
     int rc=nas_fs_lookup_node(path,true,&node,resolved);
     if(rc)return (uint64_t)(int64_t)rc;
-    if(!node.is_dir)return (uint64_t)-ENOTDIR;
-    rc=nas_vfs_node_pin(&node);
-    if(rc)return (uint64_t)(int64_t)rc;
-    struct nas_fs_context *fs=TASK.fs;
-    if(fs->cwd_pinned && nas_vfs_node_unpin(&fs->cwd_node)) {
-        (void)nas_vfs_node_unpin(&node);
-        return (uint64_t)-EIO;
-    }
-    memcpy(current_workdir,resolved,strlen(resolved)+1);
-    fs->cwd_node=node;
-    fs->cwd_pinned=true;
-    return 0;
+    return set_cwd_from_node(&node,resolved);
 }
 static uint64_t sys_chdir(uint64_t pathname) {
     char path[256];
@@ -237,31 +236,15 @@ static uint64_t sys_chdir(uint64_t pathname) {
     return (int64_t)rc<0 ? rc : set_cwd_from_path(path);
 }
 static uint64_t sys_fchdir(uint64_t fd) {
-    if (fd >= 64 || TASK.fds->entries[fd].kind == FD_CLOSED)
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
         return (uint64_t)-EBADF;
-    const char *path;
-    char proc_base[256];
-    if (TASK.fds->entries[fd].kind == FD_PROC_DIR) {
-        unsigned slot=TASK.fds->entries[fd].slot;
-        struct nas_proc_node node={nas_open_files[slot].proc_kind,
-                                   nas_open_files[slot].proc_pid,
-                                           nas_open_files[slot].proc_tgid,
-                                           nas_open_files[slot].proc_fd};
-        if(!nas_proc_dir_path(node,proc_base))return (uint64_t)-ENOENT;
-        path=proc_base;
-    } else {
-        uint8_t kind=TASK.fds->entries[fd].kind;
-        if(kind!=FD_DIR && kind!=FD_TMP_DIR)return (uint64_t)-ENOTDIR;
-        const struct nas_open_file *opened=
-            &nas_open_files[TASK.fds->entries[fd].slot];
-        if(!opened->vnode_pinned || !opened->vnode.is_dir)
-            return (uint64_t)-ENOTDIR;
-        int err=nas_vfs_directory_path(&opened->vnode,
-                                        opened->origin_path,proc_base);
-        if(err)return (uint64_t)(int64_t)err;
-        path=proc_base;
-    }
-    return set_cwd_from_path(path);
+    const struct nas_open_file *opened=
+        &nas_open_files[TASK.fds->entries[fd].slot];
+    if(!opened->vnode_pinned || !opened->vnode.is_dir)
+        return (uint64_t)-ENOTDIR;
+    /* A shared File's inode remains the same object after rename and
+     * dup/fork; cwd gets its own pin, never a reopened path snapshot. */
+    return set_cwd_from_node(&opened->vnode,opened->origin_path);
 }
 
 
