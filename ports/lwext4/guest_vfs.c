@@ -100,13 +100,22 @@ static int ext_lookup_child(const struct nas_fs_node *parent,const char *name,
     };
     return 0;
 }
-static int ext_readlink_node(const struct nas_fs_node *node,
-                             const char *absolute,char target[256]) {
+static int ext_readlink_node(const struct nas_fs_node *node,char target[256]) {
     if(!node || !node->mount || !node->mount->private_data ||
-       !absolute || !target)return -EINVAL;
+       !target)return -EINVAL;
     struct nas_lwext4_mount *ctx=node->mount->private_data;
+    if(!ctx->mounted || !ctx->upstream_mount)return -ENODEV;
+    if(!node->ino || node->ino>UINT32_MAX)return -ESTALE;
+    if((node->mode&0170000U)!=0120000U)return -EINVAL;
+    /* Original lwext4 ext4_fread accepts a known inode and handles both
+     * inline (<60 byte) and block-backed symlink storage. ext4_readlink
+     * instead reopens a GLOBAL pathname and would fail after rename, or
+     * worse follow a recycled name. Do not modify the vendor library. */
+    if(node->size>=256)return -ENAMETOOLONG;
+    ext4_file f={.mp=ctx->upstream_mount,.inode=(uint32_t)node->ino,
+                 .fsize=node->size,.fpos=0,.flags=O_RDONLY};
     size_t length=0;
-    int e=ext4_readlink(path_for(ctx,absolute),target,255,&length);
+    int e=ext4_fread(&f,target,255,&length);
     if(e)return -e;
     if(length>=256)return -ENAMETOOLONG;
     target[length]=0;

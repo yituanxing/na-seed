@@ -25,8 +25,10 @@ struct nas_vfs_type {
     int (*root)(const struct nas_vfs_mount *,struct nas_fs_node *);
     int (*lookup_child)(const struct nas_fs_node *parent,const char *name,
                         struct nas_fs_node *out);
-    int (*readlink)(const struct nas_fs_node *,const char *absolute,
-                    char target[256]);
+    /* Symlink contents are inode data, not an old pathname (Linux
+     * i_op->get_link, NaOS vfs_inode operation). A renamed symlink keeps
+     * the same content across open handles and mount aliases. */
+    int (*readlink)(const struct nas_fs_node *,char target[256]);
     /* Optional inode->LIVE namespace path for directory handles. The
      * provider owns inode/dentry knowledge; the syscall ABI never does.
      * A NULL callback means VFS can verify an immutable opening hint, but
@@ -106,8 +108,7 @@ int nas_vfs_lookup(const char *absolute, struct nas_fs_node *node);
  * `absolute` is used for VFS mount selection, NEVER given to a provider. */
 int nas_vfs_lookup_step(const struct nas_fs_node *parent,const char *absolute,
                          const char *name,struct nas_fs_node *out);
-int nas_vfs_readlink(const struct nas_fs_node *node,const char *absolute,
-                     char target[256]);
+int nas_vfs_readlink(const struct nas_fs_node *node,char target[256]);
 int64_t nas_vfs_read_at(const struct nas_fs_node *node, uint64_t offset,
                          uint8_t *dst, uint64_t count);
 int nas_vfs_read_dir(const struct nas_fs_node *node,

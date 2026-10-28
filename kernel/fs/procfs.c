@@ -151,6 +151,23 @@ bool nas_proc_find_child(uint64_t dir_ino,const char *name,
     }
     return false;
 }
+bool nas_proc_fd_link_from_ino(uint64_t ino,struct nas_proc_node *out) {
+    if(!out || ino<80000U)return false;
+    uint64_t encoded=ino-80000U, pid=encoded/2048U;
+    uint64_t tag=encoded%2048U;
+    if(tag<NAS_PROC_FD_LINK ||
+       (tag-NAS_PROC_FD_LINK)%16U)return false;
+    uint64_t fd=(tag-NAS_PROC_FD_LINK)/16U;
+    if(fd>=NAS_FD_LIMIT)return false;
+    const struct nas_task *task=living(pid);
+    if(!task || !task->fds ||
+       task->fds->entries[fd].kind==FD_CLOSED)return false;
+    struct nas_proc_node value={
+        .kind=NAS_PROC_FD_LINK,.pid=pid,.fd=(uint16_t)fd
+    };
+    if(nas_proc_ino(value)!=ino)return false;
+    *out=value;return true;
+}
 bool nas_proc_dir_path(struct nas_proc_node node,char path[256]) {
     if(!path || !nas_proc_is_dir(node))return false;
     const char *prefix="/proc";unsigned p=0;

@@ -278,9 +278,24 @@ int main(int argc,char **argv) {
         assert(nas_vfs_node_unpin(&victim)==0);
         assert(nas_vfs_unlink("/mnt/sandbox/rename-victim",0)==0);
         assert(nas_vfs_symlink("vfs-created","/mnt/sandbox/vfs-link")==0);
-        assert(nas_fs_lookup_node("/mnt/sandbox/vfs-link",true,&created,actual)==0);
+        struct nas_fs_node opened_link;
+        assert(nas_fs_lookup_node("/mnt/sandbox/vfs-link",false,
+                                  &opened_link,actual)==0);
+        assert(nas_vfs_node_pin(&opened_link)==0);
+        char link_target[256];
+        assert(nas_vfs_readlink(&opened_link,link_target)==11);
+        assert(!strcmp(link_target,"vfs-created"));
+        /* A symlink is inode DATA, not a pathname: rename the name while
+         * keeping the old inode reference open. */
+        assert(nas_vfs_rename("/mnt/sandbox/vfs-link",
+                              "/mnt/sandbox/vfs-link-moved",0)==0);
+        assert(nas_vfs_readlink(&opened_link,link_target)==11);
+        assert(!strcmp(link_target,"vfs-created"));
+        assert(nas_fs_lookup_node("/mnt/sandbox/vfs-link-moved",
+                                  true,&created,actual)==0);
         assert(created.size==sizeof(persisted)-1);
-        assert(nas_vfs_unlink("/mnt/sandbox/vfs-link",0)==0);
+        assert(nas_vfs_node_unpin(&opened_link)==0);
+        assert(nas_vfs_unlink("/mnt/sandbox/vfs-link-moved",0)==0);
         assert(nas_vfs_link("/mnt/sandbox/vfs-created","/mnt/sandbox/vfs-alias")==0);
         assert(nas_vfs_rename("/mnt/sandbox/vfs-alias","/mnt/sandbox/vfs-persist",0)==0);
         assert(nas_vfs_unlink("/mnt/sandbox/vfs-created",0)==0);

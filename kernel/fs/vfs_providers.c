@@ -72,9 +72,7 @@ static int boot_child(const struct nas_fs_node *parent,const char *name,
     memcpy(local+base,name,length+1);
     return boot_fill(bootfs_find(local),out);
 }
-static int boot_readlink(const struct nas_fs_node *node,const char *path,
-                         char target[256]) {
-    (void)path;
+static int boot_readlink(const struct nas_fs_node *node,char target[256]) {
     const struct bootfs_entry *e=node->inode;
     if(!e || !e->data || e->size>=256)return -ENAMETOOLONG;
     memcpy(target,e->data,(size_t)e->size);target[e->size]=0;
@@ -165,9 +163,7 @@ static int tmp_child(const struct nas_fs_node *parent,const char *name,
     tmp_fill(f,out);
     return 0;
 }
-static int tmp_readlink(const struct nas_fs_node *node,const char *path,
-                         char target[256]) {
-    (void)path;
+static int tmp_readlink(const struct nas_fs_node *node,char target[256]) {
     const struct nas_tmp_file *f=node->inode;
     if(!f || f->size>=256)return -ENAMETOOLONG;
     int rc=tmp_link_target(f,target);
@@ -381,12 +377,13 @@ static int proc_child(const struct nas_fs_node *parent,const char *name,
 
 /* /proc/<pid>/fd/<n> text is a dynamic link supplied by the process FD
  * owner. Do not mark it namei-followable until open-through-fd is supported. */
-static int proc_readlink_node(const struct nas_fs_node *node,const char *path,
+static int proc_readlink_node(const struct nas_fs_node *node,
                               char target[256]) {
-    (void)node;
+    if(!node || !target)return -EINVAL;
+    /* /proc/self is only a spelling. Resolve once to a stable PID/FD
+     * inode: an inherited handle must never retarget to the child PID. */
     struct nas_proc_node proc;
-    if(!nas_proc_lookup(path,&proc) || proc.kind!=NAS_PROC_FD_LINK)
-        return -EINVAL;
+    if(!nas_proc_fd_link_from_ino(node->ino,&proc))return -ENOENT;
     int64_t n=nas_proc_readlink(proc,target,256);
     if(n<0)return (int)n;
     return n>256 ? -ENAMETOOLONG : (int)n;

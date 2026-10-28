@@ -332,7 +332,7 @@ static uint64_t sys_readlinkat_boot(uint64_t dirfd, uint64_t pathname,
     if(error)return (uint64_t)(int64_t)error;
     if((node.mode&0170000U)!=0120000U)return (uint64_t)-EINVAL;
     char target[256];
-    int got=nas_vfs_readlink(&node,actual,target);
+    int got=nas_vfs_readlink(&node,target);
     if(got<0)return (uint64_t)(int64_t)got;
     uint64_t size=(uint64_t)got<capacity?(uint64_t)got:capacity;
     return nas_user_write_bytes(dst,(const uint8_t *)target,size)

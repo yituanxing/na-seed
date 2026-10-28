@@ -24,6 +24,9 @@ bool nas_proc_lookup(const char *path,struct nas_proc_node *out);
 /* Component lookup from stable procfs directory inode identity. */
 bool nas_proc_find_child(uint64_t dir_ino,const char *name,struct nas_proc_node *out);
 bool nas_proc_directory_from_ino(uint64_t dir_ino,struct nas_proc_node *out);
+/* Stable procfd inode identity -> original PID and descriptor number.
+ * Never reinterpret inherited /proc/self symlinks via caller pathname. */
+bool nas_proc_fd_link_from_ino(uint64_t ino,struct nas_proc_node *out);
 bool nas_proc_is_dir(struct nas_proc_node node);
 uint32_t nas_proc_mode(struct nas_proc_node node);
 bool nas_proc_dir_path(struct nas_proc_node node,char path[256]);

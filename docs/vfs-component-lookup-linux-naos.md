@@ -98,3 +98,16 @@ path. No third-party source changes or ISA-specific branches. The current
 in-memory namespace still relies on bounded string paths and the ext4 public
 API still requires path reconstruction; counted mount+dentry ownership and
 orphan eviction remain open and must be validated separately.
+
+### Symlink contents are inode-owned (Linux / NaOS invariant)
+
+Linux VFS `inode_operations.get_link` and NaOS's symlink inode operations
+never require an old userspace path to read symlink content. NaSeed now has the
+same boundary: `nas_vfs_readlink(node, target)` for ALL providers. bootfs and
+tmpfs use direct inode data; procfs decodes the original process PID/FD from
+the inode number rather than reinterpreting `/proc/self`; pinned original lwext4
+reads both inline and non-inline symlink bytes through its existing public
+`ext4_fread` inode handle. Original third-party code remains unchanged.
+Real ext4 host acceptance holds a pinned symlink across rename and reads
+from the original inode; a real procfs host fixture checks inherited self
+inode identity across current-task change and FD disappearance.

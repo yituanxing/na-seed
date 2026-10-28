@@ -123,6 +123,11 @@ uint32_t nas_proc_mode(struct nas_proc_node node){
     return node.kind==NAS_PROC_FD_LINK ? 0120777U : 0040555U;
 }
 bool nas_proc_is_dir(struct nas_proc_node node){return node.kind!=NAS_PROC_FD_LINK;}
+bool nas_proc_fd_link_from_ino(uint64_t ino,struct nas_proc_node *out) {
+    if(ino!=7000 || !out)return false;
+    *out=(struct nas_proc_node){.kind=NAS_PROC_FD_LINK,.pid=1,.fd=3};
+    return true;
+}
 int64_t nas_proc_readlink(struct nas_proc_node node,char *target,unsigned cap) {
     static const char name[]="pipe:[42]";
     if(node.kind!=NAS_PROC_FD_LINK || node.fd!=3)return -EINVAL;
@@ -327,7 +332,7 @@ int main(void) {
     assert(nas_fs_lookup_node("/proc/self/fd/3",false,&n,resolved)==0);
     assert((n.mode&0170000U)==0120000U && !n.is_symlink);
     char fd_target[256]={0};
-    assert(nas_vfs_readlink(&n,resolved,fd_target)==9);
+    assert(nas_vfs_readlink(&n,fd_target)==9);
     assert(!memcmp(fd_target,"pipe:[42]",9));
     assert(nas_vfs_create("/tmp/newfile",0640)==0);
     assert(nas_vfs_create("/tmp/newfile",0640)==-EEXIST);

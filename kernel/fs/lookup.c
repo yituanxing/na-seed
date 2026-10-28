@@ -72,7 +72,7 @@ static int resolve_walk(const char *path,bool follow_final,
             if(inode.is_symlink && (!last || follow_final || trailing_slash)) {
                 if(++links>8)return -ELOOP;
                 char expanded[256],target[256];
-                int nr=nas_vfs_readlink(&inode,resolved,target);
+                int nr=nas_vfs_readlink(&inode,target);
                 if(nr<0)return nr;
                 if(!nr)return -ENOENT;
                 if(nr>255)return -ENAMETOOLONG;

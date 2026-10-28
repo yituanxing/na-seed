@@ -89,8 +89,19 @@ int main(void) {
     assert(nas_proc_child(fd_dir,0,fd_path,&fd_info) &&
            !strcmp(fd_path,"1") && fd_info.kind==NAS_PROC_FD_LINK);
     assert(nas_proc_lookup("/proc/self/fd/1",&fd_info));
+    struct nas_proc_node fd_by_ino={0};
+    uint64_t owned_link_ino=nas_proc_ino(fd_info);
+    assert(nas_proc_fd_link_from_ino(owned_link_ino,&fd_by_ino));
+    assert(fd_by_ino.pid==1 && fd_by_ino.fd==1);
+    /* Inherited inode identity follows the original process even when
+     * current_task changes and 'self' acquires a different meaning. */
+    nas_current_task=&tasks[1];
+    assert(nas_proc_fd_link_from_ino(owned_link_ino,&fd_by_ino));
+    assert(fd_by_ino.pid==1);
+    nas_current_task=&tasks[0];
+    assert(!nas_proc_fd_link_from_ino(owned_link_ino+1,&fd_by_ino));
     char link[64]={0};
-    assert(nas_proc_readlink(fd_info,link,sizeof(link))==9);
+    assert(nas_proc_readlink(fd_by_ino,link,sizeof(link))==9);
     assert(!memcmp(link,"/dev/null",9));
     assert(nas_proc_lookup("/proc/1/fdinfo/1",&fd_info));
     uint8_t info[128]={0};
@@ -98,6 +109,7 @@ int main(void) {
     assert(strstr((char *)info,"pos:\t27"));
     assert(strstr((char *)info,"flags:\t0"));
     tasks[0].fds->entries[1].kind=FD_CLOSED;
+    assert(!nas_proc_fd_link_from_ino(owned_link_ino,&fd_by_ino));
     assert(!nas_proc_lookup("/proc/1/fd/1",&fd_info));
     assert(nas_proc_lookup("/proc/self/status",&entry) && entry.pid==1);
     check_file("/proc/23/status","Threads:\t2");

@@ -236,15 +236,16 @@ int nas_vfs_lookup_step(const struct nas_fs_node *parent,const char *absolute,
         return nas_vfs_lookup(absolute,out);
     return rc;
 }
-int nas_vfs_readlink(const struct nas_fs_node *node,
-                      const char *absolute,char target[256]) {
+int nas_vfs_readlink(const struct nas_fs_node *node,char target[256]) {
     /* Dynamic procfd entries have S_IFLNK metadata but deliberately do not
      * opt into generic namei-follow: opening a procfd requires FD semantics,
      * not blindly reopening printable targets such as pipe:[N]. */
     if (!node || !node->filesystem ||
         (node->mode&0170000U)!=0120000U ||
         !node->filesystem->readlink)return -EINVAL;
-    return node->filesystem->readlink(node,absolute,target);
+    if(!target || !node->mount ||
+       node->mount->type!=node->filesystem)return -EINVAL;
+    return node->filesystem->readlink(node,target);
 }
 int64_t nas_vfs_read_at(const struct nas_fs_node *node,uint64_t offset,
                         uint8_t *dst,uint64_t length) {
