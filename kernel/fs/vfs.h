@@ -51,7 +51,9 @@ struct nas_vfs_type {
     /* Logical cursor counts entries, including . and .., from zero.
      * Returns count, 0 at EOF, or negative errno. Batch size is bounded. */
     /* Directory enumeration is inode-owned: never reopen an old FD
-     * pathname, including /proc/self after fork or directory rename. */
+     * pathname, including /proc/self after fork or directory rename.
+     * Provider cookies are logical entry indices including "."/"..".
+     * VFS adds mounted entries itself; backends never get Linux dirent ABI. */
     int (*read_dir)(const struct nas_fs_node *,uint64_t cursor,
                     struct nas_vfs_dirent *entries,unsigned maximum);
     int (*chmod)(const struct nas_fs_node *, uint64_t mode);

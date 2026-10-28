@@ -124,3 +124,23 @@ unambiguous VFS-owned mount/unmount identity.
 The common host VFS acceptance now exercises missing-target rejection,
 explicit virtual bootstrap lookup/unmount, and duplicate token rejection
 after registration descriptor mutation. Vendor source remains unchanged.
+
+## VFS-owned readdir mount overlay (2026-10-28)
+
+Parent readdir now observes mounted child dentries through the common VFS
+layer, not through bootfs/tmpfs/ext4/RamFS/LittleFS special cases.
+- For an existing covered directory, VFS keeps the provider's name/cookie
+  and reports the mounted provider's real root inode (not the hidden inode).
+- For an explicitly virtual early-boot mountpoint, the VFS enumerator inserts
+  its name after dot/dotdot, before provider children. It maps logical
+  cursors back to provider cursors without scanning all underlying entries;
+  the same code works for all independently mounted providers.
+- Attachment identity uses the live parent (mount generation, inode number,
+  opaque backend inode) rather than matching stale absolute path text.
+
+Host tests exercise whole-buffer and split-buffer cursors, mounted inode
+identity, detach and return to the original namespace. The virtual boot
+entry is now readdir-visible, but this is still NOT a fully cached dentry
+tree or Linux mount namespace: directory mutation during an enumeration
+can change logical cookies, and further work is needed for per-File
+struct path and mount topology lifetime. Original upstream code is unchanged.

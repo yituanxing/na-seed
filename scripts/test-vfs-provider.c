@@ -684,7 +684,25 @@ int main(void) {
     assert(nas_vfs_register_mount(&bad_mount)==0);
     assert(nas_fs_lookup_node("/tmp/boot-only-mount",true,&n,resolved)==0);
     assert(n.filesystem==&ext_mock_type);
+    struct nas_fs_node virtual_parent;
+    struct nas_vfs_dirent virtual_entries[8];
+    assert(nas_fs_lookup_node("/tmp",true,&virtual_parent,resolved)==0);
+    /* No tmpfs-specific code adds this entry: the mounted VFS parent
+     * exposes a virtual child followed by ordinary backend children. */
+    assert(nas_vfs_read_dir(&virtual_parent,0,virtual_entries,8)==5);
+    assert(!strcmp(virtual_entries[0].name,"."));
+    assert(!strcmp(virtual_entries[1].name,".."));
+    assert(!strcmp(virtual_entries[2].name,"boot-only-mount"));
+    assert(virtual_entries[2].ino==801 && virtual_entries[2].dtype==4);
+    assert(!strcmp(virtual_entries[3].name,"demo"));
+    assert(nas_vfs_read_dir(&virtual_parent,2,virtual_entries,1)==1);
+    assert(!strcmp(virtual_entries[0].name,"boot-only-mount"));
+    assert(nas_vfs_read_dir(&virtual_parent,3,virtual_entries,2)==2);
+    assert(!strcmp(virtual_entries[0].name,"demo"));
+    assert(nas_vfs_read_dir(&virtual_parent,5,virtual_entries,8)==0);
     assert(nas_vfs_unregister_mount(&bad_mount)==0);
+    assert(nas_vfs_read_dir(&virtual_parent,0,virtual_entries,8)==4);
+    assert(!strcmp(virtual_entries[2].name,"demo"));
     bad_mount.allow_missing_mountpoint=false;
     bad_mount.mountpoint="/bin/demo/child";
     assert(nas_vfs_register_mount(&bad_mount)==-ENOTDIR);
@@ -704,6 +722,14 @@ int main(void) {
            !strcmp(resolved,"/"));
     assert(!nas_vfs_inode_is_pinned(&entries[5]));
     assert(nas_vfs_register_mount(&ext_mount)==0);
+    /* Covered readdir names must report the visible mounted root inode,
+     * not the hidden bootfs /mnt directory's original inode (6). */
+    struct nas_fs_node root_list;
+    struct nas_vfs_dirent root_entries[8];
+    assert(nas_fs_lookup_node("/",true,&root_list,resolved)==0);
+    assert(nas_vfs_read_dir(&root_list,0,root_entries,8)==7);
+    assert(!strcmp(root_entries[5].name,"mnt"));
+    assert(root_entries[5].ino==801 && root_entries[5].dtype==4);
     /* The mount itself owns the covered /mnt directory and root parent.
      * A directory lease cannot evaporate merely because no user FD is open. */
     assert(nas_vfs_inode_is_pinned(&entries[5]));

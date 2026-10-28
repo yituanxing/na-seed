@@ -552,6 +552,39 @@ int nas_vfs_directory_path(const struct nas_fs_node *node,
     memcpy(absolute,canonical,len+1);
     return 0;
 }
+/* An attachment is owned by the VFS parent inode and child basename.
+ * The parent filesystem cannot know about mountpoints created above it.
+ * This identity match is the same as lookup_step's mount crossing: the
+ * absolute string spelling of an old directory is NOT the mount owner. */
+static bool mounted_child_of(const struct mount_slot *slot,
+                             const struct nas_fs_node *parent) {
+    return slot->used && slot->parent_anchored &&
+           slot->parent_mount==parent->mount &&
+           slot->parent_mount_id==parent->mount_id &&
+           slot->parent_ino==parent->ino &&
+           slot->parent_backend_inode==parent->inode;
+}
+static int mounted_directory_entry(const struct mount_slot *slot,
+                                   struct nas_vfs_dirent *entry) {
+    /* The root inode number comes from the real mounted provider. Never
+     * invent st_ino using a mount index or expose a kernel address. */
+    struct nas_fs_node root={0};
+    int rc=slot->superblock.type->root(&slot->superblock,&root);
+    if(rc)return rc;
+    if(!root.is_dir || !root.ino)return -EIO;
+    unsigned length=(unsigned)strlen(slot->covered_name);
+    if(!length || length>255)return -EIO;
+    entry->ino=root.ino;entry->dtype=4;
+    entry->name_len=(uint8_t)length;
+    memcpy(entry->name,slot->covered_name,length+1);
+    return 0;
+}
+/* VFS-owned mount dentries are visible through the SAME readdir path for
+ * all providers. Synthetic boot mountpoints are inserted after "."/"..",
+ * shifting underlying provider cookies by the number of VFS-only entries.
+ * Real covered mountpoints retain their provider cookie/name, but report
+ * the mounted ROOT inode, not the obscured underlay's inode number.
+ * There is no filesystem-specific getdents syscall or vendor change. */
 int nas_vfs_read_dir(const struct nas_fs_node *node,
                      uint64_t cursor,struct nas_vfs_dirent *entries,
                      unsigned maximum) {
@@ -562,10 +595,59 @@ int nas_vfs_read_dir(const struct nas_fs_node *node,
     int status=vfs_node_status(node);
     if(status)return status;
     if(!node->filesystem->read_dir)return -EOPNOTSUPP;
-    int got=node->filesystem->read_dir(node,cursor,entries,maximum);
-    if(got<0)return got;
-    if((unsigned)got>maximum)return -EIO;
-    for(int i=0;i<got;i++) {
+    unsigned virtual_count=0;
+    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++)
+        if(mounted_child_of(&mounts[i],node) &&
+           !mounts[i].covered_pinned)++virtual_count;
+    unsigned written=0;
+    if(virtual_count && cursor<2) {
+        unsigned first=(unsigned)(2-cursor);
+        if(first>maximum)first=maximum;
+        int got=node->filesystem->read_dir(node,cursor,entries,first);
+        /* The common provider contract starts with "." and "..";
+         * refusing a malformed backend is safer than inventing cookies. */
+        if(got!=(int)first)return got<0?got:-EIO;
+        written=(unsigned)got;
+        cursor+=(unsigned)got;
+    }
+    if(virtual_count && written<maximum && cursor<2+virtual_count) {
+        unsigned ordinal=0;
+        for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT && written<maximum;i++) {
+            const struct mount_slot *slot=&mounts[i];
+            if(!mounted_child_of(slot,node) || slot->covered_pinned)
+                continue;
+            if(cursor>2+ordinal) {++ordinal;continue;}
+            if(cursor!=2+ordinal)return -EIO;
+            int rc=mounted_directory_entry(slot,&entries[written]);
+            if(rc)return written?(int)written:rc;
+            ++written;++cursor;++ordinal;
+        }
+    }
+    if(written<maximum) {
+        /* Provider logical cookies begin at zero. VFS synthetic entries
+         * shift only child enumeration, never the provider's dot records. */
+        uint64_t backend_cursor=cursor>=2+virtual_count ?
+                                cursor-virtual_count : cursor;
+        int got=node->filesystem->read_dir(node,backend_cursor,
+                                            entries+written,maximum-written);
+        if(got<0)return written?(int)written:got;
+        if((unsigned)got>maximum-written)return -EIO;
+        for(int j=0;j<got;j++) {
+            struct nas_vfs_dirent *entry=&entries[written+(unsigned)j];
+            /* A real covered mountpoint is one directory entry, but its
+             * inode must be the visible mount root (Linux dcache rule). */
+            for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++) {
+                const struct mount_slot *slot=&mounts[i];
+                if(!mounted_child_of(slot,node) || !slot->covered_pinned ||
+                   strcmp(entry->name,slot->covered_name))continue;
+                int rc=mounted_directory_entry(slot,entry);
+                if(rc)return rc;
+                break;
+            }
+        }
+        written+=(unsigned)got;
+    }
+    for(unsigned i=0;i<written;i++) {
         unsigned length=entries[i].name_len;
         if(!entries[i].ino || !length || length>255 ||
            entries[i].name[length])return -EIO;
@@ -573,7 +655,7 @@ int nas_vfs_read_dir(const struct nas_fs_node *node,
             if(!entries[i].name[n] || entries[i].name[n]=='/')
                 return -EIO;
     }
-    return got;
+    return (int)written;
 }
 bool nas_vfs_can_write(const struct nas_fs_node *node) {
     return !vfs_node_status(node) &&
