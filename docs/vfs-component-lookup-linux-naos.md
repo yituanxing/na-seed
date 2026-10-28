@@ -63,3 +63,14 @@ treating I/O failures as a missing archive root. The host provider fixture
 checks the failure paths alongside nested mount traversal and escaping
 a child mount through '..'. These are safety checks, not an assertion
 that a refcounted mount/dentry tree already exists.
+
+### Pathwalk and mount fail-closed invariants
+
+Do not equate lexical normalization with directory traversal: every dot or
+parent component requires a real directory inode, including `/file/.` and
+`/file/..`. Both `nas_fs_lookup_node` and `nas_fs_resolve_existing` now
+reject nonexistent roots in the direct-ELF configuration. At mount registration,
+validate the inode covered by the mountpoint as well as its parent; reject
+mount-on-regular-file and missing non-root ancestors. The only bootstrap
+exception is a missing `/` when mounting a disk directly below root without
+CPIO. Host fixtures cover positive nested mounts and these negative cases.

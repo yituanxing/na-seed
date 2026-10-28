@@ -104,11 +104,10 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
         return -EINVAL;
     for (unsigned i=0;i<count;i++)
         if (!strcmp(mounts[i].mount->mountpoint,mount->mountpoint))return -EEXIST;
-    /* Never accept a mount beneath an existing NON-directory. This catches
-     * invalid mounts before both direct VFS lookups and namei can see them.
-     * A missing bootstrap parent remains temporarily allowed: direct-ELF
-     * boots can attach a separately supplied ext4 volume at /mnt without
-     * providing any CPIO root archive. */
+    /* Validate both the parent and the covered mountpoint inode before
+     * adding the new mount. The prefix selector must not mask a regular
+     * file at the mount target, nor invent intermediate directories.
+     * A missing / itself is the ONLY direct-ELF bootstrap exception. */
     if(strcmp(mount->mountpoint,"/")) {
         char parent_path[256],resolved[256];
         size_t len=strlen(mount->mountpoint);
@@ -118,8 +117,23 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
         parent_path[len]=0;
         struct nas_fs_node parent;
         int parent_rc=nas_fs_lookup_node(parent_path,true,&parent,resolved);
-        if(!parent_rc && !parent.is_dir)return -ENOTDIR;
-        if(parent_rc && parent_rc!=-ENOENT)return parent_rc;
+        if(parent_rc==-ENOENT) {
+            /* CPIO-less direct-ELF boots have no root dentry but still
+             * attach a supplied disk at /mnt. Do not extend this exception
+             * to arbitrary missing ancestor components such as /x/y. */
+            if(strcmp(parent_path,"/"))return -ENOENT;
+            struct nas_fs_node root;
+            int root_rc=nas_vfs_lookup("/",&root);
+            if(root_rc!=-ENOENT)return root_rc?root_rc:-ENOENT;
+        } else {
+            if(parent_rc)return parent_rc;
+            if(!parent.is_dir)return -ENOTDIR;
+        }
+        struct nas_fs_node covered;
+        int covered_rc=nas_fs_lookup_node(mount->mountpoint,true,
+                                           &covered,resolved);
+        if(!covered_rc && !covered.is_dir)return -ENOTDIR;
+        if(covered_rc && covered_rc!=-ENOENT)return covered_rc;
     }
     if (count==NAS_VFS_MOUNT_LIMIT)return -ENOSPC;
     if(next_device_id==UINT64_MAX)return -ENOSPC;

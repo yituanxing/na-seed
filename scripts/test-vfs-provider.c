@@ -396,6 +396,15 @@ int main(void) {
     assert(nas_fs_lookup_node("/tmp/../bin/demo",true,&n,resolved)==0);
     assert(!strcmp(resolved,"/bin/demo"));
     assert(nas_fs_lookup_node("/bin/demo/no",true,&n,resolved)==-ENOTDIR);
+    /* Dot/dotdot are not lexical shortcuts around a non-directory inode.
+     * No provider may get a successful path by removing these components. */
+    assert(nas_fs_lookup_node("/bin/demo/.",true,&n,resolved)==-ENOTDIR);
+    assert(nas_fs_lookup_node("/bin/demo/..",true,&n,resolved)==-ENOTDIR);
+    assert(nas_fs_lookup_node("/bin/demo/../demo",true,&n,resolved)==-ENOTDIR);
+    assert(nas_fs_lookup_node("/bin/demo/./no",true,&n,resolved)==-ENOTDIR);
+    assert(nas_fs_resolve_existing("/bin/demo/..",true,resolved)==-ENOTDIR);
+    assert(nas_fs_lookup_node("/bin/./demo",true,&n,resolved)==0);
+    assert(nas_fs_lookup_node("/bin/../bin/demo",true,&n,resolved)==0);
     assert(nas_fs_lookup_node("/bin/demo/",true,&n,resolved)==-ENOTDIR);
     assert(nas_fs_lookup_node("/bin/demo///",false,&n,resolved)==-ENOTDIR);
     assert(nas_fs_lookup_node("/shortcut/",false,&n,resolved)==-ENOTDIR);
@@ -411,6 +420,19 @@ int main(void) {
     assert(nas_vfs_register_mount(&bad_mount)==-EINVAL);
     bad_mount.mountpoint="/mnt/x/";
     assert(nas_vfs_register_mount(&bad_mount)==-EINVAL);
+    /* An exact mountpoint may not cover a regular file. Missing nested
+     * parents may not be manufactured by mount-prefix dispatch. */
+    bad_mount.mountpoint="/bin/demo";
+    assert(nas_vfs_register_mount(&bad_mount)==-ENOTDIR);
+    bad_mount.mountpoint="/missing/child";
+    assert(nas_vfs_register_mount(&bad_mount)==-ENOENT);
+    bad_mount.mountpoint="/bin/demo/child";
+    assert(nas_vfs_register_mount(&bad_mount)==-ENOTDIR);
+    /* The old cwd/dirfd path remains correct on an ordinary directory. */
+    assert(nas_fs_lookup_node("/bin/.",true,&n,resolved)==0 &&
+           !strcmp(resolved,"/bin"));
+    assert(nas_fs_lookup_node("/bin/..",true,&n,resolved)==0 &&
+           !strcmp(resolved,"/"));
     assert(nas_vfs_register_mount(&ext_mount)==0);
     assert(nas_vfs_mkdir("/mnt",0755)==-EEXIST);
     assert(nas_vfs_unlink("/mnt",0x200ULL)==-EBUSY);
@@ -472,6 +494,9 @@ int main(void) {
     assert(found.mount==&nested_mount && found.ino==first.ino);
     assert(nas_fs_lookup_node("/mnt/nested/../hello",true,&found,resolved)==0);
     assert(found.mount==&ext_mount && found.ino==first.ino);
+    assert(nas_fs_lookup_node("/mnt/hello/..",true,&found,resolved)==-ENOTDIR);
+    assert(nas_fs_lookup_node("/mnt/nested/.",true,&found,resolved)==0);
+    assert(found.mount==&nested_mount && found.is_dir);
     assert(nas_vfs_unregister_mount(&nested_mount)==0);
     puts("[VFS PROVIDER PASS] real mount dispatch, pathwalk, CPIO/tmp/proc, symlinks, kernel read, inode ops");
     return 0;

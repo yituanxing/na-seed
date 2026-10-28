@@ -34,8 +34,17 @@ static int resolve_walk(const char *path,bool follow_final,
             unsigned start=pos;
             while(pending[pos] && pending[pos]!='/')pos++;
             unsigned len=pos-start;
-            if(len==1 && pending[start]=='.')continue;
+            /* Dot and dotdot are real directory traversals. Skipping them
+             * before checking the current inode would turn /file/.. or
+             * /file/. into a successful path and bypass ENOTDIR. */
+            if(len==1 && pending[start]=='.') {
+                if(!have_current)return -ENOENT;
+                if(!current.is_dir)return -ENOTDIR;
+                continue;
+            }
             if(len==2 && pending[start]=='.' && pending[start+1]=='.') {
+                if(!have_current)return -ENOENT;
+                if(!current.is_dir)return -ENOTDIR;
                 while(used>1 && resolved[used-1]!='/')used--;
                 if(used>1)used--;
                 resolved[used]=0;
@@ -90,11 +99,11 @@ static int resolve_walk(const char *path,bool follow_final,
             current=inode;have_current=true;
         }
         if(restart)continue;
+        /* resolve_existing must obey the same existence contract as lookup:
+         * a direct-ELF boot without a root archive cannot invent /. */
+        if(!have_current)return -ENOENT;
         for(unsigned i=0;i<=used;i++)out[i]=resolved[i];
-        if(result) {
-            if(!have_current)return -ENOENT;
-            *result=current;
-        }
+        if(result)*result=current;
         return 0;
     }
 }
