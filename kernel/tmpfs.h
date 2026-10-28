@@ -32,13 +32,27 @@ bool tmp_path(const char *path);
 bool tmp_parent(const char *path, char parent[256]);
 /* A dentry names an inode. Multiple dentries may reference one regular file.
  * Only namespace code owns and mutates path strings. */
+/* The dentry owns only (parent inode, basename) -> child inode.
+ * Rename moves ONE dentry. All descendant names resolve through the
+ * unchanged parent chain, never bulk-copying cached absolute paths. */
 struct nas_tmp_dentry {
     bool used;
-    char path[256];
+    const void *parent_inode;
+    char name[256];
     struct nas_tmp_file *inode;
 };
 const char *tmp_name(const struct nas_tmp_file *file);
 const struct nas_tmp_dentry *tmp_child_entry(const char *parent,unsigned index);
+const struct nas_tmp_dentry *tmp_child_entry_inode(const void *parent,unsigned index);
+const void *tmp_dir_parent_inode(const void *directory);
+struct nas_tmp_file *tmp_create_at(const void *parent,const char *name,bool dir,uint32_t mode);
+int tmp_mkdir_at(const void *parent,const char *name,uint64_t mode);
+int tmp_unlink_at(const void *parent,const char *name,uint64_t flags);
+int tmp_rename_at(const void *old_parent,const char *old_name,
+                  const void *new_parent,const char *new_name,uint64_t flags);
+int tmp_link_at(const void *old_parent,const char *old_name,
+                const void *new_parent,const char *new_name);
+int tmp_symlink_at(const void *parent,const char *name,const char *target);
 struct nas_tmp_file *tmp_inode_alloc(bool dir,uint32_t mode);
 void tmp_inode_link(struct nas_tmp_file *file);
 void tmp_inode_unlink(struct nas_tmp_file *file);

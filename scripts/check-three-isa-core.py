@@ -94,8 +94,22 @@ for source in ("kernel/fs/vfs_providers.c", "ports/littlefs/vfs_port.c",
 tmp_h=(root/"kernel/tmpfs.h").read_text()
 tmp_c=(root/"kernel/tmpfs.c").read_text()
 tmp_ns=(root/"kernel/fs/tmp_namespace.c").read_text()
-if "char path[256];" not in tmp_h or "struct nas_tmp_dentry" not in tmp_h:
-    raise SystemExit("lost namespace-owned dentry")
+if "struct nas_tmp_dentry" not in tmp_h or \
+   "const void *parent_inode;" not in tmp_h or "char name[256];" not in tmp_h:
+    raise SystemExit("tmpfs must own a parent-inode + one-basename dentry")
+if "char path[256];" in tmp_h:
+    raise SystemExit("absolute path cache reintroduced into tmpfs dentry")
+vfs_providers=(root/"kernel/fs/vfs_providers.c").read_text()
+for required in ("tmp_create_at(", "tmp_mkdir_at(", "tmp_unlink_at(",
+                 "tmp_rename_at(", "tmp_link_at(", "tmp_symlink_at(",
+                 "tmp_child_entry_inode(", "tmp_dir_parent_inode("):
+    if required not in vfs_providers:
+        raise SystemExit(f"tmpfs VFS provider bypassed parent inode: {required}")
+if "tmp_child_path(" in vfs_providers:
+    raise SystemExit("tmpfs reopened old string-based namespace mutations")
+if "source->parent_inode=new_parent;" not in tmp_ns or \
+   "source->name" not in tmp_ns or "d->path" in tmp_ns:
+    raise SystemExit("tmpfs directory rename must update one dentry edge")
 inode_part=tmp_h.split("struct nas_tmp_file {")[1].split("};")[0]
 if "char path[" in inode_part or " linked" in inode_part:
     raise SystemExit("name/link boolean leaked back into tmpfs inode")

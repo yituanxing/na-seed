@@ -169,23 +169,14 @@ static int64_t tmp_read(const struct nas_fs_node *node,uint64_t offset,
                         uint8_t *dst,uint64_t length) {
     return tmp_read_at(node->inode,offset,dst,length);
 }
-/* tmpfs owns its namespace dentries; only inode identity crosses VFS.
- * The legacy tmpfs storage API currently takes local absolute names,
- * which must be reconstructed from the CURRENT parent inode. */
-static int tmp_child_path(const struct nas_fs_node *parent,const char *name,
-                          char path[256]) {
-    if(!parent || !parent->mount || !parent->is_dir || !parent->inode ||
-       !name || !name[0] || strchr(name,'/'))return -EINVAL;
-    const struct bootfs_entry *root=bootfs_find("/tmp");
-    const char *current=root && parent->inode==(const void *)root
-        ? "/tmp" : tmp_name(parent->inode);
-    if(!current)return -ESTALE;
-    return nas_vfs_join_child(current,name,path);
-}
-static int tmp_create_node(const struct nas_fs_node *parent,const char *name,uint64_t mode) {
-    char path[256];
-    int rc=tmp_child_path(parent,name,path);
-    return rc ? rc : tmp_create(path,false,mode) ? 0 : -ENOSPC;
+/* Namespace mutations use the stable parent inode and one basename
+ * DIRECTLY, just like lookup_child. No provider callback reconstructs an
+ * old absolute pathname. A directory rename moves one dentry edge. */
+static int tmp_create_node(const struct nas_fs_node *parent,const char *name,
+                           uint64_t mode) {
+    if(!parent || !parent->is_dir)return -ENOTDIR;
+    return tmp_create_at(parent->inode,name,false,(uint32_t)mode) ?
+           0 : -ENOSPC;
 }
 static int64_t tmp_write_node(const struct nas_fs_node *node,uint64_t off,
                               const uint8_t *src,uint64_t count) {
@@ -206,26 +197,20 @@ static int tmp_utimens_node(const struct nas_fs_node *node,uint64_t a,
     return tmp_utimens((struct nas_tmp_file *)(uintptr_t)node->inode,a,m,sa,sm);
 }
 
+/* A directory FD enumerates children via its owned inode, even after
+ * multiple ancestor directory renames. Names are not path strings. */
 static int tmp_read_dir(const struct nas_fs_node *node,
                         uint64_t cursor,struct nas_vfs_dirent *out,
                         unsigned maximum) {
     if(!node || !node->is_dir || !node->inode || !out || !maximum)return -EINVAL;
-    /* The writable overlay's root borrows exactly the immutable /tmp
-     * archive inode. A renamed directory must never be identified through
-     * an old File origin_path string. */
-    const struct bootfs_entry *archive_root=bootfs_find("/tmp");
-    const bool root=archive_root && node->inode==(const void *)archive_root;
-    const struct nas_tmp_file *directory=root?NULL:node->inode;
-    const char *path=root?"/tmp":NULL;
-    if(!root && (!directory || !directory->is_dir))return -ENOTDIR;
-    /* Resolve the CURRENT dentry from the opened directory's stable
-     * inode, not the File's origin pathname. The latter becomes stale
-     * on rename and is deliberately immutable for dup/fork semantics.
-     * tmpfs permits only one name for a directory (no hardlink dirs). */
-    if(!root) {
-        path=tmp_name(directory);
-        if(!path)return -ENOENT;
+    const struct bootfs_entry *root=bootfs_find("/tmp");
+    const bool is_root=root && node->inode==(const void *)root;
+    if(!is_root) {
+        const struct nas_tmp_file *directory=node->inode;
+        if(!directory->used || !directory->is_dir)return -ENOTDIR;
     }
+    const void *parent_inode=tmp_dir_parent_inode(node->inode);
+    if(!parent_inode)return -ESTALE;
     unsigned count=0;
     for(;count<maximum;count++,cursor++) {
         const char *name;
@@ -233,57 +218,51 @@ static int tmp_read_dir(const struct nas_fs_node *node,
         unsigned dtype=4;
         if(cursor==0)name=".";
         else if(cursor==1) {
-            char parent[256];
-            get_parent(path,parent);
-            struct nas_tmp_file *p=tmp_find(parent);
-            const struct bootfs_entry *b=bootfs_find(parent);
-            ino=p?5000+tmp_number(p):b?b->ino:node->ino;
+            ino=(root && parent_inode==(const void *)root) ?
+                root->ino : 5000+tmp_number(parent_inode);
             name="..";
         } else {
             if(cursor-2>UINT32_MAX)break;
             const struct nas_tmp_dentry *entry=
-                tmp_child_entry(path,(unsigned)(cursor-2));
+                tmp_child_entry_inode(node->inode,(unsigned)(cursor-2));
             if(!entry)break;
             if(!entry->inode)return -EIO;
             ino=5000+tmp_number(entry->inode);
             dtype=file_dtype(entry->inode->mode);
-            name=basename(entry->path);
+            name=entry->name;
         }
         int rc=fill_dirent(&out[count],name,ino,dtype);
         if(rc)return rc;
     }
     return (int)count;
 }
-
-static int tmp_mkdir_node(const struct nas_fs_node *parent,const char *name,uint64_t mode) {
-    char path[256];int rc=tmp_child_path(parent,name,path);
-    return rc ? rc : tmp_mkdir(path,mode);
+static int tmp_mkdir_node(const struct nas_fs_node *parent,const char *name,
+                          uint64_t mode) {
+    return parent && parent->is_dir ?
+           tmp_mkdir_at(parent->inode,name,mode) : -ENOTDIR;
 }
-static int tmp_unlink_node(const struct nas_fs_node *parent,const char *name,uint64_t flags) {
-    char path[256];int rc=tmp_child_path(parent,name,path);
-    return rc ? rc : tmp_unlink(path,flags);
+static int tmp_unlink_node(const struct nas_fs_node *parent,const char *name,
+                           uint64_t flags) {
+    return parent && parent->is_dir ?
+           tmp_unlink_at(parent->inode,name,flags) : -ENOTDIR;
 }
 static int tmp_rename_node(const struct nas_fs_node *old_parent,const char *old_name,
                            const struct nas_fs_node *new_parent,const char *new_name,
                            uint64_t flags) {
-    char old_path[256],new_path[256];
-    int rc=tmp_child_path(old_parent,old_name,old_path);
-    if(rc)return rc;
-    rc=tmp_child_path(new_parent,new_name,new_path);
-    return rc ? rc : tmp_rename(old_path,new_path,flags);
+    if(!old_parent || !old_parent->is_dir ||
+       !new_parent || !new_parent->is_dir)return -ENOTDIR;
+    return tmp_rename_at(old_parent->inode,old_name,new_parent->inode,new_name,flags);
 }
 static int tmp_link_node(const struct nas_fs_node *old_parent,const char *old_name,
                          const struct nas_fs_node *new_parent,const char *new_name) {
-    char old_path[256],new_path[256];
-    int rc=tmp_child_path(old_parent,old_name,old_path);
-    if(rc)return rc;
-    rc=tmp_child_path(new_parent,new_name,new_path);
-    return rc ? rc : tmp_link(old_path,new_path);
+    if(!old_parent || !old_parent->is_dir ||
+       !new_parent || !new_parent->is_dir)return -ENOTDIR;
+    return tmp_link_at(old_parent->inode,old_name,new_parent->inode,new_name);
 }
 static int tmp_symlink_node(const struct nas_fs_node *parent,const char *name,
                             const char *target) {
-    char path[256];int rc=tmp_child_path(parent,name,path);
-    return rc ? rc : tmp_symlink(target,path);
+    return parent && parent->is_dir ?
+           tmp_symlink_at(parent->inode,name,target) : -ENOTDIR;
 }
 static int tmp_directory_path(const struct nas_fs_node *node,char path[256]) {
     if(!node || !node->is_dir)return -ENOTDIR;

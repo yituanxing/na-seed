@@ -217,21 +217,75 @@ struct nas_tmp_file *tmp_find_child(const void *parent,const char *name) {
     return tmp_find(path);
 }
 static const struct nas_tmp_dentry demo_dentry={
-    .used=true,.path="/tmp/demo",.inode=&tmp_demo
+    .used=true,.parent_inode=&entries[3],.name="demo",.inode=&tmp_demo
 };
 static const struct nas_tmp_dentry link_dentry={
-    .used=true,.path="/tmp/link",.inode=&fixture_symlink
+    .used=true,.parent_inode=&entries[3],.name="link",.inode=&fixture_symlink
 };
 static struct nas_tmp_dentry nested_dentry={
-    .used=true,.path="/tmp/opened/child",.inode=&fixture_open_child
+    .used=true,.parent_inode=&fixture_open_directory,.name="child",.inode=&fixture_open_child
 };
 const struct nas_tmp_dentry *tmp_child_entry(const char *path,unsigned index) {
     if(!strcmp(path,fixture_dir_path)) {
-        strcpy(nested_dentry.path,fixture_child_path);
         return index==0?&nested_dentry:NULL;
     }
     if(strcmp(path,"/tmp"))return NULL;
     return index==0?&demo_dentry:index==1?&link_dentry:NULL;
+}
+/* Host mock models the new VFS contract: the actual provider receives
+ * the parent inode and basename. Reconstruct mock paths only to address
+ * its fixed test catalog, never inside production provider callbacks. */
+static int mock_tmp_child_path(const void *parent,const char *name,
+                               char out[256]) {
+    const char *base=parent==(const void *)&entries[3] ?
+                      "/tmp":tmp_name(parent);
+    if(!base)return -ESTALE;
+    return nas_vfs_join_child(base,name,out);
+}
+const struct nas_tmp_dentry *tmp_child_entry_inode(const void *parent,unsigned index) {
+    if(parent==(const void *)&entries[3])return tmp_child_entry("/tmp",index);
+    if(parent==(const void *)&fixture_open_directory)
+        return tmp_child_entry(fixture_dir_path,index);
+    return NULL;
+}
+const void *tmp_dir_parent_inode(const void *dir) {
+    if(dir==(const void *)&entries[3])return dir;
+    if(dir==(const void *)&fixture_open_directory)return &entries[3];
+    return NULL;
+}
+struct nas_tmp_file *tmp_create_at(const void *parent,const char *name,
+                                    bool directory,uint32_t mode) {
+    char path[256];
+    return mock_tmp_child_path(parent,name,path) ? NULL :
+           tmp_create(path,directory,mode);
+}
+int tmp_mkdir_at(const void *parent,const char *name,uint64_t mode) {
+    char path[256];int rc=mock_tmp_child_path(parent,name,path);
+    return rc ? rc : tmp_mkdir(path,mode);
+}
+int tmp_unlink_at(const void *parent,const char *name,uint64_t flags) {
+    char path[256];int rc=mock_tmp_child_path(parent,name,path);
+    return rc ? rc : tmp_unlink(path,flags);
+}
+int tmp_rename_at(const void *old_parent,const char *old_name,
+                  const void *new_parent,const char *new_name,uint64_t flags) {
+    char from[256],to[256];
+    int rc=mock_tmp_child_path(old_parent,old_name,from);
+    if(rc)return rc;
+    rc=mock_tmp_child_path(new_parent,new_name,to);
+    return rc ? rc : tmp_rename(from,to,flags);
+}
+int tmp_link_at(const void *old_parent,const char *old_name,
+                const void *new_parent,const char *new_name) {
+    char from[256],to[256];
+    int rc=mock_tmp_child_path(old_parent,old_name,from);
+    if(rc)return rc;
+    rc=mock_tmp_child_path(new_parent,new_name,to);
+    return rc ? rc : tmp_link(from,to);
+}
+int tmp_symlink_at(const void *parent,const char *name,const char *target) {
+    char path[256];int rc=mock_tmp_child_path(parent,name,path);
+    return rc ? rc : tmp_symlink(target,path);
 }
 uint64_t nas_proc_ino(struct nas_proc_node p) {(void)p;return 7000;}
 bool nas_proc_dir_path(struct nas_proc_node node,char path[256]) {

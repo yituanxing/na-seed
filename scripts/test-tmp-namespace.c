@@ -103,7 +103,17 @@ int main(void) {
     assert(!strcmp(cwd_fs.cwd,"/tmp/moved/sub"));
     assert(!strcmp(tmp_name(dir),"/tmp/moved"));
     const struct nas_tmp_dentry *child=tmp_child_entry("/tmp/moved",0);
-    assert(child && child->inode && child->path[0]=='/');
+    assert(child && child->inode && !strcmp(child->name,"sub"));
+    assert(child->parent_inode==dir);
+    assert(tmp_dir_parent_inode(dir)==(const void *)&root_tmp);
+    assert(tmp_child_entry_inode(dir,0)==child);
+    assert(tmp_find_child(dir,"sub")==tmp_find("/tmp/moved/sub"));
+    assert(tmp_rename("/tmp/moved","/tmp/moved/sub/loop",0)==-EINVAL);
+    assert(tmp_mkdir_at(dir,"inode-created",0700)==0);
+    assert(tmp_find("/tmp/moved/inode-created")!=NULL);
+    assert(tmp_rename_at(dir,"inode-created",dir,"inode-moved",0)==0);
+    assert(tmp_find("/tmp/moved/inode-moved")!=NULL);
+    assert(tmp_unlink_at(dir,"inode-moved",0x200ULL)==0);
     assert(tmp_child_entry("/tmp/moved",32)==0);
 
     /* Files survive unlink and even final nlink==0 until all aliased open
