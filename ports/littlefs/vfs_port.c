@@ -62,14 +62,11 @@ static int look_child(const struct nas_fs_node *parent,const char *name,
     struct nas_littlefs_vfs *ctx=context(parent->mount);
     if(!ctx || !ctx->mounted)return -ENODEV;
     const struct nas_littlefs_identity *dir=parent->inode;
-    size_t n=strlen(dir->path),m=strlen(name);
-    if(n+(n>1?1U:0U)+m>=256)return -ENAMETOOLONG;
     char local[256];
-    memcpy(local,dir->path,n);
-    if(n>1)local[n++]='/';
-    memcpy(local+n,name,m+1);
+    int rc=nas_vfs_join_child(dir->path,name,local);
+    if(rc)return rc;
     struct lfs_info info={0};
-    int rc=lfs_stat(&ctx->fs,local,&info);
+    rc=lfs_stat(&ctx->fs,local,&info);
     if(rc)return rc;
     struct nas_littlefs_identity *id=intern(ctx,local);
     if(!id)return -ENOSPC;
@@ -133,13 +130,8 @@ static int readdir(const struct nas_fs_node *node,
                     else{memcpy(child,dirid->path,n-1);child[n-1]=0;}
                 }
             } else {
-                size_t n=strlen(dirid->path),m=strlen(e.name);
-                if(n+(n>1?1:0)+m>=sizeof(child)){
-                    rc=-ENAMETOOLONG;break;
-                }
-                memcpy(child,dirid->path,n);
-                if(n>1)child[n++]='/';
-                memcpy(child+n,e.name,m+1);
+                rc=nas_vfs_join_child(dirid->path,e.name,child);
+                if(rc)break;
             }
             if(!ino) {
                 struct nas_littlefs_identity *item=intern(ctx,child);

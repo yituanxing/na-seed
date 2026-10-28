@@ -127,6 +127,18 @@ int main(int argc,char **argv) {
     assert(nas_vfs_read_dir(&directory,
                              (uint64_t)count,entries,8)>=0);
     assert(nas_vfs_read_dir(&node,0,entries,8)==-ENOTDIR);
+    struct nas_fs_node candidate_parent;
+    char candidate[256];
+    assert(nas_fs_lookup_parent("/mnt/sandbox/negative-candidate",
+                    &candidate_parent,candidate)==0);
+    assert(candidate_parent.mount==node.mount &&
+           !strcmp(candidate,"/mnt/sandbox/negative-candidate"));
+    assert(nas_fs_canonical_candidate("/mnt/sandbox/negative-candidate",
+                                      candidate)==0);
+    assert(!strcmp(candidate,"/mnt/sandbox/negative-candidate"));
+    assert(nas_fs_canonical_candidate(
+               "/mnt/sandbox/hardlink/../negative-candidate",
+               candidate)==-ENOTDIR);
     assert(nas_vfs_mkdir("/",0755)==-EEXIST);
     assert(nas_vfs_mkdir("/mnt",0755)==-EEXIST);
     assert(nas_vfs_unlink("/mnt",0x200ULL)==-EBUSY);

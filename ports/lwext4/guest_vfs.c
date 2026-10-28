@@ -75,12 +75,8 @@ static int ext_lookup_child(const struct nas_fs_node *parent,const char *name,
     char directory[256],child_path[256];
     rc=ext_directory_path(parent,directory);
     if(rc)return rc;
-    size_t base=strlen(directory);
-    if(base+(base>1?1U:0U)+len>=sizeof(child_path))
-        return -ENAMETOOLONG;
-    memcpy(child_path,directory,base);
-    if(base>1)child_path[base++]='/';
-    memcpy(child_path+base,name,len+1);
+    rc=nas_vfs_join_child(directory,name,child_path);
+    if(rc)return rc;
     uint32_t confirmed=0;
     struct ext4_inode raw;
     rc=ext4_raw_inode_fill(path_for(ctx,child_path),&confirmed,&raw);
@@ -222,10 +218,10 @@ static int ext_child_path(const struct nas_fs_node *parent,const char *name,
        !name[0] || strchr(name,'/'))return -EINVAL;
     int rc=ext_directory_path(parent,path);
     if(rc)return rc;
-    size_t n=strlen(path),len=strlen(name);
-    if(n+(n>1?1U:0U)+len>=256)return -ENAMETOOLONG;
-    if(n>1)path[n++]='/';
-    memcpy(path+n,name,len+1);
+    char child[256];
+    rc=nas_vfs_join_child(path,name,child);
+    if(rc)return rc;
+    memcpy(path,child,strlen(child)+1);
     return 0;
 }
 static int ext_create_path(const struct nas_fs_node *parent,const char *name,uint64_t mode) {

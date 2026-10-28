@@ -64,13 +64,9 @@ static int boot_child(const struct nas_fs_node *parent,const char *name,
      * Keep O(1) expected lookup via bootfs_find's existing hash table,
      * rather than rescanning all archive children for each path step. */
     const struct bootfs_entry *dir=parent->inode;
-    size_t base=strlen(dir->path),length=strlen(name);
-    if(base+(base>1?1U:0U)+length>=256)return -ENAMETOOLONG;
     char local[256];
-    memcpy(local,dir->path,base);
-    if(base>1)local[base++]='/';
-    memcpy(local+base,name,length+1);
-    return boot_fill(bootfs_find(local),out);
+    int rc=nas_vfs_join_child(dir->path,name,local);
+    return rc ? rc : boot_fill(bootfs_find(local),out);
 }
 static int boot_readlink(const struct nas_fs_node *node,char target[256]) {
     const struct bootfs_entry *e=node->inode;
@@ -184,12 +180,7 @@ static int tmp_child_path(const struct nas_fs_node *parent,const char *name,
     const char *current=root && parent->inode==(const void *)root
         ? "/tmp" : tmp_name(parent->inode);
     if(!current)return -ESTALE;
-    size_t n=strlen(current),len=strlen(name);
-    if(n+(n>1?1U:0U)+len>=256)return -ENAMETOOLONG;
-    memcpy(path,current,n);
-    if(n>1)path[n++]='/';
-    memcpy(path+n,name,len+1);
-    return 0;
+    return nas_vfs_join_child(current,name,path);
 }
 static int tmp_create_node(const struct nas_fs_node *parent,const char *name,uint64_t mode) {
     char path[256];

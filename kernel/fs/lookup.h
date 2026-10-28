@@ -24,6 +24,9 @@ struct nas_fs_node {
     uint32_t mode;
     bool is_dir, is_symlink;
 };
+int nas_fs_lookup_parent(const char *absolute,struct nas_fs_node *parent,
+                         char canonical[256]);
+int nas_fs_canonical_candidate(const char *absolute,char canonical[256]);
 int nas_fs_resolve_existing(const char *path,bool follow_final,char out[256]);
 int nas_fs_lookup_node(const char *path,bool follow_final,
                        struct nas_fs_node *result,char resolved[256]);

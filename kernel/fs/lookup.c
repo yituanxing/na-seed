@@ -1,6 +1,21 @@
 #include "lookup.h"
 #include "../errno.h"
 #include "../lib/string.h"
+/* The only checked provider-local child-name builder. A provider may
+ * resolve a live parent inode to its backend spelling; no provider should
+ * implement a second copy of leaf component validation. */
+int nas_vfs_join_child(const char *parent,const char *name,char out[256]) {
+    if(!parent || !name || !out || parent[0]!='/' || !name[0] ||
+       strchr(name,'/') || !strcmp(name,".") || !strcmp(name,".."))
+        return -EINVAL;
+    size_t n=strlen(parent),m=strlen(name);
+    if(!n || n>=256 || (n>1 && parent[n-1]=='/'))return -EINVAL;
+    if(n+(n>1?1U:0U)+m>=256)return -ENAMETOOLONG;
+    memcpy(out,parent,n);
+    if(n>1)out[n++]='/';
+    memcpy(out+n,name,m+1);
+    return 0;
+}
 /* A single VFS component pathwalk. The filesystem observes only a parent
  * inode and one name; the VFS alone handles symlinks, mountpoint crossings,
  * legacy overlay, dot/dotdot and canonical path construction. Owned
@@ -116,4 +131,32 @@ int nas_fs_lookup_node(const char *path,bool follow_final,
     if(!path || !result || !resolved)return -ENOENT;
     if(path[0]!='/')return -EINVAL;
     return resolve_walk(path,follow_final,result,resolved);
+}
+
+/* Parent and negative-final-name resolution are VFS operations, not
+ * duplicated syscall or mount-table lexical normalization. */
+int nas_fs_lookup_parent(const char *absolute,struct nas_fs_node *parent,
+                         char canonical[256]) {
+    if(!absolute || !parent || !canonical || absolute[0]!='/')return -EINVAL;
+    size_t len=strlen(absolute);
+    if(len>=256)return -ENAMETOOLONG;
+    if(len==1)return -EBUSY;
+    if(absolute[len-1]=='/')return -ENOTDIR;
+    size_t split=len;
+    while(split>0 && absolute[split-1]!='/')--split;
+    if(!split)return -EINVAL;
+    char ancestor[256],resolved[256];
+    size_t n=split==1?1:split-1;
+    memcpy(ancestor,absolute,n);ancestor[n]=0;
+    int rc=nas_fs_lookup_node(ancestor,true,parent,resolved);
+    if(rc)return rc;
+    if(!parent->is_dir)return -ENOTDIR;
+    return nas_vfs_join_child(resolved,absolute+split,canonical);
+}
+int nas_fs_canonical_candidate(const char *absolute,char canonical[256]) {
+    if(!absolute || !canonical)return -EINVAL;
+    struct nas_fs_node found;
+    int rc=nas_fs_lookup_node(absolute,false,&found,canonical);
+    if(rc!=-ENOENT)return rc;
+    return nas_fs_lookup_parent(absolute,&found,canonical);
 }

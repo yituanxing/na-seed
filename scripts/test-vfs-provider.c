@@ -291,6 +291,20 @@ static const struct nas_vfs_mount ext_mount={
 int main(void) {
     char resolved[256],data[32];
     struct nas_fs_node n;
+    struct nas_fs_node canonical_parent;
+    assert(nas_fs_lookup_parent("/tmp/alias/new-parent",
+                  &canonical_parent,resolved)==0);
+    assert(!strcmp(resolved,"/tmp/new-parent") && canonical_parent.is_dir);
+    assert(nas_fs_canonical_candidate("/tmp/alias/new-parent",resolved)==0);
+    assert(!strcmp(resolved,"/tmp/new-parent"));
+    assert(nas_fs_canonical_candidate("/bin/demo/../new",resolved)==-ENOTDIR);
+    assert(nas_fs_lookup_parent("/no-intermediate/new",
+                  &canonical_parent,resolved)==-ENOENT);
+    assert(nas_vfs_join_child("/tmp","good",resolved)==0 &&
+           !strcmp(resolved,"/tmp/good"));
+    assert(nas_vfs_join_child("/tmp","../bad",resolved)==-EINVAL);
+    assert(nas_vfs_join_child("/tmp",".",resolved)==-EINVAL);
+    assert(nas_vfs_join_child("/tmp","..",resolved)==-EINVAL);
     assert(nas_fs_lookup_node("/bin/demo",true,&n,resolved)==0);
     assert(!strcmp(resolved,"/bin/demo") && !strcmp(n.filesystem->name,"bootfs"));
     assert(nas_vfs_read_at(&n,0,(uint8_t *)data,4)==4);
@@ -395,12 +409,16 @@ int main(void) {
     /* Saturate the VFS's owned-inode table with distinct fixture identities
      * before O_TRUNC and O_CREAT. Neither operation may mutate namespace or
      * data when a new open File cannot acquire its mandatory inode lease. */
-    struct nas_fs_node capacity_pins[256];
-    for(unsigned i=0;i<256;i++) {
-        capacity_pins[i]=n;
-        capacity_pins[i].ino=100000U+i;
-        assert(nas_vfs_node_pin(&capacity_pins[i])==0);
+    struct nas_fs_node capacity_pins[257];
+    unsigned capacity_used=0;
+    for(;capacity_used<257;capacity_used++) {
+        capacity_pins[capacity_used]=n;
+        capacity_pins[capacity_used].ino=100000U+capacity_used;
+        int rc=nas_vfs_node_pin(&capacity_pins[capacity_used]);
+        if(rc==-ENFILE)break;
+        assert(rc==0);
     }
+    assert(capacity_used>0 && capacity_used<=256);
     struct nas_fs_node failed_open;
     char failed_path[256];
     struct nas_vfs_open_options fail_options={
@@ -418,7 +436,7 @@ int main(void) {
     assert(fixture_created_length==3 && fixture_created.size==3);
     assert(nas_vfs_read_at(&n,0,(uint8_t *)data,3)==3 &&
            !memcmp(data,"xyz",3));
-    for(unsigned i=0;i<256;i++)
+    for(unsigned i=0;i<capacity_used;i++)
         assert(nas_vfs_node_unpin(&capacity_pins[i])==0);
     assert(nas_vfs_node_pin(&n)==0);
     /* Linux locks are VFS inode + owned File services. Independent

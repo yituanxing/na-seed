@@ -72,6 +72,24 @@ for source in (root/"kernel").rglob("*"):
         raise SystemExit(f"obsolete ambiguous page release API in {source}; use frame_put")
     for old in ("descriptors[", "file_slot[", "fd_cloexec["):
         if old in data: raise SystemExit(f"old FD storage escaped in {source}: {old}")
+# One shared VFS namei owner: no lexical path resolver may erase a
+# regular-file parent or a symlink before the component walker sees it.
+lookup=(root/"kernel/fs/lookup.c").read_text()
+namespace=(root/"kernel/fs/namespace_syscall.c").read_text()
+vfs_src=(root/"kernel/fs/vfs.c").read_text()
+if not all(symbol in lookup for symbol in (
+        "int nas_fs_lookup_parent(", "int nas_fs_canonical_candidate(",
+        "int nas_vfs_join_child(")):
+    raise SystemExit("shared namespace parent/candidate/leaf owner missing")
+if ("nas_fs_canonical_candidate(raw,out)" not in namespace or
+        "static bool has_dot_component(" in namespace or
+        "static int vfs_parent(" in vfs_src or
+        "int nas_path_resolve(" in (root/"kernel/path.c").read_text()):
+    raise SystemExit("old lexical namespace walker returned")
+for source in ("kernel/fs/vfs_providers.c", "ports/littlefs/vfs_port.c",
+               "ports/lwext4/guest_vfs.c"):
+    if "nas_vfs_join_child(" not in (root/source).read_text():
+        raise SystemExit(f"provider duplicates leaf join: {source}")
 # M63: path references live ONLY in namespace dentries, not sparse inodes.
 tmp_h=(root/"kernel/tmpfs.h").read_text()
 tmp_c=(root/"kernel/tmpfs.c").read_text()

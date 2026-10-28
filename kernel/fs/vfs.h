@@ -91,6 +91,8 @@ struct nas_vfs_mount {
 };
 /* An owned File or FS cwd context pins a mount once per owner.
  * Dup/CLONE_FS share their owner; normal fork copies the pin. */
+/* Only a leaf component, never a lexical normalization or mount walk. */
+int nas_vfs_join_child(const char *parent,const char *name,char out[256]);
 int nas_vfs_unregister_mount(const struct nas_vfs_mount *mount);
 int nas_vfs_node_pin(const struct nas_fs_node *node);
 int nas_vfs_node_unpin(const struct nas_fs_node *node);

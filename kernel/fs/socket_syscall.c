@@ -8,6 +8,9 @@
 #include "../task.h"
 #include "../fd.h"
 #include "../path.h"
+#include "../bootfs.h"
+#include "lookup.h"
+#include "vfs.h"
 #include "../lib/string.h"
 #include "../mm/usercopy.h"
 #include "../arch/mmu.h"
@@ -56,7 +59,25 @@ static int unix_address(uint64_t addr,uint64_t length,char out[256]) {
     for(;n<length-2 && buffer[n+2] && n<sizeof(input)-1;n++)
         input[n]=(char)buffer[n+2];
     input[n]=0;
-    return nas_path_resolve(input[0]=='/' ? 0 : current_workdir,input,out);
+    char base[256],raw[256];
+    const char *origin=NULL;
+    if(input[0]!='/') {
+        origin=current_workdir;
+        if(TASK.fs->cwd_pinned) {
+            int rc=nas_vfs_directory_path(&TASK.fs->cwd_node,
+                                           current_workdir,base);
+            if(rc)return rc;
+            origin=base;
+        }
+    }
+    int rc=nas_path_join_raw(origin,input,raw);
+    if(rc)return rc;
+    rc=nas_fs_canonical_candidate(raw,out);
+    if(rc==-ENOENT && !bootfs_mounted()) {
+        memcpy(out,raw,strlen(raw)+1);
+        return 0;
+    }
+    return rc;
 }
 static uint64_t sys_unix_bind(uint64_t fd,uint64_t address,uint64_t size) {
     if(!unix_fd(fd))return (uint64_t)-EBADF;

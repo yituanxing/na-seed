@@ -125,6 +125,7 @@ int nas_vfs_getattr(const struct nas_fs_node *node,struct nas_fs_node *out) {
         if(rc)return rc;
         if(out->filesystem!=node->filesystem || out->mount!=node->mount ||
            out->inode!=node->inode || out->ino!=node->ino ||
+           out->mount_id!=node->mount_id ||
            out->is_dir!=node->is_dir)return -ESTALE;
     }
     if(lease)out->size=lease->size;
@@ -467,7 +468,7 @@ int nas_vfs_directory_path(const struct nas_fs_node *node,
      * perform openat/unlinkat relative to a different directory. */
     if(rc== -ENAMETOOLONG)return rc;
     if(rc || current.mount!=node->mount ||
-       current.ino!=node->ino || current.inode!=node->inode ||
+       current.mount_id!=node->mount_id || current.ino!=node->ino || current.inode!=node->inode ||
        !current.is_dir)return -ESTALE;
     size_t len=strlen(canonical);
     memcpy(absolute,canonical,len+1);
@@ -506,32 +507,6 @@ bool nas_vfs_can_write(const struct nas_fs_node *node) {
 /* The provider sees a canonical path after following every parent symlink.
  * Otherwise mkdir('/tmp/alias/file') would dispatch to tmpfs but create
  * under the alias spelling rather than its true directory inode. */
-static int vfs_parent(const char *path,struct nas_fs_node *parent,
-                      char canonical[256]) {
-    if(!path || path[0]!='/' || !parent || !canonical)return -EINVAL;
-    size_t len=strlen(path);
-    if(!len || len>=256)return -ENAMETOOLONG;
-    if(len==1)return -EBUSY;
-    if(path[len-1]=='/')return -ENOTDIR;
-    size_t split=len;
-    while(split>0 && path[split-1]!='/')--split;
-    if(split==0)return -EINVAL;
-    char dir[256],resolved[256];
-    size_t size=split==1?1:split-1;
-    memcpy(dir,path,size);dir[size]=0;
-    int rc=nas_fs_lookup_node(dir,true,parent,resolved);
-    if(rc)return rc;
-    if(!parent->is_dir)return -ENOTDIR;
-    size_t prefix=strlen(resolved),basename_len=len-split;
-    bool needs_slash=prefix>1;
-    if(prefix+(needs_slash?1U:0U)+basename_len>=256)
-        return -ENAMETOOLONG;
-    memcpy(canonical,resolved,prefix);
-    if(needs_slash)canonical[prefix++]='/';
-    memcpy(canonical+prefix,path+split,basename_len);
-    canonical[prefix+basename_len]=0;
-    return 0;
-}
 /* A namespace mutation must not remove, rename or replace an active
  * mountpoint. Even an empty mounted directory is BUSY in Linux; choosing
  * the underlying provider by its parent would otherwise bypass the VFS
@@ -549,7 +524,7 @@ static bool active_mountpoint(const char *path) {
 }
 static int vfs_mutable_parent(const char *path,struct nas_fs_node *parent,
                               char canonical[256]) {
-    int rc=vfs_parent(path,parent,canonical);
+    int rc=nas_fs_lookup_parent(path,parent,canonical);
     if(rc)return rc;
     return nas_vfs_can_write(parent) ? 0 : -EROFS;
 }
@@ -692,7 +667,7 @@ int nas_vfs_unlink(const char *path,uint64_t flags) {
     /* Mount-tree identity takes precedence over the parent filesystem's
      * writable flag: rmdir(/mnt) is EBUSY even if /mnt lives below an
      * immutable bootfs directory. Read-only policy applies afterward. */
-    int rc=vfs_parent(path,&parent,canonical);
+    int rc=nas_fs_lookup_parent(path,&parent,canonical);
     if(rc)return rc;
     if(active_mountpoint(canonical))return -EBUSY;
     if(!nas_vfs_can_write(&parent))return -EROFS;
@@ -719,9 +694,9 @@ int nas_vfs_unlink(const char *path,uint64_t flags) {
 int nas_vfs_rename(const char *oldpath,const char *newpath,uint64_t flags) {
     struct nas_fs_node old_parent,new_parent;
     char old_canonical[256],new_canonical[256];
-    int rc=vfs_parent(oldpath,&old_parent,old_canonical);
+    int rc=nas_fs_lookup_parent(oldpath,&old_parent,old_canonical);
     if(rc)return rc;
-    rc=vfs_parent(newpath,&new_parent,new_canonical);
+    rc=nas_fs_lookup_parent(newpath,&new_parent,new_canonical);
     if(rc)return rc;
     if(active_mountpoint(old_canonical) || active_mountpoint(new_canonical))
         return -EBUSY;
@@ -760,13 +735,13 @@ int nas_vfs_link(const char *oldpath,const char *newpath) {
     /* Linux hardlinks cannot target directories, regardless of backend.
      * Don't defer directory link restrictions to an arbitrary filesystem. */
     if(source.is_dir)return -EPERM;
-    rc=vfs_parent(newpath,&parent,canonical);
+    rc=nas_fs_lookup_parent(newpath,&parent,canonical);
     if(rc)return rc;
     if(source.mount!=parent.mount)return -EXDEV;
     if(!nas_vfs_can_write(&parent))return -EROFS;
     struct nas_fs_node old_parent;
     char old_canonical[256];
-    rc=vfs_parent(resolved,&old_parent,old_canonical);
+    rc=nas_fs_lookup_parent(resolved,&old_parent,old_canonical);
     if(rc)return rc;
     if(old_parent.mount!=parent.mount)return -EXDEV;
     return parent.filesystem->link ?
