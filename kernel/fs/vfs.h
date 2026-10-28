@@ -6,6 +6,7 @@
  * nas_fs_node is a borrowed inode snapshot, not an owning open file. */
 struct nas_fs_node;
 struct nas_vfs_mount;
+struct nas_posix_locks;
 /* Backend-owned directory metadata in kernel memory, independent of
  * Linux userspace dirent64 layout or any concrete filesystem structures. */
 struct nas_vfs_dirent {
@@ -93,6 +94,16 @@ struct nas_vfs_mount {
 int nas_vfs_unregister_mount(const struct nas_vfs_mount *mount);
 int nas_vfs_node_pin(const struct nas_fs_node *node);
 int nas_vfs_node_unpin(const struct nas_fs_node *node);
+/* Advisory locks are common inode/File services (Linux file_lock_context),
+ * not private to tmpfs or encoded by FD_TMP. F_GETLK/F_SETLK process
+ * ownership lives on the pinned VFS inode lease. flock belongs to the
+ * shared open-file description: pass its opaque stable owner pointer.
+ * No Linux user ABI or filesystem-specific struct crosses this boundary. */
+struct nas_posix_locks *nas_vfs_posix_locks(const struct nas_fs_node *node);
+void nas_vfs_release_posix_locks(const struct nas_fs_node *node,uint64_t pid);
+int nas_vfs_flock(const struct nas_fs_node *node,const void *file_owner,
+                  unsigned operation);
+void nas_vfs_release_flock(const void *file_owner);
 /* Opaque, already allocated inode identity: protects orphan reclamation
  * of cwd and independently pinned VFS Files, not merely legacy FD slots. */
 bool nas_vfs_inode_is_pinned(const void *backend_inode);

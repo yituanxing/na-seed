@@ -23,6 +23,7 @@
 #include "syscall.h"
 #include "procfs.h"
 #include "file_ops.h"
+#include "posix_locks.h"
 #include "epoll.h"
 #include "eventfd.h"
 #include "unix_socket.h"
@@ -83,11 +84,7 @@ extern void nas_putchar(char c);
  */
 /* FD bookkeeping is syscall-local, but inode lifetime and slot identity now
  * live in the dedicated RAM /tmp backend, with shared file descriptions. */
-static struct nas_tmp_file *tmp_by_fd(uint64_t fd) {
-    return tmp_by_slot(TASK.fds->entries[fd].slot);
-}
-
-/* mmap regular file reads live in file_io.c */
+ /* mmap regular file reads live in file_io.c */
 /* The two endpoints are one pipe object, with separate shared-description
  * slots. Allocation remains transactional until both FD/slot pairs are
  * available; only then is the backend created. */
@@ -192,6 +189,9 @@ void nas_fs_description_final_close(unsigned slot) {
     nas_epoll_target_final_close(slot);
     const struct nas_file_ops *ops=nas_open_files[slot].ops;
     if(ops && ops->release)ops->release(slot);
+    /* flock belongs to the SHARED File, not the current task's FD.
+     * dup/fork/SCM_RIGHTS release this lock only on final close. */
+    nas_vfs_release_flock(&nas_open_files[slot]);
     if(nas_open_files[slot].vnode_pinned &&
        nas_vfs_node_unpin(&nas_open_files[slot].vnode))
         nas_fs_fail("File mount pin corrupted at final close");
@@ -206,9 +206,12 @@ void nas_fs_drop_kernel_description(unsigned slot) {
 void nas_fs_close_fd(uint64_t fd) {
     /* Linux POSIX locks are PROCESS-owned and closing even one descriptor
      * releases that process's locks for the whole inode (including dup). */
-    if(fd<NAS_FD_LIMIT && TASK.fds->entries[fd].kind==FD_TMP) {
-        struct nas_tmp_file *file=tmp_by_fd(fd);
-        if(file)nas_locks_release(&file->posix_locks,nas_task_process_pid(nas_current_task));
+    if(fd<NAS_FD_LIMIT && TASK.fds->entries[fd].kind!=FD_CLOSED) {
+        const struct nas_open_file *open=
+            &nas_open_files[TASK.fds->entries[fd].slot];
+        if(open->vnode_pinned)
+            nas_vfs_release_posix_locks(&open->vnode,
+                                        nas_task_process_pid(nas_current_task));
     }
     unsigned final_slot=nas_fd_close(nas_current_task, (unsigned)fd);
     if (final_slot == NAS_OPEN_FILE_LIMIT) return;
@@ -231,17 +234,20 @@ struct nas_flock64 { int16_t type,whence; uint32_t pad;
                     int64_t start,length; int32_t pid; uint32_t reserved; };
 _Static_assert(sizeof(struct nas_flock64)==32,"Linux LP64 flock size");
 static uint64_t sys_fcntl_lock(uint64_t fd,uint64_t command,uint64_t user) {
-    if(TASK.fds->entries[fd].kind!=FD_TMP)return (uint64_t)-EINVAL;
-    struct nas_tmp_file *inode=tmp_by_fd(fd);
-    if(!inode || inode->is_dir)return (uint64_t)-EBADF;
+    struct nas_open_file *opened=&nas_open_files[TASK.fds->entries[fd].slot];
+    if(opened->status_flags&NAS_LINUX_O_PATH)return (uint64_t)-EBADF;
+    if(!opened->vnode_pinned || opened->vnode.is_dir)
+        return (uint64_t)-EBADF;
+    struct nas_posix_locks *locks=nas_vfs_posix_locks(&opened->vnode);
+    if(!locks)return (uint64_t)-EBADF;
     struct nas_flock64 lk={0};
     if(!nas_user_read_bytes(user,(uint8_t *)&lk,sizeof(lk)))
         return (uint64_t)-EFAULT;
     if(lk.type<0 || lk.type>2 || lk.whence<0 || lk.whence>2)
         return (uint64_t)-EINVAL;
-    uint64_t base=0,position=nas_open_files[TASK.fds->entries[fd].slot].position;
-    if(lk.whence==1)base=position;
-    if(lk.whence==2)base=inode->size;
+    uint64_t base=0;
+    if(lk.whence==1)base=opened->position;
+    if(lk.whence==2)base=nas_vfs_node_size(&opened->vnode);
     if(base>INT64_MAX)return (uint64_t)-EOVERFLOW;
     /* POSIX permits negative l_len; this first fixed-range VFS refuses
      * an unsupported range rather than corrupting another owner's locks. */
@@ -258,11 +264,11 @@ static uint64_t sys_fcntl_lock(uint64_t fd,uint64_t command,uint64_t user) {
     }
     if(command==5) {
         if(lk.type==NAS_LOCK_UNLOCK)return (uint64_t)-EINVAL;
-        int conflict=nas_locks_conflict(&inode->posix_locks,nas_task_process_pid(nas_current_task),
+        int conflict=nas_locks_conflict(locks,nas_task_process_pid(nas_current_task),
                                      (uint16_t)lk.type,start,end);
         if(conflict<0)lk.type=NAS_LOCK_UNLOCK;
         else {
-            const struct nas_posix_lock *old=&inode->posix_locks.entries[conflict];
+            const struct nas_posix_lock *old=&locks->entries[conflict];
             lk.type=(int16_t)old->type;
             lk.whence=0;
             lk.start=(int64_t)old->start;
@@ -272,7 +278,7 @@ static uint64_t sys_fcntl_lock(uint64_t fd,uint64_t command,uint64_t user) {
         return nas_user_write_bytes(user,(uint8_t *)&lk,sizeof(lk)) ?
                0 : (uint64_t)-EFAULT;
     }
-    int rc=nas_locks_apply(&inode->posix_locks,nas_task_process_pid(nas_current_task),
+    int rc=nas_locks_apply(locks,nas_task_process_pid(nas_current_task),
                            (uint16_t)lk.type,start,end);
     if(rc==1)return (uint64_t)-EAGAIN; /* non-blocking lock conflict */
     if(rc==2)return (uint64_t)-ENOLCK;
@@ -815,11 +821,18 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
     case NAS_SC_pipe2: FS_RESULT(sys_pipe2(args[1], args[2]));
     case NAS_SC_socketpair: FS_RESULT(sys_socketpair(args[1],args[2],args[3],args[4]));
     case NAS_SC_fcntl: FS_RESULT(sys_fcntl(args[1], args[2], args[3]));
-    case NAS_SC_flock:
-        if(args[1]>=NAS_FD_LIMIT || TASK.fds->entries[args[1]].kind!=FD_TMP)
+    case NAS_SC_flock: {
+        if(args[1]>=NAS_FD_LIMIT ||
+           TASK.fds->entries[args[1]].kind==FD_CLOSED)
             FS_RESULT((uint64_t)-EBADF);
-        FS_RESULT((uint64_t)(int64_t)tmp_flock(TASK.fds->entries[args[1]].slot,
-                                              (unsigned)args[2]));
+        struct nas_open_file *opened=
+            &nas_open_files[TASK.fds->entries[args[1]].slot];
+        if(!opened->vnode_pinned ||
+           (opened->status_flags&NAS_LINUX_O_PATH))
+            FS_RESULT((uint64_t)-EBADF);
+        FS_RESULT((uint64_t)(int64_t)nas_vfs_flock(&opened->vnode,
+                                                     opened,(unsigned)args[2]));
+    }
     case NAS_SC_eventfd:
         FS_RESULT(nas_eventfd_create(args[1],0));
     case NAS_SC_eventfd2:

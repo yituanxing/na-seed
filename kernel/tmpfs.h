@@ -2,8 +2,6 @@
 #define NASEED_TMPFS_H
 #include <stdbool.h>
 #include <stdint.h>
-#include "fs/posix_locks.h"
-
 /* Volatile, finite /tmp backend. This is not yet a generic Linux VFS.
  * Transition seam: syscall/user memory remains with m1.c; namespace and
  * inode/open-description lifetimes belong here. */
@@ -28,11 +26,7 @@ struct nas_tmp_file {
     uint64_t size;
     uint64_t atime_ns, mtime_ns, ctime_ns; /* UNIX realtime nanoseconds */
     uint32_t mode;
-    struct nas_posix_locks posix_locks; /* common Linux inode record locks */
-    /* flock is open-description-owned, separate from process POSIX locks. */
-    unsigned flock_exclusive; /* owning slot + 1, or zero */
-    uint64_t flock_shared[2]; /* NAS_OPEN_FILE_LIMIT slots */
-};
+ };
 
 bool tmp_path(const char *path);
 bool tmp_parent(const char *path, char parent[256]);
@@ -67,8 +61,6 @@ uint64_t tmp_number(const struct nas_tmp_file *file);
 void tmp_bind_slot(unsigned slot, const struct nas_tmp_file *file);
 struct nas_tmp_file *tmp_by_slot(unsigned slot);
 void tmp_release_slot(unsigned slot);
-int tmp_flock(unsigned slot,unsigned operation);
-
 /* Kernel-buffer I/O, shared across Linux FD syscalls and ELF image reader.
  * Read of sparse holes returns zero; write allocates pages only on demand.
  * Negative errno only if no bytes were written. */

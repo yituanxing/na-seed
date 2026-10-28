@@ -119,3 +119,18 @@ checks SEEK_END from a reader File opened *before* another descriptor's
 inode growth, then seeks back and reads the new bytes. Full extent of Linux
 SEEK_DATA/SEEK_HOLE and directory cookies remains unimplemented and must
 not be advertised as complete.
+
+### Real common inode-scoped advisory lock ownership
+
+Linux separates process-scoped POSIX byte-range locks from open-file-
+description-scoped `flock` locks; NaOS tracks File and inode lifetime
+separately. NaSeed previously embedded *both* locking mechanisms directly
+inside `nas_tmp_file`, with a syscall `FD_TMP` gate and a backend array
+indexed by FD slots. The shared VFS's refcounted inode lease now owns the
+process record-lock table for **every filesystem**, and a bounded generic
+flock table keys conflicts by (mount, inode incarnation) and lifetime by the
+open File's opaque pointer. Closing any process FD releases its POSIX locks;
+flock survives dup/fork until the **last File description** closes, and final
+inode unpin evicts any lingering lock owner. The old tmpfs-private flock
+fields and algorithm were removed (tmpfs slot-owner remains temporarily for
+legacy M63/orphan reclaim). No per-ISA code, no vendor modifications.

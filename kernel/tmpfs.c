@@ -306,30 +306,7 @@ void tmp_release_slot(unsigned slot) {
     if (slot >= NAS_OPEN_FILE_LIMIT) return;
     struct nas_tmp_file *file=tmp_slot_owner[slot];
     tmp_slot_owner[slot]=0;
-    if(file) {
-        if(file->flock_exclusive==slot+1)file->flock_exclusive=0;
-        file->flock_shared[slot/64]&=~(1ULL<<(slot%64));
-    }
     tmp_try_reclaim(file);
-}
-int tmp_flock(unsigned slot,unsigned operation) {
-    if(slot>=NAS_OPEN_FILE_LIMIT)return -EBADF;
-    struct nas_tmp_file *file=tmp_by_slot(slot);
-    if(!file || file->is_dir)return -EBADF;
-    const unsigned kind=operation&~4U; /* LOCK_NB=4 */
-    if((operation&~(1U|2U|4U|8U)) ||
-       (kind!=1U && kind!=2U && kind!=8U))return -EINVAL;
-    uint64_t other0=file->flock_shared[0],other1=file->flock_shared[1];
-    if(slot<64)other0&=~(1ULL<<slot);
-    else other1&=~(1ULL<<(slot-64));
-    if(kind!=8U && file->flock_exclusive && file->flock_exclusive!=slot+1)
-        return -EWOULDBLOCK;
-    if(kind==2U && (other0||other1))return -EWOULDBLOCK;
-    if(file->flock_exclusive==slot+1)file->flock_exclusive=0;
-    file->flock_shared[slot/64]&=~(1ULL<<(slot%64));
-    if(kind==1U)file->flock_shared[slot/64]|=1ULL<<(slot%64);
-    if(kind==2U)file->flock_exclusive=slot+1;
-    return 0;
 }
 /* These are actual Linux mkdir(83), rmdir(84), unlink(87) and
  * mkdirat/unlinkat entry points, not shell-command path rewrites.

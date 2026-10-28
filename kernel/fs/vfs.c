@@ -1,5 +1,6 @@
 #include "vfs.h"
 #include "lookup.h"
+#include "posix_locks.h"
 #include "../errno.h"
 #include "../lib/string.h"
 #include <stddef.h>
@@ -15,8 +16,21 @@ struct inode_size_lease {
     const void *backend_inode; /* only pointer identity, never VFS-owned */
     uint64_t size;
     uint32_t refs;
+    struct nas_posix_locks posix_locks; /* process owner PID, not OFD slot */
 };
 static struct inode_size_lease live_inodes[NAS_VFS_LIVE_INODES];
+/* flock is keyed by two distinct owners: (mount,inode incarnation)
+ * for conflict detection, and the shared File object pointer for lifetime.
+ * No FD number, task and backend-specific inode struct appears here. */
+#define NAS_VFS_FLOCK_LIMIT 128U
+struct vfs_flock_entry {
+    const struct nas_vfs_mount *mount;
+    uint64_t ino;
+    const void *backend_inode;
+    const void *file_owner;
+    bool exclusive;
+};
+static struct vfs_flock_entry vfs_flocks[NAS_VFS_FLOCK_LIMIT];
 bool nas_vfs_inode_is_pinned(const void *backend_inode) {
     if(!backend_inode)return false;
     for(unsigned i=0;i<NAS_VFS_LIVE_INODES;i++)
@@ -37,6 +51,59 @@ static struct inode_size_lease *inode_lease(const struct nas_fs_node *node) {
 static bool lease_conflicts(const struct inode_size_lease *lease,
                             const struct nas_fs_node *node) {
     return lease && lease->backend_inode!=node->inode;
+}
+struct nas_posix_locks *nas_vfs_posix_locks(const struct nas_fs_node *node) {
+    struct inode_size_lease *lease=inode_lease(node);
+    return lease && !lease_conflicts(lease,node) ?
+           &lease->posix_locks : NULL;
+}
+void nas_vfs_release_posix_locks(const struct nas_fs_node *node,uint64_t pid) {
+    struct nas_posix_locks *locks=nas_vfs_posix_locks(node);
+    if(locks && pid)nas_locks_release(locks,pid);
+}
+static bool flock_matches_node(const struct vfs_flock_entry *entry,
+                               const struct nas_fs_node *node) {
+    return entry->file_owner && entry->mount==node->mount &&
+           entry->ino==node->ino && entry->backend_inode==node->inode;
+}
+int nas_vfs_flock(const struct nas_fs_node *node,const void *owner,
+                  unsigned operation) {
+    if(!node || !owner || !node->mount ||
+       !node->filesystem || node->is_dir)return -EBADF;
+    struct inode_size_lease *lease=inode_lease(node);
+    if(!lease || lease_conflicts(lease,node))return -ESTALE;
+    unsigned kind=operation&~4U; /* LOCK_NB */
+    if((operation&~(1U|2U|4U|8U)) ||
+       (kind!=1U && kind!=2U && kind!=8U))return -EINVAL;
+    struct vfs_flock_entry *mine=NULL,*empty=NULL;
+    for(unsigned i=0;i<NAS_VFS_FLOCK_LIMIT;i++) {
+        struct vfs_flock_entry *entry=&vfs_flocks[i];
+        if(!entry->file_owner) {
+            if(!empty)empty=entry;
+            continue;
+        }
+        if(entry->file_owner==owner) {
+            mine=entry;
+            continue;
+        }
+        if(kind!=8U && flock_matches_node(entry,node) &&
+           (kind==2U || entry->exclusive))return -EWOULDBLOCK;
+    }
+    if(mine)*mine=(struct vfs_flock_entry){0};
+    if(kind==8U)return 0;
+    struct vfs_flock_entry *target=mine?mine:empty;
+    if(!target)return -ENOLCK;
+    *target=(struct vfs_flock_entry){
+        .mount=node->mount,.ino=node->ino,.backend_inode=node->inode,
+        .file_owner=owner,.exclusive=kind==2U
+    };
+    return 0;
+}
+void nas_vfs_release_flock(const void *owner) {
+    if(!owner)return;
+    for(unsigned i=0;i<NAS_VFS_FLOCK_LIMIT;i++)
+        if(vfs_flocks[i].file_owner==owner)
+            vfs_flocks[i]=(struct vfs_flock_entry){0};
 }
 uint64_t nas_vfs_node_size(const struct nas_fs_node *node) {
     if(!node)return 0;
@@ -652,6 +719,11 @@ int nas_vfs_node_unpin(const struct nas_fs_node *node) {
         if(lease_conflicts(lease,node))return -ESTALE;
         --mounts[i].open_refs;
         if(!--lease->refs) {
+            /* A final inode owner cannot retain an advisory lock. In
+             * particular, an unlinked inode may be immediately recycled. */
+            for(unsigned n=0;n<NAS_VFS_FLOCK_LIMIT;n++)
+                if(flock_matches_node(&vfs_flocks[n],node))
+                    vfs_flocks[n]=(struct vfs_flock_entry){0};
             /* Publish the release BEFORE invoking the backend: tmpfs
              * orphan cleanup may now query nas_vfs_inode_is_pinned().
              * The current node is valid for this final owner invocation. */

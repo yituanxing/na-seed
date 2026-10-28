@@ -10,6 +10,7 @@
 #include "../kernel/fs/procfs.h"
 #include "../kernel/fs/lookup.h"
 #include "../kernel/fs/vfs.h"
+#include "../kernel/fs/posix_locks.h"
 #include "../kernel/errno.h"
 static const uint8_t elf_bytes[]={0x7f,'E','L','F','v','f','s'};
 static const uint8_t abs_link[]="/bin/demo";
@@ -362,11 +363,33 @@ int main(void) {
     assert(nas_fs_lookup_node("/tmp/newfile",true,&n,resolved)==0);
     assert(nas_vfs_read_at(&n,0,(uint8_t *)data,3)==3 && !memcmp(data,"xyz",3));
     assert(nas_vfs_node_pin(&n)==0);
+    /* Linux locks are VFS inode + owned File services. Independent
+     * opens contend even when backend directory names are recycled. */
+    static const unsigned owner_a=7,owner_b=8;
+    assert(nas_vfs_flock(&n,&owner_a,2)==0);
+    assert(nas_vfs_flock(&n,&owner_b,1)==-EWOULDBLOCK);
+    assert(nas_vfs_flock(&n,&owner_a,8)==0);
+    assert(nas_vfs_flock(&n,&owner_b,1)==0);
+    assert(nas_vfs_flock(&n,&owner_a,2)==-EWOULDBLOCK);
+    nas_vfs_release_flock(&owner_b);
+    assert(nas_vfs_flock(&n,&owner_a,2)==0);
+    struct nas_posix_locks *locks=nas_vfs_posix_locks(&n);
+    assert(locks);
+    assert(nas_locks_apply(locks,11,NAS_LOCK_WRITE,0,4)==0);
+    assert(nas_locks_conflict(locks,12,NAS_LOCK_WRITE,0,4)>=0);
+    nas_vfs_release_posix_locks(&n,11);
+    assert(nas_locks_conflict(locks,12,NAS_LOCK_WRITE,0,4)==-1);
     struct nas_fs_node other_open=n;
     assert(nas_vfs_node_pin(&other_open)==0);
     assert(nas_vfs_resize(&n,2)==0 && fixture_created.size==2);
     assert(nas_vfs_node_size(&other_open)==2);
     assert(nas_vfs_node_unpin(&other_open)==0);
+    assert(nas_vfs_node_unpin(&n)==0);
+    /* All flock entries on this inode disappear on last unpin, so an
+     * allocator cannot inherit stale process or File ownership. */
+    assert(nas_vfs_node_pin(&n)==0);
+    assert(nas_vfs_flock(&n,&owner_b,1)==0);
+    nas_vfs_release_flock(&owner_b);
     assert(nas_vfs_node_unpin(&n)==0);
     assert(nas_vfs_sync(&n)==0);
     struct nas_fs_node orphan;
