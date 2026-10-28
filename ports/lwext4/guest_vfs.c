@@ -223,7 +223,7 @@ static int ext_create_path(const struct nas_fs_node *parent,const char *name,uin
     char path[256];int rc=ext_child_path(parent,name,path);
     if(rc)return rc;
     ext4_file f={0};
-    int rc=ext4_fopen(&f,path,"w");
+    rc=ext4_fopen(&f,path,"w");
     if(rc)return -rc;
     int close_rc=ext4_fclose(&f);
     if(close_rc)return -close_rc;
