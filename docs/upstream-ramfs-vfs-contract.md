@@ -74,3 +74,11 @@ The imported independent FS is not a replacement for NaSeed tmpfs or
 lwext4/littlefs. It is a *control variable*: if one VFS contract cannot
 support both independent implementations, record the mismatch and fix
 the owner, instead of copying old per-filesystem dispatch logic.
+
+### Upstream portability quirk (preserve source)
+
+The upstream `ramfs_vector.c` uses `errno` without including its own
+`errno.h`. Both the hosted and freestanding import compile with
+`-include errno.h` rather than changing a single byte of the original
+MPL-2.0 source. The host defines its native errno, while the kernel
+port exposes a separate storage slot for the vendor library.

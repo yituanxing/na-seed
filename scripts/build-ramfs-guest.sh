@@ -21,7 +21,7 @@ mkdir -p "$out"
 objs=""
 for file in third_party/jkent_ramfs/src/ramfs_vector.c     ports/ramfs/runtime.c ports/ramfs/vfs_port.c ports/ramfs/guest_boot.c; do
   obj="$out/$(printf '%s' "$file" | tr '/' '_').o"
-  clang --target="$triple" $flags -std=c11 -O2 -ffreestanding     -fno-builtin -fno-stack-protector -fno-pic -fno-pie     -Werror=implicit-function-declaration -Werror=incompatible-pointer-types     -I ports/ramfs/freestanding -I third_party/jkent_ramfs/include     -I build/deps -I kernel -c "$file" -o "$obj"
+  clang --target="$triple" $flags -std=c11 -O2 -ffreestanding -include errno.h -fno-builtin -fno-stack-protector -fno-pic -fno-pie     -Werror=implicit-function-declaration -Werror=incompatible-pointer-types     -I ports/ramfs/freestanding -I third_party/jkent_ramfs/include     -I build/deps -I kernel -c "$file" -o "$obj"
   objs="$objs $obj"
 done
 ld.lld -m "$machine" -r $objs -o "$out/ramfs_guest.o"
