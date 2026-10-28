@@ -141,6 +141,9 @@ static void tmp_fill(const struct nas_tmp_file *f,
       .atime_sec=f->atime_ns/1000000000ULL,
       .mtime_sec=f->mtime_ns/1000000000ULL,
       .ctime_sec=f->ctime_ns/1000000000ULL,
+      .atime_nsec=(uint32_t)(f->atime_ns%1000000000ULL),
+      .mtime_nsec=(uint32_t)(f->mtime_ns%1000000000ULL),
+      .ctime_nsec=(uint32_t)(f->ctime_ns%1000000000ULL),
       .mode=f->mode,.is_dir=f->is_dir,.is_symlink=tmp_is_link(f)};
 }
 static int tmp_root(const struct nas_vfs_mount *mount,
@@ -328,6 +331,9 @@ static int tmp_getattr(const struct nas_fs_node *node,struct nas_fs_node *out) {
     out->atime_sec=f->atime_ns/1000000000ULL;
     out->mtime_sec=f->mtime_ns/1000000000ULL;
     out->ctime_sec=f->ctime_ns/1000000000ULL;
+    out->atime_nsec=(uint32_t)(f->atime_ns%1000000000ULL);
+    out->mtime_nsec=(uint32_t)(f->mtime_ns%1000000000ULL);
+    out->ctime_nsec=(uint32_t)(f->ctime_ns%1000000000ULL);
     return 0;
 }
 static void tmp_last_inode_unpin(const struct nas_fs_node *node) {

@@ -25,22 +25,6 @@
 #include "metadata_syscall.h"
 #define TASK (*nas_current_task)
 
-/* Same inode metadata for both fstat() and path-based stat/lstat; critical
- * for a symlink's S_IFLNK type, target length, and nofollow distinction. */
-static void fill_tmp_stat(struct nas_linux_stat *st,
-                          const struct nas_tmp_file *file) {
-    st->dev = 5; st->ino = 5000 + tmp_number(file);
-    st->mode = file->mode;
-    st->nlink = file->nlink ? (file->is_dir ? 2 : file->nlink) : 0;
-    st->size = (int64_t)file->size;
-    st->blocks = (int64_t)((file->size + 511) / 512);
-    st->atime_sec = (int64_t)(file->atime_ns / NAS_NSEC_PER_SEC);
-    st->atime_nsec = file->atime_ns % NAS_NSEC_PER_SEC;
-    st->mtime_sec = (int64_t)(file->mtime_ns / NAS_NSEC_PER_SEC);
-    st->mtime_nsec = file->mtime_ns % NAS_NSEC_PER_SEC;
-    st->ctime_sec = (int64_t)(file->ctime_ns / NAS_NSEC_PER_SEC);
-    st->ctime_nsec = file->ctime_ns % NAS_NSEC_PER_SEC;
-}
 /* Generic inode stat comes from the filesystem lookup result, never a
  * fixed ext4-only number or an exported kernel pointer. */
 static uint64_t write_mounted_stat(const struct nas_fs_node *node,
@@ -62,6 +46,9 @@ static uint64_t write_mounted_stat(const struct nas_fs_node *node,
     st.atime_sec=(int64_t)fresh.atime_sec;
     st.mtime_sec=(int64_t)fresh.mtime_sec;
     st.ctime_sec=(int64_t)fresh.ctime_sec;
+    st.atime_nsec=fresh.atime_nsec;
+    st.mtime_nsec=fresh.mtime_nsec;
+    st.ctime_nsec=fresh.ctime_nsec;
     return nas_user_write_bytes(destination,(const uint8_t *)&st,sizeof(st))
         ? 0:(uint64_t)-EFAULT;
 }
@@ -70,40 +57,16 @@ static uint64_t write_mounted_stat(const struct nas_fs_node *node,
  */
 static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
     if (fd >= 64 || !TASK.fds->entries[fd].kind) return (uint64_t)-EBADF;
-    struct nas_linux_stat st;
-    volatile uint8_t *bytes = (volatile uint8_t *)&st;
-    for (unsigned i = 0; i < sizeof(st); i++) bytes[i] = 0;
-    st.nlink = 1;
-    st.blksize = PAGE;
-    if (TASK.fds->entries[fd].kind == FD_DIR || TASK.fds->entries[fd].kind == FD_ARCHIVE) {
-        const struct bootfs_entry *entry = nas_open_files[TASK.fds->entries[fd].slot].boot_entry;
-        if(entry) {
-            st.dev=3;st.ino=entry->ino;st.mode=entry->mode;
-            st.nlink=bootfs_is_dir(entry)?2:entry->nlink;
-            st.size=(int64_t)entry->size;
-            st.blocks=(int64_t)((entry->size+511)/512);
-            st.atime_sec=st.mtime_sec=st.ctime_sec=(int64_t)entry->mtime_sec;
-        } else {
-            /* A generic mounted inode is not a bootfs archive record. */
-            const struct nas_open_file *open=&nas_open_files[TASK.fds->entries[fd].slot];
-            if(!open->vnode_pinned)return (uint64_t)-EBADF;
-            return write_mounted_stat(&open->vnode,address);
-        }
-    } else if (TASK.fds->entries[fd].kind == FD_TMP || TASK.fds->entries[fd].kind == FD_TMP_DIR) {
-        const struct nas_open_file *opened=&nas_open_files[TASK.fds->entries[fd].slot];
-        if(!opened->vnode_pinned)return (uint64_t)-EBADF;
+    /* Any opened VFS inode, regardless of bootfs/tmpfs/procfs/ext4
+     * branding, has exactly one owner and one stat encoder. fstat(fd)
+     * and fstatat(path) report the same mount identity and timestamps. */
+    const struct nas_open_file *opened=&nas_open_files[TASK.fds->entries[fd].slot];
+    if(opened->vnode_pinned)
         return write_mounted_stat(&opened->vnode,address);
-    } else if (TASK.fds->entries[fd].kind == FD_PROC_FILE ||
-               TASK.fds->entries[fd].kind == FD_PROC_DIR) {
-        unsigned slot=TASK.fds->entries[fd].slot;
-        struct nas_proc_node node={nas_open_files[slot].proc_kind,
-                                   nas_open_files[slot].proc_pid,
-                                   nas_open_files[slot].proc_tgid,
-                                   nas_open_files[slot].proc_fd};
-        st.dev=7;st.ino=nas_proc_ino(node);
-        st.mode=nas_proc_mode(node);
-        st.nlink=nas_proc_is_dir(node)?2:1;
-    } else if (TASK.fds->entries[fd].kind == FD_PTY_MASTER ||
+    struct nas_linux_stat st={0};
+    st.nlink=1;
+    st.blksize=PAGE;
+    if (TASK.fds->entries[fd].kind == FD_PTY_MASTER ||
                TASK.fds->entries[fd].kind == FD_PTY_SLAVE) {
         st.dev=6;st.ino=2000+nas_pty_number(TASK.fds->entries[fd].slot);
         st.mode=0020620; /* real PTY character device */
@@ -246,14 +209,15 @@ static uint64_t sys_access_path(uint64_t dirfd,uint64_t pathname,
         return (uint64_t)-EACCES;
     return 0;
 }
-/* chmod operates on tmpfs inode identity (not FD pathname copies).
- * Linux ABI/path and dirfd decoding stay in this syscall boundary. */
+/* A shared open-file description owns the inode across rename/unlink.
+ * No tempfs-specific FD or inode lookup belongs in the Linux ABI. */
 static uint64_t sys_fchmod_fd(uint64_t fd,uint64_t mode) {
     if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
         return (uint64_t)-EBADF;
-    if(TASK.fds->entries[fd].kind!=FD_TMP && TASK.fds->entries[fd].kind!=FD_TMP_DIR)
-        return (uint64_t)-EROFS;
-    return (uint64_t)(int64_t)tmp_chmod((struct nas_tmp_file*)tmp_by_slot(TASK.fds->entries[fd].slot),mode);
+    const struct nas_open_file *opened=&nas_open_files[TASK.fds->entries[fd].slot];
+    if(opened->status_flags&NAS_LINUX_O_PATH)return (uint64_t)-EBADF;
+    if(!opened->vnode_pinned)return (uint64_t)-EBADF;
+    return (uint64_t)(int64_t)nas_vfs_chmod(&opened->vnode,mode);
 }
 static uint64_t sys_chmod_path(uint64_t dirfd,uint64_t filename,
                                uint64_t mode) {
@@ -277,16 +241,13 @@ static uint64_t sys_utimensat_file(uint64_t dirfd, uint64_t pathname,
     const uint64_t UTIME_OMIT=0x3ffffffeULL;
     if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH))
         return (uint64_t)-EINVAL;
-    struct nas_tmp_file *file=0;
     struct nas_fs_node vnode={0};
     if (!pathname) {
         if (dirfd >= NAS_FD_LIMIT || TASK.fds->entries[dirfd].kind == FD_CLOSED)
             return (uint64_t)-EBADF;
-        if (TASK.fds->entries[dirfd].kind != FD_TMP &&
-            TASK.fds->entries[dirfd].kind != FD_TMP_DIR)
-            return (uint64_t)-EROFS;
-        file=tmp_by_slot(TASK.fds->entries[dirfd].slot);
-        if (!file) return (uint64_t)-ENOENT;
+        const struct nas_open_file *opened=&nas_open_files[TASK.fds->entries[dirfd].slot];
+        if(!opened->vnode_pinned)return (uint64_t)-EBADF;
+        vnode=opened->vnode;
     } else {
         char path[256], actual[256];
         uint64_t ret=nas_fs_resolve_path(dirfd,pathname,path);
@@ -314,41 +275,8 @@ static uint64_t sys_utimensat_file(uint64_t dirfd, uint64_t pathname,
             ns[i]=(uint64_t)raw[i*2]*NAS_NSEC_PER_SEC+nsec;
         }
     }
-    return (uint64_t)(int64_t)(pathname
-        ? nas_vfs_utimens(&vnode,ns[0],ns[1],set[0],set[1])
-        : tmp_utimens(file,ns[0],ns[1],set[0],set[1]));
-}
-static uint64_t write_boot_stat(const struct bootfs_entry *entry, uint64_t dst) {
-    struct nas_linux_stat st;
-    uint8_t *p = (uint8_t *)&st;
-    for (unsigned i = 0; i < sizeof(st); i++) p[i] = 0;
-    st.dev = 3;
-    st.ino = entry->ino;
-    st.nlink = bootfs_is_dir(entry) ? 2 : entry->nlink;
-    st.mode = entry->mode;
-    st.blksize = PAGE;
-    st.size = (int64_t)entry->size;
-    st.blocks = (int64_t)((entry->size + 511) / 512);
-    st.atime_sec = st.mtime_sec = st.ctime_sec = (int64_t)entry->mtime_sec;
-    return nas_user_write_bytes(dst, (const uint8_t *)&st, sizeof(st))
-        ? 0 : (uint64_t)-EFAULT;
-}
-static uint64_t write_tmp_stat(const struct nas_tmp_file *file,uint64_t dst) {
-    struct nas_linux_stat st={0};
-    st.blksize=PAGE;
-    fill_tmp_stat(&st,file);
-    return nas_user_write_bytes(dst,(const uint8_t *)&st,sizeof(st)) ?
-           0 : (uint64_t)-EFAULT;
-}
-static uint64_t write_proc_stat(struct nas_proc_node node,uint64_t dst) {
-    struct nas_linux_stat st={0};
-    st.dev=7;
-    st.ino=nas_proc_ino(node);
-    st.mode=nas_proc_mode(node);
-    st.nlink=nas_proc_is_dir(node)?2:1;
-    st.blksize=PAGE;
-    return nas_user_write_bytes(dst,(const uint8_t *)&st,sizeof(st))
-        ? 0:(uint64_t)-EFAULT;
+    return (uint64_t)(int64_t)nas_vfs_utimens(&vnode,ns[0],ns[1],
+                                             set[0],set[1]);
 }
 static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
                                  uint64_t statbuf, uint64_t flags) {
@@ -363,9 +291,7 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
     char path[256];
     uint64_t result = nas_fs_resolve_path(dirfd, pathname, path);
     if ((int64_t)result < 0) return result;
-    struct nas_proc_node proc;
-    if(nas_proc_lookup(path,&proc))return write_proc_stat(proc,statbuf);
-    if(!strcmp(path,"/dev/ptmx") ||
+     if(!strcmp(path,"/dev/ptmx") ||
        (nas_pty_path_number(path)>=0 &&
         nas_pty_present((unsigned)nas_pty_path_number(path)))) {
         struct nas_linux_stat device={0};
@@ -374,23 +300,14 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
         return nas_user_write_bytes(statbuf,(const uint8_t *)&device,sizeof(device))
             ? 0:(uint64_t)-EFAULT;
     }
-    if (bootfs_mounted()) {
-        char actual[256];
-        int err = nas_fs_resolve_existing(path, !(flags & AT_SYMLINK_NOFOLLOW), actual);
-        if (!err) {
-            struct nas_fs_node node={0};
-            int rc=nas_vfs_lookup(actual,&node);
-            if(rc)return (uint64_t)(int64_t)rc;
-            const struct nas_tmp_file *tmp=tmp_find(actual);
-            if(tmp && node.inode==(const void *)tmp)
-                return write_tmp_stat(tmp,statbuf);
-            const struct bootfs_entry *entry=bootfs_find(actual);
-            if(entry && node.inode==(const void *)entry)
-                return write_boot_stat(entry,statbuf);
-            return write_mounted_stat(&node,statbuf);
-        }
-        if (err != -ENOENT) return (uint64_t)(int64_t)err;
-    }
+    /* VFS works without CPIO too: mounted disk files and inherited
+     * descriptors must share the same inode metadata and st_dev. */
+    char actual[256];
+    struct nas_fs_node node={0};
+    int err=nas_fs_lookup_node(path,!(flags&AT_SYMLINK_NOFOLLOW),
+                               &node,actual);
+    if(!err)return write_mounted_stat(&node,statbuf);
+    if(err!=-ENOENT)return (uint64_t)(int64_t)err;
     /* Legacy modules and character devices retain their existing fstat. */
     result = nas_fs_open_path(path, 0, 0);
     if ((int64_t)result < 0) return result;

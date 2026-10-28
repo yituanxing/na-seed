@@ -38,3 +38,15 @@ at `2c45649144afa3dd2e32147d7029e354dc9fc518`.
 
 Test these invariants with real mounted providers and three-ISA QEMU;
 a passing host fixture alone is not complete acceptance.
+
+## Unify Linux ABI stat and inode metadata ownership
+
+The same VFS inode node now supplies fstat and fstatat for bootfs, tmpfs,
+procfs, lwext4 and LittleFS. Linux fd-based chmod and inode timestamps
+share VFS inode operations rather than manually consulting tmpfs FD slots;
+tmpfs now retains nanosecond timestamps in the common borrowed inode view.
+Only legacy synthetic character/PTY/socket and non-VFS Limine module FDs
+keep the old device-specific stat ABI. Writable lwext4 chmod/utimens remain
+unimplemented until a safe inode-based upstream API exists; the generic VFS
+returns an explicit unsupported operation rather than silently rewriting
+an untrusted pathname.

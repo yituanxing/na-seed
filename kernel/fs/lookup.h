@@ -15,6 +15,7 @@ struct nas_fs_node {
     uint64_t nlink;
     uint32_t uid,gid;
     uint64_t atime_sec,mtime_sec,ctime_sec;
+    uint32_t atime_nsec,mtime_nsec,ctime_nsec; /* provider-owned precision */
     const uint8_t *data;  /* optional zero-copy immutable data */
     uint64_t size;
     uint32_t mode;
