@@ -56,11 +56,7 @@ int tmp_symlink(const char *target, const char *path);
 int tmp_link_target(const struct nas_tmp_file *file, char target[256]);
 uint64_t tmp_number(const struct nas_tmp_file *file);
 
-/* Slot identity is shared across fork/dup; the caller owns the descriptor
- * refcount and calls tmp_release_slot only after its final decrement. */
-void tmp_bind_slot(unsigned slot, const struct nas_tmp_file *file);
-struct nas_tmp_file *tmp_by_slot(unsigned slot);
-void tmp_release_slot(unsigned slot);
+/* Open-inode lifetime and last-unpin reclaim are owned solely by VFS. */
 /* Kernel-buffer I/O, shared across Linux FD syscalls and ELF image reader.
  * Read of sparse holes returns zero; write allocates pages only on demand.
  * Negative errno only if no bytes were written. */

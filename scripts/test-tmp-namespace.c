@@ -108,19 +108,17 @@ int main(void) {
 
     /* Files survive unlink and even final nlink==0 until all aliased open
      * file-descriptions are closed; backing data and inode are not copied. */
-    nas_open_files[7].refcount=2;
-    tmp_bind_slot(7,file);
+    borrowed_vfs_pin=file; /* stand-in for real VFS inode pin */
     assert(tmp_unlink("/tmp/alias",0)==0 && file->nlink==1);
     assert(tmp_unlink("/tmp/moved/file",0)==0 && file->nlink==0);
     assert(!tmp_find("/tmp/alias"));
-    assert(tmp_by_slot(7)==file && file->used);
+    assert(nas_vfs_inode_is_pinned(file) && file->used);
     assert(tmp_read_at(file,0,got,sizeof(got))==(int64_t)sizeof(got));
     assert(!memcmp(got,content,sizeof(got)));
-    nas_open_files[7].refcount=0; /* after two separate descriptor closes */
+    borrowed_vfs_pin=NULL; /* VFS final File description closed */
     unsigned freed_before=frame_freed;
-    tmp_release_slot(7);
+    tmp_inode_discard(file); /* VFS last_inode_unpin callback */
     assert(!file->used && frame_freed>freed_before);
-    assert(tmp_by_slot(7)==0);
 
     /* Hard links to symlinks share the literal symlink inode by default. */
     assert(tmp_symlink("../source","/tmp/moved/sym")==0);

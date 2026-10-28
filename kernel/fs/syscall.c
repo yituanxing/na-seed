@@ -583,7 +583,6 @@ uint64_t nas_fs_open_path(const char *path, uint64_t native_flags,
                            flags & (NAS_LINUX_O_PATH | 3ULL | 0x800ULL | 0x400ULL),
                            !!(flags & 0x80000ULL)))
         nas_fs_fail("reserved openat description was occupied");
-    if(kind==FD_TMP || kind==FD_TMP_DIR)tmp_bind_slot(slot,tmp_file);
     if(has_node) {
         nas_open_files[slot].vnode=opened_node;
         nas_open_files[slot].vnode_pinned=true;
@@ -704,7 +703,6 @@ static void vrelease_socket(unsigned slot){
     nas_unix_socket_release(slot);
     nas_pipe_release_description(slot);
 }
-static void vrelease_tmp(unsigned slot){tmp_release_slot(slot);}
 static const struct nas_file_ops ops_uart={
     .read=vread_tty,.write=vwrite_tty,.poll=vpoll_tty,.poll_description=dpoll_tty,
     .ioctl=vioctl_uart
@@ -720,11 +718,15 @@ static const struct nas_file_ops ops_zero={
     .read=vread_zero,.write=vwrite_discard,.poll=vpoll_always,.poll_description=dpoll_always
 };
 static const struct nas_file_ops ops_bootfs={.read=vread_limine,.poll=vpoll_always,.poll_description=dpoll_always};
-static const struct nas_file_ops ops_archive={.read=vread_regular,.write=vwrite_regular,.poll=vpoll_always,.poll_description=dpoll_always};
-static const struct nas_file_ops ops_dir={.read=vread_dir,.poll=vpoll_always,.poll_description=dpoll_always};
-/* All VFS provider regular Files share one inode-driven read path. */
-static const struct nas_file_ops ops_proc_file={.read=vread_regular,.poll=vpoll_always,.poll_description=dpoll_always};
-static const struct nas_file_ops ops_proc_dir={.read=vread_dir,.poll=vpoll_always,.poll_description=dpoll_always};
+/* Every mounted regular file/dir reuses the SAME read/write/poll File ops.
+ * Filesystem types are selected only by the inode's provider callbacks. */
+static const struct nas_file_ops ops_vfs_regular={
+    .read=vread_regular,.write=vwrite_regular,
+    .poll=vpoll_always,.poll_description=dpoll_always
+};
+static const struct nas_file_ops ops_vfs_dir={
+    .read=vread_dir,.poll=vpoll_always,.poll_description=dpoll_always
+};
 static const struct nas_file_ops ops_pipe_read={
     .read=pipe_fd_read,.poll=vpoll_pipe_read,.poll_description=dpoll_pipe_read,
     .release=vrelease_pipe
@@ -756,13 +758,6 @@ static const struct nas_file_ops ops_pty={
     .read=nas_pty_read,.write=nas_pty_write,.poll=vpoll_pty,.poll_description=dpoll_pty,
     .ioctl=nas_pty_ioctl,.release=vrelease_pty
 };
-static const struct nas_file_ops ops_tmp={
-    .read=vread_regular,.write=vwrite_regular,.poll=vpoll_always,.poll_description=dpoll_always,
-    .release=vrelease_tmp
-};
-static const struct nas_file_ops ops_tmp_dir={
-    .read=vread_dir,.poll=vpoll_always,.poll_description=dpoll_always,.release=vrelease_tmp
-};
 static uint16_t vpoll_epoll(uint64_t fd,uint16_t events){
     return nas_epoll_fd_poll(fd,events);
 }
@@ -777,13 +772,14 @@ static const struct nas_file_ops ops_eventfd={
 };
 static const struct nas_file_ops *const ops_by_kind[]={
     [FD_UART]=&ops_uart,[FD_TTY]=&ops_tty,[FD_NULL]=&ops_null,
-    [FD_ZERO]=&ops_zero,[FD_BOOTFS]=&ops_bootfs,[FD_ARCHIVE]=&ops_archive,
-    [FD_DIR]=&ops_dir,[FD_PIPE_R]=&ops_pipe_read,[FD_PIPE_W]=&ops_pipe_write,
-    [FD_TMP]=&ops_tmp,[FD_TMP_DIR]=&ops_tmp_dir,
+    [FD_ZERO]=&ops_zero,[FD_BOOTFS]=&ops_bootfs,
+    [FD_ARCHIVE]=&ops_vfs_regular,[FD_DIR]=&ops_vfs_dir,
+    [FD_PIPE_R]=&ops_pipe_read,[FD_PIPE_W]=&ops_pipe_write,
+    [FD_TMP]=&ops_vfs_regular,[FD_TMP_DIR]=&ops_vfs_dir,
     [FD_EPOLL]=&ops_epoll,
     [FD_EVENTFD]=&ops_eventfd,[FD_SOCKET]=&ops_socket,
     [FD_PTY_MASTER]=&ops_pty,[FD_PTY_SLAVE]=&ops_pty,
-    [FD_PROC_FILE]=&ops_proc_file,[FD_PROC_DIR]=&ops_proc_dir
+    [FD_PROC_FILE]=&ops_vfs_regular,[FD_PROC_DIR]=&ops_vfs_dir
 };
 const struct nas_file_ops *nas_fs_ops_for_kind(uint8_t kind) {
     return kind < sizeof(ops_by_kind)/sizeof(ops_by_kind[0])

@@ -134,3 +134,14 @@ flock survives dup/fork until the **last File description** closes, and final
 inode unpin evicts any lingering lock owner. The old tmpfs-private flock
 fields and algorithm were removed (tmpfs slot-owner remains temporarily for
 legacy M63/orphan reclaim). No per-ISA code, no vendor modifications.
+
+### Eliminate the second tmpfs open File owner and duplicate fops
+
+All tmpfs open inodes now rely *only* on the generic VFS inode lease:
+`tmp_slot_owner[]`, `tmp_bind_slot`, `tmp_by_slot` and the private
+`tmp_release_slot` orphan/lock lifecycle are removed. Filesystem orphan
+reclamation occurs when VFS last_inode_unpin calls the tmpfs provider
+callback. The isolated M63 test models this real owner boundary. The Linux
+syscall File operations for bootfs/tmpfs/procfs/ext4/LittleFS are reduced to
+one `ops_vfs_regular` and one `ops_vfs_dir` table; only actual synthetic
+devices retain private File ops. No new architecture or vendor code path.

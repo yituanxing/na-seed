@@ -1,6 +1,5 @@
 #include "tmpfs.h"
 #include "task.h"
-#include "fd.h"
 #include "fs/vfs.h"
 #include "bootfs.h"
 #include "errno.h"
@@ -34,7 +33,6 @@ static uint64_t tmp_next_mtime(uint64_t previous) {
     return now > previous ? now : previous + (previous < UINT64_MAX);
 }
 static struct tmp_inode_slab *tmp_slabs;
-static struct nas_tmp_file *tmp_slot_owner[NAS_OPEN_FILE_LIMIT];
 static uint64_t tmp_next_ino = 1;
 
 static struct tmp_inode_slab *tmp_new_slab(void) {
@@ -49,13 +47,9 @@ static struct tmp_inode_slab *tmp_new_slab(void) {
 }
 static void tmp_try_reclaim(struct nas_tmp_file *node) {
     if (!node || !node->used || node->nlink) return;
-    /* An orphan inode is also owned by generic VFS File and FS cwd pins.
-     * Legacy tmp_slot_owner alone does NOT cover cwd, independently opened
-     * mounted nodes or a future mmap-held VFS reference. */
+    /* Sole lifetime owner: mounted VFS inode pins cover shared Files,
+     * independent opens, cwd, rename and orphan reclamation. */
     if(nas_vfs_inode_is_pinned(node))return;
-    for (unsigned slot = 0; slot < NAS_OPEN_FILE_LIMIT; slot++)
-        if (tmp_slot_owner[slot] == node && nas_open_files[slot].refcount)
-            return;
     tmp_truncate(node);
     node->used = false;
 }
@@ -291,22 +285,6 @@ void tmp_inode_touch(struct nas_tmp_file *file) {
 }
 uint64_t tmp_number(const struct nas_tmp_file *file) {
     return file ? file->ino : 0;
-}
-/* Directory entries live in fs/tmp_namespace.c. */
-void tmp_bind_slot(unsigned slot, const struct nas_tmp_file *file) {
-    if (slot >= NAS_OPEN_FILE_LIMIT || !file) return;
-    tmp_slot_owner[slot] = (struct nas_tmp_file *)(uintptr_t)file;
-}
-struct nas_tmp_file *tmp_by_slot(unsigned slot) {
-    if (slot >= NAS_OPEN_FILE_LIMIT) return 0;
-    struct nas_tmp_file *file=tmp_slot_owner[slot];
-    return file && file->used ? file : 0;
-}
-void tmp_release_slot(unsigned slot) {
-    if (slot >= NAS_OPEN_FILE_LIMIT) return;
-    struct nas_tmp_file *file=tmp_slot_owner[slot];
-    tmp_slot_owner[slot]=0;
-    tmp_try_reclaim(file);
 }
 /* These are actual Linux mkdir(83), rmdir(84), unlink(87) and
  * mkdirat/unlinkat entry points, not shell-command path rewrites.
