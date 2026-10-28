@@ -50,23 +50,24 @@ struct nas_vfs_type {
     int (*chmod)(const struct nas_fs_node *, uint64_t mode);
     int (*utimens)(const struct nas_fs_node *, uint64_t atime,
                    uint64_t mtime, bool set_atime, bool set_mtime);
-    /* Namespace mutations operate on kernel paths, never user pointers.
-     * Only providers implement data operations; no backend-specific syscall. */
-    /* Namespace dispatch carries the selected mount/superblock explicitly.
-     * Never infer the current filesystem from global paths or ISA branches. */
-    int (*create)(const struct nas_vfs_mount *,const char *absolute,uint64_t mode);
+    /* Namespace mutation ABI: providers receive owning PARENT inode(s)
+     * and single child name(s), never a global VFS absolute pathname.
+     * Backend-specific path reconstruction, if required by upstream APIs,
+     * happens behind the port. VFS enforces mount identity and safety. */
+    int (*create)(const struct nas_fs_node *parent,const char *name,uint64_t mode);
     int64_t (*write_at)(const struct nas_fs_node *,uint64_t offset,
                         const uint8_t *kernel_source,uint64_t length);
     int (*resize)(const struct nas_fs_node *,uint64_t size);
     int (*sync)(const struct nas_fs_node *);
-    int (*mkdir)(const struct nas_vfs_mount *,const char *absolute,uint64_t mode);
-    int (*unlink)(const struct nas_vfs_mount *,const char *absolute,uint64_t flags);
-    int (*rename)(const struct nas_vfs_mount *,const char *old_absolute,
-                  const char *new_absolute,uint64_t flags);
-    int (*link)(const struct nas_vfs_mount *,const char *old_absolute,
-                const char *new_absolute);
-    int (*symlink)(const struct nas_vfs_mount *,const char *target,
-                   const char *link_absolute);
+    int (*mkdir)(const struct nas_fs_node *parent,const char *name,uint64_t mode);
+    int (*unlink)(const struct nas_fs_node *parent,const char *name,uint64_t flags);
+    int (*rename)(const struct nas_fs_node *old_parent,const char *old_name,
+                  const struct nas_fs_node *new_parent,const char *new_name,
+                  uint64_t flags);
+    int (*link)(const struct nas_fs_node *old_parent,const char *old_name,
+                const struct nas_fs_node *new_parent,const char *new_name);
+    int (*symlink)(const struct nas_fs_node *parent,const char *name,
+                   const char *target);
     /* Backends may opt in only if unlinking the final name does not
      * invalidate an open, pinned inode (tmpfs has this lifetime today). */
     bool unlink_open_safe;

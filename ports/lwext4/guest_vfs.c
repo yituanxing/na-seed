@@ -204,8 +204,24 @@ static int ext_sync_inode(const struct nas_fs_node *node) {
     if(!node || !node->mount || !node->mount->private_data)return -EINVAL;
     return ext_sync_mount(node->mount->private_data);
 }
-static int ext_create_path(const struct nas_vfs_mount *mount,const char *path,uint64_t mode) {
-    (void)mount;
+/* Upstream lwext4 namespace APIs are path-oriented. Keep that limitation
+ * strictly inside this port: generate the path from the LIVE parent inode,
+ * not a global namei string supplied by the kernel or a stale File hint. */
+static int ext_child_path(const struct nas_fs_node *parent,const char *name,
+                           char path[256]) {
+    if(!parent || !parent->mount || !parent->is_dir || !name ||
+       !name[0] || strchr(name,'/'))return -EINVAL;
+    int rc=ext_directory_path(parent,path);
+    if(rc)return rc;
+    size_t n=strlen(path),len=strlen(name);
+    if(n+(n>1?1U:0U)+len>=256)return -ENAMETOOLONG;
+    if(n>1)path[n++]='/';
+    memcpy(path+n,name,len+1);
+    return 0;
+}
+static int ext_create_path(const struct nas_fs_node *parent,const char *name,uint64_t mode) {
+    char path[256];int rc=ext_child_path(parent,name,path);
+    if(rc)return rc;
     ext4_file f={0};
     int rc=ext4_fopen(&f,path,"w");
     if(rc)return -rc;
@@ -214,21 +230,24 @@ static int ext_create_path(const struct nas_vfs_mount *mount,const char *path,ui
     rc=ext4_mode_set(path,(uint32_t)mode&07777U);
     return rc ? -rc : 0;
 }
-static int ext_mkdir_path(const struct nas_vfs_mount *mount,const char *path,uint64_t mode) {
-    (void)mount;
-    int rc=ext4_dir_mk(path);
+static int ext_mkdir_path(const struct nas_fs_node *parent,const char *name,uint64_t mode) {
+    char path[256];int rc=ext_child_path(parent,name,path);
+    if(rc)return rc;
+    rc=ext4_dir_mk(path);
     if(rc)return -rc;
     rc=ext4_mode_set(path,(uint32_t)mode&07777U);
     return rc ? -rc : 0;
 }
-static int ext_unlink_path(const struct nas_vfs_mount *mount,const char *path,uint64_t flags) {
-    (void)mount;
+static int ext_unlink_path(const struct nas_fs_node *parent,const char *name,uint64_t flags) {
+    char path[256];
+    int rc=ext_child_path(parent,name,path);
+    if(rc)return rc;
     if(flags&~0x200ULL)return -EINVAL; /* AT_REMOVEDIR */
     if(!(flags&0x200ULL))return -ext4_fremove(path);
     /* Upstream ext4_dir_rm is recursive; never expose that to rmdir.
      * Reject any child except dot/dotdot under single-CPU VFS policy. */
     ext4_dir dir={0};
-    int rc=ext4_dir_open(&dir,path);
+    rc=ext4_dir_open(&dir,path);
     if(rc)return -rc;
     bool nonempty=false;
     const ext4_direntry *e;
@@ -242,28 +261,43 @@ static int ext_unlink_path(const struct nas_vfs_mount *mount,const char *path,ui
     if(rc)return -rc;
     return nonempty ? -ENOTEMPTY : -ext4_dir_rm(path);
 }
-static int ext_rename_path(const struct nas_vfs_mount *mount,
-                            const char *from,const char *to,uint64_t flags) {
+static int ext_rename_path(const struct nas_fs_node *old_parent,const char *old_name,
+                            const struct nas_fs_node *new_parent,const char *new_name,
+                            uint64_t flags) {
     if(flags)return -EINVAL; /* no unimplemented atomic rename flags */
-    if(!mount || !mount->private_data)return -ENODEV;
-    struct nas_lwext4_mount *ctx=mount->private_data;
+    if(!old_parent || !new_parent || old_parent->mount!=new_parent->mount)
+        return -EXDEV;
+    char from[256],to[256];
+    int rc=ext_child_path(old_parent,old_name,from);
+    if(rc)return rc;
+    rc=ext_child_path(new_parent,new_name,to);
+    if(rc)return rc;
+    if(!old_parent->mount || !old_parent->mount->private_data)return -ENODEV;
+    struct nas_lwext4_mount *ctx=old_parent->mount->private_data;
     if(!ctx->mounted || !ctx->upstream_super)return -ENODEV;
     struct ext4_inode inode;
     uint32_t number=0;
-    int rc=ext4_raw_inode_fill(from,&number,&inode);
+    rc=ext4_raw_inode_fill(from,&number,&inode);
     if(rc)return -rc;
     if(!number)return -EIO;
     uint32_t mode=ext4_inode_get_mode(ctx->upstream_super,&inode);
     return (mode&0170000U)==0040000U ?
            -ext4_dir_mv(from,to) : -ext4_frename(from,to);
 }
-static int ext_link_path(const struct nas_vfs_mount *mount,const char *from,const char *to) {
-    (void)mount;
-    return -ext4_flink(from,to);
+static int ext_link_path(const struct nas_fs_node *old_parent,const char *old_name,
+                         const struct nas_fs_node *new_parent,const char *new_name) {
+    if(!old_parent || !new_parent || old_parent->mount!=new_parent->mount)
+        return -EXDEV;
+    char from[256],to[256];
+    int rc=ext_child_path(old_parent,old_name,from);
+    if(rc)return rc;
+    rc=ext_child_path(new_parent,new_name,to);
+    return rc ? rc : -ext4_flink(from,to);
 }
-static int ext_symlink_path(const struct nas_vfs_mount *mount,const char *target,const char *path) {
-    (void)mount;
-    return -ext4_fsymlink(target,path);
+static int ext_symlink_path(const struct nas_fs_node *parent,const char *name,
+                            const char *target) {
+    char path[256];int rc=ext_child_path(parent,name,path);
+    return rc ? rc : -ext4_fsymlink(target,path);
 }
 /* Discover the current *name* of a pinned ext4 directory by following
  * upstream on-disk '..' inode references, then looking up that child's

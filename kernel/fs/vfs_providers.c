@@ -174,9 +174,28 @@ static int64_t tmp_read(const struct nas_fs_node *node,uint64_t offset,
                         uint8_t *dst,uint64_t length) {
     return tmp_read_at(node->inode,offset,dst,length);
 }
-static int tmp_create_node(const struct nas_vfs_mount *mount,const char *path,uint64_t mode) {
-    (void)mount;
-    return tmp_create(path,false,mode) ? 0 : -ENOSPC;
+/* tmpfs owns its namespace dentries; only inode identity crosses VFS.
+ * The legacy tmpfs storage API currently takes local absolute names,
+ * which must be reconstructed from the CURRENT parent inode. */
+static int tmp_child_path(const struct nas_fs_node *parent,const char *name,
+                          char path[256]) {
+    if(!parent || !parent->mount || !parent->is_dir || !parent->inode ||
+       !name || !name[0] || strchr(name,'/'))return -EINVAL;
+    const struct bootfs_entry *root=bootfs_find("/tmp");
+    const char *current=root && parent->inode==(const void *)root
+        ? "/tmp" : tmp_name(parent->inode);
+    if(!current)return -ESTALE;
+    size_t n=strlen(current),len=strlen(name);
+    if(n+(n>1?1U:0U)+len>=256)return -ENAMETOOLONG;
+    memcpy(path,current,n);
+    if(n>1)path[n++]='/';
+    memcpy(path+n,name,len+1);
+    return 0;
+}
+static int tmp_create_node(const struct nas_fs_node *parent,const char *name,uint64_t mode) {
+    char path[256];
+    int rc=tmp_child_path(parent,name,path);
+    return rc ? rc : tmp_create(path,false,mode) ? 0 : -ENOSPC;
 }
 static int64_t tmp_write_node(const struct nas_fs_node *node,uint64_t off,
                               const uint8_t *src,uint64_t count) {
@@ -246,23 +265,35 @@ static int tmp_read_dir(const struct nas_fs_node *node,
     return (int)count;
 }
 
-static int tmp_mkdir_node(const struct nas_vfs_mount *mount,const char *p,uint64_t m) {
-    (void)mount;return tmp_mkdir(p,m);
+static int tmp_mkdir_node(const struct nas_fs_node *parent,const char *name,uint64_t mode) {
+    char path[256];int rc=tmp_child_path(parent,name,path);
+    return rc ? rc : tmp_mkdir(path,mode);
 }
-static int tmp_unlink_node(const struct nas_vfs_mount *mount,const char *p,uint64_t f) {
-    (void)mount;return tmp_unlink(p,f);
+static int tmp_unlink_node(const struct nas_fs_node *parent,const char *name,uint64_t flags) {
+    char path[256];int rc=tmp_child_path(parent,name,path);
+    return rc ? rc : tmp_unlink(path,flags);
 }
-static int tmp_rename_node(const struct nas_vfs_mount *mount,
-                           const char *old,const char *new_path,uint64_t f) {
-    (void)mount;return tmp_rename(old,new_path,f);
+static int tmp_rename_node(const struct nas_fs_node *old_parent,const char *old_name,
+                           const struct nas_fs_node *new_parent,const char *new_name,
+                           uint64_t flags) {
+    char old_path[256],new_path[256];
+    int rc=tmp_child_path(old_parent,old_name,old_path);
+    if(rc)return rc;
+    rc=tmp_child_path(new_parent,new_name,new_path);
+    return rc ? rc : tmp_rename(old_path,new_path,flags);
 }
-static int tmp_link_node(const struct nas_vfs_mount *mount,
-                         const char *old,const char *new_path) {
-    (void)mount;return tmp_link(old,new_path);
+static int tmp_link_node(const struct nas_fs_node *old_parent,const char *old_name,
+                         const struct nas_fs_node *new_parent,const char *new_name) {
+    char old_path[256],new_path[256];
+    int rc=tmp_child_path(old_parent,old_name,old_path);
+    if(rc)return rc;
+    rc=tmp_child_path(new_parent,new_name,new_path);
+    return rc ? rc : tmp_link(old_path,new_path);
 }
-static int tmp_symlink_node(const struct nas_vfs_mount *mount,
-                            const char *target,const char *path) {
-    (void)mount;return tmp_symlink(target,path);
+static int tmp_symlink_node(const struct nas_fs_node *parent,const char *name,
+                            const char *target) {
+    char path[256];int rc=tmp_child_path(parent,name,path);
+    return rc ? rc : tmp_symlink(target,path);
 }
 static int tmp_directory_path(const struct nas_fs_node *node,char path[256]) {
     if(!node || !node->is_dir)return -ENOTDIR;

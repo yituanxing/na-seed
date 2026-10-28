@@ -356,6 +356,12 @@ static int vfs_mutable_parent(const char *path,struct nas_fs_node *parent,
     if(rc)return rc;
     return nas_vfs_can_write(parent) ? 0 : -EROFS;
 }
+/* vfs_parent resolved and validated the real directory inode. The final
+ * basename is not a pathname: this is the only namespace callback input. */
+static const char *vfs_leaf(const char *canonical) {
+    const char *last=strrchr(canonical,'/');
+    return last ? last+1 : canonical;
+}
 int nas_vfs_create(const char *path,uint64_t mode) {
     if(!path || path[0]!='/')return -EINVAL;
     struct nas_fs_node existing;
@@ -367,7 +373,7 @@ int nas_vfs_create(const char *path,uint64_t mode) {
     rc=vfs_mutable_parent(path,&parent,canonical);
     if(rc)return rc;
     return parent.filesystem->create ?
-           parent.filesystem->create(parent.mount,canonical,mode) : -EOPNOTSUPP;
+           parent.filesystem->create(&parent,vfs_leaf(canonical),mode) : -EOPNOTSUPP;
 }
 int64_t nas_vfs_write_at(const struct nas_fs_node *node,uint64_t offset,
                          const uint8_t *src,uint64_t length) {
@@ -411,7 +417,8 @@ int nas_vfs_mkdir(const char *path,uint64_t mode) {
     struct nas_fs_node parent;char canonical[256];
     rc=vfs_mutable_parent(path,&parent,canonical);
     if(rc)return rc;
-    return parent.filesystem->mkdir ? parent.filesystem->mkdir(parent.mount,canonical,mode) : -EOPNOTSUPP;
+    return parent.filesystem->mkdir ?
+           parent.filesystem->mkdir(&parent,vfs_leaf(canonical),mode) : -EOPNOTSUPP;
 }
 int nas_vfs_unlink(const char *path,uint64_t flags) {
     if(flags&~0x200ULL)return -EINVAL; /* Linux AT_REMOVEDIR only */
@@ -441,7 +448,7 @@ int nas_vfs_unlink(const char *path,uint64_t flags) {
         if(looked_up && looked_up!=-ENOENT)return looked_up;
     }
     return parent.filesystem->unlink ?
-           parent.filesystem->unlink(parent.mount,canonical,flags) : -EOPNOTSUPP;
+           parent.filesystem->unlink(&parent,vfs_leaf(canonical),flags) : -EOPNOTSUPP;
 }
 int nas_vfs_rename(const char *oldpath,const char *newpath,uint64_t flags) {
     struct nas_fs_node old_parent,new_parent;
@@ -475,7 +482,9 @@ int nas_vfs_rename(const char *oldpath,const char *newpath,uint64_t flags) {
         if(found && found!=-ENOENT)return found;
     }
     return old_parent.filesystem->rename ?
-           old_parent.filesystem->rename(old_parent.mount,old_canonical,new_canonical,flags) : -EOPNOTSUPP;
+           old_parent.filesystem->rename(&old_parent,vfs_leaf(old_canonical),
+                                          &new_parent,vfs_leaf(new_canonical),
+                                          flags) : -EOPNOTSUPP;
 }
 int nas_vfs_link(const char *oldpath,const char *newpath) {
     char resolved[256],canonical[256];
@@ -489,8 +498,14 @@ int nas_vfs_link(const char *oldpath,const char *newpath) {
     if(rc)return rc;
     if(source.mount!=parent.mount)return -EXDEV;
     if(!nas_vfs_can_write(&parent))return -EROFS;
+    struct nas_fs_node old_parent;
+    char old_canonical[256];
+    rc=vfs_parent(resolved,&old_parent,old_canonical);
+    if(rc)return rc;
+    if(old_parent.mount!=parent.mount)return -EXDEV;
     return parent.filesystem->link ?
-           parent.filesystem->link(parent.mount,resolved,canonical) : -EOPNOTSUPP;
+           parent.filesystem->link(&old_parent,vfs_leaf(old_canonical),
+                                     &parent,vfs_leaf(canonical)) : -EOPNOTSUPP;
 }
 int nas_vfs_symlink(const char *target,const char *path) {
     if(!target)return -EINVAL;
@@ -498,7 +513,7 @@ int nas_vfs_symlink(const char *target,const char *path) {
     int rc=vfs_mutable_parent(path,&parent,canonical);
     if(rc)return rc;
     return parent.filesystem->symlink ?
-           parent.filesystem->symlink(parent.mount,target,canonical) : -EOPNOTSUPP;
+           parent.filesystem->symlink(&parent,vfs_leaf(canonical),target) : -EOPNOTSUPP;
 }
 int nas_vfs_chmod(const struct nas_fs_node *node,uint64_t mode) {
     if(!node || !node->filesystem)return -EINVAL;

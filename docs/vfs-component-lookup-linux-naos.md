@@ -85,3 +85,16 @@ resolver first; if only the final basename is absent, it resolves the raw
 parent inode (and any symlinks) before constructing the canonical leaf.
 Ordinary device paths temporarily retain the old lexical ABI until a real
 devfs provider exists. This does not replace a counted dentry/mount tree.
+
+### Parent-inode namespace mutation ABI
+
+All VFS mutating operations now dispatch by **parent inode + basename**, not
+VFS-global path strings. Create/mkdir/unlink/symlink use one parent, rename and
+hardlink use two; the VFS validates same-mount identity, read-only policy,
+mountpoint busy guards and open-inode safety before dispatch. The tmpfs adapter
+recovers its current provider-local dentry name by inode; lwext4 reconstructs
+its required upstream absolute pathname only inside the port from a live inode
+path. No third-party source changes or ISA-specific branches. The current
+in-memory namespace still relies on bounded string paths and the ext4 public
+API still requires path reconstruction; counted mount+dentry ownership and
+orphan eviction remain open and must be validated separately.
