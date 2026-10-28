@@ -458,3 +458,17 @@ obsolete reverse-path callback calls instead of enumerating likely
 file names. This explicitly closes the omission discovered by the
 original signed applications and real three-ISA kernel-build matrix.
 The original 21 workflows must pass again on the new exact commit.
+
+### Real upstream RamFS guest — no provider reverse callback
+
+The original RamFS guest boot workload was another remaining consumer
+of the deleted VFS reverse-directory callback. It now pins the real
+`nas_vfs_path` for its opened `/ramfs/old` directory, verifies the
+Dentry's live parent/name after rename to `/ramfs/moved`, and checks
+ENOENT on Path reconstruction after rmdir while the backend inode
+still lives. It explicitly releases that Path before final inode
+unpin and clean mount teardown. The architecture audit now scans ALL
+kernel AND port C/H sources, including guest boot paths, to prevent
+another provider-specific reverse-name dependency. This is an
+integration repair for the first full real 21-workflow matrix; no
+third-party vendor library code was changed.

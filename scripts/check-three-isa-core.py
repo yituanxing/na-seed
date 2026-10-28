@@ -133,11 +133,12 @@ if ("return nas_fs_lookup_node(absolute,false,out,canonical);" not in vfs_src or
 # hand-selected file audit missed AF_UNIX, which is a real Linux pathname
 # syscall. Audit ALL runtime kernel C/H sources instead of guessing which
 # syscall file might add another duplicate.
-for source in (root/"kernel").rglob("*"):
-    if source.suffix not in (".c", ".h"): continue
-    data=source.read_text()
-    if "nas_vfs_directory_path" in data or ".directory_path=" in data:
-        raise SystemExit(f"obsolete reverse VFS name owner in {source}")
+for directory in ("kernel", "ports", "scripts", "tests"):
+    for source in (root/directory).rglob("*"):
+        if source.suffix not in (".c", ".h"): continue
+        data=source.read_text()
+        if "nas_vfs_directory_path" in data or ".directory_path=" in data:
+            raise SystemExit(f"obsolete reverse VFS name owner in {source}")
 if "nas_vfs_path_string(&TASK.fs->cwd_path,base)" not in (
         root/"kernel/fs/socket_syscall.c").read_text():
     raise SystemExit("AF_UNIX did not join the shared owned FS Path")
