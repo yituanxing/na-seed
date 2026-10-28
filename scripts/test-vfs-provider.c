@@ -557,7 +557,11 @@ int main(void) {
            !strcmp(resolved,"/bin"));
     assert(nas_fs_lookup_node("/bin/..",true,&n,resolved)==0 &&
            !strcmp(resolved,"/"));
+    assert(!nas_vfs_inode_is_pinned(&entries[5]));
     assert(nas_vfs_register_mount(&ext_mount)==0);
+    /* The mount itself owns the covered /mnt directory and root parent.
+     * A directory lease cannot evaporate merely because no user FD is open. */
+    assert(nas_vfs_inode_is_pinned(&entries[5]));
     assert(nas_vfs_mkdir("/mnt",0755)==-EEXIST);
     assert(nas_vfs_unlink("/mnt",0x200ULL)==-EBUSY);
     assert(nas_vfs_unlink("/mnt",0x800ULL)==-EINVAL);
@@ -579,6 +583,7 @@ int main(void) {
     assert(nas_vfs_unregister_mount(&ext_mount)==-EBUSY);
     assert(nas_vfs_node_unpin(&n)==0);
     assert(nas_vfs_unregister_mount(&ext_mount)==0);
+    assert(!nas_vfs_inode_is_pinned(&entries[5]));
     /* A previously borrowed inode cannot access its detached provider,
      * even when the provider's descriptor memory remains addressable. */
     assert(nas_vfs_read_at(&n,0,(uint8_t *)data,1)==-ENODEV);
@@ -618,6 +623,9 @@ int main(void) {
         .mountpoint="/mnt/nested",.type=&ext_mock_type
     };
     assert(nas_vfs_register_mount(&nested_mount)==0);
+    /* Parent mount owns a child reference and nested attachment pins the
+     * parent root. Neither may be detached behind that attachment. */
+    assert(nas_vfs_unregister_mount(&ext_mount)==-EBUSY);
     assert(nas_fs_lookup_node("/mnt/nested/hello",true,&found,resolved)==0);
     assert(found.mount==&nested_mount && found.ino==first.ino);
     assert(nas_fs_lookup_node("/mnt/nested/../hello",true,&found,resolved)==0);
@@ -626,6 +634,8 @@ int main(void) {
     assert(nas_fs_lookup_node("/mnt/nested/.",true,&found,resolved)==0);
     assert(found.mount==&nested_mount && found.is_dir);
     assert(nas_vfs_unregister_mount(&nested_mount)==0);
+    assert(nas_vfs_unregister_mount(&ext_mount)==0);
+    assert(!nas_vfs_inode_is_pinned(&entries[5]));
     puts("[VFS PROVIDER PASS] real mount dispatch, pathwalk, CPIO/tmp/proc, symlinks, kernel read, inode ops");
     return 0;
 }

@@ -187,3 +187,9 @@ covers pinned open, read-only write refusal, O_DIRECTORY and O_EXCL.
 FD reservation for openat remains a *non-mutating preflight* before the VFS
 open transaction. This preserves Linux's EMFILE/ENFILE no-side-effect
 contract: exhausted FDs must never truncate or create a filesystem inode.
+
+### Owned mount attachment and provider boundary (2026-10-28)
+
+A mount no longer stores only borrowed parent inode identity and child count. It pins the parent directory and, when present, the covered inode through the same VFS lease table as cwd and File. Registration acquires both references before publishing the new attachment; a failed acquisition rolls back without changing the parent child count. Detach releases both in reverse order before removing the entry. This specifically closes tmpfs parent/orphan reuse behind a live child mount. The host VFS fixture asserts covered inode pin and release, parent-mount EBUSY while nested, and last detach cleanup. Provider read results and directory records are checked at the VFS boundary before Linux usercopy. Namei rejects detached/stale parent identities.
+
+This is a counted mount *attachment* and owned covered inode, not a Linux-equivalent dentry cache or mount tree: nested mount identity still uses canonical mountpoint strings, directory FD path reconstruction remains, ext4 last-link orphan reclamation remains EBUSY and block IRQ queues remain polling. Do not merge without exact-head native three-ISA and upstream filesystem regression evidence.
