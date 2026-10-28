@@ -2,6 +2,7 @@
  * Numbers/register ABI live in per-target assembly; no kernel test hooks.
  * Writes operate on an explicitly ephemeral Limine ext4 RAM image. */
 #include <stdint.h>
+#include "../kernel/errno.h"
 #include "../kernel/arch/linux_fcntl_abi.h"
 enum { OP_OPENAT, OP_READ, OP_WRITE, OP_FSYNC, OP_LSEEK, OP_CLOSE,
        OP_EXIT, OP_GETDENTS64, OP_MKDIRAT, OP_RENAMEAT, OP_FCHDIR, OP_GETCWD };
@@ -18,6 +19,15 @@ static const char relative_child[]="child";
 static const char moved_child[]="/mnt/sandbox/naseed-dirfd-renamed/child";
 static const char child_payload[]="inode-not-recycled";
 static const char dirfd_pass[]="[PASS] VFS native renamed dirfd openat/fchdir/getcwd inode identity\n";
+/* Each ISA executes exactly the same genuine ring3 Linux openat requests.
+ * These fail if the syscall boundary erases '..' before VFS namei sees a
+ * regular file or incorrectly resolves a missing final leaf. */
+static const char non_dir_parent[]="/mnt/sandbox/cross-isa-created/..";
+static const char non_dir_dot[]="/mnt/sandbox/cross-isa-created/.";
+static const char valid_dot[]="/mnt/sandbox/./cross-isa-created";
+static const char missing_parent[]="/mnt/no-such-directory/../sandbox/cross-isa-created";
+static const char new_with_dotdot[]="/mnt/sandbox/../sandbox/naseed-dot-new";
+static const char pathwalk_pass[]="[PASS] VFS native dot/dotdot checked before lexical pathname normalization\n";
 __attribute__((noreturn)) void guest_main(void) {
     unsigned stage=1;
     long writer=guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)path,0x242,0644);
@@ -102,6 +112,28 @@ __attribute__((noreturn)) void guest_main(void) {
     if(guest_syscall(OP_WRITE,1,(long)(uintptr_t)dirfd_pass,
                      sizeof(dirfd_pass)-1,0)!=(long)(sizeof(dirfd_pass)-1))goto fail;
     stage=24;
+    if(guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)non_dir_parent,
+                     0,0)!=-ENOTDIR)goto fail;
+    stage=25;
+    if(guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)non_dir_dot,
+                     0,0)!=-ENOTDIR)goto fail;
+    stage=26;
+    if(guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)missing_parent,
+                     0,0)!=-ENOENT)goto fail;
+    stage=27;
+    long checked=guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)valid_dot,0,0);
+    if(checked<0)goto fail;
+    if(guest_syscall(OP_CLOSE,checked,0,0,0)!=0)goto fail;
+    stage=28;
+    checked=guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)new_with_dotdot,
+                          0x42,0600);
+    if(checked<0)goto fail;
+    if(guest_syscall(OP_CLOSE,checked,0,0,0)!=0)goto fail;
+    stage=29;
+    if(guest_syscall(OP_WRITE,1,(long)(uintptr_t)pathwalk_pass,
+                     sizeof(pathwalk_pass)-1,0)!=(long)(sizeof(pathwalk_pass)-1))
+        goto fail;
+    stage=30;
     if(guest_syscall(OP_WRITE,1,(long)(uintptr_t)passed,sizeof(passed)-1,0)!=(long)(sizeof(passed)-1))goto fail;
     guest_syscall(OP_EXIT,0,0,0,0);
     for(;;){}
