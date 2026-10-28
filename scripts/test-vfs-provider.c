@@ -392,6 +392,34 @@ int main(void) {
     assert(nas_vfs_write_at(&n,0,(const uint8_t *)"xyz",3)==3);
     assert(nas_fs_lookup_node("/tmp/newfile",true,&n,resolved)==0);
     assert(nas_vfs_read_at(&n,0,(uint8_t *)data,3)==3 && !memcmp(data,"xyz",3));
+    /* Saturate the VFS's owned-inode table with distinct fixture identities
+     * before O_TRUNC and O_CREAT. Neither operation may mutate namespace or
+     * data when a new open File cannot acquire its mandatory inode lease. */
+    struct nas_fs_node capacity_pins[256];
+    for(unsigned i=0;i<256;i++) {
+        capacity_pins[i]=n;
+        capacity_pins[i].ino=100000U+i;
+        assert(nas_vfs_node_pin(&capacity_pins[i])==0);
+    }
+    struct nas_fs_node failed_open;
+    char failed_path[256];
+    struct nas_vfs_open_options fail_options={
+        .follow_final=true,.access=2,.truncate=true
+    };
+    assert(nas_vfs_open_inode("/tmp/newfile",&fail_options,
+                              &failed_open,failed_path)==-ENFILE);
+    fail_options.truncate=false;
+    fail_options.create=true;
+    fail_options.create_mode=0640;
+    assert(nas_vfs_open_inode("/tmp/open-never-created",&fail_options,
+                              &failed_open,failed_path)==-ENFILE);
+    assert(nas_fs_lookup_node("/tmp/open-never-created",true,
+                               &failed_open,failed_path)==-ENOENT);
+    assert(fixture_created_length==3 && fixture_created.size==3);
+    assert(nas_vfs_read_at(&n,0,(uint8_t *)data,3)==3 &&
+           !memcmp(data,"xyz",3));
+    for(unsigned i=0;i<256;i++)
+        assert(nas_vfs_node_unpin(&capacity_pins[i])==0);
     assert(nas_vfs_node_pin(&n)==0);
     /* Linux locks are VFS inode + owned File services. Independent
      * opens contend even when backend directory names are recycled. */
