@@ -90,6 +90,33 @@ static void verify_gpt(unsigned sector_bytes,unsigned sectors) {
     disk[2*sector_bytes+1]^=1;
     disk[sector_bytes+80]^=1;
     assert(nas_partition_probe(&parent.block,1,&e)==-EIO);
+    /* Two INDEPENDENT genuine GPT entries with recomputed CRCs. This
+     * confirms the parser examines ALL used entries rather than only the
+     * requested partition, and rejects overlap even when CRC is valid. */
+    protective_gpt(sector_bytes,sectors);
+    uint8_t *header=disk+sector_bytes;
+    uint8_t *entries=disk+2*sector_bytes;
+    uint8_t *second=entries+128;
+    memcpy(second,entries,128);
+    second[16]^=0x22; /* unique on-disk partition GUID */
+    const uint64_t first=e.first_lba;
+    wr64(second+32,first+16);wr64(second+40,first+19);
+    wr32(header+88,crc(entries,128*128));
+    wr32(header+16,0);wr32(header+16,crc(header,92));
+    struct nas_partition_extent other={0};
+    assert(nas_partition_probe(&parent.block,2,&other)==0);
+    assert(other.first_lba==first+16 && other.sectors==4);
+    wr64(second+32,first+8);wr64(second+40,first+11);
+    wr32(header+88,crc(entries,128*128));
+    wr32(header+16,0);wr32(header+16,crc(header,92));
+    assert(nas_partition_probe(&parent.block,1,&e)==-EINVAL);
+    assert(nas_partition_probe(&parent.block,2,&e)==-EINVAL);
+    /* The primary GPT's usable LBAs must not overlap backup metadata. */
+    protective_gpt(sector_bytes,sectors);
+    header=disk+sector_bytes;
+    wr64(header+48,sectors-1);
+    wr32(header+16,0);wr32(header+16,crc(header,92));
+    assert(nas_partition_probe(&parent.block,1,&e)==-EINVAL);
     assert(nas_ramdisk_detach(&parent)==0);
 }
 int main(void) {
@@ -105,6 +132,14 @@ int main(void) {
     assert(nas_partition_probe(&parent.block,2,&e)==-EOPNOTSUPP);
     assert(nas_partition_probe(&parent.block,3,&e)==-ENOENT);
     assert(nas_partition_probe(&parent.block,5,&e)==-ENOENT);
+    /* A legal MBR signature cannot authorize two overlapping
+     * BlockDevice views into the same writable physical sectors. */
+    wr32(two+8,30);
+    assert(nas_partition_probe(&parent.block,1,&e)==-EINVAL);
+    wr32(two+8,40);
+    two[4]=0xee;
+    assert(nas_partition_probe(&parent.block,1,&e)==-EOPNOTSUPP);
+    two[4]=0x0f;
     struct nas_partition_extent invalid={
         .first_lba=UINT64_MAX,.sectors=31
     };
@@ -119,6 +154,6 @@ int main(void) {
     assert(nas_ramdisk_detach(&parent)==0);
     verify_gpt(512,256);
     verify_gpt(4096,32);
-    puts("[PARTITION PASS] real MBR/GPT CRC, 512+4096, view I/O, bounds, error, RO, flush, parent refs");
+    puts("[PARTITION PASS] real MBR/GPT CRC, geometry, non-overlap, 512+4096, view I/O, error, RO, flush, parent refs");
     return 0;
 }

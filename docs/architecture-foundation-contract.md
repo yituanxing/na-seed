@@ -246,3 +246,17 @@ VirtIO-PCI, checking guest mount provenance, disk bytes, GPT verification
 and e2fsck. This is an **additional** test; whole-disk and RamDisk
 acceptance remain unchanged. Native RV64/AArch64 link the same partition
 implementation but physical GPT QEMU on those ISAs is not claimed here.
+
+## Same physical GPT executable gate on all three native ISAs
+
+The original physical-GPT x86 acceptance has been generalized to
+`scripts/probe-vfs-gpt-busybox.sh`, driven by the same three native
+Debian BusyBox parity harnesses already used by the whole-disk driver
+acceptance. The script constructs an independently GPT-formatted
+VirtIO disk for each ISA, places the original ext4 filesystem at LBA2048
+inside a real partition, and requires two independent QEMU boots
+sharing that disk with genuine original BusyBox workloads. Verification
+uses original guest exit/provenance, host GPT CRC verification,
+partition-offset extraction, e2fsck, and persistent inode bytes.
+The previous `-x86.sh` entrypoint delegates to the single cross-ISA
+gate rather than retaining a separate implementation.
