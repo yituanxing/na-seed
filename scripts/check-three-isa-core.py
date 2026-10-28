@@ -103,9 +103,20 @@ vfs_src=(root/"kernel/fs/vfs.c").read_text()
 for item in ("struct nas_vfs_mount superblock;", "const struct nas_vfs_mount *registration;",
              "mounts[slot].superblock.mountpoint=mounts[slot].path;",
              "mounts[at]=(struct mount_slot){0};",
-             "parent->mount_id!=slot->parent_mount_id"):
+             "const struct nas_fs_node *anchor=mount_parent_inode(slot);",
+             "const struct nas_fs_node *owner=mount_parent_inode(slot);",
+             "const struct nas_fs_node *covered=mount_covered_inode(&mounts[at]);"):
     if item not in vfs_src:
         raise SystemExit(f"unstable VFS-owned mount/parent identity: {item}")
+# Mount parent/covered identities now live ONLY on reference-counted
+# Paths and their Dentries: do not require a deleted tuple or allow it
+# to return under another name. This is an architectural contract
+# strengthening, not a lowered CI acceptance threshold.
+for obsolete in ("parent_mount_id", "parent_backend_inode", "parent_ino",
+                 "parent_node", "covered_node", "parent_anchored",
+                 "parent_pinned", "covered_pinned"):
+    if obsolete in vfs_src:
+        raise SystemExit(f"copied mount identity reintroduced: {obsolete}")
 if "mounts[i]=mounts[i+1]" in vfs_src or "mounts[count++]" in vfs_src:
     raise SystemExit("packed mount registry would invalidate open File mounts")
 # A pinned empty ext4 directory is safely detached, never recursively
