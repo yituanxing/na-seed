@@ -172,11 +172,12 @@ static int vfs_node_status(const struct nas_fs_node *node) {
     if(!node || !node->filesystem || !node->mount ||
        node->filesystem!=node->mount->type)return -EINVAL;
     ensure_defaults();
-    bool attached=false;
     for(unsigned i=0;i<count;i++)
-        if(mounts[i].mount==node->mount) {attached=true;break;}
-    if(!attached)return -ENODEV;
-    return lease_conflicts(inode_lease(node),node) ? -ESTALE : 0;
+        if(mounts[i].mount==node->mount) {
+            if(node->mount_id!=mounts[i].device_id)return -ESTALE;
+            return lease_conflicts(inode_lease(node),node) ? -ESTALE : 0;
+        }
+    return -ENODEV;
 }
 /* Canonical components keep longest-prefix lookup and busy-unmount coherent. */
 static bool canonical_mountpoint(const char *path) {
@@ -321,6 +322,7 @@ int nas_vfs_lookup(const char *absolute,struct nas_fs_node *out) {
         if(!rc) {
             current.filesystem=best->type;
             current.mount=best;
+            current.mount_id=mounts[selected].device_id;
             const char *rest=absolute+longest;
             if(longest==1)rest=absolute+1;
             while(*rest=='/')rest++;
@@ -343,6 +345,7 @@ int nas_vfs_lookup(const char *absolute,struct nas_fs_node *out) {
                 if(rc)break;
                 next.mount=best;
                 next.filesystem=best->type;
+                next.mount_id=mounts[selected].device_id;
                 current=next;
                 rest+=n;
                 while(*rest=='/')rest++;
@@ -388,7 +391,11 @@ int nas_vfs_lookup_step(const struct nas_fs_node *parent,const char *absolute,
         }
         *out=(struct nas_fs_node){0};
         int rc=mnt->type->root(mnt,out);
-        if(!rc) {out->filesystem=mnt->type;out->mount=mnt;}
+        if(!rc) {
+            out->filesystem=mnt->type;
+            out->mount=mnt;
+            out->mount_id=slot->device_id;
+        }
         return rc;
     }
     if(!parent || !parent->mount || !parent->filesystem)
@@ -399,6 +406,7 @@ int nas_vfs_lookup_step(const struct nas_fs_node *parent,const char *absolute,
     if(!rc) {
         out->mount=parent->mount;
         out->filesystem=parent->filesystem;
+        out->mount_id=parent->mount_id;
         return 0;
     }
     if(rc==-ENOENT && parent->mount->fallback_on_miss)
@@ -836,6 +844,7 @@ int nas_vfs_node_pin(const struct nas_fs_node *node) {
        (!node->ino && !node->inode))return -EINVAL;
     ensure_defaults();
     for(unsigned i=0;i<count;i++)if(mounts[i].mount==node->mount) {
+        if(node->mount_id!=mounts[i].device_id)return -ESTALE;
         if(mounts[i].open_refs==UINT32_MAX)return -EMFILE;
         struct inode_size_lease *lease=inode_lease(node);
         if(lease) {
@@ -863,6 +872,7 @@ int nas_vfs_node_unpin(const struct nas_fs_node *node) {
         return -EINVAL;
     ensure_defaults();
     for(unsigned i=0;i<count;i++)if(mounts[i].mount==node->mount) {
+        if(node->mount_id!=mounts[i].device_id)return -ESTALE;
         if(!mounts[i].open_refs)return -EINVAL;
         struct inode_size_lease *lease=inode_lease(node);
         if(!lease || !lease->refs)return -EINVAL;
@@ -892,6 +902,8 @@ uint64_t nas_vfs_node_device(const struct nas_fs_node *node) {
     if(!node || !node->mount)return 0;
     ensure_defaults();
     for(unsigned i=0;i<count;i++)
-        if(mounts[i].mount==node->mount)return mounts[i].device_id;
+        if(mounts[i].mount==node->mount)
+            return node->mount_id==mounts[i].device_id ?
+                mounts[i].device_id : 0;
     return 0;
 }

@@ -53,7 +53,12 @@ static int root_lookup(const struct nas_vfs_mount *mount,const char *path,
                        struct nas_fs_node *node) {
     (void)mount;
     if(strcmp(path,"/") && strcmp(path,"/mnt"))return -ENOENT;
-    *node=(struct nas_fs_node){.is_dir=true,.mode=0040755};
+    static const uint8_t root_inode_identity,covered_inode_identity;
+    const bool covered=!strcmp(path,"/mnt");
+    *node=(struct nas_fs_node){.is_dir=true,.mode=0040755,
+        .ino=covered?2:1,
+        .inode=covered?(const void *)&covered_inode_identity:
+                       (const void *)&root_inode_identity};
     return 0;
 }
 static int root_get(const struct nas_vfs_mount *m,struct nas_fs_node *out) {

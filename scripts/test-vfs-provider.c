@@ -582,6 +582,7 @@ int main(void) {
     assert(nas_vfs_node_unpin(&n)==0);
     assert(nas_vfs_unregister_mount(&ext_mount)==-EBUSY);
     assert(nas_vfs_node_unpin(&n)==0);
+    struct nas_fs_node old_mount_incarnation=n;
     assert(nas_vfs_unregister_mount(&ext_mount)==0);
     assert(!nas_vfs_inode_is_pinned(&entries[5]));
     /* A previously borrowed inode cannot access its detached provider,
@@ -593,6 +594,12 @@ int main(void) {
     /* One provider can appear beneath two independent VFS mount records.
      * Directory lookup must never depend on its globally spelled mount path. */
     assert(nas_vfs_register_mount(&ext_mount)==0);
+    /* Reusing the identical mount descriptor must NEVER resurrect a
+     * borrowed inode from the previous mounted device incarnation. */
+    assert(nas_vfs_node_pin(&old_mount_incarnation)==-ESTALE);
+    assert(nas_vfs_read_at(&old_mount_incarnation,
+                           0,(uint8_t *)data,1)==-ESTALE);
+    assert(nas_vfs_node_device(&old_mount_incarnation)==0);
     static const struct nas_vfs_mount alias_mount={
         .mountpoint="/mnt-alias",.type=&ext_mock_type
     };

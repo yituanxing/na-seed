@@ -8,6 +8,9 @@
 struct nas_fs_node {
     const struct nas_vfs_type *filesystem;
     const struct nas_vfs_mount *mount; /* origin mount, borrowed until pinned */
+    /* Mount incarnation, not just its reused descriptor pointer. A stale
+     * pathname/FD snapshot must not target a subsequently remounted disk. */
+    uint64_t mount_id;
     const void *inode;
     /* Filesystem-supplied stable inode/stat identity. VFS never exports
      * a provider pointer as st_ino. Zero means metadata unavailable. */
