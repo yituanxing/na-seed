@@ -180,6 +180,20 @@ int main(int argc,char **argv) {
         assert(nas_vfs_read_at(&stale_reader,0,(uint8_t *)buffer,
                                sizeof(persisted)-1)==(int64_t)sizeof(persisted)-1);
         assert(!memcmp(buffer,persisted,sizeof(persisted)-1));
+        /* Separate open descriptions have independent stale snapshots:
+         * the second writer MUST use the shared live inode size, not its
+         * original fsize when appending data. Test authentic ext4 bytes. */
+        static const uint8_t appended[]="+second-open";
+        assert(nas_vfs_write_at(&stale_reader,sizeof(persisted)-1,
+                                appended,sizeof(appended)-1)==
+                                (int64_t)sizeof(appended)-1);
+        assert(nas_vfs_node_size(&created)==
+               sizeof(persisted)-1+sizeof(appended)-1);
+        assert(nas_vfs_read_at(&created,sizeof(persisted)-1,
+                               (uint8_t *)buffer,sizeof(appended)-1)==
+                               (int64_t)sizeof(appended)-1);
+        assert(!memcmp(buffer,appended,sizeof(appended)-1));
+        assert(nas_vfs_resize(&created,sizeof(persisted)-1)==0);
         assert(nas_vfs_resize(&created,6)==0);
         assert(nas_vfs_node_size(&stale_reader)==6);
         assert(nas_vfs_read_at(&stale_reader,6,(uint8_t *)buffer,1)==0);

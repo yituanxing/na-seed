@@ -50,3 +50,13 @@ keep the old device-specific stat ABI. Writable lwext4 chmod/utimens remain
 unimplemented until a safe inode-based upstream API exists; the generic VFS
 returns an explicit unsupported operation rather than silently rewriting
 an untrusted pathname.
+
+### Shared ext4 inode size over independent opens
+
+The ext4 port's positional writer and truncate handle now derive their live
+file size from the VFS inode lease; `ext4_fwrite` must not consume a stale
+`node->size` captured by an earlier independent File. The growth loop
+uses its actual current offset. The authentic ext4 host test now appends via
+a stale second File, verifies the first File observes appended data/size,
+then truncates back before original content, unlink-open and rename gates.
+This is no substitute for orphan support or a full owned dentry tree.
