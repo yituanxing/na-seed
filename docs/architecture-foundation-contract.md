@@ -260,3 +260,45 @@ uses original guest exit/provenance, host GPT CRC verification,
 partition-offset extraction, e2fsck, and persistent inode bytes.
 The previous `-x86.sh` entrypoint delegates to the single cross-ISA
 gate rather than retaining a separate implementation.
+
+## First genuine positive-Dentry and owned-Path migration (2026-10-28)
+
+The VFS now owns a positive Dentry graph keyed by parent Dentry and
+basename, and validated by the exact mount/inode incarnation. A Dentry
+holds a counted kernel VFS inode and mount reference and a parent Dentry
+reference. Objects disappear when no File, FS context or child holds
+them; there is no unbounded string-based path lookup cache.
+`struct nas_vfs_path` carries explicit (mount, mount_id, Dentry) identity
+with get/put/string lifecycle, not an absolute-path wrapper.
+
+Directory `File` descriptions bind their owned Dentry BEFORE publishing
+the FD. dup/fork share that File, releasing the Path on final close. The
+FS context holds a Path with forked reference-counted ownership and
+CLONE_FS sharing. getcwd, openat(dirfd), fchdir and task-relative namei
+use Dentry parent links rather than provider-specific reverse path
+traversal, when an owned Path exists. Each chdir/fchdir binds a Dentry to
+the exact VFS inode instead of trusting a stale pathname hint.
+
+VFS rename and unlink now acquire parent Path owners before invoking
+the provider. After success they update a Dentry's parent/name linkage
+without further filesystem lookups or fallible allocation; open child
+directory Paths automatically follow a renamed ancestor. An unlinked
+but still-open directory remains a pinned inode, but its Dentry is
+detached and cannot supply a new namespace path. Generic VFS owns this
+logic; no lwext4, RamFS or tmpfs-specific Dentry mutation callback.
+
+**Limitations:** This is an incremental but functional migration. The
+old inode-based VFS mount selector, `cwd_node`, `origin_path`,
+`nas_vfs_directory_path` and provider `directory_path` callbacks are
+retained for existing callers without owned Paths; they are not yet
+deleted. Full negative dentries, mount movement, Linux open_tree APIs,
+SMP synchronization and removal of all legacy path recovery remain
+separate and must not be claimed as implemented. Do not merge without
+the exact-head native 3-ISA QEMU and real third-party filesystem tests.
+
+**Independent acceptance:** The original unmodified upstream ext4 test
+now owns nested/duplicated directory Paths across real rename, verifies
+directory ancestor movement, reuse of the old name by a distinct inode,
+and rejection of Path string construction after unlink while references
+remain. A second test runs no-CPIO rootless mounting, Path ref sharing
+and busy-unmount without a fabricated '/' inode.

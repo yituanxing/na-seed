@@ -866,9 +866,18 @@ int main(void) {
     assert(nas_vfs_register_mount(&no_archive)==0);
     assert(nas_fs_lookup_node("/standalone/hello",true,&n,resolved)==0);
     assert(n.filesystem==&ext_mock_type && n.ino==802);
+    struct nas_vfs_path rootless={0},rootless_copy={0};
+    assert(nas_vfs_path_bind(&n,"/standalone/hello",&rootless)==0);
+    assert(nas_vfs_path_get(&rootless,&rootless_copy)==0);
+    char path_name[256];
+    assert(nas_vfs_path_string(&rootless_copy,path_name)==0);
+    assert(!strcmp(path_name,"/standalone/hello"));
     assert(nas_vfs_node_pin(&n)==0);
     assert(nas_vfs_unregister_mount(&no_archive)==-EBUSY);
     assert(nas_vfs_node_unpin(&n)==0);
+    assert(nas_vfs_unregister_mount(&no_archive)==-EBUSY);
+    assert(nas_vfs_path_put(&rootless_copy)==0);
+    assert(nas_vfs_path_put(&rootless)==0);
     assert(nas_vfs_unregister_mount(&no_archive)==0);
     archive_available=true;
     assert(nas_fs_lookup_node("/standalone/hello",true,

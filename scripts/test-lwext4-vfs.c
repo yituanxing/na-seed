@@ -302,11 +302,31 @@ int main(int argc,char **argv) {
         assert(nas_fs_lookup_node("/mnt/sandbox/vfs-directory",true,
                                   &open_directory,actual)==0);
         assert(nas_vfs_node_pin(&open_directory)==0);
+        /* Own the REAL positive Dentry and its mount, not merely the
+         * backend inode. Rename must update its parent/name in place. */
+        struct nas_vfs_path live_dir={0},duplicate_dir={0};
+        assert(nas_vfs_path_bind(&open_directory,
+                                 "/mnt/sandbox/vfs-directory",
+                                 &live_dir)==0);
+        assert(nas_vfs_path_get(&live_dir,&duplicate_dir)==0);
+        assert(nas_vfs_mkdir("/mnt/sandbox/vfs-directory/nested",0700)==0);
+        struct nas_fs_node nested_directory;
+        struct nas_vfs_path nested_path={0};
+        assert(nas_fs_lookup_node("/mnt/sandbox/vfs-directory/nested",
+                                  true,&nested_directory,actual)==0);
+        assert(nas_vfs_path_bind(&nested_directory,actual,&nested_path)==0);
         assert(nas_vfs_unlink("/mnt/sandbox/vfs-directory",0x200ULL)==-ENOTEMPTY);
         assert(nas_vfs_rename("/mnt/sandbox/vfs-directory",
                               "/mnt/sandbox/renamed-directory",0)==0);
         assert(nas_fs_lookup_node("/mnt/sandbox/vfs-directory",true,
                                   &directory,actual)==-ENOENT);
+        char dentry_absolute[256];
+        assert(nas_vfs_path_string(&live_dir,dentry_absolute)==0);
+        assert(!strcmp(dentry_absolute,"/mnt/sandbox/renamed-directory"));
+        assert(nas_vfs_path_string(&duplicate_dir,dentry_absolute)==0);
+        assert(!strcmp(dentry_absolute,"/mnt/sandbox/renamed-directory"));
+        assert(nas_vfs_path_string(&nested_path,dentry_absolute)==0);
+        assert(!strcmp(dentry_absolute,"/mnt/sandbox/renamed-directory/nested"));
         struct nas_vfs_dirent renamed_entries[8]={0};
         int renamed_n=nas_vfs_read_dir(&open_directory,0,renamed_entries,8);
         assert(renamed_n>=3);
@@ -332,10 +352,21 @@ int main(int argc,char **argv) {
                                       "/mnt/sandbox/vfs-directory",
                                       oldpath_base)==0);
         assert(!strcmp(oldpath_base,"/mnt/sandbox/renamed-directory"));
+        assert(nas_vfs_path_string(&nested_path,dentry_absolute)==0);
+        assert(!strcmp(dentry_absolute,"/mnt/sandbox/renamed-directory/nested"));
+        assert(nas_vfs_path_put(&duplicate_dir)==0);
         assert(nas_vfs_node_unpin(&open_directory)==0);
         assert(nas_vfs_unlink("/mnt/sandbox/vfs-directory",0x200ULL)==0);
+        assert(nas_vfs_unlink("/mnt/sandbox/renamed-directory/nested",
+                              0x200ULL)==0);
+        /* Unlinked directory remains a pinned inode, but can no longer
+         * provide a live name to getcwd/openat from its obsolete Dentry. */
+        assert(nas_vfs_path_string(&nested_path,dentry_absolute)==-ENOENT);
+        assert(nas_vfs_path_put(&nested_path)==0);
         assert(nas_vfs_unlink("/mnt/sandbox/renamed-directory/child",0)==0);
         assert(nas_vfs_unlink("/mnt/sandbox/renamed-directory",0x200ULL)==0);
+        assert(nas_vfs_path_string(&live_dir,dentry_absolute)==-ENOENT);
+        assert(nas_vfs_path_put(&live_dir)==0);
         /* Open but empty directory: rmdir detaches the visible name while
          * preserving this pinned inode; later path reuse is a new object. */
         assert(nas_vfs_mkdir("/mnt/sandbox/open-rmdir",0700)==0);

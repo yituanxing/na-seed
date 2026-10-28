@@ -536,6 +536,258 @@ int64_t nas_vfs_read_at(const struct nas_fs_node *node,uint64_t offset,
     int64_t got=node->filesystem->read_at(node,offset,dst,length);
     return got>=0 && (uint64_t)got>length ? -EIO : got;
 }
+/* A real positive Dentry graph, not a string wrapper. Every Dentry owns
+ * exactly one backend inode+mount lease and one parent Dentry reference;
+ * a File/FS context owns the leaf. Cache entries only survive while they
+ * have live owners. This is deliberately NOT a global unbounded negative
+ * dentry cache, nor a second filesystem implementation. */
+struct nas_vfs_dentry {
+    struct nas_vfs_dentry *next,*parent;
+    struct nas_fs_node node;
+    unsigned refs;
+    bool detached;
+    char name[256]; /* '/' root or '/mnt' for direct-ELF rootless bootstrap */
+};
+static struct nas_vfs_dentry *dentry_live;
+static bool same_vnode(const struct nas_fs_node *a,
+                       const struct nas_fs_node *b) {
+    return a->mount==b->mount && a->mount_id==b->mount_id &&
+           a->ino==b->ino && a->inode==b->inode &&
+           a->filesystem==b->filesystem;
+}
+static int dentry_ref(struct nas_vfs_dentry *entry) {
+    if(!entry || !entry->refs || entry->refs==UINT32_MAX)
+        return -EMFILE;
+    ++entry->refs;
+    return 0;
+}
+static int dentry_put(struct nas_vfs_dentry *entry) {
+    if(!entry || !entry->refs)return -EINVAL;
+    if(--entry->refs)return 0;
+    struct nas_vfs_dentry **slot=&dentry_live;
+    while(*slot && *slot!=entry)slot=&(*slot)->next;
+    if(!*slot)return -EIO;
+    *slot=entry->next;
+    struct nas_vfs_dentry *parent=entry->parent;
+    int rc=nas_vfs_node_unpin(&entry->node);
+    if(!nas_heap_free(entry))return -EIO;
+    if(parent && dentry_put(parent))return -EIO;
+    return rc;
+}
+static struct nas_vfs_dentry *dentry_find(struct nas_vfs_dentry *parent,
+                                         const char *name,
+                                         const struct nas_fs_node *node) {
+    for(struct nas_vfs_dentry *d=dentry_live;d;d=d->next) {
+        if(d->detached || d->parent!=parent || strcmp(d->name,name))
+            continue;
+        if(same_vnode(&d->node,node))return d;
+        /* The same namespace name was reused for a NEW inode. Keep
+         * the old open File identity alive, but detach its Dentry. */
+        d->detached=true;
+    }
+    return NULL;
+}
+static int dentry_acquire(struct nas_vfs_dentry *parent,const char *name,
+                          const struct nas_fs_node *inode,
+                          struct nas_vfs_dentry **result) {
+    struct nas_vfs_dentry *found=dentry_find(parent,name,inode);
+    if(found) {
+        int rc=dentry_ref(found);
+        if(!rc)*result=found;
+        return rc;
+    }
+    struct nas_vfs_dentry *d=nas_heap_calloc(1,sizeof(*d));
+    if(!d)return -ENOMEM;
+    int rc=nas_vfs_node_pin(inode);
+    if(rc) { (void)nas_heap_free(d);return rc; }
+    if(parent && (rc=dentry_ref(parent))) {
+        (void)nas_vfs_node_unpin(inode);
+        (void)nas_heap_free(d);
+        return rc;
+    }
+    size_t length=strlen(name);
+    if(length>=sizeof(d->name)) {
+        if(parent)(void)dentry_put(parent);
+        (void)nas_vfs_node_unpin(inode);
+        (void)nas_heap_free(d);
+        return -ENAMETOOLONG;
+    }
+    memcpy(d->name,name,length+1);
+    d->node=*inode;
+    d->refs=1;
+    d->parent=parent;
+    d->next=dentry_live;
+    dentry_live=d;
+    *result=d;
+    return 0;
+}
+int nas_vfs_path_bind(const struct nas_fs_node *inode,
+                      const char *canonical,struct nas_vfs_path *out) {
+    if(!inode || !canonical || !out || canonical[0]!='/')
+        return -EINVAL;
+    *out=(struct nas_vfs_path){0};
+    size_t length=strlen(canonical);
+    if(length>=256)return -ENAMETOOLONG;
+    struct nas_vfs_dentry *current=NULL;
+    char component_path[256];
+    /* Resolve the root first. If an early direct ELF has no CPIO root,
+     * an explicit bootstrap mount such as '/mnt' is a root Dentry with
+     * an absolute mountpoint name, never a fabricated '/' inode. */
+    struct nas_fs_node root;
+    char resolved[256];
+    int rc=nas_fs_lookup_node("/",true,&root,resolved);
+    if(!rc) {
+        rc=dentry_acquire(NULL,"/",&root,&current);
+        if(rc)return rc;
+    } else if(rc!=-ENOENT)return rc;
+    if(length==1) {
+        if(!current)return -ENOENT;
+        if(!same_vnode(&current->node,inode)) {
+            (void)dentry_put(current);return -ESTALE;
+        }
+    } else {
+        size_t pos=1,used=1;
+        component_path[0]='/';component_path[1]=0;
+        while(pos<length) {
+            size_t start=pos;
+            while(pos<length && canonical[pos]!='/')++pos;
+            size_t n=pos-start;
+            if(!n || (n==1 && canonical[start]=='.') ||
+               (n==2 && canonical[start]=='.' && canonical[start+1]=='.')) {
+                rc=-EINVAL;break;
+            }
+            if(used>1)component_path[used++]='/';
+            memcpy(component_path+used,canonical+start,n);
+            used+=n;component_path[used]=0;
+            struct nas_fs_node next_node;
+            rc=nas_fs_lookup_node(component_path,true,&next_node,resolved);
+            if(rc)break;
+            if(strcmp(resolved,component_path)) {rc=-ESTALE;break;}
+            struct nas_vfs_dentry *next=NULL;
+            const char *name=current ? canonical+start : component_path;
+            char basename[256];
+            if(current) {
+                memcpy(basename,name,n);
+                basename[n]=0;
+                name=basename;
+            }
+            rc=dentry_acquire(current,name,&next_node,&next);
+            if(rc)break;
+            if(current && dentry_put(current)) {
+                (void)dentry_put(next);return -EIO;
+            }
+            current=next;
+            if(pos<length)++pos;
+        }
+        if(rc) {
+            if(current)(void)dentry_put(current);
+            return rc;
+        }
+        if(!current || !same_vnode(&current->node,inode)) {
+            if(current)(void)dentry_put(current);
+            return -ESTALE;
+        }
+    }
+    out->mount=current->node.mount;
+    out->mount_id=current->node.mount_id;
+    out->dentry=current;
+    return 0;
+}
+int nas_vfs_path_get(const struct nas_vfs_path *source,
+                     struct nas_vfs_path *out) {
+    if(!source || !out || !source->dentry)return -EINVAL;
+    int rc=dentry_ref(source->dentry);
+    if(!rc)*out=*source;
+    return rc;
+}
+int nas_vfs_path_put(struct nas_vfs_path *path) {
+    if(!path || !path->dentry)return -EINVAL;
+    struct nas_vfs_dentry *d=path->dentry;
+    *path=(struct nas_vfs_path){0};
+    return dentry_put(d);
+}
+int nas_vfs_path_string(const struct nas_vfs_path *path,
+                        char absolute[256]) {
+    if(!path || !path->dentry || !absolute)return -EINVAL;
+    if(path->mount!=path->dentry->node.mount ||
+       path->mount_id!=path->dentry->node.mount_id)return -ESTALE;
+    struct nas_vfs_dentry *reverse[256];
+    unsigned n=0;
+    for(struct nas_vfs_dentry *d=path->dentry;d;d=d->parent) {
+        if(n==256)return -ENAMETOOLONG;
+        if(d->detached)return -ENOENT;
+        reverse[n++]=d;
+    }
+    unsigned used=0;
+    while(n) {
+        struct nas_vfs_dentry *d=reverse[--n];
+        const char *name=d->name;
+        size_t len=strlen(name);
+        if(!used) {
+            if(name[0]!='/')return -ESTALE;
+            if(len>=256)return -ENAMETOOLONG;
+            memcpy(absolute,name,len);
+            used=(unsigned)len;
+        } else {
+            if(used>1) {
+                if(used+1>=256)return -ENAMETOOLONG;
+                absolute[used++]='/';
+            }
+            if(used+len>=256)return -ENAMETOOLONG;
+            memcpy(absolute+used,name,len);
+            used+=(unsigned)len;
+        }
+    }
+    absolute[used]=0;
+    return 0;
+}
+/* Namespace transactions invoke these only AFTER the backend has succeeded,
+ * using parent Path owners acquired BEFORE the mutation. No allocation
+ * or pathname relookup occurs after the irreversible backend operation.
+ * A replaced/unlinked Dentry stays alive but unreachable through namei. */
+static void dentry_notice_unlink(const struct nas_vfs_path *parent,
+                                 const char *name) {
+    for(struct nas_vfs_dentry *d=dentry_live;d;d=d->next)
+        if(!d->detached && d->parent==parent->dentry &&
+           !strcmp(d->name,name))d->detached=true;
+}
+static void dentry_notice_rename(const struct nas_vfs_path *old_parent,
+                                 const char *old_name,
+                                 const struct nas_vfs_path *new_parent,
+                                 const char *new_name) {
+    if(old_parent->dentry==new_parent->dentry &&
+       !strcmp(old_name,new_name))return;
+    struct nas_vfs_dentry *moved=NULL;
+    for(struct nas_vfs_dentry *d=dentry_live;d;d=d->next)
+        if(!d->detached && d->parent==old_parent->dentry &&
+           !strcmp(d->name,old_name)) {moved=d;break;}
+    dentry_notice_unlink(new_parent,new_name);
+    if(!moved)return;
+    /* Parent ownership transfers without a fallible path reconstruction.
+     * The new parent has a live reference throughout this transaction. */
+    if(old_parent->dentry!=new_parent->dentry) {
+        if(dentry_ref(new_parent->dentry)) {
+            moved->detached=true;
+            return;
+        }
+        struct nas_vfs_dentry *previous=moved->parent;
+        moved->parent=new_parent->dentry;
+        if(previous)(void)dentry_put(previous);
+    }
+    memcpy(moved->name,new_name,strlen(new_name)+1);
+}
+static int dentry_prepare_parent(const char *full,
+                                 const struct nas_fs_node *parent,
+                                 struct nas_vfs_path *out) {
+    const char *leaf=strrchr(full,'/');
+    if(!leaf || !leaf[1])return -EINVAL;
+    char base[256];
+    size_t n=(size_t)(leaf-full);
+    if(!n)n=1;
+    memcpy(base,full,n);
+    base[n]=0;
+    return nas_vfs_path_bind(parent,base,out);
+}
 int nas_vfs_directory_path(const struct nas_fs_node *node,
                            const char *origin_hint,char absolute[256]) {
     if(!node || !node->filesystem || !node->mount || !absolute)
@@ -910,8 +1162,14 @@ int nas_vfs_unlink(const char *path,uint64_t flags) {
             return -EBUSY;
         if(looked_up && looked_up!=-ENOENT)return looked_up;
     }
-    return parent.filesystem->unlink ?
-           parent.filesystem->unlink(&parent,vfs_leaf(canonical),flags) : -EOPNOTSUPP;
+    if(!parent.filesystem->unlink)return -EOPNOTSUPP;
+    struct nas_vfs_path parent_path={0};
+    rc=dentry_prepare_parent(canonical,&parent,&parent_path);
+    if(rc)return rc;
+    rc=parent.filesystem->unlink(&parent,vfs_leaf(canonical),flags);
+    if(!rc)dentry_notice_unlink(&parent_path,vfs_leaf(canonical));
+    if(nas_vfs_path_put(&parent_path))return -EIO;
+    return rc;
 }
 int nas_vfs_rename(const char *oldpath,const char *newpath,uint64_t flags) {
     struct nas_fs_node old_parent,new_parent;
@@ -956,10 +1214,23 @@ int nas_vfs_rename(const char *oldpath,const char *newpath,uint64_t flags) {
         }
         if(found && found!=-ENOENT)return found;
     }
-    return old_parent.filesystem->rename ?
-           old_parent.filesystem->rename(&old_parent,vfs_leaf(old_canonical),
-                                          &new_parent,vfs_leaf(new_canonical),
-                                          flags) : -EOPNOTSUPP;
+    if(!old_parent.filesystem->rename)return -EOPNOTSUPP;
+    struct nas_vfs_path from={0},to={0};
+    rc=dentry_prepare_parent(old_canonical,&old_parent,&from);
+    if(rc)return rc;
+    rc=dentry_prepare_parent(new_canonical,&new_parent,&to);
+    if(rc) {
+        (void)nas_vfs_path_put(&from);
+        return rc;
+    }
+    rc=old_parent.filesystem->rename(&old_parent,vfs_leaf(old_canonical),
+                                      &new_parent,vfs_leaf(new_canonical),
+                                      flags);
+    if(!rc)dentry_notice_rename(&from,vfs_leaf(old_canonical),
+                                &to,vfs_leaf(new_canonical));
+    int dropped=nas_vfs_path_put(&from);
+    if(nas_vfs_path_put(&to) || dropped)return -EIO;
+    return rc;
 }
 int nas_vfs_link(const char *oldpath,const char *newpath) {
     char resolved[256],canonical[256];

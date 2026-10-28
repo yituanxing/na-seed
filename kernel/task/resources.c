@@ -39,6 +39,11 @@ struct nas_fs_context *nas_fs_context_copy(const struct nas_fs_context *src) {
         fs->cwd_node=src->cwd_node;
         fs->cwd_pinned=true;
     }
+    if(src->cwd_path.dentry &&
+       nas_vfs_path_get(&src->cwd_path,&fs->cwd_path)) {
+        nas_fs_context_put(fs);
+        return 0;
+    }
     return fs;
 }
 struct nas_fs_context *nas_fs_context_get(struct nas_fs_context *fs) {
@@ -50,6 +55,8 @@ struct nas_fs_context *nas_fs_context_get(struct nas_fs_context *fs) {
 void nas_fs_context_put(struct nas_fs_context *fs) {
     if(!fs || !fs->refs) nas_fail("FS context invalid put");
     if(!--fs->refs) {
+        if(fs->cwd_path.dentry && nas_vfs_path_put(&fs->cwd_path))
+            nas_fail("FS cwd dentry pin corrupted");
         if(fs->cwd_pinned && nas_vfs_node_unpin(&fs->cwd_node))
             nas_fail("FS cwd mount pin corrupted");
         memset(fs,0,sizeof(*fs));

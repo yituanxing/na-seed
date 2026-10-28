@@ -75,6 +75,10 @@ struct nas_open_file {
      * and sockets leave these empty. fork/dup do not copy the inode view. */
     struct nas_fs_node vnode;
     bool vnode_pinned;
+    /* Owned positive Dentry and mount Path for directory openat/fchdir.
+     * The existing vnode pin remains the independent File/inode owner;
+     * dup/fork share this Dentry via their shared open description. */
+    struct nas_vfs_path vpath;
     const struct limine_file *boot_file;
     /* Legacy procfs shadow PID/TGID/FD fields and bootfs entry pointer
      * were removed: all mounted File identities live in vnode+mount.

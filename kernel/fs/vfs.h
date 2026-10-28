@@ -7,6 +7,23 @@
 struct nas_fs_node;
 struct nas_vfs_mount;
 struct nas_posix_locks;
+/* Live positive Dentry identity: refcounted parent/name/inode, with its
+ * backend mount pinned for its exact incarnation. One nas_vfs_path
+ * owns one dentry reference; get/put duplicate/release it explicitly.
+ * The mount field is a typed identity, not a string prefix. */
+struct nas_vfs_dentry;
+struct nas_vfs_path {
+    const struct nas_vfs_mount *mount;
+    uint64_t mount_id;
+    struct nas_vfs_dentry *dentry;
+};
+int nas_vfs_path_bind(const struct nas_fs_node *inode,
+                      const char *canonical,struct nas_vfs_path *out);
+int nas_vfs_path_get(const struct nas_vfs_path *source,
+                     struct nas_vfs_path *out);
+int nas_vfs_path_put(struct nas_vfs_path *path);
+int nas_vfs_path_string(const struct nas_vfs_path *path,
+                        char absolute[256]);
 /* Backend-owned directory metadata in kernel memory, independent of
  * Linux userspace dirent64 layout or any concrete filesystem structures. */
 struct nas_vfs_dirent {

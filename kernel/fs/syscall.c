@@ -192,6 +192,9 @@ void nas_fs_description_final_close(unsigned slot) {
     /* flock belongs to the SHARED File, not the current task's FD.
      * dup/fork/SCM_RIGHTS release this lock only on final close. */
     nas_vfs_release_flock(&nas_open_files[slot]);
+    if(nas_open_files[slot].vpath.dentry &&
+       nas_vfs_path_put(&nas_open_files[slot].vpath))
+        nas_fs_fail("File dentry pin corrupted at final close");
     if(nas_open_files[slot].vnode_pinned &&
        nas_vfs_node_unpin(&nas_open_files[slot].vnode))
         nas_fs_fail("File mount pin corrupted at final close");
@@ -497,6 +500,17 @@ uint64_t nas_fs_open_path(const char *path,uint64_t native_flags,
             nas_pty_attach_controlling(slot);
         if(err)return (uint64_t)(int64_t)err;
     }
+    /* A directory File owns a positive Dentry/Path BEFORE publishing its
+     * descriptor. This is the same inode returned by the VFS open
+     * transaction, not a second independent provider open. */
+    struct nas_vfs_path directory_path={0};
+    if(have_node && opened_node.is_dir) {
+        int path_rc=nas_vfs_path_bind(&opened_node,canonical,&directory_path);
+        if(path_rc) {
+            (void)nas_vfs_node_unpin(&opened_node);
+            return (uint64_t)(int64_t)path_rc;
+        }
+    }
     if(!nas_fd_install_new(nas_current_task,fd,slot,kind,
                            flags&(NAS_LINUX_O_PATH|3ULL|0x800ULL|0x400ULL),
                            !!(flags&0x80000ULL)))
@@ -504,6 +518,7 @@ uint64_t nas_fs_open_path(const char *path,uint64_t native_flags,
     if(have_node) {
         nas_open_files[slot].vnode=opened_node;
         nas_open_files[slot].vnode_pinned=true;
+        nas_open_files[slot].vpath=directory_path;
     }
     nas_open_files[slot].boot_file=real_file;
     /* Diagnostic hint only. No open/read/stat/dirfd may rely on an old

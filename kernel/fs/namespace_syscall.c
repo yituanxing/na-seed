@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "../errno.h"
+#include "../panic.h"
 #include "../task.h"
 #include "../fd.h"
 #include "../bootfs.h"
@@ -69,7 +70,12 @@ uint64_t nas_fs_resolve_path(uint64_t dirfd, uint64_t pathname,
          * GNU libc/BusyBox may hand us 0x00000000ffffff9c. */
         int64_t fd=nas_linux_signed_dirfd(dirfd);
         if(fd==-100) {
-            if(TASK.fs->cwd_pinned) {
+            if(TASK.fs->cwd_path.dentry) {
+                int err=nas_vfs_path_string(&TASK.fs->cwd_path,inode_base);
+                if(err)return (uint64_t)(int64_t)err;
+                base=inode_base;
+            } else if(TASK.fs->cwd_pinned) {
+                /* Historical direct test boot without a Path owner. */
                 int err=nas_vfs_directory_path(&TASK.fs->cwd_node,
                                                 current_workdir,inode_base);
                 if(err)return (uint64_t)(int64_t)err;
@@ -85,8 +91,10 @@ uint64_t nas_fs_resolve_path(uint64_t dirfd, uint64_t pathname,
              * No procfs/tmpfs/archive FD type is privileged here. */
             if(!opened->vnode_pinned || !opened->vnode.is_dir)
                 return (uint64_t)-ENOTDIR;
-            int err=nas_vfs_directory_path(&opened->vnode,
-                                            opened->origin_path,inode_base);
+            int err=opened->vpath.dentry ?
+                nas_vfs_path_string(&opened->vpath,inode_base) :
+                nas_vfs_directory_path(&opened->vnode,
+                                       opened->origin_path,inode_base);
             if(err)return (uint64_t)(int64_t)err;
             base=inode_base;
         }
@@ -163,7 +171,12 @@ static uint64_t sys_linkat_tmp(uint64_t olddirfd,uint64_t oldptr,
 }
 
 static uint64_t sys_getcwd_root(uint64_t buffer, uint64_t size) {
-    if(TASK.fs->cwd_pinned) {
+    if(TASK.fs->cwd_path.dentry) {
+        char live[256];
+        int err=nas_vfs_path_string(&TASK.fs->cwd_path,live);
+        if(err)return (uint64_t)(int64_t)err;
+        memcpy(current_workdir,live,strlen(live)+1);
+    } else if(TASK.fs->cwd_pinned) {
         char live[256];
         int err=nas_vfs_directory_path(&TASK.fs->cwd_node,current_workdir,live);
         if(err)return (uint64_t)(int64_t)err;
@@ -182,19 +195,26 @@ static uint64_t sys_getcwd_root(uint64_t buffer, uint64_t size) {
 static uint64_t set_cwd_from_node(const struct nas_fs_node *node,
                                   const char *hint) {
     if(!node || !node->is_dir)return (uint64_t)-ENOTDIR;
-    char live[256];
-    int rc=nas_vfs_directory_path(node,hint,live);
+    /* The caller resolved the canonical name (or an owned File Path)
+     * already. Bind its Dentry to the EXACT inode; no provider reverse
+     * lookup, pathname hint reopening or independent inode traversal. */
+    struct nas_vfs_path next_path={0};
+    int rc=nas_vfs_path_bind(node,hint,&next_path);
     if(rc)return (uint64_t)(int64_t)rc;
     rc=nas_vfs_node_pin(node);
-    if(rc)return (uint64_t)(int64_t)rc;
-    struct nas_fs_context *fs=TASK.fs;
-    if(fs->cwd_pinned && nas_vfs_node_unpin(&fs->cwd_node)) {
-        (void)nas_vfs_node_unpin(node);
-        return (uint64_t)-EIO;
+    if(rc) {
+        (void)nas_vfs_path_put(&next_path);
+        return (uint64_t)(int64_t)rc;
     }
-    memcpy(current_workdir,live,strlen(live)+1);
+    struct nas_fs_context *fs=TASK.fs;
+    if(fs->cwd_path.dentry && nas_vfs_path_put(&fs->cwd_path))
+        nas_fail("FS cwd path reference corrupted");
+    if(fs->cwd_pinned && nas_vfs_node_unpin(&fs->cwd_node))
+        nas_fail("FS cwd inode reference corrupted");
+    memcpy(current_workdir,hint,strlen(hint)+1);
     fs->cwd_node=*node;
     fs->cwd_pinned=true;
+    fs->cwd_path=next_path;
     return 0;
 }
 static uint64_t set_cwd_from_path(const char *path) {
@@ -218,7 +238,14 @@ static uint64_t sys_fchdir(uint64_t fd) {
         return (uint64_t)-ENOTDIR;
     /* A shared File's inode remains the same object after rename and
      * dup/fork; cwd gets its own pin, never a reopened path snapshot. */
-    return set_cwd_from_node(&opened->vnode,opened->origin_path);
+    /* Dentry ownership, not reverse provider traversal, supplies a live
+     * fchdir path after rename; never reopen a reused origin_path. */
+    char live[256];
+    int rc=opened->vpath.dentry ?
+        nas_vfs_path_string(&opened->vpath,live) :
+        nas_vfs_directory_path(&opened->vnode,opened->origin_path,live);
+    return rc ? (uint64_t)(int64_t)rc :
+                set_cwd_from_node(&opened->vnode,live);
 }
 
 
