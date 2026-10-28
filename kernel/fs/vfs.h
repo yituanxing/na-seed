@@ -95,6 +95,11 @@ struct nas_vfs_mount {
     /* Legacy /tmp overlay can still expose CPIO descendants; real disk
      * mounts must never use this compatibility fallback. */
     bool fallback_on_miss;
+    /* Internal early-boot VFS mounts may explicitly provide a virtual
+     * mountpoint without a covered directory. Ordinary mounts require an
+     * existing directory, as Linux mount(2) does. Virtual boot names are
+     * not yet exposed through the parent filesystem's readdir. */
+    bool allow_missing_mountpoint;
     bool permanent; /* bootstrap filesystem mounts cannot be detached */
     bool read_only;  /* per-mount restriction */
     void *private_data; /* filesystem device context, owned by adapter */

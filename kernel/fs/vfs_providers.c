@@ -427,8 +427,10 @@ static const struct nas_vfs_type proc_type={
 };
 static const struct nas_vfs_mount defaults[]={
     {.mountpoint="/",.type=&boot_type,.permanent=true},
-    {.mountpoint="/tmp",.type=&tmp_type,.fallback_on_miss=true,.permanent=true},
-    {.mountpoint="/proc",.type=&proc_type,.fallback_on_miss=true,.permanent=true}
+    {.mountpoint="/tmp",.type=&tmp_type,.fallback_on_miss=true,
+     .allow_missing_mountpoint=true,.permanent=true},
+    {.mountpoint="/proc",.type=&proc_type,.fallback_on_miss=true,
+     .allow_missing_mountpoint=true,.permanent=true}
 };
 void nas_vfs_register_default_mounts(void) {
     for(unsigned i=0;i<sizeof(defaults)/sizeof(defaults[0]);i++)

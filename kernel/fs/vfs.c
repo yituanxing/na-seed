@@ -261,7 +261,10 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
     unsigned slot=NAS_VFS_MOUNT_LIMIT;
     for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++) {
         if(mounts[i].used) {
-            if(!strcmp(mounts[i].path,mount->mountpoint))return -EEXIST;
+            /* One registration token owns at most one live mount, even if
+             * its caller later mutates the borrowed source descriptor. */
+            if(mounts[i].registration==mount ||
+               !strcmp(mounts[i].path,mount->mountpoint))return -EEXIST;
         } else if(slot==NAS_VFS_MOUNT_LIMIT)slot=i;
     }
     if(slot==NAS_VFS_MOUNT_LIMIT)return -ENOSPC;
@@ -284,10 +287,10 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
         parent_path[len]=0;
         int parent_rc=nas_fs_lookup_node(parent_path,true,&parent,resolved);
         if(parent_rc==-ENOENT) {
-            /* CPIO-less direct-ELF boots have no root dentry but still
-             * attach a supplied disk at /mnt. Do not extend this exception
-             * to arbitrary missing ancestor components such as /x/y. */
-            if(strcmp(parent_path,"/"))return -ENOENT;
+            /* A root-less bootstrap is opt-in, not an implicit behavior
+             * of ordinary mounts. Never synthesize intermediate parents. */
+            if(!mount->allow_missing_mountpoint ||
+               strcmp(parent_path,"/"))return -ENOENT;
             struct nas_fs_node root;
             int root_rc=nas_vfs_lookup("/",&root);
             if(root_rc!=-ENOENT)return root_rc?root_rc:-ENOENT;
@@ -320,6 +323,10 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
             has_covered=true;
         }
         if(covered_rc && covered_rc!=-ENOENT)return covered_rc;
+        /* Missing final targets are legal ONLY for explicitly designated
+         * early-boot virtual attachments, never silently for mount(2). */
+        if(covered_rc==-ENOENT && !mount->allow_missing_mountpoint)
+            return -ENOENT;
     }
     if(next_device_id==UINT64_MAX)return -ENOSPC;
     struct mount_slot attached={0};

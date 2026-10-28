@@ -438,7 +438,9 @@ int nas_ramfs_vfs_mount(struct nas_ramfs_vfs *ctx,const char *point) {
         return -ENOMEM;
     }
     ctx->mount=(struct nas_vfs_mount){
-        .mountpoint=point,.type=&ramfs_type,.private_data=ctx
+        .mountpoint=point,.type=&ramfs_type,
+        .allow_missing_mountpoint=true, /* internal early-boot /ramfs */
+        .private_data=ctx
     };
     ctx->mounted=true;
     int rc=nas_vfs_register_mount(&ctx->mount);

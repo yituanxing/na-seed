@@ -107,3 +107,20 @@ to silently rewrite until green.
 This is an architecture assessment plus targeted implementation,
 not a claim that a fully Linux-equivalent VFS or dentry cache already
 exists.
+
+## Explicit bootstrap-only virtual mountpoints (2026-10-28)
+
+The previous shared mount registry could silently attach a filesystem over a
+nonexistent directory. Ordinary mount registration now requires an existing
+directory at its final mountpoint and refuses missing root or covered names
+with ENOENT. Internal early-boot registrations explicitly opt into
+`allow_missing_mountpoint` for /tmp, /proc, /mnt, /flash and /ramfs; they
+still cannot invent missing intermediate ancestors. This is not a public
+Linux mount(2) implementation, and synthetic names do not yet appear in
+the parent's getdents64 (an owned dentry/mount-tree gap). Re-registering
+the same live token with a different pathname is rejected, preserving
+unambiguous VFS-owned mount/unmount identity.
+
+The common host VFS acceptance now exercises missing-target rejection,
+explicit virtual bootstrap lookup/unmount, and duplicate token rejection
+after registration descriptor mutation. Vendor source remains unchanged.

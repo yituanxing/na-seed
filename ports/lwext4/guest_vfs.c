@@ -799,6 +799,7 @@ int nas_lwext4_device_mount(struct nas_lwext4_mount *ctx,
     ctx->mount=(struct nas_vfs_mount){
         .mountpoint=ctx->mount_point,
         .type=&ext_type,
+        .allow_missing_mountpoint=true, /* internal early-boot /mnt */
         .read_only=!writable,
         .private_data=ctx
     };

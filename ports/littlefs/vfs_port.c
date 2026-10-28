@@ -174,6 +174,7 @@ int nas_littlefs_vfs_mount(struct nas_littlefs_vfs *ctx,
     ctx->count=0;
     ctx->mount=(struct nas_vfs_mount){
         .mountpoint=ctx->mount_point,.type=&type,
+        .allow_missing_mountpoint=true, /* internal early-boot /flash */
         .read_only=true,.private_data=ctx
     };
     ctx->mounted=true;

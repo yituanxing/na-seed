@@ -676,6 +676,16 @@ int main(void) {
     assert(nas_vfs_register_mount(&bad_mount)==-ENOTDIR);
     bad_mount.mountpoint="/missing/child";
     assert(nas_vfs_register_mount(&bad_mount)==-ENOENT);
+    /* Ordinary mounts cannot invent an absent covered dentry. An
+     * explicitly marked bootstrap can, and remains detachable. */
+    bad_mount.mountpoint="/tmp/boot-only-mount";
+    assert(nas_vfs_register_mount(&bad_mount)==-ENOENT);
+    bad_mount.allow_missing_mountpoint=true;
+    assert(nas_vfs_register_mount(&bad_mount)==0);
+    assert(nas_fs_lookup_node("/tmp/boot-only-mount",true,&n,resolved)==0);
+    assert(n.filesystem==&ext_mock_type);
+    assert(nas_vfs_unregister_mount(&bad_mount)==0);
+    bad_mount.allow_missing_mountpoint=false;
     bad_mount.mountpoint="/bin/demo/child";
     assert(nas_vfs_register_mount(&bad_mount)==-ENOTDIR);
     /* Linux mount attachment has a covered parent dentry, not an alias
@@ -737,13 +747,15 @@ int main(void) {
     assert(nas_vfs_node_device(&old_mount_incarnation)==0);
     static char alias_path[32]="/mnt-alias";
     static struct nas_vfs_mount alias_mount={
-        .mountpoint=alias_path,.type=&ext_mock_type
+        .mountpoint=alias_path,.type=&ext_mock_type,
+        .allow_missing_mountpoint=true
     };
     assert(nas_vfs_register_mount(&alias_mount)==0);
     /* Registration copies an OWNED superblock and pathname. Mutation of
      * the caller's old mount descriptor cannot retarget an attached
      * filesystem, change its backend or trick unmount path checks. */
     alias_mount.mountpoint="/wrong-reused-descriptor";
+    assert(nas_vfs_register_mount(&alias_mount)==-EEXIST);
     alias_mount.type=NULL;
     memcpy(alias_path,"/wrong-stale",13);
     struct nas_fs_node first,second;
@@ -782,7 +794,8 @@ int main(void) {
     assert(nas_vfs_lookup_step(&regular,"/bin/demo/mounted","mounted",
                               &found)==-ENOTDIR);
     static const struct nas_vfs_mount nested_mount={
-        .mountpoint="/mnt/nested",.type=&ext_mock_type
+        .mountpoint="/mnt/nested",.type=&ext_mock_type,
+        .allow_missing_mountpoint=true
     };
     assert(nas_vfs_register_mount(&nested_mount)==0);
     /* A new attachment reuses the freed alias slot, not its old device
