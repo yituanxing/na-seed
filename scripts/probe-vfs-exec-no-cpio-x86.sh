@@ -17,6 +17,12 @@ disk="$work/real-ext4.img"
 cp "$base" "$disk"
 # debugfs may return a zero code on a failed command; compare actual bytes.
 debugfs -w -R "write $work/busybox /busybox" "$disk" >"$work/debugfs-write.log" 2>&1
+# debugfs creates regular files with non-executable default permissions.
+# Linux execve must honor inode mode; explicitly install a genuine 0755
+# executable file on the independent ext4 drive (not a fake VFS stat).
+debugfs -w -R "set_inode_field /busybox mode 0100755" "$disk" >"$work/debugfs-mode.log" 2>&1
+debugfs -R "stat /busybox" "$disk" >"$work/debugfs-stat.log" 2>&1
+grep -Eq 'Type: regular.*Mode: +0755' "$work/debugfs-stat.log"
 debugfs -R "dump /busybox $work/drive-busybox" "$disk" >"$work/debugfs-dump.log" 2>&1
 cmp "$work/busybox" "$work/drive-busybox"
 export NAS_VIRTIO_BLK_IMAGE="$disk"
