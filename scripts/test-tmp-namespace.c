@@ -49,6 +49,13 @@ bool bootfs_is_dir(const struct bootfs_entry *e) {
     return e && (e->mode & 0170000U)==0040000U;
 }
 struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
+/* M63 links the actual tmpfs data/namespace objects without VFS to keep
+ * its namespace test isolated. Model only the VFS owner signal here; the
+ * separate generic VFS fixture tests the REAL refcounted lease table. */
+static const void *borrowed_vfs_pin;
+bool nas_vfs_inode_is_pinned(const void *identity) {
+    return identity && identity==borrowed_vfs_pin;
+}
 static struct nas_task cwd_task;
 static struct nas_fs_context cwd_fs;
 struct nas_task *nas_task_at(unsigned n) {
@@ -134,6 +141,17 @@ int main(void) {
     assert(tmp_unlink("/tmp/moved/sub",0x200ULL)==0);
     assert(tmp_unlink("/tmp/moved",0x200ULL)==0);
     assert(!tmp_find("/tmp/moved"));
+    /* A cwd or another generic VFS owner pins a tmpfs inode even when no
+     * File slot is open. Last-link rmdir must NOT recycle its memory. */
+    assert(tmp_mkdir("/tmp/owned-orphan",0700)==0);
+    struct nas_tmp_file *orphan=tmp_find("/tmp/owned-orphan");
+    assert(orphan && orphan->used);
+    borrowed_vfs_pin=orphan;
+    assert(tmp_unlink("/tmp/owned-orphan",0x200ULL)==0);
+    assert(orphan->used && orphan->nlink==0 && nas_vfs_inode_is_pinned(orphan));
+    borrowed_vfs_pin=0;
+    tmp_inode_discard(orphan); /* precisely the final generic unpin hook */
+    assert(!orphan->used);
     assert(frame_allocated>=frame_freed);
     puts("[M63 TMP PASS] dentry/inode, real hardlinks, rename, cwd, unlink/open, symlink");
     return 0;
