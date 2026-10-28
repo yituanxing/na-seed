@@ -241,9 +241,11 @@ static uint64_t sys_utimensat_file(uint64_t dirfd, uint64_t pathname,
         return (uint64_t)-EINVAL;
     struct nas_fs_node vnode={0};
     if (!pathname) {
-        if (dirfd >= NAS_FD_LIMIT || TASK.fds->entries[dirfd].kind == FD_CLOSED)
+        int64_t fd=nas_linux_signed_dirfd(dirfd);
+        if(fd<0 || (uint64_t)fd>=NAS_FD_LIMIT ||
+           TASK.fds->entries[fd].kind==FD_CLOSED)
             return (uint64_t)-EBADF;
-        const struct nas_open_file *opened=&nas_open_files[TASK.fds->entries[dirfd].slot];
+        const struct nas_open_file *opened=&nas_open_files[TASK.fds->entries[fd].slot];
         if(!opened->vnode_pinned)return (uint64_t)-EBADF;
         vnode=opened->vnode;
     } else {
@@ -284,8 +286,22 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
         return (uint64_t)-EINVAL;
     uint8_t first;
     if (!nas_user_read_bytes(pathname, &first, 1)) return (uint64_t)-EFAULT;
-    if (first == 0 && (flags & AT_EMPTY_PATH))
-        return sys_fstat_boot(dirfd, statbuf);
+    if (first == 0 && (flags & AT_EMPTY_PATH)) {
+        int64_t fd=nas_linux_signed_dirfd(dirfd);
+        if(fd==-100) {
+            /* Linux AT_FDCWD + AT_EMPTY_PATH refers to the current
+             * directory's inode, not an invalid file descriptor. */
+            if(TASK.fs->cwd_pinned)
+                return write_mounted_stat(&TASK.fs->cwd_node,statbuf);
+            struct nas_fs_node cwd;
+            char canonical[256];
+            int err=nas_fs_lookup_node(TASK.fs->cwd,true,&cwd,canonical);
+            return err ? (uint64_t)(int64_t)err :
+                         write_mounted_stat(&cwd,statbuf);
+        }
+        return fd<0 ? (uint64_t)-EBADF :
+                      sys_fstat_boot((uint64_t)fd,statbuf);
+    }
     char path[256];
     uint64_t result = nas_fs_resolve_path(dirfd, pathname, path);
     if ((int64_t)result < 0) return result;

@@ -8,6 +8,7 @@
 #include "../bootfs.h"
 #include "../tmpfs.h"
 #include "../path.h"
+#include "../arch/linux_fcntl_abi.h"
 #include "../lib/string.h"
 #include "../mm/usercopy.h"
 #include "../arch/mmu.h"
@@ -63,7 +64,11 @@ uint64_t nas_fs_resolve_path(uint64_t dirfd, uint64_t pathname,
     const char *base=NULL;
     char inode_base[256];
     if(src[0]!='/') {
-        if(dirfd==(uint64_t)-100) {
+        /* *at syscall dirfd is a native int, not a native pointer/long.
+         * Do not compare raw 64-bit syscall registers against (u64)-100:
+         * GNU libc/BusyBox may hand us 0x00000000ffffff9c. */
+        int64_t fd=nas_linux_signed_dirfd(dirfd);
+        if(fd==-100) {
             if(TASK.fs->cwd_pinned) {
                 int err=nas_vfs_directory_path(&TASK.fs->cwd_node,
                                                 current_workdir,inode_base);
@@ -71,11 +76,11 @@ uint64_t nas_fs_resolve_path(uint64_t dirfd, uint64_t pathname,
                 base=inode_base;
             } else base=current_workdir;
         } else {
-            if(dirfd>=NAS_FD_LIMIT ||
-               TASK.fds->entries[dirfd].kind==FD_CLOSED)
+            if(fd<0 || (uint64_t)fd>=NAS_FD_LIMIT ||
+               TASK.fds->entries[fd].kind==FD_CLOSED)
                 return (uint64_t)-EBADF;
             const struct nas_open_file *opened=
-                &nas_open_files[TASK.fds->entries[dirfd].slot];
+                &nas_open_files[TASK.fds->entries[fd].slot];
             /* Linux openat(dirfd) uses the file's owned directory path.
              * No procfs/tmpfs/archive FD type is privileged here. */
             if(!opened->vnode_pinned || !opened->vnode.is_dir)

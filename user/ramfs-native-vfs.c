@@ -8,10 +8,12 @@
  * only UNLINKAT was appended without disturbing existing syscall IDs. */
 enum { OP_OPENAT, OP_READ, OP_WRITE, OP_FSYNC, OP_LSEEK, OP_CLOSE,
        OP_EXIT, OP_GETDENTS64, OP_MKDIRAT, OP_RENAMEAT, OP_FCHDIR,
-       OP_GETCWD, OP_SYMLINKAT, OP_UNLINKAT };
+       OP_GETCWD, OP_SYMLINKAT, OP_UNLINKAT, OP_NEWFSTATAT };
 extern long guest_syscall(long op,long a,long b,long c,long d);
 static const char old_path[]="/ramfs/native-source";
 static const char moved_path[]="/ramfs/native-renamed";
+static const char relative_moved[]="native-renamed";
+static const char empty_path[]="";
 static const char parent_path[]="/ramfs/held";
 static const char moved_parent[]="/ramfs/relocated";
 static const char new_child[]="child";
@@ -23,6 +25,7 @@ static const char child_data[]="dirfd-stays-on-original-inode";
 static const char pass[]="[PASS] RAMFS portable native Linux syscalls: open-unlink/orphan/rename/dirfd/getdents\n";
 static const char error[]="[RAMFS NATIVE DIAG] stage=";
 static unsigned char buffer[1024];
+static unsigned char stat_bytes[256];
 static char cwd[256];
 static int same(const unsigned char *a,const char *b,unsigned n) {
     for(unsigned i=0;i<n;i++)if(a[i]!=(unsigned char)b[i])return 0;
@@ -81,6 +84,25 @@ __attribute__((noreturn)) void guest_main(void) {
     if(guest_syscall(OP_RENAMEAT,-100,(long)(uintptr_t)old_path,
                      -100,(long)(uintptr_t)moved_path)!=0)goto failed;
     if(guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)old_path,0,0)!=-ENOENT)
+        goto failed;
+    /* Genuine *at ABI regression: the dirfd parameter is a C int.
+     * Both 0x00000000ffffff9c and 64-bit -100 denote AT_FDCWD.
+     * Test relative lstat through the same ABI BusyBox tar -C uses. */
+    if(guest_syscall(OP_FCHDIR,root,0,0,0)!=0)goto failed;
+    if(guest_syscall(OP_NEWFSTATAT,0x00000000ffffff9cULL,
+        (long)(uintptr_t)relative_moved,(long)(uintptr_t)stat_bytes,0)!=0)
+        goto failed;
+    if(guest_syscall(OP_NEWFSTATAT,-100,
+        (long)(uintptr_t)relative_moved,(long)(uintptr_t)stat_bytes,0)!=0)
+        goto failed;
+    if(guest_syscall(OP_NEWFSTATAT,root,
+        (long)(uintptr_t)relative_moved,(long)(uintptr_t)stat_bytes,0)!=0)
+        goto failed;
+    if(guest_syscall(OP_NEWFSTATAT,0x00000000ffffff9cULL,
+        (long)(uintptr_t)empty_path,(long)(uintptr_t)stat_bytes,0x1000)!=0)
+        goto failed;
+    if(guest_syscall(OP_NEWFSTATAT,0x00000000ffffff9dULL,
+        (long)(uintptr_t)relative_moved,(long)(uintptr_t)stat_bytes,0)!=-EBADF)
         goto failed;
     stage=11;
     if(guest_syscall(OP_LSEEK,reader,0,0,0)!=0)goto failed;

@@ -48,3 +48,27 @@ persistence and mmap remain separate capabilities to address based on
 actual application requirements. Linux-host acceptance provides
 behavioral reference, not proof of identical inode allocation or
 security behavior.
+
+### Real BusyBox tar -C catches an LP64 *at syscall ABI defect
+
+The first genuine original Debian BusyBox 1.37.0 archive workload
+was compared with Linux-host output, then failed inside NaSeed x86 QEMU
+as `tar: src: Bad file descriptor`. Original `recursive_action.c`
+calls `lstat("src")` after tar changes cwd via `-C`; the earlier
+absolute-path `find/cp/mv` stages passed, isolating the relative
+`newfstatat(AT_FDCWD,...)` behavior. NaSeed's common namei input
+compared the RAW 64-bit register to a 64-bit `-100`, although Linux
+defines this syscall argument as a signed **int**. Zero extension of
+`AT_FDCWD` gives `0x00000000ffffff9c` and was incorrectly rejected
+as an out-of-range FD. One ABI helper now sign-extends only the low 32
+bits, shared across namespace/metadata callers and all three ISA
+backends. This also aligns `AT_EMPTY_PATH` with cwd inode ownership.
+No VFS inode/dentry, backend or BusyBox source has been special-cased.
+
+The existing portable RamFS ring3 ELF now explicitly tests both
+zero- and sign-extended `AT_FDCWD` via the real `newfstatat` syscall,
+an owned directory FD, `AT_EMPTY_PATH` on cwd and rejection of `-99`.
+The native syscall ABI vector appends this operation without changing
+old indices on x86-64/RV64/AArch64. Actual BusyBox tar/extract remains
+the end-to-end acceptance. The host original BusyBox oracle PASSED;
+the exact-head QEMU test must pass before claiming defect closure.

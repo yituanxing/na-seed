@@ -3,6 +3,16 @@
 #include <stdbool.h>
 #include <stdint.h>
 #define NAS_LINUX_O_PATH 0x200000ULL
+/* Linux *at syscalls declare dfd as an int (32 bits), even on LP64.
+ * A real statically linked libc may zero-extend negative AT_FDCWD
+ * (0x00000000ffffff9c) instead of using a 64-bit -100 constant.
+ * Decode exactly the low 32 bits ONCE, without leaking architecture
+ * register-width details into VFS or filesystem providers. */
+static inline int64_t nas_linux_signed_dirfd(uint64_t raw) {
+    uint32_t low=(uint32_t)raw;
+    return (low&0x80000000U) ? (int64_t)low-0x100000000LL :
+                               (int64_t)low;
+}
 /* This is the NATIVE userspace UAPI bit, not the kernel's common
  * post-translation value. AArch64 uses a different O_DIRECTORY bit.
  * Expose the difference here, next to the audited conversion routine,
