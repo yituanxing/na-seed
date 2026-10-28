@@ -465,36 +465,53 @@ int main(void) {
     assert(nas_fs_lookup_node("/tmp/opened",true,
                               &opened_directory,resolved)==0);
     assert(nas_vfs_node_pin(&opened_directory)==0);
+    struct nas_vfs_path owned_open_dir={0};
+    assert(nas_vfs_path_bind(&opened_directory,"/tmp/opened",
+                             &owned_open_dir)==0);
     assert(nas_vfs_rename("/tmp/opened","/tmp/renamed-opened",0)==0);
     assert(nas_fs_lookup_node("/tmp/opened",true,&n,resolved)==-ENOENT);
     assert(nas_vfs_read_dir(&opened_directory,
                             0,records,8)==3);
     assert(!strcmp(records[2].name,"child") && records[2].ino==5106);
     char path_from_inode[256];
-    assert(nas_vfs_directory_path(&opened_directory,"/tmp/opened",
-                                  path_from_inode)==0);
+    assert(nas_vfs_path_string(&owned_open_dir,path_from_inode)==0);
     assert(!strcmp(path_from_inode,"/tmp/renamed-opened"));
     struct nas_fs_node read_only_dir;
     assert(nas_fs_lookup_node("/bin",true,&read_only_dir,resolved)==0);
-    assert(nas_vfs_directory_path(&read_only_dir,"/invalid",path_from_inode)==0);
+    struct nas_vfs_path read_only_path={0};
+    assert(nas_vfs_path_bind(&read_only_dir,"/bin",&read_only_path)==0);
+    assert(nas_vfs_path_string(&read_only_path,path_from_inode)==0);
     assert(!strcmp(path_from_inode,"/bin"));
+    assert(nas_vfs_path_put(&read_only_path)==0);
     assert(nas_vfs_node_unpin(&opened_directory)==0);
-    /* Even with no live lease, a recycled (mount,ino) must not make a
-     * different backend inode valid for dirfd/cwd-relative pathwalk. */
+    /* Even when the old backend address is recycled, a forged inode
+     * cannot bind a Dentry by claiming its previous canonical name. */
     struct nas_fs_node recycled_directory=opened_directory;
     recycled_directory.inode=&fixture_open_child;
-    assert(nas_vfs_directory_path(&recycled_directory,
-                "/tmp/renamed-opened",path_from_inode)==-ESTALE);
+    struct nas_vfs_path invalid_path={0};
+    assert(nas_vfs_path_bind(&recycled_directory,
+             "/tmp/renamed-opened",&invalid_path)==-ESTALE);
+    assert(!invalid_path.dentry);
+    assert(nas_vfs_path_put(&owned_open_dir)==0);
     assert(nas_fs_lookup_node("/proc",true,&n,resolved)==0);
     assert(nas_vfs_read_dir(&n,0,records,8)==3);
     assert(!strcmp(records[2].name,"self") && records[2].dtype==4);
     assert(nas_vfs_read_dir(&n,3,records,8)==0);
     assert(nas_fs_lookup_node("/tmp/archive",true,&n,resolved)==0);
     assert(!strcmp(n.filesystem->name,"bootfs")); /* legacy mount fallthrough */
+    assert(nas_vfs_lookup("/tmp/archive",&direct)==0);
+    assert(direct.mount==n.mount && direct.ino==n.ino);
+    assert(nas_vfs_lookup("/tmp/archive/..",&direct)==-ENOTDIR);
+    assert(nas_vfs_lookup("/tmp/missing-underlay",&direct)==-ENOENT);
     assert(nas_fs_lookup_node("/proc/self",true,&n,resolved)==0);
     assert(!strcmp(n.filesystem->name,"procfs") && n.is_dir);
-    assert(nas_vfs_directory_path(&n,"/proc/self",path_from_inode)==0);
-    assert(!strcmp(path_from_inode,"/proc"));
+    struct nas_vfs_path proc_alias={0};
+    assert(nas_vfs_path_bind(&n,"/proc/self",&proc_alias)==0);
+    /* A Dentry preserves the actual opened alias, rather than asking
+     * procfs to reverse-map its inode to one arbitrary canonical name. */
+    assert(nas_vfs_path_string(&proc_alias,path_from_inode)==0);
+    assert(!strcmp(path_from_inode,"/proc/self"));
+    assert(nas_vfs_path_put(&proc_alias)==0);
     assert(nas_fs_lookup_node("/proc/self/fd/3",false,&n,resolved)==0);
     assert((n.mode&0170000U)==0120000U && !n.is_symlink);
     char fd_target[256]={0};
@@ -657,6 +674,25 @@ int main(void) {
     assert(nas_vfs_link("/bin/demo","/tmp/copy")==-EXDEV);
     assert(nas_vfs_mkdir("/tmp/demo/sub",0755)==-ENOTDIR);
     assert(nas_fs_lookup_node("/shortcut",false,&n,resolved)==0 && n.is_symlink);
+    /* Direct kernel lookup and syscall namei must now share ONE pathwalk:
+     * inspect a final symlink itself; follow an intermediate symlink;
+     * never bypass a regular-file dot/dotdot parent. */
+    struct nas_fs_node direct={0};
+    assert(nas_vfs_lookup("/shortcut",&direct)==0 && direct.is_symlink);
+    assert(nas_vfs_lookup("/bin/demo/..",&direct)==-ENOTDIR);
+    assert(nas_vfs_lookup("/bin/demo/../demo",&direct)==-ENOTDIR);
+    assert(nas_vfs_lookup("/tmp/../bin/demo",&direct)==0);
+    assert(!strcmp(direct.filesystem->name,"bootfs"));
+    /* A long series of ancestor steps MUST restart the same walker,
+     * never recurse through direct VFS lookup and overflow the 16KiB
+     * kernel stack. This also checks the rewritten pending path length. */
+    char many_parents[256]="/tmp";
+    for(unsigned turn=0;turn<24;turn++)strcat(many_parents,"/../tmp");
+    strcat(many_parents,"/../bin/demo");
+    assert(strlen(many_parents)<256);
+    assert(nas_vfs_lookup(many_parents,&direct)==0);
+    assert(direct.ino==3);
+    assert(nas_vfs_lookup("/shortcut/../bin/demo",&direct)==-ENOTDIR);
     assert(nas_fs_lookup_node("/shortcut",true,&n,resolved)==0);
     assert(!strcmp(resolved,"/bin/demo"));
     assert(nas_fs_lookup_node("/tmp/link",true,&n,resolved)==0);
@@ -885,6 +921,8 @@ int main(void) {
            found.ino==first.ino);
     assert(nas_fs_lookup_node("/mnt/nested/../hello",true,&found,resolved)==0);
     assert(found.mount==first.mount && found.ino==first.ino);
+    assert(nas_vfs_lookup("/mnt/nested/../hello",&found)==0);
+    assert(found.mount==first.mount && found.ino==first.ino);
     assert(nas_fs_lookup_node("/mnt/hello/..",true,&found,resolved)==-ENOTDIR);
     assert(nas_fs_lookup_node("/mnt/nested/.",true,&found,resolved)==0);
     assert(!strcmp(found.mount->mountpoint,"/mnt/nested") && found.is_dir);
@@ -903,6 +941,9 @@ int main(void) {
     assert(nas_vfs_register_mount(&no_archive)==0);
     assert(nas_fs_lookup_node("/standalone/hello",true,&n,resolved)==0);
     assert(n.filesystem==&ext_mock_type && n.ino==802);
+    assert(nas_vfs_lookup("/standalone/hello",&direct)==0);
+    assert(direct.mount==n.mount && direct.ino==n.ino);
+    assert(nas_vfs_lookup("/standalone/../no-root",&direct)==-ENOENT);
     struct nas_vfs_path rootless={0},rootless_copy={0};
     assert(nas_vfs_path_bind(&n,"/standalone/hello",&rootless)==0);
     assert(nas_vfs_path_get(&rootless,&rootless_copy)==0);

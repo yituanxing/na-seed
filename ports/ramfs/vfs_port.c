@@ -128,28 +128,6 @@ static int getattr(const struct nas_fs_node *node,struct nas_fs_node *out) {
     out->nlink=fresh.nlink;
     return 0;
 }
-static int directory_path(const struct nas_fs_node *node,char absolute[256]) {
-    if(!node || !node->is_dir || !absolute)return -ENOTDIR;
-    int rc=validate(node);
-    if(rc)return rc;
-    /* A deleted but still opened directory is not a reachable namespace
-     * path. Never publish the adapter's private orphan directory through
-     * getcwd, fchdir or dirfd-relative pathname reconstruction. */
-    const struct nas_ramfs_identity *id=node->inode;
-    if(id->orphaned)return -ENOENT;
-    char local[256];
-    rc=path_of(id,local);
-    if(rc)return rc;
-    const char *mp=node->mount->mountpoint;
-    if(!strcmp(local,"/")) {
-        if(strlen(mp)>=256)return -ENAMETOOLONG;
-        memcpy(absolute,mp,strlen(mp)+1);return 0;
-    }
-    size_t n=strlen(mp),m=strlen(local);
-    if(n+m>=256)return -ENAMETOOLONG;
-    memcpy(absolute,mp,n);memcpy(absolute+n,local,m+1);
-    return 0;
-}
 static int64_t read_at(const struct nas_fs_node *node,uint64_t offset,
                        uint8_t *dst,uint64_t count) {
     int rc=validate(node);
@@ -400,7 +378,7 @@ static int rename_node(const struct nas_fs_node *old_parent,const char *old_name
 }
 static const struct nas_vfs_type ramfs_type={
     .name="upstream-ramfs",.exec_source_label="RAMFS",
-    .root=root,.lookup_child=child,.directory_path=directory_path,
+    .root=root,.lookup_child=child,
     .getattr=getattr,.validate_inode=validate,.read_at=read_at,
     .last_inode_unpin=last_inode_unpin,
     .read_dir=readdir_inode,.create=create,.mkdir=mkdir_node,

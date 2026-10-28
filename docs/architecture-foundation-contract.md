@@ -389,3 +389,54 @@ virtual mountpoint directory entries (an intentional namespace label,
 not a duplicate inode owner). A preflight guard forbids reintroducing
 the retired tuple fields. A future Mount namespace can reuse this
 single identity model without structural changes to providers.
+
+## One component pathname engine: delete the second VFS prefix walker
+
+The previous `nas_vfs_lookup` duplicated the kernel namei engine:
+it globally selected the longest string-prefix mount, independently
+iterated provider `lookup_child` operations, and rejected dotdot/symlink
+semantics that the syscall namei accepted. This duplicated algorithm is
+**deleted**, along with its temporary visited-mount bitset, parent-path
+revalidation selector and dead registry count. The only direct root
+lookup is a registered `/` superblock; non-root borrowed lookups delegate
+to **the same** `nas_fs_lookup_node` component walker as userland.
+
+The old CPIO `/tmp` overlay remains a deliberate and narrow exception:
+when its upper inode lookup misses, VFS fetches the independently
+refcounted *covered lower Dentry* from that SAME mount, then walks only
+the relative lower components. It no longer retries an absolute
+pathname against the global mount-prefix list. This preserves
+`/tmp/archive` read-only bootfs fallthrough while prohibiting
+unrelated ext4/RAM/proc provider fallback. Nested mount crossing and
+recycled-parent inode fail-closed behavior continue using exact
+mount-incarnation/parent-inode identity. Rootless direct-ELF `/mnt`
+bootstrap is not given a fake root. Unmount depends on actual counted
+child-Mount ownership rather than string-prefix scanning for children.
+
+The component namei no longer recursively invokes itself via the direct
+VFS lookup when it encounters `..`: it rewrites the bounded pending
+path and restarts the **same** walker, preventing a long chain of parent
+steps from recursively exhausting the kernel stack. Symlink expansion
+already uses the same iterative restart contract.
+
+### Delete all runtime filesystem-to-absolute-path reverse callbacks
+
+The old VFS `directory_path` provider callback and
+`nas_vfs_directory_path` are **deleted from the common API**. Normal
+openat/fchdir/chdir/getcwd already own their exact positive Dentry and
+Path from File/FS Context. A cwd with an inode pin but no owned Path
+now fails `ESTALE`, rather than reopening a possibly reused pathname.
+The bootfs/tmpfs/procfs and upstream RamFS adapter callback functions
+are deleted. The original external lwext4 implementation still retains
+its **internal** inode-to-library-path helper because upstream libext4
+has a path-based I/O API; it is no longer exposed as a VFS namespace
+callback. Third-party library files themselves are unchanged.
+
+Host regression explicitly compares direct VFS and userland namei on
+CPIO overlay misses, final symlink versus intermediate lookup, file
+parent dot/dotdot, nested mounts, recycled parent inode and rootless
+direct-ELF mounts. Original lwext4 tests now validate renamed live
+Dentry Paths and same-name inode reuse without invoking old reverse
+callbacks. Static architecture tests prohibit reintroducing the old
+selector or callback. The genuine original Debian BusyBox three-ISA
+QEMU/third-party FS exact-head checks remain required before merge.

@@ -20,6 +20,20 @@ if grep -Eq '(^|[^[:alnum:]_])(parent_mount_id|parent_backend_inode|parent_ino|p
   echo '[VFS FAIL] copied mount identity escaped its Path owner' >&2
   exit 1
 fi
+# One namei is the ONLY root/symlink/dot/mount path walker. Legacy
+# prefix dispatch and per-provider reverse-directory callbacks must NOT
+# reappear after this migration (use owned File/FS Dentry Paths).
+if grep -Eq 'mount_parent_visible|uint32_t seen=0|for\(unsigned attempt=0' kernel/fs/vfs.c; then
+  echo '[VFS FAIL] duplicate direct longest-prefix resolver returned' >&2
+  exit 1
+fi
+if grep -Eq 'nas_vfs_directory_path|\.directory_path=' \
+    kernel/fs/vfs.c kernel/fs/vfs.h kernel/fs/vfs_providers.c \
+    kernel/fs/namespace_syscall.c ports/lwext4/guest_vfs.c \
+    ports/ramfs/vfs_port.c; then
+  echo '[VFS FAIL] obsolete provider inode->path syscall dependency returned' >&2
+  exit 1
+fi
 if command -v clang >/dev/null 2>&1; then
   for target in x86_64-unknown-none-elf riscv64-unknown-elf aarch64-none-elf; do
     for source in kernel/fs/vfs.c kernel/fs/vfs_providers.c kernel/fs/lookup.c; do

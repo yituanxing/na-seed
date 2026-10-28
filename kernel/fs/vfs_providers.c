@@ -114,18 +114,10 @@ static int boot_read_dir(const struct nas_fs_node *node,
     return (int)count;
 }
 
-static int boot_directory_path(const struct nas_fs_node *node,char path[256]) {
-    const struct bootfs_entry *e=node ? node->inode : NULL;
-    if(!e || !bootfs_is_dir(e))return -ENOTDIR;
-    size_t len=strlen(e->path);
-    if(len>=256)return -ENAMETOOLONG;
-    memcpy(path,e->path,len+1);
-    return 0;
-}
 static const struct nas_vfs_type boot_type={
     .name="bootfs",.exec_source_label="CPIO",
     .root=boot_root,.lookup_child=boot_child,
-    .directory_path=boot_directory_path,.readlink=boot_readlink,
+    .readlink=boot_readlink,
     .read_at=boot_read,.read_dir=boot_read_dir,.read_only=true
 };
 static void tmp_fill(const struct nas_tmp_file *f,
@@ -264,22 +256,6 @@ static int tmp_symlink_node(const struct nas_fs_node *parent,const char *name,
     return parent && parent->is_dir ?
            tmp_symlink_at(parent->inode,name,target) : -ENOTDIR;
 }
-static int tmp_directory_path(const struct nas_fs_node *node,char path[256]) {
-    if(!node || !node->is_dir)return -ENOTDIR;
-    /* The synthetic /tmp root is backed by a borrowed CPIO inode, not a
-     * nas_tmp_file. Every other tmpfs directory has a unique live dentry. */
-    if(node->mount && !strcmp(node->mount->mountpoint,"/tmp") &&
-       node->inode==(const void *)bootfs_find("/tmp")) {
-        memcpy(path,"/tmp",5);
-        return 0;
-    }
-    const char *live=tmp_name(node->inode);
-    if(!live)return -ESTALE; /* deleted directory */
-    size_t len=strlen(live);
-    if(len>=256)return -ENAMETOOLONG;
-    memcpy(path,live,len+1);
-    return 0;
-}
 /* tmpfs inode slabs reuse an address after last unlink+unpin.
  * A monotonically allocated tmp inode number catches stale snapshots even
  * if the old lease was released before the caller attempts a read. */
@@ -325,7 +301,6 @@ static void tmp_last_inode_unpin(const struct nas_fs_node *node) {
 static const struct nas_vfs_type tmp_type={
     .name="tmpfs",.exec_source_label="tmpfs",
     .root=tmp_root,.lookup_child=tmp_child,
-    .directory_path=tmp_directory_path,
     .last_inode_unpin=tmp_last_inode_unpin,.getattr=tmp_getattr,
     .validate_inode=tmp_validate_inode,
     .readlink=tmp_readlink,
@@ -409,19 +384,9 @@ static int64_t proc_read_inode(const struct nas_fs_node *node,uint64_t offset,
     if(length>UINT32_MAX)length=UINT32_MAX;
     return nas_proc_read(proc,offset,dst,(unsigned)length);
 }
-/* Reverse the *owned directory inode* into its live namespace location.
- * /proc/self is a lookup alias, never a directory object's identity.
- * Shared cwd/openat/fchdir use exactly the same VFS directory callback. */
-static int proc_directory_path(const struct nas_fs_node *node,char path[256]) {
-    if(!node || !node->is_dir || !path)return -ENOTDIR;
-    struct nas_proc_node proc;
-    if(!nas_proc_directory_from_ino(node->ino,&proc))return -ESTALE;
-    return nas_proc_dir_path(proc,path) ? 0 : -ESTALE;
-}
 static const struct nas_vfs_type proc_type={
     .name="procfs",.exec_source_label="procfs",
     .root=proc_root,.lookup_child=proc_child,
-    .directory_path=proc_directory_path,
     .readlink=proc_readlink_node,.read_at=proc_read_inode,
     .read_dir=proc_read_dir,.read_only=true
 };

@@ -75,11 +75,9 @@ uint64_t nas_fs_resolve_path(uint64_t dirfd, uint64_t pathname,
                 if(err)return (uint64_t)(int64_t)err;
                 base=inode_base;
             } else if(TASK.fs->cwd_pinned) {
-                /* Historical direct test boot without a Path owner. */
-                int err=nas_vfs_directory_path(&TASK.fs->cwd_node,
-                                                current_workdir,inode_base);
-                if(err)return (uint64_t)(int64_t)err;
-                base=inode_base;
+                /* An inode-only FS cwd is an invalid owner, NOT a reason
+                 * to reverse-resolve a stale pathname from a provider. */
+                return (uint64_t)-ESTALE;
             } else base=current_workdir;
         } else {
             if(fd<0 || (uint64_t)fd>=NAS_FD_LIMIT ||
@@ -178,10 +176,9 @@ static uint64_t sys_getcwd_root(uint64_t buffer, uint64_t size) {
         if(err)return (uint64_t)(int64_t)err;
         memcpy(current_workdir,live,strlen(live)+1);
     } else if(TASK.fs->cwd_pinned) {
-        char live[256];
-        int err=nas_vfs_directory_path(&TASK.fs->cwd_node,current_workdir,live);
-        if(err)return (uint64_t)(int64_t)err;
-        memcpy(current_workdir,live,strlen(live)+1);
+        /* A pinned cwd MUST own a Dentry Path; no provider-supplied
+         * inode->name escape hatch remains in the Linux ABI. */
+        return (uint64_t)-ESTALE;
     }
     uint64_t length = 0;
     while (current_workdir[length]) length++;

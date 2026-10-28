@@ -119,6 +119,24 @@ for obsolete in ("parent_mount_id", "parent_backend_inode", "parent_ino",
         raise SystemExit(f"copied mount identity reintroduced: {obsolete}")
 if "mounts[i]=mounts[i+1]" in vfs_src or "mounts[count++]" in vfs_src:
     raise SystemExit("packed mount registry would invalidate open File mounts")
+# One shared namei, not a parallel longest-prefix filesystem traversal.
+# The only direct VFS mount-table dispatch is '/' root bootstrap. Upper
+# overlay misses cross to the original covered Path in THAT mount only.
+if ("return nas_fs_lookup_node(absolute,false,out,canonical);" not in vfs_src or
+    "lookup_covered_underlay(parent,absolute,out)" not in vfs_src or
+    "mount_parent_visible(" in vfs_src or
+    "for(unsigned attempt=0;attempt<count;attempt++)" in vfs_src or
+    "return nas_vfs_lookup(absolute,out);" in vfs_src):
+    raise SystemExit("duplicate direct VFS mount-prefix/namei walker returned")
+# Ordinary directory Files and cwd never ask a provider to reconstruct
+# a reverse pathname. Provider-internal ext4 identity->path is still
+# necessary because upstream libext4 uses path-based I/O.
+for source in ("kernel/fs/vfs.c", "kernel/fs/vfs.h",
+               "kernel/fs/vfs_providers.c", "kernel/fs/namespace_syscall.c",
+               "ports/ramfs/vfs_port.c", "ports/lwext4/guest_vfs.c"):
+    src=(root/source).read_text()
+    if "nas_vfs_directory_path(" in src or ".directory_path=" in src:
+        raise SystemExit(f"provider inode-to-global-path hook returned: {source}")
 # A pinned empty ext4 directory is safely detached, never recursively
 # removed before its last owned File/cwd inode lease reaches zero.
 if "unlink_open_dir_safe" not in (root/"kernel/fs/vfs.h").read_text() or \

@@ -203,7 +203,6 @@ static const struct nas_fs_node *mount_covered_inode(
     const struct mount_slot *slot);
 static uint64_t next_device_id=8;
 static struct mount_slot mounts[NAS_VFS_MOUNT_LIMIT];
-static unsigned count;
 static bool defaults_ready;
 void nas_vfs_register_default_mounts(void);
 static void ensure_defaults(void) {
@@ -233,7 +232,8 @@ static int vfs_node_status(const struct nas_fs_node *node) {
         }
     return -ENODEV;
 }
-/* Canonical components keep longest-prefix lookup and busy-unmount coherent. */
+/* Mountpoint lexical validation applies only to registration. Path routing
+ * belongs to component namei and the owned Dentry/Mount graph. */
 static bool canonical_mountpoint(const char *path) {
     if(!path || path[0]!='/')return false;
     size_t n=strlen(path);
@@ -254,30 +254,6 @@ static bool mount_matches(const char *prefix, const char *path) {
     size_t n = strlen(prefix);
     if (n==1 && prefix[0]=='/') return path[0]=='/';
     return !strncmp(prefix,path,n) && (path[n]=='/' || path[n]==0);
-}
-/* Direct longest-prefix lookup is a bootstrap/overlay compatibility path,
- * not the mount identity authority. The attached parent is an OWNED
- * Dentry/Path. Check its current Dentry name and also validate the
- * backend inode incarnation (including a provider recycling the inode)
- * before allowing a direct lookup across this mount boundary. */
-static bool mount_parent_visible(const struct mount_slot *slot) {
-    const struct nas_fs_node *owner=mount_parent_inode(slot);
-    if(!owner)return true; /* genuine bootstrap/rootless mount */
-    char parent_path[256],canonical[256];
-    if(nas_vfs_path_string(&slot->parent_path,parent_path))return false;
-    size_t n=strlen(slot->path);
-    while(n>1 && slot->path[n-1]!='/')--n;
-    if(n>1)--n;
-    char attached_parent[256];
-    memcpy(attached_parent,slot->path,n);
-    attached_parent[n]=0;
-    if(strcmp(attached_parent,parent_path))return false;
-    struct nas_fs_node current;
-    if(nas_fs_lookup_node(parent_path,true,&current,canonical))return false;
-    return current.mount==owner->mount &&
-           current.mount_id==owner->mount_id &&
-           current.ino==owner->ino &&
-           current.inode==owner->inode;
 }
 int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
     ensure_defaults();
@@ -397,71 +373,99 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
     mounts[slot].superblock.mountpoint=mounts[slot].path;
     mounts[slot].used=true;
     if(has_parent)++mounts[parent_slot].child_refs;
-    ++count;
     return 0;
 }
-/* One component resolver shared by all filesystems. VFS alone selects the
- * mount, strips its mountpoint and handles the legacy overlay fallback.
- * A provider only receives (parent inode, child basename), never /mnt/... .
- * This is an interim prefix mount selector until dentry-owned mounts land. */
+/* Root selection is the ONLY direct mount-table lookup. Everything else
+ * is resolved by the ONE component-aware namei engine in lookup.c. This
+ * replaces the second longest-prefix walk, which duplicated filesystem
+ * lookup, skipped symlink and '..' semantics, and bypassed mount crossings.
+ *
+ * A CPIO-less direct-ELF bootstrap genuinely has no '/' inode. Namei
+ * treats that ENOENT as permission to cross a separately attached /mnt
+ * on its first component; we must NOT manufacture a synthetic root here.
+ * A borrowed root inode needs no pin: open/path owners acquire one. */
 int nas_vfs_lookup(const char *absolute,struct nas_fs_node *out) {
     if(!absolute || !out || absolute[0]!='/')return -EINVAL;
-    size_t path_len=strlen(absolute);
-    if(path_len>=256)return -ENAMETOOLONG;
+    if(strlen(absolute)>=256)return -ENAMETOOLONG;
     ensure_defaults();
-    uint32_t seen=0;
-    for(unsigned attempt=0;attempt<count;attempt++) {
-        const struct nas_vfs_mount *best=NULL;
-        unsigned selected=0;
-        size_t longest=0;
-        for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++) {
-            if(!mounts[i].used || (seen&(1U<<i)))continue;
-            const struct nas_vfs_mount *m=&mounts[i].superblock;
-            if(!mount_matches(m->mountpoint,absolute) ||
-               !mount_parent_visible(&mounts[i]))continue;
-            size_t n=strlen(m->mountpoint);
-            if(!best || n>longest) {best=m;selected=i;longest=n;}
-        }
-        if(!best)break;
-        seen|=1U<<selected;
-        struct nas_fs_node current={0};
-        int rc=best->type->root(best,&current);
+    if(strcmp(absolute,"/")) {
+        char canonical[256];
+        /* Direct callers historically inspect the final symlink itself.
+         * Intermediate symlinks, dot/dotdot and mounts now use namei. */
+        return nas_fs_lookup_node(absolute,false,out,canonical);
+    }
+    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++) {
+        const struct mount_slot *slot=&mounts[i];
+        if(!slot->used || strcmp(slot->path,"/"))continue;
+        const struct nas_vfs_mount *mnt=&slot->superblock;
+        int rc=mnt->type->root(mnt,out);
         if(!rc) {
-            current.filesystem=best->type;
-            current.mount=best;
-            current.mount_id=mounts[selected].device_id;
-            const char *rest=absolute+longest;
-            if(longest==1)rest=absolute+1;
-            while(*rest=='/')rest++;
-            while(*rest) {
-                if(!current.is_dir){rc=-ENOTDIR;break;}
-                char name[256];
-                unsigned n=0;
-                while(rest[n] && rest[n]!='/') {
-                    if(n==255)return -ENAMETOOLONG;
-                    name[n]=rest[n];n++;
-                }
-                name[n]=0;
-                /* The shared namei layer handles dot, dotdot and symlinks.
-                 * Never present these special components as filesystem names. */
-                if((n==1 && name[0]=='.') ||
-                   (n==2 && name[0]=='.' && name[1]=='.'))
-                    return -EINVAL;
-                struct nas_fs_node next={0};
-                rc=best->type->lookup_child(&current,name,&next);
-                if(rc)break;
-                next.mount=best;
-                next.filesystem=best->type;
-                next.mount_id=mounts[selected].device_id;
-                current=next;
-                rest+=n;
-                while(*rest=='/')rest++;
-            }
+            out->filesystem=mnt->type;
+            out->mount=mnt;
+            out->mount_id=slot->device_id;
         }
-        if(!rc) {*out=current;return 0;}
-        if(rc!=-ENOENT || !best->fallback_on_miss)return rc;
+        return rc;
     }
     return -ENOENT;
+}
+/* Overlay fallback is NOT mount selection. The parent inode already tells
+ * us the exact mounted upper layer. If it misses a name, the VFS traverses
+ * its OWN pinned covered Dentry in the lower layer, relative to this one
+ * attachment. No global longest-prefix retry, no other mount registry
+ * search, no providers interpreting a VFS absolute pathname.
+ *
+ * This keeps the historical CPIO /tmp overlay while letting ordinary
+ * disk, RAM, proc and independent third-party providers use one namei.
+ * The covered parent remains pinned for the upper mount's lifetime. */
+static int lookup_covered_underlay(const struct nas_fs_node *upper_parent,
+                                   const char *absolute,
+                                   struct nas_fs_node *out) {
+    const struct mount_slot *slot=NULL;
+    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++) {
+        if(mounts[i].used &&
+           &mounts[i].superblock==upper_parent->mount) {
+            slot=&mounts[i];break;
+        }
+    }
+    if(!slot || !slot->superblock.fallback_on_miss)return -ENOENT;
+    const struct nas_fs_node *covered=mount_covered_inode(slot);
+    if(!covered)return -ENOENT;
+    /* The canonical name, not the user's raw spelling, is the sole
+     * transitional projection needed by the legacy CPIO overlay. A
+     * missing/moved attachment cannot accidentally fall through to an
+     * unrelated pathname in the underlying root. */
+    if(!mount_matches(slot->path,absolute))return -ENOENT;
+    const char *tail=absolute+strlen(slot->path);
+    while(*tail=='/')++tail;
+    if(!*tail)return -ENOENT;
+    int rc=vfs_node_status(covered);
+    if(rc)return rc;
+    struct nas_fs_node current=*covered;
+    while(*tail) {
+        if(!current.is_dir)return -ENOTDIR;
+        char name[256];unsigned n=0;
+        while(tail[n] && tail[n]!='/') {
+            if(n>=255)return -ENAMETOOLONG;
+            name[n]=tail[n];++n;
+        }
+        name[n]=0;
+        if(!n || (n==1 && name[0]=='.') ||
+           (n==2 && name[0]=='.' && name[1]=='.'))
+            return -EINVAL;
+        struct nas_fs_node next={0};
+        rc=vfs_node_status(&current);
+        if(rc)return rc;
+        rc=current.filesystem->lookup_child(&current,name,&next);
+        if(rc)return rc;
+        next.mount=current.mount;
+        next.mount_id=current.mount_id;
+        next.filesystem=current.filesystem;
+        current=next;
+        tail+=n;
+        while(*tail=='/')++tail;
+    }
+    *out=current;
+    return 0;
 }
 
 int nas_vfs_lookup_step(const struct nas_fs_node *parent,const char *absolute,
@@ -517,7 +521,7 @@ int nas_vfs_lookup_step(const struct nas_fs_node *parent,const char *absolute,
         return 0;
     }
     if(rc==-ENOENT && parent->mount->fallback_on_miss)
-        return nas_vfs_lookup(absolute,out);
+        return lookup_covered_underlay(parent,absolute,out);
     return rc;
 }
 int nas_vfs_readlink(const struct nas_fs_node *node,char target[256]) {
@@ -811,44 +815,6 @@ static int dentry_prepare_parent(const char *full,
     memcpy(base,full,n);
     base[n]=0;
     return nas_vfs_path_bind(parent,base,out);
-}
-int nas_vfs_directory_path(const struct nas_fs_node *node,
-                           const char *origin_hint,char absolute[256]) {
-    if(!node || !node->filesystem || !node->mount || !absolute)
-        return -EINVAL;
-    if(!node->is_dir)return -ENOTDIR;
-    int status=vfs_node_status(node);
-    if(status)return status;
-    /* An inode number of zero cannot identify an owned open directory.
-     * Refuse path-based operations rather than accidentally authorizing
-     * an unrelated re-used pathname under the same mount. */
-    if(!node->ino)return -ESTALE;
-    char selected[256];
-    int rc=-EOPNOTSUPP;
-    if(node->filesystem->directory_path) {
-        rc=node->filesystem->directory_path(node,selected);
-        if(rc && rc!=-EOPNOTSUPP)return rc;
-    }
-    if(rc==-EOPNOTSUPP) {
-        if(!origin_hint || origin_hint[0]!='/')return -ESTALE;
-        size_t len=strlen(origin_hint);
-        if(len>=sizeof(selected))return -ENAMETOOLONG;
-        memcpy(selected,origin_hint,len+1);
-    }
-    if(selected[0]!='/')return -EIO;
-    struct nas_fs_node current;
-    char canonical[256];
-    rc=nas_fs_lookup_node(selected,true,&current,canonical);
-    /* This is namespace-to-identity validation, not an attempt to
-     * reopen the old path. A recycled dentry must NEVER become a way to
-     * perform openat/unlinkat relative to a different directory. */
-    if(rc== -ENAMETOOLONG)return rc;
-    if(rc || current.mount!=node->mount ||
-       current.mount_id!=node->mount_id || current.ino!=node->ino || current.inode!=node->inode ||
-       !current.is_dir)return -ESTALE;
-    size_t len=strlen(canonical);
-    memcpy(absolute,canonical,len+1);
-    return 0;
 }
 static bool valid_vfs_dirent(const struct nas_vfs_dirent *entry) {
     unsigned length=entry->name_len;
@@ -1331,14 +1297,11 @@ int nas_vfs_unregister_mount(const struct nas_vfs_mount *registration) {
     if(at==NAS_VFS_MOUNT_LIMIT)return -ENOENT;
     if(mounts[at].superblock.permanent || mounts[at].open_refs ||
        mounts[at].child_refs)return -EBUSY;
-    size_t n=strlen(mounts[at].path);
-    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++) {
-        if(i==at || !mounts[i].used)continue;
-        const char *p=mounts[i].path;
-        if((n==1 && mounts[at].path[0]=='/') ||
-           (!strncmp(mounts[at].path,p,n) && p[n]=='/'))
-            return -EBUSY;
-    }
+    /* The counted attachment graph already owns child_refs. Every nested
+     * child has a pinned parent Path; scanning string prefixes would
+     * incorrectly define topology from spelling instead of ownership.
+     * Rootless bootstrap children are attached to their live parent
+     * mount, or are independently rooted with no structural parent. */
     unsigned parent_at=NAS_VFS_MOUNT_LIMIT;
     const struct nas_fs_node *owner=mount_parent_inode(&mounts[at]);
     const struct nas_fs_node *covered=mount_covered_inode(&mounts[at]);
@@ -1361,7 +1324,6 @@ int nas_vfs_unregister_mount(const struct nas_vfs_mount *registration) {
        nas_vfs_path_put(&mounts[at].parent_path))return -EIO;
     if(parent_at!=NAS_VFS_MOUNT_LIMIT)--mounts[parent_at].child_refs;
     mounts[at]=(struct mount_slot){0};
-    --count;
     return 0;
 }
 int nas_vfs_node_pin(const struct nas_fs_node *node) {

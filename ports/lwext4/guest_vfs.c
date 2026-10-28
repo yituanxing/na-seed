@@ -663,7 +663,6 @@ static const struct nas_vfs_type ext_type={
     .name="lwext4",
     .exec_source_label="lwext4",
     .root=ext_lookup_root,.lookup_child=ext_lookup_child,
-    .directory_path=ext_directory_path,
     .readlink=ext_readlink_node,
     .last_inode_unpin=ext_last_inode_unpin,
     .getattr=ext_orphan_getattr,

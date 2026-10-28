@@ -25,8 +25,10 @@ int main(void) {
     assert(nas_vfs_node_size(&node)==5);
     assert(nas_fs_lookup_node("/ramfs/parent",true,&dir,path)==0);
     assert(nas_vfs_node_pin(&dir)==0);
+    struct nas_vfs_path renamed_dir={0};
+    assert(nas_vfs_path_bind(&dir,"/ramfs/parent",&renamed_dir)==0);
     assert(nas_vfs_rename("/ramfs/parent","/ramfs/moved",0)==0);
-    assert(nas_vfs_directory_path(&dir,"/ramfs/parent",path)==0);
+    assert(nas_vfs_path_string(&renamed_dir,path)==0);
     assert(!strcmp(path,"/ramfs/moved"));
     assert(nas_vfs_read_at(&node,0,(uint8_t *)text,5)==5);
     assert(!memcmp(text,"hello",5));
@@ -48,6 +50,8 @@ int main(void) {
     assert(nas_vfs_unlink("/ramfs/moved/file",0)==0);
     assert(nas_vfs_unlink("/ramfs/moved",0x200ULL)==0);
     assert(nas_vfs_getattr(&dir,&removed)==0 && removed.nlink==0);
+    assert(nas_vfs_path_string(&renamed_dir,path)==-ENOENT);
+    assert(nas_vfs_path_put(&renamed_dir)==0);
     assert(nas_vfs_node_unpin(&node)==0);
     assert(nas_vfs_node_unpin(&dir)==0);
     /* The backend's internal orphan directory must not become a public
@@ -65,9 +69,12 @@ int main(void) {
     assert(nas_vfs_mkdir("/ramfs/open-dir",0700)==0);
     assert(nas_fs_lookup_node("/ramfs/open-dir",true,&dir,path)==0);
     assert(nas_vfs_node_pin(&dir)==0);
+    struct nas_vfs_path unlinked_dir={0};
+    assert(nas_vfs_path_bind(&dir,"/ramfs/open-dir",&unlinked_dir)==0);
     assert(nas_vfs_unlink("/ramfs/open-dir",0x200ULL)==0);
     assert(nas_vfs_getattr(&dir,&removed)==0 && removed.nlink==0);
-    assert(nas_vfs_directory_path(&dir,"/ramfs/open-dir",path)==-ENOENT);
+    assert(nas_vfs_path_string(&unlinked_dir,path)==-ENOENT);
+    assert(nas_vfs_path_put(&unlinked_dir)==0);
     assert(nas_vfs_node_unpin(&dir)==0);
     assert(nas_fs_lookup_node("/ramfs/open-dir",true,&removed,path)==-ENOENT);
     assert(nas_vfs_read_at(&other,0,(uint8_t *)text,5)==0);

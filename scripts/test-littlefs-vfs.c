@@ -68,10 +68,19 @@ int main(void) {
     assert(nas_fs_lookup_node("/flash/source/program",true,&again,path)==0);
     assert(again.ino==node.ino);
     assert(nas_fs_lookup_node("/flash/source",true,&dir,path)==0 && dir.is_dir);
+    /* The original upstream LittleFS cannot supply a VFS-global
+     * reverse inode path. Use the SAME counted Path that File/cwd own. */
     char live_directory[256];
-    assert(nas_vfs_directory_path(&dir,"/flash/source",live_directory)==0);
+    struct nas_vfs_path owned_dir={0},invalid={0};
+    assert(nas_vfs_path_bind(&dir,"/flash/source",&owned_dir)==0);
+    assert(nas_vfs_path_string(&owned_dir,live_directory)==0);
     assert(!strcmp(live_directory,"/flash/source"));
-    assert(nas_vfs_directory_path(&dir,"/flash/absent",live_directory)==-ESTALE);
+    struct nas_fs_node forged=dir;
+    ++forged.ino;
+    assert(nas_vfs_path_bind(&forged,"/flash/source",&invalid)==-ESTALE);
+    assert(!invalid.dentry);
+    assert(nas_littlefs_vfs_unmount(&vfs)==-EBUSY);
+    assert(nas_vfs_path_put(&owned_dir)==0);
     struct nas_vfs_dirent entries[8]={0};
     int n=nas_vfs_read_dir(&dir,0,entries,8);
     assert(n>=3);

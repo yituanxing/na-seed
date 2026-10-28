@@ -47,11 +47,6 @@ struct nas_vfs_type {
      * i_op->get_link, NaOS vfs_inode operation). A renamed symlink keeps
      * the same content across open handles and mount aliases. */
     int (*readlink)(const struct nas_fs_node *,char target[256]);
-    /* Optional inode->LIVE namespace path for directory handles. The
-     * provider owns inode/dentry knowledge; the syscall ABI never does.
-     * A NULL callback means VFS can verify an immutable opening hint, but
-     * refuses to redirect renamed directory FDs to an unrelated name. */
-    int (*directory_path)(const struct nas_fs_node *,char absolute[256]);
     /* Called precisely when the LAST generic mount+inode lease is dropped.
      * A backend may now reclaim an unlinked orphan inode; never called
      * on a borrowed namei snapshot or one of several dup/fork owners. */
@@ -153,9 +148,10 @@ uint64_t nas_vfs_node_size(const struct nas_fs_node *node);
 int nas_vfs_getattr(const struct nas_fs_node *node,struct nas_fs_node *out);
 int nas_vfs_register_mount(const struct nas_vfs_mount *mount);
 int nas_vfs_lookup(const char *absolute, struct nas_fs_node *node);
-/* One canonical path component. VFS checks mount crossings and the special
- * bootstrap underlay; filesystem callbacks see only (parent,name).
- * `absolute` is used for VFS mount selection, NEVER given to a provider. */
+/* One canonical path component. VFS uses the pinned parent Mount/Dentry
+ * for crossings and the one CPIO covered-underlay fallback; providers see
+ * only (parent inode, basename). The absolute spelling is a bounded
+ * bootstrap/overlay compatibility input and is NEVER passed to them. */
 int nas_vfs_lookup_step(const struct nas_fs_node *parent,const char *absolute,
                          const char *name,struct nas_fs_node *out);
 int nas_vfs_readlink(const struct nas_fs_node *node,char target[256]);
@@ -164,11 +160,6 @@ int64_t nas_vfs_read_at(const struct nas_fs_node *node, uint64_t offset,
 int nas_vfs_read_dir(const struct nas_fs_node *node,
                      uint64_t cursor,struct nas_vfs_dirent *entries,
                      unsigned maximum);
-/* Resolve current pathname of an OWNED directory inode, not a stale File
- * origin_path or task-local fd. Verifies mount+inode identity after namei.
- * Returns ESTALE when the provider cannot recover a moved dentry. */
-int nas_vfs_directory_path(const struct nas_fs_node *node,
-                           const char *origin_hint,char absolute[256]);
 int nas_vfs_chmod(const struct nas_fs_node *node, uint64_t mode);
 int nas_vfs_utimens(const struct nas_fs_node *node, uint64_t atime,
                     uint64_t mtime, bool set_atime, bool set_mtime);

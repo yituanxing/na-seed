@@ -18,8 +18,10 @@ int nas_vfs_join_child(const char *parent,const char *name,char out[256]) {
 }
 /* A single VFS component pathwalk. The filesystem observes only a parent
  * inode and one name; the VFS alone handles symlinks, mountpoint crossings,
- * legacy overlay, dot/dotdot and canonical path construction. Owned
- * mount+dentry objects will replace the current bounded path cache later. */
+ * legacy overlay, dot/dotdot and canonical path construction. The VFS
+ * owns positive Dentries for File/cwd/Mount references; this namei
+ * implementation alone walks borrowed pathnames, with no second direct
+ * longest-prefix VFS lookup algorithm. */
 static int resolve_walk(const char *path,bool follow_final,
                         struct nas_fs_node *result,char out[256],
                         bool negative_final) {
@@ -64,12 +66,22 @@ static int resolve_walk(const char *path,bool follow_final,
                 while(used>1 && resolved[used-1]!='/')used--;
                 if(used>1)used--;
                 resolved[used]=0;
-                /* Until VFS owns parent dentries, moving upward must
-                 * revalidate the current namespace identity. */
-                int up_rc=nas_vfs_lookup(resolved,&current);
-                if(up_rc && up_rc!=-ENOENT)return up_rc;
-                have_current=!up_rc;
-                continue;
+                /* Do not recursively invoke another namei for '..':
+                 * a long chain could exhaust the limited kernel stack.
+                 * Rewrite the pending canonical prefix and restart THIS
+                 * component walker; every mount crossing still uses
+                 * nas_vfs_lookup_step, with no second lookup algorithm. */
+                size_t rest=strlen(pending+pos);
+                if((size_t)used+rest>=sizeof(pending))
+                    return -ENAMETOOLONG;
+                char rewritten[256];
+                memcpy(rewritten,resolved,used);
+                memcpy(rewritten+used,pending+pos,rest+1);
+                memcpy(pending,rewritten,used+rest+1);
+                trailing_slash=used+rest>1 &&
+                               pending[used+rest-1]=='/';
+                restart=true;
+                break;
             }
             if(used+(used!=1)+len>=256)return -ENAMETOOLONG;
             if(used!=1)resolved[used++]='/';
