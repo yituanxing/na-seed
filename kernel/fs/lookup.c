@@ -158,5 +158,19 @@ int nas_fs_canonical_candidate(const char *absolute,char canonical[256]) {
     struct nas_fs_node found;
     int rc=nas_fs_lookup_node(absolute,false,&found,canonical);
     if(rc!=-ENOENT)return rc;
+    /* A trailing slash on a missing final DIRECTORY is valid for mkdir
+     * (BusyBox mkdir -p emits it for intermediate directories). Preserve
+     * component-aware parent verification, trim only trailing separators
+     * AFTER the full VFS walk reported ENOENT, never erase an interior dot.
+     * A preexisting regular file with trailing slash already returned
+     * ENOTDIR above and is never reinterpreted as a creatable basename. */
+    size_t len=strlen(absolute);
+    if(len>=256)return -ENAMETOOLONG;
+    if(len>1 && absolute[len-1]=='/') {
+        char leaf_path[256];
+        memcpy(leaf_path,absolute,len+1);
+        do {leaf_path[--len]=0;} while(len>1 && leaf_path[len-1]=='/');
+        return nas_fs_lookup_parent(leaf_path,&found,canonical);
+    }
     return nas_fs_lookup_parent(absolute,&found,canonical);
 }

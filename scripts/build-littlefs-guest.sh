@@ -43,7 +43,7 @@ readelf -h "$out/littlefs_guest.o" | grep -q 'Type:.*REL'
 undefined="$(nm -u "$out/littlefs_guest.o" | awk 'NF {print $NF}' | sort -u)"
 for symbol in $undefined; do
     case "$symbol" in
-       memcpy|memmove|memset|memcmp|strlen|strcmp|strncmp|strchr|strrchr|strcpy|strncpy|strspn|strcspn|nas_block_get|nas_block_put|nas_block_read|nas_block_write|nas_block_flush|nas_ramdisk_attach|nas_ramdisk_detach|nas_vfs_register_mount|nas_vfs_unregister_mount|nas_fs_lookup_node|nas_vfs_read_at|nas_print|nas_module) ;;
+       memcpy|memmove|memset|memcmp|strlen|strcmp|strncmp|strchr|strrchr|strcpy|strncpy|strspn|strcspn|nas_block_get|nas_block_put|nas_block_read|nas_block_write|nas_block_flush|nas_ramdisk_attach|nas_ramdisk_detach|nas_vfs_register_mount|nas_vfs_unregister_mount|nas_fs_lookup_node|nas_vfs_join_child|nas_vfs_read_at|nas_print|nas_module) ;;
        *) echo "[LITTLEFS GUEST LINK FAIL] unexpected symbol: $symbol" >&2; exit 1 ;;
     esac
 done

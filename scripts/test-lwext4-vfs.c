@@ -136,6 +136,11 @@ int main(int argc,char **argv) {
     assert(nas_fs_canonical_candidate("/mnt/sandbox/negative-candidate",
                                       candidate)==0);
     assert(!strcmp(candidate,"/mnt/sandbox/negative-candidate"));
+    assert(nas_fs_canonical_candidate("/mnt/sandbox/negative-candidate///",
+                                      candidate)==0);
+    assert(!strcmp(candidate,"/mnt/sandbox/negative-candidate"));
+    assert(nas_fs_canonical_candidate("/mnt/sandbox/hardlink/",
+                                      candidate)==-ENOTDIR);
     assert(nas_fs_canonical_candidate(
                "/mnt/sandbox/hardlink/../negative-candidate",
                candidate)==-ENOTDIR);

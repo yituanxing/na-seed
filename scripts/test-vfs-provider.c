@@ -297,6 +297,9 @@ int main(void) {
     assert(!strcmp(resolved,"/tmp/new-parent") && canonical_parent.is_dir);
     assert(nas_fs_canonical_candidate("/tmp/alias/new-parent",resolved)==0);
     assert(!strcmp(resolved,"/tmp/new-parent"));
+    assert(nas_fs_canonical_candidate("/tmp/alias/new-parent///",resolved)==0);
+    assert(!strcmp(resolved,"/tmp/new-parent"));
+    assert(nas_fs_canonical_candidate("/bin/demo/",resolved)==-ENOTDIR);
     assert(nas_fs_canonical_candidate("/bin/demo/../new",resolved)==-ENOTDIR);
     assert(nas_fs_lookup_parent("/no-intermediate/new",
                   &canonical_parent,resolved)==-ENOENT);
