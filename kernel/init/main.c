@@ -12,6 +12,10 @@ extern bool nas_lwext4_guest_boot_shutdown(void);
 extern bool nas_littlefs_guest_boot_mount(void);
 extern bool nas_littlefs_guest_boot_shutdown(void);
 #endif
+#ifdef NAS_ENABLE_RAMFS
+extern bool nas_ramfs_guest_boot_mount(void);
+extern bool nas_ramfs_guest_boot_shutdown(void);
+#endif
 #include "../arch/arch.h"
 #include "../arch/console.h"
 #include "../arch/mmu.h"
@@ -54,6 +58,10 @@ void nas_init_process_terminated(uint32_t code,uint32_t signal) {
 #ifdef NAS_ENABLE_LITTLEFS
         if (!nas_littlefs_guest_boot_shutdown())
             nas_fail("littlefs guest VFS unmount failed");
+#endif
+#ifdef NAS_ENABLE_RAMFS
+        if (!nas_ramfs_guest_boot_shutdown())
+            nas_fail("upstream ramfs guest VFS unmount failed");
 #endif
         nas_print("[PASS] cmdline userspace exit 0\n");
         nas_platform_debug_exit(0);
@@ -133,6 +141,10 @@ void nas_init_userspace(void) {
 #ifdef NAS_ENABLE_LITTLEFS
     if (!nas_littlefs_guest_boot_mount())
         nas_fail("opt-in littlefs guest VFS mount failed");
+#endif
+#ifdef NAS_ENABLE_RAMFS
+    if (!nas_ramfs_guest_boot_mount())
+        nas_fail("opt-in independent upstream ramfs VFS mount failed");
 #endif
     struct elf_image main_image = {
         .data = selected_image.image, .size = selected_image.size

@@ -11,6 +11,7 @@ flags="--target=aarch64-none-elf -march=armv8-a -mgeneral-regs-only -std=c11 -O2
 [ "${NAS_SYSCALL_TRACE:-0}" = 1 ] && flags="$flags -DNASEED_SYSCALL_TRACE"
 [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_LWEXT4=1"
 [ "${NAS_ENABLE_LITTLEFS:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_LITTLEFS=1"
+[ "${NAS_ENABLE_RAMFS:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_RAMFS=1"
 [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_VIRTIO_BLK=1 -I third_party/unikraft/include -I ports/unikraft/include -I ports/uboot/compat"
 # One authoritative full-kernel core TU list for every native ISA.
 # ISA-specific hardware providers remain below in the arch= selection.
@@ -36,6 +37,10 @@ fi
 if [ "${NAS_ENABLE_LITTLEFS:-0}" = 1 ]; then
     sh scripts/build-littlefs-guest.sh aarch64 "$out"
     obj="$obj $out/littlefs_guest.o"
+fi
+if [ "${NAS_ENABLE_RAMFS:-0}" = 1 ]; then
+    sh scripts/build-ramfs-guest.sh aarch64 "$out"
+    obj="$obj $out/ramfs_guest.o"
 fi
 # Clang -mgeneral-regs-only deliberately forbids SIMD opcodes even in
 # hand-written .S. Keep it for ALL common C, but assemble the explicit

@@ -11,6 +11,7 @@ flags="--target=riscv64-unknown-elf -march=rv64gc -mabi=lp64 -mcmodel=medany -mn
 [ "${NAS_SYSCALL_TRACE:-0}" = 1 ] && flags="$flags -DNASEED_SYSCALL_TRACE"
 [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_LWEXT4=1"
 [ "${NAS_ENABLE_LITTLEFS:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_LITTLEFS=1"
+[ "${NAS_ENABLE_RAMFS:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_RAMFS=1"
 if [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ]; then
     [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ] ||
       { echo '[VIRTIO] lwext4 gate required' >&2; exit 1; }
@@ -36,6 +37,10 @@ fi
 if [ "${NAS_ENABLE_LITTLEFS:-0}" = 1 ]; then
     sh scripts/build-littlefs-guest.sh riscv64 "$out"
     obj="$obj $out/littlefs_guest.o"
+fi
+if [ "${NAS_ENABLE_RAMFS:-0}" = 1 ]; then
+    sh scripts/build-ramfs-guest.sh riscv64 "$out"
+    obj="$obj $out/ramfs_guest.o"
 fi
 clang $flags -c kernel/arch/riscv64/trap.S -o "$out/trap.o"
 clang $flags -c kernel/arch/riscv64/kernel_switch.S -o "$out/kernel_switch.o"
