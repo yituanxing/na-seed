@@ -6,6 +6,8 @@
 #include "../kernel/block/device.h"
 #include "../kernel/errno.h"
 #include "../kernel/task/resources.h"
+#include <ext4.h>
+#include <ext4_inode.h>
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -94,6 +96,7 @@ int main(int argc,char **argv) {
     uint8_t *image=malloc((size_t)n);
     assert(image);
     assert(fread(image,1,(size_t)n,disk)==(size_t)n);
+    char stale_orphan_path[256]={0};
     static struct nas_lwext4_mount mounted;
     assert(nas_lwext4_ramdisk_mount_mode(&mounted,"vfs-test-ram","vfs-test-ext",
                                     "/mnt",image,(uint64_t)n,write)==0);
@@ -420,6 +423,31 @@ int main(int argc,char **argv) {
         assert(nas_vfs_read_at(&persisted_node,0,(uint8_t *)buffer,sizeof(buffer))==(int64_t)persisted_node.size);
         assert(!memcmp(buffer,persisted,sizeof(persisted)-1));
     }
+    if(write) {
+        /* Simulate sudden power loss between final user unlink and
+         * last File release: use the REAL original upstream rename to
+         * leave one fully linked orphan on disk without a live VFS record.
+         * This tests next mount recovery, rather than mocking cleanup. */
+        assert(nas_vfs_create("/mnt/sandbox/crashed-open-file",0600)==0);
+        struct nas_fs_node abandoned;
+        assert(nas_fs_lookup_node("/mnt/sandbox/crashed-open-file",true,
+                                  &abandoned,actual)==0);
+        static const uint8_t abandoned_data[]="must be reaped on remount";
+        assert(nas_vfs_write_at(&abandoned,0,abandoned_data,
+                                sizeof(abandoned_data)-1)==
+                                (int64_t)sizeof(abandoned_data)-1);
+        assert(snprintf(stale_orphan_path,sizeof(stale_orphan_path),
+                 "/mnt/.naseed-orphans/o%08x-fffffffe",
+                 (unsigned)abandoned.ino)>0);
+        assert(!ext4_frename("/mnt/sandbox/crashed-open-file",
+                             stale_orphan_path));
+        uint32_t orphan_number=0;struct ext4_inode orphan_raw;
+        assert(!ext4_raw_inode_fill(stale_orphan_path,
+                                     &orphan_number,&orphan_raw));
+        assert(orphan_number==abandoned.ino);
+        assert(nas_fs_lookup_node(stale_orphan_path,true,
+                                  &abandoned,actual)==-ENOENT);
+    }
     assert(nas_fs_lookup_node("/mnt/sandbox/hardlink/",true,&node,actual)==-ENOTDIR);
     assert(nas_vfs_node_pin(&node)==0);
     assert(nas_lwext4_ramdisk_unmount(&mounted)==-EBUSY);
@@ -449,6 +477,12 @@ int main(int argc,char **argv) {
                                    "external-ext4-dev","/mnt",true)==-EROFS);
     assert(nas_lwext4_device_mount(&external_mount,"external-block-driver",
                                    "external-ext4-dev","/mnt",false)==0);
+    if(write) {
+        uint32_t still_present=0;struct ext4_inode raw;
+        assert(!ext4_raw_inode_fill(stale_orphan_path,
+                                     &still_present,&raw));
+        assert(still_present!=0); /* RO mount never silently mutates disk */
+    }
     assert(nas_ramdisk_detach(&external)==-EBUSY);
     struct nas_fs_node external_node;
     assert(nas_fs_lookup_node("/mnt/sandbox/hardlink",true,&external_node,actual)==0);
@@ -476,6 +510,11 @@ int main(int argc,char **argv) {
         trace.dev.ops=&trace_ops;
         assert(nas_lwext4_device_mount(&traced_mount,"traced-disk-driver",
                                        "traced-ext4","/mnt",true)==0);
+        uint32_t recovered=0;struct ext4_inode raw_orphan;
+        assert(ext4_raw_inode_fill(stale_orphan_path,
+                                    &recovered,&raw_orphan)==ENOENT);
+        assert(nas_fs_lookup_node("/mnt/.naseed-orphans",true,
+                                  &hidden,actual)==-ENOENT);
         assert(nas_block_unregister(&trace.dev)==-EBUSY);
         assert(nas_vfs_create("/mnt/sandbox/durable-file",0600)==0);
         struct nas_fs_node durable;

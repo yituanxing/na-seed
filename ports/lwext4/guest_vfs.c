@@ -664,6 +664,18 @@ static int ext_orphan_prepare(struct nas_lwext4_mount *ctx) {
                item->name[1]=='.')continue;
             if(!ext_orphan_record(item->name,item->name_length) ||
                item->inode_type==EXT4_DE_DIR) {invalid=true;break;}
+            /* The private filename must encode the inode actually
+             * referenced by ext4's directory entry, not just resemble
+             * an arbitrary orphan name inside a possibly preexisting
+             * on-disk directory. Reject foreign/corrupt names. */
+            uint32_t named_ino=0;
+            for(unsigned i=1;i<=8;i++) {
+                uint8_t digit=item->name[i];
+                named_ino=(named_ino<<4)|
+                    (digit<='9' ? (uint32_t)(digit-'0') :
+                                  (uint32_t)(digit-'a'+10));
+            }
+            if(named_ino!=item->inode) {invalid=true;break;}
             memcpy(name,item->name,18);name[18]=0;
             found=true;break;
         }
