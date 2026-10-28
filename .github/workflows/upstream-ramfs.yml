@@ -7,6 +7,9 @@ on:
       - 'scripts/test-upstream-ramfs-vfs.c'
       - 'scripts/check-upstream-ramfs-vfs.sh'
       - 'scripts/build-ramfs-guest.sh'
+      - 'scripts/probe-vfs-busybox-real.sh'
+      - 'scripts/vfs-busybox-real-cases.tsv'
+      - 'tests/vfs-busybox-real-workload'
       - 'kernel/fs/vfs*'
       - 'kernel/fs/lookup*'
       - 'kernel/init/main.c'
@@ -18,7 +21,7 @@ on:
 jobs:
   original-ramfs-provider:
     runs-on: ubuntu-24.04
-    timeout-minutes: 55
+    timeout-minutes: 65
     steps:
       - uses: actions/checkout@v4
       - name: Install full LLVM lld for cross ISA ELF links
@@ -53,3 +56,9 @@ jobs:
         run: |
           NAS_ENABLE_RAMFS=1 NAS_RAMFS_NATIVE_PROBE=build/ramfs-native/riscv64/probe.elf sh scripts/probe-riscv64-full.sh
           NAS_ENABLE_RAMFS=1 NAS_RAMFS_NATIVE_PROBE=build/ramfs-native/aarch64/probe.elf sh scripts/probe-aarch64-full.sh
+      - name: Real Debian BusyBox cp/mv/tar/find/grep/rm on tmpfs AND original RamFS — x86-64
+        run: sh scripts/probe-vfs-busybox-real.sh amd64
+      - name: Identical real BusyBox cross-filesystem workload — RV64
+        run: sh scripts/probe-vfs-busybox-real.sh riscv64
+      - name: Identical real BusyBox cross-filesystem workload — AArch64
+        run: sh scripts/probe-vfs-busybox-real.sh arm64

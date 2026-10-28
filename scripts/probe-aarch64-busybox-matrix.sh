@@ -99,6 +99,7 @@ boot_case() {
     # No BusyBox result is assumed. A failure or timeout is a real failure.
     case "$name" in
         ash-*) time_budget=22 ;;
+        real-vfs) time_budget=100 ;;
         timer-preempt) time_budget=45 ;;
         process-capacity) time_budget=65 ;;
         init-reaper) time_budget=130 ;;

@@ -91,6 +91,7 @@ boot_case() {
     # Ordinary applet/cpio cases have a more generous 45s cap.
     case "$name" in
         ash-*) time_budget=30 ;;
+        real-vfs) time_budget=100 ;;
         timer-preempt) time_budget=45 ;;
         process-capacity) time_budget=65 ;;
         init-reaper) time_budget=130 ;;
