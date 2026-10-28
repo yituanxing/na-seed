@@ -106,3 +106,16 @@ the old FS cwd lease; it must never reopen its origin name after rename.
 This change is common to all three ISAs and keeps the original filesystems
 untouched. The interim live-directory-to-string reconstruction remains and
 will disappear when counted dentries and mount path objects become owners.
+
+### Generic File offset/size/truncation dispatch
+
+The Linux ABI `lseek` and `ftruncate` were still hard-coded to separate
+FD_TMP, FD_ARCHIVE, FD_DIR, FD_PROC_* kind branches even though the common
+open description already owns a pinned VFS inode with a shared live size
+lease and per-file offset. These now operate on VFS inode capability and
+identity for all filesystem providers; only synthetic devices and raw
+Limine modules retain exceptions. The three-ISA real ext4 guest suite
+checks SEEK_END from a reader File opened *before* another descriptor's
+inode growth, then seeks back and reads the new bytes. Full extent of Linux
+SEEK_DATA/SEEK_HOLE and directory cookies remains unimplemented and must
+not be advertised as complete.

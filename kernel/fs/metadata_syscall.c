@@ -104,13 +104,15 @@ static uint64_t sys_resize_fd(uint64_t fd,uint64_t length) {
     if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)return (uint64_t)-EBADF;
     if(nas_open_files[TASK.fds->entries[fd].slot].status_flags&NAS_LINUX_O_PATH)
         return (uint64_t)-EBADF;
-    if(TASK.fds->entries[fd].kind==FD_BOOTFS)return (uint64_t)-EROFS;
-    if(TASK.fds->entries[fd].kind!=FD_TMP &&
-       TASK.fds->entries[fd].kind!=FD_ARCHIVE)return (uint64_t)-EINVAL;
-    unsigned slot=TASK.fds->entries[fd].slot;
+    const unsigned slot=TASK.fds->entries[fd].slot;
     struct nas_open_file *opened=&nas_open_files[slot];
+    if(TASK.fds->entries[fd].kind==FD_BOOTFS)return (uint64_t)-EROFS;
+    /* File owns an inode, not a filesystem-specific FD label. A provider
+     * that supports resize participates without a syscall code change.
+     * Socket/pipe/device descriptions still have no VFS vnode. */
+    if(!opened->vnode_pinned)return (uint64_t)-EINVAL;
+    if(opened->vnode.is_dir)return (uint64_t)-EISDIR;
     if((opened->status_flags&3ULL)==0)return (uint64_t)-EINVAL;
-    if(!opened->vnode_pinned)return (uint64_t)-EBADF;
     int rc=nas_vfs_resize(&opened->vnode,length);
     if(!rc)opened->vnode.size=length;
     return (uint64_t)(int64_t)rc;
@@ -130,29 +132,25 @@ static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
         return (uint64_t)-EBADF;
     if(nas_open_files[TASK.fds->entries[fd].slot].status_flags&NAS_LINUX_O_PATH)
         return (uint64_t)-EBADF;
-    uint64_t size = 0;
-    if (TASK.fds->entries[fd].kind == FD_BOOTFS && nas_open_files[TASK.fds->entries[fd].slot].boot_file)
-        size = nas_open_files[TASK.fds->entries[fd].slot].boot_file->size;
-    else if ((TASK.fds->entries[fd].kind == FD_ARCHIVE ||
-              TASK.fds->entries[fd].kind == FD_DIR) &&
-             nas_open_files[TASK.fds->entries[fd].slot].vnode_pinned)
-        size = nas_vfs_node_size(&nas_open_files[TASK.fds->entries[fd].slot].vnode);
-    else if (TASK.fds->entries[fd].kind == FD_TMP || TASK.fds->entries[fd].kind == FD_TMP_DIR) {
-        const struct nas_tmp_file *file = tmp_by_slot(TASK.fds->entries[fd].slot);
-        if (!file) return (uint64_t)-EBADF;
-        size = file->size;
-    }
-    else if (TASK.fds->entries[fd].kind == FD_PROC_DIR ||
-             TASK.fds->entries[fd].kind == FD_PROC_FILE)
-        size=0; /* dynamic proc files report zero st_size, as Linux does */
-    else if (TASK.fds->entries[fd].kind != FD_DIR || !nas_open_files[TASK.fds->entries[fd].slot].boot_entry)
-        return (uint64_t)-ESPIPE;
-    uint64_t base = 0;
-    if (whence == 1) base = nas_open_files[TASK.fds->entries[fd].slot].position;
-    else if (whence == 2 && TASK.fds->entries[fd].kind != FD_DIR &&
-             TASK.fds->entries[fd].kind != FD_TMP_DIR &&
-             TASK.fds->entries[fd].kind != FD_PROC_DIR) base = size;
-    else if (whence != 0) return (uint64_t)-EINVAL;
+    struct nas_open_file *opened=&nas_open_files[TASK.fds->entries[fd].slot];
+    uint64_t size=0;
+    bool directory=false;
+    if(opened->vnode_pinned) {
+        /* The same open inode lease supplies seek/read/write and fstat.
+         * No tmpfs slot inspection, per-mount filename or FD_* enumeration. */
+        if(!opened->vnode.filesystem ||
+           (!opened->vnode.is_dir && !opened->vnode.filesystem->read_at))
+            return (uint64_t)-ESPIPE;
+        directory=opened->vnode.is_dir;
+        size=nas_vfs_node_size(&opened->vnode);
+    } else if(TASK.fds->entries[fd].kind==FD_BOOTFS &&
+             opened->boot_file)
+        size=opened->boot_file->size; /* only unmounted Limine modules */
+    else return (uint64_t)-ESPIPE;
+    uint64_t base=0;
+    if(whence==1)base=opened->position;
+    else if(whence==2 && !directory)base=size;
+    else if(whence!=0)return (uint64_t)-EINVAL;
     int64_t signed_off = (int64_t)off;
     if (signed_off < 0) {
         uint64_t magnitude = 0 - off;
@@ -162,7 +160,7 @@ static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
         if (base > UINT64_MAX - off) return (uint64_t)-EINVAL;
         base += off;
     }
-    nas_open_files[TASK.fds->entries[fd].slot].position = base;
+    opened->position=base;
     return base;
 }
 /* Linux access/faccessat/faccessat2: existence and permissions are

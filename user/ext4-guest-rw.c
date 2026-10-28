@@ -43,6 +43,10 @@ __attribute__((noreturn)) void guest_main(void) {
     stage=4;
     if(guest_syscall(OP_FSYNC,writer,0,0,0)!=0)goto fail;
     stage=5;
+    /* Reader was opened before writer grew this inode. SEEK_END must
+     * see the live VFS inode size, not its original File snapshot. */
+    if(guest_syscall(OP_LSEEK,reader,0,2,0)!=size)goto fail;
+    if(guest_syscall(OP_LSEEK,reader,0,0,0)!=0)goto fail;
     if(guest_syscall(OP_READ,reader,(long)(uintptr_t)result,size,0)!=size)goto fail;
     stage=6;
     for(long i=0;i<size;i++)if(result[i]!=payload[i])goto fail;
