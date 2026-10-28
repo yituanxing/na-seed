@@ -78,6 +78,24 @@ struct nas_tmp_file *tmp_find(const char *path) {
     struct nas_tmp_dentry *d=tmp_find_entry(path);
     return d ? d->inode : 0;
 }
+struct nas_tmp_file *tmp_find_child(const void *parent_inode,const char *name) {
+    if(!parent_inode || !name || !name[0] || strchr(name,'/'))return 0;
+    const struct bootfs_entry *root=bootfs_find("/tmp");
+    for(struct tmp_dentry_slab *s=tmp_dentry_slabs;s;s=s->next)
+        for(unsigned i=0;i<TMP_DENTRIES_PER_SLAB;i++) {
+            struct nas_tmp_dentry *d=&s->entries[i];
+            if(!d->used)continue;
+            const char *leaf=strrchr(d->path,'/');
+            if(!leaf || strcmp(leaf+1,name))continue;
+            char parent_path[256];
+            if(!tmp_parent(d->path,parent_path))continue;
+            if(!strcmp(parent_path,"/tmp")) {
+                if(root && parent_inode==(const void *)root)return d->inode;
+            } else if(parent_inode==(const void *)tmp_find(parent_path))
+                return d->inode;
+        }
+    return 0;
+}
 const char *tmp_name(const struct nas_tmp_file *file) {
     if(!file || !file->used)return 0;
     for(struct tmp_dentry_slab *s=tmp_dentry_slabs;s;s=s->next)

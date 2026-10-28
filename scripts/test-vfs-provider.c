@@ -182,6 +182,20 @@ const struct bootfs_entry *bootfs_child(const struct bootfs_entry *dir,
     return NULL;
 }
 uint64_t tmp_number(const struct nas_tmp_file *file) {return file->ino;}
+struct nas_tmp_file *tmp_find_child(const void *parent,const char *name) {
+    const struct bootfs_entry *root=bootfs_find("/tmp");
+    char path[256];
+    if(parent==(const void *)root)strcpy(path,"/tmp");
+    else {
+        const char *base=tmp_name(parent);
+        if(!base)return NULL;
+        strcpy(path,base);
+    }
+    size_t n=strlen(path),m=strlen(name);
+    if(n+m+1>=sizeof(path))return NULL;
+    path[n++]='/';memcpy(path+n,name,m+1);
+    return tmp_find(path);
+}
 static const struct nas_tmp_dentry demo_dentry={
     .used=true,.path="/tmp/demo",.inode=&tmp_demo
 };
@@ -200,6 +214,13 @@ const struct nas_tmp_dentry *tmp_child_entry(const char *path,unsigned index) {
     return index==0?&demo_dentry:index==1?&link_dentry:NULL;
 }
 uint64_t nas_proc_ino(struct nas_proc_node p) {(void)p;return 7000;}
+bool nas_proc_find_child(uint64_t ino,const char *name,struct nas_proc_node *out) {
+    (void)ino; /* The fixture uses a single ID for its synthetic nodes. */
+    if(!strcmp(name,"self"))return nas_proc_lookup("/proc/self",out);
+    if(!strcmp(name,"fd"))return nas_proc_lookup("/proc/self/fd",out);
+    if(!strcmp(name,"3"))return nas_proc_lookup("/proc/self/fd/3",out);
+    return false;
+}
 bool nas_proc_child(struct nas_proc_node directory,unsigned index,
                     char name[32],struct nas_proc_node *child) {
     (void)directory;
@@ -220,8 +241,19 @@ static int ext_mock_lookup(const struct nas_vfs_mount *mount,
         : (struct nas_fs_node){.ino=802,.mode=0100644U,.size=4};
     return 0;
 }
+static int ext_mock_root(const struct nas_vfs_mount *m,
+                         struct nas_fs_node *node) {
+    return ext_mock_lookup(m,"/mnt",node);
+}
+static int ext_mock_child(const struct nas_fs_node *parent,const char *name,
+                          struct nas_fs_node *out) {
+    if(!parent || !parent->is_dir)return -ENOTDIR;
+    return !strcmp(name,"hello") ?
+        ext_mock_lookup(parent->mount,"/mnt/hello",out) : -ENOENT;
+}
 static const struct nas_vfs_type ext_mock_type={
-    .name="ext-mount-mock",.lookup=ext_mock_lookup,.read_only=true
+    .name="ext-mount-mock",.root=ext_mock_root,
+    .lookup_child=ext_mock_child,.read_only=true
 };
 static const struct nas_vfs_mount ext_mount={
     .mountpoint="/mnt",.type=&ext_mock_type
@@ -398,7 +430,19 @@ int main(void) {
     assert(nas_vfs_unregister_mount(&ext_mount)==0);
     assert(nas_fs_lookup_node("/mnt/hello",true,&n,resolved)==-ENOENT);
     assert(nas_vfs_unregister_mount(&ext_mount)==-ENOENT);
-    assert(nas_vfs_register_mount(&ext_mount)==0);
+    /* One provider can appear beneath two independent VFS mount records.
+     * Directory lookup must never depend on its globally spelled mount path. */
+    static const struct nas_vfs_mount alias_mount={
+        .mountpoint="/mnt-alias",.type=&ext_mock_type
+    };
+    assert(nas_vfs_register_mount(&alias_mount)==0);
+    struct nas_fs_node first,second;
+    assert(nas_vfs_lookup("/mnt/hello",&first)==0);
+    assert(nas_vfs_lookup("/mnt-alias/hello",&second)==0);
+    assert(first.ino==second.ino && first.mount!=second.mount);
+    assert(nas_vfs_node_device(&first)!=nas_vfs_node_device(&second));
+    assert(nas_vfs_link("/mnt/hello","/mnt-alias/linked")==-EXDEV);
+    assert(nas_vfs_unregister_mount(&alias_mount)==0);
     puts("[VFS PROVIDER PASS] real mount dispatch, pathwalk, CPIO/tmp/proc, symlinks, kernel read, inode ops");
     return 0;
 }

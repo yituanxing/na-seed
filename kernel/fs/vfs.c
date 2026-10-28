@@ -98,8 +98,9 @@ static bool mount_matches(const char *prefix, const char *path) {
 }
 int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
     ensure_defaults();
-    if (!mount || !mount->type || !mount->type->lookup ||
-        !mount->type->name || !canonical_mountpoint(mount->mountpoint))
+    if (!mount || !mount->type || !mount->type->root ||
+        !mount->type->lookup_child || !mount->type->name ||
+        !canonical_mountpoint(mount->mountpoint))
         return -EINVAL;
     for (unsigned i=0;i<count;i++)
         if (!strcmp(mounts[i].mount->mountpoint,mount->mountpoint))return -EEXIST;
@@ -108,32 +109,67 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
     mounts[count++]=(struct mount_slot){.mount=mount,.device_id=next_device_id++};
     return 0;
 }
+/* One component resolver shared by all filesystems. VFS alone selects the
+ * mount, strips its mountpoint and handles the legacy overlay fallback.
+ * A provider only receives (parent inode, child basename), never /mnt/... .
+ * This is an interim prefix mount selector until dentry-owned mounts land. */
 int nas_vfs_lookup(const char *absolute,struct nas_fs_node *out) {
-    if (!absolute || !out || absolute[0]!='/')return -EINVAL;
+    if(!absolute || !out || absolute[0]!='/')return -EINVAL;
+    size_t path_len=strlen(absolute);
+    if(path_len>=256)return -ENAMETOOLONG;
     ensure_defaults();
     unsigned seen=0;
-    /* Longest mountpoint wins. Only the original /tmp overlay may fall
-     * back to the CPIO root, and that compatibility is explicit in mount. */
-    while (seen < (1U<<count)-1U) {
-        const struct nas_vfs_mount *best=0;
+    while(seen < ((1U<<count)-1U)) {
+        const struct nas_vfs_mount *best=NULL;
+        unsigned selected=0;
         size_t longest=0;
-        unsigned index=0;
         for(unsigned i=0;i<count;i++) {
-            if (seen & (1U<<i))continue;
+            if(seen&(1U<<i))continue;
             const struct nas_vfs_mount *m=mounts[i].mount;
-            if (!mount_matches(m->mountpoint,absolute))continue;
+            if(!mount_matches(m->mountpoint,absolute))continue;
             size_t n=strlen(m->mountpoint);
-            if (!best || n>longest) {best=m;index=i;longest=n;}
+            if(!best || n>longest) {best=m;selected=i;longest=n;}
         }
-        if (!best)break;
-        seen|=1U<<index;
-        *out=(struct nas_fs_node){0};
-        int rc=best->type->lookup(best,absolute,out);
-        if(!rc) {out->filesystem=best->type;out->mount=best;return 0;}
+        if(!best)break;
+        seen|=1U<<selected;
+        struct nas_fs_node current={0};
+        int rc=best->type->root(best,&current);
+        if(!rc) {
+            current.filesystem=best->type;
+            current.mount=best;
+            const char *rest=absolute+longest;
+            if(longest==1)rest=absolute+1;
+            while(*rest=='/')rest++;
+            while(*rest) {
+                if(!current.is_dir){rc=-ENOTDIR;break;}
+                char name[256];
+                unsigned n=0;
+                while(rest[n] && rest[n]!='/') {
+                    if(n==255)return -ENAMETOOLONG;
+                    name[n]=rest[n];n++;
+                }
+                name[n]=0;
+                /* The shared namei layer handles dot, dotdot and symlinks.
+                 * Never present these special components as filesystem names. */
+                if((n==1 && name[0]=='.') ||
+                   (n==2 && name[0]=='.' && name[1]=='.'))
+                    return -EINVAL;
+                struct nas_fs_node next={0};
+                rc=best->type->lookup_child(&current,name,&next);
+                if(rc)break;
+                next.mount=best;
+                next.filesystem=best->type;
+                current=next;
+                rest+=n;
+                while(*rest=='/')rest++;
+            }
+        }
+        if(!rc) {*out=current;return 0;}
         if(rc!=-ENOENT || !best->fallback_on_miss)return rc;
     }
     return -ENOENT;
 }
+
 int nas_vfs_readlink(const struct nas_fs_node *node,
                       const char *absolute,char target[256]) {
     /* Dynamic procfd entries have S_IFLNK metadata but deliberately do not

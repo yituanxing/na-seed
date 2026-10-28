@@ -19,8 +19,12 @@ struct nas_vfs_type {
     /* Human-readable source label for stable exec acceptance diagnostics;
      * does not participate in dispatch or inode ownership. */
     const char *exec_source_label;
-    int (*lookup)(const struct nas_vfs_mount *mount, const char *absolute,
-                  struct nas_fs_node *);
+    /* VFS owns pathname walking and mount dispatch. Filesystems implement
+     * root inode acquisition plus one-name lookup beneath a parent inode.
+     * No callback receives an absolute VFS pathname for lookup. */
+    int (*root)(const struct nas_vfs_mount *,struct nas_fs_node *);
+    int (*lookup_child)(const struct nas_fs_node *parent,const char *name,
+                        struct nas_fs_node *out);
     int (*readlink)(const struct nas_fs_node *,const char *absolute,
                     char target[256]);
     /* Optional inode->LIVE namespace path for directory handles. The

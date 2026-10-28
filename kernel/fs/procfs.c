@@ -114,6 +114,36 @@ bool nas_proc_lookup(const char *path,struct nas_proc_node *out) {
     else return false;
     return true;
 }
+bool nas_proc_find_child(uint64_t dir_ino,const char *name,
+                         struct nas_proc_node *out) {
+    if(!name || !name[0] || !out || strchr(name,'/'))return false;
+    struct nas_proc_node parent={0};
+    if(dir_ino==nas_proc_ino((struct nas_proc_node){.kind=NAS_PROC_ROOT}))
+        parent.kind=NAS_PROC_ROOT;
+    else if(dir_ino>=80000U) {
+        uint64_t encoded=dir_ino-80000U;
+        uint64_t pid=encoded/2048U,tag=encoded%2048U;
+        const struct nas_task *task=living(pid);
+        if(!task)return false;
+        parent.pid=pid;
+        if(tag==NAS_PROC_PID_DIR)parent.kind=NAS_PROC_PID_DIR;
+        else if(tag==NAS_PROC_FD_DIR)parent.kind=NAS_PROC_FD_DIR;
+        else if(tag==NAS_PROC_FDINFO_DIR)parent.kind=NAS_PROC_FDINFO_DIR;
+        else if(tag==1024U+NAS_PROC_TASK_DIR) {
+            parent.kind=NAS_PROC_TASK_DIR;parent.tgid=pid;
+        } else if(tag==1024U+NAS_PROC_TID_DIR) {
+            parent.kind=NAS_PROC_TID_DIR;parent.tgid=task->tgid;
+        } else return false;
+    } else return false;
+    unsigned limit=NAS_TASK_LIMIT+NAS_FD_LIMIT+16U;
+    for(unsigned i=0;i<limit;i++) {
+        char candidate[32];
+        struct nas_proc_node child;
+        if(!nas_proc_child(parent,i,candidate,&child))break;
+        if(!strcmp(candidate,name)){*out=child;return true;}
+    }
+    return false;
+}
 bool nas_proc_dir_path(struct nas_proc_node node,char path[256]) {
     if(!path || !nas_proc_is_dir(node))return false;
     const char *prefix="/proc";unsigned p=0;

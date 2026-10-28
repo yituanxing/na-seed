@@ -14,8 +14,18 @@ static int root_lookup(const struct nas_vfs_mount *m,const char *path,
     *node=(struct nas_fs_node){.ino=1,.nlink=2,.is_dir=true,.mode=0040755};
     return 0;
 }
+static int root_get(const struct nas_vfs_mount *m,struct nas_fs_node *out) {
+    return root_lookup(m,"/",out);
+}
+static int root_child(const struct nas_fs_node *parent,const char *name,
+                      struct nas_fs_node *out) {
+    if(!parent || !parent->is_dir)return -ENOTDIR;
+    return !strcmp(name,"flash") ?
+        root_lookup(parent->mount,"/flash",out) : -ENOENT;
+}
 static const struct nas_vfs_type root_type={
-    .name="fixture-root",.lookup=root_lookup,.read_only=true
+    .name="fixture-root",.root=root_get,.lookup_child=root_child,
+    .read_only=true
 };
 static const struct nas_vfs_mount root={
     .mountpoint="/",.type=&root_type,.permanent=true

@@ -52,6 +52,9 @@ void tmp_inode_discard(struct nas_tmp_file *file);
 void tmp_inode_touch(struct nas_tmp_file *file);
 int tmp_link(const char *oldpath,const char *newpath);
 struct nas_tmp_file *tmp_find(const char *path);
+/* Provider-local directory child lookup; the generic VFS passes only an
+ * opaque parent inode and one component, never an absolute pathname. */
+struct nas_tmp_file *tmp_find_child(const void *parent_inode,const char *name);
 int tmp_parent_check(const char *path);
 struct nas_tmp_file *tmp_create(const char *path, bool dir,uint32_t mode);
 bool tmp_is_link(const struct nas_tmp_file *file);

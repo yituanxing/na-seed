@@ -41,10 +41,7 @@ static const char *basename(const char *path) {
     return last?last+1:path;
 }
 
-static int boot_lookup(const struct nas_vfs_mount *mount,
-                       const char *path,struct nas_fs_node *out) {
-    (void)mount;
-    const struct bootfs_entry *e=bootfs_find(path);
+static int boot_fill(const struct bootfs_entry *e,struct nas_fs_node *out) {
     if(!e)return -ENOENT;
     *out=(struct nas_fs_node){.inode=e,.data=e->data,.size=e->size,
       .ino=e->ino,.nlink=bootfs_is_dir(e)?2:(e->nlink?e->nlink:1),
@@ -52,6 +49,21 @@ static int boot_lookup(const struct nas_vfs_mount *mount,
       .ctime_sec=e->mtime_sec,
       .mode=e->mode,.is_dir=bootfs_is_dir(e),.is_symlink=bootfs_is_link(e)};
     return 0;
+}
+static int boot_root(const struct nas_vfs_mount *mount,
+                     struct nas_fs_node *out) {
+    (void)mount;
+    return boot_fill(bootfs_find("/"),out);
+}
+static int boot_child(const struct nas_fs_node *parent,const char *name,
+                      struct nas_fs_node *out) {
+    if(!parent || !parent->inode || !parent->is_dir)return -ENOTDIR;
+    const struct bootfs_entry *dir=parent->inode;
+    for(unsigned i=0;;i++) {
+        const struct bootfs_entry *entry=bootfs_child(dir,i);
+        if(!entry)return -ENOENT;
+        if(!strcmp(basename(entry->path),name))return boot_fill(entry,out);
+    }
 }
 static int boot_readlink(const struct nas_fs_node *node,const char *path,
                          char target[256]) {
@@ -111,30 +123,37 @@ static int boot_directory_path(const struct nas_fs_node *node,char path[256]) {
     return 0;
 }
 static const struct nas_vfs_type boot_type={
-    .name="bootfs",.exec_source_label="CPIO",.lookup=boot_lookup,
+    .name="bootfs",.exec_source_label="CPIO",
+    .root=boot_root,.lookup_child=boot_child,
     .directory_path=boot_directory_path,.readlink=boot_readlink,
     .read_at=boot_read,.read_dir=boot_read_dir,.read_only=true
 };
-static int tmp_lookup(const struct nas_vfs_mount *mount,
-                       const char *path,struct nas_fs_node *out) {
-    (void)mount;
-    struct nas_tmp_file *f=tmp_find(path);
-    if(!f) {
-        /* Synthetic /tmp overlay root: preserve the old tmpfs-only
-         * directory listing while explicit fallback keeps CPIO lookups. */
-        if(strcmp(path,"/tmp"))return -ENOENT;
-        const struct bootfs_entry *root=bootfs_find("/tmp");
-        if(!root || !bootfs_is_dir(root))return -ENOENT;
-        *out=(struct nas_fs_node){.inode=root,.ino=root->ino,
-                .nlink=2,.mode=root->mode,.is_dir=true};
-        return 0;
-    }
+static void tmp_fill(const struct nas_tmp_file *f,
+                     struct nas_fs_node *out) {
     *out=(struct nas_fs_node){.inode=f,.size=f->size,
       .ino=5000+tmp_number(f),.nlink=f->nlink?(f->is_dir?2:f->nlink):0,
       .atime_sec=f->atime_ns/1000000000ULL,
       .mtime_sec=f->mtime_ns/1000000000ULL,
       .ctime_sec=f->ctime_ns/1000000000ULL,
       .mode=f->mode,.is_dir=f->is_dir,.is_symlink=tmp_is_link(f)};
+}
+static int tmp_root(const struct nas_vfs_mount *mount,
+                    struct nas_fs_node *out) {
+    (void)mount;
+    /* The bootstrap /tmp overlay root is backed by the immutable CPIO
+     * directory; children resolve through tmpfs unless fallback is needed. */
+    const struct bootfs_entry *root=bootfs_find("/tmp");
+    if(!root || !bootfs_is_dir(root))return -ENOENT;
+    *out=(struct nas_fs_node){.inode=root,.ino=root->ino,
+            .nlink=2,.mode=root->mode,.is_dir=true};
+    return 0;
+}
+static int tmp_child(const struct nas_fs_node *parent,const char *name,
+                     struct nas_fs_node *out) {
+    if(!parent || !parent->is_dir)return -ENOTDIR;
+    struct nas_tmp_file *f=tmp_find_child(parent->inode,name);
+    if(!f)return -ENOENT;
+    tmp_fill(f,out);
     return 0;
 }
 static int tmp_readlink(const struct nas_fs_node *node,const char *path,
@@ -278,7 +297,8 @@ static void tmp_last_inode_unpin(const struct nas_fs_node *node) {
     tmp_inode_discard((struct nas_tmp_file *)(uintptr_t)node->inode);
 }
 static const struct nas_vfs_type tmp_type={
-    .name="tmpfs",.exec_source_label="tmpfs",.lookup=tmp_lookup,
+    .name="tmpfs",.exec_source_label="tmpfs",
+    .root=tmp_root,.lookup_child=tmp_child,
     .directory_path=tmp_directory_path,
     .last_inode_unpin=tmp_last_inode_unpin,.getattr=tmp_getattr,
     .readlink=tmp_readlink,
@@ -289,13 +309,25 @@ static const struct nas_vfs_type tmp_type={
     .link=tmp_link_node,.symlink=tmp_symlink_node,
     .unlink_open_safe=true,.rename_replace_open_safe=true
 };
-static int proc_lookup_node(const struct nas_vfs_mount *mount,
-                       const char *path,struct nas_fs_node *out) {
+static void proc_fill(struct nas_proc_node p,struct nas_fs_node *out) {
+    *out=(struct nas_fs_node){.ino=nas_proc_ino(p),
+      .nlink=nas_proc_is_dir(p)?2:1,.mode=nas_proc_mode(p),
+      .is_dir=nas_proc_is_dir(p)};
+}
+static int proc_root(const struct nas_vfs_mount *mount,
+                     struct nas_fs_node *out) {
     (void)mount;
     struct nas_proc_node p;
-    if(!nas_proc_lookup(path,&p))return -ENOENT;
-    *out=(struct nas_fs_node){.ino=nas_proc_ino(p),.nlink=nas_proc_is_dir(p)?2:1,
-      .mode=nas_proc_mode(p),.is_dir=nas_proc_is_dir(p)};
+    if(!nas_proc_lookup("/proc",&p))return -ENOENT;
+    proc_fill(p,out);
+    return 0;
+}
+static int proc_child(const struct nas_fs_node *parent,const char *name,
+                      struct nas_fs_node *out) {
+    if(!parent || !parent->is_dir)return -ENOTDIR;
+    struct nas_proc_node p;
+    if(!nas_proc_find_child(parent->ino,name,&p))return -ENOENT;
+    proc_fill(p,out);
     return 0;
 }
 
@@ -338,7 +370,8 @@ static int proc_read_dir(const struct nas_fs_node *node,const char *path,
 }
 
 static const struct nas_vfs_type proc_type={
-    .name="procfs",.exec_source_label="procfs",.lookup=proc_lookup_node,
+    .name="procfs",.exec_source_label="procfs",
+    .root=proc_root,.lookup_child=proc_child,
     .readlink=proc_readlink_node,.read_dir=proc_read_dir,.read_only=true
 };
 static const struct nas_vfs_mount defaults[]={

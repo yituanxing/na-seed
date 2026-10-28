@@ -30,8 +30,8 @@ static struct nas_littlefs_identity *intern(struct nas_littlefs_vfs *ctx,
     id->ino=(uint64_t)++ctx->count;
     return id;
 }
-static int look(const struct nas_vfs_mount *m,const char *absolute,
-                struct nas_fs_node *out) {
+static int look_path(const struct nas_vfs_mount *m,const char *absolute,
+                     struct nas_fs_node *out) {
     struct nas_littlefs_vfs *ctx=context(m);
     if(!ctx || !ctx->mounted || !out)return -ENODEV;
     const char *path=relative(ctx,absolute);
@@ -47,6 +47,38 @@ static int look(const struct nas_vfs_mount *m,const char *absolute,
         .inode=id,.ino=id->ino,.nlink=dir?2:1,
         .size=dir?0:info.size,.mode=dir?0040555U:0100444U,
         .is_dir=dir
+    };
+    return 0;
+}
+static int look_root(const struct nas_vfs_mount *m,struct nas_fs_node *out) {
+    struct nas_littlefs_vfs *ctx=context(m);
+    if(!ctx)return -ENODEV;
+    return look_path(m,ctx->mount_point,out);
+}
+static int look_child(const struct nas_fs_node *parent,const char *name,
+                      struct nas_fs_node *out) {
+    if(!parent || !parent->is_dir || !parent->mount || !parent->inode ||
+       !name || !name[0] || !out)return -ENOTDIR;
+    struct nas_littlefs_vfs *ctx=context(parent->mount);
+    if(!ctx || !ctx->mounted)return -ENODEV;
+    const struct nas_littlefs_identity *dir=parent->inode;
+    size_t n=strlen(dir->path),m=strlen(name);
+    if(n+(n>1?1U:0U)+m>=256)return -ENAMETOOLONG;
+    char local[256];
+    memcpy(local,dir->path,n);
+    if(n>1)local[n++]='/';
+    memcpy(local+n,name,m+1);
+    struct lfs_info info={0};
+    int rc=lfs_stat(&ctx->fs,local,&info);
+    if(rc)return rc;
+    struct nas_littlefs_identity *id=intern(ctx,local);
+    if(!id)return -ENOSPC;
+    if(info.type!=LFS_TYPE_REG && info.type!=LFS_TYPE_DIR)return -EIO;
+    bool is_dir=info.type==LFS_TYPE_DIR;
+    *out=(struct nas_fs_node){
+        .inode=id,.ino=id->ino,.nlink=is_dir?2:1,
+        .size=is_dir?0:info.size,.mode=is_dir?0040555U:0100444U,
+        .is_dir=is_dir
     };
     return 0;
 }
@@ -130,7 +162,8 @@ static int readdir(const struct nas_fs_node *node,const char *opened_path,
     return rc<0?rc:close_rc?close_rc:(int)copied;
 }
 static const struct nas_vfs_type type={
-    .name="littlefs",.exec_source_label="littlefs",.lookup=look,
+    .name="littlefs",.exec_source_label="littlefs",
+    .root=look_root,.lookup_child=look_child,
     .read_at=read_at,.read_dir=readdir,.read_only=true
 };
 int nas_littlefs_vfs_mount(struct nas_littlefs_vfs *ctx,
