@@ -530,6 +530,14 @@ int nas_vfs_open_inode(const char *path,
     int rc=nas_fs_lookup_node(path,follow,&node,canonical);
     bool newly_created=false;
     if(rc==-ENOENT && options->create) {
+        /* In single-CPU VFS a new inode necessarily needs a fresh lease.
+         * Check capacity BEFORE creating a visible name: ENFILE must not
+         * leave a file behind when the subsequent File cannot own it.
+         * Existing files are handled by the exact-identity pin below. */
+        bool free_inode_slot=false;
+        for(unsigned i=0;i<NAS_VFS_LIVE_INODES;i++)
+            if(!live_inodes[i].refs) {free_inode_slot=true;break;}
+        if(!free_inode_slot)return -ENFILE;
         /* Never write a regular inode when the caller requires a dir. */
         if(options->directory_only)return -ENOTDIR;
         if(options->truncate && !options->path_only && !options->access)
