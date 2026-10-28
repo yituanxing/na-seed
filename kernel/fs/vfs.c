@@ -19,6 +19,9 @@ struct inode_size_lease {
     struct nas_posix_locks posix_locks; /* process owner PID, not OFD slot */
 };
 static struct inode_size_lease live_inodes[NAS_VFS_LIVE_INODES];
+/* Shared validation is defined after mount registry/default initialization,
+ * but already used by stat/inode operations above that definition. */
+static int vfs_node_status(const struct nas_fs_node *node);
 /* flock is keyed by two distinct owners: (mount,inode incarnation)
  * for conflict detection, and the shared File object pointer for lifetime.
  * No FD number, task and backend-specific inode struct appears here. */
