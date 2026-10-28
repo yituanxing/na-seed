@@ -113,8 +113,19 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     nas_task_adopt_orphans(child->pid);
     for (unsigned fd = 0; fd < NAS_FD_LIMIT; fd++)
         if (TASK.fds->entries[fd].kind != FD_CLOSED) nas_fs_close_fd(fd);
-    /* All inherited jobserver pipe ends are closed before SIGCHLD is
-     * observed. Wake a caught parent signal, never fake a ready pipe. */
+    /* A zombie no longer owns a live FS context. Reaping by wait4 is NOT
+     * a prerequisite for releasing cwd inode/mount pins: PID1 may never
+     * be reaped, yet its last user exit must durably unmount ext4. This
+     * also drops a tmpfs orphan cwd's final generic inode lease.
+     * Shared CLONE_FS contexts retain their other owners; a later
+     * nas_task_release() sees NULL and must not put twice. Do this only
+     * after final thread-group teardown, never on a leader with workers. */
+    if(child->fs) {
+        nas_fs_context_put(child->fs);
+        child->fs=NULL;
+    }
+    /* All inherited jobserver pipe ends and cwd refs are released
+     * before SIGCHLD is observed by a parent. */
     nas_signal_child_exit(child);
     if (signum) {
         if (signum == NAS_SIGPIPE) {
