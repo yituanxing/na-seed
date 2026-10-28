@@ -745,6 +745,18 @@ int nas_vfs_rename(const char *oldpath,const char *newpath,uint64_t flags) {
     if(active_mountpoint(old_canonical) || active_mountpoint(new_canonical))
         return -EBUSY;
     if(old_parent.mount!=new_parent.mount)return -EXDEV;
+    /* A directory cannot move beneath itself, regardless of provider.
+     * Use canonical component boundaries instead of raw user spelling:
+     * an alias or symlink to a parent is already resolved by namei. */
+    struct nas_fs_node source_for_cycle;
+    char current_source[256];
+    int source_rc=nas_fs_lookup_node(old_canonical,false,
+                                      &source_for_cycle,current_source);
+    if(source_rc)return source_rc;
+    if(source_for_cycle.is_dir &&
+       strcmp(old_canonical,new_canonical) &&
+       mount_matches(old_canonical,new_canonical))
+        return -EINVAL;
     if(!nas_vfs_can_write(&old_parent))return -EROFS;
     if(!old_parent.filesystem->rename)return -EOPNOTSUPP;
     /* POSIX rename(replace) must not invalidate an already open target.

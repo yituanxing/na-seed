@@ -13,7 +13,13 @@ struct ext4_sblock;
  * No filesystem type, ISA or direct userpointer dispatch in this port.
  */
 #define NAS_LWEXT4_ORPHAN_LIMIT 256U
-struct nas_lwext4_orphan { uint32_t ino,serial; bool used; };
+/* A staged orphan may be an ordinary file or an empty directory.
+ * The VFS File owns its backend inode until the final unpin; a stable
+ * typed private link defers physical reclaim and survives reboot. */
+struct nas_lwext4_orphan {
+    uint32_t ino,serial;
+    bool used,is_dir;
+};
 struct nas_lwext4_mount {
     struct nas_ramdisk ramdisk;
     struct nas_lwext4_device device;

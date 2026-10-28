@@ -96,7 +96,7 @@ int main(int argc,char **argv) {
     uint8_t *image=malloc((size_t)n);
     assert(image);
     assert(fread(image,1,(size_t)n,disk)==(size_t)n);
-    char stale_orphan_path[256]={0};
+    char stale_orphan_path[256]={0},stale_directory_orphan_path[256]={0};
     static struct nas_lwext4_mount mounted;
     assert(nas_lwext4_ramdisk_mount_mode(&mounted,"vfs-test-ram","vfs-test-ext",
                                     "/mnt",image,(uint64_t)n,write)==0);
@@ -335,6 +335,69 @@ int main(int argc,char **argv) {
         assert(nas_vfs_unlink("/mnt/sandbox/vfs-directory",0x200ULL)==0);
         assert(nas_vfs_unlink("/mnt/sandbox/renamed-directory/child",0)==0);
         assert(nas_vfs_unlink("/mnt/sandbox/renamed-directory",0x200ULL)==0);
+        /* Linux rename(replace) of EMPTY directories: non-empty target
+         * fails without mutating either tree; valid replacement moves
+         * source directory and its children under one existing name. */
+        assert(nas_vfs_mkdir("/mnt/sandbox/move-tree",0700)==0);
+        assert(nas_vfs_mkdir("/mnt/sandbox/move-tree/sub",0700)==0);
+        assert(nas_vfs_create("/mnt/sandbox/move-tree/sub/payload",0600)==0);
+        assert(nas_vfs_mkdir("/mnt/sandbox/move-target",0700)==0);
+        assert(nas_vfs_create("/mnt/sandbox/move-target/occupied",0600)==0);
+        assert(nas_vfs_rename("/mnt/sandbox/move-tree",
+                              "/mnt/sandbox/move-target",0)==-ENOTEMPTY);
+        assert(nas_fs_lookup_node("/mnt/sandbox/move-tree/sub/payload",
+                                   true,&directory,actual)==0);
+        assert(nas_fs_lookup_node("/mnt/sandbox/move-target/occupied",
+                                   true,&directory,actual)==0);
+        assert(nas_vfs_unlink("/mnt/sandbox/move-target/occupied",0)==0);
+        /* Parent-inode ancestry blocks a directory moved into itself;
+         * no backend should need a separate unsafe lexical cycle test. */
+        assert(nas_vfs_rename("/mnt/sandbox/move-tree",
+                              "/mnt/sandbox/move-tree/sub/cycle",0)==-EINVAL);
+        assert(nas_vfs_rename("/mnt/sandbox/move-tree",
+                              "/mnt/sandbox/move-target",0)==0);
+        assert(nas_fs_lookup_node("/mnt/sandbox/move-tree/sub/payload",
+                                   true,&directory,actual)==-ENOENT);
+        assert(nas_fs_lookup_node("/mnt/sandbox/move-target/sub/payload",
+                                   true,&directory,actual)==0);
+        assert(nas_vfs_unlink("/mnt/sandbox/move-target/sub/payload",0)==0);
+        assert(nas_vfs_unlink("/mnt/sandbox/move-target/sub",0x200ULL)==0);
+        assert(nas_vfs_unlink("/mnt/sandbox/move-target",0x200ULL)==0);
+        /* An already OPEN destination directory survives rename-overwrite
+         * until final VFS unpin; do not recursively delete the victim. */
+        assert(nas_vfs_mkdir("/mnt/sandbox/open-dir-source",0700)==0);
+        assert(nas_vfs_mkdir("/mnt/sandbox/open-dir-victim",0700)==0);
+        struct nas_fs_node open_victim_dir;
+        assert(nas_fs_lookup_node("/mnt/sandbox/open-dir-victim",true,
+                                   &open_victim_dir,actual)==0);
+        assert(nas_vfs_node_pin(&open_victim_dir)==0);
+        assert(nas_vfs_rename("/mnt/sandbox/open-dir-source",
+                              "/mnt/sandbox/open-dir-victim",0)==0);
+        struct nas_fs_node new_dir;
+        assert(nas_fs_lookup_node("/mnt/sandbox/open-dir-source",true,
+                                   &new_dir,actual)==-ENOENT);
+        assert(nas_fs_lookup_node("/mnt/sandbox/open-dir-victim",true,
+                                   &new_dir,actual)==0);
+        assert(new_dir.ino!=open_victim_dir.ino);
+        struct nas_fs_node victim_meta;
+        assert(nas_vfs_getattr(&open_victim_dir,&victim_meta)==0);
+        assert(victim_meta.nlink==0);
+        struct nas_vfs_dirent orphan_entries[8]={0};
+        assert(nas_vfs_read_dir(&open_victim_dir,0,orphan_entries,8)>=2);
+        assert(!strcmp(orphan_entries[0].name,"."));
+        assert(nas_vfs_node_unpin(&open_victim_dir)==0);
+        assert(nas_vfs_unlink("/mnt/sandbox/open-dir-victim",0x200ULL)==0);
+        /* Full VFS flag handling, not a separate NoReplace compiler path. */
+        assert(nas_vfs_create("/mnt/sandbox/noreplace-source",0600)==0);
+        assert(nas_vfs_create("/mnt/sandbox/noreplace-target",0600)==0);
+        assert(nas_vfs_rename("/mnt/sandbox/noreplace-source",
+                              "/mnt/sandbox/noreplace-target",1)==-EEXIST);
+        assert(nas_fs_lookup_node("/mnt/sandbox/noreplace-source",true,
+                                   &new_dir,actual)==0);
+        assert(nas_vfs_unlink("/mnt/sandbox/noreplace-target",0)==0);
+        assert(nas_vfs_rename("/mnt/sandbox/noreplace-source",
+                              "/mnt/sandbox/noreplace-target",1)==0);
+        assert(nas_vfs_unlink("/mnt/sandbox/noreplace-target",0)==0);
         /* Real ext4 replacement: victim is OPEN and must retain its
          * original contents and inode number while the source atomically
          * becomes the visible target in our single-CPU VFS namespace. */
@@ -441,6 +504,18 @@ int main(int argc,char **argv) {
                  (unsigned)abandoned.ino)>0);
         assert(!ext4_frename("/mnt/sandbox/crashed-open-file",
                              stale_orphan_path));
+        /* A second independently crashed private directory orphan
+         * exercises empty-dir cleanup without touching foreign entries. */
+        assert(nas_vfs_mkdir("/mnt/sandbox/crashed-empty-directory",0700)==0);
+        struct nas_fs_node abandoned_directory;
+        assert(nas_fs_lookup_node("/mnt/sandbox/crashed-empty-directory",
+                                   true,&abandoned_directory,actual)==0);
+        assert(snprintf(stale_directory_orphan_path,
+                 sizeof(stale_directory_orphan_path),
+                 "/mnt/.naseed-orphans/d%08x-fffffffd",
+                 (unsigned)abandoned_directory.ino)>0);
+        assert(!ext4_dir_mv("/mnt/sandbox/crashed-empty-directory",
+                             stale_directory_orphan_path));
         uint32_t orphan_number=0;struct ext4_inode orphan_raw;
         assert(!ext4_raw_inode_fill(stale_orphan_path,
                                      &orphan_number,&orphan_raw));
@@ -482,6 +557,10 @@ int main(int argc,char **argv) {
         assert(!ext4_raw_inode_fill(stale_orphan_path,
                                      &still_present,&raw));
         assert(still_present!=0); /* RO mount never silently mutates disk */
+        uint32_t dir_remains=0;
+        assert(!ext4_raw_inode_fill(stale_directory_orphan_path,
+                                    &dir_remains,&raw));
+        assert(dir_remains!=0);
     }
     assert(nas_ramdisk_detach(&external)==-EBUSY);
     struct nas_fs_node external_node;
@@ -512,6 +591,8 @@ int main(int argc,char **argv) {
                                        "traced-ext4","/mnt",true)==0);
         uint32_t recovered=0;struct ext4_inode raw_orphan;
         assert(ext4_raw_inode_fill(stale_orphan_path,
+                                    &recovered,&raw_orphan)==ENOENT);
+        assert(ext4_raw_inode_fill(stale_directory_orphan_path,
                                     &recovered,&raw_orphan)==ENOENT);
         assert(nas_fs_lookup_node("/mnt/.naseed-orphans",true,
                                   &hidden,actual)==-ENOENT);

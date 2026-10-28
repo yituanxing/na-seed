@@ -16,15 +16,17 @@ static bool ext_reserved_root(const struct nas_lwext4_mount *ctx,
     return ctx && parent==ctx->root_ino &&
            !strcmp(name,EXT4_ORPHAN_DIRECTORY);
 }
-static void ext_orphan_name(char name[19],uint32_t ino,uint32_t serial) {
-    name[0]='o';name[9]='-';name[18]=0;
+static void ext_orphan_name(char name[19],uint32_t ino,uint32_t serial,
+                            bool is_dir) {
+    name[0]=is_dir?'d':'o';name[9]='-';name[18]=0;
     for(unsigned i=0;i<8;i++) {
         name[1+i]=orphan_digits[(ino>>(28-4*i))&15U];
         name[10+i]=orphan_digits[(serial>>(28-4*i))&15U];
     }
 }
 static bool ext_orphan_record(const uint8_t *name,unsigned n) {
-    if(n!=18 || name[0]!='o' || name[9]!='-')return false;
+    if(n!=18 || (name[0]!='o' && name[0]!='d') ||
+       name[9]!='-')return false;
     for(unsigned i=1;i<18;i++) {
         if(i==9)continue;
         if(!((name[i]>='0' && name[i]<='9') ||
@@ -33,9 +35,10 @@ static bool ext_orphan_record(const uint8_t *name,unsigned n) {
     return true;
 }
 static int ext_orphan_path(const struct nas_lwext4_mount *ctx,
-                           uint32_t ino,uint32_t serial,char path[256]) {
+                           uint32_t ino,uint32_t serial,bool is_dir,
+                           char path[256]) {
     char name[19];
-    ext_orphan_name(name,ino,serial);
+    ext_orphan_name(name,ino,serial,is_dir);
     return nas_vfs_join_child(ctx->orphan_dir,name,path);
 }
 static const char *path_for(const struct nas_lwext4_mount *m,
@@ -275,12 +278,39 @@ static int ext_mkdir_path(const struct nas_fs_node *parent,const char *name,uint
     rc=ext4_mode_set(path,(uint32_t)mode&07777U);
     return rc ? -rc : 0;
 }
-/* Upstream ext4_fremove frees a last-link inode immediately. Reserve one
- * VFS-owned private link until final File/cwd pin disappears instead of
- * modifying upstream or invalidating a live inode. The private directory
- * is neither reachable through lookup_child nor visible in getdents. */
+/* The upstream liblwext4 namespace API is NOT a POSIX replacement
+ * transaction: it refuses an occupied target, and removes last-linked
+ * inodes immediately. Retain a private typed dentry for every live inode
+ * that loses its final visible name. Everything stays in this adapter. */
+static int ext_dir_empty(const char *path) {
+    ext4_dir dir={0};
+    int rc=ext4_dir_open(&dir,path);
+    if(rc)return -rc;
+    bool nonempty=false;
+    const ext4_direntry *e;
+    while((e=ext4_dir_entry_next(&dir))) {
+        if(!e->inode)continue;
+        if(e->name_length==1 && e->name[0]=='.')continue;
+        if(e->name_length==2 && e->name[0]=='.' && e->name[1]=='.')
+            continue;
+        nonempty=true;break;
+    }
+    rc=ext4_dir_close(&dir);
+    if(rc)return -rc;
+    return nonempty?-ENOTEMPTY:0;
+}
+/* Never use upstream ext4_dir_rm without the empty-directory preflight:
+ * that operation may recursively remove an entire directory tree. */
+static int ext_remove_staged(const char *path,bool is_dir) {
+    if(!is_dir)return -ext4_fremove(path);
+    int rc=ext_dir_empty(path);
+    return rc?rc:-ext4_dir_rm(path);
+}
+static int ext_move_staged(const char *from,const char *to,bool is_dir) {
+    return is_dir ? -ext4_dir_mv(from,to) : -ext4_frename(from,to);
+}
 static int ext_stage_orphan(struct nas_lwext4_mount *ctx,
-                            const char *from,uint32_t ino) {
+                            const char *from,uint32_t ino,bool is_dir) {
     if(!ctx || !ctx->mounted || !ctx->orphan_dir[0])return -EIO;
     unsigned slot=NAS_LWEXT4_ORPHAN_LIMIT;
     for(unsigned i=0;i<NAS_LWEXT4_ORPHAN_LIMIT;i++)
@@ -289,18 +319,18 @@ static int ext_stage_orphan(struct nas_lwext4_mount *ctx,
         return -ENOSPC;
     uint32_t serial=ctx->orphan_serial+1;
     char dest[256];
-    int rc=ext_orphan_path(ctx,ino,serial,dest);
+    int rc=ext_orphan_path(ctx,ino,serial,is_dir,dest);
     if(rc)return rc;
     struct ext4_inode raw;
     uint32_t existing=0;
     rc=ext4_raw_inode_fill(dest,&existing,&raw);
     if(!rc)return -EEXIST;
     if(rc!=ENOENT)return -rc;
-    rc=ext4_frename(from,dest);
-    if(rc)return -rc;
+    rc=ext_move_staged(from,dest,is_dir);
+    if(rc)return rc;
     ctx->orphan_serial=serial;
     ctx->orphans[slot]=(struct nas_lwext4_orphan){
-        .ino=ino,.serial=serial,.used=true
+        .ino=ino,.serial=serial,.used=true,.is_dir=is_dir
     };
     return 0;
 }
@@ -312,8 +342,10 @@ static void ext_last_inode_unpin(const struct nas_fs_node *node) {
         struct nas_lwext4_orphan *orphan=&ctx->orphans[i];
         if(!orphan->used || orphan->ino!=(uint32_t)node->ino)continue;
         char path[256];
-        if(!ext_orphan_path(ctx,orphan->ino,orphan->serial,path) &&
-           !ext4_fremove(path))orphan->used=false;
+        if(!ext_orphan_path(ctx,orphan->ino,orphan->serial,
+                            orphan->is_dir,path) &&
+           !ext_remove_staged(path,orphan->is_dir))
+            orphan->used=false;
         /* Failed deletion is durably named; next mount reaps it. */
         return;
     }
@@ -349,25 +381,12 @@ static int ext_unlink_path(const struct nas_fs_node *parent,const char *name,uin
             .filesystem=parent->filesystem,.mount_id=parent->mount_id,
             .inode=(const void *)(uintptr_t)ino,.ino=ino};
         if(ext4_inode_get_links_cnt(&raw)==1 && nas_vfs_node_has_lease(&target))
-            return ext_stage_orphan(ctx,path,ino);
+            return ext_stage_orphan(ctx,path,ino,false);
         return -ext4_fremove(path);
     }
-    /* Upstream ext4_dir_rm is recursive; never expose that to rmdir.
-     * Reject any child except dot/dotdot under single-CPU VFS policy. */
-    ext4_dir dir={0};
-    rc=ext4_dir_open(&dir,path);
-    if(rc)return -rc;
-    bool nonempty=false;
-    const ext4_direntry *e;
-    while((e=ext4_dir_entry_next(&dir))) {
-        if(!e->inode)continue;
-        if(e->name_length==1 && e->name[0]=='.')continue;
-        if(e->name_length==2 && e->name[0]=='.' && e->name[1]=='.')continue;
-        nonempty=true;break;
-    }
-    rc=ext4_dir_close(&dir);
-    if(rc)return -rc;
-    return nonempty ? -ENOTEMPTY : -ext4_dir_rm(path);
+    /* Directory unlink needs its own empty-directory preflight. */
+    rc=ext_dir_empty(path);
+    return rc?rc:-ext4_dir_rm(path);
 }
 /* Upstream ext4_frename is NO-REPLACE: ext4_create_hardlink returns
  * EEXIST for an existing destination. Replacement is adapted here, not
@@ -377,7 +396,7 @@ static int ext_unlink_path(const struct nas_fs_node *parent,const char *name,uin
 static int ext_rename_path(const struct nas_fs_node *old_parent,const char *old_name,
                             const struct nas_fs_node *new_parent,const char *new_name,
                             uint64_t flags) {
-    if(flags)return -EINVAL;
+    if(flags&~1ULL)return -EINVAL; /* Linux RENAME_NOREPLACE only */
     if(!old_parent || !new_parent || old_parent->mount!=new_parent->mount)
         return -EXDEV;
     char from[256],to[256];
@@ -397,36 +416,42 @@ static int ext_rename_path(const struct nas_fs_node *old_parent,const char *old_
                                              &source_raw)&0170000U;
     rc=ext4_raw_inode_fill(to,&victim,&victim_raw);
     if(rc==ENOENT)
-        return source_type==0040000U ?
-               -ext4_dir_mv(from,to) : -ext4_frename(from,to);
+        return ext_move_staged(from,to,source_type==0040000U);
     if(rc)return -rc;
     if(!victim)return -EIO;
+    if(flags&1ULL)return -EEXIST;
     if(source==victim)return 0; /* POSIX identical hardlink inode */
     uint32_t victim_type=ext4_inode_get_mode(ctx->upstream_super,
                                              &victim_raw)&0170000U;
     if(source_type==0040000U && victim_type!=0040000U)return -ENOTDIR;
     if(source_type!=0040000U && victim_type==0040000U)return -EISDIR;
-    /* Directory replacement still requires a separate empty-directory
-     * orphan transaction. Never call upstream recursive ext4_dir_rm. */
-    if(source_type==0040000U)return -EEXIST;
-    bool defer=ext4_inode_get_links_cnt(&victim_raw)==1;
+    const bool is_dir=source_type==0040000U;
+    if(is_dir) {
+        /* Linux rename may replace an EMPTY directory, including when an
+         * open directory File still owns the victim inode. Upstream
+         * ext4_dir_rm is recursive; it is safe only after this check. */
+        rc=ext_dir_empty(to);
+        if(rc)return rc;
+    }
+    bool defer=is_dir ||
+               ext4_inode_get_links_cnt(&victim_raw)==1;
     if(defer) {
         struct nas_fs_node node={.mount=new_parent->mount,
             .filesystem=new_parent->filesystem,.mount_id=new_parent->mount_id,
             .ino=victim,.inode=(const void *)(uintptr_t)victim};
         defer=nas_vfs_node_has_lease(&node);
     }
-    rc=ext_stage_orphan(ctx,to,victim);
+    rc=ext_stage_orphan(ctx,to,victim,is_dir);
     if(rc)return rc;
     uint32_t serial=ctx->orphan_serial;
     char hidden[256];
-    rc=ext_orphan_path(ctx,victim,serial,hidden);
+    rc=ext_orphan_path(ctx,victim,serial,is_dir,hidden);
     if(rc)return rc; /* already preflighted by ext_stage_orphan */
-    rc=ext4_frename(from,to);
+    rc=ext_move_staged(from,to,is_dir);
     if(rc) {
         /* Keep old destination data safe even if source rename fails.
          * A failed rollback is a real EIO, not a silent successful rename. */
-        int undo=ext4_frename(hidden,to);
+        int undo=ext_move_staged(hidden,to,is_dir);
         if(!undo) {
             for(unsigned i=0;i<NAS_LWEXT4_ORPHAN_LIMIT;i++)
                 if(ctx->orphans[i].used && ctx->orphans[i].ino==victim &&
@@ -436,7 +461,7 @@ static int ext_rename_path(const struct nas_fs_node *old_parent,const char *old_
         return undo ? -EIO : -rc;
     }
     if(!defer) {
-        rc=ext4_fremove(hidden);
+        rc=ext_remove_staged(hidden,is_dir);
         if(!rc) {
             for(unsigned i=0;i<NAS_LWEXT4_ORPHAN_LIMIT;i++)
                 if(ctx->orphans[i].used && ctx->orphans[i].ino==victim &&
@@ -646,7 +671,7 @@ static int ext_orphan_prepare(struct nas_lwext4_mount *ctx) {
                               ctx->orphan_dir);
     if(rc)return rc;
     char sample[256];
-    rc=ext_orphan_path(ctx,UINT32_MAX,UINT32_MAX,sample);
+    rc=ext_orphan_path(ctx,UINT32_MAX,UINT32_MAX,false,sample);
     if(rc)return rc;
     rc=ext4_dir_mk(ctx->orphan_dir);
     if(rc)return -rc;
@@ -663,7 +688,10 @@ static int ext_orphan_prepare(struct nas_lwext4_mount *ctx) {
             if(item->name_length==2 && item->name[0]=='.' &&
                item->name[1]=='.')continue;
             if(!ext_orphan_record(item->name,item->name_length) ||
-               item->inode_type==EXT4_DE_DIR) {invalid=true;break;}
+               ((item->name[0]=='d') !=
+                (item->inode_type==EXT4_DE_DIR))) {
+                invalid=true;break;
+            }
             /* The private filename must encode the inode actually
              * referenced by ext4's directory entry, not just resemble
              * an arbitrary orphan name inside a possibly preexisting
@@ -686,8 +714,8 @@ static int ext_orphan_prepare(struct nas_lwext4_mount *ctx) {
         char path[256];
         rc=nas_vfs_join_child(ctx->orphan_dir,name,path);
         if(rc)return rc;
-        rc=ext4_fremove(path);
-        if(rc)return -rc;
+        rc=ext_remove_staged(path,name[0]=='d');
+        if(rc)return rc;
     }
     return -EOVERFLOW;
 }
@@ -812,13 +840,13 @@ int nas_lwext4_unmount(struct nas_lwext4_mount *ctx) {
             .ino=o->ino};
         if(nas_vfs_node_has_lease(&target))return -EBUSY;
         char path[256];
-        rc=ext_orphan_path(ctx,o->ino,o->serial,path);
+        rc=ext_orphan_path(ctx,o->ino,o->serial,o->is_dir,path);
         if(rc)return rc;
         struct ext4_inode raw;uint32_t live=0;
         rc=ext4_raw_inode_fill(path,&live,&raw);
         if(rc!=ENOENT && rc)return -rc;
         if(!rc && live!=o->ino)return -ESTALE;
-        if(!rc && (rc=ext4_fremove(path)))return -rc;
+        if(!rc && (rc=ext_remove_staged(path,o->is_dir)))return rc;
         o->used=false;
     }
     /* A failed physical flush must leave mount and inode ownership

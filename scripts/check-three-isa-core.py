@@ -103,6 +103,17 @@ for item in ("struct nas_vfs_mount superblock;", "const struct nas_vfs_mount *re
         raise SystemExit(f"unstable VFS-owned mount/parent identity: {item}")
 if "mounts[i]=mounts[i+1]" in vfs_src or "mounts[count++]" in vfs_src:
     raise SystemExit("packed mount registry would invalidate open File mounts")
+# The original ext4 port may NOT silently treat a directory rename
+# replacement as a file truncate. All ordinary and empty-directory
+# victims use one typed staged-inode protocol with a safe emptiness check.
+ext4_port=(root/"ports/lwext4/guest_vfs.c").read_text()
+for token in ("ext_dir_empty(", "ext_remove_staged(", "ext_move_staged(",
+              "ext_stage_orphan(", "name[0]=='d'", "nonempty?-ENOTEMPTY:0"):
+    if token not in ext4_port:
+        raise SystemExit(f"ext4 typed directory-orphan contract missing: {token}")
+if ".rename_replace_open_safe=true" not in ext4_port or \
+   "ext4_dir_rm(hidden)" in ext4_port:
+    raise SystemExit("unsafe ext4 open-directory replace lifecycle")
 # Borrowed inode identity is never trusted solely by its pointer. Mounted
 # VFS validation must check the live mount registry before dereferencing
 # a possibly retired descriptor; tmpfs checks its monotonic inode number.
