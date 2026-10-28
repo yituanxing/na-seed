@@ -55,6 +55,11 @@ static bool lease_conflicts(const struct inode_size_lease *lease,
                             const struct nas_fs_node *node) {
     return lease && lease->backend_inode!=node->inode;
 }
+bool nas_vfs_node_has_lease(const struct nas_fs_node *node) {
+    if(vfs_node_status(node))return false;
+    const struct inode_size_lease *lease=inode_lease(node);
+    return lease && !lease_conflicts(lease,node);
+}
 struct nas_posix_locks *nas_vfs_posix_locks(const struct nas_fs_node *node) {
     if(vfs_node_status(node))return NULL;
     struct inode_size_lease *lease=inode_lease(node);
@@ -721,7 +726,9 @@ int nas_vfs_unlink(const char *path,uint64_t flags) {
          * so the last-file-link threshold cannot be used for directories. */
         if(!looked_up && target.mount==parent.mount && target.ino &&
            inode_lease(&target) &&
-           ((flags&0x200ULL) || target.nlink<=1))
+           ((flags&0x200ULL) ||
+            (target.nlink<=1 &&
+             !parent.filesystem->unlink_open_file_safe)))
             return -EBUSY;
         if(looked_up && looked_up!=-ENOENT)return looked_up;
     }

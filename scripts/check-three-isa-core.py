@@ -111,6 +111,19 @@ if "validate_inode" not in (root/"kernel/fs/vfs.h").read_text() or \
    ".validate_inode=tmp_validate_inode" not in vfs_providers or \
    "if(node->filesystem!=node->mount->type)return -EINVAL;" not in vfs_src:
     raise SystemExit("VFS inode-incarnation validator or safe mount boundary missing")
+# The ext4 last-link orphan protocol is entirely within the upstream
+# adapter and VFS inode lifetime contract, not a vendor fork. A readable,
+# writable, unlink-open File must retain its data until final unpin.
+vfs_h=(root/"kernel/fs/vfs.h").read_text()
+ext4_port=(root/"ports/lwext4/guest_vfs.c").read_text()
+if "unlink_open_file_safe" not in vfs_h or \
+   "nas_vfs_node_has_lease(" not in (root/"kernel/fs/vfs.c").read_text() or \
+   "ext_stage_orphan(" not in ext4_port or \
+   "ext_last_inode_unpin(" not in ext4_port or \
+   "ext_orphan_prepare(" not in ext4_port or \
+   ".unlink_open_file_safe=true" not in ext4_port or \
+   "EXT4_ORPHAN_DIRECTORY" not in ext4_port:
+    raise SystemExit("ext4 opened-last-link VFS orphan protocol incomplete")
 # M63: path references live ONLY in namespace dentries, not sparse inodes.
 tmp_h=(root/"kernel/tmpfs.h").read_text()
 tmp_c=(root/"kernel/tmpfs.c").read_text()

@@ -12,6 +12,8 @@ struct ext4_sblock;
  * persistent source image and this context through final unmount.
  * No filesystem type, ISA or direct userpointer dispatch in this port.
  */
+#define NAS_LWEXT4_ORPHAN_LIMIT 256U
+struct nas_lwext4_orphan { uint32_t ino,serial; bool used; };
 struct nas_lwext4_mount {
     struct nas_ramdisk ramdisk;
     struct nas_lwext4_device device;
@@ -20,6 +22,9 @@ struct nas_lwext4_mount {
     struct ext4_sblock *upstream_super;
     char mount_point[256];
     char upstream_prefix[256];
+    char orphan_dir[256];
+    uint32_t root_ino,orphan_serial;
+    struct nas_lwext4_orphan orphans[NAS_LWEXT4_ORPHAN_LIMIT];
     char block_name[32];
     char device_name[32];
     bool mounted;

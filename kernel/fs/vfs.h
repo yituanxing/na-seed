@@ -78,6 +78,8 @@ struct nas_vfs_type {
     /* Backends may opt in only if unlinking the final name does not
      * invalidate an open, pinned inode (tmpfs has this lifetime today). */
     bool unlink_open_safe;
+    /* Safe final-link unlink for REGULAR FILES, not open directories. */
+    bool unlink_open_file_safe;
     /* Replacement renames must preserve an open destination inode.
      * Default false: the provider must explicitly guarantee this. */
     bool rename_replace_open_safe;
@@ -115,6 +117,8 @@ void nas_vfs_release_flock(const void *file_owner);
 /* Opaque, already allocated inode identity: protects orphan reclamation
  * of cwd and independently pinned VFS Files, not merely legacy FD slots. */
 bool nas_vfs_inode_is_pinned(const void *backend_inode);
+/* Exact (mount incarnation, inode number, backend identity) ownership. */
+bool nas_vfs_node_has_lease(const struct nas_fs_node *node);
 uint64_t nas_vfs_node_device(const struct nas_fs_node *node);
 /* Live size shared by independently opened Files for the same mount+inode.
  * Unlike borrowed pathname snapshots this survives rename and dup/fork. */

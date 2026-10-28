@@ -9,6 +9,35 @@
 #include <ext4_types.h>
 #include <stddef.h>
 #include <stdint.h>
+#define EXT4_ORPHAN_DIRECTORY ".naseed-orphans"
+static const char orphan_digits[]="0123456789abcdef";
+static bool ext_reserved_root(const struct nas_lwext4_mount *ctx,
+                              uint64_t parent,const char *name) {
+    return ctx && parent==ctx->root_ino &&
+           !strcmp(name,EXT4_ORPHAN_DIRECTORY);
+}
+static void ext_orphan_name(char name[19],uint32_t ino,uint32_t serial) {
+    name[0]='o';name[9]='-';name[18]=0;
+    for(unsigned i=0;i<8;i++) {
+        name[1+i]=orphan_digits[(ino>>(28-4*i))&15U];
+        name[10+i]=orphan_digits[(serial>>(28-4*i))&15U];
+    }
+}
+static bool ext_orphan_record(const uint8_t *name,unsigned n) {
+    if(n!=18 || name[0]!='o' || name[9]!='-')return false;
+    for(unsigned i=1;i<18;i++) {
+        if(i==9)continue;
+        if(!((name[i]>='0' && name[i]<='9') ||
+             (name[i]>='a' && name[i]<='f')))return false;
+    }
+    return true;
+}
+static int ext_orphan_path(const struct nas_lwext4_mount *ctx,
+                           uint32_t ino,uint32_t serial,char path[256]) {
+    char name[19];
+    ext_orphan_name(name,ino,serial);
+    return nas_vfs_join_child(ctx->orphan_dir,name,path);
+}
 static const char *path_for(const struct nas_lwext4_mount *m,
                             const char *absolute) {
     return !strcmp(absolute,m->mount_point) ?
@@ -49,6 +78,7 @@ static int ext_lookup_child(const struct nas_fs_node *parent,const char *name,
        !out || !parent->ino || parent->ino>UINT32_MAX)return -ENOTDIR;
     struct nas_lwext4_mount *ctx=parent->mount->private_data;
     if(!ctx || !ctx->mounted || !ctx->upstream_mount)return -ENODEV;
+    if(ext_reserved_root(ctx,parent->ino,name))return -ENOENT;
     ext4_dir dir={0};
     dir.f.mp=ctx->upstream_mount;
     dir.f.inode=(uint32_t)parent->ino;
@@ -216,6 +246,8 @@ static int ext_child_path(const struct nas_fs_node *parent,const char *name,
                            char path[256]) {
     if(!parent || !parent->mount || !parent->is_dir || !name ||
        !name[0] || strchr(name,'/'))return -EINVAL;
+    const struct nas_lwext4_mount *ctx=parent->mount->private_data;
+    if(ext_reserved_root(ctx,parent->ino,name))return -EPERM;
     int rc=ext_directory_path(parent,path);
     if(rc)return rc;
     char child[256];
@@ -243,12 +275,83 @@ static int ext_mkdir_path(const struct nas_fs_node *parent,const char *name,uint
     rc=ext4_mode_set(path,(uint32_t)mode&07777U);
     return rc ? -rc : 0;
 }
+/* Upstream ext4_fremove frees a last-link inode immediately. Reserve one
+ * VFS-owned private link until final File/cwd pin disappears instead of
+ * modifying upstream or invalidating a live inode. The private directory
+ * is neither reachable through lookup_child nor visible in getdents. */
+static int ext_stage_orphan(struct nas_lwext4_mount *ctx,
+                            const char *from,uint32_t ino) {
+    if(!ctx || !ctx->mounted || !ctx->orphan_dir[0])return -EIO;
+    unsigned slot=NAS_LWEXT4_ORPHAN_LIMIT;
+    for(unsigned i=0;i<NAS_LWEXT4_ORPHAN_LIMIT;i++)
+        if(!ctx->orphans[i].used){slot=i;break;}
+    if(slot==NAS_LWEXT4_ORPHAN_LIMIT || ctx->orphan_serial==UINT32_MAX)
+        return -ENOSPC;
+    uint32_t serial=ctx->orphan_serial+1;
+    char dest[256];
+    int rc=ext_orphan_path(ctx,ino,serial,dest);
+    if(rc)return rc;
+    struct ext4_inode raw;
+    uint32_t existing=0;
+    rc=ext4_raw_inode_fill(dest,&existing,&raw);
+    if(!rc)return -EEXIST;
+    if(rc!=ENOENT)return -rc;
+    rc=ext4_frename(from,dest);
+    if(rc)return -rc;
+    ctx->orphan_serial=serial;
+    ctx->orphans[slot]=(struct nas_lwext4_orphan){
+        .ino=ino,.serial=serial,.used=true
+    };
+    return 0;
+}
+static void ext_last_inode_unpin(const struct nas_fs_node *node) {
+    if(!node || !node->mount || !node->mount->private_data)return;
+    struct nas_lwext4_mount *ctx=node->mount->private_data;
+    if(!ctx->mounted || node->ino>UINT32_MAX)return;
+    for(unsigned i=0;i<NAS_LWEXT4_ORPHAN_LIMIT;i++) {
+        struct nas_lwext4_orphan *orphan=&ctx->orphans[i];
+        if(!orphan->used || orphan->ino!=(uint32_t)node->ino)continue;
+        char path[256];
+        if(!ext_orphan_path(ctx,orphan->ino,orphan->serial,path) &&
+           !ext4_fremove(path))orphan->used=false;
+        /* Failed deletion is durably named; next mount reaps it. */
+        return;
+    }
+}
+static int ext_orphan_getattr(const struct nas_fs_node *node,
+                              struct nas_fs_node *out) {
+    if(!node || !node->mount || !node->mount->private_data || !out)
+        return -EINVAL;
+    struct nas_lwext4_mount *ctx=node->mount->private_data;
+    for(unsigned i=0;i<NAS_LWEXT4_ORPHAN_LIMIT;i++)
+        if(ctx->orphans[i].used && ctx->orphans[i].ino==node->ino) {
+            out->nlink=0;
+            break;
+        }
+    return 0;
+}
 static int ext_unlink_path(const struct nas_fs_node *parent,const char *name,uint64_t flags) {
     char path[256];
     int rc=ext_child_path(parent,name,path);
     if(rc)return rc;
     if(flags&~0x200ULL)return -EINVAL; /* AT_REMOVEDIR */
-    if(!(flags&0x200ULL))return -ext4_fremove(path);
+    if(!(flags&0x200ULL)) {
+        struct nas_lwext4_mount *ctx=parent->mount->private_data;
+        if(!ctx || !ctx->mounted)return -ENODEV;
+        struct ext4_inode raw;
+        uint32_t ino=0;
+        rc=ext4_raw_inode_fill(path,&ino,&raw);
+        if(rc)return -rc;
+        if(!ino)return -EIO;
+        uint32_t type=ext4_inode_get_mode(ctx->upstream_super,&raw)&0170000U;
+        if(type==0040000U)return -EISDIR;
+        struct nas_fs_node target={.mount=parent->mount,
+            .filesystem=parent->filesystem,.mount_id=parent->mount_id,
+            .inode=(const void *)(uintptr_t)ino,.ino=ino};
+        if(ext4_inode_get_links_cnt(&raw)==1 && nas_vfs_node_has_lease(&target))
+            return ext_stage_orphan(ctx,path,ino);
+        return -ext4_fremove(path);
+    }
     /* Upstream ext4_dir_rm is recursive; never expose that to rmdir.
      * Reject any child except dot/dotdot under single-CPU VFS policy. */
     ext4_dir dir={0};
@@ -429,6 +532,10 @@ static int ext_read_directory(const struct nas_fs_node *node,
     const ext4_direntry *entry;
     while((entry=ext4_dir_entry_next(&dir))) {
         if(!entry->inode)continue;
+        if(node->ino==ctx->root_ino &&
+           entry->name_length==sizeof(EXT4_ORPHAN_DIRECTORY)-1 &&
+           !memcmp(entry->name,EXT4_ORPHAN_DIRECTORY,
+                   sizeof(EXT4_ORPHAN_DIRECTORY)-1))continue;
         if(scanned++<cursor)continue;
         struct nas_vfs_dirent *dst=&out[copied];
         if(!entry->name_length) {
@@ -461,6 +568,8 @@ static const struct nas_vfs_type ext_type={
     .root=ext_lookup_root,.lookup_child=ext_lookup_child,
     .directory_path=ext_directory_path,
     .readlink=ext_readlink_node,
+    .last_inode_unpin=ext_last_inode_unpin,
+    .getattr=ext_orphan_getattr,
     .read_at=ext_read_inode,
     .write_at=ext_write_inode,
     .resize=ext_resize_inode,.sync=ext_sync_inode,
@@ -468,9 +577,51 @@ static const struct nas_vfs_type ext_type={
     .create=ext_create_path,.mkdir=ext_mkdir_path,
     .unlink=ext_unlink_path,.rename=ext_rename_path,
     .link=ext_link_path,.symlink=ext_symlink_path,
+    .unlink_open_file_safe=true,
     /* Capability is mount-specific; default guest mount remains RO. */
     .read_only=false
 };
+/* After unclean shutdown the private directory holds old open files.
+ * Only delete recognizably named regular orphan records. Always restart
+ * iteration after mutation; corrupt or foreign entries fail closed. */
+static int ext_orphan_prepare(struct nas_lwext4_mount *ctx) {
+    int rc=nas_vfs_join_child(ctx->mount_point,EXT4_ORPHAN_DIRECTORY,
+                              ctx->orphan_dir);
+    if(rc)return rc;
+    char sample[256];
+    rc=ext_orphan_path(ctx,UINT32_MAX,UINT32_MAX,sample);
+    if(rc)return rc;
+    rc=ext4_dir_mk(ctx->orphan_dir);
+    if(rc)return -rc;
+    for(unsigned round=0;round<65536;round++) {
+        ext4_dir dir={0};
+        rc=ext4_dir_open(&dir,ctx->orphan_dir);
+        if(rc)return -rc;
+        bool found=false,invalid=false;
+        char name[19]={0};
+        const ext4_direntry *item;
+        while((item=ext4_dir_entry_next(&dir))) {
+            if(!item->inode)continue;
+            if(item->name_length==1 && item->name[0]=='.')continue;
+            if(item->name_length==2 && item->name[0]=='.' &&
+               item->name[1]=='.')continue;
+            if(!ext_orphan_record(item->name,item->name_length) ||
+               item->inode_type==EXT4_DE_DIR) {invalid=true;break;}
+            memcpy(name,item->name,18);name[18]=0;
+            found=true;break;
+        }
+        int close_rc=ext4_dir_close(&dir);
+        if(close_rc)return -close_rc;
+        if(invalid)return -EIO;
+        if(!found)return 0;
+        char path[256];
+        rc=nas_vfs_join_child(ctx->orphan_dir,name,path);
+        if(rc)return rc;
+        rc=ext4_fremove(path);
+        if(rc)return -rc;
+    }
+    return -EOVERFLOW;
+}
 static bool copy_name(char *out,size_t capacity,const char *src) {
     if(!src || !src[0])return false;
     size_t length=strlen(src);
@@ -518,6 +669,19 @@ int nas_lwext4_device_mount(struct nas_lwext4_mount *ctx,
     rc=ext4_dir_close(&dir);
     if(rc) {rc=-rc;goto FailMount;}
     if(!ctx->upstream_mount) {rc=-EIO;goto FailMount;}
+    struct ext4_inode root_raw;
+    rc=ext4_raw_inode_fill(ctx->upstream_prefix,&ctx->root_ino,
+                           &root_raw);
+    if(rc){rc=-rc;goto FailMount;}
+    if(!ctx->root_ino){rc=-EIO;goto FailMount;}
+    if(writable) {
+        rc=ext_orphan_prepare(ctx);
+        if(rc)goto FailMount;
+        rc=ext4_cache_flush(ctx->upstream_prefix);
+        if(rc){rc=-rc;goto FailMount;}
+        rc=nas_block_flush(ctx->device.storage);
+        if(rc)goto FailMount;
+    }
     ctx->mount=(struct nas_vfs_mount){
         .mountpoint=ctx->mount_point,
         .type=&ext_type,
@@ -563,6 +727,31 @@ int nas_lwext4_ramdisk_mount(struct nas_lwext4_mount *ctx,
 }
 int nas_lwext4_unmount(struct nas_lwext4_mount *ctx) {
     if(!ctx || !ctx->mounted)return -EINVAL;
+    /* Do not discard a private inode still owned by a File; retry failed
+     * final-close reclamation here before the physical filesystem detach. */
+    for(unsigned i=0;i<NAS_LWEXT4_ORPHAN_LIMIT;i++) {
+        struct nas_lwext4_orphan *o=&ctx->orphans[i];
+        if(!o->used)continue;
+        struct nas_fs_node mounted_root;
+        char resolved[256];
+        int rc=nas_fs_lookup_node(ctx->mount_point,true,
+                                   &mounted_root,resolved);
+        if(rc)return rc;
+        struct nas_fs_node target={.mount=mounted_root.mount,
+            .filesystem=mounted_root.filesystem,
+            .mount_id=mounted_root.mount_id,.inode=(void *)(uintptr_t)o->ino,
+            .ino=o->ino};
+        if(nas_vfs_node_has_lease(&target))return -EBUSY;
+        char path[256];
+        rc=ext_orphan_path(ctx,o->ino,o->serial,path);
+        if(rc)return rc;
+        struct ext4_inode raw;uint32_t live=0;
+        rc=ext4_raw_inode_fill(path,&live,&raw);
+        if(rc!=ENOENT && rc)return -rc;
+        if(!rc && live!=o->ino)return -ESTALE;
+        if(!rc && (rc=ext4_fremove(path)))return -rc;
+        o->used=false;
+    }
     /* A failed physical flush must leave mount and inode ownership
      * untouched. Never unregister the VFS mount before checking durability. */
     int rc=ext_sync_mount(ctx);

@@ -98,6 +98,23 @@ int main(int argc,char **argv) {
     assert(nas_lwext4_ramdisk_mount_mode(&mounted,"vfs-test-ram","vfs-test-ext",
                                     "/mnt",image,(uint64_t)n,write)==0);
     char actual[256],buffer[128]={0};
+    /* Private orphan staging is NEVER an accessible or listed user inode
+     * even when writable mount initialisation had to create the directory. */
+    struct nas_fs_node hidden,root_dir;
+    assert(nas_fs_lookup_node("/mnt/.naseed-orphans",true,
+                              &hidden,actual)==-ENOENT);
+    assert(nas_fs_lookup_node("/mnt",true,&root_dir,actual)==0);
+    struct nas_vfs_dirent root_entries[16];
+    uint64_t root_cursor=0;
+    for(unsigned iteration=0;iteration<256;iteration++) {
+        int got=nas_vfs_read_dir(&root_dir,root_cursor,root_entries,16);
+        assert(got>=0);
+        if(!got)break;
+        for(int i=0;i<got;i++)
+            assert(strcmp(root_entries[i].name,".naseed-orphans"));
+        root_cursor+=(uint64_t)got;
+        assert(iteration<255);
+    }
     struct nas_fs_node node;
     assert(nas_fs_lookup_node("/mnt/sandbox/hardlink",true,&node,actual)==0);
     assert(!strcmp(node.filesystem->name,"lwext4"));
@@ -198,10 +215,49 @@ int main(int argc,char **argv) {
         assert(nas_vfs_node_pin(&created)==0);
         assert(nas_vfs_node_pin(&stale_reader)==0);
         assert(nas_vfs_node_size(&stale_reader)==sizeof(persisted)-1);
-        /* Do NOT corrupt a pinned inode by calling upstream ext4_fremove,
-         * which frees last-link data immediately. This fail-closed guard
-         * stays until proper VFS orphan/deferred deletion is implemented. */
-        assert(nas_vfs_unlink("/mnt/sandbox/vfs-created",0)==-EBUSY);
+        /* Actual original liblwext4 unlink-open: the LAST name is moved
+         * into a hidden orphan, not ext4_fremove()'d until final close.
+         * This is independent of the persistent vfs-created file below. */
+        assert(nas_vfs_create("/mnt/sandbox/orphan-test",0600)==0);
+        struct nas_fs_node orphaned;
+        assert(nas_fs_lookup_node("/mnt/sandbox/orphan-test",true,
+                                  &orphaned,actual)==0);
+        static const uint8_t old_data[]="open-old-inode-keeps-data";
+        assert(nas_vfs_node_pin(&orphaned)==0);
+        assert(nas_vfs_node_pin(&orphaned)==0);
+        assert(nas_vfs_write_at(&orphaned,0,old_data,
+                                sizeof(old_data)-1)==(int64_t)sizeof(old_data)-1);
+        assert(nas_vfs_unlink("/mnt/sandbox/orphan-test",0)==0);
+        assert(nas_fs_lookup_node("/mnt/sandbox/orphan-test",true,
+                                  &hidden,actual)==-ENOENT);
+        struct nas_fs_node orphan_stat;
+        assert(nas_vfs_getattr(&orphaned,&orphan_stat)==0 &&
+               orphan_stat.nlink==0);
+        assert(nas_vfs_read_at(&orphaned,0,(uint8_t *)buffer,
+                               sizeof(old_data)-1)==(int64_t)sizeof(old_data)-1);
+        assert(!memcmp(buffer,old_data,sizeof(old_data)-1));
+        /* New file at the recycled pathname is a DIFFERENT inode; both
+         * independent open descriptions can survive until their own close. */
+        assert(nas_vfs_create("/mnt/sandbox/orphan-test",0644)==0);
+        struct nas_fs_node replacement;
+        assert(nas_fs_lookup_node("/mnt/sandbox/orphan-test",true,
+                                  &replacement,actual)==0);
+        assert(replacement.ino!=orphaned.ino);
+        assert(nas_vfs_node_pin(&replacement)==0);
+        assert(nas_vfs_write_at(&replacement,0,(const uint8_t *)"new",3)==3);
+        assert(nas_vfs_write_at(&orphaned,sizeof(old_data)-1,
+                                (const uint8_t *)"+append",7)==7);
+        assert(nas_vfs_node_size(&orphaned)==sizeof(old_data)-1+7);
+        assert(nas_vfs_node_unpin(&orphaned)==0);
+        assert(nas_vfs_read_at(&orphaned,0,(uint8_t *)buffer,
+                               sizeof(old_data)-1)==(int64_t)sizeof(old_data)-1);
+        assert(nas_vfs_node_unpin(&orphaned)==0);
+        assert(nas_vfs_read_at(&replacement,0,(uint8_t *)buffer,3)==3);
+        assert(!memcmp(buffer,"new",3));
+        assert(nas_vfs_node_unpin(&replacement)==0);
+        assert(nas_vfs_unlink("/mnt/sandbox/orphan-test",0)==0);
+        assert(nas_fs_lookup_node("/mnt/.naseed-orphans",true,
+                                  &hidden,actual)==-ENOENT);
         assert(nas_vfs_read_at(&stale_reader,0,(uint8_t *)buffer,
                                sizeof(persisted)-1)==(int64_t)sizeof(persisted)-1);
         assert(!memcmp(buffer,persisted,sizeof(persisted)-1));
