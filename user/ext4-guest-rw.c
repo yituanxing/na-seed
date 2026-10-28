@@ -5,7 +5,8 @@
 #include "../kernel/errno.h"
 #include "../kernel/arch/linux_fcntl_abi.h"
 enum { OP_OPENAT, OP_READ, OP_WRITE, OP_FSYNC, OP_LSEEK, OP_CLOSE,
-       OP_EXIT, OP_GETDENTS64, OP_MKDIRAT, OP_RENAMEAT, OP_FCHDIR, OP_GETCWD };
+       OP_EXIT, OP_GETDENTS64, OP_MKDIRAT, OP_RENAMEAT, OP_FCHDIR, OP_GETCWD,
+       OP_SYMLINKAT };
 extern long guest_syscall(long op,long a0,long a1,long a2,long a3);
 static const char path[]="/mnt/sandbox/cross-isa-created";
 static const char payload[]="NaSeed one portable Linux ELF for x86 RV64 AArch64 ext4 RW\n";
@@ -29,6 +30,10 @@ static const char missing_parent[]="/mnt/no-such-directory/../sandbox/cross-isa-
 static const char new_with_dotdot[]="/mnt/sandbox/../sandbox/naseed-dot-new";
 static const char pathwalk_pass[]="[PASS] VFS native dot/dotdot checked before lexical pathname normalization\n";
 static const char missing_directory[]="/mnt/sandbox/naseed-dirflag-must-not-create";
+static const char link_path[]="/mnt/sandbox/naseed-negative-symlink";
+static const char target_basename[]="naseed-negative-target";
+static const char target_path[]="/mnt/sandbox/naseed-negative-target";
+static const char symlink_pass[]="[PASS] VFS native O_CREAT follows dangling relative symlink, O_EXCL preserves link\n";
 __attribute__((noreturn)) void guest_main(void) {
     unsigned stage=1;
     long writer=guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)path,0x242,0644);
@@ -152,6 +157,38 @@ __attribute__((noreturn)) void guest_main(void) {
                      sizeof(pathwalk_pass)-1,0)!=(long)(sizeof(pathwalk_pass)-1))
         goto fail;
     stage=30;
+    if(guest_syscall(OP_SYMLINKAT,(long)(uintptr_t)target_basename,
+                     -100,(long)(uintptr_t)link_path,0)!=0)goto fail;
+    stage=31;
+    if(guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)link_path,
+                     0xc2,0600)!=-EEXIST)goto fail;
+    stage=32;
+    if(guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)link_path,0,0)!=-ENOENT)
+        goto fail;
+    stage=33;
+    long from_link=guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)link_path,
+                                 0x42,0600);
+    if(from_link<0)goto fail;
+    stage=34;
+    if(guest_syscall(OP_WRITE,from_link,(long)(uintptr_t)child_payload,
+                     sizeof(child_payload)-1,0)!=(long)(sizeof(child_payload)-1))
+        goto fail;
+    if(guest_syscall(OP_CLOSE,from_link,0,0,0)!=0)goto fail;
+    stage=35;
+    from_link=guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)target_path,0,0);
+    if(from_link<0)goto fail;
+    stage=36;
+    if(guest_syscall(OP_READ,from_link,(long)(uintptr_t)result,
+                     sizeof(child_payload)-1,0)!=(long)(sizeof(child_payload)-1))
+        goto fail;
+    for(unsigned i=0;i<sizeof(child_payload)-1;i++)
+        if(result[i]!=child_payload[i])goto fail;
+    if(guest_syscall(OP_CLOSE,from_link,0,0,0)!=0)goto fail;
+    stage=37;
+    if(guest_syscall(OP_WRITE,1,(long)(uintptr_t)symlink_pass,
+                     sizeof(symlink_pass)-1,0)!=(long)(sizeof(symlink_pass)-1))
+        goto fail;
+    stage=38;
     if(guest_syscall(OP_WRITE,1,(long)(uintptr_t)passed,sizeof(passed)-1,0)!=(long)(sizeof(passed)-1))goto fail;
     guest_syscall(OP_EXIT,0,0,0,0);
     for(;;){}

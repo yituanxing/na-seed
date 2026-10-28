@@ -26,6 +26,7 @@ static struct bootfs_entry entries[]={
 };
 static struct nas_tmp_file tmp_demo={.used=true,.mode=0100644,.size=4,.ino=101};
 static struct nas_tmp_file fixture_symlink={.used=true,.mode=0120777,.size=9,.ino=102};
+static const char *fixture_link_target="/bin/demo";
 static struct nas_tmp_file fixture_dir_link={.used=true,.mode=0120777,.size=4,.ino=103};
 static struct nas_tmp_file fixture_created={.used=true,.mode=0100640,.ino=104};
 /* A named directory is renamed while its original inode remains open. */
@@ -87,7 +88,7 @@ bool tmp_is_link(const struct nas_tmp_file *f){
 int tmp_link_target(const struct nas_tmp_file *f,char target[256]){
     if(f==&fixture_dir_link){memcpy(target,"/tmp",5);return 0;}
     if(f!=&fixture_symlink)return -EINVAL;
-    memcpy(target,abs_link,sizeof(abs_link));return 0;
+    memcpy(target,fixture_link_target,strlen(fixture_link_target)+1);return 0;
 }
 int64_t tmp_read_at(const struct nas_tmp_file *file,uint64_t off,uint8_t *buf,uint64_t len){
     static const char value[]="DATA";
@@ -481,7 +482,31 @@ int main(void) {
     char fd_target[256]={0};
     assert(nas_vfs_readlink(&n,fd_target)==9);
     assert(!memcmp(fd_target,"pipe:[42]",9));
-    assert(nas_vfs_create("/tmp/newfile",0640)==0);
+    /* O_CREAT follows the dangling RELATIVE symlink to the target;
+     * O_EXCL reports the existing link without touching the target. */
+    fixture_link_target="newfile";
+    fixture_symlink.size=7;
+    assert(nas_fs_lookup_node("/tmp/link",true,&n,resolved)==-ENOENT);
+    assert(nas_fs_resolve_create_target("/tmp/link",resolved)==0);
+    assert(!strcmp(resolved,"/tmp/newfile"));
+    assert(nas_fs_resolve_create_target("/tmp/alias/newfile",resolved)==0);
+    assert(!strcmp(resolved,"/tmp/newfile"));
+    assert(nas_fs_resolve_create_target("/bin/demo/sub",resolved)==-ENOTDIR);
+    struct nas_vfs_open_options via_link={
+        .follow_final=true,.create=true,.exclusive=true,
+        .access=2,.create_mode=0640
+    };
+    struct nas_fs_node created_through_link;
+    assert(nas_vfs_open_inode("/tmp/link",&via_link,
+                              &created_through_link,resolved)==-EEXIST);
+    via_link.exclusive=false;
+    assert(nas_vfs_open_inode("/tmp/link",&via_link,
+                              &created_through_link,resolved)==0);
+    assert(!strcmp(resolved,"/tmp/newfile"));
+    assert(created_through_link.inode==&fixture_created);
+    assert(nas_vfs_node_unpin(&created_through_link)==0);
+    fixture_link_target="/bin/demo";
+    fixture_symlink.size=9;
     assert(nas_vfs_create("/tmp/newfile",0640)==-EEXIST);
     assert(nas_fs_lookup_node("/tmp/newfile",true,&n,resolved)==0);
     assert(nas_vfs_write_at(&n,0,(const uint8_t *)"xyz",3)==3);

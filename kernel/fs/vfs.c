@@ -606,9 +606,14 @@ int nas_vfs_open_inode(const char *path,
         if(options->directory_only)return -ENOTDIR;
         if(options->truncate && !options->path_only && !options->access)
             return -EINVAL;
-        rc=nas_vfs_create(path,options->create_mode);
+        /* A dangling symlink's old name already exists. Create only its
+         * missing final target via the shared component walker. */
+        char target[256];
+        rc=nas_fs_resolve_create_target(path,target);
         if(rc)return rc;
-        rc=nas_fs_lookup_node(path,follow,&node,canonical);
+        rc=nas_vfs_create(target,options->create_mode);
+        if(rc)return rc;
+        rc=nas_fs_lookup_node(target,follow,&node,canonical);
         if(rc)return rc;
         newly_created=true;
     } else if(rc)return rc;

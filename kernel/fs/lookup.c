@@ -21,7 +21,8 @@ int nas_vfs_join_child(const char *parent,const char *name,char out[256]) {
  * legacy overlay, dot/dotdot and canonical path construction. Owned
  * mount+dentry objects will replace the current bounded path cache later. */
 static int resolve_walk(const char *path,bool follow_final,
-                        struct nas_fs_node *result,char out[256]) {
+                        struct nas_fs_node *result,char out[256],
+                        bool negative_final) {
     if(!path || path[0]!='/')return -ENOENT;
     char pending[256];unsigned length=0;
     while(path[length]) {
@@ -29,7 +30,7 @@ static int resolve_walk(const char *path,bool follow_final,
         pending[length]=path[length];length++;
     }
     pending[length]=0;
-    const bool trailing_slash=length>1 && pending[length-1]=='/';
+    bool trailing_slash=length>1 && pending[length-1]=='/';
     unsigned links=0;
     for(;;) {
         char resolved[256];
@@ -77,13 +78,20 @@ static int resolve_walk(const char *path,bool follow_final,
             char component[256];
             for(unsigned i=0;i<len;i++)component[i]=pending[start+i];
             component[len]=0;
-            struct nas_fs_node inode;
-            int rc=nas_vfs_lookup_step(have_current?&current:NULL,
-                                       resolved,component,&inode);
-            if(rc)return rc;
             unsigned tail=pos;
             while(pending[tail]=='/')tail++;
             bool last=!pending[tail];
+            struct nas_fs_node inode;
+            int rc=nas_vfs_lookup_step(have_current?&current:NULL,
+                                       resolved,component,&inode);
+            /* Only O_CREAT without O_EXCL follows a dangling FINAL
+             * symlink target. Never invent intermediate directories. */
+            if(rc==-ENOENT && negative_final && last && !trailing_slash &&
+               have_current) {
+                memcpy(out,resolved,used+1);
+                return 0;
+            }
+            if(rc)return rc;
             if(inode.is_symlink && (!last || follow_final || trailing_slash)) {
                 if(++links>8)return -ELOOP;
                 char expanded[256],target[256];
@@ -108,6 +116,7 @@ static int resolve_walk(const char *path,bool follow_final,
                 expanded[size]=0;
                 if(expanded[0]!='/')return -ENOENT;
                 for(unsigned i=0;i<=size;i++)pending[i]=expanded[i];
+                trailing_slash=size>1 && pending[size-1]=='/';
                 restart=true;break;
             }
             if((!last || trailing_slash) && !inode.is_dir)return -ENOTDIR;
@@ -118,19 +127,27 @@ static int resolve_walk(const char *path,bool follow_final,
          * a direct-ELF boot without a root archive cannot invent /. */
         if(!have_current)return -ENOENT;
         for(unsigned i=0;i<=used;i++)out[i]=resolved[i];
+        if(negative_final)return -EEXIST;
         if(result)*result=current;
         return 0;
     }
 }
 int nas_fs_resolve_existing(const char *path,bool follow_final,char out[256]) {
     if(!out)return -EINVAL;
-    return resolve_walk(path,follow_final,NULL,out);
+    return resolve_walk(path,follow_final,NULL,out,false);
 }
 int nas_fs_lookup_node(const char *path,bool follow_final,
                        struct nas_fs_node *result,char resolved[256]) {
     if(!path || !result || !resolved)return -ENOENT;
     if(path[0]!='/')return -EINVAL;
-    return resolve_walk(path,follow_final,result,resolved);
+    return resolve_walk(path,follow_final,result,resolved,false);
+}
+
+/* Resolve O_CREAT's missing final TARGET after following all symlinks.
+ * Never use for unlink/rename, which address the link's own dentry. */
+int nas_fs_resolve_create_target(const char *path,char canonical[256]) {
+    if(!canonical)return -EINVAL;
+    return resolve_walk(path,true,NULL,canonical,true);
 }
 
 /* Parent and negative-final-name resolution are VFS operations, not

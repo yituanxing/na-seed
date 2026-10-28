@@ -27,6 +27,8 @@ struct nas_fs_node {
 int nas_fs_lookup_parent(const char *absolute,struct nas_fs_node *parent,
                          char canonical[256]);
 int nas_fs_canonical_candidate(const char *absolute,char canonical[256]);
+/* Follow-final negative dentry for O_CREAT, never unlink/rename. */
+int nas_fs_resolve_create_target(const char *path,char canonical[256]);
 int nas_fs_resolve_existing(const char *path,bool follow_final,char out[256]);
 int nas_fs_lookup_node(const char *path,bool follow_final,
                        struct nas_fs_node *result,char resolved[256]);

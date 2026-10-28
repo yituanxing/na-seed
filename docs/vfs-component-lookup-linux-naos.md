@@ -111,3 +111,18 @@ reads both inline and non-inline symlink bytes through its existing public
 Real ext4 host acceptance holds a pinned symlink across rename and reads
 from the original inode; a real procfs host fixture checks inherited self
 inode identity across current-task change and FD disappearance.
+
+### Negative final symlink targets for O_CREAT (2026-10-28)
+
+The common component walker now offers a create-target-only mode that
+follows the final symlink, checks every intermediate directory, and
+returns the canonical missing final target. Trailing-slash constraints
+survive symlink restarts. O_CREAT without O_EXCL uses this mode; O_EXCL
+still sees an existing symlink and returns EEXIST. Unlink/rename continue
+addressing the link itself, without creating an extra provider pathwalk.
+
+Host VFS fixtures exercise relative dangling links, intermediate directory
+aliases, ENOTDIR and O_EXCL no-side-effect. A single native freestanding
+Linux ELF executes real symlinkat/openat/write/read on the unchanged ext4
+provider in x86-64, RV64 and AArch64 QEMU. No vendored filesystem, kernel
+architecture backend or duplicate driver code is changed.
