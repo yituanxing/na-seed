@@ -4,8 +4,17 @@
 set -eu
 # A specialized gate can reuse the exact opt-in kernel ELF already built
 # in the earlier CI step. Normal native CI retains its fresh-build policy.
-if { [ -n "${NAS_LWEXT4_TEST_IMAGE:-}" ] || [ -n "${NAS_VIRTIO_BLK_IMAGE:-}" ]; } && [ -s build/port-riscv64/full/kernel.elf ]; then
-    [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ] || { echo '[LWEXT4 RV64] opt-in required' >&2; exit 1; }
+if { [ -n "${NAS_LWEXT4_TEST_IMAGE:-}" ] ||
+       [ -n "${NAS_VIRTIO_BLK_IMAGE:-}" ] ||
+       [ -n "${NAS_LITTLEFS_TEST_IMAGE:-}" ]; } &&
+   [ -s build/port-riscv64/full/kernel.elf ]; then
+    if [ -n "${NAS_LITTLEFS_TEST_IMAGE:-}" ]; then
+        [ "${NAS_ENABLE_LITTLEFS:-0}" = 1 ] ||
+          { echo '[LITTLEFS RV64] opt-in required' >&2; exit 1; }
+    else
+        [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ] ||
+          { echo '[LWEXT4 RV64] opt-in required' >&2; exit 1; }
+    fi
 else
     sh scripts/build-riscv64-full.sh
 fi
@@ -40,6 +49,21 @@ timeout: 0
     module_path: boot():/boot/ext4-write-probe.elf
 HW_CFG
     mcopy -i "$disk@@1048576" "$dir/lwext4-guest.conf" ::/boot/limine/limine.conf
+elif [ -n "${NAS_LITTLEFS_TEST_IMAGE:-}" ]; then
+    test -s "$NAS_LITTLEFS_TEST_IMAGE"
+    test -s "$NAS_LITTLEFS_PROBE"
+    mcopy -i "$disk@@1048576" "$NAS_LITTLEFS_PROBE" ::/boot/littlefs-probe.elf
+    mcopy -i "$disk@@1048576" "$NAS_LITTLEFS_TEST_IMAGE" ::/boot/naseed-littlefs.img
+    cat > "$dir/littlefs-guest.conf" <<'LFS_CFG'
+timeout: 0
+/NaSeed independent LittleFS and common native Linux ELF
+    protocol: limine
+    path: boot():/boot/kernel
+    cmdline: naseed.argv=/bin/littlefs-probe
+    module_path: boot():/boot/littlefs-probe.elf
+    module_path: boot():/boot/naseed-littlefs.img
+LFS_CFG
+    mcopy -i "$disk@@1048576" "$dir/littlefs-guest.conf" ::/boot/limine/limine.conf
 elif [ -n "${NAS_LWEXT4_RW_PROBE:-}" ]; then
     test -s "$NAS_LWEXT4_TEST_IMAGE"
     test -s "$NAS_LWEXT4_RW_PROBE"
@@ -89,6 +113,13 @@ if [ -n "${NAS_VIRTIO_BLK_IMAGE:-}" ]; then
       '[PASS] common VFS ext4 RAM RW native Linux ELF' \
       '[PASS] cmdline userspace exit 0' \
       '[RV64] userspace debug-exit status=0'
+elif [ -n "${NAS_LITTLEFS_TEST_IMAGE:-}" ]; then
+    sh scripts/port-boot-until.sh "$log" "$pid" "${limit:-90}" \
+      '[PASS] LITTLEFS native kernel VFS inode read from original filesystem' \
+      '[PASS] LITTLEFS portable native ring3 Linux ELF via VFS' \
+      '[LITTLEFS GUEST] clean unmount and BlockDevice release' \
+      '[PASS] cmdline userspace exit 0' \
+      '[RV64] userspace debug-exit status=0'
 elif [ -n "${NAS_LWEXT4_RW_PROBE:-}" ]; then
     sh scripts/port-boot-until.sh "$log" "$pid" 90 \
       '[INIT] creating common task/VM and architecture user entry' \
@@ -110,13 +141,17 @@ if [ "$monitor" -ne 0 ] || grep -Fq '[FAIL]' "$log" ||
      [ -z "${NAS_VIRTIO_BLK_IMAGE:-}" ] &&
      ! grep -Fq '[LWEXT4 GUEST] explicit ephemeral RW RamDisk only; NOT persistent storage' "$log"; } ||
    { [ -n "${NAS_LWEXT4_TEST_IMAGE:-}" ] &&
-     ! grep -Fq '[PASS] LWEXT4 guest VFS real ext4 inode read' "$log"; }; then
+     ! grep -Fq '[PASS] LWEXT4 guest VFS real ext4 inode read' "$log"; } ||
+   { [ -n "${NAS_LITTLEFS_TEST_IMAGE:-}" ] &&
+     ! grep -Fq '[PASS] LITTLEFS portable native ring3 Linux ELF via VFS' "$log"; }; then
     echo '[RV64 FULL FAIL] full kernel userland execution failed' >&2
     tail -100 "$log" >&2
     exit 1
 fi
 if [ -n "${NAS_VIRTIO_BLK_IMAGE:-}" ]; then
     echo '[VIRTIO-BLK PHYSICAL QEMU PASS] RV64 real disk syscall+flush'
+elif [ -n "${NAS_LITTLEFS_TEST_IMAGE:-}" ]; then
+    echo '[LITTLEFS NATIVE VFS PASS] RV64 actual unprivileged Linux ELF'
 elif [ -n "${NAS_LWEXT4_RW_PROBE:-}" ]; then
     echo '[LWEXT4 COMMON NATIVE RW PASS] RV64 actual unprivileged Linux ELF'
 else

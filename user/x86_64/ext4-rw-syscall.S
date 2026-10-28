@@ -15,4 +15,4 @@ guest_syscall:
     ret
 .section .rodata
 .p2align 3
-guest_sys_numbers: .quad 257,0,1,74,8,3,60
+guest_sys_numbers: .quad 257,0,1,74,8,3,60,217

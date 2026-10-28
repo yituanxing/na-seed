@@ -17,4 +17,4 @@ guest_syscall:
     ret
 .section .rodata,"a",%progbits
 .balign 8
-guest_sys_numbers: .xword 56,63,64,82,62,57,93
+guest_sys_numbers: .xword 56,63,64,82,62,57,93,61

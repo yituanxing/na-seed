@@ -44,6 +44,9 @@ on:
       - 'scripts/build-littlefs-guest.sh'
       - 'scripts/probe-littlefs-guest-x86.sh'
       - 'user/littlefs-guest-read.S'
+      - 'user/littlefs-native-vfs.c'
+      - 'scripts/build-littlefs-native-probes.sh'
+      - 'user/**/ext4-rw-syscall.S'
       - 'kernel/init/main.c'
       - 'scripts/check-ext4-fsck-clean.sh'
       - 'kernel/fs/vfs*'
@@ -149,3 +152,12 @@ jobs:
           debugfs -R 'cat /sandbox/cross-isa-created' build/external/lwext4/virtio-persistent-rv.img > build/external/lwext4/virtio-rv-content.txt
           grep -Fq 'NaSeed one portable Linux ELF for x86 RV64 AArch64 ext4 RW' build/external/lwext4/virtio-rv-content.txt
           echo '[VIRTIO-BLK RV64 HOST PERSISTENCE PASS] hardware driver ext4 bytes survived QEMU'
+      - name: 'Actual native x86 RV64 ARM64 ring3 LittleFS — one Linux ELF source'
+        run: |
+          sh scripts/build-littlefs-native-probes.sh
+          NAS_LITTLEFS_NATIVE_PROBE=build/littlefs-native/x86_64/probe.elf sh scripts/probe-littlefs-guest-x86.sh
+          NAS_ENABLE_LITTLEFS=1 sh scripts/build-riscv64-full.sh
+          NAS_ENABLE_LITTLEFS=1 sh scripts/build-aarch64-full.sh
+          NAS_ENABLE_LITTLEFS=1 NAS_LITTLEFS_TEST_IMAGE=build/littlefs-guest-x86/stage/boot/naseed-littlefs.img NAS_LITTLEFS_PROBE=build/littlefs-native/riscv64/probe.elf sh scripts/probe-riscv64-full.sh
+          NAS_ENABLE_LITTLEFS=1 NAS_LITTLEFS_TEST_IMAGE=build/littlefs-guest-x86/stage/boot/naseed-littlefs.img NAS_LITTLEFS_PROBE=build/littlefs-native/aarch64/probe.elf sh scripts/probe-aarch64-full.sh
+          echo '[LITTLEFS GENUINE VFS THREE ISA PASS] identical userspace source + original littlefs + BlockDevice'

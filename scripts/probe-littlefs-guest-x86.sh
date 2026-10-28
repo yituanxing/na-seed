@@ -12,8 +12,15 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin \
   third_party/littlefs/lfs.c third_party/littlefs/lfs_util.c \
   -o "$root/image-maker"
 "$root/image-maker" "$root/stage/boot/naseed-littlefs.img"
-clang --target=x86_64-unknown-none-elf -c user/littlefs-guest-read.S -o "$root/probe.o"
-ld.lld -m elf_x86_64 -nostdlib -static -T user/linker.ld "$root/probe.o" -o "$root/rootfs/bin/littlefs-probe"
+if [ -n "${NAS_LITTLEFS_NATIVE_PROBE:-}" ]; then
+    test -s "$NAS_LITTLEFS_NATIVE_PROBE"
+    cp "$NAS_LITTLEFS_NATIVE_PROBE" "$root/rootfs/bin/littlefs-probe"
+    expected='[PASS] LITTLEFS portable native ring3 Linux ELF via VFS'
+else
+    clang --target=x86_64-unknown-none-elf -c user/littlefs-guest-read.S -o "$root/probe.o"
+    ld.lld -m elf_x86_64 -nostdlib -static -T user/linker.ld "$root/probe.o" -o "$root/rootfs/bin/littlefs-probe"
+    expected='[PASS] LITTLEFS real ring3 openat/read/getdents64 via generic VFS'
+fi
 (cd "$root/rootfs" && find . -print | cpio -o -H newc) > "$root/stage/boot/rootfs.cpio"
 cp "$root/kernel-build/kernel.elf" "$root/stage/boot/kernel"
 cp build/deps/limine-binary/BOOTX64.EFI "$root/stage/EFI/BOOT/BOOTX64.EFI"
@@ -35,7 +42,7 @@ timeout 45s sh scripts/run.sh "$root/guest.iso" >"$root/serial.log" 2>&1 || rc=$
 tr -d '\r' < "$root/serial.log" > "$root/clean.log"
 if [ "$rc" -ne 1 ] ||
    ! grep -Fq '[PASS] LITTLEFS native kernel VFS inode read from original filesystem' "$root/clean.log" ||
-   ! grep -Fq '[PASS] LITTLEFS real ring3 openat/read/getdents64 via generic VFS' "$root/clean.log" ||
+   ! grep -Fq "$expected" "$root/clean.log" ||
    ! grep -Fq '[LITTLEFS GUEST] clean unmount and BlockDevice release' "$root/clean.log" ||
    ! grep -Fq '[PASS] cmdline userspace exit 0' "$root/clean.log" ||
    grep -Eq '\[FAIL\]|\[FAULT\]|\[DEADLOCK\]' "$root/clean.log"; then
