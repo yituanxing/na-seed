@@ -35,6 +35,10 @@ on:
       - 'Makefile'
       - 'kernel/arch/riscv64/io.c'
       - 'ports/lwext4/**'
+      - 'ports/littlefs/**'
+      - 'third_party/littlefs/**'
+      - 'scripts/check-littlefs-block.sh'
+      - 'scripts/test-littlefs-block.c'
       - 'scripts/check-ext4-fsck-clean.sh'
       - 'kernel/fs/vfs*'
       - 'kernel/fs/metadata_syscall.c'
@@ -64,6 +68,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Verify real BlockDevice and third-party driver port (host and 3 ISAs)
         run: sh scripts/check-block-foundation.sh
+      - name: Second independent upstream FS: pinned littlefs against shared BlockDevice
+        run: sh scripts/check-littlefs-block.sh
       - name: Build pinned upstream lwext4 and exercise real ext4 via NaSeed RamDisk
         run: |
           command -v cmake
