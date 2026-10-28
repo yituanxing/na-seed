@@ -187,8 +187,47 @@ int main(int argc,char **argv) {
         assert(nas_vfs_mkdir("/mnt/sandbox/vfs-directory",0750)==0);
         assert(nas_vfs_create("/mnt/sandbox/vfs-directory/child",0600)==0);
         assert(nas_vfs_unlink("/mnt/sandbox/vfs-directory",0x200ULL)==-ENOTEMPTY);
-        assert(nas_vfs_unlink("/mnt/sandbox/vfs-directory/child",0)==0);
-        assert(nas_vfs_unlink("/mnt/sandbox/vfs-directory",0x200ULL)==0);
+        /* Open directory descriptors follow inode identity across rename,
+         * even if the caller still supplies its now-stale open pathname. */
+        struct nas_fs_node open_directory;
+        assert(nas_fs_lookup_node("/mnt/sandbox/vfs-directory",true,
+                                  &open_directory,actual)==0);
+        assert(nas_vfs_node_pin(&open_directory)==0);
+        assert(nas_vfs_unlink("/mnt/sandbox/vfs-directory",0x200ULL)==-EBUSY);
+        assert(nas_vfs_rename("/mnt/sandbox/vfs-directory",
+                              "/mnt/sandbox/renamed-directory",0)==0);
+        assert(nas_fs_lookup_node("/mnt/sandbox/vfs-directory",true,
+                                  &directory,actual)==-ENOENT);
+        struct nas_vfs_dirent renamed_entries[8]={0};
+        int renamed_n=nas_vfs_read_dir(&open_directory,
+                "/mnt/sandbox/vfs-directory",0,renamed_entries,8);
+        assert(renamed_n>=3);
+        bool child_found=false;
+        for(int k=0;k<renamed_n;k++)
+            if(!strcmp(renamed_entries[k].name,"child"))child_found=true;
+        assert(child_found);
+        assert(nas_vfs_node_unpin(&open_directory)==0);
+        assert(nas_vfs_unlink("/mnt/sandbox/renamed-directory/child",0)==0);
+        assert(nas_vfs_unlink("/mnt/sandbox/renamed-directory",0x200ULL)==0);
+        /* Replacing an open target must not free the victim inode behind
+         * another open File. The source and victim are independent. */
+        assert(nas_vfs_create("/mnt/sandbox/rename-victim",0600)==0);
+        struct nas_fs_node victim;
+        assert(nas_fs_lookup_node("/mnt/sandbox/rename-victim",true,
+                                  &victim,actual)==0);
+        static const uint8_t victim_bytes[]="unmodified-open-victim";
+        assert(nas_vfs_write_at(&victim,0,victim_bytes,
+                                sizeof(victim_bytes)-1)==
+                                (int64_t)sizeof(victim_bytes)-1);
+        assert(nas_vfs_node_pin(&victim)==0);
+        assert(nas_vfs_rename("/mnt/sandbox/vfs-created",
+                              "/mnt/sandbox/rename-victim",0)==-EBUSY);
+        assert(nas_vfs_read_at(&victim,0,(uint8_t *)buffer,
+                               sizeof(victim_bytes)-1)==
+                               (int64_t)sizeof(victim_bytes)-1);
+        assert(!memcmp(buffer,victim_bytes,sizeof(victim_bytes)-1));
+        assert(nas_vfs_node_unpin(&victim)==0);
+        assert(nas_vfs_unlink("/mnt/sandbox/rename-victim",0)==0);
         assert(nas_vfs_symlink("vfs-created","/mnt/sandbox/vfs-link")==0);
         assert(nas_fs_lookup_node("/mnt/sandbox/vfs-link",true,&created,actual)==0);
         assert(created.size==sizeof(persisted)-1);

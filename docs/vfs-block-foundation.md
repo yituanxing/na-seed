@@ -363,3 +363,20 @@ for RAM tmpfs and not an ext4 clone. Its path-based lookup has no stable
 POSIX inode API, so it may NOT claim unlink-open/rename-open until per-open
 VFS object ownership is implemented. Keep original upstream sources pinned
 and add a standalone real-provider host gate before guest activation.
+
+## 2026-10-28 — inode-stable directory enumeration and replacement policy
+
+Mounted lwext4 getdents now reads the actual upstream directory by the
+pinned ext4 inode number, using the **original ext4_dir_entry_next()**;
+it no longer opens each batch by the obsolete FD origin pathname. A live
+open directory survives a same-mount rename, and rmdir-open refuses EBUSY
+until the directory ref is released. The VFS also guards rename-over a
+**different pinned victim** by default, as upstream ext4 replacement can
+otherwise free data still referenced by the victim File. A provider must
+explicitly advertise safe rename replacement to opt out, otherwise it
+fails closed with EBUSY. This extends the previous unlink-open guard;
+it does **not** implement full Linux POSIX orphan inode reclamation.
+
+The host real-ext4 test adds directory pin/rename/getdents/cleanup and
+independent pinned-victim rename rejection + surviving inode reads. This
+preserves current File/FD ABI and does not fork VFS algorithms per ISA.

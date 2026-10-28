@@ -260,11 +260,15 @@ int nas_vfs_unlink(const char *path,uint64_t flags) {
      * inode-orphan lifetime protocol exists, fail closed. EBUSY is an
      * acknowledged temporary deviation from Linux unlink-open, not a claim
      * of POSIX compliance. tmpfs explicitly opts into safe unlink-open. */
-    if(!(flags&0x200ULL) && !parent.filesystem->unlink_open_safe) {
+    if(!parent.filesystem->unlink_open_safe) {
         struct nas_fs_node target;
         int looked_up=nas_vfs_lookup(canonical,&target);
-        if(looked_up==0 && target.mount==parent.mount &&
-           target.nlink<=1 && target.ino && inode_lease(&target))
+        /* rmdir(open directory) is just as unsafe as unlink(open file).
+         * Directory st_nlink normally counts '.' and a parent's entry,
+         * so the last-file-link threshold cannot be used for directories. */
+        if(!looked_up && target.mount==parent.mount && target.ino &&
+           inode_lease(&target) &&
+           ((flags&0x200ULL) || target.nlink<=1))
             return -EBUSY;
         if(looked_up && looked_up!=-ENOENT)return looked_up;
     }
@@ -282,6 +286,26 @@ int nas_vfs_rename(const char *oldpath,const char *newpath,uint64_t flags) {
         return -EBUSY;
     if(old_parent.mount!=new_parent.mount)return -EXDEV;
     if(!nas_vfs_can_write(&old_parent))return -EROFS;
+    if(!old_parent.filesystem->rename)return -EOPNOTSUPP;
+    /* POSIX rename(replace) must not invalidate an already open target.
+     * In lwext4 the replace path may unlink/free the victim inode while
+     * VFS Files still pin it. Default to fail-closed until the provider
+     * offers proper orphan/deferred reclaim (tmpfs already does). */
+    if(!new_parent.filesystem->rename_replace_open_safe &&
+       strcmp(old_canonical,new_canonical)) {
+        struct nas_fs_node victim;
+        int found=nas_vfs_lookup(new_canonical,&victim);
+        if(!found && victim.mount==new_parent.mount && victim.ino &&
+           inode_lease(&victim)) {
+            /* A hardlink alias of source is the same inode, not a victim. */
+            struct nas_fs_node source;
+            int src=nas_vfs_lookup(old_canonical,&source);
+            if(src)return src;
+            if(source.mount!=victim.mount || source.ino!=victim.ino)
+                return -EBUSY;
+        }
+        if(found && found!=-ENOENT)return found;
+    }
     return old_parent.filesystem->rename ?
            old_parent.filesystem->rename(old_parent.mount,old_canonical,new_canonical,flags) : -EOPNOTSUPP;
 }

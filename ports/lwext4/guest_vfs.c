@@ -204,20 +204,32 @@ static int ext_symlink_path(const struct nas_vfs_mount *mount,const char *target
     (void)mount;
     return -ext4_fsymlink(target,path);
 }
-/* A bounded directory view through upstream lwext4. Each call
- * reopens and scans the directory; later mutable dirs need owned iterator
- * state per shared File, but no backend-specific syscall ABI dispatch. */
+/* POSIX open directory descriptors follow an inode across rename.
+ * The pinned upstream ext4_dir_entry_next() itself only requires
+ * dir.f.mp, dir.f.inode and dir.next_off; constructing that established
+ * upstream handle from the live VFS inode avoids reopening a stale path.
+ * The VFS's logical cursor remains owned by the shared open File.
+ * The directory scanner currently traverses from offset zero per batch;
+ * persistent byte-offset iterators are a separate optimization. */
 static int ext_read_directory(const struct nas_fs_node *node,
                               const char *absolute,uint64_t cursor,
                               struct nas_vfs_dirent *out,unsigned maximum) {
+    (void)absolute; /* namespace path may have been renamed after open */
     if(!node || !node->mount || !node->mount->private_data ||
-       !absolute || !out || !maximum)return -EINVAL;
+       !out || !maximum)return -EINVAL;
     if(!node->is_dir)return -ENOTDIR;
     struct nas_lwext4_mount *ctx=node->mount->private_data;
-    if(!ctx->mounted)return -ENODEV;
+    if(!ctx->mounted || !ctx->upstream_mount)return -ENODEV;
+    if(!node->ino || node->ino>UINT32_MAX)return -EIO;
+    /* This is an actual liblwext4 directory handle, not an invented
+     * directory reader: upstream ext4_dir_entry_next() resolves its
+     * extents by the provided inode number, not by a filename. */
     ext4_dir dir={0};
-    int error=ext4_dir_open(&dir,path_for(ctx,absolute));
-    if(error)return -error;
+    dir.f.mp=ctx->upstream_mount;
+    dir.f.inode=(uint32_t)node->ino;
+    dir.f.flags=O_RDONLY;
+    dir.next_off=0;
+    int error=0;
     unsigned copied=0;
     uint64_t scanned=0;
     const ext4_direntry *entry;

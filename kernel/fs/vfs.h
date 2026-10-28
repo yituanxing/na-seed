@@ -53,6 +53,9 @@ struct nas_vfs_type {
     /* Backends may opt in only if unlinking the final name does not
      * invalidate an open, pinned inode (tmpfs has this lifetime today). */
     bool unlink_open_safe;
+    /* Replacement renames must preserve an open destination inode.
+     * Default false: the provider must explicitly guarantee this. */
+    bool rename_replace_open_safe;
     bool read_only;
 };
 struct nas_vfs_mount {
