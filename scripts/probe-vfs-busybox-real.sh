@@ -16,7 +16,7 @@ case "$arch" in
 esac
 work="build/real-vfs-busybox/$arch"
 mkdir -p "$work/extra"
-sh scripts/fetch-busybox-fixture.sh "$arch" "$work/original-busybox"
+sh scripts/fetch-busybox-fixture.sh "$arch" "$work/busybox"
 cp tests/vfs-busybox-real-workload "$work/extra/vfs-busybox-real-workload"
 chmod 755 "$work/extra/vfs-busybox-real-workload"
 # Linux oracle runs the EXACT same unmodified Debian BusyBox binary and
@@ -24,7 +24,7 @@ chmod 755 "$work/extra/vfs-busybox-real-workload"
 # program inputs, with VFS mounts as the only controlled difference.
 if [ "$arch" = amd64 ]; then
     mkdir -p "$work/linux-oracle-a" "$work/linux-oracle-b"
-    NAS_APP_BUSYBOX="$(pwd)/$work/original-busybox" \
+    NAS_APP_BUSYBOX="$(pwd)/$work/busybox" \
     NAS_APP_FS_A="$(pwd)/$work/linux-oracle-a" \
     NAS_APP_FS_B="$(pwd)/$work/linux-oracle-b" \
       sh tests/vfs-busybox-real-workload > "$work/linux-oracle.log"
@@ -33,7 +33,7 @@ if [ "$arch" = amd64 ]; then
 fi
 # Same opaque kernel VFS pathname semantics; FS backend differs only by
 # mount location. The test checks BusyBox exit + output, not canned stdout.
-export BUSYBOX_PARITY_BINARY="$work/original-busybox"
+export BUSYBOX_PARITY_BINARY="$work/busybox"
 export BUSYBOX_EXTRA_DIR="$work/extra"
 export BUSYBOX_PARITY_MANIFEST=scripts/vfs-busybox-real-cases.tsv
 export BUSYBOX_PARITY_CASE=real-vfs
