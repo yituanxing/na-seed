@@ -4,6 +4,7 @@
 #include "guest_vfs.h"
 #include "../../kernel/fs/lookup.h"
 #include "../../kernel/fs/vfs.h"
+#include "../../kernel/errno.h"
 #include "../../kernel/lib/string.h"
 #include <limine.h>
 #include <stdint.h>
