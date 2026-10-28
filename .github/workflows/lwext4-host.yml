@@ -104,6 +104,14 @@ jobs:
           NAS_LWEXT4_RW_PROBE=build/lwext4-native-rw/x86_64/probe.elf sh scripts/probe-lwext4-writable-x86.sh
           NAS_ENABLE_LWEXT4=1 NAS_LWEXT4_TEST_IMAGE=build/external/lwext4/ext4.img NAS_LWEXT4_RW_PROBE=build/lwext4-native-rw/riscv64/probe.elf sh scripts/probe-riscv64-full.sh
           NAS_ENABLE_LWEXT4=1 NAS_LWEXT4_TEST_IMAGE=build/external/lwext4/ext4.img NAS_LWEXT4_RW_PROBE=build/lwext4-native-rw/aarch64/probe.elf sh scripts/probe-aarch64-full.sh
+      - name: Genuine x86-64 modern VirtIO-PCI disk, independent ext4 persistence and e2fsck
+        run: |
+          cp build/external/lwext4/ext4.img build/external/lwext4/virtio-persistent-x86.img
+          NAS_VIRTIO_BLK_IMAGE=build/external/lwext4/virtio-persistent-x86.img NAS_LWEXT4_RW_PROBE=build/lwext4-native-rw/x86_64/probe.elf sh scripts/probe-lwext4-virtio-pci-x86.sh
+          sh scripts/check-ext4-fsck-clean.sh build/external/lwext4/virtio-persistent-x86.img
+          debugfs -R 'cat /sandbox/cross-isa-created' build/external/lwext4/virtio-persistent-x86.img > build/external/lwext4/virtio-x86-content.txt
+          grep -Fq 'NaSeed one portable Linux ELF for x86 RV64 AArch64 ext4 RW' build/external/lwext4/virtio-x86-content.txt
+          echo '[VIRTIO-BLK PCI HOST PERSISTENCE PASS] x86 real hardware disk bytes survived QEMU'
       - name: Genuine AArch64 VirtIO-MMIO disk driver, independent ext4 image persistence and e2fsck
         run: |
           cp build/external/lwext4/ext4.img build/external/lwext4/virtio-persistent.img
@@ -122,11 +130,3 @@ jobs:
           debugfs -R 'cat /sandbox/cross-isa-created' build/external/lwext4/virtio-persistent-rv.img > build/external/lwext4/virtio-rv-content.txt
           grep -Fq 'NaSeed one portable Linux ELF for x86 RV64 AArch64 ext4 RW' build/external/lwext4/virtio-rv-content.txt
           echo '[VIRTIO-BLK RV64 HOST PERSISTENCE PASS] hardware driver ext4 bytes survived QEMU'
-      - name: Genuine x86-64 modern VirtIO-PCI disk, independent ext4 persistence and e2fsck
-        run: |
-          cp build/external/lwext4/ext4.img build/external/lwext4/virtio-persistent-x86.img
-          NAS_VIRTIO_BLK_IMAGE=build/external/lwext4/virtio-persistent-x86.img NAS_LWEXT4_RW_PROBE=build/lwext4-native-rw/x86_64/probe.elf sh scripts/probe-lwext4-virtio-pci-x86.sh
-          sh scripts/check-ext4-fsck-clean.sh build/external/lwext4/virtio-persistent-x86.img
-          debugfs -R 'cat /sandbox/cross-isa-created' build/external/lwext4/virtio-persistent-x86.img > build/external/lwext4/virtio-x86-content.txt
-          grep -Fq 'NaSeed one portable Linux ELF for x86 RV64 AArch64 ext4 RW' build/external/lwext4/virtio-x86-content.txt
-          echo '[VIRTIO-BLK PCI HOST PERSISTENCE PASS] x86 real hardware disk bytes survived QEMU'

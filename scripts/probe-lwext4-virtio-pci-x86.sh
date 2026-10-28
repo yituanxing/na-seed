@@ -33,7 +33,7 @@ xorriso -as mkisofs -R -r -J \
     --efi-boot-part --efi-boot-image \
     -o "$root/guest.iso" "$root/stage" >/dev/null 2>&1
 rc=0
-timeout 90s sh scripts/run.sh "$root/guest.iso" >"$root/serial.log" 2>&1 || rc=$?
+timeout 45s sh scripts/run.sh "$root/guest.iso" >"$root/serial.log" 2>&1 || rc=$?
 tr -d '\r' < "$root/serial.log" > "$root/clean.log"
 clean="$root/clean.log"
 if [ "$rc" -ne 1 ] ||

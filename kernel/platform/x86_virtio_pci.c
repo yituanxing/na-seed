@@ -107,17 +107,31 @@ int nas_platform_virtio_blk_probe(void) {
                         cfg_snapshot[count]);
             resources[count].config=cfg_snapshot[count];
             if(!map_bars(0,(uint8_t)slot,(uint8_t)function,count,
-                         &resources[count]))return -ENODEV;
+                         &resources[count])) {
+                nas_print("[VIRTIO PCI FAIL] stage=bar-map slot=");
+                nas_dec(slot);nas_print(" function=");nas_dec(function);
+                nas_print("\n");return -ENODEV;
+            }
             rc=nas_virtio_pci_transport_init(&transports[count],&pci[count],
                                              &resources[count],
                                              &nas_dma_qemu_coherent);
-            if(rc)return rc;
+            if(rc) {
+                nas_print("[VIRTIO PCI FAIL] stage=caps error=");
+                nas_dec((uint64_t)(-rc));nas_print(" bar-sizes=");
+                for(unsigned b=0;b<BAR_COUNT;b++){
+                    nas_dec(resources[count].bars[b].size);nas_print(",");
+                }
+                nas_print("\n");return rc;
+            }
             devices[count]=(struct nas_bus_device){
                 .bus=NAS_BUS_PCI,.device_id=2,.vendor_id=id>>16,
                 .resource=&resources[count],.context=&transports[count]
             };
             rc=nas_bus_device_register(&devices[count]);
-            if(rc)return rc;
+            if(rc) {
+                nas_print("[VIRTIO PCI FAIL] stage=driver-bind error=");
+                nas_dec((uint64_t)(-rc));nas_print("\n");return rc;
+            }
             count++;
         }
     }
