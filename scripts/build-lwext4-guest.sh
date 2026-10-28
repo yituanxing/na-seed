@@ -23,7 +23,10 @@ vendor=third_party/lwext4
 port=ports/lwext4/freestanding
 mkdir -p "$out"
 sources="$vendor"/src/*.c
-sources="$sources $port/compat.c kernel/mm/heap.c ports/lwext4/lwext4_block.c"
+sources="$sources $port/compat.c ports/lwext4/lwext4_block.c"
+if [ "$mode" = closed ]; then
+    sources="$sources kernel/mm/heap.c"
+fi
 if [ "$mode" = kernel ]; then
     sources="$sources ports/lwext4/guest_vfs.c ports/lwext4/guest_boot.c"
 fi
@@ -54,7 +57,7 @@ else
     # Strong common symbols belong to the kernel, not a duplicate in lwext4.
     for symbol in $undefined; do
         case "$symbol" in
-            memcpy|memmove|memset|memcmp|strlen|strnlen|strcmp|strncmp|strchr|strrchr|strcpy|strncpy|strspn|strcspn|nas_block_get|nas_block_put|nas_block_read|nas_block_write|nas_block_flush|nas_ramdisk_attach|nas_ramdisk_detach|nas_vfs_register_mount|nas_vfs_unregister_mount|nas_fs_lookup_node|nas_vfs_join_child|nas_vfs_read_at|nas_vfs_node_size|nas_vfs_node_has_lease|nas_print|nas_module|nas_platform_virtio_blk_probe) ;;
+            nas_heap_*|memcpy|memmove|memset|memcmp|strlen|strnlen|strcmp|strncmp|strchr|strrchr|strcpy|strncpy|strspn|strcspn|nas_block_get|nas_block_put|nas_block_read|nas_block_write|nas_block_flush|nas_ramdisk_attach|nas_ramdisk_detach|nas_vfs_register_mount|nas_vfs_unregister_mount|nas_fs_lookup_node|nas_vfs_join_child|nas_vfs_read_at|nas_vfs_node_size|nas_vfs_node_has_lease|nas_print|nas_module|nas_platform_virtio_blk_probe) ;;
             *) echo "[LWEXT4 KERNEL LINK FAIL] undefined: $symbol" >&2; exit 1 ;;
         esac
     done

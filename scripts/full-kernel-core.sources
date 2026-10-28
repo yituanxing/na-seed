@@ -38,6 +38,7 @@ kernel/pipe.c
 kernel/boot_image.c
 kernel/drivers/serial.c
 kernel/mm/frame.c
+kernel/mm/heap.c
 kernel/mm/vm.c
 kernel/mm/usercopy.c
 kernel/mm/remote_copy.c

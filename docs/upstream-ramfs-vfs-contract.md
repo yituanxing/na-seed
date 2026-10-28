@@ -82,3 +82,17 @@ The upstream `ramfs_vector.c` uses `errno` without including its own
 `-include errno.h` rather than changing a single byte of the original
 MPL-2.0 source. The host defines its native errno, while the kernel
 port exposes a separate storage slot for the vendor library.
+
+### Common heap becomes a shared kernel owner
+
+Importing *two* independent upstream libraries exposed a real structural
+problem: the lwext4 guest object had privately compiled
+`kernel/mm/heap.c`, while RamFS also needs exactly the same heap.
+The correct boundary is ONE common NaSeed kernel heap compiled from
+`scripts/full-kernel-core.sources` and linked into all three ISAs.
+lwext4 kernel mode now imports common `nas_heap_*` symbols; only its
+standalone/closed host linker test embeds the allocator. RamFS uses the
+very same symbols. Never condition an allocator's ownership on which
+filesystem happens to be enabled first; never build duplicate allocators
+with separate arenas. The original external vendor source remains
+byte-identical.
