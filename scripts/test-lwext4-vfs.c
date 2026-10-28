@@ -207,17 +207,25 @@ int main(int argc,char **argv) {
             if(!strcmp(renamed_entries[k].name,"child"))child_found=true;
         assert(child_found);
         char oldpath_base[256];
-        /* ext4 does not yet have a live inode->full-path callback.
-         * Detect a stale origin path rather than silently accessing
-         * another inode if this name is recycled by a later rename. */
+        /* Reverse-lookup through genuine upstream on-disk ext4 '..'
+         * and parent directory entries, not the stale File origin name.
+         * Recycle the old path to prove openat/fchdir can never pick up
+         * a different directory inode after rename. */
         assert(nas_vfs_directory_path(&open_directory,
                                       "/mnt/sandbox/vfs-directory",
-                                      oldpath_base)==-ESTALE);
+                                      oldpath_base)==0);
+        assert(!strcmp(oldpath_base,"/mnt/sandbox/renamed-directory"));
+        assert(nas_vfs_mkdir("/mnt/sandbox/vfs-directory",0700)==0);
+        struct nas_fs_node reused_directory;
+        assert(nas_fs_lookup_node("/mnt/sandbox/vfs-directory",true,
+                                  &reused_directory,actual)==0);
+        assert(reused_directory.ino!=open_directory.ino);
         assert(nas_vfs_directory_path(&open_directory,
-                                      "/mnt/sandbox/renamed-directory",
+                                      "/mnt/sandbox/vfs-directory",
                                       oldpath_base)==0);
         assert(!strcmp(oldpath_base,"/mnt/sandbox/renamed-directory"));
         assert(nas_vfs_node_unpin(&open_directory)==0);
+        assert(nas_vfs_unlink("/mnt/sandbox/vfs-directory",0x200ULL)==0);
         assert(nas_vfs_unlink("/mnt/sandbox/renamed-directory/child",0)==0);
         assert(nas_vfs_unlink("/mnt/sandbox/renamed-directory",0x200ULL)==0);
         /* Replacing an open target must not free the victim inode behind

@@ -412,3 +412,20 @@ Host tests cover renamed tmpfs directory live-path recovery, immutable
 bootfs directory identity, ext4 moved directory fail-closed and new-name
 validation, and real LittleFS read-only directory path identity. No new
 ISA-specific FS algorithm or modification of pinned upstream sources.
+
+## 2026-10-28 — native ext4 directory live path by inode parent chain
+
+Unlike the first conservative `ESTALE` fallback, lwext4 now implements the
+same provider-neutral `directory_path` callback using original upstream
+`ext4_dir_entry_next` over the pinned inode and its on-disk `..` parent
+entry. Each ancestor parent is scanned to recover the child's live name,
+then joined under the existing VFS mountpoint. This does not rely on a
+File's stale pathname or modify upstream code. Depth and output are
+strictly bounded, cycles and disconnected directories fail closed.
+
+One REAL ext4 writable host regression pins an open directory, renames it,
+recreates a different inode at the opening pathname and verifies the old
+FD still maps to the new name (and NOT the recycled directory). Common
+`nas_vfs_directory_path` independently validates the final mount+inode.
+This enables shared `openat`, `fchdir`, cwd and getcwd to follow ext4
+renames just like native tmpfs; no ISA/syscall knowledge in lwext4.

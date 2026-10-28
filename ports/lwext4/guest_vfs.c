@@ -204,6 +204,101 @@ static int ext_symlink_path(const struct nas_vfs_mount *mount,const char *target
     (void)mount;
     return -ext4_fsymlink(target,path);
 }
+/* Discover the current *name* of a pinned ext4 directory by following
+ * upstream on-disk '..' inode references, then looking up that child's
+ * live name inside its parent. Only the filesystem owns this knowledge.
+ * The VFS validates the resulting (mount, inode) before any pathname
+ * operation; this adapter never manufactures inode identities or opens
+ * an old path. Bounded by the common 256-byte pathname limit. */
+static ext4_dir ext_handle(const struct nas_lwext4_mount *ctx,uint32_t ino) {
+    ext4_dir dir={0};
+    dir.f.mp=ctx->upstream_mount;
+    dir.f.inode=ino;
+    dir.f.flags=O_RDONLY;
+    return dir;
+}
+static int ext_parent_directory(struct nas_lwext4_mount *ctx,
+                                uint32_t child,uint32_t *parent) {
+    ext4_dir dir=ext_handle(ctx,child);
+    const ext4_direntry *ent;
+    uint32_t found=0;
+    while((ent=ext4_dir_entry_next(&dir))) {
+        if(ent->inode && ent->name_length==2 &&
+           ent->name[0]=='.' && ent->name[1]=='.') {
+            found=ent->inode;
+            break;
+        }
+    }
+    int rc=ext4_dir_close(&dir);
+    if(rc)return -rc;
+    if(!found)return -ESTALE;
+    *parent=found;
+    return 0;
+}
+static int ext_name_in_directory(struct nas_lwext4_mount *ctx,
+                                 uint32_t parent,uint32_t child,
+                                 char name[256],unsigned *length) {
+    ext4_dir dir=ext_handle(ctx,parent);
+    const ext4_direntry *ent;
+    unsigned used=0;
+    while((ent=ext4_dir_entry_next(&dir))) {
+        if(ent->inode!=child || !ent->name_length ||
+           (ent->name_length==1 && ent->name[0]=='.') ||
+           (ent->name_length==2 && ent->name[0]=='.' &&
+            ent->name[1]=='.'))
+            continue;
+        used=ent->name_length;
+        memcpy(name,ent->name,used);
+        name[used]=0;
+        break;
+    }
+    int rc=ext4_dir_close(&dir);
+    if(rc)return -rc;
+    if(!used)return -ESTALE;
+    *length=used;
+    return 0;
+}
+static int ext_directory_path(const struct nas_fs_node *node,
+                              char absolute[256]) {
+    if(!node || !node->is_dir || !node->mount || !absolute)
+        return -EINVAL;
+    struct nas_lwext4_mount *ctx=node->mount->private_data;
+    if(!ctx || !ctx->mounted || !ctx->upstream_mount ||
+       !node->ino || node->ino>UINT32_MAX)return -ENODEV;
+    uint32_t root=0;
+    struct ext4_inode raw;
+    int rc=ext4_raw_inode_fill(ctx->upstream_prefix,&root,&raw);
+    if(rc)return -rc;
+    if(!root)return -EIO;
+    uint32_t current=(uint32_t)node->ino;
+    char reverse[256];
+    reverse[255]=0;
+    unsigned cursor=255;
+    /* Maximum number of components is at most 127 in a 255-byte
+     * absolute path, including one-character components. */
+    for(unsigned depth=0;depth<128 && current!=root;depth++) {
+        uint32_t parent;
+        rc=ext_parent_directory(ctx,current,&parent);
+        if(rc)return rc;
+        if(parent==current)return -ELOOP;
+        char name[256];
+        unsigned length=0;
+        rc=ext_name_in_directory(ctx,parent,current,name,&length);
+        if(rc)return rc;
+        if(length+1>cursor)return -ENAMETOOLONG;
+        cursor-=length;
+        memcpy(reverse+cursor,name,length);
+        reverse[--cursor]='/';
+        current=parent;
+    }
+    if(current!=root)return -ELOOP;
+    size_t base=strlen(ctx->mount_point);
+    size_t relative=255U-cursor;
+    if(base+relative>=256)return -ENAMETOOLONG;
+    memcpy(absolute,ctx->mount_point,base);
+    memcpy(absolute+base,reverse+cursor,relative+1);
+    return 0;
+}
 /* POSIX open directory descriptors follow an inode across rename.
  * The pinned upstream ext4_dir_entry_next() itself only requires
  * dir.f.mp, dir.f.inode and dir.next_off; constructing that established
@@ -265,6 +360,7 @@ static const struct nas_vfs_type ext_type={
     .name="lwext4",
     .exec_source_label="lwext4",
     .lookup=ext_lookup,
+    .directory_path=ext_directory_path,
     .readlink=ext_readlink_node,
     .read_at=ext_read_inode,
     .write_at=ext_write_inode,
