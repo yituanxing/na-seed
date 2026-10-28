@@ -76,3 +76,15 @@ no root retains the explicitly scoped unanchored `/mnt` bootstrap.
 This is **not yet** a counted generic dentry tree, superblock cache or a
 per-FD `struct path`; prefix matching is still the conservative interim
 mount locator, while the attachment's actual parent identity is now checked.
+
+### /proc reads are VFS inode operations, not a syscall FD-kind implementation
+
+Following Linux File/inode operations and NaOS f_inode/f_op, a single
+inverse of `nas_proc_ino` now decodes proc directories, static/pid/TID
+regular files and FD symlinks, including descriptor 63. `/proc` supplies
+`read_at(node,offset)` like every other provider; Linux read/pread reuses
+its shared open-description position and the common usercopy path, not a
+second hardcoded syscall-only proc reader. The common positional I/O adapter
+now dispatches using the opened provider's read/write capability rather
+than enumerating tmpfs/archive/bootfs kind labels. Original legacy Limine
+module files remain an explicit non-VFS compatibility exception.

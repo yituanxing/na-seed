@@ -27,6 +27,9 @@ bool nas_proc_directory_from_ino(uint64_t dir_ino,struct nas_proc_node *out);
 /* Stable procfd inode identity -> original PID and descriptor number.
  * Never reinterpret inherited /proc/self symlinks via caller pathname. */
 bool nas_proc_fd_link_from_ino(uint64_t ino,struct nas_proc_node *out);
+/* One stable inverse of nas_proc_ino for directories, regular files and
+ * procfd links, regardless of current task or original pathname. */
+bool nas_proc_node_from_ino(uint64_t ino,struct nas_proc_node *out);
 bool nas_proc_is_dir(struct nas_proc_node node);
 uint32_t nas_proc_mode(struct nas_proc_node node);
 bool nas_proc_dir_path(struct nas_proc_node node,char path[256]);

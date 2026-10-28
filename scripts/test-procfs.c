@@ -112,6 +112,17 @@ int main(void) {
     assert(!nas_proc_fd_link_from_ino(owned_link_ino,&fd_by_ino));
     assert(!nas_proc_lookup("/proc/1/fd/1",&fd_info));
     assert(nas_proc_lookup("/proc/self/status",&entry) && entry.pid==1);
+    struct nas_proc_node original_status,decoded_status;
+    assert(nas_proc_lookup("/proc/23/status",&original_status));
+    assert(nas_proc_node_from_ino(nas_proc_ino(original_status),
+                                   &decoded_status));
+    assert(decoded_status.pid==23 &&
+           decoded_status.kind==NAS_PROC_PID_STATUS);
+    uint8_t inode_data[192]={0};
+    assert(nas_proc_read(decoded_status,0,inode_data,sizeof(inode_data)-1)>0);
+    assert(strstr((const char *)inode_data,"Threads:"));
+    assert(!nas_proc_node_from_ino(nas_proc_ino(original_status)+99,
+                                   &decoded_status));
     check_file("/proc/23/status","Threads:\t2");
     check_file("/proc/23/stat","23 (sleep) S 1");
     check_file("/proc/23/maps","0000000000001000-0000000000003000 r-xp");
@@ -176,6 +187,10 @@ int main(void) {
     assert(nas_proc_child(thread,0,name,&threadfile) && !strcmp(name,"stat"));
     assert(threadfile.pid==24 && threadfile.tgid==23);
     assert(nas_proc_lookup("/proc/23/task/24/stat",&threadfile));
+    assert(nas_proc_node_from_ino(nas_proc_ino(threadfile),
+                                   &decoded_status));
+    assert(decoded_status.pid==24 && decoded_status.tgid==23 &&
+           decoded_status.kind==NAS_PROC_PID_STAT);
     uint8_t record[128]={0};
     assert(nas_proc_read(threadfile,0,record,sizeof(record)-1)>0);
     assert(strstr((char *)record,"24 (worker) R 1"));

@@ -114,28 +114,72 @@ bool nas_proc_lookup(const char *path,struct nas_proc_node *out) {
     else return false;
     return true;
 }
+bool nas_proc_node_from_ino(uint64_t ino,struct nas_proc_node *out) {
+    if(!out)return false;
+    struct nas_proc_node node={0};
+    if(ino>=70000U && ino<80000U) {
+        uint64_t kind=ino-70000U;
+        switch(kind) {
+        case NAS_PROC_ROOT:case NAS_PROC_MEMINFO:case NAS_PROC_UPTIME:
+        case NAS_PROC_VERSION:case NAS_PROC_CPUINFO:case NAS_PROC_STAT:
+        case NAS_PROC_LOADAVG:case NAS_PROC_VMSTAT:case NAS_PROC_MOUNTS:
+            node.kind=(uint8_t)kind;break;
+        default:return false;
+        }
+    } else if(ino>=80000U) {
+        uint64_t encoded=ino-80000U,pid=encoded/2048U,tag=encoded%2048U;
+        const struct nas_task *task=living(pid);
+        if(!pid || !task)return false;
+        node.pid=pid;
+        /* FD 63 tags straddle 1024. Decode FD identities before
+         * thread-group tags and validate against the actual FD table. */
+        if(tag>=NAS_PROC_FD_LINK &&
+           (tag-NAS_PROC_FD_LINK)%16U==0 &&
+           (tag-NAS_PROC_FD_LINK)/16U<NAS_FD_LIMIT) {
+            node.kind=NAS_PROC_FD_LINK;
+            node.fd=(uint16_t)((tag-NAS_PROC_FD_LINK)/16U);
+        } else if(tag>=NAS_PROC_FDINFO_FILE &&
+                  (tag-NAS_PROC_FDINFO_FILE)%16U==0 &&
+                  (tag-NAS_PROC_FDINFO_FILE)/16U<NAS_FD_LIMIT) {
+            node.kind=NAS_PROC_FDINFO_FILE;
+            node.fd=(uint16_t)((tag-NAS_PROC_FDINFO_FILE)/16U);
+        } else if(tag>=1024U) {
+            uint64_t kind=tag-1024U;
+            switch(kind) {
+            case NAS_PROC_TASK_DIR:
+                if(task->is_thread)return false;
+                node.kind=(uint8_t)kind;node.tgid=pid;break;
+            case NAS_PROC_TID_DIR:
+            case NAS_PROC_PID_STAT:case NAS_PROC_PID_STATUS:
+            case NAS_PROC_PID_COMM:case NAS_PROC_PID_CMDLINE:
+            case NAS_PROC_PID_STATM:
+                node.kind=(uint8_t)kind;node.tgid=task->tgid;break;
+            default:return false;
+            }
+        } else {
+            switch(tag) {
+            case NAS_PROC_PID_DIR:case NAS_PROC_PID_STAT:
+            case NAS_PROC_PID_STATUS:case NAS_PROC_PID_COMM:
+            case NAS_PROC_PID_CMDLINE:case NAS_PROC_PID_STATM:
+            case NAS_PROC_TASK_DIR:case NAS_PROC_FD_DIR:
+            case NAS_PROC_FDINFO_DIR:case NAS_PROC_PID_MAPS:
+            case NAS_PROC_MOUNTS:
+                node.kind=(uint8_t)tag;break;
+            default:return false;
+            }
+        }
+        if((node.kind==NAS_PROC_FD_LINK ||
+            node.kind==NAS_PROC_FDINFO_FILE) &&
+           (!task->fds ||
+            task->fds->entries[node.fd].kind==FD_CLOSED))
+            return false;
+    } else return false;
+    if(nas_proc_ino(node)!=ino)return false;
+    *out=node;return true;
+}
 bool nas_proc_directory_from_ino(uint64_t dir_ino,
                                  struct nas_proc_node *out) {
-    if(!out)return false;
-    struct nas_proc_node parent={0};
-    if(dir_ino==nas_proc_ino((struct nas_proc_node){.kind=NAS_PROC_ROOT}))
-        parent.kind=NAS_PROC_ROOT;
-    else if(dir_ino>=80000U) {
-        uint64_t encoded=dir_ino-80000U;
-        uint64_t pid=encoded/2048U,tag=encoded%2048U;
-        const struct nas_task *task=living(pid);
-        if(!task)return false;
-        parent.pid=pid;
-        if(tag==NAS_PROC_PID_DIR)parent.kind=NAS_PROC_PID_DIR;
-        else if(tag==NAS_PROC_FD_DIR)parent.kind=NAS_PROC_FD_DIR;
-        else if(tag==NAS_PROC_FDINFO_DIR)parent.kind=NAS_PROC_FDINFO_DIR;
-        else if(tag==1024U+NAS_PROC_TASK_DIR) {
-            parent.kind=NAS_PROC_TASK_DIR;parent.tgid=pid;
-        } else if(tag==1024U+NAS_PROC_TID_DIR) {
-            parent.kind=NAS_PROC_TID_DIR;parent.tgid=task->tgid;
-        } else return false;
-    } else return false;
-    *out=parent;return true;
+    return nas_proc_node_from_ino(dir_ino,out) && nas_proc_is_dir(*out);
 }
 bool nas_proc_find_child(uint64_t dir_ino,const char *name,
                          struct nas_proc_node *out) {
@@ -152,21 +196,8 @@ bool nas_proc_find_child(uint64_t dir_ino,const char *name,
     return false;
 }
 bool nas_proc_fd_link_from_ino(uint64_t ino,struct nas_proc_node *out) {
-    if(!out || ino<80000U)return false;
-    uint64_t encoded=ino-80000U, pid=encoded/2048U;
-    uint64_t tag=encoded%2048U;
-    if(tag<NAS_PROC_FD_LINK ||
-       (tag-NAS_PROC_FD_LINK)%16U)return false;
-    uint64_t fd=(tag-NAS_PROC_FD_LINK)/16U;
-    if(fd>=NAS_FD_LIMIT)return false;
-    const struct nas_task *task=living(pid);
-    if(!task || !task->fds ||
-       task->fds->entries[fd].kind==FD_CLOSED)return false;
-    struct nas_proc_node value={
-        .kind=NAS_PROC_FD_LINK,.pid=pid,.fd=(uint16_t)fd
-    };
-    if(nas_proc_ino(value)!=ino)return false;
-    *out=value;return true;
+    return nas_proc_node_from_ino(ino,out) &&
+           out->kind==NAS_PROC_FD_LINK;
 }
 bool nas_proc_dir_path(struct nas_proc_node node,char path[256]) {
     if(!path || !nas_proc_is_dir(node))return false;

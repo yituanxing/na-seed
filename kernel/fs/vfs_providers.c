@@ -417,10 +417,20 @@ static int proc_read_dir(const struct nas_fs_node *node,
     return (int)count;
 }
 
+static int64_t proc_read_inode(const struct nas_fs_node *node,uint64_t offset,
+                                uint8_t *dst,uint64_t length) {
+    if(!node || !node->mount || (!dst && length))return -EINVAL;
+    struct nas_proc_node proc;
+    if(!nas_proc_node_from_ino(node->ino,&proc))return -ESTALE;
+    if(nas_proc_is_dir(proc))return -EISDIR;
+    if(length>UINT32_MAX)length=UINT32_MAX;
+    return nas_proc_read(proc,offset,dst,(unsigned)length);
+}
 static const struct nas_vfs_type proc_type={
     .name="procfs",.exec_source_label="procfs",
     .root=proc_root,.lookup_child=proc_child,
-    .readlink=proc_readlink_node,.read_dir=proc_read_dir,.read_only=true
+    .readlink=proc_readlink_node,.read_at=proc_read_inode,
+    .read_dir=proc_read_dir,.read_only=true
 };
 static const struct nas_vfs_mount defaults[]={
     {.mountpoint="/",.type=&boot_type,.permanent=true},

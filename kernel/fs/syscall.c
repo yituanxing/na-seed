@@ -609,29 +609,6 @@ static uint64_t sys_open_device(uint64_t pathname, uint64_t flags,
 
 /* NaOS-aligned idea: bind ops once to the shared open description; do not
  * repeat a dispatch by FD kind in every userspace read/write/poll/ioctl. */
-static uint64_t vread_proc(uint64_t fd,uint64_t addr,uint64_t n) {
-    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind!=FD_PROC_FILE)
-        return (uint64_t)-EBADF;
-    unsigned slot=TASK.fds->entries[fd].slot;
-    struct nas_proc_node node={nas_open_files[slot].proc_kind,
-                               nas_open_files[slot].proc_pid,
-                               nas_open_files[slot].proc_tgid,
-                               nas_open_files[slot].proc_fd};
-    uint8_t bytes[256];
-    uint64_t done=0;
-    while(done<n) {
-        unsigned take=(n-done)>sizeof(bytes)?sizeof(bytes):(unsigned)(n-done);
-        int64_t got=nas_proc_read(node,nas_open_files[slot].position,bytes,take);
-        if(got<0)return done ? done : (uint64_t)got;
-        if(!got)break;
-        if(!nas_user_write_bytes(addr+done,bytes,(uint64_t)got))
-            return done ? done : (uint64_t)-EFAULT;
-        nas_open_files[slot].position+=(uint64_t)got;
-        done+=(uint64_t)got;
-        if((unsigned)got<take)break;
-    }
-    return done;
-}
 static uint64_t vread_null(uint64_t fd,uint64_t addr,uint64_t n) {
     (void)fd;(void)addr;(void)n;return 0;
 }
@@ -739,7 +716,8 @@ static const struct nas_file_ops ops_zero={
 static const struct nas_file_ops ops_bootfs={.read=vread_limine,.poll=vpoll_always,.poll_description=dpoll_always};
 static const struct nas_file_ops ops_archive={.read=vread_regular,.write=vwrite_regular,.poll=vpoll_always,.poll_description=dpoll_always};
 static const struct nas_file_ops ops_dir={.read=vread_dir,.poll=vpoll_always,.poll_description=dpoll_always};
-static const struct nas_file_ops ops_proc_file={.read=vread_proc,.poll=vpoll_always,.poll_description=dpoll_always};
+/* All VFS provider regular Files share one inode-driven read path. */
+static const struct nas_file_ops ops_proc_file={.read=vread_regular,.poll=vpoll_always,.poll_description=dpoll_always};
 static const struct nas_file_ops ops_proc_dir={.read=vread_dir,.poll=vpoll_always,.poll_description=dpoll_always};
 static const struct nas_file_ops ops_pipe_read={
     .read=pipe_fd_read,.poll=vpoll_pipe_read,.poll_description=dpoll_pipe_read,

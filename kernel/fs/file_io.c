@@ -93,9 +93,15 @@ uint64_t nas_fs_fd_pread(uint64_t fd,uint64_t address,uint64_t count,
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount) return (uint64_t)-EBADF;
     if((nas_open_files[slot].status_flags&NAS_LINUX_O_PATH) ||
        (nas_open_files[slot].status_flags&3ULL)==1ULL) return (uint64_t)-EBADF;
-    if(TASK.fds->entries[fd].kind==FD_DIR || TASK.fds->entries[fd].kind==FD_TMP_DIR) return (uint64_t)-EISDIR;
-    if(TASK.fds->entries[fd].kind!=FD_TMP && TASK.fds->entries[fd].kind!=FD_ARCHIVE &&
-       TASK.fds->entries[fd].kind!=FD_BOOTFS) return (uint64_t)-ESPIPE;
+    /* Inspect the opened VFS provider capability, not an enumerated list
+     * of specific mounted filesystem FD kinds. */
+    const struct nas_open_file *read_open=&nas_open_files[slot];
+    if(read_open->vnode_pinned) {
+        if(read_open->vnode.is_dir)return (uint64_t)-EISDIR;
+        if(!read_open->vnode.filesystem ||
+           !read_open->vnode.filesystem->read_at)return (uint64_t)-ESPIPE;
+    } else if(TASK.fds->entries[fd].kind!=FD_BOOTFS)
+        return (uint64_t)-ESPIPE;
     if(offset>INT64_MAX || count>INT64_MAX-offset) return (uint64_t)-EINVAL;
     if(count && (address>=USER_LIMIT || count>USER_LIMIT-address))
         return (uint64_t)-EFAULT;
@@ -121,9 +127,11 @@ uint64_t nas_fs_fd_pwrite(uint64_t fd,uint64_t address,uint64_t count,
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount) return (uint64_t)-EBADF;
     if((nas_open_files[slot].status_flags&NAS_LINUX_O_PATH) ||
        (nas_open_files[slot].status_flags&3ULL)==0ULL) return (uint64_t)-EBADF;
-    if(TASK.fds->entries[fd].kind==FD_DIR || TASK.fds->entries[fd].kind==FD_TMP_DIR) return (uint64_t)-EISDIR;
-    if(TASK.fds->entries[fd].kind!=FD_TMP &&
-       TASK.fds->entries[fd].kind!=FD_ARCHIVE)return (uint64_t)-ESPIPE;
+    const struct nas_open_file *write_open=&nas_open_files[slot];
+    if(!write_open->vnode_pinned)return (uint64_t)-ESPIPE;
+    if(write_open->vnode.is_dir)return (uint64_t)-EISDIR;
+    if(!write_open->vnode.filesystem ||
+       !write_open->vnode.filesystem->write_at)return (uint64_t)-ESPIPE;
     if(offset>INT64_MAX || count>INT64_MAX-offset)return (uint64_t)-EINVAL;
     if(count && (address>=USER_LIMIT || count>USER_LIMIT-address))
         return (uint64_t)-EFAULT;

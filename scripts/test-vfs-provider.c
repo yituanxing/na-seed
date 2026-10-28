@@ -123,6 +123,20 @@ uint32_t nas_proc_mode(struct nas_proc_node node){
     return node.kind==NAS_PROC_FD_LINK ? 0120777U : 0040555U;
 }
 bool nas_proc_is_dir(struct nas_proc_node node){return node.kind!=NAS_PROC_FD_LINK;}
+bool nas_proc_node_from_ino(uint64_t ino,struct nas_proc_node *out) {
+    if(ino!=7000 || !out)return false;
+    *out=(struct nas_proc_node){.kind=NAS_PROC_VERSION};
+    return true;
+}
+int64_t nas_proc_read(struct nas_proc_node node,uint64_t off,
+                      uint8_t *dst,unsigned length) {
+    (void)node;
+    static const char data[]="NaSeed proc fixture";
+    if(off>=sizeof(data)-1)return 0;
+    if(length>sizeof(data)-1-off)length=(unsigned)(sizeof(data)-1-off);
+    if(length)memcpy(dst,data+off,length);
+    return length;
+}
 bool nas_proc_fd_link_from_ino(uint64_t ino,struct nas_proc_node *out) {
     if(ino!=7000 || !out)return false;
     *out=(struct nas_proc_node){.kind=NAS_PROC_FD_LINK,.pid=1,.fd=3};
