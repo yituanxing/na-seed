@@ -42,7 +42,7 @@ static struct nas_tmp_file fixture_orphan={
 /* Saturation identities are REAL distinct, reusable tmp inode slots.
  * The old test fabricated inode numbers pointing at one file and was
  * invalid once the VFS gained a mandatory backend incarnation check. */
-static struct nas_tmp_file capacity_fixture[257];
+static struct nas_tmp_file capacity_fixture[512];
 static unsigned orphan_releases;
 void tmp_inode_discard(struct nas_tmp_file *node) {
     /* An actual kernel reclaims only orphaned, unpinned inodes; the
@@ -512,42 +512,49 @@ int main(void) {
     assert(nas_vfs_write_at(&n,0,(const uint8_t *)"xyz",3)==3);
     assert(nas_fs_lookup_node("/tmp/newfile",true,&n,resolved)==0);
     assert(nas_vfs_read_at(&n,0,(uint8_t *)data,3)==3 && !memcmp(data,"xyz",3));
-    /* Saturate the VFS's owned-inode table with distinct fixture identities
-     * before O_TRUNC and O_CREAT. Neither operation may mutate namespace or
-     * data when a new open File cannot acquire its mandatory inode lease. */
-    struct nas_fs_node capacity_pins[257];
-    unsigned capacity_used=0;
-    for(;capacity_used<257;capacity_used++) {
-        capacity_fixture[capacity_used]=(struct nas_tmp_file){
-            .used=true,.mode=0100600U,.ino=100000U+capacity_used
+    /* Architecture regression: keep 512 REAL distinct inode identities
+     * simultaneously owned. The old fixed 256-entry global lease table
+     * returned ENFILE and blocked otherwise valid applications. The dynamic
+     * stable-address lease pool must grow without moving existing record
+     * locks, mis-associating inode size or changing unrelated mounts. */
+    struct nas_fs_node capacity_pins[512];
+    for(unsigned i=0;i<512;i++) {
+        capacity_fixture[i]=(struct nas_tmp_file){
+            .used=true,.mode=0100600U,.ino=100000U+i
         };
-        capacity_pins[capacity_used]=n;
-        capacity_pins[capacity_used].inode=&capacity_fixture[capacity_used];
-        capacity_pins[capacity_used].ino=5000+capacity_fixture[capacity_used].ino;
-        int rc=nas_vfs_node_pin(&capacity_pins[capacity_used]);
-        if(rc==-ENFILE)break;
-        assert(rc==0);
+        capacity_pins[i]=n;
+        capacity_pins[i].inode=&capacity_fixture[i];
+        capacity_pins[i].ino=5000+capacity_fixture[i].ino;
+        assert(nas_vfs_node_pin(&capacity_pins[i])==0);
+        assert(nas_vfs_node_has_lease(&capacity_pins[i]));
     }
-    assert(capacity_used>0 && capacity_used<=256);
-    struct nas_fs_node failed_open;
-    char failed_path[256];
-    struct nas_vfs_open_options fail_options={
+    assert(nas_vfs_inode_is_pinned(&capacity_fixture[511]));
+    struct nas_fs_node newly_opened;
+    char newly_opened_path[256];
+    struct nas_vfs_open_options grow_options={
         .follow_final=true,.access=2,.truncate=true
     };
-    assert(nas_vfs_open_inode("/tmp/newfile",&fail_options,
-                              &failed_open,failed_path)==-ENFILE);
-    fail_options.truncate=false;
-    fail_options.create=true;
-    fail_options.create_mode=0640;
-    assert(nas_vfs_open_inode("/tmp/open-never-created",&fail_options,
-                              &failed_open,failed_path)==-ENFILE);
-    assert(nas_fs_lookup_node("/tmp/open-never-created",true,
-                               &failed_open,failed_path)==-ENOENT);
-    assert(fixture_created_length==3 && fixture_created.size==3);
+    assert(nas_vfs_open_inode("/tmp/newfile",&grow_options,
+                              &newly_opened,newly_opened_path)==0);
+    assert(fixture_created_length==0 && fixture_created.size==0);
+    assert(nas_vfs_node_unpin(&newly_opened)==0);
+    assert(nas_vfs_write_at(&n,0,(const uint8_t *)"xyz",3)==3);
     assert(nas_vfs_read_at(&n,0,(uint8_t *)data,3)==3 &&
            !memcmp(data,"xyz",3));
-    for(unsigned i=0;i<capacity_used;i++)
+    grow_options.truncate=false;
+    grow_options.create=true;
+    grow_options.create_mode=0640;
+    assert(nas_vfs_open_inode("/tmp/open-never-created",&grow_options,
+                              &newly_opened,newly_opened_path)==-ENOSPC);
+    assert(nas_fs_lookup_node("/tmp/open-never-created",true,
+                               &newly_opened,newly_opened_path)==-ENOENT);
+    for(unsigned i=0;i<512;i++)
         assert(nas_vfs_node_unpin(&capacity_pins[i])==0);
+    assert(!nas_vfs_inode_is_pinned(&capacity_fixture[511]));
+    /* Reuse the same allocated slots after closure, without retaining any
+     * old inode incarnation or POSIX record-lock ownership. */
+    assert(nas_vfs_node_pin(&capacity_pins[511])==0);
+    assert(nas_vfs_node_unpin(&capacity_pins[511])==0);
     assert(nas_vfs_node_pin(&n)==0);
     /* Linux locks are VFS inode + owned File services. Independent
      * opens contend even when backend directory names are recycled. */

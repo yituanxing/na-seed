@@ -4,7 +4,8 @@ set -eu
 mkdir -p build/vfs-provider
 cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
   scripts/test-vfs-provider.c kernel/fs/vfs.c kernel/fs/vfs_providers.c \
-  kernel/fs/lookup.c kernel/lib/string.c -o build/vfs-provider/test
+  kernel/fs/lookup.c kernel/lib/string.c kernel/mm/heap.c \
+  -o build/vfs-provider/test
 build/vfs-provider/test
 if command -v clang >/dev/null 2>&1; then
   for target in x86_64-unknown-none-elf riscv64-unknown-elf aarch64-none-elf; do

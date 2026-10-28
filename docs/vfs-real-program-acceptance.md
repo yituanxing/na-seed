@@ -72,3 +72,35 @@ The native syscall ABI vector appends this operation without changing
 old indices on x86-64/RV64/AArch64. Actual BusyBox tar/extract remains
 the end-to-end acceptance. The host original BusyBox oracle PASSED;
 the exact-head QEMU test must pass before claiming defect closure.
+
+### Architecture audit: per-inode leases are no longer a global 256 cap
+
+The original backend test intentionally created 320 names, but no more
+than one VFS inode was pinned at a time. It did not measure the shared
+File/cwd/mount ownership capacity. VFS had one static 256-element array
+of size+POSIX-record-lock leases and returned ENFILE for otherwise valid
+inodes, even when heap and per-process FD capacity were available.
+We replaced this table with **address-stable, reusable 32-entry heap
+chunks** in the common VFS. Record-lock pointers are never relocated
+when it grows; closing the last owner clears and reuses a slot. Heap
+exhaustion returns ENOMEM, and O_CREAT preflights slot capacity before
+publishing a filename. The default heap arena remains bounded; this
+does NOT claim unlimited memory, nor does it change per-process FD limits.
+
+An actual original-RamFS host integration test now pins 320 independent
+real RamFS inodes simultaneously, checks each inode's metadata and
+releases every lease. The shared bootfs/tmpfs/procfs mock host VFS test
+pins 512 independent inode identities simultaneously, tests O_TRUNC
+during pool pressure, releases/reuses chunks, and checks orphan/final
+lease lifetime. Host acceptance links the existing common kernel heap
+implementation in the three VFS host test paths; no new allocator or
+filesystem-specific pointer store was introduced.
+
+Further structural debt not hidden by these changes: mount registry
+still has a 16-attachment limit, flock retains a bounded 128-entry
+owner table, pathname buffers are fixed at 256, and the root/tmp
+bootfs overlay remains a special bootstrapping seam. In particular,
+VFS mountpoint selection uses both anchored inode identities and
+canonical string snapshots in different paths; a truly dentry-owned
+mount tree is not yet finished. These cannot be claimed solved by
+increasing inode lease capacity.

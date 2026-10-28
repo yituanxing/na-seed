@@ -3,9 +3,16 @@
 #include "posix_locks.h"
 #include "../errno.h"
 #include "../lib/string.h"
+#include "../mm/heap.h"
 #include <stddef.h>
 #define NAS_VFS_MOUNT_LIMIT 16U
-#define NAS_VFS_LIVE_INODES 256U
+/* A lease holds size + Linux record locks for the lifetime of one inode
+ * incarnation. Growing by address-stable chunks avoids the unrelated 256
+ * inode hard limit; a raw realloc would invalidate record-lock pointers
+ * borrowed by syscall operations. The kernel heap owns these chunks.
+ * Chunks are retained for reuse, bounded by the high-watermark of live
+ * File/cwd/mount references, not by total file creation churn. */
+#define NAS_VFS_LEASE_CHUNK_SIZE 32U
 /* A bounded, refcounted inode-size identity table. Owned File and cwd
  * mount pins acquire an inode lease; dup/fork share the owning File.
  * No File/Task syscall kind is embedded in VFS, and no stale pathname is
@@ -18,7 +25,24 @@ struct inode_size_lease {
     uint32_t refs;
     struct nas_posix_locks posix_locks; /* process owner PID, not OFD slot */
 };
-static struct inode_size_lease live_inodes[NAS_VFS_LIVE_INODES];
+struct inode_lease_chunk {
+    struct inode_lease_chunk *next;
+    struct inode_size_lease slots[NAS_VFS_LEASE_CHUNK_SIZE];
+};
+static struct inode_lease_chunk *lease_chunks;
+/* In this single-CPU VFS a free slot is a lease with no owner. Expanding
+ * does not move existing lock/size objects, and the same slot is reused
+ * when the last File reference disappears. */
+static struct inode_size_lease *free_inode_lease_slot(void) {
+    for(struct inode_lease_chunk *chunk=lease_chunks;chunk;chunk=chunk->next)
+        for(unsigned i=0;i<NAS_VFS_LEASE_CHUNK_SIZE;i++)
+            if(!chunk->slots[i].refs)return &chunk->slots[i];
+    struct inode_lease_chunk *chunk=nas_heap_calloc(1,sizeof(*chunk));
+    if(!chunk)return NULL;
+    chunk->next=lease_chunks;
+    lease_chunks=chunk;
+    return &chunk->slots[0];
+}
 /* Shared validation is defined after mount registry/default initialization,
  * but already used by stat/inode operations above that definition. */
 static int vfs_node_status(const struct nas_fs_node *node);
@@ -36,17 +60,22 @@ struct vfs_flock_entry {
 static struct vfs_flock_entry vfs_flocks[NAS_VFS_FLOCK_LIMIT];
 bool nas_vfs_inode_is_pinned(const void *backend_inode) {
     if(!backend_inode)return false;
-    for(unsigned i=0;i<NAS_VFS_LIVE_INODES;i++)
-        if(live_inodes[i].refs &&
-           live_inodes[i].backend_inode==backend_inode)return true;
+    for(struct inode_lease_chunk *chunk=lease_chunks;chunk;chunk=chunk->next)
+        for(unsigned i=0;i<NAS_VFS_LEASE_CHUNK_SIZE;i++) {
+            const struct inode_size_lease *entry=&chunk->slots[i];
+            if(entry->refs && entry->backend_inode==backend_inode)
+                return true;
+        }
     return false;
 }
 static struct inode_size_lease *inode_lease(const struct nas_fs_node *node) {
     if(!node || !node->mount)return NULL;
-    for(unsigned i=0;i<NAS_VFS_LIVE_INODES;i++)
-        if(live_inodes[i].refs &&
-           live_inodes[i].mount==node->mount &&
-           live_inodes[i].ino==node->ino)return &live_inodes[i];
+    for(struct inode_lease_chunk *chunk=lease_chunks;chunk;chunk=chunk->next)
+        for(unsigned i=0;i<NAS_VFS_LEASE_CHUNK_SIZE;i++) {
+            struct inode_size_lease *entry=&chunk->slots[i];
+            if(entry->refs && entry->mount==node->mount &&
+               entry->ino==node->ino)return entry;
+        }
     return NULL;
 }
 /* An inode lease is scoped to its mount AND backend incarnation. A stale
@@ -598,10 +627,10 @@ int nas_vfs_open_inode(const char *path,
          * Check capacity BEFORE creating a visible name: ENFILE must not
          * leave a file behind when the subsequent File cannot own it.
          * Existing files are handled by the exact-identity pin below. */
-        bool free_inode_slot=false;
-        for(unsigned i=0;i<NAS_VFS_LIVE_INODES;i++)
-            if(!live_inodes[i].refs) {free_inode_slot=true;break;}
-        if(!free_inode_slot)return -ENFILE;
+        /* Grow the reusable lease pool BEFORE making a visible name.
+         * A heap allocation failure must not leave O_CREAT side effects.
+         * Open already reserved the process FD and global File slot. */
+        if(!free_inode_lease_slot())return -ENOMEM;
         /* Never write a regular inode when the caller requires a dir. */
         if(options->directory_only)return -ENOTDIR;
         if(options->truncate && !options->path_only && !options->access)
@@ -891,16 +920,12 @@ int nas_vfs_node_pin(const struct nas_fs_node *node) {
             if(lease->refs==UINT32_MAX)return -EMFILE;
             ++lease->refs;
         } else {
-            for(unsigned n=0;n<NAS_VFS_LIVE_INODES;n++)
-                if(!live_inodes[n].refs) {
-                    lease=&live_inodes[n];
-                    *lease=(struct inode_size_lease){
-                        .mount=node->mount,.ino=node->ino,
-                        .backend_inode=node->inode,.size=node->size,.refs=1
-                    };
-                    break;
-                }
-            if(!lease)return -ENFILE;
+            lease=free_inode_lease_slot();
+            if(!lease)return -ENOMEM;
+            *lease=(struct inode_size_lease){
+                .mount=node->mount,.ino=node->ino,
+                .backend_inode=node->inode,.size=node->size,.refs=1
+            };
         }
         ++mounts[i].open_refs;return 0;
     }

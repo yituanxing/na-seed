@@ -16,6 +16,7 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin \
   scripts/test-littlefs-vfs.c ports/littlefs/vfs_port.c \
   ports/littlefs/block_adapter.c kernel/fs/vfs.c kernel/fs/lookup.c \
   kernel/block/device.c kernel/block/ramdisk.c kernel/lib/string.c \
+  kernel/mm/heap.c \
   third_party/littlefs/lfs.c third_party/littlefs/lfs_util.c \
   -o build/littlefs-block/real-vfs
 build/littlefs-block/real-vfs

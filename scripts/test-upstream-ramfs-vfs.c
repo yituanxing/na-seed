@@ -109,6 +109,25 @@ int main(void) {
         cursor+=(unsigned)count;
     }
     assert(seen==320);
+    /* Pin ALL 320 independent third-party original RamFS inodes at once.
+     * This invokes actual provider validate_inode/inode graph and shared
+     * VFS lease ownership: previously the 256 global leases were a hard
+     * architectural ceiling independent of available memory. */
+    struct nas_fs_node live[320];
+    for(unsigned i=0;i<320;i++) {
+        char name[256];
+        assert(snprintf(name,sizeof(name),"/ramfs/bulk/f%03u",i)>0);
+        assert(nas_fs_lookup_node(name,true,&live[i],path)==0);
+        assert(nas_vfs_node_pin(&live[i])==0);
+        assert(nas_vfs_node_has_lease(&live[i]));
+    }
+    struct nas_fs_node attrs;
+    for(unsigned i=0;i<320;i++) {
+        assert(nas_vfs_getattr(&live[i],&attrs)==0);
+        assert(attrs.ino==live[i].ino);
+        assert(nas_vfs_node_unpin(&live[i])==0);
+    }
+    assert(!nas_vfs_node_has_lease(&live[319]));
     for(unsigned i=0;i<320;i++) {
         char name[256];
         assert(snprintf(name,sizeof(name),"/ramfs/bulk/f%03u",i)>0);
