@@ -122,6 +122,8 @@ if "unlink_open_file_safe" not in vfs_h or \
    "ext_last_inode_unpin(" not in ext4_port or \
    "ext_orphan_prepare(" not in ext4_port or \
    ".unlink_open_file_safe=true" not in ext4_port or \
+   ".rename_replace_open_safe=true" not in ext4_port or \
+   "ext4_frename(hidden,to)" not in ext4_port or \
    "EXT4_ORPHAN_DIRECTORY" not in ext4_port:
     raise SystemExit("ext4 opened-last-link VFS orphan protocol incomplete")
 # M63: path references live ONLY in namespace dentries, not sparse inodes.

@@ -332,8 +332,9 @@ int main(int argc,char **argv) {
         assert(nas_vfs_unlink("/mnt/sandbox/vfs-directory",0x200ULL)==0);
         assert(nas_vfs_unlink("/mnt/sandbox/renamed-directory/child",0)==0);
         assert(nas_vfs_unlink("/mnt/sandbox/renamed-directory",0x200ULL)==0);
-        /* Replacing an open target must not free the victim inode behind
-         * another open File. The source and victim are independent. */
+        /* Real ext4 replacement: victim is OPEN and must retain its
+         * original contents and inode number while the source atomically
+         * becomes the visible target in our single-CPU VFS namespace. */
         assert(nas_vfs_create("/mnt/sandbox/rename-victim",0600)==0);
         struct nas_fs_node victim;
         assert(nas_fs_lookup_node("/mnt/sandbox/rename-victim",true,
@@ -342,22 +343,50 @@ int main(int argc,char **argv) {
         assert(nas_vfs_write_at(&victim,0,victim_bytes,
                                 sizeof(victim_bytes)-1)==
                                 (int64_t)sizeof(victim_bytes)-1);
-        /* Like any borrowed VFS inode snapshot, an unpinned node observed
-         * before a write must be refreshed before creating a new File.
-         * Real sys_open pins before writing, so its live size lease stays
-         * coherent automatically. */
         assert(nas_fs_lookup_node("/mnt/sandbox/rename-victim",true,
                                   &victim,actual)==0);
-        assert(victim.size==sizeof(victim_bytes)-1);
         assert(nas_vfs_node_pin(&victim)==0);
-        assert(nas_vfs_rename("/mnt/sandbox/vfs-created",
-                              "/mnt/sandbox/rename-victim",0)==-EBUSY);
+        assert(nas_vfs_create("/mnt/sandbox/rename-source",0600)==0);
+        struct nas_fs_node rename_source;
+        assert(nas_fs_lookup_node("/mnt/sandbox/rename-source",true,
+                                  &rename_source,actual)==0);
+        static const uint8_t fresh_bytes[]="new visible contents";
+        assert(nas_vfs_write_at(&rename_source,0,fresh_bytes,
+                                sizeof(fresh_bytes)-1)==
+                                (int64_t)sizeof(fresh_bytes)-1);
+        assert(nas_vfs_rename("/mnt/sandbox/rename-source",
+                              "/mnt/sandbox/rename-victim",0)==0);
+        assert(nas_fs_lookup_node("/mnt/sandbox/rename-source",true,
+                                  &rename_source,actual)==-ENOENT);
+        assert(nas_fs_lookup_node("/mnt/sandbox/rename-victim",true,
+                                  &rename_source,actual)==0);
+        assert(rename_source.ino!=victim.ino);
+        assert(nas_vfs_read_at(&rename_source,0,(uint8_t *)buffer,
+                               sizeof(fresh_bytes)-1)==
+                               (int64_t)sizeof(fresh_bytes)-1);
+        assert(!memcmp(buffer,fresh_bytes,sizeof(fresh_bytes)-1));
+        struct nas_fs_node victim_stat;
+        assert(nas_vfs_getattr(&victim,&victim_stat)==0 &&
+               victim_stat.nlink==0);
         assert(nas_vfs_read_at(&victim,0,(uint8_t *)buffer,
                                sizeof(victim_bytes)-1)==
                                (int64_t)sizeof(victim_bytes)-1);
         assert(!memcmp(buffer,victim_bytes,sizeof(victim_bytes)-1));
         assert(nas_vfs_node_unpin(&victim)==0);
-        assert(nas_vfs_unlink("/mnt/sandbox/rename-victim",0)==0);
+        /* Replacing an unpinned destination also works; vendor's rename
+         * otherwise returns EEXIST even without an open victim. */
+        assert(nas_vfs_create("/mnt/sandbox/replacement-no-open",0600)==0);
+        assert(nas_vfs_rename("/mnt/sandbox/rename-victim",
+                             "/mnt/sandbox/replacement-no-open",0)==0);
+        assert(nas_fs_lookup_node("/mnt/sandbox/rename-victim",true,
+                                  &rename_source,actual)==-ENOENT);
+        assert(nas_fs_lookup_node("/mnt/sandbox/replacement-no-open",true,
+                                  &rename_source,actual)==0);
+        assert(nas_vfs_read_at(&rename_source,0,(uint8_t *)buffer,
+                               sizeof(fresh_bytes)-1)==
+                               (int64_t)sizeof(fresh_bytes)-1);
+        assert(!memcmp(buffer,fresh_bytes,sizeof(fresh_bytes)-1));
+        assert(nas_vfs_unlink("/mnt/sandbox/replacement-no-open",0)==0);
         assert(nas_vfs_symlink("vfs-created","/mnt/sandbox/vfs-link")==0);
         struct nas_fs_node opened_link;
         assert(nas_fs_lookup_node("/mnt/sandbox/vfs-link",false,

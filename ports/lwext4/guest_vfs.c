@@ -369,10 +369,15 @@ static int ext_unlink_path(const struct nas_fs_node *parent,const char *name,uin
     if(rc)return -rc;
     return nonempty ? -ENOTEMPTY : -ext4_dir_rm(path);
 }
+/* Upstream ext4_frename is NO-REPLACE: ext4_create_hardlink returns
+ * EEXIST for an existing destination. Replacement is adapted here, not
+ * worked around in user BusyBox or by changing the vendor. This VFS is
+ * currently single-CPU; a staged victim can be rolled back if source
+ * rename fails, and a pinned LAST-link victim remains a live orphan. */
 static int ext_rename_path(const struct nas_fs_node *old_parent,const char *old_name,
                             const struct nas_fs_node *new_parent,const char *new_name,
                             uint64_t flags) {
-    if(flags)return -EINVAL; /* no unimplemented atomic rename flags */
+    if(flags)return -EINVAL;
     if(!old_parent || !new_parent || old_parent->mount!=new_parent->mount)
         return -EXDEV;
     char from[256],to[256];
@@ -380,17 +385,68 @@ static int ext_rename_path(const struct nas_fs_node *old_parent,const char *old_
     if(rc)return rc;
     rc=ext_child_path(new_parent,new_name,to);
     if(rc)return rc;
-    if(!old_parent->mount || !old_parent->mount->private_data)return -ENODEV;
+    if(!strcmp(from,to))return 0;
     struct nas_lwext4_mount *ctx=old_parent->mount->private_data;
-    if(!ctx->mounted || !ctx->upstream_super)return -ENODEV;
-    struct ext4_inode inode;
-    uint32_t number=0;
-    rc=ext4_raw_inode_fill(from,&number,&inode);
+    if(!ctx || !ctx->mounted || !ctx->upstream_super)return -ENODEV;
+    struct ext4_inode source_raw,victim_raw;
+    uint32_t source=0,victim=0;
+    rc=ext4_raw_inode_fill(from,&source,&source_raw);
     if(rc)return -rc;
-    if(!number)return -EIO;
-    uint32_t mode=ext4_inode_get_mode(ctx->upstream_super,&inode);
-    return (mode&0170000U)==0040000U ?
-           -ext4_dir_mv(from,to) : -ext4_frename(from,to);
+    if(!source)return -EIO;
+    uint32_t source_type=ext4_inode_get_mode(ctx->upstream_super,
+                                             &source_raw)&0170000U;
+    rc=ext4_raw_inode_fill(to,&victim,&victim_raw);
+    if(rc==ENOENT)
+        return source_type==0040000U ?
+               -ext4_dir_mv(from,to) : -ext4_frename(from,to);
+    if(rc)return -rc;
+    if(!victim)return -EIO;
+    if(source==victim)return 0; /* POSIX identical hardlink inode */
+    uint32_t victim_type=ext4_inode_get_mode(ctx->upstream_super,
+                                             &victim_raw)&0170000U;
+    if(source_type==0040000U && victim_type!=0040000U)return -ENOTDIR;
+    if(source_type!=0040000U && victim_type==0040000U)return -EISDIR;
+    /* Directory replacement still requires a separate empty-directory
+     * orphan transaction. Never call upstream recursive ext4_dir_rm. */
+    if(source_type==0040000U)return -EEXIST;
+    bool defer=ext4_inode_get_links_cnt(&victim_raw)==1;
+    if(defer) {
+        struct nas_fs_node node={.mount=new_parent->mount,
+            .filesystem=new_parent->filesystem,.mount_id=new_parent->mount_id,
+            .ino=victim,.inode=(const void *)(uintptr_t)victim};
+        defer=nas_vfs_node_has_lease(&node);
+    }
+    rc=ext_stage_orphan(ctx,to,victim);
+    if(rc)return rc;
+    uint32_t serial=ctx->orphan_serial;
+    char hidden[256];
+    rc=ext_orphan_path(ctx,victim,serial,hidden);
+    if(rc)return rc; /* already preflighted by ext_stage_orphan */
+    rc=ext4_frename(from,to);
+    if(rc) {
+        /* Keep old destination data safe even if source rename fails.
+         * A failed rollback is a real EIO, not a silent successful rename. */
+        int undo=ext4_frename(hidden,to);
+        if(!undo) {
+            for(unsigned i=0;i<NAS_LWEXT4_ORPHAN_LIMIT;i++)
+                if(ctx->orphans[i].used && ctx->orphans[i].ino==victim &&
+                   ctx->orphans[i].serial==serial)
+                    ctx->orphans[i].used=false;
+        }
+        return undo ? -EIO : -rc;
+    }
+    if(!defer) {
+        rc=ext4_fremove(hidden);
+        if(!rc) {
+            for(unsigned i=0;i<NAS_LWEXT4_ORPHAN_LIMIT;i++)
+                if(ctx->orphans[i].used && ctx->orphans[i].ino==victim &&
+                   ctx->orphans[i].serial==serial)
+                    ctx->orphans[i].used=false;
+        }
+        /* If reclaim failed, rename is already committed: retain the
+         * private orphan for next mount-time recovery, not a false errno. */
+    }
+    return 0;
 }
 static int ext_link_path(const struct nas_fs_node *old_parent,const char *old_name,
                          const struct nas_fs_node *new_parent,const char *new_name) {
@@ -578,6 +634,7 @@ static const struct nas_vfs_type ext_type={
     .unlink=ext_unlink_path,.rename=ext_rename_path,
     .link=ext_link_path,.symlink=ext_symlink_path,
     .unlink_open_file_safe=true,
+    .rename_replace_open_safe=true,
     /* Capability is mount-specific; default guest mount remains RO. */
     .read_only=false
 };
