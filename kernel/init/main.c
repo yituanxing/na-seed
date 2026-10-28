@@ -8,6 +8,10 @@
 extern bool nas_lwext4_guest_boot_mount(void);
 extern bool nas_lwext4_guest_boot_shutdown(void);
 #endif
+#ifdef NAS_ENABLE_LITTLEFS
+extern bool nas_littlefs_guest_boot_mount(void);
+extern bool nas_littlefs_guest_boot_shutdown(void);
+#endif
 #include "../arch/arch.h"
 #include "../arch/console.h"
 #include "../arch/mmu.h"
@@ -46,6 +50,10 @@ void nas_init_process_terminated(uint32_t code,uint32_t signal) {
          * Applies to both RAM and hardware devices, no ISA branches. */
         if (!nas_lwext4_guest_boot_shutdown())
             nas_fail("lwext4 final unmount/durable device flush failed");
+#endif
+#ifdef NAS_ENABLE_LITTLEFS
+        if (!nas_littlefs_guest_boot_shutdown())
+            nas_fail("littlefs guest VFS unmount failed");
 #endif
         nas_print("[PASS] cmdline userspace exit 0\n");
         nas_platform_debug_exit(0);
@@ -121,6 +129,10 @@ void nas_init_userspace(void) {
      * or architecture-specific mount dispatch is introduced here. */
     if (!nas_lwext4_guest_boot_mount())
         nas_fail("opt-in lwext4 Limine module/VFS mount failed");
+#endif
+#ifdef NAS_ENABLE_LITTLEFS
+    if (!nas_littlefs_guest_boot_mount())
+        nas_fail("opt-in littlefs guest VFS mount failed");
 #endif
     struct elf_image main_image = {
         .data = selected_image.image, .size = selected_image.size

@@ -39,6 +39,12 @@ on:
       - 'third_party/littlefs/**'
       - 'scripts/check-littlefs-block.sh'
       - 'scripts/test-littlefs-block.c'
+      - 'scripts/test-littlefs-vfs.c'
+      - 'scripts/make-littlefs-image.c'
+      - 'scripts/build-littlefs-guest.sh'
+      - 'scripts/probe-littlefs-guest-x86.sh'
+      - 'user/littlefs-guest-read.S'
+      - 'kernel/init/main.c'
       - 'scripts/check-ext4-fsck-clean.sh'
       - 'kernel/fs/vfs*'
       - 'kernel/fs/metadata_syscall.c'
@@ -80,6 +86,11 @@ jobs:
           sudo apt-get -o Acquire::Retries=1 update -qq
           sudo apt-get -y install --no-install-recommends lld
           sh scripts/check-lwext4-guest-link.sh
+      - name: 'Link unmodified littlefs VFS guest objects for three native ISAs'
+        run: |
+          for isa in x86_64 riscv64 aarch64; do
+            sh scripts/build-littlefs-guest.sh "$isa" "build/littlefs-guest/$isa"
+          done
       - name: Link real NaSeed kernel ELF with opt-in lwext4 on all supported ISAs
         run: |
           make -j2 NAS_ENABLE_LWEXT4=1 kernel
@@ -93,6 +104,8 @@ jobs:
         run: |
           sudo apt-get -y install --no-install-recommends ovmf qemu-system-x86 xorriso cpio
           sh scripts/probe-lwext4-guest-x86.sh
+      - name: 'Native x86 QEMU: original littlefs VFS + real Linux openat/read/getdents64'
+        run: sh scripts/probe-littlefs-guest-x86.sh
       - name: Actual Linux openat and read on ext4 from x86 ring3 ELF
         run: sh scripts/probe-lwext4-syscall-x86.sh
       - name: Real ring3 Linux openat/write/fsync/lseek/read/reopen against explicitly writable ephemeral ext4
