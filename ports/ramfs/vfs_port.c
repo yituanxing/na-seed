@@ -13,6 +13,24 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+/* The original vendor immediately frees entries on unlink, even if a VFS
+ * File still owns the inode. Rather than forking it, keep unlinked-open
+ * objects reachable ONLY to the backend under one private directory until
+ * the existing VFS last_inode_unpin callback performs final reclamation.
+ * This is an adapter-owned lifetime protocol, not a userspace filename. */
+#define RAMFS_ORPHAN_DIR ".nas_ramfs_orphans"
+static bool hidden_name(const struct nas_ramfs_identity *parent,
+                        const struct nas_ramfs_vfs *ctx,const char *name) {
+    return parent==&ctx->root_inode && !strcmp(name,RAMFS_ORPHAN_DIR);
+}
+static void orphan_basename(uint64_t ino,char name[18]) {
+    static const char hex[]="0123456789abcdef";
+    name[0]='o';
+    for(unsigned i=0;i<16;i++)
+        name[1+i]=hex[(unsigned)((ino>>((15U-i)*4U))&15U)];
+    name[17]=0;
+}
+
 static struct nas_ramfs_vfs *context(const struct nas_vfs_mount *m) {
     return m ? (struct nas_ramfs_vfs *)m->private_data : NULL;
 }
@@ -59,7 +77,7 @@ static int fill(struct nas_ramfs_vfs *ctx,struct nas_ramfs_identity *id,
     bool dir=st.type==RAMFS_ENTRY_TYPE_DIR;
     *out=(struct nas_fs_node){.inode=id,.ino=id->ino,
         .mode=id->mode,.size=dir?0:(uint64_t)st.size,
-        .nlink=dir?2:1,.is_dir=dir};
+        .nlink=id->orphaned?0:(dir?2:1),.is_dir=dir};
     return 0;
 }
 static int root(const struct nas_vfs_mount *m,struct nas_fs_node *out) {
@@ -72,6 +90,7 @@ static int child(const struct nas_fs_node *parent,const char *name,
     struct nas_ramfs_vfs *ctx=context(parent->mount);
     if(!ctx || !ctx->mounted)return -ENODEV;
     struct nas_ramfs_identity *dir=(struct nas_ramfs_identity *)parent->inode;
+    if(hidden_name(dir,ctx,name))return -ENOENT;
     char base[256],path[256];
     int rc=path_of(dir,base);
     if(rc)return rc;
@@ -202,10 +221,30 @@ static int readdir_inode(const struct nas_fs_node *node,uint64_t cursor,
     if(!dh)return -ENOMEM;
     uint64_t skip=cursor-2;
     const ramfs_entry_t *entry=NULL;
-    while(skip-- && ramfs_readdir(dh)) {}
+    if(skip>INT64_MAX) {ramfs_closedir(dh);return (int)written;}
+    if(dir!=&ctx->root_inode) {
+        /* The upstream vector backend owns a real O(1) directory seek;
+         * do not rescan thousands of entries for every VFS getdents batch. */
+        ramfs_seekdir(dh,(long)skip);
+    } else {
+        /* Skip the internal orphan directory from the VFS cursor namespace.
+         * No process may enumerate, resolve or mutate this adapter name. */
+        uint64_t visible=0;
+        while(visible<skip && (entry=ramfs_readdir(dh))) {
+            char *name=ramfs_get_name(entry);
+            if(!name) {ramfs_closedir(dh);return -ENOMEM;}
+            bool hidden=!strcmp(name,RAMFS_ORPHAN_DIR);
+            free(name);
+            if(!hidden)visible++;
+        }
+        if(visible<skip) {ramfs_closedir(dh);return (int)written;}
+    }
     while(written<limit && (entry=ramfs_readdir(dh))) {
         char *name=ramfs_get_name(entry);
         if(!name) {rc=-ENOMEM;break;}
+        if(dir==&ctx->root_inode && !strcmp(name,RAMFS_ORPHAN_DIR)) {
+            free(name);continue;
+        }
         size_t len=strlen(name);
         if(!len || len>255 || strchr(name,'/')) {
             free(name);rc=-EIO;break;
@@ -227,6 +266,9 @@ static int child_path(const struct nas_fs_node *parent,const char *name,
     if(!parent || !parent->is_dir)return -ENOTDIR;
     int rc=validate(parent);
     if(rc)return rc;
+    struct nas_ramfs_vfs *ctx=context(parent->mount);
+    if(hidden_name((const struct nas_ramfs_identity *)parent->inode,
+                   ctx,name))return -EPERM;
     char base[256];
     rc=path_of((const struct nas_ramfs_identity *)parent->inode,base);
     return rc?rc:nas_vfs_join_child(base,name,path);
@@ -267,6 +309,10 @@ static int chmod_node(const struct nas_fs_node *node,uint64_t mode) {
     id->mode=(id->mode&0170000U)|((uint32_t)mode&07777U);
     return 0;
 }
+/* The original backend has no orphan API. For an open inode detach the
+ * existing entry by vendor rename into an unnameable private directory.
+ * Its entry address and data survive the rename, and the SAME VFS inode
+ * identity is used by File after unlink; final VFS unpin reclaims it. */
 static int unlink_node(const struct nas_fs_node *parent,const char *name,
                        uint64_t flags) {
     char path[256];int rc=child_path(parent,name,path);
@@ -279,14 +325,48 @@ static int unlink_node(const struct nas_fs_node *parent,const char *name,
     struct nas_ramfs_identity *id=intern(ctx,
         (struct nas_ramfs_identity *)parent->inode,name,entry);
     if(!id)return -ENOMEM;
-    /* Upstream frees an entry IMMEDIATELY on unlink/rmdir. Retain the
-     * VFS inode lease contract by forbidding deletion while ANY File/cwd
-     * owns the inode, not by silently patching the vendor implementation. */
-    if(nas_vfs_inode_is_pinned(id))return -EBUSY;
+    if(nas_vfs_inode_is_pinned(id)) {
+        /* Enforce empty-directory semantics BEFORE moving to a hidden
+         * name; a nonempty open directory must not orphan its children. */
+        if(dir) {
+            ramfs_dh_t *dh=ramfs_opendir(ctx->fs,entry);
+            if(!dh)return -ENOMEM;
+            bool nonempty=ramfs_readdir(dh)!=NULL;
+            ramfs_closedir(dh);
+            if(nonempty)return -ENOTEMPTY;
+        }
+        char namebuf[18],hidden_path[256];
+        orphan_basename(id->ino,namebuf);
+        rc=nas_vfs_join_child("/" RAMFS_ORPHAN_DIR,
+                              namebuf,hidden_path);
+        if(rc)return rc;
+        if(ramfs_get_entry(ctx->fs,hidden_path))return -EEXIST;
+        if(ramfs_rename(ctx->fs,path,hidden_path))return -EIO;
+        /* The old VFS inode stays live; only its unpublished backend
+         * dentry name changes. No new File is allocated for an orphan. */
+        id->parent=ctx->orphan_dir;
+        memcpy(id->name,namebuf,sizeof(namebuf));
+        id->orphaned=true;
+        return 0;
+    }
     int removed=dir?ramfs_rmdir(entry):ramfs_unlink(entry);
     if(removed)return dir?-ENOTEMPTY:-EIO;
     id->active=false;id->entry=NULL;
     return 0;
+}
+static void last_inode_unpin(const struct nas_fs_node *node) {
+    if(!node || !node->mount || !node->inode)return;
+    struct nas_ramfs_vfs *ctx=context(node->mount);
+    if(!ctx || !ctx->mounted)return;
+    struct nas_ramfs_identity *id=(struct nas_ramfs_identity *)node->inode;
+    if(!id->active || !id->orphaned || id->ino!=node->ino)return;
+    /* VFS has already removed its LAST lease. An inaccessible orphan
+     * cannot gain new links via public VFS namei; final release is safe. */
+    int rc=ramfs_is_dir(id->entry)?ramfs_rmdir(id->entry):
+                                    ramfs_unlink(id->entry);
+    if(!rc) {
+        id->entry=NULL;id->active=false;id->orphaned=false;
+    }
 }
 static int rename_node(const struct nas_fs_node *old_parent,const char *old_name,
                        const struct nas_fs_node *new_parent,const char *new_name,
@@ -317,10 +397,12 @@ static const struct nas_vfs_type ramfs_type={
     .name="upstream-ramfs",.exec_source_label="RAMFS",
     .root=root,.lookup_child=child,.directory_path=directory_path,
     .getattr=getattr,.validate_inode=validate,.read_at=read_at,
+    .last_inode_unpin=last_inode_unpin,
     .read_dir=readdir_inode,.create=create,.mkdir=mkdir_node,
     .chmod=chmod_node,
     .write_at=write_at,.resize=resize,.sync=sync_inode,
-    .unlink=unlink_node,.rename=rename_node
+    .unlink=unlink_node,.rename=rename_node,
+    .unlink_open_file_safe=true,.unlink_open_dir_safe=true
 };
 int nas_ramfs_vfs_mount(struct nas_ramfs_vfs *ctx,const char *point) {
     if(!ctx || !point || ctx->mounted || ctx->fs)return -EINVAL;
@@ -333,13 +415,37 @@ int nas_ramfs_vfs_mount(struct nas_ramfs_vfs *ctx,const char *point) {
         .entry=ramfs_get_entry(fs,"/"),.ino=1,.mode=0040755U,.active=true
     };
     ctx->identities=&ctx->root_inode;
+    /* Vendor backend owns its private directory. Users never see it, and
+     * each VFS mount has an independent orphan name and generation scope. */
+    ramfs_entry_t *orphan_root=ramfs_mkdir(fs,"/" RAMFS_ORPHAN_DIR);
+    if(!orphan_root) {
+        ctx->identities=NULL;ctx->fs=NULL;
+        ctx->root_inode=(struct nas_ramfs_identity){0};
+        ramfs_deinit(fs);
+        return -ENOMEM;
+    }
+    ctx->orphan_dir=intern(ctx,&ctx->root_inode,RAMFS_ORPHAN_DIR,
+                            orphan_root);
+    if(!ctx->orphan_dir) {
+        ctx->identities=NULL;ctx->fs=NULL;
+        ctx->root_inode=(struct nas_ramfs_identity){0};
+        ramfs_deinit(fs);
+        return -ENOMEM;
+    }
     ctx->mount=(struct nas_vfs_mount){
         .mountpoint=point,.type=&ramfs_type,.private_data=ctx
     };
     ctx->mounted=true;
     int rc=nas_vfs_register_mount(&ctx->mount);
     if(!rc)return 0;
-    ctx->mounted=false;ctx->fs=NULL;ctx->identities=NULL;
+    ctx->mounted=false;ctx->fs=NULL;
+    struct nas_ramfs_identity *id=ctx->identities;
+    while(id) {
+        struct nas_ramfs_identity *next=id->next;
+        if(id!=&ctx->root_inode)(void)nas_heap_free(id);
+        id=next;
+    }
+    ctx->identities=NULL;ctx->orphan_dir=NULL;
     ctx->root_inode=(struct nas_ramfs_identity){0};
     ramfs_deinit(fs);
     return rc;
@@ -357,7 +463,7 @@ int nas_ramfs_vfs_unmount(struct nas_ramfs_vfs *ctx) {
         if(id!=&ctx->root_inode)(void)nas_heap_free(id);
         id=next;
     }
-    ctx->identities=NULL;
+    ctx->identities=NULL;ctx->orphan_dir=NULL;
     ctx->root_inode=(struct nas_ramfs_identity){0};
     return 0;
 }

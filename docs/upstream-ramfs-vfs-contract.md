@@ -44,17 +44,21 @@ FD path, unlink and rmdir, busy-mount and inode lease protection.
 
 **Known true interface gaps** surfaced by this upstream implementation:
 
-- Upstream `ramfs_unlink/rmdir` immediately free inode memory.
-  The adapter cannot promise Linux unlink-open lifetime without modifying
-  upstream or adding an independent orphan owner. Hence we return
-  `EBUSY` on pinned inode and keep `unlink_open_safe=false`.
-  This is a *deliberate fail-closed mismatch*, not full POSIX semantics.
+- Upstream `ramfs_unlink/rmdir` immediately free inode memory, but the
+  VFS adapter now supplies an independent **orphan owner**: it moves
+  pinned deleted files/empty directories to an unreachable private
+  backend directory, retains the same inode identity and data and
+  invokes the original vendor unlink only at VFS final inode release.
+  The public name can be reused without aliasing the old File. This
+  uses the existing `last_inode_unpin` interface; upstream is untouched.
+  The private directory is excluded from public namei and readdir.
 - Upstream rename rejects existing destinations; NaSeed refuses
   rename-overwrite with `EOPNOTSUPP` instead of deleting victim first
   without an atomic transaction. Never silently substitute a tmpfs-only
   special-case for a missing shared VFS capability.
 - This embedded RAMFS does not implement symlinks, hardlinks, POSIX
-  timestamp/mode mutation, ACLs, mmap or Swap.
+  timestamp mutation, ACLs, mmap or Swap. The adapter retains mode
+  metadata per VFS inode and supports `chmod` without vendor changes.
 - The embedded library uses a heap and its *own* in-memory data storage.
   Do not conflate it with Linux ramfs's reliance on generic page cache.
 - The upstream project may have bugs/limitations; this is a distinct
@@ -130,3 +134,38 @@ then stresses **700** create/lookup/delete generations. The unchanged
 native guest source remains used for all three ISA real QEMU acceptance.
 This does *not* solve the upstream vendor's immediate-free open-unlink or
 atomic rename replacement limitations; those remain explicitly fail-closed.
+
+### 2026-10-28 interface closure: original vendor open-unlink lifetime
+
+The previously documented `EBUSY` for an opened unlinked RamFS file
+was a real limitation of the thin adapter, **not** an unavoidable VFS
+limitation. We now reuse the generic VFS `last_inode_unpin` hook, also
+used by tmpfs/lwext4, to implement the missing lifetime *in the port*:
+
+1. VFS owns an inode lease on an independently opened File or directory.
+2. Unlink of a pinned inode moves the still-live vendor entry to a
+   mount-local `/.nas_ramfs_orphans/o<16-hex-inode-generation>`.
+   No user lookup, creation, rename, or readdir can observe that name.
+3. The unlinked File continues reading/writing by the SAME vendor
+   `ramfs_entry_t*`, without pathname reopening or byte copying.
+   `getattr` returns link count zero.
+4. The public name may be recreated while the old File remains open.
+   On the final generic VFS unpin, adapter callback invokes the original
+   vendor unlink/rmdir, recycles the sidecar generation, and frees data.
+5. An open empty directory follows the same deferred-reclaim protocol;
+   nonempty directories are rejected *before* any internal rename.
+
+All original third-party `ramfs_vector.c` and headers remain byte
+identical to upstream. Provider explicitly sets
+`unlink_open_file_safe=true` and `unlink_open_dir_safe=true`; no
+filesystem-specific kernel syscall or VFS File variant was introduced.
+Rename-overwrite remains `EOPNOTSUPP` because upstream does not provide
+a safe atomic replacement. Hidden-orphan recovery after kernel panic
+is irrelevant to this nonpersistent RAM filesystem and is not a claim of
+crash durability.
+
+This same batch changes the original vector-backend directory scanner
+to use its upstream O(1) `ramfs_seekdir` for ordinary subdirectories;
+the mount root filters its private namespace and uses a visible-only
+logical cursor. Actual host VFS and all three native QEMU guest tests
+must prove this behavior before considering it accepted.

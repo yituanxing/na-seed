@@ -15,12 +15,14 @@ struct nas_ramfs_identity {
     uint32_t mode;
     char name[256];
     bool active;
+    bool orphaned; /* VFS-open inode detached into unreachable private store */
 };
 struct nas_ramfs_vfs {
     struct nas_vfs_mount mount;
     ramfs_fs_t *fs;
     struct nas_ramfs_identity root_inode;
     struct nas_ramfs_identity *identities; /* allocated on demand, per mount */
+    struct nas_ramfs_identity *orphan_dir; /* private, never visible to namei */
     uint64_t next_ino;
     bool mounted;
 };

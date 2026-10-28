@@ -30,13 +30,45 @@ int main(void) {
     assert(!strcmp(path,"/ramfs/moved"));
     assert(nas_vfs_read_at(&node,0,(uint8_t *)text,5)==5);
     assert(!memcmp(text,"hello",5));
-    assert(nas_vfs_unlink("/ramfs/moved/file",0)==-EBUSY);
+    assert(nas_vfs_unlink("/ramfs/moved/file",0)==0);
+    struct nas_fs_node removed,renewed;
+    assert(nas_fs_lookup_node("/ramfs/moved/file",true,&removed,path)==-ENOENT);
+    assert(nas_vfs_getattr(&node,&removed)==0 && removed.nlink==0);
+    assert(nas_vfs_read_at(&node,0,(uint8_t *)text,5)==5);
+    assert(!memcmp(text,"hello",5));
     assert(nas_ramfs_vfs_unmount(&a)==-EBUSY);
+    /* An unlinked open file and a NEW file at its original name must
+     * have separate stable generations and independent data. */
+    assert(nas_vfs_create("/ramfs/moved/file",0600)==0);
+    assert(nas_fs_lookup_node("/ramfs/moved/file",true,&renewed,path)==0);
+    assert(renewed.ino!=node.ino);
+    assert(nas_vfs_write_at(&renewed,0,(const uint8_t *)"new",3)==3);
+    assert(nas_vfs_read_at(&node,0,(uint8_t *)text,5)==5);
+    assert(!memcmp(text,"hello",5));
+    assert(nas_vfs_unlink("/ramfs/moved/file",0)==0);
+    assert(nas_vfs_unlink("/ramfs/moved",0x200ULL)==0);
+    assert(nas_vfs_getattr(&dir,&removed)==0 && removed.nlink==0);
     assert(nas_vfs_node_unpin(&node)==0);
     assert(nas_vfs_node_unpin(&dir)==0);
-    assert(nas_vfs_unlink("/ramfs/moved/file",0)==0);
-    assert(nas_fs_lookup_node("/ramfs/moved/file",true,&node,path)==-ENOENT);
-    assert(nas_vfs_unlink("/ramfs/moved",0x200ULL)==0);
+    /* The backend's internal orphan directory must not become a public
+     * path or a getdents64 entry, including after final inode unpin. */
+    assert(nas_fs_lookup_node("/ramfs/.nas_ramfs_orphans",true,&removed,path)==-ENOENT);
+    assert(nas_vfs_create("/ramfs/.nas_ramfs_orphans",0644)==-EPERM);
+    assert(nas_fs_lookup_node("/ramfs",true,&dir,path)==0);
+    struct nas_vfs_dirent root_dents[8];
+    int root_n=nas_vfs_read_dir(&dir,0,root_dents,8);
+    assert(root_n>=2);
+    for(int k=0;k<root_n;k++)
+        assert(strcmp(root_dents[k].name,".nas_ramfs_orphans")!=0);
+    /* Empty opened directories are also detached then reclaimed by VFS's
+     * last_inode_unpin; nonempty rmdir must fail BEFORE private rename. */
+    assert(nas_vfs_mkdir("/ramfs/open-dir",0700)==0);
+    assert(nas_fs_lookup_node("/ramfs/open-dir",true,&dir,path)==0);
+    assert(nas_vfs_node_pin(&dir)==0);
+    assert(nas_vfs_unlink("/ramfs/open-dir",0x200ULL)==0);
+    assert(nas_vfs_getattr(&dir,&removed)==0 && removed.nlink==0);
+    assert(nas_vfs_node_unpin(&dir)==0);
+    assert(nas_fs_lookup_node("/ramfs/open-dir",true,&removed,path)==-ENOENT);
     assert(nas_vfs_read_at(&other,0,(uint8_t *)text,5)==0);
     assert(nas_vfs_write_at(&other,0,(const uint8_t *)"other",5)==5);
     assert(nas_vfs_read_at(&other,0,(uint8_t *)text,5)==5);
@@ -106,6 +138,6 @@ int main(void) {
     }
     assert(nas_ramfs_vfs_unmount(&a)==0);
     assert(nas_ramfs_vfs_unmount(&b)==0);
-    puts("[UPSTREAM RAMFS VFS PASS] original vendor; dynamic 320+ identities; 700 reuse cycles; inode generation; modes; two mounts; rename; I/O; busy unlink/umount");
+    puts("[UPSTREAM RAMFS VFS PASS] upstream unchanged; VFS open-unlink orphan; old/new generations; open rmdir; 320+ identities; 700 reuse; modes; multi-mount");
     return 0;
 }
