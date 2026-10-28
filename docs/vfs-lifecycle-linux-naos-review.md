@@ -183,3 +183,7 @@ creation guards and mount read-only/capability checks precede mutation.
 The original Limine non-VFS module exception remains a narrow compatibility
 bridge, not a second file implementation. A real common host VFS fixture
 covers pinned open, read-only write refusal, O_DIRECTORY and O_EXCL.
+
+FD reservation for openat remains a *non-mutating preflight* before the VFS
+open transaction. This preserves Linux's EMFILE/ENFILE no-side-effect
+contract: exhausted FDs must never truncate or create a filesystem inode.

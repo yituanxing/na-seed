@@ -449,6 +449,14 @@ uint64_t nas_fs_open_path(const char *path,uint64_t native_flags,
     else if(!strcmp(path,"/dev/null"))kind=FD_NULL;
     else if(!strcmp(path,"/dev/zero"))kind=FD_ZERO;
 
+    /* Reserve both resources without publication BEFORE namei may create
+     * or truncate a filesystem inode. EMFILE/ENFILE must never cause
+     * O_CREAT or O_TRUNC side effects. This probe is non-mutating. */
+    unsigned fds[2],slots[2];
+    int capacity=nas_fd_reserve(nas_current_task,0,1,fds,slots,"openat");
+    if(capacity)return (uint64_t)(int64_t)capacity;
+    const unsigned fd=fds[0],slot=slots[0];
+
     if(kind==FD_CLOSED) {
         /* The VFS owns namei, O_CREAT, inode mode/permission validation,
          * truncate and the returned mount/inode pin as ONE transaction.
@@ -480,13 +488,6 @@ uint64_t nas_fs_open_path(const char *path,uint64_t native_flags,
         }
     }
 
-    unsigned fds[2],slots[2];
-    int capacity=nas_fd_reserve(nas_current_task,0,1,fds,slots,"openat");
-    if(capacity) {
-        if(have_node)(void)nas_vfs_node_unpin(&opened_node);
-        return (uint64_t)(int64_t)capacity;
-    }
-    const unsigned fd=fds[0],slot=slots[0];
     if(kind==FD_PTY_MASTER) {
         int err=nas_pty_new(slot);
         if(err)return (uint64_t)(int64_t)err;
