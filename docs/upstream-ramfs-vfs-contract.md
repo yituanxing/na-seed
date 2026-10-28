@@ -96,3 +96,14 @@ very same symbols. Never condition an allocator's ownership on which
 filesystem happens to be enabled first; never build duplicate allocators
 with separate arenas. The original external vendor source remains
 byte-identical.
+
+### Audit rule: no duplicated numeric common-core count
+
+The original checks maintained independent hardcoded TU counts in both
+`check-three-isa-core.py` and `check-full-kernel-sources.sh`. A legitimate
+shared allocator addition caused the latter to reject 64 common TUs while
+an adjacent Python audit accepted 64. Both now derive the count only from
+the versioned manifest, validate no duplicates and exact common x86/RV/ARM
+link coverage; the Python audit also requires the VFS and common allocator
+owners. Adding a common service no longer requires patching several unrelated
+hardcoded magic counts.

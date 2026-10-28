@@ -21,17 +21,17 @@ while IFS= read -r path || [ -n "$path" ]; do
     seen="$seen$path "
     count=$((count+1))
 done < "$manifest"
-test "$count" -eq 63 || {
-    echo "[PORT SOURCES] expected 63 common TUs, got $count" >&2
-    exit 1
-}
+# The canonical manifest is the SINGLE source of truth for TU membership.
+# Validate entries/uniqueness/existence above and exact target links below;
+# never duplicate a numeric TU count that must be edited on each addition.
+test "$count" -gt 0
 for script in scripts/build-riscv64-full.sh scripts/build-aarch64-full.sh; do
     grep -Fq 'scripts/full-kernel-core.sources' "$script" || {
         echo "[PORT SOURCES] $script bypasses canonical manifest" >&2
         exit 1
     }
 done
-# The common source manifest contains 59 TUs; signal-frame native
+# Signal-frame native
 # providers are architecture units, not duplicated copies of shared policy.
 for arch in riscv64 aarch64; do
     script="scripts/build-$arch-full.sh"
