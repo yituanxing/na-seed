@@ -405,171 +405,121 @@ static uint64_t vwrite_regular(uint64_t fd, uint64_t address, uint64_t length) {
     return done;
 }
 /* Namespace-changing syscalls live in namespace_syscall.c. */
-uint64_t nas_fs_open_path(const char *path, uint64_t native_flags,
-                              uint64_t create_mode) {
+/* One open(2) control plane: namespace namei selects a VFS inode first,
+ * then Linux flags apply to its mode/capabilities. Backend/type-specific
+ * behavior belongs to VFS providers, not a parallel tmpfs/procfs branch.
+ * Only /dev character endpoints and original unmounted Limine modules
+ * remain outside the filesystem namespace until devfs is mounted. */
+uint64_t nas_fs_open_path(const char *path,uint64_t native_flags,
+                          uint64_t create_mode) {
+    if(!path || path[0]!='/')return (uint64_t)-EINVAL;
     uint64_t flags;
-    if (!nas_linux_open_flags(native_flags, &flags)) return (uint64_t)-EINVAL;
+    if(!nas_linux_open_flags(native_flags,&flags))
+        return (uint64_t)-EINVAL;
     flags=nas_linux_path_only_flags(flags);
-    const uint64_t permitted = NAS_LINUX_O_PATH | 3ULL | 0x800ULL | 0x8000ULL |
-                               0x10000ULL | 0x20000ULL | 0x80000ULL | 0x100ULL |
-                               0x80ULL | /* O_EXCL */
-                               0x40ULL | 0x200ULL | 0x400ULL;
-    if (flags & ~permitted) return (uint64_t)-EINVAL;
-    if((strcmp(path, "/dev/tty") == 0) &&
+    const uint64_t permitted=NAS_LINUX_O_PATH | 3ULL | 0x800ULL | 0x8000ULL |
+        0x10000ULL | 0x20000ULL | 0x80000ULL | 0x100ULL | 0x80ULL |
+        0x40ULL | 0x200ULL | 0x400ULL;
+    if(flags&~permitted)return (uint64_t)-EINVAL;
+    const bool path_only=(flags&NAS_LINUX_O_PATH)!=0;
+    const bool follow_final=(flags&0x20000ULL)==0; /* O_NOFOLLOW */
+    const bool create=(flags&0x40ULL)!=0;          /* O_CREAT */
+    const bool exclusive=(flags&0x80ULL)!=0;       /* O_EXCL */
+    const bool truncate=(flags&0x200ULL)!=0;      /* O_TRUNC */
+    const unsigned access=(unsigned)(flags&3ULL);
+    uint8_t kind=FD_CLOSED;
+    int pty_number=nas_pty_path_number(path);
+    const struct limine_file *real_file=NULL;
+    bool create_vfs=false,have_node=false;
+    struct nas_fs_node opened_node={0};
+    char canonical[256];
+
+    /* Temporary synthetic-device bridge; filesystems never receive a
+     * fabricated VFS inode, and future devfs can replace this one block. */
+    if(!strcmp(path,"/dev/tty") &&
        !nas_tty_controlling() && !nas_pty_controlling())
         return (uint64_t)-ENXIO;
-    uint8_t kind = FD_CLOSED;
-    const struct bootfs_entry *entry = 0;
-    const struct limine_file *real_file = 0;
-    struct nas_tmp_file *tmp_file = 0;
-    bool create_vfs = false;
-    int pty_number=nas_pty_path_number(path);
-    struct nas_proc_node proc_node={0};
-    if(nas_proc_lookup(path,&proc_node))
-        kind=nas_proc_is_dir(proc_node) ? FD_PROC_DIR : FD_PROC_FILE;
-    else if(!strcmp(path,"/dev/ptmx"))kind=FD_PTY_MASTER;
+    if(!strcmp(path,"/dev/ptmx"))kind=FD_PTY_MASTER;
     else if(pty_number>=0 && nas_pty_present((unsigned)pty_number))
         kind=FD_PTY_SLAVE;
     else if(!strcmp(path,"/dev/tty") && nas_pty_controlling())
         kind=FD_PTY_SLAVE;
-    else if((strcmp(path, "/dev/tty") == 0) || (strcmp(path, "/dev/console") == 0) ||
-       (strcmp(path, "/dev/ttyS0") == 0))kind=FD_TTY;
-    else if ((strcmp(path, "/dev/null") == 0)) kind = FD_NULL;
-    else if ((strcmp(path, "/dev/zero") == 0)) kind = FD_ZERO;
-    else {
-        /* VFS mounts may exist with a direct-ELF Limine boot and no CPIO.
-         * Do not gate the generic mount namei on bootfs being present. */
-        {
-            char actual[256];
-            int err = nas_fs_resolve_existing(path, !(flags & 0x20000ULL), actual);
-            if (!err) {
-                struct nas_fs_node source={0};
-                err=nas_vfs_lookup(actual,&source);
-                if(err)return (uint64_t)(int64_t)err;
-                /* Namei chose the *mounted* filesystem. A bootfs entry
-                 * at the same pathname must not override the mount. */
-                tmp_file=tmp_find(actual);
-                if(tmp_file && source.inode!=(const void *)tmp_file)
-                    tmp_file=NULL;
-                if(tmp_file)
-                    kind=source.is_dir ? FD_TMP_DIR : FD_TMP;
-                else {
-                    entry=bootfs_find(actual);
-                    if(entry && source.inode!=(const void *)entry)
-                        entry=NULL;
-                    kind=source.is_dir ? FD_DIR : FD_ARCHIVE;
-                }
-                if(source.is_symlink &&
-                   !((flags & NAS_LINUX_O_PATH) && (flags & 0x20000ULL)))
-                    return (uint64_t)-ELOOP;
-            } else if(err!=-ENOENT) {
-                return (uint64_t)(int64_t)err;
-            } else if(flags & 0x40ULL)create_vfs=true;
-        }
-        if (!kind && running_alpine && (real_file = bootfs_lookup(path)))
-            kind = FD_BOOTFS; /* Legacy M4 module mapping. */
-        if (!kind && bootfs_mounted() && tmp_path(path) &&
-            bootfs_find("/tmp")) {
-            tmp_file = tmp_find(path);
-            if (tmp_file) kind = tmp_file->is_dir ? FD_TMP_DIR : FD_TMP;
-            else {
-                int parent = tmp_parent_check(path);
-                if (parent) return (uint64_t)(int64_t)parent;
-                if (flags & 0x40ULL) { kind = FD_ARCHIVE; create_vfs = true; }
-            }
-        }
+    else if(!strcmp(path,"/dev/tty") || !strcmp(path,"/dev/console") ||
+            !strcmp(path,"/dev/ttyS0"))kind=FD_TTY;
+    else if(!strcmp(path,"/dev/null"))kind=FD_NULL;
+    else if(!strcmp(path,"/dev/zero"))kind=FD_ZERO;
+
+    if(kind==FD_CLOSED) {
+        /* Exactly one namei pass for every preexisting inode. No provider
+         * is allowed to substitute a new name/ino after resolution. */
+        int rc=nas_fs_lookup_node(path,follow_final,&opened_node,canonical);
+        if(!rc) {
+            have_node=true;
+            kind=opened_node.is_dir?FD_DIR:FD_ARCHIVE;
+        } else if(rc==-ENOENT) {
+            /* Keep only the unmounted direct-ELF module compatibility
+             * bridge; a mounted filesystem always owns its own names. */
+            if(running_alpine && (real_file=bootfs_lookup(path))) {
+                kind=FD_BOOTFS;
+            } else if(create) {
+                create_vfs=true;
+                kind=FD_ARCHIVE; /* provisional; inode acquired below */
+            } else return (uint64_t)-ENOENT;
+        } else return (uint64_t)(int64_t)rc;
     }
-    if(!kind && create_vfs)kind=FD_ARCHIVE;
-    if(!kind)return (uint64_t)-ENOENT;
-    /* Unix pathname sockets have genuine S_IFSOCK in tmpfs, but unlike a
-     * regular inode cannot be opened as a byte file (O_PATH may inspect). */
-    if(tmp_file && (tmp_file->mode&0170000U)==0140000U &&
-       !(flags&NAS_LINUX_O_PATH))return (uint64_t)-ENXIO;
-    if ((flags & 0x10000ULL) && kind != FD_DIR && kind != FD_TMP_DIR &&
-        kind != FD_PROC_DIR)
-        return (uint64_t)-ENOTDIR;
-    if (kind == FD_PROC_DIR && ((flags & 3ULL) || (flags & 0x200ULL)))
-        return (uint64_t)-EISDIR;
-    if (kind == FD_TMP_DIR && ((flags & 3ULL) || (flags & 0x200ULL)))
-        return (uint64_t)-EISDIR;
-    if (kind == FD_TMP) {
-        if (tmp_file && (flags & 0xc0ULL) == 0xc0ULL)
-            return (uint64_t)-EEXIST;
-        if ((flags & 0x200ULL) && !(flags & 3ULL))
+
+    if(have_node) {
+        if((flags&0x10000ULL) && !opened_node.is_dir)
+            return (uint64_t)-ENOTDIR;
+        if(create && exclusive)return (uint64_t)-EEXIST;
+        if(opened_node.is_symlink && !follow_final && !path_only)
+            return (uint64_t)-ELOOP;
+        if((opened_node.mode&0170000U)==0140000U && !path_only)
+            return (uint64_t)-ENXIO; /* UNIX socket is not a byte File */
+        if(opened_node.is_dir && (access || truncate))
+            return (uint64_t)-EISDIR;
+        if(!path_only && !opened_node.is_dir &&
+           (access || truncate) && !nas_vfs_can_write(&opened_node))
+            return (uint64_t)-EROFS;
+        if(truncate && !access && !path_only)
             return (uint64_t)-EINVAL;
+    } else if(kind==FD_BOOTFS) {
+        if(flags&0x10000ULL)return (uint64_t)-ENOTDIR;
+        if(create && exclusive)return (uint64_t)-EEXIST;
+        if(flags&(0x40ULL|0x400ULL))return (uint64_t)-EROFS;
+        if(access)return (uint64_t)-EACCES;
+    } else if(kind!=FD_ARCHIVE) {
+        if(flags&0x10000ULL)return (uint64_t)-ENOTDIR;
+        if(create && exclusive)return (uint64_t)-EEXIST;
     }
-    /* O_CREAT on an existing /dev/null or /dev/zero is not a request
-     * to create a new file. O_TRUNC has no effect on character devices.
-     * Archive-backed data, however, stays strictly read-only.
-     */
-    /* O_CREAT means "create if absent", not "write". A pre-existing
-     * immutable CPIO regular file can be opened O_RDONLY|O_CREAT.
-     * O_CREAT|O_EXCL must refuse an existing name with EEXIST.
-     */
-    /* A newly created VFS inode had no preexisting dentry. Returning
-     * EEXIST for its provisional FD_ARCHIVE identity breaks O_EXCL locks
-     * used by real Git and Tcl, on all ISA targets. */
-    if ((flags & 0xc0ULL) == 0xc0ULL && !create_vfs &&
-        (kind == FD_ARCHIVE || kind == FD_DIR || kind == FD_BOOTFS ||
-         kind == FD_PROC_FILE || kind == FD_PROC_DIR))
-        return (uint64_t)-EEXIST;
-    if((kind==FD_TMP || kind==FD_ARCHIVE) &&
-       (flags & 0x200ULL) && !(flags & 3ULL))return (uint64_t)-EINVAL;
-    if (kind != FD_NULL && kind != FD_ZERO && kind != FD_TTY &&
-        kind != FD_PTY_MASTER && kind != FD_PTY_SLAVE &&
-        kind != FD_TMP && kind != FD_ARCHIVE &&
-        (flags & 0x200ULL))
-        return (uint64_t)-EROFS;
-    if (kind == FD_BOOTFS && (flags & (0x40ULL | 0x400ULL)))
-        return (uint64_t)-EROFS;
-    if ((kind == FD_PROC_FILE || kind == FD_PROC_DIR) && (flags & 3ULL))
-        return (uint64_t)-EROFS;
-    if(kind==FD_DIR && (flags & 3ULL))return (uint64_t)-EISDIR;
-    if(kind==FD_ARCHIVE && !create_vfs &&
-       ((flags & 3ULL) || (flags & 0x200ULL))) {
-        struct nas_fs_node source;
-        char resolved[256];
-        int rc=nas_fs_lookup_node(path,!(flags & 0x20000ULL),&source,resolved);
-        if(rc)return (uint64_t)(int64_t)rc;
-        if(!nas_vfs_can_write(&source))return (uint64_t)-EROFS;
-    }
-    if (kind == FD_BOOTFS && (flags & 3ULL)) return (uint64_t)-EACCES;
+    /* Linux O_TRUNC without write access is invalid for mutable regular
+     * files; character device O_TRUNC is an inert flag. */
+    if(create_vfs && truncate && !access && !path_only)
+        return (uint64_t)-EINVAL;
+
     unsigned fds[2],slots[2];
     int capacity=nas_fd_reserve(nas_current_task,0,1,fds,slots,"openat");
     if(capacity)return (uint64_t)(int64_t)capacity;
     const unsigned fd=fds[0],slot=slots[0];
     if(create_vfs) {
-        int rc=nas_vfs_create(path,nas_fs_create_mode(create_mode,TASK.fs->umask));
+        int rc=nas_vfs_create(path,
+                    nas_fs_create_mode(create_mode,TASK.fs->umask));
         if(rc)return (uint64_t)(int64_t)rc;
+        rc=nas_fs_lookup_node(path,follow_final,&opened_node,canonical);
+        if(rc)return (uint64_t)(int64_t)rc;
+        have_node=true;
+        kind=opened_node.is_dir?FD_DIR:FD_ARCHIVE;
     }
-    if((kind==FD_TMP || kind==FD_TMP_DIR) && !tmp_file)
-        return (uint64_t)-ENOENT;
-    /* Resolve inode identity before exposing FD. Shared open descriptions,
-     * not task-local FD numbers, own the mount pin. A later unlink or rename
-     * must NOT turn read, pread or MAP_PRIVATE into pathname relookup. */
-    struct nas_fs_node opened_node={0};
-    bool has_node=kind==FD_ARCHIVE || kind==FD_DIR ||
-                  kind==FD_TMP || kind==FD_TMP_DIR ||
-                  kind==FD_PROC_FILE || kind==FD_PROC_DIR;
-    if(has_node) {
-        char resolved[256];
-        int rc=nas_fs_lookup_node(path,!(flags&0x20000ULL),
-                                  &opened_node,resolved);
-        if(rc)return (uint64_t)(int64_t)rc;
-        if(create_vfs) {
-            struct nas_tmp_file *candidate=tmp_find(resolved);
-            if(candidate && opened_node.inode==(const void *)candidate) {
-                tmp_file=candidate;kind=FD_TMP;
-            }
-        }
-        if(flags & 0x200ULL) {
-            rc=nas_vfs_resize(&opened_node,0);
+    if(have_node) {
+        if(truncate && !path_only) {
+            int rc=nas_vfs_resize(&opened_node,0);
             if(rc)return (uint64_t)(int64_t)rc;
             opened_node.size=0;
         }
-        rc=nas_vfs_node_pin(&opened_node);
+        int rc=nas_vfs_node_pin(&opened_node);
         if(rc)return (uint64_t)(int64_t)rc;
     }
+
     if(kind==FD_PTY_MASTER) {
         int err=nas_pty_new(slot);
         if(err)return (uint64_t)(int64_t)err;
@@ -580,27 +530,22 @@ uint64_t nas_fs_open_path(const char *path, uint64_t native_flags,
         if(err)return (uint64_t)(int64_t)err;
     }
     if(!nas_fd_install_new(nas_current_task,fd,slot,kind,
-                           flags & (NAS_LINUX_O_PATH | 3ULL | 0x800ULL | 0x400ULL),
-                           !!(flags & 0x80000ULL)))
+                           flags&(NAS_LINUX_O_PATH|3ULL|0x800ULL|0x400ULL),
+                           !!(flags&0x80000ULL)))
         nas_fs_fail("reserved openat description was occupied");
-    if(has_node) {
+    if(have_node) {
         nas_open_files[slot].vnode=opened_node;
         nas_open_files[slot].vnode_pinned=true;
     }
     nas_open_files[slot].boot_file=real_file;
-    nas_open_files[slot].boot_entry=entry;
-    if(kind==FD_PROC_FILE || kind==FD_PROC_DIR) {
-        nas_open_files[slot].proc_kind=proc_node.kind;
-        nas_open_files[slot].proc_pid=proc_node.pid;
-        nas_open_files[slot].proc_tgid=proc_node.tgid;
-        nas_open_files[slot].proc_fd=proc_node.fd;
-    }
-    /* A description is a real owned kernel object; do not copy on dup
-     * or fork. Retain pathname here rather than a second FD index. */
+    /* Diagnostic hint only. No open/read/stat/dirfd may rely on an old
+     * pathname after rename: its pinned VFS inode remains authoritative. */
+    const char *origin=have_node?canonical:path;
     unsigned path_len=0;
-    while(path[path_len] && path_len<sizeof(nas_open_files[slot].origin_path)-1U) {
-        nas_open_files[slot].origin_path[path_len]=path[path_len];
-        path_len++;
+    while(origin[path_len] &&
+          path_len<sizeof(nas_open_files[slot].origin_path)-1U) {
+        nas_open_files[slot].origin_path[path_len]=origin[path_len];
+        ++path_len;
     }
     nas_open_files[slot].origin_path[path_len]=0;
     return fd;

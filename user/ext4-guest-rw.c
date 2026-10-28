@@ -43,6 +43,12 @@ __attribute__((noreturn)) void guest_main(void) {
     stage=4;
     if(guest_syscall(OP_FSYNC,writer,0,0,0)!=0)goto fail;
     stage=5;
+    /* A preexisting mounted inode is resolved once through namei, then
+     * all open flags are applied to that inode, not FS-type branches. */
+    if(guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)path,0xc2,0600)
+       !=-EEXIST)goto fail;
+    if(guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)path,
+                     NAS_LINUX_NATIVE_O_DIRECTORY,0)!=-ENOTDIR)goto fail;
     /* Reader was opened before writer grew this inode. SEEK_END must
      * see the live VFS inode size, not its original File snapshot. */
     if(guest_syscall(OP_LSEEK,reader,0,2,0)!=size)goto fail;

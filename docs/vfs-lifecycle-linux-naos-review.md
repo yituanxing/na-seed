@@ -145,3 +145,19 @@ callback. The isolated M63 test models this real owner boundary. The Linux
 syscall File operations for bootfs/tmpfs/procfs/ext4/LittleFS are reduced to
 one `ops_vfs_regular` and one `ops_vfs_dir` table; only actual synthetic
 devices retain private File ops. No new architecture or vendor code path.
+
+### Single namei-led open(2) control plane — mounted files and directories
+
+Linux `do_filp_open` starts from namespace identity rather than matching
+backend-specific pathnames; NaOS likewise binds a File to a VFS inode.
+NaSeed's old `nas_fs_open_path` still had parallel tmpfs/procfs/archive
+path probes, a second generic pathname resolution, and a third reopen for
+the actual FD lease. It now resolves one existing mounted inode with the
+common VFS namei, checks UNIX file mode/dir/symlink/open flags on THAT inode,
+then pins the exact source inode and installs its shared File. O_CREAT on
+a missing final entry dispatches through the same VFS parent inode callback
+and performs one lookup for the new inode. The only special handling left in
+this boundary is synthetic /dev until devfs, and the unmounted original
+Limine module compatibility bridge. No procfs, ext4, tmpfs or bootfs pathname
+routing exists in the Linux open adapter. Real three-ISA ext4 guest adds
+O_EXCL and O_DIRECTORY checks over an already opened mounted inode.
