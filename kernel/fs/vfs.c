@@ -63,7 +63,19 @@ static void publish_inode_size(const struct nas_fs_node *node,uint64_t size) {
     struct inode_size_lease *lease=inode_lease(node);
     if(lease && !lease_conflicts(lease,node))lease->size=size;
 }
-struct mount_slot {const struct nas_vfs_mount *mount;uint32_t open_refs;uint64_t device_id;};
+/* A mount is an owned attachment to its *covered parent inode*, not
+ * merely a path prefix. The parent mount retains one child reference until
+ * detach, independent of the File/cwd inode leases. This is the first
+ * counted mount-tree seam (Linux vfsmount, NaOS mnt_parent/mountpoint). */
+struct mount_slot {
+    const struct nas_vfs_mount *mount;
+    const struct nas_vfs_mount *parent_mount;
+    const void *parent_backend_inode;
+    uint64_t parent_ino;
+    uint32_t open_refs,child_refs;
+    uint64_t device_id;
+    bool parent_anchored;
+};
 static uint64_t next_device_id=8;
 static struct mount_slot mounts[NAS_VFS_MOUNT_LIMIT];
 static unsigned count;
@@ -104,6 +116,12 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
         return -EINVAL;
     for (unsigned i=0;i<count;i++)
         if (!strcmp(mounts[i].mount->mountpoint,mount->mountpoint))return -EEXIST;
+    /* Bind the attachment to the real parent inode. String prefix mount
+     * selection alone is insufficient: a symlink alias or moved parent
+     * could otherwise silently redirect a mounted subtree. */
+    struct nas_fs_node parent={0};
+    bool has_parent=false;
+    unsigned parent_slot=count;
     /* Validate both the parent and the covered mountpoint inode before
      * adding the new mount. The prefix selector must not mask a regular
      * file at the mount target, nor invent intermediate directories.
@@ -115,7 +133,6 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
         while(len>1 && parent_path[len-1]!='/')len--;
         if(len>1)len--;
         parent_path[len]=0;
-        struct nas_fs_node parent;
         int parent_rc=nas_fs_lookup_node(parent_path,true,&parent,resolved);
         if(parent_rc==-ENOENT) {
             /* CPIO-less direct-ELF boots have no root dentry but still
@@ -128,6 +145,19 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
         } else {
             if(parent_rc)return parent_rc;
             if(!parent.is_dir)return -ENOTDIR;
+            /* The mountpoint is already a canonical path. Linux resolves
+             * mounting through a symlink before attachment; until a fully
+             * owned dentry API exists, refuse an ambiguous alias instead
+             * of creating a mount at the wrong name. */
+            if(strcmp(parent_path,resolved))return -EINVAL;
+            for(unsigned i=0;i<count;i++)
+                if(mounts[i].mount==parent.mount) {
+                    parent_slot=i;break;
+                }
+            if(parent_slot==count)return -ENODEV;
+            if(mounts[parent_slot].child_refs==UINT32_MAX)
+                return -EMFILE;
+            has_parent=true;
         }
         struct nas_fs_node covered;
         int covered_rc=nas_fs_lookup_node(mount->mountpoint,true,
@@ -137,7 +167,15 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
     }
     if (count==NAS_VFS_MOUNT_LIMIT)return -ENOSPC;
     if(next_device_id==UINT64_MAX)return -ENOSPC;
-    mounts[count++]=(struct mount_slot){.mount=mount,.device_id=next_device_id++};
+    struct mount_slot attached={.mount=mount,.device_id=next_device_id++};
+    if(has_parent) {
+        attached.parent_anchored=true;
+        attached.parent_mount=parent.mount;
+        attached.parent_ino=parent.ino;
+        attached.parent_backend_inode=parent.inode;
+        ++mounts[parent_slot].child_refs;
+    }
+    mounts[count++]=attached;
     return 0;
 }
 /* One component resolver shared by all filesystems. VFS alone selects the
@@ -217,6 +255,18 @@ int nas_vfs_lookup_step(const struct nas_fs_node *parent,const char *absolute,
     for(unsigned i=0;i<count;i++) {
         const struct nas_vfs_mount *mnt=mounts[i].mount;
         if(strcmp(mnt->mountpoint,absolute))continue;
+        const struct mount_slot *slot=&mounts[i];
+        if(slot->parent_anchored) {
+            /* Parent-mount identity is part of the attachment. Inode
+             * number alone is not enough: detect backend inode reuse. */
+            if(!parent || parent->mount!=slot->parent_mount ||
+               parent->ino!=slot->parent_ino ||
+               parent->inode!=slot->parent_backend_inode)
+                return -ESTALE;
+        } else if(parent && strcmp(mnt->mountpoint,"/") &&
+                  parent->mount && !parent->is_dir) {
+            return -ENOTDIR;
+        }
         *out=(struct nas_fs_node){0};
         int rc=mnt->type->root(mnt,out);
         if(!rc) {out->filesystem=mnt->type;out->mount=mnt;}
@@ -539,13 +589,26 @@ int nas_vfs_unregister_mount(const struct nas_vfs_mount *mount) {
     unsigned at=count;
     for(unsigned i=0;i<count;i++)if(mounts[i].mount==mount)at=i;
     if(at==count)return -ENOENT;
-    if(mount->permanent || mounts[at].open_refs)return -EBUSY;
+    if(mount->permanent || mounts[at].open_refs ||
+       mounts[at].child_refs)return -EBUSY;
     size_t n=strlen(mount->mountpoint);
     for(unsigned i=0;i<count;i++) {
         if(i==at)continue;
         const char *p=mounts[i].mount->mountpoint;
         if((n==1 && mount->mountpoint[0]=='/') ||
            (!strncmp(mount->mountpoint,p,n) && p[n]=='/'))return -EBUSY;
+    }
+    /* Release one structural mount-child reference. The covered parent
+     * mount cannot disappear while a descendant exists, even if callers
+     * later stop relying on prefix-string busy scans. */
+    if(mounts[at].parent_anchored) {
+        unsigned parent_at=count;
+        for(unsigned i=0;i<count;i++)
+            if(mounts[i].mount==mounts[at].parent_mount) {
+                parent_at=i;break;
+            }
+        if(parent_at==count || !mounts[parent_at].child_refs)return -EIO;
+        --mounts[parent_at].child_refs;
     }
     for(unsigned i=at;i+1<count;i++)mounts[i]=mounts[i+1];
     mounts[--count]=(struct mount_slot){0};

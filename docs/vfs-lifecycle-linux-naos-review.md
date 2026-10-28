@@ -60,3 +60,19 @@ uses its actual current offset. The authentic ext4 host test now appends via
 a stale second File, verifies the first File observes appended data/size,
 then truncates back before original content, unlink-open and rename gates.
 This is no substitute for orphan support or a full owned dentry tree.
+
+### Counted parent-mount attachment (2026-10-28 Linux/NaOS audit)
+
+The mount registry previously stored only a prefix string and File/cwd open
+count. In Linux `struct path` has a counted mount+dentry, and NaOS explicitly
+binds `mnt_parent` to `mnt_mountpoint`; the matching NaSeed seam now stores
+the owning parent mount and its covered inode identity at attach time, plus
+an independent child-mount reference. Unmount refuses open owners OR children,
+while exact-component mount crossings validate the actual parent mount and
+inode incarnation. Registering beneath a symlink-alias parent is rejected
+until VFS has owned dentry alias semantics; CPIO-less direct-ELF boot with
+no root retains the explicitly scoped unanchored `/mnt` bootstrap.
+
+This is **not yet** a counted generic dentry tree, superblock cache or a
+per-FD `struct path`; prefix matching is still the conservative interim
+mount locator, while the attachment's actual parent identity is now checked.

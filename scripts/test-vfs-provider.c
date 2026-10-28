@@ -433,6 +433,11 @@ int main(void) {
     assert(nas_vfs_register_mount(&bad_mount)==-ENOENT);
     bad_mount.mountpoint="/bin/demo/child";
     assert(nas_vfs_register_mount(&bad_mount)==-ENOTDIR);
+    /* Linux mount attachment has a covered parent dentry, not an alias
+     * spelled by the caller. An unresolved symlink mount path must not
+     * attach a second location under the same parent inode. */
+    bad_mount.mountpoint="/tmp/alias/mounted";
+    assert(nas_vfs_register_mount(&bad_mount)==-EINVAL);
     /* The old cwd/dirfd path remains correct on an ordinary directory. */
     assert(nas_fs_lookup_node("/bin/.",true,&n,resolved)==0 &&
            !strcmp(resolved,"/bin"));
