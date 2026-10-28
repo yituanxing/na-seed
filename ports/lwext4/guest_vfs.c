@@ -6,7 +6,6 @@
 #include "../../kernel/lib/string.h"
 #include <ext4.h>
 #include <ext4_inode.h>
-#include <ext4_fs.h>
 #include <ext4_types.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -43,6 +42,7 @@ static int ext_lookup_root(const struct nas_vfs_mount *vfs,
 /* ext4 lookup is now directly beneath a directory inode. Upstream ext4
  * owns directory iteration and inode loading; the VFS never passes a
  * reconstructed absolute pathname to this callback. */
+static int ext_directory_path(const struct nas_fs_node *node,char absolute[256]);
 static int ext_lookup_child(const struct nas_fs_node *parent,const char *name,
                             struct nas_fs_node *out) {
     if(!parent || !parent->is_dir || !parent->mount || !name || !name[0] ||
@@ -67,24 +67,38 @@ static int ext_lookup_child(const struct nas_fs_node *parent,const char *name,
     int rc=ext4_dir_close(&dir);
     if(rc)return -rc;
     if(!number)return -ENOENT;
-    struct ext4_inode_ref ref={0};
-    rc=ext4_fs_get_inode_ref(&ctx->upstream_mount->fs,number,&ref);
+    /* The public lwext4 ABI exposes inode-based directory iteration but
+     * only pathname-based raw inode metadata. Reconstruct a LIVE parent
+     * pathname from the parent inode (never from a VFS origin hint), then
+     * verify that the pathname still identifies the scanned child inode.
+     * This keeps vendor-private mount structs out of NaSeed's port. */
+    char directory[256],child_path[256];
+    rc=ext_directory_path(parent,directory);
+    if(rc)return rc;
+    size_t base=strlen(directory);
+    if(base+(base>1?1U:0U)+len>=sizeof(child_path))
+        return -ENAMETOOLONG;
+    memcpy(child_path,directory,base);
+    if(base>1)child_path[base++]='/';
+    memcpy(child_path+base,name,len+1);
+    uint32_t confirmed=0;
+    struct ext4_inode raw;
+    rc=ext4_raw_inode_fill(path_for(ctx,child_path),&confirmed,&raw);
     if(rc)return -rc;
-    struct ext4_inode *raw=ref.inode;
-    uint32_t mode=ext4_inode_get_mode(ctx->upstream_super,raw);
+    if(confirmed!=number)return -ESTALE;
+    uint32_t mode=ext4_inode_get_mode(ctx->upstream_super,&raw);
     *out=(struct nas_fs_node){
         .inode=(const void *)(uintptr_t)number,
-        .ino=number,.nlink=ext4_inode_get_links_cnt(raw),
-        .uid=ext4_inode_get_uid(raw),.gid=ext4_inode_get_gid(raw),
-        .atime_sec=ext4_inode_get_access_time(raw),
-        .mtime_sec=ext4_inode_get_modif_time(raw),
-        .ctime_sec=ext4_inode_get_change_inode_time(raw),
-        .mode=mode,.size=ext4_inode_get_size(ctx->upstream_super,raw),
+        .ino=number,.nlink=ext4_inode_get_links_cnt(&raw),
+        .uid=ext4_inode_get_uid(&raw),.gid=ext4_inode_get_gid(&raw),
+        .atime_sec=ext4_inode_get_access_time(&raw),
+        .mtime_sec=ext4_inode_get_modif_time(&raw),
+        .ctime_sec=ext4_inode_get_change_inode_time(&raw),
+        .mode=mode,.size=ext4_inode_get_size(ctx->upstream_super,&raw),
         .is_dir=(mode&0170000U)==0040000U,
         .is_symlink=(mode&0170000U)==0120000U
     };
-    rc=ext4_fs_put_inode_ref(&ref);
-    return rc?-rc:0;
+    return 0;
 }
 static int ext_readlink_node(const struct nas_fs_node *node,
                              const char *absolute,char target[256]) {
