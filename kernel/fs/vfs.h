@@ -80,6 +80,8 @@ struct nas_vfs_type {
     bool unlink_open_safe;
     /* Safe final-link unlink for REGULAR FILES, not open directories. */
     bool unlink_open_file_safe;
+    /* Safe rmdir of an EMPTY last-linked inode with open directory Files. */
+    bool unlink_open_dir_safe;
     /* Replacement renames must preserve an open destination inode.
      * Default false: the provider must explicitly guarantee this. */
     bool rename_replace_open_safe;

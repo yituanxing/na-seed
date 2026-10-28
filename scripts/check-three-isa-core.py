@@ -103,6 +103,12 @@ for item in ("struct nas_vfs_mount superblock;", "const struct nas_vfs_mount *re
         raise SystemExit(f"unstable VFS-owned mount/parent identity: {item}")
 if "mounts[i]=mounts[i+1]" in vfs_src or "mounts[count++]" in vfs_src:
     raise SystemExit("packed mount registry would invalidate open File mounts")
+# A pinned empty ext4 directory is safely detached, never recursively
+# removed before its last owned File/cwd inode lease reaches zero.
+if "unlink_open_dir_safe" not in (root/"kernel/fs/vfs.h").read_text() or \
+   ".unlink_open_dir_safe=true" not in (root/"ports/lwext4/guest_vfs.c").read_text() or \
+   "ext_stage_orphan(ctx,path,number,true)" not in (root/"ports/lwext4/guest_vfs.c").read_text():
+    raise SystemExit("ext4 opened-directory rmdir must defer inode destruction")
 # The original ext4 port may NOT silently treat a directory rename
 # replacement as a file truncate. All ordinary and empty-directory
 # victims use one typed staged-inode protocol with a safe emptiness check.

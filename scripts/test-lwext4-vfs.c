@@ -301,7 +301,7 @@ int main(int argc,char **argv) {
         assert(nas_fs_lookup_node("/mnt/sandbox/vfs-directory",true,
                                   &open_directory,actual)==0);
         assert(nas_vfs_node_pin(&open_directory)==0);
-        assert(nas_vfs_unlink("/mnt/sandbox/vfs-directory",0x200ULL)==-EBUSY);
+        assert(nas_vfs_unlink("/mnt/sandbox/vfs-directory",0x200ULL)==-ENOTEMPTY);
         assert(nas_vfs_rename("/mnt/sandbox/vfs-directory",
                               "/mnt/sandbox/renamed-directory",0)==0);
         assert(nas_fs_lookup_node("/mnt/sandbox/vfs-directory",true,
@@ -335,6 +335,28 @@ int main(int argc,char **argv) {
         assert(nas_vfs_unlink("/mnt/sandbox/vfs-directory",0x200ULL)==0);
         assert(nas_vfs_unlink("/mnt/sandbox/renamed-directory/child",0)==0);
         assert(nas_vfs_unlink("/mnt/sandbox/renamed-directory",0x200ULL)==0);
+        /* Open but empty directory: rmdir detaches the visible name while
+         * preserving this pinned inode; later path reuse is a new object. */
+        assert(nas_vfs_mkdir("/mnt/sandbox/open-rmdir",0700)==0);
+        struct nas_fs_node opened_rmdir;
+        assert(nas_fs_lookup_node("/mnt/sandbox/open-rmdir",true,
+                                   &opened_rmdir,actual)==0);
+        assert(nas_vfs_node_pin(&opened_rmdir)==0);
+        assert(nas_vfs_unlink("/mnt/sandbox/open-rmdir",0x200ULL)==0);
+        struct nas_fs_node removed_dir;
+        assert(nas_fs_lookup_node("/mnt/sandbox/open-rmdir",true,
+                                   &removed_dir,actual)==-ENOENT);
+        assert(nas_vfs_getattr(&opened_rmdir,&removed_dir)==0);
+        assert(removed_dir.nlink==0 && removed_dir.ino==opened_rmdir.ino);
+        struct nas_vfs_dirent old_dir_entries[8]={0};
+        assert(nas_vfs_read_dir(&opened_rmdir,0,old_dir_entries,8)>=2);
+        assert(!strcmp(old_dir_entries[0].name,"."));
+        assert(nas_vfs_mkdir("/mnt/sandbox/open-rmdir",0700)==0);
+        assert(nas_fs_lookup_node("/mnt/sandbox/open-rmdir",true,
+                                   &removed_dir,actual)==0);
+        assert(removed_dir.ino!=opened_rmdir.ino);
+        assert(nas_vfs_node_unpin(&opened_rmdir)==0);
+        assert(nas_vfs_unlink("/mnt/sandbox/open-rmdir",0x200ULL)==0);
         /* Linux rename(replace) of EMPTY directories: non-empty target
          * fails without mutating either tree; valid replacement moves
          * source directory and its children under one existing name. */

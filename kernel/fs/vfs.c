@@ -713,11 +713,9 @@ int nas_vfs_unlink(const char *path,uint64_t flags) {
     if(rc)return rc;
     if(active_mountpoint(canonical))return -EBUSY;
     if(!nas_vfs_can_write(&parent))return -EROFS;
-    /* Upstream lwext4 fremove() immediately truncates/frees a last-link
-     * inode, even when a shared File owns a live mount+inode pin. Until an
-     * inode-orphan lifetime protocol exists, fail closed. EBUSY is an
-     * acknowledged temporary deviation from Linux unlink-open, not a claim
-     * of POSIX compliance. tmpfs explicitly opts into safe unlink-open. */
+    /* Backend capabilities are inode-kind specific: a filesystem may safely
+     * orphan an opened file but still lack a nonrecursive directory protocol.
+     * Fail closed only when that kind of unlink cannot preserve ownership. */
     if(!parent.filesystem->unlink_open_safe) {
         struct nas_fs_node target;
         int looked_up=nas_vfs_lookup(canonical,&target);
@@ -726,8 +724,9 @@ int nas_vfs_unlink(const char *path,uint64_t flags) {
          * so the last-file-link threshold cannot be used for directories. */
         if(!looked_up && target.mount==parent.mount && target.ino &&
            inode_lease(&target) &&
-           ((flags&0x200ULL) ||
-            (target.nlink<=1 &&
+           (((flags&0x200ULL) &&
+             !parent.filesystem->unlink_open_dir_safe) ||
+            (!(flags&0x200ULL) && target.nlink<=1 &&
              !parent.filesystem->unlink_open_file_safe)))
             return -EBUSY;
         if(looked_up && looked_up!=-ENOENT)return looked_up;

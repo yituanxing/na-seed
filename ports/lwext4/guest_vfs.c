@@ -384,9 +384,25 @@ static int ext_unlink_path(const struct nas_fs_node *parent,const char *name,uin
             return ext_stage_orphan(ctx,path,ino,false);
         return -ext4_fremove(path);
     }
-    /* Directory unlink needs its own empty-directory preflight. */
+    /* Rmdir of a nonempty directory is forbidden even if an owner pins
+     * it. An EMPTY opened directory retains a hidden private link until
+     * the final VFS unpin, never a recursive ext4_dir_rm. */
     rc=ext_dir_empty(path);
-    return rc?rc:-ext4_dir_rm(path);
+    if(rc)return rc;
+    struct nas_lwext4_mount *ctx=parent->mount->private_data;
+    if(!ctx || !ctx->mounted)return -ENODEV;
+    uint32_t number=0;
+    struct ext4_inode raw;
+    rc=ext4_raw_inode_fill(path,&number,&raw);
+    if(rc)return -rc;
+    if(!number)return -EIO;
+    if((ext4_inode_get_mode(ctx->upstream_super,&raw)&0170000U)!=0040000U)
+        return -ENOTDIR;
+    struct nas_fs_node target={.mount=parent->mount,
+        .filesystem=parent->filesystem,.mount_id=parent->mount_id,
+        .inode=(const void *)(uintptr_t)number,.ino=number};
+    return nas_vfs_node_has_lease(&target) ?
+           ext_stage_orphan(ctx,path,number,true) : -ext4_dir_rm(path);
 }
 /* Upstream ext4_frename is NO-REPLACE: ext4_create_hardlink returns
  * EEXIST for an existing destination. Replacement is adapted here, not
@@ -659,6 +675,7 @@ static const struct nas_vfs_type ext_type={
     .unlink=ext_unlink_path,.rename=ext_rename_path,
     .link=ext_link_path,.symlink=ext_symlink_path,
     .unlink_open_file_safe=true,
+    .unlink_open_dir_safe=true,
     .rename_replace_open_safe=true,
     /* Capability is mount-specific; default guest mount remains RO. */
     .read_only=false
