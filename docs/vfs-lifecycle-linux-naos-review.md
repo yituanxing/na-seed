@@ -245,3 +245,41 @@ The original vendor ext4_dir_rm() can delete a non-empty subtree, while ext4_fre
 ### Open-directory rmdir lifecycle (2026-10-28)
 
 The common VFS now has a per-kind opened-directory unlink capability in addition to the existing file capability. For a pinned EMPTY ext4 directory, rmdir moves its last visible name into the strictly private typed orphan tree, preserving the actual inode and readdir/stat on its open File until final unpin. Re-creating its visible name allocates a distinct inode; final close removes the private directory without any recursive deletion of children. A NONEMPTY directory returns ENOTEMPTY even with an owner. Generic VFS still refuses this operation for providers that have not opted into safe orphan lifetimes. The original lwext4 sources remain unmodified. Openat/getcwd from an unlinked directory are not claimed to be fully Linux equivalent; the adapter rejects stale namespace reconstruction rather than reopening an unrelated path.
+
+### Positive Dentry name index and non-recursive lifetime (2026-10-28)
+
+The first counted Dentry/Path implementation used one global live-owner list
+for both destruction and positive lookup. Each new independent directory
+File or mount attachment scanned EVERY live Dentry, making a large collection
+of distinct (mount, parent, name) owners cost quadratic work in the pathname
+cache even though there are no negative dentries. This is not a good
+foundation for future multiple independent filesystems or longer running
+Linux workloads. It also used recursive parent Dentry destruction, which
+needlessly consumed one kernel C stack frame per released ancestor.
+
+A separate, fixed 257-bucket positive-name index now keys live entries by
+(parent Dentry pointer, basename, mount incarnation). The existing live
+list remains solely for lifetime inspection and namespace invalidation;
+no backend or Linux syscall owns the index. Every acquire/pin first probes
+the index. A detached Dentry immediately leaves the index, but retains its
+inode, parent and mount references until its own final File/Path put. Same
+mount and name with a replaced inode detaches the former object; an upper
+mount root and its covered lower inode remain distinct because their mount
+incarnations differ. Rename rekeys the SAME owned Dentry without allocating
+or reconstructing any provider pathname after the backend operation.
+
+Final Dentry put is now iterative: the teardown removes its positive hash
+entry (if still visible), drops the owned inode, and releases parent links
+upward only when their counts reach zero. Even a deeper directory chain
+cannot consume one recursive C call per component on the limited kernel
+stack. No heap object remains in the index after its final put. Like the
+existing VFS, the table is single-CPU only; future SMP needs publication
+and reclamation synchronization of BOTH owner list and hash buckets.
+
+The original common VFS host fixture now pins 80 independent mounted
+positive Paths simultaneously, repeatedly rebinds and copies their owner
+references across all mount chunks, checks exact Dentry identity and
+canonical names, then closes them in reverse order before mount-hole
+recycling. The original vendor RamFS/LittleFS/lwext4, unmodified Linux
+programs, and three-ISA QEMU acceptance stay mandatory; a green host
+fixture alone is not a claim of completed SMP/dcache or all-head CI.

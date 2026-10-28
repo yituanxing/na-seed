@@ -593,13 +593,61 @@ int64_t nas_vfs_read_at(const struct nas_fs_node *node,uint64_t offset,
  * have live owners. This is deliberately NOT a global unbounded negative
  * dentry cache, nor a second filesystem implementation. */
 struct nas_vfs_dentry {
-    struct nas_vfs_dentry *next,*parent;
+    struct nas_vfs_dentry *next,*parent,*hash_next;
     struct nas_fs_node node;
     unsigned refs;
     bool detached;
     char name[256]; /* '/' root or '/mnt' for direct-ELF rootless bootstrap */
 };
 static struct nas_vfs_dentry *dentry_live;
+/* A positive Dentry has two independent lifetimes: the name lookup index
+ * contains only ACTIVE names, but File/FS/Mount refs can retain a detached
+ * Dentry until the final put. A separate intrusive list owns inspection
+ * and eventual destruction; neither list allocates on lookup.
+ *
+ * Names are keyed by parent Dentry AND mount incarnation. In particular,
+ * the covered directory and a mounted root may have the same parent/name
+ * while still denoting distinct inode objects in different mounts.
+ * Single-CPU policy applies to all three ISAs until the future SMP phase. */
+#define NAS_VFS_DENTRY_BUCKETS 257U
+static struct nas_vfs_dentry *dentry_buckets[NAS_VFS_DENTRY_BUCKETS];
+static unsigned dentry_bucket(const struct nas_vfs_dentry *parent,
+                              const char *name,uint64_t mount_id) {
+    uint32_t hash=2166136261U;
+    uintptr_t address=(uintptr_t)parent;
+    for(unsigned i=0;i<sizeof(address);i++) {
+        hash=(hash^(uint8_t)address)*16777619U;
+        address>>=8;
+    }
+    for(unsigned i=0;i<8;i++) {
+        hash=(hash^(uint8_t)mount_id)*16777619U;
+        mount_id>>=8;
+    }
+    for(const unsigned char *p=(const unsigned char *)name;*p;p++)
+        hash=(hash^*p)*16777619U;
+    return hash%NAS_VFS_DENTRY_BUCKETS;
+}
+static void dentry_index_insert(struct nas_vfs_dentry *d) {
+    unsigned bucket=dentry_bucket(d->parent,d->name,d->node.mount_id);
+    d->hash_next=dentry_buckets[bucket];
+    dentry_buckets[bucket]=d;
+}
+/* Detaching does NOT put a Path or inode: existing open owners must keep
+ * working after unlink, rename-overwrite and same-name inode reuse. */
+static bool dentry_index_remove(struct nas_vfs_dentry *d) {
+    unsigned bucket=dentry_bucket(d->parent,d->name,d->node.mount_id);
+    struct nas_vfs_dentry **scan=&dentry_buckets[bucket];
+    while(*scan && *scan!=d)scan=&(*scan)->hash_next;
+    if(!*scan)return false;
+    *scan=d->hash_next;
+    d->hash_next=NULL;
+    return true;
+}
+static void dentry_detach(struct nas_vfs_dentry *d) {
+    if(!d || d->detached)return;
+    (void)dentry_index_remove(d);
+    d->detached=true;
+}
 static const struct nas_fs_node *mount_parent_inode(
     const struct mount_slot *slot) {
     if(!slot || !slot->parent_path.dentry)return NULL;
@@ -624,35 +672,46 @@ static int dentry_ref(struct nas_vfs_dentry *entry) {
 }
 static int dentry_put(struct nas_vfs_dentry *entry) {
     if(!entry || !entry->refs)return -EINVAL;
-    if(--entry->refs)return 0;
-    struct nas_vfs_dentry **slot=&dentry_live;
-    while(*slot && *slot!=entry)slot=&(*slot)->next;
-    if(!*slot)return -EIO;
-    *slot=entry->next;
-    struct nas_vfs_dentry *parent=entry->parent;
-    int rc=nas_vfs_node_unpin(&entry->node);
-    if(!nas_heap_free(entry))return -EIO;
-    if(parent && dentry_put(parent))return -EIO;
-    return rc;
+    int first_error=0;
+    /* Releasing one deep Path may drop its entire ancestor chain. A
+     * recursive destructor consumes a C frame per path component and
+     * could overflow NaSeed's bounded kernel stack. Walk iteratively. */
+    while(entry) {
+        if(!entry->refs)return first_error ? first_error : -EINVAL;
+        if(--entry->refs)break;
+        struct nas_vfs_dentry **slot=&dentry_live;
+        while(*slot && *slot!=entry)slot=&(*slot)->next;
+        if(!*slot)return -EIO;
+        *slot=entry->next;
+        if(!entry->detached && !dentry_index_remove(entry) && !first_error)
+            first_error=-EIO;
+        struct nas_vfs_dentry *parent=entry->parent;
+        int rc=nas_vfs_node_unpin(&entry->node);
+        if(rc && !first_error)first_error=rc;
+        if(!nas_heap_free(entry) && !first_error)first_error=-EIO;
+        /* Keep releasing parent owners even if a provider reported an
+         * error: otherwise a failed final inode callback leaks mounts. */
+        entry=parent;
+    }
+    return first_error;
 }
 static struct nas_vfs_dentry *dentry_find(struct nas_vfs_dentry *parent,
                                          const char *name,
                                          const struct nas_fs_node *node) {
-    for(struct nas_vfs_dentry *d=dentry_live;d;d=d->next) {
-        if(d->detached || d->parent!=parent || strcmp(d->name,name))
-            continue;
-        /* A mounted root and its COVERED lower inode intentionally
-         * have the SAME (parent,basename) but DIFFERENT mounts. They are
-         * separate positive dentries, NOT name-reuse: preserve the
-         * underlay's Path owner until explicit detach, as Linux mounts do.
-         * Only within the SAME mount does this key represent recycled
-         * directory/regular-file identity. */
-        if(d->node.mount!=node->mount ||
-           d->node.mount_id!=node->mount_id)continue;
-        if(same_vnode(&d->node,node))return d;
-        /* Same mount, same parent/name, different inode incarnation:
-         * detach the old Dentry without freeing outstanding File owners. */
-        d->detached=true;
+    unsigned bucket=dentry_bucket(parent,name,node->mount_id);
+    struct nas_vfs_dentry *d=dentry_buckets[bucket];
+    while(d) {
+        /* dentry_detach unlinks this entry from its hash chain. Retain
+         * the successor first so same-name inode reuse never skips a
+         * colliding entry (or returns an already detached inode). */
+        struct nas_vfs_dentry *next=d->hash_next;
+        if(d->parent==parent && !strcmp(d->name,name) &&
+           d->node.mount_id==node->mount_id &&
+           d->node.mount==node->mount) {
+            if(same_vnode(&d->node,node))return d;
+            dentry_detach(d);
+        }
+        d=next;
     }
     return NULL;
 }
@@ -687,6 +746,7 @@ static int dentry_acquire(struct nas_vfs_dentry *parent,const char *name,
     d->parent=parent;
     d->next=dentry_live;
     dentry_live=d;
+    dentry_index_insert(d);
     *result=d;
     return 0;
 }
@@ -818,7 +878,7 @@ static void dentry_notice_unlink(const struct nas_vfs_path *parent,
                                  const char *name) {
     for(struct nas_vfs_dentry *d=dentry_live;d;d=d->next)
         if(!d->detached && d->parent==parent->dentry &&
-           !strcmp(d->name,name))d->detached=true;
+           !strcmp(d->name,name))dentry_detach(d);
 }
 static void dentry_notice_rename(const struct nas_vfs_path *old_parent,
                                  const char *old_name,
@@ -832,8 +892,10 @@ static void dentry_notice_rename(const struct nas_vfs_path *old_parent,
            !strcmp(d->name,old_name)) {moved=d;break;}
     dentry_notice_unlink(new_parent,new_name);
     if(!moved)return;
-    /* Parent ownership transfers without a fallible path reconstruction.
-     * The new parent has a live reference throughout this transaction. */
+    /* The hash key changes with both basename and parent. Remove first,
+     * then transfer the independently counted parent owner, then publish
+     * the new key. No lookup or allocation is needed after backend rename. */
+    (void)dentry_index_remove(moved);
     if(old_parent->dentry!=new_parent->dentry) {
         if(dentry_ref(new_parent->dentry)) {
             moved->detached=true;
@@ -844,6 +906,7 @@ static void dentry_notice_rename(const struct nas_vfs_path *old_parent,
         if(previous)(void)dentry_put(previous);
     }
     memcpy(moved->name,new_name,strlen(new_name)+1);
+    dentry_index_insert(moved);
 }
 static int dentry_prepare_parent(const char *full,
                                  const struct nas_fs_node *parent,

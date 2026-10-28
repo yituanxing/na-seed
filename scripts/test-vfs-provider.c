@@ -964,9 +964,13 @@ int main(void) {
      * must grow stable superblock addresses rather than impose 16 slots.
      * All names belong to the SAME independent provider; no per-provider
      * mount-special case is allowed to make this test succeed. */
-    enum { STRESS_MOUNTS=48, REFILL_MOUNTS=20 };
+    enum { STRESS_MOUNTS=80, REFILL_MOUNTS=32 };
     static struct nas_vfs_mount stress[STRESS_MOUNTS];
     static char stress_paths[STRESS_MOUNTS][40];
+    /* Keep 80 independent mounted directory Paths alive simultaneously:
+     * the positive Dentry lookup index must reuse the exact same object,
+     * not allocate one C-heap object per repeated open/getcwd traversal. */
+    static struct nas_vfs_path stress_paths_owned[STRESS_MOUNTS];
     struct nas_fs_node stable_early,stale_reusable,stress_parent,probe;
     struct nas_vfs_dirent stress_entries[7];
     uint64_t stable_device=0;
@@ -991,8 +995,38 @@ int main(void) {
         assert(nas_vfs_node_device(&stable_early)==stable_device);
         assert(nas_vfs_lookup(stress_paths[i],&probe)==0);
         assert(probe.mount!=&stress[i] && probe.ino==801);
+        assert(nas_vfs_path_bind(&probe,stress_paths[i],
+                                 &stress_paths_owned[i])==0);
+        assert(stress_paths_owned[i].dentry);
+        /* Repeated positive lookup and open through the same mount MUST
+         * reuse its owned Dentry, including after slot-chunk expansion. */
+        struct nas_vfs_path repeat={0};
+        assert(nas_vfs_path_bind(&probe,stress_paths[i],&repeat)==0);
+        assert(repeat.dentry==stress_paths_owned[i].dentry);
+        assert(nas_vfs_path_put(&repeat)==0);
+        if(i)assert(stress_paths_owned[i].dentry!=
+                    stress_paths_owned[i-1].dentry);
     }
+    /* Exercise hash collisions, full-bucket traversal and ancestor pins
+     * from 80 live Paths without dropping/reacquiring backend mount roots.
+     * Each copied Path is an independent owner of the SAME Dentry. */
+    for(unsigned pass=0;pass<4;pass++)
+        for(unsigned i=STRESS_MOUNTS;i-->0;) {
+            struct nas_fs_node current;
+            struct nas_vfs_path repeated={0},copied={0};
+            assert(nas_fs_lookup_node(stress_paths[i],true,
+                                      &current,resolved)==0);
+            assert(nas_vfs_path_bind(&current,stress_paths[i],&repeated)==0);
+            assert(repeated.dentry==stress_paths_owned[i].dentry);
+            assert(nas_vfs_path_get(&repeated,&copied)==0);
+            assert(copied.dentry==stress_paths_owned[i].dentry);
+            assert(nas_vfs_path_string(&copied,path_name)==0);
+            assert(!strcmp(path_name,stress_paths[i]));
+            assert(nas_vfs_path_put(&repeated)==0);
+            assert(nas_vfs_path_put(&copied)==0);
+        }
     assert(nas_vfs_unregister_mount(&stress[0])==-EBUSY);
+    assert(nas_vfs_unregister_mount(&stress[31])==-EBUSY);
     assert(nas_fs_lookup_node("/tmp",true,&stress_parent,resolved)==0);
     /* Virtual mountpoints must be presented exactly once and in stable
      * registry order, even when readdir is split into tiny batches. */
@@ -1024,6 +1058,15 @@ int main(void) {
      * the SAME slot address and backend inode number are recycled. */
     assert(nas_fs_lookup_node(stress_paths[1],true,
                               &stale_reusable,resolved)==0);
+    /* A Path-owner remains live after all temporary copies close.
+     * Releasing the entire graph must also release ancestors without
+     * recursive kernel C-stack teardown or a dangling hash entry. */
+    for(unsigned i=STRESS_MOUNTS;i-->0;) {
+        assert(nas_vfs_path_string(&stress_paths_owned[i],path_name)==0);
+        assert(!strcmp(path_name,stress_paths[i]));
+        assert(nas_vfs_path_put(&stress_paths_owned[i])==0);
+        assert(!stress_paths_owned[i].dentry);
+    }
     for(unsigned i=1;i<STRESS_MOUNTS;i+=2)
         assert(nas_vfs_unregister_mount(&stress[i])==0);
     static struct nas_vfs_mount refill[REFILL_MOUNTS];

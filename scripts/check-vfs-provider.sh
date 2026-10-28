@@ -51,3 +51,16 @@ if grep -Eq 'struct mount_slot mounts\[|NAS_VFS_MOUNT_LIMIT' kernel/fs/vfs.c; th
   echo '[VFS FAIL] fixed-size/relocatable mount slot table returned' >&2
   exit 1
 fi
+
+# Hash indexing is an acceleration of the SAME positive Dentry ownership,
+# not a second namespace resolver. Reject an unindexed all-dentry scan and
+# a recursive last-owner destructor (real 16 KiB kernel stacks are bounded).
+if ! grep -q 'dentry_bucket(parent,name,node->mount_id)' kernel/fs/vfs.c ||
+   ! grep -q 'dentry_index_insert(d);' kernel/fs/vfs.c; then
+  echo '[VFS FAIL] positive Dentry index bypassed' >&2
+  exit 1
+fi
+if grep -Eq 'dentry_put\\(parent\\)' kernel/fs/vfs.c; then
+  echo '[VFS FAIL] recursive Dentry parent teardown returned' >&2
+  exit 1
+fi
