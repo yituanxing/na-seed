@@ -6,6 +6,11 @@
  */
 int main(void) {
     uint64_t converted = UINT64_MAX;
+#if defined(__aarch64__)
+    assert(NAS_LINUX_NATIVE_O_DIRECTORY == 040000ULL);
+#else
+    assert(NAS_LINUX_NATIVE_O_DIRECTORY == 0x10000ULL);
+#endif
     assert(nas_linux_arm64_open_flags(0, &converted) && converted == 0);
     assert(nas_linux_arm64_open_flags(040000ULL, &converted));
     assert(converted == 0x10000ULL); /* O_DIRECTORY */

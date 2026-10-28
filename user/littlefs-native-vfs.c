@@ -1,5 +1,6 @@
 /* Shared real native ring3 Linux ELF tests the SAME second VFS provider on 3 ISAs. */
 #include <stdint.h>
+#include "../kernel/arch/linux_fcntl_abi.h"
 enum {OPENAT,READ,WRITE,FSYNC,LSEEK,CLOSE,EXIT,GETDENTS64};
 extern long guest_syscall(long,long,long,long,long);
 static const char filename[]="/flash/source/program";
@@ -19,7 +20,8 @@ __attribute__((noreturn)) void guest_main(void) {
     stage=3;
     if(guest_syscall(CLOSE,fd,0,0,0))goto fail;
     stage=4;
-    fd=guest_syscall(OPENAT,-100,(long)(uintptr_t)dirname,0x10000,0);
+    fd=guest_syscall(OPENAT,-100,(long)(uintptr_t)dirname,
+                     NAS_LINUX_NATIVE_O_DIRECTORY,0);
     if(fd<0)goto fail;
     stage=5;
     n=guest_syscall(GETDENTS64,fd,(long)(uintptr_t)directory,512,0);

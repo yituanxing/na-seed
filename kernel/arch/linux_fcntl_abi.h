@@ -3,6 +3,16 @@
 #include <stdbool.h>
 #include <stdint.h>
 #define NAS_LINUX_O_PATH 0x200000ULL
+/* This is the NATIVE userspace UAPI bit, not the kernel's common
+ * post-translation value. AArch64 uses a different O_DIRECTORY bit.
+ * Expose the difference here, next to the audited conversion routine,
+ * so one C userspace program works on every native ISA without ad-hoc
+ * architecture-specific ifdefs in filesystem or syscall callers. */
+#if defined(__aarch64__)
+#define NAS_LINUX_NATIVE_O_DIRECTORY 040000ULL
+#else
+#define NAS_LINUX_NATIVE_O_DIRECTORY 0x10000ULL
+#endif
 /* Linux O_PATH ignores ordinary I/O flags, retaining metadata options. */
 static inline uint64_t nas_linux_path_only_flags(uint64_t flags) {
     return (flags & NAS_LINUX_O_PATH) ?
