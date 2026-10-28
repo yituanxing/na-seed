@@ -138,6 +138,15 @@ int main(void) {
     /* A cwd still referencing the live nested directory prevents rmdir. */
     assert(tmp_unlink("/tmp/moved/sub",0x200ULL)==-EBUSY);
     putcwd("/tmp");
+    /* Final group exit releases FS context before PID reap. Zombie task
+     * slots may remain visible but must never be dereferenced through fs. */
+    cwd_task.fs=NULL;
+    assert(tmp_rename("/tmp/moved","/tmp/after-exit",0)==0);
+    assert(tmp_find("/tmp/after-exit/sub")!=NULL);
+    assert(tmp_rename("/tmp/after-exit","/tmp/moved",0)==0);
+    assert(tmp_mkdir("/tmp/after-exit-empty",0700)==0);
+    assert(tmp_unlink("/tmp/after-exit-empty",0x200ULL)==0);
+    putcwd("/tmp");
     assert(tmp_unlink("/tmp/moved/sub",0x200ULL)==0);
     assert(tmp_unlink("/tmp/moved",0x200ULL)==0);
     assert(!tmp_find("/tmp/moved"));

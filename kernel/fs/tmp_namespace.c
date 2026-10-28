@@ -189,7 +189,8 @@ int tmp_unlink(const char *path,uint64_t flags) {
         if(tmp_child_entry(path,0))return -ENOTEMPTY;
         for(unsigned n=0;n<NAS_TASK_LIMIT;n++) {
             struct nas_task *t=nas_task_at(n);
-            if(t && t->state!=NAS_TASK_FREE && strcmp(t->fs->cwd,path)==0)
+            if(t && t->state!=NAS_TASK_FREE && t->fs &&
+               strcmp(t->fs->cwd,path)==0)
                 return -EBUSY;
         }
     }
@@ -246,7 +247,7 @@ int tmp_rename(const char *oldpath,const char *newpath,uint64_t flags) {
         }
         for(unsigned n=0;n<NAS_TASK_LIMIT;n++) {
             const struct nas_task *t=nas_task_at(n);
-            if(t && t->state!=NAS_TASK_FREE &&
+            if(t && t->state!=NAS_TASK_FREE && t->fs &&
                tmp_under(t->fs->cwd,oldpath) &&
                !tmp_move_name(candidate,newpath,oldpath,t->fs->cwd))
                 return -ENAMETOOLONG;
@@ -266,7 +267,7 @@ int tmp_rename(const char *oldpath,const char *newpath,uint64_t flags) {
         }
         for(unsigned n=0;n<NAS_TASK_LIMIT;n++) {
             struct nas_task *t=nas_task_at(n);
-            if(!t || t->state==NAS_TASK_FREE ||
+            if(!t || t->state==NAS_TASK_FREE || !t->fs ||
                !tmp_under(t->fs->cwd,oldpath))continue;
             if(!tmp_move_name(candidate,newpath,oldpath,t->fs->cwd))
                 return -ENAMETOOLONG;
