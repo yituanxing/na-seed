@@ -358,3 +358,16 @@ FS cwd context alongside its own inode lease. It never invokes provider
 binds a resolved canonical path exactly once. Existing `getcwd`
 compatibility fallback is retained only for historical inode-only
 FS-context boot fixtures; it is NOT used in normal Path-owned flows.
+
+## Covered Dentry vs mounted root — distinct mount layers
+
+The positive Dentry hash key MUST distinguish the *mount layer*.
+The exact same parent/name can simultaneously identify a covered inode
+in the lower mount and a visible root inode in the upper mount.
+Only a same-mount new inode incarnation detaches the old Dentry as
+stale name reuse. Acquiring a Path to a mounted root must NEVER
+detach the lower mount's covered Path. A real VFS host test now
+retains lower and upper Paths simultaneously over one mount,
+proves both valid, verifies distinct mount identities and blocks
+unmount while the upper owned Path exists. Vendor filesystem code
+is unchanged.

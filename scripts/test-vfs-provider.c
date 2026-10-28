@@ -739,7 +739,29 @@ int main(void) {
     assert(nas_fs_lookup_node("/bin/..",true,&n,resolved)==0 &&
            !strcmp(resolved,"/"));
     assert(!nas_vfs_inode_is_pinned(&entries[5]));
+    /* A real mount COVER and the VISIBLE mounted root are separate
+     * dentries occupying the same parent/name in different mount layers.
+     * They must NOT detach one another during normal Path acquisition. */
+    struct nas_fs_node underlay_node;
+    char underlay_name[256];
+    assert(nas_fs_lookup_node("/mnt",true,
+                              &underlay_node,underlay_name)==0);
+    struct nas_vfs_path underlay_path={0},visible_path={0};
+    assert(nas_vfs_path_bind(&underlay_node,"/mnt",&underlay_path)==0);
     assert(nas_vfs_register_mount(&ext_mount)==0);
+    struct nas_fs_node visible_node;
+    assert(nas_fs_lookup_node("/mnt",true,&visible_node,resolved)==0);
+    assert(visible_node.mount!=underlay_node.mount);
+    assert(nas_vfs_path_bind(&visible_node,"/mnt",&visible_path)==0);
+    char mount_path_name[256];
+    assert(nas_vfs_path_string(&underlay_path,mount_path_name)==0);
+    assert(!strcmp(mount_path_name,"/mnt"));
+    assert(nas_vfs_path_string(&visible_path,mount_path_name)==0);
+    assert(!strcmp(mount_path_name,"/mnt"));
+    assert(visible_path.dentry!=underlay_path.dentry);
+    assert(nas_vfs_unregister_mount(&ext_mount)==-EBUSY);
+    assert(nas_vfs_path_put(&visible_path)==0);
+    assert(nas_vfs_path_put(&underlay_path)==0);
     /* Covered readdir names must report the visible mounted root inode,
      * not the hidden bootfs /mnt directory's original inode (6). */
     struct nas_fs_node root_list;

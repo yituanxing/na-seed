@@ -592,9 +592,17 @@ static struct nas_vfs_dentry *dentry_find(struct nas_vfs_dentry *parent,
     for(struct nas_vfs_dentry *d=dentry_live;d;d=d->next) {
         if(d->detached || d->parent!=parent || strcmp(d->name,name))
             continue;
+        /* A mounted root and its COVERED lower inode intentionally
+         * have the SAME (parent,basename) but DIFFERENT mounts. They are
+         * separate positive dentries, NOT name-reuse: preserve the
+         * underlay's Path owner until explicit detach, as Linux mounts do.
+         * Only within the SAME mount does this key represent recycled
+         * directory/regular-file identity. */
+        if(d->node.mount!=node->mount ||
+           d->node.mount_id!=node->mount_id)continue;
         if(same_vnode(&d->node,node))return d;
-        /* The same namespace name was reused for a NEW inode. Keep
-         * the old open File identity alive, but detach its Dentry. */
+        /* Same mount, same parent/name, different inode incarnation:
+         * detach the old Dentry without freeing outstanding File owners. */
         d->detached=true;
     }
     return NULL;
