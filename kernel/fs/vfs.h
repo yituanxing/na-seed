@@ -134,6 +134,17 @@ int nas_vfs_chmod(const struct nas_fs_node *node, uint64_t mode);
 int nas_vfs_utimens(const struct nas_fs_node *node, uint64_t atime,
                     uint64_t mtime, bool set_atime, bool set_mtime);
 bool nas_vfs_can_write(const struct nas_fs_node *node);
+/* VFS owns the open inode transaction and policy, independent of Linux
+ * native O_* bit positions or backend type. A successful call returns one
+ * mount+inode reference that MUST be released on final File close. */
+struct nas_vfs_open_options {
+    bool follow_final,create,exclusive,truncate,path_only,directory_only;
+    unsigned access; /* 0=O_RDONLY, 1=O_WRONLY, 2=O_RDWR */
+    uint64_t create_mode;
+};
+int nas_vfs_open_inode(const char *absolute,
+                       const struct nas_vfs_open_options *options,
+                       struct nas_fs_node *owned,char canonical[256]);
 int nas_vfs_create(const char *absolute,uint64_t mode);
 int64_t nas_vfs_write_at(const struct nas_fs_node *node,uint64_t offset,
                          const uint8_t *source,uint64_t count);

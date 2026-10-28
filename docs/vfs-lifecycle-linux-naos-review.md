@@ -167,3 +167,19 @@ fields were removed from the shared open-description object: inode ownership
 is not copied or encoded a second time in an FD. The three-ISA ext4 guest
 further proves O_CREAT|O_DIRECTORY on a nonexistent inode refuses without
 creating a leftover file. This guard precedes the VFS namespace mutation.
+
+### VFS owns the complete mounted inode open transaction
+
+The Linux/NaOS comparison exposed another boundary leak: after unifying
+namei in the Linux open adapter, it still implemented the filesystem's
+create/exclusive/truncate/RO/dir/symlink policy and its pin transaction.
+These operations now live in `nas_vfs_open_inode(path,options,node)`: one
+common VFS control plane for ALL providers, returning an explicitly owned
+mount+inode lease on success. The Linux-facing syscall adapter only decodes
+per-ISA O_* bits, picks temporary synthetic devices, reserves an FD slot,
+installs the shared File, and transfers that lease (or releases it on FD
+capacity failure). O_EXCL does not follow a final symlink, while directory
+creation guards and mount read-only/capability checks precede mutation.
+The original Limine non-VFS module exception remains a narrow compatibility
+bridge, not a second file implementation. A real common host VFS fixture
+covers pinned open, read-only write refusal, O_DIRECTORY and O_EXCL.

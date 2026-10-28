@@ -294,6 +294,30 @@ int main(void) {
     assert(nas_fs_lookup_node("/bin/demo",true,&n,resolved)==0);
     assert(!strcmp(resolved,"/bin/demo") && !strcmp(n.filesystem->name,"bootfs"));
     assert(nas_vfs_read_at(&n,0,(uint8_t *)data,4)==4);
+    /* Open policy belongs to one VFS inode transaction, not one
+     * Linux syscall branch per provider. The returned node is pinned. */
+    struct nas_fs_node opened;
+    struct nas_vfs_open_options open_options={.follow_final=true,.access=0};
+    assert(nas_vfs_open_inode("/bin/demo",&open_options,
+                              &opened,resolved)==0);
+    assert(opened.mount && opened.ino==n.ino);
+    assert(nas_vfs_node_unpin(&opened)==0);
+    open_options.access=1;
+    assert(nas_vfs_open_inode("/bin/demo",&open_options,
+                              &opened,resolved)==-EROFS);
+    open_options.access=0;
+    open_options.directory_only=true;
+    assert(nas_vfs_open_inode("/bin/demo",&open_options,
+                              &opened,resolved)==-ENOTDIR);
+    open_options.create=true;open_options.exclusive=true;
+    open_options.directory_only=false;
+    assert(nas_vfs_open_inode("/bin/demo",&open_options,
+                              &opened,resolved)==-EEXIST);
+    open_options.directory_only=true;
+    assert(nas_vfs_open_inode("/tmp/open-never-created",&open_options,
+                              &opened,resolved)==-ENOTDIR);
+    assert(nas_fs_lookup_node("/tmp/open-never-created",true,
+                              &opened,resolved)==-ENOENT);
     assert(!memcmp(data,elf_bytes,4) && !nas_vfs_can_write(&n));
     assert(nas_vfs_chmod(&n,0666)==-EROFS);
     assert(nas_fs_lookup_node("/tmp/demo",true,&n,resolved)==0);

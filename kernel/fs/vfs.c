@@ -480,6 +480,58 @@ static const char *vfs_leaf(const char *canonical) {
     const char *last=strrchr(canonical,'/');
     return last ? last+1 : canonical;
 }
+/* Linux do_filp_open and NaOS vfs_open belong on the common VFS side of
+ * the syscall boundary. The Linux ABI adapter supplies decoded options,
+ * and no provider-specific inode or open File subclass leaks into this API.
+ * A successful open owns exactly one inode lease and mount reference. */
+int nas_vfs_open_inode(const char *path,
+                       const struct nas_vfs_open_options *options,
+                       struct nas_fs_node *owned,char canonical[256]) {
+    if(!path || path[0]!='/' || !options || !owned || !canonical)
+        return -EINVAL;
+    if(options->access>2)return -EINVAL;
+    struct nas_fs_node node={0};
+    /* O_CREAT|O_EXCL must examine a final symlink itself, not follow it
+     * to a missing destination and accidentally create another inode. */
+    bool follow=options->follow_final &&
+                !(options->create && options->exclusive);
+    int rc=nas_fs_lookup_node(path,follow,&node,canonical);
+    bool newly_created=false;
+    if(rc==-ENOENT && options->create) {
+        /* Never write a regular inode when the caller requires a dir. */
+        if(options->directory_only)return -ENOTDIR;
+        if(options->truncate && !options->path_only && !options->access)
+            return -EINVAL;
+        rc=nas_vfs_create(path,options->create_mode);
+        if(rc)return rc;
+        rc=nas_fs_lookup_node(path,follow,&node,canonical);
+        if(rc)return rc;
+        newly_created=true;
+    } else if(rc)return rc;
+    if(!newly_created && options->create && options->exclusive)
+        return -EEXIST;
+    if(options->directory_only && !node.is_dir)return -ENOTDIR;
+    if(node.is_symlink && !follow && !options->path_only)
+        return -ELOOP;
+    if((node.mode&0170000U)==0140000U && !options->path_only)
+        return -ENXIO; /* UNIX sockets are not byte files */
+    if(node.is_dir && (options->access || options->truncate))
+        return -EISDIR;
+    if(!options->path_only && !node.is_dir &&
+       (options->access || options->truncate) &&
+       !nas_vfs_can_write(&node))return -EROFS;
+    if(options->truncate && !options->access && !options->path_only)
+        return -EINVAL;
+    if(options->truncate && !options->path_only) {
+        rc=nas_vfs_resize(&node,0);
+        if(rc)return rc;
+        node.size=0;
+    }
+    rc=nas_vfs_node_pin(&node);
+    if(rc)return rc;
+    *owned=node; /* transfer the unique pin to its shared File owner */
+    return 0;
+}
 int nas_vfs_create(const char *path,uint64_t mode) {
     if(!path || path[0]!='/')return -EINVAL;
     struct nas_fs_node existing;
