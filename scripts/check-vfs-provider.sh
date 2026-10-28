@@ -10,13 +10,13 @@ build/vfs-provider/test
 # A deleted duplicate mount-inode owner is an architectural invariant:
 # positive Dentry/Path handles BOTH covered and parent mount lifetimes.
 # Never reintroduce covered_pinned / parent_pinned in another refactor.
-if grep -Eq '\\b(parent_pinned|covered_pinned)\\b' kernel/fs/vfs.c; then
+if grep -Eq '(^|[^[:alnum:]_])(parent_pinned|covered_pinned)([^[:alnum:]_]|$)' kernel/fs/vfs.c; then
   echo '[VFS FAIL] stale parallel mount pin ownership returned' >&2
   exit 1
 fi
 # Mount identity exists exactly once in its owning Dentry Path, not an
 # independent pointer/inode tuple that may diverge after rename/reuse.
-if grep -Eq 'parent_mount_id|parent_backend_inode|parent_ino|parent_node|covered_node|parent_anchored' kernel/fs/vfs.c; then
+if grep -Eq '(^|[^[:alnum:]_])(parent_mount_id|parent_backend_inode|parent_ino|parent_node|covered_node|parent_anchored)([^[:alnum:]_]|$)' kernel/fs/vfs.c; then
   echo '[VFS FAIL] copied mount identity escaped its Path owner' >&2
   exit 1
 fi

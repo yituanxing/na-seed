@@ -115,7 +115,7 @@ for item in ("struct nas_vfs_mount superblock;", "const struct nas_vfs_mount *re
 for obsolete in ("parent_mount_id", "parent_backend_inode", "parent_ino",
                  "parent_node", "covered_node", "parent_anchored",
                  "parent_pinned", "covered_pinned"):
-    if re.search(r"\\b"+obsolete+r"\\b", vfs_src):
+    if re.search(r"\b"+obsolete+r"\b", vfs_src):
         raise SystemExit(f"copied mount identity reintroduced: {obsolete}")
 if "mounts[i]=mounts[i+1]" in vfs_src or "mounts[count++]" in vfs_src:
     raise SystemExit("packed mount registry would invalidate open File mounts")
