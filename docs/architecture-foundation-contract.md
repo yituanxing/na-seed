@@ -371,3 +371,21 @@ retains lower and upper Paths simultaneously over one mount,
 proves both valid, verifies distinct mount identities and blocks
 unmount while the upper owned Path exists. Vendor filesystem code
 is unchanged.
+
+## Remove copied mount identity tuples (no second owner)
+
+Mount crossing (`lookup_step`), mounted `readdir`, direct bootstrap
+visibility checks and unmount validation now all derive their mounted
+parent's identity from **the same counted Path Dentry**. The redundant
+`parent_mount`, `parent_mount_id`, `parent_ino`, backend-pointer
+copy, parent/covered inode snapshot and anchored boolean were deleted
+from `mount_slot`. The mount's Path owner is the object of record,
+not a copied identity checked separately by each algorithm.
+
+The actual parent node is read from its Dentry only while the mount's
+Path reference is held. The covered inode is likewise read from the
+owned covered Dentry. Names remain independently stored only for
+virtual mountpoint directory entries (an intentional namespace label,
+not a duplicate inode owner). A preflight guard forbids reintroducing
+the retired tuple fields. A future Mount namespace can reuse this
+single identity model without structural changes to providers.

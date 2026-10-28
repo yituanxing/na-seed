@@ -184,21 +184,23 @@ struct mount_slot {
     const struct nas_vfs_mount *registration;
     struct nas_vfs_mount superblock;
     char path[256];
-    const struct nas_vfs_mount *parent_mount;
-    const void *parent_backend_inode;
-    uint64_t parent_ino,parent_mount_id;
     char covered_name[256];
     uint32_t open_refs,child_refs;
     uint64_t device_id;
-    bool parent_anchored;
     /* Genuine owning attachment anchors: these Paths own parent Dentry,
      * covered Dentry and all corresponding ancestor/mount references.
      * No second legacy inode pin exists beside the Dentry owner. A
      * missing bootstrap covered name has only a parent Path, not a fake
      * inode. The mount slot itself is stable until unregistration. */
     struct nas_vfs_path parent_path,covered_path;
-    struct nas_fs_node parent_node,covered_node;
 };
+/* The ONLY parent/covered identity authority is the Dentry owned by
+ * each mount's Path. These helpers are implemented after the concrete
+ * Dentry definition; no tuple copy can drift from the Path object. */
+static const struct nas_fs_node *mount_parent_inode(
+    const struct mount_slot *slot);
+static const struct nas_fs_node *mount_covered_inode(
+    const struct mount_slot *slot);
 static uint64_t next_device_id=8;
 static struct mount_slot mounts[NAS_VFS_MOUNT_LIMIT];
 static unsigned count;
@@ -259,8 +261,8 @@ static bool mount_matches(const char *prefix, const char *path) {
  * backend inode incarnation (including a provider recycling the inode)
  * before allowing a direct lookup across this mount boundary. */
 static bool mount_parent_visible(const struct mount_slot *slot) {
-    if(!slot->parent_anchored)return true;
-    if(!slot->parent_path.dentry)return false;
+    const struct nas_fs_node *owner=mount_parent_inode(slot);
+    if(!owner)return true; /* genuine bootstrap/rootless mount */
     char parent_path[256],canonical[256];
     if(nas_vfs_path_string(&slot->parent_path,parent_path))return false;
     size_t n=strlen(slot->path);
@@ -272,12 +274,10 @@ static bool mount_parent_visible(const struct mount_slot *slot) {
     if(strcmp(attached_parent,parent_path))return false;
     struct nas_fs_node current;
     if(nas_fs_lookup_node(parent_path,true,&current,canonical))return false;
-    return current.mount==slot->parent_path.mount &&
-           current.mount_id==slot->parent_path.mount_id &&
-           current.mount==slot->parent_mount &&
-           current.mount_id==slot->parent_mount_id &&
-           current.ino==slot->parent_ino &&
-           current.inode==slot->parent_backend_inode;
+    return current.mount==owner->mount &&
+           current.mount_id==owner->mount_id &&
+           current.ino==owner->ino &&
+           current.inode==owner->inode;
 }
 int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
     ensure_defaults();
@@ -370,7 +370,6 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
         int rc=nas_vfs_path_bind(&parent,parent_path,
                                  &attached.parent_path);
         if(rc)return rc;
-        attached.parent_node=parent;
         if(has_covered) {
             rc=nas_vfs_path_bind(&covered,mount->mountpoint,
                                  &attached.covered_path);
@@ -378,13 +377,7 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
                 (void)nas_vfs_path_put(&attached.parent_path);
                 return rc;
             }
-            attached.covered_node=covered;
         }
-        attached.parent_anchored=true;
-        attached.parent_mount=parent.mount;
-        attached.parent_mount_id=parent.mount_id;
-        attached.parent_ino=parent.ino;
-        attached.parent_backend_inode=parent.inode;
         const char *last=strrchr(mount->mountpoint,'/');
         if(!last || !last[1]) {
             if(attached.covered_path.dentry)
@@ -492,14 +485,15 @@ int nas_vfs_lookup_step(const struct nas_fs_node *parent,const char *absolute,
         const struct mount_slot *slot=&mounts[i];
         if(!slot->used)continue;
         const struct nas_vfs_mount *mnt=&slot->superblock;
-        if(slot->parent_anchored) {
-            /* Match (parent mount incarnation, parent inode, basename).
-             * Never trust a mountpoint string as an attachment identity. */
+        const struct nas_fs_node *anchor=mount_parent_inode(slot);
+        if(anchor) {
+            /* Match the EXACT owner of the mounted parent Dentry; no
+             * parallel ino/pointer/mount tuple may become stale. */
             if(strcmp(name,slot->covered_name) ||
-               !parent || parent->mount!=slot->parent_mount ||
-               parent->mount_id!=slot->parent_mount_id ||
-               parent->ino!=slot->parent_ino ||
-               parent->inode!=slot->parent_backend_inode)
+               !parent || parent->mount!=anchor->mount ||
+               parent->mount_id!=anchor->mount_id ||
+               parent->ino!=anchor->ino ||
+               parent->inode!=anchor->inode)
                 continue;
         } else if(strcmp(mnt->mountpoint,absolute))continue;
         *out=(struct nas_fs_node){0};
@@ -561,6 +555,16 @@ struct nas_vfs_dentry {
     char name[256]; /* '/' root or '/mnt' for direct-ELF rootless bootstrap */
 };
 static struct nas_vfs_dentry *dentry_live;
+static const struct nas_fs_node *mount_parent_inode(
+    const struct mount_slot *slot) {
+    if(!slot || !slot->parent_path.dentry)return NULL;
+    return &slot->parent_path.dentry->node;
+}
+static const struct nas_fs_node *mount_covered_inode(
+    const struct mount_slot *slot) {
+    if(!slot || !slot->covered_path.dentry)return NULL;
+    return &slot->covered_path.dentry->node;
+}
 static bool same_vnode(const struct nas_fs_node *a,
                        const struct nas_fs_node *b) {
     return a->mount==b->mount && a->mount_id==b->mount_id &&
@@ -860,11 +864,12 @@ static bool valid_vfs_dirent(const struct nas_vfs_dirent *entry) {
  * absolute string spelling of an old directory is NOT the mount owner. */
 static bool mounted_child_of(const struct mount_slot *slot,
                              const struct nas_fs_node *parent) {
-    return slot->used && slot->parent_anchored &&
-           slot->parent_mount==parent->mount &&
-           slot->parent_mount_id==parent->mount_id &&
-           slot->parent_ino==parent->ino &&
-           slot->parent_backend_inode==parent->inode;
+    const struct nas_fs_node *owner=mount_parent_inode(slot);
+    return slot->used && owner && parent &&
+           owner->mount==parent->mount &&
+           owner->mount_id==parent->mount_id &&
+           owner->ino==parent->ino &&
+           owner->inode==parent->inode;
 }
 static int mounted_directory_entry(const struct mount_slot *slot,
                                    struct nas_vfs_dirent *entry) {
@@ -1335,18 +1340,18 @@ int nas_vfs_unregister_mount(const struct nas_vfs_mount *registration) {
             return -EBUSY;
     }
     unsigned parent_at=NAS_VFS_MOUNT_LIMIT;
-    if(mounts[at].parent_anchored) {
+    const struct nas_fs_node *owner=mount_parent_inode(&mounts[at]);
+    const struct nas_fs_node *covered=mount_covered_inode(&mounts[at]);
+    if(owner) {
         for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++)
             if(mounts[i].used &&
-               &mounts[i].superblock==mounts[at].parent_mount) {
+               &mounts[i].superblock==owner->mount) {
                 parent_at=i;break;
             }
         if(parent_at==NAS_VFS_MOUNT_LIMIT ||
            !mounts[parent_at].child_refs ||
-           !mounts[at].parent_path.dentry)return -EIO;
-        if(!inode_lease(&mounts[at].parent_node) ||
-           (mounts[at].covered_path.dentry &&
-            !inode_lease(&mounts[at].covered_node)))return -EIO;
+           !inode_lease(owner) ||
+           (covered && !inode_lease(covered)))return -EIO;
     }
     /* Drop covered before parent: a covered Dentry can own its parent.
      * Both are real Path owners; do not release an extra inode pin. */
