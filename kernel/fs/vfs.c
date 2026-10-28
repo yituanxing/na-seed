@@ -999,9 +999,11 @@ static const char *vfs_leaf(const char *canonical) {
  * A successful open owns exactly one inode lease and mount reference. */
 int nas_vfs_open_inode(const char *path,
                        const struct nas_vfs_open_options *options,
-                       struct nas_fs_node *owned,char canonical[256]) {
+                       struct nas_fs_node *owned,char canonical[256],
+                       struct nas_vfs_path *owned_path) {
     if(!path || path[0]!='/' || !options || !owned || !canonical)
         return -EINVAL;
+    if(owned_path)*owned_path=(struct nas_vfs_path){0};
     if(options->access>2)return -EINVAL;
     struct nas_fs_node node={0};
     /* O_CREAT|O_EXCL must examine a final symlink itself, not follow it
@@ -1052,15 +1054,28 @@ int nas_vfs_open_inode(const char *path,
      * stale incarnation, ENFILE or mount limits must not erase data. */
     rc=nas_vfs_node_pin(&node);
     if(rc)return rc;
+    /* The VFS, not the syscall ABI, owns the Dentry/Open transaction.
+     * Bind AFTER exact-inode pin, BEFORE side effects or File publication.
+     * A failure releases the inode and never produces half an open. */
+    struct nas_vfs_path file_path={0};
+    if(owned_path && node.is_dir) {
+        rc=nas_vfs_path_bind(&node,canonical,&file_path);
+        if(rc) {
+            (void)nas_vfs_node_unpin(&node);
+            return rc;
+        }
+    }
     if(options->truncate && !options->path_only) {
         rc=nas_vfs_resize(&node,0);
         if(rc) {
+            if(file_path.dentry)(void)nas_vfs_path_put(&file_path);
             (void)nas_vfs_node_unpin(&node);
             return rc;
         }
         node.size=0;
     }
-    *owned=node; /* transfer the unique pin to its shared File owner */
+    *owned=node; /* transfer inode to shared File */
+    if(owned_path)*owned_path=file_path; /* transfer Path to same File */
     return 0;
 }
 int nas_vfs_create(const char *path,uint64_t mode) {

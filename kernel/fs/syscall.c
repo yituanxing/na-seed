@@ -435,6 +435,7 @@ uint64_t nas_fs_open_path(const char *path,uint64_t native_flags,
     const struct limine_file *real_file=NULL;
     bool have_node=false;
     struct nas_fs_node opened_node={0};
+    struct nas_vfs_path directory_path={0};
     char canonical[256];
 
     /* Temporary synthetic-device bridge; filesystems never receive a
@@ -470,7 +471,8 @@ uint64_t nas_fs_open_path(const char *path,uint64_t native_flags,
             .directory_only=(flags&0x10000ULL)!=0,.access=access,
             .create_mode=nas_fs_create_mode(create_mode,TASK.fs->umask)
         };
-        int rc=nas_vfs_open_inode(path,&options,&opened_node,canonical);
+        int rc=nas_vfs_open_inode(path,&options,&opened_node,canonical,
+                                  &directory_path);
         if(!rc) {
             have_node=true;
             kind=opened_node.is_dir?FD_DIR:FD_ARCHIVE;
@@ -500,17 +502,9 @@ uint64_t nas_fs_open_path(const char *path,uint64_t native_flags,
             nas_pty_attach_controlling(slot);
         if(err)return (uint64_t)(int64_t)err;
     }
-    /* A directory File owns a positive Dentry/Path BEFORE publishing its
-     * descriptor. This is the same inode returned by the VFS open
-     * transaction, not a second independent provider open. */
-    struct nas_vfs_path directory_path={0};
-    if(have_node && opened_node.is_dir) {
-        int path_rc=nas_vfs_path_bind(&opened_node,canonical,&directory_path);
-        if(path_rc) {
-            (void)nas_vfs_node_unpin(&opened_node);
-            return (uint64_t)(int64_t)path_rc;
-        }
-    }
+    /* Inode AND optional directory Dentry are one VFS-owned open
+     * transaction. The syscall layer just transfers their references
+     * to this shared File description; it never constructs a Path. */
     if(!nas_fd_install_new(nas_current_task,fd,slot,kind,
                            flags&(NAS_LINUX_O_PATH|3ULL|0x800ULL|0x400ULL),
                            !!(flags&0x80000ULL)))

@@ -378,23 +378,38 @@ int main(void) {
     struct nas_fs_node opened;
     struct nas_vfs_open_options open_options={.follow_final=true,.access=0};
     assert(nas_vfs_open_inode("/bin/demo",&open_options,
-                              &opened,resolved)==0);
+                              &opened,resolved,NULL)==0);
     assert(opened.mount && opened.ino==n.ino);
     assert(nas_vfs_node_unpin(&opened)==0);
+    /* The normal File opener requests a Dentry in the same transaction.
+     * Verify both independent owners can be returned and relinquished
+     * without path strings, additional syscalls or duplicate inode ops. */
+    struct nas_vfs_open_options directory_options={
+        .follow_final=true,.directory_only=true,.access=0
+    };
+    struct nas_vfs_path returned_directory={0};
+    assert(nas_vfs_open_inode("/tmp",&directory_options,&opened,resolved,
+                              &returned_directory)==0);
+    char directory_absolute[256];
+    assert(nas_vfs_path_string(&returned_directory,directory_absolute)==0);
+    assert(!strcmp(directory_absolute,"/tmp"));
+    assert(nas_vfs_node_unpin(&opened)==0);
+    assert(nas_vfs_path_put(&returned_directory)==0);
+    assert(!returned_directory.dentry);
     open_options.access=1;
     assert(nas_vfs_open_inode("/bin/demo",&open_options,
-                              &opened,resolved)==-EROFS);
+                              &opened,resolved,NULL)==-EROFS);
     open_options.access=0;
     open_options.directory_only=true;
     assert(nas_vfs_open_inode("/bin/demo",&open_options,
-                              &opened,resolved)==-ENOTDIR);
+                              &opened,resolved,NULL)==-ENOTDIR);
     open_options.create=true;open_options.exclusive=true;
     open_options.directory_only=false;
     assert(nas_vfs_open_inode("/bin/demo",&open_options,
-                              &opened,resolved)==-EEXIST);
+                              &opened,resolved,NULL)==-EEXIST);
     open_options.directory_only=true;
     assert(nas_vfs_open_inode("/tmp/open-never-created",&open_options,
-                              &opened,resolved)==-ENOTDIR);
+                              &opened,resolved,NULL)==-ENOTDIR);
     assert(nas_fs_lookup_node("/tmp/open-never-created",true,
                               &opened,resolved)==-ENOENT);
     assert(!memcmp(data,elf_bytes,4) && !nas_vfs_can_write(&n));
@@ -501,10 +516,10 @@ int main(void) {
     };
     struct nas_fs_node created_through_link;
     assert(nas_vfs_open_inode("/tmp/link",&via_link,
-                              &created_through_link,resolved)==-EEXIST);
+                              &created_through_link,resolved,NULL)==-EEXIST);
     via_link.exclusive=false;
     assert(nas_vfs_open_inode("/tmp/link",&via_link,
-                              &created_through_link,resolved)==0);
+                              &created_through_link,resolved,NULL)==0);
     assert(!strcmp(resolved,"/tmp/newfile"));
     assert(created_through_link.inode==&fixture_created);
     assert(nas_vfs_node_unpin(&created_through_link)==0);
@@ -538,7 +553,7 @@ int main(void) {
         .follow_final=true,.access=2,.truncate=true
     };
     assert(nas_vfs_open_inode("/tmp/newfile",&grow_options,
-                              &newly_opened,newly_opened_path)==0);
+                              &newly_opened,newly_opened_path,NULL)==0);
     assert(fixture_created_length==0 && fixture_created.size==0);
     assert(nas_vfs_node_unpin(&newly_opened)==0);
     assert(nas_vfs_write_at(&n,0,(const uint8_t *)"xyz",3)==3);
@@ -548,7 +563,7 @@ int main(void) {
     grow_options.create=true;
     grow_options.create_mode=0640;
     assert(nas_vfs_open_inode("/tmp/open-never-created",&grow_options,
-                              &newly_opened,newly_opened_path)==-ENOSPC);
+                              &newly_opened,newly_opened_path,NULL)==-ENOSPC);
     assert(nas_fs_lookup_node("/tmp/open-never-created",true,
                                &newly_opened,newly_opened_path)==-ENOENT);
     for(unsigned i=0;i<512;i++)
