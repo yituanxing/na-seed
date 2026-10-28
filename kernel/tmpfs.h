@@ -29,7 +29,6 @@ struct nas_tmp_file {
  };
 
 bool tmp_path(const char *path);
-bool tmp_parent(const char *path, char parent[256]);
 /* A dentry names an inode. Multiple dentries may reference one regular file.
  * Only namespace code owns and mutates path strings. */
 /* The dentry owns only (parent inode, basename) -> child inode.

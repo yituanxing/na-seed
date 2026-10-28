@@ -38,6 +38,10 @@ static struct nas_tmp_file fixture_open_child={
 static struct nas_tmp_file fixture_orphan={
     .used=true,.mode=0100600,.nlink=0,.ino=107
 };
+/* Saturation identities are REAL distinct, reusable tmp inode slots.
+ * The old test fabricated inode numbers pointing at one file and was
+ * invalid once the VFS gained a mandatory backend incarnation check. */
+static struct nas_tmp_file capacity_fixture[257];
 static unsigned orphan_releases;
 void tmp_inode_discard(struct nas_tmp_file *node) {
     /* An actual kernel reclaims only orphaned, unpinned inodes; the
@@ -489,8 +493,12 @@ int main(void) {
     struct nas_fs_node capacity_pins[257];
     unsigned capacity_used=0;
     for(;capacity_used<257;capacity_used++) {
+        capacity_fixture[capacity_used]=(struct nas_tmp_file){
+            .used=true,.mode=0100600U,.ino=100000U+capacity_used
+        };
         capacity_pins[capacity_used]=n;
-        capacity_pins[capacity_used].ino=100000U+capacity_used;
+        capacity_pins[capacity_used].inode=&capacity_fixture[capacity_used];
+        capacity_pins[capacity_used].ino=5000+capacity_fixture[capacity_used].ino;
         int rc=nas_vfs_node_pin(&capacity_pins[capacity_used]);
         if(rc==-ENFILE)break;
         assert(rc==0);

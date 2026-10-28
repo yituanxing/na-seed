@@ -108,6 +108,8 @@ if "struct nas_tmp_dentry" not in tmp_h or \
     raise SystemExit("tmpfs must own a parent-inode + one-basename dentry")
 if "char path[256];" in tmp_h:
     raise SystemExit("absolute path cache reintroduced into tmpfs dentry")
+if "tmp_parent(" in tmp_h or "bool tmp_parent(" in tmp_ns:
+    raise SystemExit("dead second tmpfs lexical parent helper returned")
 for required in ("tmp_create_at(", "tmp_mkdir_at(", "tmp_unlink_at(",
                  "tmp_rename_at(", "tmp_link_at(", "tmp_symlink_at(",
                  "tmp_child_entry_inode(", "tmp_dir_parent_inode("):

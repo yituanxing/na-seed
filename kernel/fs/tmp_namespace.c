@@ -100,15 +100,6 @@ static int legacy_parent(const char *path,const void **parent,
     *parent=d->inode;
     return 0;
 }
-bool tmp_parent(const char *path,char parent[256]) {
-    if(!tmp_path(path) || !parent)return false;
-    unsigned n=0,slash=0;
-    for(;path[n] && n<256;n++)if(path[n]=='/')slash=n;
-    if(n==256 || slash<4 || !path[slash+1])return false;
-    unsigned size=slash==4?4:slash;
-    memcpy(parent,path,size);parent[size]=0;
-    return true;
-}
 int tmp_parent_check(const char *path) {
     const void *parent=0;char name[256];
     return legacy_parent(path,&parent,name);
