@@ -116,3 +116,17 @@ IOMMU, MSI-X, hotplug or native physical hardware coverage.
 and requires clean guest unmount + host e2fsck/debugfs persistence. This is
 release-gating until the exact-head CI proves it; neither the new code nor
 syntax checks alone establish a passing hardware acceptance.
+
+### QEMU q35 PCI capability discriminator correction
+
+Real x86 QEMU root-bus acceptance on exact head `26676c5a` found
+`[VIRTIO PCI FAIL] stage=caps error=22` after successfully mapping BAR1
+(4 KiB) and BAR4 (16 KiB). Root-cause audit: PCI capabilities are a linked
+list with **two universal bytes** (ID/next); the third byte is a length
+*only* for vendor-specific ID 0x09. For a standard MSI-X capability, byte
++2 is Message Control and can be zero. The original parser erroneously
+validated that byte as a length for every capability, rejecting the valid
+QEMU device. The corrected parser checks the vendor-specific length only
+for cap ID 0x09, and the host regression explicitly places an MSI-X cap
+with a zero Message Control ahead of the same real VirtIO caps. This is a
+source-level fix pending new exact-head physical QEMU acceptance.

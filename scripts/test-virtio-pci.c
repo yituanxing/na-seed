@@ -88,6 +88,11 @@ int main(void) {
     ops->reset(&f.pci);
     assert(f.common[0x14]==0 && f.pci.queue_notify[0]==NULL);
 
+    /* Real QEMU exposes MSI-X/PCIe standard caps before VirtIO.
+     * MSI-X byte +2 is control, not a vendor capability length. */
+    prepare(&f);f.config[0x34]=0x80;
+    f.config[0x80]=0x11;f.config[0x81]=0x40;f.config[0x82]=0;
+    assert(initialize(&f)==0);
     prepare(&f);f.config[0]=0;
     assert(initialize(&f)==-ENODEV);
     prepare(&f);f.config[6]=0;
@@ -105,7 +110,7 @@ int main(void) {
     prepare(&f);f.config[0x50+1]=0;
     assert(initialize(&f)==-ENODEV); /* missing device config */
     prepare(&f);f.config[0x40+2]=15;
-    assert(initialize(&f)==-ENODEV); /* malformed common cap omitted */
+    assert(initialize(&f)==-EINVAL); /* malformed vendor cap length */
     prepare(&f);assert(initialize(&f)==0);
     ops=f.tr.ops;
     p16(f.common,0x12,1);p16(f.common,0x18,8);

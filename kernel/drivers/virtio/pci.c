@@ -131,9 +131,14 @@ int nas_virtio_pci_transport_init(struct nas_virtio_transport *out,
         if(cap<0x40U || cap>0xfcU || (cap&3U) ||
            ++traversed>48U || visited[cap])return -EINVAL;
         visited[cap]=1U;
-        unsigned next=cfg[cap+1],cap_len=cfg[cap+2];
-        if(cap_len<2U || cap_len>256U-cap)return -EINVAL;
-        if(cfg[cap]==PCI_CAP_VENDOR && cap_len>=16U) {
+        unsigned next=cfg[cap+1];
+        /* Every standard PCI capability has only the 2-byte id/next
+         * prefix. Byte +2 is a LENGTH solely for vendor-specific cap 09;
+         * for MSI-X it is Message Control and may legitimately be zero.
+         * Rejecting a zero there broke real QEMU q35 PCI discovery. */
+        if(cfg[cap]==PCI_CAP_VENDOR) {
+            unsigned cap_len=cfg[cap+2];
+            if(cap_len<16U || cap_len>256U-cap)return -EINVAL;
             unsigned type=cfg[cap+3],bar=cfg[cap+4];
             if(type==CAP_COMMON || type==CAP_NOTIFY || type==CAP_DEVICE) {
                 unsigned bit=1U<<type;
