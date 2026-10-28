@@ -1,8 +1,12 @@
 #include "lookup.h"
 #include "../errno.h"
-/* Generic namei over mounted filesystem callbacks. Retains existing bounded
- * path/symlink policy, but never calls any concrete filesystem directly. */
-int nas_fs_resolve_existing(const char *path,bool follow_final,char out[256]) {
+#include "../lib/string.h"
+/* A single VFS component pathwalk. The filesystem observes only a parent
+ * inode and one name; the VFS alone handles symlinks, mountpoint crossings,
+ * legacy overlay, dot/dotdot and canonical path construction. Owned
+ * mount+dentry objects will replace the current bounded path cache later. */
+static int resolve_walk(const char *path,bool follow_final,
+                        struct nas_fs_node *result,char out[256]) {
     if(!path || path[0]!='/')return -ENOENT;
     char pending[256];unsigned length=0;
     while(path[length]) {
@@ -10,13 +14,14 @@ int nas_fs_resolve_existing(const char *path,bool follow_final,char out[256]) {
         pending[length]=path[length];length++;
     }
     pending[length]=0;
-    /* Linux requires the terminal slash to resolve to a directory. */
     const bool trailing_slash=length>1 && pending[length-1]=='/';
     unsigned links=0;
     for(;;) {
         char resolved[256];
         resolved[0]='/';resolved[1]=0;
         unsigned used=1,pos=0;
+        struct nas_fs_node current={0};
+        bool have_current=nas_vfs_lookup("/", &current)==0;
         bool restart=false;
         while(pending[pos]) {
             while(pending[pos]=='/')pos++;
@@ -28,14 +33,22 @@ int nas_fs_resolve_existing(const char *path,bool follow_final,char out[256]) {
             if(len==2 && pending[start]=='.' && pending[start+1]=='.') {
                 while(used>1 && resolved[used-1]!='/')used--;
                 if(used>1)used--;
-                resolved[used]=0;continue;
+                resolved[used]=0;
+                /* Until VFS owns parent dentries, moving upward must
+                 * revalidate the current namespace identity. */
+                have_current=nas_vfs_lookup(resolved,&current)==0;
+                continue;
             }
             if(used+(used!=1)+len>=256)return -ENAMETOOLONG;
             if(used!=1)resolved[used++]='/';
             for(unsigned i=0;i<len;i++)resolved[used++]=pending[start+i];
             resolved[used]=0;
+            char component[256];
+            for(unsigned i=0;i<len;i++)component[i]=pending[start+i];
+            component[len]=0;
             struct nas_fs_node inode;
-            int rc=nas_vfs_lookup(resolved,&inode);
+            int rc=nas_vfs_lookup_step(have_current?&current:NULL,
+                                       resolved,component,&inode);
             if(rc)return rc;
             unsigned tail=pos;
             while(pending[tail]=='/')tail++;
@@ -67,16 +80,24 @@ int nas_fs_resolve_existing(const char *path,bool follow_final,char out[256]) {
                 restart=true;break;
             }
             if((!last || trailing_slash) && !inode.is_dir)return -ENOTDIR;
+            current=inode;have_current=true;
         }
         if(restart)continue;
         for(unsigned i=0;i<=used;i++)out[i]=resolved[i];
+        if(result) {
+            if(!have_current)return -ENOENT;
+            *result=current;
+        }
         return 0;
     }
+}
+int nas_fs_resolve_existing(const char *path,bool follow_final,char out[256]) {
+    if(!out)return -EINVAL;
+    return resolve_walk(path,follow_final,NULL,out);
 }
 int nas_fs_lookup_node(const char *path,bool follow_final,
                        struct nas_fs_node *result,char resolved[256]) {
     if(!path || !result || !resolved)return -ENOENT;
     if(path[0]!='/')return -EINVAL;
-    int err=nas_fs_resolve_existing(path,follow_final,resolved);
-    return err ? err : nas_vfs_lookup(resolved,result);
+    return resolve_walk(path,follow_final,result,resolved);
 }

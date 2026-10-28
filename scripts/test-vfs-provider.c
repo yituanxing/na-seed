@@ -432,6 +432,7 @@ int main(void) {
     assert(nas_vfs_unregister_mount(&ext_mount)==-ENOENT);
     /* One provider can appear beneath two independent VFS mount records.
      * Directory lookup must never depend on its globally spelled mount path. */
+    assert(nas_vfs_register_mount(&ext_mount)==0);
     static const struct nas_vfs_mount alias_mount={
         .mountpoint="/mnt-alias",.type=&ext_mock_type
     };
@@ -440,6 +441,10 @@ int main(void) {
     assert(nas_vfs_lookup("/mnt/hello",&first)==0);
     assert(nas_vfs_lookup("/mnt-alias/hello",&second)==0);
     assert(first.ino==second.ino && first.mount!=second.mount);
+    /* The real, shared namei pathwalk must obey exactly the same
+     * mount-root/child contract as the direct kernel VFS lookup. */
+    assert(nas_fs_lookup_node("/mnt-alias/hello",true,&second,resolved)==0);
+    assert(second.mount==&alias_mount && second.ino==first.ino);
     assert(nas_vfs_node_device(&first)!=nas_vfs_node_device(&second));
     assert(nas_vfs_link("/mnt/hello","/mnt-alias/linked")==-EXDEV);
     assert(nas_vfs_unregister_mount(&alias_mount)==0);

@@ -99,6 +99,11 @@ uint64_t nas_vfs_node_size(const struct nas_fs_node *node);
 int nas_vfs_getattr(const struct nas_fs_node *node,struct nas_fs_node *out);
 int nas_vfs_register_mount(const struct nas_vfs_mount *mount);
 int nas_vfs_lookup(const char *absolute, struct nas_fs_node *node);
+/* One canonical path component. VFS checks mount crossings and the special
+ * bootstrap underlay; filesystem callbacks see only (parent,name).
+ * `absolute` is used for VFS mount selection, NEVER given to a provider. */
+int nas_vfs_lookup_step(const struct nas_fs_node *parent,const char *absolute,
+                         const char *name,struct nas_fs_node *out);
 int nas_vfs_readlink(const struct nas_fs_node *node,const char *absolute,
                      char target[256]);
 int64_t nas_vfs_read_at(const struct nas_fs_node *node, uint64_t offset,

@@ -170,6 +170,38 @@ int nas_vfs_lookup(const char *absolute,struct nas_fs_node *out) {
     return -ENOENT;
 }
 
+int nas_vfs_lookup_step(const struct nas_fs_node *parent,const char *absolute,
+                         const char *name,struct nas_fs_node *out) {
+    if(!absolute || !name || !name[0] || !out || absolute[0]!='/' ||
+       strchr(name,'/') ||
+       (name[0]=='.' && (!name[1] ||
+                         (name[1]=='.' && !name[2]))))
+        return -EINVAL;
+    ensure_defaults();
+    /* Cross a mount only at the EXACT component-aligned mountpoint.
+     * An open parent need not belong to the target mount. */
+    for(unsigned i=0;i<count;i++) {
+        const struct nas_vfs_mount *mnt=mounts[i].mount;
+        if(strcmp(mnt->mountpoint,absolute))continue;
+        *out=(struct nas_fs_node){0};
+        int rc=mnt->type->root(mnt,out);
+        if(!rc) {out->filesystem=mnt->type;out->mount=mnt;}
+        return rc;
+    }
+    if(!parent || !parent->mount || !parent->filesystem)
+        return -ENOENT;
+    if(!parent->is_dir)return -ENOTDIR;
+    *out=(struct nas_fs_node){0};
+    int rc=parent->filesystem->lookup_child(parent,name,out);
+    if(!rc) {
+        out->mount=parent->mount;
+        out->filesystem=parent->filesystem;
+        return 0;
+    }
+    if(rc==-ENOENT && parent->mount->fallback_on_miss)
+        return nas_vfs_lookup(absolute,out);
+    return rc;
+}
 int nas_vfs_readlink(const struct nas_fs_node *node,
                       const char *absolute,char target[256]) {
     /* Dynamic procfd entries have S_IFLNK metadata but deliberately do not

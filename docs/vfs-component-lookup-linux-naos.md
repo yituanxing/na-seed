@@ -7,13 +7,15 @@ bootfs, tmpfs, procfs, lwext4, LittleFS and host VFS fixtures.
   `lookup_child(parent_inode, basename, out)`. VFS alone selects the
   mounted instance, validates component boundaries and implements
   /tmp's explicitly flagged CPIO fallthrough.
-- Bootfs uses archive parent-child inode links; tmpfs searches its own
+- Bootfs resolves a child through its own immutable inode's archive
+  path hash (not a full VFS pathname); tmpfs searches its own
   dentry namespace by parent inode; procfs resolves dynamic children from
-  the parent proc-inode identity and its real process table; lwext4 uses
-  original upstream directory iteration **by parent inode** and
-  `ext4_fs_get_inode_ref`; LittleFS constructs only a **filesystem-local**
-  relative path from its own stable identity record. Neither filesystem
-  receives a global `/mnt/...` path for lookup.
+  the parent proc-inode identity and its real process table; lwext4 scans
+  upstream ext4 directory entries **by parent inode** and validates the
+  resulting child inode against the public path-based raw metadata API.
+  LittleFS constructs only a **filesystem-local** relative path from its
+  own stable identity record. No provider receives a global `/mnt/...`
+  pathname from the VFS lookup API.
 - The old absolute-path provider `lookup` callback is removed; this is a
   real ABI replacement, not a parallel adaptor silently preserving it.
 - Read/write/fsync/getattr continue to operate on the open inode identity;
@@ -25,10 +27,18 @@ The VFS mount table still selects a mount by longest absolute component-
 aligned prefix, not an owned mountpoint dentry. Directory operations and
 lwext4 namespace mutations still accept pathname arguments, and tmpfs
 still keeps **provider-local** dentry names as absolute strings. VFS namei
-retains its bounded string representation and repeated prefix lookup,
-rather than a persistent `struct path` holding mount+dentry refs.
+now walks one component once, carrying the current inode and re-resolving
+only on `..`, symlink restarts or the bootstrap /tmp overlay fallback.
+It retains a bounded canonical string for path output, rather than a
+persistent `struct path` holding mount+dentry refs.
 Those need one subsequent coherent owner/lifetime migration, not more
-filesystem-kind branches in generic code.
+filesystem-kind branches in generic code. The public lwext4 API does
+not expose an inode-number metadata read without its private mountpoint
+structure: until a pinned, versioned public adapter exists, its provider
+temporarily reconstructs the current pathname from the parent ext4 inode,
+then requires that the public metadata lookup returns the SAME inode
+number as the directory iterator. This is a recorded performance and
+rename-race limitation, not claimed as Linux-equivalent inode lookup.
 
 Linux reference: `Documentation/filesystems/path-lookup.rst` and
 NaOS reference at `2c45649144afa3dd2e32147d7029e354dc9fc518`:

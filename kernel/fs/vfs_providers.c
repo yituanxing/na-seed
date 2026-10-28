@@ -58,12 +58,19 @@ static int boot_root(const struct nas_vfs_mount *mount,
 static int boot_child(const struct nas_fs_node *parent,const char *name,
                       struct nas_fs_node *out) {
     if(!parent || !parent->inode || !parent->is_dir)return -ENOTDIR;
+    if(!name || !name[0] || strchr(name,'/'))return -EINVAL;
+    /* Archive path indexing is an internal bootfs detail. Derive it from
+     * the directory's OWN immutable inode, never the VFS mountpoint.
+     * Keep O(1) expected lookup via bootfs_find's existing hash table,
+     * rather than rescanning all archive children for each path step. */
     const struct bootfs_entry *dir=parent->inode;
-    for(unsigned i=0;;i++) {
-        const struct bootfs_entry *entry=bootfs_child(dir,i);
-        if(!entry)return -ENOENT;
-        if(!strcmp(basename(entry->path),name))return boot_fill(entry,out);
-    }
+    size_t base=strlen(dir->path),length=strlen(name);
+    if(base+(base>1?1U:0U)+length>=256)return -ENAMETOOLONG;
+    char local[256];
+    memcpy(local,dir->path,base);
+    if(base>1)local[base++]='/';
+    memcpy(local+base,name,length+1);
+    return boot_fill(bootfs_find(local),out);
 }
 static int boot_readlink(const struct nas_fs_node *node,const char *path,
                          char target[256]) {
