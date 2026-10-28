@@ -583,14 +583,27 @@ int main(int argc,char **argv) {
     assert(nas_vfs_node_unpin(&node)==0);
     struct nas_fs_context *cwd=nas_fs_context_new();
     assert(cwd);
-    assert(nas_vfs_node_pin(&directory)==0);
-    cwd->cwd_node=directory;
+    struct nas_fs_node stable_cwd;
+    assert(nas_fs_lookup_node("/mnt/sandbox",true,
+                              &stable_cwd,actual)==0);
+    assert(nas_vfs_node_pin(&stable_cwd)==0);
+    cwd->cwd_node=stable_cwd;
     cwd->cwd_pinned=true;
     memcpy(cwd->cwd,"/mnt/sandbox",sizeof("/mnt/sandbox"));
+    assert(nas_vfs_path_bind(&stable_cwd,"/mnt/sandbox",
+                             &cwd->cwd_path)==0);
     struct nas_fs_context *forked=nas_fs_context_copy(cwd);
     assert(forked && forked->cwd_pinned);
+    assert(forked->cwd_path.dentry==cwd->cwd_path.dentry);
+    char cloned_cwd[256];
+    assert(nas_vfs_path_string(&forked->cwd_path,cloned_cwd)==0);
+    assert(!strcmp(cloned_cwd,"/mnt/sandbox"));
     assert(nas_lwext4_ramdisk_unmount(&mounted)==-EBUSY);
     nas_fs_context_put(cwd);
+    /* Forked independent FS context still owns the exact same Dentry,
+     * inode and mount identity until its final independently held put. */
+    assert(nas_vfs_path_string(&forked->cwd_path,cloned_cwd)==0);
+    assert(!strcmp(cloned_cwd,"/mnt/sandbox"));
     assert(nas_lwext4_ramdisk_unmount(&mounted)==-EBUSY);
     nas_fs_context_put(forked);
     assert(nas_lwext4_ramdisk_unmount(&mounted)==0);
