@@ -50,6 +50,7 @@ on:
       - 'kernel/init/main.c'
       - 'scripts/check-ext4-fsck-clean.sh'
       - 'scripts/probe-vfs-busybox-physical.sh'
+      - 'scripts/probe-vfs-gpt-busybox-x86.sh'
       - 'scripts/probe-vfs-exec-no-cpio-x86.sh'
       - 'scripts/vfs-rootless-exec-cases.tsv'
       - 'scripts/vfs-busybox-disk-cases.tsv'
@@ -167,6 +168,8 @@ jobs:
           sh scripts/probe-vfs-busybox-physical.sh amd64
           sh scripts/probe-vfs-busybox-physical.sh riscv64
           sh scripts/probe-vfs-busybox-physical.sh arm64
+      - name: 'Real GPT partitioned VirtIO-PCI disk: original BusyBox, two boots and ext4 e2fsck'
+        run: sh scripts/probe-vfs-gpt-busybox-x86.sh
       - name: 'Actual native x86 RV64 ARM64 ring3 LittleFS — one Linux ELF source'
         run: |
           sh scripts/build-littlefs-native-probes.sh

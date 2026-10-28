@@ -226,3 +226,23 @@ unaltered lwext4 filesystem is then mounted through a *real partition
 view at nonzero LBA*, verified by VFS inode reads and busy unmount.
 Physical GPT-backed QEMU execution is a **separate future gate**;
 host success must not be described as such.
+
+## Real physical GPT QEMU acceptance
+
+The generic partition view is now used by the **same real native boot
+path** as whole-disk ext4. `ports/lwext4/guest_boot.c` discovers
+physical VirtIO BlockDevices, detects whole-device ext4 first, and
+otherwise probes MBR/GPT ranges through `nas_partition_probe`. For a
+candidate ext4 partition it **registers an owned BlockDevice child**
+before passing its stable name to the unmodified lwext4 adapter. Clean
+unmount releases upstream ext4 and VFS before detaching the partition,
+which then releases the parent hardware device.
+
+`scripts/probe-vfs-gpt-busybox-x86.sh` uses real `sgdisk` to generate
+a 64MiB GPT physical disk, places the original ext4 filesystem image
+inside its first 40MiB partition at LBA 2048, and boots the unchanged
+original Debian BusyBox workload twice through genuine x86-64 QEMU
+VirtIO-PCI, checking guest mount provenance, disk bytes, GPT verification
+and e2fsck. This is an **additional** test; whole-disk and RamDisk
+acceptance remain unchanged. Native RV64/AArch64 link the same partition
+implementation but physical GPT QEMU on those ISAs is not claimed here.
