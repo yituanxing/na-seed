@@ -23,6 +23,11 @@ struct nas_vfs_type {
                   struct nas_fs_node *);
     int (*readlink)(const struct nas_fs_node *,const char *absolute,
                     char target[256]);
+    /* Optional inode->LIVE namespace path for directory handles. The
+     * provider owns inode/dentry knowledge; the syscall ABI never does.
+     * A NULL callback means VFS can verify an immutable opening hint, but
+     * refuses to redirect renamed directory FDs to an unrelated name. */
+    int (*directory_path)(const struct nas_fs_node *,char absolute[256]);
     int64_t (*read_at)(const struct nas_fs_node *, uint64_t offset,
                        uint8_t *kernel_dst, uint64_t length);
     /* Logical cursor counts entries, including . and .., from zero.
@@ -86,6 +91,11 @@ int64_t nas_vfs_read_at(const struct nas_fs_node *node, uint64_t offset,
 int nas_vfs_read_dir(const struct nas_fs_node *node,const char *opened_path,
                      uint64_t cursor,struct nas_vfs_dirent *entries,
                      unsigned maximum);
+/* Resolve current pathname of an OWNED directory inode, not a stale File
+ * origin_path or task-local fd. Verifies mount+inode identity after namei.
+ * Returns ESTALE when the provider cannot recover a moved dentry. */
+int nas_vfs_directory_path(const struct nas_fs_node *node,
+                           const char *origin_hint,char absolute[256]);
 int nas_vfs_chmod(const struct nas_fs_node *node, uint64_t mode);
 int nas_vfs_utimens(const struct nas_fs_node *node, uint64_t atime,
                     uint64_t mtime, bool set_atime, bool set_mtime);

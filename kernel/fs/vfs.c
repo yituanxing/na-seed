@@ -122,6 +122,41 @@ int64_t nas_vfs_read_at(const struct nas_fs_node *node,uint64_t offset,
     if(!node->filesystem->read_at)return -EOPNOTSUPP;
     return node->filesystem->read_at(node,offset,dst,length);
 }
+int nas_vfs_directory_path(const struct nas_fs_node *node,
+                           const char *origin_hint,char absolute[256]) {
+    if(!node || !node->filesystem || !node->mount || !absolute)
+        return -EINVAL;
+    if(!node->is_dir)return -ENOTDIR;
+    /* An inode number of zero cannot identify an owned open directory.
+     * Refuse path-based operations rather than accidentally authorizing
+     * an unrelated re-used pathname under the same mount. */
+    if(!node->ino)return -ESTALE;
+    char selected[256];
+    int rc=-EOPNOTSUPP;
+    if(node->filesystem->directory_path) {
+        rc=node->filesystem->directory_path(node,selected);
+        if(rc && rc!=-EOPNOTSUPP)return rc;
+    }
+    if(rc==-EOPNOTSUPP) {
+        if(!origin_hint || origin_hint[0]!='/')return -ESTALE;
+        size_t len=strlen(origin_hint);
+        if(len>=sizeof(selected))return -ENAMETOOLONG;
+        memcpy(selected,origin_hint,len+1);
+    }
+    if(selected[0]!='/')return -EIO;
+    struct nas_fs_node current;
+    char canonical[256];
+    rc=nas_fs_lookup_node(selected,true,&current,canonical);
+    /* This is namespace-to-identity validation, not an attempt to
+     * reopen the old path. A recycled dentry must NEVER become a way to
+     * perform openat/unlinkat relative to a different directory. */
+    if(rc== -ENAMETOOLONG)return rc;
+    if(rc || current.mount!=node->mount ||
+       current.ino!=node->ino || !current.is_dir)return -ESTALE;
+    size_t len=strlen(canonical);
+    memcpy(absolute,canonical,len+1);
+    return 0;
+}
 int nas_vfs_read_dir(const struct nas_fs_node *node,const char *path,
                      uint64_t cursor,struct nas_vfs_dirent *entries,
                      unsigned maximum) {

@@ -58,6 +58,10 @@ int main(void) {
     assert(nas_fs_lookup_node("/flash/source/program",true,&again,path)==0);
     assert(again.ino==node.ino);
     assert(nas_fs_lookup_node("/flash/source",true,&dir,path)==0 && dir.is_dir);
+    char live_directory[256];
+    assert(nas_vfs_directory_path(&dir,"/flash/source",live_directory)==0);
+    assert(!strcmp(live_directory,"/flash/source"));
+    assert(nas_vfs_directory_path(&dir,"/flash/absent",live_directory)==-ESTALE);
     struct nas_vfs_dirent entries[8]={0};
     int n=nas_vfs_read_dir(&dir,"/flash/source",0,entries,8);
     assert(n>=3);

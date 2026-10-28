@@ -102,8 +102,17 @@ static int boot_read_dir(const struct nas_fs_node *node,const char *path,
     return (int)count;
 }
 
+static int boot_directory_path(const struct nas_fs_node *node,char path[256]) {
+    const struct bootfs_entry *e=node ? node->inode : NULL;
+    if(!e || !bootfs_is_dir(e))return -ENOTDIR;
+    size_t len=strlen(e->path);
+    if(len>=256)return -ENAMETOOLONG;
+    memcpy(path,e->path,len+1);
+    return 0;
+}
 static const struct nas_vfs_type boot_type={
-    .name="bootfs",.exec_source_label="CPIO",.lookup=boot_lookup,.readlink=boot_readlink,
+    .name="bootfs",.exec_source_label="CPIO",.lookup=boot_lookup,
+    .directory_path=boot_directory_path,.readlink=boot_readlink,
     .read_at=boot_read,.read_dir=boot_read_dir,.read_only=true
 };
 static int tmp_lookup(const struct nas_vfs_mount *mount,
@@ -225,8 +234,25 @@ static int tmp_symlink_node(const struct nas_vfs_mount *mount,
                             const char *target,const char *path) {
     (void)mount;return tmp_symlink(target,path);
 }
+static int tmp_directory_path(const struct nas_fs_node *node,char path[256]) {
+    if(!node || !node->is_dir)return -ENOTDIR;
+    /* The synthetic /tmp root is backed by a borrowed CPIO inode, not a
+     * nas_tmp_file. Every other tmpfs directory has a unique live dentry. */
+    if(node->mount && !strcmp(node->mount->mountpoint,"/tmp") &&
+       node->inode==(const void *)bootfs_find("/tmp")) {
+        memcpy(path,"/tmp",5);
+        return 0;
+    }
+    const char *live=tmp_name(node->inode);
+    if(!live)return -ESTALE; /* deleted directory */
+    size_t len=strlen(live);
+    if(len>=256)return -ENAMETOOLONG;
+    memcpy(path,live,len+1);
+    return 0;
+}
 static const struct nas_vfs_type tmp_type={
-    .name="tmpfs",.exec_source_label="tmpfs",.lookup=tmp_lookup,.readlink=tmp_readlink,
+    .name="tmpfs",.exec_source_label="tmpfs",.lookup=tmp_lookup,
+    .directory_path=tmp_directory_path,.readlink=tmp_readlink,
     .read_at=tmp_read,.read_dir=tmp_read_dir,.chmod=tmp_chmod_node,.utimens=tmp_utimens_node,
     .create=tmp_create_node,.write_at=tmp_write_node,
     .resize=tmp_resize_node,.sync=tmp_sync_node,

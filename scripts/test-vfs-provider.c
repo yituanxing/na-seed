@@ -257,6 +257,14 @@ int main(void) {
     assert(nas_vfs_read_dir(&opened_directory,"/tmp/opened",
                             0,records,8)==3);
     assert(!strcmp(records[2].name,"child") && records[2].ino==5106);
+    char path_from_inode[256];
+    assert(nas_vfs_directory_path(&opened_directory,"/tmp/opened",
+                                  path_from_inode)==0);
+    assert(!strcmp(path_from_inode,"/tmp/renamed-opened"));
+    struct nas_fs_node read_only_dir;
+    assert(nas_fs_lookup_node("/bin",true,&read_only_dir,resolved)==0);
+    assert(nas_vfs_directory_path(&read_only_dir,"/invalid",path_from_inode)==0);
+    assert(!strcmp(path_from_inode,"/bin"));
     assert(nas_vfs_node_unpin(&opened_directory)==0);
     assert(nas_fs_lookup_node("/proc",true,&n,resolved)==0);
     assert(nas_vfs_read_dir(&n,"/proc",0,records,8)==3);

@@ -390,3 +390,25 @@ VFS/provider host fixture covers pinned directory + rename + stale-name
 readdir, and ext4 exercises the same test with upstream inode-based dir
 iteration. Production native tmpfs namespace owns the dentry tree and
 existing path mutations; this change adds no duplicate path storage.
+
+## 2026-10-28 — inode-validated live directory paths (VFS-wide)
+
+Generic `nas_vfs_directory_path(inode, origin_hint, out)` resolves the current
+name of a pinned directory. Providers MAY supply `directory_path` for a
+native inode->dentry mapping; native tmpfs uses its actual live dentry and
+bootfs uses immutable archive identity. The VFS ALWAYS verifies the
+resolved path against the original `(mount, ino)` via real namei before
+returning it to an ABI layer. This prevents a stale FD origin pathname
+from silently being repointed to a *different* directory after a rename.
+The shared Linux `openat`/namespace dirfd resolver, `fchdir`, cwd-relative
+resolution and `getcwd` use this one VFS API rather than backend-specific
+`tmp_name`/boot-entry/origin-path branches. For filesystems with no way to
+recover a moved dentry (currently lwext4), dirfd-relative operations on
+an old name return **ESTALE** instead of accessing a recycled directory;
+getdents64 remains inode-relative and survives rename. This is explicit
+partial semantics, not complete Linux dcache/rename compliance.
+
+Host tests cover renamed tmpfs directory live-path recovery, immutable
+bootfs directory identity, ext4 moved directory fail-closed and new-name
+validation, and real LittleFS read-only directory path identity. No new
+ISA-specific FS algorithm or modification of pinned upstream sources.
