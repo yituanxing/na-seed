@@ -24,6 +24,16 @@ int nas_vfs_node_unpin(const struct nas_fs_node *node) {
     if(!node || node->ino!=17 || !cwd_mount_refs)return -1;
     --cwd_mount_refs;return 0;
 }
+/* The CPU-independent Task/MM fixture never creates a Dentry; it deliberately
+ * checks the historical inode-only FS context too. Supply fail-closed
+ * linkage for the NEW Path contract rather than pulling in a fake VFS or
+ * silencing the real kernel's required references. */
+int nas_vfs_path_get(const struct nas_vfs_path *old,struct nas_vfs_path *out) {
+    (void)old;(void)out;abort();
+}
+int nas_vfs_path_put(struct nas_vfs_path *path) {
+    (void)path;abort();
+}
 #define TEST_USER_VA UINT64_C(0x20000000)
 uint64_t nas_mmu_alloc_root(void){return fork_root;}
 uint64_t nas_frame_alloc(void){return 0;} /* no eager copy for RO user page */

@@ -302,3 +302,32 @@ directory ancestor movement, reuse of the old name by a distinct inode,
 and rejection of Path string construction after unlink while references
 remain. A second test runs no-CPIO rootless mounting, Path ref sharing
 and busy-unmount without a fabricated '/' inode.
+
+## Mount attachment identity: first counted Path owner
+
+The Mount attachment now owns `parent_path` and (when a covered inode
+exists) `covered_path`, using the **same positive Dentry graph** as
+opened directory Files and FS contexts. Mount registration obtains
+these references before publishing its stable slot; failures roll back
+the prepared Dentry owner without publishing a half-attached mount.
+Unmount releases covered and then parent Path exactly once. There is
+no parallel `parent_pinned`/`covered_pinned` inode-only owner anymore;
+mount-owned Paths provide the existing inode/mount busy protection.
+
+The direct longest-prefix bootstrap selector remains an explicit,
+bounded compatibility route. It first reconstructs the attached
+parent from an OWNED Path, validates that it is still at the expected
+name and revalidates the live provider inode incarnation before
+selecting a mount. The latter is necessary for a real backend that
+recycles a parent-root inode without VFS mutation notifications.
+Normal component lookup already matches the mounted (parent
+mount-incarnation, parent inode, basename) identity. Genuine
+mount movement, root mount namespace changes and the complete removal
+of this prefix selector remain separate migration gates.
+
+Test gates include existing real mount parent pin, parent inode recycle,
+nested mount EBUSY, refcounted rootless mount, mounted readdir and
+original external lwext4/RamFS on all native ISAs. The Task/MM isolated
+test has explicit fail-closed linkage for Path methods because it never
+constructs any Dentry; production VFS code is still used by genuine
+filesystems and QEMU, without pretending the Task fixture tests VFS.
