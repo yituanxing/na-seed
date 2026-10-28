@@ -343,3 +343,18 @@ into the File description. Host tests directly verify successful
 directory owner transfer and independent last-put behavior. An
 inode-only caller may explicitly pass `NULL`, retaining the one
 authoritative VFS algorithm without a second parallel open API.
+
+## Remove normal dirfd/fchdir reverse path fallback
+
+Normal `openat(dirfd)` now requires the Path returned by its *single*
+VFS directory-open transaction; if an external/synthetic File claims
+to hold a directory inode but has no owned Path, the ABI fails closed
+with ESTALE instead of re-opening its saved origin string.
+
+`fchdir` now directly acquires a ref to the File's existing Dentry
+with `nas_vfs_path_get`, then transfers it transactionally into the
+FS cwd context alongside its own inode lease. It never invokes provider
+`directory_path` or reconstructs a new Dentry by namei. `chdir` still
+binds a resolved canonical path exactly once. Existing `getcwd`
+compatibility fallback is retained only for historical inode-only
+FS-context boot fixtures; it is NOT used in normal Path-owned flows.

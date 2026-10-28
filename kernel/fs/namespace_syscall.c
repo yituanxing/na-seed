@@ -91,10 +91,11 @@ uint64_t nas_fs_resolve_path(uint64_t dirfd, uint64_t pathname,
              * No procfs/tmpfs/archive FD type is privileged here. */
             if(!opened->vnode_pinned || !opened->vnode.is_dir)
                 return (uint64_t)-ENOTDIR;
-            int err=opened->vpath.dentry ?
-                nas_vfs_path_string(&opened->vpath,inode_base) :
-                nas_vfs_directory_path(&opened->vnode,
-                                       opened->origin_path,inode_base);
+            /* Every ordinary directory File owns a Path from the same
+             * VFS open transaction. A missing path is a broken owner,
+             * NEVER a reason to reopen origin_path through the backend. */
+            if(!opened->vpath.dentry)return (uint64_t)-ESTALE;
+            int err=nas_vfs_path_string(&opened->vpath,inode_base);
             if(err)return (uint64_t)(int64_t)err;
             base=inode_base;
         }
@@ -189,21 +190,18 @@ static uint64_t sys_getcwd_root(uint64_t buffer, uint64_t size) {
     return nas_user_write_bytes(buffer, (const uint8_t *)current_workdir, length)
         ? length : (uint64_t)-EFAULT;
 }
-/* One FS-context ownership transfer, shared by chdir and fchdir:
- * acquire a NEW mount+inode pin before releasing the old one. The FD path
- * never reopens/relooks up an owned inode after rename or hardlinking. */
-static uint64_t set_cwd_from_node(const struct nas_fs_node *node,
-                                  const char *hint) {
-    if(!node || !node->is_dir)return (uint64_t)-ENOTDIR;
-    /* The caller resolved the canonical name (or an owned File Path)
-     * already. Bind its Dentry to the EXACT inode; no provider reverse
-     * lookup, pathname hint reopening or independent inode traversal. */
-    struct nas_vfs_path next_path={0};
-    int rc=nas_vfs_path_bind(node,hint,&next_path);
-    if(rc)return (uint64_t)(int64_t)rc;
-    rc=nas_vfs_node_pin(node);
+/* Transactional cwd ownership transfer. This consumes one independently
+ * acquired Path reference; fchdir clones the existing File Dentry directly
+ * while chdir first binds its resolved canonical inode. Neither path uses
+ * provider directory_path/reverse-lookup nor a second inode resolution. */
+static uint64_t set_cwd_owned(const struct nas_fs_node *node,
+                              struct nas_vfs_path *next,
+                              const char *canonical) {
+    if(!node || !node->is_dir || !next || !next->dentry)
+        return (uint64_t)-ENOTDIR;
+    int rc=nas_vfs_node_pin(node);
     if(rc) {
-        (void)nas_vfs_path_put(&next_path);
+        (void)nas_vfs_path_put(next);
         return (uint64_t)(int64_t)rc;
     }
     struct nas_fs_context *fs=TASK.fs;
@@ -211,11 +209,20 @@ static uint64_t set_cwd_from_node(const struct nas_fs_node *node,
         nas_fail("FS cwd path reference corrupted");
     if(fs->cwd_pinned && nas_vfs_node_unpin(&fs->cwd_node))
         nas_fail("FS cwd inode reference corrupted");
-    memcpy(current_workdir,hint,strlen(hint)+1);
+    memcpy(current_workdir,canonical,strlen(canonical)+1);
     fs->cwd_node=*node;
     fs->cwd_pinned=true;
-    fs->cwd_path=next_path;
+    fs->cwd_path=*next;
+    *next=(struct nas_vfs_path){0};
     return 0;
+}
+static uint64_t set_cwd_from_node(const struct nas_fs_node *node,
+                                  const char *canonical) {
+    if(!node || !node->is_dir)return (uint64_t)-ENOTDIR;
+    struct nas_vfs_path next={0};
+    int rc=nas_vfs_path_bind(node,canonical,&next);
+    if(rc)return (uint64_t)(int64_t)rc;
+    return set_cwd_owned(node,&next,canonical);
 }
 static uint64_t set_cwd_from_path(const char *path) {
     char resolved[256];
@@ -236,16 +243,20 @@ static uint64_t sys_fchdir(uint64_t fd) {
         &nas_open_files[TASK.fds->entries[fd].slot];
     if(!opened->vnode_pinned || !opened->vnode.is_dir)
         return (uint64_t)-ENOTDIR;
-    /* A shared File's inode remains the same object after rename and
-     * dup/fork; cwd gets its own pin, never a reopened path snapshot. */
-    /* Dentry ownership, not reverse provider traversal, supplies a live
-     * fchdir path after rename; never reopen a reused origin_path. */
+    /* fchdir must acquire the ALREADY OPEN File's Dentry, not rebuild its
+     * Path by spelling and traversing a possibly renamed parent. This
+     * succeeds without a second provider lookup and preserves identity. */
+    if(!opened->vpath.dentry)return (uint64_t)-ESTALE;
+    struct nas_vfs_path next={0};
+    int rc=nas_vfs_path_get(&opened->vpath,&next);
+    if(rc)return (uint64_t)(int64_t)rc;
     char live[256];
-    int rc=opened->vpath.dentry ?
-        nas_vfs_path_string(&opened->vpath,live) :
-        nas_vfs_directory_path(&opened->vnode,opened->origin_path,live);
-    return rc ? (uint64_t)(int64_t)rc :
-                set_cwd_from_node(&opened->vnode,live);
+    rc=nas_vfs_path_string(&next,live);
+    if(rc) {
+        (void)nas_vfs_path_put(&next);
+        return (uint64_t)(int64_t)rc;
+    }
+    return set_cwd_owned(&opened->vnode,&next,live);
 }
 
 
