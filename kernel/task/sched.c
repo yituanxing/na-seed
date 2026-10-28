@@ -122,7 +122,7 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
      * after final thread-group teardown, never on a leader with workers. */
     if(child->fs) {
         nas_fs_context_put(child->fs);
-        child->fs=NULL;
+        child->fs=0;
     }
     /* All inherited jobserver pipe ends and cwd refs are released
      * before SIGCHLD is observed by a parent. */
