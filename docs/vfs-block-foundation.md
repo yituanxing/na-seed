@@ -380,3 +380,13 @@ it does **not** implement full Linux POSIX orphan inode reclamation.
 The host real-ext4 test adds directory pin/rename/getdents/cleanup and
 independent pinned-victim rename rejection + surviving inode reads. This
 preserves current File/FD ABI and does not fork VFS algorithms per ISA.
+
+## 2026-10-28 — tmpfs directory dentry follows live inode
+
+The native tmpfs provider now resolves a renamed directory's *current*
+namespace dentry from its stable inode via `tmp_name()`, not the obsolete
+per-File `origin_path` used when opening the FD. The separate generic
+VFS/provider host fixture covers pinned directory + rename + stale-name
+readdir, and ext4 exercises the same test with upstream inode-based dir
+iteration. Production native tmpfs namespace owns the dentry tree and
+existing path mutations; this change adds no duplicate path storage.

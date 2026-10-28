@@ -219,6 +219,13 @@ int main(int argc,char **argv) {
         assert(nas_vfs_write_at(&victim,0,victim_bytes,
                                 sizeof(victim_bytes)-1)==
                                 (int64_t)sizeof(victim_bytes)-1);
+        /* Like any borrowed VFS inode snapshot, an unpinned node observed
+         * before a write must be refreshed before creating a new File.
+         * Real sys_open pins before writing, so its live size lease stays
+         * coherent automatically. */
+        assert(nas_fs_lookup_node("/mnt/sandbox/rename-victim",true,
+                                  &victim,actual)==0);
+        assert(victim.size==sizeof(victim_bytes)-1);
         assert(nas_vfs_node_pin(&victim)==0);
         assert(nas_vfs_rename("/mnt/sandbox/vfs-created",
                               "/mnt/sandbox/rename-victim",0)==-EBUSY);

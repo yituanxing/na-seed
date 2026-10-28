@@ -27,6 +27,15 @@ static struct nas_tmp_file tmp_demo={.used=true,.mode=0100644,.size=4,.ino=101};
 static struct nas_tmp_file fixture_symlink={.used=true,.mode=0120777,.size=9,.ino=102};
 static struct nas_tmp_file fixture_dir_link={.used=true,.mode=0120777,.size=4,.ino=103};
 static struct nas_tmp_file fixture_created={.used=true,.mode=0100640,.ino=104};
+/* A named directory is renamed while its original inode remains open. */
+static struct nas_tmp_file fixture_open_directory={
+    .used=true,.is_dir=true,.mode=0040755,.nlink=1,.ino=105
+};
+static struct nas_tmp_file fixture_open_child={
+    .used=true,.mode=0100600,.nlink=1,.ino=106
+};
+static char fixture_dir_path[256]="/tmp/opened";
+static char fixture_child_path[256]="/tmp/opened/child";
 static uint8_t fixture_created_bytes[32];
 static unsigned fixture_created_length;
 bool bootfs_mounted(void){return true;}
@@ -46,6 +55,12 @@ struct nas_tmp_file *tmp_find(const char *path){
     if(!strcmp(path,"/tmp/link"))return &fixture_symlink;
     if(!strcmp(path,"/tmp/alias"))return &fixture_dir_link;
     if(!strcmp(path,"/tmp/newfile") && fixture_created_length)return &fixture_created;
+    if(!strcmp(path,fixture_dir_path))return &fixture_open_directory;
+    if(!strcmp(path,fixture_child_path))return &fixture_open_child;
+    return NULL;
+}
+const char *tmp_name(const struct nas_tmp_file *f) {
+    if(f==&fixture_open_directory)return fixture_dir_path;
     return NULL;
 }
 bool tmp_is_link(const struct nas_tmp_file *f){
@@ -127,6 +142,12 @@ int tmp_unlink(const char *path,uint64_t flags) {
     return !strcmp(path,"/tmp/demo") && flags==0 ? 0 : -EINVAL;
 }
 int tmp_rename(const char *oldpath,const char *newpath,uint64_t flags) {
+    if(!strcmp(oldpath,fixture_dir_path) &&
+       !strcmp(newpath,"/tmp/renamed-opened") && !flags) {
+        strcpy(fixture_dir_path,newpath);
+        strcpy(fixture_child_path,"/tmp/renamed-opened/child");
+        return 0;
+    }
     return !strcmp(oldpath,"/tmp/demo") && !strcmp(newpath,"/tmp/other") && flags==0 ? 0 : -EINVAL;
 }
 int tmp_link(const char *oldpath,const char *newpath) {
@@ -154,7 +175,14 @@ static const struct nas_tmp_dentry demo_dentry={
 static const struct nas_tmp_dentry link_dentry={
     .used=true,.path="/tmp/link",.inode=&fixture_symlink
 };
+static struct nas_tmp_dentry nested_dentry={
+    .used=true,.path="/tmp/opened/child",.inode=&fixture_open_child
+};
 const struct nas_tmp_dentry *tmp_child_entry(const char *path,unsigned index) {
+    if(!strcmp(path,fixture_dir_path)) {
+        strcpy(nested_dentry.path,fixture_child_path);
+        return index==0?&nested_dentry:NULL;
+    }
     if(strcmp(path,"/tmp"))return NULL;
     return index==0?&demo_dentry:index==1?&link_dentry:NULL;
 }
@@ -218,6 +246,18 @@ int main(void) {
     assert(!strcmp(records[3].name,"link") && records[3].dtype==10);
     assert(nas_vfs_read_dir(&n,"/tmp",2,records,1)==1);
     assert(!strcmp(records[0].name,"demo"));
+    /* Reopening an old pathname after rename is forbidden: VFS directory
+     * enumerations must follow the stable pinned inode identity instead. */
+    struct nas_fs_node opened_directory;
+    assert(nas_fs_lookup_node("/tmp/opened",true,
+                              &opened_directory,resolved)==0);
+    assert(nas_vfs_node_pin(&opened_directory)==0);
+    assert(nas_vfs_rename("/tmp/opened","/tmp/renamed-opened",0)==0);
+    assert(nas_fs_lookup_node("/tmp/opened",true,&n,resolved)==-ENOENT);
+    assert(nas_vfs_read_dir(&opened_directory,"/tmp/opened",
+                            0,records,8)==3);
+    assert(!strcmp(records[2].name,"child") && records[2].ino==5106);
+    assert(nas_vfs_node_unpin(&opened_directory)==0);
     assert(nas_fs_lookup_node("/proc",true,&n,resolved)==0);
     assert(nas_vfs_read_dir(&n,"/proc",0,records,8)==3);
     assert(!strcmp(records[2].name,"self") && records[2].dtype==4);

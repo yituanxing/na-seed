@@ -170,6 +170,14 @@ static int tmp_read_dir(const struct nas_fs_node *node,const char *path,
     const bool root=!strcmp(path,"/tmp");
     const struct nas_tmp_file *directory=root?NULL:node->inode;
     if(!root && (!directory || !directory->is_dir))return -ENOTDIR;
+    /* Resolve the CURRENT dentry from the opened directory's stable
+     * inode, not the File's origin pathname. The latter becomes stale
+     * on rename and is deliberately immutable for dup/fork semantics.
+     * tmpfs permits only one name for a directory (no hardlink dirs). */
+    if(!root) {
+        path=tmp_name(directory);
+        if(!path)return -ENOENT;
+    }
     unsigned count=0;
     for(;count<maximum;count++,cursor++) {
         const char *name;
@@ -224,7 +232,7 @@ static const struct nas_vfs_type tmp_type={
     .resize=tmp_resize_node,.sync=tmp_sync_node,
     .mkdir=tmp_mkdir_node,.unlink=tmp_unlink_node,.rename=tmp_rename_node,
     .link=tmp_link_node,.symlink=tmp_symlink_node,
-    .unlink_open_safe=true
+    .unlink_open_safe=true,.rename_replace_open_safe=true
 };
 static int proc_lookup_node(const struct nas_vfs_mount *mount,
                        const char *path,struct nas_fs_node *out) {
