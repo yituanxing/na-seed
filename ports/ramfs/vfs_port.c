@@ -6,6 +6,7 @@
 #include "../../kernel/fs/lookup.h"
 #include "../../kernel/errno.h"
 #include "../../kernel/lib/string.h"
+#include "../../kernel/mm/heap.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -22,25 +23,33 @@ static int path_of(const struct nas_ramfs_identity *id,char path[256]) {
     int rc=path_of(id->parent,parent);
     return rc ? rc : nas_vfs_join_child(parent,id->name,path);
 }
+/* One mount-local namespace identity graph, with no arbitrary 128-inode
+ * limit and no separate first-party directory tree. The unmodified
+ * upstream owns directories; this sidecar gives VFS stable generations.
+ * Reuse of an unlinked identity MUST change ino to reject stale borrows. */
 static struct nas_ramfs_identity *intern(struct nas_ramfs_vfs *ctx,
                                         struct nas_ramfs_identity *parent,
                                         const char *name,ramfs_entry_t *entry) {
-    for(unsigned i=0;i<NAS_RAMFS_IDENTITIES;i++) {
-        struct nas_ramfs_identity *id=&ctx->ids[i];
+    if(!ctx || !name || !name[0] || strlen(name)>=256 || !entry)return NULL;
+    struct nas_ramfs_identity *unused=NULL;
+    for(struct nas_ramfs_identity *id=ctx->identities;id;id=id->next) {
         if(id->active && id->parent==parent && id->entry==entry &&
            !strcmp(id->name,name))return id;
+        if(!id->active && !unused)unused=id;
     }
-    for(unsigned i=1;i<NAS_RAMFS_IDENTITIES;i++) {
-        struct nas_ramfs_identity *id=&ctx->ids[i];
-        if(id->active)continue;
-        if(ctx->next_ino==UINT64_MAX)return NULL;
-        *id=(struct nas_ramfs_identity){.entry=entry,.parent=parent,
-           .ino=++ctx->next_ino,.active=true,
-           .mode=ramfs_is_dir(entry)?0040755U:0100644U};
-        memcpy(id->name,name,strlen(name)+1);
-        return id;
+    if(ctx->next_ino==UINT64_MAX)return NULL;
+    if(!unused) {
+        unused=nas_heap_calloc(1,sizeof(*unused));
+        if(!unused)return NULL;
+        unused->next=ctx->identities;
+        ctx->identities=unused;
     }
-    return NULL;
+    struct nas_ramfs_identity *next=unused->next;
+    *unused=(struct nas_ramfs_identity){.next=next,
+        .entry=entry,.parent=parent,.ino=++ctx->next_ino,.active=true,
+        .mode=ramfs_is_dir(entry)?0040755U:0100644U};
+    memcpy(unused->name,name,strlen(name)+1);
+    return unused;
 }
 static int fill(struct nas_ramfs_vfs *ctx,struct nas_ramfs_identity *id,
                 struct nas_fs_node *out) {
@@ -54,7 +63,8 @@ static int fill(struct nas_ramfs_vfs *ctx,struct nas_ramfs_identity *id,
     return 0;
 }
 static int root(const struct nas_vfs_mount *m,struct nas_fs_node *out) {
-    return fill(context(m),&context(m)->ids[0],out);
+    struct nas_ramfs_vfs *ctx=context(m);
+    return ctx ? fill(ctx,&ctx->root_inode,out) : -ENODEV;
 }
 static int child(const struct nas_fs_node *parent,const char *name,
                  struct nas_fs_node *out) {
@@ -70,15 +80,19 @@ static int child(const struct nas_fs_node *parent,const char *name,
     ramfs_entry_t *entry=ramfs_get_entry(ctx->fs,path);
     if(!entry)return -ENOENT;
     struct nas_ramfs_identity *id=intern(ctx,dir,name,entry);
-    return id?fill(ctx,id,out):-ENOSPC;
+    return id?fill(ctx,id,out):-ENOMEM;
 }
 static int validate(const struct nas_fs_node *node) {
     if(!node || !node->mount || !node->inode)return -ESTALE;
     struct nas_ramfs_vfs *ctx=context(node->mount);
     if(!ctx || !ctx->mounted)return -ENODEV;
     const struct nas_ramfs_identity *id=node->inode;
-    if(id<&ctx->ids[0] || id>=&ctx->ids[NAS_RAMFS_IDENTITIES] ||
-       !id->active || id->ino!=node->ino)return -ESTALE;
+    /* Validate pointer provenance BEFORE dereferencing an arbitrary stale
+     * snapshot. Relational comparisons with unrelated pointers are UB. */
+    bool owned=false;
+    for(const struct nas_ramfs_identity *it=ctx->identities;it;it=it->next)
+        if(it==id) {owned=true;break;}
+    if(!owned || !id->active || id->ino!=node->ino)return -ESTALE;
     char path[256];
     int rc=path_of(id,path);
     if(rc)return rc;
@@ -197,7 +211,7 @@ static int readdir_inode(const struct nas_fs_node *node,uint64_t cursor,
             free(name);rc=-EIO;break;
         }
         struct nas_ramfs_identity *id=intern(ctx,dir,name,(ramfs_entry_t *)entry);
-        if(!id) {free(name);rc=-ENOSPC;break;}
+        if(!id) {free(name);rc=-ENOMEM;break;}
         out[written]=(struct nas_vfs_dirent){
             .ino=id->ino,.dtype=ramfs_is_dir(entry)?4:8,
             .name_len=(uint8_t)len
@@ -217,22 +231,41 @@ static int child_path(const struct nas_fs_node *parent,const char *name,
     rc=path_of((const struct nas_ramfs_identity *)parent->inode,base);
     return rc?rc:nas_vfs_join_child(base,name,path);
 }
+/* Provider-local permissions are metadata, not a reason to fork or
+ * rewrite the original third-party directory/data backend. */
 static int create(const struct nas_fs_node *parent,const char *name,uint64_t mode) {
-    (void)mode;
     char path[256];int rc=child_path(parent,name,path);
     if(rc)return rc;
     struct nas_ramfs_vfs *ctx=context(parent->mount);
     if(ramfs_get_entry(ctx->fs,path))return -EEXIST;
-    return ramfs_create(ctx->fs,path,O_RDWR)?0:-ENOMEM;
+    ramfs_entry_t *entry=ramfs_create(ctx->fs,path,O_RDWR);
+    if(!entry)return -ENOMEM;
+    struct nas_ramfs_identity *id=intern(ctx,
+        (struct nas_ramfs_identity *)parent->inode,name,entry);
+    if(!id) {(void)ramfs_unlink(entry);return -ENOMEM;}
+    id->mode=0100000U|((uint32_t)mode&07777U);
+    return 0;
 }
 static int mkdir_node(const struct nas_fs_node *parent,const char *name,
                       uint64_t mode) {
-    (void)mode;
     char path[256];int rc=child_path(parent,name,path);
     if(rc)return rc;
     struct nas_ramfs_vfs *ctx=context(parent->mount);
     if(ramfs_get_entry(ctx->fs,path))return -EEXIST;
-    return ramfs_mkdir(ctx->fs,path)?0:-ENOMEM;
+    ramfs_entry_t *entry=ramfs_mkdir(ctx->fs,path);
+    if(!entry)return -ENOMEM;
+    struct nas_ramfs_identity *id=intern(ctx,
+        (struct nas_ramfs_identity *)parent->inode,name,entry);
+    if(!id) {(void)ramfs_rmdir(entry);return -ENOMEM;}
+    id->mode=0040000U|((uint32_t)mode&07777U);
+    return 0;
+}
+static int chmod_node(const struct nas_fs_node *node,uint64_t mode) {
+    int rc=validate(node);
+    if(rc)return rc;
+    struct nas_ramfs_identity *id=(struct nas_ramfs_identity *)node->inode;
+    id->mode=(id->mode&0170000U)|((uint32_t)mode&07777U);
+    return 0;
 }
 static int unlink_node(const struct nas_fs_node *parent,const char *name,
                        uint64_t flags) {
@@ -245,7 +278,7 @@ static int unlink_node(const struct nas_fs_node *parent,const char *name,
     if(dir!=!!(flags&0x200U))return dir?-EISDIR:-ENOTDIR;
     struct nas_ramfs_identity *id=intern(ctx,
         (struct nas_ramfs_identity *)parent->inode,name,entry);
-    if(!id)return -ENOSPC;
+    if(!id)return -ENOMEM;
     /* Upstream frees an entry IMMEDIATELY on unlink/rmdir. Retain the
      * VFS inode lease contract by forbidding deletion while ANY File/cwd
      * owns the inode, not by silently patching the vendor implementation. */
@@ -274,7 +307,7 @@ static int rename_node(const struct nas_fs_node *old_parent,const char *old_name
     if(ramfs_get_entry(ctx->fs,to))return -EOPNOTSUPP;
     struct nas_ramfs_identity *id=intern(ctx,
         (struct nas_ramfs_identity *)old_parent->inode,old_name,source);
-    if(!id)return -ENOSPC;
+    if(!id)return -ENOMEM;
     if(ramfs_rename(ctx->fs,from,to))return -EIO;
     id->parent=(struct nas_ramfs_identity *)new_parent->inode;
     memcpy(id->name,new_name,strlen(new_name)+1);
@@ -285,6 +318,7 @@ static const struct nas_vfs_type ramfs_type={
     .root=root,.lookup_child=child,.directory_path=directory_path,
     .getattr=getattr,.validate_inode=validate,.read_at=read_at,
     .read_dir=readdir_inode,.create=create,.mkdir=mkdir_node,
+    .chmod=chmod_node,
     .write_at=write_at,.resize=resize,.sync=sync_inode,
     .unlink=unlink_node,.rename=rename_node
 };
@@ -295,16 +329,18 @@ int nas_ramfs_vfs_mount(struct nas_ramfs_vfs *ctx,const char *point) {
     ramfs_fs_t *fs=ramfs_init();
     if(!fs)return -ENOMEM;
     ctx->fs=fs;ctx->next_ino=1;
-    ctx->ids[0]=(struct nas_ramfs_identity){
+    ctx->root_inode=(struct nas_ramfs_identity){
         .entry=ramfs_get_entry(fs,"/"),.ino=1,.mode=0040755U,.active=true
     };
+    ctx->identities=&ctx->root_inode;
     ctx->mount=(struct nas_vfs_mount){
         .mountpoint=point,.type=&ramfs_type,.private_data=ctx
     };
     ctx->mounted=true;
     int rc=nas_vfs_register_mount(&ctx->mount);
     if(!rc)return 0;
-    ctx->mounted=false;ctx->fs=NULL;
+    ctx->mounted=false;ctx->fs=NULL;ctx->identities=NULL;
+    ctx->root_inode=(struct nas_ramfs_identity){0};
     ramfs_deinit(fs);
     return rc;
 }
@@ -315,6 +351,13 @@ int nas_ramfs_vfs_unmount(struct nas_ramfs_vfs *ctx) {
     ctx->mounted=false;
     ramfs_fs_t *fs=ctx->fs;ctx->fs=NULL;
     ramfs_deinit(fs);
-    memset(ctx->ids,0,sizeof(ctx->ids));
+    struct nas_ramfs_identity *id=ctx->identities;
+    while(id) {
+        struct nas_ramfs_identity *next=id->next;
+        if(id!=&ctx->root_inode)(void)nas_heap_free(id);
+        id=next;
+    }
+    ctx->identities=NULL;
+    ctx->root_inode=(struct nas_ramfs_identity){0};
     return 0;
 }

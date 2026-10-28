@@ -49,8 +49,63 @@ int main(void) {
     assert(nas_fs_lookup_node("/ramfs-two/victim",true,&node,path)==0);
     assert(nas_vfs_unlink("/ramfs-two/victim",0)==0);
     assert(nas_vfs_unlink("/ramfs-two/file",0)==0);
+    /* 320 same-directory records exceed the old fixed 128 identity table.
+     * Exercise independent arbitrary-name lookup and bounded readdir with
+     * stable exported inode IDs, without bypassing shared VFS dispatch. */
+    assert(nas_vfs_mkdir("/ramfs/bulk",0700)==0);
+    for(unsigned i=0;i<320;i++) {
+        char name[256];
+        assert(snprintf(name,sizeof(name),"/ramfs/bulk/f%03u",i)>0);
+        assert(nas_vfs_create(name,(i&1U)?0600:0640)==0);
+    }
+    assert(nas_fs_lookup_node("/ramfs/bulk",true,&dir,path)==0);
+    assert((dir.mode&0777)==0700);
+    unsigned seen=0;uint64_t cursor=0;
+    struct nas_vfs_dirent entries[7];
+    for(;;) {
+        int count=nas_vfs_read_dir(&dir,cursor,entries,7);
+        assert(count>=0);
+        if(!count)break;
+        for(int i=0;i<count;i++) {
+            if(cursor+(unsigned)i>=2) {
+                assert(entries[i].ino!=0);
+                assert(entries[i].dtype==8);
+                seen++;
+            }
+        }
+        cursor+=(unsigned)count;
+    }
+    assert(seen==320);
+    for(unsigned i=0;i<320;i++) {
+        char name[256];
+        assert(snprintf(name,sizeof(name),"/ramfs/bulk/f%03u",i)>0);
+        assert(nas_fs_lookup_node(name,true,&node,path)==0);
+        assert((node.mode&0777)==((i&1U)?0600:0640));
+        if(i==107) {
+            assert(nas_vfs_chmod(&node,0604)==0);
+            assert(nas_fs_lookup_node(name,true,&node,path)==0);
+            assert((node.mode&0777)==0604);
+        }
+        if(i==148) {
+            struct nas_fs_node stale=node,fresh;
+            assert(nas_vfs_unlink(name,0)==0);
+            assert(nas_vfs_create(name,0600)==0);
+            assert(nas_fs_lookup_node(name,true,&fresh,path)==0);
+            assert(fresh.ino!=stale.ino);
+            assert(nas_vfs_read_at(&stale,0,(uint8_t *)text,1)==-ESTALE);
+        }
+        assert(nas_vfs_unlink(name,0)==0);
+    }
+    assert(nas_vfs_unlink("/ramfs/bulk",0x200ULL)==0);
+    /* Recycle mount-local identity slots across repeated namespace churn:
+     * a stale pre-delete snapshot must never alias a new inode generation. */
+    for(unsigned i=0;i<700;i++) {
+        assert(nas_vfs_create("/ramfs/churn",0640)==0);
+        assert(nas_fs_lookup_node("/ramfs/churn",true,&node,path)==0);
+        assert(nas_vfs_unlink("/ramfs/churn",0)==0);
+    }
     assert(nas_ramfs_vfs_unmount(&a)==0);
     assert(nas_ramfs_vfs_unmount(&b)==0);
-    puts("[UPSTREAM RAMFS VFS PASS] original vendor; two mounts; inode identity; rename; I/O; busy unlink/umount");
+    puts("[UPSTREAM RAMFS VFS PASS] original vendor; dynamic 320+ identities; 700 reuse cycles; inode generation; modes; two mounts; rename; I/O; busy unlink/umount");
     return 0;
 }

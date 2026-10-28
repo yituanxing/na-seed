@@ -107,3 +107,26 @@ the versioned manifest, validate no duplicates and exact common x86/RV/ARM
 link coverage; the Python audit also requires the VFS and common allocator
 owners. Adding a common service no longer requires patching several unrelated
 hardcoded magic counts.
+
+### 2026-10-28 real third-party stress: inode generation and metadata ownership
+
+This VFS integration exposed another first-party architecture defect: the
+original adapter reserved exactly 128 inode identities in a mount-wide
+static table, despite the external filesystem itself supporting larger
+directories. It also silently discarded creation modes. The adapter now
+allocates identity objects on demand through the one shared kernel heap,
+recycles inactive records with a **new** monotonically increasing inode
+number, validates identity provenance without UB pointer-range comparisons,
+and keeps mode metadata in its own per-mount sidecar (including chmod).
+Vendor bytes remain untouched. On failure to allocate the sidecar for
+create/mkdir, the adapter rolls back the just-created vendor inode.
+Unmount returns all sidecar objects to the common heap after the last
+VFS lease is dropped; no filesystem-specific process FD dispatch appears.
+
+The compiled, real VFS host acceptance creates and enumerates **320**
+records using one 7-entry getdents cursor (old hard cap: 128), validates
+per-file creation modes, chmod, stale generation after delete/recreate,
+then stresses **700** create/lookup/delete generations. The unchanged
+native guest source remains used for all three ISA real QEMU acceptance.
+This does *not* solve the upstream vendor's immediate-free open-unlink or
+atomic rename replacement limitations; those remain explicitly fail-closed.

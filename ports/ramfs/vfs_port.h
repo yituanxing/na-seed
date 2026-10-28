@@ -4,8 +4,11 @@
 #include "../../third_party/jkent_ramfs/include/ramfs/ramfs.h"
 /* Each mount has independent namespace, inode generations and upstream FS.
  * Stable identities are adapter-owned; no Linux FD or user ABI leaks here. */
-#define NAS_RAMFS_IDENTITIES 128U
 struct nas_ramfs_identity {
+    /* Stable address for each borrowed VFS inode snapshot. Inactive records
+     * may be recycled only with a NEW inode generation; the old snapshot's
+     * ino will then fail validate_inode with ESTALE. */
+    struct nas_ramfs_identity *next;
     ramfs_entry_t *entry;
     struct nas_ramfs_identity *parent;
     uint64_t ino;
@@ -16,7 +19,8 @@ struct nas_ramfs_identity {
 struct nas_ramfs_vfs {
     struct nas_vfs_mount mount;
     ramfs_fs_t *fs;
-    struct nas_ramfs_identity ids[NAS_RAMFS_IDENTITIES];
+    struct nas_ramfs_identity root_inode;
+    struct nas_ramfs_identity *identities; /* allocated on demand, per mount */
     uint64_t next_ino;
     bool mounted;
 };
