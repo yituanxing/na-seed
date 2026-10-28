@@ -90,6 +90,7 @@ for source in ("kernel/fs/vfs_providers.c", "ports/littlefs/vfs_port.c",
                "ports/lwext4/guest_vfs.c"):
     if "nas_vfs_join_child(" not in (root/source).read_text():
         raise SystemExit(f"provider duplicates leaf join: {source}")
+vfs_providers=(root/"kernel/fs/vfs_providers.c").read_text()
 # Borrowed inode identity is never trusted solely by its pointer. Mounted
 # VFS validation must check the live mount registry before dereferencing
 # a possibly retired descriptor; tmpfs checks its monotonic inode number.
@@ -107,7 +108,6 @@ if "struct nas_tmp_dentry" not in tmp_h or \
     raise SystemExit("tmpfs must own a parent-inode + one-basename dentry")
 if "char path[256];" in tmp_h:
     raise SystemExit("absolute path cache reintroduced into tmpfs dentry")
-vfs_providers=(root/"kernel/fs/vfs_providers.c").read_text()
 for required in ("tmp_create_at(", "tmp_mkdir_at(", "tmp_unlink_at(",
                  "tmp_rename_at(", "tmp_link_at(", "tmp_symlink_at(",
                  "tmp_child_entry_inode(", "tmp_dir_parent_inode("):
