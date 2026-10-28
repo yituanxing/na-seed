@@ -365,6 +365,12 @@ int main(void) {
     assert(nas_vfs_directory_path(&read_only_dir,"/invalid",path_from_inode)==0);
     assert(!strcmp(path_from_inode,"/bin"));
     assert(nas_vfs_node_unpin(&opened_directory)==0);
+    /* Even with no live lease, a recycled (mount,ino) must not make a
+     * different backend inode valid for dirfd/cwd-relative pathwalk. */
+    struct nas_fs_node recycled_directory=opened_directory;
+    recycled_directory.inode=&fixture_open_child;
+    assert(nas_vfs_directory_path(&recycled_directory,
+                "/tmp/renamed-opened",path_from_inode)==-ESTALE);
     assert(nas_fs_lookup_node("/proc",true,&n,resolved)==0);
     assert(nas_vfs_read_dir(&n,0,records,8)==3);
     assert(!strcmp(records[2].name,"self") && records[2].dtype==4);
@@ -432,6 +438,14 @@ int main(void) {
     assert(nas_vfs_node_pin(&forged)==-ESTALE);
     assert(nas_vfs_node_unpin(&forged)==-ESTALE);
     assert(nas_vfs_getattr(&forged,&refreshed)==-ESTALE);
+    /* No data, metadata or durability provider may run against a stale
+     * incarnation while a different open File holds the real inode. */
+    assert(nas_vfs_read_at(&forged,0,(uint8_t *)data,1)==-ESTALE);
+    assert(nas_vfs_write_at(&forged,0,(const uint8_t *)"x",1)==-ESTALE);
+    assert(nas_vfs_resize(&forged,1)==-ESTALE);
+    assert(nas_vfs_sync(&forged)==-ESTALE);
+    assert(nas_vfs_chmod(&forged,0600)==-ESTALE);
+    assert(nas_vfs_utimens(&forged,0,0,true,true)==-ESTALE);
     assert(nas_vfs_inode_is_pinned(&fixture_orphan));
     assert(nas_vfs_node_pin(&orphan)==0); /* separate cwd and shared File */
     assert(nas_vfs_node_unpin(&orphan)==0);
@@ -506,6 +520,10 @@ int main(void) {
      * attach a second location under the same parent inode. */
     bad_mount.mountpoint="/tmp/alias/mounted";
     assert(nas_vfs_register_mount(&bad_mount)==-EINVAL);
+    /* A symlink at the FINAL covered mountpoint is not a mountable
+     * directory identity either: following /tmp/alias lands at /tmp. */
+    bad_mount.mountpoint="/tmp/alias";
+    assert(nas_vfs_register_mount(&bad_mount)==-EINVAL);
     /* The old cwd/dirfd path remains correct on an ordinary directory. */
     assert(nas_fs_lookup_node("/bin/.",true,&n,resolved)==0 &&
            !strcmp(resolved,"/bin"));
@@ -533,6 +551,10 @@ int main(void) {
     assert(nas_vfs_unregister_mount(&ext_mount)==-EBUSY);
     assert(nas_vfs_node_unpin(&n)==0);
     assert(nas_vfs_unregister_mount(&ext_mount)==0);
+    /* A previously borrowed inode cannot access its detached provider,
+     * even when the provider's descriptor memory remains addressable. */
+    assert(nas_vfs_read_at(&n,0,(uint8_t *)data,1)==-ENODEV);
+    assert(nas_vfs_sync(&n)==-ENODEV);
     assert(nas_fs_lookup_node("/mnt/hello",true,&n,resolved)==-ENOENT);
     assert(nas_vfs_unregister_mount(&ext_mount)==-ENOENT);
     /* One provider can appear beneath two independent VFS mount records.
