@@ -67,6 +67,7 @@ int main(void) {
     assert(nas_vfs_node_pin(&dir)==0);
     assert(nas_vfs_unlink("/ramfs/open-dir",0x200ULL)==0);
     assert(nas_vfs_getattr(&dir,&removed)==0 && removed.nlink==0);
+    assert(nas_vfs_directory_path(&dir,"/ramfs/open-dir",path)==-ENOENT);
     assert(nas_vfs_node_unpin(&dir)==0);
     assert(nas_fs_lookup_node("/ramfs/open-dir",true,&removed,path)==-ENOENT);
     assert(nas_vfs_read_at(&other,0,(uint8_t *)text,5)==0);

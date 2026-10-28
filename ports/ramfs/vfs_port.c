@@ -132,8 +132,13 @@ static int directory_path(const struct nas_fs_node *node,char absolute[256]) {
     if(!node || !node->is_dir || !absolute)return -ENOTDIR;
     int rc=validate(node);
     if(rc)return rc;
+    /* A deleted but still opened directory is not a reachable namespace
+     * path. Never publish the adapter's private orphan directory through
+     * getcwd, fchdir or dirfd-relative pathname reconstruction. */
+    const struct nas_ramfs_identity *id=node->inode;
+    if(id->orphaned)return -ENOENT;
     char local[256];
-    rc=path_of((const struct nas_ramfs_identity *)node->inode,local);
+    rc=path_of(id,local);
     if(rc)return rc;
     const char *mp=node->mount->mountpoint;
     if(!strcmp(local,"/")) {

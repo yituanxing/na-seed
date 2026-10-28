@@ -4,9 +4,13 @@
 set -eu
 if { [ -n "${NAS_LWEXT4_TEST_IMAGE:-}" ] ||
        [ -n "${NAS_VIRTIO_BLK_IMAGE:-}" ] ||
-       [ -n "${NAS_LITTLEFS_TEST_IMAGE:-}" ]; } &&
+       [ -n "${NAS_LITTLEFS_TEST_IMAGE:-}" ] ||
+       [ -n "${NAS_RAMFS_NATIVE_PROBE:-}" ]; } &&
    [ -s build/port-aarch64/full/kernel.elf ]; then
-    if [ -n "${NAS_LITTLEFS_TEST_IMAGE:-}" ]; then
+    if [ -n "${NAS_RAMFS_NATIVE_PROBE:-}" ]; then
+        [ "${NAS_ENABLE_RAMFS:-0}" = 1 ] ||
+          { echo '[RAMFS ARM64] opt-in required' >&2; exit 1; }
+    elif [ -n "${NAS_LITTLEFS_TEST_IMAGE:-}" ]; then
         [ "${NAS_ENABLE_LITTLEFS:-0}" = 1 ] ||
           { echo '[LITTLEFS ARM64] opt-in required' >&2; exit 1; }
     else
@@ -48,6 +52,18 @@ timeout: 0
     module_path: boot():/boot/ext4-write-probe.elf
 HW_CFG
     mcopy -i "$disk@@1048576" "$dir/lwext4-guest.conf" ::/boot/limine/limine.conf
+elif [ -n "${NAS_RAMFS_NATIVE_PROBE:-}" ]; then
+    test -s "$NAS_RAMFS_NATIVE_PROBE"
+    mcopy -i "$disk@@1048576" "$NAS_RAMFS_NATIVE_PROBE" ::/boot/ramfs-probe.elf
+    cat > "$dir/ramfs-guest.conf" <<'RAMFS_CFG'
+timeout: 0
+/NaSeed original RAMFS through one native portable Linux ELF
+    protocol: limine
+    path: boot():/boot/kernel
+    cmdline: naseed.argv=/bin/ramfs-probe
+    module_path: boot():/boot/ramfs-probe.elf
+RAMFS_CFG
+    mcopy -i "$disk@@1048576" "$dir/ramfs-guest.conf" ::/boot/limine/limine.conf
 elif [ -n "${NAS_LITTLEFS_TEST_IMAGE:-}" ]; then
     test -s "$NAS_LITTLEFS_TEST_IMAGE"
     test -s "$NAS_LITTLEFS_PROBE"
@@ -114,6 +130,13 @@ if [ -n "${NAS_VIRTIO_BLK_IMAGE:-}" ]; then
       '[PASS] common VFS ext4 RAM RW native Linux ELF' \
       '[PASS] cmdline userspace exit 0' \
       '[ARM64] userspace debug-exit status=0'
+elif [ -n "${NAS_RAMFS_NATIVE_PROBE:-}" ]; then
+    sh scripts/port-boot-until.sh "$log" "$pid" "${limit:-90}" \
+      '[PASS] real upstream RamFS: VFS create/IO/rename/open-pin/unlink/rmdir' \
+      '[PASS] RAMFS portable native Linux syscalls: open-unlink/orphan/rename/dirfd/getdents' \
+      '[RAMFS GUEST] original standalone RamFS clean VFS unmount' \
+      '[PASS] cmdline userspace exit 0' \
+      '[ARM64] userspace debug-exit status=0'
 elif [ -n "${NAS_LITTLEFS_TEST_IMAGE:-}" ]; then
     sh scripts/port-boot-until.sh "$log" "$pid" "${limit:-90}" \
       '[PASS] LITTLEFS native kernel VFS inode read from original filesystem' \
@@ -151,6 +174,8 @@ if [ "$monitor" -ne 0 ] || grep -Fq '[FAIL]' "$log" ||
 fi
 if [ -n "${NAS_VIRTIO_BLK_IMAGE:-}" ]; then
     echo '[VIRTIO-BLK PHYSICAL QEMU PASS] ARM64 real disk syscall+flush'
+elif [ -n "${NAS_RAMFS_NATIVE_PROBE:-}" ]; then
+    echo '[RAMFS NATIVE VFS PASS] ARM64 genuine Linux ELF and independent original RAMFS'
 elif [ -n "${NAS_LITTLEFS_TEST_IMAGE:-}" ]; then
     echo '[LITTLEFS NATIVE VFS PASS] ARM64 actual unprivileged Linux ELF'
 elif [ -n "${NAS_LWEXT4_RW_PROBE:-}" ]; then

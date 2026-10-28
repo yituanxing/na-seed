@@ -169,3 +169,32 @@ to use its upstream O(1) `ramfs_seekdir` for ordinary subdirectories;
 the mount root filters its private namespace and uses a visible-only
 logical cursor. Actual host VFS and all three native QEMU guest tests
 must prove this behavior before considering it accepted.
+
+### Genuine three-ISA user/syscall ABI acceptance (not only kernel selftests)
+
+The last acceptance exercised RamFS via kernel-owned VFS calls; it did
+not establish that Linux userland could interact with the independent
+backend. Now `user/ramfs-native-vfs.c` uses one unprivileged ELF source
+on x86-64/RV64/AArch64 with the existing common, ISA-specific
+`ext4-rw-syscall.S` wrapper (only Linux `unlinkat` was appended to the
+shared ABI tables, retaining existing indexes). One generic target
+matrix `scripts/build-native-vfs-probe.sh` compiles both the existing
+LittleFS probe and the new RamFS probe without duplicating triple,
+ABI or linker selection.
+
+The genuine Linux syscall route runs openat/O_CREAT|O_EXCL, concurrent
+independent File descriptions, lseek/live growth, read/write/fsync,
+rename of open inodes, unlink-open with new inode at the same name,
+getdents64 excluding the private orphan store, mkdirat, dirfd-relative
+openat/unlinkat, fchdir/getcwd through renamed parent, and close/final
+orphan reclaim. All operations enter the actual native Linux syscall
+dispatcher, NOT the kernel-side RamFS selftest.
+The three ISA native QEMU workflow checks distinct ring3 and
+kernel-side markers, exit 0 and clean unmount. No filesystem-specific
+FD type, user ABI or syscall dispatch branch was introduced.
+
+A deleted-but-open directory remains valid for inode metadata/readdir,
+but its *namespace pathname* does not exist. The adapter must return
+ENOENT from `directory_path` instead of allowing the internal orphan
+spelling to escape via `fchdir/getcwd` or dirfd path reconstruction;
+the host VFS fixture explicitly checks this boundary.
