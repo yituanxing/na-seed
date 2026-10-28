@@ -391,6 +391,26 @@ int main(void) {
                               &opened,resolved)==-ENOENT);
     assert(!memcmp(data,elf_bytes,4) && !nas_vfs_can_write(&n));
     assert(nas_vfs_chmod(&n,0666)==-EROFS);
+    struct nas_fs_node borrowed_before_reuse;
+    assert(nas_fs_lookup_node("/tmp/demo",true,
+                              &borrowed_before_reuse,resolved)==0);
+    uint64_t old_generation=tmp_demo.ino;
+    /* The backing slab address is unchanged, but its inode identity
+     * changed after an unlink+last unpin. Old borrowed descriptors must
+     * fail before VFS dispatches ANY backend read/write/stat/pin. */
+    tmp_demo.ino=old_generation+11111;
+    assert(nas_vfs_read_at(&borrowed_before_reuse,
+                           0,(uint8_t *)data,1)==-ESTALE);
+    assert(nas_vfs_node_pin(&borrowed_before_reuse)==-ESTALE);
+    struct nas_fs_node detached_descriptor=borrowed_before_reuse;
+    detached_descriptor.mount=(const struct nas_vfs_mount *)(uintptr_t)0x1U;
+    assert(nas_vfs_read_at(&detached_descriptor,
+                           0,(uint8_t *)data,1)==-ENODEV);
+    assert(nas_vfs_node_pin(&detached_descriptor)==-ENODEV);
+    assert(!nas_vfs_can_write(&detached_descriptor));
+    assert(nas_vfs_getattr(&borrowed_before_reuse,
+                           &n)==-ESTALE);
+    tmp_demo.ino=old_generation;
     assert(nas_fs_lookup_node("/tmp/demo",true,&n,resolved)==0);
     assert(!strcmp(n.filesystem->name,"tmpfs") && nas_vfs_can_write(&n));
     assert(nas_vfs_read_at(&n,1,(uint8_t *)data,5)==3);

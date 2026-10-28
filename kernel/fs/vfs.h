@@ -42,6 +42,10 @@ struct nas_vfs_type {
     /* Live metadata from the pinned inode, never reopening its old path.
      * Refresh fields only: inode, ino, filesystem, mount remain immutable. */
     int (*getattr)(const struct nas_fs_node *,struct nas_fs_node *out);
+    /* Optional cheap inode-incarnation validation on EVERY VFS operation.
+     * An unpinned borrowed node must not read a recycled tmpfs slab slot
+     * even if no active inode lease exists to detect that reuse. */
+    int (*validate_inode)(const struct nas_fs_node *);
     int64_t (*read_at)(const struct nas_fs_node *, uint64_t offset,
                        uint8_t *kernel_dst, uint64_t length);
     /* Logical cursor counts entries, including . and .., from zero.

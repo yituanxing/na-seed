@@ -56,6 +56,7 @@ static bool lease_conflicts(const struct inode_size_lease *lease,
     return lease && lease->backend_inode!=node->inode;
 }
 struct nas_posix_locks *nas_vfs_posix_locks(const struct nas_fs_node *node) {
+    if(vfs_node_status(node))return NULL;
     struct inode_size_lease *lease=inode_lease(node);
     return lease && !lease_conflicts(lease,node) ?
            &lease->posix_locks : NULL;
@@ -73,6 +74,8 @@ int nas_vfs_flock(const struct nas_fs_node *node,const void *owner,
                   unsigned operation) {
     if(!node || !owner || !node->mount ||
        !node->filesystem || node->is_dir)return -EBADF;
+    int status=vfs_node_status(node);
+    if(status)return status;
     struct inode_size_lease *lease=inode_lease(node);
     if(!lease || lease_conflicts(lease,node))return -ESTALE;
     unsigned kind=operation&~4U; /* LOCK_NB */
@@ -170,13 +173,18 @@ static void ensure_defaults(void) {
  * destroyed device adapter. A recycled ino with a different backend
  * identity must not reach any provider before the final old File closes. */
 static int vfs_node_status(const struct nas_fs_node *node) {
-    if(!node || !node->filesystem || !node->mount ||
-       node->filesystem!=node->mount->type)return -EINVAL;
+    if(!node || !node->filesystem || !node->mount)return -EINVAL;
     ensure_defaults();
+    /* Never dereference node->mount before finding its registered, live
+     * attachment. An old borrowed snapshot may retain a freed descriptor
+     * address after umount. */
     for(unsigned i=0;i<count;i++)
         if(mounts[i].mount==node->mount) {
             if(node->mount_id!=mounts[i].device_id)return -ESTALE;
-            return lease_conflicts(inode_lease(node),node) ? -ESTALE : 0;
+            if(node->filesystem!=node->mount->type)return -EINVAL;
+            if(lease_conflicts(inode_lease(node),node))return -ESTALE;
+            return node->filesystem->validate_inode ?
+                   node->filesystem->validate_inode(node) : 0;
         }
     return -ENODEV;
 }
@@ -478,7 +486,7 @@ int nas_vfs_read_dir(const struct nas_fs_node *node,
                      uint64_t cursor,struct nas_vfs_dirent *entries,
                      unsigned maximum) {
     if(!node || !node->filesystem || !node->mount ||
-       node->mount->type!=node->filesystem || !entries || !maximum)
+       !entries || !maximum)
         return -EINVAL;
     if(!node->is_dir)return -ENOTDIR;
     int status=vfs_node_status(node);
@@ -498,7 +506,7 @@ int nas_vfs_read_dir(const struct nas_fs_node *node,
     return got;
 }
 bool nas_vfs_can_write(const struct nas_fs_node *node) {
-    return node && node->filesystem && node->mount &&
+    return !vfs_node_status(node) &&
            !node->filesystem->read_only && !node->mount->read_only;
 }
 /* A namespace operation always resolves the actual mounted PARENT first.
@@ -815,11 +823,11 @@ int nas_vfs_unregister_mount(const struct nas_vfs_mount *mount) {
     return 0;
 }
 int nas_vfs_node_pin(const struct nas_fs_node *node) {
-    if(!node || !node->mount || node->filesystem!=node->mount->type ||
+    if(!node || !node->filesystem || !node->mount ||
        (!node->ino && !node->inode))return -EINVAL;
-    ensure_defaults();
+    int status=vfs_node_status(node);
+    if(status)return status;
     for(unsigned i=0;i<count;i++)if(mounts[i].mount==node->mount) {
-        if(node->mount_id!=mounts[i].device_id)return -ESTALE;
         if(mounts[i].open_refs==UINT32_MAX)return -EMFILE;
         struct inode_size_lease *lease=inode_lease(node);
         if(lease) {
@@ -843,11 +851,11 @@ int nas_vfs_node_pin(const struct nas_fs_node *node) {
     return -ENODEV;
 }
 int nas_vfs_node_unpin(const struct nas_fs_node *node) {
-    if(!node || !node->mount || node->filesystem!=node->mount->type)
-        return -EINVAL;
+    if(!node || !node->mount || !node->filesystem)return -EINVAL;
     ensure_defaults();
     for(unsigned i=0;i<count;i++)if(mounts[i].mount==node->mount) {
         if(node->mount_id!=mounts[i].device_id)return -ESTALE;
+        if(node->filesystem!=node->mount->type)return -EINVAL;
         if(!mounts[i].open_refs)return -EINVAL;
         struct inode_size_lease *lease=inode_lease(node);
         if(!lease || !lease->refs)return -EINVAL;

@@ -90,6 +90,14 @@ for source in ("kernel/fs/vfs_providers.c", "ports/littlefs/vfs_port.c",
                "ports/lwext4/guest_vfs.c"):
     if "nas_vfs_join_child(" not in (root/source).read_text():
         raise SystemExit(f"provider duplicates leaf join: {source}")
+# Borrowed inode identity is never trusted solely by its pointer. Mounted
+# VFS validation must check the live mount registry before dereferencing
+# a possibly retired descriptor; tmpfs checks its monotonic inode number.
+if "validate_inode" not in (root/"kernel/fs/vfs.h").read_text() or \
+   "tmp_validate_inode(" not in vfs_providers or \
+   ".validate_inode=tmp_validate_inode" not in vfs_providers or \
+   "if(node->filesystem!=node->mount->type)return -EINVAL;" not in vfs_src:
+    raise SystemExit("VFS inode-incarnation validator or safe mount boundary missing")
 # M63: path references live ONLY in namespace dentries, not sparse inodes.
 tmp_h=(root/"kernel/tmpfs.h").read_text()
 tmp_c=(root/"kernel/tmpfs.c").read_text()

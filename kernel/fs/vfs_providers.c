@@ -280,6 +280,18 @@ static int tmp_directory_path(const struct nas_fs_node *node,char path[256]) {
     memcpy(path,live,len+1);
     return 0;
 }
+/* tmpfs inode slabs reuse an address after last unlink+unpin.
+ * A monotonically allocated tmp inode number catches stale snapshots even
+ * if the old lease was released before the caller attempts a read. */
+static int tmp_validate_inode(const struct nas_fs_node *node) {
+    if(!node || !node->inode)return -ESTALE;
+    const struct bootfs_entry *root=bootfs_find("/tmp");
+    if(root && node->inode==(const void *)root)
+        return node->ino==root->ino && node->is_dir ? 0 : -ESTALE;
+    const struct nas_tmp_file *file=node->inode;
+    return file->used && node->ino==5000+tmp_number(file) &&
+           node->is_dir==file->is_dir ? 0 : -ESTALE;
+}
 static int tmp_getattr(const struct nas_fs_node *node,struct nas_fs_node *out) {
     if(!node || !out || !node->inode)return -EINVAL;
     /* /tmp may expose a borrowed bootfs directory as its overlay root. */
@@ -315,6 +327,7 @@ static const struct nas_vfs_type tmp_type={
     .root=tmp_root,.lookup_child=tmp_child,
     .directory_path=tmp_directory_path,
     .last_inode_unpin=tmp_last_inode_unpin,.getattr=tmp_getattr,
+    .validate_inode=tmp_validate_inode,
     .readlink=tmp_readlink,
     .read_at=tmp_read,.read_dir=tmp_read_dir,.chmod=tmp_chmod_node,.utimens=tmp_utimens_node,
     .create=tmp_create_node,.write_at=tmp_write_node,
