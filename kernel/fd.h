@@ -76,11 +76,9 @@ struct nas_open_file {
     struct nas_fs_node vnode;
     bool vnode_pinned;
     const struct limine_file *boot_file;
-    const struct bootfs_entry *boot_entry;
-    uint64_t proc_pid;
-    uint64_t proc_tgid; /* procfs /proc/<TGID>/task/<TID> ownership */
-    uint8_t proc_kind;
-    uint16_t proc_fd;
+    /* Legacy procfs shadow PID/TGID/FD fields and bootfs entry pointer
+     * were removed: all mounted File identities live in vnode+mount.
+     * Keep only the non-VFS Limine module's opaque boot_file pointer. */
     /* Canonical path of the open description, shared by dup/fork. */
     char origin_path[256];
 };

@@ -28,6 +28,7 @@ static const char valid_dot[]="/mnt/sandbox/./cross-isa-created";
 static const char missing_parent[]="/mnt/no-such-directory/../sandbox/cross-isa-created";
 static const char new_with_dotdot[]="/mnt/sandbox/../sandbox/naseed-dot-new";
 static const char pathwalk_pass[]="[PASS] VFS native dot/dotdot checked before lexical pathname normalization\n";
+static const char missing_directory[]="/mnt/sandbox/naseed-dirflag-must-not-create";
 __attribute__((noreturn)) void guest_main(void) {
     unsigned stage=1;
     long writer=guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)path,0x242,0644);
@@ -49,6 +50,13 @@ __attribute__((noreturn)) void guest_main(void) {
        !=-EEXIST)goto fail;
     if(guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)path,
                      NAS_LINUX_NATIVE_O_DIRECTORY,0)!=-ENOTDIR)goto fail;
+    /* An O_DIRECTORY|O_CREAT failure must not publish an unwanted inode.
+     * This catches the old distinction between provisional and live nodes. */
+    if(guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)missing_directory,
+                     NAS_LINUX_NATIVE_O_DIRECTORY|0x40,0600)!=-ENOTDIR)
+        goto fail;
+    if(guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)missing_directory,
+                     0,0)!=-ENOENT)goto fail;
     /* Reader was opened before writer grew this inode. SEEK_END must
      * see the live VFS inode size, not its original File snapshot. */
     if(guest_syscall(OP_LSEEK,reader,0,2,0)!=size)goto fail;

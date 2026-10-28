@@ -161,3 +161,9 @@ this boundary is synthetic /dev until devfs, and the unmounted original
 Limine module compatibility bridge. No procfs, ext4, tmpfs or bootfs pathname
 routing exists in the Linux open adapter. Real three-ISA ext4 guest adds
 O_EXCL and O_DIRECTORY checks over an already opened mounted inode.
+
+The now-unneeded per-File proc PID/TGID/kind/fd and bootfs entry pointer
+fields were removed from the shared open-description object: inode ownership
+is not copied or encoded a second time in an FD. The three-ISA ext4 guest
+further proves O_CREAT|O_DIRECTORY on a nonexistent inode refuses without
+creating a leftover file. This guard precedes the VFS namespace mutation.

@@ -492,6 +492,10 @@ uint64_t nas_fs_open_path(const char *path,uint64_t native_flags,
         if(flags&0x10000ULL)return (uint64_t)-ENOTDIR;
         if(create && exclusive)return (uint64_t)-EEXIST;
     }
+    /* O_CREAT|O_DIRECTORY on an absent name cannot fabricate a regular
+     * file and then return a directory FD. Reject BEFORE namespace write. */
+    if(create_vfs && (flags&0x10000ULL))
+        return (uint64_t)-ENOTDIR;
     /* Linux O_TRUNC without write access is invalid for mutable regular
      * files; character device O_TRUNC is an inert flag. */
     if(create_vfs && truncate && !access && !path_only)
