@@ -91,7 +91,7 @@ boot_case() {
     # Ordinary applet/cpio cases have a more generous 45s cap.
     case "$name" in
         ash-*) time_budget=30 ;;
-        real-vfs) time_budget=100 ;;
+        real-vfs|disk-create|disk-replay) time_budget=100 ;;
         timer-preempt) time_budget=45 ;;
         process-capacity) time_budget=65 ;;
         init-reaper) time_budget=130 ;;
@@ -103,6 +103,15 @@ boot_case() {
         m37-incremental) time_budget=150 ;;
         *) time_budget=45 ;;
     esac
+    # Optional second REAL block drive (the first is the UEFI FAT ESP).
+    # Not a Limine module: sector I/O goes through original U-Boot VirtIO.
+    set --
+    if [ -n "${NAS_VIRTIO_BLK_IMAGE:-}" ]; then
+        test -s "$NAS_VIRTIO_BLK_IMAGE"
+        set -- -global virtio-mmio.force-legacy=false \
+               -drive "if=none,id=real_ext4,format=raw,file=$NAS_VIRTIO_BLK_IMAGE" \
+               -device virtio-blk-device,drive=real_ext4
+    fi
     set +e
     timeout "${time_budget}s" qemu-system-riscv64 \
         -machine virt,acpi=off -m "${NAS_ACCEPTANCE_QEMU_RAM:-512M}" -smp 1 \
@@ -110,7 +119,7 @@ boot_case() {
         -drive if=pflash,format=raw,unit=0,readonly=on,file="$fw/RISCV_VIRT_CODE.fd" \
         -drive if=pflash,format=raw,unit=1,file="$work/$name.vars.fd" \
         -drive if=none,id=esp,format=raw,file="$disk" \
-        -device virtio-blk-device,drive=esp > "$log" 2>&1 < /dev/null &
+        -device virtio-blk-device,drive=esp "$@" > "$log" 2>&1 < /dev/null &
     pid=$!
     if [ "$name" = timer-preempt ]; then
         sh scripts/port-boot-until.sh "$log" "$pid" "$time_budget" \

@@ -99,7 +99,7 @@ boot_case() {
     # No BusyBox result is assumed. A failure or timeout is a real failure.
     case "$name" in
         ash-*) time_budget=22 ;;
-        real-vfs) time_budget=100 ;;
+        real-vfs|disk-create|disk-replay) time_budget=100 ;;
         timer-preempt) time_budget=45 ;;
         process-capacity) time_budget=65 ;;
         init-reaper) time_budget=130 ;;
@@ -111,6 +111,15 @@ boot_case() {
         m37-incremental) time_budget=150 ;;
         *) time_budget=28 ;;
     esac
+    # Optional second REAL block drive (the first is the UEFI FAT ESP).
+    # Not a Limine module: sector I/O goes through original U-Boot VirtIO.
+    set --
+    if [ -n "${NAS_VIRTIO_BLK_IMAGE:-}" ]; then
+        test -s "$NAS_VIRTIO_BLK_IMAGE"
+        set -- -global virtio-mmio.force-legacy=false \
+               -drive "if=none,id=real_ext4,format=raw,file=$NAS_VIRTIO_BLK_IMAGE" \
+               -device virtio-blk-device,drive=real_ext4
+    fi
     set +e
     timeout "${time_budget}s" qemu-system-aarch64 \
         -machine virt -cpu cortex-a57 -m "${NAS_ACCEPTANCE_QEMU_RAM:-512M}" -smp 1 \
@@ -118,7 +127,7 @@ boot_case() {
         -semihosting-config enable=on,target=native -bios "$fw" \
         -d in_asm -dfilter 0x404700+0x180 -D "$work/$name.instructions.log" \
         -drive if=none,id=esp,format=raw,file="$disk" \
-        -device virtio-blk-device,drive=esp > "$log" 2>&1 < /dev/null &
+        -device virtio-blk-device,drive=esp "$@" > "$log" 2>&1 < /dev/null &
     pid=$!
     if [ "$name" = timer-preempt ]; then
         sh scripts/port-boot-until.sh "$log" "$pid" "$time_budget" \

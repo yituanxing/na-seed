@@ -49,6 +49,12 @@ on:
       - 'user/**/ext4-rw-syscall.S'
       - 'kernel/init/main.c'
       - 'scripts/check-ext4-fsck-clean.sh'
+      - 'scripts/probe-vfs-busybox-physical.sh'
+      - 'scripts/vfs-busybox-disk-cases.tsv'
+      - 'tests/vfs-busybox-disk-workload'
+      - 'scripts/probe-x86-busybox-parity.sh'
+      - 'scripts/probe-riscv64-busybox-matrix.sh'
+      - 'scripts/probe-aarch64-busybox-matrix.sh'
       - 'kernel/fs/vfs*'
       - 'kernel/fs/metadata_syscall.c'
       - 'user/ext4-guest-read.S'
@@ -72,7 +78,7 @@ on:
 jobs:
   lwext4-real-ext4-host:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Verify real BlockDevice and third-party driver port (host and 3 ISAs)
@@ -152,6 +158,11 @@ jobs:
           debugfs -R 'cat /sandbox/cross-isa-created' build/external/lwext4/virtio-persistent-rv.img > build/external/lwext4/virtio-rv-content.txt
           grep -Fq 'NaSeed one portable Linux ELF for x86 RV64 AArch64 ext4 RW' build/external/lwext4/virtio-rv-content.txt
           echo '[VIRTIO-BLK RV64 HOST PERSISTENCE PASS] hardware driver ext4 bytes survived QEMU'
+      - name: Real original Debian BusyBox ext4 physical disk, two independent QEMU boots per ISA
+        run: |
+          sh scripts/probe-vfs-busybox-physical.sh amd64
+          sh scripts/probe-vfs-busybox-physical.sh riscv64
+          sh scripts/probe-vfs-busybox-physical.sh arm64
       - name: 'Actual native x86 RV64 ARM64 ring3 LittleFS — one Linux ELF source'
         run: |
           sh scripts/build-littlefs-native-probes.sh

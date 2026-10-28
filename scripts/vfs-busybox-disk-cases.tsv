@@ -1,0 +1,4 @@
+# Two actual guest boots against ONE unchanged external ext4 disk: no
+# filesystem image is rebuilt/reset between these separate processes.
+disk-create	cpio	sh /bin/vfs-busybox-disk-workload create	[PASS] REAL VIRTIO EXT4 BUSYBOX CREATE: cp/mv/tar/find/grep/sync	-
+disk-replay	cpio	sh /bin/vfs-busybox-disk-workload replay	[PASS] REAL VIRTIO EXT4 BUSYBOX REBOOT: persisted bytes, tar, rm, rmdir	-

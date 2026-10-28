@@ -60,6 +60,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_fcntl: return NAS_SC_fcntl;
     case __NR_flock: return NAS_SC_flock;
     case __NR_fsync: return NAS_SC_fsync;
+    case __NR_sync: return NAS_SC_sync;
     case __NR_fdatasync: return NAS_SC_fdatasync;
     case __NR_ftruncate: return NAS_SC_ftruncate;
     case __NR_truncate: return NAS_SC_truncate;
@@ -214,6 +215,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 278U: return NAS_SC_getrandom; /* asm-generic Linux */
     case 59U: return NAS_SC_pipe2;
     case 25U: return NAS_SC_fcntl;
+    case 81U: return NAS_SC_sync; /* asm-generic sync */
     case 82U: return NAS_SC_fsync;
     case 83U: return NAS_SC_fdatasync;
     case 46U: return NAS_SC_ftruncate;

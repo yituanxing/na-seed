@@ -2,7 +2,14 @@
 # Same pinned Debian BusyBox 1.37.0, same commands/CPIO bytes as RV64.
 # Alpine dynamic/musl is intentionally a separate test profile.
 set -eu
-make kernel build/deps/limine-binary/BOOTX64.EFI
+if [ -n "${NAS_ACCEPTANCE_KERNEL:-}" ]; then
+    test -s "$NAS_ACCEPTANCE_KERNEL" || {
+        echo "[X86 PARITY FAIL] missing requested kernel $NAS_ACCEPTANCE_KERNEL" >&2; exit 1;
+    }
+    make build/deps/limine-binary/BOOTX64.EFI
+else
+    make kernel build/deps/limine-binary/BOOTX64.EFI
+fi
 if [ -n "${BUSYBOX_PARITY_BINARY:-}" ]; then
     dir=build/busybox-source-parity-x86
     mkdir -p "$dir"
@@ -30,7 +37,7 @@ run_case() {
     log="$dir/$name.serial.log"
     clean="$dir/$name.clean.log"
     mkdir -p "$stage/boot/limine" "$stage/EFI/BOOT"
-    cp build/kernel.elf "$stage/boot/kernel"
+    cp "${NAS_ACCEPTANCE_KERNEL:-build/kernel.elf}" "$stage/boot/kernel"
     cp "$efi" "$stage/EFI/BOOT/BOOTX64.EFI"
     cp "$cdrom" "$stage/boot/limine/"
     if [ "$mode" = cpio ]; then
@@ -56,7 +63,7 @@ run_case() {
       --efi-boot-part --efi-boot-image -o "$iso" "$stage" >/dev/null 2>&1
     rc=0
     case "$name" in m38-gcc) budget=300 ;; m39-packages|m40-archives|m41-unix|m42-pthread|m43-zstd|m44-group|m45-robust|m46-exec|m47-tgkill|m48-parallel|m49-capacity|m51-git|m52-python|m53-vim|m54-dev|m58-runtime|m59-worktree) budget=500 ;;
-        real-vfs) budget=90 ;;
+        real-vfs|disk-create|disk-replay) budget=100 ;;
         m55-cjson) budget=${NAS_M55_QEMU_TIMEOUT:-2400} ;; m56-busybox) budget=${NAS_M56_QEMU_TIMEOUT:-3600} ;; m57-sqlite) budget=${NAS_M57_QEMU_TIMEOUT:-3600} ;; m37-incremental) budget=100 ;; process-capacity) budget=45 ;; init-reaper) budget=110 ;; *) budget=15 ;; esac
     if [ "$name" = m38-gcc ] || [ "$name" = m39-packages ] || [ "$name" = m40-archives ] || [ "$name" = m41-unix ] || [ "$name" = m42-pthread ] || [ "$name" = m43-zstd ] || [ "$name" = m44-group ] || [ "$name" = m45-robust ] || [ "$name" = m46-exec ] || [ "$name" = m47-tgkill ] || [ "$name" = m48-parallel ] || [ "$name" = m49-capacity ] || [ "$name" = m51-git ] || [ "$name" = m52-python ] || [ "$name" = m53-vim ] || [ "$name" = m54-dev ] || [ "$name" = m55-cjson ] || [ "$name" = m56-busybox ] || [ "$name" = m57-sqlite ] || [ "$name" = m58-runtime ] || [ "$name" = m59-worktree ] || [ "$name" = real-vfs ]; then
         # The full GCC gate is allowed a large success budget, but a real

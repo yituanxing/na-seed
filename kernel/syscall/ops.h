@@ -34,6 +34,7 @@ enum nas_syscall_op {
     NAS_SC_flock,
     NAS_SC_fsync,
     NAS_SC_fdatasync,
+    NAS_SC_sync,
     NAS_SC_ftruncate,
     NAS_SC_truncate,
     NAS_SC_fork,

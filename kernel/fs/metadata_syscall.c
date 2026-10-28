@@ -422,6 +422,7 @@ struct nas_fs_result nas_fs_metadata_syscall(enum nas_syscall_op op,
     case NAS_SC_lstat: METADATA_RESULT(sys_fstatat_boot((uint64_t)-100, args[1], args[2], 0x100ULL));
     case NAS_SC_lseek: METADATA_RESULT(sys_lseek_boot(args[1], args[2], args[3]));
     case NAS_SC_fsync: case NAS_SC_fdatasync: METADATA_RESULT(sys_sync_fd(args[1]));
+    case NAS_SC_sync: METADATA_RESULT((uint64_t)(int64_t)nas_vfs_sync_all());
     case NAS_SC_ftruncate: METADATA_RESULT(sys_resize_fd(args[1],args[2]));
     case NAS_SC_truncate: METADATA_RESULT(sys_resize_path(args[1],args[2]));
     case NAS_SC_getdents64: METADATA_RESULT(sys_getdents64(args[1], args[2], args[3]));

@@ -720,6 +720,27 @@ int nas_vfs_sync(const struct nas_fs_node *node) {
     if(!node->filesystem->sync)return node->filesystem->read_only ? 0 : -EOPNOTSUPP;
     return node->filesystem->sync(node);
 }
+int nas_vfs_sync_all(void) {
+    ensure_defaults();
+    int first_error=0;
+    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++) {
+        if(!mounts[i].used)continue;
+        const struct nas_vfs_mount *mounted=&mounts[i].superblock;
+        if(mounted->read_only || mounted->type->read_only)continue;
+        struct nas_fs_node root={0};
+        int rc=mounted->type->root(mounted,&root);
+        if(rc) {
+            if(!first_error)first_error=rc;
+            continue;
+        }
+        root.mount=mounted;
+        root.filesystem=mounted->type;
+        root.mount_id=mounts[i].device_id;
+        rc=nas_vfs_sync(&root);
+        if(rc && !first_error)first_error=rc;
+    }
+    return first_error;
+}
 int nas_vfs_mkdir(const char *path,uint64_t mode) {
     if(!path || path[0]!='/')return -EINVAL;
     if(!strcmp(path,"/"))return -EEXIST;
