@@ -57,8 +57,12 @@ static char fixture_child_path[256]="/tmp/opened/child";
 static uint8_t fixture_created_bytes[32];
 static unsigned fixture_created_length;
 static bool archive_available=true;
+/* Count actual provider probes, not synthetic elapsed host time. This
+ * isolates repeated namei work while binding one already-resolved Path. */
+static unsigned bootfs_find_calls;
 bool bootfs_mounted(void){return archive_available;}
 const struct bootfs_entry *bootfs_find(const char *path){
+    ++bootfs_find_calls;
     if(!archive_available)return NULL;
     for(unsigned i=0;i<sizeof(entries)/sizeof(entries[0]);i++)
         if(!strcmp(entries[i].path,path))return &entries[i];
@@ -373,6 +377,19 @@ int main(void) {
     assert(nas_fs_lookup_node("/bin/demo",true,&n,resolved)==0);
     assert(!strcmp(resolved,"/bin/demo") && !strcmp(n.filesystem->name,"bootfs"));
     assert(nas_vfs_read_at(&n,0,(uint8_t *)data,4)==4);
+    /* On a canonical d-component path, a Path bind must cross each edge
+     * once rather than rerun the complete root-to-prefix walk 1+...+d
+     * times. The real bootfs provider counts root/child inode probes. */
+    struct nas_vfs_path probe_path={0};
+    bootfs_find_calls=0;
+    assert(nas_vfs_path_bind(&n,"/bin/demo",&probe_path)==0);
+    fprintf(stderr,"[VFS PATH COST] /bin/demo provider probes: %u\n",
+            bootfs_find_calls);
+    assert(bootfs_find_calls==3);
+    assert(nas_vfs_path_put(&probe_path)==0);
+    /* An alias is not a canonical dentry name. A direct symlink must not
+     * bypass the established resolved-path identity check. */
+    assert(nas_vfs_path_bind(&n,"/shortcut",&probe_path)==-ESTALE);
     /* Open policy belongs to one VFS inode transaction, not one
      * Linux syscall branch per provider. The returned node is pinned. */
     struct nas_fs_node opened;
@@ -919,6 +936,14 @@ int main(void) {
     assert(found.mount!=&nested_mount &&
            !strcmp(found.mount->mountpoint,"/mnt/nested") &&
            found.ino==first.ino);
+    /* Across two independent mount transitions, Path binding also walks
+     * each canonical edge once. Re-running namei for every prefix would
+     * probe the bootfs root four times instead of once. */
+    bootfs_find_calls=0;
+    struct nas_vfs_path nested_path={0};
+    assert(nas_vfs_path_bind(&found,"/mnt/nested/hello",&nested_path)==0);
+    assert(bootfs_find_calls==1);
+    assert(nas_vfs_path_put(&nested_path)==0);
     assert(nas_fs_lookup_node("/mnt/nested/../hello",true,&found,resolved)==0);
     assert(found.mount==first.mount && found.ino==first.ino);
     assert(nas_vfs_lookup("/mnt/nested/../hello",&found)==0);

@@ -788,18 +788,22 @@ int nas_vfs_path_bind(const struct nas_fs_node *inode,
             if(used>1)component_path[used++]='/';
             memcpy(component_path+used,canonical+start,n);
             used+=n;component_path[used]=0;
-            struct nas_fs_node next_node;
-            rc=nas_fs_lookup_node(component_path,true,&next_node,resolved);
-            if(rc)break;
-            if(strcmp(resolved,component_path)) {rc=-ESTALE;break;}
-            struct nas_vfs_dentry *next=NULL;
-            const char *name=current ? canonical+start : component_path;
+            /* The caller supplies a namei-verified canonical path. Do
+             * not restart root-to-leaf namei for EVERY prefix (quadratic
+             * provider probes on deep source trees). Bind its Dentry
+             * graph one component at a time through the SAME VFS mount
+             * crossing operation used by namei itself. A symlink here
+             * would mean the spelling is not canonical, so reject it. */
             char basename[256];
-            if(current) {
-                memcpy(basename,name,n);
-                basename[n]=0;
-                name=basename;
-            }
+            memcpy(basename,canonical+start,n);
+            basename[n]=0;
+            struct nas_fs_node next_node;
+            rc=nas_vfs_lookup_step(current?&current->node:NULL,
+                                   component_path,basename,&next_node);
+            if(rc)break;
+            if(next_node.is_symlink) {rc=-ESTALE;break;}
+            struct nas_vfs_dentry *next=NULL;
+            const char *name=current ? basename : component_path;
             rc=dentry_acquire(current,name,&next_node,&next);
             if(rc)break;
             if(current && dentry_put(current)) {
