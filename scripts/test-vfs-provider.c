@@ -499,6 +499,7 @@ int main(void) {
     assert(nas_vfs_read_dir(&n,3,records,8)==0);
     assert(nas_fs_lookup_node("/tmp/archive",true,&n,resolved)==0);
     assert(!strcmp(n.filesystem->name,"bootfs")); /* legacy mount fallthrough */
+    struct nas_fs_node direct={0};
     assert(nas_vfs_lookup("/tmp/archive",&direct)==0);
     assert(direct.mount==n.mount && direct.ino==n.ino);
     assert(nas_vfs_lookup("/tmp/archive/..",&direct)==-ENOTDIR);
@@ -677,7 +678,6 @@ int main(void) {
     /* Direct kernel lookup and syscall namei must now share ONE pathwalk:
      * inspect a final symlink itself; follow an intermediate symlink;
      * never bypass a regular-file dot/dotdot parent. */
-    struct nas_fs_node direct={0};
     assert(nas_vfs_lookup("/shortcut",&direct)==0 && direct.is_symlink);
     assert(nas_vfs_lookup("/bin/demo/..",&direct)==-ENOTDIR);
     assert(nas_vfs_lookup("/bin/demo/../demo",&direct)==-ENOTDIR);

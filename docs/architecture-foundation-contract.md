@@ -440,3 +440,21 @@ Dentry Paths and same-name inode reuse without invoking old reverse
 callbacks. Static architecture tests prohibit reintroducing the old
 selector or callback. The genuine original Debian BusyBox three-ISA
 QEMU/third-party FS exact-head checks remain required before merge.
+
+### Exact-head acceptance: complete AF_UNIX and source-wide owner audit
+
+The first complete 21-workflow run of the single-batch migration reached
+compiler and independent host-test failures (not a QEMU behavior claim):
+`kernel/fs/socket_syscall.c` still called the deleted reverse-directory
+VFS API; the shared host fixture referred to a local `direct` test
+variable before its declaration. Both are corrected in one follow-up
+integration commit.
+
+AF_UNIX relative pathname sockets now consult the **same Path owned by
+Task.fs.cwd** as openat, getcwd and chdir, and fail ESTALE for a pinned
+cwd that has lost its Dentry. No syscall reopens `cwd` by inode. The
+shared architecture checker now scans *every kernel C and header* for
+obsolete reverse-path callback calls instead of enumerating likely
+file names. This explicitly closes the omission discovered by the
+original signed applications and real three-ISA kernel-build matrix.
+The original 21 workflows must pass again on the new exact commit.

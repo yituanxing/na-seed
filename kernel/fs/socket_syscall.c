@@ -63,11 +63,16 @@ static int unix_address(uint64_t addr,uint64_t length,char out[256]) {
     const char *origin=NULL;
     if(input[0]!='/') {
         origin=current_workdir;
-        if(TASK.fs->cwd_pinned) {
-            int rc=nas_vfs_directory_path(&TASK.fs->cwd_node,
-                                           current_workdir,base);
+        /* AF_UNIX pathnames use the SAME FS-context owned Dentry as
+         * openat/chdir/getcwd. A pinned cwd with no Path is not a valid
+         * name owner: never resurrect it by reverse-opening a stale
+         * pathname in tmpfs or a third-party filesystem. */
+        if(TASK.fs->cwd_path.dentry) {
+            int rc=nas_vfs_path_string(&TASK.fs->cwd_path,base);
             if(rc)return rc;
             origin=base;
+        } else if(TASK.fs->cwd_pinned) {
+            return -ESTALE;
         }
     }
     int rc=nas_path_join_raw(origin,input,raw);

@@ -128,6 +128,19 @@ if ("return nas_fs_lookup_node(absolute,false,out,canonical);" not in vfs_src or
     "for(unsigned attempt=0;attempt<count;attempt++)" in vfs_src or
     "return nas_vfs_lookup(absolute,out);" in vfs_src):
     raise SystemExit("duplicate direct VFS mount-prefix/namei walker returned")
+# No direct/callback inode->global-path escape hatch can hide inside
+# socket, metadata, task, or a newly introduced syscall owner. The earlier
+# hand-selected file audit missed AF_UNIX, which is a real Linux pathname
+# syscall. Audit ALL runtime kernel C/H sources instead of guessing which
+# syscall file might add another duplicate.
+for source in (root/"kernel").rglob("*"):
+    if source.suffix not in (".c", ".h"): continue
+    data=source.read_text()
+    if "nas_vfs_directory_path" in data or ".directory_path=" in data:
+        raise SystemExit(f"obsolete reverse VFS name owner in {source}")
+if "nas_vfs_path_string(&TASK.fs->cwd_path,base)" not in (
+        root/"kernel/fs/socket_syscall.c").read_text():
+    raise SystemExit("AF_UNIX did not join the shared owned FS Path")
 # Ordinary directory Files and cwd never ask a provider to reconstruct
 # a reverse pathname. Provider-internal ext4 identity->path is still
 # necessary because upstream libext4 uses path-based I/O.
