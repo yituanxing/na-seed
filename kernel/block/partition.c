@@ -8,9 +8,6 @@
  * device. The caller can choose among at most 128 GPT entries.
  * The 4KiB scratch belongs to this invocation, never a static global
  * shared by unrelated drivers or CPUs. */
-static uint16_t le16(const uint8_t *b) {
-    return (uint16_t)b[0] | ((uint16_t)b[1]<<8);
-}
 static uint32_t le32(const uint8_t *b) {
     return (uint32_t)b[0] | ((uint32_t)b[1]<<8) |
            ((uint32_t)b[2]<<16) | ((uint32_t)b[3]<<24);
