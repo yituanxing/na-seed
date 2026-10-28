@@ -4,6 +4,7 @@
 #include "../kernel/fs/vfs.h"
 #include "../ports/lwext4/guest_vfs.h"
 #include "../kernel/block/device.h"
+#include "../kernel/block/partition.h"
 #include "../kernel/errno.h"
 #include "../kernel/task/resources.h"
 #include <ext4.h>
@@ -593,6 +594,39 @@ int main(int argc,char **argv) {
     assert(nas_vfs_write_at(&external_node,0,(const uint8_t *)"x",1)==-EROFS);
     assert(nas_lwext4_unmount(&external_mount)==0);
     assert(nas_ramdisk_detach(&external)==0);
+    /* Real original ext4 mounted from a nonzero-LBA child BlockDevice.
+     * No special-case offset logic in vendor lwext4 or shared VFS. */
+    const uint64_t partition_start=8;
+    const uint64_t disk_bytes=(uint64_t)n+partition_start*512U;
+    uint8_t *partitioned_disk=malloc((size_t)disk_bytes);
+    assert(partitioned_disk);
+    memset(partitioned_disk,0,(size_t)partition_start*512U);
+    memcpy(partitioned_disk+(size_t)partition_start*512U,image,(size_t)n);
+    struct nas_ramdisk whole_disk={0};
+    struct nas_partition_view partition={0};
+    struct nas_partition_extent partition_range={
+        .first_lba=partition_start,.sectors=(uint64_t)n/512U
+    };
+    assert(nas_ramdisk_attach(&whole_disk,"partition-whole-disk",
+                               partitioned_disk,disk_bytes,512,false)==0);
+    assert(nas_partition_attach(&partition,"partition-ext4",
+                                 "partition-whole-disk",
+                                 &partition_range,false)==0);
+    static struct nas_lwext4_mount partition_mount;
+    assert(nas_lwext4_device_mount(&partition_mount,"partition-ext4",
+                                   "partition-ext4-dev","/mnt",false)==0);
+    assert(nas_ramdisk_detach(&whole_disk)==-EBUSY);
+    assert(nas_partition_detach(&partition)==-EBUSY);
+    assert(nas_fs_lookup_node("/mnt/sandbox/hardlink",true,
+                              &external_node,actual)==0);
+    assert(nas_vfs_read_at(&external_node,0,(uint8_t *)buffer,
+                           sizeof(buffer))==(int64_t)external_node.size);
+    assert(!memcmp(expected,buffer,sizeof(expected)-1));
+    assert(nas_lwext4_unmount(&partition_mount)==0);
+    assert(nas_partition_detach(&partition)==0);
+    assert(nas_ramdisk_detach(&whole_disk)==0);
+    free(partitioned_disk);
+    puts("[LWEXT4 PARTITION PASS] real upstream ext4 from generic nonzero-LBA BlockDevice view");
     if(write) {
         /* Physical durability contract: an externally driver-owned,
          * writable block device with an explicit, fault-injectable flush.

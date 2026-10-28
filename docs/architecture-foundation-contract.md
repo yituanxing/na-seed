@@ -198,10 +198,31 @@ log VFS provenance `lwext4 ELF`, exact stdout/exit zero and physical
 VirtIO device discovery; the host compares both complete ELF byte
 streams before/after boot, checks clean e2fsck and rejects any CPIO
 mount marker. The test is invoked after the physical x86 VirtIO kernel
-has been built, from the existing lwext4 acceptance workflow. 
+has been built, from the existing lwext4 acceptance workflow.
 This gate checks the structural decoupling without claiming the full
 disk-root PID1, pivot_root or a generic Linux mount(2) interface.
 
 The manifest `scripts/vfs-rootless-exec-cases.tsv` preserves all original
 Linux guest pass checks, and its direct-module mode is deliberately
 different from the existing CPIO BusyBox test suites.
+
+## First actual partition BlockDevice — contract and integration
+
+`kernel/block/partition.[ch]` probes MBR primary entries and protective
+MBR / GPT using header and entry-array CRC32, bounds, usable LBAs and
+partition type GUID. Extended-MBR chains, hybrid formats and recovery
+from the secondary GPT header are deliberately **not supported**.
+
+`nas_partition_view` is a registered child BlockDevice holding a stable
+parent BlockDevice pin until final detach. It translates checked I/O
+offsets and forwards write, RO and flush semantics; neither VFS nor a
+filesystem knows the partition start sector. Physical-parent removal
+fails EBUSY while an attached child view exists.
+
+The same code is built on all three ISAs. Host tests validate MBR, GPT
+with 512/4096 logical sectors, malformed CRCs, bounds, parent lifetime,
+and an independent upstream-style block-driver adapter. A pinned
+unaltered lwext4 filesystem is then mounted through a *real partition
+view at nonzero LBA*, verified by VFS inode reads and busy unmount.
+Physical GPT-backed QEMU execution is a **separate future gate**;
+host success must not be described as such.

@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "../kernel/drivers/port/block.h"
+#include "../kernel/block/partition.h"
 #include "../kernel/errno.h"
 
 static uint8_t disk[8192], buffer[4096];
@@ -50,6 +51,19 @@ int main(void) {
     assert(nas_block_write(dev,3,4,buffer)==0);
     assert(b.writes==2 && !memcmp(disk+1536,buffer,2048));
     assert(nas_block_flush(dev)==0 && b.flushes==1);
+    /* The independent upstream driver adapter shares the same partition
+     * ownership/offset semantics, not a second registry or FS shim. */
+    struct nas_partition_view view={0};
+    struct nas_partition_extent extent={.first_lba=2,.sectors=12};
+    assert(nas_partition_attach(&view,"ported-part","ported",&extent,false)==0);
+    struct nas_block_device *part=nas_block_get("ported-part");
+    assert(part==&view.block);
+    assert(nas_block_read(part,1,2,buffer)==0);
+    assert(!memcmp(buffer,disk+3*512,1024));
+    assert(nas_block_flush(part)==0 && b.flushes==2);
+    assert(nas_partition_detach(&view)==-EBUSY);
+    nas_block_put(part);
+    assert(nas_partition_detach(&view)==0);
     b.short_io=1;
     assert(nas_block_read(dev,1,2,buffer)==-EIO);
     assert(nas_block_write(dev,1,2,buffer)==-EIO);

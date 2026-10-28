@@ -7,9 +7,16 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
   scripts/test-block-foundation.c kernel/block/device.c kernel/block/ramdisk.c \
   kernel/lib/string.c -o build/block-foundation/test
 build/block-foundation/test
+# Original MBR/GPT bytes, CRC, live parent references and 512/4096 views.
+cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
+  scripts/test-block-partition.c kernel/block/device.c \
+  kernel/block/ramdisk.c kernel/block/partition.c kernel/lib/string.c \
+  -o build/block-foundation/test-partition
+build/block-foundation/test-partition
 if command -v clang >/dev/null 2>&1; then
   for target in x86_64-unknown-none-elf riscv64-unknown-elf aarch64-none-elf; do
-    for source in kernel/block/device.c kernel/block/ramdisk.c; do
+    for source in kernel/block/device.c kernel/block/ramdisk.c \
+                  kernel/block/partition.c; do
       clang --target="$target" -std=c11 -Wall -Wextra -Werror \
         -ffreestanding -fno-builtin -I kernel -fsyntax-only "$source"
     done
@@ -34,7 +41,7 @@ build/block-foundation/test-unikraft-ring
 # the actual upstream driver remains to be integrated.
 cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
   scripts/test-block-driver-port.c kernel/drivers/port/block.c \
-  kernel/block/device.c kernel/lib/string.c \
+  kernel/block/device.c kernel/block/partition.c kernel/lib/string.c \
   -o build/block-foundation/test-driver-port
 build/block-foundation/test-driver-port
 if command -v clang >/dev/null 2>&1; then

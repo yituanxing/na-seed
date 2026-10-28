@@ -29,8 +29,8 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -I "$vendor/include" \
   scripts/test-lwext4-vfs.c ports/lwext4/guest_vfs.c \
   kernel/fs/vfs.c kernel/fs/lookup.c kernel/task/resources.c \
   ports/lwext4/lwext4_block.c \
-  kernel/block/device.c kernel/block/ramdisk.c kernel/lib/string.c \
-  kernel/mm/heap.c \
+  kernel/block/device.c kernel/block/ramdisk.c kernel/block/partition.c \
+  kernel/lib/string.c kernel/mm/heap.c \
   "$root/host/src/liblwext4.a" -o "$root/vfs-test"
 "$root/vfs-test" "$root/ext4.img"
 "$root/vfs-test" "$root/ext4.img" write
