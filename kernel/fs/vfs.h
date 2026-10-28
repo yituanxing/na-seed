@@ -32,6 +32,9 @@ struct nas_vfs_type {
      * A backend may now reclaim an unlinked orphan inode; never called
      * on a borrowed namei snapshot or one of several dup/fork owners. */
     void (*last_inode_unpin)(const struct nas_fs_node *);
+    /* Live metadata from the pinned inode, never reopening its old path.
+     * Refresh fields only: inode, ino, filesystem, mount remain immutable. */
+    int (*getattr)(const struct nas_fs_node *,struct nas_fs_node *out);
     int64_t (*read_at)(const struct nas_fs_node *, uint64_t offset,
                        uint8_t *kernel_dst, uint64_t length);
     /* Logical cursor counts entries, including . and .., from zero.
@@ -89,6 +92,7 @@ uint64_t nas_vfs_node_device(const struct nas_fs_node *node);
 /* Live size shared by independently opened Files for the same mount+inode.
  * Unlike borrowed pathname snapshots this survives rename and dup/fork. */
 uint64_t nas_vfs_node_size(const struct nas_fs_node *node);
+int nas_vfs_getattr(const struct nas_fs_node *node,struct nas_fs_node *out);
 int nas_vfs_register_mount(const struct nas_vfs_mount *mount);
 int nas_vfs_lookup(const char *absolute, struct nas_fs_node *node);
 int nas_vfs_readlink(const struct nas_fs_node *node,const char *absolute,

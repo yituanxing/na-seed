@@ -46,19 +46,22 @@ static void fill_tmp_stat(struct nas_linux_stat *st,
 static uint64_t write_mounted_stat(const struct nas_fs_node *node,
                                    uint64_t destination) {
     if(!node || !node->filesystem || !node->ino)return (uint64_t)-EINVAL;
+    struct nas_fs_node fresh;
+    int rc=nas_vfs_getattr(node,&fresh);
+    if(rc)return (uint64_t)(int64_t)rc;
     struct nas_linux_stat st={0};
-    st.dev=nas_vfs_node_device(node);
+    st.dev=nas_vfs_node_device(&fresh);
     if(!st.dev)return (uint64_t)-ENODEV;
-    st.ino=node->ino;st.mode=node->mode;
-    st.nlink=node->nlink ? node->nlink : (node->is_dir ? 2 : 1);
-    st.uid=node->uid;st.gid=node->gid;
-    uint64_t live_size=nas_vfs_node_size(node);
+    st.ino=fresh.ino;st.mode=fresh.mode;
+    st.nlink=fresh.nlink; /* An unlinked but open inode has zero links. */
+    st.uid=fresh.uid;st.gid=fresh.gid;
+    uint64_t live_size=fresh.size;
     st.size=(int64_t)live_size;
     st.blocks=(int64_t)((live_size+511)/512);
     st.blksize=PAGE;
-    st.atime_sec=(int64_t)node->atime_sec;
-    st.mtime_sec=(int64_t)node->mtime_sec;
-    st.ctime_sec=(int64_t)node->ctime_sec;
+    st.atime_sec=(int64_t)fresh.atime_sec;
+    st.mtime_sec=(int64_t)fresh.mtime_sec;
+    st.ctime_sec=(int64_t)fresh.ctime_sec;
     return nas_user_write_bytes(destination,(const uint8_t *)&st,sizeof(st))
         ? 0:(uint64_t)-EFAULT;
 }
@@ -87,9 +90,9 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
             return write_mounted_stat(&open->vnode,address);
         }
     } else if (TASK.fds->entries[fd].kind == FD_TMP || TASK.fds->entries[fd].kind == FD_TMP_DIR) {
-        const struct nas_tmp_file *file = tmp_by_slot(TASK.fds->entries[fd].slot);
-        if (!file) return (uint64_t)-EBADF;
-        fill_tmp_stat(&st,file);
+        const struct nas_open_file *opened=&nas_open_files[TASK.fds->entries[fd].slot];
+        if(!opened->vnode_pinned)return (uint64_t)-EBADF;
+        return write_mounted_stat(&opened->vnode,address);
     } else if (TASK.fds->entries[fd].kind == FD_PROC_FILE ||
                TASK.fds->entries[fd].kind == FD_PROC_DIR) {
         unsigned slot=TASK.fds->entries[fd].slot;

@@ -216,8 +216,8 @@ static int ext_mock_lookup(const struct nas_vfs_mount *mount,
     mounted_lookups++;
     if(strcmp(path,"/mnt/hello") && strcmp(path,"/mnt"))return -ENOENT;
     *node=!strcmp(path,"/mnt")
-        ? (struct nas_fs_node){.mode=0040755U,.is_dir=true}
-        : (struct nas_fs_node){.mode=0100644U,.size=4};
+        ? (struct nas_fs_node){.ino=801,.mode=0040755U,.is_dir=true}
+        : (struct nas_fs_node){.ino=802,.mode=0100644U,.size=4};
     return 0;
 }
 static const struct nas_vfs_type ext_mock_type={
@@ -310,6 +310,18 @@ int main(void) {
     assert(nas_fs_lookup_node("/tmp/pinned-orphan",true,&orphan,resolved)==0);
     assert(orphan.inode==&fixture_orphan);
     assert(nas_vfs_node_pin(&orphan)==0);
+    assert(nas_vfs_inode_is_pinned(&fixture_orphan));
+    /* Open File keeps its inode even after unlink. Refresh st_nlink=0. */
+    struct nas_fs_node refreshed,forged=orphan;
+    orphan.nlink=1; /* obsolete pathname snapshot */
+    assert(nas_vfs_getattr(&orphan,&refreshed)==0);
+    assert(refreshed.nlink==0 && refreshed.inode==orphan.inode);
+    /* Reusing the inode number with a different backend identity must not
+     * release the live owner or publish stale metadata. */
+    forged.inode=&fixture_open_directory;
+    assert(nas_vfs_node_pin(&forged)==-ESTALE);
+    assert(nas_vfs_node_unpin(&forged)==-ESTALE);
+    assert(nas_vfs_getattr(&forged,&refreshed)==-ESTALE);
     assert(nas_vfs_inode_is_pinned(&fixture_orphan));
     assert(nas_vfs_node_pin(&orphan)==0); /* separate cwd and shared File */
     assert(nas_vfs_node_unpin(&orphan)==0);

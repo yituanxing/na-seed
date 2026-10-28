@@ -32,14 +32,36 @@ static struct inode_size_lease *inode_lease(const struct nas_fs_node *node) {
            live_inodes[i].ino==node->ino)return &live_inodes[i];
     return NULL;
 }
+/* An inode lease is scoped to its mount AND backend incarnation. A stale
+ * reused inode number cannot steal a newer File's size or owner reference. */
+static bool lease_conflicts(const struct inode_size_lease *lease,
+                            const struct nas_fs_node *node) {
+    return lease && lease->backend_inode!=node->inode;
+}
 uint64_t nas_vfs_node_size(const struct nas_fs_node *node) {
     if(!node)return 0;
     struct inode_size_lease *lease=inode_lease(node);
-    return lease ? lease->size : node->size;
+    return lease && !lease_conflicts(lease,node) ? lease->size : node->size;
+}
+int nas_vfs_getattr(const struct nas_fs_node *node,struct nas_fs_node *out) {
+    if(!node || !out || !node->filesystem || !node->mount ||
+       node->mount->type!=node->filesystem)return -EINVAL;
+    struct inode_size_lease *lease=inode_lease(node);
+    if(lease_conflicts(lease,node))return -ESTALE;
+    *out=*node;
+    if(node->filesystem->getattr) {
+        int rc=node->filesystem->getattr(node,out);
+        if(rc)return rc;
+        if(out->filesystem!=node->filesystem || out->mount!=node->mount ||
+           out->inode!=node->inode || out->ino!=node->ino ||
+           out->is_dir!=node->is_dir)return -ESTALE;
+    }
+    if(lease)out->size=lease->size;
+    return 0;
 }
 static void publish_inode_size(const struct nas_fs_node *node,uint64_t size) {
     struct inode_size_lease *lease=inode_lease(node);
-    if(lease)lease->size=size;
+    if(lease && !lease_conflicts(lease,node))lease->size=size;
 }
 struct mount_slot {const struct nas_vfs_mount *mount;uint32_t open_refs;uint64_t device_id;};
 static uint64_t next_device_id=8;
@@ -411,14 +433,14 @@ int nas_vfs_unregister_mount(const struct nas_vfs_mount *mount) {
     return 0;
 }
 int nas_vfs_node_pin(const struct nas_fs_node *node) {
-    if(!node || !node->mount || node->filesystem!=node->mount->type)return -EINVAL;
+    if(!node || !node->mount || node->filesystem!=node->mount->type ||
+       (!node->ino && !node->inode))return -EINVAL;
     ensure_defaults();
     for(unsigned i=0;i<count;i++)if(mounts[i].mount==node->mount) {
         if(mounts[i].open_refs==UINT32_MAX)return -EMFILE;
         struct inode_size_lease *lease=inode_lease(node);
         if(lease) {
-            if(lease->backend_inode && node->inode &&
-               lease->backend_inode!=node->inode)return -ESTALE;
+            if(lease_conflicts(lease,node))return -ESTALE;
             if(lease->refs==UINT32_MAX)return -EMFILE;
             ++lease->refs;
         } else {
@@ -438,12 +460,14 @@ int nas_vfs_node_pin(const struct nas_fs_node *node) {
     return -ENODEV;
 }
 int nas_vfs_node_unpin(const struct nas_fs_node *node) {
-    if(!node || !node->mount)return -EINVAL;
+    if(!node || !node->mount || node->filesystem!=node->mount->type)
+        return -EINVAL;
     ensure_defaults();
     for(unsigned i=0;i<count;i++)if(mounts[i].mount==node->mount) {
         if(!mounts[i].open_refs)return -EINVAL;
         struct inode_size_lease *lease=inode_lease(node);
         if(!lease || !lease->refs)return -EINVAL;
+        if(lease_conflicts(lease,node))return -ESTALE;
         --mounts[i].open_refs;
         if(!--lease->refs) {
             /* Publish the release BEFORE invoking the backend: tmpfs

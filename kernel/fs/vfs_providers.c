@@ -47,7 +47,7 @@ static int boot_lookup(const struct nas_vfs_mount *mount,
     const struct bootfs_entry *e=bootfs_find(path);
     if(!e)return -ENOENT;
     *out=(struct nas_fs_node){.inode=e,.data=e->data,.size=e->size,
-      .ino=e->ino,.nlink=bootfs_is_dir(e)?2:e->nlink,
+      .ino=e->ino,.nlink=bootfs_is_dir(e)?2:(e->nlink?e->nlink:1),
       .mtime_sec=e->mtime_sec,.atime_sec=e->mtime_sec,
       .ctime_sec=e->mtime_sec,
       .mode=e->mode,.is_dir=bootfs_is_dir(e),.is_symlink=bootfs_is_link(e)};
@@ -250,6 +250,25 @@ static int tmp_directory_path(const struct nas_fs_node *node,char path[256]) {
     memcpy(path,live,len+1);
     return 0;
 }
+static int tmp_getattr(const struct nas_fs_node *node,struct nas_fs_node *out) {
+    if(!node || !out || !node->inode)return -EINVAL;
+    /* /tmp may expose a borrowed bootfs directory as its overlay root. */
+    const struct bootfs_entry *root=bootfs_find("/tmp");
+    if(root && node->inode==(const void *)root) {
+        *out=*node;
+        return 0;
+    }
+    const struct nas_tmp_file *f=node->inode;
+    if(!f->used || 5000+tmp_number(f)!=node->ino)return -ESTALE;
+    *out=*node;
+    out->mode=f->mode;
+    out->size=f->size;
+    out->nlink=f->nlink ? (f->is_dir?2:f->nlink):0;
+    out->atime_sec=f->atime_ns/1000000000ULL;
+    out->mtime_sec=f->mtime_ns/1000000000ULL;
+    out->ctime_sec=f->ctime_ns/1000000000ULL;
+    return 0;
+}
 static void tmp_last_inode_unpin(const struct nas_fs_node *node) {
     if(!node || !node->inode)return;
     /* Synthetic /tmp overlay root borrows a CPIO inode. Never pass that
@@ -261,7 +280,8 @@ static void tmp_last_inode_unpin(const struct nas_fs_node *node) {
 static const struct nas_vfs_type tmp_type={
     .name="tmpfs",.exec_source_label="tmpfs",.lookup=tmp_lookup,
     .directory_path=tmp_directory_path,
-    .last_inode_unpin=tmp_last_inode_unpin,.readlink=tmp_readlink,
+    .last_inode_unpin=tmp_last_inode_unpin,.getattr=tmp_getattr,
+    .readlink=tmp_readlink,
     .read_at=tmp_read,.read_dir=tmp_read_dir,.chmod=tmp_chmod_node,.utimens=tmp_utimens_node,
     .create=tmp_create_node,.write_at=tmp_write_node,
     .resize=tmp_resize_node,.sync=tmp_sync_node,
