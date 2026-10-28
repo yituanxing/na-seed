@@ -892,7 +892,7 @@ int nas_vfs_read_dir(const struct nas_fs_node *node,
     unsigned virtual_count=0;
     for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++)
         if(mounted_child_of(&mounts[i],node) &&
-           !mounts[i].covered_pinned)++virtual_count;
+           !mounts[i].covered_path.dentry)++virtual_count;
     unsigned written=0;
     if(virtual_count && cursor<2) {
         unsigned first=(unsigned)(2-cursor);
@@ -914,7 +914,7 @@ int nas_vfs_read_dir(const struct nas_fs_node *node,
         unsigned ordinal=0;
         for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT && written<maximum;i++) {
             const struct mount_slot *slot=&mounts[i];
-            if(!mounted_child_of(slot,node) || slot->covered_pinned)
+            if(!mounted_child_of(slot,node) || slot->covered_path.dentry)
                 continue;
             if(cursor>2+ordinal) {++ordinal;continue;}
             if(cursor!=2+ordinal)return -EIO;
@@ -943,7 +943,7 @@ int nas_vfs_read_dir(const struct nas_fs_node *node,
              * inode must be the visible mount root (Linux dcache rule). */
             for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++) {
                 const struct mount_slot *slot=&mounts[i];
-                if(!mounted_child_of(slot,node) || !slot->covered_pinned ||
+                if(!mounted_child_of(slot,node) || !slot->covered_path.dentry ||
                    strcmp(entry->name,slot->covered_name))continue;
                 int rc=mounted_directory_entry(slot,entry);
                 if(rc)return rc;

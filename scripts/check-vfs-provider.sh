@@ -7,6 +7,13 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
   kernel/fs/lookup.c kernel/lib/string.c kernel/mm/heap.c \
   -o build/vfs-provider/test
 build/vfs-provider/test
+# A deleted duplicate mount-inode owner is an architectural invariant:
+# positive Dentry/Path handles BOTH covered and parent mount lifetimes.
+# Never reintroduce covered_pinned / parent_pinned in another refactor.
+if grep -Eq '\\b(parent_pinned|covered_pinned)\\b' kernel/fs/vfs.c; then
+  echo '[VFS FAIL] stale parallel mount pin ownership returned' >&2
+  exit 1
+fi
 if command -v clang >/dev/null 2>&1; then
   for target in x86_64-unknown-none-elf riscv64-unknown-elf aarch64-none-elf; do
     for source in kernel/fs/vfs.c kernel/fs/vfs_providers.c kernel/fs/lookup.c; do
