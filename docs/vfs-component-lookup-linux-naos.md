@@ -74,3 +74,14 @@ validate the inode covered by the mountpoint as well as its parent; reject
 mount-on-regular-file and missing non-root ancestors. The only bootstrap
 exception is a missing `/` when mounting a disk directly below root without
 CPIO. Host fixtures cover positive nested mounts and these negative cases.
+
+### User path normalization must not bypass namei
+
+A later audit found that `nas_fs_resolve_path` historically used the
+lexical `nas_path_resolve` helper, which could erase `/file/..` before the
+VFS ever inspected the non-directory inode. The namespace syscall adapter
+now routes paths containing `.` or `..` through the same VFS component
+resolver first; if only the final basename is absent, it resolves the raw
+parent inode (and any symlinks) before constructing the canonical leaf.
+Ordinary device paths temporarily retain the old lexical ABI until a real
+devfs provider exists. This does not replace a counted dentry/mount tree.

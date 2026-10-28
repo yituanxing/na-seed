@@ -35,6 +35,13 @@ static bool path_from_base(const char *base, const char *src,
     raw[n]=0;
     return true;
 }
+/* Raw join for the VFS component walker. Do not erase './..' before
+ * namei: /regular-file/.. must be ENOTDIR, not a lexical parent. */
+int nas_path_join_raw(const char *base,const char *src,char out[256]) {
+    if(!src || !src[0] || !out)return -ENOENT;
+    if(src[0]!='/' && (!base || base[0]!='/'))return -EINVAL;
+    return path_from_base(base,src,out) ? 0 : -ENAMETOOLONG;
+}
 int nas_path_resolve(const char *base, const char *src, char out[256]) {
     if (!src || !src[0]) return -ENOENT;
     /* Run the real CPIO symlink walk while '..' remains in input.

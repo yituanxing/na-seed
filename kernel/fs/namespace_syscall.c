@@ -20,11 +20,64 @@
 #define TASK (*nas_current_task)
 #define current_workdir TASK.fs->cwd
 
-/* Lexically combine absolute, cwd-relative and dirfd-relative paths.
- * bootfs_resolve performs archive symlink traversal at the actual lookup.
- */
-/* This adapter owns user memory and dirfd lookup. Component processing
- * lives in path.c and can be tested independently of the syscall ABI. */
+/* User path copy and dirfd ownership live here. The generic VFS resolves
+ * dot/dotdot when they occur, before the legacy lexical path helper could
+ * erase a non-directory intermediate component. */
+/* Dot components are actual directory traversal, not mere string edits.
+ * Ordinary paths retain the old normalized device-path API until devfs is
+ * represented by VFS nodes. For dot components use VFS namei and canonical
+ * parent inode, including for a final name that is not created yet. */
+static bool has_dot_component(const char *src) {
+    unsigned p=0;
+    while(src[p]) {
+        while(src[p]=='/')p++;
+        unsigned start=p;
+        while(src[p] && src[p]!='/')p++;
+        unsigned len=p-start;
+        if(len==1 && src[start]=='.')return true;
+        if(len==2 && src[start]=='.' && src[start+1]=='.')return true;
+    }
+    return false;
+}
+static int resolve_component_path(const char *base,const char *src,
+                                  char out[256]) {
+    if(!has_dot_component(src))return nas_path_resolve(base,src,out);
+    char raw[256],canon[256];
+    int rc=nas_path_join_raw(base,src,raw);
+    if(rc)return rc;
+    struct nas_fs_node node;
+    rc=nas_fs_lookup_node(raw,false,&node,canon);
+    if(!rc) {
+        memcpy(out,canon,strlen(canon)+1);
+        return 0;
+    }
+    if(rc!=-ENOENT)return rc;
+    /* Only a missing final basename may be created. Resolve the raw
+     * parent (including symlinks and ..) before forming that basename.
+     * A missing intermediate component must never be normalized away. */
+    size_t n=strlen(raw);
+    if(n<=1 || raw[n-1]=='/')return -ENOENT;
+    size_t start=n;
+    while(start>0 && raw[start-1]!='/')start--;
+    if(!start)return -EINVAL;
+    char parent_path[256];
+    size_t prefix=start==1 ? 1 : start-1;
+    memcpy(parent_path,raw,prefix);
+    parent_path[prefix]=0;
+    struct nas_fs_node parent;
+    rc=nas_fs_lookup_node(parent_path,true,&parent,canon);
+    if(rc)return rc;
+    if(!parent.is_dir)return -ENOTDIR;
+    size_t base_len=strlen(canon),leaf_len=n-start;
+    if(base_len+(base_len>1?1U:0U)+leaf_len>=256)return -ENAMETOOLONG;
+    memcpy(out,canon,base_len);
+    if(base_len>1)out[base_len++]='/';
+    memcpy(out+base_len,raw+start,leaf_len);
+    out[base_len+leaf_len]=0;
+    return 0;
+}
+/* This adapter owns user-memory copying and directory-FD resolution.
+ * Component semantics are checked using the same VFS namei as openat. */
 uint64_t nas_fs_resolve_path(uint64_t dirfd, uint64_t pathname,
                              char out[256]) {
     char src[256];
@@ -74,7 +127,7 @@ uint64_t nas_fs_resolve_path(uint64_t dirfd, uint64_t pathname,
             }
         }
     }
-    return (uint64_t)(int64_t)nas_path_resolve(base,src,out);
+    return (uint64_t)(int64_t)resolve_component_path(base,src,out);
 }
 
 /* Linux syscall decoders retain user-pointer validation and task-relative
