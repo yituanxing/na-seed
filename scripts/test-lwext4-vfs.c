@@ -105,6 +105,9 @@ int main(int argc,char **argv) {
     assert(!node.is_dir && !node.is_symlink && nas_vfs_can_write(&node)==write);
     assert(node.ino>=11 && node.nlink>=1);
     assert(nas_vfs_node_device(&node)>=8);
+    assert(node.mount!=&mounted.mount);
+    assert(!strcmp(node.mount->mountpoint,"/mnt"));
+    assert(node.mount->private_data==&mounted);
     static const char expected[]="NaSeed VFS and BlockDevice real lwext4 data\n";
     assert(node.size==sizeof(expected)-1);
     assert(nas_vfs_read_at(&node,0,(uint8_t *)buffer,sizeof(buffer))==(int64_t)node.size);

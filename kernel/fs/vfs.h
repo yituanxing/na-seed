@@ -84,14 +84,16 @@ struct nas_vfs_type {
     bool read_only;
 };
 struct nas_vfs_mount {
-    const char *mountpoint; /* Static, stable absolute path */
+    /* Registration source path is BORROWED only during attach. VFS stores
+     * a separate, stable superblock+mountpoint snapshot until detach. */
+    const char *mountpoint;
     const struct nas_vfs_type *type;
     /* Legacy /tmp overlay can still expose CPIO descendants; real disk
      * mounts must never use this compatibility fallback. */
     bool fallback_on_miss;
     bool permanent; /* bootstrap filesystem mounts cannot be detached */
     bool read_only;  /* per-mount restriction */
-    void *private_data; /* owning superblock/device adapter */
+    void *private_data; /* filesystem device context, owned by adapter */
 };
 /* An owned File or FS cwd context pins a mount once per owner.
  * Dup/CLONE_FS share their owner; normal fork copies the pin. */

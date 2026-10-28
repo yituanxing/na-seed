@@ -143,10 +143,17 @@ static void publish_inode_size(const struct nas_fs_node *node,uint64_t size) {
  * detach, independent of the File/cwd inode leases. This is the first
  * counted mount-tree seam (Linux vfsmount, NaOS mnt_parent/mountpoint). */
 struct mount_slot {
-    const struct nas_vfs_mount *mount;
+    /* VFS owns a stable superblock and mountpoint snapshot for the entire
+     * attachment lifetime. Its registration pointer is only an unmount
+     * token. Slots are never relocated or compacted. */
+    bool used;
+    const struct nas_vfs_mount *registration;
+    struct nas_vfs_mount superblock;
+    char path[256];
     const struct nas_vfs_mount *parent_mount;
     const void *parent_backend_inode;
-    uint64_t parent_ino;
+    uint64_t parent_ino,parent_mount_id;
+    char covered_name[256];
     uint32_t open_refs,child_refs;
     uint64_t device_id;
     bool parent_anchored;
@@ -178,8 +185,9 @@ static int vfs_node_status(const struct nas_fs_node *node) {
     /* Never dereference node->mount before finding its registered, live
      * attachment. An old borrowed snapshot may retain a freed descriptor
      * address after umount. */
-    for(unsigned i=0;i<count;i++)
-        if(mounts[i].mount==node->mount) {
+    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++)
+        if(mounts[i].used &&
+           &mounts[i].superblock==node->mount) {
             if(node->mount_id!=mounts[i].device_id)return -ESTALE;
             if(node->filesystem!=node->mount->type)return -EINVAL;
             if(lease_conflicts(inode_lease(node),node))return -ESTALE;
@@ -216,14 +224,19 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
         !mount->type->lookup_child || !mount->type->name ||
         !canonical_mountpoint(mount->mountpoint))
         return -EINVAL;
-    for (unsigned i=0;i<count;i++)
-        if (!strcmp(mounts[i].mount->mountpoint,mount->mountpoint))return -EEXIST;
+    unsigned slot=NAS_VFS_MOUNT_LIMIT;
+    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++) {
+        if(mounts[i].used) {
+            if(!strcmp(mounts[i].path,mount->mountpoint))return -EEXIST;
+        } else if(slot==NAS_VFS_MOUNT_LIMIT)slot=i;
+    }
+    if(slot==NAS_VFS_MOUNT_LIMIT)return -ENOSPC;
     /* Bind the attachment to the real parent inode. String prefix mount
      * selection alone is insufficient: a symlink alias or moved parent
      * could otherwise silently redirect a mounted subtree. */
     struct nas_fs_node parent={0},covered={0};
     bool has_parent=false,has_covered=false;
-    unsigned parent_slot=count;
+    unsigned parent_slot=NAS_VFS_MOUNT_LIMIT;
     /* Validate both the parent and the covered mountpoint inode before
      * adding the new mount. The prefix selector must not mask a regular
      * file at the mount target, nor invent intermediate directories.
@@ -252,11 +265,12 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
              * owned dentry API exists, refuse an ambiguous alias instead
              * of creating a mount at the wrong name. */
             if(strcmp(parent_path,resolved))return -EINVAL;
-            for(unsigned i=0;i<count;i++)
-                if(mounts[i].mount==parent.mount) {
+            for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++)
+                if(mounts[i].used &&
+                   &mounts[i].superblock==parent.mount) {
                     parent_slot=i;break;
                 }
-            if(parent_slot==count)return -ENODEV;
+            if(parent_slot==NAS_VFS_MOUNT_LIMIT)return -ENODEV;
             if(mounts[parent_slot].child_refs==UINT32_MAX)
                 return -EMFILE;
             has_parent=true;
@@ -273,9 +287,8 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
         }
         if(covered_rc && covered_rc!=-ENOENT)return covered_rc;
     }
-    if (count==NAS_VFS_MOUNT_LIMIT)return -ENOSPC;
     if(next_device_id==UINT64_MAX)return -ENOSPC;
-    struct mount_slot attached={.mount=mount};
+    struct mount_slot attached={0};
     if(has_parent) {
         /* First acquire all backing references, then publish attachment.
          * Failure must leave the parent inode, child count and mount
@@ -295,12 +308,29 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
         }
         attached.parent_anchored=true;
         attached.parent_mount=parent.mount;
+        attached.parent_mount_id=parent.mount_id;
         attached.parent_ino=parent.ino;
         attached.parent_backend_inode=parent.inode;
-        ++mounts[parent_slot].child_refs;
+        const char *last=strrchr(mount->mountpoint,'/');
+        if(!last || !last[1]) {
+            if(attached.covered_pinned)
+                (void)nas_vfs_node_unpin(&covered);
+            (void)nas_vfs_node_unpin(&parent);
+            return -EINVAL;
+        }
+        memcpy(attached.covered_name,last+1,strlen(last+1)+1);
     }
+    /* All backing references acquired: publish at final immutable address.
+     * No File, cwd or nested mount ever borrows a caller-owned descriptor. */
     attached.device_id=next_device_id++;
-    mounts[count++]=attached;
+    attached.registration=mount;
+    attached.superblock=*mount;
+    memcpy(attached.path,mount->mountpoint,strlen(mount->mountpoint)+1);
+    mounts[slot]=attached;
+    mounts[slot].superblock.mountpoint=mounts[slot].path;
+    mounts[slot].used=true;
+    if(has_parent)++mounts[parent_slot].child_refs;
+    ++count;
     return 0;
 }
 /* One component resolver shared by all filesystems. VFS alone selects the
@@ -312,14 +342,14 @@ int nas_vfs_lookup(const char *absolute,struct nas_fs_node *out) {
     size_t path_len=strlen(absolute);
     if(path_len>=256)return -ENAMETOOLONG;
     ensure_defaults();
-    unsigned seen=0;
-    while(seen < ((1U<<count)-1U)) {
+    uint32_t seen=0;
+    for(unsigned attempt=0;attempt<count;attempt++) {
         const struct nas_vfs_mount *best=NULL;
         unsigned selected=0;
         size_t longest=0;
-        for(unsigned i=0;i<count;i++) {
-            if(seen&(1U<<i))continue;
-            const struct nas_vfs_mount *m=mounts[i].mount;
+        for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++) {
+            if(!mounts[i].used || (seen&(1U<<i)))continue;
+            const struct nas_vfs_mount *m=&mounts[i].superblock;
             if(!mount_matches(m->mountpoint,absolute))continue;
             size_t n=strlen(m->mountpoint);
             if(!best || n>longest) {best=m;selected=i;longest=n;}
@@ -383,21 +413,20 @@ int nas_vfs_lookup_step(const struct nas_fs_node *parent,const char *absolute,
     }
     /* Cross a mount only at the EXACT component-aligned mountpoint.
      * An open parent need not belong to the target mount. */
-    for(unsigned i=0;i<count;i++) {
-        const struct nas_vfs_mount *mnt=mounts[i].mount;
-        if(strcmp(mnt->mountpoint,absolute))continue;
+    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++) {
         const struct mount_slot *slot=&mounts[i];
+        if(!slot->used)continue;
+        const struct nas_vfs_mount *mnt=&slot->superblock;
         if(slot->parent_anchored) {
-            /* Parent-mount identity is part of the attachment. Inode
-             * number alone is not enough: detect backend inode reuse. */
-            if(!parent || parent->mount!=slot->parent_mount ||
+            /* Match (parent mount incarnation, parent inode, basename).
+             * Never trust a mountpoint string as an attachment identity. */
+            if(strcmp(name,slot->covered_name) ||
+               !parent || parent->mount!=slot->parent_mount ||
+               parent->mount_id!=slot->parent_mount_id ||
                parent->ino!=slot->parent_ino ||
                parent->inode!=slot->parent_backend_inode)
-                return -ESTALE;
-        } else if(parent && strcmp(mnt->mountpoint,"/") &&
-                  parent->mount && !parent->is_dir) {
-            return -ENOTDIR;
-        }
+                continue;
+        } else if(strcmp(mnt->mountpoint,absolute))continue;
         *out=(struct nas_fs_node){0};
         int rc=mnt->type->root(mnt,out);
         if(!rc) {
@@ -522,11 +551,11 @@ bool nas_vfs_can_write(const struct nas_fs_node *node) {
 static bool active_mountpoint(const char *path) {
     if(!path)return false;
     ensure_defaults();
-    for(unsigned i=0;i<count;i++) {
-        /* A mounted subtree pins its ancestor against rename/rmdir as
-         * well: removing /a while /a/b is mounted would orphan /a/b.
-         * mount_matches compares whole path components, not raw prefixes. */
-        if(mount_matches(path,mounts[i].mount->mountpoint))return true;
+    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++) {
+        if(!mounts[i].used)continue;
+        /* VFS-owned path snapshot is protected against ancestor rename
+         * and unlink independently of caller's mount descriptor. */
+        if(mount_matches(path,mounts[i].path))return true;
     }
     return false;
 }
@@ -780,35 +809,38 @@ int nas_vfs_utimens(const struct nas_fs_node *node,uint64_t atime,
     return node->filesystem->utimens(node,atime,mtime,set_atime,set_mtime);
 }
 
-/* Mount table and File pins follow a single-CPU kernel policy. A registered
- * mount descriptor is owned by the caller; unregister rejects live Files and
- * descendants, preventing use-after-unmount for open descriptions. */
-int nas_vfs_unregister_mount(const struct nas_vfs_mount *mount) {
-    if(!mount)return -EINVAL;
+/* Unmount by registration token, never by a mutable descriptor's path.
+ * A stable internal slot is reclaimed only when all owned File references
+ * and children are gone; other slots never move. */
+int nas_vfs_unregister_mount(const struct nas_vfs_mount *registration) {
+    if(!registration)return -EINVAL;
     ensure_defaults();
-    unsigned at=count;
-    for(unsigned i=0;i<count;i++)if(mounts[i].mount==mount)at=i;
-    if(at==count)return -ENOENT;
-    if(mount->permanent || mounts[at].open_refs ||
+    unsigned at=NAS_VFS_MOUNT_LIMIT;
+    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++)
+        if(mounts[i].used && mounts[i].registration==registration) {
+            at=i;break;
+        }
+    if(at==NAS_VFS_MOUNT_LIMIT)return -ENOENT;
+    if(mounts[at].superblock.permanent || mounts[at].open_refs ||
        mounts[at].child_refs)return -EBUSY;
-    size_t n=strlen(mount->mountpoint);
-    for(unsigned i=0;i<count;i++) {
-        if(i==at)continue;
-        const char *p=mounts[i].mount->mountpoint;
-        if((n==1 && mount->mountpoint[0]=='/') ||
-           (!strncmp(mount->mountpoint,p,n) && p[n]=='/'))return -EBUSY;
+    size_t n=strlen(mounts[at].path);
+    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++) {
+        if(i==at || !mounts[i].used)continue;
+        const char *p=mounts[i].path;
+        if((n==1 && mounts[at].path[0]=='/') ||
+           (!strncmp(mounts[at].path,p,n) && p[n]=='/'))
+            return -EBUSY;
     }
-    /* Detach in reverse ownership order. The parent mount remains attached
-     * until its last child pin has been released. A failed precondition
-     * must not release even one backing inode before reporting EIO. */
-    unsigned parent_at=count;
+    unsigned parent_at=NAS_VFS_MOUNT_LIMIT;
     if(mounts[at].parent_anchored) {
-        for(unsigned i=0;i<count;i++)
-            if(mounts[i].mount==mounts[at].parent_mount) {
+        for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++)
+            if(mounts[i].used &&
+               &mounts[i].superblock==mounts[at].parent_mount) {
                 parent_at=i;break;
             }
-        if(parent_at==count || !mounts[parent_at].child_refs ||
-           !mounts[at].parent_pinned)return -EIO;
+        if(parent_at==NAS_VFS_MOUNT_LIMIT ||
+           !mounts[parent_at].child_refs || !mounts[at].parent_pinned)
+            return -EIO;
         if(!inode_lease(&mounts[at].parent_node) ||
            (mounts[at].covered_pinned &&
             !inode_lease(&mounts[at].covered_node)))return -EIO;
@@ -817,9 +849,9 @@ int nas_vfs_unregister_mount(const struct nas_vfs_mount *mount) {
        nas_vfs_node_unpin(&mounts[at].covered_node))return -EIO;
     if(mounts[at].parent_pinned &&
        nas_vfs_node_unpin(&mounts[at].parent_node))return -EIO;
-    if(parent_at<count)--mounts[parent_at].child_refs;
-    for(unsigned i=at;i+1<count;i++)mounts[i]=mounts[i+1];
-    mounts[--count]=(struct mount_slot){0};
+    if(parent_at!=NAS_VFS_MOUNT_LIMIT)--mounts[parent_at].child_refs;
+    mounts[at]=(struct mount_slot){0};
+    --count;
     return 0;
 }
 int nas_vfs_node_pin(const struct nas_fs_node *node) {
@@ -827,7 +859,8 @@ int nas_vfs_node_pin(const struct nas_fs_node *node) {
        (!node->ino && !node->inode))return -EINVAL;
     int status=vfs_node_status(node);
     if(status)return status;
-    for(unsigned i=0;i<count;i++)if(mounts[i].mount==node->mount) {
+    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++)
+        if(mounts[i].used && &mounts[i].superblock==node->mount) {
         if(mounts[i].open_refs==UINT32_MAX)return -EMFILE;
         struct inode_size_lease *lease=inode_lease(node);
         if(lease) {
@@ -853,7 +886,8 @@ int nas_vfs_node_pin(const struct nas_fs_node *node) {
 int nas_vfs_node_unpin(const struct nas_fs_node *node) {
     if(!node || !node->mount || !node->filesystem)return -EINVAL;
     ensure_defaults();
-    for(unsigned i=0;i<count;i++)if(mounts[i].mount==node->mount) {
+    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++)
+        if(mounts[i].used && &mounts[i].superblock==node->mount) {
         if(node->mount_id!=mounts[i].device_id)return -ESTALE;
         if(node->filesystem!=node->mount->type)return -EINVAL;
         if(!mounts[i].open_refs)return -EINVAL;
@@ -884,8 +918,8 @@ int nas_vfs_node_unpin(const struct nas_fs_node *node) {
 uint64_t nas_vfs_node_device(const struct nas_fs_node *node) {
     if(!node || !node->mount)return 0;
     ensure_defaults();
-    for(unsigned i=0;i<count;i++)
-        if(mounts[i].mount==node->mount)
+    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++)
+        if(mounts[i].used && &mounts[i].superblock==node->mount)
             return node->mount_id==mounts[i].device_id ?
                 mounts[i].device_id : 0;
     return 0;

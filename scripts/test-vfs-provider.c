@@ -703,10 +703,17 @@ int main(void) {
     assert(nas_vfs_read_at(&old_mount_incarnation,
                            0,(uint8_t *)data,1)==-ESTALE);
     assert(nas_vfs_node_device(&old_mount_incarnation)==0);
-    static const struct nas_vfs_mount alias_mount={
-        .mountpoint="/mnt-alias",.type=&ext_mock_type
+    static char alias_path[32]="/mnt-alias";
+    static struct nas_vfs_mount alias_mount={
+        .mountpoint=alias_path,.type=&ext_mock_type
     };
     assert(nas_vfs_register_mount(&alias_mount)==0);
+    /* Registration copies an OWNED superblock and pathname. Mutation of
+     * the caller's old mount descriptor cannot retarget an attached
+     * filesystem, change its backend or trick unmount path checks. */
+    alias_mount.mountpoint="/wrong-reused-descriptor";
+    alias_mount.type=NULL;
+    memcpy(alias_path,"/wrong-stale",13);
     struct nas_fs_node first,second;
     assert(nas_vfs_lookup("/mnt/hello",&first)==0);
     assert(nas_vfs_lookup("/mnt-alias/hello",&second)==0);
@@ -714,10 +721,23 @@ int main(void) {
     /* The real, shared namei pathwalk must obey exactly the same
      * mount-root/child contract as the direct kernel VFS lookup. */
     assert(nas_fs_lookup_node("/mnt-alias/hello",true,&second,resolved)==0);
-    assert(second.mount==&alias_mount && second.ino==first.ino);
+    assert(second.mount!=&alias_mount && second.ino==first.ino);
+    assert(!strcmp(second.mount->mountpoint,"/mnt-alias"));
+    assert(second.filesystem==&ext_mock_type);
+    assert(nas_fs_lookup_node("/wrong-stale/hello",true,
+                              &n,resolved)==-ENOENT);
+    assert(nas_fs_lookup_node("/wrong-reused-descriptor/hello",
+                              true,&n,resolved)==-ENOENT);
     assert(nas_vfs_node_device(&first)!=nas_vfs_node_device(&second));
     assert(nas_vfs_link("/mnt/hello","/mnt-alias/linked")==-EXDEV);
+    uint64_t original_ext_device=nas_vfs_node_device(&first);
+    assert(nas_vfs_node_pin(&first)==0);
     assert(nas_vfs_unregister_mount(&alias_mount)==0);
+    assert(nas_vfs_read_at(&second,0,(uint8_t *)data,1)==-ENODEV);
+    /* Unrelated mount keeps identical stable superblock and device ID
+     * after a hole opens in the registry (no array compaction). */
+    assert(nas_vfs_node_device(&first)==original_ext_device);
+    assert(nas_vfs_node_unpin(&first)==0);
     /* Registration must fail closed when a mountpoint is beneath a regular
      * file; neither prefix-based direct lookup nor VFS walk may bypass a
      * non-directory inode merely because a mountpoint string matches. */
@@ -733,16 +753,22 @@ int main(void) {
         .mountpoint="/mnt/nested",.type=&ext_mock_type
     };
     assert(nas_vfs_register_mount(&nested_mount)==0);
+    /* A new attachment reuses the freed alias slot, not its old device
+     * incarnation. Borrowed handles from before reuse stay stale. */
+    assert(nas_vfs_node_pin(&second)==-ESTALE);
+    assert(nas_vfs_node_device(&second)==0);
     /* Parent mount owns a child reference and nested attachment pins the
      * parent root. Neither may be detached behind that attachment. */
     assert(nas_vfs_unregister_mount(&ext_mount)==-EBUSY);
     assert(nas_fs_lookup_node("/mnt/nested/hello",true,&found,resolved)==0);
-    assert(found.mount==&nested_mount && found.ino==first.ino);
+    assert(found.mount!=&nested_mount &&
+           !strcmp(found.mount->mountpoint,"/mnt/nested") &&
+           found.ino==first.ino);
     assert(nas_fs_lookup_node("/mnt/nested/../hello",true,&found,resolved)==0);
-    assert(found.mount==&ext_mount && found.ino==first.ino);
+    assert(found.mount==first.mount && found.ino==first.ino);
     assert(nas_fs_lookup_node("/mnt/hello/..",true,&found,resolved)==-ENOTDIR);
     assert(nas_fs_lookup_node("/mnt/nested/.",true,&found,resolved)==0);
-    assert(found.mount==&nested_mount && found.is_dir);
+    assert(!strcmp(found.mount->mountpoint,"/mnt/nested") && found.is_dir);
     assert(nas_vfs_unregister_mount(&nested_mount)==0);
     assert(nas_vfs_unregister_mount(&ext_mount)==0);
     assert(!nas_vfs_inode_is_pinned(&entries[5]));

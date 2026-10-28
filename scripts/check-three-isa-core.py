@@ -91,6 +91,18 @@ for source in ("kernel/fs/vfs_providers.c", "ports/littlefs/vfs_port.c",
     if "nas_vfs_join_child(" not in (root/source).read_text():
         raise SystemExit(f"provider duplicates leaf join: {source}")
 vfs_providers=(root/"kernel/fs/vfs_providers.c").read_text()
+# Stable VFS mount storage: no source-owned registration pointers are
+# used as live File mount identities. The table is sparse, and removing one
+# mount must not shift the superblock address of another pinned File.
+vfs_src=(root/"kernel/fs/vfs.c").read_text()
+for item in ("struct nas_vfs_mount superblock;", "const struct nas_vfs_mount *registration;",
+             "mounts[slot].superblock.mountpoint=mounts[slot].path;",
+             "mounts[at]=(struct mount_slot){0};",
+             "parent->mount_id!=slot->parent_mount_id"):
+    if item not in vfs_src:
+        raise SystemExit(f"unstable VFS-owned mount/parent identity: {item}")
+if "mounts[i]=mounts[i+1]" in vfs_src or "mounts[count++]" in vfs_src:
+    raise SystemExit("packed mount registry would invalidate open File mounts")
 # Borrowed inode identity is never trusted solely by its pointer. Mounted
 # VFS validation must check the live mount registry before dereferencing
 # a possibly retired descriptor; tmpfs checks its monotonic inode number.
