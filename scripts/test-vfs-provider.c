@@ -960,6 +960,99 @@ int main(void) {
     archive_available=true;
     assert(nas_fs_lookup_node("/standalone/hello",true,
                               &n,resolved)==-ENOENT);
+    /* More than three full historical mount tables: the real shared VFS
+     * must grow stable superblock addresses rather than impose 16 slots.
+     * All names belong to the SAME independent provider; no per-provider
+     * mount-special case is allowed to make this test succeed. */
+    enum { STRESS_MOUNTS=48, REFILL_MOUNTS=20 };
+    static struct nas_vfs_mount stress[STRESS_MOUNTS];
+    static char stress_paths[STRESS_MOUNTS][40];
+    struct nas_fs_node stable_early,stale_reusable,stress_parent,probe;
+    struct nas_vfs_dirent stress_entries[7];
+    uint64_t stable_device=0;
+    for(unsigned i=0;i<STRESS_MOUNTS;i++) {
+        int nbytes=snprintf(stress_paths[i],sizeof(stress_paths[i]),
+                             "/tmp/stress-%02u",i);
+        assert(nbytes>0 && (unsigned)nbytes<sizeof(stress_paths[i]));
+        stress[i]=(struct nas_vfs_mount){
+            .mountpoint=stress_paths[i],.type=&ext_mock_type,
+            .allow_missing_mountpoint=true
+        };
+        assert(nas_vfs_register_mount(&stress[i])==0);
+        if(i==0) {
+            assert(nas_fs_lookup_node(stress_paths[i],true,
+                                      &stable_early,resolved)==0);
+            stable_device=nas_vfs_node_device(&stable_early);
+            assert(stable_device!=0);
+            assert(nas_vfs_node_pin(&stable_early)==0);
+        }
+        /* A pointer acquired from an early mount cannot move when the
+         * 17th, 33rd or 49th slot causes chunk growth. */
+        assert(nas_vfs_node_device(&stable_early)==stable_device);
+        assert(nas_vfs_lookup(stress_paths[i],&probe)==0);
+        assert(probe.mount!=&stress[i] && probe.ino==801);
+    }
+    assert(nas_vfs_unregister_mount(&stress[0])==-EBUSY);
+    assert(nas_fs_lookup_node("/tmp",true,&stress_parent,resolved)==0);
+    /* Virtual mountpoints must be presented exactly once and in stable
+     * registry order, even when readdir is split into tiny batches. */
+    for(unsigned i=0;i<STRESS_MOUNTS;i++) {
+        assert(nas_vfs_read_dir(&stress_parent,2+i,
+                                stress_entries,1)==1);
+        assert(!strcmp(stress_entries[0].name,stress_paths[i]+5));
+        assert(stress_entries[0].ino==801);
+        assert(stress_entries[0].dtype==4);
+    }
+    assert(nas_vfs_read_dir(&stress_parent,0,stress_entries,7)==7);
+    assert(!strcmp(stress_entries[0].name,"."));
+    assert(!strcmp(stress_entries[1].name,".."));
+    assert(!strcmp(stress_entries[2].name,stress_paths[0]+5));
+    /* Nested mount is owned by the actual parent mount, even when both
+     * attachments live in dynamically allocated storage chunks. */
+    static const struct nas_vfs_mount stress_nested={
+        .mountpoint="/tmp/stress-47/nested",.type=&ext_mock_type,
+        .allow_missing_mountpoint=true
+    };
+    assert(nas_vfs_register_mount(&stress_nested)==0);
+    assert(nas_vfs_unregister_mount(&stress[47])==-EBUSY);
+    assert(nas_fs_lookup_node("/tmp/stress-47/nested/hello",true,
+                              &probe,resolved)==0);
+    assert(probe.ino==802);
+    assert(nas_vfs_unregister_mount(&stress_nested)==0);
+    /* Free holes spanning static and heap chunks, then reuse them.
+     * A stale inode cannot inherit a different mount incarnation when
+     * the SAME slot address and backend inode number are recycled. */
+    assert(nas_fs_lookup_node(stress_paths[1],true,
+                              &stale_reusable,resolved)==0);
+    for(unsigned i=1;i<STRESS_MOUNTS;i+=2)
+        assert(nas_vfs_unregister_mount(&stress[i])==0);
+    static struct nas_vfs_mount refill[REFILL_MOUNTS];
+    static char refill_paths[REFILL_MOUNTS][40];
+    for(unsigned i=0;i<REFILL_MOUNTS;i++) {
+        int nbytes=snprintf(refill_paths[i],sizeof(refill_paths[i]),
+                            "/tmp/refill-%02u",i);
+        assert(nbytes>0 && (unsigned)nbytes<sizeof(refill_paths[i]));
+        refill[i]=(struct nas_vfs_mount){
+            .mountpoint=refill_paths[i],.type=&ext_mock_type,
+            .allow_missing_mountpoint=true
+        };
+        assert(nas_vfs_register_mount(&refill[i])==0);
+    }
+    assert(nas_vfs_node_pin(&stale_reusable)==-ESTALE);
+    assert(nas_vfs_node_device(&stale_reusable)==0);
+    assert(nas_vfs_node_device(&stable_early)==stable_device);
+    assert(nas_fs_lookup_node(refill_paths[0],true,&probe,resolved)==0);
+    /* Recycled slots intentionally retain the same superblock ADDRESS.
+     * Only the new mount_id prevents use of the old borrowed inode. */
+    assert(probe.mount==stale_reusable.mount &&
+           probe.mount_id!=stale_reusable.mount_id && probe.ino==801);
+    assert(nas_vfs_node_unpin(&stable_early)==0);
+    for(unsigned i=0;i<STRESS_MOUNTS;i+=2)
+        assert(nas_vfs_unregister_mount(&stress[i])==0);
+    for(unsigned i=0;i<REFILL_MOUNTS;i++)
+        assert(nas_vfs_unregister_mount(&refill[i])==0);
+    assert(nas_fs_lookup_node(stress_paths[0],true,&probe,resolved)==-ENOENT);
+    assert(nas_fs_lookup_node(refill_paths[0],true,&probe,resolved)==-ENOENT);
     puts("[VFS PROVIDER PASS] real mount dispatch, pathwalk, CPIO/tmp/proc, symlinks, kernel read, inode ops");
     return 0;
 }

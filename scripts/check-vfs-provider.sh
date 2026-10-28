@@ -42,3 +42,12 @@ if command -v clang >/dev/null 2>&1; then
     done
   done
 fi
+
+# The mount registry must be pointer-stable and actually grow beyond the
+# original 16 slots. Its previous fixed array silently stopped accepting
+# new independent filesystems; a reallocating mount_slot array would also
+# invalidate open File/Path references.
+if grep -Eq 'struct mount_slot mounts\[|NAS_VFS_MOUNT_LIMIT' kernel/fs/vfs.c; then
+  echo '[VFS FAIL] fixed-size/relocatable mount slot table returned' >&2
+  exit 1
+fi

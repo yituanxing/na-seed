@@ -5,7 +5,8 @@
 #include "../lib/string.h"
 #include "../mm/heap.h"
 #include <stddef.h>
-#define NAS_VFS_MOUNT_LIMIT 16U
+#define NAS_VFS_MOUNT_CHUNK_SIZE 16U
+#define NAS_VFS_MOUNT_MAX 256U
 /* A lease holds size + Linux record locks for the lifetime of one inode
  * incarnation. Growing by address-stable chunks avoids the unrelated 256
  * inode hard limit; a raw realloc would invalidate record-lock pointers
@@ -202,7 +203,41 @@ static const struct nas_fs_node *mount_parent_inode(
 static const struct nas_fs_node *mount_covered_inode(
     const struct mount_slot *slot);
 static uint64_t next_device_id=8;
-static struct mount_slot mounts[NAS_VFS_MOUNT_LIMIT];
+/* Immutable-address attachment storage: 16 static boot slots and 16-slot
+ * heap chunks. A published superblock never moves, even as capacity grows.
+ * Reuse changes the monotonically increasing device incarnation. */
+struct mount_slot_chunk {
+    struct mount_slot_chunk *next;
+    struct mount_slot slots[NAS_VFS_MOUNT_CHUNK_SIZE];
+};
+static struct mount_slot bootstrap_mounts[NAS_VFS_MOUNT_CHUNK_SIZE];
+static struct mount_slot_chunk *mount_chunks;
+static unsigned mount_slots=NAS_VFS_MOUNT_CHUNK_SIZE;
+static struct mount_slot *mount_slot_at(unsigned index) {
+    if(index<NAS_VFS_MOUNT_CHUNK_SIZE)return &bootstrap_mounts[index];
+    index-=NAS_VFS_MOUNT_CHUNK_SIZE;
+    for(struct mount_slot_chunk *chunk=mount_chunks;chunk;chunk=chunk->next) {
+        if(index<NAS_VFS_MOUNT_CHUNK_SIZE)return &chunk->slots[index];
+        index-=NAS_VFS_MOUNT_CHUNK_SIZE;
+    }
+    return NULL;
+}
+/* Heap allocation is only needed after all static slots have owners.
+ * Keep allocated chunks for reuse so stale borrowed pointers can be
+ * recognized without ever dereferencing freed mount metadata. */
+static int grow_mount_slots(void) {
+    if(mount_slots>=NAS_VFS_MOUNT_MAX)return -ENOSPC;
+    struct mount_slot_chunk *chunk=nas_heap_calloc(1,sizeof(*chunk));
+    if(!chunk)return -ENOMEM;
+    if(!mount_chunks)mount_chunks=chunk;
+    else {
+        struct mount_slot_chunk *tail=mount_chunks;
+        while(tail->next)tail=tail->next;
+        tail->next=chunk;
+    }
+    mount_slots+=NAS_VFS_MOUNT_CHUNK_SIZE;
+    return 0;
+}
 static bool defaults_ready;
 void nas_vfs_register_default_mounts(void);
 static void ensure_defaults(void) {
@@ -221,10 +256,10 @@ static int vfs_node_status(const struct nas_fs_node *node) {
     /* Never dereference node->mount before finding its registered, live
      * attachment. An old borrowed snapshot may retain a freed descriptor
      * address after umount. */
-    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++)
-        if(mounts[i].used &&
-           &mounts[i].superblock==node->mount) {
-            if(node->mount_id!=mounts[i].device_id)return -ESTALE;
+    for(unsigned i=0;i<mount_slots;i++)
+        if(mount_slot_at(i)->used &&
+           &mount_slot_at(i)->superblock==node->mount) {
+            if(node->mount_id!=mount_slot_at(i)->device_id)return -ESTALE;
             if(node->filesystem!=node->mount->type)return -EINVAL;
             if(lease_conflicts(inode_lease(node),node))return -ESTALE;
             return node->filesystem->validate_inode ?
@@ -261,22 +296,22 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
         !mount->type->lookup_child || !mount->type->name ||
         !canonical_mountpoint(mount->mountpoint))
         return -EINVAL;
-    unsigned slot=NAS_VFS_MOUNT_LIMIT;
-    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++) {
-        if(mounts[i].used) {
+    unsigned slot=mount_slots;
+    for(unsigned i=0;i<mount_slots;i++) {
+        if(mount_slot_at(i)->used) {
             /* One registration token owns at most one live mount, even if
              * its caller later mutates the borrowed source descriptor. */
-            if(mounts[i].registration==mount ||
-               !strcmp(mounts[i].path,mount->mountpoint))return -EEXIST;
-        } else if(slot==NAS_VFS_MOUNT_LIMIT)slot=i;
+            if(mount_slot_at(i)->registration==mount ||
+               !strcmp(mount_slot_at(i)->path,mount->mountpoint))return -EEXIST;
+        } else if(slot==mount_slots)slot=i;
     }
-    if(slot==NAS_VFS_MOUNT_LIMIT)return -ENOSPC;
+    if(slot==mount_slots && mount_slots>=NAS_VFS_MOUNT_MAX)return -ENOSPC;
     /* Bind the attachment to the real parent inode. String prefix mount
      * selection alone is insufficient: a symlink alias or moved parent
      * could otherwise silently redirect a mounted subtree. */
     struct nas_fs_node parent={0},covered={0};
     bool has_parent=false,has_covered=false;
-    unsigned parent_slot=NAS_VFS_MOUNT_LIMIT;
+    unsigned parent_slot=mount_slots;
     /* Validate both the parent and the covered mountpoint inode before
      * adding the new mount. The prefix selector must not mask a regular
      * file at the mount target, nor invent intermediate directories.
@@ -305,13 +340,13 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
              * owned dentry API exists, refuse an ambiguous alias instead
              * of creating a mount at the wrong name. */
             if(strcmp(parent_path,resolved))return -EINVAL;
-            for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++)
-                if(mounts[i].used &&
-                   &mounts[i].superblock==parent.mount) {
+            for(unsigned i=0;i<mount_slots;i++)
+                if(mount_slot_at(i)->used &&
+                   &mount_slot_at(i)->superblock==parent.mount) {
                     parent_slot=i;break;
                 }
-            if(parent_slot==NAS_VFS_MOUNT_LIMIT)return -ENODEV;
-            if(mounts[parent_slot].child_refs==UINT32_MAX)
+            if(parent_slot==mount_slots)return -ENODEV;
+            if(mount_slot_at(parent_slot)->child_refs==UINT32_MAX)
                 return -EMFILE;
             has_parent=true;
         }
@@ -332,6 +367,12 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
             return -ENOENT;
     }
     if(next_device_id==UINT64_MAX)return -ENOSPC;
+    /* Allocate the slot BEFORE acquiring owned parent/covered dentries.
+     * A rejected allocation cannot leak an inode pin or partial mount. */
+    if(slot==mount_slots) {
+        int grow_rc=grow_mount_slots();
+        if(grow_rc)return grow_rc;
+    }
     struct mount_slot attached={0};
     if(has_parent) {
         /* Bind the exact existing parent directory to the same canonical
@@ -369,10 +410,10 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
     attached.registration=mount;
     attached.superblock=*mount;
     memcpy(attached.path,mount->mountpoint,strlen(mount->mountpoint)+1);
-    mounts[slot]=attached;
-    mounts[slot].superblock.mountpoint=mounts[slot].path;
-    mounts[slot].used=true;
-    if(has_parent)++mounts[parent_slot].child_refs;
+    (*mount_slot_at(slot))=attached;
+    mount_slot_at(slot)->superblock.mountpoint=mount_slot_at(slot)->path;
+    mount_slot_at(slot)->used=true;
+    if(has_parent)++mount_slot_at(parent_slot)->child_refs;
     return 0;
 }
 /* Root selection is the ONLY direct mount-table lookup. Everything else
@@ -394,8 +435,8 @@ int nas_vfs_lookup(const char *absolute,struct nas_fs_node *out) {
          * Intermediate symlinks, dot/dotdot and mounts now use namei. */
         return nas_fs_lookup_node(absolute,false,out,canonical);
     }
-    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++) {
-        const struct mount_slot *slot=&mounts[i];
+    for(unsigned i=0;i<mount_slots;i++) {
+        const struct mount_slot *slot=mount_slot_at(i);
         if(!slot->used || strcmp(slot->path,"/"))continue;
         const struct nas_vfs_mount *mnt=&slot->superblock;
         int rc=mnt->type->root(mnt,out);
@@ -421,10 +462,10 @@ static int lookup_covered_underlay(const struct nas_fs_node *upper_parent,
                                    const char *absolute,
                                    struct nas_fs_node *out) {
     const struct mount_slot *slot=NULL;
-    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++) {
-        if(mounts[i].used &&
-           &mounts[i].superblock==upper_parent->mount) {
-            slot=&mounts[i];break;
+    for(unsigned i=0;i<mount_slots;i++) {
+        if(mount_slot_at(i)->used &&
+           &mount_slot_at(i)->superblock==upper_parent->mount) {
+            slot=mount_slot_at(i);break;
         }
     }
     if(!slot || !slot->superblock.fallback_on_miss)return -ENOENT;
@@ -485,8 +526,8 @@ int nas_vfs_lookup_step(const struct nas_fs_node *parent,const char *absolute,
     }
     /* Cross a mount only at the EXACT component-aligned mountpoint.
      * An open parent need not belong to the target mount. */
-    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++) {
-        const struct mount_slot *slot=&mounts[i];
+    for(unsigned i=0;i<mount_slots;i++) {
+        const struct mount_slot *slot=mount_slot_at(i);
         if(!slot->used)continue;
         const struct nas_vfs_mount *mnt=&slot->superblock;
         const struct nas_fs_node *anchor=mount_parent_inode(slot);
@@ -869,9 +910,9 @@ int nas_vfs_read_dir(const struct nas_fs_node *node,
     if(status)return status;
     if(!node->filesystem->read_dir)return -EOPNOTSUPP;
     unsigned virtual_count=0;
-    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++)
-        if(mounted_child_of(&mounts[i],node) &&
-           !mounts[i].covered_path.dentry)++virtual_count;
+    for(unsigned i=0;i<mount_slots;i++)
+        if(mounted_child_of(mount_slot_at(i),node) &&
+           !mount_slot_at(i)->covered_path.dentry)++virtual_count;
     unsigned written=0;
     if(virtual_count && cursor<2) {
         unsigned first=(unsigned)(2-cursor);
@@ -891,8 +932,8 @@ int nas_vfs_read_dir(const struct nas_fs_node *node,
     }
     if(virtual_count && written<maximum && cursor<2+virtual_count) {
         unsigned ordinal=0;
-        for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT && written<maximum;i++) {
-            const struct mount_slot *slot=&mounts[i];
+        for(unsigned i=0;i<mount_slots && written<maximum;i++) {
+            const struct mount_slot *slot=mount_slot_at(i);
             if(!mounted_child_of(slot,node) || slot->covered_path.dentry)
                 continue;
             if(cursor>2+ordinal) {++ordinal;continue;}
@@ -920,8 +961,8 @@ int nas_vfs_read_dir(const struct nas_fs_node *node,
             if(!valid_vfs_dirent(entry))return -EIO;
             /* A real covered mountpoint is one directory entry, but its
              * inode must be the visible mount root (Linux dcache rule). */
-            for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++) {
-                const struct mount_slot *slot=&mounts[i];
+            for(unsigned i=0;i<mount_slots;i++) {
+                const struct mount_slot *slot=mount_slot_at(i);
                 if(!mounted_child_of(slot,node) || !slot->covered_path.dentry ||
                    strcmp(entry->name,slot->covered_name))continue;
                 int rc=mounted_directory_entry(slot,entry);
@@ -952,11 +993,11 @@ bool nas_vfs_can_write(const struct nas_fs_node *node) {
 static bool active_mountpoint(const char *path) {
     if(!path)return false;
     ensure_defaults();
-    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++) {
-        if(!mounts[i].used)continue;
+    for(unsigned i=0;i<mount_slots;i++) {
+        if(!mount_slot_at(i)->used)continue;
         /* VFS-owned path snapshot is protected against ancestor rename
          * and unlink independently of caller's mount descriptor. */
-        if(mount_matches(path,mounts[i].path))return true;
+        if(mount_matches(path,mount_slot_at(i)->path))return true;
     }
     return false;
 }
@@ -1105,9 +1146,9 @@ int nas_vfs_sync(const struct nas_fs_node *node) {
 int nas_vfs_sync_all(void) {
     ensure_defaults();
     int first_error=0;
-    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++) {
-        if(!mounts[i].used)continue;
-        const struct nas_vfs_mount *mounted=&mounts[i].superblock;
+    for(unsigned i=0;i<mount_slots;i++) {
+        if(!mount_slot_at(i)->used)continue;
+        const struct nas_vfs_mount *mounted=&mount_slot_at(i)->superblock;
         if(mounted->read_only || mounted->type->read_only)continue;
         struct nas_fs_node root={0};
         int rc=mounted->type->root(mounted,&root);
@@ -1117,7 +1158,7 @@ int nas_vfs_sync_all(void) {
         }
         root.mount=mounted;
         root.filesystem=mounted->type;
-        root.mount_id=mounts[i].device_id;
+        root.mount_id=mount_slot_at(i)->device_id;
         rc=nas_vfs_sync(&root);
         if(rc && !first_error)first_error=rc;
     }
@@ -1289,41 +1330,41 @@ int nas_vfs_utimens(const struct nas_fs_node *node,uint64_t atime,
 int nas_vfs_unregister_mount(const struct nas_vfs_mount *registration) {
     if(!registration)return -EINVAL;
     ensure_defaults();
-    unsigned at=NAS_VFS_MOUNT_LIMIT;
-    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++)
-        if(mounts[i].used && mounts[i].registration==registration) {
+    unsigned at=mount_slots;
+    for(unsigned i=0;i<mount_slots;i++)
+        if(mount_slot_at(i)->used && mount_slot_at(i)->registration==registration) {
             at=i;break;
         }
-    if(at==NAS_VFS_MOUNT_LIMIT)return -ENOENT;
-    if(mounts[at].superblock.permanent || mounts[at].open_refs ||
-       mounts[at].child_refs)return -EBUSY;
+    if(at==mount_slots)return -ENOENT;
+    if(mount_slot_at(at)->superblock.permanent || mount_slot_at(at)->open_refs ||
+       mount_slot_at(at)->child_refs)return -EBUSY;
     /* The counted attachment graph already owns child_refs. Every nested
      * child has a pinned parent Path; scanning string prefixes would
      * incorrectly define topology from spelling instead of ownership.
      * Rootless bootstrap children are attached to their live parent
      * mount, or are independently rooted with no structural parent. */
-    unsigned parent_at=NAS_VFS_MOUNT_LIMIT;
-    const struct nas_fs_node *owner=mount_parent_inode(&mounts[at]);
-    const struct nas_fs_node *covered=mount_covered_inode(&mounts[at]);
+    unsigned parent_at=mount_slots;
+    const struct nas_fs_node *owner=mount_parent_inode(mount_slot_at(at));
+    const struct nas_fs_node *covered=mount_covered_inode(mount_slot_at(at));
     if(owner) {
-        for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++)
-            if(mounts[i].used &&
-               &mounts[i].superblock==owner->mount) {
+        for(unsigned i=0;i<mount_slots;i++)
+            if(mount_slot_at(i)->used &&
+               &mount_slot_at(i)->superblock==owner->mount) {
                 parent_at=i;break;
             }
-        if(parent_at==NAS_VFS_MOUNT_LIMIT ||
-           !mounts[parent_at].child_refs ||
+        if(parent_at==mount_slots ||
+           !mount_slot_at(parent_at)->child_refs ||
            !inode_lease(owner) ||
            (covered && !inode_lease(covered)))return -EIO;
     }
     /* Drop covered before parent: a covered Dentry can own its parent.
      * Both are real Path owners; do not release an extra inode pin. */
-    if(mounts[at].covered_path.dentry &&
-       nas_vfs_path_put(&mounts[at].covered_path))return -EIO;
-    if(mounts[at].parent_path.dentry &&
-       nas_vfs_path_put(&mounts[at].parent_path))return -EIO;
-    if(parent_at!=NAS_VFS_MOUNT_LIMIT)--mounts[parent_at].child_refs;
-    mounts[at]=(struct mount_slot){0};
+    if(mount_slot_at(at)->covered_path.dentry &&
+       nas_vfs_path_put(&mount_slot_at(at)->covered_path))return -EIO;
+    if(mount_slot_at(at)->parent_path.dentry &&
+       nas_vfs_path_put(&mount_slot_at(at)->parent_path))return -EIO;
+    if(parent_at!=mount_slots)--mount_slot_at(parent_at)->child_refs;
+    (*mount_slot_at(at))=(struct mount_slot){0};
     return 0;
 }
 int nas_vfs_node_pin(const struct nas_fs_node *node) {
@@ -1331,9 +1372,9 @@ int nas_vfs_node_pin(const struct nas_fs_node *node) {
        (!node->ino && !node->inode))return -EINVAL;
     int status=vfs_node_status(node);
     if(status)return status;
-    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++)
-        if(mounts[i].used && &mounts[i].superblock==node->mount) {
-        if(mounts[i].open_refs==UINT32_MAX)return -EMFILE;
+    for(unsigned i=0;i<mount_slots;i++)
+        if(mount_slot_at(i)->used && &mount_slot_at(i)->superblock==node->mount) {
+        if(mount_slot_at(i)->open_refs==UINT32_MAX)return -EMFILE;
         struct inode_size_lease *lease=inode_lease(node);
         if(lease) {
             if(lease_conflicts(lease,node))return -ESTALE;
@@ -1347,22 +1388,22 @@ int nas_vfs_node_pin(const struct nas_fs_node *node) {
                 .backend_inode=node->inode,.size=node->size,.refs=1
             };
         }
-        ++mounts[i].open_refs;return 0;
+        ++mount_slot_at(i)->open_refs;return 0;
     }
     return -ENODEV;
 }
 int nas_vfs_node_unpin(const struct nas_fs_node *node) {
     if(!node || !node->mount || !node->filesystem)return -EINVAL;
     ensure_defaults();
-    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++)
-        if(mounts[i].used && &mounts[i].superblock==node->mount) {
-        if(node->mount_id!=mounts[i].device_id)return -ESTALE;
+    for(unsigned i=0;i<mount_slots;i++)
+        if(mount_slot_at(i)->used && &mount_slot_at(i)->superblock==node->mount) {
+        if(node->mount_id!=mount_slot_at(i)->device_id)return -ESTALE;
         if(node->filesystem!=node->mount->type)return -EINVAL;
-        if(!mounts[i].open_refs)return -EINVAL;
+        if(!mount_slot_at(i)->open_refs)return -EINVAL;
         struct inode_size_lease *lease=inode_lease(node);
         if(!lease || !lease->refs)return -EINVAL;
         if(lease_conflicts(lease,node))return -ESTALE;
-        --mounts[i].open_refs;
+        --mount_slot_at(i)->open_refs;
         if(!--lease->refs) {
             /* A final inode owner cannot retain an advisory lock. In
              * particular, an unlinked inode may be immediately recycled. */
@@ -1386,9 +1427,9 @@ int nas_vfs_node_unpin(const struct nas_fs_node *node) {
 uint64_t nas_vfs_node_device(const struct nas_fs_node *node) {
     if(!node || !node->mount)return 0;
     ensure_defaults();
-    for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++)
-        if(mounts[i].used && &mounts[i].superblock==node->mount)
-            return node->mount_id==mounts[i].device_id ?
-                mounts[i].device_id : 0;
+    for(unsigned i=0;i<mount_slots;i++)
+        if(mount_slot_at(i)->used && &mount_slot_at(i)->superblock==node->mount)
+            return node->mount_id==mount_slot_at(i)->device_id ?
+                mount_slot_at(i)->device_id : 0;
     return 0;
 }

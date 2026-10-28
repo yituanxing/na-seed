@@ -73,9 +73,8 @@ room before creating its new pathname.
    Grow real BusyBox `mv` (overwrite same mount) and SQLite/Git
    atomic replace probes to drive a generic contract, not silently
    weaken the test or patch the source to fit NaSeed.
-4. **P1 — bounded ownership and pathname tables.** Mounts currently
-   limit 16 attachments; flock limits 128 owners and POSIX locks
-   16 per inode. All path buffers are 256 bytes. The inode
+4. **P1 — bounded ownership and pathname tables.** Mounts now allocate stable 16-entry chunks up to 256 attachments;
+   flock still limits 128 owners and POSIX locks 16 per inode. All path buffers are 256 bytes. The inode
    lease pool has been decoupled from these separate limits. The
    pathname limit is a clear gap from Linux PATH_MAX but should
    not be 'fixed' by enlarging every stack buffer unreviewed.
@@ -168,3 +167,27 @@ TinyCC 0.9.27, and RV64 UEFI RTC A/B) are pinned to the same Ubuntu 24.04
 runner family as the already-green newer native TinyCC matrix. This is
 environment-variable isolation, not proof of a kernel fix or a relaxation
 of guest pass markers. Run results must be checked on this exact head.
+
+## Stable mount registry growth and lifetime (2026-10-28)
+
+The static 16-mount table was a hard scalability failure independent of the
+inode lease table. Replacing it with a reallocating array would have been
+incorrect: open File, cwd, mount-parent Dentry and borrowed inode snapshots
+refer to published superblock addresses. The VFS now keeps its initial
+16 boot slots in static storage (no heap required during early boot), grows
+in zeroed, address-stable 16-slot heap chunks only when all slots are in
+use, and retains those chunks for hole reuse. A total of 256 slots remains
+an explicit resource limit; this is not an unbounded mount namespace.
+A new mount is published only after valid path and owner checks; failure
+to allocate an extra chunk returns ENOMEM, not a partially attached mount.
+A newly attached mount receives a fresh device incarnation and a stale
+borrowed inode cannot access that slot even when its address is reused.
+
+The real host VFS/provider fixture holds 48 simultaneous independently
+mounted root directories, verifies their live lookup and VFS-only readdir
+entries in split/cursor calls, pins an early mount across chunk expansion,
+attaches/detaches a child beneath a late heap-backed slot, and recycles
+holes across both storage tiers while checking old incarnation rejection.
+No CPIO, RamFS, ext4, LittleFS, U-Boot or real vendor source is modified.
+This test does NOT prove SMP safety, physical device hotplug, mount
+namespaces, or correct behavior after exhausting the kernel heap.

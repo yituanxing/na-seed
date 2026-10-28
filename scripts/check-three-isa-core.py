@@ -96,18 +96,30 @@ for source in ("kernel/fs/vfs_providers.c", "ports/littlefs/vfs_port.c",
     if "nas_vfs_join_child(" not in (root/source).read_text():
         raise SystemExit(f"provider duplicates leaf join: {source}")
 vfs_providers=(root/"kernel/fs/vfs_providers.c").read_text()
-# Stable VFS mount storage: no source-owned registration pointers are
-# used as live File mount identities. The table is sparse, and removing one
-# mount must not shift the superblock address of another pinned File.
+# Stable VFS mount storage: bootstrap without heap, then grow in
+# address-stable chunks. Open File, Dentry and mount-parent Path hold a
+# published superblock address; an array realloc/memmove is forbidden.
+# This is the migrated form of the original fixed-table architecture gate,
+# not a skip/relaxation of its mount ownership requirements.
 vfs_src=(root/"kernel/fs/vfs.c").read_text()
-for item in ("struct nas_vfs_mount superblock;", "const struct nas_vfs_mount *registration;",
-             "mounts[slot].superblock.mountpoint=mounts[slot].path;",
-             "mounts[at]=(struct mount_slot){0};",
+for item in ("struct nas_vfs_mount superblock;",
+             "const struct nas_vfs_mount *registration;",
+             "struct mount_slot_chunk {",
+             "static struct mount_slot bootstrap_mounts[NAS_VFS_MOUNT_CHUNK_SIZE];",
+             "static struct mount_slot *mount_slot_at(unsigned index)",
+             "struct mount_slot_chunk *chunk=nas_heap_calloc(1,sizeof(*chunk));",
+             "if(mount_slots>=NAS_VFS_MOUNT_MAX)return -ENOSPC;",
+             "mount_slot_at(slot)->superblock.mountpoint=mount_slot_at(slot)->path;",
+             "(*mount_slot_at(at))=(struct mount_slot){0};",
              "const struct nas_fs_node *anchor=mount_parent_inode(slot);",
              "const struct nas_fs_node *owner=mount_parent_inode(slot);",
-             "const struct nas_fs_node *covered=mount_covered_inode(&mounts[at]);"):
+             "const struct nas_fs_node *covered=mount_covered_inode(mount_slot_at(at));"):
     if item not in vfs_src:
         raise SystemExit(f"unstable VFS-owned mount/parent identity: {item}")
+if ("struct mount_slot mounts[" in vfs_src or
+        "NAS_VFS_MOUNT_LIMIT" in vfs_src or
+        "bootstrap_mounts=realloc(" in vfs_src):
+    raise SystemExit("VFS mount superblock addresses must not be relocated")
 # Mount parent/covered identities now live ONLY on reference-counted
 # Paths and their Dentries: do not require a deleted tuple or allow it
 # to return under another name. This is an architectural contract
