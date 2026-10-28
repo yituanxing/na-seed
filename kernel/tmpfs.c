@@ -1,6 +1,7 @@
 #include "tmpfs.h"
 #include "task.h"
 #include "fd.h"
+#include "fs/vfs.h"
 #include "bootfs.h"
 #include "errno.h"
 #include "lib/string.h"
@@ -48,6 +49,10 @@ static struct tmp_inode_slab *tmp_new_slab(void) {
 }
 static void tmp_try_reclaim(struct nas_tmp_file *node) {
     if (!node || !node->used || node->nlink) return;
+    /* An orphan inode is also owned by generic VFS File and FS cwd pins.
+     * Legacy tmp_slot_owner alone does NOT cover cwd, independently opened
+     * mounted nodes or a future mmap-held VFS reference. */
+    if(nas_vfs_inode_is_pinned(node))return;
     for (unsigned slot = 0; slot < NAS_OPEN_FILE_LIMIT; slot++)
         if (tmp_slot_owner[slot] == node && nas_open_files[slot].refcount)
             return;

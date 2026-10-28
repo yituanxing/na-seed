@@ -445,3 +445,21 @@ operation indices remain unchanged. Native ARM64 O_DIRECTORY uses the
 previously tested target-UAPI flag, not x86 flag magic. Same content and
 checks execute on all three native QEMU kernels for both volatile RamDisk
 and actual VirtIO ext4 as part of the existing full integration suite.
+
+## 2026-10-28 — tmpfs orphan inode finalization uses VFS ownership
+
+Audit found that native tmpfs `tmp_try_reclaim()` only checked legacy
+`tmp_slot_owner` open File slots; a directory could be `rmdir()`ed while
+held solely by the process `cwd_node` or a generic VFS File and be
+prematurely freed. This is a **real use-after-free** risk. The generic
+VFS inode-size lease now retains an opaque backend-inode identity and
+exposes a pure `nas_vfs_inode_is_pinned()` query to providers. tmpfs
+reclamation refuses to free a last-link orphan while *any* such VFS lease
+exists (in addition to existing FD-flock/slot checks). A new optional
+`last_inode_unpin` provider hook runs exactly after the last shared
+mount+inode lease drops, allowing native tmpfs to reclaim an orphan even
+if its final owner was the cwd FS context rather than a File. The synthetic
+`/tmp` root is explicitly excluded because its inode is owned by bootfs.
+No changes to syscall architecture, fixed ISA selection, lwext4, littlefs
+or pinned third-party implementations. The generic VFS host oracle tests
+2 independent owners, deferred orphan release, and one final callback.

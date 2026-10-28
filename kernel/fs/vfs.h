@@ -28,6 +28,10 @@ struct nas_vfs_type {
      * A NULL callback means VFS can verify an immutable opening hint, but
      * refuses to redirect renamed directory FDs to an unrelated name. */
     int (*directory_path)(const struct nas_fs_node *,char absolute[256]);
+    /* Called precisely when the LAST generic mount+inode lease is dropped.
+     * A backend may now reclaim an unlinked orphan inode; never called
+     * on a borrowed namei snapshot or one of several dup/fork owners. */
+    void (*last_inode_unpin)(const struct nas_fs_node *);
     int64_t (*read_at)(const struct nas_fs_node *, uint64_t offset,
                        uint8_t *kernel_dst, uint64_t length);
     /* Logical cursor counts entries, including . and .., from zero.
@@ -78,6 +82,9 @@ struct nas_vfs_mount {
 int nas_vfs_unregister_mount(const struct nas_vfs_mount *mount);
 int nas_vfs_node_pin(const struct nas_fs_node *node);
 int nas_vfs_node_unpin(const struct nas_fs_node *node);
+/* Opaque, already allocated inode identity: protects orphan reclamation
+ * of cwd and independently pinned VFS Files, not merely legacy FD slots. */
+bool nas_vfs_inode_is_pinned(const void *backend_inode);
 uint64_t nas_vfs_node_device(const struct nas_fs_node *node);
 /* Live size shared by independently opened Files for the same mount+inode.
  * Unlike borrowed pathname snapshots this survives rename and dup/fork. */

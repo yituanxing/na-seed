@@ -250,9 +250,18 @@ static int tmp_directory_path(const struct nas_fs_node *node,char path[256]) {
     memcpy(path,live,len+1);
     return 0;
 }
+static void tmp_last_inode_unpin(const struct nas_fs_node *node) {
+    if(!node || !node->inode)return;
+    /* Synthetic /tmp overlay root borrows a CPIO inode. Never pass that
+     * foreign pointer to the tmpfs allocator/reclaimer. */
+    const struct bootfs_entry *root=bootfs_find("/tmp");
+    if(root && node->inode==(const void *)root)return;
+    tmp_inode_discard((struct nas_tmp_file *)(uintptr_t)node->inode);
+}
 static const struct nas_vfs_type tmp_type={
     .name="tmpfs",.exec_source_label="tmpfs",.lookup=tmp_lookup,
-    .directory_path=tmp_directory_path,.readlink=tmp_readlink,
+    .directory_path=tmp_directory_path,
+    .last_inode_unpin=tmp_last_inode_unpin,.readlink=tmp_readlink,
     .read_at=tmp_read,.read_dir=tmp_read_dir,.chmod=tmp_chmod_node,.utimens=tmp_utimens_node,
     .create=tmp_create_node,.write_at=tmp_write_node,
     .resize=tmp_resize_node,.sync=tmp_sync_node,

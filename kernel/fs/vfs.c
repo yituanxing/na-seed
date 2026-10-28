@@ -12,10 +12,18 @@
 struct inode_size_lease {
     const struct nas_vfs_mount *mount;
     uint64_t ino;
+    const void *backend_inode; /* only pointer identity, never VFS-owned */
     uint64_t size;
     uint32_t refs;
 };
 static struct inode_size_lease live_inodes[NAS_VFS_LIVE_INODES];
+bool nas_vfs_inode_is_pinned(const void *backend_inode) {
+    if(!backend_inode)return false;
+    for(unsigned i=0;i<NAS_VFS_LIVE_INODES;i++)
+        if(live_inodes[i].refs &&
+           live_inodes[i].backend_inode==backend_inode)return true;
+    return false;
+}
 static struct inode_size_lease *inode_lease(const struct nas_fs_node *node) {
     if(!node || !node->mount)return NULL;
     for(unsigned i=0;i<NAS_VFS_LIVE_INODES;i++)
@@ -409,6 +417,8 @@ int nas_vfs_node_pin(const struct nas_fs_node *node) {
         if(mounts[i].open_refs==UINT32_MAX)return -EMFILE;
         struct inode_size_lease *lease=inode_lease(node);
         if(lease) {
+            if(lease->backend_inode && node->inode &&
+               lease->backend_inode!=node->inode)return -ESTALE;
             if(lease->refs==UINT32_MAX)return -EMFILE;
             ++lease->refs;
         } else {
@@ -417,7 +427,7 @@ int nas_vfs_node_pin(const struct nas_fs_node *node) {
                     lease=&live_inodes[n];
                     *lease=(struct inode_size_lease){
                         .mount=node->mount,.ino=node->ino,
-                        .size=node->size,.refs=1
+                        .backend_inode=node->inode,.size=node->size,.refs=1
                     };
                     break;
                 }
@@ -435,7 +445,14 @@ int nas_vfs_node_unpin(const struct nas_fs_node *node) {
         struct inode_size_lease *lease=inode_lease(node);
         if(!lease || !lease->refs)return -EINVAL;
         --mounts[i].open_refs;
-        if(!--lease->refs)*lease=(struct inode_size_lease){0};
+        if(!--lease->refs) {
+            /* Publish the release BEFORE invoking the backend: tmpfs
+             * orphan cleanup may now query nas_vfs_inode_is_pinned().
+             * The current node is valid for this final owner invocation. */
+            *lease=(struct inode_size_lease){0};
+            if(node->filesystem && node->filesystem->last_inode_unpin)
+                node->filesystem->last_inode_unpin(node);
+        }
         return 0;
     }
     return -ENODEV;

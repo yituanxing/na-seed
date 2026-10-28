@@ -34,6 +34,18 @@ static struct nas_tmp_file fixture_open_directory={
 static struct nas_tmp_file fixture_open_child={
     .used=true,.mode=0100600,.nlink=1,.ino=106
 };
+static struct nas_tmp_file fixture_orphan={
+    .used=true,.mode=0100600,.nlink=0,.ino=107
+};
+static unsigned orphan_releases;
+void tmp_inode_discard(struct nas_tmp_file *node) {
+    /* An actual kernel reclaims only orphaned, unpinned inodes; the
+     * host fixture records the final provider callback. */
+    if(node==&fixture_orphan && !nas_vfs_inode_is_pinned(node)) {
+        node->used=false;
+        orphan_releases++;
+    }
+}
 static char fixture_dir_path[256]="/tmp/opened";
 static char fixture_child_path[256]="/tmp/opened/child";
 static uint8_t fixture_created_bytes[32];
@@ -57,6 +69,7 @@ struct nas_tmp_file *tmp_find(const char *path){
     if(!strcmp(path,"/tmp/newfile") && fixture_created_length)return &fixture_created;
     if(!strcmp(path,fixture_dir_path))return &fixture_open_directory;
     if(!strcmp(path,fixture_child_path))return &fixture_open_child;
+    if(!strcmp(path,"/tmp/pinned-orphan"))return &fixture_orphan;
     return NULL;
 }
 const char *tmp_name(const struct nas_tmp_file *f) {
@@ -292,6 +305,18 @@ int main(void) {
     assert(nas_vfs_node_size(&other_open)==2);
     assert(nas_vfs_node_unpin(&other_open)==0);
     assert(nas_vfs_node_unpin(&n)==0);
+    assert(nas_vfs_sync(&n)==0);
+    struct nas_fs_node orphan;
+    assert(nas_fs_lookup_node("/tmp/pinned-orphan",true,&orphan,resolved)==0);
+    assert(orphan.inode==&fixture_orphan);
+    assert(nas_vfs_node_pin(&orphan)==0);
+    assert(nas_vfs_inode_is_pinned(&fixture_orphan));
+    assert(nas_vfs_node_pin(&orphan)==0); /* separate cwd and shared File */
+    assert(nas_vfs_node_unpin(&orphan)==0);
+    assert(orphan_releases==0 && fixture_orphan.used);
+    assert(nas_vfs_node_unpin(&orphan)==0);
+    assert(orphan_releases==1 && !fixture_orphan.used);
+    assert(!nas_vfs_inode_is_pinned(&fixture_orphan));
     assert(nas_vfs_sync(&n)==0);
     assert(nas_vfs_create("/bin/new",0644)==-EROFS);
     assert(nas_vfs_resize(&n,3)==0);
