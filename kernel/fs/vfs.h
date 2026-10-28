@@ -50,6 +50,9 @@ struct nas_vfs_type {
                 const char *new_absolute);
     int (*symlink)(const struct nas_vfs_mount *,const char *target,
                    const char *link_absolute);
+    /* Backends may opt in only if unlinking the final name does not
+     * invalidate an open, pinned inode (tmpfs has this lifetime today). */
+    bool unlink_open_safe;
     bool read_only;
 };
 struct nas_vfs_mount {

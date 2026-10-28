@@ -223,7 +223,8 @@ static const struct nas_vfs_type tmp_type={
     .create=tmp_create_node,.write_at=tmp_write_node,
     .resize=tmp_resize_node,.sync=tmp_sync_node,
     .mkdir=tmp_mkdir_node,.unlink=tmp_unlink_node,.rename=tmp_rename_node,
-    .link=tmp_link_node,.symlink=tmp_symlink_node
+    .link=tmp_link_node,.symlink=tmp_symlink_node,
+    .unlink_open_safe=true
 };
 static int proc_lookup_node(const struct nas_vfs_mount *mount,
                        const char *path,struct nas_fs_node *out) {

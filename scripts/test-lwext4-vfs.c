@@ -163,6 +163,13 @@ int main(int argc,char **argv) {
         assert(nas_vfs_node_pin(&created)==0);
         assert(nas_vfs_node_pin(&stale_reader)==0);
         assert(nas_vfs_node_size(&stale_reader)==sizeof(persisted)-1);
+        /* Do NOT corrupt a pinned inode by calling upstream ext4_fremove,
+         * which frees last-link data immediately. This fail-closed guard
+         * stays until proper VFS orphan/deferred deletion is implemented. */
+        assert(nas_vfs_unlink("/mnt/sandbox/vfs-created",0)==-EBUSY);
+        assert(nas_vfs_read_at(&stale_reader,0,(uint8_t *)buffer,
+                               sizeof(persisted)-1)==(int64_t)sizeof(persisted)-1);
+        assert(!memcmp(buffer,persisted,sizeof(persisted)-1));
         assert(nas_vfs_resize(&created,6)==0);
         assert(nas_vfs_node_size(&stale_reader)==6);
         assert(nas_vfs_read_at(&stale_reader,6,(uint8_t *)buffer,1)==0);

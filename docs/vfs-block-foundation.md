@@ -332,3 +332,34 @@ VirtIO-Blk read/write engine. Common NaSeed BlockDevice, VFS, lwext4,
 VirtIO transport, DMA and split-ring adapter are unchanged, so the test
 controls the *driver implementation* variable against an independently
 maintained codebase, as required by the NaOS-style architecture review.
+
+## 2026-10-28 VFS lifetime fail-closed audit (first coherent batch)
+
+The actual upstream `ext4_fremove` immediately truncates data and frees the
+inode when the last directory link is removed. A pre-existing NaSeed open
+File still keeps only a `(mount, inode)` lease, so permitting this operation
+would leave dangling open descriptions. The VFS now checks the actual live
+last-link inode lease and **rejects unlink-open with EBUSY** for providers that
+have not implemented safe inode orphan/deferred reclamation. The existing
+RAM tmpfs explicitly declares its current unlink-open lifetime support;
+other providers default to fail-closed. The pinned ext4 integration test
+exercises an open reader through rejected unlink and continued reads.
+**This is NOT POSIX-complete**: full open-unlink semantics still require
+owned inode/dentry objects and deferred reclaim, not an EBUSY workaround.
+
+On a failed *post*-ext4_umount hardware cache flush, the adapter now finishes
+detaching its BlockDevice and any owned RamDisk instead of leaking a pinned
+controller (the unmount has already irreversibly finished upstream). It
+still reports the flush error. Earlier pre-umount errors preserve a mounted
+namespace and allow retry. This must be checked independently of the
+regular successful shutdown gate.
+
+Upstream FS candidate review: Apache NuttX tmpfs is highly coupled to the
+NuttX VFS and Apache-2.0-licensed (incompatible with a GPL-2.0-only combined
+work). Linux tmpfs is GPL-2.0 but coupled to Linux page-cache/shmem. Instead
+we will **compare with BSD-3-Clause littlefs** on a borrowed memory-backed
+BlockDevice as a *second independent external file system*, not a replacement
+for RAM tmpfs and not an ext4 clone. Its path-based lookup has no stable
+POSIX inode API, so it may NOT claim unlink-open/rename-open until per-open
+VFS object ownership is implemented. Keep original upstream sources pinned
+and add a standalone real-provider host gate before guest activation.

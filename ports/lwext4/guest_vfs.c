@@ -371,17 +371,20 @@ int nas_lwext4_unmount(struct nas_lwext4_mount *ctx) {
      * preceding data-cache flush. Flush its final metadata writes through
      * the actual storage controller before releasing BlockDevice ownership. */
     int final_sync=nas_block_flush(ctx->device.storage);
+    /* ext4_umount has already finalized its superblock. On a final hardware
+     * flush error the VFS namespace is gone: returning here would leak a
+     * permanently pinned BlockDevice with mounted=false and no retry path.
+     * Finish all adapter/owned-RAM cleanup and propagate the durability
+     * error, never claim fsync success or remount a finalized superblock. */
     ctx->mounted=false;
-    if(final_sync)return final_sync;
     rc=nas_lwext4_device_detach(&ctx->device,ctx->device_name);
-    if(rc)return rc;
     if(ctx->owns_ramdisk) {
-        rc=nas_ramdisk_detach(&ctx->ramdisk);
-        if(rc)return rc;
-        ctx->owns_ramdisk=false;
+        int ram_rc=nas_ramdisk_detach(&ctx->ramdisk);
+        if(!rc)rc=ram_rc;
+        if(!ram_rc)ctx->owns_ramdisk=false;
     }
     ctx->upstream_mount=NULL;ctx->upstream_super=NULL;
-    return 0;
+    return final_sync ? final_sync : rc;
 }
 int nas_lwext4_ramdisk_unmount(struct nas_lwext4_mount *ctx) {
     return nas_lwext4_unmount(ctx);
