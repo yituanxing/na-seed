@@ -21,7 +21,12 @@ static int resolve_walk(const char *path,bool follow_final,
         resolved[0]='/';resolved[1]=0;
         unsigned used=1,pos=0;
         struct nas_fs_node current={0};
-        bool have_current=nas_vfs_lookup("/", &current)==0;
+        int root_rc=nas_vfs_lookup("/", &current);
+        /* The legacy direct-ELF boot can lack a CPIO root. Only ENOENT
+         * permits entering a separately registered /mnt mount; actual
+         * filesystem I/O or mount errors must never be silently erased. */
+        if(root_rc && root_rc!=-ENOENT)return root_rc;
+        bool have_current=!root_rc;
         bool restart=false;
         while(pending[pos]) {
             while(pending[pos]=='/')pos++;
@@ -36,7 +41,9 @@ static int resolve_walk(const char *path,bool follow_final,
                 resolved[used]=0;
                 /* Until VFS owns parent dentries, moving upward must
                  * revalidate the current namespace identity. */
-                have_current=nas_vfs_lookup(resolved,&current)==0;
+                int up_rc=nas_vfs_lookup(resolved,&current);
+                if(up_rc && up_rc!=-ENOENT)return up_rc;
+                have_current=!up_rc;
                 continue;
             }
             if(used+(used!=1)+len>=256)return -ENAMETOOLONG;

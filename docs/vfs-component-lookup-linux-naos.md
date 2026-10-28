@@ -51,3 +51,15 @@ the actual tmpfs/procfs provider fixture. The latter also mounts the same
 mock provider twice under separate mount records and asserts inode
 identity, distinct mount/device ownership, and EXDEV for cross-mount
 operations. Do not merge on compile-only evidence.
+
+### Mount ancestry hardening
+
+VFS now rejects registering a mount under a parent that resolves to a
+regular file; VFS step lookup rejects crossing any mount with a non-directory
+parent. In the transitional CPIO-less direct-ELF bootstrap, an ENOENT
+parent is still allowed because /mnt may exist solely as a mounted
+filesystem. Namei preserves non-ENOENT root/.. errors rather than silently
+treating I/O failures as a missing archive root. The host provider fixture
+checks the failure paths alongside nested mount traversal and escaping
+a child mount through '..'. These are safety checks, not an assertion
+that a refcounted mount/dentry tree already exists.

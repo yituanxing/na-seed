@@ -104,6 +104,23 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
         return -EINVAL;
     for (unsigned i=0;i<count;i++)
         if (!strcmp(mounts[i].mount->mountpoint,mount->mountpoint))return -EEXIST;
+    /* Never accept a mount beneath an existing NON-directory. This catches
+     * invalid mounts before both direct VFS lookups and namei can see them.
+     * A missing bootstrap parent remains temporarily allowed: direct-ELF
+     * boots can attach a separately supplied ext4 volume at /mnt without
+     * providing any CPIO root archive. */
+    if(strcmp(mount->mountpoint,"/")) {
+        char parent_path[256],resolved[256];
+        size_t len=strlen(mount->mountpoint);
+        memcpy(parent_path,mount->mountpoint,len+1);
+        while(len>1 && parent_path[len-1]!='/')len--;
+        if(len>1)len--;
+        parent_path[len]=0;
+        struct nas_fs_node parent;
+        int parent_rc=nas_fs_lookup_node(parent_path,true,&parent,resolved);
+        if(!parent_rc && !parent.is_dir)return -ENOTDIR;
+        if(parent_rc && parent_rc!=-ENOENT)return parent_rc;
+    }
     if (count==NAS_VFS_MOUNT_LIMIT)return -ENOSPC;
     if(next_device_id==UINT64_MAX)return -ENOSPC;
     mounts[count++]=(struct mount_slot){.mount=mount,.device_id=next_device_id++};
@@ -178,6 +195,9 @@ int nas_vfs_lookup_step(const struct nas_fs_node *parent,const char *absolute,
                          (name[1]=='.' && !name[2]))))
         return -EINVAL;
     ensure_defaults();
+    /* An existing parent file cannot acquire directory children, not even
+     * when a mount table entry spells the would-be child exactly. */
+    if(parent && !parent->is_dir)return -ENOTDIR;
     /* Cross a mount only at the EXACT component-aligned mountpoint.
      * An open parent need not belong to the target mount. */
     for(unsigned i=0;i<count;i++) {

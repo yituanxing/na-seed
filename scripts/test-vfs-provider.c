@@ -448,6 +448,26 @@ int main(void) {
     assert(nas_vfs_node_device(&first)!=nas_vfs_node_device(&second));
     assert(nas_vfs_link("/mnt/hello","/mnt-alias/linked")==-EXDEV);
     assert(nas_vfs_unregister_mount(&alias_mount)==0);
+    /* Registration must fail closed when a mountpoint is beneath a regular
+     * file; neither prefix-based direct lookup nor VFS walk may bypass a
+     * non-directory inode merely because a mountpoint string matches. */
+    static const struct nas_vfs_mount under_file={
+        .mountpoint="/bin/demo/mounted",.type=&ext_mock_type
+    };
+    assert(nas_vfs_register_mount(&under_file)==-ENOTDIR);
+    struct nas_fs_node regular,found;
+    assert(nas_fs_lookup_node("/bin/demo",true,&regular,resolved)==0);
+    assert(nas_vfs_lookup_step(&regular,"/bin/demo/mounted","mounted",
+                              &found)==-ENOTDIR);
+    static const struct nas_vfs_mount nested_mount={
+        .mountpoint="/mnt/nested",.type=&ext_mock_type
+    };
+    assert(nas_vfs_register_mount(&nested_mount)==0);
+    assert(nas_fs_lookup_node("/mnt/nested/hello",true,&found,resolved)==0);
+    assert(found.mount==&nested_mount && found.ino==first.ino);
+    assert(nas_fs_lookup_node("/mnt/nested/../hello",true,&found,resolved)==0);
+    assert(found.mount==&ext_mount && found.ino==first.ino);
+    assert(nas_vfs_unregister_mount(&nested_mount)==0);
     puts("[VFS PROVIDER PASS] real mount dispatch, pathwalk, CPIO/tmp/proc, symlinks, kernel read, inode ops");
     return 0;
 }
