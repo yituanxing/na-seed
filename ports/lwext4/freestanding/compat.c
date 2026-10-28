@@ -7,18 +7,6 @@ void *ext4_user_malloc(size_t n) {return nas_heap_alloc(n);}
 void *ext4_user_calloc(size_t n,size_t size) {return nas_heap_calloc(n,size);}
 void *ext4_user_realloc(void *p,size_t n) {return nas_heap_realloc(p,n);}
 void ext4_user_free(void *p) {(void)nas_heap_free(p);}
-char *strcpy(char *dst,const char *src) {
-    char *result=dst;
-    while((*dst++=*src++)){}
-    return result;
-}
-char *strncpy(char *dst,const char *src,size_t n) {
-    char *result=dst;
-    size_t i=0;
-    while(i<n && src[i]){dst[i]=src[i];++i;}
-    while(i<n)dst[i++]=0;
-    return result;
-}
 static void exchange(unsigned char *a,unsigned char *b,size_t size) {
     while(size--) {unsigned char t=*a;*a++=*b;*b++=t;}
 }

@@ -93,7 +93,18 @@ char *strrchr(const char *s, int ch) {
  * Keep portable routines in common libc support, never per FS backend. */
 char *strcpy(char *restrict dst,const char *restrict src) {
     char *result=dst;
-    do { *dst=*src; } while(*src++ && ++dst);
+    for(;;) {
+        char value=*src++;
+        *dst++=value;
+        if(!value)break;
+    }
+    return result;
+}
+char *strncpy(char *restrict dst,const char *restrict src,size_t n) {
+    char *result=dst;
+    size_t i=0;
+    for(;i<n && src[i];i++)dst[i]=src[i];
+    for(;i<n;i++)dst[i]=0;
     return result;
 }
 size_t strspn(const char *s,const char *accept) {
