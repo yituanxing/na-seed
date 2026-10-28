@@ -2,7 +2,6 @@
 #include "../arch/abi.h"
 #include <stdbool.h>
 #include "../errno.h"
-#include "../bootfs.h"
 #include "../fs/lookup.h"
 #include "../tmpfs.h"
 #include "../task.h"
@@ -34,10 +33,10 @@
 #define running_alpine TASK.running_alpine
 
 /* Boot/exec program-name comparison. FD path matching lives in fs/syscall.c. */
-/* Snapshot all user pointers before changing CR3. ELF bytes are
- * kernel-owned (immutable CPIO or tmpfs inode), valid across the staged
- * root switch. Map through the existing shared ELF loader, commit only
- * when successful, and roll back without invalidating the old process. */
+/* Snapshot all user pointers before changing the selected MM. ELF bytes
+ * come from the VFS-owned filesystem and are explicitly pinned during
+ * staging, whether their backing is CPIO, RAM or persistent BlockDevice.
+ * The transaction commits only after user ELF/stack construction succeeds. */
 /* Real upstream Kbuild passes hundreds of C source paths to native sed.
  * Linux's 64-argv cap was our own artificial limit, not a Kbuild error.
  * Keep a bounded 512-KiB aggregate pool (within the existing 1-MiB
@@ -72,6 +71,18 @@ static struct elf_image elf_from_fs_node(const struct nas_fs_node *node) {
         image.context = node;
     }
     return image;
+}
+/* Exec owns source inode+mount references across the entire staged MM
+ * transaction, independently of the user process's old address space.
+ * A borrowed namei snapshot alone cannot guarantee that a file's storage
+ * stays alive if the backend becomes reclaimable; File/open uses the SAME
+ * VFS inode leases. This introduces no second filename-based exec path. */
+static void exec_drop_image_sources(const struct nas_fs_node *source,
+                                    const struct nas_fs_node *interpreter) {
+    if(interpreter && nas_vfs_node_unpin(interpreter))
+        nas_fail("exec interpreter VFS inode reference corrupted");
+    if(source && nas_vfs_node_unpin(source))
+        nas_fail("exec image VFS inode reference corrupted");
 }
 
 /* Linux binfmt_script: interpret a bounded CPIO #! line as an ELF
@@ -217,7 +228,6 @@ static uint64_t copy_exec_vector(uint64_t user_array, bool environment) {
 }
 uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
                           uint64_t *syscall_frame) {
-    if (!bootfs_mounted()) return (uint64_t)-ENOENT;
     uint64_t result = nas_fs_resolve_path((uint64_t)-100, pathname, pending_exec.filename);
     if ((int64_t)result < 0) return result;
     char actual[256];
@@ -301,14 +311,35 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
         result = shebang_rewrite_args();
         if ((int64_t)result < 0) return result;
     }
+    /* Acquire all source leases BEFORE replacing the address space. Both
+     * the executable and optional dynamic interpreter are real, counted
+     * VFS inode owners throughout ELF and user-stack staging. */
+    int pin_rc=nas_vfs_node_pin(&app);
+    if(pin_rc)return (uint64_t)(int64_t)pin_rc;
+    bool interpreter_pinned=false;
+    if(interp) {
+        pin_rc=nas_vfs_node_pin(&loader);
+        if(pin_rc) {
+            exec_drop_image_sources(&app,NULL);
+            return (uint64_t)(int64_t)pin_rc;
+        }
+        interpreter_pinned=true;
+    }
     /* Load and validate the complete new image FIRST. On a failed
      * execve, every existing pthread, FD, robust list and VM must remain
      * untouched; only the successful commit may terminate sibling tasks.
      * The public syscall ABI is identical on all three architectures. */
     struct nas_mm *new_mm=nas_mm_new();
-    if (!new_mm) return (uint64_t)-ENOMEM;
+    if (!new_mm) {
+        exec_drop_image_sources(&app,interpreter_pinned?&loader:NULL);
+        return (uint64_t)-ENOMEM;
+    }
     uint64_t new_root=nas_mmu_alloc_root();
-    if (!new_root) { nas_mm_put(new_mm); return (uint64_t)-ENOMEM; }
+    if (!new_root) {
+        nas_mm_put(new_mm);
+        exec_drop_image_sources(&app,interpreter_pinned?&loader:NULL);
+        return (uint64_t)-ENOMEM;
+    }
     new_mm->root_phys=new_root;
     struct nas_mm *previous_mm=TASK.mm;
     uint64_t previous_root=previous_mm->root_phys;
@@ -350,8 +381,13 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
         loaded_phnum = old_phnum;
         loaded_main_entry = old_entry;
         loaded_interp_base = old_interp;
+        exec_drop_image_sources(&app,interpreter_pinned?&loader:NULL);
         return (uint64_t)-ENOEXEC;
     }
+    /* The ELF and all stack bytes are now owned by new_mm, not by the
+     * underlying filesystem. Drop these independent source references
+     * before quiescing sibling threads and committing the new process. */
+    exec_drop_image_sources(&app,interpreter_pinned?&loader:NULL);
     /* Image validated: unwind every other thread against OLD mappings
      * before freeing the former root. This also marks abandoned robust
      * mutexes OWNER_DIED and clears their child TIDs in the right VM.

@@ -99,8 +99,9 @@ struct nas_vfs_mount {
     bool fallback_on_miss;
     /* Internal early-boot VFS mounts may explicitly provide a virtual
      * mountpoint without a covered directory. Ordinary mounts require an
-     * existing directory, as Linux mount(2) does. Virtual boot names are
-     * not yet exposed through the parent filesystem's readdir. */
+     * existing directory, as Linux mount(2) does. VFS exposes virtual
+     * mountpoint names via its shared readdir overlay; the provider need
+     * not and must not synthesize entries for them. */
     bool allow_missing_mountpoint;
     bool permanent; /* bootstrap filesystem mounts cannot be detached */
     bool read_only;  /* per-mount restriction */

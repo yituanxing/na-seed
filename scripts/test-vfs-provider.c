@@ -56,8 +56,10 @@ static char fixture_dir_path[256]="/tmp/opened";
 static char fixture_child_path[256]="/tmp/opened/child";
 static uint8_t fixture_created_bytes[32];
 static unsigned fixture_created_length;
-bool bootfs_mounted(void){return true;}
+static bool archive_available=true;
+bool bootfs_mounted(void){return archive_available;}
 const struct bootfs_entry *bootfs_find(const char *path){
+    if(!archive_available)return NULL;
     for(unsigned i=0;i<sizeof(entries)/sizeof(entries[0]);i++)
         if(!strcmp(entries[i].path,path))return &entries[i];
     return NULL;
@@ -852,6 +854,25 @@ int main(void) {
     assert(nas_vfs_unregister_mount(&nested_mount)==0);
     assert(nas_vfs_unregister_mount(&ext_mount)==0);
     assert(!nas_vfs_inode_is_pinned(&entries[5]));
+    /* A direct ELF bootstrap with NO CPIO has no bootfs root. A separately
+     * attached real mount must still resolve an executable by component
+     * namei, without the missing archive creating a phantom '/' inode. */
+    archive_available=false;
+    assert(nas_fs_lookup_node("/",true,&n,resolved)==-ENOENT);
+    static const struct nas_vfs_mount no_archive={
+        .mountpoint="/standalone",.type=&ext_mock_type,
+        .allow_missing_mountpoint=true
+    };
+    assert(nas_vfs_register_mount(&no_archive)==0);
+    assert(nas_fs_lookup_node("/standalone/hello",true,&n,resolved)==0);
+    assert(n.filesystem==&ext_mock_type && n.ino==802);
+    assert(nas_vfs_node_pin(&n)==0);
+    assert(nas_vfs_unregister_mount(&no_archive)==-EBUSY);
+    assert(nas_vfs_node_unpin(&n)==0);
+    assert(nas_vfs_unregister_mount(&no_archive)==0);
+    archive_available=true;
+    assert(nas_fs_lookup_node("/standalone/hello",true,
+                              &n,resolved)==-ENOENT);
     puts("[VFS PROVIDER PASS] real mount dispatch, pathwalk, CPIO/tmp/proc, symlinks, kernel read, inode ops");
     return 0;
 }

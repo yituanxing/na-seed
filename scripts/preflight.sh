@@ -15,6 +15,11 @@ for script in scripts/*.sh; do
     sh -n "$script"
 done
 
+# Architecture contracts MUST gate new features before full QEMU. These
+# checks are semantic ownership boundaries, not file-count heuristics.
+python3 scripts/check-architecture-boundaries.py --self-test
+python3 scripts/check-architecture-boundaries.py
+
 # One canonical kernel-only C runtime, checked on all real target triples.
 sh scripts/check-klib.sh
 sh scripts/check-block-foundation.sh
