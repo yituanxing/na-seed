@@ -17,6 +17,9 @@ case "$target" in
            emulation=aarch64elf ;;
   *) exit 2 ;;
 esac
+# The real Limine protocol header is a shared build dependency, never a
+# vendored stub or per-ISA hand-written replacement.
+test -s build/deps/limine.h || make build/deps/limine.h
 mkdir -p "$out"
 objects=""
 for file in third_party/littlefs/lfs.c third_party/littlefs/lfs_util.c \
