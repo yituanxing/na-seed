@@ -43,9 +43,10 @@ struct nas_vfs_type {
                        uint8_t *kernel_dst, uint64_t length);
     /* Logical cursor counts entries, including . and .., from zero.
      * Returns count, 0 at EOF, or negative errno. Batch size is bounded. */
-    int (*read_dir)(const struct nas_fs_node *,const char *opened_path,
-                    uint64_t cursor,struct nas_vfs_dirent *entries,
-                    unsigned maximum);
+    /* Directory enumeration is inode-owned: never reopen an old FD
+     * pathname, including /proc/self after fork or directory rename. */
+    int (*read_dir)(const struct nas_fs_node *,uint64_t cursor,
+                    struct nas_vfs_dirent *entries,unsigned maximum);
     int (*chmod)(const struct nas_fs_node *, uint64_t mode);
     int (*utimens)(const struct nas_fs_node *, uint64_t atime,
                    uint64_t mtime, bool set_atime, bool set_mtime);
@@ -108,7 +109,7 @@ int nas_vfs_readlink(const struct nas_fs_node *node,const char *absolute,
                      char target[256]);
 int64_t nas_vfs_read_at(const struct nas_fs_node *node, uint64_t offset,
                          uint8_t *dst, uint64_t count);
-int nas_vfs_read_dir(const struct nas_fs_node *node,const char *opened_path,
+int nas_vfs_read_dir(const struct nas_fs_node *node,
                      uint64_t cursor,struct nas_vfs_dirent *entries,
                      unsigned maximum);
 /* Resolve current pathname of an OWNED directory inode, not a stale File

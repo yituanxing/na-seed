@@ -434,8 +434,7 @@ static uint64_t vfs_getdents64(uint64_t fd,uint64_t user,uint64_t capacity) {
     uint64_t cursor=opened->position,written=0;
     struct nas_vfs_dirent batch[8];
     while(capacity-written>=24) {
-        int count=nas_vfs_read_dir(&opened->vnode,opened->origin_path,
-                                   cursor,batch,8);
+        int count=nas_vfs_read_dir(&opened->vnode,cursor,batch,8);
         if(count<0)return written?written:(uint64_t)(int64_t)count;
         if(!count)break;
         if(count>8)return written?written:(uint64_t)-EIO;

@@ -73,7 +73,7 @@ int main(void) {
     assert(!strcmp(live_directory,"/flash/source"));
     assert(nas_vfs_directory_path(&dir,"/flash/absent",live_directory)==-ESTALE);
     struct nas_vfs_dirent entries[8]={0};
-    int n=nas_vfs_read_dir(&dir,"/flash/source",0,entries,8);
+    int n=nas_vfs_read_dir(&dir,0,entries,8);
     assert(n>=3);
     bool found=false;
     for(int i=0;i<n;i++)if(!strcmp(entries[i].name,"program")){
@@ -81,7 +81,7 @@ int main(void) {
         found=true;
     }
     assert(found);
-    assert(nas_vfs_read_dir(&dir,"/flash/source",n,entries,8)==0);
+    assert(nas_vfs_read_dir(&dir,n,entries,8)==0);
     assert(nas_vfs_create("/flash/source/new",0644)==-EROFS);
     assert(nas_vfs_unlink("/flash/source/program",0)==-EROFS);
     assert(nas_vfs_rename("/flash/source/program",

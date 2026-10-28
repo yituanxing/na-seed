@@ -111,7 +111,7 @@ int main(int argc,char **argv) {
     assert(nas_fs_lookup_node("/mnt/sandbox",true,&directory,actual)==0);
     assert(directory.is_dir);
     struct nas_vfs_dirent entries[8]={0};
-    int count=nas_vfs_read_dir(&directory,"/mnt/sandbox",0,entries,8);
+    int count=nas_vfs_read_dir(&directory,0,entries,8);
     assert(count>=3); /* . .. hardlink, from actual ext4 */
     bool found=false;
     for(int i=0;i<count;i++)if(!strcmp(entries[i].name,"hardlink")) {
@@ -119,9 +119,9 @@ int main(int argc,char **argv) {
         found=true;
     }
     assert(found);
-    assert(nas_vfs_read_dir(&directory,"/mnt/sandbox",
+    assert(nas_vfs_read_dir(&directory,
                              (uint64_t)count,entries,8)>=0);
-    assert(nas_vfs_read_dir(&node,"/mnt/sandbox",0,entries,8)==-ENOTDIR);
+    assert(nas_vfs_read_dir(&node,0,entries,8)==-ENOTDIR);
     assert(nas_vfs_mkdir("/",0755)==-EEXIST);
     assert(nas_vfs_mkdir("/mnt",0755)==-EEXIST);
     assert(nas_vfs_unlink("/mnt",0x200ULL)==-EBUSY);
@@ -209,8 +209,7 @@ int main(int argc,char **argv) {
         assert(nas_fs_lookup_node("/mnt/sandbox/vfs-directory",true,
                                   &directory,actual)==-ENOENT);
         struct nas_vfs_dirent renamed_entries[8]={0};
-        int renamed_n=nas_vfs_read_dir(&open_directory,
-                "/mnt/sandbox/vfs-directory",0,renamed_entries,8);
+        int renamed_n=nas_vfs_read_dir(&open_directory,0,renamed_entries,8);
         assert(renamed_n>=3);
         bool child_found=false;
         for(int k=0;k<renamed_n;k++)

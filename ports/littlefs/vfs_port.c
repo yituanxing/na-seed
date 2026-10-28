@@ -104,9 +104,8 @@ static int64_t read_at(const struct nas_fs_node *node,uint64_t off,
     rc=lfs_file_close(&ctx->fs,&f);
     return n<0?n:rc?rc:n;
 }
-static int readdir(const struct nas_fs_node *node,const char *opened_path,
+static int readdir(const struct nas_fs_node *node,
                    uint64_t cursor,struct nas_vfs_dirent *out,unsigned limit) {
-    (void)opened_path;
     if(!node || !node->mount || !node->inode || !out || !limit)
         return -EINVAL;
     if(!node->is_dir)return -ENOTDIR;

@@ -214,6 +214,11 @@ const struct nas_tmp_dentry *tmp_child_entry(const char *path,unsigned index) {
     return index==0?&demo_dentry:index==1?&link_dentry:NULL;
 }
 uint64_t nas_proc_ino(struct nas_proc_node p) {(void)p;return 7000;}
+bool nas_proc_directory_from_ino(uint64_t ino,struct nas_proc_node *out) {
+    if(ino!=7000 || !out)return false;
+    *out=(struct nas_proc_node){.kind=NAS_PROC_ROOT};
+    return true;
+}
 bool nas_proc_find_child(uint64_t ino,const char *name,struct nas_proc_node *out) {
     (void)ino; /* The fixture uses a single ID for its synthetic nodes. */
     if(!strcmp(name,"self"))return nas_proc_lookup("/proc/self",out);
@@ -275,21 +280,21 @@ int main(void) {
     assert(tmp_demo.atime_ns==123 && tmp_demo.mtime_ns==456);
     struct nas_vfs_dirent records[8];
     assert(nas_fs_lookup_node("/",true,&n,resolved)==0);
-    assert(nas_vfs_read_dir(&n,"/",0,records,8)==7);
+    assert(nas_vfs_read_dir(&n,0,records,8)==7);
     assert(!strcmp(records[0].name,".") && records[0].ino==1);
     assert(!strcmp(records[1].name,"..") && records[1].ino==1);
     assert(!strcmp(records[2].name,"bin") && records[2].ino==2);
     assert(records[2].dtype==4);
-    assert(nas_vfs_read_dir(&n,"/",7,records,8)==0);
+    assert(nas_vfs_read_dir(&n,7,records,8)==0);
     assert(nas_fs_lookup_node("/bin",true,&n,resolved)==0);
-    assert(nas_vfs_read_dir(&n,"/bin",0,records,8)==3);
+    assert(nas_vfs_read_dir(&n,0,records,8)==3);
     assert(records[2].ino==3 && !strcmp(records[2].name,"demo"));
     assert(nas_fs_lookup_node("/tmp",true,&n,resolved)==0);
     assert(!strcmp(n.filesystem->name,"tmpfs"));
-    assert(nas_vfs_read_dir(&n,"/tmp",0,records,8)==4);
+    assert(nas_vfs_read_dir(&n,0,records,8)==4);
     assert(!strcmp(records[2].name,"demo") && records[2].ino==5101);
     assert(!strcmp(records[3].name,"link") && records[3].dtype==10);
-    assert(nas_vfs_read_dir(&n,"/tmp",2,records,1)==1);
+    assert(nas_vfs_read_dir(&n,2,records,1)==1);
     assert(!strcmp(records[0].name,"demo"));
     /* Reopening an old pathname after rename is forbidden: VFS directory
      * enumerations must follow the stable pinned inode identity instead. */
@@ -299,7 +304,7 @@ int main(void) {
     assert(nas_vfs_node_pin(&opened_directory)==0);
     assert(nas_vfs_rename("/tmp/opened","/tmp/renamed-opened",0)==0);
     assert(nas_fs_lookup_node("/tmp/opened",true,&n,resolved)==-ENOENT);
-    assert(nas_vfs_read_dir(&opened_directory,"/tmp/opened",
+    assert(nas_vfs_read_dir(&opened_directory,
                             0,records,8)==3);
     assert(!strcmp(records[2].name,"child") && records[2].ino==5106);
     char path_from_inode[256];
@@ -312,9 +317,9 @@ int main(void) {
     assert(!strcmp(path_from_inode,"/bin"));
     assert(nas_vfs_node_unpin(&opened_directory)==0);
     assert(nas_fs_lookup_node("/proc",true,&n,resolved)==0);
-    assert(nas_vfs_read_dir(&n,"/proc",0,records,8)==3);
+    assert(nas_vfs_read_dir(&n,0,records,8)==3);
     assert(!strcmp(records[2].name,"self") && records[2].dtype==4);
-    assert(nas_vfs_read_dir(&n,"/proc",3,records,8)==0);
+    assert(nas_vfs_read_dir(&n,3,records,8)==0);
     assert(nas_fs_lookup_node("/tmp/archive",true,&n,resolved)==0);
     assert(!strcmp(n.filesystem->name,"bootfs")); /* legacy mount fallthrough */
     assert(nas_fs_lookup_node("/proc/self",true,&n,resolved)==0);

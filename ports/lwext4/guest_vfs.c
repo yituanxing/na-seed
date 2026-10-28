@@ -368,9 +368,8 @@ static int ext_directory_path(const struct nas_fs_node *node,
  * The directory scanner currently traverses from offset zero per batch;
  * persistent byte-offset iterators are a separate optimization. */
 static int ext_read_directory(const struct nas_fs_node *node,
-                              const char *absolute,uint64_t cursor,
+                              uint64_t cursor,
                               struct nas_vfs_dirent *out,unsigned maximum) {
-    (void)absolute; /* namespace path may have been renamed after open */
     if(!node || !node->mount || !node->mount->private_data ||
        !out || !maximum)return -EINVAL;
     if(!node->is_dir)return -ENOTDIR;

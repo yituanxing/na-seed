@@ -114,9 +114,9 @@ bool nas_proc_lookup(const char *path,struct nas_proc_node *out) {
     else return false;
     return true;
 }
-bool nas_proc_find_child(uint64_t dir_ino,const char *name,
-                         struct nas_proc_node *out) {
-    if(!name || !name[0] || !out || strchr(name,'/'))return false;
+bool nas_proc_directory_from_ino(uint64_t dir_ino,
+                                 struct nas_proc_node *out) {
+    if(!out)return false;
     struct nas_proc_node parent={0};
     if(dir_ino==nas_proc_ino((struct nas_proc_node){.kind=NAS_PROC_ROOT}))
         parent.kind=NAS_PROC_ROOT;
@@ -135,6 +135,13 @@ bool nas_proc_find_child(uint64_t dir_ino,const char *name,
             parent.kind=NAS_PROC_TID_DIR;parent.tgid=task->tgid;
         } else return false;
     } else return false;
+    *out=parent;return true;
+}
+bool nas_proc_find_child(uint64_t dir_ino,const char *name,
+                         struct nas_proc_node *out) {
+    if(!name || !name[0] || !out || strchr(name,'/'))return false;
+    struct nas_proc_node parent;
+    if(!nas_proc_directory_from_ino(dir_ino,&parent))return false;
     unsigned limit=NAS_TASK_LIMIT+NAS_FD_LIMIT+16U;
     for(unsigned i=0;i<limit;i++) {
         char candidate[32];

@@ -89,10 +89,9 @@ static int64_t boot_read(const struct nas_fs_node *node,uint64_t offset,
     return (int64_t)length;
 }
 
-static int boot_read_dir(const struct nas_fs_node *node,const char *path,
+static int boot_read_dir(const struct nas_fs_node *node,
                          uint64_t cursor,struct nas_vfs_dirent *out,
                          unsigned maximum) {
-    (void)path;
     if(!node || !node->is_dir || !node->inode || !out || !maximum)
         return -EINVAL;
     const struct bootfs_entry *dir=node->inode;
@@ -198,12 +197,17 @@ static int tmp_utimens_node(const struct nas_fs_node *node,uint64_t a,
     return tmp_utimens((struct nas_tmp_file *)(uintptr_t)node->inode,a,m,sa,sm);
 }
 
-static int tmp_read_dir(const struct nas_fs_node *node,const char *path,
+static int tmp_read_dir(const struct nas_fs_node *node,
                         uint64_t cursor,struct nas_vfs_dirent *out,
                         unsigned maximum) {
-    if(!node || !node->is_dir || !path || !out || !maximum)return -EINVAL;
-    const bool root=!strcmp(path,"/tmp");
+    if(!node || !node->is_dir || !node->inode || !out || !maximum)return -EINVAL;
+    /* The writable overlay's root borrows exactly the immutable /tmp
+     * archive inode. A renamed directory must never be identified through
+     * an old File origin_path string. */
+    const struct bootfs_entry *archive_root=bootfs_find("/tmp");
+    const bool root=archive_root && node->inode==(const void *)archive_root;
     const struct nas_tmp_file *directory=root?NULL:node->inode;
+    const char *path=root?"/tmp":NULL;
     if(!root && (!directory || !directory->is_dir))return -ENOTDIR;
     /* Resolve the CURRENT dentry from the opened directory's stable
      * inode, not the File's origin pathname. The latter becomes stale
@@ -350,12 +354,15 @@ static int proc_readlink_node(const struct nas_fs_node *node,const char *path,
     if(n<0)return (int)n;
     return n>256 ? -ENAMETOOLONG : (int)n;
 }
-static int proc_read_dir(const struct nas_fs_node *node,const char *path,
+static int proc_read_dir(const struct nas_fs_node *node,
                          uint64_t cursor,struct nas_vfs_dirent *out,
                          unsigned maximum) {
-    if(!node || !node->is_dir || !path || !out || !maximum)return -EINVAL;
+    if(!node || !node->is_dir || !out || !maximum)return -EINVAL;
     struct nas_proc_node directory;
-    if(!nas_proc_lookup(path,&directory))return -ENOENT;
+    /* Dynamic /proc/self is resolved once at open. An inherited File
+     * must enumerate its original process directory after fork rather
+     * than reinterpreting 'self' in the current task. */
+    if(!nas_proc_directory_from_ino(node->ino,&directory))return -ESTALE;
     unsigned count=0;
     for(;count<maximum;count++,cursor++) {
         char name[32];

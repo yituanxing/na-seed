@@ -275,14 +275,15 @@ int nas_vfs_directory_path(const struct nas_fs_node *node,
     memcpy(absolute,canonical,len+1);
     return 0;
 }
-int nas_vfs_read_dir(const struct nas_fs_node *node,const char *path,
+int nas_vfs_read_dir(const struct nas_fs_node *node,
                      uint64_t cursor,struct nas_vfs_dirent *entries,
                      unsigned maximum) {
-    if(!node || !node->filesystem || !path || !entries || !maximum)
+    if(!node || !node->filesystem || !node->mount ||
+       node->mount->type!=node->filesystem || !entries || !maximum)
         return -EINVAL;
     if(!node->is_dir)return -ENOTDIR;
     if(!node->filesystem->read_dir)return -EOPNOTSUPP;
-    return node->filesystem->read_dir(node,path,cursor,entries,maximum);
+    return node->filesystem->read_dir(node,cursor,entries,maximum);
 }
 bool nas_vfs_can_write(const struct nas_fs_node *node) {
     return node && node->filesystem && node->mount &&

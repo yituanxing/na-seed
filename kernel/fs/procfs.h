@@ -23,6 +23,7 @@ struct nas_proc_node {uint8_t kind;uint64_t pid,tgid;uint16_t fd;};
 bool nas_proc_lookup(const char *path,struct nas_proc_node *out);
 /* Component lookup from stable procfs directory inode identity. */
 bool nas_proc_find_child(uint64_t dir_ino,const char *name,struct nas_proc_node *out);
+bool nas_proc_directory_from_ino(uint64_t dir_ino,struct nas_proc_node *out);
 bool nas_proc_is_dir(struct nas_proc_node node);
 uint32_t nas_proc_mode(struct nas_proc_node node);
 bool nas_proc_dir_path(struct nas_proc_node node,char path[256]);
