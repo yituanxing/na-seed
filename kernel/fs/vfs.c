@@ -252,6 +252,27 @@ static bool mount_matches(const char *prefix, const char *path) {
     if (n==1 && prefix[0]=='/') return path[0]=='/';
     return !strncmp(prefix,path,n) && (path[n]=='/' || path[n]==0);
 }
+/* Direct VFS lookup is retained for lower-mount fallback and boot
+ * bootstrap. It must not trust a longest-prefix string after its
+ * parent dentry has disappeared or been reused. Match the SAME pinned
+ * parent identity as component namei before selecting an attachment.
+ * The root mount and rootless bootstrap have no parent attachment. */
+static bool mount_parent_visible(const struct mount_slot *slot) {
+    if(!slot->parent_anchored)return true;
+    const char *path=slot->path;
+    size_t n=strlen(path);
+    while(n>1 && path[n-1]!='/')--n;
+    if(n>1)--n;
+    char parent_path[256],canonical[256];
+    memcpy(parent_path,path,n);
+    parent_path[n]=0;
+    struct nas_fs_node parent;
+    if(nas_fs_lookup_node(parent_path,true,&parent,canonical))return false;
+    return parent.mount==slot->parent_mount &&
+           parent.mount_id==slot->parent_mount_id &&
+           parent.ino==slot->parent_ino &&
+           parent.inode==slot->parent_backend_inode;
+}
 int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
     ensure_defaults();
     if (!mount || !mount->type || !mount->type->root ||
@@ -391,7 +412,8 @@ int nas_vfs_lookup(const char *absolute,struct nas_fs_node *out) {
         for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++) {
             if(!mounts[i].used || (seen&(1U<<i)))continue;
             const struct nas_vfs_mount *m=&mounts[i].superblock;
-            if(!mount_matches(m->mountpoint,absolute))continue;
+            if(!mount_matches(m->mountpoint,absolute) ||
+               !mount_parent_visible(&mounts[i]))continue;
             size_t n=strlen(m->mountpoint);
             if(!best || n>longest) {best=m;selected=i;longest=n;}
         }
@@ -552,6 +574,14 @@ int nas_vfs_directory_path(const struct nas_fs_node *node,
     memcpy(absolute,canonical,len+1);
     return 0;
 }
+static bool valid_vfs_dirent(const struct nas_vfs_dirent *entry) {
+    unsigned length=entry->name_len;
+    if(!entry->ino || !length || length>255 || entry->name[length])
+        return false;
+    for(unsigned i=0;i<length;i++)
+        if(!entry->name[i] || entry->name[i]=='/')return false;
+    return true;
+}
 /* An attachment is owned by the VFS parent inode and child basename.
  * The parent filesystem cannot know about mountpoints created above it.
  * This identity match is the same as lookup_step's mount crossing: the
@@ -607,6 +637,12 @@ int nas_vfs_read_dir(const struct nas_fs_node *node,
         /* The common provider contract starts with "." and "..";
          * refusing a malformed backend is safer than inventing cookies. */
         if(got!=(int)first)return got<0?got:-EIO;
+        for(unsigned i=0;i<first;i++) {
+            const struct nas_vfs_dirent *e=&entries[i];
+            const char *dot=(cursor+i)==0?".":"..";
+            if(!valid_vfs_dirent(e) || strcmp(e->name,dot))
+                return -EIO;
+        }
         written=(unsigned)got;
         cursor+=(unsigned)got;
     }
@@ -634,6 +670,11 @@ int nas_vfs_read_dir(const struct nas_fs_node *node,
         if((unsigned)got>maximum-written)return -EIO;
         for(int j=0;j<got;j++) {
             struct nas_vfs_dirent *entry=&entries[written+(unsigned)j];
+            /* Validate the UNTRUSTED provider entry before strcmp() or
+             * replacing its fields with the mounted child metadata.
+             * A malformed unterminated name must not be dereferenced
+             * beyond the buffer or hidden by a covered mountpoint. */
+            if(!valid_vfs_dirent(entry))return -EIO;
             /* A real covered mountpoint is one directory entry, but its
              * inode must be the visible mount root (Linux dcache rule). */
             for(unsigned i=0;i<NAS_VFS_MOUNT_LIMIT;i++) {
@@ -647,14 +688,8 @@ int nas_vfs_read_dir(const struct nas_fs_node *node,
         }
         written+=(unsigned)got;
     }
-    for(unsigned i=0;i<written;i++) {
-        unsigned length=entries[i].name_len;
-        if(!entries[i].ino || !length || length>255 ||
-           entries[i].name[length])return -EIO;
-        for(unsigned n=0;n<length;n++)
-            if(!entries[i].name[n] || entries[i].name[n]=='/')
-                return -EIO;
-    }
+    for(unsigned i=0;i<written;i++)
+        if(!valid_vfs_dirent(&entries[i]))return -EIO;
     return (int)written;
 }
 bool nas_vfs_can_write(const struct nas_fs_node *node) {

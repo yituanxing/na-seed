@@ -144,3 +144,27 @@ entry is now readdir-visible, but this is still NOT a fully cached dentry
 tree or Linux mount namespace: directory mutation during an enumeration
 can change logical cookies, and further work is needed for per-File
 struct path and mount topology lifetime. Original upstream code is unchanged.
+
+## Stale mount-parent protection and strict directory records (2026-10-28)
+
+The older direct `nas_vfs_lookup` lower-layer fallback still selected
+attachments by absolute longest prefix alone. It now verifies a live parent
+inode identity (mount generation, inode number and backend incarnation)
+against the VFS-owned mount anchor, just like the component namei path.
+If the original parent pathname refers to a different inode, the stale
+child attachment cannot be selected. A host regression deliberately
+changes a mock parent-root inode while a nested child is mounted; direct
+lookup and component namei both reject it until the provider identity is
+restored. No per-filesystem mount routing exists.
+
+The common readdir boundary now validates provider-generated names before
+calling `strcmp` to find a covered child, and verifies the dot/dotdot
+prefix before synthetic entries. Previously a malformed backend record
+could be overread or have its corruption masked by replacement with
+mounted inode metadata. All providers share the same strict VFS gate.
+
+The three historical external compatibility workflows (Lua, original
+TinyCC 0.9.27, and RV64 UEFI RTC A/B) are pinned to the same Ubuntu 24.04
+runner family as the already-green newer native TinyCC matrix. This is
+environment-variable isolation, not proof of a kernel fix or a relaxation
+of guest pass markers. Run results must be checked on this exact head.

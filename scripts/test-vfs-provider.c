@@ -320,13 +320,14 @@ bool nas_proc_child(struct nas_proc_node directory,unsigned index,
 }
 
 static unsigned mounted_lookups;
+static uint64_t ext_mock_root_ino=801;
 static int ext_mock_lookup(const struct nas_vfs_mount *mount,
                            const char *path,struct nas_fs_node *node){
     (void)mount;
     mounted_lookups++;
     if(strcmp(path,"/mnt/hello") && strcmp(path,"/mnt"))return -ENOENT;
     *node=!strcmp(path,"/mnt")
-        ? (struct nas_fs_node){.ino=801,.mode=0040755U,.is_dir=true}
+        ? (struct nas_fs_node){.ino=ext_mock_root_ino,.mode=0040755U,.is_dir=true}
         : (struct nas_fs_node){.ino=802,.mode=0100644U,.size=4};
     return 0;
 }
@@ -831,6 +832,14 @@ int main(void) {
     /* Parent mount owns a child reference and nested attachment pins the
      * parent root. Neither may be detached behind that attachment. */
     assert(nas_vfs_unregister_mount(&ext_mount)==-EBUSY);
+    /* Direct longest-prefix lookup must NOT bypass the VFS dentry owner.
+     * Simulate a provider returning a recycled parent-root identity while
+     * the nested attachment still pins its original parent inode. */
+    ext_mock_root_ino=999;
+    assert(nas_vfs_lookup("/mnt/nested/hello",&found)==-ENOENT);
+    assert(nas_fs_lookup_node("/mnt/nested/hello",true,&found,resolved)==-ENOENT);
+    ext_mock_root_ino=801;
+    assert(nas_vfs_lookup("/mnt/nested/hello",&found)==0);
     assert(nas_fs_lookup_node("/mnt/nested/hello",true,&found,resolved)==0);
     assert(found.mount!=&nested_mount &&
            !strcmp(found.mount->mountpoint,"/mnt/nested") &&

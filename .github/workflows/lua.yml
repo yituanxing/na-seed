@@ -22,7 +22,7 @@ concurrency:
 jobs:
   lua:
     name: Original Lua 5.4.8 / ${{ matrix.port }} Linux vs NaSeed
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 18
     strategy:
       fail-fast: false
