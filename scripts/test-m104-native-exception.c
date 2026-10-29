@@ -53,6 +53,18 @@ static inline long sys6(long n, long a, long b, long c, long d,
 }
 #define SAY(s) ((void)sys6(N_WRITE, 1, (long)(s), sizeof(s)-1, 0, 0, 0))
 
+/* Raw-syscall diagnostics: preserve the exact wait4 status that caused a
+ * failure, even with no libc, printf, filesystem, or debug serial support. */
+static void say_hex32(unsigned value) {
+    static const char digits[] = "0123456789abcdef";
+    char text[10];
+    text[0] = '0';
+    text[1] = 'x';
+    for (unsigned i = 0; i < 8; ++i)
+        text[2+i] = digits[(value >> ((7-i)*4)) & 15U];
+    (void)sys6(N_WRITE, 1, (long)text, sizeof(text), 0, 0, 0);
+}
+
 __attribute__((noreturn)) static void leave(int status) {
     (void)sys6(N_EXIT_GROUP, status, 0, 0, 0, 0, 0);
     for (;;) { }
@@ -118,12 +130,20 @@ static void one(unsigned kind, int expected_signal) {
     long waited = sys6(N_WAIT4, pid, (long)&status, 0, 0, 0, 0);
     if (waited != pid) { SAY("M104_FAIL_WAIT4\n"); leave(11); }
     if (expected_signal) {
-        /* wait4 signal termination occupies bits 0..6. Ensure no core
-         * dump marker (bit 7), normal exit status, or stopped-child marker
-         * is mistaken for successful delivery. The host oracle sets its
-         * core-size limit to zero before starting the exact guest ELF. */
-        if ((status & 0xff) != expected_signal || (status & ~0xff) != 0) {
-            SAY("M104_FAIL_SIGNAL_STATUS\n"); leave(12);
+        /* Linux wait4: low 7 bits give the terminating signal; bit 7 is
+         * optional WCOREDUMP. Even `ulimit -c 0` does not guarantee all
+         * kernel/config combinations suppress that bit. NaSeed reports
+         * the same signal without the optional Linux core marker. A stop
+         * (low byte 0x7f) or ordinary exit must never pass. */
+        if ((status & 0x7f) != expected_signal || (status & ~0xff) != 0) {
+            SAY("M104_FAIL_SIGNAL_STATUS kind=");
+            say_hex32(kind);
+            SAY(" raw=");
+            say_hex32((unsigned)status);
+            SAY(" expected=");
+            say_hex32((unsigned)expected_signal);
+            SAY("\n");
+            leave(12);
         }
     } else if (status != (7 << 8)) {
         SAY("M104_FAIL_NORMAL_STATUS\n"); leave(13);

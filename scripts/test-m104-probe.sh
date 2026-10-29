@@ -48,10 +48,17 @@ if readelf -l "$guest" | grep -Fq 'INTERP'; then
 fi
 if [ "$port" = amd64 ]; then
     # Same x86 binary, no host substitute/relink; raw Linux syscall oracle.
-    (ulimit -c 0; timeout 30s "$guest") > \
-        "build/source-busybox/$port/m104-linux-oracle.log"
-    grep -Fxq M104_NATIVE_EXCEPTION_PASS \
-        "build/source-busybox/$port/m104-linux-oracle.log"
+    log_oracle="build/source-busybox/$port/m104-linux-oracle.log"
+    if ! (ulimit -c 0; timeout 30s "$guest") > "$log_oracle"; then
+        echo '[M104 LINUX ORACLE FAIL] guest exited nonzero' >&2
+        tail -80 "$log_oracle" >&2
+        exit 1
+    fi
+    if ! grep -Fxq M104_NATIVE_EXCEPTION_PASS "$log_oracle"; then
+        echo '[M104 LINUX ORACLE FAIL] missing final guest PASS' >&2
+        tail -80 "$log_oracle" >&2
+        exit 1
+    fi
     echo '[M104 LINUX ORACLE PASS] exact native Linux x86 guest ELF'
 fi
 export BUSYBOX_EXTRA_DIR="$extra"

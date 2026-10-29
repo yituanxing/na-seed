@@ -499,6 +499,8 @@ jobs:
           path: |
             build/source-busybox/${{ matrix.port }}/verified.config
             build/source-busybox/${{ matrix.port }}/artifacts.sha256
+            build/source-busybox/${{ matrix.port }}/m103-linux-oracle.log
+            build/source-busybox/${{ matrix.port }}/m104-linux-oracle.log
             build/busybox-source-parity-x86/*.serial.log
             build/busybox-source-parity-x86/m103-tid.clean.log
             build/busybox-source-parity-x86/m104-exception.clean.log
