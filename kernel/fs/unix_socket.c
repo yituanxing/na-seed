@@ -1,11 +1,12 @@
 #include "unix_socket.h"
 #include "../fd.h"
 #include "../pipe.h"
-#include "../tmpfs.h"
-#include "../bootfs.h"
 #include "../errno.h"
+#include "../panic.h"
 #include "../task.h"
 #include "../lib/string.h"
+#include "lookup.h"
+#include "vfs.h"
 #include "file_ops.h"
 #include "syscall.h"
 
@@ -17,7 +18,10 @@
 enum { SOCK_FREE=0,SOCK_NEW,SOCK_BOUND,SOCK_LISTEN,SOCK_CONNECTED };
 struct local_socket {
     unsigned state;
-    uint64_t inode;
+    /* Exactly one owned Path per bound shared open description. The Dentry
+     * pins its backend inode and mount incarnation even after unlink or
+     * rename, and dup/fork/SCM_RIGHTS never acquire another Path here. */
+    struct nas_vfs_path bound;
     uint32_t owner_pid,peer_pid,peer_uid,peer_gid;
     bool has_peer;
     unsigned first,count,queue[NAS_UNIX_BACKLOG];
@@ -111,22 +115,29 @@ void nas_unix_socket_release(unsigned slot) {
          * both transport and message references. */
         nas_fs_drop_kernel_description(pending);
     }
+    if(s->bound.dentry && nas_vfs_path_put(&s->bound))
+        nas_fail("UNIX listener final close lost owned inode Path");
     *s=(struct local_socket){0};
 }
-int nas_unix_socket_bind(unsigned slot,const char *path,uint32_t mode) {
+int nas_unix_socket_bind(unsigned slot,const struct nas_vfs_path *parent,
+                         const char *leaf,uint32_t mode,
+                         const char *display_name) {
     if(slot>=NAS_OPEN_FILE_LIMIT || sockets[slot].state!=SOCK_NEW)
         return -EINVAL;
-    if(!tmp_path(path) || !bootfs_mounted())return -EROFS;
-    if(tmp_find(path) || bootfs_find(path))return -EADDRINUSE;
-    int rc=tmp_parent_check(path);
+    if(!parent || !parent->dentry || !leaf || !*leaf || !display_name)
+        return -EINVAL;
+    size_t name_len=strnlen(display_name,sizeof(sockets[slot].name));
+    if(name_len>=sizeof(sockets[slot].name))return -ENAMETOOLONG;
+    struct nas_vfs_path created={0};
+    int rc=nas_vfs_mknod_child(parent,leaf,0140000U|(mode&07777U),&created);
+    /* Linux bind(2) reports a conflicting socket filename as EADDRINUSE,
+     * while the generic VFS correctly reports an occupied name as EEXIST. */
+    if(rc==-EEXIST)return -EADDRINUSE;
     if(rc)return rc;
-    struct nas_tmp_file *node=tmp_create(path,false,mode);
-    if(!node)return -ENOSPC;
-    node->mode=0140000U|(mode&07777U); /* genuine S_IFSOCK inode */
     struct local_socket *s=&sockets[slot];
     s->state=SOCK_BOUND;
-    s->inode=tmp_number(node);
-    memcpy(s->name,path,strlen(path)+1);
+    s->bound=created;
+    memcpy(s->name,display_name,name_len+1);
     return 0;
 }
 int nas_unix_socket_listen(unsigned slot,unsigned backlog) {
@@ -137,18 +148,28 @@ int nas_unix_socket_listen(unsigned slot,unsigned backlog) {
     sockets[slot].owner_pid=(uint32_t)nas_current_task->tgid;
     return 0;
 }
-int nas_unix_socket_connect(unsigned slot,const char *path) {
+static bool same_inode(const struct nas_fs_node *a,
+                       const struct nas_fs_node *b) {
+    return a->mount==b->mount && a->mount_id==b->mount_id &&
+           a->filesystem==b->filesystem && a->inode==b->inode &&
+           a->ino==b->ino;
+}
+int nas_unix_socket_connect(unsigned slot,const struct nas_vfs_path *target) {
     if(slot>=NAS_OPEN_FILE_LIMIT || sockets[slot].state!=SOCK_NEW)
         return -EISCONN;
-    struct nas_tmp_file *node=tmp_find(path);
-    if(!node)return -ENOENT;
-    if((node->mode&0170000U)!=0140000U)return -ECONNREFUSED;
+    struct nas_fs_node node={0};
+    int rc=nas_vfs_path_node(target,&node);
+    if(rc)return rc;
+    if((node.mode&0170000U)!=0140000U)return -ECONNREFUSED;
     unsigned listener=NAS_OPEN_FILE_LIMIT;
-    for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++)
-        if(sockets[i].state==SOCK_LISTEN &&
-           sockets[i].inode==tmp_number(node)) {
+    for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++) {
+        if(sockets[i].state!=SOCK_LISTEN || !sockets[i].bound.dentry)continue;
+        struct nas_fs_node bound={0};
+        if(nas_vfs_path_node(&sockets[i].bound,&bound))continue;
+        if(same_inode(&bound,&node)) {
             listener=i;break;
         }
+    }
     if(listener==NAS_OPEN_FILE_LIMIT)return -ECONNREFUSED;
     struct local_socket *s=&sockets[listener];
     if(s->count==NAS_UNIX_BACKLOG)return -EAGAIN;
@@ -156,7 +177,7 @@ int nas_unix_socket_connect(unsigned slot,const char *path) {
     for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++)
         if(!nas_open_files[i].refcount && i!=slot) {peer=i;break;}
     if(peer==NAS_OPEN_FILE_LIMIT)return -ENFILE;
-    int rc=nas_pipe_create_socketpair(slot,peer);
+    rc=nas_pipe_create_socketpair(slot,peer);
     if(rc)return rc;
     nas_open_files[peer]=(struct nas_open_file){
         .refcount=1,.status_flags=2,

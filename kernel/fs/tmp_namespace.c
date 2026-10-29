@@ -1,5 +1,4 @@
 #include "../tmpfs.h"
-#include "../task.h"
 #include "../bootfs.h"
 #include "../errno.h"
 #include "../lib/string.h"
@@ -53,61 +52,6 @@ static bool parent_valid(const void *parent) {
     const struct nas_tmp_file *f=parent;
     return f->used && f->is_dir && find_inode(parent)!=0;
 }
-bool tmp_path(const char *path) {
-    return path && !strncmp(path,"/tmp/",5) && path[5]!=0;
-}
-/* Resolve legacy absolute path strings by walking THE SAME dentry edges
- * used by VFS lookup_child(parent,name). No second flat path table. */
-static struct nas_tmp_dentry *find_entry(const char *path) {
-    if(!tmp_path(path))return 0;
-    const void *parent=tmp_root_inode();
-    if(!parent)return 0;
-    const char *p=path+5;
-    for(;;) {
-        char leaf[256];unsigned n=0;
-        while(p[n] && p[n]!='/') {
-            if(n==255)return 0;
-            leaf[n]=p[n];n++;
-        }
-        leaf[n]=0;
-        struct nas_tmp_dentry *d=find_child(parent,leaf);
-        if(!d)return 0;
-        if(!p[n])return d;
-        if(!d->inode || !d->inode->used || !d->inode->is_dir)return 0;
-        parent=d->inode;p+=n+1;
-        if(!*p)return 0;
-    }
-}
-static int legacy_parent(const char *path,const void **parent,
-                         char name[256]) {
-    if(!tmp_path(path))return -EROFS;
-    unsigned n=0,slash=0;
-    for(;path[n] && n<256;n++)if(path[n]=='/')slash=n;
-    if(n==256 || slash<4 || !path[slash+1])return -ENAMETOOLONG;
-    size_t leaf=n-slash-1;
-    if(!leaf || leaf>=256)return -EINVAL;
-    memcpy(name,path+slash+1,leaf+1);
-    if(!leaf_valid(name))return -EINVAL;
-    if(slash==4) {
-        *parent=tmp_root_inode();
-        return *parent ? 0 : -ENOENT;
-    }
-    char dirname[256];
-    memcpy(dirname,path,slash);dirname[slash]=0;
-    struct nas_tmp_dentry *d=find_entry(dirname);
-    if(!d)return -ENOENT;
-    if(!d->inode || !d->inode->is_dir)return -ENOTDIR;
-    *parent=d->inode;
-    return 0;
-}
-int tmp_parent_check(const char *path) {
-    const void *parent=0;char name[256];
-    return legacy_parent(path,&parent,name);
-}
-struct nas_tmp_file *tmp_find(const char *path) {
-    struct nas_tmp_dentry *d=find_entry(path);
-    return d?d->inode:0;
-}
 struct nas_tmp_file *tmp_find_child(const void *parent,const char *name) {
     struct nas_tmp_dentry *d=find_child(parent,name);
     return d?d->inode:0;
@@ -125,22 +69,16 @@ const struct nas_tmp_dentry *tmp_child_entry_inode(const void *parent,
         }
     return 0;
 }
-const struct nas_tmp_dentry *tmp_child_entry(const char *parent,unsigned index) {
-    if(!parent)return 0;
-    const void *inode=!strcmp(parent,"/tmp") ?
-        tmp_root_inode():(const void *)tmp_find(parent);
-    return tmp_child_entry_inode(inode,index);
-}
 const void *tmp_dir_parent_inode(const void *dir) {
     if(!dir)return 0;
     if(dir==tmp_root_inode())return dir;
     struct nas_tmp_dentry *entry=find_inode(dir);
     return entry?entry->parent_inode:0;
 }
-/* Reconstruct a path from edges for getcwd and legacy UNIX sockaddr. No
- * writable inode stores a pathname and no dentry stores its full pathname.
- * One static scratch buffer is safe under the current single-CPU kernel
- * invariant; the VFS copies/validates it before a syscall consumes it. */
+/* Reconstruct bounded temporary namespace names for insertion/rename
+ * preflight into caller-owned storage. The VFS owns getcwd and AF_UNIX
+ * identities through Paths; neither task cwd nor socket lookup may
+ * promote these scratch pathnames to namespace authority. */
 static bool dentry_path(const struct nas_tmp_dentry *entry,char out[256]) {
     const struct nas_tmp_dentry *chain[128];
     unsigned depth=0;
@@ -164,12 +102,6 @@ static bool dentry_path(const struct nas_tmp_dentry *entry,char out[256]) {
     }
     out[pos]=0;return true;
 }
-const char *tmp_name(const struct nas_tmp_file *file) {
-    static char canonical[256];
-    if(!file || !file->used)return 0;
-    const struct nas_tmp_dentry *entry=find_inode(file);
-    return entry && dentry_path(entry,canonical) ? canonical : 0;
-}
 static struct nas_tmp_dentry *tmp_insert(const void *parent,const char *name,
                                          struct nas_tmp_file *inode) {
     if(!parent_valid(parent) || !leaf_valid(name) ||
@@ -179,8 +111,9 @@ static struct nas_tmp_dentry *tmp_insert(const void *parent,const char *name,
      * the one-component basename. */
     size_t base_length=4;
     if(parent!=tmp_root_inode()) {
-        const char *base=tmp_name(parent);
-        if(!base)return 0;
+        char base[256];
+        const struct nas_tmp_dentry *named=find_inode(parent);
+        if(!named || !dentry_path(named,base))return 0;
         base_length=strlen(base);
     }
     if(base_length+1+strlen(name)>=256)return 0;
@@ -222,10 +155,21 @@ struct nas_tmp_file *tmp_create_at(const void *parent,const char *name,
     }
     return inode;
 }
-struct nas_tmp_file *tmp_create(const char *path,bool dir,uint32_t mode) {
-    const void *parent=0;char name[256];
-    return legacy_parent(path,&parent,name) ? 0 :
-           tmp_create_at(parent,name,dir,mode);
+/* Special filesystem nodes use the same inode/dentry lifetime as regular
+ * files. Publish S_IFSOCK identity atomically: neither namei nor stat may
+ * observe an intermediate S_IFREG inode at the destination. */
+struct nas_tmp_file *tmp_mknod_at(const void *parent,const char *name,
+                                 uint32_t mode) {
+    if((mode&0170000U)!=0140000U || !parent_valid(parent) ||
+       !leaf_valid(name) || find_child(parent,name))return 0;
+    struct nas_tmp_file *inode=tmp_inode_alloc(false,mode);
+    if(!inode)return 0;
+    inode->mode=0140000U|(mode&07777U);
+    if(!tmp_insert(parent,name,inode)) {
+        tmp_inode_discard(inode);
+        return 0;
+    }
+    return inode;
 }
 int tmp_mkdir_at(const void *parent,const char *name,uint64_t mode) {
     if(!parent_valid(parent))return -ENOENT;
@@ -233,32 +177,28 @@ int tmp_mkdir_at(const void *parent,const char *name,uint64_t mode) {
     if(find_child(parent,name))return -EEXIST;
     return tmp_create_at(parent,name,true,(uint32_t)mode) ? 0 : -ENOSPC;
 }
-int tmp_mkdir(const char *path,uint64_t mode) {
-    if(bootfs_find(path) || tmp_find(path))return -EEXIST;
-    const void *parent=0;char name[256];
-    int rc=legacy_parent(path,&parent,name);
-    return rc?rc:tmp_mkdir_at(parent,name,mode);
-}
 int tmp_symlink_at(const void *parent,const char *name,const char *target) {
     if(!target || !target[0])return -ENOENT;
     unsigned length=0;
     while(target[length])if(++length>=256)return -ENAMETOOLONG;
     if(!parent_valid(parent))return -ENOENT;
+    if(!leaf_valid(name))return -EINVAL;
     if(find_child(parent,name))return -EEXIST;
-    struct nas_tmp_file *inode=tmp_create_at(parent,name,false,0777U);
+    /* Build the complete typed inode, including its target bytes, before
+     * publishing the basename. No transient regular-file dentry and no
+     * unlink-on-write-error rollback are observable to concurrent namei. */
+    struct nas_tmp_file *inode=tmp_inode_alloc(false,0777U);
     if(!inode)return -ENOSPC;
     inode->mode=0120000U|0777U;
     if(tmp_write_at(inode,0,(const uint8_t *)target,length)!=(int64_t)length) {
-        tmp_remove_entry(find_child(parent,name));
+        tmp_inode_discard(inode);
         return -ENOMEM;
     }
+    if(!tmp_insert(parent,name,inode)) {
+        tmp_inode_discard(inode);
+        return -ENOSPC;
+    }
     return 0;
-}
-int tmp_symlink(const char *target,const char *path) {
-    if(bootfs_find(path) || tmp_find(path))return -EEXIST;
-    const void *parent=0;char name[256];
-    int rc=legacy_parent(path,&parent,name);
-    return rc?rc:tmp_symlink_at(parent,name,target);
 }
 int tmp_link_at(const void *old_parent,const char *old_name,
                 const void *new_parent,const char *new_name) {
@@ -271,18 +211,6 @@ int tmp_link_at(const void *old_parent,const char *old_name,
     if(find_child(new_parent,new_name))return -EEXIST;
     if(inode->nlink==UINT32_MAX)return -EMLINK;
     return tmp_insert(new_parent,new_name,inode) ? 0 : -ENOSPC;
-}
-int tmp_link(const char *oldpath,const char *newpath) {
-    if(!tmp_path(oldpath) || !tmp_path(newpath))
-        return tmp_path(oldpath)==tmp_path(newpath)?-EROFS:-EXDEV;
-    const void *oldparent=0,*newparent=0;
-    char oldname[256],newname[256];
-    int rc=legacy_parent(oldpath,&oldparent,oldname);
-    if(rc)return rc;
-    rc=legacy_parent(newpath,&newparent,newname);
-    if(rc)return rc;
-    if(bootfs_find(newpath))return -EEXIST;
-    return tmp_link_at(oldparent,oldname,newparent,newname);
 }
 int tmp_unlink_at(const void *parent,const char *name,uint64_t flags) {
     const uint64_t removedir=0x200ULL;
@@ -298,29 +226,11 @@ int tmp_unlink_at(const void *parent,const char *name,uint64_t flags) {
         /* A cwd may outlive its directory name. Linux permits rmdir(cwd):
          * the VFS-owned Path keeps the inode pinned until its final release,
          * while subsequent namei/getcwd reject the detached dentry. The
-         * historical task->fs->cwd spelling is not a namespace owner and
+         * historical process cwd text cache is not a namespace owner and
          * must not forbid removing an otherwise empty directory. */
     }
     tmp_remove_entry(d);
     return 0;
-}
-int tmp_unlink(const char *path,uint64_t flags) {
-    const void *parent=0;char name[256];
-    int rc=legacy_parent(path,&parent,name);
-    return rc?rc:tmp_unlink_at(parent,name,flags);
-}
-static bool tmp_under(const char *path,const char *dir) {
-    size_t n=strlen(dir);
-    return !strncmp(path,dir,n) && path[n]=='/';
-}
-static bool moved_name(char target[256],const char *oldbase,
-                       const char *newbase,const char *existing) {
-    size_t prefix=strlen(oldbase),destination=strlen(newbase);
-    size_t suffix=strlen(existing+prefix);
-    if(destination+suffix>=256)return false;
-    memcpy(target,newbase,destination);
-    memcpy(target+destination,existing+prefix,suffix+1);
-    return true;
 }
 /* Does parent belong to a directory's descendant chain? This prevents
  * rename(/tmp/a, /tmp/a/b/a) without string-prefix guessing. */
@@ -378,45 +288,13 @@ int tmp_rename_at(const void *old_parent,const char *old_name,
                 if(strlen(newpath)+strlen(full)-strlen(oldpath)>=256)
                     return -ENAMETOOLONG;
             }
-        /* Legacy Task.cwd is an ABI string cache, not namespace identity.
-         * Keep it in sync; owned cwd_node itself never changes identity. */
-        for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
-            const struct nas_task *t=nas_task_at(i);
-            if(t && t->state!=NAS_TASK_FREE && t->fs &&
-               tmp_under(t->fs->cwd,oldpath)) {
-                char candidate[256];
-                if(!moved_name(candidate,oldpath,newpath,t->fs->cwd))
-                    return -ENAMETOOLONG;
-            }
-        }
     }
     if(target)tmp_remove_entry(target); /* open replaced File retains inode */
     source->parent_inode=new_parent;
     memcpy(source->name,new_name,leaf+1); /* ONE dentry edge is renamed */
     tmp_inode_touch(inode);
-    if(inode->is_dir) {
-        char candidate[256];
-        for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
-            struct nas_task *t=nas_task_at(i);
-            if(t && t->state!=NAS_TASK_FREE && t->fs &&
-               tmp_under(t->fs->cwd,oldpath)) {
-                if(!moved_name(candidate,oldpath,newpath,t->fs->cwd))
-                    return -EIO; /* preflight guaranteed */
-                memcpy(t->fs->cwd,candidate,strlen(candidate)+1);
-            }
-        }
-    }
+    /* The syscall FS context owns cwd_path. Its next getcwd resolves the
+     * live Dentry ancestry; tmpfs must not traverse Task or mutate a
+     * process-local spelling cache as a second namespace authority. */
     return 0;
-}
-int tmp_rename(const char *oldpath,const char *newpath,uint64_t flags) {
-    if(!tmp_path(oldpath) || !tmp_path(newpath))
-        return tmp_path(oldpath)==tmp_path(newpath)?-EROFS:-EXDEV;
-    const void *oldparent=0,*newparent=0;
-    char oldname[256],newname[256];
-    int rc=legacy_parent(oldpath,&oldparent,oldname);
-    if(rc)return rc;
-    rc=legacy_parent(newpath,&newparent,newname);
-    if(rc)return rc;
-    if(bootfs_find(newpath))return -EROFS;
-    return tmp_rename_at(oldparent,oldname,newparent,newname,flags);
 }

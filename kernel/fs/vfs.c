@@ -1178,6 +1178,60 @@ int nas_vfs_create_child(const struct nas_vfs_path *parent,
     return owner.filesystem->create ?
            owner.filesystem->create(&owner,leaf,mode) : -EOPNOTSUPP;
 }
+int nas_vfs_mknod_child(const struct nas_vfs_path *parent,
+                        const char *leaf,uint64_t mode,
+                        struct nas_vfs_path *created) {
+    if(!created || created==parent)return -EINVAL;
+    *created=(struct nas_vfs_path){0};
+    /* Only socket inodes have a currently implemented cross-provider
+     * semantic contract. Never let the provider silently create a regular
+     * file when an unsupported device type was requested. */
+    if((mode&0170000ULL)!=0140000ULL)return -EOPNOTSUPP;
+    struct nas_fs_node owner;
+    int rc=child_parent_node(parent,leaf,&owner);
+    if(rc)return rc;
+    struct nas_vfs_path existing={0};
+    rc=child_exists(parent,leaf,&existing);
+    if(!rc) {(void)nas_vfs_path_put(&existing);return -EEXIST;}
+    if(rc!=-ENOENT)return rc;
+    if(!nas_vfs_can_write(&owner))return -EROFS;
+    if(!owner.filesystem->mknod)return -EOPNOTSUPP;
+    /* Reserve every allocation and the parent reference before the backend
+     * changes its namespace. There must be no fresh allocation after a
+     * successfully published socket inode. */
+    if(parent->dentry->refs==UINT32_MAX)return -EMFILE;
+    if(!free_inode_lease_slot())return -ENOMEM;
+    struct nas_vfs_dentry *reserved=nas_heap_calloc(1,sizeof(*reserved));
+    if(!reserved)return -ENOMEM;
+    struct nas_fs_node inode={0};
+    rc=owner.filesystem->mknod(&owner,leaf,mode,&inode);
+    if(rc) {
+        (void)nas_heap_free(reserved);
+        return rc;
+    }
+    inode.mount=owner.mount;
+    inode.mount_id=owner.mount_id;
+    inode.filesystem=owner.filesystem;
+    if(!inode.inode || !inode.ino || inode.is_dir || inode.is_symlink ||
+       (inode.mode&0170000ULL)!=0140000ULL)
+        rc=-EIO;
+    else {
+        struct nas_vfs_dentry *entry=NULL;
+        rc=dentry_acquire_ready(parent->dentry,leaf,&inode,reserved,&entry);
+        if(!rc) {
+            *created=(struct nas_vfs_path){inode.mount,inode.mount_id,entry};
+            if(entry!=reserved)(void)nas_heap_free(reserved);
+            return 0;
+        }
+    }
+    /* Failure after backend publication must not strand an unreachable,
+     * unowned inode. No VFS Dentry was published, so roll back that leaf
+     * through the very same parent provider, never an absolute path. */
+    if(!owner.filesystem->unlink ||
+       owner.filesystem->unlink(&owner,leaf,0))rc=-EIO;
+    (void)nas_heap_free(reserved);
+    return rc;
+}
 int nas_vfs_mkdir_child(const struct nas_vfs_path *parent,
                         const char *leaf,uint64_t mode) {
     struct nas_fs_node owner;

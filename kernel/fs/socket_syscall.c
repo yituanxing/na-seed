@@ -7,13 +7,10 @@
 #include "../errno.h"
 #include "../task.h"
 #include "../fd.h"
-#include "../path.h"
-#include "../bootfs.h"
 #include "lookup.h"
 #include "vfs.h"
 #include "../lib/string.h"
 #include "../mm/usercopy.h"
-#include "../arch/mmu.h"
 #include "../panic.h"
 #include "io.h"
 #include "file_ops.h"
@@ -22,7 +19,6 @@
 #include "socket_syscall.h"
 #include "path_request.h"
 #define TASK (*nas_current_task)
-#define current_workdir TASK.fs->cwd
 
 /* AF_UNIX SOCK_STREAM: same global refcounted open descriptions as pipe2
  * and socketpair. A listener owns pending accepted slots, never a task-local
@@ -49,49 +45,37 @@ static uint64_t sys_socket(uint64_t domain,uint64_t type,uint64_t protocol) {
 }
 /* Linux sockaddr_un has a native two-byte family followed by the pathname.
  * This first backend supports Linux pathname sockets, not abstract names. */
-static int unix_address(uint64_t addr,uint64_t length,char out[256]) {
+static int unix_pathname(uint64_t addr,uint64_t length,char out[109]) {
     uint8_t buffer[110];
     if(length<3 || length>sizeof(buffer))return -EINVAL;
     if(!nas_user_read_bytes(addr,buffer,length))return -EFAULT;
     if(buffer[0]!=1 || buffer[1])return -EAFNOSUPPORT;
     if(!buffer[2])return -EOPNOTSUPP;
-    char input[109];
     unsigned n=0;
-    for(;n<length-2 && buffer[n+2] && n<sizeof(input)-1;n++)
-        input[n]=(char)buffer[n+2];
-    input[n]=0;
-    struct nas_fs_path_request request;
-    int rc=nas_fs_kernel_path_begin((uint64_t)-100,input,&request);
-    if(rc)return rc;
-    struct nas_vfs_path parent={0};char leaf[256],base[256];
-    rc=nas_fs_lookup_parent_at(request.start.dentry?&request.start:NULL,
-                               request.root.dentry?&request.root:NULL,
-                               request.pathname,&parent,leaf);
-    if(!rc)rc=nas_vfs_path_string(&parent,base);
-    if(!rc)rc=nas_vfs_join_child(base,leaf,out);
-    if(parent.dentry && nas_vfs_path_put(&parent))
-        nas_fail("unix address parent Path corrupted");
-    nas_fs_path_end(&request);
-    if(rc==-ENOENT && !bootfs_mounted()) {
-        /* Rootless boot compatibility. The current UNIX socket backend
-         * still owns tmpfs pathname strings, not generic VFS socket inodes;
-         * this does not claim AF_UNIX has become an inode-owned backend. */
-        const char *origin=NULL;
-        if(input[0]!='/')origin=current_workdir;
-        char raw[256];
-        int legacy=nas_path_join_raw(origin,input,raw);
-        if(legacy)return legacy;
-        memcpy(out,raw,strlen(raw)+1);
-        return 0;
-    }
-    return rc;
+    for(;n<length-2 && buffer[n+2] && n<108;n++)
+        out[n]=(char)buffer[n+2];
+    out[n]=0;
+    return 0;
 }
 static uint64_t sys_unix_bind(uint64_t fd,uint64_t address,uint64_t size) {
     if(!unix_fd(fd))return (uint64_t)-EBADF;
-    char path[256];int err=unix_address(address,size,path);
-    if(err)return (uint64_t)(int64_t)err;
-    return (uint64_t)(int64_t)nas_unix_socket_bind(
-        TASK.fds->entries[fd].slot,path,0777U & ~(uint32_t)TASK.fs->umask);
+    char path[109];
+    int rc=unix_pathname(address,size,path);
+    if(rc)return (uint64_t)(int64_t)rc;
+    struct nas_fs_path_request request;
+    rc=nas_fs_kernel_path_begin((uint64_t)-100,path,&request);
+    if(rc)return (uint64_t)(int64_t)rc;
+    struct nas_vfs_path parent={0};
+    char leaf[256];
+    rc=nas_fs_lookup_parent_at(request.start.dentry?&request.start:NULL,
+                               request.root.dentry?&request.root:NULL,
+                               request.pathname,&parent,leaf);
+    if(!rc)rc=nas_unix_socket_bind(TASK.fds->entries[fd].slot,&parent,leaf,
+                                   0777U & ~(uint32_t)TASK.fs->umask,path);
+    if(parent.dentry && nas_vfs_path_put(&parent))
+        nas_fail("UNIX bind parent Path ownership corrupted");
+    nas_fs_path_end(&request);
+    return (uint64_t)(int64_t)rc;
 }
 static uint64_t sys_unix_listen(uint64_t fd,uint64_t backlog) {
     if(!unix_fd(fd))return (uint64_t)-EBADF;
@@ -100,9 +84,21 @@ static uint64_t sys_unix_listen(uint64_t fd,uint64_t backlog) {
 }
 static uint64_t sys_unix_connect(uint64_t fd,uint64_t address,uint64_t size) {
     if(!unix_fd(fd))return (uint64_t)-EBADF;
-    char path[256];int err=unix_address(address,size,path);
-    if(err)return (uint64_t)(int64_t)err;
-    return (uint64_t)(int64_t)nas_unix_socket_connect(TASK.fds->entries[fd].slot,path);
+    char path[109];
+    int rc=unix_pathname(address,size,path);
+    if(rc)return (uint64_t)(int64_t)rc;
+    struct nas_fs_path_request request;
+    rc=nas_fs_kernel_path_begin((uint64_t)-100,path,&request);
+    if(rc)return (uint64_t)(int64_t)rc;
+    struct nas_vfs_path found={0};
+    rc=nas_fs_lookup_path_at(request.start.dentry?&request.start:NULL,
+                             request.root.dentry?&request.root:NULL,
+                             request.pathname,true,&found);
+    if(!rc)rc=nas_unix_socket_connect(TASK.fds->entries[fd].slot,&found);
+    if(found.dentry && nas_vfs_path_put(&found))
+        nas_fail("UNIX connect result Path ownership corrupted");
+    nas_fs_path_end(&request);
+    return (uint64_t)(int64_t)rc;
 }
 static uint64_t sys_unix_accept(uint64_t fd,uint64_t address,
                                  uint64_t length_ptr,uint64_t flags) {

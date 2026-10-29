@@ -89,6 +89,12 @@ struct nas_vfs_type {
      * Backend-specific path reconstruction, if required by upstream APIs,
      * happens behind the port. VFS enforces mount identity and safety. */
     int (*create)(const struct nas_fs_node *parent,const char *name,uint64_t mode);
+    /* A filesystem may publish a special inode only after its final type
+     * and mode are initialized. Return its borrowed inode identity in out,
+     * so VFS can attach the already-reserved positive Dentry without a
+     * post-create pathname lookup. Unsupported types return EOPNOTSUPP. */
+    int (*mknod)(const struct nas_fs_node *parent,const char *name,
+                 uint64_t mode,struct nas_fs_node *out);
     int64_t (*write_at)(const struct nas_fs_node *,uint64_t offset,
                         const uint8_t *kernel_source,uint64_t length);
     int (*resize)(const struct nas_fs_node *,uint64_t size);
@@ -208,6 +214,13 @@ int nas_vfs_open_path_at(const struct nas_vfs_path *start,
                          struct nas_vfs_path *owned_path);
 int nas_vfs_create_child(const struct nas_vfs_path *parent,
                          const char *leaf,uint64_t mode);
+/* Atomic special-inode publication under an owned parent Path. Initially
+ * S_IFSOCK is the only supported kind. A successful call returns ONE owned
+ * Path, including the inode lease; the caller must release it exactly once
+ * with nas_vfs_path_put (no separate nas_vfs_node_unpin is needed). */
+int nas_vfs_mknod_child(const struct nas_vfs_path *parent,
+                        const char *leaf,uint64_t mode,
+                        struct nas_vfs_path *created);
 int nas_vfs_mkdir_child(const struct nas_vfs_path *parent,
                         const char *leaf,uint64_t mode);
 int nas_vfs_unlink_child(const struct nas_vfs_path *parent,

@@ -183,19 +183,32 @@ for directory in ("kernel", "ports", "scripts", "tests"):
         if "nas_vfs_directory_path" in data or ".directory_path=" in data:
             raise SystemExit(f"obsolete reverse VFS name owner in {source}")
 socket_src=(root/"kernel/fs/socket_syscall.c").read_text()
-# Socket pathnames still serve a legacy name-keyed backend, but the
-# directory's *identity* must come from the shared cwd/dirfd owner and
-# namei.  A literal cwd serialization is no longer a valid requirement.
+unix_src=(root/"kernel/fs/unix_socket.c").read_text()
+# AF_UNIX pathnames are first-class VFS special inodes. A bound listener
+# owns one positive Dentry Path for the shared open-description lifetime;
+# neither the syscall adapter nor the socket backend may reconstruct a
+# global pathname or dispatch a legacy tmpfs path-keyed lookup.
 for token in ("nas_fs_kernel_path_begin(",
               "nas_fs_lookup_parent_at(",
-              "nas_vfs_path_string(&parent,base)",
-              "nas_vfs_join_child(base,leaf,out)",
+              "nas_fs_lookup_path_at(",
               "nas_vfs_path_put(&parent)",
+              "nas_vfs_path_put(&found)",
               "nas_fs_path_end(&request)"):
     if token not in socket_src:
         raise SystemExit(f"AF_UNIX bypasses shared owned FS Path: {token}")
-if "nas_vfs_path_string(&TASK.fs->cwd_path,base)" in socket_src:
-    raise SystemExit("AF_UNIX regressed to serializing cwd without namei")
+for token in ("nas_vfs_mknod_child(parent,leaf,",
+              "nas_vfs_path_node(target,&node)",
+              "nas_vfs_path_put(&s->bound)",
+              "a->mount_id==b->mount_id", "a->inode==b->inode"):
+    if token not in unix_src:
+        raise SystemExit(f"AF_UNIX lost stable inode/path ownership: {token}")
+for source,body in (("socket_syscall.c",socket_src),("unix_socket.c",unix_src)):
+    for forbidden in ("nas_vfs_path_string(","nas_path_join_raw(",
+                      "tmp_find(","tmp_create(","tmp_parent_check(",
+                      "tmp_path(","tmp_number(","bootfs_find("):
+        if forbidden in body:
+            raise SystemExit(f"AF_UNIX legacy string namespace returned: "
+                             f"{source}: {forbidden}")
 # Ordinary directory Files and cwd never ask a provider to reconstruct
 # a reverse pathname. Provider-internal ext4 identity->path is still
 # necessary because upstream libext4 uses path-based I/O.
@@ -269,8 +282,17 @@ if "source->parent_inode=new_parent;" not in tmp_ns or \
 inode_part=tmp_h.split("struct nas_tmp_file {")[1].split("};")[0]
 if "char path[" in inode_part or " linked" in inode_part:
     raise SystemExit("name/link boolean leaked back into tmpfs inode")
-for text in ("int tmp_link(", "int tmp_rename(", "tmp_child_entry(", "tmp_remove_entry("):
+for text in ("int tmp_link_at(", "int tmp_rename_at(",
+             "tmp_child_entry_inode(", "tmp_remove_entry("):
     if text not in tmp_ns: raise SystemExit(f"lost dentry namespace behavior: {text}")
+# The old absolute-path tmpfs entrypoints were unreferenced by production
+# after AF_UNIX adopted the same VFS Path owner as regular namespace syscalls.
+# They must not become a second pathname engine under new names.
+for obsolete in ("tmp_path(", "tmp_find(", "tmp_create(",
+                 "tmp_parent_check(", "tmp_mkdir(", "tmp_unlink(",
+                 "tmp_rename(", "tmp_link(", "tmp_symlink("):
+    if obsolete in tmp_ns or obsolete in tmp_h:
+        raise SystemExit(f"obsolete absolute-path tmpfs API returned: {obsolete}")
 for text in ("int tmp_link(", "int tmp_rename(", "struct nas_tmp_file *tmp_find("):
     if text in tmp_c: raise SystemExit(f"inode backend acquired pathname owner: {text}")
 # M64: one per-thread wait snapshot owns all parked syscall readiness state.

@@ -170,6 +170,20 @@ static int tmp_create_node(const struct nas_fs_node *parent,const char *name,
     return tmp_create_at(parent->inode,name,false,(uint32_t)mode) ?
            0 : -ENOSPC;
 }
+static int tmp_mknod_node(const struct nas_fs_node *parent,const char *name,
+                          uint64_t mode,struct nas_fs_node *out) {
+    if(!parent || !parent->is_dir)return -ENOTDIR;
+    if(!out || !name)return -EINVAL;
+    if((mode&0170000ULL)!=0140000ULL)return -EOPNOTSUPP;
+    if(tmp_find_child(parent->inode,name))return -EEXIST;
+    /* The tmpfs namespace owner initializes S_IFSOCK before publishing
+     * the dentry. Never expose a transient regular-file inode as the old
+     * AF_UNIX bind path did. */
+    struct nas_tmp_file *created=tmp_mknod_at(parent->inode,name,(uint32_t)mode);
+    if(!created)return -ENOSPC;
+    tmp_fill(created,out);
+    return 0;
+}
 static int64_t tmp_write_node(const struct nas_fs_node *node,uint64_t off,
                               const uint8_t *src,uint64_t count) {
     return tmp_write_at((struct nas_tmp_file *)(uintptr_t)node->inode,
@@ -305,7 +319,7 @@ static const struct nas_vfs_type tmp_type={
     .validate_inode=tmp_validate_inode,
     .readlink=tmp_readlink,
     .read_at=tmp_read,.read_dir=tmp_read_dir,.chmod=tmp_chmod_node,.utimens=tmp_utimens_node,
-    .create=tmp_create_node,.write_at=tmp_write_node,
+    .create=tmp_create_node,.mknod=tmp_mknod_node,.write_at=tmp_write_node,
     .resize=tmp_resize_node,.sync=tmp_sync_node,
     .mkdir=tmp_mkdir_node,.unlink=tmp_unlink_node,.rename=tmp_rename_node,
     .link=tmp_link_node,.symlink=tmp_symlink_node,

@@ -29,6 +29,10 @@ static struct nas_tmp_file fixture_symlink={.used=true,.mode=0120777,.size=9,.in
 static const char *fixture_link_target="/bin/demo";
 static struct nas_tmp_file fixture_dir_link={.used=true,.mode=0120777,.size=4,.ino=103};
 static struct nas_tmp_file fixture_created={.used=true,.mode=0100640,.ino=104};
+/* AF_UNIX mknod publishes one inode per bind generation. Unlinking the
+ * visible name does not revoke a Path holding the previous inode. */
+static struct nas_tmp_file fixture_sockets[4];
+static unsigned socket_generation,socket_visible_index=4;
 /* A named directory is renamed while its original inode remains open. */
 static struct nas_tmp_file fixture_open_directory={
     .used=true,.is_dir=true,.mode=0040755,.nlink=1,.ino=105
@@ -56,6 +60,9 @@ void tmp_inode_discard(struct nas_tmp_file *node) {
         node->used=false;
         orphan_releases++;
     }
+    for(unsigned i=0;i<4;i++)
+        if(node==&fixture_sockets[i] && !node->nlink &&
+           !nas_vfs_inode_is_pinned(node))node->used=false;
 }
 static char fixture_dir_path[256]="/tmp/opened";
 static char fixture_child_path[256]="/tmp/opened/child";
@@ -80,6 +87,8 @@ bool bootfs_is_link(const struct bootfs_entry *e){
     return e && (e->mode&0170000U)==0120000U;
 }
 struct nas_tmp_file *tmp_find(const char *path){
+    if(!strcmp(path,"/tmp/m107-socket") && socket_visible_index<4)
+        return &fixture_sockets[socket_visible_index];
     if(!strcmp(path,"/tmp/demo"))return &tmp_demo;
     /* Two legal hard-link names for the same backend inode. A rename
      * between them must be a no-op, not one of the provider's mutations. */
@@ -195,6 +204,12 @@ int tmp_mkdir(const char *path,uint64_t mode) {
     return !strcmp(path,"/tmp/new") && mode==0755 ? 0 : -EINVAL;
 }
 int tmp_unlink(const char *path,uint64_t flags) {
+    if(!strcmp(path,"/tmp/m107-socket") && !flags &&
+       socket_visible_index<4) {
+        fixture_sockets[socket_visible_index].nlink=0;
+        socket_visible_index=4;
+        return 0;
+    }
     if(!strcmp(path,"/tmp/to-detach") && flags==0x200U &&
        fixture_detached_dir_visible) {
         fixture_detached_dir_visible=false;
@@ -288,6 +303,21 @@ struct nas_tmp_file *tmp_create_at(const void *parent,const char *name,
     char path[256];
     return mock_tmp_child_path(parent,name,path) ? NULL :
            tmp_create(path,directory,mode);
+}
+struct nas_tmp_file *tmp_mknod_at(const void *parent,const char *name,
+                                  uint32_t mode) {
+    if(parent!=(const void *)&entries[3] ||
+       strcmp(name,"m107-socket") || socket_visible_index<4 ||
+       (mode&0170000U)!=0140000U)return NULL;
+    for(unsigned i=0;i<4;i++) {
+        if(fixture_sockets[i].used)continue;
+        struct nas_tmp_file *node=&fixture_sockets[i];
+        *node=(struct nas_tmp_file){.used=true,.nlink=1,.mode=mode,
+                                    .ino=20000U + ++socket_generation};
+        socket_visible_index=i;
+        return node;
+    }
+    return NULL;
 }
 int tmp_mkdir_at(const void *parent,const char *name,uint64_t mode) {
     char path[256];int rc=mock_tmp_child_path(parent,name,path);
@@ -593,6 +623,42 @@ static void test_legacy_mounted_parity(void) {
     if(!mutation_parity_errors)
         fprintf(stderr,"[VFS LEGACY MOUNT PARITY PASS] covered mount identity\n");
 }
+/* Real shared VFS mknod transaction: one owned Dentry/Path is returned,
+ * no second pathname walk and no stale inode alias after unlink/rebind. */
+static void test_owned_unix_mknod(void) {
+    struct nas_vfs_path parent={0},first={0},second={0},again={0};
+    char leaf[256],canonical[256];
+    assert(nas_fs_lookup_parent_at(NULL,NULL,"/tmp/m107-socket",
+                                   &parent,leaf)==0);
+    assert(!strcmp(leaf,"m107-socket"));
+    assert(nas_vfs_mknod_child(&parent,leaf,0100644U,&first)==-EOPNOTSUPP);
+    assert(!first.dentry && !socket_generation);
+    assert(nas_vfs_mknod_child(&parent,leaf,0140700U,&first)==0);
+    assert(first.dentry);
+    struct nas_fs_node first_node={0},second_node={0},looked={0};
+    assert(nas_vfs_path_node(&first,&first_node)==0);
+    assert((first_node.mode&0170000U)==0140000U &&
+           (first_node.mode&0777U)==0700U);
+    assert(first_node.inode==&fixture_sockets[socket_visible_index]);
+    assert(nas_vfs_inode_is_pinned(first_node.inode));
+    assert(nas_vfs_mknod_child(&parent,leaf,0140777U,&again)==-EEXIST);
+    assert(!again.dentry);
+    assert(nas_fs_lookup_node("/tmp/m107-socket",false,&looked,canonical)==0);
+    assert(looked.ino==first_node.ino && looked.inode==first_node.inode);
+    assert(namespace_unlink("/tmp/m107-socket",0)==0);
+    assert(nas_fs_lookup_node("/tmp/m107-socket",false,&looked,canonical)==-ENOENT);
+    assert(nas_vfs_mknod_child(&parent,leaf,0140755U,&second)==0);
+    assert(nas_vfs_path_node(&second,&second_node)==0);
+    assert(second_node.ino!=first_node.ino &&
+           second_node.inode!=first_node.inode);
+    assert(nas_fs_lookup_node("/tmp/m107-socket",false,&looked,canonical)==0 &&
+           looked.ino==second_node.ino);
+    assert(nas_vfs_path_put(&second)==0);
+    assert(nas_vfs_path_put(&first)==0);
+    assert(nas_vfs_path_put(&parent)==0);
+    assert(namespace_unlink("/tmp/m107-socket",0)==0);
+    fprintf(stderr,"[M107 VFS SOCKET INODE PASS] owned mknod, EEXIST, unlink/rebind, mount-safe Path\n");
+}
 int main(void) {
     char resolved[256],data[32];
     struct nas_fs_node n;
@@ -613,6 +679,7 @@ int main(void) {
     assert(nas_vfs_join_child("/tmp","../bad",resolved)==-EINVAL);
     assert(nas_vfs_join_child("/tmp",".",resolved)==-EINVAL);
     assert(nas_vfs_join_child("/tmp","..",resolved)==-EINVAL);
+    test_owned_unix_mknod();
     assert(nas_fs_lookup_node("/bin/demo",true,&n,resolved)==0);
     assert(!strcmp(resolved,"/bin/demo") && !strcmp(n.filesystem->name,"bootfs"));
     assert(nas_vfs_read_at(&n,0,(uint8_t *)data,4)==4);

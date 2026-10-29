@@ -29,6 +29,12 @@ ARCH_MM = re.compile(r'^\s*#\s*include\s*["<][^">]*(?:'
 # raw aliases; the signal trampoline's resident mapping probe is special.
 RAW_USER_ALIAS = re.compile(r'\bnas_mmu_user_(?:byte|writable)\s*\(')
 SIGNAL_TRAMPOLINE_PROBE = 'nas_mmu_user_byte(NAS_USER_SIGNAL_TRAMPOLINE)'
+TMPFS_TASK_DEPENDENCY = re.compile(
+    r'^\s*#\s*include\s*["<][^">]*task\.h[">]|'
+    r'\bnas_task_at\s*\(|\bfs->cwd\b', re.M)
+TMPFS_LEGACY_NAMES = re.compile(
+    r'\btmp_(?:path|find|parent_check|create|mkdir|symlink|link|unlink|'
+    r'rename|child_entry|name)\s*\(')
 
 DRIVER_FILES = (
     'kernel/block/device.c',
@@ -59,6 +65,13 @@ def violations(path, source):
     if path in EXEC_FILES:
         if BOOT_EXEC.search(source) or BOOT_EXEC_INCLUDE.search(source):
             errors.append('runtime execve depends on bootstrap CPIO/bootfs')
+    if path == 'kernel/fs/tmp_namespace.c':
+        code_only = re.sub(r'/\*.*?\*/|//[^\n]*', '', source, flags=re.S)
+        if TMPFS_TASK_DEPENDENCY.search(code_only):
+            errors.append('tmpfs backend reaches into task CWD or task table')
+    if path in ('kernel/fs/tmp_namespace.c', 'kernel/tmpfs.h'):
+        if TMPFS_LEGACY_NAMES.search(source):
+            errors.append('obsolete tmpfs absolute-path namespace API returned')
     if (path.startswith(('kernel/fs/', 'kernel/drivers/', 'kernel/task/')) and
             path.endswith(('.c', '.h'))):
         examined = source
@@ -81,12 +94,18 @@ def self_test():
         ('kernel/fs/socket_syscall.c', 'nas_mmu_user_byte(user_ptr);'),
         ('kernel/drivers/pty.c', 'nas_mmu_user_writable(user_ptr);'),
         ('kernel/task/process.c', 'nas_mmu_user_byte(uaddr);'),
+        ('kernel/fs/tmp_namespace.c', '#include "../task.h"'),
+        ('kernel/fs/tmp_namespace.c', 'nas_task_at(0);'),
+        ('kernel/fs/tmp_namespace.c', 'fs->cwd[0] = 0;'),
+        ('kernel/fs/tmp_namespace.c', 'tmp_find("/tmp/x");'),
+        ('kernel/tmpfs.h', 'int tmp_rename(const char *, const char *);'),
     ]
     for path, source in examples:
         if not violations(path, source):
             raise SystemExit('[ARCH FAIL] self-test missed ' + path + ': ' + source)
     for path in FILES + ('kernel/fs/socket_syscall.c',
-                         'kernel/drivers/pty.c', 'kernel/task/process.c'):
+                         'kernel/drivers/pty.c', 'kernel/task/process.c',
+                         'kernel/fs/tmp_namespace.c', 'kernel/tmpfs.h'):
         if violations(path, '/* no forbidden dependencies */\n#include <stdint.h>\n'):
             raise SystemExit('[ARCH FAIL] self-test false positive: ' + path)
     if violations('kernel/task/signal.c',
@@ -103,7 +122,7 @@ def main():
         self_test()
         return
     issues = []
-    monitored = set(FILES)
+    monitored = set(FILES + ('kernel/tmpfs.h',))
     for root in ('kernel/fs', 'kernel/drivers', 'kernel/task'):
         monitored.update(str(p.relative_to(ROOT)) for p in (ROOT / root).rglob('*')
                          if p.suffix in ('.c', '.h'))

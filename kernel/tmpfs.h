@@ -2,9 +2,8 @@
 #define NASEED_TMPFS_H
 #include <stdbool.h>
 #include <stdint.h>
-/* Volatile, finite /tmp backend. This is not yet a generic Linux VFS.
- * Transition seam: syscall/user memory remains with m1.c; namespace and
- * inode/open-description lifetimes belong here. */
+/* Volatile tmpfs inode storage and namespace provider behind shared VFS.
+ * Syscall/user memory and descriptor ownership stay outside this backend. */
 /* Metadata is allocated in demand-paged inode slabs, not a fixed
  * global array of eight inodes. Memory exhaustion is reported by the
  * existing physical frame allocator, not an arbitrary source-level count. */
@@ -28,9 +27,8 @@ struct nas_tmp_file {
     uint32_t mode;
  };
 
-bool tmp_path(const char *path);
 /* A dentry names an inode. Multiple dentries may reference one regular file.
- * Only namespace code owns and mutates path strings. */
+ * Only shared VFS namei accepts and resolves complete path strings. */
 /* The dentry owns only (parent inode, basename) -> child inode.
  * Rename moves ONE dentry. All descendant names resolve through the
  * unchanged parent chain, never bulk-copying cached absolute paths. */
@@ -40,11 +38,12 @@ struct nas_tmp_dentry {
     char name[256];
     struct nas_tmp_file *inode;
 };
-const char *tmp_name(const struct nas_tmp_file *file);
-const struct nas_tmp_dentry *tmp_child_entry(const char *parent,unsigned index);
 const struct nas_tmp_dentry *tmp_child_entry_inode(const void *parent,unsigned index);
 const void *tmp_dir_parent_inode(const void *directory);
 struct nas_tmp_file *tmp_create_at(const void *parent,const char *name,bool dir,uint32_t mode);
+/* Only S_IFSOCK is currently supported. The published inode already has
+ * its final type bits; failures return NULL without publishing a dentry. */
+struct nas_tmp_file *tmp_mknod_at(const void *parent,const char *name,uint32_t mode);
 int tmp_mkdir_at(const void *parent,const char *name,uint64_t mode);
 int tmp_unlink_at(const void *parent,const char *name,uint64_t flags);
 int tmp_rename_at(const void *old_parent,const char *old_name,
@@ -57,15 +56,10 @@ void tmp_inode_link(struct nas_tmp_file *file);
 void tmp_inode_unlink(struct nas_tmp_file *file);
 void tmp_inode_discard(struct nas_tmp_file *file);
 void tmp_inode_touch(struct nas_tmp_file *file);
-int tmp_link(const char *oldpath,const char *newpath);
-struct nas_tmp_file *tmp_find(const char *path);
 /* Provider-local directory child lookup; the generic VFS passes only an
  * opaque parent inode and one component, never an absolute pathname. */
 struct nas_tmp_file *tmp_find_child(const void *parent_inode,const char *name);
-int tmp_parent_check(const char *path);
-struct nas_tmp_file *tmp_create(const char *path, bool dir,uint32_t mode);
 bool tmp_is_link(const struct nas_tmp_file *file);
-int tmp_symlink(const char *target, const char *path);
 int tmp_link_target(const struct nas_tmp_file *file, char target[256]);
 uint64_t tmp_number(const struct nas_tmp_file *file);
 
@@ -83,7 +77,4 @@ int tmp_utimens(struct nas_tmp_file *file, uint64_t access_ns,
                 uint64_t modified_ns, bool set_access, bool set_modified);
 
 int tmp_chmod(struct nas_tmp_file *file, uint64_t mode);
-int tmp_mkdir(const char *path, uint64_t mode);
-int tmp_unlink(const char *path, uint64_t flags);
-int tmp_rename(const char *oldpath, const char *newpath, uint64_t flags);
 #endif
