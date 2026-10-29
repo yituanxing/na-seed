@@ -204,8 +204,18 @@ static uint64_t sys_access_path(uint64_t dirfd,uint64_t pathname,
      * explicit compatibility endpoint still needs a printed fallback. */
     char path[256];
     if(!bits) {
+        /* The failed lookup released its Path owners. Reuse the same
+         * stack request to prefilter the exact bootstrap namespace before
+         * permitting a second, string-based legacy resolution. */
+        int begin=nas_fs_user_path_begin(dirfd,pathname,&request);
+        if(begin)return (uint64_t)(int64_t)begin;
+        char candidate[256];
+        bool allowed=nas_fs_bootstrap_candidate(&request,candidate);
+        nas_fs_path_end(&request);
+        if(!allowed)return (uint64_t)-ENOENT;
         uint64_t rc=nas_fs_resolve_path(dirfd,pathname,path);
         if((int64_t)rc<0)return rc;
+        if(!nas_fs_bootstrap_endpoint(path))return (uint64_t)-ENOENT;
     }
     if(!bits && (!strcmp(path,"/dev/ptmx") ||
                  (nas_pty_path_number(path)>=0 &&
@@ -342,12 +352,21 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
         return result;
     }
     if(err!=-ENOENT)return (uint64_t)(int64_t)err;
-    /* Before devfs a few endpoints are synthesized and unmounted Limine
-     * modules may have no VFS inode. Only those cases use the legacy
-     * absolute spelling adapter; normal stat stays Path/inode owned. */
+    /* Only the SAME explicit bootstrap endpoints allowed by openat may
+     * use a printed-path fallback. In particular, ENOENT under a stale
+     * renamed/unlinked dirfd must not attempt a second legacy lookup. */
+    /* Reuse the completed request's stack storage; a second 4 KiB
+     * pathname buffer would overburden the 16 KiB kernel stack. */
+    int bootstrap_rc=nas_fs_user_path_begin(dirfd,pathname,&request);
+    if(bootstrap_rc)return (uint64_t)(int64_t)bootstrap_rc;
+    char candidate[256];
+    bool allowed=nas_fs_bootstrap_candidate(&request,candidate);
+    nas_fs_path_end(&request);
+    if(!allowed)return (uint64_t)-ENOENT;
     char path[256];
     uint64_t result = nas_fs_resolve_path(dirfd,pathname,path);
     if ((int64_t)result < 0) return result;
+    if(!nas_fs_bootstrap_endpoint(path))return (uint64_t)-ENOENT;
     if(!strcmp(path,"/dev/ptmx") ||
        (nas_pty_path_number(path)>=0 &&
         nas_pty_present((unsigned)nas_pty_path_number(path)))) {

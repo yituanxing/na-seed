@@ -136,6 +136,18 @@ static void symlink_and_trailing_slash(int rootfd) {
     check_errno(mkdirat(rootfd,"./",0700),EEXIST);
     errno=0;
     check_errno(mkdirat(rootfd,"/",0700),EEXIST);
+    /* Slash-only roots have no final leaf. Namespace operations do not
+     * share one generic error: the operation selects the Linux errno. */
+    errno=0;
+    check_errno(mkdirat(rootfd,"////",0700),EEXIST);
+    errno=0;
+    check_errno(symlinkat("target",rootfd,"////"),EEXIST);
+    errno=0;
+    check_errno(linkat(rootfd,"plain",rootfd,"////",0),EEXIST);
+    errno=0;
+    check_errno(unlinkat(rootfd,"////",0),EISDIR);
+    errno=0;
+    check_errno(unlinkat(rootfd,"////",AT_REMOVEDIR),EBUSY);
     errno=0;
     check_errno(mkdirat(rootfd,"dir/.",0700),EEXIST);
     errno=0;

@@ -173,9 +173,11 @@ creating a leftover file. This guard precedes the VFS namespace mutation.
 The Linux/NaOS comparison exposed another boundary leak: after unifying
 namei in the Linux open adapter, it still implemented the filesystem's
 create/exclusive/truncate/RO/dir/symlink policy and its pin transaction.
-These operations now live in `nas_vfs_open_inode(path,options,node)`: one
-common VFS control plane for ALL providers, returning an explicitly owned
-mount+inode lease on success. The Linux-facing syscall adapter only decodes
+These operations now live in `nas_vfs_open_path_at(start,root,path,options,...)`:
+one Path-first VFS control plane for ALL providers, returning an explicitly
+owned mount+inode lease and Dentry Path on success. The obsolete parallel
+`open_inode`/string-based O_CREAT algorithm has been removed. The Linux-facing
+syscall adapter only decodes
 per-ISA O_* bits, picks temporary synthetic devices, reserves an FD slot,
 installs the shared File, and transfers that lease (or releases it on FD
 capacity failure). O_EXCL does not follow a final symlink, while directory

@@ -2,6 +2,11 @@
 #include "../errno.h"
 #include "../lib/string.h"
 #include "../mm/heap.h"
+bool nas_fs_root_only(const char *path) {
+    if(!path || path[0]!='/')return false;
+    for(size_t i=1;path[i];i++)if(path[i]!='/')return false;
+    return true;
+}
 /* The only checked provider-local child-name builder. A provider may
  * resolve a live parent inode to its backend spelling; no provider should
  * implement a second copy of leaf component validation. */
@@ -61,16 +66,6 @@ int nas_fs_lookup_parent(const char *absolute,struct nas_fs_node *parent,
     rc=nas_vfs_path_node(&owned,parent);
     if(!rc)rc=legacy_join_parent(&owned,leaf,canonical);
     int dropped=nas_vfs_path_put(&owned);
-    return dropped ? dropped : rc;
-}
-int nas_fs_resolve_create_target(const char *path,char canonical[256]) {
-    if(!path || !canonical || path[0]!='/')return -EINVAL;
-    struct nas_vfs_path parent={0};
-    char leaf[256];
-    int rc=nas_fs_resolve_create_parent_at(NULL,NULL,path,&parent,leaf);
-    if(rc)return rc;
-    rc=legacy_join_parent(&parent,leaf,canonical);
-    int dropped=nas_vfs_path_put(&parent);
     return dropped ? dropped : rc;
 }
 int nas_fs_canonical_candidate(const char *absolute,char canonical[256]) {
@@ -324,7 +319,9 @@ static int lookup_parent_at_mode(const struct nas_vfs_path *start,
         if(trailing_rc)return trailing_rc;
     }
     while(n>1 && path[n-1]=='/')--n;
-    if(n==1 && path[0]=='/')return -EBUSY;
+    if(n==1 && path[0]=='/')
+        return (policy==NAS_FS_TRAILING_MKDIR ||
+                policy==NAS_FS_TRAILING_CREATE_DEST) ? -EEXIST : -EBUSY;
     size_t leaf_start=n;
     while(leaf_start>0 && path[leaf_start-1]!='/')--leaf_start;
     size_t length=n-leaf_start;

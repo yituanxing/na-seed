@@ -1318,13 +1318,15 @@ int nas_vfs_link_child(const struct nas_vfs_path *old_parent,
     if(rc)return rc;
     rc=child_parent_node(new_parent,new_name,&after);
     if(rc)return rc;
-    if(before.mount!=after.mount)return -EXDEV;
     struct nas_vfs_path source={0};
     rc=child_exists(old_parent,old_name,&source);
     if(rc)return rc;
     struct nas_fs_node node;
     rc=nas_vfs_path_node(&source,&node);
+    /* Linux rejects hardlinks to directories before the cross-mount
+     * restriction; an already-mounted directory remains EPERM. */
     if(!rc && node.is_dir)rc=-EPERM;
+    if(!rc && before.mount!=after.mount)rc=-EXDEV;
     if(!rc && node.mount!=after.mount)rc=-EXDEV;
     if(!rc && !nas_vfs_can_write(&after))rc=-EROFS;
     if(!rc) {
@@ -1365,18 +1367,6 @@ int nas_vfs_symlink_child(const char *target,
     if(!nas_vfs_can_write(&owner))return -EROFS;
     return owner.filesystem->symlink ?
            owner.filesystem->symlink(&owner,name,target) : -EOPNOTSUPP;
-}
-static int dentry_prepare_parent(const char *full,
-                                 const struct nas_fs_node *parent,
-                                 struct nas_vfs_path *out) {
-    const char *leaf=strrchr(full,'/');
-    if(!leaf || !leaf[1])return -EINVAL;
-    char base[256];
-    size_t n=(size_t)(leaf-full);
-    if(!n)n=1;
-    memcpy(base,full,n);
-    base[n]=0;
-    return nas_vfs_path_bind(parent,base,out);
 }
 static bool valid_vfs_dirent(const struct nas_vfs_dirent *entry) {
     unsigned length=entry->name_len;
@@ -1504,125 +1494,10 @@ bool nas_vfs_can_write(const struct nas_fs_node *node) {
 /* A namespace operation always resolves the actual mounted PARENT first.
  * A new pathname has no inode to look up, so selecting by its own lookup
  * would accidentally fall through to an unrelated underlying mount. */
-/* The provider sees a canonical path after following every parent symlink.
- * Otherwise mkdir('/tmp/alias/file') would dispatch to tmpfs but create
- * under the alias spelling rather than its true directory inode. */
-/* A namespace mutation must not remove, rename or replace an active
- * mountpoint. Even an empty mounted directory is BUSY in Linux; choosing
- * the underlying provider by its parent would otherwise bypass the VFS
- * mount tree and corrupt a different filesystem's directory. */
-static bool active_mountpoint(const char *path) {
-    if(!path)return false;
-    ensure_defaults();
-    for(unsigned i=0;i<mount_slots;i++) {
-        if(!mount_slot_at(i)->used)continue;
-        /* VFS-owned path snapshot is protected against ancestor rename
-         * and unlink independently of caller's mount descriptor. */
-        if(mount_matches(path,mount_slot_at(i)->path))return true;
-    }
-    return false;
-}
-static int vfs_mutable_parent(const char *path,struct nas_fs_node *parent,
-                              char canonical[256]) {
-    int rc=nas_fs_lookup_parent(path,parent,canonical);
-    if(rc)return rc;
-    return nas_vfs_can_write(parent) ? 0 : -EROFS;
-}
-/* vfs_parent resolved and validated the real directory inode. The final
- * basename is not a pathname: this is the only namespace callback input. */
-static const char *vfs_leaf(const char *canonical) {
-    const char *last=strrchr(canonical,'/');
-    return last ? last+1 : canonical;
-}
-/* Linux do_filp_open and NaOS vfs_open belong on the common VFS side of
- * the syscall boundary. The Linux ABI adapter supplies decoded options,
- * and no provider-specific inode or open File subclass leaks into this API.
- * A successful open owns exactly one inode lease and mount reference. */
-int nas_vfs_open_inode(const char *path,
-                       const struct nas_vfs_open_options *options,
-                       struct nas_fs_node *owned,char canonical[256],
-                       struct nas_vfs_path *owned_path) {
-    if(!path || path[0]!='/' || !options || !owned || !canonical)
-        return -EINVAL;
-    if(owned_path)*owned_path=(struct nas_vfs_path){0};
-    if(options->access>2)return -EINVAL;
-    struct nas_fs_node node={0};
-    /* O_CREAT|O_EXCL must examine a final symlink itself, not follow it
-     * to a missing destination and accidentally create another inode. */
-    bool follow=options->follow_final &&
-                !(options->create && options->exclusive);
-    int rc=nas_fs_lookup_node(path,follow,&node,canonical);
-    bool newly_created=false;
-    if(rc==-ENOENT && options->create) {
-        /* In single-CPU VFS a new inode necessarily needs a fresh lease.
-         * Check capacity BEFORE creating a visible name: ENFILE must not
-         * leave a file behind when the subsequent File cannot own it.
-         * Existing files are handled by the exact-identity pin below. */
-        /* Grow the reusable lease pool BEFORE making a visible name.
-         * A heap allocation failure must not leave O_CREAT side effects.
-         * Open already reserved the process FD and global File slot. */
-        if(!free_inode_lease_slot())return -ENOMEM;
-        /* Never write a regular inode when the caller requires a dir. */
-        if(options->directory_only)return -ENOTDIR;
-        if(options->truncate && !options->path_only && !options->access)
-            return -EINVAL;
-        /* A dangling symlink's old name already exists. Create only its
-         * missing final target via the shared component walker. */
-        char target[256];
-        rc=nas_fs_resolve_create_target(path,target);
-        if(rc)return rc;
-        rc=nas_vfs_create(target,options->create_mode);
-        if(rc)return rc;
-        rc=nas_fs_lookup_node(target,follow,&node,canonical);
-        if(rc)return rc;
-        newly_created=true;
-    } else if(rc)return rc;
-    if(!newly_created && options->create && options->exclusive)
-        return -EEXIST;
-    if(options->directory_only && !node.is_dir)return -ENOTDIR;
-    if(node.is_symlink && !follow && !options->path_only)
-        return -ELOOP;
-    if((node.mode&0170000U)==0140000U && !options->path_only)
-        return -ENXIO; /* UNIX sockets are not byte files */
-    if(node.is_dir && (options->access || options->truncate))
-        return -EISDIR;
-    if(!options->path_only && !node.is_dir &&
-       (options->access || options->truncate) &&
-       !nas_vfs_can_write(&node))return -EROFS;
-    if(options->truncate && !options->access && !options->path_only)
-        return -EINVAL;
-    /* Acquire inode ownership BEFORE a potentially destructive truncate:
-     * stale incarnation, ENFILE or mount limits must not erase data. */
-    rc=nas_vfs_node_pin(&node);
-    if(rc)return rc;
-    /* The VFS, not the syscall ABI, owns the Dentry/Open transaction.
-     * Bind AFTER exact-inode pin, BEFORE side effects or File publication.
-     * A failure releases the inode and never produces half an open. */
-    struct nas_vfs_path file_path={0};
-    if(owned_path && node.is_dir) {
-        rc=nas_vfs_path_bind(&node,canonical,&file_path);
-        if(rc) {
-            (void)nas_vfs_node_unpin(&node);
-            return rc;
-        }
-    }
-    if(options->truncate && !options->path_only) {
-        rc=nas_vfs_resize(&node,0);
-        if(rc) {
-            if(file_path.dentry)(void)nas_vfs_path_put(&file_path);
-            (void)nas_vfs_node_unpin(&node);
-            return rc;
-        }
-        node.size=0;
-    }
-    *owned=node; /* transfer inode to shared File */
-    if(owned_path)*owned_path=file_path; /* transfer Path to same File */
-    return 0;
-}
-/* Object-first equivalent of open_inode: the caller passes an already
- * owned cwd/dirfd root and receives independent inode + positive Dentry
- * owners. Even ordinary files keep a Dentry when requested, so subsequent
- * link/rename/openat consumers never need the original pathname. */
+/* One open transaction for ordinary paths AND rootless bootstrap callers.
+ * The caller supplies owned cwd/dirfd anchors when available. No second
+ * pathname-based O_CREAT/truncate path exists: negative-final creation,
+ * inode pinning and Dentry publication use the same Path-first owner. */
 int nas_vfs_open_path_at(const struct nas_vfs_path *start,
                          const struct nas_vfs_path *root_clamp,
                          const char *path,
@@ -1726,16 +1601,17 @@ int nas_vfs_open_path_at(const struct nas_vfs_path *start,
 }
 int nas_vfs_create(const char *path,uint64_t mode) {
     if(!path || path[0]!='/')return -EINVAL;
-    struct nas_fs_node existing;
-    char resolved[256];
-    int rc=nas_fs_lookup_node(path,false,&existing,resolved);
-    if(!rc)return -EEXIST;
-    if(rc!=-ENOENT)return rc;
-    struct nas_fs_node parent;char canonical[256];
-    rc=vfs_mutable_parent(path,&parent,canonical);
+    if(nas_fs_root_only(path))return -EEXIST;
+    /* Absolute compatibility callers use the same owned parent and child
+     * transaction as createat/openat. Never re-resolve a canonical spelling
+     * after namei, especially through a symlink to a renamed directory. */
+    struct nas_vfs_path parent={0};
+    char leaf[256];
+    int rc=nas_fs_lookup_parent_at(NULL,NULL,path,&parent,leaf);
     if(rc)return rc;
-    return parent.filesystem->create ?
-           parent.filesystem->create(&parent,vfs_leaf(canonical),mode) : -EOPNOTSUPP;
+    rc=nas_vfs_create_child(&parent,leaf,mode);
+    int dropped=nas_vfs_path_put(&parent);
+    return dropped ? dropped : rc;
 }
 int64_t nas_vfs_write_at(const struct nas_fs_node *node,uint64_t offset,
                          const uint8_t *src,uint64_t length) {
@@ -1792,147 +1668,84 @@ int nas_vfs_sync_all(void) {
 }
 int nas_vfs_mkdir(const char *path,uint64_t mode) {
     if(!path || path[0]!='/')return -EINVAL;
-    if(!strcmp(path,"/"))return -EEXIST;
-    /* POSIX mkdir(existing) is EEXIST, even for a read-only mountpoint.
-     * Inspect namei before deciding whether the new parent's mount can
-     * accept a mutation; this is essential for BusyBox mkdir -p. */
-    struct nas_fs_node existing;
-    char existing_path[256];
-    int rc=nas_fs_lookup_node(path,false,&existing,existing_path);
-    if(!rc)return -EEXIST;
-    if(rc!=-ENOENT)return rc;
-    struct nas_fs_node parent;char canonical[256];
-    rc=vfs_mutable_parent(path,&parent,canonical);
+    if(nas_fs_root_only(path))return -EEXIST;
+    /* mkdir's final-slash and dot semantics differ from ordinary mutation:
+     * existing regular files, symlinks and read-only mountpoints are EEXIST. */
+    struct nas_vfs_path parent={0};
+    char leaf[256];
+    int rc=nas_fs_lookup_parent_mkdir_at(NULL,NULL,path,&parent,leaf);
     if(rc)return rc;
-    return parent.filesystem->mkdir ?
-           parent.filesystem->mkdir(&parent,vfs_leaf(canonical),mode) : -EOPNOTSUPP;
+    rc=nas_vfs_mkdir_child(&parent,leaf,mode);
+    int dropped=nas_vfs_path_put(&parent);
+    return dropped ? dropped : rc;
 }
 int nas_vfs_unlink(const char *path,uint64_t flags) {
     if(flags&~0x200ULL)return -EINVAL; /* Linux AT_REMOVEDIR only */
-    struct nas_fs_node parent;char canonical[256];
-    /* Mount-tree identity takes precedence over the parent filesystem's
-     * writable flag: rmdir(/mnt) is EBUSY even if /mnt lives below an
-     * immutable bootfs directory. Read-only policy applies afterward. */
-    int rc=nas_fs_lookup_parent(path,&parent,canonical);
+    if(!path || path[0]!='/')return -EINVAL;
+    if(nas_fs_root_only(path))return flags&0x200ULL ? -EBUSY : -EISDIR;
+    /* mountpoint, pinned inode and detached-directory checks are centralized
+     * in unlink_child and operate on the same parent Dentry as openat. */
+    struct nas_vfs_path parent={0};
+    char leaf[256];
+    int rc=nas_fs_lookup_parent_at(NULL,NULL,path,&parent,leaf);
     if(rc)return rc;
-    if(active_mountpoint(canonical))return -EBUSY;
-    if(!nas_vfs_can_write(&parent))return -EROFS;
-    /* Backend capabilities are inode-kind specific: a filesystem may safely
-     * orphan an opened file but still lack a nonrecursive directory protocol.
-     * Fail closed only when that kind of unlink cannot preserve ownership. */
-    if(!parent.filesystem->unlink_open_safe) {
-        struct nas_fs_node target;
-        int looked_up=nas_vfs_lookup(canonical,&target);
-        /* rmdir(open directory) is just as unsafe as unlink(open file).
-         * Directory st_nlink normally counts '.' and a parent's entry,
-         * so the last-file-link threshold cannot be used for directories. */
-        if(!looked_up && target.mount==parent.mount && target.ino &&
-           inode_lease(&target) &&
-           (((flags&0x200ULL) &&
-             !parent.filesystem->unlink_open_dir_safe) ||
-            (!(flags&0x200ULL) && target.nlink<=1 &&
-             !parent.filesystem->unlink_open_file_safe)))
-            return -EBUSY;
-        if(looked_up && looked_up!=-ENOENT)return looked_up;
-    }
-    if(!parent.filesystem->unlink)return -EOPNOTSUPP;
-    struct nas_vfs_path parent_path={0};
-    rc=dentry_prepare_parent(canonical,&parent,&parent_path);
-    if(rc)return rc;
-    rc=parent.filesystem->unlink(&parent,vfs_leaf(canonical),flags);
-    if(!rc)dentry_notice_unlink(&parent_path,vfs_leaf(canonical));
-    if(nas_vfs_path_put(&parent_path))return -EIO;
-    return rc;
+    rc=nas_vfs_unlink_child(&parent,leaf,flags);
+    int dropped=nas_vfs_path_put(&parent);
+    return dropped ? dropped : rc;
 }
 int nas_vfs_rename(const char *oldpath,const char *newpath,uint64_t flags) {
-    struct nas_fs_node old_parent,new_parent;
-    char old_canonical[256],new_canonical[256];
-    int rc=nas_fs_lookup_parent(oldpath,&old_parent,old_canonical);
-    if(rc)return rc;
-    rc=nas_fs_lookup_parent(newpath,&new_parent,new_canonical);
-    if(rc)return rc;
-    if(active_mountpoint(old_canonical) || active_mountpoint(new_canonical))
-        return -EBUSY;
-    if(old_parent.mount!=new_parent.mount)return -EXDEV;
-    /* A directory cannot move beneath itself, regardless of provider.
-     * Use canonical component boundaries instead of raw user spelling:
-     * an alias or symlink to a parent is already resolved by namei. */
-    struct nas_fs_node source_for_cycle;
-    char current_source[256];
-    int source_rc=nas_fs_lookup_node(old_canonical,false,
-                                      &source_for_cycle,current_source);
-    if(source_rc)return source_rc;
-    if(source_for_cycle.is_dir &&
-       strcmp(old_canonical,new_canonical) &&
-       mount_matches(old_canonical,new_canonical))
+    if(!oldpath || oldpath[0]!='/' || !newpath || newpath[0]!='/')
         return -EINVAL;
-    if(!nas_vfs_can_write(&old_parent))return -EROFS;
-    if(!old_parent.filesystem->rename)return -EOPNOTSUPP;
-    /* POSIX rename(replace) must not invalidate an already open target.
-     * In lwext4 the replace path may unlink/free the victim inode while
-     * VFS Files still pin it. Default to fail-closed until the provider
-     * offers proper orphan/deferred reclaim (tmpfs already does). */
-    if(!new_parent.filesystem->rename_replace_open_safe &&
-       strcmp(old_canonical,new_canonical)) {
-        struct nas_fs_node victim;
-        int found=nas_vfs_lookup(new_canonical,&victim);
-        if(!found && victim.mount==new_parent.mount && victim.ino &&
-           inode_lease(&victim)) {
-            /* A hardlink alias of source is the same inode, not a victim. */
-            struct nas_fs_node source;
-            int src=nas_vfs_lookup(old_canonical,&source);
-            if(src)return src;
-            if(source.mount!=victim.mount || source.ino!=victim.ino)
-                return -EBUSY;
-        }
-        if(found && found!=-ENOENT)return found;
-    }
-    if(!old_parent.filesystem->rename)return -EOPNOTSUPP;
     struct nas_vfs_path from={0},to={0};
-    rc=dentry_prepare_parent(old_canonical,&old_parent,&from);
+    char old_leaf[256],new_leaf[256];
+    int rc=nas_fs_lookup_parent_at(NULL,NULL,oldpath,&from,old_leaf);
     if(rc)return rc;
-    rc=dentry_prepare_parent(new_canonical,&new_parent,&to);
-    if(rc) {
-        (void)nas_vfs_path_put(&from);
-        return rc;
+    /* A trailing slash on the rename destination has special Linux rules;
+     * carry the caller's intent instead of erasing it on canonicalization. */
+    rc=nas_fs_lookup_parent_at_policy(NULL,NULL,newpath,
+                                      NAS_FS_TRAILING_RENAME_DEST,
+                                      &to,new_leaf);
+    if(!rc) {
+        size_t n=strlen(newpath);
+        bool trailing=n>1 && newpath[n-1]=='/';
+        rc=nas_vfs_rename_child_with_intent(&from,old_leaf,&to,new_leaf,
+                                             flags,trailing);
     }
-    rc=old_parent.filesystem->rename(&old_parent,vfs_leaf(old_canonical),
-                                      &new_parent,vfs_leaf(new_canonical),
-                                      flags);
-    if(!rc)dentry_notice_rename(&from,vfs_leaf(old_canonical),
-                                &to,vfs_leaf(new_canonical),false);
-    int dropped=nas_vfs_path_put(&from);
-    if(nas_vfs_path_put(&to) || dropped)return -EIO;
-    return rc;
+    int dropped_to=to.dentry ? nas_vfs_path_put(&to) : 0;
+    int dropped_from=nas_vfs_path_put(&from);
+    return dropped_to ? dropped_to : dropped_from ? dropped_from : rc;
 }
 int nas_vfs_link(const char *oldpath,const char *newpath) {
-    char resolved[256],canonical[256];
-    struct nas_fs_node source,parent;
-    int rc=nas_fs_lookup_node(oldpath,false,&source,resolved);
+    if(!oldpath || oldpath[0]!='/' || !newpath || newpath[0]!='/')
+        return -EINVAL;
+    struct nas_vfs_path source={0},parent={0};
+    int rc=nas_fs_lookup_path_at(NULL,NULL,oldpath,false,&source);
     if(rc)return rc;
-    /* Linux hardlinks cannot target directories, regardless of backend.
-     * Don't defer directory link restrictions to an arbitrary filesystem. */
-    if(source.is_dir)return -EPERM;
-    rc=nas_fs_lookup_parent(newpath,&parent,canonical);
-    if(rc)return rc;
-    if(source.mount!=parent.mount)return -EXDEV;
-    if(!nas_vfs_can_write(&parent))return -EROFS;
-    struct nas_fs_node old_parent;
-    char old_canonical[256];
-    rc=nas_fs_lookup_parent(resolved,&old_parent,old_canonical);
-    if(rc)return rc;
-    if(old_parent.mount!=parent.mount)return -EXDEV;
-    return parent.filesystem->link ?
-           parent.filesystem->link(&old_parent,vfs_leaf(old_canonical),
-                                     &parent,vfs_leaf(canonical)) : -EOPNOTSUPP;
+    struct nas_fs_node node;
+    rc=nas_vfs_path_node(&source,&node);
+    /* Preserve EPERM for linking root itself, whose Dentry has no parent. */
+    if(!rc && node.is_dir)rc=-EPERM;
+    char leaf[256];
+    if(!rc)rc=nas_fs_lookup_parent_at_policy(NULL,NULL,newpath,
+                                             NAS_FS_TRAILING_CREATE_DEST,
+                                             &parent,leaf);
+    if(!rc)rc=nas_vfs_link_path_child(&source,&parent,leaf);
+    int dropped_parent=parent.dentry ? nas_vfs_path_put(&parent) : 0;
+    int dropped_source=nas_vfs_path_put(&source);
+    return dropped_parent ? dropped_parent : dropped_source ? dropped_source : rc;
 }
 int nas_vfs_symlink(const char *target,const char *path) {
     if(!target)return -EINVAL;
-    struct nas_fs_node parent;char canonical[256];
-    int rc=vfs_mutable_parent(path,&parent,canonical);
+    if(!path || path[0]!='/')return -EINVAL;
+    struct nas_vfs_path parent={0};
+    char leaf[256];
+    int rc=nas_fs_lookup_parent_at_policy(NULL,NULL,path,
+                                          NAS_FS_TRAILING_CREATE_DEST,
+                                          &parent,leaf);
     if(rc)return rc;
-    return parent.filesystem->symlink ?
-           parent.filesystem->symlink(&parent,vfs_leaf(canonical),target) : -EOPNOTSUPP;
+    rc=nas_vfs_symlink_child(target,&parent,leaf);
+    int dropped=nas_vfs_path_put(&parent);
+    return dropped ? dropped : rc;
 }
 int nas_vfs_chmod(const struct nas_fs_node *node,uint64_t mode) {
     int status=vfs_node_status(node);

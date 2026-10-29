@@ -434,6 +434,165 @@ static int namespace_mkdir_at(const struct nas_vfs_path *start,
     if(parent.dentry)assert(nas_vfs_path_put(&parent)==0);
     return rc;
 }
+static int namespace_create(const char *path,uint64_t mode) {
+    /* Creation tests must examine the final name itself. Using the O_CREAT
+     * dangling-link resolver here would incorrectly follow the last link. */
+    struct nas_vfs_path parent={0};char leaf[256];
+    int rc=nas_fs_lookup_parent_at(NULL,NULL,path,&parent,leaf);
+    if(!rc)rc=nas_vfs_create_child(&parent,leaf,mode);
+    if(parent.dentry)assert(nas_vfs_path_put(&parent)==0);
+    return rc;
+}
+static void assert_create_parent(const char *path,const char *base,
+                                 const char *expected_leaf,int expected) {
+    struct nas_vfs_path parent={0};
+    char leaf[256],resolved[256];
+    int rc=nas_fs_resolve_create_parent_at(NULL,NULL,path,&parent,leaf);
+    assert(rc==expected);
+    if(!rc) {
+        assert(nas_vfs_path_string(&parent,resolved)==0);
+        assert(!strcmp(resolved,base) && !strcmp(leaf,expected_leaf));
+    }
+    if(parent.dentry)assert(nas_vfs_path_put(&parent)==0);
+}
+static unsigned mutation_parity_errors;
+static void mutation_parity(const char *op,const char *source,
+                            const char *target,int expected,
+                            int owned,int legacy) {
+    if(owned!=expected || legacy!=owned) {
+        fprintf(stderr,"[VFS LEGACY PARITY FAIL] %s(%s,%s): "
+                       "expected=%d path-first=%d legacy=%d\n",
+                op,source,target?target:"",expected,owned,legacy);
+        ++mutation_parity_errors;
+    }
+}
+/* Public absolute-path VFS APIs remain necessary for upstream FS/early
+ * boot callers, but they MUST be wrappers around the SAME owned Path-first
+ * mutation algorithms as Linux *at syscalls. Keep these comparisons on real
+ * production namei + VFS mutators, never separately modeled mock outcomes.
+ * All test cases are read-only, no-op, or the fixture's intentionally
+ * unmaterialized provider callbacks; other later tests keep their state. */
+static void test_legacy_owned_mutation_parity(void) {
+    struct {const char *path;int expected;} create_cases[]={
+        {"/tmp/demo",-EEXIST},{"/tmp/newfile",-EEXIST},
+        {"/bin/new",-EROFS},{"/tmp/demo/child",-ENOTDIR}
+    };
+    for(unsigned i=0;i<sizeof(create_cases)/sizeof(create_cases[0]);i++) {
+        int owned=namespace_create(create_cases[i].path,0640);
+        int legacy=nas_vfs_create(create_cases[i].path,0640);
+        mutation_parity("create",create_cases[i].path,NULL,
+                        create_cases[i].expected,owned,legacy);
+    }
+    const char *saved_target=fixture_link_target;
+    unsigned saved_length=(unsigned)fixture_symlink.size;
+    fixture_link_target="no-such-target";
+    fixture_symlink.size=14;
+    /* A dangling FINAL symlink still occupies the name: plain create and
+     * O_CREAT|O_EXCL both return EEXIST; nonexclusive open differs. */
+    assert(namespace_create("/tmp/link",0640)==-EEXIST);
+    assert(nas_vfs_create("/tmp/link",0640)==-EEXIST);
+    fixture_link_target=saved_target;
+    fixture_symlink.size=saved_length;
+
+    struct {const char *path;int expected;} mkdir_cases[]={
+        {"/",-EEXIST},{"/tmp/",-EEXIST},
+        {"/tmp/demo/",-EEXIST},{"/tmp/alias/",-EEXIST},
+        {"/tmp/.",-EEXIST},{"/tmp/..",-EEXIST},
+        {"/tmp/missing/.",-ENOENT},{"/tmp/demo/.",-ENOTDIR},
+        {"/bin/new",-EROFS}
+    };
+    for(unsigned i=0;i<sizeof(mkdir_cases)/sizeof(mkdir_cases[0]);i++) {
+        int owned=namespace_mkdir_at(NULL,mkdir_cases[i].path);
+        int legacy=nas_vfs_mkdir(mkdir_cases[i].path,0755);
+        mutation_parity("mkdir",mkdir_cases[i].path,NULL,
+                        mkdir_cases[i].expected,owned,legacy);
+    }
+    struct {const char *path;uint64_t flags;int expected;} unlink_cases[]={
+        {"/tmp/demo/",0,-ENOTDIR},{"/tmp/alias/",0,-ENOTDIR},
+        {"/tmp/demo",0x800U,-EINVAL},{"/bin/demo",0,-EROFS},
+        {"/tmp/missing",0,-ENOENT}
+    };
+    for(unsigned i=0;i<sizeof(unlink_cases)/sizeof(unlink_cases[0]);i++) {
+        int owned=namespace_unlink(unlink_cases[i].path,unlink_cases[i].flags);
+        int legacy=nas_vfs_unlink(unlink_cases[i].path,unlink_cases[i].flags);
+        mutation_parity("unlink",unlink_cases[i].path,NULL,
+                        unlink_cases[i].expected,owned,legacy);
+    }
+    struct {const char *source,*target;int expected;} rename_cases[]={
+        {"/tmp/demo/","/tmp/other",-ENOTDIR},
+        {"/tmp/demo","/tmp/no-such/",-ENOTDIR},
+        {"/tmp/demo","/tmp/renamed-opened/",-ENOTDIR},
+        {"/tmp/demo","/tmp/demo",0},
+        {"/tmp/hardlink-a","/tmp/hardlink-b",0},
+        {"/tmp/demo","/bin/demo",-EXDEV}
+    };
+    for(unsigned i=0;i<sizeof(rename_cases)/sizeof(rename_cases[0]);i++) {
+        int owned=namespace_rename(rename_cases[i].source,rename_cases[i].target);
+        int legacy=nas_vfs_rename(rename_cases[i].source,rename_cases[i].target,0);
+        mutation_parity("rename",rename_cases[i].source,rename_cases[i].target,
+                        rename_cases[i].expected,owned,legacy);
+    }
+    /* A public legacy rename with an already-held exact Dentry must not
+     * rebind or destroy that name owner when the operation is a no-op. */
+    struct nas_vfs_path pinned_noop={0};
+    assert(nas_fs_lookup_path_at(NULL,NULL,"/tmp/renamed-opened",false,
+                                 &pinned_noop)==0);
+    assert(nas_vfs_rename("/tmp/renamed-opened","/tmp/renamed-opened",0)==0);
+    struct nas_fs_node no_op_inode={0};
+    char still_owned[256];
+    assert(nas_vfs_path_node(&pinned_noop,&no_op_inode)==0);
+    assert(no_op_inode.inode==&fixture_open_directory);
+    assert(nas_vfs_path_string(&pinned_noop,still_owned)==0);
+    assert(!strcmp(still_owned,"/tmp/renamed-opened"));
+    assert(nas_vfs_path_put(&pinned_noop)==0);
+    struct {const char *source,*target;int expected;} link_cases[]={
+        {"/tmp","/tmp/direct",-EPERM},
+        {"/bin/demo","/tmp/copy",-EXDEV},
+        {"/tmp/demo","/tmp/demo",-EEXIST},
+        {"/tmp/demo","/tmp/demo/",-EEXIST},
+        {"/tmp/demo/","/tmp/newname",-ENOTDIR}
+    };
+    for(unsigned i=0;i<sizeof(link_cases)/sizeof(link_cases[0]);i++) {
+        int owned=namespace_link(link_cases[i].source,link_cases[i].target);
+        int legacy=nas_vfs_link(link_cases[i].source,link_cases[i].target);
+        mutation_parity("link",link_cases[i].source,link_cases[i].target,
+                        link_cases[i].expected,owned,legacy);
+    }
+    struct {const char *target,*path;int expected;} symlink_cases[]={
+        {"anything","/tmp/demo/",-EEXIST},
+        {"anything","/tmp/alias/",-EEXIST},
+        {"anything","/tmp/missing-symlink/",-ENOENT},
+        {"anything","/bin/newlink",-EROFS}
+    };
+    for(unsigned i=0;i<sizeof(symlink_cases)/sizeof(symlink_cases[0]);i++) {
+        int owned=namespace_symlink(symlink_cases[i].target,symlink_cases[i].path);
+        int legacy=nas_vfs_symlink(symlink_cases[i].target,symlink_cases[i].path);
+        mutation_parity("symlink",symlink_cases[i].target,symlink_cases[i].path,
+                        symlink_cases[i].expected,owned,legacy);
+    }
+    if(!mutation_parity_errors)
+        fprintf(stderr,"[VFS LEGACY PARITY PASS] six APIs share Path-first semantics\n");
+}
+static void test_legacy_mounted_parity(void) {
+    mutation_parity("mkdir","/mnt",NULL,-EEXIST,
+                    namespace_mkdir_at(NULL,"/mnt"),nas_vfs_mkdir("/mnt",0755));
+    mutation_parity("unlink","/mnt",NULL,-EBUSY,
+                    namespace_unlink("/mnt",0x200U),nas_vfs_unlink("/mnt",0x200U));
+    mutation_parity("rename","/mnt","/tmp/moved-mount",-EBUSY,
+                    namespace_rename("/mnt","/tmp/moved-mount"),
+                    nas_vfs_rename("/mnt","/tmp/moved-mount",0));
+    mutation_parity("link","/mnt/hello","/tmp/cross-device",-EXDEV,
+                    namespace_link("/mnt/hello","/tmp/cross-device"),
+                    nas_vfs_link("/mnt/hello","/tmp/cross-device"));
+    mutation_parity("create","/mnt/new-file",NULL,-EROFS,
+                    namespace_create("/mnt/new-file",0640),
+                    nas_vfs_create("/mnt/new-file",0640));
+    mutation_parity("symlink","anything","/mnt/newlink",-EROFS,
+                    namespace_symlink("anything","/mnt/newlink"),
+                    nas_vfs_symlink("anything","/mnt/newlink"));
+    if(!mutation_parity_errors)
+        fprintf(stderr,"[VFS LEGACY MOUNT PARITY PASS] covered mount identity\n");
+}
 int main(void) {
     char resolved[256],data[32];
     struct nas_fs_node n;
@@ -474,8 +633,8 @@ int main(void) {
      * Linux syscall branch per provider. The returned node is pinned. */
     struct nas_fs_node opened;
     struct nas_vfs_open_options open_options={.follow_final=true,.access=0};
-    assert(nas_vfs_open_inode("/bin/demo",&open_options,
-                              &opened,resolved,NULL)==0);
+    assert(nas_vfs_open_path_at(NULL,NULL,"/bin/demo",&open_options,
+                                &opened,NULL)==0);
     assert(opened.mount && opened.ino==n.ino);
     assert(nas_vfs_node_unpin(&opened)==0);
     /* The normal File opener requests a Dentry in the same transaction.
@@ -485,8 +644,8 @@ int main(void) {
         .follow_final=true,.directory_only=true,.access=0
     };
     struct nas_vfs_path returned_directory={0};
-    assert(nas_vfs_open_inode("/tmp",&directory_options,&opened,resolved,
-                              &returned_directory)==0);
+    assert(nas_vfs_open_path_at(NULL,NULL,"/tmp",&directory_options,
+                                &opened,&returned_directory)==0);
     char directory_absolute[256];
     assert(nas_vfs_path_string(&returned_directory,directory_absolute)==0);
     assert(!strcmp(directory_absolute,"/tmp"));
@@ -494,19 +653,19 @@ int main(void) {
     assert(nas_vfs_path_put(&returned_directory)==0);
     assert(!returned_directory.dentry);
     open_options.access=1;
-    assert(nas_vfs_open_inode("/bin/demo",&open_options,
-                              &opened,resolved,NULL)==-EROFS);
+    assert(nas_vfs_open_path_at(NULL,NULL,"/bin/demo",&open_options,
+                                &opened,NULL)==-EROFS);
     open_options.access=0;
     open_options.directory_only=true;
-    assert(nas_vfs_open_inode("/bin/demo",&open_options,
-                              &opened,resolved,NULL)==-ENOTDIR);
+    assert(nas_vfs_open_path_at(NULL,NULL,"/bin/demo",&open_options,
+                                &opened,NULL)==-ENOTDIR);
     open_options.create=true;open_options.exclusive=true;
     open_options.directory_only=false;
-    assert(nas_vfs_open_inode("/bin/demo",&open_options,
-                              &opened,resolved,NULL)==-EEXIST);
+    assert(nas_vfs_open_path_at(NULL,NULL,"/bin/demo",&open_options,
+                                &opened,NULL)==-EEXIST);
     open_options.directory_only=true;
-    assert(nas_vfs_open_inode("/tmp/open-never-created",&open_options,
-                              &opened,resolved,NULL)==-ENOTDIR);
+    assert(nas_vfs_open_path_at(NULL,NULL,"/tmp/open-never-created",
+                                &open_options,&opened,NULL)==-ENOTDIR);
     assert(nas_fs_lookup_node("/tmp/open-never-created",true,
                               &opened,resolved)==-ENOENT);
     assert(!memcmp(data,elf_bytes,4) && !nas_vfs_can_write(&n));
@@ -639,6 +798,9 @@ int main(void) {
     assert(nas_vfs_create_child(&detached_dirfd,"new",0600)==-ENOENT);
     assert(nas_vfs_mkdir_child(&detached_dirfd,"newdir",0755)==-ENOENT);
     assert(nas_vfs_symlink_child("target",&detached_dirfd,"newlink")==-ENOENT);
+    assert(nas_vfs_create("/tmp/to-detach/new",0600)==-ENOENT);
+    assert(nas_vfs_mkdir("/tmp/to-detach/newdir",0755)==-ENOENT);
+    assert(nas_vfs_symlink("target","/tmp/to-detach/newlink")==-ENOENT);
     assert(nas_vfs_path_put(&detached_dirfd)==0);
     assert(!detached_dirfd.dentry);
     assert(!fixture_detached_dir_visible);
@@ -805,11 +967,9 @@ int main(void) {
     fixture_link_target="newfile";
     fixture_symlink.size=7;
     assert(nas_fs_lookup_node("/tmp/link",true,&n,resolved)==-ENOENT);
-    assert(nas_fs_resolve_create_target("/tmp/link",resolved)==0);
-    assert(!strcmp(resolved,"/tmp/newfile"));
-    assert(nas_fs_resolve_create_target("/tmp/alias/newfile",resolved)==0);
-    assert(!strcmp(resolved,"/tmp/newfile"));
-    assert(nas_fs_resolve_create_target("/bin/demo/sub",resolved)==-ENOTDIR);
+    assert_create_parent("/tmp/link","/tmp","newfile",0);
+    assert_create_parent("/tmp/alias/newfile","/tmp","newfile",0);
+    assert_create_parent("/bin/demo/sub",NULL,NULL,-ENOTDIR);
     /* Exercise production open_path_at end-to-end: O_EXCL sees the link
      * entry itself; nonexclusive O_CREAT follows the dangling link to a
      * new basename; two returned owners (inode lease + Dentry) must both
@@ -838,14 +998,20 @@ int main(void) {
         .access=2,.create_mode=0640
     };
     struct nas_fs_node created_through_link;
-    assert(nas_vfs_open_inode("/tmp/link",&via_link,
-                              &created_through_link,resolved,NULL)==-EEXIST);
+    struct nas_vfs_path created_through_path={0};
+    assert(nas_vfs_open_path_at(NULL,NULL,"/tmp/link",&via_link,
+                                &created_through_link,
+                                &created_through_path)==-EEXIST);
+    assert(!created_through_path.dentry);
     via_link.exclusive=false;
-    assert(nas_vfs_open_inode("/tmp/link",&via_link,
-                              &created_through_link,resolved,NULL)==0);
+    assert(nas_vfs_open_path_at(NULL,NULL,"/tmp/link",&via_link,
+                                &created_through_link,
+                                &created_through_path)==0);
+    assert(nas_vfs_path_string(&created_through_path,resolved)==0);
     assert(!strcmp(resolved,"/tmp/newfile"));
     assert(created_through_link.inode==&fixture_created);
     assert(nas_vfs_node_unpin(&created_through_link)==0);
+    assert(nas_vfs_path_put(&created_through_path)==0);
     fixture_link_target="/bin/demo";
     fixture_symlink.size=9;
     assert(nas_vfs_create("/tmp/newfile",0640)==-EEXIST);
@@ -911,18 +1077,24 @@ int main(void) {
     struct nas_vfs_open_options grow_options={
         .follow_final=true,.access=2,.truncate=true
     };
-    assert(nas_vfs_open_inode("/tmp/newfile",&grow_options,
-                              &newly_opened,newly_opened_path,NULL)==0);
+    struct nas_vfs_path grown_open_path={0};
+    assert(nas_vfs_open_path_at(NULL,NULL,"/tmp/newfile",&grow_options,
+                                &newly_opened,&grown_open_path)==0);
+    assert(nas_vfs_path_string(&grown_open_path,newly_opened_path)==0);
+    assert(!strcmp(newly_opened_path,"/tmp/newfile"));
     assert(fixture_created_length==0 && fixture_created.size==0);
     assert(nas_vfs_node_unpin(&newly_opened)==0);
+    assert(nas_vfs_path_put(&grown_open_path)==0);
     assert(nas_vfs_write_at(&n,0,(const uint8_t *)"xyz",3)==3);
     assert(nas_vfs_read_at(&n,0,(uint8_t *)data,3)==3 &&
            !memcmp(data,"xyz",3));
     grow_options.truncate=false;
     grow_options.create=true;
     grow_options.create_mode=0640;
-    assert(nas_vfs_open_inode("/tmp/open-never-created",&grow_options,
-                              &newly_opened,newly_opened_path,NULL)==-ENOSPC);
+    assert(nas_vfs_open_path_at(NULL,NULL,"/tmp/open-never-created",
+                                &grow_options,&newly_opened,
+                                &grown_open_path)==-ENOSPC);
+    assert(!grown_open_path.dentry);
     assert(nas_fs_lookup_node("/tmp/open-never-created",true,
                                &newly_opened,newly_opened_path)==-ENOENT);
     for(unsigned i=0;i<512;i++)
@@ -1003,6 +1175,25 @@ int main(void) {
     assert(nas_vfs_link("/tmp/demo","/tmp/linked")==0);
     assert(nas_vfs_symlink("../target","/tmp/newlink")==0);
     assert(nas_vfs_mkdir("/",0755)==-EEXIST);
+    /* Linux treats any slash-only spelling as the existing mount root.
+     * Creation/linking reports EEXIST; unlink differs from rmdir. These
+     * are real namespace policy cases, not provider special cases. */
+    assert(nas_fs_root_only("/") && nas_fs_root_only("////"));
+    assert(!nas_fs_root_only("/tmp/") && !nas_fs_root_only("tmp"));
+    assert(nas_vfs_create("////",0644)==-EEXIST);
+    assert(nas_vfs_mkdir("////",0755)==-EEXIST);
+    assert(nas_vfs_symlink("target","////")==-EEXIST);
+    assert(nas_vfs_link("/bin/demo","////")==-EEXIST);
+    assert(nas_vfs_unlink("////",0)==-EISDIR);
+    assert(nas_vfs_unlink("////",0x200ULL)==-EBUSY);
+    struct nas_vfs_path impossible_parent={0};
+    char impossible_leaf[256];
+    assert(nas_fs_lookup_parent_mkdir_at(NULL,NULL,"////",
+                &impossible_parent,impossible_leaf)==-EEXIST);
+    assert(nas_fs_lookup_parent_at_policy(NULL,NULL,"////",
+                NAS_FS_TRAILING_CREATE_DEST,&impossible_parent,
+                impossible_leaf)==-EEXIST);
+    assert(!impossible_parent.dentry);
     assert(nas_vfs_mkdir("/tmp",0755)==-EEXIST);
     assert(nas_vfs_mkdir("/bin",0755)==-EEXIST);
     assert(nas_vfs_mkdir("/tmp/demo",0755)==-EEXIST);
@@ -1016,6 +1207,7 @@ int main(void) {
     assert(nas_vfs_rename("/tmp/demo","/bin/other",0)==-EXDEV);
     assert(nas_vfs_link("/bin/demo","/tmp/copy")==-EXDEV);
     assert(nas_vfs_mkdir("/tmp/demo/sub",0755)==-ENOTDIR);
+    test_legacy_owned_mutation_parity();
     assert(nas_fs_lookup_node("/shortcut",false,&n,resolved)==0 && n.is_symlink);
     /* Direct kernel lookup and syscall namei must now share ONE pathwalk:
      * inspect a final symlink itself; follow an intermediate symlink;
@@ -1127,6 +1319,8 @@ int main(void) {
     struct nas_vfs_path underlay_path={0},visible_path={0};
     assert(nas_vfs_path_bind(&underlay_node,"/mnt",&underlay_path)==0);
     assert(nas_vfs_register_mount(&ext_mount)==0);
+    test_legacy_mounted_parity();
+    assert(mutation_parity_errors==0);
     struct nas_fs_node visible_node;
     assert(nas_fs_lookup_node("/mnt",true,&visible_node,resolved)==0);
     assert(visible_node.mount!=underlay_node.mount);
@@ -1320,6 +1514,24 @@ int main(void) {
     assert(n.filesystem==&ext_mock_type && n.ino==802);
     assert(nas_vfs_lookup("/standalone/hello",&direct)==0);
     assert(direct.mount==n.mount && direct.ino==n.ino);
+    /* The same open transaction must work before CPIO/root is available.
+     * The deleted open_inode path used to handle this bootstrap case. */
+    struct nas_fs_node rootless_open_node={0};
+    struct nas_vfs_path rootless_open_path={0};
+    struct nas_vfs_open_options rootless_open_options={
+        .follow_final=true,.access=0
+    };
+    assert(nas_vfs_open_path_at(NULL,NULL,"/standalone/hello",
+                                 &rootless_open_options,&rootless_open_node,
+                                 &rootless_open_path)==0);
+    assert(rootless_open_node.ino==802 && rootless_open_path.dentry);
+    assert(nas_vfs_unregister_mount(&no_archive)==-EBUSY);
+    assert(nas_vfs_node_unpin(&rootless_open_node)==0);
+    assert(nas_vfs_path_put(&rootless_open_path)==0);
+    assert(nas_vfs_open_path_at(NULL,NULL,"/standalone/missing",
+                                 &rootless_open_options,&rootless_open_node,
+                                 &rootless_open_path)==-ENOENT);
+    assert(!rootless_open_path.dentry);
     assert(nas_vfs_lookup("/standalone/../no-root",&direct)==-ENOENT);
     struct nas_vfs_path rootless_mount_root={0},rootless_parent={0};
     assert(nas_fs_lookup_path_at(NULL,NULL,"/standalone",true,

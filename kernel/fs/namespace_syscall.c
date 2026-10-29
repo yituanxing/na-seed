@@ -192,10 +192,7 @@ static uint64_t sys_mkdirat_tmp(uint64_t dirfd, uint64_t pathname,
     if(rc)return (uint64_t)(int64_t)rc;
     /* The Linux VFS reports an existing root as EEXIST for mkdir("/").
      * A parent/name lookup has no final leaf for a slash-only spelling. */
-    bool root_only=path.pathname[0]=='/';
-    for(unsigned i=1;root_only && path.pathname[i];i++)
-        if(path.pathname[i]!='/')root_only=false;
-    if(root_only) {
+    if(nas_fs_root_only(path.pathname)) {
         nas_fs_path_end(&path);
         return (uint64_t)-EEXIST;
     }
@@ -211,9 +208,14 @@ static uint64_t sys_mkdirat_tmp(uint64_t dirfd, uint64_t pathname,
 }
 static uint64_t sys_unlinkat_tmp(uint64_t dirfd, uint64_t pathname,
                                  uint64_t flags) {
+    if(flags&~0x200ULL)return (uint64_t)-EINVAL;
     struct nas_fs_path_request path;
     int rc=nas_fs_user_path_begin(dirfd,pathname,&path);
     if(rc)return (uint64_t)(int64_t)rc;
+    if(nas_fs_root_only(path.pathname)) {
+        nas_fs_path_end(&path);
+        return (uint64_t)(flags&0x200ULL ? -EBUSY : -EISDIR);
+    }
     struct nas_vfs_path parent={0};char leaf[256];
     rc=nas_fs_lookup_parent_at(path.start.dentry?&path.start:NULL,
                                path.root.dentry?&path.root:NULL,

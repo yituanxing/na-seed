@@ -473,16 +473,18 @@ static uint64_t open_path_owned(const char *path,
             .directory_only=(flags&0x10000ULL)!=0,.access=access,
             .create_mode=nas_fs_create_mode(create_mode,TASK.fs->umask)
         };
-        int rc=request ?
-            nas_vfs_open_path_at(request->start.dentry?&request->start:NULL,
-                                 request->root.dentry?&request->root:NULL,
-                                 path,&options,&opened_node,&directory_path) :
-            nas_vfs_open_inode(path,&options,&opened_node,canonical,
-                               &directory_path);
+        int rc=nas_vfs_open_path_at(
+            request && request->start.dentry ? &request->start : NULL,
+            request && request->root.dentry ? &request->root : NULL,
+            path,&options,&opened_node,&directory_path);
         if(!rc) {
             have_node=true;
             kind=opened_node.is_dir?FD_DIR:FD_ARCHIVE;
-            if(request && directory_path.dentry)
+            /* origin_path is a diagnostic hint, never a second namei or
+             * part of the successful O_CREAT/O_TRUNC transaction. A long
+             * Path must not turn a committed open into an error because
+             * this optional legacy 256-byte snapshot cannot represent it. */
+            if(directory_path.dentry)
                 (void)nas_vfs_path_string(&directory_path,canonical);
         } else if(rc==-ENOENT && !request && running_alpine &&
                   (real_file=bootfs_lookup(path))) {
@@ -545,7 +547,7 @@ uint64_t nas_fs_open_path(const char *path,uint64_t native_flags,
  * In particular ENOENT from a renamed/unlinked directory FD never causes
  * an arbitrary O_CREAT to be retried through a pathname reconstructed from
  * that FD. */
-static bool is_bootstrap_open_endpoint(const char *path) {
+bool nas_fs_bootstrap_endpoint(const char *path) {
     if(!path || path[0]!='/')return false;
     if(!strcmp(path,"/dev/null") || !strcmp(path,"/dev/zero") ||
        !strcmp(path,"/dev/tty") || !strcmp(path,"/dev/ttyS0") ||
@@ -555,6 +557,22 @@ static bool is_bootstrap_open_endpoint(const char *path) {
     if(pty>=0 && nas_pty_present((unsigned)pty))return true;
     return running_alpine && bootfs_lookup(path)!=NULL;
 }
+bool nas_fs_bootstrap_candidate(const struct nas_fs_path_request *request,
+                                 char candidate[256]) {
+    if(!request || !candidate)return false;
+    if(request->pathname[0]=='/') {
+        size_t n=strlen(request->pathname);
+        if(n>=256)return false;
+        memcpy(candidate,request->pathname,n+1);
+    } else {
+        if(!request->start.dentry)return false;
+        char base[256];
+        if(nas_vfs_path_string(&request->start,base) ||
+           nas_path_join_raw(base,request->pathname,candidate))
+            return false;
+    }
+    return nas_fs_bootstrap_endpoint(candidate);
+}
 static uint64_t maybe_open_bootstrap(const struct nas_fs_path_request *request,
                                      uint64_t dirfd,uint64_t pathname,
                                      uint64_t flags,uint64_t mode,
@@ -563,19 +581,10 @@ static uint64_t maybe_open_bootstrap(const struct nas_fs_path_request *request,
     /* Classify using the already owned lookup anchor BEFORE asking the old
      * string adapter anything. Ordinary ENOENT never gets a second namei. */
     char candidate[256];
-    if(request->pathname[0]=='/')
-        memcpy(candidate,request->pathname,strlen(request->pathname)+1);
-    else {
-        if(!request->start.dentry)return original;
-        char base[256];
-        if(nas_vfs_path_string(&request->start,base) ||
-           nas_path_join_raw(base,request->pathname,candidate))
-            return original;
-    }
-    if(!is_bootstrap_open_endpoint(candidate))return original;
+    if(!nas_fs_bootstrap_candidate(request,candidate))return original;
     char legacy[256];
     uint64_t found=nas_fs_resolve_path(dirfd,pathname,legacy);
-    if((int64_t)found<0 || !is_bootstrap_open_endpoint(legacy))
+    if((int64_t)found<0 || !nas_fs_bootstrap_endpoint(legacy))
         return original;
     return nas_fs_open_path(legacy,flags,mode);
 }

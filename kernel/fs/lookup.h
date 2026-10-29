@@ -28,10 +28,12 @@ int nas_fs_lookup_parent(const char *absolute,struct nas_fs_node *parent,
                          char canonical[256]);
 int nas_fs_canonical_candidate(const char *absolute,char canonical[256]);
 /* Follow-final negative dentry for O_CREAT, never unlink/rename. */
-int nas_fs_resolve_create_target(const char *path,char canonical[256]);
 int nas_fs_resolve_existing(const char *path,bool follow_final,char out[256]);
 int nas_fs_lookup_node(const char *path,bool follow_final,
                        struct nas_fs_node *result,char resolved[256]);
+/* Slash-only spelling names the already-existing root. Shared by syscall
+ * and compatibility namespace entrypoints; it has no final child name. */
+bool nas_fs_root_only(const char *path);
 /* Internal path resolution never round-trips an owned cwd/dirfd into text. */
 int nas_fs_lookup_path_at(const struct nas_vfs_path *start,
                           const struct nas_vfs_path *root_clamp,

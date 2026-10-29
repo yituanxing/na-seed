@@ -91,6 +91,31 @@ if ("nas_fs_canonical_candidate(raw,out)" not in namespace or
         "static int vfs_parent(" in vfs_src or
         "int nas_path_resolve(" in (root/"kernel/path.c").read_text()):
     raise SystemExit("old lexical namespace walker returned")
+# All public absolute-path compatibility mutations are now thin wrappers
+# around owned Path-first parent/child operations. Neither a second open
+# transaction nor old string/mount helpers may silently reappear.
+for obsolete in ("nas_vfs_open_inode(", "vfs_mutable_parent(",
+                 "active_mountpoint(", "dentry_prepare_parent(",
+                 "nas_fs_resolve_create_target("):
+    for source in ("kernel/fs/vfs.c", "kernel/fs/vfs.h",
+                   "kernel/fs/lookup.c", "kernel/fs/lookup.h",
+                   "kernel/fs/syscall.c"):
+        if obsolete in (root/source).read_text():
+            raise SystemExit(f"parallel legacy VFS algorithm returned: {obsolete} in {source}")
+for wrapper, delegate in (("nas_vfs_create(", "nas_vfs_create_child("),
+                          ("nas_vfs_mkdir(", "nas_vfs_mkdir_child("),
+                          ("nas_vfs_unlink(", "nas_vfs_unlink_child("),
+                          ("nas_vfs_rename(", "nas_vfs_rename_child_with_intent("),
+                          ("nas_vfs_link(", "nas_vfs_link_path_child("),
+                          ("nas_vfs_symlink(", "nas_vfs_symlink_child(")):
+    if wrapper not in vfs_src or delegate not in vfs_src:
+        raise SystemExit(f"VFS namespace Path-first bridge missing: {wrapper}")
+metadata_src=(root/"kernel/fs/metadata_syscall.c").read_text()
+open_src=(root/"kernel/fs/syscall.c").read_text()
+if ("nas_fs_bootstrap_candidate(&request,candidate)" not in metadata_src or
+        "nas_fs_bootstrap_endpoint(path)" not in metadata_src or
+        "nas_fs_bootstrap_candidate(request,candidate)" not in open_src):
+    raise SystemExit("stat/open bootstrap path bypasses the shared endpoint whitelist")
 for source in ("kernel/fs/vfs_providers.c", "ports/littlefs/vfs_port.c",
                "ports/lwext4/guest_vfs.c"):
     if "nas_vfs_join_child(" not in (root/source).read_text():

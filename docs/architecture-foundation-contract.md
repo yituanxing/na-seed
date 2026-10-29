@@ -334,15 +334,15 @@ filesystems and QEMU, without pretending the Task fixture tests VFS.
 
 ## Directory File open transaction belongs entirely to VFS
 
-`nas_vfs_open_inode()` now returns the counted backend inode AND optional
-positive directory Path in one transaction. The VFS itself binds the
-Dentry after validating/pinning the exact inode and before truncation
-or File publication. The Linux syscall adapter no longer constructs
+`nas_vfs_open_path_at()` now returns the counted backend inode AND optional
+positive Path for any file kind in one transaction. The VFS itself owns
+the Dentry and inode pinning before truncation or File publication.
+There is no parallel legacy `open_inode` algorithm. The Linux syscall adapter no longer constructs
 a Path from inode and string; it only transfers VFS-created references
 into the File description. Host tests directly verify successful
 directory owner transfer and independent last-put behavior. An
-inode-only caller may explicitly pass `NULL`, retaining the one
-authoritative VFS algorithm without a second parallel open API.
+inode-only caller may pass `NULL` for the returned Path, retaining the one
+authoritative VFS algorithm; rootless bootstrap callers also use this API.
 
 ## Remove normal dirfd/fchdir reverse path fallback
 

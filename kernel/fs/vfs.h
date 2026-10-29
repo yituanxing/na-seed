@@ -197,14 +197,9 @@ struct nas_vfs_open_options {
     unsigned access; /* 0=O_RDONLY, 1=O_WRONLY, 2=O_RDWR */
     uint64_t create_mode;
 };
-/* Acquire File inode AND optional positive Dentry Path in ONE VFS
- * transaction, before any O_TRUNC. A NULL owned_path is for inode-only
- * kernel consumers and host tests, not the normal directory File ABI.
- * Successful directory open transfers both independent references. */
-int nas_vfs_open_inode(const char *absolute,
-                       const struct nas_vfs_open_options *options,
-                       struct nas_fs_node *owned,char canonical[256],
-                       struct nas_vfs_path *owned_path);
+/* Acquire the File inode and optional positive Dentry Path in ONE VFS
+ * transaction. This is also the only open for rootless/bootstrap callers:
+ * passing NULL anchors selects the mounted VFS root when one exists. */
 int nas_vfs_open_path_at(const struct nas_vfs_path *start,
                          const struct nas_vfs_path *root_clamp,
                          const char *path,

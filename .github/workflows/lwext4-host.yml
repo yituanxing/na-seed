@@ -61,6 +61,9 @@ on:
       - 'scripts/test-path-request-host.c'
       - 'scripts/check-exec-path-owner.sh'
       - 'scripts/test-exec-path-owner-host.c'
+      - 'scripts/check-path-first-oracle.sh'
+      - 'scripts/check-vfs-provider.sh'
+      - 'scripts/test-vfs-provider.c'
       - 'tests/path-first-linux-oracle.c'
       - 'kernel/task/elf*.c'
       - 'kernel/task/exec.c'
@@ -114,6 +117,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Verify real BlockDevice and third-party driver port (host and 3 ISAs)
         run: sh scripts/check-block-foundation.sh
+      - name: '[HOST] Linux path semantics oracle plus real NaSeed VFS namespace regression'
+        run: sh scripts/check-path-first-oracle.sh
       - name: '[HOST] Production Path-first dirfd and owned File request checks'
         run: sh scripts/check-path-request-host.sh
       - name: '[HOST] Production exec source Path lease fault injection and one cleanup owner'
