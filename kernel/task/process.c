@@ -547,14 +547,15 @@ uint64_t nas_process_futex(uint64_t *frame,uint64_t addr,uint64_t op,
      * Non-PI queue transfer is process/VM scoped, not an invented wake. */
     if(command==3U || command==4U) {
         if((addr2&3U) || addr2>USER_LIMIT-4)return (uint64_t)-EINVAL;
-        if(!nas_mmu_user_byte(addr) || !nas_mmu_user_byte(addr+3) ||
-           !nas_mmu_user_byte(addr2) || !nas_mmu_user_byte(addr2+3))
+        uint8_t source[4],destination[4];
+        /* A valid futex word may live in a not-yet-faulted VMA.  Use the
+         * same fault-aware path as FUTEX_WAIT before mutating wait queues. */
+        if(!nas_user_read_bytes(addr,source,sizeof(source)) ||
+           !nas_user_read_bytes(addr2,destination,sizeof(destination)))
             return (uint64_t)-EFAULT;
         if(command==4U) {
-            uint8_t current[4];
-            if(!nas_user_read_bytes(addr,current,4))return (uint64_t)-EFAULT;
-            uint32_t word=(uint32_t)current[0]|((uint32_t)current[1]<<8)|
-                          ((uint32_t)current[2]<<16)|((uint32_t)current[3]<<24);
+            uint32_t word=(uint32_t)source[0]|((uint32_t)source[1]<<8)|
+                          ((uint32_t)source[2]<<16)|((uint32_t)source[3]<<24);
             if(word!=(uint32_t)val3)return (uint64_t)-EAGAIN;
         }
         unsigned nwake=val>NAS_TASK_LIMIT?NAS_TASK_LIMIT:(unsigned)val;
@@ -568,7 +569,8 @@ uint64_t nas_process_futex(uint64_t *frame,uint64_t addr,uint64_t op,
     if(command==1U || command==10U) {
         uint32_t mask=command==10U?(uint32_t)val3:UINT32_MAX;
         if(!mask)return (uint64_t)-EINVAL;
-        if(!nas_mmu_user_byte(addr) || !nas_mmu_user_byte(addr+3))
+        uint8_t word[4];
+        if(!nas_user_read_bytes(addr,word,sizeof(word)))
             return (uint64_t)-EFAULT;
         unsigned n=val>NAS_TASK_LIMIT?NAS_TASK_LIMIT:(unsigned)val;
         return nas_process_futex_wake(addr,n,mask);

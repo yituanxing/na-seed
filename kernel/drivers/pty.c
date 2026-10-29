@@ -210,10 +210,16 @@ uint64_t nas_pty_read(uint64_t fd,uint64_t dst,uint64_t count) {
         return (master?p->slave_descriptions:p->master_open) ?
                (uint64_t)-EAGAIN : master?(uint64_t)-EIO:0;
     unsigned n=count>ring->count?ring->count:(unsigned)count;
-    for(unsigned i=0;i<n;i++) {
-        uint8_t value=ring->bytes[(ring->head+i)%PTY_RING_CAP];
-        if(!nas_user_write_bytes(dst+i,&value,1))return (uint64_t)-EFAULT;
-    }
+    /* Peek the complete bounded ring read before committing any bytes.
+     * Per-byte user writes repeatedly resolved the same PTE and could
+     * partially modify the destination while replaying the entire ring on
+     * EFAULT. usercopy now validates writable/COW pages as one transaction. */
+    uint8_t bytes[PTY_RING_CAP];
+    unsigned first=n;
+    if(first>PTY_RING_CAP-ring->head)first=PTY_RING_CAP-ring->head;
+    memcpy(bytes,ring->bytes+ring->head,first);
+    if(n>first)memcpy(bytes+first,ring->bytes,n-first);
+    if(!nas_user_write_bytes(dst,bytes,n))return (uint64_t)-EFAULT;
     for(unsigned i=0;i<n;i++)(void)ring_take(ring);
     return n;
 }

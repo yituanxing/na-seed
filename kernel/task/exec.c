@@ -193,31 +193,19 @@ static uint64_t copy_exec_string(uint64_t addr, const char **result) {
     if (start >= EXEC_POOL_BYTES) return (uint64_t)-E2BIG;
     unsigned max = EXEC_POOL_BYTES - start;
     if (max > EXEC_STRING_MAX) max = EXEC_STRING_MAX;
-    uint64_t available = USER_LIMIT - addr;
     char *dst = pending_exec.strings + start;
-    /* Resolve one PTE per page, never assume two adjacent virtual pages
-     * have contiguous physical HHDM backing. */
-    for (unsigned i = 0; i < max;) {
-        if ((uint64_t)i >= available) return (uint64_t)-EFAULT;
-        uint64_t at = addr + i;
-        const uint8_t *src = nas_mmu_user_byte(at);
-        if (!src) return (uint64_t)-EFAULT;
-        unsigned chunk = (unsigned)(PAGE - (at & (PAGE - 1)));
-        if (chunk > max - i) chunk = max - i;
-        if ((uint64_t)chunk > available - i) chunk = (unsigned)(available - i);
-        for (unsigned j = 0; j < chunk; j++) {
-            char byte = (char)src[j];
-            dst[i + j] = byte;
-            if (!byte) {
-                pending_exec.used = start + i + j + 1;
-                *result = dst;
-                return 0;
-            }
-        }
-        i += chunk;
+    /* All user strings, including exec arguments, use the same VMA-aware
+     * copy path.  It faults in legitimate lazy pages, never assumes adjacent
+     * VA pages are physically adjacent, and stops at the first NUL. */
+    int rc=nas_user_read_cstr(addr,dst,max);
+    if(rc==-ENAMETOOLONG) {
+        nas_print("[EXEC ARG LIMIT] single string over 8191 bytes or total exec strings over 512 KiB\n");
+        return (uint64_t)-E2BIG;
     }
-    nas_print("[EXEC ARG LIMIT] single string over 8191 bytes or total exec strings over 512 KiB\n");
-    return (uint64_t)-E2BIG;
+    if(rc)return (uint64_t)(int64_t)rc;
+    pending_exec.used=start+(unsigned)strlen(dst)+1;
+    *result=dst;
+    return 0;
 }
 static uint64_t copy_exec_vector(uint64_t user_array, bool environment) {
     unsigned limit = environment ? NAS_ENV_MAX : NAS_ARGV_MAX;

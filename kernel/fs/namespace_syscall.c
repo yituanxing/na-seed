@@ -70,16 +70,9 @@ int nas_fs_kernel_path_begin(uint64_t dirfd,const char *kernel_path,
 int nas_fs_user_path_begin(uint64_t dirfd,uint64_t user_pointer,
                            struct nas_fs_path_request *request) {
     if(!request)return -EINVAL;
-    if(user_pointer>=USER_LIMIT)return -EFAULT;
     char source[256];
-    unsigned i=0;
-    for(;i<sizeof(source);i++) {
-        uint8_t *byte=nas_mmu_user_byte(user_pointer+i);
-        if(!byte)return -EFAULT;
-        source[i]=(char)*byte;
-        if(!source[i])break;
-    }
-    if(i==sizeof(source))return -ENAMETOOLONG;
+    int rc=nas_user_read_cstr(user_pointer,source,sizeof(source));
+    if(rc)return rc;
     return nas_fs_kernel_path_begin(dirfd,source,request);
 }
 
@@ -134,16 +127,9 @@ static int resolve_component_path(const char *base,const char *src,
 uint64_t nas_fs_resolve_path(uint64_t dirfd, uint64_t pathname,
                              char out[256]) {
     char src[256];
-    unsigned n=0;
-    if (pathname>=USER_LIMIT) return (uint64_t)-EFAULT;
-    for (;n<sizeof(src);n++) {
-        uint8_t *p=nas_mmu_user_byte(pathname+n);
-        if (!p) return (uint64_t)-EFAULT;
-        src[n]=(char)*p;
-        if (!src[n]) break;
-    }
-    if (n==sizeof(src)) return (uint64_t)-ENAMETOOLONG;
-    if (!n) return (uint64_t)-ENOENT;
+    int copy_rc=nas_user_read_cstr(pathname,src,sizeof(src));
+    if(copy_rc)return (uint64_t)(int64_t)copy_rc;
+    if (!src[0]) return (uint64_t)-ENOENT;
     const char *base=NULL;
     char inode_base[256];
     if(src[0]!='/') {
@@ -265,15 +251,8 @@ static uint64_t sys_renameat_tmp(uint64_t olddirfd, uint64_t oldptr,
 static uint64_t sys_symlinkat_tmp(uint64_t targetptr,uint64_t dirfd,
                                   uint64_t linkptr) {
     char target[256];
-    if (targetptr>=USER_LIMIT) return (uint64_t)-EFAULT;
-    unsigned i=0;
-    for (;i<sizeof(target);i++) {
-        uint8_t *p=nas_mmu_user_byte(targetptr+i);
-        if (!p) return (uint64_t)-EFAULT;
-        target[i]=(char)*p;
-        if (!target[i]) break;
-    }
-    if (i==sizeof(target)) return (uint64_t)-ENAMETOOLONG;
+    int read_rc=nas_user_read_cstr(targetptr,target,sizeof(target));
+    if(read_rc)return (uint64_t)(int64_t)read_rc;
     struct nas_fs_path_request link;
     int rc=nas_fs_user_path_begin(dirfd,linkptr,&link);
     if(rc)return (uint64_t)(int64_t)rc;

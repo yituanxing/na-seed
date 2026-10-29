@@ -100,6 +100,8 @@ jobs:
         run: sh scripts/check-bootfs-scale.sh
       - name: Page-granularity shared usercopy regression (cross-page, RX, read-only, atomic failures)
         run: cc -std=c11 -Wall -Wextra -Werror -fno-builtin -I kernel scripts/test-usercopy-pages.c kernel/mm/usercopy.c kernel/lib/string.c -o /tmp/naseed-usercopy-pages && /tmp/naseed-usercopy-pages
+      - name: M106 real filesystem syscall usercopy and pipe/socket transaction regression
+        run: sh scripts/check-m106-usercopy-syscalls.sh
       - name: Shared ELF PT_LOAD loader regression (x86/RV64/ARM64)
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-elf-segments.c kernel/task/elf_segments.c -o /tmp/naseed-segments-test && /tmp/naseed-segments-test
       - name: Shared ELF64 structural regression (x86/RV64/ARM64)

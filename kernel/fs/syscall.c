@@ -91,10 +91,9 @@ extern void nas_putchar(char c);
  * available; only then is the backend created. */
 static uint64_t sys_channel_pair(uint64_t user_pair, uint64_t flags,
                                  bool stream_socket) {
-    if (user_pair >= USER_LIMIT || user_pair > USER_LIMIT - 8)
-        return (uint64_t)-EFAULT;
-    for (unsigned i = 0; i < 8; i++)
-        if (!nas_mmu_user_byte(user_pair + i)) return (uint64_t)-EFAULT;
+    /* Resolve writable lazy/COW destinations before allocating any open
+     * descriptions: a user-supplied read-only page is EFAULT, not panic. */
+    if (!nas_user_prepare_write(user_pair, 8)) return (uint64_t)-EFAULT;
     unsigned fds[2], slots[2];
     int capacity=nas_fd_reserve(nas_current_task,0,2,fds,slots,
                                 stream_socket ? "socketpair" : "pipe2");
@@ -117,8 +116,13 @@ static uint64_t sys_channel_pair(uint64_t user_pair, uint64_t flags,
     for (unsigned i = 0; i < 2; i++)
         for (unsigned j = 0; j < 4; j++)
             output[i * 4 + j] = (uint8_t)(fds[i] >> (j * 8));
-    if (!nas_user_write_bytes(user_pair, output, sizeof(output)))
-        nas_fs_fail("pipe2 validated destination became inaccessible");
+    if (!nas_user_write_bytes(user_pair, output, sizeof(output))) {
+        /* A future preemptive kernel may invalidate the preflight. Never
+         * retain published descriptors after a failed userspace copy. */
+        nas_fs_close_fd(fds[0]);
+        nas_fs_close_fd(fds[1]);
+        return (uint64_t)-EFAULT;
+    }
     nas_print(stream_socket ? "[SOCKETPAIR] created a=" : "[PIPE] created read=");
     nas_dec(fds[0]);
     nas_print(stream_socket ? " b=" : " write=");
@@ -140,6 +144,15 @@ static uint64_t sys_socketpair(uint64_t domain,uint64_t type,
     return sys_channel_pair(user_pair,type & (0x800ULL|0x80000ULL),true);
 }
 /* AF_UNIX Linux syscall ABI lives in socket_syscall.c. */
+/* Keep user I/O staged within a single 4-KiB page. A later invalid page
+ * must not invalidate already-consumed bytes, and distinct user pages are
+ * not assumed physically contiguous. */
+static uint64_t user_io_chunk(uint64_t address,uint64_t remaining,
+                              uint64_t capacity) {
+    uint64_t page_room=4096ULL-(address&4095ULL);
+    uint64_t take=remaining<capacity?remaining:capacity;
+    return take<page_room?take:page_room;
+}
 static uint64_t pipe_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     if (!length) return 0;
     if (address >= USER_LIMIT || length > USER_LIMIT - address)
@@ -148,17 +161,19 @@ static uint64_t pipe_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     int64_t available = nas_pipe_read_amount(
         slot, length, !!(nas_open_files[slot].status_flags & 0x800ULL));
     if (available <= 0) return (uint64_t)available;
-    unsigned count = (unsigned)available, n = 0;
-    for (; n < count; n++)
-        if (!nas_mmu_user_byte(address + n)) break;
-    if (!n) return (uint64_t)-EFAULT;
-    for (unsigned i = 0; i < n; i++) {
-        uint8_t value = nas_pipe_read_byte(slot, i);
-        if (!nas_user_write_bytes(address + i, &value, 1))
-            nas_fs_fail("pipe read validated user mapping became inaccessible");
+    uint64_t done=0;
+    uint8_t buffer[1024];
+    while(done<(uint64_t)available) {
+        uint64_t n=user_io_chunk(address+done,(uint64_t)available-done,
+                                 sizeof(buffer));
+        if(!nas_user_prepare_write(address+done,n))break;
+        for(uint64_t i=0;i<n;i++)
+            buffer[i]=nas_pipe_read_byte(slot,(unsigned)i);
+        if(!nas_user_write_bytes(address+done,buffer,n))break;
+        nas_pipe_read_commit(slot,(unsigned)n);
+        done+=n;
     }
-    nas_pipe_read_commit(slot, n);
-    return n;
+    return done ? done : (uint64_t)-EFAULT;
 }
 static uint64_t pipe_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     if (!length) return 0;
@@ -168,15 +183,18 @@ static uint64_t pipe_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     int64_t available = nas_pipe_write_amount(
         slot, length, !!(nas_open_files[slot].status_flags & 0x800ULL));
     if (available <= 0) return (uint64_t)available;
-    unsigned count = (unsigned)available, n = 0;
-    for (; n < count; n++) {
-        uint8_t *src = nas_mmu_user_byte(address + n);
-        if (!src) break;
-        nas_pipe_write_byte(slot, n, *src);
+    uint64_t done=0;
+    uint8_t buffer[1024];
+    while(done<(uint64_t)available) {
+        uint64_t n=user_io_chunk(address+done,(uint64_t)available-done,
+                                 sizeof(buffer));
+        if(!nas_user_read_bytes(address+done,buffer,n))break;
+        for(uint64_t i=0;i<n;i++)
+            nas_pipe_write_byte(slot,(unsigned)i,buffer[i]);
+        nas_pipe_write_commit(slot,(unsigned)n);
+        done+=n;
     }
-    if (!n) return (uint64_t)-EFAULT;
-    nas_pipe_write_commit(slot, n);
-    return n;
+    return done ? done : (uint64_t)-EFAULT;
 }
 
 /* FD table aliases and shared open descriptions are owned by fd.c.
@@ -361,8 +379,8 @@ static uint64_t vread_regular(uint64_t fd,uint64_t address,uint64_t length) {
     uint64_t start=nas_open_files[slot].position,done=0;
     uint8_t buffer[1024];
     while(done<length) {
-        uint64_t take=length-done;
-        if(take>sizeof(buffer))take=sizeof(buffer);
+        uint64_t take=user_io_chunk(address+done,length-done,
+                                    sizeof(buffer));
         int64_t got=nas_fs_mmap_read(fd,start+done,buffer,take);
         if(got<0)return done ? done : (uint64_t)got;
         if(!got)break;
@@ -390,20 +408,16 @@ static uint64_t vwrite_regular(uint64_t fd, uint64_t address, uint64_t length) {
     uint64_t done = 0;
     uint8_t buffer[1024];
     while (done < length) {
-        uint64_t n = 0;
-        while (n < sizeof(buffer) && n < length - done) {
-            uint8_t *ptr = nas_mmu_user_byte(address + done + n);
-            if (!ptr) break;
-            buffer[n++] = *ptr;
-        }
-        if (!n) return done ? done : (uint64_t)-EFAULT;
+        uint64_t n=user_io_chunk(address+done,length-done,
+                                 sizeof(buffer));
+        if(!nas_user_read_bytes(address+done,buffer,n))
+            return done ? done : (uint64_t)-EFAULT;
         int64_t written = nas_vfs_write_at(&opened->vnode,offset+done,buffer,n);
         if (written < 0) return done ? done : (uint64_t)written;
         done += (uint64_t)written;
         if(offset+done>opened->vnode.size)opened->vnode.size=offset+done;
         opened->position=offset+done;
         if ((uint64_t)written != n) break;
-        if (n < sizeof(buffer) && done < length) break; /* user fault */
     }
     opened->position=offset+done;
     return done;
@@ -606,12 +620,16 @@ static uint64_t vread_null(uint64_t fd,uint64_t addr,uint64_t n) {
 }
 static uint64_t vread_zero(uint64_t fd,uint64_t addr,uint64_t n) {
     (void)fd;
+    if(!n)return 0;
     if(addr>=USER_LIMIT || n>USER_LIMIT-addr)return (uint64_t)-EFAULT;
-    uint8_t zero=0;
-    for(uint64_t i=0;i<n;i++)
-        if(!nas_user_write_bytes(addr+i,&zero,1))
-            return i ? i : (uint64_t)-EFAULT;
-    return n;
+    uint8_t zero[1024]={0};
+    uint64_t done=0;
+    while(done<n) {
+        uint64_t take=user_io_chunk(addr+done,n-done,sizeof(zero));
+        if(!nas_user_write_bytes(addr+done,zero,take))break;
+        done+=take;
+    }
+    return done ? done : (uint64_t)-EFAULT;
 }
 static uint64_t vread_dir(uint64_t fd,uint64_t addr,uint64_t n) {
     (void)fd;(void)addr;(void)n;return (uint64_t)-EISDIR;
@@ -622,10 +640,18 @@ static uint64_t vread_limine(uint64_t fd,uint64_t addr,uint64_t n) {
     uint64_t start=nas_open_files[TASK.fds->entries[fd].slot].position;
     if(start>file->size)return 0;
     if(n>file->size-start)n=file->size-start;
-    if(!nas_user_write_bytes(addr,(const uint8_t*)file->address+start,n))
-        return (uint64_t)-EFAULT;
-    nas_open_files[TASK.fds->entries[fd].slot].position+=n;
-    return n;
+    if(!n)return 0;
+    if(addr>=USER_LIMIT || n>USER_LIMIT-addr)return (uint64_t)-EFAULT;
+    uint64_t done=0;
+    while(done<n) {
+        uint64_t take=user_io_chunk(addr+done,n-done,1024);
+        if(!nas_user_write_bytes(addr+done,
+                                 (const uint8_t*)file->address+start+done,
+                                 take))break;
+        done+=take;
+    }
+    nas_open_files[TASK.fds->entries[fd].slot].position+=done;
+    return done ? done : (uint64_t)-EFAULT;
 }
 static uint64_t vread_tty(uint64_t fd,uint64_t addr,uint64_t n) {
     return nas_tty_read(addr,n,(nas_open_files[TASK.fds->entries[fd].slot].status_flags&0x800ULL)!=0);
@@ -634,12 +660,22 @@ static uint64_t vwrite_discard(uint64_t fd,uint64_t addr,uint64_t n) {
     (void)fd;(void)addr;return n;
 }
 static uint64_t vwrite_tty(uint64_t fd,uint64_t addr,uint64_t n) {
-    for(uint64_t i=0;i<n;i++) {
-        uint8_t *p=nas_mmu_user_byte(addr+i);
-        if(!p)return i ? i : (uint64_t)-EFAULT;
-        nas_tty_write_char(*p);
-        if(fd==1 && (running_bash || running_busybox))
-            observe_stdout((char)*p);
+    if(!n)return 0;
+    uint8_t buffer[1024];
+    uint64_t done=0;
+    while(done<n) {
+        if(addr>=USER_LIMIT || done>USER_LIMIT-addr)
+            return done ? done : (uint64_t)-EFAULT;
+        uint64_t take=user_io_chunk(addr+done,n-done,sizeof(buffer));
+        if(take>USER_LIMIT-addr-done)take=USER_LIMIT-addr-done;
+        if(!take || !nas_user_read_bytes(addr+done,buffer,take))
+            return done ? done : (uint64_t)-EFAULT;
+        for(uint64_t i=0;i<take;i++) {
+            nas_tty_write_char(buffer[i]);
+            if(fd==1 && (running_bash || running_busybox))
+                observe_stdout((char)buffer[i]);
+        }
+        done+=take;
     }
     return n;
 }

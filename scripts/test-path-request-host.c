@@ -47,9 +47,18 @@ int nas_vfs_path_put(struct nas_vfs_path *path) {
     *path=(struct nas_vfs_path){0};
     return 0;
 }
-uint8_t *nas_mmu_user_byte(uint64_t address) {
-    if(address>=USER_LIMIT)return NULL;
-    return (uint8_t *)(uintptr_t)address;
+/* The user-memory engine has its own fault/COW tests.  This adapter fixture
+ * models its bounded-string contract without requiring a page-table setup. */
+int nas_user_read_cstr(uint64_t address,char *dst,uint64_t capacity) {
+    if(address>=USER_LIMIT)return -EFAULT;
+    if(!capacity)return -ENAMETOOLONG;
+    const char *src=(const char *)(uintptr_t)address;
+    for(uint64_t i=0;i<capacity;i++) {
+        if(address+i>=USER_LIMIT)return -EFAULT;
+        dst[i]=src[i];
+        if(!dst[i])return 0;
+    }
+    return -ENAMETOOLONG;
 }
 void nas_print(const char *message) { fputs(message,stderr); }
 void nas_arch_halt(void) { assert(!"kernel panic in path request host test");__builtin_trap(); }
@@ -139,6 +148,14 @@ int main(void) {
     assert(!nas_fs_user_path_begin((uint64_t)-100,
                    (uint64_t)(uintptr_t)"/tmp/guest",&req));
     assert(!strcmp(req.pathname,"/tmp/guest"));
+    nas_fs_path_end(&req);no_leak();
+    char too_long[257];memset(too_long,'z',256);too_long[256]=0;
+    assert(nas_fs_user_path_begin((uint64_t)-100,
+                   (uint64_t)(uintptr_t)too_long,&req)==-ENAMETOOLONG);
+    too_long[255]=0;
+    assert(!nas_fs_user_path_begin((uint64_t)-100,
+                   (uint64_t)(uintptr_t)too_long,&req));
+    assert(strlen(req.pathname)==255);
     nas_fs_path_end(&req);no_leak();
     puts("[PATH REQUEST HOST PASS] absolute dirfd ignored; rootless relative File; O_PATH; ownership; invalid paths");
     return 0;
