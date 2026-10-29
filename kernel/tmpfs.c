@@ -8,14 +8,11 @@
 #include "time/clock.h"
 #include "arch/arch.h"
 
-/* Metadata is itself demand-allocated from the common frame provider:
- * one page holds several reusable inode records; a linked slab chain grows
- * as large as available RAM allows instead of stopping after eight files.
- * Crucially, pointers remain stable across growth and fork/dup/rename.
- * Only the generic tmpfs owns slabs; no architecture-dependent allocator. */
-#define TMP_INODES_PER_SLAB ((4096U - sizeof(void *)) / sizeof(struct nas_tmp_file))
+/* Metadata is demand-allocated from the common frame provider. One page
+ * yields stable inode slots, recycled through an O(1) free-list after the
+ * FINAL VFS pin has gone away; no scan of all past allocations is needed. */
+#define TMP_INODES_PER_SLAB (4096U / sizeof(struct nas_tmp_file))
 struct tmp_inode_slab {
-    struct tmp_inode_slab *next;
     struct nas_tmp_file nodes[TMP_INODES_PER_SLAB];
 };
 _Static_assert(sizeof(struct tmp_inode_slab) <= 4096, "tmp inode slab must fit one frame");
@@ -32,7 +29,7 @@ static uint64_t tmp_next_mtime(uint64_t previous) {
     uint64_t now = tmp_now_ns();
     return now > previous ? now : previous + (previous < UINT64_MAX);
 }
-static struct tmp_inode_slab *tmp_slabs;
+static struct nas_tmp_file *tmp_free_inodes;
 static uint64_t tmp_next_ino = 1;
 
 static struct tmp_inode_slab *tmp_new_slab(void) {
@@ -41,8 +38,13 @@ static struct tmp_inode_slab *tmp_new_slab(void) {
     struct tmp_inode_slab *slab =
         (struct tmp_inode_slab *)(uintptr_t)(nas_hhdm_offset() + frame);
     memset(slab,0,4096);
-    slab->next = tmp_slabs;
-    tmp_slabs = slab;
+    /* Seed a reusable slot list once per new page. Inode allocation no
+     * longer rescans every live inode after thousands of creates. */
+    for(unsigned i=TMP_INODES_PER_SLAB;i>0;i--) {
+        struct nas_tmp_file *node=&slab->nodes[i-1];
+        node->free_next=tmp_free_inodes;
+        tmp_free_inodes=node;
+    }
     return slab;
 }
 static void tmp_try_reclaim(struct nas_tmp_file *node) {
@@ -50,8 +52,13 @@ static void tmp_try_reclaim(struct nas_tmp_file *node) {
     /* Sole lifetime owner: mounted VFS inode pins cover shared Files,
      * independent opens, cwd, rename and orphan reclamation. */
     if(nas_vfs_inode_is_pinned(node))return;
+    /* A detached directory has neither a visible alias nor children.
+     * Refuse to recycle any unexpectedly live namespace index pointer. */
+    if(node->directory_alias || node->children.count)return;
     tmp_truncate(node);
     node->used = false;
+    node->free_next=tmp_free_inodes;
+    tmp_free_inodes=node;
 }
 
 
@@ -249,15 +256,9 @@ int tmp_link_target(const struct nas_tmp_file *file, char target[256]) {
 /* Inode storage identity is independent from namespace name/link count.
  * The namespace owner publishes a dentry only AFTER successful allocation. */
 struct nas_tmp_file *tmp_inode_alloc(bool dir,uint32_t mode) {
-    struct nas_tmp_file *file=0;
-    for (struct tmp_inode_slab *slab=tmp_slabs;slab && !file;slab=slab->next)
-        for(unsigned n=0;n<TMP_INODES_PER_SLAB;n++)
-            if(!slab->nodes[n].used) {file=&slab->nodes[n];break;}
-    if(!file) {
-        struct tmp_inode_slab *slab=tmp_new_slab();
-        if(!slab)return 0;
-        file=&slab->nodes[0];
-    }
+    if(!tmp_free_inodes && !tmp_new_slab())return 0;
+    struct nas_tmp_file *file=tmp_free_inodes;
+    tmp_free_inodes=file->free_next;
     *file=(struct nas_tmp_file){0};
     file->used=true;
     file->ino=tmp_next_ino++;

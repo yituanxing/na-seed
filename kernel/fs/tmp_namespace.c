@@ -6,18 +6,22 @@
 #include "../arch/arch.h"
 
 /* A dentry is a (parent inode, one basename, child inode) edge, as in
- * Linux dcache / NaOS vnode trees. Absolute paths exist only at the
- * syscall compatibility boundary. Directory rename is one edge update:
- * children retain their parents and no subtree pathname cache is rewritten.
- * This is the sole tmpfs namespace owner; sparse inode data is in tmpfs.c. */
-#define TMP_DENTRIES_PER_SLAB ((4096U - sizeof(void *)) / sizeof(struct nas_tmp_dentry))
+ * Linux dcache / NaOS vnode trees. The namespace owns three indexes:
+ * hashed (parent, name) lookup, one ordered child list per directory, and
+ * the unique alias of each directory inode (directories cannot be linked).
+ * The ordered list shares stable slab entries with the lookup table; there
+ * is no second pathname, task cwd cache or shadow namespace authority.
+ * Directory rename changes ONE edge; children retain their parent inode. */
+#define TMP_NAME_BUCKETS 2048U
+#define TMP_DENTRIES_PER_SLAB (4096U / sizeof(struct nas_tmp_dentry))
 struct tmp_dentry_slab {
-    struct tmp_dentry_slab *next;
     struct nas_tmp_dentry entries[TMP_DENTRIES_PER_SLAB];
 };
 _Static_assert(TMP_DENTRIES_PER_SLAB>=2, "dentries fit a frame");
 _Static_assert(sizeof(struct tmp_dentry_slab)<=4096, "dentry slab too large");
-static struct tmp_dentry_slab *tmp_dentry_slabs;
+static struct nas_tmp_dentry *tmp_free_dentries;
+static struct nas_tmp_dentry *tmp_name_buckets[TMP_NAME_BUCKETS];
+static struct nas_tmp_directory tmp_root_children;
 
 static const void *tmp_root_inode(void) {
     const struct bootfs_entry *root=bootfs_find("/tmp");
@@ -28,29 +32,78 @@ static bool leaf_valid(const char *name) {
        !strcmp(name,".") || !strcmp(name,".."))return false;
     return strlen(name)<256;
 }
+static unsigned name_bucket(const void *parent,const char *name) {
+    /* Hash identity AND basename: sibling names on different directories do
+     * not form one long chain. No backend inode numbers or paths are keys. */
+    /* Only eleven bits index the table. FNV-1a/32 avoids expensive RV32I
+     * 64-bit multiplication in every lookup and never requires an M opcode. */
+    uint32_t h=2166136261U;
+    uintptr_t identity=(uintptr_t)parent;
+    for(unsigned i=0;i<sizeof(identity);i++) {
+        h^=(uint8_t)(identity>>(i*8));h*=16777619U;
+    }
+    for(const unsigned char *p=(const unsigned char *)name;*p;p++) {
+        h^=*p;h*=16777619U;
+    }
+    return (unsigned)(h&(TMP_NAME_BUCKETS-1));
+}
 static struct nas_tmp_dentry *find_child(const void *parent,const char *name) {
     if(!parent || !leaf_valid(name))return 0;
-    for(struct tmp_dentry_slab *s=tmp_dentry_slabs;s;s=s->next)
-        for(unsigned i=0;i<TMP_DENTRIES_PER_SLAB;i++) {
-            struct nas_tmp_dentry *d=&s->entries[i];
-            if(d->used && d->parent_inode==parent &&
-               !strcmp(d->name,name))return d;
-        }
+    for(struct nas_tmp_dentry *d=tmp_name_buckets[name_bucket(parent,name)];
+        d;d=d->hash_next)
+        if(d->parent_inode==parent && !strcmp(d->name,name))return d;
     return 0;
 }
 static struct nas_tmp_dentry *find_inode(const void *inode) {
-    if(!inode)return 0;
-    for(struct tmp_dentry_slab *s=tmp_dentry_slabs;s;s=s->next)
-        for(unsigned i=0;i<TMP_DENTRIES_PER_SLAB;i++)
-            if(s->entries[i].used && s->entries[i].inode==inode)
-                return &s->entries[i];
-    return 0;
+    if(!inode || inode==tmp_root_inode())return 0;
+    const struct nas_tmp_file *directory=inode;
+    if(!directory->used || !directory->is_dir)return 0;
+    struct nas_tmp_dentry *d=directory->directory_alias;
+    return d && d->used && d->inode==inode ? d : 0;
+}
+static struct nas_tmp_directory *directory_state(const void *parent) {
+    if(!parent)return 0;
+    if(parent==tmp_root_inode())return &tmp_root_children;
+    struct nas_tmp_file *f=(struct nas_tmp_file *)(uintptr_t)parent;
+    return find_inode(parent) ? &f->children : 0;
 }
 static bool parent_valid(const void *parent) {
-    if(!parent)return false;
-    if(parent==tmp_root_inode())return true;
-    const struct nas_tmp_file *f=parent;
-    return f->used && f->is_dir && find_inode(parent)!=0;
+    return directory_state(parent)!=0;
+}
+static void invalidate_seek(struct nas_tmp_directory *directory) {
+    directory->seek=0;directory->seek_index=0;
+}
+static void hash_attach(struct nas_tmp_dentry *d) {
+    unsigned bucket=name_bucket(d->parent_inode,d->name);
+    d->hash_next=tmp_name_buckets[bucket];
+    tmp_name_buckets[bucket]=d;
+}
+static void hash_detach(struct nas_tmp_dentry *d) {
+    unsigned bucket=name_bucket(d->parent_inode,d->name);
+    struct nas_tmp_dentry **link=&tmp_name_buckets[bucket];
+    while(*link && *link!=d)link=&(*link)->hash_next;
+    if(*link)*link=d->hash_next;
+    d->hash_next=0;
+}
+static void child_attach(struct nas_tmp_directory *directory,
+                         struct nas_tmp_dentry *d) {
+    d->directory_prev=directory->last;
+    d->directory_next=0;
+    if(directory->last)directory->last->directory_next=d;
+    else directory->first=d;
+    directory->last=d;
+    directory->count++;
+    invalidate_seek(directory);
+}
+static void child_detach(struct nas_tmp_directory *directory,
+                         struct nas_tmp_dentry *d) {
+    if(d->directory_prev)d->directory_prev->directory_next=d->directory_next;
+    else directory->first=d->directory_next;
+    if(d->directory_next)d->directory_next->directory_prev=d->directory_prev;
+    else directory->last=d->directory_prev;
+    d->directory_prev=d->directory_next=0;
+    directory->count--;
+    invalidate_seek(directory);
 }
 struct nas_tmp_file *tmp_find_child(const void *parent,const char *name) {
     struct nas_tmp_dentry *d=find_child(parent,name);
@@ -58,16 +111,16 @@ struct nas_tmp_file *tmp_find_child(const void *parent,const char *name) {
 }
 const struct nas_tmp_dentry *tmp_child_entry_inode(const void *parent,
                                                    unsigned index) {
-    if(!parent_valid(parent))return 0;
-    for(struct tmp_dentry_slab *s=tmp_dentry_slabs;s;s=s->next)
-        for(unsigned i=0;i<TMP_DENTRIES_PER_SLAB;i++) {
-            const struct nas_tmp_dentry *d=&s->entries[i];
-            if(d->used && d->parent_inode==parent) {
-                if(!index)return d;
-                index--;
-            }
-        }
-    return 0;
+    struct nas_tmp_directory *dir=directory_state(parent);
+    if(!dir || index>=dir->count)return 0;
+    struct nas_tmp_dentry *d=dir->first;
+    unsigned ordinal=0;
+    if(dir->seek && index>=dir->seek_index) {
+        d=dir->seek;ordinal=dir->seek_index;
+    }
+    while(ordinal<index && d) {d=d->directory_next;ordinal++;}
+    dir->seek=d;dir->seek_index=index;
+    return d;
 }
 const void *tmp_dir_parent_inode(const void *dir) {
     if(!dir)return 0;
@@ -104,8 +157,10 @@ static bool dentry_path(const struct nas_tmp_dentry *entry,char out[256]) {
 }
 static struct nas_tmp_dentry *tmp_insert(const void *parent,const char *name,
                                          struct nas_tmp_file *inode) {
-    if(!parent_valid(parent) || !leaf_valid(name) ||
-       !inode || !inode->used || find_child(parent,name))return 0;
+    struct nas_tmp_directory *directory=directory_state(parent);
+    if(!directory || !leaf_valid(name) || !inode || !inode->used ||
+       find_child(parent,name) || (inode->is_dir && inode->directory_alias))
+        return 0;
     /* Reject unreachable overlong paths before publishing a new dentry.
      * Namei's 256-byte bound applies to the entire ancestry, not only
      * the one-component basename. */
@@ -117,30 +172,41 @@ static struct nas_tmp_dentry *tmp_insert(const void *parent,const char *name,
         base_length=strlen(base);
     }
     if(base_length+1+strlen(name)>=256)return 0;
-    struct nas_tmp_dentry *entry=0;
-    for(struct tmp_dentry_slab *s=tmp_dentry_slabs;s && !entry;s=s->next)
-        for(unsigned i=0;i<TMP_DENTRIES_PER_SLAB;i++)
-            if(!s->entries[i].used){entry=&s->entries[i];break;}
-    if(!entry) {
+    if(!tmp_free_dentries) {
         uint64_t frame=nas_frame_alloc();
         if(!frame)return 0;
         struct tmp_dentry_slab *s=
             (struct tmp_dentry_slab *)(uintptr_t)(nas_hhdm_offset()+frame);
         memset(s,0,4096);
-        s->next=tmp_dentry_slabs;tmp_dentry_slabs=s;
-        entry=&s->entries[0];
+        for(unsigned i=TMP_DENTRIES_PER_SLAB;i>0;i--) {
+            struct nas_tmp_dentry *slot=&s->entries[i-1];
+            slot->free_next=tmp_free_dentries;
+            tmp_free_dentries=slot;
+        }
     }
+    struct nas_tmp_dentry *entry=tmp_free_dentries;
+    tmp_free_dentries=entry->free_next;
+    *entry=(struct nas_tmp_dentry){0};
     entry->parent_inode=parent;
     memcpy(entry->name,name,strlen(name)+1);
     entry->inode=inode;
     entry->used=true;
+    hash_attach(entry);
+    child_attach(directory,entry);
+    if(inode->is_dir)inode->directory_alias=entry;
     tmp_inode_link(inode);
     return entry;
 }
 static void tmp_remove_entry(struct nas_tmp_dentry *d) {
     if(!d || !d->used)return;
     struct nas_tmp_file *inode=d->inode;
-    d->used=false;d->inode=0;d->parent_inode=0;d->name[0]=0;
+    struct nas_tmp_directory *directory=directory_state(d->parent_inode);
+    hash_detach(d);
+    if(directory)child_detach(directory,d);
+    if(inode->is_dir && inode->directory_alias==d)inode->directory_alias=0;
+    *d=(struct nas_tmp_dentry){0};
+    d->free_next=tmp_free_dentries;
+    tmp_free_dentries=d;
     tmp_inode_unlink(inode);
 }
 struct nas_tmp_file *tmp_create_at(const void *parent,const char *name,
@@ -245,6 +311,24 @@ static bool under_inode(const void *parent,const void *directory) {
     }
     return false;
 }
+/* The path bound applies to every descendant after a directory rename.
+ * Walk only the MOVED subtree through its child lists: scanning unrelated
+ * tmpfs slabs and reconstructing every absolute name is O(total * depth).
+ * Max depth is bounded by the same 256-byte path limit as namei. */
+static bool subtree_paths_fit(const void *parent,size_t parent_length,
+                              unsigned depth) {
+    if(depth>=128)return false;
+    struct nas_tmp_directory *directory=directory_state(parent);
+    if(!directory)return false;
+    for(const struct nas_tmp_dentry *d=directory->first;
+        d;d=d->directory_next) {
+        size_t length=parent_length+1+strlen(d->name);
+        if(length>=256)return false;
+        if(d->inode->is_dir && !subtree_paths_fit(d->inode,length,depth+1))
+            return false;
+    }
+    return true;
+}
 int tmp_rename_at(const void *old_parent,const char *old_name,
                   const void *new_parent,const char *new_name,uint64_t flags) {
     if(flags&~1ULL)return -EINVAL;
@@ -264,8 +348,7 @@ int tmp_rename_at(const void *old_parent,const char *old_name,
         if(target->inode->is_dir &&
            tmp_child_entry_inode(target->inode,0))return -ENOTEMPTY;
     }
-    char oldpath[256],newpath[256],new_parent_path[256];
-    if(!dentry_path(source,oldpath))return -ENAMETOOLONG;
+    char new_parent_path[256];
     if(new_parent==tmp_root_inode())memcpy(new_parent_path,"/tmp",5);
     else {
         const struct nas_tmp_dentry *p=find_inode(new_parent);
@@ -273,25 +356,19 @@ int tmp_rename_at(const void *old_parent,const char *old_name,
     }
     size_t prefix=strlen(new_parent_path),leaf=strlen(new_name);
     if(prefix+1+leaf>=256)return -ENAMETOOLONG;
-    memcpy(newpath,new_parent_path,prefix);
-    newpath[prefix++]='/';
-    memcpy(newpath+prefix,new_name,leaf+1);
-    /* Preflight path limits for ALL descendants; no mutation can leave a
-     * directory tree whose pathname cannot be represented by namei. */
-    if(inode->is_dir) {
-        char full[256];
-        for(struct tmp_dentry_slab *s=tmp_dentry_slabs;s;s=s->next)
-            for(unsigned n=0;n<TMP_DENTRIES_PER_SLAB;n++) {
-                const struct nas_tmp_dentry *d=&s->entries[n];
-                if(!d->used || !under_inode(d->parent_inode,inode))continue;
-                if(!dentry_path(d,full))return -ESTALE;
-                if(strlen(newpath)+strlen(full)-strlen(oldpath)>=256)
-                    return -ENAMETOOLONG;
-            }
-    }
+    /* Validate the entire subtree before touching the destination. */
+    if(inode->is_dir && !subtree_paths_fit(inode,prefix+1+leaf,0))
+        return -ENAMETOOLONG;
     if(target)tmp_remove_entry(target); /* open replaced File retains inode */
+    struct nas_tmp_directory *old_directory=directory_state(old_parent);
+    struct nas_tmp_directory *new_directory=directory_state(new_parent);
+    hash_detach(source);
+    if(old_parent!=new_parent)child_detach(old_directory,source);
+    else invalidate_seek(old_directory);
     source->parent_inode=new_parent;
     memcpy(source->name,new_name,leaf+1); /* ONE dentry edge is renamed */
+    hash_attach(source);
+    if(old_parent!=new_parent)child_attach(new_directory,source);
     tmp_inode_touch(inode);
     /* The syscall FS context owns cwd_path. Its next getcwd resolves the
      * live Dentry ancestry; tmpfs must not traverse Task or mutate a

@@ -17,6 +17,15 @@
 #define TMP_INDEX_ROOT_ENTRIES 512U
 #define TMP_FILE_CAP (TMP_PAGE_SIZE * (uint64_t)TMP_PAGE_ENTRIES * TMP_INDEX_ROOT_ENTRIES)
 
+struct nas_tmp_dentry;
+/* A directory maintains its own ordered child chain and a per-directory
+ * forward readdir cursor. Namespace mutations invalidate the cached cursor;
+ * callers may still seek to any ordinal and receive the correct entry. */
+struct nas_tmp_directory {
+    struct nas_tmp_dentry *first, *last, *seek;
+    unsigned count, seek_index;
+};
+
 struct nas_tmp_file {
     bool used, is_dir;
     uint32_t nlink; /* directory-entry references, not open FD references */
@@ -25,6 +34,12 @@ struct nas_tmp_file {
     uint64_t size;
     uint64_t atime_ns, mtime_ns, ctime_ns; /* UNIX realtime nanoseconds */
     uint32_t mode;
+    /* Only directories have a namespace alias: hard-linking directories is
+     * forbidden. Detached cwd inodes retain storage but no alias. */
+    struct nas_tmp_dentry *directory_alias;
+    struct nas_tmp_directory children;
+    /* Reclaimed inode slots reuse stable slab addresses in O(1) time. */
+    struct nas_tmp_file *free_next;
  };
 
 /* A dentry names an inode. Multiple dentries may reference one regular file.
@@ -37,6 +52,12 @@ struct nas_tmp_dentry {
     const void *parent_inode;
     char name[256];
     struct nas_tmp_file *inode;
+    /* Hashed (parent, basename) lookup, per-parent ordered children, and
+     * an independent reusable slot list. A used dentry is in the first two
+     * indexes; a free dentry is only in the slot list. */
+    struct nas_tmp_dentry *hash_next;
+    struct nas_tmp_dentry *directory_prev, *directory_next;
+    struct nas_tmp_dentry *free_next;
 };
 const struct nas_tmp_dentry *tmp_child_entry_inode(const void *parent,unsigned index);
 const void *tmp_dir_parent_inode(const void *directory);
