@@ -12,6 +12,9 @@ struct nas_posix_locks;
  * owns one dentry reference; get/put duplicate/release it explicitly.
  * The mount field is a typed identity, not a string prefix. */
 struct nas_vfs_dentry;
+/* Internal namei expansion bound, NOT yet the syscall/user-path ABI limit.
+ * Existing provider and syscall adapters retain independent 256B caps. */
+#define NAS_VFS_WALK_PATH_LIMIT 4096U
 struct nas_vfs_path {
     const struct nas_vfs_mount *mount;
     uint64_t mount_id;
@@ -24,6 +27,16 @@ int nas_vfs_path_get(const struct nas_vfs_path *source,
 int nas_vfs_path_put(struct nas_vfs_path *path);
 int nas_vfs_path_string(const struct nas_vfs_path *path,
                         char absolute[256]);
+/* Path-first namei owns a Dentry reference at each returned destination.
+ * Borrowed start/root remain caller-owned throughout lookup.  Rootless
+ * direct-ELF boot still reports ENOENT for '/' without inventing an inode. */
+int nas_vfs_path_root(struct nas_vfs_path *out);
+int nas_vfs_path_node(const struct nas_vfs_path *path,struct nas_fs_node *out);
+int nas_vfs_path_parent(const struct nas_vfs_path *current,
+                        const struct nas_vfs_path *root_clamp,
+                        struct nas_vfs_path *out);
+int nas_vfs_path_lookup_child(const struct nas_vfs_path *parent,
+                              const char *name,struct nas_vfs_path *out);
 /* Backend-owned directory metadata in kernel memory, independent of
  * Linux userspace dirent64 layout or any concrete filesystem structures. */
 struct nas_vfs_dirent {
@@ -118,7 +131,19 @@ struct nas_vfs_mount {
     bool permanent; /* bootstrap filesystem mounts cannot be detached */
     bool read_only;  /* per-mount restriction */
     void *private_data; /* filesystem device context, owned by adapter */
+    /* Optional display-only source, copied by VFS during registration. */
+    const char *source_label;
 };
+struct nas_vfs_mount_snapshot {
+    char source[64];
+    char fstype[32];
+    char target[256];
+    bool read_only,permanent;
+};
+/* ordinal is the nth LIVE attachment; success=0, end=-ENOENT.
+ * All strings are copied and remain caller-owned after this returns. */
+int nas_vfs_mount_snapshot(unsigned ordinal,
+                           struct nas_vfs_mount_snapshot *out);
 /* An owned File or FS cwd context pins a mount once per owner.
  * Dup/CLONE_FS share their owner; normal fork copies the pin. */
 /* Only a leaf component, never a lexical normalization or mount walk. */
@@ -180,6 +205,36 @@ int nas_vfs_open_inode(const char *absolute,
                        const struct nas_vfs_open_options *options,
                        struct nas_fs_node *owned,char canonical[256],
                        struct nas_vfs_path *owned_path);
+int nas_vfs_open_path_at(const struct nas_vfs_path *start,
+                         const struct nas_vfs_path *root_clamp,
+                         const char *path,
+                         const struct nas_vfs_open_options *options,
+                         struct nas_fs_node *owned,
+                         struct nas_vfs_path *owned_path);
+int nas_vfs_create_child(const struct nas_vfs_path *parent,
+                         const char *leaf,uint64_t mode);
+int nas_vfs_mkdir_child(const struct nas_vfs_path *parent,
+                        const char *leaf,uint64_t mode);
+int nas_vfs_unlink_child(const struct nas_vfs_path *parent,
+                         const char *leaf,uint64_t flags);
+int nas_vfs_rename_child(const struct nas_vfs_path *old_parent,
+                         const char *old_name,
+                         const struct nas_vfs_path *new_parent,
+                         const char *new_name,uint64_t flags);
+int nas_vfs_rename_child_with_intent(const struct nas_vfs_path *old_parent,
+                                     const char *old_name,
+                                     const struct nas_vfs_path *new_parent,
+                                     const char *new_name,uint64_t flags,
+                                     bool new_trailing_slash);
+int nas_vfs_link_child(const struct nas_vfs_path *old_parent,
+                       const char *old_name,
+                       const struct nas_vfs_path *new_parent,
+                       const char *new_name);
+int nas_vfs_link_path_child(const struct nas_vfs_path *source,
+                            const struct nas_vfs_path *new_parent,
+                            const char *new_name);
+int nas_vfs_symlink_child(const char *target,
+                          const struct nas_vfs_path *parent,const char *name);
 int nas_vfs_create(const char *absolute,uint64_t mode);
 int64_t nas_vfs_write_at(const struct nas_fs_node *node,uint64_t offset,
                          const uint8_t *source,uint64_t count);

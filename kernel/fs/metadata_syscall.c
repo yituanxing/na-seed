@@ -23,7 +23,16 @@
 #include "syscall.h"
 #include "open_path.h"
 #include "metadata_syscall.h"
+#include "path_request.h"
+#include "../panic.h"
 #define TASK (*nas_current_task)
+
+static void end_mounted_lookup(struct nas_fs_path_request *request,
+                                struct nas_vfs_path *path) {
+    if(path->dentry && nas_vfs_path_put(path))
+        nas_fail("metadata lookup Path reference corrupted");
+    nas_fs_path_end(request);
+}
 
 /* Generic inode stat comes from the filesystem lookup result, never a
  * fixed ext4-only number or an exported kernel pointer. */
@@ -118,14 +127,15 @@ static uint64_t sys_resize_fd(uint64_t fd,uint64_t length) {
     return (uint64_t)(int64_t)rc;
 }
 static uint64_t sys_resize_path(uint64_t pathname,uint64_t length) {
-    char path[256];
-    uint64_t ret=nas_fs_resolve_path((uint64_t)-100,pathname,path);
-    if((int64_t)ret<0)return ret;
-    char resolved[256];
-    struct nas_fs_node node;
-    int rc=nas_fs_lookup_node(path,true,&node,resolved);
-    return rc ? (uint64_t)(int64_t)rc :
-           (uint64_t)(int64_t)nas_vfs_resize(&node,length);
+    struct nas_fs_path_request request;
+    struct nas_vfs_path path={0};
+    struct nas_fs_node node={0};
+    int rc=nas_fs_user_lookup_begin((uint64_t)-100,pathname,true,
+                                    &request,&path,&node);
+    if(rc)return (uint64_t)(int64_t)rc;
+    rc=nas_vfs_resize(&node,length);
+    end_mounted_lookup(&request,&path);
+    return (uint64_t)(int64_t)rc;
 }
 static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
     if (fd >= 64 || TASK.fds->entries[fd].kind == FD_CLOSED)
@@ -175,20 +185,28 @@ static uint64_t sys_access_path(uint64_t dirfd,uint64_t pathname,
     const uint64_t AT_SYMLINK_NOFOLLOW=0x100ULL;
     if((mode & ~7ULL) || (flags & ~(AT_EACCESS|AT_SYMLINK_NOFOLLOW)))
         return (uint64_t)-EINVAL;
-    char path[256], actual[256];
-    uint64_t rc=nas_fs_resolve_path(dirfd,pathname,path);
-    if((int64_t)rc<0) return rc;
     uint32_t bits=0;
     bool writable=false;
     bool is_dir=false;
-    struct nas_fs_node node;
-    int err=nas_fs_lookup_node(path,!(flags&AT_SYMLINK_NOFOLLOW),
-                               &node,actual);
+    struct nas_fs_path_request request;
+    struct nas_vfs_path located={0};
+    struct nas_fs_node node={0};
+    int err=nas_fs_user_lookup_begin(dirfd,pathname,
+                                    !(flags&AT_SYMLINK_NOFOLLOW),
+                                    &request,&located,&node);
     if(!err) {
         bits=node.mode;
         is_dir=node.is_dir;
         writable=nas_vfs_can_write(&node);
+        end_mounted_lookup(&request,&located);
     } else if(err!=-ENOENT)return (uint64_t)(int64_t)err;
+    /* Synthetic devices lack VFS dentries before devfs exists. Only this
+     * explicit compatibility endpoint still needs a printed fallback. */
+    char path[256];
+    if(!bits) {
+        uint64_t rc=nas_fs_resolve_path(dirfd,pathname,path);
+        if((int64_t)rc<0)return rc;
+    }
     if(!bits && (!strcmp(path,"/dev/ptmx") ||
                  (nas_pty_path_number(path)>=0 &&
                   nas_pty_present((unsigned)nas_pty_path_number(path))) ||
@@ -219,13 +237,15 @@ static uint64_t sys_fchmod_fd(uint64_t fd,uint64_t mode) {
 }
 static uint64_t sys_chmod_path(uint64_t dirfd,uint64_t filename,
                                uint64_t mode) {
-    char path[256], actual[256];
-    uint64_t ret=nas_fs_resolve_path(dirfd,filename,path);
-    if((int64_t)ret<0)return ret;
-    struct nas_fs_node node;
-    int err=nas_fs_lookup_node(path,true,&node,actual);
-    if(err)return (uint64_t)(int64_t)err;
-    return (uint64_t)(int64_t)nas_vfs_chmod(&node,mode);
+    struct nas_fs_path_request request;
+    struct nas_vfs_path path={0};
+    struct nas_fs_node node={0};
+    int rc=nas_fs_user_lookup_begin(dirfd,filename,true,
+                                    &request,&path,&node);
+    if(rc)return (uint64_t)(int64_t)rc;
+    rc=nas_vfs_chmod(&node,mode);
+    end_mounted_lookup(&request,&path);
+    return (uint64_t)(int64_t)rc;
 }
 /* Linux utimensat: native 64-bit timespec ABI common to all three ISAs.
  * The VFS resolves one real inode; CPIO never becomes writable. None of
@@ -240,6 +260,8 @@ static uint64_t sys_utimensat_file(uint64_t dirfd, uint64_t pathname,
     if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH))
         return (uint64_t)-EINVAL;
     struct nas_fs_node vnode={0};
+    struct nas_fs_path_request request;
+    struct nas_vfs_path owned={0};
     if (!pathname) {
         int64_t fd=nas_linux_signed_dirfd(dirfd);
         if(fd<0 || (uint64_t)fd>=NAS_FD_LIMIT ||
@@ -249,13 +271,14 @@ static uint64_t sys_utimensat_file(uint64_t dirfd, uint64_t pathname,
         if(!opened->vnode_pinned)return (uint64_t)-EBADF;
         vnode=opened->vnode;
     } else {
-        char path[256], actual[256];
-        uint64_t ret=nas_fs_resolve_path(dirfd,pathname,path);
-        if ((int64_t)ret<0) return ret;
-        int err=nas_fs_lookup_node(path,!(flags&AT_SYMLINK_NOFOLLOW),
-                                   &vnode,actual);
+        int err=nas_fs_user_lookup_begin(dirfd,pathname,
+                                         !(flags&AT_SYMLINK_NOFOLLOW),
+                                         &request,&owned,&vnode);
         if (err) return (uint64_t)(int64_t)err;
-        if (!nas_vfs_can_write(&vnode)) return (uint64_t)-EROFS;
+        if (!nas_vfs_can_write(&vnode)) {
+            end_mounted_lookup(&request,&owned);
+            return (uint64_t)-EROFS;
+        }
     }
     uint64_t now=0;
     if (!nas_time_realtime_ns(&now)) now=nas_arch_monotonic_ns();
@@ -263,20 +286,25 @@ static uint64_t sys_utimensat_file(uint64_t dirfd, uint64_t pathname,
     bool set[2]={true,true};
     if (timesptr) {
         int64_t raw[4];
-        if (!nas_user_read_bytes(timesptr,(uint8_t *)raw,sizeof(raw)))
+        if (!nas_user_read_bytes(timesptr,(uint8_t *)raw,sizeof(raw))) {
+            if(owned.dentry)end_mounted_lookup(&request,&owned);
             return (uint64_t)-EFAULT;
+        }
         for (unsigned i=0;i<2;i++) {
             uint64_t nsec=(uint64_t)raw[i*2+1];
             if (nsec==UTIME_OMIT) { set[i]=false; continue; }
             if (nsec==UTIME_NOW) continue;
             if (raw[i*2]<0 || raw[i*2]>INT64_MAX/(int64_t)NAS_NSEC_PER_SEC ||
-                raw[i*2+1]<0 || nsec>=NAS_NSEC_PER_SEC)
+                raw[i*2+1]<0 || nsec>=NAS_NSEC_PER_SEC) {
+                if(owned.dentry)end_mounted_lookup(&request,&owned);
                 return (uint64_t)-EINVAL;
+            }
             ns[i]=(uint64_t)raw[i*2]*NAS_NSEC_PER_SEC+nsec;
         }
     }
-    return (uint64_t)(int64_t)nas_vfs_utimens(&vnode,ns[0],ns[1],
-                                             set[0],set[1]);
+    int rc=nas_vfs_utimens(&vnode,ns[0],ns[1],set[0],set[1]);
+    if(owned.dentry)end_mounted_lookup(&request,&owned);
+    return (uint64_t)(int64_t)rc;
 }
 static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
                                  uint64_t statbuf, uint64_t flags) {
@@ -302,10 +330,25 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
         return fd<0 ? (uint64_t)-EBADF :
                       sys_fstat_boot((uint64_t)fd,statbuf);
     }
+    struct nas_fs_path_request request;
+    struct nas_vfs_path path_ref={0};
+    struct nas_fs_node node={0};
+    int err=nas_fs_user_lookup_begin(dirfd,pathname,
+                                     !(flags&AT_SYMLINK_NOFOLLOW),
+                                     &request,&path_ref,&node);
+    if(!err) {
+        uint64_t result=write_mounted_stat(&node,statbuf);
+        end_mounted_lookup(&request,&path_ref);
+        return result;
+    }
+    if(err!=-ENOENT)return (uint64_t)(int64_t)err;
+    /* Before devfs a few endpoints are synthesized and unmounted Limine
+     * modules may have no VFS inode. Only those cases use the legacy
+     * absolute spelling adapter; normal stat stays Path/inode owned. */
     char path[256];
-    uint64_t result = nas_fs_resolve_path(dirfd, pathname, path);
+    uint64_t result = nas_fs_resolve_path(dirfd,pathname,path);
     if ((int64_t)result < 0) return result;
-     if(!strcmp(path,"/dev/ptmx") ||
+    if(!strcmp(path,"/dev/ptmx") ||
        (nas_pty_path_number(path)>=0 &&
         nas_pty_present((unsigned)nas_pty_path_number(path)))) {
         struct nas_linux_stat device={0};
@@ -314,14 +357,6 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
         return nas_user_write_bytes(statbuf,(const uint8_t *)&device,sizeof(device))
             ? 0:(uint64_t)-EFAULT;
     }
-    /* VFS works without CPIO too: mounted disk files and inherited
-     * descriptors must share the same inode metadata and st_dev. */
-    char actual[256];
-    struct nas_fs_node node={0};
-    int err=nas_fs_lookup_node(path,!(flags&AT_SYMLINK_NOFOLLOW),
-                               &node,actual);
-    if(!err)return write_mounted_stat(&node,statbuf);
-    if(err!=-ENOENT)return (uint64_t)(int64_t)err;
     /* Legacy modules and character devices retain their existing fstat. */
     result = nas_fs_open_path(path, 0, 0);
     if ((int64_t)result < 0) return result;
@@ -338,19 +373,27 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
 static uint64_t sys_readlinkat_boot(uint64_t dirfd, uint64_t pathname,
                                      uint64_t dst, uint64_t capacity) {
     if (!capacity) return (uint64_t)-EINVAL;
-    char path[256], actual[256];
-    uint64_t r = nas_fs_resolve_path(dirfd, pathname, path);
-    if ((int64_t)r < 0) return r;
+    struct nas_fs_path_request request;
+    struct nas_vfs_path path={0};
     struct nas_fs_node node={0};
-    int error=nas_fs_lookup_node(path,false,&node,actual);
+    int error=nas_fs_user_lookup_begin(dirfd,pathname,false,
+                                       &request,&path,&node);
     if(error)return (uint64_t)(int64_t)error;
-    if((node.mode&0170000U)!=0120000U)return (uint64_t)-EINVAL;
+    if((node.mode&0170000U)!=0120000U) {
+        end_mounted_lookup(&request,&path);
+        return (uint64_t)-EINVAL;
+    }
     char target[256];
     int got=nas_vfs_readlink(&node,target);
-    if(got<0)return (uint64_t)(int64_t)got;
+    if(got<0) {
+        end_mounted_lookup(&request,&path);
+        return (uint64_t)(int64_t)got;
+    }
     uint64_t size=(uint64_t)got<capacity?(uint64_t)got:capacity;
-    return nas_user_write_bytes(dst,(const uint8_t *)target,size)
+    uint64_t result=nas_user_write_bytes(dst,(const uint8_t *)target,size)
         ? size:(uint64_t)-EFAULT;
+    end_mounted_lookup(&request,&path);
+    return result;
 }
 
 /* Translate any mounted provider readdir callback to Linux dirent64,

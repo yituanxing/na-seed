@@ -20,6 +20,7 @@
 #include "unix_socket.h"
 #include "syscall.h"
 #include "socket_syscall.h"
+#include "path_request.h"
 #define TASK (*nas_current_task)
 #define current_workdir TASK.fs->cwd
 
@@ -59,26 +60,27 @@ static int unix_address(uint64_t addr,uint64_t length,char out[256]) {
     for(;n<length-2 && buffer[n+2] && n<sizeof(input)-1;n++)
         input[n]=(char)buffer[n+2];
     input[n]=0;
-    char base[256],raw[256];
-    const char *origin=NULL;
-    if(input[0]!='/') {
-        origin=current_workdir;
-        /* AF_UNIX pathnames use the SAME FS-context owned Dentry as
-         * openat/chdir/getcwd. A pinned cwd with no Path is not a valid
-         * name owner: never resurrect it by reverse-opening a stale
-         * pathname in tmpfs or a third-party filesystem. */
-        if(TASK.fs->cwd_path.dentry) {
-            int rc=nas_vfs_path_string(&TASK.fs->cwd_path,base);
-            if(rc)return rc;
-            origin=base;
-        } else if(TASK.fs->cwd_pinned) {
-            return -ESTALE;
-        }
-    }
-    int rc=nas_path_join_raw(origin,input,raw);
+    struct nas_fs_path_request request;
+    int rc=nas_fs_kernel_path_begin((uint64_t)-100,input,&request);
     if(rc)return rc;
-    rc=nas_fs_canonical_candidate(raw,out);
+    struct nas_vfs_path parent={0};char leaf[256],base[256];
+    rc=nas_fs_lookup_parent_at(request.start.dentry?&request.start:NULL,
+                               request.root.dentry?&request.root:NULL,
+                               request.pathname,&parent,leaf);
+    if(!rc)rc=nas_vfs_path_string(&parent,base);
+    if(!rc)rc=nas_vfs_join_child(base,leaf,out);
+    if(parent.dentry && nas_vfs_path_put(&parent))
+        nas_fail("unix address parent Path corrupted");
+    nas_fs_path_end(&request);
     if(rc==-ENOENT && !bootfs_mounted()) {
+        /* Rootless boot compatibility. The current UNIX socket backend
+         * still owns tmpfs pathname strings, not generic VFS socket inodes;
+         * this does not claim AF_UNIX has become an inode-owned backend. */
+        const char *origin=NULL;
+        if(input[0]!='/')origin=current_workdir;
+        char raw[256];
+        int legacy=nas_path_join_raw(origin,input,raw);
+        if(legacy)return legacy;
         memcpy(out,raw,strlen(raw)+1);
         return 0;
     }

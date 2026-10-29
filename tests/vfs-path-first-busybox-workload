@@ -1,0 +1,67 @@
+#!/bin/sh
+# The EXACT original Debian BusyBox Linux ELF applets run on the host oracle
+# and on all three native NaSeed ISAs. This shell test exercises cwd/rename,
+# held FILE descriptors, symlinks, and crossing mounts; it does NOT falsely
+# claim to test C openat(dirfd) without an FD-preserving helper.
+set -eu
+BB=${NAS_APP_BUSYBOX:-/bin/busybox}
+A=${NAS_APP_FS_A:-/tmp}
+[ -d /proc ] || { echo '[PATH FIRST FAIL] missing /proc mount' >&2; exit 1; }
+# The three-ISA default images already mount writable tmpfs /tmp and a
+# distinct readonly procfs /proc. Do not require a runtime-flag-dependent
+# RamFS build or assume procfs itself is writable.
+for fs in "$A"; do
+    base="$fs/path-first"
+    "$BB" mkdir "$base"
+    "$BB" mkdir "$base/held"
+    (
+        cd "$base/held"
+        # This process continues to own cwd while a real BusyBox child
+        # renames the parent. Recreate the old spelling to catch relookup.
+        "$BB" mv "$base/held" "$base/relocated"
+        "$BB" mkdir "$base/held"
+        printf 'owned-dir\n' > child
+        [ "$("$BB" cat "$base/relocated/child")" = owned-dir ]
+        [ ! -e "$base/held/child" ]
+        [ "$("$BB" pwd -P)" = "$base/relocated" ]
+    )
+    # A file's live open description must not become a later same-name inode.
+    printf 'old-inode\n' > "$base/live"
+    (
+        exec 3< "$base/live"
+        "$BB" rm "$base/live"
+        printf 'new-inode\n' > "$base/live"
+        [ "$("$BB" cat <&3)" = old-inode ]
+        [ "$("$BB" cat "$base/live")" = new-inode ]
+        exec 3<&-
+    )
+    # .. must cross back out of the writable filesystem's mount.
+    expected_parent=$("$BB" dirname "$fs")
+    actual_parent=$(cd "$fs/.." && "$BB" pwd -P)
+    [ "$actual_parent" = "$expected_parent" ]
+    "$BB" rm "$base/relocated/child" "$base/live"
+    "$BB" rmdir "$base/relocated" "$base/held" "$base"
+    echo "[PATH FIRST APP] $fs cwd-rename/held-file/../cleanup PASS"
+done
+# The procfs mount is read-only; test traversal/escape without mutation.
+[ "$(cd /proc/.. && "$BB" pwd -P)" = / ]
+[ -d /proc ]
+echo '[PATH FIRST APP] /proc/.. mounted readonly crossing PASS'
+# Writable tmpfs is the actual original BusyBox symlink mutation target.
+base="$A/path-first-symlinks"
+"$BB" mkdir "$base"
+printf 'regular\n' > "$base/file"
+"$BB" mkdir "$base/dir"
+"$BB" ln -s file "$base/file-link"
+"$BB" ln -s dir "$base/dir-link"
+if "$BB" cat "$base/file/." >/dev/null 2>&1; then exit 1; fi
+if "$BB" cat "$base/file/.." >/dev/null 2>&1; then exit 1; fi
+if "$BB" cat "$base/file-link/" >/dev/null 2>&1; then exit 1; fi
+(cd "$base/dir-link/" && [ "$("$BB" pwd -P)" = "$base/dir" ])
+"$BB" ln -s target "$base/dangling"
+printf 'followed\n' > "$base/dangling"
+[ "$("$BB" cat "$base/target")" = followed ]
+"$BB" rm "$base/file-link" "$base/dir-link" "$base/dangling" \
+         "$base/file" "$base/target"
+"$BB" rmdir "$base/dir" "$base"
+echo '[PASS] REAL PATH FIRST APP original Debian BusyBox: cwd rename, held FD, mount .., symlink trailing slash'

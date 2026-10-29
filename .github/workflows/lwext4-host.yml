@@ -54,8 +54,24 @@ on:
       - 'scripts/probe-vfs-gpt-busybox.sh'
       - 'scripts/probe-vfs-exec-no-cpio-x86.sh'
       - 'scripts/probe-m105-vfs-dynamic-interp-*.sh'
+      - 'scripts/probe-vfs-path-first-busybox.sh'
+      - 'scripts/vfs-path-first-cases.tsv'
+      - 'tests/vfs-path-first-busybox-workload'
+      - 'scripts/check-path-request-host.sh'
+      - 'scripts/test-path-request-host.c'
+      - 'scripts/check-exec-path-owner.sh'
+      - 'scripts/test-exec-path-owner-host.c'
+      - 'tests/path-first-linux-oracle.c'
       - 'kernel/task/elf*.c'
       - 'kernel/task/exec.c'
+      # Path-first namei/owned File changes must rerun real ext4, musl
+      # PT_INTERP and cross-mount native QEMU, not just host VFS fixtures.
+      - 'kernel/task/resources.c'
+      - 'kernel/task/user_stack.c'
+      - 'kernel/fd.*'
+      - 'kernel/mm/vm.c'
+      - 'kernel/mm/fault.c'
+      - 'kernel/mm/usercopy.c'
       - 'scripts/vfs-rootless-exec-cases.tsv'
       - 'scripts/vfs-busybox-disk-cases.tsv'
       - 'tests/vfs-busybox-disk-workload'
@@ -63,6 +79,12 @@ on:
       - 'scripts/probe-riscv64-busybox-matrix.sh'
       - 'scripts/probe-aarch64-busybox-matrix.sh'
       - 'kernel/fs/vfs*'
+      - 'kernel/fs/lookup.*'
+      - 'kernel/fs/open_path.h'
+      - 'kernel/fs/path_request.h'
+      - 'kernel/fs/file_io.c'
+      - 'kernel/fs/namespace_syscall.*'
+      - 'kernel/fs/tmp_namespace.c'
       - 'kernel/fs/metadata_syscall.c'
       - 'user/ext4-guest-read.S'
       - 'user/ext4-guest-write.S'
@@ -92,6 +114,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Verify real BlockDevice and third-party driver port (host and 3 ISAs)
         run: sh scripts/check-block-foundation.sh
+      - name: '[HOST] Production Path-first dirfd and owned File request checks'
+        run: sh scripts/check-path-request-host.sh
+      - name: '[HOST] Production exec source Path lease fault injection and one cleanup owner'
+        run: sh scripts/check-exec-path-owner.sh
       - name: 'Second independent upstream FS: pinned littlefs against shared BlockDevice'
         run: sh scripts/check-littlefs-block.sh
       - name: Build pinned upstream lwext4 and exercise real ext4 via NaSeed RamDisk
@@ -196,3 +222,31 @@ jobs:
           NAS_ENABLE_LITTLEFS=1 NAS_LITTLEFS_TEST_IMAGE=build/littlefs-guest-x86/stage/boot/naseed-littlefs.img NAS_LITTLEFS_PROBE=build/littlefs-native/riscv64/probe.elf sh scripts/probe-riscv64-full.sh
           NAS_ENABLE_LITTLEFS=1 NAS_LITTLEFS_TEST_IMAGE=build/littlefs-guest-x86/stage/boot/naseed-littlefs.img NAS_LITTLEFS_PROBE=build/littlefs-native/aarch64/probe.elf sh scripts/probe-aarch64-full.sh
           echo '[LITTLEFS GENUINE VFS THREE ISA PASS] identical userspace source + original littlefs + BlockDevice'
+      - name: '[NATIVE QEMU] Path-first cwd/File mount and symlink semantics with original Debian BusyBox / 3 ISA'
+        timeout-minutes: 8
+        run: |
+          set -eu
+          sh -n scripts/probe-vfs-path-first-busybox.sh
+          sh -n tests/vfs-path-first-busybox-workload
+          # /tmp and /proc are in the existing three-ISA kernel images.
+          # Reuse the real kernels validated by earlier lwext4/littlefs steps.
+          test -s build/kernel.elf
+          test -s build/port-riscv64/full/kernel.elf
+          test -s build/port-aarch64/full/kernel.elf
+          for isa in amd64 riscv64 arm64; do
+            sh scripts/probe-vfs-path-first-busybox.sh "$isa"
+          done
+      - name: Preserve Path-first original BusyBox Linux oracle and raw native QEMU serial on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naseed-path-first-real-busybox-logs
+          path: |
+            build/path-first-busybox/**/linux-oracle.log
+            build/busybox-source-parity-x86/path-first.serial.log
+            build/busybox-source-parity-x86/path-first.clean.log
+            build/port-riscv64/full/matrix-source/path-first.serial.log
+            build/port-riscv64/full/matrix-source/path-first.clean.log
+            build/port-aarch64/full/matrix-source/path-first.serial.log
+            build/port-aarch64/full/matrix-source/path-first.clean.log
+          if-no-files-found: ignore

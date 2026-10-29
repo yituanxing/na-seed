@@ -8,6 +8,7 @@
 #include "../task/user_stack.h"
 #include "../mm/vm.h"
 #include "../arch/user_pt.h"
+#include "vfs.h"
 #include "../lib/string.h"
 #include "../errno.h"
 #include <stdint.h>
@@ -429,16 +430,68 @@ static int64_t proc_maps_read(const struct nas_task *task,uint64_t offset,
     map_flush(&s);
     return (int64_t)s.produced;
 }
+/* /proc/mounts is a view of the live VFS mount registry, never a second
+ * filesystem-specific list. In particular a real ext4/GPT mount can appear
+ * after procfs initialization and a detached mount must disappear. Stream
+ * by byte offset: the VFS supports more mounts than the fixed-size buffer
+ * used by the small /proc scalar files, and short reads must not truncate
+ * the list at that buffer's boundary. */
+struct nas_mount_stream {
+    uint64_t skip,position;
+    unsigned produced,capacity;
+    uint8_t *output;
+};
+static void mount_ch(struct nas_mount_stream *s,char c) {
+    if(s->position>=s->skip && s->produced<s->capacity)
+        s->output[s->produced++]=(uint8_t)c;
+    ++s->position;
+}
+static void mount_word(struct nas_mount_stream *s,const char *word) {
+    while(*word)mount_ch(s,*word++);
+}
+/* Linux /proc/mounts (fstab/mntent) escapes whitespace and backslash in
+ * every pathname-like field. Do not emit malformed extra columns when a
+ * user-created mountpoint contains such characters. */
+static void mount_field(struct nas_mount_stream *s,const char *field) {
+    for(;*field;field++) {
+        switch(*field) {
+        case ' ':mount_word(s,"\\040");break;
+        case '\t':mount_word(s,"\\011");break;
+        case '\n':mount_word(s,"\\012");break;
+        case '\\':mount_word(s,"\\134");break;
+        default:mount_ch(s,*field);break;
+        }
+    }
+}
+static int64_t proc_mounts_read(uint64_t offset,uint8_t *output,unsigned size) {
+    if(!size)return 0;
+    struct nas_mount_stream stream={
+        .skip=offset,.output=output,.capacity=size
+    };
+    for(unsigned ordinal=0;;ordinal++) {
+        struct nas_vfs_mount_snapshot mount;
+        int rc=nas_vfs_mount_snapshot(ordinal,&mount);
+        if(rc==-ENOENT)return (int64_t)stream.produced;
+        if(rc)return stream.produced ? (int64_t)stream.produced : rc;
+        mount_field(&stream,mount.source);mount_ch(&stream,' ');
+        mount_field(&stream,mount.target);mount_ch(&stream,' ');
+        mount_field(&stream,mount.fstype);
+        mount_word(&stream,mount.read_only?" ro 0 0\n":" rw 0 0\n");
+        if(stream.produced==size)return (int64_t)size;
+    }
+}
 int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
                       uint8_t *output,unsigned size) {
     if(nas_proc_is_dir(node))return -EISDIR;
     if(size && !output)return -EFAULT;
-    char data[LIMIT];struct writer w={data,0,LIMIT};
     const struct nas_task *t=node.pid ? living(node.pid) : 0;
     if(node.pid && !t)return -ENOENT;
     if(node.tgid && (!t || t->tgid!=node.tgid))return -ENOENT;
     if(node.kind==NAS_PROC_PID_MAPS)
         return proc_maps_read(t,offset,output,size);
+    if(node.kind==NAS_PROC_MOUNTS)
+        return proc_mounts_read(offset,output,size);
+    char data[LIMIT];struct writer w={data,0,LIMIT};
     if(node.kind==NAS_PROC_FD_LINK) return -EINVAL;
     if(node.kind==NAS_PROC_FDINFO_FILE) {
         if(!t || !t->fds || node.fd>=NAS_FD_LIMIT ||
@@ -512,14 +565,6 @@ int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
         ch(&w,' ');decimal(&w,run);ch(&w,'/');decimal(&w,total);
         ch(&w,' ');decimal(&w,last);ch(&w,'\n');break;
     }
-    case NAS_PROC_MOUNTS:
-        /* Genuine NaSeed rootfs is immutable initramfs, /tmp is the
-         * currently mutable tmpfs and /proc is this read-only provider.
-         * No fictional block device or persistent disk mount. */
-        word(&w,"rootfs / rootfs ro 0 0\n");
-        word(&w,"tmpfs /tmp tmpfs rw 0 0\n");
-        word(&w,"proc /proc proc ro 0 0\n");
-        break;
     case NAS_PROC_VMSTAT:
         word(&w,"nr_free_pages ");decimal(&w,nas_free_frames());ch(&w,'\n');break;
     case NAS_PROC_VERSION: word(&w,"NaSeed experimental kernel\n");break;

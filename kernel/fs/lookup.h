@@ -32,4 +32,35 @@ int nas_fs_resolve_create_target(const char *path,char canonical[256]);
 int nas_fs_resolve_existing(const char *path,bool follow_final,char out[256]);
 int nas_fs_lookup_node(const char *path,bool follow_final,
                        struct nas_fs_node *result,char resolved[256]);
+/* Internal path resolution never round-trips an owned cwd/dirfd into text. */
+int nas_fs_lookup_path_at(const struct nas_vfs_path *start,
+                          const struct nas_vfs_path *root_clamp,
+                          const char *path,bool follow_final,
+                          struct nas_vfs_path *out);
+int nas_fs_lookup_parent_at(const struct nas_vfs_path *start,
+                            const struct nas_vfs_path *root_clamp,
+                            const char *path,struct nas_vfs_path *parent,
+                            char leaf[256]);
+enum nas_fs_parent_trailing_policy {
+    NAS_FS_TRAILING_STRICT=0,      /* unlink/rename source: must name a dir */
+    NAS_FS_TRAILING_MKDIR,         /* existing any kind or missing: defer to mkdir */
+    NAS_FS_TRAILING_CREATE_DEST,   /* link/symlink: existing=EEXIST, missing=ENOENT */
+    NAS_FS_TRAILING_RENAME_DEST    /* missing/non-directory => ENOTDIR */
+};
+int nas_fs_lookup_parent_at_policy(const struct nas_vfs_path *start,
+                                   const struct nas_vfs_path *root_clamp,
+                                   const char *path,
+                                   enum nas_fs_parent_trailing_policy policy,
+                                   struct nas_vfs_path *parent,
+                                   char leaf[256]);
+/* mkdir -p may create a missing final directory named with trailing '/'. */
+int nas_fs_lookup_parent_mkdir_at(const struct nas_vfs_path *start,
+                                  const struct nas_vfs_path *root_clamp,
+                                  const char *path,struct nas_vfs_path *parent,
+                                  char leaf[256]);
+int nas_fs_resolve_create_parent_at(const struct nas_vfs_path *start,
+                                    const struct nas_vfs_path *root_clamp,
+                                    const char *path,
+                                    struct nas_vfs_path *parent,
+                                    char leaf[256]);
 #endif

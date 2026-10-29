@@ -124,10 +124,16 @@ if ("struct mount_slot mounts[" in vfs_src or
 # Paths and their Dentries: do not require a deleted tuple or allow it
 # to return under another name. This is an architectural contract
 # strengthening, not a lowered CI acceptance threshold.
+mount_owner = re.search(r"struct\s+mount_slot\s*\{(.*?)\};",vfs_src,re.S)
+if not mount_owner:
+    raise SystemExit("VFS has no explicit stable mount_slot ownership")
 for obsolete in ("parent_mount_id", "parent_backend_inode", "parent_ino",
                  "parent_node", "covered_node", "parent_anchored",
                  "parent_pinned", "covered_pinned"):
-    if re.search(r"\b"+obsolete+r"\b", vfs_src):
+    # Restrict the invariant to persistent mount fields. New Path-first
+    # operations legitimately name their ephemeral local inode parent_node;
+    # a blanket source-wide grep would reject exactly the migration guarded.
+    if re.search(r"\b"+obsolete+r"\b",mount_owner.group(1)):
         raise SystemExit(f"copied mount identity reintroduced: {obsolete}")
 if "mounts[i]=mounts[i+1]" in vfs_src or "mounts[count++]" in vfs_src:
     raise SystemExit("packed mount registry would invalidate open File mounts")
@@ -151,9 +157,20 @@ for directory in ("kernel", "ports", "scripts", "tests"):
         data=source.read_text()
         if "nas_vfs_directory_path" in data or ".directory_path=" in data:
             raise SystemExit(f"obsolete reverse VFS name owner in {source}")
-if "nas_vfs_path_string(&TASK.fs->cwd_path,base)" not in (
-        root/"kernel/fs/socket_syscall.c").read_text():
-    raise SystemExit("AF_UNIX did not join the shared owned FS Path")
+socket_src=(root/"kernel/fs/socket_syscall.c").read_text()
+# Socket pathnames still serve a legacy name-keyed backend, but the
+# directory's *identity* must come from the shared cwd/dirfd owner and
+# namei.  A literal cwd serialization is no longer a valid requirement.
+for token in ("nas_fs_kernel_path_begin(",
+              "nas_fs_lookup_parent_at(",
+              "nas_vfs_path_string(&parent,base)",
+              "nas_vfs_join_child(base,leaf,out)",
+              "nas_vfs_path_put(&parent)",
+              "nas_fs_path_end(&request)"):
+    if token not in socket_src:
+        raise SystemExit(f"AF_UNIX bypasses shared owned FS Path: {token}")
+if "nas_vfs_path_string(&TASK.fs->cwd_path,base)" in socket_src:
+    raise SystemExit("AF_UNIX regressed to serializing cwd without namei")
 # Ordinary directory Files and cwd never ask a provider to reconstruct
 # a reverse pathname. Provider-internal ext4 identity->path is still
 # necessary because upstream libext4 uses path-based I/O.

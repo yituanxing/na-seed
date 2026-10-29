@@ -16,7 +16,10 @@ if grep -Eq '(^|[^[:alnum:]_])(parent_pinned|covered_pinned)([^[:alnum:]_]|$)' k
 fi
 # Mount identity exists exactly once in its owning Dentry Path, not an
 # independent pointer/inode tuple that may diverge after rename/reuse.
-if grep -Eq '(^|[^[:alnum:]_])(parent_mount_id|parent_backend_inode|parent_ino|parent_node|covered_node|parent_anchored)([^[:alnum:]_]|$)' kernel/fs/vfs.c; then
+# Local variables named parent_node/covered_node are legitimate borrowed
+# results of Path->inode conversion. Only persistent duplicate mount-owner
+# fields are forbidden; otherwise a Path-first migration false-fails here.
+if grep -Eq '(^|[^[:alnum:]_])(parent_mount_id|parent_backend_inode|parent_ino|parent_anchored)([^[:alnum:]_]|$)' kernel/fs/vfs.c; then
   echo '[VFS FAIL] copied mount identity escaped its Path owner' >&2
   exit 1
 fi

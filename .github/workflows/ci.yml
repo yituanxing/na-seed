@@ -508,6 +508,9 @@ jobs:
       - name: '[NATIVE QEMU] M105 real CPU RW/RX JIT and private fork COW / ${{ matrix.port }}'
         timeout-minutes: 5
         run: sh scripts/test-m105-native-jit-probe.sh ${{ matrix.port }}
+      - name: '[NATIVE QEMU] Path-first openat(dirfd) and owned File lifecycle / ${{ matrix.port }}'
+        timeout-minutes: 5
+        run: sh scripts/probe-path-first-dirfd-native.sh ${{ matrix.port }}
       - name: Upload native source BusyBox/serial evidence on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -521,17 +524,20 @@ jobs:
             build/source-busybox/${{ matrix.port }}/m105-linux-oracle.log
             build/source-busybox/${{ matrix.port }}/m105-signal-group
             build/source-busybox/${{ matrix.port }}/m105-native-jit-linux-oracle.log
+            build/source-busybox/${{ matrix.port }}/path-first-dirfd-linux-oracle.log
             build/busybox-source-parity-x86/*.serial.log
             build/busybox-source-parity-x86/m103-tid.clean.log
             build/busybox-source-parity-x86/m104-exception.clean.log
             build/busybox-source-parity-x86/m105-signal-group.serial.log
             build/busybox-source-parity-x86/m105-native-jit.clean.log
+            build/busybox-source-parity-x86/path-first-dirfd.serial.log
             build/m28-x86-preempt/preempt.serial.log
             build/port-riscv64/full/matrix-source/*.serial.log
             build/port-riscv64/full/matrix-source/m103-tid.clean.log
             build/port-riscv64/full/matrix-source/m104-exception.clean.log
             build/port-riscv64/full/matrix-source/m105-signal-group.serial.log
             build/port-riscv64/full/matrix-source/m105-native-jit.clean.log
+            build/port-riscv64/full/matrix-source/path-first-dirfd.serial.log
             build/port-aarch64/full/matrix-source/*.serial.log
             build/port-aarch64/full/matrix-source/m105-signal-group.serial.log
             build/port-aarch64/full/matrix-source/m105-native-jit.clean.log

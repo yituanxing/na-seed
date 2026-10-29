@@ -31,6 +31,7 @@
 #include "socket_syscall.h"
 #include "metadata_syscall.h"
 #include "open_path.h"
+#include "path_request.h"
 #include "lookup.h"
 #include "vfs.h"
 #include "../time/clock.h"
@@ -413,9 +414,10 @@ static uint64_t vwrite_regular(uint64_t fd, uint64_t address, uint64_t length) {
  * behavior belongs to VFS providers, not a parallel tmpfs/procfs branch.
  * Only /dev character endpoints and original unmounted Limine modules
  * remain outside the filesystem namespace until devfs is mounted. */
-uint64_t nas_fs_open_path(const char *path,uint64_t native_flags,
-                          uint64_t create_mode) {
-    if(!path || path[0]!='/')return (uint64_t)-EINVAL;
+static uint64_t open_path_owned(const char *path,
+                                const struct nas_fs_path_request *request,
+                                uint64_t native_flags,uint64_t create_mode) {
+    if(!path || (!request && path[0]!='/'))return (uint64_t)-EINVAL;
     uint64_t flags;
     if(!nas_linux_open_flags(native_flags,&flags))
         return (uint64_t)-EINVAL;
@@ -436,7 +438,7 @@ uint64_t nas_fs_open_path(const char *path,uint64_t native_flags,
     bool have_node=false;
     struct nas_fs_node opened_node={0};
     struct nas_vfs_path directory_path={0};
-    char canonical[256];
+    char canonical[256]={0};
 
     /* Temporary synthetic-device bridge; filesystems never receive a
      * fabricated VFS inode, and future devfs can replace this one block. */
@@ -471,12 +473,18 @@ uint64_t nas_fs_open_path(const char *path,uint64_t native_flags,
             .directory_only=(flags&0x10000ULL)!=0,.access=access,
             .create_mode=nas_fs_create_mode(create_mode,TASK.fs->umask)
         };
-        int rc=nas_vfs_open_inode(path,&options,&opened_node,canonical,
-                                  &directory_path);
+        int rc=request ?
+            nas_vfs_open_path_at(request->start.dentry?&request->start:NULL,
+                                 request->root.dentry?&request->root:NULL,
+                                 path,&options,&opened_node,&directory_path) :
+            nas_vfs_open_inode(path,&options,&opened_node,canonical,
+                               &directory_path);
         if(!rc) {
             have_node=true;
             kind=opened_node.is_dir?FD_DIR:FD_ARCHIVE;
-        } else if(rc==-ENOENT && running_alpine &&
+            if(request && directory_path.dentry)
+                (void)nas_vfs_path_string(&directory_path,canonical);
+        } else if(rc==-ENOENT && !request && running_alpine &&
                   (real_file=bootfs_lookup(path))) {
             /* Original unmounted Limine module; a mounted VFS inode
              * always wins, never reopen a stale old pathname. */
@@ -517,7 +525,7 @@ uint64_t nas_fs_open_path(const char *path,uint64_t native_flags,
     nas_open_files[slot].boot_file=real_file;
     /* Diagnostic hint only. No open/read/stat/dirfd may rely on an old
      * pathname after rename: its pinned VFS inode remains authoritative. */
-    const char *origin=have_node?canonical:path;
+    const char *origin=have_node && canonical[0]?canonical:path;
     unsigned path_len=0;
     while(origin[path_len] &&
           path_len<sizeof(nas_open_files[slot].origin_path)-1U) {
@@ -527,11 +535,59 @@ uint64_t nas_fs_open_path(const char *path,uint64_t native_flags,
     nas_open_files[slot].origin_path[path_len]=0;
     return fd;
 }
+uint64_t nas_fs_open_path(const char *path,uint64_t native_flags,
+                          uint64_t create_mode) {
+    return open_path_owned(path,NULL,native_flags,create_mode);
+}
+/* This is NOT a second namei for ordinary missing paths. In a direct-ELF
+ * rootless boot a few synthetic devices and Limine modules have no VFS
+ * inode; only these explicit bootstrap endpoints may use the old adapter.
+ * In particular ENOENT from a renamed/unlinked directory FD never causes
+ * an arbitrary O_CREAT to be retried through a pathname reconstructed from
+ * that FD. */
+static bool is_bootstrap_open_endpoint(const char *path) {
+    if(!path || path[0]!='/')return false;
+    if(!strcmp(path,"/dev/null") || !strcmp(path,"/dev/zero") ||
+       !strcmp(path,"/dev/tty") || !strcmp(path,"/dev/ttyS0") ||
+       !strcmp(path,"/dev/console") || !strcmp(path,"/dev/ptmx"))
+        return true;
+    int pty=nas_pty_path_number(path);
+    if(pty>=0 && nas_pty_present((unsigned)pty))return true;
+    return running_alpine && bootfs_lookup(path)!=NULL;
+}
+static uint64_t maybe_open_bootstrap(const struct nas_fs_path_request *request,
+                                     uint64_t dirfd,uint64_t pathname,
+                                     uint64_t flags,uint64_t mode,
+                                     uint64_t original) {
+    if((int64_t)original!=-ENOENT)return original;
+    /* Classify using the already owned lookup anchor BEFORE asking the old
+     * string adapter anything. Ordinary ENOENT never gets a second namei. */
+    char candidate[256];
+    if(request->pathname[0]=='/')
+        memcpy(candidate,request->pathname,strlen(request->pathname)+1);
+    else {
+        if(!request->start.dentry)return original;
+        char base[256];
+        if(nas_vfs_path_string(&request->start,base) ||
+           nas_path_join_raw(base,request->pathname,candidate))
+            return original;
+    }
+    if(!is_bootstrap_open_endpoint(candidate))return original;
+    char legacy[256];
+    uint64_t found=nas_fs_resolve_path(dirfd,pathname,legacy);
+    if((int64_t)found<0 || !is_bootstrap_open_endpoint(legacy))
+        return original;
+    return nas_fs_open_path(legacy,flags,mode);
+}
 static uint64_t sys_open_device(uint64_t pathname, uint64_t flags,
                                  uint64_t mode) {
-    char path[256];
-    uint64_t result = nas_fs_resolve_path((uint64_t)-100, pathname, path);
-    return (int64_t)result < 0 ? result : nas_fs_open_path(path,flags,mode);
+    struct nas_fs_path_request request;
+    int rc=nas_fs_user_path_begin((uint64_t)-100,pathname,&request);
+    if(rc)return (uint64_t)(int64_t)rc;
+    uint64_t result=open_path_owned(request.pathname,&request,flags,mode);
+    result=maybe_open_bootstrap(&request,(uint64_t)-100,pathname,flags,mode,result);
+    nas_fs_path_end(&request);
+    return result;
 }
 
 /* NaOS-aligned idea: bind ops once to the shared open description; do not
@@ -714,9 +770,13 @@ const struct nas_file_ops *nas_fs_ops_for_kind(uint8_t kind) {
 /* metadata and ownership policies live in metadata_syscall.c */
 static uint64_t sys_openat_boot(uint64_t dirfd, uint64_t pathname,
                                 uint64_t flags,uint64_t mode) {
-    char path[256];
-    uint64_t result = nas_fs_resolve_path(dirfd, pathname, path);
-    return (int64_t)result < 0 ? result : nas_fs_open_path(path,flags,mode);
+    struct nas_fs_path_request request;
+    int rc=nas_fs_user_path_begin(dirfd,pathname,&request);
+    if(rc)return (uint64_t)(int64_t)rc;
+    uint64_t result=open_path_owned(request.pathname,&request,flags,mode);
+    result=maybe_open_bootstrap(&request,dirfd,pathname,flags,mode,result);
+    nas_fs_path_end(&request);
+    return result;
 }
 /* directory enumeration/stat lookup live in metadata_syscall.c */
 /* A known filesystem operation returns its genuine Linux ABI result.

@@ -36,8 +36,12 @@ static struct nas_tmp_file fixture_open_directory={
 static struct nas_tmp_file fixture_open_child={
     .used=true,.mode=0100600,.nlink=1,.ino=106
 };
+static struct nas_tmp_file fixture_detached_dir={
+    .used=true,.is_dir=true,.mode=0040755,.nlink=1,.ino=109
+};
+static bool fixture_detached_dir_visible=true;
 static struct nas_tmp_file fixture_orphan={
-    .used=true,.mode=0100600,.nlink=0,.ino=107
+    .used=true,.mode=0100600,.nlink=1,.ino=107
 };
 /* Saturation identities are REAL distinct, reusable tmp inode slots.
  * The old test fabricated inode numbers pointing at one file and was
@@ -47,7 +51,8 @@ static unsigned orphan_releases;
 void tmp_inode_discard(struct nas_tmp_file *node) {
     /* An actual kernel reclaims only orphaned, unpinned inodes; the
      * host fixture records the final provider callback. */
-    if(node==&fixture_orphan && !nas_vfs_inode_is_pinned(node)) {
+    if(node==&fixture_orphan && !node->nlink &&
+       !nas_vfs_inode_is_pinned(node)) {
         node->used=false;
         orphan_releases++;
     }
@@ -76,16 +81,23 @@ bool bootfs_is_link(const struct bootfs_entry *e){
 }
 struct nas_tmp_file *tmp_find(const char *path){
     if(!strcmp(path,"/tmp/demo"))return &tmp_demo;
+    /* Two legal hard-link names for the same backend inode. A rename
+     * between them must be a no-op, not one of the provider's mutations. */
+    if(!strcmp(path,"/tmp/hardlink-a") ||
+       !strcmp(path,"/tmp/hardlink-b"))return &tmp_demo;
     if(!strcmp(path,"/tmp/link"))return &fixture_symlink;
     if(!strcmp(path,"/tmp/alias"))return &fixture_dir_link;
     if(!strcmp(path,"/tmp/newfile") && fixture_created_length)return &fixture_created;
     if(!strcmp(path,fixture_dir_path))return &fixture_open_directory;
     if(!strcmp(path,fixture_child_path))return &fixture_open_child;
+    if(fixture_detached_dir_visible && !strcmp(path,"/tmp/to-detach"))
+        return &fixture_detached_dir;
     if(!strcmp(path,"/tmp/pinned-orphan"))return &fixture_orphan;
     return NULL;
 }
 const char *tmp_name(const struct nas_tmp_file *f) {
     if(f==&fixture_open_directory)return fixture_dir_path;
+    if(f==&fixture_detached_dir)return "/tmp/to-detach";
     return NULL;
 }
 bool tmp_is_link(const struct nas_tmp_file *f){
@@ -183,6 +195,12 @@ int tmp_mkdir(const char *path,uint64_t mode) {
     return !strcmp(path,"/tmp/new") && mode==0755 ? 0 : -EINVAL;
 }
 int tmp_unlink(const char *path,uint64_t flags) {
+    if(!strcmp(path,"/tmp/to-detach") && flags==0x200U &&
+       fixture_detached_dir_visible) {
+        fixture_detached_dir_visible=false;
+        fixture_detached_dir.nlink=0;
+        return 0;
+    }
     return !strcmp(path,"/tmp/demo") && flags==0 ? 0 : -EINVAL;
 }
 int tmp_rename(const char *oldpath,const char *newpath,uint64_t flags) {
@@ -262,6 +280,7 @@ const struct nas_tmp_dentry *tmp_child_entry_inode(const void *parent,unsigned i
 const void *tmp_dir_parent_inode(const void *dir) {
     if(dir==(const void *)&entries[3])return dir;
     if(dir==(const void *)&fixture_open_directory)return &entries[3];
+    if(dir==(const void *)&fixture_detached_dir)return &entries[3];
     return NULL;
 }
 struct nas_tmp_file *tmp_create_at(const void *parent,const char *name,
@@ -354,6 +373,52 @@ static const struct nas_vfs_type ext_mock_type={
 static const struct nas_vfs_mount ext_mount={
     .mountpoint="/mnt",.type=&ext_mock_type
 };
+/* A host-only syscall-shaped adapter. It calls production namei and
+ * production child mutators with Path ownership; no Linux host filesystem
+ * operations are used for the expected NaSeed result. */
+static int namespace_unlink(const char *path,uint64_t flags) {
+    struct nas_vfs_path parent={0};char leaf[256];
+    int rc=nas_fs_lookup_parent_at(NULL,NULL,path,&parent,leaf);
+    if(!rc)rc=nas_vfs_unlink_child(&parent,leaf,flags);
+    if(parent.dentry)assert(nas_vfs_path_put(&parent)==0);
+    return rc;
+}
+static int namespace_rename(const char *old_name,const char *new_name) {
+    struct nas_vfs_path before={0},after={0};
+    char old_leaf[256],new_leaf[256];
+    int rc=nas_fs_lookup_parent_at(NULL,NULL,old_name,&before,old_leaf);
+    if(!rc)rc=nas_fs_lookup_parent_at_policy(
+               NULL,NULL,new_name,NAS_FS_TRAILING_RENAME_DEST,
+               &after,new_leaf);
+    size_t length=strlen(new_name);
+    bool new_trailing=length>1 && new_name[length-1]=='/';
+    if(!rc)rc=nas_vfs_rename_child_with_intent(
+               &before,old_leaf,&after,new_leaf,0,new_trailing);
+    if(after.dentry)assert(nas_vfs_path_put(&after)==0);
+    if(before.dentry)assert(nas_vfs_path_put(&before)==0);
+    return rc;
+}
+static int namespace_link(const char *old_name,const char *new_name) {
+    struct nas_vfs_path before={0},after={0};
+    char new_leaf[256];
+    int rc=nas_fs_lookup_path_at(NULL,NULL,old_name,false,&before);
+    if(!rc)rc=nas_fs_lookup_parent_at_policy(
+               NULL,NULL,new_name,NAS_FS_TRAILING_CREATE_DEST,
+               &after,new_leaf);
+    if(!rc)rc=nas_vfs_link_path_child(&before,&after,new_leaf);
+    if(after.dentry)assert(nas_vfs_path_put(&after)==0);
+    if(before.dentry)assert(nas_vfs_path_put(&before)==0);
+    return rc;
+}
+static int namespace_symlink(const char *target,const char *new_name) {
+    struct nas_vfs_path parent={0};char leaf[256];
+    int rc=nas_fs_lookup_parent_at_policy(
+               NULL,NULL,new_name,NAS_FS_TRAILING_CREATE_DEST,
+               &parent,leaf);
+    if(!rc)rc=nas_vfs_symlink_child(target,&parent,leaf);
+    if(parent.dentry)assert(nas_vfs_path_put(&parent)==0);
+    return rc;
+}
 int main(void) {
     char resolved[256],data[32];
     struct nas_fs_node n;
@@ -453,6 +518,136 @@ int main(void) {
     tmp_demo.ino=old_generation;
     assert(nas_fs_lookup_node("/tmp/demo",true,&n,resolved)==0);
     assert(!strcmp(n.filesystem->name,"tmpfs") && nas_vfs_can_write(&n));
+    /* These are the REAL NaSeed Path namei and mutations, linked against
+     * production vfs.c/lookup.c, not calls to host Linux unlinkat().
+     * A terminal slash must never silently turn a regular file into an
+     * unlink/rename/link basename, even if the provider supports writes. */
+    struct nas_vfs_path slash_parent={0};
+    char slash_leaf[256]={0};
+    assert(nas_fs_lookup_parent_at(NULL,NULL,"/tmp/demo/",
+                                   &slash_parent,slash_leaf)==-ENOTDIR);
+    assert(!slash_parent.dentry);
+    assert(nas_fs_lookup_parent_at(NULL,NULL,"/tmp/missing/",
+                                   &slash_parent,slash_leaf)==-ENOENT);
+    assert(!slash_parent.dentry);
+    assert(nas_fs_lookup_parent_at(NULL,NULL,"/bin/demo/",
+                                   &slash_parent,slash_leaf)==-ENOTDIR);
+    assert(!slash_parent.dentry);
+    /* /tmp/alias -> /tmp: open("alias/") is a directory, but unlink,
+     * rmdir and rename must not mutate the symlink after dropping '/'.
+     * This parent resolver feeds those mutating namespace syscalls. */
+    assert(nas_fs_lookup_parent_at(NULL,NULL,"/tmp/alias/",
+                                   &slash_parent,slash_leaf)==-ENOTDIR);
+    assert(!slash_parent.dentry);
+    assert(nas_fs_lookup_node("/tmp/alias",false,&n,resolved)==0);
+    assert(n.ino==5000+fixture_dir_link.ino && n.is_symlink);
+    assert(namespace_unlink("/tmp/demo/",0)==-ENOTDIR);
+    assert(namespace_unlink("/tmp/alias/",0)==-ENOTDIR);
+    assert(namespace_unlink("/tmp/alias/",0x200U)==-ENOTDIR);
+    assert(namespace_rename("/tmp/demo/","/tmp/slash-renamed")==-ENOTDIR);
+    assert(namespace_rename("/tmp/alias/","/tmp/slash-renamed")==-ENOTDIR);
+    assert(namespace_link("/tmp/demo/","/tmp/slash-linked")==-ENOTDIR);
+    assert(nas_fs_lookup_node("/tmp/demo",true,&n,resolved)==0);
+    assert(n.inode==&tmp_demo);
+    assert(nas_fs_lookup_node("/tmp/alias",false,&n,resolved)==0);
+    assert(n.inode==&fixture_dir_link && n.is_symlink);
+    assert(nas_fs_lookup_node("/tmp/slash-renamed",false,
+                              &n,resolved)==-ENOENT);
+    assert(nas_fs_lookup_node("/tmp/slash-linked",false,
+                              &n,resolved)==-ENOENT);
+    assert(namespace_symlink("anything","/tmp/demo/")==-EEXIST);
+    assert(namespace_symlink("anything","/tmp/alias/")==-EEXIST);
+    assert(namespace_symlink("anything","/tmp/missing-symlink/")==-ENOENT);
+    assert(namespace_link("/tmp/demo","/tmp/demo/")==-EEXIST);
+    assert(namespace_link("/tmp/demo","/tmp/missing-hardlink/")==-ENOENT);
+    assert(namespace_rename("/tmp/demo","/tmp/missing-rename/")==-ENOTDIR);
+    assert(namespace_rename("/tmp/demo","/tmp/opened/")==-ENOTDIR);
+    assert(nas_fs_lookup_node("/tmp/demo",true,&n,resolved)==0);
+    assert(n.inode==&tmp_demo);
+    assert(nas_fs_lookup_node("/tmp/opened",true,&n,resolved)==0);
+    assert(n.inode==&fixture_open_directory);
+    assert(nas_fs_lookup_parent_mkdir_at(NULL,NULL,"/tmp/new/",
+                                   &slash_parent,slash_leaf)==0);
+    assert(!strcmp(slash_leaf,"new"));
+    assert(nas_vfs_path_put(&slash_parent)==0);
+    /* mkdir(existing/) is EEXIST even for files and symlinks, including
+     * a symlink whose target is missing. It is intentionally DIFFERENT
+     * from unlink(file/) and rename(link-to-dir/). */
+    static const char *mkdir_existing[]={
+        "/tmp/demo/", "/tmp/", "/tmp/link/", "/tmp/alias/"
+    };
+    for(unsigned i=0;i<sizeof(mkdir_existing)/sizeof(mkdir_existing[0]);i++) {
+        assert(nas_fs_lookup_parent_mkdir_at(NULL,NULL,mkdir_existing[i],
+                                             &slash_parent,slash_leaf)==0);
+        assert(nas_vfs_mkdir_child(&slash_parent,slash_leaf,0755)==-EEXIST);
+        assert(nas_vfs_path_put(&slash_parent)==0);
+    }
+    const char *saved_link_target=fixture_link_target;
+    fixture_link_target="no-such-target";
+    fixture_symlink.size=14;
+    assert(nas_fs_lookup_parent_mkdir_at(NULL,NULL,"/tmp/link/",
+                                         &slash_parent,slash_leaf)==0);
+    assert(nas_vfs_mkdir_child(&slash_parent,slash_leaf,0755)==-EEXIST);
+    assert(nas_vfs_path_put(&slash_parent)==0);
+    fixture_link_target=saved_link_target;
+    fixture_symlink.size=9;
+    struct nas_vfs_path writable_parent={0},immutable_parent={0};
+    assert(nas_fs_lookup_path_at(NULL,NULL,"/tmp",true,
+                                 &writable_parent)==0);
+    assert(nas_fs_lookup_path_at(NULL,NULL,"/bin",true,
+                                 &immutable_parent)==0);
+    struct nas_vfs_path detached_dirfd={0};
+    assert(nas_fs_lookup_path_at(NULL,NULL,"/tmp/to-detach",true,
+                                 &detached_dirfd)==0);
+    struct nas_fs_node detached_still_live={0};
+    assert(nas_vfs_path_node(&detached_dirfd,&detached_still_live)==0);
+    assert(detached_still_live.inode==&fixture_detached_dir);
+    assert(nas_vfs_unlink_child(&writable_parent,"to-detach",0x200U)==0);
+    assert(nas_fs_lookup_node("/tmp/to-detach",false,
+                              &n,resolved)==-ENOENT);
+    /* Detached directory remains fstat-able via owned dirfd but cannot
+     * grow new unreachable namespace entries. Each mutation fails BEFORE
+     * calling the backend provider or acquiring a new child identity. */
+    assert(nas_vfs_path_node(&detached_dirfd,&detached_still_live)==0);
+    assert(detached_still_live.inode==&fixture_detached_dir);
+    assert(nas_vfs_create_child(&detached_dirfd,"new",0600)==-ENOENT);
+    assert(nas_vfs_mkdir_child(&detached_dirfd,"newdir",0755)==-ENOENT);
+    assert(nas_vfs_symlink_child("target",&detached_dirfd,"newlink")==-ENOENT);
+    assert(nas_vfs_path_put(&detached_dirfd)==0);
+    assert(!detached_dirfd.dentry);
+    assert(!fixture_detached_dir_visible);
+    assert(nas_vfs_unlink_child(&writable_parent,"absent",0)==-ENOENT);
+    assert(nas_vfs_rename_child(&writable_parent,"absent",
+                                &writable_parent,"renamed",0)==-ENOENT);
+    assert(nas_vfs_link_child(&writable_parent,"absent",
+                              &writable_parent,"alias")==-ENOENT);
+    assert(nas_vfs_rename_child(&writable_parent,"demo",
+                                &immutable_parent,"alias",0)==-EXDEV);
+    assert(nas_vfs_link_child(&writable_parent,"demo",
+                              &immutable_parent,"alias")==-EXDEV);
+    assert(nas_vfs_rename_child(&writable_parent,"hardlink-a",
+                                &writable_parent,"hardlink-b",0)==0);
+    assert(nas_vfs_rename_child(&writable_parent,"hardlink-a",
+                                &writable_parent,"hardlink-b",1)==-EEXIST);
+    struct nas_vfs_path hardlink_a={0},hardlink_b={0};
+    assert(nas_fs_lookup_path_at(&writable_parent,NULL,"hardlink-a",
+                                 false,&hardlink_a)==0);
+    assert(nas_fs_lookup_path_at(&writable_parent,NULL,"hardlink-b",
+                                 false,&hardlink_b)==0);
+    struct nas_fs_node hardlink_a_node,hardlink_b_node;
+    assert(nas_vfs_path_node(&hardlink_a,&hardlink_a_node)==0);
+    assert(nas_vfs_path_node(&hardlink_b,&hardlink_b_node)==0);
+    assert(hardlink_a_node.inode==&tmp_demo &&
+           hardlink_b_node.inode==&tmp_demo &&
+           hardlink_a_node.ino==hardlink_b_node.ino);
+    assert(nas_vfs_path_put(&hardlink_b)==0);
+    assert(nas_vfs_path_put(&hardlink_a)==0);
+    assert(nas_vfs_unlink_child(&immutable_parent,"demo",0)==-EROFS);
+    assert(nas_fs_lookup_node("/tmp/demo",true,&n,resolved)==0);
+    assert(n.ino==5000+tmp_demo.ino && n.inode==&tmp_demo);
+    assert(nas_vfs_path_put(&immutable_parent)==0);
+    assert(nas_vfs_path_put(&writable_parent)==0);
+    fprintf(stderr,"[PATH FIRST HOST MUTATION PASS] slash/error/EXDEV/RO rollback\n");
     assert(nas_vfs_read_at(&n,1,(uint8_t *)data,5)==3);
     assert(!memcmp(data,"ATA",3));
     assert(nas_vfs_chmod(&n,0600)==0 && tmp_demo.mode==0100600U);
@@ -493,6 +688,50 @@ int main(void) {
     char path_from_inode[256];
     assert(nas_vfs_path_string(&owned_open_dir,path_from_inode)==0);
     assert(!strcmp(path_from_inode,"/tmp/renamed-opened"));
+    /* Path-first lookup must consume the OPEN directory identity, not
+     * reconstruct an old absolute pathname after rename. This fixture
+     * exercises the production walker/Path refs, not a Linux host mock. */
+    struct nas_vfs_path child_relative={0};
+    assert(nas_fs_lookup_path_at(&owned_open_dir,NULL,"child",true,
+                                 &child_relative)==0);
+    struct nas_fs_node child_relative_node={0};
+    assert(nas_vfs_path_node(&child_relative,&child_relative_node)==0);
+    /* The VFS Linux inode number adds a stable tmpfs-specific namespace;
+     * backend pointer identity remains the actual original child object. */
+    assert(child_relative_node.ino==5000+fixture_open_child.ino &&
+           child_relative_node.inode==&fixture_open_child);
+    assert(nas_vfs_path_put(&child_relative)==0);
+    assert(nas_fs_lookup_path_at(&owned_open_dir,NULL,"child/..",true,
+                                 &child_relative)==-ENOTDIR);
+    assert(!child_relative.dentry);
+    assert(nas_fs_lookup_path_at(&owned_open_dir,NULL,"missing",true,
+                                 &child_relative)==-ENOENT);
+    assert(!child_relative.dentry);
+    struct nas_vfs_path directory_dot={0};
+    assert(nas_fs_lookup_path_at(&owned_open_dir,NULL,".",true,
+                                 &directory_dot)==0);
+    assert(directory_dot.dentry==owned_open_dir.dentry);
+    assert(nas_vfs_path_put(&directory_dot)==0);
+    struct nas_vfs_path parent_from_held={0};
+    assert(nas_vfs_path_parent(&owned_open_dir,NULL,&parent_from_held)==0);
+    struct nas_fs_node parent_held_inode={0};
+    assert(nas_vfs_path_node(&parent_from_held,&parent_held_inode)==0);
+    assert(parent_held_inode.is_dir);
+    assert(nas_vfs_path_put(&parent_from_held)==0);
+    struct nas_fs_node opened_relative={0};
+    struct nas_vfs_path owned_open_relative={0};
+    struct nas_vfs_open_options relative_options={.follow_final=true,.access=0};
+    assert(nas_vfs_open_path_at(&owned_open_dir,NULL,"child",
+                                 &relative_options,&opened_relative,
+                                 &owned_open_relative)==0);
+    assert(opened_relative.inode==&fixture_open_child &&
+           opened_relative.ino==5106);
+    assert(owned_open_relative.dentry &&
+           owned_open_relative.dentry!=owned_open_dir.dentry);
+    assert(nas_vfs_node_unpin(&opened_relative)==0);
+    assert(nas_vfs_path_put(&owned_open_relative)==0);
+    assert(!owned_open_relative.dentry);
+    fprintf(stderr,"[PATH FIRST HOST OPENAT PASS] renamed dirfd original child identity\n");
     struct nas_fs_node read_only_dir;
     assert(nas_fs_lookup_node("/bin",true,&read_only_dir,resolved)==0);
     struct nas_vfs_path read_only_path={0};
@@ -545,6 +784,29 @@ int main(void) {
     assert(nas_fs_resolve_create_target("/tmp/alias/newfile",resolved)==0);
     assert(!strcmp(resolved,"/tmp/newfile"));
     assert(nas_fs_resolve_create_target("/bin/demo/sub",resolved)==-ENOTDIR);
+    /* Exercise production open_path_at end-to-end: O_EXCL sees the link
+     * entry itself; nonexclusive O_CREAT follows the dangling link to a
+     * new basename; two returned owners (inode lease + Dentry) must both
+     * be released by the File caller. */
+    struct nas_fs_node object_open={0};
+    struct nas_vfs_path object_path={0};
+    struct nas_vfs_open_options object_options={
+        .follow_final=true,.create=true,.exclusive=true,
+        .access=2,.create_mode=0640
+    };
+    assert(nas_vfs_open_path_at(NULL,NULL,"/tmp/link",&object_options,
+                                 &object_open,&object_path)==-EEXIST);
+    assert(!object_path.dentry && !object_open.mount);
+    assert(nas_fs_lookup_node("/tmp/newfile",true,&n,resolved)==-ENOENT);
+    object_options.exclusive=false;
+    assert(nas_vfs_open_path_at(NULL,NULL,"/tmp/link",&object_options,
+                                 &object_open,&object_path)==0);
+    assert(object_open.inode==&fixture_created && object_path.dentry);
+    assert(nas_vfs_path_string(&object_path,resolved)==0);
+    assert(!strcmp(resolved,"/tmp/newfile"));
+    assert(nas_vfs_node_unpin(&object_open)==0);
+    assert(nas_vfs_path_put(&object_path)==0);
+    assert(!object_path.dentry);
     struct nas_vfs_open_options via_link={
         .follow_final=true,.create=true,.exclusive=true,
         .access=2,.create_mode=0640
@@ -565,6 +827,42 @@ int main(void) {
     assert(nas_vfs_write_at(&n,0,(const uint8_t *)"xyz",3)==3);
     assert(nas_fs_lookup_node("/tmp/newfile",true,&n,resolved)==0);
     assert(nas_vfs_read_at(&n,0,(uint8_t *)data,3)==3 && !memcmp(data,"xyz",3));
+    struct nas_vfs_open_options path_only_options={
+        .follow_final=false,.path_only=true,.access=0
+    };
+    assert(nas_vfs_open_path_at(NULL,NULL,"/tmp/link",&path_only_options,
+                                 &object_open,&object_path)==0);
+    assert(object_path.dentry && object_open.is_symlink);
+    assert(nas_vfs_node_unpin(&object_open)==0);
+    assert(nas_vfs_path_put(&object_path)==0);
+    path_only_options.path_only=false;
+    assert(nas_vfs_open_path_at(NULL,NULL,"/tmp/link",&path_only_options,
+                                 &object_open,&object_path)==-ELOOP);
+    assert(!object_open.mount && !object_path.dentry);
+    struct nas_vfs_open_options opened_directory_path={
+        .follow_final=true,.directory_only=true,.path_only=true
+    };
+    assert(nas_vfs_open_path_at(NULL,NULL,"/tmp",&opened_directory_path,
+                                 &object_open,&object_path)==0);
+    assert(object_open.is_dir && object_path.dentry);
+    assert(nas_vfs_node_unpin(&object_open)==0);
+    assert(nas_vfs_path_put(&object_path)==0);
+    struct nas_vfs_open_options denied_truncate={
+        .follow_final=true,.truncate=true,.access=0
+    };
+    assert(nas_vfs_open_path_at(NULL,NULL,"/tmp/newfile",&denied_truncate,
+                                 &object_open,&object_path)==-EINVAL);
+    assert(!object_open.mount && !object_path.dentry);
+    assert(fixture_created_length==3 && fixture_created.size==3);
+    struct nas_vfs_open_options create_failed={
+        .follow_final=true,.create=true,.access=2,.create_mode=0640
+    };
+    assert(nas_vfs_open_path_at(NULL,NULL,"/tmp/open-never-created",
+                                 &create_failed,&object_open,&object_path)==-ENOSPC);
+    assert(!object_open.mount && !object_path.dentry);
+    assert(nas_fs_lookup_node("/tmp/open-never-created",true,
+                              &n,resolved)==-ENOENT);
+    fprintf(stderr,"[PATH FIRST HOST OPENAT PASS] O_CREAT dangling link, O_EXCL, O_PATH, rollback\n");
     /* Architecture regression: keep 512 REAL distinct inode identities
      * simultaneously owned. The old fixed 256-entry global lease table
      * returned ENFILE and blocked otherwise valid applications. The dynamic
@@ -644,6 +942,7 @@ int main(void) {
     assert(nas_vfs_node_pin(&orphan)==0);
     assert(nas_vfs_inode_is_pinned(&fixture_orphan));
     /* Open File keeps its inode even after unlink. Refresh st_nlink=0. */
+    fixture_orphan.nlink=0; /* simulate a successful backend unlink AFTER pin */
     struct nas_fs_node refreshed,forged=orphan;
     orphan.nlink=1; /* obsolete pathname snapshot */
     assert(nas_vfs_getattr(&orphan,&refreshed)==0);
@@ -831,6 +1130,24 @@ int main(void) {
     assert(nas_vfs_unlink("/mnt",0x800ULL)==-EINVAL);
     assert(nas_vfs_rename("/mnt","/tmp/renamed",0)==-EBUSY);
     assert(nas_vfs_rename("/tmp/demo","/mnt",0)==-EBUSY);
+    /* Direct production child mutation API must respect a mounted child
+     * before provider mutation; no accidental removal of its underlay. */
+    struct nas_vfs_path root_parent={0},mount_tmp_parent={0};
+    assert(nas_vfs_path_root(&root_parent)==0);
+    assert(nas_fs_lookup_path_at(NULL,NULL,"/tmp",true,
+                                 &mount_tmp_parent)==0);
+    assert(nas_vfs_unlink_child(&root_parent,"mnt",0x200ULL)==-EBUSY);
+    assert(nas_vfs_rename_child(&root_parent,"mnt",
+                                &mount_tmp_parent,"mnt-moved",0)==-EBUSY);
+    assert(nas_vfs_rename_child(&mount_tmp_parent,"demo",
+                                &root_parent,"mnt",0)==-EBUSY);
+    assert(nas_vfs_link_child(&mount_tmp_parent,"demo",
+                              &root_parent,"hardlink")==-EXDEV);
+    assert(nas_vfs_path_put(&mount_tmp_parent)==0);
+    assert(nas_vfs_path_put(&root_parent)==0);
+    assert(nas_fs_lookup_node("/mnt/hello",true,&n,resolved)==0);
+    assert(n.filesystem==&ext_mock_type);
+    fprintf(stderr,"[PATH FIRST HOST MOUNT PASS] child unlink/rename/link busy and EXDEV\n");
     assert(nas_vfs_link("/tmp","/tmp/dir-alias")==-EPERM);
     assert(nas_vfs_register_mount(&ext_mount)==-EEXIST);
     assert(nas_fs_lookup_node("/mnt/hello",true,&n,resolved)==0);
@@ -927,6 +1244,15 @@ int main(void) {
     /* Direct longest-prefix lookup must NOT bypass the VFS dentry owner.
      * Simulate a provider returning a recycled parent-root identity while
      * the nested attachment still pins its original parent inode. */
+    struct nas_vfs_path nested_parent={0},nested_source={0};
+    assert(nas_fs_lookup_path_at(NULL,NULL,"/mnt",true,
+                                 &nested_parent)==0);
+    assert(nas_fs_lookup_path_at(NULL,NULL,"/tmp",true,
+                                 &nested_source)==0);
+    assert(nas_vfs_rename_child(&nested_source,"demo",&nested_parent,
+                                "nested",0)==-EBUSY);
+    assert(nas_vfs_path_put(&nested_source)==0);
+    assert(nas_vfs_path_put(&nested_parent)==0);
     ext_mock_root_ino=999;
     assert(nas_vfs_lookup("/mnt/nested/hello",&found)==-ENOENT);
     assert(nas_fs_lookup_node("/mnt/nested/hello",true,&found,resolved)==-ENOENT);
@@ -969,6 +1295,16 @@ int main(void) {
     assert(nas_vfs_lookup("/standalone/hello",&direct)==0);
     assert(direct.mount==n.mount && direct.ino==n.ino);
     assert(nas_vfs_lookup("/standalone/../no-root",&direct)==-ENOENT);
+    struct nas_vfs_path rootless_mount_root={0},rootless_parent={0};
+    assert(nas_fs_lookup_path_at(NULL,NULL,"/standalone",true,
+                                 &rootless_mount_root)==0);
+    assert(nas_vfs_path_parent(&rootless_mount_root,NULL,
+                                &rootless_parent)==-ENOENT);
+    assert(!rootless_parent.dentry);
+    assert(nas_fs_lookup_path_at(NULL,NULL,"/standalone/..",true,
+                                 &rootless_parent)==-ENOENT);
+    assert(!rootless_parent.dentry);
+    assert(nas_vfs_path_put(&rootless_mount_root)==0);
     struct nas_vfs_path rootless={0},rootless_copy={0};
     assert(nas_vfs_path_bind(&n,"/standalone/hello",&rootless)==0);
     assert(nas_vfs_path_get(&rootless,&rootless_copy)==0);

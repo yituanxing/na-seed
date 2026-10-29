@@ -11,6 +11,14 @@ on:
       - 'kernel/arch/aarch64/**'
       - 'kernel/arch/mmu.h'
       - 'kernel/mm/**'
+      # Native signal/JIT boots also consume the shared Path-first VFS.
+      - 'kernel/fs/vfs*'
+      - 'kernel/fs/lookup.*'
+      - 'kernel/fs/open_path.h'
+      - 'kernel/fs/path_request.h'
+      - 'kernel/fs/namespace_syscall.*'
+      - 'kernel/fs/tmp_namespace.c'
+      - 'kernel/fd.*'
       - 'kernel/drivers/pty*'
       - 'kernel/drivers/tty*'
       - 'scripts/probe-aarch64-busybox-matrix.sh'
@@ -31,6 +39,10 @@ on:
       - 'scripts/test-m105-native-jit-probe.sh'
       - 'scripts/test-m105-native-jit.c'
       - 'scripts/test-m105-native-jit-cases.tsv'
+      - 'tests/path-first-dirfd-native.c'
+      - 'scripts/build-path-first-dirfd-native.sh'
+      - 'scripts/probe-path-first-dirfd-native.sh'
+      - 'scripts/path-first-dirfd-serial-check.py'
       - '.github/workflows/source-busybox-arm64.yml'
   workflow_dispatch:
   schedule:
@@ -74,6 +86,9 @@ jobs:
       - name: '[NATIVE QEMU] M105 ARM64 real CPU RW/RX JIT and private fork COW'
         timeout-minutes: 5
         run: sh scripts/test-m105-native-jit-probe.sh arm64
+      - name: '[NATIVE QEMU] Path-first openat(dirfd) and owned File lifecycle / arm64'
+        timeout-minutes: 5
+        run: sh scripts/probe-path-first-dirfd-native.sh arm64
       - name: Attach actual guest serial logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -87,5 +102,7 @@ jobs:
             build/port-aarch64/full/matrix-source/m104-exception.clean.log
             build/port-aarch64/full/matrix-source/m105-signal-group.serial.log
             build/port-aarch64/full/matrix-source/m105-native-jit.clean.log
+            build/port-aarch64/full/matrix-source/path-first-dirfd.serial.log
+            build/source-busybox/arm64/path-first-dirfd-native
             build/source-busybox/arm64/m105-signal-group
           if-no-files-found: ignore

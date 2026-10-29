@@ -6,6 +6,8 @@
 #include <stdio.h>
 #include "../kernel/task.h"
 #include "../kernel/fs/procfs.h"
+#include "../kernel/fs/vfs.h"
+#include "../kernel/errno.h"
 #include "../kernel/mm/vm.h"
 #include "../kernel/arch/user_pt.h"
 static struct nas_task tasks[3];
@@ -13,6 +15,28 @@ static struct nas_files files_fixture;
 static struct nas_mm address_spaces[2];
 struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
 struct nas_task *nas_current_task=&tasks[0];
+/* The production /proc/mounts must consume the VFS's LIVE mount snapshot,
+ * not a second hard-coded procfs table. This fake is deliberately mutable:
+ * even an already-open proc inode sees mounts appear/disappear. */
+static struct nas_vfs_mount_snapshot fixture_mounts[80];
+static unsigned fixture_mount_count;
+int nas_vfs_mount_snapshot(unsigned ordinal,struct nas_vfs_mount_snapshot *out) {
+    if(!out)return -EINVAL;
+    if(ordinal>=fixture_mount_count)return -ENOENT;
+    *out=fixture_mounts[ordinal];
+    return 0;
+}
+static void fixture_add_mount(const char *source,const char *target,
+                              const char *fstype,bool read_only) {
+    assert(fixture_mount_count<80);
+    struct nas_vfs_mount_snapshot *m=&fixture_mounts[fixture_mount_count++];
+    *m=(struct nas_vfs_mount_snapshot){0};
+    assert(strlen(source)<sizeof(m->source));
+    assert(strlen(target)<sizeof(m->target));
+    assert(strlen(fstype)<sizeof(m->fstype));
+    strcpy(m->source,source);strcpy(m->target,target);
+    strcpy(m->fstype,fstype);m->read_only=read_only;
+}
 struct nas_task *nas_task_at(unsigned n) {return n<3?&tasks[n]:0;}
 struct nas_task *nas_task_by_pid(uint64_t pid) {
     for(unsigned i=0;i<3;i++)if(tasks[i].state!=NAS_TASK_FREE && tasks[i].pid==pid)return &tasks[i];
@@ -58,6 +82,96 @@ static void check_file(const char *path,const char *wanted) {
     assert(nas_proc_read(node,0,split,5)==5);
     assert(!memcmp(split,data,5));
     assert(nas_proc_read(node,(uint64_t)n,data,1)==0);
+}
+/* Compare exact offset reads, not just a prefix in a 1536-byte stack buffer.
+ * Test every byte boundary and a few inhomogeneous small chunks, including
+ * offsets after 1536 and beyond EOF. */
+static size_t proc_mount_read_all(struct nas_proc_node node,unsigned chunk,
+                                  char *out,size_t capacity) {
+    size_t offset=0;
+    assert(chunk && capacity);
+    while(offset<capacity-1) {
+        unsigned take=chunk;
+        if(take>capacity-1-offset)take=(unsigned)(capacity-1-offset);
+        int64_t n=nas_proc_read(node,offset,(uint8_t *)out+offset,take);
+        assert(n>=0 && (unsigned)n<=take);
+        if(!n)break;
+        offset+=(size_t)n;
+    }
+    assert(offset<capacity-1);
+    out[offset]=0;
+    assert(nas_proc_read(node,offset,(uint8_t *)out,1)==0);
+    assert(nas_proc_read(node,offset+12345,(uint8_t *)out,1)==0);
+    return offset;
+}
+static void check_live_mounts(void) {
+    struct nas_proc_node global={0},per_pid={0};
+    assert(nas_proc_lookup("/proc/mounts",&global));
+    assert(nas_proc_lookup("/proc/23/mounts",&per_pid));
+    assert(!nas_proc_is_dir(global) && !nas_proc_is_dir(per_pid));
+    uint8_t small[8]={0};
+    fixture_mount_count=0;
+    assert(nas_proc_read(global,0,small,1)==0);
+    assert(nas_proc_read(per_pid,0,small,1)==0);
+    fixture_add_mount("rootfs","/","rootfs",true);
+    fixture_add_mount("tmpfs","/tmp","tmpfs",false);
+    fixture_add_mount("proc","/proc","proc",true);
+    fixture_add_mount("virtio0","/mnt","lwext4",false);
+    fixture_add_mount("virtio0p1","/gpt","lwext4",false);
+    fixture_add_mount("littlefs0","/flash","littlefs",false);
+    fixture_add_mount("ramfs","/ramfs","j-kent-ramfs",false);
+    fixture_add_mount("virtio device","/space tab\tline\nslash\\",
+                      "ext4 test",false);
+    static const char escaped[]=
+        "virtio\\040device /space\\040tab\\011line\\012slash\\134 "
+        "ext4\\040test rw 0 0\n";
+    static const char basics[]=
+        "rootfs / rootfs ro 0 0\n"
+        "tmpfs /tmp tmpfs rw 0 0\n"
+        "proc /proc proc ro 0 0\n"
+        "virtio0 /mnt lwext4 rw 0 0\n"
+        "virtio0p1 /gpt lwext4 rw 0 0\n"
+        "littlefs0 /flash littlefs rw 0 0\n"
+        "ramfs /ramfs j-kent-ramfs rw 0 0\n";
+    char expected[24000]={0};
+    strcpy(expected,basics);strcat(expected,escaped);
+    /* More than 1536 bytes: the old procfs scalar writer silently clipped
+     * this real-capacity VFS list. Real 256-mount VFS capacity is larger. */
+    for(unsigned i=0;i<52;i++) {
+        char source[64],target[256],line[400];
+        assert(snprintf(source,sizeof(source),"block%02u",i)>0);
+        assert(snprintf(target,sizeof(target),"/many/other/mount%02u",i)>0);
+        fixture_add_mount(source,target,"ext4",i%2==0);
+        int n=snprintf(line,sizeof(line),"%s %s ext4 %s 0 0\n",
+                       source,target,i%2==0?"ro":"rw");
+        assert(n>0 && (size_t)n<sizeof(line));
+        assert(strlen(expected)+(size_t)n<sizeof(expected));
+        strcat(expected,line);
+    }
+    const size_t wanted=strlen(expected);
+    assert(wanted>1536);
+    char all[24000],fragmented[24000],pid_view[24000];
+    assert(proc_mount_read_all(global,4096,all,sizeof(all))==wanted);
+    assert(!memcmp(all,expected,wanted+1));
+    assert(proc_mount_read_all(global,7,fragmented,sizeof(fragmented))==wanted);
+    assert(!memcmp(fragmented,expected,wanted+1));
+    assert(proc_mount_read_all(per_pid,13,pid_view,sizeof(pid_view))==wanted);
+    assert(!memcmp(pid_view,expected,wanted+1));
+    assert(nas_proc_read(global,0,small,0)==0);
+    assert(nas_proc_read(global,1535,small,4)==4);
+    assert(!memcmp(small,expected+1535,4));
+    assert(nas_proc_read(global,1537,small,3)==3);
+    assert(!memcmp(small,expected+1537,3));
+    /* An open /proc/mounts inode must not keep a stale synthetic snapshot. */
+    fixture_mount_count=3;
+    const size_t now=strlen("rootfs / rootfs ro 0 0\n"
+                            "tmpfs /tmp tmpfs rw 0 0\n"
+                            "proc /proc proc ro 0 0\n");
+    assert(proc_mount_read_all(global,1,all,sizeof(all))==now);
+    assert(!memcmp(all,basics,now));
+    assert(proc_mount_read_all(per_pid,3,pid_view,sizeof(pid_view))==now);
+    assert(!memcmp(all,pid_view,now+1));
+    puts("[M65 MOUNTS PASS] live VFS mount snapshot, six fields, escapes, >1536, split reads, offset and PID parity");
 }
 int main(void) {
     tasks[0].state=NAS_TASK_RUNNING;tasks[0].pid=1;tasks[0].tgid=1;
@@ -148,8 +262,7 @@ int main(void) {
     check_file("/proc/stat","btime 1760000000");
     check_file("/proc/loadavg","1.00 0.50 0.25");
     check_file("/proc/vmstat","nr_free_pages 512");
-    check_file("/proc/mounts","rootfs / rootfs ro");
-    check_file("/proc/23/mounts","proc /proc proc ro");
+    check_live_mounts();
     check_file("/proc/23/statm"," 0 0 0 0 0 0");
     tasks[1].commandline_bytes=12;
     memcpy(tasks[1].commandline,"sleep\0three\0",12);
