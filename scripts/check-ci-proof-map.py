@@ -26,6 +26,7 @@ HOST_ONLY = {
 EXTRA_HOST_CHECKS = {
     "M105 ELF/MM": "check-m105-elf-permissions.sh",
     "M105 PTY/ISIG": "test-m105-pty-isig.sh",
+    "M105 boot argv": "check-m105-boot-argv.sh",
 }
 HOST_TARGET = {
     91: "check-m91-kcontext.sh",
@@ -103,14 +104,16 @@ def check(root: Path, ci_text: str | None = None) -> list[str]:
         if re.search(r"(?i)\b(?:native|real|qemu)\b", name):
             errors.append(f"{label}: title overclaims ELF/MM host fixture evidence")
         body = (root / "scripts" / script).read_text(encoding="utf-8")
-        markers = (
-            ("kernel/task/elf_segments.c", "kernel/mm/mm.c",
-             '"$m105_tmp_dir/elf-permissions"', '"$m105_tmp_dir/elf-cow"')
-            if script == "check-m105-elf-permissions.sh" else
-            ("tests/m105-pty-isig.c", "kernel/drivers/pty.c",
-             "kernel/drivers/tty_ldisc.c", "--linux-pty-oracle",
-             '"$work/m105-pty-isig-kernel"')
-        )
+        if script == "check-m105-elf-permissions.sh":
+            markers = ("kernel/task/elf_segments.c", "kernel/mm/mm.c",
+                       '"$m105_tmp_dir/elf-permissions"', '"$m105_tmp_dir/elf-cow"')
+        elif script == "test-m105-pty-isig.sh":
+            markers = ("tests/m105-pty-isig.c", "kernel/drivers/pty.c",
+                       "kernel/drivers/tty_ldisc.c", "--linux-pty-oracle",
+                       '"$work/m105-pty-isig-kernel"')
+        else:
+            markers = ("scripts/test-m105-boot-argv.c", "kernel/task/user_stack.c",
+                       "--gc-sections", "timeout 30s build/m105-boot-argv/host")
         for marker in markers:
             if marker not in body:
                 errors.append(f"{label}: missing linked source or executed host binary {marker!r}")
@@ -326,6 +329,13 @@ def self_test() -> list[str]:
             "run: sh scripts/test-m105-pty-isig.sh",
             "run: sh scripts/not-an-m105-pty-test.sh", 1
         ),
+        "M105 boot argv false native claim": workflow.replace(
+            "'[HOST] M105 production boot argv", "'[NATIVE QEMU] M105 production boot argv", 1
+        ),
+        "M105 boot argv missing host fixture": workflow.replace(
+            "run: sh scripts/check-m105-boot-argv.sh",
+            "run: sh scripts/not-an-m105-boot-argv-test.sh", 1
+        ),
         "M105 fake host guest step": workflow.replace(
             "'[NATIVE QEMU] M105 physical TTY", "'[HOST] M105 physical TTY", 1
         ),
@@ -361,7 +371,7 @@ def main() -> int:
         for error in errors:
             print(f"[CI PROOF MAP FAIL] {error}", file=sys.stderr)
         return 1
-    print("[CI PROOF MAP PASS] M88-M103/M105: 6 host-only, 12 host + target-compile; "
+    print("[CI PROOF MAP PASS] M88-M103/M105: 7 host-only, 12 host + target-compile; "
           "M98/M99 share one host fixture; no claim of native three-ISA IRQ proof")
     if args.self_test:
         print("[CI PROOF MAP SELF-TEST PASS] duplicate/mislabel/missing gates rejected")

@@ -26,6 +26,7 @@ They are intentionally given the narrower `[HOST + TARGET-COMPILE]` CI title.
 | M105 signal routing | `check-m105-signal-group.sh` | **Host-only** production `signal.c` Task/TGID routing and teardown fixture. Its green marker does not establish a real guest process or three-ISA signal delivery. |
 | M105 ELF/MM | `check-m105-elf-permissions.sh` | **Host-only** production ELF segment engine and MM/COW path compiled into two fixtures with a mock hardware page-table backend. No native guest execution. |
 | M105 PTY/ISIG | `test-m105-pty-isig.sh` | **Host-only** Linux PTY oracle plus NaSeed `pty.c`/`tty_ldisc.c` unit model. No NaSeed system-QEMU execution. |
+| M105 boot argv capacity | `check-m105-boot-argv.sh` | **Host-only** links the actual production `kernel/task/user_stack.c` parser, proves a quoted BusyBox `sh -c` argument longer than the old 256-byte limit, quote/backslash compatibility, exact 4096-byte capacity boundary, and malformed-input rejection. Does not boot a guest. |
 
 Before this correction, M99 and M98 appeared as two separate green CI steps
 although both invoked exactly `check-m98-sched-core.sh`. Removing the duplicate
@@ -52,7 +53,7 @@ boots the native ISA, physically injects Ctrl-C/Ctrl-\\ after userspace readines
 checks explicit guest signal/group markers, a clean user exit and platform
 debug-exit status, and saves raw serial on failure. A workflow declaration
 still is not a PASS: each **exact-head** three-ISA step must actually run and
-succeed before claiming M105 native signal-group acceptance. M105's three
+succeed before claiming M105 native signal-group acceptance. M105's four
 host fixtures on their own do not count toward this native acceptance.
 
 M105 also has an independent `test-m105-native-jit-probe.sh` source-BusyBox
