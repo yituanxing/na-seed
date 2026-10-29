@@ -72,15 +72,16 @@ readelf -l "$dynamic" | grep -Fq "[Requesting program interpreter: /lib/$loader]
 disk="$work/virtio-musl-ext4.img"
 cp "$base_disk" "$disk"
 debugfs -w -R 'mkdir /lib' "$disk" >/dev/null 2>&1
-debugfs -w -R "write $dynamic /dynamic-busybox" "$disk" >/dev/null 2>&1
+debugfs -w -R 'mkdir /m105' "$disk" >/dev/null 2>&1
+debugfs -w -R "write $dynamic /m105/busybox" "$disk" >/dev/null 2>&1
 debugfs -w -R "write $ldso /lib/$loader" "$disk" >/dev/null 2>&1
-debugfs -w -R 'set_inode_field /dynamic-busybox mode 0100755' "$disk" >/dev/null 2>&1
+debugfs -w -R 'set_inode_field /m105/busybox mode 0100755' "$disk" >/dev/null 2>&1
 debugfs -w -R "set_inode_field /lib/$loader mode 0100755" "$disk" >/dev/null 2>&1
 # debugfs can return zero despite some logical errors. Recover and compare
 # exact bytes, then verify executable permission, BEFORE booting QEMU.
 : > "$work/recovered-busybox"
 : > "$work/recovered-ldso"
-debugfs -R "dump /dynamic-busybox $work/recovered-busybox" "$disk" 2>/dev/null || :
+debugfs -R "dump /m105/busybox $work/recovered-busybox" "$disk" 2>/dev/null || :
 debugfs -R "dump /lib/$loader $work/recovered-ldso" "$disk" 2>/dev/null || :
 cmp "$dynamic" "$work/recovered-busybox" || {
     echo '[M105 FAIL] official dynamic ELF not preserved on ext4' >&2; exit 1;
@@ -88,7 +89,7 @@ cmp "$dynamic" "$work/recovered-busybox" || {
 cmp "$ldso" "$work/recovered-ldso" || {
     echo '[M105 FAIL] official musl ELF not preserved on ext4' >&2; exit 1;
 }
-debugfs -R 'stat /dynamic-busybox' "$disk" 2>/dev/null | grep -Eq 'Mode:[[:space:]]+0755'
+debugfs -R 'stat /m105/busybox' "$disk" 2>/dev/null | grep -Eq 'Mode:[[:space:]]+0755'
 debugfs -R "stat /lib/$loader" "$disk" 2>/dev/null | grep -Eq 'Mode:[[:space:]]+0755'
 
 for mode in ext4 tmpfs; do
@@ -102,11 +103,11 @@ for mode in ext4 tmpfs; do
     case "$mode" in
         ext4)
             target="/mnt/lib/$loader"
-            args="sh -c 'set -e; /bin/busybox readlink /lib/$loader; exec /mnt/dynamic-busybox echo M105-EXT4-DYN-OK'"
+            args="sh -c 'set -e; /bin/busybox readlink /lib/$loader; exec /mnt/m105/busybox echo M105-EXT4-DYN-OK'"
             expected=M105-EXT4-DYN-OK ;;
         tmpfs)
             target="/tmp/$loader"
-            args="sh -c 'set -e; /bin/busybox readlink /lib/$loader; /bin/busybox cp /mnt/lib/$loader /tmp/$loader; /bin/busybox cmp /mnt/lib/$loader /tmp/$loader; exec /mnt/dynamic-busybox echo M105-TMPFS-DYN-OK'"
+            args="sh -c 'set -e; /bin/busybox readlink /lib/$loader; /bin/busybox cp /mnt/lib/$loader /tmp/$loader; /bin/busybox cmp /mnt/lib/$loader /tmp/$loader; exec /mnt/m105/busybox echo M105-TMPFS-DYN-OK'"
             expected=M105-TMPFS-DYN-OK ;;
     esac
     link="$mode_work/rootfs/lib/$loader"
@@ -135,8 +136,9 @@ for mode in ext4 tmpfs; do
             name=$0;
             sub(/^\.\//,"",name);
             if (name==expected) count++;
-            if (name=="dynamic-busybox" || name=="mnt/dynamic-busybox" ||
-                name=="bin/dynamic-busybox") bad=1;
+            if (name=="m105/busybox" || name=="mnt/m105/busybox" ||
+                name=="busybox" || name=="dynamic-busybox" ||
+                name=="mnt/dynamic-busybox" || name=="bin/dynamic-busybox") bad=1;
         }
         END { if(count!=1 || bad) exit 1 }
     ' "$mode_work/cpio-names.txt"; then
@@ -148,7 +150,8 @@ for mode in ext4 tmpfs; do
     archive_abs="$(pwd)/$mode_work/rootfs.cpio"
     if ! (
         cd "$verify_dir"
-        cpio -id --quiet "lib/$loader" "./lib/$loader" < "$archive_abs"
+        cpio -id --quiet "lib/$loader" "./lib/$loader" \
+            bin/busybox ./bin/busybox < "$archive_abs"
     ) > "$mode_work/cpio-verify.log" 2>&1; then
         echo "[M105 FAIL] cannot extract packed interpreter member $arch/$mode" >&2
         sed -n '1,60p' "$mode_work/cpio-verify.log" >&2
@@ -161,6 +164,10 @@ for mode in ext4 tmpfs; do
         sed -n '1,100p' "$mode_work/cpio-names.txt" >&2
         exit 1
     fi
+    cmp "$work/static-busybox" "$verify_dir/bin/busybox" || {
+        echo "[M105 FAIL] CPIO /bin/busybox differs from the verified static Debian ELF $arch/$mode" >&2
+        exit 1
+    }
 
     id="m105-$mode"
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
@@ -193,7 +200,7 @@ for mode in ext4 tmpfs; do
         echo "[M105 FAIL] real writable VirtIO-Blk device unproven $arch/$mode" >&2
         exit 1
     }
-    grep -Fq '[EXEC] replaced process with lwext4 ELF: /mnt/dynamic-busybox' "$clean" || {
+    grep -Fq '[EXEC] replaced process with lwext4 ELF: /mnt/m105/busybox' "$clean" || {
         echo "[M105 FAIL] Alpine ELF did not exec from ext4 $arch/$mode" >&2
         exit 1
     }
@@ -209,7 +216,7 @@ done
 # and ext4 metadata again AFTER both QEMU processes have exited.
 : > "$work/after-busybox"
 : > "$work/after-ldso"
-debugfs -R "dump /dynamic-busybox $work/after-busybox" "$disk" 2>/dev/null || :
+debugfs -R "dump /m105/busybox $work/after-busybox" "$disk" 2>/dev/null || :
 debugfs -R "dump /lib/$loader $work/after-ldso" "$disk" 2>/dev/null || :
 cmp "$dynamic" "$work/after-busybox"
 cmp "$ldso" "$work/after-ldso"
