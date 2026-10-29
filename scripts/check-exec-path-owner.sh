@@ -6,6 +6,10 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-function -fno-builtin \
   scripts/test-exec-path-owner-host.c -Wl,--gc-sections \
   -o build/exec-path-owner/test
 build/exec-path-owner/test
+cc -std=c11 -O2 -Wall -Wextra -Werror \
+  tests/path-first-execfn-linux-oracle.c \
+  -o build/exec-path-owner/execfn-linux-oracle
+timeout 30s build/exec-path-owner/execfn-linux-oracle
 # Fail closed on a future early syscall return accidentally bypassing the
 # one source-owner cleanup. Before app_pinned=true no inode ref exists; after
 # that point exactly one exec_fail handles all errors until process commit.
@@ -21,8 +25,11 @@ if returns != ['return nas_arch_saved_return(nas_current_task);']:
     raise SystemExit('[EXEC PATH OWNER FAIL] return bypasses shared unpin: '+repr(returns))
 for token in ('app_pinned=false;', 'interpreter_pinned=false;',
               'exec_drop_image_sources(app_pinned?&app:NULL,',
-              'goto exec_fail;'):
+              'goto exec_fail;',
+              'memcpy(pending_exec.filename,request.pathname,'):
     if token not in body:
         raise SystemExit('[EXEC PATH OWNER FAIL] missing '+token)
+if 'memcpy(pending_exec.filename,actual,' in body:
+    raise SystemExit('[EXEC PATH OWNER FAIL] AT_EXECFN overwritten with symlink target')
 print('[EXEC PATH OWNER STATIC PASS] no failure return escapes acquired inode lease')
 PY

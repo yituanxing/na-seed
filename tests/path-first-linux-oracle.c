@@ -67,10 +67,11 @@ static void renamed_and_unlinked_dirfd(int rootfd) {
     char cwd[PATH_MAX];
     CHECK(getcwd(cwd,sizeof(cwd))!=NULL);
     CHECK(strstr(cwd,"/moved")!=NULL);
-    CHECK(fchdir(rootfd)==0);
     CHECK(unlinkat(dirfd,"child",0)==0);
+    /* Linux permits rmdir of a directory that IS the process cwd.
+     * Its inode remains owned by cwd+dirfd, but its old name disappears;
+     * a historical cwd pathname cache cannot veto rmdir with EBUSY. */
     CHECK(unlinkat(rootfd,"moved",AT_REMOVEDIR)==0);
-    CHECK(fchdir(dirfd)==0); /* Linux permits entering an unlinked directory. */
     errno=0;
     CHECK(getcwd(cwd,sizeof(cwd))==NULL && errno==ENOENT);
     errno=0;
@@ -124,6 +125,25 @@ static void symlink_and_trailing_slash(int rootfd) {
     check_errno(mkdirat(rootfd,"plain-link/",0700),EEXIST);
     errno=0;
     check_errno(mkdirat(rootfd,"dir-link/",0700),EEXIST);
+    /* GNU tar/BusyBox extraction commonly attempts mkdir(".").
+     * Linux namei treats terminal dot/dotdot as existing directories,
+     * rather than invalid basenames in namespace creation. */
+    errno=0;
+    check_errno(mkdirat(rootfd,".",0700),EEXIST);
+    errno=0;
+    check_errno(mkdirat(rootfd,"..",0700),EEXIST);
+    errno=0;
+    check_errno(mkdirat(rootfd,"./",0700),EEXIST);
+    errno=0;
+    check_errno(mkdirat(rootfd,"/",0700),EEXIST);
+    errno=0;
+    check_errno(mkdirat(rootfd,"dir/.",0700),EEXIST);
+    errno=0;
+    check_errno(mkdirat(rootfd,"dir/..",0700),EEXIST);
+    errno=0;
+    check_errno(mkdirat(rootfd,"missing/.",0700),ENOENT);
+    errno=0;
+    check_errno(mkdirat(rootfd,"plain/.",0700),ENOTDIR);
     CHECK(mkdirat(rootfd,"new-dir/",0700)==0);
     CHECK(unlinkat(rootfd,"new-dir",AT_REMOVEDIR)==0);
     struct stat original;

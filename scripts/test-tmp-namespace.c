@@ -143,8 +143,27 @@ int main(void) {
     assert(tmp_unlink("/tmp/moved/sym2",0)==0 && !sym->used);
 
     assert(tmp_unlink("/tmp/moved",0x200ULL)==-ENOTEMPTY);
-    /* A cwd still referencing the live nested directory prevents rmdir. */
-    assert(tmp_unlink("/tmp/moved/sub",0x200ULL)==-EBUSY);
+    /* Linux allows rmdir(cwd), even while cwd owns its inode. Pathname
+     * disappearance is NOT inode destruction. A historical task->fs->cwd
+     * string must never veto namespace removal with EBUSY. This isolated
+     * tmpfs fixture models the generic VFS owner's pin; the independent
+     * real-VFS fixture verifies owned-Path detached behavior, and native
+     * ring3 probes verify getcwd()==ENOENT after rmdir(cwd). */
+    putcwd("/tmp/empty");
+    struct nas_tmp_file *cwd_orphan=tmp_find("/tmp/empty");
+    assert(cwd_orphan && cwd_orphan->is_dir && cwd_orphan->nlink==1);
+    borrowed_vfs_pin=cwd_orphan;
+    assert(tmp_unlink("/tmp/empty",0x200ULL)==0);
+    assert(!tmp_find("/tmp/empty") && cwd_orphan->used &&
+           cwd_orphan->nlink==0 && nas_vfs_inode_is_pinned(cwd_orphan));
+    assert(tmp_parent_check("/tmp/empty/new")==-ENOENT);
+    assert(tmp_create_at(cwd_orphan,"new",false,0600)==NULL);
+    assert(tmp_mkdir_at(cwd_orphan,"newdir",0700)==-ENOENT);
+    assert(tmp_symlink_at(cwd_orphan,"newlink","target")==-ENOENT);
+    assert(tmp_find_child(cwd_orphan,"new")==NULL);
+    borrowed_vfs_pin=NULL;
+    tmp_inode_discard(cwd_orphan); /* last owned cwd Path released */
+    assert(!cwd_orphan->used);
     putcwd("/tmp");
     /* Final group exit releases FS context before PID reap. Zombie task
      * slots may remain visible but must never be dereferenced through fs. */

@@ -419,6 +419,21 @@ static int namespace_symlink(const char *target,const char *new_name) {
     if(parent.dentry)assert(nas_vfs_path_put(&parent)==0);
     return rc;
 }
+static int namespace_mkdir_at(const struct nas_vfs_path *start,
+                              const char *pathname) {
+    /* Same root-only dispatch + production Path namei/child mutation
+     * sequence as sys_mkdirat_tmp, without a forged syscall return. */
+    bool root_only=pathname[0]=='/';
+    for(unsigned i=1;root_only && pathname[i];i++)
+        if(pathname[i]!='/')root_only=false;
+    if(root_only)return -EEXIST;
+    struct nas_vfs_path parent={0};char leaf[256];
+    int rc=nas_fs_lookup_parent_mkdir_at(start,NULL,pathname,
+                                         &parent,leaf);
+    if(!rc)rc=nas_vfs_mkdir_child(&parent,leaf,0755);
+    if(parent.dentry)assert(nas_vfs_path_put(&parent)==0);
+    return rc;
+}
 int main(void) {
     char resolved[256],data[32];
     struct nas_fs_node n;
@@ -591,6 +606,17 @@ int main(void) {
     assert(nas_vfs_path_put(&slash_parent)==0);
     fixture_link_target=saved_link_target;
     fixture_symlink.size=9;
+    struct nas_vfs_path mkdir_cwd={0};
+    assert(nas_fs_lookup_path_at(NULL,NULL,"/tmp",true,&mkdir_cwd)==0);
+    assert(namespace_mkdir_at(&mkdir_cwd,".")==-EEXIST);
+    assert(namespace_mkdir_at(&mkdir_cwd,"..")==-EEXIST);
+    assert(namespace_mkdir_at(&mkdir_cwd,"./")==-EEXIST);
+    assert(namespace_mkdir_at(&mkdir_cwd,"/")==-EEXIST);
+    assert(namespace_mkdir_at(&mkdir_cwd,"/tmp/opened/.")==-EEXIST);
+    assert(namespace_mkdir_at(&mkdir_cwd,"/tmp/opened/..")==-EEXIST);
+    assert(namespace_mkdir_at(&mkdir_cwd,"/tmp/missing/.")==-ENOENT);
+    assert(namespace_mkdir_at(&mkdir_cwd,"/tmp/demo/.")==-ENOTDIR);
+    assert(nas_vfs_path_put(&mkdir_cwd)==0);
     struct nas_vfs_path writable_parent={0},immutable_parent={0};
     assert(nas_fs_lookup_path_at(NULL,NULL,"/tmp",true,
                                  &writable_parent)==0);

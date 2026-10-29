@@ -331,7 +331,19 @@ static int lookup_parent_at_mode(const struct nas_vfs_path *start,
     if(!length || length>=256)return -ENAMETOOLONG;
     memcpy(leaf,path+leaf_start,length);
     leaf[length]=0;
-    if(!strcmp(leaf,".") || !strcmp(leaf,".."))return -EINVAL;
+    if(!strcmp(leaf,".") || !strcmp(leaf,"..")) {
+        /* mkdir(".") and mkdir("..") address existing directories.
+         * Validate the complete spelling through the normal namei walker:
+         * missing or non-directory prefixes must still report their true
+         * ENOENT/ENOTDIR (and symlink loops retain ELOOP).  Other namespace
+         * mutations must never forward dot components to a provider. */
+        if(policy!=NAS_FS_TRAILING_MKDIR)return -EINVAL;
+        struct nas_vfs_path existing={0};
+        int rc=nas_fs_lookup_path_at(start,root_clamp,path,true,&existing);
+        if(rc)return rc;
+        (void)nas_vfs_path_put(&existing);
+        return -EEXIST;
+    }
     if(!leaf_start) {
         if(!start || !start->dentry)return -ENOENT;
         int rc=nas_vfs_path_get(start,parent);

@@ -274,10 +274,15 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
     if(err)return (uint64_t)(int64_t)err;
     char actual[256];
     err=exec_lookup_request(&request,&app,actual);
+    /* Linux AT_EXECFN and binfmt_script retain the ORIGINAL execve()
+     * pathname, even when namei follows /bin/cat -> /bin/busybox for the
+     * image inode. A renamed cwd/dirfd is resolved by the owned Path, but
+     * it must never rewrite userspace's argv/AT_EXECFN spelling. */
+    if(!err)memcpy(pending_exec.filename,request.pathname,
+                   strlen(request.pathname)+1);
     nas_fs_path_end(&request);
     if(err)return (uint64_t)(int64_t)err;
     app_pinned=true;
-    memcpy(pending_exec.filename,actual,strlen(actual)+1);
     if(app.is_dir || !(app.mode&0111U)) {
         result=(uint64_t)-EACCES;goto exec_fail;
     }

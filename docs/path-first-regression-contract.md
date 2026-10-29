@@ -40,6 +40,14 @@ BusyBox, RamFS, ext4, LittleFS and three-ISA QEMU gates remain mandatory.
 | Open, unlink, recreate same pathname: two different live inodes | Real `fstat`, `pread`, link count | Host VFS + real RamFS native ELF | Add exact old/new byte comparison on ext4 after unlink |
 | Rename directory while old dirfd open; recreate old path | Real `openat(dirfd)` must stay on moved inode | RamFS native ELF, host owned-Path test | New path-based VFS syscall entry must use `Path`, never stringify and relookup |
 | Remove opened directory; `getcwd` and create under it fail | Linux `fchdir` succeeds, then `getcwd` and `openat(O_CREAT)` give `ENOENT` | Host stale/detached Dentry tests | Add 3-ISA native unlinked-directory probe once Path-first enters syscall layer |
+
+For this row, the Linux oracle specifically holds the removed directory
+as the **active process cwd at `rmdir` time** (and simultaneously as a live
+`dirfd`). The removal itself must succeed, never return `EBUSY` based on
+the cached task cwd spelling; after removal `getcwd` and a new
+`openat(dirfd,child,O_CREAT)` must both return `ENOENT`. The new native
+guest `tests/path-first-dirfd-native.c` contains the corresponding strict
+ring3 failure gate; do not edit it to tolerate a stale-path `EBUSY`.
 | `file/.`, `file/..`, symlink to non-directory with trailing `/` | `ENOTDIR` | Host namei fixture; original BusyBox path applets | Native guest assert exact errno for Path-first walker |
 | Dangling symlink and `O_CREAT`; `O_EXCL` | Follow destination vs `EEXIST` | Host namei/create-target regression, native ext4 symlink test | Keep exact old/next-step results on real file backend |
 | Cross a real mount and return with `..` | Linux `/proc/..` returns root inode/mount | Host VFS mount+covered Dentry, QEMU physical ext4 | Test `Path` root clamp and mount parent under native mkdir/rename |

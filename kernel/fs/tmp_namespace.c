@@ -295,13 +295,11 @@ int tmp_unlink_at(const void *parent,const char *name,uint64_t flags) {
     if(!inode->is_dir && (flags&removedir))return -ENOTDIR;
     if(inode->is_dir) {
         if(tmp_child_entry_inode(inode,0))return -ENOTEMPTY;
-        char absolute[256];
-        if(!dentry_path(d,absolute))return -ENAMETOOLONG;
-        for(unsigned n=0;n<NAS_TASK_LIMIT;n++) {
-            struct nas_task *task=nas_task_at(n);
-            if(task && task->state!=NAS_TASK_FREE && task->fs &&
-               !strcmp(task->fs->cwd,absolute))return -EBUSY;
-        }
+        /* A cwd may outlive its directory name. Linux permits rmdir(cwd):
+         * the VFS-owned Path keeps the inode pinned until its final release,
+         * while subsequent namei/getcwd reject the detached dentry. The
+         * historical task->fs->cwd spelling is not a namespace owner and
+         * must not forbid removing an otherwise empty directory. */
     }
     tmp_remove_entry(d);
     return 0;
