@@ -149,6 +149,8 @@ jobs:
         run: sh scripts/check-x86-isr-routing.sh
       - name: '[HOST] x86 production PTE NX and ELF overlap compatibility'
         run: sh scripts/check-x86-nx.sh
+      - name: '[HOST + x86 OBJECT] x86 early NXE capability and EFER bootstrap contract'
+        run: sh scripts/check-x86-nxe-bootstrap.sh
       - name: '[HOST + TARGET-COMPILE] M103 Linux clone TID and robust futex lifecycle'
         run: sh scripts/check-m103-thread-tid-lifecycle.sh
       - name: '[HOST] Fail-closed CI proof-type and milestone mapping audit'

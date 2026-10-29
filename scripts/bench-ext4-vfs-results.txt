@@ -1,6 +1,13 @@
 NaSeed genuine ext4/VFS performance acceptance, 2026-10-29
-Baseline source: commit 69b5cb17:ports/lwext4/guest_vfs.c
-Optimized source: working-tree ports/lwext4/guest_vfs.c
+Baseline adapter: commit 69b5cb17ed39ee07eb5aed9ed78fcd48e7e0c5c4
+  ports/lwext4/guest_vfs.c (git blob 5f1765204e917ac06f32c304ff09737b106618d0)
+Optimized adapter: git blob 043c2bf0f023173a47bdb81913bfca87dd789479
+  ports/lwext4/guest_vfs.c; published PR lineage commit 2a98e604, with the
+  same adapter content carried through remote exact-head d38c78e3.
+  Local pre-publication commit 6628d48f7029ab5587196e9799d5cb8c969be1c4
+  also contains this blob (that local SHA is NOT a remotely published ref).
+Both modes compile the other VFS/lwext4/harness sources from the local tree;
+future runs print the exact adapter blob and harness HEAD for provenance.
 Compiler: cc -O2; original vendored lwext4 C, no synthetic ext4 implementation.
 Image: fresh 32 MiB mke2fs ext4 4 KiB blocks, 320-file directory,
 7-entry readdir batches; 32-level path looked up 20 times.

@@ -12,7 +12,7 @@ markers and fail-closed checks stay authoritative.
 | Layer | Source | What can be claimed now |
 | --- | --- | --- |
 | Source build | `NAS_PERF_PHASE` in M38/M55/M56 serial | Verified command-group elapsed guest time when all original acceptance markers pass |
-| CPU occupancy | Optional `scripts/native-profile-guest.sh` reading guest `/proc/stat` | Busy/idle 100-Hz task occupancy and context-switch deltas; **not** precise user/system cycles |
+| CPU occupancy | `tests/native-perf-clock.sh` sources the staged `native-profile-guest.sh` at the **same original phase boundaries**, reading real guest `/proc/stat` | Automatically emits busy/idle 100-Hz task occupancy and context-switch deltas during native full M38/M55/M56; **not** actual CPU cycles or separate user/kernel time |
 | Syscall | Optional genuine guest `strace -f -c` and `scripts/native-profile-strace.py` | Instrumented syscall counts/summary time; perturbs execution, must be a separate diagnostic run |
 | VFS | Future opt-in kernel counters, e.g. lookup calls/ns, mount crossings, provider calls | **not-measured** until emitted by the actual guest; no inferred timing from build wall time |
 | Host setup, QEMU boot, rootfs image construction | Runner/job logs | Keep separate from guest build phases; do not merge them into source-build numbers |
@@ -21,6 +21,8 @@ markers and fail-closed checks stay authoritative.
 
 ```
 NAS_PERF_COUNTER workload=m56 scope=cpu metric=kbuild.busy value=120 unit=cs
+NAS_PERF_COUNTER workload=m56 scope=cpu metric=kbuild.idle value=10 unit=cs
+NAS_PERF_COUNTER workload=m56 scope=cpu metric=kbuild.switches value=42 unit=count
 NAS_PERF_COUNTER workload=m56 scope=syscall metric=kbuild.total.time value=5000000 unit=ns
 NAS_PERF_COUNTER workload=m56 scope=vfs metric=kbuild.lookup.time value=400000 unit=ns
 ```
@@ -28,24 +30,44 @@ NAS_PERF_COUNTER workload=m56 scope=vfs metric=kbuild.lookup.time value=400000 u
 Accepted scopes are `cpu`, `syscall`, `vfs`, units `ns`, `us`, `cs`, `count`,
 `bytes`. A missing scope prints `not-measured`. Duplicate records, malformed
 units, or unequal counter availability across A/B samples fail the report.
-This protocol is only an **ingestion contract**: no VFS or syscall kernel
-counter is claimed to exist at the current HEAD. Add real opt-in producers
-only after the owning task/VFS agents approve their overhead and semantics.
+This protocol is an **ingestion contract** for future syscall/VFS counters;
+neither source exists at the current HEAD. The three `scope=cpu` values are
+now produced by the guest phase hook, subject to a successfully readable,
+monotonic NaSeed `/proc/stat`. No other metric is inferred from wall time.
 
-## Guest-only opt-in diagnostics
+## Real full-guest CPU profile and optional diagnostics
 
-Wrap a **single original guest command**, without editing its arguments:
+`rootfs/alpine/build.sh` stages both `native-perf-clock.sh` and
+`native-profile-guest.sh` under `/tests`. The unchanged M38/M55/M56 guest
+drivers already call `nas_perf_begin` and `nas_perf_phase`; those same calls
+now automatically delimit **whole** GCC/CMake/CTest/BusyBox phases, including
+M56 Kconfig's multiple original commands. On a successful phase they emit
+the original `NAS_PERF_PHASE` plus three `NAS_PERF_COUNTER scope=cpu` records.
+The commands, exit statuses, and original acceptance markers are unchanged.
+
+The kernel's `kernel/fs/procfs.c` places monotonic task occupancy in the
+otherwise-Linux-`system` field of its single-CPU `cpu` row (`0 0 busy idle`);
+`kernel/task/accounting.c` includes active task runtime, not precise
+instructions or separate user/system/IRQ CPU time. The sampler requires that
+specific NaSeed field arrangement; it rejects ordinary Linux `/proc/stat`
+when nonzero user/nice fields would make that interpretation false. A missing,
+malformed, or nonmonotonic snapshot silently **omits** counter lines; it
+never substitutes zero, fails a correct original workload, or manufactures
+an application's PASS marker. The report must label absent metrics
+`not-measured`.
+
+For a separately scoped command instead of an entire stage, the same guest
+sampler can wrap a **single original command** without changing its arguments:
 
 ```sh
 sh /tests/native-profile-guest.sh m56 kbuild -- \
   /usr/bin/make -j2 HOSTCC=/usr/bin/gcc CC=/usr/bin/gcc busybox
 ```
 
-Stage the new script into the rootfs first. It reads NaSeed's `/proc/stat`
-immediately before/after that command and emits phase-qualified CPU counters
-only if the command succeeded and the accounting values were monotonic. It
-does not emit or replace acceptance markers. Single-CPU busy time includes
-other scheduled work, so compare identical guest workloads and quiescence.
+The rootfs builder already stages the script. The wrapper emits counters
+only when the command succeeded and snapshots were monotonic. This CPU
+accounting includes other scheduled work; compare identical workloads and
+quiescence. Do not mix an instrumented run with an earlier uninstrumented run.
 
 For a **separate, intentionally instrumented** run, capture original Alpine
 `strace -f -c` of a representative command (verify it actually works inside
@@ -81,7 +103,7 @@ serial log. Required keys (example values are placeholders, not results):
   "cache_state": "cold",
   "guest_ram_mib": 512,
   "vcpus": 1,
-  "instrumentation": "none"
+  "instrumentation": "phase-cpu-procstat"
 }
 ```
 
@@ -111,8 +133,10 @@ CI timeout or from a single test.
    separate from explicit `full` source-build dispatch.
 2. Attach actual run-manifests and clean logs, including guest source and
    rootfs digests, QEMU executable/arguments, guest toolchains and cache state.
-3. Verify the CPU wrapper on one native ISA first. Keep original acceptance
-   identical; measure its own overhead before deploying broadly.
+3. In full guest logs, verify all three CPU counters accompany **every**
+   original `NAS_PERF_PHASE` for each successful ISA/phase. Check missing or
+   malformed snapshots honestly as `not-measured`; keep original acceptance
+   identical and quantify the phase sampler's overhead.
 4. Use separate original strace diagnostics only if real `-f -c` succeeds.
    Instrumentation changes timings. VFS hotspots require bounded new kernel
    producers in a separately reviewed change, not guesses from elapsed time.

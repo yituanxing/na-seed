@@ -33,6 +33,32 @@ static uint64_t rdmsr(uint32_t reg) {
     return ((uint64_t)hi << 32) | lo;
 }
 
+#define NAS_X86_EFER_MSR UINT32_C(0xc0000080)
+#define NAS_X86_EFER_SCE (UINT64_C(1) << 0)
+#define NAS_X86_EFER_NXE (UINT64_C(1) << 11)
+
+/* Long mode does not imply NX support. Some UEFI firmware enters the
+ * kernel with EFER.NXE clear, so we must establish it ourselves before
+ * any user PTE has its bit 63 interpreted as no-execute. */
+static bool nas_x86_cpu_has_nx(void) {
+    uint32_t eax, ebx, ecx, edx;
+    __asm__ volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                     : "a"(UINT32_C(0x80000000)), "c"(0));
+    if (eax < UINT32_C(0x80000001)) return false;
+    __asm__ volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                     : "a"(UINT32_C(0x80000001)), "c"(0));
+    return (edx & (UINT32_C(1) << 20)) != 0;
+}
+
+static void nas_x86_enable_nxe(void) {
+    if (!nas_x86_cpu_has_nx())
+        nas_fail("x86-64 NX unavailable: cannot create safe user pages");
+    uint64_t efer = rdmsr(NAS_X86_EFER_MSR);
+    wrmsr(NAS_X86_EFER_MSR, efer | NAS_X86_EFER_NXE);
+    if ((rdmsr(NAS_X86_EFER_MSR) & NAS_X86_EFER_NXE) == 0)
+        nas_fail("x86-64 EFER.NXE enable failed");
+}
+
 /* ABI-shaped TSS; all exceptions from user mode use the kernel stack. */
 struct __attribute__((packed)) x86_tss {
     uint32_t reserved0;
@@ -261,8 +287,8 @@ void exception_report(const uint64_t *frame) {
 }
 
 void nas_arch_syscall_enable(void) {
-    uint64_t efer = rdmsr(0xc0000080);
-    wrmsr(0xc0000080, efer | 1); /* EFER.SCE */
+    uint64_t efer = rdmsr(NAS_X86_EFER_MSR);
+    wrmsr(NAS_X86_EFER_MSR, efer | NAS_X86_EFER_SCE); /* Preserve NXE. */
     wrmsr(0xc0000081, (0x20ULL << 48) | (0x08ULL << 32)); /* STAR */
     wrmsr(0xc0000082, (uint64_t)(uintptr_t)syscall_entry); /* LSTAR */
     wrmsr(0xc0000084, (1ULL << 9) | (1ULL << 10)); /* FMASK IF|DF */
@@ -287,7 +313,9 @@ uint64_t nas_arch_cycle_counter(void) {
     uint32_t lo, hi; __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
     return (uint64_t)lo | ((uint64_t)hi << 32);
 }
-bool nas_arch_nx_enabled(void) { return (rdmsr(0xc0000080) & (1ULL << 11)) != 0; }
+bool nas_arch_nx_enabled(void) {
+    return (rdmsr(NAS_X86_EFER_MSR) & NAS_X86_EFER_NXE) != 0;
+}
 void nas_arch_set_user_tls(uint64_t address) { wrmsr(0xc0000100, address); }
 
 /* Limine base revision 6 deliberately masks BSP LAPIC LINT0 ExtINT.
@@ -352,6 +380,9 @@ void nas_arch_prepare_user_cpu(void) {
      * before the first explicit user IRET enables userspace interrupts. */
     __asm__ volatile("cli" : : : "memory");
     nas_arch_cpu_tables_init();
+    /* Keep an IDT available if virtualized MSR access misbehaves. Shared
+     * init calls us before nas_mmu_bootstrap(), so no user PTE exists yet. */
+    nas_x86_enable_nxe();
     nas_arch_cpu_user_fp_init();
     if (!nas_task_kernel_stack_ok(nas_current_task)) nas_arch_halt();
     nas_arch_x86_set_kernel_stack(nas_current_task->kernel_stack_top);

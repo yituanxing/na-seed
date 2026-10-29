@@ -114,10 +114,11 @@ fi
 echo "[M38 APK PASS] signed distro packages installed: $port"
 sudo chown -R "$(id -u):$(id -g)" "$root"
 mkdir -p "$root/tmp" "$root/tests"
-# A common, read-only guest timing helper for original source-build
-# acceptance. It samples the existing monotonic /proc/uptime and never
-# patches an upstream GCC, Kbuild, CMake or Ninja executable.
+# Common, read-only guest timing and CPU occupancy helpers for original
+# source-build acceptance. They sample genuine /proc/uptime and /proc/stat,
+# never patch GCC, Kbuild, CMake or Ninja or replace acceptance markers.
 cp tests/native-perf-clock.sh "$root/tests/native-perf-clock.sh"
+cp scripts/native-profile-guest.sh "$root/tests/native-profile-guest.sh"
 chmod 1777 "$root/tmp"
 test -e "$root/bin/busybox"
 if [ "$profile" = native-busybox ]; then

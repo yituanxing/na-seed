@@ -23,8 +23,21 @@ case "$mode" in
     # Compile original PR#146 code from git directly through stdin. This
     # produces a true before/after comparison without modifying the vendor,
     # writing a second copy of the adapter, or adding benchmark #ifdefs.
+    printf '[EXT4 VFS HOTPATH SOURCE] mode=baseline adapter_commit=%s adapter_blob=%s harness_head=%s\n' \
+      "$(git rev-parse 69b5cb17^{commit})" \
+      "$(git rev-parse 69b5cb17:ports/lwext4/guest_vfs.c)" \
+      "$(git rev-parse HEAD)"
     git show 69b5cb17:ports/lwext4/guest_vfs.c | build_bench - ;;
-  optimized) build_bench ports/lwext4/guest_vfs.c ;;
+  optimized)
+    # Record the exact working-tree blob, not just HEAD: an uncommitted
+    # optimization must never inherit a commit SHA it does not match.
+    adapter_blob=$(git hash-object ports/lwext4/guest_vfs.c)
+    adapter_at_head=$(git rev-parse HEAD:ports/lwext4/guest_vfs.c)
+    printf '[EXT4 VFS HOTPATH SOURCE] mode=optimized adapter_head=%s adapter_blob=%s matches_head=%s harness_head=%s\n' \
+      "$(git rev-parse HEAD)" "$adapter_blob" \
+      "$([ "$adapter_blob" = "$adapter_at_head" ] && echo yes || echo no)" \
+      "$(git rev-parse HEAD)"
+    build_bench ports/lwext4/guest_vfs.c ;;
   *) echo "usage: $0 [baseline|optimized]" >&2; exit 2 ;;
 esac
 truncate -s 32M "$root/bench-ext4.img"

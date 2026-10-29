@@ -85,6 +85,84 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(failure.returncode, 17)
         self.assertNotIn("NAS_PERF_COUNTER", failure.stdout)
 
+    def test_original_source_build_phase_emits_cpu_sample(self):
+        """A host procfs fixture exercises the SAME sourced guest phase hook."""
+        stat = self.write("phase-stat", "cpu  0 0 110 23 0 0 0 0 0 0\nctxt 7\n")
+        code = ('set -eu; . "$1"; nas_perf_begin m56; '
+                'printf "cpu  0 0 158 29 0 0 0 0 0 0\\nctxt 14\\n" > "$2"; '
+                'nas_perf_phase kbuild')
+        env = dict(os.environ, NAS_PROFILE_STAT_FILE=str(stat),
+                   NAS_PROFILE_HELPER_FILE=str(HERE / "native-profile-guest.sh"))
+        sampled = subprocess.run(["sh", "-c", code, "guest-fixture",
+                                  str(HERE.parent / "tests/native-perf-clock.sh"),
+                                  str(stat)], capture_output=True, text=True, env=env)
+        self.assertEqual(sampled.returncode, 0, sampled.stderr)
+        self.assertIn("NAS_PERF_PHASE workload=m56 phase=kbuild elapsed_cs=",
+                      sampled.stdout)
+        self.assertIn("NAS_PERF_COUNTER workload=m56 scope=cpu "
+                      "metric=kbuild.busy value=48 unit=cs", sampled.stdout)
+        self.assertIn("metric=kbuild.idle value=6 unit=cs", sampled.stdout)
+        self.assertIn("metric=kbuild.switches value=7 unit=count", sampled.stdout)
+
+        # Feed actual hook output to the unchanged report parser, beside
+        # other fixture phase/acceptance lines. No guest PASS is claimed.
+        log = self.write("phase-fixture.log", "\n".join((
+            "NAS_PERF_PHASE workload=m56 phase=source_copy elapsed_cs=5",
+            "NAS_PERF_PHASE workload=m56 phase=kconfig elapsed_cs=10",
+            sampled.stdout.strip(),
+            "M56_REAL_GUEST_BUSYBOX_FULL_PASS", "[PASS] cmdline userspace exit 0",
+        )))
+        self.assertEqual(report.parse_log(log, "m56")["kbuild"],
+                         int(next(line.rsplit("=", 1)[1]
+                                  for line in sampled.stdout.splitlines()
+                                  if line.startswith("NAS_PERF_PHASE"))))
+        counters = report.parse_counters(log, "m56")
+        self.assertEqual(counters["cpu.kbuild.busy.cs"], 48)
+        self.assertEqual(counters["cpu.kbuild.switches.count"], 7)
+
+    def test_bad_proc_stat_does_not_fake_counter_or_break_phase(self):
+        stat = self.write("bad-stat", "cpu  123 4 30 10 0 0 0 0 0 0\nctxt 6\n")
+        code = ('set -eu; . "$1"; nas_perf_begin m38; '
+                'printf "cpu  123 4 40 11 0 0 0 0 0 0\\nctxt 9\\n" > "$2"; '
+                'nas_perf_phase gcc_hello')
+        env = dict(os.environ, NAS_PROFILE_STAT_FILE=str(stat),
+                   NAS_PROFILE_HELPER_FILE=str(HERE / "native-profile-guest.sh"))
+        result = subprocess.run(["sh", "-c", code, "guest-fixture",
+                                 str(HERE.parent / "tests/native-perf-clock.sh"),
+                                 str(stat)], capture_output=True, text=True, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("NAS_PERF_PHASE workload=m38 phase=gcc_hello", result.stdout)
+        self.assertNotIn("NAS_PERF_COUNTER", result.stdout)
+
+    def test_missing_helper_and_backwards_stat_are_not_measured(self):
+        stat = self.write("backward-stat", "cpu  0 0 200 60 0 0 0 0 0 0\nctxt 30\n")
+        code = ('set -eu; . "$1"; nas_perf_begin m55; '
+                'printf "cpu  0 0 199 61 0 0 0 0 0 0\\nctxt 29\\n" > "$2"; '
+                'nas_perf_phase ninja_build')
+        clock = str(HERE.parent / "tests/native-perf-clock.sh")
+        env = dict(os.environ, NAS_PROFILE_STAT_FILE=str(stat),
+                   NAS_PROFILE_HELPER_FILE=str(HERE / "native-profile-guest.sh"))
+        result = subprocess.run(["sh", "-c", code, "guest-fixture", clock,
+                                 str(stat)], capture_output=True, text=True, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("NAS_PERF_PHASE workload=m55 phase=ninja_build", result.stdout)
+        self.assertNotIn("NAS_PERF_COUNTER", result.stdout)
+        env["NAS_PROFILE_HELPER_FILE"] = str(self.work / "not-staged.sh")
+        result = subprocess.run(["sh", "-c", code, "guest-fixture", clock,
+                                 str(stat)], capture_output=True, text=True, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("NAS_PERF_PHASE workload=m55 phase=ninja_build", result.stdout)
+        self.assertNotIn("NAS_PERF_COUNTER", result.stdout)
+
+    def test_original_guest_scripts_and_rootfs_stage_same_profile_hook(self):
+        root = HERE.parent
+        for name in ("m38-gcc-build.sh", "m55-cjson-run.sh", "m56-busybox-run.sh"):
+            self.assertIn(". /tests/native-perf-clock.sh",
+                          (root / "tests" / name).read_text(encoding="utf-8"))
+        self.assertIn('cp scripts/native-profile-guest.sh '
+                      '"$root/tests/native-profile-guest.sh"',
+                      (root / "rootfs/alpine/build.sh").read_text(encoding="utf-8"))
+
     def test_strace_profile_requires_actual_summary(self):
         original = self.write("strace.log", """% time     seconds  usecs/call     calls    errors syscall
 ------ ----------- ----------- --------- --------- ----------------
