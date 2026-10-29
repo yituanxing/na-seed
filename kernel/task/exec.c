@@ -443,6 +443,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
     TASK.ppoll_mask_active=false;
     TASK.signal_force_deliver=0;
     thread_clear_tid = 0;
+    TASK.thread_set_tid=0; /* new image has no pending CHILD_SETTID store */
     TASK.robust_list_head=0; /* exec replaces userspace robust list */
     nas_arch_context_set_tls(&TASK.arch, 0);
     nas_arch_set_user_tls(0); /* fresh musl/glibc TLS initialization */

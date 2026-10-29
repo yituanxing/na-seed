@@ -1,5 +1,20 @@
 name: NaSeed original-source ARM64 BusyBox (extended)
 on:
+  pull_request:
+    paths:
+      - 'kernel/task/**'
+      - 'kernel/task.c'
+      - 'kernel/task.h'
+      - 'kernel/exception/**'
+      - 'kernel/arch/aarch64/context.c'
+      - 'kernel/arch/aarch64/mmu.c'
+      - 'scripts/probe-m103-tid.sh'
+      - 'scripts/test-m103-native-tid-abi.c'
+      - 'scripts/m103-native-tid-cases.tsv'
+      - 'scripts/test-m104-native-exception.c'
+      - 'scripts/test-m104-cases.tsv'
+      - 'scripts/test-m104-probe.sh'
+      - '.github/workflows/source-busybox-arm64.yml'
   workflow_dispatch:
   schedule:
     - cron: '17 3 * * 0'
@@ -13,7 +28,7 @@ concurrency:
 
 jobs:
   arm64-source:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -32,6 +47,10 @@ jobs:
         run: sh scripts/build-source-busybox.sh arm64
       - name: Run the unchanged full original-source ARM64 QEMU matrix
         run: sh scripts/probe-source-busybox.sh arm64
+      - name: M103 genuine ARM64 QEMU clone TID and robust futex acceptance
+        run: sh scripts/probe-m103-tid.sh arm64
+      - name: M104 genuine ARM64 QEMU user-fault isolation acceptance
+        run: sh scripts/test-m104-probe.sh arm64
       - name: Attach actual guest serial logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -41,4 +60,6 @@ jobs:
             build/source-busybox/arm64/verified.config
             build/source-busybox/arm64/artifacts.sha256
             build/port-aarch64/full/matrix-source/*.serial.log
+            build/port-aarch64/full/matrix-source/m103-tid.clean.log
+            build/port-aarch64/full/matrix-source/m104-exception.clean.log
           if-no-files-found: ignore

@@ -12,6 +12,15 @@
 #include <stdint.h>
 #define EXT4_ORPHAN_DIRECTORY ".naseed-orphans"
 static const char orphan_digits[]="0123456789abcdef";
+/* Directory offsets are disposable accelerator hints only. A failed VFS
+ * mutation may have partly changed vendor state, so invalidate BEFORE it. */
+static void ext_namespace_changed(struct nas_lwext4_mount *ctx) {
+    if(!ctx)return;
+    if(++ctx->namespace_epoch==0) {
+        ctx->directory_hint=(struct nas_lwext4_dir_hint){0};
+        ctx->namespace_epoch=1;
+    }
+}
 static bool ext_reserved_root(const struct nas_lwext4_mount *ctx,
                               uint64_t parent,const char *name) {
     return ctx && parent==ctx->root_ino &&
@@ -42,35 +51,38 @@ static int ext_orphan_path(const struct nas_lwext4_mount *ctx,
     ext_orphan_name(name,ino,serial,is_dir);
     return nas_vfs_join_child(ctx->orphan_dir,name,path);
 }
-static const char *path_for(const struct nas_lwext4_mount *m,
-                            const char *absolute) {
-    return !strcmp(absolute,m->mount_point) ?
-           m->upstream_prefix : absolute;
+/* A directory entry already supplies the true inode number. Read metadata
+ * through the SAME original ext4_fs_get_inode_ref API used by getattr;
+ * do not reconstruct a pathname and ask upstream to walk it again. This
+ * also keeps all inode identity independent of rename/hardlink aliases. */
+static int ext_snapshot_inode(struct nas_lwext4_mount *ctx,uint32_t ino,
+                              struct nas_fs_node *out) {
+    if(!ctx || !ctx->mounted || !ctx->device.ext.fs || !ctx->upstream_super ||
+       !ino || !out)return -ENODEV;
+    struct ext4_inode_ref ref={0};
+    int rc=ext4_fs_get_inode_ref(ctx->device.ext.fs,ino,&ref);
+    if(rc)return -rc;
+    struct ext4_inode *raw=ref.inode;
+    uint32_t mode=ext4_inode_get_mode(ctx->upstream_super,raw);
+    *out=(struct nas_fs_node){
+        .inode=(const void *)(uintptr_t)ino,
+        .ino=ino,.nlink=ext4_inode_get_links_cnt(raw),
+        .uid=ext4_inode_get_uid(raw),.gid=ext4_inode_get_gid(raw),
+        .atime_sec=ext4_inode_get_access_time(raw),
+        .mtime_sec=ext4_inode_get_modif_time(raw),
+        .ctime_sec=ext4_inode_get_change_inode_time(raw),
+        .mode=mode,.size=ext4_inode_get_size(ctx->upstream_super,raw),
+        .is_dir=(mode&0170000U)==0040000U,
+        .is_symlink=(mode&0170000U)==0120000U
+    };
+    rc=ext4_fs_put_inode_ref(&ref);
+    return rc ? -rc : 0;
 }
 static int ext_lookup_root(const struct nas_vfs_mount *vfs,
                            struct nas_fs_node *out) {
     if(!vfs || !vfs->private_data || !out)return -EINVAL;
     struct nas_lwext4_mount *ctx=vfs->private_data;
-    if(!ctx->mounted)return -ENODEV;
-    struct ext4_inode raw;
-    uint32_t number=0;
-    int e=ext4_raw_inode_fill(ctx->upstream_prefix,&number,&raw);
-    if(e)return -e;
-    if(!number)return -EIO;
-    uint32_t mode=ext4_inode_get_mode(ctx->upstream_super,&raw);
-    *out=(struct nas_fs_node){
-        .inode=(const void *)(uintptr_t)number,
-        .ino=number,.nlink=ext4_inode_get_links_cnt(&raw),
-        .uid=ext4_inode_get_uid(&raw),.gid=ext4_inode_get_gid(&raw),
-        .atime_sec=ext4_inode_get_access_time(&raw),
-        .mtime_sec=ext4_inode_get_modif_time(&raw),
-        .ctime_sec=ext4_inode_get_change_inode_time(&raw),
-        .mode=mode,
-        .size=ext4_inode_get_size(ctx->upstream_super,&raw),
-        .is_dir=(mode & 0170000U)==0040000U,
-        .is_symlink=(mode & 0170000U)==0120000U
-    };
-    return 0;
+    return ext_snapshot_inode(ctx,ctx->root_ino,out);
 }
 /* ext4 lookup is now directly beneath a directory inode. Upstream ext4
  * owns directory iteration and inode loading; the VFS never passes a
@@ -101,34 +113,7 @@ static int ext_lookup_child(const struct nas_fs_node *parent,const char *name,
     int rc=ext4_dir_close(&dir);
     if(rc)return -rc;
     if(!number)return -ENOENT;
-    /* The public lwext4 ABI exposes inode-based directory iteration but
-     * only pathname-based raw inode metadata. Reconstruct a LIVE parent
-     * pathname from the parent inode (never from a VFS origin hint), then
-     * verify that the pathname still identifies the scanned child inode.
-     * This keeps vendor-private mount structs out of NaSeed's port. */
-    char directory[256],child_path[256];
-    rc=ext_directory_path(parent,directory);
-    if(rc)return rc;
-    rc=nas_vfs_join_child(directory,name,child_path);
-    if(rc)return rc;
-    uint32_t confirmed=0;
-    struct ext4_inode raw;
-    rc=ext4_raw_inode_fill(path_for(ctx,child_path),&confirmed,&raw);
-    if(rc)return -rc;
-    if(confirmed!=number)return -ESTALE;
-    uint32_t mode=ext4_inode_get_mode(ctx->upstream_super,&raw);
-    *out=(struct nas_fs_node){
-        .inode=(const void *)(uintptr_t)number,
-        .ino=number,.nlink=ext4_inode_get_links_cnt(&raw),
-        .uid=ext4_inode_get_uid(&raw),.gid=ext4_inode_get_gid(&raw),
-        .atime_sec=ext4_inode_get_access_time(&raw),
-        .mtime_sec=ext4_inode_get_modif_time(&raw),
-        .ctime_sec=ext4_inode_get_change_inode_time(&raw),
-        .mode=mode,.size=ext4_inode_get_size(ctx->upstream_super,&raw),
-        .is_dir=(mode&0170000U)==0040000U,
-        .is_symlink=(mode&0170000U)==0120000U
-    };
-    return 0;
+    return ext_snapshot_inode(ctx,number,out);
 }
 static int ext_readlink_node(const struct nas_fs_node *node,char target[256]) {
     if(!node || !node->mount || !node->mount->private_data ||
@@ -263,6 +248,7 @@ static int ext_child_path(const struct nas_fs_node *parent,const char *name,
 static int ext_create_path(const struct nas_fs_node *parent,const char *name,uint64_t mode) {
     char path[256];int rc=ext_child_path(parent,name,path);
     if(rc)return rc;
+    ext_namespace_changed(parent->mount->private_data);
     ext4_file f={0};
     rc=ext4_fopen(&f,path,"w");
     if(rc)return -rc;
@@ -274,6 +260,7 @@ static int ext_create_path(const struct nas_fs_node *parent,const char *name,uin
 static int ext_mkdir_path(const struct nas_fs_node *parent,const char *name,uint64_t mode) {
     char path[256];int rc=ext_child_path(parent,name,path);
     if(rc)return rc;
+    ext_namespace_changed(parent->mount->private_data);
     rc=ext4_dir_mk(path);
     if(rc)return -rc;
     rc=ext4_mode_set(path,(uint32_t)mode&07777U);
@@ -342,6 +329,9 @@ static void ext_last_inode_unpin(const struct nas_fs_node *node) {
     for(unsigned i=0;i<NAS_LWEXT4_ORPHAN_LIMIT;i++) {
         struct nas_lwext4_orphan *orphan=&ctx->orphans[i];
         if(!orphan->used || orphan->ino!=(uint32_t)node->ino)continue;
+        /* Last close can remove a private directory entry without calling
+         * a public VFS namespace mutation. It still invalidates cookies. */
+        ext_namespace_changed(ctx);
         char path[256];
         if(!ext_orphan_path(ctx,orphan->ino,orphan->serial,
                             orphan->is_dir,path) &&
@@ -397,6 +387,7 @@ static int ext_unlink_path(const struct nas_fs_node *parent,const char *name,uin
     int rc=ext_child_path(parent,name,path);
     if(rc)return rc;
     if(flags&~0x200ULL)return -EINVAL; /* AT_REMOVEDIR */
+    ext_namespace_changed(parent->mount->private_data);
     if(!(flags&0x200ULL)) {
         struct nas_lwext4_mount *ctx=parent->mount->private_data;
         if(!ctx || !ctx->mounted)return -ENODEV;
@@ -453,6 +444,7 @@ static int ext_rename_path(const struct nas_fs_node *old_parent,const char *old_
     if(!strcmp(from,to))return 0;
     struct nas_lwext4_mount *ctx=old_parent->mount->private_data;
     if(!ctx || !ctx->mounted || !ctx->upstream_super)return -ENODEV;
+    ext_namespace_changed(ctx);
     struct ext4_inode source_raw,victim_raw;
     uint32_t source=0,victim=0;
     rc=ext4_raw_inode_fill(from,&source,&source_raw);
@@ -527,12 +519,16 @@ static int ext_link_path(const struct nas_fs_node *old_parent,const char *old_na
     int rc=ext_child_path(old_parent,old_name,from);
     if(rc)return rc;
     rc=ext_child_path(new_parent,new_name,to);
-    return rc ? rc : -ext4_flink(from,to);
+    if(rc)return rc;
+    ext_namespace_changed(old_parent->mount->private_data);
+    return -ext4_flink(from,to);
 }
 static int ext_symlink_path(const struct nas_fs_node *parent,const char *name,
                             const char *target) {
     char path[256];int rc=ext_child_path(parent,name,path);
-    return rc ? rc : -ext4_fsymlink(target,path);
+    if(rc)return rc;
+    ext_namespace_changed(parent->mount->private_data);
+    return -ext4_fsymlink(target,path);
 }
 /* Discover the current *name* of a pinned ext4 directory by following
  * upstream on-disk '..' inode references, then looking up that child's
@@ -652,10 +648,17 @@ static int ext_read_directory(const struct nas_fs_node *node,
     dir.f.mp=ctx->upstream_mount;
     dir.f.inode=(uint32_t)node->ino;
     dir.f.flags=O_RDONLY;
-    dir.next_off=0;
+    /* Preserve the public logical cursor ABI. The vendor's byte offset is
+     * a disposable mount-local hint for sequential batches, not VFS state. */
+    const struct nas_lwext4_dir_hint previous=ctx->directory_hint;
+    uint64_t scanned=0;
+    if(previous.epoch && previous.epoch==ctx->namespace_epoch &&
+       previous.ino==node->ino && previous.cursor<=cursor) {
+        dir.next_off=previous.next_off;
+        scanned=previous.cursor;
+    }
     int error=0;
     unsigned copied=0;
-    uint64_t scanned=0;
     const ext4_direntry *entry;
     while((entry=ext4_dir_entry_next(&dir))) {
         if(!entry->inode)continue;
@@ -687,6 +690,10 @@ static int ext_read_directory(const struct nas_fs_node *node,
     int close_error=ext4_dir_close(&dir);
     if(error)return -error;
     if(close_error)return -close_error;
+    ctx->directory_hint=(struct nas_lwext4_dir_hint){
+        .epoch=ctx->namespace_epoch,.ino=(uint32_t)node->ino,
+        .cursor=scanned,.next_off=dir.next_off
+    };
     return (int)copied;
 }
 static const struct nas_vfs_type ext_type={
@@ -779,6 +786,8 @@ int nas_lwext4_device_mount(struct nas_lwext4_mount *ctx,
                             const char *block_name,const char *dev_name,
                             const char *mount_point,bool writable) {
     if(!ctx || ctx->mounted || ctx->device.registered)return -EINVAL;
+    ctx->directory_hint=(struct nas_lwext4_dir_hint){0};
+    ctx->namespace_epoch=1;
     struct nas_block_device *block=nas_block_get(block_name);
     if(!block)return -ENODEV;
     bool forbidden=writable && block->read_only;

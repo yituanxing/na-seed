@@ -100,6 +100,7 @@ boot_case() {
         m55-cjson) time_budget=${NAS_M55_QEMU_TIMEOUT:-2400} ;;
         m56-busybox) time_budget=${NAS_M56_QEMU_TIMEOUT:-3600} ;;
         m57-sqlite) time_budget=${NAS_M57_QEMU_TIMEOUT:-3600} ;;
+        m103-tid|m104-exception) time_budget=${NAS_NATIVE_ABI_QEMU_TIMEOUT:-90} ;;
         m37-incremental) time_budget=150 ;;
         *) time_budget=45 ;;
     esac

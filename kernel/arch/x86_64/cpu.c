@@ -141,7 +141,7 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
                                           fault_addr,user_rip,frame[18]);
     struct nas_task *tracee=nas_current_task;
     struct nas_exception_outcome outcome=
-        exception.kind==NAS_EXC_MEMORY && tracee ?
+        exception.user && tracee ?
         nas_exception_dispatch(&exception,tracee->mm) :
         (struct nas_exception_outcome){0};
     /* Page-fault diagnostics are a permanent fail-closed user MM signal
@@ -179,7 +179,7 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
     if((frame[18]&3U)==3U && tracee &&
        tracee->state==NAS_TASK_RUNNING &&
        (vector==1 || vector==3 || vector==13 ||
-        (vector==14 && outcome.action==NAS_EXC_SIGNAL))) {
+        outcome.action==NAS_EXC_SIGNAL)) {
         for(unsigned i=0;i<15;i++)tracee->arch.resume_regs[i]=frame[i];
         tracee->arch.resume_user_rip=user_rip;
         /* A genuine #DB after one CPU instruction ends that step.
@@ -195,14 +195,15 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
         uint64_t signal_addr=user_rip;
         int32_t si_code=vector==1?2:0x80; /* #DB TRACE, #BP SI_KERNEL */
         if(vector==3)signal_addr=user_rip-1; /* INT3 advances RIP */
-        if(vector==14) {
-            signal_addr=fault_addr;
-            si_code=outcome.si_code; /* VMA-first MAPERR/ACCERR */
+        if(outcome.action==NAS_EXC_SIGNAL) {
+            signo=outcome.signo;
+            if(exception.kind==NAS_EXC_MEMORY)signal_addr=fault_addr;
+            si_code=outcome.si_code;
         }
         bool traced=nas_ptrace_user_exception(tracee,signo,si_code,user_rip,
                                                user_sp,signal_addr);
-        if(traced || vector==13 ||
-           (vector==14 && outcome.action==NAS_EXC_SIGNAL)) {
+        if(traced || vector==1 || vector==3 || vector==13 ||
+           outcome.action==NAS_EXC_SIGNAL) {
             /* Linux delivers user-origin #GP as SIGSEGV/SI_KERNEL.
              * Kernel #GP remains fatal, but a bad user task must NEVER
              * take down unrelated applications or the scheduler. */
@@ -217,9 +218,10 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
                     nas_print("\n");
                 }
             }
+            /* User #DB/#BP without a ptrace owner is SIGTRAP, never a
+             * kernel-wide fatal exception. Tracer-owned stops are intact. */
             if(!traced)
-                nas_sched_thread_group_exit(0,
-                    vector==13 ? 11U : outcome.signo);
+                nas_sched_thread_group_exit(0,vector==13 ? 11U : signo);
             uint64_t resumed=nas_task_schedule(frame);
             /* A native traced exception returns to the SAME Task C frame.
              * Restore debugger-edited saved GPRs before constructing IRET;

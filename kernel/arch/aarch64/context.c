@@ -62,23 +62,20 @@ void nas_arm_full_trap_c(struct nas_arm_trap_frame *frame) {
         live=frame;
         nas_arch_save_user_frame(tracee,0);
         nas_arch_save_fpu(tracee);
-        if(nas_ptrace_user_exception(tracee,NAS_SIGTRAP,
+        bool traced=nas_ptrace_user_exception(tracee,NAS_SIGTRAP,
                                       (esr>>26)==0x3cULL?1:2,
                                       frame->elr_el1,frame->sp_el0,
-                                      frame->elr_el1)) {
-            /* An exception stop can wake a tracer BLOCKED in ppoll/wait.
-             * task_schedule returns that resumed syscall's genuine
-             * result. Failing to write x0 silently turns EINTR into the
-             * tracer's stale argument/return and breaks its event loop. */
-            uint64_t resumed=nas_task_schedule((uint64_t *)(void *)frame);
-            frame->x[0]=resumed;
-            nas_signal_user_return((uint64_t *)(void *)frame);
-            live=0;
-            return;
-        }
+                                      frame->elr_el1);
+        if(!traced)nas_sched_thread_group_exit(0,NAS_SIGTRAP);
+        /* A tracer stop wakes its blocked wait loop; untraced BRK instead
+         * terminates the offending thread group before scheduling. */
+        uint64_t resumed=nas_task_schedule((uint64_t *)(void *)frame);
+        frame->x[0]=resumed;
+        nas_signal_user_return((uint64_t *)(void *)frame);
         live=0;
+        return;
     }
-    if(exception.kind==NAS_EXC_MEMORY && exception.user &&
+    if(exception.user &&
        nas_current_task && nas_current_task->state==NAS_TASK_RUNNING) {
         struct nas_exception_outcome outcome=
             nas_exception_dispatch(&exception,nas_current_task->mm);
@@ -88,8 +85,11 @@ void nas_arm_full_trap_c(struct nas_arm_trap_frame *frame) {
             live=frame;
             nas_arch_save_user_frame(tracee,0);
             nas_arch_save_fpu(tracee);
+            uint64_t signal_addr=exception.kind==NAS_EXC_ILLEGAL ?
+                                 frame->elr_el1 : far;
             bool traced=nas_ptrace_user_exception(tracee,outcome.signo,
-                         outcome.si_code,frame->elr_el1,frame->sp_el0,far);
+                         outcome.si_code,frame->elr_el1,frame->sp_el0,
+                         signal_addr);
             if(!traced)nas_sched_thread_group_exit(0,outcome.signo);
             uint64_t resumed=nas_task_schedule((uint64_t *)(void *)frame);
             frame->x[0]=resumed;

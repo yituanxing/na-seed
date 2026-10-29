@@ -77,6 +77,8 @@ on:
       - 'kernel/mm/heap.*'
       - 'scripts/check-lwext4-ramdisk.sh'
       - 'scripts/test-lwext4-ramdisk.c'
+      - 'scripts/bench-ext4-vfs-hotpaths.c'
+      - 'scripts/bench-ext4-vfs-hotpaths.sh'
       - '.github/workflows/lwext4-host.yml'
   workflow_dispatch:
 jobs:
@@ -99,6 +101,8 @@ jobs:
           sudo apt-get -o Acquire::Retries=1 update -qq
           sudo apt-get -y install --no-install-recommends lld
           sh scripts/check-lwext4-guest-link.sh
+      - name: Real ext4 directory cursor and rename regression with iterator bound
+        run: sh scripts/bench-ext4-vfs-hotpaths.sh optimized
       - name: 'Link unmodified littlefs VFS guest objects for three native ISAs'
         run: |
           for isa in x86_64 riscv64 aarch64; do

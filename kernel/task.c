@@ -164,6 +164,7 @@ struct nas_task *nas_task_fork_slot(void) {
         child->signal_force_deliver=0;
         /* Fork creates a new thread-group / task identity. The parent's
          * clear_child_tid address belongs only to the parent's thread. */
+        child->thread_set_tid = 0;
         child->thread_clear_tid = 0;
         child->robust_list_head = 0; /* clone/fork must register its own list */
         child->vfork_child_pid = 0;

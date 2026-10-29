@@ -60,7 +60,7 @@ int main(void) {
     assert(nas_sched_scan_next(&scan,&slot)==ready && slot==1);
     assert(!nas_sched_scan_next(&scan,&slot));
     /* The retired commit() fixture previously consumed this wake event.
-     * Native ring-only tests must explicitly clear the pending wake. */
+     * Host ring-only tests must explicitly clear the pending wake. */
     blocked->wait.futex_woken=false;
     ready->state=NAS_TASK_READY;ready->resume_valid=true;
     nas_sched_scan_init(&scan,NAS_TASK_LIMIT-1);
@@ -77,6 +77,6 @@ int main(void) {
     blocked->resume_valid=false;
     nas_sched_scan_init(&scan,2);
     assert(!nas_sched_scan_next(&scan,&slot));
-    puts("[M99 SCHED PASS] native IRQ/syscall full-ring fairness, I/O wake no-starvation, stopped exclusion");
-    puts("[M98 SCHED PASS] shared IRQ/syscall candidate rules, kernel/user RR fairness, stopped exclusion");
+    puts("[M99 HOST MODEL PASS] shared rotating ring fairness, I/O wake no-starvation, stopped exclusion");
+    puts("[M98 HOST MODEL PASS] shared candidate rules, kernel/user RR fairness, stopped exclusion");
 }

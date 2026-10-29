@@ -1,0 +1,2 @@
+# One genuine cross-ISA Linux64 syscall ELF; direct PID 1, no shell shortcuts.
+m103-tid	cpio	probe	M103_NATIVE_ABI_PASS	-	/bin/m103-tid

@@ -13,6 +13,13 @@ struct ext4_sblock;
  * No filesystem type, ISA or direct userpointer dispatch in this port.
  */
 #define NAS_LWEXT4_ORPHAN_LIMIT 256U
+/* A non-owning byte-offset hint for the previous getdents batch. The VFS
+ * keeps provider-independent logical cursors; every cache miss rescans. */
+struct nas_lwext4_dir_hint {
+    uint64_t epoch;
+    uint64_t cursor,next_off;
+    uint32_t ino;
+};
 /* A staged orphan may be an ordinary file or an empty directory.
  * The VFS File owns its backend inode until the final unpin; a stable
  * typed private link defers physical reclaim and survives reboot. */
@@ -31,6 +38,10 @@ struct nas_lwext4_mount {
     char orphan_dir[256];
     uint32_t root_ino,orphan_serial;
     struct nas_lwext4_orphan orphans[NAS_LWEXT4_ORPHAN_LIMIT];
+    /* The VFS is currently single-CPU. Any namespace mutation advances the
+     * epoch before side effects, invalidating the previous read cursor. */
+    uint64_t namespace_epoch;
+    struct nas_lwext4_dir_hint directory_hint;
     char block_name[32];
     char device_name[32];
     bool mounted;

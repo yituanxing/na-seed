@@ -227,6 +227,7 @@ static void native_park(struct nas_task *self) {
     self->kernel_exec.cpu.saved_sp=0;
 }
 static void native_first_user(void) {
+    nas_process_child_tid_first_dispatch();
     nas_arch_resume_saved_user();
 }
 /* A dead nonleader is not wait4-owned. Its final syscall/IRQ C frame

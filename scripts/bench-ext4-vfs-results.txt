@@ -1,0 +1,32 @@
+NaSeed genuine ext4/VFS performance acceptance, 2026-10-29
+Baseline source: commit 69b5cb17:ports/lwext4/guest_vfs.c
+Optimized source: working-tree ports/lwext4/guest_vfs.c
+Compiler: cc -O2; original vendored lwext4 C, no synthetic ext4 implementation.
+Image: fresh 32 MiB mke2fs ext4 4 KiB blocks, 320-file directory,
+7-entry readdir batches; 32-level path looked up 20 times.
+Each run completed VFS rename/pinned-inode, seek rewind, interleaved
+directory readers, mutation/cursor invalidation, and clean read-only e2fsck
+verification after unmount. Existing full VFS host fixture separately
+covers unlink-open and rename-replacement lifetime semantics.
+
+Raw repeated baseline, [read_dir_calls,read_dir_ns,deep_calls,deep_ns]:
+7890,1782078,56740,76095260
+7890,2042976,56740,80925271
+7890,1565656,56740,83727784
+
+Raw repeated optimized, [read_dir_calls,read_dir_ns,deep_calls,deep_ns]:
+323,69847,2040,2742586
+323,66959,2040,3320068
+323,68462,2040,2783189
+
+Median baseline read_dir 1,782,078 ns; optimized 68,462 ns: 26.03x.
+Median baseline deep_lookup 80,925,271 ns; optimized 2,783,189 ns: 29.08x.
+Deterministic vendor iterator call improvement:
+read_dir 7890/323 = 24.43x; deep_lookup 56740/2040 = 27.81x.
+Raw times vary with host scheduling/cache; no wall-clock thresholds in tests.
+
+Reproduce exact before/after and ratios:
+  sh scripts/compare-ext4-vfs-hotpaths.sh
+CI correctness+complexity gate (no comparison recompilation necessary):
+  sh scripts/bench-ext4-vfs-hotpaths.sh optimized
+Expected optimized entry iteration ceiling: readdir <=650, deep <=6000.

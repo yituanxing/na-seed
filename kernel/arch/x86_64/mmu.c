@@ -216,17 +216,24 @@ bool nas_mmu_exchange_leaf(uint64_t va,uint64_t new_pa,unsigned prot,
     return nas_mmu_exchange_leaf_at(TASK.mm->root_phys,va,new_pa,prot,old_pa);
 }
 bool nas_mmu_map_page(uint64_t va, bool writable) {
+    /* Legacy ELF/stack/brk entry point. New writable user pages start RW+NX;
+     * new nonwritable ELF pages start RX. The historical ELF loader maps
+     * PT_LOAD segments in order and a boundary page can be mapped twice in
+     * EITHER order. Preserve the union of requested permissions in that
+     * exceptional overlap (RWX), pending a typed whole-page ELF preflight. */
+    if(!nas_arch_nx_enabled())return false;
     uint64_t *entry = user_leaf(va, true);
     if (!entry) return false;
     if (*entry & P_PRESENT) {
         if (!(*entry & P_USER)) return false;
         if (writable) *entry |= P_RW;
+        else *entry &= ~(1ULL<<63); /* prior RW -> overlapping RX */
         nas_arch_invalidate_page(va);
         return true;
     }
     uint64_t pa = nas_frame_alloc();
     if (!pa) return false;
-    *entry = pa | P_PRESENT | P_USER | (writable ? P_RW : 0);
+    *entry = pa | P_PRESENT | P_USER | (writable ? (P_RW|(1ULL<<63)) : 0);
     nas_arch_invalidate_page(va);
     return true;
 }

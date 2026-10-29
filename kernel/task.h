@@ -165,6 +165,7 @@ struct nas_task {
     struct nas_mm *mm;
     uint64_t loaded_phdr, loaded_phnum;
     uint64_t loaded_main_entry, loaded_interp_base;
+    uint64_t thread_set_tid; /* one-shot CLONE_CHILD_SETTID, first child dispatch */
     uint64_t thread_clear_tid;
     uint64_t robust_list_head; /* per-TID user robust_list_head, not inherited */
     /* Futex wait ownership lives in task.wait. */
