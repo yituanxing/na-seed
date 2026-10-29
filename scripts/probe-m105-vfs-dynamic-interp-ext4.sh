@@ -121,15 +121,44 @@ for mode in ext4 tmpfs; do
         cd "$mode_work/rootfs"
         find . -print | LC_ALL=C sort | cpio -o -H newc --quiet --owner=0:0
     ) > "$mode_work/rootfs.cpio"
-    # Fail closed if archive accidentally contains the dynamic ELF itself.
-    cpio -itv < "$mode_work/rootfs.cpio" > "$mode_work/cpio-list.txt" 2>/dev/null
-    grep -F "./lib/$loader -> $target" "$mode_work/cpio-list.txt" | grep -Eq '^l'
-    if grep -Eq "^-.*[[:space:]]\./lib/$loader([[:space:]]|$)" "$mode_work/cpio-list.txt"; then
-        echo '[M105 FAIL] CPIO accidentally contains a regular interpreter ELF' >&2
+    # Verify the ACTUAL archive, not merely the source staging directory.
+    # GNU cpio can render its verbose symlink listing differently depending
+    # on version and whether entries begin with './'. Inspect exact archive
+    # member names and independently extract ONLY the interpreter symlink.
+    if ! cpio -it < "$mode_work/rootfs.cpio" > "$mode_work/cpio-names.txt" 2> "$mode_work/cpio-errors.txt"; then
+        echo "[M105 FAIL] cannot enumerate packed CPIO $arch/$mode" >&2
+        sed -n '1,60p' "$mode_work/cpio-errors.txt" >&2
         exit 1
     fi
-    if grep -Fq './dynamic-busybox' "$mode_work/cpio-list.txt"; then
-        echo '[M105 FAIL] CPIO accidentally contains the dynamic program' >&2
+    if ! awk -v expected="lib/$loader" '
+        {
+            name=$0;
+            sub(/^\.\//,"",name);
+            if (name==expected) count++;
+            if (name=="dynamic-busybox" || name=="mnt/dynamic-busybox" ||
+                name=="bin/dynamic-busybox") bad=1;
+        }
+        END { if(count!=1 || bad) exit 1 }
+    ' "$mode_work/cpio-names.txt"; then
+        echo "[M105 FAIL] CPIO interpreter member absent/duplicated or contains dynamic main ELF: $arch/$mode" >&2
+        sed -n '1,100p' "$mode_work/cpio-names.txt" >&2
+        exit 1
+    fi
+    verify_dir=$(mktemp -d "$mode_work/verify-archive.XXXXXX")
+    archive_abs="$(pwd)/$mode_work/rootfs.cpio"
+    if ! (
+        cd "$verify_dir"
+        cpio -id --quiet "lib/$loader" "./lib/$loader" < "$archive_abs"
+    ) > "$mode_work/cpio-verify.log" 2>&1; then
+        echo "[M105 FAIL] cannot extract packed interpreter member $arch/$mode" >&2
+        sed -n '1,60p' "$mode_work/cpio-verify.log" >&2
+        exit 1
+    fi
+    extracted_link="$verify_dir/lib/$loader"
+    if [ ! -L "$extracted_link" ] || [ "$(readlink "$extracted_link")" != "$target" ]; then
+        echo "[M105 FAIL] CPIO interpreter is not an exact symlink to $target ($arch/$mode)" >&2
+        ls -ld "$extracted_link" >&2 || :
+        sed -n '1,100p' "$mode_work/cpio-names.txt" >&2
         exit 1
     fi
 

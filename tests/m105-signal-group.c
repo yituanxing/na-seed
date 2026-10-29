@@ -96,6 +96,23 @@ static __attribute__((noreturn,used,no_stack_protector)) void worker_main(void) 
 }
 /* The child must jump into a freshly allocated stack, not `ret` through
  * its parent's missing C frames. This is the same real ABI as M103. */
+#if defined(__aarch64__)
+/* GCC for AArch64 does not implement naked C functions: the attribute is
+ * ignored (and -Werror correctly rejects it). This genuine ELF assembly
+ * symbol must have NO compiler-generated prologue before clone switches
+ * stacks. x0=stack, x1=parent_tid, x2=child_clear_tid at entry. */
+extern long launch_worker(void *stack,volatile unsigned *ptid,
+                          volatile unsigned *ctid);
+__asm__(
+    ".text\n.balign 4\n.global launch_worker\n"
+    ".type launch_worker,%function\n"
+    "launch_worker:\n"
+    "mov x4,x2\nmov x2,x1\nmov x1,x0\nmov x3,xzr\n"
+    "movz x0,#0x0f00\nmovk x0,#0x7d,lsl #16\n"
+    "mov x8,#220\nsvc #0\ncbz x0,1f\nret\n"
+    "1: b worker_main\n"
+    ".size launch_worker,.-launch_worker\n");
+#else
 __attribute__((naked)) static long launch_worker(
                  void *stack __attribute__((unused)),
                  volatile unsigned *ptid __attribute__((unused)),
@@ -111,13 +128,9 @@ __attribute__((naked)) static long launch_worker(
         "mv a4,a2\nmv a2,a1\nmv a1,a0\nli a3,0\n"
         "li a0,0x7d0f00\nli a7,220\necall\n"
         "beqz a0,1f\nret\n1: tail worker_main\n");
-#else
-    __asm__ volatile(
-        "mov x4,x2\nmov x2,x1\nmov x1,x0\nmov x3,xzr\n"
-        "movz x0,#0x0f00\nmovk x0,#0x7d,lsl #16\n"
-        "mov x8,#220\nsvc #0\ncbz x0,1f\nret\n1: b worker_main\n");
 #endif
 }
+#endif
 static void make_workers(unsigned count) {
     ck(count>0 && count<=NAS_WORKER_COUNT,"worker count");
     worker_started=worker_release=0;
