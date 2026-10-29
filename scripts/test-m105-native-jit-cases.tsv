@@ -1,0 +1,2 @@
+# name  filesystem  method  expected output  args  executable
+m105-native-jit	cpio	-	M105_NATIVE_JIT_COW_PASS	-	/bin/m105-native-jit

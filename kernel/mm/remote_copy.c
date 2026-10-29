@@ -58,6 +58,12 @@ int64_t nas_vm_write_task_bytes(const struct nas_task *task,uint64_t va,
         if(n>length-count)n=length-count;
         count+=n;
     }
+#if defined(__aarch64__)
+    uint64_t ctr=0;
+    __asm__ volatile("mrs %0, ctr_el0":"=r"(ctr));
+    const uint64_t line=4ULL<<((ctr>>16)&15U);
+    if(!line || line>4096)return -EFAULT;
+#endif
     /* Separate shared data frames before ANY breakpoint bytes are written.
      * A later OOM can leave newly private PTEs but never half-written user
      * instructions, maintaining ptrace's two-phase data mutation contract. */
@@ -80,9 +86,10 @@ int64_t nas_vm_write_task_bytes(const struct nas_task *task,uint64_t va,
 #if defined(__aarch64__)
         /* The write was through the kernel HHDM alias, but the tracee
          * will execute through its EL0 alias. Clean data to PoU, then
-         * invalidate ALL local I-cache aliases (single-core kernel). */
-        for(uint64_t p=(uint64_t)(uintptr_t)dst &~63ULL;
-            p<(((uint64_t)(uintptr_t)dst+n+63ULL)&~63ULL);p+=64)
+         * invalidate ALL local I-cache aliases (single-core kernel).
+         * Cache-line width comes from CTR_EL0.DminLine, not QEMU's 64B. */
+        for(uint64_t p=(uint64_t)(uintptr_t)dst &~(line-1);
+            p<(((uint64_t)(uintptr_t)dst+n+line-1)&~(line-1));p+=line)
             __asm__ volatile("dc cvau, %0"::"r"(p):"memory");
         __asm__ volatile("dsb ish; ic iallu; dsb ish; isb":::"memory");
 #elif defined(__riscv) && __riscv_xlen==64

@@ -271,6 +271,22 @@ static void native_dispatcher(void) {
         unsigned sig=nas_tty_take_signal(&sid,&pgid);
         if(sig && !nas_signal_tty_event(sid,pgid,sig))
             nas_tty_signal_unsupported();
+        /* PTY master writes originate inside an arbitrary userspace Task's
+         * syscall C continuation. Handle ISIG only after it reaches this
+         * independent scheduler stack: a foreground SIGINT may terminate
+         * the writer's own group and cannot invalidate its live syscall
+         * frame from within nas_pty_write(). Bound event drain latency so
+         * a noisy PTY cannot monopolize one scheduling boundary. */
+        for(unsigned n=0;n<8;n++) {
+            uint64_t pty_sid=0,pty_pgid=0;
+            unsigned pty_sig=nas_pty_take_signal(&pty_sid,&pty_pgid);
+            if(!pty_sig)break;
+            if(!nas_signal_tty_event(pty_sid,pty_pgid,pty_sig)) {
+                nas_print("[PTY SIGNAL UNSUPPORTED] sid=");nas_dec(pty_sid);
+                nas_print(" pgid=");nas_dec(pty_pgid);
+                nas_print(" signal=");nas_dec(pty_sig);nas_print("\n");
+            }
+        }
         struct nas_sched_scan scan;
         nas_sched_scan_init(&scan,native_cursor);
         unsigned slot=0;

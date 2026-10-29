@@ -198,7 +198,7 @@ bool nas_mmu_exchange_leaf_at(uint64_t root_phys,uint64_t va,
                               uint64_t new_pa,unsigned prot,
                               uint64_t *old_pa) {
     if(!old_pa || (new_pa && ((new_pa&(PAGE-1)) ||
-       !nas_vm_prot_supported(prot) || !nas_arch_nx_enabled())) ||
+       !nas_pte_prot_supported(prot) || !nas_arch_nx_enabled())) ||
        (!new_pa && prot))return false;
     uint64_t *pte=user_leaf_at(root_phys,va,false);
     if(!pte || (*pte && ((*pte&(P_PRESENT|P_USER))!=(P_PRESENT|P_USER))))
@@ -250,6 +250,28 @@ bool nas_mmu_map_prot_page(uint64_t va, uint64_t prot) {
              ((prot & NAS_VM_WRITE) ? P_RW : 0) |
              ((prot & NAS_VM_EXEC) ? 0 : nx);
     nas_arch_invalidate_page(va);
+    return true;
+}
+bool nas_mmu_map_elf_page(uint64_t va,unsigned flags) {
+    if (!(flags&4U) || (flags&~7U) || !nas_arch_nx_enabled())return false;
+    uint64_t *leaf=user_leaf(va,true);
+    if (!leaf || *leaf)return false;
+    uint64_t pa=nas_frame_alloc();
+    if (!pa)return false;
+    *leaf=pa|P_PRESENT|P_USER|((flags&2U)?P_RW:0)|
+          ((flags&1U)?0:(1ULL<<63));
+    nas_arch_invalidate_page(va);
+    return true;
+}
+bool nas_mmu_sync_user_exec(uint64_t va,uint64_t len) {
+    /* x86-64 has coherent instruction and data caches. Validate ownership
+     * so callers cannot accidentally supply an arbitrary kernel VA. */
+    if (va>=USER_LIMIT || len>USER_LIMIT-va)return false;
+    for (uint64_t p=va&~(PAGE-1);p<va+len;) {
+        if (!nas_mmu_user_byte(p))return false;
+        p+=PAGE;
+    }
+    __asm__ volatile("":::"memory");
     return true;
 }
 uint8_t *nas_mmu_user_byte(uint64_t va) {

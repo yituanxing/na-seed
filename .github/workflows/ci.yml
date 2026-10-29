@@ -153,6 +153,12 @@ jobs:
         run: sh scripts/check-x86-nxe-bootstrap.sh
       - name: '[HOST + TARGET-COMPILE] M103 Linux clone TID and robust futex lifecycle'
         run: sh scripts/check-m103-thread-tid-lifecycle.sh
+      - name: '[HOST] M105 ELF PT_LOAD overlap and COW fault model'
+        run: sh scripts/check-m105-elf-permissions.sh
+      - name: '[HOST] M105 PTY ISIG Linux oracle and production ldisc model'
+        run: sh scripts/test-m105-pty-isig.sh
+      - name: '[HOST] M105 signal group and zombie leader routing model'
+        run: sh scripts/check-m105-signal-group.sh
       - name: '[HOST] Fail-closed CI proof-type and milestone mapping audit'
         run: python3 scripts/check-ci-proof-map.py
       - name: Linux mmap/mprotect permission policy regression
@@ -422,8 +428,9 @@ jobs:
   source_busybox:
     name: Controlled source BusyBox / ${{ matrix.port }}
     runs-on: ubuntu-24.04
-    # M103/M104 add two bounded native QEMU boots after the ten older cases.
-    timeout-minutes: 21
+    # M103/M104/M105 add four bounded real native QEMU boots after the
+    # upstream BusyBox source workload; no second source build per milestone.
+    timeout-minutes: 28
     strategy:
       fail-fast: false
       matrix:
@@ -493,6 +500,12 @@ jobs:
         run: sh scripts/probe-m103-tid.sh ${{ matrix.port }}
       - name: M104 real user exceptions isolate the child, parent continues in QEMU
         run: sh scripts/test-m104-probe.sh ${{ matrix.port }}
+      - name: '[NATIVE QEMU] M105 physical TTY signal group and zombie-leader worker / ${{ matrix.port }}'
+        timeout-minutes: 5
+        run: sh scripts/probe-m105-signal-group.sh ${{ matrix.port }}
+      - name: '[NATIVE QEMU] M105 real CPU RW/RX JIT and private fork COW / ${{ matrix.port }}'
+        timeout-minutes: 5
+        run: sh scripts/test-m105-native-jit-probe.sh ${{ matrix.port }}
       - name: Upload native source BusyBox/serial evidence on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -503,12 +516,21 @@ jobs:
             build/source-busybox/${{ matrix.port }}/artifacts.sha256
             build/source-busybox/${{ matrix.port }}/m103-linux-oracle.log
             build/source-busybox/${{ matrix.port }}/m104-linux-oracle.log
+            build/source-busybox/${{ matrix.port }}/m105-linux-oracle.log
+            build/source-busybox/${{ matrix.port }}/m105-signal-group
+            build/source-busybox/${{ matrix.port }}/m105-native-jit-linux-oracle.log
             build/busybox-source-parity-x86/*.serial.log
             build/busybox-source-parity-x86/m103-tid.clean.log
             build/busybox-source-parity-x86/m104-exception.clean.log
+            build/busybox-source-parity-x86/m105-signal-group.serial.log
+            build/busybox-source-parity-x86/m105-native-jit.clean.log
             build/m28-x86-preempt/preempt.serial.log
             build/port-riscv64/full/matrix-source/*.serial.log
             build/port-riscv64/full/matrix-source/m103-tid.clean.log
             build/port-riscv64/full/matrix-source/m104-exception.clean.log
+            build/port-riscv64/full/matrix-source/m105-signal-group.serial.log
+            build/port-riscv64/full/matrix-source/m105-native-jit.clean.log
             build/port-aarch64/full/matrix-source/*.serial.log
+            build/port-aarch64/full/matrix-source/m105-signal-group.serial.log
+            build/port-aarch64/full/matrix-source/m105-native-jit.clean.log
           if-no-files-found: ignore

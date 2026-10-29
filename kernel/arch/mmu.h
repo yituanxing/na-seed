@@ -31,6 +31,12 @@ bool nas_mmu_exchange_leaf_at(uint64_t root_phys,uint64_t va,
 bool nas_mmu_prepare_leaf(uint64_t va);
 bool nas_mmu_exchange_leaf(uint64_t va,uint64_t new_pa,unsigned prot,
                            uint64_t *old_pa);
+/* Trusted ELF PT_LOAD preflight has already computed page-union permissions.
+ * Unlike mmap/mprotect this allows a cross-segment W+X boundary page. */
+bool nas_mmu_map_elf_page(uint64_t va, unsigned elf_flags);
+/* Synchronize instruction visibility after writes via the kernel HHDM alias.
+ * The current address space must still own the given user mapping. */
+bool nas_mmu_sync_user_exec(uint64_t va,uint64_t len);
 #if defined(__x86_64__)
 #include "x86_64/mmu.h"
 #elif defined(__riscv) && __riscv_xlen == 64

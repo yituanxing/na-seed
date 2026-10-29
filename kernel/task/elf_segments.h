@@ -12,6 +12,11 @@ struct nas_elf_segment_ops {
     bool (*map_page)(void *ctx, uint64_t va, unsigned elf_flags);
     bool (*copy_bytes)(void *ctx, uint64_t va, const uint8_t *src,
                        uint64_t count);
+    /* Optional logical VMA registration: one callback per constant-permission
+     * interval, never per 4KiB page (the kernel has a bounded VMA ledger).
+     * ELF flags are the page-wise union of every overlapping PT_LOAD. */
+    bool (*record_region)(void *ctx, uint64_t start, uint64_t length,
+                          unsigned elf_flags, uint64_t file_offset);
 };
 struct nas_elf_segment_policy {
     uint16_t machine;

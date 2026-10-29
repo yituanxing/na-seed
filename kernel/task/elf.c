@@ -4,6 +4,7 @@
 #include "../task.h"
 #include "../arch/mmu.h"
 #include "../mm/usercopy.h"
+#include "../mm/prot.h"
 #include "elf.h"
 #include "elf_format.h"
 #include "elf_segments.h"
@@ -24,12 +25,22 @@ extern void nas_hex(uint64_t);
 #define ALPINE_LDSO_BASE NAS_ELF_DYN_INTERP_BASE
 static bool elf_kernel_map(void *ignored,uint64_t va,unsigned flags) {
     (void)ignored;
-    return nas_mmu_map_page(va,(flags & 2U)!=0);
+    return nas_mmu_map_elf_page(va,flags);
 }
 static bool elf_kernel_copy(void *ignored,uint64_t va,
                             const uint8_t *src,uint64_t len) {
     (void)ignored;
     return nas_user_copy_to_mapped(va,src,len);
+}
+static bool elf_kernel_region(void *ignored,uint64_t first,uint64_t length,
+                              unsigned flags,uint64_t file_offset) {
+    (void)ignored;
+    unsigned prot=NAS_VM_READ|((flags&2U)?NAS_VM_WRITE:0)|
+                 ((flags&1U)?NAS_VM_EXEC:0);
+    /* These are maximal page-permission runs, not per-page VMA records.
+     * A real 3MiB executable still occupies only a handful of slots. */
+    return nas_vma_replace(&TASK.mm->mmap_vmas,first,length,prot,
+                            NAS_VMA_ELF_PRIVATE_SNAPSHOT,file_offset);
 }
 static bool elf_map_image(const struct elf_image *image,uint64_t bias,
                           bool main_image,uint64_t *entry,bool *has_interp) {
@@ -37,6 +48,7 @@ static bool elf_map_image(const struct elf_image *image,uint64_t bias,
         .machine=NAS_ELF_MACHINE,
         .allow_dynamic_elf=true,
         .max_phnum=64,
+        .require_page_congruence=true,
         .bias=bias,
         .min_va=0x10000,
         .max_va=USER_STACK_TOP-0x100000,
@@ -44,7 +56,8 @@ static bool elf_map_image(const struct elf_image *image,uint64_t bias,
         .interpreter=main_image?NAS_ELF_INTERP:0
     };
     struct nas_elf_segment_ops op={
-        .ctx=0,.map_page=elf_kernel_map,.copy_bytes=elf_kernel_copy
+        .ctx=0,.map_page=elf_kernel_map,.copy_bytes=elf_kernel_copy,
+        .record_region=elf_kernel_region
     };
     struct nas_elf_segment_result result={0};
     if(!nas_elf_segments_load(image,&options,&op,&result)) {
@@ -72,9 +85,9 @@ static bool elf_map_image(const struct elf_image *image,uint64_t bias,
         } else nas_print("[ELF REJECT] invalid header\n");
         return false;
     }
-    /* PT_LOAD VMAs are logical mappings, not resident-PTE snapshots.
-     * Stage these after the validated eager load; exec discards the whole
-     * new MM on failure, so no damaged process can observe partial state. */
+    /* After the full image is written through HHDM, clean its executable
+     * aliases before the first user fetch. ARM needs data-clean to PoU then
+     * I-cache invalidation; x86 is coherent and RV64 uses FENCE.I. */
     struct elf_hdr hdr;
     if(!nas_elf_image_read(image,0,&hdr,sizeof(hdr)))return false;
     for(unsigned i=0;i<hdr.phnum;i++) {
@@ -83,13 +96,7 @@ static bool elf_map_image(const struct elf_image *image,uint64_t bias,
                                &ph,sizeof(ph)))return false;
         if(ph.type!=1U || !ph.memsz)continue;
         uint64_t begin=ph.vaddr+bias;
-        uint64_t first=begin&~(PAGE-1);
-        uint64_t end=(begin+ph.memsz+PAGE-1)&~(PAGE-1);
-        unsigned prot=((ph.flags&4U)?1U:0U) |
-                      ((ph.flags&2U)?2U:0U) |
-                      ((ph.flags&1U)?4U:0U);
-        if(!nas_vma_replace(&TASK.mm->mmap_vmas,first,end-first,prot,
-                            NAS_VMA_ELF_PRIVATE_SNAPSHOT,ph.offset))
+        if((ph.flags&1U) && !nas_mmu_sync_user_exec(begin,ph.memsz))
             return false;
     }
     *entry=result.entry;
@@ -114,7 +121,8 @@ bool nas_elf_load(const struct elf_image *image,
         return false;
     *entry = loaded_main_entry;
     if (!has_interp) return true;
-    if (!interpreter || !interpreter->data) return false;
+    if (!interpreter || (!interpreter->data && !interpreter->read_at))
+        return false;
     loaded_interp_base = ALPINE_LDSO_BASE;
     bool nested_interp = false;
     if (!elf_map_image(interpreter, loaded_interp_base, false, entry, &nested_interp))

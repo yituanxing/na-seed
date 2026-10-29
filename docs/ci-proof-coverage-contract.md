@@ -1,4 +1,4 @@
-# CI proof types and M88–M103 coverage contract
+# CI proof types and M88–M103 / M105 coverage contract
 
 This page describes what **actually runs**, not how complete a milestone name
 sounds. The smoke workflow at `.github/workflows/ci.yml` is a useful early
@@ -14,7 +14,7 @@ The `[Mxx TARGET PASS]` lines printed by the M91–M102 shell scripts refer to
 **cross-compiler acceptance only**. Those lines are not system-QEMU PASS lines.
 They are intentionally given the narrower `[HOST + TARGET-COMPILE]` CI title.
 
-## Exact M88–M103 automated smoke mapping
+## Exact M88–M103 / M105 automated smoke mapping
 
 | Milestones | CI check scripts | Actual proof |
 | --- | --- | --- |
@@ -23,6 +23,9 @@ They are intentionally given the narrower `[HOST + TARGET-COMPILE]` CI title.
 | M98 **and M99** | **One** `check-m98-sched-core.sh` invocation; `test-m98-sched-core.c` has independent ring-cursor M99 assertions | Shared host scheduler policy and ring scan; target objects, **not** native IRQ frame parity |
 | M100–M102 | `check-m100-signal-failure.sh`, `check-m101-cow.sh`, `check-m102-tty-cow.sh` | Host fixture plus RISC-V/AArch64 object compilation |
 | M103 | `check-m103-thread-tid-lifecycle.sh` | Three **host** fixtures (clone/TID policy, Linux oracle, guest-source compiled as host), plus x86-64/RISC-V/AArch64 process and scheduler **object compilation**. No QEMU guest execution |
+| M105 signal routing | `check-m105-signal-group.sh` | **Host-only** production `signal.c` Task/TGID routing and teardown fixture. Its green marker does not establish a real guest process or three-ISA signal delivery. |
+| M105 ELF/MM | `check-m105-elf-permissions.sh` | **Host-only** production ELF segment engine and MM/COW path compiled into two fixtures with a mock hardware page-table backend. No native guest execution. |
+| M105 PTY/ISIG | `test-m105-pty-isig.sh` | **Host-only** Linux PTY oracle plus NaSeed `pty.c`/`tty_ldisc.c` unit model. No NaSeed system-QEMU execution. |
 
 Before this correction, M99 and M98 appeared as two separate green CI steps
 although both invoked exactly `check-m98-sched-core.sh`. Removing the duplicate
@@ -34,13 +37,33 @@ user registers, return to user mode, and starvation/fairness on all three ISAs.
 It must verify guest serial/exit evidence and reject a missing outcome.
 
 `scripts/check-ci-proof-map.py` runs automatically in the smoke workflow. It
-fails the job when an M88–M103 check is omitted, repeated, given an inflated
+fails the job when an M88–M103 or M105 host check is omitted, repeated, given an inflated
 proof label, or no longer contains its audited host/target-compile actions.
 It also checks that M50 full and M56/M57 remain explicit manual workflows.
 For M103, `NAS_M103_HOST_ONLY=1` is an explicit **local-only** fallback; CI
 must not set that environment variable and is expected to fail if Clang cannot
 compile the three target objects. The guest-source fixture run on the host is
 not evidence of guest execution in native system-QEMU.
+M104 has no separate smoke host checker; its genuine exception exercise is a
+later source-BusyBox system-QEMU step. M105 has a *separate* fail-closed native
+guest step (`probe-m105-signal-group.sh`) in amd64, RV64 and ARM64 source-BusyBox
+jobs. It stages the same standalone Linux ELF into the original BusyBox CPIO,
+boots the native ISA, physically injects Ctrl-C/Ctrl-\\ after userspace readiness,
+checks explicit guest signal/group markers, a clean user exit and platform
+debug-exit status, and saves raw serial on failure. A workflow declaration
+still is not a PASS: each **exact-head** three-ISA step must actually run and
+succeed before claiming M105 native signal-group acceptance. M105's three
+host fixtures on their own do not count toward this native acceptance.
+
+M105 also has an independent `test-m105-native-jit-probe.sh` source-BusyBox
+guest gate for all three ISAs. It builds the exact Linux ELF for each target,
+verifies x86 against native Linux, then uses real NaSeed system-QEMU to execute
+machine code after anonymous RW mapping and RX `mprotect`, including private
+post-fork COW rewrite and parent/child code execution. It requires both
+`M105_JIT_MPROTECT_EXEC_PASS` and `M105_NATIVE_JIT_COW_PASS` in actual guest
+serial, plus a clean userspace exit. Host MM mocks, target object compilation
+and QEMU-user are not substitutes for the native CPU/MMU/I-cache evidence.
+
 The checker has mutation-based self-tests:
 
 ```sh

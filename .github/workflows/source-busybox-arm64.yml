@@ -6,14 +6,31 @@ on:
       - 'kernel/task.c'
       - 'kernel/task.h'
       - 'kernel/exception/**'
-      - 'kernel/arch/aarch64/context.c'
-      - 'kernel/arch/aarch64/mmu.c'
+      # Native M105 signal and JIT acceptance must also rerun after a
+      # target-only signal frame, ICACHE/MMU, or PTY/TTY implementation edit.
+      - 'kernel/arch/aarch64/**'
+      - 'kernel/arch/mmu.h'
+      - 'kernel/mm/**'
+      - 'kernel/drivers/pty*'
+      - 'kernel/drivers/tty*'
+      - 'scripts/probe-aarch64-busybox-matrix.sh'
+      - 'scripts/probe-m18-port-interactive.sh'
+      - 'scripts/m18-port-qemu.sh'
+      - 'scripts/stage-busybox-rootfs.sh'
       - 'scripts/probe-m103-tid.sh'
       - 'scripts/test-m103-native-tid-abi.c'
       - 'scripts/m103-native-tid-cases.tsv'
       - 'scripts/test-m104-native-exception.c'
       - 'scripts/test-m104-cases.tsv'
       - 'scripts/test-m104-probe.sh'
+      - 'scripts/check-m105-signal-group.sh'
+      - 'scripts/build-m105-signal-group.sh'
+      - 'scripts/probe-m105-signal-group.sh'
+      - 'scripts/m105-signal-group-serial-check.py'
+      - 'tests/m105-signal-group.c'
+      - 'scripts/test-m105-native-jit-probe.sh'
+      - 'scripts/test-m105-native-jit.c'
+      - 'scripts/test-m105-native-jit-cases.tsv'
       - '.github/workflows/source-busybox-arm64.yml'
   workflow_dispatch:
   schedule:
@@ -29,7 +46,7 @@ concurrency:
 jobs:
   arm64-source:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
       - name: Install ARM64 cross-toolchain and genuine system QEMU
@@ -51,6 +68,12 @@ jobs:
         run: sh scripts/probe-m103-tid.sh arm64
       - name: M104 genuine ARM64 QEMU user-fault isolation acceptance
         run: sh scripts/test-m104-probe.sh arm64
+      - name: '[NATIVE QEMU] M105 ARM64 physical TTY group signals and zombie-leader worker'
+        timeout-minutes: 5
+        run: sh scripts/probe-m105-signal-group.sh arm64
+      - name: '[NATIVE QEMU] M105 ARM64 real CPU RW/RX JIT and private fork COW'
+        timeout-minutes: 5
+        run: sh scripts/test-m105-native-jit-probe.sh arm64
       - name: Attach actual guest serial logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -62,4 +85,7 @@ jobs:
             build/port-aarch64/full/matrix-source/*.serial.log
             build/port-aarch64/full/matrix-source/m103-tid.clean.log
             build/port-aarch64/full/matrix-source/m104-exception.clean.log
+            build/port-aarch64/full/matrix-source/m105-signal-group.serial.log
+            build/port-aarch64/full/matrix-source/m105-native-jit.clean.log
+            build/source-busybox/arm64/m105-signal-group
           if-no-files-found: ignore

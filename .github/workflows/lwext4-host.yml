@@ -53,6 +53,9 @@ on:
       - 'scripts/probe-vfs-gpt-busybox-x86.sh'
       - 'scripts/probe-vfs-gpt-busybox.sh'
       - 'scripts/probe-vfs-exec-no-cpio-x86.sh'
+      - 'scripts/probe-m105-vfs-dynamic-interp-*.sh'
+      - 'kernel/task/elf*.c'
+      - 'kernel/task/exec.c'
       - 'scripts/vfs-rootless-exec-cases.tsv'
       - 'scripts/vfs-busybox-disk-cases.tsv'
       - 'tests/vfs-busybox-disk-workload'
@@ -173,6 +176,12 @@ jobs:
           sh scripts/probe-vfs-busybox-physical.sh amd64
           sh scripts/probe-vfs-busybox-physical.sh riscv64
           sh scripts/probe-vfs-busybox-physical.sh arm64
+      - name: 'M105: original Alpine musl PT_INTERP from real ext4 and tmpfs, three native ISAs'
+        run: |
+          sh -n scripts/probe-m105-vfs-dynamic-interp-ext4.sh
+          sh scripts/probe-m105-vfs-dynamic-interp-ext4.sh amd64
+          sh scripts/probe-m105-vfs-dynamic-interp-ext4.sh riscv64
+          sh scripts/probe-m105-vfs-dynamic-interp-ext4.sh arm64
       - name: 'Three native ISAs: original Debian BusyBox on real GPT partitioned VirtIO disk, two boots per ISA'
         run: |
           sh scripts/probe-vfs-gpt-busybox.sh amd64

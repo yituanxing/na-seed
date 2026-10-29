@@ -182,16 +182,23 @@ void nas_tty_pump(void) {
         tty.rx_count++;
     }
     for(unsigned i=0;i<32 && tty.rx_count &&
-        !tty.ldisc.ready && !tty.unsupported_input && !tty.pending_signum;i++) {
+        !tty.unsupported_input && !tty.pending_signum;i++) {
         uint8_t byte=tty.rx_queue[tty.rx_head];
+        /* A completed line/full ldisc holds ordinary bytes, but Linux
+         * N_TTY still recognizes ISIG controls at that boundary. Leave
+         * any non-signal byte in the RX queue for the eventual reader. */
+        if((tty.ldisc.ready || tty.ldisc.used==NAS_LDISC_CAPACITY) &&
+           nas_ldisc_signal_event(&tty.t,byte)==NAS_LDISC_OK)break;
         tty.rx_head=(tty.rx_head+1)%NAS_TTY_RX_QUEUE_CAP;
         tty.rx_count--;
         enum nas_ldisc_event e=nas_ldisc_feed(&tty.ldisc,&tty.t,byte,tty_echo,0);
         if(e!=NAS_LDISC_OK) {
-            /* NOFLSH=0: discard queued canonical and transport input
-             * after terminal-generated signals, preserving Linux behavior. */
-            nas_ldisc_reset(&tty.ldisc);
-            tty.rx_head=tty.rx_count=0;
+            /* NOFLSH applies to both canonical N_TTY bytes and staged
+             * transport input; default Ctrl-C discards both. */
+            if(!(tty.t.lflag&0000200U)) {
+                nas_ldisc_reset(&tty.ldisc);
+                tty.rx_head=tty.rx_count=0;
+            }
             tty.pending_signum=e==NAS_LDISC_SIGNAL_INT?2U:
                 e==NAS_LDISC_SIGNAL_QUIT?3U:20U;
             break;

@@ -14,6 +14,12 @@
  * termios belong to the device, never to an ISA-specific syscall number.
  * All endpoints reference shared open-description identities. */
 #define PTY_RING_CAP 2048U
+/* A bounded cross-PTY queue owns event order until the scheduler is safely
+ * outside the writer's syscall C frame. Never overwrite an unread signal. */
+#define PTY_SIGNAL_FIFO_CAP 64U
+struct pty_signal_event {uint64_t sid,pgid;unsigned signo;};
+static struct pty_signal_event signal_fifo[PTY_SIGNAL_FIFO_CAP];
+static unsigned signal_fifo_head,signal_fifo_count;
 struct pty_ring { uint8_t bytes[PTY_RING_CAP]; unsigned head,count; };
 struct pty {
     bool used,master_open,locked;
@@ -27,6 +33,25 @@ struct pty {
 static struct pty ptys[NAS_PTY_LIMIT];
 static uint8_t slot_device[NAS_OPEN_FILE_LIMIT]; /* index + 1 */
 static uint8_t slot_is_master[NAS_OPEN_FILE_LIMIT];
+
+static bool pty_queue_signal(const struct pty *p,unsigned signum) {
+    /* No controlling session / foreground process group: consume the
+     * ISIG byte but never deliver it to another, unrelated session. */
+    if(!p->sid || !p->pgid)return true;
+    if(signal_fifo_count==PTY_SIGNAL_FIFO_CAP)return false;
+    unsigned tail=(signal_fifo_head+signal_fifo_count)%PTY_SIGNAL_FIFO_CAP;
+    signal_fifo[tail]=(struct pty_signal_event){p->sid,p->pgid,signum};
+    signal_fifo_count++;
+    return true;
+}
+unsigned nas_pty_take_signal(uint64_t *sid,uint64_t *pgid) {
+    if(!sid || !pgid || !signal_fifo_count)return 0;
+    struct pty_signal_event e=signal_fifo[signal_fifo_head];
+    signal_fifo_head=(signal_fifo_head+1)%PTY_SIGNAL_FIFO_CAP;
+    signal_fifo_count--;
+    *sid=e.sid;*pgid=e.pgid;
+    return e.signo;
+}
 
 static struct pty *get(unsigned slot) {
     unsigned id=slot<NAS_OPEN_FILE_LIMIT?slot_device[slot]:0;
@@ -138,6 +163,7 @@ bool nas_pty_write_ready(unsigned slot) {
     if(!p)return true; /* wake a blocked writer to report EBADF */
     if(slot_is_master[slot]) {
         if(!p->slave_descriptions)return true; /* wake to report EIO */
+        if(signal_fifo_count==PTY_SIGNAL_FIFO_CAP)return false;
         /* Canonical input is owned by N_TTY, not the raw slave ring.
          * A completed line waits for its reader and must not silently
          * consume further master writes or advertise false POLLOUT. */
@@ -205,13 +231,46 @@ uint64_t nas_pty_write(uint64_t fd,uint64_t src,uint64_t count) {
         uint8_t value;
         if(!nas_user_read_bytes(src+done,&value,1))
             return done?done:(uint64_t)-EFAULT;
+        if(master) {
+            /* N_TTY generates terminal signals with ICANON on OR off.
+             * The master is often a shell/tmux in a different process
+             * group; never synchronously kill the currently executing
+             * writer's Task inside this syscall. */
+            enum nas_ldisc_event ev=nas_ldisc_signal_event(&p->termios,value);
+            if(ev!=NAS_LDISC_OK) {
+                unsigned signo=ev==NAS_LDISC_SIGNAL_INT?2U:
+                    ev==NAS_LDISC_SIGNAL_QUIT?3U:20U;
+                if(!pty_queue_signal(p,signo))break; /* bounded, no loss */
+                /* Linux NOFLSH (lflag bit 0x80) preserves both canonical
+                 * and noncanonical unread input when ISIG is generated.
+                 * The default clears both queues, including typed data
+                 * ahead of the signal byte. */
+                if(!(p->termios.lflag&0000200U)) {
+                    nas_ldisc_reset(&p->input);
+                    p->slave_input.head=p->slave_input.count=0;
+                }
+                done++;
+                continue;
+            }
+        }
+        if(master && !(p->termios.lflag&0000002)) {
+            /* Noncanonical PTY input still obeys the same ICRNL/IGNCR/
+             * INLCR rules as the canonical line discipline. ISIG already
+             * inspected the original byte above, before translation. */
+            if(value=='\r') {
+                if(p->termios.iflag&0000200) {done++;continue;}
+                if(p->termios.iflag&0000400)value='\n';
+            } else if(value=='\n' && (p->termios.iflag&0000100))value='\r';
+        }
         if(master && (p->termios.lflag&0000002)) {
             /* nas_ldisc_feed() intentionally rejects input after a full
              * canonical line. Do not count a rejected byte as written. */
             if(p->input.ready || p->input.used==NAS_LDISC_CAPACITY)break;
             enum nas_ldisc_event ev=nas_ldisc_feed(&p->input,&p->termios,
                                                     value,pty_echo,p);
-            if(ev!=NAS_LDISC_OK)nas_ldisc_reset(&p->input);
+            /* Already classified above, including translated CR/NL and
+             * noncanonical ISIG. This branch only appends ordinary data. */
+            if(ev!=NAS_LDISC_OK)return done?done:(uint64_t)-EIO;
         }else{
             if(r->count>=PTY_RING_CAP-2)break;
             if(!master && value=='\n' && (p->termios.oflag&5U)==5U)

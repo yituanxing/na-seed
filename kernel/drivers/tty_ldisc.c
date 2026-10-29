@@ -16,18 +16,27 @@ static void erase_echo(nas_ldisc_echo_fn e,void *context) {
     emit(e,context,'\b');emit(e,context,' ');emit(e,context,'\b');
 }
 static bool space(uint8_t b){return b==' '||b=='\t';}
+enum nas_ldisc_event nas_ldisc_signal_event(const struct nas_termios *t,
+                                            uint8_t b) {
+    if(!(t->lflag&ISIG))return NAS_LDISC_OK;
+    /* Linux N_TTY compares ISIG control bytes before translating CR/NL.
+     * E.g. VINTR='\\n' with ICRNL does NOT turn a received CR into SIGINT. */
+    if(t->cc[VINTR] && b==t->cc[VINTR])return NAS_LDISC_SIGNAL_INT;
+    if(t->cc[VQUIT] && b==t->cc[VQUIT])return NAS_LDISC_SIGNAL_QUIT;
+    if(t->cc[VSUSP] && b==t->cc[VSUSP])return NAS_LDISC_SIGNAL_STOP;
+    return NAS_LDISC_OK;
+}
 enum nas_ldisc_event nas_ldisc_feed(struct nas_ldisc *ld,const struct nas_termios *t,
                                    uint8_t b,nas_ldisc_echo_fn echo,void *context) {
+    enum nas_ldisc_event signal=nas_ldisc_signal_event(t,b);
+    if(signal!=NAS_LDISC_OK)return signal;
+    /* Signals bypass a completed canonical line or full input buffer.
+     * Ordinary bytes still wait for the consumer to drain that buffer. */
     if(ld->ready||ld->used==NAS_LDISC_CAPACITY)return NAS_LDISC_OK;
     if(b=='\r') {
         if(t->iflag&IGNCR)return NAS_LDISC_OK;
         if(t->iflag&ICRNL)b='\n';
     } else if(b=='\n'&&(t->iflag&INLCR))b='\r';
-    if(t->lflag&ISIG) {
-        if(t->cc[VINTR]&&b==t->cc[VINTR])return NAS_LDISC_SIGNAL_INT;
-        if(t->cc[VQUIT]&&b==t->cc[VQUIT])return NAS_LDISC_SIGNAL_QUIT;
-        if(t->cc[VSUSP]&&b==t->cc[VSUSP])return NAS_LDISC_SIGNAL_STOP;
-    }
     if(t->lflag&ICANON) {
         unsigned remove=0;
         bool edit=false;

@@ -20,4 +20,7 @@ uint64_t nas_pty_ioctl(uint64_t fd,uint64_t command,uint64_t arg);
 uint16_t nas_pty_poll(unsigned slot,uint16_t events);
 bool nas_pty_read_ready(unsigned slot);
 bool nas_pty_write_ready(unsigned slot);
+/* Deferred PTY ISIG notifications: consumed by scheduler, never delivered
+ * while the master write() syscall still owns its current Task and FD. */
+unsigned nas_pty_take_signal(uint64_t *sid,uint64_t *pgid);
 #endif

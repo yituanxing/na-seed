@@ -109,7 +109,8 @@ bool nas_arch_signal_install_trampoline(void) {
     if(!nas_mmu_map_prot_page(NAS_SIGRETURN_TRAMPOLINE,5U))
         return false;
     if(!nas_user_copy_to_mapped(NAS_SIGRETURN_TRAMPOLINE,
-                               (const uint8_t *)insns,sizeof(insns))) {
+                               (const uint8_t *)insns,sizeof(insns)) ||
+       !nas_mmu_sync_user_exec(NAS_SIGRETURN_TRAMPOLINE,sizeof(insns))) {
         (void)nas_mmu_unmap_page(NAS_SIGRETURN_TRAMPOLINE);
         return false;
     }

@@ -68,7 +68,7 @@ bool nas_mmu_exchange_leaf_at(uint64_t root_phys,uint64_t va,
                               uint64_t *old_pa) {
     if(!old_pa || !root_phys || (root_phys&(PAGE-1)) ||
        (va&(PAGE-1)) || va<PAGE || va>=USER_LIMIT ||
-       (new_pa && !nas_vm_prot_supported(prot)) ||
+       (new_pa && !nas_pte_prot_supported(prot)) ||
        (!new_pa && prot))return false;
     struct nas_user_space s={root_phys,nas_arch_pt_active_levels()};
     unsigned access=new_pa?(NAS_UP_READ|(prot&6U)):0;
@@ -94,6 +94,42 @@ bool nas_mmu_map_prot_page(uint64_t va, uint64_t prot) {
         ((prot & NAS_VM_WRITE) ? NAS_UP_WRITE : 0) |
         ((prot & NAS_VM_EXEC) ? NAS_UP_EXEC : 0));
 }
+bool nas_mmu_map_elf_page(uint64_t va,unsigned flags) {
+    if (!(flags&4U) || (flags&~7U))return false;
+    struct nas_user_space s=current();
+    return nas_space_map_elf_access(&s,va,NAS_UP_READ|
+           ((flags&2U)?NAS_UP_WRITE:0)|((flags&1U)?NAS_UP_EXEC:0));
+}
+bool nas_mmu_sync_user_exec(uint64_t va,uint64_t len) {
+    if (va>=USER_LIMIT || len>USER_LIMIT-va)return false;
+#if defined(__aarch64__)
+    uint64_t ctr=0;
+    __asm__ volatile("mrs %0, ctr_el0":"=r"(ctr));
+    uint64_t dline=4ULL<<((ctr>>16)&15U);
+    if (!dline || dline>4096)return false;
+#endif
+    for (uint64_t p=va;p<va+len;) {
+        uint64_t chunk=PAGE-(p&(PAGE-1));
+        if (chunk>va+len-p)chunk=va+len-p;
+        uint8_t *alias=nas_mmu_user_byte(p);
+        if(!alias)return false;
+#if defined(__aarch64__)
+        uint64_t from=(uint64_t)(uintptr_t)alias & ~(dline-1);
+        uint64_t to=((uint64_t)(uintptr_t)alias+chunk+dline-1)&~(dline-1);
+        for(uint64_t at=from;at<to;at+=dline)
+            __asm__ volatile("dc cvau, %0"::"r"(at):"memory");
+#else
+        (void)alias;
+#endif
+        p+=chunk;
+    }
+#if defined(__aarch64__)
+    __asm__ volatile("dsb ish; ic iallu; dsb ish; isb":::"memory");
+#elif defined(__riscv) && __riscv_xlen==64
+    __asm__ volatile("fence rw,rw; fence.i":::"memory");
+#endif
+    return true;
+}
 bool nas_mmu_unmap_page(uint64_t va) {
     struct nas_user_space s=current();
     return nas_space_unmap_page(&s,va);
@@ -107,6 +143,9 @@ bool nas_mmu_user_writable(uint64_t va) {
     return nas_space_user_writable(&s,va);
 }
 bool nas_mmu_protect_pages(uint64_t va,uint64_t pages,uint64_t prot) {
+    if ((prot & NAS_VM_EXEC) &&
+        (pages > UINT64_MAX/PAGE ||
+         !nas_mmu_sync_user_exec(va,pages*PAGE)))return false;
     struct nas_user_space s=current();
     return nas_space_protect(&s,va,pages,(unsigned)prot);
 }
