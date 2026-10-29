@@ -219,6 +219,24 @@ int main(int argc,char **argv) {
         assert(nas_vfs_node_pin(&created)==0);
         assert(nas_vfs_node_pin(&stale_reader)==0);
         assert(nas_vfs_node_size(&stale_reader)==sizeof(persisted)-1);
+        /* Real upstream metadata mutations must reach fstat on an OLD,
+         * independently pinned inode snapshot. The ext4 VFS adapter does
+         * not currently expose chmod/utimens callbacks, so exercise the
+         * pinned upstream setters on the same mounted ext4 image. */
+        assert(ext4_mode_set("/mnt/sandbox/vfs-created",0604)==0);
+        assert(ext4_atime_set("/mnt/sandbox/vfs-created",1770000001U)==0);
+        assert(ext4_mtime_set("/mnt/sandbox/vfs-created",1770000002U)==0);
+        assert(ext4_ctime_set("/mnt/sandbox/vfs-created",1770000003U)==0);
+        struct nas_fs_node live_stat;
+        assert(nas_vfs_getattr(&stale_reader,&live_stat)==0);
+        assert(live_stat.ino==stale_reader.ino && live_stat.nlink==1);
+        assert((live_stat.mode&07777U)==0604U);
+        assert(live_stat.atime_sec==1770000001U);
+        assert(live_stat.mtime_sec==1770000002U);
+        assert(live_stat.ctime_sec==1770000003U);
+        assert(live_stat.size==sizeof(persisted)-1);
+        assert(nas_fs_lookup_node("/mnt/sandbox/vfs-created",true,&grown,actual)==0);
+        assert(grown.mode==live_stat.mode && grown.mtime_sec==live_stat.mtime_sec);
         /* Actual original liblwext4 unlink-open: the LAST name is moved
          * into a hidden orphan, not ext4_fremove()'d until final close.
          * This is independent of the persistent vfs-created file below. */
@@ -252,6 +270,10 @@ int main(int argc,char **argv) {
         assert(nas_vfs_write_at(&orphaned,sizeof(old_data)-1,
                                 (const uint8_t *)"+append",7)==7);
         assert(nas_vfs_node_size(&orphaned)==sizeof(old_data)-1+7);
+        assert(nas_vfs_getattr(&orphaned,&orphan_stat)==0);
+        assert(orphan_stat.nlink==0 &&
+               orphan_stat.size==sizeof(old_data)-1+7 &&
+               (orphan_stat.mode&07777U)==0600U);
         assert(nas_vfs_node_unpin(&orphaned)==0);
         assert(nas_vfs_read_at(&orphaned,0,(uint8_t *)buffer,
                                sizeof(old_data)-1)==(int64_t)sizeof(old_data)-1);
@@ -281,10 +303,14 @@ int main(int argc,char **argv) {
         assert(nas_vfs_resize(&created,sizeof(persisted)-1)==0);
         assert(nas_vfs_resize(&created,6)==0);
         assert(nas_vfs_node_size(&stale_reader)==6);
+        assert(nas_vfs_getattr(&stale_reader,&live_stat)==0);
+        assert(live_stat.size==6 && (live_stat.mode&07777U)==0604U);
         assert(nas_vfs_read_at(&stale_reader,6,(uint8_t *)buffer,1)==0);
         assert(nas_vfs_resize(&created,sizeof(persisted)-1)==0);
         assert(nas_vfs_write_at(&created,6,persisted+6,sizeof(persisted)-7)==(int64_t)sizeof(persisted)-7);
         assert(nas_vfs_node_size(&stale_reader)==sizeof(persisted)-1);
+        assert(nas_vfs_getattr(&stale_reader,&live_stat)==0);
+        assert(live_stat.size==sizeof(persisted)-1);
         assert(nas_vfs_read_at(&stale_reader,0,(uint8_t *)buffer,sizeof(persisted)-1)==(int64_t)sizeof(persisted)-1);
         assert(!memcmp(buffer,persisted,sizeof(persisted)-1));
         assert(nas_vfs_node_unpin(&stale_reader)==0);
@@ -521,8 +547,20 @@ int main(int argc,char **argv) {
         assert(nas_vfs_node_unpin(&opened_link)==0);
         assert(nas_vfs_unlink("/mnt/sandbox/vfs-link-moved",0)==0);
         assert(nas_vfs_link("/mnt/sandbox/vfs-created","/mnt/sandbox/vfs-alias")==0);
+        /* Link count is another live inode field: an open File must not
+         * report the value captured before link/rename/unlink. */
+        struct nas_fs_node linked_hold=created;
+        assert(nas_vfs_node_pin(&linked_hold)==0);
+        struct nas_fs_node linked_stat;
+        assert(nas_vfs_getattr(&linked_hold,&linked_stat)==0 &&
+               linked_stat.nlink==2);
         assert(nas_vfs_rename("/mnt/sandbox/vfs-alias","/mnt/sandbox/vfs-persist",0)==0);
+        assert(nas_vfs_getattr(&linked_hold,&linked_stat)==0 &&
+               linked_stat.nlink==2);
         assert(nas_vfs_unlink("/mnt/sandbox/vfs-created",0)==0);
+        assert(nas_vfs_getattr(&linked_hold,&linked_stat)==0 &&
+               linked_stat.nlink==1);
+        assert(nas_vfs_node_unpin(&linked_hold)==0);
         assert(nas_fs_lookup_node("/mnt/sandbox/vfs-persist",true,&created,actual)==0);
         assert(nas_vfs_read_at(&created,0,(uint8_t *)buffer,sizeof(buffer))==(int64_t)created.size);
         assert(!memcmp(buffer,persisted,sizeof(persisted)-1));

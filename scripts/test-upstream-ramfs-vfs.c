@@ -163,8 +163,36 @@ int main(void) {
         assert(nas_fs_lookup_node("/ramfs/churn",true,&node,path)==0);
         assert(nas_vfs_unlink("/ramfs/churn",0)==0);
     }
+    /* A 255-byte VFS path allows ~127 single-letter components. The
+     * RamFS identity-to-path conversion must never recurse once per level:
+     * that previously spent >32 KiB stack inside a 16 KiB kernel stack. */
+    char deep[256]="/ramfs";
+    for(unsigned i=0;i<124;i++) {
+        size_t n=strlen(deep);
+        assert(n+3<=sizeof(deep));
+        deep[n]='/';deep[n+1]='d';deep[n+2]=0;
+        assert(nas_vfs_mkdir(deep,0700)==0);
+        assert(nas_fs_lookup_node(deep,true,&node,path)==0);
+        assert(nas_vfs_getattr(&node,&attrs)==0 && attrs.is_dir);
+        if(i==122) {
+            char leaf[256];
+            assert(snprintf(leaf,sizeof(leaf),"%s/f",deep)==254);
+            assert(nas_vfs_create(leaf,0600)==0);
+            assert(nas_fs_lookup_node(leaf,true,&node,path)==0);
+            assert(nas_vfs_write_at(&node,0,(const uint8_t *)"deep",4)==4);
+            assert(nas_vfs_read_at(&node,0,(uint8_t *)text,4)==4);
+            assert(!memcmp(text,"deep",4));
+            assert(nas_vfs_unlink(leaf,0)==0);
+        }
+    }
+    assert(strlen(deep)==254);
+    for(unsigned i=0;i<124;i++) {
+        assert(nas_vfs_unlink(deep,0x200ULL)==0);
+        deep[strlen(deep)-2]=0;
+    }
+    assert(!strcmp(deep,"/ramfs"));
     assert(nas_ramfs_vfs_unmount(&a)==0);
     assert(nas_ramfs_vfs_unmount(&b)==0);
-    puts("[UPSTREAM RAMFS VFS PASS] upstream unchanged; VFS open-unlink orphan; old/new generations; open rmdir; 320+ identities; 700 reuse; modes; multi-mount");
+    puts("[UPSTREAM RAMFS VFS PASS] upstream unchanged; VFS open-unlink orphan; old/new generations; open rmdir; 320+ identities; 700 reuse; 124-level paths; modes; multi-mount");
     return 0;
 }

@@ -35,11 +35,30 @@ static struct nas_ramfs_vfs *context(const struct nas_vfs_mount *m) {
     return m ? (struct nas_ramfs_vfs *)m->private_data : NULL;
 }
 static int path_of(const struct nas_ramfs_identity *id,char path[256]) {
-    if(!id || !id->active)return -ESTALE;
-    if(!id->parent) {path[0]='/';path[1]=0;return 0;}
-    char parent[256];
-    int rc=path_of(id->parent,parent);
-    return rc ? rc : nas_vfs_join_child(parent,id->name,path);
+    if(!id)return -ESTALE;
+    /* A valid 255-byte pathname can have 127 one-character components.
+     * Recursing with a 256-byte parent buffer per component would exhaust
+     * the kernel's 16 KiB stack. Count and fill backwards in constant stack. */
+    size_t length=0;
+    for(const struct nas_ramfs_identity *it=id;;it=it->parent) {
+        if(!it || !it->active)return -ESTALE;
+        if(!it->parent)break;
+        size_t n=strnlen(it->name,sizeof(it->name));
+        if(n>=sizeof(it->name))return -ENAMETOOLONG;
+        if(!n || strchr(it->name,'/') || !strcmp(it->name,".") ||
+           !strcmp(it->name,".."))return -EINVAL;
+        if(n>=255U-length)return -ENAMETOOLONG;
+        length+=n+1; /* one leading '/' per component */
+    }
+    if(!length) {path[0]='/';path[1]=0;return 0;}
+    path[length]=0;
+    for(const struct nas_ramfs_identity *it=id;it->parent;it=it->parent) {
+        size_t n=strlen(it->name);
+        length-=n;
+        memcpy(path+length,it->name,n);
+        path[--length]='/';
+    }
+    return 0;
 }
 /* One mount-local namespace identity graph, with no arbitrary 128-inode
  * limit and no separate first-party directory tree. The unmodified

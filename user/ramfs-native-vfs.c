@@ -27,6 +27,8 @@ static const char error[]="[RAMFS NATIVE DIAG] stage=";
 static unsigned char buffer[1024];
 static unsigned char stat_bytes[256];
 static char cwd[256];
+static char deep_path[256]="/ramfs";
+static char deep_leaf[256];
 static int same(const unsigned char *a,const char *b,unsigned n) {
     for(unsigned i=0;i<n;i++)if(a[i]!=(unsigned char)b[i])return 0;
     return 1;
@@ -194,6 +196,40 @@ __attribute__((noreturn)) void guest_main(void) {
     if(guest_syscall(OP_CLOSE,dirfd,0,0,0)!=0 ||
        guest_syscall(OP_CLOSE,root,0,0,0)!=0)goto failed;
     stage=31;
+    /* The actual kernel uses 16 KiB stacks. With 124 levels and a valid
+     * 254-byte absolute pathname, a recursive identity path formatter
+     * used to consume over 30 KiB before returning from openat/mkdirat. */
+    for(unsigned level=0;level<124;level++) {
+        unsigned n=0;
+        while(deep_path[n])n++;
+        if(n+3>sizeof(deep_path))goto failed;
+        deep_path[n]='/';deep_path[n+1]='d';deep_path[n+2]=0;
+        if(guest_syscall(OP_MKDIRAT,-100,(long)(uintptr_t)deep_path,0700,0)!=0)
+            goto failed;
+        if(level==122) {
+            for(unsigned i=0;i<=n+2;i++)deep_leaf[i]=deep_path[i];
+            if(n+5>sizeof(deep_leaf))goto failed;
+            deep_leaf[n+2]='/';deep_leaf[n+3]='f';deep_leaf[n+4]=0;
+            long file=guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)deep_leaf,
+                                    0xc2,0600);
+            if(file<0 || guest_syscall(OP_CLOSE,file,0,0,0)!=0 ||
+               guest_syscall(OP_UNLINKAT,-100,(long)(uintptr_t)deep_leaf,0,0)!=0)
+                goto failed;
+        }
+    }
+    stage=32;
+    long deepest=guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)deep_path,
+                               NAS_LINUX_NATIVE_O_DIRECTORY,0);
+    if(deepest<0 || guest_syscall(OP_CLOSE,deepest,0,0,0)!=0)goto failed;
+    stage=33;
+    for(unsigned level=0;level<124;level++) {
+        if(guest_syscall(OP_UNLINKAT,-100,(long)(uintptr_t)deep_path,0x200,0)!=0)
+            goto failed;
+        unsigned n=0;
+        while(deep_path[n])n++;
+        deep_path[n-2]=0;
+    }
+    stage=34;
     if(guest_syscall(OP_WRITE,1,(long)(uintptr_t)pass,sizeof(pass)-1,0)
        !=(long)(sizeof(pass)-1))goto failed;
     guest_syscall(OP_EXIT,0,0,0,0);

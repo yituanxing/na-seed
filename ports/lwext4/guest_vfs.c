@@ -5,6 +5,7 @@
 #include "../../kernel/errno.h"
 #include "../../kernel/lib/string.h"
 #include <ext4.h>
+#include <ext4_fs.h>
 #include <ext4_inode.h>
 #include <ext4_types.h>
 #include <stddef.h>
@@ -350,11 +351,40 @@ static void ext_last_inode_unpin(const struct nas_fs_node *node) {
         return;
     }
 }
-static int ext_orphan_getattr(const struct nas_fs_node *node,
-                              struct nas_fs_node *out) {
+static int ext_live_getattr(const struct nas_fs_node *node,
+                             struct nas_fs_node *out) {
     if(!node || !node->mount || !node->mount->private_data || !out)
         return -EINVAL;
     struct nas_lwext4_mount *ctx=node->mount->private_data;
+    if(!ctx->mounted || !ctx->upstream_mount || !ctx->upstream_super ||
+       !ctx->device.ext.fs)return -ENODEV;
+    if(!node->ino || node->ino>UINT32_MAX)return -ESTALE;
+    /* The mounted blockdev publishes the ACTUAL upstream ext4_fs through
+     * its public ABI. Read the inode through that filesystem and its live
+     * cache, without following any name that may have been renamed, linked,
+     * replaced, or staged under the private orphan directory. Accessing the
+     * vendor-private ext4_mountpoint layout would be incorrect here. */
+    struct ext4_inode_ref ref={0};
+    int rc=ext4_fs_get_inode_ref(ctx->device.ext.fs,(uint32_t)node->ino,&ref);
+    if(rc)return -rc;
+    struct ext4_inode *raw=ref.inode;
+    uint32_t mode=ext4_inode_get_mode(ctx->upstream_super,raw);
+    out->mode=mode;
+    out->nlink=ext4_inode_get_links_cnt(raw);
+    out->uid=ext4_inode_get_uid(raw);
+    out->gid=ext4_inode_get_gid(raw);
+    out->atime_sec=ext4_inode_get_access_time(raw);
+    out->mtime_sec=ext4_inode_get_modif_time(raw);
+    out->ctime_sec=ext4_inode_get_change_inode_time(raw);
+    out->size=ext4_inode_get_size(ctx->upstream_super,raw);
+    out->is_dir=(mode&0170000U)==0040000U;
+    out->is_symlink=(mode&0170000U)==0120000U;
+    rc=ext4_fs_put_inode_ref(&ref);
+    if(rc)return -rc;
+    if(out->is_dir!=node->is_dir || out->is_symlink!=node->is_symlink)
+        return -ESTALE;
+    /* The on-disk hidden recovery name keeps i_links_count nonzero while
+     * an unlinked inode is pinned. POSIX fstat must report logical zero. */
     for(unsigned i=0;i<NAS_LWEXT4_ORPHAN_LIMIT;i++)
         if(ctx->orphans[i].used && ctx->orphans[i].ino==node->ino) {
             out->nlink=0;
@@ -665,7 +695,7 @@ static const struct nas_vfs_type ext_type={
     .root=ext_lookup_root,.lookup_child=ext_lookup_child,
     .readlink=ext_readlink_node,
     .last_inode_unpin=ext_last_inode_unpin,
-    .getattr=ext_orphan_getattr,
+    .getattr=ext_live_getattr,
     .read_at=ext_read_inode,
     .write_at=ext_write_inode,
     .resize=ext_resize_inode,.sync=ext_sync_inode,
