@@ -16,10 +16,9 @@ struct nas_task;
 /* Shared FD kind identities until the file-object refactor. */
 enum { FD_CLOSED = 0, FD_UART = 1, FD_NULL = 2, FD_ZERO = 3,
        FD_BOOTFS = 4, FD_ARCHIVE = 5, FD_DIR = 6,
-       FD_PIPE_R = 7, FD_PIPE_W = 8, FD_TMP = 9, FD_TMP_DIR = 10,
+       FD_PIPE_R = 7, FD_PIPE_W = 8,
        FD_TTY = 11, FD_EPOLL = 12, FD_EVENTFD = 13,
-       FD_SOCKET = 14, FD_PTY_MASTER = 15, FD_PTY_SLAVE = 16,
-       FD_PROC_FILE = 17, FD_PROC_DIR = 18 };
+       FD_SOCKET = 14, FD_PTY_MASTER = 15, FD_PTY_SLAVE = 16 };
 /* Descriptor-local entry. The open-file description is a separate
  * refcounted object: dup/fork share its offset, not the CLOEXEC bit. */
 struct nas_fd_entry {

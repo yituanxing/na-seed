@@ -1,5 +1,6 @@
 /* Single transport/device enumeration for QEMU virt modern VirtIO-MMIO.
- * All block requests use ports/nuttx/virtio_blk.c; no ISA-specific driver.
+ * Block requests use the pinned U-Boot driver in ports/uboot/blk_port.c;
+ * no ISA-specific block-request engine is retained.
  * Platform-specific page mapping and physical BAR are input parameters.
  */
 #include "virtio_mmio_qemu.h"

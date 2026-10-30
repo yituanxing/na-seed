@@ -43,14 +43,14 @@ int main(void) {
     assert(nas_fd_close(&p,1)<NAS_OPEN_FILE_LIMIT);
     assert(nas_fd_close(&p,2)<NAS_OPEN_FILE_LIMIT);
     assert(nas_fd_first_unused(&p,0)==0);
-    p.fds->entries[3] = (struct nas_fd_entry){FD_TMP, 120, 1};
+    p.fds->entries[3] = (struct nas_fd_entry){FD_ARCHIVE, 120, 1};
     nas_open_files[120].refcount = 1;
     nas_open_files[120].position = 43;
     nas_open_files[120].status_flags = 2;
 
     assert(nas_fd_clone(&p, 3, 4, false) == 4);
     assert(nas_open_files[120].refcount == 2);
-    assert(p.fds->entries[4].kind == FD_TMP);
+    assert(p.fds->entries[4].kind == FD_ARCHIVE);
     assert(p.fds->entries[4].slot == 120);
     assert(p.fds->entries[4].cloexec == 0);
     assert(p.fds->entries[3].cloexec == 1);

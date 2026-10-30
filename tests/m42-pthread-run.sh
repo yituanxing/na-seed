@@ -15,6 +15,13 @@ test -s /tmp/m42-multi.xz
 echo M42_XZ_THREADS_PASS
 echo M42_PTHREAD_PASS
 
+# The same POSIX C source ran as a Linux oracle before staging. Check native
+# target-ISA F_GETFL/F_SETFL and the Linux pwrite+O_APPEND exception while
+# the original M42 guest is already booted; no second test kernel is needed.
+test -x /tests/a009-a010-fcntl
+/tests/a009-a010-fcntl
+echo A009_A010_NATIVE_ABI_DIFFERENTIAL_PASS
+
 # A014: run the EXACT original host-Linux oracle C source as a real target-
 # ISA ELF. The original program independently asserts both ownership races:
 # a suspended readv must retain its imported iovec and its original File

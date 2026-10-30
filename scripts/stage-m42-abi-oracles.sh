@@ -1,9 +1,9 @@
 #!/bin/sh
-# Stage the SAME Linux C ownership-race fixture used by the A014 host oracle
-# into M42's existing original-Alpine pthread rootfs. Do not invent a second
-# guest runner, native library, or per-ISA syscall implementation.
+# Stage the SAME Linux C ABI fixtures used by the A009/A010 and A014 host
+# oracles into M42's original-Alpine pthread rootfs. No second guest runner,
+# native library, or per-ISA syscall implementation is introduced.
 set -eu
-test "$#" -eq 1 || { echo 'usage: stage-a014-blocked-readv-m42.sh amd64|riscv64|arm64' >&2; exit 2; }
+test "$#" -eq 1 || { echo 'usage: stage-m42-abi-oracles.sh amd64|riscv64|arm64' >&2; exit 2; }
 port=$1
 case "$port" in
     amd64) cc=gcc; machine='Advanced Micro Devices X86-64' ;;
@@ -31,9 +31,17 @@ if readelf -l "$out" | grep -Fq INTERP; then
     echo "[A014 STAGE FAIL] unexpected dynamic interpreter: $port" >&2
     exit 1
 fi
+out="$root/tests/a009-a010-fcntl"
+"$cc" -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
+    scripts/test-a009-a010-linux-fcntl.c -o "$out"
+readelf -h "$out" | grep -Fq "$machine"
+if readelf -l "$out" | grep -Fq INTERP; then
+    echo "[A009/A010 STAGE FAIL] unexpected dynamic interpreter: $port" >&2
+    exit 1
+fi
 
 # The signed-package rootfs was built by rootfs/alpine/build.sh before this
-# call. Regenerate only its CPIO index to include the guest ownership fixture.
+# call. Regenerate only its CPIO index to include both real guest ABI probes.
 # The original APK binaries and all existing M42 tests remain unchanged.
 (
     cd "$root"
@@ -49,4 +57,4 @@ fi
 ) > "$work/rootfs.cpio.tmp"
 mv "$work/rootfs.cpio.tmp" "$work/rootfs.cpio"
 test -s "$work/rootfs.cpio"
-echo "[A014 STAGE PASS] $port exact Linux oracle C source, static native ELF, existing M42 CPIO"
+echo "[A009/A010/A014 STAGE PASS] $port exact Linux oracle C sources, static native ELFs, existing M42 CPIO"

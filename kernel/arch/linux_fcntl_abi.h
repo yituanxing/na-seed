@@ -3,6 +3,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 #define NAS_LINUX_O_PATH 0x200000ULL
+#define NAS_LINUX_O_LARGEFILE_INTERNAL 0x8000ULL
+#define NAS_LINUX_O_DIRECTORY_INTERNAL 0x10000ULL
+#define NAS_LINUX_O_NOFOLLOW_INTERNAL 0x20000ULL
 /* Linux *at syscalls declare dfd as an int (32 bits), even on LP64.
  * A real statically linked libc may zero-extend negative AT_FDCWD
  * (0x00000000ffffff9c) instead of using a 64-bit -100 constant.
@@ -63,6 +66,42 @@ static inline bool nas_linux_open_flags(uint64_t native, uint64_t *internal) {
     return true;
 #else
 # error "Linux open flag ABI missing for target"
+#endif
+}
+/* File status flags belong to a shared open-file description; descriptor
+ * flags (O_CLOEXEC) and creation-only flags (O_CREAT/O_EXCL/O_TRUNC) do not.
+ * Linux LP64 sets O_LARGEFILE on ordinary open descriptions even when the
+ * caller did not request it. O_PATH is the exception: only its metadata
+ * flags survive and it does not gain O_LARGEFILE. Keep the common File
+ * representation in generic64 positions, not target-specific UAPI bits. */
+static inline uint64_t nas_linux_open_status_flags(uint64_t internal) {
+    const uint64_t retained=NAS_LINUX_O_PATH|3ULL|0x400ULL|0x800ULL|
+        NAS_LINUX_O_LARGEFILE_INTERNAL|NAS_LINUX_O_DIRECTORY_INTERNAL|
+        NAS_LINUX_O_NOFOLLOW_INTERNAL;
+    uint64_t flags=internal&retained;
+    if(!(flags&NAS_LINUX_O_PATH))flags|=NAS_LINUX_O_LARGEFILE_INTERNAL;
+    return flags;
+}
+/* fcntl(F_GETFL) is the inverse ABI edge of open/openat. On AArch64 the
+ * native O_DIRECTORY, O_NOFOLLOW and O_LARGEFILE positions differ from the
+ * common generic64 layout. F_SETFL only mutates O_APPEND/O_NONBLOCK, whose
+ * positions are already identical across our three LP64 Linux targets. */
+static inline uint64_t nas_linux_arm64_status_flags(uint64_t internal) {
+    const uint64_t translated=NAS_LINUX_O_DIRECTORY_INTERNAL|
+        NAS_LINUX_O_NOFOLLOW_INTERNAL|NAS_LINUX_O_LARGEFILE_INTERNAL;
+    uint64_t native=internal&~translated;
+    if(internal&NAS_LINUX_O_DIRECTORY_INTERNAL)native|=040000ULL;
+    if(internal&NAS_LINUX_O_NOFOLLOW_INTERNAL)native|=0100000ULL;
+    if(internal&NAS_LINUX_O_LARGEFILE_INTERNAL)native|=0400000ULL;
+    return native;
+}
+static inline uint64_t nas_linux_status_flags(uint64_t internal) {
+#if defined(__aarch64__)
+    return nas_linux_arm64_status_flags(internal);
+#elif defined(__x86_64__) || (defined(__riscv) && __riscv_xlen == 64)
+    return internal;
+#else
+# error "Linux fcntl flag ABI missing for target"
 #endif
 }
 #endif

@@ -271,7 +271,7 @@ static uint64_t sys_fcntl(uint64_t fd, uint64_t command, uint64_t arg) {
     case 0: return fd_duplicate(fd, arg, false);  /* F_DUPFD */
     case 1: return TASK.fds->entries[fd].cloexec;                 /* F_GETFD */
     case 2: TASK.fds->entries[fd].cloexec = (uint8_t)(arg & 1); return 0; /* F_SETFD */
-    case 3: return nas_open_files[slot].status_flags;       /* F_GETFL */
+    case 3: return nas_linux_status_flags(nas_open_files[slot].status_flags); /* F_GETFL */
     case 4: /* F_SETFL: only the O_NONBLOCK/O_APPEND mutable subset */
         if(nas_open_files[slot].status_flags&NAS_LINUX_O_PATH)
             return (uint64_t)-EBADF;
@@ -470,7 +470,7 @@ static uint64_t open_path_owned(const char *path,
      * transaction. The syscall layer just transfers their references
      * to this shared File description; it never constructs a Path. */
     if(!nas_fd_install_new(nas_current_task,fd,slot,kind,
-                           flags&(NAS_LINUX_O_PATH|3ULL|0x800ULL|0x400ULL),
+                           nas_linux_open_status_flags(flags),
                            !!(flags&0x80000ULL)))
         nas_fs_fail("reserved openat description was occupied");
     if(have_node) {
@@ -758,11 +758,9 @@ static const struct nas_file_ops *const ops_by_kind[]={
     [FD_ZERO]=&ops_zero,[FD_BOOTFS]=&ops_bootfs,
     [FD_ARCHIVE]=&ops_vfs_regular,[FD_DIR]=&ops_vfs_dir,
     [FD_PIPE_R]=&ops_pipe_read,[FD_PIPE_W]=&ops_pipe_write,
-    [FD_TMP]=&ops_vfs_regular,[FD_TMP_DIR]=&ops_vfs_dir,
     [FD_EPOLL]=&ops_epoll,
     [FD_EVENTFD]=&ops_eventfd,[FD_SOCKET]=&ops_socket,
-    [FD_PTY_MASTER]=&ops_pty,[FD_PTY_SLAVE]=&ops_pty,
-    [FD_PROC_FILE]=&ops_vfs_regular,[FD_PROC_DIR]=&ops_vfs_dir
+    [FD_PTY_MASTER]=&ops_pty,[FD_PTY_SLAVE]=&ops_pty
 };
 const struct nas_file_ops *nas_fs_ops_for_kind(uint8_t kind) {
     return kind < sizeof(ops_by_kind)/sizeof(ops_by_kind[0])

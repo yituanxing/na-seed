@@ -9,6 +9,8 @@ on:
       - 'scripts/stage-alpine-prebuilt-overlay.sh'
       - 'scripts/prebuilt-profile-catalog.tsv'
       - 'scripts/check-prebuilt-profile-catalog.py'
+      - 'scripts/native-qemu-target.sh'
+      - 'scripts/check-native-qemu-target.py'
       - 'rootfs/alpine/packages-m79-workflow.txt'
       - 'kernel/**'
       - '.github/workflows/m79-workflow.yml'
@@ -35,6 +37,7 @@ jobs:
           python3 -m py_compile tests/m79-validate.py
           python3 scripts/check-three-isa-core.py
           python3 scripts/check-prebuilt-profile-catalog.py
+          python3 scripts/check-native-qemu-target.py
       - name: Install native QEMU and host rootfs tools
         timeout-minutes: 12
         run: |

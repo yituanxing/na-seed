@@ -245,6 +245,13 @@ uint64_t nas_fs_fd_pwrite(uint64_t fd,uint64_t address,uint64_t count,
     struct nas_open_file *opened=&nas_open_files[slot];
     if(!opened->vnode_pinned)return (uint64_t)-EBADF;
     if(!nas_vfs_can_write(&opened->vnode))return (uint64_t)-EROFS;
+    /* Linux intentionally differs from POSIX: pwrite() on an O_APPEND
+     * description appends to the live inode size without changing the
+     * shared OFD seek position. Providers still see explicit write_at. */
+    if(opened->status_flags&0x400ULL)
+        offset=nas_vfs_node_size(&opened->vnode);
+    if(offset>INT64_MAX || count>INT64_MAX-offset)
+        return (uint64_t)-EFBIG;
     uint64_t done=0;
     uint8_t buffer[1024];
     while(done<count) {

@@ -163,9 +163,10 @@ int nas_vfs_unregister_mount(const struct nas_vfs_mount *mount);
 int nas_vfs_node_pin(const struct nas_fs_node *node);
 int nas_vfs_node_unpin(const struct nas_fs_node *node);
 /* Advisory locks are common inode/File services (Linux file_lock_context),
- * not private to tmpfs or encoded by FD_TMP. F_GETLK/F_SETLK process
- * ownership lives on the pinned VFS inode lease. flock belongs to the
- * shared open-file description: pass its opaque stable owner pointer.
+ * not private to tmpfs or encoded by filesystem-specific FD kinds.
+ * F_GETLK/F_SETLK process ownership lives on the pinned VFS inode lease.
+ * flock belongs to the shared open-file description: pass its opaque
+ * stable owner pointer.
  * No Linux user ABI or filesystem-specific struct crosses this boundary. */
 struct nas_posix_locks *nas_vfs_posix_locks(const struct nas_fs_node *node);
 void nas_vfs_release_posix_locks(const struct nas_fs_node *node,uint64_t pid);

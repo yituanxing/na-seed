@@ -3,16 +3,8 @@
 # No in-guest compiler, Make, CMake, Ninja or source tarballs are staged.
 set -eu
 [ "$#" -eq 1 ] || { echo 'usage: probe-m58-runtime.sh amd64|riscv64|arm64' >&2; exit 2; }
-case "$1" in
-  amd64) runner=scripts/probe-x86-busybox-parity.sh
-         logs=build/busybox-source-parity-x86 ;;
-  riscv64) runner=scripts/probe-riscv64-busybox-matrix.sh
-           logs=build/port-riscv64/full/matrix-source ;;
-  arm64) runner=scripts/probe-aarch64-busybox-matrix.sh
-         logs=build/port-aarch64/full/matrix-source ;;
-  *) exit 2 ;;
-esac
 port=$1
+. scripts/native-qemu-target.sh
 sh scripts/stage-m58-prebuilt.sh "$port"
 work="build/external/m58-runtime/$port"
 export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"

@@ -11,6 +11,8 @@ on:
       - 'scripts/stage-alpine-prebuilt-overlay.sh'
       - 'scripts/prebuilt-profile-catalog.tsv'
       - 'scripts/check-prebuilt-profile-catalog.py'
+      - 'scripts/native-qemu-target.sh'
+      - 'scripts/check-native-qemu-target.py'
       - '.github/workflows/m74-strace.yml'
   workflow_dispatch:
 concurrency:
@@ -33,6 +35,7 @@ jobs:
           sh -n scripts/stage-m74-prebuilt.sh scripts/probe-m74-strace.sh tests/m74-strace-run.sh
           python3 scripts/check-three-isa-core.py
           python3 scripts/check-prebuilt-profile-catalog.py
+          python3 scripts/check-native-qemu-target.py
           cc -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -I kernel scripts/test-ptrace-owner.c kernel/task/ptrace.c -o /tmp/nas-m74-ptrace-owner
           /tmp/nas-m74-ptrace-owner
           cc -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -I kernel scripts/test-ptrace-wait-ownership.c kernel/task/process.c -o /tmp/nas-m74-ptrace-wait

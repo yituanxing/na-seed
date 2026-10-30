@@ -13,7 +13,7 @@ case "$1" in
 esac
 port=$1
 NAS_ALPINE_PROFILE=pthread sh rootfs/alpine/build.sh "$port"
-sh scripts/stage-a014-blocked-readv-m42.sh "$port"
+sh scripts/stage-m42-abi-oracles.sh "$port"
 work="build/external/m42-pthread/$port"
 export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"
 export NAS_ACCEPTANCE_CPIO="$work/rootfs.cpio"
@@ -26,6 +26,9 @@ sh "$runner"
 log="$logs/m42-pthread.clean.log"
 test -s "$log"
 for marker in M42_XZ_THREADS_PASS M42_PTHREAD_PASS \
+    A009_LINUX_PWRITE_APPEND_POSITION_PASS \
+    A010_LINUX_NATIVE_FCNTL_FLAGS_PASS \
+    A009_A010_NATIVE_ABI_DIFFERENTIAL_PASS \
     A014_NATIVE_BLOCKED_READV_IOV_SNAPSHOT_PASS \
     A014_NATIVE_BLOCKED_READV_FILE_SNAPSHOT_PASS \
     A014_NATIVE_TWO_BLOCKING_OWNERSHIP_RACES_3X_PASS; do

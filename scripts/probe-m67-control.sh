@@ -2,15 +2,7 @@
 set -eu
 [ "$#" -eq 1 ] || exit 2
 port=$1
-case "$port" in
- amd64) runner=scripts/probe-x86-busybox-parity.sh
-        logs=build/busybox-source-parity-x86 ;;
- riscv64) runner=scripts/probe-riscv64-busybox-matrix.sh
-          logs=build/port-riscv64/full/matrix-source ;;
- arm64) runner=scripts/probe-aarch64-busybox-matrix.sh
-        logs=build/port-aarch64/full/matrix-source ;;
- *) exit 2 ;;
-esac
+. scripts/native-qemu-target.sh
 sh scripts/stage-m67-prebuilt.sh "$port"
 work="build/external/m67-control/$port"
 export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"

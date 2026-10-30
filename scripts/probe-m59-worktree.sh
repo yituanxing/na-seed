@@ -2,16 +2,8 @@
 # Native whole-system QEMU, not qemu-user or host-native false positives.
 set -eu
 [ "$#" -eq 1 ] || exit 2
-case "$1" in
-  amd64) runner=scripts/probe-x86-busybox-parity.sh
-         logs=build/busybox-source-parity-x86 ;;
-  riscv64) runner=scripts/probe-riscv64-busybox-matrix.sh
-           logs=build/port-riscv64/full/matrix-source ;;
-  arm64) runner=scripts/probe-aarch64-busybox-matrix.sh
-         logs=build/port-aarch64/full/matrix-source ;;
-  *) exit 2 ;;
-esac
 port=$1
+. scripts/native-qemu-target.sh
 sh scripts/stage-m59-prebuilt.sh "$port"
 work="build/external/m59-worktree/$port"
 export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"
