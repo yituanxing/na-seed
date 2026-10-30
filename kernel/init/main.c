@@ -31,9 +31,6 @@ extern bool nas_ramfs_guest_boot_shutdown(void);
 #include "../fs/file_ops.h"
 #include "../platform/platform.h"
 #define TASK (*nas_current_task)
-#define running_bash TASK.running_bash
-#define running_busybox TASK.running_busybox
-#define running_alpine TASK.running_alpine
 
 /* Only a FULLY terminated PID 1 process may drive the host test exit.
  * The scheduler publishes its group-finalization event; the boot policy
@@ -45,49 +42,29 @@ void nas_init_process_terminated(uint32_t code,uint32_t signal) {
         nas_fail("PID1 test completion before final thread exit");
     if(signal)nas_fail("init terminated by default fatal signal");
     nas_print("[EXIT] user status=");nas_dec(code);nas_print("\n");
-    if(nas_boot_argv_enabled()) {
-        if(code)nas_fail("cmdline userspace exited nonzero");
+    if(code)nas_fail("userspace exited nonzero");
 #ifdef NAS_ENABLE_LWEXT4
-        /* A successful fsync is NOT a clean filesystem shutdown. Keep the
-         * ext4 mount and BlockDevice alive until PID1's final Files have
-         * been closed, then run upstream ext4_umount and durable disk flush.
-         * Applies to both RAM and hardware devices, no ISA branches. */
-        if (!nas_lwext4_guest_boot_shutdown())
-            nas_fail("lwext4 final unmount/durable device flush failed");
+    /* A successful fsync is NOT a clean filesystem shutdown. Keep the
+     * ext4 mount and BlockDevice alive until PID1's final Files have
+     * been closed, then run upstream ext4_umount and durable disk flush.
+     * Applies to both RAM and hardware devices, no ISA branches. */
+    if (!nas_lwext4_guest_boot_shutdown())
+        nas_fail("lwext4 final unmount/durable device flush failed");
 #endif
 #ifdef NAS_ENABLE_LITTLEFS
-        if (!nas_littlefs_guest_boot_shutdown())
-            nas_fail("littlefs guest VFS unmount failed");
+    if (!nas_littlefs_guest_boot_shutdown())
+        nas_fail("littlefs guest VFS unmount failed");
 #endif
 #ifdef NAS_ENABLE_RAMFS
-        if (!nas_ramfs_guest_boot_shutdown())
-            nas_fail("upstream ramfs guest VFS unmount failed");
+    if (!nas_ramfs_guest_boot_shutdown())
+        nas_fail("upstream ramfs guest VFS unmount failed");
 #endif
+    if(nas_boot_argv_enabled())
         nas_print("[PASS] cmdline userspace exit 0\n");
-        nas_platform_debug_exit(0);
-        nas_fail("QEMU debug exit returned unexpectedly");
-    }
-    if(running_busybox) {
-        if(code==0 && TASK.saw_bash_hello) {
-            if(running_alpine)
-                nas_print("[PASS] M4 Alpine dynamic BusyBox echo hello\n");
-            else nas_print("[PASS] M2 Debian BusyBox echo hello\n");
-            nas_platform_debug_exit(0);
-        }
-        nas_fail("real BusyBox exited without stdout hello and status 0");
-    }
-    if(running_bash) {
-        if(code==0 && TASK.saw_bash_hello) {
-            nas_print("[PASS] M2 real GNU Bash -c echo hello\n");
-            nas_platform_debug_exit(0);
-        }
-        nas_fail("real Bash exited without exact hello and status zero");
-    }
-    if(code==0) {
-        nas_print("[PASS] M1 ELF / ring3 / syscall write / ENOSYS / exit\n");
-        nas_platform_debug_exit(0);
-    }
-    nas_fail("user program exit was non-zero");
+    else
+        nas_print("[PASS] userspace exit 0\n");
+    nas_platform_debug_exit(0);
+    nas_fail("QEMU debug exit returned unexpectedly");
 }
 
 void nas_init_userspace(void) {
@@ -154,9 +131,6 @@ void nas_init_userspace(void) {
     };
     const struct elf_image *interpreter =
         selected_image.has_interpreter ? &interp_image : 0;
-    running_bash = selected_image.bash;
-    running_busybox = selected_image.busybox;
-    running_alpine = selected_image.alpine;
     uint64_t entry = 0;
     if (!nas_elf_load(&main_image, interpreter, &entry))
         nas_fail("invalid or unmappable userspace ELF");
@@ -169,12 +143,13 @@ void nas_init_userspace(void) {
                                fd==0 ? 0 : 1,false))
             nas_fail("cannot install initial Linux console descriptor");
     }
-    if (!nas_build_linux_stack(running_bash, running_busybox, &stack_pointer))
+    if (!nas_build_linux_stack(selected_image.bash, selected_image.busybox,
+                               &stack_pointer))
         nas_fail("cannot initialize Linux userspace stack");
     nas_print("[ELF] userspace entry="); nas_hex(entry); nas_print("\n");
-    if (running_bash) nas_print("[M2] entering real Bash in ring 3\n");
-    else if (running_alpine) nas_print("[M4] real Alpine busybox via musl interpreter in ring 3\n");
-    else if (running_busybox) nas_print("[M2] entering real BusyBox in ring 3\n");
+    if (selected_image.bash) nas_print("[M2] entering real Bash in ring 3\n");
+    else if (selected_image.alpine) nas_print("[M4] real Alpine busybox via musl interpreter in ring 3\n");
+    else if (selected_image.busybox) nas_print("[M2] entering real BusyBox in ring 3\n");
     else nas_print("[M1] entering actual ring 3\n");
     nas_arch_enter_user(entry, stack_pointer);
     nas_fail("architecture user-entry unexpectedly returned");

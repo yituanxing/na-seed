@@ -13,6 +13,7 @@
 #include "../mm/usercopy.h"
 #include "../arch/arch.h"
 #include "../arch/abi.h"
+#include "../boot_image.h"
 #include "../arch/linux_stat_abi.h"
 #include "../arch/linux_fcntl_abi.h"
 #include "../arch/mmu.h"
@@ -40,32 +41,14 @@
  * The user ABI stat/dirent encodings are still x86-specific in v1. */
 #define TASK (*nas_current_task)
 #define current_workdir TASK.fs->cwd
-#define running_bash TASK.running_bash
-#define running_busybox TASK.running_busybox
-#define running_alpine TASK.running_alpine
-#define saw_bash_hello TASK.saw_bash_hello
-#define matched_chars TASK.matched_chars
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
 extern void nas_putchar(char);
-extern const struct limine_file *nas_module(uint64_t);
 static void nas_fs_fail(const char *msg) __attribute__((noreturn));
 static void nas_fs_fail(const char *msg) {
     nas_print("[FAIL] M1 "); nas_print(msg); nas_print("\n");
     nas_arch_halt();
 }
-
-static void observe_stdout(char ch) {
-    static const char text[] = "hello\n";
-    if (ch == text[matched_chars]) {
-        if (++matched_chars == sizeof(text) - 1) {
-            saw_bash_hello = true;
-            matched_chars = 0;
-        }
-    } else matched_chars = (ch == text[0]) ? 1 : 0;
-}
-
-
 
 /* User-copy contract now declared in mm/usercopy.h. */
 /* Single-process POSIX descriptors over actual UART and device files.
@@ -358,14 +341,6 @@ static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
     return ops && ops->ioctl ? ops->ioctl(fd,cmd,arg) : (uint64_t)-ENOTTY;
 }
 
-static const struct limine_file *bootfs_lookup(const char *path) {
-    if ((strcmp(path, "/bin/busybox") == 0)) return nas_module(0);
-    if ((strcmp(path, NAS_ELF_INTERP) == 0) ||
-        (strcmp(path, NAS_ELF_LIBC_ALIAS) == 0))
-        return nas_module(1);
-    return 0;
-}
-
 /* Pathname / dirfd user-address adapter lives in namespace_syscall.c. */
 /* A bounded adapter transfers user buffers to the shared page-backed tmpfs.
  * Kernel filesystem storage knows nothing about user virtual addresses. */
@@ -500,8 +475,8 @@ static uint64_t open_path_owned(const char *path,
              * this optional legacy 256-byte snapshot cannot represent it. */
             if(directory_path.dentry)
                 (void)nas_vfs_path_string(&directory_path,canonical);
-        } else if(rc==-ENOENT && !request && running_alpine &&
-                  (real_file=bootfs_lookup(path))) {
+        } else if(rc==-ENOENT && !request &&
+                  (real_file=nas_boot_limine_module_path(path))) {
             /* Original unmounted Limine module; a mounted VFS inode
              * always wins, never reopen a stale old pathname. */
             kind=FD_BOOTFS;
@@ -569,7 +544,7 @@ bool nas_fs_bootstrap_endpoint(const char *path) {
         return true;
     int pty=nas_pty_path_number(path);
     if(pty>=0 && nas_pty_present((unsigned)pty))return true;
-    return running_alpine && bootfs_lookup(path)!=NULL;
+    return nas_boot_limine_module_path(path)!=NULL;
 }
 bool nas_fs_bootstrap_candidate(const struct nas_fs_path_request *request,
                                  char candidate[256]) {
@@ -660,6 +635,7 @@ static uint64_t vwrite_discard(uint64_t fd,uint64_t addr,uint64_t n) {
     (void)fd;(void)addr;return n;
 }
 static uint64_t vwrite_tty(uint64_t fd,uint64_t addr,uint64_t n) {
+    (void)fd;
     if(!n)return 0;
     uint8_t buffer[1024];
     uint64_t done=0;
@@ -672,8 +648,6 @@ static uint64_t vwrite_tty(uint64_t fd,uint64_t addr,uint64_t n) {
             return done ? done : (uint64_t)-EFAULT;
         for(uint64_t i=0;i<take;i++) {
             nas_tty_write_char(buffer[i]);
-            if(fd==1 && (running_bash || running_busybox))
-                observe_stdout((char)buffer[i]);
         }
         done+=take;
     }

@@ -12,6 +12,30 @@ static const char *basename(const char *path) {
     const char *last = strrchr(path, '/');
     return last ? last + 1 : path;
 }
+static bool real_elf_module(const struct limine_file *file) {
+    static const uint8_t magic[4] = {0x7f, 'E', 'L', 'F'};
+    return file && file->address && file->path && file->size >= 4 &&
+        memcmp(file->address, magic, sizeof(magic)) == 0;
+}
+
+const struct limine_file *nas_boot_limine_module_path(const char *path) {
+    if (!path || path[0] != '/') return 0;
+    const struct limine_file *program = nas_module(0);
+    /* Direct ELF modules have no mounted inode in the original M1-M4
+     * rootless boot. Derive their visibility from the actual module,
+     * never from the name of the currently executing task. A CPIO module
+     * must not masquerade as an ELF file through this compatibility path. */
+    if (real_elf_module(program) && strncmp(path, "/bin/", 5) == 0 &&
+        strcmp(path + 5, basename(program->path)) == 0)
+        return program;
+    const struct limine_file *interpreter = nas_module(1);
+    if (real_elf_module(interpreter) &&
+        strcmp(basename(interpreter->path), basename(NAS_ELF_INTERP)) == 0 &&
+        (strcmp(path, NAS_ELF_INTERP) == 0 ||
+         strcmp(path, NAS_ELF_LIBC_ALIAS) == 0))
+        return interpreter;
+    return 0;
+}
 static bool busybox_module(const struct limine_file *file) {
     return file && file->path && strcmp(basename(file->path), "busybox") == 0;
 }

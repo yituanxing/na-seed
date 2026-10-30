@@ -12,7 +12,7 @@ for case in default explicit; do
     cp -R build/alpine-archive-iso "$stage"
     if [ "$case" = default ]; then
         awk '!/^    cmdline: /' limine-alpine-archive.conf >"$stage/boot/limine/limine.conf"
-        success='[PASS] M4 Alpine dynamic BusyBox echo hello'
+        success='[PASS] userspace exit 0'
         output=hello
     else
         awk '/^    cmdline: / {
@@ -33,6 +33,7 @@ for case in default explicit; do
        ! grep -Fq '[M5] CPIO executable selected: /bin/busybox' "$clean" ||
        ! grep -Fq '[DYN] real musl interpreter loaded' "$clean" ||
        ! grep -Fxq "$output" "$clean" ||
+       ! grep -Fq '[EXIT] user status=0' "$clean" ||
        ! grep -Fq "$success" "$clean" ||
        grep -Fq '[DEADLOCK]' "$clean" ||
        grep -Fq '[FAULT]' "$clean"; then

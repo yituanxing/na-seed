@@ -194,10 +194,6 @@ struct nas_task {
     struct nas_files *files; /* CLONE_FILES owns or shares this resource */
     struct nas_fd_table *fds; /* borrowed compatibility view */
 
-    /* Real user-thread lifecycle and per-task syscall-boundary state. */
-    bool running_bash, running_busybox, running_alpine;
-    bool saw_bash_hello;
-    unsigned matched_chars;
 };
 
 /* Process-owned operations (wait4, fcntl, sessions) use TGID.

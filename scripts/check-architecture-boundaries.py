@@ -35,6 +35,12 @@ TMPFS_TASK_DEPENDENCY = re.compile(
 TMPFS_LEGACY_NAMES = re.compile(
     r'\btmp_(?:path|find|parent_check|create|mkdir|symlink|link|unlink|'
     r'rename|child_entry|name)\s*\(')
+# Bootloader-specific legacy argv selection may remain in boot_image/user_stack;
+# the *runtime* Task, syscall and I/O layers must never retain application
+# identity or scan user output to decide whether an application passed.
+APPLICATION_TEST_STATE = re.compile(
+    r'\b(?:running_(?:bash|busybox|alpine)|saw_bash_hello|'
+    r'matched_chars|observe_stdout)\b')
 
 DRIVER_FILES = (
     'kernel/block/device.c',
@@ -47,7 +53,11 @@ VFS_FILES = ('kernel/fs/vfs.c', 'kernel/fs/lookup.c',
              'kernel/fs/vfs_providers.c')
 MM_FILES = ('kernel/mm/mm.c', 'kernel/mm/fault.c')
 EXEC_FILES = ('kernel/task/exec.c',)
-FILES = DRIVER_FILES + VFS_FILES + MM_FILES + EXEC_FILES
+APPLICATION_RUNTIME_FILES = (
+    'kernel/task.h', 'kernel/fs/syscall.c', 'kernel/syscall/dispatch.c',
+    'kernel/task/exec.c', 'kernel/init/main.c',
+)
+FILES = DRIVER_FILES + VFS_FILES + MM_FILES + EXEC_FILES + APPLICATION_RUNTIME_FILES
 
 
 def violations(path, source):
@@ -65,6 +75,8 @@ def violations(path, source):
     if path in EXEC_FILES:
         if BOOT_EXEC.search(source) or BOOT_EXEC_INCLUDE.search(source):
             errors.append('runtime execve depends on bootstrap CPIO/bootfs')
+    if path in APPLICATION_RUNTIME_FILES and APPLICATION_TEST_STATE.search(source):
+        errors.append('application identity or stdout test oracle leaked into runtime')
     if path == 'kernel/fs/tmp_namespace.c':
         code_only = re.sub(r'/\*.*?\*/|//[^\n]*', '', source, flags=re.S)
         if TMPFS_TASK_DEPENDENCY.search(code_only):
@@ -86,6 +98,9 @@ def self_test():
     examples = [
         ('kernel/task/exec.c', 'if (bootfs_mounted()) return 0;'),
         ('kernel/task/exec.c', '#include "../bootfs.h"'),
+        ('kernel/task.h', 'bool running_alpine;'),
+        ('kernel/fs/syscall.c', 'observe_stdout(ch);'),
+        ('kernel/init/main.c', 'if (saw_bash_hello) pass();'),
         ('kernel/block/device.c', '#include "../fs/vfs.h"'),
         ('kernel/drivers/core/bus.c', '#include "../../mm/usercopy.h"'),
         ('kernel/fs/vfs.c', 'syscall_dispatch(args);'),

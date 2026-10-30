@@ -30,9 +30,6 @@
 #define loaded_main_entry TASK.loaded_main_entry
 #define loaded_interp_base TASK.loaded_interp_base
 #define thread_clear_tid TASK.thread_clear_tid
-#define running_bash TASK.running_bash
-#define running_busybox TASK.running_busybox
-#define running_alpine TASK.running_alpine
 
 /* Boot/exec program-name comparison. FD path matching lives in fs/syscall.c. */
 /* Snapshot all user pointers before changing the selected MM. ELF bytes
@@ -509,9 +506,6 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
     /* Exact post-shebang argv, preserved only AFTER successful ELF commit.
      * No pre-commit failure is allowed to mutate inherited /proc/cmdline. */
     nas_task_set_commandline(&TASK,pending_exec.argv,pending_exec.argc);
-    running_busybox = strcmp(basename, "busybox") == 0;
-    running_bash = strcmp(basename, "bash") == 0;
-    running_alpine = running_busybox && executable_header.type == 3;
     if (scripted) {
         nas_print("[EXEC] CPIO #! interpreter: ");
         nas_print(pending_exec.shebang_path); nas_print("\n");

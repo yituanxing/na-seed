@@ -32,10 +32,6 @@
 #include "../panic.h"
 #define TASK (*nas_current_task)
 #define thread_clear_tid TASK.thread_clear_tid
-#define running_bash TASK.running_bash
-#define running_busybox TASK.running_busybox
-#define running_alpine TASK.running_alpine
-#define saw_bash_hello TASK.saw_bash_hello
 
 /* One Linux timespec64 ABI on three LP64 ISAs.
  * CLOCK_MONOTONIC remains independent of the boot RTC. CLOCK_REALTIME

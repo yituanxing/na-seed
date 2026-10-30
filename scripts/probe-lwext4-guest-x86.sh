@@ -34,7 +34,9 @@ tr -d '\r' <"$log" >"$root/clean.log"
 if [ "$exitcode" -ne 1 ] ||
    ! grep -Fq '[LWEXT4 GUEST] actual Limine ext4 image mounted at /mnt' "$root/clean.log" ||
    ! grep -Fq '[PASS] LWEXT4 guest VFS real ext4 inode read' "$root/clean.log" ||
-   ! grep -Fq '[PASS] M1 ELF / ring3 / syscall write / ENOSYS / exit' "$root/clean.log" ||
+   ! grep -Fxq '[USER] hello from standalone ELF via syscall' "$root/clean.log" ||
+   ! grep -Fq '[MISS] syscall nr=999' "$root/clean.log" ||
+   ! grep -Fq '[EXIT] user status=0' "$root/clean.log" ||
    grep -Eq '\[FAIL\]|\[FAULT\]|\[DEADLOCK\]' "$root/clean.log"; then
     echo "[LWEXT4 REAL GUEST FAIL] QEMU exit=$exitcode" >&2
     tail -140 "$root/clean.log" >&2
@@ -62,7 +64,7 @@ tr -d '\r' <"$log" >"$root/ext4-reader-clean.log"
 if [ "$exitcode" -ne 1 ] ||
    ! grep -Fq '[LWEXT4 GUEST] actual Limine ext4 image mounted at /mnt' "$root/ext4-reader-clean.log" ||
    ! grep -Fxq 'NaSeed VFS and BlockDevice real lwext4 data' "$root/ext4-reader-clean.log" ||
-   ! grep -Fq '[PASS] M1 ELF / ring3 / syscall write / ENOSYS / exit' "$root/ext4-reader-clean.log" ||
+   ! grep -Fq '[EXIT] user status=0' "$root/ext4-reader-clean.log" ||
    grep -Eq '\[FAIL\]|\[FAULT\]|\[DEADLOCK\]' "$root/ext4-reader-clean.log"; then
     echo "[LWEXT4 SYSCALL FAIL] real guest syscall openat/fstat/read/lseek/write/close exit=$exitcode" >&2
     tail -130 "$root/ext4-reader-clean.log" >&2

@@ -152,7 +152,9 @@ elif [ -n "${NAS_LWEXT4_RW_PROBE:-}" ]; then
 else
     sh scripts/port-boot-until.sh "$log" "$pid" 90 \
  '[INIT] creating common task/VM and architecture user entry' \
- '[PASS] M1 ELF / ring3 / syscall write / ENOSYS / exit' \
+ '[USER] hello from standalone ELF via syscall' \
+ '[MISS] syscall nr=999' \
+ '[EXIT] user status=0' \
  '[RV64] userspace debug-exit status=0'
 fi
 monitor=$?
