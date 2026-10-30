@@ -289,7 +289,11 @@ int tmp_unlink_at(const void *parent,const char *name,uint64_t flags) {
  * rename(/tmp/a, /tmp/a/b/a) without string-prefix guessing. */
 static bool under_inode(const void *parent,const void *directory) {
     const void *root=tmp_root_inode();
-    for(unsigned depth=0;parent && depth<128;depth++) {
+    /* Namespace insertion is parent-inode based, so dirfd may construct
+     * valid ancestries longer than any fixed text pathname or old 128-hop
+     * limit. Reject cycles by following the actual ancestor identity to
+     * the /tmp root; no artificial depth cutoff may bypass this guard. */
+    while(parent) {
         if(parent==directory)return true;
         if(parent==root)return false;
         const struct nas_tmp_dentry *entry=find_inode(parent);
