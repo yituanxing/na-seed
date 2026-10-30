@@ -57,6 +57,7 @@ jobs:
           sh scripts/ci-ubuntu-mirror.sh
           missing=''
           for spec in 'msgfmt:gettext' 'readelf:binutils' \
+                      'clang:clang' 'ld.lld:lld' \
                       'cpio:cpio' 'xorriso:xorriso' 'mformat:mtools' \
                       'sgdisk:gdisk' 'qemu-riscv64:qemu-user'; do
             bin=${spec%%:*}; pkg=${spec#*:}
