@@ -311,9 +311,12 @@ for old in ("static bool task_io_ready(", "static bool task_wait_ready(",
 epoll=(root/"kernel/fs/epoll.c").read_text()
 fsops=(root/"kernel/fs/file_ops.h").read_text()
 file_io=(root/"kernel/fs/file_io.c").read_text()
-for name,body in (("blocked I/O",task_wait),("epoll",epoll)):
-    if "nas_fs_poll_description(" not in body:
-        raise SystemExit(f"{name} lost description-owned readiness")
+if ("nas_fs_io_ready(task->wait.pending_io,task)" not in task_wait or
+    "nas_fs_poll_description(slot,events)" not in file_io or
+    "nas_fs_io_ready(" not in file_io):
+    raise SystemExit("blocked I/O lost pinned File-owned readiness")
+if "nas_fs_poll_description(" not in epoll:
+    raise SystemExit("epoll lost description-owned readiness")
 if "switch(w->kind)" in epoll or "nas_pipe_poll_readable(" in epoll:
     raise SystemExit("epoll reintroduced backend-kind readiness switch")
 if "poll_description" not in fsops or "nas_fs_poll_description(" not in file_io:
@@ -395,8 +398,15 @@ if "task_retry_in_resumed_context" in completion or "task_replay(" in completion
     raise SystemExit("legacy syscall dispatch switch survived native C continuation")
 if "return task->wait.finish(task);" not in completion or "self->wait.finish=finish;" not in sched:
     raise SystemExit("resumed kernel C stack does not invoke owning syscall provider")
-if "finish_io_provider(" not in (root/"kernel/syscall/dispatch.c").read_text():
-    raise SystemExit("blocking I/O providers must own their retry, not Task scheduler")
+dispatch=(root/"kernel/syscall/dispatch.c").read_text()
+if ("finish_io(struct nas_task *task)" not in dispatch or
+    "nas_fs_io_resume(task->wait.pending_io)" not in dispatch or
+    "nas_task_block(frame,nr,fd,buf,count,0,finish_io)" not in dispatch or
+    "nas_fs_io_should_block(pending,rc,false)" not in completion):
+    raise SystemExit("blocked continuation lost pinned File I/O provider retry")
+for forbidden in ("finish_readv(","finish_writev(","nas_fs_fd_readv(a[0],a[1],a[2])"):
+    if forbidden in dispatch:
+        raise SystemExit(f"blocked I/O reimported mutable user metadata: {forbidden}")
 if "nas_sched_scan_next(&scan,&slot)" not in sched or \
    "nas_sched_scan_init(&scan,native_cursor)" not in sched:
     raise SystemExit("native scheduler bypasses canonical complete-ring scan")

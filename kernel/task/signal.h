@@ -32,7 +32,7 @@ bool nas_signal_user_pending(const struct nas_task *task);
 void nas_signal_ppoll_restore(struct nas_task *task,bool interrupted);
 /* Emit SIGPIPE for caught or masked broken-pipe writes; default action is
  * handled by the scheduler before returning to userspace. */
-void nas_signal_broken_pipe(uint64_t fd);
+void nas_signal_broken_pipe(bool pipe_like);
 /* A reaped child does not vanish when SIGCHLD is ignored: deliver a
  * caught/blocked change notification separately from wait4 zombie state. */
 void nas_signal_child_exit(const struct nas_task *child);

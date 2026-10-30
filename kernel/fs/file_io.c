@@ -10,11 +10,14 @@
 #include "../lib/string.h"
 #include "../mm/usercopy.h"
 #include "../mm/heap.h"
+#include "../drivers/tty.h"
 #include "../arch/arch.h"
 #include "../arch/mmu.h"
 #include "../arch/linux_fcntl_abi.h"
+#include "../syscall/ops.h"
 #include "io.h"
 #include "file_ops.h"
+#include "syscall.h"
 #include "vfs.h"
 #define TASK (*nas_current_task)
 /* Linux MAX_RW_COUNT: apply one transfer ceiling consistently to scalar
@@ -63,9 +66,7 @@ int64_t nas_fs_mmap_read(uint64_t fd, uint64_t offset,
     return (int64_t)length;
 }
 
-uint64_t nas_fs_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
-    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)return (uint64_t)-EBADF;
-    unsigned slot=TASK.fds->entries[fd].slot;
+static uint64_t io_slot_write(unsigned slot, uint64_t address, uint64_t length) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
         return (uint64_t)-EBADF;
     /* O_PATH is never a writable description, irrespective of O_ACCMODE.
@@ -123,9 +124,7 @@ uint64_t nas_fs_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     }
     return done;
 }
-uint64_t nas_fs_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
-    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)return (uint64_t)-EBADF;
-    unsigned slot=TASK.fds->entries[fd].slot;
+static uint64_t io_slot_read(unsigned slot, uint64_t address, uint64_t length) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
         return (uint64_t)-EBADF;
     if((nas_open_files[slot].status_flags&NAS_LINUX_O_PATH) ||
@@ -174,6 +173,16 @@ uint64_t nas_fs_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
         if(got<n)break;
     }
     return done;
+}
+uint64_t nas_fs_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
+        return (uint64_t)-EBADF;
+    return io_slot_write(TASK.fds->entries[fd].slot,address,length);
+}
+uint64_t nas_fs_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
+        return (uint64_t)-EBADF;
+    return io_slot_read(TASK.fds->entries[fd].slot,address,length);
 }
 /* The Linux positional I/O ABI is the same common VFS operation on all
  * three architectures. Respect per-FD access mode and reject pipes,
@@ -263,19 +272,32 @@ struct nas_io_request {
     unsigned slot;
     const struct nas_file_ops *ops;
 };
+struct nas_pending_io {
+    struct nas_io_request request;
+    uint64_t op,scalar_address,scalar_length;
+    bool nonblocking;
+};
+/* Capture the process-local descriptor mapping once. A pending syscall
+ * subsequently holds the shared File by slot, regardless of dup2/close. */
+static int io_resolve_fd(uint64_t fd,unsigned *slot) {
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
+        return -EBADF;
+    const unsigned target=TASK.fds->entries[fd].slot;
+    if(target>=NAS_OPEN_FILE_LIMIT || !nas_open_files[target].refcount)
+        return -EBADF;
+    *slot=target;
+    return 0;
+}
 static void io_request_release(struct nas_io_request *req) {
     if(req->vectors)(void)nas_heap_free(req->vectors);
     req->vectors=0;
 }
-static int io_request_import(uint64_t fd,uint64_t user_iov,uint64_t count,
-                             bool writing,struct nas_io_request *req) {
+static int io_request_import_slot(unsigned slot,uint64_t user_iov,uint64_t count,
+                                  bool writing,struct nas_io_request *req) {
     *req=(struct nas_io_request){0};
     /* Linux looks up and checks the File before importing user iovecs,
      * including an empty iovec array. This also prevents zero-byte writev
      * from silently succeeding on an O_RDONLY/open(O_PATH) descriptor. */
-    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
-        return -EBADF;
-    unsigned slot=TASK.fds->entries[fd].slot;
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
         return -EBADF;
     uint64_t flags=nas_open_files[slot].status_flags;
@@ -326,6 +348,12 @@ static int io_request_import(uint64_t fd,uint64_t user_iov,uint64_t count,
     }
     *req=(struct nas_io_request){vectors,count,total,slot,ops};
     return 0;
+}
+static int io_request_import(uint64_t fd,uint64_t user_iov,uint64_t count,
+                             bool writing,struct nas_io_request *req) {
+    unsigned slot;
+    int rc=io_resolve_fd(fd,&slot);
+    return rc ? rc : io_request_import_slot(slot,user_iov,count,writing,req);
 }
 /* Advance a cursor across empty iovecs and return its next user slice.
  * Callers hold a private cursor while preflighting to avoid changing the
@@ -493,20 +521,20 @@ static uint64_t io_aggregate_write(const struct nas_io_request *req) {
 /* Legacy scalar callback fallback. The metadata has ALREADY been imported
  * and verified, avoiding the old bug where a later invalid iovec caused
  * partial pipe writes/consumption before Linux's import_iovec EFAULT. */
-static uint64_t io_segmented_read(uint64_t fd,const struct nas_io_request *req) {
+static uint64_t io_segmented_read(const struct nas_io_request *req) {
     uint64_t done=0;
     for(uint64_t i=0;i<req->count && done<NAS_MAX_RW_COUNT;i++) {
         uint64_t bytes=req->vectors[i].length;
         if(!bytes)continue;
         if(bytes>NAS_MAX_RW_COUNT-done)bytes=NAS_MAX_RW_COUNT-done;
-        uint64_t got=nas_fs_fd_read(fd,req->vectors[i].address,bytes);
+        uint64_t got=io_slot_read(req->slot,req->vectors[i].address,bytes);
         if((int64_t)got<0)return done ? done:got;
         done+=got;
         if(got!=bytes || bytes!=req->vectors[i].length)break;
     }
     return done;
 }
-static uint64_t io_segmented_write(uint64_t fd,const struct nas_io_request *req) {
+static uint64_t io_segmented_write(const struct nas_io_request *req) {
     uint64_t done=0;
     for(uint64_t i=0;i<req->count && done<NAS_MAX_RW_COUNT;i++) {
         uint64_t bytes=req->vectors[i].length;
@@ -515,18 +543,26 @@ static uint64_t io_segmented_write(uint64_t fd,const struct nas_io_request *req)
              * provider when later data exists: Linux eventfd.write(0)
              * rejects [0,8], but skips zero entries after progress. */
             if(!done && req->total) {
-                uint64_t rc=nas_fs_fd_write(fd,req->vectors[i].address,0);
+                uint64_t rc=io_slot_write(req->slot,req->vectors[i].address,0);
                 if((int64_t)rc<0)return rc;
             }
             continue;
         }
         if(bytes>NAS_MAX_RW_COUNT-done)bytes=NAS_MAX_RW_COUNT-done;
-        uint64_t wrote=nas_fs_fd_write(fd,req->vectors[i].address,bytes);
+        uint64_t wrote=io_slot_write(req->slot,req->vectors[i].address,bytes);
         if((int64_t)wrote<0)return done ? done:wrote;
         done+=wrote;
         if(wrote!=bytes || bytes!=req->vectors[i].length)break;
     }
     return done;
+}
+static uint64_t io_vector_execute(const struct nas_io_request *req,bool writing) {
+    if(!req->total)return 0;
+    if(writing)
+        return req->ops->aggregate_writev ? io_aggregate_write(req) :
+                                           io_segmented_write(req);
+    return req->ops->aggregate_readv ? io_aggregate_read(req) :
+                                      io_segmented_read(req);
 }
 /* The issuing syscall may park after -EAGAIN. Return the already-imported
  * logical request size as a kernel-owned wait hint: the scheduler must NEVER
@@ -538,9 +574,7 @@ uint64_t nas_fs_fd_readv_with_size(uint64_t fd,uint64_t iov,uint64_t count,
     int rc=io_request_import(fd,iov,count,false,&req);
     if(rc)return (uint64_t)(int64_t)rc;
     if(requested_out)*requested_out=req.total;
-    uint64_t result=!req.total ? 0 :
-        req.ops->aggregate_readv ? io_aggregate_read(&req) :
-                                   io_segmented_read(fd,&req);
+    uint64_t result=io_vector_execute(&req,false);
     io_request_release(&req);
     return result;
 }
@@ -551,9 +585,112 @@ uint64_t nas_fs_fd_writev(uint64_t fd,uint64_t iov,uint64_t count) {
     struct nas_io_request req;
     int rc=io_request_import(fd,iov,count,true,&req);
     if(rc)return (uint64_t)(int64_t)rc;
-    uint64_t result=!req.total ? 0 :
-        req.ops->aggregate_writev ? io_aggregate_write(&req) :
-                                    io_segmented_write(fd,&req);
+    uint64_t result=io_vector_execute(&req,true);
     io_request_release(&req);
     return result;
+}
+/* A File is a shared open-description, not a mutable fd number. This
+ * single executor is used by both the first attempt and wake completion. */
+static uint64_t io_pending_execute(const struct nas_pending_io *pending) {
+    if(pending->op==NAS_SC_read)
+        return io_slot_read(pending->request.slot,pending->scalar_address,
+                            pending->scalar_length);
+    if(pending->op==NAS_SC_write)
+        return io_slot_write(pending->request.slot,pending->scalar_address,
+                             pending->scalar_length);
+    return io_vector_execute(&pending->request,pending->op==NAS_SC_writev);
+}
+static bool io_read_op(uint64_t op) {
+    return op==NAS_SC_read || op==NAS_SC_readv;
+}
+static bool io_would_block(uint64_t rc) {
+    return (int64_t)rc==-EAGAIN || (int64_t)rc==-EOPNOTSUPP;
+}
+/* Only import metadata once. The stack request owns its File reference
+ * during the initial operation; a blocked return transfers BOTH resources
+ * to a heap request belonging exclusively to Task.wait. */
+void nas_fs_io_start(uint64_t op,uint64_t fd,uint64_t address,uint64_t length,
+                     struct nas_io_attempt *attempt) {
+    *attempt=(struct nas_io_attempt){.result=(uint64_t)-EBADF};
+    if(op!=NAS_SC_read && op!=NAS_SC_readv &&
+       op!=NAS_SC_write && op!=NAS_SC_writev) {
+        attempt->result=(uint64_t)-EINVAL;
+        return;
+    }
+    unsigned slot;
+    int rc=io_resolve_fd(fd,&slot);
+    if(rc)return;
+    const struct nas_file_ops *ops=nas_open_files[slot].ops;
+    attempt->pipe_like=ops && ops->sends_sigpipe;
+    if(!nas_fd_hold_description(slot))return;
+    struct nas_pending_io current={0};
+    current.op=op;
+    current.nonblocking=!!(nas_open_files[slot].status_flags&0x800ULL);
+    current.scalar_address=address;
+    current.scalar_length=length;
+    current.request.slot=slot;
+    current.request.ops=ops;
+    if(op==NAS_SC_readv || op==NAS_SC_writev) {
+        rc=io_request_import_slot(slot,address,length,op==NAS_SC_writev,
+                                  &current.request);
+        if(rc) {
+            attempt->result=(uint64_t)(int64_t)rc;
+            nas_fs_drop_kernel_description(slot);
+            return;
+        }
+        attempt->tty_requested_bytes=current.request.total;
+    } else attempt->tty_requested_bytes=
+        length>NAS_MAX_RW_COUNT ? NAS_MAX_RW_COUNT:length;
+    attempt->result=io_pending_execute(&current);
+    if(nas_fs_io_should_block(&current,attempt->result,true)) {
+        struct nas_pending_io *owned=nas_heap_alloc(sizeof(*owned));
+        if(!owned)attempt->result=(uint64_t)-ENOMEM;
+        else {
+            *owned=current;
+            attempt->pending=owned;
+            return;
+        }
+    }
+    io_request_release(&current.request);
+    nas_fs_drop_kernel_description(slot);
+}
+uint64_t nas_fs_io_resume(struct nas_pending_io *pending) {
+    return pending ? io_pending_execute(pending):(uint64_t)-EINVAL;
+}
+bool nas_fs_io_pipe_like(const struct nas_pending_io *pending) {
+    return pending && pending->request.ops &&
+           pending->request.ops->sends_sigpipe;
+}
+bool nas_fs_io_tty_read(const struct nas_pending_io *pending) {
+    return pending && io_read_op(pending->op) &&
+        pending->request.ops &&
+        (pending->request.ops->io_wait_flags&NAS_IO_WAIT_TTY);
+}
+bool nas_fs_io_should_block(const struct nas_pending_io *pending,
+                            uint64_t result,bool first_attempt) {
+    if(!pending || pending->nonblocking || !pending->request.ops)return false;
+    uint8_t policy=pending->request.ops->io_wait_flags;
+    if(nas_fs_io_tty_read(pending))
+        return (int64_t)result==-EAGAIN && nas_tty_read_waitable();
+    return first_attempt ? (policy&NAS_IO_WAIT_INITIAL) &&
+                           (int64_t)result==-EOPNOTSUPP :
+                           (policy&NAS_IO_WAIT_RETRY) && io_would_block(result);
+}
+bool nas_fs_io_ready(const struct nas_pending_io *pending,
+                     const struct nas_task *task) {
+    if(!pending)return true;
+    if(nas_fs_io_tty_read(pending))
+        return nas_tty_read_ready((struct nas_task *)task,
+                                  task->wait.tty_requested_bytes);
+    unsigned slot=pending->request.slot;
+    uint16_t events=io_read_op(pending->op)?0x0001U:0x0004U;
+    return (nas_fs_poll_description(slot,events)&
+            (events==0x0001U ? 0x0019U:0x001cU))!=0;
+}
+void nas_fs_io_dispose(struct nas_pending_io *pending) {
+    if(!pending)return;
+    unsigned slot=pending->request.slot;
+    io_request_release(&pending->request);
+    (void)nas_heap_free(pending);
+    nas_fs_drop_kernel_description(slot);
 }

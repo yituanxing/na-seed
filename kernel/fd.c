@@ -174,3 +174,9 @@ bool nas_task_hold_files(const struct nas_task *task) {
             nas_open_files[task->fds->entries[fd].slot].refcount++;
     return true;
 }
+bool nas_fd_hold_description(unsigned slot) {
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount ||
+       nas_open_files[slot].refcount==UINT16_MAX)return false;
+    nas_open_files[slot].refcount++;
+    return true;
+}

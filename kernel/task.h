@@ -65,11 +65,17 @@ enum nas_task_state {
 /* A parked Task retains its original kernel C stack and provider callback.
  * The scheduler must never re-dispatch a syscall from a foreign C frame. */
 struct nas_task;
+struct nas_pending_io;
 typedef uint64_t (*nas_wait_finish_fn)(struct nas_task *);
 struct nas_task_wait {
     uint64_t blocked_op, blocked_args[4];
     bool pending_valid;
     nas_wait_finish_fn finish; /* static callback owned by issuing syscall */
+    /* Exactly one parked I/O request may own a copied user iovec and a
+     * pinned shared File. Task owns it; fork copies no pending request.
+     * Callback keeps Task's generic lifetime independent of fs/file_io.c. */
+    struct nas_pending_io *pending_io;
+    void (*pending_io_release)(struct nas_pending_io *);
     uint64_t deadline_ns;
     bool deadline_active;
     unsigned tty_observed_bytes;

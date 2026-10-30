@@ -13,6 +13,7 @@ case "$1" in
 esac
 port=$1
 NAS_ALPINE_PROFILE=pthread sh rootfs/alpine/build.sh "$port"
+sh scripts/stage-a014-blocked-readv-m42.sh "$port"
 work="build/external/m42-pthread/$port"
 export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"
 export NAS_ACCEPTANCE_CPIO="$work/rootfs.cpio"
@@ -24,7 +25,10 @@ export NAS_SYSCALL_TRACE=${NAS_SYSCALL_TRACE:-0}
 sh "$runner"
 log="$logs/m42-pthread.clean.log"
 test -s "$log"
-for marker in M42_XZ_THREADS_PASS M42_PTHREAD_PASS; do
+for marker in M42_XZ_THREADS_PASS M42_PTHREAD_PASS \
+    A014_NATIVE_BLOCKED_READV_IOV_SNAPSHOT_PASS \
+    A014_NATIVE_BLOCKED_READV_FILE_SNAPSHOT_PASS \
+    A014_NATIVE_TWO_BLOCKING_OWNERSHIP_RACES_3X_PASS; do
     grep -Fxq "$marker" "$log" || {
         echo "[M42 FAIL] missing $marker ($port)" >&2
         tail -140 "$log" >&2
@@ -37,4 +41,4 @@ grep -Fq '[THREAD] clone tid=' "$log" || {
     tail -120 "$log" >&2
     exit 1
 }
-echo "[M42 PASS] $port authentic pthread-driven XZ multithreading"
+echo "[M42+A014 PASS] $port original pthread XZ and real guest blocked readv ownership"

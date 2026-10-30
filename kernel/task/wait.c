@@ -22,24 +22,9 @@
 /* Inspect only kernel-owned slots; replay only after selected task's VM
  * has been restored. No foreign user pointer read during readiness scan. */
 static bool task_io_ready(const struct nas_task *task) {
-    uint64_t fd = task->wait.blocked_args[0];
-    uint8_t kind = nas_task_fd_kind(task, fd);
-    unsigned slot = nas_task_fd_slot(task, fd);
-    if (kind==FD_CLOSED || slot>=NAS_OPEN_FILE_LIMIT ||
-        !nas_open_files[slot].refcount)
-        return true; /* replay to report a closed/invalid descriptor */
-    if (task->wait.blocked_op == NAS_SC_read ||
-        task->wait.blocked_op == NAS_SC_readv) {
-        /* Canonical/echo TTY has per-waiter observations beyond POLLIN. */
-        if(kind == FD_TTY || kind == FD_UART)
-            return nas_tty_read_ready((struct nas_task *)task,
-                                       task->wait.tty_requested_bytes);
-        return (nas_fs_poll_description(slot,0x0001U)&0x0019U)!=0;
-    }
-    if (task->wait.blocked_op == NAS_SC_write ||
-        task->wait.blocked_op == NAS_SC_writev)
-        return (nas_fs_poll_description(slot,0x0004U)&0x001cU)!=0;
-    return true;
+    /* A blocked syscall retains a File reference even if CLONE_FILES
+     * siblings close or dup2 its original integer fd. */
+    return nas_fs_io_ready(task->wait.pending_io,task);
 }
 static bool task_wait_ready(const struct nas_task *task) {
     uint64_t desired = task->wait.blocked_args[0];

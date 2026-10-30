@@ -68,7 +68,7 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
          * run; release this task slot only after switching user frames. */
         child->state=NAS_TASK_ZOMBIE;
         child->resume_valid=false;
-        nas_task_wait_reset(child);
+        nas_task_wait_dispose(child);
         struct nas_task *leader=child->group_leader;
         if(leader->group_exit_pending && !group_has_live_workers(leader)) {
             /* Leader finished earlier: group becomes waitable NOW, only
@@ -88,7 +88,7 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     child->termination_signal=signum;
     child->state=NAS_TASK_ZOMBIE;
     child->resume_valid=false;
-    nas_task_wait_reset(child);
+    nas_task_wait_dispose(child);
     if(group_has_live_workers(child)) {
         child->group_exit_pending=true;
         nas_print("[THREAD GROUP] leader exit deferred tgid=");
@@ -177,7 +177,7 @@ void nas_sched_thread_group_exit(uint32_t code,uint32_t signum) {
         nas_process_clear_tid_on_exit();
         caller->state=NAS_TASK_ZOMBIE;
         caller->resume_valid=false;
-        nas_task_wait_reset(caller);
+        nas_task_wait_dispose(caller);
         /* Temporarily take ownership of the common process FD cleanup
          * as the group leader. Real CPU root/TLS are restored to caller
          * before unwinding its syscall frame. */

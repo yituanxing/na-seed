@@ -511,11 +511,10 @@ uint64_t nas_signal_background_job(unsigned signum,uint64_t *frame,
  * EPIPE return. The default unblocked action remains the existing immediate
  * termination path used by the scheduler; this only queues handler/masked
  * instances for that same Task's subsequent user return. */
-void nas_signal_broken_pipe(uint64_t fd) {
+void nas_signal_broken_pipe(bool pipe_like) {
     struct nas_task *t=nas_current_task;
     if(!t || !t->ppid)return;
-    uint8_t kind=nas_task_fd_kind(t,fd);
-    if(kind!=FD_PIPE_W && kind!=FD_SOCKET)return;
+    if(!pipe_like)return;
     uint64_t disp=t->sighand->actions[NAS_SIGPIPE][0];
     if(disp!=1 && (disp>1 ||
                    (t->blocked_signals&(1ULL<<(NAS_SIGPIPE-1)))))

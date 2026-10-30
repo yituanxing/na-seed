@@ -30,4 +30,17 @@ static inline bool nas_wait_io_has_interest(const struct nas_task *task) {
 static inline void nas_task_wait_reset(struct nas_task *task) {
     if (task) task->wait=(struct nas_task_wait){0};
 }
+/* Dispose only a request this Task genuinely owns. Unlike reset(), this is
+ * NEVER used on a fork memcpy child before its borrowed parent fields have
+ * been cleared. Taking the pointer first makes double completion harmless. */
+static inline void nas_task_wait_dispose(struct nas_task *task) {
+    if(!task)return;
+    struct nas_pending_io *owned=task->wait.pending_io;
+    void (*release)(struct nas_pending_io *)=task->wait.pending_io_release;
+    task->wait.pending_io=0;
+    task->wait.pending_io_release=0;
+    if(owned && !release)__builtin_trap();
+    if(owned && release)release(owned);
+    nas_task_wait_reset(task);
+}
 #endif

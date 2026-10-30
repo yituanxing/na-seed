@@ -59,6 +59,10 @@ uint64_t nas_fd_clone(struct nas_task *task, uint64_t src, uint64_t dst,
 uint64_t nas_fd_duplicate(struct nas_task *task, uint64_t src,
                           uint64_t minimum, bool cloexec);
 bool nas_task_hold_files(const struct nas_task *task);
+/* One kernel-owned File reference, independent of a process FD table.
+ * Pending syscalls and SCM_RIGHTS must keep the original description alive
+ * across close/dup2 until their own final release. */
+bool nas_fd_hold_description(unsigned slot);
 
 /* Open-file descriptions are shared across fork/dup. FD_CLOEXEC and the
  * per-task mapping of FD number -> description remain task-local. This is a

@@ -3,6 +3,25 @@
 #include <stdint.h>
 #include <stdbool.h>
 struct nas_task;
+struct nas_pending_io;
+/* One issuing syscall may park after a provider reports would-block.
+ * The file layer owns the imported iovec and an independent File ref;
+ * scheduler/Task carry only this opaque request during the native C wait. */
+struct nas_io_attempt {
+    struct nas_pending_io *pending;
+    uint64_t result,tty_requested_bytes;
+    bool pipe_like;
+};
+void nas_fs_io_start(uint64_t op,uint64_t fd,uint64_t address,uint64_t length,
+                     struct nas_io_attempt *attempt);
+uint64_t nas_fs_io_resume(struct nas_pending_io *pending);
+bool nas_fs_io_should_block(const struct nas_pending_io *pending,
+                            uint64_t result,bool first_attempt);
+bool nas_fs_io_ready(const struct nas_pending_io *pending,
+                     const struct nas_task *task);
+bool nas_fs_io_pipe_like(const struct nas_pending_io *pending);
+bool nas_fs_io_tty_read(const struct nas_pending_io *pending);
+void nas_fs_io_dispose(struct nas_pending_io *pending);
 /* FS/FD operations are implemented in fs/syscall.c; the shared syscall
  * dispatcher and scheduler use this stable operation boundary. */
 uint64_t nas_fs_fd_read(uint64_t fd, uint64_t addr, uint64_t len);

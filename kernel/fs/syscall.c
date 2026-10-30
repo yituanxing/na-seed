@@ -657,12 +657,14 @@ static void vrelease_socket(unsigned slot){
 static const struct nas_file_ops ops_uart={
     .read_plan=vread_tty_plan,.read=vread_tty,.write=vwrite_tty,
     .aggregate_readv=true,.read_finalize_zero=true,
+    .io_wait_flags=NAS_IO_WAIT_TTY,
     .poll=vpoll_tty,.poll_description=dpoll_tty,
     .ioctl=vioctl_uart
 };
 static const struct nas_file_ops ops_tty={
     .read_plan=vread_tty_plan,.read=vread_tty,.write=vwrite_tty,
     .aggregate_readv=true,.read_finalize_zero=true,
+    .io_wait_flags=NAS_IO_WAIT_TTY,
     .poll=vpoll_tty,.poll_description=dpoll_tty,
     .ioctl=vioctl_tty
 };
@@ -693,12 +695,15 @@ static const struct nas_file_ops ops_vfs_dir={
 static const struct nas_file_ops ops_pipe_read={
     .read_plan=pipe_read_plan,.read=pipe_fd_read,
     .aggregate_readv=true,
+    .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
     .poll=vpoll_pipe_read,.poll_description=dpoll_pipe_read,
     .release=vrelease_pipe
 };
 static const struct nas_file_ops ops_pipe_write={
     .write_plan=pipe_write_plan,.write=pipe_fd_write,
     .atomic_write_limit=NAS_PIPE_CAP,.aggregate_writev=true,
+    .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
+    .sends_sigpipe=true,
     .poll=vpoll_pipe_write,.poll_description=dpoll_pipe_write,
     .release=vrelease_pipe
 };
@@ -714,6 +719,8 @@ static const struct nas_file_ops ops_socket={
     .read_plan=pipe_read_plan,.write_plan=socket_write_plan,
     .read=pipe_fd_read,.write=pipe_fd_write,
     .aggregate_readv=true,.aggregate_writev=true,
+    .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
+    .sends_sigpipe=true,
     .poll=vpoll_socket,.poll_description=dpoll_socket,
     .release=vrelease_socket
 };
@@ -743,6 +750,7 @@ static const struct nas_file_ops ops_eventfd={
     .read=nas_eventfd_read,.write=nas_eventfd_write,
     .atomic_write_limit=8,.read_commit_before_copyout=true,
     .aggregate_readv=true,
+    .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
     .poll=nas_eventfd_poll,.poll_description=nas_eventfd_poll_slot,.release=vrelease_eventfd
 };
 static const struct nas_file_ops *const ops_by_kind[]={

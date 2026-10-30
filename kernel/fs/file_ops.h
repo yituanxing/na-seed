@@ -16,6 +16,10 @@
  * token when read_plan returned 0 for a nonempty user read (PTY canonical
  * EOF). A user's read(fd,...,0) never retires this token.
  */
+/* Provider-owned blocking policy, independent of FD-kind dispatch. */
+#define NAS_IO_WAIT_INITIAL 0x01U
+#define NAS_IO_WAIT_RETRY   0x02U
+#define NAS_IO_WAIT_TTY     0x04U
 struct nas_file_ops {
     uint64_t (*read_plan)(unsigned slot,uint64_t requested);
     uint64_t (*write_plan)(unsigned slot,uint64_t requested);
@@ -38,6 +42,11 @@ struct nas_file_ops {
      * segments (eventfd is read_iter but scalar-write only on Linux). */
     bool aggregate_readv;
     bool aggregate_writev;
+    /* Block/retry is a File capability, not a syscall-layer FD-kind list.
+     * Distinct bits retain Linux admission/retry semantics: an initially
+     * parked request may race with another consumer after becoming ready. */
+    uint8_t io_wait_flags;
+    bool sends_sigpipe;
     uint16_t (*poll)(uint64_t fd,uint16_t events);
     /* Readiness without a process-local FD or active userspace root.
      * Used by epoll, blocked tasks and future socket/device providers.
