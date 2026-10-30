@@ -1,0 +1,13 @@
+# M115: original Alpine 3.23 GNU utilities, crypto and file operations.
+# Signed APKs are installed on the Linux HOST; the NaSeed guest only runs.
+openssl
+openssh-keygen
+gawk
+diffutils
+patch
+rsync
+file
+findutils
+grep
+sed
+bc
