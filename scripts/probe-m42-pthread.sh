@@ -2,16 +2,8 @@
 # Genuine Linux distro ELF runtime gate, common on all three target ISAs.
 set -eu
 [ "$#" -eq 1 ] || exit 2
-case "$1" in
-  amd64) runner=scripts/probe-x86-busybox-parity.sh
-         logs=build/busybox-source-parity-x86 ;;
-  riscv64) runner=scripts/probe-riscv64-busybox-matrix.sh
-         logs=build/port-riscv64/full/matrix-source ;;
-  arm64) runner=scripts/probe-aarch64-busybox-matrix.sh
-         logs=build/port-aarch64/full/matrix-source ;;
-  *) exit 2 ;;
-esac
 port=$1
+. scripts/native-qemu-target.sh
 NAS_ALPINE_PROFILE=pthread sh rootfs/alpine/build.sh "$port"
 sh scripts/stage-m42-abi-oracles.sh "$port"
 work="build/external/m42-pthread/$port"

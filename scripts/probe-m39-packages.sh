@@ -3,16 +3,8 @@
 # source under NaSeed. Reuse original three-ISA boot & Linux ABI harness.
 set -eu
 [ "$#" -eq 1 ] || exit 2
-case "$1" in
-  amd64) runner=scripts/probe-x86-busybox-parity.sh
-         logs=build/busybox-source-parity-x86 ;;
-  riscv64) runner=scripts/probe-riscv64-busybox-matrix.sh
-         logs=build/port-riscv64/full/matrix-source ;;
-  arm64) runner=scripts/probe-aarch64-busybox-matrix.sh
-         logs=build/port-aarch64/full/matrix-source ;;
-  *) exit 2 ;;
-esac
 port=$1
+. scripts/native-qemu-target.sh
 NAS_ALPINE_PROFILE=runtime sh rootfs/alpine/build.sh "$port"
 work="build/external/m39-packages/$port"
 export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"

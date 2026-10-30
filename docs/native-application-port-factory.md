@@ -13,7 +13,7 @@ compatibility.
 | `scripts/prebuilt-profile-catalog.tsv` | Profile ID | Signed APK package list, original ELF paths, rootfs copy manifest, official Alpine repository selection | QEMU arguments, kernel workarounds, test pass status |
 | `scripts/stage-alpine-prebuilt-overlay.sh` | Target ISA + validated catalog profile | Host-installed signature-verified APK dependency closure and target-ISA-checked original ELF/CPIO | Workload-specific acceptance logic, guest compilation |
 | `scripts/stage-mXX-prebuilt.sh` | Target ISA | Stable historical entry point; additional source/DWARF build where genuinely required (M76) | A second copy of catalog metadata |
-| `scripts/native-qemu-target.sh` | Validated target ISA from an M58+ probe | One real system-QEMU runner and raw guest-serial directory | Program-specific assertions, fake runner results or boot-time tuning |
+| `scripts/native-qemu-target.sh` | Validated target ISA from an M38+ probe | One real system-QEMU runner and raw guest-serial directory | Program-specific assertions, fake runner results or boot-time tuning |
 | `scripts/probe-mXX-*.sh` and `tests/mXX-*` | Original ELF and supplied input | Real guest execution and exact behavior/exit evidence | Kernel implementation rules or invented successful return values |
 | Kernel VFS + filesystem adapters | File operation and backend capabilities | Common file objects, resource ownership and correct provider-specific semantics | Knowledge of the application under test |
 
@@ -31,15 +31,18 @@ guest probes retain their own historical acceptance contracts.  The migration
 does not rewrite the genuinely different cJSON, BusyBox,
 SQLite and DWARF build algorithms into a fake common build step.
 
-All fourteen M58+ signed-APK probe entry points now source the one native
+All 33 M38+ probes (17 original M50 roster entries, two M56/M57 manual
+source-build probes and fourteen M58+ signed-APK probes) now source the **same**
 target helper for the exact `amd64`, `riscv64` and `arm64` system-QEMU
 runner and serial-log directory.  Their independent manifest selection,
-resource budgets, runner failure handling and original guest markers remain
-owned by each probe.  `scripts/check-native-qemu-target.py` fails on any
-remaining private runner/log mapping, missing source, invalid ISA acceptance
-or loss of the actual runner and raw serial-log checks.  The twelve affected
-focused workflows all track changes to the helper and run the host contract
-before launching native QEMU.
+resource budgets (including M55 RTC seeding), runner failure handling and
+original guest markers remain owned by each probe.  The original 19
+M38–M57 private case statements are deleted, not retained as an alternative.
+`scripts/check-native-qemu-target.py` resolves the three real runners,
+guards every consumer and deliberately mutates one fixture to ensure stale
+private mappings, missing boot calls or missing serial checks fail.  The M50
+matrix reuses this checker, while the twelve M58+ focused workflows track
+helper changes and run the same host contract before native QEMU.
 
 ## Compatibility is a matrix, not a single percentage
 
@@ -55,6 +58,14 @@ The future machine-readable result should identify:
    capability**.  A skipped test is never counted as a pass.
 5. **Failure classification**: supply chain, ELF/ABI, syscall, shared VFS,
    provider semantics, task/signal, network, test environment or performance.
+
+The existing `scripts/native-perf-report.py` already defines strict JSON
+input-manifest fields for exact QEMU settings, source/rootfs hashes, toolchain
+and cache-state comparisons.  A future machine-readable outcome record must
+reuse that provenance contract where applicable, not create a competing
+identity for the same execution.  Its `PASS` is valid only after the original
+probe validates genuine guest markers and exit; automatic FAST deferrals
+remain `DEFERRED`, never a manufactured success.
 
 Filesystem differences are real.  `tmpfs`, `lwext4`, `littlefs` and imported
 RAM filesystems must not be forced to advertise identical semantics.  The
@@ -75,7 +86,7 @@ test for each backend.
    for the 14 signed-APK overlay profiles, stable old wrappers and strict
    validation.  No new native application is claimed to pass as a result.
 2. **Execution target mapping (implemented)**: one sourced `ISA -> QEMU runner /
-   guest serial log` contract for all fourteen M58+ probes, preserving their
+   guest serial log` contract for all 33 M38+ probes, preserving their
    independent guest assertion logic.
 3. **Workload catalog and unified outcome record**: migrate existing FAST/
    FULL cases without deleting the historical markers or allowing hidden
