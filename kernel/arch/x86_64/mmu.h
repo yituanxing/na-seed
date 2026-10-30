@@ -9,6 +9,8 @@ bool nas_mmu_bootstrap(void);
  * Device MMIO is NOT guaranteed to live in Limine HHDM; never access
  * APIC physical addresses via a direct HHDM cast. */
 bool nas_arch_x86_map_lapic_page(uint64_t physical);
+/* Map one aligned PCI/device MMIO page into supervisor-only, UC, NX VA. */
+bool nas_arch_x86_map_device_page(uint64_t physical,uint64_t virtual_address);
 
 uint64_t nas_mmu_alloc_root(void);
 bool nas_mmu_reclaim_root(uint64_t root);

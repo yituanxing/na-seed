@@ -32,10 +32,6 @@
 #include "../panic.h"
 #define TASK (*nas_current_task)
 #define thread_clear_tid TASK.thread_clear_tid
-#define running_bash TASK.running_bash
-#define running_busybox TASK.running_busybox
-#define running_alpine TASK.running_alpine
-#define saw_bash_hello TASK.saw_bash_hello
 
 /* One Linux timespec64 ABI on three LP64 ISAs.
  * CLOCK_MONOTONIC remains independent of the boot RTC. CLOCK_REALTIME
@@ -102,28 +98,10 @@ static uint64_t finish_sleep(struct nas_task *task) {
     (void)task;
     return 0; /* expired monotonic deadline, signal checked by wait adapter */
 }
-static uint64_t finish_read(struct nas_task *task) {
-    const uint64_t *a=task->wait.blocked_args;
-    return nas_fs_fd_read(a[0],a[1],a[2]);
-}
-static uint64_t finish_readv(struct nas_task *task) {
-    const uint64_t *a=task->wait.blocked_args;
-    return nas_fs_fd_readv(a[0],a[1],a[2]);
-}
-static uint64_t finish_write(struct nas_task *task) {
-    const uint64_t *a=task->wait.blocked_args;
-    return nas_fs_fd_write(a[0],a[1],a[2]);
-}
-static uint64_t finish_writev(struct nas_task *task) {
-    const uint64_t *a=task->wait.blocked_args;
-    return nas_fs_fd_writev(a[0],a[1],a[2]);
-}
-static nas_wait_finish_fn finish_io_provider(enum nas_syscall_op nr) {
-    if(nr==NAS_SC_read) return finish_read;
-    if(nr==NAS_SC_readv) return finish_readv;
-    if(nr==NAS_SC_write) return finish_write;
-    if(nr==NAS_SC_writev) return finish_writev;
-    return 0;
+static uint64_t finish_io(struct nas_task *task) {
+    /* The resumed Task owns the same File and imported iovecs as the
+     * original syscall. Its fd number may now designate another object. */
+    return nas_fs_io_resume(task->wait.pending_io);
 }
 static uint64_t finish_epoll(struct nas_task *task) {
     const uint64_t *a=task->wait.blocked_args;
@@ -260,38 +238,27 @@ static uint64_t sys_uname_naseed(uint64_t buffer) {
 
 static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
                              uint64_t fd, uint64_t buf, uint64_t count) {
-    uint64_t ret;
-    if (nr == NAS_SC_read) ret = nas_fs_fd_read(fd, buf, count);
-    else if (nr == NAS_SC_readv) ret = nas_fs_fd_readv(fd,buf,count);
-    else if (nr == NAS_SC_write) ret = nas_fs_fd_write(fd, buf, count);
-    else ret = nas_fs_fd_writev(fd, buf, count);
+    struct nas_io_attempt attempt;
+    nas_fs_io_start(nr,fd,buf,count,&attempt);
+    uint64_t ret=attempt.result;
     if ((int64_t)ret == -EPIPE &&
         (nr == NAS_SC_write || nr == NAS_SC_writev) &&
-        nas_sched_sigpipe_default(fd)) {
+        nas_sched_sigpipe_default(attempt.pipe_like)) {
         nas_sched_child_exit(0, NAS_SIGPIPE);
         return nas_task_schedule(frame);
     }
     if ((int64_t)ret == -EPIPE &&
         (nr == NAS_SC_write || nr == NAS_SC_writev))
-        nas_signal_broken_pipe(fd);
-    if (fd < NAS_FD_LIMIT && TASK.fds->entries[fd].slot < NAS_OPEN_FILE_LIMIT &&
-        !(nas_open_files[TASK.fds->entries[fd].slot].status_flags & 0x800ULL)) {
-        if ((int64_t)ret == -EOPNOTSUPP &&
-            (TASK.fds->entries[fd].kind == FD_PIPE_R || TASK.fds->entries[fd].kind == FD_PIPE_W ||
-             TASK.fds->entries[fd].kind == FD_SOCKET ||
-             TASK.fds->entries[fd].kind == FD_EVENTFD))
-            return nas_task_block(frame,nr,fd,buf,count,0,
-                                   finish_io_provider((enum nas_syscall_op)nr));
-        if ((nr == NAS_SC_read || nr == NAS_SC_readv) &&
-            (int64_t)ret == -EAGAIN &&
-            (TASK.fds->entries[fd].kind == FD_TTY || TASK.fds->entries[fd].kind == FD_UART) &&
-            nas_tty_read_waitable()) {
-            /* First timeout for MIN=0/TIME>0 starts at the syscall,
-             * before any task sleeps; interbyte MIN>0 starts on RX. */
+        nas_signal_broken_pipe(attempt.pipe_like);
+    if(attempt.pending) {
+        /* Ownership transfers exactly once to this Task. All later
+         * readiness and retries use this OpenFile, never the fd table. */
+        TASK.wait.pending_io=attempt.pending;
+        TASK.wait.pending_io_release=nas_fs_io_dispose;
+        TASK.wait.tty_requested_bytes=attempt.tty_requested_bytes;
+        if(nas_fs_io_tty_read(attempt.pending))
             nas_tty_blocking_read_start(&TASK);
-            return nas_task_block(frame,nr,fd,buf,count,0,
-                                   finish_io_provider((enum nas_syscall_op)nr));
-        }
+        return nas_task_block(frame,nr,fd,buf,count,0,finish_io);
     }
     return ret;
 }

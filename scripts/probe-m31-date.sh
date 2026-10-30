@@ -4,15 +4,16 @@
 # BusyBox cross-compiler installation stalls CI before tests even begin.
 set -eu
 [ "$#" -eq 1 ] || { echo "usage: $0 amd64|riscv64|arm64" >&2; exit 2; }
-case "$1" in
+port=$1
+. scripts/native-qemu-target.sh
+# This gate intentionally uses the fixture/default BusyBox profile, whose
+# serial directory differs from the source-binary profile in $logs.
+case "$port" in
   amd64)
-    runner=scripts/probe-x86-busybox-parity.sh
     log=build/busybox-parity-x86/m31-date.clean.log ;;
   riscv64)
-    runner=scripts/probe-riscv64-busybox-matrix.sh
     log=build/port-riscv64/full/matrix/m31-date.clean.log ;;
   arm64)
-    runner=scripts/probe-aarch64-busybox-matrix.sh
     log=build/port-aarch64/full/matrix/m31-date.clean.log ;;
   *) exit 2 ;;
 esac
@@ -22,7 +23,7 @@ export BUSYBOX_PARITY_EXPECTED_COUNT=1
 # Run the same untouched Debian Linux ELF against real Linux syscalls first.
 # An actual Linux-time oracle differentiates an applet libc/ABI fault from
 # an invalid wall-clock epoch produced by the kernel.
-if [ "$1" = arm64 ]; then
+if [ "$port" = arm64 ]; then
   native=build/port-aarch64/full/busybox
   test -s "$native" || sh scripts/fetch-busybox-fixture.sh arm64 "$native"
   command -v qemu-aarch64 >/dev/null

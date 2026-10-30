@@ -49,14 +49,6 @@ uint64_t nas_process_prctl(uint64_t option,uint64_t arg) {
  * per-child TID setup. The original shared VM and scheduler algorithms
  * remain in charge; no RV-specific fork implementation is introduced. */
 static uint64_t fork_common(uint64_t *frame, uint64_t child_tid) {
-    /* Validate before allocating task/VM objects. Linux CHILD_SETTID
-     * stores a native 32-bit PID in the CHILD's copied address space, not
-     * in the parent. Check both ends in case of a page boundary. */
-    if (child_tid &&
-        (child_tid > UINT64_MAX-3 ||
-         !nas_user_address_writable(child_tid) ||
-         !nas_user_address_writable(child_tid+3)))
-        return (uint64_t)-EFAULT;
     struct nas_task *parent = nas_current_task;
     /* The child slot is copied from the parent, including its ARCH context.
      * Save LIVE user GPR/PC/SP/TLS and FPU BEFORE that copy, otherwise a
@@ -74,16 +66,13 @@ static uint64_t fork_common(uint64_t *frame, uint64_t child_tid) {
     nas_arch_set_saved_return(parent,child->pid);
     nas_arch_set_saved_return(child,0);
     child->resume_valid=true;
-    /* The parent still owns its live kernel C stack. New child begins
-     * later via its independent native first-dispatch context. */
-    if(child_tid) {
-        uint32_t tid=(uint32_t)child->pid;
-        uint8_t bytes[4]={(uint8_t)tid,(uint8_t)(tid>>8),
-                           (uint8_t)(tid>>16),(uint8_t)(tid>>24)};
-        if(nas_vm_write_task_bytes(child,child_tid,bytes,sizeof(bytes))!=4)
-            proc_fail("child TID failed in child's independently owned MM");
-        child->thread_clear_tid=child_tid;
-    }
+    /* Linux's schedule_tail() stores CLONE_CHILD_SETTID in the CHILD's
+     * running MM, just before returning to user mode. A bad or lazy user
+     * pointer must not panic, fail a fork that already published a child,
+     * or accidentally modify the parent's COW page. A one-shot SET address
+     * must not be conflated with the independent exit-time CLEAR address. */
+    child->thread_set_tid=child_tid;
+    child->thread_clear_tid=child_tid;
     if(nas_ptrace_fork_created(parent,child,NAS_PTRACE_EVENT_FORK,frame))
         return nas_task_schedule(frame);
     nas_print("[PROC] fork parent="); nas_dec(parent->pid);
@@ -111,6 +100,10 @@ uint64_t nas_process_vfork(uint64_t *frame, uint64_t child_stack) {
     nas_arch_save_fpu(parent);
     struct nas_task *child = nas_task_fork_slot();
     if (!child) return (uint64_t)-EAGAIN;
+    /* Fork-slot currently snapshots the parent's complete Task. Vfork
+     * does not request either TID operation; never inherit its one-shot
+     * set address even if its parent was interrupted before first use. */
+    child->thread_set_tid=0;
     child->mm=nas_mm_get(parent->mm);
     child->vfork_parent_pid = parent->pid;
     child->vfork_shared_vm = true;
@@ -236,7 +229,7 @@ uint64_t nas_process_get_robust_list(uint64_t pid,uint64_t head_addr,
  * The low bit of a list link flags an unsupported PI entry: it must not
  * be mistaken for a regular futex, nor permit invalid memory access. */
 static void robust_mark_owner_died(struct nas_task *thread,uint64_t node,
-                                    int64_t offset,bool is_pi) {
+                                    int64_t offset,bool is_pi,bool pending_op) {
     if(is_pi || !node)return;
     uint64_t addr=node+(uint64_t)offset;
     if((offset>=0 && addr<node) || (offset<0 && addr>node) ||
@@ -247,7 +240,20 @@ static void robust_mark_owner_died(struct nas_task *thread,uint64_t node,
                  ((uint32_t)word_bytes[1]<<8) |
                  ((uint32_t)word_bytes[2]<<16) |
                  ((uint32_t)word_bytes[3]<<24);
-    if((word&NAS_ROBUST_OWNER_MASK)!=(uint32_t)thread->pid)return;
+    if((word&NAS_ROBUST_OWNER_MASK)!=(uint32_t)thread->pid) {
+        /* Linux's pending-op exception: an unlocker, a woken waiter or
+         * another thread may have released/reacquired this futex before
+         * the dying waiter could re-arm FUTEX_WAITERS. When there is no
+         * WAITERS bit, wake one more peer without changing OWNER_DIED.
+         * Otherwise a remaining waiter can sleep forever on a free
+         * futex (upstream Linux futex/core.c, 2026 robust-exit fix). */
+        /* OWNER_DIED with TID==0 also needs the wake even when the old
+         * WAITERS bit remains set (Linux state D). */
+        if(pending_op && (!(word&NAS_ROBUST_OWNER_MASK) ||
+                          !(word&NAS_ROBUST_WAITERS)))
+            (void)nas_process_futex_wake(addr,1,UINT32_MAX);
+        return;
+    }
     uint32_t changed=(word&NAS_ROBUST_WAITERS)|NAS_ROBUST_OWNER_DIED;
     uint8_t updated[4]={(uint8_t)changed,(uint8_t)(changed>>8),
                         (uint8_t)(changed>>16),(uint8_t)(changed>>24)};
@@ -274,11 +280,12 @@ void nas_process_robust_exit(struct nas_task *thread) {
         uint64_t following=0;
         if(!nas_user_read_u64(node,&following))break;
         if(node!=(pending&~1ULL))
-            robust_mark_owner_died(thread,node,offset,(cursor&1U)!=0);
+            robust_mark_owner_died(thread,node,offset,(cursor&1U)!=0,false);
         cursor=following;
     }
     if(pending)
-        robust_mark_owner_died(thread,pending&~1ULL,offset,(pending&1U)!=0);
+        robust_mark_owner_died(thread,pending&~1ULL,offset,
+                               (pending&1U)!=0,true);
 }
 void nas_process_clear_tid_for_exit(struct nas_task *thread) {
     if (!thread || !thread->thread_clear_tid) return;
@@ -286,12 +293,29 @@ void nas_process_clear_tid_for_exit(struct nas_task *thread) {
         proc_fail("cross-VM clear_child_tid on thread-group exit");
     uint64_t tid_addr=thread->thread_clear_tid;
     /* Linux CLONE_CHILD_CLEARTID stores zero before FUTEX_WAKE in the
-     * exiting group's shared userspace VM, including remote dying workers. */
-    static const uint8_t zero[4]={0,0,0,0};
-    if (!nas_user_write_bytes(tid_addr,zero,sizeof(zero)))
-        proc_fail("clone clear_child_tid unmapped before exit");
+     * exiting group's shared userspace VM, including remote dying workers.
+     * Linux mm_release() ignores a failed put_user and still issues the
+     * futex wake: a userspace-supplied invalid/unmapped pointer must NEVER
+     * bring down the kernel or leave a waiting peer blocked indefinitely. */
     thread->thread_clear_tid=0;
+    static const uint8_t zero[4]={0,0,0,0};
+    (void)nas_user_write_bytes(tid_addr,zero,sizeof(zero));
     (void)nas_process_futex_wake(tid_addr,1,UINT32_MAX);
+}
+/* First dispatch is the only place with the child's own MM installed and
+ * before its first user instruction. Parent TID writes occur in the parent
+ * before clone returns; CHILD_SETTID is deliberately independent of them.
+ * A failed write (including a lazy page fault OOM) does not revoke the
+ * already-created thread, matching the Linux schedule_tail() put_user. */
+void nas_process_child_tid_first_dispatch(void) {
+    struct nas_task *child=nas_current_task;
+    if(!child || !child->thread_set_tid)return;
+    uint64_t set_addr=child->thread_set_tid;
+    child->thread_set_tid=0; /* consume once, even when usercopy faults */
+    uint32_t tid=(uint32_t)child->pid;
+    uint8_t value[4]={(uint8_t)tid,(uint8_t)(tid>>8),
+                      (uint8_t)(tid>>16),(uint8_t)(tid>>24)};
+    (void)nas_user_write_bytes(set_addr,value,sizeof(value));
 }
 /* execve succeeds atomically at the old-VM cleanup boundary. Threads
  * that did not request exec cease to exist; unlike exit_group, we DO
@@ -428,22 +452,20 @@ uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
 }
 
 
-/* A bounded single-CPU Linux thread group: only musl's exact pthread clone
- * flag set is accepted by the ISA decoder. The VM and FD table are truly
+/* A bounded single-CPU Linux thread group: the ISA decoder accepts the
+ * precise musl/glibc pthread clone flags (plus optional ignored DETACHED).
+ * The VM and FD table are truly
  * shared, while user stack, TLS, TID and trap/FPU registers are task-local.
  * No clone of another ISA backend or special application code exists. */
 uint64_t nas_process_clone_thread(uint64_t *frame,uint64_t stack,
                                  uint64_t parent_tid,uint64_t child_tid,
                                  uint64_t tls) {
     struct nas_task *parent=nas_current_task;
-    if (!stack || stack>=USER_LIMIT || tls>=USER_LIMIT ||
-        !parent_tid || !child_tid || parent_tid>USER_LIMIT-4 ||
-        child_tid>USER_LIMIT-4 || stack<16 ||
-        !nas_user_address_writable(stack-8) ||
-        !nas_user_address_writable(parent_tid) ||
-        !nas_user_address_writable(parent_tid+3) ||
-        !nas_user_address_writable(child_tid) ||
-        !nas_user_address_writable(child_tid+3))return (uint64_t)-EFAULT;
+    /* Only stack/TLS affect whether a runnable child can be constructed.
+     * Linux ignores put_user faults for PARENT_SETTID/CHILD_SETTID; their
+     * pointers must not be treated as transaction-aborting prerequisites. */
+    if (!stack || stack>=USER_LIMIT || tls>=USER_LIMIT || stack<16 ||
+        !nas_user_address_writable(stack-8))return (uint64_t)-EFAULT;
     nas_arch_save_user_frame(parent,frame);
     nas_arch_save_fpu(parent);
     struct nas_task *child=nas_task_fork_slot();
@@ -463,13 +485,19 @@ uint64_t nas_process_clone_thread(uint64_t *frame,uint64_t stack,
     child->sighand=nas_sighand_get(parent->sighand);
     nas_arch_context_set_user_sp(&child->arch,stack);
     nas_arch_context_set_tls(&child->arch,tls);
+    /* Both pthread clone masks include PARENT_SETTID and CHILD_CLEARTID,
+     * but NOT CHILD_SETTID. In the new thread the child
+     * TID cell must remain untouched until its zero-on-exit operation. */
+    child->thread_set_tid=0;
     child->thread_clear_tid=child_tid;
     uint32_t tid=(uint32_t)child->pid;
     uint8_t value[4]={(uint8_t)tid,(uint8_t)(tid>>8),
                       (uint8_t)(tid>>16),(uint8_t)(tid>>24)};
-    if (!nas_user_write_bytes(parent_tid,value,sizeof(value)) ||
-        !nas_user_write_bytes(child_tid,value,sizeof(value)))
-        proc_fail("thread TID store failed after validation");
+    /* CLONE_PARENT_SETTID is best effort in the parent MM; the child's
+     * independent CLONE_CHILD_SETTID is written on first dispatch. Do not
+     * return an error after publishing a runnable child (ghost process). */
+    if(parent_tid)
+        (void)nas_user_write_bytes(parent_tid,value,sizeof(value));
     nas_arch_set_saved_return(parent,child->pid);
     nas_arch_set_saved_return(child,0);
     child->resume_valid=true;
@@ -520,14 +548,15 @@ uint64_t nas_process_futex(uint64_t *frame,uint64_t addr,uint64_t op,
      * Non-PI queue transfer is process/VM scoped, not an invented wake. */
     if(command==3U || command==4U) {
         if((addr2&3U) || addr2>USER_LIMIT-4)return (uint64_t)-EINVAL;
-        if(!nas_mmu_user_byte(addr) || !nas_mmu_user_byte(addr+3) ||
-           !nas_mmu_user_byte(addr2) || !nas_mmu_user_byte(addr2+3))
+        uint8_t source[4],destination[4];
+        /* A valid futex word may live in a not-yet-faulted VMA.  Use the
+         * same fault-aware path as FUTEX_WAIT before mutating wait queues. */
+        if(!nas_user_read_bytes(addr,source,sizeof(source)) ||
+           !nas_user_read_bytes(addr2,destination,sizeof(destination)))
             return (uint64_t)-EFAULT;
         if(command==4U) {
-            uint8_t current[4];
-            if(!nas_user_read_bytes(addr,current,4))return (uint64_t)-EFAULT;
-            uint32_t word=(uint32_t)current[0]|((uint32_t)current[1]<<8)|
-                          ((uint32_t)current[2]<<16)|((uint32_t)current[3]<<24);
+            uint32_t word=(uint32_t)source[0]|((uint32_t)source[1]<<8)|
+                          ((uint32_t)source[2]<<16)|((uint32_t)source[3]<<24);
             if(word!=(uint32_t)val3)return (uint64_t)-EAGAIN;
         }
         unsigned nwake=val>NAS_TASK_LIMIT?NAS_TASK_LIMIT:(unsigned)val;
@@ -541,7 +570,8 @@ uint64_t nas_process_futex(uint64_t *frame,uint64_t addr,uint64_t op,
     if(command==1U || command==10U) {
         uint32_t mask=command==10U?(uint32_t)val3:UINT32_MAX;
         if(!mask)return (uint64_t)-EINVAL;
-        if(!nas_mmu_user_byte(addr) || !nas_mmu_user_byte(addr+3))
+        uint8_t word[4];
+        if(!nas_user_read_bytes(addr,word,sizeof(word)))
             return (uint64_t)-EFAULT;
         unsigned n=val>NAS_TASK_LIMIT?NAS_TASK_LIMIT:(unsigned)val;
         return nas_process_futex_wake(addr,n,mask);

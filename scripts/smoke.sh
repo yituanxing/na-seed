@@ -17,9 +17,10 @@ fi
 grep -F '[PASS] M0' build/serial.log
 if ! grep -Fq '[USER] hello from standalone ELF via syscall' build/serial.log ||
    ! grep -Fq '[MISS] syscall nr=999' build/serial.log ||
-   ! grep -Fq '[PASS] M1 ELF / ring3 / syscall write / ENOSYS / exit' build/serial.log; then
+   ! grep -Fq '[EXIT] user status=0' build/serial.log ||
+   grep -Eq '\[FAIL\]|\[FAULT\]|\[DEADLOCK\]' build/serial.log; then
     cat build/serial.log
     echo 'M1 user-space acceptance markers missing' >&2
     exit 1
 fi
-grep -F '[PASS] M1' build/serial.log
+echo '[M1 ACCEPTED] genuine user ELF wrote, saw ENOSYS, exited 0'

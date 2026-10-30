@@ -18,7 +18,8 @@ for f in $(find kernel -name '*.c' -type f | LC_ALL=C sort); do
     esac
     clang $flags -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding \
       -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
-      -I build/deps -I kernel -fsyntax-only "$f"
+      -I build/deps -I kernel -I third_party/unikraft/include \
+      -I ports/unikraft/include -fsyntax-only "$f"
     count=$((count+1))
 done
 test "$count" -ge 19

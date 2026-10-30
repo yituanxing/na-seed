@@ -13,6 +13,9 @@
 #endif
 #include "drivers/serial.h"
 #include "mm/frame.h"
+#ifndef NASEED_PORT_M0
+#include "mm/heap.h"
+#endif
 #include "random.h"
 #include "mm/user_space.h"
 #include "init/main.h"
@@ -64,6 +67,28 @@ static volatile uint64_t requests_end[] = LIMINE_REQUESTS_END_MARKER;
 
 const struct limine_file *nas_user_module(void);
 
+#ifndef NASEED_PORT_M0
+/* HHDM translates physically adjacent frames into one contiguous arena.
+ * Frame ownership is retained for the lifetime of the registered arena. */
+static bool grow_heap_from_frames(size_t minimum_bytes, void *context) {
+    (void)context;
+    const uint64_t page_bytes=4096;
+    uint64_t pages=(uint64_t)(minimum_bytes/page_bytes)+
+                   (minimum_bytes%page_bytes!=0);
+    if(!pages || pages>SIZE_MAX/page_bytes)return false;
+    uint64_t physical=nas_frame_alloc_contiguous(pages);
+    if(!physical)return false;
+    size_t bytes=(size_t)(pages*page_bytes);
+    uint64_t offset=nas_hhdm_offset();
+    if(offset<=UINTPTR_MAX-physical &&
+       nas_heap_add_arena((void *)(uintptr_t)(offset+physical),bytes))
+        return true;
+    /* The arena registry rejected the mapping; restore every page owner. */
+    for(uint64_t i=0;i<pages;i++)(void)nas_frame_put(physical+i*page_bytes);
+    return false;
+}
+#endif
+
 void kmain(void) {
     nas_serial_init();
     nas_print("[BOOT] NaSeed M0 kernel entered\n");
@@ -95,6 +120,7 @@ void kmain(void) {
     nas_print("[PASS] M0 memory allocator\n");
     nas_print("[PASS] M0 boot / serial / memory\n");
 #ifndef NASEED_PORT_M0
+    nas_heap_set_grow_callback(grow_heap_from_frames,NULL);
     bool entropy_ready = entropy_req.response &&
         nas_random_seed(entropy_req.response->values,
                         entropy_req.response->value_count);

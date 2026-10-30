@@ -1,0 +1,2 @@
+# name  filesystem  method  expected output  args  executable
+m104-exception	cpio	probe	M104_NATIVE_EXCEPTION_PASS	-	/bin/m104-exception

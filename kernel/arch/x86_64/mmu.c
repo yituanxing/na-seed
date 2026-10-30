@@ -22,13 +22,16 @@ extern void nas_print(const char *);
  * kernel image slot 511 and ordinary Limine HHDM slots.
  */
 #define NAS_X86_LAPIC_VIRT UINT64_C(0xfffffe8000000000)
-bool nas_arch_x86_map_lapic_page(uint64_t phys) {
-    if (!phys || (phys & 4095U)) return false;
+/* Generic supervisor-only, uncached device PTE. The same MMU primitive
+ * handles LAPIC and PCI BARs; never create a per-device page walker. */
+bool nas_arch_x86_map_device_page(uint64_t phys,uint64_t virt) {
+    if (!phys || (phys & 4095U) || (virt & 4095U) ||
+        virt < UINT64_C(0xffff800000000000)) return false;
     uint64_t root=nas_arch_current_page_root() & PHYS_MASK;
     if (!root) return false;
     for (unsigned level=3;level>0;--level) {
         uint64_t *table=(uint64_t *)(uintptr_t)(nas_hhdm_offset()+root);
-        unsigned idx=(unsigned)((NAS_X86_LAPIC_VIRT>>(12+9*level))&511U);
+        unsigned idx=(unsigned)((virt>>(12+9*level))&511U);
         uint64_t entry=table[idx];
         if (!(entry&P_PRESENT)) {
             root=nas_frame_alloc();
@@ -41,12 +44,15 @@ bool nas_arch_x86_map_lapic_page(uint64_t phys) {
         }
     }
     uint64_t *pt=(uint64_t *)(uintptr_t)(nas_hhdm_offset()+root);
-    unsigned idx=(unsigned)((NAS_X86_LAPIC_VIRT>>12)&511U);
+    unsigned idx=(unsigned)((virt>>12)&511U);
     if (pt[idx]) return false;
     /* Write-back caching on LAPIC MMIO is forbidden. PCD+PWT, NX, supervisor. */
     pt[idx]=phys|P_PRESENT|P_RW|0x18ULL|(1ULL<<63);
-    nas_arch_invalidate_page(NAS_X86_LAPIC_VIRT);
+    nas_arch_invalidate_page(virt);
     return true;
+}
+bool nas_arch_x86_map_lapic_page(uint64_t phys) {
+    return nas_arch_x86_map_device_page(phys,NAS_X86_LAPIC_VIRT);
 }
 /* User pages: read and amend existing Limine CR3 paging hierarchy. */
 static uint64_t *phys_table(uint64_t physical) {
@@ -192,7 +198,7 @@ bool nas_mmu_exchange_leaf_at(uint64_t root_phys,uint64_t va,
                               uint64_t new_pa,unsigned prot,
                               uint64_t *old_pa) {
     if(!old_pa || (new_pa && ((new_pa&(PAGE-1)) ||
-       !nas_vm_prot_supported(prot) || !nas_arch_nx_enabled())) ||
+       !nas_pte_prot_supported(prot) || !nas_arch_nx_enabled())) ||
        (!new_pa && prot))return false;
     uint64_t *pte=user_leaf_at(root_phys,va,false);
     if(!pte || (*pte && ((*pte&(P_PRESENT|P_USER))!=(P_PRESENT|P_USER))))
@@ -210,17 +216,24 @@ bool nas_mmu_exchange_leaf(uint64_t va,uint64_t new_pa,unsigned prot,
     return nas_mmu_exchange_leaf_at(TASK.mm->root_phys,va,new_pa,prot,old_pa);
 }
 bool nas_mmu_map_page(uint64_t va, bool writable) {
+    /* Legacy ELF/stack/brk entry point. New writable user pages start RW+NX;
+     * new nonwritable ELF pages start RX. The historical ELF loader maps
+     * PT_LOAD segments in order and a boundary page can be mapped twice in
+     * EITHER order. Preserve the union of requested permissions in that
+     * exceptional overlap (RWX), pending a typed whole-page ELF preflight. */
+    if(!nas_arch_nx_enabled())return false;
     uint64_t *entry = user_leaf(va, true);
     if (!entry) return false;
     if (*entry & P_PRESENT) {
         if (!(*entry & P_USER)) return false;
         if (writable) *entry |= P_RW;
+        else *entry &= ~(1ULL<<63); /* prior RW -> overlapping RX */
         nas_arch_invalidate_page(va);
         return true;
     }
     uint64_t pa = nas_frame_alloc();
     if (!pa) return false;
-    *entry = pa | P_PRESENT | P_USER | (writable ? P_RW : 0);
+    *entry = pa | P_PRESENT | P_USER | (writable ? (P_RW|(1ULL<<63)) : 0);
     nas_arch_invalidate_page(va);
     return true;
 }
@@ -237,6 +250,28 @@ bool nas_mmu_map_prot_page(uint64_t va, uint64_t prot) {
              ((prot & NAS_VM_WRITE) ? P_RW : 0) |
              ((prot & NAS_VM_EXEC) ? 0 : nx);
     nas_arch_invalidate_page(va);
+    return true;
+}
+bool nas_mmu_map_elf_page(uint64_t va,unsigned flags) {
+    if (!(flags&4U) || (flags&~7U) || !nas_arch_nx_enabled())return false;
+    uint64_t *leaf=user_leaf(va,true);
+    if (!leaf || *leaf)return false;
+    uint64_t pa=nas_frame_alloc();
+    if (!pa)return false;
+    *leaf=pa|P_PRESENT|P_USER|((flags&2U)?P_RW:0)|
+          ((flags&1U)?0:(1ULL<<63));
+    nas_arch_invalidate_page(va);
+    return true;
+}
+bool nas_mmu_sync_user_exec(uint64_t va,uint64_t len) {
+    /* x86-64 has coherent instruction and data caches. Validate ownership
+     * so callers cannot accidentally supply an arbitrary kernel VA. */
+    if (va>=USER_LIMIT || len>USER_LIMIT-va)return false;
+    for (uint64_t p=va&~(PAGE-1);p<va+len;) {
+        if (!nas_mmu_user_byte(p))return false;
+        p+=PAGE;
+    }
+    __asm__ volatile("":::"memory");
     return true;
 }
 uint8_t *nas_mmu_user_byte(uint64_t va) {

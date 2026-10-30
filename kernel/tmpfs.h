@@ -2,11 +2,8 @@
 #define NASEED_TMPFS_H
 #include <stdbool.h>
 #include <stdint.h>
-#include "fs/posix_locks.h"
-
-/* Volatile, finite /tmp backend. This is not yet a generic Linux VFS.
- * Transition seam: syscall/user memory remains with m1.c; namespace and
- * inode/open-description lifetimes belong here. */
+/* Volatile tmpfs inode storage and namespace provider behind shared VFS.
+ * Syscall/user memory and descriptor ownership stay outside this backend. */
 /* Metadata is allocated in demand-paged inode slabs, not a fixed
  * global array of eight inodes. Memory exhaustion is reported by the
  * existing physical frame allocator, not an arbitrary source-level count. */
@@ -20,6 +17,15 @@
 #define TMP_INDEX_ROOT_ENTRIES 512U
 #define TMP_FILE_CAP (TMP_PAGE_SIZE * (uint64_t)TMP_PAGE_ENTRIES * TMP_INDEX_ROOT_ENTRIES)
 
+struct nas_tmp_dentry;
+/* A directory maintains its own ordered child chain and a per-directory
+ * forward readdir cursor. Namespace mutations invalidate the cached cursor;
+ * callers may still seek to any ordinal and receive the correct entry. */
+struct nas_tmp_directory {
+    struct nas_tmp_dentry *first, *last, *seek;
+    unsigned count, seek_index;
+};
+
 struct nas_tmp_file {
     bool used, is_dir;
     uint32_t nlink; /* directory-entry references, not open FD references */
@@ -28,44 +34,64 @@ struct nas_tmp_file {
     uint64_t size;
     uint64_t atime_ns, mtime_ns, ctime_ns; /* UNIX realtime nanoseconds */
     uint32_t mode;
-    struct nas_posix_locks posix_locks; /* common Linux inode record locks */
-    /* flock is open-description-owned, separate from process POSIX locks. */
-    unsigned flock_exclusive; /* owning slot + 1, or zero */
-    uint64_t flock_shared[2]; /* NAS_OPEN_FILE_LIMIT slots */
-};
+    uint32_t uid,gid; /* per-inode Linux ownership, shared through all names */
+    /* Only directories have a namespace alias: hard-linking directories is
+     * forbidden. Detached cwd inodes retain storage but no alias. */
+    struct nas_tmp_dentry *directory_alias;
+    struct nas_tmp_directory children;
+    /* Reclaimed inode slots reuse stable slab addresses in O(1) time. */
+    struct nas_tmp_file *free_next;
+ };
 
-bool tmp_path(const char *path);
-bool tmp_parent(const char *path, char parent[256]);
 /* A dentry names an inode. Multiple dentries may reference one regular file.
- * Only namespace code owns and mutates path strings. */
+ * Only shared VFS namei accepts and resolves complete path strings. */
+/* The dentry owns only (parent inode, basename) -> child inode.
+ * Rename moves ONE dentry. All descendant names resolve through the
+ * unchanged parent chain, never bulk-copying cached absolute paths. */
 struct nas_tmp_dentry {
     bool used;
-    char path[256];
+    const void *parent_inode;
+    char name[256];
     struct nas_tmp_file *inode;
+    /* Hashed (parent, basename) lookup, per-parent ordered children, and
+     * an independent reusable slot list. A used dentry is in the first two
+     * indexes; a free dentry is only in the slot list. */
+    struct nas_tmp_dentry *hash_next;
+    struct nas_tmp_dentry *directory_prev, *directory_next;
+    struct nas_tmp_dentry *free_next;
 };
-const char *tmp_name(const struct nas_tmp_file *file);
-const struct nas_tmp_dentry *tmp_child_entry(const char *parent,unsigned index);
+const struct nas_tmp_dentry *tmp_child_entry_inode(const void *parent,unsigned index);
+const void *tmp_dir_parent_inode(const void *directory);
+struct nas_tmp_file *tmp_create_at(const void *parent,const char *name,bool dir,uint32_t mode);
+/* Only S_IFSOCK is currently supported. The published inode already has
+ * its final type bits; failures return NULL without publishing a dentry. */
+struct nas_tmp_file *tmp_mknod_at(const void *parent,const char *name,uint32_t mode);
+int tmp_mkdir_at(const void *parent,const char *name,uint64_t mode);
+int tmp_unlink_at(const void *parent,const char *name,uint64_t flags);
+int tmp_rename_at(const void *old_parent,const char *old_name,
+                  const void *new_parent,const char *new_name,uint64_t flags);
+int tmp_link_at(const void *old_parent,const char *old_name,
+                const void *new_parent,const char *new_name);
+int tmp_symlink_at(const void *parent,const char *name,const char *target);
 struct nas_tmp_file *tmp_inode_alloc(bool dir,uint32_t mode);
 void tmp_inode_link(struct nas_tmp_file *file);
 void tmp_inode_unlink(struct nas_tmp_file *file);
 void tmp_inode_discard(struct nas_tmp_file *file);
 void tmp_inode_touch(struct nas_tmp_file *file);
-int tmp_link(const char *oldpath,const char *newpath);
-struct nas_tmp_file *tmp_find(const char *path);
-int tmp_parent_check(const char *path);
-struct nas_tmp_file *tmp_create(const char *path, bool dir,uint32_t mode);
+/* A successful namespace edit modifies its containing directory, not merely
+ * the inserted/unlinked child. The /tmp root borrows a bootfs inode and
+ * therefore keeps its own mutable timestamp state behind this provider. */
+void tmp_dir_modified(struct nas_tmp_file *directory);
+void tmp_root_dir_modified(void);
+void tmp_root_times(uint64_t *mtime_ns,uint64_t *ctime_ns);
+/* Provider-local directory child lookup; the generic VFS passes only an
+ * opaque parent inode and one component, never an absolute pathname. */
+struct nas_tmp_file *tmp_find_child(const void *parent_inode,const char *name);
 bool tmp_is_link(const struct nas_tmp_file *file);
-int tmp_symlink(const char *target, const char *path);
 int tmp_link_target(const struct nas_tmp_file *file, char target[256]);
 uint64_t tmp_number(const struct nas_tmp_file *file);
 
-/* Slot identity is shared across fork/dup; the caller owns the descriptor
- * refcount and calls tmp_release_slot only after its final decrement. */
-void tmp_bind_slot(unsigned slot, const struct nas_tmp_file *file);
-struct nas_tmp_file *tmp_by_slot(unsigned slot);
-void tmp_release_slot(unsigned slot);
-int tmp_flock(unsigned slot,unsigned operation);
-
+/* Open-inode lifetime and last-unpin reclaim are owned solely by VFS. */
 /* Kernel-buffer I/O, shared across Linux FD syscalls and ELF image reader.
  * Read of sparse holes returns zero; write allocates pages only on demand.
  * Negative errno only if no bytes were written. */
@@ -79,7 +105,5 @@ int tmp_utimens(struct nas_tmp_file *file, uint64_t access_ns,
                 uint64_t modified_ns, bool set_access, bool set_modified);
 
 int tmp_chmod(struct nas_tmp_file *file, uint64_t mode);
-int tmp_mkdir(const char *path, uint64_t mode);
-int tmp_unlink(const char *path, uint64_t flags);
-int tmp_rename(const char *oldpath, const char *newpath, uint64_t flags);
+int tmp_chown(struct nas_tmp_file *file,uint32_t uid,uint32_t gid);
 #endif

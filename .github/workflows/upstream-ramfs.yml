@@ -1,0 +1,64 @@
+name: NaSeed original independent RamFS against common VFS (host + three ISA)
+on:
+  pull_request:
+    paths:
+      - 'third_party/jkent_ramfs/**'
+      - 'ports/ramfs/**'
+      - 'scripts/test-upstream-ramfs-vfs.c'
+      - 'scripts/check-upstream-ramfs-vfs.sh'
+      - 'scripts/build-ramfs-guest.sh'
+      - 'scripts/probe-vfs-busybox-real.sh'
+      - 'scripts/vfs-busybox-real-cases.tsv'
+      - 'tests/vfs-busybox-real-workload'
+      - 'kernel/fs/vfs*'
+      - 'kernel/fs/lookup*'
+      - 'kernel/init/main.c'
+      - 'scripts/build-riscv64-full.sh'
+      - 'scripts/build-aarch64-full.sh'
+      - 'Makefile'
+      - '.github/workflows/upstream-ramfs.yml'
+  workflow_dispatch:
+jobs:
+  original-ramfs-provider:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install full LLVM lld for cross ISA ELF links
+        run: |
+          sudo apt-get -o Acquire::Retries=1 update -qq
+          sudo apt-get -y install --no-install-recommends lld
+      - name: Unmodified upstream source hashes, host real VFS, three native ISA relocatable objects
+        run: sh scripts/check-upstream-ramfs-vfs.sh
+      - name: Opt-in real x86 kernel link with independent RAM file system
+        run: make NAS_ENABLE_RAMFS=1 build/kernel.elf
+      - name: Opt-in real RV64 kernel link with independent RAM file system
+        run: NAS_ENABLE_RAMFS=1 sh scripts/build-riscv64-full.sh
+      - name: Opt-in real AArch64 kernel link with independent RAM file system
+        run: NAS_ENABLE_RAMFS=1 sh scripts/build-aarch64-full.sh
+      - name: Build one unchanged RamFS POSIX userspace source for real x86-64 RV64 AArch64 Linux syscall ABI
+        run: sh scripts/build-ramfs-native-probes.sh
+      - name: Actual x86-64 ring3 QEMU alongside independently mounted RamFS and LittleFS
+        run: |
+          sudo apt-get -y install --no-install-recommends ovmf qemu-system-x86 xorriso cpio
+          NAS_ENABLE_RAMFS=1 sh scripts/probe-littlefs-guest-x86.sh
+          grep -Fq '[PASS] real upstream RamFS: VFS create/IO/rename/open-pin/unlink/rmdir' build/littlefs-guest-x86/serial.log
+      - name: Genuine x86-64 ring3 Linux openat/unlinkat/renameat/dirfd on original RamFS
+        run: sh scripts/probe-ramfs-native-x86.sh
+      - name: Genuine RV64 and AArch64 QEMU RAMFS VFS mount and Linux ELF boots
+        run: |
+          sudo apt-get -y install --no-install-recommends qemu-system-misc qemu-system-arm qemu-efi-aarch64 qemu-efi-riscv64 gdisk mtools
+          NAS_ENABLE_RAMFS=1 sh scripts/probe-riscv64-full.sh
+          grep -Fq '[PASS] real upstream RamFS: VFS create/IO/rename/open-pin/unlink/rmdir' build/port-riscv64/full/serial.log
+          NAS_ENABLE_RAMFS=1 sh scripts/probe-aarch64-full.sh
+          grep -Fq '[PASS] real upstream RamFS: VFS create/IO/rename/open-pin/unlink/rmdir' build/port-aarch64/full/serial.log
+      - name: Genuine native RV64 and AArch64 ring3 Linux syscalls mutate original RamFS
+        run: |
+          NAS_ENABLE_RAMFS=1 NAS_RAMFS_NATIVE_PROBE=build/ramfs-native/riscv64/probe.elf sh scripts/probe-riscv64-full.sh
+          NAS_ENABLE_RAMFS=1 NAS_RAMFS_NATIVE_PROBE=build/ramfs-native/aarch64/probe.elf sh scripts/probe-aarch64-full.sh
+      - name: Real Debian BusyBox cp/mv/tar/find/grep/rm on tmpfs AND original RamFS — x86-64
+        run: sh scripts/probe-vfs-busybox-real.sh amd64
+      - name: Identical real BusyBox cross-filesystem workload — RV64
+        run: sh scripts/probe-vfs-busybox-real.sh riscv64
+      - name: Identical real BusyBox cross-filesystem workload — AArch64
+        run: sh scripts/probe-vfs-busybox-real.sh arm64

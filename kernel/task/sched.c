@@ -68,7 +68,7 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
          * run; release this task slot only after switching user frames. */
         child->state=NAS_TASK_ZOMBIE;
         child->resume_valid=false;
-        nas_task_wait_reset(child);
+        nas_task_wait_dispose(child);
         struct nas_task *leader=child->group_leader;
         if(leader->group_exit_pending && !group_has_live_workers(leader)) {
             /* Leader finished earlier: group becomes waitable NOW, only
@@ -88,7 +88,7 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     child->termination_signal=signum;
     child->state=NAS_TASK_ZOMBIE;
     child->resume_valid=false;
-    nas_task_wait_reset(child);
+    nas_task_wait_dispose(child);
     if(group_has_live_workers(child)) {
         child->group_exit_pending=true;
         nas_print("[THREAD GROUP] leader exit deferred tgid=");
@@ -113,8 +113,19 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     nas_task_adopt_orphans(child->pid);
     for (unsigned fd = 0; fd < NAS_FD_LIMIT; fd++)
         if (TASK.fds->entries[fd].kind != FD_CLOSED) nas_fs_close_fd(fd);
-    /* All inherited jobserver pipe ends are closed before SIGCHLD is
-     * observed. Wake a caught parent signal, never fake a ready pipe. */
+    /* A zombie no longer owns a live FS context. Reaping by wait4 is NOT
+     * a prerequisite for releasing cwd inode/mount pins: PID1 may never
+     * be reaped, yet its last user exit must durably unmount ext4. This
+     * also drops a tmpfs orphan cwd's final generic inode lease.
+     * Shared CLONE_FS contexts retain their other owners; a later
+     * nas_task_release() sees NULL and must not put twice. Do this only
+     * after final thread-group teardown, never on a leader with workers. */
+    if(child->fs) {
+        nas_fs_context_put(child->fs);
+        child->fs=0;
+    }
+    /* All inherited jobserver pipe ends and cwd refs are released
+     * before SIGCHLD is observed by a parent. */
     nas_signal_child_exit(child);
     if (signum) {
         if (signum == NAS_SIGPIPE) {
@@ -166,7 +177,7 @@ void nas_sched_thread_group_exit(uint32_t code,uint32_t signum) {
         nas_process_clear_tid_on_exit();
         caller->state=NAS_TASK_ZOMBIE;
         caller->resume_valid=false;
-        nas_task_wait_reset(caller);
+        nas_task_wait_dispose(caller);
         /* Temporarily take ownership of the common process FD cleanup
          * as the group leader. Real CPU root/TLS are restored to caller
          * before unwinding its syscall frame. */
@@ -216,6 +227,7 @@ static void native_park(struct nas_task *self) {
     self->kernel_exec.cpu.saved_sp=0;
 }
 static void native_first_user(void) {
+    nas_process_child_tid_first_dispatch();
     nas_arch_resume_saved_user();
 }
 /* A dead nonleader is not wait4-owned. Its final syscall/IRQ C frame
@@ -259,6 +271,22 @@ static void native_dispatcher(void) {
         unsigned sig=nas_tty_take_signal(&sid,&pgid);
         if(sig && !nas_signal_tty_event(sid,pgid,sig))
             nas_tty_signal_unsupported();
+        /* PTY master writes originate inside an arbitrary userspace Task's
+         * syscall C continuation. Handle ISIG only after it reaches this
+         * independent scheduler stack: a foreground SIGINT may terminate
+         * the writer's own group and cannot invalidate its live syscall
+         * frame from within nas_pty_write(). Bound event drain latency so
+         * a noisy PTY cannot monopolize one scheduling boundary. */
+        for(unsigned n=0;n<8;n++) {
+            uint64_t pty_sid=0,pty_pgid=0;
+            unsigned pty_sig=nas_pty_take_signal(&pty_sid,&pty_pgid);
+            if(!pty_sig)break;
+            if(!nas_signal_tty_event(pty_sid,pty_pgid,pty_sig)) {
+                nas_print("[PTY SIGNAL UNSUPPORTED] sid=");nas_dec(pty_sid);
+                nas_print(" pgid=");nas_dec(pty_pgid);
+                nas_print(" signal=");nas_dec(pty_sig);nas_print("\n");
+            }
+        }
         struct nas_sched_scan scan;
         nas_sched_scan_init(&scan,native_cursor);
         unsigned slot=0;

@@ -8,7 +8,8 @@ struct nas_mm;
 enum nas_exception_kind {
     NAS_EXC_OTHER=0, NAS_EXC_IRQ, NAS_EXC_SYSCALL, NAS_EXC_MEMORY,
     NAS_EXC_BREAKPOINT, NAS_EXC_SINGLE_STEP, NAS_EXC_ILLEGAL,
-    NAS_EXC_ALIGNMENT
+    NAS_EXC_ALIGNMENT, NAS_EXC_BUS, NAS_EXC_ARITHMETIC,
+    NAS_EXC_BOUNDS, NAS_EXC_PROTECTION
 };
 enum nas_exception_access {NAS_EXC_READ=1, NAS_EXC_WRITE=2, NAS_EXC_EXEC=4};
 struct nas_exception {
@@ -16,6 +17,7 @@ struct nas_exception {
     bool user,present;
     unsigned access;
     uint64_t pc,addr;
+    int32_t arithmetic_code; /* FPE_INTDIV/FPE_INTOVF, otherwise generic */
 };
 enum nas_exception_action {NAS_EXC_UNHANDLED=0,NAS_EXC_RETRY,NAS_EXC_SIGNAL};
 struct nas_exception_outcome {

@@ -14,6 +14,12 @@
  * termios belong to the device, never to an ISA-specific syscall number.
  * All endpoints reference shared open-description identities. */
 #define PTY_RING_CAP 2048U
+/* A bounded cross-PTY queue owns event order until the scheduler is safely
+ * outside the writer's syscall C frame. Never overwrite an unread signal. */
+#define PTY_SIGNAL_FIFO_CAP 64U
+struct pty_signal_event {uint64_t sid,pgid;unsigned signo;};
+static struct pty_signal_event signal_fifo[PTY_SIGNAL_FIFO_CAP];
+static unsigned signal_fifo_head,signal_fifo_count;
 struct pty_ring { uint8_t bytes[PTY_RING_CAP]; unsigned head,count; };
 struct pty {
     bool used,master_open,locked;
@@ -27,6 +33,25 @@ struct pty {
 static struct pty ptys[NAS_PTY_LIMIT];
 static uint8_t slot_device[NAS_OPEN_FILE_LIMIT]; /* index + 1 */
 static uint8_t slot_is_master[NAS_OPEN_FILE_LIMIT];
+
+static bool pty_queue_signal(const struct pty *p,unsigned signum) {
+    /* No controlling session / foreground process group: consume the
+     * ISIG byte but never deliver it to another, unrelated session. */
+    if(!p->sid || !p->pgid)return true;
+    if(signal_fifo_count==PTY_SIGNAL_FIFO_CAP)return false;
+    unsigned tail=(signal_fifo_head+signal_fifo_count)%PTY_SIGNAL_FIFO_CAP;
+    signal_fifo[tail]=(struct pty_signal_event){p->sid,p->pgid,signum};
+    signal_fifo_count++;
+    return true;
+}
+unsigned nas_pty_take_signal(uint64_t *sid,uint64_t *pgid) {
+    if(!sid || !pgid || !signal_fifo_count)return 0;
+    struct pty_signal_event e=signal_fifo[signal_fifo_head];
+    signal_fifo_head=(signal_fifo_head+1)%PTY_SIGNAL_FIFO_CAP;
+    signal_fifo_count--;
+    *sid=e.sid;*pgid=e.pgid;
+    return e.signo;
+}
 
 static struct pty *get(unsigned slot) {
     unsigned id=slot<NAS_OPEN_FILE_LIMIT?slot_device[slot]:0;
@@ -138,6 +163,7 @@ bool nas_pty_write_ready(unsigned slot) {
     if(!p)return true; /* wake a blocked writer to report EBADF */
     if(slot_is_master[slot]) {
         if(!p->slave_descriptions)return true; /* wake to report EIO */
+        if(signal_fifo_count==PTY_SIGNAL_FIFO_CAP)return false;
         /* Canonical input is owned by N_TTY, not the raw slave ring.
          * A completed line waits for its reader and must not silently
          * consume further master writes or advertise false POLLOUT. */
@@ -160,40 +186,79 @@ uint16_t nas_pty_poll(unsigned slot,uint16_t events) {
     if((events&4U) && nas_pty_write_ready(slot))ready|=4U;
     return ready;
 }
-uint64_t nas_pty_read(uint64_t fd,uint64_t dst,uint64_t count) {
-    if(fd>=NAS_FD_LIMIT || !count)return 0;
-    unsigned slot=nas_current_task->fds->entries[fd].slot;
+/* Inspect a PTY read without consuming a queue byte or an N_TTY EOF token.
+ * Short reads must validate only the bytes they can actually return: a
+ * request for 1024 with four queued bytes may legally land at the end of a
+ * four-byte writable user mapping. Keep this plan in lockstep with read(). */
+uint64_t nas_pty_read_plan(unsigned slot,uint64_t requested) {
+    if(!requested)return 0;
     struct pty *p=get(slot);
     if(!p)return (uint64_t)-EBADF;
     bool master=slot_is_master[slot]!=0;
-    struct pty_ring *ring=master?&p->master_input:&p->slave_input;
     if(!master && (p->termios.lflag&0000002)) {
-        if(p->input.eof && !p->input.used) {
-            nas_ldisc_reset(&p->input);return 0;
-        }
-        if(!nas_ldisc_readable(&p->input,&p->termios,(unsigned)(count>256?256:count)))
+        if(p->input.eof && !p->input.used)return 0;
+        unsigned limit=requested>NAS_LDISC_CAPACITY ?
+                       NAS_LDISC_CAPACITY:(unsigned)requested;
+        if(!nas_ldisc_readable(&p->input,&p->termios,limit))
             return p->master_open ? (uint64_t)-EAGAIN : 0;
-        uint8_t buffer[NAS_LDISC_CAPACITY];
-        unsigned n=nas_ldisc_peek(&p->input,&p->termios,buffer,
-                                   count>sizeof(buffer)?sizeof(buffer):(unsigned)count);
-        if(!nas_user_write_bytes(dst,buffer,n))return (uint64_t)-EFAULT;
-        nas_ldisc_commit(&p->input,n);
-        return n;
+        /* peek performs its own VMIN/canonical readiness check. Its
+         * snapshot buffer stays kernel-owned and the line is not committed. */
+        uint8_t snapshot[NAS_LDISC_CAPACITY];
+        return nas_ldisc_peek(&p->input,&p->termios,snapshot,limit);
     }
+    const struct pty_ring *ring=master?&p->master_input:&p->slave_input;
     if(!ring->count)
         return (master?p->slave_descriptions:p->master_open) ?
                (uint64_t)-EAGAIN : master?(uint64_t)-EIO:0;
-    unsigned n=count>ring->count?ring->count:(unsigned)count;
-    for(unsigned i=0;i<n;i++) {
-        uint8_t value=ring->bytes[(ring->head+i)%PTY_RING_CAP];
-        if(!nas_user_write_bytes(dst+i,&value,1))return (uint64_t)-EFAULT;
+    return requested>ring->count ? ring->count:requested;
+}
+uint64_t nas_pty_read(unsigned slot,uint8_t *dst,uint64_t count) {
+    if(!count) {
+        /* A positive-length caller whose read_plan observed canonical EOF
+         * calls read(..., 0) as an explicit zero-payload EOF commit. Other
+         * empty PTY reads do not alter queues, readiness or peer state. */
+        struct pty *p=get(slot);
+        if(p && !slot_is_master[slot] && (p->termios.lflag&0000002) &&
+           p->input.eof && !p->input.used)
+            nas_ldisc_reset(&p->input);
+        return 0;
     }
+    if(!dst)return (uint64_t)-EFAULT;
+    struct pty *p=get(slot);
+    if(!p)return (uint64_t)-EBADF;
+    uint64_t budget=nas_pty_read_plan(slot,count);
+    if((int64_t)budget<=0) {
+        /* A canonical EOF is consumed by read, never by read_plan. */
+        if(!budget && !slot_is_master[slot] &&
+           (p->termios.lflag&0000002) && p->input.eof && !p->input.used)
+            nas_ldisc_reset(&p->input);
+        return budget;
+    }
+    bool master=slot_is_master[slot]!=0;
+    struct pty_ring *ring=master?&p->master_input:&p->slave_input;
+    if(!master && (p->termios.lflag&0000002)) {
+        uint8_t buffer[NAS_LDISC_CAPACITY];
+        unsigned n=nas_ldisc_peek(&p->input,&p->termios,buffer,(unsigned)budget);
+        /* The syscall adapter has already prepared the user destination;
+         * no user virtual address crosses into the PTY data plane. */
+        memcpy(dst,buffer,n);
+        nas_ldisc_commit(&p->input,n);
+        return n;
+    }
+    unsigned n=(unsigned)budget;
+    /* Copy from the bounded queue, then commit only the bytes returned.
+     * The common syscall adapter validates/COW-prepares the destination
+     * before invoking this potentially consuming read operation. */
+    unsigned first=n;
+    if(first>PTY_RING_CAP-ring->head)first=PTY_RING_CAP-ring->head;
+    memcpy(dst,ring->bytes+ring->head,first);
+    if(n>first)memcpy(dst+first,ring->bytes,n-first);
     for(unsigned i=0;i<n;i++)(void)ring_take(ring);
     return n;
 }
-uint64_t nas_pty_write(uint64_t fd,uint64_t src,uint64_t count) {
-    if(fd>=NAS_FD_LIMIT || !count)return 0;
-    unsigned slot=nas_current_task->fds->entries[fd].slot;
+uint64_t nas_pty_write(unsigned slot,const uint8_t *src,uint64_t count) {
+    if(!count)return 0;
+    if(!src)return (uint64_t)-EFAULT;
     struct pty *p=get(slot);
     if(!p)return (uint64_t)-EBADF;
     bool master=slot_is_master[slot]!=0;
@@ -202,16 +267,47 @@ uint64_t nas_pty_write(uint64_t fd,uint64_t src,uint64_t count) {
     struct pty_ring *r=master?&p->slave_input:&p->master_input;
     unsigned done=0;
     while(done<count) {
-        uint8_t value;
-        if(!nas_user_read_bytes(src+done,&value,1))
-            return done?done:(uint64_t)-EFAULT;
+        uint8_t value=src[done];
+        if(master) {
+            /* N_TTY generates terminal signals with ICANON on OR off.
+             * The master is often a shell/tmux in a different process
+             * group; never synchronously kill the currently executing
+             * writer's Task inside this syscall. */
+            enum nas_ldisc_event ev=nas_ldisc_signal_event(&p->termios,value);
+            if(ev!=NAS_LDISC_OK) {
+                unsigned signo=ev==NAS_LDISC_SIGNAL_INT?2U:
+                    ev==NAS_LDISC_SIGNAL_QUIT?3U:20U;
+                if(!pty_queue_signal(p,signo))break; /* bounded, no loss */
+                /* Linux NOFLSH (lflag bit 0x80) preserves both canonical
+                 * and noncanonical unread input when ISIG is generated.
+                 * The default clears both queues, including typed data
+                 * ahead of the signal byte. */
+                if(!(p->termios.lflag&0000200U)) {
+                    nas_ldisc_reset(&p->input);
+                    p->slave_input.head=p->slave_input.count=0;
+                }
+                done++;
+                continue;
+            }
+        }
+        if(master && !(p->termios.lflag&0000002)) {
+            /* Noncanonical PTY input still obeys the same ICRNL/IGNCR/
+             * INLCR rules as the canonical line discipline. ISIG already
+             * inspected the original byte above, before translation. */
+            if(value=='\r') {
+                if(p->termios.iflag&0000200) {done++;continue;}
+                if(p->termios.iflag&0000400)value='\n';
+            } else if(value=='\n' && (p->termios.iflag&0000100))value='\r';
+        }
         if(master && (p->termios.lflag&0000002)) {
             /* nas_ldisc_feed() intentionally rejects input after a full
              * canonical line. Do not count a rejected byte as written. */
             if(p->input.ready || p->input.used==NAS_LDISC_CAPACITY)break;
             enum nas_ldisc_event ev=nas_ldisc_feed(&p->input,&p->termios,
                                                     value,pty_echo,p);
-            if(ev!=NAS_LDISC_OK)nas_ldisc_reset(&p->input);
+            /* Already classified above, including translated CR/NL and
+             * noncanonical ISIG. This branch only appends ordinary data. */
+            if(ev!=NAS_LDISC_OK)return done?done:(uint64_t)-EIO;
         }else{
             if(r->count>=PTY_RING_CAP-2)break;
             if(!master && value=='\n' && (p->termios.oflag&5U)==5U)

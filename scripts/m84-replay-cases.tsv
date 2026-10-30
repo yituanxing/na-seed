@@ -1,0 +1,2 @@
+# A second independent QEMU boot using the SAME 256MiB physical ext4 disk.
+m84-replay	cpio	sh -c '/bin/sh /tests/m84-source-run.sh --replay'	M84_REPLAY_PASS	-	/bin/busybox

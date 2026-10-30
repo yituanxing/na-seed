@@ -15,5 +15,9 @@ int strcmp(const char *lhs, const char *rhs);
 int strncmp(const char *lhs, const char *rhs, size_t n);
 char *strchr(const char *s, int ch);
 char *strrchr(const char *s, int ch);
+char *strcpy(char *restrict dst,const char *restrict src);
+char *strncpy(char *restrict dst,const char *restrict src,size_t n);
+size_t strspn(const char *s,const char *accept);
+size_t strcspn(const char *s,const char *reject);
 
 #endif

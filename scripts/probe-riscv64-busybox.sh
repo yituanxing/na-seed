@@ -37,13 +37,14 @@ timeout 90s qemu-system-riscv64 \
 pid=$!
 sh scripts/port-boot-until.sh "$log" "$pid" 90 \
  '[INIT] creating common task/VM and architecture user entry' \
- '[PASS] M2 Debian BusyBox echo hello' \
+ '[EXIT] user status=0' \
  '[RV64] userspace debug-exit status=0'
 monitor=$?
 kill "$pid" 2>/dev/null || :
 wait "$pid" 2>/dev/null || :
 set -e
-if [ "$monitor" -ne 0 ] || grep -Fq '[FAIL]' "$log"; then
+if [ "$monitor" -ne 0 ] || ! tr -d '\r' < "$log" | grep -Fxq 'hello' ||
+   grep -Eq '\[FAIL\]|\[FAULT\]|\[DEADLOCK\]' "$log"; then
     echo '[RV64 FULL FAIL] native Debian BusyBox exited incorrectly or did not print hello' >&2
     tail -100 "$log" >&2
     exit 1

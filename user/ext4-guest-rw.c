@@ -1,0 +1,205 @@
+/* One genuine freestanding Linux userspace binary source for every ISA.
+ * Numbers/register ABI live in per-target assembly; no kernel test hooks.
+ * Writes operate on an explicitly ephemeral Limine ext4 RAM image. */
+#include <stdint.h>
+#include "../kernel/errno.h"
+#include "../kernel/arch/linux_fcntl_abi.h"
+enum { OP_OPENAT, OP_READ, OP_WRITE, OP_FSYNC, OP_LSEEK, OP_CLOSE,
+       OP_EXIT, OP_GETDENTS64, OP_MKDIRAT, OP_RENAMEAT, OP_FCHDIR, OP_GETCWD,
+       OP_SYMLINKAT };
+extern long guest_syscall(long op,long a0,long a1,long a2,long a3);
+static const char path[]="/mnt/sandbox/cross-isa-created";
+static const char payload[]="NaSeed one portable Linux ELF for x86 RV64 AArch64 ext4 RW\n";
+static const char passed[]="[PASS] common VFS ext4 RAM RW native Linux ELF\n";
+static const char failed[]="[EXT4 COMMON RW DIAG] stage=";
+static char result[256];
+static char cwd[256];
+static const char original_dir[]="/mnt/sandbox/naseed-dirfd-original";
+static const char new_dir[]="/mnt/sandbox/naseed-dirfd-renamed";
+static const char relative_child[]="child";
+static const char moved_child[]="/mnt/sandbox/naseed-dirfd-renamed/child";
+static const char child_payload[]="inode-not-recycled";
+static const char dirfd_pass[]="[PASS] VFS native renamed dirfd openat/fchdir/getcwd inode identity\n";
+/* Each ISA executes exactly the same genuine ring3 Linux openat requests.
+ * These fail if the syscall boundary erases '..' before VFS namei sees a
+ * regular file or incorrectly resolves a missing final leaf. */
+static const char non_dir_parent[]="/mnt/sandbox/cross-isa-created/..";
+static const char non_dir_dot[]="/mnt/sandbox/cross-isa-created/.";
+static const char valid_dot[]="/mnt/sandbox/./cross-isa-created";
+static const char missing_parent[]="/mnt/no-such-directory/../sandbox/cross-isa-created";
+static const char new_with_dotdot[]="/mnt/sandbox/../sandbox/naseed-dot-new";
+static const char pathwalk_pass[]="[PASS] VFS native dot/dotdot checked before lexical pathname normalization\n";
+static const char missing_directory[]="/mnt/sandbox/naseed-dirflag-must-not-create";
+static const char link_path[]="/mnt/sandbox/naseed-negative-symlink";
+static const char target_basename[]="naseed-negative-target";
+static const char target_path[]="/mnt/sandbox/naseed-negative-target";
+static const char symlink_pass[]="[PASS] VFS native O_CREAT follows dangling relative symlink, O_EXCL preserves link\n";
+__attribute__((noreturn)) void guest_main(void) {
+    unsigned stage=1;
+    long writer=guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)path,0x242,0644);
+    if(writer<0)goto fail;
+    stage=2;
+    /* Open a distinct reader BEFORE growth; its old dentry snapshot must
+     * not hide writer updates after the VFS inode-size lease is published. */
+    long reader=guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)path,0,0);
+    if(reader<0)goto fail;
+    stage=3;
+    const long size=(long)(sizeof(payload)-1);
+    if(guest_syscall(OP_WRITE,writer,(long)(uintptr_t)payload,size,0)!=size)goto fail;
+    stage=4;
+    if(guest_syscall(OP_FSYNC,writer,0,0,0)!=0)goto fail;
+    stage=5;
+    /* A preexisting mounted inode is resolved once through namei, then
+     * all open flags are applied to that inode, not FS-type branches. */
+    if(guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)path,0xc2,0600)
+       !=-EEXIST)goto fail;
+    if(guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)path,
+                     NAS_LINUX_NATIVE_O_DIRECTORY,0)!=-ENOTDIR)goto fail;
+    /* An O_DIRECTORY|O_CREAT failure must not publish an unwanted inode.
+     * This catches the old distinction between provisional and live nodes. */
+    if(guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)missing_directory,
+                     NAS_LINUX_NATIVE_O_DIRECTORY|0x40,0600)!=-ENOTDIR)
+        goto fail;
+    if(guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)missing_directory,
+                     0,0)!=-ENOENT)goto fail;
+    /* Reader was opened before writer grew this inode. SEEK_END must
+     * see the live VFS inode size, not its original File snapshot. */
+    if(guest_syscall(OP_LSEEK,reader,0,2,0)!=size)goto fail;
+    if(guest_syscall(OP_LSEEK,reader,0,0,0)!=0)goto fail;
+    if(guest_syscall(OP_READ,reader,(long)(uintptr_t)result,size,0)!=size)goto fail;
+    stage=6;
+    for(long i=0;i<size;i++)if(result[i]!=payload[i])goto fail;
+    stage=7;
+    if(guest_syscall(OP_LSEEK,writer,0,0,0)!=0)goto fail;
+    stage=8;
+    if(guest_syscall(OP_READ,writer,(long)(uintptr_t)result,size,0)!=size)goto fail;
+    for(long i=0;i<size;i++)if(result[i]!=payload[i])goto fail;
+    stage=9;
+    if(guest_syscall(OP_CLOSE,reader,0,0,0)!=0)goto fail;
+    if(guest_syscall(OP_CLOSE,writer,0,0,0)!=0)goto fail;
+    stage=10;
+    long reopened=guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)path,0,0);
+    if(reopened<0)goto fail;
+    stage=11;
+    if(guest_syscall(OP_READ,reopened,(long)(uintptr_t)result,size,0)!=size)goto fail;
+    for(long i=0;i<size;i++)if(result[i]!=payload[i])goto fail;
+    if(guest_syscall(OP_CLOSE,reopened,0,0,0)!=0)goto fail;
+    /* Linux real-guest control variable: directory FD owns the inode,
+     * independent of its original dentry string. Rename it, recycle the
+     * old name with a different inode, and ensure subsequent relative
+     * openat and fchdir use the ORIGINAL directory, not the recycled one.
+     * This same source runs x86-64, RV64, AArch64, RAM and VirtIO ext4. */
+    stage=12;
+    if(guest_syscall(OP_MKDIRAT,-100,(long)(uintptr_t)original_dir,
+                     0700,0)!=0)goto fail;
+    stage=13;
+    long dirfd=guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)original_dir,
+                            NAS_LINUX_NATIVE_O_DIRECTORY,0);
+    if(dirfd<0)goto fail;
+    stage=14;
+    if(guest_syscall(OP_RENAMEAT,-100,(long)(uintptr_t)original_dir,
+                     -100,(long)(uintptr_t)new_dir)!=0)goto fail;
+    stage=15;
+    if(guest_syscall(OP_MKDIRAT,-100,(long)(uintptr_t)original_dir,
+                     0700,0)!=0)goto fail;
+    stage=16;
+    long child=guest_syscall(OP_OPENAT,dirfd,(long)(uintptr_t)relative_child,
+                            0x42,0600); /* O_CREAT|O_RDWR */
+    if(child<0)goto fail;
+    stage=17;
+    if(guest_syscall(OP_WRITE,child,(long)(uintptr_t)child_payload,
+                     sizeof(child_payload)-1,0)!=(long)(sizeof(child_payload)-1))
+        goto fail;
+    stage=18;
+    if(guest_syscall(OP_FSYNC,child,0,0,0)!=0)goto fail;
+    if(guest_syscall(OP_CLOSE,child,0,0,0)!=0)goto fail;
+    stage=19;
+    child=guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)moved_child,0,0);
+    if(child<0)goto fail;
+    stage=20;
+    if(guest_syscall(OP_READ,child,(long)(uintptr_t)result,
+                     sizeof(child_payload)-1,0)!=(long)(sizeof(child_payload)-1))
+        goto fail;
+    for(unsigned i=0;i<sizeof(child_payload)-1;i++)
+        if(result[i]!=child_payload[i])goto fail;
+    if(guest_syscall(OP_CLOSE,child,0,0,0)!=0)goto fail;
+    stage=21;
+    if(guest_syscall(OP_FCHDIR,dirfd,0,0,0)!=0)goto fail;
+    if(guest_syscall(OP_CLOSE,dirfd,0,0,0)!=0)goto fail;
+    stage=22;
+    long cwd_bytes=guest_syscall(OP_GETCWD,(long)(uintptr_t)cwd,sizeof(cwd),0,0);
+    if(cwd_bytes!=(long)sizeof(new_dir))goto fail;
+    for(unsigned i=0;i<sizeof(new_dir);i++)
+        if(cwd[i]!=new_dir[i])goto fail;
+    stage=23;
+    if(guest_syscall(OP_WRITE,1,(long)(uintptr_t)dirfd_pass,
+                     sizeof(dirfd_pass)-1,0)!=(long)(sizeof(dirfd_pass)-1))goto fail;
+    stage=24;
+    if(guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)non_dir_parent,
+                     0,0)!=-ENOTDIR)goto fail;
+    stage=25;
+    if(guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)non_dir_dot,
+                     0,0)!=-ENOTDIR)goto fail;
+    stage=26;
+    if(guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)missing_parent,
+                     0,0)!=-ENOENT)goto fail;
+    stage=27;
+    long checked=guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)valid_dot,0,0);
+    if(checked<0)goto fail;
+    if(guest_syscall(OP_CLOSE,checked,0,0,0)!=0)goto fail;
+    stage=28;
+    checked=guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)new_with_dotdot,
+                          0x42,0600);
+    if(checked<0)goto fail;
+    if(guest_syscall(OP_CLOSE,checked,0,0,0)!=0)goto fail;
+    stage=29;
+    if(guest_syscall(OP_WRITE,1,(long)(uintptr_t)pathwalk_pass,
+                     sizeof(pathwalk_pass)-1,0)!=(long)(sizeof(pathwalk_pass)-1))
+        goto fail;
+    stage=30;
+    if(guest_syscall(OP_SYMLINKAT,(long)(uintptr_t)target_basename,
+                     -100,(long)(uintptr_t)link_path,0)!=0)goto fail;
+    stage=31;
+    if(guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)link_path,
+                     0xc2,0600)!=-EEXIST)goto fail;
+    stage=32;
+    if(guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)link_path,0,0)!=-ENOENT)
+        goto fail;
+    stage=33;
+    long from_link=guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)link_path,
+                                 0x42,0600);
+    if(from_link<0)goto fail;
+    stage=34;
+    if(guest_syscall(OP_WRITE,from_link,(long)(uintptr_t)child_payload,
+                     sizeof(child_payload)-1,0)!=(long)(sizeof(child_payload)-1))
+        goto fail;
+    if(guest_syscall(OP_CLOSE,from_link,0,0,0)!=0)goto fail;
+    stage=35;
+    from_link=guest_syscall(OP_OPENAT,-100,(long)(uintptr_t)target_path,0,0);
+    if(from_link<0)goto fail;
+    stage=36;
+    if(guest_syscall(OP_READ,from_link,(long)(uintptr_t)result,
+                     sizeof(child_payload)-1,0)!=(long)(sizeof(child_payload)-1))
+        goto fail;
+    for(unsigned i=0;i<sizeof(child_payload)-1;i++)
+        if(result[i]!=child_payload[i])goto fail;
+    if(guest_syscall(OP_CLOSE,from_link,0,0,0)!=0)goto fail;
+    stage=37;
+    if(guest_syscall(OP_WRITE,1,(long)(uintptr_t)symlink_pass,
+                     sizeof(symlink_pass)-1,0)!=(long)(sizeof(symlink_pass)-1))
+        goto fail;
+    stage=38;
+    if(guest_syscall(OP_WRITE,1,(long)(uintptr_t)passed,sizeof(passed)-1,0)!=(long)(sizeof(passed)-1))goto fail;
+    guest_syscall(OP_EXIT,0,0,0,0);
+    for(;;){}
+fail:
+    ; /* C11 requires a statement immediately after a label. */
+    char digits[3];
+    digits[0]=(char)('0'+stage/10);
+    digits[1]=(char)('0'+stage%10);
+    digits[2]='\n';
+    guest_syscall(OP_WRITE,1,(long)(uintptr_t)failed,sizeof(failed)-1,0);
+    guest_syscall(OP_WRITE,1,(long)(uintptr_t)digits,sizeof(digits),0);
+    guest_syscall(OP_EXIT,1,0,0,0);
+    for(;;){}
+}

@@ -38,6 +38,8 @@ void nas_process_exec_quiesce_siblings(void);
 void nas_process_clear_tid_on_exit(void);
 /* The caller's current VM must be identical to the target thread's VM. */
 void nas_process_clear_tid_for_exit(struct nas_task *thread);
+/* schedule_tail equivalent: best-effort CHILD_SETTID in the child's MM. */
+void nas_process_child_tid_first_dispatch(void);
 uint64_t nas_process_clone_thread(uint64_t *frame,uint64_t stack,
                                  uint64_t parent_tid,uint64_t child_tid,
                                  uint64_t tls);

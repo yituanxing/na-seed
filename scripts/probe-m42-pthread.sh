@@ -2,17 +2,10 @@
 # Genuine Linux distro ELF runtime gate, common on all three target ISAs.
 set -eu
 [ "$#" -eq 1 ] || exit 2
-case "$1" in
-  amd64) runner=scripts/probe-x86-busybox-parity.sh
-         logs=build/busybox-source-parity-x86 ;;
-  riscv64) runner=scripts/probe-riscv64-busybox-matrix.sh
-         logs=build/port-riscv64/full/matrix-source ;;
-  arm64) runner=scripts/probe-aarch64-busybox-matrix.sh
-         logs=build/port-aarch64/full/matrix-source ;;
-  *) exit 2 ;;
-esac
 port=$1
+. scripts/native-qemu-target.sh
 NAS_ALPINE_PROFILE=pthread sh rootfs/alpine/build.sh "$port"
+sh scripts/stage-m42-abi-oracles.sh "$port"
 work="build/external/m42-pthread/$port"
 export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"
 export NAS_ACCEPTANCE_CPIO="$work/rootfs.cpio"
@@ -24,7 +17,13 @@ export NAS_SYSCALL_TRACE=${NAS_SYSCALL_TRACE:-0}
 sh "$runner"
 log="$logs/m42-pthread.clean.log"
 test -s "$log"
-for marker in M42_XZ_THREADS_PASS M42_PTHREAD_PASS; do
+for marker in M42_XZ_THREADS_PASS M42_PTHREAD_PASS \
+    A009_LINUX_PWRITE_APPEND_POSITION_PASS \
+    A010_LINUX_NATIVE_FCNTL_FLAGS_PASS \
+    A009_A010_NATIVE_ABI_DIFFERENTIAL_PASS \
+    A014_NATIVE_BLOCKED_READV_IOV_SNAPSHOT_PASS \
+    A014_NATIVE_BLOCKED_READV_FILE_SNAPSHOT_PASS \
+    A014_NATIVE_TWO_BLOCKING_OWNERSHIP_RACES_3X_PASS; do
     grep -Fxq "$marker" "$log" || {
         echo "[M42 FAIL] missing $marker ($port)" >&2
         tail -140 "$log" >&2
@@ -37,4 +36,4 @@ grep -Fq '[THREAD] clone tid=' "$log" || {
     tail -120 "$log" >&2
     exit 1
 }
-echo "[M42 PASS] $port authentic pthread-driven XZ multithreading"
+echo "[M42+A014 PASS] $port original pthread XZ and real guest blocked readv ownership"

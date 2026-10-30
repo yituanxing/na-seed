@@ -1,0 +1,28 @@
+# One signed Alpine v3.23 original-program batch, same rootfs across three ISAs.
+# All 21 packages are present in upstream v3.23 main/community APKINDEX for
+# x86_64, riscv64 and aarch64. zstd/rsync are intentional old-program regressions.
+# nano stages its genuine ELF but interactive PTY acceptance stays DEFERRED.
+# M82 adds genuine signed GNU Make to the SAME M80 overlay for real incremental
+# builds across tmpfs, upstream RamFS, and physical ext4; no second installer.
+# No application install/build scripts run inside the NaSeed guest.
+grep
+sed
+gawk
+findutils
+coreutils
+jq
+ripgrep
+fd
+tree
+tar
+gzip
+xz
+bzip2
+zip
+unzip
+zstd
+sqlite
+bc
+rsync
+nano
+make

@@ -3,16 +3,27 @@
 set -eu
 
 # GitHub checkout uses fetch-depth: 2, so the parent commit is available.
-git diff --check HEAD^ HEAD
-git diff --check
-git diff --cached --check
+# Vendored upstream bytes are verified against pinned Git blobs by the
+# block driver gate; README/LICENSE files can legitimately begin with
+# Markdown '=======' headings (which Git flags as conflict markers).
+# Keep strict whitespace and conflict checks for ALL first-party code.
+git diff --check HEAD^ HEAD -- . ':(exclude)third_party/**'
+git diff --check -- . ':(exclude)third_party/**'
+git diff --cached --check -- . ':(exclude)third_party/**'
 
 for script in scripts/*.sh; do
     sh -n "$script"
 done
 
+# Architecture contracts MUST gate new features before full QEMU. These
+# checks are semantic ownership boundaries, not file-count heuristics.
+python3 scripts/check-architecture-boundaries.py --self-test
+python3 scripts/check-architecture-boundaries.py
+
 # One canonical kernel-only C runtime, checked on all real target triples.
 sh scripts/check-klib.sh
+sh scripts/check-block-foundation.sh
+sh scripts/check-vfs-provider.sh
 sh scripts/check-task-stacks.sh
 sh scripts/check-m91-kcontext.sh
 sh scripts/check-m95-kthread.sh

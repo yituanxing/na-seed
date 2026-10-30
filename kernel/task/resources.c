@@ -3,6 +3,7 @@
 #include "../fs/mode.h"
 #include "../panic.h"
 #include "../lib/string.h"
+#include "../fs/vfs.h"
 
 /* Single-CPU bounded storage policy, independent of Task/leader identity. */
 static struct nas_fs_context fs_pool[NAS_TASK_LIMIT * 2U];
@@ -30,6 +31,19 @@ struct nas_fs_context *nas_fs_context_copy(const struct nas_fs_context *src) {
     if(!fs) return 0;
     fs->umask=src->umask;
     memcpy(fs->cwd,src->cwd,sizeof(fs->cwd));
+    if(src->cwd_pinned) {
+        if(nas_vfs_node_pin(&src->cwd_node)) {
+            nas_fs_context_put(fs);
+            return 0;
+        }
+        fs->cwd_node=src->cwd_node;
+        fs->cwd_pinned=true;
+    }
+    if(src->cwd_path.dentry &&
+       nas_vfs_path_get(&src->cwd_path,&fs->cwd_path)) {
+        nas_fs_context_put(fs);
+        return 0;
+    }
     return fs;
 }
 struct nas_fs_context *nas_fs_context_get(struct nas_fs_context *fs) {
@@ -40,7 +54,13 @@ struct nas_fs_context *nas_fs_context_get(struct nas_fs_context *fs) {
 }
 void nas_fs_context_put(struct nas_fs_context *fs) {
     if(!fs || !fs->refs) nas_fail("FS context invalid put");
-    if(!--fs->refs) memset(fs,0,sizeof(*fs));
+    if(!--fs->refs) {
+        if(fs->cwd_path.dentry && nas_vfs_path_put(&fs->cwd_path))
+            nas_fail("FS cwd dentry pin corrupted");
+        if(fs->cwd_pinned && nas_vfs_node_unpin(&fs->cwd_node))
+            nas_fail("FS cwd mount pin corrupted");
+        memset(fs,0,sizeof(*fs));
+    }
 }
 struct nas_sighand *nas_sighand_new(void) {
     for(unsigned i=0;i<NAS_TASK_LIMIT * 2U;i++) {

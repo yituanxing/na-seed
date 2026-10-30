@@ -7,6 +7,11 @@
 #define ELF_DYNAMIC 2U
 #define ELF_INTERP 3U
 #define PAGE 4096ULL
+#define ELF_MAX_LOADS 64U
+struct elf_load_interval {
+    uint64_t first, last, begin, filesz, file_offset;
+    unsigned flags;
+};
 static bool checked(uint64_t start,uint64_t count,uint64_t size) {
     return start<=size && count<=size-start;
 }
@@ -83,6 +88,11 @@ bool nas_elf_segments_load(const struct elf_image *image,
     if ((h.type == 2 && opt->bias) || (h.type == 3 && !opt->bias))
         return false;
     struct nas_elf_segment_result result = {0};
+    /* Bounded by the native execve contract, not by the executable's page
+     * count. A large real BusyBox can have thousands of 4KiB code pages. */
+    if (h.phnum > ELF_MAX_LOADS) return false;
+    struct elf_load_interval loads[ELF_MAX_LOADS];
+    unsigned load_count = 0;
     result.phnum = h.phnum;
     bool has_entry = false, has_load = false;
     uint64_t pages = 0;
@@ -110,16 +120,16 @@ bool nas_elf_segments_load(const struct elf_image *image,
             if (n > opt->max_pages - pages) return false;
             pages += n;
         }
+        if ((p->flags & 3U) == 3U) return false;
         if (opt->reject_overlapping_pages)
-            for (unsigned j = 0; j < i; j++) {
-                struct elf_phdr prior;
-                if (!image_phdr(image, &h, j, &prior)) return false;
-                if (prior.type != ELF_LOAD) continue;
-                uint64_t qfirst, qlast;
-                if (!segment_bounds(&prior, image->size, opt, &qfirst, &qlast))
+            for (unsigned j = 0; j < load_count; j++)
+                if (first < loads[j].last && loads[j].first < last)
                     return false;
-                if (first < qlast && qfirst < last) return false;
-            }
+        loads[load_count++] = (struct elf_load_interval){
+            .first=first, .last=last, .file_offset=p->offset,
+            .begin=p->vaddr+opt->bias,.filesz=p->filesz,
+            .flags=p->flags
+        };
         if ((p->flags & 1U) &&
             h.entry >= p->vaddr && h.entry - p->vaddr < p->memsz)
             has_entry = true;
@@ -134,18 +144,60 @@ bool nas_elf_segments_load(const struct elf_image *image,
     if (!has_load || !has_entry || h.entry > UINT64_MAX - opt->bias)
         return false;
     result.entry = h.entry + opt->bias;
-    /* The architecture still provides only map/copy callbacks. For tmpfs
-     * we stream file bytes in bounded blocks; ELF does not require a
-     * physically or virtually contiguous copy of the whole executable. */
+    /* Map the union of PT_LOAD permissions exactly once per page. Both
+     * segment orders yield identical PTEs, including a historical RWX page
+     * when otherwise W^X PT_LOAD segments really share a 4KiB boundary.
+     * Iterate only segment boundaries: metadata cost is O(PH), not O(pages).
+     * The last covering segment supplies snapshot offset provenance; these
+     * private eager snapshots never read their source file after exec. */
+    uint64_t cursor = UINT64_MAX, final = 0;
+    for (unsigned i=0;i<load_count;i++) {
+        if (loads[i].first<cursor) cursor=loads[i].first;
+        if (loads[i].last>final) final=loads[i].last;
+    }
+    uint64_t run_start=0, run_end=0, run_offset=0;
+    unsigned run_flags=0;
+    while (cursor<final) {
+        uint64_t next=final;
+        unsigned flags=0;
+        uint64_t offset=0;
+        for (unsigned i=0;i<load_count;i++) {
+            const struct elf_load_interval *s=&loads[i];
+            if (s->first<=cursor && cursor<s->last) {
+                flags|=s->flags;
+                offset=s->file_offset+(cursor-s->first);
+                if (s->last<next) next=s->last;
+            } else if (s->first>cursor && s->first<next)
+                next=s->first;
+        }
+        if (next<=cursor || (flags && (flags&4U)==0)) return false;
+        if (run_end>run_start && (run_end!=cursor || flags!=run_flags)) {
+            if (ops->record_region && !ops->record_region(ops->ctx,
+                    run_start,run_end-run_start,run_flags,run_offset))
+                return false;
+            run_start=run_end=0;
+        }
+        if (flags) {
+            if (run_end==run_start) {
+                run_start=cursor;run_flags=flags;run_offset=offset;
+            }
+            run_end=next;
+            for (uint64_t va=cursor;va<next;va+=PAGE)
+                if (!ops->map_page(ops->ctx,va,flags))return false;
+        }
+        cursor=next;
+    }
+    if (run_end>run_start && ops->record_region &&
+        !ops->record_region(ops->ctx,run_start,run_end-run_start,
+                            run_flags,run_offset))return false;
+    /* Preserve original PT_LOAD file overwrite order. For tmpfs, stream
+     * bounded blocks without requiring a contiguous inode image pointer. */
+    static const uint8_t zero_bytes[4096]={0};
     for (unsigned i = 0; i < h.phnum; i++) {
         struct elf_phdr ph;
         if (!image_phdr(image, &h, i, &ph)) return false;
         const struct elf_phdr *p = &ph;
         if (p->type != ELF_LOAD) continue;
-        uint64_t first, last;
-        if (!segment_bounds(p, image->size, opt, &first, &last)) return false;
-        for (uint64_t va = first; va < last; va += PAGE)
-            if (!ops->map_page(ops->ctx, va, p->flags)) return false;
         if (p->filesz) {
             if (image->data) {
                 if (!ops->copy_bytes(ops->ctx, p->vaddr + opt->bias,
@@ -164,6 +216,19 @@ bool nas_elf_segments_load(const struct elf_image *image,
                     copied += n;
                 }
             }
+        }
+        /* Clear the full ELF p_memsz-p_filesz tail AFTER copying that
+         * segment, not merely on initial page allocation. A later segment
+         * can overlap the earlier one's nonzero initialized file bytes.
+         * Strict sequential PT_LOAD copy/zero order matches Linux ELF BSS
+         * semantics even for overlapping page boundaries. */
+        const uint64_t bss_first=p->vaddr+opt->bias+p->filesz;
+        const uint64_t bss_last=p->vaddr+opt->bias+p->memsz;
+        for(uint64_t at=bss_first;at<bss_last;) {
+            uint64_t n=bss_last-at;
+            if(n>sizeof(zero_bytes))n=sizeof(zero_bytes);
+            if(!ops->copy_bytes(ops->ctx,at,zero_bytes,n))return false;
+            at+=n;
         }
     }
     *out = result;

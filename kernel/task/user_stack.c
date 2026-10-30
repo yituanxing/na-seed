@@ -52,13 +52,27 @@ static bool put_stack_string(uint64_t *sp, const char *str, uint64_t *address) {
  * Quotes/backslash group arguments; this is NOT a shell or a second ABI.
  * Missing cmdline means legacy M0-M4 regression argv; malformed cmdline fails.
  */
-static char boot_argv_chars[256];
+/* Only the bootloader-selected *initial* argv needs this BSS staging area.
+ * A genuine `sh -c '<multi-command script>'` or dynamic-linker smoke can
+ * easily exceed the old 256-byte limit. Keep it distinct from Linux's
+ * execve ARG_MAX and the 1-MiB actual user stack mapping: the latter still
+ * validates its real pointer/string placement through put_stack_string().
+ * 4096 bytes, including each argument's NUL, remain bounded in kernel BSS. */
+#define NAS_BOOT_ARGV_STORAGE_BYTES 4096U
+static char boot_argv_chars[NAS_BOOT_ARGV_STORAGE_BYTES];
 static const char *boot_argv[NAS_ARGV_MAX];
 static bool boot_argv_override;
 static unsigned boot_argc;
 bool nas_parse_boot_argv(const char *cmdline,
                             const char *const **out_args, unsigned *out_argc) {
     static const char prefix[] = "naseed.argv=";
+    /* A failed second parse must never expose pointers to partially
+     * overwritten strings from an earlier successful boot-argv parse. */
+    boot_argv_override = false;
+    boot_argc = 0;
+    if (out_args) *out_args = 0;
+    if (out_argc) *out_argc = 0;
+    if (!cmdline || !out_args || !out_argc) return false;
     const char *p = cmdline;
     for (unsigned i = 0; i < sizeof(prefix) - 1; i++)
         if (p[i] != prefix[i]) return false;

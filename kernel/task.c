@@ -164,6 +164,7 @@ struct nas_task *nas_task_fork_slot(void) {
         child->signal_force_deliver=0;
         /* Fork creates a new thread-group / task identity. The parent's
          * clear_child_tid address belongs only to the parent's thread. */
+        child->thread_set_tid = 0;
         child->thread_clear_tid = 0;
         child->robust_list_head = 0; /* clone/fork must register its own list */
         child->vfork_child_pid = 0;
@@ -210,6 +211,9 @@ void nas_task_release(struct nas_task *task) {
     if (!task || task == nas_current_task) return;
     /* An abandoned kernel continuation must never leave a dangling waiter. */
     (void)nas_wait_queue_remove(&task->kernel_exec.wait);
+    /* A parked I/O request owns an independent File pin. Drop it while
+     * the Task's resource context is intact, before MM/FS/files teardown. */
+    nas_task_wait_dispose(task);
     /* Releases an independently owned MM reference, including on thread exit. */
     if (task->mm) { nas_mm_put(task->mm); task->mm=0; }
     if (task->fs) { nas_fs_context_put(task->fs); task->fs=0; }
@@ -223,7 +227,6 @@ void nas_task_release(struct nas_task *task) {
     task->group_leader=task;
     task->fds=0;
     task->robust_list_head=0;
-    nas_task_wait_reset(task);
     nas_kernel_execution_reset(&task->kernel_exec);
     task->native_trap_frame=0; /* the freed Task owns no live trap stack */
     task->resume_valid=false;

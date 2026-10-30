@@ -59,17 +59,16 @@ void nas_rv_full_trap_c(struct nas_rv_trap_frame *frame) {
          * one user instruction. Restore old instruction before GDB can
          * read memory, and report TRAP_TRACE, not a normal BRKPT. */
         bool stepped=nas_ptrace_rv_step_hit(tracee,frame->sepc);
-        if(nas_ptrace_user_exception(tracee,NAS_SIGTRAP,stepped?2:1,
-                                      frame->sepc,frame->x[2],frame->sepc)) {
-            uint64_t resumed=nas_task_schedule((uint64_t *)(void *)frame);
-            frame->x[10]=resumed;
-            nas_signal_user_return((uint64_t *)(void *)frame);
-            live=0;
-            return;
-        }
+        bool traced=nas_ptrace_user_exception(tracee,NAS_SIGTRAP,stepped?2:1,
+                                      frame->sepc,frame->x[2],frame->sepc);
+        if(!traced)nas_sched_thread_group_exit(0,NAS_SIGTRAP);
+        uint64_t resumed=nas_task_schedule((uint64_t *)(void *)frame);
+        frame->x[10]=resumed;
+        nas_signal_user_return((uint64_t *)(void *)frame);
         live=0;
+        return;
     }
-    if(exception.kind==NAS_EXC_MEMORY && exception.user &&
+    if(exception.user &&
        nas_current_task && nas_current_task->state==NAS_TASK_RUNNING) {
         struct nas_exception_outcome outcome=
             nas_exception_dispatch(&exception,nas_current_task->mm);
@@ -79,8 +78,10 @@ void nas_rv_full_trap_c(struct nas_rv_trap_frame *frame) {
             live=frame;
             nas_arch_save_user_frame(tracee,0);
             nas_arch_save_fpu(tracee);
+            uint64_t signal_addr=exception.kind==NAS_EXC_ILLEGAL ?
+                                 frame->sepc : stval;
             bool traced=nas_ptrace_user_exception(tracee,outcome.signo,
-                         outcome.si_code,frame->sepc,frame->x[2],stval);
+                         outcome.si_code,frame->sepc,frame->x[2],signal_addr);
             if(!traced)nas_sched_thread_group_exit(0,outcome.signo);
             uint64_t resumed=nas_task_schedule((uint64_t *)(void *)frame);
             frame->x[10]=resumed;

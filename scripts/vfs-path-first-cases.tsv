@@ -1,0 +1,2 @@
+# Exact original BusyBox guest argv and stdout marker; one controlled case.
+path-first	cpio	sh /bin/vfs-path-first-busybox-workload	[PASS] REAL PATH FIRST APP original Debian BusyBox: cwd rename, held FD, mount .., symlink trailing slash	-

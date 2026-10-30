@@ -1,0 +1,48 @@
+#!/bin/sh
+# Unmodified Debian BusyBox 1.37.0 applets drive two independently owned
+# NaSeed filesystem backends. This is the ACTUAL guest workload on three
+# native Linux ABIs, not an in-kernel FS test harness.
+set -eu
+BB=${NAS_APP_BUSYBOX:-/bin/busybox}
+A=${NAS_APP_FS_A:-/ramfs}
+B=${NAS_APP_FS_B:-/tmp}
+# Never silently pass by using the same mount twice.
+[ "$A" != "$B" ]
+for fs in "$A" "$B"; do
+    "$BB" mkdir "$fs/real-app"
+    "$BB" mkdir "$fs/real-app/src"
+    "$BB" mkdir "$fs/real-app/output"
+    printf 'alpha-first\n' > "$fs/real-app/src/first"
+    printf 'beta-second\n' > "$fs/real-app/src/second"
+    [ "$("$BB" cat "$fs/real-app/src/first")" = alpha-first ]
+    "$BB" cp "$fs/real-app/src/first" "$fs/real-app/src/copy"
+    [ "$("$BB" cat "$fs/real-app/src/copy")" = alpha-first ]
+    "$BB" mv "$fs/real-app/src/copy" "$fs/real-app/output/renamed"
+    [ "$("$BB" cat "$fs/real-app/output/renamed")" = alpha-first ]
+    "$BB" cp -R "$fs/real-app/src" "$fs/real-app/copied-tree"
+    [ "$("$BB" cat "$fs/real-app/copied-tree/second")" = beta-second ]
+    "$BB" find "$fs/real-app/src" -type f > "$fs/real-app/list"
+    "$BB" grep -q first "$fs/real-app/list"
+    "$BB" grep -q second "$fs/real-app/list"
+    "$BB" tar -cf "$fs/real-app/archive.tar" -C "$fs/real-app" src
+    "$BB" mkdir "$fs/real-app/unpacked"
+    "$BB" tar -xf "$fs/real-app/archive.tar" -C "$fs/real-app/unpacked"
+    [ "$("$BB" cat "$fs/real-app/unpacked/src/second")" = beta-second ]
+    "$BB" rm -rf "$fs/real-app/unpacked" "$fs/real-app/copied-tree"
+    "$BB" rm -f "$fs/real-app/output/renamed"
+    "$BB" rmdir "$fs/real-app/output"
+    echo "[REAL VFS APP] $fs create/cp/mv/find/grep/tar/extract/rm/rmdir PASS"
+done
+
+# Cross-filesystem cp uses read/write and independently owned metadata;
+# POSIX rename across these mounts must be EXDEV, while BusyBox mv can
+# recover via copy+unlink. Keep source after copy to validate both views.
+"$BB" cp "$A/real-app/src/first" "$B/real-app/from-ramfs"
+"$BB" cp "$B/real-app/src/second" "$A/real-app/from-tmpfs"
+[ "$("$BB" cat "$B/real-app/from-ramfs")" = alpha-first ]
+[ "$("$BB" cat "$A/real-app/from-tmpfs")" = beta-second ]
+"$BB" mv "$A/real-app/from-tmpfs" "$A/real-app/from-tmpfs-moved"
+[ "$("$BB" cat "$A/real-app/from-tmpfs-moved")" = beta-second ]
+"$BB" rm -rf "$A/real-app" "$B/real-app"
+[ ! -e "$A/real-app" ] && [ ! -e "$B/real-app" ]
+echo '[PASS] REAL VFS APP original Debian BusyBox: tmpfs + independent RamFS cross-mount file workloads'

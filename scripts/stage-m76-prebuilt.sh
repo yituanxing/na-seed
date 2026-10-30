@@ -35,7 +35,5 @@ readelf -Ws build/m77-inferior | grep -Fq m77_compute
 readelf -h build/m78-inferior | grep -Fq "$machine"
 readelf -WS build/m78-inferior | grep -Fq '.debug_info'
 readelf -Ws build/m78-inferior | grep -Fq m78_compute
-sh scripts/stage-alpine-prebuilt-overlay.sh "$port" m76-gdb \
-  rootfs/alpine/packages-m76-gdb.txt \
-  scripts/m76-original-elfs.txt scripts/m76-rootfs-copies.tsv
+sh scripts/stage-alpine-prebuilt-overlay.sh "$port" m76-gdb
 echo "[M76/M77 HOST STAGED] original GNU GDB and three real $port C DWARF inferiors"

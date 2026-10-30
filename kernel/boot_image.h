@@ -17,6 +17,13 @@ struct nas_boot_image {
     bool bash, busybox, alpine;
 };
 
+struct limine_file;
+/* Legacy rootless direct-module bootstrap endpoints. The module must
+ * actually be an ELF supplied by Limine, and its name must match the
+ * requested synthetic /bin entry or the architecture's musl interpreter.
+ * This is a boot-source property, never a per-task executable-name policy. */
+const struct limine_file *nas_boot_limine_module_path(const char *path);
+
 /* Select and validate the Limine modules / initramfs source. selected is
  * NULL without an explicit naseed.argv, preserving the legacy boot choice.
  * Return NULL on success; otherwise a static fatal error for caller.

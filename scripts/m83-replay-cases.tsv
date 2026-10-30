@@ -1,0 +1,2 @@
+# Separate real QEMU boot, SAME physical ext4 disk: run persisted native ELF.
+m83-replay	cpio	sh -c '/bin/sh /tests/m83-source-run.sh --replay'	M83_REPLAY_PASS	-	/bin/busybox

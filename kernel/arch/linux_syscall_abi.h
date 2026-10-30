@@ -37,8 +37,12 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_brk: return NAS_SC_brk;
     case __NR_chdir: return NAS_SC_chdir;
     case __NR_chmod: return NAS_SC_chmod;
+    case __NR_chown: return NAS_SC_chown;
     case __NR_fchmod: return NAS_SC_fchmod;
     case __NR_fchmodat: return NAS_SC_fchmodat;
+    case __NR_fchown: return NAS_SC_fchown;
+    case __NR_fchownat: return NAS_SC_fchownat;
+    case __NR_lchown: return NAS_SC_lchown;
     case __NR_clock_gettime: return NAS_SC_clock_gettime;
     case __NR_clock_getres: return NAS_SC_clock_getres;
     case __NR_clock_nanosleep: return NAS_SC_clock_nanosleep;
@@ -60,6 +64,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_fcntl: return NAS_SC_fcntl;
     case __NR_flock: return NAS_SC_flock;
     case __NR_fsync: return NAS_SC_fsync;
+    case __NR_sync: return NAS_SC_sync;
     case __NR_fdatasync: return NAS_SC_fdatasync;
     case __NR_ftruncate: return NAS_SC_ftruncate;
     case __NR_truncate: return NAS_SC_truncate;
@@ -163,6 +168,8 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
 #else
     case 52U: return NAS_SC_fchmod;
     case 53U: return NAS_SC_fchmodat;
+    case 54U: return NAS_SC_fchownat;
+    case 55U: return NAS_SC_fchown;
     case 48U: return NAS_SC_faccessat; /* Linux asm-generic */
     case 439U: return NAS_SC_faccessat2; /* same Linux syscall ID */
     case 19U: return NAS_SC_eventfd2;
@@ -214,6 +221,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 278U: return NAS_SC_getrandom; /* asm-generic Linux */
     case 59U: return NAS_SC_pipe2;
     case 25U: return NAS_SC_fcntl;
+    case 81U: return NAS_SC_sync; /* asm-generic sync */
     case 82U: return NAS_SC_fsync;
     case 83U: return NAS_SC_fdatasync;
     case 46U: return NAS_SC_ftruncate;
@@ -316,11 +324,13 @@ static inline enum nas_syscall_op nas_linux_decode_call(const uint64_t *args) {
     if (args[0] == clone_nr) {
         /* musl posix_spawn uses CLONE_VM|CLONE_VFORK|SIGCHLD with
          * its own userspace child stack. Unsupported thread clones are ENOSYS. */
-        /* musl pthread_create: VM, FS, files, sighand, thread,
-         * sysvsem, TLS, parent TID and child-clear TID. */
-        if (args[1] == (0x100ULL|0x200ULL|0x400ULL|0x800ULL|
-                        0x10000ULL|0x40000ULL|0x80000ULL|
-                        0x100000ULL|0x200000ULL|0x400000ULL))
+        /* Native glibc and musl pthreads request the SAME shared thread
+         * semantics. Musl additionally passes CLONE_DETACHED (0x400000),
+         * documented by Linux UAPI as unused/ignored. Accept precisely
+         * those two forms without widening any required ownership flags. */
+        const uint64_t pthread_flags=0x100ULL|0x200ULL|0x400ULL|0x800ULL|
+            0x10000ULL|0x40000ULL|0x80000ULL|0x100000ULL|0x200000ULL;
+        if ((args[1] & ~0x400000ULL)==pthread_flags)
             return NAS_SC_clone_thread;
         if (args[1] == (0x00000100ULL|0x00004000ULL|17ULL))
             return NAS_SC_vfork;

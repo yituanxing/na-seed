@@ -1,0 +1,48 @@
+#!/bin/sh
+# Genuine, unmodified Debian BusyBox applets against SAME persistent
+# external VirtIO ext4 volume in separate boots. All three ISA run this
+# exact script. No handwritten syscall probe/ramdisk substitutes.
+set -eu
+BB=${NAS_APP_BUSYBOX:-/bin/busybox}
+M=${NAS_APP_FS:-/mnt}
+phase=${1:-}
+case "$phase" in
+create)
+    "$BB" mkdir "$M/real-app-disk"
+    "$BB" mkdir "$M/real-app-disk/src"
+    "$BB" mkdir "$M/real-app-disk/dst"
+    printf 'persistent-hello\n' > "$M/real-app-disk/src/alpha"
+    printf 'persistent-second\n' > "$M/real-app-disk/src/beta"
+    "$BB" cp -R "$M/real-app-disk/src" "$M/real-app-disk/copied"
+    "$BB" cmp "$M/real-app-disk/src/beta" "$M/real-app-disk/copied/beta"
+    "$BB" cp "$M/real-app-disk/src/alpha" "$M/real-app-disk/dst/move-me"
+    "$BB" mv "$M/real-app-disk/dst/move-me" "$M/real-app-disk/dst/moved"
+    "$BB" cmp "$M/real-app-disk/src/alpha" "$M/real-app-disk/dst/moved"
+    "$BB" tar -cf "$M/real-app-disk/archive.tar" -C "$M/real-app-disk" src
+    "$BB" find "$M/real-app-disk/src" -type f > "$M/real-app-disk/list"
+    "$BB" grep -q alpha "$M/real-app-disk/list"
+    "$BB" grep -q beta "$M/real-app-disk/list"
+    printf 'created-before-reboot\n' > "$M/real-app-disk/phase"
+    "$BB" sync
+    echo '[PASS] REAL VIRTIO EXT4 BUSYBOX CREATE: cp/mv/tar/find/grep/sync'
+    ;;
+replay)
+    [ "$("$BB" cat "$M/real-app-disk/phase")" = created-before-reboot ]
+    [ "$("$BB" cat "$M/real-app-disk/src/alpha")" = persistent-hello ]
+    [ "$("$BB" cat "$M/real-app-disk/src/beta")" = persistent-second ]
+    "$BB" cmp "$M/real-app-disk/src/alpha" "$M/real-app-disk/dst/moved"
+    "$BB" cmp "$M/real-app-disk/src/beta" "$M/real-app-disk/copied/beta"
+    "$BB" mkdir "$M/real-app-disk/unpacked"
+    "$BB" tar -xf "$M/real-app-disk/archive.tar" -C "$M/real-app-disk/unpacked"
+    "$BB" cmp "$M/real-app-disk/src/beta" "$M/real-app-disk/unpacked/src/beta"
+    "$BB" rm -rf "$M/real-app-disk/unpacked" "$M/real-app-disk/copied"
+    "$BB" rm -f "$M/real-app-disk/dst/moved"
+    "$BB" rmdir "$M/real-app-disk/dst"
+    printf 'verified-after-reboot\n' > "$M/real-app-disk/phase"
+    "$BB" sync
+    echo '[PASS] REAL VIRTIO EXT4 BUSYBOX REBOOT: persisted bytes, tar, rm, rmdir'
+    ;;
+*)
+    echo '[FAIL] wrong real BusyBox disk workload phase' >&2
+    exit 2 ;;
+esac

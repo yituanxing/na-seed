@@ -3,8 +3,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 /* Open-description lifetime and terminal state are architecture-independent.
- * Device slots are shared by fork/dup; user pointers are touched only by the
- * current task through the syscall layer's file operations. */
+ * Device slots are shared by fork/dup; the read/write data plane accepts
+ * only kernel buffers, prepared at the common syscall boundary. */
 #define NAS_PTY_LIMIT 8U
 int nas_pty_new(unsigned slot);
 int nas_pty_attach(unsigned number,unsigned slot);
@@ -14,10 +14,16 @@ bool nas_pty_present(unsigned number);
 bool nas_pty_controlling(void);
 unsigned nas_pty_number(unsigned slot);
 void nas_pty_release(unsigned slot);
-uint64_t nas_pty_read(uint64_t fd,uint64_t dst,uint64_t count);
-uint64_t nas_pty_write(uint64_t fd,uint64_t src,uint64_t count);
+uint64_t nas_pty_read(unsigned slot,uint8_t *kernel_dst,uint64_t count);
+/* Side-effect-free read budget: available bytes, EOF (0), or -errno.
+ * The caller may prepare exactly this many output bytes before consuming. */
+uint64_t nas_pty_read_plan(unsigned slot,uint64_t requested);
+uint64_t nas_pty_write(unsigned slot,const uint8_t *kernel_src,uint64_t count);
 uint64_t nas_pty_ioctl(uint64_t fd,uint64_t command,uint64_t arg);
 uint16_t nas_pty_poll(unsigned slot,uint16_t events);
 bool nas_pty_read_ready(unsigned slot);
 bool nas_pty_write_ready(unsigned slot);
+/* Deferred PTY ISIG notifications: consumed by scheduler, never delivered
+ * while the master write() syscall still owns its current Task and FD. */
+unsigned nas_pty_take_signal(uint64_t *sid,uint64_t *pgid);
 #endif

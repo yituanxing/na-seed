@@ -9,8 +9,12 @@ HOME=/tmp
 LC_ALL=C
 LANG=C
 export PATH HOME LC_ALL LANG
-original=/tests/m57-source
-src=/tmp/m57-sqlite
+# Default M57 remains its original tmpfs test. M84 selects the SAME genuine
+# configure/build/SQL oracle on physical ext4 by setting work/database roots
+# and skipping only the unrelated large-tmpfs preflight and source copy.
+original=${NAS_SQLITE_ORIGINAL:-/tests/m57-source}
+src=${NAS_SQLITE_WORK:-/tmp/m57-sqlite}
+db=${NAS_SQLITE_DB:-/tmp/m57-real-sqlite.db}
 test -s "$original/configure"
 test -s "$original/sqlite3.c"
 test -s "$original/shell.c"
@@ -23,14 +27,18 @@ echo M57_GENUINE_UPSTREAM_SOURCE_PASS
 stage=large-regular-file-abi
 # A real 64-MiB sparse tmpfs offset exercises the common inode index,
 # pwrite/pread and shrink/regrow guarantees before expensive SQLite linking.
-cd /tmp
-/usr/bin/gcc -O2 -std=c11 -Wall -Wextra -Werror -static \
-    /tests/m57-largefile.c -o /tmp/m57-largefile
-/tmp/m57-largefile
-echo M57_LINUX_LARGE_TMPFS_INODE_PASS
+if [ "${NAS_SQLITE_SKIP_LARGEFILE:-0}" != 1 ]; then
+    cd /tmp
+    /usr/bin/gcc -O2 -std=c11 -Wall -Wextra -Werror -static \
+        /tests/m57-largefile.c -o /tmp/m57-largefile
+    /tmp/m57-largefile
+    echo M57_LINUX_LARGE_TMPFS_INODE_PASS
+fi
 
 stage=copy-upstream-to-tmpfs
-/bin/busybox cp -R "$original" "$src"
+if [ "${NAS_SQLITE_SKIP_SOURCE_COPY:-0}" != 1 ]; then
+    /bin/busybox cp -R "$original" "$src"
+fi
 test -s "$src/configure"
 cd "$src"
 
@@ -57,7 +65,6 @@ test "$("$sqlite" :memory: 'SELECT 7*6;')" = 42
 echo M57_NEW_SQLITE_CLI_EXEC_PASS
 
 stage=file-backed-database-commit
-db=/tmp/m57-real-sqlite.db
 test ! -e "$db"
 # Actual DELETE rollback journal, not memory/temp-only SQL and not WAL;
 # WAL's cross-process file-backed MAP_SHARED is a separate kernel capability.

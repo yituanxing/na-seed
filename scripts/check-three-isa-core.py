@@ -9,7 +9,12 @@ import re
 root=Path(__file__).resolve().parent.parent
 srcs=[line.strip() for line in (root/"scripts/full-kernel-core.sources").read_text().splitlines()
       if line.strip() and not line.startswith("#")]
-assert len(srcs)==len(set(srcs))==59, "common kernel TU manifest drift"
+assert srcs and len(srcs)==len(set(srcs)), "duplicate/empty shared kernel TU manifest"
+# The versioned manifest, not a second hand-maintained count, defines the
+# complete shared core. Architecture-specific link audits below cross-check it.
+for required in ("kernel/mm/heap.c", "kernel/fs/vfs.c",
+                 "kernel/fs/lookup.c", "kernel/fs/vfs_providers.c"):
+    assert required in srcs, f"critical common VFS/allocator TU missing: {required}"
 make=(root/"Makefile").read_text()
 defs={}
 for line in make.splitlines():
@@ -40,6 +45,12 @@ for port in ("aarch64","riscv64"):
         raise SystemExit(f"native {port} bypassed shared kernel TU manifest")
     if "kernel/arch/" not in script:
         raise SystemExit(f"native {port} missing actual CPU/MMU providers")
+# Block layer/ramdisk must be linked on all ISAs and remain kernel only.
+for source in ("kernel/block/device.c", "kernel/block/ramdisk.c"):
+    data=(root/source).read_text()
+    for forbidden in ("user_byte(", "nas_user_write_bytes(", "__NR_", "nas_fs_syscall("):
+        if forbidden in data:
+            raise SystemExit(f"BlockDevice acquired syscall/user address policy: {source}")
 # Ensure syscall-ABI owners remain separate from the historical FS dispatcher.
 fs_dispatch = (root/"kernel/fs/syscall.c").read_text()
 for path, symbol in (("kernel/fs/namespace_syscall.c", "nas_fs_resolve_path"),
@@ -66,17 +77,222 @@ for source in (root/"kernel").rglob("*"):
         raise SystemExit(f"obsolete ambiguous page release API in {source}; use frame_put")
     for old in ("descriptors[", "file_slot[", "fd_cloexec["):
         if old in data: raise SystemExit(f"old FD storage escaped in {source}: {old}")
+# One shared VFS namei owner: no lexical path resolver may erase a
+# regular-file parent or a symlink before the component walker sees it.
+lookup=(root/"kernel/fs/lookup.c").read_text()
+namespace=(root/"kernel/fs/namespace_syscall.c").read_text()
+vfs_src=(root/"kernel/fs/vfs.c").read_text()
+if not all(symbol in lookup for symbol in (
+        "int nas_fs_lookup_parent(", "int nas_fs_canonical_candidate(",
+        "int nas_vfs_join_child(")):
+    raise SystemExit("shared namespace parent/candidate/leaf owner missing")
+if ("nas_fs_canonical_candidate(raw,out)" not in namespace or
+        "static bool has_dot_component(" in namespace or
+        "static int vfs_parent(" in vfs_src or
+        "int nas_path_resolve(" in (root/"kernel/path.c").read_text()):
+    raise SystemExit("old lexical namespace walker returned")
+# All public absolute-path compatibility mutations are now thin wrappers
+# around owned Path-first parent/child operations. Neither a second open
+# transaction nor old string/mount helpers may silently reappear.
+for obsolete in ("nas_vfs_open_inode(", "vfs_mutable_parent(",
+                 "active_mountpoint(", "dentry_prepare_parent(",
+                 "nas_fs_resolve_create_target("):
+    for source in ("kernel/fs/vfs.c", "kernel/fs/vfs.h",
+                   "kernel/fs/lookup.c", "kernel/fs/lookup.h",
+                   "kernel/fs/syscall.c"):
+        if obsolete in (root/source).read_text():
+            raise SystemExit(f"parallel legacy VFS algorithm returned: {obsolete} in {source}")
+for wrapper, delegate in (("nas_vfs_create(", "nas_vfs_create_child("),
+                          ("nas_vfs_mkdir(", "nas_vfs_mkdir_child("),
+                          ("nas_vfs_unlink(", "nas_vfs_unlink_child("),
+                          ("nas_vfs_rename(", "nas_vfs_rename_child_with_intent("),
+                          ("nas_vfs_link(", "nas_vfs_link_path_child("),
+                          ("nas_vfs_symlink(", "nas_vfs_symlink_child(")):
+    if wrapper not in vfs_src or delegate not in vfs_src:
+        raise SystemExit(f"VFS namespace Path-first bridge missing: {wrapper}")
+metadata_src=(root/"kernel/fs/metadata_syscall.c").read_text()
+open_src=(root/"kernel/fs/syscall.c").read_text()
+if ("nas_fs_bootstrap_candidate(&request,candidate)" not in metadata_src or
+        "nas_fs_bootstrap_endpoint(path)" not in metadata_src or
+        "nas_fs_bootstrap_candidate(request,candidate)" not in open_src):
+    raise SystemExit("stat/open bootstrap path bypasses the shared endpoint whitelist")
+for source in ("kernel/fs/vfs_providers.c", "ports/littlefs/vfs_port.c",
+               "ports/lwext4/guest_vfs.c"):
+    if "nas_vfs_join_child(" not in (root/source).read_text():
+        raise SystemExit(f"provider duplicates leaf join: {source}")
+vfs_providers=(root/"kernel/fs/vfs_providers.c").read_text()
+# Stable VFS mount storage: bootstrap without heap, then grow in
+# address-stable chunks. Open File, Dentry and mount-parent Path hold a
+# published superblock address; an array realloc/memmove is forbidden.
+# This is the migrated form of the original fixed-table architecture gate,
+# not a skip/relaxation of its mount ownership requirements.
+vfs_src=(root/"kernel/fs/vfs.c").read_text()
+for item in ("struct nas_vfs_mount superblock;",
+             "const struct nas_vfs_mount *registration;",
+             "struct mount_slot_chunk {",
+             "static struct mount_slot bootstrap_mounts[NAS_VFS_MOUNT_CHUNK_SIZE];",
+             "static struct mount_slot *mount_slot_at(unsigned index)",
+             "struct mount_slot_chunk *chunk=nas_heap_calloc(1,sizeof(*chunk));",
+             "if(mount_slots>=NAS_VFS_MOUNT_MAX)return -ENOSPC;",
+             "mount_slot_at(slot)->superblock.mountpoint=mount_slot_at(slot)->path;",
+             "(*mount_slot_at(at))=(struct mount_slot){0};",
+             "const struct nas_fs_node *anchor=mount_parent_inode(slot);",
+             "const struct nas_fs_node *owner=mount_parent_inode(slot);",
+             "const struct nas_fs_node *covered=mount_covered_inode(mount_slot_at(at));"):
+    if item not in vfs_src:
+        raise SystemExit(f"unstable VFS-owned mount/parent identity: {item}")
+if ("struct mount_slot mounts[" in vfs_src or
+        "NAS_VFS_MOUNT_LIMIT" in vfs_src or
+        "bootstrap_mounts=realloc(" in vfs_src):
+    raise SystemExit("VFS mount superblock addresses must not be relocated")
+# Mount parent/covered identities now live ONLY on reference-counted
+# Paths and their Dentries: do not require a deleted tuple or allow it
+# to return under another name. This is an architectural contract
+# strengthening, not a lowered CI acceptance threshold.
+mount_owner = re.search(r"struct\s+mount_slot\s*\{(.*?)\};",vfs_src,re.S)
+if not mount_owner:
+    raise SystemExit("VFS has no explicit stable mount_slot ownership")
+for obsolete in ("parent_mount_id", "parent_backend_inode", "parent_ino",
+                 "parent_node", "covered_node", "parent_anchored",
+                 "parent_pinned", "covered_pinned"):
+    # Restrict the invariant to persistent mount fields. New Path-first
+    # operations legitimately name their ephemeral local inode parent_node;
+    # a blanket source-wide grep would reject exactly the migration guarded.
+    if re.search(r"\b"+obsolete+r"\b",mount_owner.group(1)):
+        raise SystemExit(f"copied mount identity reintroduced: {obsolete}")
+if "mounts[i]=mounts[i+1]" in vfs_src or "mounts[count++]" in vfs_src:
+    raise SystemExit("packed mount registry would invalidate open File mounts")
+# One shared namei, not a parallel longest-prefix filesystem traversal.
+# The only direct VFS mount-table dispatch is '/' root bootstrap. Upper
+# overlay misses cross to the original covered Path in THAT mount only.
+if ("return nas_fs_lookup_node(absolute,false,out,canonical);" not in vfs_src or
+    "lookup_covered_underlay(parent,absolute,out)" not in vfs_src or
+    "mount_parent_visible(" in vfs_src or
+    "for(unsigned attempt=0;attempt<count;attempt++)" in vfs_src or
+    "return nas_vfs_lookup(absolute,out);" in vfs_src):
+    raise SystemExit("duplicate direct VFS mount-prefix/namei walker returned")
+# No direct/callback inode->global-path escape hatch can hide inside
+# socket, metadata, task, or a newly introduced syscall owner. The earlier
+# hand-selected file audit missed AF_UNIX, which is a real Linux pathname
+# syscall. Audit ALL runtime kernel C/H sources instead of guessing which
+# syscall file might add another duplicate.
+for directory in ("kernel", "ports", "scripts", "tests"):
+    for source in (root/directory).rglob("*"):
+        if source.suffix not in (".c", ".h"): continue
+        data=source.read_text()
+        if "nas_vfs_directory_path" in data or ".directory_path=" in data:
+            raise SystemExit(f"obsolete reverse VFS name owner in {source}")
+socket_src=(root/"kernel/fs/socket_syscall.c").read_text()
+unix_src=(root/"kernel/fs/unix_socket.c").read_text()
+# AF_UNIX pathnames are first-class VFS special inodes. A bound listener
+# owns one positive Dentry Path for the shared open-description lifetime;
+# neither the syscall adapter nor the socket backend may reconstruct a
+# global pathname or dispatch a legacy tmpfs path-keyed lookup.
+for token in ("nas_fs_kernel_path_begin(",
+              "nas_fs_lookup_parent_at(",
+              "nas_fs_lookup_path_at(",
+              "nas_vfs_path_put(&parent)",
+              "nas_vfs_path_put(&found)",
+              "nas_fs_path_end(&request)"):
+    if token not in socket_src:
+        raise SystemExit(f"AF_UNIX bypasses shared owned FS Path: {token}")
+for token in ("nas_vfs_mknod_child(parent,leaf,",
+              "nas_vfs_path_node(target,&node)",
+              "nas_vfs_path_put(&s->bound)",
+              "a->mount_id==b->mount_id", "a->inode==b->inode"):
+    if token not in unix_src:
+        raise SystemExit(f"AF_UNIX lost stable inode/path ownership: {token}")
+for source,body in (("socket_syscall.c",socket_src),("unix_socket.c",unix_src)):
+    for forbidden in ("nas_vfs_path_string(","nas_path_join_raw(",
+                      "tmp_find(","tmp_create(","tmp_parent_check(",
+                      "tmp_path(","tmp_number(","bootfs_find("):
+        if forbidden in body:
+            raise SystemExit(f"AF_UNIX legacy string namespace returned: "
+                             f"{source}: {forbidden}")
+# Ordinary directory Files and cwd never ask a provider to reconstruct
+# a reverse pathname. Provider-internal ext4 identity->path is still
+# necessary because upstream libext4 uses path-based I/O.
+for source in ("kernel/fs/vfs.c", "kernel/fs/vfs.h",
+               "kernel/fs/vfs_providers.c", "kernel/fs/namespace_syscall.c",
+               "ports/ramfs/vfs_port.c", "ports/lwext4/guest_vfs.c"):
+    src=(root/source).read_text()
+    if "nas_vfs_directory_path(" in src or ".directory_path=" in src:
+        raise SystemExit(f"provider inode-to-global-path hook returned: {source}")
+# A pinned empty ext4 directory is safely detached, never recursively
+# removed before its last owned File/cwd inode lease reaches zero.
+if "unlink_open_dir_safe" not in (root/"kernel/fs/vfs.h").read_text() or \
+   ".unlink_open_dir_safe=true" not in (root/"ports/lwext4/guest_vfs.c").read_text() or \
+   "ext_stage_orphan(ctx,path,number,true)" not in (root/"ports/lwext4/guest_vfs.c").read_text():
+    raise SystemExit("ext4 opened-directory rmdir must defer inode destruction")
+# The original ext4 port may NOT silently treat a directory rename
+# replacement as a file truncate. All ordinary and empty-directory
+# victims use one typed staged-inode protocol with a safe emptiness check.
+ext4_port=(root/"ports/lwext4/guest_vfs.c").read_text()
+for token in ("ext_dir_empty(", "ext_remove_staged(", "ext_move_staged(",
+              "ext_stage_orphan(", "name[0]=='d'", "nonempty?-ENOTEMPTY:0"):
+    if token not in ext4_port:
+        raise SystemExit(f"ext4 typed directory-orphan contract missing: {token}")
+if ".rename_replace_open_safe=true" not in ext4_port or \
+   "ext4_dir_rm(hidden)" in ext4_port:
+    raise SystemExit("unsafe ext4 open-directory replace lifecycle")
+# Borrowed inode identity is never trusted solely by its pointer. Mounted
+# VFS validation must check the live mount registry before dereferencing
+# a possibly retired descriptor; tmpfs checks its monotonic inode number.
+if "validate_inode" not in (root/"kernel/fs/vfs.h").read_text() or \
+   "tmp_validate_inode(" not in vfs_providers or \
+   ".validate_inode=tmp_validate_inode" not in vfs_providers or \
+   "if(node->filesystem!=node->mount->type)return -EINVAL;" not in vfs_src:
+    raise SystemExit("VFS inode-incarnation validator or safe mount boundary missing")
+# The ext4 last-link orphan protocol is entirely within the upstream
+# adapter and VFS inode lifetime contract, not a vendor fork. A readable,
+# writable, unlink-open File must retain its data until final unpin.
+vfs_h=(root/"kernel/fs/vfs.h").read_text()
+ext4_port=(root/"ports/lwext4/guest_vfs.c").read_text()
+if "unlink_open_file_safe" not in vfs_h or \
+   "nas_vfs_node_has_lease(" not in (root/"kernel/fs/vfs.c").read_text() or \
+   "ext_stage_orphan(" not in ext4_port or \
+   "ext_last_inode_unpin(" not in ext4_port or \
+   "ext_orphan_prepare(" not in ext4_port or \
+   ".unlink_open_file_safe=true" not in ext4_port or \
+   ".rename_replace_open_safe=true" not in ext4_port or \
+   "ext_move_staged(hidden,to,is_dir)" not in ext4_port or \
+   "EXT4_ORPHAN_DIRECTORY" not in ext4_port:
+    raise SystemExit("ext4 opened-last-link VFS orphan protocol incomplete")
 # M63: path references live ONLY in namespace dentries, not sparse inodes.
 tmp_h=(root/"kernel/tmpfs.h").read_text()
 tmp_c=(root/"kernel/tmpfs.c").read_text()
 tmp_ns=(root/"kernel/fs/tmp_namespace.c").read_text()
-if "char path[256];" not in tmp_h or "struct nas_tmp_dentry" not in tmp_h:
-    raise SystemExit("lost namespace-owned dentry")
+if "struct nas_tmp_dentry" not in tmp_h or \
+   "const void *parent_inode;" not in tmp_h or "char name[256];" not in tmp_h:
+    raise SystemExit("tmpfs must own a parent-inode + one-basename dentry")
+if "char path[256];" in tmp_h:
+    raise SystemExit("absolute path cache reintroduced into tmpfs dentry")
+if "tmp_parent(" in tmp_h or "bool tmp_parent(" in tmp_ns:
+    raise SystemExit("dead second tmpfs lexical parent helper returned")
+for required in ("tmp_create_at(", "tmp_mkdir_at(", "tmp_unlink_at(",
+                 "tmp_rename_at(", "tmp_link_at(", "tmp_symlink_at(",
+                 "tmp_child_entry_inode(", "tmp_dir_parent_inode("):
+    if required not in vfs_providers:
+        raise SystemExit(f"tmpfs VFS provider bypassed parent inode: {required}")
+if "tmp_child_path(" in vfs_providers:
+    raise SystemExit("tmpfs reopened old string-based namespace mutations")
+if "source->parent_inode=new_parent;" not in tmp_ns or \
+   "source->name" not in tmp_ns or "d->path" in tmp_ns:
+    raise SystemExit("tmpfs directory rename must update one dentry edge")
 inode_part=tmp_h.split("struct nas_tmp_file {")[1].split("};")[0]
 if "char path[" in inode_part or " linked" in inode_part:
     raise SystemExit("name/link boolean leaked back into tmpfs inode")
-for text in ("int tmp_link(", "int tmp_rename(", "tmp_child_entry(", "tmp_remove_entry("):
+for text in ("int tmp_link_at(", "int tmp_rename_at(",
+             "tmp_child_entry_inode(", "tmp_remove_entry("):
     if text not in tmp_ns: raise SystemExit(f"lost dentry namespace behavior: {text}")
+# The old absolute-path tmpfs entrypoints were unreferenced by production
+# after AF_UNIX adopted the same VFS Path owner as regular namespace syscalls.
+# They must not become a second pathname engine under new names.
+for obsolete in ("tmp_path(", "tmp_find(", "tmp_create(",
+                 "tmp_parent_check(", "tmp_mkdir(", "tmp_unlink(",
+                 "tmp_rename(", "tmp_link(", "tmp_symlink("):
+    if obsolete in tmp_ns or obsolete in tmp_h:
+        raise SystemExit(f"obsolete absolute-path tmpfs API returned: {obsolete}")
 for text in ("int tmp_link(", "int tmp_rename(", "struct nas_tmp_file *tmp_find("):
     if text in tmp_c: raise SystemExit(f"inode backend acquired pathname owner: {text}")
 # M64: one per-thread wait snapshot owns all parked syscall readiness state.
@@ -95,9 +311,12 @@ for old in ("static bool task_io_ready(", "static bool task_wait_ready(",
 epoll=(root/"kernel/fs/epoll.c").read_text()
 fsops=(root/"kernel/fs/file_ops.h").read_text()
 file_io=(root/"kernel/fs/file_io.c").read_text()
-for name,body in (("blocked I/O",task_wait),("epoll",epoll)):
-    if "nas_fs_poll_description(" not in body:
-        raise SystemExit(f"{name} lost description-owned readiness")
+if ("nas_fs_io_ready(task->wait.pending_io,task)" not in task_wait or
+    "nas_fs_poll_description(slot,events)" not in file_io or
+    "nas_fs_io_ready(" not in file_io):
+    raise SystemExit("blocked I/O lost pinned File-owned readiness")
+if "nas_fs_poll_description(" not in epoll:
+    raise SystemExit("epoll lost description-owned readiness")
 if "switch(w->kind)" in epoll or "nas_pipe_poll_readable(" in epoll:
     raise SystemExit("epoll reintroduced backend-kind readiness switch")
 if "poll_description" not in fsops or "nas_fs_poll_description(" not in file_io:
@@ -179,8 +398,15 @@ if "task_retry_in_resumed_context" in completion or "task_replay(" in completion
     raise SystemExit("legacy syscall dispatch switch survived native C continuation")
 if "return task->wait.finish(task);" not in completion or "self->wait.finish=finish;" not in sched:
     raise SystemExit("resumed kernel C stack does not invoke owning syscall provider")
-if "finish_io_provider(" not in (root/"kernel/syscall/dispatch.c").read_text():
-    raise SystemExit("blocking I/O providers must own their retry, not Task scheduler")
+dispatch=(root/"kernel/syscall/dispatch.c").read_text()
+if ("finish_io(struct nas_task *task)" not in dispatch or
+    "nas_fs_io_resume(task->wait.pending_io)" not in dispatch or
+    "nas_task_block(frame,nr,fd,buf,count,0,finish_io)" not in dispatch or
+    "nas_fs_io_should_block(pending,rc,false)" not in completion):
+    raise SystemExit("blocked continuation lost pinned File I/O provider retry")
+for forbidden in ("finish_readv(","finish_writev(","nas_fs_fd_readv(a[0],a[1],a[2])"):
+    if forbidden in dispatch:
+        raise SystemExit(f"blocked I/O reimported mutable user metadata: {forbidden}")
 if "nas_sched_scan_next(&scan,&slot)" not in sched or \
    "nas_sched_scan_init(&scan,native_cursor)" not in sched:
     raise SystemExit("native scheduler bypasses canonical complete-ring scan")
@@ -269,8 +495,14 @@ if "nas_kthread_park_until(&sem->waiters" not in (root/"kernel/task/k_sync.c").r
 if "scheduled_after_user_entry" not in (root/"kernel/task/kthread_boot.c").read_text():
     raise SystemExit("native kernel worker is not resumed by real user scheduler")
 tty=(root/"kernel/drivers/tty.c").read_text()
-if "nas_mmu_user_writable(" in tty or "nas_user_address_writable(dst+i)" not in tty:
-    raise SystemExit("TTY is checking hardware PTE WRITE instead of the logical COW VMA right")
+file_io=(root/"kernel/fs/file_io.c").read_text()
+usercopy=(root/"kernel/mm/usercopy.c").read_text()
+# NAS-A002: the physical TTY is a kernel-buffer provider. COW validation is
+# now owned by the common FD read adapter, not by each device backend.
+if ("nas_mmu_user_writable(" in tty or
+        "nas_user_prepare_write(address+done,n)" not in file_io or
+        "nas_mm_break_cow(mm,at,access,false)" not in usercopy):
+    raise SystemExit("common FileOps read path lost fault-aware COW preflight")
 cow=(root/"kernel/mm/mm.c").read_text()
 if "nas_mm_fork_cow(parent->mm)" not in (root/"kernel/task/process.c").read_text():
     raise SystemExit("fork is not using refcounted, shared-frame private COW")

@@ -54,9 +54,8 @@ static uint64_t task_resume_syscall(struct nas_task *task) {
  * Caught/blocked SIGPIPE queues are handled by the signal producer after
  * the default-termination fast path; a custom handler runs on user return.
  */
-bool nas_sched_sigpipe_default(uint64_t fd) {
-    return TASK.pid!=1 && fd < NAS_FD_LIMIT &&
-        (TASK.fds->entries[fd].kind == FD_PIPE_W || TASK.fds->entries[fd].kind == FD_SOCKET) &&
+bool nas_sched_sigpipe_default(bool pipe_like) {
+    return TASK.pid!=1 && pipe_like &&
         signal_actions[NAS_SIGPIPE][0] == 0 &&
         !(blocked_signals & (1ULL << (NAS_SIGPIPE - 1)));
 }
@@ -70,40 +69,30 @@ enum nas_blocked_completion nas_blocked_complete(struct nas_task *task,
         nas_fail("M94 blocked completion requires selected Task");
     if(!task->wait.pending_valid)return NAS_BLOCKED_COMPLETE;
     const enum nas_syscall_op nr=(enum nas_syscall_op)task->wait.blocked_op;
-    const uint64_t fd=task->wait.blocked_args[0];
+    const struct nas_pending_io *pending=task->wait.pending_io;
     const uint64_t rc=task_resume_syscall(task);
     const bool writing=nr==NAS_SC_write || nr==NAS_SC_writev;
     if((int64_t)rc==-EPIPE && writing) {
-        if(nas_sched_sigpipe_default(fd)) {
+        if(nas_sched_sigpipe_default(nas_fs_io_pipe_like(pending))) {
             nas_sched_child_exit(0,NAS_SIGPIPE);
             return NAS_BLOCKED_TERMINATED;
         }
-        nas_signal_broken_pipe(fd);
+        nas_signal_broken_pipe(nas_fs_io_pipe_like(pending));
     }
     /* Preserve internal retry semantics when another task consumes the
      * readiness between poll and execution. Never leak -EOPNOTSUPP from
      * a blocking pipe/socket/eventfd as a successful syscall completion. */
-    const uint8_t kind=nas_task_fd_kind(task,fd);
-    const bool tty_again=(nr==NAS_SC_read || nr==NAS_SC_readv) &&
-        (kind==FD_TTY || kind==FD_UART) &&
-        (int64_t)rc==-EAGAIN && nas_tty_read_waitable();
     /* A blocking syscall already owns this live kernel C continuation.
      * Providers are allowed to return either -EAGAIN or our internal
      * -EOPNOTSUPP when readiness raced with another consumer. Never
      * return that transient error to the caller as if O_NONBLOCK had been
      * requested; PTY/socket/eventfd share the same provider contract. */
-    const bool rw_op=nr==NAS_SC_read || nr==NAS_SC_readv ||
-                     nr==NAS_SC_write || nr==NAS_SC_writev;
-    const bool io_kind=kind==FD_PIPE_R || kind==FD_PIPE_W ||
-                       kind==FD_SOCKET || kind==FD_EVENTFD ||
-                       kind==FD_PTY_MASTER || kind==FD_PTY_SLAVE;
-    const bool io_again=rw_op && io_kind &&
-        ((int64_t)rc==-EOPNOTSUPP || (int64_t)rc==-EAGAIN);
+    const bool io_again=nas_fs_io_should_block(pending,rc,false);
     const bool poll_again=(int64_t)rc==-EAGAIN &&
         (nr==NAS_SC_poll || nr==NAS_SC_ppoll ||
          nr==NAS_SC_pselect6 || nr==NAS_SC_select ||
          nr==NAS_SC_epoll_wait || nr==NAS_SC_epoll_pwait);
-    if(tty_again || io_again || poll_again) {
+    if(io_again || poll_again) {
         task->state=NAS_TASK_BLOCKED;
         return NAS_BLOCKED_RETRY;
     }
@@ -111,7 +100,7 @@ enum nas_blocked_completion nas_blocked_complete(struct nas_task *task,
        nr==NAS_SC_epoll_pwait || nr==NAS_SC_rt_sigsuspend)
         nas_signal_ppoll_restore(task,(int64_t)rc==-EINTR);
     nas_futex_wait_cancel(task);
-    nas_task_wait_reset(task);
+    nas_task_wait_dispose(task);
     nas_arch_set_saved_return(task,rc);
     *result=rc;
     return NAS_BLOCKED_COMPLETE;

@@ -84,16 +84,26 @@ int main(void) {
     x.addr=BASE+4*PAGE;x.access=NAS_EXC_READ;
     assert(nas_mm_handle_fault(&space,x.addr,NAS_UP_READ,false)==NAS_MM_FAULT_NEEDS_BACKING);
     out=nas_exception_dispatch(&x,&space);
-    assert(out.action==NAS_EXC_UNHANDLED);
+    assert(out.action==NAS_EXC_SIGNAL && out.signo==7 && out.si_code==2);
     unmap_mock();
     x.addr=BASE+PAGE;
     fail_alloc=true;
     assert(nas_mm_handle_fault(&space,x.addr,NAS_UP_WRITE,false)==NAS_MM_FAULT_OOM);
+    out=nas_exception_dispatch(&x,&space);
+    assert(out.action==NAS_EXC_SIGNAL && out.signo==9 && !present_pa);
     fail_alloc=false;fail_prepare=true;
     unsigned before=freed;
     assert(nas_mm_handle_fault(&space,x.addr,NAS_UP_WRITE,false)==NAS_MM_FAULT_OOM);
     assert(freed==before+1 && !present_pa);
     fail_prepare=false;
+    /* A hardware fault on an already usable resident PTE is a broken
+     * kernel/page-table invariant, NOT a catchable userspace SIGSEGV. */
+    present_va=BASE;present_pa=0x200000;present_access=NAS_UP_READ|NAS_UP_WRITE;
+    x.addr=BASE;
+    assert(nas_mm_handle_fault(&space,x.addr,NAS_UP_WRITE,true)==NAS_MM_FAULT_INVARIANT);
+    out=nas_exception_dispatch(&x,&space);
+    assert(out.action==NAS_EXC_UNHANDLED);
+    unmap_mock();
     x.user=false;
     out=nas_exception_dispatch(&x,&space);
     assert(out.action==NAS_EXC_UNHANDLED && !present_pa);
@@ -105,6 +115,21 @@ int main(void) {
     assert(rv.kind==NAS_EXC_MEMORY && !rv.user);
     rv=nas_exception_rv64((1ULL<<63)|5,0,0,0);
     assert(rv.kind==NAS_EXC_IRQ);
+    rv=nas_exception_rv64(2,0,0,0x6000);
+    assert(rv.kind==NAS_EXC_ILLEGAL && rv.user);
+    out=nas_exception_dispatch(&rv,&space);
+    assert(out.action==NAS_EXC_SIGNAL && out.signo==4 && out.si_code==1);
+    rv=nas_exception_rv64(4,0,BASE,0x6000);
+    out=nas_exception_dispatch(&rv,&space);
+    assert(rv.kind==NAS_EXC_ALIGNMENT && out.action==NAS_EXC_SIGNAL &&
+           out.signo==7 && out.si_code==1);
+    rv=nas_exception_rv64(5,0,BASE,0x6000);
+    out=nas_exception_dispatch(&rv,&space);
+    assert(rv.kind==NAS_EXC_BUS && out.action==NAS_EXC_SIGNAL &&
+           out.signo==7 && out.si_code==2);
+    rv=nas_exception_rv64(2,0x100,0,0x6000);
+    assert(rv.kind==NAS_EXC_ILLEGAL && !rv.user &&
+           nas_exception_dispatch(&rv,&space).action==NAS_EXC_UNHANDLED);
     struct nas_exception arm=nas_exception_arm64((0x24ULL<<26)|0x44,0,
                                                   BASE+PAGE,0x7000);
     assert(arm.kind==NAS_EXC_MEMORY && arm.user &&
@@ -113,10 +138,74 @@ int main(void) {
     assert(arm.kind==NAS_EXC_MEMORY && arm.access==NAS_EXC_EXEC && arm.present);
     arm=nas_exception_arm64((0x15ULL<<26),0,0,0);
     assert(arm.kind==NAS_EXC_SYSCALL);
+    arm=nas_exception_arm64(0,0,0,0x7000);
+    out=nas_exception_dispatch(&arm,&space);
+    assert(arm.kind==NAS_EXC_ILLEGAL && out.action==NAS_EXC_SIGNAL &&
+           out.signo==4 && out.si_code==1);
+    arm=nas_exception_arm64((0x24ULL<<26)|0x21,0,BASE,0x7000);
+    out=nas_exception_dispatch(&arm,&space);
+    assert(arm.kind==NAS_EXC_ALIGNMENT && out.action==NAS_EXC_SIGNAL &&
+           out.signo==7 && out.si_code==1);
+    arm=nas_exception_arm64((0x24ULL<<26)|0x10,0,BASE,0x7000);
+    out=nas_exception_dispatch(&arm,&space);
+    assert(arm.kind==NAS_EXC_BUS && out.action==NAS_EXC_SIGNAL &&
+           out.signo==7 && out.si_code==2);
+    arm=nas_exception_arm64((0x2cULL<<26),0,0,0x7000);
+    out=nas_exception_dispatch(&arm,&space);
+    assert(arm.kind==NAS_EXC_ARITHMETIC && out.action==NAS_EXC_SIGNAL &&
+           out.signo==8 && out.si_code==0);
+    arm=nas_exception_arm64(0,5,0,0x7000);
+    assert(arm.kind==NAS_EXC_ILLEGAL && !arm.user &&
+           nas_exception_dispatch(&arm,&space).action==NAS_EXC_UNHANDLED);
     x=nas_exception_x86(14,0x14,BASE,0,0x33);
     assert(x.access==NAS_EXC_EXEC && !x.present);
     assert(nas_exception_x86(1,0,0,0,0x33).kind==NAS_EXC_SINGLE_STEP);
     assert(nas_exception_x86(3,0,0,0,0x33).kind==NAS_EXC_BREAKPOINT);
-    puts("[M88 EXCEPTION PASS] 3 ISA cause decoders; VMA policy; anonymous repair; COW/backing fail-closed; OOM rollback");
+    x=nas_exception_x86(6,0,0,0x401000,0x33);
+    out=nas_exception_dispatch(&x,&space);
+    assert(x.kind==NAS_EXC_ILLEGAL && out.action==NAS_EXC_SIGNAL &&
+           out.signo==4 && out.si_code==1);
+    x=nas_exception_x86(17,0,0,0x401000,0x33);
+    out=nas_exception_dispatch(&x,&space);
+    assert(x.kind==NAS_EXC_ALIGNMENT && out.action==NAS_EXC_SIGNAL &&
+           out.signo==7 && out.si_code==1);
+    x=nas_exception_x86(6,0,0,0x401000,0x08);
+    assert(!x.user && nas_exception_dispatch(&x,&space).action==NAS_EXC_UNHANDLED);
+    x=nas_exception_x86(3,0,0,0x401000,0x33);
+    assert(nas_exception_dispatch(&x,&space).action==NAS_EXC_UNHANDLED);
+    /* Actual x86 0..31 vector meaning, decoded without privileged CPU
+     * state. Hardware ISR routing is separately tested at entry.S. */
+    static const struct {
+        unsigned vector;
+        enum nas_exception_kind kind;
+        unsigned signo;
+        int32_t si_code;
+    } user_sync[] = {
+        {0,NAS_EXC_ARITHMETIC,8,1}, /* #DE FPE_INTDIV */
+        {4,NAS_EXC_ARITHMETIC,8,2}, /* #OF FPE_INTOVF */
+        {5,NAS_EXC_BOUNDS,11,3},    /* #BR SEGV_BNDERR */
+        {10,NAS_EXC_PROTECTION,11,0x80}, /* #TS SI_KERNEL */
+        {11,NAS_EXC_PROTECTION,11,0x80}, /* #NP */
+        {12,NAS_EXC_PROTECTION,11,0x80}, /* #SS */
+        {16,NAS_EXC_ARITHMETIC,8,0}, /* #MF unknown FP subtype */
+        {19,NAS_EXC_ARITHMETIC,8,0}  /* #XM unknown SIMD subtype */
+    };
+    for(unsigned i=0;i<sizeof(user_sync)/sizeof(user_sync[0]);i++) {
+        x=nas_exception_x86(user_sync[i].vector,0,BASE,0x401000,0x33);
+        out=nas_exception_dispatch(&x,&space);
+        assert(x.kind==user_sync[i].kind &&
+               out.action==NAS_EXC_SIGNAL &&
+               out.signo==user_sync[i].signo &&
+               out.si_code==user_sync[i].si_code);
+        x=nas_exception_x86(user_sync[i].vector,0,BASE,0x401000,0x08);
+        assert(!x.user &&
+               nas_exception_dispatch(&x,&space).action==NAS_EXC_UNHANDLED);
+    }
+    static const unsigned kernel_fatal_vectors[]={2,7,8,18,20,21,28,29,30,31};
+    for(unsigned i=0;i<sizeof(kernel_fatal_vectors)/sizeof(kernel_fatal_vectors[0]);i++) {
+        x=nas_exception_x86(kernel_fatal_vectors[i],0,0,0x401000,0x33);
+        assert(nas_exception_dispatch(&x,&space).action==NAS_EXC_UNHANDLED);
+    }
+    puts("[M88 EXCEPTION PASS] x86 0..31 sync signal policy; ARM/RV cases; kernel/debug fail closed; COW/OOM");
     return 0;
 }

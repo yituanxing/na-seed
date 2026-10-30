@@ -6,3 +6,4 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
     kernel/mm/fault.c kernel/mm/anon_regions.c \
     -o build/m88-exceptions/check
 build/m88-exceptions/check
+python3 scripts/test-native-debug-trap-routing.py

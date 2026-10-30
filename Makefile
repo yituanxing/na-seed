@@ -16,7 +16,7 @@ ARCH ?= x86_64
 ifneq ($(filter $(ARCH),x86_64 riscv64 aarch64),$(ARCH))
 $(error Unsupported NaSeed ARCH=$(ARCH))
 endif
-OUT := build
+OUT ?= build
 HDR := $(OUT)/deps/limine.h
 PROTO_REV := 3a0526b700e356f0eac1b71a77697b3fd1c707a3
 BINARY_TAR := $(OUT)/deps/limine-binary.tar.gz
@@ -27,11 +27,26 @@ ISO := $(OUT)/naseed.iso
 CFLAGS := --target=x86_64-unknown-none-elf -std=c11 -O2 -g -Wall -Wextra -Werror \
  -ffreestanding -fno-builtin -fno-stack-protector -fno-stack-check \
  -fno-pic -fno-pie -mcmodel=kernel -mno-red-zone -mno-sse -mno-mmx \
- -I $(OUT)/deps -I kernel
+ -I $(OUT)/deps -I kernel -I third_party/unikraft/include -I ports/unikraft/include
 # Opt-in, generic Linux syscall tracing for focused real-program diagnoses.
 # Normal kernel and multi-ISA builds are unaffected.
 ifeq ($(NAS_SYSCALL_TRACE),1)
 CFLAGS += -DNASEED_SYSCALL_TRACE
+endif
+ifeq ($(NAS_ENABLE_LWEXT4),1)
+CFLAGS += -DNAS_ENABLE_LWEXT4=1
+endif
+ifeq ($(NAS_ENABLE_LITTLEFS),1)
+CFLAGS += -DNAS_ENABLE_LITTLEFS=1
+endif
+ifeq ($(NAS_ENABLE_RAMFS),1)
+CFLAGS += -DNAS_ENABLE_RAMFS=1
+endif
+ifeq ($(NAS_ENABLE_VIRTIO_BLK),1)
+ifneq ($(NAS_ENABLE_LWEXT4),1)
+$(error NAS_ENABLE_VIRTIO_BLK requires NAS_ENABLE_LWEXT4)
+endif
+CFLAGS += -DNAS_ENABLE_VIRTIO_BLK=1 -I ports/uboot/compat
 endif
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
  -z noexecstack -T kernel/arch/$(ARCH)/linker.ld
@@ -40,6 +55,45 @@ LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
 all: iso
 iso: $(ISO)
 kernel: $(KERNEL)
+
+# Opt-in unchanged original U-Boot source behind a modern PCI transport.
+# All request code is shared with ARM/RV; only x86 PCI enumeration is extra.
+VIRTIO_X86_OBJS :=
+ifeq ($(NAS_ENABLE_VIRTIO_BLK),1)
+VIRTIO_X86_SRCS := kernel/drivers/core/bus.c kernel/drivers/port/dma.c \
+ kernel/drivers/port/block.c kernel/drivers/virtio/transport.c \
+ kernel/drivers/virtio/pci.c ports/unikraft/split_queue.c \
+ ports/uboot/blk_port.c ports/uboot/virtio_bus.c \
+ kernel/platform/x86_virtio_pci.c
+VIRTIO_X86_OBJS := $(patsubst %.c,$(OUT)/virtio_%.o,$(notdir $(VIRTIO_X86_SRCS)))
+define nas_compile_x86_virtio
+$(OUT)/virtio_$(notdir $(basename $(1))).o: $(1) $(HDR)
+	mkdir -p $(OUT)
+	clang $(CFLAGS) -MMD -MP -c $$< -o $$@
+endef
+$(foreach source,$(VIRTIO_X86_SRCS),$(eval $(call nas_compile_x86_virtio,$(source))))
+endif
+
+# Opt-in until the genuine guest VFS mount and syscall workflow is complete.
+LWEXT4_EXTRA :=
+ifeq ($(NAS_ENABLE_LWEXT4),1)
+LWEXT4_EXTRA := $(OUT)/lwext4_guest.o
+endif
+LITTLEFS_EXTRA :=
+ifeq ($(NAS_ENABLE_LITTLEFS),1)
+LITTLEFS_EXTRA := $(OUT)/littlefs_guest.o
+endif
+$(OUT)/littlefs_guest.o: scripts/build-littlefs-guest.sh $(HDR)
+	sh scripts/build-littlefs-guest.sh x86_64 $(OUT)
+RAMFS_EXTRA :=
+ifeq ($(NAS_ENABLE_RAMFS),1)
+RAMFS_EXTRA := $(OUT)/ramfs_guest.o
+endif
+$(OUT)/ramfs_guest.o: scripts/build-ramfs-guest.sh $(HDR)
+	sh scripts/build-ramfs-guest.sh x86_64 $(OUT)
+$(OUT)/lwext4_guest.o: scripts/build-lwext4-guest.sh ports/lwext4/freestanding/platform.h $(HDR)
+	sh scripts/build-lwext4-guest.sh x86_64 $(OUT) kernel
+
 
 $(HDR):
 	mkdir -p $(dir $@)
@@ -361,6 +415,30 @@ $(OUT)/fs_procfs.o: kernel/fs/procfs.c kernel/fs/procfs.h kernel/task.h kernel/m
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
+$(OUT)/block_core.o: kernel/block/device.c kernel/block/device.h kernel/errno.h kernel/lib/string.h
+	mkdir -p $(dir $@)
+	clang $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(OUT)/block_ramdisk.o: kernel/block/ramdisk.c kernel/block/ramdisk.h kernel/block/device.h
+	mkdir -p $(dir $@)
+	clang $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(OUT)/block_partition.o: kernel/block/partition.c kernel/block/partition.h kernel/block/device.h
+	mkdir -p $(dir $@)
+	clang $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(OUT)/mm_heap.o: kernel/mm/heap.c kernel/mm/heap.h
+	mkdir -p $(dir $@)
+	clang $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(OUT)/fs_vfs.o: kernel/fs/vfs.c kernel/fs/vfs.h kernel/fs/lookup.h
+	mkdir -p $(dir $@)
+	clang $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(OUT)/fs_vfs_providers.o: kernel/fs/vfs_providers.c kernel/fs/vfs.h kernel/fs/lookup.h kernel/bootfs.h kernel/tmpfs.h kernel/fs/procfs.h
+	mkdir -p $(dir $@)
+	clang $(CFLAGS) -MMD -MP -c $< -o $@
+
 $(OUT)/fs_lookup.o: kernel/fs/lookup.c kernel/fs/lookup.h kernel/tmpfs.h kernel/bootfs.h
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
@@ -514,8 +592,8 @@ $(OUT)/shebang-abi.o: user/shebang-abi.S kernel/nr.h kernel/errno.h
 $(OUT)/shebang-abi: $(OUT)/shebang-abi.o user/linker.ld
 	ld.lld -m elf_x86_64 -nostdlib -static -T user/linker.ld $< -o $@
 
-$(KERNEL): $(OUT)/kernel.o $(OUT)/random.o $(OUT)/timekeeper.o $(OUT)/init_main.o $(OUT)/task_exec.o $(OUT)/syscall_dispatch.o $(OUT)/task_accounting.o $(OUT)/task.o $(OUT)/task_kernel_context.o $(OUT)/task_wait_queue.o $(OUT)/task_futex_wait.o $(OUT)/task_run_state.o $(OUT)/task_blocked_completion.o $(OUT)/task_kthread.o $(OUT)/task_kthread_boot.o $(OUT)/task_k_sync.o $(OUT)/task_scheduler_service.o $(OUT)/task_sched_core.o $(OUT)/nas_mm.o $(OUT)/exception.o $(OUT)/mm_fault.o $(OUT)/task_resources.o $(OUT)/process.o $(OUT)/ptrace.o $(OUT)/session.o $(OUT)/sched.o $(OUT)/task_wait.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fs_tmp_namespace.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/boot_image.o $(OUT)/arch.o $(OUT)/arch_cpu.o $(OUT)/arch_context.o $(OUT)/arch_kernel_switch.o $(OUT)/arch_timer.o $(OUT)/serial.o $(OUT)/tty.o $(OUT)/pty.o $(OUT)/tty_ldisc.o $(OUT)/arch_console.o $(OUT)/frame.o $(OUT)/platform.o $(OUT)/arch_mmu.o $(OUT)/vm.o $(OUT)/anon_regions.o $(OUT)/remote_copy.o $(OUT)/usercopy.o $(OUT)/elf.o $(OUT)/elf_segments.o $(OUT)/user_stack.o $(OUT)/signal.o $(OUT)/arch_signal_frame.o $(OUT)/klib_string.o $(OUT)/arch_syscall.o $(OUT)/fs_procfs.o $(OUT)/fs_lookup.o $(OUT)/fs_epoll.o $(OUT)/fs_eventfd.o $(OUT)/fs_unix_socket.o $(OUT)/fs_namespace_syscall.o $(OUT)/fs_socket_syscall.o $(OUT)/fs_file_io.o $(OUT)/fs_poll_syscall.o $(OUT)/fs_metadata_syscall.o $(OUT)/fs_syscall.o kernel/arch/$(ARCH)/linker.ld
-	ld.lld $(LDFLAGS) $(OUT)/kernel.o $(OUT)/random.o $(OUT)/timekeeper.o $(OUT)/init_main.o $(OUT)/task_exec.o $(OUT)/syscall_dispatch.o $(OUT)/task_accounting.o $(OUT)/task.o $(OUT)/task_kernel_context.o $(OUT)/task_wait_queue.o $(OUT)/task_futex_wait.o $(OUT)/task_run_state.o $(OUT)/task_blocked_completion.o $(OUT)/task_kthread.o $(OUT)/task_kthread_boot.o $(OUT)/task_k_sync.o $(OUT)/task_scheduler_service.o $(OUT)/task_sched_core.o $(OUT)/nas_mm.o $(OUT)/exception.o $(OUT)/mm_fault.o $(OUT)/task_resources.o $(OUT)/process.o $(OUT)/ptrace.o $(OUT)/session.o $(OUT)/sched.o $(OUT)/task_wait.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/fs_tmp_namespace.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/boot_image.o $(OUT)/arch.o $(OUT)/arch_cpu.o $(OUT)/arch_context.o $(OUT)/arch_kernel_switch.o $(OUT)/arch_timer.o $(OUT)/serial.o $(OUT)/tty.o $(OUT)/pty.o $(OUT)/tty_ldisc.o $(OUT)/arch_console.o $(OUT)/frame.o $(OUT)/platform.o $(OUT)/arch_mmu.o $(OUT)/vm.o $(OUT)/anon_regions.o $(OUT)/remote_copy.o $(OUT)/usercopy.o $(OUT)/elf.o $(OUT)/elf_segments.o $(OUT)/user_stack.o $(OUT)/signal.o $(OUT)/arch_signal_frame.o $(OUT)/klib_string.o $(OUT)/arch_syscall.o $(OUT)/fs_procfs.o $(OUT)/fs_lookup.o $(OUT)/fs_epoll.o $(OUT)/fs_eventfd.o $(OUT)/fs_unix_socket.o $(OUT)/fs_namespace_syscall.o $(OUT)/fs_socket_syscall.o $(OUT)/fs_file_io.o $(OUT)/fs_poll_syscall.o $(OUT)/fs_metadata_syscall.o $(OUT)/fs_syscall.o -o $@
+$(KERNEL): $(OUT)/kernel.o $(OUT)/random.o $(OUT)/timekeeper.o $(OUT)/init_main.o $(OUT)/task_exec.o $(OUT)/syscall_dispatch.o $(OUT)/task_accounting.o $(OUT)/task.o $(OUT)/task_kernel_context.o $(OUT)/task_wait_queue.o $(OUT)/task_futex_wait.o $(OUT)/task_run_state.o $(OUT)/task_blocked_completion.o $(OUT)/task_kthread.o $(OUT)/task_kthread_boot.o $(OUT)/task_k_sync.o $(OUT)/task_scheduler_service.o $(OUT)/task_sched_core.o $(OUT)/nas_mm.o $(OUT)/exception.o $(OUT)/mm_fault.o $(OUT)/task_resources.o $(OUT)/process.o $(OUT)/ptrace.o $(OUT)/session.o $(OUT)/sched.o $(OUT)/task_wait.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/block_core.o $(OUT)/block_ramdisk.o $(OUT)/block_partition.o $(OUT)/mm_heap.o $(OUT)/fs_tmp_namespace.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/boot_image.o $(OUT)/arch.o $(OUT)/arch_cpu.o $(OUT)/arch_context.o $(OUT)/arch_kernel_switch.o $(OUT)/arch_timer.o $(OUT)/serial.o $(OUT)/tty.o $(OUT)/pty.o $(OUT)/tty_ldisc.o $(OUT)/arch_console.o $(OUT)/frame.o $(OUT)/platform.o $(OUT)/arch_mmu.o $(OUT)/vm.o $(OUT)/anon_regions.o $(OUT)/remote_copy.o $(OUT)/usercopy.o $(OUT)/elf.o $(OUT)/elf_segments.o $(OUT)/user_stack.o $(OUT)/signal.o $(OUT)/arch_signal_frame.o $(OUT)/klib_string.o $(OUT)/arch_syscall.o $(OUT)/fs_procfs.o $(OUT)/fs_lookup.o $(OUT)/fs_vfs.o $(OUT)/fs_vfs_providers.o $(OUT)/fs_epoll.o $(OUT)/fs_eventfd.o $(OUT)/fs_unix_socket.o $(OUT)/fs_namespace_syscall.o $(OUT)/fs_socket_syscall.o $(OUT)/fs_file_io.o $(OUT)/fs_poll_syscall.o $(OUT)/fs_metadata_syscall.o $(OUT)/fs_syscall.o $(LWEXT4_EXTRA) $(LITTLEFS_EXTRA) $(RAMFS_EXTRA) $(VIRTIO_X86_OBJS) kernel/arch/$(ARCH)/linker.ld
+	ld.lld $(LDFLAGS) $(OUT)/kernel.o $(OUT)/random.o $(OUT)/timekeeper.o $(OUT)/init_main.o $(OUT)/task_exec.o $(OUT)/syscall_dispatch.o $(OUT)/task_accounting.o $(OUT)/task.o $(OUT)/task_kernel_context.o $(OUT)/task_wait_queue.o $(OUT)/task_futex_wait.o $(OUT)/task_run_state.o $(OUT)/task_blocked_completion.o $(OUT)/task_kthread.o $(OUT)/task_kthread_boot.o $(OUT)/task_k_sync.o $(OUT)/task_scheduler_service.o $(OUT)/task_sched_core.o $(OUT)/nas_mm.o $(OUT)/exception.o $(OUT)/mm_fault.o $(OUT)/task_resources.o $(OUT)/process.o $(OUT)/ptrace.o $(OUT)/session.o $(OUT)/sched.o $(OUT)/task_wait.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/block_core.o $(OUT)/block_ramdisk.o $(OUT)/block_partition.o $(OUT)/mm_heap.o $(OUT)/fs_tmp_namespace.o $(OUT)/fd.o $(OUT)/path.o $(OUT)/pipe.o $(OUT)/boot_image.o $(OUT)/arch.o $(OUT)/arch_cpu.o $(OUT)/arch_context.o $(OUT)/arch_kernel_switch.o $(OUT)/arch_timer.o $(OUT)/serial.o $(OUT)/tty.o $(OUT)/pty.o $(OUT)/tty_ldisc.o $(OUT)/arch_console.o $(OUT)/frame.o $(OUT)/platform.o $(OUT)/arch_mmu.o $(OUT)/vm.o $(OUT)/anon_regions.o $(OUT)/remote_copy.o $(OUT)/usercopy.o $(OUT)/elf.o $(OUT)/elf_segments.o $(OUT)/user_stack.o $(OUT)/signal.o $(OUT)/arch_signal_frame.o $(OUT)/klib_string.o $(OUT)/arch_syscall.o $(OUT)/fs_procfs.o $(OUT)/fs_lookup.o $(OUT)/fs_vfs.o $(OUT)/fs_vfs_providers.o $(OUT)/fs_epoll.o $(OUT)/fs_eventfd.o $(OUT)/fs_unix_socket.o $(OUT)/fs_namespace_syscall.o $(OUT)/fs_socket_syscall.o $(OUT)/fs_file_io.o $(OUT)/fs_poll_syscall.o $(OUT)/fs_metadata_syscall.o $(OUT)/fs_syscall.o $(LWEXT4_EXTRA) $(LITTLEFS_EXTRA) $(RAMFS_EXTRA) $(VIRTIO_X86_OBJS) -o $@
 
 $(BINARY_TAR):
 	mkdir -p $(dir $@)

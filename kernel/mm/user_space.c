@@ -31,10 +31,11 @@ bool nas_space_delete(struct nas_user_space *space) {
     nas_arch_pt_destroy(space);
     return space->root_pa == 0;
 }
-bool nas_space_map_access(struct nas_user_space *space,uint64_t va,
-                          unsigned access) {
+static bool space_map_access(struct nas_user_space *space,uint64_t va,
+                             unsigned access,bool trusted_elf) {
     if(!space || !page_aligned(va) || !(access&NAS_UP_READ) ||
-       (access&~7U) || ((access&NAS_UP_WRITE)&&(access&NAS_UP_EXEC)))
+       (access&~7U) || (!trusted_elf &&
+       (access&NAS_UP_WRITE)&&(access&NAS_UP_EXEC)))
         return false;
     uint64_t prior;
     if(nas_arch_pt_lookup(space,va,&prior,0)) return false;
@@ -46,6 +47,14 @@ bool nas_space_map_access(struct nas_user_space *space,uint64_t va,
     }
     nas_arch_pt_flush(va);
     return true;
+}
+bool nas_space_map_access(struct nas_user_space *space,uint64_t va,
+                          unsigned access) {
+    return space_map_access(space,va,access,false);
+}
+bool nas_space_map_elf_access(struct nas_user_space *space,uint64_t va,
+                              unsigned access) {
+    return space_map_access(space,va,access,true);
 }
 bool nas_space_map_page(struct nas_user_space *space,
                         uint64_t va, bool writable) {

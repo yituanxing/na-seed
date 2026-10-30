@@ -1,17 +1,26 @@
 name: NaSeed M55 original cJSON CMake-Ninja native diagnostics
 on:
   workflow_dispatch:
+  workflow_call:
 jobs:
   cmake:
     name: Upstream cJSON CTest / ${{ matrix.port }}
-    runs-on: ubuntu-latest
+    # Match the verified native QEMU jobs: ubuntu-latest (26.04) split
+    # qemu-system-riscv out of qemu-system-misc and silently skipped RV64.
+    runs-on: ubuntu-24.04
     timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
         port: [amd64, riscv64, arm64]
     steps:
+      # A PR metadata opt-in has a synthetic merge ref; always test the
+      # requested PR's exact head, not that merge or a moving branch tip.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Record the actual guest source revision
+        run: git rev-parse HEAD
       - name: Install QEMU boot and compiler tools
         timeout-minutes: 12
         run: |
@@ -43,6 +52,15 @@ jobs:
             sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
               -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
           fi
+          case "${{ matrix.port }}" in
+            amd64)  qemu_bin=qemu-system-x86_64 ;;
+            riscv64) qemu_bin=qemu-system-riscv64 ;;
+            arm64)  qemu_bin=qemu-system-aarch64 ;;
+          esac
+          command -v "$qemu_bin" || {
+            echo "[HOST TOOLING FAIL] $qemu_bin absent after package installation" >&2
+            exit 1
+          }
           command -v docker
           if [ "${{ matrix.port }}" = riscv64 ]; then
             python3 -m pip install --user --break-system-packages --disable-pip-version-check 'virt-firmware==26.5.4'
@@ -51,11 +69,12 @@ jobs:
       - name: Native real upstream cJSON configure/build/CTests/rebuild
         timeout-minutes: 65
         run: sh scripts/probe-m55-cjson.sh ${{ matrix.port }}
-      - name: Preserve exact failure evidence
-        if: failure()
+      - name: Preserve exact guest evidence on success and failure
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: m55-cmake-${{ matrix.port }}
+          retention-days: 14
           path: |
             build/external/m55-cjson/${{ matrix.port }}/apk-install.log
             build/external/m55-cjson/${{ matrix.port }}/requested-packages.txt

@@ -15,6 +15,25 @@ static unsigned reclaimed;
 static uint64_t seen_source_root;
 static uint64_t cloned_physical;
 static unsigned frame_owners=1;
+static unsigned cwd_mount_refs;
+int nas_vfs_node_pin(const struct nas_fs_node *node) {
+    if(!node || node->ino!=17)return -1;
+    ++cwd_mount_refs;return 0;
+}
+int nas_vfs_node_unpin(const struct nas_fs_node *node) {
+    if(!node || node->ino!=17 || !cwd_mount_refs)return -1;
+    --cwd_mount_refs;return 0;
+}
+/* The CPU-independent Task/MM fixture never creates a Dentry; it deliberately
+ * checks the historical inode-only FS context too. Supply fail-closed
+ * linkage for the NEW Path contract rather than pulling in a fake VFS or
+ * silencing the real kernel's required references. */
+int nas_vfs_path_get(const struct nas_vfs_path *old,struct nas_vfs_path *out) {
+    (void)old;(void)out;abort();
+}
+int nas_vfs_path_put(struct nas_vfs_path *path) {
+    (void)path;abort();
+}
 #define TEST_USER_VA UINT64_C(0x20000000)
 uint64_t nas_mmu_alloc_root(void){return fork_root;}
 uint64_t nas_frame_alloc(void){return 0;} /* no eager copy for RO user page */
@@ -80,6 +99,9 @@ int main(void) {
        "init owns independent files object");
     ck(init->fs && init->fs->refs==1 && init->sighand && init->sighand->refs==1,
        "init owns independent FS and signal resources");
+    init->fs->cwd_node.ino=17;
+    init->fs->cwd_pinned=true;
+    cwd_mount_refs=1; /* The initial chdir acquired the real mount ref. */
     init->fs->umask=027U;
     init->sighand->actions[10][0]=123U;
     nas_mm_get(init->mm);
@@ -150,6 +172,7 @@ int main(void) {
         *near_top=(uint64_t)(i*0x10203U); /* stack payload cannot alias */
     }
     ck(nas_task_fork_slot()==NULL,"full task capacity handled");
+    ck(cwd_mount_refs==NAS_TASK_LIMIT,"fork pins one mount per FS owner");
     for (unsigned i=1;i<NAS_TASK_LIMIT;i++) {
         uint64_t *near_top=(uint64_t *)(uintptr_t)(tops[i]-64);
         ck(*near_top==(uint64_t)(i*0x10203U),"stack payload isolated");
@@ -158,6 +181,7 @@ int main(void) {
         ck(nas_task_at(i)->kernel_exec.cpu.saved_sp==0,
            "recycled TID must not retain parked SP");
     }
+    ck(cwd_mount_refs==1,"child FS teardown releases cwd mount pins");
     struct nas_task *reused=nas_task_fork_slot();
     ck(reused==nas_task_at(1) && reused->kernel_stack_top==tops[1] &&
        nas_task_kernel_stack_ok(reused),"reused slot recovers own stack");
@@ -187,6 +211,7 @@ int main(void) {
        !grandchild->kernel_exec.cpu.saved_sp,
        "reclaimed task must have no stale kernel/user continuation");
     nas_task_release(worker);
+    ck(cwd_mount_refs==1,"worker/fork cleanup keeps only init cwd pin");
     ck(init->pid==1 && init->mm->users==1,
        "worker/child reclamation preserves the init MM owner");
     printf("[TASK LIFETIME PASS] worker fork parent identity, detached slot cleanup\n");

@@ -137,7 +137,8 @@ bool nas_vm_walk_task_pages(const struct nas_task *task,
  * PTE frames without returning the virtual range would eventually exhaust
  * the 0x20000000..0x60000000 window even with abundant free physical RAM.
  * Bounded VMA records are per MM: fork copies them and exec resets
- * after the new ELF image commits. No COW/lazy fault pager is claimed.
+ * after the new ELF image commits. COW and lazy fault resolution are now
+ * handled by the shared MM owner; this VMA ledger remains authoritative.
  */
 uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
                          uint64_t prot, uint64_t flags,
@@ -145,7 +146,11 @@ uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
     /* MAP_PRIVATE|MAP_ANONYMOUS. Linux ignores fd under MAP_ANONYMOUS:
      * an x86-64 libc may pass int -1 zero-extended to 0x00000000ffffffff.
      * Non-anonymous mappings and nonzero offsets remain explicitly refused. */
-    if (!length || length > (64ULL << 20) || length > UINT64_MAX - PAGE)
+    /* A real upstream xz encoder can request a single anonymous allocation
+     * larger than 64 MiB. The mmap VMA gap and physical-frame allocator
+     * already enforce honest limits; an unrelated fixed 64-MiB syscall cap
+     * incorrectly turns available RAM into an apparent malloc OOM. */
+    if (!length || length > UINT64_MAX - PAGE)
         return (uint64_t)-EINVAL;
     bool fixed=nas_linux_anon_fixed_supported(flags,offset);
     if (!fixed && !nas_linux_anon_map_supported(flags,fd,offset))
@@ -250,7 +255,7 @@ uint64_t nas_vm_munmap(uint64_t addr, uint64_t len) {
     if (addr >= USER_LIMIT || count > (USER_LIMIT - addr) / PAGE)
         return (uint64_t)-EINVAL;
     /* Plan a possibly partial unmap on a metadata copy first. If splitting
-     * requires a 65th entry, leave both the VMAs and PTEs unmodified. */
+     * exhausts NAS_ANON_REGION_LIMIT, leave VMA metadata untouched. */
     struct nas_anon_regions updated;
     /* Stage changes to VMA metadata before committing any page changes. */
     memcpy(&updated, &TASK.mm->mmap_vmas, sizeof(updated));

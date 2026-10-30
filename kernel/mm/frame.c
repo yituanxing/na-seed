@@ -123,6 +123,32 @@ static uint64_t frame_alloc(void) {
         if (!test_bit(p)) return take_frame(p);
     return 0;
 }
+/* Search two non-wrapping ranges: a reservation must never bridge the end
+ * of physical address space or a non-usable hole in the bitmap. */
+static uint64_t find_run(uint64_t begin, uint64_t end, uint64_t pages) {
+    uint64_t run_start = begin, run = 0;
+    for (uint64_t p = begin; p < end; ++p) {
+        if (!test_bit(p) && frame_refs[p] == 0) {
+            if (!run) run_start = p;
+            if (++run == pages) return run_start;
+        } else {
+            run = 0;
+        }
+    }
+    return 0;
+}
+static uint64_t frame_alloc_contiguous(uint64_t pages) {
+    if (!bitmap || !pages || pages > free_frames || pages > frame_count)
+        return 0;
+    uint64_t start = find_run(cursor, frame_count, pages);
+    if (!start) start = find_run(1, cursor < frame_count ? cursor : frame_count,
+                                 pages);
+    if (!start) return 0;
+    /* Every frame has been checked before mutation; the reservation cannot
+     * partially succeed or strand an owner reference on failure. */
+    for (uint64_t i = 0; i < pages; ++i) (void)take_frame(start + i);
+    return start * FRAME_BYTES;
+}
 static bool frame_put(uint64_t paddr) {
     if (!bitmap || paddr == 0 || paddr % FRAME_BYTES) return false;
     uint64_t p = paddr / FRAME_BYTES;
@@ -156,6 +182,9 @@ bool nas_frames_init(const struct limine_memmap_response *map, uint64_t off) {
 uint64_t nas_free_frames(void) { return free_frames; }
 uint64_t nas_managed_frames(void) { return managed_frames; }
 uint64_t nas_frame_alloc(void) { return frame_alloc(); }
+uint64_t nas_frame_alloc_contiguous(uint64_t pages) {
+    return frame_alloc_contiguous(pages);
+}
 bool nas_frame_put(uint64_t physical) { return frame_put(physical); }
 uint32_t nas_frame_refs(uint64_t physical) {
     if (!bitmap || !frame_refs || !physical || (physical%FRAME_BYTES) ||

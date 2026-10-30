@@ -6,7 +6,7 @@ on:
 jobs:
   native-build:
     name: original upstream BusyBox built inside NaSeed / ${{ matrix.port }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -49,6 +49,17 @@ jobs:
       - name: Genuine guest GNU Make + GCC + Kconfig + BusyBox binary execution
         timeout-minutes: 70
         run: sh scripts/probe-m56-native-busybox.sh ${{ matrix.port }}
+      - name: Preserve native Kbuild phase durations and successful original guest serial
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m56-native-perf-${{ matrix.port }}
+          path: |
+            build/busybox-source-parity-x86/m56-busybox.clean.log
+            build/port-riscv64/full/matrix-source/m56-busybox.clean.log
+            build/port-aarch64/full/matrix-source/m56-busybox.clean.log
+          retention-days: 14
+          if-no-files-found: ignore
       - name: Preserve exact failure evidence
         if: failure()
         uses: actions/upload-artifact@v4

@@ -182,16 +182,23 @@ void nas_tty_pump(void) {
         tty.rx_count++;
     }
     for(unsigned i=0;i<32 && tty.rx_count &&
-        !tty.ldisc.ready && !tty.unsupported_input && !tty.pending_signum;i++) {
+        !tty.unsupported_input && !tty.pending_signum;i++) {
         uint8_t byte=tty.rx_queue[tty.rx_head];
+        /* A completed line/full ldisc holds ordinary bytes, but Linux
+         * N_TTY still recognizes ISIG controls at that boundary. Leave
+         * any non-signal byte in the RX queue for the eventual reader. */
+        if((tty.ldisc.ready || tty.ldisc.used==NAS_LDISC_CAPACITY) &&
+           nas_ldisc_signal_event(&tty.t,byte)==NAS_LDISC_OK)break;
         tty.rx_head=(tty.rx_head+1)%NAS_TTY_RX_QUEUE_CAP;
         tty.rx_count--;
         enum nas_ldisc_event e=nas_ldisc_feed(&tty.ldisc,&tty.t,byte,tty_echo,0);
         if(e!=NAS_LDISC_OK) {
-            /* NOFLSH=0: discard queued canonical and transport input
-             * after terminal-generated signals, preserving Linux behavior. */
-            nas_ldisc_reset(&tty.ldisc);
-            tty.rx_head=tty.rx_count=0;
+            /* NOFLSH applies to both canonical N_TTY bytes and staged
+             * transport input; default Ctrl-C discards both. */
+            if(!(tty.t.lflag&0000200U)) {
+                nas_ldisc_reset(&tty.ldisc);
+                tty.rx_head=tty.rx_count=0;
+            }
             tty.pending_signum=e==NAS_LDISC_SIGNAL_INT?2U:
                 e==NAS_LDISC_SIGNAL_QUIT?3U:20U;
             break;
@@ -250,24 +257,16 @@ bool nas_tty_poll_readable(void) {
     unsigned min=tty.t.cc[6] ? tty.t.cc[6] : 1;
     return tty.ldisc.used-tty.ldisc.pos>=min;
 }
-uint64_t nas_tty_read(uint64_t dst,uint64_t len,bool nonblock) {
+/* Read admission is shared by scalar read and iter-style readv. The decision
+ * uses the WHOLE logical request, before a usercopy iterator can split the
+ * destination into pages and iovecs. Without this, VMIN=2 with [1,1] would
+ * silently become two independent VMIN=1 reads. */
+static uint64_t tty_read_budget(uint64_t len,bool nonblock) {
     if(!len)return 0;
     if(!tty.rx_enabled)return (uint64_t)-EAGAIN;
     if(!nas_arch_console_has_rx())return (uint64_t)-EOPNOTSUPP;
-    if(dst>UINT64_MAX-len)return (uint64_t)-EFAULT;
-    /* M102: fork COW clears a hardware write bit while the VMA is still
-     * logically writable. Terminal reads must not reject that buffer.
-     * nas_user_write_bytes() will materialize/break COW atomically BEFORE
-     * consuming the canonical input, preserving replay and terminal bytes. */
-    for(uint64_t i=0;i<len;i+=4096)
-        if(!nas_user_address_writable(dst+i))return (uint64_t)-EFAULT;
-    if(!nas_user_address_writable(dst+len-1))return (uint64_t)-EFAULT;
     nas_tty_pump();
-    if(tty.unsupported_input) {
-        tty.unsupported_input=false;
-        return (uint64_t)-EOPNOTSUPP; /* explicit, never fake ISIG delivery */
-    }
-    uint8_t bytes[NAS_LDISC_CAPACITY];
+    if(tty.unsupported_input)return (uint64_t)-EOPNOTSUPP;
     unsigned wanted=len>NAS_LDISC_CAPACITY?NAS_LDISC_CAPACITY:(unsigned)len;
     bool noncanon=!(tty.t.lflag&0000002);
     unsigned available=tty.ldisc.used-tty.ldisc.pos;
@@ -281,15 +280,47 @@ uint64_t nas_tty_read(uint64_t dst,uint64_t len,bool nonblock) {
         if(tty.t.cc[6]==0 || (expired && available))copy.cc[6]=1;
         if(expired && !available)return 0;
     }
+    /* O_NONBLOCK ignores VMIN as a minimum byte threshold, while canonical
+     * line completion remains mandatory. Never use this exception for a
+     * blocking read or an aggregate request's segment-size approximation. */
+    if(noncanon && nonblock && available)copy.cc[6]=1;
     if(!nas_ldisc_readable(&tty.ldisc,&copy,wanted)) {
         if(noncanon && !tty.t.cc[6] && !tty.t.cc[5])
             return nonblock?(uint64_t)-EAGAIN:0;
         if(noncanon && tty.t.cc[5] && expired)return 0;
         return (uint64_t)-EAGAIN;
     }
-    if(tty.ldisc.eof) { nas_ldisc_reset(&tty.ldisc);return 0; }
-    unsigned n=nas_ldisc_peek(&tty.ldisc,&copy,bytes,wanted);
-    if(!nas_user_write_bytes(dst,bytes,n))return (uint64_t)-EFAULT;
+    if(tty.ldisc.eof)return 0;
+    return available<wanted?available:wanted;
+}
+uint64_t nas_tty_read_plan(uint64_t requested,bool nonblock) {
+    uint64_t budget=tty_read_budget(requested,nonblock);
+    /* The planner does not consume error state. An unsupported RX event
+     * must reach the real read callback, which retires the one-shot flag. */
+    if((int64_t)budget==-EOPNOTSUPP && tty.unsupported_input && requested)
+        return 1;
+    return budget;
+}
+uint64_t nas_tty_read(uint8_t *dst,uint64_t len,bool nonblock) {
+    if(!len) {
+        /* read_plan may admit a zero-byte canonical EOF for a nonempty
+         * syscall; this zero-length provider commit retires that token. */
+        if(tty.ldisc.eof && tty.ldisc.ready)nas_ldisc_reset(&tty.ldisc);
+        return 0;
+    }
+    if(!dst)return (uint64_t)-EFAULT;
+    uint64_t budget=tty_read_budget(len,nonblock);
+    if(tty.unsupported_input) {
+        tty.unsupported_input=false;
+        return (uint64_t)-EOPNOTSUPP;
+    }
+    if((int64_t)budget<0)return budget;
+    if(!budget) {
+        if(tty.ldisc.eof && tty.ldisc.ready)nas_ldisc_reset(&tty.ldisc);
+        return 0;
+    }
+    unsigned n=(unsigned)budget;
+    memcpy(dst,tty.ldisc.bytes+tty.ldisc.pos,n);
     nas_ldisc_commit(&tty.ldisc,n);
-     return n;
+    return n;
 }

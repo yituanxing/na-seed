@@ -1,0 +1,21 @@
+name: NaSeed opt-in M55 full native guest acceptance
+on:
+  pull_request:
+    types: [edited, labeled]
+
+permissions:
+  contents: read
+
+# M55 is deliberately too slow to run on every push. A one-time PR title
+# marker can be set/removed using the existing GitHub app's PR edit API;
+# an optional repository label is also supported if one is provisioned.
+# The reusable workflow checks out the immutable PR head SHA.
+jobs:
+  full-native-m55:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      ((github.event.action == 'edited' &&
+        contains(github.event.pull_request.title, '[run-m55-deep]')) ||
+       (github.event.action == 'labeled' &&
+        github.event.label.name == 'run-m55-deep'))
+    uses: ./.github/workflows/m55-cmake.yml

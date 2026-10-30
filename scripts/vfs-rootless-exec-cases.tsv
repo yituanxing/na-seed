@@ -1,0 +1,4 @@
+# Exact original Debian BusyBox from a Limine direct ELF module starts
+# first; busybox sh then execve()s the same binary inside real external ext4.
+# There is NO CPIO module anywhere in the second-stage guest boot.
+rootless-ext4-exec	direct	sh -c "/mnt/busybox echo ROOTLESS-EXT4-EXEC-OK"	ROOTLESS-EXT4-EXEC-OK	-

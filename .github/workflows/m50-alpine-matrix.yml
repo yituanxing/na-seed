@@ -34,6 +34,12 @@ jobs:
         suite: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.mode == 'full' && '["foundation","pthread","lifecycle","parallel"]' || '["foundation","pthread","lifecycle"]') }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # PR checks must execute the submitted commit, not a synthetic
+          # pull-request merge commit that can mask an exact-head regression.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Identify the actual native QEMU-tested repository commit
+        run: git rev-parse HEAD
       - name: Static shared-kernel parity, exact 12 original milestones and 3 ISA coverage
         run: |
           python3 scripts/check-three-isa-core.py
@@ -53,14 +59,25 @@ jobs:
           done
           case "${{ matrix.port }}" in
             amd64)
+              if [ "${{ matrix.suite }}" = pthread ]; then
+                command -v gcc >/dev/null || missing="$missing gcc"
+              fi
               command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
               test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
                 test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
             riscv64)
+              if [ "${{ matrix.suite }}" = pthread ]; then
+                command -v riscv64-linux-gnu-gcc >/dev/null || \
+                  missing="$missing gcc-riscv64-linux-gnu libc6-dev-riscv64-cross"
+              fi
               command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
               test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
               test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
             arm64)
+              if [ "${{ matrix.suite }}" = pthread ]; then
+                command -v aarch64-linux-gnu-gcc >/dev/null || \
+                  missing="$missing gcc-aarch64-linux-gnu libc6-dev-arm64-cross"
+              fi
               command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
               test -f /usr/share/AAVMF/AAVMF_CODE.fd || missing="$missing qemu-efi-aarch64"
               test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
@@ -82,6 +99,31 @@ jobs:
       - name: Run declared fast or full original workloads in this ISA (zero suppressed failures)
         timeout-minutes: 65
         run: sh scripts/probe-alpine-batch.sh ${{ matrix.suite }} ${{ matrix.port }}
+      - name: Retain A014 authentic pthread/readv guest serial logs
+        if: always() && matrix.suite == 'pthread'
+        uses: actions/upload-artifact@v4
+        with:
+          name: a014-grouped-${{ matrix.port }}
+          retention-days: 14
+          path: |
+            build/busybox-source-parity-x86/m42-pthread.clean.log
+            build/port-riscv64/full/matrix-source/m42-pthread.clean.log
+            build/port-aarch64/full/matrix-source/m42-pthread.clean.log
+          if-no-files-found: ignore
+      - name: Preserve genuine GCC/CMake source-build phase timings in explicit full gate
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'full' && matrix.suite == 'foundation'
+        uses: actions/upload-artifact@v4
+        with:
+          name: m50-source-perf-${{ matrix.port }}
+          path: |
+            build/busybox-source-parity-x86/m38-gcc.clean.log
+            build/busybox-source-parity-x86/m55-cjson.clean.log
+            build/port-riscv64/full/matrix-source/m38-gcc.clean.log
+            build/port-riscv64/full/matrix-source/m55-cjson.clean.log
+            build/port-aarch64/full/matrix-source/m38-gcc.clean.log
+            build/port-aarch64/full/matrix-source/m55-cjson.clean.log
+          retention-days: 14
+          if-no-files-found: ignore
       - name: Retain original Alpine package/ELF/serial evidence after any failure
         if: failure()
         uses: actions/upload-artifact@v4

@@ -13,4 +13,10 @@ static inline int nas_vm_prot_supported(uint64_t prot) {
     return prot && !(prot & ~7ULL) &&
            !((prot & NAS_VM_WRITE) && (prot & NAS_VM_EXEC));
 }
+/* Internal already-authorized PTE transitions may preserve an ELF segment
+ * overlap's legacy W+X boundary page during fork/COW. User mmap/mprotect
+ * must continue to call nas_vm_prot_supported() and reject W+X. */
+static inline int nas_pte_prot_supported(uint64_t prot) {
+    return prot && !(prot & ~7ULL);
+}
 #endif

@@ -159,7 +159,8 @@ bool nas_ptrace_user_exception(struct nas_task *task,unsigned signo,
                                 int32_t si_code,uint64_t user_pc,
                                 uint64_t user_sp,uint64_t signal_addr) {
     if(!ptrace_owner_valid(task) || task->state!=NAS_TASK_RUNNING ||
-       (signo!=NAS_SIGTRAP && signo!=11U))
+       (signo!=NAS_SIGTRAP && signo!=4U /* SIGILL */ &&
+        signo!=8U /* SIGFPE */ && signo!=11U /* SIGSEGV */))
         return false;
     task->ptrace_ip=user_pc;
     task->ptrace_sp=user_sp;
@@ -167,9 +168,10 @@ bool nas_ptrace_user_exception(struct nas_task *task,unsigned signo,
 
     ptrace_stop(task,0);
 
-    /* The debug/trap event is a SIGTRAP or SIGSEGV signal-delivery stop,
-     * not a syscall-entry stop, ptrace event or guessed errno. Preserve
-     * the hardware PC verbatim (x86 INT3 already advances by one). */
+    /* Hardware SIGILL/SIGFPE/SIGSEGV and SIGTRAP all enter a genuine
+     * signal-delivery ptrace stop. A debugger can inspect GETSIGINFO,
+     * repair the offending instruction/PC, then PTRACE_CONT(0); injected
+     * signals remain explicitly unsupported, never silently discarded. */
     task->stop_signal=signo;
     task->ptrace_signal_code=si_code;
     task->ptrace_signal_addr=signal_addr;

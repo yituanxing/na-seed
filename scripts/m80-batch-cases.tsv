@@ -1,0 +1,2 @@
+# Genuine original Alpine programs: one Linux ELF workload group per native QEMU boot.
+m80-batch	cpio	sh -c '/bin/sh /tests/m80-batch-run.sh'	M80_BATCH_PASS	-	/bin/busybox

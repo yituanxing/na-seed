@@ -29,6 +29,9 @@ kernel/task/scheduler_service.c
 kernel/task/sched_core.c
 kernel/bootfs.c
 kernel/tmpfs.c
+kernel/block/device.c
+kernel/block/ramdisk.c
+kernel/block/partition.c
 kernel/fs/tmp_namespace.c
 kernel/fd.c
 kernel/path.c
@@ -36,6 +39,7 @@ kernel/pipe.c
 kernel/boot_image.c
 kernel/drivers/serial.c
 kernel/mm/frame.c
+kernel/mm/heap.c
 kernel/mm/vm.c
 kernel/mm/usercopy.c
 kernel/mm/remote_copy.c
@@ -46,6 +50,8 @@ kernel/task/signal.c
 kernel/lib/string.c
 kernel/fs/procfs.c
 kernel/fs/lookup.c
+kernel/fs/vfs.c
+kernel/fs/vfs_providers.c
 kernel/fs/syscall.c
 kernel/fs/namespace_syscall.c
 kernel/fs/socket_syscall.c

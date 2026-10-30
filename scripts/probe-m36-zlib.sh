@@ -3,13 +3,15 @@
 # designed to exceed the historical tmpfs 8-inode limit naturally.
 set -eu
 [ "$#" -eq 1 ] || exit 2
-case "$1" in
-    amd64) runner=scripts/probe-x86-busybox-parity.sh; emulator='' ;;
-    riscv64) runner=scripts/probe-riscv64-busybox-matrix.sh; emulator=qemu-riscv64 ;;
-    arm64) runner=scripts/probe-aarch64-busybox-matrix.sh; emulator=qemu-aarch64 ;;
+port=$1
+. scripts/native-qemu-target.sh
+# Keep the independent host-Linux QEMU-user oracle for zlib verification.
+case "$port" in
+    amd64) emulator='' ;;
+    riscv64) emulator=qemu-riscv64 ;;
+    arm64) emulator=qemu-aarch64 ;;
     *) exit 2 ;;
 esac
-port=$1
 compiler="build/external/m33-tcc/$port/tcc"
 make="build/external/m34-gnumake/$port/gmake"
 test -s "$compiler" && test -s "$make"

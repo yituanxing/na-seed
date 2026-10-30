@@ -114,6 +114,11 @@ fi
 echo "[M38 APK PASS] signed distro packages installed: $port"
 sudo chown -R "$(id -u):$(id -g)" "$root"
 mkdir -p "$root/tmp" "$root/tests"
+# Common, read-only guest timing and CPU occupancy helpers for original
+# source-build acceptance. They sample genuine /proc/uptime and /proc/stat,
+# never patch GCC, Kbuild, CMake or Ninja or replace acceptance markers.
+cp tests/native-perf-clock.sh "$root/tests/native-perf-clock.sh"
+cp scripts/native-profile-guest.sh "$root/tests/native-profile-guest.sh"
 chmod 1777 "$root/tmp"
 test -e "$root/bin/busybox"
 if [ "$profile" = native-busybox ]; then
@@ -187,33 +192,10 @@ if [ "$profile" = native-busybox ]; then
     echo "[M56 SOURCE PASS] original SHA256-pinned BusyBox $version + native GNU toolchain staged for genuine guest build"
 elif [ "$profile" = sqlite ]; then
     # Official SQLite 3.54.1 AUTOCONF release, not the Alpine sqlite package.
-    # Verify the publisher's SHA3-256 before extracting the untouched source.
+    # Reuse the SHA3-256 source owner also used by M84; no second fetcher.
     # Native ./configure, Makefile, GCC and resulting SQLite CLI run INSIDE
     # the NaSeed guest. Host extraction only populates immutable bootfs.
-    version=3540100
-    expected_sha3=b6ced585c750916b1052667239a12c25a7ff34e7f06e1e6e01ecb0427657d9c4
-    archive="build/deps/m57-sqlite/sqlite-autoconf-$version.tar.gz"
-    mkdir -p "$(dirname "$archive")"
-    if [ ! -s "$archive" ]; then
-        for mirror in www.sqlite.org www2.sqlite.org www3.sqlite.org; do
-            if curl -fLsS --retry 2 --connect-timeout 10 --max-time 120 \
-                    -o "$archive.tmp" \
-                    "https://$mirror/2026/sqlite-autoconf-$version.tar.gz" &&
-               [ "$(openssl dgst -sha3-256 "$archive.tmp" | awk '{print $NF}')" = "$expected_sha3" ]; then
-                mv "$archive.tmp" "$archive"
-                echo "[M57 SOURCE] official SQLite SHA3-256 verified via $mirror"
-                break
-            fi
-        done
-        test -s "$archive" || {
-            echo '[M57 FAIL] official pinned SQLite archive unavailable' >&2
-            exit 1
-        }
-    fi
-    [ "$(openssl dgst -sha3-256 "$archive" | awk '{print $NF}')" = "$expected_sha3" ] || {
-        echo '[M57 FAIL] official SQLite SHA3-256 mismatch' >&2
-        exit 1
-    }
+    archive="$(sh scripts/fetch-m57-sqlite.sh)"
     src="$root/tests/m57-source"
     mkdir -p "$src"
     tar -xzf "$archive" -C "$src" --strip-components=1

@@ -10,7 +10,7 @@ concurrency:
 jobs:
   gcc-musl:
     name: native real Make -j4, xargs -P4, 24 live children / ${{ matrix.port }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     strategy:
       fail-fast: false

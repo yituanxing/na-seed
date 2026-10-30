@@ -6,22 +6,22 @@ iso="$2"
 log="build/debian-$kind-serial.log"
 status=0
 timeout 12s sh scripts/run.sh "$iso" > "$log" 2>&1 || status=$?
+clean="build/debian-$kind-clean.log"
+tr -d '\r' < "$log" > "$clean"
 echo "===== Debian official static $kind, actual NaSeed/QEMU trace ====="
 grep -E '^\[(BOOT|MM|M1|M2|M3|MISS|FAULT|FAIL|EXIT|PASS)\]' "$log" | tail -80 || true
 if [ "$kind" = bash ]; then
-  pass='[PASS] M2 real GNU Bash -c echo hello'
-  loaded='[M2] real GNU Bash module discovered'
+  name='Bash'
 else
-  pass='[PASS] M2 Debian BusyBox echo hello'
-  loaded='[M3] real BusyBox module discovered'
+  name='BusyBox'
 fi
-if grep -Fq "$pass" "$log"; then
-  if [ "$status" -ne 1 ]; then
-    echo "[FAIL] printed pass without QEMU debug-exit(0)" >&2
-    exit 1
-  fi
-  echo "[ACCEPTED] Debian $kind wrote hello and exited 0"
-elif grep -Fq "$loaded" "$log"; then
+if [ "$status" -eq 1 ] &&
+   grep -Fxq 'hello' "$clean" &&
+   grep -Fq '[ELF] userspace entry=' "$clean" &&
+   grep -Fq '[EXIT] user status=0' "$clean" &&
+   ! grep -Eq '\[FAIL\]|\[FAULT\]|\[DEADLOCK\]' "$clean"; then
+  echo "[ACCEPTED] Debian $name wrote exact stdout hello and exited 0"
+elif grep -Fq '[ELF] userspace entry=' "$clean"; then
   echo "[BLOCKED] Debian $kind entered kernel but did not pass"
   echo "[DIAG] Unfiltered tail (includes user stderr):"
   tail -90 "$log"

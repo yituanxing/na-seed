@@ -7,6 +7,8 @@ original guest source-build cases remain in the opt-in full mode.
 """
 from pathlib import Path
 import re
+import subprocess
+import sys
 
 root = Path(__file__).resolve().parent.parent
 rows = []
@@ -40,14 +42,15 @@ for milestone, suite, path in rows:
     if not (root / path).is_file():
         raise SystemExit(f"missing original probe: {path}")
     probe = (root / path).read_text()
-    for port in ("amd64", "riscv64", "arm64"):
-        if not re.search(r"\b" + port + r"\)", probe):
-            raise SystemExit(f"{path} does not accept native {port}")
+    # Native port routing now has one owner. The common checker validates all
+    # three real runner/serial paths and rejects a reintroduced private case.
     if "BUSYBOX_PARITY_MANIFEST=" not in probe:
         raise SystemExit(f"{path} bypasses canonical manifest")
     seen[milestone] = path
 if set(seen) != set(expected):
     raise SystemExit(f"lost probes: {sorted(set(expected)-set(seen))}")
+subprocess.run([sys.executable, str(root / "scripts/check-native-qemu-target.py")],
+               cwd=root, check=True)
 w = (root / ".github/workflows/m50-alpine-matrix.yml").read_text()
 for suite in ("foundation", "pthread", "lifecycle", "parallel"):
     if suite not in w:

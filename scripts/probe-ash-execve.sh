@@ -62,7 +62,8 @@ for scenario in cat echo execbuiltin missing; do
         if [ "$rc" -ne 124 ] ||
            ! grep -Fq 'does-not-exist' "$clean" ||
            ! grep -Fq "$expect" "$clean" ||
-           ! grep -Fq '[FAIL] M1 cmdline userspace exited nonzero' "$clean" ||
+           ! grep -Fq '[EXEC] Linux execve rejected errno=2' "$clean" ||
+           ! grep -Fq '[FAIL] M1 userspace exited nonzero' "$clean" ||
            grep -Fq '[EXEC] replaced process with CPIO ELF:' "$clean" ||
            grep -Fq '[PASS] cmdline userspace exit 0' "$clean"; then
             echo '[FAIL] missing executable did not return real ENOENT to ash' >&2

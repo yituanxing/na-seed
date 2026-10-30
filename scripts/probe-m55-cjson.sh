@@ -2,16 +2,8 @@
 # All native ISA QEMU boots use exact same cJSON full-upstream CTest logic.
 set -eu
 [ "$#" -eq 1 ] || exit 2
-case "$1" in
- amd64) runner=scripts/probe-x86-busybox-parity.sh
-        logs=build/busybox-source-parity-x86 ;;
- riscv64) runner=scripts/probe-riscv64-busybox-matrix.sh
-          logs=build/port-riscv64/full/matrix-source ;;
- arm64) runner=scripts/probe-aarch64-busybox-matrix.sh
-        logs=build/port-aarch64/full/matrix-source ;;
- *) exit 2 ;;
-esac
 port=$1
+. scripts/native-qemu-target.sh
 # RV64 QEMU's original EDK2 VirtualRealTimeClockLib defaults to its old
 # compile-time epoch when booting a freshly copied UEFI varstore. The real
 # A/B test has proven that pre-seeding RtcEpochSeconds fixes UEFI GetTime()
@@ -50,6 +42,7 @@ test -s "$log"
 for stage in M55_ORIGINAL_CMAKE_NINJA_CJSON_PASS \
  M55_LINUX_EPOLL_PIPE_WAIT_PASS \
  M55_LINUX_EVENTFD_EPOLL_PASS \
+ M55_NATIVE_EVENTFD_VECTOR_PASS M55_NATIVE_PIPE_WRITEV_ATOMIC_PASS \
  M55_NATIVE_SHARED_STACK_CAPACITY_PASS \
  M55_CMAKE_REAL_CONFIGURE_PASS M55_NINJA_REAL_GCC_COMPILE_LINK_PASS \
  M55_UPSTREAM_CJSON_CTEST_PASS M55_NINJA_INCREMENTAL_NOOP_PASS \

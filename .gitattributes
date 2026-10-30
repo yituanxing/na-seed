@@ -1,0 +1,4 @@
+# Verbatim third-party code: preserve upstream bytes and copyright notices.
+# Continue strict whitespace checks for all first-party source.
+third_party/lwext4/** -whitespace
+third_party/unikraft/** -whitespace

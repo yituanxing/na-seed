@@ -2,6 +2,7 @@
 #define NASEED_FD_H
 #include <stdbool.h>
 #include <stdint.h>
+#include "fs/lookup.h"
 
 /* Per-task descriptor entry and global shared open-description lifetime.
  * Descriptor table fields stay in nas_task; offset/status and reference
@@ -15,10 +16,9 @@ struct nas_task;
 /* Shared FD kind identities until the file-object refactor. */
 enum { FD_CLOSED = 0, FD_UART = 1, FD_NULL = 2, FD_ZERO = 3,
        FD_BOOTFS = 4, FD_ARCHIVE = 5, FD_DIR = 6,
-       FD_PIPE_R = 7, FD_PIPE_W = 8, FD_TMP = 9, FD_TMP_DIR = 10,
+       FD_PIPE_R = 7, FD_PIPE_W = 8,
        FD_TTY = 11, FD_EPOLL = 12, FD_EVENTFD = 13,
-       FD_SOCKET = 14, FD_PTY_MASTER = 15, FD_PTY_SLAVE = 16,
-       FD_PROC_FILE = 17, FD_PROC_DIR = 18 };
+       FD_SOCKET = 14, FD_PTY_MASTER = 15, FD_PTY_SLAVE = 16 };
 /* Descriptor-local entry. The open-file description is a separate
  * refcounted object: dup/fork share its offset, not the CLOEXEC bit. */
 struct nas_fd_entry {
@@ -58,6 +58,10 @@ uint64_t nas_fd_clone(struct nas_task *task, uint64_t src, uint64_t dst,
 uint64_t nas_fd_duplicate(struct nas_task *task, uint64_t src,
                           uint64_t minimum, bool cloexec);
 bool nas_task_hold_files(const struct nas_task *task);
+/* One kernel-owned File reference, independent of a process FD table.
+ * Pending syscalls and SCM_RIGHTS must keep the original description alive
+ * across close/dup2 until their own final release. */
+bool nas_fd_hold_description(unsigned slot);
 
 /* Open-file descriptions are shared across fork/dup. FD_CLOEXEC and the
  * per-task mapping of FD number -> description remain task-local. This is a
@@ -70,12 +74,18 @@ struct nas_open_file {
     uint64_t status_flags;
     uint64_t position;
     const struct nas_file_ops *ops;
+    /* Provider inode + mount pin owned by shared file description; pipes
+     * and sockets leave these empty. fork/dup do not copy the inode view. */
+    struct nas_fs_node vnode;
+    bool vnode_pinned;
+    /* Owned positive Dentry and mount Path for directory openat/fchdir.
+     * The existing vnode pin remains the independent File/inode owner;
+     * dup/fork share this Dentry via their shared open description. */
+    struct nas_vfs_path vpath;
     const struct limine_file *boot_file;
-    const struct bootfs_entry *boot_entry;
-    uint64_t proc_pid;
-    uint64_t proc_tgid; /* procfs /proc/<TGID>/task/<TID> ownership */
-    uint8_t proc_kind;
-    uint16_t proc_fd;
+    /* Legacy procfs shadow PID/TGID/FD fields and bootfs entry pointer
+     * were removed: all mounted File identities live in vnode+mount.
+     * Keep only the non-VFS Limine module's opaque boot_file pointer. */
     /* Canonical path of the open description, shared by dup/fork. */
     char origin_path[256];
 };

@@ -1,0 +1,213 @@
+# NaSeed architecture issue register
+
+This is a **source-verified, living list**, not a list of things that must be
+rewritten immediately. Findings are evaluated against the actual development
+branch, not against older RFCs. A passing workload proves its observed path;
+it does not close an ownership or layering issue by itself.
+
+Baseline for this review: `vfs-block-lwext4-foundation@690b234` (M108,
+2026-10-29). Keep issue IDs stable as the branch advances. Before changing
+an entry to **fixed**, record the exact commit, deleted superseded path,
+independent consumer, and test evidence.
+
+## Current-state reconciliation (2026-10-30, `221c46a`)
+
+The issue table below deliberately retains **baseline** observations; it is
+not a list of current missing features. Later source review gives these
+overrides before using the table for further implementation:
+
+- **NAS-A001:** the program-name and stdout-PASS sniffing fields/branches
+  described in the baseline row are gone from current `kernel/task.h`,
+  `kernel/fs/syscall.c` and `kernel/init/main.c`. Do not re-implement that
+  cleanup. Retain the historical M1–M4 and exact-head native acceptance
+  contract before marking the issue fully closed.
+- **NAS-A002:** `kernel/fs/file_ops.h` already passes OpenFile slots and
+  **kernel-owned** bytes; `kernel/fs/file_io.c` owns usercopy and an
+  OFD-pinned pending request. Block admission uses provider
+  `io_wait_flags`, and `kernel/task/blocked_completion.c` calls the saved
+  native continuation rather than replaying FD-kind-specific syscalls.
+  The former `(fd,user_addr,count)` and FD-kind retry statements in the
+  baseline row and older narrative are no longer true. Verify the full
+  relevant guest oracles before closing the remaining semantic edges.
+- **NAS-A011:** remains a distinct behavior gap to prove on a real guest:
+  noncanonical PTY `VMIN/VTIME`, especially scalar/readv wait and wakeup
+  with competing consumers. A host Linux oracle alone does not close it.
+- **VFS topology:** real positive Dentry/Path and counted mount attachments
+  are implemented. Current `mount_matches()` is only the CPIO overlay
+  fallback, **not** the generic mount dispatcher. Future work is bounded
+  path compatibility, negative cache/SMP/concurrency, and measurement-led
+  lookup scaling; do not create a second VFS namespace engine.
+
+Exact-head results must still distinguish automatic grouped native FAST,
+full original GCC/Make guest suites, and manual M50 FULL/M55/M56/M57.
+Historical successes below do not establish every manual suite on `221c46a`.
+
+Historical exact-head proof (2026-10-30): `771f37b` completed **23 successful
+GitHub Actions runs and one intentionally skipped opt-in wrapper**, with zero
+failures. The independent full M55 run
+[`40999972584`](https://github.com/yituanxing/na-seed/actions/runs/40999972584)
+passed on x86-64, AArch64 and RV64 in real QEMU system guests: upstream cJSON
+Ninja build, full CTest, strict zero-action no-op, a single-source incremental
+rebuild, and a second CTest. This is evidence for the tested paths, not a
+blanket claim that every architectural issue is closed.
+
+Subsequent `c961b7a` automatic PR gate: **22/22 successful workflows**,
+including 9/9 native x86-64/RV64/AArch64 grouped QEMU jobs in
+[`41003615592`](https://github.com/yituanxing/na-seed/actions/runs/41003615592).
+The native M42 pthread group executes the original XZ test and the
+glibc-linked A014 mutation/dup2 oracle three times per ISA. A014's former
+reimport/re-resolve resume path and A016's exact musl-only clone mask have
+been replaced; the actual three-ISA guest acceptance now closes both issues.
+The A009/A010 implementation added after this head was later verified at
+`0367d01`: **22/22 automatic workflows** and **9/9 grouped native QEMU jobs**
+passed in [run 41011332339](https://github.com/yituanxing/na-seed/actions/runs/41011332339).
+The M42 pthread probe checked the same static Linux C source on all three
+NaSeed ISAs, requiring both A009/A010 guest markers before reporting PASS.
+The old filesystem-specific FD aliases and superseded M42 staging entry were
+deleted in the same commit. This does not claim the separate manual FULL
+source-build matrix ran at `0367d01`.
+
+| ID | Priority | Status at baseline | Confirmed boundary / evidence | Closure contract |
+| --- | --- | --- | --- | --- |
+| NAS-A001 | P0 | Confirmed; first cleanup batch | `kernel/task.h` owns `running_bash/busybox/alpine` and stdout matcher; `kernel/fs/syscall.c` observes TTY output; `kernel/init/main.c` judges application success | Test behavior belongs to guest/host oracle; no application identity or stdout PASS sniff in Task, syscall or exec; preserve legacy boot argv and M1–M4 plus M50+ genuine acceptance |
+| NAS-A002 | P0 | Confirmed; next ownership batch | `kernel/fs/file_ops.h` passes `(fd,user_addr,count)` to generic read/write; `kernel/task/blocked_completion.c` enumerates FD kinds | Syscall resolves FD/OFD and usercopy; providers use owned OpenFile identity plus kernel buffers; preserve partial I/O, EFAULT, blocking, signals and existing C continuations; remove superseded FD-kind retry path |
+| NAS-A003 | P1 | Confirmed optional performance/lifetime design limit; no universal correctness failure | `kernel/fs/vfs.h` deliberately supplies inode `read_at/write_at`; lwext4 and RamFS already have stable inode identity. Read-only LittleFS currently reopens an upstream file for each `read_at` call | Measure an independent real LittleFS workload first; if warranted, add optional provider state to the existing shared OFD, initialized before FD publication and closed once before final inode unpin. Keep inode-only providers and `nas_vfs_read_at` for mmap/exec; prove failure rollback and dup/fork/SCM_RIGHTS ownership |
+| NAS-A004 | P1 | Confirmed design limit; needs independent provider | `kernel/fs/vfs.c::dentry_find` hashes and compares exact names; FAT can expose case/8.3 aliases | Provider-specific name identity and coherent cache invalidation, without global case-folding or pretending FAT has Unix unlink/rename semantics |
+| NAS-A005 | P1 | Confirmed architectural limit; implementation deferred | Existing private file maps eagerly snapshot data and `MAP_SHARED` lacks an owned file/page-cache contract | File-backed VMAs pin an inode/address-space; tested dirty/writeback, read/write/truncate coherence, COW and sync before claiming shared mapping |
+| NAS-A006 | P2 | Known capacity/performance constraint | Bounded task/FD/VMA/heap resources; shared synchronous single-inflight polling VirtIO-Blk | Grow only from measured real-program failures; preserve ownership and compare cold/warm genuine-QEMU performance |
+| NAS-A007 | P1 | APK catalog and unified target mapping implemented; structured outcome/provenance still open | `scripts/prebuilt-profile-catalog.tsv` owns 14 signed-package overlays; `scripts/native-alpine-matrix.tsv` remains the unique M50 workload roster. All 33 M38+ probes now source `native-qemu-target.sh`; the contract derives consumers from both existing catalogs instead of duplicating their lists | Preserve all independent guest assertions, M50 FAST 12/FULL 17 and manual M56/M57. Add a machine-readable exact-head outcome/evidence record using existing `native-perf-report.py` comparability fields where applicable; do not turn DEFERRED, missing input digests or skipped guests into PASS |
+| NAS-A008 | P1 | Core vector importer/aggregate path already implemented; residual guest corner coverage, not the previously claimed P0 importer bug | Source re-audit at `0e76e016` found `kernel/fs/file_io.c` snapshots and validates all 1024 descriptors before provider mutation, with aggregate pipe/socket/eventfd admission and an actively used segmented fallback. Existing `scripts/check-a008-linux-vectors.sh` and `scripts/check-m106-usercopy-syscalls.sh` pass host oracles; they are not three-ISA guest proof for every vector edge | Keep later-iovec overflow/invalid-address, zero-count/bad FD, atomic `PIPE_BUF`, COW/EFAULT, blocked retry and eventfd `readv` vs segmented `writev` under exact-head native tests. Do **not** replace the already unified importer or delete segmented I/O. PTY VMIN/readv and wait semantics belong to NAS-A011 |
+| NAS-A009 | P1 | Fixed in `0367d01`; genuine M42 three-ISA guest PASS | Before this batch, `nas_fs_fd_pwrite` ignored `O_APPEND`; Linux appends at the current inode size while keeping the shared OFD offset unchanged. The common adapter now picks the live append offset and rechecks signed bounds without changing provider `write_at` | Unchanged `scripts/test-a009-a010-linux-fcntl.c` verifies two open descriptions, dup, seek, append and overwrite on Linux and NaSeed. Exact-head grouped run `41011332339` passed all three M42 pthread jobs, each requiring `A009_LINUX_PWRITE_APPEND_POSITION_PASS` |
+| NAS-A010 | P1 | Fixed in `0367d01`; genuine M42 three-ISA guest PASS | AArch64 native open flags differed from the common layout; the old `F_GETFL` returned internal bits. Original open installation also discarded `O_DIRECTORY`/`O_NOFOLLOW` and omitted Linux LP64 `O_LARGEFILE` | Preserve Linux-visible immutable OFD flags, keep `O_PATH` and CLOEXEC handling distinct, invert ARM native bits at F_GETFL and restrict F_SETFL mutations; host oracle and all three M42 jobs required `A010_LINUX_NATIVE_FCNTL_FLAGS_PASS` in run `41011332339` |
+| NAS-A011 | P1 | Confirmed PTY blocking/continuation gap; Linux VMIN/readv oracle now independently reproduced | `kernel/fs/syscall.c::ops_pty` lacks `aggregate_readv` and I/O wait flags, while `kernel/drivers/pty.c` noncanonical read tests ring availability but not VMIN. On host Linux, PTY slave `VMIN=2,VTIME=0` with data A, then B 150ms later makes `readv([1,1])` wait and return 2; current NaSeed segmented path is predicted to return 1 prematurely (guest reproduction pending) | Add a real three-ISA PTY guest oracle for scalar/readv blocking, then migrate PTY readiness and line discipline together through the existing OpenFile capability contract, not FD-kind special cases; preserve O_NONBLOCK, VMIN/VTIME, EOF, signals and wakeup ownership |
+| NAS-A012 | P1 | Fixed in `d7db661`; exact-head CI green in `771f37b` | Previous `kernel/fs/syscall.c::ops_socket` shared `pipe_write_plan` and `NAS_PIPE_CAP` atomic preflight with pipe writes; `kernel/pipe.c::nas_pipe_write_amount` rejected a partial nonblocking stream send below `PIPE_BUF` | Keep the shared ring as a private backend detail, but give AF_UNIX stream its own short-write admission and zero PIPE_BUF guarantee. Linux socketpair and NaSeed M106 vector partial-progress oracles passed; continue covering independent workloads |
+| NAS-A013 | P1 | Fixed in `d7db661`; exact-head CI green in `771f37b` | Previous `kernel/fs/file_io.c::io_segmented_read` invoked repeated scalar reads, lowering noncanonical VMIN per slice; `kernel/task/wait.c::task_io_ready` wrongly used `readv` iovcnt as requested TTY bytes | Treat one `readv` as a logical request at the TTY provider, retain correct noncanonical VMIN/VTIME, per-waiter deadlines and EFAULT/partial semantics; readiness must use kernel-owned logical byte length, never inspect another task's user iovecs. Linux and host-production oracles plus CI passed; true blocked-vector mutation remains NAS-A014 |
+| NAS-A014 | P1 | Fixed in `75e1ecc`; real M42 3-ISA guest PASS at `c961b7a` | Former `finish_readv` reimported user iovecs on wake, while the waiter re-resolved a mutable task FD. A concurrent `dup2` or iovec mutation could redirect the pending operation. Old continuation path removed in favor of Task-owned pending I/O request | The pending request pins the original shared OpenFile and one imported iovec snapshot; normal completion, EINTR, exit/group-exit and reap dispose the pin. The exact original Linux oracle now executes all two ownership races 3× per ISA under native QEMU; grouped run `41003615592` PASS |
+| NAS-A015 | P1 | Fixed in `771f37b`; full M55 real guest 3/3 PASS | Original upstream Ninja 1.13.2 `StartEdge` repeatedly opens its empty `.ninja_lock` with `fopen("wb")` and no write to record command-start mtime. `kernel/tmpfs.c::tmp_resize` returned early for unchanged lengths, so `O_TRUNC` left the timestamp frozen. This made M55 on all three ISAs plan 22 redundant no-op rebuild edges | Successful `O_TRUNC` or same-size ftruncate now updates tmpfs `mtime/ctime`; Linux oracle, NaSeed production tmpfs tests (including M108+ASan), and original three-ISA guest Ninja strict no-op, genuine source rebuild and second CTest all passed on exact head. No Ninja patches or bypasses |
+| NAS-A016 | P1 | Fixed in `20ae25f`; original musl + glibc 3-ISA guest PASS at `c961b7a` | Original musl pthread clone uses `0x7d0f00`, static GNU libc uses `clone3` fallback and `clone(0x3d0f00)`; the previous exact-mask policy wrongly rejected the equivalent request | Linux UAPI ignores `CLONE_DETACHED` bit `0x00400000`; the common ABI decoder masks only that bit while requiring all other thread ownership flags. Existing original M42 XZ and glibc A014 guest marker sequence passed in grouped native run `41003615592` |
+
+## First cleanup batch (pending exact-head runtime proof)
+
+- **NAS-A001, implementation complete; validation in progress.** Task no longer
+  stores program names or stdout-matching state; exec and TTY no longer infer
+  test acceptance. PID1 reports its exit status, while host probes verify
+  actual user output and emulator exit. Existing no-cmdline Bash/BusyBox argv
+  selection remains isolated in boot setup. Only a real Limine ELF module may
+  satisfy the historical rootless compatibility endpoint.
+- **Do not close NAS-A001** until the new exact-head commit retains M1–M4,
+  the explicit-argv cases and the three-ISA grouped runs. Host syntax and
+  static boundary checks alone are insufficient evidence.
+- **NAS-A002 and later remain open.** In particular, no second OpenFile or
+  syscall continuation mechanism is introduced by this batch.
+
+## NAS-A002 data-plane migration (implementation, exact-head proof pending)
+
+- The common FileOps `read/write` callbacks now accept the shared OpenFile
+  slot and **kernel-owned** bytes. The common FD syscall adapters own
+  usercopy/COW and bounded transfer chunks. Optional provider plans preserve
+  original logical transfer length; Pipe and AF_UNIX sockets make their
+  `PIPE_BUF` admission decision before chunks are committed.
+- PTY, TTY, eventfd, bootfs and mounted VFS providers migrated in one batch;
+  obsolete `(fd,user_addr,count)` provider implementations removed. An
+  explicit eventfd copyout-order flag preserves Linux's confirmed
+  consume-before-EFAULT semantics. A provider VFS capability, rather than a
+  filesystem name string, distinguishes exact size/EOF from dynamic procfs.
+- Host evidence: M106, M105 PTY Linux oracle, M102 COW host phase, M89 OFD
+  poll, boundary mutation guard and linked three-ISA source manifest. M55
+  eventfd differential regression passes on **Linux host**, not yet NaSeed.
+  M102 target compile and three-ISA QEMU remain pending, because the local
+  environment does not provide Clang/QEMU.
+- Later exact-head `24a8f8bd` grouped-native FAST QEMU jobs passed **9/9**
+  (three ISAs × foundation/lifecycle/pthread), and M106 passed in Actions.
+  The userspace smoke then stopped at M102 target syntax because its new
+  `file_io.c` compile lacked the already-present `limine.h` shim include.
+  That CI-script error and an independently proven `O_PATH` write access
+  bug were fixed in `3db3705d`. The subsequent `74afe88` exact head
+  achieved **22/22 automatic workflow success**, including all grouped
+  native QEMU jobs and the userspace smoke gate. The independent M55 eventfd
+  guest gate is manual-dispatch and is not part of grouped FAST; host oracle
+  results do not substitute for it.
+- Subsequent Linux-host differential checks found a finer `access_ok` rule:
+  an out-of-user-range pointer must fail `EFAULT` even for zero-byte EOF and
+  null/zero discard writes, before a backend plan or eventfd counter
+  consumption. An unmapped but *in-range* pointer is still accepted by a
+  discard sink or a zero-byte EOF without touching its pages. A follow-up
+  patch implements this generic range/page-content separation; it requires
+  its own exact-head runtime evidence before that behavior can be closed.
+- **Do not mark NAS-A002 fully closed yet:** syscall initial blocking and
+  native C continuation retry still enumerate FD kinds. Preserve SIGPIPE,
+  per-waiter TTY readiness, and exactly-once task wait semantics when
+  migrating them to an explicit provider wait capability; see
+  `docs/ofd-data-plane-contract.md`. NAS-A008 tracks separate vector-aware
+  aggregate-planning correctness.
+
+## NAS-A008 vector transaction migration (local implementation, target proof pending)
+
+- FileOps independently declares aggregate `readv` and `writev` support;
+  usercopy remains in one syscall adapter. The importer snapshots at most
+  1024 user iovecs in heap-owned kernel storage, checks all descriptors and
+  address ranges before any provider I/O, then uses bounded kernel-buffer
+  scatter/gather. It removes the old per-iovec partial side effect when a
+  later descriptor is structurally invalid.
+- Pipe and AF_UNIX writes plan the **whole vector** once and preflight all
+  source pages for an admitted `PIPE_BUF` atomic write; eventfd reads as one
+  eight-byte value across several iovecs, while its Linux-required segmented
+  `writev` fallback is preserved. Other FileOps providers remain segmented
+  until independently verified; no new FD-kind switch is added.
+- Independent host evidence: `scripts/check-a008-linux-vectors.sh` exercises
+  genuine Linux syscalls, and M106 exercises actual NaSeed FileOps, pipe and
+  eventfd providers with FD slot and user-MM failure injection. Both pass
+  locally. M55's original guest test gains vector/eventfd/pipe acceptance
+  cases; the manual QEMU gate and new exact-head automatic CI are still
+  required. Do not label NAS-A008 fully closed from host success alone.
+
+- The pushed `dbe0008c` exact head subsequently achieved **22/22 automatic
+  workflow success**, including the three-ISA grouped fast native QEMU jobs.
+  These fast runs intentionally do **not** execute M55 original CMake/Ninja,
+  and cannot be substituted for the separate full native guest gate.
+- Follow-up review confirmed NAS-A012 (socket stream is not a pipe) and
+  NAS-A013 (TTY's `readv` is not independent scalar reads). Both are tracked
+  separately from the original iovec import/ownership defect; neither
+  invalidates the evidence that importer state is heap-owned and released.
+
+## Full guest acceptance triggering contract
+
+- M55's three-ISA full native CMake/Ninja workflow stays deliberately opt-in
+  to avoid adding 40–55 minute guest builds to every routine change.
+- A small PR metadata-triggered wrapper invokes the same M55 workflow. The
+  GitHub app can temporarily add `[run-m55-deep]` to the open PR title (or
+  apply the `run-m55-deep` label if provisioned), then restore the title;
+  this requires neither a new branch nor a website login. A reusable M55
+  checkout pins `github.event.pull_request.head.sha`, not the synthetic PR
+  merge commit. Artifacts are retained on both PASS and FAIL.
+- Mark M55 guest `PASS` only after every matrix ISA reports the complete
+  original build, first/second CTest, real source rebuild, and all new
+  vector/Eventfd/Pipe stage markers at that exact head.
+
+## Already implemented: do not reopen as an unsolved issue
+
+- M103 independent Task MM/Files/FSContext/Sighand, anonymous lazy faults and
+  COW, and native C continuation (not old syscall replay).
+- Owned VFS Path/Dentry references, mount/inode pinning, and kernel-buffer
+  `nas_vfs_read_at` / `nas_vfs_write_at`.
+- OFD-level `poll_description(slot)` and the existing safe-degradation flags
+  for unlink/rename-while-open. Their presence does **not** mean complete
+  Unix semantics or per-open backend state is implemented.
+
+## Required decision record for each architecture batch
+
+1. Give the original unmodified program's observed failure and same-ISA Linux
+   baseline. If this is an adapter-specific limitation, state it explicitly.
+2. Draw the object path: creator, sole owner, borrowers/consumers, final
+   releaser, and all error exits. Record which layer owns the operation.
+3. Name the **old implementation to be removed**; globally search for every
+   caller after migration. Do not leave a second legacy implementation.
+4. Verify a focused failure case and at least two independent consumers,
+   then the relevant exact-head three-ISA QEMU gates. Distinguish host tests,
+   cross-compilation, automatic fast, and explicit manual full.
+5. Report success and unsupported/skipped scenarios separately. An application
+   name or test marker must not become a condition in generic kernel code.
+
+Related existing design/evidence: `docs/architecture-foundation-contract.md`,
+`docs/ci-proof-coverage-contract.md`, `docs/vfs-open-description.md`,
+`docs/architecture-performance-review-2026-10-28.md`.

@@ -88,3 +88,40 @@ char *strrchr(const char *s, int ch) {
         ++s;
     }
 }
+
+/* ISO C string primitives shared with upstream filesystems and all ISAs.
+ * Keep portable routines in common libc support, never per FS backend. */
+char *strcpy(char *restrict dst,const char *restrict src) {
+    char *result=dst;
+    for(;;) {
+        char value=*src++;
+        *dst++=value;
+        if(!value)break;
+    }
+    return result;
+}
+char *strncpy(char *restrict dst,const char *restrict src,size_t n) {
+    char *result=dst;
+    size_t i=0;
+    for(;i<n && src[i];i++)dst[i]=src[i];
+    for(;i<n;i++)dst[i]=0;
+    return result;
+}
+size_t strspn(const char *s,const char *accept) {
+    size_t n=0;
+    for(;s[n];n++) {
+        const char *a=accept;
+        while(*a && *a!=s[n])a++;
+        if(!*a)break;
+    }
+    return n;
+}
+size_t strcspn(const char *s,const char *reject) {
+    size_t n=0;
+    for(;s[n];n++) {
+        const char *r=reject;
+        while(*r && *r!=s[n])r++;
+        if(*r)break;
+    }
+    return n;
+}

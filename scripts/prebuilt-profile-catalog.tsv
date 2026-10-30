@@ -1,0 +1,22 @@
+profile	packages	elfs	copies	repositories
+# Original signed Alpine APK overlay catalog. One row owns each profile's
+# package, ELF and guest fixture manifests; milestone wrappers are stable APIs.
+# Schema: profile<TAB>packages<TAB>elfs<TAB>copies<TAB>repositories
+# repositories = main | main+community (all APKs still signature-verified).
+m58-runtime	rootfs/alpine/packages-m58-runtime.txt	scripts/m58-original-elfs.txt	scripts/m58-rootfs-copies.tsv	main
+m59-worktree	rootfs/alpine/packages-m59-worktree.txt	scripts/m59-original-elfs.txt	scripts/m59-rootfs-copies.tsv	main
+m60-terminal	rootfs/alpine/packages-m60-terminal.txt	scripts/m60-original-elfs.txt	scripts/m60-rootfs-copies.tsv	main
+m65-observe	rootfs/alpine/packages-m65-observe.txt	scripts/m65-original-elfs.txt	scripts/m65-rootfs-copies.tsv	main
+m66-monitor	rootfs/alpine/packages-m66-monitor.txt	scripts/m66-original-elfs.txt	scripts/m66-rootfs-copies.tsv	main
+m67-control	rootfs/alpine/packages-m67-control.txt	scripts/m67-original-elfs.txt	scripts/m67-rootfs-copies.tsv	main
+m69-inspect	rootfs/alpine/packages-m69-inspect.txt	scripts/m69-original-elfs.txt	scripts/m69-rootfs-copies.tsv	main
+m70-vmfd	rootfs/alpine/packages-m70-vmfd.txt	scripts/m70-original-elfs.txt	scripts/m70-rootfs-copies.tsv	main
+m72-strace	rootfs/alpine/packages-m72-strace.txt	scripts/m72-original-elfs.txt	scripts/m72-rootfs-copies.tsv	main
+m73-strace	rootfs/alpine/packages-m73-strace.txt	scripts/m73-original-elfs.txt	scripts/m73-rootfs-copies.tsv	main
+m74-strace	rootfs/alpine/packages-m74-strace.txt	scripts/m74-original-elfs.txt	scripts/m74-rootfs-copies.tsv	main
+m75-gdb	rootfs/alpine/packages-m75-gdb.txt	scripts/m75-original-elfs.txt	scripts/m75-rootfs-copies.tsv	main
+m76-gdb	rootfs/alpine/packages-m76-gdb.txt	scripts/m76-original-elfs.txt	scripts/m76-rootfs-copies.tsv	main
+m79-workflow	rootfs/alpine/packages-m79-workflow.txt	scripts/m79-original-elfs.txt	scripts/m79-rootfs-copies.tsv	main
+m80-batch	rootfs/alpine/packages-m80-batch.txt	scripts/m80-original-elfs.txt	scripts/m80-rootfs-copies.tsv	main+community
+m83-source	rootfs/alpine/packages-native-busybox.txt	scripts/m83-original-elfs.txt	scripts/m83-rootfs-copies.tsv	main
+m84-source	rootfs/alpine/packages-native-busybox.txt	scripts/m83-original-elfs.txt	scripts/m84-rootfs-copies.tsv	main

@@ -181,7 +181,7 @@ exception_common:
 isr0:
     pushq $0
     pushq $0
-    jmp exception_common
+    jmp nas_x86_traced_exception_entry
 .global isr1
 isr1:
     pushq $0
@@ -201,17 +201,17 @@ isr3:
 isr4:
     pushq $0
     pushq $4
-    jmp exception_common
+    jmp nas_x86_traced_exception_entry
 .global isr5
 isr5:
     pushq $0
     pushq $5
-    jmp exception_common
+    jmp nas_x86_traced_exception_entry
 .global isr6
 isr6:
     pushq $0
     pushq $6
-    jmp exception_common
+    jmp nas_x86_traced_exception_entry
 .global isr7
 isr7:
     pushq $0
@@ -229,15 +229,15 @@ isr9:
 .global isr10
 isr10:
     pushq $10
-    jmp exception_common
+    jmp nas_x86_traced_exception_entry
 .global isr11
 isr11:
     pushq $11
-    jmp exception_common
+    jmp nas_x86_traced_exception_entry
 .global isr12
 isr12:
     pushq $12
-    jmp exception_common
+    jmp nas_x86_traced_exception_entry
 .global isr13
 isr13:
     pushq $13
@@ -257,11 +257,11 @@ isr15:
 isr16:
     pushq $0
     pushq $16
-    jmp exception_common
+    jmp nas_x86_traced_exception_entry
 .global isr17
 isr17:
     pushq $17
-    jmp exception_common
+    jmp nas_x86_traced_exception_entry
 .global isr18
 isr18:
     pushq $0
@@ -271,7 +271,7 @@ isr18:
 isr19:
     pushq $0
     pushq $19
-    jmp exception_common
+    jmp nas_x86_traced_exception_entry
 .global isr20
 isr20:
     pushq $0

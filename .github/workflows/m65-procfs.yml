@@ -10,6 +10,10 @@ on:
       - 'tests/m65-*'
       - 'rootfs/alpine/packages-m65-observe.txt'
       - 'scripts/stage-alpine-prebuilt-overlay.sh'
+      - 'scripts/prebuilt-profile-catalog.tsv'
+      - 'scripts/check-prebuilt-profile-catalog.py'
+      - 'scripts/native-qemu-target.sh'
+      - 'scripts/check-native-qemu-target.py'
       - '.github/workflows/m65-procfs.yml'
   workflow_dispatch:
 concurrency:
@@ -31,6 +35,8 @@ jobs:
           set -eu
           sh -n scripts/stage-m65-prebuilt.sh scripts/probe-m65-procfs.sh tests/m65-procfs-run.sh
           python3 scripts/check-three-isa-core.py
+          python3 scripts/check-prebuilt-profile-catalog.py
+          python3 scripts/check-native-qemu-target.py
           cc -std=c11 -Wall -Wextra -Werror -fno-builtin -I kernel scripts/test-procfs.c kernel/fs/procfs.c kernel/lib/string.c -o /tmp/nas-m65-procfs
           /tmp/nas-m65-procfs
       - name: Install native QEMU and host rootfs tools

@@ -177,18 +177,41 @@ uint64_t nas_signal_tgkill(uint64_t raw_tgid,uint64_t raw_tid,
  * continuation side effect are shared across the three Linux ABIs.
  * Unknown signal-delivery semantics cannot fake a user-handler frame. */
 static bool signal_target_matches(const struct nas_task *target, int64_t pid,
-                                   const struct nas_task *sender,
-                                   bool include_threads) {
-    /* kill(pid,SIGKILL) selects process leaders, never raw pthread TIDs.
-     * Job-control STOP/CONT, by contrast, stop/resume every live TID in
-     * the selected process group, not just the group leader. */
-    if (!target || target->state == NAS_TASK_FREE ||
-        (target->is_thread && !include_threads))
+                                   const struct nas_task *sender) {
+    /* Group selection is by process identity (TGID), never a raw worker
+     * TID. A process may still be alive after its leader called SYS_exit:
+     * the ZOMBIE leader cannot be the sole signal delivery recipient. */
+    if (!target || target->state == NAS_TASK_FREE)
         return false;
     if (pid > 0) return target->tgid == (uint64_t)pid;
     if (pid == 0) return target->pgid == sender->pgid;
-    if (pid == -1) return target != sender && target->pid != 1;
+    if (pid == -1) return target->tgid != sender->tgid && target->tgid != 1;
     return target->pgid == (uint64_t)-pid;
+}
+static bool signal_live_member(const struct nas_task *task) {
+    return task && task->state!=NAS_TASK_FREE &&
+           task->state!=NAS_TASK_ZOMBIE;
+}
+/* Process-directed signals choose exactly one live TID. Prefer a peer that
+ * can take the signal now over a blocked peer, including when the leader is
+ * a ZOMBIE but its workers remain alive. All mask/pending state stays
+ * per-thread until a proper process-owned pending queue is introduced. */
+static struct nas_task *signal_group_recipient(uint64_t tgid,unsigned sig) {
+    struct nas_task *selected=0;
+    const uint64_t bit=sig ? 1ULL<<(sig-1) : 0;
+    for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
+        struct nas_task *candidate=nas_task_at(i);
+        if(!signal_live_member(candidate) || candidate->tgid!=tgid)continue;
+        if(!selected || (sig && (selected->blocked_signals&bit) &&
+                         !(candidate->blocked_signals&bit)))
+            selected=candidate;
+    }
+    return selected;
+}
+static bool signal_group_already_selected(struct nas_task *const *targets,
+                                           unsigned count,uint64_t tgid) {
+    for(unsigned i=0;i<count;i++)if(targets[i]->tgid==tgid)return true;
+    return false;
 }
 /* Common cooperative process exit owns fd and pipe last-close, PID1
  * adoption, child TID clear and zombie state. On remote kill, the
@@ -215,13 +238,28 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
     unsigned count = 0;
     bool protected_init = false, self = false;
     bool self_terminate = false;
+    const bool per_thread_transition=signal==NAS_SIGSTOP || signal==NAS_SIGCONT;
     for (unsigned i=0;i<NAS_TASK_LIMIT;i++) {
         struct nas_task *target = nas_task_at(i);
-        if (!signal_target_matches(target,pid,sender,
-                signal==NAS_SIGSTOP || signal==NAS_SIGCONT)) continue;
-        if (signal && target->pid==1) {
-            protected_init=true; /* never terminate the OS supervisor */
+        if (!signal_target_matches(target,pid,sender))continue;
+        if (signal && target->tgid==1) {
+            protected_init=true; /* PID 1 workers are also protected. */
             continue;
+        }
+        if(per_thread_transition) {
+            if(!signal_live_member(target))continue;
+        } else {
+            /* kill(pid), kill(0) and kill(-pgid) address PROCESSES, even
+             * when their original leaders are zombies with live workers.
+             * Never publish multiple copies of a caught signal or destroy
+             * the same thread group twice from this pointer snapshot. */
+            if(signal_group_already_selected(matches,count,target->tgid))
+                continue;
+            struct nas_task *recipient=signal_group_recipient(target->tgid,
+                                                    (unsigned)signal);
+            if(recipient)target=recipient;
+            /* An unreaped zombie is still PID-visible for kill(pid,0).
+             * With no live TID, a nonzero signal has no effect. */
         }
         matches[count++]=target;
     }
@@ -233,6 +271,24 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
      * No CPU-specific signal stack or fake success path is introduced. */
     for (unsigned i=0;i<count;i++) {
         struct nas_task *target=matches[i];
+        if(!per_thread_transition && target->tgid==sender->tgid) {
+            /* A target in the caller's own group must never be killed by
+             * signal_kill_other(): exit_group would release the saved
+             * sender Task before restore_cpu(sender). Defer self-fatal
+             * teardown until every OTHER group has been processed. */
+            if(!signal_live_member(target))continue;
+            const uint64_t bit=1ULL<<(signal-1);
+            const uint64_t disposition=target->sighand->actions[signal][0];
+            if(signal!=NAS_SIGKILL && disposition==1)continue;
+            if(signal!=NAS_SIGKILL &&
+               (disposition>1 || (target->blocked_signals&bit))) {
+                target->pending_signals|=bit;
+                continue;
+            }
+            self=true;
+            self_terminate=true;
+            continue;
+        }
         if (target==sender) {
             if (target->sighand->actions[signal][0]>1 &&
                 !(target->blocked_signals&(1ULL<<(signal-1))) &&
@@ -318,15 +374,29 @@ bool nas_signal_tty_event(uint64_t sid,uint64_t pgid,unsigned signum) {
     unsigned count=0;
     for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
         struct nas_task *task=nas_task_at(i);
-        if(task->state==NAS_TASK_FREE || task->state==NAS_TASK_ZOMBIE ||
-           task->sid!=sid || task->pgid!=pgid || task->pid==1)continue;
+        if(!signal_live_member(task) ||
+           task->sid!=sid || task->pgid!=pgid || task->tgid==1)continue;
         /* A masked default SIGTSTP needs full delayed job-control STOP
          * semantics; fail explicitly instead of silently losing it. */
         if(signum==NAS_SIGTSTP &&
            task->sighand->actions[signum][0]==0 &&
            (task->blocked_signals&(1ULL<<(signum-1))))return false;
+        /* SIGTSTP's default job-control stop affects every TID, whereas
+         * a caught/ignored TSTP and every SIGINT/SIGQUIT are exactly ONE
+         * process-directed event per TGID. Retaining raw Task* for every
+         * worker would be unsafe: the first fatal exit_group releases
+         * those other snapshots before this loop can inspect them. */
+        const bool whole_group_stop=signum==NAS_SIGTSTP &&
+                                      task->sighand->actions[signum][0]==0;
+        if(!whole_group_stop) {
+            if(signal_group_already_selected(targets,count,task->tgid))
+                continue;
+            task=signal_group_recipient(task->tgid,signum);
+            if(!task)continue;
+        }
         targets[count++]=task;
     }
+    bool self_group_fatal=false;
     for(unsigned i=0;i<count;i++) {
         struct nas_task *task=targets[i];
         if(task->sighand->actions[signum][0]==1)continue; /* ignored */
@@ -343,10 +413,16 @@ bool nas_signal_tty_event(uint64_t sid,uint64_t pgid,unsigned signum) {
                 task->continue_report_pending=false;
                 task->stop_signal=signum;
             }
-        } else if(task==nas_current_task) {
-            nas_sched_child_exit(0,signum);
+        } else if(task->tgid==nas_current_task->tgid) {
+            /* A remote exit_group of another TID in OUR group can release
+             * the saved current Task. TTY/PTY signals run from the native
+             * scheduler pump, which owns an independent kernel stack and
+             * can safely terminate it directly. Process OTHER groups first
+             * so their CPU/MM restores never return to a dead sender. */
+            self_group_fatal=true;
         } else signal_kill_other(task,signum);
     }
+    if(self_group_fatal)nas_sched_thread_group_exit(0,signum);
     return true;
 }
 
@@ -365,7 +441,7 @@ uint64_t nas_signal_background_job(unsigned signum,uint64_t *frame,
     if(signum!=NAS_SIGTTIN && signum!=NAS_SIGTTOU)
         return (uint64_t)-EINVAL;
     struct nas_task *self=nas_current_task;
-    if(self->pid==1 || self->pgid==0 || self->sid==0)
+    if(self->tgid==1 || self->pgid==0 || self->sid==0)
         return 0; /* protected init / no controlling session */
     uint64_t bit=1ULL<<(signum-1);
     if(self->sighand->actions[signum][0]==1 ||
@@ -435,11 +511,10 @@ uint64_t nas_signal_background_job(unsigned signum,uint64_t *frame,
  * EPIPE return. The default unblocked action remains the existing immediate
  * termination path used by the scheduler; this only queues handler/masked
  * instances for that same Task's subsequent user return. */
-void nas_signal_broken_pipe(uint64_t fd) {
+void nas_signal_broken_pipe(bool pipe_like) {
     struct nas_task *t=nas_current_task;
     if(!t || !t->ppid)return;
-    uint8_t kind=nas_task_fd_kind(t,fd);
-    if(kind!=FD_PIPE_W && kind!=FD_SOCKET)return;
+    if(!pipe_like)return;
     uint64_t disp=t->sighand->actions[NAS_SIGPIPE][0];
     if(disp!=1 && (disp>1 ||
                    (t->blocked_signals&(1ULL<<(NAS_SIGPIPE-1)))))
@@ -485,9 +560,11 @@ void nas_signal_ptrace_stop(const struct nas_task *tracee) {
 }
 void nas_signal_child_exit(const struct nas_task *child) {
     if (!child || !child->ppid) return;
-    struct nas_task *parent=nas_task_by_pid(child->ppid);
-    if (!parent || parent->state==NAS_TASK_FREE ||
-        parent->state==NAS_TASK_ZOMBIE) return;
+    /* A process can reap its children from a live worker after the
+     * original leader called SYS_exit. SIGCHLD is process-directed;
+     * never silently enqueue it on the ZOMBIE leader's dead user frame. */
+    struct nas_task *parent=signal_group_recipient(child->ppid,NAS_SIGCHLD);
+    if (!parent) return;
     if (parent->sighand->actions[NAS_SIGCHLD][0] > 1)
         parent->pending_signals |= 1ULL << (NAS_SIGCHLD-1);
 }

@@ -1,0 +1,13 @@
+# Original ISA-native ELF from authenticated Alpine v3.23 APKs; no host
+# compiler, BusyBox alias or fabricated GNU toolchain runs inside NaSeed.
+bin/busybox
+usr/bin/gcc
+usr/bin/make
+usr/bin/as
+usr/bin/ld
+usr/bin/ar
+usr/bin/readelf
+bin/sed
+bin/grep
+usr/bin/gawk
+bin/coreutils

@@ -2,8 +2,9 @@
 #include "../arch/abi.h"
 #include <stdbool.h>
 #include "../errno.h"
-#include "../bootfs.h"
 #include "../fs/lookup.h"
+#include "../fs/path_request.h"
+#include "../fs/vfs.h"
 #include "../tmpfs.h"
 #include "../task.h"
 #include "../fd.h"
@@ -29,15 +30,12 @@
 #define loaded_main_entry TASK.loaded_main_entry
 #define loaded_interp_base TASK.loaded_interp_base
 #define thread_clear_tid TASK.thread_clear_tid
-#define running_bash TASK.running_bash
-#define running_busybox TASK.running_busybox
-#define running_alpine TASK.running_alpine
 
 /* Boot/exec program-name comparison. FD path matching lives in fs/syscall.c. */
-/* Snapshot all user pointers before changing CR3. ELF bytes are
- * kernel-owned (immutable CPIO or tmpfs inode), valid across the staged
- * root switch. Map through the existing shared ELF loader, commit only
- * when successful, and roll back without invalidating the old process. */
+/* Snapshot all user pointers before changing the selected MM. ELF bytes
+ * come from the VFS-owned filesystem and are explicitly pinned during
+ * staging, whether their backing is CPIO, RAM or persistent BlockDevice.
+ * The transaction commits only after user ELF/stack construction succeeds. */
 /* Real upstream Kbuild passes hundreds of C source paths to native sed.
  * Linux's 64-argv cap was our own artificial limit, not a Kbuild error.
  * Keep a bounded 512-KiB aggregate pool (within the existing 1-MiB
@@ -57,21 +55,69 @@ static struct exec_snapshot {
     char shebang_path[256], shebang_arg[256];
 } pending_exec;
 
+/* Exec's pathname is resolved against an independently pinned cwd/dirfd
+ * Dentry, never against a transient canonical string or an old directory
+ * name. Acquire the independent inode lease WHILE the source Path is alive:
+ * the ELF reader must not use a borrowed inode during image staging. */
+static int exec_lookup_request(const struct nas_fs_path_request *request,
+                               struct nas_fs_node *node,
+                               char display[256]) {
+    struct nas_vfs_path path={0};
+    int rc=nas_fs_lookup_path_at(request->start.dentry?&request->start:NULL,
+                                 request->root.dentry?&request->root:NULL,
+                                 request->pathname,true,&path);
+    if(!rc)rc=nas_vfs_path_node(&path,node);
+    if(!rc && display) {
+        int printable=nas_vfs_path_string(&path,display);
+        if(printable==-ENAMETOOLONG || printable==-ENOENT) {
+            /* The inode is usable even when an ancestor was renamed into
+             * an overlong path. filename[] is argv/debug data, not namei. */
+            memcpy(display,request->pathname,strlen(request->pathname)+1);
+        } else rc=printable;
+    }
+    if(!rc)rc=nas_vfs_node_pin(node);
+    if(path.dentry && nas_vfs_path_put(&path))
+        nas_fail("exec source Path reference corrupted");
+    return rc;
+}
+static int exec_lookup_kernel_absolute(const char *pathname,
+                                       struct nas_fs_node *node,
+                                       char display[256]) {
+    struct nas_fs_path_request request;
+    int rc=nas_fs_kernel_path_begin((uint64_t)-100,pathname,&request);
+    if(rc)return rc;
+    rc=exec_lookup_request(&request,node,display);
+    nas_fs_path_end(&request);
+    return rc;
+}
+
 /* The executable source is owned by its filesystem, not by an ISA-
  * specific ELF loader. Immutable CPIO stays zero-copy, writable tmpfs is
  * read through the same sparse inode API as normal file descriptors. */
-static bool tmp_elf_read(const void *context, uint64_t offset,
+static bool vfs_elf_read(const void *context, uint64_t offset,
                          uint8_t *destination, uint64_t length) {
-    const struct nas_tmp_file *file = (const struct nas_tmp_file *)context;
-    return tmp_read_at(file, offset, destination, length) == (int64_t)length;
+    const struct nas_fs_node *node = context;
+    return nas_vfs_read_at(node, offset, destination, length) == (int64_t)length;
 }
 static struct elf_image elf_from_fs_node(const struct nas_fs_node *node) {
     struct elf_image image = {.data = node->data, .size = node->size};
-    if (node->backend == NAS_FS_TMPFS) {
-        image.read_at = tmp_elf_read;
-        image.context = node->tmp;
+    if (!node->data) {
+        image.read_at = vfs_elf_read;
+        image.context = node;
     }
     return image;
+}
+/* Exec owns source inode+mount references across the entire staged MM
+ * transaction, independently of the user process's old address space.
+ * A borrowed namei snapshot alone cannot guarantee that a file's storage
+ * stays alive if the backend becomes reclaimable; File/open uses the SAME
+ * VFS inode leases. This introduces no second filename-based exec path. */
+static void exec_drop_image_sources(const struct nas_fs_node *source,
+                                    const struct nas_fs_node *interpreter) {
+    if(interpreter && nas_vfs_node_unpin(interpreter))
+        nas_fail("exec interpreter VFS inode reference corrupted");
+    if(source && nas_vfs_node_unpin(source))
+        nas_fail("exec image VFS inode reference corrupted");
 }
 
 /* Linux binfmt_script: interpret a bounded CPIO #! line as an ELF
@@ -144,31 +190,19 @@ static uint64_t copy_exec_string(uint64_t addr, const char **result) {
     if (start >= EXEC_POOL_BYTES) return (uint64_t)-E2BIG;
     unsigned max = EXEC_POOL_BYTES - start;
     if (max > EXEC_STRING_MAX) max = EXEC_STRING_MAX;
-    uint64_t available = USER_LIMIT - addr;
     char *dst = pending_exec.strings + start;
-    /* Resolve one PTE per page, never assume two adjacent virtual pages
-     * have contiguous physical HHDM backing. */
-    for (unsigned i = 0; i < max;) {
-        if ((uint64_t)i >= available) return (uint64_t)-EFAULT;
-        uint64_t at = addr + i;
-        const uint8_t *src = nas_mmu_user_byte(at);
-        if (!src) return (uint64_t)-EFAULT;
-        unsigned chunk = (unsigned)(PAGE - (at & (PAGE - 1)));
-        if (chunk > max - i) chunk = max - i;
-        if ((uint64_t)chunk > available - i) chunk = (unsigned)(available - i);
-        for (unsigned j = 0; j < chunk; j++) {
-            char byte = (char)src[j];
-            dst[i + j] = byte;
-            if (!byte) {
-                pending_exec.used = start + i + j + 1;
-                *result = dst;
-                return 0;
-            }
-        }
-        i += chunk;
+    /* All user strings, including exec arguments, use the same VMA-aware
+     * copy path.  It faults in legitimate lazy pages, never assumes adjacent
+     * VA pages are physically adjacent, and stops at the first NUL. */
+    int rc=nas_user_read_cstr(addr,dst,max);
+    if(rc==-ENAMETOOLONG) {
+        nas_print("[EXEC ARG LIMIT] single string over 8191 bytes or total exec strings over 512 KiB\n");
+        return (uint64_t)-E2BIG;
     }
-    nas_print("[EXEC ARG LIMIT] single string over 8191 bytes or total exec strings over 512 KiB\n");
-    return (uint64_t)-E2BIG;
+    if(rc)return (uint64_t)(int64_t)rc;
+    pending_exec.used=start+(unsigned)strlen(dst)+1;
+    *result=dst;
+    return 0;
 }
 static uint64_t copy_exec_vector(uint64_t user_array, bool environment) {
     unsigned limit = environment ? NAS_ENV_MAX : NAS_ARGV_MAX;
@@ -217,14 +251,26 @@ static uint64_t copy_exec_vector(uint64_t user_array, bool environment) {
 }
 uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
                           uint64_t *syscall_frame) {
-    if (!bootfs_mounted()) return (uint64_t)-ENOENT;
-    uint64_t result = nas_fs_resolve_path((uint64_t)-100, pathname, pending_exec.filename);
-    if ((int64_t)result < 0) return result;
-    char actual[256];
-    struct nas_fs_node app;
-    int err=nas_fs_lookup_node(pending_exec.filename,true,&app,actual);
+    uint64_t result;
+    struct nas_fs_node app={0},loader={0};
+    bool app_pinned=false,interpreter_pinned=false;
+    struct nas_fs_path_request request;
+    int err=nas_fs_user_path_begin((uint64_t)-100,pathname,&request);
     if(err)return (uint64_t)(int64_t)err;
-    if(app.is_dir || !(app.mode&0111U))return (uint64_t)-EACCES;
+    char actual[256];
+    err=exec_lookup_request(&request,&app,actual);
+    /* Linux AT_EXECFN and binfmt_script retain the ORIGINAL execve()
+     * pathname, even when namei follows /bin/cat -> /bin/busybox for the
+     * image inode. A renamed cwd/dirfd is resolved by the owned Path, but
+     * it must never rewrite userspace's argv/AT_EXECFN spelling. */
+    if(!err)memcpy(pending_exec.filename,request.pathname,
+                   strlen(request.pathname)+1);
+    nas_fs_path_end(&request);
+    if(err)return (uint64_t)(int64_t)err;
+    app_pinned=true;
+    if(app.is_dir || !(app.mode&0111U)) {
+        result=(uint64_t)-EACCES;goto exec_fail;
+    }
     struct elf_image main_img=elf_from_fs_node(&app);
 #ifdef NASEED_SYSCALL_TRACE
     static unsigned exec_images_logged;
@@ -238,21 +284,32 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
     uint8_t magic[4] = {0};
     uint64_t available = main_img.size < sizeof(magic) ?
                          main_img.size : sizeof(magic);
-    if (!nas_elf_image_read(&main_img, 0, magic, available))
-        return (uint64_t)-ENOEXEC;
+    if (!nas_elf_image_read(&main_img, 0, magic, available)) {
+        result=(uint64_t)-ENOEXEC;goto exec_fail;
+    }
     bool scripted=false;
     if(main_img.size>=2 && magic[0]=='#' && magic[1]=='!') {
         err=read_shebang(&main_img,pending_exec.shebang_path,
                          pending_exec.shebang_arg);
-        if(err)return (uint64_t)(int64_t)err;
+        if(err) {
+            result=(uint64_t)(int64_t)err;goto exec_fail;
+        }
         char resolved_interpreter[256];
         struct nas_fs_node bin;
-        err=nas_fs_lookup_node(pending_exec.shebang_path,true,
-                               &bin,resolved_interpreter);
-        if(err)return (uint64_t)(int64_t)err;
-        if(bin.is_dir || !(bin.mode&0111U))return (uint64_t)-EACCES;
-        main_img=elf_from_fs_node(&bin);
-        app=bin; /* report the backend of the actual ELF interpreter */
+        err=exec_lookup_kernel_absolute(pending_exec.shebang_path,
+                                        &bin,resolved_interpreter);
+        if(err) {
+            result=(uint64_t)(int64_t)err;goto exec_fail;
+        }
+        if(bin.is_dir || !(bin.mode&0111U)) {
+            exec_drop_image_sources(&bin,NULL);
+            result=(uint64_t)-EACCES;goto exec_fail;
+        }
+        /* Interpreter has its OWN inode lease; retire the script source
+         * only AFTER acquiring it, never stage borrowed binfmt data. */
+        exec_drop_image_sources(&app,NULL);
+        app=bin;
+        main_img=elf_from_fs_node(&app);
         unsigned n=0;
         do { actual[n]=resolved_interpreter[n]; }
         while(resolved_interpreter[n++]);
@@ -261,8 +318,9 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
     if(main_img.size<sizeof(struct elf_hdr) ||
        !nas_elf_image_read(&main_img, 0, magic, sizeof(magic)) ||
        magic[0]!=0x7f || magic[1]!='E' ||
-       magic[2]!='L' || magic[3]!='F')
-        return (uint64_t)-ENOEXEC;
+       magic[2]!='L' || magic[3]!='F') {
+        result=(uint64_t)-ENOEXEC;goto exec_fail;
+    }
     /* Do not consult main_img.data after exec: a sparse tmpfs ELF has no
      * contiguous base pointer. Keep the validated header in kernel stack
      * storage for the post-exec BusyBox/PIE accounting. */
@@ -278,37 +336,46 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
             nas_print(" size="); nas_hex(main_img.size);
         }
         nas_print("\n");
-        return (uint64_t)-ENOEXEC;
+        result=(uint64_t)-ENOEXEC;goto exec_fail;
     }
-    struct nas_fs_node loader;
     char loader_path[256];
     struct elf_image interp_img={0};
     const struct elf_image *interp=0;
-    if(!nas_fs_lookup_node(NAS_ELF_INTERP,true,&loader,loader_path) &&
-       !loader.is_dir) {
-        interp_img=elf_from_fs_node(&loader);
-        interp=&interp_img;
+    if(!exec_lookup_kernel_absolute(NAS_ELF_INTERP,&loader,loader_path)) {
+        if(!loader.is_dir) {
+            interp_img=elf_from_fs_node(&loader);
+            interp=&interp_img;
+            interpreter_pinned=true;
+        } else exec_drop_image_sources(&loader,NULL);
     }
     /* Reset the compact pool on EVERY new exec, including retry after
      * failed syscall; do not retain stale pointers from prior attempts. */
     pending_exec.used = 0;
     pending_exec.argc = pending_exec.envc = 0;
     result = copy_exec_vector(argv, false);
-    if ((int64_t)result < 0) return result;
+    if ((int64_t)result < 0)goto exec_fail;
     result = copy_exec_vector(envp, true);
-    if ((int64_t)result < 0) return result;
+    if ((int64_t)result < 0)goto exec_fail;
     if (scripted) {
         result = shebang_rewrite_args();
-        if ((int64_t)result < 0) return result;
+        if ((int64_t)result < 0)goto exec_fail;
     }
+    /* Both the main executable and dynamic loader were pinned under
+     * their OWN positive Paths BEFORE any ELF header read. No borrowed
+     * snapshot survives a filename's Dentry release or a scheduler yield. */
     /* Load and validate the complete new image FIRST. On a failed
      * execve, every existing pthread, FD, robust list and VM must remain
      * untouched; only the successful commit may terminate sibling tasks.
      * The public syscall ABI is identical on all three architectures. */
     struct nas_mm *new_mm=nas_mm_new();
-    if (!new_mm) return (uint64_t)-ENOMEM;
+    if (!new_mm) {
+        result=(uint64_t)-ENOMEM;goto exec_fail;
+    }
     uint64_t new_root=nas_mmu_alloc_root();
-    if (!new_root) { nas_mm_put(new_mm); return (uint64_t)-ENOMEM; }
+    if (!new_root) {
+        nas_mm_put(new_mm);
+        result=(uint64_t)-ENOMEM;goto exec_fail;
+    }
     new_mm->root_phys=new_root;
     struct nas_mm *previous_mm=TASK.mm;
     uint64_t previous_root=previous_mm->root_phys;
@@ -350,8 +417,14 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
         loaded_phnum = old_phnum;
         loaded_main_entry = old_entry;
         loaded_interp_base = old_interp;
-        return (uint64_t)-ENOEXEC;
+        result=(uint64_t)-ENOEXEC;goto exec_fail;
     }
+    /* The ELF and all stack bytes are now owned by new_mm, not by the
+     * underlying filesystem. Drop these independent source references
+     * before quiescing sibling threads and committing the new process. */
+    exec_drop_image_sources(&app,interpreter_pinned?&loader:NULL);
+    app_pinned=false;
+    interpreter_pinned=false;
     /* Image validated: unwind every other thread against OLD mappings
      * before freeing the former root. This also marks abandoned robust
      * mutexes OWNER_DIED and clears their child TIDs in the right VM.
@@ -407,6 +480,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
     TASK.ppoll_mask_active=false;
     TASK.signal_force_deliver=0;
     thread_clear_tid = 0;
+    TASK.thread_set_tid=0; /* new image has no pending CHILD_SETTID store */
     TASK.robust_list_head=0; /* exec replaces userspace robust list */
     nas_arch_context_set_tls(&TASK.arch, 0);
     nas_arch_set_user_tls(0); /* fresh musl/glibc TLS initialization */
@@ -432,17 +506,14 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
     /* Exact post-shebang argv, preserved only AFTER successful ELF commit.
      * No pre-commit failure is allowed to mutate inherited /proc/cmdline. */
     nas_task_set_commandline(&TASK,pending_exec.argv,pending_exec.argc);
-    running_busybox = strcmp(basename, "busybox") == 0;
-    running_bash = strcmp(basename, "bash") == 0;
-    running_alpine = running_busybox && executable_header.type == 3;
     if (scripted) {
         nas_print("[EXEC] CPIO #! interpreter: ");
         nas_print(pending_exec.shebang_path); nas_print("\n");
     }
-    if(app.backend==NAS_FS_TMPFS)
-        nas_print("[EXEC] replaced process with tmpfs ELF: ");
-    else
-        nas_print("[EXEC] replaced process with CPIO ELF: ");
+    nas_print("[EXEC] replaced process with ");
+    nas_print(app.filesystem && app.filesystem->exec_source_label
+              ? app.filesystem->exec_source_label : "VFS");
+    nas_print(" ELF: ");
     nas_print(pending_exec.filename);
     nas_print("\n");
     if(nas_ptrace_exec_commit(nas_current_task,entry,sp)) {
@@ -455,4 +526,11 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
     }
     nas_arch_enter_user(entry, sp);
     nas_fail("architecture user-entry returned unexpectedly");
+exec_fail:
+    /* One cleanup owner for all failed exec attempts, including malformed
+     * #!, ELF, argv/env, allocation and mapping rollback. A failed exec
+     * leaves the caller's old MM/FDs/threads live and leaks no source File. */
+    exec_drop_image_sources(app_pinned?&app:NULL,
+                            interpreter_pinned?&loader:NULL);
+    return result;
 }

@@ -5,6 +5,13 @@
 #include <stddef.h>
 
 #define BOOTFS_BUCKETS 8192U
+/* CPIO is immutable after mount. A small direct-mapped cursor table lets
+ * successive getdents64 calls resume each hot directory at the previous
+ * child instead of walking its entire sibling list for every ordinal.
+ * These are borrowed pointers, never owners; reset clears every cursor
+ * BEFORE releasing the archive's entry slabs. The fixed table avoids
+ * allocating an index proportional to the number of archive entries. */
+#define BOOTFS_CHILD_CURSORS 128U
 /* Explicit resource upper limit, no small fixed array of input files. */
 #define BOOTFS_ENTRY_LIMIT 65536U
 #define NEWC_HEADER 110ULL
@@ -28,6 +35,12 @@ _Static_assert(BOOTFS_ENTRIES_PER_SLAB > 0, "bootfs entry must fit one page");
 static struct bootfs_slab *slab_head, *slab_tail;
 static struct bootfs_entry *buckets[BOOTFS_BUCKETS];
 static struct bootfs_entry *hardlinks[BOOTFS_BUCKETS];
+struct bootfs_child_cursor {
+    const struct bootfs_entry *directory;
+    const struct bootfs_entry *child;
+    unsigned ordinal;
+};
+static struct bootfs_child_cursor child_cursors[BOOTFS_CHILD_CURSORS];
 static unsigned entry_count;
 static bool mounted;
 
@@ -97,6 +110,9 @@ static void bootfs_finish_hardlinks(void) {
         }
 }
 static void bootfs_reset(void) {
+    /* Remount may reuse exactly the same frame addresses; invalidate cursor
+     * identities before any old slab is returned to the frame allocator. */
+    memset(child_cursors,0,sizeof(child_cursors));
     struct bootfs_slab *slab = slab_head;
     while (slab) {
         struct bootfs_slab *next = slab->next;
@@ -282,11 +298,25 @@ bool bootfs_is_dir(const struct bootfs_entry *entry) {
 const struct bootfs_entry *bootfs_child(const struct bootfs_entry *dir,
                                         unsigned ordinal) {
     if (!bootfs_is_dir(dir)) return 0;
-    const struct bootfs_entry *item=dir->first_child;
-    while (item && ordinal) {
-        item=item->next_sibling;
-        ordinal--;
+    /* Only the cache changes: callers and immutable archive nodes remain
+     * const. Collisions and backwards seeks simply restart at the head. */
+    unsigned slot=((uintptr_t)dir>>4)&(BOOTFS_CHILD_CURSORS-1U);
+    struct bootfs_child_cursor *cursor=&child_cursors[slot];
+    const struct bootfs_entry *item;
+    unsigned at;
+    if(cursor->directory==dir && cursor->ordinal<=ordinal) {
+        item=cursor->child;
+        at=cursor->ordinal;
+    } else {
+        item=dir->first_child;
+        at=0;
     }
+    while(item && at<ordinal) {
+        item=item->next_sibling;
+        ++at;
+    }
+    *cursor=(struct bootfs_child_cursor){.directory=dir,
+        .child=item,.ordinal=at};
     return item;
 }
 

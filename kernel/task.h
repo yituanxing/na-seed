@@ -65,14 +65,23 @@ enum nas_task_state {
 /* A parked Task retains its original kernel C stack and provider callback.
  * The scheduler must never re-dispatch a syscall from a foreign C frame. */
 struct nas_task;
+struct nas_pending_io;
 typedef uint64_t (*nas_wait_finish_fn)(struct nas_task *);
 struct nas_task_wait {
     uint64_t blocked_op, blocked_args[4];
     bool pending_valid;
     nas_wait_finish_fn finish; /* static callback owned by issuing syscall */
+    /* Exactly one parked I/O request may own a copied user iovec and a
+     * pinned shared File. Task owns it; fork copies no pending request.
+     * Callback keeps Task's generic lifetime independent of fs/file_io.c. */
+    struct nas_pending_io *pending_io;
+    void (*pending_io_release)(struct nas_pending_io *);
     uint64_t deadline_ns;
     bool deadline_active;
     unsigned tty_observed_bytes;
+    /* Exact byte length of the issuing read/readv TTY request. The
+     * scheduler checks this snapshot, never foreign user iovec memory. */
+    uint64_t tty_requested_bytes;
     /* Poll interest records OPEN-DESCRIPTION slots, not pipe numbers or
      * Task-local FDs. All providers use this one readiness representation. */
     struct nas_slot_mask poll_interest_read, poll_interest_write;
@@ -165,6 +174,7 @@ struct nas_task {
     struct nas_mm *mm;
     uint64_t loaded_phdr, loaded_phnum;
     uint64_t loaded_main_entry, loaded_interp_base;
+    uint64_t thread_set_tid; /* one-shot CLONE_CHILD_SETTID, first child dispatch */
     uint64_t thread_clear_tid;
     uint64_t robust_list_head; /* per-TID user robust_list_head, not inherited */
     /* Futex wait ownership lives in task.wait. */
@@ -193,10 +203,6 @@ struct nas_task {
     struct nas_files *files; /* CLONE_FILES owns or shares this resource */
     struct nas_fd_table *fds; /* borrowed compatibility view */
 
-    /* Real user-thread lifecycle and per-task syscall-boundary state. */
-    bool running_bash, running_busybox, running_alpine;
-    bool saw_bash_hello;
-    unsigned matched_chars;
 };
 
 /* Process-owned operations (wait4, fcntl, sessions) use TGID.

@@ -24,5 +24,10 @@ bool nas_tty_poll_readable(void);
 unsigned nas_tty_take_signal(uint64_t *sid,uint64_t *pgid);
 void nas_tty_signal_unsupported(void);
 uint64_t nas_tty_ioctl(uint64_t cmd,uint64_t arg);
-uint64_t nas_tty_read(uint64_t addr,uint64_t len,bool nonblock);
+/* Receive only into kernel memory; caller prepares the userspace destination
+ * before the line discipline consumes any queued input. */
+/* One logical read/readv request is admitted against the ORIGINAL length.
+ * In particular, noncanonical VMIN must not be recalculated per iovec. */
+uint64_t nas_tty_read_plan(uint64_t requested,bool nonblock);
+uint64_t nas_tty_read(uint8_t *kernel_dst,uint64_t len,bool nonblock);
 #endif

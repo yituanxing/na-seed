@@ -12,11 +12,13 @@
 #include "../kernel/mm/fault.h"
 #include "../kernel/task.h"
 #include "../kernel/arch/user_pt.h"
+#include "../kernel/errno.h"
 enum { PGSZ = 4096, COUNT = 4 };
 #define BASE 0x40000ULL
 static uint8_t phys[COUNT][PGSZ];
 static bool mapped[COUNT], writable[COUNT];
-static unsigned lookups, checks, mm_checks;
+static bool lazy_read[COUNT], lazy_write[COUNT], pending_cow[COUNT];
+static unsigned lookups, checks, mm_checks, read_faults, write_faults, cow_faults;
 /* The historical usercopy test owns a simulated isolated VM. New COW/lazy
  * logic is tested with actual MM/fault code in M101; this fixture retains
  * deliberately noncontiguous user-byte and permission-provider mocks. */
@@ -40,7 +42,29 @@ bool nas_mm_resolve_user(const struct nas_mm *mm,uint64_t va,
 }
 enum nas_mm_fault_result nas_mm_handle_fault(struct nas_mm *mm,uint64_t va,
                                              unsigned access,bool protection) {
-    (void)mm;(void)va;(void)access;(void)protection;
+    assert(mm==&mock_mm);
+    if(va>=BASE && va-BASE<(uint64_t)COUNT*PGSZ) {
+        unsigned index=(unsigned)((va-BASE)/PGSZ);
+        if(access==NAS_UP_READ && !protection && lazy_read[index]) {
+            ++read_faults;
+            lazy_read[index]=false;
+            mapped[index]=true;
+            return NAS_MM_FAULT_RESOLVED;
+        }
+        if(access==NAS_UP_WRITE && !protection && lazy_write[index]) {
+            ++write_faults;
+            lazy_write[index]=false;
+            mapped[index]=true;
+            writable[index]=true;
+            return NAS_MM_FAULT_RESOLVED;
+        }
+        if(access==NAS_UP_WRITE && protection && pending_cow[index]) {
+            ++cow_faults;
+            pending_cow[index]=false;
+            writable[index]=true;
+            return NAS_MM_FAULT_RESOLVED;
+        }
+    }
     return NAS_MM_FAULT_MAPERR;
 }
 uint32_t nas_frame_refs(uint64_t pa){(void)pa;return 1;}
@@ -70,9 +94,11 @@ static void reset(void) {
     mock_task.mm=&mock_mm;
     for (unsigned p = 0; p < COUNT; p++) {
         mapped[p] = writable[p] = true;
+        lazy_read[p] = lazy_write[p] = pending_cow[p] = false;
         memset(phys[p], 0xcc, PGSZ);
     }
     lookups = checks = mm_checks = 0;
+    read_faults = write_faults = cow_faults = 0;
 }
 int main(void) {
     reset();
@@ -130,6 +156,65 @@ int main(void) {
     assert(!nas_user_read_bytes(UINT64_MAX, observed, 1));
     assert(!nas_user_write_bytes(UINT64_MAX, small, 1));
     assert(nas_user_copy_to_mapped(UINT64_MAX, small, 0));
-    printf("[USERCOPY PAGE PASS] genuine shared kernel memory-copy module: cross-page, RX, atomic write rejection, u64, overflow, 4KiB lookup batching\n");
+
+    /* A legitimate lazy-read VMA is populated once, not rejected as EFAULT. */
+    reset();
+    memcpy(phys[1], "hello lazy", 11);
+    mapped[1]=false;
+    lazy_read[1]=true;
+    char user_string[32];
+    assert(nas_user_read_cstr(BASE+PGSZ,user_string,sizeof(user_string))==0);
+    assert(strcmp(user_string,"hello lazy")==0);
+    assert(read_faults==1 && mapped[1]);
+
+    /* A NUL in the last byte of a mapped page must not fault or read any
+     * unmapped byte in the page that follows it. */
+    reset();
+    memcpy(phys[0]+PGSZ-3,"ok",2);
+    phys[0][PGSZ-1]=0;
+    mapped[1]=false;
+    lookups=0;
+    assert(nas_user_read_cstr(BASE+PGSZ-3,user_string,sizeof(user_string))==0);
+    assert(strcmp(user_string,"ok")==0);
+    assert(lookups==1 && read_faults==0);
+
+    /* Crossing a page reads the second page only after the first page
+     * actually contains no terminator, and can resolve that page lazily. */
+    reset();
+    memcpy(phys[0]+PGSZ-2,"ab",2);
+    memcpy(phys[1],"cd",3);
+    mapped[1]=false;
+    lazy_read[1]=true;
+    assert(nas_user_read_cstr(BASE+PGSZ-2,user_string,sizeof(user_string))==0);
+    assert(strcmp(user_string,"abcd")==0 && read_faults==1);
+
+    reset();
+    memset(phys[0]+PGSZ-4,'x',4);
+    mapped[1]=false;
+    assert(nas_user_read_cstr(BASE+PGSZ-4,user_string,sizeof(user_string))==-EFAULT);
+    assert(nas_user_read_cstr(BASE+PGSZ-4,user_string,4)==-ENAMETOOLONG);
+    assert(nas_user_read_cstr(BASE,user_string,0)==-ENAMETOOLONG);
+    assert(nas_user_read_cstr(UINT64_MAX,user_string,1)==-EFAULT);
+
+    /* Preflighting a multi-page output never modifies data. It does resolve
+     * a legitimate writable lazy page or break write-protected COW first. */
+    reset();
+    mapped[1]=false;
+    lazy_write[1]=true;
+    assert(nas_user_prepare_write(BASE+PGSZ-4,8));
+    assert(write_faults==1 && mapped[1] && writable[1]);
+    assert(phys[0][PGSZ-1]==0xcc && phys[1][0]==0xcc);
+    reset();
+    writable[1]=false;
+    pending_cow[1]=true;
+    assert(nas_user_prepare_write(BASE+PGSZ-4,8));
+    assert(cow_faults==1 && writable[1] && phys[1][0]==0xcc);
+    reset();
+    writable[1]=false;
+    assert(!nas_user_prepare_write(BASE+PGSZ-4,8));
+    assert(phys[0][PGSZ-1]==0xcc && phys[1][0]==0xcc);
+    assert(!nas_user_prepare_write(UINT64_MAX,1));
+
+    printf("[USERCOPY PAGE PASS] genuine shared kernel module: crossing/NUL, lazy faults, COW preflight, atomic failure, u64, overflow, 4KiB batching\n");
     return 0;
 }
