@@ -1,0 +1,16 @@
+# All 15 original signed ELF executables are globally new across past manifests.
+sbin/mke2fs
+sbin/e2fsck
+usr/sbin/dumpe2fs
+usr/sbin/debugfs
+usr/sbin/tune2fs
+usr/sbin/resize2fs
+usr/sbin/e2image
+usr/sbin/badblocks
+usr/sbin/logsave
+usr/sbin/mklost+found
+usr/sbin/e2freefrag
+usr/sbin/e2undo
+sbin/mkfs.fat
+sbin/fsck.fat
+sbin/fatlabel
