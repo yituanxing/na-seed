@@ -1,0 +1,2 @@
+# The binary image fixtures are generated directly inside staged rootfs on host.
+tests/m122-batch-run.sh	tests/m122-batch-run.sh

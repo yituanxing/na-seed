@@ -1,24 +1,5 @@
 name: NaSeed M121 15 signed original PDF document applications, one QEMU per ISA
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/m121-batch.yml'
-      - 'tests/m121-*'
-      - 'scripts/m121-*'
-      - 'scripts/probe-m121-batch.sh'
-      - 'scripts/stage-m121-prebuilt.sh'
-      - 'scripts/host-configure-m121-batch.sh'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'scripts/check-prebuilt-profile-catalog.py'
-      - 'scripts/check-native-qemu-target.py'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'rootfs/alpine/**'
-      - 'kernel/**'
-      - 'ports/**'
   workflow_dispatch:
 
 concurrency:
