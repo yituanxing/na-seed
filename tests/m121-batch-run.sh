@@ -157,7 +157,7 @@ run_case() {
         if "$exe" -q M121_NO_SUCH_TEXT "$pdf"; then return 1; fi ;;
       pdfcpu)
         exe=$(original_elf /usr/bin/pdfcpu)
-        if "$exe" --conf disable validate -m strict "$pdf" > "$work/valid" 2>&1; then
+        if "$exe" validate -mode strict "$pdf" > "$work/valid" 2>&1; then
             :
         else
             status=$?
@@ -165,7 +165,7 @@ run_case() {
             busy cat "$work/valid" >&2
             return "$status"
         fi
-        if "$exe" --conf disable validate "$invalid" > "$work/invalid" 2>&1; then
+        if "$exe" validate -mode strict "$invalid" > "$work/invalid" 2>&1; then
             return 1
         fi
         [ -s "$work/invalid" ] ;;
