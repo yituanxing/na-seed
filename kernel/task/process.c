@@ -452,8 +452,9 @@ uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
 }
 
 
-/* A bounded single-CPU Linux thread group: only musl's exact pthread clone
- * flag set is accepted by the ISA decoder. The VM and FD table are truly
+/* A bounded single-CPU Linux thread group: the ISA decoder accepts the
+ * precise musl/glibc pthread clone flags (plus optional ignored DETACHED).
+ * The VM and FD table are truly
  * shared, while user stack, TLS, TID and trap/FPU registers are task-local.
  * No clone of another ISA backend or special application code exists. */
 uint64_t nas_process_clone_thread(uint64_t *frame,uint64_t stack,
@@ -484,8 +485,8 @@ uint64_t nas_process_clone_thread(uint64_t *frame,uint64_t stack,
     child->sighand=nas_sighand_get(parent->sighand);
     nas_arch_context_set_user_sp(&child->arch,stack);
     nas_arch_context_set_tls(&child->arch,tls);
-    /* musl's exact pthread clone mask includes PARENT_SETTID and
-     * CHILD_CLEARTID, but NOT CHILD_SETTID. In the new thread the child
+    /* Both pthread clone masks include PARENT_SETTID and CHILD_CLEARTID,
+     * but NOT CHILD_SETTID. In the new thread the child
      * TID cell must remain untouched until its zero-on-exit operation. */
     child->thread_set_tid=0;
     child->thread_clear_tid=child_tid;

@@ -318,11 +318,13 @@ static inline enum nas_syscall_op nas_linux_decode_call(const uint64_t *args) {
     if (args[0] == clone_nr) {
         /* musl posix_spawn uses CLONE_VM|CLONE_VFORK|SIGCHLD with
          * its own userspace child stack. Unsupported thread clones are ENOSYS. */
-        /* musl pthread_create: VM, FS, files, sighand, thread,
-         * sysvsem, TLS, parent TID and child-clear TID. */
-        if (args[1] == (0x100ULL|0x200ULL|0x400ULL|0x800ULL|
-                        0x10000ULL|0x40000ULL|0x80000ULL|
-                        0x100000ULL|0x200000ULL|0x400000ULL))
+        /* Native glibc and musl pthreads request the SAME shared thread
+         * semantics. Musl additionally passes CLONE_DETACHED (0x400000),
+         * documented by Linux UAPI as unused/ignored. Accept precisely
+         * those two forms without widening any required ownership flags. */
+        const uint64_t pthread_flags=0x100ULL|0x200ULL|0x400ULL|0x800ULL|
+            0x10000ULL|0x40000ULL|0x80000ULL|0x100000ULL|0x200000ULL;
+        if ((args[1] & ~0x400000ULL)==pthread_flags)
             return NAS_SC_clone_thread;
         if (args[1] == (0x00000100ULL|0x00004000ULL|17ULL))
             return NAS_SC_vfork;

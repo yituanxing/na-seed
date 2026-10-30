@@ -64,5 +64,16 @@ int main(void) {
     clone_args[1] = 0x01200011U;
     clone_args[0] = __NR_fork;
     assert(nas_linux_decode_call(clone_args) == NAS_SC_fork);
+    /* Real glibc static pthread uses 0x003d0f00 after clone3 ENOSYS;
+     * musl adds obsolete CLONE_DETACHED. Neither implies a different Task
+     * ownership model. A real extra flag must still be rejected. */
+    clone_args[0] = __NR_clone;
+    clone_args[1] = 0x003d0f00U;
+    clone_args[2] = 0x70000000U;
+    assert(nas_linux_decode_call(clone_args) == NAS_SC_clone_thread);
+    clone_args[1] |= 0x00400000U;
+    assert(nas_linux_decode_call(clone_args) == NAS_SC_clone_thread);
+    clone_args[1] |= 0x01000000U;
+    assert(nas_linux_decode_call(clone_args) == NAS_SC_NONE);
     return 0;
 }
