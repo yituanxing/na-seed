@@ -4,13 +4,15 @@
 # and repeats the exact build, link, chmod and native guest exec.
 set -eu
 [ "$#" -eq 1 ] || { echo "usage: $0 amd64|riscv64|arm64" >&2; exit 2; }
-case "$1" in
-  amd64) runner=scripts/probe-x86-busybox-parity.sh; emulator='' ;;
-  riscv64) runner=scripts/probe-riscv64-busybox-matrix.sh; emulator=qemu-riscv64 ;;
-  arm64) runner=scripts/probe-aarch64-busybox-matrix.sh; emulator=qemu-aarch64 ;;
+port=$1
+. scripts/native-qemu-target.sh
+# Keep the independent host-Linux QEMU-user oracle for upstream AES vectors.
+case "$port" in
+  amd64) emulator='' ;;
+  riscv64) emulator=qemu-riscv64 ;;
+  arm64) emulator=qemu-aarch64 ;;
   *) exit 2 ;;
 esac
-port=$1
 tcc="build/external/m33-tcc/$port/tcc"
 make="build/external/m34-gnumake/$port/gmake"
 test -s "$tcc" && test -s "$make"

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Sourced by original Alpine M58+ acceptance probes after setting port.
+# Sourced by historical original-program probes after setting port.
 # One owner for the real system-QEMU runner and its raw guest serial directory.
 # Do not move workload assertions or synthesize success into this mapping.
 case "${port:-}" in

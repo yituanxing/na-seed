@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Guard the single native-QEMU runner/log mapping used by M38+ programs.
+"""Guard the single native-QEMU runner shared by historical program probes.
 
 Each original workload keeps its own guest assertions and previous entrypoint.
 The M50 source-workload roster remains owned by native-alpine-matrix.tsv;
@@ -20,6 +20,11 @@ EXPECTED = {
     "riscv64": ("scripts/probe-riscv64-busybox-matrix.sh", "build/port-riscv64/full/matrix-source"),
     "arm64": ("scripts/probe-aarch64-busybox-matrix.sh", "build/port-aarch64/full/matrix-source"),
 }
+EARLY_WORKFLOWS = (
+    "m33-native-tcc.yml",
+    "arm64-full.yml",
+    "lua.yml",
+)
 
 
 def resolve(port: str) -> subprocess.CompletedProcess[str]:
@@ -85,15 +90,85 @@ def probes() -> list[Path]:
             catalog_probes())
 
 
-def validate_probe(path: Path, source: str) -> None:
+def early_probes() -> list[Path]:
+    """Read the historical QEMU entrypoints from their *existing* CI owners.
+
+    M31, M33-M37 and external Lua have distinct staging and Linux-host oracle
+    rules; no second script/config roster is introduced here.
+    """
+    entries: list[Path] = []
+    pattern = re.compile(
+        r"^\s+run:\s+sh\s+(scripts/probe-(?:m31-[a-z0-9-]+|"
+        r"m3[3-7]-[a-z0-9-]+|external-lua)\.sh)\s+\S+",
+        re.MULTILINE,
+    )
+    for name in EARLY_WORKFLOWS:
+        source = (ROOT / ".github/workflows" / name).read_text()
+        entries.extend(ROOT / match for match in pattern.findall(source))
+    assert len(entries) == 7 and len(set(entries)) == 7, (
+        "original M31/M33-M37/Lua CI QEMU probes lost or duplicated", entries
+    )
+    for path in entries:
+        assert path.is_file(), f"CI references missing original probe: {path}"
+    return entries
+
+
+def validate_runner(path: Path, source: str) -> None:
     assert source.count(f". {HELPER}") == 1, (
         f"{path}: target helper must be sourced exactly once"
     )
-    assert "runner=" not in source and "logs=" not in source, (
-        f"{path}: stale private runner or serial-path mapping"
-    )
+    assert "runner=" not in source, f"{path}: stale private runner mapping"
     assert 'sh "$runner"' in source, f"{path}: genuine native QEMU execution removed"
+
+
+def validate_probe(path: Path, source: str) -> None:
+    validate_runner(path, source)
+    assert "logs=" not in source, f"{path}: stale private serial-path mapping"
     assert '"$logs/' in source, f"{path}: raw guest serial verification removed"
+
+
+def validate_early_probe(path: Path, source: str) -> None:
+    validate_runner(path, source)
+    if path.name.startswith("probe-m37-"):
+        assert 'log="$logs/m37-incremental.clean.log"' in source, (
+            f"{path}: source-runner serial evidence path changed"
+        )
+        assert 'test -s "$log"' in source, f"{path}: serial evidence guard removed"
+    elif path.name.startswith("probe-m31-"):
+        # M31 unsets custom binaries: its real raw log lives in the *other*
+        # historical (non-source) directory, intentionally not helper.logs.
+        assert "unset BUSYBOX_PARITY_CASE BUSYBOX_PARITY_BINARY NAS_ACCEPTANCE_CPIO" in source, (
+            f"{path}: M31 must run default BusyBox, not inherited source mode"
+        )
+        for port in ("build/busybox-parity-x86/m31-date.clean.log",
+                     "build/port-riscv64/full/matrix/m31-date.clean.log",
+                     "build/port-aarch64/full/matrix/m31-date.clean.log"):
+            assert port in source, f"{path}: original non-source log {port} lost"
+        assert 'test -s "$log"' in source, f"{path}: serial evidence guard removed"
+    elif path.name.startswith(("probe-m34-", "probe-m35-", "probe-m36-")):
+        # The Linux QEMU-user emulator is an independent oracle, not the
+        # system-QEMU kernel runner; consolidating it would erase evidence.
+        for emulator in ("qemu-riscv64", "qemu-aarch64"):
+            assert f"emulator={emulator}" in source, (
+                f"{path}: native Linux emulator oracle {emulator} lost"
+            )
+        assert '"$emulator"' in source, f"{path}: Linux emulator no longer used"
+
+
+def mutation_early_guard(path: Path, source: str) -> None:
+    validate_early_probe(path, source)
+    variants = (
+        source.replace(f". {HELPER}", "# helper omitted", 1),
+        source.replace(f". {HELPER}", f". {HELPER}\nrunner=/bin/true", 1),
+        source.replace('sh "$runner"', 'true', 1),
+    )
+    for broken in variants:
+        assert broken != source, f"{path}: historical mutation fixture was unchanged"
+        try:
+            validate_early_probe(path, broken)
+        except AssertionError:
+            continue
+        raise AssertionError(f"{path}: malformed historical QEMU probe was accepted")
 
 
 def mutation_guard(path: Path, source: str) -> None:
@@ -134,9 +209,14 @@ def main() -> None:
     for path in paths:
         source = path.read_text()
         validate_probe(path, source)
+    early = early_probes()
+    for path in early:
+        validate_early_probe(path, path.read_text())
     mutation_guard(paths[0], paths[0].read_text())
-    print(f"[NATIVE QEMU TARGET PASS] 3 target mappings, {len(paths)} original "
-          "workloads, stale-implementation mutation guards")
+    mutation_early_guard(early[0], early[0].read_text())
+    print(f"[NATIVE QEMU TARGET PASS] 3 target mappings, "
+          f"{len(paths) + len(early)} original workloads "
+          "(including 7 historical CI probes), stale-implementation mutation guards")
 
 
 if __name__ == "__main__":

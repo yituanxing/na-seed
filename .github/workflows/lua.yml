@@ -5,6 +5,8 @@ on:
       - 'scripts/build-external-lua.sh'
       - 'scripts/stage-external-lua-rootfs.sh'
       - 'scripts/probe-external-lua.sh'
+      - 'scripts/native-qemu-target.sh'
+      - 'scripts/check-native-qemu-target.py'
       - 'scripts/lua-native-cases.tsv'
       - 'tests/lua-*.lua'
       - 'scripts/probe-x86-busybox-parity.sh'
@@ -30,6 +32,8 @@ jobs:
         port: [amd64, riscv64, arm64]
     steps:
       - uses: actions/checkout@v4
+      - name: Guard original three-ISA QEMU routing without private maps
+        run: python3 scripts/check-native-qemu-target.py
       - name: Install native toolchain and real system QEMU
         run: |
           sh scripts/ci-ubuntu-mirror.sh

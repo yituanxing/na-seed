@@ -3,16 +3,8 @@
 # genuine Linux stat/utimensat and exact dependency-driven incremental build.
 set -eu
 [ "$#" -eq 1 ] || exit 2
-case "$1" in
-    amd64) runner=scripts/probe-x86-busybox-parity.sh
-      dir=build/busybox-source-parity-x86 ;;
-    riscv64) runner=scripts/probe-riscv64-busybox-matrix.sh
-      dir=build/port-riscv64/full/matrix-source ;;
-    arm64) runner=scripts/probe-aarch64-busybox-matrix.sh
-      dir=build/port-aarch64/full/matrix-source ;;
-    *) exit 2 ;;
-esac
 port=$1
+. scripts/native-qemu-target.sh
 work="build/external/m36-zlib/$port"
 test -s "$work/rootfs.cpio"
 export NAS_ZLIB_MAKEFILE=tests/m37-incremental.mk
@@ -23,7 +15,7 @@ export NAS_ACCEPTANCE_CPIO="$work/rootfs.cpio"
 export BUSYBOX_PARITY_MANIFEST=scripts/m37-incremental-cases.tsv
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
 sh "$runner"
-log="$dir/m37-incremental.clean.log"
+log="$logs/m37-incremental.clean.log"
 test -s "$log"
 # 12 initial object compilations + precisely one rewritten dependency.
 num=$(grep -Fc M37_OBJECT: "$log" || :)

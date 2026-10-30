@@ -3,13 +3,15 @@
 # across three full NaSeed kernels. This is not a build-only smoke test.
 set -eu
 [ "$#" -eq 1 ] || exit 2
-case "$1" in
-  amd64) runner=scripts/probe-x86-busybox-parity.sh; emulator='' ;;
-  riscv64) runner=scripts/probe-riscv64-busybox-matrix.sh; emulator=qemu-riscv64 ;;
-  arm64) runner=scripts/probe-aarch64-busybox-matrix.sh; emulator=qemu-aarch64 ;;
+port=$1
+. scripts/native-qemu-target.sh
+# Linux QEMU-user oracle is distinct from the real NaSeed system-QEMU runner.
+case "$port" in
+  amd64) emulator='' ;;
+  riscv64) emulator=qemu-riscv64 ;;
+  arm64) emulator=qemu-aarch64 ;;
   *) exit 2 ;;
 esac
-port=$1
 # M33 Linux-native compiler oracle has already passed in this shard.
 test -s "build/external/m33-tcc/$port/tcc"
 sh scripts/build-m34-native-gnumake.sh "$port"

@@ -22,6 +22,8 @@ on:
       - 'scripts/probe-paged-tmpfs.sh'
       - 'scripts/m31-date-cases.tsv'
       - 'scripts/probe-m31-date.sh'
+      - 'scripts/native-qemu-target.sh'
+      - 'scripts/check-native-qemu-target.py'
       - 'limine-aarch64-full.conf'
       - '.github/workflows/arm64-full.yml'
   push:
@@ -47,6 +49,8 @@ on:
       - 'scripts/probe-paged-tmpfs.sh'
       - 'scripts/m31-date-cases.tsv'
       - 'scripts/probe-m31-date.sh'
+      - 'scripts/native-qemu-target.sh'
+      - 'scripts/check-native-qemu-target.py'
       - 'limine-aarch64-full.conf'
       - '.github/workflows/arm64-full.yml'
 concurrency:
@@ -83,7 +87,9 @@ jobs:
                  -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
           fi
       - name: Verify pinned native Alpine fixture and exact test matrix
-        run: sh scripts/check-alpine-native-fixtures.sh
+        run: |
+          sh scripts/check-alpine-native-fixtures.sh
+          python3 scripts/check-native-qemu-target.py
       - name: Build and boot THE shared Task/ELF/FS/syscall kernel on real ARM64
         run: NASEED_ARM_FULL_TIMEOUT=25 sh scripts/probe-aarch64-full.sh
       - name: M31 real CLOCK_REALTIME — native Debian date inside ARM64 kernel

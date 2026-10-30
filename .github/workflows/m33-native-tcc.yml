@@ -31,6 +31,8 @@ on:
       - 'tests/m37-native-init.c'
       - 'scripts/m37-incremental-cases.tsv'
       - 'scripts/probe-m37-incremental.sh'
+      - 'scripts/native-qemu-target.sh'
+      - 'scripts/check-native-qemu-target.py'
       - 'kernel/bootfs.c'
       - 'kernel/bootfs.h'
       - 'kernel/fs/syscall.c'
@@ -57,6 +59,8 @@ jobs:
         port: [amd64, riscv64, arm64]
     steps:
       - uses: actions/checkout@v4
+      - name: Guard original three-ISA QEMU routing without private maps
+        run: python3 scripts/check-native-qemu-target.py
       - name: Install missing genuine cross compiler and native QEMU
         timeout-minutes: 9
         run: |

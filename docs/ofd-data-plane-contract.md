@@ -77,13 +77,18 @@ addresses enter a provider callback.
 | Pipe | aggregate | aggregate | Shared queue admission; a writev totaling at most `PIPE_BUF` cannot partially publish when insufficient capacity or a later source page is invalid |
 | AF_UNIX stream | aggregate | aggregate | Same kernel pipe transport and transaction budget |
 | Eventfd | aggregate | segmented | Linux implements `read_iter` but falls back to scalar `write`: `readv([4,4])` succeeds; `writev([4,4])` and leading `[0,8]` fail `EINVAL`, while `[8,8]` adds two values |
-| TTY, PTY and existing mounted files | existing segmented fallback | existing segmented fallback | Their EOF, termios, short I/O, append and provider-open semantics require their own independent oracle before opting into aggregation |
+| Physical TTY/UART | aggregate | segmented | A013 already migrated a logical `readv` to one termios VMIN/VTIME admission; segmented writes remain active |
+| PTY and mounted files | segmented | segmented | PTY still lacks the physical TTY's aggregate-read/wait policy; mounted files retain independent positional/EOF/append semantics. Do not delete this active fallback |
 
 This vector migration is staged separately from the earlier scalar NAS-A002
-cutover. Linux-host oracle and a production-provider host fixture can verify
-the architectural corner cases, but **do not** prove guest libc/syscall ABI
-or three-ISA QEMU success. `NAS-A008` stays open until exact-head native
-checks cover the new vector path and the scalar path still passes.
+cutover. The original A008 objection that later iovec *metadata* is read only
+after an earlier segment commits is obsolete: `file_io.c` now imports and
+validates up to 1024 complete descriptors before the first provider operation.
+The aggregate pipe/socket/eventfd path also exists; segmented paths are not
+automatically dead code. Linux-host oracle and a production-provider fixture
+verify this architecture, but do not alone prove all guest libc/syscall ABI
+corner cases. PTY's missing noncanonical VMIN blocking is separately tracked
+by NAS-A011; it is not a reason to reimplement the completed importer.
 
 The boundary guard in `scripts/check-architecture-boundaries.py` checks that
 data-plane provider *functions* do not regress to direct usercopy or
