@@ -34,8 +34,32 @@ uint16_t nas_fs_poll_description(unsigned slot,uint16_t events) {
            ops->poll_description(slot,events) : 0;
 }
 
-/* Same open-file-description source for read(), exec and private mmap.
+/* Same open-file-description source for read(), exec and file mmap.
  * Do not expose kernel pointer paths or share mutable file offsets. */
+int nas_fs_mmap_immutable_readonly(uint64_t fd) {
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
+        return -EBADF;
+    unsigned slot=TASK.fds->entries[fd].slot;
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+        return -EBADF;
+    const struct nas_open_file *opened=&nas_open_files[slot];
+    if(opened->status_flags & NAS_LINUX_O_PATH)return -EBADF;
+    if((opened->status_flags & 3ULL)==1ULL)return -EACCES;
+    if(opened->vnode_pinned) {
+        const struct nas_fs_node *node=&opened->vnode;
+        if(node->is_dir || !node->filesystem || !node->filesystem->read_at)
+            return -ENODEV;
+        /* A read-only procfs generator is NOT immutable; neither is a
+         * read-only mount of a potentially writable filesystem. */
+        return node->filesystem->read_only &&
+               node->filesystem->immutable_file_data ? 1 : 0;
+    }
+    /* Legacy direct Limine modules are permanently resident boot data. */
+    if(TASK.fds->entries[fd].kind==FD_BOOTFS && opened->boot_file &&
+       opened->boot_file->address)
+        return 1;
+    return 0;
+}
 int64_t nas_fs_mmap_read(uint64_t fd, uint64_t offset,
                         uint8_t *buffer, uint64_t length) {
     if (fd >= NAS_FD_LIMIT || TASK.fds->entries[fd].kind == FD_CLOSED)

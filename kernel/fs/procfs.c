@@ -389,7 +389,7 @@ struct nas_map_stream {
     uint64_t skip,position,start,end;
     unsigned access,produced,cap;
     uint8_t *output;
-    bool active;
+    bool active,shared;
 };
 static void map_ch(struct nas_map_stream *s,char c) {
     if(s->position>=s->skip && s->produced<s->cap)
@@ -412,7 +412,8 @@ static void map_flush(struct nas_map_stream *s) {
     map_ch(s,(s->access&NAS_UP_READ)?'r':'-');
     map_ch(s,(s->access&NAS_UP_WRITE)?'w':'-');
     map_ch(s,(s->access&NAS_UP_EXEC)?'x':'-');
-    map_word(s,"p 00000000 00:00 0\n");
+    map_ch(s,s->shared?'s':'p');
+    map_word(s," 00000000 00:00 0\n");
     s->active=false;
 }
 static bool map_visit_vma(const struct nas_anon_region *vma,void *ctx) {
@@ -421,6 +422,7 @@ static bool map_visit_vma(const struct nas_anon_region *vma,void *ctx) {
     s->start=vma->start;
     s->end=vma->end;
     s->access=vma->prot;
+    s->shared=vma->kind==NAS_VMA_FILE_IMMUTABLE_SHARED;
     s->active=true;
     return true;
 }

@@ -63,6 +63,17 @@ void tmp_root_times(uint64_t *mtime_ns,uint64_t *ctime_ns) {
     if(mtime_ns)*mtime_ns=1761868800000000000ULL;
     if(ctime_ns)*ctime_ns=1761868800000000000ULL;
 }
+/* Keep the standalone VFS provider harness linked to the single live
+ * namespace-derived directory-size contract introduced by M123. */
+uint64_t tmp_directory_stat_size(const struct nas_tmp_file *directory) {
+    return directory && directory->is_dir ?
+           40ULL + 20ULL * directory->children.count : 0;
+}
+uint64_t tmp_root_directory_stat_size(void) {
+    unsigned children=0;
+    while(tmp_child_entry_inode(&entries[3],children))children++;
+    return 40ULL + 20ULL * children;
+}
 void tmp_inode_discard(struct nas_tmp_file *node) {
     /* An actual kernel reclaims only orphaned, unpinned inodes; the
      * host fixture records the final provider callback. */

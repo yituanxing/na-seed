@@ -44,7 +44,8 @@ check_input() {
     [ -s /tests/m124-empty-minix.img ] &&
     [ -s /tests/m124-empty-swap.img ] &&
     [ -s /tests/m124-cramfs-source/hello.txt ] &&
-    [ -s /tests/m124-cramfs-source/nested/entry.txt ]
+    [ -s /tests/m124-cramfs-source/nested/entry.txt ] &&
+    [ -s /tests/m124-look-words.txt ]
 }
 
 run_case() {
@@ -78,8 +79,9 @@ run_case() {
         busy grep -Eq '^one[[:space:]]+two$' "$work/out" ;;
       look)
         exe=$(original_elf /usr/bin/look)
-        busy printf 'alpha\nalpine\nbeta\n' > "$work/words"
-        "$exe" al "$work/words" > "$work/out"
+        # Test original util-linux look with an immutable bootfs dictionary:
+        # it mmap()s the file MAP_SHARED|PROT_READ to search sorted entries.
+        "$exe" al /tests/m124-look-words.txt > "$work/out"
         busy printf 'alpha\nalpine\n' > "$work/expected"
         busy cmp -s "$work/expected" "$work/out" ;;
       namei)

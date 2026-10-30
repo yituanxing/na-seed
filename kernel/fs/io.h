@@ -33,11 +33,15 @@ uint64_t nas_fs_fd_readv_with_size(uint64_t fd, uint64_t iov, uint64_t count,
 /* Linux positional regular-file I/O never advances shared FD position. */
 uint64_t nas_fs_fd_pread(uint64_t fd,uint64_t address,uint64_t count,uint64_t offset);
 uint64_t nas_fs_fd_pwrite(uint64_t fd,uint64_t address,uint64_t count,uint64_t offset);
-/* Kernel-buffer, position-independent file reads for MAP_PRIVATE.
+/* Kernel-buffer, position-independent file reads for file mmap.
  * A CPIO/tmpfs regular file is the source of truth; FD offsets are untouched.
  * Negative Linux errno on invalid or unsupported file kinds. */
 int64_t nas_fs_mmap_read(uint64_t fd, uint64_t offset,
                         uint8_t *buffer, uint64_t length);
+/* 1 iff an open readable regular file's bytes cannot change in this boot;
+ * 0 for mutable/dynamic sources, negative errno for an invalid descriptor.
+ * Read-only mounts alone do not imply immutable data. */
+int nas_fs_mmap_immutable_readonly(uint64_t fd);
 uint64_t nas_fs_fd_write(uint64_t fd, uint64_t addr, uint64_t len);
 uint64_t nas_fs_fd_writev(uint64_t fd, uint64_t iov, uint64_t n);
 void nas_fs_close_fd(uint64_t fd);

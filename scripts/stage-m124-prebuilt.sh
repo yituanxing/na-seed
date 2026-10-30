@@ -24,6 +24,7 @@ grep -Fxq 'P:util-linux-misc' "$root/lib/apk/db/installed"
 test -s "$root/tests/m124-empty-minix.img"
 test -s "$root/tests/m124-empty-swap.img"
 test -s "$root/tests/m124-cramfs-source/hello.txt"
+test -s "$root/tests/m124-look-words.txt"
 count=0
 while IFS= read -r elf; do
     case "$elf" in ''|'#'*) continue ;; esac

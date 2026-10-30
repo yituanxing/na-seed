@@ -205,25 +205,42 @@ uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
     nas_vma_commit(&TASK.mm->mmap_vmas,&planned);
     return start;
 }
-/* CPIO/tmpfs MAP_PRIVATE eagerly copies bytes into owned frames.
+/* CPIO/tmpfs MAP_PRIVATE eagerly copies bytes into owned frames. Immutable
+ * boot files may also satisfy read-only MAP_SHARED by copying: the provider
+ * guarantees there can never be an observable subsequent file mutation.
+ * Mutable MAP_SHARED still needs coherent backing and remains unsupported.
  * Fixed remaps may replace an existing ELF/heap user address range;
  * anonymous and file mappings use the same metadata and page ownership. */
 uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
                           uint64_t flags, uint64_t fd, uint64_t offset) {
-    const uint64_t MAP_PRIVATE=0x02ULL, MAP_FIXED=0x10ULL;
+    const uint64_t MAP_SHARED=0x01ULL, MAP_PRIVATE=0x02ULL, MAP_FIXED=0x10ULL;
     if (!length || length > (64ULL<<20) ||
         length > UINT64_MAX-(PAGE-1) ||
         (offset & (PAGE-1)) || offset > UINT64_MAX-length)
         return (uint64_t)-EINVAL;
-    /* MAP_SHARED is NOT a private copy. Never silently write back/alias
-     * anonymous memory or fabricate success for unsupported semantics. */
-    if ((flags & ~(MAP_PRIVATE|MAP_FIXED)) || !(flags & MAP_PRIVATE))
+    bool shared=(flags & MAP_SHARED)!=0;
+    bool private_map=(flags & MAP_PRIVATE)!=0;
+    if ((flags & ~(MAP_PRIVATE|MAP_SHARED|MAP_FIXED)) ||
+        (private_map == shared))
         return (uint64_t)-ENOSYS;
     if (!prot || (prot & ~7ULL)) return (uint64_t)-ENOSYS;
     if (!nas_vm_prot_supported(prot) || !nas_arch_user_nx_supported())
         return (uint64_t)-EOPNOTSUPP;
     int64_t valid=nas_fs_mmap_read(fd,offset,0,0);
     if (valid<0) return (uint64_t)valid;
+    if(shared) {
+        /* Read-only file/mount is insufficient: /proc is dynamic, and a
+         * read-only mount may alias data mutable through another mount.
+         * Do not acknowledge a writable shared mapping without real page
+         * cache/writeback; mprotect must retain this restriction as well. */
+        if(prot & 2ULL)return (uint64_t)-EACCES;
+        if(prot!=1ULL)return (uint64_t)-ENOSYS;
+        int immutable=nas_fs_mmap_immutable_readonly(fd);
+        if(immutable<0)return (uint64_t)immutable;
+        if(!immutable)return (uint64_t)-ENOSYS;
+    }
+    const unsigned kind=shared ? NAS_VMA_FILE_IMMUTABLE_SHARED :
+                                 NAS_VMA_FILE_PRIVATE_SNAPSHOT;
     uint64_t count=(length+PAGE-1)/PAGE, bytes=count*PAGE;
     uint64_t start;
     struct nas_anon_regions planned={0};
@@ -235,7 +252,7 @@ uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
             return (uint64_t)-EINVAL;
         }
         if (!nas_vma_replace(&planned,hint,bytes,(unsigned)prot,
-                             NAS_VMA_FILE_PRIVATE_SNAPSHOT,offset)) {
+                             kind,offset)) {
             nas_anon_reset(&planned);
             return (uint64_t)-ENOMEM;
         }
@@ -246,7 +263,7 @@ uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
             return (uint64_t)-ENOMEM;
         }
         if(!nas_vma_record(&planned,start,bytes,(unsigned)prot,
-                           NAS_VMA_FILE_PRIVATE_SNAPSHOT,offset)) {
+                           kind,offset)) {
             nas_anon_reset(&planned);
             return (uint64_t)-ENOMEM;
         }
@@ -434,6 +451,20 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
      * their pages materialize only on actual faults or kernel usercopy.
      * Enforce ownership before touching PTEs, including ELF and heap VMAs. */
     if (nas_anon_covered(&TASK.mm->mmap_vmas,addr,pages*PAGE)) {
+        if(prot & NAS_VM_WRITE) {
+            /* An immutable shared file cannot become writable by changing
+             * PTEs after a read-only mmap. This must be rejected BEFORE
+             * any staged VMA or physical page permissions are changed. */
+            const uint64_t end=addr+pages*PAGE;
+            for(uint64_t at=addr;at<end;) {
+                const struct nas_anon_region *v=
+                    nas_vma_find(&TASK.mm->mmap_vmas,at);
+                if(!v)return (uint64_t)-ENOMEM;
+                if(v->kind==NAS_VMA_FILE_IMMUTABLE_SHARED)
+                    return (uint64_t)-EACCES;
+                at=v->end<end?v->end:end;
+            }
+        }
         struct nas_anon_regions planned={0};
         if(!nas_vma_clone(&planned,&TASK.mm->mmap_vmas))
             return (uint64_t)-ENOMEM;

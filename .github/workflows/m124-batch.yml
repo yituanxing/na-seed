@@ -50,6 +50,8 @@ jobs:
           python3 scripts/check-prebuilt-profile-catalog.py
           python3 scripts/check-native-qemu-target.py
           python3 scripts/check-three-isa-core.py
+          sh scripts/check-m86-txn.sh
+          sh scripts/check-vfs-provider.sh
       - name: Install signed APK staging tools and native target QEMU on Linux host
         timeout-minutes: 12
         run: |

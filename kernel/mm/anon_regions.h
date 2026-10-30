@@ -16,9 +16,10 @@
 #define NAS_ANON_EXTENDED_FLOOR 0x80000000ULL
 #define NAS_ANON_EXTENDED_CEILING 0x1000000000ULL
 #define NAS_VMA_ADDRESS_LIMIT NAS_ANON_EXTENDED_CEILING
-/* Policy records for mmap-owned private user VMAs, independent of resident
+/* Policy records for mmap-owned user VMAs, independent of resident
  * pages and PTE permissions. PROT_NONE is a VMA even with no resident PTE.
- * File snapshots are eagerly private; no durable file backing yet.
+ * File snapshots are eager copies; immutable shared snapshots are safe only
+ * if the underlying provider guarantees its contents cannot ever change.
  * ELF, heap, stack and signal helper ranges use this same MM-owned map.
  * Eager snapshot mappings have no live backing file references yet. */
 enum nas_vma_kind {
@@ -27,7 +28,8 @@ enum nas_vma_kind {
     NAS_VMA_ELF_PRIVATE_SNAPSHOT=2,
     NAS_VMA_HEAP=3,
     NAS_VMA_STACK=4,
-    NAS_VMA_SIGNAL_TRAMPOLINE=5
+    NAS_VMA_SIGNAL_TRAMPOLINE=5,
+    NAS_VMA_FILE_IMMUTABLE_SHARED=6
 };
 #define NAS_VMA_DONTFORK 1U
 struct nas_anon_region {

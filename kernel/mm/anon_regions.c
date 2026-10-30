@@ -96,6 +96,11 @@ bool nas_anon_fixed_range_allowed(uint64_t addr,uint64_t length) {
            addr<NAS_ANON_EXTENDED_CEILING &&
            length<=NAS_ANON_EXTENDED_CEILING-addr;
 }
+static bool eager_file_kind(unsigned kind) {
+    return kind==NAS_VMA_FILE_PRIVATE_SNAPSHOT ||
+           kind==NAS_VMA_ELF_PRIVATE_SNAPSHOT ||
+           kind==NAS_VMA_FILE_IMMUTABLE_SHARED;
+}
 /* Coalesce only matching logical policies. File offsets must be contiguous.
  * This prevents RW and RX mappings from erasing each other's VMA semantics. */
 static bool compatible(const struct nas_anon_region *a,
@@ -105,15 +110,14 @@ static bool compatible(const struct nas_anon_region *a,
     /* A private eager file snapshot does NOT carry a durable backing ref.
      * Never coalesce independent snapshots merely due to adjacent offsets:
      * the FD may have been closed/reused for another source. */
-    if(a->kind==NAS_VMA_FILE_PRIVATE_SNAPSHOT ||
-       a->kind==NAS_VMA_ELF_PRIVATE_SNAPSHOT)return false;
+    if(eager_file_kind(a->kind))return false;
     return true;
 }
 static bool insert_area(struct nas_anon_regions *regions,
                         struct nas_anon_region candidate) {
     if(!regions || candidate.end<=candidate.start ||
        !valid_interval(candidate.start,candidate.end-candidate.start) ||
-       (candidate.prot &~7U) || candidate.kind>NAS_VMA_SIGNAL_TRAMPOLINE ||
+       (candidate.prot &~7U) || candidate.kind>NAS_VMA_FILE_IMMUTABLE_SHARED ||
        (candidate.flags & ~NAS_VMA_DONTFORK))
         return false;
     int left=-1,right=-1;
@@ -145,8 +149,7 @@ static bool insert_area(struct nas_anon_regions *regions,
 bool nas_vma_record(struct nas_anon_regions *regions,uint64_t addr,uint64_t length,
                     unsigned prot,unsigned kind,uint64_t file_offset) {
     if(!valid_interval(addr,length) ||
-       ((kind==NAS_VMA_FILE_PRIVATE_SNAPSHOT ||
-         kind==NAS_VMA_ELF_PRIVATE_SNAPSHOT) &&
+       (eager_file_kind(kind) &&
         length>UINT64_MAX-file_offset))return false;
     return insert_area(regions,(struct nas_anon_region){
         .start=addr,.end=addr+length,.file_offset=file_offset,
@@ -180,14 +183,14 @@ bool nas_anon_forget(struct nas_anon_regions *regions,
         if (!r->end || addr>=r->end || end<=r->start) continue;
         if (addr<=r->start && end>=r->end) *r=(struct nas_anon_region){0};
         else if (addr<=r->start) {
-            if((r->kind==NAS_VMA_FILE_PRIVATE_SNAPSHOT || r->kind==NAS_VMA_ELF_PRIVATE_SNAPSHOT))
+            if(eager_file_kind(r->kind))
                 r->file_offset+=end-r->start;
             r->start=end;
         } else if (end>=r->end) r->end=addr;
         else {
             struct nas_anon_region right=*r;
             right.start=end;
-            if((right.kind==NAS_VMA_FILE_PRIVATE_SNAPSHOT || right.kind==NAS_VMA_ELF_PRIVATE_SNAPSHOT))
+            if(eager_file_kind(right.kind))
                 right.file_offset+=end-r->start;
             regions->slots[spare]=right;
             r->end=addr;
@@ -244,7 +247,7 @@ bool nas_anon_overlay(struct nas_anon_regions *regions,
 bool nas_vma_replace(struct nas_anon_regions *regions,uint64_t addr,uint64_t length,
                      unsigned prot,unsigned kind,uint64_t file_offset) {
     if(!regions || !valid_interval(addr,length) || (prot&~7U) ||
-       kind>NAS_VMA_SIGNAL_TRAMPOLINE)return false;
+       kind>NAS_VMA_FILE_IMMUTABLE_SHARED)return false;
     struct nas_anon_regions planned={0};
     if(!nas_vma_clone(&planned,regions))return false;
     if(!nas_anon_forget(&planned,addr,length) ||
@@ -285,13 +288,13 @@ static bool rewrite_policy(struct nas_anon_regions *regions,uint64_t addr,
         if(rewrite_prot)middle.prot=prot;
         else middle.flags=dontfork ? (middle.flags|NAS_VMA_DONTFORK) :
                                       (middle.flags&~NAS_VMA_DONTFORK);
-        if((middle.kind==NAS_VMA_FILE_PRIVATE_SNAPSHOT || middle.kind==NAS_VMA_ELF_PRIVATE_SNAPSHOT))
+        if(eager_file_kind(middle.kind))
             middle.file_offset+=middle_start-r->start;
         if(!insert_area(&planned,middle))goto failed;
         if(middle_end<r->end) {
             struct nas_anon_region right=*r;
             right.start=middle_end;
-            if((right.kind==NAS_VMA_FILE_PRIVATE_SNAPSHOT || right.kind==NAS_VMA_ELF_PRIVATE_SNAPSHOT))
+            if(eager_file_kind(right.kind))
                 right.file_offset+=middle_end-r->start;
             if(!insert_area(&planned,right))goto failed;
         }

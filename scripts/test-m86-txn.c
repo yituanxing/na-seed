@@ -22,6 +22,14 @@
 static alignas(4096) uint8_t ram[NP*P];
 static unsigned owners[NP],alloc_count,alloc_fail_at,prepare_count,prepare_fail_at;
 static bool read_fail;
+/* The real file-descriptor/VFS layer authorizes immutable file mappings.
+ * fd=4 is a read-only bootfs file; fd=5 is a mutable tmpfs regular file.
+ * A snapshot of fd=5 would NOT satisfy Linux MAP_SHARED coherence. */
+int nas_fs_mmap_immutable_readonly(uint64_t fd){
+    if(fd==4)return 1;
+    if(fd==5)return 0;
+    return -9;
+}
 struct mapping {uint64_t va,pa;unsigned prot;};
 static struct mapping maps[96];
 static struct nas_task current;
@@ -108,7 +116,7 @@ bool nas_mmu_protect_pages(uint64_t va,uint64_t pages,uint64_t prot){
 bool nas_arch_nx_enabled(void){return true;}
 __attribute__((noreturn)) void nas_arch_halt(void){abort();}
 int64_t nas_fs_mmap_read(uint64_t fd,uint64_t off,uint8_t *dst,uint64_t n){
-    if(fd!=4)return -9;
+    if(fd!=4 && fd!=5)return -9;
     if(!dst && !n)return 0;
     if(read_fail && off>=P)return -5;
     if(!dst)return -14;
@@ -230,6 +238,28 @@ int main(void){
            slot(BASE+4*P,false)->prot==1);
     assert(nas_mmu_unmap_page(BASE+4*P));
     assert(nas_vm_munmap(transient_file,P)==0);
+    /* M124: util-linux look uses read-only MAP_SHARED on dictionary files.
+     * Immutable CPIO content can safely share snapshot *observations*;
+     * mutable tmpfs cannot, because writes through another FD must be seen.
+     * Reject write promotion by either mmap(PROT_WRITE) or mprotect(). */
+    uint64_t immutable=nas_vm_file_mmap(0,P,1,1,4,0);
+    assert((int64_t)immutable>0);
+    assert(*nas_mmu_user_byte(immutable)==7 &&
+           nas_vma_find(&space.mmap_vmas,immutable)->kind==
+               NAS_VMA_FILE_IMMUTABLE_SHARED &&
+           slot(immutable,false)->prot==1);
+    const unsigned immutable_baseline=living();
+    const uint64_t immutable_pa=slot(immutable,false)->pa;
+    assert((int64_t)nas_vm_file_mmap(0,P,1,1,5,0)==-38);
+    assert((int64_t)nas_vm_file_mmap(immutable,P,1,0x11,5,0)==-38);
+    assert((int64_t)nas_vm_file_mmap(0,P,3,1,4,0)==-13);
+    assert((int64_t)nas_vm_mprotect(immutable,P,3)==-13);
+    assert(nas_vma_find(&space.mmap_vmas,immutable)->prot==1 &&
+           slot(immutable,false)->prot==1 &&
+           slot(immutable,false)->pa==immutable_pa &&
+           *nas_mmu_user_byte(immutable)==7 &&
+           living()==immutable_baseline);
+    assert(nas_vm_munmap(immutable,P)==0);
     /* XZ's original Linux encoder can reserve 64 MiB plus one extra page
      * in a single anonymous mmap. The VMA window, not an arbitrary 64-MiB
      * per-call limit, is the authority for anonymous PROT_NONE space. */
@@ -369,6 +399,7 @@ int main(void){
     assert((int64_t)nas_vm_anon_mmap(0x6ff00000,P,
                                     0,0x32,UINT64_MAX,0)==-22);
     puts("[M80 LARGE ANON MMAP HOST PASS] 64MiB+4KiB, high 64-bit VMA, honest total-window ENOMEM");
+    puts("[M124 IMMUTABLE MAP_SHARED HOST PASS] bootfs RO mapped; mutable tmpfs and write escalation rejected");
     puts("[M110 NODE VM PASS] 512MiB RWX reservation, lazy mprotect, demand-faulted executable pages");
     puts("[M110 NODE MADVISE HOST PASS] 512MiB DONTNEED refault zero, DONTFORK VMA policy, snapshot honesty");
     puts("[M87 MM TXN PASS] MAP_FIXED rollback and mprotect lazy protection preserve VMA/PTE and frame ownership");

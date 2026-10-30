@@ -138,6 +138,11 @@ struct nas_vfs_type {
      * Default false: the provider must explicitly guarantee this. */
     bool rename_replace_open_safe;
     bool read_only;
+    /* Stronger than a read-only mount: regular file bytes are immutable
+     * for the entire lifetime of the kernel (e.g. in-memory boot CPIO).
+     * A RO MAP_SHARED snapshot is sound only for such providers; procfs
+     * and a read-only view of a writable volume must not opt in. */
+    bool immutable_file_data;
 };
 struct nas_vfs_mount {
     /* Registration source path is BORROWED only during attach. VFS stores

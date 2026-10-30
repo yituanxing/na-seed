@@ -120,7 +120,7 @@ static const struct nas_vfs_type boot_type={
     .root=boot_root,.lookup_child=boot_child,
     .readlink=boot_readlink,
     .read_at=boot_read,.read_size_is_eof=true,
-    .read_dir=boot_read_dir,.read_only=true
+    .read_dir=boot_read_dir,.read_only=true,.immutable_file_data=true
 };
 static void tmp_fill(const struct nas_tmp_file *f,
                      struct nas_fs_node *out) {
