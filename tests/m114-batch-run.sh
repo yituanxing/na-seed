@@ -233,6 +233,13 @@ run_case() {
 if [ "$#" -ne 0 ] && [ "$1" = --case ]; then
     [ "$#" -eq 2 ] || exit 2
     set -eu
+    # Keep a complete command trace in the per-case log. The parent prints
+    # that log only when a genuine Linux application/oracle fails, so early
+    # stderr cannot disappear behind later kernel QEMU serial diagnostics.
+    if [ "${M114_TRACE:-0}" = 1 ]; then
+        PS4='[M114 TRACE] '
+        set -x
+    fi
     run_case "$2"
     exit 0
 fi
@@ -241,13 +248,15 @@ failed=0
 for app in qrencode zbarimg gifsicle gif2rgb gcab cabextract \
            opusenc opusdec oggenc oggdec advdef advpng advzip ffmpeg ffprobe; do
     echo "[M114 CASE START] $app"
-    if /bin/sh /tests/m114-batch-run.sh --case "$app"; then
+    case_log="/tmp/m114-$app-case.log"
+    if M114_TRACE=1 /bin/sh /tests/m114-batch-run.sh --case "$app" > "$case_log" 2>&1; then
         upper=$(printf '%s' "$app" | busy tr '[:lower:]' '[:upper:]')
         printf 'M114_%s_PASS\n' "$upper"
     else
         rc=$?
         upper=$(printf '%s' "$app" | busy tr '[:lower:]' '[:upper:]')
         echo "[M114 $upper FAILED] original signed ELF or real functional oracle, rc=$rc" >&2
+        busy tail -100 "$case_log" >&2
         printf 'M114_%s_FAIL\n' "$upper"
         failed=$((failed + 1))
     fi

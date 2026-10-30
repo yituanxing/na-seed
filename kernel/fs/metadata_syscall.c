@@ -428,8 +428,12 @@ static uint64_t sys_utimensat_file(uint64_t dirfd, uint64_t pathname,
 static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
                                  uint64_t statbuf, uint64_t flags) {
     const uint64_t AT_SYMLINK_NOFOLLOW = 0x100ULL;
+    /* Linux accepts AT_NO_AUTOMOUNT as a no-op; glib's fallback from
+     * statx(ENOSYS) can still pass it to newfstatat. Accept the flag here,
+     * preserving the VFS lookup and symlink-following policy unchanged. */
+    const uint64_t AT_NO_AUTOMOUNT = 0x800ULL;
     const uint64_t AT_EMPTY_PATH = 0x1000ULL;
-    if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH))
+    if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH))
         return (uint64_t)-EINVAL;
     uint8_t first;
     if (!nas_user_read_bytes(pathname, &first, 1)) return (uint64_t)-EFAULT;

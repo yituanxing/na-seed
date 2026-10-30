@@ -1,7 +1,10 @@
-# M114: ten original Alpine 3.23 signed APK packages supply fifteen distinct ELF
-# executables. All packages installed and verified on HOST; guest only runs.
+# M114: signed Alpine 3.23 APKs supply fifteen distinct original ELF programs.
+# Install ImageMagick's PNG coder modules too: zbarimg depends on its runtime
+# decoder delegate, which imagemagick-libs alone does not ship.
+# All packages are installed and verified on HOST; guest only runs.
 libqrencode-tools
 zbar
+imagemagick
 gifsicle
 giflib-utils
 libgcab
