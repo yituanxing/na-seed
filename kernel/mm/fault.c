@@ -5,8 +5,9 @@
 #include "../arch/mmu.h"
 #include "../arch/user_pt.h"
 #include "prot.h"
-/* Currently resident private pages are eager. This provider resolves only
- * absent anonymous/heap/stack pages whose VMA logically permits access.
+/* Private anonymous mmap pages are demand-zero and initially nonresident.
+ * This provider resolves absent anonymous/heap/stack pages whose VMA
+ * logically permits access, including kernel usercopy's fault-in path.
  * File/private snapshot faults MUST NOT be replaced with zero-filled data;
  * write-protected resident pages MUST NOT have COW bypassed. */
 enum nas_mm_fault_result nas_mm_handle_fault(struct nas_mm *mm,uint64_t addr,

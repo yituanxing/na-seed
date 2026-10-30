@@ -187,16 +187,13 @@ uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
     struct nas_anon_regions planned=TASK.mm->mmap_vmas;
     if (!nas_vma_record(&planned,start,bytes,(unsigned)prot,
                         NAS_VMA_ANON_PRIVATE,0))return (uint64_t)-ENOMEM;
-    /* PROT_NONE owns a VMA but has no resident PTE. */
-    uint64_t va=start;
-    if (prot) {
-        for (;va<start+bytes;va+=PAGE)
-            if (!nas_mmu_map_prot_page(va,prot)) break;
-        if (va != start+bytes) {
-            while (va>start) { va-=PAGE; if (!nas_mmu_unmap_page(va)) nas_arch_halt(); }
-            return (uint64_t)-ENOMEM;
-        }
-    }
+    /* Linux private anonymous mmap owns its virtual range before any user
+     * pages become resident.  Demand-zero materialization is already owned
+     * by the common MM fault path on all three ISAs (and by kernel usercopy).
+     * Keep both PROT_NONE and initially RW mappings nonresident here: musl
+     * and Ruby reserve multi-megabyte thread stacks, then place PROT_NONE
+     * guards before touching their interior. Eagerly creating every page
+     * would destroy that legitimate no-backing guard transition. */
     TASK.mm->mmap_vmas=planned;
     return start;
 }
@@ -313,7 +310,27 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
     if (addr>=USER_LIMIT || pages>(USER_LIMIT-addr)/PAGE)
         return (uint64_t)-ENOMEM;
     if (!nas_arch_user_nx_supported()) return (uint64_t)-ENOSYS;
-    if (!prot) return (uint64_t)-ENOSYS; /* Moving populated pages to PROT_NONE needs backing preservation. */
+    if (!prot) {
+        /* A VMA-only, entirely nonresident interval can transition RW ->
+         * PROT_NONE by changing logical permissions without losing data:
+         * no physical backing exists to preserve.  This includes applying
+         * PROT_NONE again to an existing guard.  For a resident page, never
+         * discard its data frame or fake protection while the PTE remains
+         * accessible: a real backing-preserving transition is still needed. */
+        if(!nas_anon_covered(&TASK.mm->mmap_vmas,addr,pages*PAGE))
+            return (uint64_t)-ENOMEM;
+        for(uint64_t i=0;i<pages;i++) {
+            uint64_t pa=0;
+            if(nas_mmu_resolve_user_address(TASK.mm->root_phys,
+                                           addr+i*PAGE,&pa,0))
+                return (uint64_t)-ENOSYS;
+        }
+        struct nas_anon_regions planned=TASK.mm->mmap_vmas;
+        if(!nas_vma_protect(&planned,addr,pages*PAGE,0))
+            return (uint64_t)-ENOMEM;
+        TASK.mm->mmap_vmas=planned;
+        return 0;
+    }
     if (!nas_vm_prot_supported(prot)) return (uint64_t)-EOPNOTSUPP;
     /* musl pthread_create reserves MAP_PRIVATE|MAP_ANONYMOUS PROT_NONE,
      * then mprotects the stack/TLS interior RW. The virtual reservation is

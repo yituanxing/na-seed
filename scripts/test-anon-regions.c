@@ -100,6 +100,18 @@ int main(void) {
            v->prot==3);
     assert(nas_vma_find(&a,base)->prot==0);
     assert(nas_vma_find(&a,base+3*P)->prot==0);
+    /* M109 Ruby: a demand-zero RW anonymous stack arena is a VMA before
+     * its first user touch. Reprotecting an unmaterialized first guard page
+     * to NONE must preserve the remaining RW policy and range ownership. */
+    nas_anon_reset(&b);
+    const uint64_t stack=NAS_ANON_FLOOR+0x200000;
+    assert(nas_vma_record(&b,stack,0x1440000,3,NAS_VMA_ANON_PRIVATE,0));
+    assert(nas_vma_protect(&b,stack,P,0));
+    assert(nas_vma_find(&b,stack)->prot==0);
+    assert(nas_vma_find(&b,stack+P)->prot==3);
+    assert(nas_anon_covered(&b,stack,0x1440000));
+    assert(nas_vma_protect(&b,stack,P,0)); /* Guard reprotection is idempotent. */
+    assert(nas_vma_find(&b,stack)->prot==0);
     /* Same kind but differing rights never gets merged. */
     assert(nas_vma_record(&a,base+6*P,P,5,NAS_VMA_ANON_PRIVATE,0));
     assert(nas_vma_find(&a,base+6*P)->prot==5);
