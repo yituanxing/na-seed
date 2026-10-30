@@ -285,24 +285,6 @@ uint64_t nas_ptrace_syscall_dispatch(uint64_t *args) {
         return nas_arch_saved_return(original);
     }
     uint64_t result=syscall_dispatch(args);
-#ifdef NASEED_SYSCALL_TRACE
-    /* Opt-in, bounded read-only syscall/result trace for an original Ruby
-     * runtime compatibility investigation. Never changes syscall results,
-     * live Task ownership or normal (trace-disabled) kernel builds. */
-    static unsigned ruby_calls;
-    if (original && original->comm[0]=='r' && original->comm[1]=='u' &&
-        original->comm[2]=='b' && original->comm[3]=='y' &&
-        original->comm[4]==0 && ruby_calls++<600) {
-        nas_print("[RUBY SC] pid="); nas_dec(original->pid);
-        nas_print(" nr="); nas_dec(args[0]);
-        nas_print(" a1="); nas_hex(args[1]);
-        nas_print(" a2="); nas_hex(args[2]);
-        nas_print(" a3="); nas_hex(args[3]);
-        nas_print(" a4="); nas_hex(args[4]);
-        nas_print(" ret="); nas_hex(result);
-        nas_print("\n");
-    }
-#endif
     /* ptrace fork/exec event logic has already emitted its required
      * syscall-exit stop. The suspended native C continuation now returns
      * through this original gate: do not manufacture a second exit stop. */

@@ -21,3 +21,4 @@ m80-batch	rootfs/alpine/packages-m80-batch.txt	scripts/m80-original-elfs.txt	scr
 m83-source	rootfs/alpine/packages-native-busybox.txt	scripts/m83-original-elfs.txt	scripts/m83-rootfs-copies.tsv	main
 m84-source	rootfs/alpine/packages-native-busybox.txt	scripts/m83-original-elfs.txt	scripts/m84-rootfs-copies.tsv	main
 m109-batch	rootfs/alpine/packages-m109-batch.txt	scripts/m109-original-elfs.txt	scripts/m109-rootfs-copies.tsv	main+community
+m110-batch	rootfs/alpine/packages-m110-batch.txt	scripts/m110-original-elfs.txt	scripts/m110-rootfs-copies.tsv	main+community

@@ -1,0 +1,2 @@
+# Exactly one NaSeed QEMU guest boot executes every functional case.
+m110-batch	cpio	sh -c '/bin/sh /tests/m110-batch-run.sh'	M110_BATCH_PASS	-	/bin/busybox
