@@ -1,0 +1,2 @@
+# All original Alpine ELFs run in ONE real QEMU boot per target ISA.
+m109-batch	cpio	sh -c '/bin/sh /tests/m109-batch-run.sh'	M109_BATCH_PASS	-	/bin/busybox

@@ -1,0 +1,18 @@
+# M109 (software batch 2): original unmodified Alpine v3.23 APK binaries.
+# The canonical overlay installs/verifies all APKs on HOST; NaSeed runs ELF.
+# Both main and community are official signed APK repositories.
+m4
+bison
+lz4
+brotli
+xxhash
+pv
+libxml2-utils
+libxslt
+curl
+cpio
+7zip
+gettext-tiny
+gpg
+perl
+ruby

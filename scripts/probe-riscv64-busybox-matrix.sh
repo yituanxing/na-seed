@@ -97,6 +97,7 @@ boot_case() {
         m83-replay) time_budget=${NAS_M83_REPLAY_QEMU_TIMEOUT:-180} ;;
         m84-build) time_budget=${NAS_M84_BUILD_QEMU_TIMEOUT:-7200} ;;
         m84-replay) time_budget=${NAS_M84_REPLAY_QEMU_TIMEOUT:-360} ;;
+        m109-batch) time_budget=${NAS_M109_QEMU_TIMEOUT:-240} ;;
         m105-*) time_budget=120 ;;
         timer-preempt) time_budget=45 ;;
         process-capacity) time_budget=65 ;;

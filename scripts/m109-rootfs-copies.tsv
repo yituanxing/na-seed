@@ -1,0 +1,2 @@
+# One immutable test script containing the authentic 15-program guest oracles.
+tests/m109-batch-run.sh	tests/m109-batch-run.sh
