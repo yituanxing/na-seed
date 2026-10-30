@@ -13,4 +13,4 @@ usr/bin/fd
 usr/bin/tree
 usr/bin/xz
 usr/bin/bzip2
-usr/bin/tar
+bin/tar

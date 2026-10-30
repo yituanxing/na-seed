@@ -166,7 +166,7 @@ run_case() {
         "$exe" -d -c "$work/packed.bz2" > "$work/unpacked"
         busy cmp "$work/input" "$work/unpacked" ;;
       tar)
-        exe=$(original_elf /usr/bin/tar)
+        exe=$(original_elf /bin/tar)
         busy mkdir -p "$work/source" "$work/restored"
         make_payload tar-a "$work/source/one"
         make_payload tar-b "$work/source/two"
