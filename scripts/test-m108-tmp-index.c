@@ -79,6 +79,30 @@ static void expect_name(const void *parent,unsigned cursor,const char *name) {
            entry->parent_inode==parent && !strcmp(entry->name,name));
 }
 
+static void test_same_size_truncate_timestamps(void) {
+    const void *root=&root_tmp;
+    struct nas_tmp_file *lock=tmp_create_at(root,"ninja-lock",false,0600);
+    assert(lock && lock->size==0);
+    uint64_t previous=lock->mtime_ns;
+    /* Linux fopen("wb") on an already-empty file still changes mtime.
+     * Ninja 1.13.2 records this timestamp before each build edge, even
+     * if no data bytes are subsequently written to the lock file. */
+    for(unsigned i=0;i<3;i++) {
+        assert(tmp_resize(lock,0)==0);
+        assert(lock->mtime_ns>previous);
+        assert(lock->ctime_ns==lock->mtime_ns);
+        previous=lock->mtime_ns;
+    }
+    uint8_t byte=0x2e;
+    assert(tmp_write_at(lock,0,&byte,1)==1);
+    previous=lock->mtime_ns;
+    assert(tmp_resize(lock,1)==0);
+    assert(lock->mtime_ns>previous);
+    assert(lock->ctime_ns==lock->mtime_ns);
+    assert(tmp_unlink_at(root,"ninja-lock",0)==0);
+    puts("[A015 NASEED TMPFS TRUNCATE PASS] same-size zero and nonzero sizes refresh mtime");
+}
+
 static void test_large_tree(void) {
     const void *root=&root_tmp;
     assert(tmp_mkdir_at(root,"big",0755)==0);
@@ -261,6 +285,7 @@ static void test_inode_recycling(void) {
 }
 
 int main(void) {
+    test_same_size_truncate_timestamps();
     test_large_tree();
     test_inode_recycling();
     puts("[M108 TMP INDEX PASS]");

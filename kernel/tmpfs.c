@@ -177,7 +177,9 @@ int tmp_resize(struct nas_tmp_file *file, uint64_t size) {
     if (file->is_dir) return -EISDIR;
     if (size > TMP_FILE_CAP) return -EFBIG;
     uint64_t old = file->size;
-    if (size == old) return 0;
+    /* Linux updates mtime/ctime on a successful ftruncate even when the
+     * requested size equals the current size.  O_TRUNC takes this path too:
+     * an empty file reopened with O_TRUNC must acquire a fresh timestamp. */
     if (size < old) {
         if (size % TMP_PAGE_SIZE) {
             uint8_t *last = tmp_data_page(file, size / TMP_PAGE_SIZE, false);

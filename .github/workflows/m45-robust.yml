@@ -10,7 +10,7 @@ concurrency:
 jobs:
   installed-packages:
     name: Linux robust list recovery and original zstd / ${{ matrix.port }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     strategy:
       fail-fast: false

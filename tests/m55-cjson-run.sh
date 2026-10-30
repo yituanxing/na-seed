@@ -99,10 +99,18 @@ echo M55_NINJA_NOOP_OUTPUT_BEGIN
 echo M55_NINJA_NOOP_OUTPUT_END
 if ! /bin/busybox grep -Fq 'no work to do' /tmp/m55-noop.txt; then
     echo "[M55 DIAG] native Ninja found dirty edges after first complete build"
+    # Host QEMU probes print only the end of the serial log on failure.
+    # Reprint Ninja's earliest explanations next to this failure marker:
+    # they identify the FIRST dirty producer, not just 22 dependent links.
+    echo M55_NINJA_FIRST_DIRTY_EXPLANATIONS_BEGIN
+    /bin/busybox head -n 50 /tmp/m55-noop.txt
+    echo M55_NINJA_FIRST_DIRTY_EXPLANATIONS_END
     /bin/busybox stat -c '%n %y %s' \
         "$src/CMakeLists.txt" "$src/cJSON.c" \
         "$out/build.ninja" "$out/CMakeFiles/rules.ninja" \
-        "$out/libcjson.a" "$out/.ninja_log" || :
+        "$out/libcjson.a" "$out/tests/libunity.a" \
+        "$out/CMakeFiles/cjson.dir/cJSON.c.o" \
+        "$out/cJSON_test" "$out/.ninja_log" || :
     exit 1
 fi
 echo M55_NINJA_INCREMENTAL_NOOP_PASS

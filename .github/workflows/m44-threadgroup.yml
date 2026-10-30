@@ -10,7 +10,7 @@ concurrency:
 jobs:
   installed-packages:
     name: native Linux exit_group / leader lifetime and authentic pthread zstd / ${{ matrix.port }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     strategy:
       fail-fast: false

@@ -10,7 +10,7 @@ concurrency:
 jobs:
   installed-packages:
     name: genuine Zstandard pthread creation, join and VFS inside NaSeed / ${{ matrix.port }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     strategy:
       fail-fast: false

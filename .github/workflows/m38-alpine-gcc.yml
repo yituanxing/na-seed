@@ -10,7 +10,7 @@ concurrency:
 jobs:
   gcc-musl:
     name: stock Alpine GCC + musl builds an ELF inside NaSeed / ${{ matrix.port }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     strategy:
       fail-fast: false
