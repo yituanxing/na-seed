@@ -1,0 +1,2 @@
+# All image fixtures are prepared by the M125 host-configure hook.
+tests/m125-batch-run.sh	tests/m125-batch-run.sh
