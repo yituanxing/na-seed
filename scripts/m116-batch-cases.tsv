@@ -1,0 +1,2 @@
+# 15 signed independent real Linux ELF applications in one QEMU boot.
+m116-batch	cpio	sh -c '/bin/sh /tests/m116-batch-run.sh'	M116_BATCH_PASS	-	/bin/busybox

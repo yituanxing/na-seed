@@ -1,0 +1,13 @@
+# M116: ten signed Alpine 3.23 packages supplying 15 distinct original ELF
+# applications: image/AVIF/JPEG2000/JPEG, JSON, SQL and lossless archives.
+# Linux host installs all APKs; NaSeed guest only runs native binaries.
+pngcrush
+oxipng
+openjpeg-tools
+libavif-apps
+libjpeg-turbo-utils
+jq
+sqlite
+zip
+unzip
+zstd
