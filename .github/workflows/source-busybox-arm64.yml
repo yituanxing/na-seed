@@ -61,6 +61,8 @@ jobs:
     timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Install ARM64 cross-toolchain and genuine system QEMU
         run: |
           sudo apt-get update -qq

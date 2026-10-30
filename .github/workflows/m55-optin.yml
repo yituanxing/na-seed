@@ -6,6 +6,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # M55 is deliberately too slow to run on every push. A one-time PR title
 # marker can be set/removed using the existing GitHub app's PR edit API;
 # an optional repository label is also supported if one is provisioned.

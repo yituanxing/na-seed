@@ -18,10 +18,14 @@ concurrency:
 
 jobs:
   nano-x86:
-    runs-on: ubuntu-latest
+    # Ubuntu 26.04 host-built static init SIGILLs in the x86 QEMU guest;
+    # pin the same known-good runner used by the core NaSeed regressions.
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Native gcc/ncurses + genuine UEFI QEMU
         run: |
           sudo apt-get update -qq

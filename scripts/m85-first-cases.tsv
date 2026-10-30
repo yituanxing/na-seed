@@ -1,0 +1,2 @@
+# Original signed Alpine Git and real VirtIO-Blk ext4 persistent metadata.
+m85-first	cpio	sh -c '/bin/sh /tests/m85-git-run.sh --first'	M85_FIRST_BOOT_PASS	-	/bin/busybox

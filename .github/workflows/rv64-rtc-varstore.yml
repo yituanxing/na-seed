@@ -8,12 +8,17 @@ on:
       - 'scripts/probe-riscv64-busybox-matrix.sh'
       - '.github/workflows/rv64-rtc-varstore.yml'
   workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   original-uefi-rtc:
     runs-on: ubuntu-24.04
     timeout-minutes: 22
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Install genuine RISC-V QEMU and virt-fw-vars
         run: |
           set -eu

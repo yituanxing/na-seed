@@ -18,6 +18,12 @@ on:
       - 'tests/m83-source-run.sh'
       - 'kernel/**'
       - 'ports/**'
+  workflow_dispatch:
+# A superseded PR head must not keep expensive genuine guest GCC/Make boots
+# running while the replacement head is waiting for runner capacity.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   m83:
     name: M83 original signed GCC/Make upstream zlib, build then reboot / ${{ matrix.port }}
@@ -29,6 +35,8 @@ jobs:
         port: [amd64, riscv64, arm64]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Install genuine host QEMU/ELF and lwext4 ext4 check tools
         timeout-minutes: 12
         run: |

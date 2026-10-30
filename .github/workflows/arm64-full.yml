@@ -62,6 +62,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Install only missing AArch64 EDK2/QEMU/native tools
         timeout-minutes: 8
         run: |

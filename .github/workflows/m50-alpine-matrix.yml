@@ -7,7 +7,9 @@ on:
       - 'scripts/**'
       - 'tests/**'
       - 'Makefile'
-      - '.github/workflows/**'
+      # Independent workflow-only edits do not alter this nine-job guest
+      # matrix. Its own workflow, shared kernel, tests and scripts still do.
+      - '.github/workflows/m50-alpine-matrix.yml'
   workflow_dispatch:
     inputs:
       mode:

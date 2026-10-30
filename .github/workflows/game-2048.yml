@@ -15,10 +15,14 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   original-game:
-    runs-on: ubuntu-latest
+    # Ubuntu 26.04 host-built static init SIGILLs in the x86 QEMU guest;
+    # retain the qualified 24.04 toolchain until the newer image is tested.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Install native Linux compiler and UEFI system QEMU
         run: |
           sudo apt-get update -qq

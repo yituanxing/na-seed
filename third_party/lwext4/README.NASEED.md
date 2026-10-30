@@ -13,8 +13,14 @@ source set, update `UPSTREAM_REVISION`, and run
 ## License and attribution
 
 Upstream's original `LICENSE` applies. Several source files are BSD-3
-clause, while `src/ext4_xattr.c` and `src/ext4_extent.c` carry GPLv2.
-The overall unmodified compiled upstream library therefore has GPLv2 terms;
-review compatibility with NaSeed's final chosen distribution license before
-merging into a distributable kernel. Do not mix code copied from GPLv3-only
-NaOS with GPLv2-only files.
+clause, while `src/ext4_xattr.c` and `src/ext4_extent.c` explicitly permit
+**GPL version 2 or (at your option) any later version** in their original
+file headers. They must not be characterized as GPLv2-only; the broader
+upstream `LICENSE` wording does not supersede those file-level grants.
+
+Review the chosen license and distribution obligations for the **combined**
+NaSeed kernel before publishing binaries or other distributions. NaOS's
+GPLv3-only sources have not been copied into this port; any future copying
+must be reviewed against the actual per-file grants and provenance rather
+than an assumed GPLv2-only versus GPLv3 conflict. See
+`docs/distribution-license-review.md`.
