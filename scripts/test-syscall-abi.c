@@ -79,5 +79,13 @@ int main(void) {
     assert(nas_linux_decode_call(clone_args) == NAS_SC_clone_thread);
     clone_args[1] |= 0x01000000U;
     assert(nas_linux_decode_call(clone_args) == NAS_SC_NONE);
+    /* Original Go x86 runtime creates threads with CLONE_SETTLS but
+     * without either parent- or child-TID writes. Reject adjacent masks. */
+    clone_args[1] = 0x000d0f00U;
+    assert(nas_linux_decode_call(clone_args) == NAS_SC_clone_thread);
+    clone_args[1] = 0x00050f00U;
+    assert(nas_linux_decode_call(clone_args) == NAS_SC_clone_thread);
+    clone_args[1] |= 0x00200000U;
+    assert(nas_linux_decode_call(clone_args) == NAS_SC_NONE);
     return 0;
 }

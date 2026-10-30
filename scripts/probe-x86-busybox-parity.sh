@@ -70,9 +70,11 @@ run_case() {
         m84-build) budget=${NAS_M84_BUILD_QEMU_TIMEOUT:-7200} ;;
         m84-replay) budget=${NAS_M84_REPLAY_QEMU_TIMEOUT:-360} ;;
         m109-batch) budget=${NAS_M109_QEMU_TIMEOUT:-180} ;;
+        m110-batch) budget=${NAS_M110_QEMU_TIMEOUT:-180} ;;
+        m111-batch) budget=${NAS_M111_QEMU_TIMEOUT:-180} ;;
         m105-*) budget=90 ;;
         m55-cjson) budget=${NAS_M55_QEMU_TIMEOUT:-2400} ;; m56-busybox) budget=${NAS_M56_QEMU_TIMEOUT:-3600} ;; m57-sqlite) budget=${NAS_M57_QEMU_TIMEOUT:-3600} ;; m103-tid|m104-exception) budget=${NAS_NATIVE_ABI_QEMU_TIMEOUT:-90} ;; m37-incremental) budget=100 ;; process-capacity) budget=45 ;; init-reaper) budget=110 ;; *) budget=15 ;; esac
-    if [ "$name" = m109-batch ] || [ "$name" = m84-build ] || [ "$name" = m84-replay ] || [ "$name" = m83-build ] || [ "$name" = m83-replay ] || [ "$name" = m38-gcc ] || [ "$name" = m39-packages ] || [ "$name" = m40-archives ] || [ "$name" = m41-unix ] || [ "$name" = m42-pthread ] || [ "$name" = m43-zstd ] || [ "$name" = m44-group ] || [ "$name" = m45-robust ] || [ "$name" = m46-exec ] || [ "$name" = m47-tgkill ] || [ "$name" = m48-parallel ] || [ "$name" = m49-capacity ] || [ "$name" = m51-git ] || [ "$name" = m52-python ] || [ "$name" = m53-vim ] || [ "$name" = m54-dev ] || [ "$name" = m55-cjson ] || [ "$name" = m56-busybox ] || [ "$name" = m57-sqlite ] || [ "$name" = m58-runtime ] || [ "$name" = m59-worktree ] || [ "$name" = real-vfs ] || [ "${name#m105-}" != "$name" ]; then
+    if [ "$name" = m109-batch ] || [ "$name" = m110-batch ] || [ "$name" = m111-batch ] || [ "$name" = m84-build ] || [ "$name" = m84-replay ] || [ "$name" = m83-build ] || [ "$name" = m83-replay ] || [ "$name" = m38-gcc ] || [ "$name" = m39-packages ] || [ "$name" = m40-archives ] || [ "$name" = m41-unix ] || [ "$name" = m42-pthread ] || [ "$name" = m43-zstd ] || [ "$name" = m44-group ] || [ "$name" = m45-robust ] || [ "$name" = m46-exec ] || [ "$name" = m47-tgkill ] || [ "$name" = m48-parallel ] || [ "$name" = m49-capacity ] || [ "$name" = m51-git ] || [ "$name" = m52-python ] || [ "$name" = m53-vim ] || [ "$name" = m54-dev ] || [ "$name" = m55-cjson ] || [ "$name" = m56-busybox ] || [ "$name" = m57-sqlite ] || [ "$name" = m58-runtime ] || [ "$name" = m59-worktree ] || [ "$name" = real-vfs ] || [ "${name#m105-}" != "$name" ]; then
         # The full GCC gate is allowed a large success budget, but a real
         # kernel [FAIL] must not keep its headless QEMU alive for 300s.
         timeout "${budget}s" sh scripts/run.sh "$iso" > "$log" 2>&1 < /dev/null &

@@ -340,6 +340,13 @@ static inline enum nas_syscall_op nas_linux_decode_call(const uint64_t *args) {
             0x10000ULL|0x40000ULL|0x80000ULL|0x100000ULL|0x200000ULL;
         if ((args[1] & ~0x400000ULL)==pthread_flags)
             return NAS_SC_clone_thread;
+        /* Original Go age-keygen uses a shared Linux thread with no TID
+         * pointer side effects: 0x50f00 on AArch64 and 0xd0f00 on x86-64.
+         * The latter sets CLONE_SETTLS. The absence of SETTLS on ARM means
+         * arg4 is NOT a TLS value even when nonzero. Do not accept unrelated
+         * flags or assume pthread's PARENT_SETTID/CHILD_CLEARTID semantics. */
+        if (args[1]==0x00050f00ULL || args[1]==0x000d0f00ULL)
+            return NAS_SC_clone_thread;
         if (args[1] == (0x00000100ULL|0x00004000ULL|17ULL))
             return NAS_SC_vfork;
         if (args[2] != 0U) return NAS_SC_NONE; /* regular fork inherits sp */

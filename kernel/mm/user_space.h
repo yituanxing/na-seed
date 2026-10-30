@@ -6,7 +6,8 @@
 bool nas_space_new(struct nas_user_space *space, unsigned levels);
 bool nas_space_delete(struct nas_user_space *space);
 bool nas_space_map_page(struct nas_user_space *space, uint64_t va, bool writable);
-/* Exact leaf permissions for ELF segment backends, no anonymous W+X. */
+/* Exact typed leaf permissions (including Linux anonymous RWX); the VM
+ * owner chooses which prot and mapping kinds are authorized. */
 bool nas_space_map_access(struct nas_user_space *space, uint64_t va,
                           unsigned access);
 bool nas_space_map_elf_access(struct nas_user_space *space, uint64_t va,

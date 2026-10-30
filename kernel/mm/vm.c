@@ -378,12 +378,11 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
         return 0;
     }
     if (!nas_vm_prot_supported(prot)) return (uint64_t)-EOPNOTSUPP;
-    /* musl pthread_create reserves MAP_PRIVATE|MAP_ANONYMOUS PROT_NONE,
-     * then mprotects the stack/TLS interior RW. The virtual reservation is
-     * accounted for in the shared VMA ledger, but PROT_NONE has no PTE.
-     * Materialize these independently owned, zero-filled pages on demand;
-     * NEVER invent user pages in ELF, heap or unreserved address ranges.
-     * Return a real ENOMEM when the physical allocator is exhausted. */
+    /* A permission change modifies the VMA policy and the permissions of
+     * resident PTEs, NEVER the physical residency of a reservation. Musl's
+     * pthread guards and V8's 512-MiB CodeRange are valid nonresident VMAs:
+     * their pages materialize only on actual faults or kernel usercopy.
+     * Enforce ownership before touching PTEs, including ELF and heap VMAs. */
     if (nas_anon_covered(&TASK.mm->mmap_vmas,addr,pages*PAGE)) {
         struct nas_anon_regions planned={0};
         if(!nas_vma_clone(&planned,&TASK.mm->mmap_vmas))
@@ -392,37 +391,10 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
             nas_anon_reset(&planned);
             return (uint64_t)-ENOMEM;
         }
-        /* M87-B: a permission change must be all-or-nothing even when a
-         * PROT_NONE reservation has never acquired physical pages. Stage
-         * *only* missing data frames; preserve present frames and their
-         * identity. Nothing may fail after the first visible PTE edit. */
+        /* M110: never create missing leaves. Their future fault path reads
+         * the committed VMA prot. Present leaves retain frame identity,
+         * and shared COW frames must stay hardware write-protected. */
         const uint64_t root=TASK.mm->root_phys;
-        struct nas_vm_stage staged={0};
-        for(uint64_t i=0;i<pages;i++) {
-            const uint64_t va=addr+i*PAGE;
-            uint64_t pa=0;
-            if(nas_mmu_resolve_user_address(root,va,&pa,0))continue;
-            uint64_t fresh=nas_frame_alloc();
-            if(!fresh) {
-                stage_release(&staged,true);
-                nas_anon_reset(&planned);
-                return (uint64_t)-ENOMEM;
-            }
-            if(!stage_add(&staged,fresh)) {
-                (void)nas_frame_put(fresh);
-                stage_release(&staged,true);
-                nas_anon_reset(&planned);
-                return (uint64_t)-ENOMEM;
-            }
-            if(!nas_mmu_prepare_leaf_at(root,va)) {
-                stage_release(&staged,true);
-                nas_anon_reset(&planned);
-                return (uint64_t)-ENOMEM;
-            }
-        }
-        struct nas_vm_stage_cursor cursor={
-            .metadata=staged.first,.index=0
-        };
         for(uint64_t i=0;i<pages;i++) {
             const uint64_t va=addr+i*PAGE;
             uint64_t pa=0;
@@ -435,14 +407,8 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
                     hw_prot &= ~NAS_VM_WRITE;
                 if(!nas_mmu_protect_pages(va,1,hw_prot))
                     nas_arch_halt();
-            } else {
-                uint64_t old=0;
-                if(!nas_mmu_exchange_leaf_at(root,va,stage_next(&cursor),
-                                              (unsigned)prot,&old) || old)
-                    nas_arch_halt();
             }
         }
-        stage_release(&staged,false); /* Each new PTE owns its data frame. */
         nas_vma_commit(&TASK.mm->mmap_vmas,&planned);
         return 0;
     }

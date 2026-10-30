@@ -641,7 +641,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         return nas_process_clone_thread((uint64_t *)(uintptr_t)args,
                                         args[2],args[3],
                                         nas_linux_clone_child_tid(args),
-                                        nas_linux_clone_tls(args));
+                                        nas_linux_clone_tls(args),args[1]);
     if (nr == NAS_SC_vfork)
         return nas_process_vfork((uint64_t *)(uintptr_t)args,
                                   nas_linux_vfork_child_stack(args));

@@ -42,7 +42,7 @@ void nas_process_clear_tid_for_exit(struct nas_task *thread);
 void nas_process_child_tid_first_dispatch(void);
 uint64_t nas_process_clone_thread(uint64_t *frame,uint64_t stack,
                                  uint64_t parent_tid,uint64_t child_tid,
-                                 uint64_t tls);
+                                 uint64_t tls,uint64_t flags);
 uint64_t nas_process_futex(uint64_t *frame,uint64_t uaddr,uint64_t op,
                            uint64_t val,uint64_t timeout,uint64_t uaddr2,
                            uint64_t val3);

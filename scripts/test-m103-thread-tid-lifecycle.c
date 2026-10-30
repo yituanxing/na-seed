@@ -69,6 +69,8 @@ struct nas_task *nas_task_fork_slot(void) {
     child.fds=&child_files.table;
     child.fs=&child_fs;
     child.sighand=&child_sighand;
+    /* Real task_fork_slot copies the architecture state before overrides. */
+    child.arch=parent.arch;
     /* The real fork-slot memcpy briefly transfers these raw addresses;
      * every process creation path must explicitly replace stale values. */
     child.thread_set_tid=parent.thread_set_tid;
@@ -220,7 +222,8 @@ int main(void) {
     assert(write_attempts==0 && wakes==0);
 
     setup_parent();
-    assert(nas_process_clone_thread(frame,0x8000,0x9000,0xa000,0x2000)==104);
+    assert(nas_process_clone_thread(frame,0x8000,0x9000,0xa000,
+                                    0x2000,0x003d0f00ULL)==104);
     assert(child.mm==&parent_mm && child.is_thread && child.tgid==1);
     assert(child.files==&parent_files && child.fs==&parent_fs &&
            child.sighand==&parent_sighand);
@@ -233,7 +236,8 @@ int main(void) {
      * must never be returned as EFAULT or accidentally released. */
     setup_parent();
     reject_user_write=true;
-    assert(nas_process_clone_thread(frame,0x8000,1,1,0x2000)==105);
+    assert(nas_process_clone_thread(frame,0x8000,1,1,
+                                    0x2000,0x003d0f00ULL)==105);
     assert(child.state==NAS_TASK_READY && write_attempts==1);
     clear_only_thread_exit(1);
     assert(wakes==1 && panic_count==0 && released_children==0);
@@ -281,6 +285,35 @@ int main(void) {
         if(i!=4)assert(last_wake_address==robust_node+8);
         assert(panic_count==0);
     }
+    /* Original Go age-keygen AArch64: 0x50f00 shares VM/FD/FS/SIGHAND
+     * but does NOT request either TLS replacement or TID side effects.
+     * A nonzero arg4/parent_tid must be ignored without touching memory. */
+    setup_parent();
+    nas_arch_context_set_tls(&parent.arch,0x3403a090ULL);
+    assert(nas_process_clone_thread(frame,0x8000,0x34002540,0x3402c020,
+                                    UINT64_MAX,0x00050f00ULL)==106);
+    assert(child.is_thread && child.mm==&parent_mm);
+    assert(nas_arch_context_tls_base(&child.arch)==0x3403a090ULL);
+    assert(child.thread_set_tid==0 && child.thread_clear_tid==0);
+    assert(write_attempts==0 && last_parent_return==106);
+    nas_current_task=&child;
+    nas_process_child_tid_first_dispatch();
+    nas_process_clear_tid_for_exit(&child);
+    assert(write_attempts==0 && wakes==0);
+
+    /* Original Go x86: 0xd0f00 includes SETTLS but no parent-/child-TID
+     * side effects, even when incidental raw argument slots are nonzero. */
+    setup_parent();
+    nas_arch_context_set_tls(&parent.arch,0x33000000ULL);
+    assert(nas_process_clone_thread(frame,0x8000,0x34002540,0x3402c020,
+                                    0x3403a090,0x000d0f00ULL)==107);
+    assert(nas_arch_context_tls_base(&child.arch)==0x3403a090ULL);
+    assert(child.thread_set_tid==0 && child.thread_clear_tid==0);
+    assert(write_attempts==0 && last_parent_return==107);
+    nas_current_task=&child;
+    nas_process_child_tid_first_dispatch();
+    nas_process_clear_tid_for_exit(&child);
+    assert(write_attempts==0 && wakes==0);
     printf("[M103 TASK PASS] deferred CHILD_SETTID, bad TID put_user, clear+wake, shared clone, robust owner-death, no panic (%u clones)\n",allocated_children);
     return 0;
 }

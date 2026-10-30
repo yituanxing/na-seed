@@ -167,32 +167,55 @@ int main(void){
     assert(!nas_mmu_user_byte(BASE) && !nas_mmu_user_byte(BASE+P));
     assert(nas_vma_find(&space.mmap_vmas,BASE)->prot==0);
     assert(living()==0);
-    /* A mixed resident + reserved range must NOT partially change the
-     * existing page's permissions when the new page fails to allocate. */
+    /* A mixed resident + reserved range must change only VMA policy and
+     * existing PTE permissions. A protection change must NOT fault in an
+     * unused page, even if the physical allocator would reject a request. */
     assert(nas_mmu_map_prot_page(BASE,1));
     uint64_t retained=slot(BASE,false)->pa;
     assert(retained);
     ram[retained]=0x7b;
     alloc_count=0;alloc_fail_at=1;
-    assert((int64_t)nas_vm_mprotect(BASE,2*P,3)==-12);
+    assert(nas_vm_mprotect(BASE,2*P,3)==0);
+    assert(alloc_count==0);
     alloc_fail_at=0;
     assert(slot(BASE,false)->pa==retained &&
-           slot(BASE,false)->prot==1 &&
+           slot(BASE,false)->prot==3 &&
            !nas_mmu_user_byte(BASE+P) &&
-           nas_vma_find(&space.mmap_vmas,BASE)->prot==0 &&
+           nas_vma_find(&space.mmap_vmas,BASE)->prot==3 &&
            ram[retained]==0x7b && living()==1);
+    /* OOM is deferred to the real first write fault, which leaves the
+     * intended VMA permission and original resident frame intact. */
+    alloc_count=0;alloc_fail_at=1;
+    assert(nas_mm_handle_fault(&space,BASE+P+1,NAS_UP_WRITE,false)==
+           NAS_MM_FAULT_OOM);
+    alloc_fail_at=0;
+    assert(living()==1 && !nas_mmu_user_byte(BASE+P));
     prepare_count=0;prepare_fail_at=1;
-    assert((int64_t)nas_vm_mprotect(BASE,2*P,3)==-12);
+    assert(nas_vm_mprotect(BASE,2*P,7)==0);
+    assert(prepare_count==0);
     prepare_fail_at=0;
     assert(slot(BASE,false)->pa==retained &&
-           slot(BASE,false)->prot==1 &&
+           slot(BASE,false)->prot==7 &&
            !nas_mmu_user_byte(BASE+P) && living()==1);
+    /* A fork-shared resident frame must not become hardware writable when
+     * a private VMA is promoted to RWX: the eventual write must take the
+     * existing COW fault path, and the same physical owner must survive. */
+    owners[retained/P]++;
+    assert(nas_vm_mprotect(BASE,2*P,7)==0);
+    assert(slot(BASE,false)->pa==retained &&
+           slot(BASE,false)->prot==5 &&
+           nas_vma_find(&space.mmap_vmas,BASE)->prot==7 &&
+           living()==2 && ram[retained]==0x7b);
+    assert(nas_frame_put(retained));
     assert(nas_vm_mprotect(BASE,2*P,3)==0);
     assert(slot(BASE,false)->pa==retained &&
            slot(BASE,false)->prot==3 &&
-           slot(BASE+P,false)->pa &&
+           !nas_mmu_user_byte(BASE+P) &&
            nas_vma_find(&space.mmap_vmas,BASE)->prot==3 &&
-           ram[retained]==0x7b && living()==2);
+           ram[retained]==0x7b && living()==1);
+    assert(nas_mm_handle_fault(&space,BASE+P+1,NAS_UP_WRITE,false)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(slot(BASE+P,false)->pa && living()==2);
     assert(nas_vm_munmap(BASE,2*P)==0);
     assert(living()==0 && !nas_vma_find(&space.mmap_vmas,BASE));
     uint64_t transient_file=nas_vm_file_mmap(0,P,1,2,4,0);
@@ -249,11 +272,17 @@ int main(void){
     assert((int64_t)nas_vm_mprotect(high,P,0)==-38);
     assert(*nas_mmu_user_byte(high+31)==0x83);
     alloc_count=0;alloc_fail_at=1;
-    assert((int64_t)nas_vm_mprotect(high+P,P,3)==-12);
-    alloc_fail_at=0;
-    assert(nas_vma_find(&space.mmap_vmas,high+P)->prot==0 &&
-           !nas_mmu_user_byte(high+P));
     assert(nas_vm_mprotect(high+P,P,3)==0);
+    assert(alloc_count==0);
+    alloc_fail_at=0;
+    assert(nas_vma_find(&space.mmap_vmas,high+P)->prot==3 &&
+           !nas_mmu_user_byte(high+P));
+    alloc_count=0;alloc_fail_at=1;
+    assert(nas_mm_handle_fault(&space,high+P,NAS_UP_WRITE,false)==
+           NAS_MM_FAULT_OOM);
+    alloc_fail_at=0;
+    assert(nas_mm_handle_fault(&space,high+P,NAS_UP_WRITE,false)==
+           NAS_MM_FAULT_RESOLVED);
     assert(nas_mmu_user_byte(high+P) && *nas_mmu_user_byte(high+P)==0);
     *nas_mmu_user_byte(high+P)=0x49;
     assert(nas_vm_munmap(high+P,P)==0);
@@ -263,6 +292,28 @@ int main(void){
     assert(nas_vm_munmap(high,3*P)==0);
     assert(!nas_vma_find(&space.mmap_vmas,high) && living()==high_baseline);
     assert(nas_vm_munmap(NAS_ANON_FLOOR,low_width)==0);
+    /* Real V8/Node CodeRange: reserving and mprotecting 512 MiB RWX does
+     * not eagerly consume 131072 physical pages, and both first and last
+     * pages fault in with the declared Linux permissions. */
+    const uint64_t code_bytes=512ULL<<20;
+    const uint64_t code=nas_vm_anon_mmap(0,code_bytes,0,0x22,UINT64_MAX,0);
+    assert((int64_t)code>0);
+    unsigned before_code=living();
+    alloc_count=0;alloc_fail_at=1;
+    assert(nas_vm_mprotect(code,code_bytes,7)==0);
+    assert(alloc_count==0 && living()==before_code &&
+           !nas_mmu_user_byte(code) &&
+           !nas_mmu_user_byte(code+code_bytes-P));
+    alloc_fail_at=0;
+    assert(nas_mm_handle_fault(&space,code,NAS_UP_EXEC,false)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(nas_mm_handle_fault(&space,code+code_bytes-P,NAS_UP_WRITE,false)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(slot(code,false)->prot==7 &&
+           slot(code+code_bytes-P,false)->prot==7 &&
+           living()==before_code+2);
+    assert(nas_vm_munmap(code,code_bytes)==0);
+    assert(living()==before_code);
     assert(nas_vm_anon_mmap(NAS_ANON_EXTENDED_FLOOR+P,P,0,
                             0x32,UINT64_MAX,0)==NAS_ANON_EXTENDED_FLOOR+P);
     assert(nas_vm_munmap(NAS_ANON_EXTENDED_FLOOR+P,P)==0);
@@ -272,6 +323,7 @@ int main(void){
     assert((int64_t)nas_vm_anon_mmap(0x6ff00000,P,
                                     0,0x32,UINT64_MAX,0)==-22);
     puts("[M80 LARGE ANON MMAP HOST PASS] 64MiB+4KiB, high 64-bit VMA, honest total-window ENOMEM");
-    puts("[M87 MM TXN PASS] MAP_FIXED and mprotect OOM/PT faults preserve VMA/PTE and frame ownership");
+    puts("[M110 NODE VM PASS] 512MiB RWX reservation, lazy mprotect, demand-faulted executable pages");
+    puts("[M87 MM TXN PASS] MAP_FIXED rollback and mprotect lazy protection preserve VMA/PTE and frame ownership");
     return 0;
 }
