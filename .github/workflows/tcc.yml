@@ -1,14 +1,7 @@
 name: NaSeed original TinyCC
 on:
-  pull_request:
-    paths:
-      - 'scripts/build-external-tcc.sh'
-      - 'scripts/stage-external-tcc-rootfs.sh'
-      - 'scripts/probe-external-tcc.sh'
-      - 'scripts/tcc-native-cases.tsv'
-      - 'tests/tcc-first.c'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - '.github/workflows/tcc.yml'
+  # Original TinyCC compiles C objects inside NaSeed; run this diagnostic
+  # explicitly rather than on host-prebuilt application-batch PRs.
   workflow_dispatch:
 
 concurrency:

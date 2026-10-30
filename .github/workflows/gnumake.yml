@@ -1,19 +1,7 @@
 name: NaSeed genuine GNU Make and shell
 on:
-  pull_request:
-    paths:
-      - 'scripts/build-external-gnumake.sh'
-      - 'scripts/stage-external-gnumake-rootfs.sh'
-      - 'scripts/probe-external-gnumake.sh'
-      - 'scripts/gnumake-serial-check.py'
-      - 'tests/gnumake-native-init.c'
-      - 'tests/gnumake-real.mk'
-      - 'tests/tcc-first.c'
-      - 'tests/native-hello.c'
-      - 'tests/native-exec-init.c'
-      - 'scripts/probe-native-exec.sh'
-      - 'scripts/build-external-tcc.sh'
-      - '.github/workflows/gnumake.yml'
+  # This diagnostic runs GNU Make driving TinyCC inside NaSeed; keep the
+  # original test on demand, never in automatic host-prebuilt app-batch PRs.
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

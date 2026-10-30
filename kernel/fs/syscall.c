@@ -14,6 +14,7 @@
 #include "../arch/arch.h"
 #include "../arch/abi.h"
 #include "../boot_image.h"
+#include "../random.h"
 #include "../arch/linux_stat_abi.h"
 #include "../arch/linux_fcntl_abi.h"
 #include "../arch/mmu.h"
@@ -408,6 +409,8 @@ static uint64_t open_path_owned(const char *path,
             !strcmp(path,"/dev/ttyS0"))kind=FD_TTY;
     else if(!strcmp(path,"/dev/null"))kind=FD_NULL;
     else if(!strcmp(path,"/dev/zero"))kind=FD_ZERO;
+    else if(!strcmp(path,"/dev/urandom") || !strcmp(path,"/dev/random"))
+        kind=FD_RANDOM;
 
     /* Reserve both resources without publication BEFORE namei may create
      * or truncate a filesystem inode. EMFILE/ENFILE must never cause
@@ -504,6 +507,7 @@ uint64_t nas_fs_open_path(const char *path,uint64_t native_flags,
 bool nas_fs_bootstrap_endpoint(const char *path) {
     if(!path || path[0]!='/')return false;
     if(!strcmp(path,"/dev/null") || !strcmp(path,"/dev/zero") ||
+       !strcmp(path,"/dev/random") || !strcmp(path,"/dev/urandom") ||
        !strcmp(path,"/dev/tty") || !strcmp(path,"/dev/ttyS0") ||
        !strcmp(path,"/dev/console") || !strcmp(path,"/dev/ptmx"))
         return true;
@@ -567,6 +571,20 @@ static uint64_t vread_zero(unsigned slot,uint8_t *dst,uint64_t n) {
     (void)slot;
     memset(dst,0,(size_t)n);
     return n;
+}
+/* Both Linux random character endpoints consume the SAME seed-backed
+ * ChaCha20 stream as getrandom(2). The boot entropy quality contract is
+ * shared; never synthesize constant bytes or pretend an unseeded RNG works.
+ * file_io's kernel-buffer provider path makes EFAULT/partial copyout safe. */
+static uint64_t vread_random(unsigned slot,uint8_t *dst,uint64_t n) {
+    (void)slot;
+    return nas_random_bytes(dst,n) ? n : (uint64_t)-ENOSYS;
+}
+/* Injecting entropy/reseeding via a device write is not supported. A write
+ * must not claim successful mixing while silently discarding the input. */
+static uint64_t vwrite_random(unsigned slot,const uint8_t *src,uint64_t n) {
+    (void)slot;(void)src;(void)n;
+    return (uint64_t)-EOPNOTSUPP;
 }
 static uint64_t vread_dir_plan(unsigned slot,uint64_t requested) {
     (void)slot;(void)requested;
@@ -677,6 +695,10 @@ static const struct nas_file_ops ops_zero={
     .read=vread_zero,.write=vwrite_discard,.write_ignores_source=true,
     .poll=vpoll_always,.poll_description=dpoll_always
 };
+static const struct nas_file_ops ops_random={
+    .read=vread_random,.write=vwrite_random,
+    .poll=vpoll_always,.poll_description=dpoll_always
+};
 static const struct nas_file_ops ops_bootfs={
     .read_plan=vread_limine_plan,.read=vread_limine,
     .poll=vpoll_always,.poll_description=dpoll_always
@@ -755,7 +777,8 @@ static const struct nas_file_ops ops_eventfd={
 };
 static const struct nas_file_ops *const ops_by_kind[]={
     [FD_UART]=&ops_uart,[FD_TTY]=&ops_tty,[FD_NULL]=&ops_null,
-    [FD_ZERO]=&ops_zero,[FD_BOOTFS]=&ops_bootfs,
+    [FD_ZERO]=&ops_zero,[FD_RANDOM]=&ops_random,
+    [FD_BOOTFS]=&ops_bootfs,
     [FD_ARCHIVE]=&ops_vfs_regular,[FD_DIR]=&ops_vfs_dir,
     [FD_PIPE_R]=&ops_pipe_read,[FD_PIPE_W]=&ops_pipe_write,
     [FD_EPOLL]=&ops_epoll,

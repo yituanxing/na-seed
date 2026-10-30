@@ -1,0 +1,2 @@
+# Guest test only; all fifteen application ELFs and shared libraries are genuine signed APKs.
+tests/m112-batch-run.sh	tests/m112-batch-run.sh

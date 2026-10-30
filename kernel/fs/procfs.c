@@ -362,6 +362,7 @@ int64_t nas_proc_readlink(struct nas_proc_node node,char *out,unsigned cap) {
         case FD_UART: case FD_TTY: path="/dev/console";break;
         case FD_NULL:path="/dev/null";break;
         case FD_ZERO:path="/dev/zero";break;
+        case FD_RANDOM:path="/dev/urandom";break;
         case FD_PIPE_R:case FD_PIPE_W:path="pipe:[";break;
         case FD_SOCKET:path="socket:[";break;
         case FD_EPOLL:path="anon_inode:[eventpoll]";break;

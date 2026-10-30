@@ -136,6 +136,14 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
         st.mode = 0100555;
         st.size = (int64_t)file->size;
         st.blocks = (int64_t)((file->size + 511) / 512);
+    } else if (TASK.fds->entries[fd].kind == FD_RANDOM) {
+        /* Linux character device major 1: /dev/random minor 8 and
+         * /dev/urandom minor 9. The inode identity is device-stable
+         * across separate opens/dup/fork, not an arbitrary FD number. */
+        const char *path=opened->origin_path;
+        const uint64_t minor=!strcmp(path,"/dev/random")?8U:9U;
+        st.dev=2;st.ino=minor;st.rdev=(1U<<8)|minor;
+        st.mode=0020666;
     } else {
         st.dev = 2; st.ino = fd + 10;
         st.mode = 0020666; /* real character device backed by UART/null/zero */
@@ -266,6 +274,7 @@ static uint64_t sys_access_path(uint64_t dirfd,uint64_t pathname,
                  (nas_pty_path_number(path)>=0 &&
                   nas_pty_present((unsigned)nas_pty_path_number(path))) ||
                  !strcmp(path,"/dev/null") || !strcmp(path,"/dev/zero") ||
+                 !strcmp(path,"/dev/random") || !strcmp(path,"/dev/urandom") ||
                  !strcmp(path,"/dev/console") || !strcmp(path,"/dev/ttyS0") ||
                  !strcmp(path,"/dev/tty"))) {
         if(!strcmp(path,"/dev/tty") && !nas_tty_controlling() &&

@@ -52,6 +52,19 @@ run_case() {
         "$exe" --length 3 --color=never "$work/bytes" > "$work/actual"
         busy grep -Fq '61 62 63' "$work/actual" ;;
       hyperfine)
+        # On RISC-V the upstream rand 0.6 runtime opens /dev/urandom
+        # instead of relying only on getrandom(2). Verify the *real* shared
+        # character device contract before executing the unmodified ELF.
+        busy test -c /dev/random
+        busy test -c /dev/urandom
+        busy dd if=/dev/random of="$work/rng-random" bs=32 count=1 2>/dev/null
+        busy dd if=/dev/urandom of="$work/rng-urandom" bs=32 count=1 2>/dev/null
+        [ "$(busy wc -c < "$work/rng-random")" -eq 32 ]
+        [ "$(busy wc -c < "$work/rng-urandom")" -eq 32 ]
+        if busy cmp -s "$work/rng-random" "$work/rng-urandom"; then
+            echo '[M111 ENTROPY FAIL] distinct character-device reads repeated' >&2
+            return 1
+        fi
         exe=$(original_elf /usr/bin/hyperfine)
         "$exe" --warmup 0 --runs 2 --export-json "$work/bench.json" \
             '/bin/busybox true' > "$work/stdout"
