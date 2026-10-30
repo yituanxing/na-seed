@@ -239,6 +239,10 @@ if [ "$failures" -ne 0 ] || [ "$cases" -ne 27 ]; then
     echo M82_MAKE_BATCH_FAIL
     exit 1
 fi
-printf 'NaSeed-M82-GNU-Make-original-3FS-27-PASS\n' > /mnt/m82-make-persisted.txt
-/bin/busybox sync
+if ! printf 'NaSeed-M82-GNU-Make-original-3FS-27-PASS\n' > /mnt/m82-make-persisted.txt ||
+   ! /bin/busybox sync; then
+    echo '[M82 FS MAKE FAIL] physical ext4 signature write or sync failed' >&2
+    echo M82_MAKE_BATCH_FAIL
+    exit 1
+fi
 echo M82_MAKE_BATCH_PASS

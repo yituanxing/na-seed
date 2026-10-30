@@ -104,3 +104,60 @@ VFS mountpoint selection uses both anchored inode identities and
 canonical string snapshots in different paths; a truly dentry-owned
 mount tree is not yet finished. These cannot be claimed solved by
 increasing inode lease capacity.
+
+## M82: original GNU Make checks directory dependency semantics
+
+M80's authenticated Alpine v3.23 APK overlay now stages the original
+ISA-native **GNU Make 4.4.1** executable alongside the original GNU sed,
+gzip and existing 19 functional applications. The same rootfs and same
+three-filesystem QEMU boot used by M81 also run `tests/m82-make-run.sh`:
+no second installer, application shim or replacement VFS implementation.
+The guest asserts an actual `/usr/bin/make` ELF and GNU Make version;
+the host additionally records its signed APK version and SHA256.
+
+Nine actual Make dependency-graph oracles run once on **each** of `/tmp`
+(tmpfs), `/ramfs` (unchanged upstream RamFS) and `/mnt` (lwext4 on physical
+VirtIO-Blk ext4), for **27 cases per ISA**:
+
+1. GNU Make runs sed and gzip recipes and produces the expected bytes.
+2. Unchanged inputs cause a true no-op, checked by recipe count.
+3. Modified source reruns the dependent recipes and changes output.
+4. Creating a file changes its parent directory and rebuilds a
+   directory-dependent Make target.
+5. Removing a file also rebuilds that target.
+6. Renaming a file inside one parent rebuilds it.
+7. Creating a subdirectory rebuilds it.
+8. Removing a subdirectory rebuilds it.
+9. Moving a file between parents updates *both* directories and rebuilds.
+
+Directory baselines use a copied reference timestamp with zero epoch
+instead of assuming a valid guest RTC. This is important because NaSeed
+falls back to the per-ISA monotonic clock when firmware UTC is unusable.
+The actual GNU Make recipe counts, output bytes and no-op checks are the
+functional oracle; a successful `stat()` alone does not pass a case.
+
+The existing `scripts/probe-m80-batch.sh` validates **every** guest M82
+case marker, then independently reads real ext4 GNU Make output and a
+guest-written persistence record with host `debugfs` after clean unmount.
+It also performs the existing host `e2fsck` check. This is an authentic
+QEMU kernel/filesystem/application acceptance, not just an ELF or syscall
+smoke test. The first exact-head M82 run at commit `a33fa1b3` passed
+**27/27 on each of AMD64, RV64 and ARM64, 81/81 total**, while retaining
+M81's 186/186 original software/provider cases. See the M80/M81/M82
+workflow [#41036216761](https://github.com/yituanxing/na-seed/actions/runs/41036216761).
+
+### Ownership and remaining limits
+
+The required repairs were in the existing backends: tmpfs now touches
+the actual parent directory inode on successful namespace edits, while
+lwext4 updates live parent inode `mtime/ctime`, link/rename `ctime`, and
+new symlink timestamps. Synthetic `/tmp` root identity still belongs to
+immutable bootfs, so its mutable timestamp is held by the existing
+tmpfs namespace owner; the bootstrap does not modify CPIO bytes.
+
+These results **do not** imply RamFS implements hardlink, symlink or
+rename-overwrite, nor that `/tmp` root's explicit `utimensat` is fully
+POSIX-compatible; those are separate documented constraints. A future
+ext4 journal-enabled configuration also needs its own atomic namespace
+and timestamp transaction review. No third-party filesystem was patched
+to force the GNU Make tests to pass.
