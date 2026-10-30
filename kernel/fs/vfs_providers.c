@@ -124,7 +124,8 @@ static const struct nas_vfs_type boot_type={
 };
 static void tmp_fill(const struct nas_tmp_file *f,
                      struct nas_fs_node *out) {
-    *out=(struct nas_fs_node){.inode=f,.size=f->size,
+    *out=(struct nas_fs_node){.inode=f,
+      .size=f->is_dir ? tmp_directory_stat_size(f) : f->size,
       .ino=5000+tmp_number(f),.nlink=f->nlink?(f->is_dir?2:f->nlink):0,
       .atime_sec=f->atime_ns/1000000000ULL,
       .mtime_sec=f->mtime_ns/1000000000ULL,
@@ -145,6 +146,7 @@ static void tmp_fill_root_times(struct nas_fs_node *out) {
     out->mtime_nsec=(uint32_t)(mtime%1000000000ULL);
     out->ctime_sec=ctime/1000000000ULL;
     out->ctime_nsec=(uint32_t)(ctime%1000000000ULL);
+    out->size=tmp_root_directory_stat_size();
 }
 static bool tmp_is_overlay_root(const struct nas_fs_node *node) {
     const struct bootfs_entry *root=bootfs_find("/tmp");
@@ -323,7 +325,7 @@ static int tmp_getattr(const struct nas_fs_node *node,struct nas_fs_node *out) {
     out->mode=f->mode;
     out->uid=f->uid;
     out->gid=f->gid;
-    out->size=f->size;
+    out->size=f->is_dir ? tmp_directory_stat_size(f) : f->size;
     out->nlink=f->nlink ? (f->is_dir?2:f->nlink):0;
     out->atime_sec=f->atime_ns/1000000000ULL;
     out->mtime_sec=f->mtime_ns/1000000000ULL;

@@ -135,32 +135,16 @@ const void *tmp_dir_parent_inode(const void *dir) {
     struct nas_tmp_dentry *entry=find_inode(dir);
     return entry?entry->parent_inode:0;
 }
-/* Reconstruct bounded temporary namespace names for insertion/rename
- * preflight into caller-owned storage. The VFS owns getcwd and AF_UNIX
- * identities through Paths; neither task cwd nor socket lookup may
- * promote these scratch pathnames to namespace authority. */
-static bool dentry_path(const struct nas_tmp_dentry *entry,char out[256]) {
-    const struct nas_tmp_dentry *chain[128];
-    unsigned depth=0;
-    const void *root=tmp_root_inode();
-    while(entry) {
-        if(depth==128 || !entry->used)return false;
-        chain[depth++]=entry;
-        if(entry->parent_inode==root)break;
-        entry=find_inode(entry->parent_inode);
-        if(!entry)return false;
-    }
-    if(!depth || chain[depth-1]->parent_inode!=root)return false;
-    unsigned pos=4;
-    memcpy(out,"/tmp",4);
-    while(depth) {
-        const char *part=chain[--depth]->name;
-        size_t n=strlen(part);
-        if(!n || pos+n+1>=256)return false;
-        out[pos++]='/';
-        memcpy(out+pos,part,n);pos+=(unsigned)n;
-    }
-    out[pos]=0;return true;
+/* Linux tmpfs accounts each live directory entry as 20 bytes of virtual
+ * directory storage, in addition to the initial 40-byte directory inode.
+ * This is derived from the ONE ordered child index: no second mutable size
+ * cache can drift after rename, unlink, or failed insertion. */
+uint64_t tmp_directory_stat_size(const struct nas_tmp_file *directory) {
+    return directory && directory->is_dir ?
+        40ULL + 20ULL * directory->children.count : 0;
+}
+uint64_t tmp_root_directory_stat_size(void) {
+    return 40ULL + 20ULL * tmp_root_children.count;
 }
 static struct nas_tmp_dentry *tmp_insert(const void *parent,const char *name,
                                          struct nas_tmp_file *inode) {
@@ -168,17 +152,10 @@ static struct nas_tmp_dentry *tmp_insert(const void *parent,const char *name,
     if(!directory || !leaf_valid(name) || !inode || !inode->used ||
        find_child(parent,name) || (inode->is_dir && inode->directory_alias))
         return 0;
-    /* Reject unreachable overlong paths before publishing a new dentry.
-     * Namei's 256-byte bound applies to the entire ancestry, not only
-     * the one-component basename. */
-    size_t base_length=4;
-    if(parent!=tmp_root_inode()) {
-        char base[256];
-        const struct nas_tmp_dentry *named=find_inode(parent);
-        if(!named || !dentry_path(named,base))return 0;
-        base_length=strlen(base);
-    }
-    if(base_length+1+strlen(name)>=256)return 0;
+    /* The caller's Path-first namei already validates the Linux PATH_MAX
+     * syscall input and each NAME_MAX component.  Backend insertion is by
+     * stable parent inode; a directory FD may legally create children even
+     * when the full ancestry cannot fit one pathname buffer. */
     if(!tmp_free_dentries) {
         uint64_t frame=nas_frame_alloc();
         if(!frame)return 0;
@@ -321,24 +298,6 @@ static bool under_inode(const void *parent,const void *directory) {
     }
     return false;
 }
-/* The path bound applies to every descendant after a directory rename.
- * Walk only the MOVED subtree through its child lists: scanning unrelated
- * tmpfs slabs and reconstructing every absolute name is O(total * depth).
- * Max depth is bounded by the same 256-byte path limit as namei. */
-static bool subtree_paths_fit(const void *parent,size_t parent_length,
-                              unsigned depth) {
-    if(depth>=128)return false;
-    struct nas_tmp_directory *directory=directory_state(parent);
-    if(!directory)return false;
-    for(const struct nas_tmp_dentry *d=directory->first;
-        d;d=d->directory_next) {
-        size_t length=parent_length+1+strlen(d->name);
-        if(length>=256)return false;
-        if(d->inode->is_dir && !subtree_paths_fit(d->inode,length,depth+1))
-            return false;
-    }
-    return true;
-}
 int tmp_rename_at(const void *old_parent,const char *old_name,
                   const void *new_parent,const char *new_name,uint64_t flags) {
     if(flags&~1ULL)return -EINVAL;
@@ -358,17 +317,6 @@ int tmp_rename_at(const void *old_parent,const char *old_name,
         if(target->inode->is_dir &&
            tmp_child_entry_inode(target->inode,0))return -ENOTEMPTY;
     }
-    char new_parent_path[256];
-    if(new_parent==tmp_root_inode())memcpy(new_parent_path,"/tmp",5);
-    else {
-        const struct nas_tmp_dentry *p=find_inode(new_parent);
-        if(!p || !dentry_path(p,new_parent_path))return -ESTALE;
-    }
-    size_t prefix=strlen(new_parent_path),leaf=strlen(new_name);
-    if(prefix+1+leaf>=256)return -ENAMETOOLONG;
-    /* Validate the entire subtree before touching the destination. */
-    if(inode->is_dir && !subtree_paths_fit(inode,prefix+1+leaf,0))
-        return -ENAMETOOLONG;
     if(target)tmp_remove_entry(target); /* open replaced File retains inode */
     struct nas_tmp_directory *old_directory=directory_state(old_parent);
     struct nas_tmp_directory *new_directory=directory_state(new_parent);
@@ -376,7 +324,7 @@ int tmp_rename_at(const void *old_parent,const char *old_name,
     if(old_parent!=new_parent)child_detach(old_directory,source);
     else invalidate_seek(old_directory);
     source->parent_inode=new_parent;
-    memcpy(source->name,new_name,leaf+1); /* ONE dentry edge is renamed */
+    memcpy(source->name,new_name,strlen(new_name)+1); /* ONE dentry edge */
     hash_attach(source);
     if(old_parent!=new_parent)child_attach(new_directory,source);
     tmp_inode_touch(inode);

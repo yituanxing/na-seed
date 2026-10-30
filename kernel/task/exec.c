@@ -45,7 +45,9 @@
 #define EXEC_STRING_MAX 8192
 #define EXEC_POOL_BYTES (512U * 1024U)
 static struct exec_snapshot {
-    char filename[256];
+    /* Linux AT_EXECFN preserves the complete original user pathname, not
+     * the 256-byte textual display projection of the resolved VFS Path. */
+    char filename[NAS_VFS_WALK_PATH_LIMIT];
     char strings[EXEC_POOL_BYTES];
     unsigned used;
     const char *argv[NAS_ARGV_MAX];
@@ -72,8 +74,14 @@ static int exec_lookup_request(const struct nas_fs_path_request *request,
         int printable=nas_vfs_path_string(&path,display);
         if(printable==-ENAMETOOLONG || printable==-ENOENT) {
             /* The inode is usable even when an ancestor was renamed into
-             * an overlong path. filename[] is argv/debug data, not namei. */
-            memcpy(display,request->pathname,strlen(request->pathname)+1);
+             * an overlong path. This short string is only exec diagnostics
+             * and task comm; preserve full AT_EXECFN in pending_exec. */
+            const char *tail=strrchr(request->pathname,'/');
+            tail=(tail && tail[1]) ? tail+1 : request->pathname;
+            size_t len=strlen(tail);
+            if(len>=256) {tail+=len-255;len=255;}
+            memcpy(display,tail,len);
+            display[len]=0;
         } else rc=printable;
     }
     if(!rc)rc=nas_vfs_node_pin(node);

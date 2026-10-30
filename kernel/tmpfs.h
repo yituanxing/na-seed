@@ -62,6 +62,10 @@ struct nas_tmp_dentry {
 };
 const struct nas_tmp_dentry *tmp_child_entry_inode(const void *parent,unsigned index);
 const void *tmp_dir_parent_inode(const void *directory);
+/* Live tmpfs directory stat size comes from the namespace's sole child list.
+ * The /tmp root borrows its inode from bootfs and has separate child state. */
+uint64_t tmp_directory_stat_size(const struct nas_tmp_file *directory);
+uint64_t tmp_root_directory_stat_size(void);
 struct nas_tmp_file *tmp_create_at(const void *parent,const char *name,bool dir,uint32_t mode);
 /* Only S_IFSOCK is currently supported. The published inode already has
  * its final type bits; failures return NULL without publishing a dentry. */

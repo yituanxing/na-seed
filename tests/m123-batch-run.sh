@@ -107,9 +107,18 @@ run_case() {
       mklost+found)
         exe=$(original_elf /usr/sbin/mklost+found)
         busy mkdir -p "$work/new-root"
+        # Real tmpfs directory stat must respond to live dentry changes.
+        # mklost+found relies on that metadata while creating full-length
+        # (254-byte) names and growing a roughly 48-KiB lost+found directory.
+        initial=$(busy stat -c %s "$work/new-root")
+        busy touch "$work/new-root/size-probe"
+        expanded=$(busy stat -c %s "$work/new-root")
+        [ "$expanded" -gt "$initial" ]
+        busy rm "$work/new-root/size-probe"
         ( cd "$work/new-root" && "$exe" > "$work/out" 2>&1 )
         [ -d "$work/new-root/lost+found" ]
-        [ -r "$work/new-root/lost+found" ] ;;
+        [ -r "$work/new-root/lost+found" ]
+        [ -z "$(busy ls -A "$work/new-root/lost+found")" ] ;;
       e2freefrag)
         exe=$(original_elf /usr/sbin/e2freefrag)
         "$exe" "$base" > "$work/fragments" 2>&1

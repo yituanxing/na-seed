@@ -12,8 +12,9 @@ struct nas_posix_locks;
  * owns one dentry reference; get/put duplicate/release it explicitly.
  * The mount field is a typed identity, not a string prefix. */
 struct nas_vfs_dentry;
-/* Internal namei expansion bound, NOT yet the syscall/user-path ABI limit.
- * Existing provider and syscall adapters retain independent 256B caps. */
+/* Linux PATH_MAX: shared syscall path copy and namei expansion limit.
+ * Individual components retain NAME_MAX=255; legacy diagnostic path
+ * projections may still use shorter fixed buffers without owning namei. */
 #define NAS_VFS_WALK_PATH_LIMIT 4096U
 struct nas_vfs_path {
     const struct nas_vfs_mount *mount;
