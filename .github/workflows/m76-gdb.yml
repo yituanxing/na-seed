@@ -12,6 +12,8 @@ on:
       - 'scripts/test-rv64-ptrace-step.c'
       - 'rootfs/alpine/packages-m76-gdb.txt'
       - 'scripts/stage-alpine-prebuilt-overlay.sh'
+      - 'scripts/prebuilt-profile-catalog.tsv'
+      - 'scripts/check-prebuilt-profile-catalog.py'
       - '.github/workflows/m76-gdb.yml'
   workflow_dispatch:
 concurrency:
@@ -33,6 +35,7 @@ jobs:
           set -eu
           sh -n scripts/stage-m76-prebuilt.sh scripts/probe-m76-gdb.sh tests/m76-gdb-run.sh tests/m77-gdb-run.sh tests/m78-gdb-run.sh
           python3 scripts/check-three-isa-core.py
+          python3 scripts/check-prebuilt-profile-catalog.py
           cc -std=c11 -Wall -Wextra -Werror -I kernel scripts/test-rv64-ptrace-step.c -o /tmp/nas-rv64-ptrace-step
           /tmp/nas-rv64-ptrace-step
           cc -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -I kernel scripts/test-ptrace-owner.c kernel/task/ptrace.c -o /tmp/nas-m76-ptrace-owner

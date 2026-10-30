@@ -10,6 +10,8 @@ on:
       - 'tests/m70-*'
       - 'rootfs/alpine/packages-m70-vmfd.txt'
       - 'scripts/stage-alpine-prebuilt-overlay.sh'
+      - 'scripts/prebuilt-profile-catalog.tsv'
+      - 'scripts/check-prebuilt-profile-catalog.py'
       - '.github/workflows/m70-vmfd.yml'
   workflow_dispatch:
 concurrency:
@@ -31,6 +33,7 @@ jobs:
           set -eu
           sh -n scripts/stage-m70-prebuilt.sh scripts/probe-m70-vmfd.sh tests/m70-vmfd-run.sh
           python3 scripts/check-three-isa-core.py
+          python3 scripts/check-prebuilt-profile-catalog.py
           cc -std=c11 -Wall -Wextra -Werror -fno-builtin -I kernel scripts/test-procfs.c kernel/fs/procfs.c kernel/lib/string.c -o /tmp/nas-m70-procfs
           /tmp/nas-m70-procfs
       - name: Install native QEMU and host rootfs tools

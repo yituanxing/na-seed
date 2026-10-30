@@ -9,6 +9,8 @@ on:
       - 'tests/m75-*'
       - 'rootfs/alpine/packages-m75-gdb.txt'
       - 'scripts/stage-alpine-prebuilt-overlay.sh'
+      - 'scripts/prebuilt-profile-catalog.tsv'
+      - 'scripts/check-prebuilt-profile-catalog.py'
       - '.github/workflows/m75-gdb.yml'
   workflow_dispatch:
 concurrency:
@@ -30,6 +32,7 @@ jobs:
           set -eu
           sh -n scripts/stage-m75-prebuilt.sh scripts/probe-m75-gdb.sh tests/m75-gdb-run.sh
           python3 scripts/check-three-isa-core.py
+          python3 scripts/check-prebuilt-profile-catalog.py
           cc -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -I kernel scripts/test-ptrace-owner.c kernel/task/ptrace.c -o /tmp/nas-m75-ptrace-owner
           /tmp/nas-m75-ptrace-owner
           cc -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -I kernel scripts/test-ptrace-wait-ownership.c kernel/task/process.c -o /tmp/nas-m75-ptrace-wait

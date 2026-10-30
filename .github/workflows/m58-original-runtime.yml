@@ -15,6 +15,8 @@ on:
       - 'scripts/stage-m59-prebuilt.sh'
       - 'scripts/stage-m60-prebuilt.sh'
       - 'scripts/stage-alpine-prebuilt-overlay.sh'
+      - 'scripts/prebuilt-profile-catalog.tsv'
+      - 'scripts/check-prebuilt-profile-catalog.py'
       - 'scripts/m58-original-elfs.txt'
       - 'scripts/m58-rootfs-copies.tsv'
       - 'scripts/m59-original-elfs.txt'
@@ -52,6 +54,7 @@ jobs:
           sh -n scripts/stage-m60-prebuilt.sh scripts/probe-m60-terminals.sh tests/m60-*.sh
           bash -n tests/m58-bash-suite.sh
           python3 scripts/check-three-isa-core.py
+          python3 scripts/check-prebuilt-profile-catalog.py
       - name: Install native QEMU and host rootfs tools
         timeout-minutes: 12
         run: |

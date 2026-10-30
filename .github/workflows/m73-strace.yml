@@ -9,6 +9,8 @@ on:
       - 'tests/m73-*'
       - 'rootfs/alpine/packages-m73-strace.txt'
       - 'scripts/stage-alpine-prebuilt-overlay.sh'
+      - 'scripts/prebuilt-profile-catalog.tsv'
+      - 'scripts/check-prebuilt-profile-catalog.py'
       - '.github/workflows/m73-strace.yml'
   workflow_dispatch:
 concurrency:
@@ -30,6 +32,7 @@ jobs:
           set -eu
           sh -n scripts/stage-m73-prebuilt.sh scripts/probe-m73-strace.sh tests/m73-strace-run.sh
           python3 scripts/check-three-isa-core.py
+          python3 scripts/check-prebuilt-profile-catalog.py
           cc -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -I kernel scripts/test-ptrace-owner.c kernel/task/ptrace.c -o /tmp/nas-m73-ptrace-owner
           /tmp/nas-m73-ptrace-owner
       - name: Install native QEMU and host rootfs tools
