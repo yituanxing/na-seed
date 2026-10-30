@@ -13,21 +13,14 @@ esac
 cc="${cross}gcc"
 command -v "$cc" >/dev/null
 command -v readelf >/dev/null
-command -v curl >/dev/null
 if [ -n "$emu" ]; then command -v "$emu" >/dev/null; fi
 
 version=5.4.8
-sha=4f18ddae154e793e46eeab727c59ef1c0c0c2b744e7b94219710d76f530629ae
-tarball="build/deps/external/lua-$version.tar.gz"
+tarball="$(sh scripts/fetch-external-lua.sh)"
 work="build/external/lua/$port"
 source="$work/lua-$version"
 out="$work/lua"
-mkdir -p "$(dirname "$tarball")" "$work"
-if [ ! -s "$tarball" ]; then
-    curl -fLsS --retry 3 --retry-delay 2       -o "$tarball.tmp" "https://www.lua.org/ftp/lua-$version.tar.gz"
-    mv "$tarball.tmp" "$tarball"
-fi
-printf '%s  %s\n' "$sha" "$tarball" | sha256sum -c -
+mkdir -p "$work"
 if [ ! -f "$source/src/Makefile" ]; then
     tar -xzf "$tarball" -C "$work"
 fi

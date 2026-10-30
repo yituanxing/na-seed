@@ -1,0 +1,10 @@
+# Original publisher SHA3/SHA256-verified source archives, never altered.
+build/deps/m57-sqlite/sqlite-autoconf-3540100.tar.gz	tests/m84-sqlite.tar.gz
+build/deps/external/lua-5.4.8.tar.gz	tests/m84-lua.tar.gz
+# M57 remains the one authoritative original SQLite/SQL application oracle.
+tests/m57-sqlite-run.sh	tests/m57-sqlite-run.sh
+tests/m84-sqlite-run.sh	tests/m84-sqlite-run.sh
+tests/m84-lua-run.sh	tests/m84-lua-run.sh
+tests/m84-source-run.sh	tests/m84-source-run.sh
+tests/lua-vm.lua	tests/m84-lua-vm.lua
+tests/lua-io.lua	tests/m84-lua-io.lua

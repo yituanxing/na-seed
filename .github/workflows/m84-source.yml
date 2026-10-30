@@ -1,0 +1,105 @@
+name: NaSeed M84 authentic SQLite Lua guest GCC Make three-ISA two-boot acceptance
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/m84-source.yml'
+      - 'scripts/m84-*'
+      - 'scripts/stage-m84-*'
+      - 'scripts/probe-m84-*'
+      - 'scripts/fetch-m57-sqlite.sh'
+      - 'scripts/fetch-external-lua.sh'
+      - 'scripts/native-source-qemu.sh'
+      - 'scripts/native-qemu-target.sh'
+      - 'scripts/check-native-qemu-target.py'
+      - 'scripts/stage-alpine-prebuilt-overlay.sh'
+      - 'scripts/prebuilt-profile-catalog.tsv'
+      - 'scripts/probe-x86-busybox-parity.sh'
+      - 'scripts/probe-riscv64-busybox-matrix.sh'
+      - 'scripts/probe-aarch64-busybox-matrix.sh'
+      - 'rootfs/alpine/**'
+      - 'tests/m84-*.sh'
+      - 'tests/m57-sqlite-run.sh'
+      - 'tests/lua-*.lua'
+      - 'kernel/**'
+      - 'ports/**'
+jobs:
+  m84:
+    name: M84 actual in-guest SQLite and Lua original GCC Make ext4 reboot / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 165
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install real host QEMU, ELF and ext4 check tools
+        timeout-minutes: 12
+        run: |
+          set -eu
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'clang:clang' 'ld.lld:lld' 'readelf:binutils' \
+                      'ar:binutils' 'cpio:cpio' 'xorriso:xorriso' \
+                      'mformat:mtools' 'sgdisk:gdisk' 'qemu-riscv64:qemu-user' \
+                      'cmake:cmake' 'cc:gcc' 'mke2fs:e2fsprogs' \
+                      'e2fsck:e2fsprogs' 'debugfs:e2fsprogs' 'openssl:openssl'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case "${{ matrix.port }}" in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+                test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
+            riscv64)
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+            arm64)
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/AAVMF/AAVMF_CODE.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+          esac
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+      - name: Actual original SQLite Lua native GCC Make and two real QEMU boots
+        timeout-minutes: 150
+        run: sh scripts/probe-m84-source-build.sh ${{ matrix.port }}
+      - name: Retain original publisher SHA and physical guest-created ELF database evidence
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m84-original-source-pass-${{ matrix.port }}
+          path: |
+            build/external/m84-source/${{ matrix.port }}/*.sha256
+            build/external/m84-source/${{ matrix.port }}/*.sha3
+            build/external/m84-source/${{ matrix.port }}/m84-*.elf
+            build/external/m84-source/${{ matrix.port }}/m84-*.db
+            build/external/m84-source/${{ matrix.port }}/m84-*result.txt
+            build/busybox-source-parity-x86/m84-*.clean.log
+            build/port-riscv64/full/matrix-source/m84-*.clean.log
+            build/port-aarch64/full/matrix-source/m84-*.clean.log
+          if-no-files-found: error
+      - name: Retain unmodified ext4 physical disk and serial on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m84-original-source-fail-${{ matrix.port }}
+          path: |
+            build/external/m84-source/${{ matrix.port }}/*.sha256
+            build/external/m84-source/${{ matrix.port }}/*.sha3
+            build/external/m84-source/${{ matrix.port }}/m84-physical-ext4.img
+            build/external/m84-source/${{ matrix.port }}/m84-*.elf
+            build/external/m84-source/${{ matrix.port }}/m84-*.db
+            build/external/m84-source/${{ matrix.port }}/*debugfs*.log
+            build/external/m84-source/${{ matrix.port }}/*result.txt
+            build/external/m84-source/${{ matrix.port }}/apk-install.log
+            build/busybox-source-parity-x86/m84-*.clean.log
+            build/port-riscv64/full/matrix-source/m84-*.clean.log
+            build/port-aarch64/full/matrix-source/m84-*.clean.log
+          if-no-files-found: ignore

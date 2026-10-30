@@ -12,6 +12,8 @@ on:
       - 'scripts/probe-riscv64-busybox-matrix.sh'
       - 'scripts/probe-aarch64-busybox-matrix.sh'
       - 'scripts/native-qemu-target.sh'
+      - 'scripts/native-source-qemu.sh'
+      - 'scripts/check-native-qemu-target.py'
       - 'rootfs/alpine/**'
       - 'tests/m83-source-run.sh'
       - 'kernel/**'

@@ -118,13 +118,60 @@ def validate_runner(path: Path, source: str) -> None:
         f"{path}: target helper must be sourced exactly once"
     )
     assert "runner=" not in source, f"{path}: stale private runner mapping"
-    assert 'sh "$runner"' in source, f"{path}: genuine native QEMU execution removed"
+    if ". scripts/native-source-qemu.sh" in source:
+        # Original source builds share one canonical two-boot host executor.
+        # Check its REAL QEMU and serial evidence implementation, not a
+        # fictitious second `sh $runner` copied into every workload wrapper.
+        common = (ROOT / "scripts/native-source-qemu.sh").read_text()
+        assert "nas_source_run_case" in source, f"{path}: source QEMU call removed"
+        validate_shared_executor(common)
+    else:
+        assert 'sh "$runner"' in source, (
+            f"{path}: genuine native QEMU execution removed"
+        )
+
+
+SHARED_EXECUTOR_GUARDS = (
+    'if ! sh "$runner"; then',
+    'test -s "$original_log"',
+    'original_log="$logs/$original_case.clean.log"',
+    'for original_marker in $original_markers; do',
+    'grep -Fxq "$original_marker" "$original_log"',
+    "'[LWEXT4 GUEST] real external VirtIO-Blk ext4 disk mounted at /mnt'",
+    "'[VIRTIO-BLK] persistent block device write+flush enabled'",
+    "'[LWEXT4 GUEST] clean upstream unmount and durable flush'",
+    'grep -Fq "$original_line" "$original_log"',
+    'export NAS_VIRTIO_BLK_IMAGE="$original_disk"',
+)
+
+
+def validate_shared_executor(common: str) -> None:
+    """Require original real-guest, writable ext4 and serial evidence edges."""
+    assert common.count('sh "$runner"') == 1, (
+        "native source executor must invoke the genuine QEMU runner once"
+    )
+    for guard in SHARED_EXECUTOR_GUARDS:
+        assert guard in common, f"shared native source executor lost guard {guard!r}"
+
+
+def mutation_shared_executor_guard() -> None:
+    common = (ROOT / "scripts/native-source-qemu.sh").read_text()
+    validate_shared_executor(common)
+    for guard in SHARED_EXECUTOR_GUARDS:
+        broken = common.replace(guard, 'true', 1)
+        assert broken != common, f"shared executor mutation fixture missing {guard!r}"
+        try:
+            validate_shared_executor(broken)
+        except AssertionError:
+            continue
+        raise AssertionError(f"shared source executor accepted missing {guard!r}")
 
 
 def validate_probe(path: Path, source: str) -> None:
     validate_runner(path, source)
     assert "logs=" not in source, f"{path}: stale private serial-path mapping"
-    assert '"$logs/' in source, f"{path}: raw guest serial verification removed"
+    if ". scripts/native-source-qemu.sh" not in source:
+        assert '"$logs/' in source, f"{path}: raw guest serial verification removed"
 
 
 def validate_early_probe(path: Path, source: str) -> None:
@@ -214,6 +261,7 @@ def main() -> None:
         validate_early_probe(path, path.read_text())
     mutation_guard(paths[0], paths[0].read_text())
     mutation_early_guard(early[0], early[0].read_text())
+    mutation_shared_executor_guard()
     print(f"[NATIVE QEMU TARGET PASS] 3 target mappings, "
           f"{len(paths) + len(early)} original workloads "
           "(including 7 historical CI probes), stale-implementation mutation guards")

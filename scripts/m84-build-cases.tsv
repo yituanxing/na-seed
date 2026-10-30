@@ -1,0 +1,2 @@
+# Original upstream SQLite and Lua compiled by signed GCC/Make inside NaSeed.
+m84-build	cpio	sh -c '/bin/sh /tests/m84-source-run.sh --build'	M84_BUILD_PASS	-	/bin/busybox

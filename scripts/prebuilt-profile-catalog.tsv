@@ -19,3 +19,4 @@ m76-gdb	rootfs/alpine/packages-m76-gdb.txt	scripts/m76-original-elfs.txt	scripts
 m79-workflow	rootfs/alpine/packages-m79-workflow.txt	scripts/m79-original-elfs.txt	scripts/m79-rootfs-copies.tsv	main
 m80-batch	rootfs/alpine/packages-m80-batch.txt	scripts/m80-original-elfs.txt	scripts/m80-rootfs-copies.tsv	main+community
 m83-source	rootfs/alpine/packages-native-busybox.txt	scripts/m83-original-elfs.txt	scripts/m83-rootfs-copies.tsv	main
+m84-source	rootfs/alpine/packages-native-busybox.txt	scripts/m83-original-elfs.txt	scripts/m84-rootfs-copies.tsv	main

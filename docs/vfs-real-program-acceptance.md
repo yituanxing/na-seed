@@ -192,12 +192,53 @@ executes the persisted guest-built ELF, verifies `make -q` is still a
 no-op, and repeats `e2fsck`/`debugfs`; the host requires the second
 boot's extracted ELF/archive to be byte-identical to the first boot's.
 
-Both phases must pass separately on AMD64, RV64, and AArch64. The three
-new CI matrix jobs are triggered by the existing M54 developer-workflow
-file on pull requests; M54's manual developer workstation jobs remain
-manual. **A script or local static check alone is not evidence of an
-M83 PASS**: report results only from completed exact-head native QEMU
-jobs, with serial logs and independently dumped files.
+Both phases pass separately on AMD64, RV64, and AArch64 in the dedicated
+`.github/workflows/m83-source.yml` pull-request workflow. M54's historical
+developer workstation workflow remains manual-only. The final M83 commit
+`d60a1770` was verified at exact head with three original native QEMU jobs
+[#41043606132](https://github.com/yituanxing/na-seed/actions/runs/41043606132)
+(3/3 PASS) alongside the original grouped-native workflow
+[#41043605907](https://github.com/yituanxing/na-seed/actions/runs/41043605907)
+(9/9 PASS). A script or a local static check alone is not acceptance evidence.
+
+## M84: two original software releases built inside NaSeed, persisted, rebooted
+
+M84 expands the real-software driver from one zlib C project to **official
+SQLite 3.54.1 and Lua 5.4.8** on the same 256-MiB external ext4 device.
+Neither third-party source nor the existing VFS/driver implementation gets
+test-specific modifications. Both releases are separately publisher-hash
+verified on the host, then extracted and compiled *inside the guest* by
+original signed Alpine GCC and GNU Make. The authenticated APK overlay,
+kernel/QEMU orchestration and source-archive downloaders have one owner,
+shared with M57/M83/external Lua where applicable.
+
+The SQLite stage reuses `tests/m57-sqlite-run.sh`, including its actual
+autoconf `./configure`, GNU Make/GCC native CLI build, `sqlite3` execution,
+file-backed `BEGIN IMMEDIATE`/commit/rollback, index, relational join and
+`PRAGMA integrity_check` checks. M57's previous tmpfs defaults remain
+unchanged; M84 switches its source tree and database to persistent ext4.
+The Lua stage uses the unmodified upstream Makefiles to produce both `lua`
+and `luac`, executes the existing VM/GC/coroutine and file-IO suites, tests
+true Make no-op and selective `lvm.c` rebuild, and executes the *same*
+guest-compiled ELF from ext4, tmpfs and original RamFS.
+
+The first QEMU boot builds both applications and writes an ext4 completion
+record. The Linux host independently runs `e2fsck` and extracts the
+guest-compiled SQLite and Lua ELFs plus real SQLite database using `debugfs`;
+ELF architecture and database magic are checked. A separate second QEMU
+machine boot on the **same unchanged physical disk** must re-run the
+persisted executables, prove the index/database integrity and rollback,
+and require GNU Make to report no pending work. The host then requires the
+two original executables and database bytes to match across boots and a
+second clean `e2fsck`.
+
+Run `sh scripts/probe-m84-source-build.sh amd64|riscv64|arm64` or use the
+three-ISA `.github/workflows/m84-source.yml` pull-request workflow. Its
+full native QEMU stages can take substantially longer than M83 because
+the original SQLite C amalgamation is compiled with software emulation.
+**M84 is not considered passed until all three actual exact-head QEMU jobs
+finish successfully**, with original serial, physical disk and extracted
+ELF/database evidence.
 
 ### Real linker exposes sparse writes corrupting disk block zero
 
