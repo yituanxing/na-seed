@@ -1,0 +1,9 @@
+# Unmodified upstream tar is made with git archive at the pinned M36 commit.
+build/deps/m83-zlib.tar	tests/m83-zlib.tar
+# Historical original multi-translation-unit GCC/Make fixture, flattened by
+# the canonical signed-overlay copier; no parallel application installer.
+tests/m54-src/answer.c	tests/m83-answer.c
+tests/m54-src/answer.h	tests/m83-answer.h
+tests/m54-src/main.c	tests/m83-main.c
+tests/m54-src/Makefile	tests/m83-Makefile
+tests/m83-source-run.sh	tests/m83-source-run.sh

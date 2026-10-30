@@ -161,3 +161,40 @@ POSIX-compatible; those are separate documented constraints. A future
 ext4 journal-enabled configuration also needs its own atomic namespace
 and timestamp transaction review. No third-party filesystem was patched
 to force the GNU Make tests to pass.
+
+## M83: original upstream C project built and replayed on physical ext4
+
+`scripts/probe-m83-source-build.sh amd64|riscv64|arm64` uses the existing
+three-ISA QEMU boot runners and the canonical authenticated Alpine APK
+overlay. Its package profile reuses `packages-native-busybox.txt` instead
+of creating a second GCC/Make installer. The source is the complete,
+unmodified upstream zlib 1.3.1 Git tree, pinned by the existing M36
+fetcher to `51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf` and exported
+with `git archive`. There are no local zlib source or Makefile patches.
+
+In the **first real QEMU boot**, original signed native GCC and GNU Make
+run zlib's own `./configure --static`, parallel `make all`, and original
+`make teststatic` against writable VirtIO ext4. The actual example ELF
+and `libz.a` are checked. `make -q libz.a` must report no work; editing
+only `deflate.c` in the writable build tree must report a dirty target,
+rebuild `deflate.o` without rebuilding `crc32.o`, and pass the full test
+again. The guest separately compiles and runs M54's existing two-file C
+project with original GCC/Make on both tmpfs and original RamFS, including
+incremental/no-op detection. The ext4-built example must run from all
+three providers. The RamFS workload deliberately avoids unsupported
+link/symlink/rename-overwrite operations.
+
+The same 32-MiB ext4 image is then checked by host `e2fsck`, and host
+`debugfs` extracts the actual guest-produced ELF, static archive, and
+persistence record. A **second independent QEMU invocation** uses that
+*exact same* disk file without formatting or copying a replacement. It
+executes the persisted guest-built ELF, verifies `make -q` is still a
+no-op, and repeats `e2fsck`/`debugfs`; the host requires the second
+boot's extracted ELF/archive to be byte-identical to the first boot's.
+
+Both phases must pass separately on AMD64, RV64, and AArch64. The three
+new CI matrix jobs are triggered by the existing M54 developer-workflow
+file on pull requests; M54's manual developer workstation jobs remain
+manual. **A script or local static check alone is not evidence of an
+M83 PASS**: report results only from completed exact-head native QEMU
+jobs, with serial logs and independently dumped files.

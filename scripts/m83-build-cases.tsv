@@ -1,0 +1,2 @@
+# One real NaSeed boot: original pinned zlib built with signed GCC/GNU Make.
+m83-build	cpio	sh -c '/bin/sh /tests/m83-source-run.sh --build'	M83_BUILD_PASS	-	/bin/busybox
