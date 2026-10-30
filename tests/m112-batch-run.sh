@@ -39,9 +39,12 @@ make_wav() {
     printf 'RIFF\050\000\000\000WAVEfmt \020\000\000\000\001\000\001\000\100\037\000\000\100\037\000\000\001\000\010\000data\004\000\000\000\200\220\240\200' > "$1"
 }
 make_jpeg() {
-    exe=$(original_elf /usr/bin/cjpeg)
+    # POSIX sh function variables are not local: do not overwrite the caller's
+    # `exe` (exiv2/jpegoptim), or the later real application invocation would
+    # accidentally run cjpeg with unrelated command-line switches.
+    jpeg_encoder=$(original_elf /usr/bin/cjpeg)
     printf 'P6\n2 2\n255\n\377\000\000\000\377\000\000\000\377\377\377\000' > "$1.ppm"
-    "$exe" -quality 82 -outfile "$1" "$1.ppm"
+    "$jpeg_encoder" -quality 82 -outfile "$1" "$1.ppm"
     [ -s "$1" ]
 }
 png_signature() {
@@ -57,9 +60,18 @@ run_case() {
     case "$app" in
       procs)
         exe=$(original_elf /usr/bin/procs)
-        "$exe" > "$work/actual"
+        if ! "$exe" > "$work/actual" 2> "$work/stderr"; then
+            echo '[M112 PROCS DIAG] original program exited nonzero' >&2
+            busy head -n 12 "$work/stderr" >&2
+            busy head -n 12 "$work/actual" >&2
+            return 1
+        fi
         [ -s "$work/actual" ]
-        busy grep -Eq 'sh|busybox' "$work/actual" ;;
+        if ! busy grep -Eq 'sh|busybox' "$work/actual"; then
+            echo '[M112 PROCS DIAG] missing actual shell process in /proc listing' >&2
+            busy head -n 15 "$work/actual" >&2
+            return 1
+        fi ;;
       gojq)
         exe=$(original_elf /usr/bin/gojq)
         printf '{"items":[2,3,5]}\n' | "$exe" '[.items[]] | add' > "$work/actual"
