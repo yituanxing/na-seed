@@ -3,12 +3,35 @@
 Baseline: NaSeed `main@9bed1c3a` after the Task/MM architecture consolidation.
 Historical reference: NaOS `98fa26a2` ("移植lwext4"), later Linux-style VFS.
 The pinned upstream lwext4 is mounted via NaSeed's common VFS/BlockDevice
-and RamDisk across x86-64/RV64/AArch64. Historical commit 0c93f3ac
-passed AArch64 physical VirtIO-MMIO ext4 persistence using a HANDWRITTEN
-block request engine. That temporary engine is now DELETED in this PR.
-The current branch has NO physical VirtIO-Blk driver: its existing disk
-QEMU/e2fsck acceptance remains required and red until upstream code runs.
-Do not mistake validated generic transport headers for a ported driver.
+and RamDisk across x86-64/RV64/AArch64.
+
+## Current source boundary (2026-10-30, `221c46a`)
+
+- The current branch **does have a real physical-QEMU VirtIO-Blk path**:
+  `kernel/drivers/virtio/{mmio,pci}.c` share the transport/queue layer,
+  `ports/uboot/blk_port.c` uses the pinned original U-Boot request engine,
+  and `ports/lwext4/` mounts through the same BlockDevice ABI. Three-ISA
+  guest disk persistence, clean unmount/flush and host strict e2fsck have
+  dedicated CI acceptance. Do not call this physical-host or IRQ-driven
+  production hardware support: current I/O remains bounded synchronous
+  polling and QEMU emulation.
+- Normal non-root pathname lookup is **component-based** through the one
+  `kernel/fs/lookup.c` namei path, with owned `nas_vfs_path`/positive Dentry
+  references and counted mount attachments. `mount_matches()` remains only
+  in the scoped historical CPIO `/tmp` overlay fallback, not as a general
+  longest-prefix dispatch algorithm. This is not a Linux-equivalent SMP,
+  negative-dentry or mount-namespace implementation.
+- The older plan and milestone paragraphs below are a **chronological
+  implementation record**, not the present TODO list. In particular their
+  statements about no physical VirtIO-Blk, no owned Dentry, and pending
+  first guest ext4 mount have been superseded. For current acceptance and
+  remaining limits see `docs/vfs-real-program-acceptance.md`,
+  `docs/vfs-lifecycle-linux-naos-review.md`, and the exact-head Actions.
+
+At the early handwritten-driver removal checkpoint, commit `0c93f3ac`
+had passed AArch64 physical VirtIO-MMIO ext4 persistence. That temporary
+engine was deleted before the pinned U-Boot source-preserving port replaced
+it; the intervening no-physical-driver state was temporary.
 
 ## Architectural invariants
 - BlockDevice owns geometry, write policy and driver I/O callbacks, **not**
@@ -19,10 +42,10 @@ Do not mistake validated generic transport headers for a ported driver.
   split at each driver's advertised limit; I/O errors propagate. Flush does
   not return false success when a writable driver lacks a flush callback.
 - Every CPU architecture links the **same** `kernel/block/*.c` objects.
-  VirtIO PCI and MMIO will be transport-specific providers below this ABI.
+  VirtIO PCI and MMIO are transport-specific providers below this ABI.
 - Storage and FS-specific code MUST NOT be added to the common syscall decoder.
 
-## Planned path to the first real ext4 mount
+## Historical plan to the first real ext4 mount (now implemented)
 1. Migrate existing bootfs, tmpfs and procfs to real VFS
    `super_block / inode / dentry / mount / file` object lifetimes, preserving
    existing user programs. Replace filesystem-kind conditionals with provider
@@ -43,14 +66,14 @@ Upstream lwext4 includes mixed BSD-3-Clause and GPLv2 sources. Before
 vendoring, pin an exact revision and audit license compatibility against
 the NaSeed repo's declared project license. Do not blindly copy NaOS files.
 
-## Registered VFS provider milestone
-- Common pathwalk now asks longest-prefix registered filesystem mounts for
+## Historical registered VFS provider milestone (superseded)
+- At this earlier stage, common pathwalk asked longest-prefix registered filesystem mounts for
   inode views. Its symlink walk, ELF kernel-buffer reader and path metadata
   calls use provider operations, not a bootfs/tmpfs/procfs kind enum.
 - bootfs, tmpfs and procfs are registered together; /tmp and /proc retain a
   documented temporary read-through to immutable CPIO for old initramfs
   compatibility. New persistent filesystems must use strict mount semantics.
-- This is **not** yet a fully refcounted Linux dentry/superblock/mount tree;
+- At that stage this was **not** yet a counted VFS Dentry/Path owner graph;
   no claim of safe unmount/open-FD lifetime, ext4 disk execution or complete
   FD migration. Those require a later batch and real workload acceptance.
 

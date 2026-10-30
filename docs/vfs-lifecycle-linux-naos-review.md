@@ -5,6 +5,36 @@ Compared with Linux kernel `Documentation/filesystems/path-lookup.rst`
 `kernel/src/fs/vfs/{vfs.h,vfs_inode.c,vfs_dentry.c,vfs_file.c,vfs_mount.c}`
 at `2c45649144afa3dd2e32147d7029e354dc9fc518`.
 
+## Current architecture correction (2026-10-30, `221c46a`)
+
+The first comparisons below recorded genuine intermediate gaps, but several
+were implemented later in the **same** development branch. The source of
+truth for current ownership is `kernel/fs/vfs.[ch]` and `kernel/fs/lookup.c`:
+
+- `nas_vfs_path` owns a refcounted positive Dentry and an exact mount
+  incarnation. `mount_slot.parent_path` and `covered_path` anchor attachment
+  identity; Dentry lookup has a 257-bucket positive-name index and iterative
+  release. One component namei owns ordinary mount crossing. The old global
+  longest-prefix pathname resolver has been deleted; the remaining
+  `mount_matches()` call is for the historical CPIO overlay underlay only.
+- Open Files use a shared inode/Path owner through the common VFS open
+  transaction. Generic directory and regular-file operations are not
+  filesystem-specific Linux syscall implementations. Ext4's file and empty
+  directory orphan protocols are implemented in the first-party port, but
+  their multi-operation transactions are **not** crash-atomic journaling.
+- Remaining limits are narrower: 256-byte boundaries in existing syscall/
+  provider adapters and mount registration; linear search of mounted
+  attachments for crossings; no negative Dentry caching, concurrent SMP/RCU
+  lifetime, Linux mount namespaces or complete file-backed `MAP_SHARED`
+  cache/writeback contract. Keep the single-CPU ownership correctness and
+  measured original-software results before choosing performance changes.
+- The M82 original GNU Make three-filesystem oracle exposed and drove a
+  parent-directory `mtime/ctime` update in the existing lwext4 adapter.
+  Earlier text below calling that a pending provider bug is historical.
+
+The dated paragraphs below preserve how this boundary evolved. Do not
+reopen a fixed gap merely because an older paragraph uses present tense.
+
 ## Invariants implemented in this batch
 
 - An open file owns an inode, not the pathname that originally named it.
@@ -18,13 +48,13 @@ at `2c45649144afa3dd2e32147d7029e354dc9fc518`.
   decodes tmpfs File metadata for fstat. No filesystem-specific syscall
   was added, and vendored lwext4/U-Boot sources are unchanged.
 
-## Major remaining differences — not yet a Linux-equivalent VFS
+## Historical gaps at the initial comparison (not current TODOs)
 
-1. Linux `struct path` holds both a counted mount and dentry. NaOS has
+1. At the initial comparison, Linux `struct path` held both a counted mount and dentry. NaOS had
    independently refcounted `vfs_super_block`, `vfs_inode`,
    `vfs_dentry`, `vfs_mount`, `vfs_file`. NaSeed still dispatches via
    a canonical path-prefix mount table and borrowed inode snapshots;
-   it lacks persistent VFS-owned dentries and a proper mount tree.
+   it lacked persistent VFS-owned dentries and a proper mount tree.
 2. Implement true inode eviction/orphan ownership in the filesystem port
    before removing EBUSY restrictions for lwext4 unlink-open and
    rename-overwrite. A successful name unlink must not destroy an open
@@ -56,11 +86,11 @@ unknown creator-OS layouts reject unrepresentable high IDs with
 `EOVERFLOW` rather than silently truncating successful `chown` calls.
 As with the existing lwext4 mount, crash-transaction semantics with a
 started ext4 journal remain a separate unverified capability.
-**Remaining recorded provider gap:** the pinned lwext4 library does not
+**Historical M81 provider gap (resolved by M82):** the pinned lwext4 library did not
 consistently update the *parent directory* mtime/ctime on create, unlink
 or rename. M81 verifies file-level metadata and real program behavior,
-not that directory-timestamp contract; a later GNU Make/find workload
-should expose and verify the owning adapter fix.
+not that directory-timestamp contract; M82's original GNU Make workload
+later exposed and verified the owning adapter fix in `ports/lwext4/guest_vfs.c`.
 
 ### Shared ext4 inode size over independent opens
 

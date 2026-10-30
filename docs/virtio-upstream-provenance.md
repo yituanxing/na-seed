@@ -18,6 +18,23 @@ compatible with copying GPLv3-only code into their single linked kernel.
 Therefore, **do not copy NaOS C driver code into a linked NaSeed kernel
 without obtaining suitable permission or verifying an applicable license**.
 
+## Current physical-QEMU evidence (2026-10-30, `221c46a`)
+
+The source-preserving U-Boot request engine now executes through **both**
+modern transports: AArch64/RV64 VirtIO-MMIO and x86-64 QEMU q35 VirtIO-PCI.
+The dedicated x86-64 [physical ext4 run #40606858869](https://github.com/yituanxing/na-seed/actions/runs/40606858869)
+passed the actual PCI BAR/capability path, real ring3 Linux ELF
+write/fsync/reopen, clean guest ext4 unmount/flush, strict host e2fsck,
+and persisted-content verification via debugfs. This proves an independent
+QEMU raw disk, not a Limine module or physical-host deployment. The x86
+MSI-X capability-length parsing issue described below was fixed before it.
+
+Sections below preserve the intermediate history. Earlier "not yet PCI
+hardware acceptance" and "pending new exact-head" statements are **not**
+current blockers. Still excluded are IRQ-completion/waitqueue, concurrent
+requests, hotplug, general PCIe topology, IOMMU and physical hardware;
+final combined-source distribution-license review remains a separate gate.
+
 ## Actual upstream source reused unchanged
 
 U-Boot `u-boot/u-boot` Git revision
@@ -95,10 +112,10 @@ and the device-provided queue notification multiplier. Host mock checks
 cover malformed PCI capabilities and queue control; cross-ISA freestanding
 syntax checks enforce an architecture-independent source.
 
-**Not yet PCI hardware acceptance:** NaSeed's x86 PCI enumerator, BAR MMIO
-mapping and real QEMU PCI disk/persistence gate remain to be connected and
-run. The existing ARM/RV MMIO acceptance is unchanged. PCI transport is not
-a promise of IRQ completion or concurrent queue requests.
+**Historical host-first checkpoint:** x86 PCI enumeration, BAR mapping and
+real QEMU disk persistence had not yet been connected and run at this stage.
+The later run #40606858869 passed that gate. PCI still does not promise
+IRQ completion or concurrent requests.
 
 ## x86-64 PCI physical-device gate
 
@@ -129,4 +146,5 @@ validated that byte as a length for every capability, rejecting the valid
 QEMU device. The corrected parser checks the vendor-specific length only
 for cap ID 0x09, and the host regression explicitly places an MSI-X cap
 with a zero Message Control ahead of the same real VirtIO caps. This is a
-source-level fix pending new exact-head physical QEMU acceptance.
+source-level fix pending physical QEMU acceptance; later dedicated run
+#40606858869 passed that gate.

@@ -10,7 +10,39 @@ Baseline for this review: `vfs-block-lwext4-foundation@690b234` (M108,
 an entry to **fixed**, record the exact commit, deleted superseded path,
 independent consumer, and test evidence.
 
-Latest exact-head proof (2026-10-30): `771f37b` completed **23 successful
+## Current-state reconciliation (2026-10-30, `221c46a`)
+
+The issue table below deliberately retains **baseline** observations; it is
+not a list of current missing features. Later source review gives these
+overrides before using the table for further implementation:
+
+- **NAS-A001:** the program-name and stdout-PASS sniffing fields/branches
+  described in the baseline row are gone from current `kernel/task.h`,
+  `kernel/fs/syscall.c` and `kernel/init/main.c`. Do not re-implement that
+  cleanup. Retain the historical M1–M4 and exact-head native acceptance
+  contract before marking the issue fully closed.
+- **NAS-A002:** `kernel/fs/file_ops.h` already passes OpenFile slots and
+  **kernel-owned** bytes; `kernel/fs/file_io.c` owns usercopy and an
+  OFD-pinned pending request. Block admission uses provider
+  `io_wait_flags`, and `kernel/task/blocked_completion.c` calls the saved
+  native continuation rather than replaying FD-kind-specific syscalls.
+  The former `(fd,user_addr,count)` and FD-kind retry statements in the
+  baseline row and older narrative are no longer true. Verify the full
+  relevant guest oracles before closing the remaining semantic edges.
+- **NAS-A011:** remains a distinct behavior gap to prove on a real guest:
+  noncanonical PTY `VMIN/VTIME`, especially scalar/readv wait and wakeup
+  with competing consumers. A host Linux oracle alone does not close it.
+- **VFS topology:** real positive Dentry/Path and counted mount attachments
+  are implemented. Current `mount_matches()` is only the CPIO overlay
+  fallback, **not** the generic mount dispatcher. Future work is bounded
+  path compatibility, negative cache/SMP/concurrency, and measurement-led
+  lookup scaling; do not create a second VFS namespace engine.
+
+Exact-head results must still distinguish automatic grouped native FAST,
+full original GCC/Make guest suites, and manual M50 FULL/M55/M56/M57.
+Historical successes below do not establish every manual suite on `221c46a`.
+
+Historical exact-head proof (2026-10-30): `771f37b` completed **23 successful
 GitHub Actions runs and one intentionally skipped opt-in wrapper**, with zero
 failures. The independent full M55 run
 [`40999972584`](https://github.com/yituanxing/na-seed/actions/runs/40999972584)

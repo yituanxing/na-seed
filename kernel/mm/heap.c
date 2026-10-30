@@ -8,6 +8,8 @@
  * allocated from physical frames and never aliases a user address. */
 #define NAS_HEAP_BOOT_BYTES (1024U * 1024U)
 #define NAS_HEAP_ARENAS 16U
+#define NAS_HEAP_GROW_START (2U * 1024U * 1024U)
+#define NAS_HEAP_GROW_LIMIT (16U * 1024U * 1024U)
 #define NAS_HEAP_ALIGN ((size_t)_Alignof(max_align_t))
 struct heap_block {
     alignas(max_align_t) struct heap_block *next;
@@ -23,6 +25,10 @@ static alignas(max_align_t) unsigned char boot_area[NAS_HEAP_BOOT_BYTES];
 static struct heap_arena arenas[NAS_HEAP_ARENAS];
 static unsigned arena_count;
 static bool ready;
+static bool growing;
+static nas_heap_grow_callback grow_callback;
+static void *grow_context;
+static size_t next_grow_bytes = NAS_HEAP_GROW_START;
 static size_t align_up(size_t n) {
     return (n + NAS_HEAP_ALIGN - 1) & ~(NAS_HEAP_ALIGN - 1);
 }
@@ -56,6 +62,10 @@ bool nas_heap_add_arena(void *memory,size_t length) {
     ensure_ready();
     return add(memory,length);
 }
+void nas_heap_set_grow_callback(nas_heap_grow_callback callback, void *context) {
+    grow_callback=callback;
+    grow_context=context;
+}
 static void split(struct heap_block *block,size_t needed) {
     if(block->size<needed+sizeof(struct heap_block)+NAS_HEAP_ALIGN)return;
     uintptr_t where=(uintptr_t)(block+1)+needed;
@@ -73,10 +83,7 @@ static void coalesce(struct heap_block *block) {
         block->next=next->next;
     }
 }
-void *nas_heap_alloc(size_t length) {
-    if(!length || length>SIZE_MAX-(NAS_HEAP_ALIGN-1))return NULL;
-    ensure_ready();
-    size_t n=align_up(length);
+static void *alloc_existing(size_t n) {
     for(unsigned i=0;i<arena_count;i++) {
         for(struct heap_block *b=arenas[i].first;b;b=b->next) {
             if(!b->available || b->size<n)continue;
@@ -86,6 +93,31 @@ void *nas_heap_alloc(size_t length) {
         }
     }
     return NULL;
+}
+void *nas_heap_alloc(size_t length) {
+    if(!length || length>SIZE_MAX-(NAS_HEAP_ALIGN-1))return NULL;
+    ensure_ready();
+    size_t n=align_up(length);
+    void *result=alloc_existing(n);
+    if(result || !grow_callback || growing || arena_count>=NAS_HEAP_ARENAS)
+        return result;
+    if(n>SIZE_MAX-sizeof(struct heap_block)-(NAS_HEAP_ALIGN-1))return NULL;
+    const size_t minimum=n+sizeof(struct heap_block)+NAS_HEAP_ALIGN-1;
+    size_t requested=minimum>next_grow_bytes?minimum:next_grow_bytes;
+    /* A failed large contiguous reservation can still succeed at the exact
+     * required size: do not turn physical fragmentation into false ENOMEM. */
+    growing=true;
+    bool added=grow_callback(requested,grow_context);
+    if(!added && requested>minimum)
+        added=grow_callback(minimum,grow_context);
+    growing=false;
+    if(!added)return NULL;
+    if(next_grow_bytes<NAS_HEAP_GROW_LIMIT) {
+        size_t doubled=next_grow_bytes*2;
+        next_grow_bytes=doubled>NAS_HEAP_GROW_LIMIT?
+                         NAS_HEAP_GROW_LIMIT:doubled;
+    }
+    return alloc_existing(n);
 }
 static struct heap_block *find(void *ptr,struct heap_arena **owner,
                                 struct heap_block **previous) {
@@ -137,13 +169,20 @@ void *nas_heap_realloc(void *ptr,size_t length) {
         if(b->next && b->next->available)coalesce(b->next);
         return ptr;
     }
-    if(b->next && b->next->available &&
-       b->size+sizeof(struct heap_block)+b->next->size>=n) {
-        coalesce(b);
-        split(b,n);
-        return ptr;
+    /* Filesystem buffers often grow a few KiB at a time. Reserve geometric
+     * slack once, avoiding a full-file copy on every ramfs_vector realloc. */
+    size_t reserve=n;
+    if(b->size<=SIZE_MAX/2 && b->size*2>reserve)reserve=b->size*2;
+    if(b->next && b->next->available) {
+        size_t adjacent=b->size+sizeof(struct heap_block)+b->next->size;
+        if(adjacent>=n) {
+            coalesce(b);
+            split(b,adjacent>=reserve?reserve:n);
+            return ptr;
+        }
     }
-    void *replacement=nas_heap_alloc(length);
+    void *replacement=nas_heap_alloc(reserve);
+    if(!replacement && reserve>n)replacement=nas_heap_alloc(n);
     if(!replacement)return NULL;
     memcpy(replacement,ptr,b->size);
     (void)nas_heap_free(ptr);

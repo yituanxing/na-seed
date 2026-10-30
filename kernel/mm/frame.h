@@ -7,6 +7,9 @@ bool nas_frames_init(const struct limine_memmap_response *, uint64_t);
 uint64_t nas_free_frames(void);
 uint64_t nas_managed_frames(void);
 uint64_t nas_frame_alloc(void);
+/* All-or-nothing reservation of adjacent 4 KiB usable frames, zeroed and
+ * returned with one reference each. A zero result leaves state unchanged. */
+uint64_t nas_frame_alloc_contiguous(uint64_t pages);
 /* Allocate grants one owner; get increments; put drops only one reference.
  * The final put returns the 4 KiB frame to the free bitmap. No separate
  * unconditional 'free' API exists: mapped pages can have multiple owners. */
