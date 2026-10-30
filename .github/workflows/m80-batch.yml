@@ -1,15 +1,20 @@
-name: NaSeed M80 original Alpine multi-program batch — native three ISA
+name: NaSeed M80/M81 original Alpine programs and real three-FS batch — native three ISA
 on:
   pull_request:
     paths:
       - 'tests/m80-*'
+      - 'tests/m81-*'
       - 'scripts/m80-*'
+      - 'scripts/m81-*'
       - 'scripts/probe-m80-batch.sh'
       - 'scripts/stage-m80-prebuilt.sh'
       - 'scripts/stage-alpine-prebuilt-overlay.sh'
       - 'scripts/prebuilt-profile-catalog.tsv'
       - 'scripts/check-prebuilt-profile-catalog.py'
       - 'scripts/native-qemu-target.sh'
+      - 'scripts/probe-x86-busybox-parity.sh'
+      - 'scripts/probe-riscv64-busybox-matrix.sh'
+      - 'scripts/probe-aarch64-busybox-matrix.sh'
       - 'scripts/check-native-qemu-target.py'
       - 'rootfs/alpine/packages-m80-batch.txt'
       - 'kernel/**'
@@ -20,9 +25,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   real-programs:
-    name: original Alpine 19-program functional batch / ${{ matrix.port }}
+    name: original Alpine programs across tmpfs, RamFS and ext4 / ${{ matrix.port }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -32,7 +37,7 @@ jobs:
       - name: Validate original three-ISA catalog and shared kernel boundaries
         run: |
           set -eu
-          sh -n scripts/stage-alpine-prebuilt-overlay.sh scripts/stage-m80-prebuilt.sh scripts/probe-m80-batch.sh tests/m80-batch-run.sh
+          sh -n scripts/stage-alpine-prebuilt-overlay.sh scripts/stage-m80-prebuilt.sh scripts/probe-m80-batch.sh tests/m80-batch-run.sh tests/m81-fs-run.sh
           python3 scripts/check-three-isa-core.py
           python3 scripts/check-prebuilt-profile-catalog.py
           python3 scripts/check-native-qemu-target.py
@@ -43,6 +48,7 @@ jobs:
           sh scripts/ci-ubuntu-mirror.sh
           missing=''
           for spec in 'clang:clang' 'ld.lld:lld' 'readelf:binutils' 'cpio:cpio' \
+                      'mke2fs:e2fsprogs' 'debugfs:e2fsprogs' 'cmake:cmake' 'cc:gcc' \
                       'xorriso:xorriso' 'mformat:mtools' 'sgdisk:gdisk' \
                       'qemu-riscv64:qemu-user'; do
             bin=${spec%%:*}; pkg=${spec#*:}
@@ -71,16 +77,24 @@ jobs:
       - name: 'Genuine signed Alpine ELF batch: functional text, archive, SQL and rsync'
         timeout-minutes: 28
         run: sh scripts/probe-m80-batch.sh ${{ matrix.port }}
+      - name: 'M81: identical signed Alpine original programs across tmpfs, upstream RamFS and physical VirtIO-Blk ext4'
+        timeout-minutes: 40
+        run: NAS_M81_FS=1 sh scripts/probe-m80-batch.sh ${{ matrix.port }}
       - name: Preserve actual rootfs provenance and guest serial on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: m80-batch-${{ matrix.port }}
+          name: m80-m81-batch-${{ matrix.port }}
           path: |
             build/external/m80-batch/${{ matrix.port }}/apk-install.log
             build/external/m80-batch/${{ matrix.port }}/requested-packages.txt
             build/external/m80-batch/${{ matrix.port }}/rootfs.cpio
+            build/external/m80-batch/${{ matrix.port }}/m81-physical-ext4.img
+            build/external/m80-batch/${{ matrix.port }}/m81-ext4-persisted.txt
             build/busybox-source-parity-x86/m80-batch.clean.log
+            build/busybox-source-parity-x86/m81-fs.clean.log
             build/port-riscv64/full/matrix-source/m80-batch.clean.log
+            build/port-riscv64/full/matrix-source/m81-fs.clean.log
             build/port-aarch64/full/matrix-source/m80-batch.clean.log
+            build/port-aarch64/full/matrix-source/m81-fs.clean.log
           if-no-files-found: ignore

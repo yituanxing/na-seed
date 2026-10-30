@@ -9,18 +9,88 @@ sh scripts/stage-m80-prebuilt.sh "$port"
 work="build/external/m80-batch/$port"
 export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"
 export NAS_ACCEPTANCE_CPIO="$work/rootfs.cpio"
-export BUSYBOX_PARITY_MANIFEST=scripts/m80-batch-cases.tsv
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
 export NAS_ACCEPTANCE_QEMU_RAM=1536M
 export NAS_ACCEPTANCE_DISK_MB=768
 export NAS_SYSCALL_TRACE=0
-log="$logs/m80-batch.clean.log"
+if [ "${NAS_M81_FS:-0}" = 1 ]; then
+  # The same original Alpine APK overlay and parity harness, but with ALL
+  # three genuinely mounted VFS providers in one kernel and one QEMU boot.
+  # No test-only filesystem substitutes or second application installer.
+  export BUSYBOX_PARITY_MANIFEST=scripts/m81-fs-cases.tsv
+  export NAS_ENABLE_RAMFS=1 NAS_ENABLE_LWEXT4=1 NAS_ENABLE_VIRTIO_BLK=1
+  sh scripts/check-lwext4-ramdisk.sh
+  disk="$work/m81-physical-ext4.img"
+  cp build/external/lwext4/ext4.img "$disk"
+  export NAS_VIRTIO_BLK_IMAGE="$disk"
+  if [ "$port" = amd64 ]; then
+    # Normal M80 compiled an x86 kernel already: never reuse those .o files
+    # with different opt-in flags. This is the existing Makefile OUT feature.
+    out=build/m81-virtio-x86
+    mkdir -p "$out/deps"
+    cp build/deps/limine.h "$out/deps/limine.h"
+    make -j2 OUT="$out" kernel
+    export NAS_ACCEPTANCE_KERNEL="$out/kernel.elf"
+  elif [ "$port" = riscv64 ]; then
+    # Existing matrix runners only build if kernel.elf is absent.
+    sh scripts/build-riscv64-full.sh
+  else
+    sh scripts/build-aarch64-full.sh
+  fi
+  log="$logs/m81-fs.clean.log"
+else
+  export BUSYBOX_PARITY_MANIFEST=scripts/m80-batch-cases.tsv
+  log="$logs/m80-batch.clean.log"
+fi
 if ! sh "$runner"; then
-  echo "[M80 FAIL] $port genuine original Alpine program batch" >&2
+  echo "[M80/M81 FAIL] $port genuine original Alpine program batch" >&2
   test ! -s "$log" || tail -360 "$log" >&2
   exit 1
 fi
 test -s "$log"
+if [ "${NAS_M81_FS:-0}" = 1 ]; then
+  # The guest must independently prove every original program on each
+  # provider. The host also verifies actual guest mounts and ON-DISK bytes.
+  for provider in TMPFS RAMFS EXT4; do
+    for app in GREP SED GAWK FIND COREUTILS JQ RIPGREP FD TREE \
+               TAR GZIP XZ BZIP2 ZIP UNZIP ZSTD SQLITE BC RSYNC; do
+      marker="M81_${provider}_${app}_PASS"
+      if ! grep -Fxq "$marker" "$log"; then
+        echo "[M81 FAIL] $port missing authentic software/provider result $marker" >&2
+        tail -360 "$log" >&2
+        exit 1
+      fi
+    done
+  done
+  for marker in M81_MOUNT_TMPFS_PASS M81_MOUNT_RAMFS_PASS M81_MOUNT_EXT4_PASS \
+                M81_TMPFS_ALL19_PASS M81_RAMFS_ALL19_PASS M81_EXT4_ALL19_PASS \
+                M81_CROSS_RSYNC_PASS M81_CROSS_TAR_PASS \
+                M81_CROSS_ZSTD_PASS M81_CROSS_SQLITE_PASS \
+                M81_EXT4_PERSISTENCE_PASS M81_FS_BATCH_PASS; do
+    grep -Fxq "$marker" "$log" || {
+      echo "[M81 FAIL] $port missing guest assertion $marker" >&2
+      tail -360 "$log" >&2
+      exit 1
+    }
+  done
+  grep -Fq '[LWEXT4 GUEST] real external VirtIO-Blk ext4 disk mounted at /mnt' "$log" || {
+    echo "[M81 FAIL] $port never mounted real VirtIO ext4" >&2; exit 1;
+  }
+  grep -Fq '[PASS] real upstream RamFS: VFS create/IO/rename/open-pin/unlink/rmdir' "$log" || {
+    echo "[M81 FAIL] $port never initialized original RamFS" >&2; exit 1;
+  }
+  grep -Fq '[VIRTIO-BLK] persistent block device write+flush enabled' "$log" || {
+    echo "[M81 FAIL] $port ext4 block device is not writable" >&2; exit 1;
+  }
+  sh scripts/check-ext4-fsck-clean.sh "$disk"
+  debugfs -R 'cat /m81-fs-persisted.txt' "$disk" > "$work/m81-ext4-persisted.txt"
+  grep -Fxq 'NaSeed-M81-real-ext4-persistence' "$work/m81-ext4-persisted.txt" || {
+    echo "[M81 FAIL] $port real ext4 content missing after QEMU clean unmount" >&2
+    exit 1
+  }
+  echo "[M81 PASS] $port three genuine VFS providers, 57 original Alpine functional cases, physical ext4 persisted and e2fsck clean"
+  exit 0
+fi
 for marker in M80_GREP_PASS M80_SED_PASS M80_GAWK_PASS \
               M80_FIND_PASS M80_COREUTILS_PASS M80_JQ_PASS \
               M80_RIPGREP_PASS M80_FD_PASS M80_TREE_PASS \

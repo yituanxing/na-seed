@@ -33,7 +33,9 @@ original_elf() {
 
 case_run() {
     app=$1
-    work=/tmp/m80-"$app"
+    # M81 runs the SAME signed-program oracles against independent VFS
+    # providers. The M80 default still targets the original tmpfs paths.
+    work=${M80_WORK_ROOT:-/tmp}/m80-"$app"
     /bin/busybox mkdir -p "$work"
     printf 'alpha one\nbeta two\ngamma three\n' > "$work/data.txt"
 

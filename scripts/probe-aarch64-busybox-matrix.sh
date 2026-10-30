@@ -100,6 +100,7 @@ boot_case() {
     case "$name" in
         ash-*) time_budget=22 ;;
         real-vfs|disk-create|disk-replay) time_budget=100 ;;
+        m81-fs) time_budget=360 ;;
         m105-*) time_budget=120 ;;
         timer-preempt) time_budget=45 ;;
         process-capacity) time_budget=65 ;;

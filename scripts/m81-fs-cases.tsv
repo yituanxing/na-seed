@@ -1,0 +1,2 @@
+# Reuse the M80 exact signed Alpine rootfs, one QEMU boot with three real providers.
+m81-fs	cpio	sh -c '/bin/sh /tests/m81-fs-run.sh'	M81_FS_BATCH_PASS	-	/bin/busybox
