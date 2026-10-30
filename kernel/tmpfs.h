@@ -34,6 +34,7 @@ struct nas_tmp_file {
     uint64_t size;
     uint64_t atime_ns, mtime_ns, ctime_ns; /* UNIX realtime nanoseconds */
     uint32_t mode;
+    uint32_t uid,gid; /* per-inode Linux ownership, shared through all names */
     /* Only directories have a namespace alias: hard-linking directories is
      * forbidden. Detached cwd inodes retain storage but no alias. */
     struct nas_tmp_dentry *directory_alias;
@@ -98,4 +99,5 @@ int tmp_utimens(struct nas_tmp_file *file, uint64_t access_ns,
                 uint64_t modified_ns, bool set_access, bool set_modified);
 
 int tmp_chmod(struct nas_tmp_file *file, uint64_t mode);
+int tmp_chown(struct nas_tmp_file *file,uint32_t uid,uint32_t gid);
 #endif

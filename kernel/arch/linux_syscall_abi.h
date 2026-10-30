@@ -37,8 +37,12 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_brk: return NAS_SC_brk;
     case __NR_chdir: return NAS_SC_chdir;
     case __NR_chmod: return NAS_SC_chmod;
+    case __NR_chown: return NAS_SC_chown;
     case __NR_fchmod: return NAS_SC_fchmod;
     case __NR_fchmodat: return NAS_SC_fchmodat;
+    case __NR_fchown: return NAS_SC_fchown;
+    case __NR_fchownat: return NAS_SC_fchownat;
+    case __NR_lchown: return NAS_SC_lchown;
     case __NR_clock_gettime: return NAS_SC_clock_gettime;
     case __NR_clock_getres: return NAS_SC_clock_getres;
     case __NR_clock_nanosleep: return NAS_SC_clock_nanosleep;
@@ -164,6 +168,8 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
 #else
     case 52U: return NAS_SC_fchmod;
     case 53U: return NAS_SC_fchmodat;
+    case 54U: return NAS_SC_fchownat;
+    case 55U: return NAS_SC_fchown;
     case 48U: return NAS_SC_faccessat; /* Linux asm-generic */
     case 439U: return NAS_SC_faccessat2; /* same Linux syscall ID */
     case 19U: return NAS_SC_eventfd2;

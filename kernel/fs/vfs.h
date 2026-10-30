@@ -87,6 +87,9 @@ struct nas_vfs_type {
     int (*read_dir)(const struct nas_fs_node *,uint64_t cursor,
                     struct nas_vfs_dirent *entries,unsigned maximum);
     int (*chmod)(const struct nas_fs_node *, uint64_t mode);
+    /* Root-owned credential policy belongs above the provider. A backend
+     * mutates the stable inode's uid/gid; UINT32_MAX means keep that field. */
+    int (*chown)(const struct nas_fs_node *,uint32_t uid,uint32_t gid);
     int (*utimens)(const struct nas_fs_node *, uint64_t atime,
                    uint64_t mtime, bool set_atime, bool set_mtime);
     /* Namespace mutation ABI: providers receive owning PARENT inode(s)
@@ -198,6 +201,7 @@ int nas_vfs_read_dir(const struct nas_fs_node *node,
                      uint64_t cursor,struct nas_vfs_dirent *entries,
                      unsigned maximum);
 int nas_vfs_chmod(const struct nas_fs_node *node, uint64_t mode);
+int nas_vfs_chown(const struct nas_fs_node *node,uint32_t uid,uint32_t gid);
 int nas_vfs_utimens(const struct nas_fs_node *node, uint64_t atime,
                     uint64_t mtime, bool set_atime, bool set_mtime);
 bool nas_vfs_can_write(const struct nas_fs_node *node);

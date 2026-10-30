@@ -1808,6 +1808,14 @@ int nas_vfs_chmod(const struct nas_fs_node *node,uint64_t mode) {
     if(!node->filesystem->chmod)return -EOPNOTSUPP;
     return node->filesystem->chmod(node,mode);
 }
+int nas_vfs_chown(const struct nas_fs_node *node,uint32_t uid,uint32_t gid) {
+    int status=vfs_node_status(node);
+    if(status)return status;
+    if(node->filesystem->read_only || (node->mount && node->mount->read_only))
+        return -EROFS;
+    if(!node->filesystem->chown)return -EOPNOTSUPP;
+    return node->filesystem->chown(node,uid,gid);
+}
 int nas_vfs_utimens(const struct nas_fs_node *node,uint64_t atime,
                     uint64_t mtime,bool set_atime,bool set_mtime) {
     int status=vfs_node_status(node);

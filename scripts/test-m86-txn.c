@@ -191,6 +191,21 @@ int main(void){
     assert(slot(BASE+4*P,false)->pa==orphan &&
            slot(BASE+4*P,false)->prot==1);
     assert(nas_mmu_unmap_page(BASE+4*P));
+    /* XZ's original Linux encoder can reserve 64 MiB plus one extra page
+     * in a single anonymous mmap. The VMA window, not an arbitrary 64-MiB
+     * per-call limit, is the authority for anonymous PROT_NONE space. */
+    const uint64_t large_request=(64ULL<<20)+P;
+    uint64_t large=nas_vm_anon_mmap(0,large_request,0,0x22,UINT64_MAX,0);
+    assert((int64_t)large>0);
+    const struct nas_anon_region *large_vma=nas_vma_find(&space.mmap_vmas,large);
+    assert(large_vma && large_vma->start==large &&
+           large_vma->end-large==large_request &&
+           large_vma->prot==0 && large_vma->kind==NAS_VMA_ANON_PRIVATE);
+    assert(nas_vm_munmap(large,large_request)==0);
+    assert(!nas_vma_find(&space.mmap_vmas,large));
+    assert((int64_t)nas_vm_anon_mmap(0,
+               NAS_ANON_CEILING-NAS_ANON_FLOOR+P,0,0x22,UINT64_MAX,0)==-12);
+    puts("[M80 LARGE ANON MMAP HOST PASS] 64MiB+4KiB VMA reservation and honest window ENOMEM");
     puts("[M87 MM TXN PASS] MAP_FIXED and mprotect OOM/PT faults preserve VMA/PTE and frame ownership");
     return 0;
 }

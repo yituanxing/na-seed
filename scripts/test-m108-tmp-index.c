@@ -102,6 +102,22 @@ static void test_same_size_truncate_timestamps(void) {
     assert(tmp_unlink_at(root,"ninja-lock",0)==0);
     puts("[A015 NASEED TMPFS TRUNCATE PASS] same-size zero and nonzero sizes refresh mtime");
 }
+static void test_real_inode_chown(void) {
+    const void *root=&root_tmp;
+    struct nas_tmp_file *file=tmp_create_at(root,"owner-check",false,06755);
+    assert(file && file->uid==0 && file->gid==0);
+    uint64_t before=file->ctime_ns;
+    assert(tmp_chown(file,42,84)==0);
+    assert(file->uid==42 && file->gid==84 &&
+           (file->mode&07777U)==0755U && file->ctime_ns>before);
+    before=file->ctime_ns;
+    assert(tmp_chown(file,UINT32_MAX,99)==0);
+    assert(file->uid==42 && file->gid==99 && file->ctime_ns>before);
+    assert(tmp_chown(file,UINT32_MAX,UINT32_MAX)==0);
+    assert(file->uid==42 && file->gid==99);
+    assert(tmp_unlink_at(root,"owner-check",0)==0);
+    puts("[M80 TMPFS OWNER PASS] real uid/gid, -1 sentinel, ctime, set-ID reset");
+}
 
 static void test_large_tree(void) {
     const void *root=&root_tmp;
@@ -286,6 +302,7 @@ static void test_inode_recycling(void) {
 
 int main(void) {
     test_same_size_truncate_timestamps();
+    test_real_inode_chown();
     test_large_tree();
     test_inode_recycling();
     puts("[M108 TMP INDEX PASS]");

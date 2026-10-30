@@ -131,7 +131,8 @@ static void tmp_fill(const struct nas_tmp_file *f,
       .atime_nsec=(uint32_t)(f->atime_ns%1000000000ULL),
       .mtime_nsec=(uint32_t)(f->mtime_ns%1000000000ULL),
       .ctime_nsec=(uint32_t)(f->ctime_ns%1000000000ULL),
-      .mode=f->mode,.is_dir=f->is_dir,.is_symlink=tmp_is_link(f)};
+      .mode=f->mode,.uid=f->uid,.gid=f->gid,
+      .is_dir=f->is_dir,.is_symlink=tmp_is_link(f)};
 }
 static int tmp_root(const struct nas_vfs_mount *mount,
                     struct nas_fs_node *out) {
@@ -198,6 +199,12 @@ static int tmp_sync_node(const struct nas_fs_node *node) {
 }
 static int tmp_chmod_node(const struct nas_fs_node *node,uint64_t mode) {
     return tmp_chmod((struct nas_tmp_file *)(uintptr_t)node->inode,mode);
+}
+static int tmp_chown_node(const struct nas_fs_node *node,uint32_t uid,uint32_t gid) {
+    /* /tmp mount root is an immutable CPIO directory, never a tmpfs slab. */
+    const struct bootfs_entry *root=bootfs_find("/tmp");
+    if(root && node->inode==(const void *)root)return -EROFS;
+    return tmp_chown((struct nas_tmp_file *)(uintptr_t)node->inode,uid,gid);
 }
 static int tmp_utimens_node(const struct nas_fs_node *node,uint64_t a,
                            uint64_t m,bool sa,bool sm) {
@@ -295,6 +302,8 @@ static int tmp_getattr(const struct nas_fs_node *node,struct nas_fs_node *out) {
     if(!f->used || 5000+tmp_number(f)!=node->ino)return -ESTALE;
     *out=*node;
     out->mode=f->mode;
+    out->uid=f->uid;
+    out->gid=f->gid;
     out->size=f->size;
     out->nlink=f->nlink ? (f->is_dir?2:f->nlink):0;
     out->atime_sec=f->atime_ns/1000000000ULL;
@@ -320,7 +329,8 @@ static const struct nas_vfs_type tmp_type={
     .validate_inode=tmp_validate_inode,
     .readlink=tmp_readlink,
     .read_at=tmp_read,.read_size_is_eof=true,
-    .read_dir=tmp_read_dir,.chmod=tmp_chmod_node,.utimens=tmp_utimens_node,
+    .read_dir=tmp_read_dir,.chmod=tmp_chmod_node,.chown=tmp_chown_node,
+    .utimens=tmp_utimens_node,
     .create=tmp_create_node,.mknod=tmp_mknod_node,.write_at=tmp_write_node,
     .resize=tmp_resize_node,.sync=tmp_sync_node,
     .mkdir=tmp_mkdir_node,.unlink=tmp_unlink_node,.rename=tmp_rename_node,

@@ -134,6 +134,12 @@ int tmp_chmod(struct nas_tmp_file *f,uint64_t mode){
     if(f!=&tmp_demo)return -EINVAL;
     f->mode=0100000U | ((uint32_t)mode&07777U);return 0;
 }
+int tmp_chown(struct nas_tmp_file *f,uint32_t uid,uint32_t gid){
+    if(f!=&tmp_demo)return -EINVAL;
+    if(uid!=UINT32_MAX)f->uid=uid;
+    if(gid!=UINT32_MAX)f->gid=gid;
+    return 0;
+}
 int tmp_utimens(struct nas_tmp_file *f,uint64_t a,uint64_t m,bool sa,bool sm){
     if(f!=&tmp_demo)return -EINVAL;
     if(sa)f->atime_ns=a;
@@ -737,6 +743,7 @@ int main(void) {
                               &opened,resolved)==-ENOENT);
     assert(!memcmp(data,elf_bytes,4) && !nas_vfs_can_write(&n));
     assert(nas_vfs_chmod(&n,0666)==-EROFS);
+    assert(nas_vfs_chown(&n,123,456)==-EROFS);
     struct nas_fs_node borrowed_before_reuse;
     assert(nas_fs_lookup_node("/tmp/demo",true,
                               &borrowed_before_reuse,resolved)==0);
@@ -906,6 +913,13 @@ int main(void) {
     assert(nas_vfs_read_at(&n,1,(uint8_t *)data,5)==3);
     assert(!memcmp(data,"ATA",3));
     assert(nas_vfs_chmod(&n,0600)==0 && tmp_demo.mode==0100600U);
+    assert(nas_vfs_chown(&n,123,456)==0 &&
+           tmp_demo.uid==123 && tmp_demo.gid==456);
+    assert(nas_vfs_chown(&n,UINT32_MAX,789)==0 &&
+           tmp_demo.uid==123 && tmp_demo.gid==789);
+    struct nas_fs_node owned_metadata;
+    assert(nas_vfs_getattr(&n,&owned_metadata)==0 &&
+           owned_metadata.uid==123 && owned_metadata.gid==789);
     assert(nas_vfs_utimens(&n,123,456,true,true)==0);
     assert(tmp_demo.atime_ns==123 && tmp_demo.mtime_ns==456);
     struct nas_vfs_dirent records[8];
@@ -1225,6 +1239,7 @@ int main(void) {
     assert(nas_vfs_resize(&forged,1)==-ESTALE);
     assert(nas_vfs_sync(&forged)==-ESTALE);
     assert(nas_vfs_chmod(&forged,0600)==-ESTALE);
+    assert(nas_vfs_chown(&forged,123,456)==-ESTALE);
     assert(nas_vfs_utimens(&forged,0,0,true,true)==-ESTALE);
     assert(nas_vfs_inode_is_pinned(&fixture_orphan));
     assert(nas_vfs_node_pin(&orphan)==0); /* separate cwd and shared File */

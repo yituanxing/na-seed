@@ -301,4 +301,16 @@ int tmp_chmod(struct nas_tmp_file *file, uint64_t mode) {
     file->ctime_ns=tmp_next_mtime(file->ctime_ns);
     return 0;
 }
+int tmp_chown(struct nas_tmp_file *file,uint32_t uid,uint32_t gid) {
+    if(!file || !file->used)return -ENOENT;
+    /* Linux (uid_t)-1 / (gid_t)-1 independently preserve current ownership.
+     * A real change of ownership invalidates set-ID execution privileges. */
+    const bool owner_changed=uid!=UINT32_MAX && uid!=file->uid;
+    const bool group_changed=gid!=UINT32_MAX && gid!=file->gid;
+    if(uid!=UINT32_MAX)file->uid=uid;
+    if(gid!=UINT32_MAX)file->gid=gid;
+    if(owner_changed || group_changed)file->mode &= ~06000U;
+    file->ctime_ns=tmp_next_mtime(file->ctime_ns);
+    return 0;
+}
 /* Namespace mutations are implemented by fs/tmp_namespace.c. */

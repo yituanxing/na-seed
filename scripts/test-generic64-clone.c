@@ -31,6 +31,8 @@ int main(void) {
     assert(nas_linux_decode_syscall(101U)==NAS_SC_nanosleep);
     assert(nas_linux_decode_syscall(115U)==NAS_SC_clock_nanosleep);
     assert(nas_linux_decode_syscall(166U)==NAS_SC_umask);
+    assert(nas_linux_decode_syscall(54U)==NAS_SC_fchownat);
+    assert(nas_linux_decode_syscall(55U)==NAS_SC_fchown);
     assert(nas_linux_decode_syscall(123U)==NAS_SC_sched_getaffinity);
     assert(nas_linux_decode_syscall(122U)==NAS_SC_sched_setaffinity);
     assert(nas_linux_decode_syscall(67U)==NAS_SC_pread64);
