@@ -68,16 +68,16 @@ run_case() {
         busy cmp "$debug_object" "$work/recovered" ;;
       elfclassify)
         exe=$(original_elf /usr/bin/eu-elfclassify)
-        # Classification verifies ET_REL ELF; separate section proof verifies
-        # actual DWARF, independent of elfutils' unstripped heuristics.
-        "$exe" --elf-file "$debug_object" > "$work/classified"
+        # eu-elfclassify defaults to --no-print even when a check passes;
+        # --print is essential to make the matching-name oracle meaningful.
+        "$exe" --print --elf-file --unstripped "$debug_object" > "$work/classified"
         busy grep -Fxq "$debug_object" "$work/classified"
         reader=$(original_elf /usr/bin/eu-readelf)
         "$reader" -S "$debug_object" > "$work/debug-sections"
         busy grep -Fq '.debug_info' "$work/debug-sections"
         archiver=$(original_elf /usr/bin/eu-ar)
         "$archiver" q "$work/classified.a" "$debug_object" "$different_object"
-        "$exe" --elf-archive "$work/classified.a" > "$work/archive-class"
+        "$exe" --print --elf-archive "$work/classified.a" > "$work/archive-class"
         busy grep -Fxq "$work/classified.a" "$work/archive-class" ;;
       elfcmp)
         exe=$(original_elf /usr/bin/eu-elfcmp)

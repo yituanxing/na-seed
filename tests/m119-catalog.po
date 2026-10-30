@@ -1,0 +1,19 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: NaSeed M119\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: fr\n"
+
+msgid "M119_HELLO"
+msgstr "bonjour_m119"
+
+msgid "M119_WORLD"
+msgstr "monde_m119"
+
+msgid "M119_CAFE"
+msgstr "café_m119"
+
+msgid "M119_UNTRANSLATED"
+msgstr ""

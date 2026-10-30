@@ -1,0 +1,16 @@
+# Fifteen new independent signed GNU gettext ELFs (msgfmt was covered in M109).
+usr/bin/msgmerge
+usr/bin/msgattrib
+usr/bin/msgcat
+usr/bin/msgcomm
+usr/bin/msgcmp
+usr/bin/msgconv
+usr/bin/msgen
+usr/bin/msgexec
+usr/bin/msgfilter
+usr/bin/msggrep
+usr/bin/msginit
+usr/bin/msguniq
+usr/bin/msgunfmt
+usr/bin/xgettext
+usr/bin/envsubst
