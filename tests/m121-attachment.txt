@@ -1,0 +1,2 @@
+M121_ATTACHMENT_ORIGINAL_SIGNED_PDF_PROGRAMS
+This text file must survive pdfattach and pdfdetach byte-for-byte.
