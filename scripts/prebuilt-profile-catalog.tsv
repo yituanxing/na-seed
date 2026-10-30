@@ -17,3 +17,4 @@ m74-strace	rootfs/alpine/packages-m74-strace.txt	scripts/m74-original-elfs.txt	s
 m75-gdb	rootfs/alpine/packages-m75-gdb.txt	scripts/m75-original-elfs.txt	scripts/m75-rootfs-copies.tsv	main
 m76-gdb	rootfs/alpine/packages-m76-gdb.txt	scripts/m76-original-elfs.txt	scripts/m76-rootfs-copies.tsv	main
 m79-workflow	rootfs/alpine/packages-m79-workflow.txt	scripts/m79-original-elfs.txt	scripts/m79-rootfs-copies.tsv	main
+m80-batch	rootfs/alpine/packages-m80-batch.txt	scripts/m80-original-elfs.txt	scripts/m80-rootfs-copies.tsv	main+community

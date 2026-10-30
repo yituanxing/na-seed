@@ -1,0 +1,23 @@
+# Exact installed native ELF owners verified from official v3.23 riscv64 APKs.
+# GNU coreutils is a multicall ELF at bin/coreutils, while bin/ls and
+# usr/bin/sha256sum are upstream symlinks to it; do not test BusyBox aliases.
+bin/grep
+bin/sed
+usr/bin/gawk
+usr/bin/find
+bin/coreutils
+usr/bin/jq
+usr/bin/rg
+usr/bin/fd
+usr/bin/tree
+bin/tar
+bin/gzip
+usr/bin/xz
+usr/bin/bzip2
+usr/bin/zip
+usr/bin/unzip
+usr/bin/zstd
+usr/bin/sqlite3
+usr/bin/bc
+usr/bin/rsync
+usr/bin/nano
