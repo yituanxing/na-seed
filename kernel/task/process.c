@@ -9,6 +9,7 @@
 #include "../mm/vm.h"
 #include "process.h"
 #include "wait_pid.h"
+#include "rusage.h"
 #include "../time/clock.h"
 #include "sched.h"
 #include "wait.h"
@@ -402,7 +403,6 @@ uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
                            uint64_t options, uint64_t rusage) {
     if (options & ~NAS_WAIT_SUPPORTED)
         return (uint64_t)-EINVAL;
-    if (rusage) return (uint64_t)-EOPNOTSUPP;
     bool have_child = false;
     for (unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
         struct nas_task *child=nas_task_at(slot);
@@ -435,6 +435,13 @@ uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
                                 (uint8_t)(code>>16),(uint8_t)(code>>24)};
             if (!nas_user_write_bytes(status_addr,bytes,4))
                 return (uint64_t)-EFAULT; /* retain event on bad user buf */
+        }
+        if (rusage) {
+            struct nas_linux_rusage usage=
+                nas_rusage_from_cpu_ns(child->cpu_runtime_ns);
+            if (!nas_user_write_bytes(rusage,(const uint8_t *)&usage,
+                                      sizeof(usage)))
+                return (uint64_t)-EFAULT; /* retain zombie/stop event */
         }
         if (zombie) {
             nas_print("[PROC] wait4 reaped pid="); nas_dec(pid);

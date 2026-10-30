@@ -74,6 +74,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_get_robust_list: return NAS_SC_get_robust_list;
     case __NR_vfork: return NAS_SC_vfork;
     case __NR_fstat: return NAS_SC_fstat;
+    case __NR_fstatfs: return NAS_SC_fstatfs;
     case __NR_getcwd: return NAS_SC_getcwd;
     case __NR_getrandom: return NAS_SC_getrandom;
     case __NR_getdents64: return NAS_SC_getdents64;
@@ -156,6 +157,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_sched_getaffinity: return NAS_SC_sched_getaffinity;
     case __NR_sched_setaffinity: return NAS_SC_sched_setaffinity;
     case __NR_stat: return NAS_SC_stat;
+    case __NR_statfs: return NAS_SC_statfs;
     case __NR_sysinfo: return NAS_SC_sysinfo;
     case __NR_uname: return NAS_SC_uname;
     case __NR_umask: return NAS_SC_umask;
@@ -172,6 +174,8 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 54U: return NAS_SC_fchownat;
     case 55U: return NAS_SC_fchown;
     case 48U: return NAS_SC_faccessat; /* Linux asm-generic */
+    case 43U: return NAS_SC_statfs; /* Linux asm-generic */
+    case 44U: return NAS_SC_fstatfs;
     case 439U: return NAS_SC_faccessat2; /* same Linux syscall ID */
     case 19U: return NAS_SC_eventfd2;
     case 20U: return NAS_SC_epoll_create1;
@@ -308,6 +312,13 @@ static inline uint64_t nas_linux_clone_child_tid(const uint64_t *call) {
     return call[5];
 #endif
 }
+static inline uint64_t nas_linux_raw_clone_nr(void) {
+#if defined(__x86_64__)
+    return __NR_clone;
+#else
+    return 220U; /* asm-generic Linux clone */
+#endif
+}
 /* The x86 legacy vfork number has NO user stack argument; clone does.
  * Keep this register-ABI decision out of the common process dispatcher. */
 static inline uint64_t nas_linux_vfork_child_stack(const uint64_t *call) {
@@ -318,12 +329,7 @@ static inline uint64_t nas_linux_vfork_child_stack(const uint64_t *call) {
 }
 static inline enum nas_syscall_op nas_linux_decode_call(const uint64_t *args) {
     if (!args) return NAS_SC_NONE;
-#if defined(__x86_64__)
-    const uint64_t clone_nr = __NR_clone;
-#else
-    const uint64_t clone_nr = 220U; /* Linux asm-generic __NR_clone */
-#endif
-    if (args[0] == clone_nr) {
+    if (args[0] == nas_linux_raw_clone_nr()) {
         /* musl posix_spawn uses CLONE_VM|CLONE_VFORK|SIGCHLD with
          * its own userspace child stack. Unsupported thread clones are ENOSYS. */
         /* Native glibc and musl pthreads request the SAME shared thread

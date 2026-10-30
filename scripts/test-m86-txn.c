@@ -11,6 +11,10 @@
 #include "../kernel/task.h"
 #include "../kernel/mm/vm.h"
 #include "../kernel/mm/frame.h"
+/* The existing M86 runner links vm.c but not fault.c. Include the REAL
+ * common fault implementation here so this host-only high-VA check runs
+ * production demand-zero policy against the same mocked native PTEs. */
+#include "../kernel/mm/fault.c"
 #define P 4096ULL
 #define NP 96U
 #define MAP_FIXED_PRIVATE_ANON 0x32ULL
@@ -82,6 +86,16 @@ bool nas_mmu_resolve_user_address(uint64_t root,uint64_t va,
     *physical=p->pa+(va&(P-1));
     if(access)*access=p->prot;
     return true;
+}
+bool nas_mm_resolve_user(const struct nas_mm *mm,uint64_t va,
+                         uint64_t *pa,unsigned *access){
+    return mm==&space && nas_mmu_resolve_user_address(mm->root_phys,va,pa,access);
+}
+bool nas_mm_break_cow(struct nas_mm *mm,uint64_t va,
+                      unsigned prot,bool preserve_perm){
+    (void)mm;(void)va;(void)prot;(void)preserve_perm;
+    /* This fixture intentionally does not claim to exercise COW. */
+    abort();
 }
 bool nas_mmu_protect_pages(uint64_t va,uint64_t pages,uint64_t prot){
     for(uint64_t i=0;i<pages;i++){
@@ -181,7 +195,8 @@ int main(void){
            ram[retained]==0x7b && living()==2);
     assert(nas_vm_munmap(BASE,2*P)==0);
     assert(living()==0 && !nas_vma_find(&space.mmap_vmas,BASE));
-    assert(nas_vm_file_mmap(0,P,1,2,4,0)>0);
+    uint64_t transient_file=nas_vm_file_mmap(0,P,1,2,4,0);
+    assert(transient_file>0);
     assert(living()==1); /* one resident data frame; staging metadata freed */
     /* A hardware-only leaf must not regain write permission through the
      * old mprotect bypass when no corresponding VMA owns the address. */
@@ -191,6 +206,7 @@ int main(void){
     assert(slot(BASE+4*P,false)->pa==orphan &&
            slot(BASE+4*P,false)->prot==1);
     assert(nas_mmu_unmap_page(BASE+4*P));
+    assert(nas_vm_munmap(transient_file,P)==0);
     /* XZ's original Linux encoder can reserve 64 MiB plus one extra page
      * in a single anonymous mmap. The VMA window, not an arbitrary 64-MiB
      * per-call limit, is the authority for anonymous PROT_NONE space. */
@@ -203,9 +219,59 @@ int main(void){
            large_vma->prot==0 && large_vma->kind==NAS_VMA_ANON_PRIVATE);
     assert(nas_vm_munmap(large,large_request)==0);
     assert(!nas_vma_find(&space.mmap_vmas,large));
+    /* Low-window pressure spills into the disjoint high window, but a
+     * request larger than the whole high window still returns real ENOMEM. */
+    uint64_t low_width=NAS_ANON_CEILING-NAS_ANON_FLOOR;
+    assert(nas_vm_anon_mmap(0,low_width,0,0x22,UINT64_MAX,0)==NAS_ANON_FLOOR);
+    uint64_t high=nas_vm_anon_mmap(0,3*P,3,0x22,UINT64_MAX,0);
+    assert(high>=NAS_ANON_EXTENDED_FLOOR &&
+           high<=NAS_ANON_EXTENDED_CEILING-3*P);
+    assert(nas_vma_find(&space.mmap_vmas,high) &&
+           !nas_mmu_user_byte(high) && !nas_mmu_user_byte(high+P));
+    unsigned high_baseline=living();
+    /* Execute the genuine common demand-zero fault resolver at >2GiB,
+     * including physical ownership and writable byte accessibility. */
+    assert(nas_mm_handle_fault(&space,high+31,NAS_UP_WRITE,false)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(living()==high_baseline+1 && nas_mmu_user_byte(high+31));
+    assert(*nas_mmu_user_byte(high+31)==0);
+    *nas_mmu_user_byte(high+31)=0x83;
+    alloc_count=0;alloc_fail_at=1;
+    assert(nas_mm_handle_fault(&space,high+2*P,NAS_UP_WRITE,false)==
+           NAS_MM_FAULT_OOM);
+    alloc_fail_at=0;
+    assert(!nas_mmu_user_byte(high+2*P) && living()==high_baseline+1);
+    /* An untouched high guard becomes PROT_NONE without backing; an
+     * already-dirty page must not lose its original physical data. */
+    assert(nas_vm_mprotect(high+P,P,0)==0);
+    assert(nas_mm_handle_fault(&space,high+P,NAS_UP_WRITE,false)==
+           NAS_MM_FAULT_ACCERR);
+    assert((int64_t)nas_vm_mprotect(high,P,0)==-38);
+    assert(*nas_mmu_user_byte(high+31)==0x83);
+    alloc_count=0;alloc_fail_at=1;
+    assert((int64_t)nas_vm_mprotect(high+P,P,3)==-12);
+    alloc_fail_at=0;
+    assert(nas_vma_find(&space.mmap_vmas,high+P)->prot==0 &&
+           !nas_mmu_user_byte(high+P));
+    assert(nas_vm_mprotect(high+P,P,3)==0);
+    assert(nas_mmu_user_byte(high+P) && *nas_mmu_user_byte(high+P)==0);
+    *nas_mmu_user_byte(high+P)=0x49;
+    assert(nas_vm_munmap(high+P,P)==0);
+    assert(!nas_vma_find(&space.mmap_vmas,high+P) &&
+           nas_mm_handle_fault(&space,high+P,NAS_UP_READ,false)==
+           NAS_MM_FAULT_MAPERR && *nas_mmu_user_byte(high+31)==0x83);
+    assert(nas_vm_munmap(high,3*P)==0);
+    assert(!nas_vma_find(&space.mmap_vmas,high) && living()==high_baseline);
+    assert(nas_vm_munmap(NAS_ANON_FLOOR,low_width)==0);
+    assert(nas_vm_anon_mmap(NAS_ANON_EXTENDED_FLOOR+P,P,0,
+                            0x32,UINT64_MAX,0)==NAS_ANON_EXTENDED_FLOOR+P);
+    assert(nas_vm_munmap(NAS_ANON_EXTENDED_FLOOR+P,P)==0);
     assert((int64_t)nas_vm_anon_mmap(0,
-               NAS_ANON_CEILING-NAS_ANON_FLOOR+P,0,0x22,UINT64_MAX,0)==-12);
-    puts("[M80 LARGE ANON MMAP HOST PASS] 64MiB+4KiB VMA reservation and honest window ENOMEM");
+          NAS_ANON_EXTENDED_CEILING-NAS_ANON_EXTENDED_FLOOR+P,
+          0,0x22,UINT64_MAX,0)==-12);
+    assert((int64_t)nas_vm_anon_mmap(0x6ff00000,P,
+                                    0,0x32,UINT64_MAX,0)==-22);
+    puts("[M80 LARGE ANON MMAP HOST PASS] 64MiB+4KiB, high 64-bit VMA, honest total-window ENOMEM");
     puts("[M87 MM TXN PASS] MAP_FIXED and mprotect OOM/PT faults preserve VMA/PTE and frame ownership");
     return 0;
 }

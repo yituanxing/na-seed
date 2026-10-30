@@ -229,6 +229,9 @@ cc -std=c11 -O2 -Wall -Wextra -Werror \
 cc -std=c11 -Wall -Wextra -Werror scripts/test-wait-pid-abi.c \
     -o /tmp/naseed-wait-pid
 /tmp/naseed-wait-pid
+cc -std=c11 -Wall -Wextra -Werror scripts/test-m110-statfs-rusage-abi.c \
+    -o /tmp/naseed-statfs-rusage-abi
+/tmp/naseed-statfs-rusage-abi
 cc -std=c11 -Wall -Wextra -Werror scripts/test-mmap-abi.c \
     -o /tmp/naseed-mmap-abi
 /tmp/naseed-mmap-abi

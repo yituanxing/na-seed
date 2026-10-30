@@ -12,6 +12,7 @@ export NAS_ACCEPTANCE_CPIO="$work/rootfs.cpio"
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
 export NAS_ACCEPTANCE_QEMU_RAM=1536M
 export NAS_ACCEPTANCE_DISK_MB=768
+export NAS_SYSCALL_TRACE=1
 export BUSYBOX_PARITY_MANIFEST=scripts/m110-batch-cases.tsv
 
 log="$logs/m110-batch.clean.log"

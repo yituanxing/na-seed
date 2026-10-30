@@ -95,6 +95,15 @@ if ! docker run --rm --volume "$target:/target" \
 fi
 sudo chown -R "$(id -u):$(id -g)" "$root"
 
+# Some signed packages deliberately defer generated *metadata* (not ELF
+# binaries) to Alpine install scripts.  Our APK import intentionally uses
+# --no-scripts, so allow an explicitly named, profile-local HOST hook before
+# the one canonical rootfs archive is produced.  No code runs in NaSeed.
+host_hook="scripts/host-configure-$profile.sh"
+if test -f "$host_hook"; then
+    sh "$host_hook" "$port" "$root"
+fi
+
 while IFS= read -r program; do
     case "$program" in ''|'#'*) continue ;; esac
     case "$program" in /*|*../*|*/../*|*' '*) exit 2 ;; esac

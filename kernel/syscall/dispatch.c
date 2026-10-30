@@ -341,17 +341,20 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     nas_task_cpu_account_switch(nas_current_task);
     const uint64_t raw_nr = args[0];
     enum nas_syscall_op nr = nas_linux_decode_call(args);
-#if defined(__riscv) && __riscv_xlen == 64
-    /* Native BusyBox ash may invoke clone with Linux flags other than
-     * SIGCHLD. Do not pretend this is fork: show the actual ABI contract
-     * before implementing vfork/clone semantics in the existing task core. */
-    if (raw_nr == 220U && nr == NAS_SC_NONE) {
-        nas_print("[RV64 CLONE] unsupported flags=");
+#ifdef NASEED_SYSCALL_TRACE
+    /* M110 diagnostic: log the actual rejected Linux clone ABI on all three
+     * ISAs, without broadening accepted flags or changing the -ENOSYS path.
+     * Eight attempts suffice to compare original Go and pthread callers. */
+    static unsigned rejected_clone_count;
+    if (raw_nr == nas_linux_raw_clone_nr() && nr == NAS_SC_NONE &&
+        rejected_clone_count++ < 8U) {
+        nas_print("[CLONE REJECT] pid="); nas_dec(nas_current_task->pid);
+        nas_print(" flags=");
         nas_hex(args[1]);
-        nas_print(" child_stack="); nas_hex(args[2]);
+        nas_print(" stack="); nas_hex(args[2]);
         nas_print(" parent_tid="); nas_hex(args[3]);
-        nas_print(" tls="); nas_hex(args[4]);
-        nas_print(" child_tid="); nas_hex(args[5]);
+        nas_print(" arg4="); nas_hex(args[4]);
+        nas_print(" arg5="); nas_hex(args[5]);
         nas_print("\n");
     }
 #endif
@@ -653,7 +656,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         /* WUNTRACED/WCONTINUED are real blocking wait selectors too.
          * Do not treat them as unsupported when a selected child has
          * not reached a reportable event yet. Keep WNOHANG nonblocking. */
-        if ((int64_t)ret == -EOPNOTSUPP && args[4] == 0 &&
+        if ((int64_t)ret == -EOPNOTSUPP &&
             !(args[3] & NAS_WAIT_NOHANG))
             return nas_task_block((uint64_t *)(uintptr_t)args, nr,
                               args[1], args[2], args[3], args[4],finish_wait4);

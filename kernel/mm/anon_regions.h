@@ -6,8 +6,16 @@
 #define NAS_ANON_FIXED_FLOOR 0x00010000ULL
 #define NAS_ANON_FLOOR 0x20000000ULL
 #define NAS_ANON_CEILING 0x60000000ULL
-/* ELF, stack and signal pages are outside the mmap allocator window. */
-#define NAS_VMA_ADDRESS_LIMIT 0x70000000ULL
+/* Keep the established low mmap window for old binaries and Linux libc;
+ * reserve the 0x60000000..0x80000000 gap for the main user stack and signal
+ * trampoline (0x70000000/0x6fe00000). On pressure, use a disjoint higher
+ * window for large real-program VMAs, e.g. V8's >1-GiB aggregate CodeRange
+ * reservations. The 64-GiB ceiling is below the smallest 64-bit user-VA
+ * hardware regime currently supported: RV64 Sv39=256 GiB, ARM64=512 GiB,
+ * x86-64=128 TiB. No 32-bit ELF ABI is exposed by this kernel. */
+#define NAS_ANON_EXTENDED_FLOOR 0x80000000ULL
+#define NAS_ANON_EXTENDED_CEILING 0x1000000000ULL
+#define NAS_VMA_ADDRESS_LIMIT NAS_ANON_EXTENDED_CEILING
 /* Policy records for mmap-owned private user VMAs, independent of resident
  * pages and PTE permissions. PROT_NONE is a VMA even with no resident PTE.
  * File snapshots are eagerly private; no durable file backing yet.
@@ -55,6 +63,9 @@ bool nas_vma_clone(struct nas_anon_regions *destination,
 void nas_vma_commit(struct nas_anon_regions *destination,
                     struct nas_anon_regions *staged);
 bool nas_anon_find_gap(const struct nas_anon_regions *,uint64_t length,uint64_t *);
+/* Whole MAP_FIXED interval must stay in the historical low VA domain or the
+ * extended mmap domain; never overwrite the intervening user stack/gap. */
+bool nas_anon_fixed_range_allowed(uint64_t addr,uint64_t length);
 bool nas_anon_record(struct nas_anon_regions *,uint64_t addr,uint64_t length);
 bool nas_anon_forget(struct nas_anon_regions *,uint64_t addr,uint64_t length);
 bool nas_anon_covered(const struct nas_anon_regions *,uint64_t addr,uint64_t length);

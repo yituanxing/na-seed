@@ -30,6 +30,30 @@ int main(void) {
     assert(!nas_anon_record(&a,x+1,P));
     assert(!nas_anon_find_gap(&a,UINT64_MAX,&z));
     assert(!nas_anon_forget(&a,UINT64_MAX-1023,2*P));
+    /* Original Node/V8 reserves multiple disjoint CodeRanges totaling over
+     * the historic 1-GiB mmap window. A full low region must spill into the
+     * higher hardware-safe 64-bit VA window, without touching the fixed
+     * stack/trampoline gap at 0x60000000..0x80000000. */
+    struct nas_anon_regions high_test={0};
+    assert(nas_vma_record(&high_test,NAS_ANON_FLOOR,
+                          NAS_ANON_CEILING-NAS_ANON_FLOOR,0,
+                          NAS_VMA_ANON_PRIVATE,0));
+    assert(nas_anon_find_gap(&high_test,P,&z) &&
+           z==NAS_ANON_EXTENDED_CEILING-P);
+    assert(nas_vma_record(&high_test,z,P,0,NAS_VMA_ANON_PRIVATE,0));
+    assert(nas_anon_find_gap(&high_test,
+                  NAS_ANON_CEILING-NAS_ANON_FLOOR+P,&z) &&
+           z>=NAS_ANON_EXTENDED_FLOOR);
+    assert(!nas_anon_find_gap(&high_test,
+                  NAS_ANON_EXTENDED_CEILING-NAS_ANON_EXTENDED_FLOOR+P,&z));
+    assert(nas_anon_fixed_range_allowed(NAS_ANON_FIXED_FLOOR,P));
+    assert(nas_anon_fixed_range_allowed(NAS_ANON_EXTENDED_FLOOR,P));
+    assert(nas_anon_fixed_range_allowed(NAS_ANON_EXTENDED_CEILING-P,P));
+    assert(!nas_anon_fixed_range_allowed(NAS_ANON_CEILING-P,2*P));
+    assert(!nas_anon_fixed_range_allowed(0x6ff00000,P));
+    assert(!nas_anon_fixed_range_allowed(NAS_ANON_EXTENDED_FLOOR-P,2*P));
+    assert(!nas_anon_fixed_range_allowed(NAS_ANON_EXTENDED_CEILING,P));
+    nas_anon_reset(&high_test);
     nas_anon_reset(&b);
     /* Original Ruby GC has >128 disjoint VMAs while loading its standard
      * library; the registry must grow under real pressure, not return a

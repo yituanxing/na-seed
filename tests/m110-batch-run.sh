@@ -47,7 +47,15 @@ run_case() {
       age)
         program=$(original_elf /usr/bin/age)
         keygen=$(original_elf /usr/bin/age-keygen)
-        "$keygen" -o "$work/identity.txt" > "$work/keygen.log" 2>&1
+        if "$keygen" -o "$work/identity.txt" > "$work/keygen.log" 2>&1; then
+            :
+        else
+            original_rc=$?
+            echo "[M110 AGE KEYGEN DIAG] original rc=$original_rc" >&2
+            # Log an actual Go-runtime failure without altering the result.
+            busy cat "$work/keygen.log" >&2 || :
+            return "$original_rc"
+        fi
         recipient=$(busy awk '/^# public key:/ {print $4}' "$work/identity.txt")
         [ -n "$recipient" ]
         "$program" -r "$recipient" -o "$work/data.age" "$work/data.txt"

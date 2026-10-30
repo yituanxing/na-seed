@@ -50,4 +50,17 @@ _Static_assert(offsetof(struct nas_linux_stat, rdev) == 32, "generic64 rdev");
 _Static_assert(offsetof(struct nas_linux_stat, size) == 48, "size");
 _Static_assert(offsetof(struct nas_linux_stat, blocks) == 64, "blocks");
 _Static_assert(offsetof(struct nas_linux_stat, atime_sec) == 72, "timestamps");
+/* Linux LP64 struct statfs: f_fsid is two 32-bit words, followed by
+ * 64-bit name length, fragment size, mount flags and four spare words.
+ * Both x86-64 and asm-generic LP64 use this same 120-byte wire format. */
+struct nas_linux_statfs {
+    int64_t type, bsize;
+    uint64_t blocks,bfree,bavail,files,ffree;
+    int32_t fsid[2];
+    int64_t namelen,frsize,flags;
+    int64_t spare[4];
+};
+_Static_assert(sizeof(struct nas_linux_statfs)==120,"LP64 statfs size");
+_Static_assert(offsetof(struct nas_linux_statfs,fsid)==56,"LP64 statfs fsid");
+_Static_assert(offsetof(struct nas_linux_statfs,namelen)==64,"LP64 statfs name max");
 #endif

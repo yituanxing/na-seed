@@ -45,6 +45,13 @@ struct nas_vfs_dirent {
     uint8_t name_len;
     char name[256];
 };
+/* Filesystem-owned capacity and identity, deliberately independent of
+ * native Linux statfs/statvfs wire layouts and ISA packing. Unknown inode
+ * capacity is zero; never report the host's filesystem statistics. */
+struct nas_vfs_statfs {
+    uint64_t magic, block_size, blocks, free_blocks, available_blocks;
+    uint64_t files, free_files, fragment_size, name_max;
+};
 struct nas_vfs_type {
     const char *name;
     /* Human-readable source label for stable exec acceptance diagnostics;
@@ -67,6 +74,9 @@ struct nas_vfs_type {
     /* Live metadata from the pinned inode, never reopening its old path.
      * Refresh fields only: inode, ino, filesystem, mount remain immutable. */
     int (*getattr)(const struct nas_fs_node *,struct nas_fs_node *out);
+    /* Backend capacity is a superblock property, even when queried by an
+     * open, unlinked inode. The VFS verifies mount incarnation first. */
+    int (*statfs)(const struct nas_fs_node *,struct nas_vfs_statfs *out);
     /* Optional cheap inode-incarnation validation on EVERY VFS operation.
      * An unpinned borrowed node must not read a recycled tmpfs slab slot
      * even if no active inode lease exists to detect that reuse. */
@@ -186,6 +196,7 @@ uint64_t nas_vfs_node_device(const struct nas_fs_node *node);
  * Unlike borrowed pathname snapshots this survives rename and dup/fork. */
 uint64_t nas_vfs_node_size(const struct nas_fs_node *node);
 int nas_vfs_getattr(const struct nas_fs_node *node,struct nas_fs_node *out);
+int nas_vfs_statfs(const struct nas_fs_node *node,struct nas_vfs_statfs *out);
 int nas_vfs_register_mount(const struct nas_vfs_mount *mount);
 int nas_vfs_lookup(const char *absolute, struct nas_fs_node *node);
 /* One canonical path component. VFS uses the pinned parent Mount/Dentry

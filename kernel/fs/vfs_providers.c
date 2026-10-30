@@ -4,6 +4,7 @@
 #include "../tmpfs.h"
 #include "procfs.h"
 #include "../errno.h"
+#include "../mm/frame.h"
 #include "../lib/string.h"
 #include <stddef.h>
 
@@ -340,10 +341,26 @@ static void tmp_last_inode_unpin(const struct nas_fs_node *node) {
     if(root && node->inode==(const void *)root)return;
     tmp_inode_discard((struct nas_tmp_file *)(uintptr_t)node->inode);
 }
+static int tmp_statfs(const struct nas_fs_node *node,
+                      struct nas_vfs_statfs *out) {
+    (void)node;
+    /* NaSeed tmpfs allocates sparse pages from the shared physical frame
+     * pool, with no separate fixed tmpfs quota. These are the actual
+     * available backing frames, not a fabricated constant capacity. */
+    *out=(struct nas_vfs_statfs){
+        .magic=0x01021994ULL, /* Linux TMPFS_MAGIC */
+        .block_size=4096,.blocks=nas_managed_frames(),
+        .free_blocks=nas_free_frames(),
+        .available_blocks=nas_free_frames(),
+        .fragment_size=4096,.name_max=255
+    };
+    return 0;
+}
 static const struct nas_vfs_type tmp_type={
     .name="tmpfs",.exec_source_label="tmpfs",
     .root=tmp_root,.lookup_child=tmp_child,
     .last_inode_unpin=tmp_last_inode_unpin,.getattr=tmp_getattr,
+    .statfs=tmp_statfs,
     .validate_inode=tmp_validate_inode,
     .readlink=tmp_readlink,
     .read_at=tmp_read,.read_size_is_eof=true,

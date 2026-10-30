@@ -61,6 +61,51 @@ static uint64_t write_mounted_stat(const struct nas_fs_node *node,
     return nas_user_write_bytes(destination,(const uint8_t *)&st,sizeof(st))
         ? 0:(uint64_t)-EFAULT;
 }
+/* Linux statfs and fstatfs query the same already-resolved mount/inode.
+ * No provider sees a user pointer, pathname or Linux-native wire layout. */
+static uint64_t write_mounted_statfs(const struct nas_fs_node *node,
+                                     uint64_t destination) {
+    struct nas_vfs_statfs fs;
+    int rc=nas_vfs_statfs(node,&fs);
+    if(rc)return (uint64_t)(int64_t)rc;
+    uint64_t device=nas_vfs_node_device(node);
+    if(!device)return (uint64_t)-ENODEV;
+    struct nas_linux_statfs result={0};
+    result.type=(int64_t)fs.magic;
+    result.bsize=(int64_t)fs.block_size;
+    result.blocks=fs.blocks;
+    result.bfree=fs.free_blocks;
+    result.bavail=fs.available_blocks;
+    result.files=fs.files;
+    result.ffree=fs.free_files;
+    result.fsid[0]=(int32_t)(uint32_t)device;
+    result.fsid[1]=(int32_t)(uint32_t)(device>>32);
+    result.namelen=(int64_t)fs.name_max;
+    result.frsize=(int64_t)fs.fragment_size;
+    result.flags=(node->mount->read_only || node->filesystem->read_only)
+        ? 1 : 0; /* Linux ST_RDONLY */
+    return nas_user_write_bytes(destination,(const uint8_t *)&result,
+                                sizeof(result)) ? 0:(uint64_t)-EFAULT;
+}
+static uint64_t sys_fstatfs_boot(uint64_t fd,uint64_t address) {
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
+        return (uint64_t)-EBADF;
+    const struct nas_open_file *opened=
+        &nas_open_files[TASK.fds->entries[fd].slot];
+    if(!opened->vnode_pinned)return (uint64_t)-EOPNOTSUPP;
+    return write_mounted_statfs(&opened->vnode,address);
+}
+static uint64_t sys_statfs_boot(uint64_t pathname,uint64_t address) {
+    struct nas_fs_path_request request;
+    struct nas_vfs_path path={0};
+    struct nas_fs_node node={0};
+    int rc=nas_fs_user_lookup_begin((uint64_t)-100,pathname,true,
+                                    &request,&path,&node);
+    if(rc)return (uint64_t)(int64_t)rc;
+    uint64_t value=write_mounted_statfs(&node,address);
+    end_mounted_lookup(&request,&path);
+    return value;
+}
 /* Linux x86-64 struct stat layout, 144 bytes. File size is actual module.
  * Device entries have character-device type; mounted files are regular.
  */
@@ -538,8 +583,10 @@ struct nas_fs_result nas_fs_metadata_syscall(enum nas_syscall_op op,
     case NAS_SC_faccessat: METADATA_RESULT(sys_access_path(args[1],args[2],args[3],0));
     case NAS_SC_faccessat2: METADATA_RESULT(sys_access_path(args[1],args[2],args[3],args[4]));
     case NAS_SC_fstat: METADATA_RESULT(sys_fstat_boot(args[1], args[2]));
+    case NAS_SC_fstatfs: METADATA_RESULT(sys_fstatfs_boot(args[1],args[2]));
     case NAS_SC_newfstatat: METADATA_RESULT(sys_fstatat_boot(args[1], args[2], args[3], args[4]));
     case NAS_SC_stat: METADATA_RESULT(sys_fstatat_boot((uint64_t)-100, args[1], args[2], 0));
+    case NAS_SC_statfs: METADATA_RESULT(sys_statfs_boot(args[1],args[2]));
     case NAS_SC_lstat: METADATA_RESULT(sys_fstatat_boot((uint64_t)-100, args[1], args[2], 0x100ULL));
     case NAS_SC_lseek: METADATA_RESULT(sys_lseek_boot(args[1], args[2], args[3]));
     case NAS_SC_fsync: case NAS_SC_fdatasync: METADATA_RESULT(sys_sync_fd(args[1]));

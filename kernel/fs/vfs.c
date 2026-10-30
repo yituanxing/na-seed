@@ -1699,6 +1699,14 @@ int nas_vfs_sync(const struct nas_fs_node *node) {
     if(!node->filesystem->sync)return node->filesystem->read_only ? 0 : -EOPNOTSUPP;
     return node->filesystem->sync(node);
 }
+int nas_vfs_statfs(const struct nas_fs_node *node,struct nas_vfs_statfs *out) {
+    if(!out)return -EINVAL;
+    int status=vfs_node_status(node);
+    if(status)return status;
+    if(!node->filesystem->statfs)return -EOPNOTSUPP;
+    *out=(struct nas_vfs_statfs){0};
+    return node->filesystem->statfs(node,out);
+}
 int nas_vfs_sync_all(void) {
     ensure_defaults();
     int first_error=0;

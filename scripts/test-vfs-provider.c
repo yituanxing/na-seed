@@ -12,6 +12,11 @@
 #include "../kernel/fs/vfs.h"
 #include "../kernel/fs/posix_locks.h"
 #include "../kernel/errno.h"
+/* The real tmpfs statfs callback samples physical backing-frame counters.
+ * The host fixture controls only that dependency, not VFS dispatch. */
+static uint64_t fixture_free_frames=789;
+uint64_t nas_managed_frames(void) { return 2048; }
+uint64_t nas_free_frames(void) { return fixture_free_frames; }
 static const uint8_t elf_bytes[]={0x7f,'E','L','F','v','f','s'};
 static const uint8_t abs_link[]="/bin/demo";
 static struct bootfs_entry entries[]={
@@ -674,6 +679,17 @@ static void test_owned_unix_mknod(void) {
 int main(void) {
     char resolved[256],data[32];
     struct nas_fs_node n;
+    struct nas_vfs_statfs stats;
+    assert(nas_fs_lookup_node("/tmp/demo",true,&n,resolved)==0);
+    assert(nas_vfs_statfs(&n,&stats)==0);
+    assert(stats.magic==0x01021994ULL && stats.block_size==4096);
+    assert(stats.blocks==2048 && stats.free_blocks==789 &&
+           stats.available_blocks==789 && stats.name_max==255);
+    fixture_free_frames=700;
+    assert(nas_vfs_statfs(&n,&stats)==0 && stats.free_blocks==700);
+    assert(nas_vfs_statfs(0,&stats)==-EINVAL);
+    assert(nas_fs_lookup_node("/bin/demo",true,&n,resolved)==0);
+    assert(nas_vfs_statfs(&n,&stats)==-EOPNOTSUPP);
     struct nas_fs_node canonical_parent;
     assert(nas_fs_lookup_parent("/tmp/alias/new-parent",
                   &canonical_parent,resolved)==0);

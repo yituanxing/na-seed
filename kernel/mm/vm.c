@@ -135,7 +135,7 @@ bool nas_vm_walk_task_pages(const struct nas_task *task,
 /* M85-A: typed, independently MM-owned private mmap VMAs. Existing PT_LOAD and
  * heap/stack mappings stay in their established address domains. Releasing
  * PTE frames without returning the virtual range would eventually exhaust
- * the 0x20000000..0x60000000 window even with abundant free physical RAM.
+ * the logical mmap windows even with abundant free physical RAM.
  * Dynamically sized VMA records are owned per MM: fork deep-clones them and
  * exec releases them after the new ELF image commits. COW/lazy faults are
  * handled by the shared MM owner; this VMA ledger remains authoritative.
@@ -162,8 +162,7 @@ uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
     uint64_t bytes = pages * PAGE;
     uint64_t start;
     if (fixed) {
-        if ((hint & (PAGE-1)) || hint<NAS_ANON_FIXED_FLOOR ||
-            hint>=NAS_ANON_CEILING || bytes>NAS_ANON_CEILING-hint)
+        if (!nas_anon_fixed_range_allowed(hint,bytes))
             return (uint64_t)-EINVAL;
         /* Linux MAP_FIXED REPLACES a user mapping. It is not limited to
          * one previously created mmap VMA: libc may protect the brk/ELF
@@ -231,8 +230,7 @@ uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
     if(!nas_vma_clone(&planned,&TASK.mm->mmap_vmas))
         return (uint64_t)-ENOMEM;
     if (flags & MAP_FIXED) {
-        if ((hint & (PAGE-1)) || hint<NAS_ANON_FIXED_FLOOR ||
-            hint>=NAS_ANON_CEILING || bytes>NAS_ANON_CEILING-hint) {
+        if (!nas_anon_fixed_range_allowed(hint,bytes)) {
             nas_anon_reset(&planned);
             return (uint64_t)-EINVAL;
         }

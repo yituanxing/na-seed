@@ -54,13 +54,17 @@ static int empty_slot(const struct nas_anon_regions *regions) {
         if (!regions->slots[i].end) return (int)i;
     return -1;
 }
-bool nas_anon_find_gap(const struct nas_anon_regions *regions,
-                       uint64_t length,uint64_t *addr) {
-    if (!regions || !addr || !length || !aligned(length) ||
-        length>NAS_ANON_CEILING-NAS_ANON_FLOOR) return false;
-    uint64_t top=NAS_ANON_CEILING;
+/* Both disjoint placement windows obey the same first-fit/top-down ledger
+ * algorithm. Prefer the historical low range until it cannot fit a request;
+ * Node/V8 can then reserve more than 1 GiB of logical (nonresident) VA
+ * without changing already-validated library/stack placement contracts. */
+static bool find_gap_window(const struct nas_anon_regions *regions,
+                            uint64_t length,uint64_t floor,
+                            uint64_t ceiling,uint64_t *addr) {
+    if(length>ceiling-floor)return false;
+    uint64_t top=ceiling;
     for (unsigned round=0;round<=regions->capacity;++round) {
-        if (top<NAS_ANON_FLOOR+length) return false;
+        if (top<floor+length) return false;
         uint64_t start=top-length, next_top=top;
         bool collided=false;
         for (unsigned i=0;i<regions->capacity;++i) {
@@ -75,6 +79,22 @@ bool nas_anon_find_gap(const struct nas_anon_regions *regions,
         top=next_top;
     }
     return false;
+}
+bool nas_anon_find_gap(const struct nas_anon_regions *regions,
+                       uint64_t length,uint64_t *addr) {
+    if(!regions || !addr || !length || !aligned(length))return false;
+    return find_gap_window(regions,length,NAS_ANON_FLOOR,NAS_ANON_CEILING,addr) ||
+           find_gap_window(regions,length,NAS_ANON_EXTENDED_FLOOR,
+                           NAS_ANON_EXTENDED_CEILING,addr);
+}
+bool nas_anon_fixed_range_allowed(uint64_t addr,uint64_t length) {
+    if(!length || !aligned(addr) || !aligned(length) ||
+       addr<NAS_ANON_FIXED_FLOOR)return false;
+    if(addr<NAS_ANON_CEILING)
+        return length<=NAS_ANON_CEILING-addr;
+    return addr>=NAS_ANON_EXTENDED_FLOOR &&
+           addr<NAS_ANON_EXTENDED_CEILING &&
+           length<=NAS_ANON_EXTENDED_CEILING-addr;
 }
 /* Coalesce only matching logical policies. File offsets must be contiguous.
  * This prevents RW and RX mappings from erasing each other's VMA semantics. */
