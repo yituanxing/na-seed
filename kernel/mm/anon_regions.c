@@ -100,7 +100,8 @@ bool nas_anon_fixed_range_allowed(uint64_t addr,uint64_t length) {
  * This prevents RW and RX mappings from erasing each other's VMA semantics. */
 static bool compatible(const struct nas_anon_region *a,
                        const struct nas_anon_region *b) {
-    if(a->prot!=b->prot || a->kind!=b->kind)return false;
+    if(a->prot!=b->prot || a->kind!=b->kind || a->flags!=b->flags)
+        return false;
     /* A private eager file snapshot does NOT carry a durable backing ref.
      * Never coalesce independent snapshots merely due to adjacent offsets:
      * the FD may have been closed/reused for another source. */
@@ -112,7 +113,8 @@ static bool insert_area(struct nas_anon_regions *regions,
                         struct nas_anon_region candidate) {
     if(!regions || candidate.end<=candidate.start ||
        !valid_interval(candidate.start,candidate.end-candidate.start) ||
-       (candidate.prot &~7U) || candidate.kind>NAS_VMA_SIGNAL_TRAMPOLINE)
+       (candidate.prot &~7U) || candidate.kind>NAS_VMA_SIGNAL_TRAMPOLINE ||
+       (candidate.flags & ~NAS_VMA_DONTFORK))
         return false;
     int left=-1,right=-1;
     for(unsigned i=0;i<regions->capacity;i++) {
@@ -255,9 +257,11 @@ bool nas_vma_replace(struct nas_anon_regions *regions,uint64_t addr,uint64_t len
 }
 /* Rebuild the metadata in a private staging set. Permission changes may
  * split existing VMAs, but must never change snapshot file offsets. */
-bool nas_vma_protect(struct nas_anon_regions *regions,uint64_t addr,uint64_t length,
-                     unsigned prot) {
-    if(!regions || (prot&~7U) || !nas_anon_covered(regions,addr,length))
+static bool rewrite_policy(struct nas_anon_regions *regions,uint64_t addr,
+                           uint64_t length,unsigned prot,bool rewrite_prot,
+                           bool dontfork) {
+    if(!regions || (rewrite_prot && (prot&~7U)) ||
+       !nas_anon_covered(regions,addr,length))
         return false;
     const uint64_t end=addr+length;
     struct nas_anon_regions planned={0};
@@ -278,7 +282,9 @@ bool nas_vma_protect(struct nas_anon_regions *regions,uint64_t addr,uint64_t len
         struct nas_anon_region middle=*r;
         middle.start=middle_start;
         middle.end=middle_end;
-        middle.prot=prot;
+        if(rewrite_prot)middle.prot=prot;
+        else middle.flags=dontfork ? (middle.flags|NAS_VMA_DONTFORK) :
+                                      (middle.flags&~NAS_VMA_DONTFORK);
         if((middle.kind==NAS_VMA_FILE_PRIVATE_SNAPSHOT || middle.kind==NAS_VMA_ELF_PRIVATE_SNAPSHOT))
             middle.file_offset+=middle_start-r->start;
         if(!insert_area(&planned,middle))goto failed;
@@ -295,6 +301,14 @@ bool nas_vma_protect(struct nas_anon_regions *regions,uint64_t addr,uint64_t len
 failed:
     nas_anon_reset(&planned);
     return false;
+}
+bool nas_vma_protect(struct nas_anon_regions *regions,uint64_t addr,
+                     uint64_t length,unsigned prot) {
+    return rewrite_policy(regions,addr,length,prot,true,false);
+}
+bool nas_vma_set_dontfork(struct nas_anon_regions *regions,uint64_t addr,
+                           uint64_t length,bool enabled) {
+    return rewrite_policy(regions,addr,length,0,false,enabled);
 }
 const struct nas_anon_region *nas_vma_find(const struct nas_anon_regions *regions,
                                            uint64_t va) {

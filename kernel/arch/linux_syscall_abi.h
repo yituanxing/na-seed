@@ -86,6 +86,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_getsid: return NAS_SC_getsid;
     case __NR_getpid: return NAS_SC_getpid;
     case __NR_getrlimit: return NAS_SC_getrlimit;
+    case __NR_getrusage: return NAS_SC_getrusage;
     case __NR_prlimit64: return NAS_SC_prlimit64;
     case __NR_prctl: return NAS_SC_prctl;
     case __NR_ptrace: return NAS_SC_ptrace;
@@ -104,6 +105,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_mkdir: return NAS_SC_mkdir;
     case __NR_mkdirat: return NAS_SC_mkdirat;
     case __NR_mmap: return NAS_SC_mmap;
+    case __NR_madvise: return NAS_SC_madvise;
     case __NR_mprotect: return NAS_SC_mprotect;
     case __NR_munmap: return NAS_SC_munmap;
     case __NR_newfstatat: return NAS_SC_newfstatat;
@@ -261,6 +263,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 122U: return NAS_SC_sched_setaffinity;
     case 172U: return NAS_SC_getpid;
     case 163U: return NAS_SC_getrlimit; /* Linux asm-generic */
+    case 165U: return NAS_SC_getrusage; /* Linux asm-generic */
     case 261U: return NAS_SC_prlimit64; /* Linux asm-generic */
     case 167U: return NAS_SC_prctl; /* Linux asm-generic prctl */
     case 117U: return NAS_SC_ptrace; /* asm-generic __NR_ptrace, all LP64 ports */
@@ -275,6 +278,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 156U: return NAS_SC_getsid;
     case 157U: return NAS_SC_setsid;
     case 222U: return NAS_SC_mmap;
+    case 233U: return NAS_SC_madvise; /* Linux asm-generic */
     case 215U: return NAS_SC_munmap;
     case 226U: return NAS_SC_mprotect;
     case 214U: return NAS_SC_brk;

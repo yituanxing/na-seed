@@ -1,32 +1,13 @@
 name: NaSeed M84 authentic SQLite Lua guest GCC Make three-ISA two-boot acceptance
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/m84-source.yml'
-      - 'scripts/m84-*'
-      - 'scripts/stage-m84-*'
-      - 'scripts/probe-m84-*'
-      - 'scripts/fetch-m57-sqlite.sh'
-      - 'scripts/fetch-external-lua.sh'
-      - 'scripts/native-source-qemu.sh'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/check-native-qemu-target.py'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'rootfs/alpine/**'
-      - 'tests/m84-*.sh'
-      - 'tests/m57-sqlite-run.sh'
-      - 'tests/lua-*.lua'
-      - 'kernel/**'
-      - 'ports/**'
+  # Genuine in-guest GCC/Make source builds remain available on demand;
+  # PR software gates use the signed binaries staged on the Linux host.
   workflow_dispatch:
-# Cancel only superseded PR heads; intentional release dispatch runs survive.
+# Manual source-build diagnostics for a ref queue rather than cancelling a
+# previously requested run; no PR job triggers these costly guest builds.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   m84:
     name: M84 actual in-guest SQLite and Lua original GCC Make ext4 reboot / ${{ matrix.port }}

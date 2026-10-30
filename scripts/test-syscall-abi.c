@@ -25,8 +25,10 @@ int main(void) {
     assert(nas_linux_decode_syscall(__NR_truncate) == NAS_SC_truncate);
     assert(nas_linux_decode_syscall(__NR_prctl) == NAS_SC_prctl);
     assert(nas_linux_decode_syscall(__NR_mmap) == NAS_SC_mmap);
+    assert(nas_linux_decode_syscall(__NR_madvise) == NAS_SC_madvise);
     assert(nas_linux_decode_syscall(__NR_newfstatat) == NAS_SC_newfstatat);
     assert(nas_linux_decode_syscall(__NR_getrandom) == NAS_SC_getrandom);
+    assert(nas_linux_decode_syscall(__NR_getrusage) == NAS_SC_getrusage);
     assert(nas_linux_decode_syscall(__NR_eventfd) == NAS_SC_eventfd);
     assert(nas_linux_decode_syscall(__NR_eventfd2) == NAS_SC_eventfd2);
     assert(nas_linux_decode_syscall(__NR_epoll_create1) == NAS_SC_epoll_create1);

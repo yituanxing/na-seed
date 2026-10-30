@@ -44,6 +44,9 @@ static bool cow_clone_mapping(uint64_t va,unsigned access,void *opaque) {
     pa &= ~UINT64_C(4095);
     const struct nas_anon_region *v=nas_vma_find(&ctx->src->mmap_vmas,va);
     if(!v || ((access&NAS_UP_WRITE) && !(v->prot&NAS_VM_WRITE)))return false;
+    /* MADV_DONTFORK excludes both its VMA and resident PTEs from child MM.
+     * Parent remains the sole owner: do not acquire a second frame ref. */
+    if(v->flags&NAS_VMA_DONTFORK)return true;
     if(!nas_frame_get(pa))return false;
     unsigned prot=access_prot(access)&~NAS_VM_WRITE;
     if(!nas_mmu_prepare_leaf_at(ctx->dst->root_phys,va)) {
@@ -63,6 +66,8 @@ static bool cow_protect_parent(uint64_t va,unsigned access,void *opaque) {
     if(!(access&NAS_UP_WRITE))return true;
     const struct nas_anon_region *v=nas_vma_find(&src->mmap_vmas,va);
     if(!v || !(v->prot&NAS_VM_WRITE))return false;
+    /* Excluded pages were not cloned and must not be write-protected. */
+    if(v->flags&NAS_VMA_DONTFORK)return true;
     uint64_t pa=0;
     if(!nas_mm_resolve_user(src,va,&pa,0))return false;
     pa &= ~UINT64_C(4095);
@@ -85,6 +90,17 @@ struct nas_mm *nas_mm_fork_cow(const struct nas_mm *source) {
     if(!nas_vma_clone(&dst->mmap_vmas,&source->mmap_vmas)) {
         nas_mm_put(dst);
         return 0;
+    }
+    /* Remove excluded policy intervals BEFORE creating child PTEs. The
+     * operation forgets complete source VMAs; no split/heap allocation is
+     * needed, and a child may demand-fault only truly inherited regions. */
+    for(unsigned i=0;i<source->mmap_vmas.capacity;i++) {
+        const struct nas_anon_region *v=&source->mmap_vmas.slots[i];
+        if(v->end && (v->flags&NAS_VMA_DONTFORK) &&
+           !nas_anon_forget(&dst->mmap_vmas,v->start,v->end-v->start)) {
+            nas_mm_put(dst);
+            return 0;
+        }
     }
     struct cow_fork_ctx ctx={dst,source};
     if(!nas_mm_walk_pages(source,cow_clone_mapping,&ctx)) {

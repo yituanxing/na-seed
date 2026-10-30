@@ -289,6 +289,56 @@ uint64_t nas_vm_munmap(uint64_t addr, uint64_t len) {
     nas_vma_commit(&TASK.mm->mmap_vmas,&updated);
     return 0;
 }
+/* Linux MADV_DONTNEED discards *resident* private anonymous pages without
+ * revoking the VMA. The next read/write fault observes the same permissions
+ * and materializes a fresh zero page; COW frame refs are decremented, not
+ * incorrectly modified in a sibling process. Snapshot-file VMAs have no
+ * retained backing provider yet, so refusing them is essential: silently
+ * zeroing a file page would violate Linux's read-back-on-demand semantics.
+ *
+ * MADV_DONTFORK/DOFORK are persistent VMA policies. They must affect both
+ * child VMA ownership and fork COW leaf copies, not just syscall return. */
+uint64_t nas_vm_madvise(uint64_t addr,uint64_t length,uint64_t advice) {
+    const uint64_t MADV_DONTNEED=4U,MADV_DONTFORK=10U,MADV_DOFORK=11U;
+    if((addr&(PAGE-1)) || length>UINT64_MAX-(PAGE-1))
+        return (uint64_t)-EINVAL;
+    if(advice!=MADV_DONTNEED && advice!=MADV_DONTFORK &&
+       advice!=MADV_DOFORK)return (uint64_t)-EINVAL;
+    if(!length)return 0;
+    uint64_t pages=(length+PAGE-1)/PAGE;
+    if(addr>=USER_LIMIT || pages>(USER_LIMIT-addr)/PAGE)
+        return (uint64_t)-ENOMEM;
+    uint64_t bytes=pages*PAGE;
+    if(!nas_anon_covered(&TASK.mm->mmap_vmas,addr,bytes))
+        return (uint64_t)-ENOMEM;
+    if(advice==MADV_DONTFORK || advice==MADV_DOFORK) {
+        struct nas_anon_regions planned={0};
+        if(!nas_vma_clone(&planned,&TASK.mm->mmap_vmas))
+            return (uint64_t)-ENOMEM;
+        if(!nas_vma_set_dontfork(&planned,addr,bytes,
+                                 advice==MADV_DONTFORK)) {
+            nas_anon_reset(&planned);
+            return (uint64_t)-ENOMEM;
+        }
+        nas_vma_commit(&TASK.mm->mmap_vmas,&planned);
+        return 0;
+    }
+    /* Validate every VMA kind BEFORE dropping any page ownership. */
+    const uint64_t end=addr+bytes;
+    for(uint64_t at=addr;at<end;) {
+        const struct nas_anon_region *v=nas_vma_find(&TASK.mm->mmap_vmas,at);
+        if(!v || (v->kind!=NAS_VMA_ANON_PRIVATE &&
+                  v->kind!=NAS_VMA_HEAP && v->kind!=NAS_VMA_STACK))
+            return (uint64_t)-EOPNOTSUPP;
+        at=v->end<end?v->end:end;
+    }
+    for(uint64_t at=addr;at<end;at+=PAGE) {
+        uint64_t resident=0;
+        if(nas_mmu_resolve_user_address(TASK.mm->root_phys,at,&resident,0) &&
+           !nas_mmu_unmap_page(at))nas_arch_halt();
+    }
+    return 0;
+}
 uint64_t nas_vm_brk(uint64_t want) {
     uint64_t base=heap_break;
     if (!want) return heap_break;

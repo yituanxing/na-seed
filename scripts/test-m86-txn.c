@@ -312,8 +312,54 @@ int main(void){
     assert(slot(code,false)->prot==7 &&
            slot(code+code_bytes-P,false)->prot==7 &&
            living()==before_code+2);
+    /* Linux MADV_DONTFORK is VMA policy, not a 'success' with no effect.
+     * Partial interval changes must preserve adjacent pages/permissions. */
+    assert(nas_vm_madvise(code+P,P,10)==0);
+    assert(!(nas_vma_find(&space.mmap_vmas,code)->flags&NAS_VMA_DONTFORK));
+    assert(nas_vma_find(&space.mmap_vmas,code+P)->flags&NAS_VMA_DONTFORK);
+    assert(!(nas_vma_find(&space.mmap_vmas,code+2*P)->flags&NAS_VMA_DONTFORK));
+    assert(nas_vm_madvise(code+P,P,11)==0);
+    assert(!(nas_vma_find(&space.mmap_vmas,code+P)->flags&NAS_VMA_DONTFORK));
+    /* V8's real 512-MiB MADV_DONTNEED must release only resident frames;
+     * preserve the virtual RWX reservation, then refault a fresh zero page. */
+    assert(nas_vm_madvise(code,code_bytes,4)==0);
+    assert(living()==before_code && !nas_mmu_user_byte(code) &&
+           !nas_mmu_user_byte(code+code_bytes-P));
+    assert(nas_vma_find(&space.mmap_vmas,code)->prot==7);
+    assert(nas_mm_handle_fault(&space,code,NAS_UP_WRITE,false)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(*nas_mmu_user_byte(code)==0 && living()==before_code+1);
+    assert((int64_t)nas_vm_madvise(code+1,P,4)==-22);
+    assert((int64_t)nas_vm_madvise(code,P,99)==-22);
+    assert((int64_t)nas_vm_madvise(code+code_bytes,P,4)==-12);
     assert(nas_vm_munmap(code,code_bytes)==0);
     assert(living()==before_code);
+    /* A private file snapshot is eager and lacks a durable backing ref.
+     * MADV_DONTNEED must report unsupported, not silently lose data. */
+    uint64_t snap=nas_vm_file_mmap(0,P,1,2,4,0);
+    assert((int64_t)snap>0);
+    uint64_t snap_pa=slot(snap,false)->pa;
+    assert(snap_pa && *nas_mmu_user_byte(snap)==7);
+    assert((int64_t)nas_vm_madvise(snap,P,4)==-95);
+    assert(slot(snap,false)->pa==snap_pa && *nas_mmu_user_byte(snap)==7);
+    assert(nas_vm_munmap(snap,P)==0);
+    /* Simulate an external COW owner: discard the calling MM's PTE and
+     * decrement only its physical ownership, preserving sibling bytes. */
+    uint64_t shared=nas_vm_anon_mmap(0,P,3,0x22,UINT64_MAX,0);
+    assert((int64_t)shared>0);
+    assert(nas_mm_handle_fault(&space,shared,NAS_UP_WRITE,false)==
+           NAS_MM_FAULT_RESOLVED);
+    uint64_t shared_pa=slot(shared,false)->pa;
+    *nas_mmu_user_byte(shared)=0x5b;
+    owners[shared_pa/P]++;
+    assert(nas_vm_madvise(shared,P,4)==0);
+    assert(!nas_mmu_user_byte(shared) && nas_frame_refs(shared_pa)==1 &&
+           ram[shared_pa]==0x5b);
+    assert(nas_frame_put(shared_pa));
+    assert(nas_mm_handle_fault(&space,shared,NAS_UP_READ,false)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(*nas_mmu_user_byte(shared)==0);
+    assert(nas_vm_munmap(shared,P)==0);
     assert(nas_vm_anon_mmap(NAS_ANON_EXTENDED_FLOOR+P,P,0,
                             0x32,UINT64_MAX,0)==NAS_ANON_EXTENDED_FLOOR+P);
     assert(nas_vm_munmap(NAS_ANON_EXTENDED_FLOOR+P,P)==0);
@@ -324,6 +370,7 @@ int main(void){
                                     0,0x32,UINT64_MAX,0)==-22);
     puts("[M80 LARGE ANON MMAP HOST PASS] 64MiB+4KiB, high 64-bit VMA, honest total-window ENOMEM");
     puts("[M110 NODE VM PASS] 512MiB RWX reservation, lazy mprotect, demand-faulted executable pages");
+    puts("[M110 NODE MADVISE HOST PASS] 512MiB DONTNEED refault zero, DONTFORK VMA policy, snapshot honesty");
     puts("[M87 MM TXN PASS] MAP_FIXED rollback and mprotect lazy protection preserve VMA/PTE and frame ownership");
     return 0;
 }

@@ -21,6 +21,7 @@
 #include "exec.h"
 #include "../time/clock.h"
 #include "process.h"
+#include "rusage.h"
 #include "signal.h"
 #include "ptrace.h"
 #include "sched.h"
@@ -447,6 +448,19 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
      * the worker both pointed to one CLONE_FILES object. The parent sees
      * one child PID and precisely one eventual SIGCHLD. */
     if(worker_exec) {
+        /* execve from a nonleader replaces the process identity, not its
+         * measured resource history. Quiescing siblings already charged
+         * their CPU into old_leader->exited_thread_cpu_ns. The old leader's
+         * own CPU becomes completed-thread CPU; the surviving worker keeps
+         * its own per-TID runtime for RUSAGE_THREAD. Previously waited
+         * children also remain owned by this Linux process across execve. */
+        exec_thread->exited_thread_cpu_ns=nas_rusage_cpu_add(
+            exec_thread->exited_thread_cpu_ns,
+            nas_rusage_cpu_add(old_leader->cpu_runtime_ns,
+                               old_leader->exited_thread_cpu_ns));
+        exec_thread->waited_children_cpu_ns=nas_rusage_cpu_add(
+            exec_thread->waited_children_cpu_ns,
+            old_leader->waited_children_cpu_ns);
         exec_thread->pid=inherited_tgid;
         exec_thread->tgid=inherited_tgid;
         exec_thread->ppid=old_leader->ppid;

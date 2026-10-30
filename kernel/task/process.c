@@ -399,6 +399,36 @@ bool nas_process_waitable(const struct nas_task *child,uint64_t options,
         return is_parent;
     return false;
 }
+/* Linux RUSAGE_SELF/CHILDREN/THREAD use the scheduler's measured CPU time.
+ * We have no reliable user-vs-kernel split yet; rusage.h advertises total
+ * observed occupancy as utime and leaves unknown counters zero. */
+uint64_t nas_process_getrusage(uint64_t who,uint64_t address) {
+    const int64_t selector=(int64_t)who;
+    if(selector!=0 && selector!=-1 && selector!=1)
+        return (uint64_t)-EINVAL;
+    if(!address)return (uint64_t)-EFAULT;
+    /* Flush the currently running task before sampling its ledger. */
+    nas_task_cpu_account_snapshot(0,0,0,0);
+    struct nas_task *caller=nas_current_task;
+    struct nas_task *leader=caller->group_leader;
+    uint64_t cpu_ns=0;
+    if(selector==1) {
+        cpu_ns=caller->cpu_runtime_ns; /* RUSAGE_THREAD */
+    } else if(selector==-1) {
+        cpu_ns=leader->waited_children_cpu_ns; /* RUSAGE_CHILDREN */
+    } else {
+        cpu_ns=leader->exited_thread_cpu_ns; /* RUSAGE_SELF */
+        for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
+            const struct nas_task *t=nas_task_at(i);
+            if(t->state!=NAS_TASK_FREE && t->tgid==caller->tgid)
+                cpu_ns=nas_rusage_cpu_add(cpu_ns,t->cpu_runtime_ns);
+        }
+    }
+    const struct nas_linux_rusage usage=nas_rusage_from_cpu_ns(cpu_ns);
+    if(!nas_user_write_bytes(address,(const uint8_t *)&usage,sizeof(usage)))
+        return (uint64_t)-EFAULT;
+    return 0;
+}
 uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
                            uint64_t options, uint64_t rusage) {
     if (options & ~NAS_WAIT_SUPPORTED)
@@ -438,7 +468,8 @@ uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
         }
         if (rusage) {
             struct nas_linux_rusage usage=
-                nas_rusage_from_cpu_ns(child->cpu_runtime_ns);
+                nas_rusage_from_cpu_ns(nas_rusage_cpu_add(
+                    child->cpu_runtime_ns,child->exited_thread_cpu_ns));
             if (!nas_user_write_bytes(rusage,(const uint8_t *)&usage,
                                       sizeof(usage)))
                 return (uint64_t)-EFAULT; /* retain zombie/stop event */
@@ -455,7 +486,19 @@ uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
                 nas_task_release(child);
             } else if(child->ppid!=nas_task_process_pid(nas_current_task)) {
                 child->ptrace_tracer_pid=0;
-            } else nas_task_release(child);
+            } else {
+                /* Linux counts only actually waited children. A successful
+                 * wait4 transfers the child's measured group occupancy and
+                 * previously waited descendants to the parent process. */
+                struct nas_task *leader=nas_current_task->group_leader;
+                uint64_t consumed=nas_rusage_cpu_add(
+                    child->cpu_runtime_ns,child->exited_thread_cpu_ns);
+                consumed=nas_rusage_cpu_add(consumed,
+                                            child->waited_children_cpu_ns);
+                leader->waited_children_cpu_ns=nas_rusage_cpu_add(
+                    leader->waited_children_cpu_ns,consumed);
+                nas_task_release(child);
+            }
         } else if (stopped) {
             child->stop_report_pending=false;
         } else {

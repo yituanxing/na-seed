@@ -29,11 +29,13 @@ enum nas_vma_kind {
     NAS_VMA_STACK=4,
     NAS_VMA_SIGNAL_TRAMPOLINE=5
 };
+#define NAS_VMA_DONTFORK 1U
 struct nas_anon_region {
     uint64_t start,end;
     uint64_t file_offset; /* meaningful for eagerly copied file mappings */
     uint32_t prot;        /* logical permissions; NOT hardware PTE state */
     uint32_t kind;
+    uint32_t flags;       /* Linux MADV_DONTFORK, MM-owned fork policy */
 };
 /* The MM owns this heap-backed table. A zeroed table is empty; cloning an MM
  * must use nas_vma_clone rather than copying the pointer. Capacity grows with
@@ -52,6 +54,8 @@ bool nas_vma_replace(struct nas_anon_regions *,uint64_t addr,uint64_t length,
                      unsigned prot,unsigned kind,uint64_t file_offset);
 bool nas_vma_protect(struct nas_anon_regions *,uint64_t addr,uint64_t length,
                      unsigned prot);
+bool nas_vma_set_dontfork(struct nas_anon_regions *,uint64_t addr,
+                           uint64_t length,bool enabled);
 /* M11 reservation APIs are retained as compatibility wrappers. These and
  * the typed VMA routines manipulate the SAME canonical MM-owned slots. */
 /* Reset releases table storage. Clone preserves the destination on OOM;

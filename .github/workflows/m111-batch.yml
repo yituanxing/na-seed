@@ -5,6 +5,8 @@ on:
       - '.github/workflows/m111-batch.yml'
       - 'tests/m111-*'
       - 'scripts/m111-*'
+      - 'scripts/check-m111-getrusage.sh'
+      - 'scripts/test-m111-getrusage.c'
       - 'scripts/probe-m111-batch.sh'
       - 'scripts/stage-m111-prebuilt.sh'
       - 'scripts/stage-alpine-prebuilt-overlay.sh'
@@ -48,6 +50,9 @@ jobs:
           python3 scripts/check-prebuilt-profile-catalog.py
           python3 scripts/check-native-qemu-target.py
           python3 scripts/check-three-isa-core.py
+          # Direct host-link regression for actual getrusage/wait4 CPU
+          # ownership: no software is compiled inside NaSeed.
+          sh scripts/check-m111-getrusage.sh
       - name: Install host tools and native target QEMU
         timeout-minutes: 12
         run: |

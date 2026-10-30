@@ -1,29 +1,13 @@
 name: NaSeed M83 original native GCC Make upstream zlib three-FS two-boot acceptance
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/m83-source.yml'
-      - 'scripts/m83-*'
-      - 'scripts/stage-m83-*'
-      - 'scripts/probe-m83-*'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/native-source-qemu.sh'
-      - 'scripts/check-native-qemu-target.py'
-      - 'rootfs/alpine/**'
-      - 'tests/m83-source-run.sh'
-      - 'kernel/**'
-      - 'ports/**'
+  # Long guest GCC/Make builds are preserved as opt-in diagnostics. The
+  # automatic PR acceptance path now runs host-prebuilt original software.
   workflow_dispatch:
-# A superseded PR head must not keep expensive genuine guest GCC/Make boots
-# running while the replacement head is waiting for runner capacity.
+# Manual source-build diagnostics for a ref queue rather than cancelling a
+# previously requested run; no PR job triggers these costly guest builds.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   m83:
     name: M83 original signed GCC/Make upstream zlib, build then reboot / ${{ matrix.port }}

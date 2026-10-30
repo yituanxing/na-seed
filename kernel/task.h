@@ -110,6 +110,13 @@ struct nas_task {
     /* Single-CPU elapsed Task occupancy, including syscall kernel time;
      * does not pretend to separate user/system CPU instructions. */
     uint64_t cpu_runtime_ns;
+    /* Real scheduler CPU occupancy of already released sibling threads;
+     * retained by the group leader for Linux RUSAGE_SELF. */
+    uint64_t exited_thread_cpu_ns;
+    /* Real CPU occupancy of waited child processes, including their own
+     * previously waited descendants; Linux RUSAGE_CHILDREN excludes zombies
+     * until the parent actually reaps them. */
+    uint64_t waited_children_cpu_ns;
     enum nas_task_state state;
     uint32_t exit_code;
     uint32_t termination_signal; /* Linux wait4 WIFSIGNALED status */

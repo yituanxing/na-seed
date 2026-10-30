@@ -1,4 +1,5 @@
 #include "task.h"
+#include "task/rusage.h"
 #include "fs/mode.h"
 #include "arch/abi.h"
 #include "fd.h"
@@ -134,6 +135,8 @@ struct nas_task *nas_task_fork_slot(void) {
         child->execed = false;
         child->state = NAS_TASK_READY;
         child->cpu_runtime_ns=0;
+        child->exited_thread_cpu_ns=0;
+        child->waited_children_cpu_ns=0;
         child->exit_code = 0;
         child->termination_signal = 0;
         child->stopped_from = NAS_TASK_FREE;
@@ -211,6 +214,15 @@ void nas_task_adopt_orphans(uint64_t exiting_pid) {
 }
 void nas_task_release(struct nas_task *task) {
     if (!task || task == nas_current_task) return;
+    /* Freed CLONE_THREAD slots must not erase their measured CPU time from
+     * RUSAGE_SELF: charge the exact group leader once, before reuse. */
+    if(task->is_thread && task->group_leader &&
+       task->group_leader!=task &&
+       task->group_leader->state!=NAS_TASK_FREE) {
+        struct nas_task *leader=task->group_leader;
+        leader->exited_thread_cpu_ns=nas_rusage_cpu_add(
+            leader->exited_thread_cpu_ns,task->cpu_runtime_ns);
+    }
     /* An abandoned kernel continuation must never leave a dangling waiter. */
     (void)nas_wait_queue_remove(&task->kernel_exec.wait);
     /* A parked I/O request owns an independent File pin. Drop it while
@@ -222,6 +234,9 @@ void nas_task_release(struct nas_task *task) {
     if (task->sighand) { nas_sighand_put(task->sighand); task->sighand=0; }
     if (task->files) { nas_files_put(task->files); task->files=0; }
     task->state = NAS_TASK_FREE;
+    task->cpu_runtime_ns=0;
+    task->exited_thread_cpu_ns=0;
+    task->waited_children_cpu_ns=0;
     task->pid = 0;
     task->tgid=0;
     task->is_thread=false;

@@ -143,6 +143,15 @@ int main(void) {
                           NAS_VMA_ELF_PRIVATE_SNAPSHOT,0));
     map(parent,A,3,0x11);
     map(parent,X,5,0x90);
+    /* Real MADV_DONTFORK fork contract: excluded *resident* pages must be
+     * absent in the child VMA and PT, while parent stays RW with one frame
+     * ref. A neighboring ordinary VMA must still participate in COW. */
+    map(parent,A+2*P,3,0x6a);
+    uint64_t excluded=phys(parent,A+2*P,0);
+    assert(nas_vma_set_dontfork(&parent->mmap_vmas,A+2*P,P,true));
+    assert(nas_vma_find(&parent->mmap_vmas,A+P) &&
+           !(nas_vma_find(&parent->mmap_vmas,A+P)->flags&NAS_VMA_DONTFORK));
+    assert(nas_vma_find(&parent->mmap_vmas,A+2*P)->flags&NAS_VMA_DONTFORK);
     uint64_t initial=phys(parent,A,0);
     uint64_t code=phys(parent,X,0);
     struct nas_task original={0};
@@ -150,6 +159,11 @@ int main(void) {
     nas_current_task=&original;
     struct nas_mm *child=nas_mm_fork_cow(parent);assert(child);
     unsigned access=0;
+    uint64_t child_excluded=0;
+    assert(!nas_vma_find(&child->mmap_vmas,A+2*P));
+    assert(!nas_mm_resolve_user(child,A+2*P,&child_excluded,0));
+    assert(phys(parent,A+2*P,&access)==excluded &&
+           access==(NAS_UP_READ|NAS_UP_WRITE) && nas_frame_refs(excluded)==1);
     assert(phys(child,A,&access)==initial && access==NAS_UP_READ);
     assert(phys(parent,A,&access)==initial && access==NAS_UP_READ);
     assert(nas_frame_refs(initial)==2);

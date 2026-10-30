@@ -453,6 +453,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         return result;
     }
     if (nr == NAS_SC_munmap) return nas_vm_munmap(args[1], args[2]);
+    if (nr == NAS_SC_madvise)
+        return nas_vm_madvise(args[1],args[2],args[3]);
     if (nr == NAS_SC_brk) {
         uint64_t result=nas_vm_brk(args[1]);
 #ifdef NASEED_SYSCALL_TRACE
@@ -651,6 +653,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         return nas_process_fork_child_tid((uint64_t *)(uintptr_t)args,
                                           nas_linux_clone_child_tid(args));
 
+    if (nr == NAS_SC_getrusage)
+        return nas_process_getrusage(args[1],args[2]);
     if (nr == NAS_SC_wait4) {
         uint64_t ret = nas_process_wait4(args[1], args[2], args[3], args[4]);
         /* WUNTRACED/WCONTINUED are real blocking wait selectors too.
