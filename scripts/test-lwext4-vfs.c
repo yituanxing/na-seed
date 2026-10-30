@@ -196,6 +196,19 @@ int main(int argc,char **argv) {
     }
     static const uint8_t persisted[]="NaSeed writable VFS ext4 inode storage";
     if(write) {
+        /* The vendor helper only sees 16-bit i_uid/i_gid; Linux ext4 also
+         * stores high owner bits. Verify the full VFS IDs and preserve this
+         * inode across unmount + separate host process/remount. */
+        assert(nas_vfs_create("/mnt/sandbox/high-owner-persist",0640)==0);
+        struct nas_fs_node high_owner,high_stat;
+        assert(nas_fs_lookup_node("/mnt/sandbox/high-owner-persist",true,
+                                  &high_owner,actual)==0);
+        assert(nas_vfs_chown(&high_owner,70000,80000)==0);
+        assert(nas_vfs_getattr(&high_owner,&high_stat)==0);
+        assert(high_stat.uid==70000 && high_stat.gid==80000);
+        assert(nas_vfs_chown(&high_owner,UINT32_MAX,80001)==0);
+        assert(nas_vfs_getattr(&high_owner,&high_stat)==0);
+        assert(high_stat.uid==70000 && high_stat.gid==80001);
         /* An open inode survives name changes. Change real on-disk owner
          * via the same inode identity, and verify through independent VFS
          * lookup + pinned getattr (not a forged success code). */
@@ -628,6 +641,10 @@ int main(int argc,char **argv) {
         assert(!memcmp(buffer,persisted,sizeof(persisted)-1));
     }
     if(verify) {
+        struct nas_fs_node high_stat;
+        assert(nas_fs_lookup_node("/mnt/sandbox/high-owner-persist",true,
+                                  &high_stat,actual)==0);
+        assert(high_stat.uid==70000 && high_stat.gid==80001);
         struct nas_fs_node persisted_node;
         assert(nas_fs_lookup_node("/mnt/sandbox/vfs-persist",true,&persisted_node,actual)==0);
         assert(persisted_node.uid==5005 && persisted_node.gid==6006);

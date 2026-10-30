@@ -51,8 +51,16 @@ upstream `ext4_fs_get_inode_ref`/`ext4_fs_put_inode_ref` to implement
 `chmod`, `chown` and `utimens` by live inode identity, including after
 rename, and persists timestamp updates via the original block cache.
 It never reopens an untrusted historical pathname to mutate metadata.
+The ext4 adapter reads/writes both halves of Linux/Hurd inode UID/GID;
+unknown creator-OS layouts reject unrepresentable high IDs with
+`EOVERFLOW` rather than silently truncating successful `chown` calls.
 As with the existing lwext4 mount, crash-transaction semantics with a
 started ext4 journal remain a separate unverified capability.
+**Remaining recorded provider gap:** the pinned lwext4 library does not
+consistently update the *parent directory* mtime/ctime on create, unlink
+or rename. M81 verifies file-level metadata and real program behavior,
+not that directory-timestamp contract; a later GNU Make/find workload
+should expose and verify the owning adapter fix.
 
 ### Shared ext4 inode size over independent opens
 

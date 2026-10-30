@@ -119,6 +119,41 @@ static int ext_metadata_ref(const struct nas_fs_node *node,
     *mounted=ctx;
     return 0;
 }
+/* The vendor's ext4_inode_get/set_{u,g}id access only i_uid/i_gid (16 bits).
+ * Linux and Hurd ext4 store the other 16 bits in OS-dependent inode tail
+ * fields. Keep complete POSIX ownership in the existing VFS adapter, not a
+ * second pathname API or a fork of the pinned vendor source. Filesystems
+ * with an unknown creator OS cannot represent a high UID/GID safely. */
+static bool ext_owner_high_supported(const struct nas_lwext4_mount *ctx) {
+    uint32_t os=ext4_get32(ctx->upstream_super,creator_os);
+    return os==EXT4_SUPERBLOCK_OS_LINUX || os==EXT4_SUPERBLOCK_OS_HURD;
+}
+static uint32_t ext_owner_id(const struct nas_lwext4_mount *ctx,
+                             const struct ext4_inode *raw,bool group) {
+    uint32_t low=to_le16(group?raw->gid:raw->uid);
+    if(!ext_owner_high_supported(ctx))return low;
+    uint32_t os=ext4_get32(ctx->upstream_super,creator_os);
+    uint16_t high=os==EXT4_SUPERBLOCK_OS_HURD ?
+        (group?raw->osd2.hurd2.gid_high:raw->osd2.hurd2.uid_high) :
+        (group?raw->osd2.linux2.gid_high:raw->osd2.linux2.uid_high);
+    return low|((uint32_t)to_le16(high)<<16);
+}
+static void ext_set_owner_id(const struct nas_lwext4_mount *ctx,
+                             struct ext4_inode *raw,uint32_t value,bool group) {
+    if(group)raw->gid=to_le16((uint16_t)value);
+    else raw->uid=to_le16((uint16_t)value);
+    uint16_t high=to_le16((uint16_t)(value>>16));
+    switch(ext4_get32(ctx->upstream_super,creator_os)) {
+    case EXT4_SUPERBLOCK_OS_HURD:
+        if(group)raw->osd2.hurd2.gid_high=high;
+        else raw->osd2.hurd2.uid_high=high;
+        break;
+    case EXT4_SUPERBLOCK_OS_LINUX:
+        if(group)raw->osd2.linux2.gid_high=high;
+        else raw->osd2.linux2.uid_high=high;
+        break;
+    }
+}
 /* A directory entry already supplies the true inode number. Read metadata
  * through the SAME original ext4_fs_get_inode_ref API used by getattr;
  * do not reconstruct a pathname and ask upstream to walk it again. This
@@ -135,7 +170,7 @@ static int ext_snapshot_inode(struct nas_lwext4_mount *ctx,uint32_t ino,
     *out=(struct nas_fs_node){
         .inode=(const void *)(uintptr_t)ino,
         .ino=ino,.nlink=ext4_inode_get_links_cnt(raw),
-        .uid=ext4_inode_get_uid(raw),.gid=ext4_inode_get_gid(raw),
+        .uid=ext_owner_id(ctx,raw,false),.gid=ext_owner_id(ctx,raw,true),
         .atime_sec=ext4_inode_get_access_time(raw),
         .mtime_sec=ext4_inode_get_modif_time(raw),
         .ctime_sec=ext4_inode_get_change_inode_time(raw),
@@ -344,10 +379,18 @@ static int ext_chown_inode(const struct nas_fs_node *node,
     struct nas_lwext4_mount *ctx=NULL;
     int rc=ext_metadata_ref(node,&ctx,&ref);
     if(rc)return rc;
-    uint32_t old_uid=ext4_inode_get_uid(ref.inode);
-    uint32_t old_gid=ext4_inode_get_gid(ref.inode);
-    if(uid!=UINT32_MAX)ext4_inode_set_uid(ref.inode,uid);
-    if(gid!=UINT32_MAX)ext4_inode_set_gid(ref.inode,gid);
+    /* Fail before any inode mutation rather than claiming a truncated chown
+     * succeeded on an ext4 image with an unknown creator OS. */
+    if(!ext_owner_high_supported(ctx) &&
+       ((uid!=UINT32_MAX && uid>UINT16_MAX) ||
+        (gid!=UINT32_MAX && gid>UINT16_MAX))) {
+        (void)ext4_fs_put_inode_ref(&ref);
+        return -EOVERFLOW;
+    }
+    uint32_t old_uid=ext_owner_id(ctx,ref.inode,false);
+    uint32_t old_gid=ext_owner_id(ctx,ref.inode,true);
+    if(uid!=UINT32_MAX)ext_set_owner_id(ctx,ref.inode,uid,false);
+    if(gid!=UINT32_MAX)ext_set_owner_id(ctx,ref.inode,gid,true);
     if((uid!=UINT32_MAX && uid!=old_uid) ||
        (gid!=UINT32_MAX && gid!=old_gid)) {
         uint32_t mode=ext4_inode_get_mode(ctx->upstream_super,ref.inode);
@@ -536,8 +579,8 @@ static int ext_live_getattr(const struct nas_fs_node *node,
     uint32_t mode=ext4_inode_get_mode(ctx->upstream_super,raw);
     out->mode=mode;
     out->nlink=ext4_inode_get_links_cnt(raw);
-    out->uid=ext4_inode_get_uid(raw);
-    out->gid=ext4_inode_get_gid(raw);
+    out->uid=ext_owner_id(ctx,raw,false);
+    out->gid=ext_owner_id(ctx,raw,true);
     out->atime_sec=ext4_inode_get_access_time(raw);
     out->mtime_sec=ext4_inode_get_modif_time(raw);
     out->ctime_sec=ext4_inode_get_change_inode_time(raw);
