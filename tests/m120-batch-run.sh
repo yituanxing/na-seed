@@ -163,12 +163,15 @@ run_case() {
         cp_tool=$(original_elf /usr/bin/tiffcp)
         "$cp_tool" "$work/color.tif" "$work/gray.tif" "$work/album.tif"
         "$exe" "$work/album.tif" "$work/frame"
-        [ -s "$work/frameaaa.tif" ] && [ -s "$work/frameaab.tif" ]
-        count=$(busy find "$work" -maxdepth 1 -name 'frame*.tif' | busy wc -l)
-        [ "$count" -eq 2 ]
+        # Recent upstream tiffsplit emits frame0000001.tif/frame0000002.tif;
+        # older releases use frameaaa.tif/frameaab.tif.  Verify the actual
+        # exactly two split pages and compare decoded pixel contents instead
+        # of assuming a particular filename suffix convention.
+        set -- "$work"/frame*.tif
+        [ "$#" -eq 2 ] && [ -s "$1" ] && [ -s "$2" ]
         cmp=$(original_elf /usr/bin/tiffcmp)
-        "$cmp" -t "$work/color.tif" "$work/frameaaa.tif"
-        "$cmp" -t "$work/gray.tif" "$work/frameaab.tif" ;;
+        "$cmp" -t "$work/color.tif" "$1"
+        "$cmp" -t "$work/gray.tif" "$2" ;;
       *) echo "[M120 UNKNOWN CASE] $app" >&2; return 2 ;;
     esac
 }
