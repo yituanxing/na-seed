@@ -51,11 +51,16 @@ make_ppm() {
 }
 
 pixel_bytes() {
-    # OpenJPEG is another genuine signed original ELF, used as an independent
-    # lossless pixel decoding oracle for both original and optimized PNGs.
+    # OpenJPEG honors PNG gAMA/sRGB metadata when reading pixels. avifdec
+    # adds those ancillary chunks even when its decoded RGB is byte-exact,
+    # so normalize metadata with the original signed pngcrush first. This
+    # yields raw RGB comparisons without changing a single pixel: reproduced
+    # and byte-verified against the CI Alpine rootfs on the Linux host.
+    pixel_normalizer=$(original_elf /usr/bin/pngcrush)
     pixel_comp=$(original_elf /usr/bin/opj_compress)
     pixel_decomp=$(original_elf /usr/bin/opj_decompress)
-    "$pixel_comp" -i "$1" -o "$2.jp2" -n 3 > "$2.compress-log" 2>&1
+    "$pixel_normalizer" -q -rem alla "$1" "$2.neutral.png" > "$2.normalize-log" 2>&1
+    "$pixel_comp" -i "$2.neutral.png" -o "$2.jp2" -n 3 > "$2.compress-log" 2>&1
     "$pixel_decomp" -i "$2.jp2" -o "$2.ppm" > "$2.decode-log" 2>&1
     busy tail -c 768 "$2.ppm" > "$2.rgb"
     [ "$(busy wc -c < "$2.rgb")" -eq 768 ]
