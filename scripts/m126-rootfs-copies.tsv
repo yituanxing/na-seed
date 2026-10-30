@@ -1,0 +1,2 @@
+# The M126 host-configure hook prepares all roff input fixtures outside NaSeed.
+tests/m126-batch-run.sh	tests/m126-batch-run.sh
