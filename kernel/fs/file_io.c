@@ -67,7 +67,10 @@ uint64_t nas_fs_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     unsigned slot=TASK.fds->entries[fd].slot;
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
         return (uint64_t)-EBADF;
-    if((nas_open_files[slot].status_flags & (NAS_LINUX_O_PATH|3ULL))==0)
+    /* O_PATH is never a writable description, irrespective of O_ACCMODE.
+     * A combined mask would accidentally accept it as a write permission. */
+    if((nas_open_files[slot].status_flags & NAS_LINUX_O_PATH) ||
+       (nas_open_files[slot].status_flags & 3ULL)==0ULL)
         return (uint64_t)-EBADF;
     /* Linux bounds one regular write to MAX_RW_COUNT (INT_MAX rounded down
      * to the page size), not a kernel-private 1-MiB limit. GNU binutils

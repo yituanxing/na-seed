@@ -360,6 +360,12 @@ int main(void) {
     assert(nas_fs_fd_write(29,USER_LIMIT-2,32)==32);
     assert(nas_fs_fd_read(28,USER_LIMIT-2,32)==0);
 
-    puts("[M106 USER-COPY SYSCALL PASS] real pipe + syscall adapters: RO atomicity, lazy/COW, no pipe loss, socketpair publication, accept retains pending peer, null/zero discard parity");
+    /* Linux O_PATH FDs are metadata-only, including when the backend
+     * would ordinarily discard a write without touching its source. */
+    nas_open_files[22].status_flags=NAS_LINUX_O_PATH;
+    assert((int64_t)nas_fs_fd_write(28,TEST_BASE,1)==-EBADF);
+    nas_open_files[22].status_flags=2;
+
+    puts("[M106 USER-COPY SYSCALL PASS] real pipe + syscall adapters: RO atomicity, lazy/COW, no pipe loss, socketpair publication, accept retains pending peer, null/zero discard parity, O_PATH write EBADF");
     return 0;
 }

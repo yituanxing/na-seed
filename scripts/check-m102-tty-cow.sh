@@ -15,7 +15,8 @@ for arch in riscv64 aarch64; do
         -fno-builtin -fno-stack-protector -fno-pic -fno-pie -I kernel \
         -c kernel/drivers/tty.c -o "build/m102-tty-cow/$arch.o"
     clang $flags -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding \
-        -fno-builtin -fno-stack-protector -fno-pic -fno-pie -I kernel \
+        -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
+        -I scripts/m89-test-include -I kernel \
         -c kernel/fs/file_io.c -o "build/m102-tty-cow/$arch-file-io.o"
     echo "[M102 TARGET PASS] $arch TTY + shared FileOps usercopy/COW adapter"
 done
