@@ -23,6 +23,8 @@ concurrency:
 jobs:
   durable-git:
     name: M85 original signed Git real physical ext4 two QEMU boots / ${{ matrix.port }}
+    # Match the established three-ISA guest runner; changes to the build
+    # image require an independent real QEMU requalification.
     runs-on: ubuntu-24.04
     timeout-minutes: 100
     strategy:

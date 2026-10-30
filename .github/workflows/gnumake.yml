@@ -20,7 +20,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   original-make:
-    runs-on: ubuntu-latest
+    # Keep the previously qualified native libc/toolchain and QEMU image.
+    # ubuntu-latest moved to 26.04; its host-built static init SIGILLs in
+    # the bounded x86 guest before GNU Make runs (PR #147, run 41076254730).
+    runs-on: ubuntu-24.04
     timeout-minutes: 23
     steps:
       - uses: actions/checkout@v4
