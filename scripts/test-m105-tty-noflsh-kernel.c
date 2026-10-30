@@ -63,12 +63,12 @@ static void signal_int(void){
 static void read_exact(const uint8_t *want,unsigned n){
     uint8_t actual[NAS_LDISC_CAPACITY]={0};
     assert(n<=sizeof(actual));
-    assert(nas_tty_read((uint64_t)(uintptr_t)actual,n,false)==n);
+    assert(nas_tty_read(actual,n,false)==n);
     assert(memcmp(actual,want,n)==0);
 }
 static void unread(void){
     uint8_t b=0;
-    assert((int64_t)nas_tty_read((uint64_t)(uintptr_t)&b,1,true)==-EAGAIN);
+    assert((int64_t)nas_tty_read(&b,1,true)==-EAGAIN);
 }
 int main(void){
     nas_tty_init();

@@ -73,6 +73,11 @@ struct nas_vfs_type {
     int (*validate_inode)(const struct nas_fs_node *);
     int64_t (*read_at)(const struct nas_fs_node *, uint64_t offset,
                        uint8_t *kernel_dst, uint64_t length);
+    /* Only some inode providers publish byte-accurate file sizes: dynamic
+     * generators such as procfs intentionally report st_size==0 while
+     * still producing content. If true, the live node size is a reliable
+     * EOF bound for preflight of the requested user read destination. */
+    bool read_size_is_eof;
     /* Logical cursor counts entries, including . and .., from zero.
      * Returns count, 0 at EOF, or negative errno. Batch size is bounded. */
     /* Directory enumeration is inode-owned: never reopen an old FD

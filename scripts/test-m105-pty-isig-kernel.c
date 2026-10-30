@@ -13,6 +13,7 @@
 static struct nas_task owner={.pid=42,.sid=42,.pgid=77};
 static struct nas_fd_table fds;
 struct nas_task *nas_current_task=&owner;
+static unsigned slot_for_fd(unsigned fd) { return fds.entries[fd].slot; }
 struct nas_task *nas_task_at(unsigned slot) {(void)slot;return NULL;}
 bool nas_user_read_bytes(uint64_t address,uint8_t *dst,uint64_t length) {
     if(!address && length)return false;
@@ -25,7 +26,8 @@ bool nas_user_write_bytes(uint64_t address,const uint8_t *src,uint64_t length) {
     return true;
 }
 static void push(unsigned fd,uint8_t b) {
-    assert(nas_pty_write(fd,(uint64_t)(uintptr_t)&b,1)==1);
+    /* Backend takes OFD identity, independent of the task-local FD. */
+    assert(nas_pty_write(slot_for_fd(fd),&b,1)==1);
 }
 static void take(unsigned signum,uint64_t pgid) {
     uint64_t sid=0,group=0;
@@ -46,13 +48,15 @@ static void set_termios(unsigned fd,struct nas_termios *t) {
     assert(nas_pty_ioctl(fd,0x5402,(uint64_t)(uintptr_t)t)==0);
 }
 static void make_pair(unsigned master,unsigned slave,unsigned number) {
-    fds.entries[master].slot=(uint8_t)master;
-    fds.entries[slave].slot=(uint8_t)slave;
-    assert(nas_pty_new(master)==0);
+    /* Deliberately make FD numbers DIFFER from shared description slots.
+     * A backend accidentally indexing Task.fds by its slot fails here. */
+    fds.entries[master].slot=(uint8_t)(40U+2U*number);
+    fds.entries[slave].slot=(uint8_t)(41U+2U*number);
+    assert(nas_pty_new(slot_for_fd(master))==0);
     uint32_t unlocked=0;
     assert(nas_pty_ioctl(master,0x40045431,
                          (uint64_t)(uintptr_t)&unlocked)==0);
-    assert(nas_pty_attach(number,slave)==0);
+    assert(nas_pty_attach(number,slot_for_fd(slave))==0);
     assert(nas_pty_ioctl(slave,0x540e,0)==0); /* TIOCSCTTY */
 }
 int main(void) {
@@ -75,7 +79,7 @@ int main(void) {
     push(0,'\r'); /* Linux compares VINTR before CR->NL translation. */
     empty();
     uint8_t bytes[2]={0};
-    assert(nas_pty_read(1,(uint64_t)(uintptr_t)bytes,1)==1);
+    assert(nas_pty_read(slot_for_fd(1),bytes,1)==1);
     assert(bytes[0]=='\n');
     t.cc[0]='\r';set_termios(1,&t);
     push(0,'\r');take(2,77);
@@ -83,7 +87,7 @@ int main(void) {
     t.lflag&=~1U; /* ISIG off means Ctrl-C becomes ordinary data. */
     set_termios(1,&t);
     push(0,3);
-    assert(nas_pty_read(1,(uint64_t)(uintptr_t)bytes,1)==1);
+    assert(nas_pty_read(slot_for_fd(1),bytes,1)==1);
     assert(bytes[0]==3);
     empty();
 
@@ -94,24 +98,24 @@ int main(void) {
     t.cc[0]=3;
     set_termios(1,&t);
     push(0,'A');push(0,3);take(2,77);
-    assert(nas_pty_read(1,(uint64_t)(uintptr_t)bytes,1)==1);
+    assert(nas_pty_read(slot_for_fd(1),bytes,1)==1);
     assert(bytes[0]=='A');
     t.lflag&=~0000200U; /* default: signal flushes unread raw data */
     set_termios(1,&t);
     push(0,'B');push(0,3);take(2,77);
-    assert((int64_t)nas_pty_read(1,(uint64_t)(uintptr_t)bytes,1)==-EAGAIN);
+    assert((int64_t)nas_pty_read(slot_for_fd(1),bytes,1)==-EAGAIN);
 
     t.lflag|=2U|0000200U; /* canonical, ISIG, NOFLSH */
     set_termios(1,&t);
     push(0,'C');push(0,3);take(2,77);
     push(0,'\n');
-    assert(nas_pty_read(1,(uint64_t)(uintptr_t)bytes,2)==2);
+    assert(nas_pty_read(slot_for_fd(1),bytes,2)==2);
     assert(bytes[0]=='C' && bytes[1]=='\n');
     t.lflag&=~0000200U; /* canonical default flushes unfinished line */
     set_termios(1,&t);
     push(0,'D');push(0,3);take(2,77);
     push(0,'\n');
-    assert(nas_pty_read(1,(uint64_t)(uintptr_t)bytes,2)==1);
+    assert(nas_pty_read(slot_for_fd(1),bytes,2)==1);
     assert(bytes[0]=='\n');
     empty();
 
@@ -129,11 +133,11 @@ int main(void) {
 
     /* Bound the queue without silent overwrite or losing ordering. */
     for(unsigned i=0;i<64;i++)push(0,3);
-    assert(!nas_pty_write_ready(0));
+    assert(!nas_pty_write_ready(slot_for_fd(0)));
     uint8_t b=3;
-    assert((int64_t)nas_pty_write(0,(uint64_t)(uintptr_t)&b,1)<0);
+    assert((int64_t)nas_pty_write(slot_for_fd(0),&b,1)<0);
     for(unsigned i=0;i<64;i++)take(2,77);
-    assert(nas_pty_write_ready(0));
+    assert(nas_pty_write_ready(slot_for_fd(0)));
     empty();
 
     /* Remove controlling session, then an ISIG byte must not target an

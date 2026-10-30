@@ -704,6 +704,7 @@ static const struct nas_vfs_type ext_type={
     .last_inode_unpin=ext_last_inode_unpin,
     .getattr=ext_live_getattr,
     .read_at=ext_read_inode,
+    .read_size_is_eof=true,
     .write_at=ext_write_inode,
     .resize=ext_resize_inode,.sync=ext_sync_inode,
     .read_dir=ext_read_directory,

@@ -64,28 +64,100 @@ int64_t nas_fs_mmap_read(uint64_t fd, uint64_t offset,
 
 uint64_t nas_fs_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)return (uint64_t)-EBADF;
-    if((nas_open_files[TASK.fds->entries[fd].slot].status_flags & (NAS_LINUX_O_PATH|3ULL))==0)
+    unsigned slot=TASK.fds->entries[fd].slot;
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+        return (uint64_t)-EBADF;
+    if((nas_open_files[slot].status_flags & (NAS_LINUX_O_PATH|3ULL))==0)
         return (uint64_t)-EBADF;
     /* Linux bounds one regular write to MAX_RW_COUNT (INT_MAX rounded down
      * to the page size), not a kernel-private 1-MiB limit. GNU binutils
      * legitimately calls writev() with a single multi-megabyte iovec.
      * The file/device ops still copy in bounded chunks and may short-write. */
     if(length>NAS_MAX_RW_COUNT)length=NAS_MAX_RW_COUNT;
-    if(address>=USER_LIMIT || length>USER_LIMIT-address)
+    const struct nas_file_ops *ops=nas_open_files[slot].ops;
+    if(!ops || !ops->write)return (uint64_t)-EBADF;
+    /* The provider authorizes the ORIGINAL logical request before any
+     * usercopy/chunking. For pipes, <= PIPE_BUF must fit as one unit. */
+    uint64_t budget=ops->write_plan ? ops->write_plan(slot,length) : length;
+    if((int64_t)budget<0)return budget;
+    if(budget>length)return (uint64_t)-EIO;
+    if(!budget)return 0;
+    /* Only the provider-authorized byte count is dereferenced: for example
+     * eventfd rejects oversized writes before checking the user buffer. */
+    if(address>=USER_LIMIT || budget>USER_LIMIT-address)
         return (uint64_t)-EFAULT;
-    const struct nas_file_ops *ops=nas_open_files[TASK.fds->entries[fd].slot].ops;
-    return ops && ops->write ? ops->write(fd,address,length) : (uint64_t)-EBADF;
+    if(ops->atomic_write_limit && length<=ops->atomic_write_limit &&
+       !nas_user_prepare_read(address,budget))
+        return (uint64_t)-EFAULT;
+    uint8_t buffer[1024];
+    uint64_t done=0;
+    while(done<budget) {
+        uint64_t n=budget-done;
+        uint64_t room=4096ULL-((address+done)&4095ULL);
+        if(n>sizeof(buffer))n=sizeof(buffer);
+        /* Tiny indivisible providers (eventfd: eight bytes) must receive
+         * one complete kernel buffer even across a user page boundary. */
+        if(n>room && budget>8)n=room;
+        if(!nas_user_read_bytes(address+done,buffer,n))
+            return done ? done : (uint64_t)-EFAULT;
+        uint64_t written=ops->write(slot,buffer,n);
+        if((int64_t)written<0)return done ? done : written;
+        if(written>n)return done ? done : (uint64_t)-EIO;
+        done+=written;
+        if(written<n)break;
+    }
+    return done;
 }
 uint64_t nas_fs_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)return (uint64_t)-EBADF;
-    if((nas_open_files[TASK.fds->entries[fd].slot].status_flags&NAS_LINUX_O_PATH) ||
-       (nas_open_files[TASK.fds->entries[fd].slot].status_flags&3ULL)==1)
+    unsigned slot=TASK.fds->entries[fd].slot;
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+        return (uint64_t)-EBADF;
+    if((nas_open_files[slot].status_flags&NAS_LINUX_O_PATH) ||
+       (nas_open_files[slot].status_flags&3ULL)==1)
         return (uint64_t)-EBADF;
     if(length>NAS_MAX_RW_COUNT)length=NAS_MAX_RW_COUNT;
-    if(length && (address>=USER_LIMIT || length>USER_LIMIT-address))
+    const struct nas_file_ops *ops=nas_open_files[slot].ops;
+    if(!ops || !ops->read)return (uint64_t)-EBADF;
+    uint64_t budget=ops->read_plan ? ops->read_plan(slot,length) : length;
+    if((int64_t)budget<0)return budget;
+    if(budget>length)return (uint64_t)-EIO;
+    if(!budget) {
+        /* A planned zero-byte EOF can be an input token (PTY canonical
+         * terminal). It still needs a zero-length provider commit. */
+        if(length && ops->read_finalize_zero) {
+            uint8_t dummy=0;
+            uint64_t rc=ops->read(slot,&dummy,0);
+            if((int64_t)rc<0)return rc;
+            if(rc)return (uint64_t)-EIO;
+        }
+        return 0;
+    }
+    if(!ops->read_commit_before_copyout &&
+       (address>=USER_LIMIT || budget>USER_LIMIT-address))
         return (uint64_t)-EFAULT;
-    const struct nas_file_ops *ops=nas_open_files[TASK.fds->entries[fd].slot].ops;
-    return ops && ops->read ? ops->read(fd,address,length) : (uint64_t)-EBADF;
+    uint8_t buffer[1024];
+    uint64_t done=0;
+    while(done<budget) {
+        uint64_t n=budget-done;
+        uint64_t room=4096ULL-((address+done)&4095ULL);
+        if(n>sizeof(buffer))n=sizeof(buffer);
+        if(n>room && budget>8)n=room;
+        /* In particular, a consuming Pipe/PTY/TTY/Eventfd provider must
+         * not discard data or advance its cursor before this succeeds. */
+        if(!ops->read_commit_before_copyout &&
+           !nas_user_prepare_write(address+done,n))
+            return done ? done : (uint64_t)-EFAULT;
+        uint64_t got=ops->read(slot,buffer,n);
+        if((int64_t)got<0)return done ? done : got;
+        if(got>n)return done ? done : (uint64_t)-EIO;
+        if(!got)break;
+        if(!nas_user_write_bytes(address+done,buffer,got))
+            return done ? done : (uint64_t)-EFAULT;
+        done+=got;
+        if(got<n)break;
+    }
+    return done;
 }
 /* The Linux positional I/O ABI is the same common VFS operation on all
  * three architectures. Respect per-FD access mode and reject pipes,
@@ -185,8 +257,9 @@ uint64_t nas_fs_fd_readv(uint64_t fd,uint64_t iov,uint64_t count) {
         uint64_t allowed=bytes;
         if(allowed>NAS_MAX_RW_COUNT-total)
             allowed=NAS_MAX_RW_COUNT-total;
-        if (address>=USER_LIMIT || allowed>USER_LIMIT-address)
-            return total ? total : (uint64_t)-EFAULT;
+        /* The common read owns the planned-byte address check. A vector
+         * may describe more storage than a provider can actually return
+         * (eventfd: eight bytes; regular-file EOF: zero bytes). */
         uint64_t received=nas_fs_fd_read(fd,address,allowed);
         if ((int64_t)received<0) return total ? total : received;
         total+=received;

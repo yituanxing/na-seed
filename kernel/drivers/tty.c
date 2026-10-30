@@ -257,18 +257,13 @@ bool nas_tty_poll_readable(void) {
     unsigned min=tty.t.cc[6] ? tty.t.cc[6] : 1;
     return tty.ldisc.used-tty.ldisc.pos>=min;
 }
-uint64_t nas_tty_read(uint64_t dst,uint64_t len,bool nonblock) {
+uint64_t nas_tty_read(uint8_t *dst,uint64_t len,bool nonblock) {
     if(!len)return 0;
+    if(!dst)return (uint64_t)-EFAULT;
     if(!tty.rx_enabled)return (uint64_t)-EAGAIN;
     if(!nas_arch_console_has_rx())return (uint64_t)-EOPNOTSUPP;
-    if(dst>UINT64_MAX-len)return (uint64_t)-EFAULT;
-    /* M102: fork COW clears a hardware write bit while the VMA is still
-     * logically writable. Terminal reads must not reject that buffer.
-     * nas_user_write_bytes() will materialize/break COW atomically BEFORE
-     * consuming the canonical input, preserving replay and terminal bytes. */
-    for(uint64_t i=0;i<len;i+=4096)
-        if(!nas_user_address_writable(dst+i))return (uint64_t)-EFAULT;
-    if(!nas_user_address_writable(dst+len-1))return (uint64_t)-EFAULT;
+    /* COW writable checks belong to the common syscall adapter. It must
+     * validate the destination BEFORE calling this consuming operation. */
     nas_tty_pump();
     if(tty.unsupported_input) {
         tty.unsupported_input=false;
@@ -296,7 +291,7 @@ uint64_t nas_tty_read(uint64_t dst,uint64_t len,bool nonblock) {
     }
     if(tty.ldisc.eof) { nas_ldisc_reset(&tty.ldisc);return 0; }
     unsigned n=nas_ldisc_peek(&tty.ldisc,&copy,bytes,wanted);
-    if(!nas_user_write_bytes(dst,bytes,n))return (uint64_t)-EFAULT;
+    memcpy(dst,bytes,n);
     nas_ldisc_commit(&tty.ldisc,n);
      return n;
 }

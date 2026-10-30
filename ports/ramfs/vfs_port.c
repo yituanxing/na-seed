@@ -399,6 +399,7 @@ static const struct nas_vfs_type ramfs_type={
     .name="upstream-ramfs",.exec_source_label="RAMFS",
     .root=root,.lookup_child=child,
     .getattr=getattr,.validate_inode=validate,.read_at=read_at,
+    .read_size_is_eof=true,
     .last_inode_unpin=last_inode_unpin,
     .read_dir=readdir_inode,.create=create,.mkdir=mkdir_node,
     .chmod=chmod_node,

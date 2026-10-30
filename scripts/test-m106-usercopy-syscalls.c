@@ -2,8 +2,8 @@
  * simulated user MM and isolated FD reservation edge. This is a host test, not a
  * substitute for the native three-ISA QEMU acceptance.
  *
- * Include the syscall TU so the actual static pipe2/socketpair/read/write
- * paths can be called without fabricating an alternate syscall algorithm.
+ * Include the syscall TU so the actual static pipe2/socketpair and pipe
+ * provider callbacks are exercised by the PUBLIC read/write FD adapter.
  * Unrelated syscall entrypoints are removed by --gc-sections at link time.
  */
 #include <assert.h>
@@ -19,7 +19,7 @@
 #include "../kernel/mm/frame.h"
 #include "../kernel/arch/user_pt.h"
 
-enum { TEST_PAGE = 4096, TEST_PAGES = 4 };
+enum { TEST_PAGE = 4096, TEST_PAGES = 4, TEST_OFD_START = 16 };
 #define TEST_BASE UINT64_C(0x210000)
 static uint8_t pages[TEST_PAGES][TEST_PAGE];
 static bool present[TEST_PAGES], can_write[TEST_PAGES], cow[TEST_PAGES];
@@ -121,6 +121,21 @@ void nas_vfs_release_posix_locks(const struct nas_fs_node *node,uint64_t pid) {
  * test-fd-entry-model.c. Mock only the thin reservation/publication edge
  * here, while preserving the real pipe ring and syscall copy transaction. */
 struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
+/* Production callbacks, not duplicate host pipe algorithms. The isolated
+ * FD-install fixture binds only the exercised kinds so referencing the
+ * complete production ops_by_kind[] does not pull unrelated providers into
+ * this focused host executable. */
+static const struct nas_file_ops m106_pipe_reader={
+    .read_plan=pipe_read_plan,.read=pipe_fd_read
+};
+static const struct nas_file_ops m106_pipe_writer={
+    .write_plan=pipe_write_plan,.write=pipe_fd_write,
+    .atomic_write_limit=4096
+};
+static const struct nas_file_ops m106_stream_socket={
+    .read_plan=pipe_read_plan,.write_plan=pipe_write_plan,
+    .read=pipe_fd_read,.write=pipe_fd_write,.atomic_write_limit=4096
+};
 void nas_fd_system_init(void) { memset(nas_open_files,0,sizeof(nas_open_files)); }
 unsigned nas_fd_first_unused(const struct nas_task *t,unsigned minimum) {
     for(unsigned i=minimum;i<NAS_FD_LIMIT;i++)
@@ -150,7 +165,9 @@ int nas_fd_reserve(const struct nas_task *t,unsigned minimum,unsigned count,
     for(unsigned i=minimum;i<NAS_FD_LIMIT&&fd_count<count;i++)
         if(!t->fds->entries[i].kind)fds[fd_count++]=i;
     if(fd_count<count)return -EMFILE;
-    for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT&&slot_count<count;i++)
+    /* Exercise user FD != shared OpenFile slot; this fixture validates
+     * publication, not the allocator's lowest-available-slot policy. */
+    for(unsigned i=TEST_OFD_START;i<NAS_OPEN_FILE_LIMIT&&slot_count<count;i++)
         if(!nas_open_files[i].refcount)slots[slot_count++]=i;
     return slot_count<count?-ENFILE:0;
 }
@@ -163,6 +180,9 @@ bool nas_fd_install_new(struct nas_task *t,unsigned fd,unsigned slot,
     };
     nas_open_files[slot].refcount=1;
     nas_open_files[slot].status_flags=status;
+    nas_open_files[slot].ops=kind==FD_PIPE_R ? &m106_pipe_reader :
+                             kind==FD_PIPE_W ? &m106_pipe_writer :
+                             kind==FD_SOCKET ? &m106_stream_socket : NULL;
     return true;
 }
 
@@ -224,31 +244,34 @@ int main(void) {
     unsigned rd=pair_fd(pipe_out,0),wr=pair_fd(pipe_out,1);
     assert(rd!=wr && guest_task.fds->entries[rd].kind==FD_PIPE_R);
     assert(guest_task.fds->entries[wr].kind==FD_PIPE_W);
+    unsigned pipe_slot=guest_task.fds->entries[rd].slot;
+    assert(pipe_slot!=rd && guest_task.fds->entries[wr].slot!=wr);
+    /* snapshot(0) below is the first PIPE OBJECT index, not an OFD slot. */
 
     /* The reader rejects a true RX destination without consuming bytes.
      * A subsequent COW/lazy read succeeds and returns the SAME payload. */
     const char text[]="long-lived-pipe-payload";
     memcpy(pages[2]+21,text,sizeof(text));
-    assert(pipe_fd_write(wr,TEST_BASE+2*TEST_PAGE+21,sizeof(text))==sizeof(text));
+    assert(nas_fs_fd_write(wr,TEST_BASE+2*TEST_PAGE+21,sizeof(text))==sizeof(text));
     unsigned pending=0;
     assert(nas_pipe_snapshot(0,&pending,NULL,NULL)&&pending==sizeof(text));
     can_write[3]=false;
-    assert((int64_t)pipe_fd_read(rd,TEST_BASE+3*TEST_PAGE+1,sizeof(text))==-EFAULT);
+    assert((int64_t)nas_fs_fd_read(rd,TEST_BASE+3*TEST_PAGE+1,sizeof(text))==-EFAULT);
     assert(nas_pipe_snapshot(0,&pending,NULL,NULL)&&pending==sizeof(text));
     can_write[3]=true;cow[3]=true;
-    assert(pipe_fd_read(rd,TEST_BASE+3*TEST_PAGE+1,sizeof(text))==sizeof(text));
+    assert(nas_fs_fd_read(rd,TEST_BASE+3*TEST_PAGE+1,sizeof(text))==sizeof(text));
     assert(protection_faults>=1);
     assert(memcmp(pages[3]+1,text,sizeof(text))==0);
     assert(nas_pipe_snapshot(0,&pending,NULL,NULL)&&pending==0);
 
     /* Broken source address must not append garbage to the pipe. */
-    assert((int64_t)pipe_fd_write(wr,USER_LIMIT-2,4)==-EFAULT);
+    assert((int64_t)nas_fs_fd_write(wr,USER_LIMIT-2,4)==-EFAULT);
     assert(nas_pipe_snapshot(0,&pending,NULL,NULL)&&pending==0);
     present[2]=false;lazy[2]=true;
-    assert(pipe_fd_write(wr,TEST_BASE+2*TEST_PAGE+21,sizeof(text))==sizeof(text));
+    assert(nas_fs_fd_write(wr,TEST_BASE+2*TEST_PAGE+21,sizeof(text))==sizeof(text));
     assert(missing_faults>=1);
     assert(nas_pipe_snapshot(0,&pending,NULL,NULL)&&pending==sizeof(text));
-    assert(pipe_fd_read(rd,TEST_BASE+1,sizeof(text))==sizeof(text));
+    assert(nas_fs_fd_read(rd,TEST_BASE+1,sizeof(text))==sizeof(text));
     assert(memcmp(pages[0]+1,text,sizeof(text))==0);
 
     /* A large source crosses an unmapped but lazily resolvable page. The
@@ -262,16 +285,24 @@ int main(void) {
         *user_ptr(source+i)=expected[i];
     }
     present[1]=false;lazy[1]=true;
-    assert(pipe_fd_write(wr,source,sizeof(expected))==sizeof(expected));
+    assert(nas_fs_fd_write(wr,source,sizeof(expected))==sizeof(expected));
     assert(nas_pipe_snapshot(0,&pending,NULL,NULL)&&pending==sizeof(expected));
     const uint64_t dest=TEST_BASE+3*TEST_PAGE-256;
     can_write[3]=false;
-    assert(pipe_fd_read(rd,dest,sizeof(expected))==256);
+    assert(nas_fs_fd_read(rd,dest,sizeof(expected))==256);
     assert(memcmp(pages[2]+TEST_PAGE-256,expected,256)==0);
     assert(nas_pipe_snapshot(0,&pending,NULL,NULL)&&pending==444);
     can_write[3]=true;cow[3]=true;
-    assert(pipe_fd_read(rd,TEST_BASE+3*TEST_PAGE,444)==444);
+    assert(nas_fs_fd_read(rd,TEST_BASE+3*TEST_PAGE,444)==444);
     assert(memcmp(pages[3],expected+256,444)==0);
+    assert(nas_pipe_snapshot(0,&pending,NULL,NULL)&&pending==0);
+
+    /* Linux PIPE_BUF admission is one transaction: if a short atomic
+     * write spans a valid source page and a genuinely unmapped second
+     * page, the provider must not publish the first 256 bytes. This
+     * exercises source preflight before any ring write commit. */
+    present[1]=false;lazy[1]=false;
+    assert((int64_t)nas_fs_fd_write(wr,source,sizeof(expected))==-EFAULT);
     assert(nas_pipe_snapshot(0,&pending,NULL,NULL)&&pending==0);
 
     /* COW argument block must also allow socketpair, without spurious

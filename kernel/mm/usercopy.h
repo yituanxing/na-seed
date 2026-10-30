@@ -8,6 +8,10 @@ bool nas_user_copy_to_mapped(uint64_t addr, const uint8_t *src, uint64_t len);
  * hardware PTE writable bit. This inspection never commits a mapping. */
 bool nas_user_address_writable(uint64_t addr);
 bool nas_user_read_bytes(uint64_t addr, uint8_t *dst, uint64_t len);
+/* Validate/materialize every source page before an atomic backend write.
+ * No user data is consumed; callers must not schedule between preparation
+ * and transferring the same range to a kernel-owned provider. */
+bool nas_user_prepare_read(uint64_t addr, uint64_t len);
 /* Read at most capacity bytes, including the terminating NUL. Resolves
  * legitimate lazy pages one at a time and never reads beyond the first NUL.
  * Returns 0, -EFAULT, or -ENAMETOOLONG. On failure dst may be partial. */

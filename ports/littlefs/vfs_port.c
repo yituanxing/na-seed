@@ -155,7 +155,8 @@ static int readdir(const struct nas_fs_node *node,
 static const struct nas_vfs_type type={
     .name="littlefs",.exec_source_label="littlefs",
     .root=look_root,.lookup_child=look_child,
-    .read_at=read_at,.read_dir=readdir,.read_only=true
+    .read_at=read_at,.read_size_is_eof=true,
+    .read_dir=readdir,.read_only=true
 };
 int nas_littlefs_vfs_mount(struct nas_littlefs_vfs *ctx,
                            const char *device,const char *point) {

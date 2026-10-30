@@ -30,6 +30,17 @@ static uint8_t *read_page(uint64_t at) {
         return 0;
     return nas_mmu_user_byte(at);
 }
+bool nas_user_prepare_read(uint64_t addr, uint64_t len) {
+    if (addr >= USER_LIMIT || len > USER_LIMIT - addr) return false;
+    /* Check the entire range before an atomic pipe/socket write commits.
+     * Resolve valid lazy source pages without copying user data yet. */
+    for (uint64_t done = 0; done < len;) {
+        uint64_t at = addr + done;
+        if (!read_page(at)) return false;
+        done += page_chunk(at, len - done);
+    }
+    return true;
+}
 /* This kernel-origin copy may initialize RX code pages: intentionally
  * require a valid user mapping, NOT user-writable permission. */
 bool nas_user_copy_to_mapped(uint64_t va, const uint8_t *data, uint64_t length) {

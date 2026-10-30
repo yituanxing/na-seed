@@ -19,6 +19,7 @@ independent consumer, and test evidence.
 | NAS-A005 | P1 | Confirmed architectural limit; implementation deferred | Existing private file maps eagerly snapshot data and `MAP_SHARED` lacks an owned file/page-cache contract | File-backed VMAs pin an inode/address-space; tested dirty/writeback, read/write/truncate coherence, COW and sync before claiming shared mapping |
 | NAS-A006 | P2 | Known capacity/performance constraint | Bounded task/FD/VMA/heap resources; shared synchronous single-inflight polling VirtIO-Blk | Grow only from measured real-program failures; preserve ownership and compare cold/warm genuine-QEMU performance |
 | NAS-A007 | P1 | Process/tooling debt; do not duplicate foundation | `scripts/native-alpine-matrix.tsv` and M50 fast/full, original APK staging, M79 workflow and strict perf provenance already exist | One indexed source/version/ISA/dependency/workload/evidence catalog; reuse present runners and retain all M38–M108 gates, including manual full distinct from automatic fast |
+| NAS-A008 | P1 | Newly confirmed Linux ABI mismatch during NAS-A002 differential review | `kernel/fs/file_io.c` loops `readv/writev` as independently planned scalar calls: Linux eventfd `readv` may fill a single 8-byte value across 4+4 iovecs, while pipe `writev` needs one atomic admission for aggregate `<= PIPE_BUF` | Introduce vector-aware transaction planning and scatter/gather usercopy without duplicating provider algorithms; test Linux eventfd 4+4 / 8+8, pipe `writev` atomicity at low capacity, `EFAULT`, partial and blocking across all ISAs |
 
 ## First cleanup batch (pending exact-head runtime proof)
 
@@ -33,6 +34,30 @@ independent consumer, and test evidence.
   static boundary checks alone are insufficient evidence.
 - **NAS-A002 and later remain open.** In particular, no second OpenFile or
   syscall continuation mechanism is introduced by this batch.
+
+## NAS-A002 data-plane migration (implementation, exact-head proof pending)
+
+- The common FileOps `read/write` callbacks now accept the shared OpenFile
+  slot and **kernel-owned** bytes. The common FD syscall adapters own
+  usercopy/COW and bounded transfer chunks. Optional provider plans preserve
+  original logical transfer length; Pipe and AF_UNIX sockets make their
+  `PIPE_BUF` admission decision before chunks are committed.
+- PTY, TTY, eventfd, bootfs and mounted VFS providers migrated in one batch;
+  obsolete `(fd,user_addr,count)` provider implementations removed. An
+  explicit eventfd copyout-order flag preserves Linux's confirmed
+  consume-before-EFAULT semantics. A provider VFS capability, rather than a
+  filesystem name string, distinguishes exact size/EOF from dynamic procfs.
+- Host evidence: M106, M105 PTY Linux oracle, M102 COW host phase, M89 OFD
+  poll, boundary mutation guard and linked three-ISA source manifest. M55
+  eventfd differential regression passes on **Linux host**, not yet NaSeed.
+  M102 target compile and three-ISA QEMU remain pending, because the local
+  environment does not provide Clang/QEMU.
+- **Do not mark NAS-A002 fully closed yet:** syscall initial blocking and
+  native C continuation retry still enumerate FD kinds. Preserve SIGPIPE,
+  per-waiter TTY readiness, and exactly-once task wait semantics when
+  migrating them to an explicit provider wait capability; see
+  `docs/ofd-data-plane-contract.md`. NAS-A008 tracks separate vector-aware
+  aggregate-planning correctness.
 
 ## Already implemented: do not reopen as an unsolved issue
 

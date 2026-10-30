@@ -118,7 +118,8 @@ static const struct nas_vfs_type boot_type={
     .name="bootfs",.exec_source_label="CPIO",
     .root=boot_root,.lookup_child=boot_child,
     .readlink=boot_readlink,
-    .read_at=boot_read,.read_dir=boot_read_dir,.read_only=true
+    .read_at=boot_read,.read_size_is_eof=true,
+    .read_dir=boot_read_dir,.read_only=true
 };
 static void tmp_fill(const struct nas_tmp_file *f,
                      struct nas_fs_node *out) {
@@ -318,7 +319,8 @@ static const struct nas_vfs_type tmp_type={
     .last_inode_unpin=tmp_last_inode_unpin,.getattr=tmp_getattr,
     .validate_inode=tmp_validate_inode,
     .readlink=tmp_readlink,
-    .read_at=tmp_read,.read_dir=tmp_read_dir,.chmod=tmp_chmod_node,.utimens=tmp_utimens_node,
+    .read_at=tmp_read,.read_size_is_eof=true,
+    .read_dir=tmp_read_dir,.chmod=tmp_chmod_node,.utimens=tmp_utimens_node,
     .create=tmp_create_node,.mknod=tmp_mknod_node,.write_at=tmp_write_node,
     .resize=tmp_resize_node,.sync=tmp_sync_node,
     .mkdir=tmp_mkdir_node,.unlink=tmp_unlink_node,.rename=tmp_rename_node,

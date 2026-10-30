@@ -485,8 +485,14 @@ if "nas_kthread_park_until(&sem->waiters" not in (root/"kernel/task/k_sync.c").r
 if "scheduled_after_user_entry" not in (root/"kernel/task/kthread_boot.c").read_text():
     raise SystemExit("native kernel worker is not resumed by real user scheduler")
 tty=(root/"kernel/drivers/tty.c").read_text()
-if "nas_mmu_user_writable(" in tty or "nas_user_address_writable(dst+i)" not in tty:
-    raise SystemExit("TTY is checking hardware PTE WRITE instead of the logical COW VMA right")
+file_io=(root/"kernel/fs/file_io.c").read_text()
+usercopy=(root/"kernel/mm/usercopy.c").read_text()
+# NAS-A002: the physical TTY is a kernel-buffer provider. COW validation is
+# now owned by the common FD read adapter, not by each device backend.
+if ("nas_mmu_user_writable(" in tty or
+        "nas_user_prepare_write(address+done,n)" not in file_io or
+        "nas_mm_break_cow(mm,at,access,false)" not in usercopy):
+    raise SystemExit("common FileOps read path lost fault-aware COW preflight")
 cow=(root/"kernel/mm/mm.c").read_text()
 if "nas_mm_fork_cow(parent->mm)" not in (root/"kernel/task/process.c").read_text():
     raise SystemExit("fork is not using refcounted, shared-frame private COW")

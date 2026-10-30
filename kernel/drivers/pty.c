@@ -186,46 +186,79 @@ uint16_t nas_pty_poll(unsigned slot,uint16_t events) {
     if((events&4U) && nas_pty_write_ready(slot))ready|=4U;
     return ready;
 }
-uint64_t nas_pty_read(uint64_t fd,uint64_t dst,uint64_t count) {
-    if(fd>=NAS_FD_LIMIT || !count)return 0;
-    unsigned slot=nas_current_task->fds->entries[fd].slot;
+/* Inspect a PTY read without consuming a queue byte or an N_TTY EOF token.
+ * Short reads must validate only the bytes they can actually return: a
+ * request for 1024 with four queued bytes may legally land at the end of a
+ * four-byte writable user mapping. Keep this plan in lockstep with read(). */
+uint64_t nas_pty_read_plan(unsigned slot,uint64_t requested) {
+    if(!requested)return 0;
     struct pty *p=get(slot);
     if(!p)return (uint64_t)-EBADF;
     bool master=slot_is_master[slot]!=0;
-    struct pty_ring *ring=master?&p->master_input:&p->slave_input;
     if(!master && (p->termios.lflag&0000002)) {
-        if(p->input.eof && !p->input.used) {
-            nas_ldisc_reset(&p->input);return 0;
-        }
-        if(!nas_ldisc_readable(&p->input,&p->termios,(unsigned)(count>256?256:count)))
+        if(p->input.eof && !p->input.used)return 0;
+        unsigned limit=requested>NAS_LDISC_CAPACITY ?
+                       NAS_LDISC_CAPACITY:(unsigned)requested;
+        if(!nas_ldisc_readable(&p->input,&p->termios,limit))
             return p->master_open ? (uint64_t)-EAGAIN : 0;
-        uint8_t buffer[NAS_LDISC_CAPACITY];
-        unsigned n=nas_ldisc_peek(&p->input,&p->termios,buffer,
-                                   count>sizeof(buffer)?sizeof(buffer):(unsigned)count);
-        if(!nas_user_write_bytes(dst,buffer,n))return (uint64_t)-EFAULT;
-        nas_ldisc_commit(&p->input,n);
-        return n;
+        /* peek performs its own VMIN/canonical readiness check. Its
+         * snapshot buffer stays kernel-owned and the line is not committed. */
+        uint8_t snapshot[NAS_LDISC_CAPACITY];
+        return nas_ldisc_peek(&p->input,&p->termios,snapshot,limit);
     }
+    const struct pty_ring *ring=master?&p->master_input:&p->slave_input;
     if(!ring->count)
         return (master?p->slave_descriptions:p->master_open) ?
                (uint64_t)-EAGAIN : master?(uint64_t)-EIO:0;
-    unsigned n=count>ring->count?ring->count:(unsigned)count;
-    /* Peek the complete bounded ring read before committing any bytes.
-     * Per-byte user writes repeatedly resolved the same PTE and could
-     * partially modify the destination while replaying the entire ring on
-     * EFAULT. usercopy now validates writable/COW pages as one transaction. */
-    uint8_t bytes[PTY_RING_CAP];
+    return requested>ring->count ? ring->count:requested;
+}
+uint64_t nas_pty_read(unsigned slot,uint8_t *dst,uint64_t count) {
+    if(!count) {
+        /* A positive-length caller whose read_plan observed canonical EOF
+         * calls read(..., 0) as an explicit zero-payload EOF commit. Other
+         * empty PTY reads do not alter queues, readiness or peer state. */
+        struct pty *p=get(slot);
+        if(p && !slot_is_master[slot] && (p->termios.lflag&0000002) &&
+           p->input.eof && !p->input.used)
+            nas_ldisc_reset(&p->input);
+        return 0;
+    }
+    if(!dst)return (uint64_t)-EFAULT;
+    struct pty *p=get(slot);
+    if(!p)return (uint64_t)-EBADF;
+    uint64_t budget=nas_pty_read_plan(slot,count);
+    if((int64_t)budget<=0) {
+        /* A canonical EOF is consumed by read, never by read_plan. */
+        if(!budget && !slot_is_master[slot] &&
+           (p->termios.lflag&0000002) && p->input.eof && !p->input.used)
+            nas_ldisc_reset(&p->input);
+        return budget;
+    }
+    bool master=slot_is_master[slot]!=0;
+    struct pty_ring *ring=master?&p->master_input:&p->slave_input;
+    if(!master && (p->termios.lflag&0000002)) {
+        uint8_t buffer[NAS_LDISC_CAPACITY];
+        unsigned n=nas_ldisc_peek(&p->input,&p->termios,buffer,(unsigned)budget);
+        /* The syscall adapter has already prepared the user destination;
+         * no user virtual address crosses into the PTY data plane. */
+        memcpy(dst,buffer,n);
+        nas_ldisc_commit(&p->input,n);
+        return n;
+    }
+    unsigned n=(unsigned)budget;
+    /* Copy from the bounded queue, then commit only the bytes returned.
+     * The common syscall adapter validates/COW-prepares the destination
+     * before invoking this potentially consuming read operation. */
     unsigned first=n;
     if(first>PTY_RING_CAP-ring->head)first=PTY_RING_CAP-ring->head;
-    memcpy(bytes,ring->bytes+ring->head,first);
-    if(n>first)memcpy(bytes+first,ring->bytes,n-first);
-    if(!nas_user_write_bytes(dst,bytes,n))return (uint64_t)-EFAULT;
+    memcpy(dst,ring->bytes+ring->head,first);
+    if(n>first)memcpy(dst+first,ring->bytes,n-first);
     for(unsigned i=0;i<n;i++)(void)ring_take(ring);
     return n;
 }
-uint64_t nas_pty_write(uint64_t fd,uint64_t src,uint64_t count) {
-    if(fd>=NAS_FD_LIMIT || !count)return 0;
-    unsigned slot=nas_current_task->fds->entries[fd].slot;
+uint64_t nas_pty_write(unsigned slot,const uint8_t *src,uint64_t count) {
+    if(!count)return 0;
+    if(!src)return (uint64_t)-EFAULT;
     struct pty *p=get(slot);
     if(!p)return (uint64_t)-EBADF;
     bool master=slot_is_master[slot]!=0;
@@ -234,9 +267,7 @@ uint64_t nas_pty_write(uint64_t fd,uint64_t src,uint64_t count) {
     struct pty_ring *r=master?&p->slave_input:&p->master_input;
     unsigned done=0;
     while(done<count) {
-        uint8_t value;
-        if(!nas_user_read_bytes(src+done,&value,1))
-            return done?done:(uint64_t)-EFAULT;
+        uint8_t value=src[done];
         if(master) {
             /* N_TTY generates terminal signals with ICANON on OR off.
              * The master is often a shell/tmux in a different process

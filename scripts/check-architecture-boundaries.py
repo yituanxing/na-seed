@@ -41,6 +41,23 @@ TMPFS_LEGACY_NAMES = re.compile(
 APPLICATION_TEST_STATE = re.compile(
     r'\b(?:running_(?:bash|busybox|alpine)|saw_bash_hello|'
     r'matched_chars|observe_stdout)\b')
+# Only FileOps data-plane providers are forbidden to interpret user addresses
+# and process-local FD tables. Ioctl, creation and syscall adapters must still
+# legally perform fault-aware usercopy; banning it in whole driver files would
+# reject valid control-plane code.
+DATA_PLANE_PROVIDERS = {
+    'kernel/fs/syscall.c': (
+        'pipe_fd_read', 'pipe_fd_write', 'vread_regular', 'vwrite_regular',
+        'vread_null', 'vread_zero', 'vread_dir', 'vread_limine',
+        'vread_tty', 'vwrite_discard', 'vwrite_tty'),
+    'kernel/fs/eventfd.c': ('nas_eventfd_read', 'nas_eventfd_write'),
+    'kernel/drivers/pty.c': ('nas_pty_read', 'nas_pty_write'),
+    'kernel/drivers/tty.c': ('nas_tty_read',),
+}
+PROVIDER_USER_MEMORY = re.compile(
+    r'\b(?:nas_user_[A-Za-z0-9_]+|USER_LIMIT|'
+    r'nas_mmu_user_[A-Za-z0-9_]+)\b|\bTASK\b|'
+    r'\bnas_current_task\b|\bentries\s*\[')
 
 DRIVER_FILES = (
     'kernel/block/device.c',
@@ -60,6 +77,25 @@ APPLICATION_RUNTIME_FILES = (
 FILES = DRIVER_FILES + VFS_FILES + MM_FILES + EXEC_FILES + APPLICATION_RUNTIME_FILES
 
 
+def function_body(source, name):
+    """Extract a C function's balanced body without matching its prototype."""
+    stripped = re.sub(r'/\*.*?\*/|//[^\n]*', '', source, flags=re.S)
+    match = re.search(r'\b' + re.escape(name) +
+                      r'\s*\([^;{}]*\)\s*\{', stripped)
+    if not match:
+        return None
+    depth = 1
+    pos = match.end()
+    end = pos
+    while end < len(stripped) and depth:
+        if stripped[end] == '{':
+            depth += 1
+        elif stripped[end] == '}':
+            depth -= 1
+        end += 1
+    return stripped[pos:end-1] if depth == 0 else None
+
+
 def violations(path, source):
     """Return forbidden dependencies; SOURCE is text to allow mutation tests."""
     errors = []
@@ -70,6 +106,20 @@ def violations(path, source):
             errors.append('VFS core imported Linux ABI or usercopy')
         if DIRECT_ABI.search(source):
             errors.append('VFS core called Linux syscall or user-copy service')
+    for name in DATA_PLANE_PROVIDERS.get(path, ()):
+        body = function_body(source, name)
+        if body is None:
+            errors.append('missing data-plane provider ' + name)
+        else:
+            # The physical TTY's VMIN/VTIME decision still legitimately
+            # inspects the selected waiter's deadline. This narrow exception
+            # is NOT permission to resolve that waiter's FD or user VA.
+            examined = body
+            if path == 'kernel/drivers/tty.c' and name == 'nas_tty_read':
+                examined = re.sub(r'nas_current_task->wait\.[A-Za-z0-9_]+',
+                                  '', examined)
+            if PROVIDER_USER_MEMORY.search(examined):
+                errors.append('FileOps provider reaches user memory or FD table: ' + name)
     if path in MM_FILES and ARCH_MM.search(source):
         errors.append('MM owner imported filesystem, boot archive or driver')
     if path in EXEC_FILES:
@@ -121,11 +171,27 @@ def self_test():
     for path in FILES + ('kernel/fs/socket_syscall.c',
                          'kernel/drivers/pty.c', 'kernel/task/process.c',
                          'kernel/fs/tmp_namespace.c', 'kernel/tmpfs.h'):
-        if violations(path, '/* no forbidden dependencies */\n#include <stdint.h>\n'):
+        source = '/* no forbidden dependencies */\n#include <stdint.h>\n'
+        source += ''.join('uint64_t ' + n + '(unsigned slot) { return slot; }\n'
+                          for n in DATA_PLANE_PROVIDERS.get(path, ()))
+        if violations(path, source):
             raise SystemExit('[ARCH FAIL] self-test false positive: ' + path)
     if violations('kernel/task/signal.c',
                   'return nas_mmu_user_byte(NAS_USER_SIGNAL_TRAMPOLINE);'):
         raise SystemExit('[ARCH FAIL] signal trampoline probe rejected')
+    # Data-plane mutations must be caught while legal ioctl usercopy remains
+    # permitted. Supply all provider stubs so the negative test is focused.
+    for path, names in DATA_PLANE_PROVIDERS.items():
+        safe = ''.join('uint64_t ' + n + '(unsigned slot) { (void)slot; return 0; }\n'
+                       for n in names)
+        if violations(path, safe):
+            raise SystemExit('[ARCH FAIL] valid provider rejected: ' + path)
+        for illegal in ('nas_user_read_bytes(addr,dst,n);',
+                        'nas_current_task->fds->entries[fd].slot;'):
+            poisoned = safe.replace('{ (void)slot; return 0; }',
+                                    '{ ' + illegal + ' return 0; }', 1)
+            if not violations(path, poisoned):
+                raise SystemExit('[ARCH FAIL] provider escaped guard: ' + path)
     print('[ARCH PASS] negative and positive boundary mutation fixtures')
 
 

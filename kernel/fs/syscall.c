@@ -127,57 +127,27 @@ static uint64_t sys_socketpair(uint64_t domain,uint64_t type,
     return sys_channel_pair(user_pair,type & (0x800ULL|0x80000ULL),true);
 }
 /* AF_UNIX Linux syscall ABI lives in socket_syscall.c. */
-/* Keep user I/O staged within a single 4-KiB page. A later invalid page
- * must not invalidate already-consumed bytes, and distinct user pages are
- * not assumed physically contiguous. */
-static uint64_t user_io_chunk(uint64_t address,uint64_t remaining,
-                              uint64_t capacity) {
-    uint64_t page_room=4096ULL-(address&4095ULL);
-    uint64_t take=remaining<capacity?remaining:capacity;
-    return take<page_room?take:page_room;
+/* A single plan precedes the entire logical transfer, independent of the
+ * usercopy chunk boundaries. This preserves PIPE_BUF atomic admission. */
+static uint64_t pipe_read_plan(unsigned slot,uint64_t requested) {
+    return (uint64_t)nas_pipe_read_amount(
+        slot,requested,!!(nas_open_files[slot].status_flags&0x800ULL));
 }
-static uint64_t pipe_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
-    if (!length) return 0;
-    if (address >= USER_LIMIT || length > USER_LIMIT - address)
-        return (uint64_t)-EFAULT;
-    unsigned slot = TASK.fds->entries[fd].slot;
-    int64_t available = nas_pipe_read_amount(
-        slot, length, !!(nas_open_files[slot].status_flags & 0x800ULL));
-    if (available <= 0) return (uint64_t)available;
-    uint64_t done=0;
-    uint8_t buffer[1024];
-    while(done<(uint64_t)available) {
-        uint64_t n=user_io_chunk(address+done,(uint64_t)available-done,
-                                 sizeof(buffer));
-        if(!nas_user_prepare_write(address+done,n))break;
-        for(uint64_t i=0;i<n;i++)
-            buffer[i]=nas_pipe_read_byte(slot,(unsigned)i);
-        if(!nas_user_write_bytes(address+done,buffer,n))break;
-        nas_pipe_read_commit(slot,(unsigned)n);
-        done+=n;
-    }
-    return done ? done : (uint64_t)-EFAULT;
+static uint64_t pipe_write_plan(unsigned slot,uint64_t requested) {
+    return (uint64_t)nas_pipe_write_amount(
+        slot,requested,!!(nas_open_files[slot].status_flags&0x800ULL));
 }
-static uint64_t pipe_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
-    if (!length) return 0;
-    if (address >= USER_LIMIT || length > USER_LIMIT - address)
-        return (uint64_t)-EFAULT;
-    unsigned slot = TASK.fds->entries[fd].slot;
-    int64_t available = nas_pipe_write_amount(
-        slot, length, !!(nas_open_files[slot].status_flags & 0x800ULL));
-    if (available <= 0) return (uint64_t)available;
-    uint64_t done=0;
-    uint8_t buffer[1024];
-    while(done<(uint64_t)available) {
-        uint64_t n=user_io_chunk(address+done,(uint64_t)available-done,
-                                 sizeof(buffer));
-        if(!nas_user_read_bytes(address+done,buffer,n))break;
-        for(uint64_t i=0;i<n;i++)
-            nas_pipe_write_byte(slot,(unsigned)i,buffer[i]);
-        nas_pipe_write_commit(slot,(unsigned)n);
-        done+=n;
-    }
-    return done ? done : (uint64_t)-EFAULT;
+/* Providers consume kernel memory only. The File data plane owns every
+ * usercopy preflight, staging buffer and partial-fault decision. */
+static uint64_t pipe_fd_read(unsigned slot,uint8_t *dst,uint64_t n) {
+    for(uint64_t i=0;i<n;i++)dst[i]=nas_pipe_read_byte(slot,(unsigned)i);
+    nas_pipe_read_commit(slot,(unsigned)n);
+    return n;
+}
+static uint64_t pipe_fd_write(unsigned slot,const uint8_t *src,uint64_t n) {
+    for(uint64_t i=0;i<n;i++)nas_pipe_write_byte(slot,(unsigned)i,src[i]);
+    nas_pipe_write_commit(slot,(unsigned)n);
+    return n;
 }
 
 /* FD table aliases and shared open descriptions are owned by fd.c.
@@ -342,60 +312,51 @@ static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
 }
 
 /* Pathname / dirfd user-address adapter lives in namespace_syscall.c. */
-/* A bounded adapter transfers user buffers to the shared page-backed tmpfs.
- * Kernel filesystem storage knows nothing about user virtual addresses. */
-/* One provider-backed read for every mounted regular File. The filename
- * is resolved at open; seek offsets live in the shared open description. */
-static uint64_t vread_regular(uint64_t fd,uint64_t address,uint64_t length) {
-    if(!length)return 0;
-    if(address>=USER_LIMIT || length>USER_LIMIT-address)
-        return (uint64_t)-EFAULT;
-    unsigned slot=TASK.fds->entries[fd].slot;
-    uint64_t start=nas_open_files[slot].position,done=0;
-    uint8_t buffer[1024];
-    while(done<length) {
-        uint64_t take=user_io_chunk(address+done,length-done,
-                                    sizeof(buffer));
-        int64_t got=nas_fs_mmap_read(fd,start+done,buffer,take);
-        if(got<0)return done ? done : (uint64_t)got;
-        if(!got)break;
-        if(!nas_user_write_bytes(address+done,buffer,(uint64_t)got))
-            return done ? done : (uint64_t)-EFAULT;
-        done+=(uint64_t)got;
-        nas_open_files[slot].position=start+done;
-        if((uint64_t)got<take)break;
-    }
-    return done;
-}
-static uint64_t vwrite_regular(uint64_t fd, uint64_t address, uint64_t length) {
-    unsigned slot = TASK.fds->entries[fd].slot;
+/* Both offset and vnode are owned by the shared open-file description.
+ * The provider callback consumes kernel memory, never an FD or user VA. */
+static uint64_t vread_regular_plan(unsigned slot,uint64_t requested) {
     struct nas_open_file *opened=&nas_open_files[slot];
     if(!opened->vnode_pinned)return (uint64_t)-EBADF;
+    const struct nas_fs_node *node=&opened->vnode;
+    if(node->is_dir)return (uint64_t)-EISDIR;
+    if(!node->filesystem || !node->filesystem->read_at)
+        return (uint64_t)-ENODEV;
+    /* Only size-authoritative providers promise that offset >= inode size
+     * is EOF; dynamic virtual files may report st_size=0 yet yield bytes. */
+    if(node->filesystem->read_size_is_eof) {
+        uint64_t size=nas_vfs_node_size(node);
+        if(opened->position>=size)return 0;
+        if(requested>size-opened->position)
+            requested=size-opened->position;
+    }
+    return requested;
+}
+static uint64_t vread_regular(unsigned slot,uint8_t *dst,uint64_t n) {
+    struct nas_open_file *opened=&nas_open_files[slot];
+    int64_t got=nas_vfs_read_at(&opened->vnode,opened->position,dst,n);
+    if(got>0)opened->position+=(uint64_t)got;
+    return (uint64_t)got;
+}
+static uint64_t vwrite_regular_plan(unsigned slot,uint64_t requested) {
+    const struct nas_open_file *opened=&nas_open_files[slot];
+    if(!opened->vnode_pinned)return (uint64_t)-EBADF;
     if(!nas_vfs_can_write(&opened->vnode))return (uint64_t)-EROFS;
-    if (!length) return 0;
-    if (address >= USER_LIMIT || length > USER_LIMIT - address)
-        return (uint64_t)-EFAULT;
-    /* tmpfs has a live inode size; all other descriptors own a shared
-     * inode snapshot, updated after successful writes. */
+    return requested;
+}
+static uint64_t vwrite_regular(unsigned slot,const uint8_t *src,uint64_t n) {
+    struct nas_open_file *opened=&nas_open_files[slot];
+    /* O_APPEND recomputes the live inode size from the VFS lease, not from
+     * a stale open-time snapshot. This position is shared across dup/fork. */
     uint64_t size=nas_vfs_node_size(&opened->vnode);
     uint64_t offset=(opened->status_flags & 0x400ULL) ?
                     size : opened->position;
-    uint64_t done = 0;
-    uint8_t buffer[1024];
-    while (done < length) {
-        uint64_t n=user_io_chunk(address+done,length-done,
-                                 sizeof(buffer));
-        if(!nas_user_read_bytes(address+done,buffer,n))
-            return done ? done : (uint64_t)-EFAULT;
-        int64_t written = nas_vfs_write_at(&opened->vnode,offset+done,buffer,n);
-        if (written < 0) return done ? done : (uint64_t)written;
-        done += (uint64_t)written;
-        if(offset+done>opened->vnode.size)opened->vnode.size=offset+done;
-        opened->position=offset+done;
-        if ((uint64_t)written != n) break;
+    int64_t written=nas_vfs_write_at(&opened->vnode,offset,src,n);
+    if(written>0) {
+        if(offset+(uint64_t)written>opened->vnode.size)
+            opened->vnode.size=offset+(uint64_t)written;
+        opened->position=offset+(uint64_t)written;
     }
-    opened->position=offset+done;
-    return done;
+    return (uint64_t)written;
 }
 /* Namespace-changing syscalls live in namespace_syscall.c. */
 /* One open(2) control plane: namespace namei selects a VFS inode first,
@@ -590,67 +551,52 @@ static uint64_t sys_open_device(uint64_t pathname, uint64_t flags,
 
 /* NaOS-aligned idea: bind ops once to the shared open description; do not
  * repeat a dispatch by FD kind in every userspace read/write/poll/ioctl. */
-static uint64_t vread_null(uint64_t fd,uint64_t addr,uint64_t n) {
-    (void)fd;(void)addr;(void)n;return 0;
+static uint64_t vread_null_plan(unsigned slot,uint64_t requested) {
+    (void)slot;(void)requested;
+    return 0;
 }
-static uint64_t vread_zero(uint64_t fd,uint64_t addr,uint64_t n) {
-    (void)fd;
-    if(!n)return 0;
-    if(addr>=USER_LIMIT || n>USER_LIMIT-addr)return (uint64_t)-EFAULT;
-    uint8_t zero[1024]={0};
-    uint64_t done=0;
-    while(done<n) {
-        uint64_t take=user_io_chunk(addr+done,n-done,sizeof(zero));
-        if(!nas_user_write_bytes(addr+done,zero,take))break;
-        done+=take;
-    }
-    return done ? done : (uint64_t)-EFAULT;
+static uint64_t vread_null(unsigned slot,uint8_t *dst,uint64_t n) {
+    (void)slot;(void)dst;(void)n;
+    return 0;
 }
-static uint64_t vread_dir(uint64_t fd,uint64_t addr,uint64_t n) {
-    (void)fd;(void)addr;(void)n;return (uint64_t)-EISDIR;
+static uint64_t vread_zero(unsigned slot,uint8_t *dst,uint64_t n) {
+    (void)slot;
+    memset(dst,0,(size_t)n);
+    return n;
 }
-static uint64_t vread_limine(uint64_t fd,uint64_t addr,uint64_t n) {
-    const struct limine_file *file=nas_open_files[TASK.fds->entries[fd].slot].boot_file;
+static uint64_t vread_dir_plan(unsigned slot,uint64_t requested) {
+    (void)slot;(void)requested;
+    return (uint64_t)-EISDIR;
+}
+static uint64_t vread_dir(unsigned slot,uint8_t *dst,uint64_t n) {
+    (void)slot;(void)dst;(void)n;
+    return (uint64_t)-EISDIR;
+}
+static uint64_t vread_limine_plan(unsigned slot,uint64_t requested) {
+    const struct nas_open_file *opened=&nas_open_files[slot];
+    const struct limine_file *file=opened->boot_file;
     if(!file || !file->address)return (uint64_t)-EBADF;
-    uint64_t start=nas_open_files[TASK.fds->entries[fd].slot].position;
-    if(start>file->size)return 0;
-    if(n>file->size-start)n=file->size-start;
-    if(!n)return 0;
-    if(addr>=USER_LIMIT || n>USER_LIMIT-addr)return (uint64_t)-EFAULT;
-    uint64_t done=0;
-    while(done<n) {
-        uint64_t take=user_io_chunk(addr+done,n-done,1024);
-        if(!nas_user_write_bytes(addr+done,
-                                 (const uint8_t*)file->address+start+done,
-                                 take))break;
-        done+=take;
-    }
-    nas_open_files[TASK.fds->entries[fd].slot].position+=done;
-    return done ? done : (uint64_t)-EFAULT;
+    if(opened->position>=file->size)return 0;
+    uint64_t remaining=file->size-opened->position;
+    return requested<remaining ? requested : remaining;
 }
-static uint64_t vread_tty(uint64_t fd,uint64_t addr,uint64_t n) {
-    return nas_tty_read(addr,n,(nas_open_files[TASK.fds->entries[fd].slot].status_flags&0x800ULL)!=0);
+static uint64_t vread_limine(unsigned slot,uint8_t *dst,uint64_t n) {
+    struct nas_open_file *opened=&nas_open_files[slot];
+    const struct limine_file *file=opened->boot_file;
+    memcpy(dst,(const uint8_t*)file->address+opened->position,(size_t)n);
+    opened->position+=n;
+    return n;
 }
-static uint64_t vwrite_discard(uint64_t fd,uint64_t addr,uint64_t n) {
-    (void)fd;(void)addr;return n;
+static uint64_t vread_tty(unsigned slot,uint8_t *dst,uint64_t n) {
+    return nas_tty_read(dst,n,(nas_open_files[slot].status_flags&0x800ULL)!=0);
 }
-static uint64_t vwrite_tty(uint64_t fd,uint64_t addr,uint64_t n) {
-    (void)fd;
-    if(!n)return 0;
-    uint8_t buffer[1024];
-    uint64_t done=0;
-    while(done<n) {
-        if(addr>=USER_LIMIT || done>USER_LIMIT-addr)
-            return done ? done : (uint64_t)-EFAULT;
-        uint64_t take=user_io_chunk(addr+done,n-done,sizeof(buffer));
-        if(take>USER_LIMIT-addr-done)take=USER_LIMIT-addr-done;
-        if(!take || !nas_user_read_bytes(addr+done,buffer,take))
-            return done ? done : (uint64_t)-EFAULT;
-        for(uint64_t i=0;i<take;i++) {
-            nas_tty_write_char(buffer[i]);
-        }
-        done+=take;
-    }
+static uint64_t vwrite_discard(unsigned slot,const uint8_t *src,uint64_t n) {
+    (void)slot;(void)src;
+    return n;
+}
+static uint64_t vwrite_tty(unsigned slot,const uint8_t *src,uint64_t n) {
+    (void)slot;
+    for(uint64_t i=0;i<n;i++)nas_tty_write_char(src[i]);
     return n;
 }
 static uint16_t dpoll_always(unsigned slot,uint16_t events) {
@@ -709,27 +655,36 @@ static const struct nas_file_ops ops_tty={
     .ioctl=vioctl_tty
 };
 static const struct nas_file_ops ops_null={
-    .read=vread_null,.write=vwrite_discard,.poll=vpoll_always,.poll_description=dpoll_always
+    .read_plan=vread_null_plan,.read=vread_null,.write=vwrite_discard,
+    .poll=vpoll_always,.poll_description=dpoll_always
 };
 static const struct nas_file_ops ops_zero={
     .read=vread_zero,.write=vwrite_discard,.poll=vpoll_always,.poll_description=dpoll_always
 };
-static const struct nas_file_ops ops_bootfs={.read=vread_limine,.poll=vpoll_always,.poll_description=dpoll_always};
+static const struct nas_file_ops ops_bootfs={
+    .read_plan=vread_limine_plan,.read=vread_limine,
+    .poll=vpoll_always,.poll_description=dpoll_always
+};
 /* Every mounted regular file/dir reuses the SAME read/write/poll File ops.
  * Filesystem types are selected only by the inode's provider callbacks. */
 static const struct nas_file_ops ops_vfs_regular={
+    .read_plan=vread_regular_plan,.write_plan=vwrite_regular_plan,
     .read=vread_regular,.write=vwrite_regular,
     .poll=vpoll_always,.poll_description=dpoll_always
 };
 static const struct nas_file_ops ops_vfs_dir={
-    .read=vread_dir,.poll=vpoll_always,.poll_description=dpoll_always
+    .read_plan=vread_dir_plan,.read=vread_dir,
+    .poll=vpoll_always,.poll_description=dpoll_always
 };
 static const struct nas_file_ops ops_pipe_read={
-    .read=pipe_fd_read,.poll=vpoll_pipe_read,.poll_description=dpoll_pipe_read,
+    .read_plan=pipe_read_plan,.read=pipe_fd_read,
+    .poll=vpoll_pipe_read,.poll_description=dpoll_pipe_read,
     .release=vrelease_pipe
 };
 static const struct nas_file_ops ops_pipe_write={
-    .write=pipe_fd_write,.poll=vpoll_pipe_write,.poll_description=dpoll_pipe_write,
+    .write_plan=pipe_write_plan,.write=pipe_fd_write,
+    .atomic_write_limit=NAS_PIPE_CAP,
+    .poll=vpoll_pipe_write,.poll_description=dpoll_pipe_write,
     .release=vrelease_pipe
 };
 static uint16_t dpoll_socket(unsigned slot,uint16_t events) {
@@ -741,7 +696,9 @@ static uint16_t vpoll_socket(uint64_t fd,uint16_t events) {
     return dpoll_socket(TASK.fds->entries[fd].slot,events);
 }
 static const struct nas_file_ops ops_socket={
-    .read=pipe_fd_read,.write=pipe_fd_write,.poll=vpoll_socket,.poll_description=dpoll_socket,
+    .read_plan=pipe_read_plan,.write_plan=pipe_write_plan,
+    .read=pipe_fd_read,.write=pipe_fd_write,.atomic_write_limit=NAS_PIPE_CAP,
+    .poll=vpoll_socket,.poll_description=dpoll_socket,
     .release=vrelease_socket
 };
 static uint16_t dpoll_pty(unsigned slot,uint16_t events) {
@@ -752,7 +709,9 @@ static uint16_t vpoll_pty(uint64_t fd,uint16_t events) {
 }
 static void vrelease_pty(unsigned slot){nas_pty_release(slot);}
 static const struct nas_file_ops ops_pty={
-    .read=nas_pty_read,.write=nas_pty_write,.poll=vpoll_pty,.poll_description=dpoll_pty,
+    .read_plan=nas_pty_read_plan,.read=nas_pty_read,.write=nas_pty_write,
+    .read_finalize_zero=true,
+    .poll=vpoll_pty,.poll_description=dpoll_pty,
     .ioctl=nas_pty_ioctl,.release=vrelease_pty
 };
 static uint16_t vpoll_epoll(uint64_t fd,uint16_t events){
@@ -764,7 +723,9 @@ static const struct nas_file_ops ops_epoll={
     .poll=vpoll_epoll,.poll_description=nas_epoll_description_poll,.release=vrelease_epoll
 };
 static const struct nas_file_ops ops_eventfd={
+    .read_plan=nas_eventfd_read_plan,.write_plan=nas_eventfd_write_plan,
     .read=nas_eventfd_read,.write=nas_eventfd_write,
+    .atomic_write_limit=8,.read_commit_before_copyout=true,
     .poll=nas_eventfd_poll,.poll_description=nas_eventfd_poll_slot,.release=vrelease_eventfd
 };
 static const struct nas_file_ops *const ops_by_kind[]={
