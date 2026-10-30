@@ -4,6 +4,17 @@
 #include "test-vfs-provider.c"
 #undef main
 #include "../ports/ramfs/vfs_port.h"
+/* The production provider reads the common RTC-anchored kernel clock.
+ * This host-only fixture supplies a deterministic timestamp oracle. */
+static bool fake_realtime_available=true;
+bool nas_time_realtime_ns(uint64_t *out) {
+    if(!out || !fake_realtime_available)return false;
+    *out=UINT64_C(1770000100)*UINT64_C(1000000000);
+    return true;
+}
+uint64_t nas_arch_monotonic_ns(void) {
+    return UINT64_C(9876543210);
+}
 int main(void) {
     assert(nas_original_vfs_fixture_main()==0);
     static struct nas_ramfs_vfs a,b;
@@ -20,9 +31,48 @@ int main(void) {
     assert(nas_fs_lookup_node("/ramfs/parent/file",true,&node,path)==0);
     assert(nas_fs_lookup_node("/ramfs-two/file",true,&other,path)==0);
     assert(node.mount!=other.mount && node.inode!=other.inode);
+    assert(node.atime_sec==1770000100 && node.mtime_sec==1770000100 &&
+           node.ctime_sec==1770000100);
+    assert(dir.mtime_sec==1770000100);
+    assert(nas_vfs_chmod(&node,06755)==0);
+    assert(nas_vfs_chown(&node,1001,2002)==0);
+    struct nas_fs_node owner;
+    assert(nas_vfs_getattr(&node,&owner)==0);
+    assert(owner.uid==1001 && owner.gid==2002 &&
+           (owner.mode&06000U)==0 && owner.ctime_sec>=1770000100);
+    assert(nas_vfs_chown(&node,UINT32_MAX,3003)==0);
+    assert(nas_fs_lookup_node("/ramfs/parent/file",true,&owner,path)==0);
+    assert(owner.uid==1001 && owner.gid==3003);
+    assert(nas_vfs_chown(&owner,4004,UINT32_MAX)==0);
+    assert(nas_vfs_getattr(&node,&owner)==0);
+    assert(owner.uid==4004 && owner.gid==3003 &&
+           owner.ctime_sec==1770000100 && owner.ctime_nsec>0);
+    /* The common VFS parses UTIME_NOW and UTIME_OMIT; the provider owns
+     * exact ns timestamps. Both OMIT must be a true no-op (including ctime). */
+    uint64_t atime=UINT64_C(1337000123),mtime=UINT64_C(1444000456);
+    assert(nas_vfs_utimens(&node,atime,mtime,true,true)==0);
+    assert(nas_vfs_getattr(&node,&owner)==0);
+    assert(owner.atime_sec==atime/1000000000ULL &&
+           owner.atime_nsec==atime%1000000000ULL &&
+           owner.mtime_sec==mtime/1000000000ULL &&
+           owner.mtime_nsec==mtime%1000000000ULL);
+    uint64_t ctime_after=(owner.ctime_sec*1000000000ULL)+owner.ctime_nsec;
+    assert(nas_vfs_utimens(&node,0,0,false,false)==0);
+    assert(nas_vfs_getattr(&node,&owner)==0);
+    assert(owner.atime_sec==atime/1000000000ULL &&
+           owner.mtime_sec==mtime/1000000000ULL &&
+           owner.ctime_sec*1000000000ULL+owner.ctime_nsec==ctime_after);
+    assert(nas_vfs_utimens(&node,0,UINT64_C(1655000789),false,true)==0);
+    assert(nas_vfs_getattr(&node,&owner)==0);
+    assert(owner.atime_sec==atime/1000000000ULL &&
+           owner.mtime_sec==1 && owner.mtime_nsec==655000789);
+    /* Independent mounted vendor instances never share one identity. */
+    assert(other.uid==0 && other.gid==0);
     assert(nas_vfs_node_pin(&node)==0);
     assert(nas_vfs_write_at(&node,0,(const uint8_t *)"hello",5)==5);
     assert(nas_vfs_node_size(&node)==5);
+    assert(nas_vfs_getattr(&node,&owner)==0);
+    assert(owner.mtime_sec>=1770000100 && owner.ctime_sec>=1770000100);
     assert(nas_fs_lookup_node("/ramfs/parent",true,&dir,path)==0);
     assert(nas_vfs_node_pin(&dir)==0);
     struct nas_vfs_path renamed_dir={0};
@@ -32,6 +82,10 @@ int main(void) {
     assert(!strcmp(path,"/ramfs/moved"));
     assert(nas_vfs_read_at(&node,0,(uint8_t *)text,5)==5);
     assert(!memcmp(text,"hello",5));
+    /* A deliberately old mtime on the still-open old generation must not
+     * bleed into a future inode when the name is reused. */
+    assert(nas_vfs_utimens(&node,UINT64_C(1000000000),
+                          UINT64_C(2000000000),true,true)==0);
     assert(nas_vfs_unlink("/ramfs/moved/file",0)==0);
     struct nas_fs_node removed,renewed;
     assert(nas_fs_lookup_node("/ramfs/moved/file",true,&removed,path)==-ENOENT);
@@ -44,6 +98,7 @@ int main(void) {
     assert(nas_vfs_create("/ramfs/moved/file",0600)==0);
     assert(nas_fs_lookup_node("/ramfs/moved/file",true,&renewed,path)==0);
     assert(renewed.ino!=node.ino);
+    assert(renewed.mtime_sec==1770000100 && renewed.atime_sec==1770000100);
     assert(nas_vfs_write_at(&renewed,0,(const uint8_t *)"new",3)==3);
     assert(nas_vfs_read_at(&node,0,(uint8_t *)text,5)==5);
     assert(!memcmp(text,"hello",5));
@@ -89,6 +144,14 @@ int main(void) {
     assert(nas_fs_lookup_node("/ramfs-two/victim",true,&node,path)==0);
     assert(nas_vfs_unlink("/ramfs-two/victim",0)==0);
     assert(nas_vfs_unlink("/ramfs-two/file",0)==0);
+    /* Absent real RTC still uses the architecture's actual monotonic
+     * clock; newly created upstream RamFS files must never report epoch 0. */
+    fake_realtime_available=false;
+    assert(nas_vfs_create("/ramfs-two/monotonic-file",0644)==0);
+    assert(nas_fs_lookup_node("/ramfs-two/monotonic-file",true,&owner,path)==0);
+    assert(owner.mtime_sec==9 && owner.mtime_nsec==876543210);
+    fake_realtime_available=true;
+    assert(nas_vfs_unlink("/ramfs-two/monotonic-file",0)==0);
     /* 320 same-directory records exceed the old fixed 128 identity table.
      * Exercise independent arbitrary-name lookup and bounded readdir with
      * stable exported inode IDs, without bypassing shared VFS dispatch. */

@@ -82,6 +82,9 @@ if [ "${NAS_M81_FS:-0}" = 1 ]; then
   grep -Fq '[VIRTIO-BLK] persistent block device write+flush enabled' "$log" || {
     echo "[M81 FAIL] $port ext4 block device is not writable" >&2; exit 1;
   }
+  grep -Fq '[LWEXT4 GUEST] clean upstream unmount and durable flush' "$log" || {
+    echo "[M81 FAIL] $port real ext4 did not cleanly unmount and flush" >&2; exit 1;
+  }
   sh scripts/check-ext4-fsck-clean.sh "$disk"
   debugfs -R 'cat /m81-fs-persisted.txt' "$disk" > "$work/m81-ext4-persisted.txt"
   grep -Fxq 'NaSeed-M81-real-ext4-persistence' "$work/m81-ext4-persisted.txt" || {

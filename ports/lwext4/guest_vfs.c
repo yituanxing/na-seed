@@ -4,6 +4,8 @@
 #include "../../kernel/fs/lookup.h"
 #include "../../kernel/errno.h"
 #include "../../kernel/lib/string.h"
+#include "../../kernel/time/clock.h"
+#include "../../kernel/arch/arch.h"
 #include <ext4.h>
 #include <ext4_fs.h>
 #include <ext4_inode.h>
@@ -51,6 +53,72 @@ static int ext_orphan_path(const struct nas_lwext4_mount *ctx,
     ext_orphan_name(name,ino,serial,is_dir);
     return nas_vfs_join_child(ctx->orphan_dir,name,path);
 }
+/* The original ext4 inode has 128-byte legacy timestamps and optional
+ * Linux extra fields (nanoseconds). Never touch an extra field on a short
+ * inode. The VFS supplies UTIME_NOW/OMIT as resolved ns + set booleans. */
+static bool ext_has_time_extra(const struct nas_lwext4_mount *ctx,
+                               struct ext4_inode *inode,size_t field) {
+    size_t bytes=ext4_get16(ctx->upstream_super,inode_size);
+    size_t extra=ext4_inode_get_extra_isize(ctx->upstream_super,inode);
+    return bytes>=field+4 && extra>=field+4-EXT4_GOOD_OLD_INODE_SIZE;
+}
+static uint32_t ext_time_nsec(const struct nas_lwext4_mount *ctx,
+                              struct ext4_inode *inode,size_t field) {
+    if(!ext_has_time_extra(ctx,inode,field))return 0;
+    uint32_t stored=0;
+    memcpy(&stored,(const uint8_t *)inode+field,sizeof(stored));
+    return to_le32(stored)>>2;
+}
+static int ext_set_time(const struct nas_lwext4_mount *ctx,
+                        struct ext4_inode *raw,char which,uint64_t ns) {
+    uint64_t seconds=ns/NAS_NSEC_PER_SEC;
+    if(seconds>UINT32_MAX)return -EOVERFLOW;
+    uint32_t s=(uint32_t)seconds;
+    uint32_t extra=(uint32_t)(ns%NAS_NSEC_PER_SEC)<<2;
+    switch(which) {
+    case 'a':
+        ext4_inode_set_access_time(raw,s);
+        if(ext_has_time_extra(ctx,raw,offsetof(struct ext4_inode,atime_extra)))
+            raw->atime_extra=to_le32(extra);
+        return 0;
+    case 'm':
+        ext4_inode_set_modif_time(raw,s);
+        if(ext_has_time_extra(ctx,raw,offsetof(struct ext4_inode,mtime_extra)))
+            raw->mtime_extra=to_le32(extra);
+        return 0;
+    case 'c':
+        ext4_inode_set_change_inode_time(raw,s);
+        if(ext_has_time_extra(ctx,raw,offsetof(struct ext4_inode,ctime_extra)))
+            raw->ctime_extra=to_le32(extra);
+        return 0;
+    }
+    return -EINVAL;
+}
+static uint64_t ext_now_ns(void) {
+    uint64_t now=0;
+    return nas_time_realtime_ns(&now)?now:nas_arch_monotonic_ns();
+}
+static int ext_touch_ctime(const struct nas_lwext4_mount *ctx,
+                           struct ext4_inode *raw,uint64_t now) {
+    uint64_t previous=(uint64_t)ext4_inode_get_change_inode_time(raw)*
+                      NAS_NSEC_PER_SEC +
+        ext_time_nsec(ctx,raw,offsetof(struct ext4_inode,ctime_extra));
+    return ext_set_time(ctx,raw,'c',now>previous?now:previous+(previous<UINT64_MAX));
+}
+static int ext_metadata_ref(const struct nas_fs_node *node,
+                            struct nas_lwext4_mount **mounted,
+                            struct ext4_inode_ref *ref) {
+    if(!node || !node->mount || !node->mount->private_data ||
+       !node->ino || node->ino>UINT32_MAX)return -ESTALE;
+    struct nas_lwext4_mount *ctx=node->mount->private_data;
+    if(!ctx->mounted || !ctx->device.ext.fs || !ctx->upstream_super)
+        return -ENODEV;
+    if(node->mount->read_only || ctx->device.ext.fs->read_only)return -EROFS;
+    int rc=ext4_fs_get_inode_ref(ctx->device.ext.fs,(uint32_t)node->ino,ref);
+    if(rc)return -rc;
+    *mounted=ctx;
+    return 0;
+}
 /* A directory entry already supplies the true inode number. Read metadata
  * through the SAME original ext4_fs_get_inode_ref API used by getattr;
  * do not reconstruct a pathname and ask upstream to walk it again. This
@@ -71,6 +139,9 @@ static int ext_snapshot_inode(struct nas_lwext4_mount *ctx,uint32_t ino,
         .atime_sec=ext4_inode_get_access_time(raw),
         .mtime_sec=ext4_inode_get_modif_time(raw),
         .ctime_sec=ext4_inode_get_change_inode_time(raw),
+        .atime_nsec=ext_time_nsec(ctx,raw,offsetof(struct ext4_inode,atime_extra)),
+        .mtime_nsec=ext_time_nsec(ctx,raw,offsetof(struct ext4_inode,mtime_extra)),
+        .ctime_nsec=ext_time_nsec(ctx,raw,offsetof(struct ext4_inode,ctime_extra)),
         .mode=mode,.size=ext4_inode_get_size(ctx->upstream_super,raw),
         .is_dir=(mode&0170000U)==0040000U,
         .is_symlink=(mode&0170000U)==0120000U
@@ -162,6 +233,33 @@ static int64_t ext_read_inode(const struct nas_fs_node *node,
     int e=ext4_fread(&file,dst,(size_t)length,&obtained);
     return e ? -e : (int64_t)obtained;
 }
+/* Upstream lwext4 leaves timestamps zero on create/write. Initialize new
+ * inodes and update real modifications in this adapter so original gzip,
+ * tar and stat see an actual kernel clock, not a permanent 1970 timestamp.
+ * Keep operations keyed by the stable inode even after a directory rename. */
+static int ext_record_write_time(struct nas_lwext4_mount *ctx,uint32_t ino,
+                                  bool newly_created) {
+    uint64_t now=ext_now_ns();
+    if(now/NAS_NSEC_PER_SEC>UINT32_MAX)return -EOVERFLOW;
+    struct nas_fs_node node={.mount=&ctx->mount,.ino=ino};
+    struct ext4_inode_ref ref={0};
+    struct nas_lwext4_mount *actual=NULL;
+    int rc=ext_metadata_ref(&node,&actual,&ref);
+    if(rc)return rc;
+    if(newly_created)rc=ext_set_time(ctx,ref.inode,'a',now);
+    /* The firmware clock may have coarser resolution than a rapid GNU Make
+     * edit loop. Guarantee successive writes move mtime forward just as
+     * the existing tmpfs timestamp provider does. */
+    uint64_t previous=(uint64_t)ext4_inode_get_modif_time(ref.inode)*
+                      NAS_NSEC_PER_SEC +
+        ext_time_nsec(ctx,ref.inode,offsetof(struct ext4_inode,mtime_extra));
+    uint64_t modified=now>previous?now:previous+(previous<UINT64_MAX);
+    if(!rc)rc=ext_set_time(ctx,ref.inode,'m',modified);
+    if(!rc)rc=ext_touch_ctime(ctx,ref.inode,now);
+    if(!rc)ref.dirty=true;
+    int put=ext4_fs_put_inode_ref(&ref);
+    return rc?rc:(put?-put:0);
+}
 /* Inode-relative write: no pathname reopen after rename. The VFS enforces
  * per-mount write policy. Guest boot remains read-only by default. */
 static int64_t ext_write_inode(const struct nas_fs_node *node,uint64_t offset,
@@ -178,7 +276,12 @@ static int64_t ext_write_inode(const struct nas_fs_node *node,uint64_t offset,
     };
     size_t written=0;
     int rc=ext4_fwrite(&file,src,(size_t)length,&written);
-    return rc ? -rc : (int64_t)written;
+    if(rc)return -rc;
+    if(written) {
+        rc=ext_record_write_time(ctx,(uint32_t)node->ino,false);
+        if(rc)return rc;
+    }
+    return (int64_t)written;
 }
 static int ext_resize_inode(const struct nas_fs_node *node,uint64_t length) {
     if(!node || !node->mount || !node->mount->private_data)return -EINVAL;
@@ -195,7 +298,8 @@ static int ext_resize_inode(const struct nas_fs_node *node,uint64_t length) {
      * provided by the filesystem; never lie to VFS about persisted size. */
     if(length<=old_size) {
         int rc=ext4_ftruncate(&f,length);
-        return rc ? -rc : 0;
+        return rc ? -rc : (length==old_size ? 0 :
+            ext_record_write_time(ctx,(uint32_t)node->ino,false));
     }
     static const uint8_t zeros[1024]={0};
     uint64_t offset=old_size;
@@ -211,7 +315,7 @@ static int ext_resize_inode(const struct nas_fs_node *node,uint64_t length) {
         if(!written)return -EIO;
         offset+=(uint64_t)written;
     }
-    return 0;
+    return ext_record_write_time(ctx,(uint32_t)node->ino,false);
 }
 /* Linux fsync durability ordering:
  *  1. write back dirty ext4 metadata/data through the BlockDevice bridge;
@@ -227,6 +331,68 @@ static int ext_sync_mount(struct nas_lwext4_mount *ctx) {
 static int ext_sync_inode(const struct nas_fs_node *node) {
     if(!node || !node->mount || !node->mount->private_data)return -EINVAL;
     return ext_sync_mount(node->mount->private_data);
+}
+/* The VFS's (mount, inode) is already resolved and can outlive a name.
+ * Alter the SAME upstream ext4 inode used by stat/read/write, including an
+ * open inode after rename, instead of reopening an obsolete pathname via
+ * ext4_owner_set(). Checksum/metadata writeback remains liblwext4-owned. */
+static int ext_chown_inode(const struct nas_fs_node *node,
+                           uint32_t uid,uint32_t gid) {
+    uint64_t now=ext_now_ns();
+    if(now/NAS_NSEC_PER_SEC>UINT32_MAX)return -EOVERFLOW;
+    struct ext4_inode_ref ref={0};
+    struct nas_lwext4_mount *ctx=NULL;
+    int rc=ext_metadata_ref(node,&ctx,&ref);
+    if(rc)return rc;
+    uint32_t old_uid=ext4_inode_get_uid(ref.inode);
+    uint32_t old_gid=ext4_inode_get_gid(ref.inode);
+    if(uid!=UINT32_MAX)ext4_inode_set_uid(ref.inode,uid);
+    if(gid!=UINT32_MAX)ext4_inode_set_gid(ref.inode,gid);
+    if((uid!=UINT32_MAX && uid!=old_uid) ||
+       (gid!=UINT32_MAX && gid!=old_gid)) {
+        uint32_t mode=ext4_inode_get_mode(ctx->upstream_super,ref.inode);
+        ext4_inode_set_mode(ctx->upstream_super,ref.inode,mode&~06000U);
+    }
+    rc=ext_touch_ctime(ctx,ref.inode,now);
+    if(!rc)ref.dirty=true;
+    int put=ext4_fs_put_inode_ref(&ref);
+    return rc?rc:(put?-put:0);
+}
+static int ext_chmod_inode(const struct nas_fs_node *node,uint64_t mode) {
+    uint64_t now=ext_now_ns();
+    if(now/NAS_NSEC_PER_SEC>UINT32_MAX)return -EOVERFLOW;
+    struct ext4_inode_ref ref={0};
+    struct nas_lwext4_mount *ctx=NULL;
+    int rc=ext_metadata_ref(node,&ctx,&ref);
+    if(rc)return rc;
+    uint32_t current=ext4_inode_get_mode(ctx->upstream_super,ref.inode);
+    ext4_inode_set_mode(ctx->upstream_super,ref.inode,
+                        (current&0170000U)|((uint32_t)mode&07777U));
+    rc=ext_touch_ctime(ctx,ref.inode,now);
+    if(!rc)ref.dirty=true;
+    int put=ext4_fs_put_inode_ref(&ref);
+    return rc?rc:(put?-put:0);
+}
+static int ext_utimens_inode(const struct nas_fs_node *node,
+                             uint64_t access,uint64_t modified,
+                             bool set_access,bool set_modified) {
+    if((set_access && access/NAS_NSEC_PER_SEC>UINT32_MAX) ||
+       (set_modified && modified/NAS_NSEC_PER_SEC>UINT32_MAX))
+        return -EOVERFLOW;
+    uint64_t now=ext_now_ns();
+    if((set_access || set_modified) && now/NAS_NSEC_PER_SEC>UINT32_MAX)
+        return -EOVERFLOW;
+    struct ext4_inode_ref ref={0};
+    struct nas_lwext4_mount *ctx=NULL;
+    int rc=ext_metadata_ref(node,&ctx,&ref);
+    if(rc)return rc;
+    if(set_access)rc=ext_set_time(ctx,ref.inode,'a',access);
+    if(!rc && set_modified)rc=ext_set_time(ctx,ref.inode,'m',modified);
+    if(!rc && (set_access || set_modified))
+        rc=ext_touch_ctime(ctx,ref.inode,now);
+    if(!rc && (set_access || set_modified))ref.dirty=true;
+    int put=ext4_fs_put_inode_ref(&ref);
+    return rc?rc:(put?-put:0);
 }
 /* Upstream lwext4 namespace APIs are path-oriented. Keep that limitation
  * strictly inside this port: generate the path from the LIVE parent inode,
@@ -252,10 +418,13 @@ static int ext_create_path(const struct nas_fs_node *parent,const char *name,uin
     ext4_file f={0};
     rc=ext4_fopen(&f,path,"w");
     if(rc)return -rc;
+    uint32_t ino=f.inode;
     int close_rc=ext4_fclose(&f);
     if(close_rc)return -close_rc;
-    rc=ext4_mode_set(path,(uint32_t)mode&07777U);
-    return rc ? -rc : 0;
+    struct nas_fs_node new_node={.mount=parent->mount,.ino=ino};
+    rc=ext_chmod_inode(&new_node,mode);
+    return rc ? rc : ext_record_write_time(parent->mount->private_data,
+                                            ino,true);
 }
 static int ext_mkdir_path(const struct nas_fs_node *parent,const char *name,uint64_t mode) {
     char path[256];int rc=ext_child_path(parent,name,path);
@@ -263,8 +432,14 @@ static int ext_mkdir_path(const struct nas_fs_node *parent,const char *name,uint
     ext_namespace_changed(parent->mount->private_data);
     rc=ext4_dir_mk(path);
     if(rc)return -rc;
-    rc=ext4_mode_set(path,(uint32_t)mode&07777U);
-    return rc ? -rc : 0;
+    uint32_t ino=0;
+    struct ext4_inode raw;
+    rc=ext4_raw_inode_fill(path,&ino,&raw);
+    if(rc)return -rc;
+    struct nas_fs_node new_node={.mount=parent->mount,.ino=ino};
+    rc=ext_chmod_inode(&new_node,mode);
+    return rc ? rc : ext_record_write_time(parent->mount->private_data,
+                                           ino,true);
 }
 /* The upstream liblwext4 namespace API is NOT a POSIX replacement
  * transaction: it refuses an occupied target, and removes last-linked
@@ -366,6 +541,9 @@ static int ext_live_getattr(const struct nas_fs_node *node,
     out->atime_sec=ext4_inode_get_access_time(raw);
     out->mtime_sec=ext4_inode_get_modif_time(raw);
     out->ctime_sec=ext4_inode_get_change_inode_time(raw);
+    out->atime_nsec=ext_time_nsec(ctx,raw,offsetof(struct ext4_inode,atime_extra));
+    out->mtime_nsec=ext_time_nsec(ctx,raw,offsetof(struct ext4_inode,mtime_extra));
+    out->ctime_nsec=ext_time_nsec(ctx,raw,offsetof(struct ext4_inode,ctime_extra));
     out->size=ext4_inode_get_size(ctx->upstream_super,raw);
     out->is_dir=(mode&0170000U)==0040000U;
     out->is_symlink=(mode&0170000U)==0120000U;
@@ -708,6 +886,7 @@ static const struct nas_vfs_type ext_type={
     .write_at=ext_write_inode,
     .resize=ext_resize_inode,.sync=ext_sync_inode,
     .read_dir=ext_read_directory,
+    .chmod=ext_chmod_inode,.chown=ext_chown_inode,.utimens=ext_utimens_inode,
     .create=ext_create_path,.mkdir=ext_mkdir_path,
     .unlink=ext_unlink_path,.rename=ext_rename_path,
     .link=ext_link_path,.symlink=ext_symlink_path,

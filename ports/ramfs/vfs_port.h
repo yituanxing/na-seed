@@ -13,6 +13,10 @@ struct nas_ramfs_identity {
     struct nas_ramfs_identity *parent;
     uint64_t ino;
     uint32_t mode;
+    uint32_t uid,gid;
+    /* POSIX timestamps belong to the stable adapter inode, since original
+     * embedded RamFS stores bytes and directory entries only. */
+    uint64_t atime_ns,mtime_ns,ctime_ns;
     char name[256];
     bool active;
     bool orphaned; /* VFS-open inode detached into unreachable private store */

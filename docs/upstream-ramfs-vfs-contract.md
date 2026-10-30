@@ -56,9 +56,12 @@ FD path, unlink and rmdir, busy-mount and inode lease protection.
   rename-overwrite with `EOPNOTSUPP` instead of deleting victim first
   without an atomic transaction. Never silently substitute a tmpfs-only
   special-case for a missing shared VFS capability.
-- This embedded RAMFS does not implement symlinks, hardlinks, POSIX
-  timestamp mutation, ACLs, mmap or Swap. The adapter retains mode
-  metadata per VFS inode and supports `chmod` without vendor changes.
+- The original embedded RAMFS does not implement symlinks, hardlinks,
+  POSIX timestamp mutation, ACLs, mmap or Swap. The NaSeed adapter owns
+  UID/GID, mode and atime/mtime/ctime in its generation-stable inode
+  identity and exposes `chown`, `chmod` and `utimens` through the common
+  VFS without changing vendor bytes. These timestamps are volatile just
+  like the imported RAM-backed file data; no disk durability is claimed.
 - The embedded library uses a heap and its *own* in-memory data storage.
   Do not conflate it with Linux ramfs's reliance on generic page cache.
 - The upstream project may have bugs/limitations; this is a distinct

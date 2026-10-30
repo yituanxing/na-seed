@@ -7,6 +7,8 @@
 #include "../../kernel/errno.h"
 #include "../../kernel/lib/string.h"
 #include "../../kernel/mm/heap.h"
+#include "../../kernel/time/clock.h"
+#include "../../kernel/arch/arch.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -33,6 +35,22 @@ static void orphan_basename(uint64_t ino,char name[18]) {
 
 static struct nas_ramfs_vfs *context(const struct nas_vfs_mount *m) {
     return m ? (struct nas_ramfs_vfs *)m->private_data : NULL;
+}
+/* Same RTC-anchored fallback as tmpfs: an absent firmware RTC does not
+ * turn freshly written files into epoch-zero input for original GNU gzip.
+ * Monotonic nanoseconds are still a real clock, only not a UTC calendar. */
+static uint64_t ramfs_now_ns(void) {
+    uint64_t now=0;
+    return nas_time_realtime_ns(&now)?now:nas_arch_monotonic_ns();
+}
+static uint64_t ramfs_next_time(uint64_t previous) {
+    uint64_t now=ramfs_now_ns();
+    return now>previous?now:previous+(previous<UINT64_MAX);
+}
+static void ramfs_modify(struct nas_ramfs_identity *id) {
+    if(!id)return;
+    id->mtime_ns=ramfs_next_time(id->mtime_ns);
+    id->ctime_ns=ramfs_next_time(id->ctime_ns);
 }
 static int path_of(const struct nas_ramfs_identity *id,char path[256]) {
     if(!id)return -ESTALE;
@@ -82,9 +100,11 @@ static struct nas_ramfs_identity *intern(struct nas_ramfs_vfs *ctx,
         ctx->identities=unused;
     }
     struct nas_ramfs_identity *next=unused->next;
+    uint64_t now=ramfs_now_ns();
     *unused=(struct nas_ramfs_identity){.next=next,
         .entry=entry,.parent=parent,.ino=++ctx->next_ino,.active=true,
-        .mode=ramfs_is_dir(entry)?0040755U:0100644U};
+        .mode=ramfs_is_dir(entry)?0040755U:0100644U,
+        .atime_ns=now,.mtime_ns=now,.ctime_ns=now};
     memcpy(unused->name,name,strlen(name)+1);
     return unused;
 }
@@ -96,6 +116,13 @@ static int fill(struct nas_ramfs_vfs *ctx,struct nas_ramfs_identity *id,
     bool dir=st.type==RAMFS_ENTRY_TYPE_DIR;
     *out=(struct nas_fs_node){.inode=id,.ino=id->ino,
         .mode=id->mode,.size=dir?0:(uint64_t)st.size,
+        .uid=id->uid,.gid=id->gid,
+        .atime_sec=id->atime_ns/NAS_NSEC_PER_SEC,
+        .mtime_sec=id->mtime_ns/NAS_NSEC_PER_SEC,
+        .ctime_sec=id->ctime_ns/NAS_NSEC_PER_SEC,
+        .atime_nsec=(uint32_t)(id->atime_ns%NAS_NSEC_PER_SEC),
+        .mtime_nsec=(uint32_t)(id->mtime_ns%NAS_NSEC_PER_SEC),
+        .ctime_nsec=(uint32_t)(id->ctime_ns%NAS_NSEC_PER_SEC),
         .nlink=id->orphaned?0:(dir?2:1),.is_dir=dir};
     return 0;
 }
@@ -144,6 +171,11 @@ static int getattr(const struct nas_fs_node *node,struct nas_fs_node *out) {
     rc=fill(ctx,(struct nas_ramfs_identity *)node->inode,&fresh);
     if(rc)return rc;
     *out=*node;out->mode=fresh.mode;out->size=fresh.size;
+    out->uid=fresh.uid;out->gid=fresh.gid;
+    out->atime_sec=fresh.atime_sec;out->mtime_sec=fresh.mtime_sec;
+    out->ctime_sec=fresh.ctime_sec;
+    out->atime_nsec=fresh.atime_nsec;out->mtime_nsec=fresh.mtime_nsec;
+    out->ctime_nsec=fresh.ctime_nsec;
     out->nlink=fresh.nlink;
     return 0;
 }
@@ -156,12 +188,13 @@ static int64_t read_at(const struct nas_fs_node *node,uint64_t offset,
     if(!dst)return -EFAULT;
     if(offset>INT64_MAX || count>INT64_MAX)return -EFBIG;
     struct nas_ramfs_vfs *ctx=context(node->mount);
-    const struct nas_ramfs_identity *id=node->inode;
+    struct nas_ramfs_identity *id=(struct nas_ramfs_identity *)node->inode;
     ramfs_fh_t *fh=ramfs_open(ctx->fs,id->entry,O_RDONLY);
     if(!fh)return -ENOMEM;
     ssize_t pos=ramfs_seek(fh,(off_t)offset,SEEK_SET);
     ssize_t n=pos<0?-1:ramfs_read(fh,(char *)dst,(size_t)count);
     ramfs_close(fh);
+    if(n>0)id->atime_ns=ramfs_now_ns();
     return n<0?-EIO:n;
 }
 static int64_t write_at(const struct nas_fs_node *node,uint64_t offset,
@@ -173,12 +206,13 @@ static int64_t write_at(const struct nas_fs_node *node,uint64_t offset,
     if(!src)return -EFAULT;
     if(offset>INT64_MAX || count>INT64_MAX-offset)return -EFBIG;
     struct nas_ramfs_vfs *ctx=context(node->mount);
-    const struct nas_ramfs_identity *id=node->inode;
+    struct nas_ramfs_identity *id=(struct nas_ramfs_identity *)node->inode;
     ramfs_fh_t *fh=ramfs_open(ctx->fs,id->entry,O_RDWR);
     if(!fh)return -ENOMEM;
     ssize_t pos=ramfs_seek(fh,(off_t)offset,SEEK_SET);
     ssize_t n=pos<0?-1:ramfs_write(fh,(const char *)src,(size_t)count);
     ramfs_close(fh);
+    if(n>0)ramfs_modify(id);
     return n<0?-ENOMEM:n;
 }
 static int resize(const struct nas_fs_node *node,uint64_t size) {
@@ -187,15 +221,17 @@ static int resize(const struct nas_fs_node *node,uint64_t size) {
     if(node->is_dir)return -EISDIR;
     if(size>INT64_MAX)return -EFBIG;
     struct nas_ramfs_vfs *ctx=context(node->mount);
-    const struct nas_ramfs_identity *id=node->inode;
+    struct nas_ramfs_identity *id=(struct nas_ramfs_identity *)node->inode;
     if(size==0) {
         /* Upstream realloc(ptr,0) may return NULL as a successful free.
          * Its real O_TRUNC implementation has the portable zero behavior. */
         ramfs_fh_t *fh=ramfs_open(ctx->fs,id->entry,O_RDWR|O_TRUNC);
         if(!fh)return -ENOMEM;
-        ramfs_close(fh);return 0;
+        ramfs_close(fh);ramfs_modify(id);return 0;
     }
-    return ramfs_truncate(ctx->fs,id->entry,(size_t)size)?-ENOMEM:0;
+    if(ramfs_truncate(ctx->fs,id->entry,(size_t)size))return -ENOMEM;
+    ramfs_modify(id);
+    return 0;
 }
 static int sync_inode(const struct nas_fs_node *node) {
     return validate(node); /* RAM is the final volatile storage. */
@@ -288,6 +324,7 @@ static int create(const struct nas_fs_node *parent,const char *name,uint64_t mod
         (struct nas_ramfs_identity *)parent->inode,name,entry);
     if(!id) {(void)ramfs_unlink(entry);return -ENOMEM;}
     id->mode=0100000U|((uint32_t)mode&07777U);
+    ramfs_modify((struct nas_ramfs_identity *)parent->inode);
     return 0;
 }
 static int mkdir_node(const struct nas_fs_node *parent,const char *name,
@@ -302,6 +339,7 @@ static int mkdir_node(const struct nas_fs_node *parent,const char *name,
         (struct nas_ramfs_identity *)parent->inode,name,entry);
     if(!id) {(void)ramfs_rmdir(entry);return -ENOMEM;}
     id->mode=0040000U|((uint32_t)mode&07777U);
+    ramfs_modify((struct nas_ramfs_identity *)parent->inode);
     return 0;
 }
 static int chmod_node(const struct nas_fs_node *node,uint64_t mode) {
@@ -309,6 +347,33 @@ static int chmod_node(const struct nas_fs_node *node,uint64_t mode) {
     if(rc)return rc;
     struct nas_ramfs_identity *id=(struct nas_ramfs_identity *)node->inode;
     id->mode=(id->mode&0170000U)|((uint32_t)mode&07777U);
+    id->ctime_ns=ramfs_next_time(id->ctime_ns);
+    return 0;
+}
+/* The unmodified vendor RamFS has no UNIX owner fields. The existing
+ * generation-stable identity is the sole owner of VFS metadata for this
+ * mount. A reclaimed inode never lends its former UID/GID to a new file. */
+static int chown_node(const struct nas_fs_node *node,uint32_t uid,uint32_t gid) {
+    int rc=validate(node);
+    if(rc)return rc;
+    struct nas_ramfs_identity *id=(struct nas_ramfs_identity *)node->inode;
+    bool changed=(uid!=UINT32_MAX && uid!=id->uid) ||
+                 (gid!=UINT32_MAX && gid!=id->gid);
+    if(uid!=UINT32_MAX)id->uid=uid;
+    if(gid!=UINT32_MAX)id->gid=gid;
+    if(changed)id->mode&=~06000U;
+    id->ctime_ns=ramfs_next_time(id->ctime_ns);
+    return 0;
+}
+static int utimens_node(const struct nas_fs_node *node,uint64_t access_ns,
+                        uint64_t modified_ns,bool set_access,bool set_modified) {
+    int rc=validate(node);
+    if(rc)return rc;
+    if(!set_access && !set_modified)return 0; /* two UTIME_OMIT fields */
+    struct nas_ramfs_identity *id=(struct nas_ramfs_identity *)node->inode;
+    if(set_access)id->atime_ns=access_ns;
+    if(set_modified)id->mtime_ns=modified_ns;
+    id->ctime_ns=ramfs_next_time(id->ctime_ns);
     return 0;
 }
 /* The original backend has no orphan API. For an open inode detach the
@@ -349,11 +414,14 @@ static int unlink_node(const struct nas_fs_node *parent,const char *name,
         id->parent=ctx->orphan_dir;
         memcpy(id->name,namebuf,sizeof(namebuf));
         id->orphaned=true;
+        id->ctime_ns=ramfs_next_time(id->ctime_ns);
+        ramfs_modify((struct nas_ramfs_identity *)parent->inode);
         return 0;
     }
     int removed=dir?ramfs_rmdir(entry):ramfs_unlink(entry);
     if(removed)return dir?-ENOTEMPTY:-EIO;
     id->active=false;id->entry=NULL;
+    ramfs_modify((struct nas_ramfs_identity *)parent->inode);
     return 0;
 }
 static void last_inode_unpin(const struct nas_fs_node *node) {
@@ -393,6 +461,10 @@ static int rename_node(const struct nas_fs_node *old_parent,const char *old_name
     if(ramfs_rename(ctx->fs,from,to))return -EIO;
     id->parent=(struct nas_ramfs_identity *)new_parent->inode;
     memcpy(id->name,new_name,strlen(new_name)+1);
+    id->ctime_ns=ramfs_next_time(id->ctime_ns);
+    ramfs_modify((struct nas_ramfs_identity *)old_parent->inode);
+    if(old_parent->inode!=new_parent->inode)
+        ramfs_modify((struct nas_ramfs_identity *)new_parent->inode);
     return 0;
 }
 static const struct nas_vfs_type ramfs_type={
@@ -402,7 +474,7 @@ static const struct nas_vfs_type ramfs_type={
     .read_size_is_eof=true,
     .last_inode_unpin=last_inode_unpin,
     .read_dir=readdir_inode,.create=create,.mkdir=mkdir_node,
-    .chmod=chmod_node,
+    .chmod=chmod_node,.chown=chown_node,.utimens=utimens_node,
     .write_at=write_at,.resize=resize,.sync=sync_inode,
     .unlink=unlink_node,.rename=rename_node,
     .unlink_open_file_safe=true,.unlink_open_dir_safe=true
@@ -415,8 +487,10 @@ int nas_ramfs_vfs_mount(struct nas_ramfs_vfs *ctx,const char *point) {
     if(!fs)return -ENOMEM;
     ctx->fs=fs;ctx->next_ino=1;
     ctx->root_inode=(struct nas_ramfs_identity){
-        .entry=ramfs_get_entry(fs,"/"),.ino=1,.mode=0040755U,.active=true
+        .entry=ramfs_get_entry(fs,"/"),.ino=1,.mode=0040755U,.active=true,
+        .atime_ns=ramfs_now_ns()
     };
+    ctx->root_inode.mtime_ns=ctx->root_inode.ctime_ns=ctx->root_inode.atime_ns;
     ctx->identities=&ctx->root_inode;
     /* Vendor backend owns its private directory. Users never see it, and
      * each VFS mount has an independent orphan name and generation scope. */

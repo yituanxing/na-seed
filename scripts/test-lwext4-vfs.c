@@ -52,6 +52,14 @@ static const struct nas_block_ops trace_no_flush_ops={
 };
 void nas_print(const char *s) { fputs(s,stderr); }
 void nas_arch_halt(void) { abort(); }
+bool nas_time_realtime_ns(uint64_t *out) {
+    if(!out)return false;
+    *out=UINT64_C(1770000100)*UINT64_C(1000000000);
+    return true;
+}
+uint64_t nas_arch_monotonic_ns(void) {
+    return UINT64_C(1770000100)*UINT64_C(1000000000);
+}
 static int root_lookup(const struct nas_vfs_mount *mount,const char *path,
                        struct nas_fs_node *node) {
     (void)mount;
@@ -176,6 +184,7 @@ int main(int argc,char **argv) {
     assert(nas_vfs_rename("/mnt","/new-mount",0)==-EBUSY);
     assert(nas_vfs_mkdir("/mnt/sandbox",0755)==-EEXIST);
     if(!write) {
+        assert(nas_vfs_chown(&node,1001,2002)==-EROFS);
         assert(nas_vfs_create("/mnt/sandbox/new-file",0644)==-EROFS);
         assert(nas_vfs_write_at(&node,0,(const uint8_t *)"x",1)==-EROFS);
         assert(nas_vfs_resize(&node,0)==-EROFS);
@@ -187,10 +196,58 @@ int main(int argc,char **argv) {
     }
     static const uint8_t persisted[]="NaSeed writable VFS ext4 inode storage";
     if(write) {
+        /* An open inode survives name changes. Change real on-disk owner
+         * via the same inode identity, and verify through independent VFS
+         * lookup + pinned getattr (not a forged success code). */
+        assert(nas_vfs_create("/mnt/sandbox/owner-probe",06755)==0);
+        struct nas_fs_node owner_probe,owner_stat;
+        assert(nas_fs_lookup_node("/mnt/sandbox/owner-probe",true,
+                                  &owner_probe,actual)==0);
+        assert(nas_vfs_node_pin(&owner_probe)==0);
+        assert(nas_vfs_chown(&owner_probe,1001,2002)==0);
+        assert(nas_vfs_getattr(&owner_probe,&owner_stat)==0);
+        assert(owner_stat.uid==1001 && owner_stat.gid==2002 &&
+               (owner_stat.mode&06000U)==0 && owner_stat.ctime_sec==1770000100);
+        assert(nas_vfs_chmod(&owner_probe,06540)==0);
+        assert(nas_vfs_getattr(&owner_probe,&owner_stat)==0);
+        assert((owner_stat.mode&07777U)==06540U);
+        const uint64_t access=UINT64_C(1700000400123456789);
+        const uint64_t modified=UINT64_C(1700000550987654321);
+        assert(nas_vfs_utimens(&owner_probe,access,modified,true,true)==0);
+        assert(nas_vfs_getattr(&owner_probe,&owner_stat)==0);
+        assert(owner_stat.atime_sec==1700000400U &&
+               owner_stat.atime_nsec==123456789U &&
+               owner_stat.mtime_sec==1700000550U &&
+               owner_stat.mtime_nsec==987654321U);
+        assert(nas_vfs_utimens(&owner_probe,0,0,false,false)==0);
+        assert(nas_vfs_getattr(&owner_probe,&owner_stat)==0);
+        assert(owner_stat.atime_sec==1700000400U &&
+               owner_stat.atime_nsec==123456789U &&
+               owner_stat.mtime_sec==1700000550U &&
+               owner_stat.mtime_nsec==987654321U);
+        assert(nas_vfs_utimens(&owner_probe,0,modified+1000000000ULL,
+                               false,true)==0);
+        assert(nas_vfs_getattr(&owner_probe,&owner_stat)==0);
+        assert(owner_stat.atime_sec==1700000400U &&
+               owner_stat.atime_nsec==123456789U &&
+               owner_stat.mtime_sec==1700000551U &&
+               owner_stat.mtime_nsec==987654321U);
+        assert(nas_vfs_rename("/mnt/sandbox/owner-probe",
+                              "/mnt/sandbox/owner-renamed",0)==0);
+        assert(nas_vfs_chown(&owner_probe,UINT32_MAX,3003)==0);
+        assert(nas_vfs_chown(&owner_probe,4004,UINT32_MAX)==0);
+        assert(nas_fs_lookup_node("/mnt/sandbox/owner-renamed",true,
+                                  &owner_stat,actual)==0);
+        assert(owner_stat.ino==owner_probe.ino && owner_stat.uid==4004 &&
+               owner_stat.gid==3003 && owner_stat.ctime_sec==1770000100 &&
+               owner_stat.ctime_nsec>0);
+        assert(nas_vfs_node_unpin(&owner_probe)==0);
+        assert(nas_vfs_unlink("/mnt/sandbox/owner-renamed",0)==0);
         assert(nas_vfs_create("/mnt/sandbox/vfs-created",0640)==0);
         assert(nas_vfs_create("/mnt/sandbox/vfs-created",0640)==-EEXIST);
         struct nas_fs_node created;
         assert(nas_fs_lookup_node("/mnt/sandbox/vfs-created",true,&created,actual)==0);
+        assert(created.mtime_sec==1770000100U);
         assert(nas_vfs_can_write(&created) && (created.mode&0777U)==0640U);
         assert(nas_vfs_write_at(&created,0,persisted,sizeof(persisted)-1)==(int64_t)sizeof(persisted)-1);
         assert(nas_fs_lookup_node("/mnt/sandbox/vfs-created",true,&created,actual)==0);
@@ -562,12 +619,19 @@ int main(int argc,char **argv) {
                linked_stat.nlink==1);
         assert(nas_vfs_node_unpin(&linked_hold)==0);
         assert(nas_fs_lookup_node("/mnt/sandbox/vfs-persist",true,&created,actual)==0);
+        assert(nas_vfs_chown(&created,5005,6006)==0);
+        struct nas_fs_node persisted_owner;
+        assert(nas_vfs_getattr(&created,&persisted_owner)==0);
+        assert(persisted_owner.uid==5005 && persisted_owner.gid==6006);
+        assert(persisted_owner.mtime_sec==1770000100U);
         assert(nas_vfs_read_at(&created,0,(uint8_t *)buffer,sizeof(buffer))==(int64_t)created.size);
         assert(!memcmp(buffer,persisted,sizeof(persisted)-1));
     }
     if(verify) {
         struct nas_fs_node persisted_node;
         assert(nas_fs_lookup_node("/mnt/sandbox/vfs-persist",true,&persisted_node,actual)==0);
+        assert(persisted_node.uid==5005 && persisted_node.gid==6006);
+        assert(persisted_node.mtime_sec==1770000100U);
         assert(persisted_node.size==sizeof(persisted)-1);
         assert(nas_vfs_read_at(&persisted_node,0,(uint8_t *)buffer,sizeof(buffer))==(int64_t)persisted_node.size);
         assert(!memcmp(buffer,persisted,sizeof(persisted)-1));

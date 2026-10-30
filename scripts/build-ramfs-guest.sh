@@ -28,7 +28,7 @@ ld.lld -m "$machine" -r $objs -o "$out/ramfs_guest.o"
 readelf -h "$out/ramfs_guest.o" | grep -q 'Type:.*REL'
 for sym in $(nm -u "$out/ramfs_guest.o" | awk 'NF {print $NF}' | sort -u); do
   case "$sym" in
-    nas_heap_*|nas_vfs_*|nas_fs_lookup_node|nas_print|memcpy|memmove|memset|memcmp|strlen|strnlen|strcmp|strncmp|strchr|strrchr|strcpy|strncpy|strspn|strcspn) ;;
+    nas_heap_*|nas_vfs_*|nas_fs_lookup_node|nas_print|nas_time_realtime_ns|nas_arch_monotonic_ns|memcpy|memmove|memset|memcmp|strlen|strnlen|strcmp|strncmp|strchr|strrchr|strcpy|strncpy|strspn|strcspn) ;;
     *) echo "[RAMFS GUEST ERROR] unexpected kernel dependency: $sym" >&2;exit 1 ;;
   esac
 done

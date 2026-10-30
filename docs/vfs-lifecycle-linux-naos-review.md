@@ -46,10 +46,13 @@ procfs, lwext4 and LittleFS. Linux fd-based chmod and inode timestamps
 share VFS inode operations rather than manually consulting tmpfs FD slots;
 tmpfs now retains nanosecond timestamps in the common borrowed inode view.
 Only legacy synthetic character/PTY/socket and non-VFS Limine module FDs
-keep the old device-specific stat ABI. Writable lwext4 chmod/utimens remain
-unimplemented until a safe inode-based upstream API exists; the generic VFS
-returns an explicit unsupported operation rather than silently rewriting
-an untrusted pathname.
+keep the old device-specific stat ABI. The M81 lwext4 adapter now uses
+upstream `ext4_fs_get_inode_ref`/`ext4_fs_put_inode_ref` to implement
+`chmod`, `chown` and `utimens` by live inode identity, including after
+rename, and persists timestamp updates via the original block cache.
+It never reopens an untrusted historical pathname to mutate metadata.
+As with the existing lwext4 mount, crash-transaction semantics with a
+started ext4 journal remain a separate unverified capability.
 
 ### Shared ext4 inode size over independent opens
 
