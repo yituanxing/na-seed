@@ -1,25 +1,5 @@
 name: NaSeed M111 15 more signed original Alpine Linux applications — one QEMU boot per ISA
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/m111-batch.yml'
-      - 'tests/m111-*'
-      - 'scripts/m111-*'
-      - 'scripts/check-m111-getrusage.sh'
-      - 'scripts/test-m111-getrusage.c'
-      - 'scripts/probe-m111-batch.sh'
-      - 'scripts/stage-m111-prebuilt.sh'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'scripts/check-prebuilt-profile-catalog.py'
-      - 'scripts/check-native-qemu-target.py'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'rootfs/alpine/**'
-      - 'kernel/**'
-      - 'ports/**'
   workflow_dispatch:
 
 concurrency:

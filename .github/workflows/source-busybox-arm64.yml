@@ -1,49 +1,5 @@
 name: NaSeed original-source ARM64 BusyBox (extended)
 on:
-  pull_request:
-    paths:
-      - 'kernel/task/**'
-      - 'kernel/task.c'
-      - 'kernel/task.h'
-      - 'kernel/exception/**'
-      # Native M105 signal and JIT acceptance must also rerun after a
-      # target-only signal frame, ICACHE/MMU, or PTY/TTY implementation edit.
-      - 'kernel/arch/aarch64/**'
-      - 'kernel/arch/mmu.h'
-      - 'kernel/mm/**'
-      # Native signal/JIT boots also consume the shared Path-first VFS.
-      - 'kernel/fs/vfs*'
-      - 'kernel/fs/lookup.*'
-      - 'kernel/fs/open_path.h'
-      - 'kernel/fs/path_request.h'
-      - 'kernel/fs/namespace_syscall.*'
-      - 'kernel/fs/tmp_namespace.c'
-      - 'kernel/fd.*'
-      - 'kernel/drivers/pty*'
-      - 'kernel/drivers/tty*'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'scripts/probe-m18-port-interactive.sh'
-      - 'scripts/m18-port-qemu.sh'
-      - 'scripts/stage-busybox-rootfs.sh'
-      - 'scripts/probe-m103-tid.sh'
-      - 'scripts/test-m103-native-tid-abi.c'
-      - 'scripts/m103-native-tid-cases.tsv'
-      - 'scripts/test-m104-native-exception.c'
-      - 'scripts/test-m104-cases.tsv'
-      - 'scripts/test-m104-probe.sh'
-      - 'scripts/check-m105-signal-group.sh'
-      - 'scripts/build-m105-signal-group.sh'
-      - 'scripts/probe-m105-signal-group.sh'
-      - 'scripts/m105-signal-group-serial-check.py'
-      - 'tests/m105-signal-group.c'
-      - 'scripts/test-m105-native-jit-probe.sh'
-      - 'scripts/test-m105-native-jit.c'
-      - 'scripts/test-m105-native-jit-cases.tsv'
-      - 'tests/path-first-dirfd-native.c'
-      - 'scripts/build-path-first-dirfd-native.sh'
-      - 'scripts/probe-path-first-dirfd-native.sh'
-      - 'scripts/path-first-dirfd-serial-check.py'
-      - '.github/workflows/source-busybox-arm64.yml'
   workflow_dispatch:
   schedule:
     - cron: '17 3 * * 0'

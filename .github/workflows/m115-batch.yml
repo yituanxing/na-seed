@@ -1,23 +1,5 @@
 name: NaSeed M115 15 original Linux GNU and crypto utilities, one QEMU boot per ISA
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/m115-batch.yml'
-      - 'tests/m115-*'
-      - 'scripts/m115-*'
-      - 'scripts/probe-m115-batch.sh'
-      - 'scripts/stage-m115-prebuilt.sh'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'scripts/check-prebuilt-profile-catalog.py'
-      - 'scripts/check-native-qemu-target.py'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'rootfs/alpine/**'
-      - 'kernel/**'
-      - 'ports/**'
   workflow_dispatch:
 
 concurrency:

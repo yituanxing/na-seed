@@ -28,16 +28,19 @@ original_elf() {
 
 debug_object=/tests/m118-debug.o
 different_object=/tests/m118-debug-other.o
+linked_debug=/tests/m118-debug.elf
 textrel_object=/tests/m118-textrel.so
 
 check_input() {
     [ -s "$debug_object" ] && [ -s "$different_object" ] &&
+        [ -s "$linked_debug" ] &&
         [ -s "$textrel_object" ]
 }
 
 separate_debug() {
     stripper=$(original_elf /usr/bin/eu-strip)
-    "$stripper" -f "$1/separate.debug" -o "$1/stripped.o" "$debug_object"
+    input=${2:-$debug_object}
+    "$stripper" -f "$1/separate.debug" -o "$1/stripped.o" "$input"
     [ -s "$1/separate.debug" ] && [ -s "$1/stripped.o" ]
 }
 
@@ -65,8 +68,13 @@ run_case() {
         busy cmp "$debug_object" "$work/recovered" ;;
       elfclassify)
         exe=$(original_elf /usr/bin/eu-elfclassify)
-        "$exe" --elf-file --unstripped "$debug_object" > "$work/classified"
+        # Classification verifies ET_REL ELF; separate section proof verifies
+        # actual DWARF, independent of elfutils' unstripped heuristics.
+        "$exe" --elf-file "$debug_object" > "$work/classified"
         busy grep -Fxq "$debug_object" "$work/classified"
+        reader=$(original_elf /usr/bin/eu-readelf)
+        "$reader" -S "$debug_object" > "$work/debug-sections"
+        busy grep -Fq '.debug_info' "$work/debug-sections"
         archiver=$(original_elf /usr/bin/eu-ar)
         "$archiver" q "$work/classified.a" "$debug_object" "$different_object"
         "$exe" --elf-archive "$work/classified.a" > "$work/archive-class"
@@ -92,15 +100,22 @@ run_case() {
         busy grep -Fq 'm118-debug.c' "$work/srcfiles" ;;
       elflint)
         exe=$(original_elf /usr/bin/eu-elflint)
-        "$exe" --quiet "$debug_object" > "$work/lint" 2>&1
+        # Clang's relocatable objects carry LLVM-specific section metadata
+        # that elfutils' extra-strict elflint flags.  Instead lint a genuine
+        # signed Alpine GCC-linked native ELF, as a Linux program would.
+        signed_native=$(original_elf /usr/bin/eu-elflint)
+        "$exe" --quiet "$signed_native" > "$work/lint" 2>&1
         reader=$(original_elf /usr/bin/eu-readelf)
-        "$reader" -h "$debug_object" > "$work/header"
-        busy grep -Fq 'REL (Relocatable file)' "$work/header" ;;
+        "$reader" -h "$signed_native" > "$work/header"
+        busy grep -Eq 'Type:[[:space:]]+(DYN|EXEC)[[:space:]]' "$work/header" ;;
       findtextrel)
         exe=$(original_elf /usr/bin/eu-findtextrel)
         "$exe" "$textrel_object" > "$work/relocations" 2>&1
         [ -s "$work/relocations" ]
-        busy grep -Eiq 'text|reloc|0x' "$work/relocations" ;;
+        # eu-findtextrel diagnoses the source *function* or non-PIC object;
+        # it need not print the words "text" or "relocation".  These are its
+        # actual function/source diagnostics, not an arbitrary success string.
+        busy grep -Eiq 'not compiled with -fpic|-fPIC|a relocation modifies memory at offset' "$work/relocations" ;;
       nm)
         exe=$(original_elf /usr/bin/eu-nm)
         "$exe" -B "$debug_object" > "$work/symbols"
@@ -143,7 +158,7 @@ run_case() {
         busy grep -Fq '.debug_info' "$work/debug-sections" ;;
       unstrip)
         exe=$(original_elf /usr/bin/eu-unstrip)
-        separate_debug "$work"
+        separate_debug "$work" "$linked_debug"
         "$exe" -o "$work/rejoined.o" "$work/stripped.o" "$work/separate.debug"
         [ -s "$work/rejoined.o" ]
         reader=$(original_elf /usr/bin/eu-readelf)

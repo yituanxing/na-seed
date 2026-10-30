@@ -12,7 +12,7 @@ sh scripts/stage-alpine-prebuilt-overlay.sh "$port" m118-batch
 work="build/external/m118-batch/$port"
 root="$work/rootfs"
 test -s "$work/rootfs.cpio" && test -s "$root/lib/apk/db/installed"
-for artifact in m118-debug.o m118-debug-other.o m118-textrel.so; do
+for artifact in m118-debug.o m118-debug-other.o m118-debug.elf m118-textrel.so; do
     test -s "$root/tests/$artifact" || exit 1
 done
 

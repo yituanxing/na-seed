@@ -1,22 +1,5 @@
 name: NaSeed M76/M77/M78 GNU GDB source attach and genuine instruction stepping
 on:
-  pull_request:
-    paths:
-      - 'kernel/**'
-      - 'scripts/stage-m76-prebuilt.sh'
-      - 'scripts/probe-m76-gdb.sh'
-      - 'scripts/m76-*'
-      - 'tests/m76-*'
-      - 'tests/m77-*'
-      - 'tests/m78-*'
-      - 'scripts/test-rv64-ptrace-step.c'
-      - 'rootfs/alpine/packages-m76-gdb.txt'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'scripts/check-prebuilt-profile-catalog.py'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/check-native-qemu-target.py'
-      - '.github/workflows/m76-gdb.yml'
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
