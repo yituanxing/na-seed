@@ -78,6 +78,12 @@ void tmp_inode_link(struct nas_tmp_file *file);
 void tmp_inode_unlink(struct nas_tmp_file *file);
 void tmp_inode_discard(struct nas_tmp_file *file);
 void tmp_inode_touch(struct nas_tmp_file *file);
+/* A successful namespace edit modifies its containing directory, not merely
+ * the inserted/unlinked child. The /tmp root borrows a bootfs inode and
+ * therefore keeps its own mutable timestamp state behind this provider. */
+void tmp_dir_modified(struct nas_tmp_file *directory);
+void tmp_root_dir_modified(void);
+void tmp_root_times(uint64_t *mtime_ns,uint64_t *ctime_ns);
 /* Provider-local directory child lookup; the generic VFS passes only an
  * opaque parent inode and one component, never an absolute pathname. */
 struct nas_tmp_file *tmp_find_child(const void *parent_inode,const char *name);

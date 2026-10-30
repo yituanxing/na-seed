@@ -29,6 +29,30 @@ static uint64_t tmp_next_mtime(uint64_t previous) {
     uint64_t now = tmp_now_ns();
     return now > previous ? now : previous + (previous < UINT64_MAX);
 }
+/* /tmp is a writable overlay whose root inode ID is borrowed from bootfs.
+ * Its namespace timestamps must never mutate the immutable CPIO entry. */
+static uint64_t tmp_root_mtime_ns, tmp_root_ctime_ns;
+void tmp_root_times(uint64_t *mtime_ns,uint64_t *ctime_ns) {
+    if(!tmp_root_mtime_ns) {
+        uint64_t now=tmp_now_ns();
+        if(!now)now=1;
+        tmp_root_mtime_ns=tmp_root_ctime_ns=now;
+    }
+    if(mtime_ns)*mtime_ns=tmp_root_mtime_ns;
+    if(ctime_ns)*ctime_ns=tmp_root_ctime_ns;
+}
+void tmp_root_dir_modified(void) {
+    tmp_root_times(0,0);
+    uint64_t before=tmp_root_mtime_ns>tmp_root_ctime_ns ?
+                    tmp_root_mtime_ns : tmp_root_ctime_ns;
+    tmp_root_mtime_ns=tmp_root_ctime_ns=tmp_next_mtime(before);
+}
+void tmp_dir_modified(struct nas_tmp_file *directory) {
+    if(!directory || !directory->used || !directory->is_dir)return;
+    uint64_t before=directory->mtime_ns>directory->ctime_ns ?
+                    directory->mtime_ns : directory->ctime_ns;
+    directory->mtime_ns=directory->ctime_ns=tmp_next_mtime(before);
+}
 static struct nas_tmp_file *tmp_free_inodes;
 static uint64_t tmp_next_ino = 1;
 

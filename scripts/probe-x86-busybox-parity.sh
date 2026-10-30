@@ -64,7 +64,7 @@ run_case() {
     rc=0
     case "$name" in m38-gcc) budget=300 ;; m39-packages|m40-archives|m41-unix|m42-pthread|m43-zstd|m44-group|m45-robust|m46-exec|m47-tgkill|m48-parallel|m49-capacity|m51-git|m52-python|m53-vim|m54-dev|m58-runtime|m59-worktree) budget=500 ;;
         real-vfs|disk-create|disk-replay) budget=100 ;;
-        m81-fs) budget=360 ;;
+        m81-fs) budget=600 ;;
         m105-*) budget=90 ;;
         m55-cjson) budget=${NAS_M55_QEMU_TIMEOUT:-2400} ;; m56-busybox) budget=${NAS_M56_QEMU_TIMEOUT:-3600} ;; m57-sqlite) budget=${NAS_M57_QEMU_TIMEOUT:-3600} ;; m103-tid|m104-exception) budget=${NAS_NATIVE_ABI_QEMU_TIMEOUT:-90} ;; m37-incremental) budget=100 ;; process-capacity) budget=45 ;; init-reaper) budget=110 ;; *) budget=15 ;; esac
     if [ "$name" = m38-gcc ] || [ "$name" = m39-packages ] || [ "$name" = m40-archives ] || [ "$name" = m41-unix ] || [ "$name" = m42-pthread ] || [ "$name" = m43-zstd ] || [ "$name" = m44-group ] || [ "$name" = m45-robust ] || [ "$name" = m46-exec ] || [ "$name" = m47-tgkill ] || [ "$name" = m48-parallel ] || [ "$name" = m49-capacity ] || [ "$name" = m51-git ] || [ "$name" = m52-python ] || [ "$name" = m53-vim ] || [ "$name" = m54-dev ] || [ "$name" = m55-cjson ] || [ "$name" = m56-busybox ] || [ "$name" = m57-sqlite ] || [ "$name" = m58-runtime ] || [ "$name" = m59-worktree ] || [ "$name" = real-vfs ] || [ "${name#m105-}" != "$name" ]; then

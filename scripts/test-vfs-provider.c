@@ -52,6 +52,12 @@ static struct nas_tmp_file fixture_orphan={
  * invalid once the VFS gained a mandatory backend incarnation check. */
 static struct nas_tmp_file capacity_fixture[512];
 static unsigned orphan_releases;
+/* The host VFS fixture borrows an archive inode for /tmp just like the
+ * actual provider. Its live root timestamps come from the tmpfs owner. */
+void tmp_root_times(uint64_t *mtime_ns,uint64_t *ctime_ns) {
+    if(mtime_ns)*mtime_ns=1761868800000000000ULL;
+    if(ctime_ns)*ctime_ns=1761868800000000000ULL;
+}
 void tmp_inode_discard(struct nas_tmp_file *node) {
     /* An actual kernel reclaims only orphaned, unpinned inodes; the
      * host fixture records the final provider callback. */

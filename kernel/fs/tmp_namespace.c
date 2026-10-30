@@ -70,6 +70,13 @@ static struct nas_tmp_directory *directory_state(const void *parent) {
 static bool parent_valid(const void *parent) {
     return directory_state(parent)!=0;
 }
+/* Every successful directory-entry change modifies the actual parent
+ * directory's mtime/ctime. The writable /tmp root borrows a bootfs inode,
+ * so its mutable metadata lives in the tmpfs provider, not in CPIO. */
+static void parent_modified(const void *parent) {
+    if(parent==tmp_root_inode())tmp_root_dir_modified();
+    else tmp_dir_modified((struct nas_tmp_file *)(uintptr_t)parent);
+}
 static void invalidate_seek(struct nas_tmp_directory *directory) {
     directory->seek=0;directory->seek_index=0;
 }
@@ -195,12 +202,14 @@ static struct nas_tmp_dentry *tmp_insert(const void *parent,const char *name,
     child_attach(directory,entry);
     if(inode->is_dir)inode->directory_alias=entry;
     tmp_inode_link(inode);
+    parent_modified(parent);
     return entry;
 }
 static void tmp_remove_entry(struct nas_tmp_dentry *d) {
     if(!d || !d->used)return;
     struct nas_tmp_file *inode=d->inode;
-    struct nas_tmp_directory *directory=directory_state(d->parent_inode);
+    const void *parent=d->parent_inode;
+    struct nas_tmp_directory *directory=directory_state(parent);
     hash_detach(d);
     if(directory)child_detach(directory,d);
     if(inode->is_dir && inode->directory_alias==d)inode->directory_alias=0;
@@ -208,6 +217,7 @@ static void tmp_remove_entry(struct nas_tmp_dentry *d) {
     d->free_next=tmp_free_dentries;
     tmp_free_dentries=d;
     tmp_inode_unlink(inode);
+    if(directory)parent_modified(parent);
 }
 struct nas_tmp_file *tmp_create_at(const void *parent,const char *name,
                                   bool dir,uint32_t mode) {
@@ -370,6 +380,8 @@ int tmp_rename_at(const void *old_parent,const char *old_name,
     hash_attach(source);
     if(old_parent!=new_parent)child_attach(new_directory,source);
     tmp_inode_touch(inode);
+    parent_modified(old_parent);
+    if(old_parent!=new_parent)parent_modified(new_parent);
     /* The syscall FS context owns cwd_path. Its next getcwd resolves the
      * live Dentry ancestry; tmpfs must not traverse Task or mutate a
      * process-local spelling cache as a second namespace authority. */

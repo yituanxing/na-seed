@@ -91,6 +91,126 @@ static const struct nas_vfs_mount root_mount={
 void nas_vfs_register_default_mounts(void) {
     assert(nas_vfs_register_mount(&root_mount)==0);
 }
+/* M82: Namespace mutations are observable by GNU make's directory
+ * prerequisites and by find/rsync/tar metadata consumers. The fixture has a
+ * deterministic realtime clock; rewind each directory mtime before EVERY
+ * operation so even sub-second test execution exposes missing updates. */
+static const uint64_t m82_old_ns=UINT64_C(1700000000123456789);
+static const uint64_t m82_now_ns=UINT64_C(1770000100000000000);
+static struct nas_fs_node m82_stat(const char *path,bool follow) {
+    struct nas_fs_node node={0},live={0};
+    char canonical[256];
+    assert(nas_fs_lookup_node(path,follow,&node,canonical)==0);
+    assert(nas_vfs_getattr(&node,&live)==0);
+    return live;
+}
+static uint64_t m82_ctime(const struct nas_fs_node *node) {
+    return (uint64_t)node->ctime_sec*UINT64_C(1000000000)+node->ctime_nsec;
+}
+static uint64_t m82_rewind_directory(const char *path) {
+    struct nas_fs_node directory=m82_stat(path,true);
+    assert(directory.is_dir);
+    assert(nas_vfs_utimens(&directory,m82_old_ns,m82_old_ns,true,true)==0);
+    directory=m82_stat(path,true);
+    assert(directory.mtime_sec==1700000000U &&
+           directory.mtime_nsec==123456789U);
+    return m82_ctime(&directory);
+}
+static void m82_changed_directory(const char *path,uint64_t old_ctime) {
+    struct nas_fs_node directory=m82_stat(path,true);
+    assert(directory.is_dir);
+    assert(directory.mtime_sec==m82_now_ns/UINT64_C(1000000000));
+    assert(directory.mtime_nsec==0);
+    assert(m82_ctime(&directory)>old_ctime);
+}
+static void m82_unchanged_directory(const char *path,uint64_t old_ctime) {
+    struct nas_fs_node directory=m82_stat(path,true);
+    assert(directory.mtime_sec==1700000000U &&
+           directory.mtime_nsec==123456789U);
+    assert(m82_ctime(&directory)==old_ctime);
+}
+static void m82_directory_timestamp_regressions(void) {
+    const char *src="/mnt/sandbox/m82-clock-src";
+    const char *dst="/mnt/sandbox/m82-clock-dst";
+    assert(nas_vfs_mkdir(src,0700)==0);
+    assert(nas_vfs_mkdir(dst,0700)==0);
+    uint64_t src_before=m82_rewind_directory(src);
+    assert(nas_vfs_create("/mnt/sandbox/m82-clock-src/created",0600)==0);
+    m82_changed_directory(src,src_before);
+    src_before=m82_rewind_directory(src);
+    assert(nas_vfs_mkdir("/mnt/sandbox/m82-clock-src/child-dir",0700)==0);
+    m82_changed_directory(src,src_before);
+    src_before=m82_rewind_directory(src);
+    assert(nas_vfs_unlink("/mnt/sandbox/m82-clock-src/created",0)==0);
+    m82_changed_directory(src,src_before);
+    src_before=m82_rewind_directory(src);
+    assert(nas_vfs_unlink("/mnt/sandbox/m82-clock-src/child-dir",0x200ULL)==0);
+    m82_changed_directory(src,src_before);
+
+    src_before=m82_rewind_directory(src);
+    assert(nas_vfs_symlink("target", "/mnt/sandbox/m82-clock-src/sym")==0);
+    m82_changed_directory(src,src_before);
+    struct nas_fs_node link=m82_stat("/mnt/sandbox/m82-clock-src/sym",false);
+    assert(link.is_symlink && link.atime_sec==1770000100U &&
+           link.mtime_sec==1770000100U && link.ctime_sec==1770000100U);
+    assert(nas_vfs_create("/mnt/sandbox/m82-clock-src/hard-src",0600)==0);
+    struct nas_fs_node source=m82_stat("/mnt/sandbox/m82-clock-src/hard-src",true);
+    uint64_t source_ctime=m82_ctime(&source);
+    uint64_t dst_before=m82_rewind_directory(dst);
+    assert(nas_vfs_link("/mnt/sandbox/m82-clock-src/hard-src",
+                        "/mnt/sandbox/m82-clock-dst/hard-dst")==0);
+    m82_changed_directory(dst,dst_before);
+    source=m82_stat("/mnt/sandbox/m82-clock-src/hard-src",true);
+    assert(source.nlink==2 && m82_ctime(&source)>source_ctime);
+
+    src_before=m82_rewind_directory(src);
+    assert(nas_vfs_rename("/mnt/sandbox/m82-clock-src/hard-src",
+                          "/mnt/sandbox/m82-clock-src/renamed",0)==0);
+    m82_changed_directory(src,src_before);
+    src_before=m82_rewind_directory(src);
+    dst_before=m82_rewind_directory(dst);
+    assert(nas_vfs_rename("/mnt/sandbox/m82-clock-src/renamed",
+                          "/mnt/sandbox/m82-clock-dst/moved",0)==0);
+    m82_changed_directory(src,src_before);
+    m82_changed_directory(dst,dst_before);
+
+    assert(nas_vfs_create("/mnt/sandbox/m82-clock-src/replacement",0600)==0);
+    assert(nas_vfs_create("/mnt/sandbox/m82-clock-dst/victim",0600)==0);
+    src_before=m82_rewind_directory(src);
+    dst_before=m82_rewind_directory(dst);
+    assert(nas_vfs_rename("/mnt/sandbox/m82-clock-src/replacement",
+                          "/mnt/sandbox/m82-clock-dst/victim",0)==0);
+    m82_changed_directory(src,src_before);
+    m82_changed_directory(dst,dst_before);
+
+    assert(nas_vfs_mkdir("/mnt/sandbox/m82-clock-src/move-dir",0700)==0);
+    assert(nas_vfs_mkdir("/mnt/sandbox/m82-clock-dst/empty-dir",0700)==0);
+    src_before=m82_rewind_directory(src);
+    dst_before=m82_rewind_directory(dst);
+    assert(nas_vfs_rename("/mnt/sandbox/m82-clock-src/move-dir",
+                          "/mnt/sandbox/m82-clock-dst/empty-dir",0)==0);
+    m82_changed_directory(src,src_before);
+    m82_changed_directory(dst,dst_before);
+
+    /* Failed and identity-preserving rename must not publish false changes
+     * to directory prerequisites (nor silently touch orphan staging). */
+    src_before=m82_rewind_directory(src);
+    assert(nas_vfs_rename("/mnt/sandbox/m82-clock-src/absent",
+                          "/mnt/sandbox/m82-clock-dst/no-such",0)==-ENOENT);
+    m82_unchanged_directory(src,src_before);
+    dst_before=m82_rewind_directory(dst);
+    assert(nas_vfs_rename("/mnt/sandbox/m82-clock-dst/victim",
+                          "/mnt/sandbox/m82-clock-dst/victim",0)==0);
+    m82_unchanged_directory(dst,dst_before);
+
+    /* Distinct unmodified directory survives the rest of the larger host
+     * VFS suite and is independently checked in a fresh read-only mount. */
+    assert(nas_vfs_mkdir("/mnt/sandbox/m82-clock-persist",0700)==0);
+    uint64_t persist_before=m82_rewind_directory("/mnt/sandbox/m82-clock-persist");
+    assert(nas_vfs_create("/mnt/sandbox/m82-clock-persist/entry",0600)==0);
+    m82_changed_directory("/mnt/sandbox/m82-clock-persist",persist_before);
+    puts("[LWEXT4 DIRECTORY CLOCK PASS] GNU make namespace mtime/ctime, rename, hardlink, symlink");
+}
 int main(int argc,char **argv) {
     assert(argc==2 || argc==3);
     const bool write=argc==3 && !strcmp(argv[2],"write");
@@ -196,6 +316,7 @@ int main(int argc,char **argv) {
     }
     static const uint8_t persisted[]="NaSeed writable VFS ext4 inode storage";
     if(write) {
+        m82_directory_timestamp_regressions();
         /* The vendor helper only sees 16-bit i_uid/i_gid; Linux ext4 also
          * stores high owner bits. Verify the full VFS IDs and preserve this
          * inode across unmount + separate host process/remount. */
@@ -641,6 +762,11 @@ int main(int argc,char **argv) {
         assert(!memcmp(buffer,persisted,sizeof(persisted)-1));
     }
     if(verify) {
+        struct nas_fs_node persisted_dir=m82_stat(
+            "/mnt/sandbox/m82-clock-persist",true);
+        assert(persisted_dir.is_dir && persisted_dir.mtime_sec==1770000100U &&
+               persisted_dir.mtime_nsec==0);
+        (void)m82_stat("/mnt/sandbox/m82-clock-persist/entry",true);
         struct nas_fs_node high_stat;
         assert(nas_fs_lookup_node("/mnt/sandbox/high-owner-persist",true,
                                   &high_stat,actual)==0);

@@ -21,3 +21,4 @@ usr/bin/sqlite3
 usr/bin/bc
 usr/bin/rsync
 usr/bin/nano
+usr/bin/make

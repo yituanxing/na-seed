@@ -1,9 +1,10 @@
-name: NaSeed M80/M81 original Alpine programs and real three-FS batch — native three ISA
+name: NaSeed M80/M81/M82 original Alpine programs, VFS and Make — native three ISA
 on:
   pull_request:
     paths:
       - 'tests/m80-*'
       - 'tests/m81-*'
+      - 'tests/m82-*'
       - 'scripts/m80-*'
       - 'scripts/m81-*'
       - 'scripts/probe-m80-batch.sh'
@@ -25,7 +26,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   real-programs:
-    name: original Alpine programs across tmpfs, RamFS and ext4 / ${{ matrix.port }}
+    name: original Alpine programs, FS and GNU Make / ${{ matrix.port }}
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     strategy:
@@ -37,7 +38,7 @@ jobs:
       - name: Validate original three-ISA catalog and shared kernel boundaries
         run: |
           set -eu
-          sh -n scripts/stage-alpine-prebuilt-overlay.sh scripts/stage-m80-prebuilt.sh scripts/probe-m80-batch.sh tests/m80-batch-run.sh tests/m81-fs-run.sh
+          sh -n scripts/stage-alpine-prebuilt-overlay.sh scripts/stage-m80-prebuilt.sh scripts/probe-m80-batch.sh tests/m80-batch-run.sh tests/m81-fs-run.sh tests/m82-make-run.sh
           python3 scripts/check-three-isa-core.py
           python3 scripts/check-prebuilt-profile-catalog.py
           python3 scripts/check-native-qemu-target.py
@@ -77,20 +78,23 @@ jobs:
       - name: 'Genuine signed Alpine ELF batch: functional text, archive, SQL and rsync'
         timeout-minutes: 28
         run: sh scripts/probe-m80-batch.sh ${{ matrix.port }}
-      - name: 'M81: identical signed Alpine original programs across tmpfs, upstream RamFS and physical VirtIO-Blk ext4'
+      - name: 'M81/M82: genuine Alpine programs and GNU Make on tmpfs, upstream RamFS and physical VirtIO-Blk ext4'
         timeout-minutes: 40
         run: NAS_M81_FS=1 sh scripts/probe-m80-batch.sh ${{ matrix.port }}
       - name: Preserve actual rootfs provenance and guest serial on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: m80-m81-batch-${{ matrix.port }}
+          name: m80-m81-m82-batch-${{ matrix.port }}
           path: |
             build/external/m80-batch/${{ matrix.port }}/apk-install.log
+            build/external/m80-batch/${{ matrix.port }}/m82-original-gnu-make.sha256
             build/external/m80-batch/${{ matrix.port }}/requested-packages.txt
             build/external/m80-batch/${{ matrix.port }}/rootfs.cpio
             build/external/m80-batch/${{ matrix.port }}/m81-physical-ext4.img
             build/external/m80-batch/${{ matrix.port }}/m81-ext4-persisted.txt
+            build/external/m80-batch/${{ matrix.port }}/m82-ext4-persisted.txt
+            build/external/m80-batch/${{ matrix.port }}/m82-ext4-make-output.txt
             build/busybox-source-parity-x86/m80-batch.clean.log
             build/busybox-source-parity-x86/m81-fs.clean.log
             build/port-riscv64/full/matrix-source/m80-batch.clean.log

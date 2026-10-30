@@ -119,6 +119,76 @@ static void test_real_inode_chown(void) {
     puts("[M80 TMPFS OWNER PASS] real uid/gid, -1 sentinel, ctime, set-ID reset");
 }
 
+/* The production namespace is exercised, including its borrowed bootfs
+ * /tmp root. GNU Make's directory prerequisites need an actual directory
+ * mtime change after create/delete/rename, not just child inode ctime. */
+static void test_directory_mutation_timestamps(void) {
+    const void *root=&root_tmp;
+    uint64_t root_m=0,root_c=0;
+    tmp_root_times(&root_m,&root_c);
+    assert(root_m>0 && root_c>0);
+    uint64_t stable_m=0,stable_c=0;
+    tmp_root_times(&stable_m,&stable_c);
+    assert(stable_m==root_m && stable_c==root_c);
+
+    assert(tmp_mkdir_at(root,"meta-a",0755)==0);
+    tmp_root_times(&stable_m,&stable_c);
+    assert(stable_m>root_m && stable_c>root_c);
+    root_m=stable_m;root_c=stable_c;
+    assert(tmp_mkdir_at(root,"meta-b",0755)==0);
+    tmp_root_times(&stable_m,&stable_c);
+    assert(stable_m>root_m && stable_c>root_c);
+    struct nas_tmp_file *a=tmp_find_child(root,"meta-a");
+    struct nas_tmp_file *b=tmp_find_child(root,"meta-b");
+    assert(a && b && a!=b);
+
+    uint64_t am=a->mtime_ns,ac=a->ctime_ns;
+    struct nas_tmp_file *file=tmp_create_at(a,"source",false,0600);
+    assert(file && a->mtime_ns>am && a->ctime_ns>ac);
+    am=a->mtime_ns;ac=a->ctime_ns;
+    assert(!tmp_create_at(a,"source",false,0600));
+    assert(a->mtime_ns==am && a->ctime_ns==ac);
+    assert(tmp_symlink_at(a,"symlink","source")==0);
+    assert(a->mtime_ns>am && a->ctime_ns>ac);
+
+    uint64_t bm=b->mtime_ns,bc=b->ctime_ns;
+    uint64_t file_ctime=file->ctime_ns;
+    assert(tmp_link_at(a,"source",b,"alias")==0);
+    assert(b->mtime_ns>bm && b->ctime_ns>bc);
+    assert(file->ctime_ns>file_ctime && file->nlink==2);
+    bm=b->mtime_ns;bc=b->ctime_ns;
+    am=a->mtime_ns;ac=a->ctime_ns;
+    assert(tmp_rename_at(a,"source",b,"moved",0)==0);
+    assert(a->mtime_ns>am && a->ctime_ns>ac);
+    assert(b->mtime_ns>bm && b->ctime_ns>bc);
+    assert(tmp_find_child(b,"moved")==file);
+
+    bm=b->mtime_ns;bc=b->ctime_ns;
+    assert(tmp_rename_at(b,"moved",b,"moved",0)==0);
+    assert(b->mtime_ns==bm && b->ctime_ns==bc);
+    assert(tmp_rename_at(b,"missing",b,"elsewhere",0)==-ENOENT);
+    assert(b->mtime_ns==bm && b->ctime_ns==bc);
+    assert(tmp_create_at(b,"victim",false,0600));
+    bm=b->mtime_ns;bc=b->ctime_ns;
+    assert(tmp_rename_at(b,"moved",b,"victim",0)==0);
+    assert(b->mtime_ns>bm && b->ctime_ns>bc);
+    assert(tmp_find_child(b,"victim")==file);
+    bm=b->mtime_ns;bc=b->ctime_ns;
+    assert(tmp_unlink_at(b,"victim",0)==0);
+    assert(b->mtime_ns>bm && b->ctime_ns>bc);
+    assert(tmp_unlink_at(b,"alias",0)==0);
+
+    am=a->mtime_ns;ac=a->ctime_ns;
+    assert(tmp_unlink_at(a,"symlink",0)==0);
+    assert(a->mtime_ns>am && a->ctime_ns>ac);
+    root_m=stable_m;root_c=stable_c;
+    assert(tmp_unlink_at(root,"meta-a",0x200ULL)==0);
+    assert(tmp_unlink_at(root,"meta-b",0x200ULL)==0);
+    tmp_root_times(&stable_m,&stable_c);
+    assert(stable_m>root_m && stable_c>root_c);
+    puts("[M82 TMPFS DIRECTORY TIME PASS] original inode root, create/link/symlink/rename/unlink, failed and no-op mutations");
+}
+
 static void test_large_tree(void) {
     const void *root=&root_tmp;
     assert(tmp_mkdir_at(root,"big",0755)==0);
@@ -303,6 +373,7 @@ static void test_inode_recycling(void) {
 int main(void) {
     test_same_size_truncate_timestamps();
     test_real_inode_chown();
+    test_directory_mutation_timestamps();
     test_large_tree();
     test_inode_recycling();
     puts("[M108 TMP INDEX PASS]");

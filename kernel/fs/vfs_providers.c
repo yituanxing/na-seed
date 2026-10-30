@@ -134,6 +134,21 @@ static void tmp_fill(const struct nas_tmp_file *f,
       .mode=f->mode,.uid=f->uid,.gid=f->gid,
       .is_dir=f->is_dir,.is_symlink=tmp_is_link(f)};
 }
+/* The /tmp mountpoint uses an immutable bootfs identity, but its directory
+ * entries and timestamps belong to the live tmpfs namespace.  Snapshot the
+ * provider-owned root clock rather than publishing the bootfs archive time. */
+static void tmp_fill_root_times(struct nas_fs_node *out) {
+    uint64_t mtime=0,ctime=0;
+    tmp_root_times(&mtime,&ctime);
+    out->mtime_sec=mtime/1000000000ULL;
+    out->mtime_nsec=(uint32_t)(mtime%1000000000ULL);
+    out->ctime_sec=ctime/1000000000ULL;
+    out->ctime_nsec=(uint32_t)(ctime%1000000000ULL);
+}
+static bool tmp_is_overlay_root(const struct nas_fs_node *node) {
+    const struct bootfs_entry *root=bootfs_find("/tmp");
+    return node && root && node->inode==(const void *)root;
+}
 static int tmp_root(const struct nas_vfs_mount *mount,
                     struct nas_fs_node *out) {
     (void)mount;
@@ -143,6 +158,7 @@ static int tmp_root(const struct nas_vfs_mount *mount,
     if(!root || !bootfs_is_dir(root))return -ENOENT;
     *out=(struct nas_fs_node){.inode=root,.ino=root->ino,
             .nlink=2,.mode=root->mode,.is_dir=true};
+    tmp_fill_root_times(out);
     return 0;
 }
 static int tmp_child(const struct nas_fs_node *parent,const char *name,
@@ -198,16 +214,17 @@ static int tmp_sync_node(const struct nas_fs_node *node) {
     (void)node;return 0; /* Volatile memory is the final data store. */
 }
 static int tmp_chmod_node(const struct nas_fs_node *node,uint64_t mode) {
+    if(tmp_is_overlay_root(node))return -EROFS;
     return tmp_chmod((struct nas_tmp_file *)(uintptr_t)node->inode,mode);
 }
 static int tmp_chown_node(const struct nas_fs_node *node,uint32_t uid,uint32_t gid) {
     /* /tmp mount root is an immutable CPIO directory, never a tmpfs slab. */
-    const struct bootfs_entry *root=bootfs_find("/tmp");
-    if(root && node->inode==(const void *)root)return -EROFS;
+    if(tmp_is_overlay_root(node))return -EROFS;
     return tmp_chown((struct nas_tmp_file *)(uintptr_t)node->inode,uid,gid);
 }
 static int tmp_utimens_node(const struct nas_fs_node *node,uint64_t a,
                            uint64_t m,bool sa,bool sm) {
+    if(tmp_is_overlay_root(node))return -EROFS;
     return tmp_utimens((struct nas_tmp_file *)(uintptr_t)node->inode,a,m,sa,sm);
 }
 
@@ -296,6 +313,7 @@ static int tmp_getattr(const struct nas_fs_node *node,struct nas_fs_node *out) {
     const struct bootfs_entry *root=bootfs_find("/tmp");
     if(root && node->inode==(const void *)root) {
         *out=*node;
+        tmp_fill_root_times(out);
         return 0;
     }
     const struct nas_tmp_file *f=node->inode;

@@ -161,3 +161,8 @@ if [ "$failures" -ne 0 ] || [ "$cases" -ne 57 ]; then
     exit 1
 fi
 echo M81_FS_BATCH_PASS
+
+# Extend the SAME actual QEMU boot, mounted providers and signed original
+# Alpine rootfs into M82. No second filesystem/installer/runner is involved.
+# An M82 failure makes this guest command fail despite a successful M81 gate.
+/bin/sh /tests/m82-make-run.sh

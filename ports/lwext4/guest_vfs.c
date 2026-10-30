@@ -295,6 +295,37 @@ static int ext_record_write_time(struct nas_lwext4_mount *ctx,uint32_t ino,
     int put=ext4_fs_put_inode_ref(&ref);
     return rc?rc:(put?-put:0);
 }
+/* A directory is an inode too: changing one of its dentries changes its
+ * mtime AND ctime, even if no file data was written. Use the existing live
+ * inode metadata writer, never a pathname-based mode/time setter. The
+ * upstream namespace operation has already committed when this is called:
+ * returning an error now would falsely tell a caller that create/unlink or
+ * rename failed and could encourage a destructive retry. This is best-effort
+ * post-commit metadata until upstream exposes an atomic namespace/mtime
+ * transaction; sync/fsync still independently checks flush durability. */
+static void ext_note_directory_change(const struct nas_fs_node *directory) {
+    if(!directory || !directory->mount || !directory->mount->private_data ||
+       !directory->ino || directory->ino>UINT32_MAX)return;
+    (void)ext_record_write_time(directory->mount->private_data,
+                                (uint32_t)directory->ino,false);
+}
+static void ext_note_renamed_directories(const struct nas_fs_node *old_parent,
+                                         const struct nas_fs_node *new_parent) {
+    ext_note_directory_change(old_parent);
+    if(old_parent->ino!=new_parent->ino)
+        ext_note_directory_change(new_parent);
+}
+/* Linking and renaming a live inode alter its identity metadata (ctime),
+ * not its file-data mtime. The reference stays stable through all aliases. */
+static void ext_note_inode_change(struct nas_lwext4_mount *ctx,uint32_t ino) {
+    if(!ctx || !ino)return;
+    struct nas_fs_node node={.mount=&ctx->mount,.ino=ino};
+    struct ext4_inode_ref ref={0};
+    struct nas_lwext4_mount *actual=NULL;
+    if(ext_metadata_ref(&node,&actual,&ref))return;
+    if(!ext_touch_ctime(ctx,ref.inode,ext_now_ns()))ref.dirty=true;
+    (void)ext4_fs_put_inode_ref(&ref);
+}
 /* Inode-relative write: no pathname reopen after rename. The VFS enforces
  * per-mount write policy. Guest boot remains read-only by default. */
 static int64_t ext_write_inode(const struct nas_fs_node *node,uint64_t offset,
@@ -466,8 +497,9 @@ static int ext_create_path(const struct nas_fs_node *parent,const char *name,uin
     if(close_rc)return -close_rc;
     struct nas_fs_node new_node={.mount=parent->mount,.ino=ino};
     rc=ext_chmod_inode(&new_node,mode);
-    return rc ? rc : ext_record_write_time(parent->mount->private_data,
-                                            ino,true);
+    if(!rc)rc=ext_record_write_time(parent->mount->private_data,ino,true);
+    ext_note_directory_change(parent);
+    return rc;
 }
 static int ext_mkdir_path(const struct nas_fs_node *parent,const char *name,uint64_t mode) {
     char path[256];int rc=ext_child_path(parent,name,path);
@@ -481,8 +513,9 @@ static int ext_mkdir_path(const struct nas_fs_node *parent,const char *name,uint
     if(rc)return -rc;
     struct nas_fs_node new_node={.mount=parent->mount,.ino=ino};
     rc=ext_chmod_inode(&new_node,mode);
-    return rc ? rc : ext_record_write_time(parent->mount->private_data,
-                                           ino,true);
+    if(!rc)rc=ext_record_write_time(parent->mount->private_data,ino,true);
+    ext_note_directory_change(parent);
+    return rc;
 }
 /* The upstream liblwext4 namespace API is NOT a POSIX replacement
  * transaction: it refuses an occupied target, and removes last-linked
@@ -623,8 +656,16 @@ static int ext_unlink_path(const struct nas_fs_node *parent,const char *name,uin
             .filesystem=parent->filesystem,.mount_id=parent->mount_id,
             .inode=(const void *)(uintptr_t)ino,.ino=ino};
         if(ext4_inode_get_links_cnt(&raw)==1 && nas_vfs_node_has_lease(&target))
-            return ext_stage_orphan(ctx,path,ino,false);
-        return -ext4_fremove(path);
+            rc=ext_stage_orphan(ctx,path,ino,false);
+        else rc=-ext4_fremove(path);
+        if(!rc) {
+            ext_note_directory_change(parent);
+            /* The last inode may already have been reclaimed by upstream.
+             * Only a still-linked inode can receive a ctime update. */
+            if(ext4_inode_get_links_cnt(&raw)>1 ||
+               nas_vfs_node_has_lease(&target))ext_note_inode_change(ctx,ino);
+        }
+        return rc;
     }
     /* Rmdir of a nonempty directory is forbidden even if an owner pins
      * it. An EMPTY opened directory retains a hidden private link until
@@ -643,8 +684,10 @@ static int ext_unlink_path(const struct nas_fs_node *parent,const char *name,uin
     struct nas_fs_node target={.mount=parent->mount,
         .filesystem=parent->filesystem,.mount_id=parent->mount_id,
         .inode=(const void *)(uintptr_t)number,.ino=number};
-    return nas_vfs_node_has_lease(&target) ?
-           ext_stage_orphan(ctx,path,number,true) : -ext4_dir_rm(path);
+    rc=nas_vfs_node_has_lease(&target) ?
+       ext_stage_orphan(ctx,path,number,true) : -ext4_dir_rm(path);
+    if(!rc)ext_note_directory_change(parent);
+    return rc;
 }
 /* Upstream ext4_frename is NO-REPLACE: ext4_create_hardlink returns
  * EEXIST for an existing destination. Replacement is adapted here, not
@@ -674,8 +717,14 @@ static int ext_rename_path(const struct nas_fs_node *old_parent,const char *old_
     uint32_t source_type=ext4_inode_get_mode(ctx->upstream_super,
                                              &source_raw)&0170000U;
     rc=ext4_raw_inode_fill(to,&victim,&victim_raw);
-    if(rc==ENOENT)
-        return ext_move_staged(from,to,source_type==0040000U);
+    if(rc==ENOENT) {
+        rc=ext_move_staged(from,to,source_type==0040000U);
+        if(!rc) {
+            ext_note_renamed_directories(old_parent,new_parent);
+            ext_note_inode_change(ctx,source);
+        }
+        return rc;
+    }
     if(rc)return -rc;
     if(!victim)return -EIO;
     if(flags&1ULL)return -EEXIST;
@@ -730,6 +779,9 @@ static int ext_rename_path(const struct nas_fs_node *old_parent,const char *old_
         /* If reclaim failed, rename is already committed: retain the
          * private orphan for next mount-time recovery, not a false errno. */
     }
+    ext_note_renamed_directories(old_parent,new_parent);
+    ext_note_inode_change(ctx,source);
+    if(defer)ext_note_inode_change(ctx,victim);
     return 0;
 }
 static int ext_link_path(const struct nas_fs_node *old_parent,const char *old_name,
@@ -741,15 +793,32 @@ static int ext_link_path(const struct nas_fs_node *old_parent,const char *old_na
     if(rc)return rc;
     rc=ext_child_path(new_parent,new_name,to);
     if(rc)return rc;
-    ext_namespace_changed(old_parent->mount->private_data);
-    return -ext4_flink(from,to);
+    struct nas_fs_node source={0};
+    rc=ext_lookup_child(old_parent,old_name,&source);
+    if(rc)return rc;
+    struct nas_lwext4_mount *ctx=old_parent->mount->private_data;
+    ext_namespace_changed(ctx);
+    rc=-ext4_flink(from,to);
+    if(!rc) {
+        ext_note_directory_change(new_parent);
+        ext_note_inode_change(ctx,(uint32_t)source.ino);
+    }
+    return rc;
 }
 static int ext_symlink_path(const struct nas_fs_node *parent,const char *name,
                             const char *target) {
     char path[256];int rc=ext_child_path(parent,name,path);
     if(rc)return rc;
-    ext_namespace_changed(parent->mount->private_data);
-    return -ext4_fsymlink(target,path);
+    struct nas_lwext4_mount *ctx=parent->mount->private_data;
+    ext_namespace_changed(ctx);
+    rc=-ext4_fsymlink(target,path);
+    if(!rc) {
+        struct nas_fs_node link={0};
+        if(!ext_lookup_child(parent,name,&link))
+            (void)ext_record_write_time(ctx,(uint32_t)link.ino,true);
+        ext_note_directory_change(parent);
+    }
+    return rc;
 }
 /* Discover the current *name* of a pinned ext4 directory by following
  * upstream on-disk '..' inode references, then looking up that child's

@@ -91,7 +91,45 @@ if [ "${NAS_M81_FS:-0}" = 1 ]; then
     echo "[M81 FAIL] $port real ext4 content missing after QEMU clean unmount" >&2
     exit 1
   }
+  # No aggregate-only success: every authentic GNU Make incremental and
+  # directory dependency case must be attested by the actual guest serial.
+  for provider in TMPFS RAMFS EXT4; do
+    for case_id in PIPELINE NOOP SOURCE_CHANGE DIR_CREATE DIR_REMOVE \
+                   DIR_RENAME DIR_MKDIR DIR_RMDIR CROSS_RENAME; do
+      marker="M82_${provider}_${case_id}_PASS"
+      grep -Fxq "$marker" "$log" || {
+        echo "[M82 FAIL] $port missing actual GNU Make/VFS result $marker" >&2
+        tail -360 "$log" >&2
+        exit 1
+      }
+    done
+    grep -Fxq "M82_${provider}_ALL9_PASS" "$log" || {
+      echo "[M82 FAIL] $port missing full provider assertion $provider" >&2
+      tail -360 "$log" >&2
+      exit 1
+    }
+  done
+  for marker in M82_ORIGINAL_MAKE_PASS M82_MAKE_BATCH_PASS; do
+    grep -Fxq "$marker" "$log" || {
+      echo "[M82 FAIL] $port genuine GNU Make or batch assertion $marker missing" >&2
+      tail -360 "$log" >&2
+      exit 1
+    }
+  done
+  # The ext4 directory was made by REAL GNU Make inside QEMU. Independently
+  # read its bytes and the final result from the physical disk on the host.
+  debugfs -R 'cat /m82-make-pipeline/result.txt' "$disk" > "$work/m82-ext4-make-output.txt"
+  grep -Fxq 'ALPHA one' "$work/m82-ext4-make-output.txt" || {
+    echo "[M82 FAIL] $port original GNU Make output absent from real ext4 disk" >&2
+    exit 1
+  }
+  debugfs -R 'cat /m82-make-persisted.txt' "$disk" > "$work/m82-ext4-persisted.txt"
+  grep -Fxq 'NaSeed-M82-GNU-Make-original-3FS-27-PASS' "$work/m82-ext4-persisted.txt" || {
+    echo "[M82 FAIL] $port genuine GNU Make ext4 persistence missing" >&2
+    exit 1
+  }
   echo "[M81 PASS] $port three genuine VFS providers, 57 original Alpine functional cases, physical ext4 persisted and e2fsck clean"
+  echo "[M82 PASS] $port original GNU Make 27/27 incremental and directory cases across 3 live FS; ext4 QEMU disk independently verified"
   exit 0
 fi
 for marker in M80_GREP_PASS M80_SED_PASS M80_GAWK_PASS \
