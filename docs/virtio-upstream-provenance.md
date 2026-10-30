@@ -11,12 +11,15 @@ DMA bounce buffers, and ONE exported block-device read/write/flush callback
 set. NaSeed must preserve those **architecture boundaries**, never one
 independent block driver for each ISA.
 
-NaOS current kernel repository top-level LICENSE is **GPLv3**. Its block and
-queue sources carry copyright notices but no separate per-file GPLv2 grant
-in the inspected source. Pinned GPLv2-only lwext4 sources cannot be assumed
-compatible with copying GPLv3-only code into their single linked kernel.
-Therefore, **do not copy NaOS C driver code into a linked NaSeed kernel
-without obtaining suitable permission or verifying an applicable license**.
+NaOS's inspected kernel repository top-level LICENSE is **GPLv3**. Its block
+and queue sources carry copyright notices but no separate per-file GPLv2
+grant in the inspected source. NaSeed's pinned lwext4
+`ext4_xattr.c`/`ext4_extent.c` explicitly permit GPLv2 **or later**;
+the old claim that these files were GPLv2-only and necessarily incompatible
+with GPLv3 was incorrect. This does **not** authorize copying NaOS C code:
+check the actual source grants, project-wide license choice and required
+attribution before importing any NaOS implementation. The current port
+references NaOS's architecture but contains no copied NaOS driver source.
 
 ## Current physical-QEMU evidence (2026-10-30, `221c46a`)
 
@@ -33,7 +36,8 @@ Sections below preserve the intermediate history. Earlier "not yet PCI
 hardware acceptance" and "pending new exact-head" statements are **not**
 current blockers. Still excluded are IRQ-completion/waitqueue, concurrent
 requests, hotplug, general PCIe topology, IOMMU and physical hardware;
-final combined-source distribution-license review remains a separate gate.
+final combined-source distribution-license review remains a separate
+**release** gate (`docs/distribution-license-review.md`).
 
 ## Actual upstream source reused unchanged
 

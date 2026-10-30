@@ -29,6 +29,8 @@ jobs:
         port: [amd64, riscv64, arm64]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Shared kernel architecture and host procfs owner
         run: |
           set -eu

@@ -1,0 +1,25 @@
+name: NaSeed exact PR head checkout integrity
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - 'scripts/check-ci-checkout-head.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checkout-integrity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Check every PR job uses submitted source, never synthetic merge
+        run: python3 scripts/check-ci-checkout-head.py

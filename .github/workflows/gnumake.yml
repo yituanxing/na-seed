@@ -24,6 +24,8 @@ jobs:
     timeout-minutes: 23
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Install only headless x86 QEMU/UEFI prerequisites (no GUI/Spice)
         timeout-minutes: 6
         run: |

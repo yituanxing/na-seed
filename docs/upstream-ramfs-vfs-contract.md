@@ -15,8 +15,11 @@ license are preserved and the port is a separate set of NaSeed files.
 MPL 2.0 Section 3.3 permits secondary GPL distribution of covered
 source in a larger GPL work **if** the work is not marked Incompatible
 with Secondary Licenses, subject to the dual-availability obligations.
-Do not strip license headers or relicense without meeting those terms.
-This is a license review item before release, not a claim of legal sign-off.
+The checked files have no observed Exhibit B incompatible notice; verify
+this again against the exact source being distributed, including future
+upstream updates. Do not strip MPL headers or assume the covered source
+ceases to be MPL-licensed in a combined work. This is a release review item,
+not a claim of legal sign-off; see `docs/distribution-license-review.md`.
 
 ## Why import instead of only studying another OS's tmpfs
 

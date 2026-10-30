@@ -62,9 +62,13 @@ it; the intervening no-physical-driver state was temporary.
    in syscall ABI adapters. Preserve grouped native acceptance milestones.
 
 ## Licensing
-Upstream lwext4 includes mixed BSD-3-Clause and GPLv2 sources. Before
-vendoring, pin an exact revision and audit license compatibility against
-the NaSeed repo's declared project license. Do not blindly copy NaOS files.
+The already-pinned lwext4 source has BSD-3-Clause notices and two files,
+`ext4_xattr.c` and `ext4_extent.c`, whose own headers explicitly allow
+**GPL version 2 or any later version**. The bundled lwext4 `LICENSE` contains
+GPLv2 and defers to individual file notices where they differ. NaSeed has
+no repository-level `LICENSE` as of this checkpoint; a first-party licensing
+decision and a linked-kernel distribution review remain open. Do not blindly
+copy NaOS files. See `docs/distribution-license-review.md`.
 
 ## Historical registered VFS provider milestone (superseded)
 - At this earlier stage, common pathwalk asked longest-prefix registered filesystem mounts for
@@ -96,12 +100,13 @@ the NaSeed repo's declared project license. Do not blindly copy NaOS files.
   block drivers do not call ext4 APIs.
 - Host test compiles this vendored upstream **offline**; no shallow runtime
   Git clone of a moving upstream branch.
-- License caveat: upstream contains GPL-2.0-only `ext4_xattr.c` and
-  `ext4_extent.c` as well as BSD-3-Clause files. Its exact original
-  `LICENSE` and file-level headers must be retained. Check the
-  distribution-license compatibility of a linked NaSeed kernel BEFORE
-  landing any guest-side lwext4 integration, and do not copy NaOS GPL-3
-  source into the same combined work without resolving compatibility.
+- License caveat (historical import gate): upstream contains GPL-2.0-**or-later**
+  `ext4_xattr.c` and `ext4_extent.c` as well as BSD-3-Clause files.
+  Its original `LICENSE` and file-level headers must be retained. The guest
+  integration has since landed and passed QEMU; the remaining gate is a
+  documented combined-work license and notice review **before a distributable
+  kernel release**, not retroactive proof that guest integration was illegal.
+  NaOS GPLv3 source remains an architectural reference, not vendored code.
 
 ### Freestanding build boundary
 The upstream-to-NaSeed ABI adapter resides in `ports/lwext4/`. This is a
@@ -333,8 +338,10 @@ NuttX-inspired rewritten read/write driver. U-Boot's original source is
 compiled into ports/uboot/blk_port.c. The NaSeed compatibility implementation
 handles the stable device model, transport, bounce DMA and VirtIO queue
 hook, plus a small fsync-required flush adapter. NaOS source itself cannot
-be assumed directly reusable under its repository-level GPLv3 while
-the linked upstream lwext4 files use GPLv2. See
+be assumed directly reusable merely because the lwext4 files offer a
+GPLv2-or-later option: provenance, per-file grants and the intended
+first-party license still need checking. The old assumption that those
+two lwext4 files were GPLv2-only was incorrect. See
 `docs/virtio-upstream-provenance.md`.
 
 This is a **controlled driver replacement** behind the same hardware
@@ -378,8 +385,9 @@ namespace and allow retry. This must be checked independently of the
 regular successful shutdown gate.
 
 Upstream FS candidate review: Apache NuttX tmpfs is highly coupled to the
-NuttX VFS and Apache-2.0-licensed (incompatible with a GPL-2.0-only combined
-work). Linux tmpfs is GPL-2.0 but coupled to Linux page-cache/shmem. Instead
+NuttX VFS and Apache-2.0-licensed (a concern if the eventual linked work
+were restricted to GPLv2-only, which the pinned lwext4 file headers do not
+establish). Linux tmpfs is GPL-2.0 but coupled to Linux page-cache/shmem. Instead
 we will **compare with BSD-3-Clause littlefs** on a borrowed memory-backed
 BlockDevice as a *second independent external file system*, not a replacement
 for RAM tmpfs and not an ext4 clone. Its path-based lookup has no stable

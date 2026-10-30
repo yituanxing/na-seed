@@ -22,6 +22,11 @@ on:
       - 'tests/lua-*.lua'
       - 'kernel/**'
       - 'ports/**'
+  workflow_dispatch:
+# Cancel only superseded PR heads; intentional release dispatch runs survive.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   m84:
     name: M84 actual in-guest SQLite and Lua original GCC Make ext4 reboot / ${{ matrix.port }}
@@ -33,6 +38,8 @@ jobs:
         port: [amd64, riscv64, arm64]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Install real host QEMU, ELF and ext4 check tools
         timeout-minutes: 12
         run: |

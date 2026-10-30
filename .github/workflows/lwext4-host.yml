@@ -109,12 +109,17 @@ on:
       - 'scripts/bench-ext4-vfs-hotpaths.sh'
       - '.github/workflows/lwext4-host.yml'
   workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   lwext4-real-ext4-host:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Verify real BlockDevice and third-party driver port (host and 3 ISAs)
         run: sh scripts/check-block-foundation.sh
       - name: '[HOST] Linux path semantics oracle plus real NaSeed VFS namespace regression'

@@ -35,6 +35,8 @@ jobs:
         port: [amd64, riscv64, arm64]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Validate original three-ISA catalog and shared kernel boundaries
         run: |
           set -eu

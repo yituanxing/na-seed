@@ -59,6 +59,8 @@ jobs:
         port: [amd64, riscv64, arm64]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Guard original three-ISA QEMU routing without private maps
         run: python3 scripts/check-native-qemu-target.py
       - name: Install missing genuine cross compiler and native QEMU
