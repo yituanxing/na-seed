@@ -1,0 +1,2 @@
+# A fresh system QEMU machine on the same unmodified physical ext4 disk.
+m85-replay	cpio	sh -c '/bin/sh /tests/m85-git-run.sh --replay'	M85_REPLAY_PASS	-	/bin/busybox

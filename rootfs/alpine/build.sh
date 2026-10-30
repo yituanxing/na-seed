@@ -38,6 +38,8 @@ case "$profile" in
               package_list=rootfs/alpine/packages-parallel.txt ;;
     git) work="build/external/m51-git/$port"
          package_list=rootfs/alpine/packages-git.txt ;;
+    m85-git) work="build/external/m85-git/$port"
+             package_list=rootfs/alpine/packages-git.txt ;;
     python) work="build/external/m52-python/$port"
             package_list=rootfs/alpine/packages-python.txt ;;
     vim) work="build/external/m53-vim/$port"
@@ -345,6 +347,12 @@ elif [ "$profile" = git ]; then
     # Original signed native Alpine Git and its installed library closure.
     cp tests/m51-git-run.sh "$root/tests/run-git.sh"
     test -x "$root/usr/bin/git" || { echo "[M51] missing Git ELF ($port)" >&2; exit 1; }
+    readelf -h "$root/usr/bin/git" | grep -Fq "$machine"
+elif [ "$profile" = m85-git ]; then
+    # Same signed Git APK closure as M51; only the REAL guest workload differs.
+    # The runner adds the independently prepared VirtIO ext4 disk at /mnt.
+    cp tests/m85-git-run.sh "$root/tests/m85-git-run.sh"
+    test -x "$root/usr/bin/git" || { echo "[M85] missing signed Git ELF ($port)" >&2; exit 1; }
     readelf -h "$root/usr/bin/git" | grep -Fq "$machine"
 elif [ "$profile" = capacity ]; then
     # M49 runs only real packaged GNU Make/GCC/xargs and guest-built musl
