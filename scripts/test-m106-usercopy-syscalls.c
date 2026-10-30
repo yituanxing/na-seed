@@ -349,6 +349,17 @@ int main(void) {
     assert(pages[3][13]==1 && pages[3][14]==0);
     assert(memcmp(pages[0]+23,&size,sizeof(size))==0);
 
-    puts("[M106 USER-COPY SYSCALL PASS] real pipe + syscall adapters: RO atomicity, lazy/COW, no pipe loss, socketpair publication, accept retains pending peer until writable");
+    /* Linux /dev/null and /dev/zero discard writes without dereferencing
+     * the source. Moving usercopy into the common File adapter must retain
+     * that explicit provider capability, even with a bogus user pointer. */
+    assert(nas_fd_install_new(&guest_task,28,22,FD_NULL,2,false));
+    assert(nas_fd_install_new(&guest_task,29,23,FD_ZERO,2,false));
+    nas_open_files[22].ops=&ops_null;
+    nas_open_files[23].ops=&ops_zero;
+    assert(nas_fs_fd_write(28,USER_LIMIT-2,32)==32);
+    assert(nas_fs_fd_write(29,USER_LIMIT-2,32)==32);
+    assert(nas_fs_fd_read(28,USER_LIMIT-2,32)==0);
+
+    puts("[M106 USER-COPY SYSCALL PASS] real pipe + syscall adapters: RO atomicity, lazy/COW, no pipe loss, socketpair publication, accept retains pending peer, null/zero discard parity");
     return 0;
 }

@@ -82,6 +82,14 @@ uint64_t nas_fs_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     if((int64_t)budget<0)return budget;
     if(budget>length)return (uint64_t)-EIO;
     if(!budget)return 0;
+    if(ops->write_ignores_source) {
+        /* /dev/null and /dev/zero are sinks: no userspace byte is read,
+         * and a nonexistent source pointer must not manufacture EFAULT. */
+        uint64_t discarded=ops->write(slot,0,budget);
+        if((int64_t)discarded<0)return discarded;
+        if(discarded>budget)return (uint64_t)-EIO;
+        return discarded;
+    }
     /* Only the provider-authorized byte count is dereferenced: for example
      * eventfd rejects oversized writes before checking the user buffer. */
     if(address>=USER_LIMIT || budget>USER_LIMIT-address)

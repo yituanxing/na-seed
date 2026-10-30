@@ -656,10 +656,12 @@ static const struct nas_file_ops ops_tty={
 };
 static const struct nas_file_ops ops_null={
     .read_plan=vread_null_plan,.read=vread_null,.write=vwrite_discard,
+    .write_ignores_source=true,
     .poll=vpoll_always,.poll_description=dpoll_always
 };
 static const struct nas_file_ops ops_zero={
-    .read=vread_zero,.write=vwrite_discard,.poll=vpoll_always,.poll_description=dpoll_always
+    .read=vread_zero,.write=vwrite_discard,.write_ignores_source=true,
+    .poll=vpoll_always,.poll_description=dpoll_always
 };
 static const struct nas_file_ops ops_bootfs={
     .read_plan=vread_limine_plan,.read=vread_limine,
