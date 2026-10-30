@@ -198,3 +198,23 @@ file on pull requests; M54's manual developer workstation jobs remain
 manual. **A script or local static check alone is not evidence of an
 M83 PASS**: report results only from completed exact-head native QEMU
 jobs, with serial logs and independently dumped files.
+
+### Real linker exposes sparse writes corrupting disk block zero
+
+The first real M83 three-ISA run at `ba33c539` failed during GNU `ar/ld`,
+with corrupted object-file string tables or garbage symbol names. The
+actual failed AMD64 and ARM64 QEMU disk artifacts were independently
+examined: their ext4 superblock at byte offset 1024 had been replaced
+by original zlib object-file symbol strings. In pinned upstream lwext4,
+writing a brand-new file first at a non-block-aligned offset past EOF
+can resolve its unallocated data block to physical block zero. GNU as/ld
+legitimately seek past the ELF header before backfilling it; the defect
+belongs to the filesystem adapter, not to the compiler or its input.
+
+The existing lwext4 provider now allocates/zero-fills any gap from EOF
+to the requested write position using its *existing* resize path before
+calling upstream `ext4_fwrite`; third-party code remains unchanged.
+The existing host VFS + real-ext4-image acceptance adds offset-64,
+offset-4097 and nonempty-file offset-8193 sparse-write cases, ELF-header
+backfill, zero-hole reads, reserved-block byte checks, remount reads
+and host `e2fsck`. Any M83 PASS still requires a fresh post-fix QEMU run.

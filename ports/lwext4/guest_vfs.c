@@ -328,6 +328,7 @@ static void ext_note_inode_change(struct nas_lwext4_mount *ctx,uint32_t ino) {
 }
 /* Inode-relative write: no pathname reopen after rename. The VFS enforces
  * per-mount write policy. Guest boot remains read-only by default. */
+static int ext_resize_inode(const struct nas_fs_node *node,uint64_t length);
 static int64_t ext_write_inode(const struct nas_fs_node *node,uint64_t offset,
                                const uint8_t *src,uint64_t length) {
     if(!node || !node->mount || !node->mount->private_data)return -EINVAL;
@@ -335,7 +336,21 @@ static int64_t ext_write_inode(const struct nas_fs_node *node,uint64_t offset,
     if(!ctx->mounted || !ctx->upstream_mount)return -ENODEV;
     if(node->is_dir)return -EISDIR;
     if(!src && length)return -EFAULT;
-    if(length>SIZE_MAX || offset>INT64_MAX)return -EFBIG;
+    if(length>SIZE_MAX || offset>INT64_MAX || length>INT64_MAX-offset)
+        return -EFBIG;
+    if(!length)return 0;
+    /* Genuine GNU as/ld seek past a newly-created ELF's header and fill it
+     * later. Pinned upstream lwext4 does NOT implement sparse writes: for
+     * a zero-length inode its ext4_fs_init_inode_dblk_idx returns block 0.
+     * A direct nonaligned fwrite(offset>EOF) consequently writes object
+     * bytes to PHYSICAL LBA 0, destroying the ext4 superblock. Reuse this
+     * provider's existing zero-filling truncate-growth path to allocate
+     * the hole first; never patch upstream lwext4 or special-case ELF. */
+    uint64_t current_size=nas_vfs_node_size(node);
+    if(offset>current_size) {
+        int rc=ext_resize_inode(node,offset);
+        if(rc)return rc;
+    }
     ext4_file file={
         .mp=ctx->upstream_mount,.inode=(uint32_t)(uintptr_t)node->inode,
         .fsize=nas_vfs_node_size(node),.fpos=offset,.flags=O_WRONLY

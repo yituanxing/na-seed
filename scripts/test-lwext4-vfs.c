@@ -211,6 +211,94 @@ static void m82_directory_timestamp_regressions(void) {
     m82_changed_directory("/mnt/sandbox/m82-clock-persist",persist_before);
     puts("[LWEXT4 DIRECTORY CLOCK PASS] GNU make namespace mtime/ctime, rename, hardlink, symlink");
 }
+/* GNU as/ld can seek past the end of a NEW empty .o before their first write,
+ * then seek back to populate ELF headers.  Original lwext4 used to resolve an
+ * unallocated first data block to physical block ZERO, corrupting the ext4
+ * superblock instead of creating the sparse regular-file bytes.  Exercise
+ * both an offset inside block 0 and a hole beyond the first 4 KiB. */
+struct m83_sparse_case {
+    const char *path;
+    uint64_t offset;
+    const char *payload;
+    const char *prefix;
+    bool backfill;
+};
+static const struct m83_sparse_case m83_sparse_cases[]={
+    {"/mnt/sandbox/m83-sparse-64.o",64,"ELF-header-backfill-64","ELF!",true},
+    {"/mnt/sandbox/m83-sparse-4097.o",4097,"ELF-data-beyond-page-4097",NULL,false},
+    {"/mnt/sandbox/m83-sparse-8193.o",8193,"ELF-nonempty-sparse-8193","AB",false}
+};
+static void m83_verify_sparse_file(const struct m83_sparse_case *test) {
+    char canonical[256];
+    struct nas_fs_node node={0},live={0};
+    assert(nas_fs_lookup_node(test->path,true,&node,canonical)==0);
+    assert(nas_vfs_getattr(&node,&live)==0);
+    size_t length=strlen(test->payload);
+    size_t prefix_length=test->prefix?strlen(test->prefix):0;
+    assert(live.size==test->offset+length);
+    uint8_t bytes[127];
+    if(prefix_length) {
+        assert(prefix_length<=sizeof(bytes));
+        assert(nas_vfs_read_at(&node,0,bytes,prefix_length)==
+               (int64_t)prefix_length);
+        assert(!memcmp(bytes,test->prefix,prefix_length));
+    }
+    uint64_t position=prefix_length;
+    while(position<test->offset) {
+        uint64_t take=test->offset-position;
+        if(take>sizeof(bytes))take=sizeof(bytes);
+        memset(bytes,0xa5,sizeof(bytes));
+        assert(nas_vfs_read_at(&node,position,bytes,take)==(int64_t)take);
+        for(uint64_t j=0;j<take;j++)assert(bytes[j]==0);
+        position+=take;
+    }
+    memset(bytes,0xa5,sizeof(bytes));
+    assert(length<=sizeof(bytes));
+    assert(nas_vfs_read_at(&node,test->offset,bytes,length)==(int64_t)length);
+    assert(!memcmp(bytes,test->payload,length));
+    assert(nas_vfs_read_at(&node,test->offset+length,bytes,1)==0);
+}
+static void m83_sparse_elf_write_regressions(uint8_t *image) {
+    /* The first 1 KiB of an ext4 volume is reserved even with 4 KiB blocks.
+     * Save the real disk bytes, not a simulated filesystem metadata value. */
+    uint8_t reserved[1024];
+    memcpy(reserved,image,sizeof(reserved));
+    assert(image[1080]==0x53 && image[1081]==0xef); /* ext4 s_magic */
+    for(unsigned i=0;i<sizeof(m83_sparse_cases)/sizeof(m83_sparse_cases[0]);i++) {
+        const struct m83_sparse_case *test=&m83_sparse_cases[i];
+        assert(nas_vfs_create(test->path,0600)==0);
+        char canonical[256];
+        struct nas_fs_node node={0};
+        assert(nas_fs_lookup_node(test->path,true,&node,canonical)==0);
+        assert(node.size==0);
+        /* Model one real open File across prefix and sparse writes: the
+         * pinned VFS inode-size lease must preserve a nonzero earlier EOF. */
+        assert(nas_vfs_node_pin(&node)==0);
+        size_t prefix_length=test->prefix?strlen(test->prefix):0;
+        if(prefix_length && !test->backfill)
+            assert(nas_vfs_write_at(&node,0,(const uint8_t *)test->prefix,
+                                    prefix_length)==(int64_t)prefix_length);
+        size_t length=strlen(test->payload);
+        assert(nas_vfs_write_at(&node,test->offset,
+               (const uint8_t *)test->payload,length)==(int64_t)length);
+        /* Catch the original physical block-zero corruption at the precise
+         * first sparse write, before an ELF header backfill could mask it. */
+        assert(!memcmp(image,reserved,sizeof(reserved)));
+        if(prefix_length && test->backfill)
+            assert(nas_vfs_write_at(&node,0,(const uint8_t *)test->prefix,
+                                    prefix_length)==(int64_t)prefix_length);
+        m83_verify_sparse_file(test);
+        assert(!memcmp(image,reserved,sizeof(reserved)));
+        assert(image[1080]==0x53 && image[1081]==0xef);
+        assert(nas_vfs_node_unpin(&node)==0);
+    }
+    puts("[LWEXT4 SPARSE ELF WRITE PASS] seek past EOF did not overwrite ext4 block zero");
+}
+static void m83_sparse_elf_verify_regressions(void) {
+    for(unsigned i=0;i<sizeof(m83_sparse_cases)/sizeof(m83_sparse_cases[0]);i++)
+        m83_verify_sparse_file(&m83_sparse_cases[i]);
+    puts("[LWEXT4 SPARSE ELF REMOUNT PASS] durable holes and payload verified");
+}
 int main(int argc,char **argv) {
     assert(argc==2 || argc==3);
     const bool write=argc==3 && !strcmp(argv[2],"write");
@@ -316,6 +404,7 @@ int main(int argc,char **argv) {
     }
     static const uint8_t persisted[]="NaSeed writable VFS ext4 inode storage";
     if(write) {
+        m83_sparse_elf_write_regressions(image);
         m82_directory_timestamp_regressions();
         /* The vendor helper only sees 16-bit i_uid/i_gid; Linux ext4 also
          * stores high owner bits. Verify the full VFS IDs and preserve this
@@ -762,6 +851,7 @@ int main(int argc,char **argv) {
         assert(!memcmp(buffer,persisted,sizeof(persisted)-1));
     }
     if(verify) {
+        m83_sparse_elf_verify_regressions();
         struct nas_fs_node persisted_dir=m82_stat(
             "/mnt/sandbox/m82-clock-persist",true);
         assert(persisted_dir.is_dir && persisted_dir.mtime_sec==1770000100U &&
