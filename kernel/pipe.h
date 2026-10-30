@@ -37,6 +37,10 @@ int64_t nas_pipe_read_amount(unsigned slot, uint64_t requested, bool nonblock);
 uint8_t nas_pipe_read_byte(unsigned slot, unsigned offset);
 void nas_pipe_read_commit(unsigned slot, unsigned count);
 int64_t nas_pipe_write_amount(unsigned slot, uint64_t requested, bool nonblock);
+/* AF_UNIX SOCK_STREAM has byte-stream admission, not the pipe's PIPE_BUF
+ * all-or-nothing rule. It reuses the bounded ring, but may accept a short
+ * write regardless of the original request's length. */
+int64_t nas_socket_write_amount(unsigned slot, uint64_t requested, bool nonblock);
 void nas_pipe_write_byte(unsigned slot, unsigned offset, uint8_t value);
 void nas_pipe_write_commit(unsigned slot, unsigned count);
 

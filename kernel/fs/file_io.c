@@ -359,6 +359,32 @@ static bool io_prepare_vector(const struct nas_io_request *req,
     }
     return true;
 }
+/* read_iter must retain Linux's partial copy-out semantics. If a later
+ * destination iovec (or page) is unmapped, previously writable slices may
+ * still be returned as a successful short read; never reject all admitted
+ * bytes just because a later destination cannot be faulted in. In contrast,
+ * eventfd's read_commit_before_copyout explicitly consumes before copyout. */
+static uint64_t io_writable_prefix(const struct nas_io_request *req,
+                                   struct nas_io_cursor cursor,
+                                   uint64_t requested) {
+    uint64_t ready=0;
+    while(ready<requested) {
+        uint64_t addr,n;
+        if(!io_next_slice(req,&cursor,requested-ready,&addr,&n))break;
+        /* Probe page-granular slices so that one bad page does not erase
+         * progress into valid earlier pages of the SAME iovec. */
+        uint64_t offset=0;
+        while(offset<n) {
+            uint64_t take=n-offset;
+            uint64_t room=4096ULL-((addr+offset)&4095ULL);
+            if(take>room)take=room;
+            if(!nas_user_prepare_write(addr+offset,take))return ready;
+            ready+=take;
+            offset+=take;
+        }
+    }
+    return ready;
+}
 static bool io_gather_vector(const struct nas_io_request *req,
                              struct nas_io_cursor *cursor,uint8_t *dst,
                              uint64_t length) {
@@ -405,12 +431,14 @@ static uint64_t io_aggregate_read(const struct nas_io_request *req) {
     while(done<budget) {
         uint64_t n=budget-done;
         if(n>sizeof(buffer))n=sizeof(buffer);
-        /* A consuming provider may not alter its queue until all of this
-         * chunk's destinations are writable. Eventfd explicitly opts out:
-         * Linux consumes its counter before copy_to_iter, even on EFAULT. */
-        if(!req->ops->read_commit_before_copyout &&
-           !io_prepare_vector(req,cursor,n,false))
-            return done ? done : (uint64_t)-EFAULT;
+        /* Preflight only the WRITEABLE PREFIX. Linux readv can complete a
+         * valid first iovec even when a later one faults. Never consume data
+         * beyond that prefix. Eventfd explicitly opts out and consumes the
+         * counter before copy_to_iter, even if its copyout then faults. */
+        if(!req->ops->read_commit_before_copyout) {
+            n=io_writable_prefix(req,cursor,n);
+            if(!n)return done ? done : (uint64_t)-EFAULT;
+        }
         uint64_t got=req->ops->read(req->slot,buffer,n);
         if((int64_t)got<0)return done ? done : got;
         if(got>n)return done ? done : (uint64_t)-EIO;
@@ -500,15 +528,24 @@ static uint64_t io_segmented_write(uint64_t fd,const struct nas_io_request *req)
     }
     return done;
 }
-uint64_t nas_fs_fd_readv(uint64_t fd,uint64_t iov,uint64_t count) {
+/* The issuing syscall may park after -EAGAIN. Return the already-imported
+ * logical request size as a kernel-owned wait hint: the scheduler must NEVER
+ * dereference a different task's iovec pointer just to check TTY readiness. */
+uint64_t nas_fs_fd_readv_with_size(uint64_t fd,uint64_t iov,uint64_t count,
+                                  uint64_t *requested_out) {
+    if(requested_out)*requested_out=0;
     struct nas_io_request req;
     int rc=io_request_import(fd,iov,count,false,&req);
     if(rc)return (uint64_t)(int64_t)rc;
+    if(requested_out)*requested_out=req.total;
     uint64_t result=!req.total ? 0 :
         req.ops->aggregate_readv ? io_aggregate_read(&req) :
                                    io_segmented_read(fd,&req);
     io_request_release(&req);
     return result;
+}
+uint64_t nas_fs_fd_readv(uint64_t fd,uint64_t iov,uint64_t count) {
+    return nas_fs_fd_readv_with_size(fd,iov,count,0);
 }
 uint64_t nas_fs_fd_writev(uint64_t fd,uint64_t iov,uint64_t count) {
     struct nas_io_request req;

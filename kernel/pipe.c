@@ -148,6 +148,20 @@ int64_t nas_pipe_write_amount(unsigned slot, uint64_t requested, bool nonblock) 
     }
     return (int64_t)requested;
 }
+int64_t nas_socket_write_amount(unsigned slot, uint64_t requested, bool nonblock) {
+    const struct nas_pipe *pipe = pipe_for_slot(slot,true);
+    if (!pipe) return -EBADF;
+    if (!requested) return 0;
+    if (!pipe_has_reader(pipe)) return -EPIPE;
+    /* The ring is a shared implementation detail, not a promise that
+     * AF_UNIX stream writes <= PIPE_BUF are atomic. Unlike pipe writes,
+     * a stream sender may advance as soon as ANY receive space exists.
+     * The public File data plane preserves the committed short count. */
+    unsigned space = NAS_PIPE_CAP - pipe->count;
+    if (!space) return nonblock ? -EAGAIN : -EOPNOTSUPP;
+    if (requested > space) requested = space;
+    return (int64_t)requested;
+}
 void nas_pipe_write_byte(unsigned slot, unsigned offset, uint8_t value) {
     struct nas_pipe *pipe = pipe_for_slot(slot,true);
     if (!pipe) return;

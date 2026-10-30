@@ -257,8 +257,10 @@ static uint64_t sys_uname_naseed(uint64_t buffer) {
 static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
                              uint64_t fd, uint64_t buf, uint64_t count) {
     uint64_t ret;
+    uint64_t tty_requested_bytes=count;
     if (nr == NAS_SC_read) ret = nas_fs_fd_read(fd, buf, count);
-    else if (nr == NAS_SC_readv) ret = nas_fs_fd_readv(fd,buf,count);
+    else if (nr == NAS_SC_readv)
+        ret = nas_fs_fd_readv_with_size(fd,buf,count,&tty_requested_bytes);
     else if (nr == NAS_SC_write) ret = nas_fs_fd_write(fd, buf, count);
     else ret = nas_fs_fd_writev(fd, buf, count);
     if ((int64_t)ret == -EPIPE &&
@@ -284,6 +286,7 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
             nas_tty_read_waitable()) {
             /* First timeout for MIN=0/TIME>0 starts at the syscall,
              * before any task sleeps; interbyte MIN>0 starts on RX. */
+            TASK.wait.tty_requested_bytes=tty_requested_bytes;
             nas_tty_blocking_read_start(&TASK);
             return nas_task_block(frame,nr,fd,buf,count,0,
                                    finish_io_provider((enum nas_syscall_op)nr));

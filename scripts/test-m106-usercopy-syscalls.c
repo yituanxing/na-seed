@@ -139,8 +139,8 @@ static const struct nas_file_ops m106_pipe_writer={
     .atomic_write_limit=4096,.aggregate_writev=true
 };
 static const struct nas_file_ops m106_stream_socket={
-    .read_plan=pipe_read_plan,.write_plan=pipe_write_plan,
-    .read=pipe_fd_read,.write=pipe_fd_write,.atomic_write_limit=4096,
+    .read_plan=pipe_read_plan,.write_plan=socket_write_plan,
+    .read=pipe_fd_read,.write=pipe_fd_write,
     .aggregate_readv=true,.aggregate_writev=true
 };
 static const struct nas_file_ops m106_eventfd={
@@ -372,6 +372,40 @@ static void a008_vectors(unsigned rd,unsigned wr) {
     puts("[NAS-A008 M106 PASS] real FileOps pipe/eventfd: IOV_MAX, bad FD precedence, metadata/source rollback, aggregate PIPE_BUF, read_iter/write fallback");
 }
 
+static void a012_stream_socket_vectors(unsigned sender,unsigned receiver) {
+    /* The same ring backs this socketpair and an anonymous pipe, but only
+     * the latter has PIPE_BUF atomic admission. A stream socket accepts
+     * the available 96 bytes of a 150-byte request as short progress. */
+    const uint64_t iov=TEST_BASE;
+    const uint64_t fill=TEST_BASE+TEST_PAGE;
+    const uint64_t first=TEST_BASE+2*TEST_PAGE+40;
+    const uint64_t second=TEST_BASE+2*TEST_PAGE+140;
+    const uint64_t dst=TEST_BASE+3*TEST_PAGE;
+    reset_mapping();
+    nas_open_files[guest_task.fds->entries[sender].slot].status_flags|=0x800;
+    memset(user_ptr(fill),'X',4000);
+    memset(user_ptr(first),'A',50);
+    memset(user_ptr(second),'B',100);
+    a008_iov(iov,0,first,50);
+    a008_iov(iov,1,second,100);
+    assert(nas_fs_fd_write(sender,fill,4000)==4000);
+    assert(nas_fs_fd_writev(sender,iov,2)==96);
+    assert((int64_t)nas_fs_fd_writev(sender,iov,2)==-EAGAIN);
+    assert(nas_fs_fd_read(receiver,dst,4096)==4096);
+    for(unsigned i=0;i<4000;i++)assert(*user_ptr(dst+i)=='X');
+    for(unsigned i=4000;i<4050;i++)assert(*user_ptr(dst+i)=='A');
+    for(unsigned i=4050;i<4096;i++)assert(*user_ptr(dst+i)=='B');
+    assert(nas_fs_fd_writev(sender,iov,2)==150);
+    assert(nas_fs_fd_read(receiver,dst,150)==150);
+    for(unsigned i=0;i<50;i++)assert(*user_ptr(dst+i)=='A');
+    for(unsigned i=50;i<150;i++)assert(*user_ptr(dst+i)=='B');
+    *user_ptr(first)='Z';
+    assert(nas_fs_fd_write(receiver,first,1)==1);
+    assert(nas_fs_fd_read(sender,dst,1)==1);
+    assert(*user_ptr(dst)=='Z');
+    puts("[NAS-A012 M106 PASS] AF_UNIX stream accepts partial writev without PIPE_BUF atomic admission; duplex endpoints preserved");
+}
+
 int main(void) {
     guest_task.mm=&guest_mm;
     guest_files.refs=1;
@@ -531,6 +565,7 @@ int main(void) {
     nas_open_files[22].status_flags=2;
 
     a008_vectors(rd,wr);
+    a012_stream_socket_vectors(a,b);
     puts("[M106 USER-COPY SYSCALL PASS] real pipe + syscall adapters: RO atomicity, lazy/COW, no pipe loss, socketpair publication, accept retains pending peer, null/zero access_ok parity, O_PATH write EBADF");
     return 0;
 }

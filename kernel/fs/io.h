@@ -7,6 +7,10 @@ struct nas_task;
  * dispatcher and scheduler use this stable operation boundary. */
 uint64_t nas_fs_fd_read(uint64_t fd, uint64_t addr, uint64_t len);
 uint64_t nas_fs_fd_readv(uint64_t fd, uint64_t iov, uint64_t count);
+/* A blocking readv's true byte count belongs to its issuing Task, not a
+ * guessed iovcnt or a user pointer read from another Task's address space. */
+uint64_t nas_fs_fd_readv_with_size(uint64_t fd, uint64_t iov, uint64_t count,
+                                  uint64_t *requested_out);
 /* Linux positional regular-file I/O never advances shared FD position. */
 uint64_t nas_fs_fd_pread(uint64_t fd,uint64_t address,uint64_t count,uint64_t offset);
 uint64_t nas_fs_fd_pwrite(uint64_t fd,uint64_t address,uint64_t count,uint64_t offset);

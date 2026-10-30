@@ -33,7 +33,7 @@ static bool task_io_ready(const struct nas_task *task) {
         /* Canonical/echo TTY has per-waiter observations beyond POLLIN. */
         if(kind == FD_TTY || kind == FD_UART)
             return nas_tty_read_ready((struct nas_task *)task,
-                                       task->wait.blocked_args[2]);
+                                       task->wait.tty_requested_bytes);
         return (nas_fs_poll_description(slot,0x0001U)&0x0019U)!=0;
     }
     if (task->wait.blocked_op == NAS_SC_write ||

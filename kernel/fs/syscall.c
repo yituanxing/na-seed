@@ -137,6 +137,10 @@ static uint64_t pipe_write_plan(unsigned slot,uint64_t requested) {
     return (uint64_t)nas_pipe_write_amount(
         slot,requested,!!(nas_open_files[slot].status_flags&0x800ULL));
 }
+static uint64_t socket_write_plan(unsigned slot,uint64_t requested) {
+    return (uint64_t)nas_socket_write_amount(
+        slot,requested,!!(nas_open_files[slot].status_flags&0x800ULL));
+}
 /* Providers consume kernel memory only. The File data plane owns every
  * usercopy preflight, staging buffer and partial-fault decision. */
 static uint64_t pipe_fd_read(unsigned slot,uint8_t *dst,uint64_t n) {
@@ -590,6 +594,10 @@ static uint64_t vread_limine(unsigned slot,uint8_t *dst,uint64_t n) {
 static uint64_t vread_tty(unsigned slot,uint8_t *dst,uint64_t n) {
     return nas_tty_read(dst,n,(nas_open_files[slot].status_flags&0x800ULL)!=0);
 }
+static uint64_t vread_tty_plan(unsigned slot,uint64_t requested) {
+    return nas_tty_read_plan(
+        requested,(nas_open_files[slot].status_flags&0x800ULL)!=0);
+}
 static uint64_t vwrite_discard(unsigned slot,const uint8_t *src,uint64_t n) {
     (void)slot;(void)src;
     return n;
@@ -647,11 +655,15 @@ static void vrelease_socket(unsigned slot){
     nas_pipe_release_description(slot);
 }
 static const struct nas_file_ops ops_uart={
-    .read=vread_tty,.write=vwrite_tty,.poll=vpoll_tty,.poll_description=dpoll_tty,
+    .read_plan=vread_tty_plan,.read=vread_tty,.write=vwrite_tty,
+    .aggregate_readv=true,.read_finalize_zero=true,
+    .poll=vpoll_tty,.poll_description=dpoll_tty,
     .ioctl=vioctl_uart
 };
 static const struct nas_file_ops ops_tty={
-    .read=vread_tty,.write=vwrite_tty,.poll=vpoll_tty,.poll_description=dpoll_tty,
+    .read_plan=vread_tty_plan,.read=vread_tty,.write=vwrite_tty,
+    .aggregate_readv=true,.read_finalize_zero=true,
+    .poll=vpoll_tty,.poll_description=dpoll_tty,
     .ioctl=vioctl_tty
 };
 static const struct nas_file_ops ops_null={
@@ -699,8 +711,8 @@ static uint16_t vpoll_socket(uint64_t fd,uint16_t events) {
     return dpoll_socket(TASK.fds->entries[fd].slot,events);
 }
 static const struct nas_file_ops ops_socket={
-    .read_plan=pipe_read_plan,.write_plan=pipe_write_plan,
-    .read=pipe_fd_read,.write=pipe_fd_write,.atomic_write_limit=NAS_PIPE_CAP,
+    .read_plan=pipe_read_plan,.write_plan=socket_write_plan,
+    .read=pipe_fd_read,.write=pipe_fd_write,
     .aggregate_readv=true,.aggregate_writev=true,
     .poll=vpoll_socket,.poll_description=dpoll_socket,
     .release=vrelease_socket

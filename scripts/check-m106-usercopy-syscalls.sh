@@ -8,3 +8,4 @@ cc -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections \
     -o /tmp/naseed-m106-usercopy-syscalls
 /tmp/naseed-m106-usercopy-syscalls
 sh scripts/check-a008-linux-vectors.sh
+sh scripts/check-a012-linux-socket-stream.sh

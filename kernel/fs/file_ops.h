@@ -9,8 +9,9 @@
  *
  * Optional plans are non-consuming and return a transfer budget or negative
  * errno. Call them ONCE for the original logical read/write request, before
- * splitting usercopy into bounded page-local chunks. Pipe/socket providers
- * use write_plan to preserve PIPE_BUF atomic admission for the whole request.
+ * splitting usercopy into bounded page-local chunks. Providers define their
+ * own admission semantics: pipes reserve <=PIPE_BUF writes atomically, while
+ * stream sockets may admit a short write when only some space remains.
  * A provider may opt into read_finalize_zero to retire a zero-length EOF
  * token when read_plan returned 0 for a nonempty user read (PTY canonical
  * EOF). A user's read(fd,...,0) never retires this token.

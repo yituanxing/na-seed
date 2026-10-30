@@ -23,6 +23,9 @@ independent consumer, and test evidence.
 | NAS-A009 | P1 | Confirmed Linux-specific positional I/O mismatch; intentionally deferred | `nas_fs_fd_pwrite` writes at its explicit offset even with `O_APPEND`; Linux actually appends while keeping the shared OFD offset unchanged (Linux/POSIX discrepancy verified against a host memfd) | Preserve the provider's positional kernel-buffer operation and OFD offset; select append position in the Linux ABI adapter and verify two independent open descriptions and `pwrite+O_APPEND` against same-ISA Linux |
 | NAS-A010 | P1 | Cross-ISA ABI audit finding; requires direct target differential oracle | `kernel/arch/linux_fcntl_abi.h` imports AArch64 open flags into a common internal layout; `kernel/fs/syscall.c` returns `status_flags` from `fcntl(F_GETFL)` without reverse translation | Normalize open flags only at the syscall ABI boundary and export the caller ISA's native layout on `F_GETFL`; keep all providers architecture-neutral; prove each flag across x86-64/RV64/AArch64 |
 | NAS-A011 | P1 | Confirmed PTY blocking/continuation gap; deferred to provider-wait migration | `kernel/drivers/pty.c` returns EAGAIN on empty/full queues; `kernel/syscall/dispatch.c` only converts selected Pipe/Socket/Eventfd/TTY kinds into task waits, omitting PTY master/slave | Express retry/wait readiness via OpenFile operations, not another FD-kind list; preserve O_NONBLOCK, VMIN/VTIME, EOF, signal interruption and wakeup ownership through native Bash/PTY regression |
+| NAS-A012 | P1 | Implemented in next batch; exact-head CI pending | Previous `kernel/fs/syscall.c::ops_socket` shared `pipe_write_plan` and `NAS_PIPE_CAP` atomic preflight with pipe writes; `kernel/pipe.c::nas_pipe_write_amount` rejected a partial nonblocking stream send below `PIPE_BUF` | Keep the shared ring as a private backend detail, but give AF_UNIX stream its own short-write admission and zero PIPE_BUF guarantee. Linux socketpair and NaSeed M106 vector partial-progress oracles must both pass |
+| NAS-A013 | P1 | Implemented in next batch; exact-head CI pending | Previous `kernel/fs/file_io.c::io_segmented_read` invoked repeated scalar reads, lowering noncanonical VMIN per slice; `kernel/task/wait.c::task_io_ready` wrongly used `readv` iovcnt as requested TTY bytes | Treat one `readv` as a logical request at the TTY provider, retain correct noncanonical VMIN/VTIME, per-waiter deadlines and EFAULT/partial semantics; readiness must use kernel-owned logical byte length, never inspect another task's user iovecs |
+| NAS-A014 | P1 | Identified native-continuation snapshot gap; not fixed in this batch | After an initially blocking `readv`, `kernel/syscall/dispatch.c::finish_readv` calls back into `nas_fs_fd_readv` and reimports potentially changed user iovec metadata. `wait.tty_requested_bytes` snapshots readiness length, not the original iovec array | A Task-owned pending I/O iterator must keep the original imported vector metadata (with explicit release on completion, EINTR, close, exec and cancellation), avoiding foreign-VM access and replay with changed user pointers. Validate adversarial concurrent mutation on Linux and NaSeed |
 
 ## First cleanup batch (pending exact-head runtime proof)
 
@@ -98,6 +101,29 @@ independent consumer, and test evidence.
   locally. M55's original guest test gains vector/eventfd/pipe acceptance
   cases; the manual QEMU gate and new exact-head automatic CI are still
   required. Do not label NAS-A008 fully closed from host success alone.
+
+- The pushed `dbe0008c` exact head subsequently achieved **22/22 automatic
+  workflow success**, including the three-ISA grouped fast native QEMU jobs.
+  These fast runs intentionally do **not** execute M55 original CMake/Ninja,
+  and cannot be substituted for the separate full native guest gate.
+- Follow-up review confirmed NAS-A012 (socket stream is not a pipe) and
+  NAS-A013 (TTY's `readv` is not independent scalar reads). Both are tracked
+  separately from the original iovec import/ownership defect; neither
+  invalidates the evidence that importer state is heap-owned and released.
+
+## Full guest acceptance triggering contract
+
+- M55's three-ISA full native CMake/Ninja workflow stays deliberately opt-in
+  to avoid adding 40–55 minute guest builds to every routine change.
+- A small PR metadata-triggered wrapper invokes the same M55 workflow. The
+  GitHub app can temporarily add `[run-m55-deep]` to the open PR title (or
+  apply the `run-m55-deep` label if provisioned), then restore the title;
+  this requires neither a new branch nor a website login. A reusable M55
+  checkout pins `github.event.pull_request.head.sha`, not the synthetic PR
+  merge commit. Artifacts are retained on both PASS and FAIL.
+- Mark M55 guest `PASS` only after every matrix ISA reports the complete
+  original build, first/second CTest, real source rebuild, and all new
+  vector/Eventfd/Pipe stage markers at that exact head.
 
 ## Already implemented: do not reopen as an unsolved issue
 

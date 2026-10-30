@@ -104,6 +104,8 @@ jobs:
         run: cc -std=c11 -Wall -Wextra -Werror -fno-builtin -I kernel scripts/test-usercopy-pages.c kernel/mm/usercopy.c kernel/lib/string.c -o /tmp/naseed-usercopy-pages && /tmp/naseed-usercopy-pages
       - name: M106 real filesystem syscall usercopy and pipe/socket transaction regression
         run: sh scripts/check-m106-usercopy-syscalls.sh
+      - name: NAS-A013 Linux PTY oracle and real NaSeed TTY readv/VMIN/EOF contract
+        run: sh scripts/check-a013-linux-tty-vectors.sh
       - name: M107 Path-owned AF_UNIX inode namespace, SCM_RIGHTS and Linux ABI oracle
         run: sh scripts/check-m107-unix.sh
       - name: Shared ELF PT_LOAD loader regression (x86/RV64/ARM64)

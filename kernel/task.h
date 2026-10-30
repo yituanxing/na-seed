@@ -73,6 +73,9 @@ struct nas_task_wait {
     uint64_t deadline_ns;
     bool deadline_active;
     unsigned tty_observed_bytes;
+    /* Exact byte length of the issuing read/readv TTY request. The
+     * scheduler checks this snapshot, never foreign user iovec memory. */
+    uint64_t tty_requested_bytes;
     /* Poll interest records OPEN-DESCRIPTION slots, not pipe numbers or
      * Task-local FDs. All providers use this one readiness representation. */
     struct nas_slot_mask poll_interest_read, poll_interest_write;
