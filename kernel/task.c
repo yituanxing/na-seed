@@ -160,6 +160,8 @@ struct nas_task *nas_task_fork_slot(void) {
         for(unsigned n=0;n<NAS_POSIX_TIMERS;n++)child->timers[n]=(struct nas_posix_timer){0};
         child->signal_frame_active = false;
         child->signal_frame_sp = 0;
+        /* fork/vfork inherits its parent's alternate signal stack; the
+         * CLONE_VM pthread path explicitly clears it for the new TID. */
         child->ppoll_mask_active=false;
         child->signal_force_deliver=0;
         /* Fork creates a new thread-group / task identity. The parent's

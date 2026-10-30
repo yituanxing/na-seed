@@ -126,6 +126,7 @@ enum nas_syscall_op {
     NAS_SC_rt_sigprocmask,
     NAS_SC_rt_sigsuspend,
     NAS_SC_rt_sigreturn,
+    NAS_SC_sigaltstack,
     NAS_SC_setpgid,
     NAS_SC_setsid,
     NAS_SC_set_tid_address,

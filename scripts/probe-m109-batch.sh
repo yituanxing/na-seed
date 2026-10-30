@@ -19,7 +19,12 @@ export BUSYBOX_PARITY_MANIFEST=scripts/m109-batch-cases.tsv
 log="$logs/m109-batch.clean.log"
 if ! sh "$runner"; then
     echo "[M109 BATCH FAIL] $port original signed Alpine runtime" >&2
-    test ! -s "$log" || tail -360 "$log" >&2
+    if test -s "$log"; then
+        # Always surface the WHOLE fifteen-program scoreboard even when a
+        # kernel trace pushes early failures beyond the serial-log tail.
+        grep -aE '^(M109_[A-Z0-9_]+_(PASS|FAIL)|\[M109 )' "$log" >&2 || true
+        tail -360 "$log" >&2
+    fi
     exit 1
 fi
 test -s "$log" || { echo "[M109 BATCH FAIL] $port missing guest serial" >&2; exit 1; }

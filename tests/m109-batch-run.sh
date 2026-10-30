@@ -93,7 +93,8 @@ M109_BISON
         program=$(original_elf /usr/bin/xmllint /bin/xmllint)
         printf '<root><item id="42">alpha</item></root>\n' > "$work/data.xml"
         "$program" --nonet --xpath 'string(/root/item/@id)' "$work/data.xml" > "$work/actual"
-        printf 42 > "$work/expected"
+        # libxml2's XPath STRING dumper deliberately emits a trailing LF.
+        printf '42\n' > "$work/expected"
         busy cmp "$work/actual" "$work/expected" ;;
       xsltproc)
         program=$(original_elf /usr/bin/xsltproc /bin/xsltproc)

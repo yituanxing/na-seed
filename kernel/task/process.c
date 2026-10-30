@@ -147,8 +147,9 @@ void nas_process_vfork_release(void) {
     nas_print("\n");
 }
 /* Linux rlimit64: report resource limits the kernel actually enforces.
- * A limit update is NOT a no-op success: reject until the underlying
- * resource scheduler/FD/VM policy can enforce mutable soft/hard values. */
+ * Reasserting the exact existing limit is a genuine, side-effect-free
+ * successful setrlimit (e.g. GnuPG disabling already-disabled core dumps).
+ * Reject changes until the resource scheduler/FD/VM policy can enforce them. */
 uint64_t nas_process_prlimit(uint64_t pid,uint64_t resource,
                              uint64_t new_addr,uint64_t old_addr) {
     /* All current NaSeed userspace tasks share the one real root UID.
@@ -160,7 +161,6 @@ uint64_t nas_process_prlimit(uint64_t pid,uint64_t resource,
     if (pid && (pid>UINT32_MAX || !nas_task_by_pid(pid)))
         return (uint64_t)-ESRCH;
     if (resource > 15) return (uint64_t)-EINVAL;
-    if (new_addr) return (uint64_t)-EOPNOTSUPP;
     uint64_t soft=UINT64_MAX, hard=UINT64_MAX;
     switch (resource) {
     case 3: soft=hard=32ULL*4096ULL; break; /* RLIMIT_STACK */
@@ -170,6 +170,16 @@ uint64_t nas_process_prlimit(uint64_t pid,uint64_t resource,
     case 8: soft=hard=0; break;             /* RLIMIT_MEMLOCK */
     case 13: case 14: soft=hard=0; break;   /* NICE/RTPRIO */
     default: break; /* No separate resource-limit policy. */
+    }
+    if (new_addr) {
+        uint64_t requested[2];
+        if (!nas_user_read_bytes(new_addr,(uint8_t *)requested,sizeof(requested)))
+            return (uint64_t)-EFAULT;
+        /* A true no-op is safe: it does not pretend to change a limit whose
+         * accounting/enforcement has not been implemented.  This matters to
+         * programs which explicitly set RLIMIT_CORE={0,0} at startup. */
+        if (requested[0]!=soft || requested[1]!=hard)
+            return (uint64_t)-EOPNOTSUPP;
     }
     if (old_addr) {
         const uint64_t pair[2]={soft,hard};
@@ -472,6 +482,11 @@ uint64_t nas_process_clone_thread(uint64_t *frame,uint64_t stack,
     if (!child)return (uint64_t)-EAGAIN;
     child->tgid=parent->tgid;
     child->is_thread=true;
+    /* Linux clone with shared VM (without vfork) starts with no alternate
+     * signal stack, despite inheriting the shared signal dispositions. */
+    child->signal_stack_sp=0;
+    child->signal_stack_size=0;
+    child->signal_stack_enabled=false;
     child->ppid=parent->ppid;
     child->group_leader=parent->group_leader;
     nas_files_put(child->files); /* cloned table never held description refs */

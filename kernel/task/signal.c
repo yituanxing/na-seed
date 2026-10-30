@@ -14,8 +14,76 @@
  * SA_NODEFER, NOT SA_RESETHAND (0x80000000). All three ISAs share them. */
 #define NAS_SA_NODEFER UINT64_C(0x40000000)
 #define NAS_SA_RESETHAND UINT64_C(0x80000000)
-#define NAS_SA_ONSTACK UINT64_C(0x08000000)
 #define NAS_UNMASKABLE ((1ULL<<8) | (1ULL<<18))
+
+/* Linux's LP64 stack_t wire format, shared by x86-64, RISC-V and ARM64.
+ * A signal stack is per TID; saved signal dispositions remain per sighand.
+ * SS_AUTODISARM is intentionally rejected until switching away from signal
+ * handlers is supported, never reported as a feature that silently fails. */
+struct nas_sigaltstack_wire {
+    uint64_t sp;
+    uint32_t flags, padding;
+    uint64_t size;
+};
+_Static_assert(sizeof(struct nas_sigaltstack_wire)==24,
+               "Linux LP64 stack_t ABI");
+
+uint32_t nas_signal_altstack_flags(const struct nas_task *task,
+                                  uint64_t user_sp) {
+    if(!task->signal_stack_enabled)return NAS_SS_DISABLE;
+    if(user_sp>=task->signal_stack_sp &&
+       user_sp-task->signal_stack_sp<task->signal_stack_size)
+        return NAS_SS_ONSTACK;
+    return 0;
+}
+
+uint64_t nas_signal_handler_stack_top(const struct nas_task *task,
+                                     uint64_t user_sp,uint64_t action_flags) {
+    if((action_flags&NAS_SA_ONSTACK) && task->signal_stack_enabled &&
+       nas_signal_altstack_flags(task,user_sp)!=NAS_SS_ONSTACK)
+        return task->signal_stack_sp+task->signal_stack_size;
+    return user_sp;
+}
+
+uint64_t nas_signal_sigaltstack(uint64_t new_ptr,uint64_t old_ptr) {
+    struct nas_task *task=nas_current_task;
+    struct nas_sigaltstack_wire incoming={0};
+    if(new_ptr && !nas_user_read_bytes(new_ptr,(uint8_t *)&incoming,
+                                      sizeof(incoming)))return (uint64_t)-EFAULT;
+    uint64_t user_sp=nas_arch_signal_user_sp();
+    uint32_t state=nas_signal_altstack_flags(task,user_sp);
+    if(new_ptr) {
+        /* Linux forbids changing a stack while the thread executes on it.
+         * SS_ONSTACK is only a status bit returned by an old-stack query,
+         * not a valid flag for registering a new alternate stack. */
+        if(state==NAS_SS_ONSTACK)return (uint64_t)-EPERM;
+        if(incoming.flags!=0 && incoming.flags!=NAS_SS_DISABLE)
+            return (uint64_t)-EINVAL;
+        if(incoming.flags!=NAS_SS_DISABLE) {
+            if(incoming.size<nas_arch_signal_min_altstack())
+                return (uint64_t)-ENOMEM;
+            if(!incoming.sp || incoming.sp>=USER_LIMIT ||
+               incoming.size>USER_LIMIT-incoming.sp)
+                return (uint64_t)-ENOMEM;
+        }
+    }
+    if(old_ptr) {
+        struct nas_sigaltstack_wire previous={
+            .sp=task->signal_stack_sp,
+            .flags=state,
+            .padding=0,
+            .size=task->signal_stack_size,
+        };
+        if(!nas_user_write_bytes(old_ptr,(const uint8_t *)&previous,
+                                 sizeof(previous)))return (uint64_t)-EFAULT;
+    }
+    if(new_ptr) {
+        task->signal_stack_enabled=(incoming.flags!=NAS_SS_DISABLE);
+        task->signal_stack_sp=task->signal_stack_enabled?incoming.sp:0;
+        task->signal_stack_size=task->signal_stack_enabled?incoming.size:0;
+    }
+    return 0;
+}
 
 /* Shared signal lifecycle. Hardware-specific sigframe assembly is confined
  * to the three native backends below; disposition and mask decisions must
@@ -70,9 +138,9 @@ uint64_t nas_signal_action(uint64_t signum,uint64_t incoming,
         return (uint64_t)-EFAULT;
 #endif
     if(incoming) {
-        /* Do not silently advertise SA_ONSTACK while sigaltstack and
-         * nested native signal frames remain unsupported. */
-        if(action[1]&NAS_SA_ONSTACK)return (uint64_t)-EOPNOTSUPP;
+        /* SA_ONSTACK is an action attribute even when the calling thread
+         * has no alternate stack. Linux falls back to its normal stack in
+         * that case; the native signal-frame owner selects the actual SP. */
         action[3] &= ~NAS_UNMASKABLE;
         for(unsigned i=0;i<4;i++)
             nas_current_task->sighand->actions[signum][i]=action[i];

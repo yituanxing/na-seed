@@ -18,8 +18,18 @@ struct nas_task;
 #define NAS_SIGKILL 9U
 #define NAS_SIGCONT 18U
 #define NAS_SIGSTOP 19U
+#define NAS_SA_ONSTACK UINT64_C(0x08000000)
+/* Linux stack_t ABI is the same 24-byte LP64 struct on all three ports. */
+#define NAS_SS_ONSTACK 1U
+#define NAS_SS_DISABLE 2U
 uint64_t nas_signal_action(uint64_t signum, uint64_t new_action,
                            uint64_t old_action, uint64_t size);
+uint64_t nas_signal_sigaltstack(uint64_t new_stack, uint64_t old_stack);
+uint32_t nas_signal_altstack_flags(const struct nas_task *task,
+                                   uint64_t current_user_sp);
+uint64_t nas_signal_handler_stack_top(const struct nas_task *task,
+                                      uint64_t current_user_sp,
+                                      uint64_t action_flags);
 uint64_t nas_signal_procmask(uint64_t how, uint64_t set,
                              uint64_t old_set, uint64_t size,uint64_t *frame);
 /* Always run with the chosen Task's userspace MMU active and a complete

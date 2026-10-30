@@ -192,6 +192,11 @@ struct nas_task {
      * remain pending until that frame returns. */
     bool signal_frame_active;
     uint64_t signal_frame_sp, signal_saved_mask;
+    /* Linux sigaltstack belongs to the calling THREAD, not shared sighand.
+     * Fork inherits it, CLONE_VM threads begin disabled, exec clears it.
+     * Unlike a copied signal disposition, this range is an MM address. */
+    uint64_t signal_stack_sp, signal_stack_size;
+    bool signal_stack_enabled;
     /* ppoll installs a temporary signal mask atomically for the wait.
      * Its original mask is restored on ALL completion paths, but a
      * pending caught signal must still be delivered after EINTR. */

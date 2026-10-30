@@ -477,6 +477,9 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
     TASK.execed = true; /* fork parent may no longer setpgid after exec */
     TASK.signal_frame_active = false;
     TASK.signal_frame_sp = 0;
+    TASK.signal_stack_sp=0;
+    TASK.signal_stack_size=0;
+    TASK.signal_stack_enabled=false;
     TASK.ppoll_mask_active=false;
     TASK.signal_force_deliver=0;
     thread_clear_tid = 0;
