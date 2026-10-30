@@ -118,9 +118,12 @@ decode_jpeg() {
 make_avif() {
     avif_encoder=$(original_elf /usr/bin/avifenc)
     make_png "$1/source.png"
-    # The CLI promises lossless RGB 4:4:4, so compare actual decoded pixels,
-    # not the encoded container bytes or merely its metadata.
-    "$avif_encoder" --lossless -s 10 -j 1 "$1/source.png" "$1/image.avif" > "$1/encode-log"
+    # Lossless AV1 quantization alone does not make RGB<->YUV conversion
+    # reversible. Identity matrix coefficients (CICP 1/13/0), full range,
+    # and 4:4:4 preserve the original RGB channels byte-for-byte; continue
+    # verifying actual decoded pixels, not just a valid AVIF container.
+    "$avif_encoder" --lossless --cicp 1/13/0 --range full --yuv 444 \
+        -s 10 -j 1 "$1/source.png" "$1/image.avif" > "$1/encode-log"
     [ -s "$1/image.avif" ]
     avif_brand=$(busy dd if="$1/image.avif" bs=1 skip=4 count=8 2>/dev/null)
     [ "$avif_brand" = ftypavif ]
