@@ -72,6 +72,11 @@ uint64_t nas_fs_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     if((nas_open_files[slot].status_flags & NAS_LINUX_O_PATH) ||
        (nas_open_files[slot].status_flags & 3ULL)==0ULL)
         return (uint64_t)-EBADF;
+    /* The VFS access_ok check precedes provider dispatch, even for a
+     * non-copying sink, zero-length write or provider-rejected request.
+     * This checks the address RANGE, not whether its pages are mapped. */
+    if(address>=USER_LIMIT || length>USER_LIMIT-address)
+        return (uint64_t)-EFAULT;
     /* Linux bounds one regular write to MAX_RW_COUNT (INT_MAX rounded down
      * to the page size), not a kernel-private 1-MiB limit. GNU binutils
      * legitimately calls writev() with a single multi-megabyte iovec.
@@ -86,17 +91,15 @@ uint64_t nas_fs_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     if(budget>length)return (uint64_t)-EIO;
     if(!budget)return 0;
     if(ops->write_ignores_source) {
-        /* /dev/null and /dev/zero are sinks: no userspace byte is read,
-         * and a nonexistent source pointer must not manufacture EFAULT. */
+        /* /dev/null and /dev/zero are sinks: no userspace byte is read.
+         * Absent pages within a valid user range do not imply EFAULT. */
         uint64_t discarded=ops->write(slot,0,budget);
         if((int64_t)discarded<0)return discarded;
         if(discarded>budget)return (uint64_t)-EIO;
         return discarded;
     }
-    /* Only the provider-authorized byte count is dereferenced: for example
-     * eventfd rejects oversized writes before checking the user buffer. */
-    if(address>=USER_LIMIT || budget>USER_LIMIT-address)
-        return (uint64_t)-EFAULT;
+    /* Only the provider-authorized byte count is DEREFERENCED; an eventfd
+     * rejected write never copies or consumes the user's source bytes. */
     if(ops->atomic_write_limit && length<=ops->atomic_write_limit &&
        !nas_user_prepare_read(address,budget))
         return (uint64_t)-EFAULT;
@@ -127,6 +130,10 @@ uint64_t nas_fs_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     if((nas_open_files[slot].status_flags&NAS_LINUX_O_PATH) ||
        (nas_open_files[slot].status_flags&3ULL)==1)
         return (uint64_t)-EBADF;
+    /* Even an EOF read must reject an out-of-range pointer. A merely
+     * unmapped pointer is allowed when the provider returns zero bytes. */
+    if(address>=USER_LIMIT || length>USER_LIMIT-address)
+        return (uint64_t)-EFAULT;
     if(length>NAS_MAX_RW_COUNT)length=NAS_MAX_RW_COUNT;
     const struct nas_file_ops *ops=nas_open_files[slot].ops;
     if(!ops || !ops->read)return (uint64_t)-EBADF;
@@ -144,9 +151,6 @@ uint64_t nas_fs_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
         }
         return 0;
     }
-    if(!ops->read_commit_before_copyout &&
-       (address>=USER_LIMIT || budget>USER_LIMIT-address))
-        return (uint64_t)-EFAULT;
     uint8_t buffer[1024];
     uint64_t done=0;
     while(done<budget) {

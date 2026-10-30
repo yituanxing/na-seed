@@ -19,7 +19,10 @@ independent consumer, and test evidence.
 | NAS-A005 | P1 | Confirmed architectural limit; implementation deferred | Existing private file maps eagerly snapshot data and `MAP_SHARED` lacks an owned file/page-cache contract | File-backed VMAs pin an inode/address-space; tested dirty/writeback, read/write/truncate coherence, COW and sync before claiming shared mapping |
 | NAS-A006 | P2 | Known capacity/performance constraint | Bounded task/FD/VMA/heap resources; shared synchronous single-inflight polling VirtIO-Blk | Grow only from measured real-program failures; preserve ownership and compare cold/warm genuine-QEMU performance |
 | NAS-A007 | P1 | Process/tooling debt; do not duplicate foundation | `scripts/native-alpine-matrix.tsv` and M50 fast/full, original APK staging, M79 workflow and strict perf provenance already exist | One indexed source/version/ISA/dependency/workload/evidence catalog; reuse present runners and retain all M38–M108 gates, including manual full distinct from automatic fast |
-| NAS-A008 | P1 | Newly confirmed Linux ABI mismatch during NAS-A002 differential review | `kernel/fs/file_io.c` loops `readv/writev` as independently planned scalar calls: Linux eventfd `readv` may fill a single 8-byte value across 4+4 iovecs, while pipe `writev` needs one atomic admission for aggregate `<= PIPE_BUF` | Introduce vector-aware transaction planning and scatter/gather usercopy without duplicating provider algorithms; test Linux eventfd 4+4 / 8+8, pipe `writev` atomicity at low capacity, `EFAULT`, partial and blocking across all ISAs |
+| NAS-A008 | P0 | Confirmed vector transaction boundary violation; not fixed by NAS-A002 | `kernel/fs/file_io.c` streams per-iovec user metadata and commits scalar I/O before validating later elements. Linux rejects a malformed later `iov_len=UINT64_MAX` without consuming earlier data; aggregate `PIPE_BUF` must be admitted atomically. Eventfd `readv([4,4])` spans both slices, while `writev([4,4])` must still fail `EINVAL` | First snapshot/validate all vector metadata and FD permissions (including zero-count), then use one provider-capability-aware logical transaction with bounded scatter/gather; preserve Linux eventfd read-iterator vs segmented write distinction. Check iovcnt=0/bad FD, `IOV_MAX=1024`, overflow, pipe low-capacity atomicity, EFAULT and blocking on all ISAs |
+| NAS-A009 | P1 | Confirmed Linux-specific positional I/O mismatch; intentionally deferred | `nas_fs_fd_pwrite` writes at its explicit offset even with `O_APPEND`; Linux actually appends while keeping the shared OFD offset unchanged (Linux/POSIX discrepancy verified against a host memfd) | Preserve the provider's positional kernel-buffer operation and OFD offset; select append position in the Linux ABI adapter and verify two independent open descriptions and `pwrite+O_APPEND` against same-ISA Linux |
+| NAS-A010 | P1 | Cross-ISA ABI audit finding; requires direct target differential oracle | `kernel/arch/linux_fcntl_abi.h` imports AArch64 open flags into a common internal layout; `kernel/fs/syscall.c` returns `status_flags` from `fcntl(F_GETFL)` without reverse translation | Normalize open flags only at the syscall ABI boundary and export the caller ISA's native layout on `F_GETFL`; keep all providers architecture-neutral; prove each flag across x86-64/RV64/AArch64 |
+| NAS-A011 | P1 | Confirmed PTY blocking/continuation gap; deferred to provider-wait migration | `kernel/drivers/pty.c` returns EAGAIN on empty/full queues; `kernel/syscall/dispatch.c` only converts selected Pipe/Socket/Eventfd/TTY kinds into task waits, omitting PTY master/slave | Express retry/wait readiness via OpenFile operations, not another FD-kind list; preserve O_NONBLOCK, VMIN/VTIME, EOF, signal interruption and wakeup ownership through native Bash/PTY regression |
 
 ## First cleanup batch (pending exact-head runtime proof)
 
@@ -52,6 +55,21 @@ independent consumer, and test evidence.
   eventfd differential regression passes on **Linux host**, not yet NaSeed.
   M102 target compile and three-ISA QEMU remain pending, because the local
   environment does not provide Clang/QEMU.
+- Later exact-head `24a8f8bd` grouped-native FAST QEMU jobs passed **9/9**
+  (three ISAs × foundation/lifecycle/pthread), and M106 passed in Actions.
+  The userspace smoke then stopped at M102 target syntax because its new
+  `file_io.c` compile lacked the already-present `limine.h` shim include.
+  That CI-script error and an independently proven `O_PATH` write access
+  bug were fixed in `3db3705d`; **re-run evidence for that exact head is
+  pending**. The independent M55 eventfd guest gate is manual-dispatch and
+  is not part of grouped FAST; host oracle results do not substitute for it.
+- Subsequent Linux-host differential checks found a finer `access_ok` rule:
+  an out-of-user-range pointer must fail `EFAULT` even for zero-byte EOF and
+  null/zero discard writes, before a backend plan or eventfd counter
+  consumption. An unmapped but *in-range* pointer is still accepted by a
+  discard sink or a zero-byte EOF without touching its pages. A follow-up
+  patch implements this generic range/page-content separation; it requires
+  its own exact-head runtime evidence before that behavior can be closed.
 - **Do not mark NAS-A002 fully closed yet:** syscall initial blocking and
   native C continuation retry still enumerate FD kinds. Preserve SIGPIPE,
   per-waiter TTY readiness, and exactly-once task wait semantics when

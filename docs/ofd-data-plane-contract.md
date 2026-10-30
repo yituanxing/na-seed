@@ -43,7 +43,7 @@ or lock.
 | Eventfd | Reads accept count `>= 8` but move eight bytes; writes require count **exactly eight** | Linux consumes the counter even when a subsequent read `copy_to_user` fails with `EFAULT`; rejected writes do not increase it; preserve wait/nonblock/overflow behavior. This is a **documented commit-before-copyout exception** to the usual read staging rule |
 | PTY and physical TTY | Preserve canonical, noncanonical, EOF and available-byte distinctions | Preserve line-discipline peek/commit, ISIG/NOFLSH, VMIN/VTIME, peer close and COW no-data-loss behavior |
 | Mounted regular file | Read through opened/pinned VFS inode, not user FD; trim preflight at EOF **only if** `read_size_is_eof` is advertised by that filesystem | Shared OpenFile offset changes only by successful bytes, `O_APPEND` obtains the current size from the provider. Dynamic `/proc` can report `st_size=0` yet return content |
-| Null, zero and legacy Limine | Null has immediate EOF; zero produces bytes; legacy module bounded by size | Do not make EOF depend on unused user memory. Null and zero **discard writes without reading any source bytes**, even for invalid user pointers (`write_ignores_source` capability) |
+| Null, zero and legacy Limine | Null has immediate EOF; zero produces bytes; legacy module bounded by size | The common `access_ok` address-range check still runs, **even at EOF and for discarded writes**. Null and zero write sinks do not dereference unmapped but in-range user pages (`write_ignores_source` capability) |
 
 `ioctl`, pathname lookup, FD creation/close, `pread/pwrite`, and mmap file
 reads have distinct control/positional interfaces. Do not mechanically

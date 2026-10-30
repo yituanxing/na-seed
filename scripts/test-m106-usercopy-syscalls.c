@@ -350,15 +350,20 @@ int main(void) {
     assert(memcmp(pages[0]+23,&size,sizeof(size))==0);
 
     /* Linux /dev/null and /dev/zero discard writes without dereferencing
-     * the source. Moving usercopy into the common File adapter must retain
-     * that explicit provider capability, even with a bogus user pointer. */
+     * the source. An unmapped, in-range user pointer works; an address
+     * RANGE outside user space is still rejected by VFS access_ok. */
     assert(nas_fd_install_new(&guest_task,28,22,FD_NULL,2,false));
     assert(nas_fd_install_new(&guest_task,29,23,FD_ZERO,2,false));
     nas_open_files[22].ops=&ops_null;
     nas_open_files[23].ops=&ops_zero;
-    assert(nas_fs_fd_write(28,USER_LIMIT-2,32)==32);
-    assert(nas_fs_fd_write(29,USER_LIMIT-2,32)==32);
-    assert(nas_fs_fd_read(28,USER_LIMIT-2,32)==0);
+    assert(nas_fs_fd_write(28,0,32)==32);
+    assert(nas_fs_fd_write(29,0,32)==32);
+    assert(nas_fs_fd_read(28,0,32)==0);
+    assert((int64_t)nas_fs_fd_write(28,USER_LIMIT-2,32)==-EFAULT);
+    assert((int64_t)nas_fs_fd_write(29,USER_LIMIT-2,32)==-EFAULT);
+    assert((int64_t)nas_fs_fd_read(28,USER_LIMIT-2,32)==-EFAULT);
+    assert((int64_t)nas_fs_fd_write(28,USER_LIMIT,0)==-EFAULT);
+    assert((int64_t)nas_fs_fd_read(28,USER_LIMIT,0)==-EFAULT);
 
     /* Linux O_PATH FDs are metadata-only, including when the backend
      * would ordinarily discard a write without touching its source. */
@@ -366,6 +371,6 @@ int main(void) {
     assert((int64_t)nas_fs_fd_write(28,TEST_BASE,1)==-EBADF);
     nas_open_files[22].status_flags=2;
 
-    puts("[M106 USER-COPY SYSCALL PASS] real pipe + syscall adapters: RO atomicity, lazy/COW, no pipe loss, socketpair publication, accept retains pending peer, null/zero discard parity, O_PATH write EBADF");
+    puts("[M106 USER-COPY SYSCALL PASS] real pipe + syscall adapters: RO atomicity, lazy/COW, no pipe loss, socketpair publication, accept retains pending peer, null/zero access_ok parity, O_PATH write EBADF");
     return 0;
 }
