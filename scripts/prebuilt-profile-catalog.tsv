@@ -25,3 +25,4 @@ m110-batch	rootfs/alpine/packages-m110-batch.txt	scripts/m110-original-elfs.txt	
 m111-batch	rootfs/alpine/packages-m111-batch.txt	scripts/m111-original-elfs.txt	scripts/m111-rootfs-copies.tsv	main+community
 m112-batch	rootfs/alpine/packages-m112-batch.txt	scripts/m112-original-elfs.txt	scripts/m112-rootfs-copies.tsv	main+community
 m113-batch	rootfs/alpine/packages-m113-batch.txt	scripts/m113-original-elfs.txt	scripts/m113-rootfs-copies.tsv	main+community
+m114-batch	rootfs/alpine/packages-m114-batch.txt	scripts/m114-original-elfs.txt	scripts/m114-rootfs-copies.tsv	main+community

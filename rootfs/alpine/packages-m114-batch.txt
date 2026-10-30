@@ -1,0 +1,12 @@
+# M114: ten original Alpine 3.23 signed APK packages supply fifteen distinct ELF
+# executables. All packages installed and verified on HOST; guest only runs.
+libqrencode-tools
+zbar
+gifsicle
+giflib-utils
+libgcab
+cabextract
+opus-tools
+vorbis-tools
+advancecomp
+ffmpeg

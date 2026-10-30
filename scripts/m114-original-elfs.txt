@@ -1,0 +1,16 @@
+# Exactly 15 host-verified original signed x86_64 ELF targets (all 3 ISAs indexed).
+usr/bin/qrencode
+usr/bin/zbarimg
+usr/bin/gifsicle
+usr/bin/gif2rgb
+usr/bin/gcab
+usr/bin/cabextract
+usr/bin/opusenc
+usr/bin/opusdec
+usr/bin/oggenc
+usr/bin/oggdec
+usr/bin/advdef
+usr/bin/advpng
+usr/bin/advzip
+usr/bin/ffmpeg
+usr/bin/ffprobe
