@@ -1,24 +1,7 @@
 name: NaSeed M123 15 signed original ext2/FAT filesystem applications, one QEMU per ISA
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/m123-batch.yml'
-      - 'tests/m123-*'
-      - 'scripts/m123-*'
-      - 'scripts/probe-m123-batch.sh'
-      - 'scripts/stage-m123-prebuilt.sh'
-      - 'scripts/host-configure-m123-batch.sh'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'scripts/check-prebuilt-profile-catalog.py'
-      - 'scripts/check-native-qemu-target.py'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'rootfs/alpine/**'
-      - 'kernel/**'
-      - 'ports/**'
+  # M123 exact-head native 15/15 per ISA is archived. Dispatch on demand;
+  # only the currently active batch runs on each PR update.
   workflow_dispatch:
 
 concurrency:

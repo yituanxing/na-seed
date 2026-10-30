@@ -1,0 +1,16 @@
+# Fifteen globally new, independent original signed Alpine util-linux-misc ELFs.
+bin/getopt
+bin/rev
+usr/bin/cal
+usr/bin/colrm
+usr/bin/column
+usr/bin/look
+usr/bin/namei
+usr/bin/rename
+usr/bin/hardlink
+usr/bin/uuidparse
+sbin/mkfs.cramfs
+sbin/fsck.cramfs
+sbin/mkfs.minix
+sbin/fsck.minix
+sbin/mkswap
