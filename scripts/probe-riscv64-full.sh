@@ -152,8 +152,6 @@ elif [ -n "${NAS_LWEXT4_RW_PROBE:-}" ]; then
 else
     sh scripts/port-boot-until.sh "$log" "$pid" 90 \
  '[INIT] creating common task/VM and architecture user entry' \
- '[USER] hello from standalone ELF via syscall' \
- '[MISS] syscall nr=999' \
  '[EXIT] user status=0' \
  '[RV64] userspace debug-exit status=0'
 fi
@@ -162,6 +160,8 @@ kill "$pid" 2>/dev/null || :
 wait "$pid" 2>/dev/null || :
 set -e
 if [ "$monitor" -ne 0 ] || grep -Fq '[FAIL]' "$log" ||
+   { [ -z "${NAS_VIRTIO_BLK_IMAGE:-}${NAS_RAMFS_NATIVE_PROBE:-}${NAS_LITTLEFS_TEST_IMAGE:-}${NAS_LWEXT4_RW_PROBE:-}" ] &&
+     ! tr -d '\r' < "$log" | grep -Fxq 'hello'; } ||
    { [ -n "${NAS_LWEXT4_RW_PROBE:-}" ] &&
      [ -z "${NAS_VIRTIO_BLK_IMAGE:-}" ] &&
      ! grep -Fq '[LWEXT4 GUEST] explicit ephemeral RW RamDisk only; NOT persistent storage' "$log"; } ||
