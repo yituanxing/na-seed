@@ -60,15 +60,35 @@ run_case() {
     case "$app" in
       procs)
         exe=$(original_elf /usr/bin/procs)
-        if ! "$exe" > "$work/actual" 2> "$work/stderr"; then
+        # Upstream procs hides itself AND all ancestors by default. The
+        # foreground shell is therefore intentionally absent from its table.
+        # Keep a live independent sibling process and require the unchanged
+        # original Linux ELF to discover that exact PID through real procfs.
+        /bin/busybox sleep 30 &
+        probe_pid=$!
+        procs_exit=0
+        "$exe" > "$work/actual" 2> "$work/stderr" || procs_exit=$?
+        /bin/busybox kill "$probe_pid" >/dev/null 2>&1 || true
+        wait "$probe_pid" 2>/dev/null || true
+        if [ "$procs_exit" -ne 0 ]; then
             echo '[M112 PROCS DIAG] original program exited nonzero' >&2
             busy head -n 12 "$work/stderr" >&2
             busy head -n 12 "$work/actual" >&2
             return 1
         fi
         [ -s "$work/actual" ]
-        if ! busy grep -Eq 'sh|busybox' "$work/actual"; then
-            echo '[M112 PROCS DIAG] missing actual shell process in /proc listing' >&2
+        if ! busy grep -Eq "(^|[^0-9])${probe_pid}([^0-9]|$)" "$work/actual"; then
+            echo "[M112 PROCS DIAG] missing independent live PID $probe_pid from procfs listing" >&2
+            echo '[M112 PROCS DIAG] original stdout bytes and initial raw bytes:' >&2
+            busy wc -c "$work/actual" >&2 || true
+            busy od -An -tx1 -N192 "$work/actual" >&2 || true
+            echo '[M112 PROCS DIAG] original stderr:' >&2
+            busy head -n 8 "$work/stderr" >&2 || true
+            echo '[M112 PROCS DIAG] real procfs directory and PID metadata:' >&2
+            busy ls -ld /proc /proc/1 /proc/self >&2 || true
+            busy ls /proc >&2 || true
+            busy head -n 1 /proc/1/stat >&2 || true
+            busy head -n 8 /proc/1/status >&2 || true
             busy head -n 15 "$work/actual" >&2
             return 1
         fi ;;
