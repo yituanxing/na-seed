@@ -5,7 +5,9 @@ on:
 jobs:
   cmake:
     name: Upstream cJSON CTest / ${{ matrix.port }}
-    runs-on: ubuntu-latest
+    # Match the verified native QEMU jobs: ubuntu-latest (26.04) split
+    # qemu-system-riscv out of qemu-system-misc and silently skipped RV64.
+    runs-on: ubuntu-24.04
     timeout-minutes: 75
     strategy:
       fail-fast: false
@@ -50,6 +52,15 @@ jobs:
             sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
               -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
           fi
+          case "${{ matrix.port }}" in
+            amd64)  qemu_bin=qemu-system-x86_64 ;;
+            riscv64) qemu_bin=qemu-system-riscv64 ;;
+            arm64)  qemu_bin=qemu-system-aarch64 ;;
+          esac
+          command -v "$qemu_bin" || {
+            echo "[HOST TOOLING FAIL] $qemu_bin absent after package installation" >&2
+            exit 1
+          }
           command -v docker
           if [ "${{ matrix.port }}" = riscv64 ]; then
             python3 -m pip install --user --break-system-packages --disable-pip-version-check 'virt-firmware==26.5.4'
