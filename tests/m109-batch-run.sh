@@ -163,8 +163,18 @@ M109_PO
         busy cmp "$work/actual" "$work/expected" ;;
       ruby)
         program=$(original_elf /usr/bin/ruby /bin/ruby)
-        "$program" -e 's = File.read(ARGV[0]); File.write(ARGV[1], s.upcase)' \
-            "$work/data.txt" "$work/actual"
+        if "$program" -e 's = File.read(ARGV[0]); File.write(ARGV[1], s.upcase)' \
+             "$work/data.txt" "$work/actual"; then
+            :
+        else
+            original_rc=$?
+            echo "[M109 RUBY DIAG] original runtime rc=$original_rc; retrying same functionality with Ruby -d -w diagnostics" >&2
+            # The debugging run can explain a silent Ruby startup failure,
+            # but may NEVER change the original functional gate's result.
+            "$program" -d -w -e 's = File.read(ARGV[0]); File.write(ARGV[1], s.upcase)' \
+                "$work/data.txt" "$work/diagnostic-actual" >&2 || :
+            return "$original_rc"
+        fi
         printf 'ALPHA ONE\nBETA TWO\nGAMMA THREE\n' > "$work/expected"
         busy cmp "$work/actual" "$work/expected" ;;
       *)

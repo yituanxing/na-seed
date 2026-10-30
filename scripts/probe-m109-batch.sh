@@ -13,7 +13,8 @@ export NAS_ACCEPTANCE_CPIO="$work/rootfs.cpio"
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
 export NAS_ACCEPTANCE_QEMU_RAM=1536M
 export NAS_ACCEPTANCE_DISK_MB=768
-export NAS_SYSCALL_TRACE=0
+# Temporary M109 Ruby-only syscall/result diagnosis. Remove after root cause.
+export NAS_SYSCALL_TRACE=1
 export BUSYBOX_PARITY_MANIFEST=scripts/m109-batch-cases.tsv
 
 log="$logs/m109-batch.clean.log"
