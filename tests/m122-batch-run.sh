@@ -87,7 +87,8 @@ run_case() {
         assert_same_pixels "$work/white.pgm" /tests/m122-white.pgm ;;
       ppmmake)
         exe=$(original_elf /usr/bin/ppmmake)
-        "$exe" red 4 4 > "$work/red.ppm"
+        # Numeric RGB is independent of optional X11 rgb.txt name dictionaries.
+        "$exe" '#ff0000' 4 4 > "$work/red.ppm"
         assert_meta "$work/red.ppm" PPM 4 4 3 255
         assert_same_pixels "$work/red.ppm" "$red" ;;
       pamfile)
