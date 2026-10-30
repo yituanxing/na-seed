@@ -127,7 +127,8 @@ int main(void) {
        seen_source_root==init->mm->root_phys &&
        forked_mm->root_phys==fork_root &&
        forked_mm->heap_break==init->mm->heap_break &&
-       forked_mm->mmap_vmas.slots[0].end==TEST_USER_VA+4096,
+       nas_vma_find(&forked_mm->mmap_vmas,TEST_USER_VA) &&
+       nas_vma_find(&forked_mm->mmap_vmas,TEST_USER_VA)->end==TEST_USER_VA+4096,
        "COW fork shares read-only frame but owns a distinct MM layout");
     nas_mm_put(forked_mm);
     ck(reclaimed==1 && init->mm->users==1 && frame_owners==1,

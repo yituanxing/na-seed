@@ -80,7 +80,12 @@ struct nas_mm *nas_mm_fork_cow(const struct nas_mm *source) {
     dst->root_phys=nas_mmu_alloc_root();
     if(!dst->root_phys){nas_mm_put(dst);return 0;}
     dst->heap_break=source->heap_break;
-    dst->mmap_vmas=source->mmap_vmas;
+    /* Fork inherits the *policies* but has an independent ledger allocation:
+     * a child munmap/mprotect must never mutate or free its parent's slots. */
+    if(!nas_vma_clone(&dst->mmap_vmas,&source->mmap_vmas)) {
+        nas_mm_put(dst);
+        return 0;
+    }
     struct cow_fork_ctx ctx={dst,source};
     if(!nas_mm_walk_pages(source,cow_clone_mapping,&ctx)) {
         nas_mm_put(dst); /* decrement acquired frame refs, parent untouched */
@@ -146,5 +151,6 @@ void nas_mm_put(struct nas_mm *mm) {
     if (--mm->users) return;
     if (mm->root_phys && !nas_mmu_reclaim_root(mm->root_phys))
         nas_fail("MM final put: failed page-table reclamation");
+    nas_anon_reset(&mm->mmap_vmas);
     memset(mm, 0, sizeof(*mm));
 }

@@ -161,7 +161,7 @@ static void large_elf(void) {
     assert(nas_elf_segments_load(&e,&p,&ops,&out));
     assert(mapped==256 && regions==1);
     unsigned ledger_count=0;
-    for(unsigned i=0;i<NAS_ANON_REGION_LIMIT;i++)
+    for(unsigned i=0;i<ledger.capacity;i++)
         if(ledger.slots[i].end)ledger_count++;
     assert(ledger_count==1);
     assert(spans[0].first==BASE && spans[0].last==BASE+256*P);

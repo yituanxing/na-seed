@@ -136,8 +136,8 @@ bool nas_vm_walk_task_pages(const struct nas_task *task,
  * heap/stack mappings stay in their established address domains. Releasing
  * PTE frames without returning the virtual range would eventually exhaust
  * the 0x20000000..0x60000000 window even with abundant free physical RAM.
- * Bounded VMA records are per MM: fork copies them and exec resets
- * after the new ELF image commits. COW and lazy fault resolution are now
+ * Dynamically sized VMA records are owned per MM: fork deep-clones them and
+ * exec releases them after the new ELF image commits. COW/lazy faults are
  * handled by the shared MM owner; this VMA ledger remains authoritative.
  */
 uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
@@ -169,24 +169,33 @@ uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
          * one previously created mmap VMA: libc may protect the brk/ELF
          * address domain, which is mapped by our existing shared loader.
          * Stage ledger changes first, and keep all kernel/stack VAs out. */
-        struct nas_anon_regions planned=TASK.mm->mmap_vmas;
-        if (!nas_vma_replace(&planned,hint,bytes,(unsigned)prot,
-                             NAS_VMA_ANON_PRIVATE,0))
+        struct nas_anon_regions planned={0};
+        if(!nas_vma_clone(&planned,&TASK.mm->mmap_vmas))
             return (uint64_t)-ENOMEM;
+        if (!nas_vma_replace(&planned,hint,bytes,(unsigned)prot,
+                             NAS_VMA_ANON_PRIVATE,0)) {
+            nas_anon_reset(&planned);
+            return (uint64_t)-ENOMEM;
+        }
         start=hint;
         uint64_t failure=stage_replace_pages(start,pages,(unsigned)prot,
                                               false,0,0,length);
-        if(failure)return failure;
-        TASK.mm->mmap_vmas=planned;
+        if(failure) { nas_anon_reset(&planned); return failure; }
+        nas_vma_commit(&TASK.mm->mmap_vmas,&planned);
         return start;
     }
     if (!nas_anon_find_gap(&TASK.mm->mmap_vmas,bytes,&start))
         return (uint64_t)-ENOMEM;
     /* Stage logical policy BEFORE eager frame allocation. A full registry
      * cannot turn an OOM into a kernel halt after mapping physical memory. */
-    struct nas_anon_regions planned=TASK.mm->mmap_vmas;
+    struct nas_anon_regions planned={0};
+    if(!nas_vma_clone(&planned,&TASK.mm->mmap_vmas))
+        return (uint64_t)-ENOMEM;
     if (!nas_vma_record(&planned,start,bytes,(unsigned)prot,
-                        NAS_VMA_ANON_PRIVATE,0))return (uint64_t)-ENOMEM;
+                        NAS_VMA_ANON_PRIVATE,0)) {
+        nas_anon_reset(&planned);
+        return (uint64_t)-ENOMEM;
+    }
     /* Linux private anonymous mmap owns its virtual range before any user
      * pages become resident.  Demand-zero materialization is already owned
      * by the common MM fault path on all three ISAs (and by kernel usercopy).
@@ -194,7 +203,7 @@ uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
      * and Ruby reserve multi-megabyte thread stacks, then place PROT_NONE
      * guards before touching their interior. Eagerly creating every page
      * would destroy that legitimate no-backing guard transition. */
-    TASK.mm->mmap_vmas=planned;
+    nas_vma_commit(&TASK.mm->mmap_vmas,&planned);
     return start;
 }
 /* CPIO/tmpfs MAP_PRIVATE eagerly copies bytes into owned frames.
@@ -218,21 +227,31 @@ uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
     if (valid<0) return (uint64_t)valid;
     uint64_t count=(length+PAGE-1)/PAGE, bytes=count*PAGE;
     uint64_t start;
-    struct nas_anon_regions planned=TASK.mm->mmap_vmas;
+    struct nas_anon_regions planned={0};
+    if(!nas_vma_clone(&planned,&TASK.mm->mmap_vmas))
+        return (uint64_t)-ENOMEM;
     if (flags & MAP_FIXED) {
         if ((hint & (PAGE-1)) || hint<NAS_ANON_FIXED_FLOOR ||
-            hint>=NAS_ANON_CEILING || bytes>NAS_ANON_CEILING-hint)
+            hint>=NAS_ANON_CEILING || bytes>NAS_ANON_CEILING-hint) {
+            nas_anon_reset(&planned);
             return (uint64_t)-EINVAL;
+        }
         if (!nas_vma_replace(&planned,hint,bytes,(unsigned)prot,
-                             NAS_VMA_FILE_PRIVATE_SNAPSHOT,offset))
+                             NAS_VMA_FILE_PRIVATE_SNAPSHOT,offset)) {
+            nas_anon_reset(&planned);
             return (uint64_t)-ENOMEM;
+        }
         start=hint;
     } else {
-        if(!nas_anon_find_gap(&planned,bytes,&start))
+        if(!nas_anon_find_gap(&planned,bytes,&start)) {
+            nas_anon_reset(&planned);
             return (uint64_t)-ENOMEM;
+        }
         if(!nas_vma_record(&planned,start,bytes,(unsigned)prot,
-                           NAS_VMA_FILE_PRIVATE_SNAPSHOT,offset))
+                           NAS_VMA_FILE_PRIVATE_SNAPSHOT,offset)) {
+            nas_anon_reset(&planned);
             return (uint64_t)-ENOMEM;
+        }
     }
     /* Stage all file bytes in private frames BEFORE disturbing an existing
      * MAP_FIXED mapping. Failed reads/OOM leave old contents unchanged.
@@ -240,9 +259,9 @@ uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
      * no eager anonymous placeholder or doubled physical memory is needed. */
     uint64_t failure=stage_replace_pages(start,count,(unsigned)prot,true,
                                          fd,offset,length);
-    if(failure)return failure;
+    if(failure) { nas_anon_reset(&planned); return failure; }
     /* Whole mapping and its logical VMA become visible only after staging. */
-    TASK.mm->mmap_vmas=planned;
+    nas_vma_commit(&TASK.mm->mmap_vmas,&planned);
     return start;
 }
 uint64_t nas_vm_munmap(uint64_t addr, uint64_t len) {
@@ -252,19 +271,24 @@ uint64_t nas_vm_munmap(uint64_t addr, uint64_t len) {
     if (addr >= USER_LIMIT || count > (USER_LIMIT - addr) / PAGE)
         return (uint64_t)-EINVAL;
     /* Plan a possibly partial unmap on a metadata copy first. If splitting
-     * exhausts NAS_ANON_REGION_LIMIT, leave VMA metadata untouched. */
-    struct nas_anon_regions updated;
+     * exhausts the available heap-backed VMA registry, leave metadata untouched. */
+    struct nas_anon_regions updated={0};
     /* Stage changes to VMA metadata before committing any page changes. */
-    memcpy(&updated, &TASK.mm->mmap_vmas, sizeof(updated));
-    if (!nas_anon_forget(&updated,addr,count*PAGE))
+    if(!nas_vma_clone(&updated,&TASK.mm->mmap_vmas))
         return (uint64_t)-ENOMEM;
+    if (!nas_anon_forget(&updated,addr,count*PAGE)) {
+        nas_anon_reset(&updated);
+        return (uint64_t)-ENOMEM;
+    }
     for (uint64_t i=0; i<count; ++i) {
         uint64_t va=addr+i*PAGE;
         /* PROT_NONE reservations have intentionally absent PTEs. */
-        if (nas_mmu_user_byte(va) && !nas_mmu_unmap_page(va))
+        if (nas_mmu_user_byte(va) && !nas_mmu_unmap_page(va)) {
+            nas_anon_reset(&updated);
             return (uint64_t)-EFAULT;
+        }
     }
-    memcpy(&TASK.mm->mmap_vmas, &updated, sizeof(updated));
+    nas_vma_commit(&TASK.mm->mmap_vmas,&updated);
     return 0;
 }
 uint64_t nas_vm_brk(uint64_t want) {
@@ -280,23 +304,31 @@ uint64_t nas_vm_brk(uint64_t want) {
         if (nas_anon_intersects(&TASK.mm->mmap_vmas,before,after-before))
             return base;
         /* Heap VMA creation must be representable before physical mapping. */
-        struct nas_anon_regions planned=TASK.mm->mmap_vmas;
-        if(!nas_vma_record(&planned,before,after-before,3,NAS_VMA_HEAP,0))
+        struct nas_anon_regions planned={0};
+        if(!nas_vma_clone(&planned,&TASK.mm->mmap_vmas))return base;
+        if(!nas_vma_record(&planned,before,after-before,3,NAS_VMA_HEAP,0)) {
+            nas_anon_reset(&planned);
             return base;
+        }
         uint64_t va=before;
         for (;va<after;va+=PAGE)
             if (!nas_mmu_map_page(va,true)) break;
         if (va!=after) {
             while (va>before) { va-=PAGE; if (!nas_mmu_unmap_page(va)) nas_arch_halt(); }
+            nas_anon_reset(&planned);
             return base;
         }
-        TASK.mm->mmap_vmas=planned;
+        nas_vma_commit(&TASK.mm->mmap_vmas,&planned);
     } else if (after<before) {
-        struct nas_anon_regions planned=TASK.mm->mmap_vmas;
-        if (!nas_anon_forget(&planned,after,before-after)) return base;
+        struct nas_anon_regions planned={0};
+        if(!nas_vma_clone(&planned,&TASK.mm->mmap_vmas))return base;
+        if (!nas_anon_forget(&planned,after,before-after)) {
+            nas_anon_reset(&planned);
+            return base;
+        }
         for (uint64_t va=after;va<before;va+=PAGE)
-            if (!nas_mmu_unmap_page(va)) return base;
-        TASK.mm->mmap_vmas=planned;
+            if (!nas_mmu_unmap_page(va)) { nas_anon_reset(&planned); return base; }
+        nas_vma_commit(&TASK.mm->mmap_vmas,&planned);
     }
     heap_break=want;
     return want;
@@ -319,16 +351,32 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
          * accessible: a real backing-preserving transition is still needed. */
         if(!nas_anon_covered(&TASK.mm->mmap_vmas,addr,pages*PAGE))
             return (uint64_t)-ENOMEM;
+        /* File/ELF snapshots have eagerly copied backing. A PTE's absence
+         * there is not authority to turn missing file data into anonymous
+         * demand-zero memory; guard transitions only apply to zero-backed
+         * VMAs and owned stack/heap reservations. */
+        const uint64_t end=addr+pages*PAGE;
+        for(uint64_t at=addr;at<end;) {
+            const struct nas_anon_region *v=nas_vma_find(&TASK.mm->mmap_vmas,at);
+            if(!v || (v->kind!=NAS_VMA_ANON_PRIVATE &&
+                      v->kind!=NAS_VMA_HEAP && v->kind!=NAS_VMA_STACK))
+                return (uint64_t)-ENOSYS;
+            at=v->end<end?v->end:end;
+        }
         for(uint64_t i=0;i<pages;i++) {
             uint64_t pa=0;
             if(nas_mmu_resolve_user_address(TASK.mm->root_phys,
                                            addr+i*PAGE,&pa,0))
                 return (uint64_t)-ENOSYS;
         }
-        struct nas_anon_regions planned=TASK.mm->mmap_vmas;
-        if(!nas_vma_protect(&planned,addr,pages*PAGE,0))
+        struct nas_anon_regions planned={0};
+        if(!nas_vma_clone(&planned,&TASK.mm->mmap_vmas))
             return (uint64_t)-ENOMEM;
-        TASK.mm->mmap_vmas=planned;
+        if(!nas_vma_protect(&planned,addr,pages*PAGE,0)) {
+            nas_anon_reset(&planned);
+            return (uint64_t)-ENOMEM;
+        }
+        nas_vma_commit(&TASK.mm->mmap_vmas,&planned);
         return 0;
     }
     if (!nas_vm_prot_supported(prot)) return (uint64_t)-EOPNOTSUPP;
@@ -339,9 +387,13 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
      * NEVER invent user pages in ELF, heap or unreserved address ranges.
      * Return a real ENOMEM when the physical allocator is exhausted. */
     if (nas_anon_covered(&TASK.mm->mmap_vmas,addr,pages*PAGE)) {
-        struct nas_anon_regions planned=TASK.mm->mmap_vmas;
-        if(!nas_vma_protect(&planned,addr,pages*PAGE,(unsigned)prot))
+        struct nas_anon_regions planned={0};
+        if(!nas_vma_clone(&planned,&TASK.mm->mmap_vmas))
             return (uint64_t)-ENOMEM;
+        if(!nas_vma_protect(&planned,addr,pages*PAGE,(unsigned)prot)) {
+            nas_anon_reset(&planned);
+            return (uint64_t)-ENOMEM;
+        }
         /* M87-B: a permission change must be all-or-nothing even when a
          * PROT_NONE reservation has never acquired physical pages. Stage
          * *only* missing data frames; preserve present frames and their
@@ -355,15 +407,18 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
             uint64_t fresh=nas_frame_alloc();
             if(!fresh) {
                 stage_release(&staged,true);
+                nas_anon_reset(&planned);
                 return (uint64_t)-ENOMEM;
             }
             if(!stage_add(&staged,fresh)) {
                 (void)nas_frame_put(fresh);
                 stage_release(&staged,true);
+                nas_anon_reset(&planned);
                 return (uint64_t)-ENOMEM;
             }
             if(!nas_mmu_prepare_leaf_at(root,va)) {
                 stage_release(&staged,true);
+                nas_anon_reset(&planned);
                 return (uint64_t)-ENOMEM;
             }
         }
@@ -390,7 +445,7 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
             }
         }
         stage_release(&staged,false); /* Each new PTE owns its data frame. */
-        TASK.mm->mmap_vmas=planned;
+        nas_vma_commit(&TASK.mm->mmap_vmas,&planned);
         return 0;
     }
     /* Never grant hardware write access to a leaf outside MM's VMA ledger.

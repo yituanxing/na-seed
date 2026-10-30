@@ -2,7 +2,7 @@
 #define NASEED_ANON_REGIONS_H
 #include <stdbool.h>
 #include <stdint.h>
-#define NAS_ANON_REGION_LIMIT 128U
+#define NAS_ANON_REGION_INITIAL_CAPACITY 16U
 #define NAS_ANON_FIXED_FLOOR 0x00010000ULL
 #define NAS_ANON_FLOOR 0x20000000ULL
 #define NAS_ANON_CEILING 0x60000000ULL
@@ -27,7 +27,14 @@ struct nas_anon_region {
     uint32_t prot;        /* logical permissions; NOT hardware PTE state */
     uint32_t kind;
 };
-struct nas_anon_regions { struct nas_anon_region slots[NAS_ANON_REGION_LIMIT]; };
+/* The MM owns this heap-backed table. A zeroed table is empty; cloning an MM
+ * must use nas_vma_clone rather than copying the pointer. Capacity grows with
+ * the actual workload, and transactional copies never live on a 16 KiB
+ * kernel entry stack. */
+struct nas_anon_regions {
+    struct nas_anon_region *slots;
+    unsigned capacity;
+};
 typedef bool (*nas_vma_visit)(const struct nas_anon_region *,void *);
 const struct nas_anon_region *nas_vma_find(const struct nas_anon_regions *,uint64_t va);
 bool nas_vma_walk(const struct nas_anon_regions *,nas_vma_visit,void *);
@@ -39,7 +46,14 @@ bool nas_vma_protect(struct nas_anon_regions *,uint64_t addr,uint64_t length,
                      unsigned prot);
 /* M11 reservation APIs are retained as compatibility wrappers. These and
  * the typed VMA routines manipulate the SAME canonical MM-owned slots. */
+/* Reset releases table storage. Clone preserves the destination on OOM;
+ * both operands must be zero-initialized or already own valid VMA tables.
+ * Commit transfers ownership of staged slots, zeroing the staged handle. */
 void nas_anon_reset(struct nas_anon_regions *);
+bool nas_vma_clone(struct nas_anon_regions *destination,
+                   const struct nas_anon_regions *source);
+void nas_vma_commit(struct nas_anon_regions *destination,
+                    struct nas_anon_regions *staged);
 bool nas_anon_find_gap(const struct nas_anon_regions *,uint64_t length,uint64_t *);
 bool nas_anon_record(struct nas_anon_regions *,uint64_t addr,uint64_t length);
 bool nas_anon_forget(struct nas_anon_regions *,uint64_t addr,uint64_t length);

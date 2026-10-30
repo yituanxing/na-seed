@@ -332,7 +332,7 @@ bool nas_proc_child(struct nas_proc_node directory,unsigned index,
 static uint64_t anon_pages(const struct nas_task *t) {
     const struct nas_mm *mm=t->mm;
     uint64_t n=0;
-    for(unsigned i=0;i<NAS_ANON_REGION_LIMIT;i++) {
+    for(unsigned i=0;i<mm->mmap_vmas.capacity;i++) {
         uint64_t start=mm->mmap_vmas.slots[i].start;
         uint64_t end=mm->mmap_vmas.slots[i].end;
         if(end>start)n+=(end-start)/4096ULL;

@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdint.h>
+#include <string.h>
 #include "../kernel/mm/anon_regions.h"
 #define P 4096ULL
 static bool ordered(const struct nas_anon_region *r,void *ctx) {
@@ -19,7 +20,7 @@ int main(void) {
     assert(nas_anon_forget(&a,x+P,P));
     assert(nas_anon_find_gap(&a,P,&z) && z==x+P);
     assert(nas_anon_record(&a,z,P));
-    b=a;
+    assert(nas_vma_clone(&b,&a));
     assert(nas_anon_forget(&b,x,3*P));
     assert(nas_anon_find_gap(&b,3*P,&z) && z==x);
     assert(nas_anon_find_gap(&a,P,&z) && z==y-P);
@@ -30,38 +31,47 @@ int main(void) {
     assert(!nas_anon_find_gap(&a,UINT64_MAX,&z));
     assert(!nas_anon_forget(&a,UINT64_MAX-1023,2*P));
     nas_anon_reset(&b);
-    for (unsigned i=0;i<NAS_ANON_REGION_LIMIT;++i)
+    /* Original Ruby GC has >128 disjoint VMAs while loading its standard
+     * library; the registry must grow under real pressure, not return a
+     * fabricated userspace ENOMEM once the historical fixed array fills. */
+    for (unsigned i=0;i<384U;++i)
         assert(nas_anon_record(&b,NAS_ANON_FLOOR+i*2*P,P));
-    struct nas_anon_regions snap=b;
-    assert(!nas_anon_find_gap(&b,P,&z));
+    assert(b.capacity>=384U);
+    struct nas_anon_regions snap={0};
+    assert(nas_vma_clone(&snap,&b));
+    assert(nas_anon_find_gap(&b,P,&z));
     assert(!nas_anon_forget(&b,NAS_ANON_FLOOR,P/2));
-    /* Full registry can merge its adjacent gap without a new slot. */
-    struct nas_anon_regions coalesced=b;
+    /* Growth, coalescing and partial unmap remain independent across clones. */
+    struct nas_anon_regions coalesced={0};
+    assert(nas_vma_clone(&coalesced,&b));
     assert(nas_anon_record(&coalesced,NAS_ANON_FLOOR+P,P));
     assert(nas_anon_covered(&coalesced,NAS_ANON_FLOOR,3*P));
     assert(!nas_anon_record(&b,NAS_ANON_FLOOR+P/2,P));
-    for (unsigned i=0;i<NAS_ANON_REGION_LIMIT;++i)
+    for (unsigned i=0;i<snap.capacity;++i)
         assert(b.slots[i].start==snap.slots[i].start && b.slots[i].end==snap.slots[i].end);
+    nas_anon_reset(&coalesced);
+    nas_anon_reset(&snap);
     nas_anon_reset(&b);
     assert(nas_anon_record(&b,NAS_ANON_FLOOR,3*P));
-    for (unsigned i=1;i<NAS_ANON_REGION_LIMIT;++i)
+    for (unsigned i=1;i<384U;++i)
         assert(nas_anon_record(&b,NAS_ANON_FLOOR+(i+1)*4*P,P));
-    snap=b;
-    assert(!nas_anon_forget(&b,NAS_ANON_FLOOR+P,P));
-    for (unsigned i=0;i<NAS_ANON_REGION_LIMIT;++i)
-        assert(b.slots[i].start==snap.slots[i].start && b.slots[i].end==snap.slots[i].end);
+    assert(nas_vma_clone(&snap,&b));
+    assert(nas_anon_forget(&b,NAS_ANON_FLOOR+P,P));
+    assert(!nas_anon_covered(&b,NAS_ANON_FLOOR,3*P));
+    assert(nas_anon_covered(&snap,NAS_ANON_FLOOR,3*P));
+    nas_anon_reset(&snap);
     nas_anon_reset(&a);
     assert(nas_anon_find_gap(&a,3*P,&z) && z==x);
     /* A realistic libc allocator reserves 128+ adjacent small chunks:
      * only one VM ownership record must survive coalescing. */
     nas_anon_reset(&a);
-    for (unsigned i=0;i<NAS_ANON_REGION_LIMIT*2;i++) {
+    for (unsigned i=0;i<384U;i++) {
         assert(nas_anon_find_gap(&a,P,&x));
         assert(nas_anon_record(&a,x,P));
     }
     assert(nas_anon_covered(&a,x,P));
-    assert(nas_anon_covered(&a,NAS_ANON_CEILING-NAS_ANON_REGION_LIMIT*2*P,
-                            NAS_ANON_REGION_LIMIT*2*P));
+    assert(nas_anon_covered(&a,NAS_ANON_CEILING-384U*P,
+                            384U*P));
     assert(!nas_anon_covered(&a,NAS_ANON_CEILING+P,P));
     assert(!nas_anon_intersects(&a,NAS_ANON_FIXED_FLOOR,P));
     /* MAP_FIXED outside the top-down mmap window is legal for user code;
@@ -76,16 +86,16 @@ int main(void) {
     assert(nas_anon_covered(&a,0x2e6f000,4*P));
     assert(!nas_anon_overlay(&a,0x3000,P));
     assert(!nas_anon_overlay(&a,NAS_ANON_CEILING-P,2*P));
-    /* Split budget failure must leave the owner map unchanged. */
+    /* A split at high VMA density must grow without damaging the owner map. */
     nas_anon_reset(&b);
     assert(nas_anon_record(&b,NAS_ANON_FIXED_FLOOR,3*P));
-    for (unsigned i=1;i<NAS_ANON_REGION_LIMIT;i++)
+    for (unsigned i=1;i<384U;i++)
         assert(nas_anon_record(&b,NAS_ANON_FLOOR+4*i*P,P));
-    snap=b;
-    assert(!nas_anon_overlay(&b,NAS_ANON_FIXED_FLOOR+4*P,P));
-    for (unsigned i=0;i<NAS_ANON_REGION_LIMIT;i++)
-        assert(b.slots[i].start==snap.slots[i].start &&
-               b.slots[i].end==snap.slots[i].end);
+    assert(nas_vma_clone(&snap,&b));
+    assert(nas_anon_overlay(&b,NAS_ANON_FIXED_FLOOR+4*P,P));
+    assert(!nas_vma_find(&snap,NAS_ANON_FIXED_FLOOR+4*P));
+    assert(nas_vma_find(&b,NAS_ANON_FIXED_FLOOR+4*P));
+    nas_anon_reset(&snap);
     /* M85: logical mmap VMAs are independent of PTEs. PROT_NONE reserves
      * a range even when no physical frame is allocated. */
     nas_anon_reset(&a);
@@ -133,13 +143,15 @@ int main(void) {
     assert(nas_vma_walk(&a,ordered,&cursor) && cursor>=base+7*P);
     assert(!nas_vma_find(&a,base+2*P));
     /* Reprotecting an unreserved range is not a PTE allocation request. */
-    struct nas_anon_regions stable=a;
+    struct nas_anon_regions stable={0};
+    assert(nas_vma_clone(&stable,&a));
     assert(!nas_vma_protect(&a,base+2*P,P,1));
-    for(unsigned i=0;i<NAS_ANON_REGION_LIMIT;i++)
+    for(unsigned i=0;i<stable.capacity;i++)
         assert(a.slots[i].start==stable.slots[i].start &&
                a.slots[i].end==stable.slots[i].end &&
                a.slots[i].prot==stable.slots[i].prot &&
                a.slots[i].file_offset==stable.slots[i].file_offset);
+    nas_anon_reset(&stable);
     /* M85-B: one typed ledger covers mappings outside the allocator
      * window, including the fixed user stack and the ISA trampoline. */
     assert(nas_vma_record(&a,0x6ff00000,4*P,3,NAS_VMA_STACK,0));
@@ -152,5 +164,7 @@ int main(void) {
     assert(!nas_anon_overlay(&a,NAS_ANON_CEILING-P,2*P));
     uint64_t top_seen=0;
     assert(nas_vma_walk(&a,ordered,&top_seen) && top_seen==0x6ff04000);
+    nas_anon_reset(&a);
+    nas_anon_reset(&b);
     return 0;
 }
