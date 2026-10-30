@@ -32,6 +32,11 @@ struct nas_file_ops {
      * source pages for /dev/null writes, but a non-userspace address range
      * still fails the common access_ok check before provider dispatch. */
     bool write_ignores_source;
+    /* An iter-style provider sees one logical readv/writev request, across
+     * all iovecs. Legacy scalar-only providers instead receive individual
+     * segments (eventfd is read_iter but scalar-write only on Linux). */
+    bool aggregate_readv;
+    bool aggregate_writev;
     uint16_t (*poll)(uint64_t fd,uint16_t events);
     /* Readiness without a process-local FD or active userspace root.
      * Used by epoll, blocked tasks and future socket/device providers.

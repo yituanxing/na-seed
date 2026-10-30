@@ -9,6 +9,7 @@
 #include "../tmpfs.h"
 #include "../lib/string.h"
 #include "../mm/usercopy.h"
+#include "../mm/heap.h"
 #include "../arch/arch.h"
 #include "../arch/mmu.h"
 #include "../arch/linux_fcntl_abi.h"
@@ -250,58 +251,272 @@ uint64_t nas_fs_fd_pwrite(uint64_t fd,uint64_t address,uint64_t count,
     }
     return done;
 }
-/* Linux readv LP64 iovec. All slices share the open description's offset.
- * A partial transfer takes priority over an error. For an empty pipe the
- * standard internal wait sentinel returns without touching any buffer;
- * the blocked syscall is replayed only in its owner's user VM. */
-uint64_t nas_fs_fd_readv(uint64_t fd,uint64_t iov,uint64_t count) {
-    if (count > 64) return (uint64_t)-EINVAL;
-    if (count && (iov >= USER_LIMIT || count > (USER_LIMIT-iov)/16))
-        return (uint64_t)-EFAULT;
-    uint64_t total=0;
-    for (uint64_t n=0;n<count;n++) {
-        uint64_t address,bytes;
-        if (!nas_user_read_u64(iov+n*16,&address) ||
-            !nas_user_read_u64(iov+n*16+8,&bytes))
-            return total ? total : (uint64_t)-EFAULT;
-        if (bytes>INT64_MAX-total) return (uint64_t)-EINVAL;
-        if (!bytes) continue;
-        /* A vector's aggregate result, not just each read(), is capped.
-         * Stop after the cap without issuing another usercopy/provider IO. */
-        if(total==NAS_MAX_RW_COUNT)break;
-        uint64_t allowed=bytes;
-        if(allowed>NAS_MAX_RW_COUNT-total)
-            allowed=NAS_MAX_RW_COUNT-total;
-        /* The common read owns the planned-byte address check. A vector
-         * may describe more storage than a provider can actually return
-         * (eventfd: eight bytes; regular-file EOF: zero bytes). */
-        uint64_t received=nas_fs_fd_read(fd,address,allowed);
-        if ((int64_t)received<0) return total ? total : received;
-        total+=received;
-        if (received!=allowed || allowed!=bytes) break;
-    }
-    return total;
+/* LP64 Linux iovec data plane. Every iovec is imported once into heap-owned
+ * kernel memory BEFORE any provider can consume data or change File offsets.
+ * 1024 entries occupy 16 KiB, so never place the array on a kernel stack. */
+#define NAS_IOV_MAX 1024ULL
+struct nas_io_vector { uint64_t address,length; };
+struct nas_io_cursor { uint64_t index,offset; };
+struct nas_io_request {
+    struct nas_io_vector *vectors;
+    uint64_t count,total;
+    unsigned slot;
+    const struct nas_file_ops *ops;
+};
+static void io_request_release(struct nas_io_request *req) {
+    if(req->vectors)(void)nas_heap_free(req->vectors);
+    req->vectors=0;
 }
-uint64_t nas_fs_fd_writev(uint64_t fd, uint64_t iov, uint64_t count) {
-    if (count > 64) return (uint64_t)-EINVAL;
-    if (count && (iov >= USER_LIMIT || count > (USER_LIMIT - iov) / 16))
-        return (uint64_t)-EFAULT;
-    uint64_t sent = 0;
-    for (uint64_t n = 0; n < count; n++) {
-        uint64_t address, bytes;
-        if (!nas_user_read_u64(iov + n * 16, &address) ||
-            !nas_user_read_u64(iov + n * 16 + 8, &bytes))
-            return sent ? sent : (uint64_t)-EFAULT;
-        /* The Linux total transfer limit applies across the entire iovec,
-         * and the shared write path enforces pointer/FD validity. */
-        uint64_t allowed = bytes;
-        if (allowed > NAS_MAX_RW_COUNT - sent)
-            allowed = NAS_MAX_RW_COUNT - sent;
-        if (!allowed) break;
-        uint64_t r = nas_fs_fd_write(fd, address, allowed);
-        if ((int64_t)r < 0) return sent ? sent : r;
-        sent += r;
-        if (r != allowed || allowed != bytes) break;
+static int io_request_import(uint64_t fd,uint64_t user_iov,uint64_t count,
+                             bool writing,struct nas_io_request *req) {
+    *req=(struct nas_io_request){0};
+    /* Linux looks up and checks the File before importing user iovecs,
+     * including an empty iovec array. This also prevents zero-byte writev
+     * from silently succeeding on an O_RDONLY/open(O_PATH) descriptor. */
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
+        return -EBADF;
+    unsigned slot=TASK.fds->entries[fd].slot;
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+        return -EBADF;
+    uint64_t flags=nas_open_files[slot].status_flags;
+    if((flags&NAS_LINUX_O_PATH) ||
+       (writing ? (flags&3ULL)==0 : (flags&3ULL)==1))
+        return -EBADF;
+    const struct nas_file_ops *ops=nas_open_files[slot].ops;
+    if(!ops || (writing ? !ops->write : !ops->read))return -EBADF;
+    if(count>NAS_IOV_MAX)return -EINVAL;
+    if(count && (user_iov>=USER_LIMIT ||
+                 count>(USER_LIMIT-user_iov)/16ULL))return -EFAULT;
+    struct nas_io_vector *vectors=0;
+    if(count) {
+        vectors=nas_heap_alloc((size_t)count*sizeof(*vectors));
+        if(!vectors)return -ENOMEM;
     }
-    return sent;
+    /* Linux validates each signed iov_len while copying the complete
+     * metadata array, before it checks any individual data range. */
+    for(uint64_t i=0;i<count;i++) {
+        uint64_t address,length;
+        if(!nas_user_read_u64(user_iov+i*16,&address) ||
+           !nas_user_read_u64(user_iov+i*16+8,&length)) {
+            (void)nas_heap_free(vectors);
+            return -EFAULT;
+        }
+        if(length>INT64_MAX) {
+            (void)nas_heap_free(vectors);
+            return -EINVAL;
+        }
+        vectors[i]=(struct nas_io_vector){address,length};
+    }
+    uint64_t total=0;
+    for(uint64_t i=0;i<count;i++) {
+        uint64_t address=vectors[i].address;
+        uint64_t length=vectors[i].length;
+        /* Linux's single-iovec ITER_UBUF fast path caps length BEFORE
+         * access_ok; multi-iovec import checks each ORIGINAL data range,
+         * including segments beyond the eventual MAX_RW_COUNT ceiling. */
+        uint64_t checked=length;
+        if(count==1 && checked>NAS_MAX_RW_COUNT)checked=NAS_MAX_RW_COUNT;
+        if(address>=USER_LIMIT || checked>USER_LIMIT-address) {
+            (void)nas_heap_free(vectors);
+            return -EFAULT;
+        }
+        if(count==1)vectors[i].length=checked;
+        uint64_t remaining=NAS_MAX_RW_COUNT-total;
+        total+=length<remaining ? length:remaining;
+    }
+    *req=(struct nas_io_request){vectors,count,total,slot,ops};
+    return 0;
+}
+/* Advance a cursor across empty iovecs and return its next user slice.
+ * Callers hold a private cursor while preflighting to avoid changing the
+ * committed transfer cursor before an operation is accepted. */
+static bool io_next_slice(const struct nas_io_request *req,
+                          struct nas_io_cursor *cursor,uint64_t maximum,
+                          uint64_t *address,uint64_t *length) {
+    while(cursor->index<req->count &&
+          cursor->offset==req->vectors[cursor->index].length) {
+        cursor->index++;
+        cursor->offset=0;
+    }
+    if(cursor->index>=req->count)return false;
+    const struct nas_io_vector *v=&req->vectors[cursor->index];
+    uint64_t take=v->length-cursor->offset;
+    if(take>maximum)take=maximum;
+    *address=v->address+cursor->offset;
+    *length=take;
+    cursor->offset+=take;
+    return true;
+}
+static bool io_prepare_vector(const struct nas_io_request *req,
+                              struct nas_io_cursor cursor,uint64_t length,
+                              bool writing) {
+    while(length) {
+        uint64_t address,take;
+        if(!io_next_slice(req,&cursor,length,&address,&take))return false;
+        if(writing ? !nas_user_prepare_read(address,take) :
+                     !nas_user_prepare_write(address,take))return false;
+        length-=take;
+    }
+    return true;
+}
+static bool io_gather_vector(const struct nas_io_request *req,
+                             struct nas_io_cursor *cursor,uint8_t *dst,
+                             uint64_t length) {
+    uint64_t done=0;
+    while(done<length) {
+        uint64_t address,take;
+        if(!io_next_slice(req,cursor,length-done,&address,&take) ||
+           !nas_user_read_bytes(address,dst+done,take))return false;
+        done+=take;
+    }
+    return true;
+}
+static bool io_scatter_vector(const struct nas_io_request *req,
+                              struct nas_io_cursor *cursor,const uint8_t *src,
+                              uint64_t length,uint64_t *copied) {
+    *copied=0;
+    while(*copied<length) {
+        uint64_t address,take;
+        if(!io_next_slice(req,cursor,length-*copied,&address,&take) ||
+           !nas_user_write_bytes(address,src+*copied,take))return false;
+        *copied+=take;
+    }
+    return true;
+}
+static uint64_t io_aggregate_read(const struct nas_io_request *req) {
+    uint64_t requested=req->total;
+    if(requested>NAS_MAX_RW_COUNT)requested=NAS_MAX_RW_COUNT;
+    uint64_t budget=req->ops->read_plan ?
+        req->ops->read_plan(req->slot,requested):requested;
+    if((int64_t)budget<0)return budget;
+    if(budget>requested)return (uint64_t)-EIO;
+    if(!budget) {
+        if(requested && req->ops->read_finalize_zero) {
+            uint8_t dummy=0;
+            uint64_t rc=req->ops->read(req->slot,&dummy,0);
+            if((int64_t)rc<0)return rc;
+            if(rc)return (uint64_t)-EIO;
+        }
+        return 0;
+    }
+    struct nas_io_cursor cursor={0};
+    uint8_t buffer[1024];
+    uint64_t done=0;
+    while(done<budget) {
+        uint64_t n=budget-done;
+        if(n>sizeof(buffer))n=sizeof(buffer);
+        /* A consuming provider may not alter its queue until all of this
+         * chunk's destinations are writable. Eventfd explicitly opts out:
+         * Linux consumes its counter before copy_to_iter, even on EFAULT. */
+        if(!req->ops->read_commit_before_copyout &&
+           !io_prepare_vector(req,cursor,n,false))
+            return done ? done : (uint64_t)-EFAULT;
+        uint64_t got=req->ops->read(req->slot,buffer,n);
+        if((int64_t)got<0)return done ? done : got;
+        if(got>n)return done ? done : (uint64_t)-EIO;
+        if(!got)break;
+        uint64_t copied=0;
+        if(!io_scatter_vector(req,&cursor,buffer,got,&copied)) {
+            /* eventfd has already decremented its counter; Linux reports
+             * EFAULT, not a successful partial eight-byte read. */
+            if(req->ops->read_commit_before_copyout)return (uint64_t)-EFAULT;
+            return done+copied ? done+copied : (uint64_t)-EFAULT;
+        }
+        done+=got;
+        if(got<n)break;
+    }
+    return done;
+}
+static uint64_t io_aggregate_write(const struct nas_io_request *req) {
+    uint64_t requested=req->total;
+    if(requested>NAS_MAX_RW_COUNT)requested=NAS_MAX_RW_COUNT;
+    uint64_t budget=req->ops->write_plan ?
+        req->ops->write_plan(req->slot,requested):requested;
+    if((int64_t)budget<0)return budget;
+    if(budget>requested)return (uint64_t)-EIO;
+    if(!budget)return 0;
+    if(req->ops->write_ignores_source) {
+        uint64_t discarded=req->ops->write(req->slot,0,budget);
+        if((int64_t)discarded<0)return discarded;
+        return discarded<=budget ? discarded:(uint64_t)-EIO;
+    }
+    /* A PIPE_BUF-sized writev is ONE transaction regardless of how many
+     * iovecs it contains. Resolve every source page before any commit. */
+    if(req->ops->atomic_write_limit &&
+       requested<=req->ops->atomic_write_limit &&
+       !io_prepare_vector(req,(struct nas_io_cursor){0},budget,true))
+        return (uint64_t)-EFAULT;
+    struct nas_io_cursor cursor={0};
+    uint8_t buffer[1024];
+    uint64_t done=0;
+    while(done<budget) {
+        uint64_t n=budget-done;
+        if(n>sizeof(buffer))n=sizeof(buffer);
+        if(!io_gather_vector(req,&cursor,buffer,n))
+            return done ? done:(uint64_t)-EFAULT;
+        uint64_t wrote=req->ops->write(req->slot,buffer,n);
+        if((int64_t)wrote<0)return done ? done:wrote;
+        if(wrote>n)return done ? done:(uint64_t)-EIO;
+        done+=wrote;
+        if(wrote<n)break;
+    }
+    return done;
+}
+/* Legacy scalar callback fallback. The metadata has ALREADY been imported
+ * and verified, avoiding the old bug where a later invalid iovec caused
+ * partial pipe writes/consumption before Linux's import_iovec EFAULT. */
+static uint64_t io_segmented_read(uint64_t fd,const struct nas_io_request *req) {
+    uint64_t done=0;
+    for(uint64_t i=0;i<req->count && done<NAS_MAX_RW_COUNT;i++) {
+        uint64_t bytes=req->vectors[i].length;
+        if(!bytes)continue;
+        if(bytes>NAS_MAX_RW_COUNT-done)bytes=NAS_MAX_RW_COUNT-done;
+        uint64_t got=nas_fs_fd_read(fd,req->vectors[i].address,bytes);
+        if((int64_t)got<0)return done ? done:got;
+        done+=got;
+        if(got!=bytes || bytes!=req->vectors[i].length)break;
+    }
+    return done;
+}
+static uint64_t io_segmented_write(uint64_t fd,const struct nas_io_request *req) {
+    uint64_t done=0;
+    for(uint64_t i=0;i<req->count && done<NAS_MAX_RW_COUNT;i++) {
+        uint64_t bytes=req->vectors[i].length;
+        if(!bytes) {
+            /* A leading zero-length segment is handed to a scalar-only
+             * provider when later data exists: Linux eventfd.write(0)
+             * rejects [0,8], but skips zero entries after progress. */
+            if(!done && req->total) {
+                uint64_t rc=nas_fs_fd_write(fd,req->vectors[i].address,0);
+                if((int64_t)rc<0)return rc;
+            }
+            continue;
+        }
+        if(bytes>NAS_MAX_RW_COUNT-done)bytes=NAS_MAX_RW_COUNT-done;
+        uint64_t wrote=nas_fs_fd_write(fd,req->vectors[i].address,bytes);
+        if((int64_t)wrote<0)return done ? done:wrote;
+        done+=wrote;
+        if(wrote!=bytes || bytes!=req->vectors[i].length)break;
+    }
+    return done;
+}
+uint64_t nas_fs_fd_readv(uint64_t fd,uint64_t iov,uint64_t count) {
+    struct nas_io_request req;
+    int rc=io_request_import(fd,iov,count,false,&req);
+    if(rc)return (uint64_t)(int64_t)rc;
+    uint64_t result=!req.total ? 0 :
+        req.ops->aggregate_readv ? io_aggregate_read(&req) :
+                                   io_segmented_read(fd,&req);
+    io_request_release(&req);
+    return result;
+}
+uint64_t nas_fs_fd_writev(uint64_t fd,uint64_t iov,uint64_t count) {
+    struct nas_io_request req;
+    int rc=io_request_import(fd,iov,count,true,&req);
+    if(rc)return (uint64_t)(int64_t)rc;
+    uint64_t result=!req.total ? 0 :
+        req.ops->aggregate_writev ? io_aggregate_write(&req) :
+                                    io_segmented_write(fd,&req);
+    io_request_release(&req);
+    return result;
 }

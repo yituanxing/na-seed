@@ -31,6 +31,12 @@ static struct nas_files guest_files;
 struct nas_task *nas_current_task = &guest_task;
 static unsigned pending_accept_slot=NAS_OPEN_FILE_LIMIT, accepted_count;
 
+/* The real FileOps importer owns its iovec snapshot until completion. The
+ * host fixture substitutes malloc/free for the kernel's frame-backed heap,
+ * while testing the exact production import/release and provider paths. */
+void *nas_heap_alloc(size_t length){return malloc(length);}
+bool nas_heap_free(void *ptr){free(ptr);return true;}
+
 static int page_index(uint64_t va) {
     if(va<TEST_BASE || va-TEST_BASE>=TEST_PAGE*TEST_PAGES)return -1;
     return (int)((va-TEST_BASE)/TEST_PAGE);
@@ -126,15 +132,21 @@ struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
  * complete production ops_by_kind[] does not pull unrelated providers into
  * this focused host executable. */
 static const struct nas_file_ops m106_pipe_reader={
-    .read_plan=pipe_read_plan,.read=pipe_fd_read
+    .read_plan=pipe_read_plan,.read=pipe_fd_read,.aggregate_readv=true
 };
 static const struct nas_file_ops m106_pipe_writer={
     .write_plan=pipe_write_plan,.write=pipe_fd_write,
-    .atomic_write_limit=4096
+    .atomic_write_limit=4096,.aggregate_writev=true
 };
 static const struct nas_file_ops m106_stream_socket={
     .read_plan=pipe_read_plan,.write_plan=pipe_write_plan,
-    .read=pipe_fd_read,.write=pipe_fd_write,.atomic_write_limit=4096
+    .read=pipe_fd_read,.write=pipe_fd_write,.atomic_write_limit=4096,
+    .aggregate_readv=true,.aggregate_writev=true
+};
+static const struct nas_file_ops m106_eventfd={
+    .read_plan=nas_eventfd_read_plan,.write_plan=nas_eventfd_write_plan,
+    .read=nas_eventfd_read,.write=nas_eventfd_write,
+    .read_commit_before_copyout=true,.aggregate_readv=true
 };
 void nas_fd_system_init(void) { memset(nas_open_files,0,sizeof(nas_open_files)); }
 unsigned nas_fd_first_unused(const struct nas_task *t,unsigned minimum) {
@@ -182,7 +194,8 @@ bool nas_fd_install_new(struct nas_task *t,unsigned fd,unsigned slot,
     nas_open_files[slot].status_flags=status;
     nas_open_files[slot].ops=kind==FD_PIPE_R ? &m106_pipe_reader :
                              kind==FD_PIPE_W ? &m106_pipe_writer :
-                             kind==FD_SOCKET ? &m106_stream_socket : NULL;
+                             kind==FD_SOCKET ? &m106_stream_socket :
+                             kind==FD_EVENTFD ? &m106_eventfd : NULL;
     return true;
 }
 
@@ -211,6 +224,152 @@ static unsigned pair_fd(uint64_t addr,unsigned index) {
     assert(nas_user_read_bytes(addr+index*4,bytes,4));
     return (unsigned)bytes[0]|((unsigned)bytes[1]<<8)|
            ((unsigned)bytes[2]<<16)|((unsigned)bytes[3]<<24);
+}
+
+static void a008_iov(uint64_t iov,unsigned index,uint64_t source,uint64_t size) {
+    /* Each descriptor is 16-byte aligned and fits inside one mock page. */
+    uint64_t pos=iov+index*16ULL;
+    assert((pos&4095ULL)<=4096-16);
+    uint8_t *entry=user_ptr(pos);
+    assert(entry);
+    memcpy(entry,&source,8);
+    memcpy(entry+8,&size,8);
+}
+
+static void a008_vectors(unsigned rd,unsigned wr) {
+    const uint64_t iov=TEST_BASE;
+    uint64_t src=TEST_BASE+TEST_PAGE+40;
+    uint64_t dst=TEST_BASE+2*TEST_PAGE+128;
+    unsigned pending=0;
+
+    /* Linux validates the shared File and O_ACCMODE even for iovcnt=0. */
+    reset_mapping();
+    assert((int64_t)nas_fs_fd_readv(NAS_FD_LIMIT,iov,0)==-EBADF);
+    assert((int64_t)nas_fs_fd_writev(NAS_FD_LIMIT,iov,0)==-EBADF);
+    assert((int64_t)nas_fs_fd_readv(wr,iov,0)==-EBADF);
+    assert((int64_t)nas_fs_fd_writev(rd,iov,0)==-EBADF);
+    assert(nas_fs_fd_readv(rd,iov,0)==0);
+    assert(nas_fs_fd_writev(wr,iov,0)==0);
+
+    /* Linux IOV_MAX is 1024, not a userspace-visible 64-element ceiling.
+     * Exactly 1024 16-byte descriptors fit our four simulated user pages. */
+    memset(pages,0,sizeof(pages));
+    assert(nas_fs_fd_readv(rd,iov,1024)==0);
+    assert(nas_fs_fd_writev(wr,iov,1024)==0);
+    assert((int64_t)nas_fs_fd_readv(rd,iov,1025)==-EINVAL);
+    assert((int64_t)nas_fs_fd_writev(wr,iov,1025)==-EINVAL);
+    assert((int64_t)nas_fs_fd_readv(NAS_FD_LIMIT,iov,1025)==-EBADF);
+    assert((int64_t)nas_fs_fd_writev(NAS_FD_LIMIT,iov,1025)==-EBADF);
+    assert((int64_t)nas_fs_fd_readv(wr,iov,1025)==-EBADF);
+    assert((int64_t)nas_fs_fd_writev(rd,iov,1025)==-EBADF);
+    assert((int64_t)nas_fs_fd_readv(NAS_FD_LIMIT,USER_LIMIT-8,1)==-EBADF);
+    assert((int64_t)nas_fs_fd_writev(NAS_FD_LIMIT,USER_LIMIT-8,1)==-EBADF);
+    assert((int64_t)nas_fs_fd_readv(rd,USER_LIMIT-8,1)==-EFAULT);
+    assert((int64_t)nas_fs_fd_writev(wr,USER_LIMIT-8,1)==-EFAULT);
+
+    /* Linux lib/iov_iter.c fast path clamps a lone huge iovec to
+     * MAX_RW_COUNT, whereas multi-iov import validates every original
+     * address range and every signed length before any I/O. /dev/null
+     * avoids allocating or copying a 2-GiB test payload. */
+    reset_mapping();
+    a008_iov(iov,0,0,INT64_MAX);
+    assert(nas_fs_fd_readv(28,iov,1)==0);
+    assert(nas_fs_fd_writev(28,iov,1)==UINT64_C(0x7ffff000));
+    a008_iov(iov,0,0,UINT64_C(1)<<63);
+    assert((int64_t)nas_fs_fd_readv(28,iov,1)==-EINVAL);
+    assert((int64_t)nas_fs_fd_writev(28,iov,1)==-EINVAL);
+    a008_iov(iov,0,0,UINT64_C(0x7ffff000));
+    a008_iov(iov,1,0,INT64_MAX);
+    assert((int64_t)nas_fs_fd_writev(28,iov,2)==-EFAULT);
+    a008_iov(iov,0,USER_LIMIT-1,8);
+    a008_iov(iov,1,0,UINT64_C(1)<<63);
+    assert((int64_t)nas_fs_fd_writev(28,iov,2)==-EINVAL);
+    a008_iov(iov,0,0,UINT64_C(0x7ffff000));
+    a008_iov(iov,1,0,8);
+    assert(nas_fs_fd_writev(28,iov,2)==UINT64_C(0x7ffff000));
+
+    /* Import all vector metadata and atomic <=PIPE_BUF sources before a
+     * provider commits. A bad LATER metadata page or source page must not
+     * append a good first segment into a real pipe. */
+    reset_mapping();
+    memcpy(user_ptr(src+TEST_PAGE),"ok",2);
+    a008_iov(TEST_BASE+TEST_PAGE-16,0,src+TEST_PAGE,2);
+    present[1]=false;lazy[1]=false;
+    assert((int64_t)nas_fs_fd_writev(wr,TEST_BASE+TEST_PAGE-16,2)==-EFAULT);
+    assert(nas_pipe_snapshot(0,&pending,NULL,NULL)&&pending==0);
+    reset_mapping();
+    memcpy(user_ptr(src),"ok",2);
+    a008_iov(iov,0,src,2);
+    a008_iov(iov,1,USER_LIMIT-2,4);
+    assert((int64_t)nas_fs_fd_writev(wr,iov,2)==-EFAULT);
+    assert(nas_pipe_snapshot(0,&pending,NULL,NULL)&&pending==0);
+    a008_iov(iov,1,TEST_BASE+3*TEST_PAGE+13,2);
+    present[3]=false;lazy[3]=false;
+    assert((int64_t)nas_fs_fd_writev(wr,iov,2)==-EFAULT);
+    assert(nas_pipe_snapshot(0,&pending,NULL,NULL)&&pending==0);
+
+    /* A single 4000-byte write leaves 96 bytes in the 4096-byte pipe.
+     * writev(50+100) must fail as ONE atomic nonblocking transaction;
+     * writev(50+40) must then succeed and preserve byte order. */
+    reset_mapping();
+    nas_open_files[guest_task.fds->entries[wr].slot].status_flags|=0x800;
+    memset(user_ptr(src),'X',4000);
+    assert(nas_fs_fd_write(wr,src,4000)==4000);
+    assert(nas_pipe_snapshot(0,&pending,NULL,NULL)&&pending==4000);
+    memset(user_ptr(TEST_BASE+2*TEST_PAGE+50),'A',50);
+    memset(user_ptr(TEST_BASE+2*TEST_PAGE+150),'B',100);
+    a008_iov(iov,0,TEST_BASE+2*TEST_PAGE+50,50);
+    a008_iov(iov,1,TEST_BASE+2*TEST_PAGE+150,100);
+    assert((int64_t)nas_fs_fd_writev(wr,iov,2)==-EAGAIN);
+    assert(nas_pipe_snapshot(0,&pending,NULL,NULL)&&pending==4000);
+    a008_iov(iov,1,TEST_BASE+2*TEST_PAGE+150,40);
+    assert(nas_fs_fd_writev(wr,iov,2)==90);
+    assert(nas_pipe_snapshot(0,&pending,NULL,NULL)&&pending==4090);
+    uint64_t pipe_dst=TEST_BASE+3*TEST_PAGE;
+    assert(nas_fs_fd_read(rd,pipe_dst,4090)==4090);
+    assert(memcmp(user_ptr(pipe_dst),user_ptr(src),4000)==0);
+    for(unsigned i=4000;i<4050;i++)assert(*user_ptr(pipe_dst+i)=='A');
+    for(unsigned i=4050;i<4090;i++)assert(*user_ptr(pipe_dst+i)=='B');
+    assert(nas_pipe_snapshot(0,&pending,NULL,NULL)&&pending==0);
+
+    /* Linux eventfd implements read_iter (4+4 is one 8B consumption), but
+     * its write_iter falls back to scalar segment semantics, notably the
+     * leading empty segment -> EINVAL and two 8B writes -> total 16B. */
+    reset_mapping();
+    uint64_t event=nas_eventfd_create(7,0x800);
+    assert(event<NAS_FD_LIMIT);
+    assert(guest_task.fds->entries[event].slot!=event);
+    a008_iov(iov,0,dst,4);
+    a008_iov(iov,1,dst+4,4);
+    assert(nas_fs_fd_readv(event,iov,2)==8);
+    uint64_t value=0;
+    memcpy(&value,user_ptr(dst),8);
+    assert(value==7);
+    assert((int64_t)nas_fs_fd_read(event,dst,8)==-EAGAIN);
+
+    uint64_t seven=7,eleven=11;
+    memcpy(user_ptr(src),&seven,8);
+    memcpy(user_ptr(src+16),&eleven,8);
+    a008_iov(iov,0,src,0);
+    a008_iov(iov,1,src,8);
+    assert((int64_t)nas_fs_fd_writev(event,iov,2)==-EINVAL);
+    assert((int64_t)nas_fs_fd_read(event,dst,8)==-EAGAIN);
+    a008_iov(iov,0,src,8);
+    a008_iov(iov,1,src,0);
+    assert(nas_fs_fd_writev(event,iov,2)==8);
+    assert(nas_fs_fd_read(event,dst,8)==8);
+    memcpy(&value,user_ptr(dst),8);
+    assert(value==7);
+    a008_iov(iov,0,src,8);
+    a008_iov(iov,1,src+16,8);
+    assert(nas_fs_fd_writev(event,iov,2)==16);
+    assert(nas_fs_fd_read(event,dst,8)==8);
+    memcpy(&value,user_ptr(dst),8);
+    assert(value==18);
+    a008_iov(iov,0,src,4);
+    a008_iov(iov,1,src+4,4);
+    assert((int64_t)nas_fs_fd_writev(event,iov,2)==-EINVAL);
+    puts("[NAS-A008 M106 PASS] real FileOps pipe/eventfd: IOV_MAX, bad FD precedence, metadata/source rollback, aggregate PIPE_BUF, read_iter/write fallback");
 }
 
 int main(void) {
@@ -371,6 +530,7 @@ int main(void) {
     assert((int64_t)nas_fs_fd_write(28,TEST_BASE,1)==-EBADF);
     nas_open_files[22].status_flags=2;
 
+    a008_vectors(rd,wr);
     puts("[M106 USER-COPY SYSCALL PASS] real pipe + syscall adapters: RO atomicity, lazy/COW, no pipe loss, socketpair publication, accept retains pending peer, null/zero access_ok parity, O_PATH write EBADF");
     return 0;
 }

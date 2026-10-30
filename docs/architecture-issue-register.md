@@ -60,9 +60,11 @@ independent consumer, and test evidence.
   The userspace smoke then stopped at M102 target syntax because its new
   `file_io.c` compile lacked the already-present `limine.h` shim include.
   That CI-script error and an independently proven `O_PATH` write access
-  bug were fixed in `3db3705d`; **re-run evidence for that exact head is
-  pending**. The independent M55 eventfd guest gate is manual-dispatch and
-  is not part of grouped FAST; host oracle results do not substitute for it.
+  bug were fixed in `3db3705d`. The subsequent `74afe88` exact head
+  achieved **22/22 automatic workflow success**, including all grouped
+  native QEMU jobs and the userspace smoke gate. The independent M55 eventfd
+  guest gate is manual-dispatch and is not part of grouped FAST; host oracle
+  results do not substitute for it.
 - Subsequent Linux-host differential checks found a finer `access_ok` rule:
   an out-of-user-range pointer must fail `EFAULT` even for zero-byte EOF and
   null/zero discard writes, before a backend plan or eventfd counter
@@ -76,6 +78,26 @@ independent consumer, and test evidence.
   migrating them to an explicit provider wait capability; see
   `docs/ofd-data-plane-contract.md`. NAS-A008 tracks separate vector-aware
   aggregate-planning correctness.
+
+## NAS-A008 vector transaction migration (local implementation, target proof pending)
+
+- FileOps independently declares aggregate `readv` and `writev` support;
+  usercopy remains in one syscall adapter. The importer snapshots at most
+  1024 user iovecs in heap-owned kernel storage, checks all descriptors and
+  address ranges before any provider I/O, then uses bounded kernel-buffer
+  scatter/gather. It removes the old per-iovec partial side effect when a
+  later descriptor is structurally invalid.
+- Pipe and AF_UNIX writes plan the **whole vector** once and preflight all
+  source pages for an admitted `PIPE_BUF` atomic write; eventfd reads as one
+  eight-byte value across several iovecs, while its Linux-required segmented
+  `writev` fallback is preserved. Other FileOps providers remain segmented
+  until independently verified; no new FD-kind switch is added.
+- Independent host evidence: `scripts/check-a008-linux-vectors.sh` exercises
+  genuine Linux syscalls, and M106 exercises actual NaSeed FileOps, pipe and
+  eventfd providers with FD slot and user-MM failure injection. Both pass
+  locally. M55's original guest test gains vector/eventfd/pipe acceptance
+  cases; the manual QEMU gate and new exact-head automatic CI are still
+  required. Do not label NAS-A008 fully closed from host success alone.
 
 ## Already implemented: do not reopen as an unsolved issue
 

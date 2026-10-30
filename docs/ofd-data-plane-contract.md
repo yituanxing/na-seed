@@ -56,6 +56,35 @@ lwext4 publish accurate sizes; procfs remains unbounded by `st_size`.
 
 ## Regression and outstanding work
 
+### NAS-A008 vector transaction extension
+
+`readv` and `writev` are **logical I/O requests**, not necessarily loops over
+`read` and `write`. Their shared importer checks the process FD, OFD access
+direction, original iovec metadata, cumulative lengths, and every user address
+*range* before permitting any provider mutation. Up to Linux's 1024 iovecs
+are snapshotted in temporary kernel heap memory, not a 16-KiB kernel stack
+array. Imported metadata is independent of later user-buffer writes.
+
+The FileOps `aggregate_readv` and `aggregate_writev` capabilities are
+independent: an aggregate path invokes one read/write plan for the whole
+vector, then copies through bounded kernel buffers across iovec boundaries.
+A segmented path retains the scalar provider behavior only **after** the
+entire iovec array has been imported and validated. No FD kind tests or user
+addresses enter a provider callback.
+
+| OpenFile provider | readv policy | writev policy | Linux-specific reason |
+| --- | --- | --- | --- |
+| Pipe | aggregate | aggregate | Shared queue admission; a writev totaling at most `PIPE_BUF` cannot partially publish when insufficient capacity or a later source page is invalid |
+| AF_UNIX stream | aggregate | aggregate | Same kernel pipe transport and transaction budget |
+| Eventfd | aggregate | segmented | Linux implements `read_iter` but falls back to scalar `write`: `readv([4,4])` succeeds; `writev([4,4])` and leading `[0,8]` fail `EINVAL`, while `[8,8]` adds two values |
+| TTY, PTY and existing mounted files | existing segmented fallback | existing segmented fallback | Their EOF, termios, short I/O, append and provider-open semantics require their own independent oracle before opting into aggregation |
+
+This vector migration is staged separately from the earlier scalar NAS-A002
+cutover. Linux-host oracle and a production-provider host fixture can verify
+the architectural corner cases, but **do not** prove guest libc/syscall ABI
+or three-ISA QEMU success. `NAS-A008` stays open until exact-head native
+checks cover the new vector path and the scalar path still passes.
+
 The boundary guard in `scripts/check-architecture-boundaries.py` checks that
 data-plane provider *functions* do not regress to direct usercopy or
 process-local FD lookup, while allowing legitimate usercopy in ioctl and
