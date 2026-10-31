@@ -126,6 +126,8 @@ static uint64_t tmp_data_frame(struct nas_tmp_file *file,uint64_t number,
         memset((void *)(uintptr_t)(nas_hhdm_offset() + data_addr),
                0, (size_t)TMP_PAGE_SIZE);
         table[inner] = data_addr;
+        if (number + 1 > file->highest_allocated_data_page_plus_one)
+            file->highest_allocated_data_page_plus_one = number + 1;
     }
     return data_addr;
 }
@@ -289,12 +291,10 @@ int tmp_fiemap_next(const struct nas_tmp_file *file,uint64_t start,
     while(page<final && tmp_data_frame((struct nas_tmp_file *)file,page,false))page++;
     *logical=first*TMP_PAGE_SIZE;
     *length=(page-first)*TMP_PAGE_SIZE;
-    /* LAST is truthful only when no later allocated block exists,
-     * including blocks outside this request's logical end. */
-    uint64_t filepages=(file->size+TMP_PAGE_SIZE-1)/TMP_PAGE_SIZE;
-    uint64_t scan=page;
-    while(scan<filepages && !tmp_data_frame((struct nas_tmp_file *)file,scan,false))scan++;
-    *last=(scan==filepages);
+    /* A bounded query can end before later extents. The inode-owned
+     * watermark covers all allocated data pages, including MAP_SHARED
+     * faults, so every extent is found in one forward pass (not O(N^2)). */
+    *last=(page>=file->highest_allocated_data_page_plus_one);
     return 1;
 }
 static uint8_t *tmp_data_page(struct nas_tmp_file *file,uint64_t number,
@@ -406,6 +406,7 @@ void tmp_truncate(struct nas_tmp_file *file) {
         (void)nas_frame_put(file->index_root);
         file->index_root = 0;
     }
+    file->highest_allocated_data_page_plus_one = 0;
     file->size = 0;
     if (file->used) {
         file->mtime_ns = tmp_next_mtime(file->mtime_ns);
@@ -447,14 +448,22 @@ int tmp_resize(struct nas_tmp_file *file, uint64_t size) {
                 }
             }
             bool root_has_index = false;
+            uint64_t surviving_highest = 0;
             for (unsigned outer = 0; outer < TMP_INDEX_ROOT_ENTRIES; outer++) {
                 uint64_t frame = root[outer];
                 if (!frame) continue;
                 uint64_t *slots = (uint64_t *)(uintptr_t)(
                     nas_hhdm_offset() + frame);
                 bool any = false;
+                /* This existing shrink sweep already visits every resident
+                 * index frame; recover the high-water mark without a new
+                 * O(file size) scan on each FIEMAP extent. */
                 for (unsigned i = 0; i < TMP_PAGE_ENTRIES; i++)
-                    if (slots[i]) { any = true; break; }
+                    if (slots[i]) {
+                        any = true;
+                        uint64_t after = (uint64_t)outer * TMP_PAGE_ENTRIES + i + 1;
+                        if (after > surviving_highest) surviving_highest = after;
+                    }
                 if (!any) {
                     (void)nas_frame_put(frame);
                     root[outer] = 0;
@@ -464,6 +473,9 @@ int tmp_resize(struct nas_tmp_file *file, uint64_t size) {
                 (void)nas_frame_put(file->index_root);
                 file->index_root = 0;
             }
+            file->highest_allocated_data_page_plus_one = surviving_highest;
+        } else {
+            file->highest_allocated_data_page_plus_one = 0;
         }
     }
     tmp_zero_newly_visible_tail(file,old,size);

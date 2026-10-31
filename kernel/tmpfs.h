@@ -31,6 +31,9 @@ struct nas_tmp_file {
     uint32_t nlink; /* directory-entry references, not open FD references */
     uint64_t ino; /* stable object identity, never derived from a pathname */
     uint64_t index_root; /* physical address of optional 512-entry root frame */
+    /* Inode-owned allocation watermark; sparse size growth never advances it.
+     * FIEMAP_EXTENT_LAST must not repeatedly scan the remainder of a file. */
+    uint64_t highest_allocated_data_page_plus_one;
     uint64_t xattr_frame; /* optional inode-owned packed extended-attribute frame */
     uint64_t size;
     uint64_t atime_ns, mtime_ns, ctime_ns; /* UNIX realtime nanoseconds */

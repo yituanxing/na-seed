@@ -540,6 +540,64 @@ static void test_inode_xattr_and_fiemap(void) {
     puts("[M130 TMP XATTR/FIEMAP PASS] inode-owned metadata, hardlinks, orphan, sparse logical extents, frame reclaim");
 }
 
+static void test_sparse_fiemap_watermark(void) {
+    const void *root=&root_tmp;
+    unsigned before=used_frames();
+    struct nas_tmp_file *file=tmp_create_at(root,"fiemap-many",false,0600);
+    assert(file);
+    uint64_t logical=0,length=0;
+    bool last=false;
+    /* Sparse ftruncate must not allocate a page or fabricate an extent. */
+    assert(tmp_resize(file,1024*TMP_PAGE_SIZE)==0);
+    assert(file->highest_allocated_data_page_plus_one==0);
+    assert(tmp_fiemap_next(file,0,file->size,&logical,&length,&last)==0);
+
+    uint8_t byte='S';
+    for (uint64_t i=0;i<96;i++)
+        assert(tmp_write_at(file,i*2*TMP_PAGE_SIZE,&byte,1)==1);
+    assert(file->highest_allocated_data_page_plus_one==191);
+    /* LAST must describe the whole inode, even when the query ends early. */
+    assert(tmp_fiemap_next(file,0,TMP_PAGE_SIZE,&logical,&length,&last)==1);
+    assert(logical==0 && length==TMP_PAGE_SIZE && !last);
+    for (uint64_t i=0;i<96;i++) {
+        assert(tmp_fiemap_next(file,i*2*TMP_PAGE_SIZE,file->size,
+                               &logical,&length,&last)==1);
+        assert(logical==i*2*TMP_PAGE_SIZE && length==TMP_PAGE_SIZE);
+        assert(last==(i==95));
+    }
+    assert(tmp_fiemap_next(file,191*TMP_PAGE_SIZE,file->size,
+                           &logical,&length,&last)==0);
+    /* Retaining a partial EOF page and deleting later extents must update
+     * the watermark. The following sparse regrowth must not change it. */
+    assert(tmp_resize(file,179*TMP_PAGE_SIZE+1)==0);
+    assert(file->highest_allocated_data_page_plus_one==179);
+    assert(tmp_resize(file,1024*TMP_PAGE_SIZE)==0);
+    assert(file->highest_allocated_data_page_plus_one==179);
+    assert(tmp_fiemap_next(file,178*TMP_PAGE_SIZE,file->size,
+                           &logical,&length,&last)==1);
+    assert(logical==178*TMP_PAGE_SIZE && length==TMP_PAGE_SIZE && last);
+
+    tmp_truncate(file);
+    assert(file->highest_allocated_data_page_plus_one==0);
+    assert(tmp_resize(file,12*TMP_PAGE_SIZE)==0);
+    assert(tmp_fiemap_next(file,0,file->size,&logical,&length,&last)==0);
+    /* MAP_SHARED page faults allocate file data without going through
+     * write(2), and therefore must also update the shared allocation owner. */
+    uint64_t shared=0;
+    assert(tmp_acquire_shared_page(file,9*TMP_PAGE_SIZE,&shared)==0);
+    assert(file->highest_allocated_data_page_plus_one==10);
+    assert(tmp_fiemap_next(file,0,file->size,&logical,&length,&last)==1);
+    assert(logical==9*TMP_PAGE_SIZE && length==TMP_PAGE_SIZE && last);
+    assert(nas_frame_put(shared));
+    assert(tmp_unlink_at(root,"fiemap-many",0)==0);
+    assert(!file->used && file->highest_allocated_data_page_plus_one==0);
+    struct nas_tmp_file *reused=tmp_create_at(root,"fiemap-reuse",false,0600);
+    assert(reused==file && reused->highest_allocated_data_page_plus_one==0);
+    assert(tmp_unlink_at(root,"fiemap-reuse",0)==0);
+    assert(used_frames()==before);
+    puts("[M132 TMP SPARSE FIEMAP PASS] 96 extents, bounded LAST, shrink/regrow, MAP_SHARED and inode reuse");
+}
+
 int main(void) {
     test_same_size_truncate_timestamps();
     test_real_inode_chown();
@@ -548,6 +606,7 @@ int main(void) {
     test_inode_recycling();
     test_shared_page_ownership();
     test_inode_xattr_and_fiemap();
+    test_sparse_fiemap_watermark();
     puts("[M108 TMP INDEX PASS]");
     return 0;
 }

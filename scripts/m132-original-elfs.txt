@@ -1,0 +1,16 @@
+# New executable paths, distinct signed native ELF checksums on each ISA.
+usr/bin/uconv
+usr/bin/genrb
+usr/bin/derb
+usr/sbin/genccode
+usr/sbin/gencmn
+usr/sbin/icupkg
+usr/bin/makeconv
+usr/bin/gif2webp
+usr/bin/img2webp
+usr/bin/webpinfo
+usr/bin/webpmux
+usr/bin/zopfli
+usr/bin/zopflipng
+usr/bin/pcre2test
+usr/bin/bzip3
