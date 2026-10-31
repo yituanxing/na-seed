@@ -181,6 +181,40 @@ bool nas_frames_init(const struct limine_memmap_response *map, uint64_t off) {
 }
 uint64_t nas_free_frames(void) { return free_frames; }
 uint64_t nas_managed_frames(void) { return managed_frames; }
+static uint64_t memory_block_limit(void) {
+    if (!memory_map || !frame_count) return 0;
+    uint64_t top = frame_count * FRAME_BYTES;
+    return top / NAS_MEMORY_BLOCK_BYTES +
+           (top % NAS_MEMORY_BLOCK_BYTES != 0);
+}
+bool nas_memory_block_present(uint64_t index) {
+    if (index >= memory_block_limit()) return false;
+    uint64_t start = index * NAS_MEMORY_BLOCK_BYTES;
+    uint64_t end = start > UINT64_MAX - NAS_MEMORY_BLOCK_BYTES ?
+                   UINT64_MAX : start + NAS_MEMORY_BLOCK_BYTES;
+    for (uint64_t i = 0; i < memory_map->entry_count; ++i) {
+        const struct limine_memmap_entry *entry = memory_map->entries[i];
+        uint64_t region_end_addr;
+        if (entry && entry->type == LIMINE_MEMMAP_USABLE &&
+            region_end(entry->base, entry->length, &region_end_addr) &&
+            entry->base < end && region_end_addr > start)
+            return true;
+    }
+    return false;
+}
+bool nas_memory_block_index_at(uint64_t ordinal, uint64_t *index) {
+    if (!index) return false;
+    uint64_t limit = memory_block_limit();
+    for (uint64_t block = 0; block < limit; ++block) {
+        if (!nas_memory_block_present(block)) continue;
+        if (!ordinal) {
+            *index = block;
+            return true;
+        }
+        --ordinal;
+    }
+    return false;
+}
 uint64_t nas_frame_alloc(void) { return frame_alloc(); }
 uint64_t nas_frame_alloc_contiguous(uint64_t pages) {
     return frame_alloc_contiguous(pages);

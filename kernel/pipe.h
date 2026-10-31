@@ -16,6 +16,10 @@ int nas_pipe_create(unsigned read_slot, unsigned write_slot);
 /* A Unix stream socketpair is two opposing pipe channels with the same two
  * refcounted open descriptions. Both endpoints support read and write. */
 int nas_pipe_create_socketpair(unsigned first_slot, unsigned second_slot);
+/* Socket-only half close; dup/fork aliases share one endpoint state. */
+int nas_pipe_socket_shutdown(unsigned slot,unsigned how);
+bool nas_pipe_socket_read_shutdown(unsigned slot);
+bool nas_pipe_socket_write_shutdown(unsigned slot);
 void nas_pipe_release_description(unsigned slot);
 /* Return the opposing receive-description of a connected AF_UNIX stream.
  * Used for genuine SCM_RIGHTS delivery, never a process-local FD number. */

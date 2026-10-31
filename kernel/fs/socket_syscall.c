@@ -1,12 +1,13 @@
-/* Linux AF_UNIX pathname/stream userspace ABI adapter.
- * Owns socket syscall decoding and user copies; unix_socket.c owns
- * listener/endpoint state, pipe.c owns bytes, fd.c owns descriptions.
- * Hardware and ISA-specific syscall numbers never enter this layer. */
+/* Linux AF_UNIX and loopback-only AF_INET SOCK_STREAM userspace ABI adapter.
+ * Owns socket arguments and user copies; unix_socket.c and ipv4_loopback.c
+ * own endpoint state, pipe.c owns bytes, fd.c owns descriptions. No external
+ * NIC/routing or ISA-specific syscall numbers enter this layer. */
 #include <stdint.h>
 #include <stdbool.h>
 #include "../errno.h"
 #include "../task.h"
 #include "../fd.h"
+#include "../pipe.h"
 #include "lookup.h"
 #include "vfs.h"
 #include "../lib/string.h"
@@ -15,6 +16,7 @@
 #include "io.h"
 #include "file_ops.h"
 #include "unix_socket.h"
+#include "../net/ipv4_loopback.h"
 #include "syscall.h"
 #include "socket_syscall.h"
 #include "path_request.h"
@@ -26,22 +28,69 @@
  * above this shared implementation. */
 static bool unix_fd(uint64_t fd) {
     return fd<NAS_FD_LIMIT && TASK.fds->entries[fd].kind==FD_SOCKET &&
-           TASK.fds->entries[fd].slot<NAS_OPEN_FILE_LIMIT;
+           TASK.fds->entries[fd].slot<NAS_OPEN_FILE_LIMIT &&
+           !nas_ipv4_socket_active(TASK.fds->entries[fd].slot);
+}
+static bool ipv4_fd(uint64_t fd) {
+    return fd<NAS_FD_LIMIT && TASK.fds->entries[fd].kind==FD_SOCKET &&
+           nas_ipv4_socket_active(TASK.fds->entries[fd].slot);
 }
 static uint64_t sys_socket(uint64_t domain,uint64_t type,uint64_t protocol) {
-    if(domain!=1)return (uint64_t)-EAFNOSUPPORT;
+    if(domain!=1 && domain!=2)return (uint64_t)-EAFNOSUPPORT;
     if((type&15U)!=1U || (type&~(15ULL|0x800ULL|0x80000ULL)))
         return (uint64_t)-ESOCKTNOSUPPORT;
-    if(protocol)return (uint64_t)-EPROTONOSUPPORT;
+    if(protocol && !(domain==2 && protocol==6))
+        return (uint64_t)-EPROTONOSUPPORT;
     unsigned fds[2],slots[2];
     int capacity=nas_fd_reserve(nas_current_task,0,1,fds,slots,"socket");
     if(capacity)return (uint64_t)(int64_t)capacity;
     unsigned fd=fds[0],slot=slots[0];
-    nas_unix_socket_init(slot);
+    if(domain==1)nas_unix_socket_init(slot);
+    else nas_ipv4_socket_init(slot);
     if(!nas_fd_install_new(nas_current_task,fd,slot,FD_SOCKET,
                            2ULL|(type&0x800ULL),(type&0x80000ULL)!=0))
         nas_fail("reserved socket descriptor became occupied");
     return fd;
+}
+/* sockaddr_in: all supported Linux LP64 architectures use native 16-bit
+ * AF_INET followed by network-order port/IPv4 bytes. Do not cast a user
+ * pointer to a kernel sockaddr or trust its optional trailing padding. */
+static int ipv4_endpoint(uint64_t address,uint64_t size,
+                         struct nas_ipv4_endpoint *out) {
+    uint8_t bytes[16];
+    if(!out || size<sizeof(bytes))return -EINVAL;
+    if(!nas_user_read_bytes(address,bytes,sizeof(bytes)))return -EFAULT;
+    if(bytes[0]!=2 || bytes[1])return -EAFNOSUPPORT;
+    out->port=(uint16_t)((unsigned)bytes[2]<<8|bytes[3]);
+    out->address=(uint32_t)bytes[4]<<24|(uint32_t)bytes[5]<<16|
+                 (uint32_t)bytes[6]<<8|bytes[7];
+    return 0;
+}
+static void ipv4_sockaddr(struct nas_ipv4_endpoint ep,uint8_t bytes[16]) {
+    memset(bytes,0,16);
+    bytes[0]=2;
+    bytes[2]=(uint8_t)(ep.port>>8);bytes[3]=(uint8_t)ep.port;
+    bytes[4]=(uint8_t)(ep.address>>24);bytes[5]=(uint8_t)(ep.address>>16);
+    bytes[6]=(uint8_t)(ep.address>>8);bytes[7]=(uint8_t)ep.address;
+}
+static uint64_t sys_ipv4_bind(uint64_t fd,uint64_t addr,uint64_t len) {
+    if(!ipv4_fd(fd))return (uint64_t)-EBADF;
+    struct nas_ipv4_endpoint ep;
+    int rc=ipv4_endpoint(addr,len,&ep);
+    if(!rc)rc=nas_ipv4_socket_bind(TASK.fds->entries[fd].slot,ep);
+    return (uint64_t)(int64_t)rc;
+}
+static uint64_t sys_ipv4_connect(uint64_t fd,uint64_t addr,uint64_t len) {
+    if(!ipv4_fd(fd))return (uint64_t)-EBADF;
+    struct nas_ipv4_endpoint ep;
+    int rc=ipv4_endpoint(addr,len,&ep);
+    if(!rc)rc=nas_ipv4_socket_connect(TASK.fds->entries[fd].slot,ep);
+    return (uint64_t)(int64_t)rc;
+}
+static uint64_t sys_ipv4_listen(uint64_t fd,uint64_t backlog) {
+    if(!ipv4_fd(fd))return (uint64_t)-EBADF;
+    return (uint64_t)(int64_t)nas_ipv4_socket_listen(
+        TASK.fds->entries[fd].slot,backlog>16?16U:(unsigned)backlog);
 }
 /* Linux sockaddr_un has a native two-byte family followed by the pathname.
  * This first backend supports Linux pathname sockets, not abstract names. */
@@ -100,9 +149,8 @@ static uint64_t sys_unix_connect(uint64_t fd,uint64_t address,uint64_t size) {
     nas_fs_path_end(&request);
     return (uint64_t)(int64_t)rc;
 }
-static uint64_t sys_unix_accept(uint64_t fd,uint64_t address,
-                                 uint64_t length_ptr,uint64_t flags) {
-    if(!unix_fd(fd))return (uint64_t)-EBADF;
+static uint64_t sys_unix_accept_slot(unsigned listener_slot,uint64_t address,
+                                     uint64_t length_ptr,uint64_t flags) {
     if(flags & ~(0x800ULL|0x80000ULL))return (uint64_t)-EINVAL;
     if((address&&!length_ptr)||(!address&&length_ptr))return (uint64_t)-EFAULT;
     uint32_t length=0;
@@ -118,7 +166,7 @@ static uint64_t sys_unix_accept(uint64_t fd,uint64_t address,
     unsigned nextfd=nas_fd_first_unused(nas_current_task,0);
     if(nextfd==NAS_FD_LIMIT)return (uint64_t)-EMFILE;
     unsigned slot;
-    int rc=nas_unix_socket_accept(TASK.fds->entries[fd].slot,&slot);
+    int rc=nas_unix_socket_accept(listener_slot,&slot);
     if(rc)return (uint64_t)(int64_t)rc;
     if(!nas_fd_attach_owned(nas_current_task,nextfd,slot,FD_SOCKET,
                             (flags&0x80000ULL)!=0))
@@ -136,6 +184,63 @@ static uint64_t sys_unix_accept(uint64_t fd,uint64_t address,
         }
     }
     return nextfd;
+}
+static uint64_t sys_ipv4_accept_slot(unsigned listener_slot,uint64_t address,
+                                     uint64_t length_ptr,uint64_t flags) {
+    if(flags & ~(0x800ULL|0x80000ULL))return (uint64_t)-EINVAL;
+    if((address&&!length_ptr)||(!address&&length_ptr))return (uint64_t)-EFAULT;
+    uint32_t length=0;
+    if(length_ptr && !nas_user_read_bytes(length_ptr,(uint8_t *)&length,4))
+        return (uint64_t)-EFAULT;
+    if(length_ptr && (!nas_user_prepare_write(length_ptr,4) ||
+                      (length && !nas_user_prepare_write(
+                          address,length>16?16:length))))
+        return (uint64_t)-EFAULT;
+    unsigned nextfd=nas_fd_first_unused(nas_current_task,0);
+    if(nextfd==NAS_FD_LIMIT)return (uint64_t)-EMFILE;
+    unsigned slot;
+    int rc=nas_ipv4_socket_accept(listener_slot,&slot);
+    if(rc)return (uint64_t)(int64_t)rc;
+    if(!nas_fd_attach_owned(nas_current_task,nextfd,slot,FD_SOCKET,
+                            (flags&0x80000ULL)!=0))
+        nas_fail("accepted IPv4 socket violated FD ownership");
+    nas_open_files[slot].status_flags|=flags&0x800ULL;
+    if(length_ptr) {
+        struct nas_ipv4_endpoint peer;
+        if(nas_ipv4_socket_name(slot,true,&peer))
+            nas_fail("accepted IPv4 peer has no address");
+        uint8_t bytes[16];
+        ipv4_sockaddr(peer,bytes);
+        uint32_t actual=16;
+        if((length && !nas_user_write_bytes(address,bytes,
+                                            length>16?16:length)) ||
+           !nas_user_write_bytes(length_ptr,(const uint8_t *)&actual,4)) {
+            nas_fs_close_fd(nextfd);
+            return (uint64_t)-EFAULT;
+        }
+    }
+    return nextfd;
+}
+/* A blocking accept pins this exact open description across scheduler
+ * sleeps. A sibling may close/dup2 the original integer FD while we wait;
+ * completion must still dequeue from the original listener, not the new FD. */
+uint64_t nas_fs_socket_accept_description(unsigned listener_slot,
+                                           uint64_t address,
+                                           uint64_t length_ptr,uint64_t flags) {
+    if(listener_slot>=NAS_OPEN_FILE_LIMIT ||
+       !nas_open_files[listener_slot].refcount)
+        return (uint64_t)-EBADF;
+    if(nas_ipv4_socket_active(listener_slot))
+        return sys_ipv4_accept_slot(listener_slot,address,length_ptr,flags);
+    if(nas_unix_socket_listening(listener_slot))
+        return sys_unix_accept_slot(listener_slot,address,length_ptr,flags);
+    return (uint64_t)-EINVAL;
+}
+static uint64_t sys_socket_accept_fd(uint64_t fd,uint64_t address,
+                                     uint64_t length_ptr,uint64_t flags) {
+    if(!unix_fd(fd) && !ipv4_fd(fd))return (uint64_t)-EBADF;
+    return nas_fs_socket_accept_description(TASK.fds->entries[fd].slot,
+                                             address,length_ptr,flags);
 }
 static uint64_t sys_unix_name(uint64_t fd,uint64_t address,
                               uint64_t length_ptr,bool peer) {
@@ -159,6 +264,26 @@ static uint64_t sys_unix_name(uint64_t fd,uint64_t address,
         return (uint64_t)-EFAULT;
     return nas_user_write_bytes(address,output,size) &&
            nas_user_write_bytes(length_ptr,(const uint8_t *)&actual,4)
+         ? 0:(uint64_t)-EFAULT;
+}
+static uint64_t sys_ipv4_name(uint64_t fd,uint64_t address,
+                              uint64_t length_ptr,bool peer) {
+    if(!ipv4_fd(fd))return (uint64_t)-EBADF;
+    if(!address || !length_ptr)return (uint64_t)-EFAULT;
+    uint32_t length;
+    if(!nas_user_read_bytes(length_ptr,(uint8_t *)&length,4))
+        return (uint64_t)-EFAULT;
+    struct nas_ipv4_endpoint ep={0};
+    int rc=nas_ipv4_socket_name(TASK.fds->entries[fd].slot,peer,&ep);
+    if(rc)return (uint64_t)(int64_t)rc;
+    uint8_t output[16];
+    ipv4_sockaddr(ep,output);
+    uint32_t actual=16;
+    uint32_t n=length>actual?actual:length;
+    if(!nas_user_prepare_write(length_ptr,4) ||
+       (n && !nas_user_prepare_write(address,n)))return (uint64_t)-EFAULT;
+    return nas_user_write_bytes(length_ptr,(const uint8_t *)&actual,4) &&
+           (!n || nas_user_write_bytes(address,output,n))
          ? 0:(uint64_t)-EFAULT;
 }
 static uint64_t sys_unix_getsockopt(uint64_t fd,uint64_t level,
@@ -192,6 +317,62 @@ static uint64_t sys_unix_getsockopt(uint64_t fd,uint64_t level,
     return nas_user_write_bytes(address,(const uint8_t *)&value,4) &&
            nas_user_write_bytes(size_ptr,(const uint8_t *)&size,4)
          ? 0:(uint64_t)-EFAULT;
+}
+static uint64_t sys_ipv4_getsockopt(uint64_t fd,uint64_t level,
+                                    uint64_t opt,uint64_t address,
+                                    uint64_t size_ptr) {
+    if(!ipv4_fd(fd))return (uint64_t)-EBADF;
+    uint32_t length;
+    if(!size_ptr || !nas_user_read_bytes(size_ptr,(uint8_t *)&length,4))
+        return (uint64_t)-EFAULT;
+    if(length<4)return (uint64_t)-EINVAL;
+    uint32_t value=0;
+    if(level==1) {
+        switch(opt) {
+        case 2: {
+            bool reuse=false;
+            int rc=nas_ipv4_socket_reuseaddr(TASK.fds->entries[fd].slot,
+                                             false,&reuse);
+            if(rc)return (uint64_t)(int64_t)rc;
+            value=reuse?1:0;break;
+        }
+        case 3:value=1;break; /* SO_TYPE: SOCK_STREAM */
+        case 4:value=0;break; /* SO_ERROR: synchronous local connects */
+        case 7:case 8:value=NAS_PIPE_CAP;break; /* actual bounded byte rings */
+        case 30:value=nas_ipv4_socket_listening(
+            TASK.fds->entries[fd].slot)?1:0;break; /* SO_ACCEPTCONN */
+        case 38:value=6;break; /* SO_PROTOCOL: TCP */
+        case 39:value=2;break; /* SO_DOMAIN: AF_INET */
+        default:return (uint64_t)-ENOPROTOOPT;
+        }
+    } else if(level==6 && opt==1) {
+        /* No packetization or Nagle queue exists inside this local stream:
+         * every admitted write is forwarded immediately. */
+        value=1; /* TCP_NODELAY is inherently active */
+    } else return (uint64_t)-ENOPROTOOPT;
+    uint32_t actual=4;
+    if(!nas_user_prepare_write(address,4) ||
+       !nas_user_prepare_write(size_ptr,4))return (uint64_t)-EFAULT;
+    return nas_user_write_bytes(address,(const uint8_t *)&value,4) &&
+           nas_user_write_bytes(size_ptr,(const uint8_t *)&actual,4)
+         ? 0:(uint64_t)-EFAULT;
+}
+static uint64_t sys_ipv4_setsockopt(uint64_t fd,uint64_t level,
+                                    uint64_t opt,uint64_t address,
+                                    uint64_t length) {
+    if(!ipv4_fd(fd))return (uint64_t)-EBADF;
+    if(length<4 || !address)return (uint64_t)-EINVAL;
+    uint32_t value;
+    if(!nas_user_read_bytes(address,(uint8_t *)&value,4))
+        return (uint64_t)-EFAULT;
+    if(level==1 && opt==2) { /* SO_REUSEADDR */
+        bool enable=value!=0;
+        return (uint64_t)(int64_t)nas_ipv4_socket_reuseaddr(
+            TASK.fds->entries[fd].slot,true,&enable);
+    }
+    if(level==6 && opt==1) /* TCP_NODELAY: immediate stream forwarding */
+        return value ? 0:(uint64_t)-EOPNOTSUPP;
+    return (uint64_t)-ENOPROTOOPT;
 }
 /* The three Linux LP64 ISAs share the 56-byte msghdr/iovec wire layout.
  * Ancillary SCM_RIGHTS preserves open-description identity across processes,
@@ -333,24 +514,138 @@ bad_user_output:
     for(unsigned i=0;i<installed_count;i++)nas_fs_close_fd(installed[i]);
     return (uint64_t)-EFAULT;
 }
+static uint64_t sys_ipv4_sendmsg(uint64_t fd,uint64_t address,uint64_t flags) {
+    if(!ipv4_fd(fd))return (uint64_t)-EBADF;
+    /* Per-call MSG_DONTWAIT needs a dedicated File transfer flag, not a
+     * temporary mutation of the shared open-description O_NONBLOCK bit. */
+    if(flags & ~0x4000ULL)return (uint64_t)-EOPNOTSUPP;
+    struct nas_msghdr msg;
+    if(!nas_user_read_bytes(address,(uint8_t *)&msg,sizeof(msg)))
+        return (uint64_t)-EFAULT;
+    if(msg.name)return (uint64_t)-EISCONN;
+    if(msg.controllen)return (uint64_t)-EOPNOTSUPP;
+    return unix_msgiov(fd,&msg,true); /* same owned stream File data plane */
+}
+static uint64_t sys_ipv4_recvmsg(uint64_t fd,uint64_t address,uint64_t flags) {
+    if(!ipv4_fd(fd))return (uint64_t)-EBADF;
+    if(flags)return (uint64_t)-EOPNOTSUPP;
+    struct nas_msghdr msg;
+    if(!nas_user_read_bytes(address,(uint8_t *)&msg,sizeof(msg)) ||
+       !nas_user_prepare_write(address,sizeof(msg)))
+        return (uint64_t)-EFAULT;
+    uint8_t peer_addr[16];
+    if(msg.name) {
+        struct nas_ipv4_endpoint peer;
+        int rc=nas_ipv4_socket_name(TASK.fds->entries[fd].slot,true,&peer);
+        if(rc)return (uint64_t)(int64_t)rc;
+        ipv4_sockaddr(peer,peer_addr);
+        uint32_t n=msg.namelen>16?16:msg.namelen;
+        if(n && !nas_user_prepare_write(msg.name,n))
+            return (uint64_t)-EFAULT;
+    }
+    uint64_t received=unix_msgiov(fd,&msg,false);
+    if((int64_t)received<0)return received;
+    if(msg.name) {
+        uint32_t n=msg.namelen>16?16:msg.namelen;
+        if(n && !nas_user_write_bytes(msg.name,peer_addr,n))
+            return (uint64_t)-EFAULT;
+        msg.namelen=16;
+    } else msg.namelen=0;
+    msg.controllen=0;
+    msg.flags=0;
+    return nas_user_write_bytes(address,(const uint8_t *)&msg,sizeof(msg))
+         ? received:(uint64_t)-EFAULT;
+}
+static uint64_t sys_ipv4_sendto(uint64_t fd,uint64_t buffer,
+                                uint64_t length,uint64_t flags,
+                                uint64_t destination,uint64_t address_size) {
+    if(!ipv4_fd(fd))return (uint64_t)-EBADF;
+    if(flags & ~0x4000ULL)return (uint64_t)-EOPNOTSUPP;
+    if(destination || address_size)return (uint64_t)-EISCONN;
+    return nas_fs_fd_write(fd,buffer,length);
+}
+static uint64_t sys_ipv4_recvfrom(uint64_t fd,uint64_t buffer,
+                                  uint64_t length,uint64_t flags,
+                                  uint64_t address,uint64_t length_ptr) {
+    if(!ipv4_fd(fd))return (uint64_t)-EBADF;
+    if(flags)return (uint64_t)-EOPNOTSUPP;
+    if(address&&!length_ptr)return (uint64_t)-EFAULT;
+    uint32_t actual=16,capacity=0;
+    uint8_t bytes[16];
+    if(address) {
+        if(!nas_user_read_bytes(length_ptr,(uint8_t *)&capacity,4))
+            return (uint64_t)-EFAULT;
+        struct nas_ipv4_endpoint peer;
+        int rc=nas_ipv4_socket_name(TASK.fds->entries[fd].slot,true,&peer);
+        if(rc)return (uint64_t)(int64_t)rc;
+        ipv4_sockaddr(peer,bytes);
+        if(!nas_user_prepare_write(length_ptr,4) ||
+           (capacity && !nas_user_prepare_write(address,
+                                                capacity>16?16:capacity)))
+            return (uint64_t)-EFAULT;
+    }
+    uint64_t received=nas_fs_fd_read(fd,buffer,length);
+    if((int64_t)received<0)return received;
+    if(address && (!nas_user_write_bytes(length_ptr,
+                                            (const uint8_t *)&actual,4) ||
+                      (capacity && !nas_user_write_bytes(address,bytes,
+                                              capacity>16?16:capacity))))
+        return (uint64_t)-EFAULT;
+    return received;
+}
+static uint64_t sys_socket_shutdown(uint64_t fd,uint64_t how) {
+    if(!unix_fd(fd) && !ipv4_fd(fd))return (uint64_t)-EBADF;
+    if(how>2ULL)return (uint64_t)-EINVAL;
+    unsigned slot=TASK.fds->entries[fd].slot;
+    if(ipv4_fd(fd)) {
+        struct nas_ipv4_endpoint peer;
+        int rc=nas_ipv4_socket_name(slot,true,&peer);
+        if(rc)return (uint64_t)(int64_t)rc;
+    }
+    return (uint64_t)(int64_t)nas_pipe_socket_shutdown(slot,(unsigned)how);
+}
 
 #define SOCKET_RESULT(expr) return (struct nas_fs_result){ .handled=true, .value=(expr) }
 struct nas_fs_result nas_fs_socket_syscall(enum nas_syscall_op op,
                                          const uint64_t *args) {
     switch (op) {
     case NAS_SC_socket: SOCKET_RESULT(sys_socket(args[1],args[2],args[3]));
-    case NAS_SC_bind: SOCKET_RESULT(sys_unix_bind(args[1],args[2],args[3]));
-    case NAS_SC_listen: SOCKET_RESULT(sys_unix_listen(args[1],args[2]));
-    case NAS_SC_connect: SOCKET_RESULT(sys_unix_connect(args[1],args[2],args[3]));
-    case NAS_SC_accept: SOCKET_RESULT(sys_unix_accept(args[1],args[2],args[3],0));
-    case NAS_SC_accept4: SOCKET_RESULT(sys_unix_accept(args[1],args[2],args[3],args[4]));
-    case NAS_SC_getsockname: SOCKET_RESULT(sys_unix_name(args[1],args[2],args[3],false));
-    case NAS_SC_getpeername: SOCKET_RESULT(sys_unix_name(args[1],args[2],args[3],true));
+    case NAS_SC_bind: SOCKET_RESULT(ipv4_fd(args[1]) ?
+        sys_ipv4_bind(args[1],args[2],args[3]) :
+        sys_unix_bind(args[1],args[2],args[3]));
+    case NAS_SC_listen: SOCKET_RESULT(ipv4_fd(args[1]) ?
+        sys_ipv4_listen(args[1],args[2]) : sys_unix_listen(args[1],args[2]));
+    case NAS_SC_connect: SOCKET_RESULT(ipv4_fd(args[1]) ?
+        sys_ipv4_connect(args[1],args[2],args[3]) :
+        sys_unix_connect(args[1],args[2],args[3]));
+    case NAS_SC_accept: SOCKET_RESULT(sys_socket_accept_fd(
+        args[1],args[2],args[3],0));
+    case NAS_SC_accept4: SOCKET_RESULT(sys_socket_accept_fd(
+        args[1],args[2],args[3],args[4]));
+    case NAS_SC_getsockname: SOCKET_RESULT(ipv4_fd(args[1]) ?
+        sys_ipv4_name(args[1],args[2],args[3],false) :
+        sys_unix_name(args[1],args[2],args[3],false));
+    case NAS_SC_getpeername: SOCKET_RESULT(ipv4_fd(args[1]) ?
+        sys_ipv4_name(args[1],args[2],args[3],true) :
+        sys_unix_name(args[1],args[2],args[3],true));
     case NAS_SC_getsockopt:
-        SOCKET_RESULT(sys_unix_getsockopt(args[1],args[2],args[3],args[4],args[5]));
-    case NAS_SC_setsockopt: SOCKET_RESULT((uint64_t)-ENOPROTOOPT);
-    case NAS_SC_sendmsg: SOCKET_RESULT(sys_unix_sendmsg(args[1],args[2],args[3]));
-    case NAS_SC_recvmsg: SOCKET_RESULT(sys_unix_recvmsg(args[1],args[2],args[3]));
+        SOCKET_RESULT(ipv4_fd(args[1]) ?
+            sys_ipv4_getsockopt(args[1],args[2],args[3],args[4],args[5]) :
+            sys_unix_getsockopt(args[1],args[2],args[3],args[4],args[5]));
+    case NAS_SC_setsockopt: SOCKET_RESULT(ipv4_fd(args[1]) ?
+        sys_ipv4_setsockopt(args[1],args[2],args[3],args[4],args[5]) :
+        (uint64_t)-ENOPROTOOPT);
+    case NAS_SC_sendmsg: SOCKET_RESULT(ipv4_fd(args[1]) ?
+        sys_ipv4_sendmsg(args[1],args[2],args[3]) :
+        sys_unix_sendmsg(args[1],args[2],args[3]));
+    case NAS_SC_recvmsg: SOCKET_RESULT(ipv4_fd(args[1]) ?
+        sys_ipv4_recvmsg(args[1],args[2],args[3]) :
+        sys_unix_recvmsg(args[1],args[2],args[3]));
+    case NAS_SC_sendto: SOCKET_RESULT(sys_ipv4_sendto(args[1],args[2],args[3],
+                                                       args[4],args[5],args[6]));
+    case NAS_SC_recvfrom: SOCKET_RESULT(sys_ipv4_recvfrom(args[1],args[2],args[3],
+                                                           args[4],args[5],args[6]));
+    case NAS_SC_shutdown: SOCKET_RESULT(sys_socket_shutdown(args[1],args[2]));
     default: return (struct nas_fs_result){ .handled=false, .value=0 };
     }
 }

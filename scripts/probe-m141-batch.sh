@@ -18,6 +18,15 @@ if ! sh "$runner"; then
     echo "[M141 NATIVE QEMU FAIL] $port" >&2
     if test -s "$log"; then
         grep -aE '^(M141_[A-Z0-9_]+_(PASS|FAIL)|\[M141 )' "$log" >&2 || true
+        # The last serial lines can omit early failing cases (DWARF tooling
+        # runs before process/network checks). Preserve each guest-reported
+        # error tail independent of how many kernel trace lines follow it.
+        awk '
+            /^M141_[A-Z0-9_]+_FAIL$/ { failed=1; print; next }
+            /^M141_[A-Z0-9_]+_(PASS|FAIL)$/ { failed=0; next }
+            failed && $0 !~ /^\[/ { print; next }
+            failed && /^\[(MISS|VM REJECT|FS REJECT|NET|SOCKET|IPC)\]/ { print }
+        ' "$log" >&2 || true
         tail -2500 "$log" >&2
     fi
     exit 1

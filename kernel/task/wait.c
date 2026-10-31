@@ -60,6 +60,9 @@ bool nas_task_wait_ready(const struct nas_task *task) {
     if(task->wait.blocked_op==NAS_SC_epoll_wait ||
        task->wait.blocked_op==NAS_SC_epoll_pwait)
         return nas_epoll_task_ready(task);
+    if(task->wait.blocked_op==NAS_SC_accept ||
+       task->wait.blocked_op==NAS_SC_accept4)
+        return nas_fs_poll_ready(task); /* original listener description */
     if (task->wait.blocked_op == NAS_SC_poll ||
         (task->wait.blocked_op == NAS_SC_ppoll ||
          (task->wait.blocked_op == NAS_SC_pselect6 || task->wait.blocked_op == NAS_SC_select)))

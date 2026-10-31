@@ -1156,6 +1156,34 @@ static void dentry_notice_rename(const struct nas_vfs_path *old_parent,
     memcpy(moved->name,new_name,strlen(new_name)+1);
     dentry_index_insert(moved);
 }
+/* renameat2(RENAME_EXCHANGE) trades two existing Dentry edges. Both Paths
+ * remain pinned through the backend transaction, preserving open handles,
+ * cwd identity and descendants without detaching or allocating anything. */
+static void dentry_notice_exchange(const struct nas_vfs_path *source,
+                                   const struct nas_vfs_path *target,
+                                   const struct nas_vfs_path *old_parent,
+                                   const struct nas_vfs_path *new_parent) {
+    struct nas_vfs_dentry *a=source->dentry,*b=target->dentry;
+    if(!a || !b || a==b)return;
+    (void)dentry_index_remove(a);
+    (void)dentry_index_remove(b);
+    char saved_name[256];
+    memcpy(saved_name,a->name,strlen(a->name)+1);
+    memcpy(a->name,b->name,strlen(b->name)+1);
+    memcpy(b->name,saved_name,strlen(saved_name)+1);
+    if(old_parent->dentry!=new_parent->dentry) {
+        /* Each destination parent ref was reserved before mutation;
+         * transfer both old owners only after publishing the new keys. */
+        a->parent=new_parent->dentry;
+        b->parent=old_parent->dentry;
+    }
+    dentry_index_insert(a);
+    dentry_index_insert(b);
+    if(old_parent->dentry!=new_parent->dentry) {
+        (void)dentry_put(old_parent->dentry);
+        (void)dentry_put(new_parent->dentry);
+    }
+}
 static bool dentry_contains(const struct nas_vfs_dentry *ancestor,
                             const struct nas_vfs_dentry *descendant) {
     for(const struct nas_vfs_dentry *d=descendant;d;d=d->parent)
@@ -1318,6 +1346,7 @@ int nas_vfs_rename_child_with_intent(const struct nas_vfs_path *old_parent,
                                      const struct nas_vfs_path *new_parent,
                                      const char *new_name,uint64_t flags,
                                      bool new_trailing_slash) {
+    if((flags&~3ULL) || flags==3ULL)return -EINVAL;
     struct nas_fs_node before,after;
     int rc=child_parent_node(old_parent,old_name,&before);
     if(rc)return rc;
@@ -1326,7 +1355,7 @@ int nas_vfs_rename_child_with_intent(const struct nas_vfs_path *old_parent,
     if(mounted_child(old_parent,old_name) ||
        mounted_child(new_parent,new_name))return -EBUSY;
     if(before.mount!=after.mount)return -EXDEV;
-    struct nas_vfs_path source={0};
+    struct nas_vfs_path source={0},target={0};
     rc=child_exists(old_parent,old_name,&source);
     if(rc)return rc;
     struct nas_fs_node source_node;
@@ -1349,45 +1378,70 @@ int nas_vfs_rename_child_with_intent(const struct nas_vfs_path *old_parent,
         rc=flags==1U ? -EEXIST : 0;
         goto finish;
     }
-    struct nas_vfs_path target={0};
     rc=child_exists(new_parent,new_name,&target);
     if(!rc) {
         struct nas_fs_node victim;
         rc=nas_vfs_path_node(&target,&victim);
         if(!rc && ancestor_of_mounted_child(&target))rc=-EBUSY;
-        if(!rc && same_vnode(&source_node,&victim) && flags<=1U) {
+        if(!rc && flags==2ULL && victim.is_dir &&
+           dentry_contains(target.dentry,old_parent->dentry))rc=-EINVAL;
+        if(!rc && same_vnode(&source_node,&victim) && flags<=2ULL) {
             /* POSIX rename of two hard links to the SAME inode is a
-             * namespace no-op. Do not rekey one Dentry while both names
-             * still exist in the provider after its own early return. */
-            rc=flags==1U ? -EEXIST : 0;
+             * namespace no-op, including an EXCHANGE of identical inodes.
+             * Do not rekey one Dentry when both names already exist. */
+            rc=flags==1ULL ? -EEXIST : 0;
             int dropped=nas_vfs_path_put(&target);
+            target=(struct nas_vfs_path){0};
             if(dropped && !rc)rc=dropped;
             goto finish;
         }
-        if(!rc && !after.filesystem->rename_replace_open_safe &&
+        if(!rc && flags!=2ULL && !after.filesystem->rename_replace_open_safe &&
            victim.mount==after.mount && victim.ino &&
            inode_lease(&victim) && inode_lease(&victim)->refs>1)
             rc=-EBUSY;
-        int dropped=nas_vfs_path_put(&target);
-        if(dropped && !rc)rc=dropped;
+        if(flags!=2ULL) {
+            int dropped=nas_vfs_path_put(&target);
+            target=(struct nas_vfs_path){0};
+            if(dropped && !rc)rc=dropped;
+        }
         if(rc)goto finish;
     } else if(rc!=-ENOENT)goto finish;
+    else if(flags==2ULL)goto finish; /* exchange requires both names */
     /* Reserve the new parent owner BEFORE the provider's irreversible
      * rename. A refcount overflow must not detach the renamed File after
      * filesystem mutation has already succeeded. */
-    bool reserved=false;
-    if(old_parent->dentry!=new_parent->dentry && source.dentry &&
+    bool reserved=false,exchange_refs=false;
+    if(flags==2ULL && old_parent->dentry!=new_parent->dentry) {
+        rc=dentry_ref(new_parent->dentry);
+        if(rc)goto finish;
+        rc=dentry_ref(old_parent->dentry);
+        if(rc) {
+            (void)dentry_put(new_parent->dentry);
+            goto finish;
+        }
+        exchange_refs=true;
+    } else if(old_parent->dentry!=new_parent->dentry && source.dentry &&
        !source.dentry->detached) {
         rc=dentry_ref(new_parent->dentry);
         if(rc)goto finish;
         reserved=true;
     }
     rc=before.filesystem->rename(&before,old_name,&after,new_name,flags);
-    if(!rc)dentry_notice_rename(old_parent,old_name,new_parent,new_name,
-                                reserved);
-    else if(reserved)(void)dentry_put(new_parent->dentry);
+    if(!rc) {
+        if(flags==2ULL)
+            dentry_notice_exchange(&source,&target,old_parent,new_parent);
+        else dentry_notice_rename(old_parent,old_name,new_parent,new_name,
+                                  reserved);
+    } else if(exchange_refs) {
+        (void)dentry_put(old_parent->dentry);
+        (void)dentry_put(new_parent->dentry);
+    } else if(reserved)(void)dentry_put(new_parent->dentry);
 finish:
     {
+        if(target.dentry) {
+            int dropped=nas_vfs_path_put(&target);
+            if(dropped && !rc)rc=dropped;
+        }
         int dropped=nas_vfs_path_put(&source);
         return dropped ? dropped : rc;
     }

@@ -30,7 +30,9 @@
 #include "posix_locks.h"
 #include "epoll.h"
 #include "eventfd.h"
+#include "pidfd.h"
 #include "unix_socket.h"
+#include "../net/ipv4_loopback.h"
 #include "namespace_syscall.h"
 #include "socket_syscall.h"
 #include "metadata_syscall.h"
@@ -141,8 +143,13 @@ static uint64_t pipe_write_plan(unsigned slot,uint64_t requested) {
         slot,requested,!!(nas_open_files[slot].status_flags&0x800ULL));
 }
 static uint64_t socket_write_plan(unsigned slot,uint64_t requested) {
+    if(nas_pipe_socket_write_shutdown(slot))return (uint64_t)-EPIPE;
     return (uint64_t)nas_socket_write_amount(
         slot,requested,!!(nas_open_files[slot].status_flags&0x800ULL));
+}
+static uint64_t socket_read_plan(unsigned slot,uint64_t requested) {
+    if(nas_pipe_socket_read_shutdown(slot))return 0;
+    return pipe_read_plan(slot,requested);
 }
 /* Providers consume kernel memory only. The File data plane owns every
  * usercopy preflight, staging buffer and partial-fault decision. */
@@ -753,6 +760,7 @@ static uint64_t vioctl_uart(uint64_t fd,uint64_t cmd,uint64_t arg) {
 }
 static void vrelease_pipe(unsigned slot){nas_pipe_release_description(slot);}
 static void vrelease_socket(unsigned slot){
+    nas_ipv4_socket_release(slot);
     nas_unix_socket_release(slot);
     nas_pipe_release_description(slot);
 }
@@ -814,15 +822,20 @@ static const struct nas_file_ops ops_pipe_write={
     .release=vrelease_pipe
 };
 static uint16_t dpoll_socket(unsigned slot,uint16_t events) {
+    if(nas_ipv4_socket_listening(slot))
+        return nas_ipv4_socket_readable(slot) ? (events&1U) : 0;
     if(nas_unix_socket_listening(slot))
         return nas_unix_socket_readable(slot) ? (events&1U) : 0;
+    /* EOF/POLLHUP on read side; write direction may still be live. */
+    if(nas_pipe_socket_read_shutdown(slot))
+        return (events&1U)|0x10U|dpoll_pipe_write(slot,events);
     return dpoll_pipe_read(slot,events) | dpoll_pipe_write(slot,events);
 }
 static uint16_t vpoll_socket(uint64_t fd,uint16_t events) {
     return dpoll_socket(TASK.fds->entries[fd].slot,events);
 }
 static const struct nas_file_ops ops_socket={
-    .read_plan=pipe_read_plan,.write_plan=socket_write_plan,
+    .read_plan=socket_read_plan,.write_plan=socket_write_plan,
     .read=pipe_fd_read,.write=pipe_fd_write,
     .aggregate_readv=true,.aggregate_writev=true,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
@@ -935,6 +948,12 @@ static const struct nas_file_ops ops_signalfd={
     .poll=signalfd_poll_fd,.poll_description=signalfd_poll_slot,
     .release=signalfd_release
 };
+static const struct nas_file_ops ops_pidfd={
+    .read=nas_pidfd_read,
+    .poll=nas_pidfd_poll_fd,
+    .poll_description=nas_pidfd_poll_description,
+    .release=nas_pidfd_release
+};
 static const struct nas_file_ops *const ops_by_kind[]={
     [FD_UART]=&ops_uart,[FD_TTY]=&ops_tty,[FD_NULL]=&ops_null,
     [FD_ZERO]=&ops_zero,[FD_RANDOM]=&ops_random,
@@ -943,6 +962,7 @@ static const struct nas_file_ops *const ops_by_kind[]={
     [FD_PIPE_R]=&ops_pipe_read,[FD_PIPE_W]=&ops_pipe_write,
     [FD_EPOLL]=&ops_epoll,
     [FD_EVENTFD]=&ops_eventfd,[FD_SIGNALFD]=&ops_signalfd,
+    [FD_PIDFD]=&ops_pidfd,
     [FD_SOCKET]=&ops_socket,
     [FD_PTY_MASTER]=&ops_pty,[FD_PTY_SLAVE]=&ops_pty
 };
@@ -1101,6 +1121,8 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
         FS_RESULT(args[1] ? nas_epoll_create1(0) : (uint64_t)-EINVAL);
     case NAS_SC_epoll_ctl:
         FS_RESULT(nas_epoll_ctl(args[1],args[2],args[3],args[4]));
+    case NAS_SC_pidfd_open:
+        FS_RESULT(nas_pidfd_open(args[1],args[2]));
     case NAS_SC_poll: FS_RESULT(nas_fs_poll(args[1], args[2], args[3]));
     case NAS_SC_ppoll: FS_RESULT(nas_fs_ppoll(args[1], args[2], args[3], args[4]));
     case NAS_SC_dup: FS_RESULT(fd_duplicate(args[1], 0, false));

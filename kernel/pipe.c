@@ -20,6 +20,8 @@ static struct nas_pipe pipe_table[NAS_PIPE_COUNT];
  * ring implementation or inventing a second IPC lifetime model. */
 static uint8_t pipe_read_owner[NAS_OPEN_FILE_LIMIT];
 static uint8_t pipe_write_owner[NAS_OPEN_FILE_LIMIT];
+static bool socket_read_closed[NAS_OPEN_FILE_LIMIT];
+static bool socket_write_closed[NAS_OPEN_FILE_LIMIT];
 
 static struct nas_pipe *pipe_for_slot(unsigned slot, bool writing) {
     if (slot >= NAS_OPEN_FILE_LIMIT) return 0;
@@ -72,29 +74,56 @@ int nas_pipe_create_socketpair(unsigned first_slot,unsigned second_slot) {
     if(rc) {
         nas_pipe_release_description(first_slot);
         nas_pipe_release_description(second_slot);
+    } else {
+        socket_read_closed[first_slot]=socket_read_closed[second_slot]=false;
+        socket_write_closed[first_slot]=socket_write_closed[second_slot]=false;
     }
     return rc;
 }
+static void pipe_release_direction(unsigned slot,bool writing) {
+    unsigned owner=writing?pipe_write_owner[slot]:pipe_read_owner[slot];
+    if(!owner || owner>NAS_PIPE_COUNT)return;
+    struct nas_pipe *pipe=&pipe_table[owner-1];
+    if(writing) {
+        pipe->write_slot=NAS_OPEN_FILE_LIMIT;
+        pipe_write_owner[slot]=0;
+    } else {
+        pipe->read_slot=NAS_OPEN_FILE_LIMIT;
+        pipe_read_owner[slot]=0;
+    }
+    if (pipe->used && !pipe_has_reader(pipe) && !pipe_has_writer(pipe)) {
+        pipe->used=false;
+        pipe->count=pipe->head=0;
+    }
+}
+int nas_pipe_socket_shutdown(unsigned slot,unsigned how) {
+    if(slot>=NAS_OPEN_FILE_LIMIT || how>2U)return -EINVAL;
+    if(!pipe_read_owner[slot] && !pipe_write_owner[slot] &&
+       !socket_read_closed[slot] && !socket_write_closed[slot])
+        return -ENOTCONN;
+    if((how==0U || how==2U) && !socket_read_closed[slot]) {
+        socket_read_closed[slot]=true;
+        pipe_release_direction(slot,false);
+    }
+    if((how==1U || how==2U) && !socket_write_closed[slot]) {
+        socket_write_closed[slot]=true;
+        pipe_release_direction(slot,true);
+    }
+    return 0;
+}
+bool nas_pipe_socket_read_shutdown(unsigned slot) {
+    return slot<NAS_OPEN_FILE_LIMIT && socket_read_closed[slot];
+}
+bool nas_pipe_socket_write_shutdown(unsigned slot) {
+    return slot<NAS_OPEN_FILE_LIMIT && socket_write_closed[slot];
+}
 void nas_pipe_release_description(unsigned slot) {
     if(slot>=NAS_OPEN_FILE_LIMIT)return;
-    /* Forget BOTH directions of a socket endpoint before slot reuse. */
-    for (unsigned direction=0;direction<2;direction++) {
-        bool writing=direction!=0;
-        unsigned owner=writing?pipe_write_owner[slot]:pipe_read_owner[slot];
-        if(!owner || owner>NAS_PIPE_COUNT)continue;
-        struct nas_pipe *pipe=&pipe_table[owner-1];
-        if(writing) {
-            pipe->write_slot=NAS_OPEN_FILE_LIMIT;
-            pipe_write_owner[slot]=0;
-        } else {
-            pipe->read_slot=NAS_OPEN_FILE_LIMIT;
-            pipe_read_owner[slot]=0;
-        }
-        if (pipe->used && !pipe_has_reader(pipe) && !pipe_has_writer(pipe)) {
-            pipe->used = false;
-            pipe->count = pipe->head = 0;
-        }
-    }
+    /* Forget both directions on final File close; half-close leaves its
+     * peer end and buffered stream bytes alone until they can be consumed. */
+    pipe_release_direction(slot,false);
+    pipe_release_direction(slot,true);
+    socket_read_closed[slot]=socket_write_closed[slot]=false;
 }
 bool nas_pipe_read_ready(unsigned slot) {
     const struct nas_pipe *pipe = pipe_for_slot(slot,false);

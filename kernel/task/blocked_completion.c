@@ -91,7 +91,8 @@ enum nas_blocked_completion nas_blocked_complete(struct nas_task *task,
     const bool poll_again=(int64_t)rc==-EAGAIN &&
         (nr==NAS_SC_poll || nr==NAS_SC_ppoll ||
          nr==NAS_SC_pselect6 || nr==NAS_SC_select ||
-         nr==NAS_SC_epoll_wait || nr==NAS_SC_epoll_pwait);
+         nr==NAS_SC_epoll_wait || nr==NAS_SC_epoll_pwait ||
+         nr==NAS_SC_accept || nr==NAS_SC_accept4);
     if(io_again || poll_again) {
         task->state=NAS_TASK_BLOCKED;
         return NAS_BLOCKED_RETRY;

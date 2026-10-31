@@ -36,6 +36,7 @@ int main(void) {
     assert(nas_linux_decode_syscall(__NR_epoll_ctl) == NAS_SC_epoll_ctl);
     assert(nas_linux_decode_syscall(__NR_epoll_wait) == NAS_SC_epoll_wait);
     assert(nas_linux_decode_syscall(__NR_epoll_pwait) == NAS_SC_epoll_pwait);
+    assert(nas_linux_decode_syscall(__NR_pidfd_open) == NAS_SC_pidfd_open);
     assert(nas_linux_decode_syscall(__NR_timer_create) == NAS_SC_timer_create);
     assert(nas_linux_decode_syscall(__NR_timer_settime) == NAS_SC_timer_settime);
     assert(nas_linux_decode_syscall(__NR_timer_gettime) == NAS_SC_timer_gettime);

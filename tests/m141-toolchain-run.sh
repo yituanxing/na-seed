@@ -166,7 +166,12 @@ case "$case_name" in
         [ -s "$work/remark.bitstream" ]
         /usr/bin/llvm21-remarkutil bitstream2yaml "$work/remark.bitstream" \
             -o "$work/roundtrip.yaml"
-        busy grep -Fq 'Function: m141_double' "$work/roundtrip.yaml" ;;
+        # The YAML serializer is free to quote string values.  Assert the
+        # semantic identity of the remark, not its incidental whitespace or
+        # scalar quoting style.
+        busy grep -Fq m141_double "$work/roundtrip.yaml"
+        busy grep -Fq Inlined "$work/roundtrip.yaml"
+        busy grep -Fq inline "$work/roundtrip.yaml" ;;
 
     llvm-rc)
         original_elf /usr/bin/llvm21-rc
@@ -180,8 +185,14 @@ case "$case_name" in
     llvm-reduce)
         original_elf /usr/bin/llvm21-reduce
         seed_ir
-        /usr/bin/llvm21-reduce --test=/bin/true "$work/m141.ll" \
+        # llvm-reduce executes --test via execve.  /bin/true is not a required
+        # binary in the signed BusyBox root.  Invoke the guaranteed real ELF
+        # and keep the IR function instead of using an always-true predicate.
+        /usr/bin/llvm21-reduce --test=/bin/busybox \
+            --test-arg=grep --test-arg=-Fq --test-arg=m141_ir_add \
+            "$work/m141.ll" \
             -o "$work/reduced.ll" > "$work/reduce.log" 2>&1
+        busy grep -Fq m141_ir_add "$work/reduced.ll"
         /usr/bin/llvm21-as "$work/reduced.ll" -o "$work/reduced.bc"
         [ -s "$work/reduced.bc" ] ;;
 esac

@@ -304,15 +304,52 @@ static bool under_inode(const void *parent,const void *directory) {
 }
 int tmp_rename_at(const void *old_parent,const char *old_name,
                   const void *new_parent,const char *new_name,uint64_t flags) {
-    if(flags&~1ULL)return -EINVAL;
+    /* Linux renameat2: NOREPLACE (1) and EXCHANGE (2) are mutually
+     * exclusive. The latter swaps two *existing* namespace edges, while
+     * keeping the inode and every open File/cwd identity unchanged. */
+    if((flags&~3ULL) || flags==3ULL)return -EINVAL;
     if(!parent_valid(old_parent) || !parent_valid(new_parent))return -ENOENT;
     if(!leaf_valid(old_name) || !leaf_valid(new_name))return -EINVAL;
     struct nas_tmp_dentry *source=find_child(old_parent,old_name);
     if(!source)return -ENOENT;
     if(old_parent==new_parent && !strcmp(old_name,new_name))return 0;
     struct nas_tmp_file *inode=source->inode;
-    if(inode->is_dir && under_inode(new_parent,inode))return -EINVAL;
     struct nas_tmp_dentry *target=find_child(new_parent,new_name);
+    if(flags==2ULL) {
+        if(!target)return -ENOENT;
+        struct nas_tmp_file *other=target->inode;
+        if(inode==other)return 0;
+        /* Exchanging two directories is legal, including nonempty ones,
+         * unless it would make either directory its own ancestor. */
+        if((inode->is_dir && under_inode(new_parent,inode)) ||
+           (other->is_dir && under_inode(old_parent,other)))return -EINVAL;
+        struct nas_tmp_directory *old_dir=directory_state(old_parent);
+        struct nas_tmp_directory *new_dir=directory_state(new_parent);
+        hash_detach(source);
+        hash_detach(target);
+        if(old_parent!=new_parent) {
+            child_detach(old_dir,source);
+            child_detach(new_dir,target);
+        } else invalidate_seek(old_dir);
+        char saved_name[256];
+        memcpy(saved_name,source->name,strlen(source->name)+1);
+        memcpy(source->name,target->name,strlen(target->name)+1);
+        memcpy(target->name,saved_name,strlen(saved_name)+1);
+        source->parent_inode=new_parent;
+        target->parent_inode=old_parent;
+        hash_attach(source);
+        hash_attach(target);
+        if(old_parent!=new_parent) {
+            child_attach(new_dir,source);
+            child_attach(old_dir,target);
+        }
+        tmp_inode_touch(inode);
+        tmp_inode_touch(other);
+        parent_modified(old_parent);
+        if(old_parent!=new_parent)parent_modified(new_parent);
+        return 0;
+    }
+    if(inode->is_dir && under_inode(new_parent,inode))return -EINVAL;
     if(target) {
         if(flags&1ULL)return -EEXIST;
         if(target->inode==inode)return 0; /* POSIX same inode no-op */

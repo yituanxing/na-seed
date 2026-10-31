@@ -634,6 +634,76 @@ static void test_real_fallocate_reservation(void) {
     puts("[M136 TMP FALLOCATE PASS] real owned pages, KEEP_SIZE, data preservation, reclaim");
 }
 
+/* M141: renameat2(EXCHANGE) swaps real dentry edges, not contents or inodes.
+ * The pinned inode models an FD/Path owner: its data and identity remain
+ * stable while both lookup names change. Cross-directory and nonempty
+ * directory exchanges must preserve ancestry and reject cycles. */
+static void test_atomic_rename_exchange(void) {
+    const void *root=&root_tmp;
+    struct nas_tmp_file *a=tmp_create_at(root,"exchange-a",false,0600);
+    struct nas_tmp_file *b=tmp_create_at(root,"exchange-b",false,0600);
+    assert(a && b && a!=b);
+    const uint8_t a_byte='A',b_byte='B';
+    uint8_t observed=0;
+    assert(tmp_write_at(a,0,&a_byte,1)==1);
+    assert(tmp_write_at(b,0,&b_byte,1)==1);
+    uint64_t a_ino=tmp_number(a),b_ino=tmp_number(b);
+    pinned_inode=a; /* already-open FD retains the original inode */
+    assert(tmp_rename_at(root,"exchange-a",root,"exchange-b",2)==0);
+    assert(tmp_find_child(root,"exchange-a")==b);
+    assert(tmp_find_child(root,"exchange-b")==a);
+    assert(tmp_number(a)==a_ino && tmp_number(b)==b_ino);
+    assert(tmp_read_at(a,0,&observed,1)==1 && observed=='A');
+    assert(tmp_read_at(b,0,&observed,1)==1 && observed=='B');
+    assert(a->nlink==1 && b->nlink==1);
+    uint64_t before_m=0,before_c=0,after_m=0,after_c=0;
+    tmp_root_times(&before_m,&before_c);
+    assert(tmp_rename_at(root,"exchange-a",root,"absent",2)==-ENOENT);
+    assert(tmp_rename_at(root,"exchange-a",root,"exchange-b",3)==-EINVAL);
+    tmp_root_times(&after_m,&after_c);
+    assert(before_m==after_m && before_c==after_c);
+    assert(tmp_rename_at(root,"exchange-a",root,"exchange-a",2)==0);
+    assert(tmp_link_at(root,"exchange-b",root,"exchange-alias")==0);
+    assert(tmp_rename_at(root,"exchange-b",root,"exchange-alias",2)==0);
+    assert(tmp_find_child(root,"exchange-alias")==a);
+    assert(a->nlink==2);
+    pinned_inode=NULL;
+
+    assert(tmp_mkdir_at(root,"exchange-left",0700)==0);
+    assert(tmp_mkdir_at(root,"exchange-right",0700)==0);
+    struct nas_tmp_file *left=tmp_find_child(root,"exchange-left");
+    struct nas_tmp_file *right=tmp_find_child(root,"exchange-right");
+    assert(left && right && left!=right);
+    struct nas_tmp_file *one=tmp_create_at(left,"one",false,0600);
+    struct nas_tmp_file *two=tmp_create_at(right,"two",false,0600);
+    assert(one && two);
+    assert(tmp_rename_at(left,"one",right,"two",2)==0);
+    assert(tmp_find_child(left,"one")==two);
+    assert(tmp_find_child(right,"two")==one);
+    expect_name(left,0,"one");
+    expect_name(right,0,"two");
+    assert(tmp_rename_at(root,"exchange-left",root,"exchange-right",2)==0);
+    assert(tmp_find_child(root,"exchange-left")==right);
+    assert(tmp_find_child(root,"exchange-right")==left);
+    assert(tmp_dir_parent_inode(left)==root);
+    assert(tmp_dir_parent_inode(right)==root);
+    assert(tmp_find_child(left,"one")==two);
+    assert(tmp_find_child(right,"two")==one);
+    /* Exchanging an ancestor with its descendant would create a cycle. */
+    assert(tmp_rename_at(root,"exchange-left",right,"two",2)==-EINVAL);
+    assert(tmp_find_child(root,"exchange-left")==right);
+    assert(tmp_find_child(right,"two")==one);
+
+    assert(tmp_unlink_at(left,"one",0)==0);
+    assert(tmp_unlink_at(right,"two",0)==0);
+    assert(tmp_unlink_at(root,"exchange-left",0x200ULL)==0);
+    assert(tmp_unlink_at(root,"exchange-right",0x200ULL)==0);
+    assert(tmp_unlink_at(root,"exchange-a",0)==0);
+    assert(tmp_unlink_at(root,"exchange-b",0)==0);
+    assert(tmp_unlink_at(root,"exchange-alias",0)==0);
+    puts("[M141 TMP RENAME_EXCHANGE PASS] atomic names, pinned inode, cross-directory, cycle rollback");
+}
+
 int main(void) {
     test_same_size_truncate_timestamps();
     test_real_inode_chown();
@@ -644,6 +714,7 @@ int main(void) {
     test_inode_xattr_and_fiemap();
     test_sparse_fiemap_watermark();
     test_real_fallocate_reservation();
+    test_atomic_rename_exchange();
     puts("[M108 TMP INDEX PASS]");
     return 0;
 }

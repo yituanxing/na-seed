@@ -118,8 +118,12 @@ case "$case_name" in
     busy grep -Fq "$ipc_id" "$work/ipc.json" ;;
   ionice-child)
     exe=$(original_elf /bin/ionice)
-    "$exe" -c 3 /bin/busybox sh -c 'printf "M141_IONICE_CHILD\n"' > "$work/out"
-    busy grep -Fxq M141_IONICE_CHILD "$work/out" ;;
+    # Class IDLE must survive exec and be queryable from the child itself;
+    # a syscall stub returning success without saving priority fails here.
+    "$exe" -c 3 /bin/busybox sh -c \
+      'printf "M141_IONICE_CHILD\n"; /bin/ionice -p "$$"' > "$work/out"
+    busy grep -Fxq M141_IONICE_CHILD "$work/out"
+    busy grep -Fxq idle "$work/out" ;;
   pidwait-child)
     exe=$(original_elf /bin/pidwait)
     /bin/busybox sleep 5 &
@@ -162,26 +166,26 @@ case "$case_name" in
     busy grep -Fq '0x88b5' "$work/decoded" ;;
   ncat-loopback)
     exe=$(original_elf /usr/bin/ncat)
-    (busy printf 'M141_TCP_REPLY\n' | "$exe" --listen 127.0.0.1 15411) > "$work/server" 2> "$work/server.err" &
+    (busy printf 'M141_TCP_REPLY\n' | "$exe" -4 --listen 127.0.0.1 15411) > "$work/server" 2> "$work/server.err" &
     bgpid=$!
     busy sleep 1
-    busy printf 'M141_TCP_REQUEST\n' | busy timeout 10 "$exe" --recv-only 127.0.0.1 15411 > "$work/client"
+    busy printf 'M141_TCP_REQUEST\n' | busy timeout 10 "$exe" -4 --recv-only 127.0.0.1 15411 > "$work/client"
     busy grep -Fxq M141_TCP_REPLY "$work/client" ;;
   iperf3-loopback)
     exe=$(original_elf /usr/bin/iperf3)
-    "$exe" -s -1 -p 15412 > "$work/server" 2> "$work/server.err" &
+    "$exe" -4 -s -1 -p 15412 > "$work/server" 2> "$work/server.err" &
     bgpid=$!
     busy sleep 1
-    busy timeout 15 "$exe" -c 127.0.0.1 -p 15412 -t 1 -J > "$work/client.json"
+    busy timeout 15 "$exe" -4 -c 127.0.0.1 -p 15412 -t 1 -J > "$work/client.json"
     busy grep -Fq 'bits_per_second' "$work/client.json"
     busy grep -Fq 'bytes' "$work/client.json" ;;
   nmap-loopback)
     nmap=$(original_elf /usr/bin/nmap)
     ncat=$(original_elf /usr/bin/ncat)
-    "$ncat" --listen --keep-open 127.0.0.1 15413 > "$work/server" 2> "$work/server.err" &
+    "$ncat" -4 --listen --keep-open 127.0.0.1 15413 > "$work/server" 2> "$work/server.err" &
     bgpid=$!
     busy sleep 1
-    busy timeout 20 "$nmap" --unprivileged -sT -Pn -p 15413 127.0.0.1 > "$work/scan"
+    busy timeout 20 "$nmap" -4 -n --unprivileged -sT -Pn -p 15413 127.0.0.1 > "$work/scan"
     busy grep -Eq '15413/tcp[[:space:]]+open' "$work/scan" ;;
   *) echo "[M141 SYSTEM UNKNOWN CASE] $case_name" >&2; exit 2 ;;
 esac

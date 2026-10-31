@@ -86,6 +86,10 @@ struct nas_task_wait {
      * Task-local FDs. All providers use this one readiness representation. */
     struct nas_slot_mask poll_interest_read, poll_interest_write;
     bool poll_tty_read;
+    /* accept()/accept4() pins the original listening OpenFile across a
+     * native scheduler park even if a sibling closes its integer FD. */
+    unsigned accept_listener_slot;
+    void (*accept_listener_release)(unsigned slot);
     uint64_t futex_addr;
     uint32_t futex_mask;
     bool futex_woken;
@@ -101,6 +105,9 @@ struct nas_task {
     struct nas_task *group_leader;
     /* Linux process group + session identity, independent of CPU/VM. */
     uint64_t pgid, sid;
+    /* Linux ioprio value: class in bits 15:13, class data in bits 12:0.
+     * Fork/clone inherits this task-local I/O priority, exec preserves it. */
+    uint16_t ioprio;
     char comm[16]; /* Linux per-thread PR_SET_NAME, inherited at fork. */
     bool execed; /* parent may not setpgid(child) after successful exec */
     /* Immutable executable argv snapshot; incomplete overlong vectors

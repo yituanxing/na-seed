@@ -37,10 +37,14 @@ static inline void nas_task_wait_dispose(struct nas_task *task) {
     if(!task)return;
     struct nas_pending_io *owned=task->wait.pending_io;
     void (*release)(struct nas_pending_io *)=task->wait.pending_io_release;
+    unsigned accept_slot=task->wait.accept_listener_slot;
+    void (*accept_release)(unsigned)=task->wait.accept_listener_release;
     task->wait.pending_io=0;
     task->wait.pending_io_release=0;
+    task->wait.accept_listener_release=0;
     if(owned && !release)__builtin_trap();
     if(owned && release)release(owned);
+    if(accept_release)accept_release(accept_slot);
     nas_task_wait_reset(task);
 }
 #endif

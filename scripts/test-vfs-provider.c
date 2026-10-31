@@ -17,6 +17,20 @@
 static uint64_t fixture_free_frames=789;
 uint64_t nas_managed_frames(void) { return 2048; }
 uint64_t nas_free_frames(void) { return fixture_free_frames; }
+/* Three real fixture-backed memory blocks with an address gap exercise
+ * sysfs's physical-index naming and dense readdir cursor independently. */
+static const uint64_t fixture_memory_blocks[]={0,8,9};
+bool nas_memory_block_present(uint64_t index) {
+    for(unsigned i=0;i<sizeof(fixture_memory_blocks)/sizeof(fixture_memory_blocks[0]);i++)
+        if(fixture_memory_blocks[i]==index)return true;
+    return false;
+}
+bool nas_memory_block_index_at(uint64_t ordinal,uint64_t *index) {
+    if(!index || ordinal>=sizeof(fixture_memory_blocks)/sizeof(fixture_memory_blocks[0]))
+        return false;
+    *index=fixture_memory_blocks[ordinal];
+    return true;
+}
 static const uint8_t elf_bytes[]={0x7f,'E','L','F','v','f','s'};
 static const uint8_t abs_link[]="/bin/demo";
 static struct bootfs_entry entries[]={
@@ -126,6 +140,16 @@ static struct nas_tmp_file fixture_open_directory={
 static struct nas_tmp_file fixture_open_child={
     .used=true,.mode=0100600,.nlink=1,.ino=106
 };
+/* M141 renameat2 exchange uses stable backend inode pointers while the
+ * mock's (parent,name)->inode mapping changes transactionally. The VFS
+ * Dentry cache under test is the real production implementation. */
+static struct nas_tmp_file fixture_exchange_a={.used=true,.mode=0100600,.ino=3051,.nlink=1};
+static struct nas_tmp_file fixture_exchange_b={.used=true,.mode=0100600,.ino=3052,.nlink=1};
+static struct nas_tmp_file fixture_exchange_child={.used=true,.mode=0100600,.ino=3053,.nlink=1};
+static struct nas_tmp_file *exchange_at_a=&fixture_exchange_a;
+static struct nas_tmp_file *exchange_at_b=&fixture_exchange_b;
+static struct nas_tmp_file *exchange_at_child=&fixture_exchange_child;
+static bool exchange_visible;
 static struct nas_tmp_file fixture_detached_dir={
     .used=true,.is_dir=true,.mode=0040755,.nlink=1,.ino=109
 };
@@ -190,6 +214,11 @@ bool bootfs_is_link(const struct bootfs_entry *e){
     return e && (e->mode&0170000U)==0120000U;
 }
 struct nas_tmp_file *tmp_find(const char *path){
+    if(exchange_visible) {
+        if(!strcmp(path,"/tmp/exchange-a"))return exchange_at_a;
+        if(!strcmp(path,"/tmp/exchange-b"))return exchange_at_b;
+        if(!strcmp(path,"/tmp/opened/exchange-child"))return exchange_at_child;
+    }
     if(!strcmp(path,"/tmp/m107-socket") && socket_visible_index<4)
         return &fixture_sockets[socket_visible_index];
     if(!strcmp(path,"/tmp/demo"))return &tmp_demo;
@@ -334,6 +363,22 @@ int tmp_unlink(const char *path,uint64_t flags) {
     return !strcmp(path,"/tmp/demo") && flags==0 ? 0 : -EINVAL;
 }
 int tmp_rename(const char *oldpath,const char *newpath,uint64_t flags) {
+    if(exchange_visible && flags==2ULL) {
+        struct nas_tmp_file **from=NULL,**to=NULL;
+        if(!strcmp(oldpath,"/tmp/exchange-a"))from=&exchange_at_a;
+        else if(!strcmp(oldpath,"/tmp/exchange-b"))from=&exchange_at_b;
+        else if(!strcmp(oldpath,"/tmp/opened/exchange-child"))
+            from=&exchange_at_child;
+        if(!strcmp(newpath,"/tmp/exchange-a"))to=&exchange_at_a;
+        else if(!strcmp(newpath,"/tmp/exchange-b"))to=&exchange_at_b;
+        else if(!strcmp(newpath,"/tmp/opened/exchange-child"))
+            to=&exchange_at_child;
+        if(!from || !to)return -ENOENT;
+        struct nas_tmp_file *saved=*from;
+        *from=*to;
+        *to=saved;
+        return 0;
+    }
     if(!strcmp(oldpath,fixture_dir_path) &&
        !strcmp(newpath,"/tmp/renamed-opened") && !flags) {
         strcpy(fixture_dir_path,newpath);
@@ -982,6 +1027,55 @@ int main(void) {
                                  &writable_parent)==0);
     assert(nas_fs_lookup_path_at(NULL,NULL,"/bin",true,
                                  &immutable_parent)==0);
+    /* M141 real VFS Dentry-owner regression: provider-owned names swap
+     * beneath held Path/FD identities, first within /tmp and then across
+     * parent directories. No cached name may resolve the old inode. */
+    exchange_visible=true;
+    struct nas_vfs_path exchange_a_path={0},exchange_b_path={0},
+                        exchange_child_path={0},exchange_opened_parent={0};
+    assert(nas_fs_lookup_path_at(NULL,NULL,"/tmp/exchange-a",false,
+                                 &exchange_a_path)==0);
+    assert(nas_fs_lookup_path_at(NULL,NULL,"/tmp/exchange-b",false,
+                                 &exchange_b_path)==0);
+    assert(nas_fs_lookup_path_at(NULL,NULL,"/tmp/opened/exchange-child",false,
+                                 &exchange_child_path)==0);
+    assert(nas_fs_lookup_path_at(NULL,NULL,"/tmp/opened",true,
+                                 &exchange_opened_parent)==0);
+    struct nas_fs_node exchange_open_inode={0},exchange_seen={0};
+    assert(nas_vfs_path_node(&exchange_a_path,&exchange_open_inode)==0);
+    assert(exchange_open_inode.inode==&fixture_exchange_a);
+    assert(nas_vfs_node_pin(&exchange_open_inode)==0); /* simulated open FD */
+    assert(nas_vfs_rename_child(&writable_parent,"exchange-a",
+                                &writable_parent,"exchange-b",3)==-EINVAL);
+    assert(nas_vfs_rename_child(&writable_parent,"exchange-a",
+                                &writable_parent,"missing-exchange",2)==-ENOENT);
+    assert(nas_vfs_rename_child(&writable_parent,"exchange-a",
+                                &writable_parent,"exchange-b",2)==0);
+    assert(nas_fs_lookup_node("/tmp/exchange-a",false,
+                              &exchange_seen,resolved)==0);
+    assert(exchange_seen.inode==&fixture_exchange_b);
+    assert(nas_fs_lookup_node("/tmp/exchange-b",false,
+                              &exchange_seen,resolved)==0);
+    assert(exchange_seen.inode==&fixture_exchange_a);
+    assert(nas_vfs_path_string(&exchange_a_path,resolved)==0);
+    assert(!strcmp(resolved,"/tmp/exchange-b"));
+    assert(nas_vfs_rename_child(&writable_parent,"exchange-b",
+                                &exchange_opened_parent,"exchange-child",2)==0);
+    assert(nas_vfs_path_string(&exchange_a_path,resolved)==0);
+    assert(!strcmp(resolved,"/tmp/opened/exchange-child"));
+    assert(nas_vfs_path_string(&exchange_child_path,resolved)==0);
+    assert(!strcmp(resolved,"/tmp/exchange-b"));
+    assert(nas_vfs_path_node(&exchange_a_path,&exchange_seen)==0);
+    assert(exchange_seen.inode==exchange_open_inode.inode);
+    assert(nas_vfs_node_pin(&exchange_open_inode)==0);
+    assert(nas_vfs_node_unpin(&exchange_open_inode)==0);
+    assert(nas_vfs_node_unpin(&exchange_open_inode)==0);
+    assert(nas_vfs_path_put(&exchange_opened_parent)==0);
+    assert(nas_vfs_path_put(&exchange_child_path)==0);
+    assert(nas_vfs_path_put(&exchange_b_path)==0);
+    assert(nas_vfs_path_put(&exchange_a_path)==0);
+    exchange_visible=false;
+    fprintf(stderr,"[M141 VFS RENAME_EXCHANGE PASS] same/cross parent, Path cache and pinned FD identity\n");
     struct nas_vfs_path detached_dirfd={0};
     assert(nas_fs_lookup_path_at(NULL,NULL,"/tmp/to-detach",true,
                                  &detached_dirfd)==0);
@@ -1089,6 +1183,38 @@ int main(void) {
     assert(nas_fs_lookup_node("/sys/devices/system/cpu/cpu0/topology/core_id",
                               true,&n,resolved)==0);
     assert(nas_vfs_read_at(&n,0,(uint8_t *)data,4)==2);
+    assert(!memcmp(data,"0\n",2));
+    /* util-linux lsmem reads the actual read-only sysfs block graph. The
+     * numeric block ID must remain a physical address, not a dense inode
+     * ordinal; memory7 is genuinely absent in the sparse test map. */
+    assert(nas_fs_lookup_node("/sys/devices/system/memory",true,
+                              &n,resolved)==0);
+    assert(nas_vfs_read_dir(&n,0,records,8)==6);
+    assert(!strcmp(records[2].name,"block_size_bytes") && records[2].dtype==8);
+    assert(!strcmp(records[3].name,"memory0") && records[3].dtype==4);
+    assert(!strcmp(records[4].name,"memory8") && records[4].dtype==4);
+    assert(!strcmp(records[5].name,"memory9") && records[5].dtype==4);
+    assert(nas_vfs_read_dir(&n,4,records,8)==2);
+    assert(!strcmp(records[0].name,"memory8"));
+    assert(!strcmp(records[1].name,"memory9"));
+    assert(nas_fs_lookup_node("/sys/devices/system/memory/memory7",true,
+                              &n,resolved)==-ENOENT);
+    assert(nas_fs_lookup_node("/sys/devices/system/memory/block_size_bytes",
+                              true,&n,resolved)==0);
+    assert(nas_vfs_read_at(&n,0,(uint8_t *)data,16)==8);
+    assert(!memcmp(data,"8000000\n",8));
+    assert(nas_fs_lookup_node("/sys/devices/system/memory/memory8",true,
+                              &n,resolved)==0);
+    assert(nas_vfs_read_dir(&n,0,records,8)==4);
+    assert(!strcmp(records[2].name,"state") && records[2].dtype==8);
+    assert(!strcmp(records[3].name,"removable") && records[3].dtype==8);
+    assert(nas_fs_lookup_node("/sys/devices/system/memory/memory8/state",true,
+                              &n,resolved)==0);
+    assert(nas_vfs_read_at(&n,0,(uint8_t *)data,16)==7);
+    assert(!memcmp(data,"online\n",7));
+    assert(nas_fs_lookup_node("/sys/devices/system/memory/memory8/removable",
+                              true,&n,resolved)==0);
+    assert(nas_vfs_read_at(&n,0,(uint8_t *)data,16)==2);
     assert(!memcmp(data,"0\n",2));
     assert(nas_fs_lookup_node("/bin",true,&n,resolved)==0);
     assert(nas_vfs_read_dir(&n,0,records,8)==3);

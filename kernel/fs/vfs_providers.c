@@ -518,9 +518,18 @@ enum {
     SYS_ROOT, SYS_DEVICES, SYS_SYSTEM, SYS_CPU, SYS_CPU0, SYS_TOPOLOGY,
     SYS_POSSIBLE, SYS_PRESENT, SYS_ONLINE, SYS_OFFLINE, SYS_KERNEL_MAX,
     SYS_CORE_ID, SYS_PACKAGE_ID, SYS_THREAD_SIBLINGS, SYS_CORE_SIBLINGS,
+    SYS_MEMORY, SYS_MEMORY_BLOCK_SIZE,
     SYS_NODE_COUNT
 };
 #define SYS_INO_BASE 900000ULL
+/* Every memory block owns a stable directory inode and two read-only
+ * attributes; its number is the physical 128 MiB block, not a dense index.
+ * Keep this range disjoint from the fixed CPU-topology inode table. */
+#define SYS_MEMORY_INO_BASE (1ULL << 48)
+#define SYS_MEMORY_INO_STRIDE 3ULL
+_Static_assert(NAS_MEMORY_BLOCK_BYTES==0x8000000ULL,
+               "sysfs block_size_bytes must match physical block granularity");
+enum { SYS_MEMORY_DIR, SYS_MEMORY_STATE, SYS_MEMORY_REMOVABLE };
 struct sys_entry {
     unsigned parent;
     const char *name;
@@ -542,8 +551,50 @@ static const struct sys_entry sys_entries[SYS_NODE_COUNT]={
     [SYS_CORE_ID]={SYS_TOPOLOGY,"core_id","0\n",false},
     [SYS_PACKAGE_ID]={SYS_TOPOLOGY,"physical_package_id","0\n",false},
     [SYS_THREAD_SIBLINGS]={SYS_TOPOLOGY,"thread_siblings_list","0\n",false},
-    [SYS_CORE_SIBLINGS]={SYS_TOPOLOGY,"core_siblings_list","0\n",false}
+    [SYS_CORE_SIBLINGS]={SYS_TOPOLOGY,"core_siblings_list","0\n",false},
+    [SYS_MEMORY]={SYS_SYSTEM,"memory",0,true},
+    [SYS_MEMORY_BLOCK_SIZE]={SYS_MEMORY,"block_size_bytes","8000000\n",false}
 };
+static uint64_t sys_memory_ino(uint64_t block,unsigned kind) {
+    return SYS_MEMORY_INO_BASE+block*SYS_MEMORY_INO_STRIDE+kind;
+}
+static bool sys_memory_decode(const struct nas_fs_node *node,
+                              uint64_t *block,unsigned *kind) {
+    if(!node || node->ino<SYS_MEMORY_INO_BASE)return false;
+    uint64_t delta=node->ino-SYS_MEMORY_INO_BASE;
+    uint64_t number=delta/SYS_MEMORY_INO_STRIDE;
+    if(!nas_memory_block_present(number))return false;
+    if(block)*block=number;
+    if(kind)*kind=(unsigned)(delta%SYS_MEMORY_INO_STRIDE);
+    return true;
+}
+static void sys_memory_fill(uint64_t block,unsigned kind,
+                            struct nas_fs_node *out) {
+    bool directory=kind==SYS_MEMORY_DIR;
+    *out=(struct nas_fs_node){.ino=sys_memory_ino(block,kind),
+        .nlink=directory?2:1,.mode=directory?0040555U:0100444U,
+        .size=directory?0:kind==SYS_MEMORY_STATE?7:2,
+        .is_dir=directory};
+}
+static bool sys_memory_parse(const char *name,uint64_t *block) {
+    if(strncmp(name,"memory",6) || name[6]<'0' || name[6]>'9' ||
+       (name[6]=='0' && name[7]))return false;
+    uint64_t value=0;
+    for(const char *p=name+6;*p;p++) {
+        if(*p<'0' || *p>'9' || value>(UINT64_MAX-(unsigned)(*p-'0'))/10)
+            return false;
+        value=value*10+(unsigned)(*p-'0');
+    }
+    *block=value;
+    return true;
+}
+static void sys_memory_name(uint64_t block,char name[32]) {
+    char digits[20];unsigned count=0;
+    do {digits[count++]=(char)('0'+block%10);block/=10;} while(block);
+    memcpy(name,"memory",6);
+    for(unsigned i=0;i<count;i++)name[6+i]=digits[count-1-i];
+    name[6+count]=0;
+}
 static int sys_id(const struct nas_fs_node *node) {
     if(!node || node->ino<SYS_INO_BASE ||
        node->ino>=SYS_INO_BASE+SYS_NODE_COUNT)return -1;
@@ -567,24 +618,67 @@ static int sys_root(const struct nas_vfs_mount *mount,
 static int sys_child(const struct nas_fs_node *parent,const char *name,
                      struct nas_fs_node *out) {
     int id=sys_id(parent);
-    if(id<0 || !parent->is_dir)return -ENOTDIR;
+    if(!parent || !parent->is_dir)return -ENOTDIR;
     if(!name || !*name || !out || strchr(name,'/'))return -EINVAL;
+    unsigned kind;
+    if(id<0) {
+        if(!sys_memory_decode(parent,0,&kind) || kind!=SYS_MEMORY_DIR)
+            return -ENOTDIR;
+        if(!strcmp(name,"state"))kind=SYS_MEMORY_STATE;
+        else if(!strcmp(name,"removable"))kind=SYS_MEMORY_REMOVABLE;
+        else return -ENOENT;
+        uint64_t block;
+        if(!sys_memory_decode(parent,&block,0))return -ESTALE;
+        sys_memory_fill(block,kind,out);
+        return 0;
+    }
     for(unsigned i=1;i<SYS_NODE_COUNT;i++)
         if(sys_entries[i].parent==(unsigned)id &&
            !strcmp(name,sys_entries[i].name)) {
             sys_fill(i,out);
             return 0;
         }
+    if(id==SYS_MEMORY) {
+        uint64_t block;
+        if(sys_memory_parse(name,&block) && nas_memory_block_present(block)) {
+            sys_memory_fill(block,SYS_MEMORY_DIR,out);
+            return 0;
+        }
+    }
     return -ENOENT;
 }
 static int sys_read_dir(const struct nas_fs_node *node,uint64_t cursor,
                         struct nas_vfs_dirent *out,unsigned maximum) {
     int id=sys_id(node);
-    if(id<0 || !node->is_dir || !out || !maximum)return -EINVAL;
+    if(!node || !node->is_dir || !out || !maximum)return -EINVAL;
+    uint64_t block;unsigned kind;
+    if(id<0) {
+        if(!sys_memory_decode(node,&block,&kind) || kind!=SYS_MEMORY_DIR)
+            return -EINVAL;
+        unsigned count=0;
+        for(;count<maximum;count++,cursor++) {
+            const char *name;
+            uint64_t child=node->ino;
+            unsigned dtype=4;
+            if(cursor==0)name=".";
+            else if(cursor==1) {name="..";child=SYS_INO_BASE+SYS_MEMORY;}
+            else if(cursor==2) {
+                name="state";child=sys_memory_ino(block,SYS_MEMORY_STATE);
+                dtype=8;
+            } else if(cursor==3) {
+                name="removable";child=sys_memory_ino(block,SYS_MEMORY_REMOVABLE);
+                dtype=8;
+            } else break;
+            int rc=fill_dirent(&out[count],name,child,dtype);
+            if(rc)return rc;
+        }
+        return (int)count;
+    }
     unsigned count=0;
     for(;count<maximum;count++,cursor++) {
         unsigned child=(unsigned)id;
         const char *name=".";
+        char generated_name[32];
         if(cursor==1) {
             name="..";
             child=sys_entries[id].parent;
@@ -599,6 +693,14 @@ static int sys_read_dir(const struct nas_fs_node *node,uint64_t cursor,
                 found=true;
                 break;
             }
+            if(!found && id==SYS_MEMORY) {
+                if(!nas_memory_block_index_at(skip,&block))break;
+                sys_memory_name(block,generated_name);
+                int rc=fill_dirent(&out[count],generated_name,
+                                   sys_memory_ino(block,SYS_MEMORY_DIR),4);
+                if(rc)return rc;
+                continue;
+            }
             if(!found)break;
         }
         int rc=fill_dirent(&out[count],name,SYS_INO_BASE+child,
@@ -610,9 +712,17 @@ static int sys_read_dir(const struct nas_fs_node *node,uint64_t cursor,
 static int64_t sys_read_inode(const struct nas_fs_node *node,uint64_t offset,
                               uint8_t *dst,uint64_t length) {
     int id=sys_id(node);
-    if(id<0 || (!dst && length))return -EINVAL;
-    if(sys_entries[id].directory)return -EISDIR;
-    const char *content=sys_entries[id].contents;
+    if(!dst && length)return -EINVAL;
+    const char *content;
+    if(id<0) {
+        unsigned kind;
+        if(!sys_memory_decode(node,0,&kind))return -EINVAL;
+        if(kind==SYS_MEMORY_DIR)return -EISDIR;
+        content=kind==SYS_MEMORY_STATE?"online\n":"0\n";
+    } else {
+        if(sys_entries[id].directory)return -EISDIR;
+        content=sys_entries[id].contents;
+    }
     if(!content)return -EIO;
     uint64_t size=strlen(content);
     if(offset>=size)return 0;

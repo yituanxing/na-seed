@@ -100,6 +100,19 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_gettimeofday: return NAS_SC_gettimeofday;
     case __NR_getuid: return NAS_SC_getuid;
     case __NR_ioctl: return NAS_SC_ioctl;
+    case __NR_ioprio_set: return NAS_SC_ioprio_set;
+    case __NR_ioprio_get: return NAS_SC_ioprio_get;
+    case __NR_shmget: return NAS_SC_shmget;
+    case __NR_shmctl: return NAS_SC_shmctl;
+    case __NR_shmat: return NAS_SC_shmat;
+    case __NR_shmdt: return NAS_SC_shmdt;
+    case __NR_semget: return NAS_SC_semget;
+    case __NR_semctl: return NAS_SC_semctl;
+    case __NR_semop: return NAS_SC_semop;
+    case __NR_msgget: return NAS_SC_msgget;
+    case __NR_msgctl: return NAS_SC_msgctl;
+    case __NR_msgsnd: return NAS_SC_msgsnd;
+    case __NR_msgrcv: return NAS_SC_msgrcv;
     case __NR_setxattr: return NAS_SC_setxattr;
     case __NR_lsetxattr: return NAS_SC_lsetxattr;
     case __NR_fsetxattr: return NAS_SC_fsetxattr;
@@ -140,6 +153,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_epoll_ctl: return NAS_SC_epoll_ctl;
     case __NR_epoll_wait: return NAS_SC_epoll_wait;
     case __NR_epoll_pwait: return NAS_SC_epoll_pwait;
+    case __NR_pidfd_open: return NAS_SC_pidfd_open;
     case __NR_poll: return NAS_SC_poll;
     case __NR_ppoll: return NAS_SC_ppoll;
     case __NR_pselect6: return NAS_SC_pselect6;
@@ -163,6 +177,9 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_setsockopt: return NAS_SC_setsockopt;
     case __NR_sendmsg: return NAS_SC_sendmsg;
     case __NR_recvmsg: return NAS_SC_recvmsg;
+    case __NR_sendto: return NAS_SC_sendto;
+    case __NR_recvfrom: return NAS_SC_recvfrom;
+    case __NR_shutdown: return NAS_SC_shutdown;
     case __NR_rename: return NAS_SC_rename;
     case __NR_renameat: return NAS_SC_renameat;
     case __NR_renameat2: return NAS_SC_renameat2;
@@ -249,6 +266,9 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 208U: return NAS_SC_setsockopt;
     case 211U: return NAS_SC_sendmsg;
     case 212U: return NAS_SC_recvmsg;
+    case 206U: return NAS_SC_sendto; /* asm-generic */
+    case 207U: return NAS_SC_recvfrom; /* asm-generic */
+    case 210U: return NAS_SC_shutdown; /* asm-generic */
     case 50U: return NAS_SC_fchdir;
     case 32U: return NAS_SC_flock; /* asm-generic flock */
     case 17U: return NAS_SC_getcwd;
@@ -266,6 +286,19 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 24U: return NAS_SC_dup3;
     case 49U: return NAS_SC_chdir;
     case 29U: return NAS_SC_ioctl;
+    case 30U: return NAS_SC_ioprio_set; /* asm-generic ioprio_set */
+    case 31U: return NAS_SC_ioprio_get; /* asm-generic ioprio_get */
+    case 186U: return NAS_SC_msgget;
+    case 187U: return NAS_SC_msgctl;
+    case 188U: return NAS_SC_msgrcv;
+    case 189U: return NAS_SC_msgsnd;
+    case 190U: return NAS_SC_semget;
+    case 191U: return NAS_SC_semctl;
+    case 193U: return NAS_SC_semop;
+    case 194U: return NAS_SC_shmget;
+    case 195U: return NAS_SC_shmctl;
+    case 196U: return NAS_SC_shmat;
+    case 197U: return NAS_SC_shmdt;
     case 5U: return NAS_SC_setxattr;
     case 6U: return NAS_SC_lsetxattr;
     case 7U: return NAS_SC_fsetxattr;
@@ -330,6 +363,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 226U: return NAS_SC_mprotect;
     case 214U: return NAS_SC_brk;
     case 260U: return NAS_SC_wait4;
+    case 434U: return NAS_SC_pidfd_open; /* Linux asm-generic, all LP64 ports */
     case 221U: return NAS_SC_execve;
     case 93U: return NAS_SC_exit;
     case 94U: return NAS_SC_exit_group;

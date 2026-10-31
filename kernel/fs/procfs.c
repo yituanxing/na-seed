@@ -11,6 +11,7 @@
 #include "vfs.h"
 #include "../lib/string.h"
 #include "../errno.h"
+#include "../ipc/sysv.h"
 #include <stdint.h>
 #include <stdbool.h>
 #define LIMIT 1536U
@@ -21,6 +22,15 @@ static void decimal(struct writer *w,uint64_t v) {
     char digits[24];unsigned n=0;
     do {digits[n++]=(char)('0'+v%10U);v/=10U;}while(v && n<sizeof(digits));
     while(n)ch(w,digits[--n]);
+}
+static void octal(struct writer *w,uint64_t v) {
+    char digits[24];unsigned n=0;
+    do {digits[n++]=(char)('0'+(v&7U));v>>=3;}while(v && n<sizeof(digits));
+    while(n)ch(w,digits[--n]);
+}
+static void signed_decimal(struct writer *w,int64_t v) {
+    if(v<0){ch(w,'-');decimal(w,(uint64_t)-v);}
+    else decimal(w,(uint64_t)v);
 }
 static void number_name(uint64_t value,char name[32]) {
     struct writer w={name,0,31};decimal(&w,value);name[w.length]=0;
@@ -57,6 +67,10 @@ bool nas_proc_lookup(const char *path,struct nas_proc_node *out) {
     if(!strcmp(path,"/proc/mounts")) {out->kind=NAS_PROC_MOUNTS;return true;}
     if(!strcmp(path,"/proc/locks")) {out->kind=NAS_PROC_LOCKS;return true;}
     if(!strcmp(path,"/proc/slabinfo")) {out->kind=NAS_PROC_SLABINFO;return true;}
+    if(!strcmp(path,"/proc/sysvipc")) {out->kind=NAS_PROC_SYSVIPC_DIR;return true;}
+    if(!strcmp(path,"/proc/sysvipc/shm")) {out->kind=NAS_PROC_SYSVIPC_SHM;return true;}
+    if(!strcmp(path,"/proc/sysvipc/sem")) {out->kind=NAS_PROC_SYSVIPC_SEM;return true;}
+    if(!strcmp(path,"/proc/sysvipc/msg")) {out->kind=NAS_PROC_SYSVIPC_MSG;return true;}
     if(!strcmp(path,"/proc/sys")) {out->kind=NAS_PROC_SYS_DIR;return true;}
     if(!strcmp(path,"/proc/sys/kernel")) {out->kind=NAS_PROC_SYS_KERNEL_DIR;return true;}
     if(!strcmp(path,"/proc/sys/kernel/hostname")) {out->kind=NAS_PROC_SYS_HOSTNAME;return true;}
@@ -133,6 +147,8 @@ bool nas_proc_node_from_ino(uint64_t ino,struct nas_proc_node *out) {
         case NAS_PROC_LOADAVG:case NAS_PROC_VMSTAT:case NAS_PROC_MOUNTS:
         case NAS_PROC_SYS_DIR:case NAS_PROC_SYS_KERNEL_DIR:
         case NAS_PROC_SYS_HOSTNAME:case NAS_PROC_LOCKS:case NAS_PROC_SLABINFO:
+        case NAS_PROC_SYSVIPC_DIR:case NAS_PROC_SYSVIPC_SHM:
+        case NAS_PROC_SYSVIPC_SEM:case NAS_PROC_SYSVIPC_MSG:
             node.kind=(uint8_t)kind;break;
         default:return false;
         }
@@ -225,6 +241,11 @@ bool nas_proc_dir_path(struct nas_proc_node node,char path[256]) {
         for(unsigned i=0;suffix[i];i++)path[p++]=suffix[i];
         path[p]=0;return true;
     }
+    if(node.kind==NAS_PROC_SYSVIPC_DIR) {
+        const char *suffix="/sysvipc";
+        for(unsigned i=0;suffix[i];i++)path[p++]=suffix[i];
+        path[p]=0;return true;
+    }
     if(node.kind!=NAS_PROC_ROOT) {
         uint64_t leader=node.tgid?node.tgid:node.pid;
         if(!living(leader))return false;
@@ -248,6 +269,7 @@ bool nas_proc_dir_path(struct nas_proc_node node,char path[256]) {
 }
 bool nas_proc_is_dir(struct nas_proc_node node) {
     return node.kind==NAS_PROC_ROOT || node.kind==NAS_PROC_PID_DIR ||
+           node.kind==NAS_PROC_SYSVIPC_DIR ||
            node.kind==NAS_PROC_SYS_DIR || node.kind==NAS_PROC_SYS_KERNEL_DIR ||
            node.kind==NAS_PROC_TASK_DIR || node.kind==NAS_PROC_TID_DIR ||
            node.kind==NAS_PROC_FD_DIR || node.kind==NAS_PROC_FDINFO_DIR;
@@ -267,7 +289,7 @@ uint64_t nas_proc_ino(struct nas_proc_node node) {
 bool nas_proc_child(struct nas_proc_node directory,unsigned index,
                     char name[32],struct nas_proc_node *node) {
     static const char *const root[]={"self","meminfo","uptime","version","cpuinfo","stat","loadavg","vmstat",
-                                    "mounts","sys","locks","slabinfo"};
+                                    "mounts","sys","locks","slabinfo","sysvipc"};
     static const char *const process[]={"stat","status","comm","cmdline","statm","task","fd","fdinfo","maps","mounts","cwd"};
     if(!name || !node)return false;
     if(directory.kind==NAS_PROC_ROOT) {
@@ -297,6 +319,14 @@ bool nas_proc_child(struct nas_proc_node directory,unsigned index,
         unsigned i=0;do{name[i]=s[i];}while(s[i++]);
         *node=(struct nas_proc_node){directory.kind==NAS_PROC_SYS_DIR?
               NAS_PROC_SYS_KERNEL_DIR:NAS_PROC_SYS_HOSTNAME,0,0,0};
+        return true;
+    }
+    if(directory.kind==NAS_PROC_SYSVIPC_DIR) {
+        static const char *const names[]={"shm","sem","msg"};
+        if(index>=3)return false;
+        const char *s=names[index];unsigned i=0;
+        do{name[i]=s[i];}while(s[i++]);
+        *node=(struct nas_proc_node){(uint8_t)(NAS_PROC_SYSVIPC_SHM+index),0,0,0};
         return true;
     }
     if(directory.kind==NAS_PROC_FD_DIR ||
@@ -369,6 +399,40 @@ static void load_print(struct writer *w,uint64_t q16) {
     decimal(w,q16/65536ULL);ch(w,'.');
     unsigned cent=(unsigned)((q16%65536ULL)*100ULL/65536ULL);
     ch(w,(char)('0'+cent/10U));ch(w,(char)('0'+cent%10U));
+}
+/* The util-linux SysV IPC tools consume Linux's actual /proc/sysvipc
+ * columns, so these rows reflect kernel IPC objects, not canned output.
+ * The IPC_STAT interface independently exports the same live objects. */
+static void ipc_columns(struct writer *w,enum nas_sysvipc_kind kind) {
+    if(kind==NAS_SYSVIPC_SHM)
+        word(w,"       key      shmid perms                  size  cpid  lpid nattch   uid   gid  cuid  cgid      atime      dtime      ctime                   rss                  swap\n");
+    else if(kind==NAS_SYSVIPC_SEM)
+        word(w,"       key      semid perms      nsems   uid   gid  cuid  cgid      otime      ctime\n");
+    else
+        word(w,"       key      msqid perms      cbytes       qnum lspid lrpid   uid   gid  cuid  cgid      stime      rtime      ctime\n");
+    for(unsigned i=0;i<8;i++) {
+        struct nas_sysvipc_snapshot p;
+        if(!nas_sysvipc_snapshot(kind,i,&p))break;
+        signed_decimal(w,p.key);ch(w,' ');
+        decimal(w,p.id);ch(w,' ');
+        octal(w,p.mode);ch(w,' ');
+        if(kind==NAS_SYSVIPC_SHM) {
+            decimal(w,p.count);ch(w,' ');
+            decimal(w,p.creator_pid);word(w," 0 0 ");
+        } else if(kind==NAS_SYSVIPC_SEM) {
+            decimal(w,p.count);ch(w,' ');
+        } else {
+            word(w,"0 0 0 0 ");
+        }
+        decimal(w,p.uid);ch(w,' ');decimal(w,p.gid);ch(w,' ');
+        decimal(w,p.cuid);ch(w,' ');decimal(w,p.cgid);ch(w,' ');
+        if(kind==NAS_SYSVIPC_SHM)word(w,"0 0 ");
+        else if(kind==NAS_SYSVIPC_SEM)word(w,"0 ");
+        else word(w,"0 0 ");
+        decimal(w,p.ctime);
+        if(kind==NAS_SYSVIPC_SHM)word(w," 0 0");
+        ch(w,'\n');
+    }
 }
 /* A procfd link follows the target process's *live* FD ownership.
  * Open-description identity is preserved by dup/fork, never copied into
@@ -601,6 +665,9 @@ int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
         goto done;
     }
     switch(node.kind) {
+    case NAS_PROC_SYSVIPC_SHM: ipc_columns(&w,NAS_SYSVIPC_SHM);break;
+    case NAS_PROC_SYSVIPC_SEM: ipc_columns(&w,NAS_SYSVIPC_SEM);break;
+    case NAS_PROC_SYSVIPC_MSG: ipc_columns(&w,NAS_SYSVIPC_MSG);break;
     case NAS_PROC_MEMINFO:
         word(&w,"MemTotal:       ");decimal(&w,nas_managed_frames()*4U);word(&w," kB\n");
         word(&w,"MemFree:        ");decimal(&w,nas_free_frames()*4U);word(&w," kB\n");
