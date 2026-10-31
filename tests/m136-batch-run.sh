@@ -36,8 +36,10 @@ seed_terminfo() {
 }
 
 seed_pty_recording() {
-    /usr/bin/script -q -T "$work/timing.log" -O "$work/typescript" \
-        -c '/bin/busybox printf "M136_PTY_RECORDED\n"' > "$work/script.stdout"
+    SCRIPT_DEBUG=all ULPTY_DEBUG=all /usr/bin/script -q \
+        -T "$work/timing.log" -O "$work/typescript" \
+        -c '/bin/busybox printf "M136_PTY_RECORDED\n"' \
+        > "$work/script.stdout" 2> "$work/stderr"
     [ -s "$work/timing.log" ] && [ -s "$work/typescript" ]
     busy grep -Fq M136_PTY_RECORDED "$work/typescript"
 }
@@ -121,7 +123,8 @@ run_case() {
         seed_terminfo
         # tset must query terminal attributes through an actual PTY, not the
         # QEMU batch runner's redirected, non-interactive serial/stdout.
-        /usr/bin/script -q -e -c "$exe -I -Q -s m136" "$work/pty.log" \
+        SCRIPT_DEBUG=all ULPTY_DEBUG=all /usr/bin/script \
+            -q -e -c "$exe -I -Q -s m136" "$work/pty.log" \
             > "$work/output" 2> "$work/stderr"
         busy grep -Fq 'm136' "$work/pty.log" ;;
       colcrt)
@@ -141,8 +144,10 @@ run_case() {
         busy grep -Fxq 'M136 FADVISE ORIGINAL ELF DATA' "$work/payload" ;;
       script)
         exe=$(original_elf /usr/bin/script)
-        "$exe" -q -T "$work/timing.log" -O "$work/typescript" \
-            -c '/bin/busybox printf "M136_SCRIPT_ACTUAL_PTY\n"' > "$work/output"
+        SCRIPT_DEBUG=all ULPTY_DEBUG=all "$exe" -q -T "$work/timing.log" \
+            -O "$work/typescript" \
+            -c '/bin/busybox printf "M136_SCRIPT_ACTUAL_PTY\n"' \
+            > "$work/output" 2> "$work/stderr"
         [ -s "$work/timing.log" ] && [ -s "$work/typescript" ]
         busy grep -Fq 'M136_SCRIPT_ACTUAL_PTY' "$work/typescript" ;;
       scriptreplay)
@@ -195,7 +200,7 @@ run_case() {
         "$exe" -n "$lock" /bin/busybox true ;;
       lscpu)
         exe=$(original_elf /usr/bin/lscpu)
-        "$exe" -J > "$work/output"
+        LSCPU_DEBUG=all "$exe" -J > "$work/output" 2> "$work/stderr"
         busy grep -Fq 'Architecture' "$work/output"
         busy grep -Eq '"data"[[:space:]]*:[[:space:]]*"(x86_64|aarch64|riscv64)"' "$work/output" ;;
       *) echo "[M136 UNKNOWN ORIGINAL ELF CASE] $app" >&2; return 2 ;;
@@ -227,11 +232,11 @@ for app in flex byacc re2c tic infocmp clear tput toe tabs tset \
         echo "[M136 $upper FAILED] original signed ELF rc=$rc" >&2
         busy tail -130 "$case_log" >&2 || :
         for detail in output stderr decompiled lexer.c parser.c scanner.c \
-                      replayed script.stdout typescript timing.log uuid1 \
+                      replayed script.stdout pty.log typescript timing.log uuid1 \
                       payload fstab input; do
             if [ -s "/tmp/m136-$app/$detail" ]; then
                 echo "[M136 FAILED OUTPUT $app/$detail]" >&2
-                busy head -c 500 "/tmp/m136-$app/$detail" >&2 || :
+                busy head -c 1600 "/tmp/m136-$app/$detail" >&2 || :
                 echo >&2
             fi
         done
