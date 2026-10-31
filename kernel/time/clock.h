@@ -11,6 +11,8 @@ uint64_t nas_time_timer_settime(uint64_t id,uint64_t flags,uint64_t req,uint64_t
 uint64_t nas_time_timer_gettime(uint64_t id,uint64_t out);
 uint64_t nas_time_timer_getoverrun(uint64_t id);
 uint64_t nas_time_timer_delete(uint64_t id);
+uint64_t nas_time_setitimer(uint64_t which,uint64_t value,uint64_t old);
+uint64_t nas_time_getitimer(uint64_t which,uint64_t out);
 void nas_time_timers_tick(void);
 bool nas_time_timers_armed(void);
 void nas_time_timers_drop(void);

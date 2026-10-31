@@ -51,6 +51,9 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_timer_gettime: return NAS_SC_timer_gettime;
     case __NR_timer_getoverrun: return NAS_SC_timer_getoverrun;
     case __NR_timer_delete: return NAS_SC_timer_delete;
+    case __NR_getitimer: return NAS_SC_getitimer;
+    case __NR_setitimer: return NAS_SC_setitimer;
+    case __NR_pause: return NAS_SC_pause;
     case __NR_select: return NAS_SC_select;
     case __NR_nanosleep: return NAS_SC_nanosleep;
     case __NR_close: return NAS_SC_close;
@@ -197,6 +200,8 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 108U: return NAS_SC_timer_gettime;
     case 109U: return NAS_SC_timer_getoverrun;
     case 111U: return NAS_SC_timer_delete;
+    case 102U: return NAS_SC_getitimer; /* asm-generic getitimer */
+    case 103U: return NAS_SC_setitimer; /* asm-generic setitimer */
     case 63U: return NAS_SC_read;
     case 67U: return NAS_SC_pread64; /* Linux asm-generic */
     case 68U: return NAS_SC_pwrite64;

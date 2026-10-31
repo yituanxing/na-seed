@@ -28,6 +28,11 @@ struct nas_sighand {
 struct nas_signal_group {
     unsigned refs;
     uint64_t pending;
+    /* ITIMER_REAL belongs to the process's signal group (not a TID,
+     * disposition table, or POSIX timer ID). Survives CLONE_THREAD and
+     * leader exit; fork creates a fresh, unarmed signal-group owner. */
+    uint64_t itimer_real_deadline_ns, itimer_real_interval_ns;
+    bool itimer_real_armed;
 };
 void nas_resources_system_init(void);
 struct nas_fs_context *nas_fs_context_new(void);

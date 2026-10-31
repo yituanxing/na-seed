@@ -423,6 +423,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if(nr==NAS_SC_timer_gettime)return nas_time_timer_gettime(args[1],args[2]);
     if(nr==NAS_SC_timer_getoverrun)return nas_time_timer_getoverrun(args[1]);
     if(nr==NAS_SC_timer_delete)return nas_time_timer_delete(args[1]);
+    if(nr==NAS_SC_getitimer)return nas_time_getitimer(args[1],args[2]);
+    if(nr==NAS_SC_setitimer)return nas_time_setitimer(args[1],args[2],args[3]);
     if(nr==NAS_SC_gettimeofday)
         return nas_time_gettimeofday(args[1],args[2]);
     if(nr==NAS_SC_nanosleep || nr==NAS_SC_clock_nanosleep)
@@ -632,6 +634,13 @@ uint64_t syscall_dispatch(const uint64_t *args) {
                               mask,args[2],0,0,finish_sigtimedwait);
     }
     if (nr == NAS_SC_rt_sigreturn) return nas_signal_sigreturn((uint64_t *)(uintptr_t)args);
+    if (nr == NAS_SC_pause) {
+        /* Unlike sigsuspend, pause retains the calling thread's mask.
+         * Completion only occurs after a caught, unmasked signal. */
+        if(nas_signal_user_pending(&TASK))return (uint64_t)-EINTR;
+        return nas_task_block((uint64_t *)(uintptr_t)args,nr,0,0,0,0,
+                              finish_sigsuspend);
+    }
     if (nr == NAS_SC_rt_sigsuspend) {
         /* Temporary, atomic replacement of the caller's mask while asleep.
          * The existing Task wait/replay + signal trampoline own wakeup;
