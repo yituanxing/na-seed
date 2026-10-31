@@ -1,0 +1,16 @@
+# Fifteen new original ELF paths, excluded from every earlier M-series batch.
+usr/bin/pamtopam
+usr/bin/pamtopnm
+usr/bin/pamtoqoi
+usr/bin/qoitopam
+usr/bin/pamtopng
+usr/bin/pngtopnm
+usr/bin/pbmtowbmp
+usr/bin/wbmptopbm
+usr/bin/pnmenlarge
+usr/bin/pnmcrop
+usr/bin/pnmrotate
+usr/bin/pnmgamma
+usr/bin/pnmcolormap
+usr/bin/pgmtopbm
+usr/bin/pgmnorm
