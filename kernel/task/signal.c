@@ -110,6 +110,21 @@ static void signal_consume_one(struct nas_task *task,uint64_t bit) {
     if(task->pending_signals&bit)task->pending_signals &= ~bit;
     else if(task->signal_group)task->signal_group->pending &= ~bit;
 }
+bool nas_signal_signalfd_ready(const struct nas_task *task,uint64_t mask) {
+    return task && (signal_pending_union(task)&mask&task->blocked_signals)!=0;
+}
+unsigned nas_signal_signalfd_take(struct nas_task *task,uint64_t mask) {
+    if(!task)return 0;
+    uint64_t ready=signal_pending_union(task)&mask&task->blocked_signals;
+    for(unsigned sig=1;sig<=64;sig++) {
+        uint64_t bit=1ULL<<(sig-1);
+        if(ready&bit) {
+            signal_consume_one(task,bit);
+            return sig;
+        }
+    }
+    return 0;
+}
 static unsigned first_default_pending(const struct nas_task *task,
                                       uint64_t mask) {
     uint64_t ready=signal_pending_union(task) & ~mask;
@@ -683,7 +698,11 @@ void nas_signal_child_exit(const struct nas_task *child) {
      * never silently enqueue it on the ZOMBIE leader's dead user frame. */
     struct nas_task *parent=signal_group_recipient(child->ppid,NAS_SIGCHLD);
     if (!parent) return;
-    if (parent->sighand->actions[NAS_SIGCHLD][0] > 1)
+    /* SIG_DFL SIGCHLD still becomes pending while blocked: signalfd users
+     * (util-linux script) observe it and perform the real waitpid themselves.
+     * Only unblocked default/ignored dispositions skip this notification. */
+    if (parent->sighand->actions[NAS_SIGCHLD][0] > 1 ||
+        (parent->blocked_signals&(1ULL<<(NAS_SIGCHLD-1U))))
         signal_queue_process(parent,NAS_SIGCHLD);
 }
 void nas_signal_ppoll_restore(struct nas_task *task,bool interrupted) {

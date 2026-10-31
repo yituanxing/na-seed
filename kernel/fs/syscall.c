@@ -4,6 +4,7 @@
 #include "../errno.h"
 #include "../syscall/ops.h"
 #include "../task.h"
+#include "../task/signal.h"
 #include "../fd.h"
 #include "../bootfs.h"
 #include "../tmpfs.h"
@@ -869,6 +870,68 @@ static uint16_t vpoll_epoll(uint64_t fd,uint16_t events){
 }
 static void vrelease_epoll(unsigned slot){nas_epoll_release(slot);}
 static void vrelease_eventfd(unsigned slot){nas_eventfd_release(slot);}
+/* signalfd is a genuine File: its mask belongs to the refcounted open
+ * description, while pending signals belong to the active task/TGID. This
+ * works across dup/fork without creating an independent fake signal queue. */
+static uint64_t signalfd_masks[NAS_OPEN_FILE_LIMIT];
+static uint64_t sys_signalfd4(uint64_t raw_fd,uint64_t user_mask,
+                             uint64_t mask_size,uint64_t flags) {
+    if(mask_size!=8ULL || (flags&~(0x800ULL|0x80000ULL)))
+        return (uint64_t)-EINVAL;
+    uint64_t mask=0;
+    if(!nas_user_read_u64(user_mask,&mask))return (uint64_t)-EFAULT;
+    mask&=~((1ULL<<(NAS_SIGKILL-1U))|(1ULL<<(NAS_SIGSTOP-1U)));
+    int fd=(int32_t)(uint32_t)raw_fd;
+    if(fd!=-1) {
+        if(fd<0 || fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind!=FD_SIGNALFD)
+            return (uint64_t)-EBADF;
+        unsigned slot=TASK.fds->entries[fd].slot;
+        signalfd_masks[slot]=mask;
+        return (uint64_t)fd;
+    }
+    unsigned fds[2],slots[2];
+    int rc=nas_fd_reserve(nas_current_task,0,1,fds,slots,"signalfd4");
+    if(rc)return (uint64_t)(int64_t)rc;
+    signalfd_masks[slots[0]]=mask;
+    if(!nas_fd_install_new(nas_current_task,fds[0],slots[0],FD_SIGNALFD,
+                           flags&0x800ULL,!!(flags&0x80000ULL)))
+        nas_fs_fail("reserved signalfd description was occupied");
+    return fds[0];
+}
+static uint64_t signalfd_read_plan(unsigned slot,uint64_t requested) {
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+        return (uint64_t)-EBADF;
+    if(requested<128ULL)return (uint64_t)-EINVAL;
+    if(!nas_signal_signalfd_ready(nas_current_task,signalfd_masks[slot]))
+        return (nas_open_files[slot].status_flags&0x800ULL)?
+               (uint64_t)-EAGAIN:(uint64_t)-EOPNOTSUPP;
+    return 128ULL;
+}
+static uint64_t signalfd_read(unsigned slot,uint8_t *dst,uint64_t length) {
+    uint64_t plan=signalfd_read_plan(slot,length);
+    if((int64_t)plan<0)return plan;
+    if(!dst)return (uint64_t)-EFAULT;
+    unsigned signo=nas_signal_signalfd_take(nas_current_task,
+                                             signalfd_masks[slot]);
+    if(!signo)return (uint64_t)-EAGAIN;
+    /* Linux struct signalfd_siginfo is exactly 128 bytes; signo is first.
+     * Other fields are zero when no siginfo payload has been recorded. */
+    memset(dst,0,128);
+    dst[0]=(uint8_t)signo;
+    return 128ULL;
+}
+static uint16_t signalfd_poll_slot(unsigned slot,uint16_t events) {
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)return 0;
+    return (events&1U) &&
+        nas_signal_signalfd_ready(nas_current_task,signalfd_masks[slot])?1U:0U;
+}
+static uint16_t signalfd_poll_fd(uint64_t fd,uint16_t events) {
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind!=FD_SIGNALFD)return 0;
+    return signalfd_poll_slot(TASK.fds->entries[fd].slot,events);
+}
+static void signalfd_release(unsigned slot) {
+    if(slot<NAS_OPEN_FILE_LIMIT)signalfd_masks[slot]=0;
+}
 static const struct nas_file_ops ops_epoll={
     .poll=vpoll_epoll,.poll_description=nas_epoll_description_poll,.release=vrelease_epoll
 };
@@ -880,6 +943,12 @@ static const struct nas_file_ops ops_eventfd={
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
     .poll=nas_eventfd_poll,.poll_description=nas_eventfd_poll_slot,.release=vrelease_eventfd
 };
+static const struct nas_file_ops ops_signalfd={
+    .read_plan=signalfd_read_plan,.read=signalfd_read,
+    .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
+    .poll=signalfd_poll_fd,.poll_description=signalfd_poll_slot,
+    .release=signalfd_release
+};
 static const struct nas_file_ops *const ops_by_kind[]={
     [FD_UART]=&ops_uart,[FD_TTY]=&ops_tty,[FD_NULL]=&ops_null,
     [FD_ZERO]=&ops_zero,[FD_RANDOM]=&ops_random,
@@ -887,7 +956,8 @@ static const struct nas_file_ops *const ops_by_kind[]={
     [FD_ARCHIVE]=&ops_vfs_regular,[FD_DIR]=&ops_vfs_dir,
     [FD_PIPE_R]=&ops_pipe_read,[FD_PIPE_W]=&ops_pipe_write,
     [FD_EPOLL]=&ops_epoll,
-    [FD_EVENTFD]=&ops_eventfd,[FD_SOCKET]=&ops_socket,
+    [FD_EVENTFD]=&ops_eventfd,[FD_SIGNALFD]=&ops_signalfd,
+    [FD_SOCKET]=&ops_socket,
     [FD_PTY_MASTER]=&ops_pty,[FD_PTY_SLAVE]=&ops_pty
 };
 const struct nas_file_ops *nas_fs_ops_for_kind(uint8_t kind) {
@@ -1037,6 +1107,8 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
         FS_RESULT(nas_eventfd_create(args[1],0));
     case NAS_SC_eventfd2:
         FS_RESULT(nas_eventfd_create(args[1],args[2]));
+    case NAS_SC_signalfd4:
+        FS_RESULT(sys_signalfd4(args[1],args[2],args[3],args[4]));
     case NAS_SC_epoll_create1:
         FS_RESULT(nas_epoll_create1(args[1]));
     case NAS_SC_epoll_create:

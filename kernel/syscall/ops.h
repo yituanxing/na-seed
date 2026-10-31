@@ -110,6 +110,7 @@ enum nas_syscall_op {
     NAS_SC_pipe2,
     NAS_SC_eventfd,
     NAS_SC_eventfd2,
+    NAS_SC_signalfd4,
     NAS_SC_epoll_create1,
     NAS_SC_epoll_create,
     NAS_SC_epoll_ctl,

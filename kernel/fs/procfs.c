@@ -409,6 +409,7 @@ int64_t nas_proc_readlink(struct nas_proc_node node,char *out,unsigned cap) {
         case FD_SOCKET:path="socket:[";break;
         case FD_EPOLL:path="anon_inode:[eventpoll]";break;
         case FD_EVENTFD:path="anon_inode:[eventfd]";break;
+        case FD_SIGNALFD:path="anon_inode:[signalfd]";break;
         case FD_PTY_MASTER:path="/dev/ptmx";break;
         case FD_PTY_SLAVE:path="/dev/pts/0";break;
         default:path="anon_inode:[unknown]";break;

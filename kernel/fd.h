@@ -19,7 +19,7 @@ enum { FD_CLOSED = 0, FD_UART = 1, FD_NULL = 2, FD_ZERO = 3,
        FD_PIPE_R = 7, FD_PIPE_W = 8,
        FD_TTY = 11, FD_EPOLL = 12, FD_EVENTFD = 13,
        FD_SOCKET = 14, FD_PTY_MASTER = 15, FD_PTY_SLAVE = 16,
-       FD_RANDOM = 17 };
+       FD_RANDOM = 17, FD_SIGNALFD = 18 };
 /* Descriptor-local entry. The open-file description is a separate
  * refcounted object: dup/fork share its offset, not the CLOEXEC bit. */
 struct nas_fd_entry {

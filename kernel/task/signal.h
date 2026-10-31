@@ -39,6 +39,10 @@ uint64_t nas_signal_sigreturn(uint64_t *frame);
 /* Install native RX restorer into each new user address space, before exec. */
 bool nas_signal_install_trampoline(void);
 bool nas_signal_user_pending(const struct nas_task *task);
+/* signalfd consumes genuinely pending masked TID/TGID signals; no synthetic
+ * wake events, and the caller is always the active reader's task. */
+bool nas_signal_signalfd_ready(const struct nas_task *task,uint64_t mask);
+unsigned nas_signal_signalfd_take(struct nas_task *task,uint64_t mask);
 void nas_signal_ppoll_restore(struct nas_task *task,bool interrupted);
 /* Emit SIGPIPE for caught or masked broken-pipe writes; default action is
  * handled by the scheduler before returning to userspace. */

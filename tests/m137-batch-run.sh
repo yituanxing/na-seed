@@ -246,7 +246,8 @@ run_case() {
         # be misreported as a Zint QR encoder failure.
         "$exe" -b 58 -d 'M137-REAL-QR-CODE' --dump > "$work/encoded"
         [ -s "$work/encoded" ]
-        busy grep -Eq '[0-9A-Fa-f]{4,}' "$work/encoded" ;;
+        # Zint emits separate hexadecimal byte pairs, not contiguous words.
+        busy grep -Eq '^[[:space:]]*[0-9A-Fa-f]{2}([[:space:]]+[0-9A-Fa-f]{2})+' "$work/encoded" ;;
       *) echo "[M137 UNKNOWN ORIGINAL ELF CASE] $app" >&2; return 2 ;;
     esac
 }

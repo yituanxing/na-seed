@@ -18,7 +18,8 @@ if ! sh "$runner"; then
     echo "[M137 BATCH FAIL] $port signed DB/font/codegen/backup original programs" >&2
     if test -s "$log"; then
         grep -aE '^(M137_[A-Z0-9_]+_(PASS|FAIL)|\[M137 )' "$log" >&2 || true
-        tail -2000 "$log" >&2
+        # Preserve early LMDB failures as well as later ISO/Zint diagnostics.
+        tail -10000 "$log" >&2
     fi
     exit 1
 fi
