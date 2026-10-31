@@ -104,9 +104,12 @@ case "$case_name" in
     busy grep -Eq 'bytes[[:space:]]*=[[:space:]]*4096' "$work/details"
     /usr/bin/ipcrm -m "$ipc_id"
     ipc_id=
-    if /usr/bin/ipcs -m -i "$(get_ipc_id "$output")" > "$work/removed" 2>&1; then
-        exit 1
-    fi ;;
+    # util-linux ipcs prints "id N not found" but exits 0 for a missing
+    # specifically selected ID. Test the resource's actual absence, not
+    # a nonexistent nonzero-exit contract of the original Alpine tool.
+    /usr/bin/ipcs -m -i "$(get_ipc_id "$output")" > "$work/removed" 2>&1 || :
+    busy grep -Fq "id $(get_ipc_id "$output") not found" "$work/removed"
+    ! busy grep -Fq 'Shared memory Segment' "$work/removed" ;;
   ipc-semaphore)
     original_elf /usr/bin/ipcmk >/dev/null
     original_elf /usr/bin/ipcs >/dev/null

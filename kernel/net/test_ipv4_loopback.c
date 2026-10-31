@@ -46,6 +46,8 @@ int main(void) {
     open_socket(2); /* client */
     assert(nas_ipv4_socket_bind(1,service)==0);
     assert(nas_ipv4_socket_listen(1,2)==0);
+    uint8_t tcp_state=0;
+    assert(nas_ipv4_socket_tcp_state(1,&tcp_state)==0 && tcp_state==10);
     assert(nas_ipv4_socket_listening(1));
     assert(!nas_ipv4_socket_readable(1));
     open_socket(3);
@@ -61,10 +63,12 @@ int main(void) {
            (struct nas_ipv4_endpoint){NAS_IPV4_LOOPBACK,15555})
            ==-ECONNREFUSED);
     assert(nas_ipv4_socket_connect(2,service)==0);
+    assert(nas_ipv4_socket_tcp_state(2,&tcp_state)==0 && tcp_state==1);
     assert(nas_ipv4_socket_readable(1));
     assert(nas_ipv4_socket_connect(2,service)==-EISCONN);
     unsigned accepted=NAS_OPEN_FILE_LIMIT;
     assert(nas_ipv4_socket_accept(1,&accepted)==0);
+    assert(nas_ipv4_socket_tcp_state(accepted,&tcp_state)==0 && tcp_state==1);
     assert(accepted<NAS_OPEN_FILE_LIMIT && accepted!=2);
     assert(!nas_ipv4_socket_readable(1));
     assert(nas_ipv4_socket_accept(1,&accepted)==-EAGAIN);

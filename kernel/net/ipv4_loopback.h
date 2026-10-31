@@ -23,6 +23,10 @@ int nas_ipv4_socket_name(unsigned slot,bool peer,
                          struct nas_ipv4_endpoint *out);
 bool nas_ipv4_socket_listening(unsigned slot);
 bool nas_ipv4_socket_readable(unsigned slot);
+/* Linux TCP_INFO compatible lifecycle state for the in-kernel loopback
+ * stream: 1=ESTABLISHED, 7=CLOSE, 10=LISTEN. This describes endpoint
+ * ownership, not fabricated wire-level TCP congestion statistics. */
+int nas_ipv4_socket_tcp_state(unsigned slot,uint8_t *state);
 /* SO_REUSEADDR is meaningful for conflicting bound endpoints. An active
  * listener or connected endpoint always owns its port exclusively. */
 int nas_ipv4_socket_reuseaddr(unsigned slot,bool set,bool *value);

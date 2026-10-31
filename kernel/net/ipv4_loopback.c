@@ -197,6 +197,15 @@ bool nas_ipv4_socket_listening(unsigned slot) {
 bool nas_ipv4_socket_readable(unsigned slot) {
     return nas_ipv4_socket_listening(slot) && sockets[slot].count!=0;
 }
+int nas_ipv4_socket_tcp_state(unsigned slot,uint8_t *state) {
+    if(!state || !nas_ipv4_socket_active(slot))return -EBADF;
+    switch(sockets[slot].state) {
+    case IPV4_CONNECTED:*state=1;break; /* TCP_ESTABLISHED */
+    case IPV4_LISTEN:*state=10;break; /* TCP_LISTEN */
+    default:*state=7;break; /* TCP_CLOSE: unconnected */
+    }
+    return 0;
+}
 int nas_ipv4_socket_reuseaddr(unsigned slot,bool set,bool *value) {
     if(!value || !nas_ipv4_socket_active(slot))return -EBADF;
     if(set)sockets[slot].reuseaddr=*value;

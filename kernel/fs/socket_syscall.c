@@ -325,6 +325,26 @@ static uint64_t sys_ipv4_getsockopt(uint64_t fd,uint64_t level,
     uint32_t length;
     if(!size_ptr || !nas_user_read_bytes(size_ptr,(uint8_t *)&length,4))
         return (uint64_t)-EFAULT;
+    if(level==6 && opt==11) { /* Linux TCP_INFO, stable 104-byte prefix */
+        /* iperf3 samples TCP_INFO to report stream metrics. Our local-only
+         * byte stream has a genuine endpoint state and bounded receive
+         * ring, but no TCP packets, RTT, retransmits or congestion window.
+         * Publish the stable Linux tcp_info prefix with those unsupported
+         * wire metrics zero, never inventing congestion measurements. */
+        if(!length)return (uint64_t)-EINVAL;
+        uint8_t info[104]={0};
+        unsigned slot=TASK.fds->entries[fd].slot;
+        int rc=nas_ipv4_socket_tcp_state(slot,&info[0]);
+        if(rc)return (uint64_t)(int64_t)rc;
+        uint32_t receive_space=NAS_PIPE_CAP;
+        memcpy(info+96,&receive_space,sizeof(receive_space));
+        uint32_t actual=length<sizeof(info)?length:(uint32_t)sizeof(info);
+        if(!nas_user_prepare_write(address,actual) ||
+           !nas_user_prepare_write(size_ptr,4))return (uint64_t)-EFAULT;
+        return nas_user_write_bytes(address,info,actual) &&
+               nas_user_write_bytes(size_ptr,(const uint8_t *)&actual,4) ?
+               0 : (uint64_t)-EFAULT;
+    }
     if(length<4)return (uint64_t)-EINVAL;
     uint32_t value=0;
     if(level==1) {
