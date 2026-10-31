@@ -35,7 +35,8 @@ if [ ! -f "$work/packages-$package_sha/signed-install.ok" ]; then
     if ! docker run --rm --volume "$root_canonical:/target" \
         --env APK_ARCH="$arch" --env APK_PACKAGES="$package_list" \
         alpine:3.23 sh -ec '
-            apk --arch "$APK_ARCH" --root /target --keys-dir /etc/apk/keys \
+            apk --arch "$APK_ARCH" --root /target --initdb \
+                --keys-dir /etc/apk/keys \
                 --no-scripts \
                 -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main \
                 -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
