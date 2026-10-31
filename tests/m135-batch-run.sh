@@ -62,7 +62,14 @@ run_case() {
         busy mkdir -p "$work/input" "$work/archive"
         busy printf 'Native NaSeed signed CPack archive M135\n' > "$work/input/payload.txt"
         busy printf 'set(CPACK_PACKAGE_NAME "naseed")\nset(CPACK_PACKAGE_VERSION "1.0")\nset(CPACK_PACKAGE_FILE_NAME "naseed-m135")\nset(CPACK_PACKAGE_DESCRIPTION_SUMMARY "M135 native test")\nset(CPACK_GENERATOR "TGZ")\nset(CPACK_INSTALLED_DIRECTORIES "%s/input;share")\n' "$work" > "$work/CPackConfig.cmake"
-        "$exe" -G TGZ --config "$work/CPackConfig.cmake" -B "$work/archive" > "$work/pack.log"
+        if ! "$exe" -G TGZ --config "$work/CPackConfig.cmake" \
+             -B "$work/archive" > "$work/pack.log" 2>&1; then
+            # The native QEMU serial can exceed the host's failure tail.
+            # Prefix the original CPack diagnostic so the host grep always
+            # captures the real error, even after all 15 cases have run.
+            busy sed 's/^/[M135 CPACK LOG] /' "$work/pack.log" >&2 || :
+            return 1
+        fi
         archive="$work/archive/naseed-m135.tar.gz"
         [ -s "$archive" ]
         busy tar -tzf "$archive" > "$work/members"
