@@ -9,8 +9,6 @@
 #include "../arch/abi.h"
 #include "../task/sched.h"
 #include "../panic.h"
-#include "../lib/string.h"
-#include "../drivers/serial.h"
 
 /* Linux UAPI asm-generic signal.h constants for LP64. 0x40000000 is
  * SA_NODEFER, NOT SA_RESETHAND (0x80000000). All three ISAs share them. */
@@ -709,13 +707,6 @@ void nas_signal_child_exit(const struct nas_task *child) {
      * never silently enqueue it on the ZOMBIE leader's dead user frame. */
     struct nas_task *parent=signal_group_recipient(child->ppid,NAS_SIGCHLD);
     if (!parent) return;
-    if(!memcmp(parent->comm,"script",6)) {
-        nas_print("[M136 SIGCHLD] parent=");nas_dec(parent->pid);
-        nas_print(" blocked=");nas_hex(parent->blocked_signals);
-        nas_print(" disposition=");nas_hex(parent->sighand->actions[NAS_SIGCHLD][0]);
-        nas_print(" pending_before=");nas_hex(signal_pending_union(parent));
-        nas_print("\n");
-    }
     /* SIG_DFL SIGCHLD still becomes pending while blocked: signalfd users
      * (util-linux script) observe it and perform the real waitpid themselves.
      * Only unblocked default/ignored dispositions skip this notification. */

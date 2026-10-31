@@ -123,7 +123,7 @@ run_case() {
         seed_terminfo
         # tset must query terminal attributes through an actual PTY, not the
         # QEMU batch runner's redirected, non-interactive serial/stdout.
-        SCRIPT_DEBUG=all ULPTY_DEBUG=all /usr/bin/script \
+        /usr/bin/script \
             -q -e -c "$exe -I -Q -s m136" "$work/pty.log" \
             > "$work/output" 2> "$work/stderr"
         busy grep -Fq 'm136' "$work/pty.log" ;;
@@ -148,7 +148,7 @@ run_case() {
             echo '[M136 SCRIPT BINARY VERSION FAILED]' >&2
             return 1
         }
-        SCRIPT_DEBUG=all ULPTY_DEBUG=all "$exe" -q -T "$work/timing.log" \
+        "$exe" -q -T "$work/timing.log" \
             -O "$work/typescript" \
             -c '/bin/busybox printf "M136_SCRIPT_ACTUAL_PTY\n"' \
             > "$work/output" 2> "$work/stderr"

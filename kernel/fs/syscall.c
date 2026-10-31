@@ -5,7 +5,6 @@
 #include "../syscall/ops.h"
 #include "../task.h"
 #include "../task/signal.h"
-#include "../drivers/serial.h"
 #include "../fd.h"
 #include "../bootfs.h"
 #include "../tmpfs.h"
@@ -366,8 +365,6 @@ static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
         return 0;
     }
     if(cmd==0x5441ULL) { /* TIOCGPTPEER: open the slave of this PTY master */
-        nas_print("[M136 PTY TRACE] peer ioctl pid=");nas_dec(nas_current_task->pid);
-        nas_print(" flags=");nas_dec(arg);nas_print("\n");
         /* Unlike ordinary PTY ioctls this creates a NEW descriptor, so its
          * allocation belongs at the common FD boundary, not in pty.c.
          * util-linux script/openpty uses this Linux interface instead of
@@ -397,24 +394,9 @@ static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
         TASK.fds->entries[fd].cloexec=(uint8_t)(cmd==0x5451ULL);
         return 0;
     }
-    if(TASK.fds->entries[fd].kind==FD_PTY_MASTER ||
-       TASK.fds->entries[fd].kind==FD_PTY_SLAVE) {
-        static unsigned m136_pty_trace_count;
-        if(m136_pty_trace_count++<60U) {
-            nas_print("[M136 PTY TRACE] ioctl pid=");
-            nas_dec(nas_current_task->pid);
-            nas_print(" cmd=");nas_dec(cmd);
-            nas_print("\n");
-        }
-    }
     const struct nas_file_ops *ops=nas_open_files[slot].ops;
     uint64_t result=ops && ops->ioctl ? ops->ioctl(fd,cmd,arg) :
                     (uint64_t)-ENOTTY;
-    if(TASK.fds->entries[fd].kind==FD_PTY_MASTER ||
-       TASK.fds->entries[fd].kind==FD_PTY_SLAVE) {
-        nas_print("[M136 PTY TRACE] ioctl result=");
-        nas_dec(result);nas_print("\n");
-    }
     return result;
 }
 
@@ -563,14 +545,9 @@ static uint64_t open_path_owned(const char *path,
     }
 
     if(kind==FD_PTY_MASTER) {
-        nas_print("[M136 PTY TRACE] ptmx open pid=");nas_dec(nas_current_task->pid);
-        nas_print("\n");
         int err=nas_pty_new(slot);
         if(err)return (uint64_t)(int64_t)err;
     } else if(kind==FD_PTY_SLAVE) {
-        nas_print("[M136 PTY TRACE] slave open pid=");
-        nas_dec(nas_current_task->pid);
-        nas_print(" path=");nas_print(path);nas_print("\n");
         int err=pty_number>=0 ?
             nas_pty_attach((unsigned)pty_number,slot) :
             nas_pty_attach_controlling(slot);
@@ -882,12 +859,6 @@ static uint64_t sys_signalfd4(uint64_t raw_fd,uint64_t user_mask,
     uint64_t mask=0;
     if(!nas_user_read_u64(user_mask,&mask))return (uint64_t)-EFAULT;
     mask&=~((1ULL<<(NAS_SIGKILL-1U))|(1ULL<<(NAS_SIGSTOP-1U)));
-    if(!memcmp(TASK.comm,"script",6)) {
-        nas_print("[M136 SIGNALFD] pid=");nas_dec(TASK.pid);
-        nas_print(" mask=");nas_hex(mask);
-        nas_print(" blocked=");nas_hex(TASK.blocked_signals);
-        nas_print(" flags=");nas_hex(flags);nas_print("\n");
-    }
     int fd=(int32_t)(uint32_t)raw_fd;
     if(fd!=-1) {
         if(fd<0 || fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind!=FD_SIGNALFD)
@@ -934,17 +905,8 @@ static uint64_t signalfd_read(unsigned slot,uint8_t *dst,uint64_t length) {
 uint16_t nas_fs_signalfd_poll_task(unsigned slot,uint16_t events,
                                   const struct nas_task *task) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)return 0;
-    bool ready=nas_signal_signalfd_ready(task,signalfd_masks[slot]);
-    if(task && !memcmp(task->comm,"script",6)) {
-        static unsigned debug_count;
-        if(debug_count++<15U || ready) {
-            nas_print("[M136 SIGNALFD POLL] slot=");nas_dec(slot);
-            nas_print(" events=");nas_dec(events);
-            nas_print(" blocked=");nas_hex(task->blocked_signals);
-            nas_print(" ready=");nas_dec(ready);nas_print("\n");
-        }
-    }
-    return (events&1U) && ready?1U:0U;
+    return (events&1U) &&
+        nas_signal_signalfd_ready(task,signalfd_masks[slot])?1U:0U;
 }
 static uint16_t signalfd_poll_slot(unsigned slot,uint16_t events) {
     return nas_fs_signalfd_poll_task(slot,events,nas_current_task);
