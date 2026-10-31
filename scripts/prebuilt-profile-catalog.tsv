@@ -44,3 +44,4 @@ m129-batch	rootfs/alpine/packages-m129-batch.txt	scripts/m129-original-elfs.txt	
 m130-batch	rootfs/alpine/packages-m130-batch.txt	scripts/m130-original-elfs.txt	scripts/m130-rootfs-copies.tsv	main+community
 m131-batch	rootfs/alpine/packages-m131-batch.txt	scripts/m131-original-elfs.txt	scripts/m131-rootfs-copies.tsv	main+community
 m132-batch	rootfs/alpine/packages-m132-batch.txt	scripts/m132-original-elfs.txt	scripts/m132-rootfs-copies.tsv	main+community
+m133-batch	rootfs/alpine/packages-m133-batch.txt	scripts/m133-original-elfs.txt	scripts/m133-rootfs-copies.tsv	main

@@ -1,23 +1,7 @@
 name: NaSeed M132 15 signed ICU WebP compression regex ELFs, native QEMU three ISAs
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/m132-batch.yml'
-      - 'tests/m132-*'
-      - 'scripts/m132-*'
-      - 'scripts/probe-m132-batch.sh'
-      - 'scripts/stage-m132-prebuilt.sh'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'scripts/check-prebuilt-profile-catalog.py'
-      - 'scripts/check-native-qemu-target.py'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'rootfs/alpine/**'
-      - 'kernel/**'
-      - 'ports/**'
+  # Exact-head M132 45/45 remains at run 41189211776. M133 is the one
+  # active PR QEMU matrix; older milestones stay manually reproducible.
   workflow_dispatch:
 
 concurrency:
