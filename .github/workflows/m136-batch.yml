@@ -1,5 +1,10 @@
 name: NaSeed M136 20 signed parser terminfo Unix original ELFs, QEMU three ISAs
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/m136-batch.yml'
+      - 'tests/m136-*'
+      - 'kernel/**'
   workflow_dispatch:
 
 concurrency:

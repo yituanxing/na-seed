@@ -18,7 +18,7 @@ if ! sh "$runner"; then
     echo "[M137 BATCH FAIL] $port signed DB/font/codegen/backup original programs" >&2
     if test -s "$log"; then
         grep -aE '^(M137_[A-Z0-9_]+_(PASS|FAIL)|\[M137 )' "$log" >&2 || true
-        tail -500 "$log" >&2
+        tail -2000 "$log" >&2
     fi
     exit 1
 fi
@@ -34,7 +34,7 @@ while IFS= read -r marker; do
     found=$(grep -Fxc "$marker" "$log" || true)
     if [ "$found" -ne 1 ]; then
         echo "[M137 BATCH FAIL] $port $marker appears $found times (expected once)" >&2
-        tail -500 "$log" >&2
+        tail -2000 "$log" >&2
         exit 1
     fi
     if [ "$marker" = M137_BATCH_PASS ]; then summary=$((summary + 1));

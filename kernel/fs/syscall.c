@@ -406,7 +406,14 @@ static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
         }
     }
     const struct nas_file_ops *ops=nas_open_files[slot].ops;
-    return ops && ops->ioctl ? ops->ioctl(fd,cmd,arg) : (uint64_t)-ENOTTY;
+    uint64_t result=ops && ops->ioctl ? ops->ioctl(fd,cmd,arg) :
+                    (uint64_t)-ENOTTY;
+    if(TASK.fds->entries[fd].kind==FD_PTY_MASTER ||
+       TASK.fds->entries[fd].kind==FD_PTY_SLAVE) {
+        nas_print("[M136 PTY TRACE] ioctl result=");
+        nas_dec(result);nas_print("\n");
+    }
+    return result;
 }
 
 /* Pathname / dirfd user-address adapter lives in namespace_syscall.c. */
@@ -559,6 +566,9 @@ static uint64_t open_path_owned(const char *path,
         int err=nas_pty_new(slot);
         if(err)return (uint64_t)(int64_t)err;
     } else if(kind==FD_PTY_SLAVE) {
+        nas_print("[M136 PTY TRACE] slave open pid=");
+        nas_dec(nas_current_task->pid);
+        nas_print(" path=");nas_print(path);nas_print("\n");
         int err=pty_number>=0 ?
             nas_pty_attach((unsigned)pty_number,slot) :
             nas_pty_attach_controlling(slot);

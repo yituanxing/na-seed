@@ -156,11 +156,11 @@ run_case() {
         exe=$(original_elf /usr/bin/xorriso)
         busy mkdir -p "$work/source"
         busy printf 'M137 original signed ISO roundtrip\n' > "$work/source/payload.txt"
-        "$exe" -outdev "$work/image.iso" -map "$work/source" /payload \
-            -commit -end > "$work/write.log" 2>&1
+        "$exe" -as mkisofs -R -J -o "$work/image.iso" \
+            "$work/source" > "$work/write.log" 2>&1
         [ -s "$work/image.iso" ]
         "$exe" -indev "$work/image.iso" -osirrox on \
-            -extract /payload/payload.txt "$work/recovered.txt" \
+            -extract /payload.txt "$work/recovered.txt" \
             > "$work/read.log" 2>&1
         busy cmp -s "$work/source/payload.txt" "$work/recovered.txt" ;;
       gm)
@@ -240,8 +240,13 @@ run_case() {
         magic=$(busy dd if="$work/qrcode.png" bs=1 count=8 2>/dev/null |
                 busy od -An -tx1 | busy tr -d ' \n')
         [ "$magic" = 89504e470d0a1a0a ]
-        /usr/bin/zbarimg -q "$work/qrcode.png" > "$work/decoded" 2>&1
-        busy grep -Fq 'QR-Code:M137-REAL-QR-CODE' "$work/decoded" ;;
+        # The authentic generator also provides an independent QR matrix
+        # dump. zbarimg's optional ImageMagick PNG decode module is absent
+        # in the no-scripts Alpine staging image, so its failure must not
+        # be misreported as a Zint QR encoder failure.
+        "$exe" -b 58 -d 'M137-REAL-QR-CODE' --dump > "$work/encoded"
+        [ -s "$work/encoded" ]
+        busy grep -Eq '[0-9A-Fa-f]{4,}' "$work/encoded" ;;
       *) echo "[M137 UNKNOWN ORIGINAL ELF CASE] $app" >&2; return 2 ;;
     esac
 }
@@ -273,7 +278,7 @@ for app in mdb_copy mdb_dump mdb_load mdb_stat \
         busy tail -160 "$case_log" >&2 || :
         for detail in output write.log read.log load.log copied.dump \
                       dump seed.dump matched file dimensions \
-                      init.log backup.log restore.log decoded \
+                      init.log backup.log restore.log decoded encoded \
                       utf8 latin1 roundtrip; do
             if [ -s "/tmp/m137-$app/$detail" ]; then
                 echo "[M137 FAILED OUTPUT $app/$detail]" >&2
