@@ -179,6 +179,41 @@ static uint64_t sys_resize_fd(uint64_t fd,uint64_t length) {
     if(!rc)opened->vnode.size=length;
     return (uint64_t)(int64_t)rc;
 }
+/* Linux fadvise64 provides advisory cache hints, not a data mutation. It is
+ * legal to ignore every valid hint while still checking the actual inode FD,
+ * ranges and advice code; unsupported pipe/device handles remain errors. */
+static uint64_t sys_fadvise_fd(uint64_t fd,uint64_t offset,
+                              uint64_t length,uint64_t advice) {
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
+        return (uint64_t)-EBADF;
+    const struct nas_open_file *opened=
+        &nas_open_files[TASK.fds->entries[fd].slot];
+    if(opened->status_flags&NAS_LINUX_O_PATH)return (uint64_t)-EBADF;
+    if(advice>5U || offset>INT64_MAX || length>INT64_MAX ||
+       (length && offset>INT64_MAX-length))return (uint64_t)-EINVAL;
+    if(!opened->vnode_pinned)return (uint64_t)-ESPIPE;
+    if(opened->vnode.is_dir)return (uint64_t)-EINVAL;
+    return 0;
+}
+/* Unlike ftruncate this must reserve backing store. The generic VFS guards
+ * the inode; a provider without genuine allocation support reports EOPNOTSUPP
+ * rather than pretending a sparse file is preallocated. */
+static uint64_t sys_preallocate_fd(uint64_t fd,uint64_t mode,
+                                  uint64_t offset,uint64_t length) {
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
+        return (uint64_t)-EBADF;
+    struct nas_open_file *opened=&nas_open_files[TASK.fds->entries[fd].slot];
+    if(opened->status_flags&NAS_LINUX_O_PATH)return (uint64_t)-EBADF;
+    if((opened->status_flags&3ULL)==0)return (uint64_t)-EBADF;
+    if(mode&~1ULL)return (uint64_t)-EOPNOTSUPP;
+    if(!length)return (uint64_t)-EINVAL;
+    if(offset>INT64_MAX || length>INT64_MAX-offset)return (uint64_t)-EFBIG;
+    if(!opened->vnode_pinned)return (uint64_t)-ESPIPE;
+    if(opened->vnode.is_dir)return (uint64_t)-EISDIR;
+    int rc=nas_vfs_preallocate(&opened->vnode,offset,length,(unsigned)mode);
+    if(!rc && !(mode&1ULL))opened->vnode.size=nas_vfs_node_size(&opened->vnode);
+    return (uint64_t)(int64_t)rc;
+}
 static uint64_t sys_resize_path(uint64_t pathname,uint64_t length) {
     struct nas_fs_path_request request;
     struct nas_vfs_path path={0};
@@ -606,6 +641,8 @@ struct nas_fs_result nas_fs_metadata_syscall(enum nas_syscall_op op,
     case NAS_SC_sync: METADATA_RESULT((uint64_t)(int64_t)nas_vfs_sync_all());
     case NAS_SC_ftruncate: METADATA_RESULT(sys_resize_fd(args[1],args[2]));
     case NAS_SC_truncate: METADATA_RESULT(sys_resize_path(args[1],args[2]));
+    case NAS_SC_fadvise64: METADATA_RESULT(sys_fadvise_fd(args[1],args[2],args[3],args[4]));
+    case NAS_SC_fallocate: METADATA_RESULT(sys_preallocate_fd(args[1],args[2],args[3],args[4]));
     case NAS_SC_getdents64: METADATA_RESULT(sys_getdents64(args[1], args[2], args[3]));
     case NAS_SC_readlink: METADATA_RESULT(sys_readlinkat_boot((uint64_t)-100, args[1], args[2], args[3]));
     case NAS_SC_readlinkat: METADATA_RESULT(sys_readlinkat_boot(args[1], args[2], args[3], args[4]));

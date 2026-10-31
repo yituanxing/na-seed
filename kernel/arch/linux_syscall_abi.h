@@ -71,6 +71,8 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_fdatasync: return NAS_SC_fdatasync;
     case __NR_ftruncate: return NAS_SC_ftruncate;
     case __NR_truncate: return NAS_SC_truncate;
+    case __NR_fadvise64: return NAS_SC_fadvise64;
+    case __NR_fallocate: return NAS_SC_fallocate;
     case __NR_fork: return NAS_SC_fork;
     case __NR_futex: return NAS_SC_futex;
     case __NR_set_robust_list: return NAS_SC_set_robust_list;
@@ -252,6 +254,8 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 83U: return NAS_SC_fdatasync;
     case 46U: return NAS_SC_ftruncate;
     case 45U: return NAS_SC_truncate;
+    case 223U: return NAS_SC_fadvise64; /* asm-generic fadvise64 */
+    case 47U: return NAS_SC_fallocate; /* asm-generic fallocate */
     case 23U: return NAS_SC_dup;
     case 24U: return NAS_SC_dup3;
     case 49U: return NAS_SC_chdir;

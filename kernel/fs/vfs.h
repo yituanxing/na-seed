@@ -140,6 +140,10 @@ struct nas_vfs_type {
      * to keep live metadata timestamps truthful without a fake page cache. */
     int (*touch_shared)(const struct nas_fs_node *);
     int (*resize)(const struct nas_fs_node *,uint64_t size);
+    /* Real storage reservation (Linux fallocate), separate from sparse
+     * ftruncate size changes. Supported mode bits are provider-declared. */
+    int (*preallocate)(const struct nas_fs_node *,uint64_t offset,
+                       uint64_t length,unsigned mode);
     int (*sync)(const struct nas_fs_node *);
     int (*mkdir)(const struct nas_fs_node *parent,const char *name,uint64_t mode);
     int (*unlink)(const struct nas_fs_node *parent,const char *name,uint64_t flags);
@@ -318,6 +322,8 @@ int nas_vfs_acquire_shared_page(const struct nas_fs_node *node,
                                 uint64_t offset,uint64_t *pa_owned);
 int nas_vfs_touch_shared(const struct nas_fs_node *node);
 int nas_vfs_resize(const struct nas_fs_node *node,uint64_t length);
+int nas_vfs_preallocate(const struct nas_fs_node *node,uint64_t offset,
+                        uint64_t length,unsigned mode);
 int nas_vfs_sync(const struct nas_fs_node *node);
 /* Public user sync additionally re-arms first-write dirty tracking; internal
  * transaction flush must use nas_vfs_sync to preserve rollback PTE state. */

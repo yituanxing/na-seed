@@ -484,6 +484,30 @@ int tmp_resize(struct nas_tmp_file *file, uint64_t size) {
     file->ctime_ns = file->mtime_ns;
     return 0;
 }
+/* Linux fallocate mode=0 and KEEP_SIZE: reserve real zeroed data frames,
+ * not merely a sparse i_size like ftruncate. Existing data is unmodified.
+ * Partial allocation under memory exhaustion remains inode-owned and is
+ * reclaimed by truncate/unlink, as partial disk reservation may be. */
+int tmp_preallocate(struct nas_tmp_file *file,uint64_t offset,
+                    uint64_t length,unsigned mode) {
+    if(!file || !file->used)return -ENOENT;
+    if(file->is_dir)return -EISDIR;
+    if(mode&~1U)return -EOPNOTSUPP; /* no punch/collapse/zero-range */
+    if(!length)return -EINVAL;
+    if(offset>=TMP_FILE_CAP || length>TMP_FILE_CAP-offset)return -EFBIG;
+    uint64_t end=offset+length;
+    uint64_t first=offset/TMP_PAGE_SIZE;
+    uint64_t final=(end+TMP_PAGE_SIZE-1)/TMP_PAGE_SIZE;
+    for(uint64_t page=first;page<final;page++)
+        if(!tmp_data_frame(file,page,true))return -ENOMEM;
+    if(!(mode&1U) && end>file->size) {
+        tmp_zero_newly_visible_tail(file,file->size,end);
+        file->size=end;
+    }
+    file->mtime_ns=tmp_next_mtime(file->mtime_ns);
+    file->ctime_ns=file->mtime_ns;
+    return 0;
+}
 int tmp_utimens(struct nas_tmp_file *file, uint64_t access_ns,
                 uint64_t modified_ns, bool set_access, bool set_modified) {
     if (!file || !file->used) return -ENOENT;

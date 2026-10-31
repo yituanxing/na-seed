@@ -598,6 +598,42 @@ static void test_sparse_fiemap_watermark(void) {
     puts("[M132 TMP SPARSE FIEMAP PASS] 96 extents, bounded LAST, shrink/regrow, MAP_SHARED and inode reuse");
 }
 
+static void test_real_fallocate_reservation(void) {
+    const void *root=&root_tmp;
+    struct nas_tmp_file *file=tmp_create_at(root,"fallocate-real",false,0600);
+    assert(file && file->size==0);
+    unsigned before=used_frames(); /* inode/dentry slab growth is unrelated */
+    assert(tmp_preallocate(file,0,8192,0)==0);
+    assert(file->size==8192 && used_frames()==before+4);
+    uint64_t logical=0,length=0;
+    bool last=false;
+    assert(tmp_fiemap_next(file,0,file->size,&logical,&length,&last)==1);
+    assert(logical==0 && length==8192 && last);
+    uint8_t bytes[8];
+    assert(tmp_read_at(file,4094,bytes,sizeof(bytes))==(int64_t)sizeof(bytes));
+    for(unsigned i=0;i<sizeof(bytes);i++)assert(bytes[i]==0);
+
+    uint8_t original='F';
+    assert(tmp_write_at(file,4094,&original,1)==1);
+    assert(tmp_preallocate(file,0,4096,1)==0); /* KEEP_SIZE does not erase data */
+    assert(file->size==8192 && used_frames()==before+4);
+    assert(tmp_read_at(file,4094,bytes,1)==1 && bytes[0]=='F');
+
+    assert(tmp_preallocate(file,4*TMP_PAGE_SIZE,TMP_PAGE_SIZE,1)==0);
+    assert(file->size==8192 && used_frames()==before+5);
+    assert(tmp_preallocate(file,0,0,0)==-EINVAL);
+    assert(tmp_preallocate(file,0,1,2)==-EOPNOTSUPP);
+    assert(tmp_preallocate(file,TMP_FILE_CAP,1,0)==-EFBIG);
+    assert(file->size==8192 && used_frames()==before+5);
+    assert(tmp_resize(file,5*TMP_PAGE_SIZE)==0);
+    assert(tmp_read_at(file,4*TMP_PAGE_SIZE,bytes,sizeof(bytes))==(int64_t)sizeof(bytes));
+    for(unsigned i=0;i<sizeof(bytes);i++)assert(bytes[i]==0);
+    assert(tmp_read_at(file,4094,bytes,1)==1 && bytes[0]=='F');
+    assert(tmp_unlink_at(root,"fallocate-real",0)==0);
+    assert(used_frames()==before);
+    puts("[M136 TMP FALLOCATE PASS] real owned pages, KEEP_SIZE, data preservation, reclaim");
+}
+
 int main(void) {
     test_same_size_truncate_timestamps();
     test_real_inode_chown();
@@ -607,6 +643,7 @@ int main(void) {
     test_shared_page_ownership();
     test_inode_xattr_and_fiemap();
     test_sparse_fiemap_watermark();
+    test_real_fallocate_reservation();
     puts("[M108 TMP INDEX PASS]");
     return 0;
 }

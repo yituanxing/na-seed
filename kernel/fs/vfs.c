@@ -1752,6 +1752,32 @@ int nas_vfs_resize(const struct nas_fs_node *node,uint64_t length) {
     }
     return rc;
 }
+/* Reservation is not ftruncate: sparse size growth cannot promise that
+ * later writes have storage. Providers reserve real pages or disk blocks;
+ * VFS owns permission and shared inode-size publication. */
+int nas_vfs_preallocate(const struct nas_fs_node *node,uint64_t offset,
+                        uint64_t length,unsigned mode) {
+    int status=vfs_node_status(node);
+    if(status)return status;
+    if(node->is_dir)return -EISDIR;
+    if(!nas_vfs_can_write(node))return -EROFS;
+    if(!length || offset>INT64_MAX || length>INT64_MAX-offset)
+        return -EINVAL;
+    if(!node->filesystem->preallocate)return -EOPNOTSUPP;
+    /* The provider updates its live inode size before returning. Snapshot
+     * the VFS lease first, otherwise a later getattr may expose the new
+     * backend size while other open descriptors retain stale leased EOF. */
+    uint64_t old_size=nas_vfs_node_size(node);
+    int rc=node->filesystem->preallocate(node,offset,length,mode);
+    if(!rc && !(mode&1U)) {
+        uint64_t end=offset+length;
+        if(end>old_size) {
+            publish_inode_size(node,end);
+            nas_vm_invalidate_file(node,end);
+        }
+    }
+    return rc;
+}
 int nas_vfs_sync(const struct nas_fs_node *node) {
     int status=vfs_node_status(node);
     if(status)return status;

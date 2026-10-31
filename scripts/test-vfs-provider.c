@@ -296,6 +296,12 @@ int tmp_resize(struct nas_tmp_file *file,uint64_t size) {
     if(file!=&fixture_created || size>sizeof(fixture_created_bytes))return -EINVAL;
     fixture_created_length=(unsigned)size;file->size=size;return 0;
 }
+int tmp_preallocate(struct nas_tmp_file *file,uint64_t offset,
+                    uint64_t length,unsigned mode) {
+    if(file!=&fixture_created || mode || offset>UINT64_MAX-length)
+        return -EINVAL;
+    return tmp_resize(file,offset+length);
+}
 int64_t tmp_write_at(struct nas_tmp_file *file,uint64_t off,
                      const uint8_t *source,uint64_t count) {
     if(file!=&fixture_created || off+count>sizeof(fixture_created_bytes))
@@ -1063,12 +1069,23 @@ int main(void) {
     assert(nas_vfs_fiemap_next(&n,0,4,&logical,&extent_length,&extent_last)==-EOPNOTSUPP);
     struct nas_vfs_dirent records[8];
     assert(nas_fs_lookup_node("/",true,&n,resolved)==0);
-    assert(nas_vfs_read_dir(&n,0,records,8)==7);
+    assert(nas_vfs_read_dir(&n,0,records,8)==8);
     assert(!strcmp(records[0].name,".") && records[0].ino==1);
     assert(!strcmp(records[1].name,"..") && records[1].ino==1);
-    assert(!strcmp(records[2].name,"bin") && records[2].ino==2);
-    assert(records[2].dtype==4);
-    assert(nas_vfs_read_dir(&n,7,records,8)==0);
+    assert(!strcmp(records[2].name,"sys") && records[2].dtype==4);
+    assert(!strcmp(records[3].name,"bin") && records[3].ino==2);
+    assert(records[3].dtype==4);
+    assert(nas_vfs_read_dir(&n,8,records,8)==0);
+    /* The same read-only sysfs CPU topology is available to every port;
+     * neither a staged fake guest file nor a lscpu-specific syscall. */
+    assert(nas_fs_lookup_node("/sys/devices/system/cpu/possible",true,
+                              &n,resolved)==0);
+    assert(nas_vfs_read_at(&n,0,(uint8_t *)data,4)==2);
+    assert(!memcmp(data,"0\n",2));
+    assert(nas_fs_lookup_node("/sys/devices/system/cpu/cpu0/topology/core_id",
+                              true,&n,resolved)==0);
+    assert(nas_vfs_read_at(&n,0,(uint8_t *)data,4)==2);
+    assert(!memcmp(data,"0\n",2));
     assert(nas_fs_lookup_node("/bin",true,&n,resolved)==0);
     assert(nas_vfs_read_dir(&n,0,records,8)==3);
     assert(records[2].ino==3 && !strcmp(records[2].name,"demo"));
@@ -1575,9 +1592,9 @@ int main(void) {
     struct nas_fs_node root_list;
     struct nas_vfs_dirent root_entries[8];
     assert(nas_fs_lookup_node("/",true,&root_list,resolved)==0);
-    assert(nas_vfs_read_dir(&root_list,0,root_entries,8)==7);
-    assert(!strcmp(root_entries[5].name,"mnt"));
-    assert(root_entries[5].ino==801 && root_entries[5].dtype==4);
+    assert(nas_vfs_read_dir(&root_list,0,root_entries,8)==8);
+    assert(!strcmp(root_entries[6].name,"mnt"));
+    assert(root_entries[6].ino==801 && root_entries[6].dtype==4);
     /* The mount itself owns the covered /mnt directory and root parent.
      * A directory lease cannot evaporate merely because no user FD is open. */
     assert(nas_vfs_inode_is_pinned(&entries[5]));

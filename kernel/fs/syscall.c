@@ -363,6 +363,32 @@ static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
         else nas_open_files[slot].status_flags&=~0x800ULL;
         return 0;
     }
+    if(cmd==0x5441ULL) { /* TIOCGPTPEER: open the slave of this PTY master */
+        /* Unlike ordinary PTY ioctls this creates a NEW descriptor, so its
+         * allocation belongs at the common FD boundary, not in pty.c.
+         * util-linux script/openpty uses this Linux interface instead of
+         * constructing /dev/pts/N and opening it a second time. */
+        if(TASK.fds->entries[fd].kind!=FD_PTY_MASTER)
+            return (uint64_t)-ENOTTY;
+        uint64_t flags=0;
+        if(!nas_linux_open_flags(arg,&flags) ||
+           (flags&3ULL)==3ULL ||
+           (flags&~(3ULL|0x100ULL|0x800ULL|0x80000ULL)))
+            return (uint64_t)-EINVAL;
+        const unsigned number=nas_pty_number(slot);
+        if(number>=NAS_PTY_LIMIT)return (uint64_t)-EBADF;
+        unsigned fds[2],slots[2];
+        int capacity=nas_fd_reserve(nas_current_task,0,1,fds,slots,
+                                    "TIOCGPTPEER");
+        if(capacity)return (uint64_t)(int64_t)capacity;
+        int rc=nas_pty_attach(number,slots[0]);
+        if(rc)return (uint64_t)(int64_t)rc;
+        if(!nas_fd_install_new(nas_current_task,fds[0],slots[0],FD_PTY_SLAVE,
+                               nas_linux_open_status_flags(flags),
+                               !!(flags&0x80000ULL)))
+            nas_fs_fail("reserved TIOCGPTPEER FD was occupied");
+        return fds[0];
+    }
     if(cmd==0x5451ULL || cmd==0x5450ULL) { /* FIOCLEX / FIONCLEX */
         TASK.fds->entries[fd].cloexec=(uint8_t)(cmd==0x5451ULL);
         return 0;

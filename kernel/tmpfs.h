@@ -115,6 +115,8 @@ int tmp_acquire_shared_page(struct nas_tmp_file *file,uint64_t offset,
 int tmp_touch_shared(struct nas_tmp_file *file);
 void tmp_truncate(struct nas_tmp_file *file);
 int tmp_resize(struct nas_tmp_file *file,uint64_t size);
+int tmp_preallocate(struct nas_tmp_file *file,uint64_t offset,
+                    uint64_t length,unsigned mode);
 int tmp_utimens(struct nas_tmp_file *file, uint64_t access_ns,
                 uint64_t modified_ns, bool set_access, bool set_modified);
 
