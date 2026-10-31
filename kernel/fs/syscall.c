@@ -5,6 +5,7 @@
 #include "../syscall/ops.h"
 #include "../task.h"
 #include "../task/signal.h"
+#include "../drivers/serial.h"
 #include "../fd.h"
 #include "../bootfs.h"
 #include "../tmpfs.h"
@@ -478,7 +479,7 @@ static uint64_t open_path_owned(const char *path,
     if(!nas_linux_open_flags(native_flags,&flags))
         return (uint64_t)-EINVAL;
     flags=nas_linux_path_only_flags(flags);
-    const uint64_t permitted=NAS_LINUX_O_PATH | 3ULL | 0x800ULL | 0x8000ULL |
+    const uint64_t permitted=NAS_LINUX_O_PATH | 3ULL | 0x800ULL | 0x1000ULL | 0x8000ULL |
         0x10000ULL | 0x20000ULL | 0x80000ULL | 0x100ULL | 0x80ULL |
         0x40ULL | 0x200ULL | 0x400ULL;
     if(flags&~permitted)return (uint64_t)-EINVAL;
@@ -881,6 +882,12 @@ static uint64_t sys_signalfd4(uint64_t raw_fd,uint64_t user_mask,
     uint64_t mask=0;
     if(!nas_user_read_u64(user_mask,&mask))return (uint64_t)-EFAULT;
     mask&=~((1ULL<<(NAS_SIGKILL-1U))|(1ULL<<(NAS_SIGSTOP-1U)));
+    if(!memcmp(TASK.comm,"script",6)) {
+        nas_print("[M136 SIGNALFD] pid=");nas_dec(TASK.pid);
+        nas_print(" mask=");nas_hex(mask);
+        nas_print(" blocked=");nas_hex(TASK.blocked_signals);
+        nas_print(" flags=");nas_hex(flags);nas_print("\n");
+    }
     int fd=(int32_t)(uint32_t)raw_fd;
     if(fd!=-1) {
         if(fd<0 || fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind!=FD_SIGNALFD)
@@ -923,8 +930,17 @@ static uint64_t signalfd_read(unsigned slot,uint8_t *dst,uint64_t length) {
 uint16_t nas_fs_signalfd_poll_task(unsigned slot,uint16_t events,
                                   const struct nas_task *task) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)return 0;
-    return (events&1U) &&
-        nas_signal_signalfd_ready(task,signalfd_masks[slot])?1U:0U;
+    bool ready=nas_signal_signalfd_ready(task,signalfd_masks[slot]);
+    if(task && !memcmp(task->comm,"script",6)) {
+        static unsigned debug_count;
+        if(debug_count++<15U || ready) {
+            nas_print("[M136 SIGNALFD POLL] slot=");nas_dec(slot);
+            nas_print(" events=");nas_dec(events);
+            nas_print(" blocked=");nas_hex(task->blocked_signals);
+            nas_print(" ready=");nas_dec(ready);nas_print("\n");
+        }
+    }
+    return (events&1U) && ready?1U:0U;
 }
 static uint16_t signalfd_poll_slot(unsigned slot,uint16_t events) {
     return nas_fs_signalfd_poll_task(slot,events,nas_current_task);

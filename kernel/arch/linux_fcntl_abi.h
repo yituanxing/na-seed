@@ -75,7 +75,9 @@ static inline bool nas_linux_open_flags(uint64_t native, uint64_t *internal) {
  * flags survive and it does not gain O_LARGEFILE. Keep the common File
  * representation in generic64 positions, not target-specific UAPI bits. */
 static inline uint64_t nas_linux_open_status_flags(uint64_t internal) {
-    const uint64_t retained=NAS_LINUX_O_PATH|3ULL|0x400ULL|0x800ULL|
+    /* tmpfs is already in-memory coherent; O_DSYNC is an honest accepted
+     * File status hint, observable through F_GETFL, with no disk flush. */
+    const uint64_t retained=NAS_LINUX_O_PATH|3ULL|0x400ULL|0x800ULL|0x1000ULL|
         NAS_LINUX_O_LARGEFILE_INTERNAL|NAS_LINUX_O_DIRECTORY_INTERNAL|
         NAS_LINUX_O_NOFOLLOW_INTERNAL;
     uint64_t flags=internal&retained;
