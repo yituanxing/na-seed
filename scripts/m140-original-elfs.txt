@@ -1,0 +1,21 @@
+# Twenty historically unused, individually packaged GNU ELF programs.
+usr/bin/sort
+usr/bin/uniq
+usr/bin/join
+usr/bin/paste
+usr/bin/tr
+usr/bin/wc
+usr/bin/od
+usr/bin/nl
+usr/bin/numfmt
+usr/bin/shuf
+usr/bin/split
+usr/bin/tsort
+usr/bin/tac
+usr/bin/seq
+usr/bin/sha256sum
+usr/bin/md5sum
+usr/bin/realpath
+usr/bin/readlink
+usr/bin/sha1sum
+usr/bin/tail
