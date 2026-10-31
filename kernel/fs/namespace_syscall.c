@@ -244,8 +244,10 @@ static uint64_t sys_unlinkat_tmp(uint64_t dirfd, uint64_t pathname,
 static uint64_t sys_renameat_tmp(uint64_t olddirfd, uint64_t oldptr,
                                  uint64_t newdirfd, uint64_t newptr,
                                  uint64_t flags) {
-    /* Reject unsupported flags before reading user paths, as before. */
-    if (flags & ~1ULL) return (uint64_t)-EINVAL;
+    /* The VFS and tmpfs both implement NOREPLACE and EXCHANGE. Keep the
+     * syscall entrypoint in sync: rejecting bit 1 here made genuine Linux
+     * renameat2(RENAME_EXCHANGE) unreachable despite backend host tests. */
+    if ((flags & ~3ULL) || flags == 3ULL) return (uint64_t)-EINVAL;
     struct nas_fs_path_request oldpath,newpath;
     int rc=nas_fs_user_path_begin(olddirfd,oldptr,&oldpath);
     if(rc)return (uint64_t)(int64_t)rc;

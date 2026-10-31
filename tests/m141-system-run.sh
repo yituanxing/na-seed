@@ -20,6 +20,22 @@ ipc_kind=
 ssh_agent_live=
 
 cleanup() {
+    result=$?
+    if [ "$result" -ne 0 ]; then
+        busy printf '[M141 SYSTEM DIAG] %s exit=%s\n' "$case_name" "$result"
+        case "$case_name" in
+          ipc-shared|ipc-semaphore|exch-files|iperf3-loopback)
+            # These fixtures own their files; never dump arbitrary user
+            # paths. Preserve only small, bounded original-program output.
+            for diagnostic in details removed error out a b server.err server client.json; do
+                file="$work/$diagnostic"
+                if [ -s "$file" ]; then
+                    busy printf '[M141 SYSTEM DIAG] %s\n' "$diagnostic"
+                    busy head -n 12 "$file"
+                fi
+            done ;;
+        esac
+    fi
     if [ -n "$bgpid" ]; then
         busy kill "$bgpid" >/dev/null 2>&1 || :
         wait "$bgpid" >/dev/null 2>&1 || :

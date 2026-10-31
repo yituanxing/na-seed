@@ -18,6 +18,14 @@
 #define IPC_SET 1U
 #define IPC_STAT 2U
 #define IPC_64 0x100U
+#define SEM_GETPID 11U
+#define SEM_GETVAL 12U
+#define SEM_GETALL 13U
+#define SEM_GETNCNT 14U
+#define SEM_GETZCNT 15U
+#define SEM_SETVAL 16U
+#define SEM_SETALL 17U
+#define SEM_VALUE_MAX 32767U
 
 struct ipc_perm_lp64 {
     int32_t key;
@@ -58,6 +66,9 @@ struct ipc_object {
     int32_t key;
     uint32_t mode,creator_pid;
     uint64_t count,ctime;
+    /* Actual per-semaphore values, not fabricated GETVAL results. Semop's
+     * waiting/undo semantics remain unsupported until implemented. */
+    uint16_t sem_values[256];
 };
 static struct ipc_object shared[IPC_MAX_OBJECTS],
                          semaphores[IPC_MAX_OBJECTS],
@@ -171,6 +182,48 @@ static uint64_t control(enum nas_sysvipc_kind kind,uint64_t id,uint64_t cmd,
            0 : (uint64_t)-EFAULT;
 }
 
+/* semctl(semid, semnum, cmd, union semun): the fourth Linux syscall
+ * argument is the union's scalar bits, unlike semctl IPC_STAT's pointer.
+ * GETVAL/GETALL expose the zero-initialized and explicitly SET values;
+ * they never claim that semop or SEM_UNDO has been implemented. */
+static uint64_t semaphore_control(uint64_t id,uint64_t index,uint64_t cmd,
+                                  uint64_t arg) {
+    struct ipc_object *p=by_id(semaphores,id);
+    if(!p)return (uint64_t)-EINVAL;
+    if(cmd & ~(uint64_t)(IPC_64|0xffU))return (uint64_t)-EINVAL;
+    unsigned operation=(unsigned)cmd & ~IPC_64;
+    if(operation==IPC_RMID || operation==IPC_STAT || operation==IPC_SET)
+        return control(NAS_SYSVIPC_SEM,id,cmd,arg);
+    if(operation==SEM_GETALL || operation==SEM_SETALL) {
+        if(!arg)return (uint64_t)-EFAULT;
+        uint16_t values[256];
+        uint64_t length=p->count*sizeof(values[0]);
+        if(operation==SEM_GETALL) {
+            for(unsigned i=0;i<p->count;i++)values[i]=p->sem_values[i];
+            return nas_user_write_bytes(arg,(const uint8_t *)values,length) ?
+                   0 : (uint64_t)-EFAULT;
+        }
+        if(!nas_user_read_bytes(arg,(uint8_t *)values,length))
+            return (uint64_t)-EFAULT;
+        for(unsigned i=0;i<p->count;i++)
+            if(values[i]>SEM_VALUE_MAX)return (uint64_t)-ERANGE;
+        for(unsigned i=0;i<p->count;i++)p->sem_values[i]=values[i];
+        return 0;
+    }
+    if(index>=p->count)return (uint64_t)-EINVAL;
+    switch(operation) {
+    case SEM_GETVAL:return p->sem_values[index];
+    case SEM_SETVAL:
+        if(arg>SEM_VALUE_MAX)return (uint64_t)-ERANGE;
+        p->sem_values[index]=(uint16_t)arg;
+        return 0;
+    case SEM_GETPID:case SEM_GETNCNT:case SEM_GETZCNT:
+        /* No semop has run or blocked, so these lifecycle counters are 0. */
+        return 0;
+    default:return (uint64_t)-EINVAL;
+    }
+}
+
 /* operation: 0=get, 1=ctl, 2=attach/send/op, 3=detach/receive.
  * Linux syscalls dispatch only supported typed object operations here. */
 uint64_t nas_sysvipc_call(enum nas_sysvipc_kind kind,unsigned operation,
@@ -181,7 +234,7 @@ uint64_t nas_sysvipc_call(enum nas_sysvipc_kind kind,unsigned operation,
         return allocate(kind,a,b,c);
     }
     if(operation==1) {
-        if(kind==NAS_SYSVIPC_SEM)return control(kind,a,c,d);
+        if(kind==NAS_SYSVIPC_SEM)return semaphore_control(a,b,c,d);
         return control(kind,a,b,c);
     }
     return (uint64_t)-ENOSYS;

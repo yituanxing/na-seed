@@ -30,6 +30,21 @@ esac
 
 work="/tmp/m141-toolchain-$case_name"
 busy mkdir -p "$work"
+# Keep a bounded diagnostic from the failing native ELF in the QEMU serial.
+# The ordinary PASS oracle stays silent; details are useful only on failure.
+toolchain_failure() {
+    code=$?
+    if [ "$code" -ne 0 ]; then
+        busy printf '[M141 TOOLCHAIN DIAG] %s exit=%s\n' "$case_name" "$code"
+        for file in "$work"/dwarfutil.err "$work"/verify "$work"/reduce.log; do
+            if [ -s "$file" ]; then
+                busy printf '[M141 TOOLCHAIN DIAG] %s\n' "$file"
+                busy head -n 12 "$file"
+            fi
+        done
+    fi
+}
+trap toolchain_failure EXIT
 busy printf '%s\n' \
     'int m141_double(int x) {' \
     '  return x * 2;' \
@@ -110,18 +125,34 @@ case "$case_name" in
 
     llvm-dwarfutil)
         original_elf /usr/bin/llvm21-dwarfutil
-        compile_object
-        /usr/bin/llvm21-dwarfutil "$work/m141.o" "$work/copied.o"
-        object_magic "$work/copied.o"
-        /usr/bin/llvm21-dwarfdump --verify "$work/copied.o" \
+        # The DWARF editor resolves address/range relocations best on a
+        # linked ELF, unlike llvm-strip's relocatable object fixture.
+        busy printf '%s\n' \
+            'int m141_double(int);' \
+            'int main(void) { return m141_double(2) == 4 ? 0 : 1; }' \
+            > "$work/link.c"
+        /usr/bin/clang -g -O0 "$work/m141.c" "$work/link.c" \
+            -o "$work/m141.elf"
+        object_magic "$work/m141.elf"
+        /usr/bin/llvm21-dwarfutil "$work/m141.elf" "$work/copied.elf" \
+            2> "$work/dwarfutil.err"
+        object_magic "$work/copied.elf"
+        /usr/bin/llvm21-dwarfdump --verify "$work/copied.elf" \
             > "$work/verify" 2>&1
-        /usr/bin/llvm21-dwarfdump --debug-info "$work/copied.o" \
+        /usr/bin/llvm21-dwarfdump --debug-info "$work/copied.elf" \
             > "$work/dwarf"
         busy grep -Fq m141.c "$work/dwarf" ;;
 
     llvm-dwp)
         original_elf /usr/bin/llvm21-dwp
-        /usr/bin/clang -gsplit-dwarf -g -O0 -c "$work/m141.c" \
+        # RISC-V Clang rejects split DWARF with its default relaxation;
+        # -mno-relax is also accepted on the x86-64/AArch64 cross cases
+        # only when the flag is specific to the RISC-V target.
+        split_flags=
+        case "$(/usr/bin/clang -dumpmachine)" in
+            riscv64*) split_flags=-mno-relax ;;
+        esac
+        /usr/bin/clang $split_flags -gsplit-dwarf -g -O0 -c "$work/m141.c" \
             -o "$work/split.o"
         [ -s "$work/split.dwo" ]
         /usr/bin/llvm21-dwp "$work/split.dwo" -o "$work/merged.dwp"
