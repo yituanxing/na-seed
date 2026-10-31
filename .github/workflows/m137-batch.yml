@@ -1,6 +1,7 @@
 name: NaSeed M137 20 signed DB font compiler archive image backup ELFs, QEMU three ISAs
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
     paths:
       - '.github/workflows/m137-batch.yml'
       - 'tests/m137-*'
@@ -26,6 +27,7 @@ concurrency:
 
 jobs:
   signed-original-software:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-m137-batch')
     name: M137 20 signed native DB font compiler backup software / ${{ matrix.port }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60

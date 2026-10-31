@@ -1,6 +1,7 @@
 name: NaSeed M140 20 signed GNU and Netpbm ELFs, QEMU three ISAs
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
     paths:
       - '.github/workflows/m140-batch.yml'
       - 'tests/m140-*'
@@ -26,6 +27,7 @@ concurrency:
 
 jobs:
   signed-original-software:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-m140-batch')
     name: M140 20 signed native GNU and image tools / ${{ matrix.port }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60

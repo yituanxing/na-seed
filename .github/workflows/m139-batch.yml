@@ -1,6 +1,7 @@
 name: NaSeed M139 20 signed font image process crypto ELFs, QEMU three ISAs
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
     paths:
       - '.github/workflows/m139-batch.yml'
       - 'tests/m139-*'
@@ -26,6 +27,7 @@ concurrency:
 
 jobs:
   signed-original-software:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-m139-batch')
     name: M139 20 signed native font image process crypto tools / ${{ matrix.port }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60

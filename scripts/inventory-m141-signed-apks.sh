@@ -20,16 +20,16 @@ command -v readelf >/dev/null || { echo '[M141 CANDIDATE ERROR] readelf required
 manifest=scripts/m141-candidate-elfs.tsv
 packages=rootfs/alpine/packages-m141-candidates.txt
 work="build/external/m141-candidate-inventory/$port"
-root="$work/rootfs"
+package_sha=$(sha256sum "$packages" | awk '{print $1}')
+root="$work/packages-$package_sha/rootfs"
 mkdir -p "$root"
 root_canonical=$(cd "$root" && pwd -P)
 package_list=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$packages")
 test -n "$package_list"
 
-# Only cache an APK install for the identical package set, port and Alpine
-# release. The official APK signature check remains on for all packages.
-package_sha=$(sha256sum "$packages" | awk '{print $1}')
-if [ ! -f "$work/signed-install-$package_sha.ok" ]; then
+# Only reuse a root created for the identical package set and port.
+# The official APK signature check remains on for all packages.
+if [ ! -f "$work/packages-$package_sha/signed-install.ok" ]; then
     if ! docker run --rm --volume "$root_canonical:/target" \
         --env APK_ARCH="$arch" --env APK_PACKAGES="$package_list" \
         alpine:3.23 sh -ec '
@@ -43,7 +43,7 @@ if [ ! -f "$work/signed-install-$package_sha.ok" ]; then
         tail -100 "$work/apk-install.log" >&2
         exit 1
     fi
-    touch "$work/signed-install-$package_sha.ok"
+    touch "$work/packages-$package_sha/signed-install.ok"
 fi
 
 report="$work/candidates.tsv"

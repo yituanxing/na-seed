@@ -1,6 +1,7 @@
 name: NaSeed M138 20 signed LLVM21 IR codegen binary tools, QEMU three ISAs
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
     paths:
       - '.github/workflows/m138-batch.yml'
       - 'tests/m138-*'
@@ -26,6 +27,7 @@ concurrency:
 
 jobs:
   signed-original-software:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-m138-batch')
     name: M138 20 signed native LLVM21 IR codegen tools / ${{ matrix.port }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60

@@ -1,6 +1,7 @@
 name: NaSeed M136 20 signed parser terminfo Unix original ELFs, QEMU three ISAs
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
     paths:
       - '.github/workflows/m136-batch.yml'
       - 'tests/m136-*'
@@ -13,6 +14,7 @@ concurrency:
 
 jobs:
   signed-original-software:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-m136-batch')
     name: M136 20 signed native parser terminfo Unix software / ${{ matrix.port }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
