@@ -22,7 +22,9 @@ packages=rootfs/alpine/packages-m141-candidates.txt
 work="build/external/m141-candidate-inventory/$port"
 package_sha=$(sha256sum "$packages" | awk '{print $1}')
 root="$work/packages-$package_sha/rootfs"
-mkdir -p "$root"
+# Unlike the normal overlay, this discovery root starts empty. apk --root
+# expects a writable package database directory before its first install.
+mkdir -p "$root/lib/apk/db" "$root/etc/apk"
 root_canonical=$(cd "$root" && pwd -P)
 package_list=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$packages")
 test -n "$package_list"
