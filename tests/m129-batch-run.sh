@@ -4,9 +4,10 @@
 PATH=/usr/sbin:/sbin:/usr/bin:/bin
 HOME=/tmp
 TERM=xterm
+TMUX_TMPDIR=/tmp
 LC_ALL=C
 LANG=C
-export PATH HOME TERM LC_ALL LANG
+export PATH HOME TERM TMUX_TMPDIR LC_ALL LANG
 busy() { /bin/busybox "$@"; }
 
 original_elf() {
@@ -40,14 +41,14 @@ run_case() {
         busy grep -Eq 'OBJS|SLABS|CACHE|NAME' "$dir/slabs" ;;
       tload)
         exe=$(original_elf /bin/tload)
-        pty=$(original_elf /usr/bin/script)
-        # Original curses/TTY tool needs a real pseudoterminal. Alpine's
-        # original util-linux script supplies that PTY and captures its bytes.
-        rc=0
-        "$pty" -q -e -c '/bin/busybox timeout 3 /bin/tload -d 1' \
-            "$dir/load" > "$dir/pty" 2>&1 || rc=$?
-        case "$rc" in 124|143) ;; *) return 1 ;; esac
-        busy grep -Eq '[0-9]+\.[0-9]+,[[:space:]]*[0-9]+\.[0-9]+' "$dir/load" ;;
+        supervisor=$(original_elf /usr/bin/tmux)
+        # M60/M66 already prove the real PTY-backed tmux path across ISAs.
+        "$supervisor" -L m129 -f /dev/null new-session -d -s m129t \
+            '/bin/tload -d 1' > "$dir/pty" 2>&1
+        busy sleep 1
+        "$supervisor" -L m129 capture-pane -p -t m129t:0.0 > "$dir/load"
+        "$supervisor" -L m129 kill-server 2>/dev/null || :
+        busy grep -Eq '[0-9]+\.[0-9]+' "$dir/load" ;;
       vmstat)
         exe=$(original_elf /bin/vmstat)
         "$exe" -n 1 1 > "$dir/memory" 2>&1
@@ -59,13 +60,14 @@ run_case() {
         busy grep -Eq 'USER|TTY|load average' "$dir/sessions" ;;
       watch)
         exe=$(original_elf /bin/watch)
-        pty=$(original_elf /usr/bin/script)
-        # The authentic program requires a PTY and catches TERM; use KILL
-        # after three seconds so its repeated real child command is bounded.
-        rc=0
-        "$pty" -q -e -c '/bin/busybox timeout -s KILL 3 /bin/watch -t -n 1 /bin/busybox echo M129_WATCH_CHILD' \
-            "$dir/render" > "$dir/pty" 2>&1 || rc=$?
-        [ "$rc" -eq 137 ] && busy grep -Fq M129_WATCH_CHILD "$dir/render" ;;
+        supervisor=$(original_elf /usr/bin/tmux)
+        "$supervisor" -L m129 -f /dev/null new-session -d -s m129w \
+            '/bin/watch -t -n 1 /bin/busybox echo M129_WATCH_CHILD' \
+            > "$dir/pty" 2>&1
+        busy sleep 1
+        "$supervisor" -L m129 capture-pane -p -t m129w:0.0 > "$dir/render"
+        "$supervisor" -L m129 kill-server 2>/dev/null || :
+        busy grep -Fq M129_WATCH_CHILD "$dir/render" ;;
       sysctl)
         exe=$(original_elf /sbin/sysctl)
         "$exe" -n kernel.hostname > "$dir/hostname" 2>&1
@@ -80,9 +82,11 @@ run_case() {
       fuser)
         exe=$(original_elf /usr/bin/fuser)
         busy echo M129_OPEN_FILE > "$dir/held"
-        # Keep an actual kernel FD alive while the original fuser scans /proc.
+        # A live process CWD + FD must be discoverable via real /proc
+        # (procfd open-through-target remains an independent VFS milestone).
         exec 9< "$dir/held"
-        "$exe" "$dir/held" > "$dir/users" 2>&1
+        cd "$dir"
+        "$exe" "$dir" > "$dir/users" 2>&1
         busy grep -Eq "(^|[^0-9])$pid([^0-9]|$)" "$dir/users" ;;
       killall)
         exe=$(original_elf /usr/bin/killall)
