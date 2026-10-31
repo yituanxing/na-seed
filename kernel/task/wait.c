@@ -45,6 +45,9 @@ bool nas_task_wait_ready(const struct nas_task *task) {
      * frame creation is deferred until the target VM and user frame are
      * selected, not while inspecting an unrelated blocked process. */
     if (nas_signal_user_pending(task)) return true;
+    if (task->wait.blocked_op==NAS_SC_rt_sigtimedwait &&
+        nas_signal_timedwait_ready(task,task->wait.blocked_args[0]))
+        return true;
     /* A kernel-owned monotonic deadline can wake a task independently of
      * pipe/TTY events. No foreign userspace pointer is touched here. */
     if (task->wait.deadline_active &&

@@ -133,6 +133,12 @@ static uint64_t finish_sigsuspend(struct nas_task *task) {
     (void)task;
     return (uint64_t)-EINTR;
 }
+static uint64_t finish_sigtimedwait(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    /* A matching signal takes priority if it arrived at the deadline.
+     * Timeout without a matching pending signal is EAGAIN, not EINTR. */
+    return nas_signal_timedwait_consume(a[0],a[1]);
+}
 
 static uint64_t nas_time_sleep_syscall(uint64_t *frame,enum nas_syscall_op nr,
                                       const uint64_t *args) {
@@ -601,6 +607,30 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_rt_sigaction) return nas_signal_action(args[1], args[2], args[3], args[4]);
     if (nr == NAS_SC_sigaltstack) return nas_signal_sigaltstack(args[1], args[2]);
     if (nr == NAS_SC_rt_sigpending) return nas_signal_pending(args[1], args[2]);
+    if (nr == NAS_SC_rt_sigtimedwait) {
+        /* Linux LP64 sigsetsize=8 on all three native ISAs. Read the set
+         * exactly once before parking; no foreign address-space inspection
+         * is necessary in the scheduler readiness pass. */
+        if(args[4]!=8ULL)return (uint64_t)-EINVAL;
+        uint64_t mask=0;
+        if(!nas_user_read_u64(args[1],&mask))return (uint64_t)-EFAULT;
+        uint64_t delta=0;
+        if(args[3]) {
+            uint64_t rc=nas_time_read_request(args[3],&delta);
+            if((int64_t)rc<0)return rc;
+        }
+        mask &= ~((1ULL<<8)|(1ULL<<18));
+        if(nas_signal_timedwait_ready(&TASK,mask))
+            return nas_signal_timedwait_consume(mask,args[2]);
+        if(args[3] && !delta)return (uint64_t)-EAGAIN;
+        if(args[3]) {
+            TASK.wait.deadline_ns=nas_time_add_deadline(
+                nas_arch_monotonic_ns(),delta);
+            TASK.wait.deadline_active=true;
+        }
+        return nas_task_block((uint64_t *)(uintptr_t)args,nr,
+                              mask,args[2],0,0,finish_sigtimedwait);
+    }
     if (nr == NAS_SC_rt_sigreturn) return nas_signal_sigreturn((uint64_t *)(uintptr_t)args);
     if (nr == NAS_SC_rt_sigsuspend) {
         /* Temporary, atomic replacement of the caller's mask while asleep.

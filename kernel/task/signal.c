@@ -183,6 +183,31 @@ uint64_t nas_signal_pending(uint64_t destination,uint64_t size) {
         signal_pending_union(nas_current_task) & nas_current_task->blocked_signals)
         ? 0:(uint64_t)-EFAULT;
 }
+
+/* rt_sigtimedwait (sigwaitinfo is its libc wrapper): the wait set is a
+ * syscall-entry snapshot of the Linux 8-byte kernel sigset_t. Both pending
+ * ownership domains are visible, with thread-private signals consumed first.
+ * Never discard a pending signal when writing an optional siginfo faults.
+ * The present standard-signal queues retain signo rather than sender data;
+ * the 128-byte LP64 siginfo reports the signo and zero-initialized fields. */
+bool nas_signal_timedwait_ready(const struct nas_task *task,uint64_t mask) {
+    return task && (signal_pending_union(task) & mask & ~NAS_UNMASKABLE)!=0;
+}
+uint64_t nas_signal_timedwait_consume(uint64_t mask,uint64_t info) {
+    struct nas_task *task=nas_current_task;
+    uint64_t ready=signal_pending_union(task) & mask & ~NAS_UNMASKABLE;
+    if(!ready)return (uint64_t)-EAGAIN;
+    unsigned signo=(unsigned)__builtin_ctzll(ready)+1;
+    if(info) {
+        uint8_t siginfo[128]={0};
+        int32_t wire_signo=(int32_t)signo;
+        __builtin_memcpy(siginfo,&wire_signo,sizeof(wire_signo));
+        if(!nas_user_write_bytes(info,siginfo,sizeof(siginfo)))
+            return (uint64_t)-EFAULT;
+    }
+    signal_consume_one(task,1ULL<<(signo-1));
+    return signo;
+}
 uint64_t nas_signal_procmask(uint64_t how,uint64_t set,
                              uint64_t previous,uint64_t size,uint64_t *frame) {
     if(size!=8)return (uint64_t)-EINVAL;

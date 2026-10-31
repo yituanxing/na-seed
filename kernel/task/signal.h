@@ -55,6 +55,11 @@ void nas_signal_ptrace_stop(const struct nas_task *tracee);
 void nas_signal_handler_enter(struct nas_task *task,unsigned signum,
                               const uint64_t action[4]);
 uint64_t nas_signal_pending(uint64_t destination,uint64_t size);
+/* Synchronous signal acceptance consumes one pending TID or TGID signal
+ * without handler delivery. The scheduler tests the kernel-copied set, never
+ * reads a parked task's user memory from another MM. */
+bool nas_signal_timedwait_ready(const struct nas_task *task,uint64_t mask);
+uint64_t nas_signal_timedwait_consume(uint64_t mask,uint64_t info);
 /* Linux pid_t group selectors, nonmaskable SIGKILL and signal-zero probe. */
 uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame);
 uint64_t nas_signal_tkill(uint64_t raw_tid,uint64_t signum,uint64_t *frame);

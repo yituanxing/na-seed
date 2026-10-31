@@ -19,6 +19,8 @@ static unsigned exits, cpu_restores;
 static unsigned handler_installs;
 static unsigned last_handler_signal;
 static uint64_t observed_sigpending;
+static uint8_t observed_sigwait_info[128];
+static bool reject_sigwait_info;
 static uint64_t incoming_action[4];
 static uint64_t monotonic_ns;
 void nas_print(const char *message) { fputs(message,stderr); }
@@ -67,7 +69,10 @@ bool nas_user_read_bytes(uint64_t addr,uint8_t *dst,uint64_t size) {
     return true;
 }
 bool nas_user_write_bytes(uint64_t addr,const uint8_t *src,uint64_t size) {
-    (void)addr;(void)src;(void)size;
+    if(addr==0x4000 && size==sizeof(observed_sigwait_info)) {
+        if(reject_sigwait_info)return false;
+        memcpy(observed_sigwait_info,src,size);
+    }
     return true;
 }
 uint64_t nas_task_schedule(uint64_t *frame) {(void)frame;return 0;}
@@ -97,6 +102,8 @@ static void reset(void) {
     exits=cpu_restores=0;
     handler_installs=last_handler_signal=0;
     observed_sigpending=0;
+    memset(observed_sigwait_info,0,sizeof(observed_sigwait_info));
+    reject_sigwait_info=false;
     monotonic_ns=0;
     memset(incoming_action,0,sizeof(incoming_action));
     memset(exit_order,0,sizeof(exit_order));
@@ -248,6 +255,47 @@ static void test_thread_private_and_ignored_discard(void) {
     assert(leader->sighand->actions[NAS_SIGUSR2][0]==1);
     puts("M105_HOST_THREAD_PRIVATE_IGNORE_PURGE_PASS");
 }
+static void test_synchronous_sigwait_consumes_exact_ownership(void) {
+    reset();
+    struct nas_task *leader=make(0,2,2,20,3,false);
+    struct nas_task *worker=make(1,3,2,20,3,true);
+    worker->sighand=leader->sighand;
+    const uint64_t bit=1ULL<<(NAS_SIGUSR1-1);
+    leader->blocked_signals=worker->blocked_signals=bit;
+    leader->sighand->actions[NAS_SIGUSR1][0]=0x12340;
+    nas_current_task=leader;
+    assert(nas_signal_kill(2,NAS_SIGUSR1,0)==0);
+    assert(leader->signal_group->pending==bit &&
+           !leader->pending_signals && !worker->pending_signals);
+    assert(nas_signal_timedwait_ready(worker,bit));
+    assert(!nas_signal_timedwait_ready(worker,1ULL<<(NAS_SIGUSR2-1)));
+    nas_current_task=worker;
+    /* A failed usercopy never discards a signal belonging to the group. */
+    reject_sigwait_info=true;
+    assert(nas_signal_timedwait_consume(bit,0x4000)==(uint64_t)-EFAULT);
+    assert(leader->signal_group->pending==bit);
+    reject_sigwait_info=false;
+    assert(nas_signal_timedwait_consume(bit,0x4000)==NAS_SIGUSR1);
+    uint32_t got=0;
+    memcpy(&got,observed_sigwait_info,sizeof(got));
+    assert(got==NAS_SIGUSR1);
+    for(unsigned i=4;i<sizeof(observed_sigwait_info);i++)
+        assert(observed_sigwait_info[i]==0);
+    assert(!leader->signal_group->pending &&
+           nas_signal_timedwait_consume(bit,0)==(uint64_t)-EAGAIN);
+    /* SIGWAIT consumes the thread's private copy *before* the TGID copy,
+     * preserving two independent standard-signal ownership domains. */
+    nas_current_task=leader;
+    assert(nas_signal_kill(2,NAS_SIGUSR1,0)==0);
+    assert(nas_signal_tgkill(2,3,NAS_SIGUSR1,0)==0);
+    assert(worker->pending_signals==bit && leader->signal_group->pending==bit);
+    nas_current_task=worker;
+    assert(nas_signal_timedwait_consume(bit,0)==NAS_SIGUSR1);
+    assert(!worker->pending_signals && leader->signal_group->pending==bit);
+    assert(nas_signal_timedwait_consume(bit,0)==NAS_SIGUSR1);
+    assert(!leader->signal_group->pending);
+    puts("M128_HOST_SIGWAIT_TGID_TID_EFAULT_PASS");
+}
 static void test_posix_timer_process_vs_thread_direction(void) {
     reset();
     struct nas_task *leader=make(0,2,2,20,3,false);
@@ -333,6 +381,7 @@ int main(void) {
     test_caught_exactly_once();
     test_shared_pending_later_eligible_sibling();
     test_thread_private_and_ignored_discard();
+    test_synchronous_sigwait_consumes_exact_ownership();
     test_posix_timer_process_vs_thread_direction();
     test_dead_leader_live_worker();
     test_pid1_and_stop_preflight();
