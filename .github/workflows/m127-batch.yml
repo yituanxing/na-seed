@@ -1,24 +1,7 @@
 name: NaSeed M127 15 original signed audio codec tools, one QEMU per ISA
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/m127-batch.yml'
-      - 'tests/m127-*'
-      - 'scripts/m127-*'
-      - 'scripts/probe-m127-batch.sh'
-      - 'scripts/stage-m127-prebuilt.sh'
-      - 'scripts/host-configure-m127-batch.sh'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'scripts/check-prebuilt-profile-catalog.py'
-      - 'scripts/check-native-qemu-target.py'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'rootfs/alpine/**'
-      - 'kernel/**'
-      - 'ports/**'
+  # M127 passed 15/15 per ISA on run 41182559321 at a0bcb0e.
+  # Archived as manual opt-in while the single active M128 batch runs.
   workflow_dispatch:
 
 concurrency:

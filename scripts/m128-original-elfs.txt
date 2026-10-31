@@ -1,0 +1,15 @@
+usr/bin/mksquashfs
+usr/bin/unsquashfs
+usr/bin/gensquashfs
+usr/bin/rdsquashfs
+usr/bin/sqfs2tar
+usr/bin/sqfsdiff
+usr/bin/tar2sqfs
+usr/sbin/mkfs.exfat
+usr/sbin/fsck.exfat
+usr/sbin/dump.exfat
+usr/sbin/exfat2img
+usr/sbin/tune.exfat
+usr/sbin/exfatlabel
+sbin/blkid
+sbin/wipefs
