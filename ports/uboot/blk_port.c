@@ -203,7 +203,7 @@ static int64_t read_blocks(void *ctx,uint64_t lba,uint32_t count,void *dst){
  struct nas_uboot_block *b=ctx;
  if(__atomic_exchange_n(&b->busy,true,__ATOMIC_ACQUIRE))return -EBUSY;
  int64_t rc=b->poisoned?-EIO:
-      (int64_t)uboot_virtio_blk.ops->read(&b->udev,lba,count,dst);
+      (int64_t)((const struct blk_ops *)uboot_virtio_blk.ops)->read(&b->udev,lba,count,dst);
  if(rc!=(int64_t)count)rc=-EIO;
  __atomic_store_n(&b->busy,false,__ATOMIC_RELEASE);return rc;
 }
@@ -211,7 +211,7 @@ static int64_t write_blocks(void *ctx,uint64_t lba,uint32_t count,const void *sr
  struct nas_uboot_block *b=ctx;
  if(__atomic_exchange_n(&b->busy,true,__ATOMIC_ACQUIRE))return -EBUSY;
  int64_t rc=b->poisoned?-EIO:
-      (int64_t)uboot_virtio_blk.ops->write(&b->udev,lba,count,src);
+      (int64_t)((const struct blk_ops *)uboot_virtio_blk.ops)->write(&b->udev,lba,count,src);
  if(rc!=(int64_t)count)rc=-EIO;
  __atomic_store_n(&b->busy,false,__ATOMIC_RELEASE);return rc;
 }

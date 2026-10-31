@@ -19,10 +19,18 @@ Selected upstream source **pinned as a Git submodule** at
 `third_party/lwip` (fetch with `git submodule update --init`): official
 [`lwip-tcpip/lwip` `STABLE-2_2_1_RELEASE`](https://github.com/lwip-tcpip/lwip/releases/tag/STABLE-2_2_1_RELEASE),
 commit `77dcd25a72509eb83f72b033d219b1d40cd8eb95`, BSD-style `COPYING`.
-For the VirtIO-Net device implementation, evaluate and pin
-[`zephyrproject-rtos/zephyr/drivers/ethernet/eth_virtio_net.c`](https://github.com/zephyrproject-rtos/zephyr/blob/main/drivers/ethernet/eth_virtio_net.c)
-(Apache-2.0). Its VirtIO queue, net_pkt, devicetree and threading dependencies
-need a coherent port; do **not** copy a single C file and claim integration.
+The first network driver candidate is now **byte-identical U-Boot VirtIO-Net**
+at the same `ece349ade2973e220f524ce59e59711cc919263f` revision already
+used by the real VirtIO-Blk backend. Original `virtio_net.c` (GPL-2.0+)
+and `virtio_net.h` (BSD-3-Clause) are held under `third_party/uboot/`,
+hash-checked and cross-syntax-checked using the same tiny U-Boot device-model
+compatibility declarations as block. This is a **source/ABI integration**:
+the network driver is not yet linked to live queues or attached to netdev.
+The source has an unbounded TX completion wait; any real port MUST use a
+bounded/poisoning queue completion adapter and check errors outside upstream.
+Keep [Zephyr's VirtIO-Net](https://github.com/zephyrproject-rtos/zephyr/blob/main/drivers/ethernet/eth_virtio_net.c)
+(Apache-2.0) as a fallback, but it would introduce an otherwise unused
+Zephyr net_pkt/devicetree/virtqueue compatibility boundary.
 NaOS's GPL-3.0 driver implementations are architectural references only,
 given NaSeed's unresolved combined-work licensing. This dependency pin does
 **not** mean lwIP is compiled/linked, nor that a Zephyr NIC driver is ported.
@@ -62,7 +70,10 @@ QEMU VirtIO-Net hardware
   netif acquires a reference, then detaches before the driver can unregister.
   Send must retain/copy into driver-owned DMA before success; receive is a
   synchronous borrowed buffer copied into lwIP pbufs. `-EAGAIN` is genuine
-  backpressure. The NIC driver, not this interface, manages queue and IRQ.
+  backpressure. Its bounded `poll` and IRQ-safe wake callback follow Linux
+  NAPI's event/budget distinction; an IRQ only schedules a worker, never
+  calls lwIP. A final netif reference cannot drop with a wake callback
+  still installed. The NIC driver, not this interface, manages queue and IRQ.
 - `lwIP` owns the *protocol* and the 127.0.0.1 loopback netif. The existing
   `kernel/net/ipv4_loopback.c` is a temporary **simulated stream** backend;
   after real Netconn and socket acceptance, replace it and retire its
@@ -103,7 +114,7 @@ provides all wire protocol algorithms. Implement and test these OS hooks:
 | --- | --- | --- |
 | A — this batch | Make MMIO/PCI discovery publish VirtIO-Net class=1 alongside block class=2; add an independent Ethernet port/registry and host tests for binding/ownership | Multi-ISA source gates, host tests, existing BlockDevice proof; **no claim of packets on the wire** |
 | B | Link the byte-identical pinned lwIP submodule; build `sys_arch`, bootstrap tcpip thread and loopback netif | Host + all three ISA compile; lwIP timer/thread/mbox tests, real loopback TCP/UDP/ICMP without previous synthetic pipe backend |
-| C | Pin and port a coherent existing VirtIO-Net driver using the shared transport/DMA; connect netif, interrupt/bounded receive worker | PCI x86, MMIO RV64/AArch64 QEMU guest frames; DHCP lease, ARP, ping and UDP to host; MAC/address/link reporting |
+| C | Wire pinned original U-Boot VirtIO-Net through shared compatibility, 2 queues and DMA; connect netif, bounded TX completion, interrupt/bounded receive worker | PCI x86, MMIO RV64/AArch64 QEMU guest frames; DHCP lease, ARP, ping and UDP to host; MAC/address/link reporting |
 | D | Replace AF_INET socket backend with Netconn and FileOps, preserve AF_UNIX and shared open-description semantics | ncat local/remote, curl, iperf3, DNS, nonblocking connect, poll/epoll, fork/dup, close/accept races on all ISAs |
 | E | Remove old simulated AF_INET code and harden shutdown, resource failure, MTU, hot-unplug | Network + block concurrency, packet loss/backpressure, memory lifetime, repeated NIC reset, all-ISA QEMU regression accumulated as requested |
 

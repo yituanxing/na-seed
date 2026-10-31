@@ -119,6 +119,19 @@ fi
 # U-Boot *original* GPL-2.0+ VirtIO-Blk source, byte-identical to pinned upstream:
 test "$(git hash-object third_party/uboot/drivers/virtio/virtio_blk.c)" = "7b1d891cdcbb5d5795ee64f0094ad4c64bb12c52"
 test "$(git hash-object third_party/uboot/drivers/virtio/virtio_blk.h)" = "b37ba264df4b6ab6d7ed4c2cbfe580a58710799e"
+# ORIGINAL U-Boot VirtIO-Net from the SAME pinned revision as VirtIO-Blk.
+# Compile its native source/ABI before linking a live NIC in a later batch.
+test "$(git hash-object third_party/uboot/drivers/virtio/virtio_net.c)" = "71e4d2513964c7484114642453dffad69b4b5df9"
+test "$(git hash-object third_party/uboot/drivers/virtio/virtio_net.h)" = "3adcb19aead299d3fa28c747a292ee39ef68f6f8"
+cc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter \
+  -Wno-sign-compare -fno-builtin -I ports/uboot/compat -I kernel \
+  -I third_party/unikraft/include -fsyntax-only \
+  third_party/uboot/drivers/virtio/virtio_net.c
+cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin \
+  -I ports/uboot/compat -I kernel \
+  scripts/test-uboot-virtio-net-abi.c \
+  -o build/block-foundation/test-uboot-virtio-net-abi
+build/block-foundation/test-uboot-virtio-net-abi
 cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin \
   -I ports/uboot/compat -I kernel -I third_party/unikraft/include \
   -I ports/unikraft/include \
@@ -134,6 +147,11 @@ if command -v clang >/dev/null 2>&1; then
       -ffreestanding -fno-builtin -I ports/uboot/compat -I kernel \
       -I third_party/unikraft/include -I ports/unikraft/include \
       -fsyntax-only ports/uboot/blk_port.c ports/uboot/virtio_bus.c
+    clang --target="$target" -std=c11 -Wall -Wextra -Werror \
+      -Wno-unused-parameter -Wno-sign-compare \
+      -ffreestanding -fno-builtin -I ports/uboot/compat -I kernel \
+      -I third_party/unikraft/include -fsyntax-only \
+      third_party/uboot/drivers/virtio/virtio_net.c
   done
 fi
 

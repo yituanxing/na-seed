@@ -12,9 +12,10 @@ static struct nas_netdev *devices[NAS_NETDEV_LIMIT];
 int nas_netdev_register(struct nas_netdev *device) {
     if(!device || !device->name || !device->name[0] || !device->backend ||
        !device->ops || !device->ops->transmit ||
-       !device->ops->poll_receive || !device->ops->link_up ||
+       !device->ops->poll || !device->ops->link_up ||
        device->mtu<576U || device->mtu>9000U ||
-       device->registered || device->refs)return -EINVAL;
+       device->registered || device->refs || device->rx_wake ||
+       device->rx_wake_context)return -EINVAL;
     /* Only Ethernet unicast MACs can back a normal lwIP netif. */
     unsigned mac_nonzero=0;
     for(unsigned b=0;b<NAS_NETDEV_MAC_BYTES;b++)mac_nonzero|=device->mac[b];
@@ -53,6 +54,9 @@ struct nas_netdev *nas_netdev_get(const char *name) {
 }
 int nas_netdev_put(struct nas_netdev *device) {
     if(!device || !device->registered || !device->refs)return -EINVAL;
+    /* The last consumer must detach its IRQ wake before releasing the pin;
+     * otherwise an interrupt could target a retired network worker. */
+    if(device->refs==1 && device->rx_wake)return -EBUSY;
     device->refs--;
     return 0;
 }
@@ -63,12 +67,28 @@ int nas_netdev_transmit(struct nas_netdev *device,
         return -EMSGSIZE;
     return device->ops->transmit(device->backend,frame,bytes);
 }
-int nas_netdev_poll_receive(struct nas_netdev *device,uint32_t budget,
-                            nas_netdev_rx receive,void *consumer) {
+int nas_netdev_poll(struct nas_netdev *device,uint32_t budget,
+                   nas_netdev_rx receive,void *consumer) {
     if(!device || !device->registered)return -ENODEV;
     if(!budget || !receive)return -EINVAL;
-    int rc=device->ops->poll_receive(device->backend,budget,receive,consumer);
+    int rc=device->ops->poll(device->backend,budget,receive,consumer);
     return rc>=0 && (uint32_t)rc>budget ? -EIO : rc;
+}
+int nas_netdev_set_rx_wake(struct nas_netdev *device,
+                           nas_netdev_wake wake,void *consumer) {
+    if(!device || !device->registered)return -ENODEV;
+    if(!device->refs || (wake && !consumer))return -EINVAL;
+    if(wake && device->rx_wake)return -EBUSY;
+    device->rx_wake=wake;
+    device->rx_wake_context=wake?consumer:NULL;
+    return 0;
+}
+void nas_netdev_notify_rx(struct nas_netdev *device) {
+    if(!device || !device->registered)return;
+    ++device->rx_sequence;
+    /* The callback may enqueue a worker/semaphore wake. It must not sleep,
+     * dispatch a packet or unbind this live device from IRQ context. */
+    if(device->rx_wake)device->rx_wake(device->rx_wake_context);
 }
 bool nas_netdev_link_up(const struct nas_netdev *device) {
     return device && device->registered &&

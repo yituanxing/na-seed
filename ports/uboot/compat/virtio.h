@@ -5,6 +5,7 @@
 struct virtqueue;
 struct virtio_dev_priv {
  uint32_t vendor;
+ bool legacy;
  uint64_t features;
  uint64_t offered;
 };
@@ -16,6 +17,8 @@ void virtio_driver_features_init(struct virtio_dev_priv *,
 int virtio_find_vqs(struct udevice *,int,struct virtqueue **);
 int virtio_reset(struct udevice *);
 void nas_uboot_virtio_cread(struct udevice *,size_t,size_t,void *);
+void virtio_cread_bytes(struct udevice *,size_t,void *,size_t);
+void virtio_cwrite8(struct udevice *,size_t,u8);
 #define virtio_cread(dev,type,field,dst) \
  do { *(dst)=0; nas_uboot_virtio_cread((dev),offsetof(type,field),sizeof(*(dst)),(dst)); } while(0)
 #endif
