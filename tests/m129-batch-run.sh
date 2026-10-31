@@ -43,11 +43,17 @@ run_case() {
         exe=$(original_elf /bin/tload)
         supervisor=$(original_elf /usr/bin/tmux)
         # M60/M66 already prove the real PTY-backed tmux path across ISAs.
-        "$supervisor" -L m129 -f /dev/null new-session -d -s m129t \
+        # Retain a dead pane for real upstream stderr and exit-status triage;
+        # a vanished tmux server previously concealed the actual failure.
+        busy printf '%s\n' 'set-option -g remain-on-exit on' > "$dir/tmux.conf"
+        "$supervisor" -L m129 -f "$dir/tmux.conf" new-session -d -s m129t \
             '/bin/tload -d 1' > "$dir/pty" 2>&1
         busy sleep 1
         "$supervisor" -L m129 capture-pane -p -t m129t:0.0 > "$dir/load"
+        "$supervisor" -L m129 display-message -p -t m129t:0.0 \
+            '#{pane_dead}' > "$dir/pane-state"
         "$supervisor" -L m129 kill-server 2>/dev/null || :
+        [ "$(busy cat "$dir/pane-state")" = 0 ]
         busy grep -Eq '[0-9]+\.[0-9]+' "$dir/load" ;;
       vmstat)
         exe=$(original_elf /bin/vmstat)
@@ -153,7 +159,7 @@ for app in pidof slabtop tload vmstat w watch sysctl pwdx \
         upper=$(printf '%s' "$app" | busy tr '[:lower:]' '[:upper:]')
         echo "[M129 $upper FAILED] original ELF rc=$rc" >&2
         busy tail -85 "$case_log" >&2 || :
-        for detail in pids slabs load pty memory sessions render hostname cwd held \
+        for detail in pids slabs load pane-state pty memory sessions render hostname cwd held \
                       users probe stat logfds fd-table locks clocks; do
             if [ -s "/tmp/m129-$app/$detail" ]; then
                 echo "[M129 FAILED OUTPUT $app/$detail]" >&2

@@ -48,6 +48,11 @@ jobs:
           python3 scripts/check-prebuilt-profile-catalog.py
           python3 scripts/check-native-qemu-target.py
           python3 scripts/check-three-isa-core.py
+          cc -O2 -std=c11 -Wall -Wextra -Werror -fno-builtin -I kernel \
+            scripts/test-m129-itimer-host.c kernel/time/clock.c \
+            -o /tmp/naseed-m129-itimer-host
+          /tmp/naseed-m129-itimer-host
+          sh scripts/check-m105-signal-group.sh
       - name: Install signed APK staging tools and native target QEMU
         timeout-minutes: 12
         run: |
