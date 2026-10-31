@@ -40,3 +40,4 @@ m125-batch	rootfs/alpine/packages-m125-batch.txt	scripts/m125-original-elfs.txt	
 m126-batch	rootfs/alpine/packages-m126-batch.txt	scripts/m126-original-elfs.txt	scripts/m126-rootfs-copies.tsv	main
 m127-batch	rootfs/alpine/packages-m127-batch.txt	scripts/m127-original-elfs.txt	scripts/m127-rootfs-copies.tsv	main+community
 m128-batch	rootfs/alpine/packages-m128-batch.txt	scripts/m128-original-elfs.txt	scripts/m128-rootfs-copies.tsv	main+community
+m129-batch	rootfs/alpine/packages-m129-batch.txt	scripts/m129-original-elfs.txt	scripts/m129-rootfs-copies.tsv	main

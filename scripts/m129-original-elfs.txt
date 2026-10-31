@@ -1,0 +1,16 @@
+# 15 new paths, never reused from M58-M128 original ELF manifests.
+bin/pidof
+bin/slabtop
+bin/tload
+bin/vmstat
+bin/w
+bin/watch
+sbin/sysctl
+usr/bin/pwdx
+usr/bin/fuser
+usr/bin/killall
+usr/bin/prtstat
+usr/bin/pslog
+bin/lsfd
+usr/bin/lslocks
+usr/bin/lsclocks
