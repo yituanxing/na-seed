@@ -91,7 +91,7 @@ run_case() {
         seed_ppm
         # Real-valued kernel, as documented by Netpbm. Identity must
         # preserve all RGB samples, not merely the output geometry.
-        "$exe" '-matrix=0,0,0;0,1,0;0,0,0' "$work/source.ppm" \
+        "$exe" '-matrix=1' "$work/source.ppm" \
             > "$work/result.ppm" 2> "$work/output"
         [ -s "$work/result.ppm" ]
         /usr/bin/pamfile "$work/result.ppm" > "$work/geometry"
@@ -134,7 +134,9 @@ run_case() {
         busy cmp -s "$work/source.plain" "$work/result.plain" ;;
       chrt)
         exe=$(original_elf /usr/bin/chrt)
-        "$exe" -p "$$" > "$work/output" 2>&1
+        # Linux PID 0 explicitly queries the current process; this also
+        # avoids the shell's process-group identity in standalone runners.
+        "$exe" -p 0 > "$work/output" 2>&1
         busy grep -Fq 'scheduling policy' "$work/output"
         busy grep -Fq 'SCHED_OTHER' "$work/output" ;;
       setsid)

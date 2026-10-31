@@ -1,21 +1,23 @@
-# Twenty historically unused, individually packaged GNU ELF programs.
+# One GNU multicall ELF + nineteen separate Netpbm programs.
+# GNU Coreutils 9.8 installs 20 entrypoints, but their SHA is the SAME:
+# do not inflate signed ELF totals by counting those aliases repeatedly.
 usr/bin/sort
-usr/bin/uniq
-usr/bin/join
-usr/bin/paste
-usr/bin/tr
-usr/bin/wc
-usr/bin/od
-usr/bin/nl
-usr/bin/numfmt
-usr/bin/shuf
-usr/bin/split
-usr/bin/tsort
-usr/bin/tac
-usr/bin/seq
-usr/bin/sha256sum
-usr/bin/md5sum
-usr/bin/realpath
-usr/bin/readlink
-usr/bin/sha1sum
-usr/bin/tail
+usr/bin/pbmclean
+usr/bin/pbmreduce
+usr/bin/pgmedge
+usr/bin/pgmmedian
+usr/bin/pgmhist
+usr/bin/pnmnoraw
+usr/bin/pnmnorm
+usr/bin/pnmsmooth
+usr/bin/pnmhistmap
+usr/bin/pnmshear
+usr/bin/pnmmontage
+usr/bin/pnmtofits
+usr/bin/ppmtoascii
+usr/bin/pamtotiff
+usr/bin/ppmcolors
+usr/bin/pnmpaste
+usr/bin/pbmnoise
+usr/bin/pamditherbw
+usr/bin/ppmdither

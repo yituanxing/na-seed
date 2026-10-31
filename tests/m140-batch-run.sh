@@ -20,6 +20,98 @@ original_elf() {
 seed_lines() {
     busy printf '%s\n' cherry apple banana apple > "$work/lines"
 }
+seed_image() {
+    busy printf '%s\n' 'P3' '4 4' '255' \
+        '255 0 0  0 255 0  0 0 255  255 255 255' \
+        '0 0 0  128 64 32  32 64 128  255 0 255' \
+        '255 255 0  10 20 30  30 20 10  0 255 255' \
+        '1 2 3  16 32 48  96 80 64  220 210 200' > "$work/source.ppm"
+}
+seed_gray() {
+    busy printf '%s\n' 'P2' '5 5' '255' \
+        '0 20 40 60 80' '10 30 50 70 90' '100 120 140 160 180' \
+        '5 15 25 35 45' '255 240 200 120 60' > "$work/source.pgm"
+}
+seed_bitmap() {
+    busy printf '%s\n' 'P1' '8 8' \
+        '0 0 0 0 0 0 0 0' '0 1 1 0 0 1 1 0' \
+        '0 1 0 1 1 0 1 0' '0 0 1 0 0 1 0 0' \
+        '0 0 1 0 0 1 0 0' '0 1 0 1 1 0 1 0' \
+        '0 1 1 0 0 1 1 0' '0 0 0 0 0 0 0 0' > "$work/source.pbm"
+}
+verify_image() {
+    [ -s "$work/result.pnm" ]
+    /usr/bin/pamfile "$work/result.pnm" > "$work/geometry" 2>&1
+    busy grep -Fq "$1 by $2" "$work/geometry"
+}
+run_image_case() {
+    case "$app" in
+      pbmclean|pbmreduce|pbmnoise) seed_bitmap ;;
+      pgmedge|pgmmedian|pgmhist) seed_gray ;;
+      *) seed_image ;;
+    esac
+    case "$app" in
+      pbmclean) "$exe" "$work/source.pbm" > "$work/result.pnm" 2> "$work/output"
+                verify_image 8 8 ;;
+      pbmreduce) "$exe" 2 "$work/source.pbm" > "$work/result.pnm" 2> "$work/output"
+                 verify_image 4 4 ;;
+      pgmedge|pgmmedian)
+        "$exe" "$work/source.pgm" > "$work/result.pnm" 2> "$work/output"
+        verify_image 5 5 ;;
+      pgmhist)
+        "$exe" "$work/source.pgm" > "$work/output" 2> "$work/error"
+        [ -s "$work/output" ] ;;
+      pnmnoraw)
+        "$exe" "$work/source.ppm" > "$work/result.pnm" 2> "$work/output"
+        verify_image 4 4
+        busy grep -q '^P3' "$work/result.pnm" ;;
+      pnmnorm|pnmsmooth)
+        "$exe" "$work/source.ppm" > "$work/result.pnm" 2> "$work/output"
+        verify_image 4 4 ;;
+      pnmhistmap)
+        "$exe" "$work/source.ppm" > "$work/result.pnm" 2> "$work/output"
+        [ -s "$work/result.pnm" ]
+        /usr/bin/pamfile "$work/result.pnm" > "$work/geometry" ;;
+      pnmshear)
+        "$exe" 0 "$work/source.ppm" > "$work/result.pnm" 2> "$work/output"
+        verify_image 4 4 ;;
+      pnmmontage)
+        "$exe" "$work/source.ppm" "$work/source.ppm" \
+            > "$work/result.pnm" 2> "$work/output"
+        [ -s "$work/result.pnm" ]
+        /usr/bin/pamfile "$work/result.pnm" > "$work/geometry" ;;
+      pnmtofits)
+        "$exe" "$work/source.ppm" > "$work/result.fits" 2> "$work/output"
+        [ -s "$work/result.fits" ]
+        [ "$(busy head -c 6 "$work/result.fits")" = SIMPLE ] ;;
+      ppmtoascii)
+        "$exe" "$work/source.ppm" > "$work/output" 2> "$work/error"
+        [ -s "$work/output" ] ;;
+      pamtotiff)
+        "$exe" "$work/source.ppm" > "$work/result.tiff" 2> "$work/output"
+        [ -s "$work/result.tiff" ]
+        magic=$(busy dd if="$work/result.tiff" bs=1 count=2 2>/dev/null |
+                busy od -An -tx1 | busy tr -d ' \n')
+        case "$magic" in 4949|4d4d) ;; *) return 1 ;; esac ;;
+      ppmcolors)
+        "$exe" "$work/source.ppm" > "$work/result.pnm" 2> "$work/output"
+        [ -s "$work/result.pnm" ]
+        /usr/bin/pamfile "$work/result.pnm" > "$work/geometry" ;;
+      pnmpaste)
+        busy printf '%s\n' 'P3' '1 1' '255' '0 0 0' > "$work/overlay.ppm"
+        "$exe" "$work/overlay.ppm" 1 1 "$work/source.ppm" \
+            > "$work/result.pnm" 2> "$work/output"
+        verify_image 4 4 ;;
+      pbmnoise)
+        "$exe" 8 8 '-ratio=1/2' '-randomseed=42' \
+            > "$work/result.pnm" 2> "$work/output"
+        verify_image 8 8 ;;
+      pamditherbw|ppmdither)
+        "$exe" "$work/source.ppm" > "$work/result.pnm" 2> "$work/output"
+        verify_image 4 4 ;;
+      *) echo "[M140 UNKNOWN NETPBM ELF] $app" >&2; return 2 ;;
+    esac
+}
 run_case() {
     app=$1
     work="/tmp/m140-$app"
@@ -122,7 +214,7 @@ run_case() {
         "$exe" -n 2 "$work/lines" > "$work/output"
         busy printf '%s\n' c d > "$work/expected"
         busy cmp -s "$work/output" "$work/expected" ;;
-      *) echo "[M140 UNKNOWN CASE] $app" >&2; return 2 ;;
+      *) run_image_case ;;
     esac
 }
 
@@ -138,7 +230,10 @@ fi
 [ "$#" -eq 0 ] || exit 2
 failed=0
 for app in sort uniq join paste tr wc od nl numfmt shuf split tsort \
-           tac seq sha256sum md5sum realpath readlink sha1sum tail; do
+           tac seq sha256sum md5sum realpath readlink sha1sum tail \
+           pbmclean pbmreduce pgmedge pgmmedian pgmhist pnmnoraw \
+           pnmnorm pnmsmooth pnmhistmap pnmshear pnmmontage pnmtofits \
+           ppmtoascii pamtotiff ppmcolors pnmpaste pbmnoise pamditherbw ppmdither; do
     echo "[M140 CASE START] $app"
     upper=$(printf '%s' "$app" | busy tr '[:lower:]' '[:upper:]')
     log="/tmp/m140-$app-case.log"
@@ -149,7 +244,9 @@ for app in sort uniq join paste tr wc od nl numfmt shuf split tsort \
         rc=$?
         echo "[M140 $upper FAILED] signed ELF rc=$rc" >&2
         busy tail -110 "$log" >&2 || :
-        for detail in output expected lines data left right ordered edges; do
+        for detail in output error expected lines data left right ordered \
+                      edges geometry source.ppm source.pgm source.pbm \
+                      result.pnm result.fits result.tiff; do
             if [ -s "/tmp/m140-$app/$detail" ]; then
                 echo "[M140 FAILED OUTPUT $app/$detail]" >&2
                 busy head -c 850 "/tmp/m140-$app/$detail" >&2 || :
@@ -161,7 +258,7 @@ for app in sort uniq join paste tr wc od nl numfmt shuf split tsort \
     fi
 done
 if [ "$failed" -ne 0 ]; then
-    echo "[M140 BATCH FAIL] $failed/20 original GNU ELFs" >&2
+    echo "[M140 BATCH FAIL] $failed/39 functional GNU/Netpbm cases" >&2
     echo M140_BATCH_FAIL
     exit 1
 fi

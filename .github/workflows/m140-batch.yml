@@ -1,4 +1,4 @@
-name: NaSeed M140 20 signed GNU Coreutils ELFs, QEMU three ISAs
+name: NaSeed M140 20 signed GNU and Netpbm ELFs, QEMU three ISAs
 on:
   pull_request:
     paths:
@@ -26,7 +26,7 @@ concurrency:
 
 jobs:
   signed-original-software:
-    name: M140 20 signed native GNU text and data tools / ${{ matrix.port }}
+    name: M140 20 signed native GNU and image tools / ${{ matrix.port }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
@@ -84,7 +84,7 @@ jobs:
               -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
           fi
           command -v docker
-      - name: Execute all 20 new signed GNU ELFs in native NaSeed QEMU
+      - name: Execute 20 distinct signed ELFs and 39 functional cases in QEMU
         timeout-minutes: 45
         run: sh scripts/probe-m140-batch.sh ${{ matrix.port }}
       - name: Preserve signed SHA256 and full native QEMU PASS serial

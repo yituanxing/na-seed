@@ -1,5 +1,5 @@
 #!/bin/sh
-# M140: signed Alpine GNU Coreutils; no in-guest compilation or installer.
+# M140: signed Alpine GNU multicall plus nineteen distinct Netpbm ELFs.
 set -eu
 [ "$#" -eq 1 ] || exit 2
 port=$1
@@ -22,6 +22,7 @@ work="build/external/m140-batch/$port"
 root="$work/rootfs"
 test -s "$work/rootfs.cpio" && test -s "$root/lib/apk/db/installed"
 grep -Fxq 'P:coreutils' "$root/lib/apk/db/installed" || exit 1
+grep -Fxq 'P:netpbm' "$root/lib/apk/db/installed" || exit 1
 root_canonical=$(cd "$root" && pwd -P)
 count=0
 while IFS= read -r elf; do
@@ -44,4 +45,4 @@ if [ "$count" -ne 20 ] || [ "$unique" -ne 20 ]; then
     echo "[M140 HOST STAGE FAIL] $port $count paths/$unique unique SHA" >&2
     exit 1
 fi
-echo "[M140 HOST STAGE PASS] $port 20 distinct signed GNU Coreutils ELFs"
+echo "[M140 HOST STAGE PASS] $port 20 distinct signed GNU/Netpbm ELFs"

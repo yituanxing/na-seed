@@ -1,5 +1,5 @@
 #!/bin/sh
-# M140: 20 distinct signed original Coreutils ELFs in native 3-ISA QEMU.
+# M140: 20 distinct signed GNU/Netpbm ELFs, 39 real functional cases.
 set -eu
 [ "$#" -eq 1 ] || exit 2
 port=$1
@@ -40,8 +40,8 @@ while IFS= read -r marker; do
     if [ "$marker" = M140_BATCH_PASS ]; then summary=$((summary+1));
     else count=$((count+1)); fi
 done < scripts/m140-expected-markers.txt
-[ "$count" -eq 20 ] && [ "$summary" -eq 1 ] || {
-    echo "[M140 BATCH FAIL] $port expected 20 independent functional checks" >&2
+[ "$count" -eq 39 ] && [ "$summary" -eq 1 ] || {
+    echo "[M140 BATCH FAIL] $port expected 39 independent functional checks" >&2
     exit 1
 }
-echo "[M140 BATCH PASS] $port 20 original signed GNU ELF applications"
+echo "[M140 BATCH PASS] $port 20 distinct signed GNU/Netpbm ELFs, 39 functional checks"
