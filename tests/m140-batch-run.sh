@@ -94,9 +94,10 @@ run_image_case() {
                 busy od -An -tx1 | busy tr -d ' \n')
         case "$magic" in 4949|4d4d) ;; *) return 1 ;; esac ;;
       ppmcolors)
-        "$exe" "$work/source.ppm" > "$work/result.pnm" 2> "$work/output"
-        [ -s "$work/result.pnm" ]
-        /usr/bin/pamfile "$work/result.pnm" > "$work/geometry" ;;
+        # ppmcolors is a GENERATOR, not an image-file filter. Maxval 3
+        # gives exactly (3+1)^3 = 64 RGB palette entries in one row.
+        "$exe" '-maxval=3' > "$work/result.pnm" 2> "$work/output"
+        verify_image 64 1 ;;
       pnmpaste)
         busy printf '%s\n' 'P3' '1 1' '255' '0 0 0' > "$work/overlay.ppm"
         "$exe" "$work/overlay.ppm" 1 1 "$work/source.ppm" \
