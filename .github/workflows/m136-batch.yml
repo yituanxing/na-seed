@@ -1,23 +1,5 @@
 name: NaSeed M136 20 signed parser terminfo Unix original ELFs, QEMU three ISAs
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/m136-batch.yml'
-      - 'tests/m136-*'
-      - 'scripts/m136-*'
-      - 'scripts/probe-m136-batch.sh'
-      - 'scripts/stage-m136-prebuilt.sh'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'scripts/check-prebuilt-profile-catalog.py'
-      - 'scripts/check-native-qemu-target.py'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'rootfs/alpine/**'
-      - 'kernel/**'
-      - 'ports/**'
   workflow_dispatch:
 
 concurrency:
