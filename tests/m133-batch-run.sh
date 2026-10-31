@@ -55,10 +55,12 @@ run_case() {
         exe=$(original_elf /usr/bin/bcomps)
         seed_graphs
         rc=0
-        "$exe" "$work/blocks.gv" > "$work/blocks.out" || rc=$?
+        # -x emits each true biconnected block as its own root graph;
+        # the output graph basenames are version/ordering-dependent.
+        "$exe" -x "$work/blocks.gv" > "$work/blocks.out" || rc=$?
         [ "$rc" -le 2 ] && [ -s "$work/blocks.out" ]
-        busy grep -Fq 'B_bcc_0' "$work/blocks.out"
-        busy grep -Fq 'B_bcc_1' "$work/blocks.out" ;;
+        blocks=$(busy grep -Ec '^graph[[:space:]]' "$work/blocks.out")
+        [ "$blocks" -eq 2 ] ;;
       ccomps)
         exe=$(original_elf /usr/bin/ccomps)
         seed_graphs
@@ -121,7 +123,9 @@ run_case() {
         seed_compressed
         "$exe" "$work/payload.lzma" > "$work/info"
         busy grep -Fq 'Dictionary size:' "$work/info"
-        busy grep -Fq 'Literal context bits:' "$work/info" ;;
+        # Upstream includes the abbreviated field label between the name
+        # and colon: "Literal context bits (lc):", not our former spelling.
+        busy grep -Fq 'Literal context bits (lc):' "$work/info" ;;
       xzdec)
         exe=$(original_elf /usr/bin/xzdec)
         seed_compressed
@@ -160,7 +164,10 @@ run_case() {
             "$exe" myverylongname.txt > restore.sh &&
             busy grep -Fq 'mv myverylo.txt myverylongname.txt' restore.sh &&
             busy printf 'NaSeed M133 long FAT filename restoration\n' > myverylo.txt &&
-            /bin/sh restore.sh &&
+            # Alpine busybox applets are not all standalone /bin links in
+            # this minimal rootfs. Supply the real mv applet via argv[0].
+            busy ln -s /bin/busybox mv &&
+            PATH="$work:$PATH" /bin/sh restore.sh &&
             busy printf 'NaSeed M133 long FAT filename restoration\n' > expected &&
             busy cmp -s myverylongname.txt expected) ;;
       *) echo "[M133 UNKNOWN ORIGINAL ELF CASE] $app" >&2; return 2 ;;
