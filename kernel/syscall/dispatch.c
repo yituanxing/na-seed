@@ -34,6 +34,19 @@
 #define TASK (*nas_current_task)
 #define thread_clear_tid TASK.thread_clear_tid
 
+/* Linux sched_attr v0 (48 bytes) plus utilization clamps (56 bytes).
+ * Read-only export of the scheduler's actual SCHED_OTHER-only policy. */
+struct nas_linux_sched_attr {
+    uint32_t size,policy;
+    uint64_t flags;
+    int32_t nice;
+    uint32_t priority;
+    uint64_t runtime,deadline,period;
+    uint32_t util_min,util_max;
+};
+_Static_assert(sizeof(struct nas_linux_sched_attr)==56,
+               "Linux sched_attr LP64 ABI size");
+
 /* One Linux timespec64 ABI on three LP64 ISAs.
  * CLOCK_MONOTONIC remains independent of the boot RTC. CLOCK_REALTIME
  * requires a validated boot epoch plus the same hardware clocksource. */
@@ -394,13 +407,26 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_set_tid_address) { thread_clear_tid = args[1]; return TASK.pid; }
     if (nr == NAS_SC_getpid) return TASK.tgid;
     if (nr == NAS_SC_gettid) return TASK.pid;
-    if(nr==NAS_SC_sched_getscheduler || nr==NAS_SC_sched_getparam) {
+    if(nr==NAS_SC_sched_getscheduler || nr==NAS_SC_sched_getparam ||
+       nr==NAS_SC_sched_getattr) {
         /* NaSeed presently schedules every task in its one non-realtime
          * Linux-compatible policy: SCHED_OTHER, static priority zero.
          * Queries validate the target task and user output independently. */
         uint64_t pid=args[1] ? args[1] : TASK.pid;
         if(!nas_task_by_pid(pid))return (uint64_t)-ESRCH;
         if(nr==NAS_SC_sched_getscheduler)return 0; /* SCHED_OTHER */
+        if(nr==NAS_SC_sched_getattr) {
+            uint64_t size=args[3];
+            if(args[4] || size<48 || size>sizeof(struct nas_linux_sched_attr))
+                return (uint64_t)-EINVAL;
+            const struct nas_linux_sched_attr policy={
+                .size=(uint32_t)sizeof(struct nas_linux_sched_attr),
+                .policy=0,.flags=0,.nice=0,.priority=0,
+                .runtime=0,.deadline=0,.period=0,.util_min=0,.util_max=0
+            };
+            return nas_user_write_bytes(args[2],(const uint8_t *)&policy,
+                                        size) ? 0 : (uint64_t)-EFAULT;
+        }
         const uint32_t param=0; /* struct sched_param.sched_priority */
         return nas_user_write_bytes(args[2],(const uint8_t *)&param,
                                     sizeof(param)) ? 0 : (uint64_t)-EFAULT;

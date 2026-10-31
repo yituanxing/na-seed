@@ -158,6 +158,7 @@ enum nas_syscall_op {
     NAS_SC_sched_getaffinity,
     NAS_SC_sched_getscheduler,
     NAS_SC_sched_getparam,
+    NAS_SC_sched_getattr,
     NAS_SC_sched_setaffinity,
     NAS_SC_stat,
     NAS_SC_statfs,

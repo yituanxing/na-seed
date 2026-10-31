@@ -61,10 +61,10 @@ run_image_case() {
       pgmhist)
         "$exe" "$work/source.pgm" > "$work/output" 2> "$work/error"
         [ -s "$work/output" ] ;;
-      pnmnoraw)
-        "$exe" "$work/source.ppm" > "$work/result.pnm" 2> "$work/output"
+      pamgauss)
+        "$exe" 4 4 '-sigma=1' > "$work/result.pnm" 2> "$work/output"
         verify_image 4 4
-        busy grep -q '^P3' "$work/result.pnm" ;;
+        busy grep -q '^P7' "$work/result.pnm" ;;
       pnmnorm|pnmsmooth)
         "$exe" "$work/source.ppm" > "$work/result.pnm" 2> "$work/output"
         verify_image 4 4 ;;
@@ -231,7 +231,7 @@ fi
 failed=0
 for app in sort uniq join paste tr wc od nl numfmt shuf split tsort \
            tac seq sha256sum md5sum realpath readlink sha1sum tail \
-           pbmclean pbmreduce pgmedge pgmmedian pgmhist pnmnoraw \
+           pbmclean pbmreduce pgmedge pgmmedian pgmhist pamgauss \
            pnmnorm pnmsmooth pnmhistmap pnmshear pnmmontage pnmtofits \
            ppmtoascii pamtotiff ppmcolors pnmpaste pbmnoise pamditherbw ppmdither; do
     echo "[M140 CASE START] $app"

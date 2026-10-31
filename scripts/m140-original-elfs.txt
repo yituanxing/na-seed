@@ -7,7 +7,7 @@ usr/bin/pbmreduce
 usr/bin/pgmedge
 usr/bin/pgmmedian
 usr/bin/pgmhist
-usr/bin/pnmnoraw
+usr/bin/pamgauss
 usr/bin/pnmnorm
 usr/bin/pnmsmooth
 usr/bin/pnmhistmap
