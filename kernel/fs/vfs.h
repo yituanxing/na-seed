@@ -116,6 +116,17 @@ struct nas_vfs_type {
                  uint64_t mode,struct nas_fs_node *out);
     int64_t (*write_at)(const struct nas_fs_node *,uint64_t offset,
                         const uint8_t *kernel_source,uint64_t length);
+    /* Optional shared-file address-space capability. Acquires one owned
+     * reference to the provider's REAL backing 4-KiB physical frame,
+     * including sparse zero pages, rather than copying a private snapshot.
+     * The caller transfers this reference to a user PTE or drops it on
+     * failure. Unsupported providers must leave this NULL. */
+    int (*acquire_shared_page)(const struct nas_fs_node *,uint64_t offset,
+                               uint64_t *pa_owned);
+    /* A direct writable user PTE bypasses write_at. The MM dirty/write
+     * fault calls this provider hook once per observed write transition
+     * to keep live metadata timestamps truthful without a fake page cache. */
+    int (*touch_shared)(const struct nas_fs_node *);
     int (*resize)(const struct nas_fs_node *,uint64_t size);
     int (*sync)(const struct nas_fs_node *);
     int (*mkdir)(const struct nas_fs_node *parent,const char *name,uint64_t mode);
@@ -273,8 +284,14 @@ int nas_vfs_symlink_child(const char *target,
 int nas_vfs_create(const char *absolute,uint64_t mode);
 int64_t nas_vfs_write_at(const struct nas_fs_node *node,uint64_t offset,
                          const uint8_t *source,uint64_t count);
+int nas_vfs_acquire_shared_page(const struct nas_fs_node *node,
+                                uint64_t offset,uint64_t *pa_owned);
+int nas_vfs_touch_shared(const struct nas_fs_node *node);
 int nas_vfs_resize(const struct nas_fs_node *node,uint64_t length);
 int nas_vfs_sync(const struct nas_fs_node *node);
+/* Public user sync additionally re-arms first-write dirty tracking; internal
+ * transaction flush must use nas_vfs_sync to preserve rollback PTE state. */
+int nas_vfs_sync_user(const struct nas_fs_node *node);
 /* Flush ALL writable mounts through their provider durability contract.
  * Drivers remain below BlockDevice; no syscall-specific filesystem list. */
 int nas_vfs_sync_all(void);

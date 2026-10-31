@@ -453,6 +453,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         return result;
     }
     if (nr == NAS_SC_munmap) return nas_vm_munmap(args[1], args[2]);
+    if (nr == NAS_SC_msync)
+        return nas_vm_msync(args[1],args[2],args[3]);
     if (nr == NAS_SC_madvise)
         return nas_vm_madvise(args[1],args[2],args[3]);
     if (nr == NAS_SC_brk) {

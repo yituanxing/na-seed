@@ -76,6 +76,8 @@ jobs:
         run: sh scripts/check-m102-tty-cow.sh
       - name: '[HOST + TARGET-COMPILE] M101 COW fault and ptrace isolation'
         run: sh scripts/check-m101-cow.sh
+      - name: '[HOST] NAS-A005 cross-MM shared file invalidate, dirty epoch and frame refcounts'
+        run: sh scripts/check-a005-cross-mm.sh
       - name: '[HOST + TARGET-COMPILE] M100 failed user signal-frame isolation'
         run: sh scripts/check-m100-signal-failure.sh
       # One actual host fixture covers both M98 policy and M99 ring-scan

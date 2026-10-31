@@ -21,7 +21,9 @@
  * File snapshots are eager copies; immutable shared snapshots are safe only
  * if the underlying provider guarantees its contents cannot ever change.
  * ELF, heap, stack and signal helper ranges use this same MM-owned map.
- * Eager snapshot mappings have no live backing file references yet. */
+ * Eager snapshot mappings have no live backing file references. Mutable
+ * shared mappings own a reference to their pinned inode/page-cache owner,
+ * independent of the original open FD and its lifetime. */
 enum nas_vma_kind {
     NAS_VMA_ANON_PRIVATE=0,
     NAS_VMA_FILE_PRIVATE_SNAPSHOT=1,
@@ -29,15 +31,20 @@ enum nas_vma_kind {
     NAS_VMA_HEAP=3,
     NAS_VMA_STACK=4,
     NAS_VMA_SIGNAL_TRAMPOLINE=5,
-    NAS_VMA_FILE_IMMUTABLE_SHARED=6
+    NAS_VMA_FILE_IMMUTABLE_SHARED=6,
+    NAS_VMA_FILE_MUTABLE_SHARED=7
 };
 #define NAS_VMA_DONTFORK 1U
+struct nas_mapped_file;
 struct nas_anon_region {
     uint64_t start,end;
-    uint64_t file_offset; /* meaningful for eagerly copied file mappings */
+    uint64_t file_offset; /* file offset corresponding to this VMA's start */
     uint32_t prot;        /* logical permissions; NOT hardware PTE state */
     uint32_t kind;
     uint32_t flags;       /* Linux MADV_DONTFORK, MM-owned fork policy */
+    /* One owned ref per live VMA slot, including split fragments and forks.
+     * NULL for anonymous, ELF and eager snapshot policies. */
+    struct nas_mapped_file *backing;
 };
 /* The MM owns this heap-backed table. A zeroed table is empty; cloning an MM
  * must use nas_vma_clone rather than copying the pointer. Capacity grows with
@@ -52,8 +59,14 @@ const struct nas_anon_region *nas_vma_find(const struct nas_anon_regions *,uint6
 bool nas_vma_walk(const struct nas_anon_regions *,nas_vma_visit,void *);
 bool nas_vma_record(struct nas_anon_regions *,uint64_t addr,uint64_t length,
                     unsigned prot,unsigned kind,uint64_t file_offset);
+bool nas_vma_record_shared(struct nas_anon_regions *,uint64_t addr,
+                           uint64_t length,unsigned prot,uint64_t file_offset,
+                           struct nas_mapped_file *backing);
 bool nas_vma_replace(struct nas_anon_regions *,uint64_t addr,uint64_t length,
                      unsigned prot,unsigned kind,uint64_t file_offset);
+bool nas_vma_replace_shared(struct nas_anon_regions *,uint64_t addr,
+                            uint64_t length,unsigned prot,uint64_t file_offset,
+                            struct nas_mapped_file *backing);
 bool nas_vma_protect(struct nas_anon_regions *,uint64_t addr,uint64_t length,
                      unsigned prot);
 bool nas_vma_set_dontfork(struct nas_anon_regions *,uint64_t addr,

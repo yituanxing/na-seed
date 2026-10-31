@@ -5,6 +5,11 @@
 #include "../lib/string.h"
 #include "../mm/heap.h"
 #include <stddef.h>
+/* The MM owns resident user leaves and their independent physical refs.
+ * A successful truncate must revoke stale shared leaves from every MM,
+ * including processes retaining an unlinked mapped inode. */
+extern void nas_vm_invalidate_file(const struct nas_fs_node *,uint64_t new_size);
+extern void nas_vm_rearm_file(const struct nas_fs_node *);
 #define NAS_VFS_MOUNT_CHUNK_SIZE 16U
 #define NAS_VFS_MOUNT_MAX 256U
 /* A lease holds size + Linux record locks for the lifetime of one inode
@@ -1682,6 +1687,26 @@ int64_t nas_vfs_write_at(const struct nas_fs_node *node,uint64_t offset,
         publish_inode_size(node,offset+(uint64_t)written);
     return written;
 }
+int nas_vfs_acquire_shared_page(const struct nas_fs_node *node,
+                                uint64_t offset,uint64_t *pa_owned) {
+    if(!pa_owned)return -EINVAL;
+    *pa_owned=0;
+    int status=vfs_node_status(node);
+    if(status)return status;
+    if(node->is_dir)return -EISDIR;
+    if(offset&4095ULL)return -EINVAL;
+    if(offset>=nas_vfs_node_size(node))return -EFAULT;
+    if(!node->filesystem->acquire_shared_page)return -ENOSYS;
+    return node->filesystem->acquire_shared_page(node,offset,pa_owned);
+}
+int nas_vfs_touch_shared(const struct nas_fs_node *node) {
+    int status=vfs_node_status(node);
+    if(status)return status;
+    if(!nas_vfs_can_write(node))return -EROFS;
+    if(node->is_dir)return -EISDIR;
+    if(!node->filesystem->touch_shared)return -EOPNOTSUPP;
+    return node->filesystem->touch_shared(node);
+}
 int nas_vfs_resize(const struct nas_fs_node *node,uint64_t length) {
     int status=vfs_node_status(node);
     if(status)return status;
@@ -1690,7 +1715,10 @@ int nas_vfs_resize(const struct nas_fs_node *node,uint64_t length) {
     if(!nas_vfs_can_write(node))return -EROFS;
     if(!node->filesystem->resize)return -EOPNOTSUPP;
     int rc=node->filesystem->resize(node,length);
-    if(!rc)publish_inode_size(node,length);
+    if(!rc) {
+        publish_inode_size(node,length);
+        nas_vm_invalidate_file(node,length);
+    }
     return rc;
 }
 int nas_vfs_sync(const struct nas_fs_node *node) {
@@ -1698,6 +1726,14 @@ int nas_vfs_sync(const struct nas_fs_node *node) {
     if(status)return status;
     if(!node->filesystem->sync)return node->filesystem->read_only ? 0 : -EOPNOTSUPP;
     return node->filesystem->sync(node);
+}
+int nas_vfs_sync_user(const struct nas_fs_node *node) {
+    int rc=nas_vfs_sync(node);
+    /* Only an explicitly successful user fsync/msync establishes a new
+     * dirty epoch. A pre-commit MAP_FIXED/munmap flush must NOT tighten old
+     * PTE permissions if its later metadata/frame transaction rolls back. */
+    if(!rc)nas_vm_rearm_file(node);
+    return rc;
 }
 int nas_vfs_statfs(const struct nas_fs_node *node,struct nas_vfs_statfs *out) {
     if(!out)return -EINVAL;

@@ -12,12 +12,12 @@
 
 #define FRAMES 80
 static _Alignas(4096) uint8_t frames[FRAMES][4096];
-static bool busy[FRAMES];
+static unsigned refs[FRAMES];
 static unsigned frame_allocated,frame_freed;
 uint64_t nas_frame_alloc(void) {
     for(unsigned i=0;i<FRAMES;i++)
-        if(!busy[i]) {
-            busy[i]=true;frame_allocated++;
+        if(!refs[i]) {
+            refs[i]=1;frame_allocated++;
             memset(frames[i],0,4096);
             return (uint64_t)(uintptr_t)&frames[i][0];
         }
@@ -25,8 +25,18 @@ uint64_t nas_frame_alloc(void) {
 }
 bool nas_frame_put(uint64_t phys) {
     for(unsigned i=0;i<FRAMES;i++)
-        if(phys==(uint64_t)(uintptr_t)&frames[i][0] && busy[i]) {
-            busy[i]=false;frame_freed++;return true;
+        if(phys==(uint64_t)(uintptr_t)&frames[i][0] && refs[i]) {
+            if(!--refs[i])frame_freed++;
+            return true;
+        }
+    return false;
+}
+bool nas_frame_get(uint64_t phys) {
+    for(unsigned i=0;i<FRAMES;i++)
+        if(phys==(uint64_t)(uintptr_t)&frames[i][0] && refs[i] &&
+           refs[i]!=UINT32_MAX) {
+            refs[i]++;
+            return true;
         }
     return false;
 }

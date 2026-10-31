@@ -1,5 +1,19 @@
 name: NaSeed M111 15 more signed original Alpine Linux applications — one QEMU boot per ISA
 on:
+  # The heavy original-program suite remains opt-in. A PR must both change
+  # relevant execution code and carry the explicit run-m111-batch label;
+  # manual workflow_dispatch continues to work on any selected branch.
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - '.github/workflows/m111-batch.yml'
+      - 'kernel/**'
+      - 'ports/**'
+      - 'scripts/probe-m111-batch.sh'
+      - 'scripts/stage-m111-prebuilt.sh'
+      - 'scripts/stage-alpine-prebuilt-overlay.sh'
+      - 'tests/m111-*'
+      - 'rootfs/alpine/**'
   workflow_dispatch:
 
 concurrency:
@@ -8,6 +22,7 @@ concurrency:
 
 jobs:
   signed-original-software:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-m111-batch')
     name: M111 15 signed original Linux ELF functional tests / ${{ matrix.port }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -33,6 +48,7 @@ jobs:
           # Direct host-link regression for actual getrusage/wait4 CPU
           # ownership: no software is compiled inside NaSeed.
           sh scripts/check-m111-getrusage.sh
+          sh scripts/check-a005-cross-mm.sh
       - name: Install host tools and native target QEMU
         timeout-minutes: 12
         run: |

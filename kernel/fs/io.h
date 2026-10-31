@@ -2,8 +2,10 @@
 #define NASEED_FS_IO_H
 #include <stdint.h>
 #include <stdbool.h>
+#include "../mm/file_backing.h"
 struct nas_task;
 struct nas_pending_io;
+struct nas_fs_node;
 /* One issuing syscall may park after a provider reports would-block.
  * The file layer owns the imported iovec and an independent File ref;
  * scheduler/Task carry only this opaque request during the native C wait. */

@@ -3,15 +3,37 @@
 #include "../task.h"
 #include "../arch/arch.h"
 #include "vm.h"
+#include "mm.h"
 #include "prot.h"
 #include "anon_regions.h"
+#include "file_backing.h"
 #include "../lib/string.h"
 #include "../fs/io.h"
 #include "../arch/mmu.h"
+#include "../arch/user_pt.h"
 #include "mmap_abi.h"
 
 #include "frame.h"
 #define TASK (*nas_current_task)
+static bool mutable_shared(const struct nas_anon_region *v) {
+    return v && v->kind==NAS_VMA_FILE_MUTABLE_SHARED && v->backing;
+}
+/* Complete the backing operation before committing a VMA replacement.
+ * The cache is inode-scoped, so one flush covers overlapping aliases.
+ * Propagate provider errors; a MAP_FIXED/munmap must not silently throw
+ * away data that can no longer be reached through its old mapping. */
+static int sync_shared_intersection(const struct nas_anon_regions *regions,
+                                    uint64_t start,uint64_t length,bool rearm) {
+    if(!regions || length>UINT64_MAX-start)return -EINVAL;
+    uint64_t end=start+length;
+    for(unsigned i=0;i<regions->capacity;i++) {
+        const struct nas_anon_region *v=&regions->slots[i];
+        if(!mutable_shared(v) || start>=v->end || end<=v->start)continue;
+        int rc=nas_fs_mmap_sync(v->backing,rearm);
+        if(rc)return rc;
+    }
+    return 0;
+}
 /* M86 page replacement transaction. Stage new 4-KiB data frames outside
  * the live VM, followed by all required page-table directories.  Directory
  * preparation is allowed to allocate but must not change leaf mappings.
@@ -177,6 +199,8 @@ uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
             return (uint64_t)-ENOMEM;
         }
         start=hint;
+        int sync=sync_shared_intersection(&TASK.mm->mmap_vmas,start,bytes,false);
+        if(sync) {nas_anon_reset(&planned);return (uint64_t)(int64_t)sync;}
         uint64_t failure=stage_replace_pages(start,pages,(unsigned)prot,
                                               false,0,0,length);
         if(failure) { nas_anon_reset(&planned); return failure; }
@@ -205,16 +229,14 @@ uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
     nas_vma_commit(&TASK.mm->mmap_vmas,&planned);
     return start;
 }
-/* CPIO/tmpfs MAP_PRIVATE eagerly copies bytes into owned frames. Immutable
- * boot files may also satisfy read-only MAP_SHARED by copying: the provider
- * guarantees there can never be an observable subsequent file mutation.
- * Mutable MAP_SHARED still needs coherent backing and remains unsupported.
- * Fixed remaps may replace an existing ELF/heap user address range;
- * anonymous and file mappings use the same metadata and page ownership. */
+/* MAP_PRIVATE remains an eager independent file snapshot. Immutable CPIO
+ * files can use an immutable read-only shared snapshot; mutable MAP_SHARED
+ * instead pins one original inode/address-space and uses coherent cache
+ * frames on demand. The mapping survives close/rename/unlink/fork. */
 uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
                           uint64_t flags, uint64_t fd, uint64_t offset) {
     const uint64_t MAP_SHARED=0x01ULL, MAP_PRIVATE=0x02ULL, MAP_FIXED=0x10ULL;
-    if (!length || length > (64ULL<<20) ||
+    if (!length ||
         length > UINT64_MAX-(PAGE-1) ||
         (offset & (PAGE-1)) || offset > UINT64_MAX-length)
         return (uint64_t)-EINVAL;
@@ -228,55 +250,92 @@ uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
         return (uint64_t)-EOPNOTSUPP;
     int64_t valid=nas_fs_mmap_read(fd,offset,0,0);
     if (valid<0) return (uint64_t)valid;
+    bool live_shared=false;
+    struct nas_mapped_file *backing=NULL;
     if(shared) {
-        /* Read-only file/mount is insufficient: /proc is dynamic, and a
-         * read-only mount may alias data mutable through another mount.
-         * Do not acknowledge a writable shared mapping without real page
-         * cache/writeback; mprotect must retain this restriction as well. */
-        if(prot & 2ULL)return (uint64_t)-EACCES;
-        if(prot!=1ULL)return (uint64_t)-ENOSYS;
+        /* An immutable provider is permitted to share an eager read-only
+         * snapshot. A writable/mutable source MUST use a live cache, never
+         * the old private copy. The inode pin is acquired before any VMA
+         * mutation, and independently outlives the file descriptor. */
         int immutable=nas_fs_mmap_immutable_readonly(fd);
-        if(immutable<0)return (uint64_t)immutable;
-        if(!immutable)return (uint64_t)-ENOSYS;
+        if(immutable<0)return (uint64_t)(int64_t)immutable;
+        if(immutable && (prot&NAS_VM_WRITE))return (uint64_t)-EACCES;
+        if(!immutable || prot!=NAS_VM_READ) {
+            int pinned=nas_fs_mmap_pin(fd,(prot&NAS_VM_WRITE)!=0,&backing);
+            if(pinned)return (uint64_t)(int64_t)pinned;
+            live_shared=true;
+        }
     }
-    const unsigned kind=shared ? NAS_VMA_FILE_IMMUTABLE_SHARED :
-                                 NAS_VMA_FILE_PRIVATE_SNAPSHOT;
+    /* Eager private/immutable snapshots retain the historical bounded
+     * transaction. A live MAP_SHARED mapping reserves VA only; limiting it
+     * to 64 MiB would reject sparse large-file mappings despite having no
+     * resident pages until user access. */
+    if(!live_shared && length>(64ULL<<20)) {
+        if(backing)nas_fs_mmap_put(backing);
+        return (uint64_t)-EINVAL;
+    }
+    const unsigned kind=live_shared ? NAS_VMA_FILE_MUTABLE_SHARED :
+                         (shared ? NAS_VMA_FILE_IMMUTABLE_SHARED :
+                                   NAS_VMA_FILE_PRIVATE_SNAPSHOT);
     uint64_t count=(length+PAGE-1)/PAGE, bytes=count*PAGE;
     uint64_t start;
     struct nas_anon_regions planned={0};
-    if(!nas_vma_clone(&planned,&TASK.mm->mmap_vmas))
+    if(!nas_vma_clone(&planned,&TASK.mm->mmap_vmas)) {
+        if(backing)nas_fs_mmap_put(backing);
         return (uint64_t)-ENOMEM;
+    }
     if (flags & MAP_FIXED) {
         if (!nas_anon_fixed_range_allowed(hint,bytes)) {
             nas_anon_reset(&planned);
+            if(backing)nas_fs_mmap_put(backing);
             return (uint64_t)-EINVAL;
         }
-        if (!nas_vma_replace(&planned,hint,bytes,(unsigned)prot,
-                             kind,offset)) {
+        bool recorded=live_shared ?
+            nas_vma_replace_shared(&planned,hint,bytes,(unsigned)prot,
+                                   offset,backing) :
+            nas_vma_replace(&planned,hint,bytes,(unsigned)prot,kind,offset);
+        if (!recorded) {
             nas_anon_reset(&planned);
+            if(backing)nas_fs_mmap_put(backing);
             return (uint64_t)-ENOMEM;
         }
         start=hint;
     } else {
         if(!nas_anon_find_gap(&planned,bytes,&start)) {
             nas_anon_reset(&planned);
+            if(backing)nas_fs_mmap_put(backing);
             return (uint64_t)-ENOMEM;
         }
-        if(!nas_vma_record(&planned,start,bytes,(unsigned)prot,
-                           kind,offset)) {
+        bool recorded=live_shared ?
+            nas_vma_record_shared(&planned,start,bytes,(unsigned)prot,
+                                  offset,backing) :
+            nas_vma_record(&planned,start,bytes,(unsigned)prot,kind,offset);
+        if(!recorded) {
             nas_anon_reset(&planned);
+            if(backing)nas_fs_mmap_put(backing);
             return (uint64_t)-ENOMEM;
         }
     }
-    /* Stage all file bytes in private frames BEFORE disturbing an existing
-     * MAP_FIXED mapping. Failed reads/OOM leave old contents unchanged.
-     * Ordinary mmap is also staged outside its unallocated VMA window;
-     * no eager anonymous placeholder or doubled physical memory is needed. */
-    uint64_t failure=stage_replace_pages(start,count,(unsigned)prot,true,
-                                         fd,offset,length);
-    if(failure) { nas_anon_reset(&planned); return failure; }
-    /* Whole mapping and its logical VMA become visible only after staging. */
+    /* MAP_FIXED first synchronizes any displaced dirty shared file, then
+     * removes old leaves. A live file mapping remains nonresident and is
+     * faulted through the cache; eager snapshots preserve their original
+     * all-or-nothing data-frame transaction. */
+    uint64_t failure=0;
+    if(flags & MAP_FIXED) {
+        int sync=sync_shared_intersection(&TASK.mm->mmap_vmas,start,bytes,false);
+        if(sync)failure=(uint64_t)(int64_t)sync;
+    }
+    if(!failure && (flags & MAP_FIXED || !live_shared))
+        failure=stage_replace_pages(start,count,
+                                    live_shared?0:(unsigned)prot,
+                                    !live_shared,fd,offset,length);
+    if(failure) {
+        nas_anon_reset(&planned);
+        if(backing)nas_fs_mmap_put(backing);
+        return failure;
+    }
     nas_vma_commit(&TASK.mm->mmap_vmas,&planned);
+    if(backing)nas_fs_mmap_put(backing); /* ledger now owns its own ref */
     return start;
 }
 uint64_t nas_vm_munmap(uint64_t addr, uint64_t len) {
@@ -295,6 +354,8 @@ uint64_t nas_vm_munmap(uint64_t addr, uint64_t len) {
         nas_anon_reset(&updated);
         return (uint64_t)-ENOMEM;
     }
+    int sync=sync_shared_intersection(&TASK.mm->mmap_vmas,addr,count*PAGE,false);
+    if(sync) {nas_anon_reset(&updated);return (uint64_t)(int64_t)sync;}
     for (uint64_t i=0; i<count; ++i) {
         uint64_t va=addr+i*PAGE;
         /* PROT_NONE reservations have intentionally absent PTEs. */
@@ -305,6 +366,31 @@ uint64_t nas_vm_munmap(uint64_t addr, uint64_t len) {
     }
     nas_vma_commit(&TASK.mm->mmap_vmas,&updated);
     return 0;
+}
+/* Linux msync accepts flags=0 (historically equivalent to ASYNC), but
+ * neither unknown bits nor simultaneous ASYNC/SYNC are valid. Anonymous
+ * and private snapshot mappings have no file writeback; live shared VMAs
+ * own a pinned address-space whose cache must flush real backing bytes.
+ * Fail on any VMA hole, including a hole between two valid fragments. */
+uint64_t nas_vm_msync(uint64_t addr,uint64_t length,uint64_t flags) {
+    const uint64_t MS_ASYNC=1ULL,MS_INVALIDATE=2ULL,MS_SYNC=4ULL;
+    if((addr&(PAGE-1)) ||
+       (flags&~(MS_ASYNC|MS_INVALIDATE|MS_SYNC)) ||
+       ((flags&MS_ASYNC) && (flags&MS_SYNC)))
+        return (uint64_t)-EINVAL;
+    if(!length)return 0;
+    if(length>UINT64_MAX-(PAGE-1))return (uint64_t)-ENOMEM;
+    uint64_t pages=(length+PAGE-1)/PAGE;
+    if(addr>=USER_LIMIT || pages>(USER_LIMIT-addr)/PAGE)
+        return (uint64_t)-ENOMEM;
+    if(!nas_anon_covered(&TASK.mm->mmap_vmas,addr,pages*PAGE))
+        return (uint64_t)-ENOMEM;
+    /* Invalidation needs a coherent page-cache eviction protocol, including
+     * other address spaces. Explicitly reject it until that mechanism is
+     * available; never acknowledge a no-op as MS_INVALIDATE success. */
+    if(flags&MS_INVALIDATE)return (uint64_t)-EOPNOTSUPP;
+    int rc=sync_shared_intersection(&TASK.mm->mmap_vmas,addr,pages*PAGE,true);
+    return (uint64_t)(int64_t)rc;
 }
 /* Linux MADV_DONTNEED discards *resident* private anonymous pages without
  * revoking the VMA. The next read/write fault observes the same permissions
@@ -391,6 +477,11 @@ uint64_t nas_vm_brk(uint64_t want) {
             nas_anon_reset(&planned);
             return base;
         }
+        if(sync_shared_intersection(&TASK.mm->mmap_vmas,
+                                    after,before-after,false)) {
+            nas_anon_reset(&planned);
+            return base;
+        }
         for (uint64_t va=after;va<before;va+=PAGE)
             if (!nas_mmu_unmap_page(va)) { nas_anon_reset(&planned); return base; }
         nas_vma_commit(&TASK.mm->mmap_vmas,&planned);
@@ -416,22 +507,26 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
          * accessible: a real backing-preserving transition is still needed. */
         if(!nas_anon_covered(&TASK.mm->mmap_vmas,addr,pages*PAGE))
             return (uint64_t)-ENOMEM;
-        /* File/ELF snapshots have eagerly copied backing. A PTE's absence
-         * there is not authority to turn missing file data into anonymous
-         * demand-zero memory; guard transitions only apply to zero-backed
-         * VMAs and owned stack/heap reservations. */
+        /* File/ELF snapshots have eagerly copied backing, so dropping those
+         * PTEs would destroy the only data copy. Live shared file mappings
+         * instead retain an independently owned inode/cache page and can
+         * dematerialize their PTEs for PROT_NONE, then safely fault back. */
         const uint64_t end=addr+pages*PAGE;
         for(uint64_t at=addr;at<end;) {
             const struct nas_anon_region *v=nas_vma_find(&TASK.mm->mmap_vmas,at);
             if(!v || (v->kind!=NAS_VMA_ANON_PRIVATE &&
-                      v->kind!=NAS_VMA_HEAP && v->kind!=NAS_VMA_STACK))
+                      v->kind!=NAS_VMA_HEAP && v->kind!=NAS_VMA_STACK &&
+                      !mutable_shared(v)))
                 return (uint64_t)-ENOSYS;
             at=v->end<end?v->end:end;
         }
         for(uint64_t i=0;i<pages;i++) {
+            uint64_t va=addr+i*PAGE;
             uint64_t pa=0;
-            if(nas_mmu_resolve_user_address(TASK.mm->root_phys,
-                                           addr+i*PAGE,&pa,0))
+            const struct nas_anon_region *v=
+                nas_vma_find(&TASK.mm->mmap_vmas,va);
+            if(nas_mmu_resolve_user_address(TASK.mm->root_phys,va,&pa,0) &&
+               !mutable_shared(v))
                 return (uint64_t)-ENOSYS;
         }
         struct nas_anon_regions planned={0};
@@ -440,6 +535,15 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
         if(!nas_vma_protect(&planned,addr,pages*PAGE,0)) {
             nas_anon_reset(&planned);
             return (uint64_t)-ENOMEM;
+        }
+        for(uint64_t i=0;i<pages;i++) {
+            uint64_t va=addr+i*PAGE;
+            const struct nas_anon_region *v=
+                nas_vma_find(&TASK.mm->mmap_vmas,va);
+            uint64_t pa=0;
+            if(mutable_shared(v) &&
+               nas_mmu_resolve_user_address(TASK.mm->root_phys,va,&pa,0) &&
+               !nas_mmu_unmap_page(va))nas_arch_halt();
         }
         nas_vma_commit(&TASK.mm->mmap_vmas,&planned);
         return 0;
@@ -462,6 +566,8 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
                 if(!v)return (uint64_t)-ENOMEM;
                 if(v->kind==NAS_VMA_FILE_IMMUTABLE_SHARED)
                     return (uint64_t)-EACCES;
+                if(mutable_shared(v) && !nas_fs_mmap_writable(v->backing))
+                    return (uint64_t)-EACCES;
                 at=v->end<end?v->end:end;
             }
         }
@@ -483,8 +589,15 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
                 /* Present PTEs and supported prot were prevalidated. A
                  * failure here means corruption, not recoverable ENOMEM. */
                 unsigned hw_prot=(unsigned)prot;
-                if((prot&NAS_VM_WRITE) &&
-                   nas_frame_refs(pa&~UINT64_C(4095))>1)
+                const struct nas_anon_region *v=
+                    nas_vma_find(&TASK.mm->mmap_vmas,va);
+                /* Shared pages must NEVER COW merely because a cache and
+                 * another process hold frame refs. Re-arm write trapping
+                 * instead: the first genuine store marks inode times and
+                 * advances the page's coherent dirty state. */
+                if(mutable_shared(v))hw_prot &= ~NAS_VM_WRITE;
+                else if((prot&NAS_VM_WRITE) &&
+                        nas_frame_refs(pa&~UINT64_C(4095))>1)
                     hw_prot &= ~NAS_VM_WRITE;
                 if(!nas_mmu_protect_pages(va,1,hw_prot))
                     nas_arch_halt();
@@ -497,4 +610,72 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
      * Such a mapping has no recoverable COW/fault policy; keeping the old
      * PTE-only fallback would make mprotect an ownership bypass. */
     return (uint64_t)-ENOMEM;
+}
+struct nas_vm_resize_context {
+    const struct nas_fs_node *node;
+    uint64_t new_size;
+};
+/* A truncate affects every process mapping this inode, not just the Task
+ * issuing ftruncate(2). The VFS lease pins an incarnation across close,
+ * unlink and rename; an inode-number-only comparison would be unsound. */
+static bool invalidate_mm_after_resize(struct nas_mm *mm,void *opaque) {
+    const struct nas_vm_resize_context *ctx=opaque;
+    for(unsigned i=0;i<mm->mmap_vmas.capacity;i++) {
+        const struct nas_anon_region *v=&mm->mmap_vmas.slots[i];
+        if(!mutable_shared(v) ||
+           !nas_fs_mmap_matches(v->backing,ctx->node))continue;
+        for(uint64_t va=v->start;va<v->end;va+=PAGE) {
+            uint64_t off=v->file_offset+(va-v->start);
+            uint64_t pa=0;
+            if(!nas_mm_resolve_user(mm,va,&pa,0))continue;
+            if(off>=ctx->new_size) {
+                uint64_t old=0;
+                if(!nas_mmu_exchange_leaf_at(mm->root_phys,va,0,0,&old) ||
+                   old!=(pa&~(PAGE-1)))nas_arch_halt();
+                if(!nas_frame_put(old))nas_arch_halt();
+            } else if(ctx->new_size-off<PAGE) {
+                /* Linux zeroes the tail of the last partial page after
+                 * truncate, including every already-materialized alias. */
+                uint64_t first=ctx->new_size-off;
+                memset((void *)(uintptr_t)(nas_hhdm_offset()+
+                       (pa&~(PAGE-1))+first),0,(size_t)(PAGE-first));
+            }
+        }
+    }
+    return true;
+}
+void nas_vm_invalidate_file(const struct nas_fs_node *node,uint64_t new_size) {
+    if(!node)return;
+    struct nas_vm_resize_context ctx={node,new_size};
+    if(!nas_mm_walk_live(invalidate_mm_after_resize,&ctx))nas_arch_halt();
+}
+/* Dirty-state observation needs a re-arm boundary. Without one, a process
+ * can write the same writable shared leaf for the rest of its lifetime
+ * without another page fault, leaving mtime stale after a subsequent sync.
+ * Single-CPU NaSeed has no concurrent user writes during this pass. */
+static bool rearm_mm_shared_file(struct nas_mm *mm,void *opaque) {
+    const struct nas_fs_node *node=opaque;
+    for(unsigned i=0;i<mm->mmap_vmas.capacity;i++) {
+        const struct nas_anon_region *v=&mm->mmap_vmas.slots[i];
+        if(!mutable_shared(v) || !(v->prot&NAS_VM_WRITE) ||
+           !nas_fs_mmap_matches(v->backing,node))continue;
+        for(uint64_t va=v->start;va<v->end;va+=PAGE) {
+            uint64_t physical=0;
+            unsigned hw=0;
+            if(!nas_mm_resolve_user(mm,va,&physical,&hw) ||
+               !(hw&NAS_UP_WRITE))continue;
+            uint64_t frame=physical&~(PAGE-1);
+            uint64_t old=0;
+            /* Existing leaf+directory: no allocation, COW or frame ref
+             * transfer. Preserve R/X, only clear the hardware W bit. */
+            unsigned rearmed=(v->prot|NAS_VM_READ)&~NAS_VM_WRITE;
+            if(!nas_mmu_exchange_leaf_at(mm->root_phys,va,frame,rearmed,&old) ||
+               old!=frame)nas_arch_halt();
+        }
+    }
+    return true;
+}
+void nas_vm_rearm_file(const struct nas_fs_node *node) {
+    if(node && !nas_mm_walk_live(rearm_mm_shared_file,(void *)node))
+        nas_arch_halt();
 }

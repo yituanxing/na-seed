@@ -9,6 +9,10 @@
 #include <string.h>
 #include "../kernel/task/elf_segments.h"
 #include "../kernel/mm/anon_regions.h"
+#include "../kernel/mm/file_backing.h"
+/* PT_LOAD only emits private snapshots; shared-backend refs are forbidden. */
+bool nas_fs_mmap_get(struct nas_mapped_file *f) {(void)f;assert(0);return false;}
+void nas_fs_mmap_put(struct nas_mapped_file *f) {(void)f;assert(0);}
 #define P 4096ULL
 #define BASE 0x10000ULL
 #define IMAGE_SIZE 0x6000U

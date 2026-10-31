@@ -160,7 +160,7 @@ static uint64_t sys_sync_fd(uint64_t fd) {
         return (uint64_t)-EBADF;
     const struct nas_open_file *opened=&nas_open_files[TASK.fds->entries[fd].slot];
     if(!opened->vnode_pinned)return (uint64_t)-EINVAL;
-    return (uint64_t)(int64_t)nas_vfs_sync(&opened->vnode);
+    return (uint64_t)(int64_t)nas_vfs_sync_user(&opened->vnode);
 }
 static uint64_t sys_resize_fd(uint64_t fd,uint64_t length) {
     if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)return (uint64_t)-EBADF;

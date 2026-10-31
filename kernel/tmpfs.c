@@ -89,8 +89,8 @@ static void tmp_try_reclaim(struct nas_tmp_file *node) {
 /* An optional root frame indexes 512 indirect pages; each indirect page
  * indexes 512 independently allocated 4-KiB file data pages. The common
  * frame allocator and HHDM supply all storage; no ISA-specific fast path. */
-static uint8_t *tmp_data_page(struct nas_tmp_file *file, uint64_t number,
-                              bool create) {
+static uint64_t tmp_data_frame(struct nas_tmp_file *file,uint64_t number,
+                               bool create) {
     if (!file || number >= TMP_INDEX_ROOT_ENTRIES * (uint64_t)TMP_PAGE_ENTRIES)
         return 0;
     if (!file->index_root) {
@@ -123,7 +123,48 @@ static uint8_t *tmp_data_page(struct nas_tmp_file *file, uint64_t number,
                0, (size_t)TMP_PAGE_SIZE);
         table[inner] = data_addr;
     }
-    return data_addr ? (uint8_t *)(uintptr_t)(nas_hhdm_offset() + data_addr) : 0;
+    return data_addr;
+}
+static uint8_t *tmp_data_page(struct nas_tmp_file *file,uint64_t number,
+                              bool create) {
+    uint64_t frame=tmp_data_frame(file,number,create);
+    return frame ? (uint8_t *)(uintptr_t)(nas_hhdm_offset()+frame) : NULL;
+}
+/* A mmap writer may touch the mapped last page past i_size. Those bytes are
+ * NOT file contents. Both pwrite into a later hole and ftruncate-grow must
+ * zero newly exposed bytes of the old partial EOF page before publishing a
+ * larger size. Other sparse pages already read as zero without allocation. */
+static void tmp_zero_newly_visible_tail(struct nas_tmp_file *file,
+                                        uint64_t old_size,uint64_t next_size) {
+    if(next_size<=old_size || !(old_size%TMP_PAGE_SIZE))return;
+    uint64_t end=(old_size/TMP_PAGE_SIZE+1)*TMP_PAGE_SIZE;
+    if(end>next_size)end=next_size;
+    uint8_t *tail=tmp_data_page(file,old_size/TMP_PAGE_SIZE,false);
+    if(tail)memset(tail+old_size%TMP_PAGE_SIZE,0,(size_t)(end-old_size));
+}
+int tmp_acquire_shared_page(struct nas_tmp_file *file,uint64_t offset,
+                            uint64_t *pa_owned) {
+    if(!pa_owned)return -EINVAL;
+    *pa_owned=0;
+    if(!file || !file->used || file->is_dir)return -EINVAL;
+    if(offset&(TMP_PAGE_SIZE-1))return -EINVAL;
+    /* Fault beyond i_size is SIGBUS, not an implicit extension of the file.
+     * A page overlapping EOF is still mapped; the logical size remains
+     * unchanged until write(2)/ftruncate(2), just as in Linux tmpfs. */
+    if(offset>=file->size)return -EFAULT;
+    uint64_t frame=tmp_data_frame(file,offset/TMP_PAGE_SIZE,true);
+    if(!frame)return -ENOMEM;
+    /* The sparse index retains the storage owner; the caller gets an
+     * independent PTE owner and must put it on failure/unmap. */
+    if(!nas_frame_get(frame))return -EIO;
+    *pa_owned=frame;
+    return 0;
+}
+int tmp_touch_shared(struct nas_tmp_file *file) {
+    if(!file || !file->used || file->is_dir)return -EINVAL;
+    file->mtime_ns=tmp_next_mtime(file->mtime_ns);
+    file->ctime_ns=file->mtime_ns;
+    return 0;
 }
 int64_t tmp_read_at(const struct nas_tmp_file *const_file, uint64_t offset,
                     uint8_t *dst, uint64_t count) {
@@ -155,6 +196,8 @@ int64_t tmp_write_at(struct nas_tmp_file *file, uint64_t offset,
     if (!count) return 0;
     if (offset >= TMP_FILE_CAP) return -ENOSPC;
     if (count > TMP_FILE_CAP - offset) count = TMP_FILE_CAP - offset;
+    bool has_hole=offset>file->size;
+    uint64_t old_size=file->size;
     uint64_t done = 0;
     while (done < count) {
         uint64_t at = offset + done;
@@ -162,6 +205,10 @@ int64_t tmp_write_at(struct nas_tmp_file *file, uint64_t offset,
         if (length > count - done) length = count - done;
         uint8_t *page = tmp_data_page(file, at / TMP_PAGE_SIZE, true);
         if (!page) return done ? (int64_t)done : -ENOMEM;
+        /* Do not alter even a hidden mmap tail when the first destination
+         * allocation fails and the write has made zero progress. */
+        if(!done && has_hole)
+            tmp_zero_newly_visible_tail(file,old_size,offset);
         memcpy(page + at % TMP_PAGE_SIZE, src + done, (size_t)length);
         done += length;
         if (at + length > file->size) file->size = at + length;
@@ -247,6 +294,7 @@ int tmp_resize(struct nas_tmp_file *file, uint64_t size) {
             }
         }
     }
+    tmp_zero_newly_visible_tail(file,old,size);
     file->size = size;
     file->mtime_ns = tmp_next_mtime(file->mtime_ns);
     file->ctime_ns = file->mtime_ns;

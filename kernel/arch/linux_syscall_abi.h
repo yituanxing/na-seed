@@ -105,6 +105,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_mkdir: return NAS_SC_mkdir;
     case __NR_mkdirat: return NAS_SC_mkdirat;
     case __NR_mmap: return NAS_SC_mmap;
+    case __NR_msync: return NAS_SC_msync;
     case __NR_madvise: return NAS_SC_madvise;
     case __NR_mprotect: return NAS_SC_mprotect;
     case __NR_munmap: return NAS_SC_munmap;
@@ -278,6 +279,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 156U: return NAS_SC_getsid;
     case 157U: return NAS_SC_setsid;
     case 222U: return NAS_SC_mmap;
+    case 227U: return NAS_SC_msync; /* Linux asm-generic */
     case 233U: return NAS_SC_madvise; /* Linux asm-generic */
     case 215U: return NAS_SC_munmap;
     case 226U: return NAS_SC_mprotect;

@@ -5,6 +5,19 @@
 #include "../kernel/arch/abi.h"
 #include "../kernel/task/user_stack.h"
 #define P 4096ULL
+/* Only the file owner API is mocked: this fixture executes production VMA
+ * clone/split/reprotect/replace/release with real reference transitions. */
+struct nas_mapped_file { unsigned refs; };
+static bool deny_file_get;
+bool nas_fs_mmap_get(struct nas_mapped_file *file) {
+    if(!file || !file->refs || deny_file_get)return false;
+    file->refs++;
+    return true;
+}
+void nas_fs_mmap_put(struct nas_mapped_file *file) {
+    assert(file && file->refs);
+    file->refs--;
+}
 static bool ordered(const struct nas_anon_region *r,void *ctx) {
     uint64_t *previous=(uint64_t *)ctx;
     assert(r->start>=*previous && r->end>r->start);
@@ -204,5 +217,31 @@ int main(void) {
     assert(nas_vma_walk(&a,ordered,&top_seen) && top_seen==NAS_USER_STACK_TOP);
     nas_anon_reset(&a);
     nas_anon_reset(&b);
+    /* A file mapping pins one real backing owner per live fragment. Fork
+     * clones and policy rewrites acquire before committing; unmap/exec
+     * release exactly the removed fragments, even through OOM rollback. */
+    struct nas_mapped_file file={.refs=1}; /* creating FD's temporary owner */
+    struct nas_anon_regions owned={0},child={0},failed={0};
+    const uint64_t fbase=NAS_ANON_FLOOR+24*P;
+    assert(nas_vma_record_shared(&owned,fbase,3*P,3,2*P,&file));
+    assert(file.refs==2);
+    deny_file_get=true;
+    assert(!nas_vma_clone(&failed,&owned));
+    assert(!failed.slots && file.refs==2);
+    deny_file_get=false;
+    assert(nas_vma_clone(&child,&owned) && file.refs==3);
+    assert(nas_anon_forget(&owned,fbase+P,P) && file.refs==4);
+    const struct nas_anon_region *left=nas_vma_find(&owned,fbase);
+    const struct nas_anon_region *right=nas_vma_find(&owned,fbase+2*P);
+    assert(left && right && left->backing==&file && right->backing==&file &&
+           left->file_offset==2*P && right->file_offset==4*P);
+    assert(nas_vma_protect(&owned,fbase+2*P,P,1) && file.refs==4);
+    assert(nas_vma_set_dontfork(&owned,fbase+2*P,P,true) && file.refs==4);
+    assert((nas_vma_find(&owned,fbase+2*P)->flags&NAS_VMA_DONTFORK)!=0);
+    assert(nas_vma_replace(&owned,fbase,P,3,NAS_VMA_ANON_PRIVATE,0));
+    assert(file.refs==3 && !nas_vma_find(&owned,fbase)->backing);
+    nas_anon_reset(&child);
+    nas_anon_reset(&owned);
+    assert(file.refs==1);
     return 0;
 }

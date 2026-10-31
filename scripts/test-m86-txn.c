@@ -11,6 +11,8 @@
 #include "../kernel/task.h"
 #include "../kernel/mm/vm.h"
 #include "../kernel/mm/frame.h"
+#include "../kernel/fs/io.h"
+#include "../kernel/fs/lookup.h"
 #include "../kernel/arch/abi.h"
 #include "../kernel/task/user_stack.h"
 /* The existing M86 runner links vm.c but not fault.c. Include the REAL
@@ -24,6 +26,54 @@
 static alignas(4096) uint8_t ram[NP*P];
 static unsigned owners[NP],alloc_count,alloc_fail_at,prepare_count,prepare_fail_at;
 static bool read_fail;
+/* A model of one inode-scoped tmpfs page owner. The actual mapping and VMA
+ * implementation under test are production vm.c/fault.c/anon_regions.c;
+ * only FD/inode+frame provision is mocked to control OOM and EOF. */
+struct nas_mapped_file {unsigned refs;bool writable;};
+static struct nas_mapped_file shared_file={.refs=1,.writable=true};
+static uint64_t shared_pages[2],shared_size=2*P;
+static bool shared_regrown;
+static unsigned shared_dirty,shared_sync,shared_rearm,internal_sync;
+int nas_fs_mmap_pin(uint64_t fd,bool writable,struct nas_mapped_file **out){
+    if(!out)return -22;
+    *out=0;
+    if(fd!=5)return -9;
+    if(writable && !shared_file.writable)return -13;
+    shared_file.refs++;
+    *out=&shared_file;
+    return 0;
+}
+bool nas_fs_mmap_get(struct nas_mapped_file *file){
+    if(file!=&shared_file || !file->refs)return false;
+    file->refs++;
+    return true;
+}
+void nas_fs_mmap_put(struct nas_mapped_file *file){
+    assert(file==&shared_file && file->refs>1);
+    file->refs--;
+}
+bool nas_fs_mmap_writable(const struct nas_mapped_file *file){
+    return file==&shared_file && file->writable;
+}
+int nas_fs_mmap_dirty(struct nas_mapped_file *file){
+    if(!nas_fs_mmap_writable(file))return -13;
+    shared_dirty++;
+    return 0;
+}
+int nas_fs_mmap_sync(struct nas_mapped_file *file,bool rearm){
+    if(file!=&shared_file)return -9;
+    shared_sync++;
+    if(rearm){
+        struct nas_fs_node node={.ino=5};
+        shared_rearm++;
+        nas_vm_rearm_file(&node);
+    }else internal_sync++;
+    return 0;
+}
+bool nas_fs_mmap_matches(struct nas_mapped_file *file,
+                         const struct nas_fs_node *node){
+    return file==&shared_file && node && node->ino==5;
+}
 /* The real file-descriptor/VFS layer authorizes immutable file mappings.
  * fd=4 is a read-only bootfs file; fd=5 is a mutable tmpfs regular file.
  * A snapshot of fd=5 would NOT satisfy Linux MAP_SHARED coherence. */
@@ -36,6 +86,9 @@ struct mapping {uint64_t va,pa;unsigned prot;};
 static struct mapping maps[96];
 static struct nas_task current;
 static struct nas_mm space;
+bool nas_mm_walk_live(nas_mm_live_visit visitor,void *opaque){
+    return visitor(&space,opaque);
+}
 #define SELECTED_ROOT 0xabc000ULL
 struct nas_task *nas_current_task=&current;
 uint64_t nas_hhdm_offset(void){return (uint64_t)(uintptr_t)ram;}
@@ -49,6 +102,12 @@ uint64_t nas_frame_alloc(void){
 bool nas_frame_put(uint64_t pa){
     if(!pa || (pa&(P-1)) || pa/P>=NP || !owners[pa/P])return false;
     owners[pa/P]--;return true;
+}
+bool nas_frame_get(uint64_t pa){
+    if(!pa || (pa&(P-1)) || pa/P>=NP || !owners[pa/P] ||
+       owners[pa/P]==UINT32_MAX)return false;
+    owners[pa/P]++;
+    return true;
 }
 uint32_t nas_frame_refs(uint64_t pa){return pa/P<NP?owners[pa/P]:0;}
 static unsigned living(void){
@@ -124,6 +183,24 @@ int64_t nas_fs_mmap_read(uint64_t fd,uint64_t off,uint8_t *dst,uint64_t n){
     if(!dst)return -14;
     for(uint64_t i=0;i<n;i++)dst[i]=(uint8_t)((off+i+7)&255);
     return (int64_t)n;
+}
+int nas_fs_mmap_page(struct nas_mapped_file *file,uint64_t off,
+                     uint64_t *pa_owned){
+    if(!pa_owned)return -22;
+    *pa_owned=0;
+    if(file!=&shared_file || (off&(P-1)))return -22;
+    if(off>=shared_size)return -14;
+    unsigned idx=(unsigned)(off/P);
+    if(idx>=2)return -22;
+    if(!shared_pages[idx]) {
+        shared_pages[idx]=nas_frame_alloc();
+        if(!shared_pages[idx])return -12;
+        memset(ram+shared_pages[idx],idx && !shared_regrown?0x42:0x41,P);
+        if(idx && shared_regrown)memset(ram+shared_pages[idx],0,P);
+    }
+    if(!nas_frame_get(shared_pages[idx]))return -12;
+    *pa_owned=shared_pages[idx];
+    return 0;
 }
 static void initialize(void){
     current.mm=&space;space.users=1;space.root_phys=SELECTED_ROOT;
@@ -240,10 +317,9 @@ int main(void){
            slot(BASE+4*P,false)->prot==1);
     assert(nas_mmu_unmap_page(BASE+4*P));
     assert(nas_vm_munmap(transient_file,P)==0);
-    /* M124: util-linux look uses read-only MAP_SHARED on dictionary files.
-     * Immutable CPIO content can safely share snapshot *observations*;
-     * mutable tmpfs cannot, because writes through another FD must be seen.
-     * Reject write promotion by either mmap(PROT_WRITE) or mprotect(). */
+    /* M124 immutable CPIO can share snapshots. M111 mutable tmpfs MUST use
+     * the same provider-owned frame under two independently mapped VMAs;
+     * this host test executes real VM ledger, fault, MSYNC and teardown. */
     uint64_t immutable=nas_vm_file_mmap(0,P,1,1,4,0);
     assert((int64_t)immutable>0);
     assert(*nas_mmu_user_byte(immutable)==7 &&
@@ -252,8 +328,9 @@ int main(void){
            slot(immutable,false)->prot==1);
     const unsigned immutable_baseline=living();
     const uint64_t immutable_pa=slot(immutable,false)->pa;
-    assert((int64_t)nas_vm_file_mmap(0,P,1,1,5,0)==-38);
-    assert((int64_t)nas_vm_file_mmap(immutable,P,1,0x11,5,0)==-38);
+    shared_file.writable=false;
+    assert((int64_t)nas_vm_file_mmap(immutable,P,3,0x11,5,0)==-13);
+    shared_file.writable=true;
     assert((int64_t)nas_vm_file_mmap(0,P,3,1,4,0)==-13);
     assert((int64_t)nas_vm_mprotect(immutable,P,3)==-13);
     assert(nas_vma_find(&space.mmap_vmas,immutable)->prot==1 &&
@@ -261,6 +338,97 @@ int main(void){
            slot(immutable,false)->pa==immutable_pa &&
            *nas_mmu_user_byte(immutable)==7 &&
            living()==immutable_baseline);
+    uint64_t live=nas_vm_file_mmap(0,2*P,3,1,5,0);
+    assert((int64_t)live>0 && shared_file.refs==2);
+    assert(!nas_mmu_user_byte(live)); /* live file pages remain lazy */
+    assert(nas_vm_msync(live,P,0)==0 && shared_sync==1);
+    assert(nas_mm_handle_fault(&space,live,NAS_UP_READ,false)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(slot(live,false)->pa==shared_pages[0] &&
+           slot(live,false)->prot==1 && nas_frame_refs(shared_pages[0])==2);
+    assert(nas_mm_handle_fault(&space,live,NAS_UP_WRITE,true)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(slot(live,false)->prot==3 && shared_dirty>0);
+    uint64_t alias=nas_vm_file_mmap(0,P,3,1,5,0);
+    assert((int64_t)alias>0 && alias!=live && shared_file.refs==3);
+    assert(nas_mm_handle_fault(&space,alias,NAS_UP_WRITE,false)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(slot(alias,false)->pa==slot(live,false)->pa &&
+           nas_frame_refs(shared_pages[0])==3);
+    *nas_mmu_user_byte(live)=0x91;
+    assert(*nas_mmu_user_byte(alias)==0x91);
+    *nas_mmu_user_byte(alias)=0x73;
+    assert(*nas_mmu_user_byte(live)==0x73);
+    assert(nas_vm_msync(live,P,1)==0);
+    /* User msync starts a new dirty epoch for ALL resident inode aliases:
+     * the next write must trap and account for a fresh mtime update. */
+    assert(shared_rearm==2 && slot(live,false)->prot==1 &&
+           slot(alias,false)->prot==1);
+    unsigned dirty_after_sync=shared_dirty;
+    assert(nas_mm_handle_fault(&space,alias,NAS_UP_WRITE,true)==
+           NAS_MM_FAULT_RESOLVED && slot(alias,false)->prot==3 &&
+           shared_dirty==dirty_after_sync+1);
+    *nas_mmu_user_byte(alias)=0x73;
+    assert(nas_vm_msync(live,P,4)==0);
+    assert((int64_t)nas_vm_msync(live,P,5)==-22);
+    assert((int64_t)nas_vm_msync(live+1,P,1)==-22);
+    assert((int64_t)nas_vm_msync(live,4*P,1)==-12);
+    assert((int64_t)nas_vm_msync(live,P,2)==-95);
+    /* ftruncate operates on the VFS inode, not the open FD or the current
+     * Task alone. A partial tail must zero in all aliases; fully discarded
+     * pages lose their PTE, then fault SIGBUS until the inode grows again. */
+    assert(nas_mm_handle_fault(&space,live+P,NAS_UP_READ,false)==
+           NAS_MM_FAULT_RESOLVED);
+    uint64_t former_second=slot(live+P,false)->pa;
+    assert(former_second==shared_pages[1]);
+    ram[former_second+17]=0x9d;
+    struct nas_fs_node resized={.ino=5};
+    shared_size=P+1;
+    nas_vm_invalidate_file(&resized,P+1);
+    assert(slot(live+P,false)->pa==former_second &&
+           ram[former_second]==0x42 && ram[former_second+17]==0);
+    shared_size=P;
+    assert(nas_frame_put(shared_pages[1]));shared_pages[1]=0;
+    nas_vm_invalidate_file(&resized,P);
+    assert(!nas_mmu_user_byte(live+P));
+    assert(nas_mm_handle_fault(&space,live+P,NAS_UP_READ,false)==
+           NAS_MM_FAULT_NEEDS_BACKING);
+    shared_size=2*P;
+    shared_regrown=true;
+    assert(nas_mm_handle_fault(&space,live+P,NAS_UP_READ,false)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(*nas_mmu_user_byte(live+P)==0 &&
+           *(nas_mmu_user_byte(live+P)+17)==0);
+    assert(nas_vm_mprotect(alias,P,1)==0 && slot(alias,false)->prot==1);
+    assert(nas_vm_mprotect(alias,P,3)==0 && slot(alias,false)->prot==1);
+    assert(nas_mm_handle_fault(&space,alias,NAS_UP_WRITE,true)==
+           NAS_MM_FAULT_RESOLVED && slot(alias,false)->prot==3);
+    uint64_t shared_before_guard=slot(alias,false)->pa;
+    assert(nas_vm_mprotect(alias,P,0)==0 && !nas_mmu_user_byte(alias));
+    assert(nas_vma_find(&space.mmap_vmas,alias)->prot==0);
+    assert(nas_vm_mprotect(alias,P,3)==0);
+    assert(nas_mm_handle_fault(&space,alias,NAS_UP_WRITE,false)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(slot(alias,false)->pa==shared_before_guard &&
+           *nas_mmu_user_byte(alias)==0x73);
+    unsigned before_internal=internal_sync,before_rearm=shared_rearm;
+    assert(nas_vm_munmap(alias,P)==0 && shared_file.refs==2);
+    assert(internal_sync>before_internal && shared_rearm==before_rearm);
+    assert(nas_vm_munmap(live,2*P)==0 && shared_file.refs==1);
+    assert(nas_frame_refs(shared_pages[0])==1); /* cache owns final ref */
+    assert(nas_frame_put(shared_pages[0]));shared_pages[0]=0;
+    assert(nas_frame_put(shared_pages[1]));shared_pages[1]=0;
+    uint64_t split=nas_vm_file_mmap(0,3*P,3,1,5,0);
+    assert((int64_t)split>0 && shared_file.refs==2);
+    assert(nas_vm_munmap(split+P,P)==0 && shared_file.refs==3);
+    const struct nas_anon_region *split_right=
+        nas_vma_find(&space.mmap_vmas,split+2*P);
+    assert(split_right && split_right->file_offset==2*P &&
+           split_right->backing==&shared_file);
+    assert((int64_t)nas_vm_msync(split,3*P,1)==-12);
+    assert(nas_vm_munmap(split,P)==0 && shared_file.refs==2);
+    assert(nas_vm_munmap(split+2*P,P)==0 && shared_file.refs==1);
+    assert(living()==immutable_baseline);
     assert(nas_vm_munmap(immutable,P)==0);
     /* XZ's original Linux encoder can reserve 64 MiB plus one extra page
      * in a single anonymous mmap. The VMA window, not an arbitrary 64-MiB
@@ -439,7 +607,8 @@ int main(void){
     assert(nas_mmu_unmap_page(stack_bottom));
     assert(living()==before_stack);
     puts("[M80 LARGE ANON MMAP HOST PASS] 64MiB+4KiB, high 64-bit VMA, honest total-window ENOMEM");
-    puts("[M124 IMMUTABLE MAP_SHARED HOST PASS] bootfs RO mapped; mutable tmpfs and write escalation rejected");
+    puts("[M124 IMMUTABLE MAP_SHARED HOST PASS] bootfs RO snapshot and write escalation rejected");
+    puts("[A005 VM SHARED ALIAS HOST PASS] alias, VMA refs/split, truncate SIGBUS/regrow, write fault, mprotect and msync");
     puts("[M110 NODE VM PASS] 512MiB RWX reservation, lazy mprotect, demand-faulted executable pages");
     puts("[M110 NODE MADVISE HOST PASS] 512MiB DONTNEED refault zero, DONTFORK VMA policy, snapshot honesty");
     puts("[M87 MM TXN PASS] MAP_FIXED rollback and mprotect lazy protection preserve VMA/PTE and frame ownership");

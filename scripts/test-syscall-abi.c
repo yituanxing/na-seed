@@ -25,6 +25,7 @@ int main(void) {
     assert(nas_linux_decode_syscall(__NR_truncate) == NAS_SC_truncate);
     assert(nas_linux_decode_syscall(__NR_prctl) == NAS_SC_prctl);
     assert(nas_linux_decode_syscall(__NR_mmap) == NAS_SC_mmap);
+    assert(nas_linux_decode_syscall(__NR_msync) == NAS_SC_msync);
     assert(nas_linux_decode_syscall(__NR_madvise) == NAS_SC_madvise);
     assert(nas_linux_decode_syscall(__NR_newfstatat) == NAS_SC_newfstatat);
     assert(nas_linux_decode_syscall(__NR_getrandom) == NAS_SC_getrandom);

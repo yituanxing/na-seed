@@ -44,6 +44,7 @@ int main(void) {
     assert(nas_linux_decode_syscall(166U)==NAS_SC_umask);
     assert(nas_linux_decode_syscall(165U)==NAS_SC_getrusage);
     assert(nas_linux_decode_syscall(233U)==NAS_SC_madvise);
+    assert(nas_linux_decode_syscall(227U)==NAS_SC_msync);
     assert(nas_linux_decode_syscall(54U)==NAS_SC_fchownat);
     assert(nas_linux_decode_syscall(55U)==NAS_SC_fchown);
     assert(nas_linux_decode_syscall(123U)==NAS_SC_sched_getaffinity);

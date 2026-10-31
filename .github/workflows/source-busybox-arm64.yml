@@ -1,5 +1,25 @@
 name: NaSeed original-source ARM64 BusyBox (extended)
 on:
+  # Long-running original-source ARM64 QEMU is opt-in for PRs. The manual
+  # and scheduled gates remain unconditional; the label is deliberately not
+  # inherited by unrelated PRs that merely touch common MM/TTY sources.
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - '.github/workflows/source-busybox-arm64.yml'
+      - 'kernel/arch/aarch64/**'
+      - 'kernel/mm/**'
+      - 'kernel/drivers/pty*'
+      - 'kernel/drivers/tty*'
+      - 'scripts/probe-m105-signal-group.sh'
+      - 'scripts/build-m105-signal-group.sh'
+      - 'scripts/m105-signal-group-serial-check.py'
+      - 'tests/m105-signal-group.c'
+      - 'scripts/test-m105-native-jit-probe.sh'
+      - 'scripts/test-m105-native-jit.c'
+      - 'scripts/test-m105-native-jit-cases.tsv'
+      - 'scripts/build-source-busybox.sh'
+      - 'scripts/probe-source-busybox.sh'
   workflow_dispatch:
   schedule:
     - cron: '17 3 * * 0'
@@ -13,6 +33,7 @@ concurrency:
 
 jobs:
   arm64-source:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'run-arm64-source')
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     steps:

@@ -29,6 +29,18 @@ static struct nas_mm guest_mm = { .users=1, .root_phys=0x9000 };
 static struct nas_task guest_task;
 static struct nas_files guest_files;
 struct nas_task *nas_current_task = &guest_task;
+/* This FD/usercopy fixture has no mounted VFS file; A005 exercises real
+ * VFS shared-mapping permissions and mtime in separate integration tests. */
+bool nas_vfs_can_write(const struct nas_fs_node *node) {
+    (void)node;
+    assert(!"unexpected mapped VFS write in M106");
+    return false;
+}
+int nas_vfs_touch_shared(const struct nas_fs_node *node) {
+    (void)node;
+    assert(!"unexpected mapped VFS dirty in M106");
+    return -EIO;
+}
 static unsigned pending_accept_slot=NAS_OPEN_FILE_LIMIT, accepted_count;
 
 /* The real FileOps importer owns its iovec snapshot until completion. The

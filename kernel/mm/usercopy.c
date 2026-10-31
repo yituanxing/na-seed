@@ -10,6 +10,7 @@
 #include "../task.h"
 #include "../arch/user_pt.h"
 #include "prot.h"
+#include "file_backing.h"
 /* Every NaSeed user page is a 4-KiB base page across all three backends.
  * A resolved HHDM pointer is physically contiguous only until the page
  * boundary; do not confuse adjacent user VAs with adjacent frames. */
@@ -118,7 +119,8 @@ bool nas_user_prepare_write(uint64_t addr,uint64_t len) {
         } else if(!(access&NAS_UP_WRITE)) {
             if(nas_mm_handle_fault(mm,at,NAS_UP_WRITE,true)!=
                NAS_MM_FAULT_RESOLVED)return false;
-        } else if(nas_frame_refs(pa&~UINT64_C(4095))>1 &&
+        } else if((!v || v->kind!=NAS_VMA_FILE_MUTABLE_SHARED) &&
+                  nas_frame_refs(pa&~UINT64_C(4095))>1 &&
                   !nas_mm_break_cow(mm,at,access,false))return false;
         if(!nas_mmu_user_writable(at))return false;
         checked += page_chunk(at, len - checked);
@@ -129,6 +131,18 @@ bool nas_user_write_bytes(uint64_t addr, const uint8_t *src, uint64_t len) {
     /* Keep original two-phase semantics: reject any unmapped/read-only page
      * before modifying ANY byte of the target range. */
     if(!nas_user_prepare_write(addr,len))return false;
+    /* The kernel HHDM alias bypasses hardware user write faults.  A shared
+     * writable file still needs its provider's dirty/timestamp operation
+     * BEFORE the first actual copy byte is published.  Keep the two-phase
+     * usercopy contract: reject an invalid page before mutating any data. */
+    for(uint64_t checked=0;checked<len;) {
+        uint64_t at=addr+checked;
+        const struct nas_anon_region *v=
+            nas_vma_find(&nas_current_task->mm->mmap_vmas,at);
+        if(v && v->kind==NAS_VMA_FILE_MUTABLE_SHARED &&
+           nas_fs_mmap_dirty(v->backing)<0)return false;
+        checked+=page_chunk(at,len-checked);
+    }
     for (uint64_t done = 0; done < len;) {
         uint64_t at = addr + done;
         uint8_t *dest = nas_mmu_user_byte(at);

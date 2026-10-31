@@ -30,6 +30,34 @@ static struct bootfs_entry entries[]={
     {.path="/shortcut",.mode=0120777,.ino=8,.data=abs_link,.size=sizeof(abs_link)-1}
 };
 static struct nas_tmp_file tmp_demo={.used=true,.mode=0100644,.size=4,.ino=101};
+/* VFS capability fixture: the production tmpfs implementation is exercised
+ * separately in M108; here the callback must remain provider-scoped and
+ * never be inferred for bootfs/procfs or a writable mount flag alone. */
+static _Alignas(4096) uint8_t fixture_shared_frame[4096];
+static unsigned shared_touch_calls, shared_resize_invalidations;
+static unsigned shared_sync_rearms;
+int tmp_acquire_shared_page(struct nas_tmp_file *file,uint64_t offset,
+                            uint64_t *pa_owned) {
+    if(!pa_owned)return -EINVAL;
+    *pa_owned=0;
+    if(file!=&tmp_demo)return -ENODEV;
+    if(offset>=file->size)return -EFAULT;
+    *pa_owned=(uint64_t)(uintptr_t)fixture_shared_frame;
+    return 0;
+}
+int tmp_touch_shared(struct nas_tmp_file *file) {
+    if(file!=&tmp_demo)return -ENODEV;
+    shared_touch_calls++;
+    return 0;
+}
+void nas_vm_invalidate_file(const struct nas_fs_node *node,uint64_t new_size) {
+    (void)node;(void)new_size;
+    shared_resize_invalidations++;
+}
+void nas_vm_rearm_file(const struct nas_fs_node *node) {
+    assert(node && node->filesystem);
+    shared_sync_rearms++;
+}
 static struct nas_tmp_file fixture_symlink={.used=true,.mode=0120777,.size=9,.ino=102};
 static const char *fixture_link_target="/bin/demo";
 static struct nas_tmp_file fixture_dir_link={.used=true,.mode=0120777,.size=4,.ino=103};
@@ -692,6 +720,12 @@ int main(void) {
     struct nas_fs_node n;
     struct nas_vfs_statfs stats;
     assert(nas_fs_lookup_node("/tmp/demo",true,&n,resolved)==0);
+    uint64_t shared_pa=0;
+    assert(nas_vfs_acquire_shared_page(&n,0,&shared_pa)==0);
+    assert(shared_pa==(uint64_t)(uintptr_t)fixture_shared_frame);
+    assert(nas_vfs_touch_shared(&n)==0 && shared_touch_calls==1);
+    assert(nas_vfs_acquire_shared_page(&n,4096,&shared_pa)==-EFAULT);
+    assert(!shared_pa);
     assert(nas_vfs_statfs(&n,&stats)==0);
     assert(stats.magic==0x01021994ULL && stats.block_size==4096);
     assert(stats.blocks==2048 && stats.free_blocks==789 &&
@@ -700,6 +734,7 @@ int main(void) {
     assert(nas_vfs_statfs(&n,&stats)==0 && stats.free_blocks==700);
     assert(nas_vfs_statfs(0,&stats)==-EINVAL);
     assert(nas_fs_lookup_node("/bin/demo",true,&n,resolved)==0);
+    assert(nas_vfs_acquire_shared_page(&n,0,&shared_pa)==-ENOSYS);
     assert(nas_vfs_statfs(&n,&stats)==-EOPNOTSUPP);
     struct nas_fs_node canonical_parent;
     assert(nas_fs_lookup_parent("/tmp/alias/new-parent",

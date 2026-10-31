@@ -81,6 +81,7 @@ enum nas_syscall_op {
     NAS_SC_mkdir,
     NAS_SC_mkdirat,
     NAS_SC_mmap,
+    NAS_SC_msync,
     NAS_SC_madvise,
     NAS_SC_mprotect,
     NAS_SC_munmap,

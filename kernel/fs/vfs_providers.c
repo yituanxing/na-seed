@@ -210,6 +210,14 @@ static int64_t tmp_write_node(const struct nas_fs_node *node,uint64_t off,
     return tmp_write_at((struct nas_tmp_file *)(uintptr_t)node->inode,
                         off,src,count);
 }
+static int tmp_shared_page(const struct nas_fs_node *node,uint64_t offset,
+                            uint64_t *pa_owned) {
+    return tmp_acquire_shared_page((struct nas_tmp_file *)(uintptr_t)node->inode,
+                                   offset,pa_owned);
+}
+static int tmp_shared_dirty(const struct nas_fs_node *node) {
+    return tmp_touch_shared((struct nas_tmp_file *)(uintptr_t)node->inode);
+}
 static int tmp_resize_node(const struct nas_fs_node *node,uint64_t size) {
     return tmp_resize((struct nas_tmp_file *)(uintptr_t)node->inode,size);
 }
@@ -369,6 +377,7 @@ static const struct nas_vfs_type tmp_type={
     .read_dir=tmp_read_dir,.chmod=tmp_chmod_node,.chown=tmp_chown_node,
     .utimens=tmp_utimens_node,
     .create=tmp_create_node,.mknod=tmp_mknod_node,.write_at=tmp_write_node,
+    .acquire_shared_page=tmp_shared_page,.touch_shared=tmp_shared_dirty,
     .resize=tmp_resize_node,.sync=tmp_sync_node,
     .mkdir=tmp_mkdir_node,.unlink=tmp_unlink_node,.rename=tmp_rename_node,
     .link=tmp_link_node,.symlink=tmp_symlink_node,

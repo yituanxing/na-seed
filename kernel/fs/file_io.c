@@ -60,6 +60,93 @@ int nas_fs_mmap_immutable_readonly(uint64_t fd) {
         return 1;
     return 0;
 }
+/* One mapped File identity, separately owned from its creating descriptor.
+ * The VFS inode/mount lease survives FD close, rename and final unlink;
+ * VMA splits/fork share the counted object rather than taking unrelated
+ * pathname snapshots. No per-provider inode fields escape this adapter. */
+struct nas_mapped_file {
+    uint32_t refs;
+    bool write_allowed;
+    struct nas_fs_node node;
+};
+int nas_fs_mmap_pin(uint64_t fd,bool writable,struct nas_mapped_file **out) {
+    if(!out)return -EINVAL;
+    *out=NULL;
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
+        return -EBADF;
+    unsigned slot=TASK.fds->entries[fd].slot;
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+        return -EBADF;
+    const struct nas_open_file *opened=&nas_open_files[slot];
+    if(opened->status_flags & NAS_LINUX_O_PATH)return -EBADF;
+    const unsigned access=(unsigned)(opened->status_flags&3ULL);
+    /* Linux requires a readable descriptor for every file mmap, and an
+     * O_RDWR descriptor for writable MAP_SHARED, even if the original
+     * PROT_READ mapping requests write permission only via mprotect later. */
+    if(access==1U || access==3U)return -EACCES;
+    if(writable && access!=2U)return -EACCES;
+    if(!opened->vnode_pinned)return -ENODEV;
+    const struct nas_fs_node *node=&opened->vnode;
+    if(node->is_dir || (node->mode&0170000U)!=0100000U ||
+       !node->filesystem || !node->filesystem->read_at)
+        return -ENODEV;
+    /* A provider without true shared physical pages is NOT equivalent to
+     * a private eager copy. In particular, ext4 requires a coherent page
+     * cache before participating. */
+    if(!node->filesystem->acquire_shared_page)return -ENOSYS;
+    if(writable && !nas_vfs_can_write(node))return -EACCES;
+    struct nas_mapped_file *mapped=nas_heap_alloc(sizeof(*mapped));
+    if(!mapped)return -ENOMEM;
+    int rc=nas_vfs_node_pin(node);
+    if(rc) {
+        (void)nas_heap_free(mapped);
+        return rc;
+    }
+    *mapped=(struct nas_mapped_file){.refs=1,.write_allowed=access==2U,
+                                      .node=*node};
+    *out=mapped;
+    return 0;
+}
+bool nas_fs_mmap_get(struct nas_mapped_file *file) {
+    if(!file || !file->refs || file->refs==UINT32_MAX)return false;
+    ++file->refs;
+    return true;
+}
+void nas_fs_mmap_put(struct nas_mapped_file *file) {
+    if(!file || !file->refs)__builtin_trap();
+    if(--file->refs)return;
+    if(nas_vfs_node_unpin(&file->node))__builtin_trap();
+    if(!nas_heap_free(file))__builtin_trap();
+}
+bool nas_fs_mmap_writable(const struct nas_mapped_file *file) {
+    return file && file->refs && file->write_allowed &&
+           nas_vfs_can_write(&file->node);
+}
+int nas_fs_mmap_page(struct nas_mapped_file *file,uint64_t offset,
+                     uint64_t *pa_owned) {
+    if(!pa_owned)return -EINVAL;
+    *pa_owned=0;
+    if(!file || !file->refs)return -EINVAL;
+    return nas_vfs_acquire_shared_page(&file->node,offset,pa_owned);
+}
+int nas_fs_mmap_dirty(struct nas_mapped_file *file) {
+    if(!file || !file->refs)return -EINVAL;
+    if(!nas_fs_mmap_writable(file))return -EACCES;
+    return nas_vfs_touch_shared(&file->node);
+}
+int nas_fs_mmap_sync(struct nas_mapped_file *file,bool rearm) {
+    if(!file || !file->refs)return -EINVAL;
+    return rearm ? nas_vfs_sync_user(&file->node) :
+                   nas_vfs_sync(&file->node);
+}
+bool nas_fs_mmap_matches(struct nas_mapped_file *file,
+                         const struct nas_fs_node *node) {
+    if(!file || !file->refs || !node)return false;
+    const struct nas_fs_node *mine=&file->node;
+    return mine->mount==node->mount && mine->mount_id==node->mount_id &&
+           mine->filesystem==node->filesystem && mine->ino==node->ino &&
+           mine->inode==node->inode;
+}
 int64_t nas_fs_mmap_read(uint64_t fd, uint64_t offset,
                         uint8_t *buffer, uint64_t length) {
     if (fd >= NAS_FD_LIMIT || TASK.fds->entries[fd].kind == FD_CLOSED)

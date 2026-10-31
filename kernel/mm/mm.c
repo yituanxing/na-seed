@@ -24,6 +24,14 @@ struct nas_mm *nas_mm_new(void) {
     }
     return 0;
 }
+bool nas_mm_walk_live(nas_mm_live_visit visit,void *ctx) {
+    if(!visit)return false;
+    for(unsigned n=0;n<NAS_TASK_LIMIT*2U;n++) {
+        struct nas_mm *mm=&mm_pool[n];
+        if(mm->users && mm->root_phys && !visit(mm,ctx))return false;
+    }
+    return true;
+}
 /* The platform page tables are private; only ordinary user data frames
  * become shared. Every user leaf must have a logical VMA owner. Reject an
  * orphan leaf rather than silently reviving the old eager-fork fallback:
@@ -48,7 +56,10 @@ static bool cow_clone_mapping(uint64_t va,unsigned access,void *opaque) {
      * Parent remains the sole owner: do not acquire a second frame ref. */
     if(v->flags&NAS_VMA_DONTFORK)return true;
     if(!nas_frame_get(pa))return false;
-    unsigned prot=access_prot(access)&~NAS_VM_WRITE;
+    /* Shared file mappings retain the exact same backing frame and Linux
+     * write permission across fork.  Only MAP_PRIVATE pages become COW. */
+    unsigned prot=access_prot(access);
+    if(v->kind!=NAS_VMA_FILE_MUTABLE_SHARED)prot &= ~NAS_VM_WRITE;
     if(!nas_mmu_prepare_leaf_at(ctx->dst->root_phys,va)) {
         (void)nas_frame_put(pa);
         return false;
@@ -67,7 +78,8 @@ static bool cow_protect_parent(uint64_t va,unsigned access,void *opaque) {
     const struct nas_anon_region *v=nas_vma_find(&src->mmap_vmas,va);
     if(!v || !(v->prot&NAS_VM_WRITE))return false;
     /* Excluded pages were not cloned and must not be write-protected. */
-    if(v->flags&NAS_VMA_DONTFORK)return true;
+    if((v->flags&NAS_VMA_DONTFORK) ||
+       v->kind==NAS_VMA_FILE_MUTABLE_SHARED)return true;
     uint64_t pa=0;
     if(!nas_mm_resolve_user(src,va,&pa,0))return false;
     pa &= ~UINT64_C(4095);
@@ -119,6 +131,12 @@ struct nas_mm *nas_mm_fork_cow(const struct nas_mm *source) {
  * A page with a single remaining owner can be promoted in-place. */
 bool nas_mm_break_cow(struct nas_mm *mm,uint64_t va,
                       unsigned logical_prot,bool preserve_perm) {
+    /* A shared-file page has a separate inode/cache owner.  Its frame's
+     * multiple references mean live aliases, not a private COW request.
+     * Callers must preserve this mapping instead of copying its bytes. */
+    const struct nas_anon_region *v=mm ?
+        nas_vma_find(&mm->mmap_vmas,va) : 0;
+    if(v && v->kind==NAS_VMA_FILE_MUTABLE_SHARED)return false;
     uint64_t pa=0;
     unsigned access=0;
     if(!nas_mm_resolve_user(mm,va,&pa,&access))return false;

@@ -9,8 +9,10 @@
 #include "frame.h"
 #include "vm.h"
 #include "fault.h"
+#include "prot.h"
 #include "../arch/user_pt.h"
 #include "../lib/string.h"
+#include "file_backing.h"
 int64_t nas_vm_read_task_bytes(const struct nas_task *task,uint64_t va,
                                uint8_t *dst,uint64_t length) {
     if(!task || task->state==NAS_TASK_FREE || task->state==NAS_TASK_ZOMBIE)
@@ -52,7 +54,14 @@ int64_t nas_vm_write_task_bytes(const struct nas_task *task,uint64_t va,
     if(!src || va>=USER_LIMIT || length>USER_LIMIT-va)return -EFAULT;
     for(uint64_t count=0;count<length;) {
         uint64_t at=va+count,pa=0;
-        if(!nas_mm_resolve_user(mm,at,&pa,0))
+        const struct nas_anon_region *v=nas_vma_find(&mm->mmap_vmas,at);
+        if(v && v->kind==NAS_VMA_FILE_MUTABLE_SHARED &&
+           !(v->prot&NAS_VM_WRITE))return -EFAULT;
+        if(!nas_mm_resolve_user(mm,at,&pa,0) &&
+           !(v && v->kind==NAS_VMA_FILE_MUTABLE_SHARED &&
+             nas_mm_handle_fault((struct nas_mm *)mm,at,
+                 NAS_UP_WRITE,false)==NAS_MM_FAULT_RESOLVED &&
+             nas_mm_resolve_user(mm,at,&pa,0)))
             return -EFAULT; /* must not leave a partial breakpoint */
         uint64_t n=4096ULL-(at&4095ULL);
         if(n>length-count)n=length-count;
@@ -69,7 +78,10 @@ int64_t nas_vm_write_task_bytes(const struct nas_task *task,uint64_t va,
      * instructions, maintaining ptrace's two-phase data mutation contract. */
     for(uint64_t count=0;count<length;) {
         uint64_t at=va+count;
-        if(!nas_mm_break_cow((struct nas_mm *)mm,at,0,true))
+        const struct nas_anon_region *v=nas_vma_find(&mm->mmap_vmas,at);
+        if(v && v->kind==NAS_VMA_FILE_MUTABLE_SHARED) {
+            if(nas_fs_mmap_dirty(v->backing)<0)return -EFAULT;
+        } else if(!nas_mm_break_cow((struct nas_mm *)mm,at,0,true))
             return -EFAULT;
         uint64_t n=4096ULL-(at&4095ULL);
         if(n>length-count)n=length-count;

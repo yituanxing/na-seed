@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "../kernel/task.h"
+#include "../kernel/mm/file_backing.h"
 
 /* Exercise the real MM ownership implementation. Only hardware page-table
  * primitives and FD bootstrap are replaced in this CPU-independent test. */
@@ -16,6 +17,9 @@ static uint64_t seen_source_root;
 static uint64_t cloned_physical;
 static unsigned frame_owners=1;
 static unsigned cwd_mount_refs;
+/* The Task/MM ownership fixture creates no file-backed VMAs. */
+bool nas_fs_mmap_get(struct nas_mapped_file *f) {(void)f;abort();}
+void nas_fs_mmap_put(struct nas_mapped_file *f) {(void)f;abort();}
 int nas_vfs_node_pin(const struct nas_fs_node *node) {
     if(!node || node->ino!=17)return -1;
     ++cwd_mount_refs;return 0;

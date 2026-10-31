@@ -12,6 +12,22 @@ independent consumer, and test evidence.
 
 ## Current-state reconciliation (2026-10-30, `221c46a`)
 
+**NAS-A005 implementation checkpoint (2026-10-31, PR #148):** The development
+branch now implements inode-pinned mutable `MAP_SHARED`, provider-owned tmpfs
+frames with independent PTE references, VMA clone/split/fork/rollback, demand
+faults, `msync`/`fsync` writeback and dirty re-arm, truncate/unlink lifetime,
+and common three-ISA syscall dispatch. Host tests exercise Linux's EOF-hole
+oracle, live aliasing, stale-tail zeroing, cross-MM fork, usercopy/ptrace,
+refcounts and VMA transactions. The **historical 13/15 M111 guest result is
+still the latest observed native result**, and this checkpoint does not mark
+NAS-A005 fixed until exact-head native `sd` passes on all three ISAs. The
+other original M111 failure, `hyperfine`, has a separate historical trace:
+`[MISS] syscall nr=98` (`getrusage`) immediately precedes its Rust timer
+assertion and process SIGSEGV; the current branch has a common `getrusage`
+decoder/dispatcher and real host process-accounting regression. This is a
+plausible independent root-cause fix, **not** an observed `hyperfine` guest
+PASS. The opt-in M111 three-ISA rerun must prove both original applications.
+
 The issue table below deliberately retains **baseline** observations; it is
 not a list of current missing features. Later source review gives these
 overrides before using the table for further implementation:

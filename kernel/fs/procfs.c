@@ -422,7 +422,8 @@ static bool map_visit_vma(const struct nas_anon_region *vma,void *ctx) {
     s->start=vma->start;
     s->end=vma->end;
     s->access=vma->prot;
-    s->shared=vma->kind==NAS_VMA_FILE_IMMUTABLE_SHARED;
+    s->shared=vma->kind==NAS_VMA_FILE_IMMUTABLE_SHARED ||
+              vma->kind==NAS_VMA_FILE_MUTABLE_SHARED;
     s->active=true;
     return true;
 }

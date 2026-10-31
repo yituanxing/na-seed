@@ -103,6 +103,12 @@ int64_t tmp_read_at(const struct nas_tmp_file *file, uint64_t offset,
                     uint8_t *dst, uint64_t count);
 int64_t tmp_write_at(struct nas_tmp_file *file, uint64_t offset,
                      const uint8_t *src, uint64_t count);
+/* Acquire a second owner ref to the existing sparse-file data frame for
+ * direct MAP_SHARED PTE ownership. Offset is page-aligned and must be
+ * below live i_size; the inode retains its own storage-frame reference. */
+int tmp_acquire_shared_page(struct nas_tmp_file *file,uint64_t offset,
+                            uint64_t *pa_owned);
+int tmp_touch_shared(struct nas_tmp_file *file);
 void tmp_truncate(struct nas_tmp_file *file);
 int tmp_resize(struct nas_tmp_file *file,uint64_t size);
 int tmp_utimens(struct nas_tmp_file *file, uint64_t access_ns,
