@@ -1883,6 +1883,43 @@ int nas_vfs_chmod(const struct nas_fs_node *node,uint64_t mode) {
     if(!node->filesystem->chmod)return -EOPNOTSUPP;
     return node->filesystem->chmod(node,mode);
 }
+int nas_vfs_setxattr(const struct nas_fs_node *node,const char *name,
+                     const uint8_t *value,uint64_t size,unsigned flags) {
+    int rc=vfs_node_status(node);
+    if(rc)return rc;
+    if(node->filesystem->read_only || node->mount->read_only)return -EROFS;
+    if(!node->filesystem->setxattr)return -EOPNOTSUPP;
+    return node->filesystem->setxattr(node,name,value,size,flags);
+}
+int64_t nas_vfs_getxattr(const struct nas_fs_node *node,const char *name,
+                         uint8_t *value,uint64_t capacity) {
+    int rc=vfs_node_status(node);
+    if(rc)return rc;
+    if(!node->filesystem->getxattr)return -EOPNOTSUPP;
+    return node->filesystem->getxattr(node,name,value,capacity);
+}
+int64_t nas_vfs_listxattr(const struct nas_fs_node *node,
+                          uint8_t *names,uint64_t capacity) {
+    int rc=vfs_node_status(node);
+    if(rc)return rc;
+    if(!node->filesystem->listxattr)return -EOPNOTSUPP;
+    return node->filesystem->listxattr(node,names,capacity);
+}
+int nas_vfs_removexattr(const struct nas_fs_node *node,const char *name) {
+    int rc=vfs_node_status(node);
+    if(rc)return rc;
+    if(node->filesystem->read_only || node->mount->read_only)return -EROFS;
+    if(!node->filesystem->removexattr)return -EOPNOTSUPP;
+    return node->filesystem->removexattr(node,name);
+}
+int nas_vfs_fiemap_next(const struct nas_fs_node *node,uint64_t start,
+                        uint64_t end,uint64_t *logical,uint64_t *length,
+                        bool *last) {
+    int rc=vfs_node_status(node);
+    if(rc)return rc;
+    if(!node->filesystem->fiemap_next)return -EOPNOTSUPP;
+    return node->filesystem->fiemap_next(node,start,end,logical,length,last);
+}
 int nas_vfs_chown(const struct nas_fs_node *node,uint32_t uid,uint32_t gid) {
     int status=vfs_node_status(node);
     if(status)return status;

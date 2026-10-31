@@ -11,6 +11,7 @@
 #include "../path.h"
 #include "../lib/string.h"
 #include "../mm/usercopy.h"
+#include "../mm/frame.h"
 #include "../arch/arch.h"
 #include "../arch/abi.h"
 #include "../boot_image.h"
@@ -298,6 +299,60 @@ static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
      * The semantic request is its low 32 bits, not the sign extension. */
     cmd=(uint32_t)cmd;
     unsigned slot=TASK.fds->entries[fd].slot;
+    if(cmd==0xc020660bU) { /* Linux FS_IOC_FIEMAP, 32-byte header */
+        struct nas_linux_fiemap {
+            uint64_t start,length;
+            uint32_t flags,mapped,count,reserved;
+        } fm;
+        struct nas_linux_extent {
+            uint64_t logical,physical,length,reserved64[2];
+            uint32_t flags,reserved[3];
+        };
+        _Static_assert(sizeof(struct nas_linux_fiemap)==32,"FIEMAP header");
+        _Static_assert(sizeof(struct nas_linux_extent)==56,"FIEMAP extent");
+        if(nas_open_files[slot].status_flags&NAS_LINUX_O_PATH)
+            return (uint64_t)-EBADF;
+        const struct nas_open_file *opened=&nas_open_files[slot];
+        if(!opened->vnode_pinned)return (uint64_t)-ENOTTY;
+        if(!nas_user_read_bytes(arg,(uint8_t *)&fm,sizeof(fm)))
+            return (uint64_t)-EFAULT;
+        if(fm.flags&~1U)return (uint64_t)-EBADR; /* only FIEMAP_FLAG_SYNC */
+        if(!fm.length)return (uint64_t)-EINVAL;
+        uint64_t size=nas_vfs_node_size(&opened->vnode);
+        uint64_t end=fm.length>UINT64_MAX-fm.start ? UINT64_MAX :
+                     fm.start+fm.length;
+        if(end>size)end=size;
+        uint64_t cursor=fm.start;
+        uint32_t mapped=0;
+        while(cursor<end && (!fm.count || mapped<fm.count)) {
+            uint64_t logical=0,length=0;
+            bool last=false;
+            int rc=nas_vfs_fiemap_next(&opened->vnode,cursor,end,
+                                       &logical,&length,&last);
+            if(rc<0)return (uint64_t)(int64_t)rc;
+            if(!rc)break;
+            if(!length || logical>UINT64_MAX-length ||
+               logical+length<=cursor)return (uint64_t)-EIO;
+            if(fm.count) {
+                /* tmpfs has real allocated pages, but NO disk sector number.
+                 * UNKNOWN (not DELALLOC) makes filefrag report the truth. */
+                struct nas_linux_extent extent={
+                    .logical=logical,.length=length,
+                    .flags=2U|(last?1U:0U) /* UNKNOWN | LAST */
+                };
+                uint64_t displacement=32ULL+(uint64_t)mapped*sizeof(extent);
+                if(arg>UINT64_MAX-displacement ||
+                   !nas_user_write_bytes(arg+displacement,
+                                         (const uint8_t *)&extent,sizeof(extent)))
+                    return (uint64_t)-EFAULT;
+            }
+            mapped++;
+            cursor=logical+length;
+        }
+        fm.mapped=mapped;
+        return nas_user_write_bytes(arg,(const uint8_t *)&fm,sizeof(fm))
+            ? 0:(uint64_t)-EFAULT;
+    }
     if(cmd==0x5421ULL) { /* FIONBIO: pointer to native int */
         if(nas_open_files[slot].status_flags&NAS_LINUX_O_PATH)
             return (uint64_t)-EBADF;
@@ -804,6 +859,97 @@ static uint64_t sys_openat_boot(uint64_t dirfd, uint64_t pathname,
     nas_fs_path_end(&request);
     return result;
 }
+/* One common Linux xattr adapter for path/nofollow/File operations on all
+ * three architectures. Namei resolves an owned Dentry; the VFS validates
+ * the mount incarnation and the provider mutates the stable inode. The
+ * syscall boundary alone touches userspace or Linux ABI argument order. */
+static uint64_t sys_xattr(enum nas_syscall_op op,const uint64_t *args) {
+    bool by_fd=op==NAS_SC_fsetxattr || op==NAS_SC_fgetxattr ||
+               op==NAS_SC_flistxattr || op==NAS_SC_fremovexattr;
+    bool nofollow=op==NAS_SC_lsetxattr || op==NAS_SC_lgetxattr ||
+                  op==NAS_SC_llistxattr || op==NAS_SC_lremovexattr;
+    bool setting=op==NAS_SC_setxattr || op==NAS_SC_lsetxattr ||
+                 op==NAS_SC_fsetxattr;
+    bool getting=op==NAS_SC_getxattr || op==NAS_SC_lgetxattr ||
+                 op==NAS_SC_fgetxattr;
+    bool listing=op==NAS_SC_listxattr || op==NAS_SC_llistxattr ||
+                 op==NAS_SC_flistxattr;
+    struct nas_fs_path_request request={0};
+    struct nas_vfs_path path={0};
+    struct nas_fs_node resolved={0};
+    const struct nas_fs_node *node=NULL;
+    int rc=0;
+    if(by_fd) {
+        if(args[1]>=NAS_FD_LIMIT || TASK.fds->entries[args[1]].kind==FD_CLOSED)
+            return (uint64_t)-EBADF;
+        const struct nas_open_file *opened=
+            &nas_open_files[TASK.fds->entries[args[1]].slot];
+        if(!opened->vnode_pinned ||
+           (opened->status_flags&NAS_LINUX_O_PATH))
+            return (uint64_t)-EBADF;
+        node=&opened->vnode;
+    } else {
+        rc=nas_fs_user_lookup_begin((uint64_t)-100,args[1],!nofollow,
+                                    &request,&path,&resolved);
+        if(rc)return (uint64_t)(int64_t)rc;
+        node=&resolved;
+    }
+    char name[256];
+    if(!listing) {
+        rc=nas_user_read_cstr(args[2],name,sizeof(name));
+        if(rc)goto out;
+    }
+    uint64_t user_value=listing ? args[2] : args[3];
+    uint64_t user_size=listing ? args[3] : args[4];
+    uint64_t frame=0;
+    uint8_t *data=NULL;
+    if(setting) {
+        if(user_size>4096) {rc=-E2BIG;goto out;}
+        if(args[5]>UINT32_MAX) {rc=-EINVAL;goto out;}
+        if(user_size) {
+            frame=nas_frame_alloc();
+            if(!frame) {rc=-ENOMEM;goto out;}
+            data=(uint8_t *)(uintptr_t)(nas_hhdm_offset()+frame);
+            if(!nas_user_read_bytes(user_value,data,user_size)) {
+                rc=-EFAULT;goto done;
+            }
+        }
+        rc=nas_vfs_setxattr(node,name,data,user_size,(unsigned)args[5]);
+    } else if(getting || listing) {
+        int64_t required=getting ? nas_vfs_getxattr(node,name,NULL,0) :
+                                   nas_vfs_listxattr(node,NULL,0);
+        if(required<0) {rc=(int)required;goto out;}
+        if(!user_size) {rc=(int)required;goto out;}
+        if((uint64_t)required>user_size) {rc=-ERANGE;goto out;}
+        if(required>4096) {rc=-E2BIG;goto out;}
+        if(required) {
+            if(!nas_user_prepare_write(user_value,(uint64_t)required)) {
+                rc=-EFAULT;goto out;
+            }
+            frame=nas_frame_alloc();
+            if(!frame) {rc=-ENOMEM;goto out;}
+            data=(uint8_t *)(uintptr_t)(nas_hhdm_offset()+frame);
+            int64_t filled=getting ?
+                nas_vfs_getxattr(node,name,data,(uint64_t)required) :
+                nas_vfs_listxattr(node,data,(uint64_t)required);
+            if(filled<0) {rc=(int)filled;goto done;}
+            if(filled>required) {rc=-EIO;goto done;}
+            if(!nas_user_write_bytes(user_value,data,(uint64_t)filled)) {
+                rc=-EFAULT;goto done;
+            }
+            rc=(int)filled;
+        }
+    } else {
+        rc=nas_vfs_removexattr(node,name);
+    }
+done:
+    if(frame)(void)nas_frame_put(frame);
+out:
+    if(path.dentry && nas_vfs_path_put(&path))
+        nas_fs_fail("xattr Dentry reference corrupted");
+    if(!by_fd)nas_fs_path_end(&request);
+    return (uint64_t)(int64_t)rc;
+}
 /* directory enumeration/stat lookup live in metadata_syscall.c */
 /* A known filesystem operation returns its genuine Linux ABI result.
  * Non-FS operations remain owned by the common dispatcher. */
@@ -858,6 +1004,11 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
         FS_RESULT(0);
     case NAS_SC_ioctl:
         FS_RESULT(sys_ioctl_fd(args[1],args[2],args[3]));
+    case NAS_SC_setxattr: case NAS_SC_lsetxattr: case NAS_SC_fsetxattr:
+    case NAS_SC_getxattr: case NAS_SC_lgetxattr: case NAS_SC_fgetxattr:
+    case NAS_SC_listxattr: case NAS_SC_llistxattr: case NAS_SC_flistxattr:
+    case NAS_SC_removexattr: case NAS_SC_lremovexattr: case NAS_SC_fremovexattr:
+        FS_RESULT(sys_xattr(op,args));
     case NAS_SC_dup3:
         if (args[1] == args[2] || (args[3] & ~0x80000ULL))
             FS_RESULT((uint64_t)-EINVAL);

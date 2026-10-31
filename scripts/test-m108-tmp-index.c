@@ -477,6 +477,69 @@ static void test_shared_page_ownership(void) {
     puts("[A005 TMPFS EOF HOLE PASS] shared tail zeroed on pwrite-hole and ftruncate growth");
 }
 
+static void test_inode_xattr_and_fiemap(void) {
+    const void *root=&root_tmp;
+    unsigned before=used_frames();
+    struct nas_tmp_file *file=tmp_create_at(root,"xattr-source",false,0600);
+    assert(file);
+    const uint8_t value[]={'a','l','p','i','n','e'};
+    uint8_t buffer[32]={0};
+    assert(tmp_getxattr(file,"user.batch",NULL,0)==-ENODATA);
+    assert(tmp_setxattr(file,"security.capability",value,6,0)==-EOPNOTSUPP);
+    assert(tmp_setxattr(file,"user.batch",value,6,2)==-ENODATA);
+    assert(tmp_setxattr(file,"user.batch",value,6,1)==0);
+    uint64_t allocated_xattr=file->xattr_frame;
+    assert(allocated_xattr && nas_frame_refs(allocated_xattr)==1);
+    assert(tmp_setxattr(file,"user.batch",value,6,1)==-EEXIST);
+    assert(tmp_getxattr(file,"user.batch",NULL,0)==6);
+    assert(tmp_getxattr(file,"user.batch",buffer,5)==-ERANGE);
+    assert(tmp_getxattr(file,"user.batch",buffer,6)==6);
+    assert(!memcmp(buffer,value,6));
+    assert(tmp_setxattr(file,"user.extra",value,3,0)==0);
+    assert(tmp_listxattr(file,NULL,0)==22);
+    assert(tmp_listxattr(file,buffer,21)==-ERANGE);
+    assert(tmp_listxattr(file,buffer,sizeof(buffer))==22);
+    assert(!strcmp((char *)buffer,"user.batch"));
+    assert(!strcmp((char *)buffer+11,"user.extra"));
+    /* Inode attributes survive a hardlink and move, including after the
+     * last visible link is removed but the File lease remains pinned. */
+    assert(tmp_link_at(root,"xattr-source",root,"xattr-alias")==0);
+    assert(tmp_rename_at(root,"xattr-source",root,"xattr-moved",0)==0);
+    assert(tmp_find_child(root,"xattr-alias")==file);
+    assert(tmp_find_child(root,"xattr-moved")==file);
+    assert(tmp_getxattr(tmp_find_child(root,"xattr-moved"),"user.batch",NULL,0)==6);
+
+    uint8_t byte='Q';
+    assert(tmp_write_at(file,0,&byte,1)==1);
+    assert(tmp_write_at(file,3*TMP_PAGE_SIZE,&byte,1)==1);
+    uint64_t logical=0,length=0;
+    bool last=true;
+    assert(tmp_fiemap_next(file,0,file->size,&logical,&length,&last)==1);
+    assert(logical==0 && length==TMP_PAGE_SIZE && !last);
+    assert(tmp_fiemap_next(file,TMP_PAGE_SIZE,file->size,
+                           &logical,&length,&last)==1);
+    assert(logical==3*TMP_PAGE_SIZE && length==TMP_PAGE_SIZE && last);
+    assert(tmp_fiemap_next(file,4*TMP_PAGE_SIZE,file->size,
+                           &logical,&length,&last)==0);
+    assert(tmp_resize(file,1)==0);
+    assert(tmp_fiemap_next(file,0,file->size,&logical,&length,&last)==1);
+    assert(logical==0 && length==TMP_PAGE_SIZE && last);
+    assert(tmp_getxattr(file,"user.batch",NULL,0)==6);
+    pinned_inode=file;
+    assert(tmp_unlink_at(root,"xattr-alias",0)==0);
+    assert(tmp_unlink_at(root,"xattr-moved",0)==0);
+    assert(file->used && !file->nlink && nas_frame_refs(allocated_xattr)==1);
+    assert(tmp_removexattr(file,"user.batch")==0);
+    assert(tmp_getxattr(file,"user.batch",NULL,0)==-ENODATA);
+    assert(tmp_removexattr(file,"user.batch")==-ENODATA);
+    assert(tmp_listxattr(file,NULL,0)==11);
+    pinned_inode=NULL;
+    tmp_inode_discard(file);
+    assert(!file->used && nas_frame_refs(allocated_xattr)==0);
+    assert(used_frames()==before);
+    puts("[M130 TMP XATTR/FIEMAP PASS] inode-owned metadata, hardlinks, orphan, sparse logical extents, frame reclaim");
+}
+
 int main(void) {
     test_same_size_truncate_timestamps();
     test_real_inode_chown();
@@ -484,6 +547,7 @@ int main(void) {
     test_large_tree();
     test_inode_recycling();
     test_shared_page_ownership();
+    test_inode_xattr_and_fiemap();
     puts("[M108 TMP INDEX PASS]");
     return 0;
 }

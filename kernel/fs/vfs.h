@@ -78,6 +78,18 @@ struct nas_vfs_type {
     /* Backend capacity is a superblock property, even when queried by an
      * open, unlinked inode. The VFS verifies mount incarnation first. */
     int (*statfs)(const struct nas_fs_node *,struct nas_vfs_statfs *out);
+    /* Kernel-buffer inode xattrs; provider owns both allocation and inode
+     * lifetime. The VFS validates mount incarnation and write policy. */
+    int (*setxattr)(const struct nas_fs_node *,const char *,
+                    const uint8_t *,uint64_t,unsigned);
+    int64_t (*getxattr)(const struct nas_fs_node *,const char *,
+                        uint8_t *,uint64_t);
+    int64_t (*listxattr)(const struct nas_fs_node *,uint8_t *,uint64_t);
+    int (*removexattr)(const struct nas_fs_node *,const char *);
+    /* One real allocated logical extent per call. Physical disk position
+     * is deliberately unknown for RAM providers; no user ABI in drivers. */
+    int (*fiemap_next)(const struct nas_fs_node *,uint64_t,uint64_t,
+                       uint64_t *,uint64_t *,bool *);
     /* Optional cheap inode-incarnation validation on EVERY VFS operation.
      * An unpinned borrowed node must not read a recycled tmpfs slab slot
      * even if no active inode lease exists to detect that reuse. */
@@ -222,6 +234,16 @@ uint64_t nas_vfs_node_device(const struct nas_fs_node *node);
 uint64_t nas_vfs_node_size(const struct nas_fs_node *node);
 int nas_vfs_getattr(const struct nas_fs_node *node,struct nas_fs_node *out);
 int nas_vfs_statfs(const struct nas_fs_node *node,struct nas_vfs_statfs *out);
+int nas_vfs_setxattr(const struct nas_fs_node *node,const char *name,
+                     const uint8_t *value,uint64_t size,unsigned flags);
+int64_t nas_vfs_getxattr(const struct nas_fs_node *node,const char *name,
+                         uint8_t *value,uint64_t capacity);
+int64_t nas_vfs_listxattr(const struct nas_fs_node *node,
+                          uint8_t *names,uint64_t capacity);
+int nas_vfs_removexattr(const struct nas_fs_node *node,const char *name);
+int nas_vfs_fiemap_next(const struct nas_fs_node *node,uint64_t start,
+                        uint64_t end,uint64_t *logical,uint64_t *length,
+                        bool *last);
 int nas_vfs_register_mount(const struct nas_vfs_mount *mount);
 int nas_vfs_lookup(const char *absolute, struct nas_fs_node *node);
 /* One canonical path component. VFS uses the pinned parent Mount/Dentry

@@ -80,6 +80,10 @@ static void tmp_try_reclaim(struct nas_tmp_file *node) {
      * Refuse to recycle any unexpectedly live namespace index pointer. */
     if(node->directory_alias || node->children.count)return;
     tmp_truncate(node);
+    if(node->xattr_frame) {
+        (void)nas_frame_put(node->xattr_frame);
+        node->xattr_frame=0;
+    }
     node->used = false;
     node->free_next=tmp_free_inodes;
     tmp_free_inodes=node;
@@ -124,6 +128,174 @@ static uint64_t tmp_data_frame(struct nas_tmp_file *file,uint64_t number,
         table[inner] = data_addr;
     }
     return data_addr;
+}
+/* Linux xattr values can be 64 KiB; this first memory-backed provider has
+ * a documented 4-KiB per-inode capacity, not a fabricated global table.
+ * Packed entries avoid arbitrary per-name slot ceilings. Overflow returns
+ * real ENOSPC/E2BIG. Metadata survives hard links, rename and open-unlink. */
+struct tmp_xattr_page {
+    uint16_t bytes,count;
+    uint8_t data[4096-4];
+};
+_Static_assert(sizeof(struct tmp_xattr_page)==4096,"xattr page ABI");
+static struct tmp_xattr_page *tmp_xattr(const struct nas_tmp_file *file) {
+    return file && file->xattr_frame ?
+        (struct tmp_xattr_page *)(uintptr_t)(nas_hhdm_offset()+file->xattr_frame) : NULL;
+}
+static int tmp_xattr_name(const char *name) {
+    if(!name || !name[0])return -EINVAL;
+    size_t n=strnlen(name,256);
+    if(n==256)return -ERANGE;
+    if(strncmp(name,"user.",5))return -EOPNOTSUPP;
+    return n>5 ? 0 : -EINVAL;
+}
+/* An entry is [uint16 name length with NUL][uint16 value length][name][value].
+ * Header fields are copied rather than dereferenced: entries may be unaligned. */
+static bool tmp_xattr_entry(const struct tmp_xattr_page *page,unsigned at,
+                            uint16_t *name_size,uint16_t *value_size) {
+    if(!page || at>page->bytes || page->bytes-at<4)return false;
+    memcpy(name_size,page->data+at,2);
+    memcpy(value_size,page->data+at+2,2);
+    return *name_size && *name_size<=256 &&
+           (uint32_t)*name_size+*value_size<=page->bytes-at-4;
+}
+static int tmp_xattr_find(const struct tmp_xattr_page *page,
+                          const char *name,unsigned *at_out,
+                          uint16_t *name_len,uint16_t *value_len) {
+    if(!page)return -ENODATA;
+    unsigned at=0;
+    while(at<page->bytes) {
+        uint16_t n=0,v=0;
+        if(!tmp_xattr_entry(page,at,&n,&v))return -EIO;
+        if(!strcmp((const char *)page->data+at+4,name)) {
+            if(at_out)*at_out=at;
+            if(name_len)*name_len=n;
+            if(value_len)*value_len=v;
+            return 0;
+        }
+        at+=4U+n+v;
+    }
+    return -ENODATA;
+}
+int tmp_setxattr(struct nas_tmp_file *file,const char *name,
+                 const uint8_t *value,uint64_t size,unsigned flags) {
+    if(!file || !file->used)return -ENOENT;
+    int valid=tmp_xattr_name(name);
+    if(valid)return valid;
+    if((flags&~3U) || flags==3)return -EINVAL;
+    unsigned name_size=(unsigned)strlen(name)+1;
+    if(size>sizeof(((struct tmp_xattr_page *)0)->data)-4-name_size)
+        return -E2BIG;
+    if(size && !value)return -EINVAL;
+    struct tmp_xattr_page *page=tmp_xattr(file);
+    unsigned at=0;
+    uint16_t oldname=0,oldvalue=0;
+    int found=tmp_xattr_find(page,name,&at,&oldname,&oldvalue);
+    if(found && found!=-ENODATA)return found;
+    if(!found && (flags&1U))return -EEXIST;
+    if(found==-ENODATA && (flags&2U))return -ENODATA;
+    unsigned oldbytes=!found ? 4U+oldname+oldvalue : 0;
+    unsigned occupied=page ? page->bytes : 0;
+    unsigned next=occupied-oldbytes+4U+name_size+(unsigned)size;
+    if(next>sizeof(page->data))return -ENOSPC;
+    if(!page) {
+        uint64_t frame=nas_frame_alloc();
+        if(!frame)return -ENOMEM;
+        file->xattr_frame=frame;
+        page=tmp_xattr(file);
+        memset(page,0,4096);
+    }
+    if(oldbytes) {
+        memmove(page->data+at,page->data+at+oldbytes,
+                page->bytes-at-oldbytes);
+        page->bytes-=(uint16_t)oldbytes;
+        page->count--;
+    }
+    uint16_t header[2]={(uint16_t)name_size,(uint16_t)size};
+    memcpy(page->data+page->bytes,header,4);
+    memcpy(page->data+page->bytes+4,name,name_size);
+    if(size)memcpy(page->data+page->bytes+4+name_size,value,(size_t)size);
+    page->bytes=(uint16_t)next;
+    page->count++;
+    tmp_inode_touch(file);
+    return 0;
+}
+int64_t tmp_getxattr(const struct nas_tmp_file *file,const char *name,
+                     uint8_t *value,uint64_t capacity) {
+    if(!file || !file->used)return -ENOENT;
+    int valid=tmp_xattr_name(name);
+    if(valid)return valid;
+    struct tmp_xattr_page *page=tmp_xattr(file);
+    unsigned at=0;
+    uint16_t n=0,v=0;
+    int rc=tmp_xattr_find(page,name,&at,&n,&v);
+    if(rc)return rc;
+    if(!value)return v;
+    if(capacity<v)return -ERANGE;
+    if(v)memcpy(value,page->data+at+4+n,v);
+    return v;
+}
+int64_t tmp_listxattr(const struct nas_tmp_file *file,
+                      uint8_t *names,uint64_t capacity) {
+    if(!file || !file->used)return -ENOENT;
+    struct tmp_xattr_page *page=tmp_xattr(file);
+    if(!page)return 0;
+    unsigned length=0;
+    for(unsigned at=0;at<page->bytes;) {
+        uint16_t n=0,v=0;
+        if(!tmp_xattr_entry(page,at,&n,&v))return -EIO;
+        if(names) {
+            if(length+n>capacity)return -ERANGE;
+            memcpy(names+length,page->data+at+4,n);
+        }
+        length+=n;
+        at+=4U+n+v;
+    }
+    return length;
+}
+int tmp_removexattr(struct nas_tmp_file *file,const char *name) {
+    if(!file || !file->used)return -ENOENT;
+    int valid=tmp_xattr_name(name);
+    if(valid)return valid;
+    struct tmp_xattr_page *page=tmp_xattr(file);
+    unsigned at=0;
+    uint16_t n=0,v=0;
+    int rc=tmp_xattr_find(page,name,&at,&n,&v);
+    if(rc)return rc;
+    unsigned occupied=4U+n+v;
+    memmove(page->data+at,page->data+at+occupied,page->bytes-at-occupied);
+    page->bytes-=(uint16_t)occupied;
+    page->count--;
+    if(!page->bytes) {
+        (void)nas_frame_put(file->xattr_frame);
+        file->xattr_frame=0;
+    }
+    tmp_inode_touch(file);
+    return 0;
+}
+int tmp_fiemap_next(const struct nas_tmp_file *file,uint64_t start,
+                    uint64_t end,uint64_t *logical,uint64_t *length,
+                    bool *last) {
+    if(!file || !file->used)return -ENOENT;
+    if(file->is_dir)return -EISDIR;
+    if(!logical || !length || !last)return -EINVAL;
+    if(end>file->size)end=file->size;
+    if(start>=end)return 0;
+    uint64_t page=start/TMP_PAGE_SIZE;
+    uint64_t final=(end+TMP_PAGE_SIZE-1)/TMP_PAGE_SIZE;
+    while(page<final && !tmp_data_frame((struct nas_tmp_file *)file,page,false))page++;
+    if(page==final)return 0;
+    uint64_t first=page++;
+    while(page<final && tmp_data_frame((struct nas_tmp_file *)file,page,false))page++;
+    *logical=first*TMP_PAGE_SIZE;
+    *length=(page-first)*TMP_PAGE_SIZE;
+    /* LAST is truthful only when no later allocated block exists,
+     * including blocks outside this request's logical end. */
+    uint64_t filepages=(file->size+TMP_PAGE_SIZE-1)/TMP_PAGE_SIZE;
+    uint64_t scan=page;
+    while(scan<filepages && !tmp_data_frame((struct nas_tmp_file *)file,scan,false))scan++;
+    *last=(scan==filepages);
+    return 1;
 }
 static uint8_t *tmp_data_page(struct nas_tmp_file *file,uint64_t number,
                               bool create) {

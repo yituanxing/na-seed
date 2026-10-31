@@ -366,11 +366,41 @@ static int tmp_statfs(const struct nas_fs_node *node,
     };
     return 0;
 }
+static int tmp_setxattr_node(const struct nas_fs_node *node,const char *name,
+                             const uint8_t *value,uint64_t size,unsigned flags) {
+    if(tmp_is_overlay_root(node))return -EOPNOTSUPP;
+    return tmp_setxattr((struct nas_tmp_file *)(uintptr_t)node->inode,
+                        name,value,size,flags);
+}
+static int64_t tmp_getxattr_node(const struct nas_fs_node *node,
+                                 const char *name,uint8_t *value,uint64_t cap) {
+    if(tmp_is_overlay_root(node))return -EOPNOTSUPP;
+    return tmp_getxattr(node->inode,name,value,cap);
+}
+static int64_t tmp_listxattr_node(const struct nas_fs_node *node,
+                                  uint8_t *names,uint64_t cap) {
+    if(tmp_is_overlay_root(node))return 0;
+    return tmp_listxattr(node->inode,names,cap);
+}
+static int tmp_removexattr_node(const struct nas_fs_node *node,
+                                const char *name) {
+    if(tmp_is_overlay_root(node))return -EOPNOTSUPP;
+    return tmp_removexattr((struct nas_tmp_file *)(uintptr_t)node->inode,name);
+}
+static int tmp_fiemap_node(const struct nas_fs_node *node,uint64_t start,
+                           uint64_t end,uint64_t *logical,uint64_t *length,
+                           bool *last) {
+    if(tmp_is_overlay_root(node))return -EISDIR;
+    return tmp_fiemap_next(node->inode,start,end,logical,length,last);
+}
 static const struct nas_vfs_type tmp_type={
     .name="tmpfs",.exec_source_label="tmpfs",
     .root=tmp_root,.lookup_child=tmp_child,
     .last_inode_unpin=tmp_last_inode_unpin,.getattr=tmp_getattr,
     .statfs=tmp_statfs,
+    .setxattr=tmp_setxattr_node,.getxattr=tmp_getxattr_node,
+    .listxattr=tmp_listxattr_node,.removexattr=tmp_removexattr_node,
+    .fiemap_next=tmp_fiemap_node,
     .validate_inode=tmp_validate_inode,
     .readlink=tmp_readlink,
     .read_at=tmp_read,.read_size_is_eof=true,

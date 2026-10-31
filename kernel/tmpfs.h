@@ -31,6 +31,7 @@ struct nas_tmp_file {
     uint32_t nlink; /* directory-entry references, not open FD references */
     uint64_t ino; /* stable object identity, never derived from a pathname */
     uint64_t index_root; /* physical address of optional 512-entry root frame */
+    uint64_t xattr_frame; /* optional inode-owned packed extended-attribute frame */
     uint64_t size;
     uint64_t atime_ns, mtime_ns, ctime_ns; /* UNIX realtime nanoseconds */
     uint32_t mode;
@@ -116,4 +117,18 @@ int tmp_utimens(struct nas_tmp_file *file, uint64_t access_ns,
 
 int tmp_chmod(struct nas_tmp_file *file, uint64_t mode);
 int tmp_chown(struct nas_tmp_file *file,uint32_t uid,uint32_t gid);
+/* A bounded, compact per-inode user.* namespace, stored with the inode and
+ * released only after its final unlink AND VFS File/Path lease. */
+int tmp_setxattr(struct nas_tmp_file *file,const char *name,
+                 const uint8_t *value,uint64_t size,unsigned flags);
+int64_t tmp_getxattr(const struct nas_tmp_file *file,const char *name,
+                     uint8_t *value,uint64_t capacity);
+int64_t tmp_listxattr(const struct nas_tmp_file *file,
+                      uint8_t *names,uint64_t capacity);
+int tmp_removexattr(struct nas_tmp_file *file,const char *name);
+/* Returns 1 for an allocated logical extent, 0 at the end, negative errno.
+ * RAM physical frames are NEVER exposed as on-disk physical offsets. */
+int tmp_fiemap_next(const struct nas_tmp_file *file,uint64_t start,
+                    uint64_t end,uint64_t *logical,uint64_t *length,
+                    bool *last);
 #endif

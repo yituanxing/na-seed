@@ -30,6 +30,55 @@ static struct bootfs_entry entries[]={
     {.path="/shortcut",.mode=0120777,.ino=8,.data=abs_link,.size=sizeof(abs_link)-1}
 };
 static struct nas_tmp_file tmp_demo={.used=true,.mode=0100644,.size=4,.ino=101};
+/* Host backend fixture checks VFS capability routing; the real inode-backed
+ * storage/extent traversal is compiled in the native kernel and QEMU runs. */
+static char fixture_xattr_name[256];
+static uint8_t fixture_xattr_value[64];
+static unsigned fixture_xattr_length;
+int tmp_setxattr(struct nas_tmp_file *file,const char *name,
+                 const uint8_t *value,uint64_t size,unsigned flags) {
+    if(file!=&tmp_demo)return -EOPNOTSUPP;
+    if(size>sizeof(fixture_xattr_value))return -E2BIG;
+    if((flags&1U) && fixture_xattr_name[0])return -EEXIST;
+    if((flags&2U) && !fixture_xattr_name[0])return -ENODATA;
+    strcpy(fixture_xattr_name,name);
+    fixture_xattr_length=(unsigned)size;
+    if(size)memcpy(fixture_xattr_value,value,(size_t)size);
+    return 0;
+}
+int64_t tmp_getxattr(const struct nas_tmp_file *file,const char *name,
+                     uint8_t *value,uint64_t capacity) {
+    if(file!=&tmp_demo || strcmp(name,fixture_xattr_name))return -ENODATA;
+    if(value) {
+        if(capacity<fixture_xattr_length)return -ERANGE;
+        memcpy(value,fixture_xattr_value,fixture_xattr_length);
+    }
+    return fixture_xattr_length;
+}
+int64_t tmp_listxattr(const struct nas_tmp_file *file,
+                      uint8_t *names,uint64_t capacity) {
+    if(file!=&tmp_demo)return -EOPNOTSUPP;
+    size_t length=fixture_xattr_name[0]?strlen(fixture_xattr_name)+1:0;
+    if(names) {
+        if(capacity<length)return -ERANGE;
+        memcpy(names,fixture_xattr_name,length);
+    }
+    return (int64_t)length;
+}
+int tmp_removexattr(struct nas_tmp_file *file,const char *name) {
+    if(file!=&tmp_demo || strcmp(name,fixture_xattr_name))return -ENODATA;
+    fixture_xattr_name[0]=0;
+    fixture_xattr_length=0;
+    return 0;
+}
+int tmp_fiemap_next(const struct nas_tmp_file *file,uint64_t start,
+                    uint64_t end,uint64_t *logical,uint64_t *length,
+                    bool *last) {
+    if(file!=&tmp_demo)return -EOPNOTSUPP;
+    if(start>=4 || end<=start)return 0;
+    *logical=0;*length=4096;*last=true;
+    return 1;
+}
 /* VFS capability fixture: the production tmpfs implementation is exercised
  * separately in M108; here the callback must remain provider-scoped and
  * never be inferred for bootfs/procfs or a writable mount flag alone. */
@@ -990,6 +1039,28 @@ int main(void) {
            owned_metadata.uid==123 && owned_metadata.gid==789);
     assert(nas_vfs_utimens(&n,123,456,true,true)==0);
     assert(tmp_demo.atime_ns==123 && tmp_demo.mtime_ns==456);
+    /* Names stay on the same inode through aliases/renames; generic VFS
+     * never stores its own pathname-indexed xattr shadow state. */
+    const uint8_t fixture_attr[]={'N','a','S','e','e','d'};
+    assert(nas_vfs_setxattr(&n,"user.batch",fixture_attr,6,1)==0);
+    assert(nas_vfs_setxattr(&n,"user.batch",fixture_attr,6,1)==-EEXIST);
+    assert(nas_vfs_getxattr(&n,"user.batch",NULL,0)==6);
+    uint8_t xattr_readback[64]={0};
+    assert(nas_vfs_getxattr(&n,"user.batch",xattr_readback,5)==-ERANGE);
+    assert(nas_vfs_getxattr(&n,"user.batch",xattr_readback,6)==6);
+    assert(!memcmp(xattr_readback,fixture_attr,6));
+    assert(nas_vfs_listxattr(&n,NULL,0)==11);
+    assert(nas_vfs_listxattr(&n,xattr_readback,64)==11);
+    assert(!strcmp((const char *)xattr_readback,"user.batch"));
+    uint64_t logical=0,extent_length=0;
+    bool extent_last=false;
+    assert(nas_vfs_fiemap_next(&n,0,4,&logical,&extent_length,&extent_last)==1);
+    assert(logical==0 && extent_length==4096 && extent_last);
+    assert(nas_vfs_removexattr(&n,"user.batch")==0);
+    assert(nas_vfs_getxattr(&n,"user.batch",NULL,0)==-ENODATA);
+    assert(nas_fs_lookup_node("/bin/demo",true,&n,resolved)==0);
+    assert(nas_vfs_setxattr(&n,"user.batch",fixture_attr,6,0)==-EROFS);
+    assert(nas_vfs_fiemap_next(&n,0,4,&logical,&extent_length,&extent_last)==-EOPNOTSUPP);
     struct nas_vfs_dirent records[8];
     assert(nas_fs_lookup_node("/",true,&n,resolved)==0);
     assert(nas_vfs_read_dir(&n,0,records,8)==7);

@@ -99,7 +99,9 @@ run_case() {
         (cd "$dir" && "$exe" -n 65536 seed.zip \
             > report 2> error)
         busy grep -Eq 'zip|Zip|ZIP' "$dir/report"
-        busy ls "$dir" | busy grep -Eq '^zip[0-9]+\.zip$' ;;
+        # Upstream zipsplit chooses the split archive basename. Verify an
+        # actual second ZIP was emitted, irrespective of that spelling.
+        [ "$(busy find "$dir" -maxdepth 1 -name '*.zip' | busy wc -l)" -ge 2 ] ;;
       getfattr)
         exe=$(original_elf /usr/bin/getfattr)
         seed_xattr "$dir"

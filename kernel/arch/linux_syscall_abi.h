@@ -98,6 +98,18 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_gettimeofday: return NAS_SC_gettimeofday;
     case __NR_getuid: return NAS_SC_getuid;
     case __NR_ioctl: return NAS_SC_ioctl;
+    case __NR_setxattr: return NAS_SC_setxattr;
+    case __NR_lsetxattr: return NAS_SC_lsetxattr;
+    case __NR_fsetxattr: return NAS_SC_fsetxattr;
+    case __NR_getxattr: return NAS_SC_getxattr;
+    case __NR_lgetxattr: return NAS_SC_lgetxattr;
+    case __NR_fgetxattr: return NAS_SC_fgetxattr;
+    case __NR_listxattr: return NAS_SC_listxattr;
+    case __NR_llistxattr: return NAS_SC_llistxattr;
+    case __NR_flistxattr: return NAS_SC_flistxattr;
+    case __NR_removexattr: return NAS_SC_removexattr;
+    case __NR_lremovexattr: return NAS_SC_lremovexattr;
+    case __NR_fremovexattr: return NAS_SC_fremovexattr;
     case __NR_kill: return NAS_SC_kill;
     case __NR_tkill: return NAS_SC_tkill;
     case __NR_tgkill: return NAS_SC_tgkill;
@@ -244,6 +256,18 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 24U: return NAS_SC_dup3;
     case 49U: return NAS_SC_chdir;
     case 29U: return NAS_SC_ioctl;
+    case 5U: return NAS_SC_setxattr;
+    case 6U: return NAS_SC_lsetxattr;
+    case 7U: return NAS_SC_fsetxattr;
+    case 8U: return NAS_SC_getxattr;
+    case 9U: return NAS_SC_lgetxattr;
+    case 10U: return NAS_SC_fgetxattr;
+    case 11U: return NAS_SC_listxattr;
+    case 12U: return NAS_SC_llistxattr;
+    case 13U: return NAS_SC_flistxattr;
+    case 14U: return NAS_SC_removexattr;
+    case 15U: return NAS_SC_lremovexattr;
+    case 16U: return NAS_SC_fremovexattr;
     case 129U: return NAS_SC_kill; /* Linux asm-generic kill */
     case 130U: return NAS_SC_tkill;
     case 131U: return NAS_SC_tgkill;
