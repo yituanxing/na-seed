@@ -151,6 +151,37 @@ void nas_vfs_release_flock(const void *owner) {
         if(vfs_flocks[i].file_owner==owner)
             vfs_flocks[i]=(struct vfs_flock_entry){0};
 }
+int nas_vfs_lock_snapshot(unsigned ordinal,struct nas_vfs_lock_snapshot *out) {
+    if(!out)return -EINVAL;
+    unsigned found=0;
+    for(struct inode_lease_chunk *chunk=lease_chunks;chunk;chunk=chunk->next)
+        for(unsigned i=0;i<NAS_VFS_LEASE_CHUNK_SIZE;i++) {
+            const struct inode_size_lease *lease=&chunk->slots[i];
+            if(!lease->refs)continue;
+            for(unsigned k=0;k<lease->posix_locks.count;k++) {
+                const struct nas_posix_lock *lock=&lease->posix_locks.entries[k];
+                if(found++!=ordinal)continue;
+                *out=(struct nas_vfs_lock_snapshot){
+                    .ino=lease->ino,.pid=lock->pid,
+                    .start=lock->start,.end=lock->end,
+                    .exclusive=lock->type==NAS_LOCK_WRITE
+                };
+                return 0;
+            }
+        }
+    for(unsigned i=0;i<NAS_VFS_FLOCK_LIMIT;i++) {
+        const struct vfs_flock_entry *lock=&vfs_flocks[i];
+        if(!lock->file_owner)continue;
+        if(found++!=ordinal)continue;
+        *out=(struct nas_vfs_lock_snapshot){
+            .ino=lock->ino,.file_owner=lock->file_owner,
+            .start=0,.end=UINT64_MAX,.flock=true,
+            .exclusive=lock->exclusive
+        };
+        return 0;
+    }
+    return -ENOENT;
+}
 uint64_t nas_vfs_node_size(const struct nas_fs_node *node) {
     if(!node)return 0;
     struct inode_size_lease *lease=inode_lease(node);

@@ -1,3 +1,4 @@
 procps-ng
 psmisc
 util-linux-misc
+flock

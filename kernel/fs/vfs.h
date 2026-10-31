@@ -203,6 +203,14 @@ void nas_vfs_release_posix_locks(const struct nas_fs_node *node,uint64_t pid);
 int nas_vfs_flock(const struct nas_fs_node *node,const void *file_owner,
                   unsigned operation);
 void nas_vfs_release_flock(const void *file_owner);
+/* Read-only live /proc/locks view over the SAME inode/OFD lock owners.
+ * The opaque OFD owner is resolved to a process by procfs, not by VFS. */
+struct nas_vfs_lock_snapshot {
+    uint64_t ino,pid,start,end;
+    const void *file_owner;
+    bool exclusive,flock;
+};
+int nas_vfs_lock_snapshot(unsigned ordinal,struct nas_vfs_lock_snapshot *out);
 /* Opaque, already allocated inode identity: protects orphan reclamation
  * of cwd and independently pinned VFS Files, not merely legacy FD slots. */
 bool nas_vfs_inode_is_pinned(const void *backend_inode);

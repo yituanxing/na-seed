@@ -386,7 +386,9 @@ static const struct nas_vfs_type tmp_type={
 static void proc_fill(struct nas_proc_node p,struct nas_fs_node *out) {
     *out=(struct nas_fs_node){.ino=nas_proc_ino(p),
       .nlink=nas_proc_is_dir(p)?2:1,.mode=nas_proc_mode(p),
-      .is_dir=nas_proc_is_dir(p)};
+      .is_dir=nas_proc_is_dir(p),
+      /* procfd target text is intentionally not namei-followable yet. */
+      .is_symlink=p.kind==NAS_PROC_PID_CWD_LINK};
 }
 static int proc_root(const struct nas_vfs_mount *mount,
                      struct nas_fs_node *out) {
@@ -413,7 +415,9 @@ static int proc_readlink_node(const struct nas_fs_node *node,
     /* /proc/self is only a spelling. Resolve once to a stable PID/FD
      * inode: an inherited handle must never retarget to the child PID. */
     struct nas_proc_node proc;
-    if(!nas_proc_fd_link_from_ino(node->ino,&proc))return -ENOENT;
+    if(!nas_proc_fd_link_from_ino(node->ino,&proc) &&
+       (!nas_proc_node_from_ino(node->ino,&proc) ||
+        proc.kind!=NAS_PROC_PID_CWD_LINK))return -ENOENT;
     int64_t n=nas_proc_readlink(proc,target,256);
     if(n<0)return (int)n;
     return n>256 ? -ENAMETOOLONG : (int)n;
@@ -439,7 +443,8 @@ static int proc_read_dir(const struct nas_fs_node *node,
                !nas_proc_child(directory,(unsigned)(cursor-2),name,&entry))
                 break;
             dtype=nas_proc_is_dir(entry)?4:
-                  entry.kind==NAS_PROC_FD_LINK?10:8;
+                  entry.kind==NAS_PROC_FD_LINK ||
+                  entry.kind==NAS_PROC_PID_CWD_LINK?10:8;
         }
         int rc=fill_dirent(&out[count],name,nas_proc_ino(entry),dtype);
         if(rc)return rc;

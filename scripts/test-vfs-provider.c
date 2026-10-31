@@ -1268,6 +1268,21 @@ int main(void) {
     assert(locks);
     assert(nas_locks_apply(locks,11,NAS_LOCK_WRITE,0,4)==0);
     assert(nas_locks_conflict(locks,12,NAS_LOCK_WRITE,0,4)>=0);
+    bool seen_flock=false,seen_posix=false;
+    for(unsigned ordinal=0;ordinal<1024;ordinal++) {
+        struct nas_vfs_lock_snapshot snapshot;
+        int rc=nas_vfs_lock_snapshot(ordinal,&snapshot);
+        if(rc==-ENOENT)break;
+        assert(rc==0);
+        if(snapshot.ino!=n.ino)continue;
+        if(snapshot.flock && snapshot.file_owner==&owner_a &&
+           snapshot.exclusive && snapshot.end==UINT64_MAX)
+            seen_flock=true;
+        if(!snapshot.flock && snapshot.pid==11 && snapshot.exclusive &&
+           snapshot.start==0 && snapshot.end==4)
+            seen_posix=true;
+    }
+    assert(seen_flock && seen_posix);
     nas_vfs_release_posix_locks(&n,11);
     assert(nas_locks_conflict(locks,12,NAS_LOCK_WRITE,0,4)==-1);
     struct nas_fs_node other_open=n;

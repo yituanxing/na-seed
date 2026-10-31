@@ -10,9 +10,11 @@
 #include "../kernel/errno.h"
 #include "../kernel/mm/vm.h"
 #include "../kernel/arch/user_pt.h"
+#include "../kernel/task/resources.h"
 static struct nas_task tasks[3];
 static struct nas_files files_fixture;
 static struct nas_mm address_spaces[2];
+static struct nas_fs_context fixture_fs[2];
 struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
 struct nas_task *nas_current_task=&tasks[0];
 /* The production /proc/mounts must consume the VFS's LIVE mount snapshot,
@@ -20,11 +22,23 @@ struct nas_task *nas_current_task=&tasks[0];
  * even an already-open proc inode sees mounts appear/disappear. */
 static struct nas_vfs_mount_snapshot fixture_mounts[80];
 static unsigned fixture_mount_count;
+static struct nas_vfs_lock_snapshot fixture_locks[4];
+static unsigned fixture_lock_count;
+int nas_vfs_lock_snapshot(unsigned ordinal,struct nas_vfs_lock_snapshot *out) {
+    if(!out)return -EINVAL;
+    if(ordinal>=fixture_lock_count)return -ENOENT;
+    *out=fixture_locks[ordinal];return 0;
+}
 int nas_vfs_mount_snapshot(unsigned ordinal,struct nas_vfs_mount_snapshot *out) {
     if(!out)return -EINVAL;
     if(ordinal>=fixture_mount_count)return -ENOENT;
     *out=fixture_mounts[ordinal];
     return 0;
+}
+/* The procfs fixture does not link the live VFS Dentry owner. CWD snapshots
+ * without a pinned path must still expose the current task's real FS text. */
+int nas_vfs_path_string(const struct nas_vfs_path *path,char absolute[256]) {
+    (void)path;(void)absolute;return -ESTALE;
 }
 static void fixture_add_mount(const char *source,const char *target,
                               const char *fstype,bool read_only) {
@@ -177,6 +191,10 @@ int main(void) {
     tasks[0].state=NAS_TASK_RUNNING;tasks[0].pid=1;tasks[0].tgid=1;
     tasks[0].mm=&address_spaces[0];
     tasks[1].mm=&address_spaces[1];
+    tasks[0].fs=&fixture_fs[0];
+    tasks[1].fs=&fixture_fs[1];
+    strcpy(tasks[0].fs->cwd,"/tmp/original");
+    strcpy(tasks[1].fs->cwd,"/home/worker");
     tasks[2].mm=&address_spaces[1]; /* worker shares process MM */
     files_fixture.refs=1;
     tasks[0].files=&files_fixture;
@@ -262,6 +280,41 @@ int main(void) {
     check_file("/proc/stat","btime 1760000000");
     check_file("/proc/loadavg","1.00 0.50 0.25");
     check_file("/proc/vmstat","nr_free_pages 512");
+    check_file("/proc/sys/kernel/hostname","naseed\n");
+    check_file("/proc/slabinfo","slabinfo - version: 2.1");
+    struct nas_proc_node sys_dir={0},kernel_dir={0},cwd_link={0};
+    char sys_name[32];
+    assert(nas_proc_lookup("/proc/sys",&sys_dir) && nas_proc_is_dir(sys_dir));
+    assert(nas_proc_child(sys_dir,0,sys_name,&kernel_dir) &&
+           !strcmp(sys_name,"kernel") && nas_proc_is_dir(kernel_dir));
+    assert(nas_proc_child(kernel_dir,0,sys_name,&entry) &&
+           !strcmp(sys_name,"hostname") &&
+           entry.kind==NAS_PROC_SYS_HOSTNAME);
+    assert(nas_proc_node_from_ino(nas_proc_ino(entry),&decoded_status) &&
+           decoded_status.kind==NAS_PROC_SYS_HOSTNAME);
+    assert(nas_proc_lookup("/proc/23/cwd",&cwd_link) &&
+           nas_proc_mode(cwd_link)==0120777U);
+    assert(nas_proc_node_from_ino(nas_proc_ino(cwd_link),&decoded_status) &&
+           decoded_status.pid==23 &&
+           decoded_status.kind==NAS_PROC_PID_CWD_LINK);
+    char real_cwd[256]={0};
+    assert(nas_proc_readlink(cwd_link,real_cwd,sizeof(real_cwd))==12);
+    assert(!memcmp(real_cwd,"/home/worker",12));
+    assert(!nas_proc_lookup("/proc/24/cwd",&entry));
+    assert(nas_proc_lookup("/proc/locks",&entry));
+    assert(nas_proc_read(entry,0,(uint8_t *)real_cwd,sizeof(real_cwd))==0);
+    fixture_locks[0]=(struct nas_vfs_lock_snapshot){
+        .pid=23,.ino=202,.start=4,.end=9,.exclusive=true
+    };
+    fixture_lock_count=1;
+    check_file("/proc/locks","1: POSIX  ADVISORY  WRITE 23 00:00:202 4 8");
+    fixture_locks[1]=(struct nas_vfs_lock_snapshot){
+        .pid=1,.ino=303,.start=0,.end=UINT64_MAX,.exclusive=false
+    };
+    fixture_lock_count=2;
+    check_file("/proc/locks","2: POSIX  ADVISORY  READ 1 00:00:303 0 EOF");
+    fixture_lock_count=0;
+    assert(nas_proc_read(entry,0,(uint8_t *)real_cwd,sizeof(real_cwd))==0);
     check_live_mounts();
     check_file("/proc/23/statm"," 0 0 0 0 0 0");
     tasks[1].commandline_bytes=12;

@@ -21,7 +21,7 @@ sh scripts/stage-alpine-prebuilt-overlay.sh "$port" m129-batch
 work="build/external/m129-batch/$port"
 root="$work/rootfs"
 test -s "$work/rootfs.cpio" && test -s "$root/lib/apk/db/installed"
-for package in procps-ng psmisc util-linux-misc; do
+for package in procps-ng psmisc util-linux-misc flock; do
     grep -Fxq "P:$package" "$root/lib/apk/db/installed" || {
         echo "[M129 HOST STAGE FAIL] $port missing signed $package" >&2
         exit 1

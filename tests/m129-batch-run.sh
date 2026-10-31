@@ -40,11 +40,14 @@ run_case() {
         busy grep -Eq 'OBJS|SLABS|CACHE|NAME' "$dir/slabs" ;;
       tload)
         exe=$(original_elf /bin/tload)
-        # Draw live load samples in a bounded PTY-less stream, no version flag.
-        # tload is deliberately continuous: timeout's 124 is expected.
+        pty=$(original_elf /usr/bin/script)
+        # Original curses/TTY tool needs a real pseudoterminal. Alpine's
+        # original util-linux script supplies that PTY and captures its bytes.
         rc=0
-        busy timeout 3 "$exe" -d 1 > "$dir/load" 2>&1 || rc=$?
-        [ "$rc" -eq 124 ] && [ -s "$dir/load" ] ;;
+        "$pty" -q -e -c '/bin/busybox timeout 3 /bin/tload -d 1' \
+            "$dir/load" > "$dir/pty" 2>&1 || rc=$?
+        case "$rc" in 124|143) ;; *) return 1 ;; esac
+        busy grep -Eq '[0-9]+\.[0-9]+,[[:space:]]*[0-9]+\.[0-9]+' "$dir/load" ;;
       vmstat)
         exe=$(original_elf /bin/vmstat)
         "$exe" -n 1 1 > "$dir/memory" 2>&1
@@ -56,10 +59,13 @@ run_case() {
         busy grep -Eq 'USER|TTY|load average' "$dir/sessions" ;;
       watch)
         exe=$(original_elf /bin/watch)
-        # Repeatedly execute an actual child command, observe real rendered data.
+        pty=$(original_elf /usr/bin/script)
+        # The authentic program requires a PTY and catches TERM; use KILL
+        # after three seconds so its repeated real child command is bounded.
         rc=0
-        busy timeout 3 "$exe" -t -n 1 /bin/busybox echo M129_WATCH_CHILD > "$dir/render" 2>&1 || rc=$?
-        [ "$rc" -eq 124 ] && busy grep -Fq M129_WATCH_CHILD "$dir/render" ;;
+        "$pty" -q -e -c '/bin/busybox timeout -s KILL 3 /bin/watch -t -n 1 /bin/busybox echo M129_WATCH_CHILD' \
+            "$dir/render" > "$dir/pty" 2>&1 || rc=$?
+        [ "$rc" -eq 137 ] && busy grep -Fq M129_WATCH_CHILD "$dir/render" ;;
       sysctl)
         exe=$(original_elf /sbin/sysctl)
         "$exe" -n kernel.hostname > "$dir/hostname" 2>&1
@@ -81,8 +87,12 @@ run_case() {
       killall)
         exe=$(original_elf /usr/bin/killall)
         # Signal zero tests process discovery + permissions, kills nobody.
-        "$exe" -0 sh > "$dir/probe" 2>&1
-        [ -r "/proc/$pid/comm" ] ;;
+        busy sleep 5 & target=$!
+        rc=0
+        "$exe" -0 busybox > "$dir/probe" 2>&1 || rc=$?
+        busy kill -TERM "$target" 2>/dev/null || :
+        wait "$target" 2>/dev/null || :
+        [ "$rc" -eq 0 ] ;;
       prtstat)
         exe=$(original_elf /usr/bin/prtstat)
         "$exe" "$pid" > "$dir/stat" 2>&1
@@ -99,14 +109,19 @@ run_case() {
         busy grep -Fq "$pid" "$dir/fd-table" ;;
       lslocks)
         exe=$(original_elf /usr/bin/lslocks)
-        # No made-up locks: the live Linux-compatible global lock list.
+        locker=$(original_elf /usr/bin/flock)
+        busy echo M129_LOCKED > "$dir/held"
+        exec 8> "$dir/held"
+        "$locker" -n 8
+        # Lock is actually held by our inherited OFD while lslocks scans.
         [ -r /proc/locks ]
         "$exe" > "$dir/locks" 2>&1
-        busy grep -Eq 'COMMAND|PID|TYPE|SIZE' "$dir/locks" ;;
+        busy grep -Fq FLOCK "$dir/locks"
+        busy grep -Fq "$pid" "$dir/locks" ;;
       lsclocks)
         exe=$(original_elf /usr/bin/lsclocks)
         "$exe" > "$dir/clocks" 2>&1
-        busy grep -Eq 'CLOCK_REALTIME|CLOCK_MONOTONIC|REALTIME|MONOTONIC' "$dir/clocks" ;;
+        busy grep -Eq '(^|[[:space:]])(realtime|monotonic)([[:space:]]|$)' "$dir/clocks" ;;
       *) echo "[M129 UNKNOWN CASE] $app" >&2; return 2 ;;
     esac
 }
@@ -134,7 +149,7 @@ for app in pidof slabtop tload vmstat w watch sysctl pwdx \
         upper=$(printf '%s' "$app" | busy tr '[:lower:]' '[:upper:]')
         echo "[M129 $upper FAILED] original ELF rc=$rc" >&2
         busy tail -85 "$case_log" >&2 || :
-        for detail in pids slabs load memory sessions render hostname cwd held \
+        for detail in pids slabs load pty memory sessions render hostname cwd held \
                       users probe stat logfds fd-table locks clocks; do
             if [ -s "/tmp/m129-$app/$detail" ]; then
                 echo "[M129 FAILED OUTPUT $app/$detail]" >&2
