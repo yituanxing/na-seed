@@ -52,12 +52,26 @@ run_case() {
         graph_counts "$work/cycle.gv" 5 5 ;;
       gvpack)
         exe=$(original_elf /usr/bin/gvpack)
-        busy printf 'digraph A {a->b;}\n' > "$work/one.gv"
-        busy printf 'digraph B {c->d;}\n' > "$work/two.gv"
-        /usr/bin/dot "$work/one.gv" > "$work/one.layout"
-        /usr/bin/dot "$work/two.gv" > "$work/two.layout"
+        # Upstream gvpack accepts already-laid-out DOT: node pos/width/height
+        # and optional edge splines.  Alpine --no-scripts does not generate
+        # Graphviz's renderer plugin registry, so avoid invoking dot here.
+        # The two input layouts each describe a real directed edge; gvpack
+        # must geometrically pack both graphs into one 4-node/2-edge graph.
+        busy printf '%s\n' 'digraph A {' \
+            'graph [bb="0,0,160,100"];' \
+            'a [pos="40,50", width=0.75, height=0.5];' \
+            'b [pos="120,50", width=0.75, height=0.5];' \
+            'a -> b [pos="e,93,50 67,50 73,50 80,50 87,50"];' \
+            '}' > "$work/one.layout"
+        busy printf '%s\n' 'digraph B {' \
+            'graph [bb="0,0,160,100"];' \
+            'c [pos="40,50", width=0.75, height=0.5];' \
+            'd [pos="120,50", width=0.75, height=0.5];' \
+            'c -> d [pos="e,93,50 67,50 73,50 80,50 87,50"];' \
+            '}' > "$work/two.layout"
         "$exe" -g "$work/one.layout" "$work/two.layout" > "$work/merged.gv"
-        graph_counts "$work/merged.gv" 4 2 ;;
+        graph_counts "$work/merged.gv" 4 2
+        busy grep -Fq 'pos=' "$work/merged.gv" ;;
       gvpr)
         exe=$(original_elf /usr/bin/gvpr)
         busy printf 'digraph G {a [color=blue]; b [color=green]; a->b;}\n' > "$work/colors.gv"
