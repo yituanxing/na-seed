@@ -56,7 +56,9 @@ is *not* copied into NaSeed.
 
 ### Important original U-Boot limitations
 
-The pinned `virtio_net.c` is **not yet linked or run**. It assumes synchronous
+The pinned `virtio_net.c` is now **linked unchanged** through
+`ports/uboot/net_port.c` and host-tested with simulated DMA completions.
+It assumes synchronous
 TX completion with an unbounded loop, fixed 32 RX buffers, a single pair of
 queues, and link up when `VIRTIO_NET_F_STATUS` is not negotiated. Copying it
 into a live kernel unchanged without an error-aware transport adapter would
@@ -66,19 +68,23 @@ completion budget, poisoned queue/reset on failure, DMA bounce lifetime,
 short/malformed RX rejection, and correct ring rearm. Report `-EAGAIN`,
 `-EIO`, or `-ENETDOWN` rather than manufacturing success.
 
-The current `ports/uboot/blk_port.c` also owns block-specialized global
-`virtqueue_*` symbols. A network port **must not** define a second conflicting
-set. The next implementation batch should extract a single common U-Boot
-transport dispatch and make block/net use class-specific context behind it;
-the existing live block path and tests are the regression oracle.
+`ports/uboot/virtio_compat.c` now owns the **sole** shared U-Boot
+`virtqueue_*`, feature, config and queue-discovery functions. Each original
+class driver supplies only its DMA staging/completion bridge to the same
+`nas_vring_queue` implementation. Original VirtIO-Blk host regression is green.
 
 ## Acceptance and order
 
 1. This audit batch: one upstream source pin, original network-driver source
    syntax/ABI proof, generic U-Boot class-type declarations, and IRQ-wake /
    budgeted netdev host tests. **No packet or linked-driver claim.**
-2. Move common U-Boot queue helpers out of the block-only port, use exactly
-   one tested split-queue DMA core, and bind type=1 on both MMIO and PCI.
+2. **Host-proven:** one shared compatibility layer, a real pinned U-Boot
+   VirtIO-Net `eth_ops` wrapper with two DMA queues, fixed 32 RX buffers,
+   finite TX polling and malformed completion fail-closed; register a
+   type=1 class driver on both MMIO and PCI. The host tests simulate device
+   completions; real NIC interrupts, physical QEMU traffic and lwIP netif
+   are **not yet proven**. The existing opt-in VirtIO block build includes
+   this driver while the separate network boot hook is still pending.
 3. Complete lwIP `sys_arch` and Netconn/`nas_file_ops` on the original
    pinned lwIP version, with separate loopback netif and hardware netif.
 4. Accumulate host/ISA gates, then one all-ISA QEMU batch proving DHCP,

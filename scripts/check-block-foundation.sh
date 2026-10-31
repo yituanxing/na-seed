@@ -135,18 +135,28 @@ build/block-foundation/test-uboot-virtio-net-abi
 cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin \
   -I ports/uboot/compat -I kernel -I third_party/unikraft/include \
   -I ports/unikraft/include \
-  scripts/test-uboot-original-virtio-blk-port.c ports/uboot/blk_port.c \
+  scripts/test-uboot-original-virtio-blk-port.c ports/uboot/virtio_compat.c ports/uboot/blk_port.c \
   ports/unikraft/split_queue.c kernel/drivers/virtio/transport.c \
   kernel/drivers/port/dma.c kernel/drivers/port/block.c \
   kernel/block/device.c kernel/lib/string.c \
   -o build/block-foundation/test-uboot-original-port
 build/block-foundation/test-uboot-original-port
+cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin \
+  -I ports/uboot/compat -I kernel -I third_party/unikraft/include \
+  -I ports/unikraft/include \
+  scripts/test-uboot-original-virtio-net-port.c ports/uboot/virtio_compat.c \
+  ports/uboot/net_port.c ports/unikraft/split_queue.c \
+  kernel/drivers/virtio/transport.c kernel/drivers/port/dma.c \
+  kernel/drivers/port/net.c kernel/drivers/core/bus.c \
+  ports/uboot/virtio_net_bus.c kernel/lib/string.c \
+  -o build/block-foundation/test-uboot-original-virtio-net-port
+build/block-foundation/test-uboot-original-virtio-net-port
 if command -v clang >/dev/null 2>&1; then
   for target in x86_64-unknown-none-elf riscv64-unknown-elf aarch64-none-elf; do
     clang --target="$target" -std=c11 -Wall -Wextra -Werror \
       -ffreestanding -fno-builtin -I ports/uboot/compat -I kernel \
       -I third_party/unikraft/include -I ports/unikraft/include \
-      -fsyntax-only ports/uboot/blk_port.c ports/uboot/virtio_bus.c
+      -fsyntax-only ports/uboot/virtio_compat.c ports/uboot/blk_port.c ports/uboot/virtio_bus.c ports/uboot/net_port.c ports/uboot/virtio_net_bus.c
     clang --target="$target" -std=c11 -Wall -Wextra -Werror \
       -Wno-unused-parameter -Wno-sign-compare \
       -ffreestanding -fno-builtin -I ports/uboot/compat -I kernel \

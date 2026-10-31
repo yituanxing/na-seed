@@ -22,7 +22,7 @@ fi
 common=$(grep -v '^#' scripts/full-kernel-core.sources)
 arch="kernel/arch/riscv64/cpu.c kernel/arch/riscv64/mmu.c kernel/arch/riscv64/context.c kernel/arch/riscv64/signal_frame.c kernel/arch/riscv64/timer.c kernel/arch/riscv64/serial.c kernel/arch/user_pt.c kernel/mm/user_space.c kernel/mm/mmu_bridge.c kernel/platform/riscv64.c"
 if [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ]; then
-    arch="$arch kernel/drivers/virtio/transport.c kernel/drivers/virtio/mmio.c kernel/drivers/core/bus.c kernel/drivers/port/dma.c kernel/drivers/port/block.c ports/unikraft/split_queue.c ports/uboot/blk_port.c ports/uboot/virtio_bus.c kernel/platform/virtio_mmio_qemu.c kernel/platform/riscv64_virtio.c kernel/arch/riscv64/io.c"
+    arch="$arch kernel/drivers/virtio/transport.c kernel/drivers/virtio/mmio.c kernel/drivers/core/bus.c kernel/drivers/port/dma.c kernel/drivers/port/block.c kernel/drivers/port/net.c ports/unikraft/split_queue.c ports/uboot/virtio_compat.c ports/uboot/blk_port.c ports/uboot/virtio_bus.c ports/uboot/net_port.c ports/uboot/virtio_net_bus.c kernel/platform/virtio_mmio_qemu.c kernel/platform/riscv64_virtio.c kernel/arch/riscv64/io.c"
 fi
 obj=
 for f in $common $arch; do

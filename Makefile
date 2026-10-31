@@ -61,9 +61,10 @@ kernel: $(KERNEL)
 VIRTIO_X86_OBJS :=
 ifeq ($(NAS_ENABLE_VIRTIO_BLK),1)
 VIRTIO_X86_SRCS := kernel/drivers/core/bus.c kernel/drivers/port/dma.c \
- kernel/drivers/port/block.c kernel/drivers/virtio/transport.c \
+ kernel/drivers/port/block.c kernel/drivers/port/net.c kernel/drivers/virtio/transport.c \
  kernel/drivers/virtio/pci.c ports/unikraft/split_queue.c \
- ports/uboot/blk_port.c ports/uboot/virtio_bus.c \
+ ports/uboot/virtio_compat.c ports/uboot/blk_port.c ports/uboot/virtio_bus.c \
+ ports/uboot/net_port.c ports/uboot/virtio_net_bus.c \
  kernel/platform/x86_virtio_pci.c
 VIRTIO_X86_OBJS := $(patsubst %.c,$(OUT)/virtio_%.o,$(notdir $(VIRTIO_X86_SRCS)))
 define nas_compile_x86_virtio

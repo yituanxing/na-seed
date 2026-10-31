@@ -7,6 +7,7 @@
 #include "../drivers/port/dma.h"
 #include "../arch/x86_64/mmu.h"
 #include "../../ports/uboot/virtio_bus.h"
+#include "../../ports/uboot/virtio_net_bus.h"
 #include "../drivers/serial.h"
 #include "../errno.h"
 #include <virtio/virtio_ids.h>
@@ -94,6 +95,8 @@ static bool map_bars(uint8_t bus,uint8_t slot,uint8_t fun,unsigned index,
 int nas_platform_virtio_blk_probe(void) {
     int rc=nas_virtio_blk_driver_register();
     if(rc<0)return rc;
+    rc=nas_virtio_net_driver_register();
+    if(rc<0)return rc;
     unsigned count=0;
     for(unsigned slot=0;slot<32U;slot++) {
         uint32_t first=cfg_read(0,(uint8_t)slot,0,0);
@@ -146,5 +149,7 @@ int nas_platform_virtio_blk_probe(void) {
     }
     nas_print("[VIRTIO-BLK] real modern PCI devices=");
     nas_dec(nas_virtio_blk_count());nas_print("\n");
+    nas_print("[VIRTIO-NET] real modern PCI devices=");
+    nas_dec(nas_virtio_net_count());nas_print("\n");
     return (int)nas_virtio_blk_count();
 }

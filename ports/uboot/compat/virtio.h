@@ -8,6 +8,9 @@ struct virtio_dev_priv {
  bool legacy;
  uint64_t features;
  uint64_t offered;
+ const struct nas_virtio_transport *transport;
+ struct virtqueue **queues;
+ unsigned queue_count;
 };
 static inline u32 cpu_to_virtio32(struct udevice *d,u32 v){(void)d;return v;}
 static inline u64 cpu_to_virtio64(struct udevice *d,u64 v){(void)d;return v;}

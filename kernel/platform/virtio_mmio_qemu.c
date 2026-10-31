@@ -8,6 +8,7 @@
 #include "../drivers/port/dma.h"
 #include "../drivers/serial.h"
 #include "../../ports/uboot/virtio_bus.h"
+#include "../../ports/uboot/virtio_net_bus.h"
 #include <virtio/virtio_ids.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -25,6 +26,8 @@ int nas_qemu_virtio_mmio_probe(uint64_t physical, uint64_t virtual_base,
         (uint64_t)slots*stride>32U*PAGE_BYTES || scanned)
         return -1;
     int rc=nas_virtio_blk_driver_register();
+    if (rc<0) return rc;
+    rc=nas_virtio_net_driver_register();
     if (rc<0) return rc;
     for (unsigned page=0;page<(slots*stride+PAGE_BYTES-1U)/PAGE_BYTES;page++)
         if (!map_page(physical+page*PAGE_BYTES,
@@ -54,6 +57,8 @@ int nas_qemu_virtio_mmio_probe(uint64_t physical, uint64_t virtual_base,
     nas_dec(modern);nas_print(" legacy=");nas_dec(legacy);nas_print("\n");
     nas_print("[VIRTIO-BLK] real modern MMIO devices=");
     nas_dec(nas_virtio_blk_count());nas_print("\n");
+    nas_print("[VIRTIO-NET] real modern MMIO devices=");
+    nas_dec(nas_virtio_net_count());nas_print("\n");
     scanned=true;
     return (int)nas_virtio_blk_count();
 }

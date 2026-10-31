@@ -24,16 +24,18 @@ at the same `ece349ade2973e220f524ce59e59711cc919263f` revision already
 used by the real VirtIO-Blk backend. Original `virtio_net.c` (GPL-2.0+)
 and `virtio_net.h` (BSD-3-Clause) are held under `third_party/uboot/`,
 hash-checked and cross-syntax-checked using the same tiny U-Boot device-model
-compatibility declarations as block. This is a **source/ABI integration**:
-the network driver is not yet linked to live queues or attached to netdev.
-The source has an unbounded TX completion wait; any real port MUST use a
-bounded/poisoning queue completion adapter and check errors outside upstream.
+compatibility declarations as block. The original network driver is now
+**linked** to a real `nas_netdev` class adapter and two common DMA split
+queues, tested by a simulated host transport. The source has an unbounded
+TX completion wait; `net_port.c` bounds completion polling inside its queue
+adapter and converts timeout to poisoned `-EIO` outside upstream.
 Keep [Zephyr's VirtIO-Net](https://github.com/zephyrproject-rtos/zephyr/blob/main/drivers/ethernet/eth_virtio_net.c)
 (Apache-2.0) as a fallback, but it would introduce an otherwise unused
 Zephyr net_pkt/devicetree/virtqueue compatibility boundary.
 NaOS's GPL-3.0 driver implementations are architectural references only,
 given NaSeed's unresolved combined-work licensing. This dependency pin does
-**not** mean lwIP is compiled/linked, nor that a Zephyr NIC driver is ported.
+**not** mean lwIP is compiled/linked, a Zephyr NIC driver is ported or real
+QEMU network traffic is proven.
 
 ## Dependency direction (one of each owner)
 
@@ -52,7 +54,7 @@ ports/lwip/netif_port.c         (future: pbuf<->Ethernet frame, link state)
        |
 kernel/drivers/port/net.[ch]   (one Ethernet registry, pinned ownership)
        |
-ports/<upstream>/virtio_net.c  (future: original driver + thin OS adapter)
+ports/uboot/net_port.c         (original U-Boot driver + thin OS adapter)
        |
 nas_bus_driver match type=1    (one driver, both MMIO and PCI)
        |
@@ -112,7 +114,7 @@ provides all wire protocol algorithms. Implement and test these OS hooks:
 
 | Stage | Change | Proof before claiming success |
 | --- | --- | --- |
-| A — this batch | Make MMIO/PCI discovery publish VirtIO-Net class=1 alongside block class=2; add an independent Ethernet port/registry and host tests for binding/ownership | Multi-ISA source gates, host tests, existing BlockDevice proof; **no claim of packets on the wire** |
+| A — host-proven | MMIO/PCI publish VirtIO-Net class=1; independent netdev; **actual original U-Boot Net** on two DMA queues, shared VirtIO adapter and bus class binding | Host simulated RX/TX, malformed and timeout tests, multi-ISA syntax, existing BlockDevice proof; **no claim of packets on the wire** |
 | B | Link the byte-identical pinned lwIP submodule; build `sys_arch`, bootstrap tcpip thread and loopback netif | Host + all three ISA compile; lwIP timer/thread/mbox tests, real loopback TCP/UDP/ICMP without previous synthetic pipe backend |
 | C | Wire pinned original U-Boot VirtIO-Net through shared compatibility, 2 queues and DMA; connect netif, bounded TX completion, interrupt/bounded receive worker | PCI x86, MMIO RV64/AArch64 QEMU guest frames; DHCP lease, ARP, ping and UDP to host; MAC/address/link reporting |
 | D | Replace AF_INET socket backend with Netconn and FileOps, preserve AF_UNIX and shared open-description semantics | ncat local/remote, curl, iperf3, DNS, nonblocking connect, poll/epoll, fork/dup, close/accept races on all ISAs |
