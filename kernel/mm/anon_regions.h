@@ -32,7 +32,10 @@ enum nas_vma_kind {
     NAS_VMA_STACK=4,
     NAS_VMA_SIGNAL_TRAMPOLINE=5,
     NAS_VMA_FILE_IMMUTABLE_SHARED=6,
-    NAS_VMA_FILE_MUTABLE_SHARED=7
+    NAS_VMA_FILE_MUTABLE_SHARED=7,
+    /* Eager page-owned shared anonymous mapping; fork preserves writable
+     * physical frame aliases instead of COW. */
+    NAS_VMA_ANON_SHARED=8
 };
 #define NAS_VMA_DONTFORK 1U
 struct nas_mapped_file;

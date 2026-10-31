@@ -175,11 +175,18 @@ uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
     if (!length || length > UINT64_MAX - PAGE)
         return (uint64_t)-EINVAL;
     bool fixed=nas_linux_anon_fixed_supported(flags,offset);
-    if (!fixed && !nas_linux_anon_map_supported(flags,fd,offset))
+    bool shared_anon=nas_linux_anon_shared_map_supported(flags,offset);
+    if (!fixed && !shared_anon && !nas_linux_anon_map_supported(flags,fd,offset))
         return (uint64_t)-ENOSYS;
     if (prot & ~7ULL) return (uint64_t)-EINVAL;
     if (prot && !nas_vm_prot_supported(prot)) return (uint64_t)-EOPNOTSUPP;
     if (!nas_arch_user_nx_supported()) return (uint64_t)-ENOSYS;
+    /* Shared anonymous storage has no file cache to fault in after fork.
+     * Materialize its bounded page backing before publication, preserving
+     * actual physical aliases in both parent and child.  Refuse unsupported
+     * nonresident/huge forms rather than silently switching them to COW. */
+    if(shared_anon && (!prot || length>(64ULL<<20)))
+        return (uint64_t)-EOPNOTSUPP;
     uint64_t pages = (length + PAGE - 1) / PAGE;
     uint64_t bytes = pages * PAGE;
     uint64_t start;
@@ -215,9 +222,14 @@ uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
     if(!nas_vma_clone(&planned,&TASK.mm->mmap_vmas))
         return (uint64_t)-ENOMEM;
     if (!nas_vma_record(&planned,start,bytes,(unsigned)prot,
-                        NAS_VMA_ANON_PRIVATE,0)) {
+                        shared_anon?NAS_VMA_ANON_SHARED:NAS_VMA_ANON_PRIVATE,0)) {
         nas_anon_reset(&planned);
         return (uint64_t)-ENOMEM;
+    }
+    if(shared_anon) {
+        uint64_t error=stage_replace_pages(start,pages,(unsigned)prot,
+                                           false,0,0,length);
+        if(error) {nas_anon_reset(&planned);return error;}
     }
     /* Linux private anonymous mmap owns its virtual range before any user
      * pages become resident.  Demand-zero materialization is already owned
@@ -596,6 +608,8 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
                  * instead: the first genuine store marks inode times and
                  * advances the page's coherent dirty state. */
                 if(mutable_shared(v))hw_prot &= ~NAS_VM_WRITE;
+                else if(v && v->kind==NAS_VMA_ANON_SHARED)
+                    hw_prot=(unsigned)prot; /* true shared physical frame */
                 else if((prot&NAS_VM_WRITE) &&
                         nas_frame_refs(pa&~UINT64_C(4095))>1)
                     hw_prot &= ~NAS_VM_WRITE;

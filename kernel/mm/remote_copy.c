@@ -81,7 +81,8 @@ int64_t nas_vm_write_task_bytes(const struct nas_task *task,uint64_t va,
         const struct nas_anon_region *v=nas_vma_find(&mm->mmap_vmas,at);
         if(v && v->kind==NAS_VMA_FILE_MUTABLE_SHARED) {
             if(nas_fs_mmap_dirty(v->backing)<0)return -EFAULT;
-        } else if(!nas_mm_break_cow((struct nas_mm *)mm,at,0,true))
+        } else if(!(v && v->kind==NAS_VMA_ANON_SHARED) &&
+                  !nas_mm_break_cow((struct nas_mm *)mm,at,0,true))
             return -EFAULT;
         uint64_t n=4096ULL-(at&4095ULL);
         if(n>length-count)n=length-count;

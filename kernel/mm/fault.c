@@ -48,6 +48,14 @@ enum nas_mm_fault_result nas_mm_handle_fault(struct nas_mm *mm,uint64_t addr,
                        old==frame ? NAS_MM_FAULT_RESOLVED :
                                     NAS_MM_FAULT_INVARIANT;
             }
+            if(vma->kind==NAS_VMA_ANON_SHARED) {
+                uint64_t old=0;
+                const uint64_t frame=pa&~UINT64_C(4095);
+                return nas_mmu_exchange_leaf_at(mm->root_phys,
+                         addr&~UINT64_C(4095),frame,vma->prot,&old) &&
+                       old==frame ? NAS_MM_FAULT_RESOLVED :
+                                    NAS_MM_FAULT_INVARIANT;
+            }
             return nas_mm_break_cow(mm,addr,vma->prot,false) ?
                 NAS_MM_FAULT_RESOLVED : NAS_MM_FAULT_OOM;
         }

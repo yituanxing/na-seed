@@ -135,7 +135,7 @@ static bool insert_area(struct nas_anon_regions *regions,
                         struct nas_anon_region candidate) {
     if(!regions || candidate.end<=candidate.start ||
        !valid_interval(candidate.start,candidate.end-candidate.start) ||
-       (candidate.prot &~7U) || candidate.kind>NAS_VMA_FILE_MUTABLE_SHARED ||
+       (candidate.prot &~7U) || candidate.kind>NAS_VMA_ANON_SHARED ||
        (candidate.kind==NAS_VMA_FILE_MUTABLE_SHARED)!=
            (candidate.backing!=NULL) ||
        (candidate.flags & ~NAS_VMA_DONTFORK))
@@ -289,7 +289,7 @@ static bool replace_file(struct nas_anon_regions *regions,uint64_t addr,
                          uint64_t length,unsigned prot,unsigned kind,
                          uint64_t file_offset,struct nas_mapped_file *backing) {
     if(!regions || !valid_interval(addr,length) || (prot&~7U) ||
-       kind>NAS_VMA_FILE_MUTABLE_SHARED)return false;
+       kind>NAS_VMA_ANON_SHARED)return false;
     struct nas_anon_regions planned={0};
     if(!nas_vma_clone(&planned,regions))return false;
     if(!nas_anon_forget(&planned,addr,length) ||

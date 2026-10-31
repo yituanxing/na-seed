@@ -74,7 +74,9 @@ run_case() {
       mdb_stat)
         exe=$(original_elf /usr/bin/mdb_stat)
         seed_lmdb
-        "$exe" -a "$work/env" > "$work/output"
+        # -a reports DB entries; -e additionally emits the environment's
+        # actual page size. Both values must be asserted independently.
+        "$exe" -ea "$work/env" > "$work/output"
         busy grep -Eq 'Entries:[[:space:]]*2' "$work/output"
         busy grep -Fq 'Page size:' "$work/output" ;;
       fc_cache)

@@ -59,7 +59,8 @@ static bool cow_clone_mapping(uint64_t va,unsigned access,void *opaque) {
     /* Shared file mappings retain the exact same backing frame and Linux
      * write permission across fork.  Only MAP_PRIVATE pages become COW. */
     unsigned prot=access_prot(access);
-    if(v->kind!=NAS_VMA_FILE_MUTABLE_SHARED)prot &= ~NAS_VM_WRITE;
+    if(v->kind!=NAS_VMA_FILE_MUTABLE_SHARED &&
+       v->kind!=NAS_VMA_ANON_SHARED)prot &= ~NAS_VM_WRITE;
     if(!nas_mmu_prepare_leaf_at(ctx->dst->root_phys,va)) {
         (void)nas_frame_put(pa);
         return false;
@@ -79,7 +80,8 @@ static bool cow_protect_parent(uint64_t va,unsigned access,void *opaque) {
     if(!v || !(v->prot&NAS_VM_WRITE))return false;
     /* Excluded pages were not cloned and must not be write-protected. */
     if((v->flags&NAS_VMA_DONTFORK) ||
-       v->kind==NAS_VMA_FILE_MUTABLE_SHARED)return true;
+       v->kind==NAS_VMA_FILE_MUTABLE_SHARED ||
+       v->kind==NAS_VMA_ANON_SHARED)return true;
     uint64_t pa=0;
     if(!nas_mm_resolve_user(src,va,&pa,0))return false;
     pa &= ~UINT64_C(4095);
@@ -136,7 +138,8 @@ bool nas_mm_break_cow(struct nas_mm *mm,uint64_t va,
      * Callers must preserve this mapping instead of copying its bytes. */
     const struct nas_anon_region *v=mm ?
         nas_vma_find(&mm->mmap_vmas,va) : 0;
-    if(v && v->kind==NAS_VMA_FILE_MUTABLE_SHARED)return false;
+    if(v && (v->kind==NAS_VMA_FILE_MUTABLE_SHARED ||
+             v->kind==NAS_VMA_ANON_SHARED))return false;
     uint64_t pa=0;
     unsigned access=0;
     if(!nas_mm_resolve_user(mm,va,&pa,&access))return false;

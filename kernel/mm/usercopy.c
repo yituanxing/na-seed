@@ -119,7 +119,8 @@ bool nas_user_prepare_write(uint64_t addr,uint64_t len) {
         } else if(!(access&NAS_UP_WRITE)) {
             if(nas_mm_handle_fault(mm,at,NAS_UP_WRITE,true)!=
                NAS_MM_FAULT_RESOLVED)return false;
-        } else if((!v || v->kind!=NAS_VMA_FILE_MUTABLE_SHARED) &&
+        } else if((!v || (v->kind!=NAS_VMA_FILE_MUTABLE_SHARED &&
+                         v->kind!=NAS_VMA_ANON_SHARED)) &&
                   nas_frame_refs(pa&~UINT64_C(4095))>1 &&
                   !nas_mm_break_cow(mm,at,access,false))return false;
         if(!nas_mmu_user_writable(at))return false;
