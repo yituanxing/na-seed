@@ -918,13 +918,17 @@ static uint64_t signalfd_read(unsigned slot,uint8_t *dst,uint64_t length) {
     uint64_t plan=signalfd_read_plan(slot,length);
     if((int64_t)plan<0)return plan;
     if(!dst)return (uint64_t)-EFAULT;
+    struct nas_signalfd_event event={0};
     unsigned signo=nas_signal_signalfd_take(nas_current_task,
-                                             signalfd_masks[slot]);
+                                             signalfd_masks[slot],&event);
     if(!signo)return (uint64_t)-EAGAIN;
-    /* Linux struct signalfd_siginfo is exactly 128 bytes; signo is first.
-     * Other fields are zero when no siginfo payload has been recorded. */
+    /* Native Linux signalfd_siginfo: signo@0, code@8, pid@12,
+     * status@40, all 32-bit fields in the same LP64 ABI on three ISAs. */
     memset(dst,0,128);
-    dst[0]=(uint8_t)signo;
+    memcpy(dst,&event.signo,4);
+    memcpy(dst+8,&event.code,4);
+    memcpy(dst+12,&event.pid,4);
+    memcpy(dst+40,&event.status,4);
     return 128ULL;
 }
 uint16_t nas_fs_signalfd_poll_task(unsigned slot,uint16_t events,

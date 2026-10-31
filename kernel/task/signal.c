@@ -115,12 +115,21 @@ static void signal_consume_one(struct nas_task *task,uint64_t bit) {
 bool nas_signal_signalfd_ready(const struct nas_task *task,uint64_t mask) {
     return task && (signal_pending_union(task)&mask&task->blocked_signals)!=0;
 }
-unsigned nas_signal_signalfd_take(struct nas_task *task,uint64_t mask) {
+unsigned nas_signal_signalfd_take(struct nas_task *task,uint64_t mask,
+                                  struct nas_signalfd_event *event) {
     if(!task)return 0;
     uint64_t ready=signal_pending_union(task)&mask&task->blocked_signals;
     for(unsigned sig=1;sig<=64;sig++) {
         uint64_t bit=1ULL<<(sig-1);
         if(ready&bit) {
+            if(event) {
+                *event=(struct nas_signalfd_event){.signo=sig};
+                if(sig==NAS_SIGCHLD && task->signal_group) {
+                    event->pid=task->signal_group->sigchld_pid;
+                    event->status=task->signal_group->sigchld_status;
+                    event->code=task->signal_group->sigchld_code;
+                }
+            }
             signal_consume_one(task,bit);
             return sig;
         }
@@ -711,8 +720,13 @@ void nas_signal_child_exit(const struct nas_task *child) {
      * (util-linux script) observe it and perform the real waitpid themselves.
      * Only unblocked default/ignored dispositions skip this notification. */
     if (parent->sighand->actions[NAS_SIGCHLD][0] > 1 ||
-        (parent->blocked_signals&(1ULL<<(NAS_SIGCHLD-1U))))
+        (parent->blocked_signals&(1ULL<<(NAS_SIGCHLD-1U)))) {
+        parent->signal_group->sigchld_pid=(uint32_t)child->pid;
+        parent->signal_group->sigchld_status=child->termination_signal ?
+                       child->termination_signal:child->exit_code;
+        parent->signal_group->sigchld_code=child->termination_signal ? 2 : 1;
         signal_queue_process(parent,NAS_SIGCHLD);
+    }
 }
 void nas_signal_ppoll_restore(struct nas_task *task,bool interrupted) {
     if(!task || !task->ppoll_mask_active)return;

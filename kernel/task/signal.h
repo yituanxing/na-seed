@@ -42,7 +42,12 @@ bool nas_signal_user_pending(const struct nas_task *task);
 /* signalfd consumes genuinely pending masked TID/TGID signals; no synthetic
  * wake events, and the caller is always the active reader's task. */
 bool nas_signal_signalfd_ready(const struct nas_task *task,uint64_t mask);
-unsigned nas_signal_signalfd_take(struct nas_task *task,uint64_t mask);
+struct nas_signalfd_event {
+    uint32_t signo,pid,status;
+    int32_t code;
+};
+unsigned nas_signal_signalfd_take(struct nas_task *task,uint64_t mask,
+                                  struct nas_signalfd_event *event);
 void nas_signal_ppoll_restore(struct nas_task *task,bool interrupted);
 /* Emit SIGPIPE for caught or masked broken-pipe writes; default action is
  * handled by the scheduler before returning to userspace. */

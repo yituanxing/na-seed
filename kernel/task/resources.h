@@ -28,6 +28,11 @@ struct nas_sighand {
 struct nas_signal_group {
     unsigned refs;
     uint64_t pending;
+    /* SIGCHLD is a standard (non-queued) process signal. Its latest real
+     * child-exit payload is owned by the TGID so signalfd can report Linux
+     * CLD_EXITED/CLD_KILLED and the actual child PID/status. */
+    uint32_t sigchld_pid, sigchld_status;
+    int32_t sigchld_code;
     /* ITIMER_REAL belongs to the process's signal group (not a TID,
      * disposition table, or POSIX timer ID). Survives CLONE_THREAD and
      * leader exit; fork creates a fresh, unarmed signal-group owner. */
