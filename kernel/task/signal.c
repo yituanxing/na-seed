@@ -14,8 +14,76 @@
  * SA_NODEFER, NOT SA_RESETHAND (0x80000000). All three ISAs share them. */
 #define NAS_SA_NODEFER UINT64_C(0x40000000)
 #define NAS_SA_RESETHAND UINT64_C(0x80000000)
-#define NAS_SA_ONSTACK UINT64_C(0x08000000)
 #define NAS_UNMASKABLE ((1ULL<<8) | (1ULL<<18))
+
+/* Linux's LP64 stack_t wire format, shared by x86-64, RISC-V and ARM64.
+ * A signal stack is per TID; saved signal dispositions remain per sighand.
+ * SS_AUTODISARM is intentionally rejected until switching away from signal
+ * handlers is supported, never reported as a feature that silently fails. */
+struct nas_sigaltstack_wire {
+    uint64_t sp;
+    uint32_t flags, padding;
+    uint64_t size;
+};
+_Static_assert(sizeof(struct nas_sigaltstack_wire)==24,
+               "Linux LP64 stack_t ABI");
+
+uint32_t nas_signal_altstack_flags(const struct nas_task *task,
+                                  uint64_t user_sp) {
+    if(!task->signal_stack_enabled)return NAS_SS_DISABLE;
+    if(user_sp>=task->signal_stack_sp &&
+       user_sp-task->signal_stack_sp<task->signal_stack_size)
+        return NAS_SS_ONSTACK;
+    return 0;
+}
+
+uint64_t nas_signal_handler_stack_top(const struct nas_task *task,
+                                     uint64_t user_sp,uint64_t action_flags) {
+    if((action_flags&NAS_SA_ONSTACK) && task->signal_stack_enabled &&
+       nas_signal_altstack_flags(task,user_sp)!=NAS_SS_ONSTACK)
+        return task->signal_stack_sp+task->signal_stack_size;
+    return user_sp;
+}
+
+uint64_t nas_signal_sigaltstack(uint64_t new_ptr,uint64_t old_ptr) {
+    struct nas_task *task=nas_current_task;
+    struct nas_sigaltstack_wire incoming={0};
+    if(new_ptr && !nas_user_read_bytes(new_ptr,(uint8_t *)&incoming,
+                                      sizeof(incoming)))return (uint64_t)-EFAULT;
+    uint64_t user_sp=nas_arch_signal_user_sp();
+    uint32_t state=nas_signal_altstack_flags(task,user_sp);
+    if(new_ptr) {
+        /* Linux forbids changing a stack while the thread executes on it.
+         * SS_ONSTACK is only a status bit returned by an old-stack query,
+         * not a valid flag for registering a new alternate stack. */
+        if(state==NAS_SS_ONSTACK)return (uint64_t)-EPERM;
+        if(incoming.flags!=0 && incoming.flags!=NAS_SS_DISABLE)
+            return (uint64_t)-EINVAL;
+        if(incoming.flags!=NAS_SS_DISABLE) {
+            if(incoming.size<nas_arch_signal_min_altstack())
+                return (uint64_t)-ENOMEM;
+            if(!incoming.sp || incoming.sp>=USER_LIMIT ||
+               incoming.size>USER_LIMIT-incoming.sp)
+                return (uint64_t)-ENOMEM;
+        }
+    }
+    if(old_ptr) {
+        struct nas_sigaltstack_wire previous={
+            .sp=task->signal_stack_sp,
+            .flags=state,
+            .padding=0,
+            .size=task->signal_stack_size,
+        };
+        if(!nas_user_write_bytes(old_ptr,(const uint8_t *)&previous,
+                                 sizeof(previous)))return (uint64_t)-EFAULT;
+    }
+    if(new_ptr) {
+        task->signal_stack_enabled=(incoming.flags!=NAS_SS_DISABLE);
+        task->signal_stack_sp=task->signal_stack_enabled?incoming.sp:0;
+        task->signal_stack_size=task->signal_stack_enabled?incoming.size:0;
+    }
+    return 0;
+}
 
 /* Shared signal lifecycle. Hardware-specific sigframe assembly is confined
  * to the three native backends below; disposition and mask decisions must
@@ -25,9 +93,50 @@ static bool terminating_default(unsigned sig) {
            sig==NAS_SIGPIPE || sig==NAS_SIGTERM ||
            sig==NAS_SIGUSR1 || sig==NAS_SIGUSR2;
 }
+/* Linux standard signals have TWO ownership domains. tgkill/pthread_kill
+ * enqueue per-TID; kill/TTY/child-exit enqueue once per process. A shared
+ * bit must remain eligible for any unmasked sibling, not be stranded on the
+ * TID that happened to be preferred when the signal was generated. */
+static uint64_t signal_pending_union(const struct nas_task *task) {
+    return task->pending_signals |
+           (task->signal_group ? task->signal_group->pending : 0);
+}
+static void signal_queue_process(struct nas_task *task,unsigned signo) {
+    if(!task->signal_group || !task->signal_group->refs)
+        nas_fail("process signal without group owner");
+    task->signal_group->pending |= 1ULL<<(signo-1);
+}
+static void signal_consume_one(struct nas_task *task,uint64_t bit) {
+    if(task->pending_signals&bit)task->pending_signals &= ~bit;
+    else if(task->signal_group)task->signal_group->pending &= ~bit;
+}
+bool nas_signal_signalfd_ready(const struct nas_task *task,uint64_t mask) {
+    return task && (signal_pending_union(task)&mask&task->blocked_signals)!=0;
+}
+unsigned nas_signal_signalfd_take(struct nas_task *task,uint64_t mask,
+                                  struct nas_signalfd_event *event) {
+    if(!task)return 0;
+    uint64_t ready=signal_pending_union(task)&mask&task->blocked_signals;
+    for(unsigned sig=1;sig<=64;sig++) {
+        uint64_t bit=1ULL<<(sig-1);
+        if(ready&bit) {
+            if(event) {
+                *event=(struct nas_signalfd_event){.signo=sig};
+                if(sig==NAS_SIGCHLD && task->signal_group) {
+                    event->pid=task->signal_group->sigchld_pid;
+                    event->status=task->signal_group->sigchld_status;
+                    event->code=task->signal_group->sigchld_code;
+                }
+            }
+            signal_consume_one(task,bit);
+            return sig;
+        }
+    }
+    return 0;
+}
 static unsigned first_default_pending(const struct nas_task *task,
                                       uint64_t mask) {
-    uint64_t ready=task->pending_signals & ~mask;
+    uint64_t ready=signal_pending_union(task) & ~mask;
     for(unsigned sig=1;sig<=64;sig++)
         if((ready & (1ULL<<(sig-1))) && terminating_default(sig) &&
            task->sighand->actions[sig][0]==0)
@@ -70,15 +179,24 @@ uint64_t nas_signal_action(uint64_t signum,uint64_t incoming,
         return (uint64_t)-EFAULT;
 #endif
     if(incoming) {
-        /* Do not silently advertise SA_ONSTACK while sigaltstack and
-         * nested native signal frames remain unsupported. */
-        if(action[1]&NAS_SA_ONSTACK)return (uint64_t)-EOPNOTSUPP;
+        /* SA_ONSTACK is an action attribute even when the calling thread
+         * has no alternate stack. Linux falls back to its normal stack in
+         * that case; the native signal-frame owner selects the actual SP. */
         action[3] &= ~NAS_UNMASKABLE;
         for(unsigned i=0;i<4;i++)
             nas_current_task->sighand->actions[signum][i]=action[i];
-        if(action[0]==1) { /* ignored signal discards queued copies */
-            nas_current_task->pending_signals &= ~(1ULL<<(signum-1));
-            nas_current_task->signal_force_deliver &= ~(1ULL<<(signum-1));
+        if(action[0]==1) { /* SIG_IGN discards group + EVERY thread copy */
+            struct nas_task *self=nas_current_task;
+            uint64_t bit=1ULL<<(signum-1);
+            if(self->signal_group)self->signal_group->pending &= ~bit;
+            for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
+                struct nas_task *peer=nas_task_at(i);
+                if(peer && peer->state!=NAS_TASK_FREE &&
+                   peer->tgid==self->tgid) {
+                    peer->pending_signals &= ~bit;
+                    peer->signal_force_deliver &= ~bit;
+                }
+            }
         }
     }
     return 0;
@@ -86,8 +204,33 @@ uint64_t nas_signal_action(uint64_t signum,uint64_t incoming,
 uint64_t nas_signal_pending(uint64_t destination,uint64_t size) {
     if(size!=8)return (uint64_t)-EINVAL;
     return nas_user_write_u64(destination,
-        nas_current_task->pending_signals & nas_current_task->blocked_signals)
+        signal_pending_union(nas_current_task) & nas_current_task->blocked_signals)
         ? 0:(uint64_t)-EFAULT;
+}
+
+/* rt_sigtimedwait (sigwaitinfo is its libc wrapper): the wait set is a
+ * syscall-entry snapshot of the Linux 8-byte kernel sigset_t. Both pending
+ * ownership domains are visible, with thread-private signals consumed first.
+ * Never discard a pending signal when writing an optional siginfo faults.
+ * The present standard-signal queues retain signo rather than sender data;
+ * the 128-byte LP64 siginfo reports the signo and zero-initialized fields. */
+bool nas_signal_timedwait_ready(const struct nas_task *task,uint64_t mask) {
+    return task && (signal_pending_union(task) & mask & ~NAS_UNMASKABLE)!=0;
+}
+uint64_t nas_signal_timedwait_consume(uint64_t mask,uint64_t info) {
+    struct nas_task *task=nas_current_task;
+    uint64_t ready=signal_pending_union(task) & mask & ~NAS_UNMASKABLE;
+    if(!ready)return (uint64_t)-EAGAIN;
+    unsigned signo=(unsigned)__builtin_ctzll(ready)+1;
+    if(info) {
+        uint8_t siginfo[128]={0};
+        int32_t wire_signo=(int32_t)signo;
+        __builtin_memcpy(siginfo,&wire_signo,sizeof(wire_signo));
+        if(!nas_user_write_bytes(info,siginfo,sizeof(siginfo)))
+            return (uint64_t)-EFAULT;
+    }
+    signal_consume_one(task,1ULL<<(signo-1));
+    return signo;
 }
 uint64_t nas_signal_procmask(uint64_t how,uint64_t set,
                              uint64_t previous,uint64_t size,uint64_t *frame) {
@@ -109,7 +252,7 @@ uint64_t nas_signal_procmask(uint64_t how,uint64_t set,
         task->blocked_signals=mask;
         unsigned signum=first_default_pending(task,mask);
         if(signum) {
-            task->pending_signals &= ~(1ULL<<(signum-1));
+            signal_consume_one(task,1ULL<<(signum-1));
             nas_sched_thread_group_exit(0,signum);
             return nas_task_schedule(frame);
         }
@@ -192,10 +335,9 @@ static bool signal_live_member(const struct nas_task *task) {
     return task && task->state!=NAS_TASK_FREE &&
            task->state!=NAS_TASK_ZOMBIE;
 }
-/* Process-directed signals choose exactly one live TID. Prefer a peer that
- * can take the signal now over a blocked peer, including when the leader is
- * a ZOMBIE but its workers remain alive. All mask/pending state stays
- * per-thread until a proper process-owned pending queue is introduced. */
+/* Choose a live TID for immediate process-group side effects. Caught/masked
+ * signals now remain in their independent group owner until an eligible
+ * member returns to userspace. */
 static struct nas_task *signal_group_recipient(uint64_t tgid,unsigned sig) {
     struct nas_task *selected=0;
     const uint64_t bit=sig ? 1ULL<<(sig-1) : 0;
@@ -282,7 +424,7 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
             if(signal!=NAS_SIGKILL && disposition==1)continue;
             if(signal!=NAS_SIGKILL &&
                (disposition>1 || (target->blocked_signals&bit))) {
-                target->pending_signals|=bit;
+                signal_queue_process(target,(unsigned)signal);
                 continue;
             }
             self=true;
@@ -294,14 +436,14 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
                 !(target->blocked_signals&(1ULL<<(signal-1))) &&
                 signal!=NAS_SIGKILL && signal!=NAS_SIGSTOP &&
                 signal!=NAS_SIGCONT) {
-                target->pending_signals |= 1ULL<<(signal-1);
+                signal_queue_process(target,(unsigned)signal);
                 continue;
             }
             self=true;
             if(terminating_default((unsigned)signal) &&
                signal!=NAS_SIGKILL &&
                (target->blocked_signals&(1ULL<<(signal-1))))
-                target->pending_signals |= 1ULL<<(signal-1);
+                signal_queue_process(target,(unsigned)signal);
             else if(terminating_default((unsigned)signal) &&
                     (signal==NAS_SIGKILL ||
                      target->sighand->actions[signal][0]!=1))
@@ -314,14 +456,14 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
                target->sighand->actions[signal][0]==1)continue; /* SIG_IGN */
             if(signal!=NAS_SIGKILL &&
                (target->blocked_signals&(1ULL<<(signal-1)))) {
-                target->pending_signals |= 1ULL<<(signal-1);
+                signal_queue_process(target,(unsigned)signal);
                 continue;
             }
             if(target->sighand->actions[signal][0]>1 &&
                signal!=NAS_SIGKILL) {
                 /* Delivery waits until THIS task's page tables and user
                  * return frame are selected. Do not write a foreign stack. */
-                target->pending_signals |= 1ULL<<(signal-1);
+                signal_queue_process(target,(unsigned)signal);
                 continue;
             }
             signal_kill_other(target,(unsigned)signal);
@@ -402,7 +544,7 @@ bool nas_signal_tty_event(uint64_t sid,uint64_t pgid,unsigned signum) {
         if(task->sighand->actions[signum][0]==1)continue; /* ignored */
         if(task->sighand->actions[signum][0]>1 ||
            (task->blocked_signals&(1ULL<<(signum-1)))) {
-            task->pending_signals |= 1ULL<<(signum-1);
+            signal_queue_process(task,signum);
             continue;
         }
         if(signum==NAS_SIGTSTP) {
@@ -556,7 +698,7 @@ void nas_signal_ptrace_stop(const struct nas_task *tracee) {
      * signal disposition belongs to the tracer's real process group. */
     const struct nas_task *owner=tracer;
     if(owner->sighand->actions[NAS_SIGCHLD][0]>1)
-        tracer->pending_signals|=1ULL<<(NAS_SIGCHLD-1);
+        signal_queue_process(tracer,NAS_SIGCHLD);
 }
 void nas_signal_child_exit(const struct nas_task *child) {
     if (!child || !child->ppid) return;
@@ -565,19 +707,28 @@ void nas_signal_child_exit(const struct nas_task *child) {
      * never silently enqueue it on the ZOMBIE leader's dead user frame. */
     struct nas_task *parent=signal_group_recipient(child->ppid,NAS_SIGCHLD);
     if (!parent) return;
-    if (parent->sighand->actions[NAS_SIGCHLD][0] > 1)
-        parent->pending_signals |= 1ULL << (NAS_SIGCHLD-1);
+    /* SIG_DFL SIGCHLD still becomes pending while blocked: signalfd users
+     * (util-linux script) observe it and perform the real waitpid themselves.
+     * Only unblocked default/ignored dispositions skip this notification. */
+    if (parent->sighand->actions[NAS_SIGCHLD][0] > 1 ||
+        (parent->blocked_signals&(1ULL<<(NAS_SIGCHLD-1U)))) {
+        parent->signal_group->sigchld_pid=(uint32_t)child->pid;
+        parent->signal_group->sigchld_status=child->termination_signal ?
+                       child->termination_signal:child->exit_code;
+        parent->signal_group->sigchld_code=child->termination_signal ? 2 : 1;
+        signal_queue_process(parent,NAS_SIGCHLD);
+    }
 }
 void nas_signal_ppoll_restore(struct nas_task *task,bool interrupted) {
     if(!task || !task->ppoll_mask_active)return;
     if(interrupted)task->signal_force_deliver |=
-        task->pending_signals & ~task->blocked_signals;
+        signal_pending_union(task) & ~task->blocked_signals;
     task->blocked_signals=task->ppoll_saved_mask;
     task->ppoll_mask_active=false;
 }
 bool nas_signal_user_pending(const struct nas_task *task) {
     if(!task || task->signal_frame_active) return false;
-    uint64_t bits=task->pending_signals &
+    uint64_t bits=signal_pending_union(task) &
         (~task->blocked_signals | task->signal_force_deliver);
     for(unsigned sig=1;sig<=64;sig++)
         if((bits & (1ULL<<(sig-1))) && task->sighand->actions[sig][0]>1)
@@ -601,9 +752,8 @@ void nas_signal_user_return(uint64_t *frame) {
         struct nas_task *t=nas_current_task;
         if(!t || t->signal_frame_active || !nas_signal_user_pending(t))
             return;
-        uint64_t ready=t->pending_signals &
+        uint64_t ready=signal_pending_union(t) &
             (~t->blocked_signals | t->signal_force_deliver);
-        bool restarted=false;
         for(unsigned sig=1;sig<=64;sig++) {
             if(!(ready&(1ULL<<(sig-1))))continue;
             const uint64_t *act=t->sighand->actions[sig];
@@ -615,11 +765,11 @@ void nas_signal_user_return(uint64_t *frame) {
                 (void)nas_task_schedule(frame);
                 nas_fail("fatal Task resumed after thread-group exit");
             }
-            t->pending_signals &= ~(1ULL<<(sig-1));
+            signal_consume_one(t,1ULL<<(sig-1));
             t->signal_force_deliver &= ~(1ULL<<(sig-1));
             return;
         }
-        if(!restarted)return;
+        return;
     }
 }
 

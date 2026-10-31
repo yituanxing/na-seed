@@ -5,7 +5,7 @@ set -eu
 mkdir -p build/task-stacks
 cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin \
     -ffunction-sections -fdata-sections -Wl,--gc-sections \
-    tests/test-task-kstack.c kernel/task.c kernel/task/wait_queue.c kernel/mm/mm.c kernel/mm/anon_regions.c kernel/task/resources.c kernel/fd.c kernel/lib/string.c \
+    tests/test-task-kstack.c kernel/task.c kernel/task/wait_queue.c kernel/mm/mm.c kernel/mm/anon_regions.c kernel/mm/heap.c kernel/task/resources.c kernel/fd.c kernel/lib/string.c \
     -o build/task-stacks/test-task-kstack
 build/task-stacks/test-task-kstack
 for port in x86_64 riscv64 aarch64; do

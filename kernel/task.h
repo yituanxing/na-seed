@@ -110,6 +110,13 @@ struct nas_task {
     /* Single-CPU elapsed Task occupancy, including syscall kernel time;
      * does not pretend to separate user/system CPU instructions. */
     uint64_t cpu_runtime_ns;
+    /* Real scheduler CPU occupancy of already released sibling threads;
+     * retained by the group leader for Linux RUSAGE_SELF. */
+    uint64_t exited_thread_cpu_ns;
+    /* Real CPU occupancy of waited child processes, including their own
+     * previously waited descendants; Linux RUSAGE_CHILDREN excludes zombies
+     * until the parent actually reaps them. */
+    uint64_t waited_children_cpu_ns;
     enum nas_task_state state;
     uint32_t exit_code;
     uint32_t termination_signal; /* Linux wait4 WIFSIGNALED status */
@@ -185,6 +192,7 @@ struct nas_task {
     /* Signal dispositions, signal mask, and FS context have distinct lifetimes. */
     uint64_t blocked_signals;
     uint64_t pending_signals; /* Linux per-task pending standard signals */
+    struct nas_signal_group *signal_group; /* per-TGID pending, independent of leader */
     struct nas_sighand *sighand; /* CLONE_SIGHAND shares this owner */
     /* While executing a caught handler, the original full CPU/FPU state
      * remains kernel-owned until a checked rt_sigreturn from its restorer.
@@ -192,6 +200,11 @@ struct nas_task {
      * remain pending until that frame returns. */
     bool signal_frame_active;
     uint64_t signal_frame_sp, signal_saved_mask;
+    /* Linux sigaltstack belongs to the calling THREAD, not shared sighand.
+     * Fork inherits it, CLONE_VM threads begin disabled, exec clears it.
+     * Unlike a copied signal disposition, this range is an MM address. */
+    uint64_t signal_stack_sp, signal_stack_size;
+    bool signal_stack_enabled;
     /* ppoll installs a temporary signal mask atomically for the wait.
      * Its original mask is restored on ALL completion paths, but a
      * pending caught signal must still be delivered after EINTR. */

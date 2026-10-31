@@ -7,6 +7,7 @@
 #include "../../task/sched.h"
 #include "../../task/signal.h"
 #include "../../exception/exception.h"
+#include "../../mm/usercopy.h"
 #include "../../panic.h"
 #include "irq.h"
 #include "../arch.h"
@@ -241,8 +242,35 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
                     nas_print(" rsp=");nas_hex(user_sp);
                     nas_print(" saved_rip=");nas_hex(tracee->arch.resume_user_rip);
                     nas_print(" tls=");nas_hex(nas_task_tls_base(tracee));
+                    /* A real user #GP is often a privileged/unsupported
+                     * instruction. Record its exact bytes for actionable
+                     * cross-ISA QEMU diagnosis; never dereference user VA. */
+                    uint8_t instruction[8];
+                    if(nas_user_read_bytes(user_rip,instruction,sizeof(instruction))) {
+                        nas_print(" opcode=");
+                        for(unsigned b=0;b<sizeof(instruction);b++)
+                            nas_hex(instruction[b]);
+                    }
                     nas_print("\n");
                 }
+            }
+            /* Linux userspace legitimately probes x86 I/O-port / CPU
+             * features by installing SIGSEGV, executing a privileged IN
+             * instruction, and recovering via siglongjmp from the handler
+             * (util-linux lscpu does this for hypervisor detection).
+             * A caught synchronous #GP must enter that real signal frame,
+             * not unconditionally kill the process as the default case. */
+            const uint64_t segv_bit=1ULL<<(NAS_SIGSEGV-1U);
+            if(!traced && vector==13 && !tracee->signal_frame_active &&
+               tracee->sighand &&
+               tracee->sighand->actions[NAS_SIGSEGV][0]>1ULL &&
+               !(tracee->blocked_signals&segv_bit)) {
+                tracee->pending_signals|=segv_bit;
+                /* Drop exception vector/error words to restore the native
+                 * 15-register + five-word user IRET return contract. */
+                for(unsigned i=0;i<5;i++)frame[15+i]=frame[17+i];
+                nas_signal_user_return(frame);
+                return;
             }
             /* User #DB/#BP without a ptrace owner is SIGTRAP, never a
              * kernel-wide fatal exception. Tracer-owned stops are intact. */

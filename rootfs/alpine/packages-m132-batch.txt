@@ -1,0 +1,7 @@
+# Signed Alpine 3.23 main+community; five independent software families.
+icu
+icu-data-full
+libwebp-tools
+zopfli
+pcre2-tools
+bzip3

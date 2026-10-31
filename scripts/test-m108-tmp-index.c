@@ -21,26 +21,42 @@
 #define ROUNDS 3U
 
 static _Alignas(4096) uint8_t frames[FRAMES][4096];
-static bool busy[FRAMES];
+/* The production tmpfs keeps one frame owner while each MAP_SHARED PTE
+ * independently pins the SAME frame. Model reference counts, not a boolean
+ * allocation bitmap, so truncate/munmap lifetime mistakes fail here. */
+static unsigned frame_refs[FRAMES];
 static unsigned frame_allocs, frame_frees;
 uint64_t nas_frame_alloc(void) {
     for(unsigned i=0;i<FRAMES;i++) {
-        if(busy[i])continue;
-        busy[i]=true;
+        if(frame_refs[i])continue;
+        frame_refs[i]=1;
         frame_allocs++;
         memset(frames[i],0,4096);
         return (uint64_t)(uintptr_t)frames[i];
     }
     return 0;
 }
-bool nas_frame_put(uint64_t phys) {
+bool nas_frame_get(uint64_t phys) {
     for(unsigned i=0;i<FRAMES;i++) {
-        if(phys!=(uint64_t)(uintptr_t)frames[i] || !busy[i])continue;
-        busy[i]=false;
-        frame_frees++;
+        if(phys!=(uint64_t)(uintptr_t)frames[i] || !frame_refs[i] ||
+           frame_refs[i]==UINT32_MAX)continue;
+        frame_refs[i]++;
         return true;
     }
     return false;
+}
+bool nas_frame_put(uint64_t phys) {
+    for(unsigned i=0;i<FRAMES;i++) {
+        if(phys!=(uint64_t)(uintptr_t)frames[i] || !frame_refs[i])continue;
+        if(!--frame_refs[i])frame_frees++;
+        return true;
+    }
+    return false;
+}
+uint32_t nas_frame_refs(uint64_t phys) {
+    for(unsigned i=0;i<FRAMES;i++)
+        if(phys==(uint64_t)(uintptr_t)frames[i])return frame_refs[i];
+    return 0;
 }
 uint64_t nas_hhdm_offset(void) {return 0;}
 static uint64_t fake_tick;
@@ -70,7 +86,7 @@ static void recycle_name(unsigned index,char out[16]) {
 }
 static unsigned used_frames(void) {
     unsigned count=0;
-    for(unsigned i=0;i<FRAMES;i++)if(busy[i])count++;
+    for(unsigned i=0;i<FRAMES;i++)if(frame_refs[i])count++;
     return count;
 }
 static void expect_name(const void *parent,unsigned cursor,const char *name) {
@@ -227,14 +243,24 @@ static void test_large_tree(void) {
         assert(tmp_find_child(big,name));
     }
 
-    /* A directory rename that would overrun one deep descendant must
-     * reject atomically, leaving every other sibling visible at old keys. */
+    /* Path walking now owns Linux PATH_MAX independently of its 256-byte
+     * diagnostic projection. A legal long COMPONENT must remain valid even
+     * when a descendant exceeds that former whole-path buffer; inode and
+     * child identities must survive the long-name round trip. */
     char overlong[239];
     memset(overlong,'x',sizeof(overlong)-1);
     overlong[sizeof(overlong)-1]=0;
-    assert(tmp_rename_at(root,"big",root,overlong,0)==-ENAMETOOLONG);
+    assert(tmp_rename_at(root,"big",root,overlong,0)==0);
+    assert(tmp_find_child(root,"big")==NULL);
+    assert(tmp_find_child(root,overlong)==big);
+    assert(tmp_find_child(sub,"deep")==deep);
+    assert(tmp_find_child(deep,"leaf"));
+    assert(tmp_rename_at(root,overlong,root,"big",0)==0);
     assert(tmp_find_child(root,"big")==big);
-    assert(tmp_find_child(root,overlong)==NULL);
+    char invalid_leaf[257];
+    memset(invalid_leaf,'q',sizeof(invalid_leaf)-1);
+    invalid_leaf[sizeof(invalid_leaf)-1]=0;
+    assert(tmp_rename_at(root,"big",root,invalid_leaf,0)==-EINVAL);
     assert(tmp_find_child(big,"item0000")==first);
     assert(tmp_find_child(sub,"deep")==deep);
     assert(tmp_find_child(deep,"leaf"));
@@ -370,12 +396,254 @@ static void test_inode_recycling(void) {
     puts("[M108 TMP RECYCLE PASS] 3 x 1200 real create/readdir/unlink, stable slab footprint");
 }
 
+/* MAP_SHARED reuses the production tmpfs data frame, not a fresh snapshot.
+ * This is deliberately below the VFS/MM integration test: it proves the
+ * provider's independent inode/page owners, sparse I/O aliasing and ref
+ * lifetime when a file is shrunk and unlinked with a mapping still alive. */
+static void test_shared_page_ownership(void) {
+    const void *root=&root_tmp;
+    unsigned before=used_frames();
+    struct nas_tmp_file *file=tmp_create_at(root,"shared-frame",false,0600);
+    assert(file);
+    uint8_t contents[2]={0x31,0x52};
+    assert(tmp_write_at(file,0,&contents[0],1)==1);
+    assert(tmp_write_at(file,TMP_PAGE_SIZE,&contents[1],1)==1);
+    uint64_t first=0,alias=0,second=0;
+    assert(tmp_acquire_shared_page(file,0,&first)==0);
+    assert(tmp_acquire_shared_page(file,0,&alias)==0);
+    assert(first && first==alias && nas_frame_refs(first)==3);
+    assert(tmp_acquire_shared_page(file,TMP_PAGE_SIZE,&second)==0);
+    assert(second && second!=first && nas_frame_refs(second)==2);
+
+    uint8_t *mapped=(uint8_t *)(uintptr_t)first;
+    mapped[0]=0x7b;
+    uint8_t observed=0;
+    assert(tmp_read_at(file,0,&observed,1)==1 && observed==0x7b);
+    observed=0x4c;
+    assert(tmp_write_at(file,0,&observed,1)==1 && mapped[0]==0x4c);
+    /* An unlinked inode remains live while its independent VMA lease is
+     * held. Its data frame survives the inode's own truncate-time put. */
+    pinned_inode=file;
+    assert(tmp_unlink_at(root,"shared-frame",0)==0);
+    assert(file->used && !file->nlink);
+    assert(tmp_resize(file,1)==0);
+    assert(nas_frame_refs(second)==1);
+    uint64_t absent=0;
+    assert(tmp_acquire_shared_page(file,TMP_PAGE_SIZE,&absent)==-EFAULT);
+    assert(!absent);
+    /* Regrowth must reacquire the current inode page, never the stale
+     * old mapping's detached frame. Actual PTE invalidation belongs to MM. */
+    assert(tmp_resize(file,2*TMP_PAGE_SIZE)==0);
+    uint64_t renewed=0;
+    assert(tmp_acquire_shared_page(file,TMP_PAGE_SIZE,&renewed)==0);
+    assert(renewed && renewed!=second);
+    assert(*(const uint8_t *)(uintptr_t)renewed==0);
+    assert(nas_frame_put(renewed));
+    assert(nas_frame_put(second));
+    assert(nas_frame_put(alias) && nas_frame_put(first));
+    pinned_inode=NULL;
+    tmp_inode_discard(file);
+    assert(used_frames()==before);
+    /* Independent Linux oracle above proves both growth paths must zero
+     * bytes beyond old EOF that a shared mapper previously dirtied. Pwrite
+     * into a later sparse hole and ftruncate-grow share this exact producer
+     * invariant rather than maintaining two subtly different algorithms. */
+    struct nas_tmp_file *tail=tmp_create_at(root,"shared-tail",false,0600);
+    assert(tail);
+    uint8_t initial_bytes[100];
+    memset(initial_bytes,'a',sizeof(initial_bytes));
+    assert(tmp_write_at(tail,0,initial_bytes,sizeof(initial_bytes))==
+           (int64_t)sizeof(initial_bytes));
+    uint64_t tail_pa=0;
+    assert(tmp_acquire_shared_page(tail,0,&tail_pa)==0);
+    uint8_t *tail_mapping=(uint8_t *)(uintptr_t)tail_pa;
+    tail_mapping[200]='X';
+    uint8_t value='Z';
+    assert(tmp_write_at(tail,300,&value,1)==1);
+    value=1;
+    assert(tmp_read_at(tail,200,&value,1)==1 && value==0);
+    tail_mapping[350]='Y';
+    assert(tmp_resize(tail,400)==0);
+    value=1;
+    assert(tmp_read_at(tail,350,&value,1)==1 && value==0);
+    pinned_inode=tail;
+    assert(tmp_unlink_at(root,"shared-tail",0)==0);
+    assert(tail->used && !tail->nlink);
+    assert(nas_frame_put(tail_pa));
+    pinned_inode=NULL;
+    tmp_inode_discard(tail);
+    assert(used_frames()==before);
+    puts("[A005 TMPFS SHARED FRAME PASS] genuine alias, unlink pin, truncate and sparse regrow ownership");
+    puts("[A005 TMPFS EOF HOLE PASS] shared tail zeroed on pwrite-hole and ftruncate growth");
+}
+
+static void test_inode_xattr_and_fiemap(void) {
+    const void *root=&root_tmp;
+    unsigned before=used_frames();
+    struct nas_tmp_file *file=tmp_create_at(root,"xattr-source",false,0600);
+    assert(file);
+    const uint8_t value[]={'a','l','p','i','n','e'};
+    uint8_t buffer[32]={0};
+    assert(tmp_getxattr(file,"user.batch",NULL,0)==-ENODATA);
+    assert(tmp_setxattr(file,"security.capability",value,6,0)==-EOPNOTSUPP);
+    assert(tmp_setxattr(file,"user.batch",value,6,2)==-ENODATA);
+    assert(tmp_setxattr(file,"user.batch",value,6,1)==0);
+    uint64_t allocated_xattr=file->xattr_frame;
+    assert(allocated_xattr && nas_frame_refs(allocated_xattr)==1);
+    assert(tmp_setxattr(file,"user.batch",value,6,1)==-EEXIST);
+    assert(tmp_getxattr(file,"user.batch",NULL,0)==6);
+    assert(tmp_getxattr(file,"user.batch",buffer,5)==-ERANGE);
+    assert(tmp_getxattr(file,"user.batch",buffer,6)==6);
+    assert(!memcmp(buffer,value,6));
+    assert(tmp_setxattr(file,"user.extra",value,3,0)==0);
+    assert(tmp_listxattr(file,NULL,0)==22);
+    assert(tmp_listxattr(file,buffer,21)==-ERANGE);
+    assert(tmp_listxattr(file,buffer,sizeof(buffer))==22);
+    assert(!strcmp((char *)buffer,"user.batch"));
+    assert(!strcmp((char *)buffer+11,"user.extra"));
+    /* Inode attributes survive a hardlink and move, including after the
+     * last visible link is removed but the File lease remains pinned. */
+    assert(tmp_link_at(root,"xattr-source",root,"xattr-alias")==0);
+    assert(tmp_rename_at(root,"xattr-source",root,"xattr-moved",0)==0);
+    assert(tmp_find_child(root,"xattr-alias")==file);
+    assert(tmp_find_child(root,"xattr-moved")==file);
+    assert(tmp_getxattr(tmp_find_child(root,"xattr-moved"),"user.batch",NULL,0)==6);
+
+    uint8_t byte='Q';
+    assert(tmp_write_at(file,0,&byte,1)==1);
+    assert(tmp_write_at(file,3*TMP_PAGE_SIZE,&byte,1)==1);
+    uint64_t logical=0,length=0;
+    bool last=true;
+    assert(tmp_fiemap_next(file,0,file->size,&logical,&length,&last)==1);
+    assert(logical==0 && length==TMP_PAGE_SIZE && !last);
+    assert(tmp_fiemap_next(file,TMP_PAGE_SIZE,file->size,
+                           &logical,&length,&last)==1);
+    assert(logical==3*TMP_PAGE_SIZE && length==TMP_PAGE_SIZE && last);
+    assert(tmp_fiemap_next(file,4*TMP_PAGE_SIZE,file->size,
+                           &logical,&length,&last)==0);
+    assert(tmp_resize(file,1)==0);
+    assert(tmp_fiemap_next(file,0,file->size,&logical,&length,&last)==1);
+    assert(logical==0 && length==TMP_PAGE_SIZE && last);
+    assert(tmp_getxattr(file,"user.batch",NULL,0)==6);
+    pinned_inode=file;
+    assert(tmp_unlink_at(root,"xattr-alias",0)==0);
+    assert(tmp_unlink_at(root,"xattr-moved",0)==0);
+    assert(file->used && !file->nlink && nas_frame_refs(allocated_xattr)==1);
+    assert(tmp_removexattr(file,"user.batch")==0);
+    assert(tmp_getxattr(file,"user.batch",NULL,0)==-ENODATA);
+    assert(tmp_removexattr(file,"user.batch")==-ENODATA);
+    assert(tmp_listxattr(file,NULL,0)==11);
+    pinned_inode=NULL;
+    tmp_inode_discard(file);
+    assert(!file->used && nas_frame_refs(allocated_xattr)==0);
+    assert(used_frames()==before);
+    puts("[M130 TMP XATTR/FIEMAP PASS] inode-owned metadata, hardlinks, orphan, sparse logical extents, frame reclaim");
+}
+
+static void test_sparse_fiemap_watermark(void) {
+    const void *root=&root_tmp;
+    unsigned before=used_frames();
+    struct nas_tmp_file *file=tmp_create_at(root,"fiemap-many",false,0600);
+    assert(file);
+    uint64_t logical=0,length=0;
+    bool last=false;
+    /* Sparse ftruncate must not allocate a page or fabricate an extent. */
+    assert(tmp_resize(file,1024*TMP_PAGE_SIZE)==0);
+    assert(file->highest_allocated_data_page_plus_one==0);
+    assert(tmp_fiemap_next(file,0,file->size,&logical,&length,&last)==0);
+
+    uint8_t byte='S';
+    for (uint64_t i=0;i<96;i++)
+        assert(tmp_write_at(file,i*2*TMP_PAGE_SIZE,&byte,1)==1);
+    assert(file->highest_allocated_data_page_plus_one==191);
+    /* LAST must describe the whole inode, even when the query ends early. */
+    assert(tmp_fiemap_next(file,0,TMP_PAGE_SIZE,&logical,&length,&last)==1);
+    assert(logical==0 && length==TMP_PAGE_SIZE && !last);
+    for (uint64_t i=0;i<96;i++) {
+        assert(tmp_fiemap_next(file,i*2*TMP_PAGE_SIZE,file->size,
+                               &logical,&length,&last)==1);
+        assert(logical==i*2*TMP_PAGE_SIZE && length==TMP_PAGE_SIZE);
+        assert(last==(i==95));
+    }
+    assert(tmp_fiemap_next(file,191*TMP_PAGE_SIZE,file->size,
+                           &logical,&length,&last)==0);
+    /* Retaining a partial EOF page and deleting later extents must update
+     * the watermark. The following sparse regrowth must not change it. */
+    assert(tmp_resize(file,179*TMP_PAGE_SIZE+1)==0);
+    assert(file->highest_allocated_data_page_plus_one==179);
+    assert(tmp_resize(file,1024*TMP_PAGE_SIZE)==0);
+    assert(file->highest_allocated_data_page_plus_one==179);
+    assert(tmp_fiemap_next(file,178*TMP_PAGE_SIZE,file->size,
+                           &logical,&length,&last)==1);
+    assert(logical==178*TMP_PAGE_SIZE && length==TMP_PAGE_SIZE && last);
+
+    tmp_truncate(file);
+    assert(file->highest_allocated_data_page_plus_one==0);
+    assert(tmp_resize(file,12*TMP_PAGE_SIZE)==0);
+    assert(tmp_fiemap_next(file,0,file->size,&logical,&length,&last)==0);
+    /* MAP_SHARED page faults allocate file data without going through
+     * write(2), and therefore must also update the shared allocation owner. */
+    uint64_t shared=0;
+    assert(tmp_acquire_shared_page(file,9*TMP_PAGE_SIZE,&shared)==0);
+    assert(file->highest_allocated_data_page_plus_one==10);
+    assert(tmp_fiemap_next(file,0,file->size,&logical,&length,&last)==1);
+    assert(logical==9*TMP_PAGE_SIZE && length==TMP_PAGE_SIZE && last);
+    assert(nas_frame_put(shared));
+    assert(tmp_unlink_at(root,"fiemap-many",0)==0);
+    assert(!file->used && file->highest_allocated_data_page_plus_one==0);
+    struct nas_tmp_file *reused=tmp_create_at(root,"fiemap-reuse",false,0600);
+    assert(reused==file && reused->highest_allocated_data_page_plus_one==0);
+    assert(tmp_unlink_at(root,"fiemap-reuse",0)==0);
+    assert(used_frames()==before);
+    puts("[M132 TMP SPARSE FIEMAP PASS] 96 extents, bounded LAST, shrink/regrow, MAP_SHARED and inode reuse");
+}
+
+static void test_real_fallocate_reservation(void) {
+    const void *root=&root_tmp;
+    struct nas_tmp_file *file=tmp_create_at(root,"fallocate-real",false,0600);
+    assert(file && file->size==0);
+    unsigned before=used_frames(); /* inode/dentry slab growth is unrelated */
+    assert(tmp_preallocate(file,0,8192,0)==0);
+    assert(file->size==8192 && used_frames()==before+4);
+    uint64_t logical=0,length=0;
+    bool last=false;
+    assert(tmp_fiemap_next(file,0,file->size,&logical,&length,&last)==1);
+    assert(logical==0 && length==8192 && last);
+    uint8_t bytes[8];
+    assert(tmp_read_at(file,4094,bytes,sizeof(bytes))==(int64_t)sizeof(bytes));
+    for(unsigned i=0;i<sizeof(bytes);i++)assert(bytes[i]==0);
+
+    uint8_t original='F';
+    assert(tmp_write_at(file,4094,&original,1)==1);
+    assert(tmp_preallocate(file,0,4096,1)==0); /* KEEP_SIZE does not erase data */
+    assert(file->size==8192 && used_frames()==before+4);
+    assert(tmp_read_at(file,4094,bytes,1)==1 && bytes[0]=='F');
+
+    assert(tmp_preallocate(file,4*TMP_PAGE_SIZE,TMP_PAGE_SIZE,1)==0);
+    assert(file->size==8192 && used_frames()==before+5);
+    assert(tmp_preallocate(file,0,0,0)==-EINVAL);
+    assert(tmp_preallocate(file,0,1,2)==-EOPNOTSUPP);
+    assert(tmp_preallocate(file,TMP_FILE_CAP,1,0)==-EFBIG);
+    assert(file->size==8192 && used_frames()==before+5);
+    assert(tmp_resize(file,5*TMP_PAGE_SIZE)==0);
+    assert(tmp_read_at(file,4*TMP_PAGE_SIZE,bytes,sizeof(bytes))==(int64_t)sizeof(bytes));
+    for(unsigned i=0;i<sizeof(bytes);i++)assert(bytes[i]==0);
+    assert(tmp_read_at(file,4094,bytes,1)==1 && bytes[0]=='F');
+    assert(tmp_unlink_at(root,"fallocate-real",0)==0);
+    assert(used_frames()==before);
+    puts("[M136 TMP FALLOCATE PASS] real owned pages, KEEP_SIZE, data preservation, reclaim");
+}
+
 int main(void) {
     test_same_size_truncate_timestamps();
     test_real_inode_chown();
     test_directory_mutation_timestamps();
     test_large_tree();
     test_inode_recycling();
+    test_shared_page_ownership();
+    test_inode_xattr_and_fiemap();
+    test_sparse_fiemap_watermark();
+    test_real_fallocate_reservation();
     puts("[M108 TMP INDEX PASS]");
     return 0;
 }

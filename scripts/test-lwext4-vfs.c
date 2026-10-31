@@ -14,6 +14,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+/* The ext4 host bridge has no page-cache-backed MAP_SHARED yet. Ordinary
+ * truncate/fsync still notify MM, but this fixture owns no mapped tasks. */
+void nas_vm_invalidate_file(const struct nas_fs_node *node,uint64_t size) {
+    (void)node;(void)size;
+}
+void nas_vm_rearm_file(const struct nas_fs_node *node) {
+    (void)node;
+}
 /* Traced driver backend: identical registered BlockDevice contract as any
  * VirtIO/PCI transport, with real ext4 bytes and fault-injectable hardware
  * cache completion. A successful lwext4 metadata flush alone is not fsync. */

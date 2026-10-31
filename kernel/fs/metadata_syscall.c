@@ -61,6 +61,51 @@ static uint64_t write_mounted_stat(const struct nas_fs_node *node,
     return nas_user_write_bytes(destination,(const uint8_t *)&st,sizeof(st))
         ? 0:(uint64_t)-EFAULT;
 }
+/* Linux statfs and fstatfs query the same already-resolved mount/inode.
+ * No provider sees a user pointer, pathname or Linux-native wire layout. */
+static uint64_t write_mounted_statfs(const struct nas_fs_node *node,
+                                     uint64_t destination) {
+    struct nas_vfs_statfs fs;
+    int rc=nas_vfs_statfs(node,&fs);
+    if(rc)return (uint64_t)(int64_t)rc;
+    uint64_t device=nas_vfs_node_device(node);
+    if(!device)return (uint64_t)-ENODEV;
+    struct nas_linux_statfs result={0};
+    result.type=(int64_t)fs.magic;
+    result.bsize=(int64_t)fs.block_size;
+    result.blocks=fs.blocks;
+    result.bfree=fs.free_blocks;
+    result.bavail=fs.available_blocks;
+    result.files=fs.files;
+    result.ffree=fs.free_files;
+    result.fsid[0]=(int32_t)(uint32_t)device;
+    result.fsid[1]=(int32_t)(uint32_t)(device>>32);
+    result.namelen=(int64_t)fs.name_max;
+    result.frsize=(int64_t)fs.fragment_size;
+    result.flags=(node->mount->read_only || node->filesystem->read_only)
+        ? 1 : 0; /* Linux ST_RDONLY */
+    return nas_user_write_bytes(destination,(const uint8_t *)&result,
+                                sizeof(result)) ? 0:(uint64_t)-EFAULT;
+}
+static uint64_t sys_fstatfs_boot(uint64_t fd,uint64_t address) {
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
+        return (uint64_t)-EBADF;
+    const struct nas_open_file *opened=
+        &nas_open_files[TASK.fds->entries[fd].slot];
+    if(!opened->vnode_pinned)return (uint64_t)-EOPNOTSUPP;
+    return write_mounted_statfs(&opened->vnode,address);
+}
+static uint64_t sys_statfs_boot(uint64_t pathname,uint64_t address) {
+    struct nas_fs_path_request request;
+    struct nas_vfs_path path={0};
+    struct nas_fs_node node={0};
+    int rc=nas_fs_user_lookup_begin((uint64_t)-100,pathname,true,
+                                    &request,&path,&node);
+    if(rc)return (uint64_t)(int64_t)rc;
+    uint64_t value=write_mounted_statfs(&node,address);
+    end_mounted_lookup(&request,&path);
+    return value;
+}
 /* Linux x86-64 struct stat layout, 144 bytes. File size is actual module.
  * Device entries have character-device type; mounted files are regular.
  */
@@ -91,6 +136,14 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
         st.mode = 0100555;
         st.size = (int64_t)file->size;
         st.blocks = (int64_t)((file->size + 511) / 512);
+    } else if (TASK.fds->entries[fd].kind == FD_RANDOM) {
+        /* Linux character device major 1: /dev/random minor 8 and
+         * /dev/urandom minor 9. The inode identity is device-stable
+         * across separate opens/dup/fork, not an arbitrary FD number. */
+        const char *path=opened->origin_path;
+        const uint64_t minor=!strcmp(path,"/dev/random")?8U:9U;
+        st.dev=2;st.ino=minor;st.rdev=(1U<<8)|minor;
+        st.mode=0020666;
     } else {
         st.dev = 2; st.ino = fd + 10;
         st.mode = 0020666; /* real character device backed by UART/null/zero */
@@ -107,7 +160,7 @@ static uint64_t sys_sync_fd(uint64_t fd) {
         return (uint64_t)-EBADF;
     const struct nas_open_file *opened=&nas_open_files[TASK.fds->entries[fd].slot];
     if(!opened->vnode_pinned)return (uint64_t)-EINVAL;
-    return (uint64_t)(int64_t)nas_vfs_sync(&opened->vnode);
+    return (uint64_t)(int64_t)nas_vfs_sync_user(&opened->vnode);
 }
 static uint64_t sys_resize_fd(uint64_t fd,uint64_t length) {
     if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)return (uint64_t)-EBADF;
@@ -124,6 +177,41 @@ static uint64_t sys_resize_fd(uint64_t fd,uint64_t length) {
     if((opened->status_flags&3ULL)==0)return (uint64_t)-EINVAL;
     int rc=nas_vfs_resize(&opened->vnode,length);
     if(!rc)opened->vnode.size=length;
+    return (uint64_t)(int64_t)rc;
+}
+/* Linux fadvise64 provides advisory cache hints, not a data mutation. It is
+ * legal to ignore every valid hint while still checking the actual inode FD,
+ * ranges and advice code; unsupported pipe/device handles remain errors. */
+static uint64_t sys_fadvise_fd(uint64_t fd,uint64_t offset,
+                              uint64_t length,uint64_t advice) {
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
+        return (uint64_t)-EBADF;
+    const struct nas_open_file *opened=
+        &nas_open_files[TASK.fds->entries[fd].slot];
+    if(opened->status_flags&NAS_LINUX_O_PATH)return (uint64_t)-EBADF;
+    if(advice>5U || offset>INT64_MAX || length>INT64_MAX ||
+       (length && offset>INT64_MAX-length))return (uint64_t)-EINVAL;
+    if(!opened->vnode_pinned)return (uint64_t)-ESPIPE;
+    if(opened->vnode.is_dir)return (uint64_t)-EINVAL;
+    return 0;
+}
+/* Unlike ftruncate this must reserve backing store. The generic VFS guards
+ * the inode; a provider without genuine allocation support reports EOPNOTSUPP
+ * rather than pretending a sparse file is preallocated. */
+static uint64_t sys_preallocate_fd(uint64_t fd,uint64_t mode,
+                                  uint64_t offset,uint64_t length) {
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
+        return (uint64_t)-EBADF;
+    struct nas_open_file *opened=&nas_open_files[TASK.fds->entries[fd].slot];
+    if(opened->status_flags&NAS_LINUX_O_PATH)return (uint64_t)-EBADF;
+    if((opened->status_flags&3ULL)==0)return (uint64_t)-EBADF;
+    if(mode&~1ULL)return (uint64_t)-EOPNOTSUPP;
+    if(!length)return (uint64_t)-EINVAL;
+    if(offset>INT64_MAX || length>INT64_MAX-offset)return (uint64_t)-EFBIG;
+    if(!opened->vnode_pinned)return (uint64_t)-ESPIPE;
+    if(opened->vnode.is_dir)return (uint64_t)-EISDIR;
+    int rc=nas_vfs_preallocate(&opened->vnode,offset,length,(unsigned)mode);
+    if(!rc && !(mode&1ULL))opened->vnode.size=nas_vfs_node_size(&opened->vnode);
     return (uint64_t)(int64_t)rc;
 }
 static uint64_t sys_resize_path(uint64_t pathname,uint64_t length) {
@@ -221,6 +309,7 @@ static uint64_t sys_access_path(uint64_t dirfd,uint64_t pathname,
                  (nas_pty_path_number(path)>=0 &&
                   nas_pty_present((unsigned)nas_pty_path_number(path))) ||
                  !strcmp(path,"/dev/null") || !strcmp(path,"/dev/zero") ||
+                 !strcmp(path,"/dev/random") || !strcmp(path,"/dev/urandom") ||
                  !strcmp(path,"/dev/console") || !strcmp(path,"/dev/ttyS0") ||
                  !strcmp(path,"/dev/tty"))) {
         if(!strcmp(path,"/dev/tty") && !nas_tty_controlling() &&
@@ -374,8 +463,12 @@ static uint64_t sys_utimensat_file(uint64_t dirfd, uint64_t pathname,
 static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
                                  uint64_t statbuf, uint64_t flags) {
     const uint64_t AT_SYMLINK_NOFOLLOW = 0x100ULL;
+    /* Linux accepts AT_NO_AUTOMOUNT as a no-op; glib's fallback from
+     * statx(ENOSYS) can still pass it to newfstatat. Accept the flag here,
+     * preserving the VFS lookup and symlink-following policy unchanged. */
+    const uint64_t AT_NO_AUTOMOUNT = 0x800ULL;
     const uint64_t AT_EMPTY_PATH = 0x1000ULL;
-    if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH))
+    if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH))
         return (uint64_t)-EINVAL;
     uint8_t first;
     if (!nas_user_read_bytes(pathname, &first, 1)) return (uint64_t)-EFAULT;
@@ -538,14 +631,18 @@ struct nas_fs_result nas_fs_metadata_syscall(enum nas_syscall_op op,
     case NAS_SC_faccessat: METADATA_RESULT(sys_access_path(args[1],args[2],args[3],0));
     case NAS_SC_faccessat2: METADATA_RESULT(sys_access_path(args[1],args[2],args[3],args[4]));
     case NAS_SC_fstat: METADATA_RESULT(sys_fstat_boot(args[1], args[2]));
+    case NAS_SC_fstatfs: METADATA_RESULT(sys_fstatfs_boot(args[1],args[2]));
     case NAS_SC_newfstatat: METADATA_RESULT(sys_fstatat_boot(args[1], args[2], args[3], args[4]));
     case NAS_SC_stat: METADATA_RESULT(sys_fstatat_boot((uint64_t)-100, args[1], args[2], 0));
+    case NAS_SC_statfs: METADATA_RESULT(sys_statfs_boot(args[1],args[2]));
     case NAS_SC_lstat: METADATA_RESULT(sys_fstatat_boot((uint64_t)-100, args[1], args[2], 0x100ULL));
     case NAS_SC_lseek: METADATA_RESULT(sys_lseek_boot(args[1], args[2], args[3]));
     case NAS_SC_fsync: case NAS_SC_fdatasync: METADATA_RESULT(sys_sync_fd(args[1]));
     case NAS_SC_sync: METADATA_RESULT((uint64_t)(int64_t)nas_vfs_sync_all());
     case NAS_SC_ftruncate: METADATA_RESULT(sys_resize_fd(args[1],args[2]));
     case NAS_SC_truncate: METADATA_RESULT(sys_resize_path(args[1],args[2]));
+    case NAS_SC_fadvise64: METADATA_RESULT(sys_fadvise_fd(args[1],args[2],args[3],args[4]));
+    case NAS_SC_fallocate: METADATA_RESULT(sys_preallocate_fd(args[1],args[2],args[3],args[4]));
     case NAS_SC_getdents64: METADATA_RESULT(sys_getdents64(args[1], args[2], args[3]));
     case NAS_SC_readlink: METADATA_RESULT(sys_readlinkat_boot((uint64_t)-100, args[1], args[2], args[3]));
     case NAS_SC_readlinkat: METADATA_RESULT(sys_readlinkat_boot(args[1], args[2], args[3], args[4]));

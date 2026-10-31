@@ -1,0 +1,8 @@
+# Host-supplied real C/PO/POT catalogs; zero translation/build inside guest.
+tests/m119-batch-run.sh	tests/m119-batch-run.sh
+tests/m119-catalog.po	tests/m119-catalog.po
+tests/m119-second.po	tests/m119-second.po
+tests/m119-template.pot	tests/m119-template.pot
+tests/m119-template-added.pot	tests/m119-template-added.pot
+tests/m119-duplicates.po	tests/m119-duplicates.po
+tests/m119-extract.c	tests/m119-extract.c

@@ -1,0 +1,16 @@
+# Fifteen globally new, independent original signed Alpine Netpbm ELFs.
+usr/bin/asciitopgm
+usr/bin/pamcomp
+usr/bin/pamarith
+usr/bin/pamfunc
+usr/bin/pamdice
+usr/bin/pamundice
+usr/bin/ppmtopgm
+usr/bin/pgmtoppm
+usr/bin/ppmchange
+usr/bin/pamthreshold
+usr/bin/pamdeinterlace
+usr/bin/pamedge
+usr/bin/pamgauss
+usr/bin/pamgradient
+usr/bin/pamlookup

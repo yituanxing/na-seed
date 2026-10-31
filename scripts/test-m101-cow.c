@@ -14,6 +14,7 @@
 #include "../kernel/mm/fault.h"
 #include "../kernel/mm/usercopy.h"
 #include "../kernel/mm/frame.h"
+#include "../kernel/fs/io.h"
 #include "../kernel/arch/user_pt.h"
 #define P 4096ULL
 #define NFRAMES 128
@@ -26,6 +27,41 @@ static struct mock_root roots[NROOTS];
 static alignas(4096) uint8_t memory[NFRAMES*P];
 static uint32_t refs[NFRAMES];
 static unsigned get_calls,fail_get_on;
+/* Real MM/COW code over one shared inode-owned cache frame; only FS page
+ * acquisition is mocked, so a fork that accidentally COWs the page fails. */
+struct nas_mapped_file { unsigned refs; };
+static struct nas_mapped_file file_owner={.refs=1};
+static uint64_t file_pages[2];
+static uint64_t file_size=2*P;
+static unsigned mapped_dirty;
+/* This fixture has mutable shared VMAs only. Immutable lazy private reads
+ * are verified with the real VM/fault path in test-m86-txn.c. */
+int64_t nas_fs_mmap_read_immutable(struct nas_mapped_file *file,
+                                    uint64_t off,uint8_t *dst,uint64_t len) {
+    (void)file;(void)off;(void)dst;(void)len;
+    return -22;
+}
+bool nas_fs_mmap_get(struct nas_mapped_file *file) {
+    if(file!=&file_owner || !file->refs)return false;
+    file->refs++;return true;
+}
+void nas_fs_mmap_put(struct nas_mapped_file *file) {
+    assert(file==&file_owner && file->refs>1);file->refs--;
+}
+int nas_fs_mmap_page(struct nas_mapped_file *file,uint64_t off,
+                     uint64_t *pa_owned) {
+    if(!pa_owned)return -22;
+    *pa_owned=0;
+    if(file!=&file_owner || (off&(P-1)) || off>=file_size)return -14;
+    unsigned index=(unsigned)(off/P);
+    if(!file_pages[index])file_pages[index]=nas_frame_alloc();
+    if(!file_pages[index] || !nas_frame_get(file_pages[index]))return -12;
+    *pa_owned=file_pages[index];return 0;
+}
+int nas_fs_mmap_dirty(struct nas_mapped_file *file) {
+    if(file!=&file_owner)return -9;
+    mapped_dirty++;return 0;
+}
 struct nas_task *nas_current_task;
 void nas_print(const char *msg){(void)msg;}
 __attribute__((noreturn))void nas_arch_halt(void) {abort();}
@@ -143,6 +179,15 @@ int main(void) {
                           NAS_VMA_ELF_PRIVATE_SNAPSHOT,0));
     map(parent,A,3,0x11);
     map(parent,X,5,0x90);
+    /* Real MADV_DONTFORK fork contract: excluded *resident* pages must be
+     * absent in the child VMA and PT, while parent stays RW with one frame
+     * ref. A neighboring ordinary VMA must still participate in COW. */
+    map(parent,A+2*P,3,0x6a);
+    uint64_t excluded=phys(parent,A+2*P,0);
+    assert(nas_vma_set_dontfork(&parent->mmap_vmas,A+2*P,P,true));
+    assert(nas_vma_find(&parent->mmap_vmas,A+P) &&
+           !(nas_vma_find(&parent->mmap_vmas,A+P)->flags&NAS_VMA_DONTFORK));
+    assert(nas_vma_find(&parent->mmap_vmas,A+2*P)->flags&NAS_VMA_DONTFORK);
     uint64_t initial=phys(parent,A,0);
     uint64_t code=phys(parent,X,0);
     struct nas_task original={0};
@@ -150,6 +195,11 @@ int main(void) {
     nas_current_task=&original;
     struct nas_mm *child=nas_mm_fork_cow(parent);assert(child);
     unsigned access=0;
+    uint64_t child_excluded=0;
+    assert(!nas_vma_find(&child->mmap_vmas,A+2*P));
+    assert(!nas_mm_resolve_user(child,A+2*P,&child_excluded,0));
+    assert(phys(parent,A+2*P,&access)==excluded &&
+           access==(NAS_UP_READ|NAS_UP_WRITE) && nas_frame_refs(excluded)==1);
     assert(phys(child,A,&access)==initial && access==NAS_UP_READ);
     assert(phys(parent,A,&access)==initial && access==NAS_UP_READ);
     assert(nas_frame_refs(initial)==2);
@@ -211,7 +261,48 @@ int main(void) {
     assert(phys(orphan,A,&access)==orphan_frame &&
            access==(NAS_UP_READ|NAS_UP_WRITE));
     nas_mm_put(orphan);
+    /* MAP_SHARED is an inode alias, unlike the preceding private anon/ELF
+     * test. Both children and parents retain WRITE and identical frame PA;
+     * kernel usercopy, ptrace and lazy page faults must never privatize it. */
+    struct nas_mm *shared=nas_mm_new();assert(shared);
+    shared->root_phys=nas_mmu_alloc_root();assert(shared->root_phys);
+    assert(nas_vma_record_shared(&shared->mmap_vmas,X,2*P,3,0,&file_owner));
+    file_pages[0]=nas_frame_alloc();assert(file_pages[0]);
+    memset(memory+file_pages[0],0x46,P);
+    assert(nas_frame_get(file_pages[0]));
+    uint64_t prior=0;
+    assert(nas_mmu_exchange_leaf_at(shared->root_phys,X,file_pages[0],3,&prior));
+    assert(!prior && file_owner.refs==2);
+    struct nas_mm *shared_child=nas_mm_fork_cow(shared);
+    assert(shared_child && file_owner.refs==3);
+    assert(phys(shared,X,&access)==file_pages[0] &&
+           access==(NAS_UP_READ|NAS_UP_WRITE));
+    assert(phys(shared_child,X,&access)==file_pages[0] &&
+           access==(NAS_UP_READ|NAS_UP_WRITE) &&
+           nas_frame_refs(file_pages[0])==3);
+    struct nas_task shared_task={.mm=shared_child,.state=NAS_TASK_STOPPED};
+    nas_current_task=&shared_task;
+    uint8_t different=0x93;
+    assert(nas_user_write_bytes(X+1,&different,1));
+    assert(memory[file_pages[0]+1]==0x93 &&
+           phys(shared,X,0)==phys(shared_child,X,0));
+    different=0x5a;
+    assert(nas_vm_write_task_bytes(&shared_task,X+2,&different,1)==1);
+    assert(memory[file_pages[0]+2]==0x5a && mapped_dirty>=2);
+    assert(nas_mm_handle_fault(shared_child,X+P,NAS_UP_READ,false)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(nas_mm_handle_fault(shared,X+P,NAS_UP_READ,false)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(phys(shared,X+P,0)==phys(shared_child,X+P,0) &&
+           phys(shared,X+P,0)==file_pages[1]);
+    nas_mm_put(shared_child);
+    nas_mm_put(shared);
+    assert(file_owner.refs==1 && nas_frame_refs(file_pages[0])==1 &&
+           nas_frame_refs(file_pages[1])==1);
+    assert(nas_frame_put(file_pages[0]));file_pages[0]=0;
+    assert(nas_frame_put(file_pages[1]));file_pages[1]=0;
     nas_mm_put(parent);
     assert(total_refs()==0);
     puts("[M101 COW PASS] rollback, no orphan PTE fork, shared fork, COW write, singleton promotion, RX ptrace isolation and lazy usercopy");
+    puts("[A005 SHARED FORK PASS] same inode frame across fork, lazy alias, usercopy and ptrace write");
 }

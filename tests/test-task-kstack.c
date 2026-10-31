@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "../kernel/task.h"
+#include "../kernel/mm/file_backing.h"
 
 /* Exercise the real MM ownership implementation. Only hardware page-table
  * primitives and FD bootstrap are replaced in this CPU-independent test. */
@@ -16,6 +17,9 @@ static uint64_t seen_source_root;
 static uint64_t cloned_physical;
 static unsigned frame_owners=1;
 static unsigned cwd_mount_refs;
+/* The Task/MM ownership fixture creates no file-backed VMAs. */
+bool nas_fs_mmap_get(struct nas_mapped_file *f) {(void)f;abort();}
+void nas_fs_mmap_put(struct nas_mapped_file *f) {(void)f;abort();}
 int nas_vfs_node_pin(const struct nas_fs_node *node) {
     if(!node || node->ino!=17)return -1;
     ++cwd_mount_refs;return 0;
@@ -99,11 +103,15 @@ int main(void) {
        "init owns independent files object");
     ck(init->fs && init->fs->refs==1 && init->sighand && init->sighand->refs==1,
        "init owns independent FS and signal resources");
+    ck(init->signal_group && init->signal_group->refs==1 &&
+       !init->signal_group->pending,
+       "init owns clean process-directed pending signal resource");
     init->fs->cwd_node.ino=17;
     init->fs->cwd_pinned=true;
     cwd_mount_refs=1; /* The initial chdir acquired the real mount ref. */
     init->fs->umask=027U;
     init->sighand->actions[10][0]=123U;
+    init->signal_group->pending=1ULL<<(10-1);
     nas_mm_get(init->mm);
     ck(init->mm->users==2,"MM get adds one owner");
     nas_mm_put(init->mm);
@@ -127,7 +135,8 @@ int main(void) {
        seen_source_root==init->mm->root_phys &&
        forked_mm->root_phys==fork_root &&
        forked_mm->heap_break==init->mm->heap_break &&
-       forked_mm->mmap_vmas.slots[0].end==TEST_USER_VA+4096,
+       nas_vma_find(&forked_mm->mmap_vmas,TEST_USER_VA) &&
+       nas_vma_find(&forked_mm->mmap_vmas,TEST_USER_VA)->end==TEST_USER_VA+4096,
        "COW fork shares read-only frame but owns a distinct MM layout");
     nas_mm_put(forked_mm);
     ck(reclaimed==1 && init->mm->users==1 && frame_owners==1,
@@ -168,6 +177,9 @@ int main(void) {
         ck(child->sighand && child->sighand!=init->sighand &&
            child->sighand->actions[10][0]==123U,
            "fork copies live dispositions into independent resource");
+        ck(child->signal_group && child->signal_group!=init->signal_group &&
+           child->signal_group->refs==1 && !child->signal_group->pending,
+           "fork has isolated clean process-signal queue");
         uint64_t *near_top=(uint64_t *)(uintptr_t)(tops[i]-64);
         *near_top=(uint64_t)(i*0x10203U); /* stack payload cannot alias */
     }
@@ -182,9 +194,15 @@ int main(void) {
            "recycled TID must not retain parked SP");
     }
     ck(cwd_mount_refs==1,"child FS teardown releases cwd mount pins");
+    ck(init->signal_group->refs==1 &&
+       init->signal_group->pending==(1ULL<<(10-1)),
+       "fork release preserves original process signal queue");
     struct nas_task *reused=nas_task_fork_slot();
     ck(reused==nas_task_at(1) && reused->kernel_stack_top==tops[1] &&
        nas_task_kernel_stack_ok(reused),"reused slot recovers own stack");
+    ck(reused->signal_group && reused->signal_group!=init->signal_group &&
+       !reused->signal_group->pending && reused->signal_group->refs==1,
+       "slot reuse must not inherit a prior process's signal queue");
     uint64_t *bottom=(uint64_t *)(uintptr_t)(tops[1]-NAS_KERNEL_STACK_BYTES);
     uint64_t saved=*bottom;
     *bottom=0;

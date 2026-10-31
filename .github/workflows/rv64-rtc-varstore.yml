@@ -1,12 +1,5 @@
 name: NaSeed RV64 UEFI RTC varstore A/B (isolated diagnostic)
 on:
-  pull_request:
-    paths:
-      - 'scripts/seed-riscv64-uefi-rtc.sh'
-      - 'scripts/probe-riscv64-rtc-vars.sh'
-      - 'scripts/rtc-vars-case.tsv'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - '.github/workflows/rv64-rtc-varstore.yml'
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

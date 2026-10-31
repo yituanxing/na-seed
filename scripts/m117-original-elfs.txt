@@ -1,0 +1,16 @@
+# Each native ELF must be signed, machine-correct and SHA-256 distinct.
+usr/bin/ar
+usr/bin/c++filt
+usr/bin/elfedit
+usr/bin/nm
+usr/bin/objcopy
+usr/bin/objdump
+usr/bin/size
+usr/bin/strings
+usr/bin/strip
+usr/bin/rg
+usr/bin/fd
+usr/bin/tree
+usr/bin/xz
+usr/bin/bzip2
+bin/tar

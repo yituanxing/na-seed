@@ -12,7 +12,7 @@ struct nas_task;
  * belongs to the ptrace Task owner, not to a flag-only workaround. */
 #define NAS_WAIT_ALL       0x40000000ULL
 #define NAS_WAIT_SUPPORTED (NAS_WAIT_NOHANG|NAS_WAIT_UNTRACED|NAS_WAIT_CONTINUED|NAS_WAIT_ALL)
-/* Honest read-only Linux rlimit64 snapshot; changes remain unsupported. */
+/* Honest Linux rlimit64 snapshot; unchanged sets succeed, changes unsupported. */
 uint64_t nas_process_prlimit(uint64_t pid,uint64_t resource,
                              uint64_t new_addr,uint64_t old_addr);
 /* Linux PR_SET_NAME / PR_GET_NAME operate on the calling thread. */
@@ -42,7 +42,7 @@ void nas_process_clear_tid_for_exit(struct nas_task *thread);
 void nas_process_child_tid_first_dispatch(void);
 uint64_t nas_process_clone_thread(uint64_t *frame,uint64_t stack,
                                  uint64_t parent_tid,uint64_t child_tid,
-                                 uint64_t tls);
+                                 uint64_t tls,uint64_t flags);
 uint64_t nas_process_futex(uint64_t *frame,uint64_t uaddr,uint64_t op,
                            uint64_t val,uint64_t timeout,uint64_t uaddr2,
                            uint64_t val3);
@@ -53,4 +53,5 @@ bool nas_process_wait_owner(const struct nas_task *child,
 bool nas_process_waitable(const struct nas_task *child,uint64_t options,
                           const struct nas_task *waiter);
 uint64_t nas_process_wait4(uint64_t pid, uint64_t status, uint64_t options, uint64_t rusage);
+uint64_t nas_process_getrusage(uint64_t who,uint64_t address);
 #endif

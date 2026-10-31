@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include "dispatch.h"
 #include "../syscall/ops.h"
+#include "poll_wait_policy.h"
 #include "../arch/linux_syscall_abi.h"
 #include "../errno.h"
 #include "../random.h"
@@ -32,6 +33,19 @@
 #include "../panic.h"
 #define TASK (*nas_current_task)
 #define thread_clear_tid TASK.thread_clear_tid
+
+/* Linux sched_attr v0 (48 bytes) plus utilization clamps (56 bytes).
+ * Read-only export of the scheduler's actual SCHED_OTHER-only policy. */
+struct nas_linux_sched_attr {
+    uint32_t size,policy;
+    uint64_t flags;
+    int32_t nice;
+    uint32_t priority;
+    uint64_t runtime,deadline,period;
+    uint32_t util_min,util_max;
+};
+_Static_assert(sizeof(struct nas_linux_sched_attr)==56,
+               "Linux sched_attr LP64 ABI size");
 
 /* One Linux timespec64 ABI on three LP64 ISAs.
  * CLOCK_MONOTONIC remains independent of the boot RTC. CLOCK_REALTIME
@@ -132,6 +146,12 @@ static uint64_t finish_wait4(struct nas_task *task) {
 static uint64_t finish_sigsuspend(struct nas_task *task) {
     (void)task;
     return (uint64_t)-EINTR;
+}
+static uint64_t finish_sigtimedwait(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    /* A matching signal takes priority if it arrived at the deadline.
+     * Timeout without a matching pending signal is EAGAIN, not EINTR. */
+    return nas_signal_timedwait_consume(a[0],a[1]);
 }
 
 static uint64_t nas_time_sleep_syscall(uint64_t *frame,enum nas_syscall_op nr,
@@ -341,17 +361,20 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     nas_task_cpu_account_switch(nas_current_task);
     const uint64_t raw_nr = args[0];
     enum nas_syscall_op nr = nas_linux_decode_call(args);
-#if defined(__riscv) && __riscv_xlen == 64
-    /* Native BusyBox ash may invoke clone with Linux flags other than
-     * SIGCHLD. Do not pretend this is fork: show the actual ABI contract
-     * before implementing vfork/clone semantics in the existing task core. */
-    if (raw_nr == 220U && nr == NAS_SC_NONE) {
-        nas_print("[RV64 CLONE] unsupported flags=");
+#ifdef NASEED_SYSCALL_TRACE
+    /* M110 diagnostic: log the actual rejected Linux clone ABI on all three
+     * ISAs, without broadening accepted flags or changing the -ENOSYS path.
+     * Eight attempts suffice to compare original Go and pthread callers. */
+    static unsigned rejected_clone_count;
+    if (raw_nr == nas_linux_raw_clone_nr() && nr == NAS_SC_NONE &&
+        rejected_clone_count++ < 8U) {
+        nas_print("[CLONE REJECT] pid="); nas_dec(nas_current_task->pid);
+        nas_print(" flags=");
         nas_hex(args[1]);
-        nas_print(" child_stack="); nas_hex(args[2]);
+        nas_print(" stack="); nas_hex(args[2]);
         nas_print(" parent_tid="); nas_hex(args[3]);
-        nas_print(" tls="); nas_hex(args[4]);
-        nas_print(" child_tid="); nas_hex(args[5]);
+        nas_print(" arg4="); nas_hex(args[4]);
+        nas_print(" arg5="); nas_hex(args[5]);
         nas_print("\n");
     }
 #endif
@@ -384,6 +407,30 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_set_tid_address) { thread_clear_tid = args[1]; return TASK.pid; }
     if (nr == NAS_SC_getpid) return TASK.tgid;
     if (nr == NAS_SC_gettid) return TASK.pid;
+    if(nr==NAS_SC_sched_getscheduler || nr==NAS_SC_sched_getparam ||
+       nr==NAS_SC_sched_getattr) {
+        /* NaSeed presently schedules every task in its one non-realtime
+         * Linux-compatible policy: SCHED_OTHER, static priority zero.
+         * Queries validate the target task and user output independently. */
+        uint64_t pid=args[1] ? args[1] : TASK.pid;
+        if(!nas_task_by_pid(pid))return (uint64_t)-ESRCH;
+        if(nr==NAS_SC_sched_getscheduler)return 0; /* SCHED_OTHER */
+        if(nr==NAS_SC_sched_getattr) {
+            uint64_t size=args[3];
+            if(args[4] || size<48 || size>sizeof(struct nas_linux_sched_attr))
+                return (uint64_t)-EINVAL;
+            const struct nas_linux_sched_attr policy={
+                .size=(uint32_t)sizeof(struct nas_linux_sched_attr),
+                .policy=0,.flags=0,.nice=0,.priority=0,
+                .runtime=0,.deadline=0,.period=0,.util_min=0,.util_max=0
+            };
+            return nas_user_write_bytes(args[2],(const uint8_t *)&policy,
+                                        size) ? 0 : (uint64_t)-EFAULT;
+        }
+        const uint32_t param=0; /* struct sched_param.sched_priority */
+        return nas_user_write_bytes(args[2],(const uint8_t *)&param,
+                                    sizeof(param)) ? 0 : (uint64_t)-EFAULT;
+    }
     if(nr==NAS_SC_sched_getaffinity || nr==NAS_SC_sched_setaffinity) {
         uint64_t pid=args[1] ? args[1] : TASK.pid;
         if(!nas_task_by_pid(pid))return (uint64_t)-ESRCH;
@@ -414,11 +461,15 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if(nr==NAS_SC_timer_gettime)return nas_time_timer_gettime(args[1],args[2]);
     if(nr==NAS_SC_timer_getoverrun)return nas_time_timer_getoverrun(args[1]);
     if(nr==NAS_SC_timer_delete)return nas_time_timer_delete(args[1]);
+    if(nr==NAS_SC_getitimer)return nas_time_getitimer(args[1],args[2]);
+    if(nr==NAS_SC_setitimer)return nas_time_setitimer(args[1],args[2],args[3]);
     if(nr==NAS_SC_gettimeofday)
         return nas_time_gettimeofday(args[1],args[2]);
     if(nr==NAS_SC_nanosleep || nr==NAS_SC_clock_nanosleep)
         return nas_time_sleep_syscall((uint64_t *)(uintptr_t)args,nr,args);
     if (nr == NAS_SC_getuid || nr == NAS_SC_getgid || nr == NAS_SC_geteuid || nr == NAS_SC_getegid) return 0; /* root credentials */
+    if (nr == NAS_SC_mincore)
+        return nas_vm_mincore(args[1],args[2],args[3]);
     if (nr == NAS_SC_mprotect) {
         uint64_t rc=nas_vm_mprotect(args[1], args[2], args[3]);
 #ifdef NASEED_SYSCALL_TRACE
@@ -450,6 +501,10 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         return result;
     }
     if (nr == NAS_SC_munmap) return nas_vm_munmap(args[1], args[2]);
+    if (nr == NAS_SC_msync)
+        return nas_vm_msync(args[1],args[2],args[3]);
+    if (nr == NAS_SC_madvise)
+        return nas_vm_madvise(args[1],args[2],args[3]);
     if (nr == NAS_SC_brk) {
         uint64_t result=nas_vm_brk(args[1]);
 #ifdef NASEED_SYSCALL_TRACE
@@ -558,7 +613,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
             bool has_io=(nr==NAS_SC_pselect6 || nr==NAS_SC_select) ?
                 nas_fs_pselect_arm(args[1],args[2],args[3],args[4]) :
                 nas_fs_poll_arm(args[1],args[2]);
-            if(!has_io && !TASK.wait.deadline_active) {
+            if(!has_io && !TASK.wait.deadline_active &&
+               !nas_poll_signal_only_infinite(nr,args)) {
                 nas_signal_ppoll_restore(&TASK,false);
                 return (uint64_t)-EOPNOTSUPP;
             }
@@ -592,8 +648,40 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     struct nas_fs_result fs_result = nas_fs_syscall(nr, args);
     if (fs_result.handled) return fs_result.value;
     if (nr == NAS_SC_rt_sigaction) return nas_signal_action(args[1], args[2], args[3], args[4]);
+    if (nr == NAS_SC_sigaltstack) return nas_signal_sigaltstack(args[1], args[2]);
     if (nr == NAS_SC_rt_sigpending) return nas_signal_pending(args[1], args[2]);
+    if (nr == NAS_SC_rt_sigtimedwait) {
+        /* Linux LP64 sigsetsize=8 on all three native ISAs. Read the set
+         * exactly once before parking; no foreign address-space inspection
+         * is necessary in the scheduler readiness pass. */
+        if(args[4]!=8ULL)return (uint64_t)-EINVAL;
+        uint64_t mask=0;
+        if(!nas_user_read_u64(args[1],&mask))return (uint64_t)-EFAULT;
+        uint64_t delta=0;
+        if(args[3]) {
+            uint64_t rc=nas_time_read_request(args[3],&delta);
+            if((int64_t)rc<0)return rc;
+        }
+        mask &= ~((1ULL<<8)|(1ULL<<18));
+        if(nas_signal_timedwait_ready(&TASK,mask))
+            return nas_signal_timedwait_consume(mask,args[2]);
+        if(args[3] && !delta)return (uint64_t)-EAGAIN;
+        if(args[3]) {
+            TASK.wait.deadline_ns=nas_time_add_deadline(
+                nas_arch_monotonic_ns(),delta);
+            TASK.wait.deadline_active=true;
+        }
+        return nas_task_block((uint64_t *)(uintptr_t)args,nr,
+                              mask,args[2],0,0,finish_sigtimedwait);
+    }
     if (nr == NAS_SC_rt_sigreturn) return nas_signal_sigreturn((uint64_t *)(uintptr_t)args);
+    if (nr == NAS_SC_pause) {
+        /* Unlike sigsuspend, pause retains the calling thread's mask.
+         * Completion only occurs after a caught, unmasked signal. */
+        if(nas_signal_user_pending(&TASK))return (uint64_t)-EINTR;
+        return nas_task_block((uint64_t *)(uintptr_t)args,nr,0,0,0,0,
+                              finish_sigsuspend);
+    }
     if (nr == NAS_SC_rt_sigsuspend) {
         /* Temporary, atomic replacement of the caller's mask while asleep.
          * The existing Task wait/replay + signal trampoline own wakeup;
@@ -637,7 +725,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         return nas_process_clone_thread((uint64_t *)(uintptr_t)args,
                                         args[2],args[3],
                                         nas_linux_clone_child_tid(args),
-                                        nas_linux_clone_tls(args));
+                                        nas_linux_clone_tls(args),args[1]);
     if (nr == NAS_SC_vfork)
         return nas_process_vfork((uint64_t *)(uintptr_t)args,
                                   nas_linux_vfork_child_stack(args));
@@ -647,12 +735,14 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         return nas_process_fork_child_tid((uint64_t *)(uintptr_t)args,
                                           nas_linux_clone_child_tid(args));
 
+    if (nr == NAS_SC_getrusage)
+        return nas_process_getrusage(args[1],args[2]);
     if (nr == NAS_SC_wait4) {
         uint64_t ret = nas_process_wait4(args[1], args[2], args[3], args[4]);
         /* WUNTRACED/WCONTINUED are real blocking wait selectors too.
          * Do not treat them as unsupported when a selected child has
          * not reached a reportable event yet. Keep WNOHANG nonblocking. */
-        if ((int64_t)ret == -EOPNOTSUPP && args[4] == 0 &&
+        if ((int64_t)ret == -EOPNOTSUPP &&
             !(args[3] & NAS_WAIT_NOHANG))
             return nas_task_block((uint64_t *)(uintptr_t)args, nr,
                               args[1], args[2], args[3], args[4],finish_wait4);

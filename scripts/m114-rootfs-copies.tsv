@@ -1,0 +1,2 @@
+# Only runner data goes into guest. Signed native ELFs come from APK packages.
+tests/m114-batch-run.sh	tests/m114-batch-run.sh

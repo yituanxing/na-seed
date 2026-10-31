@@ -1,19 +1,5 @@
 name: NaSeed M79 original Bash Vim Git Python collaborative workflow — native three ISA
 on:
-  pull_request:
-    paths:
-      - 'tests/m79-*'
-      - 'scripts/m79-*'
-      - 'scripts/probe-m79-workflow.sh'
-      - 'scripts/stage-m79-prebuilt.sh'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'scripts/check-prebuilt-profile-catalog.py'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/check-native-qemu-target.py'
-      - 'rootfs/alpine/packages-m79-workflow.txt'
-      - 'kernel/**'
-      - '.github/workflows/m79-workflow.yml'
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

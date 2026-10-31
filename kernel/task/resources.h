@@ -21,6 +21,24 @@ struct nas_sighand {
     unsigned refs;
     uint64_t actions[65][4];
 };
+/* Process-directed standard signals belong to the thread group, never an
+ * arbitrary TID or CLONE_SIGHAND's disposition table. CLONE_SIGHAND may
+ * share dispositions outside one TGID; only CLONE_THREAD shares this owner.
+ * A dead leader cannot destroy signals still pending for live workers. */
+struct nas_signal_group {
+    unsigned refs;
+    uint64_t pending;
+    /* SIGCHLD is a standard (non-queued) process signal. Its latest real
+     * child-exit payload is owned by the TGID so signalfd can report Linux
+     * CLD_EXITED/CLD_KILLED and the actual child PID/status. */
+    uint32_t sigchld_pid, sigchld_status;
+    int32_t sigchld_code;
+    /* ITIMER_REAL belongs to the process's signal group (not a TID,
+     * disposition table, or POSIX timer ID). Survives CLONE_THREAD and
+     * leader exit; fork creates a fresh, unarmed signal-group owner. */
+    uint64_t itimer_real_deadline_ns, itimer_real_interval_ns;
+    bool itimer_real_armed;
+};
 void nas_resources_system_init(void);
 struct nas_fs_context *nas_fs_context_new(void);
 struct nas_fs_context *nas_fs_context_copy(const struct nas_fs_context *);
@@ -30,4 +48,7 @@ struct nas_sighand *nas_sighand_new(void);
 struct nas_sighand *nas_sighand_copy(const struct nas_sighand *);
 struct nas_sighand *nas_sighand_get(struct nas_sighand *);
 void nas_sighand_put(struct nas_sighand *);
+struct nas_signal_group *nas_signal_group_new(void);
+struct nas_signal_group *nas_signal_group_get(struct nas_signal_group *);
+void nas_signal_group_put(struct nas_signal_group *);
 #endif

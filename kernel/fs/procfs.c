@@ -55,6 +55,11 @@ bool nas_proc_lookup(const char *path,struct nas_proc_node *out) {
     if(!strcmp(path,"/proc/loadavg")) {out->kind=NAS_PROC_LOADAVG;return true;}
     if(!strcmp(path,"/proc/vmstat")) {out->kind=NAS_PROC_VMSTAT;return true;}
     if(!strcmp(path,"/proc/mounts")) {out->kind=NAS_PROC_MOUNTS;return true;}
+    if(!strcmp(path,"/proc/locks")) {out->kind=NAS_PROC_LOCKS;return true;}
+    if(!strcmp(path,"/proc/slabinfo")) {out->kind=NAS_PROC_SLABINFO;return true;}
+    if(!strcmp(path,"/proc/sys")) {out->kind=NAS_PROC_SYS_DIR;return true;}
+    if(!strcmp(path,"/proc/sys/kernel")) {out->kind=NAS_PROC_SYS_KERNEL_DIR;return true;}
+    if(!strcmp(path,"/proc/sys/kernel/hostname")) {out->kind=NAS_PROC_SYS_HOSTNAME;return true;}
     if(strncmp(path,"/proc/",6))return false;
     const char *p=path+6;
     uint64_t pid=0;
@@ -111,6 +116,8 @@ bool nas_proc_lookup(const char *path,struct nas_proc_node *out) {
     else if(!strcmp(p,"/cmdline"))out->kind=NAS_PROC_PID_CMDLINE;
     else if(!strcmp(p,"/statm"))out->kind=NAS_PROC_PID_STATM;
     else if(!strcmp(p,"/maps"))out->kind=NAS_PROC_PID_MAPS;
+    else if(!strcmp(p,"/cwd") && !living(pid)->is_thread)
+        out->kind=NAS_PROC_PID_CWD_LINK;
     else if(!strcmp(p,"/mounts"))out->kind=NAS_PROC_MOUNTS;
     else return false;
     return true;
@@ -124,6 +131,8 @@ bool nas_proc_node_from_ino(uint64_t ino,struct nas_proc_node *out) {
         case NAS_PROC_ROOT:case NAS_PROC_MEMINFO:case NAS_PROC_UPTIME:
         case NAS_PROC_VERSION:case NAS_PROC_CPUINFO:case NAS_PROC_STAT:
         case NAS_PROC_LOADAVG:case NAS_PROC_VMSTAT:case NAS_PROC_MOUNTS:
+        case NAS_PROC_SYS_DIR:case NAS_PROC_SYS_KERNEL_DIR:
+        case NAS_PROC_SYS_HOSTNAME:case NAS_PROC_LOCKS:case NAS_PROC_SLABINFO:
             node.kind=(uint8_t)kind;break;
         default:return false;
         }
@@ -164,7 +173,7 @@ bool nas_proc_node_from_ino(uint64_t ino,struct nas_proc_node *out) {
             case NAS_PROC_PID_CMDLINE:case NAS_PROC_PID_STATM:
             case NAS_PROC_TASK_DIR:case NAS_PROC_FD_DIR:
             case NAS_PROC_FDINFO_DIR:case NAS_PROC_PID_MAPS:
-            case NAS_PROC_MOUNTS:
+            case NAS_PROC_MOUNTS:case NAS_PROC_PID_CWD_LINK:
                 node.kind=(uint8_t)tag;break;
             default:return false;
             }
@@ -211,6 +220,11 @@ bool nas_proc_dir_path(struct nas_proc_node node,char path[256]) {
     if(!path || !nas_proc_is_dir(node))return false;
     const char *prefix="/proc";unsigned p=0;
     while(prefix[p]){path[p]=prefix[p];p++;}
+    if(node.kind==NAS_PROC_SYS_DIR || node.kind==NAS_PROC_SYS_KERNEL_DIR) {
+        const char *suffix=node.kind==NAS_PROC_SYS_DIR?"/sys":"/sys/kernel";
+        for(unsigned i=0;suffix[i];i++)path[p++]=suffix[i];
+        path[p]=0;return true;
+    }
     if(node.kind!=NAS_PROC_ROOT) {
         uint64_t leader=node.tgid?node.tgid:node.pid;
         if(!living(leader))return false;
@@ -234,11 +248,13 @@ bool nas_proc_dir_path(struct nas_proc_node node,char path[256]) {
 }
 bool nas_proc_is_dir(struct nas_proc_node node) {
     return node.kind==NAS_PROC_ROOT || node.kind==NAS_PROC_PID_DIR ||
+           node.kind==NAS_PROC_SYS_DIR || node.kind==NAS_PROC_SYS_KERNEL_DIR ||
            node.kind==NAS_PROC_TASK_DIR || node.kind==NAS_PROC_TID_DIR ||
            node.kind==NAS_PROC_FD_DIR || node.kind==NAS_PROC_FDINFO_DIR;
 }
 uint32_t nas_proc_mode(struct nas_proc_node node) {
-    if(node.kind==NAS_PROC_FD_LINK)return 0120777U;
+    if(node.kind==NAS_PROC_FD_LINK || node.kind==NAS_PROC_PID_CWD_LINK)
+        return 0120777U;
     return nas_proc_is_dir(node) ? 0040555U : 0100444U;
 }
 uint64_t nas_proc_ino(struct nas_proc_node node) {
@@ -251,8 +267,8 @@ uint64_t nas_proc_ino(struct nas_proc_node node) {
 bool nas_proc_child(struct nas_proc_node directory,unsigned index,
                     char name[32],struct nas_proc_node *node) {
     static const char *const root[]={"self","meminfo","uptime","version","cpuinfo","stat","loadavg","vmstat",
-                                    "mounts"};
-    static const char *const process[]={"stat","status","comm","cmdline","statm","task","fd","fdinfo","maps","mounts"};
+                                    "mounts","sys","locks","slabinfo"};
+    static const char *const process[]={"stat","status","comm","cmdline","statm","task","fd","fdinfo","maps","mounts","cwd"};
     if(!name || !node)return false;
     if(directory.kind==NAS_PROC_ROOT) {
         if(index<sizeof(root)/sizeof(root[0])) {
@@ -273,6 +289,15 @@ bool nas_proc_child(struct nas_proc_node directory,unsigned index,
             return true;
         }
         return false;
+    }
+    if(directory.kind==NAS_PROC_SYS_DIR ||
+       directory.kind==NAS_PROC_SYS_KERNEL_DIR) {
+        if(index)return false;
+        const char *s=directory.kind==NAS_PROC_SYS_DIR?"kernel":"hostname";
+        unsigned i=0;do{name[i]=s[i];}while(s[i++]);
+        *node=(struct nas_proc_node){directory.kind==NAS_PROC_SYS_DIR?
+              NAS_PROC_SYS_KERNEL_DIR:NAS_PROC_SYS_HOSTNAME,0,0,0};
+        return true;
     }
     if(directory.kind==NAS_PROC_FD_DIR ||
        directory.kind==NAS_PROC_FDINFO_DIR) {
@@ -321,7 +346,8 @@ bool nas_proc_child(struct nas_proc_node directory,unsigned index,
                     NAS_PROC_PID_COMM,NAS_PROC_PID_CMDLINE,
                     NAS_PROC_PID_STATM,NAS_PROC_TASK_DIR,
                     NAS_PROC_FD_DIR,NAS_PROC_FDINFO_DIR,
-                    NAS_PROC_PID_MAPS,NAS_PROC_MOUNTS};
+                    NAS_PROC_PID_MAPS,NAS_PROC_MOUNTS,
+                    NAS_PROC_PID_CWD_LINK};
     *node=(struct nas_proc_node){kind[index],directory.pid,
         directory.kind==NAS_PROC_TID_DIR?directory.tgid:
         (kind[index]==NAS_PROC_TASK_DIR?directory.pid:0),0};
@@ -332,7 +358,7 @@ bool nas_proc_child(struct nas_proc_node directory,unsigned index,
 static uint64_t anon_pages(const struct nas_task *t) {
     const struct nas_mm *mm=t->mm;
     uint64_t n=0;
-    for(unsigned i=0;i<NAS_ANON_REGION_LIMIT;i++) {
+    for(unsigned i=0;i<mm->mmap_vmas.capacity;i++) {
         uint64_t start=mm->mmap_vmas.slots[i].start;
         uint64_t end=mm->mmap_vmas.slots[i].end;
         if(end>start)n+=(end-start)/4096ULL;
@@ -349,6 +375,22 @@ static void load_print(struct writer *w,uint64_t q16) {
  * independent per-process pathname records. A pseudo target does not
  * pretend to be a reopenable regular file. */
 int64_t nas_proc_readlink(struct nas_proc_node node,char *out,unsigned cap) {
+    if(node.kind==NAS_PROC_PID_CWD_LINK) {
+        const struct nas_task *task=living(node.pid);
+        if(!task || !task->fs)return -ENOENT;
+        char pathname[256];
+        if(task->fs->cwd_path.dentry) {
+            int rc=nas_vfs_path_string(&task->fs->cwd_path,pathname);
+            if(rc)return rc;
+        } else if(task->fs->cwd_pinned)return -ENOENT;
+        else {
+            memcpy(pathname,task->fs->cwd,sizeof(pathname));
+            pathname[sizeof(pathname)-1]=0;
+        }
+        unsigned n=0;
+        while(pathname[n] && n<cap){if(out)out[n]=pathname[n];n++;}
+        return (int64_t)n;
+    }
     if(node.kind!=NAS_PROC_FD_LINK)return -EINVAL;
     const struct nas_task *task=living(node.pid);
     if(!task || !task->fds || node.fd>=NAS_FD_LIMIT)return -ENOENT;
@@ -362,10 +404,12 @@ int64_t nas_proc_readlink(struct nas_proc_node node,char *out,unsigned cap) {
         case FD_UART: case FD_TTY: path="/dev/console";break;
         case FD_NULL:path="/dev/null";break;
         case FD_ZERO:path="/dev/zero";break;
+        case FD_RANDOM:path="/dev/urandom";break;
         case FD_PIPE_R:case FD_PIPE_W:path="pipe:[";break;
         case FD_SOCKET:path="socket:[";break;
         case FD_EPOLL:path="anon_inode:[eventpoll]";break;
         case FD_EVENTFD:path="anon_inode:[eventfd]";break;
+        case FD_SIGNALFD:path="anon_inode:[signalfd]";break;
         case FD_PTY_MASTER:path="/dev/ptmx";break;
         case FD_PTY_SLAVE:path="/dev/pts/0";break;
         default:path="anon_inode:[unknown]";break;
@@ -388,7 +432,7 @@ struct nas_map_stream {
     uint64_t skip,position,start,end;
     unsigned access,produced,cap;
     uint8_t *output;
-    bool active;
+    bool active,shared;
 };
 static void map_ch(struct nas_map_stream *s,char c) {
     if(s->position>=s->skip && s->produced<s->cap)
@@ -411,7 +455,8 @@ static void map_flush(struct nas_map_stream *s) {
     map_ch(s,(s->access&NAS_UP_READ)?'r':'-');
     map_ch(s,(s->access&NAS_UP_WRITE)?'w':'-');
     map_ch(s,(s->access&NAS_UP_EXEC)?'x':'-');
-    map_word(s,"p 00000000 00:00 0\n");
+    map_ch(s,s->shared?'s':'p');
+    map_word(s," 00000000 00:00 0\n");
     s->active=false;
 }
 static bool map_visit_vma(const struct nas_anon_region *vma,void *ctx) {
@@ -420,6 +465,8 @@ static bool map_visit_vma(const struct nas_anon_region *vma,void *ctx) {
     s->start=vma->start;
     s->end=vma->end;
     s->access=vma->prot;
+    s->shared=vma->kind==NAS_VMA_FILE_IMMUTABLE_SHARED ||
+              vma->kind==NAS_VMA_FILE_MUTABLE_SHARED;
     s->active=true;
     return true;
 }
@@ -480,6 +527,47 @@ static int64_t proc_mounts_read(uint64_t offset,uint8_t *output,unsigned size) {
         if(stream.produced==size)return (int64_t)size;
     }
 }
+static void mount_decimal(struct nas_mount_stream *s,uint64_t n) {
+    char digits[24];unsigned count=0;
+    do {digits[count++]=(char)('0'+n%10U);n/=10U;}
+    while(n && count<sizeof(digits));
+    while(count)mount_ch(s,digits[--count]);
+}
+static uint64_t lock_owner_pid(const void *owner) {
+    if(!owner)return 0;
+    for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
+        const struct nas_task *t=nas_task_at(i);
+        if(!t || t->state==NAS_TASK_FREE || !t->fds)continue;
+        for(unsigned fd=0;fd<NAS_FD_LIMIT;fd++) {
+            const struct nas_fd_entry *e=&t->fds->entries[fd];
+            if(e->kind==FD_CLOSED || e->slot>=NAS_OPEN_FILE_LIMIT)continue;
+            if(owner==&nas_open_files[e->slot])return t->tgid;
+        }
+    }
+    return 0;
+}
+static int64_t proc_locks_read(uint64_t offset,uint8_t *output,unsigned size) {
+    struct nas_mount_stream s={.skip=offset,.output=output,.capacity=size};
+    for(unsigned ordinal=0;;ordinal++) {
+        struct nas_vfs_lock_snapshot lock;
+        int rc=nas_vfs_lock_snapshot(ordinal,&lock);
+        if(rc==-ENOENT)return (int64_t)s.produced;
+        if(rc)return s.produced?(int64_t)s.produced:rc;
+        mount_decimal(&s,(uint64_t)ordinal+1U);mount_word(&s,": ");
+        mount_word(&s,lock.flock?"FLOCK  ":"POSIX  ");
+        mount_word(&s,"ADVISORY  ");
+        mount_word(&s,lock.exclusive?"WRITE ":"READ ");
+        uint64_t pid=lock.flock?lock_owner_pid(lock.file_owner):lock.pid;
+        mount_decimal(&s,pid);mount_word(&s," 00:00:");
+        mount_decimal(&s,lock.ino);mount_ch(&s,' ');
+        mount_decimal(&s,lock.start);mount_ch(&s,' ');
+        if(lock.end==UINT64_MAX)mount_word(&s,"EOF");
+        else if(lock.end>0)mount_decimal(&s,lock.end-1U);
+        else mount_ch(&s,'0');
+        mount_ch(&s,'\n');
+        if(s.produced==size)return (int64_t)size;
+    }
+}
 int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
                       uint8_t *output,unsigned size) {
     if(nas_proc_is_dir(node))return -EISDIR;
@@ -491,8 +579,11 @@ int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
         return proc_maps_read(t,offset,output,size);
     if(node.kind==NAS_PROC_MOUNTS)
         return proc_mounts_read(offset,output,size);
+    if(node.kind==NAS_PROC_LOCKS)
+        return proc_locks_read(offset,output,size);
     char data[LIMIT];struct writer w={data,0,LIMIT};
-    if(node.kind==NAS_PROC_FD_LINK) return -EINVAL;
+    if(node.kind==NAS_PROC_FD_LINK || node.kind==NAS_PROC_PID_CWD_LINK)
+        return -EINVAL;
     if(node.kind==NAS_PROC_FDINFO_FILE) {
         if(!t || !t->fds || node.fd>=NAS_FD_LIMIT ||
            t->fds->entries[node.fd].kind==FD_CLOSED)return -ENOENT;
@@ -567,6 +658,12 @@ int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
     }
     case NAS_PROC_VMSTAT:
         word(&w,"nr_free_pages ");decimal(&w,nas_free_frames());ch(&w,'\n');break;
+    case NAS_PROC_SYS_HOSTNAME:word(&w,"naseed\n");break;
+    case NAS_PROC_SLABINFO:
+        /* NaSeed uses frame/heap allocators, no Linux slab cache. */
+        word(&w,"slabinfo - version: 2.1\n");
+        word(&w,"# name            <active_objs> <num_objs> <objsize> <objperslab> <pagesperslab> : tunables <limit> <batchcount> <sharedfactor> : slabdata <active_slabs> <num_slabs> <sharedavail>\n");
+        break;
     case NAS_PROC_VERSION: word(&w,"NaSeed experimental kernel\n");break;
     case NAS_PROC_CPUINFO:
 #if defined(__x86_64__)
@@ -623,7 +720,7 @@ int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
                     if(other && other->state!=NAS_TASK_FREE && other->tgid==t->tgid)threads++;
                 }
                 decimal(&w,threads);
-            }else if(field==23)decimal(&w,(anon_pages(t)+NAS_USER_STACK_PAGES)*4096ULL);
+            }else if(field==23)decimal(&w,anon_pages(t)*4096ULL);
             else decimal(&w,0);
         }
         ch(&w,'\n');break;

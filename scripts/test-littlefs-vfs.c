@@ -7,6 +7,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+/* This independent read-only FS fixture has no writable mapped VMAs.
+ * A005's actual cross-MM invalidation is covered by the MM test suite. */
+void nas_vm_invalidate_file(const struct nas_fs_node *node,uint64_t size) {
+    (void)node;(void)size;assert(!"unexpected LittleFS truncate");
+}
+void nas_vm_rearm_file(const struct nas_fs_node *node) {
+    (void)node;assert(!"unexpected LittleFS writable mapping");
+}
 static int root_lookup(const struct nas_vfs_mount *m,const char *path,
                        struct nas_fs_node *node){
     (void)m;

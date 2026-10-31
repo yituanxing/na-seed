@@ -1,0 +1,16 @@
+# Exactly 15 historically unused real original signed ELF binaries.
+usr/bin/cmake
+usr/bin/cpack
+usr/bin/ctest
+usr/bin/wrjpgcom
+usr/bin/rdjpgcom
+usr/bin/tidy
+usr/bin/gdbmtool
+usr/bin/gdbm_dump
+usr/bin/gdbm_load
+usr/bin/mm2gv
+usr/bin/prune
+usr/bin/unflatten
+usr/bin/pnmpsnr
+usr/bin/pnmtile
+usr/bin/pnmtorast

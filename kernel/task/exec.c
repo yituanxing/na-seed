@@ -21,6 +21,7 @@
 #include "exec.h"
 #include "../time/clock.h"
 #include "process.h"
+#include "rusage.h"
 #include "signal.h"
 #include "ptrace.h"
 #include "sched.h"
@@ -44,7 +45,9 @@
 #define EXEC_STRING_MAX 8192
 #define EXEC_POOL_BYTES (512U * 1024U)
 static struct exec_snapshot {
-    char filename[256];
+    /* Linux AT_EXECFN preserves the complete original user pathname, not
+     * the 256-byte textual display projection of the resolved VFS Path. */
+    char filename[NAS_VFS_WALK_PATH_LIMIT];
     char strings[EXEC_POOL_BYTES];
     unsigned used;
     const char *argv[NAS_ARGV_MAX];
@@ -71,8 +74,14 @@ static int exec_lookup_request(const struct nas_fs_path_request *request,
         int printable=nas_vfs_path_string(&path,display);
         if(printable==-ENAMETOOLONG || printable==-ENOENT) {
             /* The inode is usable even when an ancestor was renamed into
-             * an overlong path. filename[] is argv/debug data, not namei. */
-            memcpy(display,request->pathname,strlen(request->pathname)+1);
+             * an overlong path. This short string is only exec diagnostics
+             * and task comm; preserve full AT_EXECFN in pending_exec. */
+            const char *tail=strrchr(request->pathname,'/');
+            tail=(tail && tail[1]) ? tail+1 : request->pathname;
+            size_t len=strlen(tail);
+            if(len>=256) {tail+=len-255;len=255;}
+            memcpy(display,tail,len);
+            display[len]=0;
         } else rc=printable;
     }
     if(!rc)rc=nas_vfs_node_pin(node);
@@ -447,6 +456,19 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
      * the worker both pointed to one CLONE_FILES object. The parent sees
      * one child PID and precisely one eventual SIGCHLD. */
     if(worker_exec) {
+        /* execve from a nonleader replaces the process identity, not its
+         * measured resource history. Quiescing siblings already charged
+         * their CPU into old_leader->exited_thread_cpu_ns. The old leader's
+         * own CPU becomes completed-thread CPU; the surviving worker keeps
+         * its own per-TID runtime for RUSAGE_THREAD. Previously waited
+         * children also remain owned by this Linux process across execve. */
+        exec_thread->exited_thread_cpu_ns=nas_rusage_cpu_add(
+            exec_thread->exited_thread_cpu_ns,
+            nas_rusage_cpu_add(old_leader->cpu_runtime_ns,
+                               old_leader->exited_thread_cpu_ns));
+        exec_thread->waited_children_cpu_ns=nas_rusage_cpu_add(
+            exec_thread->waited_children_cpu_ns,
+            old_leader->waited_children_cpu_ns);
         exec_thread->pid=inherited_tgid;
         exec_thread->tgid=inherited_tgid;
         exec_thread->ppid=old_leader->ppid;
@@ -477,6 +499,9 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
     TASK.execed = true; /* fork parent may no longer setpgid after exec */
     TASK.signal_frame_active = false;
     TASK.signal_frame_sp = 0;
+    TASK.signal_stack_sp=0;
+    TASK.signal_stack_size=0;
+    TASK.signal_stack_enabled=false;
     TASK.ppoll_mask_active=false;
     TASK.signal_force_deliver=0;
     thread_clear_tid = 0;

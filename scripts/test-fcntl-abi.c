@@ -41,6 +41,9 @@ int main(void) {
              (NAS_LINUX_O_PATH|0x10000ULL|0x20000ULL));
     assert(nas_linux_open_status_flags(0x10000ULL|0x20000ULL|0x800ULL)==
              (0x10000ULL|0x20000ULL|0x800ULL|0x8000ULL));
+    /* LMDB opens data.mdb O_DSYNC, and F_GETFL must preserve the hint. */
+    assert(nas_linux_open_status_flags(0x80000ULL|0x1000ULL|1ULL)==
+           (0x8000ULL|0x1000ULL|1ULL));
     assert(nas_linux_arm64_status_flags(0x10000ULL|0x20000ULL|
              0x8000ULL|0x800ULL)==
              (040000ULL|0100000ULL|0400000ULL|0x800ULL));

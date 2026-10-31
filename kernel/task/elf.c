@@ -6,6 +6,7 @@
 #include "../mm/usercopy.h"
 #include "../mm/prot.h"
 #include "elf.h"
+#include "user_stack.h"
 #include "elf_format.h"
 #include "elf_segments.h"
 extern void nas_print(const char *);
@@ -51,7 +52,10 @@ static bool elf_map_image(const struct elf_image *image,uint64_t bias,
         .require_page_congruence=true,
         .bias=bias,
         .min_va=0x10000,
-        .max_va=USER_STACK_TOP-0x100000,
+        /* PT_LOAD cannot replace the independently owned signal RX page,
+         * nor the higher reserved user stack. The ELF upper limit is
+         * exclusive; this also retains a gap before the 8-MiB stack. */
+        .max_va=NAS_USER_SIGNAL_TRAMPOLINE,
         .max_segment=64ULL<<20,
         .interpreter=main_image?NAS_ELF_INTERP:0
     };

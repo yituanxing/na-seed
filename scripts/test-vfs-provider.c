@@ -12,6 +12,11 @@
 #include "../kernel/fs/vfs.h"
 #include "../kernel/fs/posix_locks.h"
 #include "../kernel/errno.h"
+/* The real tmpfs statfs callback samples physical backing-frame counters.
+ * The host fixture controls only that dependency, not VFS dispatch. */
+static uint64_t fixture_free_frames=789;
+uint64_t nas_managed_frames(void) { return 2048; }
+uint64_t nas_free_frames(void) { return fixture_free_frames; }
 static const uint8_t elf_bytes[]={0x7f,'E','L','F','v','f','s'};
 static const uint8_t abs_link[]="/bin/demo";
 static struct bootfs_entry entries[]={
@@ -25,6 +30,87 @@ static struct bootfs_entry entries[]={
     {.path="/shortcut",.mode=0120777,.ino=8,.data=abs_link,.size=sizeof(abs_link)-1}
 };
 static struct nas_tmp_file tmp_demo={.used=true,.mode=0100644,.size=4,.ino=101};
+/* Host backend fixture checks VFS capability routing; the real inode-backed
+ * storage/extent traversal is compiled in the native kernel and QEMU runs. */
+static char fixture_xattr_name[256];
+static uint8_t fixture_xattr_value[64];
+static unsigned fixture_xattr_length;
+int tmp_setxattr(struct nas_tmp_file *file,const char *name,
+                 const uint8_t *value,uint64_t size,unsigned flags) {
+    if(file!=&tmp_demo)return -EOPNOTSUPP;
+    if(size>sizeof(fixture_xattr_value))return -E2BIG;
+    if((flags&1U) && fixture_xattr_name[0])return -EEXIST;
+    if((flags&2U) && !fixture_xattr_name[0])return -ENODATA;
+    strcpy(fixture_xattr_name,name);
+    fixture_xattr_length=(unsigned)size;
+    if(size)memcpy(fixture_xattr_value,value,(size_t)size);
+    return 0;
+}
+int64_t tmp_getxattr(const struct nas_tmp_file *file,const char *name,
+                     uint8_t *value,uint64_t capacity) {
+    if(file!=&tmp_demo || strcmp(name,fixture_xattr_name))return -ENODATA;
+    if(value) {
+        if(capacity<fixture_xattr_length)return -ERANGE;
+        memcpy(value,fixture_xattr_value,fixture_xattr_length);
+    }
+    return fixture_xattr_length;
+}
+int64_t tmp_listxattr(const struct nas_tmp_file *file,
+                      uint8_t *names,uint64_t capacity) {
+    if(file!=&tmp_demo)return -EOPNOTSUPP;
+    size_t length=fixture_xattr_name[0]?strlen(fixture_xattr_name)+1:0;
+    if(names) {
+        if(capacity<length)return -ERANGE;
+        memcpy(names,fixture_xattr_name,length);
+    }
+    return (int64_t)length;
+}
+int tmp_removexattr(struct nas_tmp_file *file,const char *name) {
+    if(file!=&tmp_demo || strcmp(name,fixture_xattr_name))return -ENODATA;
+    fixture_xattr_name[0]=0;
+    fixture_xattr_length=0;
+    return 0;
+}
+int tmp_fiemap_next(const struct nas_tmp_file *file,uint64_t start,
+                    uint64_t end,uint64_t *logical,uint64_t *length,
+                    bool *last) {
+    if(file!=&tmp_demo)return -EOPNOTSUPP;
+    if(start>=4 || end<=start)return 0;
+    *logical=0;*length=4096;*last=true;
+    return 1;
+}
+/* VFS capability fixture: the production tmpfs implementation is exercised
+ * separately in M108; here the callback must remain provider-scoped and
+ * never be inferred for bootfs/procfs or a writable mount flag alone. */
+static _Alignas(4096) uint8_t fixture_shared_frame[4096];
+static unsigned shared_touch_calls, shared_resize_invalidations;
+static unsigned shared_sync_rearms;
+int tmp_acquire_shared_page(struct nas_tmp_file *file,uint64_t offset,
+                            uint64_t *pa_owned) {
+    if(!pa_owned)return -EINVAL;
+    *pa_owned=0;
+    if(file!=&tmp_demo)return -ENODEV;
+    if(offset>=file->size)return -EFAULT;
+    *pa_owned=(uint64_t)(uintptr_t)fixture_shared_frame;
+    return 0;
+}
+int tmp_page_resident(const struct nas_tmp_file *file,uint64_t offset) {
+    if(file!=&tmp_demo)return -ENODEV;
+    return offset<file->size ? 1 : 0;
+}
+int tmp_touch_shared(struct nas_tmp_file *file) {
+    if(file!=&tmp_demo)return -ENODEV;
+    shared_touch_calls++;
+    return 0;
+}
+void nas_vm_invalidate_file(const struct nas_fs_node *node,uint64_t new_size) {
+    (void)node;(void)new_size;
+    shared_resize_invalidations++;
+}
+void nas_vm_rearm_file(const struct nas_fs_node *node) {
+    assert(node && node->filesystem);
+    shared_sync_rearms++;
+}
 static struct nas_tmp_file fixture_symlink={.used=true,.mode=0120777,.size=9,.ino=102};
 static const char *fixture_link_target="/bin/demo";
 static struct nas_tmp_file fixture_dir_link={.used=true,.mode=0120777,.size=4,.ino=103};
@@ -57,6 +143,17 @@ static unsigned orphan_releases;
 void tmp_root_times(uint64_t *mtime_ns,uint64_t *ctime_ns) {
     if(mtime_ns)*mtime_ns=1761868800000000000ULL;
     if(ctime_ns)*ctime_ns=1761868800000000000ULL;
+}
+/* Keep the standalone VFS provider harness linked to the single live
+ * namespace-derived directory-size contract introduced by M123. */
+uint64_t tmp_directory_stat_size(const struct nas_tmp_file *directory) {
+    return directory && directory->is_dir ?
+           40ULL + 20ULL * directory->children.count : 0;
+}
+uint64_t tmp_root_directory_stat_size(void) {
+    unsigned children=0;
+    while(tmp_child_entry_inode(&entries[3],children))children++;
+    return 40ULL + 20ULL * children;
 }
 void tmp_inode_discard(struct nas_tmp_file *node) {
     /* An actual kernel reclaims only orphaned, unpinned inodes; the
@@ -202,6 +299,12 @@ struct nas_tmp_file *tmp_create(const char *path,bool dir,uint32_t mode) {
 int tmp_resize(struct nas_tmp_file *file,uint64_t size) {
     if(file!=&fixture_created || size>sizeof(fixture_created_bytes))return -EINVAL;
     fixture_created_length=(unsigned)size;file->size=size;return 0;
+}
+int tmp_preallocate(struct nas_tmp_file *file,uint64_t offset,
+                    uint64_t length,unsigned mode) {
+    if(file!=&fixture_created || mode || offset>UINT64_MAX-length)
+        return -EINVAL;
+    return tmp_resize(file,offset+length);
 }
 int64_t tmp_write_at(struct nas_tmp_file *file,uint64_t off,
                      const uint8_t *source,uint64_t count) {
@@ -674,6 +777,24 @@ static void test_owned_unix_mknod(void) {
 int main(void) {
     char resolved[256],data[32];
     struct nas_fs_node n;
+    struct nas_vfs_statfs stats;
+    assert(nas_fs_lookup_node("/tmp/demo",true,&n,resolved)==0);
+    uint64_t shared_pa=0;
+    assert(nas_vfs_acquire_shared_page(&n,0,&shared_pa)==0);
+    assert(shared_pa==(uint64_t)(uintptr_t)fixture_shared_frame);
+    assert(nas_vfs_touch_shared(&n)==0 && shared_touch_calls==1);
+    assert(nas_vfs_acquire_shared_page(&n,4096,&shared_pa)==-EFAULT);
+    assert(!shared_pa);
+    assert(nas_vfs_statfs(&n,&stats)==0);
+    assert(stats.magic==0x01021994ULL && stats.block_size==4096);
+    assert(stats.blocks==2048 && stats.free_blocks==789 &&
+           stats.available_blocks==789 && stats.name_max==255);
+    fixture_free_frames=700;
+    assert(nas_vfs_statfs(&n,&stats)==0 && stats.free_blocks==700);
+    assert(nas_vfs_statfs(0,&stats)==-EINVAL);
+    assert(nas_fs_lookup_node("/bin/demo",true,&n,resolved)==0);
+    assert(nas_vfs_acquire_shared_page(&n,0,&shared_pa)==-ENOSYS);
+    assert(nas_vfs_statfs(&n,&stats)==-EOPNOTSUPP);
     struct nas_fs_node canonical_parent;
     assert(nas_fs_lookup_parent("/tmp/alias/new-parent",
                   &canonical_parent,resolved)==0);
@@ -928,14 +1049,47 @@ int main(void) {
            owned_metadata.uid==123 && owned_metadata.gid==789);
     assert(nas_vfs_utimens(&n,123,456,true,true)==0);
     assert(tmp_demo.atime_ns==123 && tmp_demo.mtime_ns==456);
+    /* Names stay on the same inode through aliases/renames; generic VFS
+     * never stores its own pathname-indexed xattr shadow state. */
+    const uint8_t fixture_attr[]={'N','a','S','e','e','d'};
+    assert(nas_vfs_setxattr(&n,"user.batch",fixture_attr,6,1)==0);
+    assert(nas_vfs_setxattr(&n,"user.batch",fixture_attr,6,1)==-EEXIST);
+    assert(nas_vfs_getxattr(&n,"user.batch",NULL,0)==6);
+    uint8_t xattr_readback[64]={0};
+    assert(nas_vfs_getxattr(&n,"user.batch",xattr_readback,5)==-ERANGE);
+    assert(nas_vfs_getxattr(&n,"user.batch",xattr_readback,6)==6);
+    assert(!memcmp(xattr_readback,fixture_attr,6));
+    assert(nas_vfs_listxattr(&n,NULL,0)==11);
+    assert(nas_vfs_listxattr(&n,xattr_readback,64)==11);
+    assert(!strcmp((const char *)xattr_readback,"user.batch"));
+    uint64_t logical=0,extent_length=0;
+    bool extent_last=false;
+    assert(nas_vfs_fiemap_next(&n,0,4,&logical,&extent_length,&extent_last)==1);
+    assert(logical==0 && extent_length==4096 && extent_last);
+    assert(nas_vfs_removexattr(&n,"user.batch")==0);
+    assert(nas_vfs_getxattr(&n,"user.batch",NULL,0)==-ENODATA);
+    assert(nas_fs_lookup_node("/bin/demo",true,&n,resolved)==0);
+    assert(nas_vfs_setxattr(&n,"user.batch",fixture_attr,6,0)==-EROFS);
+    assert(nas_vfs_fiemap_next(&n,0,4,&logical,&extent_length,&extent_last)==-EOPNOTSUPP);
     struct nas_vfs_dirent records[8];
     assert(nas_fs_lookup_node("/",true,&n,resolved)==0);
-    assert(nas_vfs_read_dir(&n,0,records,8)==7);
+    assert(nas_vfs_read_dir(&n,0,records,8)==8);
     assert(!strcmp(records[0].name,".") && records[0].ino==1);
     assert(!strcmp(records[1].name,"..") && records[1].ino==1);
-    assert(!strcmp(records[2].name,"bin") && records[2].ino==2);
-    assert(records[2].dtype==4);
-    assert(nas_vfs_read_dir(&n,7,records,8)==0);
+    assert(!strcmp(records[2].name,"sys") && records[2].dtype==4);
+    assert(!strcmp(records[3].name,"bin") && records[3].ino==2);
+    assert(records[3].dtype==4);
+    assert(nas_vfs_read_dir(&n,8,records,8)==0);
+    /* The same read-only sysfs CPU topology is available to every port;
+     * neither a staged fake guest file nor a lscpu-specific syscall. */
+    assert(nas_fs_lookup_node("/sys/devices/system/cpu/possible",true,
+                              &n,resolved)==0);
+    assert(nas_vfs_read_at(&n,0,(uint8_t *)data,4)==2);
+    assert(!memcmp(data,"0\n",2));
+    assert(nas_fs_lookup_node("/sys/devices/system/cpu/cpu0/topology/core_id",
+                              true,&n,resolved)==0);
+    assert(nas_vfs_read_at(&n,0,(uint8_t *)data,4)==2);
+    assert(!memcmp(data,"0\n",2));
     assert(nas_fs_lookup_node("/bin",true,&n,resolved)==0);
     assert(nas_vfs_read_dir(&n,0,records,8)==3);
     assert(records[2].ino==3 && !strcmp(records[2].name,"demo"));
@@ -1206,6 +1360,21 @@ int main(void) {
     assert(locks);
     assert(nas_locks_apply(locks,11,NAS_LOCK_WRITE,0,4)==0);
     assert(nas_locks_conflict(locks,12,NAS_LOCK_WRITE,0,4)>=0);
+    bool seen_flock=false,seen_posix=false;
+    for(unsigned ordinal=0;ordinal<1024;ordinal++) {
+        struct nas_vfs_lock_snapshot snapshot;
+        int rc=nas_vfs_lock_snapshot(ordinal,&snapshot);
+        if(rc==-ENOENT)break;
+        assert(rc==0);
+        if(snapshot.ino!=n.ino)continue;
+        if(snapshot.flock && snapshot.file_owner==&owner_a &&
+           snapshot.exclusive && snapshot.end==UINT64_MAX)
+            seen_flock=true;
+        if(!snapshot.flock && snapshot.pid==11 && snapshot.exclusive &&
+           snapshot.start==0 && snapshot.end==4)
+            seen_posix=true;
+    }
+    assert(seen_flock && seen_posix);
     nas_vfs_release_posix_locks(&n,11);
     assert(nas_locks_conflict(locks,12,NAS_LOCK_WRITE,0,4)==-1);
     struct nas_fs_node other_open=n;
@@ -1427,9 +1596,9 @@ int main(void) {
     struct nas_fs_node root_list;
     struct nas_vfs_dirent root_entries[8];
     assert(nas_fs_lookup_node("/",true,&root_list,resolved)==0);
-    assert(nas_vfs_read_dir(&root_list,0,root_entries,8)==7);
-    assert(!strcmp(root_entries[5].name,"mnt"));
-    assert(root_entries[5].ino==801 && root_entries[5].dtype==4);
+    assert(nas_vfs_read_dir(&root_list,0,root_entries,8)==8);
+    assert(!strcmp(root_entries[6].name,"mnt"));
+    assert(root_entries[6].ino==801 && root_entries[6].dtype==4);
     /* The mount itself owns the covered /mnt directory and root parent.
      * A directory lease cannot evaporate merely because no user FD is open. */
     assert(nas_vfs_inode_is_pinned(&entries[5]));

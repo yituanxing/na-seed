@@ -4,6 +4,7 @@
 #include "../errno.h"
 #include "../syscall/ops.h"
 #include "../task.h"
+#include "../task/signal.h"
 #include "../fd.h"
 #include "../bootfs.h"
 #include "../tmpfs.h"
@@ -11,9 +12,11 @@
 #include "../path.h"
 #include "../lib/string.h"
 #include "../mm/usercopy.h"
+#include "../mm/frame.h"
 #include "../arch/arch.h"
 #include "../arch/abi.h"
 #include "../boot_image.h"
+#include "../random.h"
 #include "../arch/linux_stat_abi.h"
 #include "../arch/linux_fcntl_abi.h"
 #include "../arch/mmu.h"
@@ -297,6 +300,60 @@ static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
      * The semantic request is its low 32 bits, not the sign extension. */
     cmd=(uint32_t)cmd;
     unsigned slot=TASK.fds->entries[fd].slot;
+    if(cmd==0xc020660bU) { /* Linux FS_IOC_FIEMAP, 32-byte header */
+        struct nas_linux_fiemap {
+            uint64_t start,length;
+            uint32_t flags,mapped,count,reserved;
+        } fm;
+        struct nas_linux_extent {
+            uint64_t logical,physical,length,reserved64[2];
+            uint32_t flags,reserved[3];
+        };
+        _Static_assert(sizeof(struct nas_linux_fiemap)==32,"FIEMAP header");
+        _Static_assert(sizeof(struct nas_linux_extent)==56,"FIEMAP extent");
+        if(nas_open_files[slot].status_flags&NAS_LINUX_O_PATH)
+            return (uint64_t)-EBADF;
+        const struct nas_open_file *opened=&nas_open_files[slot];
+        if(!opened->vnode_pinned)return (uint64_t)-ENOTTY;
+        if(!nas_user_read_bytes(arg,(uint8_t *)&fm,sizeof(fm)))
+            return (uint64_t)-EFAULT;
+        if(fm.flags&~1U)return (uint64_t)-EBADR; /* only FIEMAP_FLAG_SYNC */
+        if(!fm.length)return (uint64_t)-EINVAL;
+        uint64_t size=nas_vfs_node_size(&opened->vnode);
+        uint64_t end=fm.length>UINT64_MAX-fm.start ? UINT64_MAX :
+                     fm.start+fm.length;
+        if(end>size)end=size;
+        uint64_t cursor=fm.start;
+        uint32_t mapped=0;
+        while(cursor<end && (!fm.count || mapped<fm.count)) {
+            uint64_t logical=0,length=0;
+            bool last=false;
+            int rc=nas_vfs_fiemap_next(&opened->vnode,cursor,end,
+                                       &logical,&length,&last);
+            if(rc<0)return (uint64_t)(int64_t)rc;
+            if(!rc)break;
+            if(!length || logical>UINT64_MAX-length ||
+               logical+length<=cursor)return (uint64_t)-EIO;
+            if(fm.count) {
+                /* tmpfs has real allocated pages, but NO disk sector number.
+                 * UNKNOWN (not DELALLOC) makes filefrag report the truth. */
+                struct nas_linux_extent extent={
+                    .logical=logical,.length=length,
+                    .flags=2U|(last?1U:0U) /* UNKNOWN | LAST */
+                };
+                uint64_t displacement=32ULL+(uint64_t)mapped*sizeof(extent);
+                if(arg>UINT64_MAX-displacement ||
+                   !nas_user_write_bytes(arg+displacement,
+                                         (const uint8_t *)&extent,sizeof(extent)))
+                    return (uint64_t)-EFAULT;
+            }
+            mapped++;
+            cursor=logical+length;
+        }
+        fm.mapped=mapped;
+        return nas_user_write_bytes(arg,(const uint8_t *)&fm,sizeof(fm))
+            ? 0:(uint64_t)-EFAULT;
+    }
     if(cmd==0x5421ULL) { /* FIONBIO: pointer to native int */
         if(nas_open_files[slot].status_flags&NAS_LINUX_O_PATH)
             return (uint64_t)-EBADF;
@@ -307,12 +364,40 @@ static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
         else nas_open_files[slot].status_flags&=~0x800ULL;
         return 0;
     }
+    if(cmd==0x5441ULL) { /* TIOCGPTPEER: open the slave of this PTY master */
+        /* Unlike ordinary PTY ioctls this creates a NEW descriptor, so its
+         * allocation belongs at the common FD boundary, not in pty.c.
+         * util-linux script/openpty uses this Linux interface instead of
+         * constructing /dev/pts/N and opening it a second time. */
+        if(TASK.fds->entries[fd].kind!=FD_PTY_MASTER)
+            return (uint64_t)-ENOTTY;
+        uint64_t flags=0;
+        if(!nas_linux_open_flags(arg,&flags) ||
+           (flags&3ULL)==3ULL ||
+           (flags&~(3ULL|0x100ULL|0x800ULL|0x80000ULL)))
+            return (uint64_t)-EINVAL;
+        const unsigned number=nas_pty_number(slot);
+        if(number>=NAS_PTY_LIMIT)return (uint64_t)-EBADF;
+        unsigned fds[2],slots[2];
+        int capacity=nas_fd_reserve(nas_current_task,0,1,fds,slots,
+                                    "TIOCGPTPEER");
+        if(capacity)return (uint64_t)(int64_t)capacity;
+        int rc=nas_pty_attach(number,slots[0]);
+        if(rc)return (uint64_t)(int64_t)rc;
+        if(!nas_fd_install_new(nas_current_task,fds[0],slots[0],FD_PTY_SLAVE,
+                               nas_linux_open_status_flags(flags),
+                               !!(flags&0x80000ULL)))
+            nas_fs_fail("reserved TIOCGPTPEER FD was occupied");
+        return fds[0];
+    }
     if(cmd==0x5451ULL || cmd==0x5450ULL) { /* FIOCLEX / FIONCLEX */
         TASK.fds->entries[fd].cloexec=(uint8_t)(cmd==0x5451ULL);
         return 0;
     }
     const struct nas_file_ops *ops=nas_open_files[slot].ops;
-    return ops && ops->ioctl ? ops->ioctl(fd,cmd,arg) : (uint64_t)-ENOTTY;
+    uint64_t result=ops && ops->ioctl ? ops->ioctl(fd,cmd,arg) :
+                    (uint64_t)-ENOTTY;
+    return result;
 }
 
 /* Pathname / dirfd user-address adapter lives in namespace_syscall.c. */
@@ -376,7 +461,7 @@ static uint64_t open_path_owned(const char *path,
     if(!nas_linux_open_flags(native_flags,&flags))
         return (uint64_t)-EINVAL;
     flags=nas_linux_path_only_flags(flags);
-    const uint64_t permitted=NAS_LINUX_O_PATH | 3ULL | 0x800ULL | 0x8000ULL |
+    const uint64_t permitted=NAS_LINUX_O_PATH | 3ULL | 0x800ULL | 0x1000ULL | 0x8000ULL |
         0x10000ULL | 0x20000ULL | 0x80000ULL | 0x100ULL | 0x80ULL |
         0x40ULL | 0x200ULL | 0x400ULL;
     if(flags&~permitted)return (uint64_t)-EINVAL;
@@ -408,6 +493,8 @@ static uint64_t open_path_owned(const char *path,
             !strcmp(path,"/dev/ttyS0"))kind=FD_TTY;
     else if(!strcmp(path,"/dev/null"))kind=FD_NULL;
     else if(!strcmp(path,"/dev/zero"))kind=FD_ZERO;
+    else if(!strcmp(path,"/dev/urandom") || !strcmp(path,"/dev/random"))
+        kind=FD_RANDOM;
 
     /* Reserve both resources without publication BEFORE namei may create
      * or truncate a filesystem inode. EMFILE/ENFILE must never cause
@@ -504,6 +591,7 @@ uint64_t nas_fs_open_path(const char *path,uint64_t native_flags,
 bool nas_fs_bootstrap_endpoint(const char *path) {
     if(!path || path[0]!='/')return false;
     if(!strcmp(path,"/dev/null") || !strcmp(path,"/dev/zero") ||
+       !strcmp(path,"/dev/random") || !strcmp(path,"/dev/urandom") ||
        !strcmp(path,"/dev/tty") || !strcmp(path,"/dev/ttyS0") ||
        !strcmp(path,"/dev/console") || !strcmp(path,"/dev/ptmx"))
         return true;
@@ -567,6 +655,20 @@ static uint64_t vread_zero(unsigned slot,uint8_t *dst,uint64_t n) {
     (void)slot;
     memset(dst,0,(size_t)n);
     return n;
+}
+/* Both Linux random character endpoints consume the SAME seed-backed
+ * ChaCha20 stream as getrandom(2). The boot entropy quality contract is
+ * shared; never synthesize constant bytes or pretend an unseeded RNG works.
+ * file_io's kernel-buffer provider path makes EFAULT/partial copyout safe. */
+static uint64_t vread_random(unsigned slot,uint8_t *dst,uint64_t n) {
+    (void)slot;
+    return nas_random_bytes(dst,n) ? n : (uint64_t)-ENOSYS;
+}
+/* Injecting entropy/reseeding via a device write is not supported. A write
+ * must not claim successful mixing while silently discarding the input. */
+static uint64_t vwrite_random(unsigned slot,const uint8_t *src,uint64_t n) {
+    (void)slot;(void)src;(void)n;
+    return (uint64_t)-EOPNOTSUPP;
 }
 static uint64_t vread_dir_plan(unsigned slot,uint64_t requested) {
     (void)slot;(void)requested;
@@ -677,6 +779,10 @@ static const struct nas_file_ops ops_zero={
     .read=vread_zero,.write=vwrite_discard,.write_ignores_source=true,
     .poll=vpoll_always,.poll_description=dpoll_always
 };
+static const struct nas_file_ops ops_random={
+    .read=vread_random,.write=vwrite_random,
+    .poll=vpoll_always,.poll_description=dpoll_always
+};
 static const struct nas_file_ops ops_bootfs={
     .read_plan=vread_limine_plan,.read=vread_limine,
     .poll=vpoll_always,.poll_description=dpoll_always
@@ -742,6 +848,76 @@ static uint16_t vpoll_epoll(uint64_t fd,uint16_t events){
 }
 static void vrelease_epoll(unsigned slot){nas_epoll_release(slot);}
 static void vrelease_eventfd(unsigned slot){nas_eventfd_release(slot);}
+/* signalfd is a genuine File: its mask belongs to the refcounted open
+ * description, while pending signals belong to the active task/TGID. This
+ * works across dup/fork without creating an independent fake signal queue. */
+static uint64_t signalfd_masks[NAS_OPEN_FILE_LIMIT];
+static uint64_t sys_signalfd4(uint64_t raw_fd,uint64_t user_mask,
+                             uint64_t mask_size,uint64_t flags) {
+    if(mask_size!=8ULL || (flags&~(0x800ULL|0x80000ULL)))
+        return (uint64_t)-EINVAL;
+    uint64_t mask=0;
+    if(!nas_user_read_u64(user_mask,&mask))return (uint64_t)-EFAULT;
+    mask&=~((1ULL<<(NAS_SIGKILL-1U))|(1ULL<<(NAS_SIGSTOP-1U)));
+    int fd=(int32_t)(uint32_t)raw_fd;
+    if(fd!=-1) {
+        if(fd<0 || fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind!=FD_SIGNALFD)
+            return (uint64_t)-EBADF;
+        unsigned slot=TASK.fds->entries[fd].slot;
+        signalfd_masks[slot]=mask;
+        return (uint64_t)fd;
+    }
+    unsigned fds[2],slots[2];
+    int rc=nas_fd_reserve(nas_current_task,0,1,fds,slots,"signalfd4");
+    if(rc)return (uint64_t)(int64_t)rc;
+    signalfd_masks[slots[0]]=mask;
+    if(!nas_fd_install_new(nas_current_task,fds[0],slots[0],FD_SIGNALFD,
+                           flags&0x800ULL,!!(flags&0x80000ULL)))
+        nas_fs_fail("reserved signalfd description was occupied");
+    return fds[0];
+}
+static uint64_t signalfd_read_plan(unsigned slot,uint64_t requested) {
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+        return (uint64_t)-EBADF;
+    if(requested<128ULL)return (uint64_t)-EINVAL;
+    if(!nas_signal_signalfd_ready(nas_current_task,signalfd_masks[slot]))
+        return (nas_open_files[slot].status_flags&0x800ULL)?
+               (uint64_t)-EAGAIN:(uint64_t)-EOPNOTSUPP;
+    return 128ULL;
+}
+static uint64_t signalfd_read(unsigned slot,uint8_t *dst,uint64_t length) {
+    uint64_t plan=signalfd_read_plan(slot,length);
+    if((int64_t)plan<0)return plan;
+    if(!dst)return (uint64_t)-EFAULT;
+    struct nas_signalfd_event event={0};
+    unsigned signo=nas_signal_signalfd_take(nas_current_task,
+                                             signalfd_masks[slot],&event);
+    if(!signo)return (uint64_t)-EAGAIN;
+    /* Native Linux signalfd_siginfo: signo@0, code@8, pid@12,
+     * status@40, all 32-bit fields in the same LP64 ABI on three ISAs. */
+    memset(dst,0,128);
+    memcpy(dst,&event.signo,4);
+    memcpy(dst+8,&event.code,4);
+    memcpy(dst+12,&event.pid,4);
+    memcpy(dst+40,&event.status,4);
+    return 128ULL;
+}
+uint16_t nas_fs_signalfd_poll_task(unsigned slot,uint16_t events,
+                                  const struct nas_task *task) {
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)return 0;
+    return (events&1U) &&
+        nas_signal_signalfd_ready(task,signalfd_masks[slot])?1U:0U;
+}
+static uint16_t signalfd_poll_slot(unsigned slot,uint16_t events) {
+    return nas_fs_signalfd_poll_task(slot,events,nas_current_task);
+}
+static uint16_t signalfd_poll_fd(uint64_t fd,uint16_t events) {
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind!=FD_SIGNALFD)return 0;
+    return signalfd_poll_slot(TASK.fds->entries[fd].slot,events);
+}
+static void signalfd_release(unsigned slot) {
+    if(slot<NAS_OPEN_FILE_LIMIT)signalfd_masks[slot]=0;
+}
 static const struct nas_file_ops ops_epoll={
     .poll=vpoll_epoll,.poll_description=nas_epoll_description_poll,.release=vrelease_epoll
 };
@@ -753,13 +929,21 @@ static const struct nas_file_ops ops_eventfd={
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
     .poll=nas_eventfd_poll,.poll_description=nas_eventfd_poll_slot,.release=vrelease_eventfd
 };
+static const struct nas_file_ops ops_signalfd={
+    .read_plan=signalfd_read_plan,.read=signalfd_read,
+    .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
+    .poll=signalfd_poll_fd,.poll_description=signalfd_poll_slot,
+    .release=signalfd_release
+};
 static const struct nas_file_ops *const ops_by_kind[]={
     [FD_UART]=&ops_uart,[FD_TTY]=&ops_tty,[FD_NULL]=&ops_null,
-    [FD_ZERO]=&ops_zero,[FD_BOOTFS]=&ops_bootfs,
+    [FD_ZERO]=&ops_zero,[FD_RANDOM]=&ops_random,
+    [FD_BOOTFS]=&ops_bootfs,
     [FD_ARCHIVE]=&ops_vfs_regular,[FD_DIR]=&ops_vfs_dir,
     [FD_PIPE_R]=&ops_pipe_read,[FD_PIPE_W]=&ops_pipe_write,
     [FD_EPOLL]=&ops_epoll,
-    [FD_EVENTFD]=&ops_eventfd,[FD_SOCKET]=&ops_socket,
+    [FD_EVENTFD]=&ops_eventfd,[FD_SIGNALFD]=&ops_signalfd,
+    [FD_SOCKET]=&ops_socket,
     [FD_PTY_MASTER]=&ops_pty,[FD_PTY_SLAVE]=&ops_pty
 };
 const struct nas_file_ops *nas_fs_ops_for_kind(uint8_t kind) {
@@ -780,6 +964,97 @@ static uint64_t sys_openat_boot(uint64_t dirfd, uint64_t pathname,
     result=maybe_open_bootstrap(&request,dirfd,pathname,flags,mode,result);
     nas_fs_path_end(&request);
     return result;
+}
+/* One common Linux xattr adapter for path/nofollow/File operations on all
+ * three architectures. Namei resolves an owned Dentry; the VFS validates
+ * the mount incarnation and the provider mutates the stable inode. The
+ * syscall boundary alone touches userspace or Linux ABI argument order. */
+static uint64_t sys_xattr(enum nas_syscall_op op,const uint64_t *args) {
+    bool by_fd=op==NAS_SC_fsetxattr || op==NAS_SC_fgetxattr ||
+               op==NAS_SC_flistxattr || op==NAS_SC_fremovexattr;
+    bool nofollow=op==NAS_SC_lsetxattr || op==NAS_SC_lgetxattr ||
+                  op==NAS_SC_llistxattr || op==NAS_SC_lremovexattr;
+    bool setting=op==NAS_SC_setxattr || op==NAS_SC_lsetxattr ||
+                 op==NAS_SC_fsetxattr;
+    bool getting=op==NAS_SC_getxattr || op==NAS_SC_lgetxattr ||
+                 op==NAS_SC_fgetxattr;
+    bool listing=op==NAS_SC_listxattr || op==NAS_SC_llistxattr ||
+                 op==NAS_SC_flistxattr;
+    struct nas_fs_path_request request={0};
+    struct nas_vfs_path path={0};
+    struct nas_fs_node resolved={0};
+    const struct nas_fs_node *node=NULL;
+    int rc=0;
+    if(by_fd) {
+        if(args[1]>=NAS_FD_LIMIT || TASK.fds->entries[args[1]].kind==FD_CLOSED)
+            return (uint64_t)-EBADF;
+        const struct nas_open_file *opened=
+            &nas_open_files[TASK.fds->entries[args[1]].slot];
+        if(!opened->vnode_pinned ||
+           (opened->status_flags&NAS_LINUX_O_PATH))
+            return (uint64_t)-EBADF;
+        node=&opened->vnode;
+    } else {
+        rc=nas_fs_user_lookup_begin((uint64_t)-100,args[1],!nofollow,
+                                    &request,&path,&resolved);
+        if(rc)return (uint64_t)(int64_t)rc;
+        node=&resolved;
+    }
+    char name[256];
+    if(!listing) {
+        rc=nas_user_read_cstr(args[2],name,sizeof(name));
+        if(rc)goto out;
+    }
+    uint64_t user_value=listing ? args[2] : args[3];
+    uint64_t user_size=listing ? args[3] : args[4];
+    uint64_t frame=0;
+    uint8_t *data=NULL;
+    if(setting) {
+        if(user_size>4096) {rc=-E2BIG;goto out;}
+        if(args[5]>UINT32_MAX) {rc=-EINVAL;goto out;}
+        if(user_size) {
+            frame=nas_frame_alloc();
+            if(!frame) {rc=-ENOMEM;goto out;}
+            data=(uint8_t *)(uintptr_t)(nas_hhdm_offset()+frame);
+            if(!nas_user_read_bytes(user_value,data,user_size)) {
+                rc=-EFAULT;goto done;
+            }
+        }
+        rc=nas_vfs_setxattr(node,name,data,user_size,(unsigned)args[5]);
+    } else if(getting || listing) {
+        int64_t required=getting ? nas_vfs_getxattr(node,name,NULL,0) :
+                                   nas_vfs_listxattr(node,NULL,0);
+        if(required<0) {rc=(int)required;goto out;}
+        if(!user_size) {rc=(int)required;goto out;}
+        if((uint64_t)required>user_size) {rc=-ERANGE;goto out;}
+        if(required>4096) {rc=-E2BIG;goto out;}
+        if(required) {
+            if(!nas_user_prepare_write(user_value,(uint64_t)required)) {
+                rc=-EFAULT;goto out;
+            }
+            frame=nas_frame_alloc();
+            if(!frame) {rc=-ENOMEM;goto out;}
+            data=(uint8_t *)(uintptr_t)(nas_hhdm_offset()+frame);
+            int64_t filled=getting ?
+                nas_vfs_getxattr(node,name,data,(uint64_t)required) :
+                nas_vfs_listxattr(node,data,(uint64_t)required);
+            if(filled<0) {rc=(int)filled;goto done;}
+            if(filled>required) {rc=-EIO;goto done;}
+            if(!nas_user_write_bytes(user_value,data,(uint64_t)filled)) {
+                rc=-EFAULT;goto done;
+            }
+            rc=(int)filled;
+        }
+    } else {
+        rc=nas_vfs_removexattr(node,name);
+    }
+done:
+    if(frame)(void)nas_frame_put(frame);
+out:
+    if(path.dentry && nas_vfs_path_put(&path))
+        nas_fs_fail("xattr Dentry reference corrupted");
+    if(!by_fd)nas_fs_path_end(&request);
+    return (uint64_t)(int64_t)rc;
 }
 /* directory enumeration/stat lookup live in metadata_syscall.c */
 /* A known filesystem operation returns its genuine Linux ABI result.
@@ -818,6 +1093,8 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
         FS_RESULT(nas_eventfd_create(args[1],0));
     case NAS_SC_eventfd2:
         FS_RESULT(nas_eventfd_create(args[1],args[2]));
+    case NAS_SC_signalfd4:
+        FS_RESULT(sys_signalfd4(args[1],args[2],args[3],args[4]));
     case NAS_SC_epoll_create1:
         FS_RESULT(nas_epoll_create1(args[1]));
     case NAS_SC_epoll_create:
@@ -835,6 +1112,11 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
         FS_RESULT(0);
     case NAS_SC_ioctl:
         FS_RESULT(sys_ioctl_fd(args[1],args[2],args[3]));
+    case NAS_SC_setxattr: case NAS_SC_lsetxattr: case NAS_SC_fsetxattr:
+    case NAS_SC_getxattr: case NAS_SC_lgetxattr: case NAS_SC_fgetxattr:
+    case NAS_SC_listxattr: case NAS_SC_llistxattr: case NAS_SC_flistxattr:
+    case NAS_SC_removexattr: case NAS_SC_lremovexattr: case NAS_SC_fremovexattr:
+        FS_RESULT(sys_xattr(op,args));
     case NAS_SC_dup3:
         if (args[1] == args[2] || (args[3] & ~0x80000ULL))
             FS_RESULT((uint64_t)-EINVAL);

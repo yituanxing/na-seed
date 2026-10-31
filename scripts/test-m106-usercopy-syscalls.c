@@ -29,6 +29,18 @@ static struct nas_mm guest_mm = { .users=1, .root_phys=0x9000 };
 static struct nas_task guest_task;
 static struct nas_files guest_files;
 struct nas_task *nas_current_task = &guest_task;
+/* This FD/usercopy fixture has no mounted VFS file; A005 exercises real
+ * VFS shared-mapping permissions and mtime in separate integration tests. */
+bool nas_vfs_can_write(const struct nas_fs_node *node) {
+    (void)node;
+    assert(!"unexpected mapped VFS write in M106");
+    return false;
+}
+int nas_vfs_touch_shared(const struct nas_fs_node *node) {
+    (void)node;
+    assert(!"unexpected mapped VFS dirty in M106");
+    return -EIO;
+}
 static unsigned pending_accept_slot=NAS_OPEN_FILE_LIMIT, accepted_count;
 
 /* The real FileOps importer owns its iovec snapshot until completion. The
@@ -564,8 +576,35 @@ int main(void) {
     assert((int64_t)nas_fs_fd_write(28,TEST_BASE,1)==-EBADF);
     nas_open_files[22].status_flags=2;
 
+    /* Linux /dev/random and /dev/urandom share getrandom(2)'s real seeded
+     * byte-stream backend, not a fixed test sequence or fake EOF. The new
+     * character File uses the standard descriptor's owned read/copyout path. */
+    const uint64_t random_seed[4]={
+        UINT64_C(0x0102030405060708),UINT64_C(0x1112131415161718),
+        UINT64_C(0x2122232425262728),UINT64_C(0x3132333435363738)
+    };
+    assert(nas_random_seed(random_seed,4));
+    assert(nas_fd_install_new(&guest_task,26,24,FD_RANDOM,0,false));
+    /* Other FileOps are intentionally not linked into this isolated host TU.
+     * Exercise the production random FileOps callbacks directly. */
+    nas_open_files[24].ops=&ops_random;
+    assert(nas_open_files[24].ops && nas_open_files[24].ops->read);
+    assert(nas_fs_fd_read(26,TEST_BASE+80,64)==64);
+    uint8_t first_random[64];
+    memcpy(first_random,user_ptr(TEST_BASE+80),sizeof(first_random));
+    assert(nas_fs_fd_read(26,TEST_BASE+208,64)==64);
+    assert(memcmp(first_random,user_ptr(TEST_BASE+208),64)!=0);
+    assert(nas_random_seed(random_seed,4));
+    assert(nas_random_getrandom(TEST_BASE+336,64,0)==64);
+    assert(memcmp(first_random,user_ptr(TEST_BASE+336),64)==0);
+    assert((int64_t)nas_fs_fd_write(26,TEST_BASE+80,1)==-EBADF);
+    /* O_RDWR permits writes but the unimplemented entropy-injection
+     * operation must be rejected, rather than claim false success. */
+    nas_open_files[24].status_flags=2;
+    assert((int64_t)nas_fs_fd_write(26,TEST_BASE+80,1)==-EOPNOTSUPP);
+
     a008_vectors(rd,wr);
     a012_stream_socket_vectors(a,b);
-    puts("[M106 USER-COPY SYSCALL PASS] real pipe + syscall adapters: RO atomicity, lazy/COW, no pipe loss, socketpair publication, accept retains pending peer, null/zero access_ok parity, O_PATH write EBADF");
+    puts("[M106 USER-COPY SYSCALL PASS] real pipe + syscall adapters: RO atomicity, lazy/COW, no pipe loss, socketpair publication, accept retains pending peer, null/zero and random char File parity, O_PATH write EBADF");
     return 0;
 }

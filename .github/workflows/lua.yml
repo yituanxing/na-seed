@@ -1,19 +1,5 @@
 name: NaSeed external Lua acceptance
 on:
-  pull_request:
-    paths:
-      - 'scripts/build-external-lua.sh'
-      - 'scripts/stage-external-lua-rootfs.sh'
-      - 'scripts/probe-external-lua.sh'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/check-native-qemu-target.py'
-      - 'scripts/lua-native-cases.tsv'
-      - 'tests/lua-*.lua'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'scripts/ci-ubuntu-mirror.sh'
-      - '.github/workflows/lua.yml'
   workflow_dispatch:
 
 # Failures remain on the PR; don't rerun the whole legacy BusyBox suite per

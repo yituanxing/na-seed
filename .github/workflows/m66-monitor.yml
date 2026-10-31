@@ -1,20 +1,5 @@
 name: NaSeed M66 original procps-ng top and htop native process monitoring — native three ISA
 on:
-  pull_request:
-    paths:
-      - 'kernel/**'
-      - 'scripts/test-procfs.c'
-      - 'scripts/stage-m66-prebuilt.sh'
-      - 'scripts/probe-m66-monitor.sh'
-      - 'scripts/m66-*'
-      - 'tests/m66-*'
-      - 'rootfs/alpine/packages-m66-monitor.txt'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'scripts/check-prebuilt-profile-catalog.py'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/check-native-qemu-target.py'
-      - '.github/workflows/m66-monitor.yml'
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

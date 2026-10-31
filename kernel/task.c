@@ -1,4 +1,5 @@
 #include "task.h"
+#include "task/rusage.h"
 #include "fs/mode.h"
 #include "arch/abi.h"
 #include "fd.h"
@@ -76,7 +77,9 @@ void nas_task_boot_init(void) {
     memcpy(nas_current_task->comm,"init",5);
     nas_current_task->fs=nas_fs_context_new();
     nas_current_task->sighand=nas_sighand_new();
-    if(!nas_current_task->fs || !nas_current_task->sighand)
+    nas_current_task->signal_group=nas_signal_group_new();
+    if(!nas_current_task->fs || !nas_current_task->sighand ||
+       !nas_current_task->signal_group)
         nas_fail("cannot allocate init process resources");
     nas_current_task->state = NAS_TASK_RUNNING;
 }
@@ -98,10 +101,17 @@ struct nas_task *nas_task_fork_slot(void) {
         if(!child_fs) return NULL;
         struct nas_sighand *child_sighand=nas_sighand_copy(nas_current_task->sighand);
         if(!child_sighand) { nas_fs_context_put(child_fs); return NULL; }
+        struct nas_signal_group *child_group=nas_signal_group_new();
+        if(!child_group) {
+            nas_fs_context_put(child_fs);
+            nas_sighand_put(child_sighand);
+            return NULL;
+        }
         struct nas_files *child_files=nas_files_copy(nas_current_task->files);
         if(!child_files) {
             nas_fs_context_put(child_fs);
             nas_sighand_put(child_sighand);
+            nas_signal_group_put(child_group);
             return NULL;
         }
         memcpy(child, nas_current_task, sizeof(*child));
@@ -110,6 +120,7 @@ struct nas_task *nas_task_fork_slot(void) {
         child->group_leader=child;
         child->fs=child_fs;
         child->sighand=child_sighand;
+        child->signal_group=child_group;
         /* memcpy must never transfer a reference without incrementing it. */
         child->mm=0;
         /* A fork from a worker snapshots the LIVE CLONE_FS and
@@ -134,6 +145,8 @@ struct nas_task *nas_task_fork_slot(void) {
         child->execed = false;
         child->state = NAS_TASK_READY;
         child->cpu_runtime_ns=0;
+        child->exited_thread_cpu_ns=0;
+        child->waited_children_cpu_ns=0;
         child->exit_code = 0;
         child->termination_signal = 0;
         child->stopped_from = NAS_TASK_FREE;
@@ -160,6 +173,8 @@ struct nas_task *nas_task_fork_slot(void) {
         for(unsigned n=0;n<NAS_POSIX_TIMERS;n++)child->timers[n]=(struct nas_posix_timer){0};
         child->signal_frame_active = false;
         child->signal_frame_sp = 0;
+        /* fork/vfork inherits its parent's alternate signal stack; the
+         * CLONE_VM pthread path explicitly clears it for the new TID. */
         child->ppoll_mask_active=false;
         child->signal_force_deliver=0;
         /* Fork creates a new thread-group / task identity. The parent's
@@ -209,6 +224,15 @@ void nas_task_adopt_orphans(uint64_t exiting_pid) {
 }
 void nas_task_release(struct nas_task *task) {
     if (!task || task == nas_current_task) return;
+    /* Freed CLONE_THREAD slots must not erase their measured CPU time from
+     * RUSAGE_SELF: charge the exact group leader once, before reuse. */
+    if(task->is_thread && task->group_leader &&
+       task->group_leader!=task &&
+       task->group_leader->state!=NAS_TASK_FREE) {
+        struct nas_task *leader=task->group_leader;
+        leader->exited_thread_cpu_ns=nas_rusage_cpu_add(
+            leader->exited_thread_cpu_ns,task->cpu_runtime_ns);
+    }
     /* An abandoned kernel continuation must never leave a dangling waiter. */
     (void)nas_wait_queue_remove(&task->kernel_exec.wait);
     /* A parked I/O request owns an independent File pin. Drop it while
@@ -218,8 +242,12 @@ void nas_task_release(struct nas_task *task) {
     if (task->mm) { nas_mm_put(task->mm); task->mm=0; }
     if (task->fs) { nas_fs_context_put(task->fs); task->fs=0; }
     if (task->sighand) { nas_sighand_put(task->sighand); task->sighand=0; }
+    if (task->signal_group) { nas_signal_group_put(task->signal_group); task->signal_group=0; }
     if (task->files) { nas_files_put(task->files); task->files=0; }
     task->state = NAS_TASK_FREE;
+    task->cpu_runtime_ns=0;
+    task->exited_thread_cpu_ns=0;
+    task->waited_children_cpu_ns=0;
     task->pid = 0;
     task->tgid=0;
     task->is_thread=false;

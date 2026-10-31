@@ -6,10 +6,20 @@
 #include <string.h>
 #include "../kernel/mm/vm.h"
 #include "../kernel/mm/fault.h"
+#include "../kernel/mm/file_backing.h"
 #include "../kernel/task.h"
 #define PAGE 4096ULL
 static uint8_t physical[0x10000];
 static uint64_t last_root;
+/* This isolated ptrace fixture has no VMA ledger and never owns mutable
+ * shared file pages; the M101 integration suite covers that distinct path. */
+const struct nas_anon_region *nas_vma_find(const struct nas_anon_regions *r,
+                                            uint64_t va) {
+    (void)r;(void)va;return NULL;
+}
+int nas_fs_mmap_dirty(struct nas_mapped_file *f) {
+    (void)f;assert(!"unexpected shared mapping in M75");return -1;
+}
 uint64_t nas_hhdm_offset(void){return (uint64_t)(uintptr_t)physical;}
 /* The M71/M75 remote-copy fixture has immutable, independently owned
  * frames and no VMAs. The M101 fixture tests the ACTUAL COW allocator,

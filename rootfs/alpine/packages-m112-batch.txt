@@ -1,0 +1,21 @@
+# M112: original Alpine 3.23 signed packages, downloaded on Linux host.
+# Each listed executable was independently checked to be ELF in the
+# official x86_64 APK; APKINDEX availability was checked on all three ISAs.
+procs
+gojq
+gron
+shfmt
+pngquant
+moreutils
+flac
+sox
+mediainfo
+delta
+exiv2
+optipng
+jpegoptim
+# The original cjpeg/djpeg ELFs generate and decode JPEG fixtures; they are
+# applications exercised only on prebuilt data, not guest source compilers.
+libjpeg-turbo-utils
+jo
+yq-go

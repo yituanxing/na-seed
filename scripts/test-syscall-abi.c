@@ -25,8 +25,11 @@ int main(void) {
     assert(nas_linux_decode_syscall(__NR_truncate) == NAS_SC_truncate);
     assert(nas_linux_decode_syscall(__NR_prctl) == NAS_SC_prctl);
     assert(nas_linux_decode_syscall(__NR_mmap) == NAS_SC_mmap);
+    assert(nas_linux_decode_syscall(__NR_msync) == NAS_SC_msync);
+    assert(nas_linux_decode_syscall(__NR_madvise) == NAS_SC_madvise);
     assert(nas_linux_decode_syscall(__NR_newfstatat) == NAS_SC_newfstatat);
     assert(nas_linux_decode_syscall(__NR_getrandom) == NAS_SC_getrandom);
+    assert(nas_linux_decode_syscall(__NR_getrusage) == NAS_SC_getrusage);
     assert(nas_linux_decode_syscall(__NR_eventfd) == NAS_SC_eventfd);
     assert(nas_linux_decode_syscall(__NR_eventfd2) == NAS_SC_eventfd2);
     assert(nas_linux_decode_syscall(__NR_epoll_create1) == NAS_SC_epoll_create1);
@@ -78,6 +81,14 @@ int main(void) {
     clone_args[1] |= 0x00400000U;
     assert(nas_linux_decode_call(clone_args) == NAS_SC_clone_thread);
     clone_args[1] |= 0x01000000U;
+    assert(nas_linux_decode_call(clone_args) == NAS_SC_NONE);
+    /* Original Go x86 runtime creates threads with CLONE_SETTLS but
+     * without either parent- or child-TID writes. Reject adjacent masks. */
+    clone_args[1] = 0x000d0f00U;
+    assert(nas_linux_decode_call(clone_args) == NAS_SC_clone_thread);
+    clone_args[1] = 0x00050f00U;
+    assert(nas_linux_decode_call(clone_args) == NAS_SC_clone_thread);
+    clone_args[1] |= 0x00200000U;
     assert(nas_linux_decode_call(clone_args) == NAS_SC_NONE);
     return 0;
 }

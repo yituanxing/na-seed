@@ -25,12 +25,26 @@ int main(void) {
     call[1]=17U;
     call[5]=0;
     assert(nas_linux_decode_call(call)==NAS_SC_fork);
+    /* Original AArch64 Go clone ignores the supplied arg4 without
+     * CLONE_SETTLS; x86 Go variant explicitly supplies thread-local TLS. */
+    call[1]=0x00050f00ULL;
+    call[2]=0x3401e000ULL;
+    call[3]=0x34002540ULL; /* ignored: no PARENT_SETTID flag */
+    call[4]=0x00050f00ULL; /* ignored: no SETTLS */
+    assert(nas_linux_decode_call(call)==NAS_SC_clone_thread);
+    call[1]=0x000d0f00ULL;
+    assert(nas_linux_decode_call(call)==NAS_SC_clone_thread);
+    call[1]|=0x00200000ULL; /* unimplemented extra combination */
+    assert(nas_linux_decode_call(call)==NAS_SC_NONE);
     /* Real RV64/AArch64 BusyBox Kconfig make invokes native /bin/sleep.
      * Linux asm-generic syscall 101 was already supported by the common
      * deadline scheduler, but missing from this architecture decoder. */
     assert(nas_linux_decode_syscall(101U)==NAS_SC_nanosleep);
     assert(nas_linux_decode_syscall(115U)==NAS_SC_clock_nanosleep);
     assert(nas_linux_decode_syscall(166U)==NAS_SC_umask);
+    assert(nas_linux_decode_syscall(165U)==NAS_SC_getrusage);
+    assert(nas_linux_decode_syscall(233U)==NAS_SC_madvise);
+    assert(nas_linux_decode_syscall(227U)==NAS_SC_msync);
     assert(nas_linux_decode_syscall(54U)==NAS_SC_fchownat);
     assert(nas_linux_decode_syscall(55U)==NAS_SC_fchown);
     assert(nas_linux_decode_syscall(123U)==NAS_SC_sched_getaffinity);

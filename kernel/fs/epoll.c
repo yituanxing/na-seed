@@ -67,20 +67,20 @@ static bool instance_slot(const struct nas_task *task,uint64_t fd,
     *slot=task->fds->entries[fd].slot;
     return true;
 }
-static uint16_t ready_now(const struct ep_watch *w){
+static uint16_t ready_now(const struct ep_watch *w,const struct nas_task *task){
     if(!w->used || w->disabled ||
        w->slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[w->slot].refcount)
         return 0;
     /* All kinds share one open-description operation. Future AF_INET,
      * block devices and filesystems only need to implement their own
      * poll_description callback; epoll never learns the backend type. */
-    return nas_fs_poll_description(w->slot,
-        (uint16_t)(w->events & (EP_IN|EP_PRI|EP_OUT|EP_RDHUP)));
+    return nas_fs_poll_description_task(w->slot,
+        (uint16_t)(w->events & (EP_IN|EP_PRI|EP_OUT|EP_RDHUP)),task);
 }
-static bool instance_ready(unsigned slot){
+static bool instance_ready(unsigned slot,const struct nas_task *task){
     for(unsigned i=0;i<NAS_EPOLL_EVENTS_MAX;i++){
         struct ep_watch *w=&epolls[slot].watches[i];
-        uint16_t ready=ready_now(w);
+        uint16_t ready=ready_now(w,task);
         if(!ready)w->last_ready=0;
         else if(!(w->events&EP_EDGE) || (ready & ~w->last_ready))return true;
     }
@@ -158,7 +158,7 @@ uint64_t nas_epoll_wait(uint64_t epfd,uint64_t out,uint64_t maximum,uint64_t tim
     uint64_t done=0;
     for(unsigned i=0;i<NAS_EPOLL_EVENTS_MAX && done<maximum;i++){
         struct ep_watch *w=&epolls[slot].watches[i];
-        uint16_t ready=ready_now(w);
+        uint16_t ready=ready_now(w,task);
         if(!ready) {w->last_ready=0;continue;}
         if((w->events&EP_EDGE) && !(ready & ~w->last_ready))continue;
         uint8_t bytes[EP_EVENT_BYTES]={0};
@@ -181,7 +181,7 @@ uint64_t nas_epoll_wait(uint64_t epfd,uint64_t out,uint64_t maximum,uint64_t tim
 uint16_t nas_epoll_description_poll(unsigned slot,uint16_t interests) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
         return 0;
-    return instance_ready(slot)?(interests&EP_IN):0;
+    return instance_ready(slot,nas_current_task)?(interests&EP_IN):0;
 }
 uint16_t nas_epoll_fd_poll(uint64_t fd,uint16_t interests){
     unsigned slot;
@@ -211,7 +211,7 @@ bool nas_epoll_task_ready(const struct nas_task *task){
        task->fds->entries[task->wait.blocked_args[0]].kind!=FD_EPOLL)return true;
     unsigned slot=task->fds->entries[task->wait.blocked_args[0]].slot;
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)return true;
-    return instance_ready(slot);
+    return instance_ready(slot,task);
 }
 void nas_epoll_target_final_close(unsigned target){
     for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++){

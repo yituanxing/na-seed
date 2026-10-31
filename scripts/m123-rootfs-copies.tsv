@@ -1,0 +1,2 @@
+# ext2/FAT image fixtures are built on Linux host before rootfs.cpio.
+tests/m123-batch-run.sh	tests/m123-batch-run.sh

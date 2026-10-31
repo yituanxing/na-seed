@@ -80,6 +80,10 @@ static void tmp_try_reclaim(struct nas_tmp_file *node) {
      * Refuse to recycle any unexpectedly live namespace index pointer. */
     if(node->directory_alias || node->children.count)return;
     tmp_truncate(node);
+    if(node->xattr_frame) {
+        (void)nas_frame_put(node->xattr_frame);
+        node->xattr_frame=0;
+    }
     node->used = false;
     node->free_next=tmp_free_inodes;
     tmp_free_inodes=node;
@@ -89,8 +93,8 @@ static void tmp_try_reclaim(struct nas_tmp_file *node) {
 /* An optional root frame indexes 512 indirect pages; each indirect page
  * indexes 512 independently allocated 4-KiB file data pages. The common
  * frame allocator and HHDM supply all storage; no ISA-specific fast path. */
-static uint8_t *tmp_data_page(struct nas_tmp_file *file, uint64_t number,
-                              bool create) {
+static uint64_t tmp_data_frame(struct nas_tmp_file *file,uint64_t number,
+                               bool create) {
     if (!file || number >= TMP_INDEX_ROOT_ENTRIES * (uint64_t)TMP_PAGE_ENTRIES)
         return 0;
     if (!file->index_root) {
@@ -122,8 +126,224 @@ static uint8_t *tmp_data_page(struct nas_tmp_file *file, uint64_t number,
         memset((void *)(uintptr_t)(nas_hhdm_offset() + data_addr),
                0, (size_t)TMP_PAGE_SIZE);
         table[inner] = data_addr;
+        if (number + 1 > file->highest_allocated_data_page_plus_one)
+            file->highest_allocated_data_page_plus_one = number + 1;
     }
-    return data_addr ? (uint8_t *)(uintptr_t)(nas_hhdm_offset() + data_addr) : 0;
+    return data_addr;
+}
+/* Linux xattr values can be 64 KiB; this first memory-backed provider has
+ * a documented 4-KiB per-inode capacity, not a fabricated global table.
+ * Packed entries avoid arbitrary per-name slot ceilings. Overflow returns
+ * real ENOSPC/E2BIG. Metadata survives hard links, rename and open-unlink. */
+struct tmp_xattr_page {
+    uint16_t bytes,count;
+    uint8_t data[4096-4];
+};
+_Static_assert(sizeof(struct tmp_xattr_page)==4096,"xattr page ABI");
+static struct tmp_xattr_page *tmp_xattr(const struct nas_tmp_file *file) {
+    return file && file->xattr_frame ?
+        (struct tmp_xattr_page *)(uintptr_t)(nas_hhdm_offset()+file->xattr_frame) : NULL;
+}
+static int tmp_xattr_name(const char *name) {
+    if(!name || !name[0])return -EINVAL;
+    size_t n=strnlen(name,256);
+    if(n==256)return -ERANGE;
+    if(strncmp(name,"user.",5))return -EOPNOTSUPP;
+    return n>5 ? 0 : -EINVAL;
+}
+/* An entry is [uint16 name length with NUL][uint16 value length][name][value].
+ * Header fields are copied rather than dereferenced: entries may be unaligned. */
+static bool tmp_xattr_entry(const struct tmp_xattr_page *page,unsigned at,
+                            uint16_t *name_size,uint16_t *value_size) {
+    if(!page || at>page->bytes || page->bytes-at<4)return false;
+    memcpy(name_size,page->data+at,2);
+    memcpy(value_size,page->data+at+2,2);
+    return *name_size && *name_size<=256 &&
+           (uint32_t)*name_size+*value_size<=page->bytes-at-4;
+}
+static int tmp_xattr_find(const struct tmp_xattr_page *page,
+                          const char *name,unsigned *at_out,
+                          uint16_t *name_len,uint16_t *value_len) {
+    if(!page)return -ENODATA;
+    unsigned at=0;
+    while(at<page->bytes) {
+        uint16_t n=0,v=0;
+        if(!tmp_xattr_entry(page,at,&n,&v))return -EIO;
+        if(!strcmp((const char *)page->data+at+4,name)) {
+            if(at_out)*at_out=at;
+            if(name_len)*name_len=n;
+            if(value_len)*value_len=v;
+            return 0;
+        }
+        at+=4U+n+v;
+    }
+    return -ENODATA;
+}
+int tmp_setxattr(struct nas_tmp_file *file,const char *name,
+                 const uint8_t *value,uint64_t size,unsigned flags) {
+    if(!file || !file->used)return -ENOENT;
+    int valid=tmp_xattr_name(name);
+    if(valid)return valid;
+    if((flags&~3U) || flags==3)return -EINVAL;
+    unsigned name_size=(unsigned)strlen(name)+1;
+    if(size>sizeof(((struct tmp_xattr_page *)0)->data)-4-name_size)
+        return -E2BIG;
+    if(size && !value)return -EINVAL;
+    struct tmp_xattr_page *page=tmp_xattr(file);
+    unsigned at=0;
+    uint16_t oldname=0,oldvalue=0;
+    int found=tmp_xattr_find(page,name,&at,&oldname,&oldvalue);
+    if(found && found!=-ENODATA)return found;
+    if(!found && (flags&1U))return -EEXIST;
+    if(found==-ENODATA && (flags&2U))return -ENODATA;
+    unsigned oldbytes=!found ? 4U+oldname+oldvalue : 0;
+    unsigned occupied=page ? page->bytes : 0;
+    unsigned next=occupied-oldbytes+4U+name_size+(unsigned)size;
+    if(next>sizeof(page->data))return -ENOSPC;
+    if(!page) {
+        uint64_t frame=nas_frame_alloc();
+        if(!frame)return -ENOMEM;
+        file->xattr_frame=frame;
+        page=tmp_xattr(file);
+        memset(page,0,4096);
+    }
+    if(oldbytes) {
+        memmove(page->data+at,page->data+at+oldbytes,
+                page->bytes-at-oldbytes);
+        page->bytes-=(uint16_t)oldbytes;
+        page->count--;
+    }
+    uint16_t header[2]={(uint16_t)name_size,(uint16_t)size};
+    memcpy(page->data+page->bytes,header,4);
+    memcpy(page->data+page->bytes+4,name,name_size);
+    if(size)memcpy(page->data+page->bytes+4+name_size,value,(size_t)size);
+    page->bytes=(uint16_t)next;
+    page->count++;
+    tmp_inode_touch(file);
+    return 0;
+}
+int64_t tmp_getxattr(const struct nas_tmp_file *file,const char *name,
+                     uint8_t *value,uint64_t capacity) {
+    if(!file || !file->used)return -ENOENT;
+    int valid=tmp_xattr_name(name);
+    if(valid)return valid;
+    struct tmp_xattr_page *page=tmp_xattr(file);
+    unsigned at=0;
+    uint16_t n=0,v=0;
+    int rc=tmp_xattr_find(page,name,&at,&n,&v);
+    if(rc)return rc;
+    if(!value)return v;
+    if(capacity<v)return -ERANGE;
+    if(v)memcpy(value,page->data+at+4+n,v);
+    return v;
+}
+int64_t tmp_listxattr(const struct nas_tmp_file *file,
+                      uint8_t *names,uint64_t capacity) {
+    if(!file || !file->used)return -ENOENT;
+    struct tmp_xattr_page *page=tmp_xattr(file);
+    if(!page)return 0;
+    unsigned length=0;
+    for(unsigned at=0;at<page->bytes;) {
+        uint16_t n=0,v=0;
+        if(!tmp_xattr_entry(page,at,&n,&v))return -EIO;
+        if(names) {
+            if(length+n>capacity)return -ERANGE;
+            memcpy(names+length,page->data+at+4,n);
+        }
+        length+=n;
+        at+=4U+n+v;
+    }
+    return length;
+}
+int tmp_removexattr(struct nas_tmp_file *file,const char *name) {
+    if(!file || !file->used)return -ENOENT;
+    int valid=tmp_xattr_name(name);
+    if(valid)return valid;
+    struct tmp_xattr_page *page=tmp_xattr(file);
+    unsigned at=0;
+    uint16_t n=0,v=0;
+    int rc=tmp_xattr_find(page,name,&at,&n,&v);
+    if(rc)return rc;
+    unsigned occupied=4U+n+v;
+    memmove(page->data+at,page->data+at+occupied,page->bytes-at-occupied);
+    page->bytes-=(uint16_t)occupied;
+    page->count--;
+    if(!page->bytes) {
+        (void)nas_frame_put(file->xattr_frame);
+        file->xattr_frame=0;
+    }
+    tmp_inode_touch(file);
+    return 0;
+}
+int tmp_fiemap_next(const struct nas_tmp_file *file,uint64_t start,
+                    uint64_t end,uint64_t *logical,uint64_t *length,
+                    bool *last) {
+    if(!file || !file->used)return -ENOENT;
+    if(file->is_dir)return -EISDIR;
+    if(!logical || !length || !last)return -EINVAL;
+    if(end>file->size)end=file->size;
+    if(start>=end)return 0;
+    uint64_t page=start/TMP_PAGE_SIZE;
+    uint64_t final=(end+TMP_PAGE_SIZE-1)/TMP_PAGE_SIZE;
+    while(page<final && !tmp_data_frame((struct nas_tmp_file *)file,page,false))page++;
+    if(page==final)return 0;
+    uint64_t first=page++;
+    while(page<final && tmp_data_frame((struct nas_tmp_file *)file,page,false))page++;
+    *logical=first*TMP_PAGE_SIZE;
+    *length=(page-first)*TMP_PAGE_SIZE;
+    /* A bounded query can end before later extents. The inode-owned
+     * watermark covers all allocated data pages, including MAP_SHARED
+     * faults, so every extent is found in one forward pass (not O(N^2)). */
+    *last=(page>=file->highest_allocated_data_page_plus_one);
+    return 1;
+}
+static uint8_t *tmp_data_page(struct nas_tmp_file *file,uint64_t number,
+                              bool create) {
+    uint64_t frame=tmp_data_frame(file,number,create);
+    return frame ? (uint8_t *)(uintptr_t)(nas_hhdm_offset()+frame) : NULL;
+}
+/* A mmap writer may touch the mapped last page past i_size. Those bytes are
+ * NOT file contents. Both pwrite into a later hole and ftruncate-grow must
+ * zero newly exposed bytes of the old partial EOF page before publishing a
+ * larger size. Other sparse pages already read as zero without allocation. */
+static void tmp_zero_newly_visible_tail(struct nas_tmp_file *file,
+                                        uint64_t old_size,uint64_t next_size) {
+    if(next_size<=old_size || !(old_size%TMP_PAGE_SIZE))return;
+    uint64_t end=(old_size/TMP_PAGE_SIZE+1)*TMP_PAGE_SIZE;
+    if(end>next_size)end=next_size;
+    uint8_t *tail=tmp_data_page(file,old_size/TMP_PAGE_SIZE,false);
+    if(tail)memset(tail+old_size%TMP_PAGE_SIZE,0,(size_t)(end-old_size));
+}
+int tmp_acquire_shared_page(struct nas_tmp_file *file,uint64_t offset,
+                            uint64_t *pa_owned) {
+    if(!pa_owned)return -EINVAL;
+    *pa_owned=0;
+    if(!file || !file->used || file->is_dir)return -EINVAL;
+    if(offset&(TMP_PAGE_SIZE-1))return -EINVAL;
+    /* Fault beyond i_size is SIGBUS, not an implicit extension of the file.
+     * A page overlapping EOF is still mapped; the logical size remains
+     * unchanged until write(2)/ftruncate(2), just as in Linux tmpfs. */
+    if(offset>=file->size)return -EFAULT;
+    uint64_t frame=tmp_data_frame(file,offset/TMP_PAGE_SIZE,true);
+    if(!frame)return -ENOMEM;
+    /* The sparse index retains the storage owner; the caller gets an
+     * independent PTE owner and must put it on failure/unmap. */
+    if(!nas_frame_get(frame))return -EIO;
+    *pa_owned=frame;
+    return 0;
+}
+int tmp_page_resident(const struct nas_tmp_file *file,uint64_t offset) {
+    if(!file || !file->used || file->is_dir)return -EINVAL;
+    if(offset&(TMP_PAGE_SIZE-1))return -EINVAL;
+    if(offset>=file->size)return 0;
+    return tmp_data_frame((struct nas_tmp_file *)(uintptr_t)file,
+                          offset/TMP_PAGE_SIZE,false) ? 1 : 0;
+}
+int tmp_touch_shared(struct nas_tmp_file *file) {
+    if(!file || !file->used || file->is_dir)return -EINVAL;
+    file->mtime_ns=tmp_next_mtime(file->mtime_ns);
+    file->ctime_ns=file->mtime_ns;
+    return 0;
 }
 int64_t tmp_read_at(const struct nas_tmp_file *const_file, uint64_t offset,
                     uint8_t *dst, uint64_t count) {
@@ -155,6 +375,8 @@ int64_t tmp_write_at(struct nas_tmp_file *file, uint64_t offset,
     if (!count) return 0;
     if (offset >= TMP_FILE_CAP) return -ENOSPC;
     if (count > TMP_FILE_CAP - offset) count = TMP_FILE_CAP - offset;
+    bool has_hole=offset>file->size;
+    uint64_t old_size=file->size;
     uint64_t done = 0;
     while (done < count) {
         uint64_t at = offset + done;
@@ -162,6 +384,10 @@ int64_t tmp_write_at(struct nas_tmp_file *file, uint64_t offset,
         if (length > count - done) length = count - done;
         uint8_t *page = tmp_data_page(file, at / TMP_PAGE_SIZE, true);
         if (!page) return done ? (int64_t)done : -ENOMEM;
+        /* Do not alter even a hidden mmap tail when the first destination
+         * allocation fails and the write has made zero progress. */
+        if(!done && has_hole)
+            tmp_zero_newly_visible_tail(file,old_size,offset);
         memcpy(page + at % TMP_PAGE_SIZE, src + done, (size_t)length);
         done += length;
         if (at + length > file->size) file->size = at + length;
@@ -187,6 +413,7 @@ void tmp_truncate(struct nas_tmp_file *file) {
         (void)nas_frame_put(file->index_root);
         file->index_root = 0;
     }
+    file->highest_allocated_data_page_plus_one = 0;
     file->size = 0;
     if (file->used) {
         file->mtime_ns = tmp_next_mtime(file->mtime_ns);
@@ -228,14 +455,22 @@ int tmp_resize(struct nas_tmp_file *file, uint64_t size) {
                 }
             }
             bool root_has_index = false;
+            uint64_t surviving_highest = 0;
             for (unsigned outer = 0; outer < TMP_INDEX_ROOT_ENTRIES; outer++) {
                 uint64_t frame = root[outer];
                 if (!frame) continue;
                 uint64_t *slots = (uint64_t *)(uintptr_t)(
                     nas_hhdm_offset() + frame);
                 bool any = false;
+                /* This existing shrink sweep already visits every resident
+                 * index frame; recover the high-water mark without a new
+                 * O(file size) scan on each FIEMAP extent. */
                 for (unsigned i = 0; i < TMP_PAGE_ENTRIES; i++)
-                    if (slots[i]) { any = true; break; }
+                    if (slots[i]) {
+                        any = true;
+                        uint64_t after = (uint64_t)outer * TMP_PAGE_ENTRIES + i + 1;
+                        if (after > surviving_highest) surviving_highest = after;
+                    }
                 if (!any) {
                     (void)nas_frame_put(frame);
                     root[outer] = 0;
@@ -245,11 +480,39 @@ int tmp_resize(struct nas_tmp_file *file, uint64_t size) {
                 (void)nas_frame_put(file->index_root);
                 file->index_root = 0;
             }
+            file->highest_allocated_data_page_plus_one = surviving_highest;
+        } else {
+            file->highest_allocated_data_page_plus_one = 0;
         }
     }
+    tmp_zero_newly_visible_tail(file,old,size);
     file->size = size;
     file->mtime_ns = tmp_next_mtime(file->mtime_ns);
     file->ctime_ns = file->mtime_ns;
+    return 0;
+}
+/* Linux fallocate mode=0 and KEEP_SIZE: reserve real zeroed data frames,
+ * not merely a sparse i_size like ftruncate. Existing data is unmodified.
+ * Partial allocation under memory exhaustion remains inode-owned and is
+ * reclaimed by truncate/unlink, as partial disk reservation may be. */
+int tmp_preallocate(struct nas_tmp_file *file,uint64_t offset,
+                    uint64_t length,unsigned mode) {
+    if(!file || !file->used)return -ENOENT;
+    if(file->is_dir)return -EISDIR;
+    if(mode&~1U)return -EOPNOTSUPP; /* no punch/collapse/zero-range */
+    if(!length)return -EINVAL;
+    if(offset>=TMP_FILE_CAP || length>TMP_FILE_CAP-offset)return -EFBIG;
+    uint64_t end=offset+length;
+    uint64_t first=offset/TMP_PAGE_SIZE;
+    uint64_t final=(end+TMP_PAGE_SIZE-1)/TMP_PAGE_SIZE;
+    for(uint64_t page=first;page<final;page++)
+        if(!tmp_data_frame(file,page,true))return -ENOMEM;
+    if(!(mode&1U) && end>file->size) {
+        tmp_zero_newly_visible_tail(file,file->size,end);
+        file->size=end;
+    }
+    file->mtime_ns=tmp_next_mtime(file->mtime_ns);
+    file->ctime_ns=file->mtime_ns;
     return 0;
 }
 int tmp_utimens(struct nas_tmp_file *file, uint64_t access_ns,

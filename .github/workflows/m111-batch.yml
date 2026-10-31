@@ -1,0 +1,113 @@
+name: NaSeed M111 15 more signed original Alpine Linux applications — one QEMU boot per ISA
+on:
+  # The heavy original-program suite remains opt-in. A PR must both change
+  # relevant execution code and carry the explicit run-m111-batch label;
+  # manual workflow_dispatch continues to work on any selected branch.
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - '.github/workflows/m111-batch.yml'
+      - 'kernel/**'
+      - 'ports/**'
+      - 'scripts/probe-m111-batch.sh'
+      - 'scripts/stage-m111-prebuilt.sh'
+      - 'scripts/stage-alpine-prebuilt-overlay.sh'
+      - 'tests/m111-*'
+      - 'rootfs/alpine/**'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  signed-original-software:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-m111-batch')
+    name: M111 15 signed original Linux ELF functional tests / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Validate signed APK profile and original-program functional oracles
+        timeout-minutes: 3
+        run: |
+          set -eu
+          sh -n scripts/stage-alpine-prebuilt-overlay.sh \
+                scripts/stage-m111-prebuilt.sh \
+                scripts/probe-m111-batch.sh \
+                tests/m111-batch-run.sh
+          python3 scripts/check-prebuilt-profile-catalog.py
+          python3 scripts/check-native-qemu-target.py
+          python3 scripts/check-three-isa-core.py
+          # Direct host-link regression for actual getrusage/wait4 CPU
+          # ownership: no software is compiled inside NaSeed.
+          sh scripts/check-m111-getrusage.sh
+          sh scripts/check-a005-cross-mm.sh
+      - name: Install host tools and native target QEMU
+        timeout-minutes: 12
+        run: |
+          set -eu
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'clang:clang' 'ld.lld:lld' 'readelf:binutils' \
+                      'cpio:cpio' 'xorriso:xorriso' 'mformat:mtools' \
+                      'sgdisk:gdisk' 'qemu-riscv64:qemu-user'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case "${{ matrix.port }}" in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+              test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
+            riscv64)
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+            arm64)
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/AAVMF/AAVMF_CODE.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+          esac
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+      - name: Run 15 original Alpine programs inside ONE NaSeed QEMU guest
+        timeout-minutes: 45
+        run: sh scripts/probe-m111-batch.sh ${{ matrix.port }}
+      - name: Retain original signed APK provenance and full guest serial on success
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m111-signed-original-elf-batch-pass-${{ matrix.port }}
+          path: |
+            build/external/m111-batch/${{ matrix.port }}/apk-install.log
+            build/external/m111-batch/${{ matrix.port }}/requested-packages.txt
+            build/external/m111-batch/${{ matrix.port }}/*.sha256
+            build/busybox-source-parity-x86/m111-batch.clean.log
+            build/port-riscv64/full/matrix-source/m111-batch.clean.log
+            build/port-aarch64/full/matrix-source/m111-batch.clean.log
+          if-no-files-found: error
+      - name: Preserve actual failure serial and unchanged original target ELF rootfs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m111-signed-original-elf-batch-fail-${{ matrix.port }}
+          path: |
+            build/external/m111-batch/${{ matrix.port }}/apk-install.log
+            build/external/m111-batch/${{ matrix.port }}/requested-packages.txt
+            build/external/m111-batch/${{ matrix.port }}/rootfs.cpio
+            build/external/m111-batch/${{ matrix.port }}/*.sha256
+            build/busybox-source-parity-x86/m111-batch.clean.log
+            build/port-riscv64/full/matrix-source/m111-batch.clean.log
+            build/port-aarch64/full/matrix-source/m111-batch.clean.log
+          if-no-files-found: ignore

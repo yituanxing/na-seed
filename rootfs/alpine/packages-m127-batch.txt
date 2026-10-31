@@ -1,0 +1,7 @@
+# Official signed Alpine 3.23 audio codec tools staged on Linux host.
+wavpack
+vorbis-tools
+speex-tools
+flac
+lame
+mpg123

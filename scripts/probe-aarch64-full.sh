@@ -161,6 +161,7 @@ kill "$pid" 2>/dev/null || :
 wait "$pid" 2>/dev/null || :
 set -e
 if [ "$monitor" -ne 0 ] || grep -Fq '[FAIL]' "$log" ||
+   ! grep -Fq '[ARM64 CPU] EL0 CTR/cache maintenance enabled' "$log" ||
    { [ -z "${NAS_VIRTIO_BLK_IMAGE:-}${NAS_RAMFS_NATIVE_PROBE:-}${NAS_LITTLEFS_TEST_IMAGE:-}${NAS_LWEXT4_RW_PROBE:-}" ] &&
      ! tr -d '\r' < "$log" | grep -Fxq 'hello'; } ||
    { [ -n "${NAS_LWEXT4_RW_PROBE:-}" ] &&

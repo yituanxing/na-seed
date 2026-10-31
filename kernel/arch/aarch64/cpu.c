@@ -64,6 +64,21 @@ void nas_arch_prepare_user_cpu(void) {
     __asm__ volatile("msr cpacr_el1,%0\nisb"
                      : : "r"(cpacr) : "memory");
     nas_print("[ARM64 CPU] FPEN enabled\n");
+    /* Linux EL0 programs (including V8) read CTR_EL0 to determine cache
+     * line sizes and execute DC CVAU / IC IVAU to publish JIT code. Limine
+     * does not promise SCTLR_EL1.UCT/UCI on entry. Without UCT the genuine
+     * Node ELF traps with EC=0x18 on MRS CTR_EL0; this is NOT a page fault.
+     * Preserve every unrelated MMU, alignment and privilege control bit. */
+    const uint64_t el0_cache_access=(1ULL<<15) | (1ULL<<26); /* UCT | UCI */
+    uint64_t sctlr;
+    __asm__ volatile("mrs %0,sctlr_el1" : "=r"(sctlr));
+    sctlr|=el0_cache_access;
+    __asm__ volatile("msr sctlr_el1,%0\nisb"
+                     : : "r"(sctlr) : "memory");
+    __asm__ volatile("mrs %0,sctlr_el1" : "=r"(sctlr));
+    if((sctlr&el0_cache_access)!=el0_cache_access)
+        nas_arch_halt();
+    nas_print("[ARM64 CPU] EL0 CTR/cache maintenance enabled\n");
     extern uint64_t nas_arm_entry_stack_top;
     if (!nas_task_kernel_stack_ok(nas_current_task)) nas_arch_halt();
     nas_arm_entry_stack_top = nas_current_task->kernel_stack_top;

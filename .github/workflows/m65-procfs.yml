@@ -1,20 +1,5 @@
 name: NaSeed M65 original procps-ng + true procfs — native three ISA
 on:
-  pull_request:
-    paths:
-      - 'kernel/**'
-      - 'scripts/test-procfs.c'
-      - 'scripts/stage-m65-prebuilt.sh'
-      - 'scripts/probe-m65-procfs.sh'
-      - 'scripts/m65-*'
-      - 'tests/m65-*'
-      - 'rootfs/alpine/packages-m65-observe.txt'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'scripts/check-prebuilt-profile-catalog.py'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/check-native-qemu-target.py'
-      - '.github/workflows/m65-procfs.yml'
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

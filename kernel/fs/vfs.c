@@ -5,6 +5,11 @@
 #include "../lib/string.h"
 #include "../mm/heap.h"
 #include <stddef.h>
+/* The MM owns resident user leaves and their independent physical refs.
+ * A successful truncate must revoke stale shared leaves from every MM,
+ * including processes retaining an unlinked mapped inode. */
+extern void nas_vm_invalidate_file(const struct nas_fs_node *,uint64_t new_size);
+extern void nas_vm_rearm_file(const struct nas_fs_node *);
 #define NAS_VFS_MOUNT_CHUNK_SIZE 16U
 #define NAS_VFS_MOUNT_MAX 256U
 /* A lease holds size + Linux record locks for the lifetime of one inode
@@ -145,6 +150,37 @@ void nas_vfs_release_flock(const void *owner) {
     for(unsigned i=0;i<NAS_VFS_FLOCK_LIMIT;i++)
         if(vfs_flocks[i].file_owner==owner)
             vfs_flocks[i]=(struct vfs_flock_entry){0};
+}
+int nas_vfs_lock_snapshot(unsigned ordinal,struct nas_vfs_lock_snapshot *out) {
+    if(!out)return -EINVAL;
+    unsigned found=0;
+    for(struct inode_lease_chunk *chunk=lease_chunks;chunk;chunk=chunk->next)
+        for(unsigned i=0;i<NAS_VFS_LEASE_CHUNK_SIZE;i++) {
+            const struct inode_size_lease *lease=&chunk->slots[i];
+            if(!lease->refs)continue;
+            for(unsigned k=0;k<lease->posix_locks.count;k++) {
+                const struct nas_posix_lock *lock=&lease->posix_locks.entries[k];
+                if(found++!=ordinal)continue;
+                *out=(struct nas_vfs_lock_snapshot){
+                    .ino=lease->ino,.pid=lock->pid,
+                    .start=lock->start,.end=lock->end,
+                    .exclusive=lock->type==NAS_LOCK_WRITE
+                };
+                return 0;
+            }
+        }
+    for(unsigned i=0;i<NAS_VFS_FLOCK_LIMIT;i++) {
+        const struct vfs_flock_entry *lock=&vfs_flocks[i];
+        if(!lock->file_owner)continue;
+        if(found++!=ordinal)continue;
+        *out=(struct nas_vfs_lock_snapshot){
+            .ino=lock->ino,.file_owner=lock->file_owner,
+            .start=0,.end=UINT64_MAX,.flock=true,
+            .exclusive=lock->exclusive
+        };
+        return 0;
+    }
+    return -ENOENT;
 }
 uint64_t nas_vfs_node_size(const struct nas_fs_node *node) {
     if(!node)return 0;
@@ -1682,6 +1718,35 @@ int64_t nas_vfs_write_at(const struct nas_fs_node *node,uint64_t offset,
         publish_inode_size(node,offset+(uint64_t)written);
     return written;
 }
+int nas_vfs_acquire_shared_page(const struct nas_fs_node *node,
+                                uint64_t offset,uint64_t *pa_owned) {
+    if(!pa_owned)return -EINVAL;
+    *pa_owned=0;
+    int status=vfs_node_status(node);
+    if(status)return status;
+    if(node->is_dir)return -EISDIR;
+    if(offset&4095ULL)return -EINVAL;
+    if(offset>=nas_vfs_node_size(node))return -EFAULT;
+    if(!node->filesystem->acquire_shared_page)return -ENOSYS;
+    return node->filesystem->acquire_shared_page(node,offset,pa_owned);
+}
+int nas_vfs_shared_page_resident(const struct nas_fs_node *node,uint64_t offset) {
+    int status=vfs_node_status(node);
+    if(status)return status;
+    if(node->is_dir)return -EISDIR;
+    if(offset&4095ULL)return -EINVAL;
+    if(offset>=nas_vfs_node_size(node))return 0;
+    if(!node->filesystem->shared_page_resident)return -ENOSYS;
+    return node->filesystem->shared_page_resident(node,offset);
+}
+int nas_vfs_touch_shared(const struct nas_fs_node *node) {
+    int status=vfs_node_status(node);
+    if(status)return status;
+    if(!nas_vfs_can_write(node))return -EROFS;
+    if(node->is_dir)return -EISDIR;
+    if(!node->filesystem->touch_shared)return -EOPNOTSUPP;
+    return node->filesystem->touch_shared(node);
+}
 int nas_vfs_resize(const struct nas_fs_node *node,uint64_t length) {
     int status=vfs_node_status(node);
     if(status)return status;
@@ -1690,7 +1755,36 @@ int nas_vfs_resize(const struct nas_fs_node *node,uint64_t length) {
     if(!nas_vfs_can_write(node))return -EROFS;
     if(!node->filesystem->resize)return -EOPNOTSUPP;
     int rc=node->filesystem->resize(node,length);
-    if(!rc)publish_inode_size(node,length);
+    if(!rc) {
+        publish_inode_size(node,length);
+        nas_vm_invalidate_file(node,length);
+    }
+    return rc;
+}
+/* Reservation is not ftruncate: sparse size growth cannot promise that
+ * later writes have storage. Providers reserve real pages or disk blocks;
+ * VFS owns permission and shared inode-size publication. */
+int nas_vfs_preallocate(const struct nas_fs_node *node,uint64_t offset,
+                        uint64_t length,unsigned mode) {
+    int status=vfs_node_status(node);
+    if(status)return status;
+    if(node->is_dir)return -EISDIR;
+    if(!nas_vfs_can_write(node))return -EROFS;
+    if(!length || offset>INT64_MAX || length>INT64_MAX-offset)
+        return -EINVAL;
+    if(!node->filesystem->preallocate)return -EOPNOTSUPP;
+    /* The provider updates its live inode size before returning. Snapshot
+     * the VFS lease first, otherwise a later getattr may expose the new
+     * backend size while other open descriptors retain stale leased EOF. */
+    uint64_t old_size=nas_vfs_node_size(node);
+    int rc=node->filesystem->preallocate(node,offset,length,mode);
+    if(!rc && !(mode&1U)) {
+        uint64_t end=offset+length;
+        if(end>old_size) {
+            publish_inode_size(node,end);
+            nas_vm_invalidate_file(node,end);
+        }
+    }
     return rc;
 }
 int nas_vfs_sync(const struct nas_fs_node *node) {
@@ -1698,6 +1792,22 @@ int nas_vfs_sync(const struct nas_fs_node *node) {
     if(status)return status;
     if(!node->filesystem->sync)return node->filesystem->read_only ? 0 : -EOPNOTSUPP;
     return node->filesystem->sync(node);
+}
+int nas_vfs_sync_user(const struct nas_fs_node *node) {
+    int rc=nas_vfs_sync(node);
+    /* Only an explicitly successful user fsync/msync establishes a new
+     * dirty epoch. A pre-commit MAP_FIXED/munmap flush must NOT tighten old
+     * PTE permissions if its later metadata/frame transaction rolls back. */
+    if(!rc)nas_vm_rearm_file(node);
+    return rc;
+}
+int nas_vfs_statfs(const struct nas_fs_node *node,struct nas_vfs_statfs *out) {
+    if(!out)return -EINVAL;
+    int status=vfs_node_status(node);
+    if(status)return status;
+    if(!node->filesystem->statfs)return -EOPNOTSUPP;
+    *out=(struct nas_vfs_statfs){0};
+    return node->filesystem->statfs(node,out);
 }
 int nas_vfs_sync_all(void) {
     ensure_defaults();
@@ -1807,6 +1917,43 @@ int nas_vfs_chmod(const struct nas_fs_node *node,uint64_t mode) {
     if(node->filesystem->read_only || (node->mount && node->mount->read_only))return -EROFS;
     if(!node->filesystem->chmod)return -EOPNOTSUPP;
     return node->filesystem->chmod(node,mode);
+}
+int nas_vfs_setxattr(const struct nas_fs_node *node,const char *name,
+                     const uint8_t *value,uint64_t size,unsigned flags) {
+    int rc=vfs_node_status(node);
+    if(rc)return rc;
+    if(node->filesystem->read_only || node->mount->read_only)return -EROFS;
+    if(!node->filesystem->setxattr)return -EOPNOTSUPP;
+    return node->filesystem->setxattr(node,name,value,size,flags);
+}
+int64_t nas_vfs_getxattr(const struct nas_fs_node *node,const char *name,
+                         uint8_t *value,uint64_t capacity) {
+    int rc=vfs_node_status(node);
+    if(rc)return rc;
+    if(!node->filesystem->getxattr)return -EOPNOTSUPP;
+    return node->filesystem->getxattr(node,name,value,capacity);
+}
+int64_t nas_vfs_listxattr(const struct nas_fs_node *node,
+                          uint8_t *names,uint64_t capacity) {
+    int rc=vfs_node_status(node);
+    if(rc)return rc;
+    if(!node->filesystem->listxattr)return -EOPNOTSUPP;
+    return node->filesystem->listxattr(node,names,capacity);
+}
+int nas_vfs_removexattr(const struct nas_fs_node *node,const char *name) {
+    int rc=vfs_node_status(node);
+    if(rc)return rc;
+    if(node->filesystem->read_only || node->mount->read_only)return -EROFS;
+    if(!node->filesystem->removexattr)return -EOPNOTSUPP;
+    return node->filesystem->removexattr(node,name);
+}
+int nas_vfs_fiemap_next(const struct nas_fs_node *node,uint64_t start,
+                        uint64_t end,uint64_t *logical,uint64_t *length,
+                        bool *last) {
+    int rc=vfs_node_status(node);
+    if(rc)return rc;
+    if(!node->filesystem->fiemap_next)return -EOPNOTSUPP;
+    return node->filesystem->fiemap_next(node,start,end,logical,length,last);
 }
 int nas_vfs_chown(const struct nas_fs_node *node,uint32_t uid,uint32_t gid) {
     int status=vfs_node_status(node);

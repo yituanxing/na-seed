@@ -1,31 +1,6 @@
 name: NaSeed ARM64 full-kernel gate
 on:
-  pull_request:
-    paths:
-      - 'kernel/**'
-      - 'scripts/full-kernel-core.sources'
-      - 'scripts/check-full-kernel-sources.sh'
-      - 'scripts/check-linux-stat.c'
-      - 'scripts/test-fcntl-abi.c'
-      - 'scripts/build-aarch64-full.sh'
-      - 'scripts/probe-aarch64-full.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'scripts/fetch-alpine-native.sh'
-      - 'scripts/stage-alpine-native-rootfs.sh'
-      - 'scripts/probe-alpine-native-dynamic.sh'
-      - 'scripts/probe-alpine-native-matrix.sh'
-      - 'scripts/alpine-native-fixtures.txt'
-      - 'scripts/check-alpine-native-fixtures.sh'
-      - 'scripts/busybox-static-fixtures.txt'
-      - 'scripts/busybox-parity-cases.tsv'
-      - 'scripts/m32-paged-tmpfs-cases.tsv'
-      - 'scripts/probe-paged-tmpfs.sh'
-      - 'scripts/m31-date-cases.tsv'
-      - 'scripts/probe-m31-date.sh'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/check-native-qemu-target.py'
-      - 'limine-aarch64-full.conf'
-      - '.github/workflows/arm64-full.yml'
+  workflow_dispatch:
   push:
     branches: [main]
     paths:

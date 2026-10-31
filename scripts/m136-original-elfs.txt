@@ -1,0 +1,21 @@
+# Twenty historically unused native executables (not BusyBox/symlink aliases).
+usr/bin/flex
+usr/bin/byacc
+usr/bin/re2c
+usr/bin/tic
+usr/bin/infocmp
+usr/bin/clear
+usr/bin/tput
+usr/bin/toe
+usr/bin/tabs
+usr/bin/tset
+usr/bin/colcrt
+usr/bin/whereis
+usr/bin/fadvise
+usr/bin/script
+usr/bin/scriptreplay
+usr/bin/uuidgen
+usr/bin/fallocate
+bin/findmnt
+usr/bin/flock
+usr/bin/lscpu

@@ -1,0 +1,16 @@
+# Fifteen globally new original signed ELF binaries, no aliases.
+usr/bin/wavpack
+usr/bin/wvunpack
+usr/bin/wvgain
+usr/bin/wvtag
+usr/bin/ogginfo
+usr/bin/vcut
+usr/bin/vorbiscomment
+usr/bin/speexenc
+usr/bin/speexdec
+usr/bin/metaflac
+usr/bin/lame
+usr/bin/mpg123
+usr/bin/mpg123-id3dump
+usr/bin/mpg123-strip
+usr/bin/out123

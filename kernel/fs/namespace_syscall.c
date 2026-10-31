@@ -13,6 +13,7 @@
 #include "../lib/string.h"
 #include "../mm/usercopy.h"
 #include "../arch/mmu.h"
+#include "../mm/heap.h"
 #include "mode.h"
 #include "syscall.h"
 #include "lookup.h"
@@ -29,23 +30,24 @@ void nas_fs_path_end(struct nas_fs_path_request *request) {
         nas_fail("path request start reference corrupted");
     if(request->root.dentry && nas_vfs_path_put(&request->root))
         nas_fail("path request root reference corrupted");
+    if(request->pathname && request->pathname!=request->inline_path &&
+       !nas_heap_free(request->pathname))
+        nas_fail("path request heap pathname ownership corrupted");
+    request->pathname=0;
 }
 
-int nas_fs_kernel_path_begin(uint64_t dirfd,const char *kernel_path,
-                             struct nas_fs_path_request *request) {
-    if(!kernel_path || !request)return -EINVAL;
-    *request=(struct nas_fs_path_request){0};
-    size_t length=strnlen(kernel_path,sizeof(request->pathname));
-    if(length==sizeof(request->pathname))return -ENAMETOOLONG;
-    if(!length)return -ENOENT;
-    memcpy(request->pathname,kernel_path,length+1);
+/* One owner for the cwd/dirfd/root Path lifetime, shared by user and kernel
+ * pathname entry points. The caller has already copied a complete pathname
+ * into either inline or owned heap memory. */
+static int begin_anchored_path(uint64_t dirfd,
+                               struct nas_fs_path_request *request) {
     int rc=nas_vfs_path_root(&request->root);
     /* Original direct-ELF boots can have mounted children but no root
      * archive. Path namei has a rootless fallback; keep a NULL clamp only
      * for this precise case, never for a failed mounted lookup. */
     if(rc==-ENOENT)rc=0;
-    else if(rc)return rc;
-    if(kernel_path[0]=='/')return 0;
+    else if(rc) {nas_fs_path_end(request);return rc;}
+    if(request->pathname[0]=='/')return 0;
     int64_t fd=nas_linux_signed_dirfd(dirfd);
     const struct nas_vfs_path *base=NULL;
     if(fd==-100) {
@@ -67,13 +69,41 @@ int nas_fs_kernel_path_begin(uint64_t dirfd,const char *kernel_path,
     return rc;
 }
 
+int nas_fs_kernel_path_begin(uint64_t dirfd,const char *kernel_path,
+                             struct nas_fs_path_request *request) {
+    if(!kernel_path || !request)return -EINVAL;
+    *request=(struct nas_fs_path_request){0};
+    size_t length=strnlen(kernel_path,NAS_VFS_WALK_PATH_LIMIT);
+    if(length==NAS_VFS_WALK_PATH_LIMIT)return -ENAMETOOLONG;
+    if(!length)return -ENOENT;
+    request->pathname=request->inline_path;
+    if(length>=sizeof(request->inline_path)) {
+        request->pathname=nas_heap_alloc(length+1);
+        if(!request->pathname)return -ENOMEM;
+    }
+    memcpy(request->pathname,kernel_path,length+1);
+    return begin_anchored_path(dirfd,request);
+}
+
 int nas_fs_user_path_begin(uint64_t dirfd,uint64_t user_pointer,
                            struct nas_fs_path_request *request) {
     if(!request)return -EINVAL;
-    char source[256];
-    int rc=nas_user_read_cstr(user_pointer,source,sizeof(source));
-    if(rc)return rc;
-    return nas_fs_kernel_path_begin(dirfd,source,request);
+    *request=(struct nas_fs_path_request){0};
+    request->pathname=request->inline_path;
+    int rc=nas_user_read_cstr(user_pointer,request->inline_path,
+                              sizeof(request->inline_path));
+    if(rc==-ENAMETOOLONG) {
+        /* Namei already accepts PATH_MAX strings. Keep only the rare long
+         * syscall pathname in the heap instead of inflating every stack
+         * frame using nas_fs_path_request. */
+        request->pathname=nas_heap_alloc(NAS_VFS_WALK_PATH_LIMIT);
+        if(!request->pathname)return -ENOMEM;
+        rc=nas_user_read_cstr(user_pointer,request->pathname,
+                              NAS_VFS_WALK_PATH_LIMIT);
+    }
+    if(!rc && !request->pathname[0])rc=-ENOENT;
+    if(rc) {nas_fs_path_end(request);return rc;}
+    return begin_anchored_path(dirfd,request);
 }
 
 int nas_fs_user_lookup_begin(uint64_t dirfd,uint64_t user_pointer,

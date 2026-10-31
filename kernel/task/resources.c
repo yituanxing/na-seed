@@ -8,10 +8,12 @@
 /* Single-CPU bounded storage policy, independent of Task/leader identity. */
 static struct nas_fs_context fs_pool[NAS_TASK_LIMIT * 2U];
 static struct nas_sighand sighand_pool[NAS_TASK_LIMIT * 2U];
+static struct nas_signal_group signal_group_pool[NAS_TASK_LIMIT * 2U];
 
 void nas_resources_system_init(void) {
     memset(fs_pool,0,sizeof(fs_pool));
     memset(sighand_pool,0,sizeof(sighand_pool));
+    memset(signal_group_pool,0,sizeof(signal_group_pool));
 }
 struct nas_fs_context *nas_fs_context_new(void) {
     for(unsigned i=0;i<NAS_TASK_LIMIT * 2U;i++) {
@@ -88,4 +90,23 @@ struct nas_sighand *nas_sighand_get(struct nas_sighand *s) {
 void nas_sighand_put(struct nas_sighand *s) {
     if(!s || !s->refs) nas_fail("signal dispositions invalid put");
     if(!--s->refs) memset(s,0,sizeof(*s));
+}
+struct nas_signal_group *nas_signal_group_new(void) {
+    for(unsigned i=0;i<NAS_TASK_LIMIT*2U;i++) {
+        struct nas_signal_group *g=&signal_group_pool[i];
+        if(g->refs)continue;
+        *g=(struct nas_signal_group){.refs=1};
+        return g;
+    }
+    return 0;
+}
+struct nas_signal_group *nas_signal_group_get(struct nas_signal_group *g) {
+    if(!g || !g->refs || g->refs==UINT32_MAX)
+        nas_fail("signal group invalid get");
+    g->refs++;
+    return g;
+}
+void nas_signal_group_put(struct nas_signal_group *g) {
+    if(!g || !g->refs)nas_fail("signal group invalid put");
+    if(!--g->refs)*g=(struct nas_signal_group){0};
 }

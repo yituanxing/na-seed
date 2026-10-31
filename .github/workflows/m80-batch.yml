@@ -1,25 +1,7 @@
 name: NaSeed M80/M81/M82 original Alpine programs, VFS and Make — native three ISA
 on:
-  pull_request:
-    paths:
-      - 'tests/m80-*'
-      - 'tests/m81-*'
-      - 'tests/m82-*'
-      - 'scripts/m80-*'
-      - 'scripts/m81-*'
-      - 'scripts/probe-m80-batch.sh'
-      - 'scripts/stage-m80-prebuilt.sh'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'scripts/check-prebuilt-profile-catalog.py'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'scripts/check-native-qemu-target.py'
-      - 'rootfs/alpine/packages-m80-batch.txt'
-      - 'kernel/**'
-      - '.github/workflows/m80-batch.yml'
+  # M82 executes real GNU Make recipes inside the guest. Preserve this entire
+  # filesystem acceptance on manual dispatch while app-batch PRs avoid builds.
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

@@ -32,7 +32,8 @@ bool nas_mmu_prepare_leaf(uint64_t va);
 bool nas_mmu_exchange_leaf(uint64_t va,uint64_t new_pa,unsigned prot,
                            uint64_t *old_pa);
 /* Trusted ELF PT_LOAD preflight has already computed page-union permissions.
- * Unlike mmap/mprotect this allows a cross-segment W+X boundary page. */
+ * Such boundaries may be RWX just as Linux anonymous mmap/mprotect may be;
+ * ELF loader policy and generic user VMA permissions remain separate. */
 bool nas_mmu_map_elf_page(uint64_t va, unsigned elf_flags);
 /* Synchronize instruction visibility after writes via the kernel HHDM alias.
  * The current address space must still own the given user mapping. */

@@ -1,0 +1,16 @@
+# 15 distinct original signed ELF executables; do not use Alpine applet aliases.
+usr/bin/procs
+usr/bin/gojq
+usr/bin/gron
+usr/bin/shfmt
+usr/bin/pngquant
+usr/bin/sponge
+usr/bin/flac
+usr/bin/sox
+usr/bin/mediainfo
+usr/bin/delta
+usr/bin/exiv2
+usr/bin/optipng
+usr/bin/jpegoptim
+usr/bin/jo
+usr/bin/yq

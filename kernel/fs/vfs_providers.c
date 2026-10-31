@@ -4,6 +4,7 @@
 #include "../tmpfs.h"
 #include "procfs.h"
 #include "../errno.h"
+#include "../mm/frame.h"
 #include "../lib/string.h"
 #include <stddef.h>
 
@@ -119,11 +120,12 @@ static const struct nas_vfs_type boot_type={
     .root=boot_root,.lookup_child=boot_child,
     .readlink=boot_readlink,
     .read_at=boot_read,.read_size_is_eof=true,
-    .read_dir=boot_read_dir,.read_only=true
+    .read_dir=boot_read_dir,.read_only=true,.immutable_file_data=true
 };
 static void tmp_fill(const struct nas_tmp_file *f,
                      struct nas_fs_node *out) {
-    *out=(struct nas_fs_node){.inode=f,.size=f->size,
+    *out=(struct nas_fs_node){.inode=f,
+      .size=f->is_dir ? tmp_directory_stat_size(f) : f->size,
       .ino=5000+tmp_number(f),.nlink=f->nlink?(f->is_dir?2:f->nlink):0,
       .atime_sec=f->atime_ns/1000000000ULL,
       .mtime_sec=f->mtime_ns/1000000000ULL,
@@ -144,6 +146,7 @@ static void tmp_fill_root_times(struct nas_fs_node *out) {
     out->mtime_nsec=(uint32_t)(mtime%1000000000ULL);
     out->ctime_sec=ctime/1000000000ULL;
     out->ctime_nsec=(uint32_t)(ctime%1000000000ULL);
+    out->size=tmp_root_directory_stat_size();
 }
 static bool tmp_is_overlay_root(const struct nas_fs_node *node) {
     const struct bootfs_entry *root=bootfs_find("/tmp");
@@ -206,6 +209,17 @@ static int64_t tmp_write_node(const struct nas_fs_node *node,uint64_t off,
                               const uint8_t *src,uint64_t count) {
     return tmp_write_at((struct nas_tmp_file *)(uintptr_t)node->inode,
                         off,src,count);
+}
+static int tmp_shared_page(const struct nas_fs_node *node,uint64_t offset,
+                            uint64_t *pa_owned) {
+    return tmp_acquire_shared_page((struct nas_tmp_file *)(uintptr_t)node->inode,
+                                   offset,pa_owned);
+}
+static int tmp_shared_resident(const struct nas_fs_node *node,uint64_t offset) {
+    return tmp_page_resident(node->inode,offset);
+}
+static int tmp_shared_dirty(const struct nas_fs_node *node) {
+    return tmp_touch_shared((struct nas_tmp_file *)(uintptr_t)node->inode);
 }
 static int tmp_resize_node(const struct nas_fs_node *node,uint64_t size) {
     return tmp_resize((struct nas_tmp_file *)(uintptr_t)node->inode,size);
@@ -322,7 +336,7 @@ static int tmp_getattr(const struct nas_fs_node *node,struct nas_fs_node *out) {
     out->mode=f->mode;
     out->uid=f->uid;
     out->gid=f->gid;
-    out->size=f->size;
+    out->size=f->is_dir ? tmp_directory_stat_size(f) : f->size;
     out->nlink=f->nlink ? (f->is_dir?2:f->nlink):0;
     out->atime_sec=f->atime_ns/1000000000ULL;
     out->mtime_sec=f->mtime_ns/1000000000ULL;
@@ -340,17 +354,73 @@ static void tmp_last_inode_unpin(const struct nas_fs_node *node) {
     if(root && node->inode==(const void *)root)return;
     tmp_inode_discard((struct nas_tmp_file *)(uintptr_t)node->inode);
 }
+static int tmp_statfs(const struct nas_fs_node *node,
+                      struct nas_vfs_statfs *out) {
+    (void)node;
+    /* NaSeed tmpfs allocates sparse pages from the shared physical frame
+     * pool, with no separate fixed tmpfs quota. These are the actual
+     * available backing frames, not a fabricated constant capacity. */
+    *out=(struct nas_vfs_statfs){
+        .magic=0x01021994ULL, /* Linux TMPFS_MAGIC */
+        .block_size=4096,.blocks=nas_managed_frames(),
+        .free_blocks=nas_free_frames(),
+        .available_blocks=nas_free_frames(),
+        .fragment_size=4096,.name_max=255
+    };
+    return 0;
+}
+static int tmp_setxattr_node(const struct nas_fs_node *node,const char *name,
+                             const uint8_t *value,uint64_t size,unsigned flags) {
+    if(tmp_is_overlay_root(node))return -EOPNOTSUPP;
+    return tmp_setxattr((struct nas_tmp_file *)(uintptr_t)node->inode,
+                        name,value,size,flags);
+}
+static int64_t tmp_getxattr_node(const struct nas_fs_node *node,
+                                 const char *name,uint8_t *value,uint64_t cap) {
+    if(tmp_is_overlay_root(node))return -EOPNOTSUPP;
+    return tmp_getxattr(node->inode,name,value,cap);
+}
+static int64_t tmp_listxattr_node(const struct nas_fs_node *node,
+                                  uint8_t *names,uint64_t cap) {
+    if(tmp_is_overlay_root(node))return 0;
+    return tmp_listxattr(node->inode,names,cap);
+}
+static int tmp_removexattr_node(const struct nas_fs_node *node,
+                                const char *name) {
+    if(tmp_is_overlay_root(node))return -EOPNOTSUPP;
+    return tmp_removexattr((struct nas_tmp_file *)(uintptr_t)node->inode,name);
+}
+static int tmp_fiemap_node(const struct nas_fs_node *node,uint64_t start,
+                           uint64_t end,uint64_t *logical,uint64_t *length,
+                           bool *last) {
+    if(tmp_is_overlay_root(node))return -EISDIR;
+    return tmp_fiemap_next(node->inode,start,end,logical,length,last);
+}
+static int tmp_preallocate_node(const struct nas_fs_node *node,
+                                uint64_t offset,uint64_t length,unsigned mode) {
+    if(!node || !node->inode)return -EINVAL;
+    if(tmp_is_overlay_root(node))return -EISDIR;
+    return tmp_preallocate((struct nas_tmp_file *)(uintptr_t)node->inode,
+                           offset,length,mode);
+}
 static const struct nas_vfs_type tmp_type={
     .name="tmpfs",.exec_source_label="tmpfs",
     .root=tmp_root,.lookup_child=tmp_child,
     .last_inode_unpin=tmp_last_inode_unpin,.getattr=tmp_getattr,
+    .statfs=tmp_statfs,
+    .setxattr=tmp_setxattr_node,.getxattr=tmp_getxattr_node,
+    .listxattr=tmp_listxattr_node,.removexattr=tmp_removexattr_node,
+    .fiemap_next=tmp_fiemap_node,
     .validate_inode=tmp_validate_inode,
     .readlink=tmp_readlink,
     .read_at=tmp_read,.read_size_is_eof=true,
     .read_dir=tmp_read_dir,.chmod=tmp_chmod_node,.chown=tmp_chown_node,
     .utimens=tmp_utimens_node,
     .create=tmp_create_node,.mknod=tmp_mknod_node,.write_at=tmp_write_node,
-    .resize=tmp_resize_node,.sync=tmp_sync_node,
+    .acquire_shared_page=tmp_shared_page,
+    .shared_page_resident=tmp_shared_resident,.touch_shared=tmp_shared_dirty,
+    .resize=tmp_resize_node,.preallocate=tmp_preallocate_node,
+    .sync=tmp_sync_node,
     .mkdir=tmp_mkdir_node,.unlink=tmp_unlink_node,.rename=tmp_rename_node,
     .link=tmp_link_node,.symlink=tmp_symlink_node,
     .unlink_open_safe=true,.rename_replace_open_safe=true
@@ -358,7 +428,9 @@ static const struct nas_vfs_type tmp_type={
 static void proc_fill(struct nas_proc_node p,struct nas_fs_node *out) {
     *out=(struct nas_fs_node){.ino=nas_proc_ino(p),
       .nlink=nas_proc_is_dir(p)?2:1,.mode=nas_proc_mode(p),
-      .is_dir=nas_proc_is_dir(p)};
+      .is_dir=nas_proc_is_dir(p),
+      /* procfd target text is intentionally not namei-followable yet. */
+      .is_symlink=p.kind==NAS_PROC_PID_CWD_LINK};
 }
 static int proc_root(const struct nas_vfs_mount *mount,
                      struct nas_fs_node *out) {
@@ -385,7 +457,9 @@ static int proc_readlink_node(const struct nas_fs_node *node,
     /* /proc/self is only a spelling. Resolve once to a stable PID/FD
      * inode: an inherited handle must never retarget to the child PID. */
     struct nas_proc_node proc;
-    if(!nas_proc_fd_link_from_ino(node->ino,&proc))return -ENOENT;
+    if(!nas_proc_fd_link_from_ino(node->ino,&proc) &&
+       (!nas_proc_node_from_ino(node->ino,&proc) ||
+        proc.kind!=NAS_PROC_PID_CWD_LINK))return -ENOENT;
     int64_t n=nas_proc_readlink(proc,target,256);
     if(n<0)return (int)n;
     return n>256 ? -ENAMETOOLONG : (int)n;
@@ -411,7 +485,8 @@ static int proc_read_dir(const struct nas_fs_node *node,
                !nas_proc_child(directory,(unsigned)(cursor-2),name,&entry))
                 break;
             dtype=nas_proc_is_dir(entry)?4:
-                  entry.kind==NAS_PROC_FD_LINK?10:8;
+                  entry.kind==NAS_PROC_FD_LINK ||
+                  entry.kind==NAS_PROC_PID_CWD_LINK?10:8;
         }
         int rc=fill_dirent(&out[count],name,nas_proc_ino(entry),dtype);
         if(rc)return rc;
@@ -434,11 +509,129 @@ static const struct nas_vfs_type proc_type={
     .readlink=proc_readlink_node,.read_at=proc_read_inode,
     .read_dir=proc_read_dir,.read_only=true
 };
+
+/* The current QEMU targets boot one logical CPU (-smp 1). Expose that
+ * topology through an actual read-only VFS provider, not app-specific files
+ * staged in a test image. The table is one inode/parent graph for lookup,
+ * readdir, open and reads; absent CPU capabilities remain absent. */
+enum {
+    SYS_ROOT, SYS_DEVICES, SYS_SYSTEM, SYS_CPU, SYS_CPU0, SYS_TOPOLOGY,
+    SYS_POSSIBLE, SYS_PRESENT, SYS_ONLINE, SYS_OFFLINE, SYS_KERNEL_MAX,
+    SYS_CORE_ID, SYS_PACKAGE_ID, SYS_THREAD_SIBLINGS, SYS_CORE_SIBLINGS,
+    SYS_NODE_COUNT
+};
+#define SYS_INO_BASE 900000ULL
+struct sys_entry {
+    unsigned parent;
+    const char *name;
+    const char *contents;
+    bool directory;
+};
+static const struct sys_entry sys_entries[SYS_NODE_COUNT]={
+    [SYS_ROOT]={SYS_ROOT,"",0,true},
+    [SYS_DEVICES]={SYS_ROOT,"devices",0,true},
+    [SYS_SYSTEM]={SYS_DEVICES,"system",0,true},
+    [SYS_CPU]={SYS_SYSTEM,"cpu",0,true},
+    [SYS_CPU0]={SYS_CPU,"cpu0",0,true},
+    [SYS_TOPOLOGY]={SYS_CPU0,"topology",0,true},
+    [SYS_POSSIBLE]={SYS_CPU,"possible","0\n",false},
+    [SYS_PRESENT]={SYS_CPU,"present","0\n",false},
+    [SYS_ONLINE]={SYS_CPU,"online","0\n",false},
+    [SYS_OFFLINE]={SYS_CPU,"offline","\n",false},
+    [SYS_KERNEL_MAX]={SYS_CPU,"kernel_max","0\n",false},
+    [SYS_CORE_ID]={SYS_TOPOLOGY,"core_id","0\n",false},
+    [SYS_PACKAGE_ID]={SYS_TOPOLOGY,"physical_package_id","0\n",false},
+    [SYS_THREAD_SIBLINGS]={SYS_TOPOLOGY,"thread_siblings_list","0\n",false},
+    [SYS_CORE_SIBLINGS]={SYS_TOPOLOGY,"core_siblings_list","0\n",false}
+};
+static int sys_id(const struct nas_fs_node *node) {
+    if(!node || node->ino<SYS_INO_BASE ||
+       node->ino>=SYS_INO_BASE+SYS_NODE_COUNT)return -1;
+    return (int)(node->ino-SYS_INO_BASE);
+}
+static void sys_fill(unsigned id,struct nas_fs_node *out) {
+    const struct sys_entry *entry=&sys_entries[id];
+    *out=(struct nas_fs_node){.ino=SYS_INO_BASE+id,
+        .nlink=entry->directory?2:1,
+        .mode=entry->directory?0040555U:0100444U,
+        .size=entry->contents?strlen(entry->contents):0,
+        .is_dir=entry->directory};
+}
+static int sys_root(const struct nas_vfs_mount *mount,
+                    struct nas_fs_node *out) {
+    (void)mount;
+    if(!out)return -EINVAL;
+    sys_fill(SYS_ROOT,out);
+    return 0;
+}
+static int sys_child(const struct nas_fs_node *parent,const char *name,
+                     struct nas_fs_node *out) {
+    int id=sys_id(parent);
+    if(id<0 || !parent->is_dir)return -ENOTDIR;
+    if(!name || !*name || !out || strchr(name,'/'))return -EINVAL;
+    for(unsigned i=1;i<SYS_NODE_COUNT;i++)
+        if(sys_entries[i].parent==(unsigned)id &&
+           !strcmp(name,sys_entries[i].name)) {
+            sys_fill(i,out);
+            return 0;
+        }
+    return -ENOENT;
+}
+static int sys_read_dir(const struct nas_fs_node *node,uint64_t cursor,
+                        struct nas_vfs_dirent *out,unsigned maximum) {
+    int id=sys_id(node);
+    if(id<0 || !node->is_dir || !out || !maximum)return -EINVAL;
+    unsigned count=0;
+    for(;count<maximum;count++,cursor++) {
+        unsigned child=(unsigned)id;
+        const char *name=".";
+        if(cursor==1) {
+            name="..";
+            child=sys_entries[id].parent;
+        } else if(cursor>=2) {
+            uint64_t skip=cursor-2;
+            bool found=false;
+            for(unsigned i=1;i<SYS_NODE_COUNT;i++) {
+                if(sys_entries[i].parent!=(unsigned)id)continue;
+                if(skip--!=0)continue;
+                child=i;
+                name=sys_entries[i].name;
+                found=true;
+                break;
+            }
+            if(!found)break;
+        }
+        int rc=fill_dirent(&out[count],name,SYS_INO_BASE+child,
+                           sys_entries[child].directory?4:8);
+        if(rc)return rc;
+    }
+    return (int)count;
+}
+static int64_t sys_read_inode(const struct nas_fs_node *node,uint64_t offset,
+                              uint8_t *dst,uint64_t length) {
+    int id=sys_id(node);
+    if(id<0 || (!dst && length))return -EINVAL;
+    if(sys_entries[id].directory)return -EISDIR;
+    const char *content=sys_entries[id].contents;
+    if(!content)return -EIO;
+    uint64_t size=strlen(content);
+    if(offset>=size)return 0;
+    if(length>size-offset)length=size-offset;
+    memcpy(dst,content+offset,(size_t)length);
+    return (int64_t)length;
+}
+static const struct nas_vfs_type sys_type={
+    .name="sysfs",.exec_source_label="sysfs",
+    .root=sys_root,.lookup_child=sys_child,
+    .read_at=sys_read_inode,.read_dir=sys_read_dir,.read_only=true
+};
 static const struct nas_vfs_mount defaults[]={
     {.mountpoint="/",.type=&boot_type,.permanent=true},
     {.mountpoint="/tmp",.type=&tmp_type,.fallback_on_miss=true,
      .allow_missing_mountpoint=true,.permanent=true},
     {.mountpoint="/proc",.type=&proc_type,.fallback_on_miss=true,
+     .allow_missing_mountpoint=true,.permanent=true},
+    {.mountpoint="/sys",.type=&sys_type,.fallback_on_miss=true,
      .allow_missing_mountpoint=true,.permanent=true}
 };
 void nas_vfs_register_default_mounts(void) {

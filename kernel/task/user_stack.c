@@ -25,9 +25,12 @@ bool nas_user_stack_map_initial(void) {
     for(uint64_t va=USER_STACK_TOP-NAS_USER_STACK_PAGES*PAGE;
         va<USER_STACK_TOP;va+=PAGE)
         if(!nas_mmu_map_page(va,true))return false;
+    /* Reserve the normal 8-MiB Linux-style stack limit in the VMA ledger.
+     * Only the top 1 MiB owns pages initially: stack faults farther down
+     * are zero-filled by nas_mm_handle_fault() up to this lower bound. */
     return nas_vma_record(&TASK.mm->mmap_vmas,
-                          USER_STACK_TOP-NAS_USER_STACK_PAGES*PAGE,
-                          NAS_USER_STACK_PAGES*PAGE,3,NAS_VMA_STACK,0);
+                          USER_STACK_TOP-NAS_USER_STACK_RESERVE_PAGES*PAGE,
+                          NAS_USER_STACK_RESERVE_PAGES*PAGE,3,NAS_VMA_STACK,0);
 }
 
 /* Share one kernel-BSS argument pointer staging area. A 2048-argument
@@ -55,7 +58,7 @@ static bool put_stack_string(uint64_t *sp, const char *str, uint64_t *address) {
 /* Only the bootloader-selected *initial* argv needs this BSS staging area.
  * A genuine `sh -c '<multi-command script>'` or dynamic-linker smoke can
  * easily exceed the old 256-byte limit. Keep it distinct from Linux's
- * execve ARG_MAX and the 1-MiB actual user stack mapping: the latter still
+ * execve ARG_MAX and the 1-MiB initially mapped user stack: the latter still
  * validates its real pointer/string placement through put_stack_string().
  * 4096 bytes, including each argument's NUL, remain bounded in kernel BSS. */
 #define NAS_BOOT_ARGV_STORAGE_BYTES 4096U

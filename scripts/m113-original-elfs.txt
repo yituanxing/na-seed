@@ -1,0 +1,16 @@
+# Exact 15 native signed ELF targets, independently verified from x86_64 APKs.
+usr/bin/dtc
+usr/bin/fdtget
+usr/bin/fdtput
+usr/bin/cwebp
+usr/bin/dwebp
+usr/bin/ppm2tiff
+usr/bin/tiffinfo
+usr/bin/tiffcp
+usr/bin/qpdf
+usr/bin/pdfinfo
+usr/bin/pdftotext
+usr/bin/markdown
+usr/bin/md2html
+usr/bin/lzip
+bin/lzop

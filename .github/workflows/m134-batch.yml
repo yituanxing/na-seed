@@ -1,0 +1,96 @@
+name: NaSeed M134 15 signed graph interpreters generators original ELFs, QEMU three ISAs
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  signed-original-software:
+    name: M134 15 signed native graph interpreter codegen software / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify signed profile, shared tmpfs, VFS, 3-ISA kernel invariants
+        timeout-minutes: 4
+        run: |
+          set -eu
+          sh -n scripts/stage-alpine-prebuilt-overlay.sh \
+                scripts/stage-m134-prebuilt.sh \
+                scripts/probe-m134-batch.sh \
+                tests/m134-batch-run.sh
+          python3 scripts/check-prebuilt-profile-catalog.py
+          python3 scripts/check-native-qemu-target.py
+          python3 scripts/check-three-isa-core.py
+          sh scripts/check-vfs-provider.sh
+          sh scripts/check-m108-tmp-index.sh
+      - name: Install signed APK staging tools and native system QEMU
+        timeout-minutes: 12
+        run: |
+          set -eu
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'clang:clang' 'ld.lld:lld' 'readelf:binutils' 'cpio:cpio' \
+                      'xorriso:xorriso' 'mformat:mtools' \
+                      'sgdisk:gdisk' 'qemu-riscv64:qemu-user'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case "${{ matrix.port }}" in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+              test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
+            riscv64)
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+            arm64)
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/AAVMF/AAVMF_CODE.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+          esac
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+      - name: Execute all 15 new original signed ELFs in native NaSeed QEMU
+        timeout-minutes: 45
+        run: sh scripts/probe-m134-batch.sh ${{ matrix.port }}
+      - name: Preserve signed ELF SHA256 and full native QEMU PASS serial
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m134-signed-multifamily-pass-${{ matrix.port }}
+          path: |
+            build/external/m134-batch/${{ matrix.port }}/apk-install.log
+            build/external/m134-batch/${{ matrix.port }}/requested-packages.txt
+            build/external/m134-batch/${{ matrix.port }}/*.sha256
+            build/busybox-source-parity-x86/m134-batch.clean.log
+            build/port-riscv64/full/matrix-source/m134-batch.clean.log
+            build/port-aarch64/full/matrix-source/m134-batch.clean.log
+          if-no-files-found: error
+      - name: Preserve entire failure serial and signed guest rootfs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m134-signed-multifamily-fail-${{ matrix.port }}
+          path: |
+            build/external/m134-batch/${{ matrix.port }}/apk-install.log
+            build/external/m134-batch/${{ matrix.port }}/requested-packages.txt
+            build/external/m134-batch/${{ matrix.port }}/rootfs.cpio
+            build/external/m134-batch/${{ matrix.port }}/*.sha256
+            build/busybox-source-parity-x86/m134-batch.clean.log
+            build/port-riscv64/full/matrix-source/m134-batch.clean.log
+            build/port-aarch64/full/matrix-source/m134-batch.clean.log
+          if-no-files-found: ignore
