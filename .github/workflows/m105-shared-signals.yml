@@ -64,13 +64,17 @@ jobs:
                 missing="$missing gcc-riscv64-linux-gnu libc6-dev-riscv64-cross"
               command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
               test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || \
-                missing="$missing qemu-efi-riscv64" ;;
+                missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || \
+                missing="$missing ipxe-qemu" ;;
             arm64)
               command -v aarch64-linux-gnu-gcc >/dev/null || \
                 missing="$missing gcc-aarch64-linux-gnu libc6-dev-arm64-cross"
               command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
               test -f /usr/share/AAVMF/AAVMF_CODE.fd || \
-                missing="$missing qemu-efi-aarch64" ;;
+                missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || \
+                missing="$missing ipxe-qemu" ;;
           esac
           if [ -n "$missing" ]; then
             sh scripts/ci-ubuntu-mirror.sh
