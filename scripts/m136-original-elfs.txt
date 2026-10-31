@@ -16,6 +16,6 @@ usr/bin/script
 usr/bin/scriptreplay
 usr/bin/uuidgen
 usr/bin/fallocate
-usr/bin/findmnt
+bin/findmnt
 usr/bin/flock
 usr/bin/lscpu

@@ -164,7 +164,7 @@ run_case() {
         size=$(busy stat -c '%s' "$work/preallocated")
         [ "$size" -eq 8192 ] ;;
       findmnt)
-        exe=$(original_elf /usr/bin/findmnt)
+        exe=$(original_elf /bin/findmnt)
         busy printf 'tmpfs /m136-fake tmpfs rw,nosuid 0 0\n' > "$work/fstab"
         "$exe" --fstab --tab-file "$work/fstab" -n -o TARGET,FSTYPE \
             > "$work/output"
