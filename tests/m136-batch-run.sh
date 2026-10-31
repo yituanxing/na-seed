@@ -240,6 +240,8 @@ for app in flex byacc re2c tic infocmp clear tput toe tabs tset \
                       payload fstab input; do
             if [ -s "/tmp/m136-$app/$detail" ]; then
                 echo "[M136 FAILED OUTPUT $app/$detail]" >&2
+                busy stat -c 'stored bytes: %s' "/tmp/m136-$app/$detail" >&2 || :
+                busy od -An -tx1 -N128 "/tmp/m136-$app/$detail" >&2 || :
                 busy head -c 8000 "/tmp/m136-$app/$detail" >&2 || :
                 echo >&2
             fi

@@ -165,6 +165,16 @@ void nas_fs_description_final_close(unsigned slot) {
     if(slot>=NAS_OPEN_FILE_LIMIT || nas_open_files[slot].refcount)
         nas_fs_fail("closing nonfinal open description");
     nas_epoll_target_final_close(slot);
+    if(TASK.fds->entries[fd].kind==FD_PTY_MASTER ||
+       TASK.fds->entries[fd].kind==FD_PTY_SLAVE) {
+        static unsigned m136_pty_trace_count;
+        if(m136_pty_trace_count++<60U) {
+            nas_print("[M136 PTY TRACE] ioctl pid=");
+            nas_dec(nas_current_task->pid);
+            nas_print(" cmd=");nas_hex(cmd);
+            nas_print("\n");
+        }
+    }
     const struct nas_file_ops *ops=nas_open_files[slot].ops;
     if(ops && ops->release)ops->release(slot);
     /* flock belongs to the SHARED File, not the current task's FD.
@@ -364,6 +374,8 @@ static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
         return 0;
     }
     if(cmd==0x5441ULL) { /* TIOCGPTPEER: open the slave of this PTY master */
+        nas_print("[M136 PTY TRACE] peer ioctl pid=");nas_dec(nas_current_task->pid);
+        nas_print(" flags=");nas_hex(arg);nas_print("\n");
         /* Unlike ordinary PTY ioctls this creates a NEW descriptor, so its
          * allocation belongs at the common FD boundary, not in pty.c.
          * util-linux script/openpty uses this Linux interface instead of
@@ -542,6 +554,8 @@ static uint64_t open_path_owned(const char *path,
     }
 
     if(kind==FD_PTY_MASTER) {
+        nas_print("[M136 PTY TRACE] ptmx open pid=");nas_dec(nas_current_task->pid);
+        nas_print("\n");
         int err=nas_pty_new(slot);
         if(err)return (uint64_t)(int64_t)err;
     } else if(kind==FD_PTY_SLAVE) {

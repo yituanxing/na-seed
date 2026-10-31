@@ -254,6 +254,24 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
                     nas_print("\n");
                 }
             }
+            /* Linux userspace legitimately probes x86 I/O-port / CPU
+             * features by installing SIGSEGV, executing a privileged IN
+             * instruction, and recovering via siglongjmp from the handler
+             * (util-linux lscpu does this for hypervisor detection).
+             * A caught synchronous #GP must enter that real signal frame,
+             * not unconditionally kill the process as the default case. */
+            const uint64_t segv_bit=1ULL<<(NAS_SIGSEGV-1U);
+            if(!traced && vector==13 && !tracee->signal_frame_active &&
+               tracee->sighand &&
+               tracee->sighand->actions[NAS_SIGSEGV][0]>1ULL &&
+               !(tracee->blocked_signals&segv_bit)) {
+                tracee->pending_signals|=segv_bit;
+                /* Drop exception vector/error words to restore the native
+                 * 15-register + five-word user IRET return contract. */
+                for(unsigned i=0;i<5;i++)frame[15+i]=frame[17+i];
+                nas_signal_user_return(frame);
+                return;
+            }
             /* User #DB/#BP without a ptrace owner is SIGTRAP, never a
              * kernel-wide fatal exception. Tracer-owned stops are intact. */
             if(!traced)
