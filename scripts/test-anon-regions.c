@@ -2,6 +2,8 @@
 #include <stdint.h>
 #include <string.h>
 #include "../kernel/mm/anon_regions.h"
+#include "../kernel/arch/abi.h"
+#include "../kernel/task/user_stack.h"
 #define P 4096ULL
 static bool ordered(const struct nas_anon_region *r,void *ctx) {
     uint64_t *previous=(uint64_t *)ctx;
@@ -178,16 +180,28 @@ int main(void) {
     nas_anon_reset(&stable);
     /* M85-B: one typed ledger covers mappings outside the allocator
      * window, including the fixed user stack and the ISA trampoline. */
-    assert(nas_vma_record(&a,0x6ff00000,4*P,3,NAS_VMA_STACK,0));
-    assert(nas_vma_record(&a,0x6fe00000,P,5,NAS_VMA_SIGNAL_TRAMPOLINE,0));
+    const uint64_t stack_bottom=NAS_USER_STACK_TOP-NAS_USER_STACK_RESERVE_PAGES*P;
+    const uint64_t eager_bottom=NAS_USER_STACK_TOP-NAS_USER_STACK_PAGES*P;
+    assert(NAS_USER_STACK_RESERVE_PAGES>NAS_USER_STACK_PAGES);
+    assert(eager_bottom>stack_bottom+P);
+    assert(NAS_USER_SIGNAL_TRAMPOLINE+P<stack_bottom);
+    assert(!nas_anon_fixed_range_allowed(stack_bottom,P));
+    assert(!nas_anon_fixed_range_allowed(NAS_USER_SIGNAL_TRAMPOLINE,P));
+    assert(nas_vma_record(&a,stack_bottom,
+                          NAS_USER_STACK_RESERVE_PAGES*P,3,NAS_VMA_STACK,0));
+    assert(nas_vma_record(&a,NAS_USER_SIGNAL_TRAMPOLINE,P,5,
+                          NAS_VMA_SIGNAL_TRAMPOLINE,0));
     assert(nas_vma_record(&a,0x10000000,2*P,5,
                           NAS_VMA_ELF_PRIVATE_SNAPSHOT,0x1000));
-    assert(nas_vma_find(&a,0x6ff00000)->kind==NAS_VMA_STACK);
-    assert(nas_vma_find(&a,0x6fe00000)->prot==5);
+    assert(nas_vma_find(&a,stack_bottom)->kind==NAS_VMA_STACK);
+    assert(nas_vma_find(&a,eager_bottom-P)->kind==NAS_VMA_STACK);
+    assert(nas_vma_find(&a,NAS_USER_STACK_TOP-1)->kind==NAS_VMA_STACK);
+    assert(!nas_vma_find(&a,stack_bottom-1)); /* Grow-down hard limit. */
+    assert(nas_vma_find(&a,NAS_USER_SIGNAL_TRAMPOLINE)->prot==5);
     assert(nas_vma_find(&a,0x10000000)->kind==NAS_VMA_ELF_PRIVATE_SNAPSHOT);
     assert(!nas_anon_overlay(&a,NAS_ANON_CEILING-P,2*P));
     uint64_t top_seen=0;
-    assert(nas_vma_walk(&a,ordered,&top_seen) && top_seen==0x6ff04000);
+    assert(nas_vma_walk(&a,ordered,&top_seen) && top_seen==NAS_USER_STACK_TOP);
     nas_anon_reset(&a);
     nas_anon_reset(&b);
     return 0;

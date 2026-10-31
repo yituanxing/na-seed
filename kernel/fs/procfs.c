@@ -626,7 +626,7 @@ int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
                     if(other && other->state!=NAS_TASK_FREE && other->tgid==t->tgid)threads++;
                 }
                 decimal(&w,threads);
-            }else if(field==23)decimal(&w,(anon_pages(t)+NAS_USER_STACK_PAGES)*4096ULL);
+            }else if(field==23)decimal(&w,anon_pages(t)*4096ULL);
             else decimal(&w,0);
         }
         ch(&w,'\n');break;

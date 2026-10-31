@@ -24,10 +24,10 @@
 /* Temporary common userspace layout compatible with current x86 and Sv39.
  * Replace with MMU-mode capabilities before adding general VM layouts. */
 #define NAS_USER_STACK_TOP 0x0000000070000000ULL
-/* Native RV64/AArch64 signal restorer must stay clear of the entire main
- * stack mapping; both ISA providers use this shared virtual-address contract.
- * Fixed RX page with an unmapped gap below the bounded 1-MiB user stack. */
-#define NAS_USER_SIGNAL_TRAMPOLINE 0x000000006fe00000ULL
+/* Native RV64/AArch64 signal restorer must stay clear of the entire 8-MiB
+ * reserved main stack VMA (0x6f800000..0x70000000). Keep its fixed RX
+ * page in a distinct, otherwise unmapped gap below that reservation. */
+#define NAS_USER_SIGNAL_TRAMPOLINE 0x000000006f700000ULL
 #define NAS_ELF_DYN_APP_BASE 0x10000000ULL
 #define NAS_ELF_DYN_INTERP_BASE 0x30000000ULL
 #define NAS_TASK_MMAP_CURSOR 0x60000000ULL

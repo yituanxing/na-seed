@@ -11,6 +11,8 @@
 #include "../kernel/task.h"
 #include "../kernel/mm/vm.h"
 #include "../kernel/mm/frame.h"
+#include "../kernel/arch/abi.h"
+#include "../kernel/task/user_stack.h"
 /* The existing M86 runner links vm.c but not fault.c. Include the REAL
  * common fault implementation here so this host-only high-VA check runs
  * production demand-zero policy against the same mocked native PTEs. */
@@ -398,10 +400,49 @@ int main(void){
           0,0x22,UINT64_MAX,0)==-12);
     assert((int64_t)nas_vm_anon_mmap(0x6ff00000,P,
                                     0,0x32,UINT64_MAX,0)==-22);
+    /* M127 LAME: original encoder faulted at 0x6feffd58, 680 bytes below
+     * the old 1-MiB eager stack. Reserve 8 MiB in VMA only; confirm the
+     * genuine common fault resolver lazily populates the lower stack,
+     * rejects the guard below its hard limit, and cannot write the RX
+     * signal trampoline living outside the stack reservation. */
+    const uint64_t stack_bottom=NAS_USER_STACK_TOP-
+                                NAS_USER_STACK_RESERVE_PAGES*P;
+    const uint64_t eager_bottom=NAS_USER_STACK_TOP-NAS_USER_STACK_PAGES*P;
+    const uint64_t lame_fault=eager_bottom-0x2a8ULL;
+    assert(NAS_USER_STACK_RESERVE_PAGES>NAS_USER_STACK_PAGES);
+    assert(eager_bottom>stack_bottom+P);
+    assert(NAS_USER_SIGNAL_TRAMPOLINE+P<stack_bottom);
+    assert(nas_vma_record(&space.mmap_vmas,stack_bottom,
+                          NAS_USER_STACK_RESERVE_PAGES*P,3,NAS_VMA_STACK,0));
+    assert(nas_vma_record(&space.mmap_vmas,NAS_USER_SIGNAL_TRAMPOLINE,
+                          P,5,NAS_VMA_SIGNAL_TRAMPOLINE,0));
+    assert(!nas_mmu_user_byte(lame_fault));
+    unsigned before_stack=living();
+    assert(nas_mm_handle_fault(&space,lame_fault,NAS_UP_READ,false)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(nas_mmu_user_byte(lame_fault) && *nas_mmu_user_byte(lame_fault)==0 &&
+           living()==before_stack+1);
+    *nas_mmu_user_byte(lame_fault)=0x7a;
+    assert(nas_mm_handle_fault(&space,stack_bottom,NAS_UP_WRITE,false)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(nas_mmu_user_byte(stack_bottom) &&
+           *nas_mmu_user_byte(stack_bottom)==0 && living()==before_stack+2);
+    assert(nas_mm_handle_fault(&space,stack_bottom-1,NAS_UP_READ,false)==
+           NAS_MM_FAULT_MAPERR);
+    assert(nas_mm_handle_fault(&space,NAS_USER_SIGNAL_TRAMPOLINE,
+                                NAS_UP_WRITE,false)==NAS_MM_FAULT_ACCERR);
+    assert(!nas_vma_find(&space.mmap_vmas,stack_bottom-1) &&
+           nas_vma_find(&space.mmap_vmas,lame_fault)->kind==NAS_VMA_STACK &&
+           nas_vma_find(&space.mmap_vmas,NAS_USER_SIGNAL_TRAMPOLINE)->kind==
+               NAS_VMA_SIGNAL_TRAMPOLINE);
+    assert(nas_mmu_unmap_page(lame_fault&~(P-1)));
+    assert(nas_mmu_unmap_page(stack_bottom));
+    assert(living()==before_stack);
     puts("[M80 LARGE ANON MMAP HOST PASS] 64MiB+4KiB, high 64-bit VMA, honest total-window ENOMEM");
     puts("[M124 IMMUTABLE MAP_SHARED HOST PASS] bootfs RO mapped; mutable tmpfs and write escalation rejected");
     puts("[M110 NODE VM PASS] 512MiB RWX reservation, lazy mprotect, demand-faulted executable pages");
     puts("[M110 NODE MADVISE HOST PASS] 512MiB DONTNEED refault zero, DONTFORK VMA policy, snapshot honesty");
     puts("[M87 MM TXN PASS] MAP_FIXED rollback and mprotect lazy protection preserve VMA/PTE and frame ownership");
+    puts("[M127 STACK LAZY HOST PASS] 8MiB reservation; LAME boundary and lower-limit guards; signal trampoline isolation");
     return 0;
 }

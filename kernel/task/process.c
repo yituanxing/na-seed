@@ -8,6 +8,7 @@
 #include "../mm/usercopy.h"
 #include "../mm/vm.h"
 #include "process.h"
+#include "user_stack.h"
 #include "wait_pid.h"
 #include "rusage.h"
 #include "../time/clock.h"
@@ -164,7 +165,7 @@ uint64_t nas_process_prlimit(uint64_t pid,uint64_t resource,
     if (resource > 15) return (uint64_t)-EINVAL;
     uint64_t soft=UINT64_MAX, hard=UINT64_MAX;
     switch (resource) {
-    case 3: soft=hard=32ULL*4096ULL; break; /* RLIMIT_STACK */
+    case 3: soft=hard=NAS_USER_STACK_RESERVE_PAGES*4096ULL; break; /* RLIMIT_STACK */
     case 4: soft=hard=0; break;             /* RLIMIT_CORE: no dumps */
     case 6: soft=hard=NAS_TASK_LIMIT; break; /* RLIMIT_NPROC */
     case 7: soft=hard=NAS_FD_LIMIT; break; /* RLIMIT_NOFILE */

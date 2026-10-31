@@ -126,7 +126,7 @@ run_case() {
         exe=$(original_elf /usr/bin/metaflac)
         "$exe" --show-sample-rate /tests/m127-tone.flac > "$work/rate.txt"
         "$exe" --show-total-samples /tests/m127-tone.flac > "$work/samples.txt"
-        "$exe" --show-vc-field=TITLE /tests/m127-tone.flac > "$work/title.txt"
+        "$exe" --show-tag=TITLE /tests/m127-tone.flac > "$work/title.txt"
         has "$work/rate.txt" 16000
         has "$work/samples.txt" 48000
         has "$work/title.txt" M127FLACMEMORY ;;

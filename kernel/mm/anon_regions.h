@@ -8,7 +8,7 @@
 #define NAS_ANON_CEILING 0x60000000ULL
 /* Keep the established low mmap window for old binaries and Linux libc;
  * reserve the 0x60000000..0x80000000 gap for the main user stack and signal
- * trampoline (0x70000000/0x6fe00000). On pressure, use a disjoint higher
+ * trampoline (0x70000000/0x6f700000). On pressure, use a disjoint higher
  * window for large real-program VMAs, e.g. V8's >1-GiB aggregate CodeRange
  * reservations. The 64-GiB ceiling is below the smallest 64-bit user-VA
  * hardware regime currently supported: RV64 Sv39=256 GiB, ARM64=512 GiB,
