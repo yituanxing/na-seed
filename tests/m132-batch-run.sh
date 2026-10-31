@@ -35,7 +35,9 @@ package_icu() {
 }
 
 seed_image() {
-    busy printf 'P3\n2 2\n255\n255 0 0\n0 255 0\n0 0 255\n255 255 0\n' > "$work/source.ppm"
+    # libwebp's cwebp decodes binary P6, not the human-readable P3 Netpbm
+    # fixture used by M131. This single shared fixture feeds four codecs.
+    busy printf 'P6\n2 2\n255\n\377\000\000\000\377\000\000\000\377\377\377\000' > "$work/source.ppm"
     # The two established WebP utilities are fixture generators only;
     # neither is counted as a new M132 ELF (they appeared in M113).
     /usr/bin/cwebp -quiet -lossless "$work/source.ppm" -o "$work/source.webp"
@@ -70,16 +72,27 @@ run_case() {
         seed_icu
         "$exe" -d "$work" "$work/m132.res"
         [ -s "$work/m132_res.c" ]
-        busy grep -Eq '0x[0-9a-fA-F]{2}' "$work/m132_res.c" ;;
+        # ICU emits decimal literals for some byte values, so the actual
+        # generated typed byte array is the stable semantic check.
+        busy grep -Fq 'uint8_t bytes[' "$work/m132_res.c" ;;
       gencmn)
         original_elf /usr/sbin/gencmn >/dev/null
         package_icu
-        ! busy cmp -s "$work/m132.res" "$work/m132.dat" ;;
+        ! busy cmp -s "$work/m132.res" "$work/m132.dat"
+        busy grep -aq 'm132.res' "$work/m132.dat" ;;
       icupkg)
         exe=$(original_elf /usr/sbin/icupkg)
-        package_icu
-        "$exe" -l "$work/m132.dat" > "$work/contents.txt"
-        busy grep -Fq 'm132.res' "$work/contents.txt" ;;
+        seed_icu
+        # icupkg also accepts standalone ICU resource data, not just .dat
+        # archives. Test a true endianness transformation and reversible
+        # byte-order roundtrip across all three little-endian architectures.
+        "$exe" -tb "$work/m132.res" "$work/bigendian.res"
+        [ -s "$work/bigendian.res" ]
+        ! busy cmp -s "$work/m132.res" "$work/bigendian.res"
+        "$exe" -tl "$work/bigendian.res" "$work/restored.res"
+        busy cmp -s "$work/m132.res" "$work/restored.res"
+        /usr/bin/derb -s "$work" -c restored.res > "$work/restored.txt"
+        busy grep -Fq 'Hello 132 from Unicode' "$work/restored.txt" ;;
       makeconv)
         exe=$(original_elf /usr/bin/makeconv)
         busy printf '<code_set_name> "m132"\n<mb_cur_min> 1\n<mb_cur_max> 1\n<uconv_class> "SBCS"\n<subchar> \\x3F\nCHARMAP\n<U003F> \\x3F |0\n<U0041> \\x41 |0\n<U0042> \\x42 |0\nEND CHARMAP\n' > "$work/m132.ucm"
