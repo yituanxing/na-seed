@@ -3,6 +3,12 @@
 # device implementations cannot drift between x86_64, riscv64 and aarch64.
 set -eu
 mkdir -p build/block-foundation
+# Official BSD lwIP source is a pinned external dependency, not copied
+# NaOS GPL code. A fresh checkout need not populate the gitlink until the
+# lwIP adapter is compiled in the next integration batch.
+test "$(git ls-files --stage third_party/lwip | awk '{print $1 " " $2}')" = \
+  "160000 77dcd25a72509eb83f72b033d219b1d40cd8eb95"
+grep -Fq 'url = https://github.com/lwip-tcpip/lwip.git' .gitmodules
 cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
   scripts/test-block-foundation.c kernel/block/device.c kernel/block/ramdisk.c \
   kernel/lib/string.c -o build/block-foundation/test
@@ -66,13 +72,20 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
   kernel/drivers/port/block.c kernel/block/device.c kernel/lib/string.c \
   -o build/block-foundation/test-driver-bus
 build/block-foundation/test-driver-bus
+# Ethernet framing has one driver port/registry and no duplicate TCP/IP.
+# Mock Ethernet RX/TX is a host boundary test, NOT a claim of physical NIC.
+cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
+  scripts/test-network-device-port.c kernel/drivers/port/net.c \
+  kernel/lib/string.c -o build/block-foundation/test-network-device-port
+build/block-foundation/test-network-device-port
 cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
   scripts/test-driver-dma.c kernel/drivers/port/dma.c \
   -o build/block-foundation/test-driver-dma
 build/block-foundation/test-driver-dma
 if command -v clang >/dev/null 2>&1; then
   for target in x86_64-unknown-none-elf riscv64-unknown-elf aarch64-none-elf; do
-    for source in kernel/drivers/core/bus.c kernel/drivers/port/dma.c; do
+    for source in kernel/drivers/core/bus.c kernel/drivers/port/dma.c \
+                  kernel/drivers/port/net.c; do
       clang --target="$target" -std=c11 -Wall -Wextra -Werror \
         -ffreestanding -fno-builtin -I kernel -fsyntax-only "$source"
     done

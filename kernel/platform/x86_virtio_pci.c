@@ -1,7 +1,7 @@
-/* QEMU q35 root-bus PCI #1 enumerator. x86 owns config I/O and PTE
- * mapping ONLY; existing PCI transport, bus and original U-Boot request
- * implementation remain shared. This intentionally probes bus 0 (the
- * explicitly configured QEMU root device), not arbitrary PCIe topology. */
+/* QEMU q35 root-bus PCI enumerator. x86 owns config I/O and PTE mapping
+ * ONLY; it publishes modern VirtIO device classes to the shared bus.
+ * Class drivers (blk, net, etc.) own matching, not this platform file.
+ * This still probes QEMU bus 0, not arbitrary PCIe topology. */
 #include "../drivers/virtio/pci.h"
 #include "../drivers/core/bus.h"
 #include "../drivers/port/dma.h"
@@ -9,18 +9,19 @@
 #include "../../ports/uboot/virtio_bus.h"
 #include "../drivers/serial.h"
 #include "../errno.h"
+#include <virtio/virtio_ids.h>
 #include <stdint.h>
 #include <stdbool.h>
-#define DISKS 4U
+#define VIRTIO_DEVICES 8U
 #define BAR_COUNT 6U
 #define BAR_MAX_BYTES 65536U
 #define PCI_MMIO_BASE UINT64_C(0xfffffe9000000000)
-#define DISK_VA_STRIDE (BAR_COUNT*BAR_MAX_BYTES)
-static uint8_t cfg_snapshot[DISKS][256];
-static struct nas_virtio_pci_resources resources[DISKS];
-static struct nas_virtio_pci pci[DISKS];
-static struct nas_virtio_transport transports[DISKS];
-static struct nas_bus_device devices[DISKS];
+#define DEVICE_VA_STRIDE (BAR_COUNT*BAR_MAX_BYTES)
+static uint8_t cfg_snapshot[VIRTIO_DEVICES][256];
+static struct nas_virtio_pci_resources resources[VIRTIO_DEVICES];
+static struct nas_virtio_pci pci[VIRTIO_DEVICES];
+static struct nas_virtio_transport transports[VIRTIO_DEVICES];
+static struct nas_bus_device devices[VIRTIO_DEVICES];
 static void out32(uint16_t port,uint32_t value) {
     __asm__ volatile("outl %0,%1"::"a"(value),"Nd"(port));
 }
@@ -46,7 +47,7 @@ static void load_config(uint8_t bus,uint8_t slot,uint8_t fun,uint8_t *cfg) {
         for(unsigned i=0;i<4;i++)cfg[off+i]=(uint8_t)(value>>(i*8));
     }
 }
-static bool map_bars(uint8_t bus,uint8_t slot,uint8_t fun,unsigned disk,
+static bool map_bars(uint8_t bus,uint8_t slot,uint8_t fun,unsigned index,
                      struct nas_virtio_pci_resources *res) {
     /* Disable decode while sizing, then enable memory + bus mastering
      * only for the device whose BAR regions passed bounds checks. */
@@ -72,7 +73,7 @@ static bool map_bars(uint8_t bus,uint8_t slot,uint8_t fun,unsigned disk,
         uint64_t size=~mask+1U;
         if(address && !(address&4095U) && size>=4096U &&
            size<=BAR_MAX_BYTES && !(size&(size-1U))) {
-            uint64_t virt=PCI_MMIO_BASE+(uint64_t)disk*DISK_VA_STRIDE+
+            uint64_t virt=PCI_MMIO_BASE+(uint64_t)index*DEVICE_VA_STRIDE+
                           (uint64_t)i*BAR_MAX_BYTES;
             bool ok=true;
             for(uint64_t pg=0;pg<size;pg+=4096U)
@@ -101,8 +102,15 @@ int nas_platform_virtio_blk_probe(void) {
         unsigned funcs=(header&(1U<<23))?8U:1U;
         for(unsigned function=0;function<funcs;function++) {
             uint32_t id=cfg_read(0,(uint8_t)slot,(uint8_t)function,0);
-            if((id&0xffffU)!=0x1af4U || (id>>16)!=0x1042U)continue;
-            if(count>=DISKS)return -ENOSPC;
+            /* Modern VirtIO PCI ID = 0x1040 + device class. Do not hardcode
+             * 0x1042 (block): 0x1041 is the network adapter, and late bus
+             * binding deliberately leaves its device unclaimed until a real
+             * net class driver registers. */
+            if((id&0xffffU)!=0x1af4U)continue;
+            uint32_t device_id=id>>16;
+            if(device_id!=0x1040U+VIRTIO_ID_NET &&
+               device_id!=0x1040U+VIRTIO_ID_BLOCK)continue;
+            if(count>=VIRTIO_DEVICES)return -ENOSPC;
             load_config(0,(uint8_t)slot,(uint8_t)function,
                         cfg_snapshot[count]);
             resources[count].config=cfg_snapshot[count];
@@ -124,7 +132,8 @@ int nas_platform_virtio_blk_probe(void) {
                 nas_print("\n");return rc;
             }
             devices[count]=(struct nas_bus_device){
-                .bus=NAS_BUS_PCI,.device_id=2,.vendor_id=id>>16,
+                .bus=NAS_BUS_PCI,.device_id=device_id-0x1040U,
+                .vendor_id=id&0xffffU,
                 .resource=&resources[count],.context=&transports[count]
             };
             rc=nas_bus_device_register(&devices[count]);

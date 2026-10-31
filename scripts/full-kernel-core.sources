@@ -8,6 +8,7 @@ kernel/task/exec.c
 kernel/syscall/dispatch.c
 kernel/ipc/sysv.c
 kernel/net/ipv4_loopback.c
+kernel/drivers/port/net.c
 kernel/fs/pidfd.c
 kernel/task.c
 kernel/mm/mm.c

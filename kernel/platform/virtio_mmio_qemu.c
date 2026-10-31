@@ -1,14 +1,14 @@
 /* Single transport/device enumeration for QEMU virt modern VirtIO-MMIO.
- * Block requests use the pinned U-Boot driver in ports/uboot/blk_port.c;
- * no ISA-specific block-request engine is retained.
- * Platform-specific page mapping and physical BAR are input parameters.
- */
+ * Class drivers own their queues: block uses pinned U-Boot, network will
+ * use an upstream adapter. MMIO discovery does not implement either.
+ * Platform-specific page mapping and physical BAR are input parameters. */
 #include "virtio_mmio_qemu.h"
 #include "../drivers/core/bus.h"
 #include "../drivers/virtio/mmio.h"
 #include "../drivers/port/dma.h"
 #include "../drivers/serial.h"
 #include "../../ports/uboot/virtio_bus.h"
+#include <virtio/virtio_ids.h>
 #include <stdint.h>
 #include <stdbool.h>
 #define VIRTIO_MMIO_SLOTS_MAX 32U
@@ -33,7 +33,11 @@ int nas_qemu_virtio_mmio_probe(uint64_t physical, uint64_t virtual_base,
     for (unsigned slot=0;slot<slots;slot++) {
         volatile uint32_t *reg=(volatile uint32_t *)(uintptr_t)
             (virtual_base+slot*stride);
-        if(reg[0]!=0x74726976U || reg[2]!=2U)continue;
+        if(reg[0]!=0x74726976U)continue;
+        /* Discovery reports device classes. Only an installed class driver
+         * touches queues; an unclaimed type=NET device stays registered so
+         * the future net driver can bind without changing this platform. */
+        if(reg[2]!=VIRTIO_ID_BLOCK && reg[2]!=VIRTIO_ID_NET)continue;
         if(reg[1]!=2U){legacy++;continue;}
         modern++;
         rc=nas_virtio_mmio_transport_init(&transports[slot],
@@ -46,7 +50,7 @@ int nas_qemu_virtio_mmio_probe(uint64_t physical, uint64_t virtual_base,
         rc=nas_bus_device_register(&devices[slot]);
         if(rc<0)return rc;
     }
-    nas_print("[VIRTIO-BLK] hardware transport modern=");
+    nas_print("[VIRTIO] hardware transport modern=");
     nas_dec(modern);nas_print(" legacy=");nas_dec(legacy);nas_print("\n");
     nas_print("[VIRTIO-BLK] real modern MMIO devices=");
     nas_dec(nas_virtio_blk_count());nas_print("\n");
