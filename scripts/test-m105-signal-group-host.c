@@ -374,6 +374,27 @@ static void test_sigchld_live_parent_worker(void) {
     assert(!worker->pending_signals);
     puts("M105_HOST_SIGCHLD_WORKER_PASS");
 }
+static void test_thread_private_caught_realtime_signal(void) {
+    reset();
+    struct nas_task *leader=make(0,2,2,20,3,false);
+    struct nas_task *worker=make(1,3,2,20,3,true);
+    worker->sighand=leader->sighand;
+    nas_current_task=leader;
+    /* musl pthread_cancel uses a private real-time signal with a handler.
+     * The default action must NOT be misreported as supported. */
+    assert(nas_signal_tgkill(2,3,32,0)==(uint64_t)-EOPNOTSUPP);
+    assert(!worker->pending_signals);
+    leader->sighand->actions[32][0]=0x12340;
+    assert(nas_signal_tgkill(2,3,32,0)==0);
+    assert(worker->pending_signals==(1ULL<<31));
+    assert(!leader->pending_signals && !leader->signal_group->pending);
+    nas_current_task=worker;
+    uint64_t frame[8]={0};
+    nas_signal_user_return(frame);
+    assert(handler_installs==1 && last_handler_signal==32);
+    assert(!worker->pending_signals);
+    puts("M141_HOST_PRIVATE_CAUGHT_REALTIME_SIGNAL_PASS");
+}
 int main(void) {
     test_remote_tty_group_once();
     test_sender_in_target_group();
@@ -386,6 +407,7 @@ int main(void) {
     test_dead_leader_live_worker();
     test_pid1_and_stop_preflight();
     test_sigchld_live_parent_worker();
+    test_thread_private_caught_realtime_signal();
     puts("M105_SIGNAL_GROUP_HOST_PASS");
     return 0;
 }

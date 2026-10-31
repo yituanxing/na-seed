@@ -278,12 +278,18 @@ static uint64_t signal_send_thread(uint64_t raw_tgid,uint64_t raw_tid,
         return (uint64_t)-ESRCH;
     if(!signo)return 0;
     if(target->tgid==1)return (uint64_t)-EPERM;
+    /* A thread-directed, user-caught signal does not need a default fatal
+     * action to be delivered. In particular musl's internal cancellation
+     * signal 32 has an installed handler; rejecting it solely because its
+     * default is not in our short fatal-signal list prevented pthread_cancel
+     * and real per-thread worker cleanup. Unknown uncaught defaults stay
+     * unsupported: we must not pretend they have Linux semantics. */
+    uint64_t disp=target->sighand->actions[signo][0];
     if(signo!=NAS_SIGSTOP && signo!=NAS_SIGCONT &&
-       !terminating_default((unsigned)signo))
+       !terminating_default((unsigned)signo) && disp<=1)
         return (uint64_t)-EOPNOTSUPP;
     if(signo==NAS_SIGSTOP || signo==NAS_SIGCONT)
         return nas_signal_kill(target->tgid,signo,frame);
-    uint64_t disp=target->sighand->actions[signo][0];
     uint64_t bit=1ULL<<(signo-1);
     if(signo!=NAS_SIGKILL) {
         if(disp==1)return 0;

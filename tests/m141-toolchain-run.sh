@@ -137,7 +137,9 @@ case "$case_name" in
         # DWARFUTIL defaults to parallel type/abbrev and range processing.
         # Exercise one deterministic worker on NaSeed's single-core guest;
         # avoid simultaneous GC/ODR rewriting while validating copy mode.
-        /usr/bin/llvm21-dwarfutil --num-threads=1 \
+        # LLVM21's option parser uses Separate, not Joined spelling: the
+        # manual shows --num-threads=<n> but the binary accepts two argv.
+        /usr/bin/llvm21-dwarfutil --num-threads 1 \
             --no-garbage-collection --no-odr-deduplication \
             "$work/m141.elf" "$work/copied.elf" \
             2> "$work/dwarfutil.err"
