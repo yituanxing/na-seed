@@ -1,0 +1,106 @@
+name: NaSeed M105 process-vs-thread signal queues — native three-ISA QEMU
+on:
+  # Real source-BusyBox/native firmware boots are opt-in for PRs. A label
+  # explicitly requests this costly architectural signal regression.
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - '.github/workflows/m105-shared-signals.yml'
+      - 'kernel/**'
+      - 'ports/**'
+      - 'tests/m105-signal-group.c'
+      - 'scripts/check-m105-signal-group.sh'
+      - 'scripts/test-m105-signal-group-host.c'
+      - 'scripts/m105-signal-group-serial-check.py'
+      - 'scripts/probe-m105-signal-group.sh'
+      - 'scripts/build-m105-signal-group.sh'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  native-process-and-thread-pending:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-m105-signals')
+    name: M105 original Linux signal-queue ABI / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Production signal and timer ownership, host Linux oracle
+        run: |
+          set -eu
+          sh scripts/check-m105-signal-group.sh
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+          sh scripts/check-source-busybox.sh
+      - name: Install only missing signed toolchains and system QEMU
+        timeout-minutes: 12
+        run: |
+          set -eu
+          missing=''
+          for spec in 'make:make' 'gcc:gcc' 'readelf:binutils' \
+                      'curl:curl' 'bzip2:bzip2' 'xorriso:xorriso' \
+                      'clang:clang' 'ld.lld:lld' 'cpio:cpio' \
+                      'mformat:mtools' 'sgdisk:gdisk' \
+                      'qemu-riscv64:qemu-user' 'qemu-aarch64:qemu-user'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case "${{ matrix.port }}" in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+              test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
+            riscv64)
+              command -v riscv64-linux-gnu-gcc >/dev/null || \
+                missing="$missing gcc-riscv64-linux-gnu libc6-dev-riscv64-cross"
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || \
+                missing="$missing qemu-efi-riscv64" ;;
+            arm64)
+              command -v aarch64-linux-gnu-gcc >/dev/null || \
+                missing="$missing gcc-aarch64-linux-gnu libc6-dev-arm64-cross"
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/AAVMF/AAVMF_CODE.fd || \
+                missing="$missing qemu-efi-aarch64" ;;
+          esac
+          if [ -n "$missing" ]; then
+            sh scripts/ci-ubuntu-mirror.sh
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+      - name: Cache SHA256-pinned unmodified BusyBox release
+        uses: actions/cache@v4
+        with:
+          path: build/deps/source-busybox/busybox-1.37.0.tar.bz2
+          key: naseed-source-busybox-1.37.0-3311dff32e746499
+      - name: Build one original static BusyBox and native probe prerequisites
+        timeout-minutes: 20
+        run: |
+          set -eu
+          sh scripts/build-source-busybox.sh ${{ matrix.port }}
+          sh scripts/probe-source-busybox.sh ${{ matrix.port }}
+      - name: Actual firmware QEMU real signals and later sibling unmask
+        timeout-minutes: 6
+        run: sh scripts/probe-m105-signal-group.sh ${{ matrix.port }}
+      - name: Retain real serial and unmodified guest ELF on both outcomes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m105-shared-signals-${{ matrix.port }}
+          path: |
+            build/source-busybox/${{ matrix.port }}/m105-signal-group
+            build/source-busybox/${{ matrix.port }}/m105-linux-oracle.log
+            build/busybox-source-parity-x86/m105-signal-group.serial.log
+            build/port-riscv64/full/matrix-source/m105-signal-group.serial.log
+            build/port-aarch64/full/matrix-source/m105-signal-group.serial.log
+          if-no-files-found: ignore

@@ -552,6 +552,10 @@ uint64_t nas_process_clone_thread(uint64_t *frame,uint64_t stack,
     child->fs=nas_fs_context_get(parent->fs);
     nas_sighand_put(child->sighand);
     child->sighand=nas_sighand_get(parent->sighand);
+    /* Thread-local pending_signals stays empty; process-directed pending
+     * survives a dead group leader and is shared by every live TID. */
+    nas_signal_group_put(child->signal_group);
+    child->signal_group=nas_signal_group_get(parent->signal_group);
     nas_arch_context_set_user_sp(&child->arch,stack);
     /* fork_slot copied the parent's architecture context, including TLS.
      * Go on AArch64 omits CLONE_SETTLS and passes a non-TLS arg4; preserve

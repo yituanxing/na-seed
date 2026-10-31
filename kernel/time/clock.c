@@ -175,8 +175,14 @@ void nas_time_timers_tick(void){
             if(dst && dst->state!=NAS_TASK_FREE &&
                dst->state!=NAS_TASK_ZOMBIE &&
                dst->tgid==p->tgid &&
-               p->sighand->actions[t->signum][0]!=1)
-                dst->pending_signals|=1ULL<<(t->signum-1);
+               p->sighand->actions[t->signum][0]!=1) {
+                /* SIGEV_SIGNAL is process-directed; SIGEV_THREAD_ID is
+                 * explicitly TID-directed. Their pending domains must not
+                 * collapse just because the timer lives on the leader. */
+                if(t->notify==4)dst->pending_signals|=1ULL<<(t->signum-1);
+                else if(p->signal_group)
+                    p->signal_group->pending|=1ULL<<(t->signum-1);
+            }
         }
     }
 }

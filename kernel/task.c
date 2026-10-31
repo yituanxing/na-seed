@@ -77,7 +77,9 @@ void nas_task_boot_init(void) {
     memcpy(nas_current_task->comm,"init",5);
     nas_current_task->fs=nas_fs_context_new();
     nas_current_task->sighand=nas_sighand_new();
-    if(!nas_current_task->fs || !nas_current_task->sighand)
+    nas_current_task->signal_group=nas_signal_group_new();
+    if(!nas_current_task->fs || !nas_current_task->sighand ||
+       !nas_current_task->signal_group)
         nas_fail("cannot allocate init process resources");
     nas_current_task->state = NAS_TASK_RUNNING;
 }
@@ -99,10 +101,17 @@ struct nas_task *nas_task_fork_slot(void) {
         if(!child_fs) return NULL;
         struct nas_sighand *child_sighand=nas_sighand_copy(nas_current_task->sighand);
         if(!child_sighand) { nas_fs_context_put(child_fs); return NULL; }
+        struct nas_signal_group *child_group=nas_signal_group_new();
+        if(!child_group) {
+            nas_fs_context_put(child_fs);
+            nas_sighand_put(child_sighand);
+            return NULL;
+        }
         struct nas_files *child_files=nas_files_copy(nas_current_task->files);
         if(!child_files) {
             nas_fs_context_put(child_fs);
             nas_sighand_put(child_sighand);
+            nas_signal_group_put(child_group);
             return NULL;
         }
         memcpy(child, nas_current_task, sizeof(*child));
@@ -111,6 +120,7 @@ struct nas_task *nas_task_fork_slot(void) {
         child->group_leader=child;
         child->fs=child_fs;
         child->sighand=child_sighand;
+        child->signal_group=child_group;
         /* memcpy must never transfer a reference without incrementing it. */
         child->mm=0;
         /* A fork from a worker snapshots the LIVE CLONE_FS and
@@ -232,6 +242,7 @@ void nas_task_release(struct nas_task *task) {
     if (task->mm) { nas_mm_put(task->mm); task->mm=0; }
     if (task->fs) { nas_fs_context_put(task->fs); task->fs=0; }
     if (task->sighand) { nas_sighand_put(task->sighand); task->sighand=0; }
+    if (task->signal_group) { nas_signal_group_put(task->signal_group); task->signal_group=0; }
     if (task->files) { nas_files_put(task->files); task->files=0; }
     task->state = NAS_TASK_FREE;
     task->cpu_runtime_ns=0;

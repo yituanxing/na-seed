@@ -103,11 +103,15 @@ int main(void) {
        "init owns independent files object");
     ck(init->fs && init->fs->refs==1 && init->sighand && init->sighand->refs==1,
        "init owns independent FS and signal resources");
+    ck(init->signal_group && init->signal_group->refs==1 &&
+       !init->signal_group->pending,
+       "init owns clean process-directed pending signal resource");
     init->fs->cwd_node.ino=17;
     init->fs->cwd_pinned=true;
     cwd_mount_refs=1; /* The initial chdir acquired the real mount ref. */
     init->fs->umask=027U;
     init->sighand->actions[10][0]=123U;
+    init->signal_group->pending=1ULL<<(10-1);
     nas_mm_get(init->mm);
     ck(init->mm->users==2,"MM get adds one owner");
     nas_mm_put(init->mm);
@@ -173,6 +177,9 @@ int main(void) {
         ck(child->sighand && child->sighand!=init->sighand &&
            child->sighand->actions[10][0]==123U,
            "fork copies live dispositions into independent resource");
+        ck(child->signal_group && child->signal_group!=init->signal_group &&
+           child->signal_group->refs==1 && !child->signal_group->pending,
+           "fork has isolated clean process-signal queue");
         uint64_t *near_top=(uint64_t *)(uintptr_t)(tops[i]-64);
         *near_top=(uint64_t)(i*0x10203U); /* stack payload cannot alias */
     }
@@ -187,9 +194,15 @@ int main(void) {
            "recycled TID must not retain parked SP");
     }
     ck(cwd_mount_refs==1,"child FS teardown releases cwd mount pins");
+    ck(init->signal_group->refs==1 &&
+       init->signal_group->pending==(1ULL<<(10-1)),
+       "fork release preserves original process signal queue");
     struct nas_task *reused=nas_task_fork_slot();
     ck(reused==nas_task_at(1) && reused->kernel_stack_top==tops[1] &&
        nas_task_kernel_stack_ok(reused),"reused slot recovers own stack");
+    ck(reused->signal_group && reused->signal_group!=init->signal_group &&
+       !reused->signal_group->pending && reused->signal_group->refs==1,
+       "slot reuse must not inherit a prior process's signal queue");
     uint64_t *bottom=(uint64_t *)(uintptr_t)(tops[1]-NAS_KERNEL_STACK_BYTES);
     uint64_t saved=*bottom;
     *bottom=0;

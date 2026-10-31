@@ -78,6 +78,7 @@ exit_ok = (p.returncode == 1 if port == "amd64" else
            b"[ARM64] userspace debug-exit status=0" in clean)
 checks = (b"[M105] default-parent-ready", b"M105_TTY_DEFAULT_SIGINT_PASS",
           b"[M105] caught-parent-ready", b"M105_TTY_HANDLER_ONCE_PASS",
+          b"M105_GROUP_SHARED_PENDING_PASS",
           b"M105_ZOMBIE_LEADER_KILL_PASS", b"[M105] init-parent-ready",
           b"M105_TTY_PID1_WORKER_PASS", b"M105_SIGNAL_GROUP_NATIVE_PASS",
           b"[PASS] cmdline userspace exit 0")
@@ -86,4 +87,5 @@ if stage != 3 or not exit_ok or not all(marker in clean for marker in checks) or
     sys.exit("[M105 NATIVE QEMU FAIL] ISA=%s stage=%d exit=%s" %
              (port, stage, p.returncode))
 print("[M105 NATIVE QEMU PASS] %s physical SIGINT/SIGQUIT, one-handler TGID,"
-      " zombie leader and PID1 worker" % port)
+      " shared pending consumed by late-unmasked sibling, zombie leader"
+      " and PID1 worker" % port)

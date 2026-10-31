@@ -192,6 +192,7 @@ struct nas_task {
     /* Signal dispositions, signal mask, and FS context have distinct lifetimes. */
     uint64_t blocked_signals;
     uint64_t pending_signals; /* Linux per-task pending standard signals */
+    struct nas_signal_group *signal_group; /* per-TGID pending, independent of leader */
     struct nas_sighand *sighand; /* CLONE_SIGHAND shares this owner */
     /* While executing a caught handler, the original full CPU/FPU state
      * remains kernel-owned until a checked rt_sigreturn from its restorer.

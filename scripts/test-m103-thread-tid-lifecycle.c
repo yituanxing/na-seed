@@ -15,6 +15,7 @@ static struct nas_mm parent_mm,child_mm;
 static struct nas_files parent_files,child_files;
 static struct nas_fs_context parent_fs,child_fs;
 static struct nas_sighand parent_sighand,child_sighand;
+static struct nas_signal_group parent_signals,child_signals;
 static struct nas_task parent,child;
 struct nas_task *nas_current_task;
 
@@ -69,6 +70,8 @@ struct nas_task *nas_task_fork_slot(void) {
     child.fds=&child_files.table;
     child.fs=&child_fs;
     child.sighand=&child_sighand;
+    child_signals=(struct nas_signal_group){.refs=1};
+    child.signal_group=&child_signals;
     /* Real task_fork_slot copies the architecture state before overrides. */
     child.arch=parent.arch;
     /* The real fork-slot memcpy briefly transfers these raw addresses;
@@ -103,6 +106,16 @@ struct nas_sighand *nas_sighand_get(struct nas_sighand *s) {
     assert(s==&parent_sighand);return s;
 }
 void nas_sighand_put(struct nas_sighand *s) {assert(s==&child_sighand);}
+struct nas_signal_group *nas_signal_group_get(struct nas_signal_group *s) {
+    assert(s==&parent_signals && s->refs);
+    ++s->refs;
+    return s;
+}
+void nas_signal_group_put(struct nas_signal_group *s) {
+    assert(s==&child_signals && s->refs==1);
+    s->refs=0;
+    s->pending=0;
+}
 bool nas_user_address_writable(uint64_t addr) {
     return addr==0x7000 || addr==0x7ff8;
 }
@@ -149,6 +162,8 @@ static void setup_parent(void) {
     parent.fds=&parent_files.table;
     parent.fs=&parent_fs;
     parent.sighand=&parent_sighand;
+    parent_signals=(struct nas_signal_group){.refs=1,.pending=1ULL<<9};
+    parent.signal_group=&parent_signals;
     parent.group_leader=&parent;
     parent.thread_set_tid=0x3000; /* adversarial inherited pre-dispatch state */
     parent.thread_clear_tid=0x3000;
@@ -227,6 +242,10 @@ int main(void) {
     assert(child.mm==&parent_mm && child.is_thread && child.tgid==1);
     assert(child.files==&parent_files && child.fs==&parent_fs &&
            child.sighand==&parent_sighand);
+    assert(child.signal_group==&parent_signals &&
+           child.signal_group->refs==2 &&
+           child.signal_group->pending==1ULL<<9 &&
+           child_signals.refs==0);
     assert(child.thread_set_tid==0 && child.thread_clear_tid==0xa000);
     assert(write_attempts==1 && last_written_address==0x9000);
     clear_only_thread_exit(0xa000);
