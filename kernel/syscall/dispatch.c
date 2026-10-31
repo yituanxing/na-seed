@@ -28,6 +28,7 @@
 #include "../fs/syscall.h"
 #include "../fs/epoll.h"
 #include "../platform/platform.h"
+#include "../lib/string.h"
 #include "../drivers/serial.h"
 #include "../drivers/tty.h"
 #include "../panic.h"
@@ -292,6 +293,35 @@ uint64_t nas_ptrace_syscall_dispatch(uint64_t *args) {
         return nas_arch_saved_return(original);
     }
     uint64_t result=syscall_dispatch(args);
+    /* Temporary M137 failure oracle: only real mdb_load/xorriso tasks,
+     * reporting kernel errors and write/lock/mapping transitions. No app
+     * behavior is changed and no userspace buffers are inspected. */
+    if(original && nas_current_task==original &&
+       (!memcmp(original->comm,"mdb_load",8) ||
+        !memcmp(original->comm,"xorriso",7))) {
+        static unsigned m137_mdb_debug_count,m137_iso_debug_count;
+        unsigned *m137_debug_count=original->comm[0]=='m' ?
+                       &m137_mdb_debug_count:&m137_iso_debug_count;
+        enum nas_syscall_op operation=nas_linux_decode_call(args);
+        bool io_step=operation==NAS_SC_mmap || operation==NAS_SC_fcntl ||
+                     operation==NAS_SC_ftruncate || operation==NAS_SC_msync ||
+                     operation==NAS_SC_pwrite64 || operation==NAS_SC_write ||
+                     operation==NAS_SC_writev || operation==NAS_SC_openat ||
+                     operation==NAS_SC_fsync || operation==NAS_SC_fdatasync;
+        if(*m137_debug_count<350U &&
+           (((int64_t)result<0 && (int64_t)result>=-4095) || io_step)) {
+            (*m137_debug_count)++;
+            nas_print("[M137 SYSCALL] ");nas_print(original->comm);
+            nas_print(" nr=");nas_dec(args[0]);
+            nas_print(" op=");nas_dec(operation);
+            nas_print(" rc=");nas_hex(result);
+            nas_print(" a1=");nas_hex(args[1]);
+            nas_print(" a2=");nas_hex(args[2]);
+            nas_print(" a3=");nas_hex(args[3]);
+            nas_print(" a4=");nas_hex(args[4]);
+            nas_print("\n");
+        }
+    }
     /* ptrace fork/exec event logic has already emitted its required
      * syscall-exit stop. The suspended native C continuation now returns
      * through this original gate: do not manufacture a second exit stop. */

@@ -58,4 +58,11 @@ struct nas_file_ops {
 const struct nas_file_ops *nas_fs_ops_for_kind(uint8_t kind);
 /* Call a live open-file description's operation, not an FD kind switch. */
 uint16_t nas_fs_poll_description(unsigned slot,uint16_t events);
+/* Scheduler probes an arbitrary blocked Task; signal-backed descriptors
+ * must inspect that Task's pending mask, not the currently running Task. */
+struct nas_task;
+uint16_t nas_fs_poll_description_task(unsigned slot,uint16_t events,
+                                     const struct nas_task *task);
+uint16_t nas_fs_signalfd_poll_task(unsigned slot,uint16_t events,
+                                  const struct nas_task *task);
 #endif

@@ -920,10 +920,14 @@ static uint64_t signalfd_read(unsigned slot,uint8_t *dst,uint64_t length) {
     dst[0]=(uint8_t)signo;
     return 128ULL;
 }
-static uint16_t signalfd_poll_slot(unsigned slot,uint16_t events) {
+uint16_t nas_fs_signalfd_poll_task(unsigned slot,uint16_t events,
+                                  const struct nas_task *task) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)return 0;
     return (events&1U) &&
-        nas_signal_signalfd_ready(nas_current_task,signalfd_masks[slot])?1U:0U;
+        nas_signal_signalfd_ready(task,signalfd_masks[slot])?1U:0U;
+}
+static uint16_t signalfd_poll_slot(unsigned slot,uint16_t events) {
+    return nas_fs_signalfd_poll_task(slot,events,nas_current_task);
 }
 static uint16_t signalfd_poll_fd(uint64_t fd,uint16_t events) {
     if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind!=FD_SIGNALFD)return 0;

@@ -190,7 +190,7 @@ bool nas_fs_poll_ready(const struct nas_task *task) {
         if(!events)continue;
         /* ERR/HUP must wake waiters even if the original requested
          * direction cannot make forward progress (EPIPE/EOF on replay). */
-        uint16_t ready=nas_fs_poll_description(slot,events);
+        uint16_t ready=nas_fs_poll_description_task(slot,events,task);
         if(ready&(events|0x0018U))return true;
     }
     return false;

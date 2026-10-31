@@ -23,15 +23,21 @@
 /* Linux MAX_RW_COUNT: apply one transfer ceiling consistently to scalar
  * and vector read/write, pread/pwrite, independent of filesystem kind. */
 #define NAS_MAX_RW_COUNT 0x7ffff000ULL
-/* Owner-independent readiness. No Task pointer, process FD number or
- * userspace memory access is needed to poll a live open-file description.
- * Each backend may implement its own readiness semantics. */
-uint16_t nas_fs_poll_description(unsigned slot,uint16_t events) {
+/* A signalfd's pending queue belongs to the reader's Task; all other
+ * providers remain open-description owned. Scheduler probes are explicitly
+ * passed the blocked Task, never made against another current Task. */
+uint16_t nas_fs_poll_description_task(unsigned slot,uint16_t events,
+                                     const struct nas_task *task) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
         return 0;
     const struct nas_file_ops *ops=nas_open_files[slot].ops;
+    if(ops==nas_fs_ops_for_kind(FD_SIGNALFD))
+        return nas_fs_signalfd_poll_task(slot,events,task);
     return ops && ops->poll_description ?
            ops->poll_description(slot,events) : 0;
+}
+uint16_t nas_fs_poll_description(unsigned slot,uint16_t events) {
+    return nas_fs_poll_description_task(slot,events,nas_current_task);
 }
 
 /* Same open-file-description source for read(), exec and file mmap.
@@ -802,7 +808,7 @@ bool nas_fs_io_ready(const struct nas_pending_io *pending,
                                   task->wait.tty_requested_bytes);
     unsigned slot=pending->request.slot;
     uint16_t events=io_read_op(pending->op)?0x0001U:0x0004U;
-    return (nas_fs_poll_description(slot,events)&
+    return (nas_fs_poll_description_task(slot,events,task)&
             (events==0x0001U ? 0x0019U:0x001cU))!=0;
 }
 void nas_fs_io_dispose(struct nas_pending_io *pending) {

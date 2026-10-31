@@ -312,10 +312,10 @@ epoll=(root/"kernel/fs/epoll.c").read_text()
 fsops=(root/"kernel/fs/file_ops.h").read_text()
 file_io=(root/"kernel/fs/file_io.c").read_text()
 if ("nas_fs_io_ready(task->wait.pending_io,task)" not in task_wait or
-    "nas_fs_poll_description(slot,events)" not in file_io or
+    "nas_fs_poll_description_task(slot,events,task)" not in file_io or
     "nas_fs_io_ready(" not in file_io):
     raise SystemExit("blocked I/O lost pinned File-owned readiness")
-if "nas_fs_poll_description(" not in epoll:
+if "nas_fs_poll_description_task(" not in epoll:
     raise SystemExit("epoll lost description-owned readiness")
 if "switch(w->kind)" in epoll or "nas_pipe_poll_readable(" in epoll:
     raise SystemExit("epoll reintroduced backend-kind readiness switch")
@@ -328,7 +328,7 @@ wait_header=(root/"kernel/task/wait.h").read_text()
 fs_syscall=(root/"kernel/fs/syscall.c").read_text()
 if "nas_wait_io_arm(" not in wait_header or "nas_wait_io_arm(" not in poll or "nas_wait_io_arm(" not in epoll:
     raise SystemExit("generic Task-owned multi-fd wait interest lost")
-if "nas_fs_poll_description(" not in poll or "poll_arm" in fsops or ".poll_arm=" in fs_syscall:
+if "nas_fs_poll_description_task(" not in poll or "poll_arm" in fsops or ".poll_arm=" in fs_syscall:
     raise SystemExit("FS reintroduced backend-specific poll wait registration")
 # M91: all three kernel assembly context-switch providers are explicitly
 # linked in production ELF, and a real QEMU boot exercises stack resume.
