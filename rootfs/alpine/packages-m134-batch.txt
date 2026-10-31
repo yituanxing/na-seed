@@ -1,0 +1,10 @@
+# Signed Alpine 3.23 main: graph transformations, interpreters, code generation,
+# binary inspection, build graph execution and shell programs.
+graphviz
+lua5.4
+dash
+mawk
+xxd
+gperf
+ninja-build
+fish

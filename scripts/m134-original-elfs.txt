@@ -1,0 +1,16 @@
+# 15 historically new independently signed Alpine original ELF paths.
+usr/bin/graphml2gv
+usr/bin/gvgen
+usr/bin/gvpack
+usr/bin/gvpr
+usr/bin/gxl2gv
+usr/bin/nop
+usr/bin/sccmap
+usr/bin/lua5.4
+usr/bin/luac5.4
+usr/bin/dash
+usr/bin/mawk
+usr/bin/xxd
+usr/bin/gperf
+usr/lib/ninja-build/bin/ninja
+usr/bin/fish
