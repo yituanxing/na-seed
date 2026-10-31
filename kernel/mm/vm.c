@@ -241,10 +241,12 @@ uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
     nas_vma_commit(&TASK.mm->mmap_vmas,&planned);
     return start;
 }
-/* MAP_PRIVATE remains an eager independent file snapshot. Immutable CPIO
- * files can use an immutable read-only shared snapshot; mutable MAP_SHARED
- * instead pins one original inode/address-space and uses coherent cache
- * frames on demand. The mapping survives close/rename/unlink/fork. */
+/* Small MAP_PRIVATE remains an eager independent file snapshot. Large
+ * MAP_PRIVATE of an immutable source retains a pinned inode and reads into
+ * private frames on demand: musl maps >100-MiB signed libLLVM objects and
+ * must not consume hundreds of MiB before touching any library page.
+ * Mutable MAP_SHARED retains coherent cache frames on demand. All pinned
+ * mappings survive close/rename/unlink/fork. */
 uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
                           uint64_t flags, uint64_t fd, uint64_t offset) {
     const uint64_t MAP_SHARED=0x01ULL, MAP_PRIVATE=0x02ULL, MAP_FIXED=0x10ULL;
@@ -262,7 +264,7 @@ uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
         return (uint64_t)-EOPNOTSUPP;
     int64_t valid=nas_fs_mmap_read(fd,offset,0,0);
     if (valid<0) return (uint64_t)valid;
-    bool live_shared=false;
+    bool live_shared=false, lazy_private=false;
     struct nas_mapped_file *backing=NULL;
     if(shared) {
         /* An immutable provider is permitted to share an eager read-only
@@ -278,17 +280,21 @@ uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
             live_shared=true;
         }
     }
-    /* Eager private/immutable snapshots retain the historical bounded
-     * transaction. A live MAP_SHARED mapping reserves VA only; limiting it
-     * to 64 MiB would reject sparse large-file mappings despite having no
-     * resident pages until user access. */
+    /* Eager file snapshots are intentionally bounded. Only an immutable
+     * private source can exceed this threshold without a full copy: pin its
+     * VFS identity and materialize page-sized private snapshots on fault. */
     if(!live_shared && length>(64ULL<<20)) {
-        if(backing)nas_fs_mmap_put(backing);
-        return (uint64_t)-EINVAL;
+        if(private_map) {
+            int pinned=nas_fs_mmap_pin_immutable(fd,&backing);
+            if(!pinned)lazy_private=true;
+            else return (uint64_t)(int64_t)pinned;
+        } else return (uint64_t)-EINVAL;
     }
     const unsigned kind=live_shared ? NAS_VMA_FILE_MUTABLE_SHARED :
+                         (lazy_private ? NAS_VMA_FILE_PRIVATE_LAZY :
                          (shared ? NAS_VMA_FILE_IMMUTABLE_SHARED :
-                                   NAS_VMA_FILE_PRIVATE_SNAPSHOT);
+                                   NAS_VMA_FILE_PRIVATE_SNAPSHOT));
+    const bool lazy_backed=live_shared || lazy_private;
     uint64_t count=(length+PAGE-1)/PAGE, bytes=count*PAGE;
     uint64_t start;
     struct nas_anon_regions planned={0};
@@ -305,7 +311,11 @@ uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
         bool recorded=live_shared ?
             nas_vma_replace_shared(&planned,hint,bytes,(unsigned)prot,
                                    offset,backing) :
-            nas_vma_replace(&planned,hint,bytes,(unsigned)prot,kind,offset);
+            (lazy_private ? nas_vma_replace_backed(&planned,hint,bytes,
+                                                  (unsigned)prot,kind,offset,
+                                                  backing) :
+                            nas_vma_replace(&planned,hint,bytes,
+                                            (unsigned)prot,kind,offset));
         if (!recorded) {
             nas_anon_reset(&planned);
             if(backing)nas_fs_mmap_put(backing);
@@ -321,26 +331,29 @@ uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
         bool recorded=live_shared ?
             nas_vma_record_shared(&planned,start,bytes,(unsigned)prot,
                                   offset,backing) :
-            nas_vma_record(&planned,start,bytes,(unsigned)prot,kind,offset);
+            (lazy_private ? nas_vma_record_backed(&planned,start,bytes,
+                                                 (unsigned)prot,kind,offset,
+                                                 backing) :
+                            nas_vma_record(&planned,start,bytes,
+                                           (unsigned)prot,kind,offset));
         if(!recorded) {
             nas_anon_reset(&planned);
             if(backing)nas_fs_mmap_put(backing);
             return (uint64_t)-ENOMEM;
         }
     }
-    /* MAP_FIXED first synchronizes any displaced dirty shared file, then
-     * removes old leaves. A live file mapping remains nonresident and is
-     * faulted through the cache; eager snapshots preserve their original
-     * all-or-nothing data-frame transaction. */
+    /* MAP_FIXED first synchronizes displaced dirty shared pages. Both
+     * shared-live and immutable-private-lazy VMAs stay nonresident; eager
+     * snapshots preserve the original all-or-nothing data transaction. */
     uint64_t failure=0;
     if(flags & MAP_FIXED) {
         int sync=sync_shared_intersection(&TASK.mm->mmap_vmas,start,bytes,false);
         if(sync)failure=(uint64_t)(int64_t)sync;
     }
-    if(!failure && (flags & MAP_FIXED || !live_shared))
+    if(!failure && (flags & MAP_FIXED || !lazy_backed))
         failure=stage_replace_pages(start,count,
-                                    live_shared?0:(unsigned)prot,
-                                    !live_shared,fd,offset,length);
+                                    lazy_backed?0:(unsigned)prot,
+                                    !lazy_backed,fd,offset,length);
     if(failure) {
         nas_anon_reset(&planned);
         if(backing)nas_fs_mmap_put(backing);
@@ -404,12 +417,10 @@ uint64_t nas_vm_msync(uint64_t addr,uint64_t length,uint64_t flags) {
     int rc=sync_shared_intersection(&TASK.mm->mmap_vmas,addr,pages*PAGE,true);
     return (uint64_t)(int64_t)rc;
 }
-/* Linux MADV_DONTNEED discards *resident* private anonymous pages without
- * revoking the VMA. The next read/write fault observes the same permissions
- * and materializes a fresh zero page; COW frame refs are decremented, not
- * incorrectly modified in a sibling process. Snapshot-file VMAs have no
- * retained backing provider yet, so refusing them is essential: silently
- * zeroing a file page would violate Linux's read-back-on-demand semantics.
+/* Linux MADV_DONTNEED discards resident private anonymous pages (next fault
+ * reads zero) and immutable-private lazy file pages (next fault re-reads the
+ * original pinned file). Eager snapshot-file VMAs have no retained backing,
+ * so refusing those is essential: zeroing a file page violates semantics.
  *
  * MADV_DONTFORK/DOFORK are persistent VMA policies. They must affect both
  * child VMA ownership and fork COW leaf copies, not just syscall return. */
@@ -443,7 +454,8 @@ uint64_t nas_vm_madvise(uint64_t addr,uint64_t length,uint64_t advice) {
     for(uint64_t at=addr;at<end;) {
         const struct nas_anon_region *v=nas_vma_find(&TASK.mm->mmap_vmas,at);
         if(!v || (v->kind!=NAS_VMA_ANON_PRIVATE &&
-                  v->kind!=NAS_VMA_HEAP && v->kind!=NAS_VMA_STACK))
+                  v->kind!=NAS_VMA_HEAP && v->kind!=NAS_VMA_STACK &&
+                  v->kind!=NAS_VMA_FILE_PRIVATE_LAZY))
             return (uint64_t)-EOPNOTSUPP;
         at=v->end<end?v->end:end;
     }
@@ -519,16 +531,17 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
          * accessible: a real backing-preserving transition is still needed. */
         if(!nas_anon_covered(&TASK.mm->mmap_vmas,addr,pages*PAGE))
             return (uint64_t)-ENOMEM;
-        /* File/ELF snapshots have eagerly copied backing, so dropping those
-         * PTEs would destroy the only data copy. Live shared file mappings
-         * instead retain an independently owned inode/cache page and can
-         * dematerialize their PTEs for PROT_NONE, then safely fault back. */
+        /* Eager file/ELF snapshots have no backing if resident PTEs are
+         * discarded. Live shared file mappings can dematerialize safely;
+         * immutable private lazy mappings can transition only while no
+         * privately modified page has become resident. */
         const uint64_t end=addr+pages*PAGE;
         for(uint64_t at=addr;at<end;) {
             const struct nas_anon_region *v=nas_vma_find(&TASK.mm->mmap_vmas,at);
             if(!v || (v->kind!=NAS_VMA_ANON_PRIVATE &&
                       v->kind!=NAS_VMA_HEAP && v->kind!=NAS_VMA_STACK &&
-                      !mutable_shared(v)))
+                      !mutable_shared(v) &&
+                      v->kind!=NAS_VMA_FILE_PRIVATE_LAZY))
                 return (uint64_t)-ENOSYS;
             at=v->end<end?v->end:end;
         }

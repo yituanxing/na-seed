@@ -113,6 +113,40 @@ int nas_fs_mmap_pin(uint64_t fd,bool writable,struct nas_mapped_file **out) {
     *out=mapped;
     return 0;
 }
+/* A private lazy mapping must hold its ORIGINAL immutable inode, not a live
+ * task FD (which musl closes immediately after mapping libLLVM). CPIO bootfs
+ * does not implement shared physical pages, and should not have to. */
+int nas_fs_mmap_pin_immutable(uint64_t fd,struct nas_mapped_file **out) {
+    if(!out)return -EINVAL;
+    *out=NULL;
+    int immutable=nas_fs_mmap_immutable_readonly(fd);
+    if(immutable<0)return immutable;
+    if(!immutable)return -EOPNOTSUPP;
+    unsigned slot=TASK.fds->entries[fd].slot;
+    const struct nas_open_file *opened=&nas_open_files[slot];
+    if(!opened->vnode_pinned)return -ENODEV;
+    const struct nas_fs_node *node=&opened->vnode;
+    if(node->is_dir || (node->mode&0170000U)!=0100000U ||
+       !node->filesystem || !node->filesystem->read_at)return -ENODEV;
+    struct nas_mapped_file *mapped=nas_heap_alloc(sizeof(*mapped));
+    if(!mapped)return -ENOMEM;
+    int rc=nas_vfs_node_pin(node);
+    if(rc) {
+        (void)nas_heap_free(mapped);
+        return rc;
+    }
+    *mapped=(struct nas_mapped_file){.refs=1,.write_allowed=false,.node=*node};
+    *out=mapped;
+    return 0;
+}
+int64_t nas_fs_mmap_read_immutable(struct nas_mapped_file *file,
+                                    uint64_t offset,uint8_t *dst,uint64_t len) {
+    if(!file || !file->refs || !file->node.filesystem ||
+       !file->node.filesystem->read_only ||
+       !file->node.filesystem->immutable_file_data ||
+       (!dst && len))return -EINVAL;
+    return nas_vfs_read_at(&file->node,offset,dst,len);
+}
 bool nas_fs_mmap_get(struct nas_mapped_file *file) {
     if(!file || !file->refs || file->refs==UINT32_MAX)return false;
     ++file->refs;

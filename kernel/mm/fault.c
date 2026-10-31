@@ -7,6 +7,7 @@
 #include "../arch/mmu.h"
 #include "../arch/user_pt.h"
 #include "prot.h"
+#include "../lib/string.h"
 /* Private anonymous mmap pages are demand-zero and initially nonresident.
  * This provider resolves absent anonymous/heap/stack pages whose VMA
  * logically permits access, including kernel usercopy's fault-in path.
@@ -62,6 +63,37 @@ enum nas_mm_fault_result nas_mm_handle_fault(struct nas_mm *mm,uint64_t addr,
         return NAS_MM_FAULT_INVARIANT; /* HW fault with usable user PTE */
     }
     if(hardware_protection_fault)return NAS_MM_FAULT_INVARIANT;
+    if(vma->kind==NAS_VMA_FILE_PRIVATE_LAZY) {
+        /* Immutable source identity outlives the creating FD. A private
+         * page is copied into its OWN PMM frame at first access; the inode
+         * is never writable through this mapping, and fork uses normal COW
+         * only after the frame becomes resident. */
+        const uint64_t va=addr&~UINT64_C(4095);
+        const uint64_t delta=va-vma->start;
+        if(!vma->backing || vma->file_offset>UINT64_MAX-delta)
+            return NAS_MM_FAULT_NEEDS_BACKING;
+        uint64_t fresh=nas_frame_alloc();
+        if(!fresh)return NAS_MM_FAULT_OOM;
+        uint8_t *page=(uint8_t *)(uintptr_t)(nas_hhdm_offset()+fresh);
+        memset(page,0,4096);
+        int64_t n=nas_fs_mmap_read_immutable(vma->backing,
+                            vma->file_offset+delta,page,4096);
+        if(n<=0 || n>4096) {
+            (void)nas_frame_put(fresh);
+            return NAS_MM_FAULT_NEEDS_BACKING;
+        }
+        if(!nas_mmu_prepare_leaf_at(mm->root_phys,va)) {
+            (void)nas_frame_put(fresh);
+            return NAS_MM_FAULT_OOM;
+        }
+        uint64_t old=0;
+        if(!nas_mmu_exchange_leaf_at(mm->root_phys,va,fresh,vma->prot,&old)) {
+            (void)nas_frame_put(fresh);
+            return NAS_MM_FAULT_INVARIANT;
+        }
+        if(old)__builtin_trap();
+        return NAS_MM_FAULT_RESOLVED;
+    }
     if(vma->kind==NAS_VMA_FILE_MUTABLE_SHARED) {
         /* The exact inode backing is held by the VMA independently of FD
          * close/rename/unlink.  The provider transfers ONE additional frame

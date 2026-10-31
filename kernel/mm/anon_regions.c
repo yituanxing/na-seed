@@ -117,7 +117,8 @@ static bool eager_file_kind(unsigned kind) {
            kind==NAS_VMA_FILE_IMMUTABLE_SHARED;
 }
 static bool file_kind(unsigned kind) {
-    return eager_file_kind(kind) || kind==NAS_VMA_FILE_MUTABLE_SHARED;
+    return eager_file_kind(kind) || kind==NAS_VMA_FILE_MUTABLE_SHARED ||
+           kind==NAS_VMA_FILE_PRIVATE_LAZY;
 }
 /* Coalesce only matching logical policies. File offsets must be contiguous.
  * This prevents RW and RX mappings from erasing each other's VMA semantics. */
@@ -135,8 +136,9 @@ static bool insert_area(struct nas_anon_regions *regions,
                         struct nas_anon_region candidate) {
     if(!regions || candidate.end<=candidate.start ||
        !valid_interval(candidate.start,candidate.end-candidate.start) ||
-       (candidate.prot &~7U) || candidate.kind>NAS_VMA_ANON_SHARED ||
-       (candidate.kind==NAS_VMA_FILE_MUTABLE_SHARED)!=
+       (candidate.prot &~7U) || candidate.kind>NAS_VMA_FILE_PRIVATE_LAZY ||
+       (candidate.kind==NAS_VMA_FILE_MUTABLE_SHARED ||
+        candidate.kind==NAS_VMA_FILE_PRIVATE_LAZY)!=
            (candidate.backing!=NULL) ||
        (candidate.flags & ~NAS_VMA_DONTFORK))
         return false;
@@ -188,6 +190,12 @@ bool nas_vma_record_shared(struct nas_anon_regions *regions,uint64_t addr,
     if(!backing)return false;
     return record_file(regions,addr,length,prot,
                        NAS_VMA_FILE_MUTABLE_SHARED,file_offset,backing);
+}
+bool nas_vma_record_backed(struct nas_anon_regions *regions,uint64_t addr,
+                           uint64_t length,unsigned prot,unsigned kind,
+                           uint64_t file_offset,struct nas_mapped_file *backing) {
+    return kind==NAS_VMA_FILE_PRIVATE_LAZY && backing &&
+           record_file(regions,addr,length,prot,kind,file_offset,backing);
 }
 bool nas_anon_record(struct nas_anon_regions *regions,
                      uint64_t addr,uint64_t length) {
@@ -289,7 +297,7 @@ static bool replace_file(struct nas_anon_regions *regions,uint64_t addr,
                          uint64_t length,unsigned prot,unsigned kind,
                          uint64_t file_offset,struct nas_mapped_file *backing) {
     if(!regions || !valid_interval(addr,length) || (prot&~7U) ||
-       kind>NAS_VMA_ANON_SHARED)return false;
+       kind>NAS_VMA_FILE_PRIVATE_LAZY)return false;
     struct nas_anon_regions planned={0};
     if(!nas_vma_clone(&planned,regions))return false;
     if(!nas_anon_forget(&planned,addr,length) ||
@@ -311,6 +319,12 @@ bool nas_vma_replace_shared(struct nas_anon_regions *regions,uint64_t addr,
     if(!backing)return false;
     return replace_file(regions,addr,length,prot,
                         NAS_VMA_FILE_MUTABLE_SHARED,file_offset,backing);
+}
+bool nas_vma_replace_backed(struct nas_anon_regions *regions,uint64_t addr,
+                            uint64_t length,unsigned prot,unsigned kind,
+                            uint64_t file_offset,struct nas_mapped_file *backing) {
+    return kind==NAS_VMA_FILE_PRIVATE_LAZY && backing &&
+           replace_file(regions,addr,length,prot,kind,file_offset,backing);
 }
 /* Rebuild the metadata in a private staging set. Permission changes may
  * split existing VMAs, but must never change snapshot file offsets. */

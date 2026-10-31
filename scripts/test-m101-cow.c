@@ -34,6 +34,13 @@ static struct nas_mapped_file file_owner={.refs=1};
 static uint64_t file_pages[2];
 static uint64_t file_size=2*P;
 static unsigned mapped_dirty;
+/* This fixture has mutable shared VMAs only. Immutable lazy private reads
+ * are verified with the real VM/fault path in test-m86-txn.c. */
+int64_t nas_fs_mmap_read_immutable(struct nas_mapped_file *file,
+                                    uint64_t off,uint8_t *dst,uint64_t len) {
+    (void)file;(void)off;(void)dst;(void)len;
+    return -22;
+}
 bool nas_fs_mmap_get(struct nas_mapped_file *file) {
     if(file!=&file_owner || !file->refs)return false;
     file->refs++;return true;

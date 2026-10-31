@@ -31,6 +31,8 @@ static bool read_fail;
  * only FD/inode+frame provision is mocked to control OOM and EOF. */
 struct nas_mapped_file {unsigned refs;bool writable;};
 static struct nas_mapped_file shared_file={.refs=1,.writable=true};
+static struct nas_mapped_file immutable_file={.refs=1,.writable=false};
+static unsigned immutable_reads;
 static uint64_t shared_pages[2],shared_size=2*P;
 static bool shared_regrown;
 static unsigned shared_dirty,shared_sync,shared_rearm,internal_sync;
@@ -43,13 +45,28 @@ int nas_fs_mmap_pin(uint64_t fd,bool writable,struct nas_mapped_file **out){
     *out=&shared_file;
     return 0;
 }
+int nas_fs_mmap_pin_immutable(uint64_t fd,struct nas_mapped_file **out){
+    if(!out)return -22;
+    *out=0;
+    if(fd!=4)return fd==5?-95:-9;
+    immutable_file.refs++;
+    *out=&immutable_file;
+    return 0;
+}
+int64_t nas_fs_mmap_read_immutable(struct nas_mapped_file *file,
+                                    uint64_t off,uint8_t *dst,uint64_t len){
+    if(file!=&immutable_file || !file->refs || (!dst && len))return -9;
+    immutable_reads++;
+    for(uint64_t i=0;i<len;i++)dst[i]=(uint8_t)((off+i+7)&255);
+    return (int64_t)len;
+}
 bool nas_fs_mmap_get(struct nas_mapped_file *file){
-    if(file!=&shared_file || !file->refs)return false;
+    if((file!=&shared_file && file!=&immutable_file) || !file->refs)return false;
     file->refs++;
     return true;
 }
 void nas_fs_mmap_put(struct nas_mapped_file *file){
-    assert(file==&shared_file && file->refs>1);
+    assert((file==&shared_file || file==&immutable_file) && file->refs>1);
     file->refs--;
 }
 bool nas_fs_mmap_writable(const struct nas_mapped_file *file){
@@ -430,6 +447,56 @@ int main(void){
     assert(nas_vm_munmap(split+2*P,P)==0 && shared_file.refs==1);
     assert(living()==immutable_baseline);
     assert(nas_vm_munmap(immutable,P)==0);
+    /* M138: a >64-MiB CPIO MAP_PRIVATE is an immutable, VMA-owned lazy
+     * snapshot. It must pin the original file but allocate zero data frames
+     * until touched. Splits/fork keep independently owned backing refs. */
+    const uint64_t lib_bytes=(128ULL<<20)+P;
+    unsigned before_lib=living();
+    unsigned before_reads=immutable_reads;
+    uint64_t lib=nas_vm_file_mmap(0,lib_bytes,3,2,4,0);
+    assert((int64_t)lib>0);
+    const struct nas_anon_region *lib_vma=nas_vma_find(&space.mmap_vmas,lib);
+    assert(lib_vma && lib_vma->kind==NAS_VMA_FILE_PRIVATE_LAZY &&
+           lib_vma->backing==&immutable_file && immutable_file.refs==2 &&
+           living()==before_lib && !nas_mmu_user_byte(lib+2*P));
+    assert(nas_mm_handle_fault(&space,lib+2*P,NAS_UP_READ,false)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(immutable_reads==before_reads+1 && living()==before_lib+1 &&
+           *nas_mmu_user_byte(lib+2*P)==7);
+    *nas_mmu_user_byte(lib+2*P)=0x8f;
+    /* MADV_DONTNEED of a private file page discards the private edit, then
+     * reads original immutable bytes again, never demand-zero bytes. */
+    assert(nas_vm_madvise(lib+2*P,P,4)==0);
+    assert(!nas_mmu_user_byte(lib+2*P) && living()==before_lib);
+    assert(nas_mm_handle_fault(&space,lib+2*P,NAS_UP_READ,false)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(immutable_reads==before_reads+2 &&
+           *nas_mmu_user_byte(lib+2*P)==7);
+    *nas_mmu_user_byte(lib+2*P)=0x8f;
+    assert(nas_vm_mprotect(lib,P,0)==0);
+    assert(nas_mm_handle_fault(&space,lib,NAS_UP_READ,false)==
+           NAS_MM_FAULT_ACCERR);
+    assert((int64_t)nas_vm_mprotect(lib+2*P,P,0)==-38);
+    assert(*nas_mmu_user_byte(lib+2*P)==0x8f);
+    assert(nas_vm_mprotect(lib,P,3)==0);
+    assert(nas_mm_handle_fault(&space,lib,NAS_UP_READ,false)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(*nas_mmu_user_byte(lib)==7 && living()==before_lib+2);
+    struct nas_anon_regions forked_lib={0};
+    unsigned before_fork_refs=immutable_file.refs;
+    assert(nas_vma_clone(&forked_lib,&space.mmap_vmas));
+    assert(immutable_file.refs>before_fork_refs);
+    nas_anon_reset(&forked_lib);
+    assert(immutable_file.refs==before_fork_refs);
+    assert(nas_vm_munmap(lib+P,P)==0);
+    const struct nas_anon_region *lib_right=
+        nas_vma_find(&space.mmap_vmas,lib+2*P);
+    assert(lib_right && lib_right->file_offset==2*P &&
+           lib_right->backing==&immutable_file);
+    assert(nas_vm_munmap(lib,lib_bytes)==0 && immutable_file.refs==1 &&
+           living()==before_lib);
+    assert((int64_t)nas_vm_file_mmap(0,lib_bytes,3,2,5,0)==-95);
+    puts("[M138 IMMUTABLE PRIVATE LAZY HOST PASS] 128MiB reservation, page faults, MADV_DONTNEED re-read, COW ownership, split/fork and cleanup");
     /* XZ's original Linux encoder can reserve 64 MiB plus one extra page
      * in a single anonymous mmap. The VMA window, not an arbitrary 64-MiB
      * per-call limit, is the authority for anonymous PROT_NONE space. */
