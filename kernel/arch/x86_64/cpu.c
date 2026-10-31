@@ -7,6 +7,7 @@
 #include "../../task/sched.h"
 #include "../../task/signal.h"
 #include "../../exception/exception.h"
+#include "../../mm/usercopy.h"
 #include "../../panic.h"
 #include "irq.h"
 #include "../arch.h"
@@ -241,6 +242,15 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
                     nas_print(" rsp=");nas_hex(user_sp);
                     nas_print(" saved_rip=");nas_hex(tracee->arch.resume_user_rip);
                     nas_print(" tls=");nas_hex(nas_task_tls_base(tracee));
+                    /* A real user #GP is often a privileged/unsupported
+                     * instruction. Record its exact bytes for actionable
+                     * cross-ISA QEMU diagnosis; never dereference user VA. */
+                    uint8_t instruction[8];
+                    if(nas_user_read_bytes(user_rip,instruction,sizeof(instruction))) {
+                        nas_print(" opcode=");
+                        for(unsigned b=0;b<sizeof(instruction);b++)
+                            nas_hex(instruction[b]);
+                    }
                     nas_print("\n");
                 }
             }

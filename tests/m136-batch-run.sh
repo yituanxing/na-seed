@@ -144,6 +144,10 @@ run_case() {
         busy grep -Fxq 'M136 FADVISE ORIGINAL ELF DATA' "$work/payload" ;;
       script)
         exe=$(original_elf /usr/bin/script)
+        "$exe" --version > "$work/version" 2> "$work/version.err" || {
+            echo '[M136 SCRIPT BINARY VERSION FAILED]' >&2
+            return 1
+        }
         SCRIPT_DEBUG=all ULPTY_DEBUG=all "$exe" -q -T "$work/timing.log" \
             -O "$work/typescript" \
             -c '/bin/busybox printf "M136_SCRIPT_ACTUAL_PTY\n"' \
@@ -231,12 +235,12 @@ for app in flex byacc re2c tic infocmp clear tput toe tabs tset \
         rc=$?
         echo "[M136 $upper FAILED] original signed ELF rc=$rc" >&2
         busy tail -130 "$case_log" >&2 || :
-        for detail in output stderr decompiled lexer.c parser.c scanner.c \
+        for detail in output stderr version version.err decompiled lexer.c parser.c scanner.c \
                       replayed script.stdout pty.log typescript timing.log uuid1 \
                       payload fstab input; do
             if [ -s "/tmp/m136-$app/$detail" ]; then
                 echo "[M136 FAILED OUTPUT $app/$detail]" >&2
-                busy head -c 1600 "/tmp/m136-$app/$detail" >&2 || :
+                busy head -c 8000 "/tmp/m136-$app/$detail" >&2 || :
                 echo >&2
             fi
         done
