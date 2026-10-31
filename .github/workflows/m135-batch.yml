@@ -1,23 +1,5 @@
 name: NaSeed M135 15 signed build JPEG database graph raster original ELFs, QEMU three ISAs
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/m135-batch.yml'
-      - 'tests/m135-*'
-      - 'scripts/m135-*'
-      - 'scripts/probe-m135-batch.sh'
-      - 'scripts/stage-m135-prebuilt.sh'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'scripts/check-prebuilt-profile-catalog.py'
-      - 'scripts/check-native-qemu-target.py'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'rootfs/alpine/**'
-      - 'kernel/**'
-      - 'ports/**'
   workflow_dispatch:
 
 concurrency:
