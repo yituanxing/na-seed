@@ -332,6 +332,13 @@ int tmp_acquire_shared_page(struct nas_tmp_file *file,uint64_t offset,
     *pa_owned=frame;
     return 0;
 }
+int tmp_page_resident(const struct nas_tmp_file *file,uint64_t offset) {
+    if(!file || !file->used || file->is_dir)return -EINVAL;
+    if(offset&(TMP_PAGE_SIZE-1))return -EINVAL;
+    if(offset>=file->size)return 0;
+    return tmp_data_frame((struct nas_tmp_file *)(uintptr_t)file,
+                          offset/TMP_PAGE_SIZE,false) ? 1 : 0;
+}
 int tmp_touch_shared(struct nas_tmp_file *file) {
     if(!file || !file->used || file->is_dir)return -EINVAL;
     file->mtime_ns=tmp_next_mtime(file->mtime_ns);

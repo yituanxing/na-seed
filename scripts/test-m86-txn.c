@@ -34,6 +34,17 @@ static struct nas_mapped_file shared_file={.refs=1,.writable=true};
 static struct nas_mapped_file immutable_file={.refs=1,.writable=false};
 static unsigned immutable_reads;
 static uint64_t shared_pages[2],shared_size=2*P;
+static uint8_t mincore_vec[8];
+bool nas_user_prepare_write(uint64_t addr,uint64_t len){
+    return addr==(uint64_t)(uintptr_t)mincore_vec && len<=sizeof(mincore_vec);
+}
+bool nas_user_write_bytes(uint64_t addr,const uint8_t *src,uint64_t len){
+    uint64_t base=(uint64_t)(uintptr_t)mincore_vec;
+    if(!src || addr<base || len>sizeof(mincore_vec) ||
+       addr-base>sizeof(mincore_vec)-len)return false;
+    memcpy((void *)(uintptr_t)addr,src,(size_t)len);
+    return true;
+}
 static bool shared_regrown;
 static unsigned shared_dirty,shared_sync,shared_rearm,internal_sync;
 int nas_fs_mmap_pin(uint64_t fd,bool writable,struct nas_mapped_file **out){
@@ -219,6 +230,11 @@ int nas_fs_mmap_page(struct nas_mapped_file *file,uint64_t off,
     *pa_owned=shared_pages[idx];
     return 0;
 }
+int nas_fs_mmap_page_resident(struct nas_mapped_file *file,uint64_t off){
+    if(file!=&shared_file || (off&(P-1)))return -22;
+    if(off>=shared_size)return 0;
+    return shared_pages[off/P] ? 1 : 0;
+}
 static void initialize(void){
     current.mm=&space;space.users=1;space.root_phys=SELECTED_ROOT;
     assert(nas_vma_record(&space.mmap_vmas,BASE,2*P,3,
@@ -358,11 +374,21 @@ int main(void){
     uint64_t live=nas_vm_file_mmap(0,2*P,3,1,5,0);
     assert((int64_t)live>0 && shared_file.refs==2);
     assert(!nas_mmu_user_byte(live)); /* live file pages remain lazy */
+    memset(mincore_vec,0xff,sizeof(mincore_vec));
+    assert(nas_vm_mincore(live,2*P,(uint64_t)(uintptr_t)mincore_vec)==0);
+    assert(mincore_vec[0]==0 && mincore_vec[1]==0);
+    assert(!nas_mmu_user_byte(live) && !shared_pages[0]);
+    assert((int64_t)nas_vm_mincore(live+1,P,(uint64_t)(uintptr_t)mincore_vec)==-22);
+    assert((int64_t)nas_vm_mincore(0x30000000ULL,3*P,
+                                   (uint64_t)(uintptr_t)mincore_vec)==-12);
+    assert((int64_t)nas_vm_mincore(live,P,0)==-14);
     assert(nas_vm_msync(live,P,0)==0 && shared_sync==1);
     assert(nas_mm_handle_fault(&space,live,NAS_UP_READ,false)==
            NAS_MM_FAULT_RESOLVED);
     assert(slot(live,false)->pa==shared_pages[0] &&
            slot(live,false)->prot==1 && nas_frame_refs(shared_pages[0])==2);
+    assert(nas_vm_mincore(live,2*P,(uint64_t)(uintptr_t)mincore_vec)==0);
+    assert(mincore_vec[0]==1 && mincore_vec[1]==0);
     assert(nas_mm_handle_fault(&space,live,NAS_UP_WRITE,true)==
            NAS_MM_FAULT_RESOLVED);
     assert(slot(live,false)->prot==3 && shared_dirty>0);

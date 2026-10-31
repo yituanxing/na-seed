@@ -135,6 +135,9 @@ struct nas_vfs_type {
      * failure. Unsupported providers must leave this NULL. */
     int (*acquire_shared_page)(const struct nas_fs_node *,uint64_t offset,
                                uint64_t *pa_owned);
+    /* No side effects: existing inode cache page? Negative errno only for
+     * stale/unsupported backing, never a request to allocate storage. */
+    int (*shared_page_resident)(const struct nas_fs_node *,uint64_t offset);
     /* A direct writable user PTE bypasses write_at. The MM dirty/write
      * fault calls this provider hook once per observed write transition
      * to keep live metadata timestamps truthful without a fake page cache. */
@@ -320,6 +323,7 @@ int64_t nas_vfs_write_at(const struct nas_fs_node *node,uint64_t offset,
                          const uint8_t *source,uint64_t count);
 int nas_vfs_acquire_shared_page(const struct nas_fs_node *node,
                                 uint64_t offset,uint64_t *pa_owned);
+int nas_vfs_shared_page_resident(const struct nas_fs_node *node,uint64_t offset);
 int nas_vfs_touch_shared(const struct nas_fs_node *node);
 int nas_vfs_resize(const struct nas_fs_node *node,uint64_t length);
 int nas_vfs_preallocate(const struct nas_fs_node *node,uint64_t offset,

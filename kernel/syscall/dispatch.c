@@ -394,6 +394,17 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_set_tid_address) { thread_clear_tid = args[1]; return TASK.pid; }
     if (nr == NAS_SC_getpid) return TASK.tgid;
     if (nr == NAS_SC_gettid) return TASK.pid;
+    if(nr==NAS_SC_sched_getscheduler || nr==NAS_SC_sched_getparam) {
+        /* NaSeed presently schedules every task in its one non-realtime
+         * Linux-compatible policy: SCHED_OTHER, static priority zero.
+         * Queries validate the target task and user output independently. */
+        uint64_t pid=args[1] ? args[1] : TASK.pid;
+        if(!nas_task_by_pid(pid))return (uint64_t)-ESRCH;
+        if(nr==NAS_SC_sched_getscheduler)return 0; /* SCHED_OTHER */
+        const uint32_t param=0; /* struct sched_param.sched_priority */
+        return nas_user_write_bytes(args[2],(const uint8_t *)&param,
+                                    sizeof(param)) ? 0 : (uint64_t)-EFAULT;
+    }
     if(nr==NAS_SC_sched_getaffinity || nr==NAS_SC_sched_setaffinity) {
         uint64_t pid=args[1] ? args[1] : TASK.pid;
         if(!nas_task_by_pid(pid))return (uint64_t)-ESRCH;
@@ -431,6 +442,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if(nr==NAS_SC_nanosleep || nr==NAS_SC_clock_nanosleep)
         return nas_time_sleep_syscall((uint64_t *)(uintptr_t)args,nr,args);
     if (nr == NAS_SC_getuid || nr == NAS_SC_getgid || nr == NAS_SC_geteuid || nr == NAS_SC_getegid) return 0; /* root credentials */
+    if (nr == NAS_SC_mincore)
+        return nas_vm_mincore(args[1],args[2],args[3]);
     if (nr == NAS_SC_mprotect) {
         uint64_t rc=nas_vm_mprotect(args[1], args[2], args[3]);
 #ifdef NASEED_SYSCALL_TRACE

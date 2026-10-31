@@ -21,6 +21,8 @@ bool nas_fs_mmap_writable(const struct nas_mapped_file *file);
  * page-table installation fails. The inode owns its own storage frame. */
 int nas_fs_mmap_page(struct nas_mapped_file *file,uint64_t file_offset,
                      uint64_t *pa_owned);
+/* Read-only residency probe: no allocations, no new frame references. */
+int nas_fs_mmap_page_resident(struct nas_mapped_file *file,uint64_t file_offset);
 int nas_fs_mmap_dirty(struct nas_mapped_file *file);
 /* precommit VMA replacement uses rearm=false to preserve rollback PTEs;
  * successful user msync uses true to trap the next real store for mtime. */

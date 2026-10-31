@@ -112,6 +112,8 @@ int64_t tmp_write_at(struct nas_tmp_file *file, uint64_t offset,
  * below live i_size; the inode retains its own storage-frame reference. */
 int tmp_acquire_shared_page(struct nas_tmp_file *file,uint64_t offset,
                             uint64_t *pa_owned);
+/* Query an existing inode-owned data frame without creating one. */
+int tmp_page_resident(const struct nas_tmp_file *file,uint64_t offset);
 int tmp_touch_shared(struct nas_tmp_file *file);
 void tmp_truncate(struct nas_tmp_file *file);
 int tmp_resize(struct nas_tmp_file *file,uint64_t size);

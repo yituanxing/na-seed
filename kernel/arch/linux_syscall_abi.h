@@ -122,6 +122,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_mkdir: return NAS_SC_mkdir;
     case __NR_mkdirat: return NAS_SC_mkdirat;
     case __NR_mmap: return NAS_SC_mmap;
+    case __NR_mincore: return NAS_SC_mincore;
     case __NR_msync: return NAS_SC_msync;
     case __NR_madvise: return NAS_SC_madvise;
     case __NR_mprotect: return NAS_SC_mprotect;
@@ -177,6 +178,8 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_setsid: return NAS_SC_setsid;
     case __NR_set_tid_address: return NAS_SC_set_tid_address;
     case __NR_sched_getaffinity: return NAS_SC_sched_getaffinity;
+    case __NR_sched_getscheduler: return NAS_SC_sched_getscheduler;
+    case __NR_sched_getparam: return NAS_SC_sched_getparam;
     case __NR_sched_setaffinity: return NAS_SC_sched_setaffinity;
     case __NR_stat: return NAS_SC_stat;
     case __NR_statfs: return NAS_SC_statfs;
@@ -298,6 +301,8 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 99U: return NAS_SC_set_robust_list; /* asm-generic Linux */
     case 100U: return NAS_SC_get_robust_list;
     case 123U: return NAS_SC_sched_getaffinity;
+    case 120U: return NAS_SC_sched_getscheduler; /* asm-generic */
+    case 121U: return NAS_SC_sched_getparam;
     case 122U: return NAS_SC_sched_setaffinity;
     case 172U: return NAS_SC_getpid;
     case 163U: return NAS_SC_getrlimit; /* Linux asm-generic */
@@ -316,6 +321,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 156U: return NAS_SC_getsid;
     case 157U: return NAS_SC_setsid;
     case 222U: return NAS_SC_mmap;
+    case 232U: return NAS_SC_mincore; /* asm-generic */
     case 227U: return NAS_SC_msync; /* Linux asm-generic */
     case 233U: return NAS_SC_madvise; /* Linux asm-generic */
     case 215U: return NAS_SC_munmap;

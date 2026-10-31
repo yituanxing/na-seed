@@ -169,6 +169,10 @@ int nas_fs_mmap_page(struct nas_mapped_file *file,uint64_t offset,
     if(!file || !file->refs)return -EINVAL;
     return nas_vfs_acquire_shared_page(&file->node,offset,pa_owned);
 }
+int nas_fs_mmap_page_resident(struct nas_mapped_file *file,uint64_t offset) {
+    if(!file || !file->refs)return -EINVAL;
+    return nas_vfs_shared_page_resident(&file->node,offset);
+}
 int nas_fs_mmap_dirty(struct nas_mapped_file *file) {
     if(!file || !file->refs)return -EINVAL;
     if(!nas_fs_mmap_writable(file))return -EACCES;

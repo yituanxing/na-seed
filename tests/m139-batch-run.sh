@@ -72,8 +72,12 @@ run_case() {
         exe=$(original_elf /usr/bin/fc-validate)
         need_font
         "$exe" "$font_file" > "$work/output" 2>&1
-        busy grep -Fq 'valid' "$work/output"
-        busy grep -Fq 'DejaVuSans.ttf' "$work/output" ;;
+        # A successful font may be silent. Prove the validator also rejects
+        # corrupt bytes instead of depending on localized status wording.
+        busy printf '%s\n' 'not-a-truetype-font' > "$work/invalid.ttf"
+        if "$exe" "$work/invalid.ttf" > "$work/invalid.log" 2>&1; then
+            return 1
+        fi ;;
       pnmpad)
         exe=$(original_elf /usr/bin/pnmpad)
         seed_ppm
@@ -85,15 +89,16 @@ run_case() {
       pnmconvol)
         exe=$(original_elf /usr/bin/pnmconvol)
         seed_ppm
-        busy printf '%s\n' 'P3' '3 3' '255' \
-            '128 128 128  128 128 128  128 128 128' \
-            '128 128 128  255 255 255  128 128 128' \
-            '128 128 128  128 128 128  128 128 128' > "$work/kernel.ppm"
-        "$exe" "$work/kernel.ppm" "$work/source.ppm" \
+        # Real-valued kernel, as documented by Netpbm. Identity must
+        # preserve all RGB samples, not merely the output geometry.
+        "$exe" '-matrix=0,0,0;0,1,0;0,0,0' "$work/source.ppm" \
             > "$work/result.ppm" 2> "$work/output"
         [ -s "$work/result.ppm" ]
         /usr/bin/pamfile "$work/result.ppm" > "$work/geometry"
-        busy grep -Fq '4 by 3' "$work/geometry" ;;
+        busy grep -Fq '4 by 3' "$work/geometry"
+        /usr/bin/pnmtoplainpnm "$work/source.ppm" > "$work/source.plain"
+        /usr/bin/pnmtoplainpnm "$work/result.ppm" > "$work/result.plain"
+        busy cmp -s "$work/source.plain" "$work/result.plain" ;;
       pnmhisteq)
         exe=$(original_elf /usr/bin/pnmhisteq)
         busy printf '%s\n' 'P2' '4 2' '255' \
@@ -139,7 +144,7 @@ run_case() {
             > "$work/output" 2>&1
         busy grep -Fxq 'M139_NEW_SESSION' "$work/session.txt" ;;
       mountpoint)
-        exe=$(original_elf /usr/bin/mountpoint)
+        exe=$(original_elf /bin/mountpoint)
         "$exe" -q / > "$work/output" 2>&1
         busy mkdir -p "$work/ordinary-directory"
         if "$exe" -q "$work/ordinary-directory" >> "$work/output" 2>&1; then
@@ -149,9 +154,9 @@ run_case() {
         exe=$(original_elf /usr/bin/fincore)
         busy dd if=/dev/zero of="$work/data" bs=4096 count=2 2> "$work/seed.log"
         [ "$(busy wc -c < "$work/data")" -eq 8192 ]
-        "$exe" --noheadings --output PAGES,SIZE "$work/data" \
+        "$exe" --bytes --noheadings --output PAGES,SIZE "$work/data" \
             > "$work/output" 2>&1
-        busy grep -Eq '[12][[:space:]]+8192' "$work/output" ;;
+        busy grep -Eq '2[[:space:]]+8192' "$work/output" ;;
       ul)
         exe=$(original_elf /usr/bin/ul)
         busy printf 'M139_\b_M139_UNDERLINE\n' > "$work/overstrike"

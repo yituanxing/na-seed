@@ -1730,6 +1730,15 @@ int nas_vfs_acquire_shared_page(const struct nas_fs_node *node,
     if(!node->filesystem->acquire_shared_page)return -ENOSYS;
     return node->filesystem->acquire_shared_page(node,offset,pa_owned);
 }
+int nas_vfs_shared_page_resident(const struct nas_fs_node *node,uint64_t offset) {
+    int status=vfs_node_status(node);
+    if(status)return status;
+    if(node->is_dir)return -EISDIR;
+    if(offset&4095ULL)return -EINVAL;
+    if(offset>=nas_vfs_node_size(node))return 0;
+    if(!node->filesystem->shared_page_resident)return -ENOSYS;
+    return node->filesystem->shared_page_resident(node,offset);
+}
 int nas_vfs_touch_shared(const struct nas_fs_node *node) {
     int status=vfs_node_status(node);
     if(status)return status;

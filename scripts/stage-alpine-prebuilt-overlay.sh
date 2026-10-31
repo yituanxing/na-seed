@@ -67,6 +67,7 @@ work="build/external/$profile/$port"
 mkdir -p "$work"
 cp -a "$base/rootfs" "$work/rootfs"
 root="$work/rootfs"
+root_canonical=$(cd "$root" && pwd -P)
 # Every Linux rootfs requires the parent device directory even when its
 # device nodes are supplied virtually by the kernel, not host mknod.
 mkdir -p "$root/dev"
@@ -108,11 +109,21 @@ while IFS= read -r program; do
     case "$program" in ''|'#'*) continue ;; esac
     case "$program" in /*|*../*|*/../*|*' '*) exit 2 ;; esac
     binary="$root/$program"
-    test -f "$binary" && test -x "$binary" || {
+    resolved=$(readlink -f "$binary") || {
+        echo "[ALPINE OVERLAY FAIL] unresolvable $port ELF $program" >&2
+        exit 1
+    }
+    # readlink -f follows absolute symlinks on the HOST. Never authorize a
+    # host binary as an APK-installed native guest executable by accident.
+    case "$resolved" in "$root_canonical"/*) ;;
+        *) echo "[ALPINE OVERLAY FAIL] $port ELF escapes signed root: $program -> $resolved" >&2
+           exit 1 ;;
+    esac
+    test -f "$resolved" && test -x "$resolved" || {
         echo "[ALPINE OVERLAY FAIL] missing $port ELF $program" >&2
         exit 1
     }
-    readelf -h "$binary" | grep -Fq "$machine" || {
+    readelf -h "$resolved" | grep -Fq "$machine" || {
         echo "[ALPINE OVERLAY FAIL] wrong ISA $port ELF $program" >&2
         exit 1
     }

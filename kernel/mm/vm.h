@@ -11,6 +11,9 @@ uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
 uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
                           uint64_t flags, uint64_t fd, uint64_t offset);
 uint64_t nas_vm_msync(uint64_t addr,uint64_t length,uint64_t flags);
+/* Linux mincore: report real resident PTEs and inode-owned cache pages
+ * without making the queried memory resident. */
+uint64_t nas_vm_mincore(uint64_t addr,uint64_t length,uint64_t vec);
 struct nas_fs_node;
 /* VFS calls this after a successful inode resize; every live MM loses PTEs
  * wholly beyond the new EOF and zeroes the resident partial tail. */

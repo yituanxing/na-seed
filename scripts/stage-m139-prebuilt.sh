@@ -22,6 +22,7 @@ sh scripts/stage-alpine-prebuilt-overlay.sh "$port" m139-batch
 work="build/external/m139-batch/$port"
 root="$work/rootfs"
 test -s "$work/rootfs.cpio" && test -s "$root/lib/apk/db/installed"
+root_canonical=$(cd "$root" && pwd -P)
 for pkg in fontconfig font-dejavu netpbm util-linux-misc mcookie \
            gnutls-utils gnupg-gpgconf; do
     grep -Fxq "P:$pkg" "$root/lib/apk/db/installed" || {
@@ -34,7 +35,11 @@ count=0
 while IFS= read -r elf; do
     case "$elf" in ''|'#'*) continue ;; esac
     target=$(readlink -f "$root/$elf") || exit 1
-    case "$target" in "$root/bin/busybox"|"$root/usr/bin/busybox")
+    case "$target" in "$root_canonical"/*) ;;
+        *) echo "[M139 HOST STAGE FAIL] signed ELF resolves outside guest root: $elf -> $target" >&2
+           exit 1 ;;
+    esac
+    case "$target" in "$root_canonical/bin/busybox"|"$root_canonical/usr/bin/busybox")
         echo "[M139 HOST STAGE FAIL] BusyBox alias $elf" >&2
         exit 1 ;;
     esac

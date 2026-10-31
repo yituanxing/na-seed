@@ -11,6 +11,7 @@
 #include "../fs/io.h"
 #include "../arch/mmu.h"
 #include "../arch/user_pt.h"
+#include "usercopy.h"
 #include "mmap_abi.h"
 
 #include "frame.h"
@@ -362,6 +363,39 @@ uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
     nas_vma_commit(&TASK.mm->mmap_vmas,&planned);
     if(backing)nas_fs_mmap_put(backing); /* ledger now owns its own ref */
     return start;
+}
+/* Linux mincore(2) reports residency, not logical mappings or allocation
+ * success. Inspect already-owned PTEs and coherent shared-file cache pages;
+ * never fault the requested range, allocate a backing page, or mutate VMA
+ * state. A sparse tmpfs hole therefore reports nonresident until written or
+ * mapped and touched, while a PTE from an eager private snapshot is resident. */
+uint64_t nas_vm_mincore(uint64_t addr,uint64_t length,uint64_t vec) {
+    if(addr&(PAGE-1))return (uint64_t)-EINVAL;
+    if(!length)return 0;
+    if(length>UINT64_MAX-(PAGE-1))return (uint64_t)-ENOMEM;
+    uint64_t pages=(length+PAGE-1)/PAGE;
+    if(addr>=USER_LIMIT || pages>(USER_LIMIT-addr)/PAGE)
+        return (uint64_t)-ENOMEM;
+    if(!nas_anon_covered(&TASK.mm->mmap_vmas,addr,pages*PAGE))
+        return (uint64_t)-ENOMEM;
+    if(!nas_user_prepare_write(vec,pages))return (uint64_t)-EFAULT;
+    for(uint64_t i=0;i<pages;i++) {
+        const uint64_t va=addr+i*PAGE;
+        const struct nas_anon_region *v=
+            nas_vma_find(&TASK.mm->mmap_vmas,va);
+        uint64_t pa=0;
+        uint8_t resident=nas_mmu_resolve_user_address(TASK.mm->root_phys,
+                                                      va,&pa,0) ? 1U : 0U;
+        if(!resident && mutable_shared(v)) {
+            int rc=nas_fs_mmap_page_resident(v->backing,
+                                            v->file_offset+(va-v->start));
+            if(rc<0)return (uint64_t)(int64_t)rc;
+            resident=rc>0 ? 1U : 0U;
+        }
+        if(!nas_user_write_bytes(vec+i,&resident,1))
+            return (uint64_t)-EFAULT;
+    }
+    return 0;
 }
 uint64_t nas_vm_munmap(uint64_t addr, uint64_t len) {
     if (!len || (addr & (PAGE - 1)) || len > UINT64_MAX - (PAGE - 1))
