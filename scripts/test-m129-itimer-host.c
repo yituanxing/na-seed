@@ -6,6 +6,7 @@
 #include <string.h>
 #include "../kernel/task.h"
 #include "../kernel/time/clock.h"
+#include "../kernel/syscall/poll_wait_policy.h"
 #include "../kernel/errno.h"
 
 static uint64_t mono_ns;
@@ -34,6 +35,22 @@ bool nas_user_write_bytes(uint64_t addr,const uint8_t *src,uint64_t len){
 }
 
 int main(void){
+    /* Real musl pause fallback on RV64/AArch64 blocks indefinitely with
+     * no watched FDs. The x86 legacy pause syscall shares the same Task
+     * completion, so no architecture gets a synthetic early success. */
+    uint64_t poll_args[7]={0};
+    assert(nas_poll_signal_only_infinite(NAS_SC_ppoll,poll_args));
+    assert(!nas_poll_signal_only_infinite(NAS_SC_ppoll,
+                                        (uint64_t[7]){[2]=1}));
+    assert(!nas_poll_signal_only_infinite(NAS_SC_ppoll,
+                                        (uint64_t[7]){[3]=123}));
+    poll_args[3]=(uint64_t)-1;
+    assert(nas_poll_signal_only_infinite(NAS_SC_poll,poll_args));
+    poll_args[3]=0;
+    assert(nas_poll_signal_only_infinite(NAS_SC_pselect6,poll_args));
+    assert(!nas_poll_signal_only_infinite(NAS_SC_select,
+                                        (uint64_t[7]){[1]=1}));
+
     group_a.refs=2;group_b.refs=1;
     tasks[0].pid=11;tasks[0].tgid=11;
     tasks[0].state=NAS_TASK_RUNNING;

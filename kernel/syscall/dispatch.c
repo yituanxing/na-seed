@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include "dispatch.h"
 #include "../syscall/ops.h"
+#include "poll_wait_policy.h"
 #include "../arch/linux_syscall_abi.h"
 #include "../errno.h"
 #include "../random.h"
@@ -573,7 +574,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
             bool has_io=(nr==NAS_SC_pselect6 || nr==NAS_SC_select) ?
                 nas_fs_pselect_arm(args[1],args[2],args[3],args[4]) :
                 nas_fs_poll_arm(args[1],args[2]);
-            if(!has_io && !TASK.wait.deadline_active) {
+            if(!has_io && !TASK.wait.deadline_active &&
+               !nas_poll_signal_only_infinite(nr,args)) {
                 nas_signal_ppoll_restore(&TASK,false);
                 return (uint64_t)-EOPNOTSUPP;
             }
