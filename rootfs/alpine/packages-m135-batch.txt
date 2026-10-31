@@ -1,0 +1,8 @@
+# Signed Alpine 3.23 main/community: build test/archive, JPEG metadata,
+# HTML cleanup, GDBM persistence, graph transforms and Netpbm raster data.
+cmake
+libjpeg-turbo-utils
+tidyhtml
+gdbm-tools
+graphviz
+netpbm
