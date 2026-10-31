@@ -2,7 +2,7 @@ name: NaSeed M141 signed Alpine ELF inventory (host only, no QEMU)
 on:
   # A new workflow is not dispatchable from a non-default branch. Pushing the
   # workflow itself explicitly runs one candidate census, not a full OS test.
-  # Re-run after making the empty apk root initialize its package database.
+  # Re-run with the canonical, SHA-verified target-ISA signing keys.
   push:
     branches: [naseed-app-batch2]
     paths:

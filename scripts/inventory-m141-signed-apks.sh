@@ -29,12 +29,17 @@ root_canonical=$(cd "$root" && pwd -P)
 package_list=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$packages")
 test -n "$package_list"
 
-# Only reuse a root created for the identical package set and port.
-# The official APK signature check remains on for all packages.
+# Reuse the canonical Alpine runtime builder, which SHA256-verifies the
+# target-ISA minirootfs and extracts its architecture-specific signing keys.
+# The amd64 Docker image's own keys do NOT verify riscv64/aarch64 indexes.
+# Keeping one key owner is essential: never turn off APK signature checks.
 if [ ! -f "$work/packages-$package_sha/signed-install.ok" ]; then
+    NAS_ALPINE_PROFILE=runtime sh rootfs/alpine/build.sh "$port"
+    cp -a "build/external/m39-packages/$port/rootfs/." "$root/"
     if ! docker run --rm --volume "$root_canonical:/target" \
         --env APK_ARCH="$arch" --env APK_PACKAGES="$package_list" \
         alpine:3.23 sh -ec '
+            cp -a /target/etc/apk/keys/. /etc/apk/keys/
             apk --arch "$APK_ARCH" --root /target --initdb \
                 --keys-dir /etc/apk/keys \
                 --no-scripts \
