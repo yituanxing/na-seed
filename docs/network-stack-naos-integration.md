@@ -251,6 +251,10 @@ The remaining operating-system constraints are explicit:
    The ticket survives Task return and F_SETFL changes; final listener close
    cancels the worker before invalidating the lease. Official lwIP host tests
    cover native prefetch, TCP payload, cancellation, close and FD slot reuse.
+   For freestanding `--target=*-none-elf` kernel builds, lwIP now uses its
+   documented `arch/cc.h` hooks to avoid host glibc's `inttypes/ctype/limits`
+   headers. A small port-only C string/decimal shim reuses NaSeed's existing
+   kernel string routines; it adds no allocator or alternate protocol stack.
    Exact UDP `sendto/recvfrom` metadata, wider socket options, additional
    close races and **real guest Alpine ncat/iperf3/DNS remain unproven**;
    the narrow signed-Alpine x86 ncat QEMU workflow is a test gate, not evidence

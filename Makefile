@@ -90,7 +90,7 @@ endif
 # Opt-in while the real NIC IRQ worker and Netconn FileOps are integrated.
 LWIP_X86_OBJS :=
 ifeq ($(NAS_ENABLE_LWIP),1)
-LWIP_X86_SRCS := ports/lwip/sys_arch.c ports/lwip/netif_port.c \
+LWIP_X86_SRCS := ports/lwip/libc_port.c ports/lwip/sys_arch.c ports/lwip/netif_port.c \
  ports/lwip/network_boot.c ports/lwip/netconn_bridge.c \
  ports/lwip/socket_port.c \
  $(wildcard third_party/lwip/src/core/*.c) \
@@ -101,7 +101,7 @@ LWIP_X86_OBJS := $(patsubst %.c,$(OUT)/lwip_%.o,$(notdir $(LWIP_X86_SRCS)))
 define nas_compile_x86_lwip
 $(OUT)/lwip_$(notdir $(basename $(1))).o: $(1) $(HDR)
 	mkdir -p $(OUT)
-	clang $(CFLAGS) -MMD -MP -c $$< -o $$@
+	clang $(CFLAGS) -I ports/lwip/freestanding -MMD -MP -c $$< -o $$@
 endef
 $(foreach source,$(LWIP_X86_SRCS),$(eval $(call nas_compile_x86_lwip,$(source))))
 endif

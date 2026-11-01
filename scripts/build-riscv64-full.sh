@@ -38,12 +38,15 @@ if [ "${NAS_ENABLE_VIRTIO_NET:-0}" = 1 ]; then
 fi
 lwip_src=
 if [ "${NAS_ENABLE_LWIP:-0}" = 1 ]; then
-    lwip_src="ports/lwip/sys_arch.c ports/lwip/netif_port.c ports/lwip/network_boot.c ports/lwip/netconn_bridge.c ports/lwip/socket_port.c third_party/lwip/src/core/*.c third_party/lwip/src/core/ipv4/*.c third_party/lwip/src/api/*.c third_party/lwip/src/netif/ethernet.c"
+    lwip_src="ports/lwip/libc_port.c ports/lwip/sys_arch.c ports/lwip/netif_port.c ports/lwip/network_boot.c ports/lwip/netconn_bridge.c ports/lwip/socket_port.c third_party/lwip/src/core/*.c third_party/lwip/src/core/ipv4/*.c third_party/lwip/src/api/*.c third_party/lwip/src/netif/ethernet.c"
 fi
 obj=
 for f in $common $arch $lwip_src; do
     target="$out/$(printf '%s' "$f" | tr '/' '_').o"
-    clang $flags -c "$f" -o "$target"
+    case "$f" in ports/lwip/*|third_party/lwip/*)
+        clang $flags -I ports/lwip/freestanding -c "$f" -o "$target" ;;
+      *) clang $flags -c "$f" -o "$target" ;;
+    esac
     obj="$obj $target"
 done
 if [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ]; then
