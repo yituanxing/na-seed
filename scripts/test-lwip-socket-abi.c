@@ -118,8 +118,19 @@ static uint64_t abi_read(unsigned slot,uint8_t *out,uint64_t count) {
     memmove(abi_rx_bytes[slot],abi_rx_bytes[slot]+count,abi_rx_length[slot]);
     return count;
 }
+static uint64_t abi_peek(unsigned slot,uint8_t *out,uint64_t count,
+                         uint64_t offset) {
+    assert(nas_lwip_socket_is_slot(slot));
+    assert(abi_type[slot]==NAS_LWIP_BRIDGE_TCP);
+    assert(offset<=abi_rx_length[slot]);
+    if(count>abi_rx_length[slot]-offset)
+        count=abi_rx_length[slot]-offset;
+    if(count)memcpy(out,abi_rx_bytes[slot]+offset,(size_t)count);
+    return count;
+}
 static const struct nas_file_ops abi_ops={.release=abi_release,
-    .read_plan=abi_read_plan,.read=abi_read};
+    .read_plan=abi_read_plan,.read=abi_read,.peek=abi_peek,
+    .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY};
 const struct nas_file_ops *nas_lwip_socket_port_ops(void){return &abi_ops;}
 int nas_lwip_socket_open(unsigned slot,enum nas_lwip_bridge_type type) {
     assert(slot<NAS_OPEN_FILE_LIMIT && nas_open_files[slot].refcount);
@@ -489,6 +500,25 @@ int main(void) {
     uint32_t source_capacity=5;
     memcpy(user_ptr(srclen),&source_capacity,4);
     memcpy(abi_rx_bytes[tcp_slot],"PONG",4);abi_rx_length[tcp_slot]=4;
+    /* Wget calls recvfrom(MSG_PEEK) before consuming HTTP status bytes.
+     * Two peeks must return identical data, and a normal read must still
+     * consume the original payload. Invalid writable user memory must
+     * preserve the bytes even on the peek path. */
+    assert(sys_ipv4_recvfrom(tcp_fd,rxbuf,4,0x2ULL,0,0)==4);
+    assert(!memcmp(user_ptr(rxbuf),"PONG",4));
+    assert(abi_rx_length[tcp_slot]==4);
+    can_write[0]=false;
+    assert((int64_t)sys_ipv4_recvfrom(
+        tcp_fd,rxbuf,4,0x2ULL,0,0)==-EFAULT);
+    assert(abi_rx_length[tcp_slot]==4);
+    can_write[0]=true;
+    struct nas_io_attempt peek_attempt={0};
+    nas_fs_io_start(NAS_SC_recvfrom,tcp_fd,rxbuf,4,&peek_attempt);
+    assert(!peek_attempt.pending && peek_attempt.result==4);
+    assert(abi_rx_length[tcp_slot]==4);
+    assert(!memcmp(user_ptr(rxbuf),"PONG",4));
+    assert((int64_t)sys_ipv4_recvfrom(tcp_fd,rxbuf,4,0x42ULL,0,0)
+           ==-EOPNOTSUPP);
     can_write[0]=false;
     assert((int64_t)sys_ipv4_recvfrom(
         tcp_fd,rxbuf,4,0,srcaddr,srclen)==-EFAULT);

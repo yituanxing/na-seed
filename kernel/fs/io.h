@@ -27,6 +27,9 @@ void nas_fs_io_dispose(struct nas_pending_io *pending);
 /* FS/FD operations are implemented in fs/syscall.c; the shared syscall
  * dispatcher and scheduler use this stable operation boundary. */
 uint64_t nas_fs_fd_read(uint64_t fd, uint64_t addr, uint64_t len);
+/* Native TCP socket MSG_PEEK, through the same nonconsuming FileOps read
+ * plan; the syscall dispatcher preserves a held File during blocking. */
+uint64_t nas_fs_fd_peek(uint64_t fd,uint64_t addr,uint64_t len);
 uint64_t nas_fs_fd_readv(uint64_t fd, uint64_t iov, uint64_t count);
 /* A blocking readv's true byte count belongs to its issuing Task, not a
  * guessed iovcnt or a user pointer read from another Task's address space. */

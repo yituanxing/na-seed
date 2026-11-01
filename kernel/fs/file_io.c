@@ -279,7 +279,8 @@ static uint64_t io_slot_write(unsigned slot, uint64_t address, uint64_t length) 
     }
     return done;
 }
-static uint64_t io_slot_read(unsigned slot, uint64_t address, uint64_t length) {
+static uint64_t io_slot_read_mode(unsigned slot, uint64_t address,
+                                  uint64_t length,bool peek) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
         return (uint64_t)-EBADF;
     if((nas_open_files[slot].status_flags&NAS_LINUX_O_PATH) ||
@@ -291,14 +292,15 @@ static uint64_t io_slot_read(unsigned slot, uint64_t address, uint64_t length) {
         return (uint64_t)-EFAULT;
     if(length>NAS_MAX_RW_COUNT)length=NAS_MAX_RW_COUNT;
     const struct nas_file_ops *ops=nas_open_files[slot].ops;
-    if(!ops || !ops->read)return (uint64_t)-EBADF;
+    if(!ops || !ops->read || (peek && !ops->peek))
+        return (uint64_t)-EBADF;
     uint64_t budget=ops->read_plan ? ops->read_plan(slot,length) : length;
     if((int64_t)budget<0)return budget;
     if(budget>length)return (uint64_t)-EIO;
     if(!budget) {
         /* A planned zero-byte EOF can be an input token (PTY canonical
          * terminal). It still needs a zero-length provider commit. */
-        if(length && ops->read_finalize_zero) {
+        if(length && !peek && ops->read_finalize_zero) {
             uint8_t dummy=0;
             uint64_t rc=ops->read(slot,&dummy,0);
             if((int64_t)rc<0)return rc;
@@ -318,7 +320,8 @@ static uint64_t io_slot_read(unsigned slot, uint64_t address, uint64_t length) {
         if(!ops->read_commit_before_copyout &&
            !nas_user_prepare_write(address+done,n))
             return done ? done : (uint64_t)-EFAULT;
-        uint64_t got=ops->read(slot,buffer,n);
+        uint64_t got=peek ? ops->peek(slot,buffer,n,done) :
+                            ops->read(slot,buffer,n);
         if((int64_t)got<0)return done ? done : got;
         if(got>n)return done ? done : (uint64_t)-EIO;
         if(!got)break;
@@ -329,6 +332,9 @@ static uint64_t io_slot_read(unsigned slot, uint64_t address, uint64_t length) {
     }
     return done;
 }
+static uint64_t io_slot_read(unsigned slot,uint64_t address,uint64_t length) {
+    return io_slot_read_mode(slot,address,length,false);
+}
 uint64_t nas_fs_fd_write(uint64_t fd, uint64_t address, uint64_t length) {
     if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
         return (uint64_t)-EBADF;
@@ -338,6 +344,13 @@ uint64_t nas_fs_fd_read(uint64_t fd, uint64_t address, uint64_t length) {
     if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
         return (uint64_t)-EBADF;
     return io_slot_read(TASK.fds->entries[fd].slot,address,length);
+}
+/* Connected native socket MSG_PEEK shares FileOps admission, usercopy and
+ * wake policy with read(), but never advances the provider RX cursor. */
+uint64_t nas_fs_fd_peek(uint64_t fd,uint64_t address,uint64_t length) {
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
+        return (uint64_t)-EBADF;
+    return io_slot_read_mode(TASK.fds->entries[fd].slot,address,length,true);
 }
 /* The Linux positional I/O ABI is the same common VFS operation on all
  * three architectures. Respect per-FD access mode and reject pipes,
@@ -757,13 +770,16 @@ static uint64_t io_pending_execute(const struct nas_pending_io *pending) {
     if(pending->op==NAS_SC_read)
         return io_slot_read(pending->request.slot,pending->scalar_address,
                             pending->scalar_length);
+    if(pending->op==NAS_SC_recvfrom)
+        return io_slot_read_mode(pending->request.slot,pending->scalar_address,
+                                 pending->scalar_length,true);
     if(pending->op==NAS_SC_write)
         return io_slot_write(pending->request.slot,pending->scalar_address,
                              pending->scalar_length);
     return io_vector_execute(&pending->request,pending->op==NAS_SC_writev);
 }
 static bool io_read_op(uint64_t op) {
-    return op==NAS_SC_read || op==NAS_SC_readv;
+    return op==NAS_SC_read || op==NAS_SC_readv || op==NAS_SC_recvfrom;
 }
 static bool io_would_block(uint64_t rc) {
     return (int64_t)rc==-EAGAIN || (int64_t)rc==-EOPNOTSUPP;
@@ -775,7 +791,8 @@ void nas_fs_io_start(uint64_t op,uint64_t fd,uint64_t address,uint64_t length,
                      struct nas_io_attempt *attempt) {
     *attempt=(struct nas_io_attempt){.result=(uint64_t)-EBADF};
     if(op!=NAS_SC_read && op!=NAS_SC_readv &&
-       op!=NAS_SC_write && op!=NAS_SC_writev) {
+       op!=NAS_SC_write && op!=NAS_SC_writev &&
+       op!=NAS_SC_recvfrom) {
         attempt->result=(uint64_t)-EINVAL;
         return;
     }
@@ -783,6 +800,10 @@ void nas_fs_io_start(uint64_t op,uint64_t fd,uint64_t address,uint64_t length,
     int rc=io_resolve_fd(fd,&slot);
     if(rc)return;
     const struct nas_file_ops *ops=nas_open_files[slot].ops;
+    if(op==NAS_SC_recvfrom && (!ops || !ops->peek)) {
+        attempt->result=(uint64_t)-EOPNOTSUPP;
+        return;
+    }
     attempt->pipe_like=ops && ops->sends_sigpipe;
     if(!nas_fd_hold_description(slot))return;
     struct nas_pending_io current={0};

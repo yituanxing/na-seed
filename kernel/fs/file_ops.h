@@ -24,6 +24,11 @@ struct nas_file_ops {
     uint64_t (*read_plan)(unsigned slot,uint64_t requested);
     uint64_t (*write_plan)(unsigned slot,uint64_t requested);
     uint64_t (*read)(unsigned slot,uint8_t *kernel_dst,uint64_t count);
+    /* Optional non-consuming stream snapshot. offset is relative to the
+     * current read cursor; the caller does usercopy in bounded chunks.
+     * Only a provider with a real retained RX buffer advertises this. */
+    uint64_t (*peek)(unsigned slot,uint8_t *kernel_dst,uint64_t count,
+                     uint64_t offset);
     uint64_t (*write)(unsigned slot,const uint8_t *kernel_src,uint64_t count);
     /* An admitted atomic write must validate the whole user source before
      * the first provider commit; 0 means ordinary page-local staging. */

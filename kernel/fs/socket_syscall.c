@@ -1194,7 +1194,9 @@ static uint64_t sys_ipv4_recvfrom(uint64_t fd,uint64_t buffer,
             }
             return (uint64_t)received;
         }
-        if(flags)return (uint64_t)-EOPNOTSUPP;
+        /* Pure MSG_PEEK is a non-consuming TCP FileOps read. Mixed flags
+         * require separate per-call O_NONBLOCK semantics, not silent ignore. */
+        if(flags && flags!=0x2ULL)return (uint64_t)-EOPNOTSUPP;
         if(address && !length_ptr)return (uint64_t)-EFAULT;
         uint32_t capacity=0;
         uint8_t peer_bytes[16];
@@ -1217,7 +1219,9 @@ static uint64_t sys_ipv4_recvfrom(uint64_t fd,uint64_t buffer,
             ipv4_sockaddr((struct nas_ipv4_endpoint){peer.ipv4,peer.port},
                           peer_bytes);
         }
-        uint64_t received=nas_fs_fd_read(fd,buffer,length);
+        uint64_t received=(flags&0x2ULL) ?
+            nas_fs_fd_peek(fd,buffer,length) :
+            nas_fs_fd_read(fd,buffer,length);
         if((int64_t)received<0)return received;
         if(address) {
             const uint32_t actual=16;

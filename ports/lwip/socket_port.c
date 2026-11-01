@@ -523,6 +523,22 @@ static uint64_t read_bytes(unsigned slot,uint8_t *dst,uint64_t count) {
     return count;
 }
 
+/* Read without advancing the shared socket's RX cursor (MSG_PEEK). A
+ * concurrent dup/fork reader still shares this one OpenFile buffer. */
+static uint64_t peek_bytes(unsigned slot,uint8_t *dst,uint64_t count,
+                           uint64_t offset) {
+    struct port_socket *s=socket_at(slot);
+    if(!s)return (uint64_t)-EBADF;
+    if(s->type!=NAS_LWIP_BRIDGE_TCP)return (uint64_t)-EOPNOTSUPP;
+    if(!s->rx_valid)return count ? (uint64_t)-EAGAIN:0;
+    uint64_t available=(uint64_t)s->rx_length-s->rx_position;
+    if(offset>available)return (uint64_t)-EINVAL;
+    if(count>available-offset)count=available-offset;
+    if(count && !dst)return (uint64_t)-EINVAL;
+    if(count)memcpy(dst,s->rx+s->rx_position+offset,(size_t)count);
+    return count;
+}
+
 static uint64_t write_plan(unsigned slot,uint64_t requested) {
     struct port_socket *s=socket_at(slot);
     if(!s)return (uint64_t)-EBADF;
@@ -657,7 +673,7 @@ static void release(unsigned slot) {
 
 static const struct nas_file_ops ops={
     .read_plan=read_plan,.write_plan=write_plan,
-    .read=read_bytes,.write=write_bytes,
+    .read=read_bytes,.peek=peek_bytes,.write=write_bytes,
     .read_finalize_zero=true,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
     .sends_sigpipe=true,

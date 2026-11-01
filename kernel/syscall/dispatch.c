@@ -744,6 +744,19 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_readv) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
     if (nr == NAS_SC_write) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
     if (nr == NAS_SC_writev) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
+#ifdef NAS_ENABLE_LWIP
+    /* MSG_PEEK must preserve the same shared socket RX buffer. Route the
+     * pure no-sockaddr form through the existing held-File blocking read
+     * mechanism, with the nonconsuming callback on the same FileOps. */
+    if(nr==NAS_SC_recvfrom && args[4]==0x2ULL &&
+       !args[5] && !args[6] && args[1]<NAS_FD_LIMIT &&
+       TASK.fds->entries[args[1]].kind==FD_SOCKET &&
+       nas_lwip_socket_is_slot(TASK.fds->entries[args[1]].slot) &&
+       nas_lwip_socket_type(TASK.fds->entries[args[1]].slot)==
+           NAS_LWIP_BRIDGE_TCP)
+        return task_pipe_io((uint64_t *)(uintptr_t)args,NAS_SC_recvfrom,
+                            args[1],args[2],args[3]);
+#endif
     /* Connected IPv4 stream send()/recv() are Linux sendto()/recvfrom()
      * with no address argument. They use the exact same held-OpenFile
      * provider as read/write so a full/empty stream genuinely parks and
