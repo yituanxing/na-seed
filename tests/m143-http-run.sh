@@ -12,7 +12,18 @@ for pair in wget:WGET aria2:ARIA2 curl:CURL; do
     tag=${pair#*:}
     case "$name" in
         wget)
-            /usr/bin/wget -q -t 3 -T 8 -O "$work/wget.txt" http://10.0.2.2:15431/wget
+            # DHCP ACK can precede ACD/ARP completion; retry only this
+            # initial network-ready transition and keep the exact host oracle.
+            ready=false
+            for attempt in 1 2 3 4 5 6 7 8 9 10; do
+                if /usr/bin/wget -q -t 1 -T 6 -O "$work/wget.txt" http://10.0.2.2:15431/wget; then
+                    ready=true
+                    break
+                fi
+                /bin/busybox printf '[M143 DHCP WAIT] wget attempt=%s\\n' "$attempt"
+                /bin/busybox sleep 1
+            done
+            [ "$ready" = true ]
             ;;
         aria2)
             /usr/bin/aria2c --quiet=true --disable-ipv6=true --max-tries=3 \
