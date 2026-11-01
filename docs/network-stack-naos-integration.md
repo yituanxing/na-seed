@@ -265,7 +265,8 @@ The remaining operating-system constraints are explicit:
    QEMU**, including a native server and client with the expected reply
    (`LWIP NCAT NATIVE QEMU PASS`). This verifies the kernel's opt-in lwIP
    loopback, not VirtIO-Net wire traffic, DHCP on physical NICs or non-x86
-   guest programs. An uninstrumented rerun is the final focused gate.
+   guest programs. The same focused x86 QEMU case also **passed again with
+   syscall diagnostics disabled**, proving the default boot image behavior.
    Exact UDP `sendto/recvfrom` metadata, wider socket options, additional
    close races and **real guest Alpine iperf3/DNS remain unproven**;
    even Ncat is currently proven only for one x86-64 loopback scenario, not
@@ -284,7 +285,7 @@ The remaining operating-system constraints are explicit:
 | D0 — host bridge-proven | Native Netconn RPC worker, bounded command copies, real upstream UDP/TCP loopback, OpenFile-indexed generation lifetime and deferred release | Host TCP/UDP bind/connect/listen/accept/send/recv, partial TCP/UDP truncation and stale-close tests PASS. **Not wired to user socket syscalls yet** |
 | D1a — host FileOps-proven | Netconn-backed TCP/UDP FileOps + async control state machine, same global `nas_open_file` identity, accepted handle adoption, all opt-in build source lists | `test-lwip-socket-port` against upstream lwIP; TCP/UDP data, copied queued writes, poll-driven RX, bind/connect/listen, async close; default AF_UNIX/simulated AF_INET unchanged |
 | D1b — host ABI-proven (partial) | Opt-in AF_INET TCP/UDP Socket syscall selection, real OpenFile FileOps, native bind/connect/listen Task continuations, listener event readiness and worker lease cancellation; preserve AF_UNIX and default fake backend | `test-lwip-socket-abi` on real usercopy/FD ABI with controlled provider, genuine upstream Netconn host test, M106 AF_UNIX regression PASS; **not yet a guest network-program pass** |
-| D1c — x86 loopback guest-proven | Blocking native `accept/accept4` Task lease and EINTR cleanup; nonblocking listening prefetch owned by OpenFile (F_SETFL handoff and close cancellation); real peer sockaddr including connected TCP `recvfrom()` output, GETNAME, `SO_REUSEADDR`, SHUTDOWN and TX-before-FIN ordering. UDP destination/source metadata, extended options and wider close races still open | Real syscall+FD fixture, upstream native TCP/UDP+SocketPort nonblocking-prefetch and peer tests PASS; **signed Alpine `/usr/bin/ncat` TCP loopback x86 QEMU PASS**. Next: uninstrumented confirmation, remote/wire TCP, curl, iperf3, DNS and accumulated multi-ISA checks |
+| D1c — x86 loopback guest-proven | Blocking native `accept/accept4` Task lease and EINTR cleanup; nonblocking listening prefetch owned by OpenFile (F_SETFL handoff and close cancellation); real peer sockaddr including connected TCP `recvfrom()` output, GETNAME, `SO_REUSEADDR`, SHUTDOWN and TX-before-FIN ordering. UDP destination/source metadata, extended options and wider close races still open | Real syscall+FD fixture, upstream native TCP/UDP+SocketPort nonblocking-prefetch and peer tests PASS; **signed Alpine `/usr/bin/ncat` TCP loopback x86 QEMU PASS twice, including without debug tracing**. Next: remote/wire TCP, curl, iperf3, DNS and accumulated multi-ISA checks |
 | E | Remove old simulated AF_INET code and harden shutdown, resource failure, MTU, hot-unplug | Network + block concurrency, packet loss/backpressure, memory lifetime, repeated NIC reset, all-ISA QEMU regression accumulated as requested |
 
 Don't launch the expensive QEMU M141 matrix for Stage A alone. Do not report
