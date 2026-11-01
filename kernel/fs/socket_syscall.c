@@ -996,12 +996,24 @@ static uint64_t sys_ipv4_sendmsg(uint64_t fd,uint64_t address,uint64_t flags) {
 #ifdef NAS_ENABLE_LWIP
     if(lwip_fd(fd)) {
         unsigned slot=TASK.fds->entries[fd].slot;
-        if(nas_lwip_socket_type(slot)!=NAS_LWIP_BRIDGE_UDP)
-            return (uint64_t)-EOPNOTSUPP;
-        if(flags & ~(0x4000ULL|0x40ULL))return (uint64_t)-EOPNOTSUPP;
         struct nas_msghdr msg;
         if(!nas_user_read_bytes(address,(uint8_t *)&msg,sizeof(msg)))
             return (uint64_t)-EFAULT;
+        if(nas_lwip_socket_type(slot)==NAS_LWIP_BRIDGE_TCP) {
+            /* Linux sendmsg() on connected TCP is a scatter/gather stream
+             * write, not a datagram-only operation. Use the exact same
+             * held-OpenFile vector writer as writev(): real Netconn TX,
+             * bounds-checked guest iovecs and honest partial writes. The
+             * per-call MSG_DONTWAIT override needs a separate I/O mode and
+             * must not silently mutate shared O_NONBLOCK state. */
+            if(flags & ~0x4000ULL)return (uint64_t)-EOPNOTSUPP;
+            if(msg.name)return (uint64_t)-EISCONN;
+            if(msg.controllen)return (uint64_t)-EOPNOTSUPP;
+            return nas_fs_fd_writev(fd,msg.iov,msg.iovlen);
+        }
+        if(nas_lwip_socket_type(slot)!=NAS_LWIP_BRIDGE_UDP)
+            return (uint64_t)-EOPNOTSUPP;
+        if(flags & ~(0x4000ULL|0x40ULL))return (uint64_t)-EOPNOTSUPP;
         if(msg.controllen)return (uint64_t)-EOPNOTSUPP;
         if(msg.iovlen>32)return (uint64_t)-EMSGSIZE;
         struct nas_lwip_bridge_address destination={0};

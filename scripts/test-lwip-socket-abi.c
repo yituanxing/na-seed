@@ -608,6 +608,34 @@ int main(void) {
            !memcmp(abi_udp_last_send,"PING",4));
     assert((int64_t)sys_ipv4_sendmsg(udp_fd,msgaddr,0x2ULL)==-EOPNOTSUPP);
 
+    /* Memcached transmits an ASCII response using sendmsg() with multiple
+     * iovecs on an accepted TCP socket.  The real OpenFile vector path must
+     * send the data (not report EOPNOTSUPP), validate every guest vector
+     * before touching the connection, and reject unsupported per-call modes. */
+    const struct nas_iovec tcp_iov[2]={
+        {.base=udp_payload,.length=2},
+        {.base=udp_payload+2,.length=2}
+    };
+    memcpy(user_ptr(iovaddr),tcp_iov,sizeof(tcp_iov));
+    msg=(struct nas_msghdr){.iov=iovaddr,.iovlen=2};
+    memcpy(user_ptr(msgaddr),&msg,sizeof(msg));
+    unsigned old_tcp_sends=abi_tcp_sends;
+    assert(sys_ipv4_sendmsg(tcp_fd,msgaddr,0x4000ULL)==4);
+    assert(abi_tcp_sends==old_tcp_sends+2 &&
+           abi_tcp_sent_length==2 &&
+           !memcmp(abi_tcp_sent,"NG",2));
+    assert((int64_t)sys_ipv4_sendmsg(tcp_fd,msgaddr,0x40ULL)==-EOPNOTSUPP);
+    msg.name=udp_target;
+    memcpy(user_ptr(msgaddr),&msg,sizeof(msg));
+    assert((int64_t)sys_ipv4_sendmsg(tcp_fd,msgaddr,0)==-EISCONN);
+    msg.name=0;
+    memcpy(user_ptr(msgaddr),&msg,sizeof(msg));
+    struct nas_iovec bad_iov[2]={tcp_iov[0],{.base=UINT64_MAX,.length=2}};
+    memcpy(user_ptr(iovaddr),bad_iov,sizeof(bad_iov));
+    old_tcp_sends=abi_tcp_sends;
+    assert((int64_t)sys_ipv4_sendmsg(tcp_fd,msgaddr,0)==-EFAULT);
+    assert(abi_tcp_sends==old_tcp_sends);
+
     /* Ncat -u sets SO_BROADCAST before its nonblocking UDP connect. The
      * first queues a real PCB control operation; the second has no TCP
      * handshake and therefore cannot report a spurious EINPROGRESS. */
