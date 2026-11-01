@@ -133,8 +133,25 @@ static uint64_t abi_peek(unsigned slot,uint8_t *out,uint64_t count,
     if(count)memcpy(out,abi_rx_bytes[slot]+offset,(size_t)count);
     return count;
 }
+static uint8_t abi_tcp_sent[32];
+static unsigned abi_tcp_sent_length,abi_tcp_sends;
+static uint64_t abi_write_plan(unsigned slot,uint64_t count) {
+    assert(nas_lwip_socket_is_slot(slot));
+    assert(abi_type[slot]==NAS_LWIP_BRIDGE_TCP);
+    return count;
+}
+static uint64_t abi_write(unsigned slot,const uint8_t *data,uint64_t count) {
+    assert(nas_lwip_socket_is_slot(slot));
+    assert(abi_type[slot]==NAS_LWIP_BRIDGE_TCP);
+    assert(count<=sizeof(abi_tcp_sent));
+    if(count)memcpy(abi_tcp_sent,data,(size_t)count);
+    abi_tcp_sent_length=(unsigned)count;
+    ++abi_tcp_sends;
+    return count;
+}
 static const struct nas_file_ops abi_ops={.release=abi_release,
     .read_plan=abi_read_plan,.read=abi_read,.peek=abi_peek,
+    .write_plan=abi_write_plan,.write=abi_write,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY};
 const struct nas_file_ops *nas_lwip_socket_port_ops(void){return &abi_ops;}
 int nas_lwip_socket_open(unsigned slot,enum nas_lwip_bridge_type type) {
@@ -512,6 +529,17 @@ int main(void) {
      * use the existing FileOps read, not a simulated IPv4 packet provider. */
     const uint64_t rxbuf=TEST_BASE+1400,srcaddr=TEST_BASE+1500;
     const uint64_t srclen=TEST_BASE+1600;
+    /* HAProxy writes HTTP replies with MSG_DONTWAIT|MSG_NOSIGNAL|MSG_MORE.
+     * TCP is a byte stream: the coalescing hint may flush earlier, but
+     * must never discard the payload or reject a valid sendto syscall. */
+    memcpy(user_ptr(rxbuf),"HTTP",4);
+    unsigned prior_sends=abi_tcp_sends;
+    assert(sys_ipv4_sendto(tcp_fd,rxbuf,4,0xc040ULL,0,0)==4);
+    assert(abi_tcp_sends==prior_sends+1 &&
+           abi_tcp_sent_length==4 &&
+           !memcmp(abi_tcp_sent,"HTTP",4));
+    assert((int64_t)sys_ipv4_sendto(tcp_fd,rxbuf,4,0x800000ULL,0,0)
+           ==-EOPNOTSUPP);
     uint32_t source_capacity=5;
     memcpy(user_ptr(srclen),&source_capacity,4);
     memcpy(abi_rx_bytes[tcp_slot],"PONG",4);abi_rx_length[tcp_slot]=4;
@@ -553,6 +581,11 @@ int main(void) {
     const uint64_t udp_target=abi_sockaddr(38007,UINT32_C(0x7f000001));
     const uint64_t udp_payload=TEST_BASE+1700;
     memcpy(user_ptr(udp_payload),"PING",4);
+    /* UDP MSG_MORE requires real datagram corking; do not silently split
+     * or merge the original Alpine DNS/Ncat packet stream. */
+    assert((int64_t)sys_ipv4_sendto(udp_fd,udp_payload,4,
+                                   0x8000ULL,udp_target,16)
+           ==-EOPNOTSUPP);
     assert(sys_ipv4_sendto(udp_fd,udp_payload,4,0,udp_target,16)==4);
     assert(abi_udp_send_count==1 && abi_udp_sent_length==4 &&
            !memcmp(abi_udp_last_send,"PING",4));

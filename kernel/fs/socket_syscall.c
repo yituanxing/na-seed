@@ -1138,9 +1138,16 @@ static uint64_t sys_ipv4_sendto(uint64_t fd,uint64_t buffer,
         /* Connected TCP/UDP goes through the existing parked FileOps path.
          * Connectionless UDP is copied as ONE kernel-owned datagram with
          * its actual destination, never split into stream writes. */
-        if(flags & ~(0x40ULL|0x4000ULL))return (uint64_t)-EOPNOTSUPP;
+        /* Linux MSG_MORE on TCP is a packet-coalescing hint, NOT an
+         * additional stream boundary. The upstream Netconn TX queue may
+         * flush promptly; preserve every accepted byte instead of rejecting
+         * legitimate HAProxy proxy replies with EOPNOTSUPP. This does not
+         * implement UDP MSG_MORE corking (which changes datagram framing). */
+        unsigned slot=TASK.fds->entries[fd].slot;
+        const bool tcp=nas_lwip_socket_type(slot)==NAS_LWIP_BRIDGE_TCP;
+        if(flags & ~(0x40ULL|0x4000ULL|(tcp?0x8000ULL:0ULL)))
+            return (uint64_t)-EOPNOTSUPP;
         if(destination) {
-            unsigned slot=TASK.fds->entries[fd].slot;
             if(nas_lwip_socket_type(slot)!=NAS_LWIP_BRIDGE_UDP)
                 return (uint64_t)-EISCONN;
             struct nas_ipv4_endpoint ep;
