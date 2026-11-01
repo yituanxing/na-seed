@@ -3,6 +3,7 @@
 #include "../kernel/task/kthread.h"
 #include "../kernel/fd.h"
 #include "../kernel/drivers/port/net.h"
+#include "../kernel/errno.h"
 #include "lwip/sys.h"
 #include <assert.h>
 #include <stdint.h>
@@ -12,9 +13,11 @@
 extern bool nas_lwip_guest_boot(void);
 static uint64_t now_ns;
 static unsigned scans,transmitted,polls,delivered;
+static int next_poll_error;
 static bool inbound_pending=true;
 uint64_t nas_arch_monotonic_ns(void){return now_ns;}
 void nas_print(const char *s){fputs(s,stdout);}
+void nas_dec(uint64_t n){printf("%llu",(unsigned long long)n);}
 __attribute__((noreturn)) void nas_arch_halt(void){abort();}
 void *nas_heap_calloc(size_t n,size_t size){return calloc(n,size);}
 bool nas_heap_free(void *p){free(p);return true;}
@@ -32,6 +35,7 @@ static int poll(void *ctx,uint32_t budget,nas_netdev_rx receive,void *consumer){
  (void)ctx;
  assert(budget==8);
  polls++;
+ if(next_poll_error){int rc=next_poll_error;next_poll_error=0;return rc;}
  if(!inbound_pending)return 0;
  uint8_t frame[60]={0xff,0xff,0xff,0xff,0xff,0xff,
                     0x52,0x54,0,0x12,0x34,0x56,0x08,0x06};
@@ -71,5 +75,17 @@ int main(void){
  for(unsigned i=0;i<4 && polls<3;i++)
      assert(nas_kthread_run(1)==1); /* user-scheduler slices may interleave */
  assert(polls>=3);
- puts("[LWIP NATIVE BOOT PASS] arbitrary NIC name discovery, native tcpip/DHCP, bounded RX worker, IRQ wake, deadline fallback, pins");
+ /* A real driver can hold the shared TX/RX owner or exhaust pbufs. Neither
+  * event is permanent NIC failure, and both must preserve the live netif. */
+ const int transient_errors[]={-EBUSY,-ENOBUFS,-ENOMEM};
+ for(unsigned error=0;error<sizeof(transient_errors)/sizeof(transient_errors[0]);error++){
+     const unsigned previous=polls;
+     next_poll_error=transient_errors[error];
+     nas_netdev_notify_rx(&eth);
+     for(unsigned attempt=0;attempt<8 && polls==previous;attempt++)
+         assert(nas_kthread_run(1)==1);
+     assert(polls>previous && next_poll_error==0);
+     assert(eth.registered && eth.refs==1 && eth.rx_wake);
+ }
+ puts("[LWIP NATIVE BOOT PASS] arbitrary NIC discovery, DHCP, IRQ/deadline, transient RX backpressure, pins");
 }

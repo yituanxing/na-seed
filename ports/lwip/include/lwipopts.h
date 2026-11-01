@@ -12,6 +12,7 @@
 #define LWIP_SOCKET 0
 #define LWIP_ERRNO_INCLUDE <nas_lwip_errno.h>
 #define LWIP_NETIF_API 1
+#define LWIP_NETIF_STATUS_CALLBACK 1 /* verify DHCP lease, not DHCP start */
 #define LWIP_IPV4 1
 #define LWIP_IPV6 0
 #define LWIP_DHCP 1

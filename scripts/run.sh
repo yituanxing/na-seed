@@ -18,6 +18,12 @@ if [ -n "${NAS_VIRTIO_BLK_IMAGE:-}" ]; then
 else
     set --
 fi
+if [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ]; then
+    # Opt-in real modern PCI NIC with QEMU user/slirp DHCP and host gateway.
+    # Default QEMU hardware stays unchanged for all historical OS gates.
+    set -- "$@" -netdev user,id=naseed_net \
+        -device virtio-net-pci,netdev=naseed_net,disable-legacy=on
+fi
 exec qemu-system-x86_64 -M q35 -m "${NAS_ACCEPTANCE_QEMU_RAM:-256M}" -cpu qemu64 \
     -display none -monitor none -serial stdio -no-reboot -no-shutdown \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \

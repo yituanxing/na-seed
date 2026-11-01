@@ -24,7 +24,7 @@ cleanup() {
     if [ "$result" -ne 0 ]; then
         busy printf '[M141 SYSTEM DIAG] %s exit=%s\n' "$case_name" "$result"
         case "$case_name" in
-          ipc-shared|ipc-semaphore|exch-files|iperf3-loopback|ncat-loopback)
+          ipc-shared|ipc-semaphore|exch-files|iperf3-loopback|ncat-loopback|ncat-wire)
             # These fixtures own their files; never dump arbitrary user
             # paths. Preserve only small, bounded original-program output.
             for diagnostic in details removed error out a b server.err server client.json; do
@@ -190,6 +190,14 @@ case "$case_name" in
     busy sleep 1
     busy printf 'M141_TCP_REQUEST\n' | busy timeout 10 "$exe" -4 --recv-only 127.0.0.1 15411 > "$work/client"
     busy grep -Fxq M141_TCP_REPLY "$work/client" ;;
+  ncat-wire)
+    exe=$(original_elf /usr/bin/ncat)
+    # 10.0.2.2 is QEMU user-mode networking's host gateway, not lo.
+    # The host HTTP service supplies README.md; it is absent from guest CPIO.
+    busy printf 'GET /README.md HTTP/1.0\r\nHost: 10.0.2.2\r\n\r\n' |
+      busy timeout 15 "$exe" -4 10.0.2.2 15413 > "$work/client"
+    busy grep -Fq 'HTTP/1.0 200 OK' "$work/client"
+    busy grep -Fq 'An operating system grown by real software.' "$work/client" ;;
   iperf3-loopback)
     exe=$(original_elf /usr/bin/iperf3)
     "$exe" -4 -s -1 -p 15412 > "$work/server" 2> "$work/server.err" &

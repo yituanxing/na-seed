@@ -18,6 +18,7 @@
 static uint64_t now_ns;
 uint64_t nas_arch_monotonic_ns(void){return now_ns;}
 void nas_print(const char *s){fputs(s,stdout);}
+void nas_dec(uint64_t n){printf("%llu",(unsigned long long)n);}
 __attribute__((noreturn)) void nas_arch_halt(void){abort();}
 void *nas_heap_calloc(size_t n,size_t size){return calloc(n,size);}
 bool nas_heap_free(void *p){free(p);return true;}

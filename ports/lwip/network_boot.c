@@ -6,10 +6,13 @@
 #include "../../kernel/task/k_sync.h"
 #include "../../kernel/task/kthread.h"
 #include "../../kernel/drivers/serial.h"
+#include "../../kernel/errno.h"
 #include "../../kernel/lib/string.h"
 #include "../../kernel/time/clock.h"
 #include "lwip/tcpip.h"
 #include "lwip/sys.h"
+#include "lwip/dhcp.h"
+#include "lwip/ip4_addr.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -39,11 +42,29 @@ static void detach_failed_netif(void *ctx){
  (void)nas_netdev_set_rx_wake(network.ethernet.device,NULL,NULL);
  (void)nas_lwip_eth_core_detach(&network.ethernet);
 }
+/* Executed by lwIP on its core thread, after DHCP has actually assigned an
+ * address. Merely starting DHCP is not evidence of a working NIC/lease. */
+static void network_status(struct netif *netif){
+ if(!netif || !netif_is_up(netif) || !netif_is_link_up(netif) ||
+    !dhcp_supplied_address(netif))return;
+ const ip4_addr_t *addr=netif_ip4_addr(netif);
+ if(ip4_addr_isany_val(*addr))return;
+ nas_print("[LWIP DHCP BOUND] addr=");
+ nas_dec(ip4_addr1(addr));nas_print(".");
+ nas_dec(ip4_addr2(addr));nas_print(".");
+ nas_dec(ip4_addr3(addr));nas_print(".");
+ nas_dec(ip4_addr4(addr));nas_print("\n");
+}
 static void receive_worker(void *ctx){
  (void)ctx;
  if(!nas_ksem_wait(&network.rx_wakeup))return;
  while(!network.stop && network.ethernet.attached){
      int received=nas_lwip_eth_poll(&network.ethernet,NAS_NET_RX_BUDGET);
+     /* TX and RX share the U-Boot queue owner lock. Contention or pbuf
+      * pressure is not an unplugged/poisoned NIC: retry after the normal
+      * IRQ-or-deadline wait rather than permanently detaching the netif. */
+     if(received==-EBUSY || received==-EAGAIN ||
+        received==-ENOBUFS || received==-ENOMEM)received=0;
      if(received<0){
          nas_print("[LWIP] NIC RX failed; detaching netif\n");
          network.stop=true;
@@ -81,6 +102,7 @@ static void tcpip_ready(void *unused){
          (void)nas_lwip_eth_core_detach(&network.ethernet);
          nas_print("[LWIP] cannot install NIC RX notification\n");
      }else{
+         netif_set_status_callback(&network.ethernet.interface,network_status);
          nas_print("[LWIP] native ");nas_print(network.device_name);
          nas_print(" attached; DHCP started\n");
      }

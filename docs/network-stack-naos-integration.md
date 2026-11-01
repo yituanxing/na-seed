@@ -190,6 +190,16 @@ x86-64, RV64 and AArch64 target C syntax gates.
 
 The remaining operating-system constraints are explicit:
 
+The first isolated **real wire gate** is now scripted as
+`sh scripts/probe-lwip-virtio-wire-smoke.sh`: it opts into a modern x86
+VirtIO-Net PCI device and QEMU user networking without changing the default
+QEMU hardware, waits for an actual lwIP DHCP-bound callback, and runs the
+unchanged signed Alpine Ncat against a host HTTP service at the slirp gateway.
+It requires the guest to receive the host-only README contents over TCP and
+reports a failure if the NIC, DHCP lease or reply is missing. **This is an
+unverified candidate until its real QEMU workflow succeeds**, not a claimed
+wire or DHCP PASS. The historical loopback smoke remains separate.
+
 1. `sys_mbox_new` rejects requests above the *real* `nas_kmailbox` capacity
    of 8, and `tcpip_mbox`/Netconn queue sizes are configured at 8. This is
    an honest bounded first port, not a throughput claim. Inadequate worker
@@ -208,7 +218,12 @@ The remaining operating-system constraints are explicit:
    to a **10ms suspended wait** (not a busy spin) when transport IRQ routing
    is absent. It polls at most 8 frames per slice, copies borrowed DMA frame
    bytes into pbufs and uses `tcpip_input`. Host tests verify actual boot
-   callback, DHCP TX, RX and event/time wake. Wiring/acknowledging physical
+   callback, DHCP TX, RX and event/time wake. Transient RX `-EBUSY`,
+   `-EAGAIN`, `-ENOBUFS` and `-ENOMEM` now retry after the existing
+   IRQ/deadline wait instead of incorrectly detaching an otherwise live NIC;
+   true driver failure still detaches. TX `-EBUSY` maps to lwIP `ERR_MEM`.
+   The host boot fixture injects each recoverable RX failure.
+   Wiring/acknowledging physical
    PCI/MMIO interrupts, real QEMU DHCP, clean worker cancellation and
    full user Socket ABI remain pending. `lo` is official lwIP-owned.
 5. The native `netconn_bridge.c` is now host-tested with **real upstream

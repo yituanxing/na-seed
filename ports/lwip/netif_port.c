@@ -17,7 +17,8 @@ static err_t transmit_frame(struct netif *netif,struct pbuf *p){
  uint8_t bytes[NAS_LWIP_ETH_FRAME_MAX];
  if(pbuf_copy_partial(p,bytes,p->tot_len,0)!=p->tot_len)return ERR_IF;
  int rc=nas_netdev_transmit(e->device,bytes,p->tot_len);
- return rc==0?ERR_OK:(rc==-EAGAIN || rc==-ENOBUFS ? ERR_MEM:ERR_IF);
+ return rc==0?ERR_OK:(rc==-EBUSY || rc==-EAGAIN || rc==-ENOBUFS
+                     ? ERR_MEM:ERR_IF);
 }
 static err_t initialize_netif(struct netif *netif){
  struct nas_lwip_eth *e=netif?netif->state:NULL;
