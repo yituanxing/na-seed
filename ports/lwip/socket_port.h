@@ -40,6 +40,16 @@ bool nas_lwip_socket_is_slot(unsigned slot);
 int nas_lwip_socket_type(unsigned slot); /* TCP/UDP enum, or -EBADF */
 bool nas_lwip_socket_is_connected(unsigned slot);
 bool nas_lwip_socket_is_listening(unsigned slot);
+/* TCP recvfrom() can report the established peer without another native
+ * request. Active CONNECT caches its target after successful completion;
+ * the syscall adapter passes an accepted child's REAL bridge peer after
+ * adoption. UDP packet sources are not inferred from a connected target.
+ * snapshot returns 0 on established TCP, -ENOTCONN if no TCP peer is known,
+ * and -EOPNOTSUPP for UDP. The setter is idempotent only for an equal peer. */
+int nas_lwip_socket_peer_snapshot(unsigned slot,
+                                  struct nas_lwip_bridge_address *out);
+int nas_lwip_socket_port_set_peer(unsigned slot,
+                                  struct nas_lwip_bridge_address peer);
 int nas_lwip_socket_bind(unsigned slot,struct nas_lwip_bridge_address address);
 int nas_lwip_socket_connect(unsigned slot,struct nas_lwip_bridge_address address);
 int nas_lwip_socket_listen(unsigned slot,unsigned backlog);

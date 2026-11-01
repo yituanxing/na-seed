@@ -250,6 +250,8 @@ int main(void) {
     finish_control(21,0);
     named=name_slot(21,true);
     assert(named.ipv4==UINT32_C(0x7f000001) && named.port==38007);
+    assert(nas_lwip_socket_peer_snapshot(21,&named)==-EOPNOTSUPP);
+    assert(nas_lwip_socket_port_set_peer(21,lo(38007))==-EINVAL);
 
     char payload[]="copied native UDP payload";
     const unsigned length=(unsigned)sizeof(payload)-1;
@@ -281,8 +283,12 @@ int main(void) {
     assert(named.ipv4==UINT32_C(0x7f000001) && named.port==38017);
     assert(nas_lwip_socket_listen(30,3)==0);
     finish_control(30,0);
+    assert(nas_lwip_socket_peer_snapshot(30,&named)==-ENOTCONN);
+    assert(nas_lwip_socket_port_set_peer(30,lo(38017))==-EINVAL);
     assert((int64_t)ops->read_plan(30,1)==-ENOTCONN);
     connect_slot(31,38017);
+    assert(nas_lwip_socket_peer_snapshot(31,&named)==0);
+    assert(named.ipv4==UINT32_C(0x7f000001) && named.port==38017);
     assert(ops->poll_description(31,4U)&4U);
 
     /* The syscall layer already holds a lease for the accepted child slot.
@@ -293,6 +299,12 @@ int main(void) {
     assert(accepted.slot==32);
     assert(peer.ipv4==UINT32_C(0x7f000001) && peer.port!=0);
     assert(nas_lwip_socket_port_adopt(accepted)==0);
+    assert(nas_lwip_socket_peer_snapshot(32,&named)==-ENOTCONN);
+    assert(nas_lwip_socket_port_set_peer(32,peer)==0);
+    assert(nas_lwip_socket_port_set_peer(32,peer)==0);
+    assert(nas_lwip_socket_port_set_peer(32,lo(12345))==-EALREADY);
+    assert(nas_lwip_socket_peer_snapshot(32,&named)==0);
+    assert(named.ipv4==peer.ipv4 && named.port==peer.port);
     nas_open_files[32].lease_token=0; /* fixture's atomic lease commit */
     assert(nas_lwip_socket_is_slot(32));
     named=name_slot(32,true);
@@ -394,6 +406,9 @@ int main(void) {
     /* The lease remains allocated while the syscall adopts the Netconn. */
     assert(prefetch_ticket().token==prefetched_lease.token);
     assert(nas_lwip_socket_port_adopt(accepted)==0);
+    assert(nas_lwip_socket_port_set_peer(prefetched_lease.slot,peer)==0);
+    assert(nas_lwip_socket_peer_snapshot(prefetched_lease.slot,&named)==0);
+    assert(named.ipv4==peer.ipv4 && named.port==peer.port);
     nas_open_files[prefetched_lease.slot].lease_token=0;
     nas_open_files[prefetched_lease.slot].status_flags=2;
     nas_open_files[prefetched_lease.slot].ops=ops;

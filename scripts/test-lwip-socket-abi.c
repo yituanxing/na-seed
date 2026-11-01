@@ -59,12 +59,27 @@ static bool abi_name_peer[NAS_OPEN_FILE_LIMIT];
 static bool abi_reuse_enabled[NAS_OPEN_FILE_LIMIT];
 static unsigned abi_shutdown_how[NAS_OPEN_FILE_LIMIT];
 static unsigned abi_getnames,abi_reuses,abi_shutdowns;
+static uint8_t abi_rx_length[NAS_OPEN_FILE_LIMIT];
+static uint8_t abi_rx_bytes[NAS_OPEN_FILE_LIMIT][16];
 
 static void abi_release(unsigned slot) {
     assert(slot<NAS_OPEN_FILE_LIMIT && abi_live[slot]);
     abi_live[slot]=false;abi_releases++;
 }
-static const struct nas_file_ops abi_ops={.release=abi_release};
+static uint64_t abi_read_plan(unsigned slot,uint64_t count) {
+    assert(nas_lwip_socket_is_slot(slot));
+    if(!abi_rx_length[slot])return (uint64_t)-EAGAIN;
+    return count<abi_rx_length[slot]?count:abi_rx_length[slot];
+}
+static uint64_t abi_read(unsigned slot,uint8_t *out,uint64_t count) {
+    assert(nas_lwip_socket_is_slot(slot) && count<=abi_rx_length[slot]);
+    memcpy(out,abi_rx_bytes[slot],(size_t)count);
+    abi_rx_length[slot]-=(uint8_t)count;
+    memmove(abi_rx_bytes[slot],abi_rx_bytes[slot]+count,abi_rx_length[slot]);
+    return count;
+}
+static const struct nas_file_ops abi_ops={.release=abi_release,
+    .read_plan=abi_read_plan,.read=abi_read};
 const struct nas_file_ops *nas_lwip_socket_port_ops(void){return &abi_ops;}
 int nas_lwip_socket_open(unsigned slot,enum nas_lwip_bridge_type type) {
     assert(slot<NAS_OPEN_FILE_LIMIT && nas_open_files[slot].refcount);
@@ -83,6 +98,20 @@ int nas_lwip_socket_type(unsigned slot) {
 }
 bool nas_lwip_socket_is_listening(unsigned slot) {
     return nas_lwip_socket_is_slot(slot) && abi_listening[slot];
+}
+int nas_lwip_socket_peer_snapshot(unsigned slot,
+                                  struct nas_lwip_bridge_address *out) {
+    if(!nas_lwip_socket_is_slot(slot) || !out)return -EBADF;
+    if(abi_type[slot]!=NAS_LWIP_BRIDGE_TCP)return -EOPNOTSUPP;
+    if(!abi_peer[slot].port)return -ENOTCONN;
+    *out=abi_peer[slot];
+    return 0;
+}
+int nas_lwip_socket_port_set_peer(unsigned slot,
+                                  struct nas_lwip_bridge_address peer) {
+    if(!nas_lwip_socket_is_slot(slot))return -EBADF;
+    abi_peer[slot]=peer;
+    return 0;
 }
 int nas_lwip_socket_port_take_error(unsigned slot) {
     if(!nas_lwip_socket_is_slot(slot))return -EBADF;
@@ -278,6 +307,28 @@ int main(void) {
         tcp_slot,nameaddr,namelen,true)==-EFAULT);
     can_write[0]=true;
     assert(!abi_control[tcp_slot]);
+
+    /* Real native AF_INET TCP recvfrom can return source sockaddr, as Ncat
+     * does even on a connected stream. It must retain buffer preflight and
+     * use the existing FileOps read, not a simulated IPv4 packet provider. */
+    const uint64_t rxbuf=TEST_BASE+1400,srcaddr=TEST_BASE+1500;
+    const uint64_t srclen=TEST_BASE+1600;
+    uint32_t source_capacity=5;
+    memcpy(user_ptr(srclen),&source_capacity,4);
+    memcpy(abi_rx_bytes[tcp_slot],"PONG",4);abi_rx_length[tcp_slot]=4;
+    can_write[0]=false;
+    assert((int64_t)sys_ipv4_recvfrom(
+        tcp_fd,rxbuf,4,0,srcaddr,srclen)==-EFAULT);
+    assert(abi_rx_length[tcp_slot]==4);
+    can_write[0]=true;
+    assert(sys_ipv4_recvfrom(tcp_fd,rxbuf,4,0,srcaddr,srclen)==4);
+    assert(!memcmp(user_ptr(rxbuf),"PONG",4));
+    assert(abi_rx_length[tcp_slot]==0);
+    uint32_t source_actual=0;
+    memcpy(&source_actual,user_ptr(srclen),4);assert(source_actual==16);
+    const uint8_t source_expected[5]={2,0,0x87,0x07,127};
+    assert(!memcmp(user_ptr(srcaddr),source_expected,5));
+    assert((int64_t)sys_ipv4_recvfrom(tcp_fd,rxbuf,4,0,srcaddr,0)==-EFAULT);
 
     /* SO_REUSEADDR and SHUTDOWN both wait for a native control result.
      * Unsupported or invalid controls must not pretend to have succeeded. */

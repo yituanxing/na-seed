@@ -467,6 +467,16 @@ publish:
         (void)nas_fd_slot_lease_cancel(lease);
         return (uint64_t)(int64_t)rc;
     }
+    /* The native ACCEPT bridge returned the actual peer sockaddr. Retain it
+     * with the very same OpenFile being published, so subsequent TCP
+     * recvfrom(..., sockaddr*) never needs to call Netconn on a Task. */
+    rc=nas_lwip_socket_port_set_peer(lease.slot,peer);
+    if(rc) {
+        nas_lwip_socket_port_ops()->release(lease.slot);
+        if(task_owned)lwip_accept_disarm();
+        (void)nas_fd_slot_lease_cancel(lease);
+        return (uint64_t)(int64_t)rc;
+    }
     rc=nas_fd_slot_lease_commit(lease,nas_current_task,nextfd,FD_SOCKET,
                                 2ULL|(flags&0x800ULL),
                                 (flags&0x80000ULL)!=0,
@@ -935,8 +945,38 @@ static uint64_t sys_ipv4_recvfrom(uint64_t fd,uint64_t buffer,
 #ifdef NAS_ENABLE_LWIP
     if(lwip_fd(fd)) {
         if(flags)return (uint64_t)-EOPNOTSUPP;
-        if(address || length_ptr)return (uint64_t)-EOPNOTSUPP;
-        return nas_fs_fd_read(fd,buffer,length);
+        if(address && !length_ptr)return (uint64_t)-EFAULT;
+        uint32_t capacity=0;
+        uint8_t peer_bytes[16];
+        if(address) {
+            /* A connected TCP recvfrom may legitimately request its peer
+             * sockaddr. The native worker/accept path already captured that
+             * endpoint in the OpenFile; never use the fake-loopback state or
+             * call Netconn from this userspace syscall. UDP requires true
+             * per-datagram RX metadata and stays explicitly unsupported. */
+            struct nas_lwip_bridge_address peer={0};
+            int rc=nas_lwip_socket_peer_snapshot(
+                TASK.fds->entries[fd].slot,&peer);
+            if(rc)return (uint64_t)(int64_t)rc;
+            if(!nas_user_read_bytes(length_ptr,(uint8_t *)&capacity,4))
+                return (uint64_t)-EFAULT;
+            unsigned n=capacity>16?16U:capacity;
+            if(!nas_user_prepare_write(length_ptr,4) ||
+               (n && !nas_user_prepare_write(address,n)))
+                return (uint64_t)-EFAULT;
+            ipv4_sockaddr((struct nas_ipv4_endpoint){peer.ipv4,peer.port},
+                          peer_bytes);
+        }
+        uint64_t received=nas_fs_fd_read(fd,buffer,length);
+        if((int64_t)received<0)return received;
+        if(address) {
+            const uint32_t actual=16;
+            unsigned n=capacity>16?16U:capacity;
+            if((n && !nas_user_write_bytes(address,peer_bytes,n)) ||
+               !nas_user_write_bytes(length_ptr,(const uint8_t *)&actual,4))
+                return (uint64_t)-EFAULT;
+        }
+        return received;
     }
 #endif
     if(!ipv4_fd(fd))return (uint64_t)-EBADF;

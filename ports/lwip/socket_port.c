@@ -31,7 +31,7 @@ struct port_socket {
     bool owned,connected,connecting,listening,queued_control;
     bool connect_result_pending;
     bool accept_owned,accept_cancelling,prefetch_owned;
-    bool shut_read,shut_write;
+    bool shut_read,shut_write,peer_known;
     struct nas_fd_slot_lease accept_lease;
     struct nas_fd_slot_lease prefetch_lease;
     bool rx_valid,rx_eof,rx_truncated;
@@ -41,6 +41,7 @@ struct port_socket {
     struct nas_lwip_bridge_result control_result;
     struct nas_lwip_bridge_request control_request;
     struct nas_lwip_bridge_address connect_address;
+    struct nas_lwip_bridge_address peer_address;
     uint8_t rx[NAS_LWIP_BRIDGE_DATA];
     uint16_t rx_length,rx_position;
     uint8_t tx[NAS_LWIP_BRIDGE_DATA];
@@ -101,6 +102,10 @@ static void finish(struct port_socket *s) {
                 s->connected=true;
                 s->connecting=false;
                 s->connect_result=0;
+                if(!s->peer_known) {
+                    s->peer_address=s->control_request.address;
+                    s->peer_known=true;
+                }
             } else if(result.status==-EINPROGRESS ||
                       result.status==-EALREADY) {
                 s->connected=false;
@@ -158,6 +163,10 @@ static void finish(struct port_socket *s) {
             s->connecting=false;
             s->connected=true;
             s->connect_result=0;
+            if(!s->peer_known) {
+                s->peer_address=s->connect_address;
+                s->peer_known=true;
+            }
         } else if(result.status==-EALREADY || result.status==-EINPROGRESS) {
             s->tx_retry_at=after_retry();
         } else {
@@ -579,6 +588,34 @@ int nas_lwip_socket_type(unsigned slot) {
 bool nas_lwip_socket_is_connected(unsigned slot) {
     struct port_socket *s=socket_at(slot);
     return s && s->connected && !s->connecting;
+}
+int nas_lwip_socket_peer_snapshot(unsigned slot,
+                                  struct nas_lwip_bridge_address *out) {
+    struct port_socket *s=socket_at(slot);
+    if(!s)return -EBADF;
+    if(!out)return -EINVAL;
+    if(s->type!=NAS_LWIP_BRIDGE_TCP)return -EOPNOTSUPP;
+    int rc=check(s);
+    if(rc)return rc;
+    if(!s->connected || s->connecting || !s->peer_known)return -ENOTCONN;
+    *out=s->peer_address;
+    return 0;
+}
+int nas_lwip_socket_port_set_peer(unsigned slot,
+                                  struct nas_lwip_bridge_address peer) {
+    struct port_socket *s=socket_at(slot);
+    if(!s)return -EBADF;
+    if(s->type!=NAS_LWIP_BRIDGE_TCP || !s->connected || s->listening ||
+       s->connecting || !peer.port)return -EINVAL;
+    /* Accepted TCP's actual peer was obtained by the native bridge's
+     * netconn_getaddr before adoption. TCP peers cannot subsequently
+     * change, including across read/recvfrom calls. */
+    if(s->peer_known)
+        return s->peer_address.ipv4==peer.ipv4 &&
+               s->peer_address.port==peer.port ? 0:-EALREADY;
+    s->peer_known=true;
+    s->peer_address=peer;
+    return 0;
 }
 bool nas_lwip_socket_is_listening(unsigned slot) {
     struct port_socket *s=socket_at(slot);

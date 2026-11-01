@@ -126,6 +126,18 @@ int nas_lwip_socket_port_adopt(struct nas_lwip_bridge_id accepted) {
     assert(nas_fd_slot_lease_valid(active_lease));
     return 0;
 }
+int nas_lwip_socket_port_set_peer(unsigned slot,
+                                  struct nas_lwip_bridge_address peer) {
+    assert(slot==active_lease.slot && nas_fd_slot_lease_valid(active_lease));
+    assert(peer.ipv4==actual_peer.ipv4 && peer.port==actual_peer.port);
+    return 0;
+}
+int nas_lwip_socket_peer_snapshot(unsigned slot,
+                                  struct nas_lwip_bridge_address *peer) {
+    assert(slot==LISTENER_SLOT && peer);
+    *peer=actual_peer;
+    return 0;
+}
 int nas_lwip_bridge_release(struct nas_lwip_bridge_id id) {
     assert(id.generation);
     ++bridge_release_count;
