@@ -82,6 +82,96 @@ static struct nas_lwip_bridge_id open_conn(unsigned slot,
  assert(finish(id).status==0);
  return id;
 }
+/* Real upstream pool capacity: opening 32 UDP or TCP Netconns must create
+ * native PCBs, reject the 33rd admission, and allow the SAME File identities
+ * to be reclaimed only after asynchronous native final-close. Keep the
+ * eight-command worker ring separately tested above/below. */
+static void capacity_round(enum nas_lwip_bridge_type type){
+ struct nas_lwip_bridge_id ids[NAS_LWIP_BRIDGE_ACTIVE_LIMIT];
+ assert(NAS_LWIP_BRIDGE_ACTIVE_LIMIT==MEMP_NUM_NETCONN);
+ assert(NAS_LWIP_BRIDGE_ACTIVE_LIMIT<=NAS_LWIP_BRIDGE_SLOTS-64U);
+ for(unsigned i=0;i<NAS_LWIP_BRIDGE_ACTIVE_LIMIT;i++)
+     ids[i]=open_conn(64+i,type);
+ struct nas_lwip_bridge_id overflow={0};
+ assert(nas_lwip_bridge_open(64+NAS_LWIP_BRIDGE_ACTIVE_LIMIT,
+                             type,&overflow)==-ENFILE);
+ /* Releasing a File invalidates its public ID immediately, but must not
+  * prematurely free an upstream MEMP object still owned by the worker. */
+ for(unsigned i=0;i<8;i++){
+     assert(nas_lwip_bridge_release(ids[i])==0);
+     assert(!nas_lwip_bridge_alive(ids[i]));
+ }
+ assert(nas_lwip_bridge_open(64,type,&overflow)==-ENFILE);
+ for(unsigned tries=0;tries<600;tries++)
+     if(nas_kthread_run(1)==0)break;
+ for(unsigned i=0;i<8;i++){
+     struct nas_lwip_bridge_id reopened=open_conn(64+i,type);
+     assert(reopened.generation!=ids[i].generation);
+     ids[i]=reopened;
+ }
+ for(unsigned i=0;i<NAS_LWIP_BRIDGE_ACTIVE_LIMIT;i++)
+     assert(nas_lwip_bridge_release(ids[i])==0);
+ for(unsigned tries=0;tries<600;tries++)
+     if(nas_kthread_run(1)==0)break;
+ for(unsigned i=0;i<NAS_LWIP_BRIDGE_ACTIVE_LIMIT;i++)
+     assert(nas_lwip_bridge_slot_available(64+i));
+}
+/* A working HTTP-style server consumes two Netconns per TCP peer. Exercise
+ * more than the old eight-Netconn limit with independent real loopback
+ * connections and payload delivery, not merely unbound PCB allocations. */
+static void concurrent_tcp_round(void){
+ enum { PEERS=12 };
+ struct nas_lwip_bridge_id listener=open_conn(60,NAS_LWIP_BRIDGE_TCP);
+ assert(command(listener,NAS_LWIP_BRIDGE_BIND,lo(37109),0,NULL,0).status==0);
+ assert(command(listener,NAS_LWIP_BRIDGE_LISTEN,lo(0),0,NULL,0).status==0);
+ struct nas_lwip_bridge_id clients[PEERS],accepted[PEERS];
+ for(unsigned i=0;i<PEERS;i++){
+     clients[i]=open_conn(61+i,NAS_LWIP_BRIDGE_TCP);
+     struct nas_lwip_bridge_result r=command(clients[i],
+         NAS_LWIP_BRIDGE_CONNECT,lo(37109),0,NULL,0);
+     assert(r.status==0 || r.status==-EINPROGRESS);
+     for(unsigned tries=0;tries<120 &&
+         !nas_lwip_bridge_listener_readable(listener);tries++)
+         assert(nas_kthread_run(1)==1);
+     assert(nas_lwip_bridge_listener_readable(listener));
+     struct nas_fd_slot_lease lease=lease_open(80+i);
+     accepted[i]=(struct nas_lwip_bridge_id){0};
+     for(unsigned tries=0;tries<120;tries++){
+         r=command(listener,NAS_LWIP_BRIDGE_ACCEPT,lo(0),80+i,NULL,0);
+         if(!r.status){accepted[i]=r.accepted;break;}
+         assert(r.status==-EAGAIN && nas_kthread_run(1)==1);
+     }
+     assert(accepted[i].slot==80+i && accepted[i].generation);
+     assert(nas_open_files[80+i].lease_token==lease.token);
+     nas_open_files[80+i].lease_token=0; /* native child now owns this File */
+ }
+ for(unsigned i=0;i<PEERS;i++){
+     char payload[3]={'P',(char)('0'+i/10),(char)('0'+i%10)};
+     struct nas_lwip_bridge_result r={0};
+     for(unsigned tries=0;tries<120;tries++){
+         r=command(clients[i],NAS_LWIP_BRIDGE_SEND,lo(0),0,payload,3);
+         if(!r.status)break;
+         assert((r.status==-EAGAIN || r.status==-EINPROGRESS) &&
+                nas_kthread_run(1)==1);
+     }
+     assert(!r.status && r.length==3);
+     for(unsigned tries=0;tries<120;tries++){
+         r=command(accepted[i],NAS_LWIP_BRIDGE_RECV,lo(0),0,NULL,3);
+         if(!r.status && r.length)break;
+         assert(r.status==-EAGAIN && nas_kthread_run(1)==1);
+     }
+     assert(!r.status && r.length==3 && !memcmp(r.bytes,payload,3));
+ }
+ for(unsigned i=0;i<PEERS;i++){
+     assert(nas_lwip_bridge_release(clients[i])==0);
+     assert(nas_lwip_bridge_release(accepted[i])==0);
+     nas_open_files[80+i]=(struct nas_open_file){0};
+ }
+ assert(nas_lwip_bridge_release(listener)==0);
+ for(unsigned tries=0;tries<600;tries++)
+     if(nas_kthread_run(1)==0)break;
+ puts("[LWIP MULTIPEER PASS] 12 genuine simultaneous loopback TCP pairs and exact bidirectional socket ownership");
+}
 int main(void){
  nas_kthread_system_init();
  sys_init();
@@ -115,6 +205,10 @@ int main(void){
  unsigned drained=0;
  for(;drained<200;drained++)if(nas_kthread_run(1)==0)break;
  assert(drained<200);
+
+ capacity_round(NAS_LWIP_BRIDGE_UDP);
+ capacity_round(NAS_LWIP_BRIDGE_TCP);
+ puts("[LWIP CAPACITY PASS] 32 concurrent genuine UDP PCBs, 32 TCP PCBs, 33rd refused, async close/reopen generation-safe");
 
  /* A final close before OPEN reaches lwIP must not leak a Netconn or allow
   * premature reuse of the same global OpenFile identity. */
@@ -421,6 +515,7 @@ int main(void){
          assert(replacement.generation!=udp_server.generation);
          assert(finish(replacement).status==0);
          assert(nas_lwip_bridge_release(replacement)==0);
+         concurrent_tcp_round();
          puts("[LWIP NETCONN BRIDGE PASS] real upstream UDP/TCP, copied commands, async native Netconn, FD-slot generation, final release");
          return 0;
      }

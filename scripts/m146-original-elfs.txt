@@ -1,0 +1,26 @@
+# Twenty independently linked Netpbm conversion/filter programs.
+usr/bin/pamtofits
+usr/bin/pamtogif
+usr/bin/pamtohtmltbl
+usr/bin/pamtosvg
+usr/bin/pamtotga
+usr/bin/pamtouil
+usr/bin/pamtoxvmini
+usr/bin/pbmtoascii
+usr/bin/pbmtopgm
+usr/bin/pbmtosunicon
+usr/bin/pbmtoxbm
+usr/bin/pbmtoepsi
+usr/bin/pnmtopalm
+usr/bin/pnmtops
+usr/bin/pnmtosgi
+usr/bin/pnmtorle
+usr/bin/pnmtotiffcmyk
+usr/bin/pamenlarge
+usr/bin/pamstretch
+usr/bin/pamstack
+# Four more distinct original signed Linux ELFs; no BusyBox aliases.
+usr/bin/magick
+usr/bin/php84
+usr/bin/dumpelf
+usr/bin/scanelf

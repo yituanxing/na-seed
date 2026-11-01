@@ -18,6 +18,8 @@
 
 _Static_assert(NAS_LWIP_BRIDGE_SLOTS==NAS_OPEN_FILE_LIMIT,
                "bridge identity must be one global open-description slot");
+_Static_assert(NAS_LWIP_BRIDGE_ACTIVE_LIMIT==MEMP_NUM_NETCONN,
+               "bridge admission must match the real upstream Netconn pool");
 
 /* Final close cannot wait on the Task stack. The native worker gives a
  * copied, already-admitted TCP tail a finite opportunity to enter lwIP's

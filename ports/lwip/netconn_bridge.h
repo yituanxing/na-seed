@@ -9,8 +9,8 @@
  * caller observes completion later through its owned File description.
  * This module deliberately contains no FD table or Linux sockaddr parser. */
 #define NAS_LWIP_BRIDGE_SLOTS 128U /* indexed by NAS_OPEN_FILE_LIMIT */
-#define NAS_LWIP_BRIDGE_ACTIVE_LIMIT 8U /* matches lwIP MEMP_NUM_NETCONN */
-#define NAS_LWIP_BRIDGE_QUEUE 8U
+#define NAS_LWIP_BRIDGE_ACTIVE_LIMIT 32U /* matches lwIP MEMP_NUM_NETCONN */
+#define NAS_LWIP_BRIDGE_QUEUE 8U /* bounded native work queue, not socket count */
 #define NAS_LWIP_BRIDGE_DATA 512U
 /* An asynchronous native close retains the old bridge generation even after
  * the former OpenFile refcount fell to zero; socket admission must not reuse

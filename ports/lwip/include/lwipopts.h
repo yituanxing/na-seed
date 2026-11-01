@@ -1,8 +1,8 @@
 #ifndef NASEED_LWIPOPTS_H
 #define NASEED_LWIPOPTS_H
 /* The official stack does ALL IP/ARP/ICMP/DHCP/DNS/TCP/UDP work.
- * Keep capacity <= actual NaSeed kernel k_mailbox (8 slots) until a larger
- * shared OS mailbox replaces it; never lie about a requested queue size. */
+ * Per-mailbox queue capacities must remain <= NaSeed k_mailbox (8 entries).
+ * Concurrent Netconns/PCBs are independent memory pools, not mailboxes. */
 #define NO_SYS 0
 #define SYS_LIGHTWEIGHT_PROT 1
 #define LWIP_COMPAT_MUTEX 1
@@ -31,12 +31,19 @@
 #define DEFAULT_UDP_RECVMBOX_SIZE 8
 #define DEFAULT_RAW_RECVMBOX_SIZE 8
 #define DEFAULT_ACCEPTMBOX_SIZE 8
-#define MEMP_NUM_NETCONN 8
+#define MEMP_NUM_NETCONN 32
+/* Back each admitted Netconn with a real upstream PCB. Without these pools,
+ * raising only MEMP_NUM_NETCONN would report sockets that cannot open. */
+#define MEMP_NUM_TCP_PCB 32
+#define MEMP_NUM_UDP_PCB 32
+#define MEMP_NUM_TCP_PCB_LISTEN 32
+#define MEMP_NUM_TCP_SEG 128
+#define PBUF_POOL_SIZE 64
 #define TCPIP_THREAD_STACKSIZE 8192
 #define TCPIP_THREAD_PRIO 1
 #define DEFAULT_THREAD_STACKSIZE 8192
 #define MEM_ALIGNMENT 8
-#define MEM_SIZE (64 * 1024)
+#define MEM_SIZE (256 * 1024)
 #define LWIP_STATS 0
 #define LWIP_DEBUG 0
 #define LWIP_CHECKSUM_ON_COPY 0
