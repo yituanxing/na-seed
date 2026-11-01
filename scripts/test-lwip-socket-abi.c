@@ -133,6 +133,11 @@ bool nas_lwip_socket_is_slot(unsigned slot) {
 int nas_lwip_socket_type(unsigned slot) {
     return nas_lwip_socket_is_slot(slot)? (int)abi_type[slot]:-EBADF;
 }
+int nas_lwip_socket_buffer_capacity(unsigned slot,bool sending) {
+    if(!nas_lwip_socket_is_slot(slot))return -EBADF;
+    if(abi_type[slot]!=NAS_LWIP_BRIDGE_TCP)return -ENOPROTOOPT;
+    return sending?1072:2144; /* pinned lwIP defaults, MSS=536 */
+}
 bool nas_lwip_socket_is_listening(unsigned slot) {
     return nas_lwip_socket_is_slot(slot) && abi_listening[slot];
 }
@@ -349,6 +354,13 @@ int main(void) {
     memcpy(&value,user_ptr(optaddr),4);assert(value==17);
     assert(sys_ipv4_getsockopt(tcp_fd,1,39,optaddr,optlen)==0);
     memcpy(&value,user_ptr(optaddr),4);assert(value==2);
+    /* The native TCP buffer introspection is derived from pinned official
+     * lwIP configuration, not a fabricated Linux-sized window. */
+    assert(sys_ipv4_getsockopt(tcp_fd,1,7,optaddr,optlen)==0);
+    memcpy(&value,user_ptr(optaddr),4);assert(value==1072);
+    assert(sys_ipv4_getsockopt(tcp_fd,1,8,optaddr,optlen)==0);
+    memcpy(&value,user_ptr(optaddr),4);assert(value==2144);
+    assert((int64_t)sys_ipv4_getsockopt(udp_fd,1,7,optaddr,optlen)==-ENOPROTOOPT);
     assert(sys_ipv4_getsockopt(tcp_fd,1,30,optaddr,optlen)==0);
     memcpy(&value,user_ptr(optaddr),4);assert(value==1);
     abi_so_error[tcp_slot]=-ECONNREFUSED;

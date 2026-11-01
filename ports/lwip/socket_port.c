@@ -16,6 +16,7 @@
 #include "../../kernel/arch/arch.h"
 #include "../../kernel/errno.h"
 #include "../../kernel/lib/string.h"
+#include "lwip/opt.h"
 
 #define PORT_POLLIN 0x0001U
 #define PORT_POLLOUT 0x0004U
@@ -662,6 +663,14 @@ bool nas_lwip_socket_is_slot(unsigned slot) {
 int nas_lwip_socket_type(unsigned slot) {
     struct port_socket *s=socket_at(slot);
     return s ? (int)s->type:-EBADF;
+}
+int nas_lwip_socket_buffer_capacity(unsigned slot,bool sending) {
+    struct port_socket *s=socket_at(slot);
+    if(!s)return -EBADF;
+    if(s->type!=NAS_LWIP_BRIDGE_TCP)return -ENOPROTOOPT;
+    /* Official lwIP's configured transport bounds, never a made-up
+     * Linux SO_SNDBUF or SO_RCVBUF capacity. */
+    return sending ? TCP_SND_BUF:TCP_WND;
 }
 bool nas_lwip_socket_is_connected(unsigned slot) {
     struct port_socket *s=socket_at(slot);

@@ -666,6 +666,12 @@ static uint64_t sys_ipv4_getsockopt(uint64_t fd,uint64_t level,
                 int error=nas_lwip_socket_port_take_error(slot);
                 value=(uint32_t)(error<0?-error:error);break;
             }
+            case 7: /* SO_SNDBUF: actual configured upstream TCP queue */
+            case 8: { /* SO_RCVBUF: actual upstream TCP window */
+                int capacity=nas_lwip_socket_buffer_capacity(slot,opt==7);
+                if(capacity<0)return (uint64_t)(int64_t)capacity;
+                value=(uint32_t)capacity;break;
+            }
             case 30:value=nas_lwip_socket_is_listening(slot)?1U:0U;break;
             case 38:value=type==NAS_LWIP_BRIDGE_TCP ? 6U:17U;break;
             case 39:value=2U;break;

@@ -180,6 +180,11 @@ int nas_lwip_socket_tcp_nodelay(unsigned slot,bool write,bool *enabled) {
     (void)enabled;
     return -EOPNOTSUPP;
 }
+int nas_lwip_socket_buffer_capacity(unsigned slot,bool sending) {
+    (void)slot;
+    (void)sending;
+    return -EOPNOTSUPP;
+}
 int nas_lwip_socket_ip_recverr(unsigned slot,bool write,bool *enabled) {
     (void)slot;
     (void)write;

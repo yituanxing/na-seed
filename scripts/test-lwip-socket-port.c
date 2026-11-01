@@ -358,6 +358,9 @@ int main(void) {
     connect_slot(31,38017);
     assert(nas_lwip_socket_peer_snapshot(31,&named)==0);
     assert(named.ipv4==UINT32_C(0x7f000001) && named.port==38017);
+    assert(nas_lwip_socket_buffer_capacity(31,true)==TCP_SND_BUF);
+    assert(nas_lwip_socket_buffer_capacity(31,false)==TCP_WND);
+    assert(nas_lwip_socket_buffer_capacity(21,true)==-ENOPROTOOPT);
     assert(ops->poll_description(31,4U)&4U);
     bool nodelay=false;
     assert(nas_lwip_socket_tcp_nodelay(31,false,&nodelay)==0 && !nodelay);

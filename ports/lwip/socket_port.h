@@ -49,6 +49,7 @@ int nas_lwip_socket_open(unsigned slot,enum nas_lwip_bridge_type type);
 int nas_lwip_socket_open_ready(unsigned slot); /* 1 ready, 0 pending, <0 error */
 bool nas_lwip_socket_is_slot(unsigned slot);
 int nas_lwip_socket_type(unsigned slot); /* TCP/UDP enum, or -EBADF */
+int nas_lwip_socket_buffer_capacity(unsigned slot,bool sending);
 bool nas_lwip_socket_is_connected(unsigned slot);
 bool nas_lwip_socket_is_listening(unsigned slot);
 /* TCP recvfrom() can report the established peer without another native
