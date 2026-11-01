@@ -4,10 +4,10 @@ dir=/tmp/m144/haproxy
 /bin/busybox mkdir -p "$dir"
 /bin/busybox cat > "$dir/haproxy.cfg" <<'EOF'
 global
-    maxconn 16
+    maxconn 4
     nbthread 1
 defaults
-    mode http
+    mode tcp
     timeout connect 5s
     timeout client 8s
     timeout server 8s
