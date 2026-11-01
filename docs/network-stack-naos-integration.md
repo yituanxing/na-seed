@@ -33,9 +33,9 @@ Keep [Zephyr's VirtIO-Net](https://github.com/zephyrproject-rtos/zephyr/blob/mai
 (Apache-2.0) as a fallback, but it would introduce an otherwise unused
 Zephyr net_pkt/devicetree/virtqueue compatibility boundary.
 NaOS's GPL-3.0 driver implementations are architectural references only,
-given NaSeed's unresolved combined-work licensing. This dependency pin does
-**not** mean lwIP is compiled/linked, a Zephyr NIC driver is ported or real
-QEMU network traffic is proven.
+given NaSeed's unresolved combined-work licensing. The pinned original lwIP
+and U-Boot NIC are now compiled, linked and proven with authentic Alpine apps
+in x86 PCI and RV64/ARM64 MMIO QEMU; physical NIC testing is not claimed.
 
 ## Dependency direction (one of each owner)
 
@@ -160,8 +160,9 @@ and [socket file operations](https://github.com/torvalds/linux/blob/master/net/s
 confirm that `dup`/`fork` share one open description, not protocol-specific
 FD tables. Its [NAPI guidance](https://docs.kernel.org/networking/napi.html)
 separates IRQ notification from bounded RX polling and IRQ rearming. NaSeed
-currently implements the notification/worker budget only: genuine PCI/MMIO
-IRQ acknowledge, rearm and guest packets remain unproven.
+implements notification/worker budgeting and has proven genuine guest
+PCI/MMIO packets in QEMU. Independent hot-unplug, repeated IRQ-rearm and
+packet-loss stress tests remain unproven.
 
 **Scheduler boundary:** `sys_arch_sem_wait` and `sys_arch_mbox_fetch` can
 park only a native `nas_kthread`, while user syscalls execute in a separate
@@ -293,8 +294,16 @@ classifies live non-socket versus closed FDs before dispatch.
    ([x86 wire Actions run](https://github.com/yituanxing/na-seed/actions/runs/41280543416)).
    The focused x86 QEMU loopback case also **passed again with
    syscall diagnostics disabled**, proving the default boot image behavior.
-   Exact UDP `sendto/recvfrom` metadata, wider socket options, additional
-   close races and **real guest Alpine iperf3/DNS remain unproven**;
+   Native UDP `sendto/recvfrom` source metadata, truncation, `sendmsg/recvmsg`
+   and `SO_BROADCAST` now have host tests. **Original signed Alpine Ncat UDP
+   guest-host echo has passed x86 PCI QEMU** ([run 41283507284](https://github.com/yituanxing/na-seed/actions/runs/41283507284));
+   **original signed Alpine BIND `dig` DNS A-record exchange has also passed**
+   ([run 41283507327](https://github.com/yituanxing/na-seed/actions/runs/41283507327)),
+   with a packet-validating host-only responder and no guest DNS stub.
+   `IP_RECVERR` is retained per OpenFile and readable via `getsockopt`, but
+   **asynchronous Linux `MSG_ERRQUEUE`/ICMP ancillary delivery is not implemented**;
+   other IP socket options, full-MTU datagrams, zero-length native UDP send,
+   extra close races and real Alpine iperf3 remain unproven.
    Ncat is proven for x86 loopback and **all three ISA QEMU guest-to-host TCP
    paths** (x86 PCI plus RV64/ARM64 modern MMIO); no claim is made for
    external Internet peers or production NIC hardware. The shared RV64/ARM64
@@ -316,7 +325,9 @@ classifies live non-socket versus closed FDs before dispatch.
 | D1a — host FileOps-proven | Netconn-backed TCP/UDP FileOps + async control state machine, same global `nas_open_file` identity, accepted handle adoption, all opt-in build source lists | `test-lwip-socket-port` against upstream lwIP; TCP/UDP data, copied queued writes, poll-driven RX, bind/connect/listen, async close; default AF_UNIX/simulated AF_INET unchanged |
 | D1b — host ABI-proven (partial) | Opt-in AF_INET TCP/UDP Socket syscall selection, real OpenFile FileOps, native bind/connect/listen Task continuations, listener event readiness and worker lease cancellation; preserve AF_UNIX and default fake backend | `test-lwip-socket-abi` on real usercopy/FD ABI with controlled provider, upstream Netconn host test, M106 AF_UNIX regression and real x86 guest Ncat PASS |
 | D1c — x86 loopback guest-proven | Blocking native `accept/accept4` Task lease and EINTR cleanup; nonblocking listening prefetch owned by OpenFile; real peer sockaddr including connected TCP `recvfrom()` output, GETNAME, `SO_REUSEADDR`, SHUTDOWN, TX-before-FIN ordering and live-FD `ENOTSOCK` parity | Real syscall+FD fixture, upstream TCP/UDP+SocketPort tests and signed Alpine `/usr/bin/ncat` TCP loopback x86 QEMU PASS |
-| D1d — three-ISA real-wire guest-proven | Opt-in modern PCI x86 or MMIO RV64/ARM64 VirtIO-Net + lwIP DHCP, bounded native RX, original signed Alpine Ncat TCP to a host-only HTTP server through QEMU slirp | [x86 wire QEMU PASS](https://github.com/yituanxing/na-seed/actions/runs/41281601804), [RV64/ARM64 wire QEMU PASS](https://github.com/yituanxing/na-seed/actions/runs/41281601773), independent [x86 loopback QEMU PASS](https://github.com/yituanxing/na-seed/actions/runs/41281601875); next targeted gates: guest UDP/DNS, sustained transfers |
+| D1d — three-ISA real-wire guest-proven | Opt-in modern PCI x86 or MMIO RV64/ARM64 VirtIO-Net + lwIP DHCP, bounded native RX, original signed Alpine Ncat TCP to a host-only HTTP server through QEMU slirp | [x86 wire QEMU PASS](https://github.com/yituanxing/na-seed/actions/runs/41283507314), [RV64/ARM64 wire QEMU PASS](https://github.com/yituanxing/na-seed/actions/runs/41283507304), independent [x86 loopback QEMU PASS](https://github.com/yituanxing/na-seed/actions/runs/41283507407) |
+| D1e — x86 UDP wire guest-proven | Linux datagram send/recv/message ABI, native lwIP `SO_BROADCAST`, actual per-datagram source and truncation, no TCP-style split writes | [Signed Alpine Ncat UDP QEMU PASS](https://github.com/yituanxing/na-seed/actions/runs/41283507284); independent official lwIP and syscall usercopy host tests PASS |
+| D1f — x86 DNS wire guest-proven | Original signed Alpine BIND `dig` through UDP `IP_RECVERR` setup, async `connect`/`sendmsg` retry and native VirtIO UDP both directions; host independently verifies the DNS question and sends a fixed TEST-NET A answer | [Signed Alpine dig DNS QEMU PASS](https://github.com/yituanxing/na-seed/actions/runs/41283507327); `IP_RECVERR` option storage is **not** full Linux error-queue parity |
 | E | Remove old simulated AF_INET code and harden shutdown, resource failure, MTU, hot-unplug | Network + block concurrency, packet loss/backpressure, memory lifetime, repeated NIC reset, all-ISA QEMU regression accumulated as requested |
 
 Don't launch the expensive QEMU M141 matrix for Stage A alone. Scope all
