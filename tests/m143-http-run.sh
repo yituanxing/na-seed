@@ -47,6 +47,11 @@ done
 /bin/busybox cmp "$work/openssl.hash" "$work/busybox.hash"
 echo M143_REAL_OPENSSL_SHA256_PASS
 
+# Netconn closes may still be draining asynchronously after three HTTP
+# clients; verify reclamation before the next distinct server workload.
+# Do not raise lwIP's eight-native-connection bound just to pass a test.
+/bin/busybox sleep 3
+
 # Start an actual guest-native HTTP server, NOT a host-side stand-in.
 /bin/busybox printf 'M143_REAL_LIGHTTPD_LOOPBACK_PAYLOAD\n' > "$work/site/index.txt"
 /bin/busybox cat > "$work/lighttpd.conf" <<EOF
@@ -58,7 +63,6 @@ server.errorlog = "$work/lighttpd.err"
 server.upload-dirs = ( "$work" )
 mimetype.assign = ( ".txt" => "text/plain" )
 EOF
-/usr/sbin/lighttpd -tt -f "$work/lighttpd.conf"
 /usr/sbin/lighttpd -D -f "$work/lighttpd.conf" > "$work/lighttpd.stdout" 2>&1 &
 server_pid=$!
 trap 'kill "$server_pid" 2>/dev/null || :; wait "$server_pid" 2>/dev/null || :' EXIT
