@@ -64,7 +64,11 @@ case "$case_id" in
     # preserve its native diagnostics on the serial console to diagnose that
     # pre-send path (socket/setsockopt/bind/connect vs actual sendto).
     nping_status=0
-    busy timeout 15 /usr/bin/nping --unprivileged --udp --no-capture -v3 \
+    # Nping's upstream UDP_UNPRIV mode allows only a 2ms initial nsock loop.
+    # --no-capture then SKIPS its final pending-event wait, which can kill
+    # the asynchronous UDP write before NSE_TYPE_WRITE fires. The ordinary
+    # unprivileged receive phase uses UDP sockets, not privileged raw pcap.
+    busy timeout 15 /usr/bin/nping --unprivileged --udp -v3 -d5 \
       --data-string NASEED_NPING_PROBE -c 1 -p 15416 10.0.2.2 \
       > "$work/nping.out" 2> "$work/nping.err" || nping_status=$?
     busy printf '[M142 NPING EXIT] status=%s\n' "$nping_status"
