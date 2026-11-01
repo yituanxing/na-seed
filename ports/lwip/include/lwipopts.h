@@ -10,6 +10,9 @@
 #define LWIP_TCPIP_CORE_LOCKING_INPUT 0
 #define LWIP_NETCONN 1
 #define LWIP_SOCKET 0
+/* Original Net-SNMP UDP agent needs actual per-packet destination and
+ * ingress netif metadata for Linux IP_PKTINFO recvmsg ancillary. */
+#define LWIP_NETBUF_RECVINFO 1
 #define LWIP_ERRNO_INCLUDE <nas_lwip_errno.h>
 #define LWIP_NETIF_API 1
 #define LWIP_NETIF_STATUS_CALLBACK 1 /* verify DHCP lease, not DHCP start */

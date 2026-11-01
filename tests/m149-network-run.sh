@@ -53,11 +53,12 @@ fi
 "$busy" mkdir -p "$work/snmp"
 snmp_ok=false
 # Net-SNMP's full Linux interface-mib initializer probes /proc/net and
-# NETLINK_ROUTE, which need not exist in our current kernel. Try the documented
-# -I module selection for just the genuine system MIB, with both legal IPv4
-# endpoint spellings. Also retain the unmodified default-initializer mode as
-# an independent control; record every failure, without synthetic responses.
-for mode in minimal-loopback minimal-wildcard default-wildcard; do
+# NETLINK_ROUTE, which need not exist in our current kernel. Keep the complete
+# default MIB initializer for BOTH legal IPv4 endpoint spellings: selecting
+# only `-I system_mib` also removes the rocommunity configuration parser, so
+# such a mode cannot authenticate a real SNMPv2c request even if UDP works.
+# Record each failure without synthetic responses.
+for mode in default-wildcard default-loopback; do
   case "$mode" in
     *loopback) address=udp:127.0.0.1:15491 ;;
     *wildcard) address=udp:15491 ;;
@@ -68,14 +69,8 @@ rocommunity m149public 127.0.0.1
 sysLocation NaSeed-M149
 sysContact Kernel-Port
 EOF
-  case "$mode" in
-    minimal-*)
-      /usr/sbin/snmpd -f -Lo -C -I system_mib -Dtransport,udp \
-        -c "$work/snmp/$mode.conf" > "$work/snmp/$mode.daemon.log" 2>&1 & ;;
-    *)
-      /usr/sbin/snmpd -f -Lo -C -Dtransport,udp \
-        -c "$work/snmp/$mode.conf" > "$work/snmp/$mode.daemon.log" 2>&1 & ;;
-  esac
+  /usr/sbin/snmpd -f -Lo -C -Dtransport,udp \
+    -c "$work/snmp/$mode.conf" > "$work/snmp/$mode.daemon.log" 2>&1 &
   snmp_pid=$!
   for attempt in 1 2 3; do
     if /usr/bin/snmpget -v2c -c m149public -On -t 2 -r 0 \
@@ -99,7 +94,7 @@ if [ "$snmp_ok" = true ]; then
 else
   echo M149_REAL_SNMP_UDP_AGENT_FAIL
   protocol_failures=$((protocol_failures+1))
-  for mode in minimal-loopback minimal-wildcard default-wildcard; do
+  for mode in default-wildcard default-loopback; do
     echo "[M149 SNMP DIAGNOSTIC] $mode"
     "$busy" cat "$work/snmp/$mode.daemon.log" "$work/snmp/$mode.get.out" \
                  "$work/snmp/$mode.walk.out" || :

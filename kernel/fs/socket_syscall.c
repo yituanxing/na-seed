@@ -692,9 +692,10 @@ static uint64_t sys_ipv4_getsockopt(uint64_t fd,uint64_t level,
         int type=nas_lwip_socket_type(slot);
         if(type<0)return (uint64_t)(int64_t)type;
         uint32_t value;
-        if(level==0 && opt==11) { /* IP_RECVERR */
+        if(level==0 && (opt==11 || opt==8)) { /* IP_RECVERR/IP_PKTINFO */
             bool enabled=false;
-            int rc=nas_lwip_socket_ip_recverr(slot,false,&enabled);
+            int rc=opt==8 ? nas_lwip_socket_ip_pktinfo(slot,false,&enabled) :
+                             nas_lwip_socket_ip_recverr(slot,false,&enabled);
             if(rc)return (uint64_t)(int64_t)rc;
             value=enabled?1U:0U;
         } else if(level==6 && opt==1) { /* TCP_NODELAY */
@@ -823,13 +824,18 @@ static uint64_t sys_ipv4_setsockopt(uint64_t fd,uint64_t level,
                 TASK.fds->entries[fd].slot,(unsigned)index));
         }
         if((level!=1 || (opt!=2 && opt!=6 && opt!=9)) &&
-           (level!=0 || opt!=11) &&
+           (level!=0 || (opt!=11 && opt!=8)) &&
            (level!=6 || opt!=1))return (uint64_t)-ENOPROTOOPT;
         if(length<4 || !address)return (uint64_t)-EINVAL;
         uint32_t value;
         if(!nas_user_read_bytes(address,(uint8_t *)&value,4))
             return (uint64_t)-EFAULT;
         unsigned slot=TASK.fds->entries[fd].slot;
+        if(level==0 && opt==8) { /* IP_PKTINFO: real Netbuf destination */
+            bool enabled=value!=0;
+            return lwip_control_result(nas_lwip_socket_ip_pktinfo(
+                slot,true,&enabled));
+        }
         if(level==0) { /* IP_RECVERR: per-OpenFile opt-in, no fake errqueue */
             bool enabled=value!=0;
             return (uint64_t)(int64_t)nas_lwip_socket_ip_recverr(
@@ -884,6 +890,45 @@ struct nas_msghdr {
 };
 struct nas_iovec { uint64_t base,length; };
 _Static_assert(sizeof(struct nas_msghdr)==56,"native Linux msghdr ABI");
+#ifdef NAS_ENABLE_LWIP
+/* Linux LP64 cmsghdr (16 bytes) + struct in_pktinfo (12 bytes).
+ * IP addresses are byte strings in network order, unlike the native
+ * interface index and cmsg fields. CMSG_SPACE(12)=32, CMSG_LEN(12)=28. */
+static void ipv4_pktinfo_cmsg(uint8_t out[32],
+                              struct nas_lwip_bridge_pktinfo info) {
+    memset(out,0,32);
+    const uint64_t cmsg_len=28;
+    const uint32_t level=0,type=8;
+    memcpy(out,&cmsg_len,8);
+    memcpy(out+8,&level,4);memcpy(out+12,&type,4);
+    memcpy(out+16,&info.ifindex,4);
+    const uint32_t ip[2]={info.spec_dst,info.destination};
+    for(unsigned i=0;i<2;i++)for(unsigned b=0;b<4;b++)
+        out[20+4*i+b]=(uint8_t)(ip[i]>>(24-8*b));
+}
+static int ipv4_pktinfo_import(const struct nas_msghdr *msg,
+                               struct nas_lwip_bridge_pktinfo *info) {
+    if(!msg->controllen)return 0;
+    if(!msg->control)return -EFAULT;
+    if(msg->controllen<28 || msg->controllen>32)return -EOPNOTSUPP;
+    uint8_t bytes[32]={0};
+    if(!nas_user_read_bytes(msg->control,bytes,msg->controllen))return -EFAULT;
+    uint64_t cmsg_len;
+    uint32_t level,type;
+    memcpy(&cmsg_len,bytes,8);memcpy(&level,bytes+8,4);
+    memcpy(&type,bytes+12,4);
+    if(cmsg_len!=28 || level!=0 || type!=8)return -EOPNOTSUPP;
+    /* Trailing CMSG_ALIGN padding is unspecified userspace memory. Its
+     * contents have no protocol meaning and are not a second header. */
+    memcpy(&info->ifindex,bytes+16,4);
+    info->spec_dst=0;info->destination=0;
+    for(unsigned b=0;b<4;b++) {
+        info->spec_dst=info->spec_dst<<8|bytes[20+b];
+        info->destination=info->destination<<8|bytes[24+b];
+    }
+    return 1;
+}
+#endif
 int nas_fs_socket_tcp_sendmsg_iov(uint64_t fd,uint64_t address,
                                  uint64_t flags,uint64_t *iov,
                                  uint64_t *count) {
@@ -1058,7 +1103,9 @@ static uint64_t sys_ipv4_sendmsg(uint64_t fd,uint64_t address,uint64_t flags) {
         if(nas_lwip_socket_type(slot)!=NAS_LWIP_BRIDGE_UDP)
             return (uint64_t)-EOPNOTSUPP;
         if(flags & ~(0x4000ULL|0x40ULL))return (uint64_t)-EOPNOTSUPP;
-        if(msg.controllen)return (uint64_t)-EOPNOTSUPP;
+        struct nas_lwip_bridge_pktinfo pktinfo={0};
+        int ancillary=ipv4_pktinfo_import(&msg,&pktinfo);
+        if(ancillary<0)return (uint64_t)(int64_t)ancillary;
         if(msg.iovlen>32)return (uint64_t)-EMSGSIZE;
         struct nas_lwip_bridge_address destination={0};
         if(msg.name) {
@@ -1081,8 +1128,9 @@ static uint64_t sys_ipv4_sendmsg(uint64_t fd,uint64_t address,uint64_t flags) {
                 return (uint64_t)-EFAULT;
             total+=(size_t)v.length;
         }
-        return (uint64_t)nas_lwip_socket_sendto(slot,packet,
-                    (uint16_t)total,destination);
+        return (uint64_t)nas_lwip_socket_sendto_pktinfo(slot,packet,
+                    (uint16_t)total,destination,
+                    ancillary ? &pktinfo:NULL);
     }
     return (uint64_t)-EBADF;
 #else
@@ -1127,11 +1175,20 @@ static uint64_t sys_ipv4_recvmsg(uint64_t fd,uint64_t address,uint64_t flags) {
         if(msg.name && name_capacity &&
            !nas_user_prepare_write(msg.name,name_capacity))
             return (uint64_t)-EFAULT;
+        bool enabled=false;
+        int option=nas_lwip_socket_ip_pktinfo(slot,false,&enabled);
+        if(option)return (uint64_t)(int64_t)option;
+        /* Preflight ancillary output BEFORE consuming the datagram. */
+        unsigned control_bytes=enabled && msg.control && msg.controllen>=28 ?
+                               (msg.controllen>=32 ? 32U:28U):0U;
+        if(control_bytes && !nas_user_prepare_write(msg.control,control_bytes))
+            return (uint64_t)-EFAULT;
         uint8_t packet[NAS_LWIP_BRIDGE_DATA];
         struct nas_lwip_bridge_address source={0};
+        struct nas_lwip_bridge_pktinfo info={0};
         bool truncated=false;
         int64_t received=nas_lwip_socket_recvfrom(slot,packet,
-            (uint16_t)capacity,&source,&truncated);
+            (uint16_t)capacity,&source,&truncated,&info);
         if(received<0)return (uint64_t)received;
         unsigned offset=0;
         for(unsigned i=0;i<msg.iovlen && offset<(unsigned)received;i++) {
@@ -1149,8 +1206,18 @@ static uint64_t sys_ipv4_recvmsg(uint64_t fd,uint64_t address,uint64_t flags) {
                 msg.name,bytes,name_capacity))return (uint64_t)-EFAULT;
             msg.namelen=16;
         } else msg.namelen=0;
-        msg.controllen=0; /* no invented ancillary messages */
-        msg.flags=truncated?0x20U:0U; /* Linux MSG_TRUNC */
+        if(control_bytes) {
+            /* A configured option must report actual inbound metadata;
+             * never construct fictitious destination or interface info. */
+            if(!info.ifindex || !info.destination)return (uint64_t)-EIO;
+            uint8_t control[32];
+            ipv4_pktinfo_cmsg(control,info);
+            if(!nas_user_write_bytes(msg.control,control,control_bytes))
+                return (uint64_t)-EFAULT;
+        }
+        msg.controllen=control_bytes;
+        msg.flags=(truncated?0x20U:0U) |
+                  (enabled && !control_bytes ? 0x8U:0U); /* MSG_CTRUNC */
         return nas_user_write_bytes(address,(const uint8_t *)&msg,sizeof(msg)) ?
                (uint64_t)received:(uint64_t)-EFAULT;
     }
@@ -1252,7 +1319,7 @@ static uint64_t sys_ipv4_recvfrom(uint64_t fd,uint64_t buffer,
             uint8_t packet[NAS_LWIP_BRIDGE_DATA];
             struct nas_lwip_bridge_address source={0};
             int64_t received=nas_lwip_socket_recvfrom(slot,packet,
-                (uint16_t)available,&source,NULL);
+                (uint16_t)available,&source,NULL,NULL);
             if(received<0)return (uint64_t)received;
             if(received && !nas_user_write_bytes(buffer,packet,
                                                   (size_t)received))

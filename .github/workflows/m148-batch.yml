@@ -58,7 +58,8 @@ jobs:
           sh scripts/ci-ubuntu-mirror.sh
           missing=''
           for spec in 'clang:clang' 'ld.lld:lld' 'readelf:binutils' \
-                      'cpio:cpio' 'mformat:mtools' 'sgdisk:gdisk' \
+                      'cpio:cpio' 'mke2fs:e2fsprogs' 'xorriso:xorriso' \
+                      'mformat:mtools' 'sgdisk:gdisk' \
                       'qemu-riscv64:qemu-user'; do
             bin=${spec%%:*}; pkg=${spec#*:}
             command -v "$bin" >/dev/null || missing="$missing $pkg"
@@ -84,6 +85,10 @@ jobs:
               -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
           fi
           command -v docker
+          # x86 runner suppresses mkisofs stderr; fail here explicitly rather
+          # than reporting a later 'missing ISO' as a bootloader/kernel defect.
+          command -v xorriso
+          command -v mke2fs
       - name: Execute 22 true format roundtrips across 35 unchanged Alpine ELFs
         timeout-minutes: 48
         run: sh scripts/probe-m148-batch.sh ${{ matrix.port }}

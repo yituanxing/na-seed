@@ -312,6 +312,25 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
     }
     return ret;
 }
+/* Tinyproxy and other POSIX daemons call send(MSG_NOSIGNAL), not write().
+ * The internal TCP FileOps EOPNOTSUPP means "blocking TX still in flight";
+ * it must reach the same held-description Task wait used by write(), while
+ * MSG_NOSIGNAL suppresses SIGPIPE without changing the shared File flags.
+ * Do not use this path for UDP, addressed sendto or any other MSG flags. */
+static bool native_tcp_send_nosignal_wait(enum nas_syscall_op nr,
+                                         const uint64_t *args) {
+#ifdef NAS_ENABLE_LWIP
+    if(nr!=NAS_SC_sendto || args[4]!=0x4000ULL || args[5] || args[6] ||
+       args[1]>=NAS_FD_LIMIT ||
+       TASK.fds->entries[args[1]].kind!=FD_SOCKET)return false;
+    unsigned slot=TASK.fds->entries[args[1]].slot;
+    return nas_lwip_socket_is_slot(slot) &&
+           nas_lwip_socket_type(slot)==NAS_LWIP_BRIDGE_TCP;
+#else
+    (void)nr;(void)args;
+    return false;
+#endif
+}
 static uint64_t task_socket_accept(uint64_t *frame,enum nas_syscall_op nr,
                                    const uint64_t *args,uint64_t result) {
     if((int64_t)result!=-EAGAIN)return result;
@@ -765,13 +784,12 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         return task_pipe_io((uint64_t *)(uintptr_t)args,NAS_SC_recvfrom,
                             args[1],args[2],args[3],false);
 #endif
-    /* Connected IPv4 stream send()/recv() are Linux sendto()/recvfrom()
-     * with no address argument. They use the exact same held-OpenFile
-     * provider as read/write so a full/empty stream genuinely parks and
-     * retries, rather than leaking NaSeed's internal would-block sentinel.
-     * Address-returning and per-call-flag variants retain their independent
-     * socket ABI path until those provider semantics are wired separately. */
-    if((nr==NAS_SC_sendto || nr==NAS_SC_recvfrom) && !args[4] &&
+    /* Connected send()/recv() with zero flags, plus TCP MSG_NOSIGNAL send,
+     * use the held-OpenFile wait path. Unsupported per-call flags and all
+     * addressed sendto requests stay on the strict socket ABI path. */
+    const bool send_nosignal_wait=native_tcp_send_nosignal_wait(nr,args);
+    if((nr==NAS_SC_sendto || nr==NAS_SC_recvfrom) &&
+       (!args[4] || send_nosignal_wait) &&
        args[1]<NAS_FD_LIMIT && TASK.fds->entries[args[1]].kind==FD_SOCKET &&
 #ifdef NAS_ENABLE_LWIP
        nas_lwip_socket_is_slot(TASK.fds->entries[args[1]].slot)
@@ -781,7 +799,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
        ) {
         if(nr==NAS_SC_sendto && !args[5] && !args[6])
             return task_pipe_io((uint64_t *)(uintptr_t)args,NAS_SC_write,
-                                args[1],args[2],args[3],false);
+                                args[1],args[2],args[3],send_nosignal_wait);
         if(nr==NAS_SC_recvfrom && !args[5])
             return task_pipe_io((uint64_t *)(uintptr_t)args,NAS_SC_read,
                                 args[1],args[2],args[3],false);

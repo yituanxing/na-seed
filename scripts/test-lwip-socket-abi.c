@@ -82,6 +82,7 @@ static bool abi_name_peer[NAS_OPEN_FILE_LIMIT];
 static bool abi_reuse_enabled[NAS_OPEN_FILE_LIMIT];
 static bool abi_broadcast_enabled[NAS_OPEN_FILE_LIMIT];
 static bool abi_recverr_enabled[NAS_OPEN_FILE_LIMIT];
+static bool abi_pktinfo_enabled[NAS_OPEN_FILE_LIMIT];
 static bool abi_nodelay_enabled[NAS_OPEN_FILE_LIMIT];
 static bool abi_keepalive_enabled[NAS_OPEN_FILE_LIMIT];
 static bool abi_tx_backpressure[NAS_OPEN_FILE_LIMIT];
@@ -97,6 +98,8 @@ static uint8_t abi_rx_bytes[NAS_OPEN_FILE_LIMIT][16];
 static uint8_t abi_udp_last_send[NAS_LWIP_BRIDGE_DATA];
 static unsigned abi_udp_send_count,abi_udp_sent_length;
 static struct nas_lwip_bridge_address abi_udp_destination;
+static bool abi_udp_sent_pktinfo;
+static struct nas_lwip_bridge_pktinfo abi_udp_last_pktinfo;
 
 int64_t nas_lwip_socket_sendto(unsigned slot,const uint8_t *data,
                                uint16_t length,
@@ -110,10 +113,23 @@ int64_t nas_lwip_socket_sendto(unsigned slot,const uint8_t *data,
     abi_udp_send_count++;
     return length;
 }
+int64_t nas_lwip_socket_sendto_pktinfo(
+    unsigned slot,const uint8_t *data,uint16_t length,
+    struct nas_lwip_bridge_address destination,
+    const struct nas_lwip_bridge_pktinfo *pktinfo) {
+    int64_t rc=nas_lwip_socket_sendto(slot,data,length,destination);
+    if(rc>=0) {
+        abi_udp_sent_pktinfo=pktinfo!=NULL;
+        abi_udp_last_pktinfo=pktinfo ? *pktinfo :
+                              (struct nas_lwip_bridge_pktinfo){0};
+    }
+    return rc;
+}
 int64_t nas_lwip_socket_recvfrom(unsigned slot,uint8_t *bytes,
                                  uint16_t capacity,
                                  struct nas_lwip_bridge_address *source,
-                                 bool *truncated) {
+                                 bool *truncated,
+                                 struct nas_lwip_bridge_pktinfo *pktinfo) {
     if(!nas_lwip_socket_is_slot(slot))return -EBADF;
     if(abi_type[slot]!=NAS_LWIP_BRIDGE_UDP)return -EOPNOTSUPP;
     if(!abi_rx_length[slot])return -EAGAIN;
@@ -124,6 +140,10 @@ int64_t nas_lwip_socket_recvfrom(unsigned slot,uint8_t *bytes,
         .ipv4=UINT32_C(0x7f000001),.port=38007
     };
     if(truncated)*truncated=n<length;
+    if(pktinfo)*pktinfo=(struct nas_lwip_bridge_pktinfo){
+        .ifindex=1,.spec_dst=UINT32_C(0x7f000001),
+        .destination=UINT32_C(0x7f000001)
+    };
     abi_rx_length[slot]=0; /* no TCP-style UDP tail */
     return n;
 }
@@ -323,6 +343,16 @@ int nas_lwip_socket_ip_recverr(unsigned slot,bool write,bool *enabled) {
     if(abi_type[slot]!=NAS_LWIP_BRIDGE_UDP)return -EOPNOTSUPP;
     if(write)abi_recverr_enabled[slot]=*enabled;
     else *enabled=abi_recverr_enabled[slot];
+    return 0;
+}
+int nas_lwip_socket_ip_pktinfo(unsigned slot,bool write,bool *enabled) {
+    if(!nas_lwip_socket_is_slot(slot))return -EBADF;
+    if(!enabled)return -EINVAL;
+    if(abi_type[slot]!=NAS_LWIP_BRIDGE_UDP)return -EOPNOTSUPP;
+    if(write) {
+        abi_pktinfo_enabled[slot]=*enabled;
+        abi_control[slot]=true;abi_pending_checks[slot]=1;
+    } else *enabled=abi_pktinfo_enabled[slot];
     return 0;
 }
 int nas_lwip_socket_control_ready(unsigned slot) {
@@ -568,6 +598,19 @@ int main(void) {
     memcpy(user_ptr(optaddr),&value,4);
     assert(sys_ipv4_setsockopt(udp_fd,0,11,optaddr,4)==0);
     assert(!abi_recverr_enabled[udp_slot]);
+    /* Linux IP_PKTINFO must turn on real Netbuf receive metadata through
+     * an async PCB/Netconn command; readback follows completed state. */
+    assert(sys_ipv4_getsockopt(udp_fd,0,8,optaddr,optlen)==0);
+    memcpy(&value,user_ptr(optaddr),4);assert(value==0);
+    value=1;memcpy(user_ptr(optaddr),&value,4);
+    assert((int64_t)sys_ipv4_setsockopt(tcp_fd,0,8,optaddr,4)==-EOPNOTSUPP);
+    assert((int64_t)sys_ipv4_setsockopt(udp_fd,0,8,optaddr,3)==-EINVAL);
+    assert((int64_t)sys_ipv4_setsockopt(udp_fd,0,8,optaddr,4)==-EAGAIN);
+    assert(!nas_fs_socket_control_ready(udp_slot));
+    assert(nas_fs_socket_control_ready(udp_slot));
+    assert(nas_fs_socket_control_description(udp_slot)==0);
+    assert(sys_ipv4_getsockopt(udp_fd,0,8,optaddr,optlen)==0);
+    memcpy(&value,user_ptr(optaddr),4);assert(value==1);
 
     /* GETNAME completion uses real syscall usercopy after native completion,
      * not a foreign Task's memory from the worker. Validate byte order and
@@ -691,6 +734,26 @@ int main(void) {
     assert(abi_udp_send_count==2 && abi_udp_sent_length==4 &&
            !memcmp(abi_udp_last_send,"PING",4));
     assert((int64_t)sys_ipv4_sendmsg(udp_fd,msgaddr,0x2ULL)==-EOPNOTSUPP);
+    const uint64_t cmsgaddr=TEST_BASE+2100;
+    struct nas_lwip_bridge_pktinfo request_info={
+        .ifindex=1,.spec_dst=UINT32_C(0x7f000001),
+        .destination=UINT32_C(0x0a000201)
+    };
+    uint8_t control[32];ipv4_pktinfo_cmsg(control,request_info);
+    memcpy(user_ptr(cmsgaddr),control,sizeof(control));
+    msg.control=cmsgaddr;msg.controllen=32;
+    memcpy(user_ptr(msgaddr),&msg,sizeof(msg));
+    assert(sys_ipv4_sendmsg(udp_fd,msgaddr,0x40ULL)==4);
+    assert(abi_udp_send_count==3 && abi_udp_sent_pktinfo &&
+           abi_udp_last_pktinfo.ifindex==request_info.ifindex &&
+           abi_udp_last_pktinfo.spec_dst==request_info.spec_dst &&
+           abi_udp_last_pktinfo.destination==request_info.destination);
+    uint32_t invalid=99;memcpy(user_ptr(cmsgaddr+12),&invalid,4);
+    assert((int64_t)sys_ipv4_sendmsg(udp_fd,msgaddr,0x40ULL)==-EOPNOTSUPP);
+    assert(abi_udp_send_count==3);
+    msg.controllen=27;
+    memcpy(user_ptr(msgaddr),&msg,sizeof(msg));
+    assert((int64_t)sys_ipv4_sendmsg(udp_fd,msgaddr,0)==-EOPNOTSUPP);
 
     /* Memcached transmits an ASCII response using sendmsg() with multiple
      * iovecs on an accepted TCP socket.  The real OpenFile vector path must
@@ -765,7 +828,29 @@ int main(void) {
     assert(sys_ipv4_recvmsg(udp_fd,msgaddr,0)==5);
     assert(!memcmp(user_ptr(rxbuf),"DATAG",5));
     memcpy(&msg,user_ptr(msgaddr),sizeof(msg));
-    assert(msg.namelen==16 && msg.flags==0x20U && msg.controllen==0);
+    assert(msg.namelen==16 && msg.flags==(0x20U|0x8U) &&
+           msg.controllen==0); /* data truncated, requested metadata omitted */
+    assert(abi_rx_length[udp_slot]==0);
+    /* Output ancillary has exact 16-byte cmsghdr, 12-byte in_pktinfo,
+     * 4 bytes alignment. Insufficient control space sets MSG_CTRUNC. */
+    memcpy(abi_rx_bytes[udp_slot],"INFO",4);abi_rx_length[udp_slot]=4;
+    msg=(struct nas_msghdr){.name=srcaddr,.namelen=16,
+        .iov=iovaddr,.iovlen=2,.control=cmsgaddr,.controllen=32};
+    memcpy(user_ptr(msgaddr),&msg,sizeof(msg));
+    assert(sys_ipv4_recvmsg(udp_fd,msgaddr,0x40ULL)==4);
+    memcpy(&msg,user_ptr(msgaddr),sizeof(msg));
+    assert(msg.controllen==32 && msg.flags==0);
+    uint8_t expected_info[32];ipv4_pktinfo_cmsg(expected_info,
+        (struct nas_lwip_bridge_pktinfo){.ifindex=1,
+            .spec_dst=UINT32_C(0x7f000001),
+            .destination=UINT32_C(0x7f000001)});
+    assert(!memcmp(user_ptr(cmsgaddr),expected_info,32));
+    memcpy(abi_rx_bytes[udp_slot],"CUT",3);abi_rx_length[udp_slot]=3;
+    msg.controllen=16;
+    memcpy(user_ptr(msgaddr),&msg,sizeof(msg));
+    assert(sys_ipv4_recvmsg(udp_fd,msgaddr,0)==3);
+    memcpy(&msg,user_ptr(msgaddr),sizeof(msg));
+    assert(msg.controllen==0 && msg.flags==0x8U);
     assert(abi_rx_length[udp_slot]==0);
 
     /* SO_REUSEADDR and SHUTDOWN both wait for a native control result.

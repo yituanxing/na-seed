@@ -37,10 +37,15 @@ int nas_lwip_socket_port_take_error(unsigned slot);
 int64_t nas_lwip_socket_sendto(unsigned slot,const uint8_t *bytes,
                                uint16_t length,
                                struct nas_lwip_bridge_address destination);
+int64_t nas_lwip_socket_sendto_pktinfo(
+    unsigned slot,const uint8_t *bytes,uint16_t length,
+    struct nas_lwip_bridge_address destination,
+    const struct nas_lwip_bridge_pktinfo *pktinfo);
 int64_t nas_lwip_socket_recvfrom(unsigned slot,uint8_t *bytes,
                                  uint16_t capacity,
                                  struct nas_lwip_bridge_address *source,
-                                 bool *truncated);
+                                 bool *truncated,
+                                 struct nas_lwip_bridge_pktinfo *pktinfo);
 
 /* Narrow syscall-facing shorthand. All operations queue native work; no
  * caller ever executes a Netconn function or waits on a native semaphore.
@@ -98,6 +103,9 @@ int nas_lwip_socket_keepalive(unsigned slot,bool write,bool *enabled);
  * Successful UDP paths can opt in; asynchronous ICMP MSG_ERRQUEUE delivery
  * is not implemented and must not be advertised as full parity. */
 int nas_lwip_socket_ip_recverr(unsigned slot,bool write,bool *enabled);
+/* UDP IP_PKTINFO changes the real native Netconn receive-metadata flag.
+ * Only opted-in sockets expose packet destination/ingress cmsgs. */
+int nas_lwip_socket_ip_pktinfo(unsigned slot,bool write,bool *enabled);
 int nas_lwip_socket_control_ready(unsigned slot);
 int nas_lwip_socket_control_finish(unsigned slot);
 

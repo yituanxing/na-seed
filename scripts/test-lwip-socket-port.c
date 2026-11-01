@@ -334,6 +334,15 @@ int main(void) {
      * native SENDTO, never several stream writes; truncated RX drops the
      * remainder and retains the packet's real source address. */
     reserve(23,NAS_LWIP_BRIDGE_UDP);
+    /* The receiving Netconn emits genuine ip_current_dest_addr/if_idx
+     * metadata only after its core-thread NETCONN_FLAG_PKTINFO mutation. */
+    bool pktinfo=false;
+    assert(nas_lwip_socket_ip_pktinfo(20,false,&pktinfo)==0 && !pktinfo);
+    pktinfo=true;
+    assert(nas_lwip_socket_ip_pktinfo(20,true,&pktinfo)==0);
+    finish_control(20,0);
+    pktinfo=false;
+    assert(nas_lwip_socket_ip_pktinfo(20,false,&pktinfo)==0 && pktinfo);
     bool recverr=true;
     assert(nas_lwip_socket_ip_recverr(23,true,&recverr)==0);
     recverr=false;
@@ -349,11 +358,12 @@ int main(void) {
     assert(nas_lwip_socket_sendto(23,addressed,sizeof(addressed)-1,
                                   lo(38007))==-EAGAIN);
     struct nas_lwip_bridge_address source={0};
+    struct nas_lwip_bridge_pktinfo recv_info={0};
     bool truncated=false;
     int64_t got=-EAGAIN;
     for(unsigned tries=0;tries<300;tries++) {
         got=nas_lwip_socket_recvfrom(20,result,sizeof(result),
-                                     &source,&truncated);
+                                     &source,&truncated,&recv_info);
         if(got>=0)break;
         assert(got==-EAGAIN);
         test_ns+=UINT64_C(1000000);
@@ -363,6 +373,9 @@ int main(void) {
            !memcmp(result,addressed,(size_t)got));
     assert(source.ipv4==UINT32_C(0x7f000001) && source.port);
     assert(!truncated);
+    assert(recv_info.ifindex &&
+           recv_info.destination==UINT32_C(0x7f000001) &&
+           recv_info.spec_dst==UINT32_C(0x7f000001));
     for(unsigned tries=0;tries<200 && !(ops->poll_description(23,4U)&4U);
         tries++) {
         test_ns+=UINT64_C(1000000);
@@ -373,7 +386,7 @@ int main(void) {
                                   lo(38007))==sizeof(addressed)-1);
     got=-EAGAIN;
     for(unsigned tries=0;tries<300;tries++) {
-        got=nas_lwip_socket_recvfrom(20,result,6,&source,&truncated);
+        got=nas_lwip_socket_recvfrom(20,result,6,&source,&truncated,NULL);
         if(got>=0)break;
         assert(got==-EAGAIN);
         test_ns+=UINT64_C(1000000);
@@ -381,6 +394,25 @@ int main(void) {
     }
     assert(got==6 && !memcmp(result,"one ad",6) && truncated);
     assert(source.ipv4==UINT32_C(0x7f000001) && source.port);
+    /* A sendmsg IP_PKTINFO override must hit the upstream raw UDP
+     * sendto_if_src path, including same-netif source validation. */
+    struct nas_lwip_bridge_pktinfo send_info={
+        .ifindex=recv_info.ifindex,.spec_dst=UINT32_C(0x7f000001)
+    };
+    assert(nas_lwip_socket_sendto_pktinfo(23,addressed,
+        sizeof(addressed)-1,lo(38007),&send_info)==sizeof(addressed)-1);
+    flush_tx(23);
+    recv_info=(struct nas_lwip_bridge_pktinfo){0};
+    for(unsigned tries=0;tries<300;tries++) {
+        got=nas_lwip_socket_recvfrom(20,result,sizeof(result),
+                                     &source,&truncated,&recv_info);
+        if(got>=0)break;
+        assert(got==-EAGAIN);
+        test_ns+=UINT64_C(1000000);
+        (void)nas_kthread_run(1);
+    }
+    assert(got==(int64_t)sizeof(addressed)-1 &&
+           recv_info.destination==UINT32_C(0x7f000001));
     close_slot(23);
 
     reserve(30,NAS_LWIP_BRIDGE_TCP);

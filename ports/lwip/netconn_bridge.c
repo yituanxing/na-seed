@@ -12,6 +12,8 @@
 #include "lwip/ip.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/tcp.h"
+#include "lwip/udp.h"
+#include "lwip/netif.h"
 #include "lwip/tcpip.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -187,13 +189,21 @@ struct ip_option_callback {
     struct netconn *connection;
     bool enabled;
     bool tcp_nodelay;
+    bool pktinfo;
     uint8_t option;
     struct nas_ksem completed;
     err_t status;
 };
 static void set_ip_option_on_core(void *arg) {
     struct ip_option_callback *c=(struct ip_option_callback *)arg;
-    if(c->tcp_nodelay) {
+    if(c->pktinfo) {
+        if(!c->connection->pcb.udp)c->status=ERR_CONN;
+        else {
+            if(c->enabled)netconn_set_flags(c->connection,NETCONN_FLAG_PKTINFO);
+            else netconn_clear_flags(c->connection,NETCONN_FLAG_PKTINFO);
+            c->status=ERR_OK;
+        }
+    } else if(c->tcp_nodelay) {
         if(!c->connection->pcb.tcp)c->status=ERR_CONN;
         else {
             if(c->enabled)tcp_nagle_disable(c->connection->pcb.tcp);
@@ -228,6 +238,72 @@ static err_t set_tcp_nodelay(struct netconn *connection,bool enabled) {
     if(!nas_ksem_wait(&c.completed))return ERR_VAL;
     return c.status;
 }
+static err_t set_udp_pktinfo(struct netconn *connection,bool enabled) {
+    struct ip_option_callback c={.connection=connection,.enabled=enabled,
+                                 .pktinfo=true,.status=ERR_OK};
+    nas_ksem_init(&c.completed,0);
+    err_t err=tcpip_callback(set_ip_option_on_core,&c);
+    if(err!=ERR_OK)return err;
+    if(!nas_ksem_wait(&c.completed))return ERR_VAL;
+    return c.status;
+}
+
+/* netconn_sendto has no per-datagram source/netif arguments. For Linux
+ * sendmsg(IP_PKTINFO), run the ORIGINAL upstream raw UDP send helper on
+ * tcpip_thread with the same Netconn-owned PCB and pbuf. The native bridge
+ * worker retains the pbuf and callback state until completion. */
+struct udp_send_pktinfo_callback {
+    struct netconn *connection;
+    struct pbuf *packet;
+    struct nas_lwip_bridge_address destination;
+    struct nas_lwip_bridge_pktinfo info;
+    struct nas_ksem completed;
+    err_t status;
+};
+static void send_udp_pktinfo_on_core(void *arg) {
+    struct udp_send_pktinfo_callback *c=arg;
+    struct udp_pcb *pcb=c->connection->pcb.udp;
+    if(!pcb){c->status=ERR_CONN;goto complete;}
+    const ip_addr_t dest=ipv4(c->destination);
+    struct netif *netif=NULL;
+    if(c->info.ifindex) {
+        if(c->info.ifindex>UINT8_MAX){c->status=ERR_IF;goto complete;}
+        netif=netif_get_by_index((u8_t)c->info.ifindex);
+    } else netif=ip_route(&pcb->local_ip,&dest);
+    if(!netif){c->status=ERR_RTE;goto complete;}
+    if(pcb->netif_idx && pcb->netif_idx!=netif_get_index(netif)) {
+        /* SO_BINDTODEVICE is a real PCB constraint, not a hint that a
+         * per-message CMSG may silently defeat. */
+        c->status=ERR_IF;goto complete;
+    }
+    if(c->info.spec_dst) {
+        const uint32_t source=c->info.spec_dst;
+        /* The source must be assigned to the selected real netif. With
+         * LWIP_HAVE_LOOPIF the 127/8 route has its own 127.0.0.1 netif;
+         * an arbitrary physical NIC cannot spoof loopback as source. */
+        const uint32_t actual=lwip_ntohl(ip4_addr_get_u32(netif_ip4_addr(netif)));
+        if(source!=actual) {
+            c->status=ERR_IF;goto complete;
+        }
+        const ip_addr_t src=ipv4((struct nas_lwip_bridge_address){.ipv4=source});
+        c->status=udp_sendto_if_src(pcb,c->packet,&dest,
+                                    c->destination.port,netif,&src);
+    } else c->status=udp_sendto_if(pcb,c->packet,&dest,
+                                   c->destination.port,netif);
+complete:
+    (void)nas_ksem_post(&c->completed);
+}
+static err_t send_udp_pktinfo(struct netconn *connection,struct pbuf *p,
+                               struct nas_lwip_bridge_address destination,
+                               struct nas_lwip_bridge_pktinfo info) {
+    struct udp_send_pktinfo_callback c={.connection=connection,.packet=p,
+        .destination=destination,.info=info,.status=ERR_OK};
+    nas_ksem_init(&c.completed,0);
+    err_t err=tcpip_callback(send_udp_pktinfo_on_core,&c);
+    if(err!=ERR_OK)return err;
+    if(!nas_ksem_wait(&c.completed))return ERR_VAL;
+    return c.status;
+}
 
 static void execute(unsigned slot) {
     struct bridge_slot *s=&bridge.slots[slot];
@@ -242,6 +318,8 @@ static void execute(unsigned slot) {
         /* The command worker, never a syscall, waits for lwIP core APIs;
          * data and connection admission never wait on remote peers. */
         netconn_set_nonblocking(s->connection,1);
+        if(s->type==NAS_LWIP_BRIDGE_UDP)
+            netconn_clear_flags(s->connection,NETCONN_FLAG_PKTINFO);
         return;
     }
     if(!s->connection){out->status=-ENOTCONN;return;}
@@ -325,7 +403,23 @@ static void execute(unsigned slot) {
             void *data=netbuf_alloc(packet,r->length);
             if(!data && r->length){netbuf_delete(packet);out->status=-ENOMEM;return;}
             if(r->length)memcpy(data,s->copied_send,r->length);
-            err=r->address.port ?
+            if(r->send_pktinfo) {
+                struct nas_lwip_bridge_address destination=r->address;
+                if(!destination.port) { /* connected UDP sendmsg(NULL name) */
+                    ip_addr_t peer;
+                    u16_t peer_port=0;
+                    err=netconn_getaddr(s->connection,&peer,&peer_port,0);
+                    if(err==ERR_OK && (!peer_port || !IP_IS_V4(&peer)))
+                        err=ERR_CONN;
+                    if(err==ERR_OK) {
+                        destination.ipv4=lwip_ntohl(ip4_addr_get_u32(
+                            ip_2_ip4(&peer)));
+                        destination.port=peer_port;
+                    }
+                }
+                if(err==ERR_OK)err=send_udp_pktinfo(
+                    s->connection,packet->p,destination,r->packet_info);
+            } else err=r->address.port ?
                 netconn_sendto(s->connection,packet,&address,r->address.port) :
                 netconn_send(s->connection,packet);
             if(err==ERR_OK)out->length=r->length;
@@ -355,6 +449,25 @@ static void execute(unsigned slot) {
             const ip_addr_t *from=netbuf_fromaddr(packet);
             if(from)out->peer.ipv4=lwip_ntohl(ip4_addr_get_u32(ip_2_ip4(from)));
             out->peer.port=netbuf_fromport(packet);
+#if LWIP_NETBUF_RECVINFO
+            if(packet->flags&NETBUF_FLAG_DESTADDR &&
+               IP_IS_V4(netbuf_destaddr(packet))) {
+                out->packet_info.destination=lwip_ntohl(ip4_addr_get_u32(
+                    ip_2_ip4(netbuf_destaddr(packet))));
+                out->packet_info.ifindex=packet->p->if_idx;
+                /* Linux ipi_spec_dst is a usable local source address,
+                 * not the broadcast/multicast IPv4 destination. */
+                out->packet_info.spec_dst=out->packet_info.destination;
+                struct netif *received_if=netif_get_by_index(
+                    (u8_t)out->packet_info.ifindex);
+                if(received_if &&
+                   (ip4_addr_ismulticast(ip_2_ip4(netbuf_destaddr(packet))) ||
+                    ip4_addr_isbroadcast(ip_2_ip4(netbuf_destaddr(packet)),
+                                         received_if)))
+                    out->packet_info.spec_dst=lwip_ntohl(ip4_addr_get_u32(
+                        netif_ip4_addr(received_if)));
+            }
+#endif
             out->truncated=remain>n;
             netbuf_delete(packet);
         } else if(n<remain) {
@@ -406,6 +519,10 @@ static void execute(unsigned slot) {
          * Only tcpip_thread may mutate it; a local cache alone is not an
          * implementation of SO_KEEPALIVE. */
         err=set_ip_option(s->connection,r->keepalive,SOF_KEEPALIVE);
+        break;
+    case NAS_LWIP_BRIDGE_SETPKTINFO:
+        if(s->type!=NAS_LWIP_BRIDGE_UDP){out->status=-EOPNOTSUPP;return;}
+        err=set_udp_pktinfo(s->connection,r->pktinfo);
         break;
     default:out->status=-EINVAL;return;
     }
@@ -580,7 +697,7 @@ int nas_lwip_bridge_submit(struct nas_lwip_bridge_id id,
     if(s->queued || s->executing || s->finished)return -EBUSY;
     if(bridge.count==NAS_LWIP_BRIDGE_QUEUE)return -EAGAIN;
     if(request->op<NAS_LWIP_BRIDGE_BIND ||
-       request->op>NAS_LWIP_BRIDGE_SETKEEPALIVE ||
+       request->op>NAS_LWIP_BRIDGE_SETPKTINFO ||
        request->length>NAS_LWIP_BRIDGE_DATA ||
        (request->op==NAS_LWIP_BRIDGE_BIND_IF && !request->if_index) ||
        (request->op==NAS_LWIP_BRIDGE_SHUTDOWN && request->shutdown_how>2U) ||
