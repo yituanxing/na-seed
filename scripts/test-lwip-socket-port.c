@@ -359,6 +359,18 @@ int main(void) {
     assert(nas_lwip_socket_peer_snapshot(31,&named)==0);
     assert(named.ipv4==UINT32_C(0x7f000001) && named.port==38017);
     assert(ops->poll_description(31,4U)&4U);
+    bool nodelay=false;
+    assert(nas_lwip_socket_tcp_nodelay(31,false,&nodelay)==0 && !nodelay);
+    nodelay=true;
+    assert(nas_lwip_socket_tcp_nodelay(31,true,&nodelay)==0);
+    finish_control(31,0);
+    nodelay=false;
+    assert(nas_lwip_socket_tcp_nodelay(31,false,&nodelay)==0 && nodelay);
+    nodelay=false;
+    assert(nas_lwip_socket_tcp_nodelay(31,true,&nodelay)==0);
+    finish_control(31,0);
+    assert(nas_lwip_socket_tcp_nodelay(31,false,&nodelay)==0 && !nodelay);
+    assert(nas_lwip_socket_tcp_nodelay(20,true,&nodelay)==-EOPNOTSUPP);
 
     /* The syscall layer already holds a lease for the accepted child slot.
      * Adoption transfers bridge ID onto that SAME OpenFile identity. */

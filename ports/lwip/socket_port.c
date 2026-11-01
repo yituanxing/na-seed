@@ -43,7 +43,7 @@ struct port_socket {
     struct nas_lwip_bridge_address connect_address;
     struct nas_lwip_bridge_address peer_address;
     struct nas_lwip_bridge_address tx_destination,rx_source;
-    bool ip_recverr;
+    bool ip_recverr,tcp_nodelay;
     uint8_t rx[NAS_LWIP_BRIDGE_DATA];
     uint16_t rx_length,rx_position;
     uint8_t tx[NAS_LWIP_BRIDGE_DATA];
@@ -132,6 +132,9 @@ static void finish(struct port_socket *s) {
                 s->tx_error=result.status;
             }
         } else {
+            if(s->control_request.op==NAS_LWIP_BRIDGE_SETNODELAY &&
+               result.status==0)
+                s->tcp_nodelay=s->control_request.nodelay;
             s->control_result=result;
             s->command=PORT_CONTROL_DONE;
         }
@@ -327,7 +330,8 @@ int nas_lwip_socket_port_begin(unsigned slot,
     case NAS_LWIP_BRIDGE_BIND:case NAS_LWIP_BRIDGE_CONNECT:
     case NAS_LWIP_BRIDGE_LISTEN:case NAS_LWIP_BRIDGE_ACCEPT:
     case NAS_LWIP_BRIDGE_GETNAME:case NAS_LWIP_BRIDGE_SHUTDOWN:
-    case NAS_LWIP_BRIDGE_SETREUSEADDR:case NAS_LWIP_BRIDGE_SETBROADCAST:break;
+    case NAS_LWIP_BRIDGE_SETREUSEADDR:case NAS_LWIP_BRIDGE_SETBROADCAST:
+    case NAS_LWIP_BRIDGE_SETNODELAY:break;
     default:return -EINVAL;
     }
     int rc=check(s);
@@ -349,6 +353,7 @@ int nas_lwip_socket_port_begin(unsigned slot,
                old->shutdown_how==request->shutdown_how &&
                old->reuseaddr==request->reuseaddr &&
                old->broadcast==request->broadcast &&
+               old->nodelay==request->nodelay &&
                old->accept_slot==request->accept_slot &&
                old->accept_lease_token==request->accept_lease_token &&
                old->backlog==request->backlog ? -EALREADY:-EBUSY;
@@ -362,7 +367,8 @@ int nas_lwip_socket_port_begin(unsigned slot,
     const bool deferred_control=request->op==NAS_LWIP_BRIDGE_SHUTDOWN ||
                                 request->op==NAS_LWIP_BRIDGE_GETNAME ||
                                 request->op==NAS_LWIP_BRIDGE_SETREUSEADDR ||
-                                request->op==NAS_LWIP_BRIDGE_SETBROADCAST;
+                                request->op==NAS_LWIP_BRIDGE_SETBROADCAST ||
+                                request->op==NAS_LWIP_BRIDGE_SETNODELAY;
     if(deferred_control &&
        (s->command==PORT_TX || s->command==PORT_RX || s->tx_length)) {
         s->control_request=*request;
@@ -747,6 +753,17 @@ int nas_lwip_socket_setreuseaddr(unsigned slot,bool enabled) {
 int nas_lwip_socket_setbroadcast(unsigned slot,bool enabled) {
     const struct nas_lwip_bridge_request req={
         .op=NAS_LWIP_BRIDGE_SETBROADCAST,.broadcast=enabled
+    };
+    return nas_lwip_socket_port_begin(slot,&req);
+}
+int nas_lwip_socket_tcp_nodelay(unsigned slot,bool write,bool *enabled) {
+    struct port_socket *s=socket_at(slot);
+    if(!s)return -EBADF;
+    if(!enabled)return -EINVAL;
+    if(s->type!=NAS_LWIP_BRIDGE_TCP)return -EOPNOTSUPP;
+    if(!write){*enabled=s->tcp_nodelay;return 0;}
+    const struct nas_lwip_bridge_request req={
+        .op=NAS_LWIP_BRIDGE_SETNODELAY,.nodelay=*enabled
     };
     return nas_lwip_socket_port_begin(slot,&req);
 }

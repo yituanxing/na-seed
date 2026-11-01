@@ -73,6 +73,9 @@ int nas_lwip_socket_getname_complete(unsigned slot,
 int nas_lwip_socket_shutdown(unsigned slot,unsigned how);
 int nas_lwip_socket_setreuseaddr(unsigned slot,bool enabled);
 int nas_lwip_socket_setbroadcast(unsigned slot,bool enabled);
+/* TCP_NODELAY is changed on the real upstream TCP PCB by tcpip_thread.
+ * Reads reflect the last completed native option mutation. */
+int nas_lwip_socket_tcp_nodelay(unsigned slot,bool write,bool *enabled);
 /* Linux IP_RECVERR is stored on the shared OpenFile (also across dup/fork).
  * Successful UDP paths can opt in; asynchronous ICMP MSG_ERRQUEUE delivery
  * is not implemented and must not be advertised as full parity. */

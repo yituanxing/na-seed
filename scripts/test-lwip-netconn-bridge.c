@@ -185,6 +185,11 @@ int main(void){
 #endif
  assert(command(listener,NAS_LWIP_BRIDGE_LISTEN,lo(0),0,NULL,0).status==0);
  struct nas_lwip_bridge_id client=open_conn(31,NAS_LWIP_BRIDGE_TCP);
+ assert(nas_lwip_bridge_submit(client,
+     &(struct nas_lwip_bridge_request){
+         .op=NAS_LWIP_BRIDGE_SETNODELAY,.nodelay=true
+     })==0);
+ assert(finish(client).status==0);
  result=command(client,NAS_LWIP_BRIDGE_CONNECT,lo(36007),0,NULL,0);
  assert(result.status==0 || result.status==-EINPROGRESS);
  for(unsigned tries=0;tries<120 && !nas_lwip_bridge_listener_readable(listener);

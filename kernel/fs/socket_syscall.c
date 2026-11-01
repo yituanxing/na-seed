@@ -654,6 +654,11 @@ static uint64_t sys_ipv4_getsockopt(uint64_t fd,uint64_t level,
             int rc=nas_lwip_socket_ip_recverr(slot,false,&enabled);
             if(rc)return (uint64_t)(int64_t)rc;
             value=enabled?1U:0U;
+        } else if(level==6 && opt==1) { /* TCP_NODELAY */
+            bool enabled=false;
+            int rc=nas_lwip_socket_tcp_nodelay(slot,false,&enabled);
+            if(rc)return (uint64_t)(int64_t)rc;
+            value=enabled?1U:0U;
         } else if(level==1) {
             switch(opt) {
             case 3:value=type==NAS_LWIP_BRIDGE_TCP ? 1U:2U;break;
@@ -739,7 +744,8 @@ static uint64_t sys_ipv4_setsockopt(uint64_t fd,uint64_t level,
 #ifdef NAS_ENABLE_LWIP
     if(lwip_fd(fd)) {
         if((level!=1 || (opt!=2 && opt!=6)) &&
-           (level!=0 || opt!=11))return (uint64_t)-ENOPROTOOPT;
+           (level!=0 || opt!=11) &&
+           (level!=6 || opt!=1))return (uint64_t)-ENOPROTOOPT;
         if(length<4 || !address)return (uint64_t)-EINVAL;
         uint32_t value;
         if(!nas_user_read_bytes(address,(uint8_t *)&value,4))
@@ -749,6 +755,11 @@ static uint64_t sys_ipv4_setsockopt(uint64_t fd,uint64_t level,
             bool enabled=value!=0;
             return (uint64_t)(int64_t)nas_lwip_socket_ip_recverr(
                 slot,true,&enabled);
+        }
+        if(level==6) { /* TCP_NODELAY: real PCB Nagle flag */
+            bool enabled=value!=0;
+            return lwip_control_result(nas_lwip_socket_tcp_nodelay(
+                slot,true,&enabled));
         }
         if(opt==6) {
             if(nas_lwip_socket_type(slot)!=NAS_LWIP_BRIDGE_UDP)

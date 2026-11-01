@@ -10,6 +10,7 @@
 #include "lwip/err.h"
 #include "lwip/ip.h"
 #include "lwip/ip4_addr.h"
+#include "lwip/tcp.h"
 #include "lwip/tcpip.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -124,13 +125,21 @@ static ip_addr_t ipv4(struct nas_lwip_bridge_address address) {
 struct ip_option_callback {
     struct netconn *connection;
     bool enabled;
+    bool tcp_nodelay;
     uint8_t option;
     struct nas_ksem completed;
     err_t status;
 };
 static void set_ip_option_on_core(void *arg) {
     struct ip_option_callback *c=(struct ip_option_callback *)arg;
-    if(!c->connection->pcb.ip)c->status=ERR_CONN;
+    if(c->tcp_nodelay) {
+        if(!c->connection->pcb.tcp)c->status=ERR_CONN;
+        else {
+            if(c->enabled)tcp_nagle_disable(c->connection->pcb.tcp);
+            else tcp_nagle_enable(c->connection->pcb.tcp);
+            c->status=ERR_OK;
+        }
+    } else if(!c->connection->pcb.ip)c->status=ERR_CONN;
     else {
         if(c->enabled)ip_set_option(c->connection->pcb.ip,c->option);
         else ip_reset_option(c->connection->pcb.ip,c->option);
@@ -146,6 +155,15 @@ static err_t set_ip_option(struct netconn *connection,bool enabled,
     err_t err=tcpip_callback(set_ip_option_on_core,&c);
     if(err!=ERR_OK)return err;
     /* This wait parks a native kernel thread, never a Task/syscall stack. */
+    if(!nas_ksem_wait(&c.completed))return ERR_VAL;
+    return c.status;
+}
+static err_t set_tcp_nodelay(struct netconn *connection,bool enabled) {
+    struct ip_option_callback c={.connection=connection,.enabled=enabled,
+                                 .tcp_nodelay=true,.status=ERR_OK};
+    nas_ksem_init(&c.completed,0);
+    err_t err=tcpip_callback(set_ip_option_on_core,&c);
+    if(err!=ERR_OK)return err;
     if(!nas_ksem_wait(&c.completed))return ERR_VAL;
     return c.status;
 }
@@ -311,6 +329,10 @@ static void execute(unsigned slot) {
         out->status=-ENOPROTOOPT;
 #endif
         break;
+    case NAS_LWIP_BRIDGE_SETNODELAY:
+        if(s->type!=NAS_LWIP_BRIDGE_TCP){out->status=-EOPNOTSUPP;return;}
+        err=set_tcp_nodelay(s->connection,r->nodelay);
+        break;
     default:out->status=-EINVAL;return;
     }
     if(err!=ERR_OK)out->status=-err_to_errno(err);
@@ -393,7 +415,7 @@ int nas_lwip_bridge_submit(struct nas_lwip_bridge_id id,
     if(s->queued || s->executing || s->finished)return -EBUSY;
     if(bridge.count==NAS_LWIP_BRIDGE_QUEUE)return -EAGAIN;
     if(request->op<NAS_LWIP_BRIDGE_BIND ||
-       request->op>NAS_LWIP_BRIDGE_SETBROADCAST ||
+       request->op>NAS_LWIP_BRIDGE_SETNODELAY ||
        request->length>NAS_LWIP_BRIDGE_DATA ||
        (request->op==NAS_LWIP_BRIDGE_SHUTDOWN && request->shutdown_how>2U) ||
        (request->op==NAS_LWIP_BRIDGE_SEND && request->length && !request->bytes))

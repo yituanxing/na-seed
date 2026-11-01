@@ -59,6 +59,7 @@ static bool abi_name_peer[NAS_OPEN_FILE_LIMIT];
 static bool abi_reuse_enabled[NAS_OPEN_FILE_LIMIT];
 static bool abi_broadcast_enabled[NAS_OPEN_FILE_LIMIT];
 static bool abi_recverr_enabled[NAS_OPEN_FILE_LIMIT];
+static bool abi_nodelay_enabled[NAS_OPEN_FILE_LIMIT];
 static unsigned abi_broadcasts;
 static unsigned abi_shutdown_how[NAS_OPEN_FILE_LIMIT];
 static unsigned abi_getnames,abi_reuses,abi_shutdowns;
@@ -197,6 +198,16 @@ int nas_lwip_socket_setbroadcast(unsigned slot,bool enabled) {
        abi_type[slot]!=NAS_LWIP_BRIDGE_UDP)return -EOPNOTSUPP;
     abi_broadcast_enabled[slot]=enabled;abi_control[slot]=true;
     abi_pending_checks[slot]=1;abi_broadcasts++;return 0;
+}
+int nas_lwip_socket_tcp_nodelay(unsigned slot,bool write,bool *enabled) {
+    if(!nas_lwip_socket_is_slot(slot))return -EBADF;
+    if(!enabled)return -EINVAL;
+    if(abi_type[slot]!=NAS_LWIP_BRIDGE_TCP)return -EOPNOTSUPP;
+    if(write) {
+        abi_nodelay_enabled[slot]=*enabled;abi_control[slot]=true;
+        abi_pending_checks[slot]=1;
+    } else *enabled=abi_nodelay_enabled[slot];
+    return 0;
 }
 int nas_lwip_socket_ip_recverr(unsigned slot,bool write,bool *enabled) {
     if(!nas_lwip_socket_is_slot(slot))return -EBADF;
@@ -500,7 +511,13 @@ int main(void) {
     assert(!nas_fs_socket_control_ready(tcp_slot));
     assert(nas_fs_socket_control_ready(tcp_slot));
     assert(nas_fs_socket_control_description(tcp_slot)==0);
-    assert((int64_t)sys_ipv4_setsockopt(tcp_fd,6,1,optaddr,4)==-ENOPROTOOPT);
+    assert((int64_t)sys_ipv4_setsockopt(tcp_fd,6,1,optaddr,4)==-EAGAIN);
+    assert(abi_nodelay_enabled[tcp_slot]);
+    assert(!nas_fs_socket_control_ready(tcp_slot));
+    assert(nas_fs_socket_control_ready(tcp_slot));
+    assert(nas_fs_socket_control_description(tcp_slot)==0);
+    assert(sys_ipv4_getsockopt(tcp_fd,6,1,optaddr,optlen)==0);
+    memcpy(&enabled,user_ptr(optaddr),4);assert(enabled==1);
     assert(abi_reuses==1);
     assert((int64_t)sys_socket_shutdown(tcp_fd,3)==-EINVAL);
     assert((int64_t)sys_socket_shutdown(tcp_fd,2)==-EAGAIN);
