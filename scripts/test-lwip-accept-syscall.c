@@ -61,6 +61,9 @@ static void accepted_release(unsigned slot) {
 static const struct nas_file_ops accepted_ops={.release=accepted_release};
 const struct nas_file_ops *nas_lwip_socket_port_ops(void){return &accepted_ops;}
 bool nas_lwip_socket_is_slot(unsigned slot){return slot==LISTENER_SLOT;}
+int nas_lwip_socket_type(unsigned slot){
+    return slot==LISTENER_SLOT?NAS_LWIP_BRIDGE_TCP:-EBADF;
+}
 int nas_lwip_socket_accept_begin(unsigned slot,struct nas_fd_slot_lease lease) {
     assert(slot==LISTENER_SLOT && nas_fd_slot_lease_valid(lease));
     ++bridge_begin_count;
@@ -165,6 +168,11 @@ int nas_lwip_socket_setreuseaddr(unsigned slot,bool enabled) {
     assert(slot==LISTENER_SLOT && !control_pending);
     control_pending=true;reuse_enabled=enabled;reuse_count++;
     return 0;
+}
+int nas_lwip_socket_setbroadcast(unsigned slot,bool enabled) {
+    (void)slot;
+    (void)enabled;
+    return -EOPNOTSUPP;
 }
 int nas_lwip_socket_control_ready(unsigned slot) {
     assert(slot==LISTENER_SLOT);

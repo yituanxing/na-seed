@@ -191,6 +191,8 @@ static uint64_t sys_ipv4_connect(uint64_t fd,uint64_t addr,uint64_t len) {
         unsigned slot=TASK.fds->entries[fd].slot;
         rc=nas_lwip_socket_connect(slot,lwip_address(ep));
         if(rc)return (uint64_t)(int64_t)(rc==-EAGAIN?-ENOBUFS:rc);
+        if(nas_lwip_socket_type(slot)==NAS_LWIP_BRIDGE_UDP)
+            return 0; /* no UDP remote handshake; errors via SO_ERROR */
         /* SOCK_NONBLOCK observes a pending native connect. The worker,
          * not this user syscall, completes the actual TCP handshake. */
         if(nas_open_files[slot].status_flags&0x800ULL)
@@ -710,13 +712,19 @@ static uint64_t sys_ipv4_setsockopt(uint64_t fd,uint64_t level,
                                     uint64_t length) {
 #ifdef NAS_ENABLE_LWIP
     if(lwip_fd(fd)) {
-        if(level!=1 || opt!=2)return (uint64_t)-ENOPROTOOPT;
+        if(level!=1 || (opt!=2 && opt!=6))return (uint64_t)-ENOPROTOOPT;
         if(length<4 || !address)return (uint64_t)-EINVAL;
         uint32_t value;
         if(!nas_user_read_bytes(address,(uint8_t *)&value,4))
             return (uint64_t)-EFAULT;
-        return lwip_control_result(nas_lwip_socket_setreuseaddr(
-            TASK.fds->entries[fd].slot,value!=0));
+        unsigned slot=TASK.fds->entries[fd].slot;
+        if(opt==6) {
+            if(nas_lwip_socket_type(slot)!=NAS_LWIP_BRIDGE_UDP)
+                return (uint64_t)-EOPNOTSUPP;
+            return lwip_control_result(nas_lwip_socket_setbroadcast(
+                slot,value!=0));
+        }
+        return lwip_control_result(nas_lwip_socket_setreuseaddr(slot,value!=0));
     }
 #endif
     if(!ipv4_fd(fd))return (uint64_t)-EBADF;
@@ -875,7 +883,40 @@ bad_user_output:
 }
 static uint64_t sys_ipv4_sendmsg(uint64_t fd,uint64_t address,uint64_t flags) {
 #ifdef NAS_ENABLE_LWIP
-    if(lwip_fd(fd))return (uint64_t)-EOPNOTSUPP;
+    if(lwip_fd(fd)) {
+        unsigned slot=TASK.fds->entries[fd].slot;
+        if(nas_lwip_socket_type(slot)!=NAS_LWIP_BRIDGE_UDP)
+            return (uint64_t)-EOPNOTSUPP;
+        if(flags & ~(0x4000ULL|0x40ULL))return (uint64_t)-EOPNOTSUPP;
+        struct nas_msghdr msg;
+        if(!nas_user_read_bytes(address,(uint8_t *)&msg,sizeof(msg)))
+            return (uint64_t)-EFAULT;
+        if(msg.controllen)return (uint64_t)-EOPNOTSUPP;
+        if(msg.iovlen>32)return (uint64_t)-EMSGSIZE;
+        struct nas_lwip_bridge_address destination={0};
+        if(msg.name) {
+            struct nas_ipv4_endpoint ep;
+            int rc=ipv4_endpoint(msg.name,msg.namelen,&ep);
+            if(rc)return (uint64_t)(int64_t)rc;
+            destination=lwip_address(ep);
+        }
+        uint8_t packet[NAS_LWIP_BRIDGE_DATA];
+        size_t total=0;
+        for(unsigned i=0;i<msg.iovlen;i++) {
+            struct nas_iovec v;
+            if(msg.iov>UINT64_MAX-(uint64_t)i*sizeof(v) ||
+               !nas_user_read_bytes(msg.iov+(uint64_t)i*sizeof(v),
+                                    (uint8_t *)&v,sizeof(v)))
+                return (uint64_t)-EFAULT;
+            if(v.length>NAS_LWIP_BRIDGE_DATA-total)
+                return (uint64_t)-EMSGSIZE;
+            if(v.length && !nas_user_read_bytes(v.base,packet+total,v.length))
+                return (uint64_t)-EFAULT;
+            total+=(size_t)v.length;
+        }
+        return (uint64_t)nas_lwip_socket_sendto(slot,packet,
+                    (uint16_t)total,destination);
+    }
 #endif
     if(!ipv4_fd(fd))return (uint64_t)-EBADF;
     /* Per-call MSG_DONTWAIT needs a dedicated File transfer flag, not a
@@ -890,7 +931,60 @@ static uint64_t sys_ipv4_sendmsg(uint64_t fd,uint64_t address,uint64_t flags) {
 }
 static uint64_t sys_ipv4_recvmsg(uint64_t fd,uint64_t address,uint64_t flags) {
 #ifdef NAS_ENABLE_LWIP
-    if(lwip_fd(fd))return (uint64_t)-EOPNOTSUPP;
+    if(lwip_fd(fd)) {
+        unsigned slot=TASK.fds->entries[fd].slot;
+        if(nas_lwip_socket_type(slot)!=NAS_LWIP_BRIDGE_UDP)
+            return (uint64_t)-EOPNOTSUPP;
+        if(flags & ~(0x40ULL|0x4000ULL))return (uint64_t)-EOPNOTSUPP;
+        struct nas_msghdr msg;
+        if(!nas_user_read_bytes(address,(uint8_t *)&msg,sizeof(msg)) ||
+           !nas_user_prepare_write(address,sizeof(msg)))
+            return (uint64_t)-EFAULT;
+        if(msg.iovlen>32)return (uint64_t)-EMSGSIZE;
+        struct nas_iovec iov[32];
+        uint64_t capacity=0;
+        for(unsigned i=0;i<msg.iovlen;i++) {
+            if(msg.iov>UINT64_MAX-(uint64_t)i*sizeof(iov[i]) ||
+               !nas_user_read_bytes(msg.iov+(uint64_t)i*sizeof(iov[i]),
+                                    (uint8_t *)&iov[i],sizeof(iov[i])))
+                return (uint64_t)-EFAULT;
+            uint64_t budget=NAS_LWIP_BRIDGE_DATA-capacity;
+            if(iov[i].length<budget)budget=iov[i].length;
+            if(budget && !nas_user_prepare_write(iov[i].base,budget))
+                return (uint64_t)-EFAULT;
+            capacity+=budget;
+        }
+        unsigned name_capacity=msg.namelen>16?16U:msg.namelen;
+        if(msg.name && name_capacity &&
+           !nas_user_prepare_write(msg.name,name_capacity))
+            return (uint64_t)-EFAULT;
+        uint8_t packet[NAS_LWIP_BRIDGE_DATA];
+        struct nas_lwip_bridge_address source={0};
+        bool truncated=false;
+        int64_t received=nas_lwip_socket_recvfrom(slot,packet,
+            (uint16_t)capacity,&source,&truncated);
+        if(received<0)return (uint64_t)received;
+        unsigned offset=0;
+        for(unsigned i=0;i<msg.iovlen && offset<(unsigned)received;i++) {
+            uint64_t count=iov[i].length;
+            if(count>(uint64_t)received-offset)count=(uint64_t)received-offset;
+            if(count && !nas_user_write_bytes(iov[i].base,packet+offset,count))
+                return (uint64_t)-EFAULT;
+            offset+=(unsigned)count;
+        }
+        if(msg.name) {
+            uint8_t bytes[16];
+            ipv4_sockaddr((struct nas_ipv4_endpoint){source.ipv4,
+                          source.port},bytes);
+            if(name_capacity && !nas_user_write_bytes(
+                msg.name,bytes,name_capacity))return (uint64_t)-EFAULT;
+            msg.namelen=16;
+        } else msg.namelen=0;
+        msg.controllen=0; /* no invented ancillary messages */
+        msg.flags=truncated?0x20U:0U; /* Linux MSG_TRUNC */
+        return nas_user_write_bytes(address,(const uint8_t *)&msg,sizeof(msg)) ?
+               (uint64_t)received:(uint64_t)-EFAULT;
+    }
 #endif
     if(!ipv4_fd(fd))return (uint64_t)-EBADF;
     if(flags)return (uint64_t)-EOPNOTSUPP;
@@ -926,11 +1020,25 @@ static uint64_t sys_ipv4_sendto(uint64_t fd,uint64_t buffer,
                                 uint64_t destination,uint64_t address_size) {
 #ifdef NAS_ENABLE_LWIP
     if(lwip_fd(fd)) {
-        /* Connected socket data without per-call flags uses FileOps in
-         * task_pipe_io() so a pending SEND parks without losing its File.
-         * Addressed UDP send requires a separate native SENDTO wrapper. */
-        if(flags)return (uint64_t)-EOPNOTSUPP;
-        if(destination || address_size)return (uint64_t)-EOPNOTSUPP;
+        /* Connected TCP/UDP goes through the existing parked FileOps path.
+         * Connectionless UDP is copied as ONE kernel-owned datagram with
+         * its actual destination, never split into stream writes. */
+        if(flags & ~(0x40ULL|0x4000ULL))return (uint64_t)-EOPNOTSUPP;
+        if(destination) {
+            unsigned slot=TASK.fds->entries[fd].slot;
+            if(nas_lwip_socket_type(slot)!=NAS_LWIP_BRIDGE_UDP)
+                return (uint64_t)-EISCONN;
+            struct nas_ipv4_endpoint ep;
+            int rc=ipv4_endpoint(destination,address_size,&ep);
+            if(rc)return (uint64_t)(int64_t)rc;
+            if(length>NAS_LWIP_BRIDGE_DATA)return (uint64_t)-EMSGSIZE;
+            uint8_t packet[NAS_LWIP_BRIDGE_DATA];
+            if(length && !nas_user_read_bytes(buffer,packet,length))
+                return (uint64_t)-EFAULT;
+            return (uint64_t)nas_lwip_socket_sendto(slot,packet,
+                (uint16_t)length,lwip_address(ep));
+        }
+        if(address_size)return (uint64_t)-EINVAL;
         return nas_fs_fd_write(fd,buffer,length);
     }
 #endif
@@ -944,6 +1052,44 @@ static uint64_t sys_ipv4_recvfrom(uint64_t fd,uint64_t buffer,
                                   uint64_t address,uint64_t length_ptr) {
 #ifdef NAS_ENABLE_LWIP
     if(lwip_fd(fd)) {
+        unsigned slot=TASK.fds->entries[fd].slot;
+        if(nas_lwip_socket_type(slot)==NAS_LWIP_BRIDGE_UDP) {
+            if(flags & ~(0x40ULL|0x4000ULL))return (uint64_t)-EOPNOTSUPP;
+            if(address && !length_ptr)return (uint64_t)-EFAULT;
+            uint32_t capacity=0;
+            if(address) {
+                if(!nas_user_read_bytes(length_ptr,(uint8_t *)&capacity,4))
+                    return (uint64_t)-EFAULT;
+                unsigned n=capacity>16?16U:capacity;
+                if(!nas_user_prepare_write(length_ptr,4) ||
+                   (n && !nas_user_prepare_write(address,n)))
+                    return (uint64_t)-EFAULT;
+            }
+            uint64_t available=length>NAS_LWIP_BRIDGE_DATA ?
+                               NAS_LWIP_BRIDGE_DATA:length;
+            if(available && !nas_user_prepare_write(buffer,available))
+                return (uint64_t)-EFAULT;
+            uint8_t packet[NAS_LWIP_BRIDGE_DATA];
+            struct nas_lwip_bridge_address source={0};
+            int64_t received=nas_lwip_socket_recvfrom(slot,packet,
+                (uint16_t)available,&source,NULL);
+            if(received<0)return (uint64_t)received;
+            if(received && !nas_user_write_bytes(buffer,packet,
+                                                  (size_t)received))
+                return (uint64_t)-EFAULT;
+            if(address) {
+                uint8_t bytes[16];
+                ipv4_sockaddr((struct nas_ipv4_endpoint){
+                    source.ipv4,source.port},bytes);
+                unsigned n=capacity>16?16U:capacity;
+                const uint32_t actual=16;
+                if((n && !nas_user_write_bytes(address,bytes,n)) ||
+                   !nas_user_write_bytes(length_ptr,
+                                         (const uint8_t *)&actual,4))
+                    return (uint64_t)-EFAULT;
+            }
+            return (uint64_t)received;
+        }
         if(flags)return (uint64_t)-EOPNOTSUPP;
         if(address && !length_ptr)return (uint64_t)-EFAULT;
         uint32_t capacity=0;

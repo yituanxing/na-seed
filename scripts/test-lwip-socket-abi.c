@@ -57,10 +57,45 @@ static int abi_so_error[NAS_OPEN_FILE_LIMIT];
 static unsigned abi_opens,abi_releases,abi_binds,abi_connects,abi_listens;
 static bool abi_name_peer[NAS_OPEN_FILE_LIMIT];
 static bool abi_reuse_enabled[NAS_OPEN_FILE_LIMIT];
+static bool abi_broadcast_enabled[NAS_OPEN_FILE_LIMIT];
+static unsigned abi_broadcasts;
 static unsigned abi_shutdown_how[NAS_OPEN_FILE_LIMIT];
 static unsigned abi_getnames,abi_reuses,abi_shutdowns;
 static uint8_t abi_rx_length[NAS_OPEN_FILE_LIMIT];
 static uint8_t abi_rx_bytes[NAS_OPEN_FILE_LIMIT][16];
+static uint8_t abi_udp_last_send[NAS_LWIP_BRIDGE_DATA];
+static unsigned abi_udp_send_count,abi_udp_sent_length;
+static struct nas_lwip_bridge_address abi_udp_destination;
+
+int64_t nas_lwip_socket_sendto(unsigned slot,const uint8_t *data,
+                               uint16_t length,
+                               struct nas_lwip_bridge_address destination) {
+    if(!nas_lwip_socket_is_slot(slot))return -EBADF;
+    if(abi_type[slot]!=NAS_LWIP_BRIDGE_UDP)return -EOPNOTSUPP;
+    if(length>NAS_LWIP_BRIDGE_DATA)return -EMSGSIZE;
+    assert(data && length);
+    memcpy(abi_udp_last_send,data,length);
+    abi_udp_sent_length=length;abi_udp_destination=destination;
+    abi_udp_send_count++;
+    return length;
+}
+int64_t nas_lwip_socket_recvfrom(unsigned slot,uint8_t *bytes,
+                                 uint16_t capacity,
+                                 struct nas_lwip_bridge_address *source,
+                                 bool *truncated) {
+    if(!nas_lwip_socket_is_slot(slot))return -EBADF;
+    if(abi_type[slot]!=NAS_LWIP_BRIDGE_UDP)return -EOPNOTSUPP;
+    if(!abi_rx_length[slot])return -EAGAIN;
+    unsigned length=abi_rx_length[slot];
+    unsigned n=length<capacity?length:capacity;
+    if(n)memcpy(bytes,abi_rx_bytes[slot],n);
+    if(source)*source=(struct nas_lwip_bridge_address){
+        .ipv4=UINT32_C(0x7f000001),.port=38007
+    };
+    if(truncated)*truncated=n<length;
+    abi_rx_length[slot]=0; /* no TCP-style UDP tail */
+    return n;
+}
 
 static void abi_release(unsigned slot) {
     assert(slot<NAS_OPEN_FILE_LIMIT && abi_live[slot]);
@@ -155,6 +190,12 @@ int nas_lwip_socket_setreuseaddr(unsigned slot,bool enabled) {
     if(!nas_lwip_socket_is_slot(slot))return -EBADF;
     abi_reuse_enabled[slot]=enabled;abi_control[slot]=true;
     abi_pending_checks[slot]=1;abi_reuses++;return 0;
+}
+int nas_lwip_socket_setbroadcast(unsigned slot,bool enabled) {
+    if(!nas_lwip_socket_is_slot(slot) ||
+       abi_type[slot]!=NAS_LWIP_BRIDGE_UDP)return -EOPNOTSUPP;
+    abi_broadcast_enabled[slot]=enabled;abi_control[slot]=true;
+    abi_pending_checks[slot]=1;abi_broadcasts++;return 0;
 }
 int nas_lwip_socket_control_ready(unsigned slot) {
     if(!nas_lwip_socket_is_slot(slot) || !abi_control[slot])return 0;
@@ -357,6 +398,75 @@ int main(void) {
     const uint8_t source_expected[5]={2,0,0x87,0x07,127};
     assert(!memcmp(user_ptr(srcaddr),source_expected,5));
     assert((int64_t)sys_ipv4_recvfrom(tcp_fd,rxbuf,4,0,srcaddr,0)==-EFAULT);
+
+    /* Addressed UDP uses one copied packet and the native peer metadata.
+     * Multiple iovecs in sendmsg must never become multiple datagrams. */
+    const uint64_t udp_target=abi_sockaddr(38007,UINT32_C(0x7f000001));
+    const uint64_t udp_payload=TEST_BASE+1700;
+    memcpy(user_ptr(udp_payload),"PING",4);
+    assert(sys_ipv4_sendto(udp_fd,udp_payload,4,0,udp_target,16)==4);
+    assert(abi_udp_send_count==1 && abi_udp_sent_length==4 &&
+           !memcmp(abi_udp_last_send,"PING",4));
+    assert(abi_udp_destination.port==38007 &&
+           abi_udp_destination.ipv4==UINT32_C(0x7f000001));
+    assert((int64_t)sys_ipv4_sendto(
+        udp_fd,udp_payload,NAS_LWIP_BRIDGE_DATA+1,0,udp_target,16)==-EMSGSIZE);
+
+    const uint64_t msgaddr=TEST_BASE+1800,iovaddr=TEST_BASE+1920;
+    const struct nas_iovec udp_iov[2]={
+        {.base=udp_payload,.length=2},
+        {.base=udp_payload+2,.length=2}
+    };
+    memcpy(user_ptr(iovaddr),udp_iov,sizeof(udp_iov));
+    struct nas_msghdr msg={.name=udp_target,.namelen=16,
+                            .iov=iovaddr,.iovlen=2};
+    memcpy(user_ptr(msgaddr),&msg,sizeof(msg));
+    assert(sys_ipv4_sendmsg(udp_fd,msgaddr,0)==4);
+    assert(abi_udp_send_count==2 && abi_udp_sent_length==4 &&
+           !memcmp(abi_udp_last_send,"PING",4));
+    assert((int64_t)sys_ipv4_sendmsg(udp_fd,msgaddr,0x2ULL)==-EOPNOTSUPP);
+
+    /* Ncat -u sets SO_BROADCAST before its nonblocking UDP connect. The
+     * first queues a real PCB control operation; the second has no TCP
+     * handshake and therefore cannot report a spurious EINPROGRESS. */
+    uint32_t broadcast_on=1;
+    memcpy(user_ptr(udp_payload),&broadcast_on,4);
+    assert((int64_t)sys_ipv4_setsockopt(
+        udp_fd,1,6,udp_payload,4)==-EAGAIN);
+    assert(abi_broadcasts==1 && abi_broadcast_enabled[udp_slot]);
+    assert(!nas_fs_socket_control_ready(udp_slot));
+    assert(nas_fs_socket_control_ready(udp_slot));
+    assert(nas_fs_socket_control_description(udp_slot)==0);
+    assert(sys_ipv4_connect(udp_fd,udp_target,16)==0);
+    assert(abi_connects==2 && abi_peer[udp_slot].port==38007);
+
+    memcpy(abi_rx_bytes[udp_slot],"PONG",4);abi_rx_length[udp_slot]=4;
+    uint32_t udp_source_capacity=8;
+    memcpy(user_ptr(srclen),&udp_source_capacity,4);
+    can_write[0]=false;
+    assert((int64_t)sys_ipv4_recvfrom(
+        udp_fd,rxbuf,4,0,srcaddr,srclen)==-EFAULT);
+    assert(abi_rx_length[udp_slot]==4);
+    can_write[0]=true;
+    assert(sys_ipv4_recvfrom(udp_fd,rxbuf,4,0,srcaddr,srclen)==4);
+    assert(!memcmp(user_ptr(rxbuf),"PONG",4));
+    assert(abi_rx_length[udp_slot]==0);
+    const uint8_t expected_udp_source[8]={2,0,0x94,0x77,127,0,0,1};
+    assert(!memcmp(user_ptr(srcaddr),expected_udp_source,8));
+
+    memcpy(abi_rx_bytes[udp_slot],"DATAGRAM",8);abi_rx_length[udp_slot]=8;
+    const struct nas_iovec rx_iov[2]={
+        {.base=rxbuf,.length=2},{.base=rxbuf+2,.length=3}
+    };
+    memcpy(user_ptr(iovaddr),rx_iov,sizeof(rx_iov));
+    msg=(struct nas_msghdr){.name=srcaddr,.namelen=8,
+                            .iov=iovaddr,.iovlen=2};
+    memcpy(user_ptr(msgaddr),&msg,sizeof(msg));
+    assert(sys_ipv4_recvmsg(udp_fd,msgaddr,0)==5);
+    assert(!memcmp(user_ptr(rxbuf),"DATAG",5));
+    memcpy(&msg,user_ptr(msgaddr),sizeof(msg));
+    assert(msg.namelen==16 && msg.flags==0x20U && msg.controllen==0);
+    assert(abi_rx_length[udp_slot]==0);
 
     /* SO_REUSEADDR and SHUTDOWN both wait for a native control result.
      * Unsupported or invalid controls must not pretend to have succeeded. */

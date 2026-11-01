@@ -21,6 +21,7 @@
 #define LWIP_UDP 1
 #define LWIP_TCP 1
 #define SO_REUSE 1 /* native SO_REUSEADDR for real Alpine ncat listeners */
+#define IP_SOF_BROADCAST 1 /* native UDP SO_BROADCAST on official IP PCB */
 #define LWIP_ARP 1
 #define LWIP_RAW 1
 #define LWIP_LOOPBACK_MAX_PBUFS 8

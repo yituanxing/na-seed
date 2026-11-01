@@ -118,37 +118,37 @@ static ip_addr_t ipv4(struct nas_lwip_bridge_address address) {
 }
 
 /* Netconn serializes its public API with tcpip_thread, but its PCB is not
- * writable from this bridge worker when LWIP_TCPIP_CORE_LOCKING=0. Queue the
- * SO_REUSEADDR mutation in the official TCP/IP callback context and keep the
- * worker's callback state alive until the core signals completion. */
-#if SO_REUSE
-struct reuseaddr_callback {
+ * writable from this bridge worker when LWIP_TCPIP_CORE_LOCKING=0. Queue
+ * socket-option mutations in the official TCP/IP callback context and keep
+ * the worker's callback state alive until the core signals completion. */
+struct ip_option_callback {
     struct netconn *connection;
     bool enabled;
+    uint8_t option;
     struct nas_ksem completed;
     err_t status;
 };
-static void set_reuseaddr_on_core(void *arg) {
-    struct reuseaddr_callback *c=(struct reuseaddr_callback *)arg;
+static void set_ip_option_on_core(void *arg) {
+    struct ip_option_callback *c=(struct ip_option_callback *)arg;
     if(!c->connection->pcb.ip)c->status=ERR_CONN;
     else {
-        if(c->enabled)ip_set_option(c->connection->pcb.ip,SOF_REUSEADDR);
-        else ip_reset_option(c->connection->pcb.ip,SOF_REUSEADDR);
+        if(c->enabled)ip_set_option(c->connection->pcb.ip,c->option);
+        else ip_reset_option(c->connection->pcb.ip,c->option);
         c->status=ERR_OK;
     }
     (void)nas_ksem_post(&c->completed);
 }
-static err_t set_reuseaddr(struct netconn *connection,bool enabled) {
-    struct reuseaddr_callback c={.connection=connection,.enabled=enabled,
-                                 .status=ERR_OK};
+static err_t set_ip_option(struct netconn *connection,bool enabled,
+                           uint8_t option) {
+    struct ip_option_callback c={.connection=connection,.enabled=enabled,
+                                 .option=option,.status=ERR_OK};
     nas_ksem_init(&c.completed,0);
-    err_t err=tcpip_callback(set_reuseaddr_on_core,&c);
+    err_t err=tcpip_callback(set_ip_option_on_core,&c);
     if(err!=ERR_OK)return err;
     /* This wait parks a native kernel thread, never a Task/syscall stack. */
     if(!nas_ksem_wait(&c.completed))return ERR_VAL;
     return c.status;
 }
-#endif
 
 static void execute(unsigned slot) {
     struct bridge_slot *s=&bridge.slots[slot];
@@ -298,7 +298,15 @@ static void execute(unsigned slot) {
         break;
     case NAS_LWIP_BRIDGE_SETREUSEADDR:
 #if SO_REUSE
-        err=set_reuseaddr(s->connection,r->reuseaddr);
+        err=set_ip_option(s->connection,r->reuseaddr,SOF_REUSEADDR);
+#else
+        out->status=-ENOPROTOOPT;
+#endif
+        break;
+    case NAS_LWIP_BRIDGE_SETBROADCAST:
+#if IP_SOF_BROADCAST
+        if(s->type!=NAS_LWIP_BRIDGE_UDP){out->status=-EOPNOTSUPP;return;}
+        err=set_ip_option(s->connection,r->broadcast,SOF_BROADCAST);
 #else
         out->status=-ENOPROTOOPT;
 #endif
@@ -385,7 +393,7 @@ int nas_lwip_bridge_submit(struct nas_lwip_bridge_id id,
     if(s->queued || s->executing || s->finished)return -EBUSY;
     if(bridge.count==NAS_LWIP_BRIDGE_QUEUE)return -EAGAIN;
     if(request->op<NAS_LWIP_BRIDGE_BIND ||
-       request->op>NAS_LWIP_BRIDGE_SETREUSEADDR ||
+       request->op>NAS_LWIP_BRIDGE_SETBROADCAST ||
        request->length>NAS_LWIP_BRIDGE_DATA ||
        (request->op==NAS_LWIP_BRIDGE_SHUTDOWN && request->shutdown_how>2U) ||
        (request->op==NAS_LWIP_BRIDGE_SEND && request->length && !request->bytes))

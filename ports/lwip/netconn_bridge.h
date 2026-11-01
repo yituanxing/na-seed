@@ -21,7 +21,7 @@ enum nas_lwip_bridge_op {
  NAS_LWIP_BRIDGE_LISTEN, NAS_LWIP_BRIDGE_ACCEPT,
  NAS_LWIP_BRIDGE_SEND, NAS_LWIP_BRIDGE_RECV,
  NAS_LWIP_BRIDGE_GETNAME, NAS_LWIP_BRIDGE_SHUTDOWN,
- NAS_LWIP_BRIDGE_SETREUSEADDR
+ NAS_LWIP_BRIDGE_SETREUSEADDR, NAS_LWIP_BRIDGE_SETBROADCAST
 };
 struct nas_lwip_bridge_request {
  enum nas_lwip_bridge_op op;
@@ -29,6 +29,7 @@ struct nas_lwip_bridge_request {
  bool name_peer; /* GETNAME: false = local endpoint, true = peer */
  uint8_t shutdown_how; /* Linux SHUT_RD=0, SHUT_WR=1, SHUT_RDWR=2 */
  bool reuseaddr; /* SETREUSEADDR, applied to actual lwIP PCB on core */
+ bool broadcast; /* SETBROADCAST, applied to actual lwIP UDP PCB on core */
  uint16_t accept_slot; /* caller-reserved OpenFile slot for ACCEPT */
  uint64_t accept_lease_token; /* authoritative nas_fd_slot_lease_begin token */
  uint16_t backlog;

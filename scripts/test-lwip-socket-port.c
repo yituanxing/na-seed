@@ -247,7 +247,18 @@ int main(void) {
     struct nas_lwip_bridge_address named=name_slot(20,false);
     assert(named.ipv4==UINT32_C(0x7f000001) && named.port==38007);
     assert(nas_lwip_socket_connect(21,lo(38007))==0);
-    finish_control(21,0);
+    /* UDP connect has no remote handshake or deferred user completion. The
+     * native worker completes peer association in the background. */
+    bool udp_connected=false;
+    for(unsigned tries=0;tries<300;tries++) {
+        if(ops->poll_description(21,4U)&4U) {
+            udp_connected=true;
+            break;
+        }
+        test_ns+=UINT64_C(1000000);
+        (void)nas_kthread_run(1);
+    }
+    assert(udp_connected);
     named=name_slot(21,true);
     assert(named.ipv4==UINT32_C(0x7f000001) && named.port==38007);
     assert(nas_lwip_socket_peer_snapshot(21,&named)==-EOPNOTSUPP);
@@ -273,6 +284,55 @@ int main(void) {
     assert(!memcmp(result,"trunc",5));
     /* UDP discards the rest of the first datagram, not a TCP-style tail. */
     assert((int64_t)ops->read_plan(20,1)==-EOPNOTSUPP);
+
+    /* Connectionless UDP retains one datagram and its actual source in the
+     * same OpenFile. A multi-fragment Linux sendmsg must become exactly ONE
+     * native SENDTO, never several stream writes; truncated RX drops the
+     * remainder and retains the packet's real source address. */
+    reserve(23,NAS_LWIP_BRIDGE_UDP);
+    assert(nas_lwip_socket_setbroadcast(23,true)==0);
+    finish_control(23,0);
+    assert(ops->poll_description(23,4U)&4U);
+    assert((int64_t)ops->write_plan(23,NAS_LWIP_BRIDGE_DATA+1)==-EMSGSIZE);
+    const uint8_t addressed[]="one addressed UDP packet";
+    assert(nas_lwip_socket_sendto(23,addressed,sizeof(addressed)-1,
+                                  lo(38007))==sizeof(addressed)-1);
+    assert(nas_lwip_socket_sendto(23,addressed,sizeof(addressed)-1,
+                                  lo(38007))==-EAGAIN);
+    struct nas_lwip_bridge_address source={0};
+    bool truncated=false;
+    int64_t got=-EAGAIN;
+    for(unsigned tries=0;tries<300;tries++) {
+        got=nas_lwip_socket_recvfrom(20,result,sizeof(result),
+                                     &source,&truncated);
+        if(got>=0)break;
+        assert(got==-EAGAIN);
+        test_ns+=UINT64_C(1000000);
+        (void)nas_kthread_run(1);
+    }
+    assert(got==(int64_t)sizeof(addressed)-1 &&
+           !memcmp(result,addressed,(size_t)got));
+    assert(source.ipv4==UINT32_C(0x7f000001) && source.port);
+    assert(!truncated);
+    for(unsigned tries=0;tries<200 && !(ops->poll_description(23,4U)&4U);
+        tries++) {
+        test_ns+=UINT64_C(1000000);
+        (void)nas_kthread_run(1);
+    }
+    assert(ops->poll_description(23,4U)&4U);
+    assert(nas_lwip_socket_sendto(23,addressed,sizeof(addressed)-1,
+                                  lo(38007))==sizeof(addressed)-1);
+    got=-EAGAIN;
+    for(unsigned tries=0;tries<300;tries++) {
+        got=nas_lwip_socket_recvfrom(20,result,6,&source,&truncated);
+        if(got>=0)break;
+        assert(got==-EAGAIN);
+        test_ns+=UINT64_C(1000000);
+        (void)nas_kthread_run(1);
+    }
+    assert(got==6 && !memcmp(result,"one ad",6) && truncated);
+    assert(source.ipv4==UINT32_C(0x7f000001) && source.port);
+    close_slot(23);
 
     reserve(30,NAS_LWIP_BRIDGE_TCP);
     assert(nas_lwip_socket_setreuseaddr(30,true)==0);

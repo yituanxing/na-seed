@@ -42,6 +42,7 @@ struct port_socket {
     struct nas_lwip_bridge_request control_request;
     struct nas_lwip_bridge_address connect_address;
     struct nas_lwip_bridge_address peer_address;
+    struct nas_lwip_bridge_address tx_destination,rx_source;
     uint8_t rx[NAS_LWIP_BRIDGE_DATA];
     uint16_t rx_length,rx_position;
     uint8_t tx[NAS_LWIP_BRIDGE_DATA];
@@ -96,7 +97,10 @@ static void finish(struct port_socket *s) {
              * caller returned EINPROGRESS and never explicitly takes the
              * first native result. Do not block the sole Netconn worker by
              * retaining PORT_CONTROL_DONE while waiting for user polling. */
-            s->connect_result_pending=true;
+            /* UDP connect only sets a local peer association, not a TCP
+             * handshake. Linux reports immediate success on enqueue;
+             * finish later applies the true Netconn status and SO_ERROR. */
+            s->connect_result_pending=s->type==NAS_LWIP_BRIDGE_TCP;
             s->command=PORT_IDLE;
             if(result.status==0 || result.status==-EISCONN) {
                 s->connected=true;
@@ -133,6 +137,7 @@ static void finish(struct port_socket *s) {
         } else if(result.length || s->type==NAS_LWIP_BRIDGE_UDP) {
             s->rx_valid=true;
             s->rx_truncated=result.truncated;
+            s->rx_source=result.peer;
             s->rx_length=result.length;
             s->rx_position=0;
             if(result.length)memcpy(s->rx,result.bytes,result.length);
@@ -185,6 +190,7 @@ static void submit_tx(struct port_socket *s) {
        !elapsed(s->tx_retry_at))return;
     struct nas_lwip_bridge_request r={
         .op=NAS_LWIP_BRIDGE_SEND,
+        .address=s->tx_destination,
         .bytes=s->tx+s->tx_position,
         .length=(uint16_t)(s->tx_length-s->tx_position)
     };
@@ -313,7 +319,7 @@ int nas_lwip_socket_port_begin(unsigned slot,
     case NAS_LWIP_BRIDGE_BIND:case NAS_LWIP_BRIDGE_CONNECT:
     case NAS_LWIP_BRIDGE_LISTEN:case NAS_LWIP_BRIDGE_ACCEPT:
     case NAS_LWIP_BRIDGE_GETNAME:case NAS_LWIP_BRIDGE_SHUTDOWN:
-    case NAS_LWIP_BRIDGE_SETREUSEADDR:break;
+    case NAS_LWIP_BRIDGE_SETREUSEADDR:case NAS_LWIP_BRIDGE_SETBROADCAST:break;
     default:return -EINVAL;
     }
     int rc=check(s);
@@ -334,6 +340,7 @@ int nas_lwip_socket_port_begin(unsigned slot,
                old->name_peer==request->name_peer &&
                old->shutdown_how==request->shutdown_how &&
                old->reuseaddr==request->reuseaddr &&
+               old->broadcast==request->broadcast &&
                old->accept_slot==request->accept_slot &&
                old->accept_lease_token==request->accept_lease_token &&
                old->backlog==request->backlog ? -EALREADY:-EBUSY;
@@ -346,7 +353,8 @@ int nas_lwip_socket_port_begin(unsigned slot,
     }
     const bool deferred_control=request->op==NAS_LWIP_BRIDGE_SHUTDOWN ||
                                 request->op==NAS_LWIP_BRIDGE_GETNAME ||
-                                request->op==NAS_LWIP_BRIDGE_SETREUSEADDR;
+                                request->op==NAS_LWIP_BRIDGE_SETREUSEADDR ||
+                                request->op==NAS_LWIP_BRIDGE_SETBROADCAST;
     if(deferred_control &&
        (s->command==PORT_TX || s->command==PORT_RX || s->tx_length)) {
         s->control_request=*request;
@@ -404,6 +412,58 @@ int nas_lwip_socket_port_take_error(unsigned slot) {
     return error;
 }
 
+int64_t nas_lwip_socket_sendto(unsigned slot,const uint8_t *bytes,
+                               uint16_t length,
+                               struct nas_lwip_bridge_address destination) {
+    struct port_socket *s=socket_at(slot);
+    if(!s)return -EBADF;
+    if(s->type!=NAS_LWIP_BRIDGE_UDP)return -EOPNOTSUPP;
+    if(!destination.port && !s->connected)return -EDESTADDRREQ;
+    if(length>NAS_LWIP_BRIDGE_DATA)return -EMSGSIZE;
+    /* A zero-length UDP datagram needs an explicit pending-data marker;
+     * leave it unsupported until that state is represented faithfully. */
+    if(!length)return -EOPNOTSUPP;
+    if(!bytes)return -EINVAL;
+    int rc=check(s);
+    if(rc)return rc;
+    if(s->tx_error){rc=s->tx_error;s->tx_error=0;return rc;}
+    if(s->command!=PORT_IDLE || s->tx_length || s->queued_control)
+        return -EAGAIN;
+    memcpy(s->tx,bytes,length);
+    s->tx_destination=destination;
+    s->tx_length=length;s->tx_position=0;s->tx_retry_at=0;
+    submit_tx(s);
+    if(s->command!=PORT_TX){
+        s->tx_length=s->tx_position=0;
+        return s->tx_error ? s->tx_error:-EAGAIN;
+    }
+    return length; /* copied into one owned command, not network delivery */
+}
+
+int64_t nas_lwip_socket_recvfrom(unsigned slot,uint8_t *bytes,
+                                 uint16_t capacity,
+                                 struct nas_lwip_bridge_address *source,
+                                 bool *truncated) {
+    struct port_socket *s=socket_at(slot);
+    if(!s)return -EBADF;
+    if(s->type!=NAS_LWIP_BRIDGE_UDP)return -EOPNOTSUPP;
+    int rc=check(s);
+    if(rc)return rc;
+    if(s->rx_error){rc=s->rx_error;s->rx_error=0;return rc;}
+    if(!s->rx_valid){
+        if(s->command==PORT_IDLE)submit_rx(s);
+        return -EAGAIN;
+    }
+    unsigned n=s->rx_length<capacity?s->rx_length:capacity;
+    if(n && !bytes)return -EINVAL;
+    if(n)memcpy(bytes,s->rx,n);
+    if(source)*source=s->rx_source;
+    if(truncated)*truncated=s->rx_truncated || n<s->rx_length;
+    s->rx_valid=false; /* datagrams consume as a unit, including truncation */
+    s->rx_position=s->rx_length=0;
+    return (int64_t)n;
+}
+
 static uint64_t read_plan(unsigned slot,uint64_t requested) {
     struct port_socket *s=socket_at(slot);
     if(!s)return (uint64_t)-EBADF;
@@ -446,6 +506,8 @@ static uint64_t write_plan(unsigned slot,uint64_t requested) {
     struct port_socket *s=socket_at(slot);
     if(!s)return (uint64_t)-EBADF;
     if(!requested)return 0;
+    if(s->type==NAS_LWIP_BRIDGE_UDP && requested>NAS_LWIP_BRIDGE_DATA)
+        return (uint64_t)-EMSGSIZE; /* one write must remain one datagram */
     int rc=check(s);
     if(rc)return (uint64_t)(int64_t)rc;
     if(send_shutdown_requested(s))return (uint64_t)-EPIPE;
@@ -470,6 +532,7 @@ static uint64_t write_bytes(unsigned slot,const uint8_t *src,uint64_t count) {
     if(!src || count>NAS_LWIP_BRIDGE_DATA)return (uint64_t)-EINVAL;
     if(s->command!=PORT_IDLE || s->tx_length)return (uint64_t)-EAGAIN;
     memcpy(s->tx,src,(size_t)count);
+    s->tx_destination=(struct nas_lwip_bridge_address){0};
     s->tx_length=(uint16_t)count;s->tx_position=0;s->tx_retry_at=0;
     submit_tx(s);
     if(s->command!=PORT_TX) {
@@ -520,7 +583,8 @@ static uint16_t poll_description(unsigned slot,uint16_t events) {
     }
     if(s->rx_eof)ready|=PORT_POLLHUP;
     if(s->tx_error || s->rx_error)ready|=PORT_POLLERR;
-    if(s->connected && !s->connecting && !send_shutdown_requested(s) &&
+    if((s->connected || s->type==NAS_LWIP_BRIDGE_UDP) && !s->connecting &&
+       !send_shutdown_requested(s) &&
        !s->tx_length &&
        s->command==PORT_IDLE)
         ready|=PORT_POLLOUT;
@@ -669,6 +733,12 @@ int nas_lwip_socket_shutdown(unsigned slot,unsigned how) {
 int nas_lwip_socket_setreuseaddr(unsigned slot,bool enabled) {
     const struct nas_lwip_bridge_request req={
         .op=NAS_LWIP_BRIDGE_SETREUSEADDR,.reuseaddr=enabled
+    };
+    return nas_lwip_socket_port_begin(slot,&req);
+}
+int nas_lwip_socket_setbroadcast(unsigned slot,bool enabled) {
+    const struct nas_lwip_bridge_request req={
+        .op=NAS_LWIP_BRIDGE_SETBROADCAST,.broadcast=enabled
     };
     return nas_lwip_socket_port_begin(slot,&req);
 }

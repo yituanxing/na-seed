@@ -26,6 +26,17 @@ int nas_lwip_socket_port_complete(unsigned slot,
                                   struct nas_lwip_bridge_result *result);
 /* Consume a deferred asynchronous send failure (SO_ERROR style). */
 int nas_lwip_socket_port_take_error(unsigned slot);
+/* Datagram I/O through the SAME socket OpenFile and native bridge. Both
+ * APIs copy kernel-owned buffers only; user iovecs/sockaddr are handled by
+ * the Linux syscall adapter. One SEND is one UDP packet, never split into
+ * multiple stream writes. Returns -EAGAIN while native work is pending. */
+int64_t nas_lwip_socket_sendto(unsigned slot,const uint8_t *bytes,
+                               uint16_t length,
+                               struct nas_lwip_bridge_address destination);
+int64_t nas_lwip_socket_recvfrom(unsigned slot,uint8_t *bytes,
+                                 uint16_t capacity,
+                                 struct nas_lwip_bridge_address *source,
+                                 bool *truncated);
 
 /* Narrow syscall-facing shorthand. All operations queue native work; no
  * caller ever executes a Netconn function or waits on a native semaphore.
@@ -61,6 +72,7 @@ int nas_lwip_socket_getname_complete(unsigned slot,
                                      struct nas_lwip_bridge_address *address);
 int nas_lwip_socket_shutdown(unsigned slot,unsigned how);
 int nas_lwip_socket_setreuseaddr(unsigned slot,bool enabled);
+int nas_lwip_socket_setbroadcast(unsigned slot,bool enabled);
 int nas_lwip_socket_control_ready(unsigned slot);
 int nas_lwip_socket_control_finish(unsigned slot);
 
