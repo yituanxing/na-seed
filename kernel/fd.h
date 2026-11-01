@@ -50,6 +50,13 @@ void nas_fd_report_exhaustion(const char *operation);
 unsigned nas_fd_first_unused(const struct nas_task *task, unsigned minimum);
 int nas_fd_reserve(const struct nas_task *task, unsigned minimum, unsigned count,
                    unsigned fds[2], unsigned slots[2], const char *operation);
+/* Reserve a File slot only when its provider-specific lifecycle permits
+ * reuse. Native network closes may still own their old worker ID after
+ * the userspace FD is gone; this is a non-consuming admission predicate. */
+int nas_fd_reserve_filtered(const struct nas_task *task,unsigned minimum,
+                            unsigned count,unsigned fds[2],unsigned slots[2],
+                            const char *operation,
+                            bool (*slot_reusable)(unsigned slot));
 bool nas_fd_install_new(struct nas_task *task, unsigned fd, unsigned slot,
                         uint8_t kind, uint64_t status_flags, bool cloexec);
 bool nas_fd_attach_owned(struct nas_task *task, unsigned fd, unsigned slot,

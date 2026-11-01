@@ -47,6 +47,11 @@ bool nas_ipv4_socket_listening(unsigned slot) {
 #ifdef NAS_ENABLE_LWIP
 #include "../ports/lwip/socket_port.h"
 static bool abi_live[NAS_OPEN_FILE_LIMIT];
+static bool abi_retiring_bridge[NAS_OPEN_FILE_LIMIT];
+bool nas_lwip_socket_slot_reusable(unsigned slot) {
+    return slot<NAS_OPEN_FILE_LIMIT && !abi_live[slot] &&
+           !abi_retiring_bridge[slot];
+}
 static enum nas_lwip_bridge_type abi_type[NAS_OPEN_FILE_LIMIT];
 static struct nas_lwip_bridge_address abi_bound[NAS_OPEN_FILE_LIMIT];
 static struct nas_lwip_bridge_address abi_peer[NAS_OPEN_FILE_LIMIT];
@@ -340,9 +345,19 @@ int main(void) {
 
     /* Real syscall adapter chooses official-lwIP FileOps, preserving one
      * ordinary OpenFile lifetime and the caller's SOCK_NONBLOCK/CLOEXEC. */
+    /* Reproduce the real M143 failure: a last-close native Netconn still
+     * owns the lower indexed slot after its File reference was dropped.
+     * A new TCP socket must use a different free slot, never false ENFILE. */
+    unsigned retiring_slot=0;
+    while(retiring_slot<NAS_OPEN_FILE_LIMIT &&
+          nas_open_files[retiring_slot].refcount)retiring_slot++;
+    assert(retiring_slot<NAS_OPEN_FILE_LIMIT);
+    abi_retiring_bridge[retiring_slot]=true;
     uint64_t tcp_fd=sys_socket(2,1U|0x800U|0x80000U,6);
     assert(tcp_fd<NAS_FD_LIMIT && tcp_fd!=unix_fd_number);
     unsigned tcp_slot=guest_task.fds->entries[tcp_fd].slot;
+    assert(tcp_slot!=retiring_slot);
+    abi_retiring_bridge[retiring_slot]=false;
     assert(abi_live[tcp_slot] && abi_type[tcp_slot]==NAS_LWIP_BRIDGE_TCP);
     assert(nas_open_files[tcp_slot].ops==&abi_ops);
     assert(nas_open_files[tcp_slot].status_flags&0x800U);

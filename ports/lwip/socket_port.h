@@ -11,6 +11,9 @@ struct nas_file_ops;
  * reference (or nas_fd_slot_lease) before opening/adopting a connection, then
  * installs nas_lwip_socket_port_ops() on that description. */
 const struct nas_file_ops *nas_lwip_socket_port_ops(void);
+/* Pure admission check: a native closing Netconn retains its old indexed
+ * bridge identity beyond FileOps.release(). Other File slots remain usable. */
+bool nas_lwip_socket_slot_reusable(unsigned slot);
 int nas_lwip_socket_port_open(unsigned slot,enum nas_lwip_bridge_type type);
 int nas_lwip_socket_port_adopt(struct nas_lwip_bridge_id accepted);
 

@@ -545,6 +545,9 @@ bool nas_lwip_bridge_start(void) {
     bridge.started=true;
     return true;
 }
+bool nas_lwip_bridge_slot_available(unsigned slot) {
+    return slot<NAS_LWIP_BRIDGE_SLOTS && !bridge.slots[slot].owned;
+}
 int nas_lwip_bridge_open(unsigned file_slot,enum nas_lwip_bridge_type type,
                          struct nas_lwip_bridge_id *out) {
     if(!bridge.started || !out)return -EINVAL;

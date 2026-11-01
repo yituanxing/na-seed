@@ -681,6 +681,10 @@ static const struct nas_file_ops ops={
     .release=release
 };
 const struct nas_file_ops *nas_lwip_socket_port_ops(void){return &ops;}
+bool nas_lwip_socket_slot_reusable(unsigned slot) {
+    return slot<NAS_OPEN_FILE_LIMIT && !sockets[slot].owned &&
+           nas_lwip_bridge_slot_available(slot);
+}
 
 int nas_lwip_socket_open(unsigned slot,enum nas_lwip_bridge_type type) {
     return nas_lwip_socket_port_open(slot,type);

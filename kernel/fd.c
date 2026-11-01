@@ -75,8 +75,10 @@ unsigned nas_fd_first_unused(const struct nas_task *task, unsigned minimum) {
     return NAS_FD_LIMIT;
 }
 
-int nas_fd_reserve(const struct nas_task *task, unsigned minimum, unsigned count,
-                   unsigned fds[2], unsigned slots[2], const char *operation) {
+int nas_fd_reserve_filtered(const struct nas_task *task,unsigned minimum,
+                            unsigned count,unsigned fds[2],unsigned slots[2],
+                            const char *operation,
+                            bool (*slot_reusable)(unsigned slot)) {
     if (!task || !task->fds || !fds || !slots || !count || count>2)
         return -EINVAL;
     unsigned nfds=0,nslots=0;
@@ -84,12 +86,18 @@ int nas_fd_reserve(const struct nas_task *task, unsigned minimum, unsigned count
         if(task->fds->entries[fd].kind==FD_CLOSED) fds[nfds++]=fd;
     if(nfds<count) return -EMFILE;
     for(unsigned slot=0;slot<NAS_OPEN_FILE_LIMIT && nslots<count;slot++)
-        if(!nas_open_files[slot].refcount)slots[nslots++]=slot;
+        if(!nas_open_files[slot].refcount &&
+           (!slot_reusable || slot_reusable(slot)))slots[nslots++]=slot;
     if(nslots<count) {
         if(operation)nas_fd_report_exhaustion(operation);
         return -ENFILE;
     }
     return 0;
+}
+int nas_fd_reserve(const struct nas_task *task,unsigned minimum,
+                   unsigned count,unsigned fds[2],unsigned slots[2],
+                   const char *operation) {
+    return nas_fd_reserve_filtered(task,minimum,count,fds,slots,operation,0);
 }
 
 /* The caller hands off one already-accounted backend description reference.

@@ -12,6 +12,10 @@
 #define NAS_LWIP_BRIDGE_ACTIVE_LIMIT 8U /* matches lwIP MEMP_NUM_NETCONN */
 #define NAS_LWIP_BRIDGE_QUEUE 8U
 #define NAS_LWIP_BRIDGE_DATA 512U
+/* An asynchronous native close retains the old bridge generation even after
+ * the former OpenFile refcount fell to zero; socket admission must not reuse
+ * its indexed slot before native worker teardown completes. */
+bool nas_lwip_bridge_slot_available(unsigned slot);
 
 struct nas_lwip_bridge_id { uint16_t slot; uint32_t generation; };
 struct nas_lwip_bridge_address { uint32_t ipv4; uint16_t port; };
