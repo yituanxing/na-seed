@@ -197,6 +197,33 @@ int main(void) {
     nas_fd_system_init();
     reset_mapping();
 
+    /* Linux errno parity for every socket syscall on a valid non-socket FD.
+     * Alpine Ncat calls recvfrom(0) when its stdin is a shell pipeline: a
+     * valid pipe must yield ENOTSOCK, not EBADF (which means closed). */
+    /* Model the existing pipe descriptors directly: the prior M106 suite
+     * exhausted the fixture's finite pipe-object pool. The real production
+     * FD kind/table and OpenFile publication code are still used here. */
+    unsigned input_fd=0,output_fd=1;
+    assert(nas_fd_install_new(&guest_task,input_fd,TEST_OFD_START,
+                              FD_PIPE_R,0,false));
+    assert(nas_fd_install_new(&guest_task,output_fd,TEST_OFD_START+1,
+                              FD_PIPE_W,1,false));
+    assert(guest_task.fds->entries[input_fd].kind==FD_PIPE_R);
+    const enum nas_syscall_op socket_fd_ops[]={
+        NAS_SC_bind,NAS_SC_listen,NAS_SC_connect,NAS_SC_accept,
+        NAS_SC_accept4,NAS_SC_getsockname,NAS_SC_getpeername,
+        NAS_SC_getsockopt,NAS_SC_setsockopt,NAS_SC_sendmsg,
+        NAS_SC_recvmsg,NAS_SC_sendto,NAS_SC_recvfrom,NAS_SC_shutdown
+    };
+    for(unsigned i=0;i<sizeof(socket_fd_ops)/sizeof(socket_fd_ops[0]);i++) {
+        assert(socket_fd_error(socket_fd_ops[i],input_fd)==-ENOTSOCK);
+        assert(socket_fd_error(socket_fd_ops[i],output_fd)==-ENOTSOCK);
+        assert(socket_fd_error(socket_fd_ops[i],NAS_FD_LIMIT)==-EBADF);
+    }
+    assert(nas_fd_close(&guest_task,input_fd)==TEST_OFD_START);
+    assert(nas_fd_close(&guest_task,output_fd)==TEST_OFD_START+1);
+    assert(socket_fd_error(NAS_SC_recvfrom,input_fd)==-EBADF);
+
     /* AF_UNIX remains the same File provider when native lwIP is enabled. */
     uint64_t unix_fd_number=sys_socket(1,1|0x80000U,0);
     assert(unix_fd_number<NAS_FD_LIMIT);
@@ -218,6 +245,7 @@ int main(void) {
     assert(nas_open_files[tcp_slot].status_flags&0x800U);
     assert(guest_task.fds->entries[tcp_fd].cloexec);
     assert(!unix_fd(tcp_fd) && lwip_fd(tcp_fd) && inet_fd(tcp_fd));
+    assert(socket_fd_error(NAS_SC_recvfrom,tcp_fd)==0);
 
     uint64_t udp_fd=sys_socket(2,2,17);
     assert(udp_fd<NAS_FD_LIMIT && udp_fd!=tcp_fd);

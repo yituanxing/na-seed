@@ -1021,9 +1021,28 @@ static uint64_t sys_socket_shutdown(uint64_t fd,uint64_t how) {
     return (uint64_t)(int64_t)nas_pipe_socket_shutdown(slot,(unsigned)how);
 }
 
+/* A valid pipe/file/TTY FD is not a socket: Linux reports ENOTSOCK, whereas
+ * an unallocated/closed FD reports EBADF. Check the whole socket syscall
+ * family before protocol routing; Ncat probes piped stdin with recvfrom(). */
+static int socket_fd_error(enum nas_syscall_op op,uint64_t fd) {
+    switch (op) {
+    case NAS_SC_bind: case NAS_SC_listen: case NAS_SC_connect:
+    case NAS_SC_accept: case NAS_SC_accept4:
+    case NAS_SC_getsockname: case NAS_SC_getpeername:
+    case NAS_SC_getsockopt: case NAS_SC_setsockopt:
+    case NAS_SC_sendmsg: case NAS_SC_recvmsg:
+    case NAS_SC_sendto: case NAS_SC_recvfrom: case NAS_SC_shutdown:
+        if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
+            return -EBADF;
+        return TASK.fds->entries[fd].kind==FD_SOCKET ? 0:-ENOTSOCK;
+    default: return 0;
+    }
+}
 #define SOCKET_RESULT(expr) return (struct nas_fs_result){ .handled=true, .value=(expr) }
 struct nas_fs_result nas_fs_socket_syscall(enum nas_syscall_op op,
                                          const uint64_t *args) {
+    int fd_error=socket_fd_error(op,args[1]);
+    if(fd_error)SOCKET_RESULT((uint64_t)(int64_t)fd_error);
     switch (op) {
     case NAS_SC_socket: SOCKET_RESULT(sys_socket(args[1],args[2],args[3]));
     case NAS_SC_bind: SOCKET_RESULT(inet_fd(args[1]) ?
