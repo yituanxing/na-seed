@@ -210,29 +210,35 @@ The remaining operating-system constraints are explicit:
    bytes into pbufs and uses `tcpip_input`. Host tests verify actual boot
    callback, DHCP TX, RX and event/time wake. Wiring/acknowledging physical
    PCI/MMIO interrupts, real QEMU DHCP, clean worker cancellation and
-   Socket/VFS glue remain pending. `lo` is official lwIP-owned.
+   full user Socket ABI remain pending. `lo` is official lwIP-owned.
 5. The native `netconn_bridge.c` is now host-tested with **real upstream
    TCP and UDP loopback**, but it is not yet the Linux Socket ABI: one
    bounded command queue and one native worker own all Netconn operations,
    per-OpenFile-slot generation IDs reject stale completions, and final
    release is deferred to the worker. Its copied 512-byte request chunks
    preserve TCP unread tails and explicitly flag UDP truncation. The worker
-   is started at lwIP boot, after the core and optional RX workers. An
-   `socket_port.c` now provides a **separately host-tested** `nas_file_ops`
+   is started at lwIP boot, after the core and optional RX workers.
+   `socket_port.c` provides a **separately host-tested** `nas_file_ops`
    adapter over the same global OpenFile slots: copied 512-byte asynchronous
    TCP/UDP TX, prefetched RX, FileOps `read/write/poll_description/release`,
-   deferred send errors, and idempotent asynchronous bind/connect/listen
-   control requests. A host fixture exercises genuine upstream lwIP TCP/UDP
+   deferred send errors, and single-owner asynchronous bind/connect/listen
+   control requests. Duplicate in-flight submissions return `-EALREADY`
+   instead of letting two Tasks consume one result. A host fixture exercises genuine upstream lwIP TCP/UDP
    and accepted connection adoption, rather than stubbing Netconn. The port
-   is compiled on all supported target build paths under `NAS_ENABLE_LWIP=1`,
-   but **Linux AF_INET socket syscalls do not select it yet**. In particular,
-   user-Task continuation must consume a pending control command exactly
-   once; nonblocking connect requires handshake completion and `SO_ERROR`;
-   accept needs a real OpenFile reservation lasting across the asynchronous
-   command *and safe cancellation of in-flight native accept*. A slot merely
-   observed as free is not a lease. `poll` readiness needs a true accept
-   notification or bounded repeated probe, not an unserviced `-EAGAIN`.
-   Do not claim user-program network compatibility until those are verified.
+   is compiled on all supported target build paths under `NAS_ENABLE_LWIP=1`.
+   **Linux AF_INET socket/bind/connect/listen now select it** with an
+   OpenFile-pinned native Task completion; AF_UNIX and the default-off fake
+   AF_INET preserve their prior providers. The new host ABI fixture checks
+   real syscall usercopy/FD selection with a controlled Netconn provider;
+   the separate native loopback fixture tests the actual upstream stack.
+   Native `NETCONN_EVT_RCVPLUS/RCVMINUS` now supplies genuine listening
+   readiness, and an async ACCEPT worker validates a 64-bit OpenFile lease
+   token both before and after accepting a connection. Cancellation releases
+   unclaimed children, including stale completions after slot reuse.
+   **User-facing accept is deliberately still disabled** until its Task
+   interruption/lease lifecycle is connected and host/guest tested. Exact
+   `sendto/recvfrom` metadata, Socket names/options/shutdown and guest ncat,
+   iperf3, DNS remain outstanding; do not count programs as passed yet.
 6. `nas_lwip_random32` is currently a noncryptographic clock-seeded PRNG;
    a real entropy-backed source is required for defensible TCP ISNs before
    Internet-facing use. Do not claim network security or wire operation.
@@ -246,7 +252,8 @@ The remaining operating-system constraints are explicit:
 | C — host boot-proven | Original U-Boot VirtIO-Net with dual DMA queues, independent network opt-in, filesystem-independent bus discovery, lwIP netif, native 8-frame RX worker, IRQ-safe wake callback and 10ms fallback | Host simulated boot/DHCP TX/RX, wake, fallback, pins PASS. Next: PCI x86 and MMIO RV64/AArch64 **real** QEMU guest DHCP lease, ARP, ping and UDP to host; MAC/address/link reporting |
 | D0 — host bridge-proven | Native Netconn RPC worker, bounded command copies, real upstream UDP/TCP loopback, OpenFile-indexed generation lifetime and deferred release | Host TCP/UDP bind/connect/listen/accept/send/recv, partial TCP/UDP truncation and stale-close tests PASS. **Not wired to user socket syscalls yet** |
 | D1a — host FileOps-proven | Netconn-backed TCP/UDP FileOps + async control state machine, same global `nas_open_file` identity, accepted handle adoption, all opt-in build source lists | `test-lwip-socket-port` against upstream lwIP; TCP/UDP data, copied queued writes, poll-driven RX, bind/connect/listen, async close; default AF_UNIX/simulated AF_INET unchanged |
-| D1b — remaining | Switch real AF_INET syscall provider, preserve AF_UNIX, pin and safely cancel async accept, add scheduler control continuations and accurate Linux socket options | ncat local/remote, curl, iperf3, DNS, nonblocking connect, poll/epoll, fork/dup, close/accept races on all ISAs |
+| D1b — host ABI-proven (partial) | Opt-in AF_INET TCP/UDP Socket syscall selection, real OpenFile FileOps, native bind/connect/listen Task continuations, listener event readiness and worker lease cancellation; preserve AF_UNIX and default fake backend | `test-lwip-socket-abi` on real usercopy/FD ABI with controlled provider, genuine upstream Netconn host test, M106 AF_UNIX regression PASS; **not yet a guest network-program pass** |
+| D1c — remaining | Finish accept Task lease and interruption cleanup, UDP address handling, accurate Linux socket names/options/shutdown, nonblocking readiness and close races | ncat local/remote, curl, iperf3, DNS, poll/epoll, fork/dup, close/accept races on all ISAs |
 | E | Remove old simulated AF_INET code and harden shutdown, resource failure, MTU, hot-unplug | Network + block concurrency, packet loss/backpressure, memory lifetime, repeated NIC reset, all-ISA QEMU regression accumulated as requested |
 
 Don't launch the expensive QEMU M141 matrix for Stage A alone. Do not report

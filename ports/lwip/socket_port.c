@@ -29,6 +29,7 @@ enum port_command {
 };
 struct port_socket {
     bool owned,connected,connecting,listening,queued_control;
+    bool connect_result_pending;
     bool rx_valid,rx_eof,rx_truncated;
     enum nas_lwip_bridge_type type;
     enum port_command command;
@@ -40,7 +41,7 @@ struct port_socket {
     uint16_t rx_length,rx_position;
     uint8_t tx[NAS_LWIP_BRIDGE_DATA];
     uint16_t tx_length,tx_position;
-    int failure,rx_error,tx_error;
+    int failure,rx_error,tx_error,connect_result;
     uint64_t rx_retry_at,tx_retry_at;
 };
 static struct port_socket sockets[NAS_OPEN_FILE_LIMIT];
@@ -85,8 +86,34 @@ static void finish(struct port_socket *s) {
         } else s->command=PORT_IDLE;
         break;
     case PORT_CONTROL:
-        s->control_result=result;
-        s->command=PORT_CONTROL_DONE;
+        if(s->control_request.op==NAS_LWIP_BRIDGE_CONNECT) {
+            /* An asynchronous TCP handshake must progress even when the
+             * caller returned EINPROGRESS and never explicitly takes the
+             * first native result. Do not block the sole Netconn worker by
+             * retaining PORT_CONTROL_DONE while waiting for user polling. */
+            s->connect_result_pending=true;
+            s->command=PORT_IDLE;
+            if(result.status==0 || result.status==-EISCONN) {
+                s->connected=true;
+                s->connecting=false;
+                s->connect_result=0;
+            } else if(result.status==-EINPROGRESS ||
+                      result.status==-EALREADY) {
+                s->connected=false;
+                s->connecting=true;
+                s->connect_result=-EINPROGRESS;
+                s->connect_address=s->control_request.address;
+                s->tx_retry_at=after_retry();
+            } else {
+                s->connected=false;
+                s->connecting=false;
+                s->connect_result=result.status;
+                s->tx_error=result.status;
+            }
+        } else {
+            s->control_result=result;
+            s->command=PORT_CONTROL_DONE;
+        }
         break;
     case PORT_RX:
         s->command=PORT_IDLE;
@@ -126,11 +153,13 @@ static void finish(struct port_socket *s) {
         if(result.status==0 || result.status==-EISCONN) {
             s->connecting=false;
             s->connected=true;
+            s->connect_result=0;
         } else if(result.status==-EALREADY || result.status==-EINPROGRESS) {
             s->tx_retry_at=after_retry();
         } else {
             s->connecting=false;
             s->connected=false;
+            s->connect_result=result.status;
             s->tx_error=result.status;
         }
         break;
@@ -231,13 +260,22 @@ int nas_lwip_socket_port_begin(unsigned slot,
        request->length)return -EINVAL;
     int rc=check(s);
     if(rc)return rc;
+    if(s->connect_result_pending) {
+        const struct nas_lwip_bridge_request *old=&s->control_request;
+        return request->op==NAS_LWIP_BRIDGE_CONNECT &&
+               old->address.ipv4==request->address.ipv4 &&
+               old->address.port==request->address.port ? -EALREADY:-EBUSY;
+    }
     if(s->queued_control || s->command==PORT_CONTROL ||
        s->command==PORT_CONTROL_DONE) {
+        /* Never create two Task waiters for one consumable result. The
+         * original Task resumes by slot, not by replaying this request. */
         const struct nas_lwip_bridge_request *old=&s->control_request;
         return old->op==request->op && old->address.ipv4==request->address.ipv4 &&
                old->address.port==request->address.port &&
                old->accept_slot==request->accept_slot &&
-               old->backlog==request->backlog ? 0:-EBUSY;
+               old->accept_lease_token==request->accept_lease_token &&
+               old->backlog==request->backlog ? -EALREADY:-EBUSY;
     }
     if(s->command==PORT_OPEN) {
         s->control_request=*request;
@@ -263,22 +301,15 @@ int nas_lwip_socket_port_complete(unsigned slot,
     if(!result)return -EINVAL;
     int rc=check(s);
     if(rc)return rc;
+    if(s->connect_result_pending) {
+        if(s->connecting)return 0;
+        result->status=s->connect_result;
+        s->connect_result_pending=false;
+        s->control_request=(struct nas_lwip_bridge_request){0};
+        return 1;
+    }
     if(s->command!=PORT_CONTROL_DONE)return s->command==PORT_CONTROL ? 0:-EINVAL;
     *result=s->control_result;
-    /* Netconn starts TCP connect asynchronously. Queue writes into our own
-     * bounded send buffer while its handshake is in progress; the worker
-     * retries ENOTREADY. Do not mark POLLOUT for any other failure. */
-    if(s->control_request.op==NAS_LWIP_BRIDGE_CONNECT) {
-        if(result->status==0 || result->status==-EISCONN) {
-            s->connecting=false;
-            s->connected=true;
-        } else if(result->status==-EINPROGRESS || result->status==-EALREADY) {
-            s->connected=false;
-            s->connecting=true;
-            s->connect_address=s->control_request.address;
-            s->tx_retry_at=after_retry();
-        }
-    }
     if(s->control_request.op==NAS_LWIP_BRIDGE_LISTEN && !result->status)
         s->listening=true;
     s->control_result=(struct nas_lwip_bridge_result){0};
@@ -302,6 +333,9 @@ static uint64_t read_plan(unsigned slot,uint64_t requested) {
     if(!requested)return 0;
     int rc=check(s);
     if(rc)return (uint64_t)(int64_t)rc;
+    if(s->listening)return (uint64_t)-ENOTCONN;
+    if(s->type==NAS_LWIP_BRIDGE_TCP && !s->connected && !s->connecting)
+        return (uint64_t)-ENOTCONN;
     if(s->rx_valid) {
         uint64_t left=(uint64_t)s->rx_length-s->rx_position;
         return left<requested ? left:requested;
@@ -377,6 +411,8 @@ static uint16_t poll_description(unsigned slot,uint16_t events) {
     if(s->rx_valid || s->rx_eof || s->rx_error ||
        (s->command==PORT_CONTROL_DONE &&
         s->control_request.op==NAS_LWIP_BRIDGE_ACCEPT))ready|=PORT_POLLIN;
+    if(s->listening && nas_lwip_bridge_listener_readable(s->id))
+        ready|=PORT_POLLIN;
     if(s->rx_eof)ready|=PORT_POLLHUP;
     if(s->tx_error || s->rx_error)ready|=PORT_POLLERR;
     if(s->connected && !s->connecting && !s->tx_length &&
@@ -422,6 +458,18 @@ int nas_lwip_socket_open_ready(unsigned slot) {
 bool nas_lwip_socket_is_slot(unsigned slot) {
     return socket_at(slot)!=NULL;
 }
+int nas_lwip_socket_type(unsigned slot) {
+    struct port_socket *s=socket_at(slot);
+    return s ? (int)s->type:-EBADF;
+}
+bool nas_lwip_socket_is_connected(unsigned slot) {
+    struct port_socket *s=socket_at(slot);
+    return s && s->connected && !s->connecting;
+}
+bool nas_lwip_socket_is_listening(unsigned slot) {
+    struct port_socket *s=socket_at(slot);
+    return s && s->listening;
+}
 int nas_lwip_socket_bind(unsigned slot,struct nas_lwip_bridge_address address) {
     const struct nas_lwip_bridge_request req={
         .op=NAS_LWIP_BRIDGE_BIND,.address=address
@@ -446,6 +494,7 @@ int nas_lwip_socket_control_ready(unsigned slot) {
     if(!s)return -EBADF;
     int rc=check(s);
     if(rc)return rc;
+    if(s->connect_result_pending)return s->connecting ? 0:1;
     return s->command==PORT_CONTROL_DONE ? 1:0;
 }
 int nas_lwip_socket_control_finish(unsigned slot) {

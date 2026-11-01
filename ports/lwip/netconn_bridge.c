@@ -18,7 +18,8 @@ _Static_assert(NAS_LWIP_BRIDGE_SLOTS==NAS_OPEN_FILE_LIMIT,
 enum bridge_internal_op { BRIDGE_OPEN=100 };
 struct bridge_slot {
     uint32_t generation;
-    bool owned,closing,queued,finished;
+    bool owned,closing,queued,executing,finished,accept_cancelled,listening;
+    unsigned accept_pending;
     enum nas_lwip_bridge_type type;
     struct netconn *connection;
     struct netbuf *held_tcp;
@@ -35,6 +36,30 @@ static struct {
     struct nas_kthread_handle worker;
     bool started;
 } bridge;
+
+/* API_EVENT is fired by the official lwIP core after enqueueing an accepted
+ * child (including a reported connection error), and by netconn_accept after
+ * dequeue. It contains no Task/FD information and never calls the scheduler.
+ * The bounded bridge registry maps the upstream Netconn back to its owner. */
+static void netconn_event(struct netconn *connection,enum netconn_evt event,
+                          u16_t length) {
+    (void)length;
+    for(unsigned i=0;i<NAS_LWIP_BRIDGE_SLOTS;i++) {
+        struct bridge_slot *s=&bridge.slots[i];
+        if(!s->owned || s->closing || s->connection!=connection)continue;
+        if(event==NETCONN_EVT_RCVPLUS && s->accept_pending<UINT16_MAX)
+            s->accept_pending++;
+        else if(event==NETCONN_EVT_RCVMINUS && s->accept_pending)
+            s->accept_pending--;
+        return;
+    }
+}
+
+static bool accept_lease_valid(unsigned slot,uint64_t token) {
+    return slot<NAS_OPEN_FILE_LIMIT && token &&
+           nas_open_files[slot].refcount==1 &&
+           nas_open_files[slot].lease_token==token;
+}
 
 static struct bridge_slot *lookup(struct nas_lwip_bridge_id id) {
     if(id.slot>=NAS_LWIP_BRIDGE_SLOTS || !id.generation)return NULL;
@@ -95,8 +120,9 @@ static void execute(unsigned slot) {
     const struct nas_lwip_bridge_request *r=&s->request;
     memset(out,0,sizeof(*out));
     if((int)r->op==BRIDGE_OPEN) {
-        s->connection=netconn_new(s->type==NAS_LWIP_BRIDGE_TCP ?
-                                   NETCONN_TCP:NETCONN_UDP);
+        s->connection=netconn_new_with_callback(s->type==NAS_LWIP_BRIDGE_TCP ?
+                                                NETCONN_TCP:NETCONN_UDP,
+                                                netconn_event);
         if(!s->connection){out->status=-ENOMEM;return;}
         /* The command worker, never a syscall, waits for lwIP core APIs;
          * data and connection admission never wait on remote peers. */
@@ -115,14 +141,17 @@ static void execute(unsigned slot) {
         break;
     case NAS_LWIP_BRIDGE_LISTEN:
         if(s->type!=NAS_LWIP_BRIDGE_TCP){err=ERR_ARG;break;}
+        s->accept_pending=0;
         err=netconn_listen_with_backlog(s->connection,
                                         (u8_t)(r->backlog>255U?255U:r->backlog));
+        if(err==ERR_OK)s->listening=true;
         break;
     case NAS_LWIP_BRIDGE_ACCEPT: {
         if(s->type!=NAS_LWIP_BRIDGE_TCP){err=ERR_ARG;break;}
+        if(s->accept_cancelled){out->status=-ECANCELED;return;}
         /* accept_slot is reserved by the future OpenFile caller; the
          * accepted connection is never allocated in an unrelated FD map. */
-        if(r->accept_slot>=NAS_LWIP_BRIDGE_SLOTS ||
+        if(!accept_lease_valid(r->accept_slot,r->accept_lease_token) ||
            bridge.slots[r->accept_slot].owned ||
            bridge.active>=NAS_LWIP_BRIDGE_ACTIVE_LIMIT) {
             out->status=-ENFILE;return;
@@ -131,6 +160,15 @@ static void execute(unsigned slot) {
         err=netconn_accept(s->connection,&accepted);
         if(err!=ERR_OK)break;
         if(!accepted){out->status=-EIO;return;}
+        /* A signal/close can cancel a Task's lease while Netconn is in a
+         * native wait. Recheck after returning from upstream before ever
+         * publishing a child into the former OpenFile slot. */
+        if(s->accept_cancelled ||
+           !accept_lease_valid(r->accept_slot,r->accept_lease_token)) {
+            (void)netconn_delete(accepted);
+            out->status=-ECANCELED;
+            return;
+        }
         struct nas_lwip_bridge_id id=reserve(r->accept_slot,NAS_LWIP_BRIDGE_TCP);
         if(!id.generation) {
             (void)netconn_delete(accepted);
@@ -219,7 +257,18 @@ static void worker(void *unused) {
             s->queued=false;
             if(s->closing)free_native(slot);
             else if(s->owned) {
+                s->executing=true;
                 execute(slot);
+                s->executing=false;
+                if(s->accept_cancelled &&
+                   s->request.op==NAS_LWIP_BRIDGE_ACCEPT){
+                    if(s->result.accepted.generation) {
+                        struct bridge_slot *child=lookup(s->result.accepted);
+                        if(child){child->closing=true;(void)nas_ksem_post(&bridge.wake);}
+                    }
+                    memset(&s->result,0,sizeof(s->result));
+                    s->result.status=-ECANCELED;
+                }
                 s->finished=true;
             }
         } else {
@@ -261,13 +310,17 @@ int nas_lwip_bridge_submit(struct nas_lwip_bridge_id id,
     struct bridge_slot *s=lookup(id);
     if(!s)return -EBADF;
     if(!request)return -EINVAL;
-    if(s->queued || s->finished)return -EBUSY;
+    if(s->queued || s->executing || s->finished)return -EBUSY;
     if(bridge.count==NAS_LWIP_BRIDGE_QUEUE)return -EAGAIN;
     if(request->op<NAS_LWIP_BRIDGE_BIND || request->op>NAS_LWIP_BRIDGE_RECV ||
        request->length>NAS_LWIP_BRIDGE_DATA ||
        (request->op==NAS_LWIP_BRIDGE_SEND && request->length && !request->bytes))
         return -EINVAL;
+    if(request->op==NAS_LWIP_BRIDGE_ACCEPT &&
+       !accept_lease_valid(request->accept_slot,request->accept_lease_token))
+        return -EBADF;
     s->request=*request;
+    s->accept_cancelled=false;
     if(request->op==NAS_LWIP_BRIDGE_SEND && request->length)
         memcpy(s->copied_send,request->bytes,request->length);
     s->request.bytes=NULL; /* caller buffer NEVER escapes syscall lifetime */
@@ -295,3 +348,32 @@ int nas_lwip_bridge_release(struct nas_lwip_bridge_id id) {
     return 0;
 }
 bool nas_lwip_bridge_alive(struct nas_lwip_bridge_id id){return lookup(id)!=NULL;}
+bool nas_lwip_bridge_listener_readable(struct nas_lwip_bridge_id id) {
+    struct bridge_slot *s=lookup(id);
+    return s && s->listening && s->accept_pending!=0;
+}
+
+int nas_lwip_bridge_cancel_accept(struct nas_lwip_bridge_id id,
+                                  const struct nas_fd_slot_lease *lease) {
+    struct bridge_slot *s=lookup(id);
+    if(!s)return -EBADF;
+    if(!lease || !lease->token ||
+       s->request.op!=NAS_LWIP_BRIDGE_ACCEPT ||
+       s->request.accept_slot!=lease->slot ||
+       s->request.accept_lease_token!=lease->token)return -EINVAL;
+    if(!s->queued && !s->executing && !s->finished)
+        return -EALREADY; /* a caller already consumed the result */
+    s->accept_cancelled=true;
+    if(s->finished) {
+        /* If completion raced with interruption, the native worker's
+         * unclaimed child still belongs to the listener, not the Task. */
+        struct bridge_slot *child=lookup(s->result.accepted);
+        if(child) {
+            child->closing=true;
+            (void)nas_ksem_post(&bridge.wake);
+        }
+        memset(&s->result,0,sizeof(s->result));
+        s->result.status=-ECANCELED;
+    }
+    return 0;
+}

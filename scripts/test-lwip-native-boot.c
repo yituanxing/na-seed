@@ -1,6 +1,7 @@
 /* Hosted NaSeed boot wiring: native scheduler runs official tcpip thread,
  * binds a real netdev identity and pumps RX outside IRQ context. */
 #include "../kernel/task/kthread.h"
+#include "../kernel/fd.h"
 #include "../kernel/drivers/port/net.h"
 #include "lwip/sys.h"
 #include <assert.h>
@@ -17,6 +18,7 @@ void nas_print(const char *s){fputs(s,stdout);}
 __attribute__((noreturn)) void nas_arch_halt(void){abort();}
 void *nas_heap_calloc(size_t n,size_t size){return calloc(n,size);}
 bool nas_heap_free(void *p){free(p);return true;}
+struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
 int nas_platform_virtio_blk_probe(void){scans++;return 0;}
 
 static int transmit(void *ctx,const uint8_t *frame,uint32_t bytes){

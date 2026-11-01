@@ -2,6 +2,7 @@
  * Hosted callbacks are not proof of live QEMU NIC/AF_INET. */
 #include "../kernel/task/kthread.h"
 #include "../kernel/task/k_sync.h"
+#include "../kernel/fd.h"
 #include "../ports/lwip/netif_port.h"
 #include "../kernel/errno.h"
 #include "lwip/sys.h"
@@ -20,6 +21,9 @@ void nas_print(const char *s){fputs(s,stdout);}
 __attribute__((noreturn)) void nas_arch_halt(void){abort();}
 void *nas_heap_calloc(size_t n,size_t size){return calloc(n,size);}
 bool nas_heap_free(void *p){free(p);return true;}
+/* Netconn ACCEPT validates the same OpenFile lease as the real kernel;
+ * this fixture never opens a user socket, but must provide the registry. */
+struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
 
 static sys_sem_t sem;
 static sys_mbox_t box;

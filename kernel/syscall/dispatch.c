@@ -30,6 +30,9 @@
 #include "../fs/syscall.h"
 #include "../fs/socket_syscall.h"
 #include "../net/ipv4_loopback.h"
+#ifdef NAS_ENABLE_LWIP
+#include "../../ports/lwip/socket_port.h"
+#endif
 #include "../fs/epoll.h"
 #include "../platform/platform.h"
 #include "../drivers/serial.h"
@@ -126,6 +129,13 @@ static uint64_t finish_socket_accept(struct nas_task *task) {
     return nas_fs_socket_accept_description(task->wait.accept_listener_slot,
                                              a[1],a[2],a[3]);
 }
+#ifdef NAS_ENABLE_LWIP
+/* A control-plane Netconn request belongs to the held OpenFile, not to an
+ * integer FD that another CLONE_FILES sibling could close and recycle. */
+static uint64_t finish_socket_control(struct nas_task *task) {
+    return nas_fs_socket_control_description(task->wait.accept_listener_slot);
+}
+#endif
 static uint64_t finish_epoll(struct nas_task *task) {
     const uint64_t *a=task->wait.blocked_args;
     return nas_epoll_wait(a[0],a[1],a[2],a[3]);
@@ -309,6 +319,24 @@ static uint64_t task_socket_accept(uint64_t *frame,enum nas_syscall_op nr,
     return nas_task_block(frame,nr,args[1],args[2],args[3],
                           nr==NAS_SC_accept4?args[4]:0,finish_socket_accept);
 }
+#ifdef NAS_ENABLE_LWIP
+static uint64_t task_socket_control(uint64_t *frame,enum nas_syscall_op nr,
+                                    const uint64_t *args,uint64_t result) {
+    if((int64_t)result!=-EAGAIN)return result;
+    unsigned fd=(unsigned)args[1];
+    if(args[1]>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind!=FD_SOCKET)
+        return (uint64_t)-EBADF;
+    unsigned slot=TASK.fds->entries[fd].slot;
+    if(!nas_lwip_socket_is_slot(slot))return result;
+    if(!nas_fd_hold_description(slot))return (uint64_t)-EBADF;
+    /* Reuse the established pinned-socket wait record; its release hook
+     * tears down the pin on success, caught signal and Task termination. */
+    TASK.wait.accept_listener_slot=slot;
+    TASK.wait.accept_listener_release=nas_fs_drop_kernel_description;
+    return nas_task_block(frame,nr,args[1],args[2],args[3],0,
+                          finish_socket_control);
+}
+#endif
 
 /* Both ISA-normalized call arguments and the live hardware user trap belong
  * to the current task until the kernel scheduler switches. ptrace must
@@ -708,7 +736,11 @@ uint64_t syscall_dispatch(const uint64_t *args) {
      * socket ABI path until those provider semantics are wired separately. */
     if((nr==NAS_SC_sendto || nr==NAS_SC_recvfrom) && !args[4] &&
        args[1]<NAS_FD_LIMIT && TASK.fds->entries[args[1]].kind==FD_SOCKET &&
-       nas_ipv4_socket_active(TASK.fds->entries[args[1]].slot)) {
+       (nas_ipv4_socket_active(TASK.fds->entries[args[1]].slot)
+#ifdef NAS_ENABLE_LWIP
+        || nas_lwip_socket_is_slot(TASK.fds->entries[args[1]].slot)
+#endif
+       )) {
         if(nr==NAS_SC_sendto && !args[5] && !args[6])
             return task_pipe_io((uint64_t *)(uintptr_t)args,NAS_SC_write,
                                 args[1],args[2],args[3]);
@@ -718,6 +750,11 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     }
     struct nas_fs_result fs_result = nas_fs_syscall(nr, args);
     if (fs_result.handled) {
+#ifdef NAS_ENABLE_LWIP
+        if(nr==NAS_SC_bind || nr==NAS_SC_connect || nr==NAS_SC_listen)
+            return task_socket_control((uint64_t *)(uintptr_t)args,nr,args,
+                                       fs_result.value);
+#endif
         if(nr==NAS_SC_accept || nr==NAS_SC_accept4)
             return task_socket_accept((uint64_t *)(uintptr_t)args,nr,args,
                                       fs_result.value);

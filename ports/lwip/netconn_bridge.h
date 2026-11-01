@@ -25,6 +25,7 @@ struct nas_lwip_bridge_request {
  enum nas_lwip_bridge_op op;
  struct nas_lwip_bridge_address address;
  uint16_t accept_slot; /* caller-reserved OpenFile slot for ACCEPT */
+ uint64_t accept_lease_token; /* authoritative nas_fd_slot_lease_begin token */
  uint16_t backlog;
  uint16_t length;
  const uint8_t *bytes; /* copied on submit, never retained */
@@ -52,4 +53,12 @@ int nas_lwip_bridge_take(struct nas_lwip_bridge_id id,
  * netconn_delete. Never blocks user tasks. */
 int nas_lwip_bridge_release(struct nas_lwip_bridge_id id);
 bool nas_lwip_bridge_alive(struct nas_lwip_bridge_id id);
+/* lwIP's own acceptmbox event count, not a speculative ACCEPT attempt.
+ * Safe to inspect from Task wait/poll without calling Netconn. */
+bool nas_lwip_bridge_listener_readable(struct nas_lwip_bridge_id listener);
+struct nas_fd_slot_lease;
+/* Cancel one exact leased ACCEPT, including any unclaimed child created
+ * while the caller was interrupted. Call before releasing the File lease. */
+int nas_lwip_bridge_cancel_accept(struct nas_lwip_bridge_id listener,
+                                  const struct nas_fd_slot_lease *lease);
 #endif

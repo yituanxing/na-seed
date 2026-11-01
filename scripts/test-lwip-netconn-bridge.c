@@ -2,6 +2,7 @@
  * The test caller is deliberately NOT a native kthread; it cannot invoke
  * a blocking netconn API and only submits/collects immutable commands. */
 #include "../ports/lwip/netconn_bridge.h"
+#include "../kernel/fd.h"
 #include "../kernel/task/kthread.h"
 #include "../kernel/errno.h"
 #include "lwip/tcpip.h"
@@ -19,6 +20,19 @@ void nas_print(const char *s){fputs(s,stdout);}
 __attribute__((noreturn)) void nas_arch_halt(void){abort();}
 void *nas_heap_calloc(size_t n,size_t size){return calloc(n,size);}
 bool nas_heap_free(void *p){free(p);return true;}
+struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
+static uint64_t lease_sequence;
+static struct nas_fd_slot_lease lease_open(unsigned slot) {
+ assert(slot<NAS_OPEN_FILE_LIMIT && !nas_open_files[slot].refcount);
+ struct nas_fd_slot_lease lease={.slot=slot,.token=++lease_sequence};
+ nas_open_files[slot].refcount=1;
+ nas_open_files[slot].lease_token=lease.token;
+ return lease;
+}
+static void lease_close(struct nas_fd_slot_lease lease) {
+ assert(nas_open_files[lease.slot].lease_token==lease.token);
+ nas_open_files[lease.slot]=(struct nas_open_file){0};
+}
 
 static unsigned tcpip_ready;
 static void ready(void *unused){(void)unused;tcpip_ready++;}
@@ -44,6 +58,8 @@ static struct nas_lwip_bridge_result command(struct nas_lwip_bridge_id id,
                                              const void *data,unsigned length){
  struct nas_lwip_bridge_request req={
      .op=op,.address=ep,.accept_slot=(uint16_t)accept_slot,
+     .accept_lease_token=op==NAS_LWIP_BRIDGE_ACCEPT ?
+         nas_open_files[accept_slot].lease_token:0,
      .backlog=4,.bytes=data,.length=(uint16_t)length
  };
  assert(nas_lwip_bridge_submit(id,&req)==0);
@@ -135,6 +151,10 @@ int main(void){
  struct nas_lwip_bridge_id client=open_conn(31,NAS_LWIP_BRIDGE_TCP);
  result=command(client,NAS_LWIP_BRIDGE_CONNECT,lo(36007),0,NULL,0);
  assert(result.status==0 || result.status==-EINPROGRESS);
+ for(unsigned tries=0;tries<120 && !nas_lwip_bridge_listener_readable(listener);
+     tries++)assert(nas_kthread_run(1)==1);
+ assert(nas_lwip_bridge_listener_readable(listener));
+ struct nas_fd_slot_lease accepted_lease=lease_open(32);
  struct nas_lwip_bridge_id accepted={0};
  for(unsigned tries=0;tries<120;tries++){
      result=command(listener,NAS_LWIP_BRIDGE_ACCEPT,lo(0),32,NULL,0);
@@ -143,6 +163,9 @@ int main(void){
      assert(nas_kthread_run(1)==1);
  }
  assert(accepted.slot==32 && accepted.generation);
+ /* Simulate transferring this exact live lease to the accepted File. */
+ assert(nas_open_files[32].lease_token==accepted_lease.token);
+ nas_open_files[32].lease_token=0;
  const char tcp_payload[]="official lwIP TCP";
  for(unsigned tries=0;tries<120;tries++){
      result=command(client,NAS_LWIP_BRIDGE_SEND,lo(0),0,
@@ -163,6 +186,12 @@ int main(void){
  result=command(accepted,NAS_LWIP_BRIDGE_RECV,lo(0),0,NULL,NAS_LWIP_BRIDGE_DATA);
  assert(result.status==0 && result.length==sizeof(tcp_payload)-1-5);
  assert(!memcmp(result.bytes,tcp_payload+5,result.length));
+ /* Release the first complete TCP pair before exercising several accept
+  * races: upstream lwIP defaults to only five active TCP PCBs. */
+ assert(nas_lwip_bridge_release(accepted)==0);
+ assert(nas_lwip_bridge_release(client)==0);
+ for(unsigned tries=0;tries<120;tries++)
+     if(nas_kthread_run(1)==0)break;
 
  /* An ACCEPT child exists before userspace takes the listener's result.
   * Final-close of the listener owns and retires that unclaimed Netconn,
@@ -170,11 +199,63 @@ int main(void){
  struct nas_lwip_bridge_id extra=open_conn(33,NAS_LWIP_BRIDGE_TCP);
  result=command(extra,NAS_LWIP_BRIDGE_CONNECT,lo(36007),0,NULL,0);
  assert(result.status==0 || result.status==-EINPROGRESS);
+ /* Signal cancellation before the native worker dequeues ACCEPT must not
+  * use a now-freed File slot, even when a real TCP peer arrives later. */
+ struct nas_fd_slot_lease canceled=lease_open(35);
+ struct nas_lwip_bridge_request cancel_req={
+     .op=NAS_LWIP_BRIDGE_ACCEPT,.accept_slot=35,
+     .accept_lease_token=canceled.token
+ };
+ assert(nas_lwip_bridge_submit(listener,&cancel_req)==0);
+ assert(nas_lwip_bridge_cancel_accept(listener,&canceled)==0);
+ lease_close(canceled);
+ /* Reuse exactly the same OpenFile slot before the old native command
+  * finishes. Its former generation must not see our replacement lease. */
+ struct nas_fd_slot_lease completed=lease_open(35);
+ assert(finish(listener).status==-ECANCELED);
+ assert(!nas_lwip_bridge_alive((struct nas_lwip_bridge_id){35,1}));
+ assert(nas_lwip_bridge_submit(listener,&cancel_req)==-EBADF);
+
+ /* Cancellation *after* native ACCEPT but before the caller takes the
+  * result must retire the unclaimed child while keeping listener alive. */
+ cancel_req.accept_lease_token=completed.token;
+ bool child_created=false;
+ for(unsigned tries=0;tries<120 && !child_created;tries++) {
+     assert(nas_lwip_bridge_submit(listener,&cancel_req)==0);
+     for(unsigned slice=0;slice<15;slice++) {
+         if(nas_lwip_bridge_alive((struct nas_lwip_bridge_id){35,1})) {
+             child_created=true;break;
+         }
+         if(nas_kthread_run(1)==0)break;
+     }
+     if(!child_created) {
+         result=finish(listener);
+         assert(result.status==-EAGAIN);
+     }
+ }
+ assert(child_created);
+ assert(nas_lwip_bridge_cancel_accept(listener,&completed)==0);
+ lease_close(completed);
+ assert(finish(listener).status==-ECANCELED);
+ for(unsigned tries=0;tries<120 &&
+     nas_lwip_bridge_alive((struct nas_lwip_bridge_id){35,1});tries++)
+     assert(nas_kthread_run(1)==1);
+ assert(!nas_lwip_bridge_alive((struct nas_lwip_bridge_id){35,1}));
+ /* alive() invalidates immediately on close; the native worker still
+  * owns actual netconn_delete and its MEMP capacity until its next run. */
+ for(unsigned tries=0;tries<120;tries++)
+     if(nas_kthread_run(1)==0)break;
+
+ struct nas_lwip_bridge_id extra2=open_conn(37,NAS_LWIP_BRIDGE_TCP);
+ result=command(extra2,NAS_LWIP_BRIDGE_CONNECT,lo(36007),0,NULL,0);
+ assert(result.status==0 || result.status==-EINPROGRESS);
  const struct nas_lwip_bridge_id orphan={34,1}; /* first incarnation */
+ struct nas_fd_slot_lease orphan_lease=lease_open(34);
  bool unclaimed=false;
  for(unsigned tries=0;tries<120 && !unclaimed;tries++) {
      struct nas_lwip_bridge_request req={
-         .op=NAS_LWIP_BRIDGE_ACCEPT,.accept_slot=34
+         .op=NAS_LWIP_BRIDGE_ACCEPT,.accept_slot=34,
+         .accept_lease_token=orphan_lease.token
      };
      assert(nas_lwip_bridge_submit(listener,&req)==0);
      for(unsigned slice=0;slice<15;slice++) {
@@ -183,12 +264,18 @@ int main(void){
      }
      if(!unclaimed) {
          result=finish(listener);
-         assert(result.status==-EAGAIN);
+         /* Aborting an unclaimed accepted child may enqueue ERR_ABRT on
+          * the listener; Linux accepts can legitimately report this. */
+         assert(result.status==-EAGAIN || result.status==-ECONNABORTED);
      }
  }
+ if(!unclaimed)fprintf(stderr,"orphan unavailable; last=%d readable=%u\n",
+                      result.status,(unsigned)nas_lwip_bridge_listener_readable(listener));
  assert(unclaimed);
  assert(nas_lwip_bridge_release(listener)==0); /* do not take ACCEPT result */
+ lease_close(orphan_lease);
  assert(nas_lwip_bridge_release(extra)==0);
+ assert(nas_lwip_bridge_release(extra2)==0);
  for(unsigned tries=0;tries<150 && nas_lwip_bridge_alive(orphan);tries++)
      assert(nas_kthread_run(1)==1);
  assert(!nas_lwip_bridge_alive(orphan));
@@ -203,8 +290,6 @@ int main(void){
  assert(nas_lwip_bridge_release(reclaimed)==0);
 
  /* Final File close never invokes netconn_delete on this test (user) stack. */
- assert(nas_lwip_bridge_release(accepted)==0);
- assert(nas_lwip_bridge_release(client)==0);
  assert(nas_lwip_bridge_release(udp_server)==0);
  assert(nas_lwip_bridge_release(udp_client)==0);
  assert(nas_lwip_bridge_take(udp_server,&result)==-EBADF);

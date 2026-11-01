@@ -111,15 +111,15 @@ int main(void) {
     nas_open_files[22].ops=ops;
     assert(nas_lwip_socket_open(22,NAS_LWIP_BRIDGE_UDP)==0);
     assert(nas_lwip_socket_bind(22,lo(38027))==0);
-    assert(nas_lwip_socket_bind(22,lo(38027))==0);
+    assert(nas_lwip_socket_bind(22,lo(38027))==-EALREADY);
     finish_control(22,0);
     close_slot(22);
 
     reserve(20,NAS_LWIP_BRIDGE_UDP);
     reserve(21,NAS_LWIP_BRIDGE_UDP);
     assert(nas_lwip_socket_bind(20,lo(38007))==0);
-    /* Idempotent syscall replay must never create a second command. */
-    assert(nas_lwip_socket_bind(20,lo(38007))==0);
+    /* A second Task cannot wait on another Task's one-shot completion. */
+    assert(nas_lwip_socket_bind(20,lo(38007))==-EALREADY);
     assert(nas_lwip_socket_bind(20,lo(38008))==-EBUSY);
     finish_control(20,0);
     assert(nas_lwip_socket_connect(21,lo(38007))==0);
@@ -148,35 +148,35 @@ int main(void) {
 
     reserve(30,NAS_LWIP_BRIDGE_TCP);
     reserve(31,NAS_LWIP_BRIDGE_TCP);
+    assert((int64_t)ops->read_plan(31,1)==-ENOTCONN);
     assert(nas_lwip_socket_bind(30,lo(38017))==0);
     finish_control(30,0);
     assert(nas_lwip_socket_listen(30,3)==0);
     finish_control(30,0);
+    assert((int64_t)ops->read_plan(30,1)==-ENOTCONN);
     assert(nas_lwip_socket_connect(31,lo(38017))==0);
-    for(unsigned tries=0;tries<30;tries++) {
+    bool connected_ready=false;
+    for(unsigned tries=0;tries<200;tries++) {
         int rc=nas_lwip_socket_control_ready(31);
-        if(rc==1)break;
-        assert(rc==0 && nas_kthread_run(1)==1);
+        if(rc==1){connected_ready=true;break;}
+        assert(rc==0);
+        test_ns+=UINT64_C(1000000);
+        (void)nas_kthread_run(1);
     }
+    assert(connected_ready);
     int connection_rc=nas_lwip_socket_control_finish(31);
-    assert(connection_rc==0 || connection_rc==-EINPROGRESS);
-    if(connection_rc==-EINPROGRESS) {
-        bool confirmed=false;
-        for(unsigned tries=0;tries<200;tries++) {
-            if(ops->poll_description(31,4U)&4U){confirmed=true;break;}
-            test_ns+=UINT64_C(1000000);
-            (void)nas_kthread_run(1);
-        }
-        assert(confirmed); /* never expose POLLOUT before worker confirms */
-    }
+    assert(connection_rc==0);
+    assert(ops->poll_description(31,4U)&4U);
 
     /* The syscall layer already holds a lease for the accepted child slot.
      * Adoption transfers bridge ID onto that SAME OpenFile identity. */
     nas_open_files[32].refcount=1;
+    nas_open_files[32].lease_token=UINT64_C(0x000000127ACCE551);
     nas_open_files[32].status_flags=2;
     nas_open_files[32].ops=ops;
     struct nas_lwip_bridge_request accept_req={
-        .op=NAS_LWIP_BRIDGE_ACCEPT,.accept_slot=32
+        .op=NAS_LWIP_BRIDGE_ACCEPT,.accept_slot=32,
+        .accept_lease_token=UINT64_C(0x000000127ACCE551)
     };
     struct nas_lwip_bridge_result accepted={0};
     for(unsigned tries=0;tries<200;tries++) {

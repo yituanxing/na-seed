@@ -537,14 +537,14 @@ int main(void) {
     uint32_t size=2;
     memcpy(pages[0]+23,&size,sizeof(size));
     can_write[0]=false;
-    assert((int64_t)sys_unix_accept(30,family,length_ptr,0)==-EFAULT);
+    assert((int64_t)sys_unix_accept_slot(20,family,length_ptr,0)==-EFAULT);
     assert(!accepted_count && pending_accept_slot==21);
     can_write[0]=true;
     can_write[3]=false;
-    assert((int64_t)sys_unix_accept(30,family,length_ptr,0)==-EFAULT);
+    assert((int64_t)sys_unix_accept_slot(20,family,length_ptr,0)==-EFAULT);
     assert(!accepted_count && pending_accept_slot==21);
     can_write[3]=true;cow[3]=true;
-    uint64_t accepted=sys_unix_accept(30,family,length_ptr,0x80000ULL);
+    uint64_t accepted=sys_unix_accept_slot(20,family,length_ptr,0x80000ULL);
     assert(accepted<NAS_FD_LIMIT && accepted_count==1);
     assert(pending_accept_slot==NAS_OPEN_FILE_LIMIT);
     assert(guest_task.fds->entries[accepted].kind==FD_SOCKET);

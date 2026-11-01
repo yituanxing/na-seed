@@ -28,13 +28,17 @@ int nas_lwip_socket_port_take_error(unsigned slot);
 
 /* Narrow syscall-facing shorthand. All operations queue native work; no
  * caller ever executes a Netconn function or waits on a native semaphore.
- * Control requests are idempotent while pending (syscall replay safe).
+ * A second caller cannot subscribe to the one-shot completion of the
+ * original Task: duplicate in-flight requests return -EALREADY.
  * control_finish returns the native status once; -EINPROGRESS means the
  * command is not finished, -EINVAL means there is no outstanding command.
  */
 int nas_lwip_socket_open(unsigned slot,enum nas_lwip_bridge_type type);
 int nas_lwip_socket_open_ready(unsigned slot); /* 1 ready, 0 pending, <0 error */
 bool nas_lwip_socket_is_slot(unsigned slot);
+int nas_lwip_socket_type(unsigned slot); /* TCP/UDP enum, or -EBADF */
+bool nas_lwip_socket_is_connected(unsigned slot);
+bool nas_lwip_socket_is_listening(unsigned slot);
 int nas_lwip_socket_bind(unsigned slot,struct nas_lwip_bridge_address address);
 int nas_lwip_socket_connect(unsigned slot,struct nas_lwip_bridge_address address);
 int nas_lwip_socket_listen(unsigned slot,unsigned backlog);

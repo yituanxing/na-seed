@@ -5,6 +5,9 @@ set -eu
 test "$(git -C third_party/lwip rev-parse HEAD)" = \
     77dcd25a72509eb83f72b033d219b1d40cd8eb95
 sh scripts/check-network-build-selection.sh
+# Run the actual Linux Socket usercopy/FD ABI in both default and lwIP
+# configurations; protocol traffic is separately exercised below.
+sh scripts/check-lwip-socket-abi.sh
 mkdir -p build/lwip-foundation
 sources="ports/lwip/sys_arch.c ports/lwip/netif_port.c ports/lwip/network_boot.c ports/lwip/netconn_bridge.c"
 target_sources="$sources ports/lwip/socket_port.c"
@@ -57,6 +60,14 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin \
 build/lwip-foundation/test-fd-slot-lease
 for compiler in x86_64-linux-gnu-gcc riscv64-linux-gnu-gcc aarch64-linux-gnu-gcc; do
     if command -v "$compiler" >/dev/null 2>&1; then
+        # Some build hosts provide a bare cross-GCC but no target libc
+        # headers (e.g. missing bits/wordsize.h). That is not a source
+        # regression; label the unavailable target syntax gate explicitly.
+        if ! printf '#include <inttypes.h>\n' |
+             "$compiler" -x c -fsyntax-only - >/dev/null 2>&1; then
+            printf '[LWIP TARGET C SKIP] %s (target libc headers unavailable)\n' "$compiler"
+            continue
+        fi
         "$compiler" -std=c11 -O2 -Wall -Wextra -Werror \
             -Wno-unused-parameter -ffreestanding -fno-builtin \
             $includes -fsyntax-only $target_sources $upstream
