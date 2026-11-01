@@ -782,6 +782,19 @@ int nas_lwip_socket_bind(unsigned slot,struct nas_lwip_bridge_address address) {
     return nas_lwip_socket_port_begin(slot,&req);
 }
 int nas_lwip_socket_connect(unsigned slot,struct nas_lwip_bridge_address address) {
+    struct port_socket *s=socket_at(slot);
+    if(!s)return -EBADF;
+    /* Linux nonblocking TCP callers may call connect() a second time
+     * after POLLOUT. A completed connection is EISCONN; an unresolved
+     * handshake is EALREADY. Never enqueue another native CONNECT and
+     * falsely report EINPROGRESS forever (ApacheBench/APR). UDP connect
+     * intentionally retains its distinct peer-reassociation semantics. */
+    if(s->type==NAS_LWIP_BRIDGE_TCP) {
+        int rc=check(s);
+        if(rc)return rc;
+        if(s->connected && !s->connecting)return -EISCONN;
+        if(s->connecting && !s->connect_result_pending)return -EALREADY;
+    }
     const struct nas_lwip_bridge_request req={
         .op=NAS_LWIP_BRIDGE_CONNECT,.address=address
     };

@@ -124,6 +124,10 @@ static void connect_slot(unsigned slot,unsigned port) {
                 /* Restore the original blocking mode: the remainder of
                  * the existing TCP tests intentionally exercise blocking
                  * read_plan semantics on this same connected File. */
+                /* APR/ApacheBench calls connect() again after POLLOUT.
+                 * Native connected socket must report EISCONN without
+                 * consuming a fresh worker command or starting handshake. */
+                assert(nas_lwip_socket_connect(slot,lo(port))==-EISCONN);
                 nas_open_files[slot].status_flags&=~0x800ULL;
                 return;
             }
