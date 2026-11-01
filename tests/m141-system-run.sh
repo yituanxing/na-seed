@@ -24,7 +24,7 @@ cleanup() {
     if [ "$result" -ne 0 ]; then
         busy printf '[M141 SYSTEM DIAG] %s exit=%s\n' "$case_name" "$result"
         case "$case_name" in
-          ipc-shared|ipc-semaphore|exch-files|iperf3-loopback|ncat-loopback|ncat-wire|ncat-udp-wire)
+          ipc-shared|ipc-semaphore|exch-files|iperf3-loopback|ncat-loopback|ncat-wire|ncat-udp-wire|dig-dns-wire)
             # These fixtures own their files; never dump arbitrary user
             # paths. Preserve only small, bounded original-program output.
             for diagnostic in details removed error out a b server.err server client client.json; do
@@ -225,6 +225,23 @@ case "$case_name" in
       busy sleep 1
     done
     [ "$udp_ready" = true ] ;;
+  dig-dns-wire)
+    exe=$(original_elf /usr/bin/dig)
+    # Original Alpine BIND dig, not a guest-provided DNS parser: send an
+    # actual A question on VirtIO-Net to a deterministic host-only server.
+    # The host validates the DNS packet independently before replying.
+    dns_ready=false
+    for attempt in 1 2 3 4 5 6; do
+      busy timeout 9 "$exe" -4 @10.0.2.2 -p 15415 naseed.test. A \
+        +tries=1 +time=3 +noedns > "$work/client" 2> "$work/error" || :
+      if busy grep -Fq '192.0.2.42' "$work/client" &&
+         busy grep -Fq 'NOERROR' "$work/client"; then
+        dns_ready=true
+        break
+      fi
+      busy sleep 1
+    done
+    [ "$dns_ready" = true ] ;;
   iperf3-loopback)
     exe=$(original_elf /usr/bin/iperf3)
     "$exe" -4 -s -1 -p 15412 > "$work/server" 2> "$work/server.err" &

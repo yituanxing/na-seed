@@ -6,8 +6,6 @@ set -eu
 export NAS_ENABLE_LWIP=1
 export NAS_ENABLE_VIRTIO_NET=1
 export NAS_VIRTIO_NET_USER=1
-# Diagnostic while validating the first guest UDP ABI; disable after proof.
-export NAS_SYSCALL_TRACE=1
 export NAS_APP_BATCH_QEMU_TIMEOUT=180
 export NAS_ACCEPTANCE_QEMU_RAM=1536M
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
