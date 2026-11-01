@@ -54,7 +54,8 @@ mem_pid=$!
 mem_ok=false
 for attempt in 1 2 3 4 5; do
   if "$busy" printf 'set k 0 0 5\r\nhello\r\nget k\r\nquit\r\n' |
-     /usr/bin/ncat -w 4 127.0.0.1 15471 > "$work/memcached/reply" 2>&1 &&
+     "$busy" timeout 8 /usr/bin/ncat -4 127.0.0.1 15471 \
+       > "$work/memcached/reply" 2>&1 &&
      "$busy" grep -Fq 'STORED' "$work/memcached/reply" &&
      "$busy" grep -Fq 'VALUE k 0 5' "$work/memcached/reply" &&
      "$busy" grep -Fq 'hello' "$work/memcached/reply"; then

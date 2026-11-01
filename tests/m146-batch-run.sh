@@ -78,18 +78,51 @@ run_case() {
           pamtosvg)
             "$exe" "$work/source.ppm" > "$work/result" 2> "$work/error"
             busy grep -iq '<svg' "$work/result" ;;
-          pamtotga|pamtouil|pamtoxvmini|pnmtopalm|pnmtorle)
+          pamtotga|pamtoxvmini|pnmtorle)
             "$exe" "$work/source.ppm" > "$work/result" 2> "$work/error"
+            [ -s "$work/result" ] ;;
+          pamtouil)
+            # The native converter needs a real X11-format RGB color-name
+            # dictionary. Alpine's no-scripts APK overlay has no X11 data
+            # package; give it explicit valid color metadata for our PPM.
+            busy printf '%s\n' '0 0 0 black' '255 255 255 white' \
+                '255 0 0 red' '0 255 0 green' '0 0 255 blue' \
+                '255 255 0 yellow' '255 0 255 magenta' '0 255 255 cyan' \
+                > "$work/rgb.txt"
+            RGBDEF="$work/rgb.txt" "$exe" "$work/source.ppm" \
+                > "$work/result" 2> "$work/error"
             [ -s "$work/result" ] ;;
           pbmtoascii)
             "$exe" "$work/source.pbm" > "$work/result" 2> "$work/error"
-            [ "$(busy wc -l < "$work/result")" -ge 8 ] ;;
+            # Netpbm's default 1x2 mapping produces FOUR text rows from an
+            # eight-pixel-high PBM, not eight. Assert the actual heart motif.
+            busy printf '%s\n' ' oo  oo' ' "o""o"' ' o"oo"o' ' ""  ""' \
+                > "$work/expected"
+            busy cmp -s "$work/result" "$work/expected" ;;
           pbmtopgm)
-            "$exe" "$work/source.pbm" > "$work/result.pnm" 2> "$work/error"
+            # pbmtopgm performs convolution; its odd kernel dimensions are
+            # mandatory arguments, followed by the original bitmap path.
+            "$exe" 3 3 "$work/source.pbm" \
+                > "$work/result.pnm" 2> "$work/error"
             image_dimensions 8 8 ;;
-          pbmtosunicon|pbmtoxbm)
+          pbmtosunicon)
+            "$exe" "$work/source.pbm" > "$work/result" 2> "$work/error"
+            # Its genuine Sun icon syntax is a descriptor comment plus hex
+            # pixel words, not the '#define/static' C style of XBM.
+            busy grep -Fq 'Format_version=1, Width=16, Height=8' "$work/result"
+            busy grep -Fq '0x0660' "$work/result" ;;
+          pbmtoxbm)
             "$exe" "$work/source.pbm" > "$work/result" 2> "$work/error"
             busy grep -Eq '(#define|static)' "$work/result" ;;
+          pnmtopalm)
+            # Arbitrary 24-bit PPM colors are not in Palm's fixed 8-bit
+            # colormap; native 16-bit direct color supports the original PPM.
+            "$exe" -depth=16 "$work/source.ppm" \
+                > "$work/result" 2> "$work/error"
+            [ -s "$work/result" ]
+            header=$(busy dd if="$work/result" bs=1 count=4 2>/dev/null |
+                     busy od -An -tx1 | busy tr -d ' \n')
+            [ "$header" = 00040004 ] ;;
           pbmtoepsi)
             "$exe" "$work/source.pbm" > "$work/result" 2> "$work/error"
             assert_magic '%!PS' 4 ;;
