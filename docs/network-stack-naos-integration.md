@@ -295,8 +295,11 @@ classifies live non-socket versus closed FDs before dispatch.
    syscall diagnostics disabled**, proving the default boot image behavior.
    Exact UDP `sendto/recvfrom` metadata, wider socket options, additional
    close races and **real guest Alpine iperf3/DNS remain unproven**;
-   Ncat is proven for x86 loopback and one QEMU guest-to-host TCP path, not
-   external Internet peers, production NIC hardware or the other two ISAs.
+   Ncat is proven for x86 loopback and **all three ISA QEMU guest-to-host TCP
+   paths** (x86 PCI plus RV64/ARM64 modern MMIO); no claim is made for
+   external Internet peers or production NIC hardware. The shared RV64/ARM64
+   gate independently passed on 2026-11-01
+   ([Actions run 41281601773](https://github.com/yituanxing/na-seed/actions/runs/41281601773)).
 6. `nas_lwip_random32` is currently a noncryptographic clock-seeded PRNG;
    a real entropy-backed source is required for defensible TCP ISNs before
    Internet-facing use. Do not claim Internet-facing network security or
@@ -308,15 +311,16 @@ classifies live non-socket versus closed FDs before dispatch.
 | --- | --- | --- |
 | A — host and x86 guest-proven | MMIO/PCI publish VirtIO-Net class=1; independent netdev; **actual original U-Boot Net** on two DMA queues, shared VirtIO adapter and bus class binding | Host simulated RX/TX, malformed and timeout tests, multi-ISA syntax, BlockDevice proof; x86 PCI RX/TX now demonstrated in independent QEMU pcap |
 | B — host and x86 guest-proven | Compile original pinned lwIP under `NAS_ENABLE_LWIP=1`, native `sys_arch`, upstream tcpip thread and `lo` netif; Ethernet pbuf adapter sends DHCP and queues inbound RX | Native sem/mbox/deadlines/worker, upstream UDP loopback, netdev pins PASS; actual x86 QEMU guest obtains DHCP lease and speaks host TCP |
-| C — x86 PCI guest-proven, MMIO pending | Original U-Boot VirtIO-Net with dual DMA queues, independent opt-in, filesystem-independent bus discovery, lwIP netif, native 8-frame RX worker, IRQ-safe wake and 10ms fallback | x86 PCI QEMU DHCP/ARP/HTTP PASS; a new narrow RV64/ARM64 modern-MMIO gate probes the same signed Ncat, without claiming an ISA PASS until its real workflow succeeds |
+| C — three-ISA guest-proven | Original U-Boot VirtIO-Net with dual DMA queues, independent opt-in, filesystem-independent bus discovery, lwIP netif, native 8-frame RX worker, IRQ-safe wake and 10ms fallback | [x86 PCI QEMU DHCP/ARP/HTTP PASS](https://github.com/yituanxing/na-seed/actions/runs/41281601804); [RV64/ARM64 modern-MMIO guest DHCP/HTTP PASS](https://github.com/yituanxing/na-seed/actions/runs/41281601773) |
 | D0 — host bridge-proven | Native Netconn RPC worker, bounded command copies, real upstream UDP/TCP loopback, OpenFile-indexed generation lifetime and deferred release | Host TCP/UDP bind/connect/listen/accept/send/recv, partial TCP/UDP truncation and stale-close tests PASS; already connected to shared user socket adapter below |
 | D1a — host FileOps-proven | Netconn-backed TCP/UDP FileOps + async control state machine, same global `nas_open_file` identity, accepted handle adoption, all opt-in build source lists | `test-lwip-socket-port` against upstream lwIP; TCP/UDP data, copied queued writes, poll-driven RX, bind/connect/listen, async close; default AF_UNIX/simulated AF_INET unchanged |
 | D1b — host ABI-proven (partial) | Opt-in AF_INET TCP/UDP Socket syscall selection, real OpenFile FileOps, native bind/connect/listen Task continuations, listener event readiness and worker lease cancellation; preserve AF_UNIX and default fake backend | `test-lwip-socket-abi` on real usercopy/FD ABI with controlled provider, upstream Netconn host test, M106 AF_UNIX regression and real x86 guest Ncat PASS |
 | D1c — x86 loopback guest-proven | Blocking native `accept/accept4` Task lease and EINTR cleanup; nonblocking listening prefetch owned by OpenFile; real peer sockaddr including connected TCP `recvfrom()` output, GETNAME, `SO_REUSEADDR`, SHUTDOWN, TX-before-FIN ordering and live-FD `ENOTSOCK` parity | Real syscall+FD fixture, upstream TCP/UDP+SocketPort tests and signed Alpine `/usr/bin/ncat` TCP loopback x86 QEMU PASS |
-| D1d — x86 real-wire guest-proven | Opt-in modern PCI VirtIO-Net + lwIP DHCP, bounded native RX, original Alpine Ncat TCP to a host-only HTTP server through QEMU slirp | [x86 wire QEMU PASS](https://github.com/yituanxing/na-seed/actions/runs/41280543416), independent [loopback QEMU PASS](https://github.com/yituanxing/na-seed/actions/runs/41280543343); next targeted gates: RV64/ARM64 MMIO, guest UDP/DNS, sustained transfers |
+| D1d — three-ISA real-wire guest-proven | Opt-in modern PCI x86 or MMIO RV64/ARM64 VirtIO-Net + lwIP DHCP, bounded native RX, original signed Alpine Ncat TCP to a host-only HTTP server through QEMU slirp | [x86 wire QEMU PASS](https://github.com/yituanxing/na-seed/actions/runs/41281601804), [RV64/ARM64 wire QEMU PASS](https://github.com/yituanxing/na-seed/actions/runs/41281601773), independent [x86 loopback QEMU PASS](https://github.com/yituanxing/na-seed/actions/runs/41281601875); next targeted gates: guest UDP/DNS, sustained transfers |
 | E | Remove old simulated AF_INET code and harden shutdown, resource failure, MTU, hot-unplug | Network + block concurrency, packet loss/backpressure, memory lifetime, repeated NIC reset, all-ISA QEMU regression accumulated as requested |
 
 Don't launch the expensive QEMU M141 matrix for Stage A alone. Scope all
 network PASS claims to the actual ISA, NIC transport and protocol verified;
-host simulated DMA and x86 slirp do not imply RV64/ARM64 or physical-NIC
-coverage. Keep block and filesystem regressions for major boundaries.
+host simulated DMA and three-ISA QEMU slirp do not imply physical-NIC,
+Internet-facing or sustained-load coverage. Keep block and filesystem
+regressions for major boundaries.
