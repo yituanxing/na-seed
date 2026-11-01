@@ -182,8 +182,10 @@ unsigned nas_fd_close(struct nas_task *t,unsigned fd) {
     if(!nas_open_files[slot].refcount)return NAS_OPEN_FILE_LIMIT;
     return --nas_open_files[slot].refcount?NAS_OPEN_FILE_LIMIT:slot;
 }
-int nas_fd_reserve(const struct nas_task *t,unsigned minimum,unsigned count,
-                   unsigned fds[2],unsigned slots[2],const char *operation) {
+int nas_fd_reserve_filtered(const struct nas_task *t,unsigned minimum,
+                            unsigned count,unsigned fds[2],unsigned slots[2],
+                            const char *operation,
+                            bool (*slot_reusable)(unsigned)) {
     (void)operation;
     unsigned fd_count=0,slot_count=0;
     for(unsigned i=minimum;i<NAS_FD_LIMIT&&fd_count<count;i++)
@@ -192,9 +194,23 @@ int nas_fd_reserve(const struct nas_task *t,unsigned minimum,unsigned count,
     /* Exercise user FD != shared OpenFile slot; this fixture validates
      * publication, not the allocator's lowest-available-slot policy. */
     for(unsigned i=TEST_OFD_START;i<NAS_OPEN_FILE_LIMIT&&slot_count<count;i++)
-        if(!nas_open_files[i].refcount)slots[slot_count++]=i;
+        if(!nas_open_files[i].refcount &&
+           (!slot_reusable || slot_reusable(i)))slots[slot_count++]=i;
     return slot_count<count?-ENFILE:0;
 }
+int nas_fd_reserve(const struct nas_task *t,unsigned minimum,unsigned count,
+                   unsigned fds[2],unsigned slots[2],const char *operation) {
+    return nas_fd_reserve_filtered(t,minimum,count,fds,slots,operation,NULL);
+}
+bool nas_fd_hold_description(unsigned slot) {
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount ||
+       nas_open_files[slot].refcount==UINT16_MAX)return false;
+    ++nas_open_files[slot].refcount;
+    return true;
+}
+/* No live TTY exists in the M106 fake-userspace fixture; the provider wait
+ * gate is exercised by separate TTY and real native SocketPort tests. */
+bool nas_tty_read_waitable(void){return false;}
 bool nas_fd_install_new(struct nas_task *t,unsigned fd,unsigned slot,
                         uint8_t kind,uint64_t status,bool cloexec) {
     if(fd>=NAS_FD_LIMIT||slot>=NAS_OPEN_FILE_LIMIT||
