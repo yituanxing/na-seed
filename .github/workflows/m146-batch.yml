@@ -63,7 +63,7 @@ jobs:
           sh scripts/ci-ubuntu-mirror.sh
           missing=''
           for spec in 'clang:clang' 'ld.lld:lld' 'readelf:binutils' \
-                      'cpio:cpio' 'mformat:mtools' 'sgdisk:gdisk' \
+                      'cpio:cpio' 'xorriso:xorriso' 'mformat:mtools' 'sgdisk:gdisk' \
                       'qemu-riscv64:qemu-user'; do
             bin=${spec%%:*}; pkg=${spec#*:}
             command -v "$bin" >/dev/null || missing="$missing $pkg"

@@ -17,6 +17,7 @@
 #include "../task/exec.h"
 #include "../fs/mode.h"
 #include "../task/process.h"
+#include "../task/credentials.h"
 #include "../task/ptrace.h"
 #include "../task/wait_pid.h"
 #include "../task/session.h"
@@ -567,6 +568,11 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if(nr==NAS_SC_nanosleep || nr==NAS_SC_clock_nanosleep)
         return nas_time_sleep_syscall((uint64_t *)(uintptr_t)args,nr,args);
     if (nr == NAS_SC_getuid || nr == NAS_SC_getgid || nr == NAS_SC_geteuid || nr == NAS_SC_getegid) return 0; /* root credentials */
+    if (nr == NAS_SC_getgroups) return nas_credentials_getgroups(args[1]);
+    if (nr == NAS_SC_setuid || nr == NAS_SC_setgid)
+        return nas_credentials_set_id(args[1]);
+    if (nr == NAS_SC_setgroups)
+        return nas_credentials_setgroups(args[1]);
     if (nr == NAS_SC_mincore)
         return nas_vm_mincore(args[1],args[2],args[3]);
     if (nr == NAS_SC_mprotect) {

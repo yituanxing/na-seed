@@ -1,6 +1,19 @@
 #include <assert.h>
 #include "../kernel/arch/linux_syscall_abi.h"
+#include "../kernel/task/credentials.h"
 int main(void) {
+    /* Real root-only credentials: 0/0 is idempotent; no supplementary
+     * groups exist. Changing IDs or creating group memberships is denied. */
+    assert(nas_linux_decode_syscall(__NR_setuid) == NAS_SC_setuid);
+    assert(nas_linux_decode_syscall(__NR_setgid) == NAS_SC_setgid);
+    assert(nas_linux_decode_syscall(__NR_setgroups) == NAS_SC_setgroups);
+    assert(nas_linux_decode_syscall(__NR_getgroups) == NAS_SC_getgroups);
+    assert(nas_credentials_set_id(0)==0);
+    assert((int64_t)nas_credentials_set_id(1)==-EPERM);
+    assert(nas_credentials_setgroups(0)==0);
+    assert((int64_t)nas_credentials_setgroups(1)==-EPERM);
+    assert(nas_credentials_getgroups(0)==0);
+    assert(nas_credentials_getgroups(16)==0);
     assert(nas_linux_decode_syscall(__NR_access) == NAS_SC_access);
     assert(nas_linux_decode_syscall(__NR_chown) == NAS_SC_chown);
     assert(nas_linux_decode_syscall(__NR_lchown) == NAS_SC_lchown);

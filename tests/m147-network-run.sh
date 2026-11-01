@@ -40,11 +40,15 @@ done < /tests/m147-original-elfs.txt
 echo "[M147 LOAD SUMMARY] count=$count failures=$failed"
 [ "$count" -eq 29 ] && [ "$failed" -eq 0 ] || exit 1
 echo M147_29_REAL_ELF_LOAD_PASS
+protocol_failures=0
 
 # M147 protocol 1: signed memcached server and a signed Alpine Ncat client
 # must exchange a real ASCII storage/retrieval transaction over TCP loopback.
 "$busy" mkdir -p "$work/memcached"
-/usr/bin/memcached -u root -l 127.0.0.1 -p 15471 -U 0 -m 8 -c 16 \
+# Official memcached sets both RLIMIT_NOFILE values to -c at startup.
+# NaSeed honestly enforces 64 FDs, so requesting 64 is a valid no-op;
+# this is a one-client functional check, not a 64-peer concurrency claim.
+/usr/bin/memcached -u root -l 127.0.0.1 -p 15471 -U 0 -m 8 -c 64 \
   > "$work/memcached/server.log" 2>&1 &
 mem_pid=$!
 mem_ok=false
@@ -60,11 +64,13 @@ for attempt in 1 2 3 4 5; do
 done
 kill "$mem_pid" 2>/dev/null || :
 wait "$mem_pid" 2>/dev/null || :
-[ "$mem_ok" = true ] || {
+if [ "$mem_ok" = true ]; then
+  echo M147_REAL_MEMCACHED_TCP_PASS
+else
   "$busy" cat "$work/memcached/server.log" "$work/memcached/reply" || :
-  exit 1
-}
-echo M147_REAL_MEMCACHED_TCP_PASS
+  echo M147_REAL_MEMCACHED_TCP_FAIL
+  protocol_failures=$((protocol_failures+1))
+fi
 "$busy" sleep 2
 
 # M147 protocol 2: the original MQTT broker, subscriber and publisher must
@@ -97,9 +103,11 @@ wait "$mqtt_pid" 2>/dev/null || :
 if [ "$pub_ok" != true ] || [ "$sub_ok" != true ] ||
    ! "$busy" grep -Fxq M147_SIGNED_MQTT_PAYLOAD "$work/mqtt/sub.out"; then
   "$busy" cat "$work/mqtt/broker.log" "$work/mqtt/sub.err" "$work/mqtt/pub.log" || :
-  exit 1
+  echo M147_REAL_MQTT_PUBSUB_FAIL
+  protocol_failures=$((protocol_failures+1))
+else
+  echo M147_REAL_MQTT_PUBSUB_PASS
 fi
-echo M147_REAL_MQTT_PUBSUB_PASS
 "$busy" sleep 2
 
 # M147 protocol 3: original nghttpd serves a static file over HTTP/2 prior
@@ -120,9 +128,16 @@ for attempt in 1 2 3 4 5; do
 done
 kill "$h2_pid" 2>/dev/null || :
 wait "$h2_pid" 2>/dev/null || :
-[ "$http2_ok" = true ] || {
+if [ "$http2_ok" = true ]; then
+  echo M147_REAL_HTTP2_H2C_PASS
+else
   "$busy" cat "$work/http2/server.log" "$work/http2/client.err" "$work/http2/response" || :
+  echo M147_REAL_HTTP2_H2C_FAIL
+  protocol_failures=$((protocol_failures+1))
+fi
+if [ "$protocol_failures" -ne 0 ]; then
+  echo "[M147 NETWORK FAIL] $protocol_failures/3 genuine protocols failed"
+  echo M147_NETWORK_COHORT_FAIL
   exit 1
-}
-echo M147_REAL_HTTP2_H2C_PASS
+fi
 echo M147_NETWORK_COHORT_PASS
