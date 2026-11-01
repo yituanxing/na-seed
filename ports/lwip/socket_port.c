@@ -419,7 +419,6 @@ int64_t nas_lwip_socket_sendto(unsigned slot,const uint8_t *bytes,
     struct port_socket *s=socket_at(slot);
     if(!s)return -EBADF;
     if(s->type!=NAS_LWIP_BRIDGE_UDP)return -EOPNOTSUPP;
-    if(!destination.port && !s->connected)return -EDESTADDRREQ;
     if(length>NAS_LWIP_BRIDGE_DATA)return -EMSGSIZE;
     /* A zero-length UDP datagram needs an explicit pending-data marker;
      * leave it unsupported until that state is represented faithfully. */
@@ -430,6 +429,7 @@ int64_t nas_lwip_socket_sendto(unsigned slot,const uint8_t *bytes,
     if(s->tx_error){rc=s->tx_error;s->tx_error=0;return rc;}
     if(s->command!=PORT_IDLE || s->tx_length || s->queued_control)
         return -EAGAIN;
+    if(!destination.port && !s->connected)return -EDESTADDRREQ;
     memcpy(s->tx,bytes,length);
     s->tx_destination=destination;
     s->tx_length=length;s->tx_position=0;s->tx_retry_at=0;

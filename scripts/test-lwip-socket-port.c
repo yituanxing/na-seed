@@ -247,6 +247,10 @@ int main(void) {
     struct nas_lwip_bridge_address named=name_slot(20,false);
     assert(named.ipv4==UINT32_C(0x7f000001) && named.port==38007);
     assert(nas_lwip_socket_connect(21,lo(38007))==0);
+    const uint8_t connecting_packet[]={0xCA,0xFE};
+    assert(nas_lwip_socket_sendto(21,connecting_packet,
+                sizeof(connecting_packet),
+                (struct nas_lwip_bridge_address){0})==-EAGAIN);
     /* UDP connect has no remote handshake or deferred user completion. The
      * native worker completes peer association in the background. */
     bool udp_connected=false;
