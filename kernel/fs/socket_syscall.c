@@ -129,6 +129,43 @@ static void ipv4_sockaddr(struct nas_ipv4_endpoint ep,uint8_t bytes[16]) {
     bytes[4]=(uint8_t)(ep.address>>24);bytes[5]=(uint8_t)(ep.address>>16);
     bytes[6]=(uint8_t)(ep.address>>8);bytes[7]=(uint8_t)ep.address;
 }
+#ifdef NAS_ENABLE_LWIP
+static int lwip_name_preflight(uint64_t address,uint64_t length_ptr,
+                               uint32_t *capacity) {
+    if(!address || !length_ptr || !capacity)return -EFAULT;
+    if(!nas_user_read_bytes(length_ptr,(uint8_t *)capacity,4))return -EFAULT;
+    unsigned n=*capacity>16?16U:*capacity;
+    if(!nas_user_prepare_write(length_ptr,4) ||
+       (n && !nas_user_prepare_write(address,n)))return -EFAULT;
+    return 0;
+}
+/* Native GETNAME has its own result payload, unlike status-only control.
+ * The issuing Task's virtual memory is available only in this completion,
+ * never in the asynchronous Netconn worker or a foreign Task wait scan. */
+uint64_t nas_fs_socket_name_description(unsigned slot,uint64_t address,
+                                        uint64_t length_ptr,bool peer) {
+    (void)peer; /* begin() captured the caller's local/peer selection */
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount ||
+       !nas_lwip_socket_is_slot(slot))return (uint64_t)-EBADF;
+    struct nas_lwip_bridge_address name={0};
+    int rc=nas_lwip_socket_getname_complete(slot,&name);
+    if(rc==0)return (uint64_t)-EAGAIN;
+    if(rc<0)return (uint64_t)(int64_t)rc;
+    if(rc!=1)return (uint64_t)-EIO;
+    /* A CLONE_VM peer can unmap the original output while this Task sleeps.
+     * Consume the finished native command before revalidating user memory;
+     * EFAULT must not strand PORT_CONTROL_DONE on the shared description. */
+    uint32_t capacity;
+    rc=lwip_name_preflight(address,length_ptr,&capacity);
+    if(rc)return (uint64_t)(int64_t)rc;
+    uint8_t bytes[16];
+    ipv4_sockaddr((struct nas_ipv4_endpoint){name.ipv4,name.port},bytes);
+    uint32_t actual=16,n=capacity>16?16:capacity;
+    return nas_user_write_bytes(length_ptr,(const uint8_t *)&actual,4) &&
+           (!n || nas_user_write_bytes(address,bytes,n))
+         ? 0:(uint64_t)-EFAULT;
+}
+#endif
 static uint64_t sys_ipv4_bind(uint64_t fd,uint64_t addr,uint64_t len) {
 #ifdef NAS_ENABLE_LWIP
     if(lwip_fd(fd)) {
@@ -195,8 +232,13 @@ uint64_t nas_fs_socket_control_description(unsigned slot) {
 #ifdef NAS_ENABLE_LWIP
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount ||
        !nas_lwip_socket_is_slot(slot))return (uint64_t)-EBADF;
-    int rc=nas_lwip_socket_control_finish(slot);
-    return (uint64_t)(int64_t)(rc==-EINPROGRESS ? -EAGAIN:rc);
+    /* Completion state is separate from native errno: a completed Netconn
+     * may legitimately report EINPROGRESS or EAGAIN. Only the explicit
+     * 'not yet finished' state may re-arm the blocked Task continuation. */
+    struct nas_lwip_bridge_result result={0};
+    int rc=nas_lwip_socket_port_complete(slot,&result);
+    if(rc==0)return (uint64_t)-EAGAIN;
+    return (uint64_t)(int64_t)(rc==1 ? result.status:rc);
 #else
     (void)slot;
     return (uint64_t)-EOPNOTSUPP;
@@ -331,6 +373,111 @@ static uint64_t sys_ipv4_accept_slot(unsigned listener_slot,uint64_t address,
     }
     return nextfd;
 }
+#ifdef NAS_ENABLE_LWIP
+/* A blocked Task owns the lease, while the bridge owns the native Netconn.
+ * Disposal runs for EINTR, task exit and fd unbinding; invalidate the bridge
+ * request BEFORE dropping the lease so a late accept cannot resurrect it. */
+static void lwip_accept_cancel_wait(unsigned listener_slot,
+                                    struct nas_fd_slot_lease lease) {
+    (void)nas_lwip_socket_accept_cancel(listener_slot,lease);
+    (void)nas_fd_slot_lease_cancel(lease);
+}
+static void lwip_accept_disarm(void) {
+    TASK.wait.accept_lease=(struct nas_fd_slot_lease){0};
+    TASK.wait.accept_lease_cancel=NULL;
+}
+/* One accepted Netconn is published into the EXISTING global OpenFile pool.
+ * No network stack-specific FD table, synthetic pipe, or second TCP layer. */
+static uint64_t sys_lwip_accept_slot(unsigned listener_slot,uint64_t address,
+                                     uint64_t length_ptr,uint64_t flags) {
+    if(flags & ~(0x800ULL|0x80000ULL))return (uint64_t)-EINVAL;
+    if((address&&!length_ptr)||(!address&&length_ptr))return (uint64_t)-EFAULT;
+    uint32_t capacity=0;
+    if(length_ptr && !nas_user_read_bytes(length_ptr,(uint8_t *)&capacity,4))
+        return (uint64_t)-EFAULT;
+    if(length_ptr && (!nas_user_prepare_write(length_ptr,4) ||
+                      (capacity && !nas_user_prepare_write(address,
+                                                  capacity>16?16:capacity))))
+        return (uint64_t)-EFAULT;
+    unsigned nextfd=nas_fd_first_unused(nas_current_task,0);
+    if(nextfd==NAS_FD_LIMIT)return (uint64_t)-EMFILE;
+
+    struct nas_fd_slot_lease lease=TASK.wait.accept_lease;
+    if(!TASK.wait.accept_lease_cancel) {
+        /* A user O_NONBLOCK listener cannot retain a Task-owned lease after
+         * returning to userspace. Never queue an uncancelable native accept
+         * on its behalf; a future per-listener ticket enables this case. */
+        if(nas_open_files[listener_slot].status_flags&0x800ULL)
+            return (uint64_t)-EAGAIN;
+        int rc=nas_fd_slot_lease_begin(&lease,"lwip accept");
+        if(rc)return (uint64_t)(int64_t)rc;
+        rc=nas_lwip_socket_accept_begin(listener_slot,lease);
+        if(rc) {
+            (void)nas_fd_slot_lease_cancel(lease);
+            return (uint64_t)(int64_t)(rc==-EALREADY || rc==-EBUSY ?
+                                       -EAGAIN:rc);
+        }
+        TASK.wait.accept_listener_slot=listener_slot;
+        TASK.wait.accept_lease=lease;
+        TASK.wait.accept_lease_cancel=lwip_accept_cancel_wait;
+        return (uint64_t)-EAGAIN;
+    }
+    if(TASK.wait.accept_listener_slot!=listener_slot ||
+       !nas_fd_slot_lease_valid(lease))
+        return (uint64_t)-EBADF;
+
+    struct nas_lwip_bridge_id accepted={0};
+    struct nas_lwip_bridge_address peer={0};
+    int rc=nas_lwip_socket_accept_complete(listener_slot,lease,&accepted,&peer);
+    if(rc==0)return (uint64_t)-EAGAIN; /* the same native command is pending */
+    if(rc<0) {
+        /* No accepted child was published; the native completion is already
+         * consumed. The lease can now be retired without a bridge race. */
+        lwip_accept_disarm();
+        (void)nas_fd_slot_lease_cancel(lease);
+        return (uint64_t)(int64_t)rc;
+    }
+    if(rc!=1 || !accepted.generation || accepted.slot!=lease.slot) {
+        if(accepted.generation)(void)nas_lwip_bridge_release(accepted);
+        lwip_accept_disarm();
+        (void)nas_fd_slot_lease_cancel(lease);
+        return (uint64_t)-EIO;
+    }
+    rc=nas_lwip_socket_port_adopt(accepted);
+    if(rc) {
+        (void)nas_lwip_bridge_release(accepted);
+        lwip_accept_disarm();
+        (void)nas_fd_slot_lease_cancel(lease);
+        return (uint64_t)(int64_t)rc;
+    }
+    rc=nas_fd_slot_lease_commit(lease,nas_current_task,nextfd,FD_SOCKET,
+                                2ULL|(flags&0x800ULL),
+                                (flags&0x80000ULL)!=0,
+                                nas_lwip_socket_port_ops());
+    if(rc) {
+        /* An FD number may have been claimed by a CLONE_FILES sibling
+         * between preflight and publication. Never destroy its entry. */
+        nas_lwip_socket_port_ops()->release(lease.slot);
+        lwip_accept_disarm();
+        (void)nas_fd_slot_lease_cancel(lease);
+        return (uint64_t)(int64_t)rc;
+    }
+    lwip_accept_disarm(); /* the accepted FD, not the Task waiter, owns it */
+    if(length_ptr) {
+        const struct nas_ipv4_endpoint endpoint={peer.ipv4,peer.port};
+        uint8_t bytes[16];
+        ipv4_sockaddr(endpoint,bytes);
+        const uint32_t actual=16;
+        uint32_t n=capacity>actual?actual:capacity;
+        if((n && !nas_user_write_bytes(address,bytes,n)) ||
+           !nas_user_write_bytes(length_ptr,(const uint8_t *)&actual,4)) {
+            nas_fs_close_fd(nextfd);
+            return (uint64_t)-EFAULT;
+        }
+    }
+    return nextfd;
+}
+#endif
 /* A blocking accept pins this exact open description across scheduler
  * sleeps. A sibling may close/dup2 the original integer FD while we wait;
  * completion must still dequeue from the original listener, not the new FD. */
@@ -344,7 +491,7 @@ uint64_t nas_fs_socket_accept_description(unsigned listener_slot,
         return sys_ipv4_accept_slot(listener_slot,address,length_ptr,flags);
 #ifdef NAS_ENABLE_LWIP
     if(nas_lwip_socket_is_slot(listener_slot))
-        return (uint64_t)-EOPNOTSUPP; /* pending native accept lease/TASK */
+        return sys_lwip_accept_slot(listener_slot,address,length_ptr,flags);
 #endif
     if(nas_unix_socket_listening(listener_slot))
         return sys_unix_accept_slot(listener_slot,address,length_ptr,flags);
@@ -383,7 +530,13 @@ static uint64_t sys_unix_name(uint64_t fd,uint64_t address,
 static uint64_t sys_ipv4_name(uint64_t fd,uint64_t address,
                               uint64_t length_ptr,bool peer) {
 #ifdef NAS_ENABLE_LWIP
-    if(lwip_fd(fd))return (uint64_t)-EOPNOTSUPP; /* native GETADDR pending */
+    if(lwip_fd(fd)) {
+        uint32_t capacity;
+        int rc=lwip_name_preflight(address,length_ptr,&capacity);
+        if(rc)return (uint64_t)(int64_t)rc;
+        rc=nas_lwip_socket_getname_begin(TASK.fds->entries[fd].slot,peer);
+        return lwip_control_result(rc);
+    }
 #endif
     if(!ipv4_fd(fd))return (uint64_t)-EBADF;
     if(!address || !length_ptr)return (uint64_t)-EFAULT;
@@ -529,7 +682,15 @@ static uint64_t sys_ipv4_setsockopt(uint64_t fd,uint64_t level,
                                     uint64_t opt,uint64_t address,
                                     uint64_t length) {
 #ifdef NAS_ENABLE_LWIP
-    if(lwip_fd(fd))return (uint64_t)-ENOPROTOOPT;
+    if(lwip_fd(fd)) {
+        if(level!=1 || opt!=2)return (uint64_t)-ENOPROTOOPT;
+        if(length<4 || !address)return (uint64_t)-EINVAL;
+        uint32_t value;
+        if(!nas_user_read_bytes(address,(uint8_t *)&value,4))
+            return (uint64_t)-EFAULT;
+        return lwip_control_result(nas_lwip_socket_setreuseaddr(
+            TASK.fds->entries[fd].slot,value!=0));
+    }
 #endif
     if(!ipv4_fd(fd))return (uint64_t)-EBADF;
     if(length<4 || !address)return (uint64_t)-EINVAL;
@@ -791,7 +952,8 @@ static uint64_t sys_socket_shutdown(uint64_t fd,uint64_t how) {
     if(!unix_fd(fd) && !inet_fd(fd))return (uint64_t)-EBADF;
     if(how>2ULL)return (uint64_t)-EINVAL;
 #ifdef NAS_ENABLE_LWIP
-    if(lwip_fd(fd))return (uint64_t)-EOPNOTSUPP; /* native SHUTDOWN missing */
+    if(lwip_fd(fd))return lwip_control_result(nas_lwip_socket_shutdown(
+        TASK.fds->entries[fd].slot,(unsigned)how));
 #endif
     unsigned slot=TASK.fds->entries[fd].slot;
     if(ipv4_fd(fd)) {

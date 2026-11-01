@@ -90,6 +90,12 @@ struct nas_task_wait {
      * native scheduler park even if a sibling closes its integer FD. */
     unsigned accept_listener_slot;
     void (*accept_listener_release)(unsigned slot);
+    /* A blocking native Netconn accept owns a distinct unpublished OpenFile
+     * lease. On EINTR/Task exit cancel its worker command BEFORE releasing
+     * the lease; late accepted connections must never target a reused slot. */
+    struct nas_fd_slot_lease accept_lease;
+    void (*accept_lease_cancel)(unsigned listener_slot,
+                                 struct nas_fd_slot_lease lease);
     uint64_t futex_addr;
     uint32_t futex_mask;
     bool futex_woken;

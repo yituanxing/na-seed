@@ -19,6 +19,7 @@
 #define LWIP_ICMP 1
 #define LWIP_UDP 1
 #define LWIP_TCP 1
+#define SO_REUSE 1 /* native SO_REUSEADDR for real Alpine ncat listeners */
 #define LWIP_ARP 1
 #define LWIP_RAW 1
 #define LWIP_LOOPBACK_MAX_PBUFS 8

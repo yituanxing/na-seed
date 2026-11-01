@@ -66,7 +66,11 @@ bool nas_task_wait_ready(const struct nas_task *task) {
 #ifdef NAS_ENABLE_LWIP
     if(task->wait.blocked_op==NAS_SC_bind ||
        task->wait.blocked_op==NAS_SC_connect ||
-       task->wait.blocked_op==NAS_SC_listen)
+       task->wait.blocked_op==NAS_SC_listen ||
+       task->wait.blocked_op==NAS_SC_setsockopt ||
+       task->wait.blocked_op==NAS_SC_shutdown ||
+       task->wait.blocked_op==NAS_SC_getsockname ||
+       task->wait.blocked_op==NAS_SC_getpeername)
         return nas_fs_socket_control_ready(task->wait.accept_listener_slot);
 #endif
     if(task->wait.blocked_op==NAS_SC_accept ||

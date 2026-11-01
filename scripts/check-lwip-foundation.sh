@@ -8,6 +8,9 @@ sh scripts/check-network-build-selection.sh
 # Run the actual Linux Socket usercopy/FD ABI in both default and lwIP
 # configurations; protocol traffic is separately exercised below.
 sh scripts/check-lwip-socket-abi.sh
+# Exercise native asynchronous accept publication and EINTR cancellation
+# through the actual syscall/usercopy/FD lease adapter, not a fake FD map.
+sh scripts/check-lwip-accept-syscall.sh
 mkdir -p build/lwip-foundation
 sources="ports/lwip/sys_arch.c ports/lwip/netif_port.c ports/lwip/network_boot.c ports/lwip/netconn_bridge.c"
 target_sources="$sources ports/lwip/socket_port.c"

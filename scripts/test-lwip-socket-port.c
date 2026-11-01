@@ -55,7 +55,70 @@ static void finish_control(unsigned slot,int expected) {
             assert(nas_lwip_socket_control_finish(slot)==expected);
             return;
         }
-        assert(nas_kthread_run(1)==1);
+        test_ns+=UINT64_C(1000000);
+        (void)nas_kthread_run(1);
+    }
+    abort();
+}
+static void connect_slot(unsigned slot,unsigned port) {
+    reserve(slot,NAS_LWIP_BRIDGE_TCP);
+    assert(nas_lwip_socket_connect(slot,lo(port))==0);
+    for(unsigned tries=0;tries<300;tries++) {
+        int ready=nas_lwip_socket_control_ready(slot);
+        assert(ready>=0);
+        if(ready==1) {
+            assert(nas_lwip_socket_control_finish(slot)==0);
+            return;
+        }
+        test_ns+=UINT64_C(1000000);
+        (void)nas_kthread_run(1);
+    }
+    abort();
+}
+static struct nas_lwip_bridge_address name_slot(unsigned slot,bool peer) {
+    assert(nas_lwip_socket_getname_begin(slot,peer)==0);
+    struct nas_lwip_bridge_address address={0};
+    for(unsigned tries=0;tries<100;tries++) {
+        int rc=nas_lwip_socket_getname_complete(slot,&address);
+        if(rc==1)return address;
+        assert(rc==0);
+        test_ns+=UINT64_C(1000000);
+        (void)nas_kthread_run(1);
+    }
+    abort();
+}
+static void listener_ready(unsigned slot) {
+    for(unsigned tries=0;tries<300;tries++) {
+        if(ops->poll_description(slot,1U)&1U)return;
+        test_ns+=UINT64_C(1000000);
+        (void)nas_kthread_run(1);
+    }
+    abort();
+}
+static struct nas_fd_slot_lease lease_slot(unsigned slot,uint64_t token) {
+    assert(slot<NAS_OPEN_FILE_LIMIT && token && !nas_open_files[slot].refcount);
+    nas_open_files[slot].refcount=1;
+    nas_open_files[slot].lease_token=token;
+    nas_open_files[slot].status_flags=2;
+    nas_open_files[slot].ops=ops;
+    return (struct nas_fd_slot_lease){slot,token};
+}
+static struct nas_lwip_bridge_id accept_slot(unsigned listener,
+                                             struct nas_fd_slot_lease lease,
+                                             struct nas_lwip_bridge_address *peer) {
+    listener_ready(listener);
+    assert(nas_lwip_socket_accept_begin(listener,lease)==0);
+    assert(nas_lwip_socket_accept_begin(listener,lease)==-EALREADY);
+    /* Once a native ACCEPT is running, a still-nonempty lwIP backlog must
+     * not busy-wake the blocked Task before its actual result is ready. */
+    assert((ops->poll_description(listener,1U)&1U)==0);
+    struct nas_lwip_bridge_id accepted={0};
+    for(unsigned tries=0;tries<200;tries++) {
+        int rc=nas_lwip_socket_accept_complete(listener,lease,&accepted,peer);
+        if(rc==1)return accepted;
+        assert(rc==0);
+        test_ns+=UINT64_C(1000000);
+        (void)nas_kthread_run(1);
     }
     abort();
 }
@@ -117,13 +180,19 @@ int main(void) {
 
     reserve(20,NAS_LWIP_BRIDGE_UDP);
     reserve(21,NAS_LWIP_BRIDGE_UDP);
+    assert(nas_lwip_socket_setreuseaddr(20,true)==0);
+    finish_control(20,0);
     assert(nas_lwip_socket_bind(20,lo(38007))==0);
     /* A second Task cannot wait on another Task's one-shot completion. */
     assert(nas_lwip_socket_bind(20,lo(38007))==-EALREADY);
     assert(nas_lwip_socket_bind(20,lo(38008))==-EBUSY);
     finish_control(20,0);
+    struct nas_lwip_bridge_address named=name_slot(20,false);
+    assert(named.ipv4==UINT32_C(0x7f000001) && named.port==38007);
     assert(nas_lwip_socket_connect(21,lo(38007))==0);
     finish_control(21,0);
+    named=name_slot(21,true);
+    assert(named.ipv4==UINT32_C(0x7f000001) && named.port==38007);
 
     char payload[]="copied native UDP payload";
     const unsigned length=(unsigned)sizeof(payload)-1;
@@ -147,69 +216,106 @@ int main(void) {
     assert((int64_t)ops->read_plan(20,1)==-EOPNOTSUPP);
 
     reserve(30,NAS_LWIP_BRIDGE_TCP);
-    reserve(31,NAS_LWIP_BRIDGE_TCP);
-    assert((int64_t)ops->read_plan(31,1)==-ENOTCONN);
+    assert(nas_lwip_socket_setreuseaddr(30,true)==0);
+    finish_control(30,0);
     assert(nas_lwip_socket_bind(30,lo(38017))==0);
     finish_control(30,0);
+    named=name_slot(30,false);
+    assert(named.ipv4==UINT32_C(0x7f000001) && named.port==38017);
     assert(nas_lwip_socket_listen(30,3)==0);
     finish_control(30,0);
     assert((int64_t)ops->read_plan(30,1)==-ENOTCONN);
-    assert(nas_lwip_socket_connect(31,lo(38017))==0);
-    bool connected_ready=false;
-    for(unsigned tries=0;tries<200;tries++) {
-        int rc=nas_lwip_socket_control_ready(31);
-        if(rc==1){connected_ready=true;break;}
-        assert(rc==0);
-        test_ns+=UINT64_C(1000000);
-        (void)nas_kthread_run(1);
-    }
-    assert(connected_ready);
-    int connection_rc=nas_lwip_socket_control_finish(31);
-    assert(connection_rc==0);
+    connect_slot(31,38017);
     assert(ops->poll_description(31,4U)&4U);
 
     /* The syscall layer already holds a lease for the accepted child slot.
      * Adoption transfers bridge ID onto that SAME OpenFile identity. */
-    nas_open_files[32].refcount=1;
-    nas_open_files[32].lease_token=UINT64_C(0x000000127ACCE551);
-    nas_open_files[32].status_flags=2;
-    nas_open_files[32].ops=ops;
-    struct nas_lwip_bridge_request accept_req={
-        .op=NAS_LWIP_BRIDGE_ACCEPT,.accept_slot=32,
-        .accept_lease_token=UINT64_C(0x000000127ACCE551)
-    };
-    struct nas_lwip_bridge_result accepted={0};
-    for(unsigned tries=0;tries<200;tries++) {
-        assert(nas_lwip_socket_port_begin(30,&accept_req)==0);
-        for(unsigned waits=0;waits<10;waits++) {
-            int ready=nas_lwip_socket_control_ready(30);
-            assert(ready>=0);
-            if(ready==1)break;
-            (void)nas_kthread_run(1);
-        }
-        int status=nas_lwip_socket_port_complete(30,&accepted);
-        if(status==0)continue;
-        assert(status==1);
-        if(accepted.status==0)break;
-        assert(accepted.status==-EAGAIN);
-        test_ns+=UINT64_C(1000000);
-    }
-    assert(accepted.status==0 && accepted.accepted.slot==32);
-    assert(nas_lwip_socket_port_adopt(accepted.accepted)==0);
+    struct nas_fd_slot_lease child=lease_slot(32,UINT64_C(0x127ACCE551));
+    struct nas_lwip_bridge_address peer={0};
+    struct nas_lwip_bridge_id accepted=accept_slot(30,child,&peer);
+    assert(accepted.slot==32);
+    assert(peer.ipv4==UINT32_C(0x7f000001) && peer.port!=0);
+    assert(nas_lwip_socket_port_adopt(accepted)==0);
+    nas_open_files[32].lease_token=0; /* fixture's atomic lease commit */
     assert(nas_lwip_socket_is_slot(32));
+    named=name_slot(32,true);
+    assert(named.ipv4==peer.ipv4 && named.port==peer.port);
 
     const char tcp[]="TCP stream through FileOps";
     assert(ops->write_plan(32,sizeof(tcp)-1)==sizeof(tcp)-1);
     assert(ops->write(32,(const uint8_t *)tcp,sizeof(tcp)-1)==sizeof(tcp)-1);
-    flush_tx(32);
+    /* Caller writes copied bytes then immediately shuts down sending.
+     * FIN must wait behind the TX queue, never truncate its last segment. */
+    assert(nas_lwip_socket_shutdown(32,1)==0);
+    assert(nas_lwip_socket_shutdown(32,1)==-EALREADY);
+    assert((int64_t)ops->write_plan(32,1)==-EPIPE);
+    assert((ops->poll_description(32,4U)&4U)==0);
+    finish_control(32,0);
+    assert((int64_t)ops->write_plan(32,1)==-EPIPE);
+    assert((ops->poll_description(32,4U)&4U)==0);
     assert(receive(31,result,6)==6);
     assert(!memcmp(result,"TCP st",6));
+    /* GETNAME must not reject a File just because an unread TCP tail is
+     * cached in the same provider, as ncat may inspect address midstream. */
+    named=name_slot(31,false);
+    assert(named.ipv4==UINT32_C(0x7f000001) && named.port!=0);
     assert(receive(31,result,sizeof(result))==sizeof(tcp)-1-6);
     assert(!memcmp(result,tcp+6,sizeof(tcp)-1-6));
+    assert(receive(31,result,1)==0); /* real upstream FIN after queued TX */
 
-    /* No user Task invokes lwIP Netconn teardown on final File release. */
+    /* An interrupted accept cancels its lease BEFORE releasing that slot.
+     * A queued native completion must drain even when the original Task
+     * will never call accept_complete again. The same pending connection
+     * can be accepted by a later Task using a fresh lease token. */
     close_slot(32);
     close_slot(31);
+    connect_slot(33,38017);
+    struct nas_fd_slot_lease canceled=lease_slot(34,UINT64_C(0xAA00));
+    listener_ready(30);
+    assert(nas_lwip_socket_accept_begin(30,canceled)==0);
+    assert(nas_lwip_socket_accept_cancel(30,canceled)==0);
+    nas_open_files[34]=(struct nas_open_file){0};
+    for(unsigned tries=0;tries<200;tries++) {
+        if(ops->poll_description(30,1U)&1U)break;
+        test_ns+=UINT64_C(1000000);
+        (void)nas_kthread_run(1);
+    }
+    struct nas_fd_slot_lease retry=lease_slot(35,UINT64_C(0xAA01));
+    accepted=accept_slot(30,retry,&peer);
+    assert(accepted.slot==35);
+    assert(nas_lwip_socket_port_adopt(accepted)==0);
+    nas_open_files[35].lease_token=0;
+    close_slot(35);
+    close_slot(33);
+
+    /* Cancellation after the native worker accepted a child, but before
+     * userspace claimed it, must explicitly close that orphan child: the
+     * bridge result has already been taken into SocketPort's cache. */
+    connect_slot(36,38017);
+    struct nas_fd_slot_lease late=lease_slot(37,UINT64_C(0xAA02));
+    listener_ready(30);
+    assert(nas_lwip_socket_accept_begin(30,late)==0);
+    bool completed=false;
+    for(unsigned tries=0;tries<100;tries++) {
+        if(nas_lwip_socket_control_ready(30)==1){completed=true;break;}
+        test_ns+=UINT64_C(1000000);
+        (void)nas_kthread_run(1);
+    }
+    assert(completed);
+    assert(nas_lwip_socket_accept_cancel(30,late)==0);
+    nas_open_files[37]=(struct nas_open_file){0};
+    close_slot(36);
+    for(unsigned tries=0;tries<40;tries++)(void)nas_kthread_run(1);
+    connect_slot(38,38017);
+    struct nas_fd_slot_lease after_cancel=lease_slot(39,UINT64_C(0xAA03));
+    accepted=accept_slot(30,after_cancel,&peer);
+    assert(accepted.slot==39);
+    assert(nas_lwip_socket_port_adopt(accepted)==0);
+    nas_open_files[39].lease_token=0;
+    close_slot(39);
+    close_slot(38);
+
+    /* No user Task invokes lwIP Netconn teardown on final File release. */
     close_slot(30);
     close_slot(21);
     close_slot(20);
@@ -218,6 +324,6 @@ int main(void) {
         (void)nas_kthread_run(1);
     }
     puts("[LWIP SOCKET PORT PASS] real native UDP/TCP, async FileOps,") ;
-    puts("  OpenFile identity, copied queued writes, poll/read, accept adoption");
+    puts("  OpenFile identity, copied TX, poll/read, leased accept/cancel/reaccept");
     return 0;
 }

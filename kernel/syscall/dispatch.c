@@ -135,6 +135,12 @@ static uint64_t finish_socket_accept(struct nas_task *task) {
 static uint64_t finish_socket_control(struct nas_task *task) {
     return nas_fs_socket_control_description(task->wait.accept_listener_slot);
 }
+static uint64_t finish_socket_name(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_fs_socket_name_description(task->wait.accept_listener_slot,
+                                           a[1],a[2],
+                                           task->wait.blocked_op==NAS_SC_getpeername);
+}
 #endif
 static uint64_t finish_epoll(struct nas_task *task) {
     const uint64_t *a=task->wait.blocked_args;
@@ -309,9 +315,16 @@ static uint64_t task_socket_accept(uint64_t *frame,enum nas_syscall_op nr,
         return result;
     unsigned slot=TASK.fds->entries[fd].slot;
     if(slot>=NAS_OPEN_FILE_LIMIT ||
-       (nas_open_files[slot].status_flags&0x800ULL))
+       (nas_open_files[slot].status_flags&0x800ULL)) {
+        /* No asynchronous lease may remain owned by a nonblocking Task
+         * that returns to userspace without parking its completion. */
+        if(TASK.wait.accept_lease_cancel)nas_task_wait_dispose(&TASK);
         return result; /* SOCK_NONBLOCK must observe EAGAIN */
-    if(!nas_fd_hold_description(slot))return (uint64_t)-EBADF;
+    }
+    if(!nas_fd_hold_description(slot)) {
+        if(TASK.wait.accept_lease_cancel)nas_task_wait_dispose(&TASK);
+        return (uint64_t)-EBADF;
+    }
     TASK.wait.accept_listener_slot=slot;
     TASK.wait.accept_listener_release=nas_fs_drop_kernel_description;
     nas_wait_io_clear(&TASK);
@@ -334,7 +347,8 @@ static uint64_t task_socket_control(uint64_t *frame,enum nas_syscall_op nr,
     TASK.wait.accept_listener_slot=slot;
     TASK.wait.accept_listener_release=nas_fs_drop_kernel_description;
     return nas_task_block(frame,nr,args[1],args[2],args[3],0,
-                          finish_socket_control);
+                          nr==NAS_SC_getsockname || nr==NAS_SC_getpeername ?
+                          finish_socket_name:finish_socket_control);
 }
 #endif
 
@@ -751,7 +765,9 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     struct nas_fs_result fs_result = nas_fs_syscall(nr, args);
     if (fs_result.handled) {
 #ifdef NAS_ENABLE_LWIP
-        if(nr==NAS_SC_bind || nr==NAS_SC_connect || nr==NAS_SC_listen)
+        if(nr==NAS_SC_bind || nr==NAS_SC_connect || nr==NAS_SC_listen ||
+           nr==NAS_SC_setsockopt || nr==NAS_SC_shutdown ||
+           nr==NAS_SC_getsockname || nr==NAS_SC_getpeername)
             return task_socket_control((uint64_t *)(uintptr_t)args,nr,args,
                                        fs_result.value);
 #endif

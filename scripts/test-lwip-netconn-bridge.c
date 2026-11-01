@@ -7,6 +7,7 @@
 #include "../kernel/errno.h"
 #include "lwip/tcpip.h"
 #include "lwip/sys.h"
+#include "lwip/opt.h"
 #include <assert.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -62,6 +63,14 @@ static struct nas_lwip_bridge_result command(struct nas_lwip_bridge_id id,
          nas_open_files[accept_slot].lease_token:0,
      .backlog=4,.bytes=data,.length=(uint16_t)length
  };
+ assert(nas_lwip_bridge_submit(id,&req)==0);
+ return finish(id);
+}
+static struct nas_lwip_bridge_result control(struct nas_lwip_bridge_id id,
+                                             enum nas_lwip_bridge_op op,
+                                             bool peer,unsigned how,bool reuse){
+ struct nas_lwip_bridge_request req={.op=op,.name_peer=peer,
+     .shutdown_how=(uint8_t)how,.reuseaddr=reuse};
  assert(nas_lwip_bridge_submit(id,&req)==0);
  return finish(id);
 }
@@ -146,7 +155,29 @@ int main(void){
  assert(!memcmp(result.bytes,"second",6));
 
  struct nas_lwip_bridge_id listener=open_conn(30,NAS_LWIP_BRIDGE_TCP);
+ /* Ncat's listening socket sets SO_REUSEADDR before bind(). This must be a
+  * real upstream PCB option, executed on tcpip_thread, not fake success. */
+ result=control(listener,NAS_LWIP_BRIDGE_SETREUSEADDR,false,0,true);
+#if SO_REUSE
+ assert(result.status==0);
+#else
+ assert(result.status==-ENOPROTOOPT);
+#endif
  assert(command(listener,NAS_LWIP_BRIDGE_BIND,lo(36007),0,NULL,0).status==0);
+ result=control(listener,NAS_LWIP_BRIDGE_GETNAME,false,0,false);
+ assert(result.status==0 && result.peer.ipv4==UINT32_C(0x7f000001) &&
+        result.peer.port==36007);
+#if SO_REUSE
+ /* Two real bound TCP PCBs can share one pre-listen address only when both
+  * have SOF_REUSEADDR: this verifies the core callback's effect, not merely
+  * the option request's success status. */
+ struct nas_lwip_bridge_id contender=open_conn(38,NAS_LWIP_BRIDGE_TCP);
+ assert(control(contender,NAS_LWIP_BRIDGE_SETREUSEADDR,false,0,true).status==0);
+ assert(command(contender,NAS_LWIP_BRIDGE_BIND,lo(36007),0,NULL,0).status==0);
+ assert(nas_lwip_bridge_release(contender)==0);
+ for(unsigned tries=0;tries<60;tries++)
+     if(nas_kthread_run(1)==0)break;
+#endif
  assert(command(listener,NAS_LWIP_BRIDGE_LISTEN,lo(0),0,NULL,0).status==0);
  struct nas_lwip_bridge_id client=open_conn(31,NAS_LWIP_BRIDGE_TCP);
  result=command(client,NAS_LWIP_BRIDGE_CONNECT,lo(36007),0,NULL,0);
@@ -163,6 +194,15 @@ int main(void){
      assert(nas_kthread_run(1)==1);
  }
  assert(accepted.slot==32 && accepted.generation);
+ result=control(accepted,NAS_LWIP_BRIDGE_GETNAME,false,0,false);
+ assert(result.status==0 && result.peer.ipv4==UINT32_C(0x7f000001) &&
+        result.peer.port==36007);
+ result=control(accepted,NAS_LWIP_BRIDGE_GETNAME,true,0,false);
+ assert(result.status==0 && result.peer.ipv4==UINT32_C(0x7f000001) &&
+        result.peer.port!=0 && result.peer.port!=36007);
+ result=control(client,NAS_LWIP_BRIDGE_GETNAME,true,0,false);
+ assert(result.status==0 && result.peer.ipv4==UINT32_C(0x7f000001) &&
+        result.peer.port==36007);
  /* Simulate transferring this exact live lease to the accepted File. */
  assert(nas_open_files[32].lease_token==accepted_lease.token);
  nas_open_files[32].lease_token=0;
@@ -186,6 +226,19 @@ int main(void){
  result=command(accepted,NAS_LWIP_BRIDGE_RECV,lo(0),0,NULL,NAS_LWIP_BRIDGE_DATA);
  assert(result.status==0 && result.length==sizeof(tcp_payload)-1-5);
  assert(!memcmp(result.bytes,tcp_payload+5,result.length));
+ /* Ncat closes its outgoing half after standard input EOF. Preserve the
+  * opposite receive half and surface a real TCP FIN as EOF on peer recv. */
+ assert(nas_lwip_bridge_submit(client,&(struct nas_lwip_bridge_request){
+     .op=NAS_LWIP_BRIDGE_SHUTDOWN,.shutdown_how=3})==-EINVAL);
+ result=control(client,NAS_LWIP_BRIDGE_SHUTDOWN,false,1,false);
+ assert(result.status==0);
+ for(unsigned tries=0;tries<120;tries++) {
+     result=command(accepted,NAS_LWIP_BRIDGE_RECV,lo(0),0,NULL,32);
+     if(result.status==0 && !result.length)break;
+     assert(result.status==-EAGAIN);
+     assert(nas_kthread_run(1)==1);
+ }
+ assert(result.status==0 && result.length==0);
  /* Release the first complete TCP pair before exercising several accept
   * races: upstream lwIP defaults to only five active TCP PCBs. */
  assert(nas_lwip_bridge_release(accepted)==0);

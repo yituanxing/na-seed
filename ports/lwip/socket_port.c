@@ -30,6 +30,9 @@ enum port_command {
 struct port_socket {
     bool owned,connected,connecting,listening,queued_control;
     bool connect_result_pending;
+    bool accept_owned,accept_cancelling;
+    bool shut_read,shut_write;
+    struct nas_fd_slot_lease accept_lease;
     bool rx_valid,rx_eof,rx_truncated;
     enum nas_lwip_bridge_type type;
     enum port_command command;
@@ -187,7 +190,7 @@ static void submit_tx(struct port_socket *s) {
  * socket does not consume/spin on empty datagrams; the native worker owns
  * one nonblocking RECV and a deadline gates subsequent empty retries. */
 static void submit_rx(struct port_socket *s) {
-    if(s->command!=PORT_IDLE || s->rx_valid || s->rx_eof || s->rx_error ||
+    if(s->command!=PORT_IDLE || s->shut_read || s->rx_valid || s->rx_eof || s->rx_error ||
        s->tx_length || s->listening ||
        (s->type==NAS_LWIP_BRIDGE_TCP && !s->connected) ||
        !elapsed(s->rx_retry_at))return;
@@ -210,7 +213,31 @@ static void submit_probe(struct port_socket *s) {
 static int check(struct port_socket *s) {
     finish(s);
     if(s->command==PORT_FAILED)return s->failure ? s->failure:-EIO;
-    if(s->command==PORT_IDLE && s->queued_control) {
+    if(s->accept_cancelling && s->command==PORT_CONTROL_DONE &&
+       s->control_request.op==NAS_LWIP_BRIDGE_ACCEPT) {
+        /* The native worker has observed cancellation and published its
+         * terminal result. Drain it even if the interrupted Task will never
+         * call accept_complete again; the next accept can reuse this File. */
+        if(s->control_result.accepted.generation)
+            (void)nas_lwip_bridge_release(s->control_result.accepted);
+        s->control_result=(struct nas_lwip_bridge_result){0};
+        s->control_request=(struct nas_lwip_bridge_request){0};
+        s->command=PORT_IDLE;
+        s->accept_cancelling=false;
+    }
+    /* Shutdown of a TCP stream follows the already-admitted copied SEND
+     * queue. A caller may write() then immediately SHUT_WR: userspace has
+     * been told its bytes were accepted, so we must never issue FIN first. */
+    if(s->command==PORT_IDLE && s->tx_length)submit_tx(s);
+    if(s->command==PORT_IDLE && s->queued_control && !s->tx_length) {
+        if(s->tx_error) {
+            s->control_result=(struct nas_lwip_bridge_result){
+                .status=s->tx_error
+            };
+            s->queued_control=false;
+            s->command=PORT_CONTROL_DONE;
+            return 0;
+        }
         int rc=nas_lwip_bridge_submit(s->id,&s->control_request);
         if(!rc) {
             s->queued_control=false;
@@ -224,6 +251,14 @@ static int check(struct port_socket *s) {
     }
     if(s->command==PORT_IDLE)submit_probe(s);
     return 0;
+}
+
+static bool send_shutdown_requested(const struct port_socket *s) {
+    return s->shut_write ||
+           ((s->queued_control || s->command==PORT_CONTROL ||
+             s->command==PORT_CONTROL_DONE) &&
+            s->control_request.op==NAS_LWIP_BRIDGE_SHUTDOWN &&
+            s->control_request.shutdown_how!=0);
 }
 
 const struct nas_file_ops *nas_lwip_socket_port_ops(void);
@@ -255,9 +290,14 @@ int nas_lwip_socket_port_begin(unsigned slot,
                               const struct nas_lwip_bridge_request *request) {
     struct port_socket *s=socket_at(slot);
     if(!s)return -EBADF;
-    if(!request || request->op<NAS_LWIP_BRIDGE_BIND ||
-       request->op>NAS_LWIP_BRIDGE_ACCEPT ||
-       request->length)return -EINVAL;
+    if(!request || request->length)return -EINVAL;
+    switch(request->op) {
+    case NAS_LWIP_BRIDGE_BIND:case NAS_LWIP_BRIDGE_CONNECT:
+    case NAS_LWIP_BRIDGE_LISTEN:case NAS_LWIP_BRIDGE_ACCEPT:
+    case NAS_LWIP_BRIDGE_GETNAME:case NAS_LWIP_BRIDGE_SHUTDOWN:
+    case NAS_LWIP_BRIDGE_SETREUSEADDR:break;
+    default:return -EINVAL;
+    }
     int rc=check(s);
     if(rc)return rc;
     if(s->connect_result_pending) {
@@ -273,6 +313,9 @@ int nas_lwip_socket_port_begin(unsigned slot,
         const struct nas_lwip_bridge_request *old=&s->control_request;
         return old->op==request->op && old->address.ipv4==request->address.ipv4 &&
                old->address.port==request->address.port &&
+               old->name_peer==request->name_peer &&
+               old->shutdown_how==request->shutdown_how &&
+               old->reuseaddr==request->reuseaddr &&
                old->accept_slot==request->accept_slot &&
                old->accept_lease_token==request->accept_lease_token &&
                old->backlog==request->backlog ? -EALREADY:-EBUSY;
@@ -283,7 +326,18 @@ int nas_lwip_socket_port_begin(unsigned slot,
         s->queued_control=true;
         return 0;
     }
-    if(s->command!=PORT_IDLE || s->tx_length || s->rx_valid)
+    const bool deferred_control=request->op==NAS_LWIP_BRIDGE_SHUTDOWN ||
+                                request->op==NAS_LWIP_BRIDGE_GETNAME ||
+                                request->op==NAS_LWIP_BRIDGE_SETREUSEADDR;
+    if(deferred_control &&
+       (s->command==PORT_TX || s->command==PORT_RX || s->tx_length)) {
+        s->control_request=*request;
+        s->control_request.bytes=NULL;
+        s->queued_control=true;
+        return 0;
+    }
+    if(s->command!=PORT_IDLE || s->tx_length ||
+       (s->rx_valid && !deferred_control))
         return -EBUSY;
     rc=nas_lwip_bridge_submit(s->id,request);
     if(!rc) {
@@ -312,6 +366,11 @@ int nas_lwip_socket_port_complete(unsigned slot,
     *result=s->control_result;
     if(s->control_request.op==NAS_LWIP_BRIDGE_LISTEN && !result->status)
         s->listening=true;
+    if(s->control_request.op==NAS_LWIP_BRIDGE_SHUTDOWN && !result->status) {
+        unsigned how=s->control_request.shutdown_how;
+        if(how==0U || how==2U)s->shut_read=true;
+        if(how==1U || how==2U)s->shut_write=true;
+    }
     s->control_result=(struct nas_lwip_bridge_result){0};
     s->control_request=(struct nas_lwip_bridge_request){0};
     s->command=PORT_IDLE;
@@ -333,6 +392,7 @@ static uint64_t read_plan(unsigned slot,uint64_t requested) {
     if(!requested)return 0;
     int rc=check(s);
     if(rc)return (uint64_t)(int64_t)rc;
+    if(s->shut_read)return 0;
     if(s->listening)return (uint64_t)-ENOTCONN;
     if(s->type==NAS_LWIP_BRIDGE_TCP && !s->connected && !s->connecting)
         return (uint64_t)-ENOTCONN;
@@ -370,6 +430,7 @@ static uint64_t write_plan(unsigned slot,uint64_t requested) {
     if(!requested)return 0;
     int rc=check(s);
     if(rc)return (uint64_t)(int64_t)rc;
+    if(send_shutdown_requested(s))return (uint64_t)-EPIPE;
     if(s->tx_error) {
         rc=s->tx_error;s->tx_error=0;
         return (uint64_t)(int64_t)rc;
@@ -387,6 +448,7 @@ static uint64_t write_bytes(unsigned slot,const uint8_t *src,uint64_t count) {
     struct port_socket *s=socket_at(slot);
     if(!s)return (uint64_t)-EBADF;
     if(!count)return 0;
+    if(send_shutdown_requested(s))return (uint64_t)-EPIPE;
     if(!src || count>NAS_LWIP_BRIDGE_DATA)return (uint64_t)-EINVAL;
     if(s->command!=PORT_IDLE || s->tx_length)return (uint64_t)-EAGAIN;
     memcpy(s->tx,src,(size_t)count);
@@ -411,11 +473,14 @@ static uint16_t poll_description(unsigned slot,uint16_t events) {
     if(s->rx_valid || s->rx_eof || s->rx_error ||
        (s->command==PORT_CONTROL_DONE &&
         s->control_request.op==NAS_LWIP_BRIDGE_ACCEPT))ready|=PORT_POLLIN;
-    if(s->listening && nas_lwip_bridge_listener_readable(s->id))
+    if(s->shut_read)ready|=PORT_POLLIN|PORT_POLLHUP;
+    if(s->listening && !s->accept_owned && !s->accept_cancelling &&
+       s->command==PORT_IDLE && nas_lwip_bridge_listener_readable(s->id))
         ready|=PORT_POLLIN;
     if(s->rx_eof)ready|=PORT_POLLHUP;
     if(s->tx_error || s->rx_error)ready|=PORT_POLLERR;
-    if(s->connected && !s->connecting && !s->tx_length &&
+    if(s->connected && !s->connecting && !send_shutdown_requested(s) &&
+       !s->tx_length &&
        s->command==PORT_IDLE)
         ready|=PORT_POLLOUT;
     return ready&(uint16_t)(events|PORT_POLLERR|PORT_POLLHUP);
@@ -429,7 +494,14 @@ static uint16_t poll_fd(uint64_t fd,uint16_t events) {
 
 static void release(unsigned slot) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !sockets[slot].owned)return;
-    struct nas_lwip_bridge_id id=sockets[slot].id;
+    struct port_socket *s=&sockets[slot];
+    struct nas_lwip_bridge_id id=s->id;
+    /* Once port finish() took the bridge result, the listener no longer
+     * owns that accepted child in the native bridge's result field. */
+    if(s->command==PORT_CONTROL_DONE &&
+       s->control_request.op==NAS_LWIP_BRIDGE_ACCEPT &&
+       s->control_result.accepted.generation)
+        (void)nas_lwip_bridge_release(s->control_result.accepted);
     sockets[slot]=(struct port_socket){0};
     (void)nas_lwip_bridge_release(id);
 }
@@ -489,6 +561,38 @@ int nas_lwip_socket_listen(unsigned slot,unsigned backlog) {
     };
     return nas_lwip_socket_port_begin(slot,&req);
 }
+int nas_lwip_socket_getname_begin(unsigned slot,bool peer) {
+    const struct nas_lwip_bridge_request req={
+        .op=NAS_LWIP_BRIDGE_GETNAME,.name_peer=peer
+    };
+    return nas_lwip_socket_port_begin(slot,&req);
+}
+int nas_lwip_socket_getname_complete(unsigned slot,
+                                     struct nas_lwip_bridge_address *address) {
+    struct port_socket *s=socket_at(slot);
+    if(!s)return -EBADF;
+    if(!address)return -EINVAL;
+    if(s->control_request.op!=NAS_LWIP_BRIDGE_GETNAME)return -EINVAL;
+    struct nas_lwip_bridge_result result={0};
+    int rc=nas_lwip_socket_port_complete(slot,&result);
+    if(rc<=0)return rc;
+    if(result.status)return result.status;
+    *address=result.peer;
+    return 1;
+}
+int nas_lwip_socket_shutdown(unsigned slot,unsigned how) {
+    if(how>2U)return -EINVAL;
+    const struct nas_lwip_bridge_request req={
+        .op=NAS_LWIP_BRIDGE_SHUTDOWN,.shutdown_how=(uint8_t)how
+    };
+    return nas_lwip_socket_port_begin(slot,&req);
+}
+int nas_lwip_socket_setreuseaddr(unsigned slot,bool enabled) {
+    const struct nas_lwip_bridge_request req={
+        .op=NAS_LWIP_BRIDGE_SETREUSEADDR,.reuseaddr=enabled
+    };
+    return nas_lwip_socket_port_begin(slot,&req);
+}
 int nas_lwip_socket_control_ready(unsigned slot) {
     struct port_socket *s=socket_at(slot);
     if(!s)return -EBADF;
@@ -501,4 +605,96 @@ int nas_lwip_socket_control_finish(unsigned slot) {
     struct nas_lwip_bridge_result result={0};
     int rc=nas_lwip_socket_port_complete(slot,&result);
     return rc==1 ? result.status : rc==0 ? -EINPROGRESS:rc;
+}
+
+static bool lease_matches(const struct port_socket *s,
+                          struct nas_fd_slot_lease lease) {
+    return s->accept_owned && s->accept_lease.slot==lease.slot &&
+           s->accept_lease.token==lease.token && lease.token!=0;
+}
+
+int nas_lwip_socket_accept_begin(unsigned listener_slot,
+                                 struct nas_fd_slot_lease lease) {
+    struct port_socket *s=socket_at(listener_slot);
+    if(!s)return -EBADF;
+    if(!lease.token || lease.slot>=NAS_OPEN_FILE_LIMIT)return -EBADF;
+    int rc=check(s);
+    if(rc)return rc;
+    if(s->type!=NAS_LWIP_BRIDGE_TCP || !s->listening)return -EINVAL;
+    if(s->accept_cancelling)return -EBUSY; /* cancellation still draining */
+    if(s->accept_owned)return -EALREADY; /* a different Task owns result */
+    if(!nas_lwip_bridge_listener_readable(s->id))return -EAGAIN;
+    struct nas_lwip_bridge_request request={
+        .op=NAS_LWIP_BRIDGE_ACCEPT,
+        .accept_slot=(uint16_t)lease.slot,
+        .accept_lease_token=lease.token
+    };
+    rc=nas_lwip_socket_port_begin(listener_slot,&request);
+    if(rc)return rc;
+    s->accept_owned=true;
+    s->accept_lease=lease;
+    return 0;
+}
+
+int nas_lwip_socket_accept_complete(unsigned listener_slot,
+                                    struct nas_fd_slot_lease lease,
+                                    struct nas_lwip_bridge_id *accepted,
+                                    struct nas_lwip_bridge_address *peer) {
+    struct port_socket *s=socket_at(listener_slot);
+    if(!s)return -EBADF;
+    if(!accepted || !peer)return -EINVAL;
+    if(!lease_matches(s,lease))return -EINVAL;
+    struct nas_lwip_bridge_result result={0};
+    int rc=nas_lwip_socket_port_complete(listener_slot,&result);
+    if(rc==0)return 0;
+    if(rc<0) {
+        s->accept_owned=false;
+        s->accept_lease=(struct nas_fd_slot_lease){0};
+        return rc;
+    }
+    s->accept_owned=false;
+    s->accept_lease=(struct nas_fd_slot_lease){0};
+    if(result.status)return result.status;
+    if(!result.accepted.generation)return -EIO;
+    *accepted=result.accepted;
+    *peer=result.peer;
+    return 1;
+}
+
+int nas_lwip_socket_accept_cancel(unsigned listener_slot,
+                                  struct nas_fd_slot_lease lease) {
+    struct port_socket *s=socket_at(listener_slot);
+    if(!s)return -EBADF;
+    if(!lease_matches(s,lease))return -EINVAL;
+    /* Do not call check() before determining whether the consumer already
+     * took a completed child from the native result; bridge_cancel_accept
+     * cannot cancel a result that the port has already consumed. */
+    if(s->queued_control &&
+       s->control_request.op==NAS_LWIP_BRIDGE_ACCEPT) {
+        s->queued_control=false;
+        s->control_request=(struct nas_lwip_bridge_request){0};
+        s->accept_owned=false;
+        s->accept_lease=(struct nas_fd_slot_lease){0};
+        return 0;
+    }
+    if(s->command==PORT_CONTROL_DONE &&
+       s->control_request.op==NAS_LWIP_BRIDGE_ACCEPT) {
+        if(s->control_result.accepted.generation)
+            (void)nas_lwip_bridge_release(s->control_result.accepted);
+        s->control_result=(struct nas_lwip_bridge_result){0};
+        s->control_request=(struct nas_lwip_bridge_request){0};
+        s->command=PORT_IDLE;
+        s->accept_owned=false;
+        s->accept_lease=(struct nas_fd_slot_lease){0};
+        return 0;
+    }
+    if(s->command!=PORT_CONTROL ||
+       s->control_request.op!=NAS_LWIP_BRIDGE_ACCEPT)
+        return -EALREADY;
+    int rc=nas_lwip_bridge_cancel_accept(s->id,&lease);
+    if(rc)return rc;
+    s->accept_owned=false;
+    s->accept_lease=(struct nas_fd_slot_lease){0};
+    s->accept_cancelling=true;
+    return 0;
 }

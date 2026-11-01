@@ -8,7 +8,9 @@
 #include "../../kernel/task/kthread.h"
 #include "lwip/api.h"
 #include "lwip/err.h"
+#include "lwip/ip.h"
 #include "lwip/ip4_addr.h"
+#include "lwip/tcpip.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -114,6 +116,40 @@ static ip_addr_t ipv4(struct nas_lwip_bridge_address address) {
               address.ipv4&255U);
     return ip;
 }
+
+/* Netconn serializes its public API with tcpip_thread, but its PCB is not
+ * writable from this bridge worker when LWIP_TCPIP_CORE_LOCKING=0. Queue the
+ * SO_REUSEADDR mutation in the official TCP/IP callback context and keep the
+ * worker's callback state alive until the core signals completion. */
+#if SO_REUSE
+struct reuseaddr_callback {
+    struct netconn *connection;
+    bool enabled;
+    struct nas_ksem completed;
+    err_t status;
+};
+static void set_reuseaddr_on_core(void *arg) {
+    struct reuseaddr_callback *c=(struct reuseaddr_callback *)arg;
+    if(!c->connection->pcb.ip)c->status=ERR_CONN;
+    else {
+        if(c->enabled)ip_set_option(c->connection->pcb.ip,SOF_REUSEADDR);
+        else ip_reset_option(c->connection->pcb.ip,SOF_REUSEADDR);
+        c->status=ERR_OK;
+    }
+    (void)nas_ksem_post(&c->completed);
+}
+static err_t set_reuseaddr(struct netconn *connection,bool enabled) {
+    struct reuseaddr_callback c={.connection=connection,.enabled=enabled,
+                                 .status=ERR_OK};
+    nas_ksem_init(&c.completed,0);
+    err_t err=tcpip_callback(set_reuseaddr_on_core,&c);
+    if(err!=ERR_OK)return err;
+    /* This wait parks a native kernel thread, never a Task/syscall stack. */
+    if(!nas_ksem_wait(&c.completed))return ERR_VAL;
+    return c.status;
+}
+#endif
+
 static void execute(unsigned slot) {
     struct bridge_slot *s=&bridge.slots[slot];
     struct nas_lwip_bridge_result *out=&s->result;
@@ -160,6 +196,19 @@ static void execute(unsigned slot) {
         err=netconn_accept(s->connection,&accepted);
         if(err!=ERR_OK)break;
         if(!accepted){out->status=-EIO;return;}
+        /* Linux accept() may request sockaddr_in. Query the ACTUAL peer on
+         * this native worker stack; never invent 127.0.0.1 or borrow the
+         * listener's local address for an accepted connection. */
+        ip_addr_t peer_ip;
+        u16_t peer_port=0;
+        err=netconn_getaddr(accepted,&peer_ip,&peer_port,0);
+        if(err!=ERR_OK || !IP_IS_V4(&peer_ip)) {
+            (void)netconn_delete(accepted);
+            out->status=err!=ERR_OK ? -err_to_errno(err):-EAFNOSUPPORT;
+            return;
+        }
+        out->peer.ipv4=lwip_ntohl(ip4_addr_get_u32(ip_2_ip4(&peer_ip)));
+        out->peer.port=peer_port;
         /* A signal/close can cancel a Task's lease while Netconn is in a
          * native wait. Recheck after returning from upstream before ever
          * publishing a child into the former OpenFile slot. */
@@ -231,6 +280,29 @@ static void execute(unsigned slot) {
         }
         break;
     }
+    case NAS_LWIP_BRIDGE_GETNAME: {
+        ip_addr_t endpoint;
+        u16_t port=0;
+        err=netconn_getaddr(s->connection,&endpoint,&port,
+                            r->name_peer ? 0U:1U);
+        if(err!=ERR_OK)break;
+        if(!IP_IS_V4(&endpoint)){out->status=-EAFNOSUPPORT;return;}
+        out->peer.ipv4=lwip_ntohl(ip4_addr_get_u32(ip_2_ip4(&endpoint)));
+        out->peer.port=port;
+        break;
+    }
+    case NAS_LWIP_BRIDGE_SHUTDOWN:
+        if(s->type!=NAS_LWIP_BRIDGE_TCP){out->status=-EOPNOTSUPP;return;}
+        err=netconn_shutdown(s->connection,r->shutdown_how!=1U,
+                            r->shutdown_how!=0U);
+        break;
+    case NAS_LWIP_BRIDGE_SETREUSEADDR:
+#if SO_REUSE
+        err=set_reuseaddr(s->connection,r->reuseaddr);
+#else
+        out->status=-ENOPROTOOPT;
+#endif
+        break;
     default:out->status=-EINVAL;return;
     }
     if(err!=ERR_OK)out->status=-err_to_errno(err);
@@ -312,8 +384,10 @@ int nas_lwip_bridge_submit(struct nas_lwip_bridge_id id,
     if(!request)return -EINVAL;
     if(s->queued || s->executing || s->finished)return -EBUSY;
     if(bridge.count==NAS_LWIP_BRIDGE_QUEUE)return -EAGAIN;
-    if(request->op<NAS_LWIP_BRIDGE_BIND || request->op>NAS_LWIP_BRIDGE_RECV ||
+    if(request->op<NAS_LWIP_BRIDGE_BIND ||
+       request->op>NAS_LWIP_BRIDGE_SETREUSEADDR ||
        request->length>NAS_LWIP_BRIDGE_DATA ||
+       (request->op==NAS_LWIP_BRIDGE_SHUTDOWN && request->shutdown_how>2U) ||
        (request->op==NAS_LWIP_BRIDGE_SEND && request->length && !request->bytes))
         return -EINVAL;
     if(request->op==NAS_LWIP_BRIDGE_ACCEPT &&

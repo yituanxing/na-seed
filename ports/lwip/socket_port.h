@@ -2,6 +2,7 @@
 #define NASEED_LWIP_SOCKET_PORT_H
 
 #include "netconn_bridge.h"
+#include "../../kernel/fd.h"
 
 struct nas_file_ops;
 
@@ -42,7 +43,34 @@ bool nas_lwip_socket_is_listening(unsigned slot);
 int nas_lwip_socket_bind(unsigned slot,struct nas_lwip_bridge_address address);
 int nas_lwip_socket_connect(unsigned slot,struct nas_lwip_bridge_address address);
 int nas_lwip_socket_listen(unsigned slot,unsigned backlog);
+/* Native local/peer address queries and supported control operations remain
+ * asynchronous. GETNAME has an address-bearing result; the other two share
+ * control_ready/control_finish with bind/listen. */
+int nas_lwip_socket_getname_begin(unsigned slot,bool peer);
+int nas_lwip_socket_getname_complete(unsigned slot,
+                                     struct nas_lwip_bridge_address *address);
+int nas_lwip_socket_shutdown(unsigned slot,unsigned how);
+int nas_lwip_socket_setreuseaddr(unsigned slot,bool enabled);
 int nas_lwip_socket_control_ready(unsigned slot);
 int nas_lwip_socket_control_finish(unsigned slot);
+
+/* The syscall adapter owns an OpenFile lease before native ACCEPT is
+ * queued. No User pointer or task-local FD enters this layer. Poll readiness
+ * avoids speculative accepts when lwIP reports an empty backlog.
+ *
+ * begin: 0 queued, -EAGAIN no pending peer / native queue backpressure;
+ * complete: 0 still executing, 1 successful transfer of accepted+peer,
+ * or negative native errno (including -EAGAIN for a raced-empty backlog).
+ * cancel: invalidates the outstanding command before caller drops its lease;
+ * late completions and orphan child Netconn handles are released on the
+ * native worker rather than stranded in this File or a second FD table. */
+int nas_lwip_socket_accept_begin(unsigned listener_slot,
+                                  struct nas_fd_slot_lease lease);
+int nas_lwip_socket_accept_complete(unsigned listener_slot,
+                                     struct nas_fd_slot_lease lease,
+                                     struct nas_lwip_bridge_id *accepted,
+                                     struct nas_lwip_bridge_address *peer);
+int nas_lwip_socket_accept_cancel(unsigned listener_slot,
+                                   struct nas_fd_slot_lease lease);
 
 #endif

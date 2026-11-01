@@ -235,10 +235,20 @@ The remaining operating-system constraints are explicit:
    readiness, and an async ACCEPT worker validates a 64-bit OpenFile lease
    token both before and after accepting a connection. Cancellation releases
    unclaimed children, including stale completions after slot reuse.
-   **User-facing accept is deliberately still disabled** until its Task
-   interruption/lease lifecycle is connected and host/guest tested. Exact
-   `sendto/recvfrom` metadata, Socket names/options/shutdown and guest ncat,
-   iperf3, DNS remain outstanding; do not count programs as passed yet.
+   **Blocking user-facing `accept/accept4` is now wired** to a Task-owned
+   FD-slot lease. The syscall reserves an unpublished OpenFile, parks against
+   genuine listener readiness, adopts the accepted native Netconn into the
+   existing FileOps/FD tables, returns the actual peer sockaddr, and cancels
+   worker commands before freeing leases on interruption or Task exit.
+   Dedicated real-syscall/FD-lease tests cover EINTR, FD reuse, peer usercopy,
+   CLOEXEC and accepted-child O_NONBLOCK. Native `getsockname/getpeername`,
+   `SO_REUSEADDR` and `shutdown` now use the same asynchronous worker; the
+   upstream TCP host test proves queued writes precede SHUT_WR FIN and EOF.
+   **Nonblocking listening `accept()` remains EAGAIN-only** pending a durable
+   per-listener queue/ticket. Exact UDP `sendto/recvfrom` metadata, wider
+   socket options, close races and **real guest Alpine ncat/iperf3/DNS remain
+   unproven**; the narrow signed-Alpine x86 ncat QEMU workflow is a test
+   gate, not evidence of a pass until it actually succeeds.
 6. `nas_lwip_random32` is currently a noncryptographic clock-seeded PRNG;
    a real entropy-backed source is required for defensible TCP ISNs before
    Internet-facing use. Do not claim network security or wire operation.
@@ -253,7 +263,7 @@ The remaining operating-system constraints are explicit:
 | D0 — host bridge-proven | Native Netconn RPC worker, bounded command copies, real upstream UDP/TCP loopback, OpenFile-indexed generation lifetime and deferred release | Host TCP/UDP bind/connect/listen/accept/send/recv, partial TCP/UDP truncation and stale-close tests PASS. **Not wired to user socket syscalls yet** |
 | D1a — host FileOps-proven | Netconn-backed TCP/UDP FileOps + async control state machine, same global `nas_open_file` identity, accepted handle adoption, all opt-in build source lists | `test-lwip-socket-port` against upstream lwIP; TCP/UDP data, copied queued writes, poll-driven RX, bind/connect/listen, async close; default AF_UNIX/simulated AF_INET unchanged |
 | D1b — host ABI-proven (partial) | Opt-in AF_INET TCP/UDP Socket syscall selection, real OpenFile FileOps, native bind/connect/listen Task continuations, listener event readiness and worker lease cancellation; preserve AF_UNIX and default fake backend | `test-lwip-socket-abi` on real usercopy/FD ABI with controlled provider, genuine upstream Netconn host test, M106 AF_UNIX regression PASS; **not yet a guest network-program pass** |
-| D1c — remaining | Finish accept Task lease and interruption cleanup, UDP address handling, accurate Linux socket names/options/shutdown, nonblocking readiness and close races | ncat local/remote, curl, iperf3, DNS, poll/epoll, fork/dup, close/accept races on all ISAs |
+| D1c — host-tested, guest pending | Blocking native `accept/accept4` Task FD-lease and EINTR cleanup; real peer sockaddr, GETNAME, `SO_REUSEADDR`, SHUTDOWN, TX-before-FIN ordering. Nonblocking `accept`, UDP destination/source metadata, extended options and close races still open | Real syscall+FD fixture, upstream native TCP/UDP+SocketPort tests PASS; **x86 signed Alpine ncat single-case QEMU workflow added, outcome pending**. After this, ncat remote, curl, iperf3, DNS and accumulated multi-ISA checks |
 | E | Remove old simulated AF_INET code and harden shutdown, resource failure, MTU, hot-unplug | Network + block concurrency, packet loss/backpressure, memory lifetime, repeated NIC reset, all-ISA QEMU regression accumulated as requested |
 
 Don't launch the expensive QEMU M141 matrix for Stage A alone. Do not report
