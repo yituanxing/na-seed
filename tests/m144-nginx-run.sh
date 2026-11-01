@@ -1,7 +1,8 @@
 #!/bin/sh
 set -eu
 dir=/tmp/m144/nginx
-/bin/busybox mkdir -p "$dir/site" "$dir/logs"
+/bin/busybox mkdir -p "$dir/site" "$dir/logs" "$dir/client_body" \
+    "$dir/proxy" "$dir/fastcgi" "$dir/uwsgi" "$dir/scgi" "$dir/logs"
 echo M144_REAL_NGINX_STATIC_RESPONSE > "$dir/site/item.txt"
 /bin/busybox cat > "$dir/nginx.conf" <<EOF
 user root;
@@ -12,6 +13,11 @@ daemon off;
 master_process off;
 events { worker_connections 16; }
 http { access_log off; default_type text/plain;
+    client_body_temp_path $dir/client_body;
+    proxy_temp_path $dir/proxy;
+    fastcgi_temp_path $dir/fastcgi;
+    uwsgi_temp_path $dir/uwsgi;
+    scgi_temp_path $dir/scgi;
     server { listen 127.0.0.1:15443; root $dir/site; }
 }
 EOF
