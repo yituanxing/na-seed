@@ -83,6 +83,12 @@ run_codec_pair() {
         # CompuServe RLE has fixed 128x96 (or 256x192) dimensions; its real
         # encoder pads our smaller 16x16 source to 128x96, as specified.
         verify_decoded 128 96 ;;
+      pdbimgtopam)
+        # The genuine Palm Pilot Image Viewer encoder expands its 16x16 PBM
+        # into a 160x160 monochrome PDB canvas. The actual Alpine decoder
+        # returns a PAM image with one channel and maxval 1, not 16x16 PBM.
+        verify_decoded 160 160
+        busy grep -Fq 'by 1 maxval 1' "$work/geometry" ;;
       *) verify_decoded "$width" "$height" ;;
     esac
 }
