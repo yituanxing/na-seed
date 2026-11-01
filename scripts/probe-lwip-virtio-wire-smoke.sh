@@ -6,6 +6,9 @@ set -eu
 export NAS_ENABLE_LWIP=1
 export NAS_ENABLE_VIRTIO_NET=1
 export NAS_VIRTIO_NET_USER=1
+# Temporary focused ABI diagnosis: records actual native Ncat syscall
+# arguments/status while keeping the signed executable untouched.
+export NAS_SYSCALL_TRACE=1
 export NAS_APP_BATCH_QEMU_TIMEOUT=180
 export NAS_ACCEPTANCE_QEMU_RAM=1536M
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
