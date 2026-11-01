@@ -196,11 +196,17 @@ VirtIO-Net PCI device and QEMU user networking without changing the default
 QEMU hardware, waits for an actual lwIP DHCP-bound callback, and runs the
 unchanged signed Alpine Ncat against a host HTTP service at the slirp gateway.
 It requires the guest to receive the host-only README contents over TCP and
-reports a failure if the NIC, DHCP lease or reply is missing. **This is an
-unverified candidate until its real QEMU workflow succeeds**, not a claimed
-wire or DHCP PASS. An opt-in QEMU `filter-dump` pcap records genuine frames
-at the guest NIC/backend boundary for failure classification; no IP logic is
-added to the kernel driver. The historical loopback smoke remains separate.
+reports a failure if the NIC, DHCP lease or reply is missing. **The x86-64
+QEMU gate passed on 2026-11-01** ([Actions run 41280358675](https://github.com/yituanxing/na-seed/actions/runs/41280358675)):
+real VirtIO-Net RX/TX, DHCP lease `10.0.2.15`, gateway ARP, TCP handshake,
+and host HTTP response through an unmodified Alpine Ncat. This establishes
+QEMU slirp host communication, not external-network throughput or production
+NIC hardware support. QEMU `filter-dump` records guest/backend wire frames
+for reproducible diagnosis; no IP logic is added to the kernel driver.
+The historical loopback smoke remains a separate regression gate. The
+original Ncat exposed a Linux errno compatibility gap: `recvfrom` on a live
+stdin pipe needs `ENOTSOCK`, not `EBADF`; the socket syscall adapter now
+classifies live non-socket versus closed FDs before dispatch.
 
 1. `sys_mbox_new` rejects requests above the *real* `nas_kmailbox` capacity
    of 8, and `tcpip_mbox`/Netconn queue sizes are configured at 8. This is
