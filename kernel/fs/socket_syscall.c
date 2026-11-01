@@ -168,13 +168,6 @@ uint64_t nas_fs_socket_name_description(unsigned slot,uint64_t address,
     struct nas_lwip_bridge_address name={0};
     int rc=nas_lwip_socket_getname_complete(slot,&name);
     if(rc==0)return (uint64_t)-EAGAIN;
-#ifdef NASEED_SYSCALL_TRACE
-    nas_print("[NET NAME DONE] slot=");nas_dec(slot);
-    nas_print(" rc=");nas_dec((uint64_t)(rc<0?-rc:rc));
-    nas_print(" addr=");nas_hex(name.ipv4);
-    nas_print(" port=");nas_dec(name.port);
-    nas_print("\n");
-#endif
     if(rc<0)return (uint64_t)(int64_t)rc;
     if(rc!=1)return (uint64_t)-EIO;
     /* A CLONE_VM peer can unmap the original output while this Task sleeps.
@@ -271,13 +264,6 @@ uint64_t nas_fs_socket_control_description(unsigned slot) {
     struct nas_lwip_bridge_result result={0};
     int rc=nas_lwip_socket_port_complete(slot,&result);
     if(rc==0)return (uint64_t)-EAGAIN;
-#ifdef NASEED_SYSCALL_TRACE
-    nas_print("[NET CONTROL DONE] slot=");nas_dec(slot);
-    nas_print(" completed=");nas_dec((uint64_t)(rc==1));
-    nas_print(" errno=");nas_dec((uint64_t)
-        ((rc==1?result.status:rc)<0?-(rc==1?result.status:rc):0));
-    nas_print("\n");
-#endif
     return (uint64_t)(int64_t)(rc==1 ? result.status:rc);
 #else
     (void)slot;

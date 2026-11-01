@@ -8,7 +8,7 @@ global
     nbthread 1
     noreuseport
 defaults
-    mode tcp
+    mode http
     timeout connect 5s
     timeout client 8s
     timeout server 8s
