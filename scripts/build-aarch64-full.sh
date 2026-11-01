@@ -34,7 +34,7 @@ if [ "${NAS_ENABLE_VIRTIO_NET:-0}" = 1 ]; then
 fi
 lwip_src=
 if [ "${NAS_ENABLE_LWIP:-0}" = 1 ]; then
-    lwip_src="ports/lwip/sys_arch.c ports/lwip/netif_port.c ports/lwip/network_boot.c third_party/lwip/src/core/*.c third_party/lwip/src/core/ipv4/*.c third_party/lwip/src/api/*.c third_party/lwip/src/netif/ethernet.c"
+    lwip_src="ports/lwip/sys_arch.c ports/lwip/netif_port.c ports/lwip/network_boot.c ports/lwip/netconn_bridge.c third_party/lwip/src/core/*.c third_party/lwip/src/core/ipv4/*.c third_party/lwip/src/api/*.c third_party/lwip/src/netif/ethernet.c"
 fi
 obj=
 for f in $common $arch $lwip_src; do

@@ -51,7 +51,7 @@ int main(void){
  nas_kthread_system_init();
  assert(nas_netdev_register(&eth)==0);
  assert(nas_lwip_guest_boot());
- assert(scans==1 && nas_kthread_live()==2);
+ assert(scans==1 && nas_kthread_live()==3); /* TCP/IP, NIC RX, Netconn RPC */
  assert(nas_kthread_run(1)==1); /* tcpip starts, DHCP discover */
  assert(transmitted>=1 && eth.refs==1);
  assert(nas_netdev_unregister(&eth)!=0); /* lwIP pins the live device */
@@ -61,7 +61,8 @@ int main(void){
  inbound_pending=true;
  nas_netdev_notify_rx(&eth); /* IRQ path only wakes, no RX parsing */
  assert(delivered==1);
- assert(nas_kthread_run(1)==1);
+ for(unsigned i=0;i<4 && delivered<2;i++)
+     assert(nas_kthread_run(1)==1);
  assert(delivered==2);
  now_ns+=UINT64_C(11000000);
  assert(nas_kthread_timers_tick(now_ns)>=1);

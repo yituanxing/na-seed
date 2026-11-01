@@ -1,6 +1,7 @@
 /* Opt-in native network bootstrap. Official lwIP owns all wire protocols;
  * one NaSeed kernel worker only schedules bounded NIC completion polling. */
 #include "netif_port.h"
+#include "netconn_bridge.h"
 #include "../../kernel/arch/arch.h"
 #include "../../kernel/task/k_sync.h"
 #include "../../kernel/task/kthread.h"
@@ -99,6 +100,9 @@ bool nas_lwip_guest_boot(void){
  if(network.ethernet_available &&
     !nas_kthread_spawn(receive_worker,NULL,&network.rx_handle))
      return false;
+ /* Netconn calls must run on a native kernel C stack; user Task syscalls
+  * are only producers of bounded commands and never park in lwIP sys_arch. */
+ if(!nas_lwip_bridge_start())return false;
  nas_print("[LWIP] official TCP/IP thread scheduled; native loopback enabled\n");
  return true;
 }

@@ -15,12 +15,15 @@ for configuration in net blk both; do
         if(index($0," -c ports/uboot/blk_port.c "))blk++;
         if(index($0," -c ports/uboot/virtio_compat.c "))common++;
         if(index($0," -c kernel/drivers/port/net.c "))netdev++;
+        if(index($0," -c ports/lwip/netconn_bridge.c "))netconn++;
       }
       END {
         needed_nic=(mode!="blk");
         needed_blk=(mode!="net");
-        if(nic!=needed_nic || blk!=needed_blk || common!=1 || netdev!=1)
+        needed_netconn=(mode!="blk");
+        if(nic!=needed_nic || blk!=needed_blk || common!=1 ||
+           netdev!=1 || netconn!=needed_netconn)
           exit 1;
-        print "[NETWORK BUILD SELECT PASS] " mode ": one shared transport and netdev, class-specific source only";
+        print "[NETWORK BUILD SELECT PASS] " mode ": shared transport/netdev once, correct class/Netconn selection";
       }'
 done

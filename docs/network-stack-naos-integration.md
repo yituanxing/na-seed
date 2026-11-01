@@ -47,6 +47,7 @@ kernel/fs/socket_syscall.c      (Linux ABI, sockaddr and usercopy ONLY)
 nas_open_file + nas_file_ops    (shared fork/dup/SCM_RIGHTS lifetime)
        |
 ports/lwip/socket_port.c        (future: Netconn<->File and readiness)
+ports/lwip/netconn_bridge.c     (native-worker boundary for Netconn waits)
        |
 official lwIP 2.2.1            (TCP, UDP, IP, ICMP, ARP, DHCP, DNS)
        |
@@ -93,6 +94,51 @@ QEMU VirtIO-Net hardware
   from an interrupt; it wakes a bounded network worker which invokes
   `tcpip_input` (or another thread-safe lwIP netif API).
 
+## NaOS and Linux cross-check: avoid architectural drift
+
+The exact NaOS kernel comparison baseline is
+[`aether-os-studio/na-kernel@2c456491`](https://github.com/aether-os-studio/na-kernel/tree/2c45649144afa3dd2e32147d7029e354dc9fc518).
+Its `modules/drivers/net/virtio-net/net.c` publishes a NetDevice;
+`modules/net/netserver/lwip_netif.c` adapts that device to official lwIP;
+`modules/net/netserver/lwip_socket.c` gives Netconn sockets ordinary
+`read/write/poll/release` file operations; `kernel/src/net/net_syscall.c`
+dispatches the protocol family. NaSeed already has the *single*
+`nas_open_file`/`nas_file_ops` and AF_UNIX backends, so only the AF_INET
+provider should change. Do **not** add a second socket descriptor namespace,
+duplicate VFS ownership, or copy NaOS's GPL-3.0 adapters.
+
+The NaOS git history is also a caution against equating an imported driver
+with a functioning kernel integration: Rust VirtIO
+[`09e75a10`](https://github.com/aether-os-studio/na-kernel/commit/09e75a1082afffa3cdfebac27dd7d18da5fe59ee)
+was initially untested, was removed for the C/module approach in
+[`b6f92e7e`](https://github.com/aether-os-studio/na-kernel/commit/b6f92e7ee2bd1fc935bddcfbca5fd585388b9d91),
+the block queue was repaired in
+[`f6390dde`](https://github.com/aether-os-studio/na-kernel/commit/f6390dde3f9c991faec4ce54f47d7053ce112d61),
+lwIP first arrived with known issues in
+[`1e423aa8`](https://github.com/aether-os-studio/na-kernel/commit/1e423aa83262485624b494c57070ce4bae4c870b),
+and MMIO followed in
+[`3773457b`](https://github.com/aether-os-studio/na-kernel/commit/3773457b1cf4fbfb664f72f7fe7bbd58bdb588be).
+We require executable host and then guest evidence for each NaSeed layer.
+
+Linux's [VFS `struct file`](https://docs.kernel.org/filesystems/vfs.html)
+and [socket file operations](https://github.com/torvalds/linux/blob/master/net/socket.c)
+confirm that `dup`/`fork` share one open description, not protocol-specific
+FD tables. Its [NAPI guidance](https://docs.kernel.org/networking/napi.html)
+separates IRQ notification from bounded RX polling and IRQ rearming. NaSeed
+currently implements the notification/worker budget only: genuine PCI/MMIO
+IRQ acknowledge, rearm and guest packets remain unproven.
+
+**Scheduler boundary:** `sys_arch_sem_wait` and `sys_arch_mbox_fetch` can
+park only a native `nas_kthread`, while user syscalls execute in a separate
+`nas_task` context. Consequently, direct blocking `netconn_*` calls in
+`socket_syscall.c` or a FileOps method would be invalid. Keep Netconn calls
+in a bounded native worker, publish completions through the existing Task
+blocked-continuation and `poll_description` path, and bind commands to the
+open-description lifetime with a generation check before a slot is reused.
+NaOS enables `LWIP_NETCONN_FULLDUPLEX` and
+`LWIP_NETCONN_SEM_PER_THREAD`; NaSeed currently does not, so serialized
+access and deferred final release are required until concurrency is proven.
+
 ## Scheduling and stack configuration
 
 The native port now configures `NO_SYS=0`, `LWIP_NETCONN=1`,
@@ -130,7 +176,19 @@ The remaining operating-system constraints are explicit:
    callback, DHCP TX, RX and event/time wake. Wiring/acknowledging physical
    PCI/MMIO interrupts, real QEMU DHCP, clean worker cancellation and
    Socket/VFS glue remain pending. `lo` is official lwIP-owned.
-5. `nas_lwip_random32` is currently a noncryptographic clock-seeded PRNG;
+5. The native `netconn_bridge.c` is now host-tested with **real upstream
+   TCP and UDP loopback**, but it is not yet the Linux Socket ABI: one
+   bounded command queue and one native worker own all Netconn operations,
+   per-OpenFile-slot generation IDs reject stale completions, and final
+   release is deferred to the worker. Its copied 512-byte request chunks
+   preserve TCP unread tails and explicitly flag UDP truncation. The worker
+   is started at lwIP boot, after the core and optional RX workers. An
+   AF_INET FileOps provider must still translate Task block/retry, readiness,
+   send/recv message flags, and nonblocking connect semantics. In particular,
+   `accept` needs a real OpenFile reservation lasting across the asynchronous
+   command; a slot merely observed as free is not a lease. No user program
+   is claimed to use Netconn until that ownership and ABI work is complete.
+6. `nas_lwip_random32` is currently a noncryptographic clock-seeded PRNG;
    a real entropy-backed source is required for defensible TCP ISNs before
    Internet-facing use. Do not claim network security or wire operation.
 
@@ -141,7 +199,8 @@ The remaining operating-system constraints are explicit:
 | A — host-proven | MMIO/PCI publish VirtIO-Net class=1; independent netdev; **actual original U-Boot Net** on two DMA queues, shared VirtIO adapter and bus class binding | Host simulated RX/TX, malformed and timeout tests, multi-ISA syntax, existing BlockDevice proof; **no claim of packets on the wire** |
 | B — host-proven | Compile original pinned lwIP under `NAS_ENABLE_LWIP=1`, native `sys_arch`, upstream tcpip thread and `lo` netif; Ethernet pbuf adapter sends DHCP and queues inbound RX | Native sem/mbox/deadlines/worker, **real upstream UDP loopback**, DHCP TX, RX, netdev pins and cleanup PASS; three-ISA C syntax PASS. **No guest/wire, TCP socket or AF_INET FileOps proof yet** |
 | C — host boot-proven | Original U-Boot VirtIO-Net with dual DMA queues, independent network opt-in, filesystem-independent bus discovery, lwIP netif, native 8-frame RX worker, IRQ-safe wake callback and 10ms fallback | Host simulated boot/DHCP TX/RX, wake, fallback, pins PASS. Next: PCI x86 and MMIO RV64/AArch64 **real** QEMU guest DHCP lease, ARP, ping and UDP to host; MAC/address/link reporting |
-| D | Replace AF_INET socket backend with Netconn and FileOps, preserve AF_UNIX and shared open-description semantics | ncat local/remote, curl, iperf3, DNS, nonblocking connect, poll/epoll, fork/dup, close/accept races on all ISAs |
+| D0 — host bridge-proven | Native Netconn RPC worker, bounded command copies, real upstream UDP/TCP loopback, OpenFile-indexed generation lifetime and deferred release | Host TCP/UDP bind/connect/listen/accept/send/recv, partial TCP/UDP truncation and stale-close tests PASS. **Not wired to user socket syscalls yet** |
+| D1 | Replace AF_INET socket backend with Netconn-backed FileOps, preserve AF_UNIX, pin async accept reservations and shared open-description semantics | ncat local/remote, curl, iperf3, DNS, nonblocking connect, poll/epoll, fork/dup, close/accept races on all ISAs |
 | E | Remove old simulated AF_INET code and harden shutdown, resource failure, MTU, hot-unplug | Network + block concurrency, packet loss/backpressure, memory lifetime, repeated NIC reset, all-ISA QEMU regression accumulated as requested |
 
 Don't launch the expensive QEMU M141 matrix for Stage A alone. Do not report

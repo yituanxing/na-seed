@@ -1,0 +1,297 @@
+/* Original lwIP Netconn owned by a NaSeed native kthread. No socket parser,
+ * second TCP/IP stack, user address, FD namespace or blocking user syscall. */
+#include "netconn_bridge.h"
+#include "../../kernel/fd.h"
+#include "../../kernel/errno.h"
+#include "../../kernel/lib/string.h"
+#include "../../kernel/task/k_sync.h"
+#include "../../kernel/task/kthread.h"
+#include "lwip/api.h"
+#include "lwip/err.h"
+#include "lwip/ip4_addr.h"
+#include <stdint.h>
+#include <stdbool.h>
+
+_Static_assert(NAS_LWIP_BRIDGE_SLOTS==NAS_OPEN_FILE_LIMIT,
+               "bridge identity must be one global open-description slot");
+
+enum bridge_internal_op { BRIDGE_OPEN=100 };
+struct bridge_slot {
+    uint32_t generation;
+    bool owned,closing,queued,finished;
+    enum nas_lwip_bridge_type type;
+    struct netconn *connection;
+    struct netbuf *held_tcp;
+    uint16_t held_offset;
+    struct nas_lwip_bridge_request request;
+    uint8_t copied_send[NAS_LWIP_BRIDGE_DATA];
+    struct nas_lwip_bridge_result result;
+};
+static struct {
+    struct bridge_slot slots[NAS_LWIP_BRIDGE_SLOTS];
+    uint16_t queue[NAS_LWIP_BRIDGE_QUEUE];
+    unsigned first,count,active;
+    struct nas_ksem wake;
+    struct nas_kthread_handle worker;
+    bool started;
+} bridge;
+
+static struct bridge_slot *lookup(struct nas_lwip_bridge_id id) {
+    if(id.slot>=NAS_LWIP_BRIDGE_SLOTS || !id.generation)return NULL;
+    struct bridge_slot *s=&bridge.slots[id.slot];
+    return s->owned && !s->closing && s->generation==id.generation ? s : NULL;
+}
+static struct nas_lwip_bridge_id reserve(unsigned slot,
+                                         enum nas_lwip_bridge_type type) {
+    struct nas_lwip_bridge_id none={0};
+    if(slot>=NAS_LWIP_BRIDGE_SLOTS || bridge.active>=NAS_LWIP_BRIDGE_ACTIVE_LIMIT ||
+       bridge.slots[slot].owned)return none;
+    struct bridge_slot *s=&bridge.slots[slot];
+    uint32_t generation=s->generation+1U;
+    if(!generation)return none; /* no ABA after 2^32 incarnations */
+    memset(s,0,sizeof(*s));
+    s->generation=generation;
+    s->owned=true;
+    s->type=type;
+    bridge.active++;
+    return (struct nas_lwip_bridge_id){(uint16_t)slot,generation};
+}
+static bool enqueue(unsigned slot) {
+    if(bridge.count==NAS_LWIP_BRIDGE_QUEUE)return false;
+    bridge.queue[(bridge.first+bridge.count)%NAS_LWIP_BRIDGE_QUEUE]=(uint16_t)slot;
+    bridge.count++;
+    (void)nas_ksem_post(&bridge.wake);
+    return true;
+}
+static void free_native(unsigned slot) {
+    struct bridge_slot *s=&bridge.slots[slot];
+    /* ACCEPT creates an owned Netconn before userspace can install a new
+     * File. Until take() transfers the result, the LISTENER owns this child.
+     * Closing the listener must not orphan an accepted, unclaimed handle. */
+    if(s->finished && s->result.accepted.generation) {
+        struct bridge_slot *child=lookup(s->result.accepted);
+        if(child) {
+            child->closing=true;
+            (void)nas_ksem_post(&bridge.wake);
+        }
+    }
+    if(s->held_tcp)netbuf_delete(s->held_tcp);
+    if(s->connection)(void)netconn_delete(s->connection);
+    uint32_t generation=s->generation;
+    memset(s,0,sizeof(*s));
+    s->generation=generation; /* invalidated old ID, never revive it */
+    bridge.active--;
+}
+static ip_addr_t ipv4(struct nas_lwip_bridge_address address) {
+    ip_addr_t ip;
+    IP4_ADDR(ip_2_ip4(&ip), (address.ipv4>>24)&255U,
+             (address.ipv4>>16)&255U,(address.ipv4>>8)&255U,
+              address.ipv4&255U);
+    return ip;
+}
+static void execute(unsigned slot) {
+    struct bridge_slot *s=&bridge.slots[slot];
+    struct nas_lwip_bridge_result *out=&s->result;
+    const struct nas_lwip_bridge_request *r=&s->request;
+    memset(out,0,sizeof(*out));
+    if((int)r->op==BRIDGE_OPEN) {
+        s->connection=netconn_new(s->type==NAS_LWIP_BRIDGE_TCP ?
+                                   NETCONN_TCP:NETCONN_UDP);
+        if(!s->connection){out->status=-ENOMEM;return;}
+        /* The command worker, never a syscall, waits for lwIP core APIs;
+         * data and connection admission never wait on remote peers. */
+        netconn_set_nonblocking(s->connection,1);
+        return;
+    }
+    if(!s->connection){out->status=-ENOTCONN;return;}
+    err_t err=ERR_OK;
+    ip_addr_t address=ipv4(r->address);
+    switch(r->op) {
+    case NAS_LWIP_BRIDGE_BIND:
+        err=netconn_bind(s->connection,&address,r->address.port);
+        break;
+    case NAS_LWIP_BRIDGE_CONNECT:
+        err=netconn_connect(s->connection,&address,r->address.port);
+        break;
+    case NAS_LWIP_BRIDGE_LISTEN:
+        if(s->type!=NAS_LWIP_BRIDGE_TCP){err=ERR_ARG;break;}
+        err=netconn_listen_with_backlog(s->connection,
+                                        (u8_t)(r->backlog>255U?255U:r->backlog));
+        break;
+    case NAS_LWIP_BRIDGE_ACCEPT: {
+        if(s->type!=NAS_LWIP_BRIDGE_TCP){err=ERR_ARG;break;}
+        /* accept_slot is reserved by the future OpenFile caller; the
+         * accepted connection is never allocated in an unrelated FD map. */
+        if(r->accept_slot>=NAS_LWIP_BRIDGE_SLOTS ||
+           bridge.slots[r->accept_slot].owned ||
+           bridge.active>=NAS_LWIP_BRIDGE_ACTIVE_LIMIT) {
+            out->status=-ENFILE;return;
+        }
+        struct netconn *accepted=NULL;
+        err=netconn_accept(s->connection,&accepted);
+        if(err!=ERR_OK)break;
+        if(!accepted){out->status=-EIO;return;}
+        struct nas_lwip_bridge_id id=reserve(r->accept_slot,NAS_LWIP_BRIDGE_TCP);
+        if(!id.generation) {
+            (void)netconn_delete(accepted);
+            out->status=-ENFILE;return;
+        }
+        bridge.slots[id.slot].connection=accepted;
+        netconn_set_nonblocking(accepted,1);
+        out->accepted=id;
+        break;
+    }
+    case NAS_LWIP_BRIDGE_SEND:
+        if(s->type==NAS_LWIP_BRIDGE_TCP) {
+            size_t sent=0;
+            err=netconn_write_partly(s->connection,s->copied_send,r->length,
+                                     NETCONN_COPY|NETCONN_DONTBLOCK,&sent);
+            if(sent>NAS_LWIP_BRIDGE_DATA){out->status=-EIO;return;}
+            out->length=(uint16_t)sent;
+        } else {
+            struct netbuf *packet=netbuf_new();
+            if(!packet){out->status=-ENOMEM;return;}
+            void *data=netbuf_alloc(packet,r->length);
+            if(!data && r->length){netbuf_delete(packet);out->status=-ENOMEM;return;}
+            if(r->length)memcpy(data,s->copied_send,r->length);
+            err=r->address.port ?
+                netconn_sendto(s->connection,packet,&address,r->address.port) :
+                netconn_send(s->connection,packet);
+            if(err==ERR_OK)out->length=r->length;
+            netbuf_delete(packet);
+        }
+        break;
+    case NAS_LWIP_BRIDGE_RECV: {
+        /* A zero-byte read cannot consume a datagram or TCP segment. */
+        if(!r->length)break;
+        struct netbuf *packet=s->held_tcp;
+        if(!packet) {
+            err=netconn_recv(s->connection,&packet);
+            if(err==ERR_CLSD) {out->status=0;return;} /* TCP EOF */
+            if(err!=ERR_OK)break;
+            if(!packet){out->status=-EIO;return;}
+        }
+        uint16_t total=netbuf_len(packet);
+        unsigned remain=(unsigned)total-s->held_offset;
+        unsigned n=remain>r->length?r->length:remain;
+        if(n && netbuf_copy_partial(packet,out->bytes,(u16_t)n,
+                                    s->held_offset)!=(u16_t)n) {
+            netbuf_delete(packet);s->held_tcp=NULL;s->held_offset=0;
+            out->status=-EIO;return;
+        }
+        out->length=(uint16_t)n;
+        if(s->type==NAS_LWIP_BRIDGE_UDP) {
+            const ip_addr_t *from=netbuf_fromaddr(packet);
+            if(from)out->peer.ipv4=lwip_ntohl(ip4_addr_get_u32(ip_2_ip4(from)));
+            out->peer.port=netbuf_fromport(packet);
+            out->truncated=remain>n;
+            netbuf_delete(packet);
+        } else if(n<remain) {
+            s->held_tcp=packet;s->held_offset+=(uint16_t)n;
+        } else {
+            netbuf_delete(packet);s->held_tcp=NULL;s->held_offset=0;
+        }
+        break;
+    }
+    default:out->status=-EINVAL;return;
+    }
+    if(err!=ERR_OK)out->status=-err_to_errno(err);
+}
+static int next_closing(void) {
+    for(unsigned i=0;i<NAS_LWIP_BRIDGE_SLOTS;i++)
+        if(bridge.slots[i].owned && bridge.slots[i].closing &&
+           !bridge.slots[i].queued)return (int)i;
+    return -1;
+}
+static void worker(void *unused) {
+    (void)unused;
+    unsigned worked=0;
+    for(;;) {
+        if(!nas_ksem_wait(&bridge.wake))return;
+        /* One semaphore token represents ONE enqueue/close notification.
+         * Draining the entire queue after one wait would strand the other
+         * posted tokens and spin a later worker slice without any work. */
+        if(bridge.count) {
+            unsigned slot=bridge.queue[bridge.first];
+            bridge.first=(bridge.first+1U)%NAS_LWIP_BRIDGE_QUEUE;
+            bridge.count--;
+            struct bridge_slot *s=&bridge.slots[slot];
+            s->queued=false;
+            if(s->closing)free_native(slot);
+            else if(s->owned) {
+                execute(slot);
+                s->finished=true;
+            }
+        } else {
+            int slot=next_closing();
+            if(slot>=0)free_native((unsigned)slot);
+            /* A final close of a still-queued command may leave one extra
+             * wake token; this single no-op consumes it exactly once. */
+        }
+        if(++worked==4) {
+            /* One native C-stack slice cannot starve user programs. */
+            worked=0;
+            (void)nas_kthread_yield();
+        }
+    }
+}
+bool nas_lwip_bridge_start(void) {
+    if(bridge.started)return false;
+    nas_ksem_init(&bridge.wake,0);
+    if(!nas_kthread_spawn(worker,NULL,&bridge.worker))return false;
+    bridge.started=true;
+    return true;
+}
+int nas_lwip_bridge_open(unsigned file_slot,enum nas_lwip_bridge_type type,
+                         struct nas_lwip_bridge_id *out) {
+    if(!bridge.started || !out)return -EINVAL;
+    if(type!=NAS_LWIP_BRIDGE_TCP && type!=NAS_LWIP_BRIDGE_UDP)return -EPROTOTYPE;
+    if(bridge.count==NAS_LWIP_BRIDGE_QUEUE)return -EAGAIN;
+    struct nas_lwip_bridge_id id=reserve(file_slot,type);
+    if(!id.generation)return -ENFILE;
+    struct bridge_slot *s=&bridge.slots[id.slot];
+    s->request.op=(enum nas_lwip_bridge_op)BRIDGE_OPEN;
+    s->queued=true;
+    if(!enqueue(id.slot)) {s->queued=false;s->closing=true;return -EAGAIN;}
+    *out=id;
+    return 0;
+}
+int nas_lwip_bridge_submit(struct nas_lwip_bridge_id id,
+                           const struct nas_lwip_bridge_request *request) {
+    struct bridge_slot *s=lookup(id);
+    if(!s)return -EBADF;
+    if(!request)return -EINVAL;
+    if(s->queued || s->finished)return -EBUSY;
+    if(bridge.count==NAS_LWIP_BRIDGE_QUEUE)return -EAGAIN;
+    if(request->op<NAS_LWIP_BRIDGE_BIND || request->op>NAS_LWIP_BRIDGE_RECV ||
+       request->length>NAS_LWIP_BRIDGE_DATA ||
+       (request->op==NAS_LWIP_BRIDGE_SEND && request->length && !request->bytes))
+        return -EINVAL;
+    s->request=*request;
+    if(request->op==NAS_LWIP_BRIDGE_SEND && request->length)
+        memcpy(s->copied_send,request->bytes,request->length);
+    s->request.bytes=NULL; /* caller buffer NEVER escapes syscall lifetime */
+    s->queued=true;
+    if(!enqueue(id.slot)) {s->queued=false;return -EAGAIN;}
+    return 0;
+}
+int nas_lwip_bridge_take(struct nas_lwip_bridge_id id,
+                         struct nas_lwip_bridge_result *out) {
+    struct bridge_slot *s=lookup(id);
+    if(!s)return -EBADF;
+    if(!out)return -EINVAL;
+    if(!s->finished)return 0;
+    *out=s->result;
+    s->finished=false;
+    return 1;
+}
+int nas_lwip_bridge_release(struct nas_lwip_bridge_id id) {
+    struct bridge_slot *s=lookup(id);
+    if(!s)return -EBADF;
+    s->closing=true;
+    /* A queued command keeps its slot owned until the worker observes it;
+     * final release cannot reuse either the Netconn or the generation. */
+    (void)nas_ksem_post(&bridge.wake);
+    return 0;
+}
+bool nas_lwip_bridge_alive(struct nas_lwip_bridge_id id){return lookup(id)!=NULL;}
