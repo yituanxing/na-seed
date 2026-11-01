@@ -1,0 +1,2 @@
+# profile	rootfs	guest_argv	expected_marker	evidence	entrypoint
+m154-batch	cpio	sh -c '/bin/sh /tests/m154-batch-run.sh'	M154_BATCH_PASS	-	/bin/busybox

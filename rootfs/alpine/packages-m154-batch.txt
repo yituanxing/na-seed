@@ -1,0 +1,24 @@
+# Original signed Alpine 3.23 text, structured-data, typesetting and graphics
+# converters. font-dejavu is runtime DATA for real Pango font rendering;
+# none of its files are counted as a new ELF identity.
+a2ps
+barcode
+chafa
+csview
+csvq
+enca
+enscript
+figlet
+gnuplot
+ghostscript
+html2text
+jql
+libxml2-utils
+mandoc
+pango-tools
+potrace
+psutils
+rsvg-convert
+taplo
+unrtf
+font-dejavu

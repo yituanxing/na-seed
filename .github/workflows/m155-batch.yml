@@ -1,0 +1,113 @@
+name: NaSeed M155 33 NEW signed Alpine filesystem and partition ELFs
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - '.github/workflows/m155-batch.yml'
+      - 'scripts/m155-*'
+      - 'scripts/stage-m155-prebuilt.sh'
+      - 'scripts/probe-m155-batch.sh'
+      - 'scripts/host-configure-m155-batch.sh'
+      - 'scripts/stage-alpine-prebuilt-overlay.sh'
+      - 'scripts/prebuilt-profile-catalog.tsv'
+      - 'tests/m155-*'
+      - 'rootfs/alpine/packages-m155-batch.txt'
+      - 'docs/m155-*'
+      - 'kernel/**'
+      - 'ports/**'
+
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  signed-filesystem-software:
+    name: M155 33 signed ELFs, 30 image operations / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        port: ${{ fromJSON((github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-m155-multiarch') || contains(github.event.pull_request.labels.*.name, 'run-m151-155-multiarch')) && '["amd64","riscv64","arm64"]' || '["amd64"]') }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
+      - name: Check signed ELF uniqueness and three-ISA source syntax
+        timeout-minutes: 4
+        run: |
+          set -eu
+          for script in scripts/stage-m155-prebuilt.sh \
+                        scripts/probe-m155-batch.sh \
+                        scripts/host-configure-m155-batch.sh \
+                        tests/m155-batch-run.sh; do
+            sh -n "$script"
+          done
+          python3 scripts/check-prebuilt-profile-catalog.py
+          python3 scripts/check-three-isa-core.py
+          test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m155-original-elfs.txt)" -eq 33
+          test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m155-expected-markers.txt)" -eq 31
+          test "$(awk '!/^#/ && NF {print $0}' scripts/m155-original-elfs.txt | sort -u | wc -l)" -eq 33
+          test "$(awk '!/^#/ && NF {print $0}' scripts/m155-expected-markers.txt | sort -u | wc -l)" -eq 31
+      - name: Install native QEMU and official host filesystem tools
+        timeout-minutes: 14
+        run: |
+          set -eu
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'clang:clang' 'ld.lld:lld' 'readelf:binutils' \
+                      'cpio:cpio' 'gzip:gzip' 'xorriso:xorriso' \
+                      'mformat:mtools' 'mke2fs:e2fsprogs' \
+                      'mkfs.btrfs:btrfs-progs' 'mkfs.xfs:xfsprogs' \
+                      'mkfs.f2fs:f2fs-tools' 'mkntfs:ntfs-3g' \
+                      'ntfscp:ntfs-3g' 'mkfs.erofs:erofs-utils' \
+                      'parted:parted' 'sgdisk:gdisk' \
+                      'qemu-riscv64:qemu-user'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case '${{ matrix.port }}' in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+                test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
+            riscv64)
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+            arm64)
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/AAVMF/AAVMF_CODE.fd || \
+                test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+          esac
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+      - name: Native QEMU 33 original signed ELFs / 30 real offline operations
+        timeout-minutes: 55
+        run: sh scripts/probe-m155-batch.sh ${{ matrix.port }}
+      - name: Preserve original signed hashes and native guest serial
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m155-filesystem-original-${{ matrix.port }}-proof
+          path: |
+            build/external/m155-batch/${{ matrix.port }}/apk-install.log
+            build/external/m155-batch/${{ matrix.port }}/requested-packages.txt
+            build/external/m155-batch/${{ matrix.port }}/*.sha256
+            build/busybox-source-parity-x86/m155-batch.clean.log
+            build/busybox-source-parity-x86/m155-batch.serial.log
+            build/port-riscv64/full/matrix-source/m155-batch.clean.log
+            build/port-riscv64/full/matrix-source/m155-batch.serial.log
+            build/port-aarch64/full/matrix-source/m155-batch.clean.log
+            build/port-aarch64/full/matrix-source/m155-batch.serial.log
+          if-no-files-found: ignore

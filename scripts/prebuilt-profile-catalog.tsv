@@ -60,3 +60,8 @@ m147-batch	rootfs/alpine/packages-m147-batch.txt	scripts/m147-original-elfs.txt	
 m148-batch	rootfs/alpine/packages-m148-batch.txt	scripts/m148-original-elfs.txt	scripts/m148-rootfs-copies.tsv	main+community
 m149-batch	rootfs/alpine/packages-m149-batch.txt	scripts/m149-original-elfs.txt	scripts/m149-rootfs-copies.tsv	main+community
 m150-batch	rootfs/alpine/packages-m150-batch.txt	scripts/m150-original-elfs.txt	scripts/m150-rootfs-copies.tsv	main+community
+m151-batch	rootfs/alpine/packages-m151-batch.txt	scripts/m151-original-elfs.txt	scripts/m151-rootfs-copies.tsv	main+community
+m152-batch	rootfs/alpine/packages-m152-batch.txt	scripts/m152-original-elfs.txt	scripts/m152-rootfs-copies.tsv	main+community
+m153-batch	rootfs/alpine/packages-m153-batch.txt	scripts/m153-original-elfs.txt	scripts/m153-rootfs-copies.tsv	main+community
+m154-batch	rootfs/alpine/packages-m154-batch.txt	scripts/m154-original-elfs.txt	scripts/m154-rootfs-copies.tsv	main+community
+m155-batch	rootfs/alpine/packages-m155-batch.txt	scripts/m155-original-elfs.txt	scripts/m155-rootfs-copies.tsv	main+community
