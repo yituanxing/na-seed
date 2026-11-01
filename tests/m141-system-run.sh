@@ -24,10 +24,10 @@ cleanup() {
     if [ "$result" -ne 0 ]; then
         busy printf '[M141 SYSTEM DIAG] %s exit=%s\n' "$case_name" "$result"
         case "$case_name" in
-          ipc-shared|ipc-semaphore|exch-files|iperf3-loopback|ncat-loopback|ncat-wire)
+          ipc-shared|ipc-semaphore|exch-files|iperf3-loopback|ncat-loopback|ncat-wire|ncat-udp-wire)
             # These fixtures own their files; never dump arbitrary user
             # paths. Preserve only small, bounded original-program output.
-            for diagnostic in details removed error out a b server.err server client.json; do
+            for diagnostic in details removed error out a b server.err server client client.json; do
                 file="$work/$diagnostic"
                 if [ -s "$file" ]; then
                     busy printf '[M141 SYSTEM DIAG] %s\n' "$diagnostic"
@@ -209,6 +209,22 @@ case "$case_name" in
       busy sleep 1
     done
     [ "$wire_ready" = true ] ;;
+  ncat-udp-wire)
+    exe=$(original_elf /usr/bin/ncat)
+    # Ncat must emit a real UDP datagram through VirtIO-Net, then receive
+    # the host's byte-exact response. Keep the pipeline open briefly so the
+    # client has an RX window before stdin EOF; neither packet is in CPIO.
+    udp_ready=false
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+      (busy printf 'M141_UDP_REQUEST\n'; busy sleep 2) |
+        busy timeout 8 "$exe" -4 -u 10.0.2.2 15414 > "$work/client" 2> "$work/error" || :
+      if busy grep -Fxq M141_UDP_REPLY "$work/client"; then
+        udp_ready=true
+        break
+      fi
+      busy sleep 1
+    done
+    [ "$udp_ready" = true ] ;;
   iperf3-loopback)
     exe=$(original_elf /usr/bin/iperf3)
     "$exe" -4 -s -1 -p 15412 > "$work/server" 2> "$work/server.err" &
