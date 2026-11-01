@@ -780,9 +780,17 @@ static uint64_t sys_ipv4_setsockopt(uint64_t fd,uint64_t level,
                 return (uint64_t)-EFAULT;
             unsigned namelen=(unsigned)strnlen(name,sizeof(name));
             if(namelen==sizeof(name))return (uint64_t)-ENAMETOOLONG;
-            /* Clearing an existing binding is not yet offered by native
-             * Netconn; fail honestly rather than leave a hidden constraint. */
-            if(!namelen)return (uint64_t)-EOPNOTSUPP;
+            /* An empty name is Linux's request to clear the binding.
+             * For a genuinely unbound socket it is already satisfied,
+             * including Nping/libnsock's initial empty-device request.
+             * Upstream Netconn has no API to clear an existing PCB bind;
+             * reject that case instead of claiming a phantom unbind. */
+            if(!namelen) {
+                int current=nas_lwip_socket_bound_ifindex(
+                    TASK.fds->entries[fd].slot);
+                if(current<0)return (uint64_t)(int64_t)current;
+                return current ? (uint64_t)-EOPNOTSUPP:0;
+            }
             int index=nas_lwip_guest_ifindex(name);
             if(index<0)return (uint64_t)(int64_t)index;
             return lwip_control_result(nas_lwip_socket_bind_if(

@@ -398,6 +398,9 @@ int main(void) {
     /* Nping's libnsock requests the Linux physical NIC name. A successful
      * setsockopt is asynchronous and changes the actual shared OpenFile only
      * after native worker success; invalid names never enqueue a fake bind. */
+    *user_ptr(optaddr)=0;
+    assert(sys_ipv4_setsockopt(udp_fd,1,25,optaddr,1)==0);
+    assert(abi_bind_if_calls==0 && nas_lwip_socket_bound_ifindex(udp_slot)==0);
     memcpy(user_ptr(optaddr),"eth0",4); /* no NUL terminator is also legal */
     assert((int64_t)sys_ipv4_setsockopt(udp_fd,1,25,optaddr,4)==-EAGAIN);
     assert(abi_bind_if_calls==1 && abi_pending_ifindex[udp_slot]==2);
