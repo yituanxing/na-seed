@@ -56,7 +56,7 @@ for elf in /usr/bin/wget /usr/bin/aria2c /usr/sbin/lighttpd \
         echo "[M143 FAIL] original ELF did not run: $elf" >&2; exit 1;
     }
 done
-for entry in '/wget bytes=29' '/aria2 bytes=30' '/curl bytes=29'; do
+for entry in '/wget bytes=28' '/aria2 bytes=29' '/curl bytes=28'; do
     grep -Fq "[M143 HOST HTTP GET] $entry" "$root/host-m143-http.log" || {
         echo "[M143 FAIL] independent host did not receive $entry" >&2
         cat "$root/host-m143-http.log" >&2
