@@ -9,7 +9,8 @@ set -eu
 }
 
 export NAS_ENABLE_LWIP=1
-export NAS_SYSCALL_TRACE=1  # targeted guest syscall diagnostics until Ncat passes
+# NASEED_SYSCALL_TRACE remains an explicit opt-in for later triage. Keep the
+# acceptance run on the same default non-instrumented kernel as users boot.
 export NAS_APP_BATCH_QEMU_TIMEOUT=180
 export NAS_ACCEPTANCE_QEMU_RAM=1536M
 export BUSYBOX_PARITY_EXPECTED_COUNT=1

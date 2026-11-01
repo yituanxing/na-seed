@@ -255,16 +255,21 @@ The remaining operating-system constraints are explicit:
    documented `arch/cc.h` hooks to avoid host glibc's `inttypes/ctype/limits`
    headers. A small port-only C string/decimal shim reuses NaSeed's existing
    kernel string routines; it adds no allocator or alternate protocol stack.
-   A signed Alpine Ncat x86 QEMU run exposed an additional genuine Linux ABI
+   The signed Alpine Ncat x86 QEMU run exposed an additional genuine Linux ABI
    detail: **even connected TCP `recvfrom()` can request source sockaddr**.
    The established peer is now cached in the same SocketPort on successful
    CONNECT (or from native `netconn_getaddr` on ACCEPT); the syscall preflights
    user memory before FileOps consumption and writes the real TCP peer back.
    UDP does not borrow a cached TCP peer or fabricate datagram metadata.
+   **Real signed Alpine `/usr/bin/ncat` TCP loopback has now passed x86-64
+   QEMU**, including a native server and client with the expected reply
+   (`LWIP NCAT NATIVE QEMU PASS`). This verifies the kernel's opt-in lwIP
+   loopback, not VirtIO-Net wire traffic, DHCP on physical NICs or non-x86
+   guest programs. An uninstrumented rerun is the final focused gate.
    Exact UDP `sendto/recvfrom` metadata, wider socket options, additional
-   close races and **real guest Alpine ncat/iperf3/DNS remain unproven**;
-   the narrow signed-Alpine x86 ncat QEMU workflow is a test gate, not evidence
-   of a pass until it actually succeeds.
+   close races and **real guest Alpine iperf3/DNS remain unproven**;
+   even Ncat is currently proven only for one x86-64 loopback scenario, not
+   remote peers, a physical Ethernet driver or the other two ISAs.
 6. `nas_lwip_random32` is currently a noncryptographic clock-seeded PRNG;
    a real entropy-backed source is required for defensible TCP ISNs before
    Internet-facing use. Do not claim network security or wire operation.
@@ -279,7 +284,7 @@ The remaining operating-system constraints are explicit:
 | D0 — host bridge-proven | Native Netconn RPC worker, bounded command copies, real upstream UDP/TCP loopback, OpenFile-indexed generation lifetime and deferred release | Host TCP/UDP bind/connect/listen/accept/send/recv, partial TCP/UDP truncation and stale-close tests PASS. **Not wired to user socket syscalls yet** |
 | D1a — host FileOps-proven | Netconn-backed TCP/UDP FileOps + async control state machine, same global `nas_open_file` identity, accepted handle adoption, all opt-in build source lists | `test-lwip-socket-port` against upstream lwIP; TCP/UDP data, copied queued writes, poll-driven RX, bind/connect/listen, async close; default AF_UNIX/simulated AF_INET unchanged |
 | D1b — host ABI-proven (partial) | Opt-in AF_INET TCP/UDP Socket syscall selection, real OpenFile FileOps, native bind/connect/listen Task continuations, listener event readiness and worker lease cancellation; preserve AF_UNIX and default fake backend | `test-lwip-socket-abi` on real usercopy/FD ABI with controlled provider, genuine upstream Netconn host test, M106 AF_UNIX regression PASS; **not yet a guest network-program pass** |
-| D1c — host-tested, guest pending | Blocking native `accept/accept4` Task lease and EINTR cleanup; nonblocking listening prefetch owned by OpenFile (F_SETFL handoff and close cancellation); real peer sockaddr including connected TCP `recvfrom()` output, GETNAME, `SO_REUSEADDR`, SHUTDOWN and TX-before-FIN ordering. UDP destination/source metadata, extended options and wider close races still open | Real syscall+FD fixture, upstream native TCP/UDP+SocketPort nonblocking-prefetch and peer tests PASS; **x86 signed Alpine ncat single-case QEMU workflow actively driving compatibility, no guest pass yet**. After this, ncat remote, curl, iperf3, DNS and accumulated multi-ISA checks |
+| D1c — x86 loopback guest-proven | Blocking native `accept/accept4` Task lease and EINTR cleanup; nonblocking listening prefetch owned by OpenFile (F_SETFL handoff and close cancellation); real peer sockaddr including connected TCP `recvfrom()` output, GETNAME, `SO_REUSEADDR`, SHUTDOWN and TX-before-FIN ordering. UDP destination/source metadata, extended options and wider close races still open | Real syscall+FD fixture, upstream native TCP/UDP+SocketPort nonblocking-prefetch and peer tests PASS; **signed Alpine `/usr/bin/ncat` TCP loopback x86 QEMU PASS**. Next: uninstrumented confirmation, remote/wire TCP, curl, iperf3, DNS and accumulated multi-ISA checks |
 | E | Remove old simulated AF_INET code and harden shutdown, resource failure, MTU, hot-unplug | Network + block concurrency, packet loss/backpressure, memory lifetime, repeated NIC reset, all-ISA QEMU regression accumulated as requested |
 
 Don't launch the expensive QEMU M141 matrix for Stage A alone. Do not report
