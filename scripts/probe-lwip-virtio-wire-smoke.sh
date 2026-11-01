@@ -19,6 +19,7 @@ test -s "$root/rootfs/usr/bin/ncat"
 test -s "$root/rootfs/bin/busybox"
 export NAS_ACCEPTANCE_CPIO="$root/rootfs.cpio"
 export BUSYBOX_PARITY_BINARY="$root/rootfs/bin/busybox"
+export NAS_VIRTIO_NET_PCAP="$root/virtio-wire.pcap"
 
 # QEMU slirp exposes host loopback services through gateway 10.0.2.2.
 python3 -m http.server 15413 --bind 127.0.0.1 --directory . \

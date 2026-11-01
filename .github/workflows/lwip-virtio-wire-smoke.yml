@@ -78,6 +78,7 @@ jobs:
             build/external/m141-batch/amd64/requested-packages.txt
             build/external/m141-batch/amd64/*.sha256
             build/external/m141-batch/amd64/host-http.log
+            build/external/m141-batch/amd64/virtio-wire.pcap
             build/busybox-source-parity-x86/m141-batch.clean.log
             build/busybox-source-parity-x86/m141-batch.serial.log
           if-no-files-found: ignore

@@ -24,6 +24,16 @@ if [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ]; then
     set -- "$@" -netdev user,id=naseed_net \
         -device virtio-net-pci,netdev=naseed_net,disable-legacy=on
 fi
+if [ -n "${NAS_VIRTIO_NET_PCAP:-}" ]; then
+    [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ] || {
+        echo 'NAS_VIRTIO_NET_PCAP requires NAS_VIRTIO_NET_USER=1' >&2
+        exit 2
+    }
+    # QEMU's independent libpcap capture distinguishes guest TX, DHCP
+    # replies and actual NIC RX without inserting IP logic into the driver.
+    set -- "$@" -object \
+        "filter-dump,id=naseed_wire_capture,netdev=naseed_net,file=$NAS_VIRTIO_NET_PCAP"
+fi
 exec qemu-system-x86_64 -M q35 -m "${NAS_ACCEPTANCE_QEMU_RAM:-256M}" -cpu qemu64 \
     -display none -monitor none -serial stdio -no-reboot -no-shutdown \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \

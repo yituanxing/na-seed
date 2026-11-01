@@ -198,7 +198,9 @@ unchanged signed Alpine Ncat against a host HTTP service at the slirp gateway.
 It requires the guest to receive the host-only README contents over TCP and
 reports a failure if the NIC, DHCP lease or reply is missing. **This is an
 unverified candidate until its real QEMU workflow succeeds**, not a claimed
-wire or DHCP PASS. The historical loopback smoke remains separate.
+wire or DHCP PASS. An opt-in QEMU `filter-dump` pcap records genuine frames
+at the guest NIC/backend boundary for failure classification; no IP logic is
+added to the kernel driver. The historical loopback smoke remains separate.
 
 1. `sys_mbox_new` rejects requests above the *real* `nas_kmailbox` capacity
    of 8, and `tcpip_mbox`/Netconn queue sizes are configured at 8. This is
