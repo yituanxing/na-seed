@@ -59,12 +59,25 @@ case "$case_id" in
     busy printf 'M142_ORIGINAL_HOST_POST_UPDATE_QUERY_PASS\n' ;;
   nping-udp)
     original_elf /usr/bin/nping
-    # Official Nping's --unprivileged UDP mode uses sendto(), not raw IP.
-    # No packet-receive claim follows from exit status: the independent host
-    # oracle must also record the exact datagram before this gate can PASS.
-    busy timeout 15 /usr/bin/nping --unprivileged --udp --no-capture \
+    # Original Nping should report sending exactly one 18-byte UDP payload.
+    # Its exit code alone was zero in a real QEMU run that sent NO datagram;
+    # preserve its native diagnostics on the serial console to diagnose that
+    # pre-send path (socket/setsockopt/bind/connect vs actual sendto).
+    nping_status=0
+    busy timeout 15 /usr/bin/nping --unprivileged --udp --no-capture -v3 \
       --data-string NASEED_NPING_PROBE -c 1 -p 15416 10.0.2.2 \
-      > "$work/nping.out" 2> "$work/nping.err"
+      > "$work/nping.out" 2> "$work/nping.err" || nping_status=$?
+    busy printf '[M142 NPING EXIT] status=%s\n' "$nping_status"
+    busy printf '[M142 NPING STDOUT BEGIN]\n'
+    busy cat "$work/nping.out"
+    busy printf '[M142 NPING STDOUT END]\n'
+    busy printf '[M142 NPING STDERR BEGIN]\n'
+    busy cat "$work/nping.err"
+    busy printf '[M142 NPING STDERR END]\n'
+    [ "$nping_status" -eq 0 ]
+    # This is only CLI evidence; the independent host UDP oracle and QEMU
+    # PCAP remain the final proof that a packet actually traversed the wire.
+    busy grep -Eq 'SENT .*UDP packet with 18 bytes' "$work/nping.out"
     busy printf 'M142_ORIGINAL_NPING_UDP_COMMAND_PASS\n' ;;
   *)
     busy printf '[M142 UNKNOWN CASE] %s\n' "$case_id" >&2

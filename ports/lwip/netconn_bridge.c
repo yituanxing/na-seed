@@ -6,6 +6,7 @@
 #include "../../kernel/lib/string.h"
 #include "../../kernel/task/k_sync.h"
 #include "../../kernel/task/kthread.h"
+#include "../../kernel/arch/arch.h"
 #include "lwip/api.h"
 #include "lwip/err.h"
 #include "lwip/ip.h"
@@ -18,11 +19,23 @@
 _Static_assert(NAS_LWIP_BRIDGE_SLOTS==NAS_OPEN_FILE_LIMIT,
                "bridge identity must be one global open-description slot");
 
+/* Final close cannot wait on the Task stack. The native worker gives a
+ * copied, already-admitted TCP tail a finite opportunity to enter lwIP's
+ * TCP send buffer before FIN. TCP retransmission thereafter belongs to
+ * upstream lwIP, not this bridge. */
+#define CLOSE_TX_RETRY_NS UINT64_C(20000000)
+#define CLOSE_TX_DEADLINE_NS UINT64_C(1000000000)
+#define CLOSE_TX_MAX_ATTEMPTS 64U
+
 enum bridge_internal_op { BRIDGE_OPEN=100 };
 struct bridge_slot {
     uint32_t generation;
     bool owned,closing,queued,executing,finished,accept_cancelled,listening;
+    bool close_tx_active,close_tx_wait,close_tx_result_pending;
     unsigned accept_pending;
+    unsigned close_tx_attempts;
+    uint16_t close_tx_position,close_tx_length;
+    uint64_t close_tx_retry_at,close_tx_deadline;
     enum nas_lwip_bridge_type type;
     struct netconn *connection;
     struct netbuf *held_tcp;
@@ -49,7 +62,17 @@ static void netconn_event(struct netconn *connection,enum netconn_evt event,
     (void)length;
     for(unsigned i=0;i<NAS_LWIP_BRIDGE_SLOTS;i++) {
         struct bridge_slot *s=&bridge.slots[i];
-        if(!s->owned || s->closing || s->connection!=connection)continue;
+        if(!s->owned || s->connection!=connection)continue;
+        if(s->closing) {
+            /* A full send queue can reopen when the peer ACKs. Wake only
+             * an actual waiting close, never repeatedly post stale tokens
+             * or reenter Netconn from its core callback. */
+            if(event==NETCONN_EVT_SENDPLUS && s->close_tx_wait) {
+                s->close_tx_wait=false;
+                (void)nas_ksem_post(&bridge.wake);
+            }
+            return;
+        }
         if(event==NETCONN_EVT_RCVPLUS && s->accept_pending<UINT16_MAX)
             s->accept_pending++;
         else if(event==NETCONN_EVT_RCVMINUS && s->accept_pending)
@@ -109,6 +132,13 @@ static void free_native(unsigned slot) {
     memset(s,0,sizeof(*s));
     s->generation=generation; /* invalidated old ID, never revive it */
     bridge.active--;
+}
+
+static uint64_t add_deadline(uint64_t now,uint64_t duration) {
+    return now<=UINT64_MAX-duration ? now+duration:UINT64_MAX;
+}
+static bool deadline_expired(uint64_t now,uint64_t deadline) {
+    return now>=deadline;
 }
 static ip_addr_t ipv4(struct nas_lwip_bridge_address address) {
     ip_addr_t ip;
@@ -337,19 +367,96 @@ static void execute(unsigned slot) {
     }
     if(err!=ERR_OK)out->status=-err_to_errno(err);
 }
+/* This is a single-buffer, finite, asynchronous final-close drain. All
+ * Netconn calls still happen in the one native bridge worker. `copied_send`
+ * is retained under the old bridge generation until either upstream lwIP
+ * accepts it, a real error arrives, or the close deadline expires. */
+static void finish_closing(unsigned slot) {
+    struct bridge_slot *s=&bridge.slots[slot];
+    if(!s->close_tx_active || !s->connection ||
+       s->type!=NAS_LWIP_BRIDGE_TCP) {
+        free_native(slot);
+        return;
+    }
+    if(s->close_tx_result_pending) {
+        /* A normal SEND may have finished after the Task called close().
+         * Its accepted prefix is already inside TCP; never send it again. */
+        if(!s->finished)return;
+        if(s->result.length>s->close_tx_length) {
+            free_native(slot);
+            return;
+        }
+        s->close_tx_position=s->result.length;
+        s->close_tx_result_pending=false;
+        if(s->result.status && s->result.status!=-EAGAIN &&
+           s->result.status!=-EINPROGRESS &&
+           s->result.status!=-ENOMEM) {
+            free_native(slot);
+            return;
+        }
+    }
+    const uint64_t now=nas_arch_monotonic_ns();
+    if(s->close_tx_position==s->close_tx_length ||
+       deadline_expired(now,s->close_tx_deadline) ||
+       s->close_tx_attempts>=CLOSE_TX_MAX_ATTEMPTS) {
+        free_native(slot);
+        return;
+    }
+    ++s->close_tx_attempts;
+    const uint16_t remaining=s->close_tx_length-s->close_tx_position;
+    size_t sent=0;
+    err_t err=netconn_write_partly(s->connection,
+                                  s->copied_send+s->close_tx_position,
+                                  remaining,NETCONN_COPY|NETCONN_DONTBLOCK,
+                                  &sent);
+    if(sent>remaining) {
+        free_native(slot);
+        return;
+    }
+    s->close_tx_position+=(uint16_t)sent;
+    if(s->close_tx_position==s->close_tx_length ||
+       (err!=ERR_OK && err!=ERR_WOULDBLOCK && err!=ERR_MEM)) {
+        free_native(slot);
+        return;
+    }
+    /* TCP may need a genuine ACK/window update before accepting the rest.
+     * Its SENDPLUS event expedites retry; the monotonic timer also retries
+     * every 20ms and enforces the absolute 1s / 64-attempt upper bound. */
+    s->close_tx_wait=true;
+    s->close_tx_retry_at=add_deadline(now,CLOSE_TX_RETRY_NS);
+}
 static int next_closing(void) {
-    for(unsigned i=0;i<NAS_LWIP_BRIDGE_SLOTS;i++)
-        if(bridge.slots[i].owned && bridge.slots[i].closing &&
-           !bridge.slots[i].queued)return (int)i;
+    uint64_t now=nas_arch_monotonic_ns();
+    for(unsigned i=0;i<NAS_LWIP_BRIDGE_SLOTS;i++) {
+        const struct bridge_slot *s=&bridge.slots[i];
+        if(!s->owned || !s->closing || s->queued)continue;
+        if(!s->close_tx_wait ||
+           deadline_expired(now,s->close_tx_retry_at) ||
+           deadline_expired(now,s->close_tx_deadline))return (int)i;
+    }
     return -1;
+}
+static uint64_t next_closing_retry(void) {
+    uint64_t earliest=0;
+    for(unsigned i=0;i<NAS_LWIP_BRIDGE_SLOTS;i++) {
+        const struct bridge_slot *s=&bridge.slots[i];
+        if(!s->owned || !s->closing || !s->close_tx_wait)continue;
+        uint64_t deadline=s->close_tx_retry_at<s->close_tx_deadline ?
+                          s->close_tx_retry_at:s->close_tx_deadline;
+        if(!earliest || deadline<earliest)earliest=deadline;
+    }
+    return earliest;
 }
 static void worker(void *unused) {
     (void)unused;
     unsigned worked=0;
     for(;;) {
-        if(!nas_ksem_wait(&bridge.wake))return;
-        /* One semaphore token represents ONE enqueue/close notification.
-         * Draining the entire queue after one wait would strand the other
+        enum nas_kwait_result wait=nas_ksem_wait_until(
+            &bridge.wake,next_closing_retry());
+        if(wait==NAS_KWAIT_INVALID)return;
+        /* Each posted token represents one enqueue/close notification;
+         * timeout wakes additionally retry an old close's copied suffix.
+         * Draining the entire queue after one wait would strand its other
          * posted tokens and spin a later worker slice without any work. */
         if(bridge.count) {
             unsigned slot=bridge.queue[bridge.first];
@@ -358,17 +465,16 @@ static void worker(void *unused) {
             struct bridge_slot *s=&bridge.slots[slot];
             s->queued=false;
             if(s->closing) {
-                /* close() can follow an already-successful write() before
-                 * this native worker has consumed the copied SEND command.
-                 * Keep that admitted data ahead of tcp_close/FIN. In
-                 * particular iperf3 sends its one-byte IPERF_DONE and then
-                 * closes the control socket without waiting for POLLOUT.
-                 * Other queued operations have no promised payload to
-                 * preserve and remain cancellable on final release. */
-                if(s->connection &&
-                   s->request.op==NAS_LWIP_BRIDGE_SEND)
+                /* If close raced a queued SEND, first consume the exact
+                 * copied command. The finish step accounts for partial
+                 * admission before trying its still-owned suffix. */
+                if(s->close_tx_result_pending ||
+                   (s->type==NAS_LWIP_BRIDGE_UDP && s->connection &&
+                    s->request.op==NAS_LWIP_BRIDGE_SEND)) {
                     execute(slot);
-                free_native(slot);
+                    s->finished=true;
+                }
+                finish_closing(slot);
             }
             else if(s->owned) {
                 s->executing=true;
@@ -387,7 +493,7 @@ static void worker(void *unused) {
             }
         } else {
             int slot=next_closing();
-            if(slot>=0)free_native((unsigned)slot);
+            if(slot>=0)finish_closing((unsigned)slot);
             /* A final close of a still-queued command may leave one extra
              * wake token; this single no-op consumes it exactly once. */
         }
@@ -454,14 +560,42 @@ int nas_lwip_bridge_take(struct nas_lwip_bridge_id id,
     s->finished=false;
     return 1;
 }
-int nas_lwip_bridge_release(struct nas_lwip_bridge_id id) {
+int nas_lwip_bridge_release_with_tail(struct nas_lwip_bridge_id id,
+                                      const uint8_t *tail,uint16_t length) {
     struct bridge_slot *s=lookup(id);
     if(!s)return -EBADF;
+    if(length>NAS_LWIP_BRIDGE_DATA || (length && !tail))return -EINVAL;
+    if(length && s->type!=NAS_LWIP_BRIDGE_TCP)return -EOPNOTSUPP;
+    if(length && (s->queued || s->executing || s->finished))
+        return -EBUSY; /* caller must not overwrite another worker request */
+    if(length) {
+        /* SocketPort completed one native partial SEND, and this is its
+         * not-yet-submitted copied remainder. Preserve that buffer under
+         * the old generation before SocketPort destroys its File state. */
+        memcpy(s->copied_send,tail,length);
+        s->request=(struct nas_lwip_bridge_request){
+            .op=NAS_LWIP_BRIDGE_SEND,.length=length
+        };
+    }
+    if(s->type==NAS_LWIP_BRIDGE_TCP &&
+       (length || (s->request.op==NAS_LWIP_BRIDGE_SEND &&
+                   (s->queued || s->executing || s->finished)))) {
+        s->close_tx_active=true;
+        s->close_tx_length=length ? length:s->request.length;
+        s->close_tx_position=0;
+        s->close_tx_result_pending=!length;
+        s->close_tx_deadline=add_deadline(nas_arch_monotonic_ns(),
+                                           CLOSE_TX_DEADLINE_NS);
+    }
     s->closing=true;
     /* A queued command keeps its slot owned until the worker observes it;
-     * final release cannot reuse either the Netconn or the generation. */
+     * the native close drain also pins the old slot/generation, preventing
+     * an unrelated new FD from claiming its worker-owned Netconn. */
     (void)nas_ksem_post(&bridge.wake);
     return 0;
+}
+int nas_lwip_bridge_release(struct nas_lwip_bridge_id id) {
+    return nas_lwip_bridge_release_with_tail(id,NULL,0);
 }
 bool nas_lwip_bridge_alive(struct nas_lwip_bridge_id id){return lookup(id)!=NULL;}
 bool nas_lwip_bridge_listener_readable(struct nas_lwip_bridge_id id) {

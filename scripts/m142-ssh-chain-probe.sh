@@ -67,6 +67,19 @@ awk '$1=="ssh-ed25519" {print "[10.0.2.2]:15423",$1,$2}' \
 printf '%s %s\n' "$host_user" "$host_dir" > "$guest_dir/host-info"
 test -s "$guest_dir/known_hosts"
 
+# The minimal Alpine CPIO does not install account metadata. OpenSSH's real
+# client calls getpwuid(getuid()) before connecting; without uid 0 in passwd
+# it exits 255 with "No user exists for uid 0". Supply only an ephemeral
+# local root identity in this test-specific CPIO, not a synthetic SSH client.
+mkdir -p "$root/rootfs/etc"
+if [ ! -s "$root/rootfs/etc/passwd" ]; then
+    printf 'root:x:0:0:root:/tmp/m142-ssh-chain:/bin/sh\n' \
+        > "$root/rootfs/etc/passwd"
+fi
+if [ ! -s "$root/rootfs/etc/group" ]; then
+    printf 'root:x:0:\n' > "$root/rootfs/etc/group"
+fi
+
 # Repack only for this acceptance case, with the same canonical newc order
 # as stage-alpine-prebuilt-overlay.sh. Do not mutate the signed ELF payloads
 # or the ordinary rootfs.cpio reused by other independent smoke gates.

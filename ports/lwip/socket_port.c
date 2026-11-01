@@ -632,8 +632,21 @@ static void release(unsigned slot) {
        s->control_request.op==NAS_LWIP_BRIDGE_ACCEPT &&
        s->control_result.accepted.generation)
         (void)nas_lwip_bridge_release(s->control_result.accepted);
+    /* `PORT_TX` already owns the suffix inside bridge.c, even if its
+     * completion has not yet been taken here. If a previous partial SEND
+     * completed, `PORT_IDLE` keeps the remaining copied suffix in this
+     * File. Transfer that suffix before clearing the File, so close() does
+     * not silently forget bytes previously accepted by write(). */
+    const uint16_t tail=s->tx_length>=s->tx_position ?
+                        s->tx_length-s->tx_position:0;
+    const bool bridge_tx=s->command==PORT_TX;
+    int rc=nas_lwip_bridge_release_with_tail(
+        id,tail && !bridge_tx ? s->tx+s->tx_position:NULL,
+        tail && !bridge_tx ? tail:0);
+    /* A malformed/overlapping bridge state must never orphan its native
+     * Netconn after the File's final refcount has gone away. */
+    if(rc)(void)nas_lwip_bridge_release(id);
     sockets[slot]=(struct port_socket){0};
-    (void)nas_lwip_bridge_release(id);
 }
 
 static const struct nas_file_ops ops={

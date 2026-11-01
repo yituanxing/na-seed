@@ -56,9 +56,13 @@ int nas_lwip_bridge_submit(struct nas_lwip_bridge_id id,
 /* 1 = result consumed, 0 = pending/no completion, negative = stale/closed. */
 int nas_lwip_bridge_take(struct nas_lwip_bridge_id id,
                          struct nas_lwip_bridge_result *out);
-/* Asynchronous final File close. Invalidates ID immediately; a queued
- * command is canceled, or an already-run command finishes before native
- * netconn_delete. Never blocks user tasks. */
+/* Asynchronous final File close. Invalidates ID immediately; already
+ * admitted TCP SEND bytes receive a bounded native drain before FIN.
+ * `tail` is the provider's unsubmitted copied TX suffix (at most DATA),
+ * not user memory; NULL/0 means any in-flight SEND is already bridge-owned.
+ * Neither path waits on a user Task; delivery itself is not guaranteed. */
+int nas_lwip_bridge_release_with_tail(struct nas_lwip_bridge_id id,
+                                      const uint8_t *tail,uint16_t length);
 int nas_lwip_bridge_release(struct nas_lwip_bridge_id id);
 bool nas_lwip_bridge_alive(struct nas_lwip_bridge_id id);
 /* lwIP's own acceptmbox event count, not a speculative ACCEPT attempt.

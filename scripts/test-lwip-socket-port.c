@@ -439,6 +439,53 @@ int main(void) {
     assert(receive(46,result,1)==0);
     close_slot(46);
 
+    /* Hold the peer's application receive queue full to force real lwIP
+     * TCP_SND_BUF / remote-window backpressure. Previously a later copied
+     * write could return success and then lose its unsent tail on close.
+     * Drain the peer only AFTER final close, checking every admitted byte. */
+    connect_slot(47,38017);
+    struct nas_fd_slot_lease pressure_lease=lease_slot(48,UINT64_C(0x1FEF02));
+    accepted=accept_slot(30,pressure_lease,&peer);
+    assert(nas_lwip_socket_port_adopt(accepted)==0);
+    nas_open_files[48].lease_token=0;
+    uint8_t block[NAS_LWIP_BRIDGE_DATA];
+    unsigned admitted_blocks=0;
+    for(;admitted_blocks<18;admitted_blocks++) {
+        bool writable=false;
+        for(unsigned tries=0;tries<80;tries++) {
+            int64_t budget=(int64_t)ops->write_plan(47,sizeof(block));
+            if(budget==(int64_t)sizeof(block)){writable=true;break;}
+            assert(budget==-EOPNOTSUPP);
+            test_ns+=UINT64_C(1000000);
+            (void)nas_kthread_run(1);
+        }
+        if(!writable)break;
+        memset(block,(int)(admitted_blocks+1),sizeof(block));
+        assert(ops->write(47,block,sizeof(block))==sizeof(block));
+    }
+    assert(admitted_blocks>=5); /* exceeds the default remote TCP_WND */
+    close_slot(47);
+    nas_open_files[47].refcount=1;
+    assert(nas_lwip_socket_open(47,NAS_LWIP_BRIDGE_TCP)==-ENFILE);
+    nas_open_files[47]=(struct nas_open_file){0};
+    unsigned received_bytes=0;
+    const unsigned total_admitted=admitted_blocks*sizeof(block);
+    while(received_bytes<total_admitted) {
+        unsigned n=receive(48,result,sizeof(result));
+        if(!n)fprintf(stderr,"[LWIP PRESSURE] admitted=%u received=%u EOF\n",
+                      total_admitted,received_bytes);
+        assert(n && received_bytes+n<=total_admitted);
+        for(unsigned i=0;i<n;i++)
+            assert(result[i]==(uint8_t)((received_bytes+i)/sizeof(block)+1));
+        received_bytes+=n;
+    }
+    assert(receive(48,result,1)==0);
+    close_slot(48);
+    reserve(47,NAS_LWIP_BRIDGE_TCP); /* old close has retired generation */
+    close_slot(47);
+    printf("[LWIP CLOSE DRAIN PASS] %u admitted/received bytes under TCP window pressure\n",
+           total_admitted);
+
     /* An original TCP-connect scanner uses nonblocking connect(), polls
      * for writability, reads SO_ERROR and then calls getsockname(). There
      * is no blocking Task to consume control_finish() in that sequence.

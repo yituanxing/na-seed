@@ -256,6 +256,51 @@ int main(void){
  for(unsigned tries=0;tries<120;tries++)
      if(nas_kthread_run(1)==0)break;
 
+ /* The File provider can finish a partial native SEND and own only the
+  * unsubmitted copied suffix when the user closes. The new close API must
+  * copy that suffix immediately, preserve the old slot generation while
+  * the native worker sends it, then let real lwIP deliver data before FIN. */
+ struct nas_lwip_bridge_id tail_client=open_conn(42,NAS_LWIP_BRIDGE_TCP);
+ result=command(tail_client,NAS_LWIP_BRIDGE_CONNECT,lo(36007),0,NULL,0);
+ assert(result.status==0 || result.status==-EINPROGRESS);
+ for(unsigned tries=0;tries<120 && !nas_lwip_bridge_listener_readable(listener);
+     tries++)assert(nas_kthread_run(1)==1);
+ struct nas_fd_slot_lease tail_lease=lease_open(41);
+ struct nas_lwip_bridge_id tail_peer={0};
+ for(unsigned tries=0;tries<120;tries++) {
+     result=command(listener,NAS_LWIP_BRIDGE_ACCEPT,lo(0),41,NULL,0);
+     if(result.status==0){tail_peer=result.accepted;break;}
+     assert(result.status==-EAGAIN && nas_kthread_run(1)==1);
+ }
+ assert(tail_peer.slot==41 && tail_peer.generation);
+ char tail_payload[]="last copied TCP bytes";
+ assert(nas_lwip_bridge_release_with_tail(tail_client,NULL,1)==-EINVAL);
+ assert(nas_lwip_bridge_release_with_tail(tail_client,
+                (const uint8_t *)tail_payload,NAS_LWIP_BRIDGE_DATA+1)==-EINVAL);
+ assert(nas_lwip_bridge_alive(tail_client));
+ assert(nas_lwip_bridge_release_with_tail(tail_client,
+                (const uint8_t *)tail_payload,sizeof(tail_payload)-1)==0);
+ assert(!nas_lwip_bridge_alive(tail_client));
+ assert(nas_lwip_bridge_release_with_tail(tail_client,NULL,0)==-EBADF);
+ memset(tail_payload,'X',sizeof(tail_payload)-1);
+ for(unsigned tries=0;tries<120;tries++) {
+     result=command(tail_peer,NAS_LWIP_BRIDGE_RECV,lo(0),0,NULL,64);
+     if(result.status==0 && result.length)break;
+     assert(result.status==-EAGAIN && nas_kthread_run(1)==1);
+ }
+ assert(result.status==0 && result.length==sizeof(tail_payload)-1);
+ assert(!memcmp(result.bytes,"last copied TCP bytes",result.length));
+ for(unsigned tries=0;tries<120;tries++) {
+     result=command(tail_peer,NAS_LWIP_BRIDGE_RECV,lo(0),0,NULL,64);
+     if(result.status==0 && !result.length)break;
+     assert(result.status==-EAGAIN && nas_kthread_run(1)==1);
+ }
+ assert(result.status==0 && result.length==0);
+ assert(nas_lwip_bridge_release(tail_peer)==0);
+ lease_close(tail_lease);
+ for(unsigned tries=0;tries<120;tries++)
+     if(nas_kthread_run(1)==0)break;
+
  /* An ACCEPT child exists before userspace takes the listener's result.
   * Final-close of the listener owns and retires that unclaimed Netconn,
   * posting its own wake token even if the command queue is now empty. */
