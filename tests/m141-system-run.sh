@@ -24,7 +24,7 @@ cleanup() {
     if [ "$result" -ne 0 ]; then
         busy printf '[M141 SYSTEM DIAG] %s exit=%s\n' "$case_name" "$result"
         case "$case_name" in
-          ipc-shared|ipc-semaphore|exch-files|iperf3-loopback)
+          ipc-shared|ipc-semaphore|exch-files|iperf3-loopback|ncat-loopback)
             # These fixtures own their files; never dump arbitrary user
             # paths. Preserve only small, bounded original-program output.
             for diagnostic in details removed error out a b server.err server client.json; do

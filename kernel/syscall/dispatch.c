@@ -764,6 +764,29 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     }
     struct nas_fs_result fs_result = nas_fs_syscall(nr, args);
     if (fs_result.handled) {
+#ifdef NASEED_SYSCALL_TRACE
+        /* Native ncat/iperf3 diagnostics: syscall result BEFORE Task parking
+         * or FileOps completion. This is an opt-in trace, never a socket
+         * implementation branch, and does not inspect guest pointers. */
+        if(nr==NAS_SC_socket || nr==NAS_SC_bind || nr==NAS_SC_listen ||
+           nr==NAS_SC_connect || nr==NAS_SC_accept || nr==NAS_SC_accept4 ||
+           nr==NAS_SC_setsockopt || nr==NAS_SC_getsockopt ||
+           nr==NAS_SC_getsockname || nr==NAS_SC_getpeername ||
+           nr==NAS_SC_sendto || nr==NAS_SC_recvfrom ||
+           nr==NAS_SC_sendmsg || nr==NAS_SC_recvmsg ||
+           nr==NAS_SC_shutdown) {
+            nas_print("[NET SYS] pid=");nas_dec(TASK.pid);
+            nas_print(" op=");nas_dec(nr);
+            nas_print(" a1=");nas_hex(args[1]);
+            nas_print(" a2=");nas_hex(args[2]);
+            nas_print(" a3=");nas_hex(args[3]);
+            nas_print(" status=");
+            if((int64_t)fs_result.value<0) {
+                nas_print("-");nas_dec((uint64_t)(-(int64_t)fs_result.value));
+            } else nas_dec(fs_result.value);
+            nas_print("\n");
+        }
+#endif
 #ifdef NAS_ENABLE_LWIP
         if(nr==NAS_SC_bind || nr==NAS_SC_connect || nr==NAS_SC_listen ||
            nr==NAS_SC_setsockopt || nr==NAS_SC_shutdown ||

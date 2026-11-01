@@ -9,6 +9,7 @@ set -eu
 }
 
 export NAS_ENABLE_LWIP=1
+export NAS_SYSCALL_TRACE=1  # targeted guest syscall diagnostics until Ncat passes
 export NAS_APP_BATCH_QEMU_TIMEOUT=180
 export NAS_ACCEPTANCE_QEMU_RAM=1536M
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
