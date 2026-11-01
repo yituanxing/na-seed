@@ -125,11 +125,26 @@ boot_case() {
     # Optional second REAL block drive (the first is the UEFI FAT ESP).
     # Not a Limine module: sector I/O goes through original U-Boot VirtIO.
     set --
+    if [ -n "${NAS_VIRTIO_BLK_IMAGE:-}" ] || [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ]; then
+        # The shared MMIO probe binds modern VirtIO only (version 2).
+        set -- "$@" -global virtio-mmio.force-legacy=false
+    fi
     if [ -n "${NAS_VIRTIO_BLK_IMAGE:-}" ]; then
         test -s "$NAS_VIRTIO_BLK_IMAGE"
-        set -- -global virtio-mmio.force-legacy=false \
-               -drive "if=none,id=real_ext4,format=raw,file=$NAS_VIRTIO_BLK_IMAGE" \
+        set -- "$@" -drive "if=none,id=real_ext4,format=raw,file=$NAS_VIRTIO_BLK_IMAGE" \
                -device virtio-blk-device,drive=real_ext4
+    fi
+    if [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ]; then
+        set -- "$@" -netdev user,id=naseed_net \
+               -device virtio-net-device,netdev=naseed_net
+    fi
+    if [ -n "${NAS_VIRTIO_NET_PCAP:-}" ]; then
+        [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ] || {
+            echo 'NAS_VIRTIO_NET_PCAP requires NAS_VIRTIO_NET_USER=1' >&2
+            return 2
+        }
+        set -- "$@" -object \
+            "filter-dump,id=naseed_wire_capture,netdev=naseed_net,file=$NAS_VIRTIO_NET_PCAP"
     fi
     set +e
     timeout "${time_budget}s" qemu-system-aarch64 \
