@@ -133,7 +133,15 @@ fdkaac_case() {
     # Original FAAD's -w selects stdout WAV data, overriding -o entirely.
     # Use the genuine named WAV output and verify its decoded PCM metadata.
     "$decoder" -o "$work/decoded.wav" "$work/audio.m4a" > "$work/decode.log" 2>&1
-    check_wav "$work/decoded.wav"
+    # The pinned original fdkaac mode emits HE-AAC with SBR. FAAD correctly
+    # reconstructs 32 kHz stereo PCM from the 16 kHz mono encoder input:
+    # demanding the source sample rate here rejects a real codec conversion.
+    size_gt "$work/decoded.wav" 1000 || return 1
+    [ "$(busy dd if="$work/decoded.wav" bs=1 count=4 2>/dev/null)" = RIFF ] || return 1
+    /usr/bin/sndfile-info "$work/decoded.wav" > "$work/audio-info.txt" 2>&1
+    busy grep -Eq 'Sample[[:space:]]+Rate[[:space:]]*:[[:space:]]*32000' "$work/audio-info.txt" || return 1
+    busy grep -Eq 'Frames[[:space:]]*:[[:space:]]*[1-9][0-9]+' "$work/audio-info.txt" || return 1
+    busy grep -Eq 'Channels[[:space:]]*:[[:space:]]*2' "$work/audio-info.txt" || return 1
     echo '[M151 ROUNDTRIP] FDK AAC MP4=>FAAD WAV decode'
 }
 audiofile_case() {

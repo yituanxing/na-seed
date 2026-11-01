@@ -76,6 +76,7 @@ fi
 /usr/sbin/dnsmasq --no-daemon --user=root --group=root \
   --no-hosts --no-resolv --port=15454 --listen-address=127.0.0.1 \
   --bind-interfaces '--server=10.0.2.2#15453' --log-queries \
+  --log-facility=- \
   > "$work/dns/dnsmasq.log" 2>&1 &
 dns_pid=$!
 dns_ok=false
