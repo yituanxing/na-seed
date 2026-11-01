@@ -30,9 +30,28 @@ echo '[M144 HAPROXY DIAG] guest native process startup output:'
 if ! kill -0 "$pid" 2>/dev/null; then
   echo '[M144 HAPROXY DIAG] server exited before curl'
 fi
-if ! /usr/bin/curl -f -s -S --noproxy '*' --retry 3 --retry-delay 1 \
-  --retry-connrefused -o "$dir/received" http://127.0.0.1:15444/haproxy; then
-  /bin/busybox sed -n "1,160p" "$dir/output" || :; exit 1
+# The upstream HAProxy startup performs socket capability probes before
+# publishing its frontend. Do not mistake that bounded init phase for a
+# network failure, but never accept a mere running process as success.
+ready=false
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  if /usr/bin/curl -f -s -S --noproxy '*' --connect-timeout 2 \
+      --max-time 3 -o "$dir/received" \
+      http://127.0.0.1:15444/haproxy > "$dir/curl.log" 2>&1; then
+    ready=true
+    break
+  fi
+  echo "[M144 HAPROXY WAIT] frontend attempt=$attempt"
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo '[M144 HAPROXY FAIL] original server process exited'
+    break
+  fi
+  /bin/busybox sleep 1
+done
+if [ "$ready" != true ]; then
+  /bin/busybox sed -n "1,100p" "$dir/curl.log" || :
+  /bin/busybox sed -n "1,160p" "$dir/output" || :
+  exit 1
 fi
 /bin/busybox grep -Fxq M144_HOST_HAPROXY_BACKEND_VALUE "$dir/received"
 echo M144_SIGNED_HAPROXY_PASS
