@@ -49,7 +49,7 @@ echo M143_REAL_OPENSSL_SHA256_PASS
 
 # Start an actual guest-native HTTP server, NOT a host-side stand-in.
 /bin/busybox printf 'M143_REAL_LIGHTTPD_LOOPBACK_PAYLOAD\n' > "$work/site/index.txt"
-cat > "$work/lighttpd.conf" <<EOF
+/bin/busybox cat > "$work/lighttpd.conf" <<EOF
 server.modules = ( "mod_staticfile" )
 server.document-root = "$work/site"
 server.bind = "127.0.0.1"
