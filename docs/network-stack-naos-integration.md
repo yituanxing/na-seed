@@ -46,7 +46,7 @@ kernel/fs/socket_syscall.c      (Linux ABI, sockaddr and usercopy ONLY)
        |
 nas_open_file + nas_file_ops    (shared fork/dup/SCM_RIGHTS lifetime)
        |
-ports/lwip/socket_port.c        (future: Netconn<->File and readiness)
+ports/lwip/socket_port.c        (host-tested Netconn<->File data/control)
 ports/lwip/netconn_bridge.c     (native-worker boundary for Netconn waits)
        |
 official lwIP 2.2.1            (TCP, UDP, IP, ICMP, ARP, DHCP, DNS)
@@ -218,11 +218,21 @@ The remaining operating-system constraints are explicit:
    release is deferred to the worker. Its copied 512-byte request chunks
    preserve TCP unread tails and explicitly flag UDP truncation. The worker
    is started at lwIP boot, after the core and optional RX workers. An
-   AF_INET FileOps provider must still translate Task block/retry, readiness,
-   send/recv message flags, and nonblocking connect semantics. In particular,
-   `accept` needs a real OpenFile reservation lasting across the asynchronous
-   command; a slot merely observed as free is not a lease. No user program
-   is claimed to use Netconn until that ownership and ABI work is complete.
+   `socket_port.c` now provides a **separately host-tested** `nas_file_ops`
+   adapter over the same global OpenFile slots: copied 512-byte asynchronous
+   TCP/UDP TX, prefetched RX, FileOps `read/write/poll_description/release`,
+   deferred send errors, and idempotent asynchronous bind/connect/listen
+   control requests. A host fixture exercises genuine upstream lwIP TCP/UDP
+   and accepted connection adoption, rather than stubbing Netconn. The port
+   is compiled on all supported target build paths under `NAS_ENABLE_LWIP=1`,
+   but **Linux AF_INET socket syscalls do not select it yet**. In particular,
+   user-Task continuation must consume a pending control command exactly
+   once; nonblocking connect requires handshake completion and `SO_ERROR`;
+   accept needs a real OpenFile reservation lasting across the asynchronous
+   command *and safe cancellation of in-flight native accept*. A slot merely
+   observed as free is not a lease. `poll` readiness needs a true accept
+   notification or bounded repeated probe, not an unserviced `-EAGAIN`.
+   Do not claim user-program network compatibility until those are verified.
 6. `nas_lwip_random32` is currently a noncryptographic clock-seeded PRNG;
    a real entropy-backed source is required for defensible TCP ISNs before
    Internet-facing use. Do not claim network security or wire operation.
@@ -235,7 +245,8 @@ The remaining operating-system constraints are explicit:
 | B — host-proven | Compile original pinned lwIP under `NAS_ENABLE_LWIP=1`, native `sys_arch`, upstream tcpip thread and `lo` netif; Ethernet pbuf adapter sends DHCP and queues inbound RX | Native sem/mbox/deadlines/worker, **real upstream UDP loopback**, DHCP TX, RX, netdev pins and cleanup PASS; three-ISA C syntax PASS. **No guest/wire, TCP socket or AF_INET FileOps proof yet** |
 | C — host boot-proven | Original U-Boot VirtIO-Net with dual DMA queues, independent network opt-in, filesystem-independent bus discovery, lwIP netif, native 8-frame RX worker, IRQ-safe wake callback and 10ms fallback | Host simulated boot/DHCP TX/RX, wake, fallback, pins PASS. Next: PCI x86 and MMIO RV64/AArch64 **real** QEMU guest DHCP lease, ARP, ping and UDP to host; MAC/address/link reporting |
 | D0 — host bridge-proven | Native Netconn RPC worker, bounded command copies, real upstream UDP/TCP loopback, OpenFile-indexed generation lifetime and deferred release | Host TCP/UDP bind/connect/listen/accept/send/recv, partial TCP/UDP truncation and stale-close tests PASS. **Not wired to user socket syscalls yet** |
-| D1 | Replace AF_INET socket backend with Netconn-backed FileOps, preserve AF_UNIX, pin async accept reservations and shared open-description semantics | ncat local/remote, curl, iperf3, DNS, nonblocking connect, poll/epoll, fork/dup, close/accept races on all ISAs |
+| D1a — host FileOps-proven | Netconn-backed TCP/UDP FileOps + async control state machine, same global `nas_open_file` identity, accepted handle adoption, all opt-in build source lists | `test-lwip-socket-port` against upstream lwIP; TCP/UDP data, copied queued writes, poll-driven RX, bind/connect/listen, async close; default AF_UNIX/simulated AF_INET unchanged |
+| D1b — remaining | Switch real AF_INET syscall provider, preserve AF_UNIX, pin and safely cancel async accept, add scheduler control continuations and accurate Linux socket options | ncat local/remote, curl, iperf3, DNS, nonblocking connect, poll/epoll, fork/dup, close/accept races on all ISAs |
 | E | Remove old simulated AF_INET code and harden shutdown, resource failure, MTU, hot-unplug | Network + block concurrency, packet loss/backpressure, memory lifetime, repeated NIC reset, all-ISA QEMU regression accumulated as requested |
 
 Don't launch the expensive QEMU M141 matrix for Stage A alone. Do not report

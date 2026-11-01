@@ -92,6 +92,7 @@ LWIP_X86_OBJS :=
 ifeq ($(NAS_ENABLE_LWIP),1)
 LWIP_X86_SRCS := ports/lwip/sys_arch.c ports/lwip/netif_port.c \
  ports/lwip/network_boot.c ports/lwip/netconn_bridge.c \
+ ports/lwip/socket_port.c \
  $(wildcard third_party/lwip/src/core/*.c) \
  $(wildcard third_party/lwip/src/core/ipv4/*.c) \
  $(wildcard third_party/lwip/src/api/*.c) \

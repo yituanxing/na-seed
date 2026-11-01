@@ -7,8 +7,12 @@ test "$(git -C third_party/lwip rev-parse HEAD)" = \
 sh scripts/check-network-build-selection.sh
 mkdir -p build/lwip-foundation
 sources="ports/lwip/sys_arch.c ports/lwip/netif_port.c ports/lwip/network_boot.c ports/lwip/netconn_bridge.c"
+target_sources="$sources ports/lwip/socket_port.c"
 upstream="third_party/lwip/src/core/*.c third_party/lwip/src/core/ipv4/*.c third_party/lwip/src/api/*.c third_party/lwip/src/netif/ethernet.c"
 includes="-I ports/lwip/include -I third_party/lwip/src/include -I kernel"
+cc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter \
+   -ffreestanding -fno-builtin $includes -fsyntax-only \
+   ports/lwip/socket_port.c
 cc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -fno-builtin \
    $includes scripts/test-lwip-native-sys-arch.c $sources $upstream \
    kernel/drivers/port/net.c kernel/task/k_sync.c kernel/task/kthread.c \
@@ -34,6 +38,17 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -fno-builtin \
    kernel/arch/x86_64/kernel_switch.S \
    -o build/lwip-foundation/test-netconn-bridge
 build/lwip-foundation/test-netconn-bridge
+# Socket data/control provider stays on the shared OpenFile identity.
+# Run a separate genuine lwIP TCP/UDP host test, without a fake Netconn.
+cc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -fno-builtin \
+   $includes scripts/test-lwip-socket-port.c \
+   ports/lwip/sys_arch.c ports/lwip/netconn_bridge.c \
+   ports/lwip/socket_port.c $upstream \
+   kernel/task/k_sync.c kernel/task/kthread.c \
+   kernel/task/wait_queue.c kernel/task/kernel_context.c \
+   kernel/arch/x86_64/kernel_switch.S \
+   -o build/lwip-foundation/test-socket-port
+build/lwip-foundation/test-socket-port
 # A native ACCEPT worker must pin its destination OpenFile slot against
 # competing Task allocations until the accepted Netconn can be published.
 cc -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin \
@@ -44,7 +59,7 @@ for compiler in x86_64-linux-gnu-gcc riscv64-linux-gnu-gcc aarch64-linux-gnu-gcc
     if command -v "$compiler" >/dev/null 2>&1; then
         "$compiler" -std=c11 -O2 -Wall -Wextra -Werror \
             -Wno-unused-parameter -ffreestanding -fno-builtin \
-            $includes -fsyntax-only $sources $upstream
+            $includes -fsyntax-only $target_sources $upstream
         printf '[LWIP TARGET C PASS] %s (official core+Netconn+Ethernet)\n' "$compiler"
     fi
 done
