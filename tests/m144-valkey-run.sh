@@ -6,6 +6,7 @@ dir=/tmp/m144/valkey
 bind 127.0.0.1
 port 15445
 daemonize no
+maxclients 8
 protected-mode no
 save ""
 appendonly no

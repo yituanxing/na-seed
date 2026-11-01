@@ -5,6 +5,7 @@ dir=/tmp/m144/haproxy
 /bin/busybox cat > "$dir/haproxy.cfg" <<'EOF'
 global
     maxconn 16
+    nbthread 1
 defaults
     mode http
     timeout connect 5s

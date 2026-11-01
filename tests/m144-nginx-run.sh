@@ -1,9 +1,10 @@
 #!/bin/sh
 set -eu
 dir=/tmp/m144/nginx
-/bin/busybox mkdir -p "$dir/site"
+/bin/busybox mkdir -p "$dir/site" "$dir/logs"
 echo M144_REAL_NGINX_STATIC_RESPONSE > "$dir/site/item.txt"
 /bin/busybox cat > "$dir/nginx.conf" <<EOF
+user root;
 worker_processes 1;
 pid $dir/nginx.pid;
 error_log $dir/nginx.err notice;
