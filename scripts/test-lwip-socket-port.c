@@ -121,6 +121,10 @@ static void connect_slot(unsigned slot,unsigned port) {
                 bool applied=false;
                 assert(nas_lwip_socket_tcp_nodelay(slot,false,&applied)==0 &&
                        applied);
+                /* Restore the original blocking mode: the remainder of
+                 * the existing TCP tests intentionally exercise blocking
+                 * read_plan semantics on this same connected File. */
+                nas_open_files[slot].status_flags&=~0x800ULL;
                 return;
             }
         } else {
