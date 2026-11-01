@@ -488,7 +488,18 @@ publish:
         (void)nas_fd_slot_lease_cancel(lease);
         return (uint64_t)-EIO;
     }
-    rc=nas_lwip_socket_port_adopt(accepted);
+    /* Upstream TCP inherits SOF_KEEPALIVE when constructing an accepted
+     * child (tcp_in.c: SOF_INHERITED). Mirror that real PCB state on the
+     * new OpenFile for Linux getsockopt(), including across dup/fork. */
+    bool inherited_keepalive=false;
+    rc=nas_lwip_socket_keepalive(listener_slot,false,&inherited_keepalive);
+    if(rc) {
+        (void)nas_lwip_bridge_release(accepted);
+        if(task_owned)lwip_accept_disarm();
+        (void)nas_fd_slot_lease_cancel(lease);
+        return (uint64_t)(int64_t)rc;
+    }
+    rc=nas_lwip_socket_port_adopt(accepted,inherited_keepalive);
     if(rc) {
         (void)nas_lwip_bridge_release(accepted);
         if(task_owned)lwip_accept_disarm();
@@ -691,6 +702,11 @@ static uint64_t sys_ipv4_getsockopt(uint64_t fd,uint64_t level,
             int rc=nas_lwip_socket_tcp_nodelay(slot,false,&enabled);
             if(rc)return (uint64_t)(int64_t)rc;
             value=enabled?1U:0U;
+        } else if(level==1 && opt==9) { /* SO_KEEPALIVE */
+            bool enabled=false;
+            int rc=nas_lwip_socket_keepalive(slot,false,&enabled);
+            if(rc)return (uint64_t)(int64_t)rc;
+            value=enabled?1U:0U;
         } else if(level==1) {
             switch(opt) {
             case 3:value=type==NAS_LWIP_BRIDGE_TCP ? 1U:2U;break;
@@ -806,7 +822,7 @@ static uint64_t sys_ipv4_setsockopt(uint64_t fd,uint64_t level,
             return lwip_control_result(nas_lwip_socket_bind_if(
                 TASK.fds->entries[fd].slot,(unsigned)index));
         }
-        if((level!=1 || (opt!=2 && opt!=6)) &&
+        if((level!=1 || (opt!=2 && opt!=6 && opt!=9)) &&
            (level!=0 || opt!=11) &&
            (level!=6 || opt!=1))return (uint64_t)-ENOPROTOOPT;
         if(length<4 || !address)return (uint64_t)-EINVAL;
@@ -826,6 +842,11 @@ static uint64_t sys_ipv4_setsockopt(uint64_t fd,uint64_t level,
              * A separately held deferred option must not park on its
              * consumable connect completion or claim a phantom EBUSY. */
             return rc==1 ? 0 : lwip_control_result(rc);
+        }
+        if(opt==9) { /* SO_KEEPALIVE: real TCP probe-enable PCB flag */
+            bool enabled=value!=0;
+            return lwip_control_result(nas_lwip_socket_keepalive(
+                slot,true,&enabled));
         }
         if(opt==6) {
             if(nas_lwip_socket_type(slot)!=NAS_LWIP_BRIDGE_UDP)
@@ -863,6 +884,28 @@ struct nas_msghdr {
 };
 struct nas_iovec { uint64_t base,length; };
 _Static_assert(sizeof(struct nas_msghdr)==56,"native Linux msghdr ABI");
+int nas_fs_socket_tcp_sendmsg_iov(uint64_t fd,uint64_t address,
+                                 uint64_t flags,uint64_t *iov,
+                                 uint64_t *count) {
+#ifdef NAS_ENABLE_LWIP
+    if(!lwip_fd(fd) || nas_lwip_socket_type(TASK.fds->entries[fd].slot)!=
+       NAS_LWIP_BRIDGE_TCP)return 0;
+    if(!iov || !count)return -EINVAL;
+    struct nas_msghdr msg;
+    if(!nas_user_read_bytes(address,(uint8_t *)&msg,sizeof(msg)))return -EFAULT;
+    if(flags & ~0x4000ULL)return -EOPNOTSUPP; /* only MSG_NOSIGNAL */
+    if(msg.name)return -EISCONN;
+    if(msg.controllen)return -EOPNOTSUPP;
+    /* writev's shared importer validates every iovec before data transfer
+     * and pins the copied vector across Task parking and FD reuse. */
+    *iov=msg.iov;
+    *count=msg.iovlen;
+    return 1;
+#else
+    (void)fd;(void)address;(void)flags;(void)iov;(void)count;
+    return 0;
+#endif
+}
 static uint64_t unix_msgiov(uint64_t fd,const struct nas_msghdr *msg,
                             bool writing) {
     if(msg->iovlen>32)return (uint64_t)-EMSGSIZE;
@@ -1006,10 +1049,11 @@ static uint64_t sys_ipv4_sendmsg(uint64_t fd,uint64_t address,uint64_t flags) {
              * bounds-checked guest iovecs and honest partial writes. The
              * per-call MSG_DONTWAIT override needs a separate I/O mode and
              * must not silently mutate shared O_NONBLOCK state. */
-            if(flags & ~0x4000ULL)return (uint64_t)-EOPNOTSUPP;
-            if(msg.name)return (uint64_t)-EISCONN;
-            if(msg.controllen)return (uint64_t)-EOPNOTSUPP;
-            return nas_fs_fd_writev(fd,msg.iov,msg.iovlen);
+            uint64_t iov=0,count=0;
+            int rc=nas_fs_socket_tcp_sendmsg_iov(fd,address,flags,&iov,&count);
+            if(rc<0)return (uint64_t)(int64_t)rc;
+            if(rc!=1)return (uint64_t)-EIO;
+            return nas_fs_fd_writev(fd,iov,count);
         }
         if(nas_lwip_socket_type(slot)!=NAS_LWIP_BRIDGE_UDP)
             return (uint64_t)-EOPNOTSUPP;

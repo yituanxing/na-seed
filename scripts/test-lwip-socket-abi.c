@@ -65,6 +65,8 @@ static bool abi_reuse_enabled[NAS_OPEN_FILE_LIMIT];
 static bool abi_broadcast_enabled[NAS_OPEN_FILE_LIMIT];
 static bool abi_recverr_enabled[NAS_OPEN_FILE_LIMIT];
 static bool abi_nodelay_enabled[NAS_OPEN_FILE_LIMIT];
+static bool abi_keepalive_enabled[NAS_OPEN_FILE_LIMIT];
+static bool abi_tx_backpressure[NAS_OPEN_FILE_LIMIT];
 static uint8_t abi_bound_ifindex[NAS_OPEN_FILE_LIMIT];
 static uint8_t abi_pending_ifindex[NAS_OPEN_FILE_LIMIT];
 static unsigned abi_bind_if_calls;
@@ -135,15 +137,18 @@ static uint64_t abi_peek(unsigned slot,uint8_t *out,uint64_t count,
 }
 static uint8_t abi_tcp_sent[32];
 static unsigned abi_tcp_sent_length,abi_tcp_sends;
+static unsigned abi_tcp_last_write_slot;
 static uint64_t abi_write_plan(unsigned slot,uint64_t count) {
     assert(nas_lwip_socket_is_slot(slot));
     assert(abi_type[slot]==NAS_LWIP_BRIDGE_TCP);
+    if(abi_tx_backpressure[slot])return (uint64_t)-EOPNOTSUPP;
     return count;
 }
 static uint64_t abi_write(unsigned slot,const uint8_t *data,uint64_t count) {
     assert(nas_lwip_socket_is_slot(slot));
     assert(abi_type[slot]==NAS_LWIP_BRIDGE_TCP);
     assert(count<=sizeof(abi_tcp_sent));
+    abi_tcp_last_write_slot=slot;
     if(count)memcpy(abi_tcp_sent,data,(size_t)count);
     abi_tcp_sent_length=(unsigned)count;
     ++abi_tcp_sends;
@@ -268,6 +273,17 @@ int nas_lwip_socket_tcp_nodelay(unsigned slot,bool write,bool *enabled) {
         abi_nodelay_enabled[slot]=*enabled;abi_control[slot]=true;
         abi_pending_checks[slot]=1;
     } else *enabled=abi_nodelay_enabled[slot];
+    return 0;
+}
+int nas_lwip_socket_keepalive(unsigned slot,bool write,bool *enabled) {
+    if(!nas_lwip_socket_is_slot(slot))return -EBADF;
+    if(!enabled)return -EINVAL;
+    if(abi_type[slot]!=NAS_LWIP_BRIDGE_TCP)return -EOPNOTSUPP;
+    if(write) {
+        abi_keepalive_enabled[slot]=*enabled;
+        abi_control[slot]=true;
+        abi_pending_checks[slot]=1;
+    } else *enabled=abi_keepalive_enabled[slot];
     return 0;
 }
 int nas_lwip_socket_ip_recverr(unsigned slot,bool write,bool *enabled) {
@@ -625,6 +641,12 @@ int main(void) {
            abi_tcp_sent_length==2 &&
            !memcmp(abi_tcp_sent,"NG",2));
     assert((int64_t)sys_ipv4_sendmsg(tcp_fd,msgaddr,0x40ULL)==-EOPNOTSUPP);
+    uint64_t prepared_iov=0,prepared_count=0;
+    assert(nas_fs_socket_tcp_sendmsg_iov(tcp_fd,msgaddr,0x4000ULL,
+                                        &prepared_iov,&prepared_count)==1);
+    assert(prepared_iov==iovaddr && prepared_count==2);
+    assert(nas_fs_socket_tcp_sendmsg_iov(tcp_fd,msgaddr,0x40ULL,
+                                        &prepared_iov,&prepared_count)==-EOPNOTSUPP);
     msg.name=udp_target;
     memcpy(user_ptr(msgaddr),&msg,sizeof(msg));
     assert((int64_t)sys_ipv4_sendmsg(tcp_fd,msgaddr,0)==-EISCONN);
@@ -694,6 +716,31 @@ int main(void) {
     assert(nas_fs_socket_control_description(tcp_slot)==0);
     assert(sys_ipv4_getsockopt(tcp_fd,6,1,optaddr,optlen)==0);
     memcpy(&enabled,user_ptr(optaddr),4);assert(enabled==1);
+    /* SO_KEEPALIVE must mutate a TCP PCB through the async control path,
+     * expose its completed value, and reject UDP without false success. */
+    enabled=0;
+    memcpy(user_ptr(optaddr),&enabled,4);
+    assert(sys_ipv4_getsockopt(tcp_fd,1,9,optaddr,optlen)==0);
+    memcpy(&enabled,user_ptr(optaddr),4);assert(enabled==0);
+    enabled=1;
+    memcpy(user_ptr(optaddr),&enabled,4);
+    assert((int64_t)sys_ipv4_setsockopt(udp_fd,1,9,optaddr,4)==-EOPNOTSUPP);
+    assert((int64_t)sys_ipv4_setsockopt(tcp_fd,1,9,optaddr,3)==-EINVAL);
+    assert((int64_t)sys_ipv4_setsockopt(tcp_fd,1,9,optaddr,4)==-EAGAIN);
+    assert(abi_keepalive_enabled[tcp_slot]);
+    assert(!nas_fs_socket_control_ready(tcp_slot));
+    assert(nas_fs_socket_control_ready(tcp_slot));
+    assert(nas_fs_socket_control_description(tcp_slot)==0);
+    assert(sys_ipv4_getsockopt(tcp_fd,1,9,optaddr,optlen)==0);
+    memcpy(&enabled,user_ptr(optaddr),4);assert(enabled==1);
+    enabled=0;
+    memcpy(user_ptr(optaddr),&enabled,4);
+    assert((int64_t)sys_ipv4_setsockopt(tcp_fd,1,9,optaddr,4)==-EAGAIN);
+    assert(!nas_fs_socket_control_ready(tcp_slot));
+    assert(nas_fs_socket_control_ready(tcp_slot));
+    assert(nas_fs_socket_control_description(tcp_slot)==0);
+    assert(sys_ipv4_getsockopt(tcp_fd,1,9,optaddr,optlen)==0);
+    memcpy(&enabled,user_ptr(optaddr),4);assert(enabled==0);
     assert(abi_reuses==1);
     assert((int64_t)sys_socket_shutdown(tcp_fd,3)==-EINVAL);
     assert((int64_t)sys_socket_shutdown(tcp_fd,2)==-EAGAIN);
@@ -709,6 +756,67 @@ int main(void) {
     assert(nas_fs_socket_control_ready(tcp_slot));
     assert((int64_t)nas_fs_socket_control_description(tcp_slot)==-EINPROGRESS);
     assert(!abi_control[tcp_slot]);
+
+    /* Dispatch routes a prepared TCP sendmsg through nas_fs_io_start's
+     * held-File writev path. Force provider-level TX backpressure: blocking
+     * requests park with one imported vector and retain the ORIGINAL
+     * OpenFile when a sibling closes/reuses the integer descriptor. */
+    uint64_t pending_fd=sys_socket(2,1,6);
+    assert(pending_fd<NAS_FD_LIMIT);
+    unsigned pending_slot=guest_task.fds->entries[pending_fd].slot;
+    assert(!(nas_open_files[pending_slot].status_flags&0x800ULL));
+    msg=(struct nas_msghdr){.iov=iovaddr,.iovlen=2};
+    memcpy(user_ptr(msgaddr),&msg,sizeof(msg));
+    memcpy(user_ptr(iovaddr),tcp_iov,sizeof(tcp_iov));
+    memcpy(user_ptr(udp_payload),"PING",4);
+    prepared_iov=prepared_count=0;
+    assert(nas_fs_socket_tcp_sendmsg_iov(pending_fd,msgaddr,0x4000ULL,
+                                        &prepared_iov,&prepared_count)==1);
+    struct nas_io_attempt backpressure={0};
+    abi_tx_backpressure[pending_slot]=true;
+    old_tcp_sends=abi_tcp_sends;
+    nas_fs_io_start(NAS_SC_writev,pending_fd,prepared_iov,prepared_count,
+                    &backpressure);
+    assert(backpressure.pending &&
+           (int64_t)backpressure.result==-EOPNOTSUPP);
+    assert(nas_open_files[pending_slot].refcount==2);
+    assert(abi_tcp_sends==old_tcp_sends);
+    /* The iovec metadata may change or become unmapped after import; the
+     * parked kernel request must never reread a new Task's user pointer. */
+    memcpy(user_ptr(iovaddr),bad_iov,sizeof(bad_iov));
+    nas_fs_close_fd(pending_fd);
+    assert(nas_open_files[pending_slot].refcount==1 &&
+           guest_task.fds->entries[pending_fd].kind==FD_CLOSED);
+    uint64_t reused_fd=sys_socket(2,1,6);
+    assert(reused_fd==pending_fd);
+    unsigned reused_slot=guest_task.fds->entries[reused_fd].slot;
+    assert(reused_slot!=pending_slot);
+    abi_tx_backpressure[pending_slot]=false;
+    assert(nas_fs_io_resume(backpressure.pending)==4);
+    assert(abi_tcp_sends==old_tcp_sends+2 &&
+           abi_tcp_last_write_slot==pending_slot &&
+           !memcmp(abi_tcp_sent,"NG",2));
+    nas_fs_io_dispose(backpressure.pending);
+    assert(!nas_open_files[pending_slot].refcount &&
+           !abi_live[pending_slot] && abi_live[reused_slot]);
+    nas_fs_close_fd(reused_fd);
+    /* Full import atomicity: invalid second iovec must never send the
+     * first iovec, and too many vectors must fail before provider I/O. */
+    uint64_t invalid_fd=sys_socket(2,1,6);
+    assert(invalid_fd<NAS_FD_LIMIT);
+    msg=(struct nas_msghdr){.iov=iovaddr,.iovlen=2};
+    memcpy(user_ptr(msgaddr),&msg,sizeof(msg));
+    memcpy(user_ptr(iovaddr),bad_iov,sizeof(bad_iov));
+    old_tcp_sends=abi_tcp_sends;
+    nas_fs_io_start(NAS_SC_writev,invalid_fd,iovaddr,2,&backpressure);
+    assert(!backpressure.pending && (int64_t)backpressure.result==-EFAULT);
+    assert(abi_tcp_sends==old_tcp_sends);
+    nas_fs_io_start(NAS_SC_writev,invalid_fd,iovaddr,1025,&backpressure);
+    assert(!backpressure.pending && (int64_t)backpressure.result==-EINVAL);
+    assert(abi_tcp_sends==old_tcp_sends);
+    nas_fs_close_fd(invalid_fd);
+    puts("[LWIP SENDMSG BLOCKING PASS] full iovec import, TX park/resume,");
+    puts("  immutable vector snapshot, held OpenFile across close/fd reuse");
     puts("[LWIP SOCKET ABI PASS] native AF_INET TCP/UDP OpenFile + user sockaddr,");
     puts("  async control/GETNAME/SHUTDOWN/REUSEADDR, AF_UNIX preserved");
 #else

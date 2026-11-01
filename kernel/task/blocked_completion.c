@@ -72,7 +72,7 @@ enum nas_blocked_completion nas_blocked_complete(struct nas_task *task,
     const struct nas_pending_io *pending=task->wait.pending_io;
     const uint64_t rc=task_resume_syscall(task);
     const bool writing=nr==NAS_SC_write || nr==NAS_SC_writev;
-    if((int64_t)rc==-EPIPE && writing) {
+    if((int64_t)rc==-EPIPE && writing && !task->wait.suppress_sigpipe) {
         if(nas_sched_sigpipe_default(nas_fs_io_pipe_like(pending))) {
             nas_sched_child_exit(0,NAS_SIGPIPE);
             return NAS_BLOCKED_TERMINATED;

@@ -124,7 +124,9 @@ int nas_lwip_socket_accept_prefetched(unsigned slot,
     prefetch_lease=(struct nas_fd_slot_lease){0};
     return rc;
 }
-int nas_lwip_socket_port_adopt(struct nas_lwip_bridge_id accepted) {
+int nas_lwip_socket_port_adopt(struct nas_lwip_bridge_id accepted,
+                                bool inherited_keepalive) {
+    assert(!inherited_keepalive);
     assert(accepted.slot==active_lease.slot && accepted.generation);
     assert(nas_fd_slot_lease_valid(active_lease));
     return 0;
@@ -197,6 +199,11 @@ int nas_lwip_socket_tcp_nodelay(unsigned slot,bool write,bool *enabled) {
     (void)write;
     (void)enabled;
     return -EOPNOTSUPP;
+}
+int nas_lwip_socket_keepalive(unsigned slot,bool write,bool *enabled) {
+    assert(slot==LISTENER_SLOT && !write && enabled);
+    *enabled=false;
+    return 0;
 }
 int nas_lwip_socket_buffer_capacity(unsigned slot,bool sending) {
     (void)slot;

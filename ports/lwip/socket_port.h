@@ -15,7 +15,8 @@ const struct nas_file_ops *nas_lwip_socket_port_ops(void);
  * bridge identity beyond FileOps.release(). Other File slots remain usable. */
 bool nas_lwip_socket_slot_reusable(unsigned slot);
 int nas_lwip_socket_port_open(unsigned slot,enum nas_lwip_bridge_type type);
-int nas_lwip_socket_port_adopt(struct nas_lwip_bridge_id accepted);
+int nas_lwip_socket_port_adopt(struct nas_lwip_bridge_id accepted,
+                                bool inherited_keepalive);
 
 /* Socket-specific control plane: the syscall adapter parses sockaddr and
  * reserves ACCEPT's child OpenFile lease; the provider only sees kernel
@@ -89,6 +90,10 @@ int nas_lwip_socket_bound_ifindex(unsigned slot);
  * on this same OpenFile, or negative errno. The deferred path actually
  * changes the upstream PCB before subsequent TX; failure reaches SO_ERROR. */
 int nas_lwip_socket_tcp_nodelay(unsigned slot,bool write,bool *enabled);
+/* Real lwIP PCB SOF_KEEPALIVE, not an ACK-only success. The native TCP
+ * timer probes idle peers; listening TCP PCBs pass SOF_KEEPALIVE to accepted
+ * children via upstream SOF_INHERITED. */
+int nas_lwip_socket_keepalive(unsigned slot,bool write,bool *enabled);
 /* Linux IP_RECVERR is stored on the shared OpenFile (also across dup/fork).
  * Successful UDP paths can opt in; asynchronous ICMP MSG_ERRQUEUE delivery
  * is not implemented and must not be advertised as full parity. */

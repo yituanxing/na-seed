@@ -399,6 +399,14 @@ static void execute(unsigned slot) {
         if(s->type!=NAS_LWIP_BRIDGE_TCP){out->status=-EOPNOTSUPP;return;}
         err=set_tcp_nodelay(s->connection,r->nodelay);
         break;
+    case NAS_LWIP_BRIDGE_SETKEEPALIVE:
+        if(s->type!=NAS_LWIP_BRIDGE_TCP){out->status=-EOPNOTSUPP;return;}
+        /* The upstream slow TCP timer checks this PCB bit and sends real
+         * keepalive probes (with lwIP's configured default probe timings).
+         * Only tcpip_thread may mutate it; a local cache alone is not an
+         * implementation of SO_KEEPALIVE. */
+        err=set_ip_option(s->connection,r->keepalive,SOF_KEEPALIVE);
+        break;
     default:out->status=-EINVAL;return;
     }
     if(err!=ERR_OK)out->status=-err_to_errno(err);
@@ -572,7 +580,7 @@ int nas_lwip_bridge_submit(struct nas_lwip_bridge_id id,
     if(s->queued || s->executing || s->finished)return -EBUSY;
     if(bridge.count==NAS_LWIP_BRIDGE_QUEUE)return -EAGAIN;
     if(request->op<NAS_LWIP_BRIDGE_BIND ||
-       request->op>NAS_LWIP_BRIDGE_BIND_IF ||
+       request->op>NAS_LWIP_BRIDGE_SETKEEPALIVE ||
        request->length>NAS_LWIP_BRIDGE_DATA ||
        (request->op==NAS_LWIP_BRIDGE_BIND_IF && !request->if_index) ||
        (request->op==NAS_LWIP_BRIDGE_SHUTDOWN && request->shutdown_how>2U) ||

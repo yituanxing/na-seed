@@ -76,6 +76,7 @@ struct nas_task_wait {
      * Callback keeps Task's generic lifetime independent of fs/file_io.c. */
     struct nas_pending_io *pending_io;
     void (*pending_io_release)(struct nas_pending_io *);
+    bool suppress_sigpipe; /* per-call TCP sendmsg(MSG_NOSIGNAL), not FD state */
     uint64_t deadline_ns;
     bool deadline_active;
     unsigned tty_observed_bytes;

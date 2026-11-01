@@ -44,7 +44,7 @@ struct port_socket {
     struct nas_lwip_bridge_address connect_address;
     struct nas_lwip_bridge_address peer_address;
     struct nas_lwip_bridge_address tx_destination,rx_source;
-    bool ip_recverr,tcp_nodelay;
+    bool ip_recverr,tcp_nodelay,keepalive;
     /* Nonblocking connect() may return to userspace before Netconn finishes.
      * A subsequent TCP_NODELAY is accepted as a same-File pending mutation,
      * applied by the native worker before the first stream data transfer. */
@@ -147,6 +147,9 @@ static void finish(struct port_socket *s) {
             if(s->control_request.op==NAS_LWIP_BRIDGE_SETNODELAY &&
                result.status==0)
                 s->tcp_nodelay=s->control_request.nodelay;
+            if(s->control_request.op==NAS_LWIP_BRIDGE_SETKEEPALIVE &&
+               result.status==0)
+                s->keepalive=s->control_request.keepalive;
             if(s->control_request.op==NAS_LWIP_BRIDGE_BIND_IF &&
                result.status==0)
                 s->bound_ifindex=s->control_request.if_index;
@@ -343,14 +346,16 @@ int nas_lwip_socket_port_open(unsigned slot,enum nas_lwip_bridge_type type) {
     return 0;
 }
 
-int nas_lwip_socket_port_adopt(struct nas_lwip_bridge_id accepted) {
+int nas_lwip_socket_port_adopt(struct nas_lwip_bridge_id accepted,
+                                bool inherited_keepalive) {
     unsigned slot=accepted.slot;
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
         return -EBADF;
     if(sockets[slot].owned)return -EBUSY;
     if(!nas_lwip_bridge_alive(accepted))return -EBADF;
     sockets[slot]=(struct port_socket){.owned=true,.connected=true,
-        .type=NAS_LWIP_BRIDGE_TCP,.id=accepted,.command=PORT_IDLE};
+        .type=NAS_LWIP_BRIDGE_TCP,.id=accepted,.command=PORT_IDLE,
+        .keepalive=inherited_keepalive};
     return 0;
 }
 
@@ -364,7 +369,8 @@ int nas_lwip_socket_port_begin(unsigned slot,
     case NAS_LWIP_BRIDGE_LISTEN:case NAS_LWIP_BRIDGE_ACCEPT:
     case NAS_LWIP_BRIDGE_GETNAME:case NAS_LWIP_BRIDGE_SHUTDOWN:
     case NAS_LWIP_BRIDGE_SETREUSEADDR:case NAS_LWIP_BRIDGE_SETBROADCAST:
-    case NAS_LWIP_BRIDGE_SETNODELAY:case NAS_LWIP_BRIDGE_BIND_IF:break;
+    case NAS_LWIP_BRIDGE_SETNODELAY:case NAS_LWIP_BRIDGE_BIND_IF:
+    case NAS_LWIP_BRIDGE_SETKEEPALIVE:break;
     default:return -EINVAL;
     }
     int rc=check(s);
@@ -387,6 +393,7 @@ int nas_lwip_socket_port_begin(unsigned slot,
                old->reuseaddr==request->reuseaddr &&
                old->broadcast==request->broadcast &&
                old->nodelay==request->nodelay &&
+               old->keepalive==request->keepalive &&
                old->if_index==request->if_index &&
                old->accept_slot==request->accept_slot &&
                old->accept_lease_token==request->accept_lease_token &&
@@ -403,6 +410,7 @@ int nas_lwip_socket_port_begin(unsigned slot,
                                 request->op==NAS_LWIP_BRIDGE_SETREUSEADDR ||
                                 request->op==NAS_LWIP_BRIDGE_SETBROADCAST ||
                                 request->op==NAS_LWIP_BRIDGE_SETNODELAY ||
+                                request->op==NAS_LWIP_BRIDGE_SETKEEPALIVE ||
                                 request->op==NAS_LWIP_BRIDGE_BIND_IF;
     if(deferred_control &&
        (s->command==PORT_TX || s->command==PORT_RX || s->tx_length)) {
@@ -883,6 +891,22 @@ int nas_lwip_socket_tcp_nodelay(unsigned slot,bool write,bool *enabled) {
     }
     const struct nas_lwip_bridge_request req={
         .op=NAS_LWIP_BRIDGE_SETNODELAY,.nodelay=*enabled
+    };
+    return nas_lwip_socket_port_begin(slot,&req);
+}
+int nas_lwip_socket_keepalive(unsigned slot,bool write,bool *enabled) {
+    struct port_socket *s=socket_at(slot);
+    if(!s)return -EBADF;
+    if(!enabled)return -EINVAL;
+    if(s->type!=NAS_LWIP_BRIDGE_TCP)return -EOPNOTSUPP;
+    if(!write) {
+        int rc=check(s);
+        if(rc)return rc;
+        *enabled=s->keepalive;
+        return 0;
+    }
+    const struct nas_lwip_bridge_request req={
+        .op=NAS_LWIP_BRIDGE_SETKEEPALIVE,.keepalive=*enabled
     };
     return nas_lwip_socket_port_begin(slot,&req);
 }

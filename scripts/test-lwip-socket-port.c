@@ -384,6 +384,18 @@ int main(void) {
     close_slot(23);
 
     reserve(30,NAS_LWIP_BRIDGE_TCP);
+    /* A genuine core-thread PCB option: lwIP's TCP slow timer checks
+     * SOF_KEEPALIVE and accepted children inherit this option from the
+     * listener, unlike a pretend successful setsockopt in the syscall. */
+    bool keepalive=false;
+    assert(nas_lwip_socket_keepalive(30,false,&keepalive)==0 && !keepalive);
+    keepalive=true;
+    assert(nas_lwip_socket_keepalive(20,true,&keepalive)==-EOPNOTSUPP);
+    assert(nas_lwip_socket_keepalive(30,true,&keepalive)==0);
+    assert(nas_lwip_socket_keepalive(30,true,&keepalive)==-EALREADY);
+    finish_control(30,0);
+    keepalive=false;
+    assert(nas_lwip_socket_keepalive(30,false,&keepalive)==0 && keepalive);
     assert(nas_lwip_socket_setreuseaddr(30,true)==0);
     finish_control(30,0);
     assert(nas_lwip_socket_bind(30,lo(38017))==0);
@@ -422,7 +434,14 @@ int main(void) {
     struct nas_lwip_bridge_id accepted=accept_slot(30,child,&peer);
     assert(accepted.slot==32);
     assert(peer.ipv4==UINT32_C(0x7f000001) && peer.port!=0);
-    assert(nas_lwip_socket_port_adopt(accepted)==0);
+    assert(nas_lwip_socket_port_adopt(accepted,true)==0);
+    keepalive=false;
+    assert(nas_lwip_socket_keepalive(32,false,&keepalive)==0 && keepalive);
+    keepalive=false;
+    assert(nas_lwip_socket_keepalive(32,true,&keepalive)==0);
+    finish_control(32,0);
+    keepalive=true;
+    assert(nas_lwip_socket_keepalive(32,false,&keepalive)==0 && !keepalive);
     assert(nas_lwip_socket_peer_snapshot(32,&named)==-ENOTCONN);
     assert(nas_lwip_socket_port_set_peer(32,peer)==0);
     assert(nas_lwip_socket_port_set_peer(32,peer)==0);
@@ -469,7 +488,7 @@ int main(void) {
     connect_slot(45,38017);
     struct nas_fd_slot_lease last_lease=lease_slot(46,UINT64_C(0x1FEF));
     accepted=accept_slot(30,last_lease,&peer);
-    assert(nas_lwip_socket_port_adopt(accepted)==0);
+    assert(nas_lwip_socket_port_adopt(accepted,true)==0);
     nas_open_files[46].lease_token=0;
     const uint8_t final_state=16; /* original iperf3 IPERF_DONE */
     assert(ops->write_plan(45,1)==1);
@@ -486,7 +505,7 @@ int main(void) {
     connect_slot(47,38017);
     struct nas_fd_slot_lease pressure_lease=lease_slot(48,UINT64_C(0x1FEF02));
     accepted=accept_slot(30,pressure_lease,&peer);
-    assert(nas_lwip_socket_port_adopt(accepted)==0);
+    assert(nas_lwip_socket_port_adopt(accepted,true)==0);
     nas_open_files[48].lease_token=0;
     uint8_t block[NAS_LWIP_BRIDGE_DATA];
     unsigned admitted_blocks=0;
@@ -540,7 +559,7 @@ int main(void) {
     assert(named.ipv4==UINT32_C(0x7f000001) && named.port!=0);
     struct nas_fd_slot_lease scanned=lease_slot(44,UINT64_C(0xAA10));
     accepted=accept_slot(30,scanned,&peer);
-    assert(nas_lwip_socket_port_adopt(accepted)==0);
+    assert(nas_lwip_socket_port_adopt(accepted,true)==0);
     nas_open_files[44].lease_token=0;
     close_slot(44);
     close_slot(43);
@@ -558,7 +577,7 @@ int main(void) {
     struct nas_fd_slot_lease retry=lease_slot(35,UINT64_C(0xAA01));
     accepted=accept_slot(30,retry,&peer);
     assert(accepted.slot==35);
-    assert(nas_lwip_socket_port_adopt(accepted)==0);
+    assert(nas_lwip_socket_port_adopt(accepted,true)==0);
     nas_open_files[35].lease_token=0;
     close_slot(35);
     close_slot(33);
@@ -585,7 +604,7 @@ int main(void) {
     struct nas_fd_slot_lease after_cancel=lease_slot(39,UINT64_C(0xAA03));
     accepted=accept_slot(30,after_cancel,&peer);
     assert(accepted.slot==39);
-    assert(nas_lwip_socket_port_adopt(accepted)==0);
+    assert(nas_lwip_socket_port_adopt(accepted,true)==0);
     nas_open_files[39].lease_token=0;
     close_slot(39);
     close_slot(38);
@@ -611,7 +630,7 @@ int main(void) {
     assert(peer.ipv4==UINT32_C(0x7f000001) && peer.port!=0);
     /* The lease remains allocated while the syscall adopts the Netconn. */
     assert(prefetch_ticket().token==prefetched_lease.token);
-    assert(nas_lwip_socket_port_adopt(accepted)==0);
+    assert(nas_lwip_socket_port_adopt(accepted,true)==0);
     assert(nas_lwip_socket_port_set_peer(prefetched_lease.slot,peer)==0);
     assert(nas_lwip_socket_peer_snapshot(prefetched_lease.slot,&named)==0);
     assert(named.ipv4==peer.ipv4 && named.port==peer.port);
@@ -643,7 +662,7 @@ int main(void) {
     assert(nas_fd_slot_lease_cancel(duplicate));
     accepted=finish_prefetch(30,&prefetched_lease,&peer);
     assert(prefetched_lease.token==flipped_prefetch.token);
-    assert(nas_lwip_socket_port_adopt(accepted)==0);
+    assert(nas_lwip_socket_port_adopt(accepted,true)==0);
     nas_open_files[prefetched_lease.slot].lease_token=0;
     nas_open_files[prefetched_lease.slot].status_flags=2;
     nas_open_files[prefetched_lease.slot].ops=ops;

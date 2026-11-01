@@ -285,24 +285,26 @@ static uint64_t sys_uname_naseed(uint64_t buffer) {
 
 
 static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
-                             uint64_t fd, uint64_t buf, uint64_t count) {
+                             uint64_t fd, uint64_t buf, uint64_t count,
+                             bool suppress_sigpipe) {
     struct nas_io_attempt attempt;
     nas_fs_io_start(nr,fd,buf,count,&attempt);
     uint64_t ret=attempt.result;
     if ((int64_t)ret == -EPIPE &&
         (nr == NAS_SC_write || nr == NAS_SC_writev) &&
-        nas_sched_sigpipe_default(attempt.pipe_like)) {
+        !suppress_sigpipe && nas_sched_sigpipe_default(attempt.pipe_like)) {
         nas_sched_child_exit(0, NAS_SIGPIPE);
         return nas_task_schedule(frame);
     }
     if ((int64_t)ret == -EPIPE &&
-        (nr == NAS_SC_write || nr == NAS_SC_writev))
+        (nr == NAS_SC_write || nr == NAS_SC_writev) && !suppress_sigpipe)
         nas_signal_broken_pipe(attempt.pipe_like);
     if(attempt.pending) {
         /* Ownership transfers exactly once to this Task. All later
          * readiness and retries use this OpenFile, never the fd table. */
         TASK.wait.pending_io=attempt.pending;
         TASK.wait.pending_io_release=nas_fs_io_dispose;
+        TASK.wait.suppress_sigpipe=suppress_sigpipe;
         TASK.wait.tty_requested_bytes=attempt.tty_requested_bytes;
         if(nas_fs_io_tty_read(attempt.pending))
             nas_tty_blocking_read_start(&TASK);
@@ -746,10 +748,10 @@ uint64_t syscall_dispatch(const uint64_t *args) {
             if(handled)return result;
         }
     }
-    if (nr == NAS_SC_read) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
-    if (nr == NAS_SC_readv) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
-    if (nr == NAS_SC_write) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
-    if (nr == NAS_SC_writev) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
+    if (nr == NAS_SC_read) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3],false);
+    if (nr == NAS_SC_readv) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3],false);
+    if (nr == NAS_SC_write) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3],false);
+    if (nr == NAS_SC_writev) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3],false);
 #ifdef NAS_ENABLE_LWIP
     /* MSG_PEEK must preserve the same shared socket RX buffer. Route the
      * pure no-sockaddr form through the existing held-File blocking read
@@ -761,7 +763,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
        nas_lwip_socket_type(TASK.fds->entries[args[1]].slot)==
            NAS_LWIP_BRIDGE_TCP)
         return task_pipe_io((uint64_t *)(uintptr_t)args,NAS_SC_recvfrom,
-                            args[1],args[2],args[3]);
+                            args[1],args[2],args[3],false);
 #endif
     /* Connected IPv4 stream send()/recv() are Linux sendto()/recvfrom()
      * with no address argument. They use the exact same held-OpenFile
@@ -779,10 +781,23 @@ uint64_t syscall_dispatch(const uint64_t *args) {
        ) {
         if(nr==NAS_SC_sendto && !args[5] && !args[6])
             return task_pipe_io((uint64_t *)(uintptr_t)args,NAS_SC_write,
-                                args[1],args[2],args[3]);
+                                args[1],args[2],args[3],false);
         if(nr==NAS_SC_recvfrom && !args[5])
             return task_pipe_io((uint64_t *)(uintptr_t)args,NAS_SC_read,
-                                args[1],args[2],args[3]);
+                                args[1],args[2],args[3],false);
+    }
+    /* Connected TCP sendmsg() is a stream writev with a Linux msghdr
+     * wrapper. The File layer imports and retains every iovec once, and
+     * the Task continuation parks/retries on real TX backpressure even if
+     * another thread closes or reuses this integer fd meanwhile. */
+    if(nr==NAS_SC_sendmsg && args[1]<NAS_FD_LIMIT &&
+       TASK.fds->entries[args[1]].kind==FD_SOCKET) {
+        uint64_t iov=0,count=0;
+        int prepared=nas_fs_socket_tcp_sendmsg_iov(
+            args[1],args[2],args[3],&iov,&count);
+        if(prepared<0)return (uint64_t)(int64_t)prepared;
+        if(prepared==1)return task_pipe_io((uint64_t *)(uintptr_t)args,
+            NAS_SC_writev,args[1],iov,count,(args[3]&0x4000ULL)!=0);
     }
     struct nas_fs_result fs_result = nas_fs_syscall(nr, args);
     if (fs_result.handled) {

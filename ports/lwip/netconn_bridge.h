@@ -26,7 +26,8 @@ enum nas_lwip_bridge_op {
  NAS_LWIP_BRIDGE_SEND, NAS_LWIP_BRIDGE_RECV,
  NAS_LWIP_BRIDGE_GETNAME, NAS_LWIP_BRIDGE_SHUTDOWN,
  NAS_LWIP_BRIDGE_SETREUSEADDR, NAS_LWIP_BRIDGE_SETBROADCAST,
- NAS_LWIP_BRIDGE_SETNODELAY, NAS_LWIP_BRIDGE_BIND_IF
+ NAS_LWIP_BRIDGE_SETNODELAY, NAS_LWIP_BRIDGE_BIND_IF,
+ NAS_LWIP_BRIDGE_SETKEEPALIVE
 };
 struct nas_lwip_bridge_request {
  enum nas_lwip_bridge_op op;
@@ -36,6 +37,7 @@ struct nas_lwip_bridge_request {
  bool reuseaddr; /* SETREUSEADDR, applied to actual lwIP PCB on core */
  bool broadcast; /* SETBROADCAST, applied to actual lwIP UDP PCB on core */
  bool nodelay; /* SETNODELAY, applied to actual lwIP TCP PCB on core */
+ bool keepalive; /* SETKEEPALIVE, actual TCP SOF_KEEPALIVE probe flag */
  uint8_t if_index; /* BIND_IF: real attached lwIP netif, never guessed */
  uint16_t accept_slot; /* caller-reserved OpenFile slot for ACCEPT */
  uint64_t accept_lease_token; /* authoritative nas_fd_slot_lease_begin token */

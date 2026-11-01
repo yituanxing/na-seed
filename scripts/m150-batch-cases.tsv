@@ -1,0 +1,2 @@
+# profile	source	command	pass_marker	failure_marker	native_binary
+m150-batch	cpio	sh -c '/bin/sh /tests/m150-batch-run.sh'	M150_BATCH_PASS	-	/bin/busybox
