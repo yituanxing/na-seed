@@ -237,6 +237,16 @@ int main(void) {
 
     reserve(20,NAS_LWIP_BRIDGE_UDP);
     reserve(21,NAS_LWIP_BRIDGE_UDP);
+    /* The same global OpenFile queues a genuine native PCB binding. An
+     * unsupported ifindex is rejected by upstream, never cached as bound. */
+    assert(nas_lwip_socket_bound_ifindex(21)==0);
+    assert(nas_lwip_socket_bind_if(21,0)==-EINVAL);
+    assert(nas_lwip_socket_bind_if(21,256)==-EINVAL);
+    assert(nas_lwip_socket_bind_if(21,255)==0);
+    assert(nas_lwip_socket_bind_if(21,255)==-EALREADY);
+    assert(nas_lwip_socket_bind_if(21,254)==-EBUSY);
+    finish_control(21,-EINVAL);
+    assert(nas_lwip_socket_bound_ifindex(21)==0);
     assert(nas_lwip_socket_setreuseaddr(20,true)==0);
     finish_control(20,0);
     assert(nas_lwip_socket_bind(20,lo(38007))==0);

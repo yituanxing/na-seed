@@ -26,6 +26,7 @@
 #include "path_request.h"
 #ifdef NAS_ENABLE_LWIP
 #include "../../ports/lwip/socket_port.h"
+#include "../../ports/lwip/network_boot.h"
 #endif
 #define TASK (*nas_current_task)
 
@@ -644,6 +645,27 @@ static uint64_t sys_ipv4_getsockopt(uint64_t fd,uint64_t level,
         uint32_t length;
         if(!size_ptr || !nas_user_read_bytes(size_ptr,(uint8_t *)&length,4))
             return (uint64_t)-EFAULT;
+        if(level==1 && opt==25) { /* SO_BINDTODEVICE: physical NIC name */
+            int index=nas_lwip_socket_bound_ifindex(
+                TASK.fds->entries[fd].slot);
+            if(index<0)return (uint64_t)(int64_t)index;
+            char name[NAS_LWIP_DEVICE_NAME_MAX]={0};
+            uint32_t actual=0;
+            if(index) {
+                int rc=nas_lwip_guest_ifname((unsigned)index,name);
+                if(rc)return (uint64_t)(int64_t)rc;
+                actual=(uint32_t)strnlen(name,sizeof(name))+1U;
+                if(actual>sizeof(name))return (uint64_t)-EIO;
+            }
+            if(length<actual)return (uint64_t)-EINVAL;
+            if((actual && !nas_user_prepare_write(address,actual)) ||
+               !nas_user_prepare_write(size_ptr,4))return (uint64_t)-EFAULT;
+            return (!actual || nas_user_write_bytes(
+                       address,(const uint8_t *)name,actual)) &&
+                   nas_user_write_bytes(size_ptr,
+                                        (const uint8_t *)&actual,4) ?
+                   0:(uint64_t)-EFAULT;
+        }
         if(length<4)return (uint64_t)-EINVAL;
         unsigned slot=TASK.fds->entries[fd].slot;
         int type=nas_lwip_socket_type(slot);
@@ -749,6 +771,23 @@ static uint64_t sys_ipv4_setsockopt(uint64_t fd,uint64_t level,
                                     uint64_t length) {
 #ifdef NAS_ENABLE_LWIP
     if(lwip_fd(fd)) {
+        if(level==1 && opt==25) { /* Linux SO_BINDTODEVICE = 25 */
+            if(!address)return (uint64_t)-EFAULT;
+            if(!length || length>NAS_LWIP_DEVICE_NAME_MAX)
+                return (uint64_t)-EINVAL;
+            char name[NAS_LWIP_DEVICE_NAME_MAX]={0};
+            if(!nas_user_read_bytes(address,(uint8_t *)name,length))
+                return (uint64_t)-EFAULT;
+            unsigned namelen=(unsigned)strnlen(name,sizeof(name));
+            if(namelen==sizeof(name))return (uint64_t)-ENAMETOOLONG;
+            /* Clearing an existing binding is not yet offered by native
+             * Netconn; fail honestly rather than leave a hidden constraint. */
+            if(!namelen)return (uint64_t)-EOPNOTSUPP;
+            int index=nas_lwip_guest_ifindex(name);
+            if(index<0)return (uint64_t)(int64_t)index;
+            return lwip_control_result(nas_lwip_socket_bind_if(
+                TASK.fds->entries[fd].slot,(unsigned)index));
+        }
         if((level!=1 || (opt!=2 && opt!=6)) &&
            (level!=0 || opt!=11) &&
            (level!=6 || opt!=1))return (uint64_t)-ENOPROTOOPT;

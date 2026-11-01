@@ -74,6 +74,11 @@ int nas_lwip_socket_getname_complete(unsigned slot,
 int nas_lwip_socket_shutdown(unsigned slot,unsigned how);
 int nas_lwip_socket_setreuseaddr(unsigned slot,bool enabled);
 int nas_lwip_socket_setbroadcast(unsigned slot,bool enabled);
+/* SO_BINDTODEVICE is a real native PCB constraint via netconn_bind_if().
+ * Caller maps the existing Linux physical NIC name to lwIP's actual index;
+ * the successful index is shared by dup/fork via the same OpenFile slot. */
+int nas_lwip_socket_bind_if(unsigned slot,unsigned index);
+int nas_lwip_socket_bound_ifindex(unsigned slot);
 /* TCP_NODELAY is changed on the real upstream TCP PCB by tcpip_thread.
  * Reads reflect the last completed native option mutation. */
 int nas_lwip_socket_tcp_nodelay(unsigned slot,bool write,bool *enabled);

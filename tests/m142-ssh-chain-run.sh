@@ -29,15 +29,31 @@ case "$host_dir" in /*) ;; *) exit 1 ;; esac
 case "$host_dir" in *' '*|*'..'*) exit 1 ;; esac
 host="$host_user@10.0.2.2"
 
-if ! busy timeout 28 /usr/bin/ssh -F /dev/null \
-    -i /tests/ssh-chain/id_ed25519 -p 15423 \
-    -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none \
-    -o StrictHostKeyChecking=yes \
-    -o UserKnownHostsFile=/tests/ssh-chain/known_hosts \
-    -o GlobalKnownHostsFile=/dev/null \
-    -o ConnectTimeout=5 "$host" \
-    'printf M142_REAL_SSH_REMOTE_COMMAND_OK' \
-    > "$work/ssh.out" 2> "$work/ssh.err"; then
+# The original QEMU wire capture contains a valid DHCP OFFER/ACK but some
+# boots are still in lwIP IPv4 address-conflict detection after the initial
+# four-second delay. Retry only routing/timeout errors while the real DHCP
+# lease settles. Authentication or protocol failures are never masked.
+ssh_ready=false
+for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    if busy timeout 15 /usr/bin/ssh -F /dev/null \
+        -i /tests/ssh-chain/id_ed25519 -p 15423 \
+        -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none \
+        -o StrictHostKeyChecking=yes \
+        -o UserKnownHostsFile=/tests/ssh-chain/known_hosts \
+        -o GlobalKnownHostsFile=/dev/null \
+        -o ConnectTimeout=4 "$host" \
+        'printf M142_REAL_SSH_REMOTE_COMMAND_OK' \
+        > "$work/ssh.out" 2> "$work/ssh.err"; then
+        ssh_ready=true
+        break
+    fi
+    if ! busy grep -Eq 'Host is unreachable|Network is unreachable|Connection timed out' \
+        "$work/ssh.err"; then
+        break
+    fi
+    busy sleep 1
+done
+if [ "$ssh_ready" != true ]; then
     busy head -n 16 "$work/ssh.err" || :
     exit 1
 fi

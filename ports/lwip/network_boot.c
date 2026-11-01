@@ -1,6 +1,7 @@
 /* Opt-in native network bootstrap. Official lwIP owns all wire protocols;
  * one NaSeed kernel worker only schedules bounded NIC completion polling. */
 #include "netif_port.h"
+#include "network_boot.h"
 #include "netconn_bridge.h"
 #include "../../kernel/arch/arch.h"
 #include "../../kernel/task/k_sync.h"
@@ -29,6 +30,25 @@ static struct {
  struct nas_kthread_handle rx_handle;
  bool ethernet_available,ready,stop;
 } network;
+
+/* The bootstrap attaches at most one physical netif; give Linux's name to
+ * the upstream netconn_bind_if() interface index, without guessing ns0/eth0
+ * index numbering or routing through a different interface. */
+int nas_lwip_guest_ifindex(const char *device_name){
+ if(!device_name || !network.ethernet.attached ||
+    !network.ethernet.device ||
+    strcmp(device_name,network.device_name))return -ENODEV;
+ unsigned index=netif_get_index(&network.ethernet.interface);
+ return index ? (int)index:-ENODEV;
+}
+int nas_lwip_guest_ifname(unsigned index,
+                         char output[NAS_LWIP_DEVICE_NAME_MAX]){
+ if(!output || !index || !network.ethernet.attached ||
+    !network.ethernet.device ||
+    index!=netif_get_index(&network.ethernet.interface))return -ENODEV;
+ memcpy(output,network.device_name,sizeof(network.device_name));
+ return 0;
+}
 
 /* Called by nas_netdev_notify_rx from the transport IRQ/scheduled signal.
  * It never executes lwIP or polls the queue inside an IRQ. */

@@ -3,12 +3,15 @@
 #include "../kernel/task/kthread.h"
 #include "../kernel/fd.h"
 #include "../kernel/drivers/port/net.h"
+#include "../ports/lwip/network_boot.h"
+#include "../ports/lwip/netconn_bridge.h"
 #include "../kernel/errno.h"
 #include "lwip/sys.h"
 #include <assert.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 
 extern bool nas_lwip_guest_boot(void);
 static uint64_t now_ns;
@@ -87,5 +90,34 @@ int main(void){
      assert(polls>previous && next_poll_error==0);
      assert(eth.registered && eth.refs==1 && eth.rx_wake);
  }
+ /* Linux names the physical device en0; upstream lwIP has a distinct
+  * internal netif index. Never claim that another name is this interface. */
+ int real_ifindex=nas_lwip_guest_ifindex("en0");
+ assert(real_ifindex>0 && real_ifindex<=255);
+ assert(nas_lwip_guest_ifindex("eth0")==-ENODEV);
+ char bound_name[NAS_LWIP_DEVICE_NAME_MAX]={0};
+ assert(nas_lwip_guest_ifname((unsigned)real_ifindex,bound_name)==0);
+ assert(!strcmp(bound_name,"en0"));
+ assert(nas_lwip_guest_ifname((unsigned)real_ifindex+1,bound_name)==-ENODEV);
+ struct nas_lwip_bridge_id bound={0};
+ assert(nas_lwip_bridge_open(40,NAS_LWIP_BRIDGE_UDP,&bound)==0);
+ struct nas_lwip_bridge_result bound_result={0};
+ bool opened=false;
+ for(unsigned attempt=0;attempt<60;attempt++) {
+     int got=nas_lwip_bridge_take(bound,&bound_result);
+     if(got==1){opened=true;break;}
+     assert(got==0 && nas_kthread_run(1)==1);
+ }
+ assert(opened && bound_result.status==0);
+ assert(nas_lwip_bridge_submit(bound,&(struct nas_lwip_bridge_request){
+     .op=NAS_LWIP_BRIDGE_BIND_IF,.if_index=(uint8_t)real_ifindex})==0);
+ bool bound_done=false;
+ for(unsigned attempt=0;attempt<60;attempt++) {
+     int got=nas_lwip_bridge_take(bound,&bound_result);
+     if(got==1){bound_done=true;break;}
+     assert(got==0 && nas_kthread_run(1)==1);
+ }
+ assert(bound_done && bound_result.status==0);
+ assert(nas_lwip_bridge_release(bound)==0);
  puts("[LWIP NATIVE BOOT PASS] arbitrary NIC discovery, DHCP, IRQ/deadline, transient RX backpressure, pins");
 }

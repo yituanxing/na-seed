@@ -60,6 +60,9 @@ static bool abi_reuse_enabled[NAS_OPEN_FILE_LIMIT];
 static bool abi_broadcast_enabled[NAS_OPEN_FILE_LIMIT];
 static bool abi_recverr_enabled[NAS_OPEN_FILE_LIMIT];
 static bool abi_nodelay_enabled[NAS_OPEN_FILE_LIMIT];
+static uint8_t abi_bound_ifindex[NAS_OPEN_FILE_LIMIT];
+static uint8_t abi_pending_ifindex[NAS_OPEN_FILE_LIMIT];
+static unsigned abi_bind_if_calls;
 static unsigned abi_broadcasts;
 static unsigned abi_shutdown_how[NAS_OPEN_FILE_LIMIT];
 static unsigned abi_getnames,abi_reuses,abi_shutdowns;
@@ -204,6 +207,26 @@ int nas_lwip_socket_setbroadcast(unsigned slot,bool enabled) {
     abi_broadcast_enabled[slot]=enabled;abi_control[slot]=true;
     abi_pending_checks[slot]=1;abi_broadcasts++;return 0;
 }
+int nas_lwip_guest_ifindex(const char *device_name) {
+    return device_name && !strcmp(device_name,"eth0") ? 2:-ENODEV;
+}
+int nas_lwip_guest_ifname(unsigned index,
+                         char name[NAS_LWIP_DEVICE_NAME_MAX]) {
+    if(index!=2 || !name)return -ENODEV;
+    memcpy(name,"eth0",5);
+    return 0;
+}
+int nas_lwip_socket_bind_if(unsigned slot,unsigned index) {
+    if(!nas_lwip_socket_is_slot(slot))return -EBADF;
+    if(index!=2)return -ENODEV;
+    abi_pending_ifindex[slot]=(uint8_t)index;
+    abi_control[slot]=true;abi_pending_checks[slot]=1;
+    abi_bind_if_calls++;
+    return 0;
+}
+int nas_lwip_socket_bound_ifindex(unsigned slot) {
+    return nas_lwip_socket_is_slot(slot)?abi_bound_ifindex[slot]:-EBADF;
+}
 int nas_lwip_socket_tcp_nodelay(unsigned slot,bool write,bool *enabled) {
     if(!nas_lwip_socket_is_slot(slot))return -EBADF;
     if(!enabled)return -EINVAL;
@@ -230,6 +253,9 @@ int nas_lwip_socket_control_ready(unsigned slot) {
 int nas_lwip_socket_control_finish(unsigned slot) {
     if(!nas_lwip_socket_is_slot(slot))return -EBADF;
     if(!abi_control[slot])return -EINPROGRESS;
+    if(abi_pending_ifindex[slot] && !abi_control_status[slot])
+        abi_bound_ifindex[slot]=abi_pending_ifindex[slot];
+    abi_pending_ifindex[slot]=0;
     abi_control[slot]=false;return 0;
 }
 int nas_lwip_socket_port_complete(unsigned slot,
@@ -369,6 +395,35 @@ int main(void) {
     assert(sys_ipv4_getsockopt(tcp_fd,1,4,optaddr,optlen)==0);
     memcpy(&value,user_ptr(optaddr),4);assert(value==0);
     assert((int64_t)sys_ipv4_getsockopt(tcp_fd,1,999,optaddr,optlen)==-ENOPROTOOPT);
+    /* Nping's libnsock requests the Linux physical NIC name. A successful
+     * setsockopt is asynchronous and changes the actual shared OpenFile only
+     * after native worker success; invalid names never enqueue a fake bind. */
+    memcpy(user_ptr(optaddr),"eth0",4); /* no NUL terminator is also legal */
+    assert((int64_t)sys_ipv4_setsockopt(udp_fd,1,25,optaddr,4)==-EAGAIN);
+    assert(abi_bind_if_calls==1 && abi_pending_ifindex[udp_slot]==2);
+    assert(nas_lwip_socket_bound_ifindex(udp_slot)==0);
+    assert(!nas_fs_socket_control_ready(udp_slot));
+    assert(nas_fs_socket_control_ready(udp_slot));
+    assert(nas_fs_socket_control_description(udp_slot)==0);
+    assert(nas_lwip_socket_bound_ifindex(udp_slot)==2);
+    capacity=16;memcpy(user_ptr(optlen),&capacity,4);
+    assert(sys_ipv4_getsockopt(udp_fd,1,25,optaddr,optlen)==0);
+    assert(!memcmp(user_ptr(optaddr),"eth0",5));
+    memcpy(&capacity,user_ptr(optlen),4);assert(capacity==5);
+    capacity=4;memcpy(user_ptr(optlen),&capacity,4);
+    assert((int64_t)sys_ipv4_getsockopt(udp_fd,1,25,optaddr,optlen)==-EINVAL);
+    assert((int64_t)sys_ipv4_getsockopt(udp_fd,1,25,0,optlen)==-EINVAL);
+    memcpy(user_ptr(optaddr),"ghost0",7);
+    assert((int64_t)sys_ipv4_setsockopt(udp_fd,1,25,optaddr,7)==-ENODEV);
+    assert((int64_t)sys_ipv4_setsockopt(udp_fd,1,25,optaddr,0)==-EINVAL);
+    assert((int64_t)sys_ipv4_setsockopt(udp_fd,1,25,optaddr,17)==-EINVAL);
+    assert((int64_t)sys_ipv4_setsockopt(udp_fd,1,25,0,5)==-EFAULT);
+    memset(user_ptr(optaddr),'x',16);
+    assert((int64_t)sys_ipv4_setsockopt(udp_fd,1,25,optaddr,16)==-ENAMETOOLONG);
+    *user_ptr(optaddr)=0;
+    assert((int64_t)sys_ipv4_setsockopt(udp_fd,1,25,optaddr,1)==-EOPNOTSUPP);
+    assert(abi_bind_if_calls==1 && nas_lwip_socket_bound_ifindex(udp_slot)==2);
+    capacity=4;memcpy(user_ptr(optlen),&capacity,4);
     /* BIND dig enables IP_RECVERR on its UDP OpenFile before emitting a
      * DNS question. It must be a real per-description option, readable
      * back without a phantom protocol queue. */

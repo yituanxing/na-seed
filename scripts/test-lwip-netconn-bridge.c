@@ -134,6 +134,17 @@ int main(void){
 
  struct nas_lwip_bridge_id udp_server=open_conn(20,NAS_LWIP_BRIDGE_UDP);
  struct nas_lwip_bridge_id udp_client=open_conn(21,NAS_LWIP_BRIDGE_UDP);
+ /* A request for a nonexistent lwIP interface must reach the native core
+  * and fail; neither the queue nor a zero/guessed device is success. */
+ assert(nas_lwip_bridge_submit(udp_client,
+     &(struct nas_lwip_bridge_request){
+         .op=NAS_LWIP_BRIDGE_BIND_IF,.if_index=0
+     })==-EINVAL);
+ assert(nas_lwip_bridge_submit(udp_client,
+     &(struct nas_lwip_bridge_request){
+         .op=NAS_LWIP_BRIDGE_BIND_IF,.if_index=255
+     })==0);
+ assert(finish(udp_client).status==-EINVAL);
  assert(nas_lwip_bridge_submit(udp_client,
      &(struct nas_lwip_bridge_request){
          .op=NAS_LWIP_BRIDGE_SETBROADCAST,.broadcast=true

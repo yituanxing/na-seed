@@ -220,6 +220,11 @@ static void execute(unsigned slot) {
     case NAS_LWIP_BRIDGE_BIND:
         err=netconn_bind(s->connection,&address,r->address.port);
         break;
+    case NAS_LWIP_BRIDGE_BIND_IF:
+        /* Official lwIP updates the actual UDP/TCP PCB's bound netif.
+         * Unknown indices are rejected by upstream, never reported bound. */
+        err=netconn_bind_if(s->connection,r->if_index);
+        break;
     case NAS_LWIP_BRIDGE_CONNECT:
         err=netconn_connect(s->connection,&address,r->address.port);
         break;
@@ -533,8 +538,9 @@ int nas_lwip_bridge_submit(struct nas_lwip_bridge_id id,
     if(s->queued || s->executing || s->finished)return -EBUSY;
     if(bridge.count==NAS_LWIP_BRIDGE_QUEUE)return -EAGAIN;
     if(request->op<NAS_LWIP_BRIDGE_BIND ||
-       request->op>NAS_LWIP_BRIDGE_SETNODELAY ||
+       request->op>NAS_LWIP_BRIDGE_BIND_IF ||
        request->length>NAS_LWIP_BRIDGE_DATA ||
+       (request->op==NAS_LWIP_BRIDGE_BIND_IF && !request->if_index) ||
        (request->op==NAS_LWIP_BRIDGE_SHUTDOWN && request->shutdown_how>2U) ||
        (request->op==NAS_LWIP_BRIDGE_SEND && request->length && !request->bytes))
         return -EINVAL;

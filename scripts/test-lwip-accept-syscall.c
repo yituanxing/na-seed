@@ -174,6 +174,24 @@ int nas_lwip_socket_setbroadcast(unsigned slot,bool enabled) {
     (void)enabled;
     return -EOPNOTSUPP;
 }
+/* This fixture exercises ACCEPT lease handoff, not the independently tested
+ * real SO_BINDTODEVICE/PCB operation. Keep its uninvoked symbols explicit. */
+int nas_lwip_guest_ifindex(const char *name) {
+    (void)name;assert(!"unexpected NIC selection in ACCEPT fixture");return -ENODEV;
+}
+int nas_lwip_guest_ifname(unsigned index,
+                         char output[NAS_LWIP_DEVICE_NAME_MAX]) {
+    (void)index;(void)output;
+    assert(!"unexpected NIC name query in ACCEPT fixture");return -ENODEV;
+}
+int nas_lwip_socket_bind_if(unsigned slot,unsigned index) {
+    (void)slot;(void)index;
+    assert(!"unexpected interface bind in ACCEPT fixture");return -ENOSYS;
+}
+int nas_lwip_socket_bound_ifindex(unsigned slot) {
+    (void)slot;
+    assert(!"unexpected interface binding query in ACCEPT fixture");return -ENOSYS;
+}
 int nas_lwip_socket_tcp_nodelay(unsigned slot,bool write,bool *enabled) {
     (void)slot;
     (void)write;
