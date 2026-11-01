@@ -20,7 +20,7 @@ EOF
 if ! /usr/sbin/haproxy -c -f "$dir/haproxy.cfg" > "$dir/check" 2>&1; then
   /bin/busybox cat "$dir/check"; exit 1
 fi
-/usr/sbin/haproxy -db -V -de -f "$dir/haproxy.cfg" > "$dir/output" 2>&1 &
+/usr/sbin/haproxy -db -V -f "$dir/haproxy.cfg" > "$dir/output" 2>&1 &
 pid=$!
 trap 'kill "$pid" 2>/dev/null || :; wait "$pid" 2>/dev/null || :' EXIT
 /bin/busybox sleep 1
