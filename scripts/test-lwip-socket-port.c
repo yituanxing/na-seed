@@ -113,11 +113,23 @@ static void connect_slot(unsigned slot,unsigned port) {
                enabled);
     }
     for(unsigned tries=0;tries<300;tries++) {
-        int ready=nas_lwip_socket_control_ready(slot);
-        assert(ready>=0);
-        if(ready==1) {
-            assert(nas_lwip_socket_control_finish(slot)==0);
-            return;
+        if(slot==31) {
+            /* Nonblocking CONNECT has no blocking control result to take.
+             * Poll the real File until both the handshake and deferred
+             * TCP_NODELAY native PCB update have finished. */
+            if(ops->poll_description(slot,4U)&4U) {
+                bool applied=false;
+                assert(nas_lwip_socket_tcp_nodelay(slot,false,&applied)==0 &&
+                       applied);
+                return;
+            }
+        } else {
+            int ready=nas_lwip_socket_control_ready(slot);
+            assert(ready>=0);
+            if(ready==1) {
+                assert(nas_lwip_socket_control_finish(slot)==0);
+                return;
+            }
         }
         test_ns+=UINT64_C(1000000);
         (void)nas_kthread_run(1);
