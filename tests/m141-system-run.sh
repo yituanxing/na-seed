@@ -24,7 +24,7 @@ cleanup() {
     if [ "$result" -ne 0 ]; then
         busy printf '[M141 SYSTEM DIAG] %s exit=%s\n' "$case_name" "$result"
         case "$case_name" in
-          ipc-shared|ipc-semaphore|exch-files|iperf3-loopback|ncat-loopback|ncat-wire|ncat-udp-wire|dig-dns-wire)
+          ipc-shared|ipc-semaphore|exch-files|iperf3-loopback|ncat-loopback|ncat-wire|ncat-udp-wire|dig-dns-wire|host-dns-wire|nslookup-dns-wire|mdig-dns-wire)
             # These fixtures own their files; never dump arbitrary user
             # paths. Preserve only small, bounded original-program output.
             for diagnostic in details removed error out a b server.err server client client.json; do
@@ -242,6 +242,51 @@ case "$case_name" in
       busy sleep 1
     done
     [ "$dns_ready" = true ] ;;
+  host-dns-wire)
+    exe=$(original_elf /usr/bin/host)
+    host_ready=false
+    for attempt in 1 2 3 4 5 6; do
+      busy timeout 9 "$exe" -4 -t A -p 15415 -R 1 -W 3 \
+        naseed.test. 10.0.2.2 > "$work/client" 2> "$work/error" || :
+      if busy grep -Fq '192.0.2.42' "$work/client" &&
+         busy grep -Fq 'naseed.test' "$work/client"; then
+        host_ready=true
+        break
+      fi
+      busy sleep 1
+    done
+    [ "$host_ready" = true ]
+    busy printf 'M141_SYSTEM_HOST_DNS_WIRE_PASS\n' ;;
+  nslookup-dns-wire)
+    exe=$(original_elf /usr/bin/nslookup)
+    lookup_ready=false
+    for attempt in 1 2 3 4 5 6; do
+      busy timeout 9 "$exe" -type=A -port=15415 -timeout=3 -retry=1 \
+        naseed.test. 10.0.2.2 > "$work/client" 2> "$work/error" || :
+      if busy grep -Fq '192.0.2.42' "$work/client" &&
+         busy grep -Fq 'naseed.test' "$work/client"; then
+        lookup_ready=true
+        break
+      fi
+      busy sleep 1
+    done
+    [ "$lookup_ready" = true ]
+    busy printf 'M141_SYSTEM_NSLOOKUP_DNS_WIRE_PASS\n' ;;
+  mdig-dns-wire)
+    exe=$(original_elf /usr/bin/mdig)
+    mdig_ready=false
+    for attempt in 1 2 3 4 5 6; do
+      busy timeout 9 "$exe" @10.0.2.2 -4 -p 15415 -t A \
+        +tries=1 +timeout=3 naseed.test. > "$work/client" 2> "$work/error" || :
+      if busy grep -Fq '192.0.2.42' "$work/client" &&
+         busy grep -Fq 'naseed.test' "$work/client"; then
+        mdig_ready=true
+        break
+      fi
+      busy sleep 1
+    done
+    [ "$mdig_ready" = true ]
+    busy printf 'M141_SYSTEM_MDIG_DNS_WIRE_PASS\n' ;;
   iperf3-loopback)
     exe=$(original_elf /usr/bin/iperf3)
     "$exe" -4 -s -1 -p 15412 > "$work/server" 2> "$work/server.err" &

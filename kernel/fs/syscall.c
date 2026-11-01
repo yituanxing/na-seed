@@ -32,7 +32,9 @@
 #include "eventfd.h"
 #include "pidfd.h"
 #include "unix_socket.h"
+#ifndef NAS_ENABLE_LWIP
 #include "../net/ipv4_loopback.h"
+#endif
 #include "namespace_syscall.h"
 #include "socket_syscall.h"
 #include "metadata_syscall.h"
@@ -760,7 +762,9 @@ static uint64_t vioctl_uart(uint64_t fd,uint64_t cmd,uint64_t arg) {
 }
 static void vrelease_pipe(unsigned slot){nas_pipe_release_description(slot);}
 static void vrelease_socket(unsigned slot){
+#ifndef NAS_ENABLE_LWIP
     nas_ipv4_socket_release(slot);
+#endif
     nas_unix_socket_release(slot);
     nas_pipe_release_description(slot);
 }
@@ -822,8 +826,10 @@ static const struct nas_file_ops ops_pipe_write={
     .release=vrelease_pipe
 };
 static uint16_t dpoll_socket(unsigned slot,uint16_t events) {
+#ifndef NAS_ENABLE_LWIP
     if(nas_ipv4_socket_listening(slot))
         return nas_ipv4_socket_readable(slot) ? (events&1U) : 0;
+#endif
     if(nas_unix_socket_listening(slot))
         return nas_unix_socket_readable(slot) ? (events&1U) : 0;
     /* EOF/POLLHUP on read side; write direction may still be live. */

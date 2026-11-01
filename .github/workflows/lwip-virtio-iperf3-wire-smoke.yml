@@ -1,0 +1,84 @@
+name: NaSeed VirtIO-Net + lwIP signed Alpine Nmap and iperf3 wire (x86 QEMU)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/lwip-virtio-iperf3-wire-smoke.yml'
+      - 'kernel/fs/socket_syscall.c'
+      - 'kernel/syscall/dispatch.c'
+      - 'ports/lwip/**'
+      - 'kernel/drivers/virtio/**'
+      - 'scripts/lwip-iperf3-wire-cases.tsv'
+      - 'scripts/probe-lwip-iperf3-wire-smoke.sh'
+      - 'scripts/m141-rootfs-copies.tsv'
+      - 'scripts/run.sh'
+      - 'tests/m141-iperf3-wire-run.sh'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  x86-real-virtio-iperf3:
+    name: Real PCI + DHCP + authentic Nmap TCP scan and iperf3 transfer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
+      - name: Verify pinned upstream stack and both exact signed guest cases
+        run: |
+          set -eu
+          test "$(git -C third_party/lwip rev-parse HEAD)" = \
+            77dcd25a72509eb83f72b033d219b1d40cd8eb95
+          sh -n scripts/probe-lwip-iperf3-wire-smoke.sh
+          sh -n tests/m141-iperf3-wire-run.sh
+          sh -n scripts/run.sh
+          test "$(awk -F '\t' '$1 !~ /^#/ && NF { n++ } END {print n+0}' scripts/lwip-iperf3-wire-cases.tsv)" -eq 1
+          grep -Fxq 'tests/m141-iperf3-wire-run.sh	tests/m141-iperf3-wire-run.sh' scripts/m141-rootfs-copies.tsv
+          grep -Fq M141_SIGNED_NMAP_IPERF3_WIRE_PASS scripts/lwip-iperf3-wire-cases.tsv
+      - name: Install QEMU, signed Alpine staging tools and original host iperf3
+        timeout-minutes: 12
+        run: |
+          set -eu
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'clang:clang' 'ld.lld:lld' 'readelf:binutils' \
+                      'cpio:cpio' 'xorriso:xorriso' 'mformat:mtools' \
+                      'sgdisk:gdisk' 'iperf3:iperf3'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+          test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+          test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf"
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+          command -v iperf3
+      - name: Probe original Alpine Nmap and iperf3 through real VirtIO-Net
+        timeout-minutes: 35
+        run: sh scripts/probe-lwip-iperf3-wire-smoke.sh
+      - name: Preserve signed binaries, host traffic, serial and wire evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lwip-virtio-nmap-iperf3-wire-amd64-qemu
+          path: |
+            build/external/m141-batch/amd64/apk-install.log
+            build/external/m141-batch/amd64/requested-packages.txt
+            build/external/m141-batch/amd64/*.sha256
+            build/external/m141-batch/amd64/host-iperf3.log
+            build/external/m141-batch/amd64/virtio-iperf3-wire.pcap
+            build/busybox-source-parity-x86/m141-batch.clean.log
+            build/busybox-source-parity-x86/m141-batch.serial.log
+          if-no-files-found: ignore

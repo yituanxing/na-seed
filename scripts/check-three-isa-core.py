@@ -35,10 +35,21 @@ for source in srcs:
     obj=defs.get(source)
     if obj is None:
         raise SystemExit(f"x86 kernel missing exact common compilation rule: {source}")
-    if f"$(OUT)/{obj}" not in linked.group(1).split():
+    # The legacy simulated IPv4 backend remains in default kernels, but an
+    # opt-in lwIP build must contain exactly one protocol implementation.
+    # Its x86 object is selected through an explicit conditional variable.
+    link_name=("$(LEGACY_IPV4_X86_OBJS)"
+               if source=="kernel/net/ipv4_loopback.c" else f"$(OUT)/{obj}")
+    if link_name not in linked.group(1).split():
         raise SystemExit(f"x86 kernel linker omits common object {obj} ({source})")
-    if f"$(OUT)/{obj}" not in actual_link.group(1).split():
+    if link_name not in actual_link.group(1).split():
         raise SystemExit(f"x86 actual ld.lld command omits common object {obj} ({source})")
+assert "LEGACY_IPV4_X86_OBJS := $(OUT)/net_ipv4_loopback.o" in make
+assert "LEGACY_IPV4_X86_OBJS :=\nendif" in make, "lwIP x86 must omit legacy AF_INET"
+for port in ("aarch64","riscv64"):
+    script=(root/f"scripts/build-{port}-full.sh").read_text()
+    assert "grep -v '^kernel/net/ipv4_loopback.c$'" in script, (
+        f"native {port} lwIP kernel still links simulated AF_INET")
 for port in ("aarch64","riscv64"):
     script=(root/f"scripts/build-{port}-full.sh").read_text()
     if 'scripts/full-kernel-core.sources' not in script or 'for f in $common $arch' not in script:

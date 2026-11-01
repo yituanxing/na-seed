@@ -29,7 +29,9 @@
 #include "../fs/io.h"
 #include "../fs/syscall.h"
 #include "../fs/socket_syscall.h"
+#ifndef NAS_ENABLE_LWIP
 #include "../net/ipv4_loopback.h"
+#endif
 #ifdef NAS_ENABLE_LWIP
 #include "../../ports/lwip/socket_port.h"
 #endif
@@ -750,11 +752,12 @@ uint64_t syscall_dispatch(const uint64_t *args) {
      * socket ABI path until those provider semantics are wired separately. */
     if((nr==NAS_SC_sendto || nr==NAS_SC_recvfrom) && !args[4] &&
        args[1]<NAS_FD_LIMIT && TASK.fds->entries[args[1]].kind==FD_SOCKET &&
-       (nas_ipv4_socket_active(TASK.fds->entries[args[1]].slot)
 #ifdef NAS_ENABLE_LWIP
-        || nas_lwip_socket_is_slot(TASK.fds->entries[args[1]].slot)
+       nas_lwip_socket_is_slot(TASK.fds->entries[args[1]].slot)
+#else
+       nas_ipv4_socket_active(TASK.fds->entries[args[1]].slot)
 #endif
-       )) {
+       ) {
         if(nr==NAS_SC_sendto && !args[5] && !args[6])
             return task_pipe_io((uint64_t *)(uintptr_t)args,NAS_SC_write,
                                 args[1],args[2],args[3]);

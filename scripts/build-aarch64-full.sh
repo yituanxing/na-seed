@@ -18,6 +18,10 @@ flags="--target=aarch64-none-elf -march=armv8-a -mgeneral-regs-only -std=c11 -O2
 # One authoritative full-kernel core TU list for every native ISA.
 # ISA-specific hardware providers remain below in the arch= selection.
 common=$(grep -v '^#' scripts/full-kernel-core.sources)
+if [ "${NAS_ENABLE_LWIP:-0}" = 1 ]; then
+    # The native Netconn File owns AF_INET; never link simulated loopback.
+    common=$(printf '%s\n' "$common" | grep -v '^kernel/net/ipv4_loopback.c$')
+fi
 arch="kernel/arch/aarch64/cpu.c kernel/arch/aarch64/mmu.c kernel/arch/aarch64/context.c kernel/arch/aarch64/signal_frame.c kernel/arch/aarch64/timer.c kernel/arch/aarch64/debug_console.c kernel/arch/user_pt.c kernel/mm/user_space.c kernel/mm/mmu_bridge.c kernel/platform/aarch64.c"
 # Only the hardware/transport source selection is target-dependent.
 # VirtIO descriptors, block requests, BlockDevice and ext4 stay generic.
