@@ -48,14 +48,20 @@ protocol_failures=0
 # Official memcached sets both RLIMIT_NOFILE values to -c at startup.
 # NaSeed honestly enforces 64 FDs, so requesting 64 is a valid no-op;
 # this is a one-client functional check, not a 64-peer concurrency claim.
-/usr/bin/memcached -u root -l 127.0.0.1 -p 15471 -U 0 -m 8 -c 64 \
+/usr/bin/memcached -u root -l 127.0.0.1 -p 15471 -U 0 -m 8 -c 64 -t 1 -vv \
   > "$work/memcached/server.log" 2>&1 &
 mem_pid=$!
 mem_ok=false
 for attempt in 1 2 3 4 5; do
-  if "$busy" printf 'set k 0 0 5\r\nhello\r\nget k\r\nquit\r\n' |
-     "$busy" timeout 8 /usr/bin/ncat -4 127.0.0.1 15471 \
-       > "$work/memcached/reply" 2>&1 &&
+  # Keep stdin open briefly after writing the whole ASCII transaction.  The
+  # client must not signal EOF before memcached's worker has read the payload.
+  client_rc=0
+  { "$busy" printf 'set k 0 0 5\r\nhello\r\nget k\r\nquit\r\n'; "$busy" sleep 2; } |
+    "$busy" timeout 9 /usr/bin/ncat -4 127.0.0.1 15471 \
+      > "$work/memcached/reply" 2>&1 || client_rc=$?
+  reply_bytes=$("$busy" wc -c < "$work/memcached/reply")
+  echo "[M147 MEMCACHED ATTEMPT] $attempt client_rc=$client_rc reply_bytes=$reply_bytes"
+  if [ "$client_rc" -eq 0 ] &&
      "$busy" grep -Fq 'STORED' "$work/memcached/reply" &&
      "$busy" grep -Fq 'VALUE k 0 5' "$work/memcached/reply" &&
      "$busy" grep -Fq 'hello' "$work/memcached/reply"; then
@@ -68,7 +74,13 @@ wait "$mem_pid" 2>/dev/null || :
 if [ "$mem_ok" = true ]; then
   echo M147_REAL_MEMCACHED_TCP_PASS
 else
-  "$busy" cat "$work/memcached/server.log" "$work/memcached/reply" || :
+  echo '[M147 MEMCACHED SERVER LOG BEGIN]'
+  "$busy" cat "$work/memcached/server.log" || :
+  echo '[M147 MEMCACHED SERVER LOG END]'
+  echo '[M147 MEMCACHED CLIENT REPLY BEGIN]'
+  "$busy" cat "$work/memcached/reply" || :
+  echo '[M147 MEMCACHED CLIENT REPLY END]'
+  "$busy" od -An -tx1 "$work/memcached/reply" || :
   echo M147_REAL_MEMCACHED_TCP_FAIL
   protocol_failures=$((protocol_failures+1))
 fi
