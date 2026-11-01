@@ -78,7 +78,11 @@ case_run() {
         busy grep -Fq '0x58465342' "$work/out" &&
         busy grep -Fq '4096' "$work/out" ;;
       xfs_repair)
-        run_bin /sbin/xfs_repair -n -f "$xfs" \
+        # -P disables optional prefetch; the original Alpine tool still
+        # performs the full readonly Phase 1-7 filesystem verification.
+        # The default QEMU invocation segfaulted during Phase 1, but this
+        # variant must pass the same strict output assertions in the guest.
+        run_bin /sbin/xfs_repair -n -f -P "$xfs" \
             > "$work/out" 2> "$work/err" || return 1
         # xfs_repair writes its seven real scrub phases to stderr and
         # some metadata notes to stdout; both are part of its result.

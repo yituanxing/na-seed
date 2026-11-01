@@ -44,6 +44,19 @@ def wav(path, channels, samples):
 wav('m151-mono.wav', 1, mono)
 wav('m151-stereo.wav', 2, stereo)
 
+# A longer, strongly percussive 120 BPM waveform permits the real aubio
+# tempo tracker to warm up and lock onto a pulse; the 2-second melodic WAV
+# remains the harder mixed note/onset/pitch/quiet input for five other tools.
+beats = []
+for i in range(rate * 8):
+    phase = (i % (rate // 2)) / rate
+    t = i / rate
+    sample = int(23000 * math.exp(-36 * phase) *
+                 (0.6 * math.sin(2 * math.pi * 145 * t) +
+                  0.4 * math.sin(2 * math.pi * 385 * t)))
+    beats.append(sample)
+wav('m151-beats.wav', 1, beats)
+
 def pixel(x, y):
     # Three independent varying channels, structured rectangles, no all-zero
     # fixture that a bogus image decoder could accidentally emulate.
@@ -77,7 +90,8 @@ for frame in range(2):
 (p / 'm151-source.y4m').write_bytes(video)
 
 assert (p / 'm151-mono.wav').stat().st_size == 64044
+assert (p / 'm151-beats.wav').stat().st_size == 256044
 assert (p / 'm151-source.y4m').stat().st_size > 790
 assert png[:8] == b'\x89PNG\r\n\x1a\n'
-print('[M151 HOST MEDIA FIXTURES PASS] 16kHz PCM, 64x64 RGB PNG/PPM, two Y4M frames')
+print('[M151 HOST MEDIA FIXTURES PASS] 16kHz notes/8s beats PCM, 64x64 RGB PNG/PPM, two Y4M frames')
 PY

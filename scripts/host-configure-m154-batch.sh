@@ -5,6 +5,19 @@ set -eu
 [ "$#" -eq 2 ] || exit 2
 port=$1 root=$2
 case "$port" in amd64|riscv64|arm64) ;; *) exit 2 ;; esac
+# Alpine `apk --root --no-scripts` installs signed executable payloads but
+# does not populate the base image's local account database.  The original
+# enscript ELF calls getpwuid(0) before doing any real PS conversion: without
+# UID 0 metadata it exits "couldn't get passwd entry for uid=0".  Add only
+# standard root account *data*, never a rebuilt executable or shortcut output.
+mkdir -p "$root/etc"
+test ! -L "$root/etc/passwd" && test ! -L "$root/etc/group"
+if ! grep -q '^root:[^:]*:0:' "$root/etc/passwd" 2>/dev/null; then
+    printf 'root:x:0:0:root:/root:/bin/sh\n' >> "$root/etc/passwd"
+fi
+if ! grep -q '^root:[^:]*:0:' "$root/etc/group" 2>/dev/null; then
+    printf 'root:x:0:\n' >> "$root/etc/group"
+fi
 test -d "$root/tests" || mkdir -p "$root/tests"
 dest="$root/tests"
 printf 'name,score\nAda,7\nLin,11\n' > "$dest/m154-data.csv"

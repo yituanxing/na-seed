@@ -383,9 +383,9 @@ void nas_sched_preempt_select(void) {
     /* The IRQ stack remains owned by the same Task. Return directly to
      * its saved exception frame, after ordinary pending-signal delivery. */
 }
-uint64_t nas_task_block(uint64_t *frame,enum nas_syscall_op nr,
-                        uint64_t a,uint64_t b,uint64_t c,uint64_t d,
-                        uint64_t (*finish)(struct nas_task *)) {
+uint64_t nas_task_block5(uint64_t *frame,enum nas_syscall_op nr,
+                         uint64_t a,uint64_t b,uint64_t c,uint64_t d,uint64_t e,
+                         uint64_t (*finish)(struct nas_task *)) {
     struct nas_task *self=nas_current_task;
     if(!finish)sched_fail("native Task blocked without completion provider");
     nas_arch_save_user_frame(self,frame);
@@ -398,6 +398,7 @@ uint64_t nas_task_block(uint64_t *frame,enum nas_syscall_op nr,
     self->wait.blocked_args[1]=b;
     self->wait.blocked_args[2]=c;
     self->wait.blocked_args[3]=d;
+    self->wait.blocked_args[4]=e;
     self->state=NAS_TASK_BLOCKED;
     /* This reports a genuine park, never a synthetic blocking result.
      * Keep the immutable original BusyBox large-pipe gate intact. */
@@ -420,4 +421,9 @@ uint64_t nas_task_block(uint64_t *frame,enum nas_syscall_op nr,
         self->resume_valid=true;
         if(outcome==NAS_BLOCKED_RETRY)self->state=NAS_TASK_BLOCKED;
     }
+}
+uint64_t nas_task_block(uint64_t *frame,enum nas_syscall_op nr,
+                        uint64_t a,uint64_t b,uint64_t c,uint64_t d,
+                        uint64_t (*finish)(struct nas_task *)) {
+    return nas_task_block5(frame,nr,a,b,c,d,0,finish);
 }

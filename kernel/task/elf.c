@@ -56,7 +56,11 @@ static bool elf_map_image(const struct elf_image *image,uint64_t bias,
          * nor the higher reserved user stack. The ELF upper limit is
          * exclusive; this also retains a gap before the 8-MiB stack. */
         .max_va=NAS_USER_SIGNAL_TRAMPOLINE,
-        .max_segment=64ULL<<20,
+        /* Real signed Alpine LLVM/Rust binaries can carry a single
+         * approximately 97-MiB read-only PT_LOAD (e.g. difftastic).
+         * Accept bounded 128-MiB segments; the reserved virtual-address
+         * interval and actual mapped physical pages are still validated. */
+        .max_segment=128ULL<<20,
         .interpreter=main_image?NAS_ELF_INTERP:0
     };
     struct nas_elf_segment_ops op={

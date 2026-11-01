@@ -60,6 +60,9 @@ bool nas_task_wait_ready(const struct nas_task *task) {
         task->wait.blocked_op == NAS_SC_clock_nanosleep) return false;
     if (task->wait.blocked_op == NAS_SC_futex) return task->wait.futex_woken;
     if (task->wait.blocked_op == NAS_SC_wait4) return task_wait_ready(task);
+    if (task->wait.blocked_op == NAS_SC_waitid)
+        return nas_process_waitid_ready(task,task->wait.blocked_args[0],
+                task->wait.blocked_args[1],task->wait.blocked_args[3]);
     if(task->wait.blocked_op==NAS_SC_epoll_wait ||
        task->wait.blocked_op==NAS_SC_epoll_pwait)
         return nas_epoll_task_ready(task);

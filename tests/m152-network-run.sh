@@ -16,6 +16,10 @@ while IFS= read -r program; do
   case "$program" in ''|'#'*) continue ;; esac
   count=$((count+1))
   case "$program" in
+    # Upstream ldns-chaos.c and ldns-mx.c have no -h parser: a single
+    # argument is treated as a DNS name and can fail silently. With zero
+    # arguments, both original programs print their genuine usage string.
+    usr/bin/ldns-chaos|usr/bin/ldns-mx) option=none ;;
     usr/bin/ldns-version) option=none ;;
     usr/sbin/rsyslogd) option=-v ;;
     usr/sbin/syslog-ng|usr/sbin/syslog-ng-ctl|usr/bin/loggen|usr/bin/pdbtool)
@@ -76,7 +80,9 @@ fi
 dns_pid=$!
 dns_ok=false
 for attempt in 1 2 3; do
-  if "$busy" timeout 10 /usr/bin/drill -p 15454 \
+  # Pin IPv4 explicitly: the native kernel wire oracle currently uses
+  # AF_INET/UDP, and upstream drill defaults to INETANY without -4.
+  if "$busy" timeout 10 /usr/bin/drill -4 -p 15454 \
        m152.example.test @127.0.0.1 A \
        > "$work/dns/drill.out" 2> "$work/dns/drill.err" &&
      "$busy" grep -Fq '198.51.100.152' "$work/dns/drill.out"; then

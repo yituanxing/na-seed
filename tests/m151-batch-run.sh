@@ -26,7 +26,7 @@ check_audio() {
     /usr/bin/sndfile-info "$input" > "$work/audio-info.txt" 2>&1
     # A successfully parsed sound file must contain the original samplerate,
     # nonzero decoded PCM frames and actual channel metadata.
-    busy grep -Eq 'Samplerate[[:space:]]*:[[:space:]]*16000' "$work/audio-info.txt" || return 1
+    busy grep -Eq 'Sample[[:space:]]+Rate[[:space:]]*:[[:space:]]*16000' "$work/audio-info.txt" || return 1
     busy grep -Eq 'Frames[[:space:]]*:[[:space:]]*[1-9][0-9]+' "$work/audio-info.txt" || return 1
     busy grep -Eq 'Channels[[:space:]]*:[[:space:]]*[12]' "$work/audio-info.txt"
 }
@@ -116,19 +116,14 @@ sndfile_salvage() {
 aubio_case() {
     binary=$1
     analyzer=$(original "$binary")
-    "$analyzer" -i /tests/m151-mono.wav > "$work/analysis.txt" 2> "$work/analysis.err"
+    input=/tests/m151-mono.wav
+    # A two-second melody is suitable for notes/onsets but too short for
+    # aubio's stateful tempo tracker. Use twelve evenly spaced real beats.
+    [ "$binary" != aubiotrack ] || input=/tests/m151-beats.wav
+    "$analyzer" -i "$input" > "$work/analysis.txt" 2> "$work/analysis.err"
     size_gt "$work/analysis.txt" 2 || return 1
     # All six tools emit actual timestamps, frequency/cepstra/beat events.
     busy grep -Eq '[0-9]+([.][0-9]+)?' "$work/analysis.txt"
-}
-faac_case() {
-    encoder=$(original faac)
-    decoder=$(original faad)
-    "$encoder" -q 110 -o "$work/audio.aac" /tests/m151-mono.wav > "$work/encode.log" 2>&1
-    size_gt "$work/audio.aac" 120 || return 1
-    "$decoder" -w -o "$work/decoded.wav" "$work/audio.aac" > "$work/decode.log" 2>&1
-    check_wav "$work/decoded.wav"
-    echo '[M151 ROUNDTRIP] FAAC AAC ADTS=>FAAD WAV decode'
 }
 fdkaac_case() {
     encoder=$(original fdkaac)
@@ -195,7 +190,7 @@ aom_case() {
 vpx_case() {
     enc=$(original vpxenc)
     dec=$(original vpxdec)
-    "$enc" --codec=vp8 --good --cpu-used=5 --passes=1 --output="$work/vp8.ivf" \
+    "$enc" --codec=vp8 --good --cpu-used=5 --passes=1 --ivf --output="$work/vp8.ivf" \
         /tests/m151-source.y4m > "$work/encode.log" 2>&1
     check_ivf "$work/vp8.ivf"
     "$dec" --rawvideo -o "$work/vp8.i420" "$work/vp8.ivf" > "$work/decode.log" 2>&1
@@ -233,14 +228,33 @@ heif_case() {
     check_pnm "$work/decoded.ppm"
     echo '[M151 ROUNDTRIP] PNG 64x64=>HEIC=>PNG=>PNM'
 }
+heif_thumbnailer_case() {
+    enc=$(original heif-enc)
+    thumbnailer=$(original heif-thumbnailer)
+    # Convert a real 64x64 RGB PNG through the genuine HEIC encoder, then
+    # invoke the independent original thumbnailer to decode and downsample.
+    "$enc" -q 80 -o "$work/thumbnail-source.heic" /tests/m151-source.png \
+        > "$work/encode.log" 2>&1
+    size_gt "$work/thumbnail-source.heic" 200 || return 1
+    "$thumbnailer" -s 32 -p "$work/thumbnail-source.heic" "$work/thumb.png" \
+        > "$work/thumbnail.log" 2>&1
+    size_gt "$work/thumb.png" 90 || return 1
+    pngmagic=$(busy dd if="$work/thumb.png" bs=1 count=8 2>/dev/null | busy od -An -tx1 | busy tr -d ' \n')
+    [ "$pngmagic" = 89504e470d0a1a0a ] || return 1
+    /usr/bin/pngtopnm "$work/thumb.png" > "$work/thumb.ppm" 2> "$work/png.log"
+    /usr/bin/pamfile "$work/thumb.ppm" > "$work/pnm-info.txt" 2>&1
+    busy grep -Fq '32 by 32' "$work/pnm-info.txt" || return 1
+    size_gt "$work/thumb.ppm" 3000 || return 1
+    echo '[M151 ROUNDTRIP] PNG 64x64=>HEIC=>32x32 thumbnail PNG=>PNM'
+}
 jasper_case() {
     codec=$(original jasper)
     info=$(original imginfo)
     cmp=$(original imgcmp)
-    # Alpine JasPer 4.2.7 accepts these explicit long flags; its short
-    # options have changed across versions. JPEG2000 rate=1 is lossless.
+    # Alpine JasPer 4.2.7 defaults to lossless JPEG2000. Explicit `rate=1`
+    # is a lossy target bitrate: original imgcmp returns 1 instead of 0.
     "$codec" --input /tests/m151-source.ppm --output "$work/image.jp2" \
-        --output-format jp2 --output-option rate=1 > "$work/encode.log" 2>&1
+        --output-format jp2 > "$work/encode.log" 2>&1
     size_gt "$work/image.jp2" 100 || return 1
     "$info" -f "$work/image.jp2" > "$work/jp2-info.log" 2>&1
     size_gt "$work/jp2-info.log" 15 || return 1
@@ -263,7 +277,7 @@ run_case() {
         salvage) sndfile_salvage ;;
         aubiomfcc|aubionotes|aubioonset|aubiopitch|aubioquiet|aubiotrack)
             aubio_case "$case_id" ;;
-        faac) faac_case ;; fdkaac) fdkaac_case ;; audiofile) audiofile_case ;;
+        thumbnail) heif_thumbnailer_case ;; fdkaac) fdkaac_case ;; audiofile) audiofile_case ;;
         rubberband) rubberband_case ;; soundstretch) soundstretch_case ;;
         aom) aom_case ;; vpx) vpx_case ;; jxl) jxl_case ;;
         heif) heif_case ;; jasper) jasper_case ;;
@@ -286,7 +300,7 @@ for entry in \
     'aubiomfcc:aubiomfcc' 'aubionotes:aubionotes' \
     'aubioonset:aubioonset' 'aubiopitch:aubiopitch' \
     'aubioquiet:aubioquiet' 'aubiotrack:aubiotrack' \
-    'faac:faac,faad' 'fdkaac:fdkaac' 'audiofile:sfconvert,sfinfo' \
+    'thumbnail:heif-thumbnailer' 'fdkaac:fdkaac,faad' 'audiofile:sfconvert,sfinfo' \
     'rubberband:rubberband' 'soundstretch:soundstretch' \
     'aom:aomenc,aomdec' 'vpx:vpxenc,vpxdec' \
     'jxl:cjxl,djxl,jxlinfo' 'heif:heif-enc,heif-dec,heif-info' \

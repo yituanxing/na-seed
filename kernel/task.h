@@ -68,7 +68,7 @@ struct nas_task;
 struct nas_pending_io;
 typedef uint64_t (*nas_wait_finish_fn)(struct nas_task *);
 struct nas_task_wait {
-    uint64_t blocked_op, blocked_args[4];
+    uint64_t blocked_op, blocked_args[5];
     bool pending_valid;
     nas_wait_finish_fn finish; /* static callback owned by issuing syscall */
     /* Exactly one parked I/O request may own a copied user iovec and a

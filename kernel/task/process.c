@@ -512,6 +512,114 @@ uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
         : (uint64_t)-ECHILD;
 }
 
+/* Linux waitid is a separate ABI from wait4: success returns 0 with child
+ * identity/status in siginfo_t, not the child's PID as a syscall result.
+ * All three supported LP64 Linux targets use this 128-byte layout. */
+#define NAS_ID_ALL 0U
+#define NAS_ID_PID 1U
+#define NAS_ID_PGID 2U
+#define NAS_WEXITED 4ULL
+#define NAS_WSTOPPED 2ULL
+#define NAS_WNOWAIT 0x01000000ULL
+#define NAS_WAITID_OPTIONS (NAS_WAIT_NOHANG|NAS_WEXITED|NAS_WSTOPPED|\
+                            NAS_WAIT_CONTINUED|NAS_WNOWAIT|NAS_WAIT_ALL)
+struct nas_linux_child_siginfo {
+    int32_t signo,error,code,padding0;
+    int32_t pid,uid,status,padding1;
+    int64_t utime,stime;
+    uint8_t padding2[80];
+};
+_Static_assert(sizeof(struct nas_linux_child_siginfo)==128,
+               "Linux LP64 waitid siginfo_t layout");
+
+static bool waitid_child_selected(const struct nas_task *child,
+                                  const struct nas_task *waiter,
+                                  uint64_t idtype,uint64_t id) {
+    if(child->state==NAS_TASK_FREE ||
+       !nas_process_wait_owner(child,waiter))return false;
+    uint32_t value=(uint32_t)id;
+    if(idtype==NAS_ID_PID)return value && child->pid==value;
+    if(idtype==NAS_ID_PGID)
+        return child->pgid==(value ? value : waiter->pgid);
+    return idtype==NAS_ID_ALL;
+}
+static bool waitid_child_event(const struct nas_task *child,
+                               const struct nas_task *waiter,uint64_t options) {
+    const bool may_stop=(options&NAS_WSTOPPED)!=0;
+    const uint64_t wait4_options=(may_stop ? NAS_WAIT_UNTRACED : 0) |
+        (options&NAS_WAIT_CONTINUED) | (options&NAS_WAIT_ALL);
+    if(!nas_process_waitable(child,wait4_options,waiter))return false;
+    if(child->state==NAS_TASK_ZOMBIE)
+        return (options&NAS_WEXITED)!=0;
+    if(child->state==NAS_TASK_STOPPED)
+        return may_stop;
+    return (options&NAS_WAIT_CONTINUED)!=0;
+}
+bool nas_process_waitid_ready(const struct nas_task *waiter,uint64_t idtype,
+                              uint64_t id,uint64_t options) {
+    for(unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
+        const struct nas_task *child=nas_task_at(slot);
+        if(waitid_child_selected(child,waiter,idtype,id) &&
+           waitid_child_event(child,waiter,options))return true;
+    }
+    return false;
+}
+uint64_t nas_process_waitid(uint64_t idtype,uint64_t id,uint64_t infop,
+                            uint64_t options,uint64_t rusage) {
+    if(idtype>NAS_ID_PGID ||
+       (options&~NAS_WAITID_OPTIONS) ||
+       !(options&(NAS_WEXITED|NAS_WSTOPPED|NAS_WAIT_CONTINUED)))
+        return (uint64_t)-EINVAL;
+    if(!infop)return (uint64_t)-EFAULT;
+    bool have_child=false;
+    for(unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
+        struct nas_task *child=nas_task_at(slot);
+        if(!waitid_child_selected(child,nas_current_task,idtype,id))continue;
+        have_child=true;
+        if(!waitid_child_event(child,nas_current_task,options))continue;
+        const bool zombie=child->state==NAS_TASK_ZOMBIE;
+        const bool stopped=!zombie && child->state==NAS_TASK_STOPPED;
+        struct nas_linux_child_siginfo info={0};
+        info.signo=NAS_SIGCHLD;
+        info.pid=(int32_t)child->pid;
+        info.uid=0; /* The current kernel credential model is root-only. */
+        if(zombie) {
+            info.code=child->termination_signal ? 2 : 1; /* CLD_KILLED/EXITED */
+            info.status=(int32_t)(child->termination_signal ?
+                child->termination_signal : (child->exit_code&255U));
+        } else if(stopped) {
+            info.code=child->ptrace_tracer_pid ? 4 : 5; /* TRAPPED/STOPPED */
+            info.status=(int32_t)(child->stop_signal ?
+                child->stop_signal : NAS_SIGSTOP);
+        } else {
+            info.code=6; /* CLD_CONTINUED */
+            info.status=NAS_SIGCONT;
+        }
+        /* Two-phase commit: failed copyout cannot consume the event. */
+        if(!nas_user_write_bytes(infop,(const uint8_t *)&info,sizeof(info)))
+            return (uint64_t)-EFAULT;
+        if(rusage) {
+            struct nas_linux_rusage usage=nas_rusage_from_cpu_ns(
+                nas_rusage_cpu_add(child->cpu_runtime_ns,
+                                  child->exited_thread_cpu_ns));
+            if(!nas_user_write_bytes(rusage,(const uint8_t *)&usage,
+                                      sizeof(usage)))return (uint64_t)-EFAULT;
+        }
+        if(!(options&NAS_WNOWAIT)) {
+            uint64_t wait4_options=(stopped ? NAS_WAIT_UNTRACED : 0) |
+                (options&NAS_WAIT_CONTINUED) | (options&NAS_WAIT_ALL);
+            uint64_t reaped=nas_process_wait4(child->pid,0,wait4_options,0);
+            if((int64_t)reaped<0)return reaped;
+        }
+        return 0;
+    }
+    if(!have_child)return (uint64_t)-ECHILD;
+    if(!(options&NAS_WAIT_NOHANG))return (uint64_t)-EOPNOTSUPP;
+    const struct nas_linux_child_siginfo empty={0};
+    return nas_user_write_bytes(infop,(const uint8_t *)&empty,sizeof(empty))
+        ? 0:(uint64_t)-EFAULT;
+}
+
 
 /* A bounded single-CPU Linux thread group: the ISA decoder accepts the
  * precise musl/glibc pthread and observed Go shared-thread clone flags.

@@ -13,15 +13,16 @@ QEMU was run successfully**. The CI guest must independently establish PASS.
 | --- | --- | ---: |
 | `libsndfile` | `sndfile-cmp`, `sndfile-concat`, `sndfile-convert`, `sndfile-deinterleave`, `sndfile-info`, `sndfile-interleave`, `sndfile-metadata-get`, `sndfile-metadata-set`, `sndfile-salvage` | 9 |
 | `aubio` | `aubiomfcc`, `aubionotes`, `aubioonset`, `aubiopitch`, `aubioquiet`, `aubiotrack` | 6 |
-| `faac`, `faad2`, `fdkaac` | `faac`, `faad`, `fdkaac` | 3 |
+| `faad2`, `fdkaac` | `faad`, `fdkaac` | 2 |
 | `audiofile` | `sfconvert`, `sfinfo` | 2 |
 | `rubberband`, `soundtouch` | `rubberband`, `soundstretch` | 2 |
 | `aom` | `aomdec`, `aomenc` | 2 |
 | `libvpx-utils` | `vpxdec`, `vpxenc` | 2 |
 | `libjxl-tools` | `cjxl`, `djxl`, `jxlinfo` | 3 |
 | `libheif-tools` | `heif-dec`, `heif-enc`, `heif-info` | 3 |
+| `heif-thumbnailer` | `heif-thumbnailer` | 1 |
 | `jasper` | `imgcmp`, `imginfo`, `jasper` | 3 |
-| **Total** | **22 original audio/DSP plus 13 image/video codec ELFs** | **35** |
+| **Total** | **21 original audio/DSP plus 14 image/video codec ELFs** | **35** |
 
 Do **not** count `/usr/bin/heif-convert` because it is an APK symlink to
 `heif-dec`, nor `rubberband-r3` because it has the *same SHA256 bytes* as
@@ -32,13 +33,22 @@ Alpine's official signature-verifying `apk --no-scripts` on the **host**, uses
 exactly 35 distinct SHA256 before any native guest execution. No guest ELF is
 recompiled, relinked, modified, or replaced by a shim.
 
+The first native x86 QEMU run (41325580989) exposed a genuine upstream
+`faac` 1.31.1 ELF crash, independently reproducible on the host under Alpine
+musl using ordinary PCM WAV inputs. To retain 35 genuinely useful original
+ELFs, the failing `faac` identity is **removed** and the new, separately
+signed `heif-thumbnailer` executable is exercised on a real HEIC image.
+`libheif-tools` declares an exact `heif-thumbnailer=1.23.0-r0` dependency;
+the staging gate now also requires that package's official installation.
+
 ## Real, nontrivial audio and multimedia evidence
 
 `scripts/host-configure-m151-batch.sh` creates **format-conforming** files
 on the host, then CPIO packs them unchanged into the guest:
 
 - A 16-bit/16-kHz PCM WAV with four separated sinusoidal notes and actual
-  quiet regions, plus a two-channel PCM WAV with independent channel content.
+  quiet regions, a two-channel PCM WAV with independent channel content, and
+  an eight-second 120 BPM percussive WAV for stateful beat-tracking analysis.
 - A nonconstant 64×64 RGB PPM, a structurally valid RGB PNG with IHDR/IDAT
   CRC32, and a two-frame 16×16 YUV4MPEG2 (YUV 4:2:0) video with changing
   luma/chroma fields.
@@ -51,10 +61,11 @@ with **23 actual format roundtrips plus one independent WAV→W64 salvage**:
 | Libsndfile | WAV→AIFF/AU/CAF/W64/RF64/FLAC/NIST→WAV | 7 |
 | Interleave | Stereo→2 mono→stereo | 1 |
 | Audiofile | WAV→AIFF/NeXT/AIFC/NIST→WAV | 4 |
-| AAC encoders | Original FAAC ADTS→FAAD WAV, FDK MP4→FAAD WAV | 2 |
+| AAC codec | Original FDK MP4→FAAD WAV | 1 |
 | DSP | Two Rubber Band and two SoundStretch time transforms; WAV→AIFF→WAV | 4 |
 | AV1/VP8 | Two real Y4M frames→IVF→raw 768-byte YUV420 | 2 |
 | Still-image codecs | RGB→JPEG XL→RGB, PNG→HEIC→PNG, PPM→JPEG2000→PPM | 3 |
+| HEIC thumbnail | 64×64 PNG→HEIC→32×32 decoded thumbnail PNG, re-parsed to PNM | 1 |
 | **Total** | **23 roundtrips; WAV→W64 salvage tested separately** | **23** |
 
 Each encoding has an actual output size/header verification and genuine decoder
@@ -65,7 +76,10 @@ Additionally, genuine `sndfile-cmp` positively compares equal PCM and
 negatively rejects different channel content; `sndfile-concat` checks a
 precisely doubled PCM frame count; title metadata is actually written/read;
 the six aubio analyzers must compute nonempty numeric note, onset, pitch,
-tempo, MFCC, and quiet/noisy outputs from the four-note WAV.
+tempo, MFCC, and quiet/noisy outputs from nontrivial notes or the independent
+eight-second rhythmic WAV. The thumbnailer must actually decode and shrink a
+freshly encoded image, and the JasPer JP2 comparison must report three equal
+color channels (zero difference) after lossless coding.
 
 No `--help`, `--version`, fake pre-recorded stdout, guest-built binary, or
 host replay counts toward semantic admission.

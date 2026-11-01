@@ -2,7 +2,6 @@
 # Includes Netpbm solely as an independently signed image geometry verifier.
 libsndfile
 aubio
-faac
 faad2
 fdkaac
 audiofile

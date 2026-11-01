@@ -171,6 +171,10 @@ static uint64_t finish_wait4(struct nas_task *task) {
     const uint64_t *a=task->wait.blocked_args;
     return nas_process_wait4(a[0],a[1],a[2],a[3]);
 }
+static uint64_t finish_waitid(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_process_waitid(a[0],a[1],a[2],a[3],a[4]);
+}
 static uint64_t finish_sigsuspend(struct nas_task *task) {
     (void)task;
     return (uint64_t)-EINTR;
@@ -956,6 +960,14 @@ uint64_t syscall_dispatch(const uint64_t *args) {
             !(args[3] & NAS_WAIT_NOHANG))
             return nas_task_block((uint64_t *)(uintptr_t)args, nr,
                               args[1], args[2], args[3], args[4],finish_wait4);
+        return ret;
+    }
+    if (nr == NAS_SC_waitid) {
+        uint64_t ret=nas_process_waitid(args[1],args[2],args[3],args[4],args[5]);
+        if((int64_t)ret==-EOPNOTSUPP && !(args[4]&NAS_WAIT_NOHANG))
+            return nas_task_block5((uint64_t *)(uintptr_t)args,nr,
+                                   args[1],args[2],args[3],args[4],args[5],
+                                   finish_waitid);
         return ret;
     }
     if (nr == NAS_SC_execve) {

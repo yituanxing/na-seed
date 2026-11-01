@@ -115,12 +115,20 @@ case_run() {
         busy grep -Eiq '[[:space:]]NOP$' "$work/result" &&
         busy grep -Eiq '[[:space:]]RET$' "$work/result" ;;
       yara)
-        "$exe" "$rule" "$object" > "$work/result" 2> "$work/error" || return 1
+        # YARA fstatfs() probes the scan target's filesystem. The immutable
+        # boot CPIO fd has no mounted-fs backing, while /tmp is real tmpfs.
+        # Copy the *entire byte-identical ELF* before genuine mmap-backed
+        # scanning; the YARA rule and matched string remain unchanged.
+        busy cp "$object" "$work/scan.o"
+        busy cmp -s "$object" "$work/scan.o" || return 1
+        "$exe" "$rule" "$work/scan.o" > "$work/result" 2> "$work/error" || return 1
         contains result M153_Compiled ;;
       yarac)
         "$exe" "$rule" "$work/compiled.yarc" > "$work/result" 2> "$work/error" || return 1
         nonempty compiled.yarc || return 1
-        /usr/bin/yara -C "$work/compiled.yarc" "$object" > "$work/scan" 2>> "$work/error" || return 1
+        busy cp "$object" "$work/scan.o"
+        busy cmp -s "$object" "$work/scan.o" || return 1
+        /usr/bin/yara -C "$work/compiled.yarc" "$work/scan.o" > "$work/scan" 2>> "$work/error" || return 1
         contains scan M153_Compiled ;;
       bloaty)
         "$exe" -d sections "$object" > "$work/result" 2> "$work/error" || return 1

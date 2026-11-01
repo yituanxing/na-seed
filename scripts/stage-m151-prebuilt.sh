@@ -28,14 +28,14 @@ sh scripts/stage-alpine-prebuilt-overlay.sh "$port" m151-batch
 work="build/external/m151-batch/$port"
 root="$work/rootfs"
 test -s "$work/rootfs.cpio" && test -s "$root/lib/apk/db/installed"
-for package in libsndfile aubio faac faad2 fdkaac audiofile rubberband \
+for package in libsndfile aubio heif-thumbnailer faad2 fdkaac audiofile rubberband \
                soundtouch aom libvpx-utils libjxl-tools libheif-tools jasper netpbm; do
     grep -Fxq "P:$package" "$root/lib/apk/db/installed" || {
         echo "[M151 STAGE FAIL] missing signed package $package" >&2
         exit 1
     }
 done
-for fixture in m151-mono.wav m151-stereo.wav m151-source.png \
+for fixture in m151-mono.wav m151-stereo.wav m151-beats.wav m151-source.png \
                m151-source.ppm m151-source.y4m; do
     test -s "$root/tests/$fixture" || exit 1
 done

@@ -28,6 +28,11 @@ bool nas_process_waitable(const struct nas_task *child,uint64_t options,
     (void)child;(void)options;(void)waiter;
     return false;
 }
+bool nas_process_waitid_ready(const struct nas_task *waiter,uint64_t idtype,
+                              uint64_t id,uint64_t options) {
+    (void)waiter;(void)idtype;(void)id;(void)options;
+    return false;
+}
 bool nas_signal_user_pending(const struct nas_task *task) {
     (void)task;
     return false;

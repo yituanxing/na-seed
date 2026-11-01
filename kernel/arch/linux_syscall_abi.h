@@ -212,6 +212,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_unlinkat: return NAS_SC_unlinkat;
     case __NR_utimensat: return NAS_SC_utimensat;
     case __NR_wait4: return NAS_SC_wait4;
+    case __NR_waitid: return NAS_SC_waitid;
     case __NR_write: return NAS_SC_write;
     case __NR_pwrite64: return NAS_SC_pwrite64;
     case __NR_writev: return NAS_SC_writev;
@@ -371,6 +372,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 226U: return NAS_SC_mprotect;
     case 214U: return NAS_SC_brk;
     case 260U: return NAS_SC_wait4;
+    case 95U: return NAS_SC_waitid; /* asm-generic waitid */
     case 434U: return NAS_SC_pidfd_open; /* Linux asm-generic, all LP64 ports */
     case 221U: return NAS_SC_execve;
     case 93U: return NAS_SC_exit;

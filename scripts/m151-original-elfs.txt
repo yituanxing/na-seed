@@ -1,5 +1,5 @@
 # 35 original native executable paths; each historically new and unique SHA.
-# Audio/container metadata, conversion and DSP: 22
+# Audio/container metadata, conversion and DSP: 21
 usr/bin/sndfile-cmp
 usr/bin/sndfile-concat
 usr/bin/sndfile-convert
@@ -15,14 +15,13 @@ usr/bin/aubioonset
 usr/bin/aubiopitch
 usr/bin/aubioquiet
 usr/bin/aubiotrack
-usr/bin/faac
 usr/bin/faad
 usr/bin/fdkaac
 usr/bin/sfconvert
 usr/bin/sfinfo
 usr/bin/rubberband
 usr/bin/soundstretch
-# Original AV1/VP8, JPEG XL, HEIF, JPEG2000 codecs: 13
+# Original AV1/VP8, JPEG XL, HEIF, JPEG2000 codecs: 14
 usr/bin/aomdec
 usr/bin/aomenc
 usr/bin/vpxdec
@@ -33,6 +32,7 @@ usr/bin/jxlinfo
 usr/bin/heif-dec
 usr/bin/heif-enc
 usr/bin/heif-info
+usr/bin/heif-thumbnailer
 usr/bin/imgcmp
 usr/bin/imginfo
 usr/bin/jasper

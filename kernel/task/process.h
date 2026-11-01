@@ -53,5 +53,11 @@ bool nas_process_wait_owner(const struct nas_task *child,
 bool nas_process_waitable(const struct nas_task *child,uint64_t options,
                           const struct nas_task *waiter);
 uint64_t nas_process_wait4(uint64_t pid, uint64_t status, uint64_t options, uint64_t rusage);
+/* Linux waitid: validated idtype and WEXITED/WSTOPPED/WCONTINUED selection,
+ * 128-byte siginfo_t and WNOWAIT observation without consuming a child. */
+uint64_t nas_process_waitid(uint64_t idtype,uint64_t id,uint64_t infop,
+                            uint64_t options,uint64_t rusage);
+bool nas_process_waitid_ready(const struct nas_task *task,uint64_t idtype,
+                              uint64_t id,uint64_t options);
 uint64_t nas_process_getrusage(uint64_t who,uint64_t address);
 #endif
