@@ -84,6 +84,10 @@ int nas_lwip_socket_bind_if(unsigned slot,unsigned index);
 int nas_lwip_socket_bound_ifindex(unsigned slot);
 /* TCP_NODELAY is changed on the real upstream TCP PCB by tcpip_thread.
  * Reads reflect the last completed native option mutation. */
+/* Write returns 0 for a normal worker request (caller waits), 1 when a
+ * nonblocking CONNECT owns the worker and the option was safely deferred
+ * on this same OpenFile, or negative errno. The deferred path actually
+ * changes the upstream PCB before subsequent TX; failure reaches SO_ERROR. */
 int nas_lwip_socket_tcp_nodelay(unsigned slot,bool write,bool *enabled);
 /* Linux IP_RECVERR is stored on the shared OpenFile (also across dup/fork).
  * Successful UDP paths can opt in; asynchronous ICMP MSG_ERRQUEUE delivery

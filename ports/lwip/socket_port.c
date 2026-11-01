@@ -26,7 +26,7 @@
 
 enum port_command {
     PORT_IDLE=0, PORT_OPEN, PORT_CONTROL, PORT_CONTROL_DONE,
-    PORT_RX, PORT_TX, PORT_CONNECT_PROBE, PORT_FAILED
+    PORT_RX, PORT_TX, PORT_CONNECT_PROBE, PORT_DEFERRED_NODELAY, PORT_FAILED
 };
 struct port_socket {
     bool owned,connected,connecting,listening,queued_control;
@@ -45,6 +45,10 @@ struct port_socket {
     struct nas_lwip_bridge_address peer_address;
     struct nas_lwip_bridge_address tx_destination,rx_source;
     bool ip_recverr,tcp_nodelay;
+    /* Nonblocking connect() may return to userspace before Netconn finishes.
+     * A subsequent TCP_NODELAY is accepted as a same-File pending mutation,
+     * applied by the native worker before the first stream data transfer. */
+    bool deferred_nodelay,deferred_nodelay_value;
     uint8_t bound_ifindex;
     uint8_t rx[NAS_LWIP_BRIDGE_DATA];
     uint16_t rx_length,rx_position;
@@ -78,7 +82,8 @@ static uint64_t after_retry(void) {
 static void finish(struct port_socket *s) {
     if(s->command!=PORT_OPEN && s->command!=PORT_CONTROL &&
        s->command!=PORT_RX && s->command!=PORT_TX &&
-       s->command!=PORT_CONNECT_PROBE)return;
+       s->command!=PORT_CONNECT_PROBE &&
+       s->command!=PORT_DEFERRED_NODELAY)return;
     struct nas_lwip_bridge_result result={0};
     int got=nas_lwip_bridge_take(s->id,&result);
     if(got==0)return;
@@ -88,6 +93,11 @@ static void finish(struct port_socket *s) {
         return;
     }
     switch(s->command) {
+    case PORT_DEFERRED_NODELAY:
+        if(result.status)s->tx_error=result.status;
+        else s->tcp_nodelay=s->deferred_nodelay_value;
+        s->command=PORT_IDLE;
+        break;
     case PORT_OPEN:
         if(result.status) {
             s->failure=result.status;
@@ -256,6 +266,24 @@ static int check(struct port_socket *s) {
         s->control_request=(struct nas_lwip_bridge_request){0};
         s->command=PORT_IDLE;
         s->accept_cancelling=false;
+    }
+    /* Apply a deferred option on the actual upstream TCP PCB after the
+     * nonblocking CONNECT worker command finishes, before admitting data.
+     * The original caller already returned from setsockopt; failures reach
+     * SO_ERROR/POLLERR instead of pretending the mutation succeeded. */
+    if(s->command==PORT_IDLE && s->deferred_nodelay) {
+        struct nas_lwip_bridge_request option={
+            .op=NAS_LWIP_BRIDGE_SETNODELAY,
+            .nodelay=s->deferred_nodelay_value
+        };
+        int rc=nas_lwip_bridge_submit(s->id,&option);
+        if(!rc) {
+            s->deferred_nodelay=false;
+            s->command=PORT_DEFERRED_NODELAY;
+        } else if(rc!=-EAGAIN && rc!=-EBUSY) {
+            s->deferred_nodelay=false;
+            s->tx_error=rc;
+        }
     }
     /* Shutdown of a TCP stream follows the already-admitted copied SEND
      * queue. A caller may write() then immediately SHUT_WR: userspace has
@@ -822,7 +850,24 @@ int nas_lwip_socket_tcp_nodelay(unsigned slot,bool write,bool *enabled) {
     if(!s)return -EBADF;
     if(!enabled)return -EINVAL;
     if(s->type!=NAS_LWIP_BRIDGE_TCP)return -EOPNOTSUPP;
-    if(!write){*enabled=s->tcp_nodelay;return 0;}
+    if(!write) {
+        *enabled=s->deferred_nodelay ? s->deferred_nodelay_value:
+                 s->tcp_nodelay;
+        return 0;
+    }
+    /* Linux permits TCP_NODELAY immediately after a nonblocking connect.
+     * The pending CONNECT owns the one-shot bridge result, so queuing the
+     * option as another waiter would corrupt its result ownership. Retain
+     * one deferred mutation on this OpenFile and apply it on tcpip_thread. */
+    if((nas_open_files[slot].status_flags&0x800ULL) &&
+       ((s->command==PORT_CONTROL &&
+         s->control_request.op==NAS_LWIP_BRIDGE_CONNECT) ||
+        s->command==PORT_CONNECT_PROBE || s->connecting ||
+        s->deferred_nodelay)) {
+        s->deferred_nodelay=true;
+        s->deferred_nodelay_value=*enabled;
+        return 1; /* owned deferred request, no Task waiter */
+    }
     const struct nas_lwip_bridge_request req={
         .op=NAS_LWIP_BRIDGE_SETNODELAY,.nodelay=*enabled
     };

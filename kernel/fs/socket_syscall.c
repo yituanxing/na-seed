@@ -821,8 +821,11 @@ static uint64_t sys_ipv4_setsockopt(uint64_t fd,uint64_t level,
         }
         if(level==6) { /* TCP_NODELAY: real PCB Nagle flag */
             bool enabled=value!=0;
-            return lwip_control_result(nas_lwip_socket_tcp_nodelay(
-                slot,true,&enabled));
+            int rc=nas_lwip_socket_tcp_nodelay(slot,true,&enabled);
+            /* Async nonblocking CONNECT already owns the native command.
+             * A separately held deferred option must not park on its
+             * consumable connect completion or claim a phantom EBUSY. */
+            return rc==1 ? 0 : lwip_control_result(rc);
         }
         if(opt==6) {
             if(nas_lwip_socket_type(slot)!=NAS_LWIP_BRIDGE_UDP)

@@ -102,6 +102,16 @@ static void finish_control(unsigned slot,int expected) {
 static void connect_slot(unsigned slot,unsigned port) {
     reserve(slot,NAS_LWIP_BRIDGE_TCP);
     assert(nas_lwip_socket_connect(slot,lo(port))==0);
+    if(slot==31) {
+        /* Real Valkey CLI behavior: return from nonblocking connect then
+         * apply TCP_NODELAY before its worker completed the handshake. */
+        nas_open_files[slot].status_flags|=0x800ULL;
+        bool enabled=true;
+        assert(nas_lwip_socket_tcp_nodelay(slot,true,&enabled)==1);
+        enabled=false;
+        assert(nas_lwip_socket_tcp_nodelay(slot,false,&enabled)==0 &&
+               enabled);
+    }
     for(unsigned tries=0;tries<300;tries++) {
         int ready=nas_lwip_socket_control_ready(slot);
         assert(ready>=0);
@@ -373,7 +383,7 @@ int main(void) {
     assert(nas_lwip_socket_buffer_capacity(21,true)==-ENOPROTOOPT);
     assert(ops->poll_description(31,4U)&4U);
     bool nodelay=false;
-    assert(nas_lwip_socket_tcp_nodelay(31,false,&nodelay)==0 && !nodelay);
+    assert(nas_lwip_socket_tcp_nodelay(31,false,&nodelay)==0 && nodelay);
     nodelay=true;
     assert(nas_lwip_socket_tcp_nodelay(31,true,&nodelay)==0);
     finish_control(31,0);
