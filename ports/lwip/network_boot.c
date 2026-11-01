@@ -29,6 +29,7 @@ static struct {
  struct nas_ksem rx_wakeup;
  struct nas_kthread_handle rx_handle;
  bool ethernet_available,ready,stop;
+ uint32_t dhcp_ipv4_host_order; /* copied only by upstream core callback */
 } network;
 
 /* The bootstrap attaches at most one physical netif; give Linux's name to
@@ -49,6 +50,21 @@ int nas_lwip_guest_ifname(unsigned index,
  memcpy(output,network.device_name,sizeof(network.device_name));
  return 0;
 }
+unsigned nas_lwip_guest_ipv4_ifconf(
+    struct nas_lwip_guest_ipv4_if out[2]) {
+ if(!out)return 0;
+ out[0]=(struct nas_lwip_guest_ipv4_if){
+     .name="lo",.ipv4_host_order=UINT32_C(0x7f000001)
+ };
+ unsigned count=1;
+ const uint32_t address=network.dhcp_ipv4_host_order;
+ if(network.ethernet.attached && network.ethernet.device && address) {
+     out[count]=(struct nas_lwip_guest_ipv4_if){.ipv4_host_order=address};
+     memcpy(out[count].name,network.device_name,sizeof(network.device_name));
+     ++count;
+ }
+ return count;
+}
 
 /* Called by nas_netdev_notify_rx from the transport IRQ/scheduled signal.
  * It never executes lwIP or polls the queue inside an IRQ. */
@@ -67,6 +83,12 @@ static void detach_failed_netif(void *ctx){
 static void network_status(struct netif *netif){
  if(!netif)return;
  const ip4_addr_t *addr=netif_ip4_addr(netif);
+ /* Never manufacture a guest interface address from a DHCP request or
+  * a merely attached NIC; report only the real core-owned IPv4 lease. */
+ network.dhcp_ipv4_host_order=netif_is_up(netif) &&
+     netif_is_link_up(netif) && dhcp_supplied_address(netif) &&
+     !ip4_addr_isany_val(*addr) ?
+     lwip_ntohl(ip4_addr_get_u32(addr)) : 0;
  nas_print("[LWIP NETIF STATUS] up=");nas_dec(netif_is_up(netif));
  nas_print(" link=");nas_dec(netif_is_link_up(netif));
  nas_print(" dhcp=");nas_dec(dhcp_supplied_address(netif));

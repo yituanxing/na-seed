@@ -453,6 +453,38 @@ int main(void) {
     named=name_slot(32,true);
     assert(named.ipv4==peer.ipv4 && named.port==peer.port);
 
+    /* Tinyproxy scans each HTTP request line with recv(MSG_PEEK) before
+     * consuming it with read(). Exercise an actual upstream accepted TCP
+     * child, asynchronous Netconn RX, repeated nonconsuming snapshots and
+     * the subsequent consuming read (not only a mocked FileOps buffer). */
+    const char request_line[]="GET /m149 HTTP/1.1\r\n";
+    const unsigned request_size=sizeof(request_line)-1;
+    assert(ops->write_plan(31,request_size)==request_size);
+    assert(ops->write(31,(const uint8_t *)request_line,request_size)==
+           request_size);
+    bool peek_ready=false;
+    for(unsigned tries=0;tries<300;tries++) {
+        uint64_t available=ops->read_plan(32,512);
+        if((int64_t)available>=0) {
+            assert(available==request_size);
+            uint8_t preview[64]={0};
+            assert(ops->peek(32,preview,available,0)==available);
+            assert(!memcmp(preview,request_line,request_size));
+            memset(preview,0,sizeof(preview));
+            assert(ops->peek(32,preview,available,0)==available);
+            assert(!memcmp(preview,request_line,request_size));
+            assert(ops->read(32,preview,available)==available);
+            assert(!memcmp(preview,request_line,request_size));
+            peek_ready=true;
+            break;
+        }
+        assert((int64_t)available==-EOPNOTSUPP);
+        (void)ops->poll_description(32,1U);
+        test_ns+=UINT64_C(1000000);
+        (void)nas_kthread_run(1);
+    }
+    assert(peek_ready);
+
     const char tcp[]="TCP stream through FileOps";
     assert(ops->write_plan(32,sizeof(tcp)-1)==sizeof(tcp)-1);
     assert(ops->write(32,(const uint8_t *)tcp,sizeof(tcp)-1)==sizeof(tcp)-1);

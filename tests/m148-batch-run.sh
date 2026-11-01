@@ -64,14 +64,27 @@ run_codec_pair() {
         source="$work/original.ppm"
         width=4 height=4
     fi
-    "$encoder" "$source" > "$work/encoded" 2> "$work/encode-error"
+    case "$encode_name" in
+      pbmtog3)
+        # Group 3 fax normally targets 1728 columns. Preserve our native
+        # 16-column fixture so the decoder's -width=16 means the same image.
+        "$encoder" -nofixedwidth "$source" \
+            > "$work/encoded" 2> "$work/encode-error" ;;
+      *) "$encoder" "$source" > "$work/encoded" 2> "$work/encode-error" ;;
+    esac
     case "$decode_name" in
       g3topbm) "$decoder" -width=16 "$work/encoded" \
                    > "$work/decoded.pnm" 2> "$work/decode-error" ;;
       *) "$decoder" "$work/encoded" \
              > "$work/decoded.pnm" 2> "$work/decode-error" ;;
     esac
-    verify_decoded "$width" "$height"
+    case "$decode_name" in
+      cistopbm)
+        # CompuServe RLE has fixed 128x96 (or 256x192) dimensions; its real
+        # encoder pads our smaller 16x16 source to 128x96, as specified.
+        verify_decoded 128 96 ;;
+      *) verify_decoded "$width" "$height" ;;
+    esac
 }
 run_single_decoder() {
     encoder_name=$1 decoder_name=$2 source_kind=$3

@@ -1,5 +1,6 @@
 # M149: official Alpine 3.23 signed networking/security/daemon packages.
-# Curl was previously accepted and is a protocol oracle dependency only.
+# Curl/Ncat were previously accepted and are protocol clients only, not new
+# M149 ELF identities.  Ncat is used for an independent raw-HTTP diagnostic.
 net-snmp
 net-snmp-tools
 knot
@@ -10,3 +11,4 @@ lftp
 ethtool
 s6-networking
 curl
+nmap-ncat

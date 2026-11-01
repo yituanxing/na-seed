@@ -8,6 +8,12 @@ sh scripts/check-network-build-selection.sh
 # Run the actual Linux Socket usercopy/FD ABI in both default and lwIP
 # configurations; protocol traffic is separately exercised below.
 sh scripts/check-lwip-socket-abi.sh
+cc -std=c11 -O2 -Wall -Wextra -Werror -ffunction-sections \
+   -fdata-sections -Wl,--gc-sections -DNAS_ENABLE_LWIP=1 \
+   -I scripts/m89-test-include -I kernel \
+   scripts/test-lwip-peek-wait.c \
+   -o build/lwip-foundation/test-peek-wait
+build/lwip-foundation/test-peek-wait
 # Exercise native asynchronous accept publication and EINTR cancellation
 # through the actual syscall/usercopy/FD lease adapter, not a fake FD map.
 sh scripts/check-lwip-accept-syscall.sh

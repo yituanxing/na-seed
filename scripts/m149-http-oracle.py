@@ -5,16 +5,21 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path != "/proxy":
+        if self.path == "/proxy":
+            body = b"M149_REAL_TINYPROXY_HOST_PAYLOAD\n"
+            prefix = "M149 HOST PROXY GET"
+        elif self.path == "/direct":
+            body = b"M149_REAL_DIRECT_HOST_PAYLOAD\n"
+            prefix = "M149 HOST DIRECT GET"
+        else:
             self.send_error(404)
             return
-        body = b"M149_REAL_TINYPROXY_HOST_PAYLOAD\n"
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
-        print(f"[M149 HOST PROXY GET] {self.path} bytes={len(body)}", flush=True)
+        print(f"[{prefix}] {self.path} bytes={len(body)}", flush=True)
 
     def log_message(self, fmt, *args):
         pass

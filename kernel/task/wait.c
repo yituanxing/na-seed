@@ -82,6 +82,7 @@ bool nas_task_wait_ready(const struct nas_task *task) {
         return nas_fs_poll_ready(task);
     if (task->wait.blocked_op == NAS_SC_read ||
         task->wait.blocked_op == NAS_SC_readv ||
+        task->wait.blocked_op == NAS_SC_recvfrom || /* TCP MSG_PEEK */
         task->wait.blocked_op == NAS_SC_write ||
         task->wait.blocked_op == NAS_SC_writev)
         return task_io_ready(task);

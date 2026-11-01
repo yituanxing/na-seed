@@ -34,6 +34,9 @@
 #include "unix_socket.h"
 #ifndef NAS_ENABLE_LWIP
 #include "../net/ipv4_loopback.h"
+#else
+#include "../../ports/lwip/socket_port.h"
+#include "../../ports/lwip/network_boot.h"
 #endif
 #include "namespace_syscall.h"
 #include "socket_syscall.h"
@@ -309,6 +312,46 @@ static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
      * The semantic request is its low 32 bits, not the sign extension. */
     cmd=(uint32_t)cmd;
     unsigned slot=TASK.fds->entries[fd].slot;
+#ifdef NAS_ENABLE_LWIP
+    if(cmd==0x8912U && nas_lwip_socket_is_slot(slot)) { /* SIOCGIFCONF */
+        /* Linux LP64 ifconf = int32 length, pad32, uint64 buffer.
+         * Its traditional fixed-width IPv4 ifreq is 16-byte name plus
+         * 16-byte sockaddr plus 8 bytes of union padding (40 total).
+         * Only actual IPv4 interfaces are returned; the DHCP snapshot
+         * comes from the upstream core, never a guessed NIC address. */
+        struct { int32_t length;uint32_t pad;uint64_t buffer; } ifconf;
+        _Static_assert(sizeof(ifconf)==16,"Linux LP64 ifconf");
+        if(!nas_user_read_bytes(arg,(uint8_t *)&ifconf,sizeof(ifconf)))
+            return (uint64_t)-EFAULT;
+        if(ifconf.length<0)return (uint64_t)-EINVAL;
+        struct nas_lwip_guest_ipv4_if interfaces[2]={0};
+        unsigned count=nas_lwip_guest_ipv4_ifconf(interfaces);
+        if(count>2)return (uint64_t)-EIO;
+        unsigned fitting=ifconf.buffer ? (unsigned)ifconf.length/40U : count;
+        if(fitting>count)fitting=count;
+        const uint32_t actual=(uint32_t)fitting*40U;
+        if(!nas_user_prepare_write(arg,sizeof(ifconf)) ||
+           (ifconf.buffer && actual &&
+            !nas_user_prepare_write(ifconf.buffer,actual)))
+            return (uint64_t)-EFAULT;
+        for(unsigned i=0;ifconf.buffer && i<fitting;i++) {
+            uint8_t request[40]={0};
+            memcpy(request,interfaces[i].name,16);
+            request[16]=2; /* sockaddr_in.sin_family = AF_INET */
+            const uint32_t ip=interfaces[i].ipv4_host_order;
+            request[20]=(uint8_t)(ip>>24);
+            request[21]=(uint8_t)(ip>>16);
+            request[22]=(uint8_t)(ip>>8);
+            request[23]=(uint8_t)ip;
+            if(!nas_user_write_bytes(ifconf.buffer+(uint64_t)i*40U,
+                                     request,sizeof(request)))
+                return (uint64_t)-EFAULT;
+        }
+        ifconf.length=(int32_t)actual;
+        return nas_user_write_bytes(arg,(const uint8_t *)&ifconf,
+                                    sizeof(ifconf)) ? 0:(uint64_t)-EFAULT;
+    }
+#endif
     if(cmd==0xc020660bU) { /* Linux FS_IOC_FIEMAP, 32-byte header */
         struct nas_linux_fiemap {
             uint64_t start,length;

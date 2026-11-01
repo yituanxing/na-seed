@@ -46,6 +46,24 @@ bool nas_ipv4_socket_listening(unsigned slot) {
 
 #ifdef NAS_ENABLE_LWIP
 #include "../ports/lwip/socket_port.h"
+/* SIOCGIFCONF now exercises the real generic ioctl dispatcher. Its other
+ * filesystem/PTY branches are unrelated to this network fixture and must
+ * not silently succeed if an unexpected branch becomes reachable. */
+uint64_t nas_vfs_node_size(const struct nas_fs_node *node) {
+    (void)node;assert(!"unexpected VFS ioctl");return 0;
+}
+int nas_vfs_fiemap_next(const struct nas_fs_node *node,uint64_t start,
+                        uint64_t end,uint64_t *logical,uint64_t *length,
+                        bool *last) {
+    (void)node;(void)start;(void)end;(void)logical;(void)length;(void)last;
+    assert(!"unexpected FIEMAP ioctl");return -EIO;
+}
+unsigned nas_pty_number(unsigned slot) {
+    (void)slot;assert(!"unexpected PTY ioctl");return 0;
+}
+int nas_pty_attach(unsigned number,unsigned slot) {
+    (void)number;(void)slot;assert(!"unexpected PTY ioctl");return -EIO;
+}
 static bool abi_live[NAS_OPEN_FILE_LIMIT];
 static bool abi_retiring_bridge[NAS_OPEN_FILE_LIMIT];
 bool nas_lwip_socket_slot_reusable(unsigned slot) {
@@ -68,6 +86,7 @@ static bool abi_nodelay_enabled[NAS_OPEN_FILE_LIMIT];
 static bool abi_keepalive_enabled[NAS_OPEN_FILE_LIMIT];
 static bool abi_tx_backpressure[NAS_OPEN_FILE_LIMIT];
 static uint8_t abi_bound_ifindex[NAS_OPEN_FILE_LIMIT];
+static bool abi_has_dhcp_ipv4=true;
 static uint8_t abi_pending_ifindex[NAS_OPEN_FILE_LIMIT];
 static unsigned abi_bind_if_calls;
 static unsigned abi_broadcasts;
@@ -248,6 +267,18 @@ int nas_lwip_socket_setbroadcast(unsigned slot,bool enabled) {
 int nas_lwip_guest_ifindex(const char *device_name) {
     return device_name && !strcmp(device_name,"eth0") ? 2:-ENODEV;
 }
+unsigned nas_lwip_guest_ipv4_ifconf(
+    struct nas_lwip_guest_ipv4_if out[2]) {
+    assert(out);
+    out[0]=(struct nas_lwip_guest_ipv4_if){
+        .name="lo",.ipv4_host_order=UINT32_C(0x7f000001)
+    };
+    if(!abi_has_dhcp_ipv4)return 1;
+    out[1]=(struct nas_lwip_guest_ipv4_if){
+        .name="eth0",.ipv4_host_order=UINT32_C(0x0a00020f)
+    };
+    return 2;
+}
 int nas_lwip_guest_ifname(unsigned index,
                          char name[NAS_LWIP_DEVICE_NAME_MAX]) {
     if(index!=2 || !name)return -ENODEV;
@@ -397,6 +428,43 @@ int main(void) {
     assert(guest_task.fds->entries[tcp_fd].cloexec);
     assert(!unix_fd(tcp_fd) && lwip_fd(tcp_fd) && inet_fd(tcp_fd));
     assert(socket_fd_error(NAS_SC_recvfrom,tcp_fd)==0);
+    /* Net-SNMP uses the real SIOCGIFCONF ioctl to enumerate IPv4
+     * interfaces. Return Linux LP64 ifconf/ifreq bytes from the native
+     * network snapshot, not ENOTTY and not a fabricated DHCP lease. */
+    const uint64_t ifcaddr=TEST_BASE+1800,ifbuf=TEST_BASE+1900;
+    struct {int32_t length;uint32_t pad;uint64_t buffer;} ifconf={0};
+    _Static_assert(sizeof(ifconf)==16,"Linux LP64 ifconf fixture");
+    ifconf.length=80;
+    memcpy(user_ptr(ifcaddr),&ifconf,sizeof(ifconf));
+    assert(sys_ioctl_fd(tcp_fd,0x8912ULL,ifcaddr)==0);
+    memcpy(&ifconf,user_ptr(ifcaddr),sizeof(ifconf));
+    assert(ifconf.length==80 && ifconf.buffer==0);
+    ifconf.buffer=ifbuf;ifconf.length=40;
+    memcpy(user_ptr(ifcaddr),&ifconf,sizeof(ifconf));
+    assert(sys_ioctl_fd(tcp_fd,0x8912ULL,ifcaddr)==0);
+    memcpy(&ifconf,user_ptr(ifcaddr),sizeof(ifconf));
+    assert(ifconf.length==40 && !strcmp((char *)user_ptr(ifbuf),"lo"));
+    const uint8_t lo_sockaddr[8]={2,0,0,0,127,0,0,1};
+    assert(!memcmp(user_ptr(ifbuf)+16,lo_sockaddr,8));
+    ifconf.length=80;
+    memcpy(user_ptr(ifcaddr),&ifconf,sizeof(ifconf));
+    assert(sys_ioctl_fd(tcp_fd,0x8912ULL,ifcaddr)==0);
+    memcpy(&ifconf,user_ptr(ifcaddr),sizeof(ifconf));
+    assert(ifconf.length==80 &&
+           !strcmp((char *)user_ptr(ifbuf+40),"eth0"));
+    const uint8_t eth_sockaddr[8]={2,0,0,0,10,0,2,15};
+    assert(!memcmp(user_ptr(ifbuf+40)+16,eth_sockaddr,8));
+    abi_has_dhcp_ipv4=false;
+    assert(sys_ioctl_fd(tcp_fd,0x8912ULL,ifcaddr)==0);
+    memcpy(&ifconf,user_ptr(ifcaddr),sizeof(ifconf));
+    assert(ifconf.length==40);
+    abi_has_dhcp_ipv4=true;
+    ifconf.length=80;
+    memcpy(user_ptr(ifcaddr),&ifconf,sizeof(ifconf));
+    can_write[0]=false;
+    assert((int64_t)sys_ioctl_fd(tcp_fd,0x8912ULL,ifcaddr)==-EFAULT);
+    can_write[0]=true;
+    assert((int64_t)sys_ioctl_fd(tcp_fd,0x8912ULL,0)==-EFAULT);
 
     uint64_t udp_fd=sys_socket(2,2,17);
     assert(udp_fd<NAS_FD_LIMIT && udp_fd!=tcp_fd);

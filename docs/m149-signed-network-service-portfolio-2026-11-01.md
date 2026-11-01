@@ -56,3 +56,29 @@ The default PR job uses native x86-64 QEMU; an explicit workflow dispatch or
 This is intentionally a strict discovery gate, not a claim that these new
 programs are all working. Physical NICs, the public Internet, TLS service
 handshakes and multi-client performance are outside M149's present scope.
+
+## First genuine QEMU result and follow-up diagnosis
+
+The first x86-64 GitHub Actions execution, [run 41318891509](https://github.com/yituanxing/na-seed/actions/runs/41318891509),
+on commit `d27b3cc` **failed**. All 35 real original ELF paths entered kernel
+`execve`; 34/35 version/help probes completed with output. The remaining
+`snmpd -V` was a fixture error: upstream Net-SNMP documents `-v` as its
+version flag, whereas `-V` enables verbose daemon mode. The fixture now uses
+the correct `-v`, without relaxing the 35-executable requirement.
+
+The actual SNMP UDP server/client transaction and Tinyproxy host HTTP relay
+both **failed** in that run. Net-SNMP logged missing optional Linux
+`/proc/net` statistics, unsupported IPv6 `PF_NETLINK` prefix-listener socket,
+`ioctl` errno 25 and inability to bind its UDP endpoint. The IPv6 Netlink
+warning is distinct from the IPv4 UDP endpoint failure; static fake `/proc`
+files are not a valid proof of protocol correctness. Follow-up probes try a
+system-MIB-only daemon with loopback and wildcard IPv4 binding, plus the full
+initializer as a control; all still require real numeric-OID UDP get/walk.
+
+Tinyproxy accepted five guest TCP connections but read no HTTP request bytes
+until each Curl client timed out; the independent host saw zero forwarded GETs.
+Follow-up probes distinguish direct Curl guest-to-host traffic, explicit HTTP
+1.0 and 1.1 proxy modes with real Curl traces, and independently signed Ncat
+raw HTTP requests. Ncat is a *diagnostic* and cannot substitute for the
+original Curl + host-wire gate. The two protocols continue running even if one
+fails, with distinct failure markers and one end-of-batch summary.

@@ -109,11 +109,13 @@ case_run() {
             file_nonempty result ;;
           blkstat)
             "$exe" "$image" 2 > "$work/result" 2> "$work/error" || return 1
-            busy grep -Eiq '(block|sector)' "$work/result" ;;
+            busy grep -Fq 'Fragment: 2' "$work/result" &&
+            busy grep -Fq 'Allocated (Meta)' "$work/result" ;;
           blkls)
-            # Block 2 may be metadata/allocated. -e copies every block;
-            # the default unallocated-only mode would silently emit zero.
-            "$exe" -e "$image" 2 > "$work/result" 2> "$work/error" || return 1
+            # -e copies the real allocated and unallocated block stream;
+            # blkls takes the image as its final positional argument, not a
+            # second positional block index (which it reads as a filename).
+            "$exe" -e "$image" > "$work/result" 2> "$work/error" || return 1
             file_nonempty result ;;
           ils)
             "$exe" -a "$image" > "$work/result" 2> "$work/error" || return 1

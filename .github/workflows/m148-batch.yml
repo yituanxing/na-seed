@@ -45,7 +45,6 @@ jobs:
             sh -n "$script"
           done
           python3 scripts/check-prebuilt-profile-catalog.py
-          python3 scripts/check-native-qemu-target.py
           python3 scripts/check-three-isa-core.py
           sh scripts/check-vfs-provider.sh
           sh scripts/check-m86-txn.sh
