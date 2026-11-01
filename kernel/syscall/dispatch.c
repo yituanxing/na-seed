@@ -780,6 +780,9 @@ uint64_t syscall_dispatch(const uint64_t *args) {
             nas_print(" a1=");nas_hex(args[1]);
             nas_print(" a2=");nas_hex(args[2]);
             nas_print(" a3=");nas_hex(args[3]);
+            nas_print(" a4=");nas_hex(args[4]);
+            nas_print(" a5=");nas_hex(args[5]);
+            nas_print(" a6=");nas_hex(args[6]);
             nas_print(" status=");
             if((int64_t)fs_result.value<0) {
                 nas_print("-");nas_dec((uint64_t)(-(int64_t)fs_result.value));
