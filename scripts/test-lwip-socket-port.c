@@ -407,6 +407,24 @@ int main(void) {
      * can be accepted by a later Task using a fresh lease token. */
     close_slot(32);
     close_slot(31);
+    /* An original TCP-connect scanner uses nonblocking connect(), polls
+     * for writability, reads SO_ERROR and then calls getsockname(). There
+     * is no blocking Task to consume control_finish() in that sequence.
+     * The native completion must not leave a permanent EBUSY owner. */
+    reserve(43,NAS_LWIP_BRIDGE_TCP);
+    nas_open_files[43].status_flags|=0x800ULL;
+    assert(nas_lwip_socket_connect(43,lo(38017))==0);
+    flush_tx(43);
+    assert(nas_lwip_socket_control_ready(43)==0);
+    assert(nas_lwip_socket_port_take_error(43)==0);
+    named=name_slot(43,false);
+    assert(named.ipv4==UINT32_C(0x7f000001) && named.port!=0);
+    struct nas_fd_slot_lease scanned=lease_slot(44,UINT64_C(0xAA10));
+    accepted=accept_slot(30,scanned,&peer);
+    assert(nas_lwip_socket_port_adopt(accepted)==0);
+    nas_open_files[44].lease_token=0;
+    close_slot(44);
+    close_slot(43);
     connect_slot(33,38017);
     struct nas_fd_slot_lease canceled=lease_slot(34,UINT64_C(0xAA00));
     listener_ready(30);

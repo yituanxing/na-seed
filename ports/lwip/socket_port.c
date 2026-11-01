@@ -101,7 +101,14 @@ static void finish(struct port_socket *s) {
             /* UDP connect only sets a local peer association, not a TCP
              * handshake. Linux reports immediate success on enqueue;
              * finish later applies the true Netconn status and SO_ERROR. */
-            s->connect_result_pending=s->type==NAS_LWIP_BRIDGE_TCP;
+            /* Blocking connect() has a Task waiting for this one-shot
+             * result. Nonblocking connect() already returned EINPROGRESS:
+             * no Task will consume control_finish(), and retaining the
+             * result would permanently reject later getsockname(), bind()
+             * or other controls with EBUSY, even after POLLOUT/SO_ERROR.
+             * Keep any eventual failure in tx_error for SO_ERROR/POLLERR. */
+            s->connect_result_pending=s->type==NAS_LWIP_BRIDGE_TCP &&
+                !(nas_open_files[s->id.slot].status_flags&0x800ULL);
             s->command=PORT_IDLE;
             if(result.status==0 || result.status==-EISCONN) {
                 s->connected=true;
