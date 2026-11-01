@@ -194,10 +194,21 @@ case "$case_name" in
     exe=$(original_elf /usr/bin/ncat)
     # 10.0.2.2 is QEMU user-mode networking's host gateway, not lo.
     # The host HTTP service supplies README.md; it is absent from guest CPIO.
-    busy printf 'GET /README.md HTTP/1.0\r\nHost: 10.0.2.2\r\n\r\n' |
-      busy timeout 15 "$exe" -4 10.0.2.2 15413 > "$work/client"
-    busy grep -Fq 'HTTP/1.0 200 OK' "$work/client"
-    busy grep -Fq 'An operating system grown by real software.' "$work/client" ;;
+    # DHCP/ARP address-conflict checks are asynchronous. Probe real network
+    # readiness for a bounded interval, never assume sleep(4) is a lease.
+    wire_ready=false
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+      if busy printf 'GET /README.md HTTP/1.0\r\nHost: 10.0.2.2\r\n\r\n' |
+         busy timeout 8 "$exe" -4 10.0.2.2 15413 > "$work/client" 2> "$work/error"; then
+        if busy grep -Fq 'HTTP/1.0 200 OK' "$work/client" &&
+           busy grep -Fq 'An operating system grown by real software.' "$work/client"; then
+          wire_ready=true
+          break
+        fi
+      fi
+      busy sleep 1
+    done
+    [ "$wire_ready" = true ] ;;
   iperf3-loopback)
     exe=$(original_elf /usr/bin/iperf3)
     "$exe" -4 -s -1 -p 15412 > "$work/server" 2> "$work/server.err" &

@@ -45,9 +45,17 @@ static void detach_failed_netif(void *ctx){
 /* Executed by lwIP on its core thread, after DHCP has actually assigned an
  * address. Merely starting DHCP is not evidence of a working NIC/lease. */
 static void network_status(struct netif *netif){
- if(!netif || !netif_is_up(netif) || !netif_is_link_up(netif) ||
-    !dhcp_supplied_address(netif))return;
+ if(!netif)return;
  const ip4_addr_t *addr=netif_ip4_addr(netif);
+ nas_print("[LWIP NETIF STATUS] up=");nas_dec(netif_is_up(netif));
+ nas_print(" link=");nas_dec(netif_is_link_up(netif));
+ nas_print(" dhcp=");nas_dec(dhcp_supplied_address(netif));
+ nas_print(" ip=");nas_dec(ip4_addr1(addr));nas_print(".");
+ nas_dec(ip4_addr2(addr));nas_print(".");
+ nas_dec(ip4_addr3(addr));nas_print(".");
+ nas_dec(ip4_addr4(addr));nas_print("\n");
+ if(!netif_is_up(netif) || !netif_is_link_up(netif) ||
+    !dhcp_supplied_address(netif))return;
  if(ip4_addr_isany_val(*addr))return;
  nas_print("[LWIP DHCP BOUND] addr=");
  nas_dec(ip4_addr1(addr));nas_print(".");
@@ -103,6 +111,9 @@ static void tcpip_ready(void *unused){
          nas_print("[LWIP] cannot install NIC RX notification\n");
      }else{
          netif_set_status_callback(&network.ethernet.interface,network_status);
+         /* Covers a DHCP reply accepted while the callback was being
+          * registered; later address changes still use lwIP's callback. */
+         network_status(&network.ethernet.interface);
          nas_print("[LWIP] native ");nas_print(network.device_name);
          nas_print(" attached; DHCP started\n");
      }
