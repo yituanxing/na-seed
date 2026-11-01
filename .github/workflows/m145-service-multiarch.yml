@@ -1,0 +1,106 @@
+name: NaSeed M145 RV64 ARM64 original signed HTTP services over VirtIO-MMIO
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/m145-service-multiarch.yml'
+      - 'scripts/probe-m145-service-multiarch.sh'
+      - 'scripts/probe-riscv64-busybox-matrix.sh'
+      - 'scripts/probe-aarch64-busybox-matrix.sh'
+      - 'scripts/native-qemu-target.sh'
+      - 'scripts/stage-m143-prebuilt.sh'
+      - 'scripts/stage-m144-prebuilt.sh'
+      - 'scripts/stage-alpine-prebuilt-overlay.sh'
+      - 'scripts/m143-**'
+      - 'scripts/m144-**'
+      - 'scripts/host-configure-m143-batch.sh'
+      - 'scripts/host-configure-m144-batch.sh'
+      - 'rootfs/alpine/packages-m143-batch.txt'
+      - 'rootfs/alpine/packages-m144-batch.txt'
+      - 'tests/m143-**'
+      - 'tests/m144-**'
+      - 'kernel/fs/**'
+      - 'kernel/fd.*'
+      - 'kernel/drivers/virtio/**'
+      - 'ports/lwip/**'
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  real-isa-signed-services:
+    name: ${{ matrix.port }} / ${{ matrix.cohort }} signed original app HTTP
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [riscv64, arm64]
+        cohort: [m143, m144]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
+      - name: Verify upstream lwIP pin and reused genuine workload manifests
+        run: |
+          set -eu
+          test "$(git -C third_party/lwip rev-parse HEAD)" = 77dcd25a72509eb83f72b033d219b1d40cd8eb95
+          for script in scripts/probe-m145-service-multiarch.sh \
+                        scripts/probe-riscv64-busybox-matrix.sh \
+                        scripts/probe-aarch64-busybox-matrix.sh \
+                        scripts/stage-m143-prebuilt.sh scripts/stage-m144-prebuilt.sh \
+                        tests/m143-http-run.sh tests/m144-*-run.sh; do
+            sh -n "$script"
+          done
+          python3 -m py_compile scripts/m143-http-server.py scripts/m144-http-oracle.py
+          test "$(awk -F '\t' '$1 !~ /^#/ && NF {n++} END {print n+0}' scripts/m143-http-cases.tsv)" -eq 1
+          test "$(awk -F '\t' '$1 !~ /^#/ && NF {n++} END {print n+0}' scripts/m144-server-cases.tsv)" -eq 1
+      - name: Install native QEMU and verified APK staging dependencies
+        timeout-minutes: 12
+        run: |
+          set -eu
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'clang:clang' 'ld.lld:lld' 'readelf:binutils' \
+                      'cpio:cpio' 'mformat:mtools' 'sgdisk:gdisk' \
+                      'qemu-riscv64:qemu-user'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case '${{ matrix.port }}' in
+            riscv64)
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64" ;;
+            arm64)
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64" ;;
+          esac
+          test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu"
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+      - name: Native multiarch signed original Alpine HTTP/RESP end-to-end
+        timeout-minutes: 48
+        run: sh scripts/probe-m145-service-multiarch.sh ${{ matrix.port }} ${{ matrix.cohort }}
+      - name: Preserve full guest serial, original signed ELF hashes and host wire evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m145-${{ matrix.port }}-${{ matrix.cohort }}-native-guest
+          path: |
+            build/external/${{ matrix.cohort }}-batch/${{ matrix.port }}/apk-install.log
+            build/external/${{ matrix.cohort }}-batch/${{ matrix.port }}/requested-packages.txt
+            build/external/${{ matrix.cohort }}-batch/${{ matrix.port }}/*.sha256
+            build/external/${{ matrix.cohort }}-batch/${{ matrix.port }}/host-*.log
+            build/external/${{ matrix.cohort }}-batch/${{ matrix.port }}/m145-*.pcap
+            build/port-riscv64/full/matrix-source/${{ matrix.cohort }}-batch.clean.log
+            build/port-riscv64/full/matrix-source/${{ matrix.cohort }}-batch.serial.log
+            build/port-aarch64/full/matrix-source/${{ matrix.cohort }}-batch.clean.log
+            build/port-aarch64/full/matrix-source/${{ matrix.cohort }}-batch.serial.log
+          if-no-files-found: ignore
