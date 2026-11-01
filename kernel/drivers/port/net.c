@@ -40,15 +40,25 @@ int nas_netdev_unregister(struct nas_netdev *device) {
     }
     return -ENODEV;
 }
+static struct nas_netdev *pin_device(struct nas_netdev *device) {
+    if(!device || !device->registered || device->refs==UINT32_MAX)return NULL;
+    device->refs++;
+    return device;
+}
 struct nas_netdev *nas_netdev_get(const char *name) {
     if(!name)return NULL;
     for(unsigned i=0;i<NAS_NETDEV_LIMIT;i++){
         struct nas_netdev *device=devices[i];
-        if(device && !strcmp(device->name,name)){
-            if(device->refs==UINT32_MAX)return NULL;
-            device->refs++;
-            return device;
-        }
+        if(device && !strcmp(device->name,name))return pin_device(device);
+    }
+    return NULL;
+}
+struct nas_netdev *nas_netdev_get_ordinal(unsigned ordinal) {
+    for(unsigned i=0;i<NAS_NETDEV_LIMIT;i++){
+        struct nas_netdev *device=devices[i];
+        if(!device)continue;
+        if(!ordinal)return pin_device(device);
+        ordinal--;
     }
     return NULL;
 }

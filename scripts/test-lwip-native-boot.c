@@ -44,7 +44,7 @@ static const struct nas_netdev_ops network_ops={
  .transmit=transmit,.poll=poll,.link_up=link_up
 };
 static struct nas_netdev eth={
- .name="eth0",.mac={0x52,0x54,0,0x12,0x34,0x56},
+ .name="en0",.mac={0x52,0x54,0,0x12,0x34,0x56},
  .mtu=1500,.backend=&eth,.ops=&network_ops
 };
 int main(void){
@@ -69,5 +69,5 @@ int main(void){
  for(unsigned i=0;i<4 && polls<3;i++)
      assert(nas_kthread_run(1)==1); /* user-scheduler slices may interleave */
  assert(polls>=3);
- puts("[LWIP NATIVE BOOT PASS] idempotent discovery hook, native tcpip/DHCP, bounded RX worker, IRQ wake, deadline fallback, pins");
+ puts("[LWIP NATIVE BOOT PASS] arbitrary NIC name discovery, native tcpip/DHCP, bounded RX worker, IRQ wake, deadline fallback, pins");
 }

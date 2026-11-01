@@ -48,6 +48,10 @@ int nas_netdev_register(struct nas_netdev *device);
 int nas_netdev_unregister(struct nas_netdev *device);
 /* Acquires one device reference; a live netif must call put on removal. */
 struct nas_netdev *nas_netdev_get(const char *name);
+/* Enumerate any NIC driver through the same pinned registry, independent
+ * of naming (e.g. eth0, en0, wlan0). Ordinal is among currently registered
+ * devices, not a persistent identity; hold the returned reference. */
+struct nas_netdev *nas_netdev_get_ordinal(unsigned ordinal);
 int nas_netdev_put(struct nas_netdev *device);
 int nas_netdev_transmit(struct nas_netdev *device,
                         const uint8_t *frame, uint32_t bytes);

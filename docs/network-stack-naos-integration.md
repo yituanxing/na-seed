@@ -94,6 +94,41 @@ QEMU VirtIO-Net hardware
   from an interrupt; it wakes a bounded network worker which invokes
   `tcpip_input` (or another thread-safe lwIP netif API).
 
+### Replacing drivers and stacks, like filesystem providers
+
+There are **two different** stable provider boundaries. `nas_bus_driver`
+claims a discovered hardware device; the NIC port publishes Ethernet
+frames through `nas_netdev_ops` (`transmit`, bounded `poll`, `link_up`).
+The network stack never sees a VirtIO queue or PCI BAR. A second NIC such as
+[U-Boot's E1000](https://docs.u-boot.org/en/latest/board/emulation/network.html)
+will implement the same frame contract, not another IP layer or NetDevice
+registry. The new `nas_netdev_get_ordinal()` offers pin-safe discovery
+independent of the driver's interface name. lwIP boot now selects a registered
+NIC instead of looking up the hard-coded `eth0`; host tests publish `en0`.
+
+**Current hardware limitation:** `kernel/platform/x86_virtio_pci.c` scans
+VirtIO PCI vendor/devices and publishes VirtIO transport descriptors only.
+It is *not* yet generic PCI enumeration for E1000/RTL8139. Before the
+second real NIC, factor PCI vendor/device/BAR/IRQ discovery into the common
+bus and keep VirtIO-specific capability/queue setup behind the VirtIO
+driver. Do not clone a second PCI scan. Also add driver-neutral link-change
+notifications, dynamic attach/detach and a real IRQ acknowledge/rearm test;
+the existing RX notification supports only one attached stack consumer.
+
+The second stable boundary is **above** `nas_netdev`: each protocol stack
+provides its own frame adapter and Socket `nas_file_ops` implementation.
+Current `ports/lwip/netif_port.c`, `sys_arch.c`, and `netconn_bridge.c` belong
+exclusively to lwIP; a future
+[smoltcp](https://github.com/smoltcp-rs/smoltcp),
+[Zephyr](https://docs.zephyrproject.org/latest/services/connectivity/networking/overview.html)
+or [NuttX](https://github.com/apache/nuttx) stack would supply its own port.
+Unlike VFS filesystems, two stacks cannot casually hot-swap the *same*
+active TCP connection, routing table and DHCP lease. Keep one build-time
+selected stack until a second real stack exercises the interface; then
+introduce mutually exclusive stack-provider build selection. Do not create
+a second FD table, synthetic TCP compatibility layer or unused runtime
+plugin registry in advance. Prioritize upstream lwIP + real Alpine apps.
+
 ## NaOS and Linux cross-check: avoid architectural drift
 
 The exact NaOS kernel comparison baseline is

@@ -36,11 +36,22 @@ static struct nas_netdev first={
 static struct nas_netdev duplicate={
     .name="eth0",.mac={0x52,0x54,0,0x12,0x34,0x57},
     .mtu=1500,.backend=&tx_count,.ops=&ops};
+static struct nas_netdev alternate={
+    .name="en0",.mac={0x52,0x54,0,0x12,0x34,0x58},
+    .mtu=1500,.backend=&tx_count,.ops=&ops};
 int main(void){
     assert(nas_netdev_register(&first)==0);
     assert(nas_netdev_register(&first)==-EINVAL);
     assert(nas_netdev_register(&duplicate)==-EEXIST);
+    assert(nas_netdev_register(&alternate)==0);
     assert(nas_netdev_get("eth1")==NULL);
+    struct nas_netdev *other=nas_netdev_get_ordinal(1);
+    assert(other==&alternate && alternate.refs==1);
+    assert(nas_netdev_get_ordinal(2)==NULL);
+    assert(nas_netdev_unregister(&alternate)==-EBUSY);
+    assert(nas_netdev_put(other)==0);
+    assert(nas_netdev_get_ordinal(0)==&first && first.refs==1);
+    assert(nas_netdev_put(&first)==0);
     struct nas_netdev *pin=nas_netdev_get("eth0");
     assert(pin==&first && first.refs==1);
     assert(nas_netdev_set_rx_wake(pin,wake,&wake_count)==0);
@@ -60,6 +71,10 @@ int main(void){
     assert(nas_netdev_put(pin)==0);
     assert(nas_netdev_put(pin)==-EINVAL);
     assert(nas_netdev_unregister(&first)==0);
+    assert(nas_netdev_get_ordinal(0)==&alternate);
+    assert(nas_netdev_put(&alternate)==0);
+    assert(nas_netdev_unregister(&alternate)==0);
+    assert(nas_netdev_get_ordinal(0)==NULL);
     nas_netdev_notify_rx(&first);
     assert(wake_count==2);
     assert(!nas_netdev_link_up(&first));

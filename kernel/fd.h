@@ -10,6 +10,7 @@
  * A return value of NAS_OPEN_FILE_LIMIT means no final description was released.
  */
 struct nas_task;
+struct nas_file_ops;
 /* System-wide open descriptions, independent of per-process FD count. */
 #define NAS_OPEN_FILE_LIMIT 128
 #define NAS_FD_LIMIT 64
@@ -64,14 +65,32 @@ bool nas_task_hold_files(const struct nas_task *task);
  * across close/dup2 until their own final release. */
 bool nas_fd_hold_description(unsigned slot);
 
+/* Asynchronous providers (notably Netconn accept) must own an OpenFile slot
+ * while a native worker is pending. A read-only nas_fd_reserve probe is NOT
+ * a lease: another Task may allocate that slot before completion. The lease
+ * holds exactly one kernel-owned description reference without publishing a
+ * process FD; commit transfers it atomically, cancel releases it. Neither
+ * operation introduces a separate socket/FD namespace. */
+struct nas_fd_slot_lease { unsigned slot; uint64_t token; };
+int nas_fd_slot_lease_begin(struct nas_fd_slot_lease *out,
+                            const char *operation);
+bool nas_fd_slot_lease_valid(struct nas_fd_slot_lease lease);
+int nas_fd_slot_lease_commit(struct nas_fd_slot_lease lease,
+                             struct nas_task *task,unsigned fd,uint8_t kind,
+                             uint64_t status_flags,bool cloexec,
+                             const struct nas_file_ops *provider_ops);
+bool nas_fd_slot_lease_cancel(struct nas_fd_slot_lease lease);
+
 /* Open-file descriptions are shared across fork/dup. FD_CLOEXEC and the
  * per-task mapping of FD number -> description remain task-local. This is a
  * fixed-capacity object table for now, not a heap allocator or full VFS. */
-struct nas_file_ops;
 struct limine_file;
 struct bootfs_entry;
 struct nas_open_file {
     uint16_t refcount;
+    /* Nonzero only while this OpenFile is a kernel-owned pending lease.
+     * The token cannot be confused with the protocol stack's own handle. */
+    uint64_t lease_token;
     uint64_t status_flags;
     uint64_t position;
     const struct nas_file_ops *ops;

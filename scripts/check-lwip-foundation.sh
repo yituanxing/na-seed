@@ -34,6 +34,12 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -fno-builtin \
    kernel/arch/x86_64/kernel_switch.S \
    -o build/lwip-foundation/test-netconn-bridge
 build/lwip-foundation/test-netconn-bridge
+# A native ACCEPT worker must pin its destination OpenFile slot against
+# competing Task allocations until the accepted Netconn can be published.
+cc -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin \
+   -I kernel scripts/test-fd-slot-lease.c kernel/fd.c \
+   -o build/lwip-foundation/test-fd-slot-lease
+build/lwip-foundation/test-fd-slot-lease
 for compiler in x86_64-linux-gnu-gcc riscv64-linux-gnu-gcc aarch64-linux-gnu-gcc; do
     if command -v "$compiler" >/dev/null 2>&1; then
         "$compiler" -std=c11 -O2 -Wall -Wextra -Werror \

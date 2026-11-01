@@ -6,6 +6,7 @@
 #include "../../kernel/task/k_sync.h"
 #include "../../kernel/task/kthread.h"
 #include "../../kernel/drivers/serial.h"
+#include "../../kernel/lib/string.h"
 #include "../../kernel/time/clock.h"
 #include "lwip/tcpip.h"
 #include "lwip/sys.h"
@@ -20,6 +21,7 @@ extern int nas_platform_virtio_blk_probe(void);
 #define NAS_NET_FALLBACK_POLL_NS UINT64_C(10000000)
 static struct {
  struct nas_lwip_eth ethernet;
+ char device_name[16]; /* Linux IFNAMSIZ: selection is not driver-specific. */
  struct nas_ksem rx_wakeup;
  struct nas_kthread_handle rx_handle;
  bool ethernet_available,ready,stop;
@@ -70,8 +72,8 @@ static void receive_worker(void *ctx){
 static void tcpip_ready(void *unused){
  (void)unused;
  if(network.ethernet_available){
-     if(nas_lwip_eth_core_attach(&network.ethernet,"eth0",true)){
-         nas_print("[LWIP] cannot attach eth0; loopback remains active\n");
+     if(nas_lwip_eth_core_attach(&network.ethernet,network.device_name,true)){
+         nas_print("[LWIP] cannot attach selected NIC; loopback remains active\n");
          network.stop=true;
      }else if(nas_netdev_set_rx_wake(network.ethernet.device,
                                      wake_rx,&network.rx_wakeup)){
@@ -79,7 +81,8 @@ static void tcpip_ready(void *unused){
          (void)nas_lwip_eth_core_detach(&network.ethernet);
          nas_print("[LWIP] cannot install NIC RX notification\n");
      }else{
-         nas_print("[LWIP] original U-Boot eth0 attached; DHCP started\n");
+         nas_print("[LWIP] native ");nas_print(network.device_name);
+         nas_print(" attached; DHCP started\n");
      }
  }
  network.ready=true;
@@ -92,8 +95,18 @@ bool nas_lwip_guest_boot(void){
   * lwext4 already scanned before us; no filesystem owns this bootstrap. */
  if(nas_platform_virtio_blk_probe()<0)return false;
 #endif
- struct nas_netdev *eth=nas_netdev_get("eth0");
- if(eth){network.ethernet_available=true;(void)nas_netdev_put(eth);}
+ /* Device discovery is stack-neutral. Another NIC driver may publish a
+  * different interface name without changing the lwIP bootstrap. This
+  * initial port still manages only one netif; multi-NIC is a later gate. */
+ struct nas_netdev *eth=nas_netdev_get_ordinal(0);
+ if(eth){
+     size_t len=strnlen(eth->name,sizeof(network.device_name));
+     if(len && len<sizeof(network.device_name)){
+         memcpy(network.device_name,eth->name,len+1U);
+         network.ethernet_available=true;
+     }
+     (void)nas_netdev_put(eth);
+ }
  nas_ksem_init(&network.rx_wakeup,0);
  sys_init();
  tcpip_init(tcpip_ready,NULL);

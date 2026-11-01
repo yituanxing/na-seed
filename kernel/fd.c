@@ -10,6 +10,9 @@
  * the generic description layer has no dependency on /tmp or pipes.
  */
 struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
+/* A single monotonic identity, never reset on a warm test reinit. Its only
+ * owner is the global File table; it is not a parallel FD allocation map. */
+static uint64_t next_lease_token;
 /* Fixed pool implements the allocator only; identity is not a Task slot. */
 static struct nas_files files_pool[NAS_TASK_LIMIT * 2U];
 struct nas_files *nas_files_new(void) {
@@ -96,7 +99,8 @@ bool nas_fd_attach_owned(struct nas_task *task, unsigned fd, unsigned slot,
     if(!task || !task->fds || fd>=NAS_FD_LIMIT ||
        slot>=NAS_OPEN_FILE_LIMIT || kind==FD_CLOSED ||
        task->fds->entries[fd].kind!=FD_CLOSED ||
-       !nas_open_files[slot].refcount) return false;
+       !nas_open_files[slot].refcount ||
+       nas_open_files[slot].lease_token) return false;
     task->fds->entries[fd]=(struct nas_fd_entry){
         .kind=kind,.slot=(uint8_t)slot,.cloexec=cloexec ? 1U : 0U
     };
@@ -176,7 +180,59 @@ bool nas_task_hold_files(const struct nas_task *task) {
 }
 bool nas_fd_hold_description(unsigned slot) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount ||
+       nas_open_files[slot].lease_token ||
        nas_open_files[slot].refcount==UINT16_MAX)return false;
     nas_open_files[slot].refcount++;
+    return true;
+}
+
+int nas_fd_slot_lease_begin(struct nas_fd_slot_lease *out,
+                            const char *operation) {
+    if(!out)return -EINVAL;
+    *out=(struct nas_fd_slot_lease){.slot=NAS_OPEN_FILE_LIMIT};
+    if(next_lease_token==UINT64_MAX)return -EOVERFLOW;
+    for(unsigned slot=0;slot<NAS_OPEN_FILE_LIMIT;slot++) {
+        if(nas_open_files[slot].refcount)continue;
+        uint64_t token=++next_lease_token;
+        nas_open_files[slot]=(struct nas_open_file){
+            .refcount=1,.lease_token=token
+        };
+        *out=(struct nas_fd_slot_lease){.slot=slot,.token=token};
+        return 0;
+    }
+    if(operation)nas_fd_report_exhaustion(operation);
+    return -ENFILE;
+}
+bool nas_fd_slot_lease_valid(struct nas_fd_slot_lease lease) {
+    return lease.slot<NAS_OPEN_FILE_LIMIT && lease.token &&
+           nas_open_files[lease.slot].refcount==1 &&
+           nas_open_files[lease.slot].lease_token==lease.token;
+}
+int nas_fd_slot_lease_commit(struct nas_fd_slot_lease lease,
+                             struct nas_task *task,unsigned fd,uint8_t kind,
+                             uint64_t status_flags,bool cloexec,
+                             const struct nas_file_ops *provider_ops) {
+    if(!nas_fd_slot_lease_valid(lease))return -EBADF;
+    if(!task || !task->fds || fd>=NAS_FD_LIMIT || kind==FD_CLOSED)
+        return -EINVAL;
+    /* Target Task may have installed a different FD while our native
+     * accept worker ran. Preserve its entry and leave the lease live. */
+    if(task->fds->entries[fd].kind!=FD_CLOSED)return -EBUSY;
+    const unsigned slot=lease.slot;
+    nas_open_files[slot]=(struct nas_open_file){
+        .refcount=1,.status_flags=status_flags,
+        .ops=provider_ops?provider_ops:nas_fs_ops_for_kind(kind)
+    };
+    /* Both the lease and this placement live on the same masked-IRQ kernel
+     * execution boundary; there is no partially published File visible. */
+    if(!nas_fd_attach_owned(task,fd,slot,kind,cloexec))
+        nas_fail("FD lease publication violated validated slot ownership");
+    return 0;
+}
+bool nas_fd_slot_lease_cancel(struct nas_fd_slot_lease lease) {
+    if(!nas_fd_slot_lease_valid(lease))return false;
+    /* Backend cleanup (e.g. async netconn_release) belongs to the caller
+     * before aborting the lease; this slot has no FileOps finalizer yet. */
+    nas_open_files[lease.slot]=(struct nas_open_file){0};
     return true;
 }
