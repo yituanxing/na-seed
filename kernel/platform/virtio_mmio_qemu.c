@@ -17,18 +17,38 @@
 static struct nas_bus_device devices[VIRTIO_MMIO_SLOTS_MAX];
 static struct nas_virtio_transport transports[VIRTIO_MMIO_SLOTS_MAX];
 static bool scanned;
+static unsigned block_count(void){
+#ifdef NAS_ENABLE_VIRTIO_BLK
+    return nas_virtio_blk_count();
+#else
+    return 0;
+#endif
+}
+static unsigned net_count(void){
+#ifdef NAS_ENABLE_VIRTIO_NET
+    return nas_virtio_net_count();
+#else
+    return 0;
+#endif
+}
 int nas_qemu_virtio_mmio_probe(uint64_t physical, uint64_t virtual_base,
                               unsigned stride, unsigned slots,
                               bool (*map_page)(uint64_t,uint64_t)) {
     if (!map_page || (physical&4095U) || (virtual_base&4095U) ||
         !slots || slots>VIRTIO_MMIO_SLOTS_MAX || !stride ||
         (stride&3U) || stride<0x200U || stride>PAGE_BYTES ||
-        (uint64_t)slots*stride>32U*PAGE_BYTES || scanned)
+        (uint64_t)slots*stride>32U*PAGE_BYTES)
         return -1;
-    int rc=nas_virtio_blk_driver_register();
+    if(scanned)return (int)block_count();
+    int rc=0;
+#ifdef NAS_ENABLE_VIRTIO_BLK
+    rc=nas_virtio_blk_driver_register();
     if (rc<0) return rc;
+#endif
+#ifdef NAS_ENABLE_VIRTIO_NET
     rc=nas_virtio_net_driver_register();
     if (rc<0) return rc;
+#endif
     for (unsigned page=0;page<(slots*stride+PAGE_BYTES-1U)/PAGE_BYTES;page++)
         if (!map_page(physical+page*PAGE_BYTES,
                       virtual_base+page*PAGE_BYTES)) return -1;
@@ -56,9 +76,9 @@ int nas_qemu_virtio_mmio_probe(uint64_t physical, uint64_t virtual_base,
     nas_print("[VIRTIO] hardware transport modern=");
     nas_dec(modern);nas_print(" legacy=");nas_dec(legacy);nas_print("\n");
     nas_print("[VIRTIO-BLK] real modern MMIO devices=");
-    nas_dec(nas_virtio_blk_count());nas_print("\n");
+    nas_dec(block_count());nas_print("\n");
     nas_print("[VIRTIO-NET] real modern MMIO devices=");
-    nas_dec(nas_virtio_net_count());nas_print("\n");
+    nas_dec(net_count());nas_print("\n");
     scanned=true;
-    return (int)nas_virtio_blk_count();
+    return (int)block_count();
 }

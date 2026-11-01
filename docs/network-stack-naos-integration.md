@@ -65,8 +65,12 @@ QEMU VirtIO-Net hardware
 
 - The **kernel bus** knows device class and transport, not frames, IP,
   sockets or user descriptors. A discovered but unclaimed network adapter
-  remains available for later `nas_bus_driver_register`. The platform's
-  VirtIO type=1 acceptance is the first wiring change in this batch.
+  remains available for later `nas_bus_driver_register`. The two class
+  drivers now have **independent opt-ins**: `NAS_ENABLE_VIRTIO_NET=1` for
+  the actual original NIC and `NAS_ENABLE_VIRTIO_BLK=1` for block/ext4.
+  Common bus/transport/vring code is included once in either build. The
+  native netdev implementation is already part of shared kernel sources;
+  the optional VirtIO object list no longer compiles it twice.
 - `nas_netdev` is solely an Ethernet frame-facing interface; never a second
   socket implementation, routing table, DHCP client or TCP stream. A
   netif acquires a reference, then detaches before the driver can unregister.
@@ -117,11 +121,15 @@ The remaining operating-system constraints are explicit:
    IRQ-masked kernel execution and non-preemptible C scheduler. Before
    enabling SMP/preemptible kernel, add the shared irqsave lock; do not
    introduce a second lwIP-specific scheduler or busy-wait mechanism.
-4. `nas_lwip_eth_core_attach` / `core_detach` must run on the lwIP core
-   thread. `nas_lwip_eth_poll` runs from a non-IRQ kernel worker, copies the
-   device-owned Ethernet frame into pbufs and uses `tcpip_input`. An actual
-   NIC IRQ wake/run loop, live guest DHCP and socket/VFS glue are still
-   pending. The default `127.0.0.1` loopback is official lwIP-owned.
+4. `nas_lwip_eth_core_attach` / `core_detach` run on the official lwIP core
+   thread. The new opt-in `network_boot.c` starts one native RX worker,
+   handles an IRQ-safe `nas_netdev_notify_rx` semaphore wake and falls back
+   to a **10ms suspended wait** (not a busy spin) when transport IRQ routing
+   is absent. It polls at most 8 frames per slice, copies borrowed DMA frame
+   bytes into pbufs and uses `tcpip_input`. Host tests verify actual boot
+   callback, DHCP TX, RX and event/time wake. Wiring/acknowledging physical
+   PCI/MMIO interrupts, real QEMU DHCP, clean worker cancellation and
+   Socket/VFS glue remain pending. `lo` is official lwIP-owned.
 5. `nas_lwip_random32` is currently a noncryptographic clock-seeded PRNG;
    a real entropy-backed source is required for defensible TCP ISNs before
    Internet-facing use. Do not claim network security or wire operation.
@@ -132,7 +140,7 @@ The remaining operating-system constraints are explicit:
 | --- | --- | --- |
 | A — host-proven | MMIO/PCI publish VirtIO-Net class=1; independent netdev; **actual original U-Boot Net** on two DMA queues, shared VirtIO adapter and bus class binding | Host simulated RX/TX, malformed and timeout tests, multi-ISA syntax, existing BlockDevice proof; **no claim of packets on the wire** |
 | B — host-proven | Compile original pinned lwIP under `NAS_ENABLE_LWIP=1`, native `sys_arch`, upstream tcpip thread and `lo` netif; Ethernet pbuf adapter sends DHCP and queues inbound RX | Native sem/mbox/deadlines/worker, **real upstream UDP loopback**, DHCP TX, RX, netdev pins and cleanup PASS; three-ISA C syntax PASS. **No guest/wire, TCP socket or AF_INET FileOps proof yet** |
-| C | Wire pinned original U-Boot VirtIO-Net through shared compatibility, 2 queues and DMA; connect netif, bounded TX completion, interrupt/bounded receive worker | PCI x86, MMIO RV64/AArch64 QEMU guest frames; DHCP lease, ARP, ping and UDP to host; MAC/address/link reporting |
+| C — host boot-proven | Original U-Boot VirtIO-Net with dual DMA queues, independent network opt-in, filesystem-independent bus discovery, lwIP netif, native 8-frame RX worker, IRQ-safe wake callback and 10ms fallback | Host simulated boot/DHCP TX/RX, wake, fallback, pins PASS. Next: PCI x86 and MMIO RV64/AArch64 **real** QEMU guest DHCP lease, ARP, ping and UDP to host; MAC/address/link reporting |
 | D | Replace AF_INET socket backend with Netconn and FileOps, preserve AF_UNIX and shared open-description semantics | ncat local/remote, curl, iperf3, DNS, nonblocking connect, poll/epoll, fork/dup, close/accept races on all ISAs |
 | E | Remove old simulated AF_INET code and harden shutdown, resource failure, MTU, hot-unplug | Network + block concurrency, packet loss/backpressure, memory lifetime, repeated NIC reset, all-ISA QEMU regression accumulated as requested |
 

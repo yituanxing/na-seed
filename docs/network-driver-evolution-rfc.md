@@ -82,11 +82,15 @@ class driver supplies only its DMA staging/completion bridge to the same
    VirtIO-Net `eth_ops` wrapper with two DMA queues, fixed 32 RX buffers,
    finite TX polling and malformed completion fail-closed; register a
    type=1 class driver on both MMIO and PCI. The host tests simulate device
-   completions; real NIC interrupts, physical QEMU traffic and lwIP netif
-   are **not yet proven**. The existing opt-in VirtIO block build includes
-   this driver while the separate network boot hook is still pending.
-3. Complete lwIP `sys_arch` and Netconn/`nas_file_ops` on the original
-   pinned lwIP version, with separate loopback netif and hardware netif.
+   completions; hardware PCI/MMIO IRQ acknowledgment and physical QEMU
+   traffic are **not yet proven**. `NAS_ENABLE_VIRTIO_NET=1` independently
+   enables the NIC, with no lwext4/BlockDevice requirement. The kernel
+   bootstrap now schedules official lwIP and a native bounded RX worker;
+   both paths have host-side simulated DMA acceptance.
+3. **Host-proven:** original pinned lwIP `sys_arch` and native Netconn-core
+   thread, real upstream UDP over its own loopback, DHCP transmit and
+   `nas_netdev` Ethernet pbuf adapter. The remaining work is Netconn into
+   the one `nas_file_ops` open-file lifetime, guest TCP/IP and IRQ delivery.
 4. Accumulate host/ISA gates, then one all-ISA QEMU batch proving DHCP,
    ping, UDP/TCP, DNS and real Alpine network applications. Retire the old
    simulated AF_INET backend only when this replacement passes.

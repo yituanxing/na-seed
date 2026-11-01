@@ -23,6 +23,21 @@ static struct nas_virtio_pci_resources resources[VIRTIO_DEVICES];
 static struct nas_virtio_pci pci[VIRTIO_DEVICES];
 static struct nas_virtio_transport transports[VIRTIO_DEVICES];
 static struct nas_bus_device devices[VIRTIO_DEVICES];
+static bool scanned;
+static unsigned block_count(void){
+#ifdef NAS_ENABLE_VIRTIO_BLK
+    return nas_virtio_blk_count();
+#else
+    return 0;
+#endif
+}
+static unsigned net_count(void){
+#ifdef NAS_ENABLE_VIRTIO_NET
+    return nas_virtio_net_count();
+#else
+    return 0;
+#endif
+}
 static void out32(uint16_t port,uint32_t value) {
     __asm__ volatile("outl %0,%1"::"a"(value),"Nd"(port));
 }
@@ -93,10 +108,16 @@ static bool map_bars(uint8_t bus,uint8_t slot,uint8_t fun,unsigned index,
     return mapped;
 }
 int nas_platform_virtio_blk_probe(void) {
-    int rc=nas_virtio_blk_driver_register();
+    if(scanned)return (int)block_count();
+    int rc=0;
+#ifdef NAS_ENABLE_VIRTIO_BLK
+    rc=nas_virtio_blk_driver_register();
     if(rc<0)return rc;
+#endif
+#ifdef NAS_ENABLE_VIRTIO_NET
     rc=nas_virtio_net_driver_register();
     if(rc<0)return rc;
+#endif
     unsigned count=0;
     for(unsigned slot=0;slot<32U;slot++) {
         uint32_t first=cfg_read(0,(uint8_t)slot,0,0);
@@ -148,8 +169,9 @@ int nas_platform_virtio_blk_probe(void) {
         }
     }
     nas_print("[VIRTIO-BLK] real modern PCI devices=");
-    nas_dec(nas_virtio_blk_count());nas_print("\n");
+    nas_dec(block_count());nas_print("\n");
     nas_print("[VIRTIO-NET] real modern PCI devices=");
-    nas_dec(nas_virtio_net_count());nas_print("\n");
-    return (int)nas_virtio_blk_count();
+    nas_dec(net_count());nas_print("\n");
+    scanned=true;
+    return (int)block_count();
 }

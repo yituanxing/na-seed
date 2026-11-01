@@ -48,6 +48,9 @@ $(error NAS_ENABLE_VIRTIO_BLK requires NAS_ENABLE_LWEXT4)
 endif
 CFLAGS += -DNAS_ENABLE_VIRTIO_BLK=1 -I ports/uboot/compat
 endif
+ifeq ($(NAS_ENABLE_VIRTIO_NET),1)
+CFLAGS += -DNAS_ENABLE_VIRTIO_NET=1 -I ports/uboot/compat
+endif
 ifeq ($(NAS_ENABLE_LWIP),1)
 CFLAGS += -DNAS_ENABLE_LWIP=1 -I ports/lwip/include -I third_party/lwip/src/include
 endif
@@ -62,13 +65,18 @@ kernel: $(KERNEL)
 # Opt-in unchanged original U-Boot source behind a modern PCI transport.
 # All request code is shared with ARM/RV; only x86 PCI enumeration is extra.
 VIRTIO_X86_OBJS :=
-ifeq ($(NAS_ENABLE_VIRTIO_BLK),1)
+ifneq ($(filter 1,$(NAS_ENABLE_VIRTIO_BLK) $(NAS_ENABLE_VIRTIO_NET)),)
 VIRTIO_X86_SRCS := kernel/drivers/core/bus.c kernel/drivers/port/dma.c \
- kernel/drivers/port/block.c kernel/drivers/port/net.c kernel/drivers/virtio/transport.c \
+ kernel/drivers/virtio/transport.c \
  kernel/drivers/virtio/pci.c ports/unikraft/split_queue.c \
- ports/uboot/virtio_compat.c ports/uboot/blk_port.c ports/uboot/virtio_bus.c \
- ports/uboot/net_port.c ports/uboot/virtio_net_bus.c \
+ ports/uboot/virtio_compat.c \
  kernel/platform/x86_virtio_pci.c
+ifeq ($(NAS_ENABLE_VIRTIO_BLK),1)
+VIRTIO_X86_SRCS += kernel/drivers/port/block.c ports/uboot/blk_port.c ports/uboot/virtio_bus.c
+endif
+ifeq ($(NAS_ENABLE_VIRTIO_NET),1)
+VIRTIO_X86_SRCS += ports/uboot/net_port.c ports/uboot/virtio_net_bus.c
+endif
 VIRTIO_X86_OBJS := $(patsubst %.c,$(OUT)/virtio_%.o,$(notdir $(VIRTIO_X86_SRCS)))
 define nas_compile_x86_virtio
 $(OUT)/virtio_$(notdir $(basename $(1))).o: $(1) $(HDR)
@@ -83,6 +91,7 @@ endif
 LWIP_X86_OBJS :=
 ifeq ($(NAS_ENABLE_LWIP),1)
 LWIP_X86_SRCS := ports/lwip/sys_arch.c ports/lwip/netif_port.c \
+ ports/lwip/network_boot.c \
  $(wildcard third_party/lwip/src/core/*.c) \
  $(wildcard third_party/lwip/src/core/ipv4/*.c) \
  $(wildcard third_party/lwip/src/api/*.c) \
