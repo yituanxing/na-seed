@@ -24,7 +24,7 @@ cleanup() {
     if [ "$result" -ne 0 ]; then
         busy printf '[M141 SYSTEM DIAG] %s exit=%s\n' "$case_name" "$result"
         case "$case_name" in
-          ipc-shared|ipc-semaphore|exch-files|iperf3-loopback|ncat-loopback|ncat-wire|ncat-udp-wire|dig-dns-wire|host-dns-wire|nslookup-dns-wire|mdig-dns-wire)
+          ipc-shared|ipc-semaphore|exch-files|iperf3-loopback|ncat-loopback|ncat-wire|ncat-udp-wire|dig-dns-wire|host-dns-wire|nslookup-dns-wire|mdig-dns-wire|offline-arpa|offline-rr|offline-zone|offline-rndc-key|offline-ddns-key)
             # These fixtures own their files; never dump arbitrary user
             # paths. Preserve only small, bounded original-program output.
             for diagnostic in details removed error out a b server.err server client client.json; do
@@ -287,6 +287,30 @@ case "$case_name" in
     done
     [ "$mdig_ready" = true ]
     busy printf 'M141_SYSTEM_MDIG_DNS_WIRE_PASS\n' ;;
+  offline-arpa)
+    original_elf /usr/bin/arpaname >/dev/null
+    /bin/sh /tests/m141-dns-run.sh arpa_ipv4
+    /bin/sh /tests/m141-dns-run.sh arpa_ipv6
+    busy printf 'M141_SYSTEM_OFFLINE_ARPA_PASS\n' ;;
+  offline-rr)
+    original_elf /usr/bin/named-rrchecker >/dev/null
+    /bin/sh /tests/m141-dns-run.sh rr_a
+    /bin/sh /tests/m141-dns-run.sh rr_relative_cname
+    /bin/sh /tests/m141-dns-run.sh rr_invalid
+    busy printf 'M141_SYSTEM_OFFLINE_RR_PASS\n' ;;
+  offline-zone)
+    original_elf /usr/bin/named-checkzone >/dev/null
+    /bin/sh /tests/m141-dns-run.sh zone_valid
+    /bin/sh /tests/m141-dns-run.sh zone_invalid
+    busy printf 'M141_SYSTEM_OFFLINE_ZONE_PASS\n' ;;
+  offline-rndc-key)
+    original_elf /usr/sbin/rndc-confgen >/dev/null
+    /bin/sh /tests/m141-dns-run.sh rndc_key
+    busy printf 'M141_SYSTEM_OFFLINE_RNDC_KEY_PASS\n' ;;
+  offline-ddns-key)
+    original_elf /usr/sbin/ddns-confgen >/dev/null
+    /bin/sh /tests/m141-dns-run.sh ddns_key
+    busy printf 'M141_SYSTEM_OFFLINE_DDNS_KEY_PASS\n' ;;
   iperf3-loopback)
     exe=$(original_elf /usr/bin/iperf3)
     "$exe" -4 -s -1 -p 15412 > "$work/server" 2> "$work/server.err" &

@@ -83,6 +83,15 @@ case "$case_id" in
         "$busy" grep -Fq 'secret' "$work/rndc.conf"
         "$busy" grep -Fq 'hmac-sha256' "$work/rndc.conf"
         ;;
+    ddns_key)
+        /usr/sbin/ddns-confgen -a hmac-sha256 -k m141-ddns -z example.test \
+            > "$work/ddns.conf"
+        "$busy" grep -Fq 'm141-ddns' "$work/ddns.conf"
+        "$busy" grep -Fq 'hmac-sha256' "$work/ddns.conf"
+        "$busy" grep -Fq 'secret' "$work/ddns.conf"
+        "$busy" grep -Fq 'example.test' "$work/ddns.conf"
+        "$busy" grep -Fq 'update-policy' "$work/ddns.conf"
+        ;;
     *)
         echo "[M141 DNS ERROR] unknown case: $case_id" >&2
         exit 2

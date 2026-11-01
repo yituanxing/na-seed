@@ -422,6 +422,23 @@ int main(void) {
      * can be accepted by a later Task using a fresh lease token. */
     close_slot(32);
     close_slot(31);
+    /* An iperf3-style final control byte is copied by write(), followed
+     * immediately by final close(), with no scheduler slice in between.
+     * The queued native SEND must precede tcp_close/FIN; otherwise the
+     * receiving peer sees EOF before the protocol's IPERF_DONE byte. */
+    connect_slot(45,38017);
+    struct nas_fd_slot_lease last_lease=lease_slot(46,UINT64_C(0x1FEF));
+    accepted=accept_slot(30,last_lease,&peer);
+    assert(nas_lwip_socket_port_adopt(accepted)==0);
+    nas_open_files[46].lease_token=0;
+    const uint8_t final_state=16; /* original iperf3 IPERF_DONE */
+    assert(ops->write_plan(45,1)==1);
+    assert(ops->write(45,&final_state,1)==1);
+    close_slot(45); /* worker must not run between write and close */
+    assert(receive(46,result,1)==1 && result[0]==final_state);
+    assert(receive(46,result,1)==0);
+    close_slot(46);
+
     /* An original TCP-connect scanner uses nonblocking connect(), polls
      * for writability, reads SO_ERROR and then calls getsockname(). There
      * is no blocking Task to consume control_finish() in that sequence.

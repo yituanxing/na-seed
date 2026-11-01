@@ -3,4 +3,6 @@ tests/m141-dns-run.sh	tests/m141-dns-run.sh
 tests/m141-toolchain-run.sh	tests/m141-toolchain-run.sh
 tests/m141-system-run.sh	tests/m141-system-run.sh
 tests/m141-iperf3-wire-run.sh	tests/m141-iperf3-wire-run.sh
+tests/m141-system-cohort-run.sh	tests/m141-system-cohort-run.sh
+tests/m141-ssh-keyscan-wire-run.sh	tests/m141-ssh-keyscan-wire-run.sh
 tests/m141-guest-cases.tsv	tests/m141-guest-cases.tsv

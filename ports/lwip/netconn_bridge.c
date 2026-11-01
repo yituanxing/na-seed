@@ -357,7 +357,19 @@ static void worker(void *unused) {
             bridge.count--;
             struct bridge_slot *s=&bridge.slots[slot];
             s->queued=false;
-            if(s->closing)free_native(slot);
+            if(s->closing) {
+                /* close() can follow an already-successful write() before
+                 * this native worker has consumed the copied SEND command.
+                 * Keep that admitted data ahead of tcp_close/FIN. In
+                 * particular iperf3 sends its one-byte IPERF_DONE and then
+                 * closes the control socket without waiting for POLLOUT.
+                 * Other queued operations have no promised payload to
+                 * preserve and remain cancellable on final release. */
+                if(s->connection &&
+                   s->request.op==NAS_LWIP_BRIDGE_SEND)
+                    execute(slot);
+                free_native(slot);
+            }
             else if(s->owned) {
                 s->executing=true;
                 execute(slot);
