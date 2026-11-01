@@ -6,6 +6,7 @@ dir=/tmp/m144/haproxy
 global
     maxconn 4
     nbthread 1
+    noreuseport
 defaults
     mode tcp
     timeout connect 5s
