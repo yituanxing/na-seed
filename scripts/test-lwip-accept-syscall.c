@@ -61,6 +61,9 @@ static void accepted_release(unsigned slot) {
 static const struct nas_file_ops accepted_ops={.release=accepted_release};
 const struct nas_file_ops *nas_lwip_socket_port_ops(void){return &accepted_ops;}
 bool nas_lwip_socket_is_slot(unsigned slot){return slot==LISTENER_SLOT;}
+/* This focused accept fixture contains only AF_INET native TCP; genuine
+ * NETLINK_ROUTE lifecycle is covered by its separate host/backend tests. */
+bool nas_netlink_route_is_slot(unsigned slot){(void)slot;return false;}
 int nas_lwip_socket_type(unsigned slot){
     return slot==LISTENER_SLOT?NAS_LWIP_BRIDGE_TCP:-EBADF;
 }

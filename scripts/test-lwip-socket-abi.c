@@ -291,11 +291,13 @@ unsigned nas_lwip_guest_ipv4_ifconf(
     struct nas_lwip_guest_ipv4_if out[2]) {
     assert(out);
     out[0]=(struct nas_lwip_guest_ipv4_if){
-        .name="lo",.ipv4_host_order=UINT32_C(0x7f000001)
+        .name="lo",.ipv4_host_order=UINT32_C(0x7f000001),.prefix_len=8,
+        .mtu=65536
     };
     if(!abi_has_dhcp_ipv4)return 1;
     out[1]=(struct nas_lwip_guest_ipv4_if){
-        .name="eth0",.ipv4_host_order=UINT32_C(0x0a00020f)
+        .name="eth0",.ipv4_host_order=UINT32_C(0x0a00020f),.prefix_len=24,
+        .mtu=1500
     };
     return 2;
 }
@@ -495,6 +497,41 @@ int main(void) {
     assert((int64_t)sys_ioctl_fd(tcp_fd,0x8912ULL,ifcaddr)==-EFAULT);
     can_write[0]=true;
     assert((int64_t)sys_ioctl_fd(tcp_fd,0x8912ULL,0)==-EFAULT);
+
+    /* dnsmasq resolves Linux NETLINK_ROUTE ifindices back through these
+     * real interface ioctls. Both operations must agree with SIOCGIFCONF;
+     * an interface without a DHCP address must not be invented. */
+    const uint64_t ifraddr=TEST_BASE+2100;
+    uint8_t ifreq[40]={0};
+    int32_t ifindex=1;
+    memcpy(ifreq+16,&ifindex,4);
+    memcpy(user_ptr(ifraddr),ifreq,sizeof(ifreq));
+    assert(sys_ioctl_fd(tcp_fd,0x8910ULL,ifraddr)==0);
+    assert(!strcmp((const char *)user_ptr(ifraddr),"lo"));
+    memcpy(ifreq,user_ptr(ifraddr),sizeof(ifreq));
+    assert(sys_ioctl_fd(tcp_fd,0x8913ULL,ifraddr)==0);
+    uint16_t ifflags=0;
+    memcpy(&ifflags,user_ptr(ifraddr)+16,2);
+    assert(ifflags==0x49U); /* IFF_UP|LOOPBACK|RUNNING */
+    memset(ifreq,0,sizeof(ifreq));
+    ifindex=2;memcpy(ifreq+16,&ifindex,4);
+    memcpy(user_ptr(ifraddr),ifreq,sizeof(ifreq));
+    assert(sys_ioctl_fd(tcp_fd,0x8910ULL,ifraddr)==0);
+    assert(!strcmp((const char *)user_ptr(ifraddr),"eth0"));
+    assert(sys_ioctl_fd(tcp_fd,0x8913ULL,ifraddr)==0);
+    memcpy(&ifflags,user_ptr(ifraddr)+16,2);
+    assert(ifflags==0x1043U); /* UP|BROADCAST|RUNNING|MULTICAST */
+    assert(sys_ioctl_fd(tcp_fd,0x8921ULL,ifraddr)==0);
+    uint32_t ifmtu=0;
+    memcpy(&ifmtu,user_ptr(ifraddr)+16,4);
+    assert(ifmtu==1500U); /* observed native Ethernet core MTU */
+    abi_has_dhcp_ipv4=false;
+    assert((int64_t)sys_ioctl_fd(tcp_fd,0x8913ULL,ifraddr)==-ENODEV);
+    abi_has_dhcp_ipv4=true;
+    ifindex=77;memset(ifreq,0,sizeof(ifreq));
+    memcpy(ifreq+16,&ifindex,4);
+    memcpy(user_ptr(ifraddr),ifreq,sizeof(ifreq));
+    assert((int64_t)sys_ioctl_fd(tcp_fd,0x8910ULL,ifraddr)==-ENODEV);
 
     uint64_t udp_fd=sys_socket(2,2,17);
     assert(udp_fd<NAS_FD_LIMIT && udp_fd!=tcp_fd);
@@ -968,6 +1005,48 @@ int main(void) {
     assert(!backpressure.pending && (int64_t)backpressure.result==-EINVAL);
     assert(abi_tcp_sends==old_tcp_sends);
     nas_fs_close_fd(invalid_fd);
+    /* Exercise the ACTUAL shared syscall dispatcher against the real
+     * kernel NETLINK_ROUTE provider, including guest msghdr usercopy.
+     * The standalone backend test covers all multipart/header bytes. */
+    uint64_t nl_fd=sys_socket(16,3,0);
+    assert(nl_fd<NAS_FD_LIMIT && netlink_fd(nl_fd) &&
+           !unix_fd(nl_fd) && !inet_fd(nl_fd));
+    assert(nas_open_files[guest_task.fds->entries[nl_fd].slot].ops==
+           nas_netlink_route_ops());
+    const uint64_t nl_name=TEST_BASE+TEST_PAGE+300;
+    const uint64_t nl_packet=TEST_BASE+TEST_PAGE+350;
+    const uint64_t nl_message=TEST_BASE+TEST_PAGE+450;
+    const uint64_t nl_iovec=TEST_BASE+TEST_PAGE+520;
+    const uint64_t nl_reply=TEST_BASE+TEST_PAGE+600;
+    const uint64_t nl_source=TEST_BASE+TEST_PAGE+700;
+    const uint64_t nl_length=TEST_BASE+TEST_PAGE+800;
+    const uint8_t nl_kernel[12]={16,0,0,0,0,0,0,0,0,0,0,0};
+    memcpy(user_ptr(nl_name),nl_kernel,sizeof(nl_kernel));
+    assert(sys_netlink_bind(nl_fd,nl_name,12)==0);
+    uint32_t nl_cap=12;
+    memcpy(user_ptr(nl_length),&nl_cap,4);
+    assert(sys_netlink_name(nl_fd,nl_name,nl_length)==0);
+    assert(user_ptr(nl_name)[0]==16 && user_ptr(nl_name)[1]==0);
+    /* getsockname returned the bound USER port; sendto targets KERNEL 0. */
+    memcpy(user_ptr(nl_name),nl_kernel,sizeof(nl_kernel));
+    const uint8_t nl_getaddr[20]={20,0,0,0,22,0,5,3,123,0,0,0,
+                                   0,0,0,0,2,0,0,0};
+    memcpy(user_ptr(nl_packet),nl_getaddr,sizeof(nl_getaddr));
+    assert(sys_netlink_sendto(nl_fd,nl_packet,20,0,nl_name,12)==20);
+    struct nas_iovec nl_iov={.base=nl_reply,.length=8};
+    memcpy(user_ptr(nl_iovec),&nl_iov,sizeof(nl_iov));
+    struct nas_msghdr nl_msg={.name=nl_source,.namelen=12,
+                             .iov=nl_iovec,.iovlen=1};
+    memcpy(user_ptr(nl_message),&nl_msg,sizeof(nl_msg));
+    assert(sys_netlink_recvmsg(nl_fd,nl_message,0x22)==40);
+    memcpy(&nl_msg,user_ptr(nl_message),sizeof(nl_msg));
+    assert((nl_msg.flags&0x20U) && nl_msg.namelen==12);
+    nl_iov.length=64;memcpy(user_ptr(nl_iovec),&nl_iov,sizeof(nl_iov));
+    /* consuming read of the very same 40-byte record */
+    assert(sys_netlink_recvmsg(nl_fd,nl_message,0)==40);
+    assert(user_ptr(nl_reply)[4]==20 && user_ptr(nl_reply)[16]==2 &&
+           user_ptr(nl_reply)[17]==8 && user_ptr(nl_reply)[28]==127);
+    nas_fs_close_fd(nl_fd);
     puts("[LWIP SENDMSG BLOCKING PASS] full iovec import, TX park/resume,");
     puts("  immutable vector snapshot, held OpenFile across close/fd reuse");
     puts("[LWIP SOCKET ABI PASS] native AF_INET TCP/UDP OpenFile + user sockaddr,");

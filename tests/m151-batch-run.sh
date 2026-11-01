@@ -130,7 +130,9 @@ fdkaac_case() {
     decoder=$(original faad)
     "$encoder" -m 2 -o "$work/audio.m4a" /tests/m151-mono.wav > "$work/encode.log" 2>&1
     size_gt "$work/audio.m4a" 120 || return 1
-    "$decoder" -w -o "$work/decoded.wav" "$work/audio.m4a" > "$work/decode.log" 2>&1
+    # Original FAAD's -w selects stdout WAV data, overriding -o entirely.
+    # Use the genuine named WAV output and verify its decoded PCM metadata.
+    "$decoder" -o "$work/decoded.wav" "$work/audio.m4a" > "$work/decode.log" 2>&1
     check_wav "$work/decoded.wav"
     echo '[M151 ROUNDTRIP] FDK AAC MP4=>FAAD WAV decode'
 }

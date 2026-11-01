@@ -27,6 +27,7 @@
 #ifdef NAS_ENABLE_LWIP
 #include "../../ports/lwip/socket_port.h"
 #include "../../ports/lwip/network_boot.h"
+#include "netlink_route.h"
 #endif
 #define TASK (*nas_current_task)
 
@@ -34,6 +35,10 @@
 static bool lwip_fd(uint64_t fd) {
     return fd<NAS_FD_LIMIT && TASK.fds->entries[fd].kind==FD_SOCKET &&
            nas_lwip_socket_is_slot(TASK.fds->entries[fd].slot);
+}
+static bool netlink_fd(uint64_t fd) {
+    return fd<NAS_FD_LIMIT && TASK.fds->entries[fd].kind==FD_SOCKET &&
+           nas_netlink_route_is_slot(TASK.fds->entries[fd].slot);
 }
 static struct nas_lwip_bridge_address lwip_address(
                                      struct nas_ipv4_endpoint endpoint) {
@@ -61,6 +66,7 @@ static bool unix_fd(uint64_t fd) {
 #endif
 #ifdef NAS_ENABLE_LWIP
            && !nas_lwip_socket_is_slot(TASK.fds->entries[fd].slot)
+           && !nas_netlink_route_is_slot(TASK.fds->entries[fd].slot)
 #endif
            ;
 }
@@ -78,11 +84,16 @@ static bool inet_fd(uint64_t fd) {
 #endif
 }
 static uint64_t sys_socket(uint64_t domain,uint64_t type,uint64_t protocol) {
-    if(domain!=1 && domain!=2)return (uint64_t)-EAFNOSUPPORT;
+    if(domain!=1 && domain!=2
+#ifdef NAS_ENABLE_LWIP
+       && domain!=16 /* Linux AF_NETLINK */
+#endif
+       )return (uint64_t)-EAFNOSUPPORT;
     unsigned socket_type=(unsigned)(type&15U);
     if((socket_type!=1U
 #ifdef NAS_ENABLE_LWIP
         && !(domain==2 && socket_type==2U)
+        && !(domain==16 && socket_type==3U) /* SOCK_RAW NETLINK_ROUTE */
 #endif
        ) || (type&~(15ULL|0x800ULL|0x80000ULL)))
         return (uint64_t)-ESOCKTNOSUPPORT;
@@ -120,6 +131,15 @@ static uint64_t sys_socket(uint64_t domain,uint64_t type,uint64_t protocol) {
                                    NAS_LWIP_BRIDGE_TCP:NAS_LWIP_BRIDGE_UDP);
         if(rc) {
             nas_fs_close_fd(fd); /* same FileOps finalizer, no second table */
+            return (uint64_t)(int64_t)rc;
+        }
+    }
+    if(domain==16) {
+        nas_open_files[slot].ops=nas_netlink_route_ops();
+        int rc=nas_netlink_route_open(slot,
+                          (uint32_t)nas_task_process_pid(nas_current_task));
+        if(rc) {
+            nas_fs_close_fd(fd);
             return (uint64_t)(int64_t)rc;
         }
     }
@@ -891,6 +911,136 @@ struct nas_msghdr {
 struct nas_iovec { uint64_t base,length; };
 _Static_assert(sizeof(struct nas_msghdr)==56,"native Linux msghdr ABI");
 #ifdef NAS_ENABLE_LWIP
+/* AF_NETLINK exposes a kernel-owned ROUTE notification/query File, not a
+ * second TCP/IP stack. This syscall adapter is the sole owner of usercopy,
+ * iovec import, and Linux sockaddr_nl/msghdr layout on all three LP64 ISAs. */
+static uint64_t sys_netlink_bind(uint64_t fd,uint64_t address,uint64_t length) {
+    if(!netlink_fd(fd))return (uint64_t)-EBADF;
+    if(length<NAS_NETLINK_ROUTE_SOCKADDR_SIZE)return (uint64_t)-EINVAL;
+    uint8_t local[NAS_NETLINK_ROUTE_SOCKADDR_SIZE];
+    if(!nas_user_read_bytes(address,local,sizeof(local)))
+        return (uint64_t)-EFAULT;
+    return (uint64_t)(int64_t)nas_netlink_route_bind(
+        TASK.fds->entries[fd].slot,local,sizeof(local));
+}
+static uint64_t sys_netlink_name(uint64_t fd,uint64_t address,
+                                  uint64_t length_ptr) {
+    if(!netlink_fd(fd))return (uint64_t)-EBADF;
+    if(!address || !length_ptr)return (uint64_t)-EFAULT;
+    uint32_t capacity=0;
+    if(!nas_user_read_bytes(length_ptr,(uint8_t *)&capacity,sizeof(capacity)))
+        return (uint64_t)-EFAULT;
+    uint8_t name[NAS_NETLINK_ROUTE_SOCKADDR_SIZE];
+    int rc=nas_netlink_route_getsockname(TASK.fds->entries[fd].slot,name);
+    if(rc)return (uint64_t)(int64_t)rc;
+    uint32_t actual=sizeof(name),n=capacity<actual?capacity:actual;
+    if(!nas_user_prepare_write(length_ptr,4) ||
+       (n && !nas_user_prepare_write(address,n)))return (uint64_t)-EFAULT;
+    return nas_user_write_bytes(length_ptr,(const uint8_t *)&actual,4) &&
+           (!n || nas_user_write_bytes(address,name,n)) ?
+           0:(uint64_t)-EFAULT;
+}
+static uint64_t sys_netlink_sendto(uint64_t fd,uint64_t user_data,
+                                   uint64_t length,uint64_t flags,
+                                   uint64_t user_name,uint64_t name_length) {
+    if(!netlink_fd(fd))return (uint64_t)-EBADF;
+    if(flags&~0x40ULL)return (uint64_t)-EOPNOTSUPP; /* MSG_DONTWAIT */
+    if(length>NAS_NETLINK_ROUTE_MAX_DATAGRAM)return (uint64_t)-EMSGSIZE;
+    if(user_name && name_length<NAS_NETLINK_ROUTE_SOCKADDR_SIZE)
+        return (uint64_t)-EINVAL;
+    if(!user_name && name_length)return (uint64_t)-EINVAL;
+    uint8_t packet[NAS_NETLINK_ROUTE_MAX_DATAGRAM];
+    uint8_t name[NAS_NETLINK_ROUTE_SOCKADDR_SIZE];
+    if(length && !nas_user_read_bytes(user_data,packet,length))
+        return (uint64_t)-EFAULT;
+    if(user_name && !nas_user_read_bytes(user_name,name,sizeof(name)))
+        return (uint64_t)-EFAULT;
+    return (uint64_t)nas_netlink_route_sendto(TASK.fds->entries[fd].slot,
+        packet,(unsigned)length,user_name?name:NULL,
+        user_name?sizeof(name):0);
+}
+static uint64_t sys_netlink_recvmsg(uint64_t fd,uint64_t user_message,
+                                    uint64_t flags) {
+    if(!netlink_fd(fd))return (uint64_t)-EBADF;
+    if(flags&~(0x2ULL|0x20ULL|0x40ULL))return (uint64_t)-EOPNOTSUPP;
+    struct nas_msghdr msg;
+    if(!nas_user_read_bytes(user_message,(uint8_t *)&msg,sizeof(msg)) ||
+       !nas_user_prepare_write(user_message,sizeof(msg)))
+        return (uint64_t)-EFAULT;
+    if(msg.iovlen>32)return (uint64_t)-EMSGSIZE;
+    struct nas_iovec iov[32];
+    uint64_t capacity=0;
+    for(unsigned i=0;i<msg.iovlen;i++) {
+        if(msg.iov>UINT64_MAX-(uint64_t)i*sizeof(iov[i]) ||
+           !nas_user_read_bytes(msg.iov+(uint64_t)i*sizeof(iov[i]),
+                                (uint8_t *)&iov[i],sizeof(iov[i])))
+            return (uint64_t)-EFAULT;
+        uint64_t room=NAS_NETLINK_ROUTE_MAX_DATAGRAM-capacity;
+        if(iov[i].length<room)room=iov[i].length;
+        if(room && !nas_user_prepare_write(iov[i].base,room))
+            return (uint64_t)-EFAULT;
+        capacity+=room;
+    }
+    const uint32_t name_space=msg.namelen>NAS_NETLINK_ROUTE_SOCKADDR_SIZE ?
+                              NAS_NETLINK_ROUTE_SOCKADDR_SIZE:msg.namelen;
+    if(msg.name && name_space &&
+       !nas_user_prepare_write(msg.name,name_space))return (uint64_t)-EFAULT;
+    uint8_t packet[NAS_NETLINK_ROUTE_MAX_DATAGRAM];
+    uint8_t source[NAS_NETLINK_ROUTE_SOCKADDR_SIZE];
+    uint32_t source_length=0,received_flags=0;
+    int64_t got=nas_netlink_route_recvmsg(TASK.fds->entries[fd].slot,
+                   packet,(unsigned)capacity,(unsigned)flags,
+                   source,&source_length,&received_flags);
+    if(got<0)return (uint64_t)got;
+    /* MSG_TRUNC as an input reports the datagram's ORIGINAL length, even
+     * though only the user-requested prefix is copied. PEEK remains owned
+     * by the kernel queue until the later consuming recvmsg. */
+    uint64_t copied=(uint64_t)got<capacity?(uint64_t)got:capacity;
+    uint64_t offset=0;
+    for(unsigned i=0;i<msg.iovlen && offset<copied;i++) {
+        uint64_t n=iov[i].length;
+        if(n>copied-offset)n=copied-offset;
+        if(n && !nas_user_write_bytes(iov[i].base,packet+offset,n))
+            return (uint64_t)-EFAULT;
+        offset+=n;
+    }
+    if(msg.name) {
+        uint32_t n=name_space<source_length?name_space:source_length;
+        if(n && !nas_user_write_bytes(msg.name,source,n))
+            return (uint64_t)-EFAULT;
+        msg.namelen=source_length;
+    } else msg.namelen=0;
+    msg.controllen=0;
+    msg.flags=received_flags;
+    return nas_user_write_bytes(user_message,(const uint8_t *)&msg,
+                                sizeof(msg)) ? (uint64_t)got:(uint64_t)-EFAULT;
+}
+static uint64_t sys_netlink_getsockopt(uint64_t fd,uint64_t level,
+                                       uint64_t option,uint64_t value,
+                                       uint64_t length_ptr) {
+    if(!netlink_fd(fd))return (uint64_t)-EBADF;
+    if(level!=1)return (uint64_t)-ENOPROTOOPT; /* SOL_SOCKET */
+    uint32_t answer;
+    switch(option) {
+    case 3:answer=3;break;  /* SO_TYPE: SOCK_RAW */
+    case 4:answer=0;break;  /* SO_ERROR: synchronous kernel route endpoint */
+    case 38:answer=0;break; /* SO_PROTOCOL: NETLINK_ROUTE */
+    case 39:answer=16;break;/* SO_DOMAIN: AF_NETLINK */
+    default:return (uint64_t)-ENOPROTOOPT;
+    }
+    uint32_t length;
+    if(!nas_user_read_bytes(length_ptr,(uint8_t *)&length,4))
+        return (uint64_t)-EFAULT;
+    if(length<4)return (uint64_t)-EINVAL;
+    const uint32_t actual=4;
+    if(!nas_user_prepare_write(value,4) ||
+       !nas_user_prepare_write(length_ptr,4))return (uint64_t)-EFAULT;
+    return nas_user_write_bytes(value,(const uint8_t *)&answer,4) &&
+           nas_user_write_bytes(length_ptr,(const uint8_t *)&actual,4) ?
+           0:(uint64_t)-EFAULT;
+}
+#endif
+#ifdef NAS_ENABLE_LWIP
 /* Linux LP64 cmsghdr (16 bytes) + struct in_pktinfo (12 bytes).
  * IP addresses are byte strings in network order, unlike the native
  * interface index and cmsg fields. CMSG_SPACE(12)=32, CMSG_LEN(12)=28. */
@@ -1444,6 +1594,31 @@ struct nas_fs_result nas_fs_socket_syscall(enum nas_syscall_op op,
                                          const uint64_t *args) {
     int fd_error=socket_fd_error(op,args[1]);
     if(fd_error)SOCKET_RESULT((uint64_t)(int64_t)fd_error);
+#ifdef NAS_ENABLE_LWIP
+    if(op!=NAS_SC_socket && netlink_fd(args[1])) {
+        switch(op) {
+        case NAS_SC_bind:
+            SOCKET_RESULT(sys_netlink_bind(args[1],args[2],args[3]));
+        case NAS_SC_getsockname:
+            SOCKET_RESULT(sys_netlink_name(args[1],args[2],args[3]));
+        case NAS_SC_getsockopt:
+            SOCKET_RESULT(sys_netlink_getsockopt(args[1],args[2],args[3],
+                                                  args[4],args[5]));
+        case NAS_SC_sendto:
+            SOCKET_RESULT(sys_netlink_sendto(args[1],args[2],args[3],
+                           args[4],args[5],args[6]));
+        case NAS_SC_recvmsg:
+            SOCKET_RESULT(sys_netlink_recvmsg(args[1],args[2],args[3]));
+        case NAS_SC_getpeername:SOCKET_RESULT((uint64_t)-ENOTCONN);
+        case NAS_SC_connect:case NAS_SC_listen:
+        case NAS_SC_accept:case NAS_SC_accept4:
+        case NAS_SC_setsockopt:case NAS_SC_sendmsg:
+        case NAS_SC_recvfrom:case NAS_SC_shutdown:
+            SOCKET_RESULT((uint64_t)-EOPNOTSUPP);
+        default:break;
+        }
+    }
+#endif
     switch (op) {
     case NAS_SC_socket: SOCKET_RESULT(sys_socket(args[1],args[2],args[3]));
     case NAS_SC_bind: SOCKET_RESULT(inet_fd(args[1]) ?

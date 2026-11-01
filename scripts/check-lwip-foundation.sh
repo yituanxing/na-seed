@@ -8,6 +8,13 @@ sh scripts/check-network-build-selection.sh
 # Run the actual Linux Socket usercopy/FD ABI in both default and lwIP
 # configurations; protocol traffic is separately exercised below.
 sh scripts/check-lwip-socket-abi.sh
+# Original dnsmasq's Linux NETLINK_ROUTE IPv4 interface enumeration must
+# return actual lwIP loopback/DHCP addresses and correct multipart framing.
+cc -std=c11 -O2 -Wall -Wextra -Werror -DNAS_ENABLE_LWIP=1 \
+   -I kernel -I ports/lwip/include -I third_party/lwip/src/include \
+   scripts/test-netlink-route.c kernel/fs/netlink_route.c kernel/lib/string.c \
+   -o build/lwip-foundation/test-netlink-route
+build/lwip-foundation/test-netlink-route
 cc -std=c11 -O2 -Wall -Wextra -Werror -ffunction-sections \
    -fdata-sections -Wl,--gc-sections -DNAS_ENABLE_LWIP=1 \
    -I scripts/m89-test-include -I kernel \

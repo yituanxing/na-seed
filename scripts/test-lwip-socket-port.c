@@ -284,6 +284,26 @@ int main(void) {
     assert(nas_lwip_socket_bind(20,lo(38007))==-EALREADY);
     assert(nas_lwip_socket_bind(20,lo(38008))==-EBUSY);
     finish_control(20,0);
+    /* Real ldns/drill does socket(AF_INET,SOCK_DGRAM) followed immediately
+     * by sendto(), before the asynchronous Netconn OPEN worker runs. The
+     * kernel must retain that actual first datagram, never leak EAGAIN. */
+    nas_open_files[24].refcount=1;
+    nas_open_files[24].status_flags=2;
+    nas_open_files[24].ops=ops;
+    assert(nas_lwip_socket_open(24,NAS_LWIP_BRIDGE_UDP)==0);
+    const uint8_t first_udp_packet[]={0xD1,0x15,0x42};
+    assert(nas_lwip_socket_sendto(24,first_udp_packet,
+                sizeof(first_udp_packet),lo(38007))==
+           (int64_t)sizeof(first_udp_packet));
+    assert(nas_lwip_socket_sendto(24,first_udp_packet,
+                sizeof(first_udp_packet),lo(38007))==-EAGAIN);
+    flush_tx(24);
+    uint8_t first_udp_received[8]={0};
+    assert(receive(20,first_udp_received,sizeof(first_udp_received))==
+           sizeof(first_udp_packet));
+    assert(!memcmp(first_udp_received,first_udp_packet,
+                   sizeof(first_udp_packet)));
+    close_slot(24);
     struct nas_lwip_bridge_address named=name_slot(20,false);
     assert(named.ipv4==UINT32_C(0x7f000001) && named.port==38007);
     assert(nas_lwip_socket_connect(21,lo(38007))==0);

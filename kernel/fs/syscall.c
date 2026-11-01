@@ -313,6 +313,48 @@ static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
     cmd=(uint32_t)cmd;
     unsigned slot=TASK.fds->entries[fd].slot;
 #ifdef NAS_ENABLE_LWIP
+    if((cmd==0x8910U || cmd==0x8913U || cmd==0x8921U) &&
+       nas_lwip_socket_is_slot(slot)) { /* SIOCGIFNAME/FLAGS/MTU */
+        /* Actual loopback and DHCP-backed device identities are shared
+         * with SIOCGIFCONF and upcoming NETLINK_ROUTE RTM_NEWADDR. Linux
+         * ifreq is IFNAMSIZ (16) plus a 24-byte LP64 union. Never claim
+         * an interface that the native network bootstrap has not exposed. */
+        uint8_t request[40];
+        if(!nas_user_read_bytes(arg,request,sizeof(request)))
+            return (uint64_t)-EFAULT;
+        struct nas_lwip_guest_ipv4_if interfaces[2]={0};
+        unsigned count=nas_lwip_guest_ipv4_ifconf(interfaces);
+        if(!count || count>2)return (uint64_t)-ENODEV;
+        unsigned found=count;
+        if(cmd==0x8910U) { /* ifr_ifindex -> ifr_name */
+            int32_t index=0;
+            memcpy(&index,request+16,sizeof(index));
+            if(index==1)found=0; /* native lwIP loopback netif */
+            else for(unsigned i=1;i<count;i++)
+                if(nas_lwip_guest_ifindex(interfaces[i].name)==index)
+                    {found=i;break;}
+            if(found==count)return (uint64_t)-ENODEV;
+            memcpy(request,interfaces[found].name,16);
+        } else { /* ifr_name -> flags or real interface MTU */
+            char name[17];
+            memcpy(name,request,16);name[16]=0;
+            for(unsigned i=0;i<count;i++)
+                if(!strcmp(name,interfaces[i].name)) {found=i;break;}
+            if(found==count)return (uint64_t)-ENODEV;
+            if(cmd==0x8913U) {
+                const uint16_t flags=found==0 ?
+                    0x0049U : /* IFF_UP | IFF_LOOPBACK | IFF_RUNNING */
+                    0x1043U; /* UP | BROADCAST | RUNNING | MULTICAST */
+                memcpy(request+16,&flags,sizeof(flags));
+            } else {
+                const uint32_t mtu=interfaces[found].mtu;
+                if(!mtu)return (uint64_t)-ENODEV;
+                memcpy(request+16,&mtu,sizeof(mtu));
+            }
+        }
+        return nas_user_write_bytes(arg,request,sizeof(request)) ?
+               0:(uint64_t)-EFAULT;
+    }
     if(cmd==0x8912U && nas_lwip_socket_is_slot(slot)) { /* SIOCGIFCONF */
         /* Linux LP64 ifconf = int32 length, pad32, uint64 buffer.
          * Its traditional fixed-width IPv4 ifreq is 16-byte name plus

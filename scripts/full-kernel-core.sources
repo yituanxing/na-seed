@@ -59,6 +59,8 @@ kernel/fs/vfs_providers.c
 kernel/fs/syscall.c
 kernel/fs/namespace_syscall.c
 kernel/fs/socket_syscall.c
+kernel/fs/netlink_route.c
+kernel/fs/memfd.c
 kernel/fs/file_io.c
 kernel/fs/poll_syscall.c
 kernel/fs/metadata_syscall.c

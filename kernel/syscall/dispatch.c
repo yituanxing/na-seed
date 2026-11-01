@@ -30,6 +30,7 @@
 #include "../fs/io.h"
 #include "../fs/syscall.h"
 #include "../fs/socket_syscall.h"
+#include "../fs/memfd.h"
 #ifndef NAS_ENABLE_LWIP
 #include "../net/ipv4_loopback.h"
 #endif
@@ -951,6 +952,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
 
     if (nr == NAS_SC_getrusage)
         return nas_process_getrusage(args[1],args[2]);
+    if (nr == NAS_SC_memfd_create)
+        return nas_fs_memfd_create(args[1],args[2]);
     if (nr == NAS_SC_wait4) {
         uint64_t ret = nas_process_wait4(args[1], args[2], args[3], args[4]);
         /* WUNTRACED/WCONTINUED are real blocking wait selectors too.

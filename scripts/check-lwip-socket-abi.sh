@@ -8,6 +8,6 @@ common='-std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -fno-
 sources='scripts/test-lwip-socket-abi.c kernel/fs/file_io.c kernel/mm/usercopy.c kernel/random.c kernel/fs/eventfd.c kernel/pipe.c kernel/lib/string.c'
 cc $common $sources -o build/lwip-foundation/test-socket-abi-legacy
 build/lwip-foundation/test-socket-abi-legacy
-cc $common -DNAS_ENABLE_LWIP=1 $sources \
+cc $common -DNAS_ENABLE_LWIP=1 $sources kernel/fs/netlink_route.c \
     -o build/lwip-foundation/test-socket-abi-lwip
 build/lwip-foundation/test-socket-abi-lwip

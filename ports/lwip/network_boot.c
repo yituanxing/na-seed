@@ -30,6 +30,8 @@ static struct {
  struct nas_kthread_handle rx_handle;
  bool ethernet_available,ready,stop;
  uint32_t dhcp_ipv4_host_order; /* copied only by upstream core callback */
+ uint8_t dhcp_prefix_len; /* derived from the same real DHCP netif lease */
+ uint16_t dhcp_mtu; /* native core netif MTU at the actual DHCP lease */
 } network;
 
 /* The bootstrap attaches at most one physical netif; give Linux's name to
@@ -54,12 +56,15 @@ unsigned nas_lwip_guest_ipv4_ifconf(
     struct nas_lwip_guest_ipv4_if out[2]) {
  if(!out)return 0;
  out[0]=(struct nas_lwip_guest_ipv4_if){
-     .name="lo",.ipv4_host_order=UINT32_C(0x7f000001)
+     .name="lo",.ipv4_host_order=UINT32_C(0x7f000001),.prefix_len=8,
+     .mtu=65536U
  };
  unsigned count=1;
  const uint32_t address=network.dhcp_ipv4_host_order;
- if(network.ethernet.attached && network.ethernet.device && address) {
-     out[count]=(struct nas_lwip_guest_ipv4_if){.ipv4_host_order=address};
+ if(network.ethernet.attached && network.ethernet.device && address &&
+    network.dhcp_prefix_len) {
+     out[count]=(struct nas_lwip_guest_ipv4_if){.ipv4_host_order=address,
+               .prefix_len=network.dhcp_prefix_len,.mtu=network.dhcp_mtu};
      memcpy(out[count].name,network.device_name,sizeof(network.device_name));
      ++count;
  }
@@ -89,6 +94,17 @@ static void network_status(struct netif *netif){
      netif_is_link_up(netif) && dhcp_supplied_address(netif) &&
      !ip4_addr_isany_val(*addr) ?
      lwip_ntohl(ip4_addr_get_u32(addr)) : 0;
+ /* Snapshot the ACTUAL DHCP subnet mask with the address, not a hardwired
+  * 10.0.2.0/24 assumption. Linux RTM_NEWADDR stores a CIDR prefix length. */
+ network.dhcp_prefix_len=0;
+ network.dhcp_mtu=network.dhcp_ipv4_host_order ? netif->mtu : 0;
+ if(network.dhcp_ipv4_host_order) {
+     uint32_t mask=lwip_ntohl(ip4_addr_get_u32(netif_ip4_netmask(netif)));
+     uint32_t rest=mask;
+     uint8_t length=0;
+     while(rest&UINT32_C(0x80000000)) {length++;rest<<=1;}
+     if(!rest)network.dhcp_prefix_len=length;
+ }
  nas_print("[LWIP NETIF STATUS] up=");nas_dec(netif_is_up(netif));
  nas_print(" link=");nas_dec(netif_is_link_up(netif));
  nas_print(" dhcp=");nas_dec(dhcp_supplied_address(netif));

@@ -1,5 +1,6 @@
 #ifndef NASEED_LWIP_NETWORK_BOOT_H
 #define NASEED_LWIP_NETWORK_BOOT_H
+#include <stdint.h>
 
 /* Linux socket options name the actual network device (eth0/en0), not
  * lwIP's internal netif prefix (ns0). Only the physical NIC attached by
@@ -14,6 +15,8 @@ int nas_lwip_guest_ifname(unsigned index,
 struct nas_lwip_guest_ipv4_if {
  char name[NAS_LWIP_DEVICE_NAME_MAX];
  unsigned ipv4_host_order;
+ uint8_t prefix_len; /* DHCP's actual contiguous IPv4 netmask length */
+ uint32_t mtu; /* native core netif MTU, not a presumed Ethernet default */
 };
 unsigned nas_lwip_guest_ipv4_ifconf(
     struct nas_lwip_guest_ipv4_if out[2]);

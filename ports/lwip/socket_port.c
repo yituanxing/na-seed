@@ -495,8 +495,16 @@ int64_t nas_lwip_socket_sendto_pktinfo(
     int rc=check(s);
     if(rc)return rc;
     if(s->tx_error){rc=s->tx_error;s->tx_error=0;return rc;}
-    if(s->command!=PORT_IDLE || s->tx_length || s->queued_control)
+    /* Linux socket() returns a usable UDP descriptor immediately. The
+     * native Netconn worker may still be finishing its asynchronous OPEN;
+     * admit ONE genuine copied first datagram to the same OpenFile queue.
+     * check() submits that exact packet only AFTER the PCB exists. A
+     * second send cannot overwrite it, and queued bind/connect controls
+     * retain their ordering before data. This removes a real race seen by
+     * unmodified ldns/drill without falsely claiming network delivery. */
+    if(s->command!=PORT_IDLE && s->command!=PORT_OPEN)
         return -EAGAIN;
+    if(s->tx_length || s->queued_control)return -EAGAIN;
     if(!destination.port && !s->connected)return -EDESTADDRREQ;
     memcpy(s->tx,bytes,length);
     s->tx_destination=destination;
@@ -504,6 +512,7 @@ int64_t nas_lwip_socket_sendto_pktinfo(
     s->tx_packet_info=pktinfo ? *pktinfo :
                        (struct nas_lwip_bridge_pktinfo){0};
     s->tx_length=length;s->tx_position=0;s->tx_retry_at=0;
+    if(s->command==PORT_OPEN)return length; /* queued behind real OPEN */
     submit_tx(s);
     if(s->command!=PORT_TX){
         s->tx_length=s->tx_position=0;

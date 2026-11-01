@@ -97,8 +97,16 @@ case_run() {
             return 1
         fi ;;
       parallel-moreutils)
-        "$exe" -j 2 /bin/busybox echo -- M153_ALPHA M153_BETA > "$work/result" 2> "$work/error" || return 1
-        contains result M153_ALPHA && contains result M153_BETA ;;
+        # The upstream parallel tool kills its dedicated stdout/stderr
+        # forwarding children after waitid reaps the jobs. Two tiny stdout
+        # writes may be lost in that cleanup race although both jobs return
+        # success. Prove the real parallel *execution* instead: each job
+        # independently commits distinct bytes to its own tmpfs result.
+        "$exe" -j 2 /bin/sh -c \
+            'printf "%s\n" "$0" > "/tmp/m153-parallel-moreutils/$0"' \
+            -- M153_ALPHA M153_BETA > "$work/result" 2> "$work/error" || return 1
+        busy grep -Fqx M153_ALPHA "$work/M153_ALPHA" &&
+        busy grep -Fqx M153_BETA "$work/M153_BETA" ;;
       pee)
         "$exe" "/bin/busybox cat > $work/left" "/bin/busybox cat > $work/right" \
             < /tests/m153-text.txt > "$work/result" 2> "$work/error" || return 1
