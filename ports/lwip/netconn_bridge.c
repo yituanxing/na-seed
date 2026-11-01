@@ -92,11 +92,40 @@ static struct bridge_slot *lookup(struct nas_lwip_bridge_id id) {
     struct bridge_slot *s=&bridge.slots[id.slot];
     return s->owned && !s->closing && s->generation==id.generation ? s : NULL;
 }
+#ifdef NASEED_SYSCALL_TRACE
+extern void nas_print(const char *);
+extern void nas_dec(uint64_t);
+/* Only print on genuine native bridge admission failure. Socket count must
+ * never be increased to conceal a failed final-close/reclaim path. */
+static void trace_bridge_exhaustion(unsigned requested) {
+    nas_print("[LWIP BRIDGE CAP] requested=");nas_dec(requested);
+    nas_print(" active=");nas_dec(bridge.active);
+    nas_print(" capacity=");nas_dec(NAS_LWIP_BRIDGE_ACTIVE_LIMIT);
+    nas_print("\n");
+    for(unsigned i=0;i<NAS_LWIP_BRIDGE_SLOTS;i++) {
+        const struct bridge_slot *s=&bridge.slots[i];
+        if(!s->owned)continue;
+        nas_print("[LWIP BRIDGE CAP SLOT] id=");nas_dec(i);
+        nas_print(" ref=");nas_dec(nas_open_files[i].refcount);
+        nas_print(" closing=");nas_dec(s->closing);
+        nas_print(" queued=");nas_dec(s->queued);
+        nas_print(" executing=");nas_dec(s->executing);
+        nas_print(" finished=");nas_dec(s->finished);
+        nas_print(" tx_pending=");nas_dec(s->close_tx_active);
+        nas_print("\n");
+    }
+}
+#endif
 static struct nas_lwip_bridge_id reserve(unsigned slot,
                                          enum nas_lwip_bridge_type type) {
     struct nas_lwip_bridge_id none={0};
     if(slot>=NAS_LWIP_BRIDGE_SLOTS || bridge.active>=NAS_LWIP_BRIDGE_ACTIVE_LIMIT ||
-       bridge.slots[slot].owned)return none;
+       bridge.slots[slot].owned) {
+#ifdef NASEED_SYSCALL_TRACE
+        trace_bridge_exhaustion(slot);
+#endif
+        return none;
+    }
     struct bridge_slot *s=&bridge.slots[slot];
     uint32_t generation=s->generation+1U;
     if(!generation)return none; /* no ABA after 2^32 incarnations */
