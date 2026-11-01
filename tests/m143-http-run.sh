@@ -55,6 +55,7 @@ server.document-root = "$work/site"
 server.bind = "127.0.0.1"
 server.port = 15432
 server.errorlog = "$work/lighttpd.err"
+server.upload-dirs = ( "$work" )
 mimetype.assign = ( ".txt" => "text/plain" )
 EOF
 /usr/sbin/lighttpd -tt -f "$work/lighttpd.conf"
@@ -62,9 +63,20 @@ EOF
 server_pid=$!
 trap 'kill "$server_pid" 2>/dev/null || :; wait "$server_pid" 2>/dev/null || :' EXIT
 /bin/busybox sleep 2
-/usr/bin/curl --noproxy '*' --fail --silent --show-error \
+if ! kill -0 "$server_pid" 2>/dev/null; then
+    echo '[M143 LIGHTTPD FAIL] real server exited before loopback HTTP'
+    /bin/busybox cat "$work/lighttpd.stdout" || :
+    /bin/busybox cat "$work/lighttpd.err" || :
+    exit 1
+fi
+if ! /usr/bin/curl --noproxy '*' --fail --silent --show-error \
     --retry 3 --retry-delay 1 --retry-connrefused \
-    -o "$work/lighttpd.out" http://127.0.0.1:15432/index.txt
+    -o "$work/lighttpd.out" http://127.0.0.1:15432/index.txt; then
+    echo '[M143 LIGHTTPD FAIL] original curl could not GET guest server'
+    /bin/busybox cat "$work/lighttpd.stdout" || :
+    /bin/busybox cat "$work/lighttpd.err" || :
+    exit 1
+fi
 /bin/busybox cmp "$work/site/index.txt" "$work/lighttpd.out"
 echo M143_REAL_LIGHTTPD_LOOPBACK_PASS
 echo M143_HTTP_COHORT_PASS
