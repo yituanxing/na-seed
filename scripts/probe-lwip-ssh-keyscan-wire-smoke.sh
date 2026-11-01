@@ -35,7 +35,7 @@ export NAS_VIRTIO_NET_PCAP="$root/virtio-ssh-keyscan-wire.pcap"
 # job's private staging directory and is NEVER included in CI artifacts.
 # The sshd is deliberately loopback-only, has no authentication mechanisms,
 # no remote forwarding and ignores the machine's normal sshd_config.
-host_dir="$root/host-ssh-keyscan"
+host_dir="$PWD/$root/host-ssh-keyscan" # sshd -h requires an absolute key path
 umask 077
 mkdir -p "$host_dir"
 chmod 700 "$host_dir"

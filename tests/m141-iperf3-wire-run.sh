@@ -46,10 +46,12 @@ busy printf 'M141_SIGNED_NMAP_WIRE_PASS\n'
 # host-side bytes while keeping the first OS network benchmark bounded.
 transferred=false
 for attempt in 1 2 3; do
+    iperf_exit=0
     busy timeout 25 /usr/bin/iperf3 -4 -c 10.0.2.2 -p 15416 \
       -t 1 -l 512 -P 1 -J > "$work/client.json" \
-      2> "$work/iperf.err" || :
-    if busy grep -Eq '"bytes"[[:space:]]*:[[:space:]]*[1-9]' \
+      2> "$work/iperf.err" || iperf_exit=$?
+    if [ "$iperf_exit" -eq 0 ] &&
+       busy grep -Eq '"bytes"[[:space:]]*:[[:space:]]*[1-9]' \
          "$work/client.json" &&
        busy grep -Eq '"bits_per_second"[[:space:]]*:[[:space:]]*[1-9]' \
          "$work/client.json"; then

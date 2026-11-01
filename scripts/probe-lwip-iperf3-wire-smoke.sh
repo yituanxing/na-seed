@@ -64,4 +64,13 @@ grep -Fxq M141_SIGNED_NMAP_IPERF3_WIRE_PASS "$clean" || {
 grep -Eq '[[:space:]]receiver[[:space:]]*$' "$root/host-iperf3.log" || {
     echo '[LWIP IPERF WIRE FAIL] host reported no real receiving stream' >&2; exit 1;
 }
+awk '$NF=="receiver" && $5+0>0 {nonzero=1} END {exit nonzero?0:1}' \
+    "$root/host-iperf3.log" || {
+    echo '[LWIP IPERF WIRE FAIL] host receiver reported zero bytes' >&2; exit 1;
+}
+if grep -Fq 'client has unexpectedly closed the connection' \
+   "$root/host-iperf3.log"; then
+    echo '[LWIP IPERF WIRE FAIL] control stream closed before IPERF_DONE' >&2
+    exit 1
+fi
 echo '[LWIP VIRTIO IPERF WIRE QEMU PASS] original signed Alpine Nmap port scan and iperf3 TCP transfer over real PCI/DHCP/lwIP'
