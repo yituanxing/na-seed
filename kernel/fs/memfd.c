@@ -1,5 +1,5 @@
 #include <stdint.h>
-#include <string.h>
+#include "../lib/string.h"
 #include "../errno.h"
 #include "../mm/usercopy.h"
 #include "open_path.h"
