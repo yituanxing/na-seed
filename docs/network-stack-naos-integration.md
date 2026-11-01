@@ -50,7 +50,7 @@ ports/lwip/socket_port.c        (future: Netconn<->File and readiness)
        |
 official lwIP 2.2.1            (TCP, UDP, IP, ICMP, ARP, DHCP, DNS)
        |
-ports/lwip/netif_port.c         (future: pbuf<->Ethernet frame, link state)
+ports/lwip/netif_port.c         (linked/host-tested pbuf<->Ethernet frame)
        |
 kernel/drivers/port/net.[ch]   (one Ethernet registry, pinned ownership)
        |
@@ -91,31 +91,47 @@ QEMU VirtIO-Net hardware
 
 ## Scheduling and stack configuration
 
-Port `NO_SYS=0`, `LWIP_NETCONN=1`, `LWIP_SOCKET=0`,
-`LWIP_NETIF_API=1` (as in NaOS's netserver): the `tcpip_thread` and
-Netconn API run atop a real `sys_arch.c`. The standard lwIP BSD source
-provides all wire protocol algorithms. Implement and test these OS hooks:
+The native port now configures `NO_SYS=0`, `LWIP_NETCONN=1`,
+`LWIP_SOCKET=0`, `LWIP_NETIF_API=1`: official `tcpip_thread` and the
+Netconn API compile against the real `ports/lwip/sys_arch.c`. Official lwIP
+retains all protocol algorithms. Host integration **executed** the original
+`tcpip_thread` on a native NaSeed kernel continuation, verified native
+semaphore and mailbox timeout/wake semantics, automatically initialized the
+official `lo` loopback interface and **sent/received UDP on 127.0.0.1
+through upstream lwIP** (no synthetic AF_INET pipe), emitted a DHCP frame via
+`netif_port.c` and delivered an inbound Ethernet frame to official lwIP.
+Run `sh scripts/check-lwip-foundation.sh` to repeat the host proof plus
+x86-64, RV64 and AArch64 target C syntax gates.
 
-1. `sys_sem_*` and `sys_mbox_*`: correct timeout and wakeup semantics using
-   `nas_ksem`, `nas_kmailbox`/wait queues, IRQ-masked atomicity and bounded
-   storage; `sys_mbox` capacity must be explicitly sized and allocation
-   failures propagated. Never return fake success under pressure.
-2. `sys_thread_new`: map to genuine `nas_kthread_spawn` with sufficient C
-   stack and lifecycle, not a fake inline call. Provide `sys_now` from the
-   monotonic clock and per-thread timeouts where configured.
-3. Protect lwIP core ownership and scheduling against reentrancy. The
-   existing single-CPU kthread primitives are a foundation, **not yet a
-   completed lwIP sys_arch**. Future SMP requires a real common lock.
-4. `netif` startup: register loopback first; attach an Ethernet `nas_netdev`
-   on link-up; let official lwIP handle DHCP and DNS. QEMU user-mode NAT
-   DHCP/addressing must be tested on guest, not assumed from host.
+The remaining operating-system constraints are explicit:
+
+1. `sys_mbox_new` rejects requests above the *real* `nas_kmailbox` capacity
+   of 8, and `tcpip_mbox`/Netconn queue sizes are configured at 8. This is
+   an honest bounded first port, not a throughput claim. Inadequate worker
+   capacity or requested stack size fails closed via a kernel assertion.
+2. `sys_thread_new` creates a real `nas_kthread_spawn` continuation with
+   the existing 8192-byte stack; host-tested scheduler parking, deadlines,
+   `sys_now` and upstream `sys_msleep`. Assess live stack high-water before
+   promising high traffic; network/tcpip thread cancellation is pending.
+3. `sys_arch_protect` currently relies on today's single-core, locally
+   IRQ-masked kernel execution and non-preemptible C scheduler. Before
+   enabling SMP/preemptible kernel, add the shared irqsave lock; do not
+   introduce a second lwIP-specific scheduler or busy-wait mechanism.
+4. `nas_lwip_eth_core_attach` / `core_detach` must run on the lwIP core
+   thread. `nas_lwip_eth_poll` runs from a non-IRQ kernel worker, copies the
+   device-owned Ethernet frame into pbufs and uses `tcpip_input`. An actual
+   NIC IRQ wake/run loop, live guest DHCP and socket/VFS glue are still
+   pending. The default `127.0.0.1` loopback is official lwIP-owned.
+5. `nas_lwip_random32` is currently a noncryptographic clock-seeded PRNG;
+   a real entropy-backed source is required for defensible TCP ISNs before
+   Internet-facing use. Do not claim network security or wire operation.
 
 ## Batches and acceptance gates
 
 | Stage | Change | Proof before claiming success |
 | --- | --- | --- |
 | A — host-proven | MMIO/PCI publish VirtIO-Net class=1; independent netdev; **actual original U-Boot Net** on two DMA queues, shared VirtIO adapter and bus class binding | Host simulated RX/TX, malformed and timeout tests, multi-ISA syntax, existing BlockDevice proof; **no claim of packets on the wire** |
-| B | Link the byte-identical pinned lwIP submodule; build `sys_arch`, bootstrap tcpip thread and loopback netif | Host + all three ISA compile; lwIP timer/thread/mbox tests, real loopback TCP/UDP/ICMP without previous synthetic pipe backend |
+| B — host-proven | Compile original pinned lwIP under `NAS_ENABLE_LWIP=1`, native `sys_arch`, upstream tcpip thread and `lo` netif; Ethernet pbuf adapter sends DHCP and queues inbound RX | Native sem/mbox/deadlines/worker, **real upstream UDP loopback**, DHCP TX, RX, netdev pins and cleanup PASS; three-ISA C syntax PASS. **No guest/wire, TCP socket or AF_INET FileOps proof yet** |
 | C | Wire pinned original U-Boot VirtIO-Net through shared compatibility, 2 queues and DMA; connect netif, bounded TX completion, interrupt/bounded receive worker | PCI x86, MMIO RV64/AArch64 QEMU guest frames; DHCP lease, ARP, ping and UDP to host; MAC/address/link reporting |
 | D | Replace AF_INET socket backend with Netconn and FileOps, preserve AF_UNIX and shared open-description semantics | ncat local/remote, curl, iperf3, DNS, nonblocking connect, poll/epoll, fork/dup, close/accept races on all ISAs |
 | E | Remove old simulated AF_INET code and harden shutdown, resource failure, MTU, hot-unplug | Network + block concurrency, packet loss/backpressure, memory lifetime, repeated NIC reset, all-ISA QEMU regression accumulated as requested |

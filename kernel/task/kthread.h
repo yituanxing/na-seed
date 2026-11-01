@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 struct nas_wait_queue;
+#define NAS_KTHREAD_STACK_BYTES 8192U
 /* Absolute monotonic deadline; zero means wait indefinitely.
  * All outcomes are explicit; a timed-out or canceled waiter is unlinked
  * before its saved C frame may be resumed/reclaimed. */

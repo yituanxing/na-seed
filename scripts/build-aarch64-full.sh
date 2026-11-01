@@ -13,6 +13,7 @@ flags="--target=aarch64-none-elf -march=armv8-a -mgeneral-regs-only -std=c11 -O2
 [ "${NAS_ENABLE_LITTLEFS:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_LITTLEFS=1"
 [ "${NAS_ENABLE_RAMFS:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_RAMFS=1"
 [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_VIRTIO_BLK=1 -I third_party/unikraft/include -I ports/unikraft/include -I ports/uboot/compat"
+[ "${NAS_ENABLE_LWIP:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_LWIP=1 -I ports/lwip/include -I third_party/lwip/src/include"
 # One authoritative full-kernel core TU list for every native ISA.
 # ISA-specific hardware providers remain below in the arch= selection.
 common=$(grep -v '^#' scripts/full-kernel-core.sources)
@@ -24,8 +25,12 @@ if [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ]; then
       { echo '[VIRTIO] lwext4 gate required' >&2; exit 1; }
     arch="$arch kernel/drivers/virtio/transport.c kernel/drivers/virtio/mmio.c kernel/drivers/core/bus.c kernel/drivers/port/dma.c kernel/drivers/port/block.c kernel/drivers/port/net.c ports/unikraft/split_queue.c ports/uboot/virtio_compat.c ports/uboot/blk_port.c ports/uboot/virtio_bus.c ports/uboot/net_port.c ports/uboot/virtio_net_bus.c kernel/platform/virtio_mmio_qemu.c kernel/platform/aarch64_virtio.c"
 fi
+lwip_src=
+if [ "${NAS_ENABLE_LWIP:-0}" = 1 ]; then
+    lwip_src="ports/lwip/sys_arch.c ports/lwip/netif_port.c third_party/lwip/src/core/*.c third_party/lwip/src/core/ipv4/*.c third_party/lwip/src/api/*.c third_party/lwip/src/netif/ethernet.c"
+fi
 obj=
-for f in $common $arch; do
+for f in $common $arch $lwip_src; do
     target="$out/$(printf '%s' "$f" | tr '/' '_').o"
     clang $flags -c "$f" -o "$target"
     obj="$obj $target"

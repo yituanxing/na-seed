@@ -10,7 +10,7 @@
  * Keep this deliberately separate from Linux user-task accounting while
  * per-task native syscall continuation migration remains incomplete. */
 #define NAS_KTHREAD_LIMIT 4U
-#define NAS_KTHREAD_STACK 8192U
+#define NAS_KTHREAD_STACK NAS_KTHREAD_STACK_BYTES
 enum worker_state { KTHREAD_FREE, KTHREAD_READY, KTHREAD_RUNNING,
                     KTHREAD_WAITING, KTHREAD_DONE };
 struct nas_kthread {

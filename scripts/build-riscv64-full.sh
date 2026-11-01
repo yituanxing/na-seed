@@ -17,6 +17,9 @@ if [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ]; then
       { echo '[VIRTIO] lwext4 gate required' >&2; exit 1; }
     flags="$flags -DNAS_ENABLE_VIRTIO_BLK=1"
 fi
+if [ "${NAS_ENABLE_LWIP:-0}" = 1 ]; then
+    flags="$flags -DNAS_ENABLE_LWIP=1 -I ports/lwip/include -I third_party/lwip/src/include"
+fi
 # One authoritative full-kernel core TU list for every native ISA.
 # ISA-specific hardware providers remain below in the arch= selection.
 common=$(grep -v '^#' scripts/full-kernel-core.sources)
@@ -24,8 +27,12 @@ arch="kernel/arch/riscv64/cpu.c kernel/arch/riscv64/mmu.c kernel/arch/riscv64/co
 if [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ]; then
     arch="$arch kernel/drivers/virtio/transport.c kernel/drivers/virtio/mmio.c kernel/drivers/core/bus.c kernel/drivers/port/dma.c kernel/drivers/port/block.c kernel/drivers/port/net.c ports/unikraft/split_queue.c ports/uboot/virtio_compat.c ports/uboot/blk_port.c ports/uboot/virtio_bus.c ports/uboot/net_port.c ports/uboot/virtio_net_bus.c kernel/platform/virtio_mmio_qemu.c kernel/platform/riscv64_virtio.c kernel/arch/riscv64/io.c"
 fi
+lwip_src=
+if [ "${NAS_ENABLE_LWIP:-0}" = 1 ]; then
+    lwip_src="ports/lwip/sys_arch.c ports/lwip/netif_port.c third_party/lwip/src/core/*.c third_party/lwip/src/core/ipv4/*.c third_party/lwip/src/api/*.c third_party/lwip/src/netif/ethernet.c"
+fi
 obj=
-for f in $common $arch; do
+for f in $common $arch $lwip_src; do
     target="$out/$(printf '%s' "$f" | tr '/' '_').o"
     clang $flags -c "$f" -o "$target"
     obj="$obj $target"
