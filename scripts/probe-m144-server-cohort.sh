@@ -1,7 +1,8 @@
 #!/bin/sh
 set -eu
 export NAS_ENABLE_LWIP=1 NAS_ENABLE_VIRTIO_NET=1 NAS_VIRTIO_NET_USER=1
-export NAS_SYSCALL_TRACE=1 NAS_APP_BATCH_QEMU_TIMEOUT=240
+unset NAS_SYSCALL_TRACE # The production-style gate must not rely on debug tracing.
+export NAS_APP_BATCH_QEMU_TIMEOUT=240
 export NAS_ACCEPTANCE_QEMU_RAM=2048M BUSYBOX_PARITY_EXPECTED_COUNT=1
 export BUSYBOX_PARITY_MANIFEST=scripts/m144-server-cases.tsv
 sh scripts/stage-m144-prebuilt.sh amd64
