@@ -1,0 +1,6 @@
+# Five distinct signed ELF identities (new, not prior aliases)
+usr/sbin/nginx
+usr/sbin/haproxy
+usr/bin/ab
+usr/bin/valkey-server
+usr/bin/valkey-cli

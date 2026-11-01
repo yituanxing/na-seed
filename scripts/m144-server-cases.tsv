@@ -1,0 +1,2 @@
+# case	rootfs	guest_argv	marker	evidence	entrypoint
+m144-batch	cpio	sh -c '/bin/busybox sleep 4 && /bin/sh /tests/m144-server-batch-run.sh'	M144_SERVER_COHORT_PASS	-	/bin/busybox
