@@ -30,6 +30,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
+      - name: Verify pinned official lwIP source
+        run: |
+          set -eu
+          test -s third_party/lwip/src/include/lwip/opt.h
+          test "$(git -C third_party/lwip rev-parse HEAD)" = \
+            77dcd25a72509eb83f72b033d219b1d40cd8eb95
       - name: Validate narrow smoke selection
         run: |
           set -eu

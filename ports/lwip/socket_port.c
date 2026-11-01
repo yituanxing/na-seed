@@ -30,9 +30,10 @@ enum port_command {
 struct port_socket {
     bool owned,connected,connecting,listening,queued_control;
     bool connect_result_pending;
-    bool accept_owned,accept_cancelling;
+    bool accept_owned,accept_cancelling,prefetch_owned;
     bool shut_read,shut_write;
     struct nas_fd_slot_lease accept_lease;
+    struct nas_fd_slot_lease prefetch_lease;
     bool rx_valid,rx_eof,rx_truncated;
     enum nas_lwip_bridge_type type;
     enum port_command command;
@@ -261,6 +262,14 @@ static bool send_shutdown_requested(const struct port_socket *s) {
             s->control_request.shutdown_how!=0);
 }
 
+static bool accept_finished(const struct port_socket *s) {
+    return s->accept_owned && s->command==PORT_CONTROL_DONE &&
+           s->control_request.op==NAS_LWIP_BRIDGE_ACCEPT;
+}
+
+static int nas_lwip_socket_accept_cancel_internal(
+    struct port_socket *s,struct nas_fd_slot_lease lease);
+
 const struct nas_file_ops *nas_lwip_socket_port_ops(void);
 
 int nas_lwip_socket_port_open(unsigned slot,enum nas_lwip_bridge_type type) {
@@ -470,13 +479,36 @@ static uint16_t poll_description(unsigned slot,uint16_t events) {
     /* An RX request started above can complete on a subsequent native
      * scheduling slice, never synchronously in this poll callback. */
     uint16_t ready=0;
-    if(s->rx_valid || s->rx_eof || s->rx_error ||
-       (s->command==PORT_CONTROL_DONE &&
-        s->control_request.op==NAS_LWIP_BRIDGE_ACCEPT))ready|=PORT_POLLIN;
-    if(s->shut_read)ready|=PORT_POLLIN|PORT_POLLHUP;
-    if(s->listening && !s->accept_owned && !s->accept_cancelling &&
-       s->command==PORT_IDLE && nas_lwip_bridge_listener_readable(s->id))
+    if(s->rx_valid || s->rx_eof || s->rx_error || accept_finished(s))
         ready|=PORT_POLLIN;
+    if(s->shut_read)ready|=PORT_POLLIN|PORT_POLLHUP;
+    if(s->listening && (events&PORT_POLLIN)) {
+        if(s->prefetch_owned) {
+            /* A native ACCEPT that lost a race with another consumer of
+             * lwIP's backlog is not readable. Retire the reserved slot and
+             * let the next callback start a fresh attempt. */
+            if(accept_finished(s) && s->control_result.status==-EAGAIN) {
+                struct nas_fd_slot_lease ignored={0};
+                struct nas_lwip_bridge_id child={0};
+                struct nas_lwip_bridge_address peer={0};
+                (void)nas_lwip_socket_accept_prefetched(slot,&ignored,
+                                                         &child,&peer);
+                ready&=(uint16_t)~PORT_POLLIN;
+            }
+        } else if(!s->accept_owned && !s->accept_cancelling &&
+                  s->command==PORT_IDLE) {
+            if(nas_open_files[slot].status_flags&0x800ULL) {
+                /* Native lwIP only exposes pending-backlog indication,
+                 * whereas userspace select/poll must mean a nonblocking
+                 * accept can actually harvest a completed child. */
+                int rc=nas_lwip_socket_accept_prefetch_start(slot);
+                if(rc && rc!=-EAGAIN && rc!=-EBUSY && rc!=-EALREADY)
+                    ready|=PORT_POLLERR;
+            } else if(nas_lwip_bridge_listener_readable(s->id)) {
+                ready|=PORT_POLLIN;
+            }
+        }
+    }
     if(s->rx_eof)ready|=PORT_POLLHUP;
     if(s->tx_error || s->rx_error)ready|=PORT_POLLERR;
     if(s->connected && !s->connecting && !send_shutdown_requested(s) &&
@@ -496,6 +528,16 @@ static void release(unsigned slot) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !sockets[slot].owned)return;
     struct port_socket *s=&sockets[slot];
     struct nas_lwip_bridge_id id=s->id;
+    if(s->prefetch_owned) {
+        /* nas_fd_close has already set this listener's refcount to zero.
+         * Use the internal cancellation path, which does not call
+         * socket_at(), while the cached bridge identity still exists.
+         * The native worker must see cancellation before lease invalidity. */
+        struct nas_fd_slot_lease lease=s->prefetch_lease;
+        (void)nas_lwip_socket_accept_cancel_internal(s,lease);
+        (void)nas_fd_slot_lease_cancel(lease);
+        s->prefetch_owned=false;
+    }
     /* Once port finish() took the bridge result, the listener no longer
      * owns that accepted child in the native bridge's result field. */
     if(s->command==PORT_CONTROL_DONE &&
@@ -661,10 +703,8 @@ int nas_lwip_socket_accept_complete(unsigned listener_slot,
     return 1;
 }
 
-int nas_lwip_socket_accept_cancel(unsigned listener_slot,
-                                  struct nas_fd_slot_lease lease) {
-    struct port_socket *s=socket_at(listener_slot);
-    if(!s)return -EBADF;
+static int nas_lwip_socket_accept_cancel_internal(
+    struct port_socket *s,struct nas_fd_slot_lease lease) {
     if(!lease_matches(s,lease))return -EINVAL;
     /* Do not call check() before determining whether the consumer already
      * took a completed child from the native result; bridge_cancel_accept
@@ -697,4 +737,63 @@ int nas_lwip_socket_accept_cancel(unsigned listener_slot,
     s->accept_lease=(struct nas_fd_slot_lease){0};
     s->accept_cancelling=true;
     return 0;
+}
+
+int nas_lwip_socket_accept_cancel(unsigned listener_slot,
+                                  struct nas_fd_slot_lease lease) {
+    struct port_socket *s=socket_at(listener_slot);
+    return s ? nas_lwip_socket_accept_cancel_internal(s,lease):-EBADF;
+}
+
+int nas_lwip_socket_accept_prefetch_start(unsigned listener_slot) {
+    struct port_socket *s=socket_at(listener_slot);
+    if(!s)return -EBADF;
+    int rc=check(s);
+    if(rc)return rc;
+    if(s->type!=NAS_LWIP_BRIDGE_TCP || !s->listening)return -EINVAL;
+    if(s->prefetch_owned)return 0;
+    if(s->accept_owned)return -EALREADY;
+    if(s->accept_cancelling || s->command!=PORT_IDLE)return -EAGAIN;
+    if(!nas_lwip_bridge_listener_readable(s->id))return -EAGAIN;
+
+    /* The ticket is an ordinary global OpenFile lease; it remains alive
+     * after the Task running poll/select returns. The bridge checks its
+     * identity before and after netconn_accept. */
+    struct nas_fd_slot_lease lease={0};
+    rc=nas_fd_slot_lease_begin(&lease,"lwip accept prefetch");
+    if(rc)return rc;
+    rc=nas_lwip_socket_accept_begin(listener_slot,lease);
+    if(rc) {
+        (void)nas_fd_slot_lease_cancel(lease);
+        return rc;
+    }
+    s->prefetch_owned=true;
+    s->prefetch_lease=lease;
+    return 0;
+}
+
+int nas_lwip_socket_accept_prefetched(unsigned listener_slot,
+                                      struct nas_fd_slot_lease *lease,
+                                      struct nas_lwip_bridge_id *accepted,
+                                      struct nas_lwip_bridge_address *peer) {
+    struct port_socket *s=socket_at(listener_slot);
+    if(!s)return -EBADF;
+    if(!lease || !accepted || !peer)return -EINVAL;
+    if(!s->prefetch_owned)return 0;
+    struct nas_fd_slot_lease ticket=s->prefetch_lease;
+    int rc=nas_lwip_socket_accept_complete(listener_slot,ticket,
+                                           accepted,peer);
+    if(rc==0)return -EAGAIN;
+
+    /* The listener no longer owns this ticket. On successful ACCEPT the
+     * syscall gets both the real leased slot and accepted native identity;
+     * only its subsequent commit publishes the child FD to userspace. */
+    s->prefetch_owned=false;
+    s->prefetch_lease=(struct nas_fd_slot_lease){0};
+    if(rc==1) {
+        *lease=ticket;
+        return 1;
+    }
+    (void)nas_fd_slot_lease_cancel(ticket);
+    return rc;
 }

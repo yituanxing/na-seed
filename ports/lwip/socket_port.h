@@ -73,4 +73,24 @@ int nas_lwip_socket_accept_complete(unsigned listener_slot,
 int nas_lwip_socket_accept_cancel(unsigned listener_slot,
                                    struct nas_fd_slot_lease lease);
 
+/* A nonblocking listener has no sleeping Task to own its native ACCEPT.
+ * Its shared OpenFile therefore retains one real kernel slot lease while
+ * poll/select prefetches the next child. Only a genuinely readable native
+ * listener may start prefetch. A completed child and its lease transfer
+ * together to the syscall adapter, which adopts/commits them atomically.
+ * This also lets a blocking accept harvest a ticket retained across F_SETFL.
+ *
+ * start: 0 queued/already active, -EAGAIN no native backlog/work capacity,
+ *        -EALREADY a Task already owns this listener's ACCEPT.
+ * prefetched: 0 no owned ticket, -EAGAIN pending, 1 completed transfer,
+ *             other negative native errno after retiring its lease.
+ * Caller never cancels the lease returned with 1 before releasing any
+ * accepted bridge child, and never starts a Task-owned ACCEPT while a
+ * prefetch ticket is active. */
+int nas_lwip_socket_accept_prefetch_start(unsigned listener_slot);
+int nas_lwip_socket_accept_prefetched(unsigned listener_slot,
+                                      struct nas_fd_slot_lease *lease,
+                                      struct nas_lwip_bridge_id *accepted,
+                                      struct nas_lwip_bridge_address *peer);
+
 #endif

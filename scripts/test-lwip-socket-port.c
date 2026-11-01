@@ -25,6 +25,45 @@ bool nas_heap_free(void *p){free(p);return true;}
 struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
 struct nas_task *nas_current_task;
 
+/* This focused host executable links the actual SocketPort/bridge/official
+ * lwIP, not the guest's full FD allocator. Model the same real OpenFile
+ * lease identity in its fixed global array, including cancel semantics. */
+static uint64_t next_test_lease=UINT64_C(0xF00001);
+int nas_fd_slot_lease_begin(struct nas_fd_slot_lease *out,const char *operation) {
+    (void)operation;
+    if(!out)return -EINVAL;
+    *out=(struct nas_fd_slot_lease){.slot=NAS_OPEN_FILE_LIMIT};
+    for(unsigned slot=96;slot<NAS_OPEN_FILE_LIMIT;slot++) {
+        if(nas_open_files[slot].refcount)continue;
+        const uint64_t token=++next_test_lease;
+        nas_open_files[slot]=(struct nas_open_file){
+            .refcount=1,.lease_token=token
+        };
+        *out=(struct nas_fd_slot_lease){slot,token};
+        return 0;
+    }
+    return -ENFILE;
+}
+bool nas_fd_slot_lease_valid(struct nas_fd_slot_lease lease) {
+    return lease.slot<NAS_OPEN_FILE_LIMIT && lease.token &&
+           nas_open_files[lease.slot].refcount==1 &&
+           nas_open_files[lease.slot].lease_token==lease.token;
+}
+bool nas_fd_slot_lease_cancel(struct nas_fd_slot_lease lease) {
+    if(!nas_fd_slot_lease_valid(lease))return false;
+    nas_open_files[lease.slot]=(struct nas_open_file){0};
+    return true;
+}
+
+static struct nas_fd_slot_lease prefetch_ticket(void) {
+    for(unsigned slot=96;slot<NAS_OPEN_FILE_LIMIT;slot++)
+        if(nas_open_files[slot].lease_token)
+            return (struct nas_fd_slot_lease){
+                slot,nas_open_files[slot].lease_token
+            };
+    return (struct nas_fd_slot_lease){0};
+}
+
 static unsigned ready_calls;
 static void core_ready(void *unused){(void)unused;ready_calls++;}
 static struct nas_lwip_bridge_address lo(unsigned port){
@@ -154,6 +193,24 @@ static void close_slot(unsigned slot) {
     ops->release(slot);
     assert(!nas_lwip_socket_is_slot(slot));
     nas_open_files[slot]=(struct nas_open_file){0};
+}
+
+static struct nas_lwip_bridge_id finish_prefetch(
+    unsigned listener,struct nas_fd_slot_lease *lease,
+    struct nas_lwip_bridge_address *peer) {
+    struct nas_lwip_bridge_id accepted={0};
+    for(unsigned tries=0;tries<200;tries++) {
+        if(ops->poll_description(listener,1U)&1U) {
+            assert(nas_lwip_socket_accept_prefetched(listener,lease,
+                                                      &accepted,peer)==1);
+            assert(nas_fd_slot_lease_valid(*lease));
+            assert(accepted.slot==lease->slot);
+            return accepted;
+        }
+        test_ns+=UINT64_C(1000000);
+        (void)nas_kthread_run(1);
+    }
+    abort();
 }
 
 int main(void) {
@@ -315,6 +372,84 @@ int main(void) {
     close_slot(39);
     close_slot(38);
 
+    /* Real nonblocking server path: select/poll owns a persistent lease,
+     * and must not advertise POLLIN until native ACCEPT has completed.
+     * A later nonblocking accept transfers this exact lease and child. */
+    nas_open_files[30].status_flags|=0x800ULL;
+    connect_slot(40,38017);
+    struct nas_fd_slot_lease prefetched_lease={0};
+    accepted=(struct nas_lwip_bridge_id){0};
+    assert(nas_lwip_socket_accept_prefetched(30,&prefetched_lease,
+                                            &accepted,&peer)==0);
+    assert((ops->poll_description(30,1U)&1U)==0);
+    struct nas_fd_slot_lease first_prefetch=prefetch_ticket();
+    assert(nas_fd_slot_lease_valid(first_prefetch));
+    assert(nas_lwip_socket_accept_prefetch_start(30)==0);
+    assert(prefetch_ticket().token==first_prefetch.token);
+    assert(nas_lwip_socket_accept_prefetched(30,&prefetched_lease,
+                                            &accepted,&peer)==-EAGAIN);
+    accepted=finish_prefetch(30,&prefetched_lease,&peer);
+    assert(prefetched_lease.token==first_prefetch.token);
+    assert(peer.ipv4==UINT32_C(0x7f000001) && peer.port!=0);
+    /* The lease remains allocated while the syscall adopts the Netconn. */
+    assert(prefetch_ticket().token==prefetched_lease.token);
+    assert(nas_lwip_socket_port_adopt(accepted)==0);
+    nas_open_files[prefetched_lease.slot].lease_token=0;
+    nas_open_files[prefetched_lease.slot].status_flags=2;
+    nas_open_files[prefetched_lease.slot].ops=ops;
+    assert(!prefetch_ticket().token);
+    const char prefetched_payload[]="TCP after durable select accept";
+    assert(ops->write(40,(const uint8_t *)prefetched_payload,
+                      sizeof(prefetched_payload)-1)==sizeof(prefetched_payload)-1);
+    flush_tx(40);
+    assert(receive(prefetched_lease.slot,result,sizeof(result))==
+           sizeof(prefetched_payload)-1);
+    assert(!memcmp(result,prefetched_payload,sizeof(prefetched_payload)-1));
+    close_slot(prefetched_lease.slot);
+    close_slot(40);
+
+    /* F_SETFL may flip the listener to blocking while prefetch is pending.
+     * Its OpenFile-owned ticket remains harvestable and a Task must not
+     * queue a competing native ACCEPT for the same connection. */
+    connect_slot(41,38017);
+    assert((ops->poll_description(30,1U)&1U)==0);
+    struct nas_fd_slot_lease flipped_prefetch=prefetch_ticket();
+    assert(nas_fd_slot_lease_valid(flipped_prefetch));
+    nas_open_files[30].status_flags&=~0x800ULL;
+    assert((ops->poll_description(30,1U)&1U)==0);
+    struct nas_fd_slot_lease duplicate=lease_slot(42,UINT64_C(0xAA04));
+    assert(nas_lwip_socket_accept_begin(30,duplicate)==-EALREADY);
+    assert(nas_fd_slot_lease_cancel(duplicate));
+    accepted=finish_prefetch(30,&prefetched_lease,&peer);
+    assert(prefetched_lease.token==flipped_prefetch.token);
+    assert(nas_lwip_socket_port_adopt(accepted)==0);
+    nas_open_files[prefetched_lease.slot].lease_token=0;
+    nas_open_files[prefetched_lease.slot].status_flags=2;
+    nas_open_files[prefetched_lease.slot].ops=ops;
+    close_slot(prefetched_lease.slot);
+    close_slot(41);
+
+    /* Closing a listening File after nas_fd_close zeroed its refcount must
+     * cancel the native worker BEFORE invalidating its kernel lease. */
+    reserve(50,NAS_LWIP_BRIDGE_TCP);
+    assert(nas_lwip_socket_bind(50,lo(38019))==0);
+    finish_control(50,0);
+    assert(nas_lwip_socket_listen(50,2)==0);
+    finish_control(50,0);
+    nas_open_files[50].status_flags|=0x800ULL;
+    connect_slot(51,38019);
+    assert((ops->poll_description(50,1U)&1U)==0);
+    struct nas_fd_slot_lease orphan_prefetch=prefetch_ticket();
+    assert(nas_fd_slot_lease_valid(orphan_prefetch));
+    nas_open_files[50].refcount=0; /* the actual final-close ordering */
+    ops->release(50);
+    assert(!nas_fd_slot_lease_valid(orphan_prefetch));
+    assert(!nas_lwip_socket_is_slot(50));
+    nas_open_files[50]=(struct nas_open_file){0};
+    close_slot(51);
+    for(unsigned tries=0;tries<80;tries++)(void)nas_kthread_run(1);
+    assert(!prefetch_ticket().token);
+
     /* No user Task invokes lwIP Netconn teardown on final File release. */
     close_slot(30);
     close_slot(21);
@@ -325,5 +460,6 @@ int main(void) {
     }
     puts("[LWIP SOCKET PORT PASS] real native UDP/TCP, async FileOps,") ;
     puts("  OpenFile identity, copied TX, poll/read, leased accept/cancel/reaccept");
+    puts("  durable nonblocking prefetch, F_SETFL handoff, final-close cleanup");
     return 0;
 }

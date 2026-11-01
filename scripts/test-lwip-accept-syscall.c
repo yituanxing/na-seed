@@ -45,6 +45,8 @@ const struct nas_file_ops *nas_fs_ops_for_kind(uint8_t kind){(void)kind;return N
 static unsigned bridge_begin_count,bridge_complete_count,bridge_cancel_count;
 static unsigned bridge_release_count,adopt_count,release_count;
 static bool have_peer,bridge_pending,bridge_complete,bridge_native_empty;
+static bool prefetch_owned;
+static struct nas_fd_slot_lease prefetch_lease;
 static bool name_pending,name_ready,control_pending;
 static bool name_requested_peer,reuse_enabled;
 static unsigned shutdown_how,shutdown_count,reuse_count;
@@ -90,6 +92,34 @@ int nas_lwip_socket_accept_cancel(unsigned slot,
     bridge_pending=false;
     ++bridge_cancel_count;
     return 0;
+}
+int nas_lwip_socket_accept_prefetch_start(unsigned slot) {
+    assert(slot==LISTENER_SLOT);
+    if(prefetch_owned)return -EALREADY;
+    if(!have_peer)return -EAGAIN;
+    int rc=nas_fd_slot_lease_begin(&prefetch_lease,"mock prefetch");
+    if(rc)return rc;
+    rc=nas_lwip_socket_accept_begin(slot,prefetch_lease);
+    if(rc) {
+        (void)nas_fd_slot_lease_cancel(prefetch_lease);
+        return rc;
+    }
+    prefetch_owned=true;
+    return 0;
+}
+int nas_lwip_socket_accept_prefetched(unsigned slot,
+                                      struct nas_fd_slot_lease *lease,
+                                      struct nas_lwip_bridge_id *accepted,
+                                      struct nas_lwip_bridge_address *peer) {
+    assert(slot==LISTENER_SLOT && lease && accepted && peer);
+    if(!prefetch_owned)return 0;
+    int rc=nas_lwip_socket_accept_complete(slot,prefetch_lease,accepted,peer);
+    if(rc==0)return -EAGAIN;
+    prefetch_owned=false;
+    if(rc==1)*lease=prefetch_lease;
+    else (void)nas_fd_slot_lease_cancel(prefetch_lease);
+    prefetch_lease=(struct nas_fd_slot_lease){0};
+    return rc;
 }
 int nas_lwip_socket_port_adopt(struct nas_lwip_bridge_id accepted) {
     assert(accepted.slot==active_lease.slot && accepted.generation);
@@ -232,7 +262,7 @@ int main(void) {
     /* A nonblocking listener cannot strand a task-owned lease after syscall
      * return; no queued native completion, no dangling OpenFile ref. */
     nas_open_files[LISTENER_SLOT].status_flags|=0x800;
-    have_peer=true;
+    have_peer=false;
     assert((int64_t)nas_fs_socket_accept_description(
         LISTENER_SLOT,addr,size_ptr,0)==-EAGAIN);
     assert(!bridge_begin_count && !live_leases());
@@ -292,7 +322,30 @@ int main(void) {
     nas_task_wait_dispose(&test_task);
     assert(bridge_cancel_count==1);
 
+    /* Nonblocking accept is now two-phase across syscall returns. The
+     * original listening OpenFile, not the returning Task, owns the native
+     * worker lease until accept() atomically publishes the accepted child. */
+    bridge_native_empty=false;have_peer=true;
+    nas_open_files[LISTENER_SLOT].status_flags|=0x800;
+    unsigned previous_begins=bridge_begin_count;
+    assert((int64_t)nas_fs_socket_accept_description(
+        LISTENER_SLOT,addr,size_ptr,0)==-EAGAIN);
+    assert(prefetch_owned && bridge_pending && live_leases()==1);
+    assert(bridge_begin_count==previous_begins+1);
+    assert((int64_t)nas_fs_socket_accept_description(
+        LISTENER_SLOT,addr,size_ptr,0)==-EAGAIN);
+    assert(bridge_begin_count==previous_begins+1 && live_leases()==1);
+    bridge_complete=true;set_socklen(16);
+    accepted=nas_fs_socket_accept_description(
+        LISTENER_SLOT,addr,size_ptr,0x80000ULL);
+    assert(accepted<NAS_FD_LIMIT && !prefetch_owned && !bridge_pending);
+    assert(test_fds.entries[accepted].cloexec && !live_leases());
+    assert(!test_task.wait.accept_lease_cancel && get_socklen()==16);
+    assert(user_bytes[4]==127 && user_bytes[3]==(uint8_t)actual_peer.port);
+    nas_fs_close_fd(accepted);
+    nas_open_files[LISTENER_SLOT].status_flags=2;
+
     puts("[LWIP ACCEPT SYSCALL PASS] genuine OpenFile lease, syscall usercopy,");
-    puts("  async continuation, CLOEXEC/NONBLOCK child, peer sockaddr, EINTR/ABA");
+    puts("  blocking/EINTR and nonblocking prefetch, CLOEXEC, peer, FD ABA");
     return 0;
 }

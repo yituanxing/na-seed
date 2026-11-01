@@ -403,13 +403,26 @@ static uint64_t sys_lwip_accept_slot(unsigned listener_slot,uint64_t address,
     if(nextfd==NAS_FD_LIMIT)return (uint64_t)-EMFILE;
 
     struct nas_fd_slot_lease lease=TASK.wait.accept_lease;
-    if(!TASK.wait.accept_lease_cancel) {
-        /* A user O_NONBLOCK listener cannot retain a Task-owned lease after
-         * returning to userspace. Never queue an uncancelable native accept
-         * on its behalf; a future per-listener ticket enables this case. */
-        if(nas_open_files[listener_slot].status_flags&0x800ULL)
-            return (uint64_t)-EAGAIN;
-        int rc=nas_fd_slot_lease_begin(&lease,"lwip accept");
+    struct nas_lwip_bridge_id accepted={0};
+    struct nas_lwip_bridge_address peer={0};
+    const bool task_owned=TASK.wait.accept_lease_cancel!=NULL;
+    int rc;
+    if(!task_owned) {
+        /* A nonblocking listener may already own a fully accepted child:
+         * poll/select initiated the native worker in the background. This
+         * durable ticket belongs to the OpenFile, never to a returning Task.
+         * Blocking accept also drains a ticket if F_SETFL changed meanwhile. */
+        rc=nas_lwip_socket_accept_prefetched(listener_slot,&lease,
+                                               &accepted,&peer);
+        if(rc==1)goto publish;
+        if(rc==-EAGAIN)return (uint64_t)-EAGAIN;
+        if(rc<0)return (uint64_t)(int64_t)rc;
+        if(nas_open_files[listener_slot].status_flags&0x800ULL) {
+            rc=nas_lwip_socket_accept_prefetch_start(listener_slot);
+            return (uint64_t)(int64_t)(rc==0 || rc==-EAGAIN ||
+                rc==-EALREADY || rc==-EBUSY ? -EAGAIN:rc);
+        }
+        rc=nas_fd_slot_lease_begin(&lease,"lwip accept");
         if(rc)return (uint64_t)(int64_t)rc;
         rc=nas_lwip_socket_accept_begin(listener_slot,lease);
         if(rc) {
@@ -426,9 +439,7 @@ static uint64_t sys_lwip_accept_slot(unsigned listener_slot,uint64_t address,
        !nas_fd_slot_lease_valid(lease))
         return (uint64_t)-EBADF;
 
-    struct nas_lwip_bridge_id accepted={0};
-    struct nas_lwip_bridge_address peer={0};
-    int rc=nas_lwip_socket_accept_complete(listener_slot,lease,&accepted,&peer);
+    rc=nas_lwip_socket_accept_complete(listener_slot,lease,&accepted,&peer);
     if(rc==0)return (uint64_t)-EAGAIN; /* the same native command is pending */
     if(rc<0) {
         /* No accepted child was published; the native completion is already
@@ -437,16 +448,22 @@ static uint64_t sys_lwip_accept_slot(unsigned listener_slot,uint64_t address,
         (void)nas_fd_slot_lease_cancel(lease);
         return (uint64_t)(int64_t)rc;
     }
-    if(rc!=1 || !accepted.generation || accepted.slot!=lease.slot) {
-        if(accepted.generation)(void)nas_lwip_bridge_release(accepted);
+    if(rc!=1) {
         lwip_accept_disarm();
+        (void)nas_fd_slot_lease_cancel(lease);
+        return (uint64_t)-EIO;
+    }
+publish:
+    if(!accepted.generation || accepted.slot!=lease.slot) {
+        if(accepted.generation)(void)nas_lwip_bridge_release(accepted);
+        if(task_owned)lwip_accept_disarm();
         (void)nas_fd_slot_lease_cancel(lease);
         return (uint64_t)-EIO;
     }
     rc=nas_lwip_socket_port_adopt(accepted);
     if(rc) {
         (void)nas_lwip_bridge_release(accepted);
-        lwip_accept_disarm();
+        if(task_owned)lwip_accept_disarm();
         (void)nas_fd_slot_lease_cancel(lease);
         return (uint64_t)(int64_t)rc;
     }
@@ -458,11 +475,11 @@ static uint64_t sys_lwip_accept_slot(unsigned listener_slot,uint64_t address,
         /* An FD number may have been claimed by a CLONE_FILES sibling
          * between preflight and publication. Never destroy its entry. */
         nas_lwip_socket_port_ops()->release(lease.slot);
-        lwip_accept_disarm();
+        if(task_owned)lwip_accept_disarm();
         (void)nas_fd_slot_lease_cancel(lease);
         return (uint64_t)(int64_t)rc;
     }
-    lwip_accept_disarm(); /* the accepted FD, not the Task waiter, owns it */
+    if(task_owned)lwip_accept_disarm(); /* accepted FD owns it now */
     if(length_ptr) {
         const struct nas_ipv4_endpoint endpoint={peer.ipv4,peer.port};
         uint8_t bytes[16];
