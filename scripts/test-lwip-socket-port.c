@@ -290,6 +290,11 @@ int main(void) {
      * native SENDTO, never several stream writes; truncated RX drops the
      * remainder and retains the packet's real source address. */
     reserve(23,NAS_LWIP_BRIDGE_UDP);
+    bool recverr=true;
+    assert(nas_lwip_socket_ip_recverr(23,true,&recverr)==0);
+    recverr=false;
+    assert(nas_lwip_socket_ip_recverr(23,false,&recverr)==0 && recverr);
+    assert(nas_lwip_socket_ip_recverr(21,false,&recverr)==0 && !recverr);
     assert(nas_lwip_socket_setbroadcast(23,true)==0);
     finish_control(23,0);
     assert(ops->poll_description(23,4U)&4U);

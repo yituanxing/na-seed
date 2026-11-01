@@ -630,7 +630,12 @@ static uint64_t sys_ipv4_getsockopt(uint64_t fd,uint64_t level,
         int type=nas_lwip_socket_type(slot);
         if(type<0)return (uint64_t)(int64_t)type;
         uint32_t value;
-        if(level==1) {
+        if(level==0 && opt==11) { /* IP_RECVERR */
+            bool enabled=false;
+            int rc=nas_lwip_socket_ip_recverr(slot,false,&enabled);
+            if(rc)return (uint64_t)(int64_t)rc;
+            value=enabled?1U:0U;
+        } else if(level==1) {
             switch(opt) {
             case 3:value=type==NAS_LWIP_BRIDGE_TCP ? 1U:2U;break;
             case 4: {
@@ -712,12 +717,18 @@ static uint64_t sys_ipv4_setsockopt(uint64_t fd,uint64_t level,
                                     uint64_t length) {
 #ifdef NAS_ENABLE_LWIP
     if(lwip_fd(fd)) {
-        if(level!=1 || (opt!=2 && opt!=6))return (uint64_t)-ENOPROTOOPT;
+        if((level!=1 || (opt!=2 && opt!=6)) &&
+           (level!=0 || opt!=11))return (uint64_t)-ENOPROTOOPT;
         if(length<4 || !address)return (uint64_t)-EINVAL;
         uint32_t value;
         if(!nas_user_read_bytes(address,(uint8_t *)&value,4))
             return (uint64_t)-EFAULT;
         unsigned slot=TASK.fds->entries[fd].slot;
+        if(level==0) { /* IP_RECVERR: per-OpenFile opt-in, no fake errqueue */
+            bool enabled=value!=0;
+            return (uint64_t)(int64_t)nas_lwip_socket_ip_recverr(
+                slot,true,&enabled);
+        }
         if(opt==6) {
             if(nas_lwip_socket_type(slot)!=NAS_LWIP_BRIDGE_UDP)
                 return (uint64_t)-EOPNOTSUPP;

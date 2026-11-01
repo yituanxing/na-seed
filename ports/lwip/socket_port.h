@@ -73,6 +73,10 @@ int nas_lwip_socket_getname_complete(unsigned slot,
 int nas_lwip_socket_shutdown(unsigned slot,unsigned how);
 int nas_lwip_socket_setreuseaddr(unsigned slot,bool enabled);
 int nas_lwip_socket_setbroadcast(unsigned slot,bool enabled);
+/* Linux IP_RECVERR is stored on the shared OpenFile (also across dup/fork).
+ * Successful UDP paths can opt in; asynchronous ICMP MSG_ERRQUEUE delivery
+ * is not implemented and must not be advertised as full parity. */
+int nas_lwip_socket_ip_recverr(unsigned slot,bool write,bool *enabled);
 int nas_lwip_socket_control_ready(unsigned slot);
 int nas_lwip_socket_control_finish(unsigned slot);
 

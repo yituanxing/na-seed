@@ -58,6 +58,7 @@ static unsigned abi_opens,abi_releases,abi_binds,abi_connects,abi_listens;
 static bool abi_name_peer[NAS_OPEN_FILE_LIMIT];
 static bool abi_reuse_enabled[NAS_OPEN_FILE_LIMIT];
 static bool abi_broadcast_enabled[NAS_OPEN_FILE_LIMIT];
+static bool abi_recverr_enabled[NAS_OPEN_FILE_LIMIT];
 static unsigned abi_broadcasts;
 static unsigned abi_shutdown_how[NAS_OPEN_FILE_LIMIT];
 static unsigned abi_getnames,abi_reuses,abi_shutdowns;
@@ -196,6 +197,14 @@ int nas_lwip_socket_setbroadcast(unsigned slot,bool enabled) {
        abi_type[slot]!=NAS_LWIP_BRIDGE_UDP)return -EOPNOTSUPP;
     abi_broadcast_enabled[slot]=enabled;abi_control[slot]=true;
     abi_pending_checks[slot]=1;abi_broadcasts++;return 0;
+}
+int nas_lwip_socket_ip_recverr(unsigned slot,bool write,bool *enabled) {
+    if(!nas_lwip_socket_is_slot(slot))return -EBADF;
+    if(!enabled)return -EINVAL;
+    if(abi_type[slot]!=NAS_LWIP_BRIDGE_UDP)return -EOPNOTSUPP;
+    if(write)abi_recverr_enabled[slot]=*enabled;
+    else *enabled=abi_recverr_enabled[slot];
+    return 0;
 }
 int nas_lwip_socket_control_ready(unsigned slot) {
     if(!nas_lwip_socket_is_slot(slot) || !abi_control[slot])return 0;
@@ -337,6 +346,20 @@ int main(void) {
     assert(sys_ipv4_getsockopt(tcp_fd,1,4,optaddr,optlen)==0);
     memcpy(&value,user_ptr(optaddr),4);assert(value==0);
     assert((int64_t)sys_ipv4_getsockopt(tcp_fd,1,999,optaddr,optlen)==-ENOPROTOOPT);
+    /* BIND dig enables IP_RECVERR on its UDP OpenFile before emitting a
+     * DNS question. It must be a real per-description option, readable
+     * back without a phantom protocol queue. */
+    value=1;
+    memcpy(user_ptr(optaddr),&value,4);
+    assert(sys_ipv4_setsockopt(udp_fd,0,11,optaddr,4)==0);
+    assert(abi_recverr_enabled[udp_slot]);
+    assert(sys_ipv4_getsockopt(udp_fd,0,11,optaddr,optlen)==0);
+    memcpy(&value,user_ptr(optaddr),4);assert(value==1);
+    assert((int64_t)sys_ipv4_setsockopt(tcp_fd,0,11,optaddr,4)==-EOPNOTSUPP);
+    value=0;
+    memcpy(user_ptr(optaddr),&value,4);
+    assert(sys_ipv4_setsockopt(udp_fd,0,11,optaddr,4)==0);
+    assert(!abi_recverr_enabled[udp_slot]);
 
     /* GETNAME completion uses real syscall usercopy after native completion,
      * not a foreign Task's memory from the worker. Validate byte order and

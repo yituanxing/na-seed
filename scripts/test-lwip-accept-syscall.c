@@ -174,6 +174,12 @@ int nas_lwip_socket_setbroadcast(unsigned slot,bool enabled) {
     (void)enabled;
     return -EOPNOTSUPP;
 }
+int nas_lwip_socket_ip_recverr(unsigned slot,bool write,bool *enabled) {
+    (void)slot;
+    (void)write;
+    (void)enabled;
+    return -EOPNOTSUPP;
+}
 int nas_lwip_socket_control_ready(unsigned slot) {
     assert(slot==LISTENER_SLOT);
     return control_pending?1:0;

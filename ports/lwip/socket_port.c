@@ -43,6 +43,7 @@ struct port_socket {
     struct nas_lwip_bridge_address connect_address;
     struct nas_lwip_bridge_address peer_address;
     struct nas_lwip_bridge_address tx_destination,rx_source;
+    bool ip_recverr;
     uint8_t rx[NAS_LWIP_BRIDGE_DATA];
     uint16_t rx_length,rx_position;
     uint8_t tx[NAS_LWIP_BRIDGE_DATA];
@@ -741,6 +742,18 @@ int nas_lwip_socket_setbroadcast(unsigned slot,bool enabled) {
         .op=NAS_LWIP_BRIDGE_SETBROADCAST,.broadcast=enabled
     };
     return nas_lwip_socket_port_begin(slot,&req);
+}
+int nas_lwip_socket_ip_recverr(unsigned slot,bool write,bool *enabled) {
+    struct port_socket *s=socket_at(slot);
+    if(!s)return -EBADF;
+    if(!enabled)return -EINVAL;
+    if(s->type!=NAS_LWIP_BRIDGE_UDP)return -EOPNOTSUPP;
+    /* Maintain the Linux option's File identity. Native Netconn already
+     * exposes synchronous UDP errors through SO_ERROR; no MSG_ERRQUEUE is
+     * synthesized, and no nonexistent ICMP metadata is fabricated. */
+    if(write)s->ip_recverr=*enabled;
+    else *enabled=s->ip_recverr;
+    return 0;
 }
 int nas_lwip_socket_control_ready(unsigned slot) {
     struct port_socket *s=socket_at(slot);
