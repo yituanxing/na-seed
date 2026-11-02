@@ -46,6 +46,10 @@ pretending that this unimplemented general case already works.
   desktop ELFs and executes the production compositor's host self-test:
   real fork/Unix `SCM_RIGHTS`/memfd surface, overlap, focus, hit-testing,
   bounded tablet scaling and live shared-surface repaint.
+- `scripts/test-m105-pty-isig.sh` now also checks that real PTY output
+  already queued when the last slave closes is delivered as
+  `POLLIN|POLLHUP`, then only HUP after draining. The terminal establishes
+  a separate child-attachment handshake to avoid racing its slave open.
 - `.github/workflows/m167-batch.yml` invokes three-ISA native QEMU acceptance
   (amd64, riscv64, arm64). QEMU's hardware input sequence raises the image,
   drags it, raises the terminal and types into its PTY. The independent QMP

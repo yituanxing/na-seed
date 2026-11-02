@@ -52,14 +52,23 @@ static int start_shell(pid_t *pid) {
     const char *name=ptsname(master);
     nasd_require(name!=NULL && strnlen(name,128)<128,"PTY slave name");
     char slave[128];strcpy(slave,name);
+    /* A PTY master can legitimately report POLLHUP while the forked child
+     * has not yet opened its slave. Synchronize the actual slave attachment
+     * before the parent starts the terminal reader. This is a one-shot
+     * process-lifecycle pipe, not a fabricated terminal output token. */
+    int attached[2]={-1,-1};
+    nasd_require(pipe(attached)==0,"terminal child attachment handshake pipe");
     *pid=fork();nasd_require(*pid>=0,"fork real terminal shell");
     if(!*pid) {
+        close(attached[0]);
         if(setsid()<0) _exit(126);
         int fd=open(slave,O_RDWR);
         if(fd<0 || ioctl(fd,TIOCSCTTY,0)<0) _exit(125);
         if(dup2(fd,0)<0 || dup2(fd,1)<0 || dup2(fd,2)<0) _exit(124);
         if(fd>2)close(fd);
         close(master);close(3);
+        nasd_write_all(attached[1],"R",1);
+        close(attached[1]);
         /* Signed original dialog is invoked by the real guest shell on a
          * real PTY. The client verifies its output before announcing ready. */
         char *const argv[]={"busybox","sh","-c",
@@ -70,6 +79,11 @@ static int start_shell(pid_t *pid) {
         execv("/bin/busybox",argv);
         _exit(123);
     }
+    close(attached[1]);
+    char ready=0;
+    nasd_read_all(attached[0],&ready,1);
+    close(attached[0]);
+    nasd_require(ready=='R',"PTY child attached real slave");
     return master;
 }
 static void terminal_client(int channel) {

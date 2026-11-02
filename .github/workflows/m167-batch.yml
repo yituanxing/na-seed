@@ -10,6 +10,8 @@ on:
       - 'scripts/check-m167-fb-pwrite.sh'
       - 'scripts/test-m167-fb-pwrite.c'
       - 'scripts/check-m167-desktop.sh'
+      - 'scripts/test-m105-pty-isig.sh'
+      - 'scripts/test-m105-pty-isig-kernel.c'
       - 'scripts/check-m166-input-port.sh'
       - 'scripts/check-m107-unix.sh'
       - 'scripts/m161-qmp-verify.py'
@@ -68,6 +70,7 @@ jobs:
           python3 scripts/check-architecture-boundaries.py
           sh scripts/check-m167-fb-pwrite.sh
           sh scripts/check-m167-desktop.sh
+          sh scripts/test-m105-pty-isig.sh
           sh scripts/check-m166-input-port.sh
           sh scripts/check-m107-unix.sh
           cc -std=c11 -O2 -Wall -Wextra -Werror -static -fsyntax-only \

@@ -179,8 +179,15 @@ uint16_t nas_pty_poll(unsigned slot,uint16_t events) {
     bool peer_closed=slot_is_master[slot] ?
         !p->slave_descriptions : !p->master_open;
     /* Linux poll reports HUP/ERR even when the caller requested only
-     * POLLIN/POLLOUT. A disconnected peer is not a writable stream. */
-    if(peer_closed)return 0x0018U; /* POLLERR | POLLHUP */
+     * POLLIN/POLLOUT. Unread slave output must remain POLLIN after the last
+     * slave description closes: terminal emulators drain the final prompt
+     * before observing HUP. A disconnected peer is not writable. */
+    if(peer_closed) {
+        uint16_t ready=0x0018U; /* POLLERR | POLLHUP */
+        if((events&1U) && (int64_t)nas_pty_read_plan(slot,1)>0)
+            ready|=1U;
+        return ready;
+    }
     uint16_t ready=0;
     if((events&1U) && nas_pty_read_ready(slot))ready|=1U;
     if((events&4U) && nas_pty_write_ready(slot))ready|=4U;

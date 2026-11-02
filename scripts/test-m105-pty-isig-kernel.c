@@ -145,6 +145,17 @@ int main(void) {
     assert(nas_pty_ioctl(1,0x5422,0)==0); /* TIOCNOTTY */
     push(0,3);
     empty();
+    /* A real shell may exit immediately after writing its final line. The
+     * PTY master must expose that buffered output as POLLIN|POLLHUP until
+     * the last byte is drained, then HUP without false readable data. */
+    const uint8_t final='Z';
+    assert(nas_pty_write(slot_for_fd(3),&final,1)==1);
+    nas_pty_release(slot_for_fd(3));
+    assert((nas_pty_poll(slot_for_fd(2),1U)&0x19U)==0x19U);
+    uint8_t observed=0;
+    assert(nas_pty_read(slot_for_fd(2),&observed,1)==1);
+    assert(observed==final);
+    assert((nas_pty_poll(slot_for_fd(2),1U)&0x19U)==0x18U);
     (void)other;
     return 0;
 }
