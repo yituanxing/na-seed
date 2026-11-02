@@ -33,7 +33,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        port: ${{ fromJSON((github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-m157-multiarch')) && '["amd64","riscv64","arm64"]' || '["amd64"]') }}
+        # Every original-program batch must prove all three native ISAs.
+        port: [amd64, riscv64, arm64]
     steps:
       - uses: actions/checkout@v4
         with:

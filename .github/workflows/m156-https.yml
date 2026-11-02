@@ -1,4 +1,4 @@
-name: NaSeed M156 signed Alpine HTTPS TLS wire (x86 QEMU)
+name: NaSeed M156 signed Alpine HTTPS TLS wire (three ISA QEMU)
 
 on:
   workflow_dispatch:
@@ -28,8 +28,13 @@ concurrency:
 
 jobs:
   m156-authentic-https:
+    name: M156 verified TLS / ${{ matrix.port }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 65
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,14 +58,27 @@ jobs:
           sh scripts/ci-ubuntu-mirror.sh
           missing=''
           for spec in 'clang:clang' 'ld.lld:lld' 'readelf:binutils' \
-                      'cpio:cpio' 'xorriso:xorriso' 'mformat:mtools' \
-                      'sgdisk:gdisk' 'openssl:openssl'; do
+                      'cpio:cpio' 'mke2fs:e2fsprogs' 'xorriso:xorriso' \
+                      'mformat:mtools' 'sgdisk:gdisk' 'openssl:openssl' \
+                      'qemu-riscv64:qemu-user'; do
             bin=${spec%%:*}; pkg=${spec#*:}
             command -v "$bin" >/dev/null || missing="$missing $pkg"
           done
-          command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
-          test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
-          test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf"
+          case '${{ matrix.port }}' in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+              test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
+            riscv64)
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+            arm64)
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/AAVMF/AAVMF_CODE.fd || \
+              test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+          esac
           if [ -n "$missing" ]; then
             sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
             sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
@@ -68,20 +86,24 @@ jobs:
           fi
           command -v docker
       - name: Native signed Alpine HTTPS client to independent TLS host
-        timeout-minutes: 44
-        run: sh scripts/probe-m156-https-wire-smoke.sh
+        timeout-minutes: 54
+        run: sh scripts/probe-m156-https-wire-smoke.sh ${{ matrix.port }}
       - name: Preserve certificate, wire proof, guest serial and APK hashes
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: m156-original-alpine-verified-https-x86
+          name: m156-original-alpine-verified-https-${{ matrix.port }}
           path: |
-            build/external/m156-https/amd64/apk-install.log
-            build/external/m156-https/amd64/requested-packages.txt
-            build/external/m156-https/amd64/*.sha256
-            build/external/m156-https/amd64/host-m156-https.log
-            build/external/m156-https/amd64/host-tls.crt
-            build/external/m156-https/amd64/virtio-m156-https.pcap
+            build/external/m156-https/${{ matrix.port }}/apk-install.log
+            build/external/m156-https/${{ matrix.port }}/requested-packages.txt
+            build/external/m156-https/${{ matrix.port }}/*.sha256
+            build/external/m156-https/${{ matrix.port }}/host-m156-https.log
+            build/external/m156-https/${{ matrix.port }}/host-tls.crt
+            build/external/m156-https/${{ matrix.port }}/virtio-m156-https.pcap
             build/busybox-source-parity-x86/m156-batch.clean.log
             build/busybox-source-parity-x86/m156-batch.serial.log
+            build/port-riscv64/full/matrix-source/m156-batch.clean.log
+            build/port-riscv64/full/matrix-source/m156-batch.serial.log
+            build/port-aarch64/full/matrix-source/m156-batch.clean.log
+            build/port-aarch64/full/matrix-source/m156-batch.serial.log
           if-no-files-found: ignore

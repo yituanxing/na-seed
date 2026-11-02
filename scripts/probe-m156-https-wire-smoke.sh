@@ -1,8 +1,19 @@
 #!/bin/sh
 # Signed original Alpine curl and GNU wget perform certificate-verified TLS
-# over the real QEMU PCI VirtIO-Net/lwIP path, with a separate host oracle.
+# over real x86 PCI / RV64+ARM64 MMIO VirtIO-Net/lwIP, with a host oracle.
 set -eu
-[ "$#" -eq 0 ] || { echo 'usage: sh scripts/probe-m156-https-wire-smoke.sh' >&2; exit 2; }
+[ "$#" -le 1 ] || {
+    echo 'usage: sh scripts/probe-m156-https-wire-smoke.sh [amd64|riscv64|arm64]' >&2
+    exit 2
+}
+port=${1:-amd64}
+case "$port" in
+    amd64) machine='Advanced Micro Devices X86-64'; nic='PCI' ;;
+    riscv64) machine='RISC-V'; nic='MMIO' ;;
+    arm64) machine='AArch64'; nic='MMIO' ;;
+    *) echo "[M156 HTTPS FAIL] unknown target: $port" >&2; exit 2 ;;
+esac
+. scripts/native-qemu-target.sh
 command -v openssl >/dev/null || {
     echo '[M156 HTTPS FAIL] host openssl CLI unavailable' >&2
     exit 1
@@ -10,17 +21,26 @@ command -v openssl >/dev/null || {
 export NAS_ENABLE_LWIP=1
 export NAS_ENABLE_VIRTIO_NET=1
 export NAS_VIRTIO_NET_USER=1
-export NAS_SYSCALL_TRACE=1
-export NAS_APP_BATCH_QEMU_TIMEOUT=240
-export NAS_ACCEPTANCE_QEMU_RAM=1536M
+if [ "$port" = amd64 ]; then
+    export NAS_SYSCALL_TRACE=1
+    export NAS_APP_BATCH_QEMU_TIMEOUT=240
+    export NAS_ACCEPTANCE_QEMU_RAM=1536M
+else
+    # M145 already proves these exact MMIO+slirp runners and signed M143
+    # clients. Do not turn on per-syscall logs for a multiarch TLS workload.
+    unset NAS_SYSCALL_TRACE
+    export NAS_APP_BATCH_QEMU_TIMEOUT=540
+    export NAS_ACCEPTANCE_QEMU_RAM=2048M
+    export NAS_ACCEPTANCE_DISK_MB=1024
+fi
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
 export BUSYBOX_PARITY_MANIFEST=scripts/m156-https-cases.tsv
 
 # This is a catalog-backed profile of the SAME M143 signed Alpine curl/wget
 # packages, not a claim of new ELF identities. The shared overlay is the only
 # CPIO writer; its profile-local host hook creates ephemeral TLS keys/CA.
-sh scripts/stage-m156-prebuilt.sh amd64
-root=build/external/m156-https/amd64
+sh scripts/stage-m156-prebuilt.sh "$port"
+root="build/external/m156-https/$port"
 test -s "$root/rootfs/usr/bin/curl"
 test -s "$root/rootfs/usr/bin/wget"
 test -s "$root/rootfs/tests/m156-https-run.sh"
@@ -32,7 +52,7 @@ test -s "$root/rootfs.cpio"
 for elf in curl wget; do
     file="$root/rootfs/usr/bin/$elf"
     test -f "$file" && test -x "$file"
-    readelf -h "$file" | grep -Fq 'Advanced Micro Devices X86-64'
+    readelf -h "$file" | grep -Fq "$machine"
     case "$(readlink -f "$file")" in
         "$(pwd)/$root/rootfs"/*) ;;
         *) echo "[M156 HTTPS FAIL] ELF escaped signed root: $elf" >&2; exit 1 ;;
@@ -44,6 +64,13 @@ test "$(awk '{print $1}' "$root/m156-original-signed-elfs.sha256" | sort -u | wc
 export NAS_ACCEPTANCE_CPIO="$root/rootfs.cpio"
 export BUSYBOX_PARITY_BINARY="$root/rootfs/bin/busybox"
 export NAS_VIRTIO_NET_PCAP="$root/virtio-m156-https.pcap"
+
+# The shared three-ISA kernel/guest runners are the same as M145, including
+# their real QEMU NICs and single original BusyBox work manifest.
+case "$port" in
+    riscv64) sh scripts/build-riscv64-full.sh ;;
+    arm64) sh scripts/build-aarch64-full.sh ;;
+esac
 
 python3 -u scripts/m156-https-wire-server.py \
     "$root/host-tls.crt" "$root/host-tls.key" \
@@ -64,10 +91,10 @@ done
     exit 1
 }
 
-sh scripts/probe-x86-busybox-parity.sh
-clean=build/busybox-source-parity-x86/m156-batch.clean.log
+sh "$runner"
+clean="$logs/m156-batch.clean.log"
 test -s "$clean"
-grep -Fq '[VIRTIO-NET] real modern PCI devices=1' "$clean"
+grep -Fq "[VIRTIO-NET] real modern $nic devices=1" "$clean"
 grep -Fq '[LWIP DHCP BOUND] addr=10.0.2.' "$clean"
 for marker in M156_REAL_CURL_VERIFIED_TLS_PASS \
               M156_REAL_WGET_VERIFIED_TLS_PASS \
@@ -93,4 +120,4 @@ for path in curl wget; do
         exit 1
     }
 done
-echo '[M156 HTTPS QEMU PASS] original signed Alpine curl+wget verified TLS 1.2+ certificates and HTTP bodies through real VirtIO/lwIP'
+echo "[M156 HTTPS QEMU PASS] $port original signed Alpine curl+wget verified TLS 1.2+ certificates and HTTP bodies through real $nic VirtIO/lwIP"
