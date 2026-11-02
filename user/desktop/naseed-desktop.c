@@ -212,6 +212,8 @@ static void pointer_button(struct session *s,int down) {
         render(s);
         if(s->stage==0 && target==IMAGE && !s->dragging) {
             s->stage=1;nasd_mark("M167_IMAGE_FOCUS_VISIBLE");
+        } else if(s->stage==1 && target==IMAGE && s->dragging) {
+            nasd_mark("M167_IMAGE_DRAG_GRABBED");
         } else if(s->stage==2 && target==TERMINAL) {
             s->stage=3;nasd_mark("M167_TERMINAL_FOCUS_VISIBLE");
         }

@@ -55,6 +55,9 @@ pretending that this unimplemented general case already works.
   drags it, raises the terminal and types into its PTY. The independent QMP
   oracle captures and validates **five physical framebuffer screenshots**.
   Serial markers are synchronization signals, **not** proof of visible pixels.
+  Injection distinguishes mouse positioning from button press/release across
+  independent VirtIO tablet/mouse queues; a separate drag-grab marker must
+  appear before the oracle sends drag motion.
 - Each architecture stages three additional **original signed Alpine ELFs**:
   `dialog`, `links`, `w3m`, disjoint from previous milestone manifests.
   The signed ImageMagick program reused from earlier milestones and the new

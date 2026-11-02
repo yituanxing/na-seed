@@ -143,15 +143,23 @@ def main():
 
         # Raise the image window by clicking body pixels (no titlebar drag).
         send(sock, reader, pointer(150, 150))
+        # QEMU's absolute tablet and BTN_LEFT can arrive through different
+        # evdev devices, without a cross-device delivery-order guarantee.
+        # Model a physical move-then-click with a short settle interval.
+        time.sleep(0.6)
         send(sock, reader, [button(True)])
         wait_marker(args.serial, MARKERS['image-focus'], deadline)
         check_frame(sock, reader, args.outdir, 'image-focus')
         send(sock, reader, [button(False)])
+        time.sleep(0.6)
 
         # Press titlebar, move with hardware button held, release at (240,120).
         send(sock, reader, pointer(150, 90))
+        time.sleep(0.6)
         send(sock, reader, [button(True)])
+        wait_marker(args.serial, 'M167_IMAGE_DRAG_GRABBED', deadline)
         send(sock, reader, pointer(240, 120))
+        time.sleep(0.6)
         send(sock, reader, [button(False)])
         wait_marker(args.serial, MARKERS['image-drag'], deadline)
         check_frame(sock, reader, args.outdir, 'image-drag')
@@ -159,10 +167,12 @@ def main():
         # Only the terminal receives this focused key, through its real
         # client-process IPC; no direct framebuffer change is authorized.
         send(sock, reader, pointer(550, 220))
+        time.sleep(0.6)
         send(sock, reader, [button(True)])
         wait_marker(args.serial, MARKERS['terminal-focus'], deadline)
         check_frame(sock, reader, args.outdir, 'terminal-focus')
         send(sock, reader, [button(False)])
+        time.sleep(0.6)
         send(sock, reader, [key('a', True)])
         wait_marker(args.serial, MARKERS['terminal-key'], deadline)
         check_frame(sock, reader, args.outdir, 'terminal-key')
