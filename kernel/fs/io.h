@@ -36,7 +36,8 @@ uint64_t nas_fs_fd_readv(uint64_t fd, uint64_t iov, uint64_t count);
  * guessed iovcnt or a user pointer read from another Task's address space. */
 uint64_t nas_fs_fd_readv_with_size(uint64_t fd, uint64_t iov, uint64_t count,
                                   uint64_t *requested_out);
-/* Linux positional regular-file I/O never advances shared FD position. */
+/* Linux positional VFS and explicitly seekable character-device I/O never
+ * advances the shared File position; nonseekable providers return ESPIPE. */
 uint64_t nas_fs_fd_pread(uint64_t fd,uint64_t address,uint64_t count,uint64_t offset);
 uint64_t nas_fs_fd_pwrite(uint64_t fd,uint64_t address,uint64_t count,uint64_t offset);
 /* Kernel-buffer, position-independent file reads for file mmap.

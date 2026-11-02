@@ -33,6 +33,14 @@ struct nas_file_ops {
     uint64_t (*peek)(unsigned slot,uint8_t *kernel_dst,uint64_t count,
                      uint64_t offset);
     uint64_t (*write)(unsigned slot,const uint8_t *kernel_src,uint64_t count);
+    /* Optional explicit-offset I/O for seekable character devices.  Like
+     * VFS read_at/write_at, these callbacks neither consult nor mutate the
+     * shared open-file position (including across dup/fork).  User pointers
+     * and descriptor access policy remain in file_io.c, never in a driver. */
+    uint64_t (*read_at)(unsigned slot,uint64_t offset,
+                        uint8_t *kernel_dst,uint64_t count);
+    uint64_t (*write_at)(unsigned slot,uint64_t offset,
+                         const uint8_t *kernel_src,uint64_t count);
     /* An admitted atomic write must validate the whole user source before
      * the first provider commit; 0 means ordinary page-local staging. */
     uint64_t atomic_write_limit;

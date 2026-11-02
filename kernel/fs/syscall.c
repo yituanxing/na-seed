@@ -974,6 +974,16 @@ static uint64_t fb_write(unsigned slot,const uint8_t *src,uint64_t count) {
     file->position+=done;
     return done;
 }
+static uint64_t fb_read_at(unsigned slot,uint64_t offset,
+                           uint8_t *dst,uint64_t count) {
+    (void)slot;
+    return nas_fbdev_read_at(offset,dst,count);
+}
+static uint64_t fb_write_at(unsigned slot,uint64_t offset,
+                            const uint8_t *src,uint64_t count) {
+    (void)slot;
+    return nas_fbdev_write_at(offset,src,count);
+}
 /* This is the syscall adapter: the hardware driver only emits Linux-shaped
  * kernel objects. Usercopy belongs here, never in the framebuffer driver. */
 static uint64_t fb_ioctl(uint64_t fd,uint64_t cmd,uint64_t arg) {
@@ -1090,6 +1100,7 @@ static const struct nas_file_ops ops_bootfs={
 static const struct nas_file_ops ops_fbdev={
     .read_plan=fb_transfer_plan,.write_plan=fb_transfer_plan,
     .read=fb_read,.write=fb_write,
+    .read_at=fb_read_at,.write_at=fb_write_at,
     .poll=vpoll_always,.poll_description=dpoll_always,
     .ioctl=fb_ioctl
 };
