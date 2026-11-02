@@ -1,9 +1,12 @@
 # NaSeed architecture integration: network state and unnamed VFS inodes
 
 **Date:** 2026-11-02. **Starting tree:** `naseed-app-batch2@dc86cf2`,
-after M151–M155. This note records **new source changes and host gates**, not
-an unobserved three-ISA system-QEMU result. The historical 169 signed Alpine
-ELFs / 507 executions / 15 guest jobs belong to that **starting** commit.
+after M151–M155. The network/anonymous-inode batch was published as
+`3622b0c` on Draft PR #148. Its exact-head QEMU rerun subsequently passed
+all **15/15** M151–M155 x86-64/RV64/AArch64 jobs (169 original signed
+Alpine ELFs across three ports, 507 executions). The 56-workflow summary
+was 37 successes, 19 conditional skips and zero failures. These are proofs
+for the tested behaviors, not universal Linux syscall parity.
 
 ## Reference boundary: Linux and NaOS, without copying whole subsystems
 
@@ -68,11 +71,22 @@ MFD sealing/hugepage/noexec-seal options continue to fail explicitly.
 The Path-first walker already accepts up to 4095 bytes; one bounded length
 helper now protects root-only fast paths too. Oversized slash-only strings
 must return `ENAMETOOLONG`, rather than being mistaken for a valid root
-operation. This does **not** make every legacy 256-byte projection a full
-PATH_MAX pathname: `nas_vfs_path_string`, diagnostic `origin_path`, cwd
-display and parts of metadata/syscall compatibility remain bounded.
-Future fixes should migrate those consumers to owned Path references rather
-than lengthen a second string-based namei.
+operation.
+
+The subsequent **long-cwd batch** adds an explicitly sized
+`nas_vfs_path_string_buf` projection from the *same owned Dentry ancestry*.
+It preflights all ancestors before writing and uses two linear walks, without
+the old 256-Dentry pointer stack or a second namei. The 256-byte function is
+a checked wrapper. `chdir`/`fchdir` retain an authoritative long cwd Path
+even when optional `cwd[256]` cannot hold it; `getcwd` returns the live
+4095-byte spelling and correct `ERANGE` with heap scratch only for long
+outputs. `/proc/<pid>/cwd` also supports long paths, with readlink truncation.
+
+**Not yet widened:** diagnostic `origin_path`, mount snapshots, absolute
+bootstrap compatibility and old metadata adapters still use 256-byte
+projections. They are not extra namei engines and should not grow into one.
+The long-cwd batch has focused host regression evidence; exact-head guest
+results must be checked after publication.
 
 ## Focused proof (run on source working tree)
 
@@ -83,13 +97,15 @@ than lengthen a second string-based namei.
 | `sh scripts/check-vfs-provider.sh` | Real VFS mount/lease + anonymous inode lifecycle; memfd ABI | Host tests only |
 | `sh scripts/check-path-contract-host.sh` | 4095/4096 length and root namespace error codes | Host tests only |
 | `sh scripts/check-m106-usercopy-syscalls.sh` | Real File/FD syscall publication/close, failure rollback, memfd diagnostic bounds | Host tests only |
+| `sh scripts/check-path-contract-host.sh` (extended) | Real deep provider: 4095-byte output, >256 ancestors, actual chdir/fchdir/getcwd, ERANGE and owned File Path | Host tests only |
+| `scripts/test-procfs.c` (extended) | Long `/proc/<pid>/cwd` full and truncated readlink outputs | Host tests only |
 | `python3 scripts/check-three-isa-core.py` | All 71 shared source units selected in three build manifests | Static manifest, **not** cross-compilation |
 | `python3 scripts/check-architecture-boundaries.py` | VFS, MM, driver dependency fences | Static source check |
 
-The local executor for this batch has `cc`, but lacks `clang` and
-`qemu-system-{x86_64,riscv64,aarch64}`. The native exact-head CI/QEMU
-workloads must therefore be inspected **after push**, before treating the
-new source changes as proven in guests or merging the Draft PR.
+The local executor has `cc`, but lacks `clang` and
+`qemu-system-{x86_64,riscv64,aarch64}`. The preceding `3622b0c` was
+verified after push. The **newer long-cwd** source changes need a separate
+exact-head CI/QEMU result before claiming three-ISA guest proof.
 
 ## Remaining architectural gates, in order
 

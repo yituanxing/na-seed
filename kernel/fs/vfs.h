@@ -2,6 +2,7 @@
 #define NASEED_VFS_H
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 /* Registered VFS providers; kernel-owned buffers only, never Linux user ABI.
  * nas_fs_node is a borrowed inode snapshot, not an owning open file. */
 struct nas_fs_node;
@@ -28,6 +29,12 @@ int nas_vfs_path_get(const struct nas_vfs_path *source,
 int nas_vfs_path_put(struct nas_vfs_path *path);
 int nas_vfs_path_string(const struct nas_vfs_path *path,
                         char absolute[256]);
+/* A display-only projection with explicit caller capacity. It traverses
+ * the owned Dentry ancestry (never another namei), accepts PATH_MAX-1
+ * bytes and leaves the destination untouched when it cannot fit. The
+ * 256-byte entrypoint above remains a checked compatibility wrapper. */
+int nas_vfs_path_string_buf(const struct nas_vfs_path *path,
+                            char *absolute,size_t capacity);
 /* Path-first namei owns a Dentry reference at each returned destination.
  * Borrowed start/root remain caller-owned throughout lookup.  Rootless
  * direct-ELF boot still reports ENOENT for '/' without inventing an inode. */

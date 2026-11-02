@@ -10,6 +10,7 @@
 #include "../arch/user_pt.h"
 #include "vfs.h"
 #include "../lib/string.h"
+#include "../mm/heap.h"
 #include "../errno.h"
 #include "../ipc/sysv.h"
 #include <stdint.h>
@@ -443,16 +444,27 @@ int64_t nas_proc_readlink(struct nas_proc_node node,char *out,unsigned cap) {
         const struct nas_task *task=living(node.pid);
         if(!task || !task->fs)return -ENOENT;
         char pathname[256];
+        char *full=pathname;
         if(task->fs->cwd_path.dentry) {
             int rc=nas_vfs_path_string(&task->fs->cwd_path,pathname);
-            if(rc)return rc;
+            if(rc==-ENAMETOOLONG) {
+                full=nas_heap_alloc(NAS_VFS_WALK_PATH_LIMIT);
+                if(!full)return -ENOMEM;
+                rc=nas_vfs_path_string_buf(&task->fs->cwd_path,full,
+                                            NAS_VFS_WALK_PATH_LIMIT);
+            }
+            if(rc) {
+                if(full!=pathname)(void)nas_heap_free(full);
+                return rc;
+            }
         } else if(task->fs->cwd_pinned)return -ENOENT;
         else {
             memcpy(pathname,task->fs->cwd,sizeof(pathname));
             pathname[sizeof(pathname)-1]=0;
         }
         unsigned n=0;
-        while(pathname[n] && n<cap){if(out)out[n]=pathname[n];n++;}
+        while(full[n] && n<cap){if(out)out[n]=full[n];n++;}
+        if(full!=pathname)(void)nas_heap_free(full);
         return (int64_t)n;
     }
     if(node.kind!=NAS_PROC_FD_LINK)return -EINVAL;

@@ -973,40 +973,44 @@ int nas_vfs_path_put(struct nas_vfs_path *path) {
     *path=(struct nas_vfs_path){0};
     return dentry_put(d);
 }
-int nas_vfs_path_string(const struct nas_vfs_path *path,
-                        char absolute[256]) {
-    if(!path || !path->dentry || !absolute)return -EINVAL;
+int nas_vfs_path_string_buf(const struct nas_vfs_path *path,
+                            char *absolute,size_t capacity) {
+    if(!path || !path->dentry || !absolute || !capacity)return -EINVAL;
     if(path->mount!=path->dentry->node.mount ||
        path->mount_id!=path->dentry->node.mount_id)return -ESTALE;
-    struct nas_vfs_dentry *reverse[256];
-    unsigned n=0;
+    /* Preflight the entire ancestry before writing even one byte. Reverse
+     * arrays used to impose an unrelated 256-component limit and consumed
+     * 2 KiB of a task's 16 KiB kernel stack. Walking twice needs neither
+     * a second pathname lookup nor memory proportional to depth. */
+    size_t required=0;
     for(struct nas_vfs_dentry *d=path->dentry;d;d=d->parent) {
-        if(n==256)return -ENAMETOOLONG;
         if(d->detached)return -ENOENT;
-        reverse[n++]=d;
+        size_t length=strlen(d->name);
+        if(!length)return -ESTALE;
+        if(!d->parent && d->name[0]!='/')return -ESTALE;
+        size_t separator=d->parent &&
+            (d->parent->parent || strcmp(d->parent->name,"/")) ? 1U : 0U;
+        if(length+separator>=NAS_VFS_WALK_PATH_LIMIT-required)
+            return -ENAMETOOLONG;
+        required+=length+separator;
     }
-    unsigned used=0;
-    while(n) {
-        struct nas_vfs_dentry *d=reverse[--n];
-        const char *name=d->name;
-        size_t len=strlen(name);
-        if(!used) {
-            if(name[0]!='/')return -ESTALE;
-            if(len>=256)return -ENAMETOOLONG;
-            memcpy(absolute,name,len);
-            used=(unsigned)len;
-        } else {
-            if(used>1) {
-                if(used+1>=256)return -ENAMETOOLONG;
-                absolute[used++]='/';
-            }
-            if(used+len>=256)return -ENAMETOOLONG;
-            memcpy(absolute+used,name,len);
-            used+=(unsigned)len;
+    if(required>=capacity)return -ENAMETOOLONG;
+    size_t at=required;
+    absolute[at]=0;
+    for(struct nas_vfs_dentry *d=path->dentry;d;d=d->parent) {
+        size_t length=strlen(d->name);
+        at-=length;
+        memcpy(absolute+at,d->name,length);
+        if(d->parent &&
+           (d->parent->parent || strcmp(d->parent->name,"/"))) {
+            absolute[--at]='/';
         }
     }
-    absolute[used]=0;
-    return 0;
+    return at ? -ESTALE : 0;
+}
+int nas_vfs_path_string(const struct nas_vfs_path *path,
+                        char absolute[256]) {
+    return nas_vfs_path_string_buf(path,absolute,256);
 }
 int nas_vfs_path_node(const struct nas_vfs_path *path,
                       struct nas_fs_node *out) {

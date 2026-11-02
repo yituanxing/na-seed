@@ -337,8 +337,28 @@ static uint64_t sys_getcwd_root(uint64_t buffer, uint64_t size) {
     if(TASK.fs->cwd_path.dentry) {
         char live[256];
         int err=nas_vfs_path_string(&TASK.fs->cwd_path,live);
-        if(err)return (uint64_t)(int64_t)err;
-        memcpy(current_workdir,live,strlen(live)+1);
+        char *path=live;
+        if(err==-ENAMETOOLONG) {
+            /* Deep cwd identity is the owned Dentry, not cwd[256]. Only
+             * exceptional long getcwd requests need a PATH_MAX heap copy. */
+            path=nas_heap_alloc(NAS_VFS_WALK_PATH_LIMIT);
+            if(!path)return (uint64_t)-ENOMEM;
+            err=nas_vfs_path_string_buf(&TASK.fs->cwd_path,path,
+                                        NAS_VFS_WALK_PATH_LIMIT);
+        }
+        if(err) {
+            if(path!=live)(void)nas_heap_free(path);
+            return (uint64_t)(int64_t)err;
+        }
+        uint64_t length=strlen(path)+1U;
+        if(length<=sizeof(TASK.fs->cwd))
+            memcpy(current_workdir,path,(size_t)length);
+        else current_workdir[0]=0; /* optional short diagnostic only */
+        uint64_t result=size<length ? (uint64_t)-ERANGE :
+            (nas_user_write_bytes(buffer,(const uint8_t *)path,length) ?
+                length : (uint64_t)-EFAULT);
+        if(path!=live)(void)nas_heap_free(path);
+        return result;
     } else if(TASK.fs->cwd_pinned) {
         /* A pinned cwd MUST own a Dentry Path; no provider-supplied
          * inode->name escape hatch remains in the Linux ABI. */
@@ -367,10 +387,11 @@ static uint64_t set_cwd_owned(const struct nas_fs_node *node,
      * display cache. A detached directory has no printable absolute name:
      * Linux fchdir(fd) succeeds but getcwd() reports ENOENT. NULL means
      * precisely this absence, never a cue to reopen an old cwd string. */
-    if(canonical && strnlen(canonical,sizeof(TASK.fs->cwd))==sizeof(TASK.fs->cwd)) {
-        if(nas_vfs_path_put(next))nas_fail("overlong cwd Path ref");
-        return (uint64_t)-ENAMETOOLONG;
-    }
+    /* Long absolute paths have no 256-byte display cache, but remain
+     * perfectly valid owned cwd Paths. Never fail chdir/fchdir because a
+     * diagnostic cannot represent the already-resolved directory. */
+    if(canonical && strnlen(canonical,sizeof(TASK.fs->cwd))==sizeof(TASK.fs->cwd))
+        canonical=NULL;
     int rc=nas_vfs_node_pin(node);
     if(rc) {
         (void)nas_vfs_path_put(next);
@@ -401,7 +422,7 @@ static uint64_t sys_chdir(uint64_t pathname) {
     if(!rc)rc=nas_vfs_path_node(&next,&node);
     if(!rc) {
         int text_rc=nas_vfs_path_string(&next,live);
-        if(text_rc && text_rc!=-ENOENT)rc=text_rc;
+        if(text_rc && text_rc!=-ENOENT && text_rc!=-ENAMETOOLONG)rc=text_rc;
         else {
             uint64_t result=set_cwd_owned(&node,&next,
                                           text_rc ? NULL : live);
@@ -431,7 +452,7 @@ static uint64_t sys_fchdir(uint64_t fd) {
     if(rc)return (uint64_t)(int64_t)rc;
     char live[256];
     rc=nas_vfs_path_string(&next,live);
-    if(rc && rc!=-ENOENT) {
+    if(rc && rc!=-ENOENT && rc!=-ENAMETOOLONG) {
         (void)nas_vfs_path_put(&next);
         return (uint64_t)(int64_t)rc;
     }

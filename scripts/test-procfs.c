@@ -11,6 +11,7 @@
 #include "../kernel/mm/vm.h"
 #include "../kernel/arch/user_pt.h"
 #include "../kernel/task/resources.h"
+#include "../kernel/ipc/sysv.h"
 static struct nas_task tasks[3];
 static struct nas_files files_fixture;
 static struct nas_mm address_spaces[2];
@@ -24,6 +25,13 @@ static struct nas_vfs_mount_snapshot fixture_mounts[80];
 static unsigned fixture_mount_count;
 static struct nas_vfs_lock_snapshot fixture_locks[4];
 static unsigned fixture_lock_count;
+/* Proc's dynamic SysV IPC view has a separate M138 owner; the standalone
+ * process fixture intentionally starts with no live IPC objects. */
+bool nas_sysvipc_snapshot(enum nas_sysvipc_kind kind,unsigned ordinal,
+                          struct nas_sysvipc_snapshot *out) {
+    (void)kind;(void)ordinal;(void)out;
+    return false;
+}
 int nas_vfs_lock_snapshot(unsigned ordinal,struct nas_vfs_lock_snapshot *out) {
     if(!out)return -EINVAL;
     if(ordinal>=fixture_lock_count)return -ENOENT;
@@ -37,8 +45,18 @@ int nas_vfs_mount_snapshot(unsigned ordinal,struct nas_vfs_mount_snapshot *out) 
 }
 /* The procfs fixture does not link the live VFS Dentry owner. CWD snapshots
  * without a pinned path must still expose the current task's real FS text. */
+static bool fixture_long_cwd;
 int nas_vfs_path_string(const struct nas_vfs_path *path,char absolute[256]) {
-    (void)path;(void)absolute;return -ESTALE;
+    (void)path;(void)absolute;
+    return fixture_long_cwd ? -ENAMETOOLONG : -ESTALE;
+}
+int nas_vfs_path_string_buf(const struct nas_vfs_path *path,char *absolute,
+                            size_t capacity) {
+    (void)path;
+    if(!fixture_long_cwd)return -ESTALE;
+    if(capacity<3901)return -ENAMETOOLONG;
+    absolute[0]='/';memset(absolute+1,'q',3899);absolute[3900]=0;
+    return 0;
 }
 static void fixture_add_mount(const char *source,const char *target,
                               const char *fstype,bool read_only) {
@@ -300,6 +318,18 @@ int main(void) {
     char real_cwd[256]={0};
     assert(nas_proc_readlink(cwd_link,real_cwd,sizeof(real_cwd))==12);
     assert(!memcmp(real_cwd,"/home/worker",12));
+    /* A valid cwd longer than the optional 256-byte FS cache is still
+     * printable through /proc/<pid>/cwd. readlink truncates to cap. */
+    fixture_long_cwd=true;
+    tasks[1].fs->cwd_path.dentry=(struct nas_vfs_dentry *)(uintptr_t)1;
+    char long_cwd[3902]={0};
+    assert(nas_proc_readlink(cwd_link,long_cwd,3900)==3900);
+    assert(long_cwd[0]=='/' && long_cwd[3899]=='q' && !long_cwd[3900]);
+    memset(real_cwd,0,sizeof(real_cwd));
+    assert(nas_proc_readlink(cwd_link,real_cwd,24)==24);
+    assert(real_cwd[0]=='/' && real_cwd[23]=='q' && !real_cwd[24]);
+    tasks[1].fs->cwd_path.dentry=NULL;
+    fixture_long_cwd=false;
     assert(!nas_proc_lookup("/proc/24/cwd",&entry));
     assert(nas_proc_lookup("/proc/locks",&entry));
     assert(nas_proc_read(entry,0,(uint8_t *)real_cwd,sizeof(real_cwd))==0);
