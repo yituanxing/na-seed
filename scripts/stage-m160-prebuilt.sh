@@ -5,7 +5,7 @@ set -eu
 [ "$#" -eq 1 ] || exit 2
 port=$1
 case "$port" in amd64|riscv64|arm64) ;; *) exit 2 ;; esac
-manifest=scripts/m160-original-elfs.txt
+manifest=scripts/m160-reused-elfs.txt
 count=0
 while IFS= read -r elf; do
     case "$elf" in ''|'#'*) continue ;; esac

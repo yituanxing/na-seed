@@ -5,7 +5,7 @@ set -eu
 port=$1
 case "$port" in amd64|riscv64|arm64) ;; *) exit 2 ;; esac
 grep -Fxq 'usr/bin/fbgrab' scripts/m161-original-elfs.txt
-grep -Fxq 'usr/bin/magick' scripts/m161-original-elfs.txt
+grep -Fxq 'usr/bin/magick' scripts/m146-original-elfs.txt
 if grep -Fxq 'usr/bin/fbgrab' scripts/m[0-9]*-original-elfs.txt; then
     # Need to test old manifests individually rather than grep own identity.
     for old in scripts/m[0-9]*-original-elfs.txt; do

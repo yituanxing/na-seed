@@ -93,7 +93,7 @@ while IFS= read -r path; do
         echo "[M160 FAIL] original Alpine ELF not executed: /$path" >&2
         exit 1
     }
-done < scripts/m160-original-elfs.txt
+done < scripts/m160-reused-elfs.txt
 
 # Exactly two authenticated, live HTTP GETs, with original PNG bytes; the
 # guest cannot pass by replaying a host-staged image from its CPIO archive.

@@ -8,7 +8,7 @@ runner additionally requires each guest marker, original exec and TLS GET.
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-manifest = ROOT / 'scripts/m160-original-elfs.txt'
+manifest = ROOT / 'scripts/m160-reused-elfs.txt'
 lines = [s.strip() for s in manifest.read_text().splitlines()
          if s.strip() and not s.lstrip().startswith('#')]
 assert lines == [
