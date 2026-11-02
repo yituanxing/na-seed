@@ -21,6 +21,7 @@
 #include "../arch/mmu.h"
 #include "../drivers/tty.h"
 #include "../drivers/pty.h"
+#include "../drivers/display/fbdev.h"
 #include "io.h"
 #include "mode.h"
 #include "syscall.h"
@@ -780,6 +781,8 @@ int nas_fs_bootstrap_describe(const char *path,
         b->fd_kind=FD_TTY;b->ino=102;b->rdev=(4U<<8)|64U;
     } else if(!strcmp(path,"/dev/console")) {
         b->fd_kind=FD_TTY;b->ino=101;b->rdev=(5U<<8)|1U;
+    } else if(!strcmp(path,"/dev/fb0") && nas_fbdev_available()) {
+        b->fd_kind=FD_FRAMEBUFFER;b->ino=2900;b->rdev=(29U<<8);
     } else if(!strcmp(path,"/dev/ptmx")) {
         b->fd_kind=FD_PTY_MASTER;b->dev=6;b->ino=2000;
         b->rdev=(5U<<8)|2U;b->mode=0020620U;
@@ -909,6 +912,44 @@ static uint64_t vread_limine(unsigned slot,uint8_t *dst,uint64_t n) {
     opened->position+=n;
     return n;
 }
+static uint64_t fb_transfer_plan(unsigned slot,uint64_t requested) {
+    const uint64_t pos=nas_open_files[slot].position;
+    const uint64_t size=nas_fbdev_length();
+    if(!size)return (uint64_t)-ENODEV;
+    if(pos>=size)return 0;
+    const uint64_t remaining=size-pos;
+    return requested<remaining ? requested : remaining;
+}
+static uint64_t fb_read(unsigned slot,uint8_t *dst,uint64_t count) {
+    struct nas_open_file *file=&nas_open_files[slot];
+    uint64_t got=nas_fbdev_read_at(file->position,dst,count);
+    file->position+=got;
+    return got;
+}
+static uint64_t fb_write(unsigned slot,const uint8_t *src,uint64_t count) {
+    struct nas_open_file *file=&nas_open_files[slot];
+    uint64_t done=nas_fbdev_write_at(file->position,src,count);
+    file->position+=done;
+    return done;
+}
+/* This is the syscall adapter: the hardware driver only emits Linux-shaped
+ * kernel objects. Usercopy belongs here, never in the framebuffer driver. */
+static uint64_t fb_ioctl(uint64_t fd,uint64_t cmd,uint64_t arg) {
+    (void)fd;
+    if(cmd==NAS_FBIOGET_VSCREENINFO) {
+        struct nas_fb_var_screeninfo info;
+        if(!nas_fbdev_var_screeninfo(&info))return (uint64_t)-ENODEV;
+        return nas_user_write_bytes(arg,(const uint8_t *)&info,sizeof(info)) ?
+               0 : (uint64_t)-EFAULT;
+    }
+    if(cmd==NAS_FBIOGET_FSCREENINFO) {
+        struct nas_fb_fix_screeninfo info;
+        if(!nas_fbdev_fix_screeninfo(&info))return (uint64_t)-ENODEV;
+        return nas_user_write_bytes(arg,(const uint8_t *)&info,sizeof(info)) ?
+               0 : (uint64_t)-EFAULT;
+    }
+    return (uint64_t)-ENOTTY;
+}
 static uint64_t vread_tty(unsigned slot,uint8_t *dst,uint64_t n) {
     return nas_tty_read(dst,n,(nas_open_files[slot].status_flags&0x800ULL)!=0);
 }
@@ -1003,6 +1044,12 @@ static const struct nas_file_ops ops_random={
 static const struct nas_file_ops ops_bootfs={
     .read_plan=vread_limine_plan,.read=vread_limine,
     .poll=vpoll_always,.poll_description=dpoll_always
+};
+static const struct nas_file_ops ops_fbdev={
+    .read_plan=fb_transfer_plan,.write_plan=fb_transfer_plan,
+    .read=fb_read,.write=fb_write,
+    .poll=vpoll_always,.poll_description=dpoll_always,
+    .ioctl=fb_ioctl
 };
 /* Every mounted regular file/dir reuses the SAME read/write/poll File ops.
  * Filesystem types are selected only by the inode's provider callbacks. */
@@ -1166,6 +1213,7 @@ static const struct nas_file_ops *const ops_by_kind[]={
     [FD_UART]=&ops_uart,[FD_TTY]=&ops_tty,[FD_NULL]=&ops_null,
     [FD_ZERO]=&ops_zero,[FD_RANDOM]=&ops_random,
     [FD_BOOTFS]=&ops_bootfs,
+    [FD_FRAMEBUFFER]=&ops_fbdev,
     [FD_ARCHIVE]=&ops_vfs_regular,[FD_DIR]=&ops_vfs_dir,
     [FD_PIPE_R]=&ops_pipe_read,[FD_PIPE_W]=&ops_pipe_write,
     [FD_EPOLL]=&ops_epoll,

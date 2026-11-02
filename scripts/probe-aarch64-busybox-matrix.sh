@@ -154,6 +154,15 @@ boot_case() {
         set -- "$@" -object \
             "filter-dump,id=naseed_wire_capture,netdev=naseed_net,file=$NAS_VIRTIO_NET_PCAP"
     fi
+    if [ "${NAS_QEMU_RAMFB:-0}" = 1 ]; then
+        set -- "$@" -device ramfb
+        if [ -n "${NAS_QEMU_QMP_SOCKET:-}" ]; then
+            set -- "$@" -qmp "unix:$NAS_QEMU_QMP_SOCKET,server=on,wait=off"
+        fi
+    elif [ -n "${NAS_QEMU_QMP_SOCKET:-}" ]; then
+        echo 'NAS_QEMU_QMP_SOCKET requires NAS_QEMU_RAMFB=1' >&2
+        return 2
+    fi
     set +e
     timeout "${time_budget}s" qemu-system-aarch64 \
         -machine virt -cpu cortex-a57 -m "${NAS_ACCEPTANCE_QEMU_RAM:-512M}" -smp 1 \

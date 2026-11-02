@@ -1,0 +1,2 @@
+# id	mode	args	expected	evidence	entry
+m161-batch	cpio	ash /tests/m161-batch-run.sh	M161_FRAMEBUFFER_PASS	-	/bin/busybox

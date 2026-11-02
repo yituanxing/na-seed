@@ -41,6 +41,7 @@ kernel/fd.c
 kernel/pipe.c
 kernel/boot_image.c
 kernel/drivers/serial.c
+kernel/drivers/display/fbdev.c
 kernel/mm/frame.c
 kernel/mm/heap.c
 kernel/mm/vm.c

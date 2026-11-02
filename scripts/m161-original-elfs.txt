@@ -1,0 +1,3 @@
+# fbgrab is a newly admitted original ELF. magick was admitted by M146.
+usr/bin/fbgrab
+usr/bin/magick

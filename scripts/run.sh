@@ -44,6 +44,17 @@ if [ -n "${NAS_VIRTIO_NET_PCAP:-}" ]; then
     set -- "$@" -object \
         "filter-dump,id=naseed_wire_capture,netdev=naseed_net,file=$NAS_VIRTIO_NET_PCAP"
 fi
+# Explicit graphics acceptance only. Never change the long-standing headless
+# hardware profile unless M161 requests QEMU ramfb and a QMP proof socket.
+if [ "${NAS_QEMU_RAMFB:-0}" = 1 ]; then
+    set -- "$@" -vga none -device ramfb
+    if [ -n "${NAS_QEMU_QMP_SOCKET:-}" ]; then
+        set -- "$@" -qmp "unix:$NAS_QEMU_QMP_SOCKET,server=on,wait=off"
+    fi
+elif [ -n "${NAS_QEMU_QMP_SOCKET:-}" ]; then
+    echo 'NAS_QEMU_QMP_SOCKET requires NAS_QEMU_RAMFB=1' >&2
+    exit 2
+fi
 exec qemu-system-x86_64 -M q35 -m "${NAS_ACCEPTANCE_QEMU_RAM:-256M}" -cpu qemu64 \
     -display none -monitor none -serial stdio -no-reboot -no-shutdown \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \

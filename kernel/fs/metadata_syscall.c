@@ -5,6 +5,7 @@
 #include "../errno.h"
 #include "../task.h"
 #include "../fd.h"
+#include "../drivers/display/fbdev.h"
 #include "../bootfs.h"
 #include "../tmpfs.h"
 #include "../lib/string.h"
@@ -146,6 +147,13 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
             .mode=0100555U,.size=file->size
         };
         return write_bootstrap_stat(&module,address);
+    } else if(kind==FD_FRAMEBUFFER) {
+        /* Relative openat("fb0") under /dev has the same device identity:
+         * fstat must not depend on the optional origin-path spelling. */
+        struct nas_fs_bootstrap_info info;
+        if(nas_fs_bootstrap_describe("/dev/fb0",&info))
+            return (uint64_t)-ENODEV;
+        return write_bootstrap_stat(&info,address);
     } else if(kind==FD_PTY_MASTER || kind==FD_PTY_SLAVE) {
         unsigned number=nas_pty_number(TASK.fds->entries[fd].slot);
         const struct nas_fs_bootstrap_info pty={
@@ -267,7 +275,10 @@ static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
             return (uint64_t)-ESPIPE;
         directory=opened->vnode.is_dir;
         size=nas_vfs_node_size(&opened->vnode);
-    } else if(TASK.fds->entries[fd].kind==FD_BOOTFS &&
+    } else if(TASK.fds->entries[fd].kind==FD_FRAMEBUFFER &&
+              nas_fbdev_available())
+        size=nas_fbdev_length(); /* the File's shared seek offset */
+    else if(TASK.fds->entries[fd].kind==FD_BOOTFS &&
              opened->boot_file)
         size=opened->boot_file->size; /* only unmounted Limine modules */
     else return (uint64_t)-ESPIPE;

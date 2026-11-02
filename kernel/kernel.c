@@ -12,6 +12,9 @@
 #include "arch/aarch64/mmu.h"
 #endif
 #include "drivers/serial.h"
+#ifndef NASEED_PORT_M0
+#include "drivers/display/fbdev.h"
+#endif
 #include "mm/frame.h"
 #ifndef NASEED_PORT_M0
 #include "mm/heap.h"
@@ -107,6 +110,43 @@ void kmain(void) {
         nas_print("[FAIL] frame allocator init\n");
         nas_arch_halt();
     }
+#ifndef NASEED_PORT_M0
+    /* Limine supplies a mapped kernel VA, not a PMM-owned RAM frame. An
+     * absent/unsupported display remains optional on serial-only QEMU. */
+    bool fb_ready=false;
+    if(fb_req.response && fb_req.response->framebuffers) {
+        uint64_t available=fb_req.response->framebuffer_count;
+        if(available>16U)available=16U;
+        for(uint64_t i=0;i<available && !fb_ready;i++) {
+            const struct limine_framebuffer *fb=
+                fb_req.response->framebuffers[i];
+            if(!fb)continue;
+            const struct nas_fb_boot_info info={
+                .address=(volatile uint8_t *)fb->address,
+                .width=fb->width,.height=fb->height,.pitch=fb->pitch,
+                .bpp=fb->bpp,.memory_model=fb->memory_model,
+                .red_size=fb->red_mask_size,.red_shift=fb->red_mask_shift,
+                .green_size=fb->green_mask_size,.green_shift=fb->green_mask_shift,
+                .blue_size=fb->blue_mask_size,.blue_shift=fb->blue_mask_shift
+            };
+            fb_ready=nas_fbdev_boot_init(&info);
+            if(fb_ready) {
+                nas_print("[FB] firmware framebuffer ready ");
+                nas_dec(fb->width);nas_print("x");nas_dec(fb->height);
+                nas_print(" pitch=");nas_dec(fb->pitch);
+                nas_print(" bpp=");nas_dec(fb->bpp);
+                nas_print(" r");nas_dec(fb->red_mask_size);
+                nas_print("@");nas_dec(fb->red_mask_shift);
+                nas_print(" g");nas_dec(fb->green_mask_size);
+                nas_print("@");nas_dec(fb->green_mask_shift);
+                nas_print(" b");nas_dec(fb->blue_mask_size);
+                nas_print("@");nas_dec(fb->blue_mask_shift);
+                nas_print("\n");
+            }
+        }
+    }
+    if(!fb_ready)nas_print("[FB] no usable firmware framebuffer\n");
+#endif
     uint64_t before = nas_free_frames();
     nas_print("[MM] available frames=");
     nas_dec(before);

@@ -1,0 +1,7 @@
+# Reuse already-admitted signed original Alpine ELF identities: zero NEW.
+usr/bin/curl
+usr/bin/wget
+usr/bin/pngtopam
+usr/bin/pamfile
+usr/bin/pamtable
+usr/bin/chafa
