@@ -33,6 +33,19 @@ static void end_mounted_lookup(struct nas_fs_path_request *request,
         nas_fail("metadata lookup Path reference corrupted");
     nas_fs_path_end(request);
 }
+/* Linux-visible bootstrap metadata is a read-only namespace projection.
+ * It must not acquire an OpenFile, allocate a PTY or depend on spare FDs.
+ * Both stat(path) and fstat(open(path)) use the SAME device identity. */
+static uint64_t write_bootstrap_stat(const struct nas_fs_bootstrap_info *info,
+                                     uint64_t address) {
+    struct nas_linux_stat st={0};
+    st.dev=info->dev;st.ino=info->ino;st.rdev=info->rdev;
+    st.mode=(uint32_t)info->mode;st.nlink=1;st.blksize=PAGE;
+    st.size=(int64_t)info->size;
+    st.blocks=(int64_t)((info->size+511U)/512U);
+    return nas_user_write_bytes(address,(const uint8_t *)&st,sizeof(st)) ?
+           0:(uint64_t)-EFAULT;
+}
 
 /* Generic inode stat comes from the filesystem lookup result, never a
  * fixed ext4-only number or an exported kernel pointer. */
@@ -110,43 +123,56 @@ static uint64_t sys_statfs_boot(uint64_t pathname,uint64_t address) {
  * Device entries have character-device type; mounted files are regular.
  */
 static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
-    if (fd >= 64 || !TASK.fds->entries[fd].kind) return (uint64_t)-EBADF;
+    if (fd >= NAS_FD_LIMIT || !TASK.fds->entries[fd].kind)
+        return (uint64_t)-EBADF;
     /* Any opened VFS inode, regardless of bootfs/tmpfs/procfs/ext4
      * branding, has exactly one owner and one stat encoder. fstat(fd)
      * and fstatat(path) report the same mount identity and timestamps. */
     const struct nas_open_file *opened=&nas_open_files[TASK.fds->entries[fd].slot];
     if(opened->vnode_pinned)
         return write_mounted_stat(&opened->vnode,address);
+    const uint8_t kind=TASK.fds->entries[fd].kind;
     struct nas_linux_stat st={0};
-    st.nlink=1;
-    st.blksize=PAGE;
-    if (TASK.fds->entries[fd].kind == FD_PTY_MASTER ||
-               TASK.fds->entries[fd].kind == FD_PTY_SLAVE) {
-        st.dev=6;st.ino=2000+nas_pty_number(TASK.fds->entries[fd].slot);
-        st.mode=0020620; /* real PTY character device */
-    } else if (TASK.fds->entries[fd].kind == FD_PIPE_R || TASK.fds->entries[fd].kind == FD_PIPE_W ||
-               TASK.fds->entries[fd].kind == FD_SOCKET) {
+    st.nlink=1;st.blksize=PAGE;
+    if (kind == FD_PIPE_R || kind == FD_PIPE_W || kind == FD_SOCKET) {
         st.dev = 4; st.ino = (uint64_t)TASK.fds->entries[fd].slot + 1000;
-        st.mode = TASK.fds->entries[fd].kind == FD_SOCKET ? 0140777 : 0010600;
+        st.mode = kind == FD_SOCKET ? 0140777 : 0010600;
         /* Linux presents socketpair as S_IFSOCK, pipe as S_IFIFO. */
-    } else if (TASK.fds->entries[fd].kind == FD_BOOTFS) {
-        const struct limine_file *file = nas_open_files[TASK.fds->entries[fd].slot].boot_file;
+    } else if(kind==FD_BOOTFS) {
+        const struct limine_file *file=opened->boot_file;
         if (!file) return (uint64_t)-EBADF;
-        st.dev = 1; st.ino = fd + 100;
-        st.mode = 0100555;
-        st.size = (int64_t)file->size;
-        st.blocks = (int64_t)((file->size + 511) / 512);
-    } else if (TASK.fds->entries[fd].kind == FD_RANDOM) {
-        /* Linux character device major 1: /dev/random minor 8 and
-         * /dev/urandom minor 9. The inode identity is device-stable
-         * across separate opens/dup/fork, not an arbitrary FD number. */
-        const char *path=opened->origin_path;
-        const uint64_t minor=!strcmp(path,"/dev/random")?8U:9U;
-        st.dev=2;st.ino=minor;st.rdev=(1U<<8)|minor;
-        st.mode=0020666;
+        const struct nas_fs_bootstrap_info module={
+            .dev=1,.ino=nas_fs_bootstrap_module_ino(file),
+            .mode=0100555U,.size=file->size
+        };
+        return write_bootstrap_stat(&module,address);
+    } else if(kind==FD_PTY_MASTER || kind==FD_PTY_SLAVE) {
+        unsigned number=nas_pty_number(TASK.fds->entries[fd].slot);
+        const struct nas_fs_bootstrap_info pty={
+            .dev=6,.ino=kind==FD_PTY_MASTER ? 2000U :
+                        2000U+(uint64_t)number,
+            .rdev=kind==FD_PTY_MASTER ? ((5U<<8)|2U) :
+                  ((136U<<8)|(uint64_t)number),
+            .mode=0020620U
+        };
+        return write_bootstrap_stat(&pty,address);
     } else {
-        st.dev = 2; st.ino = fd + 10;
-        st.mode = 0020666; /* real character device backed by UART/null/zero */
+        const char *path=opened->origin_path;
+        if(!path[0]) {
+            path=kind==FD_NULL ? "/dev/null" :
+                 kind==FD_ZERO ? "/dev/zero" :
+                 kind==FD_RANDOM ? "/dev/urandom" : "/dev/console";
+        }
+        struct nas_fs_bootstrap_info info;
+        if(!nas_fs_bootstrap_describe(path,&info) &&
+           info.fd_kind!=FD_BOOTFS)
+            return write_bootstrap_stat(&info,address);
+        /* The original bootstrap UART is not a named VFS inode. Keep its
+         * console identity stable across dup and across separate FDs. */
+        const struct nas_fs_bootstrap_info console={
+            .dev=2,.ino=101,.rdev=(5U<<8)|1U,.mode=0020666U
+        };
+        return write_bootstrap_stat(&console,address);
     }
     if (!nas_user_write_bytes(address, (const uint8_t *)&st, sizeof(st)))
         return (uint64_t)-EFAULT;
@@ -305,20 +331,14 @@ static uint64_t sys_access_path(uint64_t dirfd,uint64_t pathname,
         /* Only a failed lookup reaches this explicit bootstrap whitelist;
          * it must reuse the SAME still-owned request/anchor. */
         bool allowed=nas_fs_bootstrap_candidate(&request,path);
+        bool genuinely_missing=allowed &&
+            nas_fs_bootstrap_nofollow_probe(&request,request.pathname)==-ENOENT;
         end_mounted_lookup(&request,&located);
-        if(!allowed)return (uint64_t)-ENOENT;
-    }
-    if(!bits && (!strcmp(path,"/dev/ptmx") ||
-                 (nas_pty_path_number(path)>=0 &&
-                  nas_pty_present((unsigned)nas_pty_path_number(path))) ||
-                 !strcmp(path,"/dev/null") || !strcmp(path,"/dev/zero") ||
-                 !strcmp(path,"/dev/random") || !strcmp(path,"/dev/urandom") ||
-                 !strcmp(path,"/dev/console") || !strcmp(path,"/dev/ttyS0") ||
-                 !strcmp(path,"/dev/tty"))) {
-        if(!strcmp(path,"/dev/tty") && !nas_tty_controlling() &&
-           !nas_pty_controlling())
-            return (uint64_t)-ENXIO;
-        bits=0020666U; writable=true;
+        if(!genuinely_missing)return (uint64_t)-ENOENT;
+        struct nas_fs_bootstrap_info bootstrap;
+        if(nas_fs_bootstrap_describe(path,&bootstrap))return (uint64_t)-ENOENT;
+        bits=(uint32_t)bootstrap.mode;
+        writable=bootstrap.fd_kind!=FD_BOOTFS;
     }
     if(!bits)return (uint64_t)-ENOENT;
     if((mode & 1ULL) && !(bits & 0111U))return (uint64_t)-EACCES;
@@ -515,23 +535,16 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
      * renamed/unlinked dirfd must not attempt a second legacy lookup. */
     char path[256];
     bool allowed=nas_fs_bootstrap_candidate(&request,path);
+    bool genuinely_missing=allowed &&
+        nas_fs_bootstrap_nofollow_probe(&request,request.pathname)==-ENOENT;
     end_mounted_lookup(&request,&path_ref);
-    if(!allowed)return (uint64_t)-ENOENT;
-    if(!strcmp(path,"/dev/ptmx") ||
-       (nas_pty_path_number(path)>=0 &&
-        nas_pty_present((unsigned)nas_pty_path_number(path)))) {
-        struct nas_linux_stat device={0};
-        device.dev=6;device.ino=2000;
-        device.mode=0020620;device.nlink=1;device.blksize=PAGE;
-        return nas_user_write_bytes(statbuf,(const uint8_t *)&device,sizeof(device))
-            ? 0:(uint64_t)-EFAULT;
-    }
-    /* Legacy modules and character devices retain their existing fstat. */
-    uint64_t result = nas_fs_open_path(path, 0, 0);
-    if ((int64_t)result < 0) return result;
-    uint64_t ret = sys_fstat_boot(result, statbuf);
-    nas_fs_close_fd(result);
-    return ret;
+    if(!genuinely_missing)return (uint64_t)-ENOENT;
+    /* stat is a metadata operation. It must not consume a descriptor,
+     * initialize a driver, or fail EMFILE simply because FDs are full. */
+    struct nas_fs_bootstrap_info bootstrap;
+    int described=nas_fs_bootstrap_describe(path,&bootstrap);
+    return described ? (uint64_t)(int64_t)described :
+                       write_bootstrap_stat(&bootstrap,statbuf);
 }
 
 /* Linux x86-64 linux_dirent64: ino64, off64, reclen16, dtype8, name[].

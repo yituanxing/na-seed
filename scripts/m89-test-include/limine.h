@@ -5,5 +5,5 @@
  * section GC to discard unrelated ELF/archive readers. Native kernel builds
  * continue to use the genuine pinned Limine header. */
 #include <stdint.h>
-struct limine_file {void *address; uint64_t size;};
+struct limine_file {void *address; uint64_t size; const char *path;};
 #endif

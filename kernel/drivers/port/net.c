@@ -10,14 +10,33 @@
 static struct nas_netdev *devices[NAS_NETDEV_LIMIT];
 static nas_netdev_wake change_wake;
 static void *change_context;
+/* IRQs can interrupt callback installation on today's single CPU. Publish
+ * the non-NULL context before the callback and retire the callback before
+ * clearing the context; an acquire snapshot observes that order. This is
+ * not a substitute for a registry/teardown lock when SMP is introduced. */
+static void invoke_wake(nas_netdev_wake *callback,void **context) {
+    nas_netdev_wake wake=__atomic_load_n(callback,__ATOMIC_ACQUIRE);
+    if(wake)wake(__atomic_load_n(context,__ATOMIC_RELAXED));
+}
+static void set_wake(nas_netdev_wake *callback,void **context,
+                     nas_netdev_wake wake,void *consumer) {
+    if(wake) {
+        __atomic_store_n(context,consumer,__ATOMIC_RELAXED);
+        __atomic_store_n(callback,wake,__ATOMIC_RELEASE);
+    } else {
+        /* The two seq-cst stores forbid compiler/CPU reversal during
+         * IRQ-visible teardown, including on weakly ordered RV/ARM. */
+        __atomic_store_n(callback,NULL,__ATOMIC_SEQ_CST);
+        __atomic_store_n(context,NULL,__ATOMIC_SEQ_CST);
+    }
+}
 static void notify_change(void) {
-    if(change_wake)change_wake(change_context);
+    invoke_wake(&change_wake,&change_context);
 }
 int nas_netdev_set_change_wake(nas_netdev_wake wake,void *consumer) {
     if(wake && !consumer)return -EINVAL;
-    if(wake && change_wake)return -EBUSY;
-    change_wake=wake;
-    change_context=wake?consumer:NULL;
+    if(wake && __atomic_load_n(&change_wake,__ATOMIC_ACQUIRE))return -EBUSY;
+    set_wake(&change_wake,&change_context,wake,consumer);
     return 0;
 }
 
@@ -50,7 +69,7 @@ int nas_netdev_begin_remove(struct nas_netdev *device) {
     /* A final pin may belong to the lwIP worker. It must observe removal
      * and schedule netif_detach on tcpip_thread before the driver can free
      * transport rings or DMA. Never invoke the core from this callback. */
-    if(device->rx_wake)device->rx_wake(device->rx_wake_context);
+    invoke_wake(&device->rx_wake,&device->rx_wake_context);
     notify_change();
     return 0;
 }
@@ -96,7 +115,8 @@ int nas_netdev_put(struct nas_netdev *device) {
     if(!device || !device->registered || !device->refs)return -EINVAL;
     /* The last consumer must detach its IRQ wake before releasing the pin;
      * otherwise an interrupt could target a retired network worker. */
-    if(device->refs==1 && device->rx_wake)return -EBUSY;
+    if(device->refs==1 &&
+       __atomic_load_n(&device->rx_wake,__ATOMIC_ACQUIRE))return -EBUSY;
     device->refs--;
     return 0;
 }
@@ -119,9 +139,9 @@ int nas_netdev_set_rx_wake(struct nas_netdev *device,
     if(!device || !device->registered)return -ENODEV;
     if(!device->refs || (wake && !consumer))return -EINVAL;
     if(wake && device->removing)return -ENODEV;
-    if(wake && device->rx_wake)return -EBUSY;
-    device->rx_wake=wake;
-    device->rx_wake_context=wake?consumer:NULL;
+    if(wake && __atomic_load_n(&device->rx_wake,__ATOMIC_ACQUIRE))
+        return -EBUSY;
+    set_wake(&device->rx_wake,&device->rx_wake_context,wake,consumer);
     return 0;
 }
 void nas_netdev_notify_rx(struct nas_netdev *device) {
@@ -129,7 +149,7 @@ void nas_netdev_notify_rx(struct nas_netdev *device) {
     ++device->rx_sequence;
     /* The callback may enqueue a worker/semaphore wake. It must not sleep,
      * dispatch a packet or unbind this live device from IRQ context. */
-    if(device->rx_wake)device->rx_wake(device->rx_wake_context);
+    invoke_wake(&device->rx_wake,&device->rx_wake_context);
 }
 bool nas_netdev_link_up(const struct nas_netdev *device) {
     return device && device->registered && !device->removing &&

@@ -24,12 +24,6 @@ int nas_vfs_fiemap_next(const struct nas_fs_node *node,uint64_t start,
     (void)node;(void)start;(void)end;(void)logical;(void)length;(void)last;
     assert(!"unexpected FIEMAP ioctl");return -EIO;
 }
-unsigned nas_pty_number(unsigned slot) {
-    (void)slot;assert(!"unexpected PTY ioctl");return 0;
-}
-int nas_pty_attach(unsigned number,unsigned slot) {
-    (void)number;(void)slot;assert(!"unexpected PTY ioctl");return -EIO;
-}
 static bool abi_live[NAS_OPEN_FILE_LIMIT];
 static bool abi_retiring_bridge[NAS_OPEN_FILE_LIMIT];
 bool nas_lwip_socket_slot_reusable(unsigned slot) {
@@ -279,7 +273,8 @@ unsigned nas_lwip_guest_ipv4_ifconf(
         if(!snapshot[i].ipv4_host_order || !snapshot[i].prefix_len)continue;
         out[available]=(struct nas_lwip_guest_ipv4_if){
             .ipv4_host_order=snapshot[i].ipv4_host_order,
-            .prefix_len=snapshot[i].prefix_len,.mtu=snapshot[i].mtu
+            .prefix_len=snapshot[i].prefix_len,.mtu=snapshot[i].mtu,
+            .ifindex=snapshot[i].ifindex
         };
         memcpy(out[available].name,snapshot[i].name,sizeof(out[available].name));
         available++;

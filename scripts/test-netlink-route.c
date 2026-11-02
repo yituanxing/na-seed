@@ -16,18 +16,21 @@
 
 struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
 struct nas_task *nas_current_task;
-static bool full_snapshot;
+static bool full_snapshot,second_addressed=true;
 unsigned nas_lwip_guest_ipv4_ifconf(
     struct nas_lwip_guest_ipv4_if out[NAS_LWIP_GUEST_IF_LIMIT]) {
     if(!out)return 0;
     out[0]=(struct nas_lwip_guest_ipv4_if){
-        .name="lo",.ipv4_host_order=UINT32_C(0x7f000001),.prefix_len=8
+        .name="lo",.ifindex=1,
+        .ipv4_host_order=UINT32_C(0x7f000001),.prefix_len=8
     };
     out[1]=(struct nas_lwip_guest_ipv4_if){
-        .name="eth0",.ipv4_host_order=UINT32_C(0x0a00020f),.prefix_len=24
+        .name="eth0",.ifindex=2,
+        .ipv4_host_order=UINT32_C(0x0a00020f),.prefix_len=24
     };
     out[2]=(struct nas_lwip_guest_ipv4_if){
-        .name="eth1",.ipv4_host_order=UINT32_C(0x0a000314),.prefix_len=24
+        .name="eth1",.ifindex=3,
+        .ipv4_host_order=UINT32_C(0x0a000314),.prefix_len=24
     };
     if(full_snapshot){
         for(unsigned i=1;i<NAS_LWIP_GUEST_IF_LIMIT;i++){
@@ -35,18 +38,21 @@ unsigned nas_lwip_guest_ipv4_ifconf(
             memset(nic,0,sizeof(*nic));
             nic->name[0]='e';nic->name[1]='t';nic->name[2]='h';
             nic->name[3]=(char)('0'+i-1U);
+            /* Non-sequential actual IDs catch accidental name-to-index
+             * re-lookups after the one authoritative address snapshot. */
+            nic->ifindex=100U+i;
             nic->ipv4_host_order=UINT32_C(0x0a000200)+i;
             nic->prefix_len=24;
         }
         return NAS_LWIP_GUEST_IF_LIMIT;
     }
-    return 3;
+    return second_addressed?3:2;
 }
 int nas_lwip_guest_ifindex(const char *name) {
-    if(name && name[0]=='e' && name[1]=='t' && name[2]=='h' &&
-       name[3]>='0' && (unsigned)(name[3]-'0')<NAS_NETDEV_LIMIT &&
-       !name[4])
-        return name[3]-'0'+2;
+    (void)name;
+    /* NETLINK_ROUTE must never re-read an interface by name after a
+     * snapshot: a DHCP update could change the second observation. */
+    assert(!"NETLINK_ROUTE retried netif identity outside snapshot");
     return -ENODEV;
 }
 int nas_lwip_guest_ifname(unsigned index,char out[16]) {
@@ -170,6 +176,23 @@ int main(void) {
     }
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
                                     NULL,NULL)==-EAGAIN);
+    /* Losing a DHCP lease removes only that address; the interface itself
+     * still exists, and an exact one-shot address dump must not relabel it. */
+    second_addressed=false;
+    getaddr(request,2,106);
+    assert(nas_netlink_route_sendto(11,request,20,addr,12)==20);
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==40);
+    expect_newaddr(reply,4142,106,1,8,254,lo);
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==40);
+    expect_newaddr(reply,4142,106,2,24,0,ethernet);
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==16);
+    assert(rd16(reply+4)==3 && rd32(reply+8)==106);
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==-EAGAIN);
+    second_addressed=true;
     /* Full registry capacity: lo + eight independently addressed NICs
      * must fit one all-or-nothing multipart dump, including NLMSG_DONE. */
     full_snapshot=true;
@@ -181,7 +204,7 @@ int main(void) {
                                         NULL,NULL)==40);
         const uint8_t ip[4]={i?10U:127U,i?0U:0U,
                              i?2U:0U,i?(uint8_t)i:1U};
-        expect_newaddr(reply,4142,105,i?i+1U:1U,i?24U:8U,
+        expect_newaddr(reply,4142,105,i?100U+i:1U,i?24U:8U,
                        i?0U:254U,ip);
     }
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
@@ -205,7 +228,7 @@ int main(void) {
     assert(nas_netlink_route_bind(11,addr,12)==0);
     assert(nas_netlink_route_getsockname(11,name)==0);
     assert(rd32(name+4)==9000);
-    puts("[NETLINK_ROUTE HOST PASS] real lo+two DHCP IPv4 and max eight-NIC RTM_GETADDR multipart, "
+    puts("[NETLINK_ROUTE HOST PASS] single-snapshot IDs, address loss, and max eight-NIC RTM_GETADDR multipart, "
          "SOCK_RAW port bind, MSG_PEEK/TRUNC, poll/release");
     return 0;
 }

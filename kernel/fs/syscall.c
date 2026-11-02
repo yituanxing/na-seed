@@ -561,29 +561,12 @@ static uint64_t open_path_owned(const char *path,
     const bool truncate=(flags&0x200ULL)!=0;      /* O_TRUNC */
     const unsigned access=(unsigned)(flags&3ULL);
     uint8_t kind=FD_CLOSED;
-    int pty_number=nas_pty_path_number(path);
+    int pty_number=-1;
     const struct limine_file *real_file=NULL;
     bool have_node=false;
     struct nas_fs_node opened_node={0};
     struct nas_vfs_path directory_path={0};
     char canonical[256]={0};
-
-    /* Temporary synthetic-device bridge; filesystems never receive a
-     * fabricated VFS inode, and future devfs can replace this one block. */
-    if(!strcmp(path,"/dev/tty") &&
-       !nas_tty_controlling() && !nas_pty_controlling())
-        return (uint64_t)-ENXIO;
-    if(!strcmp(path,"/dev/ptmx"))kind=FD_PTY_MASTER;
-    else if(pty_number>=0 && nas_pty_present((unsigned)pty_number))
-        kind=FD_PTY_SLAVE;
-    else if(!strcmp(path,"/dev/tty") && nas_pty_controlling())
-        kind=FD_PTY_SLAVE;
-    else if(!strcmp(path,"/dev/tty") || !strcmp(path,"/dev/console") ||
-            !strcmp(path,"/dev/ttyS0"))kind=FD_TTY;
-    else if(!strcmp(path,"/dev/null"))kind=FD_NULL;
-    else if(!strcmp(path,"/dev/zero"))kind=FD_ZERO;
-    else if(!strcmp(path,"/dev/urandom") || !strcmp(path,"/dev/random"))
-        kind=FD_RANDOM;
 
     /* Reserve both resources without publication BEFORE namei may create
      * or truncate a filesystem inode. EMFILE/ENFILE must never cause
@@ -593,7 +576,28 @@ static uint64_t open_path_owned(const char *path,
     if(capacity)return (uint64_t)(int64_t)capacity;
     const unsigned fd=fds[0],slot=slots[0];
 
-    if(kind==FD_CLOSED) {
+    struct nas_fs_bootstrap_info bootstrap={0};
+    bool bootstrap_ready=false;
+    if(create) {
+        /* O_CREAT must not first manufacture /dev/null as a regular file
+         * before discovering the rootless synthetic endpoint. Resolve the
+         * literal whitelist from the SAME owned request, then run a
+         * side-effect-free nofollow namei. An existing real inode (also a
+         * symlink) proceeds through ordinary VFS open, never this bridge. */
+        char candidate[256];
+        const char *literal=NULL;
+        if(request && nas_fs_bootstrap_candidate(request,candidate))
+            literal=candidate;
+        else if(!request && nas_fs_bootstrap_endpoint(path))literal=path;
+        if(literal) {
+            int checked=nas_fs_bootstrap_nofollow_probe(request,path);
+            if(checked==-ENOENT) {
+                if(!nas_fs_bootstrap_describe(literal,&bootstrap))
+                    bootstrap_ready=true;
+            } else if(checked)return (uint64_t)(int64_t)checked;
+        }
+    }
+    if(!bootstrap_ready) {
         /* The VFS owns namei, O_CREAT, inode mode/permission validation,
          * truncate and the returned mount/inode pin as ONE transaction.
          * Linux native flags are decoded here and never enter providers. */
@@ -616,12 +620,29 @@ static uint64_t open_path_owned(const char *path,
              * this optional legacy 256-byte snapshot cannot represent it. */
             if(directory_path.dentry)
                 (void)nas_vfs_path_string(&directory_path,canonical);
-        } else if(rc==-ENOENT && !request &&
-                  (real_file=nas_boot_limine_module_path(path))) {
-            /* Original unmounted Limine module; a mounted VFS inode
-             * always wins, never reopen a stale old pathname. */
-            kind=FD_BOOTFS;
+        } else if(rc==-ENOENT && !request) {
+            /* Only an explicit rootless-bootstrap call may request this
+             * bridge. A normal openat retains its owned Path and reaches
+             * this code only after the same request has been whitelisted
+             * by maybe_open_bootstrap(). Real VFS inodes always win. */
+            int fallback=nas_fs_bootstrap_describe(path,&bootstrap);
+            if(fallback)return (uint64_t)(int64_t)rc;
+            /* A dangling symlink can make follow-final return ENOENT even
+             * though a real mounted name owns this exact spelling. */
+            if(nas_fs_bootstrap_nofollow_probe(NULL,path)!=-ENOENT)
+                return (uint64_t)(int64_t)rc;
+            bootstrap_ready=true;
         } else return (uint64_t)(int64_t)rc;
+    }
+    if(bootstrap_ready) {
+        kind=bootstrap.fd_kind;
+        pty_number=bootstrap.pty_number;
+        real_file=bootstrap.boot_file;
+        if(bootstrap.fd_kind==FD_TTY && bootstrap.rdev==(5U<<8)) {
+            if(!nas_tty_controlling() && !nas_pty_controlling())
+                return (uint64_t)-ENXIO;
+            if(nas_pty_controlling())kind=FD_PTY_SLAVE;
+        }
     }
 
     if(!have_node) {
@@ -708,6 +729,64 @@ uint64_t nas_fs_open_anon_tmpfs(const char *user_name,bool cloexec) {
     label[written]=0;
     return fd;
 }
+/* Direct Limine ELF modules have no mounted inode in the rootless boot.
+ * Their stable identity comes from the module's own path, not a process FD
+ * or a kernel pointer exposed through st_ino. Interpreter path aliases
+ * therefore retain the same inode number across separate opens. */
+uint64_t nas_fs_bootstrap_module_ino(const struct limine_file *file) {
+    if(!file || !file->path)return 0;
+    uint64_t hash=14695981039346656037ULL;
+    for(const unsigned char *p=(const unsigned char *)file->path;*p;p++)
+        hash=(hash^*p)*1099511628211ULL;
+    return hash ? hash : 1U;
+}
+/* The only description of temporary, genuinely unmounted bootstrap
+ * endpoints. The caller MUST first establish that the Path-first VFS
+ * lookup missed; no synthetic device is allowed to hide a real inode.
+ * Stat/access use this descriptor without opening an FD or invoking a
+ * driver. Open handles terminal attachment only after classification. */
+int nas_fs_bootstrap_describe(const char *path,
+                              struct nas_fs_bootstrap_info *out) {
+    if(!out)return -EINVAL;
+    *out=(struct nas_fs_bootstrap_info){.pty_number=-1};
+    if(!path || path[0]!='/')return -ENOENT;
+    struct nas_fs_bootstrap_info *b=out;
+    b->dev=2;
+    b->mode=0020666U;
+    if(!strcmp(path,"/dev/null")) {
+        b->fd_kind=FD_NULL;b->ino=3;b->rdev=(1U<<8)|3U;
+    } else if(!strcmp(path,"/dev/zero")) {
+        b->fd_kind=FD_ZERO;b->ino=5;b->rdev=(1U<<8)|5U;
+    } else if(!strcmp(path,"/dev/random")) {
+        b->fd_kind=FD_RANDOM;b->ino=8;b->rdev=(1U<<8)|8U;
+    } else if(!strcmp(path,"/dev/urandom")) {
+        b->fd_kind=FD_RANDOM;b->ino=9;b->rdev=(1U<<8)|9U;
+    } else if(!strcmp(path,"/dev/tty")) {
+        b->fd_kind=FD_TTY;b->ino=103;b->rdev=(5U<<8);
+    } else if(!strcmp(path,"/dev/ttyS0")) {
+        b->fd_kind=FD_TTY;b->ino=102;b->rdev=(4U<<8)|64U;
+    } else if(!strcmp(path,"/dev/console")) {
+        b->fd_kind=FD_TTY;b->ino=101;b->rdev=(5U<<8)|1U;
+    } else if(!strcmp(path,"/dev/ptmx")) {
+        b->fd_kind=FD_PTY_MASTER;b->dev=6;b->ino=2000;
+        b->rdev=(5U<<8)|2U;b->mode=0020620U;
+    } else {
+        int number=nas_pty_path_number(path);
+        if(number>=0 && nas_pty_present((unsigned)number)) {
+            b->fd_kind=FD_PTY_SLAVE;b->pty_number=number;
+            b->dev=6;b->ino=2000U+(uint64_t)number;
+            b->rdev=(136U<<8)|(uint64_t)(unsigned)number;
+            b->mode=0020620U;
+        } else {
+            const struct limine_file *module=nas_boot_limine_module_path(path);
+            if(!module)return -ENOENT;
+            b->fd_kind=FD_BOOTFS;b->boot_file=module;
+            b->dev=1;b->ino=nas_fs_bootstrap_module_ino(module);
+            b->mode=0100555U;b->size=module->size;
+        }
+    }
+    return 0;
+}
 /* This is NOT a second namei for ordinary missing paths. In a direct-ELF
  * rootless boot a few synthetic devices and Limine modules have no VFS
  * inode; only these explicit bootstrap endpoints may use a literal name.
@@ -715,15 +794,8 @@ uint64_t nas_fs_open_anon_tmpfs(const char *user_name,bool cloexec) {
  * an arbitrary O_CREAT to be retried through a pathname reconstructed from
  * that FD. */
 bool nas_fs_bootstrap_endpoint(const char *path) {
-    if(!path || path[0]!='/')return false;
-    if(!strcmp(path,"/dev/null") || !strcmp(path,"/dev/zero") ||
-       !strcmp(path,"/dev/random") || !strcmp(path,"/dev/urandom") ||
-       !strcmp(path,"/dev/tty") || !strcmp(path,"/dev/ttyS0") ||
-       !strcmp(path,"/dev/console") || !strcmp(path,"/dev/ptmx"))
-        return true;
-    int pty=nas_pty_path_number(path);
-    if(pty>=0 && nas_pty_present((unsigned)pty))return true;
-    return nas_boot_limine_module_path(path)!=NULL;
+    struct nas_fs_bootstrap_info info;
+    return nas_fs_bootstrap_describe(path,&info)==0;
 }
 bool nas_fs_bootstrap_candidate(const struct nas_fs_path_request *request,
                                  char candidate[256]) {
@@ -751,6 +823,17 @@ bool nas_fs_bootstrap_candidate(const struct nas_fs_path_request *request,
     }
     return nas_fs_bootstrap_endpoint(candidate);
 }
+int nas_fs_bootstrap_nofollow_probe(const struct nas_fs_path_request *request,
+                                    const char *path) {
+    struct nas_vfs_path existing={0};
+    int rc=nas_fs_lookup_path_at(
+        request && request->start.dentry ? &request->start : NULL,
+        request && request->root.dentry ? &request->root : NULL,
+        path,false,&existing);
+    if(existing.dentry && nas_vfs_path_put(&existing))
+        nas_fs_fail("bootstrap nofollow Path reference corrupted");
+    return rc;
+}
 static uint64_t maybe_open_bootstrap(const struct nas_fs_path_request *request,
                                      uint64_t flags,uint64_t mode,
                                      uint64_t original) {
@@ -759,6 +842,8 @@ static uint64_t maybe_open_bootstrap(const struct nas_fs_path_request *request,
      * never copy the user path a second time or re-walk its old spelling. */
     char candidate[256];
     if(!nas_fs_bootstrap_candidate(request,candidate))return original;
+    if(nas_fs_bootstrap_nofollow_probe(request,request->pathname)!=-ENOENT)
+        return original;
     return nas_fs_open_path(candidate,flags,mode);
 }
 static uint64_t sys_open_device(uint64_t pathname, uint64_t flags,

@@ -32,6 +32,7 @@ int nas_lwip_guest_ifname(unsigned index,
  * after its actual DHCP-supplied IPv4 address was observed on tcpip_thread. */
 struct nas_lwip_guest_ipv4_if {
  char name[NAS_LWIP_DEVICE_NAME_MAX];
+ unsigned ifindex; /* same core snapshot as the address, never re-resolve */
  unsigned ipv4_host_order;
  uint8_t prefix_len; /* DHCP's actual contiguous IPv4 netmask length */
  uint32_t mtu; /* native core netif MTU, not a presumed Ethernet default */

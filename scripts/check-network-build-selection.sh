@@ -2,6 +2,8 @@
 # Dry-run the REAL x86 build graph. The upstream lwIP/Netconn provider is
 # always linked; only the U-Boot NIC and BlockDevice attachment are optional.
 set -eu
+dry_run=$(mktemp)
+trap 'rm -f "$dry_run"' 0
 if make -n NAS_ENABLE_LWIP=0 kernel >/dev/null 2>&1; then
     echo '[NETWORK BUILD FAIL] retired legacy AF_INET opt-out accepted' >&2
     exit 1
@@ -14,7 +16,16 @@ for configuration in default net blk both; do
         both) flags='NAS_ENABLE_VIRTIO_NET=1 NAS_ENABLE_VIRTIO_BLK=1 NAS_ENABLE_LWEXT4=1' ;;
     esac
     # Intentionally split known make VAR=value tokens from flags.
-    make -n $flags kernel | awk -v mode="$configuration" '
+    # The shell reports the last command's exit status for a pipeline.
+    # -B lists the entire build graph even if a previous kernel build made
+    # every object up-to-date. Run make separately so a missing provider or
+    # broken dependency cannot be hidden by awk on partial output.
+    if ! make -Bn $flags kernel >"$dry_run" 2>&1; then
+        echo "[NETWORK BUILD FAIL] $configuration: make -Bn kernel failed" >&2
+        tail -n 8 "$dry_run" >&2
+        exit 1
+    fi
+    awk -v mode="$configuration" '
       /^clang / && / -c / {
         if(index($0," -c ports/uboot/net_port.c "))nic++;
         if(index($0," -c ports/uboot/blk_port.c "))blk++;
@@ -33,5 +44,5 @@ for configuration in default net blk both; do
            netdev!=1 || netconn!=needed_netconn || socketport!=needed_netconn)
           exit 1;
         print "[NETWORK BUILD SELECT PASS] " mode ": shared transport/netdev once, correct class/Netconn/FileOps selection";
-      }'
+      }' <"$dry_run"
 done

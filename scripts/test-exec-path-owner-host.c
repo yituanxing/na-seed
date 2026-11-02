@@ -66,6 +66,7 @@ static void reset(void) {
 }
 int main(void) {
     struct nas_fs_path_request request={0};
+    request.pathname=request.inline_path;
     strcpy(request.pathname,"image");
     struct nas_fs_node node={0};char display[256];
     reset();

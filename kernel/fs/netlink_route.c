@@ -200,20 +200,16 @@ int64_t nas_netlink_route_sendto(unsigned slot,const uint8_t *bytes,
     if(count>NAS_LWIP_GUEST_IF_LIMIT)return -EIO;
     /* Reject an impossible or unverified core snapshot; never issue a
      * successful but misleading empty interface dump. */
-    uint32_t indexes[NAS_LWIP_GUEST_IF_LIMIT]={0};
     for(unsigned i=0;i<count;i++) {
-        if(!interfaces[i].ipv4_host_order || interfaces[i].prefix_len>32)
+        if(!interfaces[i].ifindex || !interfaces[i].ipv4_host_order ||
+           interfaces[i].prefix_len>32)
             return -EIO;
         if(i==0) {
             if(strcmp(interfaces[i].name,"lo") ||
+               interfaces[i].ifindex!=1 ||
                interfaces[i].ipv4_host_order!=UINT32_C(0x7f000001) ||
                interfaces[i].prefix_len!=8)return -EIO;
-            indexes[i]=1; /* lwIP netif_init creates the loopif first */
-        } else {
-            int index=nas_lwip_guest_ifindex(interfaces[i].name);
-            if(index<=0 || index==1)return -EIO;
-            indexes[i]=(uint32_t)index;
-        }
+        } else if(interfaces[i].ifindex==1)return -EIO;
     }
     if(s->count+count+1U>NETLINK_REPLY_QUEUE)return -EAGAIN;
     if(!s->bound) {
@@ -221,7 +217,7 @@ int64_t nas_netlink_route_sendto(unsigned slot,const uint8_t *bytes,
         if(rc)return rc;
     }
     for(unsigned i=0;i<count;i++)
-        enqueue_addr(s,seq,indexes[i],interfaces[i].prefix_len,
+        enqueue_addr(s,seq,interfaces[i].ifindex,interfaces[i].prefix_len,
                      i==0 ? 254U:0U,interfaces[i].ipv4_host_order);
     enqueue_done(s,seq);
     return length;

@@ -6,10 +6,14 @@
 #include "../kernel/errno.h"
 
 static unsigned tx_count,rx_count,wake_count;
-static unsigned registry_events;
+static unsigned registry_events,registry_rebound_events,wake_rebound_count;
 static void changed(void *context){
     assert(context==&registry_events);
     registry_events++;
+}
+static void changed_rebound(void *context){
+    assert(context==&registry_rebound_events);
+    registry_rebound_events++;
 }
 static int send(void *context,const uint8_t *data,uint32_t size){
     assert(context==(void *)&tx_count && data && size==60);
@@ -32,6 +36,10 @@ static bool up(void *context){return context==(void *)&tx_count;}
 static void wake(void *context){
     assert(context==(void *)&wake_count);
     wake_count++;
+}
+static void wake_rebound(void *context){
+    assert(context==(void *)&wake_rebound_count);
+    wake_rebound_count++;
 }
 static const struct nas_netdev_ops ops={
     .transmit=send,.poll=incoming,.link_up=up};
@@ -75,6 +83,12 @@ int main(void){
     assert(nas_netdev_unregister(&first)==-EBUSY);
     assert(nas_netdev_put(pin)==-EBUSY); /* cannot leave an IRQ callback */
     assert(nas_netdev_set_rx_wake(pin,NULL,NULL)==0);
+    assert(pin->rx_wake==NULL && pin->rx_wake_context==NULL);
+    assert(nas_netdev_set_rx_wake(pin,wake_rebound,&wake_rebound_count)==0);
+    nas_netdev_notify_rx(pin);
+    assert(wake_rebound_count==1 && wake_count==2);
+    assert(nas_netdev_set_rx_wake(pin,NULL,NULL)==0);
+    assert(pin->rx_wake==NULL && pin->rx_wake_context==NULL);
     assert(nas_netdev_put(pin)==0);
     assert(nas_netdev_put(pin)==-EINVAL);
     assert(nas_netdev_unregister(&first)==0);
@@ -107,6 +121,12 @@ int main(void){
     assert(nas_netdev_register(&duplicate)==-EINVAL);
     assert(registry_events==5); /* two register, two remove, one drain */
     assert(nas_netdev_set_change_wake(NULL,NULL)==0);
-    puts("[NET DEVICE PORT PASS] bounded poll, registry events, remove/drain, DMA pins");
+    assert(nas_netdev_set_change_wake(changed_rebound,
+                                      &registry_rebound_events)==0);
+    assert(nas_netdev_register(&first)==0);
+    assert(nas_netdev_unregister(&first)==0);
+    assert(registry_rebound_events==2 && registry_events==5);
+    assert(nas_netdev_set_change_wake(NULL,NULL)==0);
+    puts("[NET DEVICE PORT PASS] bounded poll, callback/context rebind, remove/drain, DMA pins");
     return 0;
 }

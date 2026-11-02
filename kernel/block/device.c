@@ -55,6 +55,8 @@ struct nas_block_device *nas_block_get(const char *name) {
         struct nas_block_device *dev = registered[n];
         if (dev && dev->registered && !dev->removing &&
             !strcmp(name, dev->name)) {
+            /* A wrapped pin count could allow removal of live storage. */
+            if (dev->refs == UINT32_MAX) return NULL;
             ++dev->refs;
             return dev;
         }

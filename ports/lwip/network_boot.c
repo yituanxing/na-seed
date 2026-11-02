@@ -96,6 +96,7 @@ unsigned nas_lwip_guest_ipv4_ifconf(
      if(!iface->ipv4_host_order || (!iface->loopback &&
          !iface->prefix_len))continue;
      out[count]=(struct nas_lwip_guest_ipv4_if){
+         .ifindex=iface->ifindex,
          .ipv4_host_order=iface->ipv4_host_order,
          .prefix_len=iface->prefix_len,.mtu=iface->mtu
      };
@@ -115,15 +116,19 @@ static struct nas_guest_nic *owner_of(struct netif *netif){
      if(&network.nic[i].ethernet.interface==netif)return &network.nic[i];
  return NULL;
 }
-/* The core alone owns default-route selection. Never select a removed or
- * carrier-down NIC, and do not let the last DHCP attach steal routing. */
+/* The core alone owns default-route selection. A carrier-up netif without
+ * a DHCP lease is not yet a usable IPv4 egress route. Prefer the first
+ * genuinely addressed interface; DHCP completion/loss may change this
+ * choice without any new driver attach or carrier event. */
 static void choose_default_on_core(void){
  struct netif *choice=NULL;
  for(unsigned i=0;i<NAS_NETDEV_LIMIT;i++){
      struct nas_lwip_eth *e=&network.nic[i].ethernet;
      if(e->attached && e->device &&
         !nas_netdev_is_removing(e->device) &&
-        netif_is_up(&e->interface) && netif_is_link_up(&e->interface)){
+        netif_is_up(&e->interface) && netif_is_link_up(&e->interface) &&
+        network.nic[i].dhcp_ipv4_host_order &&
+        network.nic[i].dhcp_prefix_len){
          choice=&e->interface;break;
      }
  }
@@ -175,6 +180,7 @@ static void network_status(struct netif *netif){
      while(rest&UINT32_C(0x80000000)){length++;rest<<=1;}
      if(!rest)nic->dhcp_prefix_len=length;
  }
+ choose_default_on_core();
  nas_print("[LWIP NETIF STATUS] up=");nas_dec(netif_is_up(netif));
  nas_print(" link=");nas_dec(netif_is_link_up(netif));
  nas_print(" dhcp=");nas_dec(dhcp_supplied_address(netif));
