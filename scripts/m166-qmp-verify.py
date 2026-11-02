@@ -149,7 +149,10 @@ def main():
 
         send(sock, reader, [key('q', True)])
         wait_marker(args.serial, 'M166_REAL_EVDEV_DISPLAY_PASS', deadline)
-        send(sock, reader, [key('q', False)])
+        # The application exits on KEY_Q down.  The runner stops QEMU as
+        # soon as its real final PASS marker appears, so another QMP write
+        # after that marker races the intentional VM teardown (EPIPE).
+        # There is no consumer left that needs a KEY_Q release.
     print('[M166 INPUT->QMP PASS] QEMU keyboard, tablet absolute/button, '
           'relative mouse through actual Linux evdev into five independently '
           'sampled framebuffer images', flush=True)
