@@ -32,6 +32,10 @@ This is deliberately a **small local surface/seat protocol** with strict
 roles and messages. It is neither claimed to be Wayland-compatible nor a
 replacement for a full compositor protocol. The boundaries make a future
 public protocol possible without changing kernel interfaces.
+Surface handshakes use `poll(POLLIN)` before `recvmsg(SCM_RIGHTS)`; the
+current NaSeed syscall path does not yet park an otherwise blocking
+`recvmsg` on an empty Unix socket. The readiness-based design avoids
+pretending that this unimplemented general case already works.
 
 ## Acceptance
 

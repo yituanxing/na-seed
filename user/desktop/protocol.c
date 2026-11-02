@@ -2,6 +2,7 @@
 #include "protocol.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,6 +60,20 @@ void nasd_send_surface(int fd,int surface,uint32_t role) {
             "sendmsg memfd SCM_RIGHTS");
 }
 int nasd_receive_surface(int fd,int role) {
+    /* A client does real work (ImageMagick or PTY shell startup) before
+     * announcing its memfd. Park on socket readiness before recvmsg: NaSeed
+     * currently exposes its wait/retry scheduler for poll and read/write,
+     * while an empty blocking recvmsg still returns EOPNOTSUPP. This also
+     * fits a compositor's eventual poll-driven multi-client event loop. */
+    struct pollfd ready={.fd=fd,.events=POLLIN};
+    for(;;) {
+        int n=poll(&ready,1,120000);
+        if(n<0 && errno==EINTR)continue;
+        nasd_require(n==1 && (ready.revents&POLLIN) &&
+                !(ready.revents&(POLLERR|POLLNVAL)),
+                "wait for independent image/terminal surface readiness");
+        break;
+    }
     struct message packet={0};
     struct iovec iov={.iov_base=&packet,.iov_len=sizeof(packet)};
     union {struct cmsghdr align;uint8_t bytes[CMSG_SPACE(sizeof(int))];} control={0};
