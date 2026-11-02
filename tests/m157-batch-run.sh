@@ -60,7 +60,12 @@ case_run() {
         busy grep -q top "$work/result" && busy grep -q bottom "$work/result" ;;
       pamhue) "$exe" -huechange=30 "$img" > "$work/out.pnm" 2> "$work/error" && pnm ;;
       pamlevels)
-        "$exe" -from1 black -to1 black -from2 white -to2 white "$img" > "$work/out.pnm" 2> "$work/error" && pnm ;;
+        # Alpine's signed Netpbm package does not ship the optional X11
+        # rgb.txt color-name dictionary. Numeric colors test the real levels
+        # transform without adding a synthetic host file to the guest.
+        "$exe" -from1 rgb-255:0/0/0 -to1 rgb-255:0/0/0 \
+               -from2 rgb-255:255/255/255 -to2 rgb-255:255/255/255 \
+               "$img" > "$work/out.pnm" 2> "$work/error" && pnm ;;
       pamrestack) "$exe" -width=16 "$img" > "$work/out.pnm" 2> "$work/error" && pnm ;;
       pamslice)
         "$exe" -row=3 "$img" > "$work/result" 2> "$work/error" || return 1
