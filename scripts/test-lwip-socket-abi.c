@@ -255,7 +255,8 @@ int nas_lwip_socket_setbroadcast(unsigned slot,bool enabled) {
 int nas_lwip_guest_ifindex(const char *device_name) {
     return device_name && !strcmp(device_name,"eth0") ? 2:-ENODEV;
 }
-unsigned nas_lwip_guest_if_snapshot(struct nas_lwip_guest_if out[2]) {
+unsigned nas_lwip_guest_if_snapshot(
+    struct nas_lwip_guest_if out[NAS_LWIP_GUEST_IF_LIMIT]) {
     assert(out);
     out[0]=(struct nas_lwip_guest_if){
         .name="lo",.ipv4_host_order=UINT32_C(0x7f000001),.prefix_len=8,
@@ -270,9 +271,9 @@ unsigned nas_lwip_guest_if_snapshot(struct nas_lwip_guest_if out[2]) {
     return 2;
 }
 unsigned nas_lwip_guest_ipv4_ifconf(
-    struct nas_lwip_guest_ipv4_if out[2]) {
+    struct nas_lwip_guest_ipv4_if out[NAS_LWIP_GUEST_IF_LIMIT]) {
     assert(out);
-    struct nas_lwip_guest_if snapshot[2];
+    struct nas_lwip_guest_if snapshot[NAS_LWIP_GUEST_IF_LIMIT];
     unsigned count=nas_lwip_guest_if_snapshot(snapshot),available=0;
     for(unsigned i=0;i<count;i++) {
         if(!snapshot[i].ipv4_host_order || !snapshot[i].prefix_len)continue;

@@ -16,7 +16,9 @@
 
 struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
 struct nas_task *nas_current_task;
-unsigned nas_lwip_guest_ipv4_ifconf(struct nas_lwip_guest_ipv4_if out[2]) {
+static bool full_snapshot;
+unsigned nas_lwip_guest_ipv4_ifconf(
+    struct nas_lwip_guest_ipv4_if out[NAS_LWIP_GUEST_IF_LIMIT]) {
     if(!out)return 0;
     out[0]=(struct nas_lwip_guest_ipv4_if){
         .name="lo",.ipv4_host_order=UINT32_C(0x7f000001),.prefix_len=8
@@ -24,14 +26,33 @@ unsigned nas_lwip_guest_ipv4_ifconf(struct nas_lwip_guest_ipv4_if out[2]) {
     out[1]=(struct nas_lwip_guest_ipv4_if){
         .name="eth0",.ipv4_host_order=UINT32_C(0x0a00020f),.prefix_len=24
     };
-    return 2;
+    out[2]=(struct nas_lwip_guest_ipv4_if){
+        .name="eth1",.ipv4_host_order=UINT32_C(0x0a000314),.prefix_len=24
+    };
+    if(full_snapshot){
+        for(unsigned i=1;i<NAS_LWIP_GUEST_IF_LIMIT;i++){
+            struct nas_lwip_guest_ipv4_if *nic=&out[i];
+            memset(nic,0,sizeof(*nic));
+            nic->name[0]='e';nic->name[1]='t';nic->name[2]='h';
+            nic->name[3]=(char)('0'+i-1U);
+            nic->ipv4_host_order=UINT32_C(0x0a000200)+i;
+            nic->prefix_len=24;
+        }
+        return NAS_LWIP_GUEST_IF_LIMIT;
+    }
+    return 3;
 }
 int nas_lwip_guest_ifindex(const char *name) {
-    return name && !strcmp(name,"eth0") ? 2:-ENODEV;
+    if(name && name[0]=='e' && name[1]=='t' && name[2]=='h' &&
+       name[3]>='0' && (unsigned)(name[3]-'0')<NAS_NETDEV_LIMIT &&
+       !name[4])
+        return name[3]-'0'+2;
+    return -ENODEV;
 }
 int nas_lwip_guest_ifname(unsigned index,char out[16]) {
-    if(index!=2)return -ENODEV;
-    memcpy(out,"eth0",5);return 0;
+    if(index==2){memcpy(out,"eth0",5);return 0;}
+    if(index==3){memcpy(out,"eth1",5);return 0;}
+    return -ENODEV;
 }
 
 static uint16_t rd16(const uint8_t *p) {
@@ -123,6 +144,10 @@ int main(void) {
     const uint8_t ethernet[4]={10,0,2,15};
     expect_newaddr(reply,4142,102,2,24,0,ethernet);
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,source,
+                                    &source_len,&msg_flags)==40);
+    const uint8_t second[4]={10,0,3,20};
+    expect_newaddr(reply,4142,102,3,24,0,second);
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,source,
                                     &source_len,&msg_flags)==16);
     assert(rd16(reply+4)==3 && rd32(reply+8)==102);
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,source,
@@ -131,15 +156,40 @@ int main(void) {
     /* No partial multipart dumps if another pending request cannot fit. */
     getaddr(request,2,103);
     assert(nas_netlink_route_sendto(11,request,20,addr,12)==20);
+    assert(nas_netlink_route_sendto(11,request,20,addr,12)==20);
     assert(nas_netlink_route_sendto(11,request,20,addr,12)==-EAGAIN);
-    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
-                                    NULL,NULL)==40);
-    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
-                                    NULL,NULL)==40);
-    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
-                                    NULL,NULL)==16);
+    for(unsigned i=0;i<2;i++){
+        assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                        NULL,NULL)==40);
+        assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                        NULL,NULL)==40);
+        assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                        NULL,NULL)==40);
+        assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                        NULL,NULL)==16);
+    }
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
                                     NULL,NULL)==-EAGAIN);
+    /* Full registry capacity: lo + eight independently addressed NICs
+     * must fit one all-or-nothing multipart dump, including NLMSG_DONE. */
+    full_snapshot=true;
+    getaddr(request,2,105);
+    assert(nas_netlink_route_sendto(11,request,20,addr,12)==20);
+    assert(nas_netlink_route_sendto(11,request,20,addr,12)==-EAGAIN);
+    for(unsigned i=0;i<NAS_LWIP_GUEST_IF_LIMIT;i++){
+        assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                        NULL,NULL)==40);
+        const uint8_t ip[4]={i?10U:127U,i?0U:0U,
+                             i?2U:0U,i?(uint8_t)i:1U};
+        expect_newaddr(reply,4142,105,i?i+1U:1U,i?24U:8U,
+                       i?0U:254U,ip);
+    }
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==16);
+    assert(rd16(reply+4)==3 && rd32(reply+8)==105);
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==-EAGAIN);
+    full_snapshot=false;
     getaddr(request,2,104);
     wr32(request,21);
     assert(nas_netlink_route_sendto(11,request,20,addr,12)==-EINVAL);
@@ -155,7 +205,7 @@ int main(void) {
     assert(nas_netlink_route_bind(11,addr,12)==0);
     assert(nas_netlink_route_getsockname(11,name)==0);
     assert(rd32(name+4)==9000);
-    puts("[NETLINK_ROUTE HOST PASS] real lo+DHCP IPv4 RTM_GETADDR multipart, "
+    puts("[NETLINK_ROUTE HOST PASS] real lo+two DHCP IPv4 and max eight-NIC RTM_GETADDR multipart, "
          "SOCK_RAW port bind, MSG_PEEK/TRUNC, poll/release");
     return 0;
 }

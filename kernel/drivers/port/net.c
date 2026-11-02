@@ -8,13 +8,25 @@
  * NIC. The bootstrap kernel is single-core; the future preemptible/network
  * worker phase must protect registry operations with the same OS lock. */
 static struct nas_netdev *devices[NAS_NETDEV_LIMIT];
+static nas_netdev_wake change_wake;
+static void *change_context;
+static void notify_change(void) {
+    if(change_wake)change_wake(change_context);
+}
+int nas_netdev_set_change_wake(nas_netdev_wake wake,void *consumer) {
+    if(wake && !consumer)return -EINVAL;
+    if(wake && change_wake)return -EBUSY;
+    change_wake=wake;
+    change_context=wake?consumer:NULL;
+    return 0;
+}
 
 int nas_netdev_register(struct nas_netdev *device) {
     if(!device || !device->name || !device->name[0] || !device->backend ||
        !device->ops || !device->ops->transmit ||
        !device->ops->poll || !device->ops->link_up ||
        device->mtu<576U || device->mtu>9000U ||
-       device->registered || device->refs || device->rx_wake ||
+       device->registered || device->removing || device->refs || device->rx_wake ||
        device->rx_wake_context)return -EINVAL;
     /* Only Ethernet unicast MACs can back a normal lwIP netif. */
     unsigned mac_nonzero=0;
@@ -28,7 +40,22 @@ int nas_netdev_register(struct nas_netdev *device) {
     if(free_slot==NAS_NETDEV_LIMIT)return -ENOSPC;
     devices[free_slot]=device;
     device->registered=true;
+    notify_change();
     return 0;
+}
+int nas_netdev_begin_remove(struct nas_netdev *device) {
+    if(!device || !device->registered)return -ENODEV;
+    if(device->removing)return 0;
+    device->removing=true;
+    /* A final pin may belong to the lwIP worker. It must observe removal
+     * and schedule netif_detach on tcpip_thread before the driver can free
+     * transport rings or DMA. Never invoke the core from this callback. */
+    if(device->rx_wake)device->rx_wake(device->rx_wake_context);
+    notify_change();
+    return 0;
+}
+bool nas_netdev_is_removing(const struct nas_netdev *device) {
+    return device && device->registered && device->removing;
 }
 int nas_netdev_unregister(struct nas_netdev *device) {
     if(!device || !device->registered)return -ENODEV;
@@ -36,12 +63,15 @@ int nas_netdev_unregister(struct nas_netdev *device) {
     for(unsigned i=0;i<NAS_NETDEV_LIMIT;i++)if(devices[i]==device){
         devices[i]=NULL;
         device->registered=false;
+        device->removing=false;
+        notify_change();
         return 0;
     }
     return -ENODEV;
 }
 static struct nas_netdev *pin_device(struct nas_netdev *device) {
-    if(!device || !device->registered || device->refs==UINT32_MAX)return NULL;
+    if(!device || !device->registered || device->removing ||
+       device->refs==UINT32_MAX)return NULL;
     device->refs++;
     return device;
 }
@@ -56,7 +86,7 @@ struct nas_netdev *nas_netdev_get(const char *name) {
 struct nas_netdev *nas_netdev_get_ordinal(unsigned ordinal) {
     for(unsigned i=0;i<NAS_NETDEV_LIMIT;i++){
         struct nas_netdev *device=devices[i];
-        if(!device)continue;
+        if(!device || device->removing)continue;
         if(!ordinal)return pin_device(device);
         ordinal--;
     }
@@ -72,14 +102,14 @@ int nas_netdev_put(struct nas_netdev *device) {
 }
 int nas_netdev_transmit(struct nas_netdev *device,
                         const uint8_t *frame,uint32_t bytes) {
-    if(!device || !device->registered)return -ENODEV;
+    if(!device || !device->registered || device->removing)return -ENODEV;
     if(!frame || bytes<14U || bytes>(uint32_t)device->mtu+18U)
         return -EMSGSIZE;
     return device->ops->transmit(device->backend,frame,bytes);
 }
 int nas_netdev_poll(struct nas_netdev *device,uint32_t budget,
                    nas_netdev_rx receive,void *consumer) {
-    if(!device || !device->registered)return -ENODEV;
+    if(!device || !device->registered || device->removing)return -ENODEV;
     if(!budget || !receive)return -EINVAL;
     int rc=device->ops->poll(device->backend,budget,receive,consumer);
     return rc>=0 && (uint32_t)rc>budget ? -EIO : rc;
@@ -88,6 +118,7 @@ int nas_netdev_set_rx_wake(struct nas_netdev *device,
                            nas_netdev_wake wake,void *consumer) {
     if(!device || !device->registered)return -ENODEV;
     if(!device->refs || (wake && !consumer))return -EINVAL;
+    if(wake && device->removing)return -ENODEV;
     if(wake && device->rx_wake)return -EBUSY;
     device->rx_wake=wake;
     device->rx_wake_context=wake?consumer:NULL;
@@ -101,6 +132,6 @@ void nas_netdev_notify_rx(struct nas_netdev *device) {
     if(device->rx_wake)device->rx_wake(device->rx_wake_context);
 }
 bool nas_netdev_link_up(const struct nas_netdev *device) {
-    return device && device->registered &&
+    return device && device->registered && !device->removing &&
            device->ops->link_up(device->backend);
 }

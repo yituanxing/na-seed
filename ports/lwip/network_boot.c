@@ -23,48 +23,52 @@ extern int nas_platform_virtio_blk_probe(void);
 
 #define NAS_NET_RX_BUDGET 8U
 #define NAS_NET_FALLBACK_POLL_NS UINT64_C(10000000)
-static struct {
+/* Each pinned physical netif has an independent DHCP lease and link state.
+ * This is a stack-side projection of the ONLY NetDevice registry; there is
+ * no second device ownership table. The tcpip_thread owns netif mutation. */
+struct nas_guest_nic {
  struct nas_lwip_eth ethernet;
- char device_name[16]; /* Linux IFNAMSIZ: selection is not driver-specific. */
+ char name[NAS_LWIP_DEVICE_NAME_MAX];
+ bool pending_attach,pending_detach,link_sync_queued;
+ uint32_t dhcp_ipv4_host_order;
+ uint8_t dhcp_prefix_len;
+};
+static struct {
+ struct nas_guest_nic nic[NAS_NETDEV_LIMIT];
  struct nas_ksem rx_wakeup;
  struct nas_kthread_handle rx_handle;
- bool ethernet_available,ready,stop;
- bool link_sync_queued;
- uint32_t dhcp_ipv4_host_order; /* copied only by upstream core callback */
- uint8_t dhcp_prefix_len; /* derived from the same real DHCP netif lease */
+ bool starting,ready,stop;
 } network;
 
-/* The bootstrap attaches at most one physical netif; give Linux's name to
- * the upstream netconn_bind_if() interface index, without guessing ns0/eth0
- * index numbering or routing through a different interface. */
-unsigned nas_lwip_guest_if_snapshot(struct nas_lwip_guest_if out[2]) {
+unsigned nas_lwip_guest_if_snapshot(
+    struct nas_lwip_guest_if out[NAS_LWIP_GUEST_IF_LIMIT]) {
  if(!out)return 0;
  out[0]=(struct nas_lwip_guest_if){
      .name="lo",.ifindex=1,.ipv4_host_order=UINT32_C(0x7f000001),
      .prefix_len=8,.mtu=65536U,.up=true,.link_up=true,.loopback=true
  };
  unsigned count=1;
- if(network.ethernet.attached && network.ethernet.device) {
-     struct netif *netif=&network.ethernet.interface;
-     struct nas_lwip_guest_if *physical=&out[count];
+ for(unsigned i=0;i<NAS_NETDEV_LIMIT;i++) {
+     const struct nas_guest_nic *nic=&network.nic[i];
+     if(!nic->ethernet.attached || !nic->ethernet.device)continue;
+     const struct netif *netif=&nic->ethernet.interface;
+     struct nas_lwip_guest_if *physical=&out[count++];
      *physical=(struct nas_lwip_guest_if){
-         .ifindex=netif_get_index(netif),.mtu=netif->mtu,
+         .ifindex=netif_get_index((struct netif *)netif),.mtu=netif->mtu,
          .up=netif_is_up(netif),.link_up=netif_is_link_up(netif)
      };
-     memcpy(physical->name,network.device_name,sizeof(physical->name));
-     /* The DHCP status callback may not have run yet after a link change;
-      * an address is usable only while the actual upstream link is up. */
+     memcpy(physical->name,nic->name,sizeof(physical->name));
+     /* Only an actually assigned, live core-owned lease is visible. */
      if(physical->up && physical->link_up) {
-         physical->ipv4_host_order=network.dhcp_ipv4_host_order;
-         physical->prefix_len=network.dhcp_prefix_len;
+         physical->ipv4_host_order=nic->dhcp_ipv4_host_order;
+         physical->prefix_len=nic->dhcp_prefix_len;
      }
-     ++count;
  }
  return count;
 }
 int nas_lwip_guest_ifindex(const char *device_name){
  if(!device_name)return -ENODEV;
- struct nas_lwip_guest_if interfaces[2]={0};
+ struct nas_lwip_guest_if interfaces[NAS_LWIP_GUEST_IF_LIMIT]={0};
  unsigned count=nas_lwip_guest_if_snapshot(interfaces);
  for(unsigned i=1;i<count;i++)
      if(!strcmp(device_name,interfaces[i].name))
@@ -74,7 +78,7 @@ int nas_lwip_guest_ifindex(const char *device_name){
 int nas_lwip_guest_ifname(unsigned index,
                          char output[NAS_LWIP_DEVICE_NAME_MAX]){
  if(!output || !index)return -ENODEV;
- struct nas_lwip_guest_if interfaces[2]={0};
+ struct nas_lwip_guest_if interfaces[NAS_LWIP_GUEST_IF_LIMIT]={0};
  unsigned count=nas_lwip_guest_if_snapshot(interfaces);
  for(unsigned i=1;i<count;i++)if(interfaces[i].ifindex==index){
      memcpy(output,interfaces[i].name,sizeof(interfaces[i].name));
@@ -83,9 +87,9 @@ int nas_lwip_guest_ifname(unsigned index,
  return -ENODEV;
 }
 unsigned nas_lwip_guest_ipv4_ifconf(
-    struct nas_lwip_guest_ipv4_if out[2]) {
+    struct nas_lwip_guest_ipv4_if out[NAS_LWIP_GUEST_IF_LIMIT]) {
  if(!out)return 0;
- struct nas_lwip_guest_if interfaces[2]={0};
+ struct nas_lwip_guest_if interfaces[NAS_LWIP_GUEST_IF_LIMIT]={0};
  unsigned total=nas_lwip_guest_if_snapshot(interfaces),count=0;
  for(unsigned i=0;i<total;i++) {
      const struct nas_lwip_guest_if *iface=&interfaces[i];
@@ -100,39 +104,76 @@ unsigned nas_lwip_guest_ipv4_ifconf(
  }
  return count;
 }
-
-/* Called by nas_netdev_notify_rx from the transport IRQ/scheduled signal.
- * It never executes lwIP or polls the queue inside an IRQ. */
+/* Device/registry notifications only wake this one worker. Nothing ever
+ * calls lwIP from the IRQ or the U-Boot driver remove path. */
 static void wake_rx(void *ctx){
  struct nas_ksem *sem=ctx;
  (void)nas_ksem_post(sem);
 }
-static void detach_failed_netif(void *ctx){
- (void)ctx;
- if(!network.ethernet.attached)return;
- (void)nas_netdev_set_rx_wake(network.ethernet.device,NULL,NULL);
- (void)nas_lwip_eth_core_detach(&network.ethernet);
+static struct nas_guest_nic *owner_of(struct netif *netif){
+ for(unsigned i=0;i<NAS_NETDEV_LIMIT;i++)
+     if(&network.nic[i].ethernet.interface==netif)return &network.nic[i];
+ return NULL;
 }
-/* Executed by lwIP on its core thread, after DHCP has actually assigned an
- * address. Merely starting DHCP is not evidence of a working NIC/lease. */
+/* The core alone owns default-route selection. Never select a removed or
+ * carrier-down NIC, and do not let the last DHCP attach steal routing. */
+static void choose_default_on_core(void){
+ struct netif *choice=NULL;
+ for(unsigned i=0;i<NAS_NETDEV_LIMIT;i++){
+     struct nas_lwip_eth *e=&network.nic[i].ethernet;
+     if(e->attached && e->device &&
+        !nas_netdev_is_removing(e->device) &&
+        netif_is_up(&e->interface) && netif_is_link_up(&e->interface)){
+         choice=&e->interface;break;
+     }
+ }
+ netif_set_default(choice);
+}
+/* A driver first makes the NetDevice unavailable. Only tcpip_thread can
+ * stop DHCP and unregister its netif; only after this releases the device
+ * pin may a bus-unbind retry free the original U-Boot DMA and rings. */
+static void detach_on_core(void *ctx){
+ struct nas_guest_nic *nic=ctx;
+ if(!nic)return;
+ nic->pending_detach=false;
+ if(nic->ethernet.attached && nic->ethernet.device){
+     (void)nas_netdev_set_rx_wake(nic->ethernet.device,NULL,NULL);
+     netif_set_status_callback(&nic->ethernet.interface,NULL);
+     if(nas_lwip_eth_core_detach(&nic->ethernet)){
+         nas_print("[LWIP] netif detach retained owner; will retry\n");
+         return;
+     }
+ }
+ nic->link_sync_queued=false;
+ nic->dhcp_ipv4_host_order=0;
+ nic->dhcp_prefix_len=0;
+ nic->name[0]=0;
+ choose_default_on_core();
+ (void)nas_ksem_post(&network.rx_wakeup);
+}
+static void request_detach(struct nas_guest_nic *nic){
+ if(!nic || nic->pending_detach || !nic->ethernet.attached)return;
+ nic->pending_detach=true;
+ if(tcpip_try_callback(detach_on_core,nic)!=ERR_OK)
+     nic->pending_detach=false; /* bounded mailbox: retry next RX wake */
+}
+/* This callback executes on the genuine upstream tcpip_thread. An IPv4
+ * address exists only after DHCP supplied it on this specific interface. */
 static void network_status(struct netif *netif){
- if(!netif)return;
+ struct nas_guest_nic *nic=owner_of(netif);
+ if(!nic)return;
  const ip4_addr_t *addr=netif_ip4_addr(netif);
- /* Never manufacture a guest interface address from a DHCP request or
-  * a merely attached NIC; report only the real core-owned IPv4 lease. */
- network.dhcp_ipv4_host_order=netif_is_up(netif) &&
+ nic->dhcp_ipv4_host_order=netif_is_up(netif) &&
      netif_is_link_up(netif) && dhcp_supplied_address(netif) &&
      !ip4_addr_isany_val(*addr) ?
      lwip_ntohl(ip4_addr_get_u32(addr)) : 0;
- /* Snapshot the ACTUAL DHCP subnet mask with the address, not a hardwired
-  * 10.0.2.0/24 assumption. Linux RTM_NEWADDR stores a CIDR prefix length. */
- network.dhcp_prefix_len=0;
- if(network.dhcp_ipv4_host_order) {
+ nic->dhcp_prefix_len=0;
+ if(nic->dhcp_ipv4_host_order) {
      uint32_t mask=lwip_ntohl(ip4_addr_get_u32(netif_ip4_netmask(netif)));
      uint32_t rest=mask;
      uint8_t length=0;
-     while(rest&UINT32_C(0x80000000)) {length++;rest<<=1;}
-     if(!rest)network.dhcp_prefix_len=length;
+     while(rest&UINT32_C(0x80000000)){length++;rest<<=1;}
+     if(!rest)nic->dhcp_prefix_len=length;
  }
  nas_print("[LWIP NETIF STATUS] up=");nas_dec(netif_is_up(netif));
  nas_print(" link=");nas_dec(netif_is_link_up(netif));
@@ -141,60 +182,123 @@ static void network_status(struct netif *netif){
  nas_dec(ip4_addr2(addr));nas_print(".");
  nas_dec(ip4_addr3(addr));nas_print(".");
  nas_dec(ip4_addr4(addr));nas_print("\n");
- if(!netif_is_up(netif) || !netif_is_link_up(netif) ||
-    !dhcp_supplied_address(netif))return;
- if(ip4_addr_isany_val(*addr))return;
+ if(!nic->dhcp_ipv4_host_order)return;
  nas_print("[LWIP DHCP BOUND] addr=");
  nas_dec(ip4_addr1(addr));nas_print(".");
  nas_dec(ip4_addr2(addr));nas_print(".");
  nas_dec(ip4_addr3(addr));nas_print(".");
  nas_dec(ip4_addr4(addr));nas_print("\n");
 }
-/* Only the upstream core may change its netif flags. The native RX worker
- * observes driver carrier changes, then queues this callback; lwIP itself
- * handles DHCP restart on link-up (netif_set_link_up). A link loss clears
- * the Linux-visible address snapshot before clients can see stale data. */
 static void reconcile_link_on_core(void *ctx){
- (void)ctx;
- network.link_sync_queued=false;
- if(!network.ethernet.attached || !network.ethernet.device || network.stop)
+ struct nas_guest_nic *nic=ctx;
+ if(!nic)return;
+ nic->link_sync_queued=false;
+ if(!nic->ethernet.attached || !nic->ethernet.device ||
+    nic->pending_detach || nas_netdev_is_removing(nic->ethernet.device))
      return;
- struct netif *netif=&network.ethernet.interface;
- bool carrier=nas_netdev_link_up(network.ethernet.device);
+ struct netif *netif=&nic->ethernet.interface;
+ bool carrier=nas_netdev_link_up(nic->ethernet.device);
  if(carrier==netif_is_link_up(netif))return;
  if(carrier)netif_set_link_up(netif);
  else netif_set_link_down(netif);
  network_status(netif);
+ choose_default_on_core();
 }
-static void request_link_reconcile(void){
- if(network.link_sync_queued || !network.ethernet.attached ||
-    !network.ethernet.device)return;
- if(nas_netdev_link_up(network.ethernet.device)==
-    netif_is_link_up(&network.ethernet.interface))return;
- network.link_sync_queued=true;
- if(tcpip_try_callback(reconcile_link_on_core,NULL)!=ERR_OK)
-     network.link_sync_queued=false; /* bounded core mailbox: retry later */
+static void request_link_reconcile(struct nas_guest_nic *nic){
+ if(nic->link_sync_queued || nic->pending_detach ||
+    !nic->ethernet.attached || !nic->ethernet.device ||
+    nas_netdev_is_removing(nic->ethernet.device))return;
+ if(nas_netdev_link_up(nic->ethernet.device)==
+    netif_is_link_up(&nic->ethernet.interface))return;
+ nic->link_sync_queued=true;
+ if(tcpip_try_callback(reconcile_link_on_core,nic)!=ERR_OK)
+     nic->link_sync_queued=false;
 }
+/* Called on tcpip_thread after discovery; retains exactly one standard
+ * NetDevice pin through nas_lwip_eth_core_attach. Every failure rolls back
+ * the would-be interface independently, without poisoning the other NICs. */
+static void attach_on_core(void *ctx){
+ struct nas_guest_nic *nic=ctx;
+ if(!nic)return;
+ nic->pending_attach=false;
+ if(network.stop || !nic->name[0])return;
+ if(nas_lwip_eth_core_attach(&nic->ethernet,nic->name,true)){
+     nic->name[0]=0;return;
+ }
+ if(nas_netdev_set_rx_wake(nic->ethernet.device,
+                           wake_rx,&network.rx_wakeup)){
+     (void)nas_lwip_eth_core_detach(&nic->ethernet);
+     nic->name[0]=0;
+     nas_print("[LWIP] could not attach NIC notification\n");
+     return;
+ }
+ netif_set_status_callback(&nic->ethernet.interface,network_status);
+ network_status(&nic->ethernet.interface);
+ choose_default_on_core();
+ nas_print("[LWIP] native ");nas_print(nic->name);
+ nas_print(" attached; DHCP started\n");
+ (void)nas_ksem_post(&network.rx_wakeup);
+}
+/* The actual registry is authoritative. A short-lived discovery pin only
+ * reads a name and is released before handing off to tcpip_thread. */
+static void discover_devices(void){
+ for(unsigned ordinal=0;ordinal<NAS_NETDEV_LIMIT;ordinal++){
+     struct nas_netdev *dev=nas_netdev_get_ordinal(ordinal);
+     if(!dev)break;
+     bool known=false;
+     for(unsigned i=0;i<NAS_NETDEV_LIMIT;i++)
+         if(network.nic[i].name[0] &&
+            !strcmp(network.nic[i].name,dev->name)){known=true;break;}
+     if(!known){
+         size_t n=strnlen(dev->name,NAS_LWIP_DEVICE_NAME_MAX);
+         if(n && n<NAS_LWIP_DEVICE_NAME_MAX){
+             for(unsigned i=0;i<NAS_NETDEV_LIMIT;i++){
+                 struct nas_guest_nic *nic=&network.nic[i];
+                 if(nic->name[0] || nic->ethernet.attached ||
+                    nic->pending_attach || nic->pending_detach)continue;
+                 memcpy(nic->name,dev->name,n+1U);
+                 nic->pending_attach=true;
+                 if(tcpip_try_callback(attach_on_core,nic)!=ERR_OK){
+                     nic->pending_attach=false;nic->name[0]=0;
+                 }
+                 break;
+             }
+         }
+     }
+     (void)nas_netdev_put(dev);
+ }
+}
+/* One bounded native worker handles every NIC. It never touches the lwIP
+ * netif list directly; status, DHCP, default routes and detach are core
+ * callbacks. Full RX budgets yield so no NIC starves other tasks. */
 static void receive_worker(void *ctx){
  (void)ctx;
  if(!nas_ksem_wait(&network.rx_wakeup))return;
- while(!network.stop && network.ethernet.attached){
-     request_link_reconcile();
-     int received=nas_lwip_eth_poll(&network.ethernet,NAS_NET_RX_BUDGET);
-     /* TX and RX share the U-Boot queue owner lock. Contention or pbuf
-      * pressure is not an unplugged/poisoned NIC: retry after the normal
-      * IRQ-or-deadline wait rather than permanently detaching the netif. */
-     if(received==-EBUSY || received==-EAGAIN ||
-        received==-ENOBUFS || received==-ENOMEM)received=0;
-     if(received<0){
-         nas_print("[LWIP] NIC RX failed; detaching netif\n");
-         network.stop=true;
-         (void)tcpip_callback(detach_failed_netif,NULL);
-         return;
+ while(!network.stop){
+     discover_devices();
+     bool saturated=false;
+     for(unsigned i=0;i<NAS_NETDEV_LIMIT;i++){
+         struct nas_guest_nic *nic=&network.nic[i];
+         if(!nic->ethernet.attached || !nic->ethernet.device ||
+            nic->pending_detach)continue;
+         if(nas_netdev_is_removing(nic->ethernet.device)){
+             request_detach(nic);continue;
+         }
+         request_link_reconcile(nic);
+         int received=nas_lwip_eth_poll(&nic->ethernet,NAS_NET_RX_BUDGET);
+         if(received==-EBUSY || received==-EAGAIN ||
+            received==-ENOBUFS || received==-ENOMEM)continue;
+         if(received<0){
+             /* A permanently poisoned transport cannot be rediscovered
+              * as a fresh netif while the same driver incarnation lives.
+              * Quarantine it until the bus owner retires and re-registers. */
+             (void)nas_netdev_begin_remove(nic->ethernet.device);
+             nas_print("[LWIP] NIC RX failed; quarantining and detaching its netif\n");
+             request_detach(nic);continue;
+         }
+         if(received==(int)NAS_NET_RX_BUDGET)saturated=true;
      }
-     if(received==(int)NAS_NET_RX_BUDGET){
-         /* Yield after each full budget; never starve user tasks or the
-          * actual lwIP tcpip_thread with an always-ready NIC worker. */
+     if(saturated){
          (void)nas_kthread_yield();
          continue;
      }
@@ -204,64 +308,40 @@ static void receive_worker(void *ctx){
                                                        deadline);
      if(result==NAS_KWAIT_INVALID){
          network.stop=true;
-         (void)tcpip_callback(detach_failed_netif,NULL);
-         return;
+         for(unsigned i=0;i<NAS_NETDEV_LIMIT;i++)
+             request_detach(&network.nic[i]);
      }
  }
 }
-/* This callback runs ON the real lwIP tcpip_thread C stack. Starting DHCP,
- * adding the netif and registering the event callback all belong here. */
+/* Upstream has initialized its own loopif. Start dynamic discovery only
+ * after the core thread is ready to accept attach/detach callbacks. */
 static void tcpip_ready(void *unused){
  (void)unused;
- if(network.ethernet_available){
-     if(nas_lwip_eth_core_attach(&network.ethernet,network.device_name,true)){
-         nas_print("[LWIP] cannot attach selected NIC; loopback remains active\n");
-         network.stop=true;
-     }else if(nas_netdev_set_rx_wake(network.ethernet.device,
-                                     wake_rx,&network.rx_wakeup)){
-         network.stop=true;
-         (void)nas_lwip_eth_core_detach(&network.ethernet);
-         nas_print("[LWIP] cannot install NIC RX notification\n");
-     }else{
-         netif_set_status_callback(&network.ethernet.interface,network_status);
-         /* Covers a DHCP reply accepted while the callback was being
-          * registered; later address changes still use lwIP's callback. */
-         network_status(&network.ethernet.interface);
-         nas_print("[LWIP] native ");nas_print(network.device_name);
-         nas_print(" attached; DHCP started\n");
-     }
- }
  network.ready=true;
  (void)nas_ksem_post(&network.rx_wakeup);
 }
 bool nas_lwip_guest_boot(void){
- if(network.ready || network.ethernet_available)return false;
+ if(network.ready || network.starting)return false;
 #if defined(NAS_ENABLE_VIRTIO_BLK) || defined(NAS_ENABLE_VIRTIO_NET)
- /* The same platform bus enumerates block and net. It is idempotent if
-  * lwext4 already scanned before us; no filesystem owns this bootstrap. */
  if(nas_platform_virtio_blk_probe()<0)return false;
 #endif
- /* Device discovery is stack-neutral. Another NIC driver may publish a
-  * different interface name without changing the lwIP bootstrap. This
-  * initial port still manages only one netif; multi-NIC is a later gate. */
- struct nas_netdev *eth=nas_netdev_get_ordinal(0);
- if(eth){
-     size_t len=strnlen(eth->name,sizeof(network.device_name));
-     if(len && len<sizeof(network.device_name)){
-         memcpy(network.device_name,eth->name,len+1U);
-         network.ethernet_available=true;
-     }
-     (void)nas_netdev_put(eth);
- }
  nas_ksem_init(&network.rx_wakeup,0);
+ if(nas_netdev_set_change_wake(wake_rx,&network.rx_wakeup))return false;
+ network.starting=true;
  sys_init();
  tcpip_init(tcpip_ready,NULL);
- if(network.ethernet_available &&
-    !nas_kthread_spawn(receive_worker,NULL,&network.rx_handle))
+ if(!nas_kthread_spawn(receive_worker,NULL,&network.rx_handle)){
+     (void)nas_netdev_set_change_wake(NULL,NULL);
      return false;
- /* Netconn calls must run on a native kernel C stack; user Task syscalls
-  * are only producers of bounded commands and never park in lwIP sys_arch. */
- if(!nas_lwip_bridge_start())return false;
+ }
+ /* The asynchronous Netconn File worker is independent of physical NIC
+  * inventory; native lwIP loopback is available even with no NIC. */
+ if(!nas_lwip_bridge_start()){
+     network.stop=true;
+     (void)nas_netdev_set_change_wake(NULL,NULL);
+     (void)nas_ksem_post(&network.rx_wakeup);
+     return false;
+ }
  nas_print("[LWIP] official TCP/IP thread scheduled; native loopback enabled\n");
  return true;
 }

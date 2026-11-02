@@ -2,16 +2,18 @@
 #define NASEED_LWIP_NETWORK_BOOT_H
 #include <stdbool.h>
 #include <stdint.h>
+#include "../../kernel/drivers/port/net.h"
 
 /* Linux socket options name the actual network device (eth0/en0), not
- * lwIP's internal netif prefix (ns0). Only the physical NIC attached by
- * native bootstrap may be selected; index zero is never a live interface. */
+ * lwIP's internal netif prefix (ns0). Any presently attached physical NIC
+ * may be selected; index zero is never a live interface. */
 #define NAS_LWIP_DEVICE_NAME_MAX 16U /* Linux IFNAMSIZ */
 /* One coherent, read-only view of interfaces genuinely owned by the live
  * upstream stack. Physical device identity comes from the pinned netdev;
  * ifindex, administrative/link state and IPv4 lease come from lwIP. A NIC
  * without DHCP is still a device, but does not have an IPv4 address.
  * This is an interface projection, never another device registry. */
+#define NAS_LWIP_GUEST_IF_LIMIT (NAS_NETDEV_LIMIT + 1U)
 struct nas_lwip_guest_if {
  char name[NAS_LWIP_DEVICE_NAME_MAX];
  unsigned ifindex;
@@ -20,12 +22,13 @@ struct nas_lwip_guest_if {
  uint8_t prefix_len;
  bool up,link_up,loopback;
 };
-unsigned nas_lwip_guest_if_snapshot(struct nas_lwip_guest_if out[2]);
+unsigned nas_lwip_guest_if_snapshot(
+    struct nas_lwip_guest_if out[NAS_LWIP_GUEST_IF_LIMIT]);
 int nas_lwip_guest_ifindex(const char *device_name); /* positive or -ENODEV */
 int nas_lwip_guest_ifname(unsigned index,
                          char output[NAS_LWIP_DEVICE_NAME_MAX]);
 /* Snapshot usable IPv4 interfaces for Linux's read-only SIOCGIFCONF ABI.
- * The loopback endpoint exists in lwIP; the physical NIC is exposed only
+ * The loopback endpoint exists in lwIP; each physical NIC is exposed only
  * after its actual DHCP-supplied IPv4 address was observed on tcpip_thread. */
 struct nas_lwip_guest_ipv4_if {
  char name[NAS_LWIP_DEVICE_NAME_MAX];
@@ -34,6 +37,6 @@ struct nas_lwip_guest_ipv4_if {
  uint32_t mtu; /* native core netif MTU, not a presumed Ethernet default */
 };
 unsigned nas_lwip_guest_ipv4_ifconf(
-    struct nas_lwip_guest_ipv4_if out[2]);
+    struct nas_lwip_guest_ipv4_if out[NAS_LWIP_GUEST_IF_LIMIT]);
 
 #endif

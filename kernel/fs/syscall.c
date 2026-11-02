@@ -317,9 +317,9 @@ static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
         uint8_t request[40];
         if(!nas_user_read_bytes(arg,request,sizeof(request)))
             return (uint64_t)-EFAULT;
-        struct nas_lwip_guest_if interfaces[2]={0};
+        struct nas_lwip_guest_if interfaces[NAS_LWIP_GUEST_IF_LIMIT]={0};
         unsigned count=nas_lwip_guest_if_snapshot(interfaces);
-        if(!count || count>2)return (uint64_t)-ENODEV;
+        if(!count || count>NAS_LWIP_GUEST_IF_LIMIT)return (uint64_t)-ENODEV;
         unsigned found=count;
         if(cmd==0x8910U) { /* ifr_ifindex -> ifr_name */
             int32_t index=0;
@@ -362,9 +362,9 @@ static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
         if(!nas_user_read_bytes(arg,(uint8_t *)&ifconf,sizeof(ifconf)))
             return (uint64_t)-EFAULT;
         if(ifconf.length<0)return (uint64_t)-EINVAL;
-        struct nas_lwip_guest_ipv4_if interfaces[2]={0};
+        struct nas_lwip_guest_ipv4_if interfaces[NAS_LWIP_GUEST_IF_LIMIT]={0};
         unsigned count=nas_lwip_guest_ipv4_ifconf(interfaces);
-        if(count>2)return (uint64_t)-EIO;
+        if(count>NAS_LWIP_GUEST_IF_LIMIT)return (uint64_t)-EIO;
         unsigned fitting=ifconf.buffer ? (unsigned)ifconf.length/40U : count;
         if(fitting>count)fitting=count;
         const uint32_t actual=(uint32_t)fitting*40U;

@@ -49,6 +49,36 @@ for retired in ("kernel/net/ipv4_loopback.c", "kernel/net/ipv4_loopback.h",
                 "kernel/net/ipv4_endpoint.h", "kernel/net/test_ipv4_loopback.c"):
     assert not (root/retired).exists(), f"retired TCP/IP backend returned: {retired}"
     assert retired not in srcs
+# The hardware registry is singular. All three native ports must retain
+# the two-NIC wire gate, while the stack supports the full registry bound.
+netdev=(root/"kernel/drivers/port/net.c").read_text()
+network=(root/"ports/lwip/network_boot.c").read_text()
+network_h=(root/"ports/lwip/network_boot.h").read_text()
+driver=(root/"ports/uboot/net_port.c").read_text()
+route=(root/"kernel/fs/netlink_route.c").read_text()
+for token in ("nas_netdev_begin_remove(", "nas_netdev_set_change_wake(",
+              "device->removing=true;", "if(device->refs)return -EBUSY;"):
+    assert token in netdev, f"lost two-phase NIC registry lifetime: {token}"
+for token in ("struct nas_guest_nic nic[NAS_NETDEV_LIMIT]",
+              "nas_netdev_get_ordinal(", "tcpip_try_callback(detach_on_core,",
+              "tcpip_try_callback(attach_on_core,", "choose_default_on_core();",
+              "nas_netdev_is_removing("):
+    assert token in network, f"lost multi-NIC upstream core ownership: {token}"
+assert "struct nas_lwip_eth ethernet;" in network
+assert "struct nas_lwip_eth ethernet;" not in network.split("static struct {")[1]
+assert "NAS_LWIP_GUEST_IF_LIMIT (NAS_NETDEV_LIMIT + 1U)" in network_h
+assert "nas_netdev_begin_remove(&n->netdev)" in driver
+assert "NETLINK_REPLY_QUEUE (NAS_LWIP_GUEST_IF_LIMIT + 1U)" in route
+for runner in ("scripts/run.sh", "scripts/probe-riscv64-busybox-matrix.sh",
+               "scripts/probe-aarch64-busybox-matrix.sh"):
+    assert "NAS_VIRTIO_NET_SECOND_USER" in (root/runner).read_text(), \
+        f"two-real-NIC QEMU option missing: {runner}"
+for probe in ("scripts/probe-lwip-virtio-wire-smoke.sh",
+              "scripts/probe-lwip-virtio-wire-multiarch.sh"):
+    body=(root/probe).read_text()
+    assert all(x in body for x in ("NAS_VIRTIO_NET_SECOND_USER=1",
+                                "devices=2", "10.0.2.", "10.0.3.",
+                                "eth0 eth1")), f"multi-NIC wire gate missing: {probe}"
 for port in ("aarch64","riscv64"):
     script=(root/f"scripts/build-{port}-full.sh").read_text()
     assert "-DNAS_ENABLE_LWIP=1" in script

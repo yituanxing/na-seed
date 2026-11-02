@@ -43,9 +43,18 @@ struct nas_netdev {
     uint64_t rx_sequence;
     uint32_t refs;
     bool registered;
+    bool removing; /* reject new pins while live consumers detach */
 };
 int nas_netdev_register(struct nas_netdev *device);
+/* Linux-like two-phase removal: first make a device unavailable to new
+ * consumers, notify the attached owner, then unregister after its final put.
+ * Driver DMA memory remains alive until unregister succeeds. */
+int nas_netdev_begin_remove(struct nas_netdev *device);
 int nas_netdev_unregister(struct nas_netdev *device);
+bool nas_netdev_is_removing(const struct nas_netdev *device);
+/* One change-event subscriber, not another NIC registry. The callback only
+ * wakes the network manager; it never runs lwIP or blocks in a driver. */
+int nas_netdev_set_change_wake(nas_netdev_wake wake,void *consumer);
 /* Acquires one device reference; a live netif must call put on removal. */
 struct nas_netdev *nas_netdev_get(const char *name);
 /* Enumerate any NIC driver through the same pinned registry, independent

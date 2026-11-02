@@ -1,6 +1,7 @@
 #ifndef NAS_LWIP_NETIF_PORT_H
 #define NAS_LWIP_NETIF_PORT_H
-/* Single adapter between official lwIP pbuf/netif and NaSeed netdev.
+/* One adapter INSTANCE per pinned Ethernet device. This class adapter
+ * translates official lwIP pbuf/netif and NaSeed netdev operations.
  * No IP parsing, ARP table, socket registry or duplicate NIC queue code. */
 #include "../../kernel/drivers/port/net.h"
 #include "lwip/netif.h"

@@ -1,6 +1,6 @@
 #!/bin/sh
-# Real RV64/ARM64 QEMU VirtIO-MMIO -> pinned U-Boot NIC -> official lwIP DHCP
-# -> untouched signed Alpine Ncat -> host-only HTTP response over slirp.
+# Two real RV64/ARM64 VirtIO-MMIO NICs -> independent official lwIP DHCP
+# -> untouched signed Alpine Ncat -> host-only HTTP over the first slirp.
 # Single targeted smoke per ISA, not a full M141 software matrix.
 set -eu
 [ "$#" -eq 1 ] || { echo 'usage: sh scripts/probe-lwip-virtio-wire-multiarch.sh riscv64|arm64' >&2; exit 2; }
@@ -11,6 +11,7 @@ case "$port" in riscv64|arm64) ;; *) exit 2 ;; esac
 export NAS_ENABLE_LWIP=1
 export NAS_ENABLE_VIRTIO_NET=1
 export NAS_VIRTIO_NET_USER=1
+export NAS_VIRTIO_NET_SECOND_USER=1
 export NAS_APP_BATCH_QEMU_TIMEOUT=240
 export NAS_ACCEPTANCE_QEMU_RAM=1536M
 export NAS_ACCEPTANCE_DISK_MB=768
@@ -53,16 +54,20 @@ done
 sh "$runner"
 clean="$logs/m141-batch.clean.log"
 test -s "$clean"
-grep -Fq '[VIRTIO-NET] real modern MMIO devices=1' "$clean" || {
-    echo "[LWIP MMIO WIRE FAIL] $port real MMIO NIC not bound" >&2; exit 1;
+grep -Fq '[VIRTIO-NET] real modern MMIO devices=2' "$clean" || {
+    echo "[LWIP MMIO WIRE FAIL] $port two real MMIO NICs not bound" >&2; exit 1;
 }
-grep -Fq '[LWIP] native eth0 attached; DHCP started' "$clean" || {
-    echo "[LWIP MMIO WIRE FAIL] $port netif/DHCP not started" >&2; exit 1;
-}
-grep -Fq '[LWIP DHCP BOUND] addr=10.0.2.' "$clean" || {
-    echo "[LWIP MMIO WIRE FAIL] $port no QEMU DHCP lease" >&2; exit 1;
-}
+for name in eth0 eth1; do
+    grep -Fq "[LWIP] native $name attached; DHCP started" "$clean" || {
+        echo "[LWIP MMIO WIRE FAIL] $port $name netif/DHCP not started" >&2; exit 1;
+    }
+done
+for prefix in 10.0.2. 10.0.3.; do
+    grep -Fq "[LWIP DHCP BOUND] addr=$prefix" "$clean" || {
+        echo "[LWIP MMIO WIRE FAIL] $port no $prefix DHCP lease" >&2; exit 1;
+    }
+done
 grep -Fxq M141_SYSTEM_NCAT_WIRE_PASS "$clean" || {
     echo "[LWIP MMIO WIRE FAIL] $port no signed Alpine Ncat HTTP reply" >&2; exit 1;
 }
-echo "[LWIP VIRTIO MMIO WIRE QEMU PASS] $port real NIC, DHCP, signed Alpine Ncat TCP to host"
+echo "[LWIP VIRTIO MMIO WIRE QEMU PASS] $port two real NICs, two DHCP leases, signed Alpine Ncat TCP to host"

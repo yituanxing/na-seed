@@ -42,7 +42,8 @@ int nas_lwip_eth_core_attach(struct nas_lwip_eth *e,
      e->device=NULL;(void)nas_netdev_put(dev);return -EIO;
  }
  e->attached=true;
- netif_set_default(&e->interface);
+ /* The network manager selects exactly one default route across all live
+  * instances; a class adapter must not make the last attached NIC win. */
  netif_set_up(&e->interface);
  if(nas_netdev_link_up(dev))netif_set_link_up(&e->interface);
  if(dhcp && dhcp_start(&e->interface)!=ERR_OK){
@@ -56,6 +57,7 @@ int nas_lwip_eth_core_detach(struct nas_lwip_eth *e){
  dhcp_stop(&e->interface);
  netif_set_link_down(&e->interface);
  netif_set_down(&e->interface);
+ if(netif_default==&e->interface)netif_set_default(NULL);
  netif_remove(&e->interface);
  int rc=nas_netdev_put(e->device);
  if(rc)return rc;

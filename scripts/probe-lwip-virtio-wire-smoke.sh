@@ -1,11 +1,12 @@
 #!/bin/sh
-# Actual modern VirtIO-Net PCI -> U-Boot NIC -> lwIP DHCP -> Alpine Ncat TCP
-# to a host HTTP service over QEMU slirp. Separate from pure lo acceptance.
+# Two real modern VirtIO-Net PCI devices -> U-Boot NICs -> independent lwIP
+# DHCP, plus untouched Alpine Ncat TCP to host over the first QEMU slirp.
 set -eu
 [ "$#" -eq 0 ] || { echo 'usage: sh scripts/probe-lwip-virtio-wire-smoke.sh' >&2; exit 2; }
 export NAS_ENABLE_LWIP=1
 export NAS_ENABLE_VIRTIO_NET=1
 export NAS_VIRTIO_NET_USER=1
+export NAS_VIRTIO_NET_SECOND_USER=1
 export NAS_APP_BATCH_QEMU_TIMEOUT=180
 export NAS_ACCEPTANCE_QEMU_RAM=1536M
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
@@ -39,13 +40,17 @@ done
 
 sh scripts/probe-x86-busybox-parity.sh
 clean=build/busybox-source-parity-x86/m141-batch.clean.log
-grep -Fq '[VIRTIO-NET] real modern PCI devices=1' "$clean" || {
-    echo '[LWIP WIRE FAIL] real PCI NIC not bound' >&2; exit 1;
+grep -Fq '[VIRTIO-NET] real modern PCI devices=2' "$clean" || {
+    echo '[LWIP WIRE FAIL] two real PCI NICs not bound' >&2; exit 1;
 }
-grep -Fq '[LWIP] native eth0 attached; DHCP started' "$clean" || {
-    echo '[LWIP WIRE FAIL] NIC netif/DHCP not started' >&2; exit 1;
-}
-grep -Fq '[LWIP DHCP BOUND] addr=10.0.2.' "$clean" || {
-    echo '[LWIP WIRE FAIL] no verified QEMU DHCP lease' >&2; exit 1;
-}
-echo '[LWIP VIRTIO WIRE QEMU PASS] x86 modern PCI, DHCP lease, signed Alpine Ncat TCP to host'
+for name in eth0 eth1; do
+    grep -Fq "[LWIP] native $name attached; DHCP started" "$clean" || {
+        echo "[LWIP WIRE FAIL] $name netif/DHCP not started" >&2; exit 1;
+    }
+done
+for prefix in 10.0.2. 10.0.3.; do
+    grep -Fq "[LWIP DHCP BOUND] addr=$prefix" "$clean" || {
+        echo "[LWIP WIRE FAIL] no independently verified $prefix DHCP lease" >&2; exit 1;
+    }
+done
+echo '[LWIP VIRTIO WIRE QEMU PASS] x86 two PCI NICs, two DHCP leases, signed Alpine Ncat TCP to host'

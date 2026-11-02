@@ -1,4 +1,4 @@
-name: NaSeed VirtIO-Net + lwIP Alpine Ncat wire (x86 QEMU)
+name: NaSeed dual VirtIO-Net + lwIP Alpine Ncat wire (x86 QEMU)
 
 on:
   workflow_dispatch:
@@ -26,7 +26,7 @@ concurrency:
 
 jobs:
   x86-real-virtio-net:
-    name: Real VirtIO PCI + DHCP + Alpine Ncat TCP to host
+    name: Two real VirtIO PCI NICs + independent DHCP + Alpine Ncat TCP
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     steps:
@@ -65,7 +65,7 @@ jobs:
               -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
           fi
           command -v docker
-      - name: Real PCI/DHCP/wire TCP targeted QEMU gate
+      - name: Real dual-PCI/two-DHCP/wire TCP targeted QEMU gate
         timeout-minutes: 35
         run: sh scripts/probe-lwip-virtio-wire-smoke.sh
       - name: Preserve guest serial and host HTTP evidence

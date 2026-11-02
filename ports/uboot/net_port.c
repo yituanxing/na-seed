@@ -235,6 +235,11 @@ fail:
 int nas_uboot_net_detach(struct nas_uboot_net *n){
  if(!n)return -EINVAL;
  if(__atomic_load_n(&n->busy,__ATOMIC_ACQUIRE))return -EBUSY;
+ /* First notify the sole stack consumer and prohibit new netdev pins.
+  * A retry after the lwIP tcpip_thread releases its Path-like device pin
+  * is required before the original U-Boot DMA/virtqueues can be reclaimed. */
+ int begin=nas_netdev_begin_remove(&n->netdev);
+ if(begin)return begin;
  int rc=nas_netdev_unregister(&n->netdev);
  if(rc)return rc;
  upstream_ops()->stop(&n->udev);

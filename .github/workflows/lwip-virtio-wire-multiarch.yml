@@ -1,4 +1,4 @@
-name: NaSeed VirtIO-MMIO + lwIP Alpine Ncat wire (RV64 and ARM64 QEMU)
+name: NaSeed dual VirtIO-MMIO + lwIP Alpine Ncat wire (RV64 and ARM64 QEMU)
 
 on:
   workflow_dispatch:
@@ -30,7 +30,7 @@ concurrency:
 
 jobs:
   real-virtio-mmio-net:
-    name: Native ${{ matrix.port }} MMIO DHCP + signed Alpine Ncat host TCP
+    name: Native ${{ matrix.port }} two MMIO NICs + DHCP + Alpine Ncat TCP
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     strategy:
@@ -82,7 +82,7 @@ jobs:
               -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
           fi
           command -v docker
-      - name: Boot real VirtIO-MMIO NIC, obtain DHCP and read host HTTP
+      - name: Boot two real MMIO NICs, obtain two DHCP leases and read host HTTP
         timeout-minutes: 35
         run: sh scripts/probe-lwip-virtio-wire-multiarch.sh ${{ matrix.port }}
       - name: Preserve signed Alpine, guest serial and actual network frames

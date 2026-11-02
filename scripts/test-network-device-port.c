@@ -6,6 +6,11 @@
 #include "../kernel/errno.h"
 
 static unsigned tx_count,rx_count,wake_count;
+static unsigned registry_events;
+static void changed(void *context){
+    assert(context==&registry_events);
+    registry_events++;
+}
 static int send(void *context,const uint8_t *data,uint32_t size){
     assert(context==(void *)&tx_count && data && size==60);
     tx_count++;
@@ -40,6 +45,8 @@ static struct nas_netdev alternate={
     .name="en0",.mac={0x52,0x54,0,0x12,0x34,0x58},
     .mtu=1500,.backend=&tx_count,.ops=&ops};
 int main(void){
+    assert(nas_netdev_set_change_wake(changed,&registry_events)==0);
+    assert(nas_netdev_set_change_wake(changed,&registry_events)==-EBUSY);
     assert(nas_netdev_register(&first)==0);
     assert(nas_netdev_register(&first)==-EINVAL);
     assert(nas_netdev_register(&duplicate)==-EEXIST);
@@ -73,14 +80,33 @@ int main(void){
     assert(nas_netdev_unregister(&first)==0);
     assert(nas_netdev_get_ordinal(0)==&alternate);
     assert(nas_netdev_put(&alternate)==0);
+    /* A real driver makes the object invisible to new consumers before
+     * freeing any DMA. Its attached worker receives one last wake and must
+     * release the old pin before unregister can finish. */
+    struct nas_netdev *drain=nas_netdev_get("en0");
+    assert(drain==&alternate);
+    assert(nas_netdev_set_rx_wake(drain,wake,&wake_count)==0);
+    assert(nas_netdev_begin_remove(drain)==0);
+    assert(nas_netdev_begin_remove(drain)==0); /* idempotent */
+    assert(nas_netdev_is_removing(drain) && !nas_netdev_link_up(drain));
+    assert(nas_netdev_get("en0")==NULL && nas_netdev_get_ordinal(0)==NULL);
+    assert(nas_netdev_transmit(drain,frame,sizeof(frame))==-ENODEV);
+    assert(nas_netdev_poll(drain,4,on_frame,&rx_count)==-ENODEV);
+    assert(nas_netdev_set_rx_wake(drain,wake,&wake_count)==-ENODEV);
+    assert(nas_netdev_unregister(drain)==-EBUSY);
+    assert(wake_count==3); /* unregister request wakes exactly once */
+    assert(nas_netdev_set_rx_wake(drain,NULL,NULL)==0);
+    assert(nas_netdev_put(drain)==0);
     assert(nas_netdev_unregister(&alternate)==0);
     assert(nas_netdev_get_ordinal(0)==NULL);
     nas_netdev_notify_rx(&first);
-    assert(wake_count==2);
+    assert(wake_count==3);
     assert(!nas_netdev_link_up(&first));
     assert(nas_netdev_transmit(&first,frame,sizeof(frame))==-ENODEV);
     duplicate.mac[0]=1;
     assert(nas_netdev_register(&duplicate)==-EINVAL);
-    puts("[NET DEVICE PORT PASS] bounded NAPI-like poll, IRQ wake, MAC, pins and safe detach");
+    assert(registry_events==5); /* two register, two remove, one drain */
+    assert(nas_netdev_set_change_wake(NULL,NULL)==0);
+    puts("[NET DEVICE PORT PASS] bounded poll, registry events, remove/drain, DMA pins");
     return 0;
 }

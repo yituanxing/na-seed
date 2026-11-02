@@ -10,7 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#define PAGES 40U
+#define PAGES 80U /* two simultaneously live original 33-page U-Boot NICs */
 static _Alignas(4096) uint8_t pages[PAGES][NAS_DMA_PAGE_BYTES];
 static bool used[PAGES];
 uint64_t nas_hhdm_offset(void){return 0;}
@@ -131,7 +131,6 @@ int main(void){
  assert(!memcmp(nic.netdev.mac,fake.mac,6));
  struct nas_netdev *dev=nas_netdev_get("eth-uboot");
  assert(dev==&nic.netdev && nas_netdev_link_up(dev));
- assert(nas_uboot_net_detach(&nic)==-EBUSY);
  assert(nas_netdev_transmit(dev,frame,sizeof(frame))==0);
  assert(fake.tx_count==1 && fake.tx_length==sizeof(frame));
  assert(!memcmp(fake.tx_frame,frame,sizeof(frame)));
@@ -146,6 +145,13 @@ int main(void){
  assert(nas_netdev_poll(dev,4,receive,&calls)==-EIO);
  assert(nic.poisoned && !nas_netdev_link_up(dev));
  assert(nas_netdev_transmit(dev,frame,sizeof(frame))==-EIO);
+ /* Begin removal refuses new pins and packets, but retains DMA until the
+  * already-pinned consumer has finished detaching on its own core. */
+ assert(nas_uboot_net_detach(&nic)==-EBUSY);
+ assert(nas_netdev_is_removing(dev));
+ assert(nas_netdev_get("eth-uboot")==NULL);
+ assert(nas_netdev_transmit(dev,frame,sizeof(frame))==-ENODEV);
+ assert(nas_netdev_poll(dev,4,receive,&calls)==-ENODEV);
  assert(nas_netdev_put(dev)==0);
  assert(nas_uboot_net_detach(&nic)==0);
  all_pages_freed();
@@ -166,8 +172,8 @@ int main(void){
  tr.context=&no_mac;
  assert(nas_uboot_net_attach(&missing,&tr,"eth-no-mac")<0);
  all_pages_freed();
-    /* Real class binding survives both PCI and MMIO enumeration without a
-     * second network device model; a pinned netdev forbids hot-unplug. */
+    /* Real class binding supports two simultaneous independently owned PCI
+     * NICs, then MMIO reuse. Removing one cannot free the other's DMA. */
     assert(nas_virtio_net_driver_register()==0);
     struct fake_nic discovered={
         .features=NAS_VIRTIO_F_VERSION_1|(UINT64_C(1)<<5),
@@ -181,12 +187,38 @@ int main(void){
     dev=nas_netdev_get("eth0");
     assert(dev);
     discovered.backend=dev->backend;
-    assert(nas_bus_device_unbind(&bus)==-EBUSY);
+    struct fake_nic discovered2={
+        .features=NAS_VIRTIO_F_VERSION_1|(UINT64_C(1)<<5),
+        .mac={0x52,0x54,0,0x12,0x34,0x57}
+    };
+    struct nas_virtio_transport tr2=tr;
+    tr2.context=&discovered2;
+    struct nas_bus_device bus2={.bus=NAS_BUS_PCI,
+        .device_id=VIRTIO_ID_NET,.context=&tr2,.resource=&discovered2};
+    assert(nas_bus_device_register(&bus2)==0);
+    assert(nas_virtio_net_count()==2);
+    struct nas_netdev *dev2=nas_netdev_get("eth1");
+    assert(dev2 && dev2!=dev);
+    discovered2.backend=dev2->backend;
+    assert(nas_netdev_transmit(dev2,frame,sizeof(frame))==0);
+    assert(discovered2.tx_count==1);
     assert(nas_netdev_transmit(dev,frame,sizeof(frame))==0);
     assert(discovered.tx_count==1);
+    assert(nas_bus_device_unbind(&bus)==-EBUSY);
+    assert(nas_netdev_is_removing(dev));
+    assert(nas_netdev_get("eth0")==NULL);
+    assert(nas_netdev_transmit(dev,frame,sizeof(frame))==-ENODEV);
     assert(nas_netdev_put(dev)==0);
     assert(nas_bus_device_unbind(&bus)==0);
     assert(nas_bus_device_unregister(&bus)==0);
+    assert(nas_virtio_net_count()==1);
+    assert(nas_netdev_transmit(dev2,frame,sizeof(frame))==0);
+    assert(discovered2.tx_count==2);
+    assert(nas_bus_device_unbind(&bus2)==-EBUSY);
+    assert(nas_netdev_is_removing(dev2));
+    assert(nas_netdev_put(dev2)==0);
+    assert(nas_bus_device_unbind(&bus2)==0);
+    assert(nas_bus_device_unregister(&bus2)==0);
     assert(nas_virtio_net_count()==0);
     all_pages_freed();
     /* Reattach same upstream class driver on VirtIO-MMIO. */
@@ -197,5 +229,5 @@ int main(void){
     assert(nas_bus_device_unbind(&mmio)==0);
     assert(nas_bus_device_unregister(&mmio)==0);
     all_pages_freed();
- puts("[ORIGINAL U-BOOT VIRTIO NET PORT PASS] original eth_ops, MAC, dual DMA queues, TX, RX rearm, malformed, timeout, pins, cleanup");
+ puts("[ORIGINAL U-BOOT VIRTIO NET PORT PASS] two simultaneous PCI NICs, independent DMA/TX, original eth_ops, RX rearm, malformed, timeout, two-phase hot-unbind, MMIO reuse");
 }

@@ -35,13 +35,12 @@ only real addresses. A driver-carrier change is observed by the bounded
 native RX worker and reconciled on the upstream lwIP `tcpip_thread`, not in
 an interrupt or the Linux socket syscall.
 
-The snapshot is currently **one loopback plus at most one attached NIC**,
-not a generalized IP-address service or multi-NIC manager. Link resync is
-asynchronous (IRQ wake plus bounded polling), and SMP synchronization is not
-present. `kernel/net/ipv4_loopback.c` is still required by the default
-non-lwIP build: its complete retirement must include Makefile, the two
-full-kernel cross-build scripts, syscall conditionals, host tests and source
-manifest checks in a separate all-or-nothing migration.
+The initial snapshot supported loopback plus one NIC. The later lifecycle
+convergence (below) expands it to **one loopback plus eight live devices**,
+matching the sole `NetDevice` registry. Link resync remains asynchronous;
+SMP synchronization and a general address-management service are not yet
+implemented. The legacy `kernel/net/ipv4_loopback.c` and its other TCP/IP
+simulation units have since been deleted from every default build profile.
 
 ## File lifetime: no namespace round-trip for memfd
 
@@ -135,15 +134,67 @@ device table is linked for the default/blk/net/both build profiles.
 the removed simulation. Source manifest and dry-run guards reject regressions.
 
 This batch's host checks include the real syscall ABI fixture, native
-upstream loopback/Netconn integration and all-source selection audit. A new
-exact-head three-ISA QEMU run is required before claiming kernel-level boot
-and ELF execution evidence for the default-provider change.
+upstream loopback/Netconn integration and all-source selection audit. The
+subsequent default-provider exact-head three-ISA QEMU gate passed on
+`0470082` (M155, 3/3) before the multi-NIC changes described next.
+
+## Device lifetime and multi-NIC convergence (current batch)
+
+Linux's [netdevice lifecycle](https://docs.kernel.org/networking/netdevices.html)
+and [driver binding model](https://docs.kernel.org/driver-api/driver-model/binding.html)
+set the order: fully initialize before publishing; stop new consumers and
+traffic before removing; do not reclaim queue/DMA storage while another
+component retains a reference. NaSeed implements the smaller single-core
+version without importing Linux's rtnl/RCU machinery:
+
+1. The **only** hardware authority is `kernel/drivers/port/net.c`, with at
+   most eight uniquely named Ethernet devices. Driver registration signals
+   one change-notification subscriber; the lwIP manager owns no second
+   hardware registry. U-Boot's original VirtIO class currently has **two**
+   physical driver slots (`eth0`, `eth1`) on PCI or MMIO.
+2. One network worker discovers registered devices by a **short-lived
+   registry pin**, and owns bounded RX polling for every attached NIC.
+   All calls that add/remove a `netif`, change its link, start/stop DHCP or
+   choose a default route run on the **genuine upstream tcpip_thread**.
+3. The manager creates one adapter and DHCP lease/status projection per
+   physical NIC, in addition to native loopback. It publishes `lo` and at
+   most eight physically attached NICs to ioctl and NETLINK_ROUTE. Address
+   enumeration includes only actually assigned, carrier-up IPv4 leases;
+   the NETLINK multipart queue is sized for nine addresses plus DONE.
+4. `nas_netdev_begin_remove()` marks a NIC unavailable to **new pins,
+   TX and RX** and wakes the manager. The core detaches that NIC's netif,
+   shuts down DHCP, removes its IRQ wake and drops the lifetime pin.
+   `nas_uboot_net_detach()`/bus unbind intentionally returns `-EBUSY` until
+   the final pin is gone; a retry then frees the original driver's DMA,
+   virtqueues and class slot. No driver DMA is freed on an unsuccessful
+   first unbind.
+5. The default route remains on the first live carrier-up interface;
+   attaching a later NIC cannot steal it. If that interface disappears,
+   the core selects the next attached, usable NIC. One NIC's RX or DHCP
+   failure cannot wipe a sibling interface's state.
+
+Proof is layered: actual upstream lwIP host tests cover two NICs, late
+registration, independent link/DHCP and RX, two-phase removal, re-register
+of the same device storage and route failover. The U-Boot driver host test
+checks that a busy unbind leaves DMA alive but TX disabled, then retries
+after the pin drains. NETLINK_ROUTE additionally tests an exact full-size
+eight-NIC multipart dump. Three per-ISA QEMU wire gates have been upgraded
+to attach **two genuine VirtIO PCI/MMIO NICs**, each with a distinct slirp
+DHCP subnet (10.0.2/24, 10.0.3/24), while an untouched signed Alpine Ncat
+ELF verifies actual guest-to-host TCP through the default interface.
+
+This is **not** arbitrary PCI hotplug, automatic bus-unbind retry, SMP-safe
+concurrent device registry mutation, full Linux routing policy, or IPv6.
+Platform enumeration remains bootstrap-time; dynamic core attach/remove is
+triggered by the registry events that drivers explicitly issue.
 
 ## Focused proof (run on source working tree)
 
 | Gate | Scope | Expected claim |
 | --- | --- | --- |
-| `sh scripts/check-lwip-foundation.sh` | Real upstream lwIP, native worker, Socket FileOps, NETLINK_ROUTE; carrier up/down/up | Host tests only |
+| `sh scripts/check-lwip-foundation.sh` | Real upstream lwIP, two native NICs, re-registration, route failover, eight-NIC NETLINK_ROUTE, Socket FileOps | Host tests only |
+| `sh scripts/check-block-foundation.sh` | Original U-Boot VirtIO-Net driver unbind/drain/DMA lifetime, shared bus and block regression | Host tests only |
+| `sh scripts/probe-lwip-virtio-wire-smoke.sh` / `sh scripts/probe-lwip-virtio-wire-multiarch.sh` | Two real PCI/MMIO NICs per ISA, two actual DHCP subnets and signed Alpine TCP | Requires 3-ISA QEMU CI |
 | `sh scripts/check-lwip-socket-abi.sh` | Legacy and lwIP Linux socket ABI, DHCP-less NIC flags/MTU/ifindex | Host tests only |
 | `sh scripts/check-vfs-provider.sh` | Real VFS mount/lease + anonymous inode lifecycle; memfd ABI | Host tests only |
 | `sh scripts/check-path-contract-host.sh` | 4095/4096 length and root namespace error codes | Host tests only |
@@ -154,18 +205,18 @@ and ELF execution evidence for the default-provider change.
 | `python3 scripts/check-architecture-boundaries.py` | VFS, MM, driver dependency fences | Static source check |
 
 The local executor has `cc`, but lacks `clang` and
-`qemu-system-{x86_64,riscv64,aarch64}`. The preceding `3622b0c` was
-verified after push. The **newer long-cwd** source changes need a separate
-exact-head CI/QEMU result before claiming three-ISA guest proof.
+`qemu-system-{x86_64,riscv64,aarch64}`. Only **new exact-head** CI/QEMU
+results prove the current two-NIC wire behavior, rather than the earlier
+single-NIC guest acceptance.
 
 ## Remaining architectural gates, in order
 
-1. Exact-head three-ISA native QEMU Alpine/BusyBox/network/memfd acceptance.
-2. Multi-NIC and IRQ/link-loss/remove tests before claiming a general
-   network-device lifecycle or hotplug support.
-3. Keep upstream lwIP as the only protocol provider in every normal
-   kernel build, and verify the default and NIC-enabled native guests on
-   all three ISAs before relying on the newly converged configuration.
+1. Exact-head three-ISA dual-VirtIO DHCP/wire acceptance **for this batch**,
+   plus normal full guest Alpine/BusyBox/memfd regression.
+2. True hardware hotplug notifications and asynchronous bus-unbind retry;
+   current detach is safe but requires the caller to retry `-EBUSY`.
+3. Preserve official upstream lwIP as the sole IPv4 provider in every
+   default and NIC-enabled native build; reject legacy providers.
 4. Replace remaining 256-byte *active* pathname compatibility paths with
    Path-first ownership. Add a private shmem mount only when an independent
    memfd/no-tmpfs use case requires it.

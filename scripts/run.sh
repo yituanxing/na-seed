@@ -24,6 +24,16 @@ if [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ]; then
     set -- "$@" -netdev user,id=naseed_net \
         -device virtio-net-pci,netdev=naseed_net,disable-legacy=on
 fi
+if [ "${NAS_VIRTIO_NET_SECOND_USER:-0}" = 1 ]; then
+    [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ] || {
+        echo 'NAS_VIRTIO_NET_SECOND_USER requires NAS_VIRTIO_NET_USER=1' >&2
+        exit 2
+    }
+    # Independent slirp subnet proves the two original U-Boot/lwIP netifs
+    # receive separate DHCP leases rather than aliasing one NIC's state.
+    set -- "$@" -netdev user,id=naseed_net2,net=10.0.3.0/24 \
+        -device virtio-net-pci,netdev=naseed_net2,disable-legacy=on
+fi
 if [ -n "${NAS_VIRTIO_NET_PCAP:-}" ]; then
     [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ] || {
         echo 'NAS_VIRTIO_NET_PCAP requires NAS_VIRTIO_NET_USER=1' >&2

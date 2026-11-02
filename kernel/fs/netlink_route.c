@@ -26,7 +26,7 @@
 #define MSG_PEEK_LINUX 2U
 #define MSG_TRUNC_LINUX 32U
 #define MSG_DONTWAIT_LINUX 64U
-#define NETLINK_REPLY_QUEUE 4U
+#define NETLINK_REPLY_QUEUE (NAS_LWIP_GUEST_IF_LIMIT + 1U)
 #define NETLINK_REPLY_SIZE 64U
 #define PORT_POLLIN 1U
 #define PORT_POLLOUT 4U
@@ -194,13 +194,13 @@ int64_t nas_netlink_route_sendto(unsigned slot,const uint8_t *bytes,
     if(family!=AF_INET_LINUX && family!=AF_INET6_LINUX)
         return -EAFNOSUPPORT;
 
-    struct nas_lwip_guest_ipv4_if interfaces[2]={0};
+    struct nas_lwip_guest_ipv4_if interfaces[NAS_LWIP_GUEST_IF_LIMIT]={0};
     const unsigned count=family==AF_INET_LINUX ?
         nas_lwip_guest_ipv4_ifconf(interfaces):0;
-    if(count>2)return -EIO;
+    if(count>NAS_LWIP_GUEST_IF_LIMIT)return -EIO;
     /* Reject an impossible or unverified core snapshot; never issue a
      * successful but misleading empty interface dump. */
-    uint32_t indexes[2]={0};
+    uint32_t indexes[NAS_LWIP_GUEST_IF_LIMIT]={0};
     for(unsigned i=0;i<count;i++) {
         if(!interfaces[i].ipv4_host_order || interfaces[i].prefix_len>32)
             return -EIO;
