@@ -8,6 +8,7 @@ on:
       - '.github/workflows/m166-batch.yml'
       - 'scripts/m166-*'
       - 'scripts/check-m166-input-port.sh'
+      - 'scripts/check-block-foundation.sh'
       - 'scripts/probe-m166-batch.sh'
       - 'scripts/stage-m166-prebuilt.sh'
       - 'scripts/host-configure-m166-batch.sh'
@@ -60,8 +61,8 @@ jobs:
           python3 scripts/check-prebuilt-profile-catalog.py
           python3 scripts/check-three-isa-core.py
           python3 scripts/check-architecture-boundaries.py
-          sh scripts/check-block-foundation.sh
           sh scripts/check-m166-input-port.sh
+          sh scripts/check-block-foundation.sh
       - name: Install native Linux ABI compilers, QEMU and EFI firmware
         timeout-minutes: 18
         run: |

@@ -160,6 +160,7 @@ if command -v clang >/dev/null 2>&1; then
       -fsyntax-only ports/uboot/virtio_compat.c ports/uboot/blk_port.c ports/uboot/virtio_bus.c ports/uboot/net_port.c ports/uboot/virtio_net_bus.c
     clang --target="$target" -std=c11 -Wall -Wextra -Werror \
       -Wno-unused-parameter -Wno-sign-compare \
+      -Wno-unused-const-variable \
       -ffreestanding -fno-builtin -I ports/uboot/compat -I kernel \
       -I third_party/unikraft/include -fsyntax-only \
       third_party/uboot/drivers/virtio/virtio_net.c
