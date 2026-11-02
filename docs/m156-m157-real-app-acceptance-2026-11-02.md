@@ -1,8 +1,12 @@
 # M156–M157: original Alpine applications drive the next kernel contracts
 
-**Branch:** `naseed-app-batch2`, Draft PR #148. **Initial status:** test
-implementation complete; new native-QEMU acceptance is pending. A host/static
-pass is not a guest application pass.
+**Branch:** `naseed-app-batch2`, Draft PR #148. **M156 native x86 QEMU
+passed** on exact PR head `a9cd5df` ([Actions run
+41417005258](https://github.com/yituanxing/na-seed/actions/runs/41417005258)).
+M157's initial run reached signed APK staging and correctly rejected
+two unsuitable Netpbm paths before guest boot; the replacement 30-program
+batch still requires new native-QEMU acceptance. A host/static pass is not
+a guest application pass.
 
 The architecture audit found no evidence that a second networking stack,
 device registry, File table or independent CPIO builder is needed. Continue
@@ -26,9 +30,9 @@ only when their **real behavior** exposes a specific fault.
 - `scripts/probe-m156-https-wire-smoke.sh` requires a real PCI VirtIO-Net,
   actual DHCP, the kernel's `[EXEC]` evidence for both ELF clients, guest
   semantic markers, per-client SHA-256 and the independent TLS host log. It
-  stores the guest serial and optional frame capture. The host TLS server
-  and generated certificate were smoke-tested independently; **the NaSeed
-  guest TLS handshake still requires the new exact-head CI job**.
+  stores the guest serial and optional frame capture. The test completed on
+  the genuine x86-64 NaSeed QEMU guest with both clients and the independent
+  host oracle passing. This is a **real signed Alpine HTTPS/TLS acceptance**.
 
 M156 deliberately keeps its deterministic host on QEMU slirp. This is real
 certificate-verified encrypted traffic across the guest NIC, **not** proof of

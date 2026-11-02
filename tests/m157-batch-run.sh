@@ -74,8 +74,8 @@ case_run() {
       pgmenhance) "$exe" "$gray" > "$work/out.pnm" 2> "$work/error" && pnm ;;
       pgmramp) "$exe" -lr 8 8 > "$work/out.pnm" 2> "$work/error" && pnm ;;
       pnmalias) "$exe" "$img" > "$work/out.pnm" 2> "$work/error" && pnm ;;
-      pnmmargin) "$exe" -white 2 "$img" > "$work/out.pnm" 2> "$work/error" && pnm ;;
-      pnmnoraw) "$exe" "$img" > "$work/out.pnm" 2> "$work/error" && pnm ;;
+      pnmnlfilt) "$exe" 0.5 1.0 "$img" > "$work/out.pnm" 2> "$work/error" && pnm ;;
+      pnmremap) "$exe" -mapfile="$img" "$img" > "$work/out.pnm" 2> "$work/error" && pnm ;;
       pnmscalefixed) "$exe" 2 "$img" > "$work/out.pnm" 2> "$work/error" && pnm ;;
       ppmshift) "$exe" 2 "$img" > "$work/out.pnm" 2> "$work/error" && pnm ;;
       ppmspread) "$exe" 1 "$img" -randomseed=157 > "$work/out.pnm" 2> "$work/error" && pnm ;;
@@ -117,7 +117,7 @@ fi
 failures=0
 for app in pamaddnoise pamaltsat pambrighten pamgetcolor pamhue pamlevels \
            pamrestack pamslice pamsummcol pamtable pbmlife pbmmask \
-           pgmenhance pgmramp pnmalias pnmmargin pnmnoraw pnmscalefixed \
+           pgmenhance pgmramp pnmalias pnmnlfilt pnmremap pnmscalefixed \
            ppmshift ppmspread gifbuild gifclrmp giffix giftext giftool \
            fax2ps fax2tiff pal2rgb pngfix png-fix-itxt; do
     echo "[M157 CASE START] $app"
