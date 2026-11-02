@@ -23,6 +23,7 @@ if command -v clang >/dev/null 2>&1; then
             -I kernel -I third_party/unikraft/include \
             -I ports/unikraft/include -I ports/uboot/compat \
             -I ports/lwip/include -I third_party/lwip/src/include \
+            -I scripts/m89-test-include \
             -fsyntax-only \
             kernel/drivers/core/chrdev.c kernel/drivers/input/core.c \
             kernel/drivers/input/evdev.c \
