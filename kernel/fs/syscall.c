@@ -209,9 +209,19 @@ void nas_fs_close_fd(uint64_t fd) {
 static uint64_t fd_clone(uint64_t src, uint64_t dst, bool cloexec) {
     if (src >= NAS_FD_LIMIT || TASK.fds->entries[src].kind == FD_CLOSED ||
         dst >= NAS_FD_LIMIT) return (uint64_t)-EBADF;
-    if (src == dst) return dst;
+    /* Acquire ownership BEFORE closing dst: final_close can reclaim the
+     * source backend when dst aliases src, and a saturated File must leave
+     * the old destination untouched. attach_owned consumes this one pin. */
+    unsigned slot=TASK.fds->entries[src].slot;
+    uint8_t kind=TASK.fds->entries[src].kind;
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount ||
+       nas_open_files[slot].lease_token)return (uint64_t)-EBADF;
+    if(src==dst)return dst;
+    if(!nas_fd_hold_description(slot))return (uint64_t)-ENFILE;
     nas_fs_close_fd(dst);
-    return nas_fd_clone(nas_current_task, src, dst, cloexec);
+    if(!nas_fd_attach_owned(nas_current_task,(unsigned)dst,slot,kind,cloexec))
+        nas_fs_fail("dup2 destination publication violated FD invariant");
+    return dst;
 }
 static uint64_t fd_duplicate(uint64_t oldfd, uint64_t minimum,
                              bool cloexec) {

@@ -265,6 +265,55 @@ void nas_dec(uint64_t n){(void)n;}
 void nas_putchar(char ch){(void)ch;}
 void nas_arch_halt(void){assert(!"user syscall triggered kernel panic");abort();}
 void nas_unix_socket_pair_ready(unsigned a,unsigned b){(void)a;(void)b;}
+#if !defined(NAS_ENABLE_LWIP) || !NAS_ENABLE_LWIP
+bool nas_lwip_socket_is_slot(unsigned slot){(void)slot;return false;}
+bool nas_netlink_route_is_slot(unsigned slot){(void)slot;return false;}
+#endif
+/* M107 tests the backend; here we observe the real syscall adapter's
+ * prepare-before-I/O, commit-on-progress and cancel-on-failure decisions. */
+static bool mock_rights_queued;
+static unsigned mock_rights_peer,mock_rights_prepared;
+static unsigned mock_rights_committed,mock_rights_canceled;
+static uint8_t mock_right_kind,mock_right_slot;
+int nas_unix_rights_prepare(unsigned sender,const uint8_t *kinds,
+                            const uint8_t *slots,unsigned count,
+                            struct nas_unix_rights_transfer *transfer) {
+    assert(count==1 && transfer && kinds && slots && !mock_rights_queued);
+    int peer=nas_pipe_peer_slot(sender);
+    assert(peer>=0 && (unsigned)peer<NAS_OPEN_FILE_LIMIT);
+    if(!nas_fd_hold_description(slots[0]))return -ENFILE;
+    *transfer=(struct nas_unix_rights_transfer){
+        .sender=sender,.receiver=(unsigned)peer,.count=1,.active=true,
+        .kinds={kinds[0]},.slots={slots[0]}
+    };
+    ++mock_rights_prepared;
+    return 0;
+}
+void nas_unix_rights_commit(struct nas_unix_rights_transfer *transfer) {
+    assert(transfer && transfer->active && transfer->count==1);
+    mock_rights_queued=true;
+    mock_rights_peer=transfer->receiver;
+    mock_right_kind=transfer->kinds[0];
+    mock_right_slot=transfer->slots[0];
+    ++mock_rights_committed;
+    *transfer=(struct nas_unix_rights_transfer){0};
+}
+void nas_unix_rights_cancel(struct nas_unix_rights_transfer *transfer) {
+    assert(transfer && transfer->active && transfer->count==1);
+    ++mock_rights_canceled;
+    nas_fs_drop_kernel_description(transfer->slots[0]);
+    *transfer=(struct nas_unix_rights_transfer){0};
+}
+unsigned nas_unix_rights_count(unsigned receiver) {
+    return mock_rights_queued && receiver==mock_rights_peer ? 1U:0U;
+}
+unsigned nas_unix_rights_receive(unsigned receiver,uint8_t *kinds,
+                                 uint8_t *slots,unsigned max_count) {
+    if(!max_count || !nas_unix_rights_count(receiver))return 0;
+    kinds[0]=mock_right_kind;slots[0]=mock_right_slot;
+    mock_rights_queued=false;
+    return 1;
+}
 int nas_unix_socket_accept(unsigned listener,unsigned *slot) {
     assert(listener==20);
     if(pending_accept_slot==NAS_OPEN_FILE_LIMIT)return -EAGAIN;
@@ -331,7 +380,8 @@ unsigned nas_fd_first_unused(const struct nas_task *t,unsigned minimum) {
 bool nas_fd_attach_owned(struct nas_task *t,unsigned fd,unsigned slot,
                          uint8_t kind,bool cloexec) {
     if(fd>=NAS_FD_LIMIT||slot>=NAS_OPEN_FILE_LIMIT||
-       t->fds->entries[fd].kind||!nas_open_files[slot].refcount)return false;
+       t->fds->entries[fd].kind||!nas_open_files[slot].refcount||
+       nas_open_files[slot].lease_token)return false;
     t->fds->entries[fd]=(struct nas_fd_entry){
         .kind=kind,.slot=(uint8_t)slot,.cloexec=cloexec?1U:0U
     };
@@ -366,6 +416,7 @@ int nas_fd_reserve(const struct nas_task *t,unsigned minimum,unsigned count,
 }
 bool nas_fd_hold_description(unsigned slot) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount ||
+       nas_open_files[slot].lease_token ||
        nas_open_files[slot].refcount==UINT16_MAX)return false;
     ++nas_open_files[slot].refcount;
     return true;
@@ -394,6 +445,33 @@ static unsigned live_fds(void) {
     for(unsigned i=0;i<NAS_FD_LIMIT;i++)
         n+=(guest_task.fds->entries[i].kind!=FD_CLOSED);
     return n;
+}
+static void test_dup2_atomic_source_pin(void) {
+    assert(live_fds()==0);
+    enum { SRC=5,DST=6,SRC_SLOT=126,DST_SLOT=127 };
+    guest_task.fds->entries[SRC]=(struct nas_fd_entry){FD_NULL,SRC_SLOT,0};
+    guest_task.fds->entries[DST]=(struct nas_fd_entry){FD_NULL,DST_SLOT,1};
+    nas_open_files[SRC_SLOT].refcount=UINT16_MAX;
+    nas_open_files[DST_SLOT].refcount=1;
+    assert(fd_clone(SRC,DST,false)==(uint64_t)-ENFILE);
+    assert(guest_task.fds->entries[DST].slot==DST_SLOT);
+    assert(nas_open_files[DST_SLOT].refcount==1);
+    assert(nas_open_files[SRC_SLOT].refcount==UINT16_MAX);
+    nas_open_files[SRC_SLOT].refcount=1;
+    assert(fd_clone(SRC,DST,true)==DST);
+    assert(guest_task.fds->entries[DST].slot==SRC_SLOT);
+    assert(guest_task.fds->entries[DST].cloexec==1);
+    assert(nas_open_files[DST_SLOT].refcount==0);
+    assert(nas_open_files[SRC_SLOT].refcount==2);
+    /* Replacing an alias must neither finalize nor double-hold its File. */
+    assert(fd_clone(SRC,DST,false)==DST);
+    assert(nas_open_files[SRC_SLOT].refcount==2);
+    assert(guest_task.fds->entries[DST].cloexec==0);
+    assert(fd_clone(SRC,SRC,false)==SRC);
+    nas_fs_close_fd(DST);
+    nas_fs_close_fd(SRC);
+    assert(live_fds()==0 && !nas_open_files[SRC_SLOT].refcount);
+    puts("[M106 DUP2 PASS] atomic source pin, saturated source preserves destination, alias replacement/final close");
 }
 static unsigned live_files(void) {
     unsigned n=0;
@@ -795,6 +873,60 @@ static void a012_stream_socket_vectors(unsigned sender,unsigned receiver) {
     assert(*user_ptr(dst)=='Z');
     puts("[NAS-A012 M106 PASS] AF_UNIX stream accepts partial writev without PIPE_BUF atomic admission; duplex endpoints preserved");
 }
+static void a012_unix_message_vectors(unsigned sender,unsigned receiver) {
+    /* The real sendmsg/recvmsg syscall adapter consumes the same aggregate
+     * FileOps importer as readv/writev; M107 covers the genuine rights queue. */
+    const uint64_t iov=TEST_BASE+32,msg_addr=TEST_BASE+512;
+    const uint64_t ctl=TEST_BASE+640,recv_iov=TEST_BASE+736;
+    const uint64_t recv_msg_addr=TEST_BASE+880,recv_ctl=TEST_BASE+1024;
+    const uint64_t first=TEST_BASE+TEST_PAGE+64,second=first+32;
+    const uint64_t recv_dst=TEST_BASE+2*TEST_PAGE+64;
+    reset_mapping();
+    memcpy(user_ptr(first),"AB",2);
+    memcpy(user_ptr(second),"CDE",3);
+    a008_iov(iov,0,first,2);
+    a008_iov(iov,1,second,3);
+    uint8_t control[20]={0};
+    uint64_t cmsglen=20;
+    uint32_t level=1,type=1;
+    int32_t passed=(int32_t)sender;
+    memcpy(control,&cmsglen,8);memcpy(control+8,&level,4);
+    memcpy(control+12,&type,4);memcpy(control+16,&passed,4);
+    assert(nas_user_write_bytes(ctl,control,sizeof(control)));
+    struct nas_msghdr outgoing={.iov=iov,.iovlen=2,.control=ctl,
+                                 .controllen=sizeof(control)};
+    assert(nas_user_write_bytes(msg_addr,(uint8_t *)&outgoing,sizeof(outgoing)));
+    unsigned sender_slot=guest_task.fds->entries[sender].slot;
+    uint16_t original_ref=nas_open_files[sender_slot].refcount;
+    assert(sys_unix_sendmsg(sender,msg_addr,0)==5);
+    assert(mock_rights_prepared==1 && mock_rights_committed==1 &&
+           !mock_rights_canceled && mock_rights_queued);
+    assert(nas_open_files[sender_slot].refcount==original_ref+1);
+    a008_iov(recv_iov,0,recv_dst,2);
+    a008_iov(recv_iov,1,recv_dst+2,3);
+    struct nas_msghdr incoming={.iov=recv_iov,.iovlen=2,
+                                .control=recv_ctl,.controllen=24};
+    assert(nas_user_write_bytes(recv_msg_addr,(uint8_t *)&incoming,sizeof(incoming)));
+    assert(sys_unix_recvmsg(receiver,recv_msg_addr,0x40000000ULL)==5);
+    assert(!memcmp(user_ptr(recv_dst),"ABCDE",5));
+    assert(!mock_rights_queued);
+    assert(nas_user_read_bytes(recv_msg_addr,(uint8_t *)&incoming,sizeof(incoming)));
+    assert(incoming.controllen==24 && incoming.flags==0);
+    int32_t installed=-1;
+    assert(nas_user_read_bytes(recv_ctl+16,(uint8_t *)&installed,4));
+    assert(installed>=3 && installed<NAS_FD_LIMIT && (unsigned)installed!=sender);
+    assert(guest_task.fds->entries[installed].slot==sender_slot);
+    assert(guest_task.fds->entries[installed].cloexec);
+    nas_fs_close_fd((unsigned)installed);
+    assert(nas_open_files[sender_slot].refcount==original_ref);
+    /* Invalid later iovec: the staged right must be dropped, never queued. */
+    a008_iov(iov,1,USER_LIMIT,3);
+    assert((int64_t)sys_unix_sendmsg(sender,msg_addr,0)==-EFAULT);
+    assert(mock_rights_prepared==2 && mock_rights_committed==1 &&
+           mock_rights_canceled==1 && !mock_rights_queued);
+    assert(nas_open_files[sender_slot].refcount==original_ref);
+    puts("[M106 UNIX MSG PASS] real sendmsg/recvmsg vectors, SCM_RIGHTS publish, usercopy rollback");
+}
 
 int main(void) {
     test_bootstrap_owned_candidate();
@@ -806,6 +938,7 @@ int main(void) {
     nas_fd_system_init();
     reset_mapping();
     test_bootstrap_metadata_and_vfs_priority();
+    test_dup2_atomic_source_pin();
 
     /* A valid mapped RX destination must NOT publish descriptors. */
     can_write[0]=false;
@@ -986,6 +1119,7 @@ int main(void) {
 
     a008_vectors(rd,wr);
     a012_stream_socket_vectors(a,b);
+    a012_unix_message_vectors(a,b);
     /* Real syscall File/FD publication: an anonymous tmpfs inode must
      * transfer its sole VFS pin into the existing OpenFile, not create a
      * private memfd registry or publish a path-backed stand-in. */

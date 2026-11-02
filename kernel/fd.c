@@ -127,7 +127,10 @@ bool nas_fd_install_new(struct nas_task *task, unsigned fd, unsigned slot,
         .refcount=1,.status_flags=status_flags,
         .ops=nas_fs_ops_for_kind(kind)
     };
-    return nas_fd_attach_owned(task,fd,slot,kind,cloexec);
+    if(nas_fd_attach_owned(task,fd,slot,kind,cloexec))return true;
+    /* A failed placement must never strand an unpublished live File. */
+    nas_open_files[slot]=(struct nas_open_file){0};
+    return false;
 }
 
 /* Called when the owning task's FD entry is closed. Detach exactly one
@@ -135,15 +138,13 @@ bool nas_fd_install_new(struct nas_task *task, unsigned fd, unsigned slot,
  * unreachable; it must then tear down the backend before slot reuse.
  */
 unsigned nas_fd_close(struct nas_task *task, unsigned fd) {
-    if (!task || fd>=NAS_FD_LIMIT ||
+    if (!task || !task->fds || fd>=NAS_FD_LIMIT ||
         !task->fds->entries[fd].kind) return NAS_OPEN_FILE_LIMIT;
     const unsigned slot=task->fds->entries[fd].slot;
-    if (slot>=NAS_OPEN_FILE_LIMIT) return NAS_OPEN_FILE_LIMIT;
-    bool last=false;
-    if (nas_open_files[slot].refcount) {
-        nas_open_files[slot].refcount--;
-        last=nas_open_files[slot].refcount==0;
-    }
+    if (slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+        nas_fail("close of dangling open description");
+    nas_open_files[slot].refcount--;
+    bool last=nas_open_files[slot].refcount==0;
     task->fds->entries[fd]=(struct nas_fd_entry){0};
     return last ? slot : NAS_OPEN_FILE_LIMIT;
 }
@@ -151,12 +152,14 @@ unsigned nas_fd_close(struct nas_task *task, unsigned fd) {
 /* Same open description, independent descriptor-local CLOEXEC bit. */
 uint64_t nas_fd_clone(struct nas_task *task, uint64_t src, uint64_t dst,
                       bool cloexec) {
-    if (!task || src>=NAS_FD_LIMIT || dst>=NAS_FD_LIMIT ||
+    if (!task || !task->fds || src>=NAS_FD_LIMIT || dst>=NAS_FD_LIMIT ||
         !task->fds->entries[src].kind) return (uint64_t)-EBADF;
+    unsigned slot=task->fds->entries[src].slot;
+    if (slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount ||
+        nas_open_files[slot].lease_token)return (uint64_t)-EBADF;
     if (src==dst) return dst;
     if (task->fds->entries[dst].kind) return (uint64_t)-EBUSY;
-    unsigned slot=task->fds->entries[src].slot;
-    if (slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount) return (uint64_t)-EBADF;
+    if(nas_open_files[slot].refcount==UINT16_MAX)return (uint64_t)-ENFILE;
     task->fds->entries[dst]=task->fds->entries[src];
     task->fds->entries[dst].cloexec=cloexec ? 1 : 0;
     nas_open_files[slot].refcount++;
@@ -164,7 +167,8 @@ uint64_t nas_fd_clone(struct nas_task *task, uint64_t src, uint64_t dst,
 }
 uint64_t nas_fd_duplicate(struct nas_task *task, uint64_t src,
                           uint64_t minimum, bool cloexec) {
-    if (!task || src>=NAS_FD_LIMIT || !task->fds->entries[src].kind)
+    if (!task || !task->fds || src>=NAS_FD_LIMIT ||
+        !task->fds->entries[src].kind)
         return (uint64_t)-EBADF;
     if (minimum>=NAS_FD_LIMIT) return (uint64_t)-EINVAL;
     for (unsigned fd=(unsigned)minimum;fd<NAS_FD_LIMIT;fd++)
@@ -176,14 +180,23 @@ uint64_t nas_fd_duplicate(struct nas_task *task, uint64_t src,
 /* Fork copies each process-local FD entry, but references shared open
  * descriptions. Validate first to avoid a partially incremented table. */
 bool nas_task_hold_files(const struct nas_task *task) {
-    if (!task) return false;
-    for (unsigned fd=0;fd<NAS_FD_LIMIT;fd++)
-        if (task->fds->entries[fd].kind &&
-            (task->fds->entries[fd].slot>=NAS_OPEN_FILE_LIMIT ||
-              !nas_open_files[task->fds->entries[fd].slot].refcount)) return false;
-    for (unsigned fd=0;fd<NAS_FD_LIMIT;fd++)
-        if (task->fds->entries[fd].kind)
-            nas_open_files[task->fds->entries[fd].slot].refcount++;
+    if (!task || !task->fds) return false;
+    /* Multiple copied descriptors may point to ONE File. Check the whole
+     * fork increment before mutating any reference, not just each entry
+     * against UINT16_MAX independently (which could wrap on alias two). */
+    uint16_t additions[NAS_OPEN_FILE_LIMIT]={0};
+    for (unsigned fd=0;fd<NAS_FD_LIMIT;fd++) {
+        if(!task->fds->entries[fd].kind)continue;
+        unsigned slot=task->fds->entries[fd].slot;
+        if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount ||
+           nas_open_files[slot].lease_token)return false;
+        additions[slot]++;
+    }
+    for(unsigned slot=0;slot<NAS_OPEN_FILE_LIMIT;slot++)
+        if(additions[slot] && nas_open_files[slot].refcount>
+           UINT16_MAX-additions[slot])return false;
+    for(unsigned slot=0;slot<NAS_OPEN_FILE_LIMIT;slot++)
+        nas_open_files[slot].refcount+=additions[slot];
     return true;
 }
 bool nas_fd_hold_description(unsigned slot) {

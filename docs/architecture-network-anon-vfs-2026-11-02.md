@@ -1,5 +1,40 @@
 # NaSeed architecture integration: network state and unnamed VFS inodes
 
+## Subsequent File/FD/AF_UNIX ownership convergence (2026-11-02)
+
+After tracing the complete `Task.fds -> FD entry -> OpenFile -> FileOps ->
+backend finalizer` path and the AF_UNIX ancillary message path, the follow-up
+ownership repair keeps exactly one global File table:
+
+- `dup2`/`dup3` pin the source OpenFile **before** closing the destination.
+  If the source cannot be pinned (including reference saturation), the old
+  destination remains intact. Publishing the replacement transfers that pin;
+  it never performs a second increment. Closing an alias still uses the
+  canonical process-close hook for POSIX record locks.
+- `dup` and `fork` reject stale/leased descriptions and uint16 saturation.
+  Fork first counts every copied descriptor *per shared File*, preflights
+  the combined increments, then applies them atomically; multiple aliases
+  cannot wrap the reference counter or leave a partial fork hold.
+- AF_UNIX `sendmsg` prepares an SCM_RIGHTS transfer before payload I/O,
+  taking checked File references for every passed right and both socket
+  endpoints. It reserves the receiver's one-message queue across waits;
+  positive byte progress commits ownership without a fallible second lookup,
+  while errors/zero progress cancel all pins. A sender's FD may be closed or
+  reused without changing the staged OpenFile identity.
+- AF_UNIX `sendmsg`/`recvmsg` now use the same checked, aggregate FileOps
+  `writev`/`readv` importer as ordinary vector I/O. `recvmsg` holds its
+  receiver File during I/O and queries the pinned endpoint for rights *after*
+  reading, since the message may arrive during a blocked read and the integer
+  FD can be reused. Undelivered rights remain kernel-owned until receive or
+  final socket teardown. These are lifetime guarantees, **not** a claim of
+  complete Linux stream ancillary framing, descriptor-cycle garbage
+  collection, or all blocking/MSG_DONTWAIT semantics.
+
+The focused regressions exercise the real FD allocator, the actual Linux
+syscall adapter plus FileOps vector importer, and the real UNIX backend with
+injected failure and endpoint-close cases. This batch changes no NIC discovery,
+hotplug API, IPv6, SMP, or protocol-feature surface.
+
 **Date:** 2026-11-02. **Starting tree:** `naseed-app-batch2@dc86cf2`,
 after M151–M155. The network/anonymous-inode batch was published as
 `3622b0c` on Draft PR #148. Its exact-head QEMU rerun subsequently passed

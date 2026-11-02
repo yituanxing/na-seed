@@ -140,6 +140,13 @@ void nas_fs_drop_kernel_description(unsigned slot) {
         nas_unix_socket_release(slot);
     }
 }
+bool nas_fd_hold_description(unsigned slot) {
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount ||
+       nas_open_files[slot].lease_token ||
+       nas_open_files[slot].refcount==UINT16_MAX)return false;
+    nas_open_files[slot].refcount++;
+    return true;
+}
 void nas_print(const char *message){(void)message;}
 void nas_arch_halt(void){assert(!"NaSeed unix backend panic");__builtin_trap();}
 
@@ -217,7 +224,26 @@ int main(void) {
     paired[40]=41;paired[41]=40;
     uint8_t kind=FD_SOCKET,transfer_slot=14;
     uint16_t prior=nas_open_files[transfer_slot].refcount;
-    assert(nas_unix_rights_send(40,&kind,&transfer_slot,1)==0);
+    struct nas_unix_rights_transfer staged={0},racing={0};
+    assert(nas_unix_rights_prepare(40,&kind,&transfer_slot,1,&staged)==0);
+    assert(nas_open_files[transfer_slot].refcount==prior+1);
+    assert(nas_open_files[40].refcount==2 && nas_open_files[41].refcount==2);
+    assert(nas_unix_rights_prepare(40,&kind,&transfer_slot,1,&racing)==-EAGAIN);
+    nas_unix_rights_cancel(&staged);
+    assert(nas_open_files[transfer_slot].refcount==prior);
+    assert(nas_open_files[40].refcount==1 && nas_open_files[41].refcount==1);
+    /* Failing on a LATER duplicated right must roll back earlier pins. */
+    uint8_t kinds_pair[2]={FD_SOCKET,FD_SOCKET},slots_pair[2]={14,14};
+    nas_open_files[14].refcount=UINT16_MAX-1;
+    assert(nas_unix_rights_prepare(40,kinds_pair,slots_pair,2,&staged)==-ENFILE);
+    assert(nas_open_files[14].refcount==UINT16_MAX-1);
+    nas_open_files[14].refcount=prior;
+    /* A stale/leased slot cannot enter a message. */
+    nas_open_files[14].lease_token=42;
+    assert(nas_unix_rights_prepare(40,&kind,&transfer_slot,1,&staged)==-EBADF);
+    nas_open_files[14].lease_token=0;
+    assert(nas_unix_rights_prepare(40,&kind,&transfer_slot,1,&staged)==0);
+    nas_unix_rights_commit(&staged);
     assert(nas_open_files[transfer_slot].refcount==prior+1);
     nas_fs_drop_kernel_description(transfer_slot); /* sender closes */
     uint8_t got_kind=0,got_slot=0;
@@ -229,6 +255,40 @@ int main(void) {
     nas_fs_drop_kernel_description(40);
     nas_fs_drop_kernel_description(41);
 
+    /* A blocked sender can lose BOTH endpoint FDs while the transaction
+     * waits. The pre-held kernel references still make cancellation safe. */
+    new_endpoint(52);new_endpoint(53);
+    nas_unix_socket_pair_ready(52,53);
+    paired[52]=53;paired[53]=52;
+    transfer_slot=13;
+    prior=nas_open_files[transfer_slot].refcount;
+    assert(nas_unix_rights_prepare(52,&kind,&transfer_slot,1,&staged)==0);
+    nas_fs_drop_kernel_description(52);
+    nas_fs_drop_kernel_description(53);
+    assert(nas_open_files[52].refcount==1 && nas_open_files[53].refcount==1);
+    nas_unix_rights_cancel(&staged);
+    assert(!nas_open_files[52].refcount && !nas_open_files[53].refcount);
+    assert(nas_open_files[transfer_slot].refcount==prior);
+
+    /* Partial receive transfers exactly one reference; socket teardown
+     * disposes only the undelivered remainder via the canonical finalizer. */
+    new_endpoint(54);new_endpoint(55);
+    nas_unix_socket_pair_ready(54,55);
+    paired[54]=55;paired[55]=54;
+    uint8_t multiple[2]={13,15};
+    uint16_t original13=nas_open_files[13].refcount;
+    uint16_t original15=nas_open_files[15].refcount;
+    assert(nas_unix_rights_prepare(54,kinds_pair,multiple,2,&staged)==0);
+    nas_unix_rights_commit(&staged);
+    assert(nas_unix_rights_count(55)==2);
+    assert(nas_unix_rights_receive(55,&got_kind,&got_slot,1)==1);
+    assert(got_slot==13 && nas_unix_rights_count(55)==1);
+    nas_fs_drop_kernel_description(55);
+    assert(nas_open_files[15].refcount==original15);
+    nas_fs_drop_kernel_description(got_slot);
+    assert(nas_open_files[13].refcount==original13);
+    nas_fs_drop_kernel_description(54);
+
     /* Release old (unlinked) listener only after its final description.
      * Connection peers survive independent of its bound name. */
     unsigned released_before=path_drops;
@@ -236,6 +296,6 @@ int main(void) {
     assert(path_drops==released_before+1);
     assert(!nas_unix_socket_listening(10));
     assert(pipe_pairs>=3 && peer_drops>=3);
-    puts("[M107 AF_UNIX KERNEL PASS] real listener/rights backend: inode/mount identity, unlink/rebind, rename, dup/final pin, SCM_RIGHTS");
+    puts("[M107 AF_UNIX KERNEL PASS] real listener/rights backend: inode/mount identity, unlink/rebind, rename, dup/final pin, reserved SCM_RIGHTS/rollback");
     return 0;
 }

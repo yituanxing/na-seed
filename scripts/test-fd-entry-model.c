@@ -99,6 +99,33 @@ int main(void) {
     assert(!nas_task_hold_files(&p));
     assert(nas_open_files[120].refcount == 0);
     assert(nas_fd_duplicate(&p, 0, 1, false) == (uint64_t)-EBADF);
+    /* Two aliases in one fork must be charged together, with no overflow
+     * or partially applied increments when the second alias would wrap. */
+    p.fds->entries[0]=(struct nas_fd_entry){0};
+    p.fds->entries[1]=(struct nas_fd_entry){FD_ARCHIVE,119,0};
+    p.fds->entries[2]=(struct nas_fd_entry){FD_ARCHIVE,119,1};
+    nas_open_files[119].refcount=UINT16_MAX-1;
+    assert(!nas_task_hold_files(&p));
+    assert(nas_open_files[119].refcount==UINT16_MAX-1);
+    assert(nas_fd_clone(&p,1,3,false)==3);
+    assert(nas_open_files[119].refcount==UINT16_MAX);
+    assert(nas_fd_clone(&p,1,4,false)==(uint64_t)-ENFILE);
+    assert(p.fds->entries[4].kind==FD_CLOSED);
+    assert(!nas_task_hold_files(&p));
+    assert(nas_open_files[119].refcount==UINT16_MAX);
+    nas_open_files[119].refcount=3;
+    assert(nas_fd_close(&p,1)==NAS_OPEN_FILE_LIMIT);
+    assert(nas_fd_close(&p,2)==NAS_OPEN_FILE_LIMIT);
+    assert(nas_fd_close(&p,3)==119);
+    assert(nas_open_files[119].refcount==0);
+    /* A leased File is never a valid descriptor duplication target. */
+    p.fds->entries[1]=(struct nas_fd_entry){FD_ARCHIVE,118,0};
+    nas_open_files[118].refcount=1;
+    nas_open_files[118].lease_token=99;
+    assert(nas_fd_clone(&p,1,2,false)==(uint64_t)-EBADF);
+    assert(!nas_task_hold_files(&p));
+    nas_open_files[118].lease_token=0;
+    assert(nas_fd_close(&p,1)==118);
     puts("[M62 FD PASS] AoS, fork/CLONE_FILES, dup, CLOEXEC, last-close");
     return 0;
 }

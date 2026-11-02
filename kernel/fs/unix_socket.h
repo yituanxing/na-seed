@@ -24,9 +24,19 @@ const char *nas_unix_socket_name(unsigned slot);
 /* Linux SO_PEERCRED: connection-time credentials, never the caller's. */
 int nas_unix_socket_peercred(unsigned slot,uint32_t credentials[3]);
 #define NAS_UNIX_MAX_RIGHTS 12U
-bool nas_unix_rights_available(unsigned sender,unsigned count);
-int nas_unix_rights_send(unsigned sender,const uint8_t *kinds,
-                         const uint8_t *slots,unsigned count);
+/* One in-flight message owns its File pins independently of mutable task
+ * FD numbers. prepare reserves the recipient queue before payload I/O can
+ * park; commit transfers rights, cancel releases them on every failure. */
+struct nas_unix_rights_transfer {
+    unsigned sender,receiver,count;
+    bool active;
+    uint8_t kinds[NAS_UNIX_MAX_RIGHTS],slots[NAS_UNIX_MAX_RIGHTS];
+};
+int nas_unix_rights_prepare(unsigned sender,const uint8_t *kinds,
+                            const uint8_t *slots,unsigned count,
+                            struct nas_unix_rights_transfer *transfer);
+void nas_unix_rights_commit(struct nas_unix_rights_transfer *transfer);
+void nas_unix_rights_cancel(struct nas_unix_rights_transfer *transfer);
 unsigned nas_unix_rights_count(unsigned receiver);
 unsigned nas_unix_rights_receive(unsigned receiver,uint8_t *kinds,
                                   uint8_t *slots,unsigned max_count);

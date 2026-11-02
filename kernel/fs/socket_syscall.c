@@ -886,25 +886,6 @@ int nas_fs_socket_tcp_sendmsg_iov(uint64_t fd,uint64_t address,
     *count=msg.iovlen;
     return 1;
 }
-static uint64_t unix_msgiov(uint64_t fd,const struct nas_msghdr *msg,
-                            bool writing) {
-    if(msg->iovlen>32)return (uint64_t)-EMSGSIZE;
-    uint64_t total=0;
-    for(unsigned i=0;i<msg->iovlen;i++) {
-        struct nas_iovec v;
-        if(msg->iov>UINT64_MAX-(uint64_t)i*sizeof(v) ||
-           !nas_user_read_bytes(msg->iov+(uint64_t)i*sizeof(v),
-                                (uint8_t *)&v,sizeof(v)))
-            return total?total:(uint64_t)-EFAULT;
-        if(!v.length)continue;
-        uint64_t done=writing?nas_fs_fd_write(fd,v.base,v.length):
-                              nas_fs_fd_read(fd,v.base,v.length);
-        if((int64_t)done<0)return total?total:done;
-        total+=done;
-        if(done<v.length)break;
-    }
-    return total;
-}
 static uint64_t sys_unix_sendmsg(uint64_t fd,uint64_t address,uint64_t flags) {
     if(!unix_fd(fd))return (uint64_t)-EBADF;
     if(flags & ~(0x4000ULL|0x40ULL))return (uint64_t)-EOPNOTSUPP;
@@ -912,6 +893,7 @@ static uint64_t sys_unix_sendmsg(uint64_t fd,uint64_t address,uint64_t flags) {
     if(!nas_user_read_bytes(address,(uint8_t *)&msg,sizeof(msg)))
         return (uint64_t)-EFAULT;
     if(msg.name)return (uint64_t)-EISCONN;
+    if(msg.iovlen>32)return (uint64_t)-EMSGSIZE;
     uint8_t kinds[NAS_UNIX_MAX_RIGHTS],slots[NAS_UNIX_MAX_RIGHTS];
     unsigned rights_count=0;
     if(msg.controllen) {
@@ -936,47 +918,52 @@ static uint64_t sys_unix_sendmsg(uint64_t fd,uint64_t address,uint64_t flags) {
             kinds[i]=TASK.fds->entries[transferred].kind;
             slots[i]=TASK.fds->entries[transferred].slot;
         }
-        if(!nas_unix_rights_available(TASK.fds->entries[fd].slot,rights_count))
-            return (uint64_t)-EAGAIN;
     }
-    uint64_t wrote=unix_msgiov(fd,&msg,true);
-    if((int64_t)wrote<0)return wrote;
-    if(rights_count && wrote) {
-        int rc=nas_unix_rights_send(TASK.fds->entries[fd].slot,kinds,slots,rights_count);
+    struct nas_unix_rights_transfer transfer={0};
+    if(rights_count) {
+        int rc=nas_unix_rights_prepare(TASK.fds->entries[fd].slot,
+                                       kinds,slots,rights_count,&transfer);
         if(rc)return (uint64_t)(int64_t)rc;
+    }
+    /* Shared vector importer validates the WHOLE iovec and owns one File
+     * through wait/retry. Ancillary references were pinned before parking. */
+    uint64_t wrote=nas_fs_fd_writev(fd,msg.iov,msg.iovlen);
+    if(rights_count) {
+        if((int64_t)wrote>0)nas_unix_rights_commit(&transfer);
+        else nas_unix_rights_cancel(&transfer);
     }
     return wrote;
 }
-static uint64_t sys_unix_recvmsg(uint64_t fd,uint64_t address,uint64_t flags) {
-    if(!unix_fd(fd))return (uint64_t)-EBADF;
-    if(flags & ~(0x40000000ULL|0x40ULL|0x2ULL))
-        return (uint64_t)-EOPNOTSUPP; /* CMSG_CLOEXEC/DONTWAIT/PEEK */
-    if(flags&0x2ULL)return (uint64_t)-EOPNOTSUPP;
+static uint64_t unix_recvmsg_pinned(uint64_t fd,uint64_t address,
+                                    uint64_t flags,unsigned receiver_slot) {
     struct nas_msghdr msg;
     if(!nas_user_read_bytes(address,(uint8_t *)&msg,sizeof(msg)))
         return (uint64_t)-EFAULT;
     if(!nas_user_prepare_write(address,sizeof(msg)))
         return (uint64_t)-EFAULT;
     if(msg.iovlen>32)return (uint64_t)-EMSGSIZE;
-    unsigned pending=nas_unix_rights_count(TASK.fds->entries[fd].slot);
-    unsigned deliver=0;
+    unsigned capacity=0;
     if(msg.control && msg.controllen>=20) {
         /* Clamp in uint64_t before narrowing an untrusted controllen.
          * UINT64_MAX must not wrap the deliverable rights count to zero. */
-        uint64_t capacity=(msg.controllen-16)/4;
-        if(capacity>NAS_UNIX_MAX_RIGHTS)capacity=NAS_UNIX_MAX_RIGHTS;
-        deliver=(unsigned)capacity;
+        uint64_t control_capacity=(msg.controllen-16)/4;
+        if(control_capacity>NAS_UNIX_MAX_RIGHTS)
+            control_capacity=NAS_UNIX_MAX_RIGHTS;
+        capacity=(unsigned)control_capacity;
     }
-    if(deliver>pending)deliver=pending;
-    if(deliver && !nas_user_prepare_write(
-        msg.control,16ULL+(uint64_t)deliver*4ULL))
+    if(capacity && !nas_user_prepare_write(
+        msg.control,16ULL+(uint64_t)capacity*4ULL))
         return (uint64_t)-EFAULT;
+    uint64_t received=nas_fs_fd_readv(fd,msg.iov,msg.iovlen);
+    if((int64_t)received<0)return received;
+    /* Rights may arrive while readv parks. Inspect the pinned endpoint,
+     * not the original integer FD, which another task may have reused. */
+    unsigned pending=nas_unix_rights_count(receiver_slot);
+    unsigned deliver=capacity<pending?capacity:pending;
     unsigned free_fd=0;
     for(unsigned i=3;i<NAS_FD_LIMIT;i++)
         if(TASK.fds->entries[i].kind==FD_CLOSED)free_fd++;
-    if(deliver>free_fd)return (uint64_t)-EMFILE;
-    uint64_t received=unix_msgiov(fd,&msg,false);
-    if((int64_t)received<0)return received;
+    if(deliver>free_fd)deliver=free_fd;
     msg.namelen=0;
     msg.flags=pending>deliver ? 0x8U : 0U; /* MSG_CTRUNC */
     msg.controllen=0;
@@ -984,7 +971,7 @@ static uint64_t sys_unix_recvmsg(uint64_t fd,uint64_t address,uint64_t flags) {
     unsigned installed_count=0;
     if(deliver && received) {
         uint8_t kinds[NAS_UNIX_MAX_RIGHTS],slots[NAS_UNIX_MAX_RIGHTS];
-        unsigned count=nas_unix_rights_receive(TASK.fds->entries[fd].slot,kinds,slots,deliver);
+        unsigned count=nas_unix_rights_receive(receiver_slot,kinds,slots,deliver);
         uint8_t control[16+NAS_UNIX_MAX_RIGHTS*4]={0};
         uint64_t clen=16+(uint64_t)count*4;
         uint32_t level=1,type=1;
@@ -1014,6 +1001,17 @@ bad_user_output:
      * requeued, but its transferred references can always be released. */
     for(unsigned i=0;i<installed_count;i++)nas_fs_close_fd(installed[i]);
     return (uint64_t)-EFAULT;
+}
+static uint64_t sys_unix_recvmsg(uint64_t fd,uint64_t address,uint64_t flags) {
+    if(!unix_fd(fd))return (uint64_t)-EBADF;
+    if(flags & ~(0x40000000ULL|0x40ULL|0x2ULL))
+        return (uint64_t)-EOPNOTSUPP; /* CMSG_CLOEXEC/DONTWAIT/PEEK */
+    if(flags&0x2ULL)return (uint64_t)-EOPNOTSUPP;
+    unsigned slot=TASK.fds->entries[fd].slot;
+    if(!nas_fd_hold_description(slot))return (uint64_t)-ENFILE;
+    uint64_t result=unix_recvmsg_pinned(fd,address,flags,slot);
+    nas_fs_drop_kernel_description(slot);
+    return result;
 }
 static uint64_t sys_ipv4_sendmsg(uint64_t fd,uint64_t address,uint64_t flags) {
     if(lwip_fd(fd)) {
