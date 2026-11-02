@@ -26,7 +26,7 @@ arch="kernel/arch/aarch64/cpu.c kernel/arch/aarch64/mmu.c kernel/arch/aarch64/co
 # Only the hardware/transport source selection is target-dependent.
 # VirtIO descriptors, block requests, BlockDevice and ext4 stay generic.
 if [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ] || [ "${NAS_ENABLE_VIRTIO_NET:-0}" = 1 ]; then
-    arch="$arch kernel/drivers/virtio/transport.c kernel/drivers/virtio/mmio.c kernel/drivers/core/bus.c kernel/drivers/port/dma.c ports/unikraft/split_queue.c ports/uboot/virtio_compat.c kernel/platform/virtio_mmio_qemu.c kernel/platform/aarch64_virtio.c"
+    arch="$arch kernel/drivers/virtio/transport.c kernel/drivers/virtio/mmio.c kernel/drivers/port/dma.c ports/unikraft/split_queue.c ports/uboot/virtio_compat.c kernel/platform/virtio_mmio_qemu.c kernel/platform/aarch64_virtio.c"
 fi
 if [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ]; then
     [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ] ||

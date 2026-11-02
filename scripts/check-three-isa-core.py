@@ -13,7 +13,8 @@ assert srcs and len(srcs)==len(set(srcs)), "duplicate/empty shared kernel TU man
 # The versioned manifest, not a second hand-maintained count, defines the
 # complete shared core. Architecture-specific link audits below cross-check it.
 for required in ("kernel/mm/heap.c", "kernel/fs/vfs.c",
-                 "kernel/fs/lookup.c", "kernel/fs/vfs_providers.c"):
+                 "kernel/fs/lookup.c", "kernel/fs/vfs_providers.c",
+                 "kernel/drivers/core/bus.c"):
     assert required in srcs, f"critical common VFS/allocator TU missing: {required}"
 make=(root/"Makefile").read_text()
 defs={}
@@ -45,6 +46,12 @@ assert "LEGACY_IPV4_X86_OBJS" not in make
 assert "$(LWIP_X86_OBJS)" in linked.group(1).split()
 assert "$(LWIP_X86_OBJS)" in actual_link.group(1).split()
 assert "ports/lwip/socket_port.c" in make and "ports/lwip/netconn_bridge.c" in make
+# The scheduler always reaps bus removals, including a loopback-only kernel.
+# A VirtIO-conditional copy of the bus object makes that build fail to link.
+assert "kernel/drivers/core/bus.c" not in make.split("VIRTIO_X86_SRCS :=",1)[1].split("LWIP_X86_SRCS :=",1)[0]
+for port in ("aarch64", "riscv64"):
+    assert "kernel/drivers/core/bus.c" not in (root/f"scripts/build-{port}-full.sh").read_text(), \
+        f"{port} duplicates common bus object behind VirtIO option"
 for retired in ("kernel/net/ipv4_loopback.c", "kernel/net/ipv4_loopback.h",
                 "kernel/net/ipv4_endpoint.h", "kernel/net/test_ipv4_loopback.c"):
     assert not (root/retired).exists(), f"retired TCP/IP backend returned: {retired}"
