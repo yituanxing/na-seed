@@ -101,12 +101,13 @@ const struct limine_file *nas_boot_limine_module_path(const char *path) {
  * fixture below deliberately shadows /dev/null with a regular inode. */
 int nas_fs_user_path_begin(uint64_t dirfd,uint64_t user_pointer,
                            struct nas_fs_path_request *request) {
-    (void)dirfd;
     *request=(struct nas_fs_path_request){0};
     int rc=nas_user_read_cstr(user_pointer,request->inline_path,
                               sizeof(request->inline_path));
     if(rc)return rc;
     request->pathname=request->inline_path;
+    if(dirfd==123U)
+        request->start.dentry=(struct nas_vfs_dentry *)(uintptr_t)1;
     return 0;
 }
 void nas_fs_path_end(struct nas_fs_path_request *request){(void)request;}
@@ -117,7 +118,9 @@ int nas_fs_lookup_path_at(const struct nas_vfs_path *start,
     (void)start;(void)root_clamp;
     ++bootstrap_vfs_lookup_calls;
     *out=(struct nas_vfs_path){0};
-    if(strcmp(path,"/dev/null"))return -ENOENT;
+    bool is_null=!strcmp(path,"/dev/null") ||
+                 (start && start->dentry && !strcmp(path,"dev/null"));
+    if(!is_null)return -ENOENT;
     if(bootstrap_vfs_dangling_link && follow_final)return -ENOENT;
     if(!bootstrap_vfs_dangling_link && !bootstrap_vfs_shadow)return -ENOENT;
     out->dentry=(struct nas_vfs_dentry *)(uintptr_t)1;
@@ -148,10 +151,12 @@ int nas_vfs_open_path_at(const struct nas_vfs_path *start,
                          const struct nas_vfs_open_options *options,
                          struct nas_fs_node *owned,
                          struct nas_vfs_path *owned_path) {
-    (void)start;(void)root_clamp;(void)options;
+    (void)root_clamp;(void)options;
     ++bootstrap_vfs_open_calls;
-    if(bootstrap_vfs_dangling_link && !strcmp(path,"/dev/null"))return -ENOENT;
-    if(!bootstrap_vfs_shadow || strcmp(path,"/dev/null"))return -ENOENT;
+    bool is_null=!strcmp(path,"/dev/null") ||
+                 (start && start->dentry && !strcmp(path,"dev/null"));
+    if(bootstrap_vfs_dangling_link && is_null)return -ENOENT;
+    if(!bootstrap_vfs_shadow || !is_null)return -ENOENT;
     *owned=bootstrap_real_inode;
     if(owned_path)owned_path->dentry=(struct nas_vfs_dentry *)(uintptr_t)1;
     return 0;
@@ -482,6 +487,35 @@ static void test_bootstrap_metadata_and_vfs_priority(void) {
     assert(bootstrap_vfs_open_calls>link_vfs_opens);
     bootstrap_vfs_dangling_link=false;
 
+    /* openat must retain the original dirfd Path during bootstrap. The
+     * former implementation opened /dev/null a SECOND time from the
+     * process root, silently losing the user's anchor and another FD
+     * reservation. A live rootless endpoint needs exactly one VFS open
+     * attempt (and a nofollow metadata probe) in that same transaction. */
+    bootstrap_set_user_path(path,"dev/null");
+    unsigned opens_before=bootstrap_vfs_open_calls;
+    unsigned lookups_before=bootstrap_vfs_lookup_calls;
+    fd=sys_openat_boot(123,path,0,0);
+    assert((int64_t)fd>=0 && guest_task.fds->entries[fd].kind==FD_NULL);
+    assert(bootstrap_vfs_open_calls==opens_before+1 &&
+           bootstrap_vfs_lookup_calls==lookups_before+1);
+    nas_fs_close_fd(fd);
+    opens_before=bootstrap_vfs_open_calls;
+    lookups_before=bootstrap_vfs_lookup_calls;
+    fd=sys_openat_boot(123,path,0x40U|0x200U,0666);
+    assert((int64_t)fd>=0 && guest_task.fds->entries[fd].kind==FD_NULL);
+    assert(bootstrap_vfs_open_calls==opens_before &&
+           bootstrap_vfs_lookup_calls==lookups_before+1);
+    nas_fs_close_fd(fd);
+    assert(sys_openat_boot(123,path,0x40U|0x80U,0666)==
+           (uint64_t)-EEXIST);
+    bootstrap_vfs_dangling_link=true;
+    opens_before=bootstrap_vfs_open_calls;
+    assert(sys_openat_boot(123,path,0,0)==(uint64_t)-ENOENT);
+    assert(bootstrap_vfs_open_calls==opens_before+1);
+    bootstrap_vfs_dangling_link=false;
+    bootstrap_set_user_path(path,"/dev/null");
+
     /* If /dev/null is genuinely absent from the mounted namespace,
      * O_CREAT and O_TRUNC may still open the historical synthetic device.
      * No ordinary VFS create transaction is permitted after ENOENT. */
@@ -503,7 +537,9 @@ static void test_bootstrap_metadata_and_vfs_priority(void) {
     assert(live_fds()==NAS_FD_LIMIT);
     memset(guest_task.fds->entries,0,sizeof(guest_task.fds->entries));
 
+    opens_before=bootstrap_vfs_open_calls;
     fd=sys_open_device(path,0,0);
+    assert(bootstrap_vfs_open_calls==opens_before+1);
     uint64_t second=sys_open_device(path,0,0);
     assert((int64_t)fd>=0 && (int64_t)second>=0 && fd!=second);
     assert(sys_fstat_boot(fd,stat_address)==0);

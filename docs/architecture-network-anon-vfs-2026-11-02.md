@@ -229,6 +229,10 @@ that the name does not exist: a side-effect-free **nofollow lookup with the
 same owned root/dirfd** excludes a real dangling symlink from synthetic
 fallback. An `O_CREAT` preflight similarly avoids creating an accidental
 regular `/dev` file before the bootstrap endpoint can be recognized.
+The `openat` fallback now completes within the **original** `open_path_owned`
+transaction: one ordinary VFS open attempt, then only the read-only nofollow
+probe where permitted. It does not construct a second absolute pathname,
+reserve a second FD or reopen relative to a different root after `ENOENT`.
 
 One read-only descriptor now supplies stable `st_dev`, `st_ino`, `st_rdev`,
 mode and size to bootstrap `stat` and `fstat`. Path metadata inspection does
@@ -242,6 +246,9 @@ larger Linux feature-surface promise. The new production M106 oracle covers
 real-inode shadowing, dangling symlinks, `O_CREAT|O_EXCL`, descriptor
 exhaustion, PTY/TTY metadata and Limine aliases. Host network regressions
 exercise delayed/withdrawn DHCP and an eight-NIC single-snapshot dump.
+The real openat test also checks a relative, dirfd-anchored bootstrap name,
+`O_CREAT|O_TRUNC`, `O_EXCL` and a dangling symlink while counting actual
+VFS open attempts.
 
 ## Focused proof (run on source working tree)
 

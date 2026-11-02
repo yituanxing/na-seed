@@ -620,16 +620,19 @@ static uint64_t open_path_owned(const char *path,
              * this optional legacy 256-byte snapshot cannot represent it. */
             if(directory_path.dentry)
                 (void)nas_vfs_path_string(&directory_path,canonical);
-        } else if(rc==-ENOENT && !request) {
-            /* Only an explicit rootless-bootstrap call may request this
-             * bridge. A normal openat retains its owned Path and reaches
-             * this code only after the same request has been whitelisted
-             * by maybe_open_bootstrap(). Real VFS inodes always win. */
-            int fallback=nas_fs_bootstrap_describe(path,&bootstrap);
-            if(fallback)return (uint64_t)(int64_t)rc;
-            /* A dangling symlink can make follow-final return ENOENT even
-             * though a real mounted name owns this exact spelling. */
-            if(nas_fs_bootstrap_nofollow_probe(NULL,path)!=-ENOENT)
+        } else if(rc==-ENOENT) {
+            /* Rootless bootstrap is the exceptional result of THIS open
+             * transaction. Keep the owned root/dirfd anchors through its
+             * nofollow probe; never reconstruct a name and reopen it via
+             * the process root after the first namei already failed. */
+            char candidate[256];
+            const char *literal=NULL;
+            if(request && nas_fs_bootstrap_candidate(request,candidate))
+                literal=candidate;
+            else if(!request && nas_fs_bootstrap_endpoint(path))literal=path;
+            if(!literal ||
+               nas_fs_bootstrap_nofollow_probe(request,path)!=-ENOENT ||
+               nas_fs_bootstrap_describe(literal,&bootstrap))
                 return (uint64_t)(int64_t)rc;
             bootstrap_ready=true;
         } else return (uint64_t)(int64_t)rc;
@@ -834,25 +837,12 @@ int nas_fs_bootstrap_nofollow_probe(const struct nas_fs_path_request *request,
         nas_fs_fail("bootstrap nofollow Path reference corrupted");
     return rc;
 }
-static uint64_t maybe_open_bootstrap(const struct nas_fs_path_request *request,
-                                     uint64_t flags,uint64_t mode,
-                                     uint64_t original) {
-    if((int64_t)original!=-ENOENT)return original;
-    /* A single owned path request selects the explicit synthetic endpoint;
-     * never copy the user path a second time or re-walk its old spelling. */
-    char candidate[256];
-    if(!nas_fs_bootstrap_candidate(request,candidate))return original;
-    if(nas_fs_bootstrap_nofollow_probe(request,request->pathname)!=-ENOENT)
-        return original;
-    return nas_fs_open_path(candidate,flags,mode);
-}
 static uint64_t sys_open_device(uint64_t pathname, uint64_t flags,
                                  uint64_t mode) {
     struct nas_fs_path_request request;
     int rc=nas_fs_user_path_begin((uint64_t)-100,pathname,&request);
     if(rc)return (uint64_t)(int64_t)rc;
     uint64_t result=open_path_owned(request.pathname,&request,flags,mode);
-    result=maybe_open_bootstrap(&request,flags,mode,result);
     nas_fs_path_end(&request);
     return result;
 }
@@ -1187,7 +1177,6 @@ static uint64_t sys_openat_boot(uint64_t dirfd, uint64_t pathname,
     int rc=nas_fs_user_path_begin(dirfd,pathname,&request);
     if(rc)return (uint64_t)(int64_t)rc;
     uint64_t result=open_path_owned(request.pathname,&request,flags,mode);
-    result=maybe_open_bootstrap(&request,flags,mode,result);
     nas_fs_path_end(&request);
     return result;
 }

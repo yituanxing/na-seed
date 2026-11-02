@@ -195,7 +195,7 @@ case "$case_name" in
     # 10.0.2.2 is QEMU user-mode networking's host gateway, not lo.
     # The host HTTP service supplies README.md; it is absent from guest CPIO.
     # DHCP/ARP address-conflict checks are asynchronous. Probe real network
-    # readiness for a bounded interval, never assume sleep(4) is a lease.
+    # readiness for a bounded interval, never assume a startup sleep is a lease.
     wire_ready=false
     for attempt in 1 2 3 4 5 6 7 8 9 10; do
       if busy printf 'GET /README.md HTTP/1.0\r\nHost: 10.0.2.2\r\n\r\n' |
