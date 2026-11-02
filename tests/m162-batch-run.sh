@@ -55,10 +55,14 @@ echo M162_WGET_TLS_PNG_PASS
 busy grep -Fq '512 by 8' "$work/image-info"
 echo M162_ORIGINAL_PNG_PIXELS_PASS
 
-# Same downloaded image is also rendered by the original signed Chafa
-# terminal renderer; this proves real program composition, not a test marker.
+# A 512x8 panorama would naturally collapse into one or two terminal rows
+# when Chafa preserves aspect ratio. Original ImageMagick resizes the REAL
+# downloaded PNG into a square terminal thumbnail first. This also exercises
+# an actual image-processing application before the original Chafa renderer.
+/usr/bin/magick "$work/wire-curl.png" -resize 96x96! "$work/terminal-thumbnail.png"
+[ -s "$work/terminal-thumbnail.png" ]
 /usr/bin/chafa --format symbols --colors none --size 40x12 \
-    "$work/wire-curl.png" > "$work/char-frame"
+    "$work/terminal-thumbnail.png" > "$work/char-frame"
 [ "$(busy wc -c < "$work/char-frame")" -gt 80 ]
 [ "$(busy wc -l < "$work/char-frame")" -ge 8 ]
 echo '[M162 TERMINAL IMAGE BEGIN]'
