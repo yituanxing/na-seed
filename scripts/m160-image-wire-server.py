@@ -26,6 +26,10 @@ if __name__ == '__main__':
     original['BODIES'].update({
         '/m160-curl.png': image,
         '/m160-wget.png': image,
+        # M162 reuses this same independently verified TLS image oracle to
+        # drive a real firmware framebuffer through original Linux programs.
+        '/m162-display.png': image,
+        '/m162-display-wget.png': image,
     })
 
     class ImageHandler(original['Handler']):

@@ -1,0 +1,2 @@
+# id mode args expected evidence entry
+m163-batch	cpio	ash /tests/m163-batch-run.sh	M163_BATCH_PASS	-	/bin/busybox

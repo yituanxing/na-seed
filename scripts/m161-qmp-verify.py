@@ -74,7 +74,7 @@ def ppm_tokens(data, needed=4):
     return tokens, data[pos:]
 
 
-def verify_ppm(path):
+def verify_ppm(path, label):
     data = path.read_bytes()
     tokens, pixels = ppm_tokens(data)
     if tokens[0] != b"P6" or tokens[3] != b"255":
@@ -89,7 +89,7 @@ def verify_ppm(path):
         actual = tuple(pixels[start:start + 3])
         if actual != expected:
             raise RuntimeError(f"visible QEMU pixel ({x},{y}): expected {expected}, got {actual}")
-    print(f"[M161 QMP DISPLAY PASS] {width}x{height} exact four RGB bands from actual emulated screen", flush=True)
+    print(f"[{label} QMP DISPLAY PASS] {width}x{height} exact four RGB bands from actual emulated screen", flush=True)
 
 
 def main():
@@ -98,6 +98,9 @@ def main():
     parser.add_argument("--serial", required=True, type=Path)
     parser.add_argument("--screenshot", required=True, type=Path)
     parser.add_argument("--timeout", type=int, default=700)
+    parser.add_argument("--trigger", choices=("M161_SCREEN_DRAWN", "M162_FRAME_VISIBLE"),
+                        default="M161_SCREEN_DRAWN")
+    parser.add_argument("--label", choices=("M161", "M162"), default="M161")
     args = parser.parse_args()
     deadline = time.monotonic() + args.timeout
 
@@ -106,11 +109,11 @@ def main():
             trace = args.serial.read_bytes()
             if b"[FAIL]" in trace:
                 raise RuntimeError("guest kernel reported FAIL before framebuffer screenshot")
-            if trace.count(b"M161_SCREEN_DRAWN") == 1:
+            if trace.count(args.trigger.encode("ascii")) == 1:
                 break
         time.sleep(0.1)
     else:
-        raise RuntimeError("guest did not draw the M161 frame within budget")
+        raise RuntimeError(f"guest did not draw the {args.label} frame within budget")
 
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(2)
@@ -132,12 +135,12 @@ def main():
         qmp_command(sock, reader, "screendump", {"filename": str(args.screenshot.resolve())})
     if not args.screenshot.is_file():
         raise RuntimeError("QEMU screendump failed to write screenshot")
-    verify_ppm(args.screenshot)
+    verify_ppm(args.screenshot, args.label)
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        print(f"[M161 QMP FAIL] {exc}", file=sys.stderr, flush=True)
+        print(f"[QMP DISPLAY FAIL] {exc}", file=sys.stderr, flush=True)
         raise SystemExit(1)

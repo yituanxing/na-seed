@@ -1,0 +1,8 @@
+# Existing original signed Alpine ELF identities, NOT 7 new programs.
+usr/bin/curl
+usr/bin/wget
+usr/bin/pngtopam
+usr/bin/pamfile
+usr/bin/chafa
+usr/bin/magick
+usr/bin/fbgrab
