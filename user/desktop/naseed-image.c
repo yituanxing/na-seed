@@ -55,7 +55,7 @@ static void image_client(int channel) {
             pixels[((size_t)IMAGE_W*IMAGE_H-1)*4U+2]==255,
             "signed image expected magenta pixel contract");
     __atomic_thread_fence(__ATOMIC_RELEASE);
-    nasd_send_surface(channel,surface,IMAGE);
+    nasd_send_surface(channel,surface,IMAGE,IMAGE_W,IMAGE_H);
     nasd_mark("M167_SIGNED_MAGICK_IMAGE_PASS");
     for(;;) {
         struct message packet=nasd_recv_packet(channel);

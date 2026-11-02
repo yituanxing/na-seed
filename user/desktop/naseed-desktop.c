@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "protocol.h"
+#include "text.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/fb.h>
@@ -29,17 +30,24 @@ _Static_assert(sizeof(struct fb_var_screeninfo) == 160, "Linux framebuffer");
 _Static_assert(sizeof(struct fb_fix_screeninfo) == 80, "Linux framebuffer");
 
 struct window {
-    int channel, surface_fd, x,y,w,h;
+    int channel, surface_fd, x,y,w,h,role;
     uint8_t *pixels;
     pid_t pid;
 };
 struct input_handles {int keyboard,tablet,mouse; int abs_min[2],abs_max[2];};
 struct session {
-    struct window windows[WINDOW_COUNT];
+    struct window windows[WINDOW_LIMIT];
+    unsigned order[WINDOW_LIMIT],count;
     struct input_handles input;
-    int fb, pointer_x,pointer_y,focus,top,stage;
+    int fb, pointer_x,pointer_y,focus,top,stage,mode;
     int held,dragging,grab_x,grab_y,origin_x,origin_y;
     int sent_key;
+};
+struct client_spec {const char *path;int x,y;};
+static const struct client_spec clients[]={
+    [IMAGE]={"/usr/bin/naseed-image",64,80},
+    [TERMINAL]={"/usr/bin/naseed-terminal",300,160},
+    [BROWSER]={"/usr/bin/naseed-browser",445,86},
 };
 static uint8_t screen[SCREEN_W*SCREEN_H*4];
 
@@ -134,8 +142,11 @@ static void render(struct session *s) {
     for(unsigned y=0;y<SCREEN_H;y++)
         for(unsigned x=0;x<SCREEN_W;x++)
             set_pixel(screen,(int)x,(int)y,16,32,48);
-    draw_window(&s->windows[1-s->top],0);
-    draw_window(&s->windows[s->top],1);
+    for(unsigned i=0;i<s->count;i++) {
+        unsigned index=s->order[i];
+        nasd_require(index<s->count,"window z-order index");
+        draw_window(&s->windows[index],(int)index==s->focus);
+    }
     /* The same positioned FileOps path is used by LVGL's Linux fbdev
      * non-mmap backend. No shared OpenFile seek cursor is modified. */
     size_t written=0;
@@ -148,8 +159,10 @@ static void render(struct session *s) {
     }
 }
 static void spawn_client(struct session *s,int role) {
-    const char *path=role==IMAGE?"/usr/bin/naseed-image":
-                            "/usr/bin/naseed-terminal";
+    nasd_require(role>=0 && (unsigned)role<s->count &&
+                 (unsigned)role<sizeof(clients)/sizeof(clients[0]),
+                 "desktop client registration capacity");
+    const char *path=clients[role].path;
     int link[2]={-1,-1};
     nasd_require(socketpair(AF_UNIX,SOCK_STREAM,0,link)==0,
             "create genuine AF_UNIX client IPC");
@@ -160,18 +173,22 @@ static void spawn_client(struct session *s,int role) {
         /* Only a single IPC descriptor is inherited by the exec'ed client.
          * Devices, framebuffer and earlier clients remain desktop-owned. */
         for(int i=4;i<64;i++)close(i);
-        char *const args[]={(char *)path,NULL};
+        char *const args[]={(char *)path,
+              s->mode==168 && role==TERMINAL ? "--m168" : NULL,NULL};
         execv(path,args);
         _exit(121);
     }
     close(link[1]);
     struct window *w=&s->windows[role];
-    w->pid=pid;w->channel=link[0];
-    w->w=role==IMAGE?IMAGE_W:TERM_W;
-    w->h=role==IMAGE?IMAGE_H:TERM_H;
-    w->x=role==IMAGE?64:300;
-    w->y=role==IMAGE?80:160;
-    w->surface_fd=nasd_receive_surface(w->channel,role);
+    w->pid=pid;w->channel=link[0];w->role=role;
+    w->x=clients[role].x;w->y=clients[role].y;
+    unsigned surface_w=0,surface_h=0;
+    w->surface_fd=nasd_receive_surface(w->channel,role,
+                                       &surface_w,&surface_h);
+    w->w=(int)surface_w;w->h=(int)surface_h;
+    nasd_require(w->x+w->w<=SCREEN_W &&
+            w->y+w->h+TITLE_H<=SCREEN_H,
+            "client surface fits initial desktop placement");
     const size_t bytes=(size_t)w->w*(size_t)w->h*4U;
     void *mapping=mmap(NULL,bytes,PROT_READ,MAP_SHARED,w->surface_fd,0);
     nasd_require(mapping!=MAP_FAILED,"map received shared surface in compositor");
@@ -187,13 +204,22 @@ static int scale_abs(int value,int min,int max,int pixels) {
     return clamp((int)(numerator/(max-min)),pixels-1);
 }
 static int window_at(const struct session *s,int x,int y) {
-    for(int pass=0;pass<WINDOW_COUNT;pass++) {
-        int i=pass==0?s->top:1-s->top;
+    for(unsigned pass=0;pass<s->count;pass++) {
+        int i=(int)s->order[s->count-1-pass];
         const struct window *w=&s->windows[i];
         if(x>=w->x && y>=w->y && x<w->x+w->w &&
            y<w->y+w->h+TITLE_H)return i;
     }
     return -1;
+}
+static void raise_window(struct session *s,unsigned target) {
+    unsigned at=0;
+    while(at<s->count && s->order[at]!=target)at++;
+    nasd_require(at<s->count,"raising registered window");
+    for(unsigned i=at+1;i<s->count;i++)s->order[i-1]=s->order[i];
+    s->order[s->count-1]=target;
+    s->top=(int)target;
+    s->focus=(int)target;
 }
 static void pointer_button(struct session *s,int down) {
     /* QEMU may deliver BTN_LEFT through tablet OR mouse. One logical held
@@ -203,7 +229,7 @@ static void pointer_button(struct session *s,int down) {
     if(down) {
         int target=window_at(s,s->pointer_x,s->pointer_y);
         if(target<0)return;
-        s->focus=s->top=target;
+        raise_window(s,(unsigned)target);
         struct window *w=&s->windows[target];
         s->dragging=s->pointer_y>=w->y &&
                     s->pointer_y<w->y+TITLE_H;
@@ -211,10 +237,18 @@ static void pointer_button(struct session *s,int down) {
         s->origin_x=w->x;s->origin_y=w->y;
         render(s);
         if(s->stage==0 && target==IMAGE && !s->dragging) {
-            s->stage=1;nasd_mark("M167_IMAGE_FOCUS_VISIBLE");
+            s->stage=1;nasd_mark(s->mode==168 ?
+                 "M168_IMAGE_FOCUS_VISIBLE":"M167_IMAGE_FOCUS_VISIBLE");
         } else if(s->stage==1 && target==IMAGE && s->dragging) {
-            nasd_mark("M167_IMAGE_DRAG_GRABBED");
-        } else if(s->stage==2 && target==TERMINAL) {
+            nasd_mark(s->mode==168 ?
+                 "M168_IMAGE_DRAG_GRABBED":"M167_IMAGE_DRAG_GRABBED");
+        } else if(s->mode==168 && s->stage==2 && target==BROWSER &&
+                  !s->dragging) {
+            s->stage=3;nasd_mark("M168_BROWSER_FOCUS_VISIBLE");
+        } else if(s->mode==168 && s->stage==4 && target==TERMINAL &&
+                  !s->dragging) {
+            s->stage=5;nasd_mark("M168_TERMINAL_FOCUS_VISIBLE");
+        } else if(s->mode==167 && s->stage==2 && target==TERMINAL) {
             s->stage=3;nasd_mark("M167_TERMINAL_FOCUS_VISIBLE");
         }
     } else if(s->dragging) {
@@ -223,7 +257,8 @@ static void pointer_button(struct session *s,int down) {
         if(s->stage==1 && s->focus==IMAGE &&
            w->x-s->origin_x>=50 && w->y-s->origin_y>=20) {
             render(s);s->stage=2;
-            nasd_mark("M167_IMAGE_MOVED_VISIBLE");
+            nasd_mark(s->mode==168 ?
+                     "M168_IMAGE_MOVED_VISIBLE":"M167_IMAGE_MOVED_VISIBLE");
         }
     }
 }
@@ -240,12 +275,17 @@ static void pointer_motion(struct session *s) {
 static void input_event(struct session *s,unsigned device,
                         const struct input_event *e) {
     if(device==0 && e->type==EV_KEY && e->value==1) {
-        if(e->code==KEY_Q && s->stage==4) {
-            s->stage=5;
-        } else if(e->code==KEY_A && s->stage==3 &&
-                  s->focus==TERMINAL && !s->sent_key) {
+        if(e->code==KEY_Q && s->stage==(s->mode==168?6:4)) {
+            s->stage=s->mode==168?7:5;
+        } else if(e->code==KEY_B && s->mode==168 && s->stage==3 &&
+                  s->focus==BROWSER && !(s->sent_key&(1<<BROWSER))) {
+            nasd_send_packet(s->windows[BROWSER].channel,MSG_KEY,KEY_B);
+            s->sent_key|=1<<BROWSER;
+        } else if(e->code==KEY_A &&
+                  s->stage==(s->mode==168?5:3) &&
+                  s->focus==TERMINAL && !(s->sent_key&(1<<TERMINAL))) {
             nasd_send_packet(s->windows[TERMINAL].channel,MSG_KEY,KEY_A);
-            s->sent_key=1;
+            s->sent_key|=1<<TERMINAL;
         }
     } else if(device==1 && e->type==EV_ABS) {
         if(e->code==ABS_X)
@@ -264,18 +304,18 @@ static void input_event(struct session *s,unsigned device,
        (e->value==0 || e->value==1))pointer_button(s,e->value);
 }
 static void event_loop(struct session *s) {
-    while(s->stage<5) {
-        struct pollfd fds[5]={
+    while(s->stage<(s->mode==168?7:5)) {
+        struct pollfd fds[3+WINDOW_LIMIT]={
             {.fd=s->input.keyboard,.events=POLLIN},
             {.fd=s->input.tablet,.events=POLLIN},
-            {.fd=s->input.mouse,.events=POLLIN},
-            {.fd=s->windows[IMAGE].channel,.events=POLLIN},
-            {.fd=s->windows[TERMINAL].channel,.events=POLLIN}
+            {.fd=s->input.mouse,.events=POLLIN}
         };
-        int count=poll(fds,5,30000);
+        for(unsigned i=0;i<s->count;i++)
+            fds[3+i]=(struct pollfd){.fd=s->windows[i].channel,.events=POLLIN};
+        int count=poll(fds,3+s->count,30000);
         if(count<0 && errno==EINTR)continue;
         nasd_require(count>0,"poll hardware devices and IPC timeout/nasd_fail");
-        for(unsigned i=0;i<5;i++) {
+        for(unsigned i=0;i<3+s->count;i++) {
             nasd_require(!(fds[i].revents&(POLLERR|POLLNVAL|POLLHUP)),
                     "desktop device or client disconnected");
             if(!(fds[i].revents&POLLIN))continue;
@@ -290,27 +330,41 @@ static void event_loop(struct session *s) {
             } else {
                 int role=(int)i-3;
                 struct message m=nasd_recv_packet(s->windows[role].channel);
-                nasd_require(role==TERMINAL && s->stage==3 &&
-                        m.type==MSG_UPDATED && m.key==KEY_A,
-                        "terminal-only live surface commit");
+                nasd_require(m.type==MSG_UPDATED,
+                             "client-only live surface commit");
+                if(s->mode==168 && role==BROWSER && s->stage==3 &&
+                   m.key==KEY_B) {
+                    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+                    render(s);s->stage=4;
+                    nasd_mark("M168_BROWSER_KEY_VISIBLE");
+                    continue;
+                }
+                nasd_require(role==TERMINAL &&
+                         s->stage==(s->mode==168?5:3) && m.key==KEY_A,
+                         "focused terminal surface commit");
                 __atomic_thread_fence(__ATOMIC_ACQUIRE);
-                render(s);s->stage=4;
-                nasd_mark("M167_TERMINAL_KEY_VISIBLE");
+                render(s);s->stage=s->mode==168?6:4;
+                nasd_mark(s->mode==168 ?
+                     "M168_TERMINAL_KEY_VISIBLE":"M167_TERMINAL_KEY_VISIBLE");
             }
         }
     }
 }
-static void desktop(void) {
+static void desktop(int mode) {
     struct session s={0};
+    s.mode=mode;s.count=mode==168?3U:2U;
     s.input=open_input();
     s.fb=open_fb();
-    spawn_client(&s,IMAGE);
-    spawn_client(&s,TERMINAL);
-    s.focus=s.top=TERMINAL;s.pointer_x=400;s.pointer_y=300;
+    for(unsigned i=0;i<s.count;i++) {
+        spawn_client(&s,(int)i);
+        s.order[i]=i;
+    }
+    s.focus=s.top=(int)(s.count-1);s.pointer_x=400;s.pointer_y=300;
     render(&s);
-    nasd_mark("M167_DESKTOP_INITIAL_VISIBLE");
+    nasd_mark(mode==168?"M168_DESKTOP_INITIAL_VISIBLE":
+                        "M167_DESKTOP_INITIAL_VISIBLE");
     event_loop(&s);
-    for(unsigned i=0;i<WINDOW_COUNT;i++) {
+    for(unsigned i=0;i<s.count;i++) {
         struct window *w=&s.windows[i];
         nasd_send_packet(w->channel,MSG_QUIT,0);
         int status=0;
@@ -321,8 +375,9 @@ static void desktop(void) {
     }
     close(s.input.keyboard);close(s.input.tablet);close(s.input.mouse);
     close(s.fb);
-    nasd_mark("M167_TWO_EXEC_CLIENTS_CLEAN_PASS");
-    nasd_mark("M167_DESKTOP_PASS");
+    nasd_mark(mode==168?"M168_THREE_EXEC_CLIENTS_CLEAN_PASS":
+                        "M167_TWO_EXEC_CLIENTS_CLEAN_PASS");
+    nasd_mark(mode==168?"M168_DESKTOP_PASS":"M167_DESKTOP_PASS");
 }
 /* Reproducible host check for EXACT production IPC/surface/geometry helpers.
  * No fake kernel entrypoint or fabricated guest acceptance marker. */
@@ -336,13 +391,16 @@ static void selftest(void) {
         uint8_t *pixels=nasd_make_surface("m167-selftest-image",IMAGE_W,
                                       IMAGE_H,&fd);
         nasd_fill_surface(pixels,IMAGE_W,IMAGE_H,255,0,255);
-        nasd_send_surface(ends[1],fd,IMAGE);
+        nasd_send_surface(ends[1],fd,IMAGE,IMAGE_W,IMAGE_H);
         munmap(pixels,(size_t)IMAGE_W*IMAGE_H*4U);
         close(fd);close(ends[1]);
         _exit(0);
     }
     close(ends[1]);
-    int fd=nasd_receive_surface(ends[0],IMAGE);
+    unsigned w=0,h=0;
+    int fd=nasd_receive_surface(ends[0],IMAGE,&w,&h);
+    nasd_require(w==IMAGE_W && h==IMAGE_H,
+                 "host client-specified surface metadata identity");
     uint8_t *pixels=mmap(NULL,(size_t)IMAGE_W*IMAGE_H*4U,
                          PROT_READ,MAP_SHARED,fd,0);
     nasd_require(pixels!=MAP_FAILED && pixels[0]==255 && pixels[1]==0 &&
@@ -351,7 +409,7 @@ static void selftest(void) {
     int status=0;
     nasd_require(waitpid(child,&status,0)==child && WIFEXITED(status) &&
             WEXITSTATUS(status)==0,"independent IPC client exit");
-    struct session s={0};
+    struct session s={.count=2,.order={TERMINAL,IMAGE}};
     s.windows[IMAGE]=(struct window){.x=64,.y=80,.w=IMAGE_W,.h=IMAGE_H,
                                       .pixels=pixels};
     s.windows[TERMINAL]=(struct window){.x=300,.y=160,
@@ -389,14 +447,59 @@ static void selftest(void) {
     nasd_mark("[M167 HOST DESKTOP PASS] fork/SCM_RIGHTS/memfd shared pixels, "
          "overlap, focus, hit-testing, axis scaling, live surface update");
 }
+static void selftest168(void) {
+    struct session s={.count=3,.order={IMAGE,TERMINAL,BROWSER},
+                      .focus=BROWSER,.top=BROWSER,.mode=168};
+    const int dimensions[3][2]={{IMAGE_W,IMAGE_H},{TERM_W,TERM_H},
+                                 {BROWSER_W,BROWSER_H}};
+    const uint8_t colors[3][3]={{255,0,255},{20,68,204},{34,95,72}};
+    int fds[3]={-1,-1,-1};
+    for(unsigned i=0;i<3;i++) {
+        struct window *w=&s.windows[i];
+        w->x=clients[i].x;w->y=clients[i].y;
+        w->w=dimensions[i][0];w->h=dimensions[i][1];
+        w->pixels=nasd_make_surface("m168-host-client",w->w,w->h,
+                                    &fds[i]);
+        nasd_fill_surface(w->pixels,w->w,w->h,
+                          colors[i][0],colors[i][1],colors[i][2]);
+    }
+    for(unsigned k=0;k<3;k++)draw_window(&s.windows[s.order[k]],
+                                           (int)s.order[k]==s.focus);
+    const size_t overlap=((size_t)210*SCREEN_W+500)*4U;
+    nasd_require(screen[overlap+2]==34 && screen[overlap+1]==95,
+                 "third client initially owns overlap");
+    nasd_require(window_at(&s,600,150)==BROWSER,
+                 "third-party client participates in hit-testing");
+    raise_window(&s,TERMINAL);
+    for(unsigned k=0;k<3;k++)draw_window(&s.windows[s.order[k]],
+                                           (int)s.order[k]==s.focus);
+    nasd_require(screen[overlap+2]==20 && screen[overlap+1]==68,
+                 "terminal raises above dynamically registered browser");
+    nasd_draw_text(s.windows[BROWSER].pixels,BROWSER_W,BROWSER_H,
+                   8,7,"NASEED",6,255,255,255);
+    size_t glyph=((size_t)7*BROWSER_W+8)*4U;
+    nasd_require(s.windows[BROWSER].pixels[glyph+2]==255,
+                 "real client pixel glyph rasterizer");
+    for(unsigned i=0;i<3;i++) {
+        struct window *w=&s.windows[i];
+        munmap(w->pixels,(size_t)w->w*w->h*4U);
+        close(fds[i]);
+    }
+    nasd_mark("[M168 HOST DESKTOP PASS] three registered dimensioned clients, "
+              "z-order, focus, surface pixels and userspace text glyphs");
+}
 int main(int argc,char **argv) {
     if(argc==2 && !strcmp(argv[1],"--selftest")) {
         selftest();return 0;
     }
+    if(argc==2 && !strcmp(argv[1],"--selftest168")) {
+        selftest();selftest168();return 0;
+    }
     /* The signed guest program runner passes its case identifier as argv[1].
      * Desktop can also be launched interactively without that selector. */
-    nasd_require(argc==1 || (argc==2 && !strcmp(argv[1],"m167")),
+    nasd_require(argc==1 || (argc==2 &&
+                 (!strcmp(argv[1],"m167") || !strcmp(argv[1],"m168"))),
                  "desktop mode arguments");
-    desktop();
+    desktop(argc==2 && !strcmp(argv[1],"m168") ? 168 : 167);
     return 0;
 }

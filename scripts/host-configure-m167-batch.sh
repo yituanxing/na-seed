@@ -19,7 +19,7 @@ command -v "$compiler" >/dev/null
 mkdir -p "$root/usr/bin"
 for app in naseed-desktop naseed-image naseed-terminal; do
     "$compiler" -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
-        "user/desktop/$app.c" user/desktop/protocol.c \
+        "user/desktop/$app.c" user/desktop/protocol.c user/desktop/text.c \
         -o "$root/usr/bin/$app"
     [ "$(od -An -tx1 -N4 "$root/usr/bin/$app" | tr -d ' \n')" = 7f454c46 ] || exit 1
     readelf -h "$root/usr/bin/$app" | grep -Fq "$machine" || exit 1

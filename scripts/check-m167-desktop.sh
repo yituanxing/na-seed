@@ -6,7 +6,7 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/naseed-m167-desktop.XXXXXX")
 trap 'rm -f "$work/naseed-desktop" "$work/naseed-image" "$work/naseed-terminal" "$work/output"; rmdir "$work"' EXIT HUP INT TERM
 for app in naseed-desktop naseed-image naseed-terminal; do
     gcc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
-        "user/desktop/$app.c" user/desktop/protocol.c \
+        "user/desktop/$app.c" user/desktop/protocol.c user/desktop/text.c \
         -o "$work/$app"
     readelf -h "$work/$app" | grep -Fq 'Advanced Micro Devices X86-64'
     ! readelf -l "$work/$app" | grep -Fq INTERP

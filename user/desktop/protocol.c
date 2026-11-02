@@ -45,8 +45,13 @@ struct message nasd_recv_packet(int fd) {
     nasd_require(!m.reserved && !m.value,"desktop IPC reserved fields");
     return m;
 }
-void nasd_send_surface(int fd,int surface,uint32_t role) {
-    struct message packet={.type=MSG_READY,.key=role};
+void nasd_send_surface(int fd,int surface,uint32_t role,unsigned width,
+                       unsigned height) {
+    nasd_require(width>0 && height>0 && width<=SCREEN_W &&
+                 height<=SCREEN_H-TITLE_H,
+                 "client surface dimensions in screen bounds");
+    struct message packet={.type=MSG_READY,.key=role,
+                           .value=(width<<16U)|height};
     struct iovec iov={.iov_base=&packet,.iov_len=sizeof(packet)};
     union {struct cmsghdr align;uint8_t bytes[CMSG_SPACE(sizeof(int))];} control={0};
     struct msghdr m={.msg_iov=&iov,.msg_iovlen=1,
@@ -59,7 +64,9 @@ void nasd_send_surface(int fd,int surface,uint32_t role) {
     nasd_require(sendmsg(fd,&m,0)==(ssize_t)sizeof(packet),
             "sendmsg memfd SCM_RIGHTS");
 }
-int nasd_receive_surface(int fd,int role) {
+int nasd_receive_surface(int fd,int role,unsigned *width,unsigned *height) {
+    nasd_require(width!=NULL && height!=NULL,
+                 "surface metadata outputs");
     /* A client does real work (ImageMagick or PTY shell startup) before
      * announcing its memfd. Park on socket readiness before recvmsg: NaSeed
      * currently exposes its wait/retry scheduler for poll and read/write,
@@ -83,14 +90,17 @@ int nasd_receive_surface(int fd,int role) {
     nasd_require(n>0 && n<=(ssize_t)sizeof(packet),"recvmsg surface header");
     if(n<(ssize_t)sizeof(packet))
         nasd_read_all(fd,(uint8_t *)&packet+n,sizeof(packet)-(size_t)n);
+    const unsigned w=packet.value>>16U,h=packet.value&65535U;
     nasd_require(packet.type==MSG_READY && packet.key==(unsigned)role &&
-            !packet.value && !packet.reserved && !(m.msg_flags&MSG_CTRUNC),
+            w>0 && h>0 && w<=SCREEN_W && h<=SCREEN_H-TITLE_H &&
+            !packet.reserved && !(m.msg_flags&MSG_CTRUNC),
             "surface role/protocol mismatch");
     struct cmsghdr *c=CMSG_FIRSTHDR(&m);
     nasd_require(c!=NULL && c->cmsg_level==SOL_SOCKET && c->cmsg_type==SCM_RIGHTS &&
             c->cmsg_len==CMSG_LEN(sizeof(int)),"real received memfd capability");
     int shared=-1;memcpy(&shared,CMSG_DATA(c),sizeof(shared));
     nasd_require(shared>=0,"invalid received memfd");
+    *width=w;*height=h;
     return shared;
 }
 uint8_t *nasd_make_surface(const char *name,int w,int h,int *outfd) {

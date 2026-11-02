@@ -1,0 +1,2 @@
+# profile	root	target	marker	shell	argv
+m168-batch	cpio	m168	M168_DESKTOP_PASS	-	/usr/bin/naseed-desktop

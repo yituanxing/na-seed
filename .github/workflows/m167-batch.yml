@@ -74,7 +74,8 @@ jobs:
           sh scripts/check-m166-input-port.sh
           sh scripts/check-m107-unix.sh
           cc -std=c11 -O2 -Wall -Wextra -Werror -static -fsyntax-only \
-            user/desktop/protocol.c user/desktop/naseed-desktop.c \
+            user/desktop/protocol.c user/desktop/text.c \
+            user/desktop/naseed-desktop.c \
             user/desktop/naseed-image.c user/desktop/naseed-terminal.c
       - name: Install native Linux ABI compilers QEMU EFI and staging tools
         timeout-minutes: 18

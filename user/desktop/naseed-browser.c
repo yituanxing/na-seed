@@ -1,0 +1,95 @@
+#define _GNU_SOURCE
+#include "protocol.h"
+#include "text.h"
+#include <errno.h>
+#include <fcntl.h>
+#include <linux/input.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+/* Independent userspace document viewer. Original APK-signed Lynx parses a
+ * real HTML file and Midnight Commander reports its version; their output
+ * becomes actual client-owned pixels (not compositor-generated labels). */
+static size_t signed_program_output(int channel,const char *path,
+                                    char *const argv[],char *out,size_t cap) {
+    int pipefd[2]={-1,-1};
+    nasd_require(pipe(pipefd)==0,"signed document tool output pipe");
+    pid_t pid=fork();nasd_require(pid>=0,"fork signed document tool");
+    if(!pid) {
+        close(channel);close(pipefd[0]);
+        if(dup2(pipefd[1],STDOUT_FILENO)<0 ||
+           dup2(pipefd[1],STDERR_FILENO)<0)_exit(125);
+        close(pipefd[1]);
+        execv(path,argv);_exit(127);
+    }
+    close(pipefd[1]);
+    size_t used=0;
+    while(used+1<cap) {
+        ssize_t n=read(pipefd[0],out+used,cap-1-used);
+        if(n<0 && errno==EINTR)continue;
+        nasd_require(n>=0,"signed program output read");
+        if(!n)break;
+        used+=(size_t)n;
+    }
+    out[used]=0;
+    nasd_require(used+1<cap,"signed document output bounded");
+    close(pipefd[0]);
+    int status=0;
+    nasd_require(waitpid(pid,&status,0)==pid && WIFEXITED(status) &&
+                 WEXITSTATUS(status)==0,"original signed document program exit");
+    return used;
+}
+static void paint(uint8_t *pixels,const char *lynx,size_t lynx_size,
+                  const char *mc,size_t mc_size,int active) {
+    nasd_fill_surface(pixels,BROWSER_W,BROWSER_H,
+                      active?218:34,active?115:95,active?48:72);
+    const char *banner=active?"BROWSER KEY B RECEIVED":"LYNX HTML AND MC VIEW";
+    nasd_draw_text(pixels,BROWSER_W,BROWSER_H,8,7,banner,strlen(banner),
+                   255,255,255);
+    nasd_draw_text(pixels,BROWSER_W,BROWSER_H,8,27,lynx,lynx_size,
+                   245,247,235);
+    /* Keep the signed MC identification visible beneath the Lynx text. */
+    nasd_draw_text(pixels,BROWSER_W,BROWSER_H,8,154,mc,mc_size,
+                   245,239,219);
+}
+int main(void) {
+    const int channel=3;
+    char lynx[2048]={0},mc[256]={0};
+    char *const lynx_argv[]={"lynx","-dump","-nolist","-width=38",
+                              "/tests/m168-home.html",NULL};
+    size_t nlynx=signed_program_output(channel,"/usr/bin/lynx",
+                                      lynx_argv,lynx,sizeof(lynx));
+    nasd_require(strstr(lynx,"NaSeed")!=NULL,
+                 "original Lynx did not render HTML content");
+    char *const mc_argv[]={"mc","--version",NULL};
+    size_t nmc=signed_program_output(channel,"/usr/bin/mc",
+                                    mc_argv,mc,sizeof(mc));
+    nasd_require(strstr(mc,"Midnight Commander")!=NULL,
+                 "original MC version output unavailable");
+    int surface=-1;
+    uint8_t *pixels=nasd_make_surface("m168-browser",BROWSER_W,
+                                     BROWSER_H,&surface);
+    paint(pixels,lynx,nlynx,mc,nmc,0);
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    nasd_send_surface(channel,surface,BROWSER,BROWSER_W,BROWSER_H);
+    nasd_mark("M168_SIGNED_LYNX_MC_BROWSER_PASS");
+    for(;;) {
+        struct message msg=nasd_recv_packet(channel);
+        if(msg.type==MSG_QUIT)break;
+        nasd_require(msg.type==MSG_KEY && msg.key==KEY_B,
+                     "focused browser KEY_B only");
+        paint(pixels,lynx,nlynx,mc,nmc,1);
+        __atomic_thread_fence(__ATOMIC_RELEASE);
+        nasd_send_packet(channel,MSG_UPDATED,KEY_B);
+        nasd_mark("M168_REAL_BROWSER_KEY_ROUTE_PASS");
+    }
+    munmap(pixels,(size_t)BROWSER_W*BROWSER_H*4U);
+    close(surface);close(channel);
+    return 0;
+}

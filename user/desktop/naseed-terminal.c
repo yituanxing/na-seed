@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "protocol.h"
+#include "text.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/input.h>
@@ -17,7 +18,8 @@
 
 /* Independent terminal app: a real PTY, signed dialog --version through
  * BusyBox sh, keyboard input from compositor IPC and a live memfd surface. */
-static void read_pty_until(int fd,const char *wanted,int version) {
+static void read_pty_until(int fd,const char *wanted,int version,
+                           char *capture,size_t capacity) {
     char collected[2048]={0};
     size_t used=0;
     while(used<sizeof(collected)-1) {
@@ -38,6 +40,10 @@ static void read_pty_until(int fd,const char *wanted,int version) {
                 fprintf(stderr,"[M167 PTY] dialog output=%.*s\n",
                         (int)used,collected);
                 nasd_fail("signed dialog version missing in actual PTY");
+            }
+            if(capture && capacity) {
+                size_t copy=used<capacity-1?used:capacity-1;
+                memcpy(capture,collected,copy);capture[copy]=0;
             }
             return;
         }
@@ -86,31 +92,41 @@ static int start_shell(pid_t *pid) {
     nasd_require(ready=='R',"PTY child attached real slave");
     return master;
 }
-static void terminal_client(int channel) {
+static void terminal_client(int channel,int rich) {
     int surface=-1;
     uint8_t *pixels=nasd_make_surface("m167-terminal",TERM_W,TERM_H,&surface);
     pid_t shell=0;
     int pty=start_shell(&shell);
-    read_pty_until(pty,"M167_SHELL_READY",1);
+    char initial[2048]={0};
+    read_pty_until(pty,"M167_SHELL_READY",1,initial,sizeof(initial));
     nasd_fill_surface(pixels,TERM_W,TERM_H,20,68,204);
+    if(rich)
+        nasd_draw_text(pixels,TERM_W,TERM_H,8,9,initial,strlen(initial),
+                       250,250,255);
     __atomic_thread_fence(__ATOMIC_RELEASE);
-    nasd_send_surface(channel,surface,TERMINAL);
+    nasd_send_surface(channel,surface,TERMINAL,TERM_W,TERM_H);
     nasd_mark("M167_SIGNED_DIALOG_PTY_SHELL_PASS");
+    if(rich)nasd_mark("M168_TERMINAL_TEXT_FROM_PTY_PASS");
     for(;;) {
         struct message m=nasd_recv_packet(channel);
         if(m.type==MSG_QUIT)break;
         nasd_require(m.type==MSG_KEY && m.key==KEY_A,
                 "terminal only accepts routed KEY_A");
         nasd_write_all(pty,"a\n",2);
-        read_pty_until(pty,"M167_SHELL_KEY=a",0);
+        char typed[2048]={0};
+        read_pty_until(pty,"M167_SHELL_KEY=a",0,typed,sizeof(typed));
         int status=0;
         nasd_require(waitpid(shell,&status,0)==shell && WIFEXITED(status) &&
                 WEXITSTATUS(status)==0,"BusyBox shell must exit successfully");
         shell=0;
         nasd_fill_surface(pixels,TERM_W,TERM_H,255,255,0);
+        if(rich)
+            nasd_draw_text(pixels,TERM_W,TERM_H,8,9,typed,strlen(typed),
+                           15,26,56);
         __atomic_thread_fence(__ATOMIC_RELEASE);
         nasd_send_packet(channel,MSG_UPDATED,KEY_A);
         nasd_mark("M167_REAL_PTY_KEY_ROUTE_PASS");
+        if(rich)nasd_mark("M168_REAL_PTY_TEXT_KEY_ROUTE_PASS");
     }
     if(shell>0) {
         nasd_write_all(pty,"\n",1);
@@ -120,7 +136,9 @@ static void terminal_client(int channel) {
     close(surface);close(channel);
 }
 
-int main(void) {
-    terminal_client(3);
+int main(int argc,char **argv) {
+    nasd_require(argc==1 || (argc==2 && !strcmp(argv[1],"--m168")),
+                 "terminal client mode selector");
+    terminal_client(3,argc==2);
     return 0;
 }
