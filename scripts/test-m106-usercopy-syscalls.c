@@ -82,7 +82,9 @@ int nas_pty_path_number(const char *path){
 }
 bool nas_pty_present(unsigned number){return number==3 && bootstrap_pty_present;}
 bool nas_pty_controlling(void){return bootstrap_pty_controlling;}
+#ifndef NAS_TEST_REAL_TTY
 bool nas_tty_controlling(void){return bootstrap_tty_present;}
+#endif
 unsigned nas_pty_number(unsigned slot){(void)slot;return 3;}
 int nas_pty_new(unsigned slot){(void)slot;return 0;}
 int nas_pty_attach(unsigned number,unsigned slot){
@@ -265,8 +267,12 @@ void nas_print(const char *msg){(void)msg;}
 void nas_dec(uint64_t n){(void)n;}
 void nas_putchar(char ch){(void)ch;}
 void nas_arch_halt(void){assert(!"user syscall triggered kernel panic");abort();}
+#ifndef NAS_TEST_OVERRIDE_MONOTONIC
 uint64_t nas_arch_monotonic_ns(void){return 1000000000ULL;}
+#endif
+#ifndef NAS_TEST_REAL_TTY
 bool nas_tty_poll_readable(void){return false;}
+#endif
 void nas_unix_socket_pair_ready(unsigned a,unsigned b){(void)a;(void)b;}
 #if !defined(NAS_ENABLE_LWIP) || !NAS_ENABLE_LWIP
 bool nas_lwip_socket_is_slot(unsigned slot){(void)slot;return false;}
@@ -426,7 +432,9 @@ bool nas_fd_hold_description(unsigned slot) {
 }
 /* No live TTY exists in the M106 fake-userspace fixture; the provider wait
  * gate is exercised by separate TTY and real native SocketPort tests. */
+#ifndef NAS_TEST_REAL_TTY
 bool nas_tty_read_waitable(void){return false;}
+#endif
 bool nas_fd_install_new(struct nas_task *t,unsigned fd,unsigned slot,
                         uint8_t kind,uint64_t status,bool cloexec) {
     if(fd>=NAS_FD_LIMIT||slot>=NAS_OPEN_FILE_LIMIT||

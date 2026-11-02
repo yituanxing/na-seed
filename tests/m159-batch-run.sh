@@ -132,10 +132,22 @@ case_run() {
       shlibsign)
         # Signs the authentic signed-APK NSS shared object with genuine
         # upstream integrity code; no generated host executable is involved.
-        "$exe" -i /usr/lib/libnss3.so -o "$work/libnss3.chk" \
-            > "$work/result" 2> "$work/error" || return 1
-        [ -s "$work/libnss3.chk" ] &&
-        [ "$(busy wc -c < "$work/libnss3.chk")" -ge 16 ] ;;
+        if ! "$exe" -i /usr/lib/libnss3.so -o "$work/libnss3.chk" \
+            > "$work/result" 2> "$work/error"; then
+            echo '[M159 SHLIBSIGN DIAG] original NSS integrity tool returned nonzero' >&2
+            busy head -c 750 "$work/error" >&2 || :
+            busy head -c 750 "$work/result" >&2 || :
+            return 1
+        fi
+        if [ ! -s "$work/libnss3.chk" ]; then
+            echo '[M159 SHLIBSIGN DIAG] NSS tool exited zero without a signature file' >&2
+            return 1
+        fi
+        signed_bytes=$(busy wc -c < "$work/libnss3.chk")
+        if [ "$signed_bytes" -lt 16 ]; then
+            echo "[M159 SHLIBSIGN DIAG] signature too short: $signed_bytes bytes" >&2
+            return 1
+        fi ;;
 
       pamsplit)
         (cd "$work" && "$exe" /tests/m159-multi.pnm \
