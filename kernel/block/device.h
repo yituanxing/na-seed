@@ -33,9 +33,13 @@ struct nas_block_device {
     void *context;                    /* Driver state, never a user address */
     unsigned refs;                    /* Mount/device-open pins, not raw I/O count */
     bool registered;
+    bool removing;                    /* no NEW mount pins during bus removal */
 };
 
 int nas_block_register(struct nas_block_device *dev);
+/* Stop new BlockDevice acquisitions, without denying I/O to already-pinned
+ * mounted filesystems. Final unregister waits for their ordinary puts. */
+int nas_block_begin_remove(struct nas_block_device *dev);
 int nas_block_unregister(struct nas_block_device *dev);
 /* A returned reference must be released. A failed unregister leaves state
  * untouched so mounted filesystems can keep using the device. */

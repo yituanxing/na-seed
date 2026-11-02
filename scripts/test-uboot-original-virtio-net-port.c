@@ -204,21 +204,24 @@ int main(void){
     assert(discovered2.tx_count==1);
     assert(nas_netdev_transmit(dev,frame,sizeof(frame))==0);
     assert(discovered.tx_count==1);
-    assert(nas_bus_device_unbind(&bus)==-EBUSY);
+    assert(nas_bus_device_request_remove(&bus)==0);
+    assert(nas_bus_device_remove_status(&bus)==-EINPROGRESS);
     assert(nas_netdev_is_removing(dev));
     assert(nas_netdev_get("eth0")==NULL);
     assert(nas_netdev_transmit(dev,frame,sizeof(frame))==-ENODEV);
+    assert(nas_bus_service_removals(1)==1 && bus.registered);
     assert(nas_netdev_put(dev)==0);
-    assert(nas_bus_device_unbind(&bus)==0);
-    assert(nas_bus_device_unregister(&bus)==0);
+    assert(nas_bus_service_removals(1)==1);
+    assert(nas_bus_device_remove_status(&bus)==0 && !bus.registered);
     assert(nas_virtio_net_count()==1);
     assert(nas_netdev_transmit(dev2,frame,sizeof(frame))==0);
     assert(discovered2.tx_count==2);
-    assert(nas_bus_device_unbind(&bus2)==-EBUSY);
+    assert(nas_bus_device_request_remove(&bus2)==0);
+    assert(nas_bus_device_remove_status(&bus2)==-EINPROGRESS);
     assert(nas_netdev_is_removing(dev2));
     assert(nas_netdev_put(dev2)==0);
-    assert(nas_bus_device_unbind(&bus2)==0);
-    assert(nas_bus_device_unregister(&bus2)==0);
+    assert(nas_bus_service_removals(1)==1);
+    assert(nas_bus_device_remove_status(&bus2)==0 && !bus2.registered);
     assert(nas_virtio_net_count()==0);
     all_pages_freed();
     /* Reattach same upstream class driver on VirtIO-MMIO. */
@@ -229,5 +232,5 @@ int main(void){
     assert(nas_bus_device_unbind(&mmio)==0);
     assert(nas_bus_device_unregister(&mmio)==0);
     all_pages_freed();
- puts("[ORIGINAL U-BOOT VIRTIO NET PORT PASS] two simultaneous PCI NICs, independent DMA/TX, original eth_ops, RX rearm, malformed, timeout, two-phase hot-unbind, MMIO reuse");
+ puts("[ORIGINAL U-BOOT VIRTIO NET PORT PASS] two simultaneous PCI NICs, independent DMA/TX, original eth_ops, RX rearm, malformed, async bus-reaped hot-unbind, MMIO reuse");
 }

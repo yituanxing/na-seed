@@ -69,6 +69,22 @@ assert "struct nas_lwip_eth ethernet;" not in network.split("static struct {")[1
 assert "NAS_LWIP_GUEST_IF_LIMIT (NAS_NETDEV_LIMIT + 1U)" in network_h
 assert "nas_netdev_begin_remove(&n->netdev)" in driver
 assert "NETLINK_REPLY_QUEUE (NAS_LWIP_GUEST_IF_LIMIT + 1U)" in route
+bus=(root/"kernel/drivers/core/bus.c").read_text()
+bus_h=(root/"kernel/drivers/core/bus.h").read_text()
+scheduler=(root/"kernel/task/scheduler_service.c").read_text()
+for token in ("nas_bus_device_request_remove(",
+              "nas_bus_service_removals(",
+              "nas_bus_device_remove_status(",
+              "dev->removal_pending", "pending_removals"):
+    if token not in bus or (token.endswith("(") and token not in bus_h):
+        raise SystemExit(f"sole bus lost automatic two-phase removal: {token}")
+assert "devices[i]->removal_pending" in bus
+assert "nas_bus_service_removals(1);" in scheduler
+assert "nas_kthread_spawn(" not in bus, "bus remove must not consume a worker"
+block_port=(root/"kernel/drivers/port/block.c").read_text()
+block_core=(root/"kernel/block/device.c").read_text()
+assert "nas_block_begin_remove(&port->block)" in block_port
+assert "!dev->removing" in block_core and "dev->removing = true;" in block_core
 for runner in ("scripts/run.sh", "scripts/probe-riscv64-busybox-matrix.sh",
                "scripts/probe-aarch64-busybox-matrix.sh"):
     assert "NAS_VIRTIO_NET_SECOND_USER" in (root/runner).read_text(), \

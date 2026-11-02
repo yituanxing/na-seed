@@ -5,6 +5,12 @@ on:
   pull_request:
     paths:
       - '.github/workflows/lwip-virtio-wire-smoke.yml'
+      - 'kernel/drivers/core/bus.c'
+      - 'kernel/drivers/core/bus.h'
+      - 'kernel/task/scheduler_service.c'
+      - 'kernel/block/device.c'
+      - 'kernel/block/device.h'
+      - 'kernel/drivers/port/block.c'
       - 'kernel/drivers/port/net.c'
       - 'kernel/drivers/virtio/**'
       - 'kernel/platform/x86_virtio_pci.c'

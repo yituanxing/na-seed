@@ -30,6 +30,10 @@ struct nas_bus_device {
     void *context;           /* Discoverer-owned transport state */
     const struct nas_bus_driver *driver; /* NULL until successful probe */
     bool registered;
+    /* Only the bus owns an asynchronous removal request. The discoverer
+     * keeps this object, its transport and BAR mapping stable until DONE. */
+    bool removal_pending;
+    int removal_error;       /* terminal driver error, retained for caller */
 };
 struct nas_bus_driver {
     const char *name;
@@ -47,4 +51,17 @@ int nas_bus_device_register(struct nas_bus_device *);
 int nas_bus_device_unbind(struct nas_bus_device *);
 int nas_bus_device_unregister(struct nas_bus_device *);
 int nas_bus_rescan(void);
+/* Request full removal, including unbind and registry deletion. Starts the
+ * driver's stop/drain phase immediately; -EBUSY is accepted as a pending
+ * request, not returned to the caller for manual retry. Idempotent while
+ * pending. No device storage or DMA is freed until driver remove succeeds.
+ * Unlike an ordinary unbind, a removal request forbids future rebinding. */
+int nas_bus_device_request_remove(struct nas_bus_device *);
+/* Runs only at a safe scheduler boundary, never inside IRQ/tcpip_thread.
+ * Tries at most `budget` pending removals, round-robin across devices;
+ * returns the number attempted. No new permanent kernel worker is needed. */
+unsigned nas_bus_service_removals(unsigned budget);
+/* 0: completely removed; -EINPROGRESS: waiting for consumers;
+ * -EAGAIN: registered, no removal requested; otherwise terminal -errno. */
+int nas_bus_device_remove_status(const struct nas_bus_device *);
 #endif

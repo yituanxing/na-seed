@@ -377,7 +377,7 @@ $(OUT)/task_k_sync.o: kernel/task/k_sync.c kernel/task/k_sync.h kernel/task/kthr
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
-$(OUT)/task_scheduler_service.o: kernel/task/scheduler_service.c kernel/task/scheduler_service.h kernel/task/kthread.h
+$(OUT)/task_scheduler_service.o: kernel/task/scheduler_service.c kernel/task/scheduler_service.h kernel/task/kthread.h kernel/drivers/core/bus.h
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 

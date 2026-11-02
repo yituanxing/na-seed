@@ -50,7 +50,8 @@ build/lwip-foundation/test-native-netif
 cc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -fno-builtin \
    -DNAS_ENABLE_VIRTIO_BLK=1 $includes \
    scripts/test-lwip-native-boot.c $sources $upstream \
-   kernel/drivers/port/net.c kernel/task/k_sync.c kernel/task/kthread.c \
+   kernel/drivers/port/net.c kernel/drivers/core/bus.c \
+   kernel/task/k_sync.c kernel/task/kthread.c \
    kernel/task/wait_queue.c kernel/task/kernel_context.c \
    kernel/arch/x86_64/kernel_switch.S \
    -o build/lwip-foundation/test-native-boot

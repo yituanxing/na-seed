@@ -16,7 +16,7 @@ int nas_block_register(struct nas_block_device *dev) {
         dev->sectors > UINT64_MAX / dev->sector_bytes ||
         (!dev->read_only && !dev->ops->write))
         return -EINVAL;
-    if (dev->registered || dev->refs)
+    if (dev->registered || dev->removing || dev->refs)
         return -EBUSY;
     unsigned vacant = NAS_BLOCK_DEVICE_LIMIT;
     for (unsigned n = 0; n < NAS_BLOCK_DEVICE_LIMIT; ++n) {
@@ -31,6 +31,11 @@ int nas_block_register(struct nas_block_device *dev) {
     dev->registered = true;
     return 0;
 }
+int nas_block_begin_remove(struct nas_block_device *dev) {
+    if (!dev || !dev->registered) return -ENODEV;
+    dev->removing = true;
+    return 0;
+}
 int nas_block_unregister(struct nas_block_device *dev) {
     if (!dev || !dev->registered) return -ENODEV;
     if (dev->refs) return -EBUSY;
@@ -38,6 +43,7 @@ int nas_block_unregister(struct nas_block_device *dev) {
         if (registered[n] == dev) {
             registered[n] = NULL;
             dev->registered = false;
+            dev->removing = false;
             return 0;
         }
     }
@@ -47,7 +53,8 @@ struct nas_block_device *nas_block_get(const char *name) {
     if (!name) return NULL;
     for (unsigned n = 0; n < NAS_BLOCK_DEVICE_LIMIT; ++n) {
         struct nas_block_device *dev = registered[n];
-        if (dev && dev->registered && !strcmp(name, dev->name)) {
+        if (dev && dev->registered && !dev->removing &&
+            !strcmp(name, dev->name)) {
             ++dev->refs;
             return dev;
         }

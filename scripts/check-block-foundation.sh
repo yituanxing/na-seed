@@ -69,6 +69,7 @@ fi
 # Hardware-provider-independent bus matching, backend binding and lifetime.
 cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
   scripts/test-driver-bus.c kernel/drivers/core/bus.c \
+  kernel/task/scheduler_service.c \
   kernel/drivers/port/block.c kernel/block/device.c kernel/lib/string.c \
   -o build/block-foundation/test-driver-bus
 build/block-foundation/test-driver-bus

@@ -3,6 +3,7 @@
 #include "../kernel/task/kthread.h"
 #include "../kernel/fd.h"
 #include "../kernel/drivers/port/net.h"
+#include "../kernel/drivers/core/bus.h"
 #include "../ports/lwip/network_boot.h"
 #include "../ports/lwip/netconn_bridge.h"
 #include "../kernel/errno.h"
@@ -73,6 +74,27 @@ static struct nas_netdev eth={
 static struct nas_netdev second={
  .name="en1",.mac={0x52,0x54,0,0x12,0x34,0x57},
  .mtu=1500,.backend=&second,.ops=&network_ops
+};
+/* The fake PCI discoverer owns transport lifetime while the genuine lwIP
+ * core drops the final pin. This exercises the ACTUAL generic bus reaper. */
+static bool second_bus_match(const struct nas_bus_device *dev){
+ return dev && dev->context==&second;
+}
+static int second_bus_probe(struct nas_bus_device *dev){
+ return dev->context==&second && second.registered ? 0:-ENODEV;
+}
+static int second_bus_remove(struct nas_bus_device *dev){
+ if(dev->context!=&second)return -ENODEV;
+ int rc=nas_netdev_begin_remove(&second);
+ return rc ? rc:nas_netdev_unregister(&second);
+}
+static const struct nas_bus_driver second_driver={
+ .name="native-lwip-device-lifetime",
+ .bus_mask=NAS_BUS_MASK_PCI,.match=second_bus_match,
+ .probe=second_bus_probe,.remove=second_bus_remove
+};
+static struct nas_bus_device second_bus={
+ .bus=NAS_BUS_PCI,.device_id=1,.context=&second,.resource=&second
 };
 int main(void){
  nas_kthread_system_init();
@@ -213,21 +235,27 @@ int main(void){
  }
  assert(second_up && devices[1].link_up);
 
- /* Driver-unbind is two-phase. It cannot reclaim DMA until the core has
-  * stopped DHCP, detached the netif and dropped its exact device pin. */
- assert(nas_netdev_begin_remove(&second)==0);
+ /* Generic bus remove begins immediately, then waits for genuine upstream
+  * tcpip_thread to detach the lwIP netif. No caller-driven unbind retry. */
+ assert(nas_bus_driver_register(&second_driver)==0);
+ assert(nas_bus_device_register(&second_bus)==0);
+ assert(nas_bus_device_request_remove(&second_bus)==0);
+ assert(nas_bus_device_remove_status(&second_bus)==-EINPROGRESS);
  assert(nas_netdev_get("en1")==NULL);
- assert(nas_netdev_unregister(&second)==-EBUSY);
+ assert(nas_bus_service_removals(1)==1 && second_bus.registered);
  for(unsigned attempt=0;attempt<100 && second.refs;attempt++)
      assert(nas_kthread_run(1)==1);
  assert(second.refs==0 && !second.rx_wake);
  assert(nas_lwip_guest_if_snapshot(devices)==2);
  assert(nas_lwip_guest_ifindex("en1")==-ENODEV);
- assert(nas_netdev_unregister(&second)==0);
+ assert(nas_bus_service_removals(1)==1);
+ assert(nas_bus_device_remove_status(&second_bus)==0 &&
+        !second_bus.registered && !second.registered);
 
  /* The same stable driver storage may register another incarnation;
   * stale netif indexes or old IRQ callbacks must never survive. */
  assert(nas_netdev_register(&second)==0);
+ assert(nas_bus_device_register(&second_bus)==0);
  for(unsigned attempt=0;attempt<100 && second.refs!=1;attempt++)
      assert(nas_kthread_run(1)==1);
  assert(second.refs==1 && nas_lwip_guest_if_snapshot(devices)==3);
@@ -245,12 +273,14 @@ int main(void){
  assert(netif_default && netif_get_index(netif_default)==devices[1].ifindex);
  assert(nas_lwip_guest_ifindex("en0")==-ENODEV);
  assert(nas_netdev_unregister(&eth)==0);
- assert(nas_netdev_begin_remove(&second)==0);
+ assert(nas_bus_device_request_remove(&second_bus)==0);
  for(unsigned attempt=0;attempt<100 && second.refs;attempt++)
      assert(nas_kthread_run(1)==1);
- assert(!second.refs && nas_netdev_unregister(&second)==0);
+ assert(!second.refs && nas_bus_service_removals(1)==1);
+ assert(nas_bus_device_remove_status(&second_bus)==0);
+ assert(nas_bus_driver_unregister(&second_driver)==0);
  assert(nas_lwip_guest_if_snapshot(devices)==1);
 
  puts("[LWIP NATIVE BOOT PASS] two live NICs, late attach, independent DHCP/link,");
- puts("  bounded RX, quarantine, dynamic detach/re-attach, registry pins, core-owned routing");
+ puts("  bounded RX, quarantine, bus-owned async detach/re-attach, pins, core-owned routing");
 }

@@ -5,6 +5,12 @@ on:
   pull_request:
     paths:
       - '.github/workflows/lwip-virtio-wire-multiarch.yml'
+      - 'kernel/drivers/core/bus.c'
+      - 'kernel/drivers/core/bus.h'
+      - 'kernel/task/scheduler_service.c'
+      - 'kernel/block/device.c'
+      - 'kernel/block/device.h'
+      - 'kernel/drivers/port/block.c'
       - 'scripts/probe-lwip-virtio-wire-multiarch.sh'
       - 'scripts/probe-riscv64-busybox-matrix.sh'
       - 'scripts/probe-aarch64-busybox-matrix.sh'

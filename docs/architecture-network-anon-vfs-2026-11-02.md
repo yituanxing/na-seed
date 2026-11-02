@@ -164,10 +164,9 @@ version without importing Linux's rtnl/RCU machinery:
 4. `nas_netdev_begin_remove()` marks a NIC unavailable to **new pins,
    TX and RX** and wakes the manager. The core detaches that NIC's netif,
    shuts down DHCP, removes its IRQ wake and drops the lifetime pin.
-   `nas_uboot_net_detach()`/bus unbind intentionally returns `-EBUSY` until
-   the final pin is gone; a retry then frees the original driver's DMA,
-   virtqueues and class slot. No driver DMA is freed on an unsuccessful
-   first unbind.
+   `nas_uboot_net_detach()`/ordinary synchronous bus unbind returns
+   `-EBUSY` until the final pin is gone. DMA is never freed on an unsuccessful
+   first unbind; the new bus-owned deferred removal below manages retries.
 5. The default route remains on the first live carrier-up interface;
    attaching a later NIC cannot steal it. If that interface disappears,
    the core selects the next attached, usable NIC. One NIC's RX or DHCP
@@ -176,24 +175,46 @@ version without importing Linux's rtnl/RCU machinery:
 Proof is layered: actual upstream lwIP host tests cover two NICs, late
 registration, independent link/DHCP and RX, two-phase removal, re-register
 of the same device storage and route failover. The U-Boot driver host test
-checks that a busy unbind leaves DMA alive but TX disabled, then retries
-after the pin drains. NETLINK_ROUTE additionally tests an exact full-size
+checks that a busy unbind leaves DMA alive but TX disabled, then the generic
+bus reaper completes after its final pin drains. NETLINK_ROUTE tests an exact full-size
 eight-NIC multipart dump. Three per-ISA QEMU wire gates have been upgraded
 to attach **two genuine VirtIO PCI/MMIO NICs**, each with a distinct slirp
 DHCP subnet (10.0.2/24, 10.0.3/24), while an untouched signed Alpine Ncat
 ELF verifies actual guest-to-host TCP through the default interface.
 
-This is **not** arbitrary PCI hotplug, automatic bus-unbind retry, SMP-safe
-concurrent device registry mutation, full Linux routing policy, or IPv6.
-Platform enumeration remains bootstrap-time; dynamic core attach/remove is
-triggered by the registry events that drivers explicitly issue.
+The subsequent **bus removal convergence** adds a single bounded, deferred
+retirement mechanism to the existing `nas_bus_device` registry (64 stable
+discoverer-owned slots). `nas_bus_device_request_remove()` synchronously
+begins driver quiescence, records an idempotent pending request on `-EBUSY`,
+and returns acceptance without requiring a caller-driven retry loop.
+`nas_sched_service_kernel()` performs at most **one retry per normal Task
+scheduling boundary** through `nas_bus_service_removals(1)`. It runs after
+the native worker slice, so lwIP can first detach on `tcpip_thread`; no
+fifth kernel worker, IRQ-time DMA cleanup or device-specific bus registry is
+created. Finished removals unbind **and** unregister; the retired device is
+never rediscovered by a bus rescan. Terminal driver errors remain
+observable via `nas_bus_device_remove_status()` and require an explicit
+new request. The original synchronous unbind API remains intact.
+
+This mechanism also applies to the existing original U-Boot BlockDevice
+driver: the first removal marks the BlockDevice as retiring and rejects
+**new** mount pins. An already-mounted volume that still holds a block
+reference remains fully readable/writable/flushable while the bus removal
+is pending; the final unmount allows the same generic deferred workerless
+bus service to release its transport. Unlike an Ethernet netif, a mounted
+block device must never lose its live I/O capability during the drain.
+
+This is **not** arbitrary PCI hotplug, SMP-safe concurrent device registry
+mutation, full Linux routing policy, or IPv6. Platform enumeration remains
+bootstrap-time; dynamic core attach/remove is triggered by the registry
+events that drivers explicitly issue, and explicit bus removal requests.
 
 ## Focused proof (run on source working tree)
 
 | Gate | Scope | Expected claim |
 | --- | --- | --- |
 | `sh scripts/check-lwip-foundation.sh` | Real upstream lwIP, two native NICs, re-registration, route failover, eight-NIC NETLINK_ROUTE, Socket FileOps | Host tests only |
-| `sh scripts/check-block-foundation.sh` | Original U-Boot VirtIO-Net driver unbind/drain/DMA lifetime, shared bus and block regression | Host tests only |
+| `sh scripts/check-block-foundation.sh` | Original U-Boot VirtIO-Net driver unbind/drain/DMA lifetime, async PCI/MMIO bus retire, bounded fair retries, mounted BlockDevice I/O | Host tests only |
 | `sh scripts/probe-lwip-virtio-wire-smoke.sh` / `sh scripts/probe-lwip-virtio-wire-multiarch.sh` | Two real PCI/MMIO NICs per ISA, two actual DHCP subnets and signed Alpine TCP | Requires 3-ISA QEMU CI |
 | `sh scripts/check-lwip-socket-abi.sh` | Legacy and lwIP Linux socket ABI, DHCP-less NIC flags/MTU/ifindex | Host tests only |
 | `sh scripts/check-vfs-provider.sh` | Real VFS mount/lease + anonymous inode lifecycle; memfd ABI | Host tests only |
@@ -213,8 +234,9 @@ single-NIC guest acceptance.
 
 1. Exact-head three-ISA dual-VirtIO DHCP/wire acceptance **for this batch**,
    plus normal full guest Alpine/BusyBox/memfd regression.
-2. True hardware hotplug notifications and asynchronous bus-unbind retry;
-   current detach is safe but requires the caller to retry `-EBUSY`.
+2. True hardware hotplug notifications and device-tree/PCI enumeration
+   refresh; deferred bus-unbind completion now exists but physical hotplug
+   detection and SMP-safe registry mutation are deliberately not claimed.
 3. Preserve official upstream lwIP as the sole IPv4 provider in every
    default and NIC-enabled native build; reject legacy providers.
 4. Replace remaining 256-byte *active* pathname compatibility paths with
