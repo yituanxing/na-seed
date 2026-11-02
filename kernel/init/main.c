@@ -16,9 +16,7 @@ extern bool nas_littlefs_guest_boot_shutdown(void);
 extern bool nas_ramfs_guest_boot_mount(void);
 extern bool nas_ramfs_guest_boot_shutdown(void);
 #endif
-#ifdef NAS_ENABLE_LWIP
 extern bool nas_lwip_guest_boot(void);
-#endif
 #include "../arch/arch.h"
 #include "../arch/console.h"
 #include "../arch/mmu.h"
@@ -126,12 +124,10 @@ void nas_init_userspace(void) {
     if (!nas_ramfs_guest_boot_mount())
         nas_fail("opt-in independent upstream ramfs VFS mount failed");
 #endif
-#ifdef NAS_ENABLE_LWIP
     /* The native tcpip worker is independent of filesystems and AF_UNIX.
      * It uses the same kernel continuation scheduler as every other worker. */
     if (!nas_lwip_guest_boot())
-        nas_fail("opt-in upstream lwIP native bootstrap failed");
-#endif
+        nas_fail("upstream lwIP native bootstrap failed");
     struct elf_image main_image = {
         .data = selected_image.image, .size = selected_image.size
     };

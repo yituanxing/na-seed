@@ -10,11 +10,7 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -I kernel \
 /tmp/naseed-m141-ipc-host-test
 printf '[M141 SYSVIPC HOST PASS]\n'
 
-cc -std=c11 -O2 -Wall -Wextra -Werror -I kernel \
-  kernel/net/ipv4_loopback.c kernel/pipe.c \
-  kernel/net/test_ipv4_loopback.c \
-  -o /tmp/naseed-m141-ipv4-loopback-host-test
-/tmp/naseed-m141-ipv4-loopback-host-test
+sh scripts/check-lwip-socket-abi.sh
 
 sh scripts/check-a012-linux-socket-stream.sh
 printf '[M141 HOST PRIMITIVES PASS]\n'

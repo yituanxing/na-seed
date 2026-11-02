@@ -3,6 +3,10 @@
 # modules for Task/ELF/exec/VM/FS/syscall/process/scheduler are identical.
 # Only the CPU trap/context, MMU/PTE, console and debug-exit providers vary.
 set -eu
+if [ "${NAS_ENABLE_LWIP:-1}" != 1 ]; then
+    echo '[NET] the legacy AF_INET provider is retired; upstream lwIP is required' >&2
+    exit 1
+fi
 make ARCH=aarch64 build/deps/limine.h
 out=build/port-aarch64/full
 mkdir -p "$out"
@@ -14,14 +18,10 @@ flags="--target=aarch64-none-elf -march=armv8-a -mgeneral-regs-only -std=c11 -O2
 [ "${NAS_ENABLE_RAMFS:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_RAMFS=1"
 [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_VIRTIO_BLK=1 -I third_party/unikraft/include -I ports/unikraft/include -I ports/uboot/compat"
 [ "${NAS_ENABLE_VIRTIO_NET:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_VIRTIO_NET=1 -I third_party/unikraft/include -I ports/unikraft/include -I ports/uboot/compat"
-[ "${NAS_ENABLE_LWIP:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_LWIP=1 -I ports/lwip/include -I third_party/lwip/src/include"
+flags="$flags -DNAS_ENABLE_LWIP=1 -I ports/lwip/include -I third_party/lwip/src/include"
 # One authoritative full-kernel core TU list for every native ISA.
 # ISA-specific hardware providers remain below in the arch= selection.
 common=$(grep -v '^#' scripts/full-kernel-core.sources)
-if [ "${NAS_ENABLE_LWIP:-0}" = 1 ]; then
-    # The native Netconn File owns AF_INET; never link simulated loopback.
-    common=$(printf '%s\n' "$common" | grep -v '^kernel/net/ipv4_loopback.c$')
-fi
 arch="kernel/arch/aarch64/cpu.c kernel/arch/aarch64/mmu.c kernel/arch/aarch64/context.c kernel/arch/aarch64/signal_frame.c kernel/arch/aarch64/timer.c kernel/arch/aarch64/debug_console.c kernel/arch/user_pt.c kernel/mm/user_space.c kernel/mm/mmu_bridge.c kernel/platform/aarch64.c"
 # Only the hardware/transport source selection is target-dependent.
 # VirtIO descriptors, block requests, BlockDevice and ext4 stay generic.
@@ -36,10 +36,7 @@ fi
 if [ "${NAS_ENABLE_VIRTIO_NET:-0}" = 1 ]; then
     arch="$arch ports/uboot/net_port.c ports/uboot/virtio_net_bus.c"
 fi
-lwip_src=
-if [ "${NAS_ENABLE_LWIP:-0}" = 1 ]; then
-    lwip_src="ports/lwip/libc_port.c ports/lwip/sys_arch.c ports/lwip/netif_port.c ports/lwip/network_boot.c ports/lwip/netconn_bridge.c ports/lwip/socket_port.c third_party/lwip/src/core/*.c third_party/lwip/src/core/ipv4/*.c third_party/lwip/src/api/*.c third_party/lwip/src/netif/ethernet.c"
-fi
+lwip_src="ports/lwip/libc_port.c ports/lwip/sys_arch.c ports/lwip/netif_port.c ports/lwip/network_boot.c ports/lwip/netconn_bridge.c ports/lwip/socket_port.c third_party/lwip/src/core/*.c third_party/lwip/src/core/ipv4/*.c third_party/lwip/src/api/*.c third_party/lwip/src/netif/ethernet.c"
 obj=
 for f in $common $arch $lwip_src; do
     target="$out/$(printf '%s' "$f" | tr '/' '_').o"

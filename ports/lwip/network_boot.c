@@ -1,4 +1,4 @@
-/* Opt-in native network bootstrap. Official lwIP owns all wire protocols;
+/* Native network bootstrap. Official lwIP owns all wire protocols;
  * one NaSeed kernel worker only schedules bounded NIC completion polling. */
 #include "netif_port.h"
 #include "network_boot.h"

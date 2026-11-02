@@ -17,9 +17,7 @@
 #include "../fs/file_ops.h"
 #include "../fs/eventfd.h"
 #include "../fs/unix_socket.h"
-#ifdef NAS_ENABLE_LWIP
 #include "../fs/socket_syscall.h"
-#endif
 #include "wait.h"
 
 /* Inspect only kernel-owned slots; replay only after selected task's VM
@@ -66,7 +64,6 @@ bool nas_task_wait_ready(const struct nas_task *task) {
     if(task->wait.blocked_op==NAS_SC_epoll_wait ||
        task->wait.blocked_op==NAS_SC_epoll_pwait)
         return nas_epoll_task_ready(task);
-#ifdef NAS_ENABLE_LWIP
     if(task->wait.blocked_op==NAS_SC_bind ||
        task->wait.blocked_op==NAS_SC_connect ||
        task->wait.blocked_op==NAS_SC_listen ||
@@ -75,7 +72,6 @@ bool nas_task_wait_ready(const struct nas_task *task) {
        task->wait.blocked_op==NAS_SC_getsockname ||
        task->wait.blocked_op==NAS_SC_getpeername)
         return nas_fs_socket_control_ready(task->wait.accept_listener_slot);
-#endif
     if(task->wait.blocked_op==NAS_SC_accept ||
        task->wait.blocked_op==NAS_SC_accept4)
         return nas_fs_poll_ready(task); /* original listener description */

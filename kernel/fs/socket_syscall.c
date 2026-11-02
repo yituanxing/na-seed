@@ -1,7 +1,6 @@
-/* Shared Linux AF_UNIX / AF_INET userspace socket ABI adapter. AF_UNIX and
- * the default simulated local-only AF_INET preserve their existing endpoint
- * ownership. With NAS_ENABLE_LWIP, AF_INET selects the native lwIP OpenFile
- * provider; this layer alone parses syscall arguments and user sockaddr.
+/* Shared Linux AF_UNIX / AF_INET userspace socket ABI adapter. AF_UNIX
+ * remains an owned UNIX File; AF_INET uses the upstream lwIP OpenFile
+ * provider on every ISA. This layer parses Linux syscall arguments and sockaddr.
  * No NIC policy, Netconn waits or ISA syscall numbers enter here. */
 #include <stdint.h>
 #include <stdbool.h>
@@ -17,21 +16,18 @@
 #include "io.h"
 #include "file_ops.h"
 #include "unix_socket.h"
-#include "../net/ipv4_endpoint.h"
-#ifndef NAS_ENABLE_LWIP
-#include "../net/ipv4_loopback.h"
-#endif
 #include "syscall.h"
 #include "socket_syscall.h"
 #include "path_request.h"
-#ifdef NAS_ENABLE_LWIP
 #include "../../ports/lwip/socket_port.h"
 #include "../../ports/lwip/network_boot.h"
 #include "netlink_route.h"
-#endif
 #define TASK (*nas_current_task)
 
-#ifdef NAS_ENABLE_LWIP
+/* Only this Linux ABI adapter decodes the network-order sockaddr_in wire
+ * format; Netconn and the driver never own this host-order stack value. */
+struct nas_ipv4_endpoint { uint32_t address; uint16_t port; };
+
 static bool lwip_fd(uint64_t fd) {
     return fd<NAS_FD_LIMIT && TASK.fds->entries[fd].kind==FD_SOCKET &&
            nas_lwip_socket_is_slot(TASK.fds->entries[fd].slot);
@@ -52,7 +48,6 @@ static struct nas_lwip_bridge_address lwip_address(
 static uint64_t lwip_control_result(int rc) {
     return (uint64_t)(int64_t)(rc==-EAGAIN ? -ENOBUFS : rc ? rc : -EAGAIN);
 }
-#endif
 
 /* AF_UNIX SOCK_STREAM: same global refcounted open descriptions as pipe2
  * and socketpair. A listener owns pending accepted slots, never a task-local
@@ -61,46 +56,25 @@ static uint64_t lwip_control_result(int rc) {
 static bool unix_fd(uint64_t fd) {
     return fd<NAS_FD_LIMIT && TASK.fds->entries[fd].kind==FD_SOCKET &&
            TASK.fds->entries[fd].slot<NAS_OPEN_FILE_LIMIT
-#ifndef NAS_ENABLE_LWIP
-           && !nas_ipv4_socket_active(TASK.fds->entries[fd].slot)
-#endif
-#ifdef NAS_ENABLE_LWIP
            && !nas_lwip_socket_is_slot(TASK.fds->entries[fd].slot)
            && !nas_netlink_route_is_slot(TASK.fds->entries[fd].slot)
-#endif
            ;
 }
-#ifndef NAS_ENABLE_LWIP
-static bool ipv4_fd(uint64_t fd) {
-    return fd<NAS_FD_LIMIT && TASK.fds->entries[fd].kind==FD_SOCKET &&
-           nas_ipv4_socket_active(TASK.fds->entries[fd].slot);
-}
-#endif
 static bool inet_fd(uint64_t fd) {
-#ifdef NAS_ENABLE_LWIP
     return lwip_fd(fd);
-#else
-    return ipv4_fd(fd);
-#endif
 }
 static uint64_t sys_socket(uint64_t domain,uint64_t type,uint64_t protocol) {
     if(domain!=1 && domain!=2
-#ifdef NAS_ENABLE_LWIP
        && domain!=16 /* Linux AF_NETLINK */
-#endif
        )return (uint64_t)-EAFNOSUPPORT;
     unsigned socket_type=(unsigned)(type&15U);
     if((socket_type!=1U
-#ifdef NAS_ENABLE_LWIP
         && !(domain==2 && socket_type==2U)
         && !(domain==16 && socket_type==3U) /* SOCK_RAW NETLINK_ROUTE */
-#endif
        ) || (type&~(15ULL|0x800ULL|0x80000ULL)))
         return (uint64_t)-ESOCKTNOSUPPORT;
     if(protocol && !(domain==2 && protocol==6 && socket_type==1U)
-#ifdef NAS_ENABLE_LWIP
        && !(domain==2 && protocol==17 && socket_type==2U)
-#endif
        )
         return (uint64_t)-EPROTONOSUPPORT;
     unsigned fds[2],slots[2];
@@ -109,22 +83,16 @@ static uint64_t sys_socket(uint64_t domain,uint64_t type,uint64_t protocol) {
      * AF_INET socket must skip the still-closing native bridge slot instead
      * of reporting false ENFILE while many other slots are available. */
     int capacity=
-#ifdef NAS_ENABLE_LWIP
         domain==2 ?
         nas_fd_reserve_filtered(nas_current_task,0,1,fds,slots,"socket",
                                 nas_lwip_socket_slot_reusable) :
-#endif
         nas_fd_reserve(nas_current_task,0,1,fds,slots,"socket");
     if(capacity)return (uint64_t)(int64_t)capacity;
     unsigned fd=fds[0],slot=slots[0];
     if(domain==1)nas_unix_socket_init(slot);
-#ifndef NAS_ENABLE_LWIP
-    else nas_ipv4_socket_init(slot);
-#endif
     if(!nas_fd_install_new(nas_current_task,fd,slot,FD_SOCKET,
                            2ULL|(type&0x800ULL),(type&0x80000ULL)!=0))
         nas_fail("reserved socket descriptor became occupied");
-#ifdef NAS_ENABLE_LWIP
     if(domain==2) {
         nas_open_files[slot].ops=nas_lwip_socket_port_ops();
         int rc=nas_lwip_socket_open(slot,socket_type==1U ?
@@ -143,7 +111,6 @@ static uint64_t sys_socket(uint64_t domain,uint64_t type,uint64_t protocol) {
             return (uint64_t)(int64_t)rc;
         }
     }
-#endif
     return fd;
 }
 /* sockaddr_in: all supported Linux LP64 architectures use native 16-bit
@@ -167,7 +134,6 @@ static void ipv4_sockaddr(struct nas_ipv4_endpoint ep,uint8_t bytes[16]) {
     bytes[4]=(uint8_t)(ep.address>>24);bytes[5]=(uint8_t)(ep.address>>16);
     bytes[6]=(uint8_t)(ep.address>>8);bytes[7]=(uint8_t)ep.address;
 }
-#ifdef NAS_ENABLE_LWIP
 static int lwip_name_preflight(uint64_t address,uint64_t length_ptr,
                                uint32_t *capacity) {
     if(!address || !length_ptr || !capacity)return -EFAULT;
@@ -203,9 +169,7 @@ uint64_t nas_fs_socket_name_description(unsigned slot,uint64_t address,
            (!n || nas_user_write_bytes(address,bytes,n))
          ? 0:(uint64_t)-EFAULT;
 }
-#endif
 static uint64_t sys_ipv4_bind(uint64_t fd,uint64_t addr,uint64_t len) {
-#ifdef NAS_ENABLE_LWIP
     if(lwip_fd(fd)) {
         struct nas_ipv4_endpoint ep;
         int rc=ipv4_endpoint(addr,len,&ep);
@@ -214,16 +178,8 @@ static uint64_t sys_ipv4_bind(uint64_t fd,uint64_t addr,uint64_t len) {
             TASK.fds->entries[fd].slot,lwip_address(ep)));
     }
     return (uint64_t)-EBADF;
-#else
-    if(!ipv4_fd(fd))return (uint64_t)-EBADF;
-    struct nas_ipv4_endpoint ep;
-    int rc=ipv4_endpoint(addr,len,&ep);
-    if(!rc)rc=nas_ipv4_socket_bind(TASK.fds->entries[fd].slot,ep);
-    return (uint64_t)(int64_t)rc;
-#endif
 }
 static uint64_t sys_ipv4_connect(uint64_t fd,uint64_t addr,uint64_t len) {
-#ifdef NAS_ENABLE_LWIP
     if(lwip_fd(fd)) {
         struct nas_ipv4_endpoint ep;
         int rc=ipv4_endpoint(addr,len,&ep);
@@ -240,24 +196,11 @@ static uint64_t sys_ipv4_connect(uint64_t fd,uint64_t addr,uint64_t len) {
         return (uint64_t)-EAGAIN;
     }
     return (uint64_t)-EBADF;
-#else
-    if(!ipv4_fd(fd))return (uint64_t)-EBADF;
-    struct nas_ipv4_endpoint ep;
-    int rc=ipv4_endpoint(addr,len,&ep);
-    if(!rc)rc=nas_ipv4_socket_connect(TASK.fds->entries[fd].slot,ep);
-    return (uint64_t)(int64_t)rc;
-#endif
 }
 static uint64_t sys_ipv4_listen(uint64_t fd,uint64_t backlog) {
-#ifdef NAS_ENABLE_LWIP
     if(lwip_fd(fd))return lwip_control_result(nas_lwip_socket_listen(
         TASK.fds->entries[fd].slot,backlog>16U?16U:(unsigned)backlog));
     return (uint64_t)-EBADF;
-#else
-    if(!ipv4_fd(fd))return (uint64_t)-EBADF;
-    return (uint64_t)(int64_t)nas_ipv4_socket_listen(
-        TASK.fds->entries[fd].slot,backlog>16?16U:(unsigned)backlog);
-#endif
 }
 
 /* A native Task parked in bind/connect/listen pins one OpenFile slot. Its
@@ -265,17 +208,12 @@ static uint64_t sys_ipv4_listen(uint64_t fd,uint64_t backlog) {
  * duplicate network command. The FileOps owner retains the copied native
  * Netconn request and caches exactly one eventual result. */
 bool nas_fs_socket_control_ready(unsigned slot) {
-#ifdef NAS_ENABLE_LWIP
     if(slot<NAS_OPEN_FILE_LIMIT && nas_open_files[slot].refcount &&
        nas_lwip_socket_is_slot(slot))
         return nas_lwip_socket_control_ready(slot)!=0;
-#else
-    (void)slot;
-#endif
     return false;
 }
 uint64_t nas_fs_socket_control_description(unsigned slot) {
-#ifdef NAS_ENABLE_LWIP
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount ||
        !nas_lwip_socket_is_slot(slot))return (uint64_t)-EBADF;
     /* Completion state is separate from native errno: a completed Netconn
@@ -285,10 +223,6 @@ uint64_t nas_fs_socket_control_description(unsigned slot) {
     int rc=nas_lwip_socket_port_complete(slot,&result);
     if(rc==0)return (uint64_t)-EAGAIN;
     return (uint64_t)(int64_t)(rc==1 ? result.status:rc);
-#else
-    (void)slot;
-    return (uint64_t)-EOPNOTSUPP;
-#endif
 }
 /* Linux sockaddr_un has a native two-byte family followed by the pathname.
  * This first backend supports Linux pathname sockets, not abstract names. */
@@ -383,45 +317,6 @@ static uint64_t sys_unix_accept_slot(unsigned listener_slot,uint64_t address,
     }
     return nextfd;
 }
-#ifndef NAS_ENABLE_LWIP
-static uint64_t sys_ipv4_accept_slot(unsigned listener_slot,uint64_t address,
-                                     uint64_t length_ptr,uint64_t flags) {
-    if(flags & ~(0x800ULL|0x80000ULL))return (uint64_t)-EINVAL;
-    if((address&&!length_ptr)||(!address&&length_ptr))return (uint64_t)-EFAULT;
-    uint32_t length=0;
-    if(length_ptr && !nas_user_read_bytes(length_ptr,(uint8_t *)&length,4))
-        return (uint64_t)-EFAULT;
-    if(length_ptr && (!nas_user_prepare_write(length_ptr,4) ||
-                      (length && !nas_user_prepare_write(
-                          address,length>16?16:length))))
-        return (uint64_t)-EFAULT;
-    unsigned nextfd=nas_fd_first_unused(nas_current_task,0);
-    if(nextfd==NAS_FD_LIMIT)return (uint64_t)-EMFILE;
-    unsigned slot;
-    int rc=nas_ipv4_socket_accept(listener_slot,&slot);
-    if(rc)return (uint64_t)(int64_t)rc;
-    if(!nas_fd_attach_owned(nas_current_task,nextfd,slot,FD_SOCKET,
-                            (flags&0x80000ULL)!=0))
-        nas_fail("accepted IPv4 socket violated FD ownership");
-    nas_open_files[slot].status_flags|=flags&0x800ULL;
-    if(length_ptr) {
-        struct nas_ipv4_endpoint peer;
-        if(nas_ipv4_socket_name(slot,true,&peer))
-            nas_fail("accepted IPv4 peer has no address");
-        uint8_t bytes[16];
-        ipv4_sockaddr(peer,bytes);
-        uint32_t actual=16;
-        if((length && !nas_user_write_bytes(address,bytes,
-                                            length>16?16:length)) ||
-           !nas_user_write_bytes(length_ptr,(const uint8_t *)&actual,4)) {
-            nas_fs_close_fd(nextfd);
-            return (uint64_t)-EFAULT;
-        }
-    }
-    return nextfd;
-}
-#endif
-#ifdef NAS_ENABLE_LWIP
 /* A blocked Task owns the lease, while the bridge owns the native Netconn.
  * Disposal runs for EINTR, task exit and fd unbinding; invalidate the bridge
  * request BEFORE dropping the lease so a late accept cannot resurrect it. */
@@ -563,7 +458,6 @@ publish:
     }
     return nextfd;
 }
-#endif
 /* A blocking accept pins this exact open description across scheduler
  * sleeps. A sibling may close/dup2 the original integer FD while we wait;
  * completion must still dequeue from the original listener, not the new FD. */
@@ -573,14 +467,8 @@ uint64_t nas_fs_socket_accept_description(unsigned listener_slot,
     if(listener_slot>=NAS_OPEN_FILE_LIMIT ||
        !nas_open_files[listener_slot].refcount)
         return (uint64_t)-EBADF;
-#ifndef NAS_ENABLE_LWIP
-    if(nas_ipv4_socket_active(listener_slot))
-        return sys_ipv4_accept_slot(listener_slot,address,length_ptr,flags);
-#endif
-#ifdef NAS_ENABLE_LWIP
     if(nas_lwip_socket_is_slot(listener_slot))
         return sys_lwip_accept_slot(listener_slot,address,length_ptr,flags);
-#endif
     if(nas_unix_socket_listening(listener_slot))
         return sys_unix_accept_slot(listener_slot,address,length_ptr,flags);
     return (uint64_t)-EINVAL;
@@ -617,7 +505,6 @@ static uint64_t sys_unix_name(uint64_t fd,uint64_t address,
 }
 static uint64_t sys_ipv4_name(uint64_t fd,uint64_t address,
                               uint64_t length_ptr,bool peer) {
-#ifdef NAS_ENABLE_LWIP
     if(lwip_fd(fd)) {
         uint32_t capacity;
         int rc=lwip_name_preflight(address,length_ptr,&capacity);
@@ -626,25 +513,6 @@ static uint64_t sys_ipv4_name(uint64_t fd,uint64_t address,
         return lwip_control_result(rc);
     }
     return (uint64_t)-EBADF;
-#else
-    if(!ipv4_fd(fd))return (uint64_t)-EBADF;
-    if(!address || !length_ptr)return (uint64_t)-EFAULT;
-    uint32_t length;
-    if(!nas_user_read_bytes(length_ptr,(uint8_t *)&length,4))
-        return (uint64_t)-EFAULT;
-    struct nas_ipv4_endpoint ep={0};
-    int rc=nas_ipv4_socket_name(TASK.fds->entries[fd].slot,peer,&ep);
-    if(rc)return (uint64_t)(int64_t)rc;
-    uint8_t output[16];
-    ipv4_sockaddr(ep,output);
-    uint32_t actual=16;
-    uint32_t n=length>actual?actual:length;
-    if(!nas_user_prepare_write(length_ptr,4) ||
-       (n && !nas_user_prepare_write(address,n)))return (uint64_t)-EFAULT;
-    return nas_user_write_bytes(length_ptr,(const uint8_t *)&actual,4) &&
-           (!n || nas_user_write_bytes(address,output,n))
-         ? 0:(uint64_t)-EFAULT;
-#endif
 }
 static uint64_t sys_unix_getsockopt(uint64_t fd,uint64_t level,
                                     uint64_t opt,uint64_t address,
@@ -681,7 +549,6 @@ static uint64_t sys_unix_getsockopt(uint64_t fd,uint64_t level,
 static uint64_t sys_ipv4_getsockopt(uint64_t fd,uint64_t level,
                                     uint64_t opt,uint64_t address,
                                     uint64_t size_ptr) {
-#ifdef NAS_ENABLE_LWIP
     if(lwip_fd(fd)) {
         uint32_t length;
         if(!size_ptr || !nas_user_read_bytes(size_ptr,(uint8_t *)&length,4))
@@ -755,68 +622,10 @@ static uint64_t sys_ipv4_getsockopt(uint64_t fd,uint64_t level,
                0:(uint64_t)-EFAULT;
     }
     return (uint64_t)-EBADF;
-#else
-    if(!ipv4_fd(fd))return (uint64_t)-EBADF;
-    uint32_t length;
-    if(!size_ptr || !nas_user_read_bytes(size_ptr,(uint8_t *)&length,4))
-        return (uint64_t)-EFAULT;
-    if(level==6 && opt==11) { /* Linux TCP_INFO, stable 104-byte prefix */
-        /* iperf3 samples TCP_INFO to report stream metrics. Our local-only
-         * byte stream has a genuine endpoint state and bounded receive
-         * ring, but no TCP packets, RTT, retransmits or congestion window.
-         * Publish the stable Linux tcp_info prefix with those unsupported
-         * wire metrics zero, never inventing congestion measurements. */
-        if(!length)return (uint64_t)-EINVAL;
-        uint8_t info[104]={0};
-        unsigned slot=TASK.fds->entries[fd].slot;
-        int rc=nas_ipv4_socket_tcp_state(slot,&info[0]);
-        if(rc)return (uint64_t)(int64_t)rc;
-        uint32_t receive_space=NAS_PIPE_CAP;
-        memcpy(info+96,&receive_space,sizeof(receive_space));
-        uint32_t actual=length<sizeof(info)?length:(uint32_t)sizeof(info);
-        if(!nas_user_prepare_write(address,actual) ||
-           !nas_user_prepare_write(size_ptr,4))return (uint64_t)-EFAULT;
-        return nas_user_write_bytes(address,info,actual) &&
-               nas_user_write_bytes(size_ptr,(const uint8_t *)&actual,4) ?
-               0 : (uint64_t)-EFAULT;
-    }
-    if(length<4)return (uint64_t)-EINVAL;
-    uint32_t value=0;
-    if(level==1) {
-        switch(opt) {
-        case 2: {
-            bool reuse=false;
-            int rc=nas_ipv4_socket_reuseaddr(TASK.fds->entries[fd].slot,
-                                             false,&reuse);
-            if(rc)return (uint64_t)(int64_t)rc;
-            value=reuse?1:0;break;
-        }
-        case 3:value=1;break; /* SO_TYPE: SOCK_STREAM */
-        case 4:value=0;break; /* SO_ERROR: synchronous local connects */
-        case 7:case 8:value=NAS_PIPE_CAP;break; /* actual bounded byte rings */
-        case 30:value=nas_ipv4_socket_listening(
-            TASK.fds->entries[fd].slot)?1:0;break; /* SO_ACCEPTCONN */
-        case 38:value=6;break; /* SO_PROTOCOL: TCP */
-        case 39:value=2;break; /* SO_DOMAIN: AF_INET */
-        default:return (uint64_t)-ENOPROTOOPT;
-        }
-    } else if(level==6 && opt==1) {
-        /* No packetization or Nagle queue exists inside this local stream:
-         * every admitted write is forwarded immediately. */
-        value=1; /* TCP_NODELAY is inherently active */
-    } else return (uint64_t)-ENOPROTOOPT;
-    uint32_t actual=4;
-    if(!nas_user_prepare_write(address,4) ||
-       !nas_user_prepare_write(size_ptr,4))return (uint64_t)-EFAULT;
-    return nas_user_write_bytes(address,(const uint8_t *)&value,4) &&
-           nas_user_write_bytes(size_ptr,(const uint8_t *)&actual,4)
-         ? 0:(uint64_t)-EFAULT;
-#endif
 }
 static uint64_t sys_ipv4_setsockopt(uint64_t fd,uint64_t level,
                                     uint64_t opt,uint64_t address,
                                     uint64_t length) {
-#ifdef NAS_ENABLE_LWIP
     if(lwip_fd(fd)) {
         if(level==1 && opt==25) { /* Linux SO_BINDTODEVICE = 25 */
             if(!address)return (uint64_t)-EFAULT;
@@ -883,21 +692,6 @@ static uint64_t sys_ipv4_setsockopt(uint64_t fd,uint64_t level,
         return lwip_control_result(nas_lwip_socket_setreuseaddr(slot,value!=0));
     }
     return (uint64_t)-EBADF;
-#else
-    if(!ipv4_fd(fd))return (uint64_t)-EBADF;
-    if(length<4 || !address)return (uint64_t)-EINVAL;
-    uint32_t value;
-    if(!nas_user_read_bytes(address,(uint8_t *)&value,4))
-        return (uint64_t)-EFAULT;
-    if(level==1 && opt==2) { /* SO_REUSEADDR */
-        bool enable=value!=0;
-        return (uint64_t)(int64_t)nas_ipv4_socket_reuseaddr(
-            TASK.fds->entries[fd].slot,true,&enable);
-    }
-    if(level==6 && opt==1) /* TCP_NODELAY: immediate stream forwarding */
-        return value ? 0:(uint64_t)-EOPNOTSUPP;
-    return (uint64_t)-ENOPROTOOPT;
-#endif
 }
 /* The three Linux LP64 ISAs share the 56-byte msghdr/iovec wire layout.
  * Ancillary SCM_RIGHTS preserves open-description identity across processes,
@@ -910,7 +704,6 @@ struct nas_msghdr {
 };
 struct nas_iovec { uint64_t base,length; };
 _Static_assert(sizeof(struct nas_msghdr)==56,"native Linux msghdr ABI");
-#ifdef NAS_ENABLE_LWIP
 /* AF_NETLINK exposes a kernel-owned ROUTE notification/query File, not a
  * second TCP/IP stack. This syscall adapter is the sole owner of usercopy,
  * iovec import, and Linux sockaddr_nl/msghdr layout on all three LP64 ISAs. */
@@ -1039,8 +832,6 @@ static uint64_t sys_netlink_getsockopt(uint64_t fd,uint64_t level,
            nas_user_write_bytes(length_ptr,(const uint8_t *)&actual,4) ?
            0:(uint64_t)-EFAULT;
 }
-#endif
-#ifdef NAS_ENABLE_LWIP
 /* Linux LP64 cmsghdr (16 bytes) + struct in_pktinfo (12 bytes).
  * IP addresses are byte strings in network order, unlike the native
  * interface index and cmsg fields. CMSG_SPACE(12)=32, CMSG_LEN(12)=28. */
@@ -1078,11 +869,9 @@ static int ipv4_pktinfo_import(const struct nas_msghdr *msg,
     }
     return 1;
 }
-#endif
 int nas_fs_socket_tcp_sendmsg_iov(uint64_t fd,uint64_t address,
                                  uint64_t flags,uint64_t *iov,
                                  uint64_t *count) {
-#ifdef NAS_ENABLE_LWIP
     if(!lwip_fd(fd) || nas_lwip_socket_type(TASK.fds->entries[fd].slot)!=
        NAS_LWIP_BRIDGE_TCP)return 0;
     if(!iov || !count)return -EINVAL;
@@ -1096,10 +885,6 @@ int nas_fs_socket_tcp_sendmsg_iov(uint64_t fd,uint64_t address,
     *iov=msg.iov;
     *count=msg.iovlen;
     return 1;
-#else
-    (void)fd;(void)address;(void)flags;(void)iov;(void)count;
-    return 0;
-#endif
 }
 static uint64_t unix_msgiov(uint64_t fd,const struct nas_msghdr *msg,
                             bool writing) {
@@ -1231,7 +1016,6 @@ bad_user_output:
     return (uint64_t)-EFAULT;
 }
 static uint64_t sys_ipv4_sendmsg(uint64_t fd,uint64_t address,uint64_t flags) {
-#ifdef NAS_ENABLE_LWIP
     if(lwip_fd(fd)) {
         unsigned slot=TASK.fds->entries[fd].slot;
         struct nas_msghdr msg;
@@ -1283,21 +1067,8 @@ static uint64_t sys_ipv4_sendmsg(uint64_t fd,uint64_t address,uint64_t flags) {
                     ancillary ? &pktinfo:NULL);
     }
     return (uint64_t)-EBADF;
-#else
-    if(!ipv4_fd(fd))return (uint64_t)-EBADF;
-    /* Per-call MSG_DONTWAIT needs a dedicated File transfer flag, not a
-     * temporary mutation of the shared open-description O_NONBLOCK bit. */
-    if(flags & ~0x4000ULL)return (uint64_t)-EOPNOTSUPP;
-    struct nas_msghdr msg;
-    if(!nas_user_read_bytes(address,(uint8_t *)&msg,sizeof(msg)))
-        return (uint64_t)-EFAULT;
-    if(msg.name)return (uint64_t)-EISCONN;
-    if(msg.controllen)return (uint64_t)-EOPNOTSUPP;
-    return unix_msgiov(fd,&msg,true); /* same owned stream File data plane */
-#endif
 }
 static uint64_t sys_ipv4_recvmsg(uint64_t fd,uint64_t address,uint64_t flags) {
-#ifdef NAS_ENABLE_LWIP
     if(lwip_fd(fd)) {
         unsigned slot=TASK.fds->entries[fd].slot;
         if(nas_lwip_socket_type(slot)!=NAS_LWIP_BRIDGE_UDP)
@@ -1372,41 +1143,10 @@ static uint64_t sys_ipv4_recvmsg(uint64_t fd,uint64_t address,uint64_t flags) {
                (uint64_t)received:(uint64_t)-EFAULT;
     }
     return (uint64_t)-EBADF;
-#else
-    if(!ipv4_fd(fd))return (uint64_t)-EBADF;
-    if(flags)return (uint64_t)-EOPNOTSUPP;
-    struct nas_msghdr msg;
-    if(!nas_user_read_bytes(address,(uint8_t *)&msg,sizeof(msg)) ||
-       !nas_user_prepare_write(address,sizeof(msg)))
-        return (uint64_t)-EFAULT;
-    uint8_t peer_addr[16];
-    if(msg.name) {
-        struct nas_ipv4_endpoint peer;
-        int rc=nas_ipv4_socket_name(TASK.fds->entries[fd].slot,true,&peer);
-        if(rc)return (uint64_t)(int64_t)rc;
-        ipv4_sockaddr(peer,peer_addr);
-        uint32_t n=msg.namelen>16?16:msg.namelen;
-        if(n && !nas_user_prepare_write(msg.name,n))
-            return (uint64_t)-EFAULT;
-    }
-    uint64_t received=unix_msgiov(fd,&msg,false);
-    if((int64_t)received<0)return received;
-    if(msg.name) {
-        uint32_t n=msg.namelen>16?16:msg.namelen;
-        if(n && !nas_user_write_bytes(msg.name,peer_addr,n))
-            return (uint64_t)-EFAULT;
-        msg.namelen=16;
-    } else msg.namelen=0;
-    msg.controllen=0;
-    msg.flags=0;
-    return nas_user_write_bytes(address,(const uint8_t *)&msg,sizeof(msg))
-         ? received:(uint64_t)-EFAULT;
-#endif
 }
 static uint64_t sys_ipv4_sendto(uint64_t fd,uint64_t buffer,
                                 uint64_t length,uint64_t flags,
                                 uint64_t destination,uint64_t address_size) {
-#ifdef NAS_ENABLE_LWIP
     if(lwip_fd(fd)) {
         /* Connected TCP/UDP goes through the existing parked FileOps path.
          * Connectionless UDP is copied as ONE kernel-owned datagram with
@@ -1437,17 +1177,10 @@ static uint64_t sys_ipv4_sendto(uint64_t fd,uint64_t buffer,
         return nas_fs_fd_write(fd,buffer,length);
     }
     return (uint64_t)-EBADF;
-#else
-    if(!ipv4_fd(fd))return (uint64_t)-EBADF;
-    if(flags & ~0x4000ULL)return (uint64_t)-EOPNOTSUPP;
-    if(destination || address_size)return (uint64_t)-EISCONN;
-    return nas_fs_fd_write(fd,buffer,length);
-#endif
 }
 static uint64_t sys_ipv4_recvfrom(uint64_t fd,uint64_t buffer,
                                   uint64_t length,uint64_t flags,
                                   uint64_t address,uint64_t length_ptr) {
-#ifdef NAS_ENABLE_LWIP
     if(lwip_fd(fd)) {
         unsigned slot=TASK.fds->entries[fd].slot;
         if(nas_lwip_socket_type(slot)==NAS_LWIP_BRIDGE_UDP) {
@@ -1526,49 +1259,13 @@ static uint64_t sys_ipv4_recvfrom(uint64_t fd,uint64_t buffer,
         return received;
     }
     return (uint64_t)-EBADF;
-#else
-    if(!ipv4_fd(fd))return (uint64_t)-EBADF;
-    if(flags)return (uint64_t)-EOPNOTSUPP;
-    if(address&&!length_ptr)return (uint64_t)-EFAULT;
-    uint32_t actual=16,capacity=0;
-    uint8_t bytes[16];
-    if(address) {
-        if(!nas_user_read_bytes(length_ptr,(uint8_t *)&capacity,4))
-            return (uint64_t)-EFAULT;
-        struct nas_ipv4_endpoint peer;
-        int rc=nas_ipv4_socket_name(TASK.fds->entries[fd].slot,true,&peer);
-        if(rc)return (uint64_t)(int64_t)rc;
-        ipv4_sockaddr(peer,bytes);
-        if(!nas_user_prepare_write(length_ptr,4) ||
-           (capacity && !nas_user_prepare_write(address,
-                                                capacity>16?16:capacity)))
-            return (uint64_t)-EFAULT;
-    }
-    uint64_t received=nas_fs_fd_read(fd,buffer,length);
-    if((int64_t)received<0)return received;
-    if(address && (!nas_user_write_bytes(length_ptr,
-                                            (const uint8_t *)&actual,4) ||
-                      (capacity && !nas_user_write_bytes(address,bytes,
-                                              capacity>16?16:capacity))))
-        return (uint64_t)-EFAULT;
-    return received;
-#endif
 }
 static uint64_t sys_socket_shutdown(uint64_t fd,uint64_t how) {
     if(!unix_fd(fd) && !inet_fd(fd))return (uint64_t)-EBADF;
     if(how>2ULL)return (uint64_t)-EINVAL;
-#ifdef NAS_ENABLE_LWIP
     if(lwip_fd(fd))return lwip_control_result(nas_lwip_socket_shutdown(
         TASK.fds->entries[fd].slot,(unsigned)how));
-#endif
     unsigned slot=TASK.fds->entries[fd].slot;
-#ifndef NAS_ENABLE_LWIP
-    if(ipv4_fd(fd)) {
-        struct nas_ipv4_endpoint peer;
-        int rc=nas_ipv4_socket_name(slot,true,&peer);
-        if(rc)return (uint64_t)(int64_t)rc;
-    }
-#endif
     return (uint64_t)(int64_t)nas_pipe_socket_shutdown(slot,(unsigned)how);
 }
 
@@ -1594,7 +1291,6 @@ struct nas_fs_result nas_fs_socket_syscall(enum nas_syscall_op op,
                                          const uint64_t *args) {
     int fd_error=socket_fd_error(op,args[1]);
     if(fd_error)SOCKET_RESULT((uint64_t)(int64_t)fd_error);
-#ifdef NAS_ENABLE_LWIP
     if(op!=NAS_SC_socket && netlink_fd(args[1])) {
         switch(op) {
         case NAS_SC_bind:
@@ -1618,7 +1314,6 @@ struct nas_fs_result nas_fs_socket_syscall(enum nas_syscall_op op,
         default:break;
         }
     }
-#endif
     switch (op) {
     case NAS_SC_socket: SOCKET_RESULT(sys_socket(args[1],args[2],args[3]));
     case NAS_SC_bind: SOCKET_RESULT(inet_fd(args[1]) ?

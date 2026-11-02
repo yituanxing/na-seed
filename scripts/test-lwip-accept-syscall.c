@@ -248,20 +248,10 @@ void nas_fs_close_fd(uint64_t fd) {
         nas_open_files[slot]=(struct nas_open_file){0};
     }
 }
-/* Only the real lwIP branch may be taken for listener_slot. */
-bool nas_ipv4_socket_active(unsigned slot){(void)slot;return false;}
+/* Only the real lwIP provider may handle listener_slot. */
 bool nas_unix_socket_listening(unsigned slot){(void)slot;return false;}
-int nas_ipv4_socket_accept(unsigned slot,unsigned *out) {
-    (void)slot;(void)out;abort();
-}
 int nas_unix_socket_accept(unsigned slot,unsigned *out) {
     (void)slot;(void)out;abort();
-}
-int nas_ipv4_socket_name(unsigned slot,bool peer,struct nas_ipv4_endpoint *out) {
-    (void)slot;(void)peer;(void)out;abort();
-}
-int nas_ipv4_socket_reuseaddr(unsigned slot,bool set,bool *value) {
-    (void)slot;(void)set;(void)value;abort();
 }
 int nas_pipe_socket_shutdown(unsigned slot,unsigned how) {
     (void)slot;(void)how;abort();

@@ -1,5 +1,5 @@
 /* Host Linux-socket ABI proof. Import the real M106 usercopy/FD fixture and
- * real syscall sources, then exercise AF_UNIX isolation and opt-in AF_INET
+ * real syscall sources, then exercise AF_UNIX isolation and native AF_INET
  * selection against a deliberately controlled asynchronous File provider.
  * The separate test-lwip-socket-port.c executes upstream lwIP TCP/UDP; this
  * fixture tests syscall parsing/publication, not protocol algorithms. */
@@ -7,44 +7,10 @@
 #include "test-m106-usercopy-syscalls.c"
 #undef main
 
-/* These legacy backend identities are enough to prove that the actual
- * syscall adapter routes families correctly; full AF_UNIX/loopback protocol
- * behavior is tested separately by M107 and the existing guest suite. */
-static bool abi_fake_ipv4[NAS_OPEN_FILE_LIMIT];
+/* Only the single upstream-lwIP AF_INET provider exists. The fake provider
+ * below tests File publication/ABI, not another TCP/IP implementation. */
 void nas_unix_socket_init(unsigned slot){assert(slot<NAS_OPEN_FILE_LIMIT);}
-void nas_ipv4_socket_init(unsigned slot){
-    assert(slot<NAS_OPEN_FILE_LIMIT);
-    abi_fake_ipv4[slot]=true;
-}
-bool nas_ipv4_socket_active(unsigned slot){
-    return slot<NAS_OPEN_FILE_LIMIT && abi_fake_ipv4[slot];
-}
-#ifdef NAS_ENABLE_LWIP
-int nas_ipv4_socket_bind(unsigned slot,struct nas_ipv4_endpoint ep) {
-    (void)slot;(void)ep;assert(!"lwIP bind fell into old loopback");return -EIO;
-}
-int nas_ipv4_socket_connect(unsigned slot,struct nas_ipv4_endpoint ep) {
-    (void)slot;(void)ep;assert(!"lwIP connect fell into old loopback");return -EIO;
-}
-int nas_ipv4_socket_listen(unsigned slot,unsigned backlog) {
-    (void)slot;(void)backlog;assert(!"lwIP listen fell into old loopback");return -EIO;
-}
-int nas_ipv4_socket_name(unsigned slot,bool peer,struct nas_ipv4_endpoint *out) {
-    (void)slot;(void)peer;(void)out;
-    assert(!"lwIP name fell into old loopback");return -EIO;
-}
-int nas_ipv4_socket_tcp_state(unsigned slot,uint8_t *state) {
-    (void)slot;(void)state;assert(!"lwIP getsockopt fell into fake TCP");return -EIO;
-}
-int nas_ipv4_socket_reuseaddr(unsigned slot,bool set,bool *value) {
-    (void)slot;(void)set;(void)value;assert(!"lwIP reuseaddr fell into fake TCP");return -EIO;
-}
-bool nas_ipv4_socket_listening(unsigned slot) {
-    (void)slot;assert(!"lwIP listening fell into fake TCP");return false;
-}
-#endif
 
-#ifdef NAS_ENABLE_LWIP
 #include "../ports/lwip/socket_port.h"
 /* SIOCGIFCONF now exercises the real generic ioctl dispatcher. Its other
  * filesystem/PTY branches are unrelated to this network fixture and must
@@ -397,9 +363,7 @@ int nas_lwip_socket_port_complete(unsigned slot,
     abi_control_status[slot]=0;
     return 1;
 }
-#endif
 
-#ifdef NAS_ENABLE_LWIP
 /* Keep host copies in mapped guest pages: native pointers are deliberately
  * never passed to the real syscall adapter. */
 static uint64_t abi_sockaddr(uint16_t port,uint32_t ip) {
@@ -410,7 +374,6 @@ static uint64_t abi_sockaddr(uint16_t port,uint32_t ip) {
     memcpy(user_ptr(addr),bytes,sizeof(bytes));
     return addr;
 }
-#endif
 
 int main(void) {
     /* Run all original AF_UNIX socketpair and usercopy regressions first. */
@@ -451,7 +414,6 @@ int main(void) {
     assert(unix_fd_number<NAS_FD_LIMIT);
     assert(guest_task.fds->entries[unix_fd_number].cloexec);
     assert(unix_fd(unix_fd_number));
-#ifdef NAS_ENABLE_LWIP
     unsigned unix_slot=guest_task.fds->entries[unix_fd_number].slot;
     assert(!nas_lwip_socket_is_slot(unix_slot));
     assert(abi_opens==0);
@@ -1089,12 +1051,5 @@ int main(void) {
     puts("  immutable vector snapshot, held OpenFile across close/fd reuse");
     puts("[LWIP SOCKET ABI PASS] native AF_INET TCP/UDP OpenFile + user sockaddr,");
     puts("  async control/GETNAME/SHUTDOWN/REUSEADDR, AF_UNIX preserved");
-#else
-    assert((int64_t)sys_socket(2,2,0)==-ESOCKTNOSUPPORT);
-    uint64_t legacy_fd=sys_socket(2,1,6);
-    assert(legacy_fd<NAS_FD_LIMIT && inet_fd(legacy_fd));
-    assert(!unix_fd(legacy_fd));
-    puts("[LEGACY SOCKET ABI PASS] AF_UNIX and simulated AF_INET unchanged");
-#endif
     return 0;
 }

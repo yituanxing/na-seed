@@ -31,12 +31,8 @@
 #include "eventfd.h"
 #include "pidfd.h"
 #include "unix_socket.h"
-#ifndef NAS_ENABLE_LWIP
-#include "../net/ipv4_loopback.h"
-#else
 #include "../../ports/lwip/socket_port.h"
 #include "../../ports/lwip/network_boot.h"
-#endif
 #include "namespace_syscall.h"
 #include "socket_syscall.h"
 #include "metadata_syscall.h"
@@ -311,7 +307,6 @@ static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
      * The semantic request is its low 32 bits, not the sign extension. */
     cmd=(uint32_t)cmd;
     unsigned slot=TASK.fds->entries[fd].slot;
-#ifdef NAS_ENABLE_LWIP
     if((cmd==0x8910U || cmd==0x8913U || cmd==0x8921U) &&
        nas_lwip_socket_is_slot(slot)) { /* SIOCGIFNAME/FLAGS/MTU */
         /* Device identity, administrative state and link carrier are
@@ -394,7 +389,6 @@ static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
         return nas_user_write_bytes(arg,(const uint8_t *)&ifconf,
                                     sizeof(ifconf)) ? 0:(uint64_t)-EFAULT;
     }
-#endif
     if(cmd==0xc020660bU) { /* Linux FS_IOC_FIEMAP, 32-byte header */
         struct nas_linux_fiemap {
             uint64_t start,length;
@@ -890,9 +884,6 @@ static uint64_t vioctl_uart(uint64_t fd,uint64_t cmd,uint64_t arg) {
 }
 static void vrelease_pipe(unsigned slot){nas_pipe_release_description(slot);}
 static void vrelease_socket(unsigned slot){
-#ifndef NAS_ENABLE_LWIP
-    nas_ipv4_socket_release(slot);
-#endif
     nas_unix_socket_release(slot);
     nas_pipe_release_description(slot);
 }
@@ -954,10 +945,6 @@ static const struct nas_file_ops ops_pipe_write={
     .release=vrelease_pipe
 };
 static uint16_t dpoll_socket(unsigned slot,uint16_t events) {
-#ifndef NAS_ENABLE_LWIP
-    if(nas_ipv4_socket_listening(slot))
-        return nas_ipv4_socket_readable(slot) ? (events&1U) : 0;
-#endif
     if(nas_unix_socket_listening(slot))
         return nas_unix_socket_readable(slot) ? (events&1U) : 0;
     /* EOF/POLLHUP on read side; write direction may still be live. */

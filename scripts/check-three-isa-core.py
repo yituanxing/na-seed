@@ -35,21 +35,33 @@ for source in srcs:
     obj=defs.get(source)
     if obj is None:
         raise SystemExit(f"x86 kernel missing exact common compilation rule: {source}")
-    # The legacy simulated IPv4 backend remains in default kernels, but an
-    # opt-in lwIP build must contain exactly one protocol implementation.
-    # Its x86 object is selected through an explicit conditional variable.
-    link_name=("$(LEGACY_IPV4_X86_OBJS)"
-               if source=="kernel/net/ipv4_loopback.c" else f"$(OUT)/{obj}")
+    link_name=f"$(OUT)/{obj}"
     if link_name not in linked.group(1).split():
         raise SystemExit(f"x86 kernel linker omits common object {obj} ({source})")
     if link_name not in actual_link.group(1).split():
         raise SystemExit(f"x86 actual ld.lld command omits common object {obj} ({source})")
-assert "LEGACY_IPV4_X86_OBJS := $(OUT)/net_ipv4_loopback.o" in make
-assert "LEGACY_IPV4_X86_OBJS :=\nendif" in make, "lwIP x86 must omit legacy AF_INET"
+assert "NAS_ENABLE_LWIP ?= 1" in make
+assert "LEGACY_IPV4_X86_OBJS" not in make
+assert "$(LWIP_X86_OBJS)" in linked.group(1).split()
+assert "$(LWIP_X86_OBJS)" in actual_link.group(1).split()
+assert "ports/lwip/socket_port.c" in make and "ports/lwip/netconn_bridge.c" in make
+for retired in ("kernel/net/ipv4_loopback.c", "kernel/net/ipv4_loopback.h",
+                "kernel/net/ipv4_endpoint.h", "kernel/net/test_ipv4_loopback.c"):
+    assert not (root/retired).exists(), f"retired TCP/IP backend returned: {retired}"
+    assert retired not in srcs
 for port in ("aarch64","riscv64"):
     script=(root/f"scripts/build-{port}-full.sh").read_text()
-    assert "grep -v '^kernel/net/ipv4_loopback.c$'" in script, (
-        f"native {port} lwIP kernel still links simulated AF_INET")
+    assert "-DNAS_ENABLE_LWIP=1" in script
+    assert 'lwip_src="ports/lwip/libc_port.c' in script
+    assert "grep -v '^kernel/net/ipv4_loopback.c$'" not in script
+    assert "NAS_ENABLE_LWIP:-1" in script, f"native {port} still has a default legacy stack"
+for path in ("kernel/fs/socket_syscall.c", "kernel/syscall/dispatch.c",
+             "kernel/fs/syscall.c", "kernel/task/blocked_completion.c",
+             "kernel/task/wait.c", "kernel/init/main.c", "kernel/fs/netlink_route.c"):
+    source=(root/path).read_text()
+    assert "#ifdef NAS_ENABLE_LWIP" not in source
+    assert "#ifndef NAS_ENABLE_LWIP" not in source
+    assert "nas_ipv4_socket_" not in source, f"parallel IPv4 backend in {path}"
 for port in ("aarch64","riscv64"):
     script=(root/f"scripts/build-{port}-full.sh").read_text()
     if 'scripts/full-kernel-core.sources' not in script or 'for f in $common $arch' not in script:

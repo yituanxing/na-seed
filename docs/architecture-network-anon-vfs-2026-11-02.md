@@ -82,13 +82,13 @@ even when optional `cwd[256]` cannot hold it; `getcwd` returns the live
 4095-byte spelling and correct `ERANGE` with heap scratch only for long
 outputs. `/proc/<pid>/cwd` also supports long paths, with readlink truncation.
 
-**Not yet widened:** diagnostic `origin_path`, mount snapshots, absolute
-bootstrap compatibility and old metadata adapters still use 256-byte
-projections. They are not extra namei engines and should not grow into one.
-The long-cwd batch has focused host regression evidence; exact-head guest
-results must be checked after publication.
+**Not yet widened:** diagnostic `origin_path`, mount snapshots and absolute
+bootstrap compatibility still use bounded 256-byte projections. They are
+not extra namei engines and should not grow into one. The long-cwd batch
+has both focused host regressions and earlier 3-ISA native-QEMU evidence;
+the current default-lwIP migration still needs its own exact-head guest run.
 
-## Lexical namespace adapter retirement (next consolidated batch)
+## Lexical namespace adapter retirement
 
 The obsolete `kernel/path.[ch]`, `nas_fs_resolve_path` and three
 test-only canonical/parent string wrappers are now deleted from the source,
@@ -112,8 +112,32 @@ this small explicit bootstrap exception.
 The host oracles now test the actual negative-parent Path operations,
 instead of retaining unused canonical wrappers solely to keep tests green.
 The M106 fixture directly exercises absolute, rooted-relative, dot/dotdot,
-double slash and overlong bootstrap names. This is host evidence only until
-the current commit's native three-ISA CI completes.
+double slash and overlong bootstrap names. Its predecessor exact-head native
+three-ISA QEMU job and 56-workflow CI checks passed after publication.
+
+## Default network provider convergence (single upstream lwIP stack)
+
+The obsolete simulated AF_INET TCP loopback backend has been retired from
+the repository, its host-only test, x86 linker, shared source manifest,
+ARM64/RV64 builders and all syscall/Task/poll branches. Official upstream
+lwIP (tcpip thread, Netconn, native FileOps) is the **only** AF_INET protocol
+provider in the default kernel on all three ISAs. The kernel's AF_UNIX
+endpoint and AF_NETLINK route File ownership remain independent of the IP
+protocol stack. In particular, Netconn's asynchronous close keeps its
+OpenFile generation lease; a new socket cannot race a closing bridge slot.
+
+Ethernet hardware is still optional: without a discovered NIC, the real
+upstream lwIP loopback starts and the guest can use TCP/UDP on 127.0.0.1.
+Enabling an U-Boot VirtIO NIC attaches to **that same stack** and uses its
+existing carrier/DHCP callbacks. No second loopback packet algorithm or
+device table is linked for the default/blk/net/both build profiles.
+`NAS_ENABLE_LWIP=0` is now a configuration error, not an implicit switch to
+the removed simulation. Source manifest and dry-run guards reject regressions.
+
+This batch's host checks include the real syscall ABI fixture, native
+upstream loopback/Netconn integration and all-source selection audit. A new
+exact-head three-ISA QEMU run is required before claiming kernel-level boot
+and ELF execution evidence for the default-provider change.
 
 ## Focused proof (run on source working tree)
 
@@ -126,7 +150,7 @@ the current commit's native three-ISA CI completes.
 | `sh scripts/check-m106-usercopy-syscalls.sh` | Real File/FD syscall publication/close, failure rollback, memfd diagnostic bounds | Host tests only |
 | `sh scripts/check-path-contract-host.sh` (extended) | Real deep provider: 4095-byte output, >256 ancestors, actual chdir/fchdir/getcwd, ERANGE and owned File Path | Host tests only |
 | `scripts/test-procfs.c` (extended) | Long `/proc/<pid>/cwd` full and truncated readlink outputs | Host tests only |
-| `python3 scripts/check-three-isa-core.py` | All 71 shared source units selected in three build manifests | Static manifest, **not** cross-compilation |
+| `python3 scripts/check-three-isa-core.py` | All 69 shared source units selected in three build manifests | Static manifest, **not** cross-compilation |
 | `python3 scripts/check-architecture-boundaries.py` | VFS, MM, driver dependency fences | Static source check |
 
 The local executor has `cc`, but lacks `clang` and
@@ -139,9 +163,9 @@ exact-head CI/QEMU result before claiming three-ISA guest proof.
 1. Exact-head three-ISA native QEMU Alpine/BusyBox/network/memfd acceptance.
 2. Multi-NIC and IRQ/link-loss/remove tests before claiming a general
    network-device lifecycle or hotplug support.
-3. Retire the compiled legacy IPv4 profile only after the default boot and
-   three-ISA build selection are migrated together; no leftover #ifdef
-   behavior fork in the active network syscall layer.
+3. Keep upstream lwIP as the only protocol provider in every normal
+   kernel build, and verify the default and NIC-enabled native guests on
+   all three ISAs before relying on the newly converged configuration.
 4. Replace remaining 256-byte *active* pathname compatibility paths with
    Path-first ownership. Add a private shmem mount only when an independent
    memfd/no-tmpfs use case requires it.

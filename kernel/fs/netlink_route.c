@@ -8,7 +8,6 @@
  * returns EPERM, which the unmodified dnsmasq v2.91 explicitly handles by
  * retrying with nl_groups=0. No made-up change notifications are sent. */
 #include "netlink_route.h"
-#ifdef NAS_ENABLE_LWIP
 #include "file_ops.h"
 #include "../fd.h"
 #include "../task.h"
@@ -287,4 +286,3 @@ static const struct nas_file_ops ops={
     .poll=poll_fd,.poll_description=poll_description,.release=release
 };
 const struct nas_file_ops *nas_netlink_route_ops(void){return &ops;}
-#endif /* NAS_ENABLE_LWIP: no native route interfaces in the default build */

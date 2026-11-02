@@ -93,11 +93,9 @@ enum nas_blocked_completion nas_blocked_complete(struct nas_task *task,
          nr==NAS_SC_pselect6 || nr==NAS_SC_select ||
          nr==NAS_SC_epoll_wait || nr==NAS_SC_epoll_pwait ||
          nr==NAS_SC_accept || nr==NAS_SC_accept4
-#ifdef NAS_ENABLE_LWIP
          || nr==NAS_SC_bind || nr==NAS_SC_connect || nr==NAS_SC_listen ||
          nr==NAS_SC_setsockopt || nr==NAS_SC_shutdown ||
          nr==NAS_SC_getsockname || nr==NAS_SC_getpeername
-#endif
         );
     if(io_again || poll_again) {
         task->state=NAS_TASK_BLOCKED;

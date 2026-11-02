@@ -2,7 +2,7 @@
  * This deliberately feeds a snapshot with the same source contract as the
  * native lwIP DHCP callback, and checks Linux multipart wire bytes and
  * actual FileOps lifetime. No guest userspace pointer or QEMU is involved. */
-/* Compile with -DNAS_ENABLE_LWIP=1; default-kernel netlink_route.c is empty. */
+/* The default kernel includes the real NETLINK_ROUTE File provider. */
 #include "../kernel/fs/netlink_route.h"
 #include "../kernel/fs/file_ops.h"
 #include "../kernel/fd.h"
