@@ -130,9 +130,12 @@ case_run() {
             > "$work/result" 2> "$work/error" || return 1
         busy grep -Fq 'm159-nss-fixture' "$work/result" "$work/error" ;;
       shlibsign)
-        # Signs the authentic signed-APK NSS shared object with genuine
-        # upstream integrity code; no generated host executable is involved.
-        if ! "$exe" -i /usr/lib/libnss3.so -o "$work/libnss3.chk" \
+        # The upstream signer writes a companion *.chk beside its input
+        # library, even with -o. Signed APK /usr/lib is correctly read-only
+        # in the CPIO mount: copy the ORIGINAL shared-object bytes to the
+        # writable test directory before performing authentic NSS signing.
+        busy cp /usr/lib/libnss3.so "$work/libnss3.so" || return 1
+        if ! "$exe" -i "$work/libnss3.so" -o "$work/libnss3.chk" \
             > "$work/result" 2> "$work/error"; then
             echo '[M159 SHLIBSIGN DIAG] original NSS integrity tool returned nonzero' >&2
             busy head -c 750 "$work/error" >&2 || :
