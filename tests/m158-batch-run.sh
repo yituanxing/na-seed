@@ -39,7 +39,24 @@ format_check() {
       pgmtolispm)     [ "$(hexprefix "$encoded" 16)" = 546869732069732061204269744d6170 ] ;;
       pbmtoicon)      [ "$(hexprefix "$encoded" 16)" = 2f2a20466f726d61745f76657273696f ] ;;
       pbmtomacp)      [ "$(busy wc -c < "$encoded")" -eq 1992 ] ;;
-      pnmtoxwd)       [ "$(hexprefix "$encoded" 4)" = 000000a3 ] ;;
+      pnmtoxwd)
+        # XWD has no 4-byte magic. Its first word is the XWD header size,
+        # which includes the source filename: e.g. 0xA3 for a long host
+        # path but a smaller value under the guest's /tests path. Validate
+        # the actual 25-word XWD header's version, ZPixmap, pixel depth
+        # and dimensions without hard-coding that variable first word.
+        header=$(hexprefix "$encoded" 24)
+        case "$header" in
+          ????????0000000700000002000000080000000800000008) ;;
+          *) return 1 ;;
+        esac
+        header_octets=$(busy dd if="$encoded" bs=1 count=4 2>/dev/null |
+                        busy od -An -tu1)
+        set -- $header_octets
+        [ "$#" -eq 4 ] && [ "$1" -eq 0 ] && [ "$2" -eq 0 ] || return 1
+        header_size=$(($3 * 256 + $4))
+        [ "$header_size" -ge 100 ] && [ "$header_size" -le 512 ]
+        ;;
       pamtowinicon)   [ "$(hexprefix "$encoded" 4)" = 00000100 ] ;;
       pamtohdiff)     [ "$(hexprefix "$encoded" 2)" = 5037 ] ;;
       pnmtosir)       [ "$(hexprefix "$encoded" 2)" = 4f3a ] ;;
