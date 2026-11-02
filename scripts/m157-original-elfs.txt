@@ -1,0 +1,33 @@
+# M157 original signed Alpine 3.23 image and color pipeline.
+# Twenty native Netpbm programs, five GIFLIB utilities, three TIFF tools,
+# and two libpng repair/check programs. Every path is historically new.
+usr/bin/pamaddnoise
+usr/bin/pamaltsat
+usr/bin/pambrighten
+usr/bin/pamgetcolor
+usr/bin/pamhue
+usr/bin/pamlevels
+usr/bin/pamrestack
+usr/bin/pamslice
+usr/bin/pamsummcol
+usr/bin/pamtable
+usr/bin/pbmlife
+usr/bin/pbmmask
+usr/bin/pgmenhance
+usr/bin/pgmramp
+usr/bin/pnmalias
+usr/bin/pnmmargin
+usr/bin/pnmnoraw
+usr/bin/pnmscalefixed
+usr/bin/ppmshift
+usr/bin/ppmspread
+usr/bin/gifbuild
+usr/bin/gifclrmp
+usr/bin/giffix
+usr/bin/giftext
+usr/bin/giftool
+usr/bin/fax2ps
+usr/bin/fax2tiff
+usr/bin/pal2rgb
+usr/bin/pngfix
+usr/bin/png-fix-itxt
