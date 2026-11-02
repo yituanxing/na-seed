@@ -191,6 +191,21 @@ static int tmp_create_node(const struct nas_fs_node *parent,const char *name,
     return tmp_create_at(parent->inode,name,false,(uint32_t)mode) ?
            0 : -ENOSPC;
 }
+/* memfd uses a real tmpfs inode with no name and no directory link.
+ * VFS immediately owns a mount+inode pin, so the existing orphan reclaimer
+ * runs on final File/VMA unpin without a second anonymous-file store. */
+static int tmp_create_anonymous(const struct nas_vfs_mount *mount,
+                                uint64_t mode,struct nas_fs_node *out) {
+    if(!mount || !out || (mode&~07777ULL))return -EINVAL;
+    struct nas_tmp_file *inode=tmp_inode_alloc(false,(uint32_t)mode);
+    if(!inode)return -ENOSPC;
+    tmp_fill(inode,out);
+    return 0;
+}
+static void tmp_abort_anonymous(const struct nas_fs_node *node) {
+    if(node && node->inode)
+        tmp_inode_discard((struct nas_tmp_file *)(uintptr_t)node->inode);
+}
 static int tmp_mknod_node(const struct nas_fs_node *parent,const char *name,
                           uint64_t mode,struct nas_fs_node *out) {
     if(!parent || !parent->is_dir)return -ENOTDIR;
@@ -416,7 +431,9 @@ static const struct nas_vfs_type tmp_type={
     .read_at=tmp_read,.read_size_is_eof=true,
     .read_dir=tmp_read_dir,.chmod=tmp_chmod_node,.chown=tmp_chown_node,
     .utimens=tmp_utimens_node,
-    .create=tmp_create_node,.mknod=tmp_mknod_node,.write_at=tmp_write_node,
+    .create=tmp_create_node,.create_anonymous=tmp_create_anonymous,
+    .abort_anonymous=tmp_abort_anonymous,.mknod=tmp_mknod_node,
+    .write_at=tmp_write_node,
     .acquire_shared_page=tmp_shared_page,
     .shared_page_resident=tmp_shared_resident,.touch_shared=tmp_shared_dirty,
     .resize=tmp_resize_node,.preallocate=tmp_preallocate_node,
@@ -425,6 +442,9 @@ static const struct nas_vfs_type tmp_type={
     .link=tmp_link_node,.symlink=tmp_symlink_node,
     .unlink_open_safe=true,.rename_replace_open_safe=true
 };
+int nas_vfs_create_anonymous_tmpfs(uint64_t mode,struct nas_fs_node *owned) {
+    return nas_vfs_create_anonymous(&tmp_type,mode,owned);
+}
 static void proc_fill(struct nas_proc_node p,struct nas_fs_node *out) {
     *out=(struct nas_fs_node){.ino=nas_proc_ino(p),
       .nlink=nas_proc_is_dir(p)?2:1,.mode=nas_proc_mode(p),

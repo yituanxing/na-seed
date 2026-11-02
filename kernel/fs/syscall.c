@@ -315,24 +315,23 @@ static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
 #ifdef NAS_ENABLE_LWIP
     if((cmd==0x8910U || cmd==0x8913U || cmd==0x8921U) &&
        nas_lwip_socket_is_slot(slot)) { /* SIOCGIFNAME/FLAGS/MTU */
-        /* Actual loopback and DHCP-backed device identities are shared
-         * with SIOCGIFCONF and upcoming NETLINK_ROUTE RTM_NEWADDR. Linux
-         * ifreq is IFNAMSIZ (16) plus a 24-byte LP64 union. Never claim
-         * an interface that the native network bootstrap has not exposed. */
+        /* Device identity, administrative state and link carrier are
+         * distinct from DHCP address assignment. SIOCGIFCONF lists only
+         * IPv4 addresses; these ioctls can query an attached interface
+         * even while its address is pending or the link is down. Linux
+         * ifreq is IFNAMSIZ (16) plus a 24-byte LP64 union. */
         uint8_t request[40];
         if(!nas_user_read_bytes(arg,request,sizeof(request)))
             return (uint64_t)-EFAULT;
-        struct nas_lwip_guest_ipv4_if interfaces[2]={0};
-        unsigned count=nas_lwip_guest_ipv4_ifconf(interfaces);
+        struct nas_lwip_guest_if interfaces[2]={0};
+        unsigned count=nas_lwip_guest_if_snapshot(interfaces);
         if(!count || count>2)return (uint64_t)-ENODEV;
         unsigned found=count;
         if(cmd==0x8910U) { /* ifr_ifindex -> ifr_name */
             int32_t index=0;
             memcpy(&index,request+16,sizeof(index));
-            if(index==1)found=0; /* native lwIP loopback netif */
-            else for(unsigned i=1;i<count;i++)
-                if(nas_lwip_guest_ifindex(interfaces[i].name)==index)
-                    {found=i;break;}
+            for(unsigned i=0;i<count;i++)
+                if((int)interfaces[i].ifindex==index){found=i;break;}
             if(found==count)return (uint64_t)-ENODEV;
             memcpy(request,interfaces[found].name,16);
         } else { /* ifr_name -> flags or real interface MTU */
@@ -342,9 +341,12 @@ static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
                 if(!strcmp(name,interfaces[i].name)) {found=i;break;}
             if(found==count)return (uint64_t)-ENODEV;
             if(cmd==0x8913U) {
-                const uint16_t flags=found==0 ?
-                    0x0049U : /* IFF_UP | IFF_LOOPBACK | IFF_RUNNING */
-                    0x1043U; /* UP | BROADCAST | RUNNING | MULTICAST */
+                /* IFF_RUNNING is a live carrier/operational assertion,
+                 * not a fixed consequence of a named physical device. */
+                const uint16_t flags=(interfaces[found].up ? 0x0001U:0U) |
+                    (interfaces[found].link_up && interfaces[found].up ?
+                     0x0040U:0U) |
+                    (interfaces[found].loopback ? 0x0008U : 0x1002U);
                 memcpy(request+16,&flags,sizeof(flags));
             } else {
                 const uint32_t mtu=interfaces[found].mtu;
@@ -675,6 +677,43 @@ static uint64_t open_path_owned(const char *path,
 uint64_t nas_fs_open_path(const char *path,uint64_t native_flags,
                           uint64_t create_mode) {
     return open_path_owned(path,NULL,native_flags,create_mode);
+}
+/* Anonymous regular files use the SAME VFS inode lease, FileOps and FD
+ * namespace as a named open. The VFS creates an initially unlinked tmpfs
+ * inode and transfers its single owned mount/inode pin to this OpenFile.
+ * No pathname creation, umask or /tmp directory permissions participate.
+ * The visible memfd name is diagnostics only, never an inode lookup key. */
+uint64_t nas_fs_open_anon_tmpfs(const char *user_name,bool cloexec) {
+    if(!user_name)return (uint64_t)-EINVAL;
+    unsigned fds[2],slots[2];
+    int rc=nas_fd_reserve(nas_current_task,0,1,fds,slots,"memfd_create");
+    if(rc)return (uint64_t)(int64_t)rc;
+    struct nas_fs_node node={0};
+    rc=nas_vfs_create_anonymous_tmpfs(0777U,&node);
+    if(rc)return (uint64_t)(int64_t)rc;
+    const unsigned fd=fds[0],slot=slots[0];
+    if(!nas_fd_install_new(nas_current_task,fd,slot,FD_ARCHIVE,2ULL,cloexec)) {
+        if(nas_vfs_node_unpin(&node))nas_fs_fail("memfd failed pin rollback");
+        return (uint64_t)-EAGAIN;
+    }
+    struct nas_open_file *opened=&nas_open_files[slot];
+    opened->vnode=node;
+    opened->vnode_pinned=true;
+    /* Linux presents /memfd:<description> (deleted) in /proc/self/fd.
+     * Existing OpenFile diagnostic hints are bounded to 256 bytes; keep
+     * the deletion suffix even when the permitted 249-byte name is longer.
+     * No operation may resolve or reopen this diagnostic string. */
+    static const char prefix[]="/memfd:";
+    static const char suffix[]=" (deleted)";
+    char *label=opened->origin_path;
+    unsigned written=0;
+    for(unsigned i=0;i<sizeof(prefix)-1;i++)label[written++]=prefix[i];
+    for(unsigned i=0;user_name[i] &&
+           written+sizeof(suffix)<sizeof(opened->origin_path);i++)
+        label[written++]=user_name[i];
+    for(unsigned i=0;i<sizeof(suffix)-1;i++)label[written++]=suffix[i];
+    label[written]=0;
+    return fd;
 }
 /* This is NOT a second namei for ordinary missing paths. In a direct-ELF
  * rootless boot a few synthetic devices and Limine modules have no VFS

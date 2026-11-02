@@ -29,43 +29,73 @@ static struct {
  struct nas_ksem rx_wakeup;
  struct nas_kthread_handle rx_handle;
  bool ethernet_available,ready,stop;
+ bool link_sync_queued;
  uint32_t dhcp_ipv4_host_order; /* copied only by upstream core callback */
  uint8_t dhcp_prefix_len; /* derived from the same real DHCP netif lease */
- uint16_t dhcp_mtu; /* native core netif MTU at the actual DHCP lease */
 } network;
 
 /* The bootstrap attaches at most one physical netif; give Linux's name to
  * the upstream netconn_bind_if() interface index, without guessing ns0/eth0
  * index numbering or routing through a different interface. */
+unsigned nas_lwip_guest_if_snapshot(struct nas_lwip_guest_if out[2]) {
+ if(!out)return 0;
+ out[0]=(struct nas_lwip_guest_if){
+     .name="lo",.ifindex=1,.ipv4_host_order=UINT32_C(0x7f000001),
+     .prefix_len=8,.mtu=65536U,.up=true,.link_up=true,.loopback=true
+ };
+ unsigned count=1;
+ if(network.ethernet.attached && network.ethernet.device) {
+     struct netif *netif=&network.ethernet.interface;
+     struct nas_lwip_guest_if *physical=&out[count];
+     *physical=(struct nas_lwip_guest_if){
+         .ifindex=netif_get_index(netif),.mtu=netif->mtu,
+         .up=netif_is_up(netif),.link_up=netif_is_link_up(netif)
+     };
+     memcpy(physical->name,network.device_name,sizeof(physical->name));
+     /* The DHCP status callback may not have run yet after a link change;
+      * an address is usable only while the actual upstream link is up. */
+     if(physical->up && physical->link_up) {
+         physical->ipv4_host_order=network.dhcp_ipv4_host_order;
+         physical->prefix_len=network.dhcp_prefix_len;
+     }
+     ++count;
+ }
+ return count;
+}
 int nas_lwip_guest_ifindex(const char *device_name){
- if(!device_name || !network.ethernet.attached ||
-    !network.ethernet.device ||
-    strcmp(device_name,network.device_name))return -ENODEV;
- unsigned index=netif_get_index(&network.ethernet.interface);
- return index ? (int)index:-ENODEV;
+ if(!device_name)return -ENODEV;
+ struct nas_lwip_guest_if interfaces[2]={0};
+ unsigned count=nas_lwip_guest_if_snapshot(interfaces);
+ for(unsigned i=1;i<count;i++)
+     if(!strcmp(device_name,interfaces[i].name))
+         return interfaces[i].ifindex ? (int)interfaces[i].ifindex:-ENODEV;
+ return -ENODEV;
 }
 int nas_lwip_guest_ifname(unsigned index,
                          char output[NAS_LWIP_DEVICE_NAME_MAX]){
- if(!output || !index || !network.ethernet.attached ||
-    !network.ethernet.device ||
-    index!=netif_get_index(&network.ethernet.interface))return -ENODEV;
- memcpy(output,network.device_name,sizeof(network.device_name));
- return 0;
+ if(!output || !index)return -ENODEV;
+ struct nas_lwip_guest_if interfaces[2]={0};
+ unsigned count=nas_lwip_guest_if_snapshot(interfaces);
+ for(unsigned i=1;i<count;i++)if(interfaces[i].ifindex==index){
+     memcpy(output,interfaces[i].name,sizeof(interfaces[i].name));
+     return 0;
+ }
+ return -ENODEV;
 }
 unsigned nas_lwip_guest_ipv4_ifconf(
     struct nas_lwip_guest_ipv4_if out[2]) {
  if(!out)return 0;
- out[0]=(struct nas_lwip_guest_ipv4_if){
-     .name="lo",.ipv4_host_order=UINT32_C(0x7f000001),.prefix_len=8,
-     .mtu=65536U
- };
- unsigned count=1;
- const uint32_t address=network.dhcp_ipv4_host_order;
- if(network.ethernet.attached && network.ethernet.device && address &&
-    network.dhcp_prefix_len) {
-     out[count]=(struct nas_lwip_guest_ipv4_if){.ipv4_host_order=address,
-               .prefix_len=network.dhcp_prefix_len,.mtu=network.dhcp_mtu};
-     memcpy(out[count].name,network.device_name,sizeof(network.device_name));
+ struct nas_lwip_guest_if interfaces[2]={0};
+ unsigned total=nas_lwip_guest_if_snapshot(interfaces),count=0;
+ for(unsigned i=0;i<total;i++) {
+     const struct nas_lwip_guest_if *iface=&interfaces[i];
+     if(!iface->ipv4_host_order || (!iface->loopback &&
+         !iface->prefix_len))continue;
+     out[count]=(struct nas_lwip_guest_ipv4_if){
+         .ipv4_host_order=iface->ipv4_host_order,
+         .prefix_len=iface->prefix_len,.mtu=iface->mtu
+     };
+     memcpy(out[count].name,iface->name,sizeof(out[count].name));
      ++count;
  }
  return count;
@@ -97,7 +127,6 @@ static void network_status(struct netif *netif){
  /* Snapshot the ACTUAL DHCP subnet mask with the address, not a hardwired
   * 10.0.2.0/24 assumption. Linux RTM_NEWADDR stores a CIDR prefix length. */
  network.dhcp_prefix_len=0;
- network.dhcp_mtu=network.dhcp_ipv4_host_order ? netif->mtu : 0;
  if(network.dhcp_ipv4_host_order) {
      uint32_t mask=lwip_ntohl(ip4_addr_get_u32(netif_ip4_netmask(netif)));
      uint32_t rest=mask;
@@ -121,10 +150,36 @@ static void network_status(struct netif *netif){
  nas_dec(ip4_addr3(addr));nas_print(".");
  nas_dec(ip4_addr4(addr));nas_print("\n");
 }
+/* Only the upstream core may change its netif flags. The native RX worker
+ * observes driver carrier changes, then queues this callback; lwIP itself
+ * handles DHCP restart on link-up (netif_set_link_up). A link loss clears
+ * the Linux-visible address snapshot before clients can see stale data. */
+static void reconcile_link_on_core(void *ctx){
+ (void)ctx;
+ network.link_sync_queued=false;
+ if(!network.ethernet.attached || !network.ethernet.device || network.stop)
+     return;
+ struct netif *netif=&network.ethernet.interface;
+ bool carrier=nas_netdev_link_up(network.ethernet.device);
+ if(carrier==netif_is_link_up(netif))return;
+ if(carrier)netif_set_link_up(netif);
+ else netif_set_link_down(netif);
+ network_status(netif);
+}
+static void request_link_reconcile(void){
+ if(network.link_sync_queued || !network.ethernet.attached ||
+    !network.ethernet.device)return;
+ if(nas_netdev_link_up(network.ethernet.device)==
+    netif_is_link_up(&network.ethernet.interface))return;
+ network.link_sync_queued=true;
+ if(tcpip_try_callback(reconcile_link_on_core,NULL)!=ERR_OK)
+     network.link_sync_queued=false; /* bounded core mailbox: retry later */
+}
 static void receive_worker(void *ctx){
  (void)ctx;
  if(!nas_ksem_wait(&network.rx_wakeup))return;
  while(!network.stop && network.ethernet.attached){
+     request_link_reconcile();
      int received=nas_lwip_eth_poll(&network.ethernet,NAS_NET_RX_BUDGET);
      /* TX and RX share the U-Boot queue owner lock. Contention or pbuf
       * pressure is not an unplugged/poisoned NIC: retry after the normal

@@ -1,5 +1,11 @@
 # NaSeed architecture issue register
 
+**Latest implementation checkpoint:** [2026-11-02 network state / unnamed
+VFS inode integration](architecture-network-anon-vfs-2026-11-02.md).
+The older evidence and issue rows below retain their historical baseline;
+do not read a historical missing-feature statement as the current source
+state without checking the newer checkpoint and code.
+
 This is a **source-verified, living list**, not a list of things that must be
 rewritten immediately. Findings are evaluated against the actual development
 branch, not against older RFCs. A passing workload proves its observed path;

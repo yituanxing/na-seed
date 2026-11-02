@@ -162,6 +162,25 @@ static struct nas_tmp_file fixture_orphan={
  * invalid once the VFS gained a mandatory backend incarnation check. */
 static struct nas_tmp_file capacity_fixture[512];
 static unsigned orphan_releases;
+/* These zero-link tmpfs inodes have no dentry, and become reclaimable only
+ * after the LAST VFS mount+inode lease is released. */
+static struct nas_tmp_file anonymous_fixture[4];
+static unsigned anonymous_allocations,anonymous_releases;
+static bool anonymous_out_of_space;
+struct nas_tmp_file *tmp_inode_alloc(bool dir,uint32_t mode) {
+    assert(!dir);
+    if(anonymous_out_of_space)return NULL;
+    for(unsigned i=0;i<4;i++) {
+        struct nas_tmp_file *n=&anonymous_fixture[i];
+        if(n->used)continue;
+        *n=(struct nas_tmp_file){
+            .used=true,.ino=UINT64_C(30000)+ ++anonymous_allocations,
+            .mode=0100000U|(mode&07777U)
+        };
+        return n;
+    }
+    return NULL;
+}
 /* The host VFS fixture borrows an archive inode for /tmp just like the
  * actual provider. Its live root timestamps come from the tmpfs owner. */
 void tmp_root_times(uint64_t *mtime_ns,uint64_t *ctime_ns) {
@@ -187,6 +206,12 @@ void tmp_inode_discard(struct nas_tmp_file *node) {
         node->used=false;
         orphan_releases++;
     }
+    for(unsigned i=0;i<4;i++)
+        if(node==&anonymous_fixture[i] && node->used && !node->nlink &&
+           !nas_vfs_inode_is_pinned(node)) {
+            node->used=false;
+            anonymous_releases++;
+        }
     for(unsigned i=0;i<4;i++)
         if(node==&fixture_sockets[i] && !node->nlink &&
            !nas_vfs_inode_is_pinned(node))node->used=false;
@@ -563,6 +588,64 @@ static const struct nas_vfs_type ext_mock_type={
 static const struct nas_vfs_mount ext_mount={
     .mountpoint="/mnt",.type=&ext_mock_type
 };
+/* A removable filesystem mount proves anonymous inodes obey the SAME
+ * mount open_refs gate as a regular open File. The permanent /tmp bootstrap
+ * mount itself cannot be unmounted even after the final File closes. */
+static struct nas_tmp_file removable_anonymous;
+static unsigned removable_abort_calls,removable_final_calls;
+static bool removable_reject_pin;
+static int removable_create(const struct nas_vfs_mount *mount,uint64_t mode,
+                            struct nas_fs_node *out) {
+    assert(mount && out && !removable_anonymous.used);
+    removable_anonymous=(struct nas_tmp_file){
+        .used=true,.mode=0100000U|((uint32_t)mode&07777U),.ino=90001
+    };
+    *out=(struct nas_fs_node){.inode=&removable_anonymous,.ino=90001,
+                              .mode=removable_anonymous.mode};
+    return 0;
+}
+static int removable_validate(const struct nas_fs_node *node) {
+    if(node && node->inode==&removable_anonymous &&
+       (!removable_anonymous.used || removable_reject_pin))return -ESTALE;
+    return 0;
+}
+static void removable_abort(const struct nas_fs_node *node) {
+    assert(node && node->inode==&removable_anonymous &&
+           !nas_vfs_inode_is_pinned(node->inode));
+    removable_anonymous.used=false;
+    ++removable_abort_calls;
+}
+static void removable_final(const struct nas_fs_node *node) {
+    assert(node && node->inode==&removable_anonymous &&
+           !nas_vfs_inode_is_pinned(node->inode));
+    removable_anonymous.used=false;
+    ++removable_final_calls;
+}
+static const struct nas_vfs_type removable_anon_type={
+    .name="removable-anon-fixture",.root=ext_mock_root,
+    .lookup_child=ext_mock_child,.validate_inode=removable_validate,
+    .create_anonymous=removable_create,.abort_anonymous=removable_abort,
+    .last_inode_unpin=removable_final
+};
+static const struct nas_vfs_mount removable_anon_mount={
+    .mountpoint="/mnt",.type=&removable_anon_type
+};
+static void test_removable_anonymous_lifetime(void) {
+    assert(nas_vfs_register_mount(&removable_anon_mount)==0);
+    struct nas_fs_node owned={0};
+    removable_reject_pin=true;
+    assert(nas_vfs_create_anonymous(&removable_anon_type,0600,&owned)==-ESTALE);
+    assert(!owned.inode && !owned.mount && removable_abort_calls==1);
+    removable_reject_pin=false;
+    assert(nas_vfs_create_anonymous(&removable_anon_type,0600,&owned)==0);
+    assert(owned.mount && owned.mount_id && owned.nlink==0);
+    assert(nas_vfs_unregister_mount(&removable_anon_mount)==-EBUSY);
+    assert(removable_final_calls==0 && removable_anonymous.used);
+    assert(nas_vfs_node_unpin(&owned)==0);
+    assert(removable_final_calls==1 && !removable_anonymous.used);
+    assert(nas_vfs_unregister_mount(&removable_anon_mount)==0);
+    fprintf(stderr,"[VFS ANONYMOUS MOUNT PASS] pin blocks unmount, last put frees, failed pin aborts\n");
+}
 /* A host-only syscall-shaped adapter. It calls production namei and
  * production child mutators with Path ownership; no Linux host filesystem
  * operations are used for the expected NaSeed result. */
@@ -819,10 +902,59 @@ static void test_owned_unix_mknod(void) {
     assert(namespace_unlink("/tmp/m107-socket",0)==0);
     fprintf(stderr,"[M107 VFS SOCKET INODE PASS] owned mknod, EEXIST, unlink/rebind, mount-safe Path\n");
 }
+static void test_anonymous_tmpfs_lifetime(void) {
+    /* Unlike the old memfd O_CREAT/unlink shim, this transaction never
+     * creates a pathname or Dentry. It acquires precisely one mounted
+     * tmpfs inode lease and uses the ordinary orphan reclaimer. */
+    struct nas_fs_node root={0},anonymous={0},metadata={0};
+    char canonical[256];
+    assert(nas_fs_lookup_node("/tmp",true,&root,canonical)==0);
+    struct nas_vfs_dirent before[8],after[8];
+    int prior=nas_vfs_read_dir(&root,0,before,8);
+    assert(prior>0);
+    unsigned created=anonymous_allocations,disposed=anonymous_releases;
+    assert(nas_vfs_create_anonymous_tmpfs(0777U,&anonymous)==0);
+    assert(anonymous.mount && anonymous.mount_id && anonymous.inode &&
+           anonymous.filesystem && !strcmp(anonymous.filesystem->name,"tmpfs"));
+    assert((anonymous.mode&0177777U)==0100777U && anonymous.nlink==0);
+    assert(anonymous_allocations==created+1 &&
+           anonymous_releases==disposed);
+    assert(nas_vfs_node_has_lease(&anonymous));
+    assert(nas_vfs_getattr(&anonymous,&metadata)==0 && metadata.nlink==0);
+    int current=nas_vfs_read_dir(&root,0,after,8);
+    assert(current==prior);
+    for(int i=0;i<prior;i++)
+        assert(before[i].ino==after[i].ino &&
+               !strcmp(before[i].name,after[i].name));
+
+    assert(nas_vfs_node_pin(&anonymous)==0);
+    assert(nas_vfs_node_unpin(&anonymous)==0);
+    assert(nas_vfs_node_has_lease(&anonymous));
+    assert(anonymous_releases==disposed);
+    struct nas_fs_node stale=anonymous;
+    assert(nas_vfs_node_unpin(&anonymous)==0);
+    assert(anonymous_releases==disposed+1);
+    assert(!nas_vfs_node_has_lease(&stale));
+    assert(nas_vfs_getattr(&stale,&metadata)==-ESTALE);
+    /* The inode slab can recycle its storage address, but its incarnation
+     * must never revive a former File's borrowed snapshot. */
+    assert(nas_vfs_create_anonymous_tmpfs(0600U,&anonymous)==0);
+    assert(anonymous.ino!=stale.ino && anonymous.inode==stale.inode);
+    assert(nas_vfs_node_pin(&stale)==-ESTALE);
+    assert(nas_vfs_node_unpin(&anonymous)==0);
+
+    anonymous_out_of_space=true;
+    struct nas_fs_node failed={0};
+    assert(nas_vfs_create_anonymous_tmpfs(0777U,&failed)==-ENOSPC);
+    assert(!failed.inode && !failed.mount);
+    anonymous_out_of_space=false;
+    fprintf(stderr,"[VFS ANONYMOUS TMPFS PASS] no dentry, live pin, final orphan reclaim, incarnation isolation\n");
+}
 int main(void) {
     char resolved[256],data[32];
     struct nas_fs_node n;
     struct nas_vfs_statfs stats;
+    test_anonymous_tmpfs_lifetime();
     assert(nas_fs_lookup_node("/tmp/demo",true,&n,resolved)==0);
     uint64_t shared_pa=0;
     assert(nas_vfs_acquire_shared_page(&n,0,&shared_pa)==0);
@@ -1692,6 +1824,7 @@ int main(void) {
     assert(nas_fs_lookup_node("/bin/..",true,&n,resolved)==0 &&
            !strcmp(resolved,"/"));
     assert(!nas_vfs_inode_is_pinned(&entries[5]));
+    test_removable_anonymous_lifetime();
     /* A real mount COVER and the VISIBLE mounted root are separate
      * dentries occupying the same parent/name in different mount layers.
      * They must NOT detach one another during normal Path acquisition. */

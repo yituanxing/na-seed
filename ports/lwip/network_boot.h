@@ -1,11 +1,26 @@
 #ifndef NASEED_LWIP_NETWORK_BOOT_H
 #define NASEED_LWIP_NETWORK_BOOT_H
+#include <stdbool.h>
 #include <stdint.h>
 
 /* Linux socket options name the actual network device (eth0/en0), not
  * lwIP's internal netif prefix (ns0). Only the physical NIC attached by
  * native bootstrap may be selected; index zero is never a live interface. */
 #define NAS_LWIP_DEVICE_NAME_MAX 16U /* Linux IFNAMSIZ */
+/* One coherent, read-only view of interfaces genuinely owned by the live
+ * upstream stack. Physical device identity comes from the pinned netdev;
+ * ifindex, administrative/link state and IPv4 lease come from lwIP. A NIC
+ * without DHCP is still a device, but does not have an IPv4 address.
+ * This is an interface projection, never another device registry. */
+struct nas_lwip_guest_if {
+ char name[NAS_LWIP_DEVICE_NAME_MAX];
+ unsigned ifindex;
+ uint32_t ipv4_host_order;
+ uint32_t mtu;
+ uint8_t prefix_len;
+ bool up,link_up,loopback;
+};
+unsigned nas_lwip_guest_if_snapshot(struct nas_lwip_guest_if out[2]);
 int nas_lwip_guest_ifindex(const char *device_name); /* positive or -ENODEV */
 int nas_lwip_guest_ifname(unsigned index,
                          char output[NAS_LWIP_DEVICE_NAME_MAX]);

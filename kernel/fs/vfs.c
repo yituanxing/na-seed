@@ -464,6 +464,54 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
     if(has_parent)++mount_slot_at(parent_slot)->child_refs;
     return 0;
 }
+/* The anonymous inode belongs to a genuine, already-mounted filesystem,
+ * not to a fake mount or a transient /tmp pathname. Select its exact live
+ * mount incarnation before allocation; the ordinary mount+inode lease is
+ * the ONLY lifetime owner after this function returns. The optional
+ * provider rollback hook covers the gap between inode allocation and pin.
+ *
+ * Single-CPU VFS: like O_CREAT the allocation/pin transaction cannot race
+ * with umount, but that invariant will need locking before preemptive SMP. */
+int nas_vfs_create_anonymous(const struct nas_vfs_type *type,uint64_t mode,
+                             struct nas_fs_node *owned) {
+    if(!owned || !type)return -EINVAL;
+    *owned=(struct nas_fs_node){0};
+    if(!type->create_anonymous || !type->abort_anonymous ||
+       !type->last_inode_unpin)return -EOPNOTSUPP;
+    ensure_defaults();
+    bool found_mount=false;
+    for(unsigned i=0;i<mount_slots;i++) {
+        const struct mount_slot *slot=mount_slot_at(i);
+        if(!slot->used || slot->superblock.type!=type)continue;
+        found_mount=true;
+        if(slot->superblock.read_only || type->read_only)continue;
+        if(slot->open_refs==UINT32_MAX)return -EMFILE;
+        /* Reserve heap capacity for a new inode lease BEFORE publishing an
+         * orphan. A pin failure still executes the explicit abort path. */
+        if(!free_inode_lease_slot())return -ENOMEM;
+        struct nas_fs_node node={0};
+        int rc=type->create_anonymous(&slot->superblock,mode,&node);
+        if(rc)return rc;
+        /* Provider cannot pass a named inode or another inode type off as
+         * memfd backing; no path or Dentry should ever be constructed. */
+        if(!node.inode || !node.ino || node.nlink || node.is_dir ||
+           (node.mode&0170000U)!=0100000U) {
+            type->abort_anonymous(&node);
+            return -EIO;
+        }
+        node.mount=&slot->superblock;
+        node.mount_id=slot->device_id;
+        node.filesystem=type;
+        rc=nas_vfs_node_pin(&node);
+        if(rc) {
+            type->abort_anonymous(&node);
+            return rc;
+        }
+        *owned=node;
+        return 0;
+    }
+    return found_mount ? -EROFS:-ENODEV;
+}
 int nas_vfs_mount_snapshot(unsigned ordinal,
                            struct nas_vfs_mount_snapshot *out) {
     if(!out)return -EINVAL;

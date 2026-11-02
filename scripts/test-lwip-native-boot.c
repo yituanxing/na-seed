@@ -18,6 +18,7 @@ static uint64_t now_ns;
 static unsigned scans,transmitted,polls,delivered;
 static int next_poll_error;
 static bool inbound_pending=true;
+static bool carrier=true;
 uint64_t nas_arch_monotonic_ns(void){return now_ns;}
 void nas_print(const char *s){fputs(s,stdout);}
 void nas_dec(uint64_t n){printf("%llu",(unsigned long long)n);}
@@ -48,7 +49,7 @@ static int poll(void *ctx,uint32_t budget,nas_netdev_rx receive,void *consumer){
  delivered++;
  return 1;
 }
-static bool link_up(void *ctx){(void)ctx;return true;}
+static bool link_up(void *ctx){(void)ctx;return carrier;}
 static const struct nas_netdev_ops network_ops={
  .transmit=transmit,.poll=poll,.link_up=link_up
 };
@@ -64,6 +65,13 @@ int main(void){
  assert(nas_kthread_run(1)==1); /* tcpip starts, DHCP discover */
  assert(transmitted>=1 && eth.refs==1);
  assert(nas_netdev_unregister(&eth)!=0); /* lwIP pins the live device */
+ struct nas_lwip_guest_if devices[2]={0};
+ assert(nas_lwip_guest_if_snapshot(devices)==2);
+ assert(!strcmp(devices[0].name,"lo") && devices[0].loopback &&
+        devices[0].ifindex==1 && devices[0].ipv4_host_order==0x7f000001U);
+ assert(!strcmp(devices[1].name,"en0") && !devices[1].loopback &&
+        devices[1].up && devices[1].link_up && devices[1].mtu==1500 &&
+        devices[1].ifindex>1);
  assert(nas_kthread_run(1)==1);
  assert(delivered==1 && polls==1); /* RX worker, outside tcpip stack */
  assert(nas_kthread_run(1)==1); /* upstream lwIP consumes inbound frame */
@@ -90,6 +98,32 @@ int main(void){
      assert(polls>previous && next_poll_error==0);
      assert(eth.registered && eth.refs==1 && eth.rx_wake);
  }
+ /* Carrier transitions belong to the driver; lwIP link state and DHCP
+  * reconfiguration happen exclusively on tcpip_thread. No address is ever
+  * fabricated for the detached link, but the device identity remains. */
+ carrier=false;
+ nas_netdev_notify_rx(&eth);
+ bool saw_down=false;
+ for(unsigned attempt=0;attempt<30;attempt++) {
+     assert(nas_kthread_run(1)==1);
+     assert(nas_lwip_guest_if_snapshot(devices)==2);
+     if(!devices[1].link_up){saw_down=true;break;}
+ }
+ assert(saw_down && devices[1].up && !devices[1].ipv4_host_order &&
+        devices[1].mtu==1500);
+ struct nas_lwip_guest_ipv4_if addressed[2]={0};
+ assert(nas_lwip_guest_ipv4_ifconf(addressed)==1 &&
+        !strcmp(addressed[0].name,"lo"));
+ carrier=true;
+ nas_netdev_notify_rx(&eth);
+ bool saw_up=false;
+ for(unsigned attempt=0;attempt<30;attempt++) {
+     assert(nas_kthread_run(1)==1);
+     assert(nas_lwip_guest_if_snapshot(devices)==2);
+     if(devices[1].link_up){saw_up=true;break;}
+ }
+ assert(saw_up && devices[1].up && devices[1].mtu==1500 &&
+        devices[1].ifindex>1);
  /* Linux names the physical device en0; upstream lwIP has a distinct
   * internal netif index. Never claim that another name is this interface. */
  int real_ifindex=nas_lwip_guest_ifindex("en0");
@@ -119,5 +153,5 @@ int main(void){
  }
  assert(bound_done && bound_result.status==0);
  assert(nas_lwip_bridge_release(bound)==0);
- puts("[LWIP NATIVE BOOT PASS] arbitrary NIC discovery, DHCP, IRQ/deadline, transient RX backpressure, pins");
+ puts("[LWIP NATIVE BOOT PASS] NIC identity, carrier down/up core reconciliation, DHCP, IRQ/deadline, RX backpressure, pins");
 }

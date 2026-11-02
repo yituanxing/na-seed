@@ -7,11 +7,19 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
   kernel/fs/lookup.c kernel/lib/string.c kernel/mm/heap.c \
   -o build/vfs-provider/test
 build/vfs-provider/test
-# memfd_create must publish an actual pinned tmpfs inode, then unlink its
-# temporary name while keeping the original FD and shared backing alive.
+# memfd_create validates Linux arguments then asks for a pathless mounted
+# tmpfs inode. Provider tests above prove last-pin orphan reclamation and
+# removable mount EBUSY without ever creating a temporary namespace name.
 cc -std=gnu11 -O2 -Wall -Wextra -Werror \
   scripts/test-memfd.c -o build/vfs-provider/test-memfd
 build/vfs-provider/test-memfd
+# memfd must remain pathless: a future cleanup cannot silently reintroduce
+# O_CREAT/unlink or a synthetic private-name registry alongside VFS ownership.
+if grep -Eq 'nas_fs_open_path\(|nas_vfs_unlink\(|\.naseed-memfd-|memfd_next_id' \
+    kernel/fs/memfd.c; then
+  echo '[VFS FAIL] superseded pathname-backed memfd creation returned' >&2
+  exit 1
+fi
 # A deleted duplicate mount-inode owner is an architectural invariant:
 # positive Dentry/Path handles BOTH covered and parent mount lifetimes.
 # Never reintroduce covered_pinned / parent_pinned in another refactor.

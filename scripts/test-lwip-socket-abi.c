@@ -88,6 +88,8 @@ static bool abi_keepalive_enabled[NAS_OPEN_FILE_LIMIT];
 static bool abi_tx_backpressure[NAS_OPEN_FILE_LIMIT];
 static uint8_t abi_bound_ifindex[NAS_OPEN_FILE_LIMIT];
 static bool abi_has_dhcp_ipv4=true;
+static bool abi_link_carrier=true;
+static bool abi_interface_up=true;
 static uint8_t abi_pending_ifindex[NAS_OPEN_FILE_LIMIT];
 static unsigned abi_bind_if_calls;
 static unsigned abi_broadcasts;
@@ -287,19 +289,35 @@ int nas_lwip_socket_setbroadcast(unsigned slot,bool enabled) {
 int nas_lwip_guest_ifindex(const char *device_name) {
     return device_name && !strcmp(device_name,"eth0") ? 2:-ENODEV;
 }
+unsigned nas_lwip_guest_if_snapshot(struct nas_lwip_guest_if out[2]) {
+    assert(out);
+    out[0]=(struct nas_lwip_guest_if){
+        .name="lo",.ipv4_host_order=UINT32_C(0x7f000001),.prefix_len=8,
+        .mtu=65536,.ifindex=1,.up=true,.link_up=true,.loopback=true
+    };
+    out[1]=(struct nas_lwip_guest_if){
+        .name="eth0",.ifindex=2,.mtu=1500,.up=abi_interface_up,
+        .link_up=abi_link_carrier,
+        .ipv4_host_order=abi_has_dhcp_ipv4 ? UINT32_C(0x0a00020f):0,
+        .prefix_len=abi_has_dhcp_ipv4 ? 24:0
+    };
+    return 2;
+}
 unsigned nas_lwip_guest_ipv4_ifconf(
     struct nas_lwip_guest_ipv4_if out[2]) {
     assert(out);
-    out[0]=(struct nas_lwip_guest_ipv4_if){
-        .name="lo",.ipv4_host_order=UINT32_C(0x7f000001),.prefix_len=8,
-        .mtu=65536
-    };
-    if(!abi_has_dhcp_ipv4)return 1;
-    out[1]=(struct nas_lwip_guest_ipv4_if){
-        .name="eth0",.ipv4_host_order=UINT32_C(0x0a00020f),.prefix_len=24,
-        .mtu=1500
-    };
-    return 2;
+    struct nas_lwip_guest_if snapshot[2];
+    unsigned count=nas_lwip_guest_if_snapshot(snapshot),available=0;
+    for(unsigned i=0;i<count;i++) {
+        if(!snapshot[i].ipv4_host_order || !snapshot[i].prefix_len)continue;
+        out[available]=(struct nas_lwip_guest_ipv4_if){
+            .ipv4_host_order=snapshot[i].ipv4_host_order,
+            .prefix_len=snapshot[i].prefix_len,.mtu=snapshot[i].mtu
+        };
+        memcpy(out[available].name,snapshot[i].name,sizeof(out[available].name));
+        available++;
+    }
+    return available;
 }
 int nas_lwip_guest_ifname(unsigned index,
                          char name[NAS_LWIP_DEVICE_NAME_MAX]) {
@@ -498,9 +516,9 @@ int main(void) {
     can_write[0]=true;
     assert((int64_t)sys_ioctl_fd(tcp_fd,0x8912ULL,0)==-EFAULT);
 
-    /* dnsmasq resolves Linux NETLINK_ROUTE ifindices back through these
-     * real interface ioctls. Both operations must agree with SIOCGIFCONF;
-     * an interface without a DHCP address must not be invented. */
+    /* dnsmasq resolves Linux NETLINK_ROUTE ifindices through interface
+     * ioctls. An attached NIC exists before DHCP, but SIOCGIFCONF must
+     * publish only an address actually assigned by lwIP. */
     const uint64_t ifraddr=TEST_BASE+2100;
     uint8_t ifreq[40]={0};
     int32_t ifindex=1;
@@ -526,7 +544,27 @@ int main(void) {
     memcpy(&ifmtu,user_ptr(ifraddr)+16,4);
     assert(ifmtu==1500U); /* observed native Ethernet core MTU */
     abi_has_dhcp_ipv4=false;
-    assert((int64_t)sys_ioctl_fd(tcp_fd,0x8913ULL,ifraddr)==-ENODEV);
+    memset(ifreq,0,sizeof(ifreq));
+    ifindex=2;memcpy(ifreq+16,&ifindex,4);
+    memcpy(user_ptr(ifraddr),ifreq,sizeof(ifreq));
+    assert(sys_ioctl_fd(tcp_fd,0x8910ULL,ifraddr)==0);
+    assert(!strcmp((const char *)user_ptr(ifraddr),"eth0"));
+    assert(sys_ioctl_fd(tcp_fd,0x8913ULL,ifraddr)==0);
+    memcpy(&ifflags,user_ptr(ifraddr)+16,2);
+    assert(ifflags==0x1043U); /* no DHCP lease does not remove NIC */
+    abi_link_carrier=false;
+    assert(sys_ioctl_fd(tcp_fd,0x8913ULL,ifraddr)==0);
+    memcpy(&ifflags,user_ptr(ifraddr)+16,2);
+    assert(ifflags==0x1003U); /* IFF_RUNNING drops with real carrier */
+    assert(sys_ioctl_fd(tcp_fd,0x8921ULL,ifraddr)==0);
+    memcpy(&ifmtu,user_ptr(ifraddr)+16,4);
+    assert(ifmtu==1500U); /* MTU available during link loss */
+    abi_interface_up=false;
+    assert(sys_ioctl_fd(tcp_fd,0x8913ULL,ifraddr)==0);
+    memcpy(&ifflags,user_ptr(ifraddr)+16,2);
+    assert(ifflags==0x1002U); /* IFF_UP clears independently of IFF_RUNNING */
+    abi_interface_up=true;
+    abi_link_carrier=true;
     abi_has_dhcp_ipv4=true;
     ifindex=77;memset(ifreq,0,sizeof(ifreq));
     memcpy(ifreq+16,&ifindex,4);

@@ -131,7 +131,22 @@ int nas_unix_socket_accept(unsigned listener,unsigned *slot) {
 void nas_epoll_target_final_close(unsigned slot){(void)slot;}
 void nas_vfs_release_flock(const void *owner){(void)owner;}
 int nas_vfs_path_put(struct nas_vfs_path *p){(void)p;return 0;}
-int nas_vfs_node_unpin(const struct nas_fs_node *node){(void)node;return 0;}
+static unsigned anonymous_factory_calls,anonymous_unpins;
+static int anonymous_factory_error;
+static uint8_t anonymous_backend_inode;
+int nas_vfs_node_unpin(const struct nas_fs_node *node){
+    if(node && node->inode==&anonymous_backend_inode)++anonymous_unpins;
+    return 0;
+}
+int nas_vfs_create_anonymous_tmpfs(uint64_t mode,struct nas_fs_node *out) {
+    assert(mode==0777U && out);
+    ++anonymous_factory_calls;
+    if(anonymous_factory_error)return anonymous_factory_error;
+    *out=(struct nas_fs_node){
+        .inode=&anonymous_backend_inode,.ino=5001,.mode=0100777U
+    };
+    return 0;
+}
 void nas_vfs_release_posix_locks(const struct nas_fs_node *node,uint64_t pid) {
     (void)node;(void)pid;
 }
@@ -621,6 +636,41 @@ int main(void) {
 
     a008_vectors(rd,wr);
     a012_stream_socket_vectors(a,b);
+    /* Real syscall File/FD publication: an anonymous tmpfs inode must
+     * transfer its sole VFS pin into the existing OpenFile, not create a
+     * private memfd registry or publish a path-backed stand-in. */
+    unsigned before_fds=live_fds(),before_files=live_files();
+    uint64_t anonymous_fd=nas_fs_open_anon_tmpfs("abc/def",true);
+    assert(anonymous_fd<NAS_FD_LIMIT && anonymous_factory_calls==1);
+    struct nas_fd_entry anonymous_entry=guest_task.fds->entries[anonymous_fd];
+    assert(anonymous_entry.kind==FD_ARCHIVE && anonymous_entry.cloexec);
+    struct nas_open_file *anonymous_open=&nas_open_files[anonymous_entry.slot];
+    assert(anonymous_open->refcount==1 && anonymous_open->vnode_pinned &&
+           anonymous_open->vnode.inode==&anonymous_backend_inode &&
+           anonymous_open->status_flags==2ULL &&
+           !strcmp(anonymous_open->origin_path,"/memfd:abc/def (deleted)"));
+    assert(live_fds()==before_fds+1 && live_files()==before_files+1);
+    nas_fs_close_fd(anonymous_fd);
+    assert(anonymous_unpins==1 && live_fds()==before_fds &&
+           live_files()==before_files);
+    char longest_memfd_name[250];
+    memset(longest_memfd_name,'m',sizeof(longest_memfd_name)-1);
+    longest_memfd_name[sizeof(longest_memfd_name)-1]=0;
+    anonymous_fd=nas_fs_open_anon_tmpfs(longest_memfd_name,false);
+    assert(anonymous_fd<NAS_FD_LIMIT);
+    anonymous_entry=guest_task.fds->entries[anonymous_fd];
+    anonymous_open=&nas_open_files[anonymous_entry.slot];
+    assert(!strncmp(anonymous_open->origin_path,"/memfd:",7));
+    assert(strlen(anonymous_open->origin_path)==255);
+    assert(!strcmp(anonymous_open->origin_path+245," (deleted)"));
+    nas_fs_close_fd(anonymous_fd);
+    assert(anonymous_unpins==2);
+    anonymous_factory_error=-ENOSPC;
+    assert((int64_t)nas_fs_open_anon_tmpfs("failure",false)==-ENOSPC);
+    assert(anonymous_factory_calls==3 && anonymous_unpins==2 &&
+           live_fds()==before_fds && live_files()==before_files);
+    anonymous_factory_error=0;
+    puts("[MEMFD OPENFILE TRANSACTION PASS] pinned unnamed VFS inode, OFD/FD close rollback, procfd label bounds");
     puts("[M106 USER-COPY SYSCALL PASS] real pipe + syscall adapters: RO atomicity, lazy/COW, no pipe loss, socketpair publication, accept retains pending peer, null/zero and random char File parity, O_PATH write EBADF");
     return 0;
 }

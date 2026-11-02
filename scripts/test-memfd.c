@@ -1,24 +1,22 @@
-/* Bounded memfd_create adapter regression. Compile/run directly on host:
+/* Linux memfd syscall ABI and pathless File factory admission. Run on host:
  * cc -std=gnu11 -Wall -Wextra -Werror scripts/test-memfd.c -o /tmp/test-memfd
  * /tmp/test-memfd
- * The VFS's real tmpfs sparse/mmap backing is exercised by the existing
- * VFS/file-mmap tests; these mocks test admission and FD/inode publication. */
+ * The real VFS/provider inode pin and orphan reclaim are tested separately
+ * by the provider fixture; no fake /tmp O_CREAT/unlink path exists here. */
 #include <assert.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include "../kernel/fs/lookup.h"
 #include "../kernel/fs/memfd.c"
 
-static unsigned reads,opens,lookups,chmods,unlinks,closes;
-static int open_error,lookup_error,chmod_error,unlink_error;
-static unsigned collisions;
-static uint64_t last_flags,last_mode;
-static char first_path[80],last_path[80];
-static bool named,open_live;
+static unsigned reads,creates;
+static uint64_t result_fd=7;
+static bool last_cloexec;
+static char last_name[250];
 
 int nas_user_read_cstr(uint64_t address,char *dst,uint64_t capacity) {
-    reads++;
+    ++reads;
     if(!address || address==1)return -EFAULT;
     const char *name=(const char *)(uintptr_t)address;
     for(uint64_t i=0;i<capacity;i++) {
@@ -27,52 +25,22 @@ int nas_user_read_cstr(uint64_t address,char *dst,uint64_t capacity) {
     }
     return -ENAMETOOLONG;
 }
-uint64_t nas_fs_open_path(const char *path,uint64_t flags,uint64_t mode) {
-    opens++;
-    assert(strncmp(path,"/tmp/.naseed-memfd-",19)==0);
-    assert(strlen(path)==35);
-    if(!first_path[0])strcpy(first_path,path);
-    strcpy(last_path,path);
-    last_flags=flags;last_mode=mode;
-    if(collisions) {collisions--;return (uint64_t)-EEXIST;}
-    if(open_error)return (uint64_t)(int64_t)open_error;
-    named=true;open_live=true;
-    return 7;
+uint64_t nas_fs_open_anon_tmpfs(const char *name,bool cloexec) {
+    assert(name && strlen(name)<sizeof(last_name));
+    ++creates;
+    strcpy(last_name,name);
+    last_cloexec=cloexec;
+    return result_fd;
 }
-int nas_vfs_lookup(const char *path,struct nas_fs_node *out) {
-    lookups++;
-    assert(!strcmp(path,last_path) && named);
-    memset(out,0,sizeof(*out));
-    return lookup_error;
-}
-int nas_vfs_chmod(const struct nas_fs_node *inode,uint64_t mode) {
-    (void)inode;
-    chmods++;
-    assert(mode==0777U);
-    return chmod_error;
-}
-int nas_vfs_unlink(const char *path,uint64_t flags) {
-    unlinks++;
-    assert(!strcmp(path,last_path) && flags==0 && named);
-    if(unlink_error)return unlink_error;
-    named=false;
-    return 0;
-}
-void nas_fs_close_fd(uint64_t fd) {
-    closes++;
-    assert(fd==7 && open_live);
-    open_live=false;
-}
-static void clear_events(void) {
-    reads=opens=lookups=chmods=unlinks=closes=0;
-    open_error=lookup_error=chmod_error=unlink_error=0;
-    collisions=0;last_flags=last_mode=0;
-    first_path[0]=last_path[0]=0;
-    named=open_live=false;
+static void reset(void) {
+    reads=creates=0;
+    result_fd=7;
+    last_cloexec=false;
+    last_name[0]=0;
 }
 int main(void) {
-    clear_events();
     const char *name="xfs_repair: AG 0 / private";
+    reset();
     assert(nas_fs_memfd_create((uint64_t)(uintptr_t)name,0x9U)==
            (uint64_t)-EINVAL);
     assert(nas_fs_memfd_create((uint64_t)(uintptr_t)name,0x2U)==
@@ -81,58 +49,39 @@ int main(void) {
            (uint64_t)-EOPNOTSUPP);
     assert(nas_fs_memfd_create((uint64_t)(uintptr_t)name,0x10U)==
            (uint64_t)-EINVAL);
-    assert(reads==0 && opens==0);
+    assert(reads==0 && creates==0);
 
     assert(nas_fs_memfd_create(0,1U)==(uint64_t)-EFAULT);
-    assert(reads==1 && opens==0);
+    assert(reads==1 && creates==0);
     assert(nas_fs_memfd_create(1,0)==(uint64_t)-EFAULT);
-    char huge[251];memset(huge,'z',sizeof(huge));huge[250]=0;
-    assert(nas_fs_memfd_create((uint64_t)(uintptr_t)huge,1U)==
+    char too_long[251];memset(too_long,'z',sizeof(too_long));
+    too_long[250]=0;
+    assert(nas_fs_memfd_create((uint64_t)(uintptr_t)too_long,1U)==
            (uint64_t)-ENAMETOOLONG);
-    assert(opens==0);
+    assert(creates==0);
 
-    clear_events();
-    uint64_t fd=nas_fs_memfd_create((uint64_t)(uintptr_t)name,1U);
-    assert(fd==7 && reads==1 && opens==1);
-    assert(lookups==1 && chmods==1 && unlinks==1 && closes==0);
-    assert(last_flags==(0x2ULL|0x40ULL|0x80ULL|0x80000ULL));
-    assert(last_mode==0777U);
-    assert(!named && open_live); /* unlinked inode survives on its FD */
-
-    clear_events();
-    collisions=2;
+    reset();
+    assert(nas_fs_memfd_create((uint64_t)(uintptr_t)name,1U)==7);
+    assert(reads==1 && creates==1 && last_cloexec);
+    assert(!strcmp(last_name,name)); /* slash is descriptive, not path */
     assert(nas_fs_memfd_create((uint64_t)(uintptr_t)"",0)==7);
-    assert(opens==3 && lookups==1 && chmods==1 && unlinks==1);
-    assert(last_flags==(0x2ULL|0x40ULL|0x80ULL));
-    assert(strcmp(first_path,last_path)!=0);
-    assert(!named && open_live);
+    assert(creates==2 && !last_cloexec && !last_name[0]);
 
-    clear_events();
-    open_error=-ENOSPC;
+    /* Full Linux name capacity is 249 bytes, without any filesystem
+     * filename component limit, EEXIST collision loop or /tmp dependency. */
+    char maximum[250];memset(maximum,'m',249);maximum[249]=0;
+    assert(nas_fs_memfd_create((uint64_t)(uintptr_t)maximum,0)==7);
+    assert(creates==3 && strlen(last_name)==249);
+
+    result_fd=(uint64_t)-EMFILE;
     assert(nas_fs_memfd_create((uint64_t)(uintptr_t)name,1U)==
+           (uint64_t)-EMFILE);
+    result_fd=(uint64_t)-ENOSPC;
+    assert(nas_fs_memfd_create((uint64_t)(uintptr_t)name,0)==
            (uint64_t)-ENOSPC);
-    assert(opens==1 && lookups==0 && unlinks==0 && closes==0);
-
-    clear_events();
-    lookup_error=-EIO;
-    assert(nas_fs_memfd_create((uint64_t)(uintptr_t)name,1U)==
-           (uint64_t)-EIO);
-    assert(opens==1 && lookups==1 && chmods==0 && unlinks==1 && closes==1);
-    assert(!named && !open_live);
-
-    clear_events();
-    chmod_error=-EACCES;
+    result_fd=(uint64_t)-ENOMEM;
     assert(nas_fs_memfd_create((uint64_t)(uintptr_t)name,0)==
-           (uint64_t)-EACCES);
-    assert(opens==1 && lookups==1 && chmods==1 && unlinks==1 && closes==1);
-    assert(!named && !open_live);
-
-    clear_events();
-    unlink_error=-EBUSY;
-    assert(nas_fs_memfd_create((uint64_t)(uintptr_t)name,0)==
-           (uint64_t)-EBUSY);
-    assert(opens==1 && lookups==1 && chmods==1 && unlinks==1 && closes==1);
-    assert(named && !open_live); /* no successful orphan claim on failure */
-    puts("memfd syscall ABI / real VFS object lifecycle: PASS");
+           (uint64_t)-ENOMEM);
+    puts("memfd syscall ABI / pathless VFS inode request: PASS");
     return 0;
 }

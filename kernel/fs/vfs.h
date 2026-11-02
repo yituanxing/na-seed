@@ -120,6 +120,13 @@ struct nas_vfs_type {
      * Backend-specific path reconstruction, if required by upstream APIs,
      * happens behind the port. VFS enforces mount identity and safety. */
     int (*create)(const struct nas_fs_node *parent,const char *name,uint64_t mode);
+    /* Optional inode creation without a namespace name. The new inode is
+     * unlinked (nlink=0) and BORROWED until the VFS pins it. Allocation
+     * failure must publish nothing; pin failure invokes abort_anonymous.
+     * After a successful pin, only last_inode_unpin may reclaim it. */
+    int (*create_anonymous)(const struct nas_vfs_mount *,uint64_t mode,
+                            struct nas_fs_node *out);
+    void (*abort_anonymous)(const struct nas_fs_node *);
     /* A filesystem may publish a special inode only after its final type
      * and mode are initialized. Return its borrowed inode identity in out,
      * so VFS can attach the already-reserved positive Dentry without a
@@ -252,6 +259,14 @@ int nas_vfs_fiemap_next(const struct nas_fs_node *node,uint64_t start,
                         uint64_t end,uint64_t *logical,uint64_t *length,
                         bool *last);
 int nas_vfs_register_mount(const struct nas_vfs_mount *mount);
+/* Anonymous inodes use the same mount-incarnation lease and FileOps as
+ * named inodes, but no Dentry, path lookup, or transient namespace entry.
+ * The returned inode is pinned until the owning File releases it. */
+int nas_vfs_create_anonymous(const struct nas_vfs_type *type,uint64_t mode,
+                             struct nas_fs_node *owned);
+/* Builtin tmpfs provider chooses an existing live writable tmpfs mount;
+ * this does not construct a private hidden shmem superblock. */
+int nas_vfs_create_anonymous_tmpfs(uint64_t mode,struct nas_fs_node *owned);
 int nas_vfs_lookup(const char *absolute, struct nas_fs_node *node);
 /* One canonical path component. VFS uses the pinned parent Mount/Dentry
  * for crossings and the one CPIO covered-underlay fallback; providers see

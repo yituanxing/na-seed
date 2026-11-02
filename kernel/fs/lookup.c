@@ -2,9 +2,20 @@
 #include "../errno.h"
 #include "../lib/string.h"
 #include "../mm/heap.h"
+/* All pathname users, including fast-path root tests, must observe the same
+ * PATH_MAX boundary.  Reading at most PATH_MAX bytes also avoids an
+ * unbounded scan before the Path-first walker gets a chance to reject a
+ * malformed internal request. */
+static size_t bounded_path_length(const char *path) {
+    size_t n=0;
+    while(n<NAS_VFS_WALK_PATH_LIMIT && path[n])++n;
+    return n;
+}
 bool nas_fs_root_only(const char *path) {
     if(!path || path[0]!='/')return false;
-    for(size_t i=1;path[i];i++)if(path[i]!='/')return false;
+    size_t length=bounded_path_length(path);
+    if(length>=NAS_VFS_WALK_PATH_LIMIT)return false;
+    for(size_t i=1;i<length;i++)if(path[i]!='/')return false;
     return true;
 }
 /* The only checked provider-local child-name builder. A provider may
@@ -110,8 +121,7 @@ static int walk_path_at(const struct nas_vfs_path *start,
                            missing_parent==root_clamp)))return -EINVAL;
     if(out)*out=(struct nas_vfs_path){0};
     if(missing_parent)*missing_parent=(struct nas_vfs_path){0};
-    size_t size=0;
-    while(size<NAS_VFS_WALK_PATH_LIMIT && path[size])++size;
+    size_t size=bounded_path_length(path);
     if(size>=NAS_VFS_WALK_PATH_LIMIT)return -ENAMETOOLONG;
     if(!size)return -ENOENT;
     char short_pending[256];
@@ -282,8 +292,7 @@ static int lookup_parent_at_mode(const struct nas_vfs_path *start,
     if(!path || !parent || !leaf || parent==start ||
        parent==root_clamp)return -EINVAL;
     *parent=(struct nas_vfs_path){0};
-    size_t n=0;
-    while(n<NAS_VFS_WALK_PATH_LIMIT && path[n])++n;
+    size_t n=bounded_path_length(path);
     if(n>=NAS_VFS_WALK_PATH_LIMIT)return -ENAMETOOLONG;
     if(!n)return -ENOENT;
     if(policy>NAS_FS_TRAILING_RENAME_DEST)return -EINVAL;
