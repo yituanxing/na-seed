@@ -9,7 +9,6 @@
 #include "../bootfs.h"
 #include "../tmpfs.h"
 #include "../pipe.h"
-#include "../path.h"
 #include "../lib/string.h"
 #include "../mm/usercopy.h"
 #include "../mm/frame.h"
@@ -717,7 +716,7 @@ uint64_t nas_fs_open_anon_tmpfs(const char *user_name,bool cloexec) {
 }
 /* This is NOT a second namei for ordinary missing paths. In a direct-ELF
  * rootless boot a few synthetic devices and Limine modules have no VFS
- * inode; only these explicit bootstrap endpoints may use the old adapter.
+ * inode; only these explicit bootstrap endpoints may use a literal name.
  * In particular ENOENT from a renamed/unlinked directory FD never causes
  * an arbitrary O_CREAT to be retried through a pathname reconstructed from
  * that FD. */
@@ -734,34 +733,39 @@ bool nas_fs_bootstrap_endpoint(const char *path) {
 }
 bool nas_fs_bootstrap_candidate(const struct nas_fs_path_request *request,
                                  char candidate[256]) {
-    if(!request || !candidate)return false;
+    if(!request || !request->pathname || !request->pathname[0] || !candidate)
+        return false;
     if(request->pathname[0]=='/') {
-        size_t n=strlen(request->pathname);
-        if(n>=256)return false;
+        size_t n=strnlen(request->pathname,256);
+        if(n==256)return false;
         memcpy(candidate,request->pathname,n+1);
     } else {
         if(!request->start.dentry)return false;
         char base[256];
-        if(nas_vfs_path_string(&request->start,base) ||
-           nas_path_join_raw(base,request->pathname,candidate))
-            return false;
+        if(nas_vfs_path_string(&request->start,base))return false;
+        size_t parent_length=strlen(base);
+        size_t length=strnlen(request->pathname,256);
+        if(!parent_length || !length || length==256)return false;
+        /* Only bootstrap endpoint spelling may be projected: ordinary
+         * relative paths always use Path-first namei. Preserve literal
+         * components (including '.'/'..') for whitelist rejection. */
+        unsigned separator=parent_length>1 && base[parent_length-1]!='/' ? 1U:0U;
+        if(parent_length+separator+length>=256)return false;
+        memcpy(candidate,base,parent_length);
+        if(separator)candidate[parent_length++]='/';
+        memcpy(candidate+parent_length,request->pathname,length+1);
     }
     return nas_fs_bootstrap_endpoint(candidate);
 }
 static uint64_t maybe_open_bootstrap(const struct nas_fs_path_request *request,
-                                     uint64_t dirfd,uint64_t pathname,
                                      uint64_t flags,uint64_t mode,
                                      uint64_t original) {
     if((int64_t)original!=-ENOENT)return original;
-    /* Classify using the already owned lookup anchor BEFORE asking the old
-     * string adapter anything. Ordinary ENOENT never gets a second namei. */
+    /* A single owned path request selects the explicit synthetic endpoint;
+     * never copy the user path a second time or re-walk its old spelling. */
     char candidate[256];
     if(!nas_fs_bootstrap_candidate(request,candidate))return original;
-    char legacy[256];
-    uint64_t found=nas_fs_resolve_path(dirfd,pathname,legacy);
-    if((int64_t)found<0 || !nas_fs_bootstrap_endpoint(legacy))
-        return original;
-    return nas_fs_open_path(legacy,flags,mode);
+    return nas_fs_open_path(candidate,flags,mode);
 }
 static uint64_t sys_open_device(uint64_t pathname, uint64_t flags,
                                  uint64_t mode) {
@@ -769,7 +773,7 @@ static uint64_t sys_open_device(uint64_t pathname, uint64_t flags,
     int rc=nas_fs_user_path_begin((uint64_t)-100,pathname,&request);
     if(rc)return (uint64_t)(int64_t)rc;
     uint64_t result=open_path_owned(request.pathname,&request,flags,mode);
-    result=maybe_open_bootstrap(&request,(uint64_t)-100,pathname,flags,mode,result);
+    result=maybe_open_bootstrap(&request,flags,mode,result);
     nas_fs_path_end(&request);
     return result;
 }
@@ -1111,7 +1115,7 @@ static uint64_t sys_openat_boot(uint64_t dirfd, uint64_t pathname,
     int rc=nas_fs_user_path_begin(dirfd,pathname,&request);
     if(rc)return (uint64_t)(int64_t)rc;
     uint64_t result=open_path_owned(request.pathname,&request,flags,mode);
-    result=maybe_open_bootstrap(&request,dirfd,pathname,flags,mode,result);
+    result=maybe_open_bootstrap(&request,flags,mode,result);
     nas_fs_path_end(&request);
     return result;
 }

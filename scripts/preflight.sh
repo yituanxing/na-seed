@@ -79,10 +79,11 @@ if grep -Eq 'pipe_release_description|tmp_release_slot|tmp_bind_slot' kernel/fd.
     exit 1
 fi
 
-# Kernel pathname logic must never reach into raw user memory or FD
-# tables. Only syscall/FS ABI adapters perform the user argument copying.
-if grep -Eq 'user_byte\(|user_write_bytes\(|nas_task_fd_|descriptors\[' kernel/path.c; then
-    echo '[PREFLIGHT] path.c reached into syscall user/FD layer' >&2
+# One shared Path-first namei owns syscall and provider path resolution.
+# Do not reintroduce the deleted pre-VFS lexical pathname module.
+if test -e kernel/path.c || test -e kernel/path.h ||
+   grep -REq 'nas_fs_resolve_path\(|nas_path_join_raw\(' kernel; then
+    echo '[PREFLIGHT] retired lexical pathname adapter returned' >&2
     exit 1
 fi
 

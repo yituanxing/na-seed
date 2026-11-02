@@ -64,7 +64,7 @@ for source in ("kernel/block/device.c", "kernel/block/ramdisk.c"):
             raise SystemExit(f"BlockDevice acquired syscall/user address policy: {source}")
 # Ensure syscall-ABI owners remain separate from the historical FS dispatcher.
 fs_dispatch = (root/"kernel/fs/syscall.c").read_text()
-for path, symbol in (("kernel/fs/namespace_syscall.c", "nas_fs_resolve_path"),
+for path, symbol in (("kernel/fs/namespace_syscall.c", "nas_fs_user_path_begin"),
                      ("kernel/fs/socket_syscall.c", "sys_unix_sendmsg")):
     if symbol not in (root/path).read_text():
         raise SystemExit(f"lost dedicated FS owner {path}: {symbol}")
@@ -94,14 +94,22 @@ lookup=(root/"kernel/fs/lookup.c").read_text()
 namespace=(root/"kernel/fs/namespace_syscall.c").read_text()
 vfs_src=(root/"kernel/fs/vfs.c").read_text()
 if not all(symbol in lookup for symbol in (
-        "int nas_fs_lookup_parent(", "int nas_fs_canonical_candidate(",
+        "int nas_fs_lookup_parent_at(",
+        "int nas_fs_lookup_parent_mkdir_at(",
         "int nas_vfs_join_child(")):
-    raise SystemExit("shared namespace parent/candidate/leaf owner missing")
-if ("nas_fs_canonical_candidate(raw,out)" not in namespace or
+    raise SystemExit("shared Path-first parent/leaf owner missing")
+if ("nas_fs_user_lookup_begin(" not in namespace or
         "static bool has_dot_component(" in namespace or
         "static int vfs_parent(" in vfs_src or
-        "int nas_path_resolve(" in (root/"kernel/path.c").read_text()):
+        (root/"kernel/path.c").exists() or
+        (root/"kernel/path.h").exists()):
     raise SystemExit("old lexical namespace walker returned")
+for obsolete in ("nas_fs_resolve_path(", "nas_fs_canonical_candidate(",
+                 "nas_fs_lookup_parent(", "nas_fs_resolve_existing(",
+                 "nas_path_join_raw("):
+    for source in (root/"kernel").rglob("*"):
+        if source.suffix in (".c", ".h") and obsolete in source.read_text():
+            raise SystemExit(f"retired string namespace API returned: {obsolete} in {source}")
 # All public absolute-path compatibility mutations are now thin wrappers
 # around owned Path-first parent/child operations. Neither a second open
 # transaction nor old string/mount helpers may silently reappear.
@@ -123,8 +131,7 @@ for wrapper, delegate in (("nas_vfs_create(", "nas_vfs_create_child("),
         raise SystemExit(f"VFS namespace Path-first bridge missing: {wrapper}")
 metadata_src=(root/"kernel/fs/metadata_syscall.c").read_text()
 open_src=(root/"kernel/fs/syscall.c").read_text()
-if ("nas_fs_bootstrap_candidate(&request,candidate)" not in metadata_src or
-        "nas_fs_bootstrap_endpoint(path)" not in metadata_src or
+if ("nas_fs_bootstrap_candidate(&request,path)" not in metadata_src or
         "nas_fs_bootstrap_candidate(request,candidate)" not in open_src):
     raise SystemExit("stat/open bootstrap path bypasses the shared endpoint whitelist")
 for source in ("kernel/fs/vfs_providers.c", "ports/littlefs/vfs_port.c",

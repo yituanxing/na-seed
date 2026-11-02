@@ -38,7 +38,6 @@ kernel/block/ramdisk.c
 kernel/block/partition.c
 kernel/fs/tmp_namespace.c
 kernel/fd.c
-kernel/path.c
 kernel/pipe.c
 kernel/boot_image.c
 kernel/drivers/serial.c

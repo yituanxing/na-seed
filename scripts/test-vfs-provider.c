@@ -972,18 +972,31 @@ int main(void) {
     assert(nas_fs_lookup_node("/bin/demo",true,&n,resolved)==0);
     assert(nas_vfs_acquire_shared_page(&n,0,&shared_pa)==-ENOSYS);
     assert(nas_vfs_statfs(&n,&stats)==-EOPNOTSUPP);
-    struct nas_fs_node canonical_parent;
-    assert(nas_fs_lookup_parent("/tmp/alias/new-parent",
-                  &canonical_parent,resolved)==0);
-    assert(!strcmp(resolved,"/tmp/new-parent") && canonical_parent.is_dir);
-    assert(nas_fs_canonical_candidate("/tmp/alias/new-parent",resolved)==0);
-    assert(!strcmp(resolved,"/tmp/new-parent"));
-    assert(nas_fs_canonical_candidate("/tmp/alias/new-parent///",resolved)==0);
-    assert(!strcmp(resolved,"/tmp/new-parent"));
-    assert(nas_fs_canonical_candidate("/bin/demo/",resolved)==-ENOTDIR);
-    assert(nas_fs_canonical_candidate("/bin/demo/../new",resolved)==-ENOTDIR);
-    assert(nas_fs_lookup_parent("/no-intermediate/new",
-                  &canonical_parent,resolved)==-ENOENT);
+    /* The former canonical-string parent/candidate adapters are gone:
+     * test the real owned parent and one basename returned by namei. */
+    struct nas_vfs_path candidate_parent_path={0};
+    struct nas_fs_node canonical_parent={0};
+    char candidate_leaf[256];
+    assert(nas_fs_lookup_parent_at(NULL,NULL,"/tmp/alias/new-parent",
+                  &candidate_parent_path,candidate_leaf)==0);
+    assert(nas_vfs_path_node(&candidate_parent_path,&canonical_parent)==0);
+    assert(canonical_parent.is_dir && !strcmp(candidate_leaf,"new-parent"));
+    assert(nas_vfs_path_string(&candidate_parent_path,resolved)==0 &&
+           !strcmp(resolved,"/tmp"));
+    assert(nas_vfs_path_put(&candidate_parent_path)==0);
+    assert(nas_fs_lookup_parent_mkdir_at(NULL,NULL,
+                  "/tmp/alias/new-parent///",&candidate_parent_path,
+                  candidate_leaf)==0);
+    assert(!strcmp(candidate_leaf,"new-parent"));
+    assert(nas_vfs_path_string(&candidate_parent_path,resolved)==0 &&
+           !strcmp(resolved,"/tmp"));
+    assert(nas_vfs_path_put(&candidate_parent_path)==0);
+    assert(nas_fs_lookup_path_at(NULL,NULL,"/bin/demo/",false,
+                                 &candidate_parent_path)==-ENOTDIR);
+    assert(nas_fs_lookup_path_at(NULL,NULL,"/bin/demo/../new",false,
+                                 &candidate_parent_path)==-ENOTDIR);
+    assert(nas_fs_lookup_parent_at(NULL,NULL,"/no-intermediate/new",
+                  &candidate_parent_path,candidate_leaf)==-ENOENT);
     assert(nas_vfs_join_child("/tmp","good",resolved)==0 &&
            !strcmp(resolved,"/tmp/good"));
     assert(nas_vfs_join_child("/tmp","../bad",resolved)==-EINVAL);
@@ -1755,7 +1768,9 @@ int main(void) {
     assert(nas_fs_lookup_node("/bin/demo/..",true,&n,resolved)==-ENOTDIR);
     assert(nas_fs_lookup_node("/bin/demo/../demo",true,&n,resolved)==-ENOTDIR);
     assert(nas_fs_lookup_node("/bin/demo/./no",true,&n,resolved)==-ENOTDIR);
-    assert(nas_fs_resolve_existing("/bin/demo/..",true,resolved)==-ENOTDIR);
+    struct nas_vfs_path bad_parent={0};
+    assert(nas_fs_lookup_path_at(NULL,NULL,"/bin/demo/..",true,
+                                 &bad_parent)==-ENOTDIR);
     assert(nas_fs_lookup_node("/bin/./demo",true,&n,resolved)==0);
     assert(nas_fs_lookup_node("/bin/../bin/demo",true,&n,resolved)==0);
     assert(nas_fs_lookup_node("/bin/demo/",true,&n,resolved)==-ENOTDIR);

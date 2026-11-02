@@ -375,23 +375,29 @@ int main(int argc,char **argv) {
     assert(nas_vfs_read_dir(&directory,
                              (uint64_t)count,entries,8)>=0);
     assert(nas_vfs_read_dir(&node,0,entries,8)==-ENOTDIR);
-    struct nas_fs_node candidate_parent;
-    char candidate[256];
-    assert(nas_fs_lookup_parent("/mnt/sandbox/negative-candidate",
-                    &candidate_parent,candidate)==0);
+    struct nas_fs_node candidate_parent={0};
+    char candidate[256],leaf[256];
+    struct nas_vfs_path owned_candidate={0};
+    assert(nas_fs_lookup_parent_at(NULL,NULL,
+                    "/mnt/sandbox/negative-candidate",
+                    &owned_candidate,leaf)==0);
+    assert(nas_vfs_path_node(&owned_candidate,&candidate_parent)==0);
     assert(candidate_parent.mount==node.mount &&
-           !strcmp(candidate,"/mnt/sandbox/negative-candidate"));
-    assert(nas_fs_canonical_candidate("/mnt/sandbox/negative-candidate",
-                                      candidate)==0);
-    assert(!strcmp(candidate,"/mnt/sandbox/negative-candidate"));
-    assert(nas_fs_canonical_candidate("/mnt/sandbox/negative-candidate///",
-                                      candidate)==0);
-    assert(!strcmp(candidate,"/mnt/sandbox/negative-candidate"));
-    assert(nas_fs_canonical_candidate("/mnt/sandbox/hardlink/",
-                                      candidate)==-ENOTDIR);
-    assert(nas_fs_canonical_candidate(
-               "/mnt/sandbox/hardlink/../negative-candidate",
-               candidate)==-ENOTDIR);
+           !strcmp(leaf,"negative-candidate"));
+    assert(nas_vfs_path_string(&owned_candidate,candidate)==0);
+    assert(!strcmp(candidate,"/mnt/sandbox"));
+    assert(nas_vfs_path_put(&owned_candidate)==0);
+    assert(nas_fs_lookup_parent_mkdir_at(NULL,NULL,
+                    "/mnt/sandbox/negative-candidate///",
+                    &owned_candidate,leaf)==0);
+    assert(!strcmp(leaf,"negative-candidate"));
+    assert(nas_vfs_path_put(&owned_candidate)==0);
+    assert(nas_fs_lookup_path_at(NULL,NULL,
+                    "/mnt/sandbox/hardlink/",false,
+                    &owned_candidate)==-ENOTDIR);
+    assert(nas_fs_lookup_path_at(NULL,NULL,
+                    "/mnt/sandbox/hardlink/../negative-candidate",false,
+                    &owned_candidate)==-ENOTDIR);
     assert(nas_vfs_mkdir("/",0755)==-EEXIST);
     assert(nas_vfs_mkdir("/mnt",0755)==-EEXIST);
     assert(nas_vfs_unlink("/mnt",0x200ULL)==-EBUSY);

@@ -6,9 +6,7 @@
 #include "../panic.h"
 #include "../task.h"
 #include "../fd.h"
-#include "../bootfs.h"
 #include "../tmpfs.h"
-#include "../path.h"
 #include "../arch/linux_fcntl_abi.h"
 #include "../lib/string.h"
 #include "../mm/usercopy.h"
@@ -125,78 +123,6 @@ int nas_fs_user_lookup_begin(uint64_t dirfd,uint64_t user_pointer,
         nas_fs_path_end(request);
     }
     return rc;
-}
-
-/* Component walking, dot/dotdot, symlinks and negative final names
- * belong to one namei owner in lookup.c, not syscall-specific copies. */
-static int resolve_component_path(const char *base,const char *src,
-                                  char out[256]) {
-    char raw[256];
-    int rc=nas_path_join_raw(base,src,raw);
-    if(rc)return rc;
-    rc=nas_fs_canonical_candidate(raw,out);
-    if(rc!=-ENOENT)return rc;
-    /* Temporary bootstrap compatibility: synthetic /dev names have no
-     * devfs inodes, and CPIO-less direct ELF has no root VFS inode.
-     * Never skip actual dot components via this escape hatch. */
-    bool dot=false;
-    for(unsigned i=1;raw[i];i++) {
-        if(raw[i]!='.' || raw[i-1]!='/')continue;
-        if(!raw[i+1] || raw[i+1]=='/' ||
-           (raw[i+1]=='.' && (!raw[i+2] || raw[i+2]=='/')))
-            dot=true;
-    }
-    if(!dot && (!strncmp(raw,"/dev/",5) || !bootfs_mounted())) {
-        memcpy(out,raw,strlen(raw)+1);
-        return 0;
-    }
-    return rc;
-}
-/* This adapter owns user-memory copying and directory-FD resolution.
- * Component semantics are checked using the same VFS namei as openat. */
-uint64_t nas_fs_resolve_path(uint64_t dirfd, uint64_t pathname,
-                             char out[256]) {
-    char src[256];
-    int copy_rc=nas_user_read_cstr(pathname,src,sizeof(src));
-    if(copy_rc)return (uint64_t)(int64_t)copy_rc;
-    if (!src[0]) return (uint64_t)-ENOENT;
-    const char *base=NULL;
-    char inode_base[256];
-    if(src[0]!='/') {
-        /* *at syscall dirfd is a native int, not a native pointer/long.
-         * Do not compare raw 64-bit syscall registers against (u64)-100:
-         * GNU libc/BusyBox may hand us 0x00000000ffffff9c. */
-        int64_t fd=nas_linux_signed_dirfd(dirfd);
-        if(fd==-100) {
-            if(TASK.fs->cwd_path.dentry) {
-                int err=nas_vfs_path_string(&TASK.fs->cwd_path,inode_base);
-                if(err)return (uint64_t)(int64_t)err;
-                base=inode_base;
-            } else if(TASK.fs->cwd_pinned) {
-                /* An inode-only FS cwd is an invalid owner, NOT a reason
-                 * to reverse-resolve a stale pathname from a provider. */
-                return (uint64_t)-ESTALE;
-            } else base=current_workdir;
-        } else {
-            if(fd<0 || (uint64_t)fd>=NAS_FD_LIMIT ||
-               TASK.fds->entries[fd].kind==FD_CLOSED)
-                return (uint64_t)-EBADF;
-            const struct nas_open_file *opened=
-                &nas_open_files[TASK.fds->entries[fd].slot];
-            /* Linux openat(dirfd) uses the file's owned directory path.
-             * No procfs/tmpfs/archive FD type is privileged here. */
-            if(!opened->vnode_pinned || !opened->vnode.is_dir)
-                return (uint64_t)-ENOTDIR;
-            /* Every ordinary directory File owns a Path from the same
-             * VFS open transaction. A missing path is a broken owner,
-             * NEVER a reason to reopen origin_path through the backend. */
-            if(!opened->vpath.dentry)return (uint64_t)-ESTALE;
-            int err=nas_vfs_path_string(&opened->vpath,inode_base);
-            if(err)return (uint64_t)(int64_t)err;
-            base=inode_base;
-        }
-    }
-    return (uint64_t)(int64_t)resolve_component_path(base,src,out);
 }
 
 /* Linux syscall decoders retain user-pointer validation and task-relative

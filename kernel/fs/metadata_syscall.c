@@ -279,31 +279,34 @@ static uint64_t sys_access_path(uint64_t dirfd,uint64_t pathname,
     struct nas_fs_path_request request;
     struct nas_vfs_path located={0};
     struct nas_fs_node node={0};
-    int err=nas_fs_user_lookup_begin(dirfd,pathname,
-                                    !(flags&AT_SYMLINK_NOFOLLOW),
-                                    &request,&located,&node);
+    /* Keep the original copied pathname AND its owned root/dirfd anchors
+     * alive through both mounted lookup and the narrowly permitted
+     * bootstrap fallback. No second usercopy or lexical re-resolution. */
+    int err=nas_fs_user_path_begin(dirfd,pathname,&request);
+    if(err)return (uint64_t)(int64_t)err;
+    err=nas_fs_lookup_path_at(request.start.dentry?&request.start:NULL,
+                              request.root.dentry?&request.root:NULL,
+                              request.pathname,!(flags&AT_SYMLINK_NOFOLLOW),
+                              &located);
+    if(!err)err=nas_vfs_path_node(&located,&node);
     if(!err) {
         bits=node.mode;
         is_dir=node.is_dir;
         writable=nas_vfs_can_write(&node);
         end_mounted_lookup(&request,&located);
-    } else if(err!=-ENOENT)return (uint64_t)(int64_t)err;
+    } else if(err!=-ENOENT) {
+        end_mounted_lookup(&request,&located);
+        return (uint64_t)(int64_t)err;
+    }
     /* Synthetic devices lack VFS dentries before devfs exists. Only this
      * explicit compatibility endpoint still needs a printed fallback. */
-    char path[256];
-    if(!bits) {
-        /* The failed lookup released its Path owners. Reuse the same
-         * stack request to prefilter the exact bootstrap namespace before
-         * permitting a second, string-based legacy resolution. */
-        int begin=nas_fs_user_path_begin(dirfd,pathname,&request);
-        if(begin)return (uint64_t)(int64_t)begin;
-        char candidate[256];
-        bool allowed=nas_fs_bootstrap_candidate(&request,candidate);
-        nas_fs_path_end(&request);
+    char path[256]={0};
+    if(err==-ENOENT) {
+        /* Only a failed lookup reaches this explicit bootstrap whitelist;
+         * it must reuse the SAME still-owned request/anchor. */
+        bool allowed=nas_fs_bootstrap_candidate(&request,path);
+        end_mounted_lookup(&request,&located);
         if(!allowed)return (uint64_t)-ENOENT;
-        uint64_t rc=nas_fs_resolve_path(dirfd,pathname,path);
-        if((int64_t)rc<0)return rc;
-        if(!nas_fs_bootstrap_endpoint(path))return (uint64_t)-ENOENT;
     }
     if(!bits && (!strcmp(path,"/dev/ptmx") ||
                  (nas_pty_path_number(path)>=0 &&
@@ -491,30 +494,29 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
     struct nas_fs_path_request request;
     struct nas_vfs_path path_ref={0};
     struct nas_fs_node node={0};
-    int err=nas_fs_user_lookup_begin(dirfd,pathname,
-                                     !(flags&AT_SYMLINK_NOFOLLOW),
-                                     &request,&path_ref,&node);
+    int err=nas_fs_user_path_begin(dirfd,pathname,&request);
+    if(err)return (uint64_t)(int64_t)err;
+    err=nas_fs_lookup_path_at(request.start.dentry?&request.start:NULL,
+                              request.root.dentry?&request.root:NULL,
+                              request.pathname,!(flags&AT_SYMLINK_NOFOLLOW),
+                              &path_ref);
+    if(!err)err=nas_vfs_path_node(&path_ref,&node);
     if(!err) {
         uint64_t result=write_mounted_stat(&node,statbuf);
         end_mounted_lookup(&request,&path_ref);
         return result;
     }
-    if(err!=-ENOENT)return (uint64_t)(int64_t)err;
+    if(err!=-ENOENT) {
+        end_mounted_lookup(&request,&path_ref);
+        return (uint64_t)(int64_t)err;
+    }
     /* Only the SAME explicit bootstrap endpoints allowed by openat may
      * use a printed-path fallback. In particular, ENOENT under a stale
      * renamed/unlinked dirfd must not attempt a second legacy lookup. */
-    /* Reuse the completed request's stack storage; a second 4 KiB
-     * pathname buffer would overburden the 16 KiB kernel stack. */
-    int bootstrap_rc=nas_fs_user_path_begin(dirfd,pathname,&request);
-    if(bootstrap_rc)return (uint64_t)(int64_t)bootstrap_rc;
-    char candidate[256];
-    bool allowed=nas_fs_bootstrap_candidate(&request,candidate);
-    nas_fs_path_end(&request);
-    if(!allowed)return (uint64_t)-ENOENT;
     char path[256];
-    uint64_t result = nas_fs_resolve_path(dirfd,pathname,path);
-    if ((int64_t)result < 0) return result;
-    if(!nas_fs_bootstrap_endpoint(path))return (uint64_t)-ENOENT;
+    bool allowed=nas_fs_bootstrap_candidate(&request,path);
+    end_mounted_lookup(&request,&path_ref);
+    if(!allowed)return (uint64_t)-ENOENT;
     if(!strcmp(path,"/dev/ptmx") ||
        (nas_pty_path_number(path)>=0 &&
         nas_pty_present((unsigned)nas_pty_path_number(path)))) {
@@ -525,7 +527,7 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
             ? 0:(uint64_t)-EFAULT;
     }
     /* Legacy modules and character devices retain their existing fstat. */
-    result = nas_fs_open_path(path, 0, 0);
+    uint64_t result = nas_fs_open_path(path, 0, 0);
     if ((int64_t)result < 0) return result;
     uint64_t ret = sys_fstat_boot(result, statbuf);
     nas_fs_close_fd(result);

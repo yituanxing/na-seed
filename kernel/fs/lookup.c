@@ -33,16 +33,10 @@ int nas_vfs_join_child(const char *parent,const char *name,char out[256]) {
     memcpy(out+n,name,m+1);
     return 0;
 }
-/* Compatibility wrappers retain the historical 256-byte canonical result,
- * but all component, dot, symlink and mount semantics now live in ONE
- * Path-first walker below. The string is a projection of an owned Path,
- * never an input used to retraverse cwd/dirfd or select a backend. */
-static int legacy_join_parent(const struct nas_vfs_path *parent,
-                              const char *leaf,char canonical[256]) {
-    char absolute[256];
-    int rc=nas_vfs_path_string(parent,absolute);
-    return rc ? rc : nas_vfs_join_child(absolute,leaf,canonical);
-}
+/* This compatibility entrypoint remains for early mount registration and
+ * bootstrap paths, which publish a bounded mountpoint string. All mutations
+ * and task cwd/dirfd requests use owned Paths directly; the former three
+ * test-only canonical/parent string adapters have been retired. */
 int nas_fs_lookup_node(const char *path,bool follow_final,
                        struct nas_fs_node *result,char resolved[256]) {
     if(!path || !result || !resolved || path[0]!='/')return -EINVAL;
@@ -54,51 +48,6 @@ int nas_fs_lookup_node(const char *path,bool follow_final,
     int dropped=nas_vfs_path_put(&owned);
     return dropped ? dropped : rc;
 }
-int nas_fs_resolve_existing(const char *path,bool follow_final,char out[256]) {
-    if(!path || !out || path[0]!='/')return -EINVAL;
-    struct nas_vfs_path owned={0};
-    int rc=nas_fs_lookup_path_at(NULL,NULL,path,follow_final,&owned);
-    if(rc)return rc;
-    rc=nas_vfs_path_string(&owned,out);
-    int dropped=nas_vfs_path_put(&owned);
-    return dropped ? dropped : rc;
-}
-int nas_fs_lookup_parent(const char *absolute,struct nas_fs_node *parent,
-                         char canonical[256]) {
-    if(!absolute || !parent || !canonical || absolute[0]!='/')
-        return -EINVAL;
-    size_t length=strlen(absolute);
-    if(length>=256)return -ENAMETOOLONG;
-    if(length>1 && absolute[length-1]=='/')return -ENOTDIR;
-    struct nas_vfs_path owned={0};
-    char leaf[256];
-    int rc=nas_fs_lookup_parent_at(NULL,NULL,absolute,&owned,leaf);
-    if(rc)return rc;
-    rc=nas_vfs_path_node(&owned,parent);
-    if(!rc)rc=legacy_join_parent(&owned,leaf,canonical);
-    int dropped=nas_vfs_path_put(&owned);
-    return dropped ? dropped : rc;
-}
-int nas_fs_canonical_candidate(const char *absolute,char canonical[256]) {
-    if(!absolute || !canonical || absolute[0]!='/')return -EINVAL;
-    struct nas_vfs_path existing={0};
-    int rc=nas_fs_lookup_path_at(NULL,NULL,absolute,false,&existing);
-    if(!rc) {
-        rc=nas_vfs_path_string(&existing,canonical);
-        int dropped=nas_vfs_path_put(&existing);
-        return dropped ? dropped : rc;
-    }
-    if(rc!=-ENOENT)return rc;
-    struct nas_vfs_path parent={0};
-    char leaf[256];
-    /* Historical mkdir -p allows a missing final directory with '/'. */
-    rc=nas_fs_lookup_parent_mkdir_at(NULL,NULL,absolute,&parent,leaf);
-    if(rc)return rc;
-    rc=legacy_join_parent(&parent,leaf,canonical);
-    int dropped=nas_vfs_path_put(&parent);
-    return dropped ? dropped : rc;
-}
-
 /* Path-first namei: the pathname is only the sequence of names to consume,
  * never the authority for cwd, dirfd, mount attachment or '..'.  A dentry
  * reference owns each intermediate position; an already owned start path

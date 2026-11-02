@@ -88,6 +88,33 @@ projections. They are not extra namei engines and should not grow into one.
 The long-cwd batch has focused host regression evidence; exact-head guest
 results must be checked after publication.
 
+## Lexical namespace adapter retirement (next consolidated batch)
+
+The obsolete `kernel/path.[ch]`, `nas_fs_resolve_path` and three
+test-only canonical/parent string wrappers are now deleted from the source,
+both real and manifest build lists, and regression fixtures. The shared
+kernel source manifest decreases from **71 to 70** translation units.
+`nas_fs_lookup_path_at` and `nas_fs_lookup_parent_at` remain the only generic
+namei mechanisms; backend-local `nas_vfs_join_child` is still needed for
+ports whose upstream filesystem APIs accept a directory spelling.
+
+`openat`, `access/faccessat` and `newfstatat` retain their exceptional
+rootless-boot `/dev` and Limine module compatibility. Instead of copying
+the user's name again and asking a lexical adapter to canonicalize it,
+they obtain a checked, bounded, literal endpoint candidate from the
+**same owned Path request**. A missing ordinary VFS inode never becomes
+a synthetic device, and literal `.`/`..` or multiple separators cannot
+escape this whitelist. Production `access` and `newfstatat` preserve their
+original mount/dirfd owners while deciding this fallback, without a second
+usercopy or a second namei. The future devfs should eventually replace
+this small explicit bootstrap exception.
+
+The host oracles now test the actual negative-parent Path operations,
+instead of retaining unused canonical wrappers solely to keep tests green.
+The M106 fixture directly exercises absolute, rooted-relative, dot/dotdot,
+double slash and overlong bootstrap names. This is host evidence only until
+the current commit's native three-ISA CI completes.
+
 ## Focused proof (run on source working tree)
 
 | Gate | Scope | Expected claim |

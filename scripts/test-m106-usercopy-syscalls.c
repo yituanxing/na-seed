@@ -48,6 +48,56 @@ static unsigned pending_accept_slot=NAS_OPEN_FILE_LIMIT, accepted_count;
  * while testing the exact production import/release and provider paths. */
 void *nas_heap_alloc(size_t length){return malloc(length);}
 bool nas_heap_free(void *ptr){free(ptr);return true;}
+/* Only synthetic /dev bootstrap may project a Path to a diagnostic string.
+ * A missing root or stale/oversized anchor must never cause a blind lexical
+ * path resolver to invent an ordinary filesystem endpoint. */
+static const char *bootstrap_test_parent="/";
+int nas_vfs_path_string(const struct nas_vfs_path *path,char output[256]) {
+    if(!path || !path->dentry)return -ESTALE;
+    size_t length=strlen(bootstrap_test_parent);
+    if(length>=256)return -ENAMETOOLONG;
+    memcpy(output,bootstrap_test_parent,length+1);
+    return 0;
+}
+int nas_pty_path_number(const char *path){(void)path;return -1;}
+bool nas_pty_present(unsigned number){(void)number;return false;}
+const struct limine_file *nas_boot_limine_module_path(const char *path) {
+    (void)path;return NULL;
+}
+static void test_bootstrap_owned_candidate(void) {
+    struct nas_fs_path_request request={0};
+    char candidate[256];
+    request.pathname="/dev/null";
+    assert(nas_fs_bootstrap_candidate(&request,candidate));
+    assert(!strcmp(candidate,"/dev/null"));
+    request.pathname="dev/null";
+    assert(!nas_fs_bootstrap_candidate(&request,candidate));
+    request.start.dentry=(struct nas_vfs_dentry *)(uintptr_t)1;
+    assert(nas_fs_bootstrap_candidate(&request,candidate));
+    assert(!strcmp(candidate,"/dev/null"));
+    request.pathname="./dev/null";
+    assert(!nas_fs_bootstrap_candidate(&request,candidate));
+    request.pathname="dev/../dev/null";
+    assert(!nas_fs_bootstrap_candidate(&request,candidate));
+    request.pathname="/dev//null";
+    assert(!nas_fs_bootstrap_candidate(&request,candidate));
+    request.pathname="/dev/../dev/null";
+    assert(!nas_fs_bootstrap_candidate(&request,candidate));
+    bootstrap_test_parent="/tmp";
+    request.pathname="../dev/null";
+    assert(!nas_fs_bootstrap_candidate(&request,candidate));
+    request.pathname="/dev/null";
+    assert(nas_fs_bootstrap_candidate(&request,candidate));
+    char long_path[4096];
+    memset(long_path,'x',sizeof(long_path));
+    long_path[0]='/';long_path[sizeof(long_path)-1]=0;
+    request.pathname=long_path;
+    assert(!nas_fs_bootstrap_candidate(&request,candidate));
+    request.pathname="dev/null";
+    assert(!nas_fs_bootstrap_candidate(&request,candidate));
+    bootstrap_test_parent="/";
+    puts("[BOOTSTRAP PATH PASS] owned root/dirfd, literal whitelist, no second namei");
+}
 
 static int page_index(uint64_t va) {
     if(va<TEST_BASE || va-TEST_BASE>=TEST_PAGE*TEST_PAGES)return -1;
@@ -450,6 +500,7 @@ static void a012_stream_socket_vectors(unsigned sender,unsigned receiver) {
 }
 
 int main(void) {
+    test_bootstrap_owned_candidate();
     guest_task.mm=&guest_mm;
     guest_files.refs=1;
     guest_task.files=&guest_files;
