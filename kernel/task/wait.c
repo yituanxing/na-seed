@@ -71,7 +71,7 @@ bool nas_task_wait_ready(const struct nas_task *task) {
        task->wait.blocked_op==NAS_SC_shutdown ||
        task->wait.blocked_op==NAS_SC_getsockname ||
        task->wait.blocked_op==NAS_SC_getpeername)
-        return nas_fs_socket_control_ready(task->wait.accept_listener_slot);
+        return nas_fs_socket_control_ready(task->wait.description_slot);
     if(task->wait.blocked_op==NAS_SC_accept ||
        task->wait.blocked_op==NAS_SC_accept4)
         return nas_fs_poll_ready(task); /* original listener description */

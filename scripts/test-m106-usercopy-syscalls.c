@@ -16,6 +16,7 @@
 #include "../kernel/fs/syscall.c"
 #include "../kernel/fs/metadata_syscall.c"
 #include "../kernel/fs/socket_syscall.c"
+#include "../kernel/fs/poll_syscall.c"
 #include "../kernel/mm/fault.h"
 #include "../kernel/mm/frame.h"
 #include "../kernel/arch/user_pt.h"
@@ -264,6 +265,8 @@ void nas_print(const char *msg){(void)msg;}
 void nas_dec(uint64_t n){(void)n;}
 void nas_putchar(char ch){(void)ch;}
 void nas_arch_halt(void){assert(!"user syscall triggered kernel panic");abort();}
+uint64_t nas_arch_monotonic_ns(void){return 1000000000ULL;}
+bool nas_tty_poll_readable(void){return false;}
 void nas_unix_socket_pair_ready(unsigned a,unsigned b){(void)a;(void)b;}
 #if !defined(NAS_ENABLE_LWIP) || !NAS_ENABLE_LWIP
 bool nas_lwip_socket_is_slot(unsigned slot){(void)slot;return false;}
@@ -486,6 +489,110 @@ static void reset_mapping(void) {
         cow[i]=lazy[i]=false;
     }
     missing_faults=protection_faults=copied_pages=0;
+}
+static uint16_t m106_poll_state[NAS_OPEN_FILE_LIMIT];
+static uint16_t m106_poll_description(unsigned slot,uint16_t events) {
+    return m106_poll_state[slot]&(events|0x0018U);
+}
+static const struct nas_file_ops m106_poll_ops={
+    .poll_description=m106_poll_description
+};
+static void test_poll_select_wait_ownership(void) {
+    /* Real poll/select ABI and usercopy; only provider readiness is mocked.
+     * The Task must retain original File identities across FD reuse and
+     * copy output from its own immutable interest snapshot after waking. */
+    const uint64_t pollfds=TEST_BASE+128,readset=TEST_BASE+384;
+    reset_mapping();
+    assert(live_fds()==0);
+    assert(nas_fd_install_new(&guest_task,3,124,FD_NULL,0,false));
+    assert(nas_fd_install_new(&guest_task,4,125,FD_NULL,0,false));
+    nas_open_files[124].ops=&m106_poll_ops;
+    nas_open_files[125].ops=&m106_poll_ops;
+    uint64_t p0=(uint64_t)3|(1ULL<<32),p1=(uint64_t)4|(1ULL<<32);
+    assert(nas_user_write_u64(pollfds,p0));
+    assert(nas_user_write_u64(pollfds+8,p1));
+    assert((int64_t)nas_fs_poll(pollfds,2,(uint64_t)-1)==-EAGAIN);
+    can_write[0]=false;
+    assert((int64_t)nas_fs_poll(pollfds,2,(uint64_t)-1)==-EFAULT);
+    can_write[0]=true;
+    nas_open_files[125].refcount=UINT16_MAX;
+    assert(nas_fs_poll_arm(pollfds,2)==-ENFILE);
+    assert(nas_open_files[124].refcount==1);
+    nas_open_files[125].refcount=1;
+    assert(nas_fs_poll_arm(pollfds,2)==1);
+    assert(nas_open_files[124].refcount==2 && nas_open_files[125].refcount==2);
+    guest_task.wait.blocked_op=NAS_SC_poll;
+    guest_task.wait.blocked_args[0]=pollfds;
+    guest_task.wait.blocked_args[2]=(uint64_t)-1;
+    nas_fs_close_fd(3);
+    nas_fs_close_fd(4);
+    assert(nas_open_files[124].refcount==1 && nas_open_files[125].refcount==1);
+    assert(nas_fd_install_new(&guest_task,3,123,FD_NULL,0,false));
+    nas_open_files[123].ops=&m106_poll_ops;
+    m106_poll_state[123]=1; /* new File cannot wake the old request */
+    assert(nas_user_write_u64(pollfds,(uint64_t)3|(4ULL<<32)));
+    assert(!nas_fs_poll_ready(&guest_task));
+    assert((int64_t)nas_fs_poll_resume(&guest_task)==-EAGAIN);
+    m106_poll_state[124]=1;
+    assert(nas_fs_poll_ready(&guest_task));
+    assert(nas_fs_poll_resume(&guest_task)==1);
+    uint64_t returned=0;
+    assert(nas_user_read_u64(pollfds,&returned));
+    assert(returned==(p0|(1ULL<<48)));
+    nas_task_wait_dispose(&guest_task);
+    assert(!nas_open_files[124].refcount && !nas_open_files[125].refcount);
+    assert(nas_open_files[123].refcount==1);
+    nas_fs_close_fd(3);
+    m106_poll_state[123]=m106_poll_state[124]=0;
+
+    assert(nas_fd_install_new(&guest_task,3,124,FD_NULL,0,false));
+    nas_open_files[124].ops=&m106_poll_ops;
+    assert(nas_user_write_u64(readset,1ULL<<3));
+    assert((int64_t)nas_fs_pselect6(4,readset,0,0,false)==-EAGAIN);
+    assert(nas_fs_pselect_arm(4,readset,0,0)==1);
+    assert(nas_open_files[124].refcount==2);
+    guest_task.wait.blocked_op=NAS_SC_pselect6;
+    guest_task.wait.blocked_args[1]=readset;
+    nas_fs_close_fd(3);
+    assert(nas_fd_install_new(&guest_task,3,123,FD_NULL,0,false));
+    nas_open_files[123].ops=&m106_poll_ops;
+    m106_poll_state[123]=1;
+    assert(nas_user_write_u64(readset,0)); /* user cannot change interest */
+    assert(!nas_fs_poll_ready(&guest_task));
+    m106_poll_state[124]=1;
+    assert(nas_fs_poll_ready(&guest_task));
+    assert(nas_fs_pselect_resume(&guest_task)==1);
+    assert(nas_user_read_u64(readset,&returned) && returned==(1ULL<<3));
+    nas_task_wait_dispose(&guest_task);
+    nas_fs_close_fd(3);
+    m106_poll_state[123]=m106_poll_state[124]=0;
+    assert(live_fds()==0 && !nas_open_files[123].refcount &&
+           !nas_open_files[124].refcount);
+    /* The real pipe backend distinguishes readable data from terminal HUP.
+     * POLLHUP is reported even if the caller supplied events=0. */
+    const uint64_t pair=TEST_BASE+800;
+    assert(sys_pipe2(pair,0)==0);
+    unsigned rd=(unsigned)*user_ptr(pair),wr=(unsigned)*user_ptr(pair+4);
+    unsigned read_slot=guest_task.fds->entries[rd].slot;
+    unsigned write_slot=guest_task.fds->entries[wr].slot;
+    assert(!nas_pipe_read_hup(read_slot));
+    nas_fs_close_fd(wr);
+    assert(nas_pipe_read_hup(read_slot));
+    assert(dpoll_pipe_read(read_slot,0)==0x0010U);
+    static const struct nas_file_ops hup_ops={
+        .poll_description=dpoll_pipe_read
+    };
+    nas_open_files[read_slot].ops=&hup_ops;
+    assert(nas_user_write_u64(pair+64,(uint64_t)rd));
+    assert(nas_fs_poll(pair+64,1,0)==1);
+    uint64_t hup_word=0;
+    assert(nas_user_read_u64(pair+64,&hup_word) &&
+           (uint16_t)(hup_word>>48)==0x0010U);
+    nas_fs_close_fd(rd);
+    /* The isolated M106 FileOps fixture omits release callbacks. */
+    nas_pipe_release_description(read_slot);
+    nas_pipe_release_description(write_slot);
+    puts("[M106 POLL WAIT PASS] usercopy preflight, transactional pins, FD ABA, immutable poll/select wake snapshots");
 }
 static unsigned pair_fd(uint64_t addr,unsigned index) {
     uint8_t bytes[4];
@@ -939,6 +1046,7 @@ int main(void) {
     reset_mapping();
     test_bootstrap_metadata_and_vfs_priority();
     test_dup2_atomic_source_pin();
+    test_poll_select_wait_ownership();
 
     /* A valid mapped RX destination must NOT publish descriptors. */
     can_write[0]=false;

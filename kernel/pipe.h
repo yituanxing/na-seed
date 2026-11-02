@@ -32,6 +32,8 @@ bool nas_pipe_read_ready(unsigned slot);
 bool nas_pipe_write_ready(unsigned slot);
 bool nas_pipe_poll_readable(unsigned slot);
 bool nas_pipe_poll_writable(unsigned slot);
+/* EOF is independently observable as POLLHUP even with events=0. */
+bool nas_pipe_read_hup(unsigned slot);
 
 /* Preflight returns available/accepted byte count or negative errno.
  * Caller owns user-memory validation and transfers bytes before commit.

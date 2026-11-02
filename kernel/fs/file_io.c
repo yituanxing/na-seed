@@ -31,8 +31,8 @@ uint16_t nas_fs_poll_description_task(unsigned slot,uint16_t events,
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
         return 0;
     const struct nas_file_ops *ops=nas_open_files[slot].ops;
-    if(ops==nas_fs_ops_for_kind(FD_SIGNALFD))
-        return nas_fs_signalfd_poll_task(slot,events,task);
+    if(ops && ops->poll_description_task)
+        return ops->poll_description_task(slot,events,task);
     return ops && ops->poll_description ?
            ops->poll_description(slot,events) : 0;
 }

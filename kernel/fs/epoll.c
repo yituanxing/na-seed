@@ -146,14 +146,23 @@ uint64_t nas_epoll_ctl(uint64_t epfd,uint64_t op,uint64_t fd,uint64_t event){
     slot_found->last_ready=0; /* MOD rearms EPOLLONESHOT. */
     return 0;
 }
-uint64_t nas_epoll_wait(uint64_t epfd,uint64_t out,uint64_t maximum,uint64_t timeout){
+int nas_epoll_hold_instance(uint64_t epfd,unsigned *slot) {
+    if(!slot || !instance_slot(nas_current_task,epfd,slot))return -EBADF;
+    return nas_fd_hold_description(*slot) ? 0:-ENFILE;
+}
+uint64_t nas_epoll_wait_description(unsigned slot,uint64_t out,
+                                    uint64_t maximum,uint64_t timeout){
     struct nas_task *task=nas_current_task;
-    unsigned slot;
-    if(!instance_slot(task,epfd,&slot))return (uint64_t)-EBADF;
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+        return (uint64_t)-EBADF;
     if(maximum==0 || (int64_t)maximum<0 || maximum>INT32_MAX)
         return (uint64_t)-EINVAL;
     const uint64_t maxcopy=maximum<NAS_EPOLL_EVENTS_MAX?maximum:NAS_EPOLL_EVENTS_MAX;
     if(out>=USER_LIMIT || maxcopy>(USER_LIMIT-out)/EP_EVENT_BYTES)
+        return (uint64_t)-EFAULT;
+    /* Validate the complete requested output window before consuming an
+     * edge/ONESHOT event or parking on an unwritable userspace buffer. */
+    if(!nas_user_prepare_write(out,maxcopy*EP_EVENT_BYTES))
         return (uint64_t)-EFAULT;
     uint64_t done=0;
     for(unsigned i=0;i<NAS_EPOLL_EVENTS_MAX && done<maximum;i++){
@@ -177,6 +186,12 @@ uint64_t nas_epoll_wait(uint64_t epfd,uint64_t out,uint64_t maximum,uint64_t tim
         nas_time_deadline_expired(nas_arch_monotonic_ns(),task->wait.deadline_ns)))
         return 0;
     return (uint64_t)-EAGAIN;
+}
+uint64_t nas_epoll_wait(uint64_t epfd,uint64_t out,uint64_t maximum,
+                        uint64_t timeout) {
+    unsigned slot;
+    if(!instance_slot(nas_current_task,epfd,&slot))return (uint64_t)-EBADF;
+    return nas_epoll_wait_description(slot,out,maximum,timeout);
 }
 uint16_t nas_epoll_description_poll(unsigned slot,uint16_t interests) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
@@ -207,9 +222,8 @@ void nas_epoll_arm_current_task(uint64_t epfd){
     }
 }
 bool nas_epoll_task_ready(const struct nas_task *task){
-    if(!task || task->wait.blocked_args[0]>=NAS_FD_LIMIT ||
-       task->fds->entries[task->wait.blocked_args[0]].kind!=FD_EPOLL)return true;
-    unsigned slot=task->fds->entries[task->wait.blocked_args[0]].slot;
+    if(!task || !task->wait.description_release)return true;
+    unsigned slot=task->wait.description_slot;
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)return true;
     return instance_ready(slot,task);
 }

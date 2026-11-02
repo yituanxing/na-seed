@@ -1,5 +1,39 @@
 # NaSeed architecture integration: network state and unnamed VFS inodes
 
+## Task-owned poll/select/epoll wait convergence (2026-11-02)
+
+The next traversal followed `poll/ppoll/select/pselect6 -> dispatcher ->
+Task.wait -> scheduler readiness -> native completion -> cancellation`. It
+found a lifetime mismatch: blocked `readv/writev` had already copied their
+vectors and pinned one OpenFile, while poll/select had only unpinned slot-bit
+interests, and epoll completion re-resolved the original integer epfd.
+
+- The **only** File registry is still `nas_open_files`. A parked poll/select
+  Task now owns a bounded kernel interest snapshot, with one checked File
+  reference per watched descriptor. `pollfd` integers, event masks, select
+  fd_sets and output layout are not reimported from mutable userspace on wake.
+  The same provider callback runs initially and after blocking; FD close,
+  dup2 or reuse cannot silently retarget a wait. Failed staging rolls back
+  every pin. `Task.wait` releases snapshots on completion, interruption and
+  process exit; fork does not inherit a parent's pending wait.
+- A parked epoll waiter uses the **existing** single-description wait pin
+  already used by native accept/control. Its readiness probe and completion
+  both target the original epoll OpenFile slot, not the integer epfd that a
+  sibling may reassign. Generic wait fields are named for their ownership,
+  not an AF_INET-specific accept operation; no second epoll registry exists.
+- All FileOps readiness now goes through the description callback, with an
+  optional Task-context callback for signalfd. The data-plane no longer
+  contains a hard-coded signalfd kind exception. Pipe EOF reports POLLHUP
+  independently of the requested event mask. Poll/select/epoll user copy-out
+  is preflighted before modifying results or consuming ONESHOT events.
+
+Real syscall/usercopy regressions exercise overlapping poll/select watches,
+saturated-file rollback, invalid output VM permissions, blocked FD ABA and
+user-buffer mutation. A separate real epoll TU regression verifies the old
+instance stays alive and is not confused by a newly ready instance bound to
+the same epfd. These are ownership/ready-event fixes, not additions of new
+protocols, hotplug, SMP or an unbounded `fd_set` implementation.
+
 ## Subsequent File/FD/AF_UNIX ownership convergence (2026-11-02)
 
 After tracing the complete `Task.fds -> FD entry -> OpenFile -> FileOps ->

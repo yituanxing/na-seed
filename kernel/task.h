@@ -66,6 +66,7 @@ enum nas_task_state {
  * The scheduler must never re-dispatch a syscall from a foreign C frame. */
 struct nas_task;
 struct nas_pending_io;
+struct nas_poll_snapshot;
 typedef uint64_t (*nas_wait_finish_fn)(struct nas_task *);
 struct nas_task_wait {
     uint64_t blocked_op, blocked_args[5];
@@ -87,10 +88,15 @@ struct nas_task_wait {
      * Task-local FDs. All providers use this one readiness representation. */
     struct nas_slot_mask poll_interest_read, poll_interest_write;
     bool poll_tty_read;
-    /* accept()/accept4() pins the original listening OpenFile across a
-     * native scheduler park even if a sibling closes its integer FD. */
-    unsigned accept_listener_slot;
-    void (*accept_listener_release)(unsigned slot);
+    /* poll/ppoll/select retain one copied interest set and ALL referenced
+     * OpenFiles across a native park. This pointer is Task-owned, never
+     * inherited by fork, and does not depend on mutable user FD integers. */
+    struct nas_poll_snapshot *poll_snapshot;
+    void (*poll_snapshot_release)(struct nas_poll_snapshot *);
+    /* accept/control/epoll each wait on ONE original File. The generic
+     * release hook covers completed, interrupted and exited Tasks. */
+    unsigned description_slot;
+    void (*description_release)(unsigned slot);
     /* A blocking native Netconn accept owns a distinct unpublished OpenFile
      * lease. On EINTR/Task exit cancel its worker command BEFORE releasing
      * the lease; late accepted connections must never target a reused slot. */

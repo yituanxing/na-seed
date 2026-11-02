@@ -138,6 +138,10 @@ bool nas_pipe_poll_readable(unsigned slot) {
     const struct nas_pipe *pipe = pipe_for_slot(slot,false);
     return pipe && (pipe->count || !pipe_has_writer(pipe));
 }
+bool nas_pipe_read_hup(unsigned slot) {
+    const struct nas_pipe *pipe=pipe_for_slot(slot,false);
+    return pipe && !pipe_has_writer(pipe);
+}
 bool nas_pipe_poll_writable(unsigned slot) {
     const struct nas_pipe *pipe = pipe_for_slot(slot,true);
     return pipe && pipe_has_reader(pipe) && pipe->count < NAS_PIPE_CAP;

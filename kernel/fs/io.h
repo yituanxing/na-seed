@@ -5,6 +5,7 @@
 #include "../mm/file_backing.h"
 struct nas_task;
 struct nas_pending_io;
+struct nas_poll_snapshot;
 struct nas_fs_node;
 /* One issuing syscall may park after a provider reports would-block.
  * The file layer owns the imported iovec and an independent File ref;
@@ -58,8 +59,13 @@ uint64_t nas_fs_ppoll(uint64_t pollfds,uint64_t nfds,
 uint64_t nas_fs_pselect6(uint64_t nfds, uint64_t readfds,
                         uint64_t writefds, uint64_t exceptfds,
                         bool immediate);
-bool nas_fs_pselect_arm(uint64_t nfds, uint64_t readfds,
-                        uint64_t writefds, uint64_t exceptfds);
-bool nas_fs_poll_arm(uint64_t pollfds,uint64_t nfds);
+/* Returns 1 when subscribed, 0 for deadline/signal-only, or -errno;
+ * success transfers a kernel-owned, File-pinned snapshot to Task.wait. */
+int nas_fs_pselect_arm(uint64_t nfds, uint64_t readfds,
+                       uint64_t writefds, uint64_t exceptfds);
+int nas_fs_poll_arm(uint64_t pollfds,uint64_t nfds);
+uint64_t nas_fs_poll_resume(const struct nas_task *task);
+uint64_t nas_fs_pselect_resume(const struct nas_task *task);
+void nas_fs_poll_snapshot_release(struct nas_poll_snapshot *snapshot);
 bool nas_fs_poll_ready(const struct nas_task *task);
 #endif

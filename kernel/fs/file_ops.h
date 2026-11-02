@@ -57,6 +57,10 @@ struct nas_file_ops {
      * Used by epoll, blocked tasks and future socket/device providers.
      * slot is an owned open-file description, not an integer user FD. */
     uint16_t (*poll_description)(unsigned slot,uint16_t events);
+    /* Optional Task-dependent readiness (signalfd). Scheduler passes the
+     * BLOCKED owner, never infers it from the currently running process. */
+    uint16_t (*poll_description_task)(unsigned slot,uint16_t events,
+                                      const struct nas_task *task);
     uint64_t (*ioctl)(uint64_t fd,uint64_t cmd,uint64_t arg);
     void (*release)(unsigned slot);
 };

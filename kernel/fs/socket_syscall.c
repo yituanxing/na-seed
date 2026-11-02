@@ -373,12 +373,12 @@ static uint64_t sys_lwip_accept_slot(unsigned listener_slot,uint64_t address,
             return (uint64_t)(int64_t)(rc==-EALREADY || rc==-EBUSY ?
                                        -EAGAIN:rc);
         }
-        TASK.wait.accept_listener_slot=listener_slot;
+        TASK.wait.description_slot=listener_slot;
         TASK.wait.accept_lease=lease;
         TASK.wait.accept_lease_cancel=lwip_accept_cancel_wait;
         return (uint64_t)-EAGAIN;
     }
-    if(TASK.wait.accept_listener_slot!=listener_slot ||
+    if(TASK.wait.description_slot!=listener_slot ||
        !nas_fd_slot_lease_valid(lease))
         return (uint64_t)-EBADF;
 

@@ -941,7 +941,8 @@ static uint16_t vpoll_tty(uint64_t fd,uint16_t events) {
     (void)fd;return dpoll_tty(0,events);
 }
 static uint16_t dpoll_pipe_read(unsigned slot,uint16_t events) {
-    if(nas_pipe_poll_readable(slot))return events & 0x0001U;
+    if(nas_pipe_poll_readable(slot))
+        return (events&0x0001U)|(nas_pipe_read_hup(slot)?0x0010U:0);
     /* A disappeared backend must wake blocked readers to report EBADF.
      * A normally closed writer is already readable as EOF above. */
     return nas_pipe_read_ready(slot)?0x0018U:0;
@@ -1152,6 +1153,7 @@ static const struct nas_file_ops ops_signalfd={
     .read_plan=signalfd_read_plan,.read=signalfd_read,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
     .poll=signalfd_poll_fd,.poll_description=signalfd_poll_slot,
+    .poll_description_task=nas_fs_signalfd_poll_task,
     .release=signalfd_release
 };
 static const struct nas_file_ops ops_pidfd={

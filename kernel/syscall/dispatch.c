@@ -125,35 +125,33 @@ static uint64_t finish_io(struct nas_task *task) {
 }
 static uint64_t finish_socket_accept(struct nas_task *task) {
     const uint64_t *a=task->wait.blocked_args;
-    return nas_fs_socket_accept_description(task->wait.accept_listener_slot,
+    return nas_fs_socket_accept_description(task->wait.description_slot,
                                              a[1],a[2],a[3]);
 }
 /* A control-plane Netconn request belongs to the held OpenFile, not to an
  * integer FD that another CLONE_FILES sibling could close and recycle. */
 static uint64_t finish_socket_control(struct nas_task *task) {
-    return nas_fs_socket_control_description(task->wait.accept_listener_slot);
+    return nas_fs_socket_control_description(task->wait.description_slot);
 }
 static uint64_t finish_socket_name(struct nas_task *task) {
     const uint64_t *a=task->wait.blocked_args;
-    return nas_fs_socket_name_description(task->wait.accept_listener_slot,
+    return nas_fs_socket_name_description(task->wait.description_slot,
                                            a[1],a[2],
                                            task->wait.blocked_op==NAS_SC_getpeername);
 }
 static uint64_t finish_epoll(struct nas_task *task) {
     const uint64_t *a=task->wait.blocked_args;
-    return nas_epoll_wait(a[0],a[1],a[2],a[3]);
+    return nas_epoll_wait_description(task->wait.description_slot,
+                                      a[1],a[2],a[3]);
 }
 static uint64_t finish_poll(struct nas_task *task) {
-    const uint64_t *a=task->wait.blocked_args;
-    return nas_fs_poll(a[0],a[1],a[2]);
+    return nas_fs_poll_resume(task);
 }
 static uint64_t finish_ppoll(struct nas_task *task) {
-    const uint64_t *a=task->wait.blocked_args;
-    return nas_fs_ppoll(a[0],a[1],a[2],a[3]);
+    return nas_fs_poll_resume(task);
 }
 static uint64_t finish_select(struct nas_task *task) {
-    const uint64_t *a=task->wait.blocked_args;
-    return nas_fs_pselect6(a[0],a[1],a[2],a[3],false);
+    return nas_fs_pselect_resume(task);
 }
 static nas_wait_finish_fn finish_poll_provider(enum nas_syscall_op nr) {
     if(nr==NAS_SC_poll) return finish_poll;
@@ -342,8 +340,8 @@ static uint64_t task_socket_accept(uint64_t *frame,enum nas_syscall_op nr,
         if(TASK.wait.accept_lease_cancel)nas_task_wait_dispose(&TASK);
         return (uint64_t)-EBADF;
     }
-    TASK.wait.accept_listener_slot=slot;
-    TASK.wait.accept_listener_release=nas_fs_drop_kernel_description;
+    TASK.wait.description_slot=slot;
+    TASK.wait.description_release=nas_fs_drop_kernel_description;
     nas_wait_io_clear(&TASK);
     nas_wait_io_arm(&TASK,slot,0x0001U,false);
     return nas_task_block(frame,nr,args[1],args[2],args[3],
@@ -360,8 +358,8 @@ static uint64_t task_socket_control(uint64_t *frame,enum nas_syscall_op nr,
     if(!nas_fd_hold_description(slot))return (uint64_t)-EBADF;
     /* Reuse the established pinned-socket wait record; its release hook
      * tears down the pin on success, caught signal and Task termination. */
-    TASK.wait.accept_listener_slot=slot;
-    TASK.wait.accept_listener_release=nas_fs_drop_kernel_description;
+    TASK.wait.description_slot=slot;
+    TASK.wait.description_release=nas_fs_drop_kernel_description;
     return nas_task_block(frame,nr,args[1],args[2],args[3],0,
                           nr==NAS_SC_getsockname || nr==NAS_SC_getpeername ?
                           finish_socket_name:finish_socket_control);
@@ -655,6 +653,15 @@ uint64_t syscall_dispatch(const uint64_t *args) {
                     nas_arch_monotonic_ns(),(uint64_t)(unsigned)ms*1000000ULL);
                 TASK.wait.deadline_active=true;
             }
+            unsigned instance;
+            int held=nas_epoll_hold_instance(args[1],&instance);
+            if(held) {
+                nas_signal_ppoll_restore(&TASK,false);
+                TASK.wait.deadline_active=false;
+                return (uint64_t)(int64_t)held;
+            }
+            TASK.wait.description_slot=instance;
+            TASK.wait.description_release=nas_fs_drop_kernel_description;
             nas_epoll_arm_current_task(args[1]);
             return nas_task_block((uint64_t *)(uintptr_t)args,nr,
                                   args[1],args[2],args[3],args[4],finish_epoll);
@@ -727,11 +734,17 @@ uint64_t syscall_dispatch(const uint64_t *args) {
                 nas_signal_ppoll_restore(&TASK,false);
                 return rc;
             }
-            bool has_io=(nr==NAS_SC_pselect6 || nr==NAS_SC_select) ?
+            int armed=(nr==NAS_SC_pselect6 || nr==NAS_SC_select) ?
                 nas_fs_pselect_arm(args[1],args[2],args[3],args[4]) :
                 nas_fs_poll_arm(args[1],args[2]);
-            if(!has_io && !TASK.wait.deadline_active &&
+            if(armed<0) {
+                nas_signal_ppoll_restore(&TASK,false);
+                TASK.wait.deadline_active=false;
+                return (uint64_t)(int64_t)armed;
+            }
+            if(!armed && !TASK.wait.deadline_active &&
                !nas_poll_signal_only_infinite(nr,args)) {
+                nas_task_wait_dispose(&TASK);
                 nas_signal_ppoll_restore(&TASK,false);
                 return (uint64_t)-EOPNOTSUPP;
             }
