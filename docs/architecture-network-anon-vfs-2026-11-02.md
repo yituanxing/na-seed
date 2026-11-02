@@ -167,10 +167,20 @@ version without importing Linux's rtnl/RCU machinery:
    `nas_uboot_net_detach()`/ordinary synchronous bus unbind returns
    `-EBUSY` until the final pin is gone. DMA is never freed on an unsuccessful
    first unbind; the new bus-owned deferred removal below manages retries.
-5. The default route remains on the first live carrier-up interface;
-   attaching a later NIC cannot steal it. If that interface disappears,
-   the core selects the next attached, usable NIC. One NIC's RX or DHCP
-   failure cannot wipe a sibling interface's state.
+5. The default IPv4 route belongs to the first live, carrier-up NIC with
+   an **actual DHCP-supplied IPv4 address and prefix**. Merely attaching
+   a later NIC cannot steal it. DHCP assignment, lease loss and RX-driven
+   removal all reselect the route on `tcpip_thread`; if the first NIC
+   loses its lease, the still-addressed sibling takes over. A carrier-up
+   but unaddressed NIC must not become a silent default-route black hole.
+
+`RTM_GETADDR` takes `ifindex`, IPv4 and prefix from **one** core-owned
+snapshot. It never resolves the interface name in a second operation after
+the address snapshot, which would permit an index/lease mismatch during
+detach/re-registration. IRQ-visible NetDevice wake callbacks publish their
+context before the function pointer and revoke the function pointer before
+retiring context; this is the present **single-core** contract, not a claim
+of SMP-safe reconfiguration.
 
 Proof is layered: actual upstream lwIP host tests cover two NICs, late
 registration, independent link/DHCP and RX, two-phase removal, re-register
@@ -209,20 +219,45 @@ mutation, full Linux routing policy, or IPv6. Platform enumeration remains
 bootstrap-time; dynamic core attach/remove is triggered by the registry
 events that drivers explicitly issue, and explicit bus removal requests.
 
+## Bootstrap namespace and syscall identity corrections
+
+The rootless `/dev` and unmounted Limine-module compatibility bridge is a
+**whitelist after Path-first namei**, not a second filesystem. `openat`,
+`access` and `newfstatat` first trust a mounted inode even if its pathname
+spells `/dev/null`. A failed follow-final lookup is insufficient evidence
+that the name does not exist: a side-effect-free **nofollow lookup with the
+same owned root/dirfd** excludes a real dangling symlink from synthetic
+fallback. An `O_CREAT` preflight similarly avoids creating an accidental
+regular `/dev` file before the bootstrap endpoint can be recognized.
+
+One read-only descriptor now supplies stable `st_dev`, `st_ino`, `st_rdev`,
+mode and size to bootstrap `stat` and `fstat`. Path metadata inspection does
+not allocate an FD, create a PTY, or run the device open path, so a full FD
+table cannot turn `stat("/dev/null")` into `EMFILE`. Repeated opens and dup
+share device identity; Limine aliases for one module use its underlying
+module-path identity. Real mounted inodes always keep their VFS identity.
+
+These are semantic/ownership repairs, not a new devfs, hotplug service or
+larger Linux feature-surface promise. The new production M106 oracle covers
+real-inode shadowing, dangling symlinks, `O_CREAT|O_EXCL`, descriptor
+exhaustion, PTY/TTY metadata and Limine aliases. Host network regressions
+exercise delayed/withdrawn DHCP and an eight-NIC single-snapshot dump.
+
 ## Focused proof (run on source working tree)
 
 | Gate | Scope | Expected claim |
 | --- | --- | --- |
-| `sh scripts/check-lwip-foundation.sh` | Real upstream lwIP, two native NICs, re-registration, route failover, eight-NIC NETLINK_ROUTE, Socket FileOps | Host tests only |
+| `sh scripts/check-lwip-foundation.sh` | Real upstream lwIP, two native NICs, delayed/withdrawn DHCP, addressed-only route failover, bus-owned re-registration, eight-NIC single-snapshot NETLINK_ROUTE | Host tests only |
 | `sh scripts/check-block-foundation.sh` | Original U-Boot VirtIO-Net driver unbind/drain/DMA lifetime, async PCI/MMIO bus retire, bounded fair retries, mounted BlockDevice I/O | Host tests only |
 | `sh scripts/probe-lwip-virtio-wire-smoke.sh` / `sh scripts/probe-lwip-virtio-wire-multiarch.sh` | Two real PCI/MMIO NICs per ISA, two actual DHCP subnets and signed Alpine TCP | Requires 3-ISA QEMU CI |
 | `sh scripts/check-lwip-socket-abi.sh` | Legacy and lwIP Linux socket ABI, DHCP-less NIC flags/MTU/ifindex | Host tests only |
 | `sh scripts/check-vfs-provider.sh` | Real VFS mount/lease + anonymous inode lifecycle; memfd ABI | Host tests only |
 | `sh scripts/check-path-contract-host.sh` | 4095/4096 length and root namespace error codes | Host tests only |
-| `sh scripts/check-m106-usercopy-syscalls.sh` | Real File/FD syscall publication/close, failure rollback, memfd diagnostic bounds | Host tests only |
+| `sh scripts/check-m106-usercopy-syscalls.sh` | Real File/FD syscall publication/close, failure rollback, memfd diagnostic bounds, Path-first bootstrap metadata and symlink/FD-full behavior | Host tests only |
+| `sh scripts/check-path-request-host.sh` | Real 255/256/4095/4096 user/kernel pathname ownership, inline/heap release | Host tests only |
 | `sh scripts/check-path-contract-host.sh` (extended) | Real deep provider: 4095-byte output, >256 ancestors, actual chdir/fchdir/getcwd, ERANGE and owned File Path | Host tests only |
 | `scripts/test-procfs.c` (extended) | Long `/proc/<pid>/cwd` full and truncated readlink outputs | Host tests only |
-| `python3 scripts/check-three-isa-core.py` | All 69 shared source units selected in three build manifests | Static manifest, **not** cross-compilation |
+| `python3 scripts/check-three-isa-core.py` | All 70 shared source units selected in three build manifests, including the single generic bus registry | Static manifest, **not** cross-compilation |
 | `python3 scripts/check-architecture-boundaries.py` | VFS, MM, driver dependency fences | Static source check |
 
 The local executor has `cc`, but lacks `clang` and
