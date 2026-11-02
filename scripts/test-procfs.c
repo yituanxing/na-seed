@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "../kernel/task.h"
 #include "../kernel/fs/procfs.h"
 #include "../kernel/fs/vfs.h"
@@ -16,6 +17,10 @@ static struct nas_task tasks[3];
 static struct nas_files files_fixture;
 static struct nas_mm address_spaces[2];
 static struct nas_fs_context fixture_fs[2];
+/* This standalone procfs host test is deliberately linked without the
+ * kernel heap implementation in historical M65-M70 workflows. */
+void *nas_heap_alloc(size_t length) { return malloc(length); }
+bool nas_heap_free(void *ptr) { free(ptr);return true; }
 struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
 struct nas_task *nas_current_task=&tasks[0];
 /* The production /proc/mounts must consume the VFS's LIVE mount snapshot,
