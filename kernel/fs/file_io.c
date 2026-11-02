@@ -314,7 +314,15 @@ static uint64_t io_slot_read_mode(unsigned slot, uint64_t address,
         uint64_t n=budget-done;
         uint64_t room=4096ULL-((address+done)&4095ULL);
         if(n>sizeof(buffer))n=sizeof(buffer);
-        if(n>room && budget>8)n=room;
+        if(ops->read_record_bytes) {
+            /* Linux evdev returns whole input_event records even when the
+             * destination straddles two COW/lazy user pages. Usercopy can
+             * validate and copy across pages; a device must not receive
+             * an artificial 1..23-byte read at a page boundary. */
+            uint64_t unit=ops->read_record_bytes;
+            if(unit>sizeof(buffer))return done ? done:(uint64_t)-EIO;
+            n-=n%unit;
+        } else if(n>room && budget>8)n=room;
         /* In particular, a consuming Pipe/PTY/TTY/Eventfd provider must
          * not discard data or advance its cursor before this succeeds. */
         if(!ops->read_commit_before_copyout &&
@@ -634,12 +642,18 @@ static uint64_t io_aggregate_read(const struct nas_io_request *req) {
     while(done<budget) {
         uint64_t n=budget-done;
         if(n>sizeof(buffer))n=sizeof(buffer);
+        const uint64_t unit=req->ops->read_record_bytes;
+        if(unit) {
+            if(unit>sizeof(buffer))return done ? done:(uint64_t)-EIO;
+            n-=n%unit;
+        }
         /* Preflight only the WRITEABLE PREFIX. Linux readv can complete a
          * valid first iovec even when a later one faults. Never consume data
          * beyond that prefix. Eventfd explicitly opts out and consumes the
          * counter before copy_to_iter, even if its copyout then faults. */
         if(!req->ops->read_commit_before_copyout) {
             n=io_writable_prefix(req,cursor,n);
+            if(unit)n-=n%unit;
             if(!n)return done ? done : (uint64_t)-EFAULT;
         }
         uint64_t got=req->ops->read(req->slot,buffer,n);

@@ -1,0 +1,2 @@
+# id mode args expected evidence entry
+m166-batch	cpio	m166	M166_REAL_EVDEV_DISPLAY_PASS	-	/tests/m166-input-display

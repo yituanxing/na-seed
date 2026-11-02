@@ -17,7 +17,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#if defined(NAS_ENABLE_VIRTIO_BLK) || defined(NAS_ENABLE_VIRTIO_NET)
+#if defined(NAS_ENABLE_VIRTIO_BLK) || defined(NAS_ENABLE_VIRTIO_NET) || defined(NAS_ENABLE_VIRTIO_INPUT)
 extern int nas_platform_virtio_blk_probe(void);
 #endif
 
@@ -328,7 +328,7 @@ static void tcpip_ready(void *unused){
 }
 bool nas_lwip_guest_boot(void){
  if(network.ready || network.starting)return false;
-#if defined(NAS_ENABLE_VIRTIO_BLK) || defined(NAS_ENABLE_VIRTIO_NET)
+#if defined(NAS_ENABLE_VIRTIO_BLK) || defined(NAS_ENABLE_VIRTIO_NET) || defined(NAS_ENABLE_VIRTIO_INPUT)
  if(nas_platform_virtio_blk_probe()<0)return false;
 #endif
  nas_ksem_init(&network.rx_wakeup,0);

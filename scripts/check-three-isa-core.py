@@ -30,6 +30,15 @@ if not linked:
 actual_link=re.search(r"^\s*ld\.lld \$\(LDFLAGS\)\s+([^\n]+)",make,re.M)
 if not actual_link:
     raise SystemExit("x86 kernel has no actual ld.lld link recipe")
+# The linker may spell every prerequisite explicitly or use GNU make's
+# unmodified $^ object set. The latter is stronger against accidentally
+# forgetting a newly added optional driver in a duplicate hand-written
+# link command; filter out the linker script (not an ELF object) exactly.
+recipe=actual_link.group(1).strip()
+if recipe=="$(filter %.o,$^) -o $@":
+    actual_link_names=set(linked.group(1).split())
+else:
+    actual_link_names=set(recipe.split())
 for source in srcs:
     if not (root/source).is_file():
         raise SystemExit(f"missing shared source: {source}")
@@ -39,12 +48,12 @@ for source in srcs:
     link_name=f"$(OUT)/{obj}"
     if link_name not in linked.group(1).split():
         raise SystemExit(f"x86 kernel linker omits common object {obj} ({source})")
-    if link_name not in actual_link.group(1).split():
+    if link_name not in actual_link_names:
         raise SystemExit(f"x86 actual ld.lld command omits common object {obj} ({source})")
 assert "NAS_ENABLE_LWIP ?= 1" in make
 assert "LEGACY_IPV4_X86_OBJS" not in make
 assert "$(LWIP_X86_OBJS)" in linked.group(1).split()
-assert "$(LWIP_X86_OBJS)" in actual_link.group(1).split()
+assert "$(LWIP_X86_OBJS)" in actual_link_names
 assert "ports/lwip/socket_port.c" in make and "ports/lwip/netconn_bridge.c" in make
 # The scheduler always reaps bus removals, including a loopback-only kernel.
 # A VirtIO-conditional copy of the bus object makes that build fail to link.
@@ -420,7 +429,7 @@ for arch in ("x86_64","riscv64","aarch64"):
     if not asm.is_file() or "nas_arch_kernel_swap:" not in asm.read_text():
         raise SystemExit(f"missing native kernel context switch on {arch}")
 for needle in ("$(OUT)/arch_kernel_switch.o", "$(OUT)/task_kernel_context.o"):
-    if needle not in linked.group(1).split() or needle not in actual_link.group(1).split():
+    if needle not in linked.group(1).split() or needle not in actual_link_names:
         raise SystemExit(f"x86 kernel fails to LINK continuation {needle}")
 for arch in ("riscv64","aarch64"):
     script=(root/f"scripts/build-{arch}-full.sh").read_text()

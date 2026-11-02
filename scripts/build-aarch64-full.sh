@@ -18,15 +18,25 @@ flags="--target=aarch64-none-elf -march=armv8-a -mgeneral-regs-only -std=c11 -O2
 [ "${NAS_ENABLE_RAMFS:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_RAMFS=1"
 [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_VIRTIO_BLK=1 -I third_party/unikraft/include -I ports/unikraft/include -I ports/uboot/compat"
 [ "${NAS_ENABLE_VIRTIO_NET:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_VIRTIO_NET=1 -I third_party/unikraft/include -I ports/unikraft/include -I ports/uboot/compat"
+[ "${NAS_ENABLE_VIRTIO_INPUT:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_VIRTIO_INPUT=1 -I third_party/unikraft/include -I ports/unikraft/include"
 flags="$flags -DNAS_ENABLE_LWIP=1 -I ports/lwip/include -I third_party/lwip/src/include"
 # One authoritative full-kernel core TU list for every native ISA.
 # ISA-specific hardware providers remain below in the arch= selection.
 common=$(grep -v '^#' scripts/full-kernel-core.sources)
+if [ "${NAS_ENABLE_VIRTIO_INPUT:-0}" = 1 ]; then
+    common="$common kernel/drivers/input/core.c kernel/drivers/input/evdev.c kernel/drivers/core/chrdev.c kernel/fs/input_chrdev.c"
+fi
 arch="kernel/arch/aarch64/cpu.c kernel/arch/aarch64/mmu.c kernel/arch/aarch64/context.c kernel/arch/aarch64/signal_frame.c kernel/arch/aarch64/timer.c kernel/arch/aarch64/debug_console.c kernel/arch/user_pt.c kernel/mm/user_space.c kernel/mm/mmu_bridge.c kernel/platform/aarch64.c"
 # Only the hardware/transport source selection is target-dependent.
 # VirtIO descriptors, block requests, BlockDevice and ext4 stay generic.
+if [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ] || [ "${NAS_ENABLE_VIRTIO_NET:-0}" = 1 ] || [ "${NAS_ENABLE_VIRTIO_INPUT:-0}" = 1 ]; then
+    arch="$arch kernel/drivers/virtio/transport.c kernel/drivers/virtio/mmio.c kernel/drivers/port/dma.c ports/unikraft/split_queue.c kernel/platform/virtio_mmio_qemu.c kernel/platform/aarch64_virtio.c"
+fi
 if [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ] || [ "${NAS_ENABLE_VIRTIO_NET:-0}" = 1 ]; then
-    arch="$arch kernel/drivers/virtio/transport.c kernel/drivers/virtio/mmio.c kernel/drivers/port/dma.c ports/unikraft/split_queue.c ports/uboot/virtio_compat.c kernel/platform/virtio_mmio_qemu.c kernel/platform/aarch64_virtio.c"
+    arch="$arch ports/uboot/virtio_compat.c"
+fi
+if [ "${NAS_ENABLE_VIRTIO_INPUT:-0}" = 1 ]; then
+    arch="$arch kernel/drivers/input/virtio_input.c"
 fi
 if [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ]; then
     [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ] ||

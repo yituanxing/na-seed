@@ -132,6 +132,16 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
     const struct nas_open_file *opened=&nas_open_files[TASK.fds->entries[fd].slot];
     if(opened->vnode_pinned)
         return write_mounted_stat(&opened->vnode,address);
+    if(opened->boot_identity.valid) {
+        const struct nas_fs_bootstrap_info identity={
+            .dev=opened->boot_identity.dev,
+            .ino=opened->boot_identity.ino,
+            .rdev=opened->boot_identity.rdev,
+            .mode=opened->boot_identity.mode,
+            .size=opened->boot_identity.size
+        };
+        return write_bootstrap_stat(&identity,address);
+    }
     const uint8_t kind=TASK.fds->entries[fd].kind;
     struct nas_linux_stat st={0};
     st.nlink=1;st.blksize=PAGE;

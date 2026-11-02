@@ -23,6 +23,12 @@ struct nas_virtio_transport_ops {
                        uint64_t desc, uint64_t driver, uint64_t device);
     void (*notify_queue)(void *, unsigned qid);
     uint32_t (*read_config32)(void *, uint32_t offset);
+    /* Linux virtio-input uses byte-wide select/subsel writes followed by
+     * selected bitmap/ABS-info reads. Keep device configuration accesses
+     * transport-neutral; an individual class driver owns the protocol. */
+    int (*read_config)(void *, uint32_t offset, void *dst, uint32_t bytes);
+    int (*write_config)(void *, uint32_t offset, const void *src,
+                        uint32_t bytes);
 };
 struct nas_virtio_transport {
     void *context;
@@ -42,4 +48,8 @@ int nas_virtio_activate(const struct nas_virtio_transport *);
 void nas_virtio_notify(const struct nas_virtio_transport *, unsigned qid);
 void nas_virtio_fail(const struct nas_virtio_transport *);
 uint32_t nas_virtio_config32(const struct nas_virtio_transport *,uint32_t offset);
+int nas_virtio_config_read(const struct nas_virtio_transport *,uint32_t offset,
+                           void *dst,uint32_t bytes);
+int nas_virtio_config_write(const struct nas_virtio_transport *,uint32_t offset,
+                            const void *src,uint32_t bytes);
 #endif

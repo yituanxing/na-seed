@@ -108,11 +108,29 @@ static uint32_t pci_config32(void *context,uint32_t off) {
        p->device_size-off<sizeof(uint32_t))return 0;
     return r32(p->device,off);
 }
+static int pci_config_read(void *context,uint32_t off,void *dst,uint32_t len) {
+    struct nas_virtio_pci *p=context;
+    if(!dst || !len || off>p->device_size ||
+       len>p->device_size-off)return -EINVAL;
+    uint8_t *to=dst;
+    for(uint32_t i=0;i<len;i++)to[i]=p->device[off+i];
+    return 0;
+}
+static int pci_config_write(void *context,uint32_t off,const void *src,
+                            uint32_t len) {
+    struct nas_virtio_pci *p=context;
+    if(!src || !len || off>p->device_size ||
+       len>p->device_size-off)return -EINVAL;
+    const uint8_t *from=src;
+    for(uint32_t i=0;i<len;i++)p->device[off+i]=from[i];
+    return 0;
+}
 static const struct nas_virtio_transport_ops pci_ops={
     .reset=pci_reset,.read_status=pci_read_status,
     .write_status=pci_write_status,.read_features=pci_read_features,
     .write_features=pci_write_features,.setup_queue=pci_setup_queue,
-    .notify_queue=pci_notify,.read_config32=pci_config32
+    .notify_queue=pci_notify,.read_config32=pci_config32,
+    .read_config=pci_config_read,.write_config=pci_config_write
 };
 int nas_virtio_pci_transport_init(struct nas_virtio_transport *out,
                                   struct nas_virtio_pci *pci,

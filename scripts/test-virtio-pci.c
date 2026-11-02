@@ -70,6 +70,17 @@ int main(void) {
     assert(ops->read_config32(&f.pci,0)==0x12345678);
     assert(ops->read_config32(&f.pci,2)==0);
     assert(ops->read_config32(&f.pci,0x40)==0);
+    uint8_t bytes[7]={0},select[2]={0x11,0x22};
+    assert(ops->read_config(&f.pci,0,bytes,4)==0);
+    assert(g32(bytes,0)==0x12345678);
+    assert(ops->write_config(&f.pci,0,select,2)==0);
+    assert(f.device[0]==0x11 && f.device[1]==0x22);
+    assert(ops->read_config(&f.pci,0,bytes,7)==0);
+    assert(bytes[0]==0x11 && bytes[1]==0x22);
+    assert(ops->read_config(&f.pci,0x3f,bytes,1)==0);
+    assert(ops->write_config(&f.pci,0x3f,select,2)==-EINVAL);
+    assert(ops->read_config(&f.pci,0x40,bytes,1)==-EINVAL);
+    assert(ops->read_config(&f.pci,UINT32_MAX,bytes,1)==-EINVAL);
     p16(f.common,0x12,1);p16(f.common,0x18,8);p16(f.common,0x1e,3);
     assert(ops->setup_queue(&f.pci,1,8,0x1000,0x2000,0x3000)==-EINVAL);
     assert(ops->setup_queue(&f.pci,0,16,0x1000,0x2000,0x3000)==-EOPNOTSUPP);
@@ -117,6 +128,6 @@ int main(void) {
     p16(f.common,0x1e,17); /* 17*4 beyond 64-byte notify cap */
     assert(ops->setup_queue(&f.pci,0,8,0x1000,0x2000,0x3000)==-EOPNOTSUPP);
     assert(g16(f.common,0x1c)==0);
-    puts("[VIRTIO MODERN PCI TRANSPORT PASS] capabilities, BAR validation, config, queue and notify");
+    puts("[VIRTIO MODERN PCI TRANSPORT PASS] capabilities, byte config, BAR bounds, queues and notify");
     return 0;
 }

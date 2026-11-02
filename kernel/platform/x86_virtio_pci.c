@@ -8,6 +8,9 @@
 #include "../arch/x86_64/mmu.h"
 #include "../../ports/uboot/virtio_bus.h"
 #include "../../ports/uboot/virtio_net_bus.h"
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+#include "../drivers/input/virtio_input.h"
+#endif
 #include "../drivers/serial.h"
 #include "../errno.h"
 #include <virtio/virtio_ids.h>
@@ -118,6 +121,10 @@ int nas_platform_virtio_blk_probe(void) {
     rc=nas_virtio_net_driver_register();
     if(rc<0)return rc;
 #endif
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+    rc=nas_virtio_input_driver_register();
+    if(rc<0)return rc;
+#endif
     unsigned count=0;
     for(unsigned slot=0;slot<32U;slot++) {
         uint32_t first=cfg_read(0,(uint8_t)slot,0,0);
@@ -126,14 +133,14 @@ int nas_platform_virtio_blk_probe(void) {
         unsigned funcs=(header&(1U<<23))?8U:1U;
         for(unsigned function=0;function<funcs;function++) {
             uint32_t id=cfg_read(0,(uint8_t)slot,(uint8_t)function,0);
-            /* Modern VirtIO PCI ID = 0x1040 + device class. Do not hardcode
-             * 0x1042 (block): 0x1041 is the network adapter, and late bus
-             * binding deliberately leaves its device unclaimed until a real
-             * net class driver registers. */
+            /* Modern VirtIO PCI ID = 0x1040 + device class. The bus
+             * publishes each supported class; drivers own protocols and
+             * lifetime, including input and its independent event queues. */
             if((id&0xffffU)!=0x1af4U)continue;
             uint32_t device_id=id>>16;
             if(device_id!=0x1040U+VIRTIO_ID_NET &&
-               device_id!=0x1040U+VIRTIO_ID_BLOCK)continue;
+               device_id!=0x1040U+VIRTIO_ID_BLOCK &&
+               device_id!=0x1040U+VIRTIO_ID_INPUT)continue;
             if(count>=VIRTIO_DEVICES)return -ENOSPC;
             load_config(0,(uint8_t)slot,(uint8_t)function,
                         cfg_snapshot[count]);
@@ -172,6 +179,10 @@ int nas_platform_virtio_blk_probe(void) {
     nas_dec(block_count());nas_print("\n");
     nas_print("[VIRTIO-NET] real modern PCI devices=");
     nas_dec(net_count());nas_print("\n");
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+    nas_print("[VIRTIO-INPUT] real modern PCI devices=");
+    nas_dec(nas_virtio_input_count());nas_print("\n");
+#endif
     scanned=true;
     return (int)block_count();
 }

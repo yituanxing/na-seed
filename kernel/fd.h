@@ -21,7 +21,7 @@ enum { FD_CLOSED = 0, FD_UART = 1, FD_NULL = 2, FD_ZERO = 3,
        FD_TTY = 11, FD_EPOLL = 12, FD_EVENTFD = 13,
        FD_SOCKET = 14, FD_PTY_MASTER = 15, FD_PTY_SLAVE = 16,
        FD_RANDOM = 17, FD_SIGNALFD = 18, FD_PIDFD = 19,
-       FD_FRAMEBUFFER = 20 };
+       FD_FRAMEBUFFER = 20, FD_EVDEV = 21 };
 /* Descriptor-local entry. The open-file description is a separate
  * refcounted object: dup/fork share its offset, not the CLOEXEC bit. */
 struct nas_fd_entry {
@@ -106,6 +106,12 @@ struct nas_open_file {
      * and sockets leave these empty. fork/dup do not copy the inode view. */
     struct nas_fs_node vnode;
     bool vnode_pinned;
+    /* Immutable bootstrap-device identity. Unlike origin_path, this is
+     * authoritative for fstat after relative openat/dup/fork/rename. */
+    struct {
+        uint64_t dev, ino, rdev, mode, size;
+        bool valid;
+    } boot_identity;
     /* Owned positive Dentry and mount Path for directory openat/fchdir.
      * The existing vnode pin remains the independent File/inode owner;
      * dup/fork share this Dentry via their shared open description. */

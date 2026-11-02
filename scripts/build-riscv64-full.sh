@@ -24,13 +24,23 @@ fi
 if [ "${NAS_ENABLE_VIRTIO_NET:-0}" = 1 ]; then
     flags="$flags -DNAS_ENABLE_VIRTIO_NET=1 -I third_party/unikraft/include -I ports/unikraft/include -I ports/uboot/compat"
 fi
+[ "${NAS_ENABLE_VIRTIO_INPUT:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_VIRTIO_INPUT=1"
 flags="$flags -DNAS_ENABLE_LWIP=1 -I ports/lwip/include -I third_party/lwip/src/include"
 # One authoritative full-kernel core TU list for every native ISA.
 # ISA-specific hardware providers remain below in the arch= selection.
 common=$(grep -v '^#' scripts/full-kernel-core.sources)
+if [ "${NAS_ENABLE_VIRTIO_INPUT:-0}" = 1 ]; then
+    common="$common kernel/drivers/input/core.c kernel/drivers/input/evdev.c kernel/drivers/core/chrdev.c kernel/fs/input_chrdev.c"
+fi
 arch="kernel/arch/riscv64/cpu.c kernel/arch/riscv64/mmu.c kernel/arch/riscv64/context.c kernel/arch/riscv64/signal_frame.c kernel/arch/riscv64/timer.c kernel/arch/riscv64/serial.c kernel/arch/user_pt.c kernel/mm/user_space.c kernel/mm/mmu_bridge.c kernel/platform/riscv64.c"
+if [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ] || [ "${NAS_ENABLE_VIRTIO_NET:-0}" = 1 ] || [ "${NAS_ENABLE_VIRTIO_INPUT:-0}" = 1 ]; then
+    arch="$arch kernel/drivers/virtio/transport.c kernel/drivers/virtio/mmio.c kernel/drivers/port/dma.c ports/unikraft/split_queue.c kernel/platform/virtio_mmio_qemu.c kernel/platform/riscv64_virtio.c kernel/arch/riscv64/io.c"
+fi
 if [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ] || [ "${NAS_ENABLE_VIRTIO_NET:-0}" = 1 ]; then
-    arch="$arch kernel/drivers/virtio/transport.c kernel/drivers/virtio/mmio.c kernel/drivers/port/dma.c ports/unikraft/split_queue.c ports/uboot/virtio_compat.c kernel/platform/virtio_mmio_qemu.c kernel/platform/riscv64_virtio.c kernel/arch/riscv64/io.c"
+    arch="$arch ports/uboot/virtio_compat.c"
+fi
+if [ "${NAS_ENABLE_VIRTIO_INPUT:-0}" = 1 ]; then
+    arch="$arch kernel/drivers/input/virtio_input.c"
 fi
 if [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ]; then
     arch="$arch kernel/drivers/port/block.c ports/uboot/blk_port.c ports/uboot/virtio_bus.c"

@@ -63,3 +63,17 @@ uint32_t nas_virtio_config32(const struct nas_virtio_transport *t,uint32_t offse
     if(!valid(t))return 0;
     return t->ops->read_config32(t->context,offset);
 }
+int nas_virtio_config_read(const struct nas_virtio_transport *t,uint32_t offset,
+                          void *dst,uint32_t bytes) {
+    if(!valid(t) || (bytes && !dst))return -EINVAL;
+    if(!bytes)return 0;
+    if(!t->ops->read_config)return -EOPNOTSUPP;
+    return t->ops->read_config(t->context,offset,dst,bytes);
+}
+int nas_virtio_config_write(const struct nas_virtio_transport *t,uint32_t offset,
+                           const void *src,uint32_t bytes) {
+    if(!valid(t) || (bytes && !src))return -EINVAL;
+    if(!bytes)return 0;
+    if(!t->ops->write_config)return -EOPNOTSUPP;
+    return t->ops->write_config(t->context,offset,src,bytes);
+}

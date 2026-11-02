@@ -22,6 +22,11 @@
 #include "../drivers/tty.h"
 #include "../drivers/pty.h"
 #include "../drivers/display/fbdev.h"
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+#include "../drivers/core/chrdev.h"
+#include "../drivers/input/core.h"
+#include "input_chrdev.h"
+#endif
 #include "io.h"
 #include "mode.h"
 #include "syscall.h"
@@ -574,6 +579,10 @@ static uint64_t open_path_owned(const char *path,
     uint8_t kind=FD_CLOSED;
     int pty_number=-1;
     const struct limine_file *real_file=NULL;
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+    const struct nas_chrdev_provider *chrdev_provider=NULL;
+    unsigned chrdev_unit=0;
+#endif
     bool have_node=false;
     struct nas_fs_node opened_node={0};
     struct nas_vfs_path directory_path={0};
@@ -652,6 +661,10 @@ static uint64_t open_path_owned(const char *path,
         kind=bootstrap.fd_kind;
         pty_number=bootstrap.pty_number;
         real_file=bootstrap.boot_file;
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+        chrdev_provider=bootstrap.chrdev_provider;
+        chrdev_unit=bootstrap.chrdev_unit;
+#endif
         if(bootstrap.fd_kind==FD_TTY && bootstrap.rdev==(5U<<8)) {
             if(!nas_tty_controlling() && !nas_pty_controlling())
                 return (uint64_t)-ENXIO;
@@ -677,6 +690,14 @@ static uint64_t open_path_owned(const char *path,
             nas_pty_attach_controlling(slot);
         if(err)return (uint64_t)(int64_t)err;
     }
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+    if(chrdev_provider && !path_only) {
+        /* A character device owns one consumer per shared File, not one
+         * per FD alias. Do not publish a descriptor until it is attached. */
+        int err=chrdev_provider->open(slot,chrdev_unit);
+        if(err)return (uint64_t)(int64_t)err;
+    }
+#endif
     /* Inode AND optional directory Dentry are one VFS-owned open
      * transaction. The syscall layer just transfers their references
      * to this shared File description; it never constructs a Path. */
@@ -688,6 +709,14 @@ static uint64_t open_path_owned(const char *path,
         nas_open_files[slot].vnode=opened_node;
         nas_open_files[slot].vnode_pinned=true;
         nas_open_files[slot].vpath=directory_path;
+    }
+    if(bootstrap_ready) {
+        nas_open_files[slot].boot_identity.dev=bootstrap.dev;
+        nas_open_files[slot].boot_identity.ino=bootstrap.ino;
+        nas_open_files[slot].boot_identity.rdev=bootstrap.rdev;
+        nas_open_files[slot].boot_identity.mode=bootstrap.mode;
+        nas_open_files[slot].boot_identity.size=bootstrap.size;
+        nas_open_files[slot].boot_identity.valid=true;
     }
     nas_open_files[slot].boot_file=real_file;
     /* Diagnostic hint only. No open/read/stat/dirfd may rely on an old
@@ -794,6 +823,19 @@ int nas_fs_bootstrap_describe(const char *path,
             b->rdev=(136U<<8)|(uint64_t)(unsigned)number;
             b->mode=0020620U;
         } else {
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+            struct nas_chrdev_info chrdev={0};
+            const struct nas_chrdev_provider *provider=NULL;
+            int found=nas_chrdev_describe(path,&chrdev,&provider);
+            if(found && found!=-ENOENT)return found;
+            if(!found) {
+                b->fd_kind=chrdev.fd_kind;b->dev=chrdev.dev;
+                b->ino=chrdev.ino;b->rdev=chrdev.rdev;
+                b->mode=chrdev.mode;b->size=chrdev.size;
+                b->chrdev_unit=chrdev.unit;b->chrdev_provider=provider;
+                return 0;
+            }
+#endif
             const struct limine_file *module=nas_boot_limine_module_path(path);
             if(!module)return -ENOENT;
             b->fd_kind=FD_BOOTFS;b->boot_file=module;
@@ -1209,11 +1251,26 @@ static const struct nas_file_ops ops_pidfd={
     .poll_description=nas_pidfd_poll_description,
     .release=nas_pidfd_release
 };
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+static const struct nas_file_ops ops_evdev={
+    .read_plan=nas_input_chrdev_read_plan,
+    .read_record_bytes=sizeof(struct nas_input_event),
+    .read=nas_input_chrdev_read,
+    .aggregate_readv=true,
+    .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
+    .poll_description=nas_input_chrdev_poll,
+    .ioctl=nas_input_chrdev_ioctl,
+    .release=nas_input_chrdev_release
+};
+#endif
 static const struct nas_file_ops *const ops_by_kind[]={
     [FD_UART]=&ops_uart,[FD_TTY]=&ops_tty,[FD_NULL]=&ops_null,
     [FD_ZERO]=&ops_zero,[FD_RANDOM]=&ops_random,
     [FD_BOOTFS]=&ops_bootfs,
     [FD_FRAMEBUFFER]=&ops_fbdev,
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+    [FD_EVDEV]=&ops_evdev,
+#endif
     [FD_ARCHIVE]=&ops_vfs_regular,[FD_DIR]=&ops_vfs_dir,
     [FD_PIPE_R]=&ops_pipe_read,[FD_PIPE_W]=&ops_pipe_write,
     [FD_EPOLL]=&ops_epoll,

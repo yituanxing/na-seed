@@ -71,6 +71,13 @@ void nas_init_process_terminated(uint32_t code,uint32_t signal) {
 void nas_init_userspace(void) {
     nas_print("[INIT] creating common task/VM and architecture user entry\n");
     nas_task_boot_init();
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+    /* Publish the event character-device handler before the shared bus
+     * can discover a VirtIO input device (through lwIP or block boot). */
+    extern int nas_input_chrdev_init(void);
+    if(nas_input_chrdev_init())
+        nas_fail("evdev character-device registration failed");
+#endif
     /* Native QEMU hardware acceptance: exercise real kernel C contexts
      * before user syscalls begin using the same continuation mechanism. */
     nas_kernel_context_boot_selftest();

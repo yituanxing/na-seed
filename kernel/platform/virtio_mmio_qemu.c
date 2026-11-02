@@ -9,6 +9,9 @@
 #include "../drivers/serial.h"
 #include "../../ports/uboot/virtio_bus.h"
 #include "../../ports/uboot/virtio_net_bus.h"
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+#include "../drivers/input/virtio_input.h"
+#endif
 #include <virtio/virtio_ids.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -49,6 +52,10 @@ int nas_qemu_virtio_mmio_probe(uint64_t physical, uint64_t virtual_base,
     rc=nas_virtio_net_driver_register();
     if (rc<0) return rc;
 #endif
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+    rc=nas_virtio_input_driver_register();
+    if (rc<0) return rc;
+#endif
     for (unsigned page=0;page<(slots*stride+PAGE_BYTES-1U)/PAGE_BYTES;page++)
         if (!map_page(physical+page*PAGE_BYTES,
                       virtual_base+page*PAGE_BYTES)) return -1;
@@ -57,10 +64,10 @@ int nas_qemu_virtio_mmio_probe(uint64_t physical, uint64_t virtual_base,
         volatile uint32_t *reg=(volatile uint32_t *)(uintptr_t)
             (virtual_base+slot*stride);
         if(reg[0]!=0x74726976U)continue;
-        /* Discovery reports device classes. Only an installed class driver
-         * touches queues; an unclaimed type=NET device stays registered so
-         * the future net driver can bind without changing this platform. */
-        if(reg[2]!=VIRTIO_ID_BLOCK && reg[2]!=VIRTIO_ID_NET)continue;
+        /* Transport discovery publishes classes, not device protocols.
+         * An unclaimed device remains available for later driver binding. */
+        if(reg[2]!=VIRTIO_ID_BLOCK && reg[2]!=VIRTIO_ID_NET &&
+           reg[2]!=VIRTIO_ID_INPUT)continue;
         if(reg[1]!=2U){legacy++;continue;}
         modern++;
         rc=nas_virtio_mmio_transport_init(&transports[slot],
@@ -79,6 +86,10 @@ int nas_qemu_virtio_mmio_probe(uint64_t physical, uint64_t virtual_base,
     nas_dec(block_count());nas_print("\n");
     nas_print("[VIRTIO-NET] real modern MMIO devices=");
     nas_dec(net_count());nas_print("\n");
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+    nas_print("[VIRTIO-INPUT] real modern MMIO devices=");
+    nas_dec(nas_virtio_input_count());nas_print("\n");
+#endif
     scanned=true;
     return (int)block_count();
 }

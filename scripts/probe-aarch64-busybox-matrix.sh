@@ -129,7 +129,8 @@ boot_case() {
     # Optional second REAL block drive (the first is the UEFI FAT ESP).
     # Not a Limine module: sector I/O goes through original U-Boot VirtIO.
     set --
-    if [ -n "${NAS_VIRTIO_BLK_IMAGE:-}" ] || [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ]; then
+    if [ -n "${NAS_VIRTIO_BLK_IMAGE:-}" ] || [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ] || \
+       [ "${NAS_QEMU_INPUT_OPTIN:-0}" = 1 ]; then
         # The shared MMIO probe binds modern VirtIO only (version 2).
         set -- "$@" -global virtio-mmio.force-legacy=false
     fi
@@ -157,6 +158,10 @@ boot_case() {
         }
         set -- "$@" -object \
             "filter-dump,id=naseed_wire_capture,netdev=naseed_net,file=$NAS_VIRTIO_NET_PCAP"
+    fi
+    if [ "${NAS_QEMU_INPUT_OPTIN:-0}" = 1 ]; then
+        set -- "$@" -device virtio-keyboard-device \
+            -device virtio-tablet-device -device virtio-mouse-device
     fi
     if [ "${NAS_QEMU_RAMFB:-0}" = 1 ]; then
         set -- "$@" -device ramfb

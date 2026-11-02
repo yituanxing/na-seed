@@ -22,6 +22,10 @@
 #define R_DEVICE_LO    0x0a0U
 #define R_DEVICE_HI    0x0a4U
 #define R_DEVICE_CFG   0x100U
+/* QEMU virt's MMIO slot is 0x200 bytes. Device config must stay inside the
+ * same slot, never bleed into the next transport. VirtIO-Input's selected
+ * bitmap/absolute-coordinate config fits entirely in this aperture. */
+#define DEVICE_CFG_BYTES 0x100U
 #define MAGIC          0x74726976U
 #define VERSION        2U
 static volatile uint32_t *regs(void *ctx) {return (volatile uint32_t *)ctx;}
@@ -55,12 +59,29 @@ static int setup_queue(void *c,unsigned qid,unsigned count,uint64_t desc,
 }
 static void notify(void *c,unsigned qid){wr(c,R_QUEUE_NOTIFY,qid);}
 static uint32_t read_cfg32(void *c,uint32_t off){
-    return (off&3U)?0:rd(c,R_DEVICE_CFG+off);
+    return (off&3U || off>DEVICE_CFG_BYTES-4U)?0:rd(c,R_DEVICE_CFG+off);
+}
+static int read_config(void *c,uint32_t off,void *dst,uint32_t len) {
+    if(!dst || !len || off>DEVICE_CFG_BYTES ||
+       len>DEVICE_CFG_BYTES-off)return -EINVAL;
+    volatile uint8_t *from=(volatile uint8_t *)c+R_DEVICE_CFG+off;
+    uint8_t *to=dst;
+    for(uint32_t i=0;i<len;i++)to[i]=from[i];
+    return 0;
+}
+static int write_config(void *c,uint32_t off,const void *src,uint32_t len) {
+    if(!src || !len || off>DEVICE_CFG_BYTES ||
+       len>DEVICE_CFG_BYTES-off)return -EINVAL;
+    volatile uint8_t *to=(volatile uint8_t *)c+R_DEVICE_CFG+off;
+    const uint8_t *from=src;
+    for(uint32_t i=0;i<len;i++)to[i]=from[i];
+    return 0;
 }
 static const struct nas_virtio_transport_ops ops={
     .reset=reset,.read_status=read_status,.write_status=write_status,
     .read_features=read_features,.write_features=write_features,
-    .setup_queue=setup_queue,.notify_queue=notify,.read_config32=read_cfg32
+    .setup_queue=setup_queue,.notify_queue=notify,.read_config32=read_cfg32,
+    .read_config=read_config,.write_config=write_config
 };
 int nas_virtio_mmio_transport_init(struct nas_virtio_transport *out,
                                   volatile uint32_t *mmio,
