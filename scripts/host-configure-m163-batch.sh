@@ -8,7 +8,10 @@ root=$2
 case "$port:$root" in
     amd64:build/external/m163-batch/amd64/rootfs|\
     riscv64:build/external/m163-batch/riscv64/rootfs|\
-    arm64:build/external/m163-batch/arm64/rootfs) ;;
+    arm64:build/external/m163-batch/arm64/rootfs|\
+    amd64:build/external/m165-batch/amd64/rootfs|\
+    riscv64:build/external/m165-batch/riscv64/rootfs|\
+    arm64:build/external/m165-batch/arm64/rootfs) ;;
     *) exit 2 ;;
 esac
 python3 - "$root/tests" <<'PY'

@@ -3,6 +3,10 @@
 # BusyBox through the SAME shared kernel as x86 for a growing workload matrix.
 # No guest-side test-specific kernel shortcuts. Strict stdout + exit checks.
 set -eu
+# Preserve the usual detached stdin unless real serial interaction is under
+# test; no synthetic bytes are injected into the TTY/line discipline.
+serial_input=${NAS_QEMU_SERIAL_FIFO:-/dev/null}
+if [ "$serial_input" != /dev/null ]; then test -p "$serial_input"; fi
 test -s build/port-aarch64/full/kernel.elf || sh scripts/build-aarch64-full.sh
 dir=build/port-aarch64/full
 if [ -n "${BUSYBOX_PARITY_BINARY:-}" ]; then
@@ -170,7 +174,7 @@ boot_case() {
         -semihosting-config enable=on,target=native -bios "$fw" \
         -d in_asm -dfilter 0x404700+0x180 -D "$work/$name.instructions.log" \
         -drive if=none,id=esp,format=raw,file="$disk" \
-        -device virtio-blk-device,drive=esp "$@" > "$log" 2>&1 < /dev/null &
+        -device virtio-blk-device,drive=esp "$@" > "$log" 2>&1 < "$serial_input" &
     pid=$!
     if [ "$name" = timer-preempt ]; then
         sh scripts/port-boot-until.sh "$log" "$pid" "$time_budget" \

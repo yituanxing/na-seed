@@ -74,7 +74,7 @@ def ppm_tokens(data, needed=4):
     return tokens, data[pos:]
 
 
-def verify_ppm(path, label):
+def verify_ppm(path, label, samples=SAMPLES):
     data = path.read_bytes()
     tokens, pixels = ppm_tokens(data)
     if tokens[0] != b"P6" or tokens[3] != b"255":
@@ -84,7 +84,7 @@ def verify_ppm(path, label):
         raise RuntimeError(f"implausible physical screen: {width}x{height}")
     if len(pixels) != width * height * 3:
         raise RuntimeError(f"QEMU PPM length mismatch: {len(pixels)} != {width * height * 3}")
-    for x, y, expected in SAMPLES:
+    for x, y, expected in samples:
         start = (y * width + x) * 3
         actual = tuple(pixels[start:start + 3])
         if actual != expected:

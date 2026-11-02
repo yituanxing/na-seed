@@ -2,6 +2,10 @@
 # Same pinned Debian BusyBox 1.37.0, same commands/CPIO bytes as RV64.
 # Alpine dynamic/musl is intentionally a separate test profile.
 set -eu
+# Opt-in physical serial RX injection for interactive display acceptance.
+# The default stays /dev/null for every existing headless workload.
+serial_input=${NAS_QEMU_SERIAL_FIFO:-/dev/null}
+if [ "$serial_input" != /dev/null ]; then test -p "$serial_input"; fi
 if [ -n "${NAS_ACCEPTANCE_KERNEL:-}" ]; then
     test -s "$NAS_ACCEPTANCE_KERNEL" || {
         echo "[X86 PARITY FAIL] missing requested kernel $NAS_ACCEPTANCE_KERNEL" >&2; exit 1;
@@ -80,7 +84,7 @@ run_case() {
     if [ "${name#m1??-batch}" != "$name" ] || [ "$name" = m84-build ] || [ "$name" = m84-replay ] || [ "$name" = m83-build ] || [ "$name" = m83-replay ] || [ "$name" = m38-gcc ] || [ "$name" = m39-packages ] || [ "$name" = m40-archives ] || [ "$name" = m41-unix ] || [ "$name" = m42-pthread ] || [ "$name" = m43-zstd ] || [ "$name" = m44-group ] || [ "$name" = m45-robust ] || [ "$name" = m46-exec ] || [ "$name" = m47-tgkill ] || [ "$name" = m48-parallel ] || [ "$name" = m49-capacity ] || [ "$name" = m51-git ] || [ "$name" = m52-python ] || [ "$name" = m53-vim ] || [ "$name" = m54-dev ] || [ "$name" = m55-cjson ] || [ "$name" = m56-busybox ] || [ "$name" = m57-sqlite ] || [ "$name" = m58-runtime ] || [ "$name" = m59-worktree ] || [ "$name" = real-vfs ] || [ "${name#m105-}" != "$name" ]; then
         # The full GCC gate is allowed a large success budget, but a real
         # kernel [FAIL] must not keep its headless QEMU alive for 300s.
-        timeout "${budget}s" sh scripts/run.sh "$iso" > "$log" 2>&1 < /dev/null &
+        timeout "${budget}s" sh scripts/run.sh "$iso" > "$log" 2>&1 < "$serial_input" &
         guest_pid=$!
         (
             while :; do
@@ -101,7 +105,7 @@ run_case() {
         kill "$monitor_pid" 2>/dev/null || :
         wait "$monitor_pid" 2>/dev/null || :
     else
-        timeout "${budget}s" sh scripts/run.sh "$iso" > "$log" 2>&1 < /dev/null || rc=$?
+        timeout "${budget}s" sh scripts/run.sh "$iso" > "$log" 2>&1 < "$serial_input" || rc=$?
     fi
     tr -d '\r' < "$log" > "$clean"
     if [ "$rc" -ne 1 ] ||

@@ -3,6 +3,10 @@
 # BusyBox through the SAME shared kernel as x86 for a growing workload matrix.
 # No guest-side test-specific kernel shortcuts. Strict stdout + exit checks.
 set -eu
+# Only interactive opt-in cases read host keyboard bytes. The default is
+# still detached stdin, preserving every historical QEMU regression.
+serial_input=${NAS_QEMU_SERIAL_FIFO:-/dev/null}
+if [ "$serial_input" != /dev/null ]; then test -p "$serial_input"; fi
 test -s build/port-riscv64/full/kernel.elf || sh scripts/build-riscv64-full.sh
 dir=build/port-riscv64/full
 if [ -n "${BUSYBOX_PARITY_BINARY:-}" ]; then
@@ -162,7 +166,7 @@ boot_case() {
         -drive if=pflash,format=raw,unit=0,readonly=on,file="$fw/RISCV_VIRT_CODE.fd" \
         -drive if=pflash,format=raw,unit=1,file="$work/$name.vars.fd" \
         -drive if=none,id=esp,format=raw,file="$disk" \
-        -device virtio-blk-device,drive=esp "$@" > "$log" 2>&1 < /dev/null &
+        -device virtio-blk-device,drive=esp "$@" > "$log" 2>&1 < "$serial_input" &
     pid=$!
     if [ "$name" = timer-preempt ]; then
         sh scripts/port-boot-until.sh "$log" "$pid" "$time_budget" \
