@@ -47,7 +47,58 @@ def change_until(sock, reader, outdir, name, previous, minimum, deadline):
             return destination
         except RuntimeError:
             time.sleep(.25)
+    # Fail the native boot immediately; otherwise its outer QEMU watchdog
+    # waits another 850 seconds after the physical oracle already knows it
+    # cannot pass. This is a failure-only QMP shutdown, never a fake PASS.
+    try:
+        qmp['qmp_command'](sock, reader, 'quit')
+    except Exception:
+        pass
     raise RuntimeError(f'{name} never showed distinct physical PTY pixels')
+
+
+def dialog_ready(sock, reader, outdir, focused, deadline):
+    """Wait for a *settled physical TUI frame*, not its first partial repaint.
+
+    On slower ISA emulation the first changed pixels can be only shell echo
+    or ncurses clearing the PTY. Sending RIGHT before the final dialog screen
+    has been painted lets the shell or partially initialized curses consume
+    the key. Repeated QEMU screendumps are the sole readiness evidence.
+    """
+    previous = None
+    steady = 0
+    last_delta = None
+    while time.monotonic() < deadline:
+        shot = screenshot(sock, reader, outdir, 'dialog')
+        data = ui['pixels'](shot)
+        try:
+            ui['changed'](focused, shot, 309, 199, 615, 410, 1000)
+            # This is a centered 8x30 yes/no dialog in the existing 53x25
+            # terminal. Command echo and an initial ncurses clear can settle
+            # without having drawn the box; they must not arm the RIGHT key.
+            ui['changed'](focused, shot, 385, 260, 535, 330, 200)
+        except RuntimeError:
+            steady = 0
+        else:
+            if previous is not None:
+                delta = 0
+                for y in range(199, 410):
+                    left = (y * 800 + 309) * 3
+                    right = (y * 800 + 615) * 3
+                    delta += sum(a != b for a, b in
+                                 zip(previous[left:right], data[left:right]))
+                last_delta = delta
+                steady = steady + 1 if delta <= 20 else 0
+                if steady >= 2:
+                    return shot
+        previous = data
+        time.sleep(.4)
+    try:
+        qmp['qmp_command'](sock, reader, 'quit')
+    except Exception:
+        pass
+    raise RuntimeError(f'dialog physical frame did not settle; '
+                       f'last pixel delta={last_delta}')
 
 
 def main():
@@ -82,8 +133,8 @@ def main():
         # satisfy this oracle even if it changed PTY glyphs.
         base['wait_marker'](args.serial,
                  '[EXEC] replaced process with CPIO ELF: /usr/bin/dialog',deadline)
-        shown=change_until(sock,reader,args.outdir,'dialog',focused,1000,
-                           min(deadline,time.monotonic()+20))
+        shown=dialog_ready(sock,reader,args.outdir,focused,
+                           min(deadline,time.monotonic()+25))
 
         # Dialog's yes/no selection reacts to VT100 application cursor mode
         # (DECCKM) or ordinary cursor mode. QMP sends a real KEY_RIGHT.

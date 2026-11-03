@@ -248,6 +248,12 @@ bool nas_lwext4_async_worker_current(void) {
 bool nas_lwext4_async_runtime_passed(void) {
     return m179_state==M179_PASSED;
 }
+/* The same kernel image may boot without the independent IRQ-backed disk.
+ * DORMANT means no filesystem worker/fixture was armed on THIS boot, not a
+ * worker that has failed or is still waiting for its durable flush. */
+bool nas_lwext4_async_runtime_armed(void) {
+    return m179_state!=M179_DORMANT;
+}
 static uint8_t m179_expected_byte(uint64_t offset,bool guest) {
     const char *header=guest?m179_write_header:m179_seed_header;
     size_t header_length=guest?sizeof(m179_write_header):

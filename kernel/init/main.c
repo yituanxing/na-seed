@@ -10,6 +10,7 @@ extern bool nas_lwext4_guest_boot_shutdown(void);
 #endif
 #ifdef NAS_ENABLE_M179_FS_IRQ
 extern bool nas_lwext4_async_runtime_passed(void);
+extern bool nas_lwext4_async_runtime_armed(void);
 extern void nas_lwext4_async_runtime_step(void);
 void nas_init_process_deferred_exit_service(void);
 static bool m179_pid1_exit_waiting;
@@ -159,6 +160,14 @@ void nas_init_process_terminated(uint32_t code,uint32_t signal) {
     nas_print("[EXIT] user status=");nas_dec(code);nas_print("\n");
     if(code)nas_fail("userspace exited nonzero");
 #ifdef NAS_ENABLE_M179_FS_IRQ
+    /* Compilation enables the M179/M180 worker, but a later independent
+     * desktop boot of this SAME kernel may have no async disk fixture.
+     * Only an actually armed worker owns the durable-shutdown exit gate.
+     * Once armed, the existing strict M179/M180 completion checks apply. */
+    if(!nas_lwext4_async_runtime_armed()) {
+        nas_init_finish_success();
+        return;
+    }
     /* PID1 may finish before the disk IRQ-backed filesystem worker. Leave
      * its Task zombie and return to the independent native scheduler;
      * only a completed, flushed and unmounted real ext4 volume permits the
