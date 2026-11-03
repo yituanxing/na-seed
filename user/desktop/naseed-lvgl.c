@@ -19,6 +19,7 @@
 enum { GUI_W=240, GUI_H=176, GUI_DRAW_ROWS=44 };
 struct lvgl_app {
     int channel,surface_fd,flushed,clicks;
+    int reported_clicks;
     unsigned slider_changes,timer_updates,scroll_events;
     int reported_drag,reported_scroll,reported_timer;
     uint8_t *surface;
@@ -97,6 +98,23 @@ static void clock_advanced(lv_timer_t *timer) {
 }
 static void pump_lvgl(void) {
     (void)lv_timer_handler();
+}
+/* LVGL can dispatch CLICKED before its next display refresh timer fires.
+ * Preserve the input acknowledgement until the *pixels* have been flushed:
+ * otherwise a click on one poll iteration and a repaint on the next sends
+ * MSG_UPDATED(key=0), losing M173's real physical-button evidence. */
+static int flushed_update_key(void) {
+    if(!app.flushed)return -1;
+    const int clicked=app.clicks>app.reported_clicks;
+    app.reported_clicks=app.clicks;
+    app.flushed=0;
+    return clicked?KEY_ENTER:0;
+}
+static void publish_flushed_update(void) {
+    const int key=flushed_update_key();
+    if(key<0)return;
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    nasd_send_packet(app.channel,MSG_UPDATED,(uint32_t)key);
 }
 static void init_lvgl_surface(void) {
     app.surface=nasd_make_surface("m171-real-lvgl",GUI_W,GUI_H,
@@ -240,6 +258,16 @@ static void host_selftest(void) {
     nasd_require(app.clicks==1 && app.flushed &&
                  surface_sum()!=before,
                  "original LVGL pointer event repainted real XRGB pixels");
+    /* A deferred real-clock refresh must not erase the CLICKED notification.
+     * This isolates the cross-poll state machine from the refresh cadence. */
+    app.flushed=0;
+    nasd_require(flushed_update_key()==-1 && app.reported_clicks==0,
+                 "LVGL click waits for physical framebuffer flush");
+    app.flushed=1;
+    nasd_require(flushed_update_key()==KEY_ENTER && app.reported_clicks==1,
+                 "LVGL delayed refresh acknowledges the real click once");
+    nasd_require(flushed_update_key()==-1,
+                 "LVGL notification has exactly one physical flush owner");
     const int slider_before=lv_slider_get_value(app.slider);
     set_pointer(28,146,1);
     set_pointer(126,146,1);
@@ -260,7 +288,8 @@ static void host_selftest(void) {
     cleanup();
     nasd_mark("[M171 HOST LVGL PASS] pinned upstream LVGL linked, "
               "pointer button click and real XRGB memfd flush; "
-              "M188 monotonic timer, slider drag and wheel scroll PASS");
+              "M188 deferred click acknowledgement, monotonic timer, "
+              "slider drag and wheel scroll PASS");
 }
 int main(int argc,char **argv) {
     if(argc==2 && !strcmp(argv[1],"--selftest171")) {
@@ -280,12 +309,7 @@ int main(int argc,char **argv) {
         unsigned wait_ms=lv_timer_handler();
         if(wait_ms>100U)wait_ms=100U;
         if(wait_ms<1U)wait_ms=1U;
-        int before=app.clicks;
-        if(app.flushed) {
-            __atomic_thread_fence(__ATOMIC_RELEASE);
-            nasd_send_packet(app.channel,MSG_UPDATED,0);
-            app.flushed=0;
-        }
+        publish_flushed_update();
         struct pollfd in={.fd=app.channel,.events=POLLIN};
         int ready=poll(&in,1,(int)wait_ms);
         if(ready<0 && errno==EINTR)continue;
@@ -294,6 +318,7 @@ int main(int argc,char **argv) {
         nasd_require(in.revents&POLLIN,"LVGL compositor channel alive");
         struct message m=nasd_recv_packet(app.channel);
         if(m.type==MSG_QUIT)break;
+        const int before=app.clicks;
         if(m.type==MSG_POINTER) {
             nasd_require(m.key<=1,"LVGL pointer press state");
             const unsigned x=m.value>>16U,y=m.value&65535U;
@@ -306,12 +331,7 @@ int main(int argc,char **argv) {
         }else if(m.type==MSG_SCROLL) {
             scroll_panel((int32_t)m.key,(int32_t)m.value);
         }else nasd_require(0,"LVGL client input IPC type");
-        if(app.flushed) {
-            __atomic_thread_fence(__ATOMIC_RELEASE);
-            nasd_send_packet(app.channel,MSG_UPDATED,
-                             app.clicks>before?KEY_ENTER:0);
-            app.flushed=0;
-        }
+        publish_flushed_update();
         if(app.clicks>before && app.clicks==1)
             nasd_mark("M171_LVGL_REAL_BUTTON_CLICK_PASS");
     }

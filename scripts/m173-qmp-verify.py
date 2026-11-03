@@ -134,6 +134,11 @@ def main():
         # through the compositor into the *external* upstream-LVGL client.
         pointer_click(sock, reader, 650, 485)
         pointer_release(sock, reader)
+        # Preserve a physical-frame diagnostic even if a later client/IPC
+        # acknowledgement stalls. No synthetic PASS or marker substitution:
+        # the original QMP assertion below remains mandatory.
+        screenshot(sock, reader, args.outdir, 'button-probe',
+                   ((20, 20, BG), (100, 150, MAGENTA)))
         base['wait_marker'](args.serial,
                             'M173_SECOND_LVGL_BUTTON_VISIBLE', deadline)
         clicked = screenshot(sock, reader, args.outdir, 'clicked',
