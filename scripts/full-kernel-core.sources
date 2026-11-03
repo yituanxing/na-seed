@@ -67,6 +67,8 @@ kernel/fs/socket_syscall.c
 kernel/fs/netlink_route.c
 kernel/fs/memfd.c
 kernel/fs/file_io.c
+kernel/fs/broker.c
+kernel/fs/user_broker.c
 kernel/fs/poll_syscall.c
 kernel/fs/metadata_syscall.c
 kernel/fs/epoll.c

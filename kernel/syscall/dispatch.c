@@ -29,6 +29,7 @@
 #include "../task/user_stack.h"
 #include "../fs/io.h"
 #include "../fs/syscall.h"
+#include "../fs/user_broker.h"
 #include "../fs/socket_syscall.h"
 #include "../fs/memfd.h"
 #include "../../ports/lwip/socket_port.h"
@@ -771,6 +772,12 @@ uint64_t syscall_dispatch(const uint64_t *args) {
             if(handled)return result;
         }
     }
+    /* M180: only a genuine worker_io VFS owner enters this branch. Linux
+     * usercopy/FD reservation stays on the original Task continuation;
+     * upstream lwext4 executes on one dedicated parkable kernel worker. */
+    struct nas_fs_user_broker_answer fs_broker=nas_fs_user_broker_enter(
+        (uint64_t *)(uintptr_t)args,nr,args);
+    if(fs_broker.handled)return fs_broker.value;
     if (nr == NAS_SC_read) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3],false);
     if (nr == NAS_SC_readv) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3],false);
     if (nr == NAS_SC_write) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3],false);

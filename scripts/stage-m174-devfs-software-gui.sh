@@ -36,8 +36,26 @@ if [ "${NAS_M176_NET_STAGE:-0}" = 1 ]; then
     sh scripts/stage-m176-irq-network.sh "$port" "$root" "$cc"
 fi
 
+# M180 adds one ordinary, separately linked ring3 ELF and extends the same
+# opt-in M176 PID1 to wait for its actual exit status before the original
+# software/desktop workload. Do not alter the M174-M179 default rootfs.
+m180_apps=
+if [ "${NAS_M180_FS_USER_STAGE:-0}" = 1 ]; then
+    [ "${NAS_M176_NET_STAGE:-0}" = 1 ] || {
+        echo "[M180 STAGE FAIL] requires the preserved M176 native launcher" >&2
+        exit 1
+    }
+    "$cc" -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
+        user/m180-fs-user.c -o "$root/usr/bin/naseed-m180-fs-user"
+    "$cc" -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
+        -DNAS_M180_FS_USER_STAGE=1 \
+        scripts/test-m176-ncat-launch.c \
+        -o "$root/usr/bin/naseed-m174-devfs-launch"
+    m180_apps=' naseed-m180-fs-user'
+fi
+
 for app in naseed-desktop naseed-image naseed-terminal naseed-browser \
-           naseed-lvgl naseed-m174-devfs-launch; do
+           naseed-lvgl naseed-m174-devfs-launch $m180_apps; do
     file="$root/usr/bin/$app"
     test -x "$file"
     readelf -h "$file" | grep -Fq "$machine"
@@ -60,3 +78,6 @@ test -s "$root/tests/m174-software-run.sh"
 mv "$work/rootfs.cpio.tmp" "$work/rootfs.cpio"
 test -s "$work/rootfs.cpio"
 echo "[M174 STAGE PASS] $port 20 original signed Alpine ELFs + VFS-devfs PID1 launcher + five GUI clients"
+if [ "${NAS_M180_FS_USER_STAGE:-0}" = 1 ]; then
+    echo "[M180 STAGE PASS] $port separate static ring3 user ext4 fsync ELF + existing M176 PID1 launcher"
+fi

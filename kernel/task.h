@@ -67,6 +67,7 @@ enum nas_task_state {
 struct nas_task;
 struct nas_pending_io;
 struct nas_poll_snapshot;
+struct nas_fs_broker_request;
 typedef uint64_t (*nas_wait_finish_fn)(struct nas_task *);
 struct nas_task_wait {
     uint64_t blocked_op, blocked_args[5];
@@ -77,6 +78,10 @@ struct nas_task_wait {
      * Callback keeps Task's generic lifetime independent of fs/file_io.c. */
     struct nas_pending_io *pending_io;
     void (*pending_io_release)(struct nas_pending_io *);
+    /* One kernel-owned filesystem request may outlive a parked Task.
+     * The worker owns execution and its own reference; Task wait disposal
+     * merely detaches, including on signal, exit_group, or teardown. */
+    struct nas_fs_broker_request *fs_request;
     bool suppress_sigpipe; /* per-call TCP sendmsg(MSG_NOSIGNAL), not FD state */
     uint64_t deadline_ns;
     bool deadline_active;

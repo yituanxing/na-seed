@@ -1,0 +1,143 @@
+name: NaSeed M180 ordinary user syscalls via IRQ-backed ext4 filesystem worker on three ISA
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/m180-fs-user-irq.yml'
+      - 'kernel/**'
+      - 'ports/lwext4/**'
+      - 'ports/uboot/**'
+      - 'scripts/*m180*'
+      - 'scripts/*m179*'
+      - 'scripts/stage-m174-devfs-software-gui.sh'
+      - 'scripts/test-m176-ncat-launch.c'
+      - 'scripts/build-riscv64-full.sh'
+      - 'scripts/build-aarch64-full.sh'
+      - 'scripts/build-lwext4-guest.sh'
+      - 'scripts/full-kernel-core.sources'
+      - 'user/m180-fs-user.c'
+      - 'Makefile'
+
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  host-contract:
+    name: M180 shared scheduler, filesystem, IRQ and historic M179 worker contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
+      - name: Install real ext4 host inspection tools if absent
+        run: |
+          set -eu
+          if ! command -v mke2fs >/dev/null ||
+             ! command -v debugfs >/dev/null ||
+             ! command -v e2fsck >/dev/null; then
+            sh scripts/ci-ubuntu-mirror.sh
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends e2fsprogs
+          fi
+      - name: Check native target boundaries and old async block contracts
+        run: |
+          set -eu
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+          sh scripts/check-m179-fs-irq.sh
+          sh -n scripts/probe-m180-fs-user.sh
+          python3 -m py_compile scripts/m180-ext4-fixture.py
+      - name: Exercise in-kernel FD reservation with shared files, fork and dup
+        run: |
+          set -eu
+          mkdir -p build/m180
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding \
+            scripts/test-fd-pending.c kernel/fd.c -o build/m180/test-fd-pending
+          build/m180/test-fd-pending
+
+  native-user-fs-irq:
+    name: M180 ring3 ext4 write/fsync/read with real IRQ and host disk oracle / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    needs: host-contract
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
+      - name: Install actual system QEMU, GNU cross compilers and ext4 tools
+        timeout-minutes: 18
+        run: |
+          set -eu
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'cmake:cmake' 'g++:g++' 'clang:clang' 'ld.lld:lld' \
+                      'readelf:binutils' 'cpio:cpio' 'mke2fs:e2fsprogs' \
+                      'xorriso:xorriso' 'mformat:mtools' 'sgdisk:gdisk' \
+                      'gcc:gcc' 'qemu-riscv64:qemu-user' 'curl:curl'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case '${{ matrix.port }}' in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+              test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
+            riscv64)
+              command -v riscv64-linux-gnu-gcc >/dev/null || missing="$missing gcc-riscv64-linux-gnu"
+              command -v riscv64-linux-gnu-g++ >/dev/null || missing="$missing g++-riscv64-linux-gnu"
+              test -f /usr/riscv64-linux-gnu/include/bits/wordsize.h && \
+              test -f /usr/riscv64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-riscv64-cross"
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+            arm64)
+              command -v aarch64-linux-gnu-gcc >/dev/null || missing="$missing gcc-aarch64-linux-gnu"
+              command -v aarch64-linux-gnu-g++ >/dev/null || missing="$missing g++-aarch64-linux-gnu"
+              test -f /usr/aarch64-linux-gnu/include/bits/wordsize.h && \
+              test -f /usr/aarch64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-arm64-cross"
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/AAVMF/AAVMF_CODE.fd || \
+              test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+          esac
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+      - name: Execute original Alpine/network/GPU plus true user ext4 broker and host raw disk inspection
+        timeout-minutes: 78
+        run: sh scripts/probe-m180-fs-user.sh ${{ matrix.port }}
+      - name: Retain physical disk, guest serial, network packet capture, frames and original signed ELF evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m180-ring3-irq-ext4-${{ matrix.port }}
+          path: |
+            build/m178/async-blk/${{ matrix.port }}/independent-virtio-blk.img
+            build/external/m174-software-batch/${{ matrix.port }}/m174-qmp-check.log
+            build/external/m174-software-batch/${{ matrix.port }}/m173-*.ppm
+            build/external/m174-software-batch/${{ matrix.port }}/m176-wire.pcap
+            build/external/m174-software-batch/${{ matrix.port }}/m176-host-http.log
+            build/external/m174-software-batch/${{ matrix.port }}/m174-software-original-signed-elfs.sha256
+            build/busybox-source-parity-x86/m174-batch.clean.log
+            build/busybox-source-parity-x86/m174-batch.serial.log
+            build/port-riscv64/full/matrix-source/m174-batch.clean.log
+            build/port-riscv64/full/matrix-source/m174-batch.serial.log
+            build/port-aarch64/full/matrix-source/m174-batch.clean.log
+            build/port-aarch64/full/matrix-source/m174-batch.serial.log
+          if-no-files-found: ignore

@@ -217,6 +217,12 @@ void nas_fs_close_fd(uint64_t fd) {
 static uint64_t fd_clone(uint64_t src, uint64_t dst, bool cloexec) {
     if (src >= NAS_FD_LIMIT || TASK.fds->entries[src].kind == FD_CLOSED ||
         dst >= NAS_FD_LIMIT) return (uint64_t)-EBADF;
+    /* A blocked openat owns this unpublished descriptor index across
+     * CLONE_FILES siblings. dup2/dup3 must not steal its slot while the
+     * filesystem worker performs O_CREAT/O_TRUNC side effects. */
+    if(!nas_fd_available(nas_current_task,(unsigned)dst) &&
+       TASK.fds->entries[dst].kind==FD_CLOSED)
+        return (uint64_t)-EBUSY;
     /* Acquire ownership BEFORE closing dst: final_close can reclaim the
      * source backend when dst aliases src, and a saturated File must leave
      * the old destination untouched. attach_owned consumes this one pin. */

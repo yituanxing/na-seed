@@ -1,6 +1,9 @@
 /* Real upstream ext4 inode -> NaSeed VFS, independent of physical drivers.
  * Ext4 inode numbers (not pathname lookups) identify open files for reads. */
 #include "guest_vfs.h"
+#ifdef NAS_ENABLE_M180_FS_USER_IRQ
+#include "../../kernel/fs/broker.h"
+#endif
 #include "../../kernel/fs/lookup.h"
 #include "../../kernel/errno.h"
 #include "../../kernel/lib/string.h"
@@ -588,6 +591,42 @@ static int ext_stage_orphan(struct nas_lwext4_mount *ctx,
     };
     return 0;
 }
+#ifdef NAS_ENABLE_M180_FS_USER_IRQ
+extern bool nas_lwext4_async_worker_current(void);
+/* The *last* generic VFS inode lease may disappear during close/exit in
+ * a user Task. This cleanup can issue ext4 metadata writes and physically
+ * park on an IRQ: never execute it from that Task's kernel C frame. */
+struct ext_orphan_release_request {
+    struct nas_lwext4_mount *mount;
+    uint32_t ino, serial;
+    bool is_dir;
+};
+static int64_t ext_orphan_release_worker(void *opaque) {
+    const struct ext_orphan_release_request *request=opaque;
+    if(!request || !request->mount || !nas_lwext4_async_worker_current())
+        return -EINVAL;
+    struct nas_lwext4_mount *ctx=request->mount;
+    if(!ctx->mounted)return -ENODEV;
+    for(unsigned i=0;i<NAS_LWEXT4_ORPHAN_LIMIT;i++) {
+        struct nas_lwext4_orphan *o=&ctx->orphans[i];
+        if(!o->used || o->ino!=request->ino ||
+           o->serial!=request->serial || o->is_dir!=request->is_dir)
+            continue;
+        /* The original File dropped its last owner before this was
+         * queued; rechecking the record prevents deleting a reused inode
+         * or a different incarnation after intervening namespace changes. */
+        ext_namespace_changed(ctx);
+        char path[256];
+        int rc=ext_orphan_path(ctx,o->ino,o->serial,o->is_dir,path);
+        if(!rc)rc=ext_remove_staged(path,o->is_dir);
+        if(!rc)o->used=false;
+        /* A failure leaves its private durable name for unmount/reboot
+         * cleanup, and is never represented as a successful unlink. */
+        return rc;
+    }
+    return 0; /* already reclaimed by an earlier owned completion */
+}
+#endif
 static void ext_last_inode_unpin(const struct nas_fs_node *node) {
     if(!node || !node->mount || !node->mount->private_data)return;
     struct nas_lwext4_mount *ctx=node->mount->private_data;
@@ -595,6 +634,30 @@ static void ext_last_inode_unpin(const struct nas_fs_node *node) {
     for(unsigned i=0;i<NAS_LWEXT4_ORPHAN_LIMIT;i++) {
         struct nas_lwext4_orphan *orphan=&ctx->orphans[i];
         if(!orphan->used || orphan->ino!=(uint32_t)node->ino)continue;
+#ifdef NAS_ENABLE_M180_FS_USER_IRQ
+        if(ctx->worker_io_mount && !nas_lwext4_async_worker_current()) {
+            struct nas_fs_broker_request *request=
+                nas_fs_broker_request_new(sizeof(struct ext_orphan_release_request),
+                                          ext_orphan_release_worker,NULL);
+            if(request) {
+                struct ext_orphan_release_request *payload=
+                    nas_fs_broker_request_payload(request);
+                *payload=(struct ext_orphan_release_request){
+                    .mount=ctx,.ino=orphan->ino,.serial=orphan->serial,
+                    .is_dir=orphan->is_dir
+                };
+                /* This is a kernel-only fire-and-forget request. The
+                 * worker reference must survive the immediate detach. */
+                int queued=nas_fs_broker_request_submit(request);
+                nas_fs_broker_request_detach(request);
+                if(!queued)return;
+            }
+            /* Out of memory/shutdown: leave the durable private orphan
+             * registered. The same worker's final unmount reaps it after
+             * all inode leases are gone; never issue foreign ext4 I/O. */
+            return;
+        }
+#endif
         /* Last close can remove a private directory entry without calling
          * a public VFS namespace mutation. It still invalidates cookies. */
         ext_namespace_changed(ctx);

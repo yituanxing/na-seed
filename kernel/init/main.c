@@ -12,6 +12,10 @@ extern bool nas_lwext4_guest_boot_shutdown(void);
 extern bool nas_lwext4_async_runtime_passed(void);
 static bool m179_pid1_exit_waiting;
 #endif
+#ifdef NAS_ENABLE_M180_FS_USER_IRQ
+extern void nas_lwext4_m180_shutdown_request(void);
+extern bool nas_lwext4_m180_shutdown_complete(void);
+#endif
 #ifdef NAS_ENABLE_LITTLEFS
 extern bool nas_littlefs_guest_boot_mount(void);
 extern bool nas_littlefs_guest_boot_shutdown(void);
@@ -83,17 +87,30 @@ void nas_init_process_terminated(uint32_t code,uint32_t signal) {
      * only a completed, flushed and unmounted real ext4 volume permits the
      * test-success debug exit. Never spin or pump a nested scheduler from
      * this dead Task's syscall stack. */
+#ifdef NAS_ENABLE_M180_FS_USER_IRQ
+    /* M180's live user mount must finish its worker-owned ext4_umount
+     * AFTER the final PID1 Files release. The shutdown command is queued
+     * here, never run recursively on the dying Task's kernel stack. */
+    nas_lwext4_m180_shutdown_request();
+    m179_pid1_exit_waiting=true;
+    return;
+#else
     if(!nas_lwext4_async_runtime_passed()) {
         m179_pid1_exit_waiting=true;
         return;
     }
+#endif
 #endif
     nas_init_finish_success();
 }
 
 #ifdef NAS_ENABLE_M179_FS_IRQ
 void nas_init_process_deferred_exit_service(void) {
+#ifdef NAS_ENABLE_M180_FS_USER_IRQ
+    if(!m179_pid1_exit_waiting || !nas_lwext4_m180_shutdown_complete())return;
+#else
     if(!m179_pid1_exit_waiting || !nas_lwext4_async_runtime_passed())return;
+#endif
     /* Called by scheduler_service after a bounded worker slice. All PID1
      * Files/cwd pins were released by the normal process-exit path. */
     m179_pid1_exit_waiting=false;

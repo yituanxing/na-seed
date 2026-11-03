@@ -2,6 +2,9 @@
  * This is an opt-in source-level capability, never a replacement for the
  * common VFS or userspace syscall route. Build for all supported ISAs. */
 #include "guest_vfs.h"
+#ifdef NAS_ENABLE_M180_FS_USER_IRQ
+#include "../../kernel/fs/broker.h"
+#endif
 #include "../../kernel/fs/lookup.h"
 #include "../../kernel/fs/vfs.h"
 #include "../../kernel/errno.h"
@@ -221,12 +224,26 @@ enum m179_state { M179_DORMANT, M179_SPAWNED, M179_RUNNING,
 static enum m179_state m179_state;
 static struct nas_kthread_handle m179_worker;
 static struct nas_lwext4_mount m179_mount;
+#ifdef NAS_ENABLE_M180_FS_USER_IRQ
+enum m180_state { M180_DORMANT, M180_SPAWNED, M180_MOUNTED,
+                  M180_UNMOUNTING, M180_UNMOUNTED };
+static enum m180_state m180_state;
+static struct nas_kthread_handle m180_worker;
+static bool m180_shutdown_requested;
+#endif
 static const char m179_seed_header[]="M179_HOST_EXT4_SEED";
 static const char m179_write_header[]="M179_GUEST_EXT4_WRITE";
 
 bool nas_lwext4_async_worker_current(void) {
-    return (m179_state==M179_RUNNING || m179_state==M179_PASSED) &&
-           nas_kthread_is_current(m179_worker);
+    if((m179_state==M179_RUNNING || m179_state==M179_PASSED) &&
+       nas_kthread_is_current(m179_worker))return true;
+#ifdef NAS_ENABLE_M180_FS_USER_IRQ
+    return (m180_state==M180_SPAWNED || m180_state==M180_MOUNTED ||
+            m180_state==M180_UNMOUNTING) &&
+           nas_kthread_is_current(m180_worker);
+#else
+    return false;
+#endif
 }
 bool nas_lwext4_async_runtime_passed(void) {
     return m179_state==M179_PASSED;
@@ -347,10 +364,83 @@ static void m179_worker_entry(void *argument) {
     nas_print("[M179] real lwext4 VFS 8KiB host read + "
               "12KiB durable guest write/reopen; BlockRequest IRQ and clean unmount\n");
 }
+#ifdef NAS_ENABLE_M180_FS_USER_IRQ
+/* M179's original independent disk oracle must finish AND cleanly unmount
+ * before M180 may attach its user-facing instance. Start the latter after
+ * M179 PASS, independently of user requests: pathname traversal must see
+ * the newly published /async mount before it can know to queue an openat. */
+static void m180_worker_entry(void *argument) {
+    (void)argument;
+    if(m179_state!=M179_PASSED || m180_state!=M180_SPAWNED ||
+       !nas_kthread_is_current(m180_worker))
+        nas_fail("M180 filesystem worker started without exclusive owner");
+    struct nas_async_blk_stats before={0},after={0};
+    nas_async_blk_get_stats(&before);
+    const char *partition=nas_async_blk_mountable_partition();
+    if(!partition || strcmp(partition,"async-fixturep1"))
+        nas_fail("M180 original physical ext4 partition unavailable");
+    m179_mount.worker_io_mount=true;
+    int rc=nas_lwext4_device_mount(&m179_mount,partition,"m179-ext4-dev",
+                                    "/async",true);
+    if(rc)nas_fail("M180 persistent IRQ-backed lwext4 remount failed");
+    m180_state=M180_MOUNTED;
+    nas_print("[M180 FS USER IRQ] remounted /async in sole filesystem worker\n");
+    /* One serialized VFS executor. Its own C stack parks on real DMA IRQ;
+     * a blocked userspace syscall has an entirely different Task stack. */
+    nas_fs_broker_serve();
+    m180_state=M180_UNMOUNTING;
+    if(nas_lwext4_unmount(&m179_mount))
+        nas_fail("M180 final ext4 unmount/durable flush failed");
+    nas_async_blk_get_stats(&after);
+    struct nas_fs_broker_stats broker={0};
+    nas_fs_broker_get_stats(&broker);
+    nas_print("[M180 FS USER IRQ STATS] submitted=");
+    nas_dec(broker.submitted);
+    nas_print(" started=");nas_dec(broker.started);
+    nas_print(" completed=");nas_dec(broker.completed);
+    nas_print(" detached=");nas_dec(broker.detached);
+    nas_print(" abandoned=");nas_dec(broker.abandoned);
+    nas_print(" peak_queued=");nas_dec(broker.peak_queued);
+    nas_print(" broker_submitted=");nas_dec(broker.submitted);
+    nas_print(" broker_completed=");nas_dec(broker.completed);
+    nas_print(" task_parked=");nas_dec(broker.task_parked);
+    nas_print(" task_woken=");nas_dec(broker.task_woken);
+    nas_print(" request_submitted=");nas_dec(after.submitted-before.submitted);
+    nas_print(" request_completed=");nas_dec(after.completed-before.completed);
+    nas_print(" irq_ack=");nas_dec(after.irq_ack-before.irq_ack);
+    nas_print(" deferred=");nas_dec(after.deferred-before.deferred);
+    nas_print(" fallback_poll=");
+    nas_dec(after.fallback_poll-before.fallback_poll);
+    nas_print(" worker_waited=");nas_dec(after.worker_waits-before.worker_waits);
+    nas_print("\n[M180 FS USER IRQ] clean unmount and durable flush\n");
+    m180_state=M180_UNMOUNTED;
+}
+bool nas_lwext4_m180_runtime_ready(void) {
+    return m179_state==M179_PASSED && !m180_shutdown_requested &&
+           m180_state==M180_MOUNTED;
+}
+void nas_lwext4_m180_shutdown_request(void) {
+    m180_shutdown_requested=true;
+    nas_fs_broker_request_shutdown();
+}
+bool nas_lwext4_m180_shutdown_complete(void) {
+    if(m179_state!=M179_PASSED)return false;
+    return m180_state==M180_UNMOUNTED &&
+           nas_fs_broker_shutdown_complete();
+}
+#endif
 void nas_lwext4_async_runtime_step(void) {
-    if(m179_state!=M179_DORMANT || !nas_async_blk_fixture_ready())return;
-    if(!nas_kthread_spawn(m179_worker_entry,NULL,&m179_worker))
-        nas_fail("M179 cannot reserve owned filesystem kernel worker");
-    m179_state=M179_SPAWNED;
+    if(m179_state==M179_DORMANT && nas_async_blk_fixture_ready()) {
+        if(!nas_kthread_spawn(m179_worker_entry,NULL,&m179_worker))
+            nas_fail("M179 cannot reserve owned filesystem kernel worker");
+        m179_state=M179_SPAWNED;
+    }
+#ifdef NAS_ENABLE_M180_FS_USER_IRQ
+    if(m179_state==M179_PASSED && m180_state==M180_DORMANT) {
+        if(!nas_kthread_spawn(m180_worker_entry,NULL,&m180_worker))
+            nas_fail("M180 cannot reserve persistent filesystem worker");
+        m180_state=M180_SPAWNED;
+    }
+#endif
 }
 #endif

@@ -36,6 +36,10 @@ struct nas_fd_table {
 };
 struct nas_files {
     unsigned refs;
+    /* Unpublished FD numbers reserved by blocking open-like syscalls.
+     * CLONE_FILES siblings see one shared mask; fork copies no reservations.
+     * A reservation holds an independent nas_files ref until commit/cancel. */
+    uint64_t pending_fd_mask;
     struct nas_fd_table table;
 };
 struct nas_files *nas_files_new(void);
@@ -50,6 +54,18 @@ void nas_fd_report_exhaustion(const char *operation);
  * attach_owned transfers a previously accounted open-description ref
  * (AF_UNIX accept/SCM_RIGHTS), without incrementing it again. */
 unsigned nas_fd_first_unused(const struct nas_task *task, unsigned minimum);
+/* A pending FD is not open (reads/close return EBADF) but is unavailable to
+ * every allocation/dup path until its owner commits or cancels. The returned
+ * files_hold is a reference to the exact original CLONE_FILES table, even
+ * when the issuing Task dies while a kernel worker is still operating.
+ * Begin takes the lowest available FD; success requires exactly one commit
+ * or cancel. Commit/cancel each release that one independent files ref. */
+bool nas_fd_available(const struct nas_task *task, unsigned fd);
+int nas_fd_pending_begin(struct nas_task *task, unsigned *fd,
+                         struct nas_files **files_hold);
+bool nas_fd_pending_valid(const struct nas_files *files_hold, unsigned fd);
+bool nas_fd_pending_commit(struct nas_files *files_hold, unsigned fd);
+bool nas_fd_pending_cancel(struct nas_files *files_hold, unsigned fd);
 int nas_fd_reserve(const struct nas_task *task, unsigned minimum, unsigned count,
                    unsigned fds[2], unsigned slots[2], const char *operation);
 /* Reserve a File slot only when its provider-specific lifecycle permits

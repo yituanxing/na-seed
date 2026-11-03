@@ -962,7 +962,7 @@ static uint64_t unix_recvmsg_pinned(uint64_t fd,uint64_t address,
     unsigned deliver=capacity<pending?capacity:pending;
     unsigned free_fd=0;
     for(unsigned i=3;i<NAS_FD_LIMIT;i++)
-        if(TASK.fds->entries[i].kind==FD_CLOSED)free_fd++;
+        if(nas_fd_available(nas_current_task,i))free_fd++;
     if(deliver>free_fd)deliver=free_fd;
     msg.namelen=0;
     msg.flags=pending>deliver ? 0x8U : 0U; /* MSG_CTRUNC */
@@ -979,7 +979,7 @@ static uint64_t unix_recvmsg_pinned(uint64_t fd,uint64_t address,
         memcpy(control+8,&level,4);memcpy(control+12,&type,4);
         unsigned done=0;
         for(unsigned i=3;i<NAS_FD_LIMIT && done<count;i++) {
-            if(TASK.fds->entries[i].kind!=FD_CLOSED)continue;
+            if(!nas_fd_available(nas_current_task,i))continue;
             if(!nas_fd_attach_owned(nas_current_task,i,slots[done],
                                     kinds[done],(flags&0x40000000ULL)!=0))
                 nas_fail("received SCM_RIGHTS slot violated FD invariant");

@@ -66,4 +66,12 @@ int nas_lwext4_ramdisk_mount(struct nas_lwext4_mount *mount,
                              const char *mount_point,void *image,
                              uint64_t image_bytes);
 int nas_lwext4_ramdisk_unmount(struct nas_lwext4_mount *mount);
+#ifdef NAS_ENABLE_M180_FS_USER_IRQ
+/* Readiness becomes true only AFTER the independent kernel worker mounted
+ * /async. PID1 shutdown drains requests and makes the same worker perform
+ * the final durable ext4 unmount/flush. */
+bool nas_lwext4_m180_runtime_ready(void);
+void nas_lwext4_m180_shutdown_request(void);
+bool nas_lwext4_m180_shutdown_complete(void);
+#endif
 #endif

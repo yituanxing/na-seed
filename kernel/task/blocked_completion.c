@@ -27,6 +27,16 @@
 static uint64_t task_resume_syscall(struct nas_task *task) {
     const enum nas_syscall_op nr=(enum nas_syscall_op)task->wait.blocked_op;
     const uint64_t *a=task->wait.blocked_args;
+    /* Disk metadata/data requests are deliberately noninterruptible while
+     * the owning worker can still mutate the filesystem. Once the worker
+     * has completed, publish its result before a pending signal is handled
+     * on user return. EINTR here could otherwise conceal a committed
+     * O_CREAT/truncate/write or abandon a running worker-owned request. */
+    if(task->wait.fs_request) {
+        if(!task->wait.finish)
+            nas_fail("native FS broker lost completion provider");
+        return task->wait.finish(task);
+    }
     if(nas_signal_user_pending(task)) {
         if(nr==NAS_SC_nanosleep || nr==NAS_SC_clock_nanosleep) {
             uint64_t rem=nr==NAS_SC_nanosleep ? a[1] :

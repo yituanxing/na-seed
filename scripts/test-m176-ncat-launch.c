@@ -129,8 +129,32 @@ static void ncat_http(void) {
     fflush(stdout);
 }
 
+#ifdef NAS_M180_FS_USER_STAGE
+/* Only the opt-in M180 probe runs this separately linked Linux program.
+ * The original M176/M174 native PID1 path and all existing Alpine/GPU
+ * acceptance continue afterwards, in the same QEMU guest. */
+static void m180_user_fs(void) {
+    pid_t child=fork();
+    require(child>=0,"spawn ordinary user fsync test Task");
+    if(child==0) {
+        char *const argv[]={(char *)"/usr/bin/naseed-m180-fs-user",NULL};
+        execv(argv[0],argv);
+        _exit(180);
+    }
+    int status=0;
+    require(waitpid(child,&status,0)==child && WIFEXITED(status) &&
+            WEXITSTATUS(status)==0,
+            "ordinary Linux ELF openat/read/write/fsync/close child exited 0");
+    puts("[M180 USER FS LAUNCH PASS]");
+    fflush(stdout);
+}
+#endif
+
 int main(void) {
     ncat_http();
+#ifdef NAS_M180_FS_USER_STAGE
+    m180_user_fs();
+#endif
     /* Preserves the original M174 devfs/20-ELF/gui PID1, so QMP still
      * exercises five physical screen states and shell-launched fifth LVGL. */
     return m174_original_main();

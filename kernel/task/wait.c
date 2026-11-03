@@ -15,6 +15,7 @@
 #include "../time/clock.h"
 #include "../fs/epoll.h"
 #include "../fs/file_ops.h"
+#include "../fs/broker.h"
 #include "../fs/eventfd.h"
 #include "../fs/unix_socket.h"
 #include "../fs/socket_syscall.h"
@@ -42,6 +43,13 @@ static bool task_wait_ready(const struct nas_task *task) {
 bool nas_task_wait_ready(const struct nas_task *task) {
     if (task->state != NAS_TASK_BLOCKED || !task->resume_valid ||
         !task->wait.pending_valid) return false;
+    /* An in-flight filesystem request may commit durable side effects.
+     * Do not wake on EINTR before the worker reaches a terminal state:
+     * doing so would return to userspace while a write/create was still
+     * able to occur after the syscall had apparently been interrupted.
+     * Pending signals are delivered on the eventual user-mode return. */
+    if (task->wait.fs_request)
+        return nas_fs_broker_request_ready(task->wait.fs_request);
     /* A pending caught signal interrupts an outstanding syscall. Signal
      * frame creation is deferred until the target VM and user frame are
      * selected, not while inspecting an unrelated blocked process. */
