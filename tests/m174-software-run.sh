@@ -36,7 +36,7 @@ echo M174_SOFTWARE_DBUS_UUIDGEN_FUNCTION_PASS
 
 # Actual sysstat parsing of the kernel's current /proc/stat CPU counters.
 busy grep -q '^cpu ' /proc/stat
-busy timeout 15 /usr/bin/mpstat 1 1 > "$work/mpstat" 2> "$work/mpstat-error"
+busy timeout 15 /bin/mpstat 1 1 > "$work/mpstat" 2> "$work/mpstat-error"
 busy grep -Eq '(^|[[:space:]])all([[:space:]]|$)' "$work/mpstat"
 echo M174_SOFTWARE_MPSTAT_PROC_FUNCTION_PASS
 
