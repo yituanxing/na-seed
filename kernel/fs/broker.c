@@ -25,6 +25,7 @@ struct nas_fs_broker_request {
     enum request_state state;
     bool task_attached;
     bool claimed;
+    bool independent;
 };
 
 static struct nas_fs_broker_request *head,*tail;
@@ -81,7 +82,7 @@ void *nas_fs_broker_request_payload(struct nas_fs_broker_request *request) {
 bool nas_fs_broker_request_set_abandon(struct nas_fs_broker_request *request,
                                        nas_fs_broker_abandon_fn abandon) {
     if(!request || !request->task_attached || request->state!=FS_NEW ||
-       request->abandon)return false;
+       request->abandon || request->independent)return false;
     request->abandon=abandon;
     return true;
 }
@@ -89,6 +90,14 @@ bool nas_fs_broker_request_claim(struct nas_fs_broker_request *request) {
     if(!request || !request->task_attached || request->state!=FS_DONE ||
        request->claimed)return false;
     request->claimed=true;
+    return true;
+}
+bool nas_fs_broker_request_make_independent(
+    struct nas_fs_broker_request *request) {
+    if(!request || !request->task_attached || request->state!=FS_NEW ||
+       request->refs!=1 || request->abandon || request->independent)
+        return false;
+    request->independent=true;
     return true;
 }
 int nas_fs_broker_request_submit(struct nas_fs_broker_request *request) {
@@ -122,7 +131,8 @@ void nas_fs_broker_request_detach(struct nas_fs_broker_request *request) {
     if(!request->task_attached)nas_fail("M180 broker Task double detach");
     request->task_attached=false;
     ++stats.detached;
-    if(request->state!=FS_DONE && request->state!=FS_NEW)
+    if(!request->independent && request->state!=FS_DONE &&
+       request->state!=FS_NEW)
         ++stats.abandoned;
     /* Worker finished but the Task was killed before adopting an inode.
      * Requeue its VFS destruction: release() may run on a Task stack and
@@ -192,7 +202,7 @@ void nas_fs_broker_serve(void) {
         ++stats.started;
         /* Callback may park on block IRQ while retaining its own C stack;
          * no other Task or worker may reenter this filesystem's VFS mount. */
-        int64_t result=request->task_attached ?
+        int64_t result=(request->task_attached || request->independent) ?
             request->work(request->payload) : -ECANCELED;
         request->result=result;
         request->state=FS_DONE;

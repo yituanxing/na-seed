@@ -35,6 +35,12 @@ void *nas_fs_broker_request_payload(struct nas_fs_broker_request *request);
 bool nas_fs_broker_request_set_abandon(struct nas_fs_broker_request *request,
                                        nas_fs_broker_abandon_fn abandon);
 bool nas_fs_broker_request_claim(struct nas_fs_broker_request *request);
+/* Explicitly declare an internal, kernel-owned fire-and-forget operation.
+ * Its work MUST execute after submit even though the creator immediately
+ * detaches; ordinary canceled Task syscalls retain skip-before-start policy.
+ * Only a NEW request without a result-ownership/abandon hook can opt in. */
+bool nas_fs_broker_request_make_independent(
+    struct nas_fs_broker_request *request);
 /* Return 0 only after an independent worker reference owns the queue entry.
  * On negative errno the caller still owns the newly allocated request. */
 int nas_fs_broker_request_submit(struct nas_fs_broker_request *request);

@@ -647,7 +647,12 @@ static void ext_last_inode_unpin(const struct nas_fs_node *node) {
                     .is_dir=orphan->is_dir
                 };
                 /* This is a kernel-only fire-and-forget request. The
-                 * worker reference must survive the immediate detach. */
+                 * worker reference must survive the immediate detach AND
+                 * actually run: an ordinary canceled syscall is skipped. */
+                if(!nas_fs_broker_request_make_independent(request)) {
+                    nas_fs_broker_request_detach(request);
+                    return; /* the durable orphan remains for final unmount */
+                }
                 int queued=nas_fs_broker_request_submit(request);
                 nas_fs_broker_request_detach(request);
                 if(!queued)return;
