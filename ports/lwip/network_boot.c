@@ -57,6 +57,8 @@ static void report_real_net_irq(bool all_irq_driven){
  struct nas_virtio_net_irq_stats stats={0};
  nas_virtio_net_irq_totals(&stats);
  if(stats.irq_driven_nics!=2 || stats.irq_proven_nics!=2 ||
+    stats.tx_proven_nics!=2 || !stats.tx_irq_wakes ||
+    !stats.tx_worker_waits || stats.tx_legacy_polls ||
     !stats.irq_acks ||
     !stats.irq_rx_wakes || !stats.rx_completed ||
     !network.rx_deferred_drains)return;
@@ -67,6 +69,10 @@ static void report_real_net_irq(bool all_irq_driven){
  nas_print(" rx_packets=");nas_dec(stats.rx_completed);
  nas_print(" deferred_drains=");nas_dec(network.rx_deferred_drains);
  nas_print(" fallback_poll=");nas_dec(network.rx_fallback_polls);
+ nas_print(" tx_nic_proven=");nas_dec(stats.tx_proven_nics);
+ nas_print(" tx_irq_wakes=");nas_dec(stats.tx_irq_wakes);
+ nas_print(" tx_worker_waits=");nas_dec(stats.tx_worker_waits);
+ nas_print(" tx_legacy_polls=");nas_dec(stats.tx_legacy_polls);
  nas_print("\n[M176 NET RX IRQ ONLY PASS]\n");
  network.irq_reported=true;
 #else

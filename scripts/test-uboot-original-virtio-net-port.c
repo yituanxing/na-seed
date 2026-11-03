@@ -46,9 +46,50 @@ struct fake_nic {
  uint32_t pending_isr;
  unsigned isr_reads;
  bool stall_tx;
+ bool probe_rx_busy_during_tx;
+ unsigned rx_busy_collisions;
  uint8_t tx_frame[1518];
  unsigned tx_length;
 };
+static void inject(struct fake_nic *,uint32_t written);
+static int unexpected_rx(void *ctx,const uint8_t *data,uint32_t bytes){
+ (void)ctx;(void)data;(void)bytes;
+ assert(!"RX may not drain the queue while TX owns it");
+ return -EIO;
+}
+static struct fake_nic *park_device;
+static bool simulate_worker;
+static uint64_t monotonic_ns;
+uint64_t nas_arch_monotonic_ns(void){return monotonic_ns+=1000000U;}
+bool nas_kthread_in_worker(void){return simulate_worker;}
+static void worker_woken(struct nas_wait_entry *entry,void *context){
+ (void)entry;*(bool *)context=true;
+}
+enum nas_kwait_result nas_kthread_park_until(struct nas_wait_queue *queue,
+                                             uint64_t deadline){
+ assert(simulate_worker && park_device && deadline>monotonic_ns);
+ if(park_device->stall_tx)return NAS_KWAIT_TIMED_OUT;
+ struct nas_wait_entry entry={0};bool woke=false;
+ assert(nas_wait_queue_enqueue(queue,&entry,worker_woken,&woke));
+ /* Real delivery may interrupt only AFTER this worker parks. Trigger the
+  * production IRQ core and wake queue; never complete by polling blindly. */
+ park_device->pending_isr=NAS_VIRTIO_IRQ_USED_BUFFER;
+ assert(nas_irq_dispatch(11U));
+ assert(woke && !entry.queue);
+ if(park_device->probe_rx_busy_during_tx){
+     /* TX remains suspended with busy=true. Let the RX worker win this
+      * scheduling slice after a real IRQ, and inject a completed RX buffer.
+      * It must not swallow that sole wake when TX eventually resumes. */
+     unsigned attempted=0;
+     inject(park_device,12U+60U);
+     assert(nas_netdev_poll(&park_device->backend->netdev,4,
+                            unexpected_rx,&attempted)==-EBUSY);
+     assert(attempted==0);
+     ++park_device->rx_busy_collisions;
+     park_device->probe_rx_busy_during_tx=false;
+ }
+ return NAS_KWAIT_READY;
+}
 static void reset(void *p){
  struct fake_nic *n=p;n->status=0;n->resets++;
 }
@@ -139,6 +180,13 @@ static void wake(void *context){
  unsigned *wakes=context;
  (*wakes)++;
 }
+static int routed_transmit(struct nas_netdev *dev,struct fake_nic *device){
+ assert(!simulate_worker && !park_device);
+ park_device=device;simulate_worker=true;
+ int rc=nas_netdev_transmit(dev,frame,sizeof(frame));
+ simulate_worker=false;park_device=NULL;
+ return rc;
+}
 int main(void){
  const struct nas_irq_route route={.domain=NAS_IRQ_DOMAIN_X86_PIC,
                                     .hwirq=11};
@@ -163,9 +211,14 @@ int main(void){
  assert(!fake.pending_isr && wakes==1 && nic.irq_acks==1 &&
         nic.irq_rx_wakes==1 && dev->rx_sequence>=2);
  assert(!nas_irq_dispatch(11));
- assert(nas_netdev_transmit(dev,frame,sizeof(frame))==0);
+ assert(routed_transmit(dev,&fake)==0);
  assert(fake.tx_count==1 && fake.tx_length==sizeof(frame));
  assert(!memcmp(fake.tx_frame,frame,sizeof(frame)));
+ const uint64_t legacy_polls=nic.tx_legacy_polls;
+ assert(routed_transmit(dev,&fake)==0);
+ assert(fake.tx_count==2 && nic.tx_worker_waits>=1 &&
+        nic.tx_irq_wakes>=1 && nic.tx_legacy_polls==legacy_polls &&
+        legacy_polls==0);
  unsigned calls=0;
  assert(nas_netdev_poll(dev,4,receive,&calls)==0);
  inject(&fake,sizeof(frame)+12U);
@@ -173,6 +226,17 @@ int main(void){
  assert(nic.rx_completed==1);
  assert(nic.rx_submitted==33);
  assert(nas_netdev_poll(dev,4,receive,&calls)==0);
+ /* One hardware IRQ completes TX and RX. RX runs first and collides with
+  * the parked TX owner's busy flag; release must produce one extra wake. */
+ const unsigned wake_before_collision=wakes;
+ const uint64_t ack_before_collision=nic.irq_acks;
+ fake.probe_rx_busy_during_tx=true;
+ assert(routed_transmit(dev,&fake)==0);
+ assert(fake.rx_busy_collisions==1 && !nic.rx_retry_after_tx);
+ assert(nic.irq_acks==ack_before_collision+1U &&
+        wakes==wake_before_collision+2U);
+ assert(nas_netdev_poll(dev,4,receive,&calls)==1 && calls==2);
+ assert(nic.rx_completed==2 && nic.irq_acks==ack_before_collision+1U);
  /* malformed completion poisons device, never leaks stale packet data. */
  inject(&fake,12);
  assert(nas_netdev_poll(dev,4,receive,&calls)==-EIO);
@@ -283,9 +347,9 @@ int main(void){
     nas_virtio_net_irq_totals(&stats);
     assert(stats.irq_driven_nics==2 && stats.irq_acks==2 &&
            stats.irq_rx_wakes==2);
-    assert(nas_netdev_transmit(dev2,frame,sizeof(frame))==0);
+    assert(routed_transmit(dev2,&discovered2)==0);
     assert(discovered2.tx_count==1);
-    assert(nas_netdev_transmit(dev,frame,sizeof(frame))==0);
+    assert(routed_transmit(dev,&discovered)==0);
     assert(discovered.tx_count==1);
     assert(nas_bus_device_request_remove(&bus)==0);
     assert(nas_bus_device_request_remove(&bus)==0);
@@ -301,8 +365,10 @@ int main(void){
     assert(nas_virtio_net_count()==1);
     assert(route_disables==2); /* shared second owner keeps IRQ11 live */
     nas_virtio_net_irq_totals(&stats);
-    assert(stats.irq_driven_nics==1 && stats.irq_acks==1);
-    assert(nas_netdev_transmit(dev2,frame,sizeof(frame))==0);
+    /* The surviving NIC also received its TX completion IRQ above. */
+    assert(stats.irq_driven_nics==1 && stats.irq_acks==2 &&
+           stats.irq_acks==discovered2.backend->irq_acks);
+    assert(routed_transmit(dev2,&discovered2)==0);
     assert(discovered2.tx_count==2);
     assert(nas_bus_device_request_remove(&bus2)==0);
     assert(nas_bus_device_remove_status(&bus2)==-EINPROGRESS);
@@ -324,5 +390,42 @@ int main(void){
     assert(nas_bus_device_unbind(&mmio)==0);
     assert(nas_bus_device_unregister(&mmio)==0);
     all_pages_freed();
- puts("[ORIGINAL U-BOOT VIRTIO NET PORT PASS] two simultaneous PCI NICs, independent DMA/TX, original eth_ops, RX rearm, malformed, async bus-reaped hot-unbind, MMIO reuse");
+    /* A routed NIC's stalled TX parks its kernel C frame and times out,
+     * retaining the DMA buffer until the poison/reset path has run. */
+    struct nas_uboot_net timed={0};
+    struct fake_nic hung={.backend=&timed,
+        .features=NAS_VIRTIO_F_VERSION_1|(UINT64_C(1)<<5),
+        .mac={0x52,0x54,0,0x12,0x34,0x59},.stall_tx=true};
+    tr.context=&hung;tr.ops=&ops;
+    assert(nas_uboot_net_attach(&timed,&tr,"eth-timeout",route)==0);
+    assert(routed_transmit(&timed.netdev,&hung)==-EIO);
+    assert(timed.poisoned && timed.tx_worker_waits==1U &&
+           timed.tx_legacy_polls==0 && hung.resets>=1U);
+    assert(nas_uboot_net_detach(&timed)==0);
+    all_pages_freed();
+    /* A routed NIC must never silently poll if called outside a worker;
+     * non-routed early clients retain their bounded legacy compatibility. */
+    struct nas_uboot_net wrong={0};
+    struct fake_nic wrong_device={.backend=&wrong,
+        .features=NAS_VIRTIO_F_VERSION_1|(UINT64_C(1)<<5),
+        .mac={0x52,0x54,0,0x12,0x34,0x5a}};
+    tr.context=&wrong_device;
+    assert(nas_uboot_net_attach(&wrong,&tr,"eth-no-worker",route)==0);
+    assert(nas_netdev_transmit(&wrong.netdev,frame,sizeof(frame))==-EIO);
+    assert(wrong.poisoned && wrong.tx_legacy_polls==0 &&
+           wrong_device.resets>=1U);
+    assert(nas_uboot_net_detach(&wrong)==0);
+    all_pages_freed();
+    struct nas_uboot_net early={0};
+    struct fake_nic early_device={.backend=&early,
+        .features=NAS_VIRTIO_F_VERSION_1|(UINT64_C(1)<<5),
+        .mac={0x52,0x54,0,0x12,0x34,0x5b}};
+    tr.context=&early_device;
+    assert(nas_uboot_net_attach(&early,&tr,"eth-no-irq",
+                                (struct nas_irq_route){0})==0);
+    assert(nas_netdev_transmit(&early.netdev,frame,sizeof(frame))==0);
+    assert(early.tx_legacy_polls>0 && !early.tx_worker_waits);
+    assert(nas_uboot_net_detach(&early)==0);
+    all_pages_freed();
+ puts("[ORIGINAL U-BOOT VIRTIO NET PORT PASS] two PCI NICs, IRQ-only worker TX, RX-busy deferred retry with one wake, timeout and no-worker fail-closed, non-IRQ fallback, DMA, RX, hot-unbind, MMIO reuse");
 }

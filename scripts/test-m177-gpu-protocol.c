@@ -12,7 +12,8 @@
 enum failure {
     GOOD, BAD_RESPONSE, BAD_FENCE, SHORT_REPLY, MISSING_SCANOUT,
     BAD_CREATE, BAD_ATTACH, BAD_SCANOUT, TIMEOUT, ALLOC_FAIL,
-    NO_IRQ_SOURCE, NO_PRIMARY, RUNTIME_FENCE
+    NO_IRQ_SOURCE, NO_PRIMARY, RUNTIME_FENCE, RUNTIME_TIMEOUT,
+    RUNTIME_DIRTY_EPOCH
 };
 static enum failure failure;
 static const struct nas_bus_driver *registered_driver;
@@ -29,6 +30,7 @@ static uint64_t ticks;
 static uint32_t submitted_types[32];
 static uint32_t original_alloc_count;
 static uint32_t irq_status;
+static unsigned polls;
 
 void nas_print(const char *str) { fputs(str,stdout); }
 void nas_dec(uint64_t n) { printf("%llu",(unsigned long long)n); }
@@ -231,10 +233,20 @@ int nas_vring_queue_submit(struct nas_vring_queue *queue,
 int nas_vring_queue_poll(struct nas_vring_queue *queue,uint16_t *out_head,
                          uint32_t *bytes) {
     assert(queue && out_head && bytes && last_reply);
+    ++polls;
     if (failure==TIMEOUT)return -EAGAIN;
     *out_head=head;
     *bytes=response_bytes;
     return 0;
+}
+
+static void deliver_gpu_completion(void) {
+    assert(bound_irq && gpu.runtime_phase!=GPU_RUNTIME_IDLE);
+    irq_status=NAS_VIRTIO_IRQ_USED_BUFFER;
+    const uint32_t status=bound_irq->source_ack(bound_irq->source_context);
+    assert(status==NAS_VIRTIO_IRQ_USED_BUFFER && !irq_status);
+    bound_irq->notify(bound_irq->notify_context,status);
+    assert(gpu.display.ops->present(&gpu.display)==0);
 }
 
 static enum failure parse_mode(const char *name) {
@@ -251,6 +263,8 @@ static enum failure parse_mode(const char *name) {
     if (!strcmp(name,"no_irq_source"))return NO_IRQ_SOURCE;
     if (!strcmp(name,"no_primary"))return NO_PRIMARY;
     if (!strcmp(name,"runtime_fence"))return RUNTIME_FENCE;
+    if (!strcmp(name,"runtime_timeout"))return RUNTIME_TIMEOUT;
+    if (!strcmp(name,"runtime_dirty_epoch"))return RUNTIME_DIRTY_EPOCH;
     fprintf(stderr,"unknown fixture: %s\n",name);
     exit(2);
 }
@@ -273,7 +287,8 @@ int main(int argc,char **argv) {
     assert(nas_virtio_gpu_driver_register()==0 && registered==1U);
     assert(registered_driver && registered_driver->match(&device));
     const int result=registered_driver->probe(&device);
-    if (failure!=GOOD && failure!=RUNTIME_FENCE) {
+    if (failure!=GOOD && failure!=RUNTIME_FENCE &&
+        failure!=RUNTIME_TIMEOUT && failure!=RUNTIME_DIRTY_EPOCH) {
         assert(result<0 && !gpu.claimed && !primary && !bound_irq);
         assert(allocs==frees && !nas_virtio_gpu_count());
         assert(resets>=1U);
@@ -291,6 +306,11 @@ int main(int argc,char **argv) {
     assert(gpu.display.mode.width==800 && gpu.display.mode.height==600);
     assert(gpu.display.mode.pitch==3200 && gpu.display.mode.bpp==32);
     if (failure==RUNTIME_FENCE) {
+        assert(gpu.display.ops->present(&gpu.display)==0);
+        assert(gpu.runtime_phase==GPU_RUNTIME_TRANSFER);
+        irq_status=NAS_VIRTIO_IRQ_USED_BUFFER;
+        const uint32_t status=bound_irq->source_ack(bound_irq->source_context);
+        bound_irq->notify(bound_irq->notify_context,status);
         assert(gpu.display.ops->present(&gpu.display)==-EIO);
         assert(gpu.stalled && gpu.dirty);
         const unsigned sent=commands;
@@ -301,9 +321,45 @@ int main(int argc,char **argv) {
                allocs,commands);
         return 0;
     }
+    if (failure==RUNTIME_TIMEOUT) {
+        assert(gpu.display.ops->present(&gpu.display)==0);
+        const unsigned submitted=commands;
+        const unsigned polled=polls;
+        int rc=0;
+        for(unsigned n=0;n<8U && !rc;n++)
+            rc=gpu.display.ops->present(&gpu.display);
+        assert(rc==-ETIMEDOUT && gpu.stalled && gpu.dirty);
+        assert(commands==submitted && polls==polled);
+        assert(allocs==473U && !frees);
+        puts("[M181 GPU IRQ TIMEOUT PASS] no polling, no DMA reuse");
+        return 0;
+    }
+    if (failure==RUNTIME_DIRTY_EPOCH) {
+        assert(gpu.display.ops->present(&gpu.display)==0);
+        uint8_t pixel[8]={1,2,3,4,5,6,7,8};
+        assert(gpu.display.ops->write_at(&gpu.display,GPU_PITCH*7U,
+                                         pixel,sizeof(pixel))==sizeof(pixel));
+        assert(gpu.dirty && gpu.dirty_y0==7U);
+        deliver_gpu_completion(); /* First transfer; old epoch flush queued. */
+        assert(gpu.dirty && gpu.dirty_y0==7U);
+        deliver_gpu_completion(); /* Old flush; new transfer submitted. */
+        assert(gpu.runtime_phase==GPU_RUNTIME_TRANSFER &&
+               last_transfer_y==7U && last_transfer_height==1U);
+        deliver_gpu_completion();
+        deliver_gpu_completion();
+        assert(!gpu.dirty && gpu.runtime_phase==GPU_RUNTIME_IDLE);
+        assert(gpu.transfers==2U && gpu.flushes==2U);
+        puts("[M181 GPU DIRTY EPOCH PASS] writes during old DMA re-presented");
+        return 0;
+    }
     /* Initial zero-filled resource is a real 800x600 TRANSFER+FLUSH. */
     assert(gpu.display.ops->present(&gpu.display)==0);
+    assert(commands==5 && transfers==1 && flushes==0);
+    const unsigned before_poll=polls;
+    assert(gpu.display.ops->present(&gpu.display)==0 && polls==before_poll);
+    deliver_gpu_completion();
     assert(commands==6 && transfers==1 && flushes==1);
+    deliver_gpu_completion();
     assert(!gpu.dirty && last_transfer_y==0 && last_transfer_height==600);
     assert(gpu.display.ops->present(&gpu.display)==0 && commands==6);
     uint8_t bytes[1600],out[1600];
@@ -321,11 +377,9 @@ int main(int argc,char **argv) {
         assert(last_transfer_y==frame*133U+10U);
         assert(last_transfer_height==2U);
         assert(last_transfer_offset==(uint64_t)last_transfer_y*GPU_PITCH);
-        assert(!gpu.dirty);
-        irq_status=NAS_VIRTIO_IRQ_USED_BUFFER;
-        const uint32_t status=bound_irq->source_ack(bound_irq->source_context);
-        assert(status==NAS_VIRTIO_IRQ_USED_BUFFER && irq_status==0U);
-        bound_irq->notify(bound_irq->notify_context,status);
+        assert(!gpu.dirty && gpu.runtime_phase==GPU_RUNTIME_TRANSFER);
+        deliver_gpu_completion();
+        deliver_gpu_completion();
     }
     assert(commands==14 && transfers==5 && flushes==5);
     assert(gpu.display.ops->write_at(&gpu.display,GPU_BYTES-8U,bytes,16U)==0);
@@ -334,11 +388,24 @@ int main(int argc,char **argv) {
     nas_virtio_gpu_get_stats(&stats);
     assert(stats.width==800 && stats.height==600 && stats.backing_pages==469);
     assert(stats.scanout_id==0 && stats.submitted==14 && stats.completed==14);
-    assert(stats.transfers==5 && stats.flushes==5 && stats.irq_acks==4);
+    assert(stats.transfers==5 && stats.flushes==5 && stats.irq_acks==10);
+    /* A valid one-shot native stats record can be emitted with exactly one
+     * newer transfer in flight: M177 must not require equality here. */
+    assert(gpu.display.ops->write_at(&gpu.display,GPU_PITCH*17U,
+                                     bytes,sizeof(bytes))==sizeof(bytes));
+    assert(gpu.display.ops->present(&gpu.display)==0);
+    assert(gpu.runtime_phase==GPU_RUNTIME_TRANSFER &&
+           gpu.submitted==15U && gpu.completed==14U &&
+           gpu.transfers==5U && gpu.flushes==5U);
     nas_virtio_gpu_report();
     assert(gpu.reported);
     nas_virtio_gpu_report();
     assert(gpu.reported);
+    deliver_gpu_completion();
+    deliver_gpu_completion();
+    assert(gpu.runtime_phase==GPU_RUNTIME_IDLE &&
+           gpu.submitted==16U && gpu.completed==16U &&
+           gpu.transfers==6U && gpu.flushes==6U);
     assert(syncs>100 && allocs==473U && frees==0U);
     printf("[M177 HOST GPU PROTOCOL PASS] 469 pages across 2 attach SG pages,"
            " GET/CREATE/ATTACH/SCANOUT, 5 fenced TRANSFER/FLUSH,"

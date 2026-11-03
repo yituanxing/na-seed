@@ -149,7 +149,7 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin \
   ports/uboot/net_port.c ports/unikraft/split_queue.c \
   kernel/drivers/virtio/transport.c kernel/drivers/port/dma.c \
   kernel/drivers/port/net.c kernel/drivers/core/bus.c \
-  kernel/drivers/core/irq.c \
+  kernel/drivers/core/irq.c kernel/task/k_sync.c kernel/task/wait_queue.c \
   ports/uboot/virtio_net_bus.c kernel/lib/string.c \
   -o build/block-foundation/test-uboot-original-virtio-net-port
 build/block-foundation/test-uboot-original-virtio-net-port

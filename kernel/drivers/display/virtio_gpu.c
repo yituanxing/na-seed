@@ -10,6 +10,7 @@
 #include "../port/dma.h"
 #include "../virtio/transport.h"
 #include "../../arch/arch.h"
+#include "../../time/clock.h"
 #include "../../errno.h"
 #include "../../lib/string.h"
 #include "../../../ports/unikraft/split_queue.h"
@@ -67,6 +68,9 @@ _Static_assert(sizeof(struct gpu_transfer)==56U, "virtio-gpu transfer");
 _Static_assert(sizeof(struct gpu_flush)==48U, "virtio-gpu flush");
 _Static_assert(sizeof(struct gpu_entry)==GPU_ENTRY_BYTES, "virtio-gpu mem entry");
 
+enum gpu_runtime_phase { GPU_RUNTIME_IDLE, GPU_RUNTIME_TRANSFER,
+                         GPU_RUNTIME_FLUSH };
+
 struct gpu_device {
     struct nas_virtio_transport transport;
     struct nas_bus_device *owner;
@@ -81,6 +85,10 @@ struct gpu_device {
     uint32_t scanout;
     unsigned pixel_pages, entry_pages;
     uint32_t dirty_y0, dirty_y1;
+    uint32_t epoch_first, epoch_last;
+    uint16_t runtime_head;
+    uint64_t runtime_fence, runtime_deadline;
+    enum gpu_runtime_phase runtime_phase;
     bool dirty, claimed, reported, stalled;
 };
 static struct gpu_device gpu;
@@ -114,16 +122,13 @@ static void irq_notify(void *context,uint32_t asserted) {
     /* No DRM, framebuffer, queue drain, or allocation in hardirq context. */
 }
 
-/* One in-flight control command makes mutable DMA request/reply storage and
- * the shared resource backing trivially owned. All submission/completion
- * happens in IRQ-masked kernel C, including the scheduler-safe present().
- * The fence flag makes used-ring completion an actual host processing barrier
- * even if a future implementation has an asynchronous renderer. */
-static int command_sync(struct gpu_device *g,const void *request,
-                        uint32_t request_bytes,uint32_t entry_bytes,
-                        uint32_t expected_response) {
+/* Bootstrap and runtime share one DMA submission path. Runtime completion
+ * owns the head/fence in gpu_device, never a borrowed scheduler C stack. */
+static int command_submit(struct gpu_device *g,const void *request,
+                          uint32_t request_bytes,uint32_t entry_bytes,
+                          uint16_t *submitted_head) {
     if(g && g->stalled)return -EIO;
-    if(!g || !g->control.active || !request ||
+    if(!g || !g->control.active || !request || !submitted_head ||
        request_bytes>NAS_DMA_PAGE_BYTES ||
        entry_bytes>GPU_ENTRY_PAGES*NAS_DMA_PAGE_BYTES)return -EINVAL;
     memset(g->command.cpu,0,NAS_DMA_PAGE_BYTES);
@@ -152,36 +157,51 @@ static int command_sync(struct gpu_device *g,const void *request,
     rc=nas_dma_sync(g->transport.dma,&g->response,0,
                     sizeof(struct gpu_resp_info),NAS_DMA_FROM_DEVICE);
     if(rc)return rc;
-    uint16_t submitted_head=0;
-    rc=nas_vring_queue_submit(&g->control,segments,n,&submitted_head);
+    rc=nas_vring_queue_submit(&g->control,segments,n,submitted_head);
     if(rc)return rc;
     ++g->submitted;
+    return 0;
+}
+
+static int command_response(struct gpu_device *g,const struct gpu_hdr *question,
+                            uint32_t expected_response,uint32_t response_bytes) {
+    if(response_bytes<sizeof(struct gpu_hdr) ||
+       response_bytes>sizeof(struct gpu_resp_info))return -EIO;
+    int rc=nas_dma_sync(g->transport.dma,&g->response,0,response_bytes,
+                        NAS_DMA_FROM_DEVICE);
+    if(rc)return rc;
+    const struct gpu_hdr *answer=(const struct gpu_hdr *)g->response.cpu;
+    if(little32(answer->type)!=expected_response ||
+       !(little32(answer->flags)&GPU_FENCE) ||
+       answer->fence_id!=question->fence_id)return -EIO;
+    if(expected_response==GPU_RESP_OK_DISPLAY_INFO &&
+       response_bytes<sizeof(struct gpu_resp_info))return -EIO;
+    ++g->completed;
+    return 0;
+}
+
+/* Only the four pre-userspace initialization commands may busy-wait: no
+ * native Task or kernel worker is yet able to consume device completion. */
+static int command_sync(struct gpu_device *g,const void *request,
+                        uint32_t request_bytes,uint32_t entry_bytes,
+                        uint32_t expected_response) {
+    uint16_t submitted_head=0;
+    int rc=command_submit(g,request,request_bytes,entry_bytes,&submitted_head);
+    if(rc)return rc;
     const uint64_t start=nas_arch_monotonic_ns();
     uint16_t completed_head=0;
     uint32_t response_bytes=0;
     do {
         rc=nas_vring_queue_poll(&g->control,&completed_head,&response_bytes);
         if(rc!=-EAGAIN)break;
-        /* Yielding this C frame would invalidate the borrowed stack request;
-         * bounded device completion is intentionally synchronous here. */
+        /* Bootstrap runs before the scheduler can park any C frame. */
         __asm__ volatile("" : : : "memory");
     }while(nas_arch_monotonic_ns()-start<GPU_TIMEOUT_NS);
     if(rc==-EAGAIN)rc=-ETIMEDOUT;
     if(rc)goto poisoned;
-    if(completed_head!=submitted_head ||
-       response_bytes<sizeof(struct gpu_hdr) ||
-       response_bytes>sizeof(struct gpu_resp_info)) {rc=-EIO;goto poisoned;}
-    rc=nas_dma_sync(g->transport.dma,&g->response,0,response_bytes,
-                    NAS_DMA_FROM_DEVICE);
+    if(completed_head!=submitted_head) {rc=-EIO;goto poisoned;}
+    rc=command_response(g,request,expected_response,response_bytes);
     if(rc)goto poisoned;
-    const struct gpu_hdr *answer=(const struct gpu_hdr *)g->response.cpu;
-    const struct gpu_hdr *question=(const struct gpu_hdr *)request;
-    if(little32(answer->type)!=expected_response ||
-       !(little32(answer->flags)&GPU_FENCE) ||
-       answer->fence_id!=question->fence_id) {rc=-EIO;goto poisoned;}
-    if(expected_response==GPU_RESP_OK_DISPLAY_INFO &&
-       response_bytes<sizeof(struct gpu_resp_info)) {rc=-EIO;goto poisoned;}
-    ++g->completed;
     return 0;
 poisoned:
     /* A timed-out/invalid used entry may still reference these DMA pages.
@@ -253,39 +273,85 @@ static uint64_t write_at(struct nas_display_device *display,uint64_t offset,
     return done;
 }
 
+/* Runtime used-ring processing is strictly IRQ driven. An acknowledged
+ * interrupt permits one bounded drain, but no scheduler-stack busy wait. */
+static int runtime_submit(struct gpu_device *g,const struct gpu_hdr *request,
+                          uint32_t bytes,enum gpu_runtime_phase phase) {
+    uint16_t head=0;
+    int rc=command_submit(g,request,bytes,0,&head);
+    if(rc)return rc;
+    g->runtime_head=head;
+    g->runtime_fence=request->fence_id;
+    g->runtime_deadline=nas_time_add_deadline(nas_arch_monotonic_ns(),
+                                             GPU_TIMEOUT_NS);
+    g->runtime_phase=phase;
+    return 0;
+}
+static int runtime_poison(struct gpu_device *g,int rc) {
+    /* Host DMA may still own the command, reply and pixel backing. Never
+     * reuse or release them before transport reset, even after timeout. */
+    g->stalled=true;
+    mark_dirty(g,g->epoch_first,g->epoch_last);
+    return rc;
+}
+static int runtime_complete(struct gpu_device *g) {
+    if(g->runtime_phase==GPU_RUNTIME_IDLE)return 0;
+    const uint32_t irq=__atomic_exchange_n(&g->irq_pending,0U,__ATOMIC_ACQUIRE);
+    if(!(irq&NAS_VIRTIO_IRQ_USED_BUFFER)) {
+        if(nas_arch_monotonic_ns()>=g->runtime_deadline)
+            return runtime_poison(g,-ETIMEDOUT);
+        return 0;
+    }
+    uint16_t head=0;
+    uint32_t bytes=0;
+    int rc=nas_vring_queue_poll(&g->control,&head,&bytes);
+    if(rc==-EAGAIN)return 0; /* No speculative retry without another IRQ. */
+    if(rc || head!=g->runtime_head)
+        return runtime_poison(g,rc ? rc : -EIO);
+    const struct gpu_hdr expected={.fence_id=g->runtime_fence};
+    rc=command_response(g,&expected,GPU_RESP_OK_NODATA,bytes);
+    if(rc)return runtime_poison(g,rc);
+    if(g->runtime_phase==GPU_RUNTIME_TRANSFER) {
+        ++g->transfers;
+        struct gpu_rect rect={0,little32(g->epoch_first),little32(GPU_WIDTH),
+                              little32(g->epoch_last-g->epoch_first)};
+        struct gpu_flush flush={.hdr=command_hdr(g,GPU_CMD_RESOURCE_FLUSH),
+                                .r=rect,.id=little32(GPU_RESOURCE_ID)};
+        rc=runtime_submit(g,&flush.hdr,sizeof(flush),GPU_RUNTIME_FLUSH);
+        return rc ? runtime_poison(g,rc) : 0;
+    }
+    ++g->flushes;
+    g->runtime_phase=GPU_RUNTIME_IDLE;
+    return 0;
+}
+
 static int gpu_present(struct nas_display_device *display) {
     struct gpu_device *g=display->backend;
     if(!g || !g->claimed)return -ENODEV;
-    /* Device-side ISR ACK only signals here; all queue work remains in the
-     * scheduler's safe context, never in the interrupt handler. */
-    (void)__atomic_exchange_n(&g->irq_pending,0U,__ATOMIC_ACQUIRE);
+    if(g->stalled)return -EIO;
+    int rc=runtime_complete(g);
+    if(rc || g->runtime_phase!=GPU_RUNTIME_IDLE)return rc;
     if(!g->dirty)return 0;
-    /* Preserve dirty state across failure: never report an unseen frame as
-     * visible. Only a completed fenced transfer+flush clears this epoch. */
     const uint32_t first=g->dirty_y0,last=g->dirty_y1;
     if(last>GPU_HEIGHT || last<=first)return -EINVAL;
     for(unsigned i=first*GPU_PITCH/NAS_DMA_PAGE_BYTES;
         i<((uint64_t)last*GPU_PITCH+NAS_DMA_PAGE_BYTES-1U)/NAS_DMA_PAGE_BYTES;
         ++i) {
-        int rc=nas_dma_sync(g->transport.dma,&g->pixels[i],0,
-                            NAS_DMA_PAGE_BYTES,NAS_DMA_TO_DEVICE);
+        rc=nas_dma_sync(g->transport.dma,&g->pixels[i],0,
+                        NAS_DMA_PAGE_BYTES,NAS_DMA_TO_DEVICE);
         if(rc)return rc;
     }
+    /* New user writes during an in-flight epoch remain dirty for the next
+     * transfer; an older flush must never erase those later writes. */
+    g->epoch_first=first;g->epoch_last=last;
+    g->dirty=false;
     struct gpu_rect rect={0,little32(first),little32(GPU_WIDTH),
                           little32(last-first)};
     struct gpu_transfer transfer={.hdr=command_hdr(g,GPU_CMD_TRANSFER_TO_HOST_2D),
         .r=rect,.offset=little64((uint64_t)first*GPU_PITCH),
         .id=little32(GPU_RESOURCE_ID)};
-    int rc=command_sync(g,&transfer,sizeof(transfer),0,GPU_RESP_OK_NODATA);
-    if(rc)return rc;
-    ++g->transfers;
-    struct gpu_flush flush={.hdr=command_hdr(g,GPU_CMD_RESOURCE_FLUSH),
-                            .r=rect,.id=little32(GPU_RESOURCE_ID)};
-    rc=command_sync(g,&flush,sizeof(flush),0,GPU_RESP_OK_NODATA);
-    if(rc)return rc;
-    ++g->flushes;
-    g->dirty=false;
-    return 0;
+    rc=runtime_submit(g,&transfer.hdr,sizeof(transfer),GPU_RUNTIME_TRANSFER);
+    return rc ? runtime_poison(g,rc) : 0;
 }
 
 static const struct nas_display_ops gpu_display_ops={

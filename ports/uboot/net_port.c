@@ -5,6 +5,8 @@
 #include "../../kernel/mm/heap.h"
 #include "../../kernel/errno.h"
 #include "../../kernel/lib/string.h"
+#include "../../kernel/task/kthread.h"
+#include "../../kernel/arch/arch.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -15,6 +17,7 @@
 #pragma GCC diagnostic pop
 
 #define NAS_NET_TX_POLL_BUDGET 2000000U
+#define NAS_NET_TX_TIMEOUT_NS UINT64_C(3000000000)
 #define NAS_NET_TX_FRAME_OFFSET 64U
 #define NET_FEATURE(bit) (UINT64_C(1)<<(bit))
 
@@ -78,6 +81,9 @@ static int net_queue_add(struct virtqueue *vq,struct virtio_sg **sgs,
  };
  rc=nas_vring_queue_submit(&n->tx_ring,segments,2,&n->tx_head);
  if(rc){net_poison(n);return rc;}
+ /* Serialized send owns this completion semaphore until get_buf retires the
+  * descriptor. Any earlier RX/old-TX wake token must not complete a new TX. */
+ nas_ksem_init(&n->tx_completion,0);
  n->tx_pending=true;
  return 0;
 }
@@ -92,11 +98,37 @@ static void *net_queue_get_buf(struct virtqueue *vq,unsigned *used_len){
  if(vq==&n->tx_vq){
      if(!n->tx_pending)return NULL;
      int rc=-EAGAIN;
-     /* Upstream send() loops forever; consume its request in one bounded
-      * get_buf(), then return a sentinel and force the caller to report EIO. */
-     for(unsigned k=0;k<NAS_NET_TX_POLL_BUDGET;k++){
-         rc=nas_vring_queue_poll(&n->tx_ring,&head,&bytes);
-         if(rc!=-EAGAIN)break;
+     if(n->rx_irq.bound){
+         /* A routed runtime NIC may not spin on a scheduler/kernel C frame.
+          * The upstream send() loop needs a sentinel on failure, so poison
+          * and reset rather than falling back to the old polling path. */
+         if(!nas_kthread_in_worker()){
+             n->tx_pending=false;
+             net_poison(n);
+             return vq;
+         }
+         /* Original U-Boot send() is synchronous. Keep its C frame on the
+          * actual lwIP worker stack, park until a routed device IRQ, then
+          * inspect the used ring once per notification. No busy TX polling. */
+         uint64_t start=nas_arch_monotonic_ns();
+         const uint64_t deadline=start>UINT64_MAX-NAS_NET_TX_TIMEOUT_NS ?
+                                  UINT64_MAX:start+NAS_NET_TX_TIMEOUT_NS;
+         for(;;){
+             ++n->tx_worker_waits;
+             if(nas_ksem_wait_until(&n->tx_completion,deadline)!=NAS_KWAIT_READY){
+                 rc=-ETIMEDOUT;break;
+             }
+             rc=nas_vring_queue_poll(&n->tx_ring,&head,&bytes);
+             if(rc!=-EAGAIN)break;
+         }
+     }else{
+         /* Non-routed early clients have no IRQ to park on. Keep their
+          * bounded polling compatibility path isolated from runtime lwIP. */
+         for(unsigned k=0;k<NAS_NET_TX_POLL_BUDGET;k++){
+             ++n->tx_legacy_polls;
+             rc=nas_vring_queue_poll(&n->tx_ring,&head,&bytes);
+             if(rc!=-EAGAIN)break;
+         }
      }
      n->tx_pending=false;
      if(rc || head!=n->tx_head || bytes){
@@ -138,12 +170,23 @@ static int net_transmit(void *ctx,const uint8_t *frame,uint32_t bytes){
  int rc=n->poisoned?-EIO:upstream_ops()->send(&n->udev,(void *)frame,(int)bytes);
  if(n->poisoned)rc=-EIO;
  __atomic_store_n(&n->busy,false,__ATOMIC_RELEASE);
+ /* An RX IRQ may wake its worker while this TX owner is parked. If RX ran
+  * first, its -EBUSY must not consume the sole hardware wake forever. One
+  * compensating notification after releasing busy is enough; the single-
+  * core kernel dispatch does not preempt these two state transitions. */
+ if(__atomic_exchange_n(&n->rx_retry_after_tx,false,__ATOMIC_ACQ_REL) &&
+    n->netdev.registered && !n->netdev.removing)
+     nas_netdev_notify_rx(&n->netdev);
  return rc;
 }
 static int net_poll(void *ctx,uint32_t budget,
                     nas_netdev_rx receive,void *consumer){
  struct nas_uboot_net *n=ctx;
- if(__atomic_exchange_n(&n->busy,true,__ATOMIC_ACQUIRE))return -EBUSY;
+ if(__atomic_exchange_n(&n->busy,true,__ATOMIC_ACQUIRE)){
+     /* RX did not touch the queue: re-schedule it once TX completes. */
+     __atomic_store_n(&n->rx_retry_after_tx,true,__ATOMIC_RELEASE);
+     return -EBUSY;
+ }
  int count=0,rc=0;
  while((uint32_t)count<budget && !n->poisoned){
      uchar *packet=NULL;
@@ -177,6 +220,9 @@ static void net_rx_irq_notify(void *context,uint32_t source_status){
  if(!(source_status&(NAS_VIRTIO_IRQ_USED_BUFFER|
                       NAS_VIRTIO_IRQ_CONFIG_CHANGE)) || n->poisoned ||
     !n->netdev.registered || n->netdev.removing)return;
+ if((source_status&NAS_VIRTIO_IRQ_USED_BUFFER) && n->tx_pending){
+     if(nas_ksem_post(&n->tx_completion))++n->tx_irq_wakes;
+ }
  /* Count only an installed worker wake, never a pre-registration or
   * pre-attach ISR, so acceptance proves hardirq reached the real worker. */
  if(__atomic_load_n(&n->netdev.rx_wake,__ATOMIC_ACQUIRE))n->irq_rx_wakes++;
@@ -189,8 +235,11 @@ int nas_uboot_net_attach(struct nas_uboot_net *n,
     n->netdev.registered || n->rx_ring.active || n->tx_ring.active)
      return -EINVAL;
  n->transport=*tr;n->busy=false;n->poisoned=false;
+ n->rx_retry_after_tx=false;
  n->rx_dma_count=0;n->rx_submitted=0;n->tx_pending=false;
  n->irq_acks=0;n->irq_rx_wakes=0;n->rx_completed=0;
+ n->tx_irq_wakes=0;n->tx_worker_waits=0;n->tx_legacy_polls=0;
+ nas_ksem_init(&n->tx_completion,0);
  memset(n->rx_slot_by_head,0,sizeof(n->rx_slot_by_head));
  memset(n->rx_queued,0,sizeof(n->rx_queued));
  n->parent_priv=(struct virtio_dev_priv){.vendor=0,

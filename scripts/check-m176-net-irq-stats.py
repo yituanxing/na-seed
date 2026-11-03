@@ -7,7 +7,8 @@ from pathlib import Path
 PREFIX = "[M176 NET RX IRQ STATS] "
 VERDICT = "[M176 NET RX IRQ ONLY PASS]"
 KEYS = ("nic_irq", "nic_proven", "irq_ack", "irq_wakes", "rx_packets",
-        "deferred_drains", "fallback_poll")
+        "deferred_drains", "fallback_poll", "tx_nic_proven",
+        "tx_irq_wakes", "tx_worker_waits", "tx_legacy_polls")
 
 
 def parse_guest_log(log: str) -> dict[str, int]:
@@ -31,14 +32,19 @@ def parse_guest_log(log: str) -> dict[str, int]:
        numbers["nic_proven"] != 2 or \
        numbers["irq_ack"] < 1 or numbers["irq_wakes"] < 1 or \
        numbers["rx_packets"] < 1 or numbers["deferred_drains"] < 1 or \
-       numbers["fallback_poll"] != 0:
+       numbers["fallback_poll"] != 0 or \
+       numbers["tx_nic_proven"] != 2 or \
+       numbers["tx_irq_wakes"] < 1 or \
+       numbers["tx_worker_waits"] < 1 or \
+       numbers["tx_legacy_polls"] != 0:
         raise ValueError("native hardware/deferred/fallback counters invalid")
     return numbers
 
 
 def selftest() -> None:
     good = (PREFIX + "nic_irq=2 nic_proven=2 irq_ack=3 irq_wakes=2 rx_packets=5 "
-            "deferred_drains=2 fallback_poll=0\n" + VERDICT + "\n")
+            "deferred_drains=2 fallback_poll=0 tx_nic_proven=2 "
+            "tx_irq_wakes=4 tx_worker_waits=5 tx_legacy_polls=0\n" + VERDICT + "\n")
     assert parse_guest_log(good)["rx_packets"] == 5
     corrupt = (
         good.replace("nic_irq=2", "nic_irq=1"),
@@ -50,6 +56,12 @@ def selftest() -> None:
         good.replace("deferred_drains=2", "deferred_drains=0"),
         good.replace("fallback_poll=0", "fallback_poll=1"),
         good.replace("fallback_poll=0", "fallback_poll=foo"),
+        good.replace("tx_nic_proven=2", "tx_nic_proven=1"),
+        good.replace("tx_irq_wakes=4", "tx_irq_wakes=0"),
+        good.replace("tx_worker_waits=5", "tx_worker_waits=0"),
+        good.replace("tx_legacy_polls=0", "tx_legacy_polls=1"),
+        good.replace("tx_legacy_polls=0", "tx_legacy_polls=foo"),
+        good.replace("tx_worker_waits=5 ", ""),
         good.replace("nic_irq=2 ", ""),
         good.replace("fallback_poll=0", "irq_ack=1 fallback_poll=0"),
         good + good,
@@ -62,7 +74,7 @@ def selftest() -> None:
         except ValueError:
             continue
         raise AssertionError(f"M176 parser accepted fraudulent case {index}")
-    print("[M176 HOST STATS PARSER PASS] IRQ and RX numbers fail closed")
+    print("[M176/M181 HOST STATS PARSER PASS] RX/TX IRQ and fallback numbers fail closed")
 
 
 if __name__ == "__main__":

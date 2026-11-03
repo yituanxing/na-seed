@@ -10,7 +10,8 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin \
 build/m177/test-gpu-protocol good
 for scenario in bad_response bad_fence short_reply missing_scanout \
                 bad_create bad_attach bad_scanout timeout alloc_fail \
-                no_irq_source no_primary; do
+                no_irq_source no_primary runtime_fence runtime_timeout \
+                runtime_dirty_epoch; do
     build/m177/test-gpu-protocol "$scenario"
 done
 cc -std=c11 -O2 -Wall -Wextra -Werror -fsanitize=address,undefined \
@@ -28,4 +29,4 @@ sh -n scripts/probe-riscv64-busybox-matrix.sh
 sh -n scripts/probe-aarch64-busybox-matrix.sh
 sh scripts/check-m172-device-display.sh
 sh scripts/check-m176-net-irq.sh
-echo '[M177 HOST GPU PASS] real driver protocol 12 cases, 469-page DMA+2-page attach SG, fenced response, one-shot DisplayDevice takeover, unchanged M176 IRQ/network and M172 fbdev/evdev'
+echo '[M177/M181 HOST GPU PASS] real driver protocol, IRQ-only runtime completion, dirty epochs, timeout/fence DMA lifetime, one-shot DisplayDevice takeover, unchanged M176 IRQ/network and M172 fbdev/evdev'

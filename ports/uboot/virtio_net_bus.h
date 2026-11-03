@@ -5,6 +5,8 @@
 struct nas_virtio_net_irq_stats {
  uint64_t irq_acks,irq_rx_wakes,rx_completed;
  unsigned irq_driven_nics,irq_proven_nics;
+ uint64_t tx_irq_wakes,tx_worker_waits,tx_legacy_polls;
+ unsigned tx_proven_nics;
 };
 int nas_virtio_net_driver_register(void);
 unsigned nas_virtio_net_count(void);

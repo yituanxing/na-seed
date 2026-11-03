@@ -34,10 +34,18 @@ awk '
         }
     }
     END {
+        # M181 is IRQ driven: a completed fifth flush may be followed by a
+        # sixth frame in flight when this one-shot stats line is emitted.
+        # With exactly one reusable control request, at most one command and
+        # at most one completed transfer awaiting flush are legitimate.
         if (records!=1 || stats["backing_pages"]!=469 ||
-            stats["submitted"]<14 || stats["completed"]!=stats["submitted"] ||
+            stats["submitted"]<14 || stats["completed"]<14 ||
+            stats["completed"]>stats["submitted"] ||
+            stats["submitted"]-stats["completed"]>1 ||
             stats["transfers"]<5 || stats["flushes"]<5 ||
-            stats["transfers"]!=stats["flushes"] || stats["irq_ack"]<1)
+            stats["flushes"]>stats["transfers"] ||
+            stats["transfers"]-stats["flushes"]>1 ||
+            stats["irq_ack"]<1)
             exit 1
     }
 ' "$log" || {

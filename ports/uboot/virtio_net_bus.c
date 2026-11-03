@@ -54,12 +54,17 @@ void nas_virtio_net_irq_totals(struct nas_virtio_net_irq_stats *stats){
      stats->irq_acks+=n->irq_acks;
      stats->irq_rx_wakes+=n->irq_rx_wakes;
      stats->rx_completed+=n->rx_completed;
+     stats->tx_irq_wakes+=n->tx_irq_wakes;
+     stats->tx_worker_waits+=n->tx_worker_waits;
+     stats->tx_legacy_polls+=n->tx_legacy_polls;
      if(n->netdev.rx_irq_driven){
          stats->irq_driven_nics++;
          /* A total ACK count can hide an unserviced second NIC. Count
           * only independently witnessed ISR, worker wake and RX traffic. */
          if(n->irq_acks && n->irq_rx_wakes && n->rx_completed)
              stats->irq_proven_nics++;
+         if(n->tx_irq_wakes && n->tx_worker_waits && !n->tx_legacy_polls)
+             stats->tx_proven_nics++;
      }
  }
 }
