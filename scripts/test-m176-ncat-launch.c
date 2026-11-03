@@ -15,26 +15,54 @@
 static void wait_both_dhcp(void) {
     int fd=socket(AF_INET,SOCK_DGRAM,0);
     require(fd>=0,"open real lwIP interface-query socket");
-    /* The actual SIOCGIFCONF implementation takes its address list from
-     * lwIP's live netif leases. No fixed IP is ever asserted just because
-     * a QEMU NIC appeared or a timer expired. */
+    /* SIOCGIFCONF takes its address list from live lwIP DHCP leases. QEMU
+     * virtio-mmio device addresses (and therefore eth0/eth1 enumeration)
+     * need not follow the order of -device arguments. Require exactly two
+     * named, independently leased NICs and both real guest subnets, without
+     * incorrectly assigning either subnet to a particular interface name. */
     int ready=0;
     for(unsigned attempt=0;attempt<120U && !ready;attempt++) {
         struct ifreq entries[8]={0};
         struct ifconf conf={.ifc_len=sizeof(entries),.ifc_req=entries};
-        if(ioctl(fd,SIOCGIFCONF,&conf)==0 &&
+        const int query=ioctl(fd,SIOCGIFCONF,&conf);
+        if(query==0 &&
            conf.ifc_len>=0 && conf.ifc_len<=(int)sizeof(entries) &&
            conf.ifc_len%(int)sizeof(struct ifreq)==0) {
-            int first=0,second=0;
+            unsigned eth0=0,eth1=0,subnet2=0,subnet3=0;
             for(unsigned i=0;i<(unsigned)conf.ifc_len/sizeof(entries[0]);i++) {
                 const uint32_t ip=ntohl(((struct sockaddr_in *)
                     (void *)&entries[i].ifr_addr)->sin_addr.s_addr);
-                if(!strcmp(entries[i].ifr_name,"eth0") &&
-                   (ip>>8)==UINT32_C(0x0a0002))first=1;
-                if(!strcmp(entries[i].ifr_name,"eth1") &&
-                   (ip>>8)==UINT32_C(0x0a0003))second=1;
+                if(strcmp(entries[i].ifr_name,"eth0") &&
+                   strcmp(entries[i].ifr_name,"eth1"))continue;
+                if(!strcmp(entries[i].ifr_name,"eth0"))eth0++;
+                else eth1++;
+                if((ip>>8)==UINT32_C(0x0a0002))subnet2++;
+                if((ip>>8)==UINT32_C(0x0a0003))subnet3++;
             }
-            ready=first && second;
+            ready=eth0==1 && eth1==1 && subnet2==1 && subnet3==1;
+            if(ready) {
+                printf("[M176 DUAL DHCP] eth0+eth1 leased both "
+                       "10.0.2/24 and 10.0.3/24 (enumeration independent)\n");
+                fflush(stdout);
+            }
+        }
+        if(!ready && attempt==119U) {
+            printf("[M176 DHCP DIAG] ioctl=%d errno=%d len=%d "
+                   "ifreq_size=%zu\n",query,errno,conf.ifc_len,
+                   sizeof(struct ifreq));
+            if(query==0 && conf.ifc_len>=0 &&
+               conf.ifc_len<=(int)sizeof(entries) &&
+               conf.ifc_len%(int)sizeof(struct ifreq)==0) {
+                for(unsigned i=0;i<(unsigned)conf.ifc_len/sizeof(entries[0]);i++) {
+                    const uint32_t ip=ntohl(((struct sockaddr_in *)
+                        (void *)&entries[i].ifr_addr)->sin_addr.s_addr);
+                    printf("[M176 DHCP DIAG] if=%s ip=%u.%u.%u.%u\n",
+                           entries[i].ifr_name,(unsigned)(ip>>24),
+                           (unsigned)((ip>>16)&255U),
+                           (unsigned)((ip>>8)&255U),(unsigned)(ip&255U));
+                }
+            }
+            fflush(stdout);
         }
         if(ready)break;
         struct timespec delay={.tv_sec=0,.tv_nsec=250000000L};
