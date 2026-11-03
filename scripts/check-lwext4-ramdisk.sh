@@ -28,6 +28,7 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -I "$vendor/include" \
   -I "$root/host/include" -I kernel \
   scripts/test-lwext4-vfs.c ports/lwext4/guest_vfs.c \
   kernel/fs/vfs.c kernel/fs/lookup.c kernel/task/resources.c \
+  scripts/inotify-vfs-test-stubs.c \
   ports/lwext4/lwext4_block.c \
   kernel/block/device.c kernel/block/ramdisk.c kernel/block/partition.c \
   kernel/lib/string.c kernel/mm/heap.c \

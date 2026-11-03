@@ -47,9 +47,11 @@ struct session {
     int fb,listener,pointer_x,pointer_y,focus,top,stage,mode;
     int held,dragging,grab_x,grab_y,origin_x,origin_y;
     int sent_key,exit_requested,pointer_client;
+    unsigned modifier_keys,vt_keyboard;
     unsigned changes,external_live,external_total;
 };
 struct client_spec {const char *path;int x,y;};
+static int dynamic_mode(int mode) {return mode==173 || mode==187;}
 static const struct client_spec clients[]={
     [IMAGE]={"/usr/bin/naseed-image",64,80},
     [TERMINAL]={"/usr/bin/naseed-terminal",300,160},
@@ -210,12 +212,13 @@ static void spawn_client(struct session *s,int role) {
     if(!pid) {
         close(link[0]);
         if(dup2(link[1],3)<0)_exit(122);
-        if(s->mode==173 && setenv(NASD_INHERITED_ENV,"3",1)!=0)_exit(120);
+        if(dynamic_mode(s->mode) &&
+           setenv(NASD_INHERITED_ENV,"3",1)!=0)_exit(120);
         /* Only a single IPC descriptor is inherited by the exec'ed client.
          * Devices, framebuffer and earlier clients remain desktop-owned. */
         for(int i=4;i<64;i++)close(i);
         char *const args[]={(char *)path,
-              s->mode==170 || s->mode==171 || s->mode==173 || s->mode==0 ?
+              s->mode==170 || s->mode==171 || dynamic_mode(s->mode) || s->mode==0 ?
                          (role==TERMINAL ? "--m170" :
                          role==BROWSER ? "--m170" : NULL) :
                          (s->mode==168 && role==TERMINAL ? "--m168" : NULL),NULL};
@@ -227,7 +230,7 @@ static void spawn_client(struct session *s,int role) {
     w->pid=pid;w->channel=link[0];w->role=role;w->owned_child=1;
     w->x=clients[role].x;w->y=clients[role].y;
     unsigned surface_w=0,surface_h=0;
-    if(s->mode==173) {
+    if(dynamic_mode(s->mode)) {
         int flags=fcntl(w->channel,F_GETFL);
         nasd_require(flags>=0 && fcntl(w->channel,F_SETFL,flags|O_NONBLOCK)==0,
                      "bootstrap client nonblocking surface receive");
@@ -395,7 +398,7 @@ static void retire_window(struct session *s,unsigned role,int request_quit) {
         if(abnormal)nasd_mark("M170_CRASHED_CLIENT_ISOLATED");
     } else if(s->mode==171 && role==LVGL && s->stage==1) {
         s->stage=2;nasd_mark("M171_LVGL_CLOSED_VISIBLE");
-    } else if(s->mode==173 && external && s->stage==2) {
+    } else if(dynamic_mode(s->mode) && external && s->stage==2) {
         s->stage=3;nasd_mark("M173_EXTERNAL_CLIENT_CLOSED_VISIBLE");
     }
 }
@@ -410,7 +413,7 @@ static void pointer_button(struct session *s,int down) {
         if(target<0)return;
         raise_window(s,(unsigned)target);
         struct window *w=&s->windows[target];
-        if((s->mode==0 || s->mode==170 || s->mode==171 || s->mode==173) &&
+        if((s->mode==0 || s->mode==170 || s->mode==171 || dynamic_mode(s->mode)) &&
            s->pointer_y>=w->y && s->pointer_y<w->y+TITLE_H &&
            s->pointer_x>=w->x+w->w-20) {
             retire_window(s,(unsigned)target,1);
@@ -423,7 +426,7 @@ static void pointer_button(struct session *s,int down) {
         render(s);
         if(((s->mode==171 || s->mode==0) && target==LVGL &&
              !s->dragging) ||
-           (s->mode==173 && (w->capabilities&NASD_INPUT_POINTER) &&
+           (dynamic_mode(s->mode) && (w->capabilities&NASD_INPUT_POINTER) &&
              !s->dragging)) {
             s->pointer_client=target;
             nasd_send_pointer(w->channel,
@@ -447,7 +450,7 @@ static void pointer_button(struct session *s,int down) {
         }
     } else if(s->pointer_client>=0 &&
                s->windows[s->pointer_client].active &&
-               (s->mode==171 || s->mode==0 || s->mode==173)) {
+               (s->mode==171 || s->mode==0 || dynamic_mode(s->mode))) {
         struct window *w=&s->windows[s->pointer_client];
         nasd_send_pointer(w->channel,
             (unsigned)clamp(s->pointer_x-w->x,w->w-1),
@@ -476,13 +479,35 @@ static void pointer_motion(struct session *s) {
 }
 static void input_event(struct session *s,unsigned device,
                         const struct input_event *e) {
+    if(device==0 && e->type==EV_KEY && (e->value==0 || e->value==1)) {
+        unsigned bit=0;
+        switch(e->code) {
+        case KEY_LEFTSHIFT:bit=1U;break;case KEY_RIGHTSHIFT:bit=2U;break;
+        case KEY_LEFTCTRL:bit=4U;break;case KEY_RIGHTCTRL:bit=8U;break;
+        case KEY_LEFTALT:bit=16U;break;case KEY_RIGHTALT:bit=32U;break;
+        default:break;
+        }
+        if(bit) {
+            if(e->value)s->modifier_keys|=bit;
+            else s->modifier_keys&=~bit;
+            return; /* one combined modifier snapshot travels with next key */
+        }
+    }
     if(device==0 && e->type==EV_KEY && e->value==1) {
-        if(s->mode==173) {
-            if(e->code==KEY_Q && s->stage==3)s->exit_requested=1;
-            else if(e->code==KEY_ESC)s->exit_requested=1;
+        uint32_t modifiers=0;
+        if(s->modifier_keys&3U)modifiers|=NASD_MOD_SHIFT;
+        if(s->modifier_keys&12U)modifiers|=NASD_MOD_CTRL;
+        if(s->modifier_keys&48U)modifiers|=NASD_MOD_ALT;
+        if(dynamic_mode(s->mode)) {
+            if(!s->vt_keyboard && e->code==KEY_Q && s->stage==3)
+                s->exit_requested=1;
+            else if(!s->vt_keyboard && e->code==KEY_ESC)
+                s->exit_requested=1;
+            else if(s->vt_keyboard && e->code==KEY_F12 &&
+                    (modifiers&NASD_MOD_CTRL))s->exit_requested=1;
             else if(s->focus>=0 && s->windows[s->focus].active &&
                     (s->windows[s->focus].capabilities&NASD_INPUT_KEYS))
-                nasd_send_packet(s->windows[s->focus].channel,MSG_KEY,e->code);
+                nasd_send_key(s->windows[s->focus].channel,e->code,modifiers);
         } else if(s->mode==171 && e->code==KEY_Q && s->stage==2) {
             s->exit_requested=1;
         } else if(s->mode==170 && e->code==KEY_Q && s->stage==4) {
@@ -491,20 +516,20 @@ static void input_event(struct session *s,unsigned device,
                   e->code==KEY_Q && s->stage==(s->mode==168?6:4)) {
             s->stage=s->mode==168?7:5;
             s->exit_requested=1;
-        } else if(!s->mode && e->code==KEY_ESC) {
+        } else if(!s->mode && !s->vt_keyboard && e->code==KEY_ESC) {
             s->exit_requested=1;
         } else if(s->focus>=0 &&
                   s->windows[s->focus].active &&
                   s->focus==BROWSER &&
                   (e->code==KEY_B || (s->mode!=167 && s->mode!=168 &&
                                      e->code==KEY_C))) {
-            nasd_send_packet(s->windows[BROWSER].channel,MSG_KEY,e->code);
+                nasd_send_key(s->windows[BROWSER].channel,e->code,modifiers);
         } else if(s->focus==TERMINAL && s->windows[TERMINAL].active) {
             if(s->mode==170 || s->mode==171 || s->mode==0) {
                 /* Translate evdev in the client, not in the compositor.
                  * Each physical key is one asynchronous IPC message. */
-                nasd_send_packet(s->windows[TERMINAL].channel,
-                                 MSG_KEY,e->code);
+                nasd_send_key(s->windows[TERMINAL].channel,
+                              e->code,modifiers);
             } else if(e->code==KEY_A &&
                       !(s->sent_key&(1<<TERMINAL))) {
                 nasd_send_packet(s->windows[TERMINAL].channel,MSG_KEY,KEY_A);
@@ -531,12 +556,12 @@ static void handle_client_message(struct session *s,unsigned slot,
                                   struct message m) {
     struct window *w=&s->windows[slot];
     const int role=w->role;
-    if((s->mode==170 || s->mode==171 || s->mode==0 || s->mode==173) &&
+    if((s->mode==170 || s->mode==171 || s->mode==0 || dynamic_mode(s->mode)) &&
        m.type==MSG_CLOSE) {
         retire_window(s,slot,0);
         return;
     }
-    if(s->mode==173) {
+    if(dynamic_mode(s->mode)) {
         /* Only READY advertises capabilities; any registered client can
          * repaint without needing a compositor-side application branch. */
         if(m.type!=MSG_UPDATED) {
@@ -579,7 +604,7 @@ static void handle_client_message(struct session *s,unsigned slot,
 }
 static void event_loop(struct session *s) {
     while(!s->exit_requested) {
-        const int dynamic=s->mode==173;
+        const int dynamic=dynamic_mode(s->mode);
         const unsigned base=dynamic?4U:3U;
         struct pollfd fds[4+WINDOW_LIMIT]={
             {.fd=s->input.keyboard,.events=POLLIN},
@@ -687,19 +712,22 @@ static void event_loop(struct session *s) {
 static void desktop(int mode) {
     struct session s={0};
     const unsigned bootstrap=mode==167?2U:
-                             (mode==171 || mode==173 || mode==0?4U:3U);
-    s.mode=mode;s.count=mode==173?WINDOW_LIMIT:bootstrap;
+                             (mode==171 || dynamic_mode(mode) || mode==0?4U:3U);
+    s.mode=mode;s.count=dynamic_mode(mode)?WINDOW_LIMIT:bootstrap;
+    s.vt_keyboard=mode==187 || (getenv("NASEED_TERMINAL_VT100") &&
+             !strcmp(getenv("NASEED_TERMINAL_VT100"),"1"));
     s.pointer_client=-1;s.listener=-1;
     s.input=open_input();
     s.fb=open_fb();
-    if(mode==173)s.listener=open_listener();
+    if(dynamic_mode(mode))s.listener=open_listener();
     for(unsigned i=0;i<bootstrap;i++) {
         spawn_client(&s,(int)i);
         s.order[s.live_count++]=i;
     }
     s.focus=s.top=(int)(bootstrap-1);s.pointer_x=400;s.pointer_y=300;
     render(&s);
-    if(mode==173)nasd_mark("M173_DESKTOP_INITIAL_VISIBLE");
+    if(mode==187)nasd_mark("M187_DESKTOP_INITIAL_VISIBLE");
+    else if(mode==173)nasd_mark("M173_DESKTOP_INITIAL_VISIBLE");
     else if(mode==171)nasd_mark("M171_DESKTOP_INITIAL_VISIBLE");
     else if(mode==170)nasd_mark("M170_DESKTOP_INITIAL_VISIBLE");
     else if(mode)nasd_mark(mode==168?"M168_DESKTOP_INITIAL_VISIBLE":
@@ -711,7 +739,7 @@ static void desktop(int mode) {
         unsigned role=s.order[s.live_count-1];
         retire_window(&s,role,1);
     }
-    if(mode==173) {
+    if(dynamic_mode(mode)) {
         for(unsigned i=0;i<s.count;i++)
             if(s.windows[i].pending)discard_pending(&s,i);
         close(s.listener);
@@ -720,9 +748,14 @@ static void desktop(int mode) {
     }
     close(s.input.keyboard);close(s.input.tablet);close(s.input.mouse);
     close(s.fb);
-    if(mode==173) {
+    if(dynamic_mode(mode)) {
+        if(mode==187) {
+            nasd_mark("M187_CLIENTS_REAPED");
+            nasd_mark("M187_DESKTOP_PASS");
+        } else {
         nasd_mark("M173_CLIENTS_REAPED");
         nasd_mark("M173_DESKTOP_PASS");
+        }
     } else if(mode==171) {
         nasd_mark("M171_CLIENTS_REAPED");
         nasd_mark("M171_DESKTOP_PASS");
@@ -984,6 +1017,46 @@ static void selftest170(void) {
     close(s.fb);
     nasd_mark("[M170 HOST DESKTOP PASS] crash reaped, stable z-order, focus and physical backing cleanup");
 }
+static void selftest187(void) {
+    int channels[2];
+    nasd_require(socketpair(AF_UNIX,SOCK_STREAM,0,channels)==0,
+                 "M187 real compositor-to-VT IPC");
+    struct session s={.mode=187,.count=WINDOW_LIMIT,.focus=TERMINAL,
+                      .vt_keyboard=1};
+    s.windows[TERMINAL].active=1;
+    s.windows[TERMINAL].channel=channels[0];
+    s.windows[TERMINAL].capabilities=NASD_INPUT_KEYS;
+    struct input_event e={.type=EV_KEY,.code=KEY_LEFTCTRL,.value=1};
+    input_event(&s,0,&e);
+    e.code=KEY_X;input_event(&s,0,&e);
+    struct message key=nasd_recv_packet(channels[1]);
+    nasd_require(key.type==MSG_KEY && key.key==KEY_X &&
+                 key.value==NASD_MOD_CTRL,"Ctrl+X modifier over actual IPC");
+    e.code=KEY_UP;input_event(&s,0,&e);
+    key=nasd_recv_packet(channels[1]);
+    nasd_require(key.key==KEY_UP && key.value==NASD_MOD_CTRL,
+                 "physical VT arrow key preserved over IPC");
+    e.code=KEY_LEFTCTRL;e.value=0;input_event(&s,0,&e);
+    e.code=KEY_ESC;e.value=1;input_event(&s,0,&e);
+    key=nasd_recv_packet(channels[1]);
+    nasd_require(key.key==KEY_ESC && key.value==0 && !s.exit_requested,
+                 "M187 ESC reaches focused PTY instead of quitting desktop");
+    e.code=KEY_RIGHTSHIFT;input_event(&s,0,&e);
+    e.code=KEY_A;input_event(&s,0,&e);
+    key=nasd_recv_packet(channels[1]);
+    nasd_require(key.key==KEY_A && key.value==NASD_MOD_SHIFT,
+                 "hardware Shift preserved to client");
+    e.code=KEY_RIGHTSHIFT;e.value=0;input_event(&s,0,&e);
+    e.code=KEY_LEFTCTRL;e.value=1;input_event(&s,0,&e);
+    e.code=KEY_F12;input_event(&s,0,&e);
+    nasd_require(s.exit_requested,"Ctrl+F12 deliberate M187 desktop exit");
+    struct session legacy={.mode=173};
+    e.code=KEY_ESC;input_event(&legacy,0,&e);
+    nasd_require(legacy.exit_requested,"M173 historical ESC exit unchanged");
+    close(channels[0]);close(channels[1]);
+    nasd_mark("[M187 HOST COMPOSITOR PASS] real IPC modifiers, ESC key routing, "
+              "Ctrl+F12 exit and M173 compatibility");
+}
 
 /* Exercise the production pathname listener and admission/retirement path
  * without a QEMU screen. The two clients deliberately register the SAME
@@ -1159,6 +1232,9 @@ int main(int argc,char **argv) {
     if(argc==2 && !strcmp(argv[1],"--selftest170")) {
         selftest();selftest168();selftest169();selftest170();return 0;
     }
+    if(argc==2 && !strcmp(argv[1],"--selftest187")) {
+        selftest187();return 0;
+    }
     if(argc==2 && !strcmp(argv[1],"--selftest173")) {
         selftest173();return 0;
     }
@@ -1170,11 +1246,13 @@ int main(int argc,char **argv) {
     nasd_require(argc==1 || (argc==2 &&
                  (!strcmp(argv[1],"m167") || !strcmp(argv[1],"m168") ||
                   !strcmp(argv[1],"m170") || !strcmp(argv[1],"m171") ||
-                  !strcmp(argv[1],"m173") || !strcmp(argv[1],"--m173"))),
+                  !strcmp(argv[1],"m173") || !strcmp(argv[1],"--m173") ||
+                  !strcmp(argv[1],"m187"))),
                  "desktop mode arguments");
     desktop(argc==1?173:(!strcmp(argv[1],"m168")?168:
                        !strcmp(argv[1],"m170")?170:
                        !strcmp(argv[1],"m171")?171:
+                       !strcmp(argv[1],"m187")?187:
                        (!strcmp(argv[1],"m173") ||
                         !strcmp(argv[1],"--m173"))?173:167));
     return 0;

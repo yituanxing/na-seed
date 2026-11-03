@@ -19,6 +19,15 @@ on:
       - 'ports/lwip/network_boot.c'
       - 'scripts/*m178*'
       - 'scripts/*m179*'
+      - 'scripts/*m187*'
+      - 'scripts/m174-expected-markers.txt'
+      - 'scripts/m174-software-rootfs-copies.tsv'
+      - 'scripts/stage-alpine-prebuilt-overlay.sh'
+      - 'scripts/prebuilt-profile-catalog.tsv'
+      - 'tests/m174-software-run.sh'
+      - 'tests/m187-software-functions.sh'
+      - 'rootfs/alpine/**'
+      - 'user/desktop/**'
       - 'scripts/probe-m174-batch.sh'
       - 'scripts/probe-riscv64-busybox-matrix.sh'
       - 'scripts/probe-aarch64-busybox-matrix.sh'
@@ -44,16 +53,23 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           submodules: true
-      - name: Ensure actual ext4 host inspection tools are installed
+      - name: Ensure ext4 host tools and real fullscreen GNU nano are installed
         run: |
           set -eu
+          missing=''
           if ! command -v mke2fs >/dev/null ||
              ! command -v debugfs >/dev/null ||
              ! command -v e2fsck >/dev/null; then
+            missing="$missing e2fsprogs"
+          fi
+          if ! command -v nano >/dev/null; then
+            missing="$missing nano"
+          fi
+          if [ -n "$missing" ]; then
             sh scripts/ci-ubuntu-mirror.sh
             sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
             sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
-              -o Acquire::http::Timeout=30 install -y --no-install-recommends e2fsprogs
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
           fi
       - name: Common ISA boundaries, request/IRQ/transport and previous 2D GPU
         run: |
@@ -133,10 +149,16 @@ jobs:
             build/external/m174-software-batch/${{ matrix.port }}/m176-wire.pcap
             build/external/m174-software-batch/${{ matrix.port }}/m176-host-http.log
             build/external/m174-software-batch/${{ matrix.port }}/m174-software-original-signed-elfs.sha256
+            build/external/m174-software-batch/${{ matrix.port }}/m187-software-new-signed-elfs.sha256
+            build/external/m174-software-batch/${{ matrix.port }}/m187-vt100-qmp-check.log
+            build/external/m174-software-batch/${{ matrix.port }}/m187-*.ppm
             build/busybox-source-parity-x86/m174-batch.clean.log
             build/busybox-source-parity-x86/m174-batch.serial.log
             build/port-riscv64/full/matrix-source/m174-batch.clean.log
             build/port-riscv64/full/matrix-source/m174-batch.serial.log
             build/port-aarch64/full/matrix-source/m174-batch.clean.log
             build/port-aarch64/full/matrix-source/m174-batch.serial.log
+            build/busybox-source-parity-x86/m187-vt100.serial.log
+            build/port-riscv64/full/matrix-source/m187-vt100.serial.log
+            build/port-aarch64/full/matrix-source/m187-vt100.serial.log
           if-no-files-found: ignore

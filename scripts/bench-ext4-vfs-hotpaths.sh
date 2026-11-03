@@ -13,6 +13,7 @@ build_bench() {
     -I ports/lwext4 -I third_party/lwext4/include -I kernel \
     -x c "$1" -x none scripts/bench-ext4-vfs-hotpaths.c \
     kernel/fs/vfs.c kernel/fs/lookup.c kernel/task/resources.c \
+    scripts/inotify-vfs-test-stubs.c \
     ports/lwext4/lwext4_block.c kernel/block/device.c \
     kernel/block/ramdisk.c kernel/block/partition.c \
     kernel/lib/string.c kernel/mm/heap.c third_party/lwext4/src/*.c \

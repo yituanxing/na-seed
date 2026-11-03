@@ -13,3 +13,7 @@ dbus
 inotify-tools
 sysstat
 tig
+# M187: additional native diagnostic tools, in this same signed CPIO overlay.
+util-linux-misc
+# The original Alpine dialog/ncurses VT100 capabilities must exist in-guest.
+ncurses-terminfo-base

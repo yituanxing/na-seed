@@ -119,6 +119,12 @@ busy awk '
 ' "$work/pidstat-self"
 echo M186_SOFTWARE_PIDSTAT_SELF_PROC_FUNCTION_PASS
 
+# M187: original signed Alpine sysstat sar/sadf CPU telemetry recording and
+# inotify create/modify semantics. Keep this separate script in the SAME
+# original M174 CPIO; its markers require actual guest-side operations.
+/bin/sh /tests/m187-software-functions.sh
+/bin/sh /tests/m187-util-linux-run.sh
+
 # Original ELF entry/version exercises ONLY, never watch/TUI semantics.
 # Alpine inotifywait's --version can exit 1 after printing its version/usage
 # on a kernel without inotify. It is not an inotify-watch functional check:

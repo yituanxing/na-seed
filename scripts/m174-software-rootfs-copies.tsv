@@ -3,3 +3,6 @@ tests/m167-desktop-fixture.ppm	tests/m167-desktop-fixture.ppm
 tests/m168-home.html	tests/m168-home.html
 # Representative native-guest semantics, separate from the twenty-ELF gate.
 tests/m174-software-run.sh	tests/m174-software-run.sh
+tests/m187-software-functions.sh	tests/m187-software-functions.sh
+# M187 entry-only test shares this exact CPIO; the host hook stages the list.
+tests/m187-util-linux-run.sh	tests/m187-util-linux-run.sh

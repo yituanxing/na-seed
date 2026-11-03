@@ -322,7 +322,7 @@ static uint64_t io_slot_read_mode(unsigned slot, uint64_t address,
             uint64_t unit=ops->read_record_bytes;
             if(unit>sizeof(buffer))return done ? done:(uint64_t)-EIO;
             n-=n%unit;
-        } else if(n>room && budget>8)n=room;
+        } else if(n>room && budget>8 && !ops->read_variable_records)n=room;
         /* In particular, a consuming Pipe/PTY/TTY/Eventfd provider must
          * not discard data or advance its cursor before this succeeds. */
         if(!ops->read_commit_before_copyout &&

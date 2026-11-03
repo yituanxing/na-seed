@@ -57,3 +57,14 @@ disk="$PWD/build/m178/async-blk/$port/independent-virtio-blk.img"
 test -s "$disk"
 python3 scripts/m179-ext4-fixture.py verify "$disk"
 echo "[M179 REAL EXT4 IRQ NATIVE PASS] $port kernel kthread park/resume through actual VFS/lwext4/MBR physical disk, host-observed 12KiB persisted, M178 concurrent DMA IRQ plus original 20 signed Alpine/Ncat/GPU/QMP oracles; ordinary user syscalls deferred"
+# The already staged M174 signed CPIO also drives a separate *desktop mode*
+# acceptance with the original dialog ELF and physical keyboard/QMP frames.
+# Do not reuse the ext4-block workload flags or disk for that second boot:
+# the physical persisted M179/M180 disk above remains an independent oracle.
+(
+    unset NAS_M179_EXT4_PARTITION NAS_ENABLE_M179_FS_IRQ
+    unset NAS_ENABLE_M180_FS_USER_IRQ NAS_M180_FS_USER_STAGE
+    unset NAS_QEMU_ASYNC_BLK NAS_QEMU_ASYNC_BLK_IMAGE
+    unset NAS_ENABLE_VIRTIO_BLK_ASYNC NAS_ENABLE_LWEXT4
+    sh scripts/probe-m187-vt100.sh "$port"
+)

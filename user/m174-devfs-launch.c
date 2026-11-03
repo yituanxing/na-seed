@@ -146,13 +146,17 @@ static void exercise_original_software(void) {
             "20 original signed Alpine entrypoints and representative functions");
     puts("M174_DEVFS_SOFTWARE_INTEGRATION_PASS");fflush(stdout);
 }
-int main(void) {
+int main(int argc,char **argv) {
     exercise_pseudo_devices();
     exercise_hardware_and_pty();
     puts("M174_DEVFS_VFS_PASS");fflush(stdout);
     exercise_original_software();
-    char *const argv[]={"/usr/bin/naseed-desktop","m173",NULL};
-    execv(argv[0],argv);
-    require(0,"exec preserved independently launched M173 desktop");
+    /* The same original-software/devfs preflight and same CPIO boot either
+     * M173's accepted desktop, or M187's full VT terminal. No parallel GUI
+     * service, special in-kernel launch path, or second filesystem image. */
+    const char *mode=argc==2 && !strcmp(argv[1],"m187")?"m187":"m173";
+    char *const desktop_argv[]={"/usr/bin/naseed-desktop",(char *)mode,NULL};
+    execv(desktop_argv[0],desktop_argv);
+    require(0,"exec existing desktop after original software and devfs");
     return 74;
 }

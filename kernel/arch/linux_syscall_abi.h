@@ -152,6 +152,10 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_pipe2: return NAS_SC_pipe2;
     case __NR_eventfd: return NAS_SC_eventfd;
     case __NR_eventfd2: return NAS_SC_eventfd2;
+    case __NR_inotify_init: return NAS_SC_inotify_init;
+    case __NR_inotify_init1: return NAS_SC_inotify_init1;
+    case __NR_inotify_add_watch: return NAS_SC_inotify_add_watch;
+    case __NR_inotify_rm_watch: return NAS_SC_inotify_rm_watch;
     case __NR_signalfd4: return NAS_SC_signalfd4;
     case __NR_epoll_create1: return NAS_SC_epoll_create1;
     case __NR_epoll_create: return NAS_SC_epoll_create;
@@ -227,6 +231,9 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 44U: return NAS_SC_fstatfs;
     case 439U: return NAS_SC_faccessat2; /* same Linux syscall ID */
     case 19U: return NAS_SC_eventfd2;
+    case 26U: return NAS_SC_inotify_init1;
+    case 27U: return NAS_SC_inotify_add_watch;
+    case 28U: return NAS_SC_inotify_rm_watch;
     case 74U: return NAS_SC_signalfd4; /* asm-generic signalfd4 */
     case 20U: return NAS_SC_epoll_create1;
     case 21U: return NAS_SC_epoll_ctl;

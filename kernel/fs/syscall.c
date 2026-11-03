@@ -35,6 +35,7 @@
 #include "posix_locks.h"
 #include "epoll.h"
 #include "eventfd.h"
+#include "inotify.h"
 #include "pidfd.h"
 #include "unix_socket.h"
 #include "../../ports/lwip/socket_port.h"
@@ -181,6 +182,9 @@ void nas_fs_description_final_close(unsigned slot) {
     nas_epoll_target_final_close(slot);
     const struct nas_file_ops *ops=nas_open_files[slot].ops;
     if(ops && ops->release)ops->release(slot);
+    if(nas_open_files[slot].vnode_pinned)
+        nas_vfs_notify_file_close(&nas_open_files[slot].vnode,
+                                  (nas_open_files[slot].status_flags&3U)!=0U);
     /* flock belongs to the SHARED File, not the current task's FD.
      * dup/fork/SCM_RIGHTS release this lock only on final close. */
     nas_vfs_release_flock(&nas_open_files[slot]);
@@ -1267,6 +1271,13 @@ static const struct nas_file_ops ops_eventfd={
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
     .poll=nas_eventfd_poll,.poll_description=nas_eventfd_poll_slot,.release=vrelease_eventfd
 };
+static const struct nas_file_ops ops_inotify={
+    .read_plan=nas_inotify_read_plan,.read=nas_inotify_read,
+    .read_variable_records=true,
+    .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
+    .poll=nas_inotify_poll_fd,.poll_description=nas_inotify_poll_slot,
+    .release=nas_inotify_release
+};
 static const struct nas_file_ops ops_signalfd={
     .read_plan=signalfd_read_plan,.read=signalfd_read,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
@@ -1304,6 +1315,7 @@ static const struct nas_file_ops *const ops_by_kind[]={
     [FD_PIPE_R]=&ops_pipe_read,[FD_PIPE_W]=&ops_pipe_write,
     [FD_EPOLL]=&ops_epoll,
     [FD_EVENTFD]=&ops_eventfd,[FD_SIGNALFD]=&ops_signalfd,
+    [FD_INOTIFY]=&ops_inotify,
     [FD_PIDFD]=&ops_pidfd,
     [FD_SOCKET]=&ops_socket,
     [FD_PTY_MASTER]=&ops_pty,[FD_PTY_SLAVE]=&ops_pty
@@ -1454,6 +1466,14 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
         FS_RESULT(nas_eventfd_create(args[1],0));
     case NAS_SC_eventfd2:
         FS_RESULT(nas_eventfd_create(args[1],args[2]));
+    case NAS_SC_inotify_init:
+        FS_RESULT(nas_inotify_init1(0));
+    case NAS_SC_inotify_init1:
+        FS_RESULT(nas_inotify_init1(args[1]));
+    case NAS_SC_inotify_add_watch:
+        FS_RESULT(nas_inotify_add_watch(args[1],args[2],args[3]));
+    case NAS_SC_inotify_rm_watch:
+        FS_RESULT(nas_inotify_rm_watch(args[1],args[2]));
     case NAS_SC_signalfd4:
         FS_RESULT(sys_signalfd4(args[1],args[2],args[3],args[4]));
     case NAS_SC_epoll_create1:

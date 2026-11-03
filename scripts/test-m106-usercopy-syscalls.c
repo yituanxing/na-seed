@@ -14,6 +14,10 @@
 #include <string.h>
 
 #include "../kernel/fs/syscall.c"
+/* This isolated syscall adapter fixture does not link the real VFS. */
+void nas_vfs_notify_file_close(const struct nas_fs_node *node,bool writable) {
+    (void)node;(void)writable;
+}
 #include "../kernel/fs/metadata_syscall.c"
 #include "../kernel/fs/socket_syscall.c"
 #include "../kernel/fs/poll_syscall.c"

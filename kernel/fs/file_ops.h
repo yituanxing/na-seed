@@ -25,6 +25,9 @@ struct nas_file_ops {
     /* A record-oriented provider (evdev) must never receive half of one
      * input_event because a user iovec or page boundary split a transfer. */
     uint16_t read_record_bytes;
+    /* Variable-length native records (inotify_event) must cross virtual
+     * page boundaries in one prepared usercopy, never split the wire record. */
+    bool read_variable_records;
     uint64_t (*write_plan)(unsigned slot,uint64_t requested);
     uint64_t (*read)(unsigned slot,uint8_t *kernel_dst,uint64_t count);
     /* Optional non-consuming stream snapshot. offset is relative to the

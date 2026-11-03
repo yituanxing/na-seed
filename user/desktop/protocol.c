@@ -42,6 +42,11 @@ void nasd_send_packet(int fd,uint32_t type,uint32_t key) {
     const struct message m={.type=type,.key=key};
     nasd_write_all(fd,&m,sizeof(m));
 }
+void nasd_send_key(int fd,uint32_t key,uint32_t modifiers) {
+    nasd_require(!(modifiers&~NASD_MOD_MASK),"bounded keyboard modifiers");
+    const struct message m={.type=MSG_KEY,.key=key,.value=modifiers};
+    nasd_write_all(fd,&m,sizeof(m));
+}
 void nasd_send_pointer(int fd,unsigned x,unsigned y,int pressed) {
     nasd_require(x<SCREEN_W && y<SCREEN_H &&
                  (pressed==0 || pressed==1),"pointer packet bounded");
@@ -56,7 +61,10 @@ struct message nasd_recv_packet(int fd) {
         nasd_require(m.key<=1 && (m.value>>16U)<SCREEN_W &&
                      (m.value&65535U)<SCREEN_H,
                      "bounded client pointer packet");
-    } else nasd_require(!m.value,"desktop IPC reserved fields");
+    } else if(m.type==MSG_KEY)
+        nasd_require(!(m.value&~NASD_MOD_MASK),
+                     "desktop keyboard modifier encoding");
+    else nasd_require(!m.value,"desktop IPC reserved fields");
     return m;
 }
 void nasd_send_surface_caps(int fd,int surface,uint32_t role,unsigned width,

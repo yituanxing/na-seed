@@ -76,6 +76,17 @@ while IFS= read -r elf; do
         exit 1
     }
 done < scripts/m174-software-original-elfs.txt
+# M187 is an independent additive signed-ELF cohort in the SAME CPIO/guest.
+# Each name must have passed native ELF+SHA host checks, and kernel execve
+# must now prove a real replacement with that distinct ELF. This is loader
+# ENTRY acceptance only, not unsupported device/namespace semantics.
+while IFS= read -r elf; do
+    case "$elf" in ''|'#'*) continue ;; esac
+    grep -Fq "[EXEC] replaced process with CPIO ELF: /$elf" "$log" || {
+        echo "[M187 ELF FAIL] $port new signed guest entry absent: /$elf" >&2
+        exit 1
+    }
+done < scripts/m187-original-elfs.txt
 for original in /usr/bin/magick /usr/bin/lynx /usr/bin/mc; do
     grep -Fq "[EXEC] replaced process with CPIO ELF: $original" "$log" || {
         echo "[M174 DESKTOP ELF FAIL] $port original program did not exec: $original" >&2
@@ -104,3 +115,4 @@ for frame in four five clicked closed shell-after; do
     }
 done
 echo "[M174 NATIVE PASS] $port true /dev VFS + char OpenFile + 20 original signed Alpine ELF entries + real dbus/proc semantics + 5 QMP physical frames"
+echo "[M187 SIGNED SOFTWARE PASS] $port +26 independently native Alpine ELF entries; sar/sadf roundtrip + inotify create/modify guest functions"

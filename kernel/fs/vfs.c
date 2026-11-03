@@ -1,6 +1,7 @@
 #include "vfs.h"
 #include "lookup.h"
 #include "posix_locks.h"
+#include "inotify.h"
 #include "../errno.h"
 #include "../lib/string.h"
 #include "../mm/heap.h"
@@ -26,6 +27,8 @@ extern void nas_vm_invalidate_file(const struct nas_fs_node *,uint64_t new_size)
 extern void nas_vm_rearm_file(const struct nas_fs_node *);
 #define NAS_VFS_MOUNT_CHUNK_SIZE 16U
 #define NAS_VFS_MOUNT_MAX 256U
+static void inotify_emit_inode_and_parents(const struct nas_fs_node *node,
+                                            uint32_t event);
 /* A lease holds size + Linux record locks for the lifetime of one inode
  * incarnation. Growing by address-stable chunks avoids the unrelated 256
  * inode hard limit; a raw realloc would invalidate record-lock pointers
@@ -727,6 +730,7 @@ int64_t nas_vfs_read_at(const struct nas_fs_node *node,uint64_t offset,
     if(!dst && length)return -EINVAL;
     if(!node->filesystem->read_at)return -EOPNOTSUPP;
     int64_t got=node->filesystem->read_at(node,offset,dst,length);
+    if(got>0)inotify_emit_inode_and_parents(node,NAS_IN_ACCESS);
     return got>=0 && (uint64_t)got>length ? -EIO : got;
 }
 /* A real positive Dentry graph, not a string wrapper. Every Dentry owns
@@ -805,6 +809,23 @@ static bool same_vnode(const struct nas_fs_node *a,
     return a->mount==b->mount && a->mount_id==b->mount_id &&
            a->ino==b->ino && a->inode==b->inode &&
            a->filesystem==b->filesystem;
+}
+/* Watchers receive inode events and their parent directories receive child
+ * names. Enumerate VFS's already-owned positive Dentries; no additional
+ * path walk, inode pin or syscall-layer event hooks are necessary. Hardlinks
+ * legitimately produce one child event per currently resolved alias. */
+static void inotify_emit_inode_and_parents(const struct nas_fs_node *node,
+                                            uint32_t event) {
+    nas_inotify_emit_node(node,event);
+    for(struct nas_vfs_dentry *d=dentry_live;d;d=d->next)
+        if(!d->detached && d->parent && !d->parent->detached &&
+           same_vnode(&d->node,node))
+            nas_inotify_emit_child(&d->parent->node,d->name,
+                                   event,0,node->is_dir);
+}
+void nas_vfs_notify_file_close(const struct nas_fs_node *node,bool writable) {
+    if(node)inotify_emit_inode_and_parents(node,
+                    writable?NAS_IN_CLOSE_WRITE:NAS_IN_CLOSE_NOWRITE);
 }
 static int dentry_ref(struct nas_vfs_dentry *entry) {
     if(!entry || !entry->refs || entry->refs==UINT32_MAX)
@@ -1309,8 +1330,10 @@ int nas_vfs_create_child(const struct nas_vfs_path *parent,
     if(!rc) {(void)nas_vfs_path_put(&existing);return -EEXIST;}
     if(rc!=-ENOENT)return rc;
     if(!nas_vfs_can_write(&owner))return -EROFS;
-    return owner.filesystem->create ?
-           owner.filesystem->create(&owner,leaf,mode) : -EOPNOTSUPP;
+    rc=owner.filesystem->create ?
+       owner.filesystem->create(&owner,leaf,mode) : -EOPNOTSUPP;
+    if(!rc)nas_inotify_emit_child(&owner,leaf,NAS_IN_CREATE,0,false);
+    return rc;
 }
 int nas_vfs_mknod_child(const struct nas_vfs_path *parent,
                         const char *leaf,uint64_t mode,
@@ -1355,6 +1378,7 @@ int nas_vfs_mknod_child(const struct nas_vfs_path *parent,
         if(!rc) {
             *created=(struct nas_vfs_path){inode.mount,inode.mount_id,entry};
             if(entry!=reserved)(void)nas_heap_free(reserved);
+            nas_inotify_emit_child(&owner,leaf,NAS_IN_CREATE,0,false);
             return 0;
         }
     }
@@ -1376,8 +1400,10 @@ int nas_vfs_mkdir_child(const struct nas_vfs_path *parent,
     if(!rc) {(void)nas_vfs_path_put(&existing);return -EEXIST;}
     if(rc!=-ENOENT)return rc;
     if(!nas_vfs_can_write(&owner))return -EROFS;
-    return owner.filesystem->mkdir ?
-           owner.filesystem->mkdir(&owner,leaf,mode) : -EOPNOTSUPP;
+    rc=owner.filesystem->mkdir ?
+       owner.filesystem->mkdir(&owner,leaf,mode) : -EOPNOTSUPP;
+    if(!rc)nas_inotify_emit_child(&owner,leaf,NAS_IN_CREATE,0,true);
+    return rc;
 }
 int nas_vfs_unlink_child(const struct nas_vfs_path *parent,
                          const char *leaf,uint64_t flags) {
@@ -1406,7 +1432,11 @@ int nas_vfs_unlink_child(const struct nas_vfs_path *parent,
     else if(!owner.filesystem->unlink)rc=-EOPNOTSUPP;
     else {
         rc=owner.filesystem->unlink(&owner,leaf,flags);
-        if(!rc)dentry_notice_unlink(parent,leaf);
+        if(!rc) {
+            dentry_notice_unlink(parent,leaf);
+            nas_inotify_emit_child(&owner,leaf,NAS_IN_DELETE,0,target.is_dir);
+            if(target.is_dir || target.nlink<=1)nas_inotify_erase_node(&target);
+        }
     }
     int released=nas_vfs_path_put(&victim);
     return released ? released : rc;
@@ -1426,6 +1456,8 @@ int nas_vfs_rename_child_with_intent(const struct nas_vfs_path *old_parent,
        mounted_child(new_parent,new_name))return -EBUSY;
     if(before.mount!=after.mount)return -EXDEV;
     struct nas_vfs_path source={0},target={0};
+    struct nas_fs_node overwritten={0};
+    bool erased_overwritten=false;
     rc=child_exists(old_parent,old_name,&source);
     if(rc)return rc;
     struct nas_fs_node source_node;
@@ -1465,6 +1497,10 @@ int nas_vfs_rename_child_with_intent(const struct nas_vfs_path *old_parent,
             if(dropped && !rc)rc=dropped;
             goto finish;
         }
+        if(!rc && flags!=2ULL && (victim.is_dir || victim.nlink<=1)) {
+            overwritten=victim;
+            erased_overwritten=true;
+        }
         if(!rc && flags!=2ULL && !after.filesystem->rename_replace_open_safe &&
            victim.mount==after.mount && victim.ino &&
            inode_lease(&victim) && inode_lease(&victim)->refs>1)
@@ -1502,6 +1538,24 @@ int nas_vfs_rename_child_with_intent(const struct nas_vfs_path *old_parent,
             dentry_notice_exchange(&source,&target,old_parent,new_parent);
         else dentry_notice_rename(old_parent,old_name,new_parent,new_name,
                                   reserved);
+        uint32_t cookie=nas_inotify_rename_cookie();
+        nas_inotify_emit_child(&before,old_name,NAS_IN_MOVED_FROM,cookie,
+                              source_node.is_dir);
+        nas_inotify_emit_child(&after,new_name,NAS_IN_MOVED_TO,cookie,
+                              source_node.is_dir);
+        nas_inotify_emit_node(&source_node,NAS_IN_MOVE_SELF);
+        if(erased_overwritten)nas_inotify_erase_node(&overwritten);
+        if(flags==2ULL) {
+            struct nas_fs_node exchanged={0};
+            if(!nas_vfs_path_node(&target,&exchanged)) {
+                cookie=nas_inotify_rename_cookie();
+                nas_inotify_emit_child(&after,new_name,NAS_IN_MOVED_FROM,
+                                      cookie,exchanged.is_dir);
+                nas_inotify_emit_child(&before,old_name,NAS_IN_MOVED_TO,
+                                      cookie,exchanged.is_dir);
+                nas_inotify_emit_node(&exchanged,NAS_IN_MOVE_SELF);
+            }
+        }
     } else if(exchange_refs) {
         (void)dentry_put(old_parent->dentry);
         (void)dentry_put(new_parent->dentry);
@@ -1554,6 +1608,7 @@ int nas_vfs_link_child(const struct nas_vfs_path *old_parent,
     if(!rc)rc=after.filesystem->link ?
              after.filesystem->link(&before,old_name,&after,new_name) :
              -EOPNOTSUPP;
+    if(!rc)nas_inotify_emit_child(&after,new_name,NAS_IN_CREATE,0,false);
     int released=nas_vfs_path_put(&source);
     return released ? released : rc;
 }
@@ -1579,8 +1634,10 @@ int nas_vfs_symlink_child(const char *target,
     if(!rc) {(void)nas_vfs_path_put(&existing);return -EEXIST;}
     if(rc!=-ENOENT)return rc;
     if(!nas_vfs_can_write(&owner))return -EROFS;
-    return owner.filesystem->symlink ?
-           owner.filesystem->symlink(&owner,name,target) : -EOPNOTSUPP;
+    rc=owner.filesystem->symlink ?
+       owner.filesystem->symlink(&owner,name,target) : -EOPNOTSUPP;
+    if(!rc)nas_inotify_emit_child(&owner,name,NAS_IN_CREATE,0,false);
+    return rc;
 }
 static bool valid_vfs_dirent(const struct nas_vfs_dirent *entry) {
     unsigned length=entry->name_len;
@@ -1812,6 +1869,7 @@ int nas_vfs_open_path_at(const struct nas_vfs_path *start,
         if(target_path.dentry)(void)nas_vfs_path_put(&target_path);
         return rc;
     }
+    inotify_emit_inode_and_parents(&node,NAS_IN_OPEN);
     *owned=node;
     if(owned_path)*owned_path=target_path;
     else (void)nas_vfs_path_put(&target_path);
@@ -1844,6 +1902,7 @@ int64_t nas_vfs_write_at(const struct nas_fs_node *node,uint64_t offset,
     if(written>0 && (uint64_t)written>length)return -EIO;
     if(written>0 && offset+(uint64_t)written>nas_vfs_node_size(node))
         publish_inode_size(node,offset+(uint64_t)written);
+    if(written>0)inotify_emit_inode_and_parents(node,NAS_IN_MODIFY);
     return written;
 }
 int nas_vfs_acquire_shared_page(const struct nas_fs_node *node,
@@ -1873,7 +1932,9 @@ int nas_vfs_touch_shared(const struct nas_fs_node *node) {
     if(!nas_vfs_can_write(node))return -EROFS;
     if(node->is_dir)return -EISDIR;
     if(!node->filesystem->touch_shared)return -EOPNOTSUPP;
-    return node->filesystem->touch_shared(node);
+    int rc=node->filesystem->touch_shared(node);
+    if(!rc)inotify_emit_inode_and_parents(node,NAS_IN_MODIFY);
+    return rc;
 }
 int nas_vfs_resize(const struct nas_fs_node *node,uint64_t length) {
     int status=vfs_node_status(node);
@@ -1886,6 +1947,7 @@ int nas_vfs_resize(const struct nas_fs_node *node,uint64_t length) {
     if(!rc) {
         publish_inode_size(node,length);
         nas_vm_invalidate_file(node,length);
+        inotify_emit_inode_and_parents(node,NAS_IN_MODIFY);
     }
     return rc;
 }
@@ -2044,7 +2106,9 @@ int nas_vfs_chmod(const struct nas_fs_node *node,uint64_t mode) {
     if(status)return status;
     if(node->filesystem->read_only || (node->mount && node->mount->read_only))return -EROFS;
     if(!node->filesystem->chmod)return -EOPNOTSUPP;
-    return node->filesystem->chmod(node,mode);
+    int rc=node->filesystem->chmod(node,mode);
+    if(!rc)inotify_emit_inode_and_parents(node,NAS_IN_ATTRIB);
+    return rc;
 }
 int nas_vfs_setxattr(const struct nas_fs_node *node,const char *name,
                      const uint8_t *value,uint64_t size,unsigned flags) {
@@ -2052,7 +2116,9 @@ int nas_vfs_setxattr(const struct nas_fs_node *node,const char *name,
     if(rc)return rc;
     if(node->filesystem->read_only || node->mount->read_only)return -EROFS;
     if(!node->filesystem->setxattr)return -EOPNOTSUPP;
-    return node->filesystem->setxattr(node,name,value,size,flags);
+    rc=node->filesystem->setxattr(node,name,value,size,flags);
+    if(!rc)inotify_emit_inode_and_parents(node,NAS_IN_ATTRIB);
+    return rc;
 }
 int64_t nas_vfs_getxattr(const struct nas_fs_node *node,const char *name,
                          uint8_t *value,uint64_t capacity) {
@@ -2073,7 +2139,9 @@ int nas_vfs_removexattr(const struct nas_fs_node *node,const char *name) {
     if(rc)return rc;
     if(node->filesystem->read_only || node->mount->read_only)return -EROFS;
     if(!node->filesystem->removexattr)return -EOPNOTSUPP;
-    return node->filesystem->removexattr(node,name);
+    rc=node->filesystem->removexattr(node,name);
+    if(!rc)inotify_emit_inode_and_parents(node,NAS_IN_ATTRIB);
+    return rc;
 }
 int nas_vfs_fiemap_next(const struct nas_fs_node *node,uint64_t start,
                         uint64_t end,uint64_t *logical,uint64_t *length,
@@ -2089,7 +2157,9 @@ int nas_vfs_chown(const struct nas_fs_node *node,uint32_t uid,uint32_t gid) {
     if(node->filesystem->read_only || (node->mount && node->mount->read_only))
         return -EROFS;
     if(!node->filesystem->chown)return -EOPNOTSUPP;
-    return node->filesystem->chown(node,uid,gid);
+    int rc=node->filesystem->chown(node,uid,gid);
+    if(!rc)inotify_emit_inode_and_parents(node,NAS_IN_ATTRIB);
+    return rc;
 }
 int nas_vfs_utimens(const struct nas_fs_node *node,uint64_t atime,
                     uint64_t mtime,bool set_atime,bool set_mtime) {
@@ -2097,7 +2167,9 @@ int nas_vfs_utimens(const struct nas_fs_node *node,uint64_t atime,
     if(status)return status;
     if(node->filesystem->read_only || (node->mount && node->mount->read_only))return -EROFS;
     if(!node->filesystem->utimens)return -EOPNOTSUPP;
-    return node->filesystem->utimens(node,atime,mtime,set_atime,set_mtime);
+    int rc=node->filesystem->utimens(node,atime,mtime,set_atime,set_mtime);
+    if(!rc)inotify_emit_inode_and_parents(node,NAS_IN_ATTRIB);
+    return rc;
 }
 
 /* Unmount by registration token, never by a mutable descriptor's path.
@@ -2135,6 +2207,8 @@ int nas_vfs_unregister_mount(const struct nas_vfs_mount *registration) {
     }
     /* Drop covered before parent: a covered Dentry can own its parent.
      * Both are real Path owners; do not release an extra inode pin. */
+    nas_inotify_erase_mount(&mount_slot_at(at)->superblock,
+                           mount_slot_at(at)->device_id);
     if(mount_slot_at(at)->covered_path.dentry &&
        nas_vfs_path_put(&mount_slot_at(at)->covered_path))return -EIO;
     if(mount_slot_at(at)->parent_path.dentry &&

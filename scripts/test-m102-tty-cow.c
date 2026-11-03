@@ -13,6 +13,9 @@
 #include "../kernel/fs/io.h"
 /* Use the actual serial/TTY FileOps adapter, not a test-side imitation. */
 #include "../kernel/fs/syscall.c"
+void nas_vfs_notify_file_close(const struct nas_fs_node *node,bool writable) {
+    (void)node;(void)writable;
+}
 #define USER_ADDR 0x20010000ULL
 static struct nas_task current;
 struct nas_task *nas_current_task=&current;

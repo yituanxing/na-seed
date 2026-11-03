@@ -35,6 +35,9 @@ int nas_vfs_path_string(const struct nas_vfs_path *path,
  * 256-byte entrypoint above remains a checked compatibility wrapper. */
 int nas_vfs_path_string_buf(const struct nas_vfs_path *path,
                             char *absolute,size_t capacity);
+/* Emit the native inotify close event once for a final shared OpenFile,
+ * without letting the syscall layer traverse a stale pathname. */
+void nas_vfs_notify_file_close(const struct nas_fs_node *node,bool writable);
 /* Path-first namei owns a Dentry reference at each returned destination.
  * Borrowed start/root remain caller-owned throughout lookup.  Rootless
  * direct-ELF boot still reports ENOENT for '/' without inventing an inode. */
