@@ -8,7 +8,7 @@ on:
       - '.github/workflows/m171-batch.yml'
       - 'scripts/m170-*'
       - 'scripts/m171-*'
-      - 'scripts/stage-m171-prebuilt.sh'
+      - 'scripts/stage-m171-lvgl.sh'
       - 'scripts/host-configure-m171-lvgl.sh'
       - 'scripts/check-m171-desktop.sh'
       - 'third_party/lvgl'
@@ -63,7 +63,7 @@ jobs:
                         scripts/host-configure-m168-batch.sh \
                         scripts/probe-m170-batch.sh \
                         scripts/probe-m171-batch.sh \
-                        scripts/stage-m171-prebuilt.sh \
+                        scripts/stage-m171-lvgl.sh \
                         scripts/host-configure-m171-lvgl.sh; do
             sh -n "$script"
           done
