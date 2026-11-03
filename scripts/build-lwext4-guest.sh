@@ -72,7 +72,7 @@ else
             nas_heap_*|memcpy|memmove|memset|memcmp|strlen|strnlen|strcmp|strncmp|strchr|strrchr|strcpy|strncpy|strspn|strcspn|nas_block_get|nas_block_put|nas_block_read|nas_block_write|nas_block_flush|nas_partition_probe|nas_partition_attach|nas_partition_detach|nas_ramdisk_attach|nas_ramdisk_detach|nas_vfs_register_mount|nas_vfs_unregister_mount|nas_fs_lookup_node|nas_vfs_join_child|nas_vfs_read_at|nas_vfs_node_size|nas_vfs_node_has_lease|nas_print|nas_time_realtime_ns|nas_arch_monotonic_ns|nas_module|nas_platform_virtio_blk_probe) ;;
             # M179 is kernel-only: these are actual common-kernel worker,
             # VFS and IRQ-backed block engine exports, never hosted copies.
-            nas_async_blk_fixture_ready|nas_async_blk_get_stats|nas_async_blk_mountable_partition|nas_async_blk_register_block_device|nas_kthread_is_current|nas_kthread_spawn|nas_vfs_lookup|nas_vfs_create|nas_vfs_node_pin|nas_vfs_node_unpin|nas_vfs_write_at|nas_vfs_sync|nas_fail|nas_dec)
+            nas_async_blk_fixture_ready|nas_async_blk_get_stats|nas_async_blk_mountable_partition|nas_async_blk_register_block_device|nas_kthread_is_current|nas_kthread_spawn|nas_vfs_lookup|nas_vfs_create|nas_vfs_node_pin|nas_vfs_node_unpin|nas_vfs_write_at|nas_vfs_sync|nas_arch_halt|nas_dec)
                 [ "$mode" = kernel ] && [ "${NAS_ENABLE_M179_FS_IRQ:-0}" = 1 ] || {
                     echo "[LWEXT4 KERNEL LINK FAIL] unexpected M179 worker reference: $symbol" >&2
                     exit 1
