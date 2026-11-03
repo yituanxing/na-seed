@@ -25,6 +25,7 @@ struct fixture {
     alignas(8) uint8_t common[128];
     alignas(8) uint8_t notify[128];
     alignas(8) uint8_t device[128];
+    alignas(8) uint8_t isr[16];
     struct nas_virtio_pci_resources res;
     struct nas_virtio_pci pci;
     struct nas_virtio_transport tr;
@@ -43,11 +44,13 @@ static void prepare(struct fixture *f) {
     p16(f->config,6,0x10);f->config[0x34]=0x40;
     cap(f->config,0x40,0x50,1,0,0x40,0);
     cap(f->config,0x50,0x68,2,1,0x40,4);
-    cap(f->config,0x68,0,4,2,0x40,0);
+    cap(f->config,0x68,0x90,4,2,0x40,0);
+    cap(f->config,0x90,0,3,3,1,0);
     f->res.config=f->config;
     f->res.bars[0]=(struct nas_virtio_pci_bar){f->common,sizeof(f->common)};
     f->res.bars[1]=(struct nas_virtio_pci_bar){f->notify,sizeof(f->notify)};
     f->res.bars[2]=(struct nas_virtio_pci_bar){f->device,sizeof(f->device)};
+    f->res.bars[3]=(struct nas_virtio_pci_bar){f->isr,sizeof(f->isr)};
 }
 static int initialize(struct fixture *f) {
     static const struct nas_dma_provider dma={.coherent=true};
@@ -59,6 +62,11 @@ int main(void) {
     assert(initialize(&f)==0);
     const struct nas_virtio_transport_ops *ops=f.tr.ops;
     assert(f.tr.context==&f.pci && ops);
+    assert(ops->read_ack_irq && f.pci.isr==f.isr);
+    f.isr[0]=3;
+    assert(ops->read_ack_irq(&f.pci)==3); /* PCI ISR_CFG read-to-clear in hardware */
+    f.isr[0]=0;
+    assert(ops->read_ack_irq(&f.pci)==0); /* another device on shared INTx */
     ops->write_status(&f.pci,7);
     assert(f.common[0x14]==7 && ops->read_status(&f.pci)==7);
     p32(f.common,4,0xdeadbeef);
@@ -120,6 +128,12 @@ int main(void) {
     assert(initialize(&f)==-EINVAL); /* BAR bounds */
     prepare(&f);f.config[0x50+1]=0;
     assert(initialize(&f)==-ENODEV); /* missing device config */
+    prepare(&f);f.config[0x68+1]=0;
+    assert(initialize(&f)==-ENODEV); /* missing mandatory PCI ISR_CFG */
+    prepare(&f);f.config[0x90+4]=6;
+    assert(initialize(&f)==-EINVAL); /* ISR cap BAR index */
+    prepare(&f);p32(f.config,0x90+12,0);
+    assert(initialize(&f)==-EINVAL); /* ISR status aperture must be a byte */
     prepare(&f);f.config[0x40+2]=15;
     assert(initialize(&f)==-EINVAL); /* malformed vendor cap length */
     prepare(&f);assert(initialize(&f)==0);

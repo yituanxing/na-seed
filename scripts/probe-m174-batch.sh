@@ -21,7 +21,7 @@ serial="$logs/m174-batch.serial.log"
 oracle="$work/m174-qmp-check.log"
 mkdir -p "$logs"
 truncate -s 0 "$serial"
-python3 scripts/m173-qmp-verify.py --serial "$serial" \
+python3 "${NAS_QMP_VERIFY_SCRIPT:-scripts/m173-qmp-verify.py}" --serial "$serial" \
     --qmp "$NAS_QEMU_QMP_SOCKET" --outdir "$work" --timeout 850 \
     > "$oracle" 2>&1 &
 watcher=$!

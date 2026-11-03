@@ -4,6 +4,7 @@
  * This still probes QEMU bus 0, not arbitrary PCIe topology. */
 #include "../drivers/virtio/pci.h"
 #include "../drivers/core/bus.h"
+#include "../drivers/core/irq.h"
 #include "../drivers/port/dma.h"
 #include "../arch/x86_64/mmu.h"
 #include "../../ports/uboot/virtio_bus.h"
@@ -21,11 +22,21 @@
 #define BAR_MAX_BYTES 65536U
 #define PCI_MMIO_BASE UINT64_C(0xfffffe9000000000)
 #define DEVICE_VA_STRIDE (BAR_COUNT*BAR_MAX_BYTES)
+/* This Q35 path uses the existing single-CPU 8259 virtual-wire route.
+ * QEMU ICH9 maps bus-0 PCI INTx to PIRQ E-H for slots below 25. The
+ * platform actively programs ONLY PIRQ lines used by real input devices;
+ * PIC11 cannot be inferred from PCI Interrupt Line (firmware-owned). */
+#define ICH9_LPC_SLOT 31U
+#define ICH9_PIRQ_E_ROUT 0x68U
+#define X86_PIC_DEVICE_IRQ 11U
+#define PIRQ_UNKNOWN 0xffU
 static uint8_t cfg_snapshot[VIRTIO_DEVICES][256];
 static struct nas_virtio_pci_resources resources[VIRTIO_DEVICES];
 static struct nas_virtio_pci pci[VIRTIO_DEVICES];
 static struct nas_virtio_transport transports[VIRTIO_DEVICES];
 static struct nas_bus_device devices[VIRTIO_DEVICES];
+static struct nas_irq_action shared_irq_acks[VIRTIO_DEVICES];
+static uint8_t device_pirq[VIRTIO_DEVICES];
 static bool scanned;
 static unsigned block_count(void){
 #ifdef NAS_ENABLE_VIRTIO_BLK
@@ -65,6 +76,63 @@ static void load_config(uint8_t bus,uint8_t slot,uint8_t fun,uint8_t *cfg) {
         uint32_t value=cfg_read(bus,slot,fun,off);
         for(unsigned i=0;i<4;i++)cfg[off+i]=(uint8_t)(value>>(i*8));
     }
+}
+static uint8_t q35_bus0_pirq(uint8_t slot,uint8_t interrupt_pin) {
+    /* QEMU hw/isa/lpc_ich9.c:ich9_cc_init(). For D25-D31, ICH9
+     * programmable DxxIR registers override the fallback mapping, so do
+     * not silently claim those slots until full PCI routing is provided. */
+    if(slot>=25U || interrupt_pin<1U || interrupt_pin>4U)
+        return PIRQ_UNKNOWN;
+    return (uint8_t)(4U+((slot+interrupt_pin-1U)&3U));
+}
+static int q35_route_input_pirqs(uint8_t enabled_pirqs) {
+    if(!enabled_pirqs)return 0;
+    /* Intel 82801IB/ICH9 LPC is bus0:device31:function0 on Q35.  An
+     * unrecognized host bridge is an explicit unsupported platform, not
+     * permission to write unknown PCI config bytes. */
+    if(cfg_read(0,ICH9_LPC_SLOT,0,0)!=UINT32_C(0x29188086))
+        return -ENODEV;
+    uint32_t route=cfg_read(0,ICH9_LPC_SLOT,0,ICH9_PIRQ_E_ROUT);
+    uint32_t updated=route;
+    for(unsigned pirq=4U;pirq<8U;pirq++) {
+        if(!(enabled_pirqs&(1U<<pirq)))continue;
+        unsigned shift=(pirq-4U)*8U;
+        updated=(updated&~(UINT32_C(0xff)<<shift)) |
+                ((uint32_t)X86_PIC_DEVICE_IRQ<<shift);
+    }
+    cfg_write(0,ICH9_LPC_SLOT,0,ICH9_PIRQ_E_ROUT,updated);
+    if(cfg_read(0,ICH9_LPC_SLOT,0,ICH9_PIRQ_E_ROUT)!=updated)
+        return -EIO;
+    return 0;
+}
+static int q35_select_pci_intx(uint8_t slot,uint8_t function,
+                               const uint8_t *config) {
+    /* A modern-only VirtIO PCI function still has INTx.  Firmware might
+     * have left MSI/MSI-X enabled or PCI COMMAND.INTX_DISABLE set; force
+     * our chosen INTx path explicitly before the class driver activates. */
+    uint8_t visited[256]={0};
+    unsigned cap=config[0x34U];
+    for(unsigned traversed=0;cap;traversed++) {
+        if(traversed>=48U || cap<0x40U || cap>0xfcU ||
+           (cap&3U) || visited[cap])return -EINVAL;
+        visited[cap]=1U;
+        if(config[cap]==0x11U) { /* MSI-X Message Control bit 15 */
+            uint32_t word=cfg_read(0,slot,function,cap);
+            cfg_write(0,slot,function,cap,word&~(UINT32_C(1)<<31));
+        } else if(config[cap]==0x05U) { /* MSI Message Control bit 0 */
+            uint32_t word=cfg_read(0,slot,function,cap);
+            cfg_write(0,slot,function,cap,word&~(UINT32_C(1)<<16));
+        }
+        cap=config[cap+1];
+    }
+    uint32_t command=cfg_read(0,slot,function,4U);
+    cfg_write(0,slot,function,4U,command&~(UINT32_C(1)<<10));
+    return (cfg_read(0,slot,function,4U)&(UINT32_C(1)<<10))?
+           -EIO:0;
+}
+static void q35_shared_irq_ack_only(void *unused,uint32_t status) {
+    (void)unused;
+    (void)status;
 }
 static bool map_bars(uint8_t bus,uint8_t slot,uint8_t fun,unsigned index,
                      struct nas_virtio_pci_resources *res) {
@@ -144,6 +212,8 @@ int nas_platform_virtio_blk_probe(void) {
             if(count>=VIRTIO_DEVICES)return -ENOSPC;
             load_config(0,(uint8_t)slot,(uint8_t)function,
                         cfg_snapshot[count]);
+            device_pirq[count]=q35_bus0_pirq((uint8_t)slot,
+                                            cfg_snapshot[count][0x3dU]);
             resources[count].config=cfg_snapshot[count];
             if(!map_bars(0,(uint8_t)slot,(uint8_t)function,count,
                          &resources[count])) {
@@ -176,12 +246,55 @@ int nas_platform_virtio_blk_probe(void) {
                 if(resources[count].bars[bar].cpu)
                     devices[count].resource.view.pci.mapped_bar_mask |=
                         (uint8_t)(1U<<bar);
-            rc=nas_bus_device_register(&devices[count]);
-            if(rc) {
-                nas_print("[VIRTIO PCI FAIL] stage=driver-bind error=");
-                nas_dec((uint64_t)(-rc));nas_print("\n");return rc;
-            }
             count++;
+        }
+    }
+    /* Enumerate every transport before enabling a shared legacy IRQ.
+     * A non-input NIC/block on the same Q35 PIRQ must still ACK its
+     * level-triggered status, even if its original driver remains polled.
+     * Only actual input pins select which ICH9 PIRQ links are programmed. */
+    uint8_t input_pirqs=0;
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+    for(unsigned i=0;i<count;i++) {
+        if(devices[i].device_id!=VIRTIO_ID_INPUT)continue;
+        if(device_pirq[i]==PIRQ_UNKNOWN) {
+            nas_print("[VIRTIO PCI FAIL] stage=q35-input-pirq\n");
+            return -EOPNOTSUPP;
+        }
+        input_pirqs|=(uint8_t)(1U<<device_pirq[i]);
+    }
+#endif
+    rc=q35_route_input_pirqs(input_pirqs);
+    if(rc) {
+        nas_print("[VIRTIO PCI FAIL] stage=q35-ich9-route\n");
+        return rc;
+    }
+    for(unsigned i=0;i<count;i++) {
+        bool shared_line=device_pirq[i]!=PIRQ_UNKNOWN &&
+            (input_pirqs&(1U<<device_pirq[i]));
+        if(shared_line) {
+            rc=q35_select_pci_intx(devices[i].resource.view.pci.slot,
+                                   devices[i].resource.view.pci.function,
+                                   cfg_snapshot[i]);
+            if(rc)return rc;
+            devices[i].resource.irq=(struct nas_irq_route){
+                .domain=NAS_IRQ_DOMAIN_X86_PIC,.hwirq=X86_PIC_DEVICE_IRQ
+            };
+        }
+        rc=nas_bus_device_register(&devices[i]);
+        if(rc) {
+            nas_print("[VIRTIO PCI FAIL] stage=driver-bind error=");
+            nas_dec((uint64_t)(-rc));nas_print("\n");return rc;
+        }
+        if(shared_line && devices[i].device_id!=VIRTIO_ID_INPUT) {
+            /* No second ACK registration for Input: that class already
+             * binds its own completion notifier to this same transport.
+             * Platform-owned borrowed transports remain mapped for the
+             * lifetime of this Q35 enumerator. */
+            rc=nas_irq_bind(&shared_irq_acks[i],devices[i].resource.irq,
+                            nas_virtio_irq_ack_source,&transports[i],
+                            q35_shared_irq_ack_only,NULL);
+            if(rc)return rc;
         }
     }
     nas_print("[VIRTIO-BLK] real modern PCI devices=");

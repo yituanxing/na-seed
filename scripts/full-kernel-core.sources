@@ -9,6 +9,7 @@ kernel/syscall/dispatch.c
 kernel/ipc/sysv.c
 kernel/drivers/port/net.c
 kernel/drivers/core/bus.c
+kernel/drivers/core/irq.c
 kernel/drivers/core/chrdev.c
 kernel/drivers/core/misc.c
 kernel/fs/pidfd.c

@@ -14,6 +14,8 @@
 #define R_QUEUE_NUM    0x038U
 #define R_QUEUE_READY  0x044U
 #define R_QUEUE_NOTIFY 0x050U
+#define R_IRQ_STATUS   0x060U
+#define R_IRQ_ACK      0x064U
 #define R_STATUS       0x070U
 #define R_DESC_LO      0x080U
 #define R_DESC_HI      0x084U
@@ -58,6 +60,12 @@ static int setup_queue(void *c,unsigned qid,unsigned count,uint64_t desc,
     return 0;
 }
 static void notify(void *c,unsigned qid){wr(c,R_QUEUE_NOTIFY,qid);}
+static uint32_t read_ack_irq(void *c) {
+    uint32_t asserted=rd(c,R_IRQ_STATUS)&
+        (NAS_VIRTIO_IRQ_USED_BUFFER|NAS_VIRTIO_IRQ_CONFIG_CHANGE);
+    if(asserted)wr(c,R_IRQ_ACK,asserted);
+    return asserted;
+}
 static uint32_t read_cfg32(void *c,uint32_t off){
     return (off&3U || off>DEVICE_CFG_BYTES-4U)?0:rd(c,R_DEVICE_CFG+off);
 }
@@ -81,7 +89,8 @@ static const struct nas_virtio_transport_ops ops={
     .reset=reset,.read_status=read_status,.write_status=write_status,
     .read_features=read_features,.write_features=write_features,
     .setup_queue=setup_queue,.notify_queue=notify,.read_config32=read_cfg32,
-    .read_config=read_config,.write_config=write_config
+    .read_config=read_config,.write_config=write_config,
+    .read_ack_irq=read_ack_irq
 };
 int nas_virtio_mmio_transport_init(struct nas_virtio_transport *out,
                                   volatile uint32_t *mmio,

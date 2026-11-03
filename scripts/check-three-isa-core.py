@@ -564,8 +564,9 @@ if not all(s in rv_timer for s in ('nas_rv_idle_trap', 'csrsi sstatus,2', 'csrci
     raise SystemExit("RV64 idle must handle S-mode IRQ without sscratch stack swap")
 arm_timer=(root/"kernel/arch/aarch64/timer.c").read_text()
 arm_trap=(root/"kernel/arch/aarch64/trap.S").read_text()
-if not all(s in arm_timer for s in ('msr daifclr,#2', 'msr daifset,#2', 'nas_arm_timer_idle_irq_c')) or    'b nas_arm_upper_irq' not in arm_trap or 'nas_arm_upper_irq:' not in arm_trap or    'b nas_arm_restore_frame' not in arm_trap or \
-   'if((id & 0x3ffU)==1023U)return 0;' not in arm_timer:
+if not all(s in arm_timer for s in ('msr daifclr,#2', 'msr daifset,#2', 'nas_arm_idle_irq_c', 'if(id==1023U)return 0;', 'nas_irq_dispatch(id);')) or \
+   'b nas_arm_upper_irq' not in arm_trap or 'nas_arm_upper_irq:' not in arm_trap or \
+   'bl nas_arm_idle_irq_c' not in arm_trap or 'b nas_arm_restore_frame' not in arm_trap:
     raise SystemExit("ARM64 idle needs EL1h IRQ entry with in-place kernel ERET")
 # Both ARM64 exception classes need separate return boundaries: EL0 timer
 # resumes the Task's canonical frame, EL1h idle resumes its kernel frame.

@@ -2,6 +2,7 @@
 #define NASEED_BUS_DEVICE_H
 #include <stdbool.h>
 #include <stdint.h>
+#include "irq.h"
 
 /* One kernel bus/driver binding model. A filesystem cannot see any of
  * these objects; storage drivers publish only nas_block_device.
@@ -34,6 +35,9 @@ enum nas_bus_resource_kind {
 #define NAS_BUS_PCI_CONFIG_BYTES 256U
 struct nas_bus_resource {
     enum nas_bus_resource_kind kind;
+    /* Immutable, platform-resolved IRQ route. NONE means a transport that
+     * can operate only by polling; class drivers never infer IRQ wiring. */
+    struct nas_irq_route irq;
     union {
         struct {
             volatile uint32_t *registers;

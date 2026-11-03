@@ -36,11 +36,15 @@ static unsigned net_count(void){
 }
 int nas_qemu_virtio_mmio_probe(uint64_t physical, uint64_t virtual_base,
                               unsigned stride, unsigned slots,
-                              bool (*map_page)(uint64_t,uint64_t)) {
+                              bool (*map_page)(uint64_t,uint64_t),
+                              enum nas_irq_domain irq_domain,
+                              unsigned irq_first) {
     if (!map_page || (physical&4095U) || (virtual_base&4095U) ||
         !slots || slots>VIRTIO_MMIO_SLOTS_MAX || !stride ||
         (stride&3U) || stride<0x200U || stride>PAGE_BYTES ||
-        (uint64_t)slots*stride>32U*PAGE_BYTES)
+        (uint64_t)slots*stride>32U*PAGE_BYTES ||
+        irq_domain==NAS_IRQ_DOMAIN_NONE || irq_first==0 ||
+        irq_first>UINT32_MAX-slots)
         return -1;
     if(scanned)return (int)block_count();
     int rc=0;
@@ -77,6 +81,7 @@ int nas_qemu_virtio_mmio_probe(uint64_t physical, uint64_t virtual_base,
             .bus=NAS_BUS_VIRTIO_MMIO,.device_id=reg[2],
             .vendor_id=reg[3],
             .resource={.kind=NAS_BUS_RESOURCE_VIRTIO_MMIO,
+                       .irq={.domain=irq_domain,.hwirq=irq_first+slot},
                        .view.mmio={.registers=reg,.mapped_bytes=stride}},
             .virtio=&transports[slot]
         };

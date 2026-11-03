@@ -77,3 +77,12 @@ int nas_virtio_config_write(const struct nas_virtio_transport *t,uint32_t offset
     if(!t->ops->write_config)return -EOPNOTSUPP;
     return t->ops->write_config(t->context,offset,src,bytes);
 }
+uint32_t nas_virtio_irq_ack(const struct nas_virtio_transport *t) {
+    if(!t || !t->context || !t->ops || !t->ops->read_ack_irq)return 0;
+    return t->ops->read_ack_irq(t->context)&
+           (NAS_VIRTIO_IRQ_USED_BUFFER|NAS_VIRTIO_IRQ_CONFIG_CHANGE);
+}
+uint32_t nas_virtio_irq_ack_source(void *transport_context) {
+    return nas_virtio_irq_ack(
+        (const struct nas_virtio_transport *)transport_context);
+}

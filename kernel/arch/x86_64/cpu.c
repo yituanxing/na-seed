@@ -10,6 +10,8 @@
 #include "../../mm/usercopy.h"
 #include "../../panic.h"
 #include "irq.h"
+#include "../../errno.h"
+#include "../../drivers/core/irq.h"
 #include "../arch.h"
 void exception_report(const uint64_t *frame);
 #include "mmu.h"
@@ -21,9 +23,15 @@ extern void syscall_entry(void);
 extern void *exception_vectors[32];
 extern char kernel_stack_top;
 extern void nas_x86_timer_isr(void);
+extern void nas_x86_pic_device_isr(void);
 extern uint64_t nas_x86_kernel_stack_ptr;
 void nas_arch_outb(uint16_t port, uint8_t value) {
     __asm__ volatile ("outb %0, %1" : : "a"(value), "Nd"(port));
+}
+static uint8_t nas_x86_inb(uint16_t port) {
+    uint8_t value;
+    __asm__ volatile ("inb %1, %0" : "=a"(value) : "Nd"(port));
+    return value;
 }
 static void wrmsr(uint32_t reg, uint64_t value) {
     __asm__ volatile ("wrmsr" : : "c"(reg), "a"((uint32_t)value), "d"((uint32_t)(value >> 32)));
@@ -151,6 +159,17 @@ void nas_arch_cpu_tables_init(void) {
     idt[0x20].ist=0;
     idt[0x20].type=0x8e;
     idt[0x20].reserved=0;
+    /* Q35 explicitly programmed ICH9 PCI INTx -> PIC IRQ11.  Unlike the
+     * timer this IRQ returns to its own hardware IRET frame and never
+     * performs Task preemption.  Vector 0x2b is unrelated to user SS. */
+    irq_addr=(uint64_t)(uintptr_t)nas_x86_pic_device_isr;
+    idt[0x2b].offset_low=irq_addr & 0xffffU;
+    idt[0x2b].offset_middle=(irq_addr>>16)&0xffffU;
+    idt[0x2b].offset_high=irq_addr>>32;
+    idt[0x2b].selector=0x08;
+    idt[0x2b].ist=0;
+    idt[0x2b].type=0x8e;
+    idt[0x2b].reserved=0;
     struct table_pointer idtr = { sizeof(idt) - 1, (uint64_t)(uintptr_t)idt };
     __asm__ volatile ("lidt %0" : : "m"(idtr));
 }
@@ -386,6 +405,7 @@ static void nas_x86_enable_virtual_wire(void) {
 /* PIT oscillator/8259 PIC: IRQ0 at vector 0x20. User IRET restores IF,
  * kernel-mode syscall/interrupt gates always run with interrupts masked.
  * Single CPU only; replace with real APIC timer/IOAPIC for portability. */
+static bool pic_ready;
 static void nas_x86_enable_legacy_pit(void) {
     nas_arch_outb(0x20,0x11);
     nas_arch_outb(0xa0,0x11);
@@ -401,6 +421,38 @@ static void nas_x86_enable_legacy_pit(void) {
     nas_arch_outb(0x43,0x36); /* channel0, lo/hi, mode3 */
     nas_arch_outb(0x40,(uint8_t)divisor);
     nas_arch_outb(0x40,(uint8_t)(divisor>>8));
+    pic_ready=true;
+}
+/* This is the existing one-CPU Q35 virtual-wire PIC, not a generic PCI
+ * interrupt domain.  The platform must FIRST route the target ICH9 PIRQ
+ * to ISA IRQ11; that programming belongs to x86_virtio_pci.c. */
+int nas_arch_irq_route_enable(unsigned hwirq) {
+    if(hwirq!=11U)return -EINVAL;
+    if(!pic_ready)return -EAGAIN;
+    /* PCI INTx is level triggered.  The PIC cascade must be open at master
+     * IRQ2 and IRQ11 is bit 3 of the slave, not bit 11 of the master. */
+    nas_arch_outb(0x4d1,(uint8_t)(nas_x86_inb(0x4d1)|0x08U));
+    nas_arch_outb(0xa1,(uint8_t)(nas_x86_inb(0xa1)&~0x08U));
+    nas_arch_outb(0x21,(uint8_t)(nas_x86_inb(0x21)&~0x04U));
+    return 0;
+}
+void nas_arch_irq_route_disable(unsigned hwirq) {
+    if(hwirq!=11U || !pic_ready)return;
+    nas_arch_outb(0xa1,(uint8_t)(nas_x86_inb(0xa1)|0x08U));
+}
+/* A shared INTx can arrive just after its last device is reset.  Always
+ * acknowledge the PIC even when no transport currently claims status, but
+ * fail closed on a sustained unclaimed level rather than spinning forever. */
+void nas_x86_pic_device_irq(void) {
+    static unsigned unclaimed;
+    if(nas_irq_dispatch(11U)) {
+        unclaimed=0;
+    } else if(unclaimed<64U && ++unclaimed==64U) {
+        nas_arch_irq_route_disable(11U);
+        nas_print("[M175 x86] masked unclaimed PIC IRQ11 storm\n");
+    }
+    nas_arch_outb(0xa0,0x20); /* IRQ11 EOI: slave first */
+    nas_arch_outb(0x20,0x20); /* then master's cascade IRQ2 */
 }
 /* Shared init contract: preserve all established x86 hardware operations. */
 void nas_arch_prepare_user_cpu(void) {

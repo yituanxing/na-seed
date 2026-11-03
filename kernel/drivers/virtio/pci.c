@@ -4,6 +4,7 @@
 #include <stddef.h>
 #define CAP_COMMON 1U
 #define CAP_NOTIFY 2U
+#define CAP_ISR    3U
 #define CAP_DEVICE 4U
 #define CFG_STATUS 0x06U
 #define CFG_CAP_PTR 0x34U
@@ -102,6 +103,14 @@ static void pci_notify(void *context,unsigned qid) {
     __atomic_thread_fence(__ATOMIC_RELEASE);
     *p->queue_notify[qid]=(uint16_t)qid;
 }
+static uint32_t pci_read_ack_irq(void *context) {
+    struct nas_virtio_pci *p=context;
+    /* A single ISR_CFG byte read atomically clears both status bits.
+     * In PCI INTx mode a zero means a different device asserted this
+     * shared line; never notify our class driver in that case. */
+    return p->isr ? (*p->isr &
+         (NAS_VIRTIO_IRQ_USED_BUFFER|NAS_VIRTIO_IRQ_CONFIG_CHANGE)) : 0;
+}
 static uint32_t pci_config32(void *context,uint32_t off) {
     struct nas_virtio_pci *p=context;
     if((off&3U) || off>p->device_size ||
@@ -130,7 +139,8 @@ static const struct nas_virtio_transport_ops pci_ops={
     .write_status=pci_write_status,.read_features=pci_read_features,
     .write_features=pci_write_features,.setup_queue=pci_setup_queue,
     .notify_queue=pci_notify,.read_config32=pci_config32,
-    .read_config=pci_config_read,.write_config=pci_config_write
+    .read_config=pci_config_read,.write_config=pci_config_write,
+    .read_ack_irq=pci_read_ack_irq
 };
 int nas_virtio_pci_transport_init(struct nas_virtio_transport *out,
                                   struct nas_virtio_pci *pci,
@@ -158,26 +168,30 @@ int nas_virtio_pci_transport_init(struct nas_virtio_transport *out,
             unsigned cap_len=cfg[cap+2];
             if(cap_len<16U || cap_len>256U-cap)return -EINVAL;
             unsigned type=cfg[cap+3],bar=cfg[cap+4];
-            if(type==CAP_COMMON || type==CAP_NOTIFY || type==CAP_DEVICE) {
+            if(type==CAP_COMMON || type==CAP_NOTIFY || type==CAP_ISR ||
+               type==CAP_DEVICE) {
                 unsigned bit=1U<<type;
                 if((seen&bit) || bar>=NAS_VIRTIO_PCI_BAR_COUNT ||
                    !res->bars[bar].cpu)return -EINVAL;
                 uint64_t offset=cfg32(cfg,cap+8);
                 uint64_t length=cfg32(cfg,cap+12);
                 uint64_t minimum=type==CAP_COMMON ? COMMON_MIN_BYTES :
-                                 type==CAP_NOTIFY ? 2U : 4U;
+                                 type==CAP_NOTIFY ? 2U :
+                                 type==CAP_ISR ? 1U : 4U;
                 if(length<minimum || offset>res->bars[bar].size ||
                    length>res->bars[bar].size-offset ||
                    (uintptr_t)res->bars[bar].cpu>UINTPTR_MAX-offset)
                     return -EINVAL;
                 volatile uint8_t *address=res->bars[bar].cpu+(size_t)offset;
-                unsigned align=type==CAP_NOTIFY?2U:4U;
+                unsigned align=type==CAP_ISR?1U:type==CAP_NOTIFY?2U:4U;
                 if(((uintptr_t)address&(align-1U))!=0U)return -EINVAL;
                 if(type==CAP_COMMON) {
                     if(((uintptr_t)address&7U)!=0U)return -EINVAL;
                     parsed.common=address;
                 } else if(type==CAP_DEVICE) {
                     parsed.device=address;parsed.device_size=(uint32_t)length;
+                } else if(type==CAP_ISR) {
+                    parsed.isr=address;
                 } else {
                     if(cap_len<20U)return -EINVAL;
                     parsed.notify=address;
@@ -189,7 +203,8 @@ int nas_virtio_pci_transport_init(struct nas_virtio_transport *out,
         }
         cap=(uint8_t)next;
     }
-    if(seen!=((1U<<CAP_COMMON)|(1U<<CAP_NOTIFY)|(1U<<CAP_DEVICE)))
+    if(seen!=((1U<<CAP_COMMON)|(1U<<CAP_NOTIFY)|
+             (1U<<CAP_ISR)|(1U<<CAP_DEVICE)))
         return -ENODEV;
     *pci=parsed;
     *out=(struct nas_virtio_transport){.context=pci,.ops=&pci_ops,.dma=dma};

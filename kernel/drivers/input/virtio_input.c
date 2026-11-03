@@ -10,6 +10,10 @@
 #include "virtio_input.h"
 #include "core.h"
 #include "../core/bus.h"
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+#include "../core/irq.h"
+#include "../serial.h"
+#endif
 #include "../virtio/transport.h"
 #include "../../errno.h"
 #include "../../lib/string.h"
@@ -52,11 +56,45 @@ struct virtinput_slot {
     bool registered;
     bool poisoned;
     bool busy;
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+    /* ISR owns only source acknowledgement and this pending bit. The ring,
+     * input core and evdev are always serviced in scheduler context. */
+    struct nas_irq_action irq_action;
+    bool irq_pending;
+    uint64_t irq_acks;
+    uint64_t deferred_drains;
+    uint64_t fallback_polls;
+    uint64_t delivered_events;
+#endif
 };
 
 static struct virtinput_slot inputs[VIRTINPUT_MAX_DEVICES];
 static unsigned current_count;
 static unsigned poll_cursor;
+
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+static void input_irq_notify(void *context,uint32_t status) {
+    struct virtinput_slot *v=(struct virtinput_slot *)context;
+    if (!v || !(status&NAS_VIRTIO_IRQ_USED_BUFFER)) return;
+    __atomic_fetch_add(&v->irq_acks,1U,__ATOMIC_RELAXED);
+    __atomic_store_n(&v->irq_pending,true,__ATOMIC_RELEASE);
+}
+
+static bool input_has_capability(const uint8_t *bits,unsigned code) {
+    return !!(bits[code/8U]&(1U<<(code%8U)));
+}
+static bool is_keyboard(const struct virtinput_slot *v) {
+    /* Linux KEY_A; a keyboard is distinguished from pointer button keys. */
+    return input_has_capability(v->input.keybit,30U);
+}
+static bool is_pointer(const struct virtinput_slot *v) {
+    /* Linux ABS_X/Y or REL_X/Y. The VirtIO tablet is an absolute pointer. */
+    return (input_has_capability(v->input.absbit,0U) &&
+            input_has_capability(v->input.absbit,1U)) ||
+           (input_has_capability(v->input.relbit,0U) &&
+            input_has_capability(v->input.relbit,1U));
+}
+#endif
 
 static uint16_t load16(const uint8_t *v) {
     return (uint16_t)((uint16_t)v[0] | (uint16_t)v[1] << 8);
@@ -168,6 +206,12 @@ static int describe_input(struct virtinput_slot *v) {
 }
 
 static void stop_device(struct virtinput_slot *v) {
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+    /* The IRQ action lives inside the slot. It MUST be unbound before any
+     * transport registers, DMA ring or the slot storage can disappear. */
+    (void)nas_irq_unbind(&v->irq_action);
+    __atomic_store_n(&v->irq_pending,false,__ATOMIC_RELEASE);
+#endif
     /* Queue close performs device reset before freeing DMA. If the two
      * queues are present, only one reset is required, but both queue
      * allocations remain owned until every DMA transfer has stopped. */
@@ -235,6 +279,24 @@ static int probe(struct nas_bus_device *dev) {
         if (rc) goto fail;
     }
     v->bus_device=dev;
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+    if (dev->resource.irq.domain!=NAS_IRQ_DOMAIN_NONE) {
+        /* A routed native device is IRQ-driven. Missing transport ACK or a
+         * failed controller bind is a genuine probe failure, not grounds
+         * for silent fallback polling. */
+        if (!v->transport.ops || !v->transport.ops->read_ack_irq) {
+            rc=-EOPNOTSUPP;
+            goto fail;
+        }
+        rc=nas_irq_bind(&v->irq_action,dev->resource.irq,
+                        nas_virtio_irq_ack_source,&v->transport,
+                        input_irq_notify,v);
+        if (rc) goto fail;
+        /* Cover the interval between posting buffers and binding the IRQ.
+         * It is not counted as an interrupt acknowledgement. */
+        __atomic_store_n(&v->irq_pending,true,__ATOMIC_RELEASE);
+    }
+#endif
     ++current_count;
     return 0;
 fail:
@@ -284,6 +346,20 @@ int nas_virtio_input_poll(unsigned budget) {
         struct virtinput_slot *v=&inputs[i];
         if (!v->bus_device || v->poisoned ||
             __atomic_exchange_n(&v->busy,true,__ATOMIC_ACQUIRE)) continue;
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+        bool irq_bound=v->irq_action.bound;
+        if (irq_bound) {
+            if (!__atomic_exchange_n(&v->irq_pending,false,__ATOMIC_ACQ_REL)) {
+                __atomic_store_n(&v->busy,false,__ATOMIC_RELEASE);
+                continue;
+            }
+            ++v->deferred_drains;
+        } else {
+            /* Historical mock buses have no IRQ route. Their explicit
+             * polling contract remains available for host regressions. */
+            ++v->fallback_polls;
+        }
+#endif
         /* One flooding keyboard must not starve a pointer sharing the
          * same per-CPU service budget; next service rotates the first
          * device as well. */
@@ -309,11 +385,64 @@ int nas_virtio_input_poll(unsigned budget) {
                                   slot*VIRTINPUT_EVENT_BYTES;
             nas_input_event(&v->input,load16(event),load16(event+2),
                             (int32_t)load32(event+4));
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+            ++v->delivered_events;
+#endif
             ++done;
             ++served;
             if (queue_slot(v,slot)) {poison(v);break;}
         }
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+        /* The quota is intentionally just eight descriptors per device.
+         * On hitting it, there may be more used descriptors even if the
+         * device has coalesced the interrupt. Retain work for next turn. */
+        if (irq_bound && served==quota && !v->poisoned)
+            __atomic_store_n(&v->irq_pending,true,__ATOMIC_RELEASE);
+#endif
         __atomic_store_n(&v->busy,false,__ATOMIC_RELEASE);
     }
     return done;
 }
+
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+/* This probe is evaluated only at the ordinary scheduler boundary, never
+ * in hard IRQ context. The PASS marker is derived from independent real
+ * keyboard and pointer IRQs, deferred drains and delivered queue entries. */
+void nas_virtio_input_irq_report(void) {
+    static bool reported;
+    if (reported) return;
+    uint64_t keyboard_ack=0,pointer_ack=0;
+    uint64_t keyboard_drain=0,pointer_drain=0;
+    uint64_t keyboard_events=0,pointer_events=0,fallback_poll=0;
+    bool found_keyboard=false,found_pointer=false;
+    for (unsigned i=0;i<VIRTINPUT_MAX_DEVICES;i++) {
+        const struct virtinput_slot *v=&inputs[i];
+        if (!v->bus_device) continue;
+        fallback_poll+=v->fallback_polls;
+        if (!v->irq_action.bound) continue;
+        if (is_keyboard(v)) {
+            found_keyboard=true;
+            keyboard_ack+=__atomic_load_n(&v->irq_acks,__ATOMIC_RELAXED);
+            keyboard_drain+=v->deferred_drains;
+            keyboard_events+=v->delivered_events;
+        } else if (is_pointer(v)) {
+            found_pointer=true;
+            pointer_ack+=__atomic_load_n(&v->irq_acks,__ATOMIC_RELAXED);
+            pointer_drain+=v->deferred_drains;
+            pointer_events+=v->delivered_events;
+        }
+    }
+    if (!found_keyboard || !found_pointer || !keyboard_ack || !pointer_ack ||
+        !keyboard_drain || !pointer_drain || keyboard_events<=8U ||
+        pointer_events<=8U || fallback_poll) return;
+    reported=true;
+    nas_print("[M175 INPUT IRQ STATS] keyboard_ack=");nas_dec(keyboard_ack);
+    nas_print(" pointer_ack=");nas_dec(pointer_ack);
+    nas_print(" keyboard_drain=");nas_dec(keyboard_drain);
+    nas_print(" pointer_drain=");nas_dec(pointer_drain);
+    nas_print(" keyboard_events=");nas_dec(keyboard_events);
+    nas_print(" pointer_events=");nas_dec(pointer_events);
+    nas_print(" fallback_poll=");nas_dec(fallback_poll);
+    nas_print("\n[M175 INPUT IRQ ONLY PASS]\n");
+}
+#endif
