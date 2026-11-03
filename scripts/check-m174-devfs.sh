@@ -41,4 +41,14 @@ cc -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections \
     kernel/drivers/core/misc.c kernel/random.c kernel/fs/eventfd.c \
     kernel/pipe.c kernel/lib/string.c -o build/m174-devfs/test-open-file
 build/m174-devfs/test-open-file
+
+# Mounting /dev as real inodes must not steal seekable-char FileOps. A prior
+# regression returned ESPIPE for native fb0 pread/pwrite despite its valid
+# driver operations; keep this exact production data plane under test.
+cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin \
+    -ffunction-sections -fdata-sections -Wl,--gc-sections \
+    -I kernel -I scripts/m89-test-include \
+    scripts/test-m174-devfs-fb-positional.c kernel/fs/file_io.c \
+    kernel/drivers/display/fbdev.c -o build/m174-devfs/test-fb-positional
+build/m174-devfs/test-fb-positional
 echo '[M174 HOST PASS] mounted devfs inode and class enumeration, FD/FileOps/rdev, syscall flags, dup and SCM_RIGHTS final close, legacy host ABI'

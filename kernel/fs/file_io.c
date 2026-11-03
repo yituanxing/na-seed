@@ -371,10 +371,14 @@ uint64_t nas_fs_fd_pread(uint64_t fd,uint64_t address,uint64_t count,
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount) return (uint64_t)-EBADF;
     if((nas_open_files[slot].status_flags&NAS_LINUX_O_PATH) ||
        (nas_open_files[slot].status_flags&3ULL)==1ULL) return (uint64_t)-EBADF;
-    /* Inspect the opened VFS provider capability, not an enumerated list
-     * of specific mounted filesystem FD kinds. */
+    /* A mounted S_IFCHR inode owns its VFS namespace identity, while the
+     * character FileOps still owns positioned I/O. Regular VFS files use
+     * their filesystem's read_at. Never infer a data-plane backend solely
+     * from the fact that this OpenFile has a pinned VFS inode. */
     const struct nas_open_file *read_open=&nas_open_files[slot];
-    if(read_open->vnode_pinned) {
+    const bool regular_vfs=read_open->vnode_pinned &&
+        (read_open->vnode.mode&0170000U)!=0020000U;
+    if(regular_vfs) {
         if(read_open->vnode.is_dir)return (uint64_t)-EISDIR;
         if(!read_open->vnode.filesystem ||
            !read_open->vnode.filesystem->read_at)return (uint64_t)-ESPIPE;
@@ -391,7 +395,7 @@ uint64_t nas_fs_fd_pread(uint64_t fd,uint64_t address,uint64_t count,
     while(done<count) {
         uint64_t take=count-done;
         if(take>sizeof(buffer))take=sizeof(buffer);
-        int64_t got=(!read_open->vnode_pinned && read_open->ops &&
+        int64_t got=(!regular_vfs && read_open->ops &&
                      read_open->ops->read_at) ?
             (int64_t)read_open->ops->read_at(slot,offset+done,buffer,take) :
             nas_fs_mmap_read(fd,offset+done,buffer,take);
@@ -413,7 +417,11 @@ uint64_t nas_fs_fd_pwrite(uint64_t fd,uint64_t address,uint64_t count,
     if((nas_open_files[slot].status_flags&NAS_LINUX_O_PATH) ||
        (nas_open_files[slot].status_flags&3ULL)==0ULL) return (uint64_t)-EBADF;
     const struct nas_open_file *write_open=&nas_open_files[slot];
-    if(write_open->vnode_pinned) {
+    /* Same owner boundary as pread: devfs is a namespace, fbdev's original
+     * seekable-char FileOps supplies pwrite instead of devfs.write_at. */
+    const bool regular_vfs=write_open->vnode_pinned &&
+        (write_open->vnode.mode&0170000U)!=0020000U;
+    if(regular_vfs) {
         if(write_open->vnode.is_dir)return (uint64_t)-EISDIR;
         if(!write_open->vnode.filesystem ||
            !write_open->vnode.filesystem->write_at)return (uint64_t)-ESPIPE;
@@ -425,12 +433,12 @@ uint64_t nas_fs_fd_pwrite(uint64_t fd,uint64_t address,uint64_t count,
     if(count && (address>=USER_LIMIT || count>USER_LIMIT-address))
         return (uint64_t)-EFAULT;
     struct nas_open_file *opened=&nas_open_files[slot];
-    if(opened->vnode_pinned && !nas_vfs_can_write(&opened->vnode))
+    if(regular_vfs && !nas_vfs_can_write(&opened->vnode))
         return (uint64_t)-EROFS;
     /* Linux intentionally differs from POSIX: pwrite() on an O_APPEND
      * description appends to the live inode size without changing the
      * shared OFD seek position. Providers still see explicit write_at. */
-    if(opened->vnode_pinned && (opened->status_flags&0x400ULL))
+    if(regular_vfs && (opened->status_flags&0x400ULL))
         offset=nas_vfs_node_size(&opened->vnode);
     if(offset>INT64_MAX || count>INT64_MAX-offset)
         return (uint64_t)-EFBIG;
@@ -441,13 +449,13 @@ uint64_t nas_fs_fd_pwrite(uint64_t fd,uint64_t address,uint64_t count,
         if(n>sizeof(buffer))n=sizeof(buffer);
         if(!nas_user_read_bytes(address+done,buffer,n))
             return done ? done : (uint64_t)-EFAULT;
-        int64_t wrote=opened->vnode_pinned ?
+        int64_t wrote=regular_vfs ?
             nas_vfs_write_at(&opened->vnode,offset+done,buffer,n) :
             (int64_t)opened->ops->write_at(slot,offset+done,buffer,n);
         if(wrote<0)return done ? done : (uint64_t)wrote;
         if((uint64_t)wrote>n)return done ? done : (uint64_t)-EIO;
         done+=(uint64_t)wrote;
-        if(opened->vnode_pinned && offset+done>opened->vnode.size)
+        if(regular_vfs && offset+done>opened->vnode.size)
             opened->vnode.size=offset+done;
         if((uint64_t)wrote<n)break;
     }

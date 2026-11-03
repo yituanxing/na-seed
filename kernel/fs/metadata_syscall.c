@@ -278,7 +278,12 @@ static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
     struct nas_open_file *opened=&nas_open_files[TASK.fds->entries[fd].slot];
     uint64_t size=0;
     bool directory=false;
-    if(opened->vnode_pinned) {
+    /* A mounted fbdev inode supplies path/stat ownership, but the device
+     * still owns the seekable scanout length. Mounting /dev must preserve
+     * the same seek semantics as the rootless chrdev bootstrap. */
+    if(TASK.fds->entries[fd].kind==FD_FRAMEBUFFER && nas_fbdev_available())
+        size=nas_fbdev_length();
+    else if(opened->vnode_pinned) {
         /* The same open inode lease supplies seek/read/write and fstat.
          * No tmpfs slot inspection, per-mount filename or FD_* enumeration. */
         if(!opened->vnode.filesystem ||
@@ -286,10 +291,7 @@ static uint64_t sys_lseek_boot(uint64_t fd, uint64_t off, uint64_t whence) {
             return (uint64_t)-ESPIPE;
         directory=opened->vnode.is_dir;
         size=nas_vfs_node_size(&opened->vnode);
-    } else if(TASK.fds->entries[fd].kind==FD_FRAMEBUFFER &&
-              nas_fbdev_available())
-        size=nas_fbdev_length(); /* the File's shared seek offset */
-    else if(TASK.fds->entries[fd].kind==FD_BOOTFS &&
+    } else if(TASK.fds->entries[fd].kind==FD_BOOTFS &&
              opened->boot_file)
         size=opened->boot_file->size; /* only unmounted Limine modules */
     else return (uint64_t)-ESPIPE;

@@ -34,6 +34,11 @@ or a second terminal protocol.
   `O_RDWR|O_TRUNC` is valid for a character device despite the namespace
   being read-only. `O_EXCL`, directory `getdents`, `openat`, device ioctls,
   `/dev/pts/N` and the Linux device major/minor report use the ordinary ABI.
+- A mounted character File still delegates positioned `pread/pwrite` to its
+  device FileOps, even though its VFS inode/path are pinned. The fbdev
+  scanout retains its seekable character-device length and write permission;
+  neither operation mutates devfs directory bytes or its inode size. This
+  distinction was verified against the real M173 framebuffer workload.
 - Direct Limine/rootless bootstrap remains the narrow existing compatibility
   path, not a second resolver for mounted `/dev`.
 
