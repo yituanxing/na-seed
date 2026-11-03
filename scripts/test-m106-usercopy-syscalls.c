@@ -395,9 +395,18 @@ static const struct nas_file_ops m106_eventfd={
     .read_commit_before_copyout=true,.aggregate_readv=true
 };
 void nas_fd_system_init(void) { memset(nas_open_files,0,sizeof(nas_open_files)); }
+/* M180's FD-pending contract is exercised using the production fd.c in
+ * test-fd-pending.c. This older syscall/pipe fixture intentionally mocks
+ * the FD registry and must expose the same free-slot predicate to dup and
+ * SCM_RIGHTS without linking a second, conflicting FD implementation. */
+bool nas_fd_available(const struct nas_task *t,unsigned fd) {
+    return t && t->fds && fd<NAS_FD_LIMIT &&
+           t->fds->entries[fd].kind==FD_CLOSED &&
+           (!t->files || !(t->files->pending_fd_mask&(UINT64_C(1)<<fd)));
+}
 unsigned nas_fd_first_unused(const struct nas_task *t,unsigned minimum) {
     for(unsigned i=minimum;i<NAS_FD_LIMIT;i++)
-        if(!t->fds->entries[i].kind)return i;
+        if(nas_fd_available(t,i))return i;
     return NAS_FD_LIMIT;
 }
 bool nas_fd_attach_owned(struct nas_task *t,unsigned fd,unsigned slot,
