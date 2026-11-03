@@ -393,12 +393,17 @@ static void event_loop(struct session *s) {
                 retire_window(s,roles[i-3],0);
                 break; /* rebuild poll entries after z-order compaction */
             }
-            /* Stream peers can report POLLIN | POLLHUP together when the
-             * last packet is still buffered. Drain the packet first; the
-             * following poll retires the closed endpoint. */
-            nasd_require(!(revents&(POLLERR|POLLNVAL)) &&
-                         ((s->mode==170 || s->mode==0) || !(revents&POLLHUP)),
-                         "desktop hardware or client unexpectedly disconnected");
+            /* An AF_UNIX peer can close immediately after writing its
+             * final MSG_CLOSE. NaSeed's socket poll may report POLLIN and
+             * POLLERR/POLLHUP together for that last buffered message.
+             * Read it while POLLIN is set; only treat a non-readable
+             * terminal event as an actual disconnected client. */
+            if(i<3 || (s->mode!=170 && s->mode!=0))
+                nasd_require(!(revents&(POLLERR|POLLNVAL|POLLHUP)),
+                             "desktop hardware or client disconnected");
+            else
+                nasd_require(!(revents&POLLNVAL),
+                             "registered client descriptor invalid");
             if(!(revents&POLLIN))continue;
             if(i<3) {
                 struct input_event events[32];
