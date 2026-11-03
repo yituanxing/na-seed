@@ -81,6 +81,11 @@ guest manifest and exact rootfs fixture preservation fail closed at staging.
   real `/dev/null`, zero, framebuffer/evdev ioctls, live PTY `getdents`,
   pathname/FD identity and software child exit before replacing itself with
   M173's original desktop.
+- PID 1 is loaded directly from the initial CPIO ELF by the boot path; it
+  does **not** produce the normal `execve` replacement marker. Acceptance
+  checks both the boot-selected ELF and Limine argv, then checks launcher
+  functionality through independent devfs/software markers. Child ELFs,
+  including the real `/usr/bin/gui` alias, require actual `execve` markers.
 - Real QMP then drives mouse, keyboard and BusyBox PTY to launch a fifth
   upstream LVGL client. Five physically captured 800x600 frames are checked
   for visible windows, button pixels and terminal survival. Serial markers

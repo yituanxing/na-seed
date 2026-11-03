@@ -38,8 +38,14 @@ if ! wait "$watcher"; then
     tail -130 "$oracle" >&2
     exit 1
 fi
-grep -Fq '[M173 QMP DYNAMIC PASS]' "$oracle"
-grep -aE '^\[FB\] firmware framebuffer ready 800x600 pitch=3200 bpp=32 r8@16 g8@8 b8@0$' "$log" >/dev/null
+grep -Fq '[M173 QMP DYNAMIC PASS]' "$oracle" || {
+    echo "[M174 QMP ORACLE FAIL] $port missing strict physical-frame verdict" >&2
+    exit 1
+}
+grep -aE '^\[FB\] firmware framebuffer ready 800x600 pitch=3200 bpp=32 r8@16 g8@8 b8@0$' "$log" >/dev/null || {
+    echo "[M174 FRAMEBUFFER FAIL] $port unexpected firmware framebuffer geometry" >&2
+    exit 1
+}
 while IFS= read -r marker; do
     case "$marker" in ''|'#'*) continue ;; esac
     [ "$(grep -Fxc "$marker" "$log" || :)" -eq 1 ] || {
@@ -57,11 +63,30 @@ while IFS= read -r elf; do
     }
 done < scripts/m174-software-original-elfs.txt
 for original in /usr/bin/magick /usr/bin/lynx /usr/bin/mc; do
-    grep -Fq "[EXEC] replaced process with CPIO ELF: $original" "$log"
+    grep -Fq "[EXEC] replaced process with CPIO ELF: $original" "$log" || {
+        echo "[M174 DESKTOP ELF FAIL] $port original program did not exec: $original" >&2
+        exit 1
+    }
 done
-grep -Fq '[EXEC] replaced process with CPIO ELF: /usr/bin/naseed-m174-devfs-launch' "$log"
-grep -Fq '[EXEC] replaced process with CPIO ELF: /usr/bin/gui' "$log"
+# The launcher is PID1 selected directly by the bootstrap ELF loader, not a
+# process created through execve(). The kernel logs its initial ELF selection
+# and command line; the devfs and desktop markers prove it ran to completion.
+grep -Fq '[M5] CPIO executable selected: /usr/bin/naseed-m174-devfs-launch' "$log" || {
+    echo "[M174 PID1 FAIL] $port bootstrap did not select the mounted-devfs launcher" >&2
+    exit 1
+}
+grep -Fq 'naseed.argv=/usr/bin/naseed-m174-devfs-launch m174' "$log" || {
+    echo "[M174 PID1 FAIL] $port launcher command line not observed" >&2
+    exit 1
+}
+grep -Fq '[EXEC] replaced process with CPIO ELF: /usr/bin/gui' "$log" || {
+    echo "[M174 LVGL FAIL] $port external GUI alias did not exec" >&2
+    exit 1
+}
 for frame in four five clicked closed shell-after; do
-    test -s "$work/m173-$frame.ppm" || exit 1
+    test -s "$work/m173-$frame.ppm" || {
+        echo "[M174 FRAME FAIL] $port missing QMP screenshot: $frame" >&2
+        exit 1
+    }
 done
 echo "[M174 NATIVE PASS] $port true /dev VFS + char OpenFile + 20 original signed Alpine ELF entries + real dbus/proc semantics + 5 QMP physical frames"

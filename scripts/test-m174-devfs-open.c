@@ -8,6 +8,12 @@
 #include "test-m106-usercopy-syscalls.c"
 #undef main
 
+uint64_t nas_vfs_node_size(const struct nas_fs_node *node) {
+    (void)node;
+    assert(!"mounted fbdev seek length must come from DisplayDevice");
+    return 0;
+}
+
 static void m174_init(void) {
     assert(nas_misc_chrdev_init()==0);
     for(unsigned i=0;i<sizeof(bootstrap_test_endpoints)/
@@ -122,6 +128,32 @@ int main(void) {
     assert((int64_t)truncfd>=0 && guest_task.fds->entries[truncfd].kind==FD_NULL);
     nas_fs_close_fd((unsigned)truncfd);
     assert(!live_fds() && !live_files());
-    puts("[M174 DEVFS OPEN PASS] mounted character inode FileOps, stat/rdev, O_PATH/O_TRUNC, dup/SCM_RIGHTS shared final close and EBUSY");
+
+    /* Mounted framebuffer remains a real seekable character device. Its
+     * display length is owned by fbdev, not by devfs's inode.read_at hook. */
+    static uint8_t framebuffer[128];
+    struct nas_fb_boot_info display={
+        .address=framebuffer,.width=8,.height=4,.pitch=32,.bpp=32,
+        .memory_model=1,.red_size=8,.red_shift=16,
+        .green_size=8,.green_shift=8,.blue_size=8,.blue_shift=0
+    };
+    assert(nas_fbdev_boot_init(&display));
+    const unsigned fbfd=12,fbslot=21;
+    assert(!guest_task.fds->entries[fbfd].kind);
+    guest_task.fds->entries[fbfd]=(struct nas_fd_entry){
+        .kind=FD_FRAMEBUFFER,.slot=fbslot};
+    nas_open_files[fbslot]=(struct nas_open_file){
+        .refcount=1,.status_flags=2,.position=17,.vnode_pinned=true,
+        .vnode={.filesystem=(const struct nas_vfs_type *)(uintptr_t)1,
+                .inode=&bootstrap_inode_storage,.ino=65550,
+                .rdev=(29U<<8),.mode=0020660U,.nlink=1}
+    };
+    assert(sys_lseek_boot(fbfd,0,2)==sizeof(framebuffer));
+    assert(sys_lseek_boot(fbfd,(uint64_t)-1,2)==sizeof(framebuffer)-1);
+    assert(sys_lseek_boot(fbfd,0,1)==sizeof(framebuffer)-1);
+    assert(sys_lseek_boot(fbfd,0,0)==0);
+    nas_fs_close_fd(fbfd);
+    assert(!live_fds() && !live_files());
+    puts("[M174 DEVFS OPEN PASS] mounted character inode FileOps, stat/rdev, O_PATH/O_TRUNC, dup/SCM_RIGHTS shared final close, EBUSY and mounted fbdev lseek");
     return 0;
 }
