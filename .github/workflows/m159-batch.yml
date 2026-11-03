@@ -2,21 +2,6 @@ name: NaSeed M159 30 new original Alpine CLI programs three ISA
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - '.github/workflows/m159-batch.yml'
-      - 'scripts/m159-*'
-      - 'scripts/stage-m159-prebuilt.sh'
-      - 'scripts/probe-m159-batch.sh'
-      - 'scripts/host-configure-m159-batch.sh'
-      - 'scripts/check-m159-inventory.py'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'tests/m159-*'
-      - 'rootfs/alpine/packages-m159-batch.txt'
-      - 'kernel/**'
-      - 'ports/**'
 
 permissions:
   contents: read

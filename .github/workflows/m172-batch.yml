@@ -95,7 +95,8 @@ jobs:
               test -f /usr/aarch64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-arm64-cross"
               command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
               test -f /usr/share/AAVMF/AAVMF_CODE.fd || \
-              test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64" ;;
+              test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
           esac
           if [ -n "$missing" ]; then
             sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq

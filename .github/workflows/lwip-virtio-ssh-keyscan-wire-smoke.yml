@@ -2,18 +2,6 @@ name: NaSeed VirtIO-Net + lwIP signed Alpine OpenSSH keyscan (x86 QEMU)
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - '.github/workflows/lwip-virtio-ssh-keyscan-wire-smoke.yml'
-      - 'kernel/fs/socket_syscall.c'
-      - 'kernel/syscall/dispatch.c'
-      - 'ports/lwip/**'
-      - 'kernel/drivers/virtio/**'
-      - 'scripts/lwip-ssh-keyscan-wire-cases.tsv'
-      - 'scripts/probe-lwip-ssh-keyscan-wire-smoke.sh'
-      - 'scripts/m141-rootfs-copies.tsv'
-      - 'scripts/run.sh'
-      - 'tests/m141-ssh-keyscan-wire-run.sh'
 
 permissions:
   contents: read

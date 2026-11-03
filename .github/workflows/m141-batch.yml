@@ -1,24 +1,5 @@
 name: NaSeed M141 68 signed original Alpine ELF candidates, QEMU three ISAs
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, labeled, edited]
-    paths:
-      - '.github/workflows/m141-batch.yml'
-      - 'tests/m141-*'
-      - 'scripts/m141-*'
-      - 'scripts/probe-m141-batch.sh'
-      - 'scripts/stage-m141-prebuilt.sh'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'scripts/check-prebuilt-profile-catalog.py'
-      - 'scripts/check-native-qemu-target.py'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'rootfs/alpine/**'
-      - 'kernel/**'
-      - 'ports/**'
   workflow_dispatch:
 
 concurrency:

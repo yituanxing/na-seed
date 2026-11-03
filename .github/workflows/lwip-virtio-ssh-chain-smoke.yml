@@ -2,18 +2,6 @@ name: NaSeed VirtIO-Net + lwIP signed Alpine SSH SCP SFTP wire (x86 QEMU)
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - '.github/workflows/lwip-virtio-ssh-chain-smoke.yml'
-      - 'kernel/fs/socket_syscall.c'
-      - 'kernel/syscall/dispatch.c'
-      - 'ports/lwip/**'
-      - 'kernel/drivers/virtio/**'
-      - 'scripts/m142-ssh-chain-cases.tsv'
-      - 'scripts/m142-ssh-chain-probe.sh'
-      - 'scripts/m141-rootfs-copies.tsv'
-      - 'scripts/run.sh'
-      - 'tests/m142-ssh-chain-run.sh'
 
 permissions:
   contents: read

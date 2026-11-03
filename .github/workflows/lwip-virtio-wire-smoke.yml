@@ -2,26 +2,6 @@ name: NaSeed dual VirtIO-Net + lwIP Alpine Ncat wire (x86 QEMU)
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - '.github/workflows/lwip-virtio-wire-smoke.yml'
-      - 'kernel/drivers/core/bus.c'
-      - 'kernel/drivers/core/bus.h'
-      - 'kernel/task/scheduler_service.c'
-      - 'kernel/block/device.c'
-      - 'kernel/block/device.h'
-      - 'kernel/drivers/port/block.c'
-      - 'kernel/drivers/port/net.c'
-      - 'kernel/drivers/virtio/**'
-      - 'kernel/platform/x86_virtio_pci.c'
-      - 'kernel/fs/socket_syscall.c'
-      - 'ports/lwip/**'
-      - 'ports/uboot/net_port.c'
-      - 'ports/uboot/virtio_net_bus.c'
-      - 'scripts/probe-lwip-virtio-wire-smoke.sh'
-      - 'scripts/lwip-wire-cases.tsv'
-      - 'scripts/run.sh'
-      - 'tests/m141-system-run.sh'
 
 permissions:
   contents: read

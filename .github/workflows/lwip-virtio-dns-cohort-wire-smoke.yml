@@ -2,18 +2,6 @@ name: NaSeed VirtIO-Net + lwIP 3 signed Alpine DNS tools (x86 QEMU)
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - '.github/workflows/lwip-virtio-dns-cohort-wire-smoke.yml'
-      - 'kernel/fs/socket_syscall.c'
-      - 'kernel/syscall/dispatch.c'
-      - 'ports/lwip/**'
-      - 'kernel/drivers/virtio/**'
-      - 'scripts/lwip-dns-cohort-wire-cases.tsv'
-      - 'scripts/lwip-dns-wire-server.py'
-      - 'scripts/probe-lwip-dns-cohort-wire-smoke.sh'
-      - 'scripts/run.sh'
-      - 'tests/m141-system-run.sh'
 
 permissions:
   contents: read

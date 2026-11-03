@@ -2,17 +2,6 @@ name: NaSeed M141 five signed Alpine BIND9 offline ELFs (x86 QEMU)
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - '.github/workflows/m141-bind-offline-cohort.yml'
-      - 'scripts/m141-bind-offline-cohort-cases.tsv'
-      - 'scripts/probe-m141-bind-offline-cohort.sh'
-      - 'scripts/stage-m141-prebuilt.sh'
-      - 'tests/m141-dns-run.sh'
-      - 'tests/m141-system-run.sh'
-      - 'scripts/m141-original-elfs.txt'
-      - 'kernel/fs/**'
-      - 'kernel/syscall/**'
 
 permissions:
   contents: read

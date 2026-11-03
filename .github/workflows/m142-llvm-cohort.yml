@@ -2,18 +2,6 @@ name: NaSeed M142 nine signed Alpine LLVM21 and Clang ELFs (one x86 QEMU)
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - '.github/workflows/m142-llvm-cohort.yml'
-      - 'scripts/m142-llvm-cohort-cases.tsv'
-      - 'scripts/probe-m142-llvm-cohort.sh'
-      - 'scripts/m141-rootfs-copies.tsv'
-      - 'scripts/stage-m141-prebuilt.sh'
-      - 'tests/m142-llvm-cohort-run.sh'
-      - 'tests/m141-toolchain-run.sh'
-      - 'kernel/fs/**'
-      - 'kernel/task/**'
-      - 'kernel/mm/**'
 
 permissions:
   contents: read

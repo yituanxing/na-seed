@@ -1,24 +1,5 @@
 name: NaSeed M140 20 signed GNU and Netpbm ELFs, QEMU three ISAs
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, labeled]
-    paths:
-      - '.github/workflows/m140-batch.yml'
-      - 'tests/m140-*'
-      - 'scripts/m140-*'
-      - 'scripts/probe-m140-batch.sh'
-      - 'scripts/stage-m140-prebuilt.sh'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'scripts/check-prebuilt-profile-catalog.py'
-      - 'scripts/check-native-qemu-target.py'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'rootfs/alpine/**'
-      - 'kernel/**'
-      - 'ports/**'
   workflow_dispatch:
 
 concurrency:

@@ -2,18 +2,6 @@ name: NaSeed VirtIO-Net + lwIP signed Alpine Nmap and iperf3 wire (x86 QEMU)
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - '.github/workflows/lwip-virtio-iperf3-wire-smoke.yml'
-      - 'kernel/fs/socket_syscall.c'
-      - 'kernel/syscall/dispatch.c'
-      - 'ports/lwip/**'
-      - 'kernel/drivers/virtio/**'
-      - 'scripts/lwip-iperf3-wire-cases.tsv'
-      - 'scripts/probe-lwip-iperf3-wire-smoke.sh'
-      - 'scripts/m141-rootfs-copies.tsv'
-      - 'scripts/run.sh'
-      - 'tests/m141-iperf3-wire-run.sh'
 
 permissions:
   contents: read

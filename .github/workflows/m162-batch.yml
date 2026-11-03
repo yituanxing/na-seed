@@ -2,24 +2,6 @@ name: NaSeed M162 native HTTPS PNG to actual framebuffer hardware pixels
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - '.github/workflows/m162-batch.yml'
-      - 'scripts/m162-*'
-      - 'scripts/stage-m162-prebuilt.sh'
-      - 'scripts/probe-m162-batch.sh'
-      - 'scripts/host-configure-m162-batch.sh'
-      - 'scripts/check-m162-wire-display.py'
-      - 'scripts/m160-image-wire-server.py'
-      - 'scripts/m161-qmp-verify.py'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'rootfs/alpine/packages-m162-batch.txt'
-      - 'tests/m162-*'
-      - 'scripts/run.sh'
-      - 'kernel/**'
-      - 'ports/**'
 
 permissions:
   contents: read

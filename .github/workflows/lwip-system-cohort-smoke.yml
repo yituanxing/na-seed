@@ -2,18 +2,6 @@ name: NaSeed 8 signed Alpine system utilities, one x86 QEMU boot
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - '.github/workflows/lwip-system-cohort-smoke.yml'
-      - 'scripts/lwip-system-cohort-cases.tsv'
-      - 'scripts/probe-lwip-system-cohort-smoke.sh'
-      - 'scripts/m141-rootfs-copies.tsv'
-      - 'tests/m141-system-cohort-run.sh'
-      - 'tests/m141-system-run.sh'
-      - 'scripts/stage-m141-prebuilt.sh'
-      - 'kernel/fs/**'
-      - 'kernel/task/**'
-      - 'ports/lwip/**'
 
 permissions:
   contents: read

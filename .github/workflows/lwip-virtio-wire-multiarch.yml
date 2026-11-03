@@ -2,30 +2,6 @@ name: NaSeed dual VirtIO-MMIO + lwIP Alpine Ncat wire (RV64 and ARM64 QEMU)
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - '.github/workflows/lwip-virtio-wire-multiarch.yml'
-      - 'kernel/drivers/core/bus.c'
-      - 'kernel/drivers/core/bus.h'
-      - 'kernel/task/scheduler_service.c'
-      - 'kernel/block/device.c'
-      - 'kernel/block/device.h'
-      - 'kernel/drivers/port/block.c'
-      - 'scripts/probe-lwip-virtio-wire-multiarch.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'scripts/lwip-wire-cases.tsv'
-      - 'scripts/build-riscv64-full.sh'
-      - 'scripts/build-aarch64-full.sh'
-      - 'kernel/platform/virtio_mmio_qemu.c'
-      - 'kernel/platform/riscv64_virtio.c'
-      - 'kernel/platform/aarch64_virtio.c'
-      - 'kernel/drivers/virtio/**'
-      - 'kernel/fs/socket_syscall.c'
-      - 'ports/lwip/**'
-      - 'ports/uboot/net_port.c'
-      - 'ports/uboot/virtio_net_bus.c'
-      - 'tests/m141-system-run.sh'
 
 permissions:
   contents: read

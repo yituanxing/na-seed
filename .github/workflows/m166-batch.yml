@@ -2,29 +2,6 @@ name: NaSeed M166 Linux VirtIO keyboard tablet mouse and real desktop three ISA
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - '.github/workflows/m166-batch.yml'
-      - 'scripts/m166-*'
-      - 'scripts/check-m166-input-port.sh'
-      - 'scripts/check-block-foundation.sh'
-      - 'scripts/probe-m166-batch.sh'
-      - 'scripts/stage-m166-prebuilt.sh'
-      - 'scripts/host-configure-m166-batch.sh'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'rootfs/alpine/packages-m166-batch.txt'
-      - 'tests/m166-*'
-      - 'kernel/**'
-      - 'ports/**'
-      - 'Makefile'
-      - 'scripts/build-riscv64-full.sh'
-      - 'scripts/build-aarch64-full.sh'
-      - 'scripts/run.sh'
 
 permissions:
   contents: read

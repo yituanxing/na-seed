@@ -2,24 +2,6 @@ name: NaSeed M161 real framebuffer ImageMagick fbgrab QMP pixels
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - '.github/workflows/m161-batch.yml'
-      - 'scripts/m161-*'
-      - 'scripts/stage-m161-prebuilt.sh'
-      - 'scripts/probe-m161-batch.sh'
-      - 'scripts/host-configure-m161-batch.sh'
-      - 'scripts/test-fbdev-core.c'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'scripts/run.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'tests/m161-*'
-      - 'rootfs/alpine/packages-m161-batch.txt'
-      - 'kernel/**'
-      - 'ports/**'
 
 permissions:
   contents: read

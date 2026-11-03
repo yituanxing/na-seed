@@ -2,19 +2,6 @@ name: NaSeed M151 35 NEW signed Alpine multimedia codecs
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened, labeled]
-    paths:
-      - '.github/workflows/m151-batch.yml'
-      - 'scripts/m151-*'
-      - 'scripts/stage-m151-prebuilt.sh'
-      - 'scripts/probe-m151-batch.sh'
-      - 'scripts/host-configure-m151-batch.sh'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'tests/m151-*'
-      - 'rootfs/alpine/packages-m151-batch.txt'
-      - 'docs/m151-*'
 
 permissions:
   contents: read

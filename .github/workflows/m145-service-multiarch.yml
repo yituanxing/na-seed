@@ -2,28 +2,6 @@ name: NaSeed M145 RV64 ARM64 original signed HTTP services over VirtIO-MMIO
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - '.github/workflows/m145-service-multiarch.yml'
-      - 'scripts/probe-m145-service-multiarch.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/stage-m143-prebuilt.sh'
-      - 'scripts/stage-m144-prebuilt.sh'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/m143-**'
-      - 'scripts/m144-**'
-      - 'scripts/host-configure-m143-batch.sh'
-      - 'scripts/host-configure-m144-batch.sh'
-      - 'rootfs/alpine/packages-m143-batch.txt'
-      - 'rootfs/alpine/packages-m144-batch.txt'
-      - 'tests/m143-**'
-      - 'tests/m144-**'
-      - 'kernel/fs/**'
-      - 'kernel/fd.*'
-      - 'kernel/drivers/virtio/**'
-      - 'ports/lwip/**'
 permissions:
   contents: read
 concurrency:

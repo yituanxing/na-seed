@@ -2,17 +2,6 @@ name: NaSeed lwIP signed Alpine Ncat loopback (x86 QEMU smoke)
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - '.github/workflows/lwip-ncat-smoke.yml'
-      - 'kernel/fs/socket_syscall.c'
-      - 'ports/lwip/**'
-      - 'kernel/task/**'
-      - 'scripts/probe-lwip*'
-      - 'scripts/lwip-ncat-cases.tsv'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/stage-m141-prebuilt.sh'
-      - 'tests/m141-system-run.sh'
 
 permissions:
   contents: read

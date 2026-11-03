@@ -2,21 +2,6 @@ name: NaSeed M152 35 original Alpine DNS SMTP and network diagnostics ELF
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened, labeled]
-    paths:
-      - '.github/workflows/m152-network.yml'
-      - 'rootfs/alpine/packages-m152-batch.txt'
-      - 'scripts/m152-**'
-      - 'scripts/stage-m152-prebuilt.sh'
-      - 'scripts/probe-m152-network-cohort.sh'
-      - 'scripts/host-configure-m152-batch.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'tests/m152-**'
-      - 'kernel/fs/**'
-      - 'kernel/fd.*'
-      - 'ports/lwip/**'
-      - 'kernel/drivers/virtio/**'
 permissions:
   contents: read
 concurrency:

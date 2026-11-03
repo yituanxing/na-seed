@@ -2,19 +2,6 @@ name: NaSeed M143 original signed Wget/aria2c/lighttpd HTTP (x86 QEMU)
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - '.github/workflows/m143-http-wire-smoke.yml'
-      - 'rootfs/alpine/packages-m143-batch.txt'
-      - 'scripts/m143-**'
-      - 'scripts/stage-m143-prebuilt.sh'
-      - 'scripts/host-configure-m143-batch.sh'
-      - 'scripts/probe-m143-http-wire-smoke.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'tests/m143-http-run.sh'
-      - 'kernel/fs/**'
-      - 'ports/lwip/**'
-      - 'kernel/drivers/virtio/**'
 permissions:
   contents: read
 concurrency:

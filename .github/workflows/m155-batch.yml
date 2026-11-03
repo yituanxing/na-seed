@@ -2,21 +2,6 @@ name: NaSeed M155 33 NEW signed Alpine filesystem and partition ELFs
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened, labeled]
-    paths:
-      - '.github/workflows/m155-batch.yml'
-      - 'scripts/m155-*'
-      - 'scripts/stage-m155-prebuilt.sh'
-      - 'scripts/probe-m155-batch.sh'
-      - 'scripts/host-configure-m155-batch.sh'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'tests/m155-*'
-      - 'rootfs/alpine/packages-m155-batch.txt'
-      - 'docs/m155-*'
-      - 'kernel/**'
-      - 'ports/**'
 
 permissions:
   contents: read

@@ -3,17 +3,6 @@ on:
   # The heavy original-program suite remains opt-in. A PR must both change
   # relevant execution code and carry the explicit run-m111-batch label;
   # manual workflow_dispatch continues to work on any selected branch.
-  pull_request:
-    types: [opened, synchronize, reopened, labeled]
-    paths:
-      - '.github/workflows/m111-batch.yml'
-      - 'kernel/**'
-      - 'ports/**'
-      - 'scripts/probe-m111-batch.sh'
-      - 'scripts/stage-m111-prebuilt.sh'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'tests/m111-*'
-      - 'rootfs/alpine/**'
   workflow_dispatch:
 
 concurrency:

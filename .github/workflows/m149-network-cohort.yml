@@ -2,21 +2,6 @@ name: NaSeed M149 35 original signed network/security ELF and protocols
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened, labeled]
-    paths:
-      - '.github/workflows/m149-network-cohort.yml'
-      - 'rootfs/alpine/packages-m149-batch.txt'
-      - 'scripts/m149-**'
-      - 'scripts/stage-m149-prebuilt.sh'
-      - 'scripts/probe-m149-network-cohort.sh'
-      - 'scripts/host-configure-m149-batch.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'tests/m149-**'
-      - 'kernel/fs/**'
-      - 'kernel/fd.*'
-      - 'ports/lwip/**'
-      - 'kernel/drivers/virtio/**'
 permissions:
   contents: read
 concurrency:

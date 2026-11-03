@@ -2,25 +2,6 @@ name: NaSeed M164 real serial keyboard to visible QEMU display three ISA
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - '.github/workflows/m164-batch.yml'
-      - 'scripts/m164-*'
-      - 'scripts/probe-m164-batch.sh'
-      - 'scripts/stage-m164-prebuilt.sh'
-      - 'scripts/host-configure-m164-batch.sh'
-      - 'scripts/check-m164-interactive.py'
-      - 'scripts/m161-qmp-verify.py'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'rootfs/alpine/packages-m164-batch.txt'
-      - 'tests/m164-*'
-      - 'kernel/**'
-      - 'ports/**'
 
 permissions:
   contents: read

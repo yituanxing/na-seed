@@ -2,23 +2,6 @@ name: NaSeed M156 signed Alpine HTTPS TLS wire (three ISA QEMU)
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - '.github/workflows/m156-https.yml'
-      - 'scripts/m156-https-*'
-      - 'scripts/probe-m156-https-wire-smoke.sh'
-      - 'scripts/stage-m156-prebuilt.sh'
-      - 'scripts/host-configure-m156-https.sh'
-      - 'tests/m156-https-run.sh'
-      - 'scripts/m143-*'
-      - 'scripts/stage-m143-prebuilt.sh'
-      - 'scripts/m156-https-rootfs-copies.tsv'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'rootfs/alpine/packages-m143-batch.txt'
-      - 'kernel/**'
-      - 'ports/**'
 
 permissions:
   contents: read

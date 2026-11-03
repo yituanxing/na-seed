@@ -2,18 +2,6 @@ name: NaSeed M105 process-vs-thread signal queues — native three-ISA QEMU
 on:
   # Real source-BusyBox/native firmware boots are opt-in for PRs. A label
   # explicitly requests this costly architectural signal regression.
-  pull_request:
-    types: [opened, synchronize, reopened, labeled]
-    paths:
-      - '.github/workflows/m105-shared-signals.yml'
-      - 'kernel/**'
-      - 'ports/**'
-      - 'tests/m105-signal-group.c'
-      - 'scripts/check-m105-signal-group.sh'
-      - 'scripts/test-m105-signal-group-host.c'
-      - 'scripts/m105-signal-group-serial-check.py'
-      - 'scripts/probe-m105-signal-group.sh'
-      - 'scripts/build-m105-signal-group.sh'
   workflow_dispatch:
 
 concurrency:

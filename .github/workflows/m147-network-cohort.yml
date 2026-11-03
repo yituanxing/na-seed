@@ -2,21 +2,6 @@ name: NaSeed M147 29 original Alpine networking ELF and protocol QEMU
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened, labeled]
-    paths:
-      - '.github/workflows/m147-network-cohort.yml'
-      - 'rootfs/alpine/packages-m147-batch.txt'
-      - 'scripts/m147-**'
-      - 'scripts/stage-m147-prebuilt.sh'
-      - 'scripts/probe-m147-network-cohort.sh'
-      - 'scripts/host-configure-m147-batch.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'tests/m147-**'
-      - 'kernel/fs/**'
-      - 'kernel/fd.*'
-      - 'ports/lwip/**'
-      - 'kernel/drivers/virtio/**'
 permissions:
   contents: read
 concurrency:

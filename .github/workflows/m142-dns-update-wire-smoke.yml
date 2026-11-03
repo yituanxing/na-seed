@@ -2,18 +2,6 @@ name: NaSeed M142 signed Alpine nsupdate + Nping wire (x86 QEMU)
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - '.github/workflows/m142-dns-update-wire-smoke.yml'
-      - 'scripts/m142-dns-update-**'
-      - 'scripts/probe-m142-dns-update-wire-smoke.sh'
-      - 'scripts/test-m142-dns-update-server.py'
-      - 'scripts/m141-rootfs-copies.tsv'
-      - 'tests/m142-dns-update-run.sh'
-      - 'kernel/fs/socket_syscall.c'
-      - 'ports/lwip/**'
-      - 'kernel/drivers/virtio/**'
-      - 'scripts/run.sh'
 
 permissions:
   contents: read

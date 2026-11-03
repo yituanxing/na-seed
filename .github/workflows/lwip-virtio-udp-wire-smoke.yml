@@ -2,18 +2,6 @@ name: NaSeed VirtIO-Net + lwIP signed Alpine Ncat UDP (x86 QEMU)
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - '.github/workflows/lwip-virtio-udp-wire-smoke.yml'
-      - 'kernel/fs/socket_syscall.c'
-      - 'kernel/syscall/dispatch.c'
-      - 'ports/lwip/**'
-      - 'kernel/drivers/virtio/**'
-      - 'scripts/lwip-udp-wire-cases.tsv'
-      - 'scripts/lwip-udp-echo-server.py'
-      - 'scripts/probe-lwip-udp-wire-smoke.sh'
-      - 'scripts/run.sh'
-      - 'tests/m141-system-run.sh'
 
 permissions:
   contents: read

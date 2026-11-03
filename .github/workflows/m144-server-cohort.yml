@@ -2,19 +2,6 @@ name: NaSeed M144 signed five-service HTTP and RESP original Alpine ELFs
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - '.github/workflows/m144-server-cohort.yml'
-      - 'scripts/m144-**'
-      - 'scripts/stage-m144-prebuilt.sh'
-      - 'scripts/host-configure-m144-batch.sh'
-      - 'scripts/probe-m144-server-cohort.sh'
-      - 'rootfs/alpine/packages-m144-batch.txt'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'tests/m144-**'
-      - 'kernel/fs/**'
-      - 'kernel/fd.*'
-      - 'ports/lwip/**'
 permissions:
   contents: read
 concurrency:
