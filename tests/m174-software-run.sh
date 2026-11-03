@@ -41,10 +41,17 @@ busy grep -Eq '(^|[[:space:]])all([[:space:]]|$)' "$work/mpstat"
 echo M174_SOFTWARE_MPSTAT_PROC_FUNCTION_PASS
 
 # Original ELF entry/version exercises ONLY, never watch/TUI semantics.
-busy timeout 15 /usr/bin/inotifywait --version > "$work/inotify-version" 2>&1
+# Alpine inotifywait's --version can exit 1 after printing its version/usage
+# on a kernel without inotify. It is not an inotify-watch functional check:
+# require entry/diagnostic text and reject exec errors, signals and timeout.
+code=0
+busy timeout 15 /usr/bin/inotifywait --version > "$work/inotify-version" 2>&1 || code=$?
+[ "$code" -lt 124 ] && [ -s "$work/inotify-version" ]
 busy grep -iq 'inotify' "$work/inotify-version"
 echo M174_SOFTWARE_INOTIFY_ENTRY_ONLY_PASS
-busy timeout 15 /usr/bin/tig --version > "$work/tig-version" 2>&1
+code=0
+busy timeout 15 /usr/bin/tig --version > "$work/tig-version" 2>&1 || code=$?
+[ "$code" -lt 124 ] && [ -s "$work/tig-version" ]
 busy grep -iq 'tig' "$work/tig-version"
 echo M174_SOFTWARE_TIG_ENTRY_ONLY_PASS
 
