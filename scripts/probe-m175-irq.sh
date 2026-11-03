@@ -12,6 +12,11 @@ case "$port" in amd64|riscv64|arm64) ;; *) exit 2 ;; esac
 # semantics, and the five physical pixel oracle. Override only QMP input.
 NAS_QMP_VERIFY_SCRIPT=scripts/m175-qmp-verify.py
 export NAS_QMP_VERIFY_SCRIPT
+# This native milestone has an active QMP IRQ-burst oracle: on missing
+# hardware delivery fail in a bounded 4-minute guest, preserving raw serial
+# evidence. The original M174 standalone probe keeps its 850s allowance.
+NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_APP_BATCH_QEMU_TIMEOUT:-240}
+export NAS_APP_BATCH_QEMU_TIMEOUT
 sh scripts/probe-m174-batch.sh "$port"
 
 work="build/external/m174-software-batch/$port"

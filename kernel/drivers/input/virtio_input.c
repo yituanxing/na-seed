@@ -274,26 +274,36 @@ static int probe(struct nas_bus_device *dev) {
     rc=nas_input_register_device(&v->input);
     if (rc) goto fail;
     v->registered=true;
-    for (unsigned i=0;i<VIRTINPUT_RING_SIZE;i++) {
-        rc=queue_slot(v,i);
-        if (rc) goto fail;
-    }
     v->bus_device=dev;
 #ifdef NAS_ENABLE_VIRTIO_INPUT
     if (dev->resource.irq.domain!=NAS_IRQ_DOMAIN_NONE) {
-        /* A routed native device is IRQ-driven. Missing transport ACK or a
-         * failed controller bind is a genuine probe failure, not grounds
-         * for silent fallback polling. */
+        /* Linux installs virtqueue IRQ callbacks before exposing event
+         * buffers to a device. QEMU ARM virt's GIC SPI is EDGE triggered:
+         * if a device asserts an old ISR before we bind the controller,
+         * its held-high line cannot produce another rising edge. Clear
+         * stale status before unmask, then publish event buffers only
+         * AFTER the IRQ action has a live route. PIC/PLIC level paths use
+         * the same order so all three ISAs have one lifecycle contract. */
         if (!v->transport.ops || !v->transport.ops->read_ack_irq) {
             rc=-EOPNOTSUPP;
             goto fail;
         }
+        (void)nas_virtio_irq_ack(&v->transport);
         rc=nas_irq_bind(&v->irq_action,dev->resource.irq,
                         nas_virtio_irq_ack_source,&v->transport,
                         input_irq_notify,v);
         if (rc) goto fail;
-        /* Cover the interval between posting buffers and binding the IRQ.
-         * It is not counted as an interrupt acknowledgement. */
+    }
+#endif
+    for (unsigned i=0;i<VIRTINPUT_RING_SIZE;i++) {
+        rc=queue_slot(v,i);
+        if (rc) goto fail;
+    }
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+    if (v->irq_action.bound) {
+        /* One initialization drain also covers completions arriving while
+         * the CPU still has interrupts masked during the first postings.
+         * It is not counted as a hardware IRQ or as fallback polling. */
         __atomic_store_n(&v->irq_pending,true,__ATOMIC_RELEASE);
     }
 #endif
@@ -444,5 +454,43 @@ void nas_virtio_input_irq_report(void) {
     nas_print(" pointer_events=");nas_dec(pointer_events);
     nas_print(" fallback_poll=");nas_dec(fallback_poll);
     nas_print("\n[M175 INPUT IRQ ONLY PASS]\n");
+}
+/* Bounded diagnostic for this first ARM GIC SPI hardware bring-up. It is
+ * gated by the *actual* published IRQ domain and uses read-only MMIO status,
+ * never read-and-clear transport ACK or speculative queue consumption.
+ * Scheduler context is safe; hard-IRQ handlers remain ACK-and-notify only. */
+void nas_virtio_input_irq_diagnostic(uint64_t now_ns) {
+    static uint64_t next_ns;
+    static unsigned reports;
+    if (reports>=64U || (next_ns && now_ns<next_ns))return;
+    bool arm=false;
+    for(unsigned i=0;i<VIRTINPUT_MAX_DEVICES;i++)
+        if(inputs[i].bus_device &&
+           inputs[i].bus_device->resource.irq.domain==NAS_IRQ_DOMAIN_ARM_GIC)
+            arm=true;
+    if(!arm)return;
+    reports++;
+    next_ns=now_ns+UINT64_C(2000000000);
+    for(unsigned i=0;i<VIRTINPUT_MAX_DEVICES;i++) {
+        const struct virtinput_slot *v=&inputs[i];
+        if(!v->bus_device ||
+           v->bus_device->resource.irq.domain!=NAS_IRQ_DOMAIN_ARM_GIC)
+            continue;
+        const volatile uint32_t *mmio=v->bus_device->resource.view.mmio.registers;
+        uint32_t status=mmio?mmio[0x60U/4U]:UINT32_MAX;
+        uint16_t used=v->eventq.ring.used?v->eventq.ring.used->idx:0;
+        nas_print("[M175 ARM INPUT SNAPSHOT] slot=");nas_dec(i);
+        nas_print(" irq=");nas_dec(v->bus_device->resource.irq.hwirq);
+        nas_print(" mmio_isr=");nas_dec(status);
+        nas_print(" ring_used=");nas_dec(used);
+        nas_print(" ring_consumed=");nas_dec(v->eventq.last_used);
+        nas_print(" irq_ack=");
+        nas_dec(__atomic_load_n(&v->irq_acks,__ATOMIC_RELAXED));
+        nas_print(" drains=");nas_dec(v->deferred_drains);
+        nas_print(" events=");nas_dec(v->delivered_events);
+        nas_print(" pending=");
+        nas_dec(__atomic_load_n(&v->irq_pending,__ATOMIC_RELAXED));
+        nas_print("\n");
+    }
 }
 #endif
