@@ -38,6 +38,11 @@ FRAMES = {
                      (448, 250, term_key), (550, 370, term_key)),
 }
 
+# M169: hardware input after a true >30s idle interval must still wake a
+# live compositor. A frozen last frame alone is not proof: the next focus
+# marker and physical pixels must also change.
+FRAMES['idle']=FRAMES['initial']
+
 
 def frame(sock, reader, outdir, label):
     # Reuse the canonical P6 screenshot parser. Every physical frame is a
@@ -79,9 +84,12 @@ def main():
     key=old['key']
     with sock:
         frame(sock,reader,args.outdir,'initial')
+        time.sleep(32)
+        frame(sock,reader,args.outdir,'idle')
         send(sock,reader,pointer(150,150));time.sleep(.6)
         send(sock,reader,[button(True)])
         wait(args.serial,'M168_IMAGE_FOCUS_VISIBLE',deadline)
+        print('[M169 IDLE WAKE PASS] >30s without events, real tablet click wakes userspace compositor',flush=True)
         frame(sock,reader,args.outdir,'image-focus')
         send(sock,reader,[button(False)]);time.sleep(.6)
 
@@ -116,7 +124,7 @@ def main():
         send(sock,reader,[key('q',True)])
         wait(args.serial,'M168_DESKTOP_PASS',deadline)
     print('[M168 QMP THREE CLIENTS PASS] seven actual framebuffer screenshots, '
-          'real keyboard/tablet, signed Lynx and MC output, three independent '
+          'real keyboard/tablet after >30s idle, signed Lynx and MC output, three independent '
           'userland surfaces and focused PTY/browser repaint',flush=True)
 
 

@@ -1,4 +1,4 @@
-name: NaSeed M168 three client browser terminal image desktop seven screens three ISA
+name: NaSeed M168 three client browser terminal image desktop eight screens three ISA (M169 idle/IPC safety)
 
 on:
   workflow_dispatch:
@@ -114,7 +114,7 @@ jobs:
       - name: Boot true QEMU and drive three windows from physical input
         timeout-minutes: 58
         run: sh scripts/probe-m168-batch.sh ${{ matrix.port }}
-      - name: Preserve signed APK binaries logs and seven independent screenshots
+      - name: Preserve signed APK binaries logs and eight independent screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:

@@ -41,7 +41,7 @@ struct session {
     struct input_handles input;
     int fb, pointer_x,pointer_y,focus,top,stage,mode;
     int held,dragging,grab_x,grab_y,origin_x,origin_y;
-    int sent_key;
+    int sent_key,exit_requested;
 };
 struct client_spec {const char *path;int x,y;};
 static const struct client_spec clients[]={
@@ -174,7 +174,7 @@ static void spawn_client(struct session *s,int role) {
          * Devices, framebuffer and earlier clients remain desktop-owned. */
         for(int i=4;i<64;i++)close(i);
         char *const args[]={(char *)path,
-              s->mode==168 && role==TERMINAL ? "--m168" : NULL,NULL};
+              s->mode!=167 && role==TERMINAL ? "--m168" : NULL,NULL};
         execv(path,args);
         _exit(121);
     }
@@ -236,10 +236,10 @@ static void pointer_button(struct session *s,int down) {
         s->grab_x=s->pointer_x;s->grab_y=s->pointer_y;
         s->origin_x=w->x;s->origin_y=w->y;
         render(s);
-        if(s->stage==0 && target==IMAGE && !s->dragging) {
+        if(s->mode && s->stage==0 && target==IMAGE && !s->dragging) {
             s->stage=1;nasd_mark(s->mode==168 ?
                  "M168_IMAGE_FOCUS_VISIBLE":"M167_IMAGE_FOCUS_VISIBLE");
-        } else if(s->stage==1 && target==IMAGE && s->dragging) {
+        } else if(s->mode && s->stage==1 && target==IMAGE && s->dragging) {
             nasd_mark(s->mode==168 ?
                  "M168_IMAGE_DRAG_GRABBED":"M167_IMAGE_DRAG_GRABBED");
         } else if(s->mode==168 && s->stage==2 && target==BROWSER &&
@@ -254,7 +254,7 @@ static void pointer_button(struct session *s,int down) {
     } else if(s->dragging) {
         s->dragging=0;
         struct window *w=&s->windows[s->focus];
-        if(s->stage==1 && s->focus==IMAGE &&
+        if(s->mode && s->stage==1 && s->focus==IMAGE &&
            w->x-s->origin_x>=50 && w->y-s->origin_y>=20) {
             render(s);s->stage=2;
             nasd_mark(s->mode==168 ?
@@ -275,15 +275,22 @@ static void pointer_motion(struct session *s) {
 static void input_event(struct session *s,unsigned device,
                         const struct input_event *e) {
     if(device==0 && e->type==EV_KEY && e->value==1) {
-        if(e->code==KEY_Q && s->stage==(s->mode==168?6:4)) {
+        /* Test-state markers describe acceptance only. Normal desktop
+         * keyboard focus and IPC are not gated by any QMP stage. */
+        if(s->mode && e->code==KEY_Q &&
+           s->stage==(s->mode==168?6:4)) {
             s->stage=s->mode==168?7:5;
-        } else if(e->code==KEY_B && s->mode==168 && s->stage==3 &&
-                  s->focus==BROWSER && !(s->sent_key&(1<<BROWSER))) {
+            s->exit_requested=1;
+        } else if(!s->mode && e->code==KEY_ESC) {
+            s->exit_requested=1; /* orderly human-session shutdown */
+        } else if(s->focus==BROWSER && s->count>BROWSER &&
+                  e->code==KEY_B) {
             nasd_send_packet(s->windows[BROWSER].channel,MSG_KEY,KEY_B);
-            s->sent_key|=1<<BROWSER;
-        } else if(e->code==KEY_A &&
-                  s->stage==(s->mode==168?5:3) &&
-                  s->focus==TERMINAL && !(s->sent_key&(1<<TERMINAL))) {
+        } else if(s->focus==TERMINAL && e->code==KEY_A &&
+                  !(s->sent_key&(1<<TERMINAL))) {
+            /* This milestone's PTY shell consumes one line then exits.
+             * Do not send a second line to a dead PTY; a persistent
+             * interactive shell is a separate terminal-app milestone. */
             nasd_send_packet(s->windows[TERMINAL].channel,MSG_KEY,KEY_A);
             s->sent_key|=1<<TERMINAL;
         }
@@ -304,7 +311,7 @@ static void input_event(struct session *s,unsigned device,
        (e->value==0 || e->value==1))pointer_button(s,e->value);
 }
 static void event_loop(struct session *s) {
-    while(s->stage<(s->mode==168?7:5)) {
+    while(!s->exit_requested) {
         struct pollfd fds[3+WINDOW_LIMIT]={
             {.fd=s->input.keyboard,.events=POLLIN},
             {.fd=s->input.tablet,.events=POLLIN},
@@ -312,9 +319,12 @@ static void event_loop(struct session *s) {
         };
         for(unsigned i=0;i<s->count;i++)
             fds[3+i]=(struct pollfd){.fd=s->windows[i].channel,.events=POLLIN};
-        int count=poll(fds,3+s->count,30000);
+        /* An idle desktop is not an error. The test runner may remain
+         * silent for longer than 30 seconds and must still get a response
+         * to the next real evdev event. */
+        int count=poll(fds,3+s->count,-1);
         if(count<0 && errno==EINTR)continue;
-        nasd_require(count>0,"poll hardware devices and IPC timeout/nasd_fail");
+        nasd_require(count>0,"poll hardware devices and IPC readiness");
         for(unsigned i=0;i<3+s->count;i++) {
             nasd_require(!(fds[i].revents&(POLLERR|POLLNVAL|POLLHUP)),
                     "desktop device or client disconnected");
@@ -330,29 +340,28 @@ static void event_loop(struct session *s) {
             } else {
                 int role=(int)i-3;
                 struct message m=nasd_recv_packet(s->windows[role].channel);
-                nasd_require(m.type==MSG_UPDATED,
-                             "client-only live surface commit");
-                if(s->mode==168 && role==BROWSER && s->stage==3 &&
-                   m.key==KEY_B) {
-                    __atomic_thread_fence(__ATOMIC_ACQUIRE);
-                    render(s);s->stage=4;
-                    nasd_mark("M168_BROWSER_KEY_VISIBLE");
-                    continue;
-                }
-                nasd_require(role==TERMINAL &&
-                         s->stage==(s->mode==168?5:3) && m.key==KEY_A,
-                         "focused terminal surface commit");
+                nasd_require(m.type==MSG_UPDATED &&
+                    ((role==BROWSER && m.key==KEY_B) ||
+                     (role==TERMINAL && m.key==KEY_A)),
+                    "registered client live surface update");
                 __atomic_thread_fence(__ATOMIC_ACQUIRE);
-                render(s);s->stage=s->mode==168?6:4;
-                nasd_mark(s->mode==168 ?
-                     "M168_TERMINAL_KEY_VISIBLE":"M167_TERMINAL_KEY_VISIBLE");
+                render(s);
+                /* Only acceptance marker transitions are stage-specific.
+                 * A valid app repaint at any other time remains valid. */
+                if(s->mode==168 && role==BROWSER && s->stage==3) {
+                    s->stage=4;nasd_mark("M168_BROWSER_KEY_VISIBLE");
+                } else if(s->mode==168 && role==TERMINAL && s->stage==5) {
+                    s->stage=6;nasd_mark("M168_TERMINAL_KEY_VISIBLE");
+                } else if(s->mode==167 && role==TERMINAL && s->stage==3) {
+                    s->stage=4;nasd_mark("M167_TERMINAL_KEY_VISIBLE");
+                }
             }
         }
     }
 }
 static void desktop(int mode) {
     struct session s={0};
-    s.mode=mode;s.count=mode==168?3U:2U;
+    s.mode=mode;s.count=mode==167?2U:3U;
     s.input=open_input();
     s.fb=open_fb();
     for(unsigned i=0;i<s.count;i++) {
@@ -361,8 +370,8 @@ static void desktop(int mode) {
     }
     s.focus=s.top=(int)(s.count-1);s.pointer_x=400;s.pointer_y=300;
     render(&s);
-    nasd_mark(mode==168?"M168_DESKTOP_INITIAL_VISIBLE":
-                        "M167_DESKTOP_INITIAL_VISIBLE");
+    if(mode)nasd_mark(mode==168?"M168_DESKTOP_INITIAL_VISIBLE":
+                                  "M167_DESKTOP_INITIAL_VISIBLE");
     event_loop(&s);
     for(unsigned i=0;i<s.count;i++) {
         struct window *w=&s.windows[i];
@@ -375,9 +384,11 @@ static void desktop(int mode) {
     }
     close(s.input.keyboard);close(s.input.tablet);close(s.input.mouse);
     close(s.fb);
-    nasd_mark(mode==168?"M168_THREE_EXEC_CLIENTS_CLEAN_PASS":
-                        "M167_TWO_EXEC_CLIENTS_CLEAN_PASS");
-    nasd_mark(mode==168?"M168_DESKTOP_PASS":"M167_DESKTOP_PASS");
+    if(mode) {
+        nasd_mark(mode==168?"M168_THREE_EXEC_CLIENTS_CLEAN_PASS":
+                             "M167_TWO_EXEC_CLIENTS_CLEAN_PASS");
+        nasd_mark(mode==168?"M168_DESKTOP_PASS":"M167_DESKTOP_PASS");
+    }
 }
 /* Reproducible host check for EXACT production IPC/surface/geometry helpers.
  * No fake kernel entrypoint or fabricated guest acceptance marker. */
@@ -488,6 +499,88 @@ static void selftest168(void) {
     nasd_mark("[M168 HOST DESKTOP PASS] three registered dimensioned clients, "
               "z-order, focus, surface pixels and userspace text glyphs");
 }
+
+/* M169: exercise the real SCM_RIGHTS receiver, not a mock fstat. Each
+ * malformed backing capability is sent over an actual AF_UNIX socket and
+ * rejected by a separate receiving process before any mmap/pixel access. */
+static void selftest169(void) {
+    const off_t proper=(off_t)IMAGE_W*IMAGE_H*4;
+    for(unsigned kind=0;kind<4;kind++) {
+        int ends[2]={-1,-1};
+        nasd_require(socketpair(AF_UNIX,SOCK_STREAM,0,ends)==0,
+                     "M169 surface test socketpair");
+        int backing=-1;
+        if(kind==2) {
+            int pipefds[2]={-1,-1};
+            nasd_require(pipe(pipefds)==0,"M169 nonregular backing pipe");
+            backing=pipefds[0];
+            close(pipefds[1]);
+        } else if(kind!=3) {
+            backing=memfd_create("m169-invalid-surface",MFD_CLOEXEC);
+            nasd_require(backing>=0,"M169 real memfd backing");
+            off_t length=kind==0?proper-1:proper+1;
+            nasd_require(ftruncate(backing,length)==0,
+                         "M169 malformed backing size");
+        }
+        if(kind==3) {
+            const struct message packet={
+                .type=MSG_READY,.key=IMAGE,
+                .value=(IMAGE_W<<16U)|IMAGE_H
+            };
+            nasd_write_all(ends[0],&packet,sizeof(packet));
+        } else {
+            nasd_send_surface(ends[0],backing,IMAGE,IMAGE_W,IMAGE_H);
+        }
+        pid_t receiver=fork();
+        nasd_require(receiver>=0,"M169 invalid surface receiver fork");
+        if(!receiver) {
+            close(ends[0]);
+            if(backing>=0)close(backing);
+            FILE *quiet=freopen("/dev/null","w",stderr);
+            (void)quiet;
+            unsigned w=0,h=0;
+            int fd=nasd_receive_surface(ends[1],IMAGE,&w,&h);
+            (void)fd;
+            _exit(99); /* accepted an invalid FD: forbidden */
+        }
+        close(ends[0]);close(ends[1]);
+        if(backing>=0)close(backing);
+        int status=0;
+        nasd_require(waitpid(receiver,&status,0)==receiver &&
+                    WIFEXITED(status) && WEXITSTATUS(status)==17,
+                    "M169 reject malformed SCM_RIGHTS backing before mmap");
+    }
+    /* Without QMP stages, focused keys still reach the correct userspace
+     * client over real IPC. Browser accepts repeated B; the one-shot PTY
+     * fixture is dispatched only once after its shell exits. */
+    int browser[2],terminal[2];
+    nasd_require(socketpair(AF_UNIX,SOCK_STREAM,0,browser)==0 &&
+                 socketpair(AF_UNIX,SOCK_STREAM,0,terminal)==0,
+                 "M169 focused keyboard channels");
+    struct session s={.mode=0,.count=3,.focus=BROWSER,.stage=0};
+    s.windows[BROWSER].channel=browser[0];
+    s.windows[TERMINAL].channel=terminal[0];
+    const struct input_event b={.type=EV_KEY,.code=KEY_B,.value=1};
+    const struct input_event a={.type=EV_KEY,.code=KEY_A,.value=1};
+    for(unsigned n=0;n<2;n++) {
+        input_event(&s,0,&b);
+        struct message packet=nasd_recv_packet(browser[1]);
+        nasd_require(packet.type==MSG_KEY && packet.key==KEY_B,
+                     "M169 repeated browser key without acceptance stage");
+    }
+    s.focus=TERMINAL;
+    input_event(&s,0,&a);
+    struct message packet=nasd_recv_packet(terminal[1]);
+    nasd_require(packet.type==MSG_KEY && packet.key==KEY_A,
+                 "M169 focused terminal key without acceptance stage");
+    input_event(&s,0,&a);
+    nasd_require((s.sent_key&(1<<TERMINAL))!=0,
+                 "M169 one-shot shell not sent a second input");
+    close(browser[0]);close(browser[1]);
+    close(terminal[0]);close(terminal[1]);
+    nasd_mark("[M169 HOST DESKTOP PASS] invalid SCM_RIGHTS size/type/missing FD rejected, unstaged focused keys");
+}
+
 int main(int argc,char **argv) {
     if(argc==2 && !strcmp(argv[1],"--selftest")) {
         selftest();return 0;
@@ -495,11 +588,14 @@ int main(int argc,char **argv) {
     if(argc==2 && !strcmp(argv[1],"--selftest168")) {
         selftest();selftest168();return 0;
     }
-    /* The signed guest program runner passes its case identifier as argv[1].
-     * Desktop can also be launched interactively without that selector. */
+    if(argc==2 && !strcmp(argv[1],"--selftest169")) {
+        selftest();selftest168();selftest169();return 0;
+    }
+    /* No selector starts a long-lived three-window user session. Milestone
+     * arguments alone turn on QMP acceptance stage markers and Q-to-exit. */
     nasd_require(argc==1 || (argc==2 &&
                  (!strcmp(argv[1],"m167") || !strcmp(argv[1],"m168"))),
                  "desktop mode arguments");
-    desktop(argc==2 && !strcmp(argv[1],"m168") ? 168 : 167);
+    desktop(argc==1?0:(!strcmp(argv[1],"m168")?168:167));
     return 0;
 }

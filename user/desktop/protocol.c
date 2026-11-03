@@ -8,6 +8,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -93,13 +94,23 @@ int nasd_receive_surface(int fd,int role,unsigned *width,unsigned *height) {
     const unsigned w=packet.value>>16U,h=packet.value&65535U;
     nasd_require(packet.type==MSG_READY && packet.key==(unsigned)role &&
             w>0 && h>0 && w<=SCREEN_W && h<=SCREEN_H-TITLE_H &&
-            !packet.reserved && !(m.msg_flags&MSG_CTRUNC),
+            !packet.reserved && !(m.msg_flags&(MSG_CTRUNC|MSG_TRUNC)),
             "surface role/protocol mismatch");
     struct cmsghdr *c=CMSG_FIRSTHDR(&m);
     nasd_require(c!=NULL && c->cmsg_level==SOL_SOCKET && c->cmsg_type==SCM_RIGHTS &&
             c->cmsg_len==CMSG_LEN(sizeof(int)),"real received memfd capability");
     int shared=-1;memcpy(&shared,CMSG_DATA(c),sizeof(shared));
     nasd_require(shared>=0,"invalid received memfd");
+    /* Do not trust the surface dimensions or the sender's FD type merely
+     * because the SCM_RIGHTS message is syntactically valid. mmap() may
+     * succeed on an undersized file, yet pixel reads would SIGBUS. The
+     * bounded protocol specifies one exact XRGB32 allocation per window. */
+    struct stat backing={0};
+    const uint64_t expected=(uint64_t)w*(uint64_t)h*4U;
+    nasd_require(fstat(shared,&backing)==0,"fstat received surface FD");
+    nasd_require(S_ISREG(backing.st_mode) && backing.st_size>=0 &&
+                 (uint64_t)backing.st_size==expected,
+                 "regular surface FD with exact advertised byte length");
     *width=w;*height=h;
     return shared;
 }

@@ -41,6 +41,7 @@ if ! wait "$watcher"; then
     exit 1
 fi
 grep -Fq '[M168 QMP THREE CLIENTS PASS]' "$oracle"
+grep -Fq '[M169 IDLE WAKE PASS]' "$oracle"
 grep -aE '^\[FB\] firmware framebuffer ready 800x600 pitch=3200 bpp=32 r8@16 g8@8 b8@0$' "$log" >/dev/null
 while IFS= read -r marker; do
     case "$marker" in ''|'#'*) continue ;; esac
@@ -52,7 +53,7 @@ done < scripts/m168-expected-markers.txt
 for original in /usr/bin/magick /usr/bin/dialog /usr/bin/lynx /usr/bin/mc; do
     grep -Fq "[EXEC] replaced process with CPIO ELF: $original" "$log"
 done
-for shot in initial image-focus image-drag browser-focus browser-key terminal-focus terminal-key; do
+for shot in initial idle image-focus image-drag browser-focus browser-key terminal-focus terminal-key; do
     test -s "$work/m168-$shot.ppm"
 done
-echo "[M168 NATIVE DESKTOP PASS] $port four native ELFs, seven true QEMU screen captures, signed Lynx/MC, PTY terminal glyphs"
+echo "[M168 NATIVE DESKTOP PASS] $port four native ELFs, eight true QEMU screen captures including >30s idle, signed Lynx/MC, PTY terminal glyphs"
