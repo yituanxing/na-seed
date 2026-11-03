@@ -157,5 +157,6 @@ int main(void) {
 #endif
     /* Preserves the original M174 devfs/20-ELF/gui PID1, so QMP still
      * exercises five physical screen states and shell-launched fifth LVGL. */
-    return m174_original_main();
+    char *original_argv[]={"naseed-m174-devfs-launch","m174",NULL};
+    return m174_original_main(2,original_argv);
 }
