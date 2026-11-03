@@ -1271,11 +1271,21 @@ static const struct nas_file_ops ops_eventfd={
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
     .poll=nas_eventfd_poll,.poll_description=nas_eventfd_poll_slot,.release=vrelease_eventfd
 };
+static uint64_t vioctl_inotify(uint64_t fd,uint64_t cmd,uint64_t arg) {
+    if(cmd!=0x541bULL)return (uint64_t)-ENOTTY; /* Linux FIONREAD */
+    const unsigned slot=TASK.fds->entries[fd].slot;
+    uint32_t available=0;
+    int rc=nas_inotify_pending_bytes(slot,&available);
+    if(rc)return (uint64_t)(int64_t)rc;
+    return nas_user_write_bytes(arg,(const uint8_t *)&available,
+                                sizeof(available)) ? 0:(uint64_t)-EFAULT;
+}
 static const struct nas_file_ops ops_inotify={
     .read_plan=nas_inotify_read_plan,.read=nas_inotify_read,
     .read_variable_records=true,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
     .poll=nas_inotify_poll_fd,.poll_description=nas_inotify_poll_slot,
+    .ioctl=vioctl_inotify,
     .release=nas_inotify_release
 };
 static const struct nas_file_ops ops_signalfd={

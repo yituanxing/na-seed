@@ -82,9 +82,12 @@ int main(void) {
     assert(nas_inotify_add_watch(fd,0x1000,mask|IN_MASK_CREATE)==
            (uint64_t)-EEXIST);
     assert(nas_inotify_read_plan(33,4096)==(uint64_t)-EAGAIN);
+    uint32_t available=123;
+    assert(nas_inotify_pending_bytes(33,&available)==0 && available==0);
 
     nas_inotify_emit_child(&path_identity,"alpha.txt",NAS_IN_CREATE,0,false);
     assert(nas_inotify_poll_slot(33,1)==1);
+    assert(nas_inotify_pending_bytes(33,&available)==0 && available==28);
     assert(nas_inotify_read_plan(33,16)==(uint64_t)-EINVAL);
     uint8_t bytes[1024]={0};
     const uint64_t first=nas_inotify_read_plan(33,sizeof(bytes));
@@ -118,6 +121,8 @@ int main(void) {
         nas_inotify_emit_child(&path_identity,name,NAS_IN_CREATE,0,false);
     }
     assert(instances[33]->count==IN_EVENT_MAX && instances[33]->overflow_pending);
+    assert(nas_inotify_pending_bytes(33,&available)==0 &&
+           available==IN_EVENT_MAX*28U+16U);
     unsigned overflow=0,create=0;
     while(nas_inotify_poll_slot(33,1)) {
         uint64_t planned=nas_inotify_read_plan(33,sizeof(bytes));
@@ -149,6 +154,7 @@ int main(void) {
     assert(nas_inotify_rm_watch(6,1)==(uint64_t)-EINVAL);
     nas_open_files[33].refcount=0;
     nas_inotify_release(33);
+    assert(nas_inotify_pending_bytes(33,&available)==-EBADF);
     assert(!instances[33] && !allocations);
     puts("[M187 INOTIFY HOST PASS] Linux wire ABI, padding, rename cookies, stale mount identity, overflow, nonblock, read atomicity, poll, shared OpenFile final release");
     return 0;

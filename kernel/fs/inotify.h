@@ -24,6 +24,7 @@ uint64_t nas_inotify_add_watch(uint64_t fd,uint64_t user_path,uint64_t mask);
 uint64_t nas_inotify_rm_watch(uint64_t fd,uint64_t wd);
 uint64_t nas_inotify_read_plan(unsigned slot,uint64_t count);
 uint64_t nas_inotify_read(unsigned slot,uint8_t *dst,uint64_t count);
+int nas_inotify_pending_bytes(unsigned slot,uint32_t *bytes);
 uint16_t nas_inotify_poll_slot(unsigned slot,uint16_t events);
 uint16_t nas_inotify_poll_fd(uint64_t fd,uint16_t events);
 void nas_inotify_release(unsigned slot);

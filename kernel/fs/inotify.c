@@ -89,6 +89,19 @@ static void queue_event(struct in_instance *in,int32_t wd,uint32_t mask,
 static uint32_t event_bytes(const struct in_event *e) {
     return IN_WIRE_HEADER+e->length;
 }
+/* Linux inotifytools queries FIONREAD before consuming a ready descriptor.
+ * Count entire unread records (including the pending overflow sentinel),
+ * not merely the current 1024-byte bounded read batch. */
+int nas_inotify_pending_bytes(unsigned slot,uint32_t *bytes) {
+    if(slot>=NAS_OPEN_FILE_LIMIT || !instances[slot] ||
+       !nas_open_files[slot].refcount)return -EBADF;
+    struct in_instance *in=instances[slot];
+    uint32_t total=in->overflow_pending ? IN_WIRE_HEADER:0U;
+    for(unsigned i=0;i<in->count;i++)
+        total+=event_bytes(&in->queue[(in->head+i)%IN_EVENT_MAX]);
+    *bytes=total;
+    return 0;
+}
 static bool queue_peek(const struct in_instance *in,unsigned at,
                        struct in_event *out) {
     if(at<in->count) {
