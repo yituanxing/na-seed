@@ -30,7 +30,7 @@ oracle="$work/m187-vt100-qmp-check.log"
 mkdir -p "$logs"
 truncate -s 0 "$serial"
 python3 scripts/m187-qmp-verify.py --serial "$serial" \
-    --qmp "$NAS_QEMU_QMP_SOCKET" --outdir "$work" --timeout 850 \
+    --qmp "$NAS_QEMU_QMP_SOCKET" --outdir "$work" --timeout 850 --m188 \
     > "$oracle" 2>&1 &
 watcher=$!
 if ! sh "$runner"; then
@@ -47,9 +47,12 @@ if ! wait "$watcher"; then
     exit 1
 fi
 grep -Fq '[M187 QMP VT100 PASS]' "$oracle"
+grep -Fq '[M188 QMP REAL INPUT PASS]' "$oracle"
 for marker in M174_DEVFS_PSEUDO_PASS M174_DEVFS_HARDWARE_PTY_PASS \
               M174_DEVFS_SOFTWARE_INTEGRATION_PASS \
-              M187_PTY_SHELL_RESUMED_AFTER_TUI M187_DESKTOP_PASS; do
+              M187_PTY_SHELL_RESUMED_AFTER_TUI M187_DESKTOP_PASS \
+              M188_LVGL_TIMER_PASS M188_LVGL_SLIDER_DRAG_PASS \
+              M188_LVGL_SCROLL_PASS M188_VIM_SAVED_FUNCTION_PASS; do
     grep -Fxq "$marker" "$log" || {
         echo "[M187 VT MARKER FAIL] $port $marker" >&2;exit 1
     }
@@ -59,4 +62,10 @@ grep -Fq '[EXEC] replaced process with CPIO ELF: /usr/bin/dialog' "$log"
 for frame in initial focused dialog arrow shell-resumed; do
     test -s "$work/m187-$frame.ppm"
 done
+for frame in lvgl-time-initial lvgl-time-progress slider-held \
+             slider-dragged scroll-before scroll-after before-vim \
+             vim-visible vim-inserted vim-shell-verified; do
+    test -s "$work/m188-$frame.ppm"
+done
 echo "[M187 VT NATIVE PASS] $port same M174 signed guest: original dialog TUI, physical keyboard/VT/QMP and resumed shell"
+echo "[M188 REAL INPUT NATIVE PASS] $port same M174 signed guest: real LVGL monotonic timer, captured slider drag, wheel scroll, original Vim edit/save, shell readback"

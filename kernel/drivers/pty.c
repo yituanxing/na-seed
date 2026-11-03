@@ -3,6 +3,7 @@
 #include "../errno.h"
 #include "../fd.h"
 #include "../task.h"
+#include "../arch/arch.h"
 #include "../mm/usercopy.h"
 #include "../lib/string.h"
 #include "tty.h"
@@ -174,7 +175,31 @@ bool nas_pty_read_ready(unsigned slot) {
         return p->master_input.count || !p->slave_descriptions;
     if(p->termios.lflag&0000002)
         return p->input.ready || p->input.eof || !p->master_open;
-    return p->slave_input.count || !p->master_open;
+    return nas_ldisc_noncanon_poll(&p->termios,p->slave_input.count) ||
+           !p->master_open;
+}
+/* This is the scheduler's Task-owned timed read state, never a global PTY
+ * timer: unrelated slave readers may have independent VMIN/VTIME waits. */
+static struct nas_ldisc_wait_clock pty_wait_clock(struct nas_task *task) {
+    return (struct nas_ldisc_wait_clock){&task->wait.deadline_active,
+        &task->wait.deadline_ns,&task->wait.tty_observed_bytes};
+}
+void nas_pty_read_wait_start(unsigned slot,struct nas_task *task,
+                              uint64_t requested) {
+    struct pty *p=get(slot);
+    if(!p || !task || slot_is_master[slot] || !requested ||
+       !p->master_open || (p->termios.lflag&0000002U))return;
+    nas_ldisc_noncanon_wait_start(&p->termios,p->slave_input.count,
+                                   pty_wait_clock(task),nas_arch_monotonic_ns());
+}
+bool nas_pty_read_wait_ready(unsigned slot,struct nas_task *task,
+                              uint64_t requested) {
+    struct pty *p=get(slot);
+    if(!p || !task || !requested || slot_is_master[slot] ||
+       !p->master_open || (p->termios.lflag&0000002U))
+        return nas_pty_read_ready(slot);
+    return nas_ldisc_noncanon_wait_ready(&p->termios,p->slave_input.count,
+                       requested,pty_wait_clock(task),nas_arch_monotonic_ns());
 }
 bool nas_pty_write_ready(unsigned slot) {
     struct pty *p=get(slot);
@@ -215,7 +240,8 @@ uint16_t nas_pty_poll(unsigned slot,uint16_t events) {
  * Short reads must validate only the bytes they can actually return: a
  * request for 1024 with four queued bytes may legally land at the end of a
  * four-byte writable user mapping. Keep this plan in lockstep with read(). */
-uint64_t nas_pty_read_plan(unsigned slot,uint64_t requested) {
+uint64_t nas_pty_read_plan_mode(unsigned slot,uint64_t requested,
+                                bool nonblocking) {
     if(!requested)return 0;
     struct pty *p=get(slot);
     if(!p)return (uint64_t)-EBADF;
@@ -232,12 +258,26 @@ uint64_t nas_pty_read_plan(unsigned slot,uint64_t requested) {
         return nas_ldisc_peek(&p->input,&p->termios,snapshot,limit);
     }
     const struct pty_ring *ring=master?&p->master_input:&p->slave_input;
-    if(!ring->count)
-        return (master?p->slave_descriptions:p->master_open) ?
-               (uint64_t)-EAGAIN : master?(uint64_t)-EIO:0;
-    return requested>ring->count ? ring->count:requested;
+    if(!ring->count && !(master?p->slave_descriptions:p->master_open))
+        return master?(uint64_t)-EIO:0;
+    if(master)return ring->count ?
+                   (requested>ring->count ? ring->count:requested):
+                   (uint64_t)-EAGAIN;
+    /* Hangup terminates the wait: return the buffered short tail even if
+     * it is below VMIN, then EOF. A blocked read must not repark forever
+     * after its master's final description closed. */
+    if(!p->master_open)
+        return requested>ring->count?ring->count:requested;
+    bool expired=nas_current_task->wait.deadline_active &&
+        nas_arch_monotonic_ns()>=nas_current_task->wait.deadline_ns;
+    return nas_ldisc_noncanon_budget(&p->termios,requested,ring->count,
+                                      nonblocking,expired);
 }
-uint64_t nas_pty_read(unsigned slot,uint8_t *dst,uint64_t count) {
+uint64_t nas_pty_read_plan(unsigned slot,uint64_t requested) {
+    return nas_pty_read_plan_mode(slot,requested,false);
+}
+uint64_t nas_pty_read_mode(unsigned slot,uint8_t *dst,uint64_t count,
+                           bool nonblocking) {
     if(!count) {
         /* A positive-length caller whose read_plan observed canonical EOF
          * calls read(..., 0) as an explicit zero-payload EOF commit. Other
@@ -251,7 +291,7 @@ uint64_t nas_pty_read(unsigned slot,uint8_t *dst,uint64_t count) {
     if(!dst)return (uint64_t)-EFAULT;
     struct pty *p=get(slot);
     if(!p)return (uint64_t)-EBADF;
-    uint64_t budget=nas_pty_read_plan(slot,count);
+    uint64_t budget=nas_pty_read_plan_mode(slot,count,nonblocking);
     if((int64_t)budget<=0) {
         /* A canonical EOF is consumed by read, never by read_plan. */
         if(!budget && !slot_is_master[slot] &&
@@ -280,6 +320,9 @@ uint64_t nas_pty_read(unsigned slot,uint8_t *dst,uint64_t count) {
     if(n>first)memcpy(dst+first,ring->bytes,n-first);
     for(unsigned i=0;i<n;i++)(void)ring_take(ring);
     return n;
+}
+uint64_t nas_pty_read(unsigned slot,uint8_t *dst,uint64_t count) {
+    return nas_pty_read_mode(slot,dst,count,false);
 }
 uint64_t nas_pty_write(unsigned slot,const uint8_t *src,uint64_t count) {
     if(!count)return 0;
@@ -378,9 +421,18 @@ uint64_t nas_pty_ioctl(uint64_t fd,uint64_t cmd,uint64_t arg) {
     case 0x5413ULL: /* TIOCGWINSZ */
         return nas_user_write_bytes(arg,(const uint8_t *)p->winsize,8)
                ? 0:(uint64_t)-EFAULT;
-    case 0x5414ULL: /* TIOCSWINSZ */
-        return nas_user_read_bytes(arg,(uint8_t *)p->winsize,8)
-               ? 0:(uint64_t)-EFAULT;
+    case 0x5414ULL: { /* TIOCSWINSZ */
+        uint16_t size[4];
+        if(!nas_user_read_bytes(arg,(uint8_t *)size,sizeof(size)))
+            return (uint64_t)-EFAULT;
+        if(!memcmp(p->winsize,size,sizeof(size)))return 0;
+        /* The foreground group observes SIGWINCH only for real geometry
+         * changes.  As with ISIG, deliver safely after the writer's C
+         * frame; a full event FIFO must never silently lose a signal. */
+        if(!pty_queue_signal(p,28U))return (uint64_t)-EAGAIN;
+        memcpy(p->winsize,size,sizeof(size));
+        return 0;
+    }
     case 0x540eULL: /* TIOCSCTTY */
         if(master)return (uint64_t)-ENOTTY;
         if(nas_current_task->pid!=nas_current_task->sid)return (uint64_t)-EPERM;

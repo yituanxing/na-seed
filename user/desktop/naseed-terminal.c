@@ -372,7 +372,7 @@ static void terminal_live(int channel) {
     nasd_send_surface_caps(channel,surface,TERMINAL,TERM_W,TERM_H,
                            NASD_INPUT_KEYS);
     nasd_mark("M170_PTY_INTERACTIVE_SHELL_ATTACHED");
-    unsigned verified=0,verified187=0;
+    unsigned verified=0,verified187=0,verified188=0;
     struct terminal_tx outgoing={0};
     for(;;) {
         struct pollfd fds[2]={
@@ -426,6 +426,16 @@ static void terminal_live(int channel) {
                 if(!verified187 && strstr(t.evidence,"\n187\n")) {
                     verified187=1;
                     nasd_mark("M187_PTY_SHELL_RESUMED_AFTER_TUI");
+                }
+                /* The M188 checker runs in the ORIGINAL persistent shell
+                 * after a physical editor session. Its unique line is
+                 * emitted only when it has re-opened and compared the file
+                 * saved by the untouched Alpine editor. Merely echoing the
+                 * command to launch the checker cannot satisfy this gate. */
+                if(!verified188 &&
+                   strstr(t.evidence,"\nM188_VIM_EDITED_CONTENT_VERIFIED\n")) {
+                    verified188=1;
+                    nasd_mark("M188_VIM_SAVED_FUNCTION_PASS");
                 }
                 nasd_send_packet(channel,MSG_UPDATED,tag);
             }

@@ -52,6 +52,10 @@ void nas_fs_io_dispose(struct nas_pending_io *pending) {
 bool nas_fs_io_tty_read(const struct nas_pending_io *pending) {
     (void)pending;return false;
 }
+void nas_fs_io_read_wait_start(const struct nas_pending_io *pending,
+                               struct nas_task *task_ptr) {
+    (void)pending;(void)task_ptr;
+}
 void nas_tty_blocking_read_start(struct nas_task *task_ptr) {
     (void)task_ptr;assert(!"TCP send cannot enter TTY readiness");
 }

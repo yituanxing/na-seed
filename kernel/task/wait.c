@@ -60,8 +60,17 @@ bool nas_task_wait_ready(const struct nas_task *task) {
     /* A kernel-owned monotonic deadline can wake a task independently of
      * pipe/TTY events. No foreign userspace pointer is touched here. */
     if (task->wait.deadline_active &&
-        nas_time_deadline_expired(nas_arch_monotonic_ns(),task->wait.deadline_ns))
+        nas_time_deadline_expired(nas_arch_monotonic_ns(),task->wait.deadline_ns)) {
+        /* Noncanonical TTY/PTY interbyte timers may be invalidated when
+         * another reader consumed the first byte. Give the Task-owned
+         * provider one chance to disarm/restart that stale deadline before
+         * resuming a native C read that would immediately return EAGAIN. */
+        if (task->wait.pending_io &&
+            (task->wait.blocked_op==NAS_SC_read ||
+             task->wait.blocked_op==NAS_SC_readv))
+            return task_io_ready(task);
         return true;
+    }
     if (task->wait.blocked_op == NAS_SC_nanosleep ||
         task->wait.blocked_op == NAS_SC_clock_nanosleep) return false;
     if (task->wait.blocked_op == NAS_SC_futex) return task->wait.futex_woken;

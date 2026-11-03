@@ -12,12 +12,14 @@ on:
       - 'scripts/*m180*'
       - 'scripts/*m179*'
       - 'scripts/*m187*'
+      - 'scripts/*m188*'
       - 'scripts/m174-expected-markers.txt'
       - 'scripts/m174-software-rootfs-copies.tsv'
       - 'scripts/stage-alpine-prebuilt-overlay.sh'
       - 'scripts/prebuilt-profile-catalog.tsv'
       - 'tests/m174-software-run.sh'
       - 'tests/m187-software-functions.sh'
+      - 'tests/m188-*.sh'
       - 'rootfs/alpine/**'
       - 'user/desktop/**'
       - 'scripts/stage-m174-devfs-software-gui.sh'
@@ -69,6 +71,9 @@ jobs:
           python3 scripts/check-three-isa-core.py
           python3 scripts/check-architecture-boundaries.py
           sh scripts/check-m179-fs-irq.sh
+          sh scripts/m188-software-check-manifest.sh
+          sh scripts/check-m187-vt100.sh
+          sh scripts/check-m188-pty.sh
           sh -n scripts/probe-m180-fs-user.sh
           python3 -m py_compile scripts/m180-ext4-fixture.py
       - name: Exercise in-kernel FD reservation with shared files, fork and dup
@@ -162,8 +167,10 @@ jobs:
             build/external/m174-software-batch/${{ matrix.port }}/m176-host-http.log
             build/external/m174-software-batch/${{ matrix.port }}/m174-software-original-signed-elfs.sha256
             build/external/m174-software-batch/${{ matrix.port }}/m187-software-new-signed-elfs.sha256
+            build/external/m174-software-batch/${{ matrix.port }}/m188-software-new-signed-elfs.sha256
             build/external/m174-software-batch/${{ matrix.port }}/m187-vt100-qmp-check.log
             build/external/m174-software-batch/${{ matrix.port }}/m187-*.ppm
+            build/external/m174-software-batch/${{ matrix.port }}/m188-*.ppm
             build/busybox-source-parity-x86/m174-batch.clean.log
             build/busybox-source-parity-x86/m174-batch.serial.log
             build/port-riscv64/full/matrix-source/m174-batch.clean.log

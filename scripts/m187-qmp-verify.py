@@ -228,6 +228,8 @@ def main():
     ap.add_argument('--qmp',required=True,type=Path)
     ap.add_argument('--outdir',required=True,type=Path)
     ap.add_argument('--timeout',type=int,default=850)
+    ap.add_argument('--m188',action='store_true',
+                    help='also verify live pointer/scroll and original Vim')
     args=ap.parse_args()
     deadline=time.monotonic()+args.timeout
     args.outdir.mkdir(parents=True,exist_ok=True)
@@ -287,6 +289,14 @@ def main():
         resumed=screenshot(sock,reader,args.outdir,'shell-resumed')
         ui['changed'](moved,resumed,309,199,615,410,200)
 
+        if args.m188:
+            # Same QEMU machine, same physical desktop and PTY, same signed
+            # M174 CPIO. The additional oracle does not replay M187 or spawn
+            # a second profile just to exercise the new input capabilities.
+            extra=runpy.run_path('scripts/m188-qmp-extras.py',
+                                 run_name='m188_qmp_extension')
+            extra['run'](sock,reader,args.serial,args.outdir)
+
         # Deliberate compositor shortcut, exclusive to the new mode. Old
         # M173 QMP still exits on Q/ESC per its existing acceptance contract.
         base['send'](sock,reader,[base['key']('ctrl',True)])
@@ -298,6 +308,10 @@ def main():
           'full-screen yes/no PTY rendering, hardware right arrow selection, '
           'ESC exits into real shell, physical QEMU framebuffer screenshots',
           flush=True)
+    if args.m188:
+        print('[M188 QMP REAL INPUT PASS] original upstream LVGL timed input, '
+              'physical slider drag/scroll, original Alpine Vim edit and '
+              'independent shell file-content verification',flush=True)
 
 
 if __name__=='__main__':

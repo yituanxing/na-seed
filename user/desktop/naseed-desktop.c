@@ -40,13 +40,19 @@ struct window {
     struct nasd_packet_reader incoming;
 };
 struct input_handles {int keyboard,tablet,mouse; int abs_min[2],abs_max[2];};
+struct pointer_frame {
+    int moved,button_pending,button_down;
+    int wheel_v,wheel_h,wheel_v_hi,wheel_h_hi;
+    unsigned hi_v_seen,hi_h_seen,desynchronized;
+};
 struct session {
     struct window windows[WINDOW_LIMIT];
     unsigned order[WINDOW_LIMIT],count,live_count;
     struct input_handles input;
     int fb,listener,pointer_x,pointer_y,focus,top,stage,mode;
     int held,dragging,grab_x,grab_y,origin_x,origin_y;
-    int sent_key,exit_requested,pointer_client;
+    int sent_key,exit_requested,pointer_client,hover_client;
+    struct pointer_frame frames[3];
     unsigned modifier_keys,vt_keyboard;
     unsigned changes,external_live,external_total;
 };
@@ -326,6 +332,9 @@ static void complete_external(struct session *s,unsigned slot) {
 static int clamp(int v,int maximum) {
     return v<0?0:v>maximum?maximum:v;
 }
+static int clamp_wide(int64_t v,int maximum) {
+    return v<0?0:v>maximum?maximum:(int)v;
+}
 static int scale_abs(int value,int min,int max,int pixels) {
     int64_t numerator=(int64_t)(value-min)*(pixels-1);
     return clamp((int)(numerator/(max-min)),pixels-1);
@@ -371,6 +380,7 @@ static void retire_window(struct session *s,unsigned role,int request_quit) {
     const int external=!w->owned_child;
     w->surface_fd=w->channel=-1;w->pixels=NULL;w->active=0;
     if(s->pointer_client==(int)role)s->pointer_client=-1;
+    if(s->hover_client==(int)role)s->hover_client=-1;
     unsigned at=0;
     while(at<s->live_count && s->order[at]!=role)at++;
     nasd_require(at<s->live_count,"retired role in z-order");
@@ -403,6 +413,31 @@ static void retire_window(struct session *s,unsigned role,int request_quit) {
     }
 }
 
+static int pointer_content_target(const struct session *s) {
+    int target=window_at(s,s->pointer_x,s->pointer_y);
+    if(target<0)return -1;
+    const struct window *w=&s->windows[target];
+    if(s->pointer_y<w->y+TITLE_H ||
+       !(w->capabilities&NASD_INPUT_POINTER))return -1;
+    return target;
+}
+static void hover_transition(struct session *s,int target) {
+    if(target==s->hover_client)return;
+    if(s->hover_client>=0 && s->hover_client<(int)s->count) {
+        const struct window *previous=&s->windows[s->hover_client];
+        if(previous->active &&
+           (previous->capabilities&NASD_INPUT_POINTER_MOTION))
+            nasd_send_pointer_leave(previous->channel);
+    }
+    s->hover_client=target;
+}
+static void send_client_pointer(const struct session *s,int target,int pressed) {
+    const struct window *w=&s->windows[target];
+    nasd_send_pointer(w->channel,
+        (unsigned)clamp(s->pointer_x-w->x,w->w-1),
+        (unsigned)clamp(s->pointer_y-w->y-TITLE_H,w->h-1),pressed);
+}
+static void pointer_motion(struct session *s);
 static void pointer_button(struct session *s,int down) {
     /* QEMU may deliver BTN_LEFT through tablet OR mouse. One logical held
      * button is reported to this seat even when devices enumerate twice. */
@@ -410,9 +445,14 @@ static void pointer_button(struct session *s,int down) {
     s->held=down;
     if(down) {
         int target=window_at(s,s->pointer_x,s->pointer_y);
-        if(target<0)return;
+        if(target<0) {
+            hover_transition(s,-1);
+            return;
+        }
         raise_window(s,(unsigned)target);
         struct window *w=&s->windows[target];
+        if(!(w->capabilities&NASD_INPUT_POINTER_MOTION))
+            hover_transition(s,-1);
         if((s->mode==0 || s->mode==170 || s->mode==171 || dynamic_mode(s->mode)) &&
            s->pointer_y>=w->y && s->pointer_y<w->y+TITLE_H &&
            s->pointer_x>=w->x+w->w-20) {
@@ -429,9 +469,7 @@ static void pointer_button(struct session *s,int down) {
            (dynamic_mode(s->mode) && (w->capabilities&NASD_INPUT_POINTER) &&
              !s->dragging)) {
             s->pointer_client=target;
-            nasd_send_pointer(w->channel,
-                 (unsigned)(s->pointer_x-w->x),
-                 (unsigned)(s->pointer_y-w->y-TITLE_H),1);
+            send_client_pointer(s,target,1);
         }
         if((s->mode==167 || s->mode==168) && s->stage==0 && target==IMAGE && !s->dragging) {
             s->stage=1;nasd_mark(s->mode==168 ?
@@ -451,10 +489,7 @@ static void pointer_button(struct session *s,int down) {
     } else if(s->pointer_client>=0 &&
                s->windows[s->pointer_client].active &&
                (s->mode==171 || s->mode==0 || dynamic_mode(s->mode))) {
-        struct window *w=&s->windows[s->pointer_client];
-        nasd_send_pointer(w->channel,
-            (unsigned)clamp(s->pointer_x-w->x,w->w-1),
-            (unsigned)clamp(s->pointer_y-w->y-TITLE_H,w->h-1),0);
+        send_client_pointer(s,s->pointer_client,0);
         s->pointer_client=-1;
     } else if(s->dragging) {
         s->dragging=0;
@@ -466,16 +501,55 @@ static void pointer_button(struct session *s,int down) {
                      "M168_IMAGE_MOVED_VISIBLE":"M167_IMAGE_MOVED_VISIBLE");
         }
     }
+    if(!down && dynamic_mode(s->mode) &&
+       pointer_content_target(s)!=s->hover_client)pointer_motion(s);
 }
 static void pointer_motion(struct session *s) {
-    if(!s->held || !s->dragging)return;
-    struct window *w=&s->windows[s->focus];
-    int x=s->origin_x+s->pointer_x-s->grab_x;
-    int y=s->origin_y+s->pointer_y-s->grab_y;
-    /* A compositor, not a frame buffer driver, determines window placement. */
-    w->x=clamp(x,SCREEN_W-w->w);
-    w->y=clamp(y,SCREEN_H-(w->h+TITLE_H));
-    render(s);
+    if(s->held && s->dragging) {
+        struct window *w=&s->windows[s->focus];
+        int x=s->origin_x+s->pointer_x-s->grab_x;
+        int y=s->origin_y+s->pointer_y-s->grab_y;
+        /* A compositor, not a framebuffer driver, owns window placement. */
+        w->x=clamp(x,SCREEN_W-w->w);
+        w->y=clamp(y,SCREEN_H-(w->h+TITLE_H));
+        render(s);
+        return;
+    }
+    if(!dynamic_mode(s->mode))return;
+    if(s->held && s->pointer_client>=0 &&
+       s->windows[s->pointer_client].active) {
+        const struct window *w=&s->windows[s->pointer_client];
+        if(w->capabilities&NASD_INPUT_POINTER_MOTION)
+            send_client_pointer(s,s->pointer_client,1);
+        return;
+    }
+    int target=pointer_content_target(s);
+    if(target>=0 && !(s->windows[target].capabilities&
+                       NASD_INPUT_POINTER_MOTION))target=-1;
+    hover_transition(s,target);
+    if(target>=0)send_client_pointer(s,target,0);
+}
+static int scroll_bound(int64_t delta) {
+    return delta>12000?12000:delta<-12000?-12000:(int)delta;
+}
+static void pointer_scroll(struct session *s,int vertical,int horizontal) {
+    if(!dynamic_mode(s->mode) || (!vertical && !horizontal))return;
+    int target=s->held && s->pointer_client>=0 ?
+               s->pointer_client:pointer_content_target(s);
+    if(target<0 || !s->windows[target].active ||
+       !(s->windows[target].capabilities&NASD_INPUT_SCROLL))return;
+    nasd_send_scroll(s->windows[target].channel,vertical,horizontal);
+}
+static void pointer_frame_commit(struct session *s,unsigned device) {
+    struct pointer_frame *frame=&s->frames[device];
+    if(frame->moved)pointer_motion(s);
+    if(frame->button_pending)pointer_button(s,frame->button_down);
+    const int vertical=frame->hi_v_seen ? frame->wheel_v_hi :
+                        scroll_bound((int64_t)frame->wheel_v*NASD_SCROLL_DETENT);
+    const int horizontal=frame->hi_h_seen ? frame->wheel_h_hi :
+                        scroll_bound((int64_t)frame->wheel_h*NASD_SCROLL_DETENT);
+    pointer_scroll(s,vertical,horizontal);
+    *frame=(struct pointer_frame){0};
 }
 static void input_event(struct session *s,unsigned device,
                         const struct input_event *e) {
@@ -536,21 +610,66 @@ static void input_event(struct session *s,unsigned device,
                 s->sent_key|=1<<TERMINAL;
             }
         }
-    } else if(device==1 && e->type==EV_ABS) {
-        if(e->code==ABS_X)
-            s->pointer_x=scale_abs(e->value,s->input.abs_min[0],
-                                    s->input.abs_max[0],SCREEN_W);
-        if(e->code==ABS_Y)
-            s->pointer_y=scale_abs(e->value,s->input.abs_min[1],
-                                    s->input.abs_max[1],SCREEN_H);
-        pointer_motion(s);
-    } else if(device==2 && e->type==EV_REL) {
-        if(e->code==REL_X)s->pointer_x=clamp(s->pointer_x+e->value,SCREEN_W-1);
-        if(e->code==REL_Y)s->pointer_y=clamp(s->pointer_y+e->value,SCREEN_H-1);
-        pointer_motion(s);
+    } else if(device==1 || device==2) {
+        struct pointer_frame *frame=&s->frames[device];
+        if(e->type==EV_SYN) {
+            if(e->code==SYN_DROPPED) {
+                /* Kernel evdev overflow: stale button capture must not hold
+                 * an unrelated window. Ignore the damaged frame until the
+                 * next SYN_REPORT instead of dispatching partial motion. */
+                *frame=(struct pointer_frame){.desynchronized=1};
+                if(s->held)pointer_button(s,0);
+                hover_transition(s,-1);
+            } else if(e->code==SYN_REPORT) {
+                if(frame->desynchronized)frame->desynchronized=0;
+                else pointer_frame_commit(s,device);
+            }
+            return;
+        }
+        if(frame->desynchronized)return;
+        if(device==1 && e->type==EV_ABS) {
+            if(e->code==ABS_X) {
+                s->pointer_x=scale_abs(e->value,s->input.abs_min[0],
+                                        s->input.abs_max[0],SCREEN_W);
+                frame->moved=1;
+            } else if(e->code==ABS_Y) {
+                s->pointer_y=scale_abs(e->value,s->input.abs_min[1],
+                                        s->input.abs_max[1],SCREEN_H);
+                frame->moved=1;
+            }
+        } else if(e->type==EV_REL) {
+            switch(e->code) {
+            case REL_X:
+                if(device!=2)break;
+                s->pointer_x=clamp_wide((int64_t)s->pointer_x+e->value,
+                                         SCREEN_W-1);
+                frame->moved=1;break;
+            case REL_Y:
+                if(device!=2)break;
+                s->pointer_y=clamp_wide((int64_t)s->pointer_y+e->value,
+                                         SCREEN_H-1);
+                frame->moved=1;break;
+            case REL_WHEEL:
+                frame->wheel_v=scroll_bound((int64_t)frame->wheel_v+e->value);
+                break;
+            case REL_HWHEEL:
+                frame->wheel_h=scroll_bound((int64_t)frame->wheel_h+e->value);
+                break;
+            case REL_WHEEL_HI_RES:
+                frame->wheel_v_hi=scroll_bound(
+                    (int64_t)frame->wheel_v_hi+e->value);
+                frame->hi_v_seen=1;break;
+            case REL_HWHEEL_HI_RES:
+                frame->wheel_h_hi=scroll_bound(
+                    (int64_t)frame->wheel_h_hi+e->value);
+                frame->hi_h_seen=1;break;
+            default:break;
+            }
+        } else if(e->type==EV_KEY && e->code==BTN_LEFT &&
+                  (e->value==0 || e->value==1)) {
+            frame->button_pending=1;frame->button_down=e->value;
+        }
     }
-    if(device!=0 && e->type==EV_KEY && e->code==BTN_LEFT &&
-       (e->value==0 || e->value==1))pointer_button(s,e->value);
 }
 static void handle_client_message(struct session *s,unsigned slot,
                                   struct message m) {
@@ -716,7 +835,7 @@ static void desktop(int mode) {
     s.mode=mode;s.count=dynamic_mode(mode)?WINDOW_LIMIT:bootstrap;
     s.vt_keyboard=mode==187 || (getenv("NASEED_TERMINAL_VT100") &&
              !strcmp(getenv("NASEED_TERMINAL_VT100"),"1"));
-    s.pointer_client=-1;s.listener=-1;
+    s.pointer_client=s.hover_client=-1;s.listener=-1;
     s.input=open_input();
     s.fb=open_fb();
     if(dynamic_mode(mode))s.listener=open_listener();
@@ -1058,6 +1177,197 @@ static void selftest187(void) {
               "Ctrl+F12 exit and M173 compatibility");
 }
 
+/* Exercise actual compositor input dispatch and 16-byte AF_UNIX packets.
+ * Host-only frames are synthetic evdev events, not substituted for the
+ * required native QEMU hardware/physical framebuffer verification. */
+static void selftest188_packet(int fd,uint32_t type,uint32_t key,
+                               uint32_t value,const char *contract) {
+    struct pollfd ready={.fd=fd,.events=POLLIN};
+    nasd_require(poll(&ready,1,1000)==1 && (ready.revents&POLLIN),
+                 contract);
+    struct message got=nasd_recv_packet(fd);
+    nasd_require(got.type==type && got.key==key && got.value==value,
+                 contract);
+}
+static void selftest188_quiet(int fd,const char *contract) {
+    struct pollfd ready={.fd=fd,.events=POLLIN};
+    nasd_require(poll(&ready,1,0)==0,contract);
+}
+static void selftest188_event(struct session *s,unsigned device,
+                              unsigned type,unsigned code,int value) {
+    const struct input_event e={.type=(uint16_t)type,
+                                .code=(uint16_t)code,.value=value};
+    input_event(s,device,&e);
+}
+static void selftest188(void) {
+    const int gui=LVGL;
+    int image[2]={-1,-1},lvgl[2]={-1,-1};
+    nasd_require(socketpair(AF_UNIX,SOCK_STREAM,0,image)==0 &&
+                 socketpair(AF_UNIX,SOCK_STREAM,0,lvgl)==0,
+                 "M188 two independent real IPC clients");
+    struct session s={.mode=187,.count=WINDOW_LIMIT,.live_count=2,
+                      .order={IMAGE,LVGL},.focus=LVGL,.top=LVGL,
+                      .pointer_x=400,.pointer_y=300,
+                      .pointer_client=-1,.hover_client=-1};
+    s.fb=memfd_create("m188-host-screen",MFD_CLOEXEC);
+    nasd_require(s.fb>=0 && ftruncate(s.fb,sizeof(screen))==0,
+                 "M188 host framebuffer is a real sized file");
+    const unsigned ids[]={IMAGE,LVGL};
+    const int dimensions[][4]={{45,80,100,90},{320,200,240,176}};
+    const int channels[]={image[0],lvgl[0]};
+    for(unsigned i=0;i<2;i++) {
+        struct window *w=&s.windows[ids[i]];
+        w->active=1;w->role=(int)ids[i];w->channel=channels[i];
+        w->x=dimensions[i][0];w->y=dimensions[i][1];
+        w->w=dimensions[i][2];w->h=dimensions[i][3];
+        w->capabilities=NASD_INPUT_POINTER|NASD_INPUT_POINTER_MOTION|
+                        NASD_INPUT_SCROLL;
+        w->pixels=nasd_make_surface("m188-host-client",w->w,w->h,
+                                    &w->surface_fd);
+        nasd_fill_surface(w->pixels,w->w,w->h,20,40,90);
+    }
+    /* X and Y from the same hardware frame may not be forwarded separately.
+     * Hovering the LVGL content does not change keyboard focus or z-order. */
+    selftest188_event(&s,2,EV_REL,REL_X,10);
+    selftest188_event(&s,2,EV_REL,REL_Y,6);
+    selftest188_quiet(lvgl[1],"M188 no partial-frame pointer delivery");
+    selftest188_event(&s,2,EV_SYN,SYN_REPORT,0);
+    selftest188_packet(lvgl[1],MSG_POINTER,0,(90U<<16U)|82U,
+                       "M188 one hover packet per complete mouse frame");
+    selftest188_quiet(lvgl[1],"M188 no duplicated X/Y hover events");
+    nasd_require(s.focus==LVGL && s.hover_client==LVGL,
+                 "M188 hover does not steal keyboard focus");
+
+    selftest188_event(&s,2,EV_KEY,BTN_LEFT,1);
+    nasd_require(!s.held,"M188 press awaits hardware SYN_REPORT");
+    selftest188_event(&s,2,EV_SYN,SYN_REPORT,0);
+    selftest188_packet(lvgl[1],MSG_POINTER,1,(90U<<16U)|82U,
+                       "M188 press captures actual focused content");
+    nasd_require(s.held && s.pointer_client==LVGL,
+                 "M188 pointer capture owner is the clicked window");
+
+    selftest188_event(&s,2,EV_REL,REL_X,40);
+    selftest188_event(&s,2,EV_REL,REL_Y,20);
+    selftest188_event(&s,2,EV_REL,REL_WHEEL,1);
+    selftest188_event(&s,2,EV_REL,REL_WHEEL_HI_RES,60);
+    selftest188_event(&s,2,EV_REL,REL_HWHEEL,-1);
+    selftest188_quiet(lvgl[1],"M188 motion and wheel wait for SYN");
+    selftest188_event(&s,2,EV_SYN,SYN_REPORT,0);
+    selftest188_packet(lvgl[1],MSG_POINTER,1,(130U<<16U)|102U,
+                       "M188 single captured drag motion packet");
+    selftest188_packet(lvgl[1],MSG_SCROLL,60,(uint32_t)-120,
+                       "M188 hires wheel supersedes duplicate legacy wheel");
+    selftest188_quiet(lvgl[1],"M188 no duplicate hi-res scroll packet");
+    selftest188_event(&s,2,EV_KEY,BTN_LEFT,0);
+    selftest188_event(&s,2,EV_SYN,SYN_REPORT,0);
+    selftest188_packet(lvgl[1],MSG_POINTER,0,(130U<<16U)|102U,
+                       "M188 captured release reaches original client");
+    nasd_require(!s.held && s.pointer_client==-1,
+                 "M188 capture released on hardware button-up");
+    selftest188_quiet(lvgl[1],"M188 no synthetic duplicate release");
+
+    /* Leaving the content cancels hover explicitly; no off-surface x/y is
+     * smuggled through the original MSG_POINTER wire contract. */
+    selftest188_event(&s,2,EV_REL,REL_X,200);
+    selftest188_event(&s,2,EV_REL,REL_Y,200);
+    selftest188_event(&s,2,EV_SYN,SYN_REPORT,0);
+    selftest188_packet(lvgl[1],MSG_POINTER_LEAVE,0,0,
+                       "M188 leaving client content clears hover");
+    nasd_require(s.hover_client==-1,"M188 no stale hover owner");
+
+    /* Absolute tablet axes are coalesced with the same SYN boundary. A
+     * dropped evdev frame releases capture and discards subsequent damage
+     * until the next report, rather than leaking a stale drag to a window. */
+    s.input.abs_min[0]=s.input.abs_min[1]=0;
+    s.input.abs_max[0]=s.input.abs_max[1]=32767;
+    selftest188_event(&s,1,EV_ABS,ABS_X,85*32767/(SCREEN_W-1));
+    selftest188_event(&s,1,EV_ABS,ABS_Y,130*32767/(SCREEN_H-1));
+    selftest188_quiet(image[1],"M188 tablet axes await SYN_REPORT");
+    selftest188_event(&s,1,EV_SYN,SYN_REPORT,0);
+    nasd_require(s.hover_client==IMAGE && s.pointer_x>=45 &&
+                 s.pointer_x<145 && s.pointer_y>=104 && s.pointer_y<194,
+                 "M188 real absolute-axis scaling targets image content");
+    const uint32_t image_location=
+        ((uint32_t)(s.pointer_x-45)<<16U)|(uint32_t)(s.pointer_y-104);
+    selftest188_packet(image[1],MSG_POINTER,0,image_location,
+                       "M188 one absolute tablet frame delivers hover");
+    /* QEMU's wheel-down BTN input may be routed through the tablet HID:
+     * both virtio-tablet and virtio-mouse advertise EV_REL/REL_WHEEL.
+     * Wheel input must be accepted on either pointer device, with its own
+     * device-local SYN_REPORT and no synthesized cross-device sync. */
+    selftest188_event(&s,1,EV_REL,REL_WHEEL,-1);
+    selftest188_quiet(image[1],"M188 tablet wheel awaits own SYN_REPORT");
+    selftest188_event(&s,1,EV_SYN,SYN_REPORT,0);
+    selftest188_packet(image[1],MSG_SCROLL,(uint32_t)-120,0,
+                       "M188 tablet wheel-down reaches original client");
+    selftest188_quiet(image[1],"M188 tablet wheel reports exactly once");
+    selftest188_event(&s,1,EV_KEY,BTN_LEFT,1);
+    selftest188_event(&s,1,EV_SYN,SYN_REPORT,0);
+    selftest188_packet(image[1],MSG_POINTER,1,image_location,
+                       "M188 tablet button captures independent window");
+    selftest188_event(&s,1,EV_SYN,SYN_DROPPED,0);
+    selftest188_packet(image[1],MSG_POINTER,0,image_location,
+                       "M188 overflow fails safe by releasing held pointer");
+    selftest188_packet(image[1],MSG_POINTER_LEAVE,0,0,
+                       "M188 overflow also invalidates client hover");
+    nasd_require(!s.held && s.pointer_client==-1 && s.hover_client==-1,
+                 "M188 evdev overflow cannot strand a captured window");
+    selftest188_event(&s,1,EV_ABS,ABS_X,0);
+    selftest188_event(&s,1,EV_SYN,SYN_REPORT,0);
+    selftest188_quiet(image[1],"M188 discarded overflow frame never routed");
+
+    /* The old M173 pointer-only client must never receive a new message;
+     * its ordinary down/up MSG_POINTER packets remain bitwise unchanged. */
+    s.windows[gui].capabilities=NASD_INPUT_POINTER;
+    s.pointer_x=410;s.pointer_y=306;
+    selftest188_event(&s,2,EV_REL,REL_X,1);
+    selftest188_event(&s,2,EV_REL,REL_WHEEL,1);
+    selftest188_event(&s,2,EV_SYN,SYN_REPORT,0);
+    selftest188_quiet(lvgl[1],"M188 legacy pointer client receives no extensions");
+    selftest188_event(&s,2,EV_KEY,BTN_LEFT,1);
+    selftest188_event(&s,2,EV_SYN,SYN_REPORT,0);
+    selftest188_packet(lvgl[1],MSG_POINTER,1,(91U<<16U)|82U,
+                       "M188 legacy press compatible");
+    selftest188_event(&s,2,EV_KEY,BTN_LEFT,0);
+    selftest188_event(&s,2,EV_SYN,SYN_REPORT,0);
+    selftest188_packet(lvgl[1],MSG_POINTER,0,(91U<<16U)|82U,
+                       "M188 legacy release compatible");
+
+    /* Titlebar drag changes the window only after the batched X/Y commit;
+     * it never fabricates a pressed pointer event to the content process. */
+    s.pointer_x=80;s.pointer_y=90;
+    selftest188_event(&s,2,EV_KEY,BTN_LEFT,1);
+    selftest188_event(&s,2,EV_SYN,SYN_REPORT,0);
+    nasd_require(s.dragging && s.focus==IMAGE && s.pointer_client==-1,
+                 "M188 titlebar owned by compositor instead of client");
+    const int old_x=s.windows[IMAGE].x,old_y=s.windows[IMAGE].y;
+    selftest188_event(&s,2,EV_REL,REL_X,15);
+    selftest188_event(&s,2,EV_REL,REL_Y,12);
+    nasd_require(s.windows[IMAGE].x==old_x &&
+                 s.windows[IMAGE].y==old_y,
+                 "M188 no duplicate pre-SYN window reposition");
+    selftest188_event(&s,2,EV_SYN,SYN_REPORT,0);
+    nasd_require(s.windows[IMAGE].x==old_x+15 &&
+                 s.windows[IMAGE].y==old_y+12,
+                 "M188 one combined hardware frame repositions titlebar");
+    selftest188_event(&s,2,EV_KEY,BTN_LEFT,0);
+    selftest188_event(&s,2,EV_SYN,SYN_REPORT,0);
+    nasd_require(!s.dragging && !s.held,
+                 "M188 header drag releases compositor capture");
+    selftest188_quiet(image[1],"M188 titlebar drag never reaches app pointer");
+
+    for(unsigned i=0;i<2;i++) {
+        struct window *w=&s.windows[ids[i]];
+        nasd_require(munmap(w->pixels,(size_t)w->w*w->h*4U)==0,
+                     "M188 release real client memory");
+        close(w->surface_fd);
+    }
+    close(image[0]);close(image[1]);close(lvgl[0]);close(lvgl[1]);
+    close(s.fb);
+    nasd_mark("[M188 HOST INPUT PASS] EV_SYN frame coalescing, physical-style "
+              "hover/leave, captured drag, hi-res wheel and legacy IPC");
+}
+
 /* Exercise the production pathname listener and admission/retirement path
  * without a QEMU screen. The two clients deliberately register the SAME
  * application kind; their connection identities must never alias. */
@@ -1233,7 +1543,7 @@ int main(int argc,char **argv) {
         selftest();selftest168();selftest169();selftest170();return 0;
     }
     if(argc==2 && !strcmp(argv[1],"--selftest187")) {
-        selftest187();return 0;
+        selftest187();selftest188();return 0;
     }
     if(argc==2 && !strcmp(argv[1],"--selftest173")) {
         selftest173();return 0;

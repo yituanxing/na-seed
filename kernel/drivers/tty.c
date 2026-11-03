@@ -223,16 +223,10 @@ void nas_tty_pump(void) {
     }
 }
 void nas_tty_blocking_read_start(struct nas_task *task) {
-    task->wait.tty_observed_bytes=0;
-    if(!(tty.t.lflag&0000002) && tty.t.cc[5]) {
-        unsigned available=tty.ldisc.used-tty.ldisc.pos;
-        if(!tty.t.cc[6] || available) {
-            task->wait.tty_observed_bytes=available;
-            task->wait.deadline_active=true;
-            task->wait.deadline_ns=nas_time_add_deadline(nas_arch_monotonic_ns(),
-                         (uint64_t)tty.t.cc[5]*100000000ULL);
-        }
-    }
+    struct nas_ldisc_wait_clock clock={&task->wait.deadline_active,
+        &task->wait.deadline_ns,&task->wait.tty_observed_bytes};
+    nas_ldisc_noncanon_wait_start(&tty.t,tty.ldisc.used-tty.ldisc.pos,
+                                  clock,nas_arch_monotonic_ns());
 }
 bool nas_tty_read_waitable(void) {
     /* Any supported TTY read may wait: the Task owns the monotonic timer,
@@ -245,34 +239,17 @@ bool nas_tty_read_ready(struct nas_task *task,uint64_t length) {
     if(tty.unsupported_input || tty.pending_signum)return true;
     unsigned available=tty.ldisc.used-tty.ldisc.pos;
     if(tty.t.lflag&0000002)return tty.ldisc.ready;
-    unsigned need=tty.t.cc[6];
-    if(need>length)need=(unsigned)length;
-    if(need>NAS_LDISC_CAPACITY)need=NAS_LDISC_CAPACITY;
-    if(need==0)need=1;
-    if(available>=need)return true;
-    if(!tty.t.cc[5])return false;
-    /* VMIN=0: total deadline from initial read. VMIN>0: interbyte
-     * deadline starts at the first received byte, and resets on progress.
-     * 1 decisecond = 100,000,000 actual monotonic nanoseconds. */
-    if(tty.t.cc[6] && !available)return false;
-    if(!task->wait.deadline_active || available>task->wait.tty_observed_bytes) {
-        task->wait.deadline_active=true;
-        task->wait.deadline_ns=nas_time_add_deadline(nas_arch_monotonic_ns(),
-                    (uint64_t)tty.t.cc[5]*100000000ULL);
-        task->wait.tty_observed_bytes=available;
-    }
-    return nas_time_deadline_expired(nas_arch_monotonic_ns(),task->wait.deadline_ns);
+    struct nas_ldisc_wait_clock clock={&task->wait.deadline_active,
+        &task->wait.deadline_ns,&task->wait.tty_observed_bytes};
+    return nas_ldisc_noncanon_wait_ready(&tty.t,available,length,clock,
+                                          nas_arch_monotonic_ns());
 }
 bool nas_tty_poll_readable(void) {
     if(!tty.rx_enabled || !nas_arch_console_has_rx())return false;
     nas_tty_pump();
     if(tty.unsupported_input || tty.pending_signum)return true;
     if(tty.t.lflag&0000002)return tty.ldisc.ready;
-    /* MIN=0/TIME=0 read returns 0, but poll(POLLIN) must not report
-     * a nonexistent byte. Minimum of one physical character for poll. */
-    if(tty.ldisc.used==tty.ldisc.pos)return false;
-    unsigned min=tty.t.cc[6] ? tty.t.cc[6] : 1;
-    return tty.ldisc.used-tty.ldisc.pos>=min;
+    return nas_ldisc_noncanon_poll(&tty.t,tty.ldisc.used-tty.ldisc.pos);
 }
 /* Read admission is shared by scalar read and iter-style readv. The decision
  * uses the WHOLE logical request, before a usercopy iterator can split the
@@ -290,23 +267,11 @@ static uint64_t tty_read_budget(uint64_t len,bool nonblock) {
     bool expired=nas_current_task->wait.deadline_active &&
         nas_time_deadline_expired(nas_arch_monotonic_ns(),
                                   nas_current_task->wait.deadline_ns);
-    struct nas_termios copy=tty.t;
-    if(noncanon && tty.t.cc[5]) {
-        /* VMIN=0/VTIME>0 must NOT complete before the actual timeout.
-         * VMIN>0 may return partial input only after interbyte expiry. */
-        if(tty.t.cc[6]==0 || (expired && available))copy.cc[6]=1;
-        if(expired && !available)return 0;
-    }
-    /* O_NONBLOCK ignores VMIN as a minimum byte threshold, while canonical
-     * line completion remains mandatory. Never use this exception for a
-     * blocking read or an aggregate request's segment-size approximation. */
-    if(noncanon && nonblock && available)copy.cc[6]=1;
-    if(!nas_ldisc_readable(&tty.ldisc,&copy,wanted)) {
-        if(noncanon && !tty.t.cc[6] && !tty.t.cc[5])
-            return nonblock?(uint64_t)-EAGAIN:0;
-        if(noncanon && tty.t.cc[5] && expired)return 0;
+    if(noncanon)
+        return nas_ldisc_noncanon_budget(&tty.t,wanted,available,
+                                         nonblock,expired);
+    if(!nas_ldisc_readable(&tty.ldisc,&tty.t,wanted))
         return (uint64_t)-EAGAIN;
-    }
     if(tty.ldisc.eof)return 0;
     return available<wanted?available:wanted;
 }

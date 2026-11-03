@@ -6,3 +6,7 @@ tests/m174-software-run.sh	tests/m174-software-run.sh
 tests/m187-software-functions.sh	tests/m187-software-functions.sh
 # M187 entry-only test shares this exact CPIO; the host hook stages the list.
 tests/m187-util-linux-run.sh	tests/m187-util-linux-run.sh
+# M188 verification only reads a file genuinely saved by live PTY Vim.
+tests/m188-editor-check.sh	tests/m188-editor-check.sh
+# The two NEW M188 signed ELF paths receive guest loader/CLI entry tests.
+tests/m188-software-entry.sh	tests/m188-software-entry.sh

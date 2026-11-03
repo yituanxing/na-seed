@@ -303,8 +303,7 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
         TASK.wait.pending_io_release=nas_fs_io_dispose;
         TASK.wait.suppress_sigpipe=suppress_sigpipe;
         TASK.wait.tty_requested_bytes=attempt.tty_requested_bytes;
-        if(nas_fs_io_tty_read(attempt.pending))
-            nas_tty_blocking_read_start(&TASK);
+        nas_fs_io_read_wait_start(attempt.pending,&TASK);
         return nas_task_block(frame,nr,fd,buf,count,0,finish_io);
     }
     return ret;

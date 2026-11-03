@@ -1,11 +1,75 @@
 #include "tty_ldisc.h"
+#include "../errno.h"
 /* Standard Linux termios flag values and c_cc indices, not host libc. */
 enum {
     IGNCR=0000200, ICRNL=0000400, INLCR=0000100,
     ISIG=0000001, ICANON=0000002, ECHO=0000010,
-    VINTR=0, VQUIT=1, VERASE=2, VKILL=3, VEOF=4, VMIN=6,
+    VINTR=0, VQUIT=1, VERASE=2, VKILL=3, VEOF=4, VTIME=5, VMIN=6,
     VSUSP=10, VWERASE=14
 };
+static unsigned min_input(const struct nas_termios *termios,uint64_t requested) {
+    unsigned minimum=termios->cc[VMIN];
+    if(requested<minimum)minimum=(unsigned)requested;
+    return minimum;
+}
+uint64_t nas_ldisc_noncanon_budget(const struct nas_termios *termios,
+                                  uint64_t requested,unsigned available,
+                                  bool nonblock,bool expired) {
+    if(!requested)return 0;
+    uint64_t count=available<requested?available:requested;
+    if(nonblock)return count?count:(uint64_t)-EAGAIN;
+    unsigned minimum=min_input(termios,requested);
+    unsigned deciseconds=termios->cc[VTIME];
+    if(!minimum && !deciseconds)return count;
+    if(!minimum)return count?count:(expired?0:(uint64_t)-EAGAIN);
+    if(count>=minimum)return count;
+    if(deciseconds && expired && count)return count;
+    return (uint64_t)-EAGAIN;
+}
+bool nas_ldisc_noncanon_poll(const struct nas_termios *termios,
+                            unsigned available) {
+    unsigned minimum=termios->cc[VMIN];
+    return available >= (minimum?minimum:1U);
+}
+static uint64_t add_deciseconds(uint64_t now,unsigned deciseconds) {
+    uint64_t delta=(uint64_t)deciseconds*100000000ULL;
+    return UINT64_MAX-now<delta?UINT64_MAX:now+delta;
+}
+void nas_ldisc_noncanon_wait_start(const struct nas_termios *termios,
+                                  unsigned available,
+                                  struct nas_ldisc_wait_clock clock,
+                                  uint64_t now_ns) {
+    *clock.active=false;
+    *clock.observed_bytes=0;
+    if((termios->lflag&ICANON) || !termios->cc[VTIME])return;
+    if(!termios->cc[VMIN] || available) {
+        *clock.active=true;
+        *clock.deadline_ns=add_deciseconds(now_ns,termios->cc[VTIME]);
+        *clock.observed_bytes=available;
+    }
+}
+bool nas_ldisc_noncanon_wait_ready(const struct nas_termios *termios,
+                                  unsigned available,uint64_t requested,
+                                  struct nas_ldisc_wait_clock clock,
+                                  uint64_t now_ns) {
+    if(!requested)return true;
+    unsigned minimum=min_input(termios,requested);
+    if(available >= (minimum?minimum:1U))return true;
+    if(!termios->cc[VTIME])return false;
+    if(minimum && !available) {
+        /* A competing reader may have drained the first byte; an old
+         * interbyte timer must not keep waking this Task indefinitely. */
+        *clock.active=false;
+        *clock.observed_bytes=0;
+        return false;
+    }
+    if(!*clock.active || available>*clock.observed_bytes) {
+        *clock.active=true;
+        *clock.deadline_ns=add_deciseconds(now_ns,termios->cc[VTIME]);
+        *clock.observed_bytes=available;
+    }
+    return now_ns>=*clock.deadline_ns;
+}
 void nas_ldisc_reset(struct nas_ldisc *ld) {
     ld->used=ld->pos=0; ld->ready=ld->eof=false;
 }

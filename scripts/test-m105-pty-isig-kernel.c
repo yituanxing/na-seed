@@ -9,6 +9,12 @@
 #include "../kernel/task.h"
 #include "../kernel/drivers/pty.h"
 #include "../kernel/drivers/tty.h"
+#include "../kernel/drivers/core/chrdev.h"
+
+uint64_t nas_arch_monotonic_ns(void) { return 0; }
+int nas_chrdev_node_register(struct nas_chrdev_node *node) {
+    (void)node;return 0;
+}
 
 static struct nas_task owner={.pid=42,.sid=42,.pgid=77};
 static struct nas_fd_table fds;

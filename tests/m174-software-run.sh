@@ -131,6 +131,9 @@ echo M186_SOFTWARE_PIDSTAT_SELF_PROC_FUNCTION_PASS
 # original M174 CPIO; its markers require actual guest-side operations.
 /bin/sh /tests/m187-software-functions.sh
 /bin/sh /tests/m187-util-linux-run.sh
+# Independent M188: two new signed native ELF loader/CLI entry checks ONLY.
+# M79 Vim / M80 Nano remain historical and are exercised separately via PTY.
+/bin/sh /tests/m188-software-entry.sh
 
 # Original ELF entry/version exercises ONLY, never watch/TUI semantics.
 # Alpine inotifywait's --version can exit 1 after printing its version/usage

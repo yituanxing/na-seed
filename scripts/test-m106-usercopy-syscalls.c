@@ -62,7 +62,9 @@ bool nas_heap_free(void *ptr){free(ptr);return true;}
 static const char *bootstrap_test_parent="/";
 static bool bootstrap_vfs_shadow,bootstrap_vfs_dangling_link;
 static bool bootstrap_pty_present,bootstrap_tty_present;
+#ifndef NAS_TEST_REAL_PTY
 static bool bootstrap_pty_controlling;
+#endif
 static unsigned bootstrap_vfs_open_calls,bootstrap_vfs_lookup_calls;
 /* This isolated syscall fixture intentionally does not link the real PTY
  * and TTY backends: they are tested independently by A013/M105. Publish
@@ -98,17 +100,21 @@ int nas_vfs_path_string(const struct nas_vfs_path *path,char output[256]) {
 int nas_pty_path_number(const char *path){
     return path && !strcmp(path,"/dev/pts/3") ? 3 : -1;
 }
+#ifndef NAS_TEST_REAL_PTY
+/* M188 compiles this same real FileOps/usercopy fixture with the genuine
+ * PTY provider rather than these M106 bootstrap-only identities. */
 bool nas_pty_present(unsigned number){return number==3 && bootstrap_pty_present;}
 bool nas_pty_controlling(void){return bootstrap_pty_controlling;}
-#ifndef NAS_TEST_REAL_TTY
-bool nas_tty_controlling(void){return bootstrap_tty_present;}
-#endif
 unsigned nas_pty_number(unsigned slot){(void)slot;return 3;}
 int nas_pty_new(unsigned slot){(void)slot;return 0;}
 int nas_pty_attach(unsigned number,unsigned slot){
     (void)slot;return number==3 && bootstrap_pty_present ? 0:-ENOENT;
 }
 int nas_pty_attach_controlling(unsigned slot){(void)slot;return 0;}
+#endif
+#ifndef NAS_TEST_REAL_TTY
+bool nas_tty_controlling(void){return bootstrap_tty_present;}
+#endif
 static const struct limine_file bootstrap_module={
     .address=NULL,.size=1234,.path="/boot/direct-elf"
 };

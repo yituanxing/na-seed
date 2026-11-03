@@ -7,6 +7,8 @@ port=$1
 case "$port" in amd64|riscv64|arm64) ;; *) exit 2 ;; esac
 sh scripts/m174-software-check-manifest.sh
 sh scripts/m187-software-check-manifest.sh
+sh scripts/m188-software-check-manifest.sh
 sh scripts/stage-alpine-prebuilt-overlay.sh "$port" m174-software-batch
 sh scripts/m174-software-stage-check.sh "$port"
 sh scripts/m187-software-stage-check.sh "$port"
+sh scripts/m188-software-stage-check.sh "$port"

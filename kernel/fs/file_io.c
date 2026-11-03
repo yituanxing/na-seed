@@ -878,6 +878,17 @@ bool nas_fs_io_tty_read(const struct nas_pending_io *pending) {
         pending->request.ops &&
         (pending->request.ops->io_wait_flags&NAS_IO_WAIT_TTY);
 }
+void nas_fs_io_read_wait_start(const struct nas_pending_io *pending,
+                               struct nas_task *task) {
+    if(!pending || !task || !io_read_op(pending->op) ||
+       !pending->request.ops)return;
+    if(pending->request.ops->read_wait_start) {
+        pending->request.ops->read_wait_start(pending->request.slot,task,
+                                               task->wait.tty_requested_bytes);
+    } else if(nas_fs_io_tty_read(pending)) {
+        nas_tty_blocking_read_start(task);
+    }
+}
 bool nas_fs_io_should_block(const struct nas_pending_io *pending,
                             uint64_t result,bool first_attempt) {
     if(!pending || pending->nonblocking || !pending->request.ops)return false;
@@ -890,6 +901,10 @@ bool nas_fs_io_should_block(const struct nas_pending_io *pending,
 bool nas_fs_io_ready(const struct nas_pending_io *pending,
                      const struct nas_task *task) {
     if(!pending)return true;
+    if(io_read_op(pending->op) && pending->request.ops &&
+       pending->request.ops->read_wait_ready)
+        return pending->request.ops->read_wait_ready(pending->request.slot,
+            (struct nas_task *)task,task->wait.tty_requested_bytes);
     if(nas_fs_io_tty_read(pending))
         return nas_tty_read_ready((struct nas_task *)task,
                                   task->wait.tty_requested_bytes);

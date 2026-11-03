@@ -15,3 +15,7 @@ cp scripts/m174-software-original-elfs.txt \
 test -s scripts/m187-original-elfs.txt
 cp scripts/m187-original-elfs.txt \
     "$root/tests/m187-original-elfs.txt"
+# M188's two new ELFs are additive; M79 Vim and M80 Nano are reused.
+test -s scripts/m188-original-elfs.txt
+cp scripts/m188-original-elfs.txt \
+    "$root/tests/m188-original-elfs.txt"

@@ -79,6 +79,13 @@ struct nas_file_ops {
      * Distinct bits retain Linux admission/retry semantics: an initially
      * parked request may race with another consumer after becoming ready. */
     uint8_t io_wait_flags;
+    /* Task-owned blocking read policy, e.g. termios VMIN/VTIME on PTY.
+     * FileOps owns the descriptor identity; the scheduler owns monotonic
+     * deadlines. The provider must never inspect another Task's user VM. */
+    void (*read_wait_start)(unsigned slot,struct nas_task *task,
+                            uint64_t requested);
+    bool (*read_wait_ready)(unsigned slot,struct nas_task *task,
+                            uint64_t requested);
     bool sends_sigpipe;
     uint16_t (*poll)(uint64_t fd,uint16_t events);
     /* Readiness without a process-local FD or active userspace root.

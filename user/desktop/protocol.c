@@ -54,6 +54,17 @@ void nasd_send_pointer(int fd,unsigned x,unsigned y,int pressed) {
                             .value=(x<<16U)|y};
     nasd_write_all(fd,&m,sizeof(m));
 }
+void nasd_send_scroll(int fd,int vertical_120,int horizontal_120) {
+    nasd_require(vertical_120>=-12000 && vertical_120<=12000 &&
+                 horizontal_120>=-12000 && horizontal_120<=12000,
+                 "bounded high-resolution scroll delta");
+    const struct message m={.type=MSG_SCROLL,.key=(uint32_t)vertical_120,
+                            .value=(uint32_t)horizontal_120};
+    nasd_write_all(fd,&m,sizeof(m));
+}
+void nasd_send_pointer_leave(int fd) {
+    nasd_send_packet(fd,MSG_POINTER_LEAVE,0);
+}
 struct message nasd_recv_packet(int fd) {
     struct message m={0};nasd_read_all(fd,&m,sizeof(m));
     nasd_require(!m.reserved,"desktop IPC reserved bits");
@@ -64,15 +75,29 @@ struct message nasd_recv_packet(int fd) {
     } else if(m.type==MSG_KEY)
         nasd_require(!(m.value&~NASD_MOD_MASK),
                      "desktop keyboard modifier encoding");
+    else if(m.type==MSG_SCROLL)
+        nasd_require((int32_t)m.key>=-12000 && (int32_t)m.key<=12000 &&
+                     (int32_t)m.value>=-12000 && (int32_t)m.value<=12000,
+                     "bounded signed high-resolution scroll packet");
+    else if(m.type==MSG_POINTER_LEAVE)
+        nasd_require(!m.key && !m.value,
+                     "pointer leave has no stale coordinates or buttons");
     else nasd_require(!m.value,"desktop IPC reserved fields");
     return m;
+}
+static int surface_caps_valid(uint32_t caps) {
+    const uint32_t valid=NASD_INPUT_KEYS|NASD_INPUT_POINTER|
+                         NASD_INPUT_SCROLL|NASD_INPUT_POINTER_MOTION;
+    return !(caps&~valid) &&
+           (!(caps&(NASD_INPUT_SCROLL|NASD_INPUT_POINTER_MOTION)) ||
+            (caps&NASD_INPUT_POINTER));
 }
 void nasd_send_surface_caps(int fd,int surface,uint32_t role,unsigned width,
                             unsigned height,uint32_t capabilities) {
     nasd_require(width>0 && height>0 && width<=SCREEN_W &&
                  height<=SCREEN_H-TITLE_H,
                  "client surface dimensions in screen bounds");
-    nasd_require(!(capabilities&~(NASD_INPUT_KEYS|NASD_INPUT_POINTER)),
+    nasd_require(surface_caps_valid(capabilities),
                  "desktop input capabilities");
     struct message packet={.type=MSG_READY,.key=role,
                            .value=(width<<16U)|height,
@@ -98,7 +123,7 @@ static int surface_valid(const struct message *packet,int shared,
                          uint32_t *capabilities) {
     const unsigned w=packet->value>>16U,h=packet->value&65535U;
     if(packet->type!=MSG_READY ||
-       (packet->reserved&~(NASD_INPUT_KEYS|NASD_INPUT_POINTER)) ||
+       !surface_caps_valid(packet->reserved) ||
        !w || !h || w>SCREEN_W || h>SCREEN_H-TITLE_H || shared<0)
         return 0;
     struct stat backing={0};

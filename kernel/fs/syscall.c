@@ -1178,14 +1178,24 @@ static uint16_t dpoll_pty(unsigned slot,uint16_t events) {
 static uint16_t vpoll_pty(uint64_t fd,uint16_t events) {
     return dpoll_pty(TASK.fds->entries[fd].slot,events);
 }
+static uint64_t vread_pty_plan(unsigned slot,uint64_t requested) {
+    return nas_pty_read_plan_mode(slot,requested,
+                           (nas_open_files[slot].status_flags&0x800ULL)!=0);
+}
+static uint64_t vread_pty(unsigned slot,uint8_t *dst,uint64_t count) {
+    return nas_pty_read_mode(slot,dst,count,
+                           (nas_open_files[slot].status_flags&0x800ULL)!=0);
+}
 static void vrelease_pty(unsigned slot){nas_pty_release(slot);}
 static const struct nas_file_ops ops_pty={
-    .read_plan=nas_pty_read_plan,.read=nas_pty_read,.write=nas_pty_write,
-    .read_finalize_zero=true,
+    .read_plan=vread_pty_plan,.read=vread_pty,.write=nas_pty_write,
+    .aggregate_readv=true,.read_finalize_zero=true,
     /* An empty blocking PTY read must park until real master input arrives.
      * Unlike pipe/socket initial admission, its normal wait errno is EAGAIN.
      * A nonblocking descriptor still returns EAGAIN to the caller. */
     .io_wait_flags=NAS_IO_WAIT_INITIAL_EAGAIN|NAS_IO_WAIT_RETRY,
+    .read_wait_start=nas_pty_read_wait_start,
+    .read_wait_ready=nas_pty_read_wait_ready,
     .poll=vpoll_pty,.poll_description=dpoll_pty,
     .ioctl=nas_pty_ioctl,.release=vrelease_pty
 };

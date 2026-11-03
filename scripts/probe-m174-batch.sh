@@ -87,6 +87,23 @@ while IFS= read -r elf; do
         exit 1
     }
 done < scripts/m187-original-elfs.txt
+# M188 adds ONLY mg/rdfind; Vim/Nano retain their historical M79/M80 slots.
+# Kernel execve of the actual native APK ELF is mandatory even for entry-only.
+while IFS= read -r elf; do
+    case "$elf" in ''|'#'*) continue ;; esac
+    grep -Fq "[EXEC] replaced process with CPIO ELF: /$elf" "$log" || {
+        echo "[M188 ELF FAIL] $port original guest entry absent: /$elf" >&2
+        exit 1
+    }
+done < scripts/m188-original-elfs.txt
+for marker in M188_MG_NATIVE_ELF_ENTRY_ONLY_PASS \
+              M188_RDFIND_NATIVE_ELF_ENTRY_ONLY_PASS \
+              M188_SOFTWARE_2_SIGNED_ELF_ENTRY_ONLY_PASS; do
+    [ "$(grep -Fxc "$marker" "$log" || :)" -eq 1 ] || {
+        echo "[M188 ENTRY FAIL] $port expected exactly one real guest CLI marker $marker" >&2
+        exit 1
+    }
+done
 for original in /usr/bin/magick /usr/bin/lynx /usr/bin/mc; do
     grep -Fq "[EXEC] replaced process with CPIO ELF: $original" "$log" || {
         echo "[M174 DESKTOP ELF FAIL] $port original program did not exec: $original" >&2

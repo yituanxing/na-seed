@@ -9,6 +9,11 @@
 #include "../kernel/task.h"
 #include "../kernel/errno.h"
 #include "../kernel/drivers/tty.h"
+#include "../kernel/drivers/core/chrdev.h"
+
+int nas_chrdev_node_register(struct nas_chrdev_node *node) {
+    (void)node;return 0;
+}
 #include "../kernel/drivers/tty_ldisc.h"
 
 static struct nas_task owner={.pid=41,.sid=41,.pgid=41};

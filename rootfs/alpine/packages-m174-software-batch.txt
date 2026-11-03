@@ -17,3 +17,10 @@ tig
 util-linux-misc
 # The original Alpine dialog/ncurses VT100 capabilities must exist in-guest.
 ncurses-terminfo-base
+# M188: reuse historical M79 Vim and M80 Nano native APKs in the same CPIO.
+# Neither editor is a new original-ELF inventory entry.
+vim
+nano
+# M188: two additional original Alpine v3.23 main ELFs verified on all 3 ISAs.
+mg
+rdfind

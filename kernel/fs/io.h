@@ -24,6 +24,8 @@ bool nas_fs_io_ready(const struct nas_pending_io *pending,
                      const struct nas_task *task);
 bool nas_fs_io_pipe_like(const struct nas_pending_io *pending);
 bool nas_fs_io_tty_read(const struct nas_pending_io *pending);
+void nas_fs_io_read_wait_start(const struct nas_pending_io *pending,
+                               struct nas_task *task);
 void nas_fs_io_dispose(struct nas_pending_io *pending);
 /* FS/FD operations are implemented in fs/syscall.c; the shared syscall
  * dispatcher and scheduler use this stable operation boundary. */
