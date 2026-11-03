@@ -645,6 +645,8 @@ static void selftest169(void) {
     struct session s={.mode=168,.count=3,.focus=BROWSER,.stage=0};
     s.windows[BROWSER].channel=browser[0];
     s.windows[TERMINAL].channel=terminal[0];
+    s.windows[BROWSER].active=1;
+    s.windows[TERMINAL].active=1;
     const struct input_event b={.type=EV_KEY,.code=KEY_B,.value=1};
     const struct input_event a={.type=EV_KEY,.code=KEY_A,.value=1};
     for(unsigned n=0;n<2;n++) {
