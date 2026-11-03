@@ -97,7 +97,10 @@ int main(void) {
         struct pollfd fd={.fd=master,.events=POLLIN};
         (void)poll(&fd,1,100);
         if(fd.revents&POLLIN) {
-            char discard[2048];(void)read(master,discard,sizeof(discard));
+            char discard[2048];
+            ssize_t drained=read(master,discard,sizeof(discard));
+            if(drained<0 && errno!=EINTR && errno!=EAGAIN &&
+               errno!=EWOULDBLOCK)break;
         }
     }
     if(!exited) {kill(pid,SIGKILL);(void)waitpid(pid,&status,0);}
