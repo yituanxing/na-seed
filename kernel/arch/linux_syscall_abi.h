@@ -100,6 +100,8 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_gettid: return NAS_SC_gettid;
     case __NR_gettimeofday: return NAS_SC_gettimeofday;
     case __NR_getuid: return NAS_SC_getuid;
+    case __NR_setfsuid: return NAS_SC_setfsuid;
+    case __NR_setfsgid: return NAS_SC_setfsgid;
     case __NR_setgid: return NAS_SC_setgid;
     case __NR_setgroups: return NAS_SC_setgroups;
     case __NR_setuid: return NAS_SC_setuid;
@@ -365,6 +367,8 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 158U: return NAS_SC_getgroups; /* asm-generic supplementary groups */
     case 177U: return NAS_SC_getegid;
     case 144U: return NAS_SC_setgid;
+    case 151U: return NAS_SC_setfsuid; /* Linux asm-generic */
+    case 152U: return NAS_SC_setfsgid; /* Linux asm-generic */
     case 159U: return NAS_SC_setgroups;
     case 146U: return NAS_SC_setuid;
     case 178U: return NAS_SC_gettid;

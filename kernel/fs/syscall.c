@@ -1182,6 +1182,10 @@ static void vrelease_pty(unsigned slot){nas_pty_release(slot);}
 static const struct nas_file_ops ops_pty={
     .read_plan=nas_pty_read_plan,.read=nas_pty_read,.write=nas_pty_write,
     .read_finalize_zero=true,
+    /* An empty blocking PTY read must park until real master input arrives.
+     * Unlike pipe/socket initial admission, its normal wait errno is EAGAIN.
+     * A nonblocking descriptor still returns EAGAIN to the caller. */
+    .io_wait_flags=NAS_IO_WAIT_INITIAL_EAGAIN|NAS_IO_WAIT_RETRY,
     .poll=vpoll_pty,.poll_description=dpoll_pty,
     .ioctl=nas_pty_ioctl,.release=vrelease_pty
 };

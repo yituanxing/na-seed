@@ -76,6 +76,8 @@ enum nas_syscall_op {
     NAS_SC_gettid,
     NAS_SC_gettimeofday,
     NAS_SC_getuid,
+    NAS_SC_setfsuid,
+    NAS_SC_setfsgid,
     NAS_SC_setgid,
     NAS_SC_setgroups,
     NAS_SC_setuid,

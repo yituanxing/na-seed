@@ -582,6 +582,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_getgroups) return nas_credentials_getgroups(args[1]);
     if (nr == NAS_SC_setuid || nr == NAS_SC_setgid)
         return nas_credentials_set_id(args[1]);
+    if (nr == NAS_SC_setfsuid || nr == NAS_SC_setfsgid)
+        return nas_credentials_set_fs_id(args[1]);
     if (nr == NAS_SC_setgroups)
         return nas_credentials_setgroups(args[1]);
     if (nr == NAS_SC_mincore)

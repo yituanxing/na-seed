@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "../task.h"
+#include "../errno.h"
 /* Shared open-description data plane. A provider only sees an owned File slot
  * and kernel memory: Linux FDs and user virtual addresses belong exclusively
  * to the syscall adapter in file_io.c. This is not a pathname/VFS interface.
@@ -20,6 +21,19 @@
 #define NAS_IO_WAIT_INITIAL 0x01U
 #define NAS_IO_WAIT_RETRY   0x02U
 #define NAS_IO_WAIT_TTY     0x04U
+/* PTY (and other explicitly opting-in streams) reports ordinary -EAGAIN on
+ * its first empty blocking read. Pipe/socket initial admission deliberately
+ * retains its existing -EOPNOTSUPP-only policy. */
+#define NAS_IO_WAIT_INITIAL_EAGAIN 0x08U
+static inline bool nas_io_wait_policy(uint8_t flags,bool nonblocking,
+                                      int64_t result,bool initial) {
+    if(nonblocking)return false;
+    if(initial)
+        return ((flags&NAS_IO_WAIT_INITIAL) && result==-EOPNOTSUPP) ||
+               ((flags&NAS_IO_WAIT_INITIAL_EAGAIN) && result==-EAGAIN);
+    return (flags&NAS_IO_WAIT_RETRY) &&
+           (result==-EOPNOTSUPP || result==-EAGAIN);
+}
 struct nas_file_ops {
     uint64_t (*read_plan)(unsigned slot,uint64_t requested);
     /* A record-oriented provider (evdev) must never receive half of one

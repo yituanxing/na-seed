@@ -813,9 +813,6 @@ static uint64_t io_pending_execute(const struct nas_pending_io *pending) {
 static bool io_read_op(uint64_t op) {
     return op==NAS_SC_read || op==NAS_SC_readv || op==NAS_SC_recvfrom;
 }
-static bool io_would_block(uint64_t rc) {
-    return (int64_t)rc==-EAGAIN || (int64_t)rc==-EOPNOTSUPP;
-}
 /* Only import metadata once. The stack request owns its File reference
  * during the initial operation; a blocked return transfers BOTH resources
  * to a heap request belonging exclusively to Task.wait. */
@@ -887,9 +884,8 @@ bool nas_fs_io_should_block(const struct nas_pending_io *pending,
     uint8_t policy=pending->request.ops->io_wait_flags;
     if(nas_fs_io_tty_read(pending))
         return (int64_t)result==-EAGAIN && nas_tty_read_waitable();
-    return first_attempt ? (policy&NAS_IO_WAIT_INITIAL) &&
-                           (int64_t)result==-EOPNOTSUPP :
-                           (policy&NAS_IO_WAIT_RETRY) && io_would_block(result);
+    return nas_io_wait_policy(policy,pending->nonblocking,
+                              (int64_t)result,first_attempt);
 }
 bool nas_fs_io_ready(const struct nas_pending_io *pending,
                      const struct nas_task *task) {

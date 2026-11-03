@@ -25,6 +25,8 @@ gcc -std=c11 -O2 -Wall -Wextra -Werror \
     tests/m187-vt100.c -o "$work/vt100-fixture"
 gcc -std=c11 -O2 -Wall -Wextra -Werror \
     tests/m187-fullscreen-pty.c -o "$work/fullscreen-fixture"
+gcc -std=c11 -O2 -Wall -Wextra -Werror \
+    tests/m187-pty-blocking-policy.c -o "$work/pty-blocking-policy"
 gcc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
     user/desktop/naseed-terminal.c user/desktop/protocol.c \
     user/desktop/text.c -o "$work/naseed-terminal"
@@ -37,11 +39,13 @@ gcc -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
 "$work/naseed-terminal" --selftest187 > "$work/terminal.log"
 "$work/naseed-desktop" --selftest187 > "$work/compositor.log"
 "$work/fullscreen-fixture" > "$work/fullscreen.log"
+"$work/pty-blocking-policy" > "$work/pty-blocking-policy.log"
 grep -Fq '[M187 HOST VT100 PASS]' "$work/parser.log"
 grep -Fq '[M187 HOST TERMINAL PASS]' "$work/terminal.log"
 grep -Fq '[M187 HOST COMPOSITOR PASS]' "$work/compositor.log"
 grep -Fq '[M187 HOST FULLSCREEN PASS]' "$work/fullscreen.log"
+grep -Fq '[M187 PTY BLOCKING POLICY PASS]' "$work/pty-blocking-policy.log"
 grep -Fq '[M170 HOST TERMINAL PASS]' "$work/legacy.log"
 cat "$work/parser.log" "$work/terminal.log" \
-    "$work/compositor.log" "$work/fullscreen.log"
+    "$work/compositor.log" "$work/fullscreen.log" "$work/pty-blocking-policy.log"
 echo '[M187 HOST PASS] legacy compatible, VT ANSI parser, independent full-screen GNU nano PTY'

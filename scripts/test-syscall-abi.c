@@ -6,10 +6,15 @@ int main(void) {
      * groups exist. Changing IDs or creating group memberships is denied. */
     assert(nas_linux_decode_syscall(__NR_setuid) == NAS_SC_setuid);
     assert(nas_linux_decode_syscall(__NR_setgid) == NAS_SC_setgid);
+    assert(nas_linux_decode_syscall(__NR_setfsuid) == NAS_SC_setfsuid);
+    assert(nas_linux_decode_syscall(__NR_setfsgid) == NAS_SC_setfsgid);
     assert(nas_linux_decode_syscall(__NR_setgroups) == NAS_SC_setgroups);
     assert(nas_linux_decode_syscall(__NR_getgroups) == NAS_SC_getgroups);
     assert(nas_credentials_set_id(0)==0);
     assert((int64_t)nas_credentials_set_id(1)==-EPERM);
+    assert(nas_credentials_set_fs_id(0)==0);
+    assert(nas_credentials_set_fs_id(UINT64_MAX)==0);
+    assert(nas_credentials_set_fs_id(1000)==0);
     assert(nas_credentials_setgroups(0)==0);
     assert((int64_t)nas_credentials_setgroups(1)==-EPERM);
     assert(nas_credentials_getgroups(0)==0);
