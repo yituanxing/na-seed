@@ -1,5 +1,5 @@
-#ifndef NASEED_LV_CONF_H
-#define NASEED_LV_CONF_H
+#ifndef LV_CONF_H
+#define LV_CONF_H
 /* Real LVGL 9.4 userspace rendering for a NaSeed-owned memfd surface. */
 #define LV_COLOR_DEPTH 32
 #define LV_USE_STDLIB_MALLOC LV_STDLIB_CLIB

@@ -24,7 +24,7 @@ cmake -S third_party/lvgl -B "$work" \
     -DCONFIG_LV_USE_THORVG_INTERNAL=OFF \
     -DBUILD_SHARED_LIBS=OFF > "$work/configure.log"
 cmake --build "$work" --target lvgl -j 4 > "$work/build.log"
-test -s "$work/liblvgl.a"
+test -s "$work/lib/liblvgl.a"
 "$cc" -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
     user/desktop/naseed-desktop.c user/desktop/protocol.c user/desktop/text.c \
     -o "$root/usr/bin/naseed-desktop"
@@ -32,7 +32,7 @@ test -s "$work/liblvgl.a"
     -DLV_CONF_INCLUDE_SIMPLE -Ithird_party/lvgl \
     -Iuser/desktop/lvgl-config \
     user/desktop/naseed-lvgl.c user/desktop/protocol.c \
-    "$work/liblvgl.a" -lm -o "$root/usr/bin/naseed-lvgl"
+    "$work/lib/liblvgl.a" -lm -o "$root/usr/bin/naseed-lvgl"
 for app in naseed-desktop naseed-image naseed-terminal naseed-browser naseed-lvgl; do
     file="$root/usr/bin/$app"
     test -x "$file"
