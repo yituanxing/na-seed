@@ -1315,10 +1315,36 @@ int main(void) {
     assert(nas_vfs_read_dir(&n,0,records,8)==8);
     assert(!strcmp(records[0].name,".") && records[0].ino==1);
     assert(!strcmp(records[1].name,"..") && records[1].ino==1);
-    assert(!strcmp(records[2].name,"sys") && records[2].dtype==4);
-    assert(!strcmp(records[3].name,"bin") && records[3].ino==2);
-    assert(records[3].dtype==4);
-    assert(nas_vfs_read_dir(&n,8,records,8)==0);
+    bool found_sys=false,found_dev=false,found_bin=false;
+    for(unsigned i=2;i<8;i++) {
+        if(!strcmp(records[i].name,"sys")) {
+            assert(records[i].dtype==4);found_sys=true;
+        }
+        if(!strcmp(records[i].name,"dev")) {
+            assert(records[i].dtype==4);found_dev=true;
+        }
+        if(!strcmp(records[i].name,"bin")) {
+            assert(records[i].dtype==4 && records[i].ino==2);
+            found_bin=true;
+        }
+    }
+    struct nas_vfs_dirent remainder[8]={0};
+    int tail=nas_vfs_read_dir(&n,8,remainder,8);
+    assert(tail>=0 && tail<=8);
+    for(int i=0;i<tail;i++) {
+        if(!strcmp(remainder[i].name,"sys")) {
+            assert(remainder[i].dtype==4);found_sys=true;
+        }
+        if(!strcmp(remainder[i].name,"dev")) {
+            assert(remainder[i].dtype==4);found_dev=true;
+        }
+        if(!strcmp(remainder[i].name,"bin")) {
+            assert(remainder[i].dtype==4 && remainder[i].ino==2);
+            found_bin=true;
+        }
+    }
+    assert(found_sys && found_dev && found_bin);
+    assert(nas_vfs_read_dir(&n,8U+(unsigned)tail,records,8)==0);
     /* The same read-only sysfs CPU topology is available to every port;
      * neither a staged fake guest file nor a lscpu-specific syscall. */
     assert(nas_fs_lookup_node("/sys/devices/system/cpu/possible",true,
@@ -1868,11 +1894,17 @@ int main(void) {
     /* Covered readdir names must report the visible mounted root inode,
      * not the hidden bootfs /mnt directory's original inode (6). */
     struct nas_fs_node root_list;
-    struct nas_vfs_dirent root_entries[8];
+    struct nas_vfs_dirent root_entries[16];
     assert(nas_fs_lookup_node("/",true,&root_list,resolved)==0);
-    assert(nas_vfs_read_dir(&root_list,0,root_entries,8)==8);
-    assert(!strcmp(root_entries[6].name,"mnt"));
-    assert(root_entries[6].ino==801 && root_entries[6].dtype==4);
+    int root_count=nas_vfs_read_dir(&root_list,0,root_entries,16);
+    assert(root_count>=9 && root_count<=16);
+    bool found_mounted_mnt=false;
+    for(int i=0;i<root_count;i++)
+        if(!strcmp(root_entries[i].name,"mnt")) {
+            assert(root_entries[i].ino==801 && root_entries[i].dtype==4);
+            found_mounted_mnt=true;
+        }
+    assert(found_mounted_mnt);
     /* The mount itself owns the covered /mnt directory and root parent.
      * A directory lease cannot evaporate merely because no user FD is open. */
     assert(nas_vfs_inode_is_pinned(&entries[5]));

@@ -15,6 +15,7 @@ struct nas_fs_node {
     /* Filesystem-supplied stable inode/stat identity. VFS never exports
      * a provider pointer as st_ino. Zero means metadata unavailable. */
     uint64_t ino;
+    uint64_t rdev;  /* Linux S_IFCHR/S_IFBLK device identity, not st_dev */
     uint64_t nlink;
     uint32_t uid,gid;
     uint64_t atime_sec,mtime_sec,ctime_sec;

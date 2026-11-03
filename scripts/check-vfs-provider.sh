@@ -1,10 +1,10 @@
 #!/bin/sh
 # Exercise real compiled VFS dispatch, symlink walk and inode I/O contracts.
 set -eu
+. scripts/vfs-host-sources.sh
 mkdir -p build/vfs-provider
 cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
-  scripts/test-vfs-provider.c kernel/fs/vfs.c kernel/fs/vfs_providers.c \
-  kernel/fs/lookup.c kernel/lib/string.c kernel/mm/heap.c \
+  scripts/test-vfs-provider.c $NAS_VFS_HOST_SOURCES \
   -o build/vfs-provider/test
 build/vfs-provider/test
 # memfd_create validates Linux arguments then asks for a pathless mounted
@@ -52,7 +52,8 @@ if grep -Eq 'nas_vfs_directory_path|\.directory_path=' \
 fi
 if command -v clang >/dev/null 2>&1; then
   for target in x86_64-unknown-none-elf riscv64-unknown-elf aarch64-none-elf; do
-    for source in kernel/fs/vfs.c kernel/fs/vfs_providers.c kernel/fs/lookup.c; do
+    for source in kernel/fs/vfs.c kernel/fs/vfs_providers.c kernel/fs/devfs.c \
+                  kernel/drivers/core/chrdev.c kernel/fs/lookup.c; do
       clang --target="$target" -std=c11 -Wall -Wextra -Werror \
         -ffreestanding -fno-builtin -I kernel -fsyntax-only "$source"
     done

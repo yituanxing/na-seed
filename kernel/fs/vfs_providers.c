@@ -3,6 +3,7 @@
 #include "../bootfs.h"
 #include "../tmpfs.h"
 #include "procfs.h"
+#include "devfs.h"
 #include "../errno.h"
 #include "../mm/frame.h"
 #include "../lib/string.h"
@@ -757,6 +758,8 @@ static const struct nas_vfs_type sys_type={
 };
 static const struct nas_vfs_mount defaults[]={
     {.mountpoint="/",.type=&boot_type,.permanent=true},
+    {.mountpoint="/dev",.type=&nas_devfs_type,
+     .allow_missing_mountpoint=true,.permanent=true},
     {.mountpoint="/tmp",.type=&tmp_type,.fallback_on_miss=true,
      .allow_missing_mountpoint=true,.permanent=true},
     {.mountpoint="/proc",.type=&proc_type,.fallback_on_miss=true,

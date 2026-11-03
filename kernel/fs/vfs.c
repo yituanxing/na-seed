@@ -199,6 +199,7 @@ int nas_vfs_getattr(const struct nas_fs_node *node,struct nas_fs_node *out) {
         if(rc)return rc;
         if(out->filesystem!=node->filesystem || out->mount!=node->mount ||
            out->inode!=node->inode || out->ino!=node->ino ||
+           out->rdev!=node->rdev ||
            out->mount_id!=node->mount_id ||
            out->is_dir!=node->is_dir)return -ESTALE;
     }
@@ -1775,13 +1776,17 @@ int nas_vfs_open_path_at(const struct nas_vfs_path *start,
         rc=-ENXIO;
     if(!rc && node.is_dir && (options->access || options->truncate))
         rc=-EISDIR;
-    if(!rc && !options->path_only && !node.is_dir &&
+    /* A read-only /dev namespace may still expose a writable character
+     * device. Neither opening it O_RDWR nor O_TRUNC mutates devfs inode
+     * bytes; the underlying FileOps owns its data plane. */
+    bool character=(node.mode&0170000U)==0020000U;
+    if(!rc && !options->path_only && !node.is_dir && !character &&
        (options->access || options->truncate) &&
        !nas_vfs_can_write(&node))rc=-EROFS;
     if(!rc && options->truncate && !options->access && !options->path_only)
         rc=-EINVAL;
     if(!rc)rc=nas_vfs_node_pin(&node);
-    if(!rc && options->truncate && !options->path_only) {
+    if(!rc && options->truncate && !options->path_only && !character) {
         rc=nas_vfs_resize(&node,0);
         if(rc)(void)nas_vfs_node_unpin(&node);
         else node.size=0;
@@ -2137,6 +2142,10 @@ int nas_vfs_node_pin(const struct nas_fs_node *node) {
         } else {
             lease=free_inode_lease_slot();
             if(!lease)return -ENOMEM;
+            if(node->filesystem->first_inode_pin) {
+                int acquired=node->filesystem->first_inode_pin(node);
+                if(acquired)return acquired;
+            }
             *lease=(struct inode_size_lease){
                 .mount=node->mount,.ino=node->ino,
                 .backend_inode=node->inode,.size=node->size,.refs=1

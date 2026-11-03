@@ -59,6 +59,7 @@ kernel/fs/procfs.c
 kernel/fs/lookup.c
 kernel/fs/vfs.c
 kernel/fs/vfs_providers.c
+kernel/fs/devfs.c
 kernel/fs/syscall.c
 kernel/fs/namespace_syscall.c
 kernel/fs/socket_syscall.c

@@ -1,0 +1,5 @@
+# Retain M168 signed-desktop fixtures in the shared M174 guest root.
+tests/m167-desktop-fixture.ppm	tests/m167-desktop-fixture.ppm
+tests/m168-home.html	tests/m168-home.html
+# Representative native-guest semantics, separate from the twenty-ELF gate.
+tests/m174-software-run.sh	tests/m174-software-run.sh

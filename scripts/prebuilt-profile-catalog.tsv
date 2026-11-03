@@ -78,3 +78,4 @@ m165-batch	rootfs/alpine/packages-m165-batch.txt	scripts/m165-original-elfs.txt	
 m166-batch	rootfs/alpine/packages-m166-batch.txt	scripts/m166-original-elfs.txt	scripts/m166-rootfs-copies.tsv	main+community
 m167-batch	rootfs/alpine/packages-m167-batch.txt	scripts/m167-original-elfs.txt	scripts/m167-rootfs-copies.tsv	main+community
 m168-batch	rootfs/alpine/packages-m168-batch.txt	scripts/m168-original-elfs.txt	scripts/m168-rootfs-copies.tsv	main+community
+m174-software-batch	rootfs/alpine/packages-m174-software-batch.txt	scripts/m174-software-original-elfs.txt	scripts/m174-software-rootfs-copies.tsv	main+community

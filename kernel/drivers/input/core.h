@@ -73,6 +73,9 @@ int nas_input_set_absinfo(struct nas_input_device *, uint16_t code,
 int nas_input_register_device(struct nas_input_device *);
 /* May not unbind while evdev has open descriptions: returns -EBUSY. */
 int nas_input_unregister_device(struct nas_input_device *);
+/* Optional class-node publisher, installed before bus discovery. Device
+ * registration and unregistration roll back if its publication fails. */
+int nas_input_set_publication(int (*publish)(unsigned index,bool add));
 const struct nas_input_device *nas_input_device_at(unsigned index);
 /* Capability blob for Linux EVIOCGBIT; size in bytes, NULL if unsupported. */
 const uint8_t *nas_input_capabilities(const struct nas_input_device *,

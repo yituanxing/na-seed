@@ -26,6 +26,8 @@ struct nas_chrdev_provider {
 struct nas_chrdev_node {
     const char *path;                 /* Owner-owned immutable /dev pathname */
     struct nas_chrdev_info info;      /* Device and stable stat identity */
+    const struct nas_chrdev_provider *provider; /* Optional per-open backend */
+    uint64_t devfs_ino;              /* Unique per registration incarnation */
     bool (*present)(unsigned unit);   /* Optional non-consuming availability */
     unsigned pins;                   /* One per owning shared OpenFile */
     bool registered;
@@ -35,6 +37,12 @@ int nas_chrdev_node_register(struct nas_chrdev_node *node);
 int nas_chrdev_node_unregister(struct nas_chrdev_node *node);
 int nas_chrdev_node_pin(struct nas_chrdev_node *node);
 void nas_chrdev_node_put(struct nas_chrdev_node *node);
+/* A borrowed live node, or NULL after the last registered present node.
+ * Enumeration never creates a second class/device registry in devfs. */
+struct nas_chrdev_node *nas_chrdev_node_at(unsigned ordinal);
+int nas_chrdev_resolve_rdev(uint64_t rdev,struct nas_chrdev_info *out,
+                            const struct nas_chrdev_provider **provider,
+                            struct nas_chrdev_node **node);
 int nas_chrdev_provider_register(const struct nas_chrdev_provider *provider);
 int nas_chrdev_describe(const char *absolute, struct nas_chrdev_info *out,
                        const struct nas_chrdev_provider **provider,

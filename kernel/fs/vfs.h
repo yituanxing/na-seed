@@ -75,6 +75,10 @@ struct nas_vfs_type {
      * i_op->get_link, NaOS vfs_inode operation). A renamed symlink keeps
      * the same content across open handles and mount aliases. */
     int (*readlink)(const struct nas_fs_node *,char target[256]);
+    /* Symmetric lifetime hooks for a provider's FIRST generic VFS inode
+     * lease and LAST release. devfs uses these to pin published class-node
+     * storage through cached positive dentries, independent of OpenFiles. */
+    int (*first_inode_pin)(const struct nas_fs_node *);
     /* Called precisely when the LAST generic mount+inode lease is dropped.
      * A backend may now reclaim an unlinked orphan inode; never called
      * on a borrowed namei snapshot or one of several dup/fork owners. */

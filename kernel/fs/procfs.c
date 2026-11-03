@@ -473,7 +473,13 @@ int64_t nas_proc_readlink(struct nas_proc_node node,char *out,unsigned cap) {
     struct nas_fd_entry e=task->fds->entries[node.fd];
     if(e.kind==FD_CLOSED || e.slot>=NAS_OPEN_FILE_LIMIT)return -ENOENT;
     const struct nas_open_file *f=&nas_open_files[e.slot];
+    /* A genuine VFS-owned open retains its Dentry, so /proc/pid/fd must
+     * describe that owned location before consulting the legacy 256-byte
+     * open-time hint (which can become stale after rename). */
+    char owned_path[256]={0};
     const char *path=f->origin_path;
+    if(f->vpath.dentry && !nas_vfs_path_string(&f->vpath,owned_path))
+        path=owned_path;
     char temporary[64];
     if(!path[0]) {
         switch(e.kind) {

@@ -60,6 +60,7 @@ static uint64_t write_mounted_stat(const struct nas_fs_node *node,
     st.dev=nas_vfs_node_device(&fresh);
     if(!st.dev)return (uint64_t)-ENODEV;
     st.ino=fresh.ino;st.mode=fresh.mode;
+    st.rdev=fresh.rdev;
     st.nlink=fresh.nlink; /* An unlinked but open inode has zero links. */
     st.uid=fresh.uid;st.gid=fresh.gid;
     uint64_t live_size=fresh.size;
@@ -339,7 +340,10 @@ static uint64_t sys_access_path(uint64_t dirfd,uint64_t pathname,
     if(!err) {
         bits=node.mode;
         is_dir=node.is_dir;
-        writable=nas_vfs_can_write(&node);
+        /* devfs is a read-only NAME namespace, not a read-only device
+         * backend: access(W_OK) on a writable character inode is legal. */
+        writable=nas_vfs_can_write(&node) ||
+                 (node.mode&0170000U)==0020000U;
         end_mounted_lookup(&request,&located);
     } else if(err!=-ENOENT) {
         end_mounted_lookup(&request,&located);

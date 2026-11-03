@@ -13,36 +13,40 @@
 #include <stdint.h>
 
 static struct nas_evdev_client *clients[NAS_OPEN_FILE_LIMIT];
-
-static int describe(const char *path,struct nas_chrdev_info *out) {
-    static const char prefix[]="/dev/input/event";
-    if(!path || !out || strncmp(path,prefix,sizeof(prefix)-1U))return -ENOENT;
-    const char *digits=path+sizeof(prefix)-1U;
-    if(!*digits || (*digits=='0' && digits[1]))return -ENOENT;
-    unsigned index=0;
-    for(;*digits;digits++) {
-        if(*digits<'0' || *digits>'9')return -ENOENT;
-        index=index*10U+(unsigned)(*digits-'0');
-        if(index>=NAS_INPUT_MAX_DEVICES)return -ENOENT;
-    }
-    if(!nas_input_device_at(index))return -ENOENT;
-    *out=(struct nas_chrdev_info){
-        .fd_kind=FD_EVDEV,.unit=index,.dev=2,
-        .ino=3000U+index,.rdev=(13U<<8)|(64U+index),
-        .mode=0020600U
-    };
-    return 0;
-}
+static char device_names[NAS_INPUT_MAX_DEVICES][20];
+static struct nas_chrdev_node event_nodes[NAS_INPUT_MAX_DEVICES];
 static int open_slot(unsigned slot,unsigned unit) {
     if(slot>=NAS_OPEN_FILE_LIMIT)return -EINVAL;
     if(clients[slot])return -EBUSY;
     return nas_evdev_open(unit,&clients[slot]);
 }
 static const struct nas_chrdev_provider evdev_provider={
-    .name="linux-evdev",.describe=describe,.open=open_slot
+    .name="linux-evdev",.open=open_slot
 };
+static int publish_node(unsigned index,bool add) {
+    if(index>=NAS_INPUT_MAX_DEVICES)return -EINVAL;
+    struct nas_chrdev_node *node=&event_nodes[index];
+    if(!add)return nas_chrdev_node_unregister(node);
+    static const char prefix[]="/dev/input/event";
+    memcpy(device_names[index],prefix,sizeof(prefix)-1U);
+    unsigned n=sizeof(prefix)-1U;
+    if(index>=10U)
+        device_names[index][n++]=(char)('0'+index/10U);
+    device_names[index][n++]=(char)('0'+index%10U);
+    device_names[index][n]=0;
+    *node=(struct nas_chrdev_node){
+        .path=device_names[index],
+        .info={
+            .fd_kind=FD_EVDEV,.unit=index,.dev=2,
+            .ino=3000U+index,.rdev=(13U<<8)|(64U+index),
+            .mode=0020600U
+        },
+        .provider=&evdev_provider
+    };
+    return nas_chrdev_node_register(node);
+}
 int nas_input_chrdev_init(void) {
-    return nas_chrdev_provider_register(&evdev_provider);
+    return nas_input_set_publication(publish_node);
 }
 uint64_t nas_input_chrdev_read_plan(unsigned slot,uint64_t requested) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !clients[slot])return (uint64_t)-ENODEV;

@@ -635,6 +635,23 @@ static uint64_t open_path_owned(const char *path,
         if(!rc) {
             have_node=true;
             kind=opened_node.is_dir?FD_DIR:FD_ARCHIVE;
+            if((opened_node.mode&0170000U)==0020000U) {
+                /* VFS is the namespace authority; the class registry is
+                 * ONLY the rdev -> live FileOps/backend owner. Resolve
+                 * before publishing any process FD, while the real inode
+                 * and the namespace Dentry remain independently pinned. */
+                struct nas_chrdev_info info={0};
+                rc=nas_chrdev_resolve_rdev(opened_node.rdev,&info,
+                                          &chrdev_provider,&chrdev_node);
+                if(rc) {
+                    (void)nas_vfs_path_put(&directory_path);
+                    (void)nas_vfs_node_unpin(&opened_node);
+                    return (uint64_t)(int64_t)rc;
+                }
+                kind=info.fd_kind;
+                chrdev_unit=info.unit;
+                if(kind==FD_PTY_SLAVE)pty_number=(int)info.unit;
+            }
             /* origin_path is a diagnostic hint, never a second namei or
              * part of the successful O_CREAT/O_TRUNC transaction. A long
              * Path must not turn a committed open into an error because
@@ -665,11 +682,17 @@ static uint64_t open_path_owned(const char *path,
         chrdev_provider=bootstrap.chrdev_provider;
         chrdev_node=bootstrap.chrdev_node;
         chrdev_unit=bootstrap.chrdev_unit;
-        if(bootstrap.fd_kind==FD_TTY && bootstrap.rdev==(5U<<8)) {
-            if(!nas_tty_controlling() && !nas_pty_controlling())
-                return (uint64_t)-ENXIO;
-            if(nas_pty_controlling())kind=FD_PTY_SLAVE;
+    }
+    if(!path_only && kind==FD_TTY &&
+       (have_node ? opened_node.rdev : bootstrap.rdev)==(5U<<8)) {
+        if(!nas_tty_controlling() && !nas_pty_controlling()) {
+            if(have_node) {
+                (void)nas_vfs_path_put(&directory_path);
+                (void)nas_vfs_node_unpin(&opened_node);
+            }
+            return (uint64_t)-ENXIO;
         }
+        if(nas_pty_controlling())kind=FD_PTY_SLAVE;
     }
 
     if(!have_node) {
@@ -685,10 +708,10 @@ static uint64_t open_path_owned(const char *path,
      * state to the still-unpublished shared OpenFile slot. Both are rolled
      * back on failure, before a process FD becomes visible. */
     int open_error=chrdev_node ? nas_chrdev_node_pin(chrdev_node) : 0;
-    if(open_error)return (uint64_t)(int64_t)open_error;
-    if(kind==FD_PTY_MASTER) {
+    if(open_error)goto open_rollback;
+    if(!path_only && kind==FD_PTY_MASTER) {
         open_error=nas_pty_new(slot);
-    } else if(kind==FD_PTY_SLAVE) {
+    } else if(!path_only && kind==FD_PTY_SLAVE) {
         open_error=pty_number>=0 ?
             nas_pty_attach((unsigned)pty_number,slot) :
             nas_pty_attach_controlling(slot);
@@ -700,7 +723,7 @@ static uint64_t open_path_owned(const char *path,
     }
     if(open_error) {
         if(chrdev_node)nas_chrdev_node_put(chrdev_node);
-        return (uint64_t)(int64_t)open_error;
+        goto open_rollback;
     }
     /* Inode AND optional directory Dentry are one VFS-owned open
      * transaction. The syscall layer just transfers their references
@@ -713,6 +736,7 @@ static uint64_t open_path_owned(const char *path,
         nas_open_files[slot].vnode=opened_node;
         nas_open_files[slot].vnode_pinned=true;
         nas_open_files[slot].vpath=directory_path;
+        nas_open_files[slot].chrdev_node=chrdev_node;
     }
     if(bootstrap_ready) {
         nas_open_files[slot].chrdev_node=chrdev_node;
@@ -735,6 +759,12 @@ static uint64_t open_path_owned(const char *path,
     }
     nas_open_files[slot].origin_path[path_len]=0;
     return fd;
+open_rollback:
+    if(have_node) {
+        if(directory_path.dentry)(void)nas_vfs_path_put(&directory_path);
+        (void)nas_vfs_node_unpin(&opened_node);
+    }
+    return (uint64_t)(int64_t)open_error;
 }
 uint64_t nas_fs_open_path(const char *path,uint64_t native_flags,
                           uint64_t create_mode) {

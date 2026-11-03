@@ -12,6 +12,15 @@
  * while the core owns only stable device indices and capability/state checks.
  * Slot 0 is event0, not an assumption that it is a keyboard or a mouse. */
 static struct nas_input_device *devices[NAS_INPUT_MAX_DEVICES];
+static int (*publish_node)(unsigned index,bool add);
+
+int nas_input_set_publication(int (*publish)(unsigned index,bool add)) {
+    if(!publish || publish_node)return -EINVAL;
+    for(unsigned i=0;i<NAS_INPUT_MAX_DEVICES;i++)
+        if(devices[i])return -EBUSY;
+    publish_node=publish;
+    return 0;
+}
 
 static bool bit_test(const uint8_t *bitmap, unsigned code) {
     return (bitmap[code / 8U] & (uint8_t)(1U << (code & 7U))) != 0;
@@ -95,6 +104,13 @@ int nas_input_register_device(struct nas_input_device *dev) {
             dev->index = slot;
             dev->registered = true;
             devices[slot] = dev;
+            int rc=publish_node ? publish_node(slot,true) : 0;
+            if(rc) {
+                devices[slot]=NULL;
+                dev->registered=false;
+                dev->index=NAS_INPUT_MAX_DEVICES;
+                return rc;
+            }
             return 0;
         }
     }
@@ -106,6 +122,10 @@ int nas_input_unregister_device(struct nas_input_device *dev) {
         devices[dev->index] != dev)
         return -ENODEV;
     if (dev->readers) return -EBUSY;
+    if(publish_node) {
+        int rc=publish_node(dev->index,false);
+        if(rc)return rc;
+    }
     devices[dev->index] = NULL;
     dev->registered = false;
     dev->index = NAS_INPUT_MAX_DEVICES;

@@ -1,0 +1,15 @@
+# Preserve M168 desktop APK dependencies for M174 devfs/GUI staging.
+fbgrab
+imagemagick
+evtest
+libevdev-tools
+dialog
+links
+w3m
+lynx
+mc
+# Four new original signed Alpine 3.23 software families.
+dbus
+inotify-tools
+sysstat
+tig
