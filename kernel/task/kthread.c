@@ -9,8 +9,8 @@
 /* No heap allocation, stack memcpy, floating point or user MM switching.
  * Keep this deliberately separate from Linux user-task accounting while
  * per-task native syscall continuation migration remains incomplete. */
-#define NAS_KTHREAD_LIMIT 4U
 #define NAS_KTHREAD_STACK NAS_KTHREAD_STACK_BYTES
+#define NAS_KTHREAD_GUARD_SIZE 16U
 enum worker_state { KTHREAD_FREE, KTHREAD_READY, KTHREAD_RUNNING,
                     KTHREAD_WAITING, KTHREAD_DONE };
 struct nas_kthread {
@@ -29,11 +29,21 @@ static struct nas_kthread *active;
 static struct nas_kernel_context caller_context;
 static bool in_dispatch;
 static unsigned next_slot;
+static void stack_guard_init(struct nas_kthread *worker) {
+    for(unsigned i=0;i<NAS_KTHREAD_GUARD_SIZE;i++)
+        worker->stack[i]=(uint8_t)(0xa5U^(i*37U));
+}
+static void stack_guard_check(const struct nas_kthread *worker) {
+    for(unsigned i=0;i<NAS_KTHREAD_GUARD_SIZE;i++)
+        if(worker->stack[i]!=(uint8_t)(0xa5U^(i*37U)))
+            nas_fail("M179 kernel worker stack overflow into guard");
+}
 static void kthread_start(void) {
     struct nas_kthread *self=active;
     if(!self || self->state!=KTHREAD_RUNNING || !self->entry)
         nas_fail("M95 kernel worker trampoline without active owner");
     self->entry(self->argument);
+    stack_guard_check(self);
     if(self->exec.wait.queue)
         nas_fail("M95 worker returned while still queued");
     self->state=KTHREAD_DONE;
@@ -69,6 +79,7 @@ bool nas_kthread_spawn(void (*run)(void *),void *argument,
         if(!nas_kernel_context_prepare(&w->exec.cpu,w->stack,
                                        sizeof(w->stack),kthread_start))
             return false;
+        stack_guard_init(w);
         w->generation++;
         w->deadline_ns=0;
         w->deadline_active=false;
@@ -162,10 +173,16 @@ bool nas_kthread_runnable(void) {
         if(workers[i].state==KTHREAD_READY)return true;
     return false;
 }
+bool nas_kthread_in_worker(void) {
+    return in_dispatch && active && active->state==KTHREAD_RUNNING;
+}
 static struct nas_kthread *handle_lookup(struct nas_kthread_handle h) {
     if(h.slot>=NAS_KTHREAD_LIMIT || !h.generation)return 0;
     struct nas_kthread *w=&workers[h.slot];
     return w->generation==h.generation ? w : 0;
+}
+bool nas_kthread_is_current(struct nas_kthread_handle handle) {
+    return nas_kthread_in_worker() && handle_lookup(handle)==active;
 }
 bool nas_kthread_wake(struct nas_kthread_handle handle) {
     struct nas_kthread *w=handle_lookup(handle);
@@ -211,6 +228,7 @@ unsigned nas_kthread_run(unsigned budget) {
         /* The caller's interrupt state and selected MM are unchanged:
          * this only swaps a kernel C stack, never a user return frame. */
         nas_arch_kernel_swap(&caller_context,&chosen->exec.cpu);
+        stack_guard_check(chosen);
         if(active!=chosen || chosen->state==KTHREAD_RUNNING)
             nas_fail("M95 kernel worker resumed without yielding");
         active=0;

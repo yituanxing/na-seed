@@ -55,6 +55,13 @@ with open(image, "r+b") as disk:
         raise SystemExit(2)
 PY
 
+# The M179 opt-in extension uses the same genuinely attached second disk,
+# but restricts its ext4 MBR partition to LBA>=4096. Earlier M178 oracle
+# sectors 16/17/32/33 remain outside the partition and independently tested.
+if [ "${NAS_M179_EXT4_PARTITION:-0}" = 1 ]; then
+    python3 scripts/m179-ext4-fixture.py prepare "$disk"
+fi
+
 # The pre-existing M177 probe boots once and runs the M174-M176 authentic
 # software, network-wire, input-IRQ and five physical GPU-frame oracles.
 # The async block drive is an additional physical QEMU device, not a module.

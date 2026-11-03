@@ -208,6 +208,10 @@ struct nas_vfs_mount {
     bool allow_missing_mountpoint;
     bool permanent; /* bootstrap filesystem mounts cannot be detached */
     bool read_only;  /* per-mount restriction */
+    /* A block callback on this mount may suspend a kernel worker until IRQ
+     * completion. User Task control-plane entry must then reject concurrent
+     * access while that worker is inside the filesystem provider. */
+    bool worker_io;
     void *private_data; /* filesystem device context, owned by adapter */
     /* Optional display-only source, copied by VFS during registration. */
     const char *source_label;

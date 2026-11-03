@@ -15,6 +15,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
+#ifdef NAS_ENABLE_M179_FS_IRQ
+#include "../../kernel/block/partition.h"
+#include "../../kernel/task/kthread.h"
+#include "../../kernel/task/wait_queue.h"
+#endif
 
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
@@ -55,10 +60,13 @@ struct async_block {
     struct nas_vring_queue ring;
     struct nas_irq_action irq;
     struct nas_block_device geometry;
+#ifdef NAS_ENABLE_M179_FS_IRQ
+    struct nas_partition_view ext4_partition;
+#endif
     struct nas_block_request_pool requests;
     struct blk_slot slots[BLK_SLOTS];
     uint64_t submitted, completed, irq_ack, deferred, fallback_poll;
-    uint64_t verified_reads, verified_writes, flushes;
+    uint64_t verified_reads, verified_writes, flushes, worker_waits;
     uint32_t irq_pending;
     unsigned max_inflight;
     bool ready, poisoned, flush_supported, read_only, reported;
@@ -68,6 +76,113 @@ enum test_stage { TEST_SEEDED=0,TEST_SEED_PENDING,TEST_WRITE_PENDING,
                   TEST_FLUSH_PENDING,TEST_VERIFY_PENDING,TEST_PASSED };
 static enum test_stage test_stage;
 static struct nas_block_request *test_a,*test_b;
+
+#ifdef NAS_ENABLE_M179_FS_IRQ
+static void halt_queue(struct async_block *,int);
+/* Synchronous *filesystem* BlockDevice facade over the actual IRQ/DMA
+ * BlockRequest engine. Only a scheduler-owned kernel C continuation may
+ * call it: parking in a user syscall/boot stack would leak a borrowed
+ * completion context and deadlock the IRQ-deferred completion phase.
+ * The wait queue lives on the preserved kernel worker stack. */
+static const char m179_partition_name[]="async-fixturep1";
+static void block_io_done(struct nas_block_request *request,void *context) {
+    struct nas_wait_queue *waiters=context;
+    if(!request || request->state!=NAS_BLOCK_REQ_DONE || !waiters)
+        nas_fail("M179 invalid BlockRequest completion ownership");
+    (void)nas_wait_queue_wake(waiters,0);
+}
+static int block_io_worker(enum nas_block_request_op op,uint64_t sector,
+                           uint32_t sectors,const void *source,void *destination) {
+    struct async_block *b=&disk;
+    if(!nas_kthread_in_worker())return -EOPNOTSUPP;
+    if(!b->ready || b->poisoned || !b->geometry.registered ||
+       test_stage!=TEST_PASSED)return -ENODEV;
+    const uint64_t now=nas_arch_monotonic_ns();
+    if(now>UINT64_MAX-BLK_TIMEOUT_NS)return -EOVERFLOW;
+    struct nas_wait_queue queue;
+    nas_wait_queue_init(&queue);
+    struct nas_block_request *r=NULL;
+    int rc=nas_block_request_acquire(&b->requests,op,sector,sectors,source,
+                         now+BLK_TIMEOUT_NS,block_io_done,&queue,&r);
+    if(rc)return rc;
+    rc=nas_async_blk_submit(r);
+    if(rc) {
+        /* No newly submitted DMA request may be released: the driver
+         * must have stopped DMA and completed any published chain first. */
+        if(r->state==NAS_BLOCK_REQ_READY)
+            (void)nas_block_request_complete(r,rc);
+        if(r->state!=NAS_BLOCK_REQ_DONE)
+            nas_fail("M179 DMA request escaped submission failure");
+        (void)nas_block_request_release(r);
+        return rc;
+    }
+    while(r->state!=NAS_BLOCK_REQ_DONE) {
+        ++b->worker_waits;
+        enum nas_kwait_result wake=nas_kthread_park_until(&queue,
+                                                          r->deadline_ns);
+        if(wake==NAS_KWAIT_TIMED_OUT && r->state!=NAS_BLOCK_REQ_DONE) {
+            /* Worker deadline can become visible between the scheduler's
+             * device timeout check and its worker-timer phase. We MUST
+             * stop every DMA request before unwinding this C stack. */
+            halt_queue(b,-ETIMEDOUT);
+        } else if(wake==NAS_KWAIT_INVALID) {
+            nas_fail("M179 IRQ wait escaped live kernel worker");
+        }
+    }
+    rc=r->result;
+    if(!rc && destination && op==NAS_BLOCK_REQ_READ)
+        memcpy(destination,r->payload,r->bytes);
+    if(nas_block_request_release(r))
+        nas_fail("M179 could not release completed block request");
+    return rc;
+}
+static int worker_read(struct nas_block_device *dev,uint64_t lba,
+                       uint32_t count,void *dst) {
+    if(dev!=&disk.geometry || !dst || !count)return -EINVAL;
+    return block_io_worker(NAS_BLOCK_REQ_READ,lba,count,NULL,dst);
+}
+static int worker_write(struct nas_block_device *dev,uint64_t lba,
+                        uint32_t count,const void *src) {
+    if(dev!=&disk.geometry || !src || !count)return -EINVAL;
+    return block_io_worker(NAS_BLOCK_REQ_WRITE,lba,count,src,NULL);
+}
+static int worker_flush(struct nas_block_device *dev) {
+    if(dev!=&disk.geometry)return -EINVAL;
+    return block_io_worker(NAS_BLOCK_REQ_FLUSH,0,0,NULL,NULL);
+}
+static const struct nas_block_ops worker_block_ops={
+    .read=worker_read,.write=worker_write,.flush=worker_flush
+};
+bool nas_async_blk_fixture_ready(void) {
+    return disk.ready && !disk.poisoned && test_stage==TEST_PASSED;
+}
+const char *nas_async_blk_mountable_partition(void) {
+    return disk.ext4_partition.parent ? m179_partition_name : NULL;
+}
+int nas_async_blk_register_block_device(void) {
+    if(!nas_kthread_in_worker())return -EOPNOTSUPP;
+    if(!nas_async_blk_fixture_ready())return -EAGAIN;
+    if(disk.ext4_partition.parent)return 0;
+    /* The Request pool already references this stable private geometry;
+     * registration publishes it without moving or resetting that owner. */
+    disk.geometry.ops=&worker_block_ops;
+    disk.geometry.context=&disk;
+    int rc=nas_block_register(&disk.geometry);
+    if(rc)return rc;
+    struct nas_partition_extent extent={0};
+    rc=nas_partition_probe(&disk.geometry,1,&extent);
+    if(!rc)rc=nas_partition_attach(&disk.ext4_partition,
+                                   m179_partition_name,disk.geometry.name,
+                                   &extent,false);
+    if(rc) {
+        (void)nas_block_unregister(&disk.geometry);
+        return rc;
+    }
+    /* Never mount an arbitrary raw guest disk: the MBR/GPT partition
+     * parser validates bounds and overlap before this child is published. */
+    return 0;
+}
+#endif
 
 static uint32_t le32(uint32_t value) {
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
@@ -305,6 +420,20 @@ static int probe(struct nas_bus_device *dev) {
 static int remove_device(struct nas_bus_device *dev) {
     if(!disk.owner || disk.owner!=dev)return -ENODEV;
     if(!nas_block_request_pool_idle(&disk.requests))return -EBUSY;
+#ifdef NAS_ENABLE_M179_FS_IRQ
+    /* Mounted ext4 and any other holders prevent hot-unplug. Do not reset
+     * the transport while a filesystem can still issue new I/O. */
+    if(disk.ext4_partition.parent) {
+        if(disk.ext4_partition.block.refs || disk.geometry.refs>1U)
+            return -EBUSY;
+        int rc=nas_partition_detach(&disk.ext4_partition);
+        if(rc)return rc;
+    }
+    if(disk.geometry.registered) {
+        int rc=nas_block_unregister(&disk.geometry);
+        if(rc)return rc;
+    }
+#endif
     reset_own_dma(&disk);
     memset(&disk,0,sizeof(disk));
     test_stage=TEST_SEEDED;
@@ -330,7 +459,8 @@ void nas_async_blk_get_stats(struct nas_async_blk_stats *out) {
         .irq_ack=__atomic_load_n(&disk.irq_ack,__ATOMIC_RELAXED),
         .deferred=disk.deferred,.fallback_poll=disk.fallback_poll,
         .verified_reads=disk.verified_reads,.verified_writes=disk.verified_writes,
-        .flushes=disk.flushes,.max_inflight=disk.max_inflight
+        .flushes=disk.flushes,.worker_waits=disk.worker_waits,
+        .max_inflight=disk.max_inflight
     };
 }
 

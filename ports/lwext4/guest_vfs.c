@@ -1146,6 +1146,7 @@ int nas_lwext4_device_mount(struct nas_lwext4_mount *ctx,
         .type=&ext_type,
         .allow_missing_mountpoint=true, /* internal early-boot /mnt */
         .read_only=!writable,
+        .worker_io=ctx->worker_io_mount,
         .private_data=ctx
     };
     ctx->mounted=true; /* lookup may run during VFS mount registration */

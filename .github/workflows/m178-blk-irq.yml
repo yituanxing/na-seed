@@ -2,28 +2,6 @@ name: NaSeed M178 real concurrent VirtIO block IRQ plus original Alpine GPU desk
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - '.github/workflows/m178-blk-irq.yml'
-      - 'kernel/block/**'
-      - 'kernel/drivers/core/**'
-      - 'kernel/drivers/virtio/**'
-      - 'kernel/drivers/port/**'
-      - 'kernel/platform/**'
-      - 'kernel/task/**'
-      - 'ports/uboot/**'
-      - 'ports/unikraft/**'
-      - 'ports/lwip/network_boot.c'
-      - 'scripts/*m178*'
-      - 'scripts/probe-m174-batch.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'scripts/run.sh'
-      - 'scripts/build-riscv64-full.sh'
-      - 'scripts/build-aarch64-full.sh'
-      - 'scripts/full-kernel-core.sources'
-      - 'Makefile'
 
 permissions:
   contents: read

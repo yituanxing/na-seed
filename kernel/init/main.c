@@ -8,6 +8,10 @@
 extern bool nas_lwext4_guest_boot_mount(void);
 extern bool nas_lwext4_guest_boot_shutdown(void);
 #endif
+#ifdef NAS_ENABLE_M179_FS_IRQ
+extern bool nas_lwext4_async_runtime_passed(void);
+static bool m179_pid1_exit_waiting;
+#endif
 #ifdef NAS_ENABLE_LITTLEFS
 extern bool nas_littlefs_guest_boot_mount(void);
 extern bool nas_littlefs_guest_boot_shutdown(void);
@@ -40,14 +44,7 @@ extern bool nas_lwip_guest_boot(void);
 /* Only a FULLY terminated PID 1 process may drive the host test exit.
  * The scheduler publishes its group-finalization event; the boot policy
  * stays here, never in an ISA trap or the syscall dispatch hot path. */
-void nas_init_process_terminated(uint32_t code,uint32_t signal) {
-    if(!nas_current_task || nas_current_task->pid!=1 ||
-       nas_current_task->state!=NAS_TASK_ZOMBIE ||
-       nas_current_task->group_exit_pending)
-        nas_fail("PID1 test completion before final thread exit");
-    if(signal)nas_fail("init terminated by default fatal signal");
-    nas_print("[EXIT] user status=");nas_dec(code);nas_print("\n");
-    if(code)nas_fail("userspace exited nonzero");
+static void nas_init_finish_success(void) {
 #ifdef NAS_ENABLE_LWEXT4
     /* A successful fsync is NOT a clean filesystem shutdown. Keep the
      * ext4 mount and BlockDevice alive until PID1's final Files have
@@ -71,6 +68,38 @@ void nas_init_process_terminated(uint32_t code,uint32_t signal) {
     nas_platform_debug_exit(0);
     nas_fail("QEMU debug exit returned unexpectedly");
 }
+
+void nas_init_process_terminated(uint32_t code,uint32_t signal) {
+    if(!nas_current_task || nas_current_task->pid!=1 ||
+       nas_current_task->state!=NAS_TASK_ZOMBIE ||
+       nas_current_task->group_exit_pending)
+        nas_fail("PID1 test completion before final thread exit");
+    if(signal)nas_fail("init terminated by default fatal signal");
+    nas_print("[EXIT] user status=");nas_dec(code);nas_print("\n");
+    if(code)nas_fail("userspace exited nonzero");
+#ifdef NAS_ENABLE_M179_FS_IRQ
+    /* PID1 may finish before the disk IRQ-backed filesystem worker. Leave
+     * its Task zombie and return to the independent native scheduler;
+     * only a completed, flushed and unmounted real ext4 volume permits the
+     * test-success debug exit. Never spin or pump a nested scheduler from
+     * this dead Task's syscall stack. */
+    if(!nas_lwext4_async_runtime_passed()) {
+        m179_pid1_exit_waiting=true;
+        return;
+    }
+#endif
+    nas_init_finish_success();
+}
+
+#ifdef NAS_ENABLE_M179_FS_IRQ
+void nas_init_process_deferred_exit_service(void) {
+    if(!m179_pid1_exit_waiting || !nas_lwext4_async_runtime_passed())return;
+    /* Called by scheduler_service after a bounded worker slice. All PID1
+     * Files/cwd pins were released by the normal process-exit path. */
+    m179_pid1_exit_waiting=false;
+    nas_init_finish_success();
+}
+#endif
 
 void nas_init_userspace(void) {
     nas_print("[INIT] creating common task/VM and architecture user entry\n");

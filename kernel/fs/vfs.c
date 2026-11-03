@@ -5,6 +5,20 @@
 #include "../lib/string.h"
 #include "../mm/heap.h"
 #include <stddef.h>
+#ifdef NAS_ENABLE_M179_FS_IRQ
+/* The IRQ-backed runtime mount is worker-owned until the complete VFS
+ * metadata broker exists. Deny foreign Task/worker entry before touching
+ * any lwext4 inode or block cache suspended across an IRQ wait. */
+extern bool nas_lwext4_async_worker_current(void);
+static bool worker_mount_denied(const struct nas_vfs_mount *mount) {
+    return mount && mount->worker_io && !nas_lwext4_async_worker_current();
+}
+#else
+static bool worker_mount_denied(const struct nas_vfs_mount *mount) {
+    (void)mount;
+    return false;
+}
+#endif
 /* The MM owns resident user leaves and their independent physical refs.
  * A successful truncate must revoke stale shared leaves from every MM,
  * including processes retaining an unlinked mapped inode. */
@@ -298,6 +312,7 @@ static int vfs_node_status(const struct nas_fs_node *node) {
         if(mount_slot_at(i)->used &&
            &mount_slot_at(i)->superblock==node->mount) {
             if(node->mount_id!=mount_slot_at(i)->device_id)return -ESTALE;
+            if(worker_mount_denied(node->mount))return -EBUSY;
             if(node->filesystem!=node->mount->type)return -EINVAL;
             if(lease_conflicts(inode_lease(node),node))return -ESTALE;
             return node->filesystem->validate_inode ?
@@ -661,6 +676,7 @@ static int lookup_step_core(const struct nas_fs_node *parent,
                parent->inode!=anchor->inode)
                 continue;
         } else if(parent || strcmp(mnt->mountpoint,absolute))continue;
+        if(worker_mount_denied(mnt))return -EBUSY;
         *out=(struct nas_fs_node){0};
         int rc=mnt->type->root(mnt,out);
         if(!rc) {
@@ -673,6 +689,7 @@ static int lookup_step_core(const struct nas_fs_node *parent,
     if(!parent || !parent->mount || !parent->filesystem)
         return -ENOENT;
     if(!parent->is_dir)return -ENOTDIR;
+    if(worker_mount_denied(parent->mount))return -EBUSY;
     *out=(struct nas_fs_node){0};
     int rc=parent->filesystem->lookup_child(parent,name,out);
     if(!rc) {

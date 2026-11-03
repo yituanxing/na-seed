@@ -9,6 +9,12 @@
 #include <limine.h>
 #include <stdint.h>
 #include <stdbool.h>
+#ifdef NAS_ENABLE_M179_FS_IRQ
+#include "../../kernel/mm/heap.h"
+#include "../../kernel/task/kthread.h"
+#include "../../kernel/panic.h"
+#include "../uboot/async_blk.h"
+#endif
 #ifdef NAS_ENABLE_VIRTIO_BLK
 #include "../../kernel/block/device.h"
 #include "../../kernel/block/partition.h"
@@ -198,3 +204,153 @@ bool nas_lwext4_guest_boot_shutdown(void) {
     nas_print("[LWEXT4 GUEST] clean upstream unmount and durable flush\n");
     return true;
 }
+
+#ifdef NAS_ENABLE_M179_FS_IRQ
+/* M179: the *same* upstream lwext4+VFS pipeline as boot ext4, now on a
+ * second physical VirtIO-BLK partition whose BlockDevice may park the
+ * owning kernel C frame until an actual hardware IRQ completes its DMA.
+ * The entire mount/test/unmount lifetime stays in ONE kernel worker. In
+ * particular, exposing ordinary user open/create/stat on this mount before
+ * an M180 control-plane broker would enter that blocking driver on a user
+ * Task stack, so VFS rejects foreign access via mount.worker_io. */
+#define M179_SEED_BYTES 8192U
+#define M179_WRITE_BYTES 12288U
+#define M179_BLOCK_BYTES 4096U
+enum m179_state { M179_DORMANT, M179_SPAWNED, M179_RUNNING,
+                  M179_PASSED, M179_FAILED };
+static enum m179_state m179_state;
+static struct nas_kthread_handle m179_worker;
+static struct nas_lwext4_mount m179_mount;
+static const char m179_seed_header[]="M179_HOST_EXT4_SEED";
+static const char m179_write_header[]="M179_GUEST_EXT4_WRITE";
+
+bool nas_lwext4_async_worker_current(void) {
+    return (m179_state==M179_RUNNING || m179_state==M179_PASSED) &&
+           nas_kthread_is_current(m179_worker);
+}
+bool nas_lwext4_async_runtime_passed(void) {
+    return m179_state==M179_PASSED;
+}
+static uint8_t m179_expected_byte(uint64_t offset,bool guest) {
+    const char *header=guest?m179_write_header:m179_seed_header;
+    size_t header_length=guest?sizeof(m179_write_header):
+                               sizeof(m179_seed_header);
+    if(offset<header_length)return (uint8_t)header[offset];
+    uint64_t fill=offset-header_length;
+    return (uint8_t)((fill*31U+(guest?43U:17U))&255U);
+}
+static bool m179_bytes_match(const uint8_t *bytes,uint64_t start,
+                             uint64_t count,bool guest) {
+    for(uint64_t i=0;i<count;i++)
+        if(bytes[i]!=m179_expected_byte(start+i,guest))return false;
+    return true;
+}
+static void m179_print_stats(const struct nas_async_blk_stats *before,
+                              const struct nas_async_blk_stats *after) {
+    nas_print("[M179 FS IRQ WORKER STATS] request_submitted=");
+    nas_dec(after->submitted-before->submitted);
+    nas_print(" request_completed=");
+    nas_dec(after->completed-before->completed);
+    nas_print(" irq_ack=");nas_dec(after->irq_ack-before->irq_ack);
+    nas_print(" deferred=");nas_dec(after->deferred-before->deferred);
+    nas_print(" fallback_poll=");
+    nas_dec(after->fallback_poll-before->fallback_poll);
+    nas_print(" waited=");
+    nas_dec(after->worker_waits-before->worker_waits);
+    nas_print("\n");
+}
+static bool m179_verified_ext4(void) {
+    struct nas_async_blk_stats before={0},after={0};
+    nas_async_blk_get_stats(&before);
+    int rc=nas_async_blk_register_block_device();
+    if(rc)return false;
+    const char *partition=nas_async_blk_mountable_partition();
+    if(!partition || strcmp(partition,"async-fixturep1"))return false;
+    m179_mount.worker_io_mount=true;
+    rc=nas_lwext4_device_mount(&m179_mount,partition,"m179-ext4-dev",
+                                "/async",true);
+    if(rc)return false;
+    bool okay=false;
+    uint8_t *buffer=nas_heap_alloc(M179_BLOCK_BYTES);
+    if(!buffer)goto Done;
+    struct nas_fs_node inode={0};
+    rc=nas_vfs_lookup("/async/host-seed.bin",&inode);
+    if(rc || inode.size!=M179_SEED_BYTES)goto DoneBuffer;
+    if(nas_vfs_node_pin(&inode))goto DoneBuffer;
+    for(uint64_t off=0;off<M179_SEED_BYTES;off+=M179_BLOCK_BYTES) {
+        int64_t got=nas_vfs_read_at(&inode,off,buffer,M179_BLOCK_BYTES);
+        if(got!=M179_BLOCK_BYTES ||
+           !m179_bytes_match(buffer,off,M179_BLOCK_BYTES,false)) {
+            (void)nas_vfs_node_unpin(&inode);
+            goto DoneBuffer;
+        }
+    }
+    if(nas_vfs_node_unpin(&inode))goto DoneBuffer;
+    rc=nas_vfs_create("/async/guest-write.bin",0644);
+    if(rc)goto DoneBuffer;
+    rc=nas_vfs_lookup("/async/guest-write.bin",&inode);
+    if(rc || nas_vfs_node_pin(&inode))goto DoneBuffer;
+    for(uint64_t off=0;off<M179_WRITE_BYTES;off+=M179_BLOCK_BYTES) {
+        for(unsigned i=0;i<M179_BLOCK_BYTES;i++)
+            buffer[i]=m179_expected_byte(off+i,true);
+        int64_t wrote=nas_vfs_write_at(&inode,off,buffer,M179_BLOCK_BYTES);
+        if(wrote!=M179_BLOCK_BYTES) {
+            (void)nas_vfs_node_unpin(&inode);
+            goto DoneBuffer;
+        }
+    }
+    int synced=nas_vfs_sync(&inode);
+    int released=nas_vfs_node_unpin(&inode);
+    if(synced || released)goto DoneBuffer;
+    /* Fresh VFS pathname/inode resolution, not an aliased dirty source
+     * buffer: prove the vendor filesystem can reopen the physical bytes. */
+    rc=nas_vfs_lookup("/async/guest-write.bin",&inode);
+    if(rc || nas_vfs_node_size(&inode)!=M179_WRITE_BYTES ||
+       nas_vfs_node_pin(&inode))goto DoneBuffer;
+    okay=true;
+    for(uint64_t off=0;off<M179_WRITE_BYTES;off+=M179_BLOCK_BYTES) {
+        int64_t got=nas_vfs_read_at(&inode,off,buffer,M179_BLOCK_BYTES);
+        if(got!=M179_BLOCK_BYTES ||
+           !m179_bytes_match(buffer,off,M179_BLOCK_BYTES,true)) {
+            okay=false;
+            break;
+        }
+    }
+    if(nas_vfs_node_unpin(&inode))okay=false;
+DoneBuffer:
+    if(!nas_heap_free(buffer))okay=false;
+Done:
+    /* The final journal/superblock flush is part of the proof. An fsync
+     * without ext4_umount is NOT an ext4 filesystem clean-shutdown oracle. */
+    if(nas_lwext4_unmount(&m179_mount))okay=false;
+    nas_async_blk_get_stats(&after);
+    m179_print_stats(&before,&after);
+    if(after.submitted<=before.submitted ||
+       after.completed<=before.completed ||
+       after.irq_ack<=before.irq_ack ||
+       after.deferred<=before.deferred ||
+       after.worker_waits<=before.worker_waits ||
+       after.fallback_poll!=before.fallback_poll)okay=false;
+    return okay;
+}
+static void m179_worker_entry(void *argument) {
+    (void)argument;
+    if(m179_state!=M179_SPAWNED)
+        nas_fail("M179 worker started without exactly-once ownership");
+    m179_state=M179_RUNNING;
+    if(!m179_verified_ext4()) {
+        m179_state=M179_FAILED;
+        nas_fail("M179 real ext4 IRQ-backed worker mount/read/write/fsync/umount failed");
+    }
+    m179_state=M179_PASSED;
+    nas_print("[M179 FS IRQ WORKER PASS]\n");
+    nas_print("[M179] real lwext4 VFS 8KiB host read + "
+              "12KiB durable guest write/reopen; BlockRequest IRQ and clean unmount\n");
+}
+void nas_lwext4_async_runtime_step(void) {
+    if(m179_state!=M179_DORMANT || !nas_async_blk_fixture_ready())return;
+    if(!nas_kthread_spawn(m179_worker_entry,NULL,&m179_worker))
+        nas_fail("M179 cannot reserve owned filesystem kernel worker");
+    m179_state=M179_SPAWNED;
+}
+#endif

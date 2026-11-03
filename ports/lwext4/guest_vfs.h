@@ -46,6 +46,7 @@ struct nas_lwext4_mount {
     char device_name[32];
     bool mounted;
     bool owns_ramdisk; /* Only the optional Limine/host RAM image adapter. */
+    bool worker_io_mount; /* explicit opt-in for IRQ-backed runtime volume */
 };
 /* The generic mount consumes ANY existing BlockDevice: driver ownership,
  * DMA, discovery and interrupt completion stay below BlockDevice.

@@ -27,6 +27,11 @@ fi
 [ "${NAS_ENABLE_VIRTIO_INPUT:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_VIRTIO_INPUT=1"
 [ "${NAS_ENABLE_VIRTIO_GPU:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_VIRTIO_GPU=1"
 [ "${NAS_ENABLE_VIRTIO_BLK_ASYNC:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_VIRTIO_BLK_ASYNC=1"
+if [ "${NAS_ENABLE_M179_FS_IRQ:-0}" = 1 ]; then
+    [ "${NAS_ENABLE_VIRTIO_BLK_ASYNC:-0}" = 1 ] && [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ] ||
+      { echo '[M179] async block and lwext4 gates required' >&2; exit 1; }
+    flags="$flags -DNAS_ENABLE_M179_FS_IRQ=1"
+fi
 flags="$flags -DNAS_ENABLE_LWIP=1 -I ports/lwip/include -I third_party/lwip/src/include"
 # One authoritative full-kernel core TU list for every native ISA.
 # ISA-specific hardware providers remain below in the arch= selection.

@@ -64,6 +64,15 @@ endif
 ifeq ($(NAS_ENABLE_VIRTIO_BLK_ASYNC),1)
 CFLAGS += -DNAS_ENABLE_VIRTIO_BLK_ASYNC=1
 endif
+ifeq ($(NAS_ENABLE_M179_FS_IRQ),1)
+ifneq ($(NAS_ENABLE_VIRTIO_BLK_ASYNC),1)
+$(error M179 filesystem IRQ requires NAS_ENABLE_VIRTIO_BLK_ASYNC=1)
+endif
+ifneq ($(NAS_ENABLE_LWEXT4),1)
+$(error M179 filesystem IRQ requires NAS_ENABLE_LWEXT4=1)
+endif
+CFLAGS += -DNAS_ENABLE_M179_FS_IRQ=1
+endif
 CFLAGS += -DNAS_ENABLE_LWIP=1 -I ports/lwip/include -I third_party/lwip/src/include
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
  -z noexecstack -T kernel/arch/$(ARCH)/linker.ld

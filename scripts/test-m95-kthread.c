@@ -27,11 +27,16 @@ static void b(void *unused) {
     assert(seen==4);
     seen=5;
 }
-static void once(void *unused){(void)unused;seen++;}
+static void once(void *owner){
+    assert(nas_kthread_in_worker());
+    if(owner)assert(nas_kthread_is_current(*(struct nas_kthread_handle *)owner));
+    seen++;
+}
 int main(void) {
     nas_kthread_system_init();
     nas_wait_queue_init(&q);
     assert(!nas_kthread_park(&q));
+    assert(!nas_kthread_in_worker());
     struct nas_kthread_handle x={0},y={0},reused={0};
     assert(!nas_kthread_spawn(0,0,&x));
     assert(nas_kthread_spawn(a,0,&x));
@@ -54,5 +59,19 @@ int main(void) {
     assert(nas_kthread_cancel(reused) && q.count==0);
     assert(!nas_kthread_cancel(reused));
     nas_kthread_system_init();
+    /* A native system with lwIP's three persistent workers still needs
+     * multiple owned FS I/O contexts. Exercise the full bounded worker
+     * pool rather than accepting only a single remaining worker slot. */
+    struct nas_kthread_handle capacity[NAS_KTHREAD_LIMIT];
+    seen=0;
+    for(unsigned i=0;i<NAS_KTHREAD_LIMIT;i++)
+        assert(nas_kthread_spawn(once,&capacity[i],&capacity[i]));
+    struct nas_kthread_handle extra={0};
+    assert(!nas_kthread_spawn(once,0,&extra));
+    assert(nas_kthread_live()==NAS_KTHREAD_LIMIT);
+    assert(!nas_kthread_is_current(capacity[0]));
+    assert(nas_kthread_run(NAS_KTHREAD_LIMIT)==NAS_KTHREAD_LIMIT);
+    assert(seen==NAS_KTHREAD_LIMIT && !nas_kthread_live());
+    assert(!nas_kthread_in_worker());
     puts("[M95 HOST PASS] native x86 C frames, common queue, yield, stale-handle isolation, cancel and slot reuse");
 }
