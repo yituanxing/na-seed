@@ -289,7 +289,7 @@ static void pointer_button(struct session *s,int down) {
         s->grab_x=s->pointer_x;s->grab_y=s->pointer_y;
         s->origin_x=w->x;s->origin_y=w->y;
         render(s);
-        if(s->mode==171 && target==LVGL && !s->dragging) {
+        if((s->mode==171 || s->mode==0) && target==LVGL && !s->dragging) {
             s->pointer_client=LVGL;
             nasd_send_pointer(w->channel,
                  (unsigned)(s->pointer_x-w->x),
@@ -311,7 +311,7 @@ static void pointer_button(struct session *s,int down) {
             s->stage=3;nasd_mark("M167_TERMINAL_FOCUS_VISIBLE");
         }
     } else if(s->pointer_client==LVGL &&
-               s->windows[LVGL].active && s->mode==171) {
+               s->windows[LVGL].active && (s->mode==171 || s->mode==0)) {
         struct window *w=&s->windows[LVGL];
         nasd_send_pointer(w->channel,
             (unsigned)clamp(s->pointer_x-w->x,w->w-1),
@@ -442,7 +442,7 @@ static void event_loop(struct session *s) {
                     break;
                 }
                 nasd_require(m.type==MSG_UPDATED &&
-                    ((role==LVGL && s->mode==171 &&
+                    ((role==LVGL && (s->mode==171 || s->mode==0) &&
                       (m.key==0 || m.key==KEY_ENTER)) ||
                      (role==BROWSER && m.key==KEY_B) ||
                      (role==TERMINAL &&
