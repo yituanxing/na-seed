@@ -28,6 +28,14 @@ sh scripts/host-configure-m171-lvgl.sh "$port" "$root"
     user/m174-devfs-launch.c -o "$root/usr/bin/naseed-m174-devfs-launch"
 ln -sfn naseed-lvgl "$root/usr/bin/gui"
 
+# M176 is an explicitly opt-in extension of THIS SAME M174 rootfs, not a
+# second boot/profile: host APK adds untouched original Ncat and the guest
+# launcher performs a real external HTTP transaction before the prior
+# M174 devfs/software/five-frame desktop workload.
+if [ "${NAS_M176_NET_STAGE:-0}" = 1 ]; then
+    sh scripts/stage-m176-irq-network.sh "$port" "$root" "$cc"
+fi
+
 for app in naseed-desktop naseed-image naseed-terminal naseed-browser \
            naseed-lvgl naseed-m174-devfs-launch; do
     file="$root/usr/bin/$app"

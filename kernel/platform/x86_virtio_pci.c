@@ -24,8 +24,8 @@
 #define DEVICE_VA_STRIDE (BAR_COUNT*BAR_MAX_BYTES)
 /* This Q35 path uses the existing single-CPU 8259 virtual-wire route.
  * QEMU ICH9 maps bus-0 PCI INTx to PIRQ E-H for slots below 25. The
- * platform actively programs ONLY PIRQ lines used by real input devices;
- * PIC11 cannot be inferred from PCI Interrupt Line (firmware-owned). */
+ * platform routes IRQ-capable class devices (Input and Net); PIC11 cannot
+ * be inferred from PCI Interrupt Line (firmware-owned). */
 #define ICH9_LPC_SLOT 31U
 #define ICH9_PIRQ_E_ROUT 0x68U
 #define X86_PIC_DEVICE_IRQ 11U
@@ -85,7 +85,7 @@ static uint8_t q35_bus0_pirq(uint8_t slot,uint8_t interrupt_pin) {
         return PIRQ_UNKNOWN;
     return (uint8_t)(4U+((slot+interrupt_pin-1U)&3U));
 }
-static int q35_route_input_pirqs(uint8_t enabled_pirqs) {
+static int q35_route_device_pirqs(uint8_t enabled_pirqs) {
     if(!enabled_pirqs)return 0;
     /* Intel 82801IB/ICH9 LPC is bus0:device31:function0 on Q35.  An
      * unrecognized host bridge is an explicit unsupported platform, not
@@ -250,28 +250,33 @@ int nas_platform_virtio_blk_probe(void) {
         }
     }
     /* Enumerate every transport before enabling a shared legacy IRQ.
-     * A non-input NIC/block on the same Q35 PIRQ must still ACK its
-     * level-triggered status, even if its original driver remains polled.
-     * Only actual input pins select which ICH9 PIRQ links are programmed. */
-    uint8_t input_pirqs=0;
-#ifdef NAS_ENABLE_VIRTIO_INPUT
+     * The real IRQ-driven Input and Net classes select the ICH9 PIRQ
+     * links; an otherwise polled device on a shared PIC line still needs
+     * its source status ACKed to release that level-triggered line. */
+    uint8_t active_pirqs=0;
     for(unsigned i=0;i<count;i++) {
-        if(devices[i].device_id!=VIRTIO_ID_INPUT)continue;
+        bool needs_irq=false;
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+        if(devices[i].device_id==VIRTIO_ID_INPUT)needs_irq=true;
+#endif
+#ifdef NAS_ENABLE_VIRTIO_NET
+        if(devices[i].device_id==VIRTIO_ID_NET)needs_irq=true;
+#endif
+        if(!needs_irq)continue;
         if(device_pirq[i]==PIRQ_UNKNOWN) {
-            nas_print("[VIRTIO PCI FAIL] stage=q35-input-pirq\n");
+            nas_print("[VIRTIO PCI FAIL] stage=q35-device-pirq\n");
             return -EOPNOTSUPP;
         }
-        input_pirqs|=(uint8_t)(1U<<device_pirq[i]);
+        active_pirqs|=(uint8_t)(1U<<device_pirq[i]);
     }
-#endif
-    rc=q35_route_input_pirqs(input_pirqs);
+    rc=q35_route_device_pirqs(active_pirqs);
     if(rc) {
         nas_print("[VIRTIO PCI FAIL] stage=q35-ich9-route\n");
         return rc;
     }
     for(unsigned i=0;i<count;i++) {
         bool shared_line=device_pirq[i]!=PIRQ_UNKNOWN &&
-            (input_pirqs&(1U<<device_pirq[i]));
+            (active_pirqs&(1U<<device_pirq[i]));
         if(shared_line) {
             rc=q35_select_pci_intx(devices[i].resource.view.pci.slot,
                                    devices[i].resource.view.pci.function,
@@ -286,11 +291,17 @@ int nas_platform_virtio_blk_probe(void) {
             nas_print("[VIRTIO PCI FAIL] stage=driver-bind error=");
             nas_dec((uint64_t)(-rc));nas_print("\n");return rc;
         }
-        if(shared_line && devices[i].device_id!=VIRTIO_ID_INPUT) {
-            /* No second ACK registration for Input: that class already
-             * binds its own completion notifier to this same transport.
-             * Platform-owned borrowed transports remain mapped for the
-             * lifetime of this Q35 enumerator. */
+        bool class_owns_irq=false;
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+        if(devices[i].device_id==VIRTIO_ID_INPUT)class_owns_irq=true;
+#endif
+#ifdef NAS_ENABLE_VIRTIO_NET
+        if(devices[i].device_id==VIRTIO_ID_NET)class_owns_irq=true;
+#endif
+        if(shared_line && !class_owns_irq) {
+            /* A class that has bound its own IRQ action must never have
+             * its read-to-clear VirtIO ISR consumed a second time here.
+             * Polled devices sharing IRQ11 still must ACK their source. */
             rc=nas_irq_bind(&shared_irq_acks[i],devices[i].resource.irq,
                             nas_virtio_irq_ack_source,&transports[i],
                             q35_shared_irq_ack_only,NULL);

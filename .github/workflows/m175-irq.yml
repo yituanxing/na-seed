@@ -1,23 +1,11 @@
 name: NaSeed M175 real VirtIO Input IRQ and original Alpine desktop three-ISA acceptance
 
+# Historical replay is explicit. M176's single real-QEMU boot now contains
+# this whole input, software and desktop oracle plus native network RX IRQ;
+# do not run an independent expensive M175 matrix for the same PR diff.
+
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - '.github/workflows/m175-irq.yml'
-      - 'kernel/arch/**'
-      - 'kernel/drivers/core/**'
-      - 'kernel/drivers/input/**'
-      - 'kernel/drivers/virtio/**'
-      - 'kernel/platform/**'
-      - 'kernel/task/scheduler_service.c'
-      - 'scripts/*m175*'
-      - 'scripts/probe-m174-batch.sh'
-      - 'scripts/check-three-isa-core.py'
-      - 'scripts/test-virtio-pci.c'
-      - 'scripts/full-kernel-core.sources'
-      - 'Makefile'
 
 permissions:
   contents: read

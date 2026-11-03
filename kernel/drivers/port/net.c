@@ -146,7 +146,7 @@ int nas_netdev_set_rx_wake(struct nas_netdev *device,
 }
 void nas_netdev_notify_rx(struct nas_netdev *device) {
     if(!device || !device->registered)return;
-    ++device->rx_sequence;
+    (void)__atomic_fetch_add(&device->rx_sequence,1,__ATOMIC_RELEASE);
     /* The callback may enqueue a worker/semaphore wake. It must not sleep,
      * dispatch a packet or unbind this live device from IRQ context. */
     invoke_wake(&device->rx_wake,&device->rx_wake_context);

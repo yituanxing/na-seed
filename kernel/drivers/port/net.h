@@ -36,6 +36,9 @@ struct nas_netdev {
     uint16_t mtu;     /* IP payload, Ethernet framing is driver-owned */
     void *backend;
     const struct nas_netdev_ops *ops;
+    /* True only after the physical driver binds a real IRQ source. The
+     * network worker may then use RX notifications instead of timer poll. */
+    bool rx_irq_driven;
     /* One pinned stack consumer; IRQ notification is a tiny scheduling
      * signal. Synchronize listener install/remove with local IRQs masked. */
     nas_netdev_wake rx_wake;

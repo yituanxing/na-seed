@@ -155,6 +155,7 @@ static int net_poll(void *ctx,uint32_t budget,
      if(n->poisoned){rc=-EIO;break;}
      if(rc)break;
      count++;
+     n->rx_completed++;
  }
  if(n->poisoned)rc=-EIO;
  __atomic_store_n(&n->busy,false,__ATOMIC_RELEASE);
@@ -166,13 +167,30 @@ static bool net_link_up(void *ctx){
 static const struct nas_netdev_ops net_ops={
  .transmit=net_transmit,.poll=net_poll,.link_up=net_link_up
 };
+/* The generic IRQ core has already read and acknowledged this NIC's ISR.
+ * Hardirq owns only a bounded wake signal; the existing U-Boot recv/free_pkt
+ * and all DMA retirement remain in the network worker's bounded poll(). */
+static void net_rx_irq_notify(void *context,uint32_t source_status){
+ struct nas_uboot_net *n=context;
+ if(!n)return;
+ n->irq_acks++;
+ if(!(source_status&(NAS_VIRTIO_IRQ_USED_BUFFER|
+                      NAS_VIRTIO_IRQ_CONFIG_CHANGE)) || n->poisoned ||
+    !n->netdev.registered || n->netdev.removing)return;
+ /* Count only an installed worker wake, never a pre-registration or
+  * pre-attach ISR, so acceptance proves hardirq reached the real worker. */
+ if(__atomic_load_n(&n->netdev.rx_wake,__ATOMIC_ACQUIRE))n->irq_rx_wakes++;
+ nas_netdev_notify_rx(&n->netdev);
+}
 int nas_uboot_net_attach(struct nas_uboot_net *n,
- const struct nas_virtio_transport *tr,const char *name){
+ const struct nas_virtio_transport *tr,const char *name,
+ struct nas_irq_route irq){
  if(!n || !tr || !name || !name[0] || !tr->dma || !tr->dma->coherent ||
     n->netdev.registered || n->rx_ring.active || n->tx_ring.active)
      return -EINVAL;
  n->transport=*tr;n->busy=false;n->poisoned=false;
  n->rx_dma_count=0;n->rx_submitted=0;n->tx_pending=false;
+ n->irq_acks=0;n->irq_rx_wakes=0;n->rx_completed=0;
  memset(n->rx_slot_by_head,0,sizeof(n->rx_slot_by_head));
  memset(n->rx_queued,0,sizeof(n->rx_queued));
  n->parent_priv=(struct virtio_dev_priv){.vendor=0,
@@ -204,6 +222,18 @@ int nas_uboot_net_attach(struct nas_uboot_net *n,
  n->tx_vq=(struct virtqueue){.bridge=&net_vq_bridge,.owner=n,
                             .ring=&n->tx_ring,.transport=&n->transport};
  n->queue_refs[0]=&n->rx_vq;n->queue_refs[1]=&n->tx_vq;
+ /* Real routes are bound before DRIVER_OK and before U-Boot posts its
+  * initial RX descriptors. Clear an old ISR first: GIC edge-triggered
+  * delivery must not lose a stale asserted event at the unmask boundary. */
+ if(irq.domain!=NAS_IRQ_DOMAIN_NONE || irq.hwirq){
+     if(!n->transport.ops || !n->transport.ops->read_ack_irq){
+         rc=-EOPNOTSUPP;goto fail;
+     }
+     (void)nas_virtio_irq_ack(&n->transport);
+     rc=nas_irq_bind(&n->rx_irq,irq,nas_virtio_irq_ack_source,
+                     &n->transport,net_rx_irq_notify,n);
+     if(rc)goto fail;
+ }
  rc=nas_virtio_activate(&n->transport);
  if(rc)goto fail;
  rc=uboot_virtio_net.probe(&n->udev);
@@ -216,11 +246,18 @@ int nas_uboot_net_attach(struct nas_uboot_net *n,
      rc=-EIO;goto fail;
  }
  n->netdev=(struct nas_netdev){.name=name,.backend=n,
-     .mtu=1500,.ops=&net_ops};
+     .mtu=1500,.ops=&net_ops,.rx_irq_driven=n->rx_irq.bound};
  memcpy(n->netdev.mac,n->eth.enetaddr,sizeof(n->eth.enetaddr));
  rc=nas_netdev_register(&n->netdev);
- if(!rc)return 0;
+ if(!rc){
+     /* Consumer registration can race an earlier interrupt. A final
+      * synthetic wake lets the newly attached worker drain completions. */
+     nas_netdev_notify_rx(&n->netdev);
+     return 0;
+ }
 fail:
+ /* Unbind before any queue, DMA, transport or U-Boot state is reclaimed. */
+ (void)nas_irq_unbind(&n->rx_irq);
  if(n->rx_ring.active)(void)nas_vring_queue_close(&n->rx_ring);
  if(n->tx_ring.active)(void)nas_vring_queue_close(&n->tx_ring);
  for(unsigned i=0;i<n->rx_dma_count;i++)
@@ -241,6 +278,10 @@ int nas_uboot_net_detach(struct nas_uboot_net *n){
  int begin=nas_netdev_begin_remove(&n->netdev);
  if(begin)return begin;
  int rc=nas_netdev_unregister(&n->netdev);
+ if(rc)return rc;
+ /* A failed unregister keeps the IRQ binding live and retriable. After the
+  * last consumer has left, drop IRQ ownership before retiring DMA. */
+ rc=nas_irq_unbind(&n->rx_irq);
  if(rc)return rc;
  upstream_ops()->stop(&n->udev);
  int e1=nas_vring_queue_close(&n->rx_ring);
