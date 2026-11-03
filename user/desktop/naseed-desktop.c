@@ -42,13 +42,14 @@ struct session {
     struct input_handles input;
     int fb, pointer_x,pointer_y,focus,top,stage,mode;
     int held,dragging,grab_x,grab_y,origin_x,origin_y;
-    int sent_key,exit_requested;
+    int sent_key,exit_requested,pointer_client;
 };
 struct client_spec {const char *path;int x,y;};
 static const struct client_spec clients[]={
     [IMAGE]={"/usr/bin/naseed-image",64,80},
     [TERMINAL]={"/usr/bin/naseed-terminal",300,160},
     [BROWSER]={"/usr/bin/naseed-browser",445,86},
+    [LVGL]={"/usr/bin/naseed-lvgl",75,365},
 };
 static uint8_t screen[SCREEN_W*SCREEN_H*4];
 
@@ -175,7 +176,7 @@ static void spawn_client(struct session *s,int role) {
          * Devices, framebuffer and earlier clients remain desktop-owned. */
         for(int i=4;i<64;i++)close(i);
         char *const args[]={(char *)path,
-              s->mode==170 || s->mode==0 ? (role==TERMINAL ? "--m170" :
+              s->mode==170 || s->mode==171 || s->mode==0 ? (role==TERMINAL ? "--m170" :
                          role==BROWSER ? "--m170" : NULL) :
                          (s->mode==168 && role==TERMINAL ? "--m168" : NULL),NULL};
         execv(path,args);
@@ -262,6 +263,8 @@ static void retire_window(struct session *s,unsigned role,int request_quit) {
             s->stage=4;nasd_mark("M170_TERMINAL_CLOSED_VISIBLE");
         }
         if(abnormal)nasd_mark("M170_CRASHED_CLIENT_ISOLATED");
+    } else if(s->mode==171 && role==LVGL && s->stage==1) {
+        s->stage=2;nasd_mark("M171_LVGL_CLOSED_VISIBLE");
     }
 }
 
@@ -275,7 +278,7 @@ static void pointer_button(struct session *s,int down) {
         if(target<0)return;
         raise_window(s,(unsigned)target);
         struct window *w=&s->windows[target];
-        if((s->mode==0 || s->mode==170) &&
+        if((s->mode==0 || s->mode==170 || s->mode==171) &&
            s->pointer_y>=w->y && s->pointer_y<w->y+TITLE_H &&
            s->pointer_x>=w->x+w->w-20) {
             retire_window(s,(unsigned)target,1);
@@ -286,6 +289,12 @@ static void pointer_button(struct session *s,int down) {
         s->grab_x=s->pointer_x;s->grab_y=s->pointer_y;
         s->origin_x=w->x;s->origin_y=w->y;
         render(s);
+        if(s->mode==171 && target==LVGL && !s->dragging) {
+            s->pointer_client=LVGL;
+            nasd_send_pointer(w->channel,
+                 (unsigned)(s->pointer_x-w->x),
+                 (unsigned)(s->pointer_y-w->y-TITLE_H),1);
+        }
         if((s->mode==167 || s->mode==168) && s->stage==0 && target==IMAGE && !s->dragging) {
             s->stage=1;nasd_mark(s->mode==168 ?
                  "M168_IMAGE_FOCUS_VISIBLE":"M167_IMAGE_FOCUS_VISIBLE");
@@ -301,6 +310,13 @@ static void pointer_button(struct session *s,int down) {
         } else if(s->mode==167 && s->stage==2 && target==TERMINAL) {
             s->stage=3;nasd_mark("M167_TERMINAL_FOCUS_VISIBLE");
         }
+    } else if(s->pointer_client==LVGL &&
+               s->windows[LVGL].active && s->mode==171) {
+        struct window *w=&s->windows[LVGL];
+        nasd_send_pointer(w->channel,
+            (unsigned)clamp(s->pointer_x-w->x,w->w-1),
+            (unsigned)clamp(s->pointer_y-w->y-TITLE_H,w->h-1),0);
+        s->pointer_client=-1;
     } else if(s->dragging) {
         s->dragging=0;
         struct window *w=&s->windows[s->focus];
@@ -325,7 +341,9 @@ static void pointer_motion(struct session *s) {
 static void input_event(struct session *s,unsigned device,
                         const struct input_event *e) {
     if(device==0 && e->type==EV_KEY && e->value==1) {
-        if(s->mode==170 && e->code==KEY_Q && s->stage==4) {
+        if(s->mode==171 && e->code==KEY_Q && s->stage==2) {
+            s->exit_requested=1;
+        } else if(s->mode==170 && e->code==KEY_Q && s->stage==4) {
             s->exit_requested=1; /* QMP acceptance finishes after two real commands */
         } else if((s->mode==167 || s->mode==168) &&
                   e->code==KEY_Q && s->stage==(s->mode==168?6:4)) {
@@ -340,7 +358,7 @@ static void input_event(struct session *s,unsigned device,
                                      e->code==KEY_C))) {
             nasd_send_packet(s->windows[BROWSER].channel,MSG_KEY,e->code);
         } else if(s->focus==TERMINAL && s->windows[TERMINAL].active) {
-            if(s->mode==170 || s->mode==0) {
+            if(s->mode==170 || s->mode==171 || s->mode==0) {
                 /* Translate evdev in the client, not in the compositor.
                  * Each physical key is one asynchronous IPC message. */
                 nasd_send_packet(s->windows[TERMINAL].channel,
@@ -387,7 +405,7 @@ static void event_loop(struct session *s) {
         for(unsigned i=0;i<3+s->live_count;i++) {
             if(i>=3 && !s->windows[roles[i-3]].active)continue;
             const short revents=fds[i].revents;
-            if(i>=3 && (s->mode==170 || s->mode==0) &&
+            if(i>=3 && (s->mode==170 || s->mode==171 || s->mode==0) &&
                (revents&(POLLHUP|POLLERR|POLLNVAL)) &&
                !(revents&POLLIN)) {
                 retire_window(s,roles[i-3],0);
@@ -398,7 +416,7 @@ static void event_loop(struct session *s) {
              * POLLERR/POLLHUP together for that last buffered message.
              * Read it while POLLIN is set; only treat a non-readable
              * terminal event as an actual disconnected client. */
-            if(i<3 || (s->mode!=170 && s->mode!=0))
+            if(i<3 || (s->mode!=170 && s->mode!=171 && s->mode!=0))
                 nasd_require(!(revents&(POLLERR|POLLNVAL|POLLHUP)),
                              "desktop hardware or client disconnected");
             else
@@ -419,19 +437,24 @@ static void event_loop(struct session *s) {
             } else {
                 int role=(int)roles[i-3];
                 struct message m=nasd_recv_packet(s->windows[role].channel);
-                if((s->mode==170 || s->mode==0) && m.type==MSG_CLOSE) {
+                if((s->mode==170 || s->mode==171 || s->mode==0) && m.type==MSG_CLOSE) {
                     retire_window(s,(unsigned)role,0);
                     break;
                 }
                 nasd_require(m.type==MSG_UPDATED &&
-                    ((role==BROWSER && m.key==KEY_B) ||
+                    ((role==LVGL && s->mode==171 &&
+                      (m.key==0 || m.key==KEY_ENTER)) ||
+                     (role==BROWSER && m.key==KEY_B) ||
                      (role==TERMINAL &&
-                       ((s->mode==170 || s->mode==0) ||
+                       ((s->mode==170 || s->mode==171 || s->mode==0) ||
                         m.key==KEY_A))),
                     "registered client live surface update");
                 __atomic_thread_fence(__ATOMIC_ACQUIRE);
                 render(s);
-                if(s->mode==170 && role==TERMINAL && s->stage==1 &&
+                if(s->mode==171 && role==LVGL && s->stage==0 &&
+                   m.key==KEY_ENTER) {
+                    s->stage=1;nasd_mark("M171_LVGL_BUTTON_CLICK_VISIBLE");
+                } else if(s->mode==170 && role==TERMINAL && s->stage==1 &&
                    m.key==KEY_1) {
                     s->stage=2;nasd_mark("M170_FIRST_COMMAND_VISIBLE");
                 } else if(s->mode==170 && role==TERMINAL && s->stage==2 &&
@@ -450,7 +473,8 @@ static void event_loop(struct session *s) {
 }
 static void desktop(int mode) {
     struct session s={0};
-    s.mode=mode;s.count=mode==167?2U:3U;
+    s.mode=mode;s.count=mode==167?2U:(mode==171 || mode==0?4U:3U);
+    s.pointer_client=-1;
     s.input=open_input();
     s.fb=open_fb();
     for(unsigned i=0;i<s.count;i++) {
@@ -459,7 +483,8 @@ static void desktop(int mode) {
     }
     s.focus=s.top=(int)(s.count-1);s.pointer_x=400;s.pointer_y=300;
     render(&s);
-    if(mode==170)nasd_mark("M170_DESKTOP_INITIAL_VISIBLE");
+    if(mode==171)nasd_mark("M171_DESKTOP_INITIAL_VISIBLE");
+    else if(mode==170)nasd_mark("M170_DESKTOP_INITIAL_VISIBLE");
     else if(mode)nasd_mark(mode==168?"M168_DESKTOP_INITIAL_VISIBLE":
                                        "M167_DESKTOP_INITIAL_VISIBLE");
     event_loop(&s);
@@ -471,7 +496,10 @@ static void desktop(int mode) {
     }
     close(s.input.keyboard);close(s.input.tablet);close(s.input.mouse);
     close(s.fb);
-    if(mode==170) {
+    if(mode==171) {
+        nasd_mark("M171_CLIENTS_REAPED");
+        nasd_mark("M171_DESKTOP_PASS");
+    } else if(mode==170) {
         nasd_mark("M170_CLIENTS_REAPED");
         nasd_mark("M170_DESKTOP_PASS");
     } else if(mode) {
@@ -746,9 +774,10 @@ int main(int argc,char **argv) {
      * gates, earlier selectors still run their exact old QMP workflows. */
     nasd_require(argc==1 || (argc==2 &&
                  (!strcmp(argv[1],"m167") || !strcmp(argv[1],"m168") ||
-                  !strcmp(argv[1],"m170"))),
+                  !strcmp(argv[1],"m170") || !strcmp(argv[1],"m171"))),
                  "desktop mode arguments");
     desktop(argc==1?0:(!strcmp(argv[1],"m168")?168:
-                       !strcmp(argv[1],"m170")?170:167));
+                       !strcmp(argv[1],"m170")?170:
+                       !strcmp(argv[1],"m171")?171:167));
     return 0;
 }

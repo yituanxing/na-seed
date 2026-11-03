@@ -41,9 +41,21 @@ void nasd_send_packet(int fd,uint32_t type,uint32_t key) {
     const struct message m={.type=type,.key=key};
     nasd_write_all(fd,&m,sizeof(m));
 }
+void nasd_send_pointer(int fd,unsigned x,unsigned y,int pressed) {
+    nasd_require(x<SCREEN_W && y<SCREEN_H &&
+                 (pressed==0 || pressed==1),"pointer packet bounded");
+    const struct message m={.type=MSG_POINTER,.key=(uint32_t)pressed,
+                            .value=(x<<16U)|y};
+    nasd_write_all(fd,&m,sizeof(m));
+}
 struct message nasd_recv_packet(int fd) {
     struct message m={0};nasd_read_all(fd,&m,sizeof(m));
-    nasd_require(!m.reserved && !m.value,"desktop IPC reserved fields");
+    nasd_require(!m.reserved,"desktop IPC reserved bits");
+    if(m.type==MSG_POINTER) {
+        nasd_require(m.key<=1 && (m.value>>16U)<SCREEN_W &&
+                     (m.value&65535U)<SCREEN_H,
+                     "bounded client pointer packet");
+    } else nasd_require(!m.value,"desktop IPC reserved fields");
     return m;
 }
 void nasd_send_surface(int fd,int surface,uint32_t role,unsigned width,
