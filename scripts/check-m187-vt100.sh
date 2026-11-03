@@ -13,6 +13,10 @@ awk -F '\t' '
     END {if(valid!=1)exit 1}
 ' scripts/m187-vt100-batch-cases.tsv
 grep -Fq '"m187"' user/m174-devfs-launch.c
+grep -Fq 'if(argc==2 && strcmp(argv[1],"m187")==0)' \
+    scripts/test-m176-ncat-launch.c
+grep -Fq 'return m174_original_main(argc,argv);' \
+    scripts/test-m176-ncat-launch.c
 sh scripts/check-m170-desktop.sh
 work=$(mktemp -d /tmp/naseed-m187.XXXXXX)
 trap 'rm -rf "$work"' EXIT HUP INT TERM

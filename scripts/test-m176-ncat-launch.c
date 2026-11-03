@@ -150,7 +150,14 @@ static void m180_user_fs(void) {
 }
 #endif
 
-int main(void) {
+int main(int argc,char **argv) {
+    /* The staged CPIO is shared by the M176 network and M187 terminal QMP
+     * boots. The latter is an independent desktop acceptance, not a replay
+     * of the dual-NIC/host-HTTP transaction. Preserve the actual requested
+     * desktop mode instead of forcing every boot through M176's net preflight
+     * and then unconditionally downgrading it to m174. */
+    if(argc==2 && strcmp(argv[1],"m187")==0)
+        return m174_original_main(argc,argv);
     ncat_http();
 #ifdef NAS_M180_FS_USER_STAGE
     m180_user_fs();
