@@ -18,12 +18,19 @@ while IFS= read -r elf; do
     case "$elf" in ''|'#'*) continue ;; esac
     entry_count=$((entry_count+1))
     code=0
-    busy timeout 7 "/$elf" --help > "$work/entry-$entry_count" 2>&1 || code=$?
-    # 124 means timed out, 126/127 failed exec, >=128 usually a signal.
+    # These finite --help probes are bounded by the OUTER QEMU watchdog.
+    # BusyBox timeout leaves a separate watchdog child for every invocation;
+    # 20 such children unnecessarily compete with the next signed ELF batch
+    # for NaSeed's bounded task slots. Host validation requires a real kernel
+    # [EXEC] record for every individual original ELF.
+    echo "[M174 SOFTWARE ENTRY START] $elf"
+    "/$elf" --help > "$work/entry-$entry_count" 2>&1 || code=$?
+    # 126/127 failed exec; >=128 usually means a signal.
     [ "$code" -lt 124 ] && [ -s "$work/entry-$entry_count" ] || {
         echo "[M174 SOFTWARE ENTRY FAIL] $elf exit=$code" >&2
         exit 1
     }
+    echo "[M174 SOFTWARE ENTRY OK] $elf exit=$code"
 done < /tests/m174-software-original-elfs.txt
 [ "$entry_count" -eq 20 ]
 echo M174_SOFTWARE_20_ENTRY_ONLY_PASS

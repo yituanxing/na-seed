@@ -141,7 +141,18 @@ static void exercise_original_software(void) {
         _exit(127);
     }
     int status=0;
-    require(waitpid(child,&status,0)==child,"wait original Alpine batch");
+    /* PID 1 inherits orphaned descendants, including short-lived watchdogs
+     * from genuinely bounded functional probes. Waiting only for the direct
+     * shell leaves adopted zombies resident and can exhaust the fixed task
+     * table before a later original ELF can start. Reap ALL exited children
+     * until the actual original batch child finishes; never substitute an
+     * unrelated child's exit status for the batch acceptance result. */
+    for(;;) {
+        pid_t reaped=waitpid(-1,&status,0);
+        if(reaped<0 && errno==EINTR)continue;
+        require(reaped>0,"reap original Alpine batch or adopted child");
+        if(reaped==child)break;
+    }
     require(WIFEXITED(status) && WEXITSTATUS(status)==0,
             "20 original signed Alpine entrypoints and representative functions");
     puts("M174_DEVFS_SOFTWARE_INTEGRATION_PASS");fflush(stdout);

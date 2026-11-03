@@ -53,4 +53,12 @@ grep -Fq 'scripts/m187-original-elfs.txt' scripts/host-configure-m174-software-b
 }
 sh -n tests/m187-util-linux-run.sh
 sh -n tests/m187-software-functions.sh
+grep -Fq '"/$elf" --help' tests/m187-util-linux-run.sh
+grep -Fq '"/$elf" --help' tests/m174-software-run.sh
+if grep -Eq '(^|[[:space:]])(busy|/bin/busybox)[[:space:]]+timeout[[:space:]]+[0-9]+[[:space:]]+"/\$elf"' \
+        tests/m174-software-run.sh tests/m187-util-linux-run.sh; then
+    echo '[M187 SOFTWARE MANIFEST FAIL] 46 entry probes spawn duplicate timeout watchdogs' >&2
+    exit 1
+fi
+grep -Fq '[EXEC] replaced process with CPIO ELF: /$elf' scripts/probe-m174-batch.sh
 echo '[M187 SOFTWARE MANIFEST PASS] +26 historically new util-linux-misc ELF paths; original M174 20/13 unchanged'
