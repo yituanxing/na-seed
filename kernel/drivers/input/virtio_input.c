@@ -198,7 +198,7 @@ static int queue_slot(struct virtinput_slot *v,unsigned slot) {
     return 0;
 }
 static int probe(struct nas_bus_device *dev) {
-    if (!dev || dev->device_id!=VIRTIO_ID_INPUT || !dev->context) return -ENODEV;
+    if (!dev || dev->device_id!=VIRTIO_ID_INPUT || !dev->virtio) return -ENODEV;
     unsigned slot=VIRTINPUT_MAX_DEVICES;
     for (unsigned i=0;i<VIRTINPUT_MAX_DEVICES;i++) {
         if (inputs[i].bus_device==dev) return -EEXIST;
@@ -207,7 +207,7 @@ static int probe(struct nas_bus_device *dev) {
     if (slot==VIRTINPUT_MAX_DEVICES) return -ENOSPC;
     struct virtinput_slot *v=&inputs[slot];
     memset(v,0,sizeof(*v));
-    v->transport=*(const struct nas_virtio_transport *)dev->context;
+    v->transport=*dev->virtio;
     if (!v->transport.dma || !v->transport.dma->coherent) return -EOPNOTSUPP;
 
     /* Linux virtinput_probe: negotiate, describe device, allocate VQs,
@@ -258,7 +258,7 @@ static int remove_device(struct nas_bus_device *dev) {
     return -ENODEV;
 }
 static bool matches(const struct nas_bus_device *dev) {
-    return dev && dev->device_id==VIRTIO_ID_INPUT && dev->context;
+    return dev && dev->device_id==VIRTIO_ID_INPUT && dev->virtio;
 }
 static const struct nas_bus_driver driver={
     .name="linux-virtio-input-port", .bus_mask=NAS_BUS_MASK_ALL,

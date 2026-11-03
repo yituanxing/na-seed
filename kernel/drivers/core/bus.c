@@ -10,6 +10,26 @@ static unsigned next_removal;
 static bool valid_bus(enum nas_bus_type type) {
     return type == NAS_BUS_VIRTIO_MMIO || type == NAS_BUS_PCI;
 }
+static bool valid_resource(const struct nas_bus_device *dev) {
+    const struct nas_bus_resource *res = &dev->resource;
+    if (dev->bus == NAS_BUS_VIRTIO_MMIO) {
+        return res->kind == NAS_BUS_RESOURCE_VIRTIO_MMIO &&
+            res->view.mmio.registers &&
+            res->view.mmio.mapped_bytes >= 0x200U &&
+            res->view.mmio.mapped_bytes <= 4096U &&
+            !(res->view.mmio.mapped_bytes & 3U);
+    }
+    if (dev->bus == NAS_BUS_PCI) {
+        return res->kind == NAS_BUS_RESOURCE_PCI &&
+            res->view.pci.config &&
+            res->view.pci.config_bytes == NAS_BUS_PCI_CONFIG_BYTES &&
+            res->view.pci.slot < 32U &&
+            res->view.pci.function < 8U &&
+            res->view.pci.mapped_bar_mask &&
+            !(res->view.pci.mapped_bar_mask & ~0x3fU);
+    }
+    return false;
+}
 static int bind(struct nas_bus_device *dev) {
     if (dev->driver || dev->removal_pending) return 0;
     for (unsigned i = 0; i < NAS_BUS_DRIVER_LIMIT; ++i) {
@@ -59,7 +79,7 @@ int nas_bus_driver_unregister(const struct nas_bus_driver *drv) {
     return 0;
 }
 int nas_bus_device_register(struct nas_bus_device *dev) {
-    if (!dev || !valid_bus(dev->bus) || !dev->resource ||
+    if (!dev || !valid_bus(dev->bus) || !valid_resource(dev) ||
         dev->registered || dev->driver || dev->removal_pending) return -EINVAL;
     unsigned vacant = NAS_BUS_DEVICE_LIMIT;
     for (unsigned i = 0; i < NAS_BUS_DEVICE_LIMIT; ++i) {

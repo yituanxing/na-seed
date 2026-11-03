@@ -165,8 +165,17 @@ int nas_platform_virtio_blk_probe(void) {
             devices[count]=(struct nas_bus_device){
                 .bus=NAS_BUS_PCI,.device_id=device_id-0x1040U,
                 .vendor_id=id&0xffffU,
-                .resource=&resources[count],.context=&transports[count]
+                .resource={.kind=NAS_BUS_RESOURCE_PCI,
+                           .view.pci={.config=cfg_snapshot[count],
+                                      .config_bytes=NAS_BUS_PCI_CONFIG_BYTES,
+                                      .bus=0,.slot=(uint8_t)slot,
+                                      .function=(uint8_t)function}},
+                .virtio=&transports[count]
             };
+            for(unsigned bar=0;bar<BAR_COUNT;bar++)
+                if(resources[count].bars[bar].cpu)
+                    devices[count].resource.view.pci.mapped_bar_mask |=
+                        (uint8_t)(1U<<bar);
             rc=nas_bus_device_register(&devices[count]);
             if(rc) {
                 nas_print("[VIRTIO PCI FAIL] stage=driver-bind error=");

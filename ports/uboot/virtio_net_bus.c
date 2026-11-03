@@ -15,10 +15,10 @@ static struct nic_slot nics[MAX_NICS];
 static const char *const names[MAX_NICS]={"eth0","eth1"};
 static unsigned nic_count;
 static bool match(const struct nas_bus_device *dev){
- return dev->device_id==VIRTIO_ID_NET && dev->context!=NULL;
+ return dev->device_id==VIRTIO_ID_NET && dev->virtio!=NULL;
 }
 static int probe(struct nas_bus_device *dev){
- const struct nas_virtio_transport *tr=dev->context;
+ const struct nas_virtio_transport *tr=dev->virtio;
  unsigned slot=MAX_NICS;
  for(unsigned i=0;i<MAX_NICS;i++){
      if(nics[i].transport==tr)return -EEXIST;
@@ -31,7 +31,7 @@ static int probe(struct nas_bus_device *dev){
  return 0;
 }
 static int remove_device(struct nas_bus_device *dev){
- for(unsigned i=0;i<MAX_NICS;i++)if(nics[i].transport==dev->context){
+ for(unsigned i=0;i<MAX_NICS;i++)if(nics[i].transport==dev->virtio){
      int rc=nas_uboot_net_detach(&nics[i].device);
      if(rc)return rc;
      memset(&nics[i],0,sizeof(nics[i]));nic_count--;

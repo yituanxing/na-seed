@@ -180,8 +180,14 @@ int main(void){
         .mac={0x52,0x54,0,0x12,0x34,0x56}
     };
     tr.context=&discovered;
+    static uint8_t pci_config[NAS_BUS_PCI_CONFIG_BYTES];
+    static volatile uint32_t mmio_registers[128];
     struct nas_bus_device bus={.bus=NAS_BUS_PCI,
-        .device_id=VIRTIO_ID_NET,.context=&tr,.resource=&discovered};
+        .device_id=VIRTIO_ID_NET,.virtio=&tr,
+        .resource={.kind=NAS_BUS_RESOURCE_PCI,
+                   .view.pci={.config=pci_config,
+                              .config_bytes=NAS_BUS_PCI_CONFIG_BYTES,
+                              .mapped_bar_mask=1}}};
     assert(nas_bus_device_register(&bus)==0);
     assert(nas_virtio_net_count()==1);
     dev=nas_netdev_get("eth0");
@@ -194,7 +200,11 @@ int main(void){
     struct nas_virtio_transport tr2=tr;
     tr2.context=&discovered2;
     struct nas_bus_device bus2={.bus=NAS_BUS_PCI,
-        .device_id=VIRTIO_ID_NET,.context=&tr2,.resource=&discovered2};
+        .device_id=VIRTIO_ID_NET,.virtio=&tr2,
+        .resource={.kind=NAS_BUS_RESOURCE_PCI,
+                   .view.pci={.config=pci_config,
+                              .config_bytes=NAS_BUS_PCI_CONFIG_BYTES,
+                              .slot=1,.mapped_bar_mask=1}}};
     assert(nas_bus_device_register(&bus2)==0);
     assert(nas_virtio_net_count()==2);
     struct nas_netdev *dev2=nas_netdev_get("eth1");
@@ -226,7 +236,9 @@ int main(void){
     all_pages_freed();
     /* Reattach same upstream class driver on VirtIO-MMIO. */
     struct nas_bus_device mmio={.bus=NAS_BUS_VIRTIO_MMIO,
-        .device_id=VIRTIO_ID_NET,.context=&tr,.resource=&discovered};
+        .device_id=VIRTIO_ID_NET,.virtio=&tr,
+        .resource={.kind=NAS_BUS_RESOURCE_VIRTIO_MMIO,
+                   .view.mmio={mmio_registers,sizeof(mmio_registers)}}};
     assert(nas_bus_device_register(&mmio)==0);
     assert(nas_virtio_net_count()==1);
     assert(nas_bus_device_unbind(&mmio)==0);

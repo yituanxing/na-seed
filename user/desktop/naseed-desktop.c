@@ -14,6 +14,7 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
@@ -33,16 +34,20 @@ struct window {
     int channel, surface_fd, x,y,w,h,role;
     uint8_t *pixels;
     pid_t pid;
-    int active;
+    int active,pending,owned_child;
+    uint32_t capabilities;
+    struct nasd_surface_offer offer;
+    struct nasd_packet_reader incoming;
 };
 struct input_handles {int keyboard,tablet,mouse; int abs_min[2],abs_max[2];};
 struct session {
     struct window windows[WINDOW_LIMIT];
     unsigned order[WINDOW_LIMIT],count,live_count;
     struct input_handles input;
-    int fb, pointer_x,pointer_y,focus,top,stage,mode;
+    int fb,listener,pointer_x,pointer_y,focus,top,stage,mode;
     int held,dragging,grab_x,grab_y,origin_x,origin_y;
     int sent_key,exit_requested,pointer_client;
+    unsigned changes,external_live,external_total;
 };
 struct client_spec {const char *path;int x,y;};
 static const struct client_spec clients[]={
@@ -160,6 +165,39 @@ static void render(struct session *s) {
         written+=(size_t)n;
     }
 }
+static int attach_surface(struct window *w,int fd,unsigned width,
+                          unsigned height) {
+    if(width>SCREEN_W || height>SCREEN_H-TITLE_H ||
+       w->x<0 || w->y<0 || w->x+(int)width>SCREEN_W ||
+       w->y+(int)height+TITLE_H>SCREEN_H)return -1;
+    const size_t bytes=(size_t)width*height*4U;
+    void *mapping=mmap(NULL,bytes,PROT_READ,MAP_SHARED,fd,0);
+    if(mapping==MAP_FAILED)return -1;
+    w->surface_fd=fd;w->w=(int)width;w->h=(int)height;
+    w->pixels=mapping;w->active=1;w->pending=0;
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    return 0;
+}
+static int open_listener(void) {
+    int fd=socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0);
+    nasd_require(fd>=0,"create userspace desktop listener");
+    struct sockaddr_un address={.sun_family=AF_UNIX};
+    const char *path=getenv(NASD_SOCKET_ENV);
+    if(!path || !*path)path=NASD_SOCKET_PATH;
+    nasd_require(strlen(path)<sizeof(address.sun_path),
+                 "desktop listener path bounded");
+    strcpy(address.sun_path,path);
+    nasd_require(bind(fd,(const struct sockaddr *)&address,sizeof(address))==0,
+                 "bind real VFS pathname socket");
+    nasd_require(listen(fd,WINDOW_LIMIT)==0,"listen desktop client socket");
+    int flags=fcntl(fd,F_GETFL);
+    nasd_require(flags>=0 && fcntl(fd,F_SETFL,flags|O_NONBLOCK)==0,
+                 "desktop listener nonblocking accepts");
+    nasd_require(setenv(NASD_SOCKET_ENV,path,1)==0 &&
+                 setenv(NASD_PROTOCOL_ENV,"1",1)==0,
+                 "publish desktop discovery environment");
+    return fd;
+}
 static void spawn_client(struct session *s,int role) {
     nasd_require(role>=0 && (unsigned)role<s->count &&
                  (unsigned)role<sizeof(clients)/sizeof(clients[0]),
@@ -172,11 +210,13 @@ static void spawn_client(struct session *s,int role) {
     if(!pid) {
         close(link[0]);
         if(dup2(link[1],3)<0)_exit(122);
+        if(s->mode==173 && setenv(NASD_INHERITED_ENV,"3",1)!=0)_exit(120);
         /* Only a single IPC descriptor is inherited by the exec'ed client.
          * Devices, framebuffer and earlier clients remain desktop-owned. */
         for(int i=4;i<64;i++)close(i);
         char *const args[]={(char *)path,
-              s->mode==170 || s->mode==171 || s->mode==0 ? (role==TERMINAL ? "--m170" :
+              s->mode==170 || s->mode==171 || s->mode==173 || s->mode==0 ?
+                         (role==TERMINAL ? "--m170" :
                          role==BROWSER ? "--m170" : NULL) :
                          (s->mode==168 && role==TERMINAL ? "--m168" : NULL),NULL};
         execv(path,args);
@@ -184,21 +224,101 @@ static void spawn_client(struct session *s,int role) {
     }
     close(link[1]);
     struct window *w=&s->windows[role];
-    w->pid=pid;w->channel=link[0];w->role=role;w->active=1;
+    w->pid=pid;w->channel=link[0];w->role=role;w->owned_child=1;
     w->x=clients[role].x;w->y=clients[role].y;
     unsigned surface_w=0,surface_h=0;
-    w->surface_fd=nasd_receive_surface(w->channel,role,
-                                       &surface_w,&surface_h);
-    w->w=(int)surface_w;w->h=(int)surface_h;
-    nasd_require(w->x+w->w<=SCREEN_W &&
-            w->y+w->h+TITLE_H<=SCREEN_H,
-            "client surface fits initial desktop placement");
-    const size_t bytes=(size_t)w->w*(size_t)w->h*4U;
-    void *mapping=mmap(NULL,bytes,PROT_READ,MAP_SHARED,w->surface_fd,0);
-    nasd_require(mapping!=MAP_FAILED,"map received shared surface in compositor");
-    w->pixels=mapping;
-    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    if(s->mode==173) {
+        int flags=fcntl(w->channel,F_GETFL);
+        nasd_require(flags>=0 && fcntl(w->channel,F_SETFL,flags|O_NONBLOCK)==0,
+                     "bootstrap client nonblocking surface receive");
+        nasd_surface_offer_init(&w->offer);
+        uint32_t kind=UINT32_MAX,caps=0;
+        int accepted=0;
+        for(unsigned tries=0;tries<120 && accepted==0;tries++) {
+            struct pollfd ready={.fd=w->channel,.events=POLLIN};
+            int n=poll(&ready,1,1000);
+            if(n<0 && errno==EINTR)continue;
+            nasd_require(n>=0 && !(ready.revents&POLLNVAL),
+                         "bootstrap client poll");
+            if(n==0)continue;
+            accepted=nasd_surface_offer_step(w->channel,&w->offer,&kind,
+                          &surface_w,&surface_h,&caps);
+        }
+        nasd_require(accepted==1 && kind==(uint32_t)role,
+                     "bootstrap client valid capability surface");
+        int fd=w->offer.surface_fd;w->offer.surface_fd=-1;
+        w->capabilities=caps;
+        nasd_require(attach_surface(w,fd,surface_w,surface_h)==0,
+                     "map bootstrap shared surface");
+    } else {
+        int fd=nasd_receive_surface(w->channel,role,&surface_w,&surface_h);
+        nasd_require(attach_surface(w,fd,surface_w,surface_h)==0,
+                     "map legacy shared surface");
+    }
     nasd_require(w->pixels[3]==255,"cross-process surface first pixel");
+}
+static int free_window_slot(const struct session *s) {
+    for(unsigned i=0;i<s->count;i++)
+        if(!s->windows[i].active && !s->windows[i].pending)return (int)i;
+    return -1;
+}
+static void raise_window(struct session *,unsigned);
+static void discard_pending(struct session *s,unsigned slot) {
+    struct window *w=&s->windows[slot];
+    nasd_require(w->pending && !w->active,"pending registration owner");
+    nasd_surface_offer_release(&w->offer);
+    close(w->channel);
+    *w=(struct window){0};
+    ++s->changes;
+}
+static void accept_external(struct session *s) {
+    for(;;) {
+        int channel=accept4(s->listener,NULL,NULL,SOCK_NONBLOCK|SOCK_CLOEXEC);
+        if(channel<0 && (errno==EAGAIN || errno==EWOULDBLOCK))return;
+        if(channel<0 && errno==EINTR)continue;
+        nasd_require(channel>=0,"accept independent desktop client");
+        const int slot=free_window_slot(s);
+        if(slot<0) {close(channel);continue;} /* bounded admission */
+        struct window *w=&s->windows[slot];
+        *w=(struct window){.channel=channel,.surface_fd=-1,
+                            .pid=-1,.role=-1,.pending=1};
+        nasd_surface_offer_init(&w->offer);
+        ++s->changes;
+    }
+}
+static void complete_external(struct session *s,unsigned slot) {
+    struct window *w=&s->windows[slot];
+    uint32_t kind=0,capabilities=0;
+    unsigned width=0,height=0;
+    const int state=nasd_surface_offer_step(w->channel,&w->offer,
+                         &kind,&width,&height,&capabilities);
+    if(state<0) {discard_pending(s,slot);return;}
+    if(!state)return;
+    if(kind>UINT16_MAX) {discard_pending(s,slot);return;}
+    /* A registration kind is descriptive metadata, not an array index or
+     * a uniqueness constraint: two genuine LVGL processes can coexist. */
+    const unsigned number=s->external_total;
+    const int x=number==0?535:55+(int)((number%4U)*110U);
+    const int y=number==0?370:80+(int)((number%4U)*65U);
+    w->x=x>SCREEN_W-(int)width?SCREEN_W-(int)width:x;
+    w->y=y>SCREEN_H-(int)height-TITLE_H ?
+         SCREEN_H-(int)height-TITLE_H:y;
+    w->role=(int)kind;
+    w->capabilities=capabilities;
+    const int fd=w->offer.surface_fd;
+    w->offer.surface_fd=-1;
+    if(attach_surface(w,fd,width,height)!=0) {
+        close(fd);discard_pending(s,slot);return;
+    }
+    ++s->external_total;++s->external_live;
+    s->order[s->live_count++]=slot;
+    raise_window(s,slot);
+    ++s->changes;
+    render(s);
+    if(s->stage==0 && kind==LVGL) {
+        s->stage=1;
+        nasd_mark("M173_EXTERNAL_CLIENT_VISIBLE");
+    }
 }
 static int clamp(int v,int maximum) {
     return v<0?0:v>maximum?maximum:v;
@@ -235,19 +355,29 @@ static void retire_window(struct session *s,unsigned role,int request_quit) {
     struct window *w=&s->windows[role];
     if(request_quit)nasd_send_packet(w->channel,MSG_QUIT,0);
     int status=0;
-    pid_t waited;
-    do waited=waitpid(w->pid,&status,0);while(waited<0 && errno==EINTR);
-    nasd_require(waited==w->pid,"reap exactly one desktop child");
-    const int abnormal=!WIFEXITED(status) || WEXITSTATUS(status)!=0;
+    pid_t waited=0;
+    if(w->owned_child) {
+        do waited=waitpid(w->pid,&status,0);while(waited<0 && errno==EINTR);
+        nasd_require(waited==w->pid,"reap exactly one owned desktop child");
+    }
+    const int abnormal=w->owned_child &&
+                       (!WIFEXITED(status) || WEXITSTATUS(status)!=0);
     const size_t size=(size_t)w->w*w->h*4U;
     nasd_require(munmap(w->pixels,size)==0,"release client shared mapping");
     close(w->surface_fd);close(w->channel);
+    const int external=!w->owned_child;
     w->surface_fd=w->channel=-1;w->pixels=NULL;w->active=0;
+    if(s->pointer_client==(int)role)s->pointer_client=-1;
     unsigned at=0;
     while(at<s->live_count && s->order[at]!=role)at++;
     nasd_require(at<s->live_count,"retired role in z-order");
     for(unsigned i=at+1;i<s->live_count;i++)s->order[i-1]=s->order[i];
     --s->live_count;
+    ++s->changes;
+    if(external) {
+        nasd_require(s->external_live>0,"external client reference balance");
+        --s->external_live;
+    }
     if(s->focus==(int)role) {
         s->focus=s->live_count?(int)s->order[s->live_count-1]:-1;
         s->top=s->focus;
@@ -265,6 +395,8 @@ static void retire_window(struct session *s,unsigned role,int request_quit) {
         if(abnormal)nasd_mark("M170_CRASHED_CLIENT_ISOLATED");
     } else if(s->mode==171 && role==LVGL && s->stage==1) {
         s->stage=2;nasd_mark("M171_LVGL_CLOSED_VISIBLE");
+    } else if(s->mode==173 && external && s->stage==2) {
+        s->stage=3;nasd_mark("M173_EXTERNAL_CLIENT_CLOSED_VISIBLE");
     }
 }
 
@@ -278,7 +410,7 @@ static void pointer_button(struct session *s,int down) {
         if(target<0)return;
         raise_window(s,(unsigned)target);
         struct window *w=&s->windows[target];
-        if((s->mode==0 || s->mode==170 || s->mode==171) &&
+        if((s->mode==0 || s->mode==170 || s->mode==171 || s->mode==173) &&
            s->pointer_y>=w->y && s->pointer_y<w->y+TITLE_H &&
            s->pointer_x>=w->x+w->w-20) {
             retire_window(s,(unsigned)target,1);
@@ -289,8 +421,11 @@ static void pointer_button(struct session *s,int down) {
         s->grab_x=s->pointer_x;s->grab_y=s->pointer_y;
         s->origin_x=w->x;s->origin_y=w->y;
         render(s);
-        if((s->mode==171 || s->mode==0) && target==LVGL && !s->dragging) {
-            s->pointer_client=LVGL;
+        if(((s->mode==171 || s->mode==0) && target==LVGL &&
+             !s->dragging) ||
+           (s->mode==173 && (w->capabilities&NASD_INPUT_POINTER) &&
+             !s->dragging)) {
+            s->pointer_client=target;
             nasd_send_pointer(w->channel,
                  (unsigned)(s->pointer_x-w->x),
                  (unsigned)(s->pointer_y-w->y-TITLE_H),1);
@@ -310,9 +445,10 @@ static void pointer_button(struct session *s,int down) {
         } else if(s->mode==167 && s->stage==2 && target==TERMINAL) {
             s->stage=3;nasd_mark("M167_TERMINAL_FOCUS_VISIBLE");
         }
-    } else if(s->pointer_client==LVGL &&
-               s->windows[LVGL].active && (s->mode==171 || s->mode==0)) {
-        struct window *w=&s->windows[LVGL];
+    } else if(s->pointer_client>=0 &&
+               s->windows[s->pointer_client].active &&
+               (s->mode==171 || s->mode==0 || s->mode==173)) {
+        struct window *w=&s->windows[s->pointer_client];
         nasd_send_pointer(w->channel,
             (unsigned)clamp(s->pointer_x-w->x,w->w-1),
             (unsigned)clamp(s->pointer_y-w->y-TITLE_H,w->h-1),0);
@@ -341,7 +477,13 @@ static void pointer_motion(struct session *s) {
 static void input_event(struct session *s,unsigned device,
                         const struct input_event *e) {
     if(device==0 && e->type==EV_KEY && e->value==1) {
-        if(s->mode==171 && e->code==KEY_Q && s->stage==2) {
+        if(s->mode==173) {
+            if(e->code==KEY_Q && s->stage==3)s->exit_requested=1;
+            else if(e->code==KEY_ESC)s->exit_requested=1;
+            else if(s->focus>=0 && s->windows[s->focus].active &&
+                    (s->windows[s->focus].capabilities&NASD_INPUT_KEYS))
+                nasd_send_packet(s->windows[s->focus].channel,MSG_KEY,e->code);
+        } else if(s->mode==171 && e->code==KEY_Q && s->stage==2) {
             s->exit_requested=1;
         } else if(s->mode==170 && e->code==KEY_Q && s->stage==4) {
             s->exit_requested=1; /* QMP acceptance finishes after two real commands */
@@ -385,30 +527,125 @@ static void input_event(struct session *s,unsigned device,
     if(device!=0 && e->type==EV_KEY && e->code==BTN_LEFT &&
        (e->value==0 || e->value==1))pointer_button(s,e->value);
 }
+static void handle_client_message(struct session *s,unsigned slot,
+                                  struct message m) {
+    struct window *w=&s->windows[slot];
+    const int role=w->role;
+    if((s->mode==170 || s->mode==171 || s->mode==0 || s->mode==173) &&
+       m.type==MSG_CLOSE) {
+        retire_window(s,slot,0);
+        return;
+    }
+    if(s->mode==173) {
+        /* Only READY advertises capabilities; any registered client can
+         * repaint without needing a compositor-side application branch. */
+        if(m.type!=MSG_UPDATED) {
+            retire_window(s,slot,0);return;
+        }
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        render(s);
+        if(!w->owned_child && role==LVGL && s->stage==1 &&
+           m.key==KEY_ENTER) {
+            s->stage=2;nasd_mark("M173_SECOND_LVGL_BUTTON_VISIBLE");
+        }
+        return;
+    }
+    nasd_require(m.type==MSG_UPDATED &&
+        ((role==LVGL && (s->mode==171 || s->mode==0) &&
+          (m.key==0 || m.key==KEY_ENTER)) ||
+         (role==BROWSER && m.key==KEY_B) ||
+         (role==TERMINAL &&
+           ((s->mode==170 || s->mode==171 || s->mode==0) ||
+            m.key==KEY_A))),
+        "registered client live surface update");
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    render(s);
+    if(s->mode==171 && role==LVGL && s->stage==0 &&
+       m.key==KEY_ENTER) {
+        s->stage=1;nasd_mark("M171_LVGL_BUTTON_CLICK_VISIBLE");
+    } else if(s->mode==170 && role==TERMINAL && s->stage==1 &&
+              m.key==KEY_1) {
+        s->stage=2;nasd_mark("M170_FIRST_COMMAND_VISIBLE");
+    } else if(s->mode==170 && role==TERMINAL && s->stage==2 &&
+              m.key==KEY_2) {
+        s->stage=3;nasd_mark("M170_SECOND_COMMAND_VISIBLE");
+    } else if(s->mode==168 && role==BROWSER && s->stage==3) {
+        s->stage=4;nasd_mark("M168_BROWSER_KEY_VISIBLE");
+    } else if(s->mode==168 && role==TERMINAL && s->stage==5) {
+        s->stage=6;nasd_mark("M168_TERMINAL_KEY_VISIBLE");
+    } else if(s->mode==167 && role==TERMINAL && s->stage==3) {
+        s->stage=4;nasd_mark("M167_TERMINAL_KEY_VISIBLE");
+    }
+}
 static void event_loop(struct session *s) {
     while(!s->exit_requested) {
-        struct pollfd fds[3+WINDOW_LIMIT]={
+        const int dynamic=s->mode==173;
+        const unsigned base=dynamic?4U:3U;
+        struct pollfd fds[4+WINDOW_LIMIT]={
             {.fd=s->input.keyboard,.events=POLLIN},
             {.fd=s->input.tablet,.events=POLLIN},
             {.fd=s->input.mouse,.events=POLLIN}
         };
+        if(dynamic)fds[3]=(struct pollfd){.fd=s->listener,.events=POLLIN};
         unsigned roles[WINDOW_LIMIT]={0};
-        for(unsigned i=0;i<s->live_count;i++) {
-            roles[i]=s->order[i];
-            fds[3+i]=(struct pollfd){
-                .fd=s->windows[roles[i]].channel,.events=POLLIN
-            };
+        unsigned watchers=0;
+        if(dynamic) {
+            for(unsigned i=0;i<s->count;i++) {
+                if(!s->windows[i].active && !s->windows[i].pending)continue;
+                roles[watchers]=i;
+                fds[base+watchers++]=(struct pollfd){
+                     .fd=s->windows[i].channel,.events=POLLIN};
+            }
+        } else {
+            for(unsigned i=0;i<s->live_count;i++) {
+                roles[watchers]=s->order[i];
+                fds[base+watchers++]=(struct pollfd){
+                    .fd=s->windows[roles[i]].channel,.events=POLLIN};
+            }
         }
-        int count=poll(fds,3+s->live_count,-1);
+        int count=poll(fds,base+watchers,-1);
         if(count<0 && errno==EINTR)continue;
         nasd_require(count>0,"poll hardware devices and live client IPC");
-        for(unsigned i=0;i<3+s->live_count;i++) {
-            if(i>=3 && !s->windows[roles[i-3]].active)continue;
+        for(unsigned i=0;i<base+watchers;i++) {
+            if(i>=base && !s->windows[roles[i-base]].active &&
+               !s->windows[roles[i-base]].pending)continue;
             const short revents=fds[i].revents;
-            if(i>=3 && (s->mode==170 || s->mode==171 || s->mode==0) &&
+            if(dynamic && i==3) {
+                nasd_require(!(revents&POLLNVAL),"listener FD remains valid");
+                if(revents&POLLIN) {accept_external(s);break;}
+                continue;
+            }
+            if(i>=base && dynamic) {
+                const unsigned slot=roles[i-base];
+                struct window *w=&s->windows[slot];
+                if(revents&POLLNVAL) {
+                    if(w->pending)discard_pending(s,slot);
+                    else retire_window(s,slot,0);
+                    break;
+                }
+                /* POLLIN wins over HUP: the last complete MSG_CLOSE may
+                 * still be buffered in the real AF_UNIX stream. */
+                if(!(revents&POLLIN) && (revents&(POLLHUP|POLLERR))) {
+                    if(w->pending)discard_pending(s,slot);
+                    else retire_window(s,slot,0);
+                    break;
+                }
+                if(!(revents&POLLIN))continue;
+                const unsigned before=s->changes;
+                if(w->pending)complete_external(s,slot);
+                else {
+                    struct message m={0};
+                    int state=nasd_packet_step(w->channel,&w->incoming,&m);
+                    if(state<0)retire_window(s,slot,0);
+                    else if(state==1)handle_client_message(s,slot,m);
+                }
+                if(s->changes!=before)break;
+                continue;
+            }
+            if(i>=base && (s->mode==170 || s->mode==171 || s->mode==0) &&
                (revents&(POLLHUP|POLLERR|POLLNVAL)) &&
                !(revents&POLLIN)) {
-                retire_window(s,roles[i-3],0);
+                retire_window(s,roles[i-base],0);
                 break; /* rebuild poll entries after z-order compaction */
             }
             /* An AF_UNIX peer can close immediately after writing its
@@ -424,66 +661,46 @@ static void event_loop(struct session *s) {
                              "registered client descriptor invalid");
             if(!(revents&POLLIN))continue;
             if(i<3) {
+                const unsigned before=s->changes;
                 struct input_event events[32];
                 ssize_t n=read(fds[i].fd,events,sizeof(events));
                 if(n<0 && (errno==EAGAIN || errno==EINTR))continue;
                 nasd_require(n>0 && n%(ssize_t)sizeof(events[0])==0,
                         "aligned LP64 hardware event read");
-                for(size_t j=0;j<(size_t)n/sizeof(events[0]);j++)
+                for(size_t j=0;j<(size_t)n/sizeof(events[0]);j++) {
                     input_event(s,i,&events[j]);
+                    if(s->exit_requested || s->changes!=before)break;
+                }
                 /* A titlebar close or normal quit changes the FDs: return
                  * to poll() before reusing this fixed event snapshot. */
-                if(s->exit_requested)break;
+                if(s->exit_requested || s->changes!=before)break;
             } else {
-                int role=(int)roles[i-3];
-                struct message m=nasd_recv_packet(s->windows[role].channel);
-                if((s->mode==170 || s->mode==171 || s->mode==0) && m.type==MSG_CLOSE) {
-                    retire_window(s,(unsigned)role,0);
-                    break;
-                }
-                nasd_require(m.type==MSG_UPDATED &&
-                    ((role==LVGL && (s->mode==171 || s->mode==0) &&
-                      (m.key==0 || m.key==KEY_ENTER)) ||
-                     (role==BROWSER && m.key==KEY_B) ||
-                     (role==TERMINAL &&
-                       ((s->mode==170 || s->mode==171 || s->mode==0) ||
-                        m.key==KEY_A))),
-                    "registered client live surface update");
-                __atomic_thread_fence(__ATOMIC_ACQUIRE);
-                render(s);
-                if(s->mode==171 && role==LVGL && s->stage==0 &&
-                   m.key==KEY_ENTER) {
-                    s->stage=1;nasd_mark("M171_LVGL_BUTTON_CLICK_VISIBLE");
-                } else if(s->mode==170 && role==TERMINAL && s->stage==1 &&
-                   m.key==KEY_1) {
-                    s->stage=2;nasd_mark("M170_FIRST_COMMAND_VISIBLE");
-                } else if(s->mode==170 && role==TERMINAL && s->stage==2 &&
-                          m.key==KEY_2) {
-                    s->stage=3;nasd_mark("M170_SECOND_COMMAND_VISIBLE");
-                } else if(s->mode==168 && role==BROWSER && s->stage==3) {
-                    s->stage=4;nasd_mark("M168_BROWSER_KEY_VISIBLE");
-                } else if(s->mode==168 && role==TERMINAL && s->stage==5) {
-                    s->stage=6;nasd_mark("M168_TERMINAL_KEY_VISIBLE");
-                } else if(s->mode==167 && role==TERMINAL && s->stage==3) {
-                    s->stage=4;nasd_mark("M167_TERMINAL_KEY_VISIBLE");
-                }
+                const unsigned slot=roles[i-base];
+                struct message m=nasd_recv_packet(s->windows[slot].channel);
+                const unsigned before=s->changes;
+                handle_client_message(s,slot,m);
+                if(s->changes!=before)break;
             }
         }
     }
 }
 static void desktop(int mode) {
     struct session s={0};
-    s.mode=mode;s.count=mode==167?2U:(mode==171 || mode==0?4U:3U);
-    s.pointer_client=-1;
+    const unsigned bootstrap=mode==167?2U:
+                             (mode==171 || mode==173 || mode==0?4U:3U);
+    s.mode=mode;s.count=mode==173?WINDOW_LIMIT:bootstrap;
+    s.pointer_client=-1;s.listener=-1;
     s.input=open_input();
     s.fb=open_fb();
-    for(unsigned i=0;i<s.count;i++) {
+    if(mode==173)s.listener=open_listener();
+    for(unsigned i=0;i<bootstrap;i++) {
         spawn_client(&s,(int)i);
         s.order[s.live_count++]=i;
     }
-    s.focus=s.top=(int)(s.count-1);s.pointer_x=400;s.pointer_y=300;
+    s.focus=s.top=(int)(bootstrap-1);s.pointer_x=400;s.pointer_y=300;
     render(&s);
-    if(mode==171)nasd_mark("M171_DESKTOP_INITIAL_VISIBLE");
+    if(mode==173)nasd_mark("M173_DESKTOP_INITIAL_VISIBLE");
+    else if(mode==171)nasd_mark("M171_DESKTOP_INITIAL_VISIBLE");
     else if(mode==170)nasd_mark("M170_DESKTOP_INITIAL_VISIBLE");
     else if(mode)nasd_mark(mode==168?"M168_DESKTOP_INITIAL_VISIBLE":
                                        "M167_DESKTOP_INITIAL_VISIBLE");
@@ -494,9 +711,19 @@ static void desktop(int mode) {
         unsigned role=s.order[s.live_count-1];
         retire_window(&s,role,1);
     }
+    if(mode==173) {
+        for(unsigned i=0;i<s.count;i++)
+            if(s.windows[i].pending)discard_pending(&s,i);
+        close(s.listener);
+        nasd_require(unlink(getenv(NASD_SOCKET_ENV))==0,
+                     "remove owned desktop pathname socket");
+    }
     close(s.input.keyboard);close(s.input.tablet);close(s.input.mouse);
     close(s.fb);
-    if(mode==171) {
+    if(mode==173) {
+        nasd_mark("M173_CLIENTS_REAPED");
+        nasd_mark("M173_DESKTOP_PASS");
+    } else if(mode==171) {
         nasd_mark("M171_CLIENTS_REAPED");
         nasd_mark("M171_DESKTOP_PASS");
     } else if(mode==170) {
@@ -738,6 +965,7 @@ static void selftest170(void) {
     close(channel[1]);
     s.windows[BROWSER].pid=child;
     s.windows[BROWSER].channel=channel[0];
+    s.windows[BROWSER].owned_child=1;
     retire_window(&s,BROWSER,0);
     nasd_require(s.live_count==2 && s.focus==TERMINAL &&
                  s.order[0]==IMAGE && s.order[1]==TERMINAL &&
@@ -757,6 +985,167 @@ static void selftest170(void) {
     nasd_mark("[M170 HOST DESKTOP PASS] crash reaped, stable z-order, focus and physical backing cleanup");
 }
 
+/* Exercise the production pathname listener and admission/retirement path
+ * without a QEMU screen. The two clients deliberately register the SAME
+ * application kind; their connection identities must never alias. */
+static void selftest173_client(int listener,unsigned color) {
+    close(listener);
+    (void)unsetenv(NASD_INHERITED_ENV);
+    int channel=nasd_client_channel();
+    int fd=-1;
+    const unsigned width=40,height=40;
+    uint8_t *pixels=nasd_make_surface("m173-host-external",width,height,&fd);
+    nasd_fill_surface(pixels,width,height,(uint8_t)color,
+                      (uint8_t)(255U-color),80);
+    nasd_send_surface_caps(channel,fd,LVGL,width,height,
+                           NASD_INPUT_POINTER);
+    struct message m=nasd_recv_packet(channel);
+    nasd_require(m.type==MSG_QUIT,"external host client shutdown");
+    munmap(pixels,(size_t)width*height*4U);
+    close(fd);close(channel);
+    _exit(0);
+}
+static void selftest173_protocol(void) {
+    nasd_require(setenv(NASD_PROTOCOL_ENV,"1",1)==0,
+                 "M173 protocol test version");
+    int ends[2]={-1,-1};
+    nasd_require(socketpair(AF_UNIX,SOCK_STREAM,0,ends)==0,
+                 "M173 real nonblocking protocol channel");
+    int flags=fcntl(ends[1],F_GETFL);
+    nasd_require(flags>=0 && fcntl(ends[1],F_SETFL,flags|O_NONBLOCK)==0,
+                 "M173 receive socket must not park compositor");
+    int fd=memfd_create("m173-protocol",MFD_CLOEXEC);
+    nasd_require(fd>=0 && ftruncate(fd,40*40*4)==0,
+                 "M173 physical memfd descriptor");
+    nasd_send_surface_caps(ends[0],fd,LVGL,40,40,NASD_INPUT_POINTER);
+    struct nasd_surface_offer offer;
+    nasd_surface_offer_init(&offer);
+    uint32_t kind=0,capabilities=0;
+    unsigned width=0,height=0;
+    nasd_require(nasd_surface_offer_step(ends[1],&offer,&kind,&width,
+                  &height,&capabilities)==1 && kind==LVGL &&
+                 capabilities==NASD_INPUT_POINTER && width==40 && height==40,
+                 "M173 incremental real SCM_RIGHTS capability offer");
+    nasd_surface_offer_release(&offer);
+    close(fd);
+    const struct message updated={.type=MSG_UPDATED,.key=KEY_ENTER};
+    nasd_write_all(ends[0],&updated,5);
+    struct nasd_packet_reader reader={0};
+    struct message received={0};
+    nasd_require(nasd_packet_step(ends[1],&reader,&received)==0 &&
+                 reader.received==5,
+                 "M173 partial packet must not block independent clients");
+    nasd_write_all(ends[0],(const uint8_t *)&updated+5,
+                   sizeof(updated)-5);
+    nasd_require(nasd_packet_step(ends[1],&reader,&received)==1 &&
+                 received.type==MSG_UPDATED && received.key==KEY_ENTER,
+                 "M173 packet assembly after independent writable event");
+    close(ends[0]);close(ends[1]);
+    nasd_require(socketpair(AF_UNIX,SOCK_STREAM,0,ends)==0,
+                 "M173 malformed peer real IPC");
+    nasd_surface_offer_init(&offer);
+    const struct message invalid={.type=MSG_READY,.key=LVGL,
+                                  .value=(40U<<16U)|40U};
+    nasd_write_all(ends[0],&invalid,sizeof(invalid));
+    nasd_require(nasd_surface_offer_step(ends[1],&offer,NULL,NULL,
+                                        NULL,NULL)<0 && offer.surface_fd<0,
+                 "M173 reject missing SCM_RIGHTS without compositor exit");
+    nasd_surface_offer_release(&offer);
+    close(ends[0]);close(ends[1]);
+    nasd_mark("[M173 HOST PROTOCOL PASS] nonblocking validated SCM_RIGHTS, "
+              "partial packets and isolated invalid clients");
+}
+static void selftest173(void) {
+    selftest173_protocol();
+    char directory[]="/tmp/naseed-m173-host-XXXXXX";
+    nasd_require(mkdtemp(directory)!=NULL,"host unique socket directory");
+    char path[108];
+    nasd_require(snprintf(path,sizeof(path),"%s/session.sock",directory)>0 &&
+                 strlen(path)<sizeof(((struct sockaddr_un *)0)->sun_path),
+                 "host pathname socket length");
+    nasd_require(setenv(NASD_SOCKET_ENV,path,1)==0,
+                 "host unique desktop socket selection");
+    struct session s={.mode=173,.count=WINDOW_LIMIT,.focus=-1,.top=-1,
+                      .pointer_client=-1};
+    s.fb=memfd_create("m173-host-physical-screen",MFD_CLOEXEC);
+    nasd_require(s.fb>=0 && ftruncate(s.fb,sizeof(screen))==0,
+                 "host framebuffer byte-owner fixture");
+    s.listener=open_listener();
+
+    /* One unrelated, invalid peer must not kill the compositor, leak an
+     * untrusted FD or consume a permanent window slot. */
+    int bad=socket(AF_UNIX,SOCK_STREAM,0);
+    nasd_require(bad>=0,"malformed peer real socket");
+    struct sockaddr_un address={.sun_family=AF_UNIX};
+    strcpy(address.sun_path,path);
+    nasd_require(connect(bad,(struct sockaddr *)&address,sizeof(address))==0,
+                 "malformed peer real connect");
+    const struct message bad_packet={.type=MSG_READY,.key=LVGL,
+                                     .value=(40U<<16U)|40U};
+    nasd_write_all(bad,&bad_packet,sizeof(bad_packet)); /* no SCM_RIGHTS */
+    accept_external(&s);
+    nasd_require(s.windows[0].pending,"malformed peer pending admission");
+    complete_external(&s,0);
+    nasd_require(!s.windows[0].pending && !s.windows[0].active &&
+                 s.live_count==0,"malformed surface isolated and released");
+    close(bad);
+
+    pid_t children[2]={-1,-1};
+    for(unsigned i=0;i<2;i++) {
+        children[i]=fork();
+        nasd_require(children[i]>=0,"two independently forked GUI clients");
+        if(children[i]==0)selftest173_client(s.listener,30U+i*150U);
+    }
+    int slots[2]={-1,-1};
+    for(unsigned tries=0;tries<150 && s.live_count<2;tries++) {
+        struct pollfd listener={.fd=s.listener,.events=POLLIN};
+        (void)poll(&listener,1,30);
+        if(listener.revents&POLLIN)accept_external(&s);
+        for(unsigned slot=0;slot<s.count;slot++) {
+            if(!s.windows[slot].pending)continue;
+            struct pollfd ready={.fd=s.windows[slot].channel,.events=POLLIN};
+            (void)poll(&ready,1,20);
+            if(ready.revents&POLLIN)complete_external(&s,slot);
+        }
+    }
+    nasd_require(s.live_count==2 && s.external_live==2,
+                 "two dynamic GUI registrations accepted independently");
+    slots[0]=(int)s.order[0];slots[1]=(int)s.order[1];
+    nasd_require(slots[0]!=slots[1] && s.windows[slots[0]].role==LVGL &&
+                 s.windows[slots[1]].role==LVGL &&
+                 s.windows[slots[0]].capabilities==NASD_INPUT_POINTER &&
+                 s.windows[slots[1]].capabilities==NASD_INPUT_POINTER,
+                 "same app kind has independent slots and capabilities");
+    uint8_t first[4]={0},second[4]={0};
+    const struct window *a=&s.windows[slots[0]],*b=&s.windows[slots[1]];
+    off_t one=((off_t)(a->y+TITLE_H)*SCREEN_W+a->x)*4;
+    off_t two=((off_t)(b->y+TITLE_H)*SCREEN_W+b->x)*4;
+    nasd_require(pread(s.fb,first,4,one)==4 &&
+                 pread(s.fb,second,4,two)==4 &&
+                 first[3]==255 && second[3]==255 &&
+                 first[2]!=second[2],
+                 "independent original memfd pixel surfaces in one display");
+    retire_window(&s,(unsigned)slots[1],1);
+    nasd_require(s.live_count==1 && s.windows[slots[0]].active &&
+                 !s.windows[slots[1]].active && s.external_live==1,
+                 "close one nonchild GUI without retiring its sibling");
+    retire_window(&s,(unsigned)slots[0],1);
+    nasd_require(!s.live_count && !s.external_live && s.focus==-1,
+                 "all dynamic surface/map/FD and focus owners released");
+    for(unsigned i=0;i<2;i++) {
+        int status=0;
+        nasd_require(waitpid(children[i],&status,0)==children[i] &&
+                     WIFEXITED(status) && WEXITSTATUS(status)==0,
+                     "compositor did not reap external application child");
+    }
+    close(s.listener);close(s.fb);
+    nasd_require(unlink(path)==0 && rmdir(directory)==0,
+                 "host dynamic listener pathname cleanup");
+    nasd_mark("[M173 HOST DYNAMIC PASS] real pathname listen/connect, "
+         "malformed peer isolation, duplicate-kind SCM_RIGHTS windows, "
+         "independent pixels, nonchild close and focused resource release");
+}
+
 int main(int argc,char **argv) {
     if(argc==2 && !strcmp(argv[1],"--selftest")) {
         selftest();return 0;
@@ -770,14 +1159,23 @@ int main(int argc,char **argv) {
     if(argc==2 && !strcmp(argv[1],"--selftest170")) {
         selftest();selftest168();selftest169();selftest170();return 0;
     }
+    if(argc==2 && !strcmp(argv[1],"--selftest173")) {
+        selftest173();return 0;
+    }
+    if(argc==2 && !strcmp(argv[1],"--selftest173proto")) {
+        selftest173_protocol();return 0;
+    }
     /* No selector runs a persistent desktop. M170 uses new PTY + lifecycle
      * gates, earlier selectors still run their exact old QMP workflows. */
     nasd_require(argc==1 || (argc==2 &&
                  (!strcmp(argv[1],"m167") || !strcmp(argv[1],"m168") ||
-                  !strcmp(argv[1],"m170") || !strcmp(argv[1],"m171"))),
+                  !strcmp(argv[1],"m170") || !strcmp(argv[1],"m171") ||
+                  !strcmp(argv[1],"m173") || !strcmp(argv[1],"--m173"))),
                  "desktop mode arguments");
-    desktop(argc==1?0:(!strcmp(argv[1],"m168")?168:
+    desktop(argc==1?173:(!strcmp(argv[1],"m168")?168:
                        !strcmp(argv[1],"m170")?170:
-                       !strcmp(argv[1],"m171")?171:167));
+                       !strcmp(argv[1],"m171")?171:
+                       (!strcmp(argv[1],"m173") ||
+                        !strcmp(argv[1],"--m173"))?173:167));
     return 0;
 }

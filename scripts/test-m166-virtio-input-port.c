@@ -16,6 +16,8 @@
 
 static _Alignas(4096) uint8_t pages[12][NAS_DMA_PAGE_BYTES];
 static bool page_used[12];
+static uint8_t pci_config[NAS_BUS_PCI_CONFIG_BYTES];
+static volatile uint32_t mmio_registers[128];
 uint64_t nas_hhdm_offset(void) { return 0; }
 uint64_t nas_frame_alloc(void) {
     for (unsigned i=0;i<12;i++) if (!page_used[i]) {
@@ -206,8 +208,15 @@ int main(void) {
     struct nas_virtio_transport ktr={.context=&keyboard,.ops=&mock_ops,
         .dma=&nas_dma_qemu_coherent};
     struct nas_bus_device kdev={.bus=NAS_BUS_PCI,
-        .device_id=18,.resource=&keyboard,.context=&ktr};
+        .device_id=18,
+        .resource={.kind=NAS_BUS_RESOURCE_PCI,
+                   .view.pci={.config=pci_config,
+                              .config_bytes=NAS_BUS_PCI_CONFIG_BYTES,
+                              .mapped_bar_mask=1}},.virtio=&ktr};
     assert(nas_virtio_input_driver_register()==0 && bound_driver);
+    struct nas_bus_device no_transport=kdev;
+    no_transport.virtio=NULL;
+    assert(!bound_driver->match(&no_transport));
     assert(bound_driver->match(&kdev));
     assert(bound_driver->probe(&kdev)==0);
     assert(nas_virtio_input_count()==1 && registered==1);
@@ -231,7 +240,10 @@ int main(void) {
     struct nas_virtio_transport ttr={.context=&tablet,.ops=&mock_ops,
         .dma=&nas_dma_qemu_coherent};
     struct nas_bus_device tdev={.bus=NAS_BUS_VIRTIO_MMIO,
-        .device_id=18,.resource=&tablet,.context=&ttr};
+        .device_id=18,
+        .resource={.kind=NAS_BUS_RESOURCE_VIRTIO_MMIO,
+                   .view.mmio={mmio_registers,sizeof(mmio_registers)}},
+        .virtio=&ttr};
     assert(bound_driver->probe(&tdev)==0);
     assert(nas_virtio_input_count()==2 && registered==2);
     assert(received[1]->absbit[0]&3U);

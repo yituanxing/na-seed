@@ -65,7 +65,7 @@ static void paint(uint8_t *pixels,const char *lynx,size_t lynx_size,
                    245,239,219);
 }
 int main(int argc,char **argv) {
-    const int channel=3;
+    const int channel=nasd_client_channel();
     const int live=argc==2 && !strcmp(argv[1],"--m170");
     nasd_require(argc==1 || live,"browser client selector");
     char lynx[2048]={0},mc[4096]={0};
@@ -85,7 +85,8 @@ int main(int argc,char **argv) {
                                      BROWSER_H,&surface);
     paint(pixels,lynx,nlynx,mc,nmc,0);
     __atomic_thread_fence(__ATOMIC_RELEASE);
-    nasd_send_surface(channel,surface,BROWSER,BROWSER_W,BROWSER_H);
+    nasd_send_surface_caps(channel,surface,BROWSER,BROWSER_W,BROWSER_H,
+                           NASD_INPUT_KEYS);
     nasd_mark("M168_SIGNED_LYNX_MC_BROWSER_PASS");
     for(;;) {
         struct message msg=nasd_recv_packet(channel);

@@ -73,6 +73,7 @@ static int start_shell(pid_t *pid,int interactive) {
         if(dup2(fd,0)<0 || dup2(fd,1)<0 || dup2(fd,2)<0) _exit(124);
         if(fd>2)close(fd);
         close(master);close(3);
+        (void)unsetenv(NASD_INHERITED_ENV);
         nasd_write_all(attached[1],"R",1);
         close(attached[1]);
         /* Signed original dialog is invoked by the real guest shell on a
@@ -112,7 +113,8 @@ static void terminal_client(int channel,int rich) {
         nasd_draw_text(pixels,TERM_W,TERM_H,8,9,initial,strlen(initial),
                        250,250,255);
     __atomic_thread_fence(__ATOMIC_RELEASE);
-    nasd_send_surface(channel,surface,TERMINAL,TERM_W,TERM_H);
+    nasd_send_surface_caps(channel,surface,TERMINAL,TERM_W,TERM_H,
+                           NASD_INPUT_KEYS);
     nasd_mark("M167_SIGNED_DIALOG_PTY_SHELL_PASS");
     if(rich)nasd_mark("M168_TERMINAL_TEXT_FROM_PTY_PASS");
     for(;;) {
@@ -235,7 +237,8 @@ static void terminal_live(int channel) {
     transcript_paint(pixels,&t);
     pid_t child=0;
     int pty=start_shell(&child,1);
-    nasd_send_surface(channel,surface,TERMINAL,TERM_W,TERM_H);
+    nasd_send_surface_caps(channel,surface,TERMINAL,TERM_W,TERM_H,
+                           NASD_INPUT_KEYS);
     nasd_mark("M170_PTY_INTERACTIVE_SHELL_ATTACHED");
     unsigned verified=0;
     for(;;) {
@@ -341,7 +344,7 @@ int main(int argc,char **argv) {
                   !strcmp(argv[1],"--m170"))),
                  "terminal client mode selector");
     if(argc==2 && !strcmp(argv[1],"--m170"))
-        terminal_live(3);
-    else terminal_client(3,argc==2);
+        terminal_live(nasd_client_channel());
+    else terminal_client(nasd_client_channel(),argc==2);
     return 0;
 }

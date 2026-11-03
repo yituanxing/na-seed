@@ -149,10 +149,11 @@ int main(int argc,char **argv) {
         host_selftest();return 0;
     }
     nasd_require(argc==1,"LVGL client arguments");
-    app.channel=3;
+    app.channel=nasd_client_channel();
     init_lvgl_surface();
     __atomic_thread_fence(__ATOMIC_RELEASE);
-    nasd_send_surface(app.channel,app.surface_fd,LVGL,GUI_W,GUI_H);
+    nasd_send_surface_caps(app.channel,app.surface_fd,LVGL,GUI_W,GUI_H,
+                           NASD_INPUT_POINTER);
     nasd_mark("M171_LVGL_REAL_RENDER_PASS");
     for(;;) {
         struct message m=nasd_recv_packet(app.channel);

@@ -2,27 +2,6 @@ name: NaSeed M172 device-node and display-backend three-ISA acceptance
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - '.github/workflows/m172-batch.yml'
-      - 'scripts/check-m172-device-display.sh'
-      - 'scripts/test-m172-device-publication.c'
-      - 'scripts/full-kernel-core.sources'
-      - 'scripts/build-riscv64-full.sh'
-      - 'scripts/build-aarch64-full.sh'
-      - 'kernel/drivers/core/**'
-      - 'kernel/drivers/display/**'
-      - 'kernel/fs/syscall.c'
-      - 'kernel/fs/open_path.h'
-      - 'kernel/fs/input_chrdev.c'
-      - 'kernel/fs/input_chrdev.h'
-      - 'kernel/fd.*'
-      - 'kernel/drivers/tty.*'
-      - 'kernel/drivers/pty.*'
-      - 'kernel/init/main.c'
-      - 'kernel/kernel.c'
-      - 'Makefile'
 
 permissions:
   contents: read

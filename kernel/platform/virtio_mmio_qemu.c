@@ -75,7 +75,10 @@ int nas_qemu_virtio_mmio_probe(uint64_t physical, uint64_t virtual_base,
         if(rc<0)return rc;
         devices[slot]=(struct nas_bus_device){
             .bus=NAS_BUS_VIRTIO_MMIO,.device_id=reg[2],
-            .vendor_id=reg[3],.resource=reg,.context=&transports[slot]
+            .vendor_id=reg[3],
+            .resource={.kind=NAS_BUS_RESOURCE_VIRTIO_MMIO,
+                       .view.mmio={.registers=reg,.mapped_bytes=stride}},
+            .virtio=&transports[slot]
         };
         rc=nas_bus_device_register(&devices[slot]);
         if(rc<0)return rc;

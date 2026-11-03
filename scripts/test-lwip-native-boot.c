@@ -80,14 +80,16 @@ static struct nas_netdev second={
 };
 /* The fake PCI discoverer owns transport lifetime while the genuine lwIP
  * core drops the final pin. This exercises the ACTUAL generic bus reaper. */
+static struct nas_bus_device second_bus;
+static uint8_t second_pci_config[NAS_BUS_PCI_CONFIG_BYTES];
 static bool second_bus_match(const struct nas_bus_device *dev){
- return dev && dev->context==&second;
+ return dev==&second_bus;
 }
 static int second_bus_probe(struct nas_bus_device *dev){
- return dev->context==&second && second.registered ? 0:-ENODEV;
+ return dev==&second_bus && second.registered ? 0:-ENODEV;
 }
 static int second_bus_remove(struct nas_bus_device *dev){
- if(dev->context!=&second)return -ENODEV;
+ if(dev!=&second_bus)return -ENODEV;
  int rc=nas_netdev_begin_remove(&second);
  return rc ? rc:nas_netdev_unregister(&second);
 }
@@ -97,7 +99,11 @@ static const struct nas_bus_driver second_driver={
  .probe=second_bus_probe,.remove=second_bus_remove
 };
 static struct nas_bus_device second_bus={
- .bus=NAS_BUS_PCI,.device_id=1,.context=&second,.resource=&second
+ .bus=NAS_BUS_PCI,.device_id=1,
+ .resource={.kind=NAS_BUS_RESOURCE_PCI,
+            .view.pci={.config=second_pci_config,
+                       .config_bytes=NAS_BUS_PCI_CONFIG_BYTES,
+                       .mapped_bar_mask=1}}
 };
 /* The fake Ethernet driver has no DHCP server. Inject a lease transition
  * on the real upstream tcpip_thread, exercising production netif/status

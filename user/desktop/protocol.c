@@ -10,6 +10,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 /* Shared userspace IPC/anonymous surface ownership. No kernel-specific ABI
@@ -58,13 +59,16 @@ struct message nasd_recv_packet(int fd) {
     } else nasd_require(!m.value,"desktop IPC reserved fields");
     return m;
 }
-void nasd_send_surface(int fd,int surface,uint32_t role,unsigned width,
-                       unsigned height) {
+void nasd_send_surface_caps(int fd,int surface,uint32_t role,unsigned width,
+                            unsigned height,uint32_t capabilities) {
     nasd_require(width>0 && height>0 && width<=SCREEN_W &&
                  height<=SCREEN_H-TITLE_H,
                  "client surface dimensions in screen bounds");
+    nasd_require(!(capabilities&~(NASD_INPUT_KEYS|NASD_INPUT_POINTER)),
+                 "desktop input capabilities");
     struct message packet={.type=MSG_READY,.key=role,
-                           .value=(width<<16U)|height};
+                           .value=(width<<16U)|height,
+                           .reserved=getenv(NASD_PROTOCOL_ENV)?capabilities:0};
     struct iovec iov={.iov_base=&packet,.iov_len=sizeof(packet)};
     union {struct cmsghdr align;uint8_t bytes[CMSG_SPACE(sizeof(int))];} control={0};
     struct msghdr m={.msg_iov=&iov,.msg_iovlen=1,
@@ -76,6 +80,29 @@ void nasd_send_surface(int fd,int surface,uint32_t role,unsigned width,
     memcpy(CMSG_DATA(c),&surface,sizeof(surface));
     nasd_require(sendmsg(fd,&m,0)==(ssize_t)sizeof(packet),
             "sendmsg memfd SCM_RIGHTS");
+}
+void nasd_send_surface(int fd,int surface,uint32_t role,unsigned width,
+                       unsigned height) {
+    nasd_send_surface_caps(fd,surface,role,width,height,0);
+}
+static int surface_valid(const struct message *packet,int shared,
+                         uint32_t *kind,unsigned *width,unsigned *height,
+                         uint32_t *capabilities) {
+    const unsigned w=packet->value>>16U,h=packet->value&65535U;
+    if(packet->type!=MSG_READY ||
+       (packet->reserved&~(NASD_INPUT_KEYS|NASD_INPUT_POINTER)) ||
+       !w || !h || w>SCREEN_W || h>SCREEN_H-TITLE_H || shared<0)
+        return 0;
+    struct stat backing={0};
+    const uint64_t expected=(uint64_t)w*(uint64_t)h*4U;
+    if(fstat(shared,&backing)!=0 || !S_ISREG(backing.st_mode) ||
+       backing.st_size<0 || (uint64_t)backing.st_size!=expected)
+        return 0;
+    if(kind)*kind=packet->key;
+    if(capabilities)*capabilities=packet->reserved;
+    if(width)*width=w;
+    if(height)*height=h;
+    return 1;
 }
 int nasd_receive_surface(int fd,int role,unsigned *width,unsigned *height) {
     nasd_require(width!=NULL && height!=NULL,
@@ -103,10 +130,8 @@ int nasd_receive_surface(int fd,int role,unsigned *width,unsigned *height) {
     nasd_require(n>0 && n<=(ssize_t)sizeof(packet),"recvmsg surface header");
     if(n<(ssize_t)sizeof(packet))
         nasd_read_all(fd,(uint8_t *)&packet+n,sizeof(packet)-(size_t)n);
-    const unsigned w=packet.value>>16U,h=packet.value&65535U;
-    nasd_require(packet.type==MSG_READY && packet.key==(unsigned)role &&
-            w>0 && h>0 && w<=SCREEN_W && h<=SCREEN_H-TITLE_H &&
-            !packet.reserved && !(m.msg_flags&(MSG_CTRUNC|MSG_TRUNC)),
+    nasd_require(packet.key==(unsigned)role &&
+            !(m.msg_flags&(MSG_CTRUNC|MSG_TRUNC)),
             "surface role/protocol mismatch");
     struct cmsghdr *c=CMSG_FIRSTHDR(&m);
     nasd_require(c!=NULL && c->cmsg_level==SOL_SOCKET && c->cmsg_type==SCM_RIGHTS &&
@@ -117,14 +142,98 @@ int nasd_receive_surface(int fd,int role,unsigned *width,unsigned *height) {
      * because the SCM_RIGHTS message is syntactically valid. mmap() may
      * succeed on an undersized file, yet pixel reads would SIGBUS. The
      * bounded protocol specifies one exact XRGB32 allocation per window. */
-    struct stat backing={0};
-    const uint64_t expected=(uint64_t)w*(uint64_t)h*4U;
-    nasd_require(fstat(shared,&backing)==0,"fstat received surface FD");
-    nasd_require(S_ISREG(backing.st_mode) && backing.st_size>=0 &&
-                 (uint64_t)backing.st_size==expected,
+    nasd_require(!packet.reserved &&
+                 surface_valid(&packet,shared,NULL,width,height,NULL),
                  "regular surface FD with exact advertised byte length");
-    *width=w;*height=h;
     return shared;
+}
+void nasd_surface_offer_init(struct nasd_surface_offer *offer) {
+    *offer=(struct nasd_surface_offer){.surface_fd=-1};
+}
+void nasd_surface_offer_release(struct nasd_surface_offer *offer) {
+    if(offer->surface_fd>=0)close(offer->surface_fd);
+    nasd_surface_offer_init(offer);
+}
+int nasd_surface_offer_step(int channel,struct nasd_surface_offer *offer,
+                            uint32_t *kind,unsigned *width,unsigned *height,
+                            uint32_t *capabilities) {
+    if(offer->received==sizeof(offer->packet))return -1;
+    const size_t remaining=sizeof(offer->packet)-offer->received;
+    ssize_t n;
+    if(!offer->received) {
+        struct iovec iov={.iov_base=&offer->packet,.iov_len=remaining};
+        union {struct cmsghdr align;
+               uint8_t bytes[CMSG_SPACE(sizeof(int))];} control={0};
+        struct msghdr m={.msg_iov=&iov,.msg_iovlen=1,
+             .msg_control=control.bytes,.msg_controllen=sizeof(control.bytes)};
+        n=recvmsg(channel,&m,MSG_CMSG_CLOEXEC|MSG_DONTWAIT);
+        if(n>0) {
+            struct cmsghdr *c=CMSG_FIRSTHDR(&m);
+            int delivered=-1;
+            if(c && c->cmsg_level==SOL_SOCKET && c->cmsg_type==SCM_RIGHTS &&
+               c->cmsg_len>=CMSG_LEN(sizeof(int)))
+                memcpy(&delivered,CMSG_DATA(c),sizeof(int));
+            if(!c || c->cmsg_level!=SOL_SOCKET || c->cmsg_type!=SCM_RIGHTS ||
+               c->cmsg_len!=CMSG_LEN(sizeof(int)) ||
+               (m.msg_flags&(MSG_CTRUNC|MSG_TRUNC)) || delivered<0) {
+                if(delivered>=0)close(delivered);
+                return -1;
+            }
+            offer->surface_fd=delivered;
+        }
+    } else {
+        n=read(channel,(uint8_t *)&offer->packet+offer->received,remaining);
+    }
+    if(n<0 && (errno==EINTR || errno==EAGAIN || errno==EWOULDBLOCK))return 0;
+    if(n<=0 || (size_t)n>remaining)return -1;
+    offer->received+=(unsigned)n;
+    if(offer->received<sizeof(offer->packet))return 0;
+    return surface_valid(&offer->packet,offer->surface_fd,
+                         kind,width,height,capabilities) ? 1:-1;
+}
+int nasd_packet_step(int channel,struct nasd_packet_reader *reader,
+                     struct message *result) {
+    const size_t remaining=sizeof(reader->packet)-reader->received;
+    if(!remaining)return -1;
+    ssize_t n=read(channel,(uint8_t *)&reader->packet+reader->received,
+                   remaining);
+    if(n<0 && (errno==EINTR || errno==EAGAIN || errno==EWOULDBLOCK))return 0;
+    if(n<=0 || (size_t)n>remaining)return -1;
+    reader->received+=(unsigned)n;
+    if(reader->received<sizeof(reader->packet))return 0;
+    *result=reader->packet;
+    *reader=(struct nasd_packet_reader){0};
+    /* Application-to-compositor data plane never accepts peer-generated
+     * input events, or arbitrary values in a repaint/close notification. */
+    if(result->reserved || (result->type!=MSG_UPDATED &&
+                            result->type!=MSG_CLOSE) ||
+       (result->type==MSG_CLOSE && (result->key || result->value)) ||
+       result->value)return -1;
+    return 1;
+}
+int nasd_client_channel(void) {
+    /* Compositor-launched legacy and bootstrap clients receive a connected
+     * descriptor 3. A child started later by BusyBox shell has no fd 3 and
+     * connects to exactly the same ordinary AF_UNIX server as any app. */
+    if(!getenv(NASD_PROTOCOL_ENV))return 3; /* M167-M171 exact old ABI */
+    const char *inherited=getenv(NASD_INHERITED_ENV);
+    if(inherited && !strcmp(inherited,"3")) {
+        nasd_require(fcntl(3,F_GETFD)>=0,
+                     "compositor inherited FD3 capability missing");
+        return 3;
+    }
+    const char *path=getenv(NASD_SOCKET_ENV);
+    if(!path || !*path)path=NASD_SOCKET_PATH;
+    nasd_require(strlen(path)<sizeof(((struct sockaddr_un *)0)->sun_path),
+                 "desktop socket path length");
+    int fd=socket(AF_UNIX,SOCK_STREAM,0);
+    nasd_require(fd>=0,"create external desktop client socket");
+    struct sockaddr_un address={.sun_family=AF_UNIX};
+    strcpy(address.sun_path,path);
+    nasd_require(connect(fd,(const struct sockaddr *)&address,
+                          sizeof(address))==0,
+                 "connect external desktop session");
+    return fd;
 }
 uint8_t *nasd_make_surface(const char *name,int w,int h,int *outfd) {
     size_t length=(size_t)w*(size_t)h*4U;

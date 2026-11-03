@@ -22,12 +22,37 @@ enum nas_bus_type {
 #define NAS_BUS_DEVICE_LIMIT 64U
 #define NAS_BUS_DRIVER_LIMIT 16U
 struct nas_bus_driver;
+struct nas_virtio_transport;
+/* A borrowed description of the platform-owned discovery resource. Neither
+ * the bus registry nor a class driver may unmap it. PCI BAR ownership stays
+ * in the enumerator; the already-initialized VirtIO transport is the only
+ * queue/register interface exposed to VirtIO class drivers. */
+enum nas_bus_resource_kind {
+    NAS_BUS_RESOURCE_VIRTIO_MMIO = 1,
+    NAS_BUS_RESOURCE_PCI = 2
+};
+#define NAS_BUS_PCI_CONFIG_BYTES 256U
+struct nas_bus_resource {
+    enum nas_bus_resource_kind kind;
+    union {
+        struct {
+            volatile uint32_t *registers;
+            uint32_t mapped_bytes;
+        } mmio;
+        struct {
+            const uint8_t *config;
+            uint16_t config_bytes;
+            uint8_t bus, slot, function;
+            uint8_t mapped_bar_mask;
+        } pci;
+    } view;
+};
 struct nas_bus_device {
     enum nas_bus_type bus;
     uint32_t device_id;
     uint32_t vendor_id;
-    volatile void *resource; /* MMIO region, or PCI transport descriptor */
-    void *context;           /* Discoverer-owned transport state */
+    struct nas_bus_resource resource; /* Borrowed, tagged platform resource. */
+    const struct nas_virtio_transport *virtio; /* Typed, borrowed transport. */
     const struct nas_bus_driver *driver; /* NULL until successful probe */
     bool registered;
     /* Only the bus owns an asynchronous removal request. The discoverer
