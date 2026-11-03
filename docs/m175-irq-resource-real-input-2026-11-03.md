@@ -38,7 +38,11 @@ irqdomain, MSI-X allocation, SMP affinity or a new interrupt worker.
    remain unchanged. `scheduler_service` drains the existing bounded queue
    at a safe boundary, not on an interrupt stack; quota exhaustion keeps
    pending work for a later service slice. No extra permanent kthread is
-   consumed from the kernel's four-worker pool.
+   consumed from the kernel's four-worker pool. Initialization explicitly
+   clears stale device ISR state and binds the controller **before** publishing
+   event buffers: QEMU ARM virt declares edge-triggered GIC SPIs, so enabling
+   the route only after the device has asserted a held-high status risks
+   losing a later rising edge. This ordering is shared across all three ISAs.
 5. Driver removal refuses to free in-use Input devices; once safe, it unbinds
    the IRQ action before stopping/resetting transport and freeing DMA.
    Hardware-routed devices must not silently fall back to polling if IRQ

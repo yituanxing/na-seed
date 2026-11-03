@@ -18,7 +18,6 @@ void nas_sched_service_kernel(void) {
      * fake buses lacking IRQ routes retain their poll-based host contract. */
     (void)nas_virtio_input_poll(64U);
     nas_virtio_input_irq_report();
-    nas_virtio_input_irq_diagnostic(nas_arch_monotonic_ns());
 #endif
     (void)nas_kthread_timers_tick(nas_arch_monotonic_ns());
     if(nas_sched_allow_kernel_slice(nas_sched_has_ready_users(),

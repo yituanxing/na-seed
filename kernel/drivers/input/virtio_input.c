@@ -455,42 +455,4 @@ void nas_virtio_input_irq_report(void) {
     nas_print(" fallback_poll=");nas_dec(fallback_poll);
     nas_print("\n[M175 INPUT IRQ ONLY PASS]\n");
 }
-/* Bounded diagnostic for this first ARM GIC SPI hardware bring-up. It is
- * gated by the *actual* published IRQ domain and uses read-only MMIO status,
- * never read-and-clear transport ACK or speculative queue consumption.
- * Scheduler context is safe; hard-IRQ handlers remain ACK-and-notify only. */
-void nas_virtio_input_irq_diagnostic(uint64_t now_ns) {
-    static uint64_t next_ns;
-    static unsigned reports;
-    if (reports>=64U || (next_ns && now_ns<next_ns))return;
-    bool arm=false;
-    for(unsigned i=0;i<VIRTINPUT_MAX_DEVICES;i++)
-        if(inputs[i].bus_device &&
-           inputs[i].bus_device->resource.irq.domain==NAS_IRQ_DOMAIN_ARM_GIC)
-            arm=true;
-    if(!arm)return;
-    reports++;
-    next_ns=now_ns+UINT64_C(2000000000);
-    for(unsigned i=0;i<VIRTINPUT_MAX_DEVICES;i++) {
-        const struct virtinput_slot *v=&inputs[i];
-        if(!v->bus_device ||
-           v->bus_device->resource.irq.domain!=NAS_IRQ_DOMAIN_ARM_GIC)
-            continue;
-        const volatile uint32_t *mmio=v->bus_device->resource.view.mmio.registers;
-        uint32_t status=mmio?mmio[0x60U/4U]:UINT32_MAX;
-        uint16_t used=v->eventq.ring.used?v->eventq.ring.used->idx:0;
-        nas_print("[M175 ARM INPUT SNAPSHOT] slot=");nas_dec(i);
-        nas_print(" irq=");nas_dec(v->bus_device->resource.irq.hwirq);
-        nas_print(" mmio_isr=");nas_dec(status);
-        nas_print(" ring_used=");nas_dec(used);
-        nas_print(" ring_consumed=");nas_dec(v->eventq.last_used);
-        nas_print(" irq_ack=");
-        nas_dec(__atomic_load_n(&v->irq_acks,__ATOMIC_RELAXED));
-        nas_print(" drains=");nas_dec(v->deferred_drains);
-        nas_print(" events=");nas_dec(v->delivered_events);
-        nas_print(" pending=");
-        nas_dec(__atomic_load_n(&v->irq_pending,__ATOMIC_RELAXED));
-        nas_print("\n");
-    }
-}
 #endif

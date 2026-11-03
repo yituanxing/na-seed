@@ -4,7 +4,6 @@
 #include "../../panic.h"
 #include "../../errno.h"
 #include "../../drivers/core/irq.h"
-#include "../../drivers/serial.h"
 #include "../arch.h"
 #include "context.h"
 
@@ -24,10 +23,8 @@
 #define ARM_VIRTIO_IRQ_COUNT 32U
 #define GICD_CTLR       0x000U
 #define GICD_TYPER      0x004U
-#define GICD_IGROUPR    0x080U
 #define GICD_ISENABLER  0x100U
 #define GICD_ICENABLER  0x180U
-#define GICD_ISPENDR    0x200U
 #define GICD_ICPENDR    0x280U
 #define GICD_IPRIORITYR 0x400U
 #define GICD_ITARGETSR  0x800U
@@ -35,7 +32,6 @@
 #define GICC_PMR        0x004U
 #define GICC_IAR        0x00cU
 #define GICC_EOIR       0x010U
-#define GICC_HPPIR      0x018U
 extern bool nas_arm_map_io_page(uint64_t phys, uint64_t virt);
 static volatile uint32_t *dist;
 static volatile uint32_t *iface;
@@ -67,24 +63,6 @@ int nas_arch_irq_route_enable(unsigned id) {
     __asm__ volatile("dsb sy" : : : "memory");
     dist[GICD_ISENABLER/4+id/32U]=1U<<(id%32U);
     __asm__ volatile("dsb sy; isb" : : : "memory");
-    /* First-batch hardware evidence: record the actual SPI register state
-     * instead of inferring success merely from nas_irq_bind() returning 0.
-     * HPPIR is observational; reading IAR here would wrongly claim IRQ. */
-    nas_print("[M175 ARM GIC ROUTE] id=");nas_dec(id);
-    nas_print(" enabled=");
-    nas_dec((dist[GICD_ISENABLER/4+id/32U]>>(id%32U))&1U);
-    nas_print(" pending=");
-    nas_dec((dist[GICD_ISPENDR/4+id/32U]>>(id%32U))&1U);
-    nas_print(" group=");
-    nas_dec((dist[GICD_IGROUPR/4+id/32U]>>(id%32U))&1U);
-    nas_print(" edge=");
-    nas_dec((dist[GICD_ICFGR/4+id/16U]>>(2U*(id%16U)))&3U);
-    nas_print(" target=");nas_dec(bytes[GICD_ITARGETSR+id]);
-    nas_print(" dist_ctlr=");nas_dec(dist[GICD_CTLR/4]);
-    nas_print(" cpu_ctlr=");nas_dec(iface[0]);
-    nas_print(" pmr=");nas_dec(iface[GICC_PMR/4]);
-    nas_print(" hppir=");nas_dec(iface[GICC_HPPIR/4]);
-    nas_print("\n");
     return 0;
 }
 void nas_arch_irq_route_disable(unsigned id) {
@@ -179,15 +157,7 @@ static void arm_device_complete_irq(uint32_t iar) {
      * before GIC EOI, so the level cannot immediately retrigger.  An
      * already-deasserted device line may have a zero ISR: this is an
      * ordinary unclaimed edge, not a fatal error or permission to poll. */
-    bool claimed=nas_irq_dispatch(id);
-    static unsigned observed;
-    if(observed<16U) {
-        observed++;
-        nas_print("[M175 ARM GIC CLAIM] id=");nas_dec(id);
-        nas_print(" claimed=");nas_dec(claimed);
-        nas_print(" iar=");nas_hex(iar);
-        nas_print("\n");
-    }
+    (void)nas_irq_dispatch(id);
     __asm__ volatile("dsb sy" : : : "memory");
     iface[GICC_EOIR/4]=iar;
     __asm__ volatile("dsb sy" : : : "memory");
