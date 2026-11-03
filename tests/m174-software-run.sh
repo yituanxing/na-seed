@@ -91,6 +91,34 @@ busy awk '
 ' "$work/iostat-cpu"
 echo M185_SOFTWARE_IOSTAT_CPU_FUNCTION_PASS
 
+# M186: the actual Alpine pidstat ELF exercises live per-process accounting
+# rather than just global /proc/stat. A selected SELF PID must survive two
+# one-second sampling intervals and produce two genuine task CPU rows. The
+# kernel already exposes /proc/<pid>/stat, /proc/stat and /proc/uptime; do
+# not claim disk I/O, task delay accounting or a generic process monitor.
+busy test -r /proc/self/stat
+busy timeout 15 /usr/bin/pidstat -u -p SELF 1 2 \
+    > "$work/pidstat-self" 2> "$work/pidstat-self-error"
+busy awk '
+    /(^|[[:space:]])PID[[:space:]]/ && /%CPU/ { headers++; next }
+    $NF=="pidstat" && $1!="Average:" && NF>=9 {
+        # Columns relative to Command are stable even with a 12-hour
+        # timestamp (AM/PM adds one field): UID PID %usr %system %guest
+        # %wait %CPU CPU Command. The process PID must be nonzero.
+        pid=$(NF-7)
+        if (pid !~ /^[0-9]+$/ || pid+0<=0) exit 1
+        if (first_pid && pid!=first_pid) exit 1
+        first_pid=pid
+        for (i=NF-6; i<=NF-2; i++) {
+            if ($i !~ /^[0-9]+([.][0-9]+)?$/) exit 1
+            if ($i+0<0 || $i+0>100.5) exit 1
+        }
+        samples++
+    }
+    END { if (headers<1 || samples!=2) exit 1 }
+' "$work/pidstat-self"
+echo M186_SOFTWARE_PIDSTAT_SELF_PROC_FUNCTION_PASS
+
 # Original ELF entry/version exercises ONLY, never watch/TUI semantics.
 # Alpine inotifywait's --version can exit 1 after printing its version/usage
 # on a kernel without inotify. It is not an inotify-watch functional check:

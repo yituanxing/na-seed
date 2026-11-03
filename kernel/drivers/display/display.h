@@ -7,8 +7,9 @@
 /* A scanout surface class, independent of firmware, PCI/MMIO transport,
  * userspace's Linux fbdev ABI and the desktop compositor. One fixed-mode
  * primary may be selected during bootstrap; a real driver may take over
- * Limine bootfb ONCE before user entry. The resulting primary is immutable
- * throughout userspace. Modeset, hotplug and GPU commands live elsewhere. */
+ * Limine bootfb ONCE before user entry. A published primary is stable until
+ * explicitly detached after all consumers release it. Modeset and GPU
+ * commands live elsewhere. */
 struct nas_display_mode {
     uint32_t width, height, pitch;
     uint16_t bpp;
@@ -44,8 +45,18 @@ struct nas_display_device {
  * replacing the provisional Limine bootfb exactly once before user entry. */
 bool nas_display_register_primary(struct nas_display_device *);
 bool nas_display_boot_takeover(struct nas_display_device *);
+/* Detach exactly the registered owner. A published /dev/fb0 shared OpenFile
+ * pins the scanout; removal fails -EBUSY without changing any class state.
+ * Successful removal creates the only vacancy in which a locked class may
+ * register another validated primary. Firmware takeover remains one-shot. */
+int nas_display_unregister_primary(struct nas_display_device *);
+/* Installed once by the fbdev character-device adapter after its stable
+ * node is registered. The query counts live shared OpenFile descriptions,
+ * not duplicated descriptors; a second different provider is rejected. */
+int nas_display_set_open_pins_callback(unsigned (*query)(void));
 /* Called immediately before entering userspace; late registration and all
- * replacements are then refused, including if no display was discovered. */
+ * replacements are then refused, including if no display was discovered.
+ * A subsequent explicit unregistration opens a distinct rebind vacancy. */
 void nas_display_lock_primary(void);
 const struct nas_display_device *nas_display_primary(void);
 uint64_t nas_display_length(void);

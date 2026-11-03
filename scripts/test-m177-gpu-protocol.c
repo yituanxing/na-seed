@@ -15,11 +15,15 @@ enum failure {
     NO_IRQ_SOURCE, NO_PRIMARY, RUNTIME_FENCE, RUNTIME_TIMEOUT,
     RUNTIME_DIRTY_EPOCH, PIXEL_RELEASE_FAIL, ENTRY_RELEASE_FAIL,
     COMMAND_RELEASE_FAIL, RESPONSE_RELEASE_FAIL, RING_RELEASE_FAIL,
-    RING_INIT_ORPHAN, ALLOC_ROLLBACK_FAIL, IRQ_UNBIND_FAIL
+    RING_INIT_ORPHAN, ALLOC_ROLLBACK_FAIL, IRQ_UNBIND_FAIL,
+    REMOVE_PIXEL_RELEASE_FAIL, REMOVE_RING_RELEASE_FAIL,
+    REMOVE_IRQ_UNBIND_FAIL
 };
 static enum failure failure;
 static const struct nas_bus_driver *registered_driver;
 static struct nas_display_device *primary;
+static unsigned live_fb_files;
+static bool takeover_done, class_locked, class_vacant;
 static struct nas_irq_action *bound_irq;
 static unsigned allocs, frees, resets, syncs, commands, registered;
 static unsigned scanout, transfers, flushes;
@@ -32,6 +36,7 @@ static uint64_t ticks;
 static uint32_t submitted_types[32];
 static uint32_t original_alloc_count;
 static uint32_t irq_status;
+static uint64_t submitted_fence;
 static unsigned polls;
 static unsigned ring_allocs,ring_frees,ring_release_failures;
 static unsigned dma_release_failures;
@@ -47,16 +52,29 @@ int nas_bus_driver_register(const struct nas_bus_driver *driver) {
     return 0;
 }
 bool nas_display_boot_takeover(struct nas_display_device *display) {
-    if (failure==NO_PRIMARY) return false;
+    if (failure==NO_PRIMARY || takeover_done || class_locked) return false;
     assert(!primary);
     primary=display;
+    takeover_done=true;
     return true;
 }
 bool nas_display_register_primary(struct nas_display_device *display) {
     if (failure==NO_PRIMARY) return false;
+    if(class_locked && !class_vacant)return false;
     assert(!primary);
     primary=display;
+    class_vacant=false;
     return true;
+}
+int nas_display_unregister_primary(struct nas_display_device *display) {
+    if(!primary)return -ENODEV;
+    if(primary!=display)return -EINVAL;
+    /* Real fbdev class checks nas_chrdev_node.pins, one per shared OpenFile
+     * across fork/dup, before withdrawing a published DisplayDevice. */
+    if(live_fb_files)return -EBUSY;
+    primary=NULL;
+    class_vacant=true;
+    return 0;
 }
 
 int nas_dma_alloc_page(const struct nas_dma_provider *provider,
@@ -81,6 +99,8 @@ int nas_dma_free_page(const struct nas_dma_provider *provider,
                       struct nas_dma_page *page) {
     assert(provider && page && page->cpu);
     const bool failing_page=(failure==PIXEL_RELEASE_FAIL &&
+                                 page==&gpu.pixels[200]) ||
+                            (failure==REMOVE_PIXEL_RELEASE_FAIL &&
                                  page==&gpu.pixels[200]) ||
                             (failure==ENTRY_RELEASE_FAIL &&
                                  page==&gpu.entries[0]) ||
@@ -150,7 +170,8 @@ int nas_irq_bind(struct nas_irq_action *action,struct nas_irq_route route,
     return 0;
 }
 int nas_irq_unbind(struct nas_irq_action *action) {
-    if(failure==IRQ_UNBIND_FAIL && action->bound &&
+    if((failure==IRQ_UNBIND_FAIL ||
+        failure==REMOVE_IRQ_UNBIND_FAIL) && action->bound &&
        !irq_unbind_failed) {
         irq_unbind_failed=true;
         return -EAGAIN;
@@ -196,7 +217,8 @@ int nas_vring_queue_close(struct nas_vring_queue *queue) {
         queue->active=false;
         queue->transport->ops->reset(queue->transport->context);
     }
-    if((failure==RING_RELEASE_FAIL || failure==RING_INIT_ORPHAN) &&
+    if((failure==RING_RELEASE_FAIL || failure==RING_INIT_ORPHAN ||
+        failure==REMOVE_RING_RELEASE_FAIL) &&
        !ring_release_failures++)return -EAGAIN;
     free(queue->dma_page.cpu);
     queue->dma_page.cpu=NULL;
@@ -227,7 +249,12 @@ int nas_vring_queue_submit(struct nas_vring_queue *queue,
     const struct gpu_hdr *request=(const void *)(uintptr_t)segments[0].bus_address;
     const uint32_t type=request->type;
     submitted_types[commands++]=type;
-    assert((request->flags&GPU_FENCE) && request->fence_id==commands);
+    /* A correct post-unplug rebind starts a fresh independent device fence
+     * sequence while the host fixture keeps a cumulative command count. */
+    assert((request->flags&GPU_FENCE) &&
+           (request->fence_id==submitted_fence+1U ||
+            (request->fence_id==1U && submitted_fence>=4U)));
+    submitted_fence=request->fence_id;
     assert(segments[count-1].device_writes);
     assert(segments[count-1].length==sizeof(struct gpu_resp_info));
     struct gpu_resp_info *answer=(void *)(uintptr_t)segments[count-1].bus_address;
@@ -323,9 +350,66 @@ static enum failure parse_mode(const char *name) {
     if (!strcmp(name,"ring_init_orphan"))return RING_INIT_ORPHAN;
     if (!strcmp(name,"alloc_rollback_fail"))return ALLOC_ROLLBACK_FAIL;
     if (!strcmp(name,"irq_unbind_fail"))return IRQ_UNBIND_FAIL;
+    if (!strcmp(name,"remove_pixel_release_fail"))return REMOVE_PIXEL_RELEASE_FAIL;
+    if (!strcmp(name,"remove_ring_release_fail"))return REMOVE_RING_RELEASE_FAIL;
+    if (!strcmp(name,"remove_irq_unbind_fail"))return REMOVE_IRQ_UNBIND_FAIL;
     fprintf(stderr,"unknown fixture: %s\n",name);
     exit(2);
 }
+
+/* M186: Exercise a *published* DisplayDevice's actual bus removal boundary.
+ * A shared /dev/fb0 File pin blocks unbind without affecting live scanout.
+ * Once the last File closes, class retirement precedes IRQ/DMA shutdown;
+ * provider failures keep an un-reusable owner until remove retries. A new
+ * device may then bind after primary_lock via explicit vacant-slot policy,
+ * never by a second unauthorized bootfb takeover. */
+static void exercise_unplug(struct nas_bus_device *device) {
+    assert(primary==&gpu.display && gpu.claimed && !gpu.teardown_pending);
+    assert(!live_fb_files);
+    live_fb_files=1U;
+    class_locked=true;
+    assert(registered_driver->remove(device)==-EBUSY);
+    assert(primary==&gpu.display && gpu.claimed && !gpu.teardown_pending);
+    assert(gpu.owner==device && bound_irq && bound_irq->bound);
+    uint8_t sample=0x6d;
+    assert(gpu.display.ops->write_at(&gpu.display,0U,&sample,1U)==1U);
+    sample=0U;
+    assert(gpu.display.ops->read_at(&gpu.display,0U,&sample,1U)==1U);
+    assert(sample==0x6d);
+    live_fb_files=0;
+
+    const bool removal_fault=(failure==REMOVE_PIXEL_RELEASE_FAIL ||
+                              failure==REMOVE_RING_RELEASE_FAIL ||
+                              failure==REMOVE_IRQ_UNBIND_FAIL);
+    assert(registered_driver->remove(device)==
+           (removal_fault ? -EAGAIN : 0));
+    if(removal_fault) {
+        assert(!primary && !gpu.claimed && gpu.teardown_pending &&
+               gpu.owner==device && class_vacant);
+        assert(registered_driver->probe(device)==-EBUSY);
+        assert(gpu.owner==device);
+        assert(registered_driver->remove(device)==0);
+    }
+    assert(!primary && !gpu.claimed && !gpu.owner && !gpu.teardown_pending);
+    assert(allocs==frees && ring_allocs==ring_frees && !bound_irq);
+    assert(!nas_virtio_gpu_count());
+
+    /* The prior GPU bus owner has fully retired, so a later real probe can
+     * publish a fresh DisplayDevice without going through Limine again. */
+    const unsigned old_commands=commands;
+    failure=GOOD;
+    assert(registered_driver->probe(device)==0);
+    assert(primary==&gpu.display && gpu.claimed && gpu.owner==device);
+    assert(commands==old_commands+4U && takeover_done && !class_vacant);
+    assert(allocs-frees==GPU_PAGES+GPU_ENTRY_PAGES+2U);
+    assert(ring_allocs-ring_frees==1U && gpu.control.active);
+    assert(registered_driver->remove(device)==0);
+    assert(!primary && !gpu.owner && !nas_virtio_gpu_count());
+    assert(allocs==frees && ring_allocs==ring_frees && !bound_irq);
+    puts("[M186 GPU REMOVE/REBIND PASS] framebuffer pin, class withdrawal,"
+         " IRQ/DMA retry and explicit post-lock vacancy, no bootfb retakeover");
+}
+
 int main(int argc,char **argv) {
     assert(argc==2);
     failure=parse_mode(argv[1]);
@@ -345,7 +429,7 @@ int main(int argc,char **argv) {
     assert(nas_virtio_gpu_driver_register()==0 && registered==1U);
     assert(registered_driver && registered_driver->match(&device));
     const int result=registered_driver->probe(&device);
-    if(failure>=PIXEL_RELEASE_FAIL) {
+    if(failure>=PIXEL_RELEASE_FAIL && failure<REMOVE_PIXEL_RELEASE_FAIL) {
         /* A failed probe is not bound to the generic bus. The next probe
          * must reap its old transport without ever freeing a live primary
          * display, losing a DMA page, or releasing any page twice. */
@@ -374,14 +458,14 @@ int main(int argc,char **argv) {
                gpu.owner==&device && bound_irq && bound_irq->bound);
         assert(allocs-frees==GPU_PAGES+GPU_ENTRY_PAGES+2U);
         assert(ring_allocs-ring_frees==1U && gpu.control.active);
-        assert(registered_driver->remove(&device)==-EOPNOTSUPP);
-        assert(registered_driver->probe(&device)==-ENODEV);
+        exercise_unplug(&device);
         printf("[M185 GPU LIFETIME PASS] case=%s owner preserved, retryable"
                " after provider/ring failures, exact-once DMA releases\n",argv[1]);
         return 0;
     }
     if (failure!=GOOD && failure!=RUNTIME_FENCE &&
-        failure!=RUNTIME_TIMEOUT && failure!=RUNTIME_DIRTY_EPOCH) {
+        failure!=RUNTIME_TIMEOUT && failure!=RUNTIME_DIRTY_EPOCH &&
+        failure<REMOVE_PIXEL_RELEASE_FAIL) {
         assert(result<0 && !gpu.claimed && !primary && !bound_irq);
         assert(allocs==frees && !nas_virtio_gpu_count());
         assert(ring_allocs==ring_frees);
@@ -394,15 +478,20 @@ int main(int argc,char **argv) {
     assert(nas_virtio_gpu_count()==1U && allocs==GPU_PAGES+GPU_ENTRY_PAGES+2U);
     assert(commands==4U && gpu.submitted==4U && gpu.completed==4U);
     assert(bound_irq && bound_irq->bound && gpu.dirty);
-    /* The primary DisplayDevice retains borrowed GPU DMA for its entire
-     * lifetime. This is a terminal hot-remove restriction, not a retryable
-     * busy state that would strand the generic bus removal queue forever. */
-    assert(registered_driver->remove(&device)==-EOPNOTSUPP);
+    /* A published scanout with an open framebuffer File remains usable
+     * until the owner can retire all shared OpenFile pins. */
+    live_fb_files=1U;
+    assert(registered_driver->remove(&device)==-EBUSY);
+    live_fb_files=0;
     assert(bound_irq->source_ack(bound_irq->source_context)==0U);
     assert(gpu.irq_acks==0U);
     assert(registered_driver->probe(&device)==-ENODEV);
     assert(gpu.display.mode.width==800 && gpu.display.mode.height==600);
     assert(gpu.display.mode.pitch==3200 && gpu.display.mode.bpp==32);
+    if(failure>=REMOVE_PIXEL_RELEASE_FAIL) {
+        exercise_unplug(&device);
+        return 0;
+    }
     if (failure==RUNTIME_FENCE) {
         assert(gpu.display.ops->present(&gpu.display)==0);
         assert(gpu.runtime_phase==GPU_RUNTIME_TRANSFER);
@@ -415,6 +504,7 @@ int main(int argc,char **argv) {
         assert(gpu.display.ops->present(&gpu.display)==-EIO);
         assert(commands==sent);
         assert(!gpu.reported && gpu.transfers==0U);
+        exercise_unplug(&device); /* reset may reclaim a poisoned in-flight DMA */
         printf("[M177 HOST GPU RUNTIME FAIL CLOSED PASS] pinned=%u pending=%u\n",
                allocs,commands);
         return 0;
@@ -429,6 +519,7 @@ int main(int argc,char **argv) {
         assert(rc==-ETIMEDOUT && gpu.stalled && gpu.dirty);
         assert(commands==submitted && polls==polled);
         assert(allocs==473U && !frees);
+        exercise_unplug(&device); /* timeout must not leak command/scanout */
         puts("[M181 GPU IRQ TIMEOUT PASS] no polling, no DMA reuse");
         return 0;
     }
@@ -447,6 +538,7 @@ int main(int argc,char **argv) {
         deliver_gpu_completion();
         assert(!gpu.dirty && gpu.runtime_phase==GPU_RUNTIME_IDLE);
         assert(gpu.transfers==2U && gpu.flushes==2U);
+        exercise_unplug(&device);
         puts("[M181 GPU DIRTY EPOCH PASS] writes during old DMA re-presented");
         return 0;
     }
@@ -505,6 +597,7 @@ int main(int argc,char **argv) {
            gpu.submitted==16U && gpu.completed==16U &&
            gpu.transfers==6U && gpu.flushes==6U);
     assert(syncs>100 && allocs==473U && frees==0U);
+    exercise_unplug(&device);
     printf("[M177 HOST GPU PROTOCOL PASS] 469 pages across 2 attach SG pages,"
            " GET/CREATE/ATTACH/SCANOUT, 5 fenced TRANSFER/FLUSH,"
            " row offset, dirty coalescing, exact DMA lifetime\n");

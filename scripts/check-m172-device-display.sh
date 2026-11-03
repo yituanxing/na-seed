@@ -23,6 +23,13 @@ cc -std=c11 -O1 -g -Wall -Wextra -Werror -fno-builtin \
   -o build/m172-device-display/registered-display
 ASAN_OPTIONS=detect_leaks=0 build/m172-device-display/registered-display boot
 ASAN_OPTIONS=detect_leaks=0 build/m172-device-display/registered-display provider
+# M186: class owner detaches only after live OpenFile consumers release;
+# an explicit vacancy permits post-lock rebind without reopening bootfb's
+# one-shot takeover or silently allowing first-time late registrations.
+ASAN_OPTIONS=detect_leaks=0 build/m172-device-display/registered-display late
+ASAN_OPTIONS=detect_leaks=0 build/m172-device-display/registered-display detach
+ASAN_OPTIONS=detect_leaks=0 build/m172-device-display/registered-display boot-rebind
+sh scripts/check-m186-fbdev-node-pins.sh
 sh scripts/check-m167-fb-pwrite.sh
 
 # The production VFS-first bootstrap fallback, OpenFile final-close, TTY,

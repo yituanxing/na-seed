@@ -11,6 +11,11 @@ static struct nas_display_device *primary_display;
 static uint64_t primary_bytes;
 static bool primary_locked;
 static bool boot_taken_over;
+/* Do not permit arbitrary late discovery after lock. A successful explicit
+ * detach, which has checked all /dev/fb0 OpenFile pins, authorizes the next
+ * primary registration even if the kernel already entered userspace. */
+static bool primary_vacant;
+static unsigned (*primary_open_pins)(void);
 
 /* A Limine-provided framebuffer is an ordinary *backend*, not the display
  * interface itself. These pages belong to firmware and are already mapped
@@ -51,10 +56,12 @@ static bool valid_device(const struct nas_display_device *device,
 
 bool nas_display_register_primary(struct nas_display_device *device) {
     uint64_t bytes=0;
-    if(primary_display || primary_locked || !valid_device(device,&bytes))
+    if(primary_display || (primary_locked && !primary_vacant) ||
+       !valid_device(device,&bytes))
         return false;
     primary_display=device;
     primary_bytes=bytes;
+    primary_vacant=false;
     return true;
 }
 bool nas_display_boot_takeover(struct nas_display_device *device) {
@@ -67,7 +74,28 @@ bool nas_display_boot_takeover(struct nas_display_device *device) {
     primary_display=device;
     primary_bytes=bytes;
     boot_taken_over=true;
+    primary_vacant=false;
     return true;
+}
+int nas_display_set_open_pins_callback(unsigned (*query)(void)) {
+    if(!query)return -EINVAL;
+    if(primary_open_pins && primary_open_pins!=query)return -EBUSY;
+    primary_open_pins=query;
+    return 0;
+}
+int nas_display_unregister_primary(struct nas_display_device *device) {
+    if(!device)return -EINVAL;
+    if(!primary_display)return -ENODEV;
+    if(primary_display!=device)return -EINVAL;
+    /* After user entry the class must know how to count published /dev/fb0
+     * OpenFile pins. Never allow a missing adapter/query to masquerade as
+     * zero live readers. Bootstrap failures can still retire pre-lock. */
+    if(primary_locked && !primary_open_pins)return -EBUSY;
+    if(primary_open_pins && primary_open_pins())return -EBUSY;
+    primary_display=NULL;
+    primary_bytes=0;
+    primary_vacant=true;
+    return 0;
 }
 void nas_display_lock_primary(void) {primary_locked=true;}
 const struct nas_display_device *nas_display_primary(void) {
@@ -114,8 +142,8 @@ bool nas_fbdev_boot_init(const struct nas_fb_boot_info *src) {
     /* Firmware initialization is a bootstrap-only operation, before any
      * user File can refer to /dev/fb0. Preserve the historical ability to
      * reject/replace a bad Limine candidate while never displacing a
-     * separately registered DisplayDevice backend. Runtime hot-unplug is
-     * intentionally not an operation exposed by this display class. */
+     * separately registered DisplayDevice backend. Explicit post-bootstrap
+     * removal/rebind instead uses the DisplayDevice owner API above. */
     if(primary_locked || boot_taken_over ||
        (primary_display && primary_display!=&boot_display))return false;
     if(primary_display==&boot_display) {

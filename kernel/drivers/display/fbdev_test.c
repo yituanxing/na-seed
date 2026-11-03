@@ -1,10 +1,12 @@
 /* Host-only contract tests. Build with:
  * cc -std=c11 -Wall -Wextra -Werror fbdev.c fbdev_test.c -o fbdev-test
- * ./fbdev-test boot && ./fbdev-test provider
+ * ./fbdev-test boot && ./fbdev-test provider && ./fbdev-test late &&
+ * ./fbdev-test detach && ./fbdev-test boot-rebind
  * A fresh process is used for each scenario because the primary scanout
- * deliberately cannot be replaced after registration. */
+ * has process-global state and supports only explicit, pinned-safe rebind. */
 #include "display.h"
 #include "fbdev.h"
+#include "../../errno.h"
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -85,6 +87,9 @@ static uint64_t mock_write(struct nas_display_device *dev,uint64_t offset,
 static const struct nas_display_ops mock_ops={
     .read_at=mock_read,.write_at=mock_write
 };
+static unsigned pinned_files;
+static unsigned file_pins(void) {return pinned_files;}
+static unsigned other_file_pins(void) {return 0;}
 
 static void test_provider(void) {
     struct nas_display_device other={
@@ -107,10 +112,96 @@ static void test_provider(void) {
     assert(!nas_display_register_primary(&other));
 }
 
+/* Only an explicit successful detach creates a vacancy across the
+ * user-entry lock. No ordinary late primary registration is permitted. */
+static void test_locked_late(void) {
+    struct nas_display_device late={
+        .name="late gpu",.backend=pixels,.mode=rgb32(),.ops=&mock_ops
+    };
+    nas_display_lock_primary();
+    assert(!nas_display_register_primary(&late));
+    assert(nas_display_unregister_primary(&late)==-ENODEV);
+    assert(!nas_fbdev_available());
+    assert(!nas_fbdev_length());
+}
+
+static void test_detach_rebind(void) {
+    struct nas_display_device first={
+        .name="first GPU",.backend=pixels,.mode=rgb32(),.ops=&mock_ops
+    };
+    struct nas_display_device second={
+        .name="second GPU",.backend=pixels,.mode=rgb32(),.ops=&mock_ops
+    };
+    assert(nas_display_register_primary(&first));
+    nas_display_lock_primary();
+    assert(nas_display_unregister_primary(NULL)==-EINVAL);
+    assert(nas_display_unregister_primary(&second)==-EINVAL);
+    /* Without the registered /dev/fb0 adapter a locked primary must
+     * fail closed instead of guessing that no external File is open. */
+    assert(nas_display_unregister_primary(&first)==-EBUSY);
+    assert(nas_display_set_open_pins_callback(NULL)==-EINVAL);
+    assert(nas_display_set_open_pins_callback(file_pins)==0);
+    assert(nas_display_set_open_pins_callback(file_pins)==0);
+    assert(nas_display_set_open_pins_callback(other_file_pins)==-EBUSY);
+    pinned_files=2;
+    assert(nas_display_unregister_primary(&first)==-EBUSY);
+    assert(nas_display_primary()==&first);
+    assert(nas_display_length()==sizeof(pixels));
+    assert(nas_fbdev_available());
+    assert(!nas_display_register_primary(&second));
+    pinned_files=0;
+    assert(nas_display_unregister_primary(&first)==0);
+    assert(nas_display_unregister_primary(&first)==-ENODEV);
+    assert(!nas_fbdev_available() && nas_display_primary()==NULL);
+    assert(nas_fbdev_length()==0);
+    assert(nas_display_read_at(0,pixels,1)==0);
+    assert(nas_display_write_at(0,pixels,1)==0);
+    assert(nas_display_present()==-ENODEV);
+    /* A successful detach alone permits one validated register after lock. */
+    second.mode.red_shift=8;
+    assert(!nas_display_register_primary(&second));
+    second.mode=rgb32();
+    assert(nas_display_register_primary(&second));
+    assert(nas_display_primary()==&second && nas_fbdev_available());
+    assert(!nas_display_register_primary(&first));
+    assert(nas_display_unregister_primary(&first)==-EINVAL);
+    assert(nas_display_unregister_primary(&second)==0);
+    assert(nas_display_register_primary(&first));
+    assert(nas_display_primary()==&first);
+}
+
+static void test_boot_rebind(void) {
+    struct nas_fb_boot_info fb={
+        .address=pixels,.width=4,.height=3,.pitch=16,.bpp=32,
+        .memory_model=1,.red_size=8,.red_shift=16,
+        .green_size=8,.green_shift=8,.blue_size=8,.blue_shift=0
+    };
+    struct nas_display_device gpu={
+        .name="gpu takeover",.backend=pixels,.mode=rgb32(),.ops=&mock_ops
+    };
+    struct nas_display_device replacement={
+        .name="gpu replacement",.backend=pixels,.mode=rgb32(),.ops=&mock_ops
+    };
+    assert(nas_fbdev_boot_init(&fb));
+    assert(nas_display_boot_takeover(&gpu));
+    nas_display_lock_primary();
+    assert(nas_display_set_open_pins_callback(file_pins)==0);
+    assert(nas_display_unregister_primary(&gpu)==0);
+    assert(!nas_fbdev_available());
+    assert(!nas_display_boot_takeover(&replacement));
+    assert(!nas_fbdev_boot_init(&fb));
+    assert(nas_display_register_primary(&replacement));
+    assert(nas_display_primary()==&replacement);
+    assert(!nas_display_boot_takeover(&gpu));
+}
+
 int main(int argc,char **argv) {
     if(argc!=2)return 2;
     if(strcmp(argv[1],"boot")==0)test_boot();
     else if(strcmp(argv[1],"provider")==0)test_provider();
+    else if(strcmp(argv[1],"late")==0)test_locked_late();
+    else if(strcmp(argv[1],"detach")==0)test_detach_rebind();
+    else if(strcmp(argv[1],"boot-rebind")==0)test_boot_rebind();
     else return 2;
     puts("DISPLAY BACKEND PASS");
     return 0;

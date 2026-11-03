@@ -89,7 +89,7 @@ struct gpu_device {
     uint16_t runtime_head;
     uint64_t runtime_fence, runtime_deadline;
     enum gpu_runtime_phase runtime_phase;
-    bool dirty, claimed, reported, stalled;
+    bool dirty, claimed, reported, stalled, teardown_pending;
 };
 static struct gpu_device gpu;
 
@@ -214,8 +214,8 @@ poisoned:
 /* One ownership unwind for probe failure and a later retry. An unsuccessful
  * provider release is not a successful detach: retain this singleton and its
  * original transport until every DMA owner has actually been returned.
- * The published primary display is intentionally NEVER passed here: fbdev
- * has no unregister/unpin contract for a live /dev/fb0 consumer yet. */
+ * A published primary must FIRST be unregistered from the DisplayDevice
+ * class, which checks outstanding shared /dev/fb0 OpenFile pins. */
 static int release_dma(struct gpu_device *g) {
     /* IRQ is detached before transport reset, reset before freeing ANY page
      * that a late host DMA request could still reference. */
@@ -478,6 +478,10 @@ static bool match(const struct nas_bus_device *dev) {
 static int probe(struct nas_bus_device *dev) {
     if(!dev || !dev->virtio)return -ENODEV;
     if(gpu.claimed)return -ENODEV; /* One primary, one owned scanout. */
+    /* A previously bound bus owner remains live until its remove callback
+     * finishes. Do not steal its singleton on a different device probe just
+     * because class withdrawal succeeded but DMA free later failed. */
+    if(gpu.teardown_pending)return -EBUSY;
     if(gpu.owner) {
         /* The generic bus did not publish a driver when probe failed, so
          * its remove() callback cannot reap that failed probe. Retry its
@@ -497,10 +501,25 @@ static int probe(struct nas_bus_device *dev) {
     return rc;
 }
 static int remove_device(struct nas_bus_device *dev) {
-    /* Until DisplayDevice supports unpin/unregister, an open /dev/fb0 may
-     * refer to this scanout forever. Permanent unsupported removal must
-     * not be treated as a transient EBUSY by bus retry processing. */
-    return gpu.claimed && gpu.owner==dev ? -EOPNOTSUPP : -ENODEV;
+    if(!dev || gpu.owner!=dev || (!gpu.claimed && !gpu.teardown_pending))
+        return -ENODEV;
+    if(!gpu.teardown_pending) {
+        /* The class owns the first retirement boundary: while a shared
+         * OpenFile pins /dev/fb0 return EBUSY with the primary, backing,
+         * IRQ and DMA *all* still serviceable. A successful unregister
+         * withdraws the backend from future use before hardware resets. */
+        int rc=nas_display_unregister_primary(&gpu.display);
+        if(rc)return rc;
+        gpu.claimed=false;
+        gpu.teardown_pending=true;
+    }
+    /* IRQ unbind, ring reset/close and every DMA page release may fail.
+     * Keep this exact owner until a later bus remove retries the remainder;
+     * no new probe may reuse its transport or static slot meanwhile. */
+    int rc=release_dma(&gpu);
+    if(rc)return rc;
+    memset(&gpu,0,sizeof(gpu));
+    return 0;
 }
 static const struct nas_bus_driver gpu_driver={
     .name="virtio-gpu-2d",.bus_mask=NAS_BUS_MASK_ALL,

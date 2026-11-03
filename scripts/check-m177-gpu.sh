@@ -13,7 +13,9 @@ for scenario in bad_response bad_fence short_reply missing_scanout \
                 no_irq_source no_primary runtime_fence runtime_timeout \
                 runtime_dirty_epoch pixel_release_fail entry_release_fail \
                 command_release_fail response_release_fail ring_release_fail \
-                ring_init_orphan alloc_rollback_fail irq_unbind_fail; do
+                ring_init_orphan alloc_rollback_fail irq_unbind_fail \
+                remove_pixel_release_fail remove_ring_release_fail \
+                remove_irq_unbind_fail; do
     build/m177/test-gpu-protocol "$scenario"
 done
 cc -std=c11 -O2 -Wall -Wextra -Werror -fsanitize=address,undefined \
@@ -31,4 +33,4 @@ sh -n scripts/probe-riscv64-busybox-matrix.sh
 sh -n scripts/probe-aarch64-busybox-matrix.sh
 sh scripts/check-m172-device-display.sh
 sh scripts/check-m176-net-irq.sh
-echo '[M177/M181 HOST GPU PASS] real driver protocol, IRQ-only runtime completion, dirty epochs, timeout/fence DMA lifetime, one-shot DisplayDevice takeover, unchanged M176 IRQ/network and M172 fbdev/evdev'
+echo '[M177/M181/M186 HOST GPU PASS] real protocol, IRQ-only runtime completion, dirty epochs, timeout/fence DMA lifetime, pinned framebuffer removal/rebind, prior network/input/IRQ and framebuffer oracles'
