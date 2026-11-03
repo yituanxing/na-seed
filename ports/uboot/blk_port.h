@@ -19,6 +19,9 @@ struct nas_uboot_block{
  struct virtqueue vq;
  struct virtqueue *queue_refs[1];
  bool busy,poisoned;
+ /* Class unregister may succeed while vring/DMA/heap teardown fails.
+  * Keep the stable slot and retry remaining owner-controlled releases. */
+ bool teardown_pending;
  bool flush_supported;
 };
 int nas_uboot_block_attach(struct nas_uboot_block *,

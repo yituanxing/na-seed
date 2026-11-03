@@ -228,12 +228,62 @@ static void net_rx_irq_notify(void *context,uint32_t source_status){
  if(__atomic_load_n(&n->netdev.rx_wake,__ATOMIC_ACQUIRE))n->irq_rx_wakes++;
  nas_netdev_notify_rx(&n->netdev);
 }
+/* This phase is safe after netdev's final consumer releases its pin, or
+ * after an attach that never published a class device. A failed reset/IRQ
+ * unbind or DMA release leaves each still-owned resource in place for a
+ * subsequent retry; partially retired queues/pages are never freed twice.
+ * The generic bus retries only -EBUSY/-EAGAIN, treating other errors as
+ * terminal while keeping the unfinished hardware owner intact. */
+static int net_release_hardware(struct nas_uboot_net *n) {
+ int rc=nas_irq_unbind(&n->rx_irq);
+ if(rc)return rc;
+ if(n->upstream_started && !n->upstream_stopped) {
+     upstream_ops()->stop(&n->udev);
+     n->upstream_stopped=true;
+ }
+ bool had_queues=n->rx_ring.active || n->tx_ring.active ||
+                 n->rx_ring.dma_page.cpu || n->tx_ring.dma_page.cpu;
+ /* A failed probe can reach hardware feature negotiation without opening
+  * either queue. Reset that partial transport before releasing DMA. */
+ if(!had_queues && n->transport.ops && n->transport.ops->reset)
+     n->transport.ops->reset(n->transport.context);
+ if(n->rx_ring.active || n->rx_ring.dma_page.cpu) {
+     rc=nas_vring_queue_close(&n->rx_ring);
+     if(rc)return rc;
+ }
+ if(n->tx_ring.active || n->tx_ring.dma_page.cpu) {
+     rc=nas_vring_queue_close(&n->tx_ring);
+     if(rc)return rc;
+ }
+ for(unsigned i=0;i<n->rx_dma_count;i++) {
+     if(!n->rx_dma[i].cpu)continue;
+     rc=nas_dma_free_page(n->transport.dma,&n->rx_dma[i]);
+     if(rc)return rc;
+ }
+ n->rx_dma_count=0;
+ if(n->tx_dma.cpu) {
+     rc=nas_dma_free_page(n->transport.dma,&n->tx_dma);
+     if(rc)return rc;
+ }
+ if(n->udev.priv) {
+     if(!nas_heap_free(n->udev.priv))return -EIO;
+     n->udev.priv=NULL;
+ }
+ n->teardown_active=false;
+ n->class_retired=false;
+ n->upstream_started=false;
+ n->upstream_stopped=false;
+ return 0;
+}
 int nas_uboot_net_attach(struct nas_uboot_net *n,
  const struct nas_virtio_transport *tr,const char *name,
  struct nas_irq_route irq){
- if(!n || !tr || !name || !name[0] || !tr->dma || !tr->dma->coherent ||
-    n->netdev.registered || n->rx_ring.active || n->tx_ring.active)
+ if(!n || !tr || !name || !name[0] || !tr->dma || !tr->dma->coherent)
      return -EINVAL;
+ if(n->netdev.registered || n->rx_ring.active || n->tx_ring.active ||
+    n->rx_ring.dma_page.cpu || n->tx_ring.dma_page.cpu ||
+    n->teardown_active || n->udev.priv || n->tx_dma.cpu ||
+    n->rx_dma_count || n->rx_irq.bound)return -EBUSY;
  n->transport=*tr;n->busy=false;n->poisoned=false;
  n->rx_retry_after_tx=false;
  n->rx_dma_count=0;n->rx_submitted=0;n->tx_pending=false;
@@ -291,6 +341,7 @@ int nas_uboot_net_attach(struct nas_uboot_net *n,
  if(rc)goto fail;
  rc=upstream_ops()->start(&n->udev);
  if(rc)goto fail;
+ n->upstream_started=true;
  if(n->poisoned || n->rx_submitted!=NAS_UBOOT_NET_RX_SLOTS){
      rc=-EIO;goto fail;
  }
@@ -305,17 +356,12 @@ int nas_uboot_net_attach(struct nas_uboot_net *n,
      return 0;
  }
 fail:
- /* Unbind before any queue, DMA, transport or U-Boot state is reclaimed. */
- (void)nas_irq_unbind(&n->rx_irq);
- if(n->rx_ring.active)(void)nas_vring_queue_close(&n->rx_ring);
- if(n->tx_ring.active)(void)nas_vring_queue_close(&n->tx_ring);
- for(unsigned i=0;i<n->rx_dma_count;i++)
-     (void)nas_dma_free_page(n->transport.dma,&n->rx_dma[i]);
- n->rx_dma_count=0;
- if(n->tx_dma.cpu)(void)nas_dma_free_page(n->transport.dma,&n->tx_dma);
- if(n->transport.ops && n->transport.ops->reset)
-     n->transport.ops->reset(n->transport.context);
- if(n->udev.priv){(void)nas_heap_free(n->udev.priv);n->udev.priv=NULL;}
+ /* A failed probe still owns its resources. The same staged cleanup is
+  * available through detach() if the provider rejects a page release;
+  * reattach is barred until cleanup actually finishes. */
+ n->teardown_active=true;
+ n->class_retired=!n->netdev.registered;
+ (void)net_release_hardware(n);
  return rc;
 }
 int nas_uboot_net_detach(struct nas_uboot_net *n){
@@ -324,24 +370,16 @@ int nas_uboot_net_detach(struct nas_uboot_net *n){
  /* First notify the sole stack consumer and prohibit new netdev pins.
   * A retry after the lwIP tcpip_thread releases its Path-like device pin
   * is required before the original U-Boot DMA/virtqueues can be reclaimed. */
- int begin=nas_netdev_begin_remove(&n->netdev);
- if(begin)return begin;
- int rc=nas_netdev_unregister(&n->netdev);
- if(rc)return rc;
- /* A failed unregister keeps the IRQ binding live and retriable. After the
-  * last consumer has left, drop IRQ ownership before retiring DMA. */
- rc=nas_irq_unbind(&n->rx_irq);
- if(rc)return rc;
- upstream_ops()->stop(&n->udev);
- int e1=nas_vring_queue_close(&n->rx_ring);
- int e2=nas_vring_queue_close(&n->tx_ring);
- int e3=0;
- for(unsigned i=0;i<n->rx_dma_count;i++){
-     int e=nas_dma_free_page(n->transport.dma,&n->rx_dma[i]);
-     if(e && !e3)e3=e;
+ if(!n->teardown_active) {
+     if(!n->netdev.registered)return -ENODEV;
+     n->teardown_active=true;
  }
- n->rx_dma_count=0;
- int e4=nas_dma_free_page(n->transport.dma,&n->tx_dma);
- if(n->udev.priv){(void)nas_heap_free(n->udev.priv);n->udev.priv=NULL;}
- return e1?e1:e2?e2:e3?e3:e4;
+ if(!n->class_retired) {
+     int rc=nas_netdev_begin_remove(&n->netdev);
+     if(rc)return rc;
+     rc=nas_netdev_unregister(&n->netdev);
+     if(rc)return rc;
+     n->class_retired=true;
+ }
+ return net_release_hardware(n);
 }

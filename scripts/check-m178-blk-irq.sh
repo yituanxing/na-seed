@@ -28,6 +28,14 @@ for scenario in bad_used bad_status timeout no_irq alloc_fail read_only \
     build/m178/test-virtio-blk "$scenario"
 done
 
+# The same production async class must retain IRQ, ring and DMA ownership
+# if a provider refuses release during remove or failed attach. Retry on
+# the original singleton before reusing its storage for a new bus probe.
+cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin \
+    -I . -I kernel -I third_party/unikraft/include -I ports/unikraft/include \
+    scripts/test-m184-async-blk-lifetime.c -o build/m178/test-m184-async-blk-lifetime
+build/m178/test-m184-async-blk-lifetime
+
 sh -n scripts/probe-m178-blk-irq.sh
 sh -n scripts/probe-m177-gpu-2d.sh
 sh -n scripts/probe-m174-batch.sh

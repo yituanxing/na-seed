@@ -11,6 +11,7 @@
 #define CAPACITY 128U
 static _Alignas(4096) uint8_t pages[5][NAS_DMA_PAGE_BYTES];
 static bool pages_used[5];
+static unsigned heap_free_fail_once;
 uint64_t nas_hhdm_offset(void) { return 0; }
 uint64_t nas_frame_alloc(void) {
     for(unsigned i=0;i<5;i++) if(!pages_used[i]) {
@@ -31,6 +32,7 @@ struct fake_device {
     uint32_t status, logical_size;
     unsigned reads,writes,flushes,resets,notifies;
     bool io_error,stall,short_success_read,oversize_success_write;
+    bool fail_queue_setup;
 };
 static void reset(void *ctx) {
     struct fake_device *d=ctx; d->status=0;d->resets++;
@@ -45,9 +47,8 @@ static void write_features(void *ctx,unsigned bank,uint32_t x){
 }
 static int setup(void *ctx,unsigned q,unsigned size,uint64_t desc,
                  uint64_t avail,uint64_t used){
-    (void)ctx;
     assert(q==0 && size==8 && desc && avail && used);
-    return 0;
+    return ((struct fake_device *)ctx)->fail_queue_setup?-EIO:0;
 }
 static uint32_t config(void *ctx,uint32_t off) {
     struct fake_device *d=ctx;
@@ -108,6 +109,117 @@ static const struct nas_virtio_transport_ops ops={
     .read_features=read_features,.write_features=write_features,
     .setup_queue=setup,.notify_queue=notify,.read_config32=config
 };
+/* Fail exactly one *real* DMA release call, without claiming its ownership
+ * was returned. DMA page pointers must remain intact until retry succeeds. */
+struct release_fault {
+    unsigned attempt,success,fail_at,fail_again_at;
+};
+static int fault_alloc(void *ctx,struct nas_dma_page *page) {
+    (void)ctx;
+    return nas_dma_qemu_coherent.alloc_page(NULL,page);
+}
+static int fault_release(void *ctx,struct nas_dma_page *page) {
+    struct release_fault *f=ctx;
+    ++f->attempt;
+    if(f->attempt==f->fail_at || f->attempt==f->fail_again_at)
+        return -EIO;
+    int rc=nas_dma_qemu_coherent.release_page(NULL,page);
+    if(!rc)++f->success;
+    return rc;
+}
+static void assert_all_pages_released(void) {
+    for(unsigned i=0;i<5;i++)assert(!pages_used[i]);
+}
+static void test_teardown_retries(uint64_t base) {
+    for(unsigned fail=1;fail<=3;fail++) {
+        struct fake_device dev={.features=base,.logical_size=512};
+        struct nas_uboot_block port={0};dev.backend=&port;
+        struct release_fault fault={.fail_at=fail};
+        struct nas_dma_provider dma={
+            .context=&fault,.coherent=true,
+            .alloc_page=fault_alloc,.release_page=fault_release
+        };
+        struct nas_virtio_transport tr={.context=&dev,.ops=&ops,.dma=&dma};
+        assert(nas_uboot_block_attach(&port,&tr,"retry-disk")==0);
+        assert(nas_uboot_block_detach(&port)==-EIO);
+        assert(!port.port.block.registered && port.teardown_pending);
+        assert(nas_block_get("retry-disk")==NULL);
+        assert(nas_uboot_block_attach(&port,&tr,"retry-disk")==-EBUSY);
+        assert(nas_uboot_block_detach(&port)==0);
+        assert(!port.teardown_pending && !port.ring.active);
+        assert(!port.header_dma.cpu && !port.payload_dma.cpu && !port.udev.priv);
+        assert(fault.attempt==4 && fault.success==3);
+        assert(dev.resets>=2);
+        assert_all_pages_released();
+        /* A fully released slot may be reused with fresh device state. */
+        assert(nas_uboot_block_attach(&port,&tr,"retry-disk")==0);
+        assert(nas_uboot_block_detach(&port)==0);
+        assert(fault.success==6);
+        assert_all_pages_released();
+    }
+    /* The last owner is U-Boot's heap allocation, after all DMA pages
+     * have been reclaimed. A failed free must not publish a reusable slot. */
+    {
+        struct fake_device dev={.features=base,.logical_size=512};
+        struct nas_uboot_block port={0};dev.backend=&port;
+        struct nas_virtio_transport tr={
+            .context=&dev,.ops=&ops,.dma=&nas_dma_qemu_coherent
+        };
+        assert(nas_uboot_block_attach(&port,&tr,"heap-retry-disk")==0);
+        heap_free_fail_once=1;
+        assert(nas_uboot_block_detach(&port)==-EIO);
+        assert(port.teardown_pending && port.udev.priv && !port.ring.active);
+        assert(!port.header_dma.cpu && !port.payload_dma.cpu);
+        assert_all_pages_released();
+        assert(nas_uboot_block_detach(&port)==0);
+        assert(!port.udev.priv && !port.teardown_pending);
+        assert_all_pages_released();
+    }
+    /* Probe fails before publishing a BlockDevice; rollback itself fails
+     * once while closing an active ring. Explicit detach must release the
+     * surviving owner, with no orphan class registration or DMA reuse. */
+    {
+        struct fake_device dev={.features=base,.logical_size=128};
+        struct nas_uboot_block port={0};dev.backend=&port;
+        struct release_fault fault={.fail_at=1};
+        struct nas_dma_provider dma={
+            .context=&fault,.coherent=true,
+            .alloc_page=fault_alloc,.release_page=fault_release
+        };
+        struct nas_virtio_transport tr={.context=&dev,.ops=&ops,.dma=&dma};
+        assert(nas_uboot_block_attach(&port,&tr,"failed-probe-disk")==-EIO);
+        assert(port.teardown_pending && !port.ring.active &&
+               port.ring.dma_page.cpu &&
+               !port.port.block.registered);
+        assert(nas_uboot_block_attach(&port,&tr,"failed-probe-disk")==-EBUSY);
+        assert(nas_uboot_block_detach(&port)==0);
+        assert(fault.attempt==4 && fault.success==3);
+        assert_all_pages_released();
+    }
+    /* Queue setup fails before active=true. Its rollback cannot discard a
+     * DMA page when the provider rejects release; even a second failed
+     * cleanup must leave that page pinned for the next explicit retry. */
+    {
+        struct fake_device dev={.features=base,.logical_size=512,
+                                .fail_queue_setup=true};
+        struct nas_uboot_block port={0};dev.backend=&port;
+        struct release_fault fault={.fail_at=1,.fail_again_at=2};
+        struct nas_dma_provider dma={
+            .context=&fault,.coherent=true,
+            .alloc_page=fault_alloc,.release_page=fault_release
+        };
+        struct nas_virtio_transport tr={.context=&dev,.ops=&ops,.dma=&dma};
+        assert(nas_uboot_block_attach(&port,&tr,"queue-orphan-disk")==-EIO);
+        assert(!port.ring.active && port.ring.dma_page.cpu &&
+               port.teardown_pending && !port.port.block.registered);
+        assert(nas_uboot_block_attach(&port,&tr,"queue-orphan-disk")==-EBUSY);
+        assert(nas_uboot_block_detach(&port)==0);
+        assert(!port.ring.dma_page.cpu && !port.teardown_pending);
+        assert(fault.attempt==5 && fault.success==3);
+        assert_all_pages_released();
+    }
+    puts("[U-BOOT BLK LIFETIME PASS] vring/header/payload/heap one-shot teardown failures, probe rollback retry, no double DMA free");
+}
 static void one_case(uint64_t offered,uint32_t size,bool expect_ok) {
     struct fake_device device={.features=offered,.logical_size=size};
     struct nas_uboot_block port={0};device.backend=&port;
@@ -152,7 +264,10 @@ static void one_case(uint64_t offered,uint32_t size,bool expect_ok) {
 #include <stdlib.h>
 void *nas_heap_alloc(size_t n){return malloc(n);}
 void *nas_heap_calloc(size_t n,size_t s){return calloc(n,s);}
-bool nas_heap_free(void *p){free(p);return true;}
+bool nas_heap_free(void *p){
+    if(heap_free_fail_once){--heap_free_fail_once;return false;}
+    free(p);return true;
+}
 
 int main(void) {
     const uint64_t base=NAS_VIRTIO_F_VERSION_1 |
@@ -165,6 +280,7 @@ int main(void) {
     one_case(base & ~(UINT64_C(1)<<VIRTIO_BLK_F_FLUSH),512,false);
     one_case(base,1024,true);
     one_case(base,128,false);
+    test_teardown_retries(base);
     /* Missing completion cannot be converted into success; reset first. */
     {
         struct fake_device stalled={.features=base,.logical_size=512,.stall=true};

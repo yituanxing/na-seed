@@ -1154,13 +1154,64 @@ static bool copy_name(char *out,size_t capacity,const char *src) {
     memcpy(out,src,length+1);
     return true;
 }
+/* Unwind in ownership order: the upstream mount can still issue BlockDevice
+ * requests, and the block bridge pins a RAM source. A failed stage remains
+ * visible and retryable; in particular, never detach RAM while the bridge
+ * still owns a pin. Upstream ext4_umount may return an error AFTER it closed
+ * the block device, so ph_refctr disambiguates a completed unmount and
+ * prevents a dangerous second ext4_umount on an already-finalized mount. */
+int nas_lwext4_cleanup_failed_mount(struct nas_lwext4_mount *ctx) {
+    if(!ctx)return -EINVAL;
+    if(ctx->mounted)return -EBUSY;
+    if(ctx->cleanup_stage==NAS_LWEXT4_CLEANUP_NONE) {
+        if(ctx->device.registered)
+            ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_DEVICE;
+        else if(ctx->owns_ramdisk)
+            ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_RAMDISK;
+        else return 0;
+    }
+    if(ctx->cleanup_stage==NAS_LWEXT4_CLEANUP_UPSTREAM) {
+        if(ctx->device.interface.ph_refctr) {
+            int e=ext4_umount(ctx->upstream_prefix);
+            if(e) {
+                ctx->cleanup_error=-e;
+                if(!ctx->device.interface.ph_refctr)
+                    ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_DEVICE;
+                return -e;
+            }
+        }
+        ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_DEVICE;
+    }
+    if(ctx->cleanup_stage==NAS_LWEXT4_CLEANUP_DEVICE) {
+        if(ctx->device.registered) {
+            int rc=nas_lwext4_device_detach(&ctx->device,ctx->device_name);
+            if(rc) {ctx->cleanup_error=rc;return rc;}
+        }
+        ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_RAMDISK;
+    }
+    if(ctx->cleanup_stage==NAS_LWEXT4_CLEANUP_RAMDISK && ctx->owns_ramdisk) {
+        int rc=nas_ramdisk_detach(&ctx->ramdisk);
+        if(rc) {ctx->cleanup_error=rc;return rc;}
+        ctx->owns_ramdisk=false;
+    }
+    ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_NONE;
+    ctx->cleanup_error=0;
+    ctx->upstream_mount=NULL;
+    ctx->upstream_super=NULL;
+    return 0;
+}
 /* Generic FS mount consumes a previously registered BlockDevice (e.g.
  * VirtIO-Blk, NVMe or RAM). It never owns, probes or dereferences any
  * driver's storage. The device remains pinned until final unmount. */
 int nas_lwext4_device_mount(struct nas_lwext4_mount *ctx,
                             const char *block_name,const char *dev_name,
                             const char *mount_point,bool writable) {
-    if(!ctx || ctx->mounted || ctx->device.registered)return -EINVAL;
+    if(!ctx || ctx->mounted)return -EINVAL;
+    if(ctx->cleanup_stage!=NAS_LWEXT4_CLEANUP_NONE) {
+        int pending=nas_lwext4_cleanup_failed_mount(ctx);
+        if(pending)return pending;
+    }
+    if(ctx->device.registered)return -EBUSY;
     ctx->directory_hint=(struct nas_lwext4_dir_hint){0};
     ctx->namespace_epoch=1;
     struct nas_block_device *block=nas_block_get(block_name);
@@ -1219,14 +1270,19 @@ int nas_lwext4_device_mount(struct nas_lwext4_mount *ctx,
     };
     ctx->mounted=true; /* lookup may run during VFS mount registration */
     rc=nas_vfs_register_mount(&ctx->mount);
-    if(!rc)return 0;
+    if(!rc) {
+        ctx->cleanup_origin_error=0;
+        ctx->cleanup_error=0;
+        return 0;
+    }
     ctx->mounted=false;
 FailMount:
-    (void)ext4_umount(ctx->upstream_prefix);
+    ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_UPSTREAM;
 FailDevice:
-    (void)nas_lwext4_device_detach(&ctx->device,ctx->device_name);
-    ctx->upstream_mount=NULL;
-    ctx->upstream_super=NULL;
+    if(ctx->cleanup_stage==NAS_LWEXT4_CLEANUP_NONE)
+        ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_DEVICE;
+    ctx->cleanup_origin_error=rc;
+    (void)nas_lwext4_cleanup_failed_mount(ctx);
     return rc;
 }
 /* RAM-backed boot-module path is an adapter, not the only mount path.
@@ -1235,16 +1291,33 @@ int nas_lwext4_ramdisk_mount_mode(struct nas_lwext4_mount *ctx,
                              const char *block_name,const char *dev_name,
                              const char *mount_point,void *image,
                              uint64_t image_bytes,bool writable) {
-    if(!ctx || !image || ctx->mounted || ctx->ramdisk.block.registered)
+    if(!ctx || !image || ctx->mounted)
         return -EINVAL;
+    /* Do not attach a NEW RAM source while a previous failed mount still
+     * has cleanup ownership: the pending stage would mistake this new RAM
+     * disk for the old one. Complete the old lifecycle before replacement. */
+    if(ctx->cleanup_stage!=NAS_LWEXT4_CLEANUP_NONE) {
+        int pending=nas_lwext4_cleanup_failed_mount(ctx);
+        if(pending)return pending;
+    }
+    if(ctx->ramdisk.block.registered || ctx->device.registered ||
+       ctx->owns_ramdisk)return -EBUSY;
     int rc=nas_ramdisk_attach(&ctx->ramdisk,block_name,image,image_bytes,512,writable);
-    if(rc)return rc;
+    if(rc) {ctx->cleanup_origin_error=rc;return rc;}
+    ctx->owns_ramdisk=true; /* Bridge detach MUST precede this RAM owner. */
     rc=nas_lwext4_device_mount(ctx,block_name,dev_name,mount_point,writable);
     if(rc) {
-        (void)nas_ramdisk_detach(&ctx->ramdisk);
+        ctx->cleanup_origin_error=rc;
+        /* The generic mount already attempted bridge/upstream teardown.
+         * Never retry a failed upstream umount twice in one mount call;
+         * retry remains the explicit caller's decision. The adapter only
+         * owns first cleanup if failure preceded bridge registration. */
+        if(ctx->cleanup_stage==NAS_LWEXT4_CLEANUP_NONE && ctx->owns_ramdisk) {
+            ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_RAMDISK;
+            (void)nas_lwext4_cleanup_failed_mount(ctx);
+        }
         return rc;
     }
-    ctx->owns_ramdisk=true;
     return 0;
 }
 int nas_lwext4_ramdisk_mount(struct nas_lwext4_mount *ctx,
@@ -1289,7 +1362,26 @@ int nas_lwext4_unmount(struct nas_lwext4_mount *ctx) {
     if(rc)return rc;
     int e=ext4_umount(ctx->upstream_prefix);
     if(e) {
-        (void)nas_vfs_register_mount(&ctx->mount);
+        /* ext4_umount can return a close/flush error after it has
+         * already finished the upstream mount. The refcount is dropped
+         * before close(): never resurrect a finalized VFS namespace. */
+        if(!ctx->device.interface.ph_refctr) {
+            ctx->mounted=false;
+            ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_DEVICE;
+            ctx->cleanup_origin_error=-e;
+            (void)nas_lwext4_cleanup_failed_mount(ctx);
+            return -e;
+        }
+        /* Upstream still owns the device. Preserve the active mount for
+         * a later unmount attempt, unless namespace re-registration fails;
+         * in that case explicitly transfer ownership to retryable cleanup. */
+        int restore=nas_vfs_register_mount(&ctx->mount);
+        if(restore) {
+            ctx->mounted=false;
+            ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_UPSTREAM;
+            ctx->cleanup_origin_error=-e;
+            ctx->cleanup_error=restore;
+        }
         return -e;
     }
     /* Upstream ext4_umount updates on-disk superblock/counters AFTER the
@@ -1302,13 +1394,10 @@ int nas_lwext4_unmount(struct nas_lwext4_mount *ctx) {
      * Finish all adapter/owned-RAM cleanup and propagate the durability
      * error, never claim fsync success or remount a finalized superblock. */
     ctx->mounted=false;
-    rc=nas_lwext4_device_detach(&ctx->device,ctx->device_name);
-    if(ctx->owns_ramdisk) {
-        int ram_rc=nas_ramdisk_detach(&ctx->ramdisk);
-        if(!rc)rc=ram_rc;
-        if(!ram_rc)ctx->owns_ramdisk=false;
-    }
-    ctx->upstream_mount=NULL;ctx->upstream_super=NULL;
+    ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_DEVICE;
+    ctx->cleanup_origin_error=final_sync;
+    rc=nas_lwext4_cleanup_failed_mount(ctx);
+    if(!final_sync && rc)ctx->cleanup_origin_error=rc;
     return final_sync ? final_sync : rc;
 }
 int nas_lwext4_ramdisk_unmount(struct nas_lwext4_mount *ctx) {

@@ -35,7 +35,22 @@ bool nas_frame_put(uint64_t frame){
 }
 void *nas_heap_alloc(size_t n){return malloc(n);}
 void *nas_heap_calloc(size_t n,size_t sz){return calloc(n,sz);}
-bool nas_heap_free(void *p){free(p);return true;}
+static bool fail_heap_free_once;
+bool nas_heap_free(void *p){
+    if(fail_heap_free_once){fail_heap_free_once=false;return false;}
+    free(p);return true;
+}
+
+/* Retryable DMA release failure on one exact call. The original provider
+ * must see every successfully released frame once and only once. */
+static unsigned release_calls,fail_release_at,fail_release_second;
+static int flaky_release(void *context,struct nas_dma_page *page){
+    (void)context;
+    ++release_calls;
+    if(release_calls==fail_release_at){fail_release_at=0;return -EAGAIN;}
+    if(release_calls==fail_release_second){fail_release_second=0;return -EAGAIN;}
+    return nas_dma_qemu_coherent.release_page(NULL,page);
+}
 
 struct fake_nic {
  struct nas_uboot_net *backend;
@@ -46,6 +61,7 @@ struct fake_nic {
  uint32_t pending_isr;
  unsigned isr_reads;
  bool stall_tx;
+ bool fail_queue_setup;
  bool probe_rx_busy_during_tx;
  unsigned rx_busy_collisions;
  uint8_t tx_frame[1518];
@@ -109,9 +125,9 @@ static void write_features(void *p,unsigned bank,uint32_t bits){
 }
 static int setup(void *p,unsigned q,unsigned size,uint64_t desc,
                  uint64_t avail,uint64_t complete){
- (void)p;
  assert(q<2 && size==(q?8U:NAS_UBOOT_NET_RX_RING_SIZE));
  assert(desc && avail && complete);
+ if(q==0 && ((struct fake_nic *)p)->fail_queue_setup)return -EIO;
  return 0;
 }
 static uint32_t config(void *p,uint32_t off){
@@ -290,6 +306,102 @@ int main(void){
  assert(nas_uboot_net_attach(&no_ack,&tr,"eth-no-isr",route)==-EOPNOTSUPP);
  assert(!no_ack.rx_irq.bound && route_enables==2);
  all_pages_freed();
+    /* A class-device withdrawal succeeds before the first vring DMA page
+     * release is rejected. The second detach must NOT retry unregister on
+     * a vanished netdev, must retain ownership, and must finish once. */
+    struct nas_dma_provider flaky_dma=nas_dma_qemu_coherent;
+    flaky_dma.release_page=flaky_release;
+    struct nas_uboot_net partial={0};
+    struct fake_nic partial_fake={.backend=&partial,
+        .features=NAS_VIRTIO_F_VERSION_1|(UINT64_C(1)<<5),
+        .mac={0x52,0x54,0,0x12,0x34,0x68}};
+    tr=(struct nas_virtio_transport){.context=&partial_fake,
+        .ops=&ops,.dma=&flaky_dma};
+    assert(nas_uboot_net_attach(&partial,&tr,"eth-partial",route)==0);
+    unsigned disabled_before=route_disables;
+    release_calls=0;fail_release_at=1;
+    assert(nas_uboot_net_detach(&partial)==-EAGAIN);
+    assert(partial.teardown_active && partial.class_retired &&
+           !partial.netdev.registered && !partial.rx_ring.active &&
+           partial.rx_ring.dma_page.cpu &&
+           route_disables==disabled_before+1U);
+    assert(nas_uboot_net_attach(&partial,&tr,"eth-overwrite",route)==-EBUSY);
+    assert(nas_uboot_net_detach(&partial)==0);
+    assert(!partial.teardown_active && !partial.rx_ring.active &&
+           !partial.tx_ring.active && release_calls==36U &&
+           route_disables==disabled_before+1U);
+    all_pages_freed();
+    /* Both hardware queues can retire successfully while a payload page
+     * remains DMA-owned. Retry must skip already-freed ring pages. */
+    struct nas_uboot_net partial_dma={0};
+    struct fake_nic partial_dma_fake={.backend=&partial_dma,
+        .features=NAS_VIRTIO_F_VERSION_1|(UINT64_C(1)<<5),
+        .mac={0x52,0x54,0,0x12,0x34,0x69}};
+    tr.context=&partial_dma_fake;
+    assert(nas_uboot_net_attach(&partial_dma,&tr,"eth-dma-retry",route)==0);
+    release_calls=0;fail_release_at=3;
+    assert(nas_uboot_net_detach(&partial_dma)==-EAGAIN);
+    assert(partial_dma.teardown_active && partial_dma.class_retired &&
+           !partial_dma.rx_ring.active && !partial_dma.tx_ring.active &&
+           partial_dma.rx_dma_count==NAS_UBOOT_NET_RX_SLOTS &&
+           partial_dma.rx_dma[0].cpu);
+    assert(nas_uboot_net_detach(&partial_dma)==0 && release_calls==36U);
+    all_pages_freed();
+    /* Terminal heap-provider error is not silently converted into another
+     * scheduled bus retry, but explicit maintenance can resume the exact
+     * remaining heap stage without touching already retired DMA again. */
+    struct nas_uboot_net partial_heap={0};
+    struct fake_nic partial_heap_fake={.backend=&partial_heap,
+        .features=NAS_VIRTIO_F_VERSION_1|(UINT64_C(1)<<5),
+        .mac={0x52,0x54,0,0x12,0x34,0x6a}};
+    tr.context=&partial_heap_fake;
+    tr.dma=&nas_dma_qemu_coherent;
+    assert(nas_uboot_net_attach(&partial_heap,&tr,"eth-heap-retry",route)==0);
+    fail_heap_free_once=true;
+    assert(nas_uboot_net_detach(&partial_heap)==-EIO);
+    assert(partial_heap.teardown_active && partial_heap.class_retired &&
+           partial_heap.udev.priv && !partial_heap.rx_ring.active &&
+           !partial_heap.tx_ring.active && !partial_heap.tx_dma.cpu &&
+           partial_heap.rx_dma_count==0);
+    all_pages_freed();
+    assert(nas_uboot_net_detach(&partial_heap)==0 && !partial_heap.udev.priv);
+    all_pages_freed();
+    /* The same recovery contract applies to a probe failure after DMA and
+     * IRQ setup but BEFORE the class device was ever published. */
+    struct nas_uboot_net failed_attach={0};
+    struct fake_nic failed_attach_fake={.backend=&failed_attach,
+        .features=NAS_VIRTIO_F_VERSION_1|(UINT64_C(1)<<5)};
+    tr.context=&failed_attach_fake;
+    tr.dma=&flaky_dma;
+    release_calls=0;fail_release_at=1;
+    assert(nas_uboot_net_attach(&failed_attach,&tr,"eth-no-mac-retry",route)<0);
+    assert(failed_attach.teardown_active && failed_attach.class_retired &&
+           !failed_attach.netdev.registered && !failed_attach.rx_ring.active &&
+           failed_attach.rx_ring.dma_page.cpu);
+    assert(nas_uboot_net_attach(&failed_attach,&tr,"eth-overwrite",route)==-EBUSY);
+    assert(nas_uboot_net_detach(&failed_attach)==0);
+    all_pages_freed();
+    /* Failed vring INIT has an inactive ring but may still own a DMA page
+     * if its own rollback release fails. A second failure during driver
+     * cleanup retains this invisible owner until the next detach. */
+    struct nas_uboot_net inactive_ring={0};
+    struct fake_nic incomplete_queue={.backend=&inactive_ring,
+        .features=NAS_VIRTIO_F_VERSION_1|(UINT64_C(1)<<5),
+        .mac={0x52,0x54,0,0x12,0x34,0x6b},.fail_queue_setup=true};
+    tr.context=&incomplete_queue;
+    tr.dma=&flaky_dma;
+    release_calls=0;fail_release_at=1;fail_release_second=2;
+    assert(nas_uboot_net_attach(&inactive_ring,&tr,
+                                "eth-inactive-ring",route)<0);
+    assert(inactive_ring.teardown_active && inactive_ring.class_retired &&
+           !inactive_ring.rx_ring.active && inactive_ring.rx_ring.dma_page.cpu);
+    assert(nas_uboot_net_attach(&inactive_ring,&tr,"eth-overwrite",route)==-EBUSY);
+    assert(nas_uboot_net_detach(&inactive_ring)==0);
+    all_pages_freed();
+    /* Start the independent multi-NIC bus fixture with its original IRQ
+     * enable/disable baseline; no prior test has a live action. */
+    route_enables=2;
+    route_disables=2;
     /* Real class binding supports two simultaneous independently owned PCI
      * NICs, then MMIO reuse. Removing one cannot free the other's DMA. */
     assert(nas_virtio_net_driver_register()==0);
@@ -389,6 +501,41 @@ int main(void){
     assert(nas_virtio_net_count()==1);
     assert(nas_bus_device_unbind(&mmio)==0);
     assert(nas_bus_device_unregister(&mmio)==0);
+    all_pages_freed();
+    /* A failed bus probe does not acquire a BusDriver binding. Its static
+     * slot nonetheless retains the failed DMA release. The NEXT bus probe
+     * must retry that cleanup before reusing the same class-driver slot,
+     * never memset the stale transport or leak a 35-page owner. */
+    struct fake_nic stale={
+        .features=NAS_VIRTIO_F_VERSION_1|(UINT64_C(1)<<5)
+    };
+    struct nas_virtio_transport stale_tr={.context=&stale,.ops=&ops,
+                                         .dma=&flaky_dma};
+    struct nas_bus_device stale_bus={.bus=NAS_BUS_PCI,
+        .device_id=VIRTIO_ID_NET,.virtio=&stale_tr,
+        .resource={.kind=NAS_BUS_RESOURCE_PCI,
+                   .irq={.domain=NAS_IRQ_DOMAIN_X86_PIC,.hwirq=11},
+                   .view.pci={.config=pci_config,
+                              .config_bytes=NAS_BUS_PCI_CONFIG_BYTES,
+                              .slot=2,.mapped_bar_mask=1}}};
+    release_calls=0;fail_release_at=1;
+    assert(nas_bus_device_register(&stale_bus)<0 && !stale_bus.registered);
+    assert(nas_virtio_net_count()==0 && release_calls==1);
+    memcpy(stale.mac,discovered.mac,sizeof(stale.mac));
+    assert(nas_bus_device_register(&stale_bus)==0);
+    assert(nas_virtio_net_count()==1);
+    struct nas_netdev *recovered=nas_netdev_get("eth0");
+    if(recovered)stale.backend=recovered->backend;
+    assert(recovered && nas_netdev_put(recovered)==0);
+    /* The real bus owns the retry, not an ad-hoc driver polling loop. */
+    release_calls=0;fail_release_at=1;
+    assert(nas_bus_device_request_remove(&stale_bus)==0);
+    assert(nas_bus_device_remove_status(&stale_bus)==-EINPROGRESS &&
+           !stale.backend->netdev.registered);
+    assert(nas_bus_service_removals(1)==1);
+    assert(nas_bus_device_remove_status(&stale_bus)==0 &&
+           !stale_bus.registered && nas_virtio_net_count()==0);
+    assert(release_calls==36U);
     all_pages_freed();
     /* A routed NIC's stalled TX parks its kernel C frame and times out,
      * retaining the DMA buffer until the poison/reset path has run. */

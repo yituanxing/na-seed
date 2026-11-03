@@ -32,6 +32,9 @@ struct nas_uboot_net {
  struct eth_pdata eth;
  struct virtqueue rx_vq,tx_vq,*queue_refs[2];
  bool busy,poisoned,tx_pending,rx_retry_after_tx;
+ /* Class withdrawal and hardware DMA retirement are separate, retryable
+  * stages. Never reattach over a failed partial teardown. */
+ bool teardown_active,class_retired,upstream_started,upstream_stopped;
 };
 int nas_uboot_net_attach(struct nas_uboot_net *,
  const struct nas_virtio_transport *,const char *name,

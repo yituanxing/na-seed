@@ -30,6 +30,10 @@ struct traced_disk {
     uint8_t *image;
     unsigned reads,writes,flushes;
     bool fail_flush;
+    /* Target only the final durable flush AFTER ext4_umount closed the
+     * physical bridge, without depending on an exact flush call count. */
+    const struct nas_lwext4_mount *final_close_mount;
+    bool saw_upstream_close;
 };
 static int trace_read(struct nas_block_device *dev,uint64_t sector,
                       uint32_t count,void *destination) {
@@ -50,6 +54,11 @@ static int trace_write(struct nas_block_device *dev,uint64_t sector,
 static int trace_flush(struct nas_block_device *dev) {
     struct traced_disk *t=dev->context;
     ++t->flushes;
+    if(t->final_close_mount &&
+       !t->final_close_mount->device.interface.ph_refctr) {
+        if(t->saw_upstream_close)return -EIO;
+        t->saw_upstream_close=true;
+    }
     return t->fail_flush ? -EIO : 0;
 }
 static const struct nas_block_ops trace_ops={
@@ -307,11 +316,72 @@ static void m83_sparse_elf_verify_regressions(void) {
         m83_verify_sparse_file(&m83_sparse_cases[i]);
     puts("[LWEXT4 SPARSE ELF REMOUNT PASS] durable holes and payload verified");
 }
+/* M184: a failed mount does NOT grant permission to release the owned RAM
+ * source while its block bridge is still pinned. A subsequent ordinary
+ * cleanup call resumes at the failed stage without double-unregister. */
+static void m184_mount_rollback_regressions(uint8_t *image,uint64_t bytes,
+                                            bool valid_ext4_image) {
+    static struct nas_lwext4_mount rollback;
+    assert(nas_ramdisk_attach(&rollback.ramdisk,"m184-source",image,
+                              bytes,512,false)==0);
+    rollback.owns_ramdisk=true;
+    assert(nas_lwext4_device_attach(&rollback.device,"m184-source",
+                                    "m184-bridge")==0);
+    memcpy(rollback.device_name,"m184-bridge",sizeof("m184-bridge"));
+    rollback.cleanup_origin_error=-EIO;
+    rollback.cleanup_stage=NAS_LWEXT4_CLEANUP_DEVICE;
+    /* A partially initialized upstream mount may still hold this ref. */
+    rollback.device.interface.ph_refctr=1;
+    assert(nas_lwext4_cleanup_failed_mount(&rollback)==-EBUSY);
+    assert(rollback.cleanup_stage==NAS_LWEXT4_CLEANUP_DEVICE &&
+           rollback.cleanup_error==-EBUSY && rollback.device.registered &&
+           rollback.ramdisk.block.registered && rollback.owns_ramdisk &&
+           rollback.cleanup_origin_error==-EIO);
+    assert(nas_lwext4_ramdisk_mount_mode(&rollback,"m184-replacement",
+           "m184-replacement-ext","/mnt",image,bytes,false)==-EBUSY);
+    assert(!nas_block_get("m184-replacement"));
+    rollback.device.interface.ph_refctr=0;
+    struct nas_block_device *other=nas_block_get("m184-source");
+    assert(other==&rollback.ramdisk.block);
+    assert(nas_lwext4_cleanup_failed_mount(&rollback)==-EBUSY);
+    assert(rollback.cleanup_stage==NAS_LWEXT4_CLEANUP_RAMDISK &&
+           !rollback.device.registered && rollback.ramdisk.block.registered &&
+           rollback.cleanup_error==-EBUSY);
+    nas_block_put(other);
+    assert(nas_lwext4_cleanup_failed_mount(&rollback)==0);
+    assert(nas_lwext4_cleanup_failed_mount(&rollback)==0);
+    assert(!rollback.owns_ramdisk && !rollback.ramdisk.block.registered &&
+           !rollback.device.registered && !rollback.cleanup_error &&
+           rollback.cleanup_origin_error==-EIO);
+    /* A fully drained context must succeed when reused with a valid ext4
+     * image. The standalone m184-only smoke test uses a zero image instead. */
+    if(valid_ext4_image) {
+        assert(nas_lwext4_ramdisk_mount_mode(&rollback,"m184-reuse-source",
+               "m184-reuse-bridge","/mnt",image,bytes,false)==0);
+        assert(rollback.cleanup_origin_error==0 && !rollback.cleanup_error);
+        assert(nas_lwext4_unmount(&rollback)==0);
+        assert(!rollback.device.registered && !rollback.owns_ramdisk &&
+               !rollback.ramdisk.block.registered);
+    }
+    /* An actual corrupt ext4 superblock exercises failure automatic unwind. */
+    static struct nas_lwext4_mount corrupt;
+    uint8_t magic[2]={image[1080],image[1081]};
+    image[1080]=0;image[1081]=0;
+    assert(nas_lwext4_ramdisk_mount_mode(&corrupt,"m184-corrupt-source",
+          "m184-corrupt-bridge","/mnt",image,bytes,false)<0);
+    assert(!corrupt.device.registered && !corrupt.owns_ramdisk &&
+           !corrupt.ramdisk.block.registered && !corrupt.cleanup_error &&
+           corrupt.cleanup_stage==NAS_LWEXT4_CLEANUP_NONE &&
+           corrupt.cleanup_origin_error<0);
+    image[1080]=magic[0];image[1081]=magic[1];
+    puts("[M184 LWEXT4 ROLLBACK PASS] staged busy bridge/RAM pin, original error and automatic invalid-mount unwind");
+}
 int main(int argc,char **argv) {
     assert(argc==2 || argc==3);
     const bool write=argc==3 && !strcmp(argv[2],"write");
     const bool verify=argc==3 && !strcmp(argv[2],"verify");
-    assert(argc==2 || write || verify);
+    const bool rollback_only=argc==3 && !strcmp(argv[2],"m184-only");
+    assert(argc==2 || write || verify || rollback_only);
     FILE *disk=fopen(argv[1],write?"rb+":"rb");
     assert(disk);
     assert(!fseek(disk,0,SEEK_END));
@@ -321,6 +391,14 @@ int main(int argc,char **argv) {
     uint8_t *image=malloc((size_t)n);
     assert(image);
     assert(fread(image,1,(size_t)n,disk)==(size_t)n);
+    m184_mount_rollback_regressions(image,(uint64_t)n,!rollback_only);
+    /* Deterministic fast path for machines without mke2fs/cmake: a plain
+     * zero-filled image is enough to exercise both ownership failure modes. */
+    if(rollback_only) {
+        assert(!fclose(disk));
+        free(image);
+        return 0;
+    }
     char stale_orphan_path[256]={0},stale_directory_orphan_path[256]={0};
     static struct nas_lwext4_mount mounted;
     assert(nas_lwext4_ramdisk_mount_mode(&mounted,"vfs-test-ram","vfs-test-ext",
@@ -1057,6 +1135,24 @@ int main(int argc,char **argv) {
         assert(nas_vfs_sync(&durable)==0);
         assert(trace.flushes>=before+3);
         assert(nas_lwext4_unmount(&traced_mount)==0);
+        /* The third physical flush happens AFTER lwext4 has fully closed.
+         * Such an EIO must still release the bridge, never resurrect VFS,
+         * and never require a second upstream ext4_umount. */
+        static struct nas_lwext4_mount final_flush_mount;
+        assert(nas_lwext4_device_mount(&final_flush_mount,"traced-disk-driver",
+                                       "m184-final-flush","/mnt",false)==0);
+        trace.final_close_mount=&final_flush_mount;
+        trace.saw_upstream_close=false;
+        assert(nas_lwext4_unmount(&final_flush_mount)==-EIO);
+        assert(trace.saw_upstream_close && !final_flush_mount.mounted &&
+               !final_flush_mount.device.registered &&
+               final_flush_mount.cleanup_stage==NAS_LWEXT4_CLEANUP_NONE &&
+               final_flush_mount.cleanup_origin_error==-EIO &&
+               !final_flush_mount.cleanup_error);
+        assert(nas_lwext4_cleanup_failed_mount(&final_flush_mount)==0);
+        trace.final_close_mount=NULL;
+        assert(nas_fs_lookup_node("/mnt/sandbox/durable-file",true,
+                                  &durable,actual)==-ENOENT);
         assert(nas_block_unregister(&trace.dev)==0);
         /* Fresh read-only mount after actual physical flush must recover
          * the bytes, proving that a failed flush did not fake persistence. */

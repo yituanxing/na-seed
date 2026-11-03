@@ -34,6 +34,34 @@ busy timeout 15 /usr/bin/dbus-uuidgen > "$work/dbus-uuid" 2> "$work/dbus-uuid-er
 busy grep -Eq '^[[:xdigit:]]{32}$' "$work/dbus-uuid"
 echo M174_SOFTWARE_DBUS_UUIDGEN_FUNCTION_PASS
 
+# M184: real D-Bus machine-ID file semantics, independently of the D-Bus
+# daemon/session ABI. The CPIO archive is read-only; /tmp is the existing
+# writable tmpfs already used by this same signed-program acceptance script.
+# Upstream dbus-uuidgen(1): --ensure=FILE creates/validates without stdout,
+# --get=FILE reads that exact file, and a second ensure must not replace it.
+machine_id="$work/dbus-machine-id"
+busy timeout 15 /usr/bin/dbus-uuidgen --ensure="$machine_id" \
+    > "$work/dbus-ensure-output" 2> "$work/dbus-ensure-error"
+[ ! -s "$work/dbus-ensure-output" ]
+[ "$(busy wc -c < "$machine_id")" -eq 33 ]
+busy grep -Eq '^[[:xdigit:]]{32}$' "$machine_id"
+busy cp "$machine_id" "$work/dbus-machine-id-original"
+busy timeout 15 /usr/bin/dbus-uuidgen --get="$machine_id" \
+    > "$work/dbus-get-output" 2> "$work/dbus-get-error"
+busy cmp -s "$machine_id" "$work/dbus-get-output"
+busy timeout 15 /usr/bin/dbus-uuidgen --ensure="$machine_id" \
+    > "$work/dbus-reensure-output" 2> "$work/dbus-reensure-error"
+[ ! -s "$work/dbus-reensure-output" ]
+busy cmp -s "$machine_id" "$work/dbus-machine-id-original"
+# A malformed existing ID is not silently overwritten by --ensure=FILE.
+busy printf 'malformed-dbus-machine-id\n' > "$work/dbus-malformed-id"
+bad_rc=0
+busy timeout 15 /usr/bin/dbus-uuidgen --ensure="$work/dbus-malformed-id" \
+    > "$work/dbus-reject-output" 2>&1 || bad_rc=$?
+[ "$bad_rc" -gt 0 ] && [ "$bad_rc" -lt 124 ]
+busy grep -Fxq 'malformed-dbus-machine-id' "$work/dbus-malformed-id"
+echo M184_SOFTWARE_DBUS_UUID_FILE_FUNCTION_PASS
+
 # Actual sysstat parsing of the kernel's current /proc/stat CPU counters.
 busy grep -q '^cpu ' /proc/stat
 busy timeout 15 /bin/mpstat 1 1 > "$work/mpstat" 2> "$work/mpstat-error"

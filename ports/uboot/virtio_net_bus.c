@@ -22,7 +22,16 @@ static int probe(struct nas_bus_device *dev){
  unsigned slot=MAX_NICS;
  for(unsigned i=0;i<MAX_NICS;i++){
      if(nics[i].transport==tr)return -EEXIST;
-     if(!nics[i].transport && slot==MAX_NICS)slot=i;
+     if(nics[i].transport)continue;
+     /* A previous attach could have failed after transport acquisition,
+      * with a provider refusing DMA release. That unbound slot still owns
+      * hardware; retry its cleanup before EVER reusing its static storage. */
+     if(nics[i].device.teardown_active) {
+         int rc=nas_uboot_net_detach(&nics[i].device);
+         if(rc)return rc;
+         memset(&nics[i],0,sizeof(nics[i]));
+     }
+     if(slot==MAX_NICS)slot=i;
  }
  if(slot==MAX_NICS)return -ENOSPC;
  int rc=nas_uboot_net_attach(&nics[slot].device,tr,names[slot],

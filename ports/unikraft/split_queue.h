@@ -32,6 +32,9 @@ struct nas_vring_queue {
 int nas_vring_queue_init(struct nas_vring_queue *,
                          const struct nas_virtio_transport *,
                          unsigned queue_id, unsigned num_desc);
+/* q must be zero-initialized, or completely closed after its previous use.
+ * If setup fails and the DMA release also fails, init returns the setup
+ * error but retains dma_page ownership; call close to finish cleanup. */
 /* One call publishes the entire scatter/gather chain. A successful submit
  * never implies that the device completed the request. */
 int nas_vring_queue_submit(struct nas_vring_queue *,
@@ -41,6 +44,7 @@ int nas_vring_queue_submit(struct nas_vring_queue *,
  * -EIO: corrupt completion, device marked failed. */
 int nas_vring_queue_poll(struct nas_vring_queue *, uint16_t *head,
                          uint32_t *bytes);
-/* Reset the transport before releasing a live queue, to stop device DMA. */
+/* Reset before releasing a live queue. Also completes an inactive queue's
+ * failed-initialization rollback or retries a failed DMA release. */
 int nas_vring_queue_close(struct nas_vring_queue *);
 #endif

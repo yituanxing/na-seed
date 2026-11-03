@@ -186,10 +186,42 @@ static int flush_blocks(void *ctx){
 static const struct nas_port_block_ops block_ops={
  .read=read_blocks,.write=write_blocks,.flush=flush_blocks
 };
+/* Teardown is ordered, retryable and ownership preserving: hardware stops
+ * touching the queue before any DMA page is returned. A failing release
+ * keeps its page/heap pointer intact, and an already released owner is
+ * skipped on retry. This is shared by normal detach and failed attach. */
+static int release_block_owners(struct nas_uboot_block *b) {
+ int rc=0;
+ if(b->ring.active || b->ring.dma_page.cpu) {
+     rc=nas_vring_queue_close(&b->ring);
+     if(rc)return rc;
+ } else if(b->transport.ops && b->transport.ops->reset) {
+     /* Also stop a partially configured transport which never published
+      * an active ring. The real close above already resets its device. */
+     b->transport.ops->reset(b->transport.context);
+ }
+ if(b->header_dma.cpu) {
+     rc=nas_dma_free_page(b->transport.dma,&b->header_dma);
+     if(rc)return rc;
+ }
+ if(b->payload_dma.cpu) {
+     rc=nas_dma_free_page(b->transport.dma,&b->payload_dma);
+     if(rc)return rc;
+ }
+ if(b->udev.priv) {
+     if(!nas_heap_free(b->udev.priv))return -EIO;
+     b->udev.priv=NULL;
+ }
+ return 0;
+}
 int nas_uboot_block_attach(struct nas_uboot_block *b,
  const struct nas_virtio_transport *tr,const char *name){
- if(!b||!tr||!name||!name[0]||!tr->dma||!tr->dma->coherent ||
-    b->port.block.registered||b->ring.active)return -EINVAL;
+ if(!b||!tr||!name||!name[0]||!tr->dma||!tr->dma->coherent)
+     return -EINVAL;
+ if(b->port.block.registered||b->port.block.refs||b->ring.active||
+    b->ring.dma_page.cpu||
+    b->header_dma.cpu||b->payload_dma.cpu||b->udev.priv||
+    b->teardown_pending)return -EBUSY;
  b->transport=*tr;b->poisoned=false;b->busy=false;
  b->parent_priv=(struct virtio_dev_priv){.vendor=0,
      .transport=&b->transport,.queues=b->queue_refs,.queue_count=1};
@@ -237,23 +269,27 @@ int nas_uboot_block_attach(struct nas_uboot_block *b,
       ro,NAS_PORT_BLOCK_SECTORS,&block_ops);
  if(!rc)return 0;
 fail:
- if(b->ring.active)(void)nas_vring_queue_close(&b->ring);
- if(b->payload_dma.cpu)(void)nas_dma_free_page(b->transport.dma,&b->payload_dma);
- if(b->header_dma.cpu)(void)nas_dma_free_page(b->transport.dma,&b->header_dma);
- if(b->transport.ops && b->transport.ops->reset)
-      b->transport.ops->reset(b->transport.context);
- if(b->udev.priv){(void)nas_heap_free(b->udev.priv);b->udev.priv=NULL;}
+ /* A failed rollback is still an owned instance. Keep it available for
+  * explicit retry via detach; the class was never published. */
+ int cleanup=release_block_owners(b);
+ if(cleanup) {
+     b->teardown_pending=true;
+     return cleanup;
+ }
  return rc;
 }
 int nas_uboot_block_detach(struct nas_uboot_block *b){
  if(!b)return -EINVAL;
  if(__atomic_load_n(&b->busy,__ATOMIC_ACQUIRE))return -EBUSY;
- int rc=nas_port_block_detach(&b->port);
- if(rc)return rc;
- rc=nas_vring_queue_close(&b->ring);
- if(rc)return rc;
- int e1=nas_dma_free_page(b->transport.dma,&b->header_dma);
- int e2=nas_dma_free_page(b->transport.dma,&b->payload_dma);
- if(b->udev.priv){(void)nas_heap_free(b->udev.priv);b->udev.priv=NULL;}
- return e1?e1:e2;
+ if(!b->teardown_pending) {
+     if(!b->port.block.registered)return -ENODEV;
+     int rc=nas_port_block_detach(&b->port);
+     if(rc)return rc; /* mounted devices keep I/O until their last put */
+     b->teardown_pending=true;
+ }
+ int rc=release_block_owners(b);
+ if(rc)return rc; /* remain unregistered; no new I/O, retry is safe */
+ b->teardown_pending=false;
+ b->queue_refs[0]=NULL;
+ return 0;
 }

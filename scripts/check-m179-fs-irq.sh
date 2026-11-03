@@ -34,4 +34,5 @@ for script in scripts/stage-m174-devfs-software-gui.sh \
     sh -n "$script"
 done
 sh scripts/check-m178-blk-irq.sh
+sh scripts/check-m184-software-functions.sh
 echo '[M179 HOST FS IRQ PASS] physical ext4/MBR host persistence oracle, real kernel worker path, owned BlockRequest + M178/M177/M176/M175/M174 preservation'

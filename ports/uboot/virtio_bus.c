@@ -27,7 +27,16 @@ static int probe(struct nas_bus_device *dev){
  unsigned index=MAX_BLOCKS;
  for(unsigned i=0;i<MAX_BLOCKS;i++){
      if(disks[i].tr==tr)return -EEXIST;
-     if(!disks[i].tr && index==MAX_BLOCKS)index=i;
+     if(disks[i].tr)continue;
+     /* A failed probe can leave a queue/page owned when the physical
+      * release itself fails. Never overwrite that stable owner with a new
+      * transport: first retry its original fail-closed cleanup. */
+     if(disks[i].device.teardown_pending) {
+         int cleanup=nas_uboot_block_detach(&disks[i].device);
+         if(cleanup)continue;
+         memset(&disks[i].device,0,sizeof(disks[i].device));
+     }
+     if(index==MAX_BLOCKS)index=i;
  }
  if(index==MAX_BLOCKS)return -ENOSPC;
  int rc=nas_uboot_block_attach(&disks[index].device,tr,names[index]);

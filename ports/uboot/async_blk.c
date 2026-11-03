@@ -70,6 +70,9 @@ struct async_block {
     uint32_t irq_pending;
     unsigned max_inflight;
     bool ready, poisoned, flush_supported, read_only, reported;
+    /* A failed provider release is still our resource. The singleton must
+     * never be overwritten by a later probe until cleanup can finish. */
+    bool teardown_pending;
 };
 static struct async_block disk;
 enum test_stage { TEST_SEEDED=0,TEST_SEED_PENDING,TEST_WRITE_PENDING,
@@ -218,17 +221,28 @@ static void irq_event(void *context,uint32_t source_status) {
      * in the device/controller hardware interrupt stack. */
 }
 
-static void reset_own_dma(struct async_block *b) {
-    (void)nas_irq_unbind(&b->irq);
-    if(b->ring.active)(void)nas_vring_queue_close(&b->ring);
-    else if(b->transport.ops && b->transport.ops->reset)
+static int release_owned_dma(struct async_block *b) {
+    /* Retire the hardware IRQ owner first. If the IRQ controller refuses,
+     * the stable driver instance and every DMA page remain pinned. */
+    int rc=nas_irq_unbind(&b->irq);
+    if(rc)return rc;
+    if(b->ring.active || b->ring.dma_page.cpu) {
+        rc=nas_vring_queue_close(&b->ring);
+        if(rc)return rc;
+    } else if(b->transport.ops && b->transport.ops->reset) {
         b->transport.ops->reset(b->transport.context);
-    for(unsigned i=0;i<BLK_SLOTS;i++) {
-        if(b->slots[i].header.cpu)
-            (void)nas_dma_free_page(b->transport.dma,&b->slots[i].header);
-        if(b->slots[i].payload.cpu)
-            (void)nas_dma_free_page(b->transport.dma,&b->slots[i].payload);
     }
+    for(unsigned i=0;i<BLK_SLOTS;i++) {
+        if(b->slots[i].header.cpu) {
+            rc=nas_dma_free_page(b->transport.dma,&b->slots[i].header);
+            if(rc)return rc;
+        }
+        if(b->slots[i].payload.cpu) {
+            rc=nas_dma_free_page(b->transport.dma,&b->slots[i].payload);
+            if(rc)return rc;
+        }
+    }
+    return 0;
 }
 /* Poison is terminal for a hardware queue, not for a single valid I/O
  * status. First stop all DMA; then exactly once complete every pinned
@@ -405,14 +419,24 @@ static int setup(struct async_block *b,struct nas_bus_device *dev) {
 }
 
 static int probe(struct nas_bus_device *dev) {
-    if(disk.ready || disk.owner)return -EBUSY;
+    if(disk.owner) {
+        /* A failed probe may have retained a queue/DMA owner. Reap its
+         * original transport before giving the static storage to anyone. */
+        if(!disk.teardown_pending)return -EBUSY;
+        int cleanup=release_owned_dma(&disk);
+        if(cleanup)return cleanup;
+        memset(&disk,0,sizeof(disk));
+    }
+    if(disk.ready)return -EBUSY;
     memset(&disk,0,sizeof(disk));
     test_stage=TEST_SEEDED;
     test_a=NULL;
     test_b=NULL;
     int rc=setup(&disk,dev);
     if(rc) {
-        reset_own_dma(&disk);
+        disk.teardown_pending=true;
+        int cleanup=release_owned_dma(&disk);
+        if(cleanup)return cleanup;
         memset(&disk,0,sizeof(disk));
     }
     return rc;
@@ -434,7 +458,13 @@ static int remove_device(struct nas_bus_device *dev) {
         if(rc)return rc;
     }
 #endif
-    reset_own_dma(&disk);
+    /* Stop admitting new I/O before the first fallible hardware release.
+     * If it fails, the owner survives and remove() retries from the same
+     * stage after the provider is ready to release its retained pages. */
+    disk.ready=false;
+    disk.teardown_pending=true;
+    int cleanup=release_owned_dma(&disk);
+    if(cleanup)return cleanup;
     memset(&disk,0,sizeof(disk));
     test_stage=TEST_SEEDED;
     test_a=NULL;
@@ -450,7 +480,10 @@ int nas_async_blk_driver_register(void) {
 }
 unsigned nas_async_blk_count(void) {return disk.ready?1U:0U;}
 bool nas_async_blk_owns_device(const struct nas_bus_device *dev) {
-    return dev && dev==disk.owner && disk.ready;
+    /* PCI IRQ routing must still treat a partially retired class as the
+     * owner: its failed unbind may leave the ISR action installed even
+     * after it stopped accepting new BlockRequests. */
+    return dev && dev==disk.owner && (disk.ready || disk.teardown_pending);
 }
 void nas_async_blk_get_stats(struct nas_async_blk_stats *out) {
     if(!out)return;
