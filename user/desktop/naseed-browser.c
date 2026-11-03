@@ -29,16 +29,22 @@ static size_t signed_program_output(int channel,const char *path,
         execv(path,argv);_exit(127);
     }
     close(pipefd[1]);
+    /* Consume the entire pipe, even when the display buffer fills. A full
+     * buffer must not truncate the pipe reader and deadlock waitpid(). */
+    nasd_require(cap>0,"signed document output buffer");
     size_t used=0;
-    while(used+1<cap) {
-        ssize_t n=read(pipefd[0],out+used,cap-1-used);
+    char chunk[512];
+    for(;;) {
+        ssize_t n=read(pipefd[0],chunk,sizeof(chunk));
         if(n<0 && errno==EINTR)continue;
         nasd_require(n>=0,"signed program output read");
         if(!n)break;
-        used+=(size_t)n;
+        size_t keep=(size_t)n;
+        if(keep>cap-1-used)keep=cap-1-used;
+        if(keep)memcpy(out+used,chunk,keep);
+        used+=keep;
     }
     out[used]=0;
-    nasd_require(used+1<cap,"signed document output bounded");
     close(pipefd[0]);
     int status=0;
     nasd_require(waitpid(pid,&status,0)==pid && WIFEXITED(status) &&
@@ -60,7 +66,7 @@ static void paint(uint8_t *pixels,const char *lynx,size_t lynx_size,
 }
 int main(void) {
     const int channel=3;
-    char lynx[2048]={0},mc[256]={0};
+    char lynx[2048]={0},mc[4096]={0};
     char *const lynx_argv[]={"lynx","-dump","-nolist","-width=38",
                               "/tests/m168-home.html",NULL};
     size_t nlynx=signed_program_output(channel,"/usr/bin/lynx",
