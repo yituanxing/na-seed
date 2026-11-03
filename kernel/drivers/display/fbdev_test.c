@@ -82,7 +82,9 @@ static uint64_t mock_write(struct nas_display_device *dev,uint64_t offset,
     memcpy(dest+offset,src,(size_t)bytes);
     return bytes;
 }
-static const struct nas_display_ops mock_ops={mock_read,mock_write};
+static const struct nas_display_ops mock_ops={
+    .read_at=mock_read,.write_at=mock_write
+};
 
 static void test_provider(void) {
     struct nas_display_device other={

@@ -122,7 +122,7 @@ boot_case() {
     # Not a Limine module: sector I/O goes through original U-Boot VirtIO.
     set --
     if [ -n "${NAS_VIRTIO_BLK_IMAGE:-}" ] || [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ] || \
-       [ "${NAS_QEMU_INPUT_OPTIN:-0}" = 1 ]; then
+       [ "${NAS_QEMU_INPUT_OPTIN:-0}" = 1 ] || [ "${NAS_QEMU_VIRTIO_GPU:-0}" = 1 ]; then
         # The shared MMIO probe binds modern VirtIO only (version 2).
         set -- "$@" -global virtio-mmio.force-legacy=false
     fi
@@ -155,14 +155,20 @@ boot_case() {
         set -- "$@" -device virtio-keyboard-device \
             -device virtio-tablet-device -device virtio-mouse-device
     fi
-    if [ "${NAS_QEMU_RAMFB:-0}" = 1 ]; then
+    if [ "${NAS_QEMU_VIRTIO_GPU:-0}" = 1 ]; then
+        [ "${NAS_QEMU_RAMFB:-0}" != 1 ] || {
+            echo 'GPU and ramfb acceptance devices cannot be combined' >&2
+            return 2
+        }
+        set -- "$@" -device virtio-gpu-device,xres=800,yres=600
+    elif [ "${NAS_QEMU_RAMFB:-0}" = 1 ]; then
         set -- "$@" -device ramfb
-        if [ -n "${NAS_QEMU_QMP_SOCKET:-}" ]; then
-            set -- "$@" -qmp "unix:$NAS_QEMU_QMP_SOCKET,server=on,wait=off"
-        fi
     elif [ -n "${NAS_QEMU_QMP_SOCKET:-}" ]; then
-        echo 'NAS_QEMU_QMP_SOCKET requires NAS_QEMU_RAMFB=1' >&2
+        echo 'NAS_QEMU_QMP_SOCKET requires a real graphics device' >&2
         return 2
+    fi
+    if [ -n "${NAS_QEMU_QMP_SOCKET:-}" ]; then
+        set -- "$@" -qmp "unix:$NAS_QEMU_QMP_SOCKET,server=on,wait=off"
     fi
     set +e
     timeout "${time_budget}s" qemu-system-riscv64 \

@@ -58,6 +58,9 @@ endif
 ifeq ($(NAS_ENABLE_VIRTIO_INPUT),1)
 CFLAGS += -DNAS_ENABLE_VIRTIO_INPUT=1
 endif
+ifeq ($(NAS_ENABLE_VIRTIO_GPU),1)
+CFLAGS += -DNAS_ENABLE_VIRTIO_GPU=1
+endif
 CFLAGS += -DNAS_ENABLE_LWIP=1 -I ports/lwip/include -I third_party/lwip/src/include
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
  -z noexecstack -T kernel/arch/$(ARCH)/linker.ld
@@ -70,7 +73,7 @@ kernel: $(KERNEL)
 # Opt-in unchanged original U-Boot source behind a modern PCI transport.
 # All request code is shared with ARM/RV; only x86 PCI enumeration is extra.
 VIRTIO_X86_OBJS :=
-ifneq ($(filter 1,$(NAS_ENABLE_VIRTIO_BLK) $(NAS_ENABLE_VIRTIO_NET) $(NAS_ENABLE_VIRTIO_INPUT)),)
+ifneq ($(filter 1,$(NAS_ENABLE_VIRTIO_BLK) $(NAS_ENABLE_VIRTIO_NET) $(NAS_ENABLE_VIRTIO_INPUT) $(NAS_ENABLE_VIRTIO_GPU)),)
 VIRTIO_X86_SRCS := kernel/drivers/port/dma.c \
  kernel/drivers/virtio/transport.c \
  kernel/drivers/virtio/pci.c ports/unikraft/split_queue.c \
@@ -86,6 +89,9 @@ VIRTIO_X86_SRCS += ports/uboot/net_port.c ports/uboot/virtio_net_bus.c
 endif
 ifeq ($(NAS_ENABLE_VIRTIO_INPUT),1)
 VIRTIO_X86_SRCS += kernel/drivers/input/virtio_input.c
+endif
+ifeq ($(NAS_ENABLE_VIRTIO_GPU),1)
+VIRTIO_X86_SRCS += kernel/drivers/display/virtio_gpu.c
 endif
 VIRTIO_X86_OBJS := $(patsubst %.c,$(OUT)/virtio_%.o,$(notdir $(VIRTIO_X86_SRCS)))
 define nas_compile_x86_virtio

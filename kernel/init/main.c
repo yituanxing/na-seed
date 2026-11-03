@@ -34,6 +34,7 @@ extern bool nas_lwip_guest_boot(void);
 #include "main.h"
 #include "../fs/file_ops.h"
 #include "../platform/platform.h"
+#include "../drivers/display/display.h"
 #define TASK (*nas_current_task)
 
 /* Only a FULLY terminated PID 1 process may drive the host test exit.
@@ -171,6 +172,9 @@ void nas_init_userspace(void) {
     else if (selected_image.alpine) nas_print("[M4] real Alpine busybox via musl interpreter in ring 3\n");
     else if (selected_image.busybox) nas_print("[M2] entering real BusyBox in ring 3\n");
     else nas_print("[M1] entering actual ring 3\n");
+    /* One bootstrap bootfb -> GPU handoff is possible while assembling the
+     * machine, never after a process can open /dev/fb0. */
+    nas_display_lock_primary();
     nas_arch_enter_user(entry, stack_pointer);
     nas_fail("architecture user-entry unexpectedly returned");
 }

@@ -51,16 +51,22 @@ if [ "${NAS_QEMU_INPUT_OPTIN:-0}" = 1 ]; then
         -device virtio-tablet-pci,disable-legacy=on \
         -device virtio-mouse-pci,disable-legacy=on
 fi
-# Explicit graphics acceptance only. Never change the long-standing headless
-# hardware profile unless M161 requests QEMU ramfb and a QMP proof socket.
-if [ "${NAS_QEMU_RAMFB:-0}" = 1 ]; then
+# Explicit graphics acceptance only. The 2D VirtIO-GPU profile and historical
+# firmware ramfb are mutually exclusive real QEMU devices, not aliases.
+if [ "${NAS_QEMU_VIRTIO_GPU:-0}" = 1 ]; then
+    [ "${NAS_QEMU_RAMFB:-0}" != 1 ] || {
+        echo 'GPU and ramfb acceptance devices cannot be combined' >&2
+        exit 2
+    }
+    set -- "$@" -vga none -device virtio-gpu-pci,disable-legacy=on,xres=800,yres=600
+elif [ "${NAS_QEMU_RAMFB:-0}" = 1 ]; then
     set -- "$@" -vga none -device ramfb
-    if [ -n "${NAS_QEMU_QMP_SOCKET:-}" ]; then
-        set -- "$@" -qmp "unix:$NAS_QEMU_QMP_SOCKET,server=on,wait=off"
-    fi
 elif [ -n "${NAS_QEMU_QMP_SOCKET:-}" ]; then
-    echo 'NAS_QEMU_QMP_SOCKET requires NAS_QEMU_RAMFB=1' >&2
+    echo 'NAS_QEMU_QMP_SOCKET requires a real graphics device' >&2
     exit 2
+fi
+if [ -n "${NAS_QEMU_QMP_SOCKET:-}" ]; then
+    set -- "$@" -qmp "unix:$NAS_QEMU_QMP_SOCKET,server=on,wait=off"
 fi
 exec qemu-system-x86_64 -M q35 -m "${NAS_ACCEPTANCE_QEMU_RAM:-256M}" -cpu qemu64 \
     -display none -monitor none -serial stdio -no-reboot -no-shutdown \

@@ -2,9 +2,9 @@
 #include "../core/chrdev.h"
 #include "../../fd.h"
 
-/* The display class publishes the fbdev endpoint, not the syscall decoder.
- * The underlying scanout may be the boot framebuffer or any future driver
- * registered with DisplayDevice. A missing display publishes no /dev/fb0. */
+/* Publish a STABLE devfs node even when firmware has no boot framebuffer.
+ * The presence callback changes dynamically when the first GPU binds (or
+ * takes over bootfb); no device names are fabricated in syscall dispatch. */
 static bool display_present(unsigned unit) {
     return unit==0U && nas_fbdev_available();
 }
@@ -23,6 +23,5 @@ static struct nas_chrdev_node framebuffer_node={
 };
 
 int nas_fbdev_chrdev_init(void) {
-    if(!nas_fbdev_available())return 0;
     return nas_chrdev_node_register(&framebuffer_node);
 }

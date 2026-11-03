@@ -12,6 +12,9 @@
 #ifdef NAS_ENABLE_VIRTIO_INPUT
 #include "../drivers/input/virtio_input.h"
 #endif
+#ifdef NAS_ENABLE_VIRTIO_GPU
+#include "../drivers/display/virtio_gpu.h"
+#endif
 #include "../drivers/serial.h"
 #include "../errno.h"
 #include <virtio/virtio_ids.h>
@@ -193,6 +196,10 @@ int nas_platform_virtio_blk_probe(void) {
     rc=nas_virtio_input_driver_register();
     if(rc<0)return rc;
 #endif
+#ifdef NAS_ENABLE_VIRTIO_GPU
+    rc=nas_virtio_gpu_driver_register();
+    if(rc<0)return rc;
+#endif
     unsigned count=0;
     for(unsigned slot=0;slot<32U;slot++) {
         uint32_t first=cfg_read(0,(uint8_t)slot,0,0);
@@ -208,7 +215,8 @@ int nas_platform_virtio_blk_probe(void) {
             uint32_t device_id=id>>16;
             if(device_id!=0x1040U+VIRTIO_ID_NET &&
                device_id!=0x1040U+VIRTIO_ID_BLOCK &&
-               device_id!=0x1040U+VIRTIO_ID_INPUT)continue;
+               device_id!=0x1040U+VIRTIO_ID_INPUT &&
+               device_id!=0x1040U+VIRTIO_ID_GPU)continue;
             if(count>=VIRTIO_DEVICES)return -ENOSPC;
             load_config(0,(uint8_t)slot,(uint8_t)function,
                         cfg_snapshot[count]);
@@ -262,6 +270,9 @@ int nas_platform_virtio_blk_probe(void) {
 #ifdef NAS_ENABLE_VIRTIO_NET
         if(devices[i].device_id==VIRTIO_ID_NET)needs_irq=true;
 #endif
+#ifdef NAS_ENABLE_VIRTIO_GPU
+        if(devices[i].device_id==VIRTIO_ID_GPU)needs_irq=true;
+#endif
         if(!needs_irq)continue;
         if(device_pirq[i]==PIRQ_UNKNOWN) {
             nas_print("[VIRTIO PCI FAIL] stage=q35-device-pirq\n");
@@ -298,6 +309,9 @@ int nas_platform_virtio_blk_probe(void) {
 #ifdef NAS_ENABLE_VIRTIO_NET
         if(devices[i].device_id==VIRTIO_ID_NET)class_owns_irq=true;
 #endif
+#ifdef NAS_ENABLE_VIRTIO_GPU
+        if(devices[i].device_id==VIRTIO_ID_GPU)class_owns_irq=true;
+#endif
         if(shared_line && !class_owns_irq) {
             /* A class that has bound its own IRQ action must never have
              * its read-to-clear VirtIO ISR consumed a second time here.
@@ -315,6 +329,10 @@ int nas_platform_virtio_blk_probe(void) {
 #ifdef NAS_ENABLE_VIRTIO_INPUT
     nas_print("[VIRTIO-INPUT] real modern PCI devices=");
     nas_dec(nas_virtio_input_count());nas_print("\n");
+#endif
+#ifdef NAS_ENABLE_VIRTIO_GPU
+    nas_print("[VIRTIO-GPU] real modern PCI devices=");
+    nas_dec(nas_virtio_gpu_count());nas_print("\n");
 #endif
     scanned=true;
     return (int)block_count();

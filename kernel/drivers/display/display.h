@@ -5,10 +5,10 @@
 #include <stdint.h>
 
 /* A scanout surface class, independent of firmware, PCI/MMIO transport,
- * userspace's Linux fbdev ABI and the desktop compositor. This first stage
- * deliberately has one stable primary device and one fixed mode: drivers
- * register before user files are opened and remain alive for the boot.
- * Mode setting, GPU command queues and runtime removal are not promised. */
+ * userspace's Linux fbdev ABI and the desktop compositor. One fixed-mode
+ * primary may be selected during bootstrap; a real driver may take over
+ * Limine bootfb ONCE before user entry. The resulting primary is immutable
+ * throughout userspace. Modeset, hotplug and GPU commands live elsewhere. */
 struct nas_display_mode {
     uint32_t width, height, pitch;
     uint16_t bpp;
@@ -25,6 +25,11 @@ struct nas_display_ops {
     uint64_t (*read_at)(struct nas_display_device *,uint64_t,uint8_t *,uint64_t);
     uint64_t (*write_at)(struct nas_display_device *,uint64_t,
                          const uint8_t *,uint64_t);
+    /* Optional deferred scanout commit. A framebuffer driver that writes
+     * directly to visible firmware memory may leave this NULL. GPU drivers
+     * can batch dirty byte writes and submit at a safe scheduler boundary;
+     * this is NEVER called once for every internal 1-KiB FileOps chunk. */
+    int (*present)(struct nas_display_device *);
 };
 
 struct nas_display_device {
@@ -34,13 +39,20 @@ struct nas_display_device {
     const struct nas_display_ops *ops;
 };
 
-/* The first successfully registered scanout becomes /dev/fb0's backend.
- * Registration rejects a second primary rather than silently changing
- * memory while an OpenFile might still refer to the previous screen. */
+/* No display yet: register one. A registered non-firmware display cannot be
+ * superseded. The distinct takeover path is for a genuine display device
+ * replacing the provisional Limine bootfb exactly once before user entry. */
 bool nas_display_register_primary(struct nas_display_device *);
+bool nas_display_boot_takeover(struct nas_display_device *);
+/* Called immediately before entering userspace; late registration and all
+ * replacements are then refused, including if no display was discovered. */
+void nas_display_lock_primary(void);
 const struct nas_display_device *nas_display_primary(void);
 uint64_t nas_display_length(void);
 uint64_t nas_display_read_at(uint64_t,uint8_t *,uint64_t);
 uint64_t nas_display_write_at(uint64_t,const uint8_t *,uint64_t);
+/* Deferred present is explicit: a null backend hook is a successful no-op,
+ * an absent display fails ENODEV, and errors propagate to the caller. */
+int nas_display_present(void);
 
 #endif

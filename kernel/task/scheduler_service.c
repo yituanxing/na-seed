@@ -6,11 +6,24 @@
 #ifdef NAS_ENABLE_VIRTIO_INPUT
 #include "../drivers/input/virtio_input.h"
 #endif
+#ifdef NAS_ENABLE_VIRTIO_GPU
+#include "../drivers/display/display.h"
+#include "../drivers/display/virtio_gpu.h"
+#include "../panic.h"
+#endif
 #include "../arch/arch.h"
 /* Exactly one native kernel C-frame slice per user scheduling boundary.
  * Every additional user Task remains eligible on the same boundary.
  * A yielding, always-ready worker cannot monopolize a user process. */
 void nas_sched_service_kernel(void) {
+#ifdef NAS_ENABLE_VIRTIO_GPU
+    /* fbdev pwrite is internally copied in 1 KiB chunks. Only at this
+     * scheduler-safe boundary may a GPU submit its coalesced dirty scanout;
+     * never issue one VirtIO command for every kernel usercopy chunk. */
+    if(nas_display_primary() && nas_display_present()<0)
+        nas_fail("GPU scanout update failed");
+    nas_virtio_gpu_report();
+#endif
 #ifdef NAS_ENABLE_VIRTIO_INPUT
     /* Hardware IRQ handlers ACK only their VirtIO source and atomically
      * mark pending work; real queue/input/evdev work runs here. Routed

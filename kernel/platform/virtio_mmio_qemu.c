@@ -12,6 +12,9 @@
 #ifdef NAS_ENABLE_VIRTIO_INPUT
 #include "../drivers/input/virtio_input.h"
 #endif
+#ifdef NAS_ENABLE_VIRTIO_GPU
+#include "../drivers/display/virtio_gpu.h"
+#endif
 #include <virtio/virtio_ids.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -60,6 +63,10 @@ int nas_qemu_virtio_mmio_probe(uint64_t physical, uint64_t virtual_base,
     rc=nas_virtio_input_driver_register();
     if (rc<0) return rc;
 #endif
+#ifdef NAS_ENABLE_VIRTIO_GPU
+    rc=nas_virtio_gpu_driver_register();
+    if (rc<0) return rc;
+#endif
     for (unsigned page=0;page<(slots*stride+PAGE_BYTES-1U)/PAGE_BYTES;page++)
         if (!map_page(physical+page*PAGE_BYTES,
                       virtual_base+page*PAGE_BYTES)) return -1;
@@ -71,7 +78,7 @@ int nas_qemu_virtio_mmio_probe(uint64_t physical, uint64_t virtual_base,
         /* Transport discovery publishes classes, not device protocols.
          * An unclaimed device remains available for later driver binding. */
         if(reg[2]!=VIRTIO_ID_BLOCK && reg[2]!=VIRTIO_ID_NET &&
-           reg[2]!=VIRTIO_ID_INPUT)continue;
+           reg[2]!=VIRTIO_ID_INPUT && reg[2]!=VIRTIO_ID_GPU)continue;
         if(reg[1]!=2U){legacy++;continue;}
         modern++;
         rc=nas_virtio_mmio_transport_init(&transports[slot],
@@ -97,6 +104,10 @@ int nas_qemu_virtio_mmio_probe(uint64_t physical, uint64_t virtual_base,
 #ifdef NAS_ENABLE_VIRTIO_INPUT
     nas_print("[VIRTIO-INPUT] real modern MMIO devices=");
     nas_dec(nas_virtio_input_count());nas_print("\n");
+#endif
+#ifdef NAS_ENABLE_VIRTIO_GPU
+    nas_print("[VIRTIO-GPU] real modern MMIO devices=");
+    nas_dec(nas_virtio_gpu_count());nas_print("\n");
 #endif
     scanned=true;
     return (int)block_count();

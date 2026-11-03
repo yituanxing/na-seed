@@ -6,7 +6,14 @@ set -eu
 port=$1
 case "$port" in amd64|riscv64|arm64) ;; *) exit 2 ;; esac
 . scripts/native-qemu-target.sh
-export NAS_QEMU_RAMFB=1 NAS_QEMU_INPUT_OPTIN=1 NAS_ENABLE_VIRTIO_INPUT=1
+export NAS_QEMU_INPUT_OPTIN=1 NAS_ENABLE_VIRTIO_INPUT=1
+if [ "${NAS_QEMU_VIRTIO_GPU:-0}" = 1 ]; then
+    # M177 verifies the actual 2D scanout rather than firmware ramfb. The
+    # same original desktop and QMP five-frame oracle remain authoritative.
+    export NAS_QEMU_RAMFB=0 NAS_ENABLE_VIRTIO_GPU=1
+else
+    export NAS_QEMU_RAMFB=1
+fi
 export NAS_ACCEPTANCE_QEMU_RAM=2048M NAS_ACCEPTANCE_DISK_MB=1024
 export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_APP_BATCH_QEMU_TIMEOUT:-850}
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
@@ -42,10 +49,17 @@ grep -Fq '[M173 QMP DYNAMIC PASS]' "$oracle" || {
     echo "[M174 QMP ORACLE FAIL] $port missing strict physical-frame verdict" >&2
     exit 1
 }
-grep -aE '^\[FB\] firmware framebuffer ready 800x600 pitch=3200 bpp=32 r8@16 g8@8 b8@0$' "$log" >/dev/null || {
-    echo "[M174 FRAMEBUFFER FAIL] $port unexpected firmware framebuffer geometry" >&2
-    exit 1
-}
+if [ "${NAS_QEMU_VIRTIO_GPU:-0}" = 1 ]; then
+    grep -aEq '^\[VIRTIO-GPU\] real modern (PCI|MMIO) devices=1$' "$log" || {
+        echo "[M177 GPU FAIL] $port real PCI/MMIO GPU did not bind" >&2
+        exit 1
+    }
+else
+    grep -aE '^\[FB\] firmware framebuffer ready 800x600 pitch=3200 bpp=32 r8@16 g8@8 b8@0$' "$log" >/dev/null || {
+        echo "[M174 FRAMEBUFFER FAIL] $port unexpected firmware framebuffer geometry" >&2
+        exit 1
+    }
+fi
 while IFS= read -r marker; do
     case "$marker" in ''|'#'*) continue ;; esac
     [ "$(grep -Fxc "$marker" "$log" || :)" -eq 1 ] || {

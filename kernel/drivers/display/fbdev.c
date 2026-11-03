@@ -1,5 +1,6 @@
 #include "fbdev.h"
 #include "display.h"
+#include "../../errno.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -8,6 +9,8 @@
  * links the same code. Their state/operations remain separately owned. */
 static struct nas_display_device *primary_display;
 static uint64_t primary_bytes;
+static bool primary_locked;
+static bool boot_taken_over;
 
 /* A Limine-provided framebuffer is an ordinary *backend*, not the display
  * interface itself. These pages belong to firmware and are already mapped
@@ -39,15 +42,34 @@ static bool mode_valid(const struct nas_display_mode *mode,uint64_t *bytes) {
     return true;
 }
 
+static bool valid_device(const struct nas_display_device *device,
+                         uint64_t *bytes) {
+    return device && device->name && device->name[0] && device->ops &&
+       device->ops->read_at && device->ops->write_at &&
+       mode_valid(&device->mode,bytes);
+}
+
 bool nas_display_register_primary(struct nas_display_device *device) {
     uint64_t bytes=0;
-    if(primary_display || !device || !device->name || !device->ops ||
-       !device->ops->read_at || !device->ops->write_at ||
-       !mode_valid(&device->mode,&bytes))return false;
+    if(primary_display || primary_locked || !valid_device(device,&bytes))
+        return false;
     primary_display=device;
     primary_bytes=bytes;
     return true;
 }
+bool nas_display_boot_takeover(struct nas_display_device *device) {
+    uint64_t bytes=0;
+    if(primary_locked || boot_taken_over || primary_display!=&boot_display ||
+       device==&boot_display || !valid_device(device,&bytes))return false;
+    /* The old boot framebuffer is firmware-owned and stays mapped, but no
+     * displayed File exists yet. Switch identity and mode atomically before
+     * init exposes the first process. No runtime framebuffer replacement. */
+    primary_display=device;
+    primary_bytes=bytes;
+    boot_taken_over=true;
+    return true;
+}
+void nas_display_lock_primary(void) {primary_locked=true;}
 const struct nas_display_device *nas_display_primary(void) {
     return primary_display;
 }
@@ -64,6 +86,11 @@ uint64_t nas_display_write_at(uint64_t offset,const uint8_t *src,uint64_t bytes)
     uint64_t done=primary_display->ops->write_at(primary_display,offset,src,bytes);
     return done<=bytes ? done : 0;
 }
+int nas_display_present(void) {
+    if(!primary_display)return -ENODEV;
+    return primary_display->ops->present ?
+        primary_display->ops->present(primary_display) : 0;
+}
 
 static uint64_t boot_read(struct nas_display_device *device,uint64_t offset,
                           uint8_t *dst,uint64_t bytes) {
@@ -79,7 +106,9 @@ static uint64_t boot_write(struct nas_display_device *device,uint64_t offset,
     for(uint64_t i=0;i<bytes;i++)to[i]=src[i];
     return bytes;
 }
-static const struct nas_display_ops boot_ops={boot_read,boot_write};
+static const struct nas_display_ops boot_ops={
+    .read_at=boot_read,.write_at=boot_write
+};
 
 bool nas_fbdev_boot_init(const struct nas_fb_boot_info *src) {
     /* Firmware initialization is a bootstrap-only operation, before any
@@ -87,7 +116,8 @@ bool nas_fbdev_boot_init(const struct nas_fb_boot_info *src) {
      * reject/replace a bad Limine candidate while never displacing a
      * separately registered DisplayDevice backend. Runtime hot-unplug is
      * intentionally not an operation exposed by this display class. */
-    if(primary_display && primary_display!=&boot_display)return false;
+    if(primary_locked || boot_taken_over ||
+       (primary_display && primary_display!=&boot_display))return false;
     if(primary_display==&boot_display) {
         primary_display=NULL;
         primary_bytes=0;
