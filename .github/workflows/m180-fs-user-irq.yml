@@ -62,6 +62,17 @@ jobs:
           gcc -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding \
             scripts/test-fd-pending.c kernel/fd.c -o build/m180/test-fd-pending
           build/m180/test-fd-pending
+      - name: Prove independent and cancelled filesystem broker request lifetimes
+        run: |
+          set -eu
+          mkdir -p build/m180
+          gcc -std=c11 -O2 -Wall -Wextra -Werror \
+            -DNAS_ENABLE_M180_FS_USER_IRQ=1 \
+            -DNAS_ENABLE_M179_FS_IRQ=1 \
+            -DNAS_ENABLE_VIRTIO_BLK_ASYNC=1 \
+            scripts/test-m180-fs-broker.c kernel/fs/broker.c \
+            -o build/m180/test-fs-broker
+          build/m180/test-fs-broker
 
   native-user-fs-irq:
     name: M180 ring3 ext4 write/fsync/read with real IRQ and host disk oracle / ${{ matrix.port }}
