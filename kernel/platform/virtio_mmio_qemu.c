@@ -15,6 +15,9 @@
 #ifdef NAS_ENABLE_VIRTIO_GPU
 #include "../drivers/display/virtio_gpu.h"
 #endif
+#ifdef NAS_ENABLE_VIRTIO_BLK_ASYNC
+#include "../../ports/uboot/async_blk.h"
+#endif
 #include <virtio/virtio_ids.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -51,6 +54,10 @@ int nas_qemu_virtio_mmio_probe(uint64_t physical, uint64_t virtual_base,
         return -1;
     if(scanned)return (int)block_count();
     int rc=0;
+#ifdef NAS_ENABLE_VIRTIO_BLK_ASYNC
+    rc=nas_async_blk_driver_register();
+    if (rc<0) return rc;
+#endif
 #ifdef NAS_ENABLE_VIRTIO_BLK
     rc=nas_virtio_blk_driver_register();
     if (rc<0) return rc;
@@ -108,6 +115,10 @@ int nas_qemu_virtio_mmio_probe(uint64_t physical, uint64_t virtual_base,
 #ifdef NAS_ENABLE_VIRTIO_GPU
     nas_print("[VIRTIO-GPU] real modern MMIO devices=");
     nas_dec(nas_virtio_gpu_count());nas_print("\n");
+#endif
+#ifdef NAS_ENABLE_VIRTIO_BLK_ASYNC
+    nas_print("[VIRTIO-BLK-ASYNC] real modern MMIO devices=");
+    nas_dec(nas_async_blk_count());nas_print("\n");
 #endif
     scanned=true;
     return (int)block_count();

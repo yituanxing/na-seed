@@ -15,6 +15,9 @@
 #ifdef NAS_ENABLE_VIRTIO_GPU
 #include "../drivers/display/virtio_gpu.h"
 #endif
+#ifdef NAS_ENABLE_VIRTIO_BLK_ASYNC
+#include "../../ports/uboot/async_blk.h"
+#endif
 #include "../drivers/serial.h"
 #include "../errno.h"
 #include <virtio/virtio_ids.h>
@@ -184,6 +187,10 @@ static bool map_bars(uint8_t bus,uint8_t slot,uint8_t fun,unsigned index,
 int nas_platform_virtio_blk_probe(void) {
     if(scanned)return (int)block_count();
     int rc=0;
+#ifdef NAS_ENABLE_VIRTIO_BLK_ASYNC
+    rc=nas_async_blk_driver_register();
+    if(rc<0)return rc;
+#endif
 #ifdef NAS_ENABLE_VIRTIO_BLK
     rc=nas_virtio_blk_driver_register();
     if(rc<0)return rc;
@@ -273,6 +280,9 @@ int nas_platform_virtio_blk_probe(void) {
 #ifdef NAS_ENABLE_VIRTIO_GPU
         if(devices[i].device_id==VIRTIO_ID_GPU)needs_irq=true;
 #endif
+#ifdef NAS_ENABLE_VIRTIO_BLK_ASYNC
+        if(devices[i].device_id==VIRTIO_ID_BLOCK)needs_irq=true;
+#endif
         if(!needs_irq)continue;
         if(device_pirq[i]==PIRQ_UNKNOWN) {
             nas_print("[VIRTIO PCI FAIL] stage=q35-device-pirq\n");
@@ -312,6 +322,10 @@ int nas_platform_virtio_blk_probe(void) {
 #ifdef NAS_ENABLE_VIRTIO_GPU
         if(devices[i].device_id==VIRTIO_ID_GPU)class_owns_irq=true;
 #endif
+#ifdef NAS_ENABLE_VIRTIO_BLK_ASYNC
+        if(devices[i].device_id==VIRTIO_ID_BLOCK &&
+           nas_async_blk_owns_device(&devices[i]))class_owns_irq=true;
+#endif
         if(shared_line && !class_owns_irq) {
             /* A class that has bound its own IRQ action must never have
              * its read-to-clear VirtIO ISR consumed a second time here.
@@ -333,6 +347,10 @@ int nas_platform_virtio_blk_probe(void) {
 #ifdef NAS_ENABLE_VIRTIO_GPU
     nas_print("[VIRTIO-GPU] real modern PCI devices=");
     nas_dec(nas_virtio_gpu_count());nas_print("\n");
+#endif
+#ifdef NAS_ENABLE_VIRTIO_BLK_ASYNC
+    nas_print("[VIRTIO-BLK-ASYNC] real modern PCI devices=");
+    nas_dec(nas_async_blk_count());nas_print("\n");
 #endif
     scanned=true;
     return (int)block_count();

@@ -2,28 +2,6 @@ name: NaSeed M177 real VirtIO GPU 2D + Alpine desktop three ISA
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - '.github/workflows/m177-gpu-2d.yml'
-      - 'kernel/drivers/display/**'
-      - 'kernel/drivers/core/**'
-      - 'kernel/drivers/virtio/**'
-      - 'kernel/drivers/port/dma*'
-      - 'kernel/platform/**'
-      - 'kernel/init/main.c'
-      - 'kernel/task/scheduler_service.c'
-      - 'ports/unikraft/**'
-      - 'ports/lwip/network_boot.c'
-      - 'scripts/*m177*'
-      - 'scripts/probe-m174-batch.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'scripts/run.sh'
-      - 'scripts/build-riscv64-full.sh'
-      - 'scripts/build-aarch64-full.sh'
-      - 'scripts/full-kernel-core.sources'
-      - 'Makefile'
 
 permissions:
   contents: read

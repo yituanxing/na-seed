@@ -122,7 +122,8 @@ boot_case() {
     # Not a Limine module: sector I/O goes through original U-Boot VirtIO.
     set --
     if [ -n "${NAS_VIRTIO_BLK_IMAGE:-}" ] || [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ] || \
-       [ "${NAS_QEMU_INPUT_OPTIN:-0}" = 1 ] || [ "${NAS_QEMU_VIRTIO_GPU:-0}" = 1 ]; then
+       [ "${NAS_QEMU_INPUT_OPTIN:-0}" = 1 ] || [ "${NAS_QEMU_VIRTIO_GPU:-0}" = 1 ] || \
+       [ -n "${NAS_QEMU_ASYNC_BLK_IMAGE:-}" ]; then
         # The shared MMIO probe binds modern VirtIO only (version 2).
         set -- "$@" -global virtio-mmio.force-legacy=false
     fi
@@ -130,6 +131,11 @@ boot_case() {
         test -s "$NAS_VIRTIO_BLK_IMAGE"
         set -- "$@" -drive "if=none,id=real_ext4,format=raw,file=$NAS_VIRTIO_BLK_IMAGE" \
                -device virtio-blk-device,drive=real_ext4
+    fi
+    if [ -n "${NAS_QEMU_ASYNC_BLK_IMAGE:-}" ]; then
+        test -s "$NAS_QEMU_ASYNC_BLK_IMAGE"
+        set -- "$@" -drive "if=none,id=m178_async,format=raw,file=$NAS_QEMU_ASYNC_BLK_IMAGE" \
+            -device virtio-blk-device,drive=m178_async
     fi
     if [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ]; then
         set -- "$@" -netdev user,id=naseed_net \

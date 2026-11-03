@@ -2,6 +2,9 @@
  * CPU/device discovery is outside this translation unit. */
 #include "virtio_bus.h"
 #include "blk_port.h"
+#ifdef NAS_ENABLE_VIRTIO_BLK_ASYNC
+#include "async_blk.h"
+#endif
 #include "../../kernel/drivers/core/bus.h"
 #include "../../kernel/errno.h"
 #include "../../kernel/lib/string.h"
@@ -12,6 +15,11 @@ static struct slot disks[MAX_BLOCKS];
 static const char *const names[MAX_BLOCKS]={"virtio0","virtio1","virtio2","virtio3"};
 static unsigned count;
 static bool match(const struct nas_bus_device *dev){
+#ifdef NAS_ENABLE_VIRTIO_BLK_ASYNC
+ /* The separate 16MiB acceptance disk belongs to the asynchronous class.
+  * Device order is not stable across PCI and VirtIO-MMIO enumeration. */
+ if(nas_async_blk_is_fixture(dev))return false;
+#endif
  return dev->device_id==VIRTIO_ID_BLOCK && dev->virtio!=NULL;
 }
 static int probe(struct nas_bus_device *dev){

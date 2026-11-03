@@ -18,6 +18,11 @@ if [ -n "${NAS_VIRTIO_BLK_IMAGE:-}" ]; then
 else
     set --
 fi
+if [ -n "${NAS_QEMU_ASYNC_BLK_IMAGE:-}" ]; then
+    test -s "$NAS_QEMU_ASYNC_BLK_IMAGE"
+    set -- "$@" -drive "if=none,id=m178_async,format=raw,file=$NAS_QEMU_ASYNC_BLK_IMAGE" \
+        -device virtio-blk-pci,drive=m178_async,disable-legacy=on
+fi
 if [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ]; then
     # Opt-in real modern PCI NIC with QEMU user/slirp DHCP and host gateway.
     # Default QEMU hardware stays unchanged for all historical OS gates.

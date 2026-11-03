@@ -11,11 +11,20 @@
 #include "../drivers/display/virtio_gpu.h"
 #include "../panic.h"
 #endif
+#ifdef NAS_ENABLE_VIRTIO_BLK_ASYNC
+#include "../../ports/uboot/async_blk.h"
+#endif
 #include "../arch/arch.h"
 /* Exactly one native kernel C-frame slice per user scheduling boundary.
  * Every additional user Task remains eligible on the same boundary.
  * A yielding, always-ready worker cannot monopolize a user process. */
 void nas_sched_service_kernel(void) {
+#ifdef NAS_ENABLE_VIRTIO_BLK_ASYNC
+    /* IRQ acknowledges only this hardware source. A bounded scheduler-side
+     * drain owns buffer sync, completion callbacks and next test actions. */
+    nas_async_blk_service();
+    nas_async_blk_native_test_step();
+#endif
 #ifdef NAS_ENABLE_VIRTIO_GPU
     /* fbdev pwrite is internally copied in 1 KiB chunks. Only at this
      * scheduler-safe boundary may a GPU submit its coalesced dirty scanout;
