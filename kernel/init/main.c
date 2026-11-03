@@ -22,6 +22,9 @@ extern bool nas_lwip_guest_boot(void);
 #include "../arch/mmu.h"
 #include "../drivers/serial.h"
 #include "../drivers/tty.h"
+#include "../drivers/pty.h"
+#include "../drivers/core/misc.h"
+#include "../drivers/display/fbdev.h"
 #include "../panic.h"
 #include "../task/elf.h"
 #include "../task/user_stack.h"
@@ -71,6 +74,11 @@ void nas_init_process_terminated(uint32_t code,uint32_t signal) {
 void nas_init_userspace(void) {
     nas_print("[INIT] creating common task/VM and architecture user entry\n");
     nas_task_boot_init();
+    /* Character class publication is independent of a mounted /dev.
+     * The VFS namei path still wins whenever a real inode exists. */
+    if(nas_misc_chrdev_init() || nas_tty_chrdev_init() ||
+       nas_pty_chrdev_init() || nas_fbdev_chrdev_init())
+        nas_fail("base character-device publication failed");
 #ifdef NAS_ENABLE_VIRTIO_INPUT
     /* Publish the event character-device handler before the shared bus
      * can discover a VirtIO input device (through lwIP or block boot). */

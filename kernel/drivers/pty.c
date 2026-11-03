@@ -8,6 +8,7 @@
 #include "tty.h"
 #include "tty_ldisc.h"
 #include "pty.h"
+#include "core/chrdev.h"
 
 /* One multiplexor with N independently allocated master/slave pairs.
  * Two real byte queues transfer data; a slave-side line discipline and
@@ -33,6 +34,36 @@ struct pty {
 static struct pty ptys[NAS_PTY_LIMIT];
 static uint8_t slot_device[NAS_OPEN_FILE_LIMIT]; /* index + 1 */
 static uint8_t slot_is_master[NAS_OPEN_FILE_LIMIT];
+/* The same class endpoint can represent successive PTY incarnations.
+ * Presence is checked on lookup AND pin; a live OpenFile owns its PTY
+ * independently through the existing per-slot PTY reference. */
+static struct nas_chrdev_node ptmx_node={.path="/dev/ptmx",.info={
+    .fd_kind=FD_PTY_MASTER,.dev=6,.ino=2000,
+    .rdev=(5U<<8)|2U,.mode=0020620U
+}};
+static char pts_names[NAS_PTY_LIMIT][12];
+static struct nas_chrdev_node pts_nodes[NAS_PTY_LIMIT];
+_Static_assert(NAS_PTY_LIMIT<=10U,"PTY node names require two digits");
+int nas_pty_chrdev_init(void) {
+    int rc=nas_chrdev_node_register(&ptmx_node);
+    if(rc)return rc;
+    static const char prefix[]="/dev/pts/";
+    for(unsigned i=0;i<NAS_PTY_LIMIT;i++) {
+        memcpy(pts_names[i],prefix,sizeof(prefix)-1U);
+        pts_names[i][sizeof(prefix)-1U]=(char)('0'+i);
+        pts_names[i][sizeof(prefix)]=0;
+        pts_nodes[i]=(struct nas_chrdev_node){
+            .path=pts_names[i],.info={
+                .fd_kind=FD_PTY_SLAVE,.unit=i,.dev=6,.ino=2000U+i,
+                .rdev=(136U<<8)|i,.mode=0020620U
+            },
+            .present=nas_pty_present
+        };
+        rc=nas_chrdev_node_register(&pts_nodes[i]);
+        if(rc)return rc;
+    }
+    return 0;
+}
 
 static bool pty_queue_signal(const struct pty *p,unsigned signum) {
     /* No controlling session / foreground process group: consume the
@@ -63,19 +94,6 @@ unsigned nas_pty_number(unsigned slot) {
 }
 bool nas_pty_present(unsigned number) {
     return number<NAS_PTY_LIMIT && ptys[number].used && ptys[number].master_open;
-}
-int nas_pty_path_number(const char *path) {
-    const char *prefix="/dev/pts/";
-    unsigned i=0;
-    while(prefix[i] && path[i]==prefix[i])i++;
-    if(prefix[i] || !path[i])return -1;
-    unsigned value=0;
-    for(;path[i];i++) {
-        if(path[i]<'0'||path[i]>'9')return -1;
-        value=value*10+(unsigned)(path[i]-'0');
-        if(value>=NAS_PTY_LIMIT)return -1;
-    }
-    return (int)value;
 }
 static void init_termios(struct nas_termios *t) {
     memset(t,0,sizeof(*t));

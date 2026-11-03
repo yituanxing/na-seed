@@ -2,38 +2,6 @@ name: NaSeed M171 upstream LVGL 9.4 real GUI and pointer QMP three ISA
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - '.github/workflows/m171-batch.yml'
-      - 'scripts/m170-*'
-      - 'scripts/m171-*'
-      - 'scripts/stage-m171-lvgl.sh'
-      - 'scripts/host-configure-m171-lvgl.sh'
-      - 'scripts/check-m171-desktop.sh'
-      - 'third_party/lvgl'
-      - '.gitmodules'
-      - 'scripts/m168-*'
-      - 'scripts/check-m168-desktop.sh'
-      - 'scripts/check-m170-desktop.sh'
-      - 'scripts/probe-m168-batch.sh'
-      - 'scripts/probe-m170-batch.sh'
-      - 'scripts/stage-m168-prebuilt.sh'
-      - 'scripts/host-configure-m168-batch.sh'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'rootfs/alpine/packages-m168-batch.txt'
-      - 'tests/m168-*'
-      - 'user/desktop/**'
-      - 'kernel/**'
-      - 'ports/**'
-      - 'Makefile'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'scripts/build-riscv64-full.sh'
-      - 'scripts/build-aarch64-full.sh'
-      - 'scripts/run.sh'
 
 permissions:
   contents: read

@@ -11,6 +11,7 @@
  */
 struct nas_task;
 struct nas_file_ops;
+struct nas_chrdev_node;
 /* System-wide open descriptions, independent of per-process FD count. */
 #define NAS_OPEN_FILE_LIMIT 128
 #define NAS_FD_LIMIT 64
@@ -102,6 +103,9 @@ struct nas_open_file {
     uint64_t status_flags;
     uint64_t position;
     const struct nas_file_ops *ops;
+    /* A class-published device node is pinned once for this shared File.
+     * dup/fork/SCM_RIGHTS transfer File references, never extra node pins. */
+    struct nas_chrdev_node *chrdev_node;
     /* Provider inode + mount pin owned by shared file description; pipes
      * and sockets leave these empty. fork/dup do not copy the inode view. */
     struct nas_fs_node vnode;

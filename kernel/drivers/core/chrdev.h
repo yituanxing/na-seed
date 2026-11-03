@@ -1,10 +1,16 @@
 #ifndef NASEED_CHRDEV_H
 #define NASEED_CHRDEV_H
+#include <stdbool.h>
 #include <stdint.h>
 
-/* Device endpoint publication, independent of the bus that discovered it.
- * The VFS is always consulted first: this registry describes only genuinely
- * unmounted bootstrap character nodes, until a mounted devfs owns them. */
+/* Character-device publication, independent of discovery bus and Linux
+ * syscall dispatch. The VFS owns all mounted inodes; these node identities
+ * describe only paths absent from the bootstrap namespace until devfs mounts.
+ *
+ * Owners provide stable storage, register when their class device is live,
+ * and may unregister only after the last shared OpenFile has closed. This
+ * is the devfs publication boundary, not a second pathname walker.
+ */
 struct nas_chrdev_info {
     uint8_t fd_kind;
     unsigned unit;
@@ -17,7 +23,20 @@ struct nas_chrdev_provider {
     /* Called once per new open-file description, never per dup/fork FD. */
     int (*open)(unsigned description_slot, unsigned unit);
 };
+struct nas_chrdev_node {
+    const char *path;                 /* Owner-owned immutable /dev pathname */
+    struct nas_chrdev_info info;      /* Device and stable stat identity */
+    bool (*present)(unsigned unit);   /* Optional non-consuming availability */
+    unsigned pins;                   /* One per owning shared OpenFile */
+    bool registered;
+};
+int nas_chrdev_node_register(struct nas_chrdev_node *node);
+/* -EBUSY on open descriptions; no user-visible alias may dangle. */
+int nas_chrdev_node_unregister(struct nas_chrdev_node *node);
+int nas_chrdev_node_pin(struct nas_chrdev_node *node);
+void nas_chrdev_node_put(struct nas_chrdev_node *node);
 int nas_chrdev_provider_register(const struct nas_chrdev_provider *provider);
 int nas_chrdev_describe(const char *absolute, struct nas_chrdev_info *out,
-                       const struct nas_chrdev_provider **provider);
+                       const struct nas_chrdev_provider **provider,
+                       struct nas_chrdev_node **node);
 #endif

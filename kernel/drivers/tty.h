@@ -6,6 +6,8 @@ struct nas_task;
 struct nas_termios { uint32_t iflag,oflag,cflag,lflag; uint8_t line,cc[19]; };
 _Static_assert(sizeof(struct nas_termios)==36,"native Linux TCGETS size");
 void nas_tty_init(void);
+/* Publish TTY class endpoints independently of the VFS namei path. */
+int nas_tty_chrdev_init(void);
 bool nas_tty_controlling(void);
 bool nas_tty_enabled(void);
 /* TTY access policy for explicit /dev/tty open-file descriptions only;

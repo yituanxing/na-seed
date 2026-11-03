@@ -22,8 +22,8 @@
 #include "../drivers/tty.h"
 #include "../drivers/pty.h"
 #include "../drivers/display/fbdev.h"
-#ifdef NAS_ENABLE_VIRTIO_INPUT
 #include "../drivers/core/chrdev.h"
+#ifdef NAS_ENABLE_VIRTIO_INPUT
 #include "../drivers/input/core.h"
 #include "input_chrdev.h"
 #endif
@@ -190,6 +190,8 @@ void nas_fs_description_final_close(unsigned slot) {
     if(nas_open_files[slot].vnode_pinned &&
        nas_vfs_node_unpin(&nas_open_files[slot].vnode))
         nas_fs_fail("File mount pin corrupted at final close");
+    if(nas_open_files[slot].chrdev_node)
+        nas_chrdev_node_put(nas_open_files[slot].chrdev_node);
     nas_open_files[slot]=(struct nas_open_file){0};
 }
 void nas_fs_drop_kernel_description(unsigned slot) {
@@ -579,10 +581,9 @@ static uint64_t open_path_owned(const char *path,
     uint8_t kind=FD_CLOSED;
     int pty_number=-1;
     const struct limine_file *real_file=NULL;
-#ifdef NAS_ENABLE_VIRTIO_INPUT
     const struct nas_chrdev_provider *chrdev_provider=NULL;
+    struct nas_chrdev_node *chrdev_node=NULL;
     unsigned chrdev_unit=0;
-#endif
     bool have_node=false;
     struct nas_fs_node opened_node={0};
     struct nas_vfs_path directory_path={0};
@@ -661,10 +662,9 @@ static uint64_t open_path_owned(const char *path,
         kind=bootstrap.fd_kind;
         pty_number=bootstrap.pty_number;
         real_file=bootstrap.boot_file;
-#ifdef NAS_ENABLE_VIRTIO_INPUT
         chrdev_provider=bootstrap.chrdev_provider;
+        chrdev_node=bootstrap.chrdev_node;
         chrdev_unit=bootstrap.chrdev_unit;
-#endif
         if(bootstrap.fd_kind==FD_TTY && bootstrap.rdev==(5U<<8)) {
             if(!nas_tty_controlling() && !nas_pty_controlling())
                 return (uint64_t)-ENXIO;
@@ -681,23 +681,27 @@ static uint64_t open_path_owned(const char *path,
         }
     }
 
+    /* Pin the published class node exactly once, then attach provider
+     * state to the still-unpublished shared OpenFile slot. Both are rolled
+     * back on failure, before a process FD becomes visible. */
+    int open_error=chrdev_node ? nas_chrdev_node_pin(chrdev_node) : 0;
+    if(open_error)return (uint64_t)(int64_t)open_error;
     if(kind==FD_PTY_MASTER) {
-        int err=nas_pty_new(slot);
-        if(err)return (uint64_t)(int64_t)err;
+        open_error=nas_pty_new(slot);
     } else if(kind==FD_PTY_SLAVE) {
-        int err=pty_number>=0 ?
+        open_error=pty_number>=0 ?
             nas_pty_attach((unsigned)pty_number,slot) :
             nas_pty_attach_controlling(slot);
-        if(err)return (uint64_t)(int64_t)err;
     }
-#ifdef NAS_ENABLE_VIRTIO_INPUT
-    if(chrdev_provider && !path_only) {
+    if(!open_error && chrdev_provider && chrdev_provider->open && !path_only) {
         /* A character device owns one consumer per shared File, not one
          * per FD alias. Do not publish a descriptor until it is attached. */
-        int err=chrdev_provider->open(slot,chrdev_unit);
-        if(err)return (uint64_t)(int64_t)err;
+        open_error=chrdev_provider->open(slot,chrdev_unit);
     }
-#endif
+    if(open_error) {
+        if(chrdev_node)nas_chrdev_node_put(chrdev_node);
+        return (uint64_t)(int64_t)open_error;
+    }
     /* Inode AND optional directory Dentry are one VFS-owned open
      * transaction. The syscall layer just transfers their references
      * to this shared File description; it never constructs a Path. */
@@ -711,6 +715,7 @@ static uint64_t open_path_owned(const char *path,
         nas_open_files[slot].vpath=directory_path;
     }
     if(bootstrap_ready) {
+        nas_open_files[slot].chrdev_node=chrdev_node;
         nas_open_files[slot].boot_identity.dev=bootstrap.dev;
         nas_open_files[slot].boot_identity.ino=bootstrap.ino;
         nas_open_files[slot].boot_identity.rdev=bootstrap.rdev;
@@ -783,66 +788,43 @@ uint64_t nas_fs_bootstrap_module_ino(const struct limine_file *file) {
         hash=(hash^*p)*1099511628211ULL;
     return hash ? hash : 1U;
 }
-/* The only description of temporary, genuinely unmounted bootstrap
- * endpoints. The caller MUST first establish that the Path-first VFS
- * lookup missed; no synthetic device is allowed to hide a real inode.
- * Stat/access use this descriptor without opening an FD or invoking a
- * driver. Open handles terminal attachment only after classification. */
+/* The only fallback for genuinely unmounted bootstrap endpoints. Device
+ * ownership and /dev publication are now delegated to the character class
+ * registry; syscall dispatch never enumerates device names or classes.
+ * The caller must establish that Path-first VFS lookup missed, so no
+ * synthetic device can hide a real mounted inode. */
 int nas_fs_bootstrap_describe(const char *path,
                               struct nas_fs_bootstrap_info *out) {
     if(!out)return -EINVAL;
     *out=(struct nas_fs_bootstrap_info){.pty_number=-1};
     if(!path || path[0]!='/')return -ENOENT;
-    struct nas_fs_bootstrap_info *b=out;
-    b->dev=2;
-    b->mode=0020666U;
-    if(!strcmp(path,"/dev/null")) {
-        b->fd_kind=FD_NULL;b->ino=3;b->rdev=(1U<<8)|3U;
-    } else if(!strcmp(path,"/dev/zero")) {
-        b->fd_kind=FD_ZERO;b->ino=5;b->rdev=(1U<<8)|5U;
-    } else if(!strcmp(path,"/dev/random")) {
-        b->fd_kind=FD_RANDOM;b->ino=8;b->rdev=(1U<<8)|8U;
-    } else if(!strcmp(path,"/dev/urandom")) {
-        b->fd_kind=FD_RANDOM;b->ino=9;b->rdev=(1U<<8)|9U;
-    } else if(!strcmp(path,"/dev/tty")) {
-        b->fd_kind=FD_TTY;b->ino=103;b->rdev=(5U<<8);
-    } else if(!strcmp(path,"/dev/ttyS0")) {
-        b->fd_kind=FD_TTY;b->ino=102;b->rdev=(4U<<8)|64U;
-    } else if(!strcmp(path,"/dev/console")) {
-        b->fd_kind=FD_TTY;b->ino=101;b->rdev=(5U<<8)|1U;
-    } else if(!strcmp(path,"/dev/fb0") && nas_fbdev_available()) {
-        b->fd_kind=FD_FRAMEBUFFER;b->ino=2900;b->rdev=(29U<<8);
-    } else if(!strcmp(path,"/dev/ptmx")) {
-        b->fd_kind=FD_PTY_MASTER;b->dev=6;b->ino=2000;
-        b->rdev=(5U<<8)|2U;b->mode=0020620U;
-    } else {
-        int number=nas_pty_path_number(path);
-        if(number>=0 && nas_pty_present((unsigned)number)) {
-            b->fd_kind=FD_PTY_SLAVE;b->pty_number=number;
-            b->dev=6;b->ino=2000U+(uint64_t)number;
-            b->rdev=(136U<<8)|(uint64_t)(unsigned)number;
-            b->mode=0020620U;
-        } else {
-#ifdef NAS_ENABLE_VIRTIO_INPUT
-            struct nas_chrdev_info chrdev={0};
-            const struct nas_chrdev_provider *provider=NULL;
-            int found=nas_chrdev_describe(path,&chrdev,&provider);
-            if(found && found!=-ENOENT)return found;
-            if(!found) {
-                b->fd_kind=chrdev.fd_kind;b->dev=chrdev.dev;
-                b->ino=chrdev.ino;b->rdev=chrdev.rdev;
-                b->mode=chrdev.mode;b->size=chrdev.size;
-                b->chrdev_unit=chrdev.unit;b->chrdev_provider=provider;
-                return 0;
-            }
-#endif
-            const struct limine_file *module=nas_boot_limine_module_path(path);
-            if(!module)return -ENOENT;
-            b->fd_kind=FD_BOOTFS;b->boot_file=module;
-            b->dev=1;b->ino=nas_fs_bootstrap_module_ino(module);
-            b->mode=0100555U;b->size=module->size;
-        }
+    struct nas_chrdev_info chrdev={0};
+    const struct nas_chrdev_provider *provider=NULL;
+    struct nas_chrdev_node *node=NULL;
+    int found=nas_chrdev_describe(path,&chrdev,&provider,&node);
+    if(!found) {
+        out->fd_kind=chrdev.fd_kind;
+        out->dev=chrdev.dev;
+        out->ino=chrdev.ino;
+        out->rdev=chrdev.rdev;
+        out->mode=chrdev.mode;
+        out->size=chrdev.size;
+        out->chrdev_unit=chrdev.unit;
+        out->chrdev_provider=provider;
+        out->chrdev_node=node;
+        if(chrdev.fd_kind==FD_PTY_SLAVE)
+            out->pty_number=(int)chrdev.unit;
+        return 0;
     }
+    if(found!=-ENOENT)return found;
+    const struct limine_file *module=nas_boot_limine_module_path(path);
+    if(!module)return -ENOENT;
+    out->fd_kind=FD_BOOTFS;
+    out->boot_file=module;
+    out->dev=1;
+    out->ino=nas_fs_bootstrap_module_ino(module);
+    out->mode=0100555U;
+    out->size=module->size;
     return 0;
 }
 /* This is NOT a second namei for ordinary missing paths. In a direct-ELF

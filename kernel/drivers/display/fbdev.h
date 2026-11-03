@@ -3,9 +3,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Bootloader-provided, already kernel-mapped display surface. The bootloader
- * owns the physical pages; the frame allocator and user page tables do not.
- * No guest physical framebuffer address is published to userspace. */
+/* The first DisplayDevice backend. Bootloader-provided and kernel-mapped;
+ * the bootloader owns the pages and they are never mapped to userspace. */
 struct nas_fb_boot_info {
     volatile uint8_t *address;
     uint64_t width, height, pitch;
@@ -49,6 +48,8 @@ _Static_assert(sizeof(struct nas_fb_fix_screeninfo)==80, "Linux LP64 fb_fix_scre
 
 bool nas_fbdev_boot_init(const struct nas_fb_boot_info *);
 bool nas_fbdev_available(void);
+/* Publish the active DisplayDevice as an ordinary character endpoint. */
+int nas_fbdev_chrdev_init(void);
 uint64_t nas_fbdev_length(void);
 uint64_t nas_fbdev_read_at(uint64_t offset,uint8_t *dst,uint64_t bytes);
 uint64_t nas_fbdev_write_at(uint64_t offset,const uint8_t *src,uint64_t bytes);

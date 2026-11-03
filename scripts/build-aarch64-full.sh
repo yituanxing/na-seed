@@ -24,7 +24,7 @@ flags="$flags -DNAS_ENABLE_LWIP=1 -I ports/lwip/include -I third_party/lwip/src/
 # ISA-specific hardware providers remain below in the arch= selection.
 common=$(grep -v '^#' scripts/full-kernel-core.sources)
 if [ "${NAS_ENABLE_VIRTIO_INPUT:-0}" = 1 ]; then
-    common="$common kernel/drivers/input/core.c kernel/drivers/input/evdev.c kernel/drivers/core/chrdev.c kernel/fs/input_chrdev.c"
+    common="$common kernel/drivers/input/core.c kernel/drivers/input/evdev.c kernel/fs/input_chrdev.c"
 fi
 arch="kernel/arch/aarch64/cpu.c kernel/arch/aarch64/mmu.c kernel/arch/aarch64/context.c kernel/arch/aarch64/signal_frame.c kernel/arch/aarch64/timer.c kernel/arch/aarch64/debug_console.c kernel/arch/user_pt.c kernel/mm/user_space.c kernel/mm/mmu_bridge.c kernel/platform/aarch64.c"
 # Only the hardware/transport source selection is target-dependent.

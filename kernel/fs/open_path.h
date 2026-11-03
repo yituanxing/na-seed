@@ -5,6 +5,7 @@
 struct nas_fs_path_request;
 struct limine_file;
 struct nas_chrdev_provider;
+struct nas_chrdev_node;
 /* The small rootless-boot namespace is NOT a second VFS. Describe a
  * literal, whitelisted endpoint only after Path-first namei returned
  * ENOENT. This read-only descriptor is shared by open/access/stat, so
@@ -14,6 +15,7 @@ struct nas_fs_bootstrap_info {
     int pty_number;
     const struct limine_file *boot_file;
     const struct nas_chrdev_provider *chrdev_provider;
+    struct nas_chrdev_node *chrdev_node;
     unsigned chrdev_unit;
     uint64_t dev,ino,rdev,mode,size;
 };

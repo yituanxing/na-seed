@@ -10,6 +10,7 @@
 #include "serial.h"
 #include "tty.h"
 #include "tty_ldisc.h"
+#include "core/chrdev.h"
 #include "../time/clock.h"
  #include "../arch/arch.h"
 /* One console TTY: POSIX session/foreground ownership and native Linux
@@ -29,6 +30,22 @@ static struct {
     uint8_t rx_queue[NAS_TTY_RX_QUEUE_CAP];
     unsigned rx_head,rx_count;
 } tty;
+
+static struct nas_chrdev_node tty_nodes[]={
+    { .path="/dev/tty", .info={
+        .fd_kind=FD_TTY,.dev=2,.ino=103,.rdev=(5U<<8),.mode=0020666U }},
+    { .path="/dev/ttyS0", .info={
+        .fd_kind=FD_TTY,.dev=2,.ino=102,.rdev=(4U<<8)|64U,.mode=0020666U }},
+    { .path="/dev/console", .info={
+        .fd_kind=FD_TTY,.dev=2,.ino=101,.rdev=(5U<<8)|1U,.mode=0020666U }}
+};
+int nas_tty_chrdev_init(void) {
+    for(unsigned i=0;i<sizeof(tty_nodes)/sizeof(tty_nodes[0]);i++) {
+        int rc=nas_chrdev_node_register(&tty_nodes[i]);
+        if(rc)return rc;
+    }
+    return 0;
+}
 void nas_tty_init(void) {
     tty.sid=nas_current_task->sid; tty.pgid=nas_current_task->pgid;
     tty.ws_row=24; tty.ws_col=80; tty.ws_xpixel=tty.ws_ypixel=0;

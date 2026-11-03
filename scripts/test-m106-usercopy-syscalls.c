@@ -17,6 +17,7 @@
 #include "../kernel/fs/metadata_syscall.c"
 #include "../kernel/fs/socket_syscall.c"
 #include "../kernel/fs/poll_syscall.c"
+#include "../kernel/drivers/core/misc.h"
 #include "../kernel/mm/fault.h"
 #include "../kernel/mm/frame.h"
 #include "../kernel/arch/user_pt.h"
@@ -59,6 +60,19 @@ static bool bootstrap_vfs_shadow,bootstrap_vfs_dangling_link;
 static bool bootstrap_pty_present,bootstrap_tty_present;
 static bool bootstrap_pty_controlling;
 static unsigned bootstrap_vfs_open_calls,bootstrap_vfs_lookup_calls;
+/* This isolated syscall fixture intentionally does not link the real PTY
+ * and TTY backends: they are tested independently by A013/M105. Publish
+ * their device identities through the production node API so M106 still
+ * exercises the same VFS-first, class-device fallback as a booted guest. */
+static struct nas_chrdev_node bootstrap_test_endpoints[]={
+    { .path="/dev/ptmx",.info={.fd_kind=FD_PTY_MASTER,.dev=6,
+        .ino=2000,.rdev=(5U<<8)|2U,.mode=0020620U} },
+    { .path="/dev/pts/3",.info={.fd_kind=FD_PTY_SLAVE,.unit=3,.dev=6,
+        .ino=2003,.rdev=(136U<<8)|3U,.mode=0020620U},
+      .present=nas_pty_present },
+    { .path="/dev/tty",.info={.fd_kind=FD_TTY,.dev=2,
+        .ino=103,.rdev=(5U<<8),.mode=0020666U} }
+};
 static uint8_t bootstrap_inode_storage;
 static struct nas_fs_node bootstrap_real_inode={
     .inode=&bootstrap_inode_storage,.ino=9001,.mode=0100644U,.nlink=1,
@@ -1044,6 +1058,12 @@ static void a012_unix_message_vectors(unsigned sender,unsigned receiver) {
 }
 
 int main(void) {
+    /* Real boot publishes /dev/null and its siblings through the device
+     * owner, no longer via a syscall-local hardcoded pathname table. */
+    assert(nas_misc_chrdev_init()==0);
+    for(unsigned i=0;i<sizeof(bootstrap_test_endpoints)/
+                         sizeof(bootstrap_test_endpoints[0]);i++)
+        assert(nas_chrdev_node_register(&bootstrap_test_endpoints[i])==0);
     test_bootstrap_owned_candidate();
     guest_task.mm=&guest_mm;
     guest_files.refs=1;

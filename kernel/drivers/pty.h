@@ -6,10 +6,11 @@
  * Device slots are shared by fork/dup; the read/write data plane accepts
  * only kernel buffers, prepared at the common syscall boundary. */
 #define NAS_PTY_LIMIT 8U
+/* Publish /dev/ptmx and the /dev/pts/N class nodes. */
+int nas_pty_chrdev_init(void);
 int nas_pty_new(unsigned slot);
 int nas_pty_attach(unsigned number,unsigned slot);
 int nas_pty_attach_controlling(unsigned slot);
-int nas_pty_path_number(const char *path); /* -1 means not a /dev/pts/N */
 bool nas_pty_present(unsigned number);
 bool nas_pty_controlling(void);
 unsigned nas_pty_number(unsigned slot);
