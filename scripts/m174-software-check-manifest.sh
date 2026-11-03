@@ -11,7 +11,9 @@ seen=' '
 while IFS= read -r elf; do
     case "$elf" in ''|'#'*) continue ;; esac
     case "$elf" in
-        usr/bin/*) ;;
+        # Alpine 3.23 deliberately has not completed /usr-merge. Original
+        # sysstat installs iostat/mpstat in /bin, not /usr/bin.
+        usr/bin/*|bin/*) ;;
         *) echo "[M174 SOFTWARE INVENTORY FAIL] noncanonical path: $elf" >&2; exit 1 ;;
     esac
     case "$seen" in
