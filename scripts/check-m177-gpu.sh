@@ -11,7 +11,9 @@ build/m177/test-gpu-protocol good
 for scenario in bad_response bad_fence short_reply missing_scanout \
                 bad_create bad_attach bad_scanout timeout alloc_fail \
                 no_irq_source no_primary runtime_fence runtime_timeout \
-                runtime_dirty_epoch; do
+                runtime_dirty_epoch pixel_release_fail entry_release_fail \
+                command_release_fail response_release_fail ring_release_fail \
+                ring_init_orphan alloc_rollback_fail irq_unbind_fail; do
     build/m177/test-gpu-protocol "$scenario"
 done
 cc -std=c11 -O2 -Wall -Wextra -Werror -fsanitize=address,undefined \

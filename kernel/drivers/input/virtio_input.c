@@ -56,6 +56,15 @@ struct virtinput_slot {
     bool registered;
     bool poisoned;
     bool busy;
+    /* Probe failed after partially publishing work. A pinned InputDevice
+     * may still have readers: leave it serviceable until unregister succeeds
+     * before marking the hardware teardown as pending/poisoned. */
+    bool failed_probe_rollback;
+    /* A class-device unregister can succeed while the provider still owns
+     * a queue/DMA page. Keep the original static slot until every release
+     * succeeds, and never count a failed probe as an attached device. */
+    bool teardown_pending;
+    bool counted;
 #ifdef NAS_ENABLE_VIRTIO_INPUT
     /* ISR owns only source acknowledgement and this pending bit. The ring,
      * input core and evdev are always serviced in scheduler context. */
@@ -205,21 +214,51 @@ static int describe_input(struct virtinput_slot *v) {
     return 0;
 }
 
-static void stop_device(struct virtinput_slot *v) {
+static int stop_device(struct virtinput_slot *v) {
 #ifdef NAS_ENABLE_VIRTIO_INPUT
     /* The IRQ action lives inside the slot. It MUST be unbound before any
      * transport registers, DMA ring or the slot storage can disappear. */
-    (void)nas_irq_unbind(&v->irq_action);
+    int rc=nas_irq_unbind(&v->irq_action);
+    if (rc) return rc;
     __atomic_store_n(&v->irq_pending,false,__ATOMIC_RELEASE);
 #endif
-    /* Queue close performs device reset before freeing DMA. If the two
-     * queues are present, only one reset is required, but both queue
-     * allocations remain owned until every DMA transfer has stopped. */
-    if (v->eventq.active) (void)nas_vring_queue_close(&v->eventq);
-    if (v->statusq.active) (void)nas_vring_queue_close(&v->statusq);
-    if (v->event_dma.cpu) (void)nas_dma_free_page(v->transport.dma,&v->event_dma);
+    /* Reset even if a failed probe never activated its queues: negotiation
+     * can have touched transport state. A failed page release must not
+     * invalidate the original owner, and no partially retired queue can
+     * submit again on a later scheduler slice. */
     if (v->transport.ops && v->transport.ops->reset)
         v->transport.ops->reset(v->transport.context);
+    if (v->eventq.active || v->eventq.dma_page.cpu) {
+        int rc=nas_vring_queue_close(&v->eventq);
+        if (rc) return rc;
+    }
+    if (v->statusq.active || v->statusq.dma_page.cpu) {
+        int rc=nas_vring_queue_close(&v->statusq);
+        if (rc) return rc;
+    }
+    if (v->event_dma.cpu) {
+        int rc=nas_dma_free_page(v->transport.dma,&v->event_dma);
+        if (rc) return rc;
+    }
+    return 0;
+}
+/* Retire the public InputDevice before its hardware storage; readers hold
+ * the class pinned and must return -EBUSY with all live IRQ/queues intact.
+ * After class retirement a failed hardware release stays in this static
+ * owner for an explicit remove/reprobe retry, without unregistering twice. */
+static int retire_slot(struct virtinput_slot *v) {
+    if (v->registered) {
+        int rc=nas_input_unregister_device(&v->input);
+        if (rc) return rc;
+        v->registered=false;
+    }
+    v->teardown_pending=true;
+    v->poisoned=true;
+    int rc=stop_device(v);
+    if (rc) return rc;
+    if (v->counted) --current_count;
+    memset(v,0,sizeof(*v));
+    return 0;
 }
 static void poison(struct virtinput_slot *v) {
     v->poisoned=true;
@@ -245,8 +284,20 @@ static int probe(struct nas_bus_device *dev) {
     if (!dev || dev->device_id!=VIRTIO_ID_INPUT || !dev->virtio) return -ENODEV;
     unsigned slot=VIRTINPUT_MAX_DEVICES;
     for (unsigned i=0;i<VIRTINPUT_MAX_DEVICES;i++) {
+        /* A failed probe never bound a driver at the bus level, but its
+         * static slot can still own DMA after a provider release error.
+         * Retry that exact old owner BEFORE selecting a slot to reuse. */
+        if ((inputs[i].teardown_pending || inputs[i].failed_probe_rollback) &&
+            !inputs[i].counted) {
+            int cleanup=retire_slot(&inputs[i]);
+            if (cleanup) return cleanup;
+        }
         if (inputs[i].bus_device==dev) return -EEXIST;
-        if (!inputs[i].bus_device && slot==VIRTINPUT_MAX_DEVICES) slot=i;
+        if (!inputs[i].bus_device && !inputs[i].teardown_pending &&
+            !inputs[i].registered && !inputs[i].event_dma.cpu &&
+            !inputs[i].eventq.dma_page.cpu &&
+            !inputs[i].statusq.dma_page.cpu &&
+            slot==VIRTINPUT_MAX_DEVICES) slot=i;
     }
     if (slot==VIRTINPUT_MAX_DEVICES) return -ENOSPC;
     struct virtinput_slot *v=&inputs[slot];
@@ -307,12 +358,15 @@ static int probe(struct nas_bus_device *dev) {
         __atomic_store_n(&v->irq_pending,true,__ATOMIC_RELEASE);
     }
 #endif
+    v->counted=true;
     ++current_count;
     return 0;
 fail:
-    if (v->registered) (void)nas_input_unregister_device(&v->input);
-    stop_device(v);
-    memset(v,0,sizeof(*v));
+    /* The unbound bus probe can leave a live owner after failed rollback.
+     * Preserve its context even when retire_slot fails, so the next probe
+     * first reaps it rather than overwriting a queue or DMA address. */
+    v->failed_probe_rollback=true;
+    (void)retire_slot(v);
     return rc;
 }
 static int remove_device(struct nas_bus_device *dev) {
@@ -320,12 +374,7 @@ static int remove_device(struct nas_bus_device *dev) {
         struct virtinput_slot *v=&inputs[i];
         if (v->bus_device!=dev) continue;
         if (v->busy) return -EBUSY;
-        int rc=nas_input_unregister_device(&v->input);
-        if (rc) return rc;
-        stop_device(v);
-        memset(v,0,sizeof(*v));
-        --current_count;
-        return 0;
+        return retire_slot(v);
     }
     return -ENODEV;
 }
@@ -354,7 +403,7 @@ int nas_virtio_input_poll(unsigned budget) {
          (unsigned)done<budget;step++) {
         unsigned i=(start+step)%VIRTINPUT_MAX_DEVICES;
         struct virtinput_slot *v=&inputs[i];
-        if (!v->bus_device || v->poisoned ||
+        if (!v->bus_device || v->poisoned || v->teardown_pending ||
             __atomic_exchange_n(&v->busy,true,__ATOMIC_ACQUIRE)) continue;
 #ifdef NAS_ENABLE_VIRTIO_INPUT
         bool irq_bound=v->irq_action.bound;
@@ -427,7 +476,7 @@ void nas_virtio_input_irq_report(void) {
     bool found_keyboard=false,found_pointer=false;
     for (unsigned i=0;i<VIRTINPUT_MAX_DEVICES;i++) {
         const struct virtinput_slot *v=&inputs[i];
-        if (!v->bus_device) continue;
+        if (!v->bus_device || v->teardown_pending) continue;
         fallback_poll+=v->fallback_polls;
         if (!v->irq_action.bound) continue;
         if (is_keyboard(v)) {

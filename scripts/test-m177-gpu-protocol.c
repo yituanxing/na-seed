@@ -13,7 +13,9 @@ enum failure {
     GOOD, BAD_RESPONSE, BAD_FENCE, SHORT_REPLY, MISSING_SCANOUT,
     BAD_CREATE, BAD_ATTACH, BAD_SCANOUT, TIMEOUT, ALLOC_FAIL,
     NO_IRQ_SOURCE, NO_PRIMARY, RUNTIME_FENCE, RUNTIME_TIMEOUT,
-    RUNTIME_DIRTY_EPOCH
+    RUNTIME_DIRTY_EPOCH, PIXEL_RELEASE_FAIL, ENTRY_RELEASE_FAIL,
+    COMMAND_RELEASE_FAIL, RESPONSE_RELEASE_FAIL, RING_RELEASE_FAIL,
+    RING_INIT_ORPHAN, ALLOC_ROLLBACK_FAIL, IRQ_UNBIND_FAIL
 };
 static enum failure failure;
 static const struct nas_bus_driver *registered_driver;
@@ -31,6 +33,9 @@ static uint32_t submitted_types[32];
 static uint32_t original_alloc_count;
 static uint32_t irq_status;
 static unsigned polls;
+static unsigned ring_allocs,ring_frees,ring_release_failures;
+static unsigned dma_release_failures;
+static bool irq_unbind_failed;
 
 void nas_print(const char *str) { fputs(str,stdout); }
 void nas_dec(uint64_t n) { printf("%llu",(unsigned long long)n); }
@@ -64,11 +69,33 @@ int nas_dma_alloc_page(const struct nas_dma_provider *provider,
     *page=(struct nas_dma_page){.cpu=memory,.bus_address=(uintptr_t)memory,
                                 .bytes=NAS_DMA_PAGE_BYTES};
     ++allocs;
+    /* M184 DMA may report a failed validation rollback while it still
+     * owns an unusable page. pixel_pages has not advanced for this slot. */
+    if(failure==ALLOC_ROLLBACK_FAIL && allocs==201U) {
+        page->bytes=NAS_DMA_PAGE_BYTES/2U;
+        return -EAGAIN;
+    }
     return 0;
 }
 int nas_dma_free_page(const struct nas_dma_provider *provider,
                       struct nas_dma_page *page) {
     assert(provider && page && page->cpu);
+    const bool failing_page=(failure==PIXEL_RELEASE_FAIL &&
+                                 page==&gpu.pixels[200]) ||
+                            (failure==ENTRY_RELEASE_FAIL &&
+                                 page==&gpu.entries[0]) ||
+                            (failure==COMMAND_RELEASE_FAIL &&
+                                 page==&gpu.command) ||
+                            (failure==RESPONSE_RELEASE_FAIL &&
+                                 page==&gpu.response) ||
+                            (failure==ALLOC_ROLLBACK_FAIL &&
+                                 page==&gpu.pixels[200]);
+    const unsigned failures=(failure==PIXEL_RELEASE_FAIL ||
+                             failure==ALLOC_ROLLBACK_FAIL)?2U:1U;
+    if(failing_page && dma_release_failures<failures) {
+        ++dma_release_failures;
+        return -EAGAIN;
+    }
     free(page->cpu);
     memset(page,0,sizeof(*page));
     ++frees;
@@ -95,6 +122,9 @@ uint32_t nas_virtio_config32(const struct nas_virtio_transport *t,uint32_t offse
 }
 int nas_virtio_activate(const struct nas_virtio_transport *t) {
     assert(t);
+    if(failure==PIXEL_RELEASE_FAIL || failure==ENTRY_RELEASE_FAIL ||
+       failure==COMMAND_RELEASE_FAIL || failure==RESPONSE_RELEASE_FAIL ||
+       failure==RING_RELEASE_FAIL || failure==IRQ_UNBIND_FAIL)return -EIO;
     return 0;
 }
 uint32_t nas_virtio_irq_ack(const struct nas_virtio_transport *t) {
@@ -120,6 +150,11 @@ int nas_irq_bind(struct nas_irq_action *action,struct nas_irq_route route,
     return 0;
 }
 int nas_irq_unbind(struct nas_irq_action *action) {
+    if(failure==IRQ_UNBIND_FAIL && action->bound &&
+       !irq_unbind_failed) {
+        irq_unbind_failed=true;
+        return -EAGAIN;
+    }
     if (action->bound) {
         assert(bound_irq==action);
         bound_irq=NULL;
@@ -145,13 +180,28 @@ int nas_vring_queue_init(struct nas_vring_queue *queue,
                          unsigned qid,unsigned descs) {
     assert(queue && transport && qid==0 && descs==16);
     queue->transport=transport;
+    queue->dma_page.cpu=aligned_alloc(NAS_DMA_PAGE_BYTES,NAS_DMA_PAGE_BYTES);
+    assert(queue->dma_page.cpu);
+    queue->dma_page.bytes=NAS_DMA_PAGE_BYTES;
+    ++ring_allocs;
+    /* Init failed before publishing any live ring, but its failed
+     * cleanup left the DMA page owned and closeable. */
+    if(failure==RING_INIT_ORPHAN)return -EIO;
     queue->active=true;
     return 0;
 }
 int nas_vring_queue_close(struct nas_vring_queue *queue) {
-    assert(queue && queue->active);
-    queue->active=false;
-    queue->transport->ops->reset(queue->transport->context);
+    assert(queue && queue->transport && queue->dma_page.cpu);
+    if(queue->active) {
+        queue->active=false;
+        queue->transport->ops->reset(queue->transport->context);
+    }
+    if((failure==RING_RELEASE_FAIL || failure==RING_INIT_ORPHAN) &&
+       !ring_release_failures++)return -EAGAIN;
+    free(queue->dma_page.cpu);
+    queue->dma_page.cpu=NULL;
+    queue->transport=NULL;
+    ++ring_frees;
     return 0;
 }
 static void check_attach(const struct nas_vring_segment *segments,unsigned count) {
@@ -265,6 +315,14 @@ static enum failure parse_mode(const char *name) {
     if (!strcmp(name,"runtime_fence"))return RUNTIME_FENCE;
     if (!strcmp(name,"runtime_timeout"))return RUNTIME_TIMEOUT;
     if (!strcmp(name,"runtime_dirty_epoch"))return RUNTIME_DIRTY_EPOCH;
+    if (!strcmp(name,"pixel_release_fail"))return PIXEL_RELEASE_FAIL;
+    if (!strcmp(name,"entry_release_fail"))return ENTRY_RELEASE_FAIL;
+    if (!strcmp(name,"command_release_fail"))return COMMAND_RELEASE_FAIL;
+    if (!strcmp(name,"response_release_fail"))return RESPONSE_RELEASE_FAIL;
+    if (!strcmp(name,"ring_release_fail"))return RING_RELEASE_FAIL;
+    if (!strcmp(name,"ring_init_orphan"))return RING_INIT_ORPHAN;
+    if (!strcmp(name,"alloc_rollback_fail"))return ALLOC_ROLLBACK_FAIL;
+    if (!strcmp(name,"irq_unbind_fail"))return IRQ_UNBIND_FAIL;
     fprintf(stderr,"unknown fixture: %s\n",name);
     exit(2);
 }
@@ -287,10 +345,46 @@ int main(int argc,char **argv) {
     assert(nas_virtio_gpu_driver_register()==0 && registered==1U);
     assert(registered_driver && registered_driver->match(&device));
     const int result=registered_driver->probe(&device);
+    if(failure>=PIXEL_RELEASE_FAIL) {
+        /* A failed probe is not bound to the generic bus. The next probe
+         * must reap its old transport without ever freeing a live primary
+         * display, losing a DMA page, or releasing any page twice. */
+        assert(result==-EAGAIN && !gpu.claimed && !primary);
+        if(failure==IRQ_UNBIND_FAIL)
+            assert(bound_irq && bound_irq->bound && gpu.control.active);
+        else assert(!bound_irq);
+        assert(gpu.owner==&device && allocs>frees);
+        assert(allocs-frees<=GPU_PAGES+GPU_ENTRY_PAGES+2U);
+        if(failure==RING_RELEASE_FAIL || failure==RING_INIT_ORPHAN)
+            assert(!gpu.control.active && gpu.control.dma_page.cpu &&
+                   ring_allocs==1 && !ring_frees);
+        if(failure==ALLOC_ROLLBACK_FAIL) {
+            assert(gpu.pixel_pages==200U && gpu.pixels[200].cpu &&
+                   gpu.pixels[200].bytes==NAS_DMA_PAGE_BYTES/2U);
+            assert(!ring_allocs);
+        }
+        if(failure==PIXEL_RELEASE_FAIL || failure==ALLOC_ROLLBACK_FAIL) {
+            assert(registered_driver->probe(&device)==-EAGAIN);
+            assert(gpu.owner==&device && !gpu.claimed && !primary);
+            assert(dma_release_failures==2U);
+        }
+        failure=GOOD;
+        assert(registered_driver->probe(&device)==0);
+        assert(gpu.claimed && primary==&gpu.display &&
+               gpu.owner==&device && bound_irq && bound_irq->bound);
+        assert(allocs-frees==GPU_PAGES+GPU_ENTRY_PAGES+2U);
+        assert(ring_allocs-ring_frees==1U && gpu.control.active);
+        assert(registered_driver->remove(&device)==-EOPNOTSUPP);
+        assert(registered_driver->probe(&device)==-ENODEV);
+        printf("[M185 GPU LIFETIME PASS] case=%s owner preserved, retryable"
+               " after provider/ring failures, exact-once DMA releases\n",argv[1]);
+        return 0;
+    }
     if (failure!=GOOD && failure!=RUNTIME_FENCE &&
         failure!=RUNTIME_TIMEOUT && failure!=RUNTIME_DIRTY_EPOCH) {
         assert(result<0 && !gpu.claimed && !primary && !bound_irq);
         assert(allocs==frees && !nas_virtio_gpu_count());
+        assert(ring_allocs==ring_frees);
         assert(resets>=1U);
         printf("[M177 HOST GPU NEGATIVE PASS] case=%s alloc=%u free=%u\n",
                argv[1],allocs,frees);

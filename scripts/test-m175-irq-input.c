@@ -82,11 +82,22 @@ int main(void) {
     struct nas_virtio_transport missing_ack=ktr;
     missing_ack.ops=&mock_ops;
     kdev.virtio=&missing_ack;
+    /* A reader can pin InputDevice between its publication and late
+     * native IRQ binding failure. The unbound bus probe must keep that
+     * class serviceable until the reader drops its pin; next probe then
+     * finishes rollback before publishing the replacement instance. */
+    pin_new_registration=true;
     assert(bound_driver->probe(&kdev)==-EOPNOTSUPP);
-    assert(!irq_actions[1] && !nas_virtio_input_count() && !registered);
-    for (unsigned i=0;i<12;i++) assert(!page_used[i]);
+    assert(!irq_actions[1] && !nas_virtio_input_count() && registered==1);
+    assert(received[0] && received[0]->registered &&
+           received[0]->readers==1 && nas_virtio_input_poll(1)==0);
+    assert(bound_driver->probe(&kdev)==-EBUSY);
+    assert(registered==1 && received[0]->registered);
+    received[0]->readers=0;
+    pin_new_registration=false;
     kdev.virtio=&ktr;
     assert(bound_driver->probe(&kdev)==0);
+    assert(registered==1 && nas_virtio_input_count()==1);
     assert(bound_driver->probe(&pdev)==0);
     assert(irq_actions[1] && irq_actions[2]);
 

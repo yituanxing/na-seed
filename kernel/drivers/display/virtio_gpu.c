@@ -211,24 +211,43 @@ poisoned:
     return rc;
 }
 
-static void release_dma(struct gpu_device *g) {
+/* One ownership unwind for probe failure and a later retry. An unsuccessful
+ * provider release is not a successful detach: retain this singleton and its
+ * original transport until every DMA owner has actually been returned.
+ * The published primary display is intentionally NEVER passed here: fbdev
+ * has no unregister/unpin contract for a live /dev/fb0 consumer yet. */
+static int release_dma(struct gpu_device *g) {
     /* IRQ is detached before transport reset, reset before freeing ANY page
      * that a late host DMA request could still reference. */
-    (void)nas_irq_unbind(&g->irq);
-    if(g->control.active) {
-        (void)nas_vring_queue_close(&g->control);
+    int rc=nas_irq_unbind(&g->irq);
+    if(rc)return rc;
+    /* A failed split-ring init can own a page without ever being active. */
+    if(g->control.active || g->control.dma_page.cpu) {
+        rc=nas_vring_queue_close(&g->control);
+        if(rc)return rc;
     }else if(g->transport.ops && g->transport.ops->reset) {
         g->transport.ops->reset(g->transport.context);
     }
-    for(unsigned i=0;i<g->pixel_pages;i++)
-        if(g->pixels[i].cpu)
-            (void)nas_dma_free_page(g->transport.dma,&g->pixels[i]);
-    for(unsigned i=0;i<g->entry_pages;i++)
-        if(g->entries[i].cpu)
-            (void)nas_dma_free_page(g->transport.dma,&g->entries[i]);
-    if(g->command.cpu)(void)nas_dma_free_page(g->transport.dma,&g->command);
-    if(g->response.cpu)(void)nas_dma_free_page(g->transport.dma,&g->response);
-    memset(g,0,sizeof(*g));
+    /* Scan the WHOLE stable array, not pixel_pages/entry_pages: M184 DMA
+     * allocation may fail validation AND then fail rollback, leaving the
+     * failing slot owned despite no successful-count increment. */
+    for(unsigned i=0;i<GPU_PAGES;i++)if(g->pixels[i].cpu) {
+        rc=nas_dma_free_page(g->transport.dma,&g->pixels[i]);
+        if(rc)return rc;
+    }
+    for(unsigned i=0;i<GPU_ENTRY_PAGES;i++)if(g->entries[i].cpu) {
+        rc=nas_dma_free_page(g->transport.dma,&g->entries[i]);
+        if(rc)return rc;
+    }
+    if(g->command.cpu) {
+        rc=nas_dma_free_page(g->transport.dma,&g->command);
+        if(rc)return rc;
+    }
+    if(g->response.cpu) {
+        rc=nas_dma_free_page(g->transport.dma,&g->response);
+        if(rc)return rc;
+    }
+    return 0;
 }
 
 static void mark_dirty(struct gpu_device *g,uint32_t first,uint32_t last) {
@@ -459,11 +478,22 @@ static bool match(const struct nas_bus_device *dev) {
 static int probe(struct nas_bus_device *dev) {
     if(!dev || !dev->virtio)return -ENODEV;
     if(gpu.claimed)return -ENODEV; /* One primary, one owned scanout. */
+    if(gpu.owner) {
+        /* The generic bus did not publish a driver when probe failed, so
+         * its remove() callback cannot reap that failed probe. Retry its
+         * original transport here BEFORE replacing this stable owner. */
+        int cleanup=release_dma(&gpu);
+        if(cleanup)return cleanup;
+    }
     memset(&gpu,0,sizeof(gpu));
     gpu.owner=dev;
     gpu.transport=*dev->virtio;
     int rc=setup_resource(&gpu);
-    if(rc)release_dma(&gpu);
+    if(rc) {
+        int cleanup=release_dma(&gpu);
+        if(cleanup)return cleanup;
+        memset(&gpu,0,sizeof(gpu));
+    }
     return rc;
 }
 static int remove_device(struct nas_bus_device *dev) {

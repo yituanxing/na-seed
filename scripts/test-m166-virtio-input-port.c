@@ -16,6 +16,7 @@
 
 static _Alignas(4096) uint8_t pages[12][NAS_DMA_PAGE_BYTES];
 static bool page_used[12];
+static unsigned reject_put_index=12U,reject_put_remaining,failed_puts;
 static uint8_t pci_config[NAS_BUS_PCI_CONFIG_BYTES];
 static volatile uint32_t mmio_registers[128];
 uint64_t nas_hhdm_offset(void) { return 0; }
@@ -29,6 +30,11 @@ uint64_t nas_frame_alloc(void) {
 bool nas_frame_put(uint64_t pa) {
     for (unsigned i=0;i<12;i++) if (page_used[i] &&
         pa==(uint64_t)(uintptr_t)pages[i]) {
+        if(i==reject_put_index && reject_put_remaining) {
+            --reject_put_remaining;
+            ++failed_puts;
+            return false;
+        }
         page_used[i]=false;return true;
     }
     return false;
@@ -37,7 +43,8 @@ bool nas_frame_put(uint64_t pa) {
 struct fake_vq {unsigned count;struct vring_desc *desc;
                 struct vring_avail *avail;struct vring_used *used;};
 struct fake_input {uint32_t status;uint64_t features;
-    uint8_t select,subsel;unsigned resets,notifies;bool tablet;
+    uint8_t select,subsel;unsigned resets,notifies;
+    bool tablet,fail_status_setup;
     struct fake_vq queues[2];};
 
 static const struct nas_bus_driver *bound_driver;
@@ -47,6 +54,7 @@ int nas_bus_driver_register(const struct nas_bus_driver *driver) {
 }
 static unsigned registered;
 static struct nas_input_device *received[2];
+static bool pin_new_registration;
 static struct {uint16_t type,code;int32_t value;} events[512];
 static unsigned event_count;
 void nas_input_device_init(struct nas_input_device *d,const char *name) {
@@ -83,7 +91,9 @@ int nas_input_set_absinfo(struct nas_input_device *d,uint16_t axis,
 }
 int nas_input_register_device(struct nas_input_device *d){
     assert(d && registered<2 && (d->evbit&~1U));
-    received[registered++]=d;d->registered=true;return 0;
+    received[registered++]=d;d->registered=true;
+    if(pin_new_registration)d->readers=1;
+    return 0;
 }
 int nas_input_unregister_device(struct nas_input_device *d){
     if(d->readers)return -EBUSY;
@@ -115,6 +125,7 @@ static int mock_setup(void *p,unsigned qid,unsigned count,
                       uint64_t desc,uint64_t avail,uint64_t used){
     struct fake_input *m=p;
     if(qid>1 || count!=(qid?8U:64U))return -EINVAL;
+    if(qid==1 && m->fail_status_setup)return -EIO;
     m->queues[qid]=(struct fake_vq){count,(struct vring_desc *)(uintptr_t)desc,
         (struct vring_avail *)(uintptr_t)avail,
         (struct vring_used *)(uintptr_t)used};
@@ -202,6 +213,11 @@ static void complete(struct fake_input *m,unsigned available,
     q->used->ring[used%q->count]=(struct vring_used_elem){head,8};
     q->used->idx=(uint16_t)(used+1U);
 }
+static unsigned used_pages(void) {
+    unsigned count=0;
+    for(unsigned i=0;i<12;i++)if(page_used[i])++count;
+    return count;
+}
 
 int main(void) {
     struct fake_input keyboard={.features=NAS_VIRTIO_F_VERSION_1};
@@ -263,6 +279,36 @@ int main(void) {
     assert(bound_driver->remove(&kdev)==0);
     for(unsigned i=0;i<12;i++)assert(!page_used[i]);
     assert(nas_virtio_input_count()==0 && registered==0);
+    /* M185: statusq setup fails after three allocations. Its init
+     * rollback and the driver's first cleanup attempt both reject freeing
+     * the same page. An inactive queue must still retain its DMA owner. */
+    struct fake_input orphan={.features=NAS_VIRTIO_F_VERSION_1,
+                              .fail_status_setup=true};
+    struct nas_virtio_transport orphan_tr={.context=&orphan,.ops=&mock_ops,
+                                          .dma=&nas_dma_qemu_coherent};
+    struct nas_bus_device orphan_dev=kdev;
+    orphan_dev.virtio=&orphan_tr;
+    reject_put_index=2U;reject_put_remaining=2U;
+    assert(bound_driver->probe(&orphan_dev)==-EIO);
+    assert(registered==0 && nas_virtio_input_count()==0 &&
+           reject_put_remaining==0 && page_used[0] && page_used[2] &&
+           used_pages()==2);
+    orphan.fail_status_setup=false;
+    assert(bound_driver->probe(&orphan_dev)==0);
+    assert(nas_virtio_input_count()==1 && registered==1 && used_pages()==3);
+    /* A class can be retired before the provider accepts release of an
+     * active queue page. Its owner stays pinned and new probe is barred. */
+    reject_put_index=1U;reject_put_remaining=1U;
+    const unsigned prior_events=event_count;
+    assert(bound_driver->remove(&orphan_dev)==-EIO);
+    assert(registered==0 && nas_virtio_input_count()==1 &&
+           used_pages()==3 && reject_put_remaining==0 &&
+           nas_virtio_input_poll(1U)==0 && event_count==prior_events);
+    assert(bound_driver->probe(&orphan_dev)==-EEXIST);
+    assert(bound_driver->remove(&orphan_dev)==0);
+    assert(nas_virtio_input_count()==0 && registered==0 && !used_pages());
+    assert(failed_puts==3);
+    puts("[M185 VIRTIO INPUT LIFETIME PASS] failed probe preserves inactive queue DMA, class-retired detach retries without resource reuse");
     printf("[VIRTIO INPUT PORT PASS] Linux config, both vrings, keyboard/ABS, "
            "per-device DMA, %u events, wrap, remove\n",event_count);
     return 0;

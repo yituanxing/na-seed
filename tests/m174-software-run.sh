@@ -68,6 +68,29 @@ busy timeout 15 /bin/mpstat 1 1 > "$work/mpstat" 2> "$work/mpstat-error"
 busy grep -Eq '(^|[[:space:]])all([[:space:]]|$)' "$work/mpstat"
 echo M174_SOFTWARE_MPSTAT_PROC_FUNCTION_PASS
 
+# M185: independent signed sysstat iostat ELF, in CPU-only mode. NaSeed
+# exports actual monotonic /proc/stat task accounting; it does not yet export
+# /proc/diskstats, so claiming a device-I/O iostat test would be dishonest.
+# Two observations at 1s spacing must each contain six parsed numeric CPU
+# percentages. This tests real /proc ingestion and the interval timer path,
+# not just "--help" or a fixed stdout marker.
+busy grep -q '^cpu ' /proc/stat
+busy timeout 15 /bin/iostat -c 1 2 > "$work/iostat-cpu" 2> "$work/iostat-error"
+busy awk '
+    /^avg-cpu:/ { reports++; await_data=1; next }
+    await_data && /%user/ { next }
+    await_data && NF>=6 {
+        for (i=1; i<=6; i++) {
+            if ($i !~ /^[0-9]+([.][0-9]+)?$/) exit 1
+            if ($i+0 < 0 || $i+0 > 100.5) exit 1
+        }
+        samples++
+        await_data=0
+    }
+    END { if (reports!=2 || samples!=2) exit 1 }
+' "$work/iostat-cpu"
+echo M185_SOFTWARE_IOSTAT_CPU_FUNCTION_PASS
+
 # Original ELF entry/version exercises ONLY, never watch/TUI semantics.
 # Alpine inotifywait's --version can exit 1 after printing its version/usage
 # on a kernel without inotify. It is not an inotify-watch functional check:
