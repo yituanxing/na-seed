@@ -10,6 +10,8 @@ extern bool nas_lwext4_guest_boot_shutdown(void);
 #endif
 #ifdef NAS_ENABLE_M179_FS_IRQ
 extern bool nas_lwext4_async_runtime_passed(void);
+extern void nas_lwext4_async_runtime_step(void);
+void nas_init_process_deferred_exit_service(void);
 static bool m179_pid1_exit_waiting;
 #endif
 #ifdef NAS_ENABLE_M180_FS_USER_IRQ
@@ -38,12 +40,87 @@ extern bool nas_lwip_guest_boot(void);
 #include "../task/user_stack.h"
 #include "../task/signal.h"
 #include "../task/kthread.h"
+#include "../task/scheduler_service.h"
 #include "../time/clock.h"
 #include "main.h"
 #include "../fs/file_ops.h"
 #include "../platform/platform.h"
 #include "../drivers/display/display.h"
+#ifdef NAS_ENABLE_VIRTIO_BLK_ASYNC
+#include "../../ports/uboot/async_blk.h"
+#endif
+#ifdef NAS_ENABLE_VIRTIO_GPU
+#include "../drivers/display/virtio_gpu.h"
+#endif
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+#include "../drivers/input/virtio_input.h"
+#endif
 #define TASK (*nas_current_task)
+
+/* Boot owns the ordered service composition. The scheduler never names an
+ * individual driver. Every callback checks its own live device state. */
+#ifdef NAS_ENABLE_VIRTIO_BLK_ASYNC
+static void deferred_async_block(void *context) {
+    (void)context;
+    nas_async_blk_service();
+    nas_async_blk_native_test_step();
+}
+#endif
+#ifdef NAS_ENABLE_M179_FS_IRQ
+static void deferred_lwext4_worker(void *context) {
+    (void)context;
+    nas_lwext4_async_runtime_step();
+}
+static void deferred_pid1_exit(void *context) {
+    (void)context;
+    nas_init_process_deferred_exit_service();
+}
+#endif
+#ifdef NAS_ENABLE_VIRTIO_GPU
+static void deferred_gpu_scanout(void *context) {
+    (void)context;
+    if(nas_display_primary() && nas_display_present()<0)
+        nas_fail("GPU scanout update failed");
+    nas_virtio_gpu_report();
+}
+#endif
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+static void deferred_input_events(void *context) {
+    (void)context;
+    (void)nas_virtio_input_poll(64U);
+    nas_virtio_input_irq_report();
+}
+#endif
+static void init_deferred_services(void) {
+    int rc=0;
+#ifdef NAS_ENABLE_VIRTIO_BLK_ASYNC
+    rc=nas_sched_register_deferred(NAS_SCHED_BEFORE_WORKERS,
+                                   deferred_async_block,NULL);
+    if(rc)nas_fail("deferred block service registration failed");
+#endif
+#ifdef NAS_ENABLE_M179_FS_IRQ
+    rc=nas_sched_register_deferred(NAS_SCHED_BEFORE_WORKERS,
+                                   deferred_lwext4_worker,NULL);
+    if(rc)nas_fail("deferred ext4 service registration failed");
+#endif
+#ifdef NAS_ENABLE_VIRTIO_GPU
+    rc=nas_sched_register_deferred(NAS_SCHED_BEFORE_WORKERS,
+                                   deferred_gpu_scanout,NULL);
+    if(rc)nas_fail("deferred GPU service registration failed");
+#endif
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+    rc=nas_sched_register_deferred(NAS_SCHED_BEFORE_WORKERS,
+                                   deferred_input_events,NULL);
+    if(rc)nas_fail("deferred input service registration failed");
+#endif
+#ifdef NAS_ENABLE_M179_FS_IRQ
+    /* PID1 success requires the real filesystem worker's durable shutdown. */
+    rc=nas_sched_register_deferred(NAS_SCHED_AFTER_WORKERS,
+                                   deferred_pid1_exit,NULL);
+    if(rc)nas_fail("deferred PID1 exit service registration failed");
+#endif
+    (void)rc;
+}
 
 /* Only a FULLY terminated PID 1 process may drive the host test exit.
  * The scheduler publishes its group-finalization event; the boot policy
@@ -111,7 +188,7 @@ void nas_init_process_deferred_exit_service(void) {
 #else
     if(!m179_pid1_exit_waiting || !nas_lwext4_async_runtime_passed())return;
 #endif
-    /* Called by scheduler_service after a bounded worker slice. All PID1
+    /* Called by the post-worker service after a bounded slice. All PID1
      * Files/cwd pins were released by the normal process-exit path. */
     m179_pid1_exit_waiting=false;
     nas_init_finish_success();
@@ -138,6 +215,7 @@ void nas_init_userspace(void) {
     nas_kernel_context_boot_selftest();
     nas_kthread_system_init();
     nas_kthread_boot_selftest();
+    init_deferred_services();
     /* User console must be a hardware/firmware input backend BEFORE
      * TIOCSCTTY enables terminal RX. x86 COM1 and RV SBI work early;
      * ARM maps its real PL011 Device page into TTBR1 only after frame init. */

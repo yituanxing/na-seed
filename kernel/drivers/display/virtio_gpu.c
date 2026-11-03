@@ -468,8 +468,9 @@ static int probe(struct nas_bus_device *dev) {
 }
 static int remove_device(struct nas_bus_device *dev) {
     /* Until DisplayDevice supports unpin/unregister, an open /dev/fb0 may
-     * refer to this scanout forever. Fail closed instead of dangling DMA. */
-    return gpu.claimed && gpu.owner==dev ? -EBUSY : -ENODEV;
+     * refer to this scanout forever. Permanent unsupported removal must
+     * not be treated as a transient EBUSY by bus retry processing. */
+    return gpu.claimed && gpu.owner==dev ? -EOPNOTSUPP : -ENODEV;
 }
 static const struct nas_bus_driver gpu_driver={
     .name="virtio-gpu-2d",.bus_mask=NAS_BUS_MASK_ALL,

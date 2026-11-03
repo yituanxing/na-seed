@@ -300,6 +300,10 @@ int main(int argc,char **argv) {
     assert(nas_virtio_gpu_count()==1U && allocs==GPU_PAGES+GPU_ENTRY_PAGES+2U);
     assert(commands==4U && gpu.submitted==4U && gpu.completed==4U);
     assert(bound_irq && bound_irq->bound && gpu.dirty);
+    /* The primary DisplayDevice retains borrowed GPU DMA for its entire
+     * lifetime. This is a terminal hot-remove restriction, not a retryable
+     * busy state that would strand the generic bus removal queue forever. */
+    assert(registered_driver->remove(&device)==-EOPNOTSUPP);
     assert(bound_irq->source_ack(bound_irq->source_context)==0U);
     assert(gpu.irq_acks==0U);
     assert(registered_driver->probe(&device)==-ENODEV);

@@ -98,7 +98,49 @@ static struct nas_bus_device unclaimed={.bus=NAS_BUS_PCI,
                .view.pci={.config=pci_configs[2],
                           .config_bytes=NAS_BUS_PCI_CONFIG_BYTES,
                           .slot=2,.mapped_bar_mask=4}}};
+/* Prove boot-composed deferred services preserve FIFO and PRE/POST phases,
+ * without borrowing an IRQ or kernel-worker execution context. */
+static char deferred_order[8];
+static unsigned deferred_count;
+static bool recording_deferred;
+static void deferred_append(void *context) {
+    if(recording_deferred) {
+        assert(deferred_count<sizeof(deferred_order));
+        deferred_order[deferred_count++]=*(const char *)context;
+        assert(nas_sched_register_deferred(NAS_SCHED_AFTER_WORKERS,
+                                           deferred_append,NULL)==-EBUSY);
+    }
+}
+static void deferred_noop(void *context) {(void)context;}
+static void test_deferred_services(void) {
+    static const char a='A',b='B',c='C',d='D';
+    static int distinct[10];
+    assert(nas_sched_register_deferred(NAS_SCHED_BEFORE_WORKERS,NULL,NULL)==-EINVAL);
+    assert(nas_sched_register_deferred((enum nas_sched_service_phase)2,
+                                       deferred_append,(void *)&a)==-EINVAL);
+    assert(nas_sched_register_deferred(NAS_SCHED_BEFORE_WORKERS,
+                                       deferred_append,(void *)&a)==0);
+    assert(nas_sched_register_deferred(NAS_SCHED_BEFORE_WORKERS,
+                                       deferred_append,(void *)&b)==0);
+    assert(nas_sched_register_deferred(NAS_SCHED_AFTER_WORKERS,
+                                       deferred_append,(void *)&c)==0);
+    assert(nas_sched_register_deferred(NAS_SCHED_AFTER_WORKERS,
+                                       deferred_append,(void *)&d)==0);
+    assert(nas_sched_register_deferred(NAS_SCHED_AFTER_WORKERS,
+                                       deferred_append,(void *)&c)==-EEXIST);
+    recording_deferred=true;
+    nas_sched_service_kernel();
+    recording_deferred=false;
+    assert(deferred_count==4U && deferred_order[0]=='A' && deferred_order[1]=='B' &&
+           deferred_order[2]=='C' && deferred_order[3]=='D');
+    for(unsigned i=0;i<10U;i++)
+        assert(nas_sched_register_deferred(NAS_SCHED_AFTER_WORKERS,
+                                          deferred_noop,&distinct[i])==0);
+    assert(nas_sched_register_deferred(NAS_SCHED_AFTER_WORKERS,
+                                       deferred_noop,NULL)==-ENOSPC);
+}
 int main(void) {
+    test_deferred_services();
     /* A tagged resource must agree with the bus. Reject incomplete
      * PCI enumeration and unmapped MMIO before trying any driver. */
     struct nas_bus_device wrong={.bus=NAS_BUS_PCI,
@@ -146,6 +188,15 @@ int main(void) {
     assert(net_mmio.driver==&net && net_pci.driver==&net);
     assert(net_probe_count==2 && probe_count==1);
     assert(nas_bus_driver_unregister(&net)==-EBUSY);
+    /* A pinned primary display can never detach with current DisplayDevice
+     * ownership. -EOPNOTSUPP must be terminal, not queued as a retryable
+     * -EBUSY that remains EINPROGRESS for the lifetime of the kernel. */
+    net_remove_result=-EOPNOTSUPP;
+    assert(nas_bus_device_request_remove(&net_mmio)==-EOPNOTSUPP);
+    assert(nas_bus_device_remove_status(&net_mmio)==-EOPNOTSUPP);
+    assert(net_mmio.registered && net_mmio.driver==&net &&
+           !net_mmio.removal_pending && nas_bus_service_removals(1)==0);
+    net_remove_count=0; /* Next test measures only the two retryable owners. */
     const volatile uint32_t *borrowed_mmio=net_mmio.resource.view.mmio.registers;
     const uint8_t *borrowed_config=net_pci.resource.view.pci.config;
     /* Two simultaneous removals: both begin once, no new probe/rebind,
