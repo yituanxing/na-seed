@@ -30,7 +30,7 @@ static unsigned queue_count,completions;
 
 void nas_print(const char *s) {fputs(s,stdout);}
 void nas_dec(uint64_t n) {printf("%llu",(unsigned long long)n);}
-void nas_fail(const char *s) {fprintf(stderr,"FAIL CLOSED: %s\n",s);abort();}
+void nas_arch_halt(void) {abort();}
 int nas_bus_driver_register(const struct nas_bus_driver *driver) {
     assert(driver && !registered_driver);
     registered_driver=driver;return 0;

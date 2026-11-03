@@ -7,6 +7,7 @@
 #include "../../kernel/drivers/virtio/transport.h"
 #include "../../kernel/drivers/port/dma.h"
 #include "../../kernel/arch/arch.h"
+#include "../../kernel/panic.h"
 #include "../../kernel/errno.h"
 #include "../../kernel/lib/string.h"
 #include "../unikraft/split_queue.h"
@@ -17,7 +18,6 @@
 
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
-extern void nas_fail(const char *);
 
 #define BLK_SLOTS NAS_BLOCK_REQUEST_SLOT_LIMIT
 #define BLK_RING_DESC 32U
