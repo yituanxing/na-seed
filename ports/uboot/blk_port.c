@@ -268,7 +268,7 @@ int nas_uboot_block_attach(struct nas_uboot_block *b,
       (uint32_t)b->desc.blksz,NAS_DMA_PAGE_BYTES/(uint32_t)b->desc.blksz,
       ro,NAS_PORT_BLOCK_SECTORS,&block_ops);
  if(!rc)return 0;
-fail:
+fail: {
  /* A failed rollback is still an owned instance. Keep it available for
   * explicit retry via detach; the class was never published. */
  int cleanup=release_block_owners(b);
@@ -277,6 +277,7 @@ fail:
      return cleanup;
  }
  return rc;
+}
 }
 int nas_uboot_block_detach(struct nas_uboot_block *b){
  if(!b)return -EINVAL;
