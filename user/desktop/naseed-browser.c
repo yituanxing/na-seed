@@ -64,8 +64,10 @@ static void paint(uint8_t *pixels,const char *lynx,size_t lynx_size,
     nasd_draw_text(pixels,BROWSER_W,BROWSER_H,8,154,mc,mc_size,
                    245,239,219);
 }
-int main(void) {
+int main(int argc,char **argv) {
     const int channel=3;
+    const int live=argc==2 && !strcmp(argv[1],"--m170");
+    nasd_require(argc==1 || live,"browser client selector");
     char lynx[2048]={0},mc[4096]={0};
     char *const lynx_argv[]={"lynx","-dump","-nolist","-width=38",
                               "/tests/m168-home.html",NULL};
@@ -88,8 +90,14 @@ int main(void) {
     for(;;) {
         struct message msg=nasd_recv_packet(channel);
         if(msg.type==MSG_QUIT)break;
-        nasd_require(msg.type==MSG_KEY && msg.key==KEY_B,
-                     "focused browser KEY_B only");
+        nasd_require(msg.type==MSG_KEY &&
+                     (msg.key==KEY_B || (live && msg.key==KEY_C)),
+                     "focused browser legal keyboard input");
+        if(live && msg.key==KEY_C) {
+            nasd_send_packet(channel,MSG_CLOSE,0);
+            nasd_mark("M170_BROWSER_CLIENT_CLOSE_SENT");
+            break;
+        }
         paint(pixels,lynx,nlynx,mc,nmc,1);
         __atomic_thread_fence(__ATOMIC_RELEASE);
         nasd_send_packet(channel,MSG_UPDATED,KEY_B);
