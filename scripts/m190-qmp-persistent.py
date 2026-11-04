@@ -133,6 +133,18 @@ def write(sock,reader,serial:Path,outdir:Path):
     vim_close(sock,reader)
     m189['process_reaped'](sock,reader,serial,'durable Vim',pid,started,35)
     prior['shell_frame_ready'](sock,reader,outdir,frame,time.monotonic()+20)
+    # A separate native Linux ABI diagnostic checks the PREEXISTING inode.
+    # Its target open is nonmutating: original Nano still does the real save.
+    probe_start=len(serial.read_bytes())
+    m188['keys'](sock,reader,'/usr/bin/naseed-m190-open-probe')
+    prior['send_key'](sock,reader,'ret')
+    probe_pid,probe_exec=m189['process_started'](
+        sock,reader,serial,'/usr/bin/naseed-m190-open-probe',
+        probe_start,35)
+    m189['process_reaped'](
+        sock,reader,serial,'M190 original existing-inode ABI probe',
+        probe_pid,probe_exec,30)
+    physical_terminal_text(sock,reader,outdir,'open-abi-probe')
     before=m189['frame'](sock,reader,outdir,'before-durable-nano')
     after=len(serial.read_bytes())
     m188['keys'](sock,reader,'/usr/bin/nano /async/m190-editor.txt')

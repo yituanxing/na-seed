@@ -47,11 +47,15 @@ if [ "${NAS_M180_FS_USER_STAGE:-0}" = 1 ]; then
     }
     "$cc" -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
         user/m180-fs-user.c -o "$root/usr/bin/naseed-m180-fs-user"
+    # Supplemental diagnostic: actual Linux ABI overwrite of an existing
+    # ext4 inode before original Nano. Not an additional Alpine signed ELF.
+    "$cc" -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
+        user/m190-open-probe.c -o "$root/usr/bin/naseed-m190-open-probe"
     "$cc" -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
         -DNAS_M180_FS_USER_STAGE=1 \
         scripts/test-m176-ncat-launch.c \
         -o "$root/usr/bin/naseed-m174-devfs-launch"
-    m180_apps=' naseed-m180-fs-user'
+    m180_apps=' naseed-m180-fs-user naseed-m190-open-probe'
 fi
 
 for app in naseed-desktop naseed-image naseed-terminal naseed-browser \
