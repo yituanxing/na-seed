@@ -7,6 +7,7 @@ after a genuine kernel restart and then reopens it in an original editor.
 from pathlib import Path
 import runpy
 import time
+ui=runpy.run_path('scripts/m173-qmp-verify.py',run_name='m190_screen')
 prior=runpy.run_path('scripts/m187-qmp-verify.py',run_name='m190_prior')
 m188=runpy.run_path('scripts/m188-qmp-extras.py',run_name='m190_input')
 m189=runpy.run_path('scripts/m189-qmp-sequence.py',run_name='m190_process')
@@ -30,6 +31,42 @@ def vim_close(sock,reader):
     base['send'](sock,reader,[base['key']('shift',False)])
     m188['keys'](sock,reader,'wq')
     prior['send_key'](sock,reader,'ret')
+
+def nano_save_finished(sock,reader,outdir,prompt,seconds):
+    """Wait for the real Nano Save-As prompt to disappear and screen settle.
+
+    On IRQ-backed ext4, a user syscall parks while the filesystem worker
+    completes block DMA; the fixed tmpfs delay used by M189 is insufficient.
+    A Ctrl+X typed while Nano still writes can be consumed before the editor
+    resumes input. Two actual stable QEMU frames are required, not a timer.
+    """
+    previous=None
+    stable=0
+    until=time.monotonic()+seconds
+    while time.monotonic()<until:
+        shot=m189['frame'](sock,reader,outdir,'nano-durable-saved')
+        data=ui['pixels'](shot)
+        try:
+            ui['changed'](prompt,shot,309,350,615,410,50)
+        except RuntimeError:
+            stable=0
+        else:
+            if previous is not None:
+                delta=0
+                for y in range(350,410):
+                    left=(y*800+309)*3
+                    right=(y*800+615)*3
+                    delta+=sum(a!=b for a,b in
+                               zip(previous[left:right],data[left:right]))
+                stable=stable+1 if delta<=20 else 0
+                if stable>=2:
+                    return shot
+        previous=data
+        time.sleep(.4)
+    prior['fail_native'](
+        sock,reader,'original Nano save prompt never returned to a '
+                    'stable physical editor after IRQ-backed ext4 write')
+
 
 def write(sock,reader,serial:Path,outdir:Path):
     mount_ready(sock,reader,serial)
@@ -60,10 +97,11 @@ def write(sock,reader,serial:Path,outdir:Path):
     edited=m188['changed_until'](sock,reader,outdir,'durable-nano-typed',
                                  frame,(309,199,615,410),100,15)
     m189['ctrl'](sock,reader,'o')
-    m188['changed_until'](sock,reader,outdir,'durable-nano-prompt',
-                          edited,(309,360,615,410),40,12)
+    prompted=m188['changed_until'](
+        sock,reader,outdir,'durable-nano-prompt',
+        edited,(309,360,615,410),40,12)
     prior['send_key'](sock,reader,'ret')
-    time.sleep(.5)
+    nano_save_finished(sock,reader,outdir,prompted,30)
     m189['ctrl'](sock,reader,'x')
     m189['process_reaped'](sock,reader,serial,'durable Nano',pid,started,35)
     prior['shell_frame_ready'](sock,reader,outdir,edited,time.monotonic()+20)
