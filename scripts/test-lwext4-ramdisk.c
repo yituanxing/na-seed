@@ -13,10 +13,12 @@ static void check(int rc,const char *action) {
 }
 int main(int argc,char **argv) {
     if(argc!=3 || (strcmp(argv[2],"write")&&strcmp(argv[2],"verify")&&
-                   strcmp(argv[2],"sync-crash")&&strcmp(argv[2],"sync-reopen")))return 2;
+                   strcmp(argv[2],"sync-crash")&&strcmp(argv[2],"sync-reopen")&&
+                   strcmp(argv[2],"sparse-verify")))return 2;
     bool sync_crash=!strcmp(argv[2],"sync-crash");
     bool sync_reopen=!strcmp(argv[2],"sync-reopen");
-    bool write=strcmp(argv[2],"verify")!=0;
+    bool sparse_verify=!strcmp(argv[2],"sparse-verify");
+    bool write=!sparse_verify && strcmp(argv[2],"verify")!=0;
     FILE *disk=fopen(argv[1],"rb+");
     assert(disk);
     assert(!fseek(disk,0,SEEK_END));
@@ -34,6 +36,47 @@ int main(int argc,char **argv) {
           "register upstream lwext4 device");
     assert(nas_ramdisk_detach(&rd)==-EBUSY); /* real reference pin */
     check(ext4_mount("ext-test","/mnt/",!write),"mount ext4");
+    if(sparse_verify) {
+        /* The host has deliberately created a 32-KiB sparse inode with NO
+         * data blocks. Every logical file byte must be zero, even when a
+         * request starts at a full-block boundary. Older lwext4 passed the
+         * physical block number zero to ext4_blocks_get_direct, returning
+         * the ext4 superblock instead. This broke genuine Alpine libcrypto
+         * when the dynamic linker mmap'd one 4-KiB sparse page. */
+        ext4_file f={0};
+        check(ext4_fopen(&f,"/mnt/sparse-hole","r"),"open sparse inode");
+        assert(ext4_fsize(&f)==32768);
+        static const struct { uint64_t offset; size_t length; } cases[]={
+            {0,4096},       /* aligned single whole sparse block */
+            {4096,8192},    /* two contiguous whole sparse blocks */
+            {4096,4096+37}, /* whole sparse block + trailing partial */
+            {103,1536},    /* unaligned partial sparse block */
+            {4096-11,4096+37}, /* initial partial + whole + tail */
+            {32768-63,63}  /* final partial sparse block */
+        };
+        unsigned char buf[8192];
+        for(size_t i=0;i<sizeof(cases)/sizeof(cases[0]);i++) {
+            check(ext4_fseek(&f,(int64_t)cases[i].offset,SEEK_SET),
+                  "seek sparse hole");
+            memset(buf,0xa5,sizeof(buf));
+            size_t got=0;
+            check(ext4_fread(&f,buf,cases[i].length,&got),"read sparse hole");
+            assert(got==cases[i].length);
+            for(size_t j=0;j<got;j++)if(buf[j]) {
+                fprintf(stderr,"[LWEXT4 SPARSE READ FAIL] case=%zu file_off=%llu value=0x%02x\n",
+                        i,(unsigned long long)(cases[i].offset+j),buf[j]);
+                exit(1);
+            }
+        }
+        check(ext4_fclose(&f),"close sparse inode");
+        check(ext4_umount("/mnt/"),"unmount sparse ext4");
+        check(nas_lwext4_device_detach(&device,"ext-test"),"detach sparse ext4");
+        check(nas_ramdisk_detach(&rd),"detach sparse RAM disk");
+        assert(!fclose(disk));
+        free(image);
+        puts("[LWEXT4 SPARSE READ PASS] entire aligned blocks and partial sparse holes are zero, not ext4 block0");
+        return 0;
+    }
     if(sync_crash || sync_reopen) {
         static const char witness[]="NaSeed original ext4 ordered-sync crash witness\n";
         ext4_file f={0};
