@@ -1,0 +1,98 @@
+name: NaSeed M192 original Alpine init entry diagnostic on three ISA
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/m192-alpine-init-diagnostic.yml'
+      - 'scripts/m192-*'
+      - 'scripts/probe-m192-alpine-init.sh'
+      - 'kernel/init/**'
+      - 'kernel/boot_image.c'
+      - 'rootfs/alpine/**'
+
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  init-entry-diagnostic:
+    name: M192 initial native Alpine /sbin/init (not OpenRC readiness) / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
+      - name: Validate the isolated init probe without changing M191 oracles
+        run: |
+          set -eu
+          sh -n scripts/probe-m192-alpine-init.sh scripts/probe-m191-alpine-root.sh
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+          python3 - <<'PY'
+          from pathlib import Path
+          lines = [line for line in Path('scripts/m192-init-cases.tsv').read_text().splitlines() if line and not line.startswith('#')]
+          assert lines == ['m192-batch\tcpio\t \t-\t-\t/sbin/init'], lines
+          PY
+      - name: Install native QEMU firmware ext4 and official Alpine verification tools
+        timeout-minutes: 18
+        run: |
+          set -eu
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'cmake:cmake' 'g++:g++' 'clang:clang' 'ld.lld:lld' \
+                      'readelf:binutils' 'cpio:cpio' 'mke2fs:e2fsprogs' \
+                      'debugfs:e2fsprogs' 'e2fsck:e2fsprogs' \
+                      'xorriso:xorriso' 'mformat:mtools' 'sgdisk:gdisk' \
+                      'curl:curl' 'python3:python3'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case '${{ matrix.port }}' in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+              test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
+            riscv64)
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+            arm64)
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+          esac
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+          command -v sudo
+      - name: Run M191 strict gate then observe original Alpine init PID1
+        timeout-minutes: 70
+        run: sh scripts/probe-m192-alpine-init.sh ${{ matrix.port }}
+      - name: Keep genuine Alpine root image and M191/M192 serial evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m192-alpine-init-diagnostic-${{ matrix.port }}
+          path: |
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m192-init-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/apk-install.log
+            build/busybox-source-parity-x86/m192-batch.clean.log
+            build/busybox-source-parity-x86/m192-batch.serial.log
+            build/port-riscv64/full/matrix-source/m192-batch.clean.log
+            build/port-riscv64/full/matrix-source/m192-batch.serial.log
+            build/port-aarch64/full/matrix-source/m192-batch.clean.log
+            build/port-aarch64/full/matrix-source/m192-batch.serial.log
+          if-no-files-found: ignore

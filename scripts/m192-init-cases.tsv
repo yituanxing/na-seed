@@ -1,0 +1,4 @@
+# M192 diagnostic-only native-ISA case: original Alpine BusyBox init from the
+# real ext4 root. The third field is one literal space: argv is just init.
+# Do not put this case in M191's PID1 exit-0 acceptance manifest.
+m192-batch	cpio	 	-	-	/sbin/init
