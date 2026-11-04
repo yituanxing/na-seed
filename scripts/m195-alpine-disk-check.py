@@ -37,10 +37,13 @@ def verify(port: str, signed_root: Path, disk: Path) -> None:
     disk = disk.resolve(strict=True)
     if not signed_root.is_dir() or not disk.is_file():
         raise ValueError("[M195 HOST FAIL] source or physical disk is missing")
-    for path in ("/usr/bin/tree", "/root/m195-wire.txt"):
-        source = m191.guest_path(signed_root, path)
-        if source.exists() or source.is_symlink():
-            raise ValueError("[M195 HOST FAIL] guest result was staged: " + path)
+    # A BusyBox applet pathname is not evidence that the separate upstream
+    # tree APK was installed. The guest first requires `apk info -e tree` to
+    # report absent, then installs it over the captured wire; this check only
+    # forbids staging the HTTP witness before the VM begins.
+    witness_source = m191.guest_path(signed_root, "/root/m195-wire.txt")
+    if witness_source.exists() or witness_source.is_symlink():
+        raise ValueError("[M195 HOST FAIL] HTTP witness was staged")
 
     m191.check_mbr(disk)
     with tempfile.TemporaryDirectory(prefix="m195-alpine-ext4-") as workspace:

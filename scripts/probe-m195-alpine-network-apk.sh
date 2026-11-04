@@ -30,8 +30,19 @@ overlay=$(mktemp -d "$PWD/$work/m195-network-overlay.XXXXXX")
 sudo cp -a "$root/." "$overlay/"
 sudo python3 scripts/m193-alpine-login-overlay.py "$root" "$overlay"
 sudo install -m 0644 "$repo/repositories" "$overlay/root/m195-repositories"
-test ! -e "$overlay/usr/bin/tree"
-test ! -e "$overlay/root/m195-wire.txt"
+test -s "$overlay/root/m195-repositories" || {
+    echo '[M195 STAGE FAIL] scoped APK repository missing in test root' >&2; exit 1;
+}
+test ! -e "$overlay/root/m195-wire.txt" || {
+    echo '[M195 STAGE FAIL] HTTP witness was preseeded' >&2; exit 1;
+}
+# Alpine/BusyBox may expose an existing applet at /usr/bin/tree even when
+# the separate Alpine "tree" APK is NOT installed. The authenticated guest
+# `apk info -e tree` probe is the authority for package absence; after apk
+# add, both the package database and native ELF are checked independently.
+if [ -e "$overlay/usr/bin/tree" ] || [ -L "$overlay/usr/bin/tree" ]; then
+    echo '[M195 STAGE] preexisting tree pathname allowed; guest APK database will decide package presence'
+fi
 disk="$PWD/$work/m195-network-disposable.img"
 sudo python3 scripts/m191-alpine-root-disk.py prepare "$port" "$overlay" "$disk"
 sudo chown "$(id -u):$(id -g)" "$disk"
