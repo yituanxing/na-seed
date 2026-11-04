@@ -36,7 +36,7 @@ COMMANDS = M197.COMMANDS + (
      "printf 'M198_DESKTOP_INPUTS_RC=%d\\n' \"$?\"\r",
      "M198_DESKTOP_INPUTS_RC=0",
      "original package programs and separately built NaSeed clients"),
-    ("NASEED_TERMINAL_VT100=1 /usr/bin/naseed-desktop; "
+    ("NASEED_TERMINAL_VT100=1 /usr/bin/naseed-desktop m187; "
      "printf 'M198_DESKTOP_EXIT_RC=%d\\n' \"$?\"\r",
      "M198_DESKTOP_EXIT_RC=0",
      "existing userspace desktop closed after physical QMP Ctrl-F12"),
