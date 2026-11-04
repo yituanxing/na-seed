@@ -11,6 +11,9 @@
 #include "../fs/io.h"
 #include "../arch/mmu.h"
 #include "../arch/user_pt.h"
+#if defined(__riscv) && __riscv_xlen==64
+#include "../drivers/serial.h"
+#endif
 #include "usercopy.h"
 #include "mmap_abi.h"
 
@@ -106,6 +109,41 @@ static uint64_t stage_replace_pages(uint64_t start,uint64_t pages,
                 return (uint64_t)n;
             }
             memcpy((void *)(uintptr_t)(nas_hhdm_offset()+pa),buffer,PAGE);
+#if defined(__riscv) && __riscv_xlen==64
+            /* M194 diagnostic only: verify original libcrypto's RELRO page
+             * at the exact VFS read -> newly staged private-frame boundary.
+             * Compare against the later mapped bytes in the RV64 trap log.
+             * The stage path is otherwise completely unchanged. */
+            static uint64_t traced_pid;
+            static unsigned traced_pages;
+            if(TASK.pid!=traced_pid) {
+                traced_pid=TASK.pid;
+                traced_pages=0;
+            }
+            if(!traced_pages && file_off==UINT64_C(0x33f000) &&
+               length==UINT64_C(0x77000) &&
+               file_off+i*PAGE==UINT64_C(0x3a2000)) {
+                uint64_t file_values[8]={0},frame_values[8]={0};
+                memcpy(file_values,buffer+0x400,sizeof(file_values));
+                memcpy(frame_values,(const uint8_t *)(uintptr_t)
+                    (nas_hhdm_offset()+pa)+0x400,sizeof(frame_values));
+                nas_print("[RV64 MMAP STAGE] pid=");nas_dec(TASK.pid);
+                nas_print(" fd=");nas_dec(fd);
+                nas_print(" map_file_off=");nas_hex(file_off);
+                nas_print(" page_file_off=");nas_hex(file_off+i*PAGE);
+                nas_print(" read_bytes=");nas_dec(n);
+                for(unsigned k=0;k<8;k++) {
+                    nas_print(" f");nas_dec(k);
+                    nas_print("=");nas_hex(file_values[k]);
+                }
+                for(unsigned k=0;k<8;k++) {
+                    nas_print(" p");nas_dec(k);
+                    nas_print("=");nas_hex(frame_values[k]);
+                }
+                nas_print("\n");
+                traced_pages++;
+            }
+#endif
         }
         if(!stage_add(&staged,pa)) {
             (void)nas_frame_put(pa);
