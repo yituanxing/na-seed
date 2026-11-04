@@ -11,7 +11,6 @@
 #include "../../mm/vm.h"
 #include "../../panic.h"
 #include "../../drivers/serial.h"
-#include "../../fs/io.h"
 #include "../../lib/string.h"
 #include "context.h"
 extern void nas_rv_timer_handle(struct nas_rv_trap_frame *frame);
@@ -19,67 +18,6 @@ extern void nas_rv_plic_external_irq(void);
 extern void nas_rv_save_fp(uint64_t *);
 extern void nas_rv_restore_fp(const uint64_t *);
 static struct nas_rv_trap_frame *live;
-/* M194 only: compare libcrypto's original .data.rel.ro bytes immediately
- * after file-backed mmap with a second VFS read from the SAME live fd.
- * Never modify the DSO, VMA policy or kernel syscall result. */
-static void nas_rv_trace_libcrypto_relro(uint64_t range_start,
-                                         uint64_t range_length,
-                                         uint64_t fd,uint64_t file_offset,
-                                         uint64_t flags) {
-    static uint64_t reported_pid;
-    static unsigned reports;
-    if(!range_length || !nas_current_task ||
-       !nas_current_task->mm)return;
-    struct nas_task *task=nas_current_task;
-    if(reported_pid!=task->pid) {reported_pid=task->pid;reports=0;}
-    if(reports>=1U)return;
-    const struct nas_anon_regions *regions=&task->mm->mmap_vmas;
-    for(unsigned i=0;i<regions->capacity;i++) {
-        const struct nas_anon_region *rx=&regions->slots[i];
-        if(rx->kind!=NAS_VMA_FILE_PRIVATE_SNAPSHOT ||
-           rx->file_offset!=0 || (rx->prot&5U)!=5U ||
-           rx->end-rx->start!=UINT64_C(0x33f000))continue;
-        if(rx->start>USER_LIMIT-UINT64_C(0x3a2420))continue;
-        uint64_t preview=rx->start+UINT64_C(0x3a2400);
-        if(range_start>preview || range_length<64U ||
-           preview-range_start>range_length-64U)continue;
-        const struct nas_anon_region *rw=nas_vma_find(regions,preview);
-        if(!rw || rw->kind!=NAS_VMA_FILE_PRIVATE_SNAPSHOT ||
-           rw->file_offset>UINT64_C(0x3a2400) ||
-           preview-rw->start!=UINT64_C(0x3a2400)-rw->file_offset)continue;
-        uint64_t values[8]={0};
-        int64_t n=nas_vm_read_task_bytes(task,preview,
-                         (uint8_t *)(void *)values,sizeof(values));
-        nas_print("[RV64 MMAP RETURN] pid=");nas_dec(task->pid);
-        nas_print(" preview_va=");nas_hex(preview);
-        nas_print(" count=");nas_dec(n==64?8:0);
-        if(n==64)for(unsigned k=0;k<8;k++) {
-            nas_print(" q");nas_dec(k);
-            nas_print("=");nas_hex(values[k]);
-        }
-        nas_print(" region_prot=");nas_hex(rw->prot);
-        nas_print(" range_start=");nas_hex(range_start);
-        nas_print(" range_len=");nas_hex(range_length);
-        nas_print(" fd=");nas_dec(fd);
-        nas_print(" mmap_off=");nas_hex(file_offset);
-        nas_print(" mmap_flags=");nas_hex(flags);
-        if(file_offset<=UINT64_MAX-(preview-range_start)) {
-            uint64_t on_disk[8]={0};
-            uint64_t source_offset=file_offset+(preview-range_start);
-            int64_t read_bytes=nas_fs_mmap_read(fd,source_offset,
-                       (uint8_t *)(void *)on_disk,sizeof(on_disk));
-            nas_print(" source_off=");nas_hex(source_offset);
-            nas_print(" source_bytes=");nas_dec(read_bytes);
-            if(read_bytes==64)for(unsigned k=0;k<8;k++) {
-                nas_print(" f");nas_dec(k);
-                nas_print("=");nas_hex(on_disk[k]);
-            }
-        }
-        nas_print("\n");
-        reports++;
-        return;
-    }
-}
 /* Used by first user entry and by an execve that replaces a process image. */
 uint64_t nas_rv_entry_stack_top;
 uint64_t nas_rv_return_stack(const struct nas_rv_trap_frame *source) {
@@ -148,88 +86,6 @@ void nas_rv_full_trap_c(struct nas_rv_trap_frame *frame) {
         if(outcome.action==NAS_EXC_RETRY)return; /* retry unchanged SEPC */
         if(outcome.action==NAS_EXC_SIGNAL) {
             struct nas_task *tracee=nas_current_task;
-            /* Preserve the first genuine, unresolved user page faults for
-             * cross-ISA loader/runtime diagnosis. As on x86 [USERPF], the
-             * faulting user PC, VA and native register image must be captured
-             * before the fatal signal reaps the process. This observation
-             * does not hide or recover a fault and is bounded on purpose. */
-            if(exception.kind==NAS_EXC_MEMORY) {
-                static unsigned user_fault_reports;
-                if(user_fault_reports++<16U) {
-                    nas_print("[RV64 USERPF] pid=");nas_dec(tracee->pid);
-                    nas_print(" scause=");nas_hex(scause);
-                    nas_print(" sepc=");nas_hex(frame->sepc);
-                    nas_print(" stval=");nas_hex(stval);
-                    nas_print(" sp=");nas_hex(frame->x[2]);
-                    nas_print(" ra=");nas_hex(frame->x[1]);
-                    nas_print(" tp=");nas_hex(frame->x[4]);
-                    nas_print(" a0=");nas_hex(frame->x[10]);
-                    nas_print(" a1=");nas_hex(frame->x[11]);
-                    nas_print(" t0=");nas_hex(frame->x[5]);
-                    nas_print(" t1=");nas_hex(frame->x[6]);
-                    nas_print(" t2=");nas_hex(frame->x[7]);
-                    nas_print(" a2=");nas_hex(frame->x[12]);
-                    nas_print(" a3=");nas_hex(frame->x[13]);
-                    nas_print(" a4=");nas_hex(frame->x[14]);
-                    nas_print(" a5=");nas_hex(frame->x[15]);
-                    nas_print(" a6=");nas_hex(frame->x[16]);
-                    nas_print(" si_code=");nas_dec((uint64_t)outcome.si_code);
-                    nas_print("\n");
-                    /* A noncanonical SEPC often follows a corrupted
-                     * indirect JALR in an mmaped DSO. Identify the call
-                     * site and its load segment without trusting user VA
-                     * as a kernel pointer or requiring debug symbols. */
-                    if(frame->x[1]>=8 && frame->x[1]<USER_LIMIT-4) {
-                        uint32_t words[3]={0};
-                        int64_t count=nas_vm_read_task_bytes(tracee,
-                            frame->x[1]-8,(uint8_t *)(void *)words,12);
-                        nas_print("[RV64 CALLSITE] ra=");nas_hex(frame->x[1]);
-                        nas_print(" code=");nas_hex(words[0]);
-                        nas_print(" ");nas_hex(words[1]);
-                        nas_print(" ");nas_hex(words[2]);
-                        nas_print(" count=");nas_dec(count==12);
-                        const struct nas_anon_region *v=nas_vma_find(
-                            &tracee->mm->mmap_vmas,frame->x[1]-4);
-                        if(v) {
-                            nas_print(" map_start=");nas_hex(v->start);
-                            nas_print(" map_end=");nas_hex(v->end);
-                            nas_print(" file_offset=");nas_hex(v->file_offset);
-                            nas_print(" prot=");nas_hex(v->prot);
-                            nas_print(" kind=");nas_dec(v->kind);
-                        }
-                        nas_print("\n");
-                    }
-                    /* libcrypto.so.3 RV64 c.ld a5,32(a1) followed by
-                     * c.bnez and c.jalr has exposed a noncanonical callback
-                     * value. Read the actual data-table qwords in the
-                     * faulted process, not a guessed host offset. The MM
-                     * remote-copy helper validates every address. */
-                    const uint64_t table_va=frame->x[11];
-                    if(table_va<USER_LIMIT && UINT64_C(64)<=USER_LIMIT-table_va) {
-                        uint64_t values[8]={0};
-                        int64_t n=nas_vm_read_task_bytes(tracee,table_va,
-                            (uint8_t *)(void *)values,sizeof(values));
-                        nas_print("[RV64 CALLTARGET] a1=");nas_hex(table_va);
-                        nas_print(" read_qwords=");nas_dec(n==64?8:0);
-                        if(n==64)for(unsigned k=0;k<8;k++) {
-                            nas_print(" q");nas_dec(k);
-                            nas_print("=");nas_hex(values[k]);
-                        }
-                        const struct nas_anon_region *v=nas_vma_find(
-                            &tracee->mm->mmap_vmas,table_va+32);
-                        if(v) {
-                            nas_print(" map_start=");nas_hex(v->start);
-                            nas_print(" map_end=");nas_hex(v->end);
-                            nas_print(" map_file_off=");nas_hex(v->file_offset);
-                            nas_print(" callback_file_off=");
-                            nas_hex(v->file_offset+table_va+32-v->start);
-                            nas_print(" prot=");nas_hex(v->prot);
-                            nas_print(" kind=");nas_dec(v->kind);
-                        }
-                        nas_print("\n");
-                    }
-                }
-            }
             live=frame;
             nas_arch_save_user_frame(tracee,0);
             nas_arch_save_fpu(tracee);
@@ -267,17 +123,8 @@ void nas_rv_full_trap_c(struct nas_rv_trap_frame *frame) {
     frame->sepc += 4; /* ECALL is always an uncompressed 4-byte instruction. */
     uint64_t call[15]={frame->x[17],frame->x[10],frame->x[11],
         frame->x[12],frame->x[13],frame->x[14],frame->x[15],frame->sepc};
-    const uint64_t trapped_nr=frame->x[17];
-    const uint64_t trapped_length=frame->x[11];
-    const uint64_t trapped_flags=frame->x[13];
-    const uint64_t trapped_fd=frame->x[14];
-    const uint64_t trapped_offset=frame->x[15];
-    struct nas_task *const trapped_task=nas_current_task;
     live=frame;
     uint64_t result=nas_ptrace_syscall_dispatch(call);
-    if(nas_current_task==trapped_task && trapped_nr==222U)
-        nas_rv_trace_libcrypto_relro(result,trapped_length,
-                  trapped_fd,trapped_offset,trapped_flags);
     /* Scheduler may have replaced *frame* with another task's snapshot. */
     frame->x[10]=result;
     nas_signal_user_return((uint64_t *)(void *)frame);
