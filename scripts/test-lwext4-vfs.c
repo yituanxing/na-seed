@@ -260,6 +260,28 @@ static void m83_verify_sparse_file(const struct m83_sparse_case *test) {
                (int64_t)prefix_length);
         assert(!memcmp(bytes,test->prefix,prefix_length));
     }
+    /* A full-block ext4_fread must return the same sparse-file bytes as
+     * smaller unaligned reads. Dynamic loaders mmap regular files in 4-KiB
+     * chunks, while ordinary pread often takes the partial-block path.
+     * Cover allocated-prefix -> hole and hole -> data transitions. */
+    uint8_t block[4096];
+    for(uint64_t base=0;base+sizeof(block)<=test->offset;base+=sizeof(block)) {
+        memset(block,0xa5,sizeof(block));
+        assert(nas_vfs_read_at(&node,base,block,sizeof(block))==
+               (int64_t)sizeof(block));
+        for(unsigned j=0;j<sizeof(block);j++) {
+            uint64_t at=base+j;
+            uint8_t expected=at<prefix_length ? (uint8_t)test->prefix[at] : 0;
+            assert(block[j]==expected);
+        }
+    }
+    /* Aligned reads shorter than one block use ext4_fread's trailing-data
+     * branch, distinct from both complete blocks and unaligned heads. */
+    if(test->offset>=4096+2048) {
+        memset(block,0xa5,sizeof(block));
+        assert(nas_vfs_read_at(&node,4096,block,2048)==2048);
+        for(unsigned j=0;j<2048;j++)assert(block[j]==0);
+    }
     uint64_t position=prefix_length;
     while(position<test->offset) {
         uint64_t take=test->offset-position;
