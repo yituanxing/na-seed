@@ -20,7 +20,8 @@ COMMANDS = (
     ("id -u\r", "0", "root UID"),
     ("uname -s\r", "Linux", "real uname"),
     ("cat /etc/alpine-release\r", "3.23.7", "official Alpine release"),
-    ("exec /bin/sh\r", None, "exec original /bin/sh"),
+    ("exec /bin/ash\r", "/bin/ash", "exec original /bin/ash"),
+    ("exec /bin/sh\r", "/bin/sh", "exec original /bin/sh"),
     ("printf 'M193_POSIX_SH_CONFIRMED\\n'\r", "M193_POSIX_SH_CONFIRMED", "original POSIX shell"),
 )
 PROOF = (
@@ -52,6 +53,7 @@ def output_line(segment: str, value: str) -> bool:
 def shell_prompt(text: str) -> bool:
     # A genuine root ash prompt typically ends in "naseed:~# ".  Accept
     # configured PS1 variations only AFTER real password authentication.
+    text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
     tail = text[-250:].split("\n")[-1]
     return bool(re.search(r"(?:^|[:~/])[^\n]{0,55}# ?$", tail))
 
@@ -74,6 +76,7 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
     step = 0
     step_start = 0
     shell_at = 0.0
+    dsr_replies = 0
     started = time.monotonic()
     try:
         with runner_log.open("wb") as runner_out:
@@ -93,6 +96,14 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
                         or any(marker in text for marker in OPENRC_FATAL)):
                     raise RuntimeError("guest reported real boot/TTY failure")
 
+                # Original BusyBox ash is a VT100 terminal application.  Its
+                # ESC[6n device-status query expects a cursor-position report;
+                # a serial CI client must act like a REAL terminal, not leave
+                # the authenticated shell waiting indefinitely for this reply.
+                while dsr_replies < text.count("\x1b[6n"):
+                    sent(hold, "\x1b[1;1R")
+                    dsr_replies += 1
+
                 if state == "login" and "naseed login:" in text:
                     print("[M193 UART] original getty prompt; typing root", flush=True)
                     sent(hold, "root\r")
@@ -102,6 +113,7 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
                     sent(hold, PASSWORD + "\r")
                     state = "shell"
                 elif state == "shell" and (
+                    "[EXEC] replaced process with lwext4 ELF: /bin/sh" in text or
                     "[EXEC] replaced process with lwext4 ELF: /bin/ash" in text or
                     shell_prompt(text)
                 ):
@@ -116,8 +128,8 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
                 elif state == "commands":
                     command, expected, description = COMMANDS[step]
                     segment = text[step_start:]
-                    okay = ("[EXEC] replaced process with lwext4 ELF: /bin/sh" in segment
-                            if expected is None else output_line(segment, expected))
+                    okay = ("[EXEC] replaced process with lwext4 ELF: " + expected in segment
+                            if expected.startswith("/bin/") else output_line(segment, expected))
                     if okay:
                         print(f"[M193 UART] verified {description}", flush=True)
                         step += 1
@@ -127,14 +139,15 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
                                 raise RuntimeError("missing physical QEMU proof: " + ", ".join(missing))
                             if "[EXEC] replaced process with lwext4 ELF: /bin/login" not in text:
                                 raise RuntimeError("original /bin/login was never executed")
-                            if "[EXEC] replaced process with lwext4 ELF: /bin/ash" not in text:
-                                raise RuntimeError("original /bin/ash was never executed")
+                            for path in ("/bin/ash", "/bin/sh"):
+                                if "[EXEC] replaced process with lwext4 ELF: " + path not in text:
+                                    raise RuntimeError("original shell was never executed: " + path)
                             print("[M193 ALPINE INTERACTIVE LOGIN PASS] original ext4 Alpine "
                                   "init -> OpenRC -> getty -> password-authenticated login "
                                   "-> ash -> /bin/sh -> real output; timeout was NOT a PASS", flush=True)
                             return
                         step_start = len(text)
-                        if expected is None:
+                        if expected.startswith("/bin/"):
                             # Exec committed the POSIX shell, but usermode
                             # startup and the new readline may still be pending.
                             time.sleep(0.4)

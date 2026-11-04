@@ -44,6 +44,8 @@ jobs:
           set -eu
           sh -n scripts/probe-m193-alpine-login.sh scripts/probe-m191-alpine-root.sh
           python3 -m py_compile scripts/m193-alpine-login-overlay.py scripts/m193-alpine-uart.py
+          cc -std=c11 -Wall -Wextra -Werror scripts/test-syscall-abi.c -o /tmp/naseed-m193-syscall-abi
+          /tmp/naseed-m193-syscall-abi
           python3 scripts/check-three-isa-core.py
           python3 scripts/check-architecture-boundaries.py
           python3 scripts/m191-host-smoke.py
@@ -51,8 +53,13 @@ jobs:
           sh scripts/check-m191-root-provider.sh
           python3 - <<'PY'
           from pathlib import Path
+          import runpy
           lines = [line for line in Path('scripts/m193-login-cases.tsv').read_text().splitlines() if line and not line.startswith('#')]
           assert lines == ['m193-batch\tcpio\t \t-\t-\t/sbin/init'], lines
+          uart = runpy.run_path('scripts/m193-alpine-uart.py', run_name='m193_qa')
+          assert uart['shell_prompt']('naseed:~# \x1b[6n')
+          assert uart['output_line']('naseed:~# id -u\n0\n', '0')
+          assert not uart['output_line']('naseed:~# echo 0\n', '0')
           PY
       - name: Install native QEMU, ext4, Alpine signature verification tools and crypt helper
         timeout-minutes: 18
