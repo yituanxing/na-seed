@@ -71,6 +71,10 @@ static struct nas_tmp_directory *directory_state(const void *parent) {
 static bool parent_valid(const void *parent) {
     return directory_state(parent)!=0;
 }
+static struct nas_tmp_quota *parent_quota(const void *parent) {
+    if(!parent || parent==tmp_root_inode())return NULL;
+    return ((const struct nas_tmp_file *)parent)->quota;
+}
 /* Every successful directory-entry change modifies the actual parent
  * directory's mtime/ctime. The writable /tmp root borrows a bootfs inode,
  * so its mutable metadata lives in the tmpfs provider, not in CPIO. */
@@ -203,7 +207,8 @@ struct nas_tmp_file *tmp_create_at(const void *parent,const char *name,
                                   bool dir,uint32_t mode) {
     if(!parent_valid(parent) || !leaf_valid(name) ||
        find_child(parent,name))return 0;
-    struct nas_tmp_file *inode=tmp_inode_alloc(dir,mode);
+    struct nas_tmp_file *inode=tmp_inode_alloc_quota(dir,mode,
+                                                     parent_quota(parent));
     if(!inode)return 0;
     if(!tmp_insert(parent,name,inode)) {
         tmp_inode_discard(inode);
@@ -218,7 +223,8 @@ struct nas_tmp_file *tmp_mknod_at(const void *parent,const char *name,
                                  uint32_t mode) {
     if((mode&0170000U)!=0140000U || !parent_valid(parent) ||
        !leaf_valid(name) || find_child(parent,name))return 0;
-    struct nas_tmp_file *inode=tmp_inode_alloc(false,mode);
+    struct nas_tmp_file *inode=tmp_inode_alloc_quota(false,mode,
+                                                     parent_quota(parent));
     if(!inode)return 0;
     inode->mode=0140000U|(mode&07777U);
     if(!tmp_insert(parent,name,inode)) {
@@ -243,7 +249,8 @@ int tmp_symlink_at(const void *parent,const char *name,const char *target) {
     /* Build the complete typed inode, including its target bytes, before
      * publishing the basename. No transient regular-file dentry and no
      * unlink-on-write-error rollback are observable to concurrent namei. */
-    struct nas_tmp_file *inode=tmp_inode_alloc(false,0777U);
+    struct nas_tmp_file *inode=tmp_inode_alloc_quota(false,0777U,
+                                                     parent_quota(parent));
     if(!inode)return -ENOSPC;
     inode->mode=0120000U|0777U;
     if(tmp_write_at(inode,0,(const uint8_t *)target,length)!=(int64_t)length) {

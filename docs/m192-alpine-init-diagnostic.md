@@ -79,3 +79,31 @@ resets the old session input state and releases the controlling TTY on the
 session leader's final exit. Host regression exercises forced ownership,
 rejected ordinary stealing, and reacquisition after a session leader exits.
 This is not yet proof of a login shell or a runnable Alpine distribution.
+
+### M192 strict-gate correction: real OpenRC sysinit failures
+
+The positive `naseed login:` marker on run `41819669551` was genuine but
+**insufficient** to establish a successful OpenRC sysinit. On run
+`41820208870`, the strict negative gate caught errors *earlier* in the same
+serial log even though BusyBox init later launched getty:
+
+```
+mount: mounting proc on /proc failed: Not supported
+mount: mounting tmpfs on /run failed: Not supported
+ * Unable to mount tmpfs on /run.
+ * Can't continue.
+```
+
+Original OpenRC 0.63 `sh/init.sh.Linux.in` mounts `/proc` with
+`noexec,nosuid,nodev` and `/run` with
+`mode=0755,nosuid,nodev,nr_inodes=800k,size=20%,strictatime`:
+https://github.com/OpenRC/openrc/blob/0.63/sh/init.sh.Linux.in
+
+The shared NaSeed mount implementation now recognizes those specific Linux
+flags, treats the already-mounted genuine procfs as idempotent with its
+inherent noexec/nosuid/nodev policy, and parses actual tmpfs memory and inode
+limits. Each runtime tmpfs superblock owns resource counters for allocated
+data pages and live inodes, freed on truncate/unlink/umount, and strictatime
+updates successful reads. Unknown options still fail; neither Alpine's
+original executable nor OpenRC script is replaced. Until the revised
+three-ISA QEMU run succeeds, **full sysinit success remains unverified**.

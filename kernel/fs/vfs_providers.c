@@ -275,6 +275,7 @@ static int tmp_read_dir(const struct nas_fs_node *node,
     if(!is_root) {
         const struct nas_tmp_file *directory=node->inode;
         if(!directory->used || !directory->is_dir)return -ENOTDIR;
+        tmp_inode_access((struct nas_tmp_file *)(uintptr_t)directory);
     }
     const void *parent_inode=tmp_dir_parent_inode(node->inode);
     if(!parent_inode)return -ESTALE;
@@ -378,7 +379,22 @@ static void tmp_last_inode_unpin(const struct nas_fs_node *node) {
 }
 static int tmp_statfs(const struct nas_fs_node *node,
                       struct nas_vfs_statfs *out) {
-    (void)node;
+    const struct nas_tmp_file *file=node ? node->inode : NULL;
+    const struct nas_tmp_quota *quota=file ? file->quota : NULL;
+    if(quota) {
+        /* Mounted instances report their OWN accounted limits, rather
+         * than advertising the whole shared frame pool as available. */
+        uint64_t free=quota->max_pages-quota->used_pages;
+        if(free>nas_free_frames())free=nas_free_frames();
+        *out=(struct nas_vfs_statfs){
+            .magic=0x01021994ULL,.block_size=4096,
+            .blocks=quota->max_pages,.free_blocks=free,
+            .available_blocks=free,.files=quota->max_inodes,
+            .free_files=quota->max_inodes-quota->used_inodes,
+            .fragment_size=4096,.name_max=255
+        };
+        return 0;
+    }
     /* NaSeed tmpfs allocates sparse pages from the shared physical frame
      * pool, with no separate fixed tmpfs quota. These are the actual
      * available backing frames, not a fabricated constant capacity. */
@@ -459,6 +475,7 @@ int nas_vfs_create_anonymous_tmpfs(uint64_t mode,struct nas_fs_node *owned) {
 #define NAS_RUNTIME_TMPFS_MAX 8U
 static struct runtime_tmpfs {
     struct nas_vfs_mount mount;
+    struct nas_tmp_quota quota;
     char target[256];
     char source[64];
     struct nas_tmp_file *root;
@@ -466,16 +483,21 @@ static struct runtime_tmpfs {
 } runtime_tmpfs[NAS_RUNTIME_TMPFS_MAX];
 
 int nas_vfs_mount_tmpfs(const char *target,const char *source,
-                        uint32_t mode,bool read_only) {
+                        uint32_t mode,bool read_only,uint64_t max_pages,
+                        uint64_t max_inodes,bool strict_atime) {
     if(!target || !source || !source[0] ||
        strlen(target)>=sizeof(runtime_tmpfs[0].target) ||
        strlen(source)>=sizeof(runtime_tmpfs[0].source) ||
-       (mode&~07777U))return -EINVAL;
+       (mode&~07777U) || !max_pages || !max_inodes)return -EINVAL;
     struct runtime_tmpfs *entry=NULL;
     for(unsigned i=0;i<NAS_RUNTIME_TMPFS_MAX;i++)
         if(!runtime_tmpfs[i].used) {entry=&runtime_tmpfs[i];break;}
     if(!entry)return -ENOSPC;
-    struct nas_tmp_file *root=tmp_inode_alloc(true,mode);
+    entry->quota=(struct nas_tmp_quota){
+        .max_pages=max_pages,.max_inodes=max_inodes,
+        .strict_atime=strict_atime
+    };
+    struct nas_tmp_file *root=tmp_inode_alloc_quota(true,mode,&entry->quota);
     if(!root)return -ENOMEM;
     root->is_mount_root=true;
     tmp_inode_link(root); /* superblock's reference until detach */

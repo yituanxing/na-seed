@@ -12,6 +12,7 @@
 #include "../mm/usercopy.h"
 #include "../arch/mmu.h"
 #include "../mm/heap.h"
+#include "../mm/frame.h"
 #include "mode.h"
 #include "syscall.h"
 #include "lookup.h"
@@ -401,8 +402,33 @@ static int mount_target(uint64_t pointer,char target[256]) {
     nas_fs_path_end(&request);
     return rc;
 }
-static int parse_tmpfs_options(const char *data,uint32_t *mode) {
+/* Values are enforced by the tmpfs superblock's actual data-page and inode
+ * accounting, not discarded because OpenRC happens to request large limits.
+ * tmpfs sizes use percentages of managed RAM or binary K/M/G byte units. */
+static int parse_scaled_number(const char *text,uint64_t *value) {
+    if(!text || *text<'0' || *text>'9')return -EINVAL;
+    uint64_t number=0;
+    while(*text>='0' && *text<='9') {
+        unsigned digit=(unsigned)(*text++-'0');
+        if(number>(UINT64_MAX-digit)/10ULL)return -ERANGE;
+        number=number*10ULL+digit;
+    }
+    unsigned shift=0;
+    if(*text=='k' || *text=='K')shift=10;
+    else if(*text=='m' || *text=='M')shift=20;
+    else if(*text=='g' || *text=='G')shift=30;
+    if(shift)text++;
+    if(*text || number>(UINT64_MAX>>shift))return -ERANGE;
+    *value=number<<shift;
+    return number ? 0 : -EINVAL;
+}
+static int parse_tmpfs_options(const char *data,uint32_t *mode,
+                                uint64_t *max_pages,uint64_t *max_inodes) {
     *mode=0755U;
+    uint64_t frames=nas_managed_frames();
+    if(!frames)return -ENOMEM;
+    *max_pages=frames/2ULL ? frames/2ULL : 1;
+    *max_inodes=frames/2ULL ? frames/2ULL : 1;
     if(!data[0])return 0;
     const char *cursor=data;
     while(*cursor) {
@@ -423,6 +449,27 @@ static int parse_tmpfs_options(const char *data,uint32_t *mode) {
             }
             if(value>07777U)return -EINVAL;
             *mode=value;
+        } else if(!strncmp(option,"size=",5)) {
+            size_t length=strlen(option+5);
+            if(length && option[5+length-1]=='%') {
+                option[5+length-1]=0;
+                uint64_t percent;
+                int rc=parse_scaled_number(option+5,&percent);
+                if(rc)return rc;
+                if(percent>100)return -EINVAL;
+                /* Avoid overflow even with a large physical frame count. */
+                *max_pages=(frames/100ULL)*percent+
+                           ((frames%100ULL)*percent)/100ULL;
+                if(!*max_pages)*max_pages=1;
+            } else {
+                uint64_t bytes;
+                int rc=parse_scaled_number(option+5,&bytes);
+                if(rc)return rc;
+                *max_pages=bytes/4096ULL+((bytes%4096ULL)!=0);
+            }
+        } else if(!strncmp(option,"nr_inodes=",10)) {
+            int rc=parse_scaled_number(option+10,max_inodes);
+            if(rc)return rc;
         } else if(strcmp(option,"nosuid") && strcmp(option,"nodev") &&
                   strcmp(option,"rw") && strcmp(option,"ro"))
             return -EOPNOTSUPP;
@@ -432,10 +479,11 @@ static int parse_tmpfs_options(const char *data,uint32_t *mode) {
 static uint64_t sys_mount(uint64_t source_ptr,uint64_t target_ptr,
                           uint64_t type_ptr,uint64_t flags,
                           uint64_t data_ptr) {
-    /* MS_RDONLY, MS_NOSUID and MS_NODEV: privileged uid transitions and
-     * device node creation are not supported by this root-only kernel.
-     * Do not silently claim support for bind/remount/propagation/noexec. */
-    if(flags&~7ULL)return (uint64_t)-EOPNOTSUPP;
+    /* MS_RDONLY=1, MS_NOSUID=2, MS_NODEV=4, MS_NOEXEC=8 and
+     * MS_STRICTATIME=1<<24. Procfs has no executable regular files,
+     * device nodes or set-ID transitions; runtime tmpfs implements
+     * strict atime and separately limits its data pages and inodes.
+     * Bind/remount/propagation and tmpfs noexec remain unsupported. */
     char source[64]={0},fstype[32],target[256],data[256]={0};
     int rc=0;
     if(source_ptr)rc=nas_user_read_cstr(source_ptr,source,sizeof(source));
@@ -448,7 +496,7 @@ static uint64_t sys_mount(uint64_t source_ptr,uint64_t target_ptr,
     rc=mount_target(target_ptr,target);
     if(rc)return (uint64_t)(int64_t)rc;
     if(!strcmp(fstype,"proc")) {
-        if(strcmp(source,"proc") || flags || data[0] ||
+        if(strcmp(source,"proc") || (flags&~14ULL) || data[0] ||
            strcmp(target,"/proc"))return (uint64_t)-EINVAL;
         /* /proc is already a permanent, genuine procfs attachment.
          * Idempotence is limited to the exact same existing superblock. */
@@ -462,10 +510,13 @@ static uint64_t sys_mount(uint64_t source_ptr,uint64_t target_ptr,
                        0 : (uint64_t)-EBUSY;
         }
     }
+    if(flags&~(7ULL|(1ULL<<24)))return (uint64_t)-EOPNOTSUPP;
     if(!source[0])return (uint64_t)-EINVAL;
     uint32_t mode;
-    rc=parse_tmpfs_options(data,&mode);
-    if(!rc)rc=nas_vfs_mount_tmpfs(target,source,mode,(flags&1ULL)!=0);
+    uint64_t max_pages,max_inodes;
+    rc=parse_tmpfs_options(data,&mode,&max_pages,&max_inodes);
+    if(!rc)rc=nas_vfs_mount_tmpfs(target,source,mode,(flags&1ULL)!=0,
+                                  max_pages,max_inodes,(flags&(1ULL<<24))!=0);
     return (uint64_t)(int64_t)rc;
 }
 static uint64_t sys_umount2(uint64_t target_ptr,uint64_t flags) {

@@ -181,6 +181,16 @@ struct nas_tmp_file *tmp_inode_alloc(bool dir,uint32_t mode) {
     }
     return NULL;
 }
+/* Only the production tmpfs namespace fixture exercises quota allocations;
+ * this path/lease-only harness must still link the new provider ownership
+ * entry points without pretending to implement them. */
+struct nas_tmp_file *tmp_inode_alloc_quota(bool dir,uint32_t mode,
+                                          struct nas_tmp_quota *quota) {
+    (void)dir;(void)mode;(void)quota;
+    assert(!"unexpected runtime tmpfs allocation in path-only fixture");
+    return NULL;
+}
+void tmp_inode_access(struct nas_tmp_file *node) {(void)node;}
 /* Production VFS now links the runtime tmpfs mount owner API as well.
  * This host fixture tests VFS path/lease logic with synthetic storage;
  * the independent REAL tmpfs namespace teardown is tested separately by

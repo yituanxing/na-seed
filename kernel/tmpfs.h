@@ -18,6 +18,13 @@
 #define TMP_FILE_CAP (TMP_PAGE_SIZE * (uint64_t)TMP_PAGE_ENTRIES * TMP_INDEX_ROOT_ENTRIES)
 
 struct nas_tmp_dentry;
+/* Runtime tmpfs mount owns its own resource accounting. The historical
+ * bootfs-backed /tmp and anonymous memfd keep their existing shared pool. */
+struct nas_tmp_quota {
+    uint64_t max_pages, used_pages;
+    uint64_t max_inodes, used_inodes;
+    bool strict_atime;
+};
 /* A directory maintains its own ordered child chain and a per-directory
  * forward readdir cursor. Namespace mutations invalidate the cached cursor;
  * callers may still seek to any ordinal and receive the correct entry. */
@@ -30,6 +37,7 @@ struct nas_tmp_file {
     bool used, is_dir;
     /* An independent tmpfs superblock root is not a named dentry. */
     bool is_mount_root;
+    struct nas_tmp_quota *quota; /* stable until the last VFS mount lease */
     uint32_t nlink; /* directory-entry references, not open FD references */
     uint64_t ino; /* stable object identity, never derived from a pathname */
     uint64_t index_root; /* physical address of optional 512-entry root frame */
@@ -84,12 +92,15 @@ int tmp_link_at(const void *old_parent,const char *old_name,
                 const void *new_parent,const char *new_name);
 int tmp_symlink_at(const void *parent,const char *name,const char *target);
 struct nas_tmp_file *tmp_inode_alloc(bool dir,uint32_t mode);
+struct nas_tmp_file *tmp_inode_alloc_quota(bool dir,uint32_t mode,
+                                          struct nas_tmp_quota *quota);
 /* Called only after VFS successfully detaches the corresponding mount. */
 int tmp_destroy_mount_root(struct nas_tmp_file *root);
 void tmp_inode_link(struct nas_tmp_file *file);
 void tmp_inode_unlink(struct nas_tmp_file *file);
 void tmp_inode_discard(struct nas_tmp_file *file);
 void tmp_inode_touch(struct nas_tmp_file *file);
+void tmp_inode_access(struct nas_tmp_file *file);
 /* A successful namespace edit modifies its containing directory, not merely
  * the inserted/unlinked child. The /tmp root borrows a bootfs inode and
  * therefore keeps its own mutable timestamp state behind this provider. */

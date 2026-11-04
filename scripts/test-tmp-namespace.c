@@ -221,7 +221,33 @@ int main(void) {
     assert(tmp_find_child(other_root,"openrc")==NULL);
     assert(tmp_mkdir_at(other_root,"own",0755)==0);
     assert(tmp_destroy_mount_root(other_root)==0 && !other_root->used);
+    /* Official Alpine OpenRC mounts /run with strictatime, size=20% and
+     * nr_inodes=800k. Exercise the REAL per-superblock accounting with
+     * tiny deterministic limits, including reclaim after unlink/umount. */
+    struct nas_tmp_quota quota={
+        .max_pages=1,.max_inodes=2,.strict_atime=true
+    };
+    struct nas_tmp_file *limited=tmp_inode_alloc_quota(true,0755,&quota);
+    assert(limited && quota.used_inodes==1);
+    limited->is_mount_root=true;
+    tmp_inode_link(limited);
+    struct nas_tmp_file *payload=tmp_create_at(limited,"data",false,0644);
+    assert(payload && payload->quota==&quota && quota.used_inodes==2);
+    assert(!tmp_create_at(limited,"exhausted",false,0600));
+    uint8_t page[4096]={1};
+    assert(tmp_write_at(payload,0,page,sizeof(page))==sizeof(page));
+    assert(quota.used_pages==1);
+    assert(tmp_write_at(payload,4096,page,sizeof(page))==-ENOSPC);
+    uint64_t accessed=payload->atime_ns;
+    uint8_t byte=0;
+    assert(tmp_read_at(payload,0,&byte,1)==1 && byte==1);
+    assert(payload->atime_ns>accessed);
+    assert(tmp_unlink_at(limited,"data",0)==0);
+    assert(quota.used_inodes==1 && quota.used_pages==0);
+    assert(tmp_create_at(limited,"reused",false,0600));
+    assert(tmp_destroy_mount_root(limited)==0);
+    assert(quota.used_inodes==0 && quota.used_pages==0);
     assert(frame_allocated>=frame_freed);
-    puts("[M63 TMP PASS] dentry/inode, hardlinks, rename, cwd, orphan lifetime, independent mount roots, iterative teardown");
+    puts("[M63 TMP PASS] dentry/inode, hardlinks, rename, cwd, orphan lifetime, independent mount roots, quotas/strictatime, iterative teardown");
     return 0;
 }

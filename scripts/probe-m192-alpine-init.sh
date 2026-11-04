@@ -94,8 +94,8 @@ for marker in \
         exit 1
     fi
 done
-if grep -Eq 'TIOCSCTTY: Operation not permitted|Unable to mount tmpfs on /run|Can.t continue\.' "$log"; then
-    echo "[M192 ALPINE LOGIN FAIL] $port guest remained blocked in mount or tty init" >&2
+if grep -Eq 'TIOCSCTTY: Operation not permitted|mount: mounting (proc|tmpfs) on /(proc|run) failed|Unable to mount tmpfs on /run|Can.t continue\.' "$log"; then
+    echo "[M192 ALPINE LOGIN FAIL] $port guest reported a real sysinit mount or tty failure" >&2
     tail -170 "$log" >&2
     exit 1
 fi

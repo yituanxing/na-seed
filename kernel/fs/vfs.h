@@ -237,7 +237,8 @@ int nas_vfs_unregister_mount(const struct nas_vfs_mount *mount);
 /* Runtime independent tmpfs superblocks. The VFS owns the mount tree;
  * the provider owns and reclaims the unaliased root inode. */
 int nas_vfs_mount_tmpfs(const char *target,const char *source,
-                        uint32_t mode,bool read_only);
+                        uint32_t mode,bool read_only,uint64_t max_pages,
+                        uint64_t max_inodes,bool strict_atime);
 int nas_vfs_umount_tmpfs(const char *target);
 /* Early boot may select a real block-backed root BEFORE default pseudo
  * mounts acquire parent Dentries. This is a one-shot boot policy, never a

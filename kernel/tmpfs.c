@@ -84,6 +84,8 @@ static void tmp_try_reclaim(struct nas_tmp_file *node) {
         (void)nas_frame_put(node->xattr_frame);
         node->xattr_frame=0;
     }
+    if(node->quota && node->quota->used_inodes)
+        node->quota->used_inodes--;
     node->used = false;
     node->free_next=tmp_free_inodes;
     tmp_free_inodes=node;
@@ -121,15 +123,22 @@ static uint64_t tmp_data_frame(struct nas_tmp_file *file,uint64_t number,
     uint64_t *table = (uint64_t *)(uintptr_t)(nas_hhdm_offset() + table_addr);
     uint64_t data_addr = table[inner];
     if (!data_addr && create) {
+        if(file->quota &&
+           file->quota->used_pages>=file->quota->max_pages)return 0;
         data_addr = nas_frame_alloc();
         if (!data_addr) return 0;
         memset((void *)(uintptr_t)(nas_hhdm_offset() + data_addr),
                0, (size_t)TMP_PAGE_SIZE);
         table[inner] = data_addr;
+        if(file->quota)file->quota->used_pages++;
         if (number + 1 > file->highest_allocated_data_page_plus_one)
             file->highest_allocated_data_page_plus_one = number + 1;
     }
     return data_addr;
+}
+static bool tmp_quota_full(const struct nas_tmp_file *file) {
+    return file && file->quota &&
+           file->quota->used_pages>=file->quota->max_pages;
 }
 /* Linux xattr values can be 64 KiB; this first memory-backed provider has
  * a documented 4-KiB per-inode capacity, not a fabricated global table.
@@ -325,7 +334,7 @@ int tmp_acquire_shared_page(struct nas_tmp_file *file,uint64_t offset,
      * unchanged until write(2)/ftruncate(2), just as in Linux tmpfs. */
     if(offset>=file->size)return -EFAULT;
     uint64_t frame=tmp_data_frame(file,offset/TMP_PAGE_SIZE,true);
-    if(!frame)return -ENOMEM;
+    if(!frame)return tmp_quota_full(file) ? -ENOSPC : -ENOMEM;
     /* The sparse index retains the storage owner; the caller gets an
      * independent PTE owner and must put it on failure/unmap. */
     if(!nas_frame_get(frame))return -EIO;
@@ -367,6 +376,9 @@ int64_t tmp_read_at(const struct nas_tmp_file *const_file, uint64_t offset,
         else memset(dst + done, 0, (size_t)length);
         done += length;
     }
+    /* MS_STRICTATIME updates on each successful data read, including a
+     * cached/sparse read; it is not an ignored OpenRC mount option. */
+    tmp_inode_access(file);
     return (int64_t)done;
 }
 int64_t tmp_write_at(struct nas_tmp_file *file, uint64_t offset,
@@ -383,7 +395,8 @@ int64_t tmp_write_at(struct nas_tmp_file *file, uint64_t offset,
         uint64_t length = TMP_PAGE_SIZE - at % TMP_PAGE_SIZE;
         if (length > count - done) length = count - done;
         uint8_t *page = tmp_data_page(file, at / TMP_PAGE_SIZE, true);
-        if (!page) return done ? (int64_t)done : -ENOMEM;
+        if (!page) return done ? (int64_t)done :
+                         (tmp_quota_full(file) ? -ENOSPC : -ENOMEM);
         /* Do not alter even a hidden mmap tail when the first destination
          * allocation fails and the write has made zero progress. */
         if(!done && has_hole)
@@ -406,7 +419,11 @@ void tmp_truncate(struct nas_tmp_file *file) {
             if (!frame) continue;
             uint64_t *table = (uint64_t *)(uintptr_t)(nas_hhdm_offset() + frame);
             for (unsigned inner = 0; inner < TMP_PAGE_ENTRIES; inner++) {
-                if (table[inner]) (void)nas_frame_put(table[inner]);
+                if (table[inner]) {
+                    (void)nas_frame_put(table[inner]);
+                    if(file->quota && file->quota->used_pages)
+                        file->quota->used_pages--;
+                }
             }
             (void)nas_frame_put(frame);
         }
@@ -452,6 +469,8 @@ int tmp_resize(struct nas_tmp_file *file, uint64_t size) {
                 if (slots[inner]) {
                     (void)nas_frame_put(slots[inner]);
                     slots[inner] = 0;
+                    if(file->quota && file->quota->used_pages)
+                        file->quota->used_pages--;
                 }
             }
             bool root_has_index = false;
@@ -506,7 +525,8 @@ int tmp_preallocate(struct nas_tmp_file *file,uint64_t offset,
     uint64_t first=offset/TMP_PAGE_SIZE;
     uint64_t final=(end+TMP_PAGE_SIZE-1)/TMP_PAGE_SIZE;
     for(uint64_t page=first;page<final;page++)
-        if(!tmp_data_frame(file,page,true))return -ENOMEM;
+        if(!tmp_data_frame(file,page,true))
+            return tmp_quota_full(file) ? -ENOSPC : -ENOMEM;
     if(!(mode&1U) && end>file->size) {
         tmp_zero_newly_visible_tail(file,file->size,end);
         file->size=end;
@@ -544,7 +564,9 @@ int tmp_link_target(const struct nas_tmp_file *file, char target[256]) {
 /* Namespace owns symlink names and writable inode creation. */
 /* Inode storage identity is independent from namespace name/link count.
  * The namespace owner publishes a dentry only AFTER successful allocation. */
-struct nas_tmp_file *tmp_inode_alloc(bool dir,uint32_t mode) {
+struct nas_tmp_file *tmp_inode_alloc_quota(bool dir,uint32_t mode,
+                                          struct nas_tmp_quota *quota) {
+    if(quota && quota->used_inodes>=quota->max_inodes)return 0;
     if(!tmp_free_inodes && !tmp_new_slab())return 0;
     struct nas_tmp_file *file=tmp_free_inodes;
     tmp_free_inodes=file->free_next;
@@ -553,8 +575,13 @@ struct nas_tmp_file *tmp_inode_alloc(bool dir,uint32_t mode) {
     file->ino=tmp_next_ino++;
     file->mode=(dir?0040000U:0100000U)|(mode&07777U);
     file->is_dir=dir;
+    file->quota=quota;
+    if(quota)quota->used_inodes++;
     file->atime_ns=file->mtime_ns=file->ctime_ns=tmp_now_ns();
     return file;
+}
+struct nas_tmp_file *tmp_inode_alloc(bool dir,uint32_t mode) {
+    return tmp_inode_alloc_quota(dir,mode,NULL);
 }
 void tmp_inode_link(struct nas_tmp_file *file) {
     if(!file || !file->used)return;
@@ -572,6 +599,10 @@ void tmp_inode_discard(struct nas_tmp_file *file) {
 }
 void tmp_inode_touch(struct nas_tmp_file *file) {
     if(file && file->used)file->ctime_ns=tmp_next_mtime(file->ctime_ns);
+}
+void tmp_inode_access(struct nas_tmp_file *file) {
+    if(file && file->used && file->quota && file->quota->strict_atime)
+        file->atime_ns=tmp_now_ns();
 }
 uint64_t tmp_number(const struct nas_tmp_file *file) {
     return file ? file->ino : 0;
