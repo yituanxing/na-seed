@@ -14,6 +14,14 @@ esac
 . scripts/native-qemu-target.sh
 
 export NAS_ENABLE_VIRTIO_NET=1 NAS_VIRTIO_NET_USER=1 NAS_ENABLE_LWIP=1
+# The first real public-CDN canary exposed a shared musl DNS receive error
+# after genuine UDP replies arrived on the wire. Trace the exact x86 socket
+# ABI results while keeping RV64/AArch64 production-style execution quiet.
+if [ "$port" = amd64 ]; then
+    export NAS_SYSCALL_TRACE=1
+else
+    unset NAS_SYSCALL_TRACE
+fi
 sh scripts/probe-m191-alpine-root.sh "$port"
 work="build/external/m191-alpine-rootfs/$port"
 root="$PWD/$work/rootfs"
