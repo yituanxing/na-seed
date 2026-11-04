@@ -75,3 +75,7 @@ test -s "$disk" || {
 }
 python3 scripts/m180-ext4-fixture.py verify "$disk"
 echo "[M180 REAL EXT4 USER IRQ NATIVE PASS] $port ordinary static Linux ELF openat/read/write/fsync/close/reopen over worker-owned ext4 + genuine block IRQ/deferred/wake/no polling + post-QEMU host-observed 12KiB physical persistence/e2fsck; M174-M179 signed Alpine/Ncat/GPU/QMP/physical disk oracles retained"
+
+# M190 retains THIS verified physical raw disk across two further full QEMU
+# boots. Neither probe-m178 nor image preparation is called again.
+sh scripts/probe-m190-persistent-desktop.sh "$port"

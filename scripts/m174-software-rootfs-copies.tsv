@@ -12,3 +12,5 @@ tests/m188-editor-check.sh	tests/m188-editor-check.sh
 tests/m188-software-entry.sh	tests/m188-software-entry.sh
 # M189 same-PTY Vim/Nano/Vim exact saved bytes oracle.
 tests/m189-editor-check.sh	tests/m189-editor-check.sh
+# M190 physical ext4 readback checker; creates no file or expected data.
+tests/m190-durable-check.sh	tests/m190-durable-check.sh

@@ -232,7 +232,15 @@ def main():
                     help='also verify live pointer/scroll and original Vim')
     ap.add_argument('--m189',action='store_true',
                     help='also verify repeated Nano/Vim on one living PTY')
+    ap.add_argument('--m190-write',action='store_true',
+                    help='original editors write real IRQ ext4 in same GUI')
+    ap.add_argument('--m190-reopen',action='store_true',
+                    help='second kernel boot checks and reopens durable ext4')
     args=ap.parse_args()
+    if args.m190_write and args.m190_reopen:
+        ap.error('only one M190 physical guest phase per boot')
+    if (args.m190_write or args.m190_reopen) and not args.m189:
+        ap.error('M190 requires original verified M189 PTY')
     if args.m189 and not args.m188:
         ap.error('--m189 requires --m188 (same running signed-CPIO session)')
     deadline=time.monotonic()+args.timeout
@@ -306,6 +314,12 @@ def main():
                                     run_name='m189_qmp_extension')
             sequence['run'](sock,reader,args.serial,args.outdir)
 
+        if args.m190_write or args.m190_reopen:
+            persistent=runpy.run_path('scripts/m190-qmp-persistent.py',
+                                      run_name='m190_qmp_extension')
+            phase='write' if args.m190_write else 'reopen'
+            persistent[phase](sock,reader,args.serial,args.outdir)
+
         # Deliberate compositor shortcut, exclusive to the new mode. Old
         # M173 QMP still exits on Q/ESC per its existing acceptance contract.
         base['send'](sock,reader,[base['key']('ctrl',True)])
@@ -327,6 +341,12 @@ def main():
         print('[M189 QMP MULTI EDITOR PASS] physical original Vim -> Nano '
               '-> Vim session, exact shared-file readback, actual PID/wait4 '
               'and resumed shell',flush=True)
+
+
+    if args.m190_write or args.m190_reopen:
+        phase='write' if args.m190_write else 'reopen'
+        print(f'[M190 QMP {phase} PASS] physical original GUI and editors, '
+              'real IRQ ext4 file and independent shell readback',flush=True)
 
 
 if __name__=='__main__':

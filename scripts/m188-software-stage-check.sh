@@ -22,7 +22,8 @@ for package in vim nano mg rdfind; do
     }
 done
 for fixture in tests/m188-editor-check.sh tests/m188-software-entry.sh \
-               tests/m188-original-elfs.txt tests/m189-editor-check.sh; do
+               tests/m188-original-elfs.txt tests/m189-editor-check.sh \
+               tests/m190-durable-check.sh; do
     test -s "$root/$fixture" || {
         echo "[M188 SOFTWARE STAGE FAIL] $port same-CPIO fixture absent: $fixture" >&2
         exit 1
@@ -33,7 +34,7 @@ cmp -s "$manifest" "$root/tests/m188-original-elfs.txt" || {
     exit 1
 }
 for fixture in tests/m188-editor-check.sh tests/m188-software-entry.sh \
-               tests/m189-editor-check.sh; do
+               tests/m189-editor-check.sh tests/m190-durable-check.sh; do
     cmp -s "$fixture" "$root/$fixture" || {
         echo "[M188 SOFTWARE STAGE FAIL] $port fixture differs: $fixture" >&2
         exit 1

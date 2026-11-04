@@ -310,7 +310,11 @@ static bool m179_verified_ext4(void) {
     }
     if(nas_vfs_node_unpin(&inode))goto DoneBuffer;
     rc=nas_vfs_create("/async/guest-write.bin",0644);
-    if(rc)goto DoneBuffer;
+    /* M190's next real kernel boot retains this same ext4 partition.
+     * Only our own deterministic fixture inode may already exist; still
+     * overwrite, fsync, reopen, and compare every byte. Never turn other
+     * errors into a false M179 worker PASS. */
+    if(rc && rc!=-EEXIST)goto DoneBuffer;
     rc=nas_vfs_lookup("/async/guest-write.bin",&inode);
     if(rc || nas_vfs_node_pin(&inode))goto DoneBuffer;
     for(uint64_t off=0;off<M179_WRITE_BYTES;off+=M179_BLOCK_BYTES) {

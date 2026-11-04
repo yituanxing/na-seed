@@ -13,6 +13,8 @@ on:
       - 'scripts/*m179*'
       - 'scripts/*m187*'
       - 'scripts/*m188*'
+      - 'scripts/*m190*'
+      - 'tests/m190-*.sh'
       - 'scripts/*m189*'
       - 'tests/m189-*.sh'
       - 'scripts/m174-expected-markers.txt'
@@ -77,6 +79,7 @@ jobs:
           sh scripts/check-m187-vt100.sh
           sh scripts/check-m188-pty.sh
           sh scripts/check-m189-session.sh
+          sh scripts/check-m190-durable.sh
           sh -n scripts/probe-m180-fs-user.sh
           python3 -m py_compile scripts/m180-ext4-fixture.py
       - name: Exercise in-kernel FD reservation with shared files, fork and dup
@@ -175,6 +178,11 @@ jobs:
             build/external/m174-software-batch/${{ matrix.port }}/m187-*.ppm
             build/external/m174-software-batch/${{ matrix.port }}/m188-*.ppm
             build/external/m174-software-batch/${{ matrix.port }}/m189-*.ppm
+            build/external/m174-software-batch/${{ matrix.port }}/m190-*.ppm
+            build/external/m174-software-batch/${{ matrix.port }}/m190-*-qmp-check.log
+            build/busybox-source-parity-x86/m190-*.serial.log
+            build/port-riscv64/full/matrix-source/m190-*.serial.log
+            build/port-aarch64/full/matrix-source/m190-*.serial.log
             build/busybox-source-parity-x86/m174-batch.clean.log
             build/busybox-source-parity-x86/m174-batch.serial.log
             build/port-riscv64/full/matrix-source/m174-batch.clean.log
