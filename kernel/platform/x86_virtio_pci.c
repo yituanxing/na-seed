@@ -295,6 +295,35 @@ int nas_platform_virtio_blk_probe(void) {
         nas_print("[VIRTIO PCI FAIL] stage=q35-ich9-route\n");
         return rc;
     }
+    /* Diagnose one shared Q35 PIC11 storm without changing its masking,
+     * ownership or device protocol. Q35 D25-D31 may use DxxIR rather than
+     * the bus-0 swizzle; report raw pin/line for these unowned devices. */
+    nas_print("[M195 Q35 PIRQ DIAG] active_mask=");
+    nas_hex(active_pirqs);nas_print("\n");
+    for(unsigned slot=0;slot<32U;slot++) {
+        uint32_t first=cfg_read(0,(uint8_t)slot,0,0);
+        if((first&UINT32_C(0xffff))==UINT32_C(0xffff))continue;
+        uint32_t header=cfg_read(0,(uint8_t)slot,0,0x0cU);
+        unsigned functions=(header&(1U<<23))?8U:1U;
+        for(unsigned function=0;function<functions;function++) {
+            uint32_t identity=cfg_read(0,(uint8_t)slot,(uint8_t)function,0);
+            if((identity&UINT32_C(0xffff))==UINT32_C(0xffff))continue;
+            uint32_t line_pin=cfg_read(0,(uint8_t)slot,(uint8_t)function,0x3cU);
+            unsigned pin=(line_pin>>8)&UINT32_C(0xff);
+            if(!pin)continue;
+            unsigned pirq=q35_bus0_pirq((uint8_t)slot,(uint8_t)pin);
+            uint32_t class_code=cfg_read(0,(uint8_t)slot,
+                                         (uint8_t)function,0x08U);
+            nas_print("[M195 Q35 PCI SOURCE] slot=");nas_dec(slot);
+            nas_print(" function=");nas_dec(function);
+            nas_print(" id=");nas_hex(identity);
+            nas_print(" class=");nas_hex(class_code>>16);
+            nas_print(" pin=");nas_dec(pin);
+            nas_print(" line=");nas_dec(line_pin&UINT32_C(0xff));
+            nas_print(" pirq=");nas_dec(pirq);
+            nas_print("\n");
+        }
+    }
     for(unsigned i=0;i<count;i++) {
         bool shared_line=device_pirq[i]!=PIRQ_UNKNOWN &&
             (active_pirqs&(1U<<device_pirq[i]));

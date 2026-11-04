@@ -445,11 +445,32 @@ void nas_arch_irq_route_disable(unsigned hwirq) {
  * fail closed on a sustained unclaimed level rather than spinning forever. */
 void nas_x86_pic_device_irq(void) {
     static unsigned unclaimed;
+    static uint64_t first_unclaimed_cycle;
     if(nas_irq_dispatch(11U)) {
         unclaimed=0;
-    } else if(unclaimed<64U && ++unclaimed==64U) {
-        nas_arch_irq_route_disable(11U);
-        nas_print("[M175 x86] masked unclaimed PIC IRQ11 storm\n");
+        first_unclaimed_cycle=0;
+    } else {
+        if(!unclaimed)first_unclaimed_cycle=nas_arch_cycle_counter();
+        if(unclaimed<64U && ++unclaimed==64U) {
+            /* Capture the genuine controller state before preserving the
+             * existing storm quarantine. This cannot read any VirtIO ISR:
+             * those are read-to-clear and belong to the dispatch owners. */
+            uint64_t elapsed=nas_arch_cycle_counter()-first_unclaimed_cycle;
+            uint8_t mask=nas_x86_inb(0xa1);
+            uint8_t elcr=nas_x86_inb(0x4d1);
+            nas_arch_outb(0xa0,0x0b); /* OCW3: read in-service register */
+            uint8_t isr=nas_x86_inb(0xa0);
+            nas_arch_outb(0xa0,0x0a); /* OCW3: read request register */
+            uint8_t irr=nas_x86_inb(0xa0);
+            nas_print("[M195 X86 PIC11 DIAG] unclaimed=64 elapsed_cycles=");
+            nas_dec(elapsed);
+            nas_print(" mask=");nas_hex(mask);
+            nas_print(" elcr=");nas_hex(elcr);
+            nas_print(" isr=");nas_hex(isr);
+            nas_print(" irr=");nas_hex(irr);nas_print("\n");
+            nas_arch_irq_route_disable(11U);
+            nas_print("[M175 x86] masked unclaimed PIC IRQ11 storm\n");
+        }
     }
     nas_arch_outb(0xa0,0x20); /* IRQ11 EOI: slave first */
     nas_arch_outb(0x20,0x20); /* then master's cascade IRQ2 */
