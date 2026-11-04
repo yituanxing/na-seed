@@ -785,6 +785,14 @@ int nas_vfs_register_pseudo_mounts(void) {
         external_pseudos[i].permanent=false;
         int rc=nas_vfs_register_mount(&external_pseudos[i]);
         if(rc) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+            extern void nas_print(const char *);
+            extern void nas_dec(uint64_t);
+            nas_print("[M191 ROOT FAIL] pseudo-attach ");
+            nas_print(external_pseudos[i].mountpoint);
+            nas_print(" code=");nas_dec((uint64_t)(rc<0?-rc:rc));
+            nas_print("\n");
+#endif
             while(i>0) {
                 if(nas_vfs_unregister_mount(&external_pseudos[--i]))
                     return -EIO;

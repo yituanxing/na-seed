@@ -1203,6 +1203,15 @@ int nas_lwext4_cleanup_failed_mount(struct nas_lwext4_mount *ctx) {
 /* Generic FS mount consumes a previously registered BlockDevice (e.g.
  * VirtIO-Blk, NVMe or RAM). It never owns, probes or dereferences any
  * driver's storage. The device remains pinned until final unmount. */
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+extern void nas_print(const char *);
+extern void nas_dec(uint64_t);
+static void m191_ext4_fail(const char *phase,int code) {
+    nas_print("[M191 ROOT FAIL] ");nas_print(phase);
+    nas_print(" code=");nas_dec((uint64_t)(code<0?-code:code));
+    nas_print("\n");
+}
+#endif
 int nas_lwext4_device_mount(struct nas_lwext4_mount *ctx,
                             const char *block_name,const char *dev_name,
                             const char *mount_point,bool writable) {
@@ -1244,14 +1253,34 @@ int nas_lwext4_device_mount(struct nas_lwext4_mount *ctx,
         ctx->upstream_prefix[length+1]=0;
     }
     int rc=nas_lwext4_device_attach(&ctx->device,ctx->block_name,ctx->device_name);
-    if(rc)return rc;
+    if(rc) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+        m191_ext4_fail("block-attach",rc);
+#endif
+        return rc;
+    }
     rc=ext4_mount(ctx->device_name,ctx->upstream_prefix,!writable);
-    if(rc) {rc=-rc;goto FailDevice;}
+    if(rc) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+        m191_ext4_fail("ext4_mount",rc);
+#endif
+        rc=-rc;goto FailDevice;
+    }
     rc=ext4_get_sblock(ctx->upstream_prefix,&ctx->upstream_super);
-    if(rc) {rc=-rc;goto FailMount;}
+    if(rc) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+        m191_ext4_fail("ext4_get_sblock",rc);
+#endif
+        rc=-rc;goto FailMount;
+    }
     ext4_dir dir={0};
     rc=ext4_dir_open(&dir,ctx->upstream_prefix);
-    if(rc) {rc=-rc;goto FailMount;}
+    if(rc) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+        m191_ext4_fail("ext4_dir_open",rc);
+#endif
+        rc=-rc;goto FailMount;
+    }
     ctx->upstream_mount=dir.f.mp;
     rc=ext4_dir_close(&dir);
     if(rc) {rc=-rc;goto FailMount;}
@@ -1259,7 +1288,12 @@ int nas_lwext4_device_mount(struct nas_lwext4_mount *ctx,
     struct ext4_inode root_raw;
     rc=ext4_raw_inode_fill(ctx->upstream_prefix,&ctx->root_ino,
                            &root_raw);
-    if(rc){rc=-rc;goto FailMount;}
+    if(rc){
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+        m191_ext4_fail("ext4_raw_inode",rc);
+#endif
+        rc=-rc;goto FailMount;
+    }
     if(!ctx->root_ino){rc=-EIO;goto FailMount;}
     if(writable) {
         rc=ext_orphan_prepare(ctx);
@@ -1284,6 +1318,9 @@ int nas_lwext4_device_mount(struct nas_lwext4_mount *ctx,
         ctx->cleanup_error=0;
         return 0;
     }
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+    m191_ext4_fail("vfs-root-register",rc);
+#endif
     ctx->mounted=false;
 FailMount:
     ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_UPSTREAM;

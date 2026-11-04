@@ -53,6 +53,14 @@ static void partition_device_name(char name[32],
 
 extern const struct limine_file *nas_module(uint64_t index);
 extern void nas_print(const char *);
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+extern void nas_dec(uint64_t);
+static void m191_boot_fail(const char *phase,int code) {
+    nas_print("[M191 ROOT FAIL] ");nas_print(phase);
+    nas_print(" code=");nas_dec((uint64_t)(code<0?-code:code));
+    nas_print("\n");
+}
+#endif
 static struct nas_lwext4_mount boot_mount;
 
 static bool ext4_module(const struct limine_file *file) {
@@ -101,7 +109,12 @@ bool nas_lwext4_guest_boot_mount(void) {
          * syscall/backend-specific path. The EFI ESP is also VirtIO-Blk
          * but is FAT; select the *actual ext4 superblock* from each disk. */
         int disks=nas_platform_virtio_blk_probe();
-        if(disks<0)return false;
+        if(disks<0) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+            m191_boot_fail("virtio-probe",disks);
+#endif
+            return false;
+        }
         unsigned found=0;
         char chosen_disk[16]={0};
         unsigned chosen_partition_index=0;
@@ -111,7 +124,12 @@ bool nas_lwext4_guest_boot_mount(void) {
             char block_name[]="virtio0";
             block_name[6]=(char)('0'+i);
             struct nas_block_device *block=nas_block_get(block_name);
-            if(!block)return false;
+            if(!block) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+                m191_boot_fail("block-device-lookup",i);
+#endif
+                return false;
+            }
             bool whole_ext4=physical_ext4_at(block,0);
             if(whole_ext4) {
                 if(found++) {nas_block_put(block);return false;}
@@ -143,6 +161,7 @@ bool nas_lwext4_guest_boot_mount(void) {
         }
         if(!found) {
 #ifdef NAS_ENABLE_M191_ALPINE_ROOT
+            m191_boot_fail("ext4-superblock-not-found",disks);
             return false; /* selected external root is mandatory */
 #else
             return true; /* legitimate boot without ext4 disk */
@@ -155,7 +174,12 @@ bool nas_lwext4_guest_boot_mount(void) {
                                   chosen_partition_index);
             int rc=nas_partition_attach(&boot_partition,partition_name,
                                         chosen_disk,&chosen_extent,false);
-            if(rc)return false;
+            if(rc) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+                m191_boot_fail("partition-attach",rc);
+#endif
+                return false;
+            }
             boot_partition_attached=true;
             selected_device=partition_name;
         }
@@ -165,8 +189,12 @@ bool nas_lwext4_guest_boot_mount(void) {
 #else
             "/mnt";
 #endif
-        if(nas_lwext4_device_mount(&boot_mount,selected_device,
-                                   "virtio-ext4",target,chosen_writable)) {
+        int mount_rc=nas_lwext4_device_mount(&boot_mount,selected_device,
+                                           "virtio-ext4",target,chosen_writable);
+        if(mount_rc) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+            m191_boot_fail("lwext4-device-mount",mount_rc);
+#endif
             if(boot_partition_attached) {
                 (void)nas_partition_detach(&boot_partition);
                 boot_partition_attached=false;
