@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Independent host proof of Alpine's guest-installed package and HTTP data.
+"""Independent host proof of Alpine's guest-installed package and wire data.
 
 M195 intentionally mutates APK's world/database on a disposable ext4 disk.
 The unmodified M191 signed baseline is verified separately, so applying
 M191's byte-for-byte world oracle to this intentionally changed disk would
-falsely reject legitimate package installation.
+falsely reject legitimate package installation. M196 reuses the same strict
+GPT/ext4/APK/ELF oracle with its own public-network witness and two packages.
 """
 
 import importlib.util
@@ -27,26 +28,31 @@ def load_m191():
     return module
 
 
-def verify(port: str, signed_root: Path, disk: Path) -> None:
+def verify(port: str, signed_root: Path, disk: Path, *,
+           stage: str = "M195",
+           witness_path: str = "/root/m195-wire.txt",
+           witness: bytes = WITNESS,
+           packages: tuple[str, ...] = ("tree",),
+           executables: tuple[str, ...] = ("/usr/bin/tree",)) -> None:
     m191 = load_m191()
     if port not in m191.ARCH_MACHINE:
-        raise ValueError("[M195 HOST FAIL] unsupported ISA")
+        raise ValueError(f"[{stage} HOST FAIL] unsupported ISA")
     if signed_root.is_symlink() or disk.is_symlink():
-        raise ValueError("[M195 HOST FAIL] host source or disk is a symlink")
+        raise ValueError(f"[{stage} HOST FAIL] host source or disk is a symlink")
     signed_root = signed_root.resolve(strict=True)
     disk = disk.resolve(strict=True)
     if not signed_root.is_dir() or not disk.is_file():
-        raise ValueError("[M195 HOST FAIL] source or physical disk is missing")
+        raise ValueError(f"[{stage} HOST FAIL] source or physical disk is missing")
     # A BusyBox applet pathname is not evidence that the separate upstream
-    # tree APK was installed. The guest first requires `apk info -e tree` to
-    # report absent, then installs it over the captured wire; this check only
-    # forbids staging the HTTP witness before the VM begins.
-    witness_source = m191.guest_path(signed_root, "/root/m195-wire.txt")
+    # APK was installed. The guest first requires its installed database to
+    # report the package absent, then installs over the captured wire; this
+    # check also forbids staging the network witness before the VM begins.
+    witness_source = m191.guest_path(signed_root, witness_path)
     if witness_source.exists() or witness_source.is_symlink():
-        raise ValueError("[M195 HOST FAIL] HTTP witness was staged")
+        raise ValueError(f"[{stage} HOST FAIL] network witness was staged")
 
     m191.check_mbr(disk)
-    with tempfile.TemporaryDirectory(prefix="m195-alpine-ext4-") as workspace:
+    with tempfile.TemporaryDirectory(prefix=f"{stage.lower()}-alpine-ext4-") as workspace:
         partition = Path(workspace) / "root.ext4"
         m191.extract_partition(disk, partition)
         m191.check_fsck(partition)
@@ -56,24 +62,26 @@ def verify(port: str, signed_root: Path, disk: Path) -> None:
         # apart from APK's intentionally changed world and installed index.
         for path in ("/etc/alpine-release", "/etc/apk/repositories", "/etc/inittab"):
             if read(path) != m191.guest_path(signed_root, path).read_bytes():
-                raise ValueError("[M195 HOST FAIL] baseline changed: " + path)
+                raise ValueError(f"[{stage} HOST FAIL] baseline changed: " + path)
         world = read("/etc/apk/world").decode("utf-8")
-        if not {"alpine-base", "openrc", "tree"}.issubset(set(world.splitlines())):
-            raise ValueError("[M195 HOST FAIL] APK world missing installed package")
+        if not {"alpine-base", "openrc", *packages}.issubset(set(world.splitlines())):
+            raise ValueError(f"[{stage} HOST FAIL] APK world missing installed package")
         installed = read("/lib/apk/db/installed").decode("utf-8")
-        if "P:tree\n" not in "\n" + installed:
-            raise ValueError("[M195 HOST FAIL] APK installed database missing tree")
-        binary = read("/usr/bin/tree")
-        if len(binary) < 20 or binary[:4] != b"\x7fELF" or binary[4:6] != b"\x02\x01":
-            raise ValueError("[M195 HOST FAIL] new package's original ELF is absent")
-        if struct.unpack_from("<H", binary, 18)[0] != m191.ARCH_MACHINE[port]:
-            raise ValueError("[M195 HOST FAIL] new ELF has wrong ISA")
-        if read("/root/m195-wire.txt") != WITNESS:
-            raise ValueError("[M195 HOST FAIL] exact HTTP file not durable after reboot")
+        for name in packages:
+            if f"P:{name}\n" not in "\n" + installed:
+                raise ValueError(f"[{stage} HOST FAIL] APK installed database missing {name}")
+        for executable in executables:
+            binary = read(executable)
+            if len(binary) < 20 or binary[:4] != b"\x7fELF" or binary[4:6] != b"\x02\x01":
+                raise ValueError(f"[{stage} HOST FAIL] original ELF missing: {executable}")
+            if struct.unpack_from("<H", binary, 18)[0] != m191.ARCH_MACHINE[port]:
+                raise ValueError(f"[{stage} HOST FAIL] wrong ELF ISA: {executable}")
+        if read(witness_path) != witness:
+            raise ValueError(f"[{stage} HOST FAIL] network witness not durable")
 
-    print(f"[M195 ALPINE PACKAGE PERSISTENCE HOST PASS] {port} guest APK "
-          "world+installed DB, native tree ELF, original base metadata, "
-          "HTTP witness, second-QEMU reboot and clean ext4 fsck")
+    print(f"[{stage} ALPINE PACKAGE PERSISTENCE HOST PASS] {port} guest APK "
+          "world+installed DB, original native ELF, base metadata, "
+          "network witness, second-QEMU reboot and clean ext4 fsck")
 
 
 def main() -> None:
