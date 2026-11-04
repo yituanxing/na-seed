@@ -107,3 +107,17 @@ data pages and live inodes, freed on truncate/unlink/umount, and strictatime
 updates successful reads. Unknown options still fail; neither Alpine's
 original executable nor OpenRC script is replaced. Until the revised
 three-ISA QEMU run succeeds, **full sysinit success remains unverified**.
+
+The follow-up real-ABI trace on all three ISAs (run `41822859625`) found
+one additional Linux flag in the **original** BusyBox calls:
+
+```
+proc:  flags=0x0000800e  data=""
+tmpfs: flags=0x01008006  data="mode=0755,nr_inodes=800k,size=20%"
+```
+
+Bit `0x8000` is Linux `MS_SILENT`, a diagnostic-verbosity request rather
+than a mount behavior change. The shared syscall path now removes only
+that bit before semantic validation. The temporary kernel ABI tracing was
+removed again; next three-ISA M192 CI must independently prove that
+OpenRC's `/proc` and `/run` mounts no longer fail.
