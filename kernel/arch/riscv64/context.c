@@ -86,6 +86,27 @@ void nas_rv_full_trap_c(struct nas_rv_trap_frame *frame) {
         if(outcome.action==NAS_EXC_RETRY)return; /* retry unchanged SEPC */
         if(outcome.action==NAS_EXC_SIGNAL) {
             struct nas_task *tracee=nas_current_task;
+            /* Preserve the first genuine, unresolved user page faults for
+             * cross-ISA loader/runtime diagnosis. As on x86 [USERPF], the
+             * faulting user PC, VA and native register image must be captured
+             * before the fatal signal reaps the process. This observation
+             * does not hide or recover a fault and is bounded on purpose. */
+            if(exception.kind==NAS_EXC_MEMORY) {
+                static unsigned user_fault_reports;
+                if(user_fault_reports++<16U) {
+                    nas_print("[RV64 USERPF] pid=");nas_dec(tracee->pid);
+                    nas_print(" scause=");nas_hex(scause);
+                    nas_print(" sepc=");nas_hex(frame->sepc);
+                    nas_print(" stval=");nas_hex(stval);
+                    nas_print(" sp=");nas_hex(frame->x[2]);
+                    nas_print(" ra=");nas_hex(frame->x[1]);
+                    nas_print(" tp=");nas_hex(frame->x[4]);
+                    nas_print(" a0=");nas_hex(frame->x[10]);
+                    nas_print(" a1=");nas_hex(frame->x[11]);
+                    nas_print(" si_code=");nas_dec((uint64_t)outcome.si_code);
+                    nas_print("\n");
+                }
+            }
             live=frame;
             nas_arch_save_user_frame(tracee,0);
             nas_arch_save_fpu(tracee);

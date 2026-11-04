@@ -6,6 +6,7 @@ Every M194 step waits for a new *guest output line*, never a command echo,
 host-inferred return status, timer expiration or synthesized shell response.
 """
 
+import fcntl
 import importlib.util
 import os
 from pathlib import Path
@@ -72,6 +73,64 @@ def step_match(segment: str, expected: str | re.Pattern[str]) -> re.Match[str] |
 
 def step_observed(segment: str, expected: str | re.Pattern[str]) -> bool:
     return step_match(segment, expected) is not None
+
+
+def disk_lock_released(image: str) -> bool:
+    """Probe QEMU's advisory byte-range lock without changing the ext4 disk.
+
+    QEMU's raw image writer takes an exclusive POSIX/OFD byte-range lock. A
+    second QEMU must not start until a conflicting nonblocking lock succeeds;
+    waiting for the *runner shell* alone does not prove its QEMU child exited.
+    """
+    fd = os.open(image, os.O_RDWR | os.O_CLOEXEC)
+    try:
+        try:
+            fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        return True
+    finally:
+        # Closing immediately releases this temporary probe lock. Never hold
+        # it across the real second QEMU boot.
+        os.close(fd)
+
+
+def stop_runner(proc: subprocess.Popen[bytes]) -> None:
+    """Stop the entire native-QEMU runner group and await image-lock release.
+
+    ``sh runner`` owns ``timeout -> qemu`` descendants in the fresh session
+    created below. The shell can be reaped earlier than QEMU, so calling only
+    proc.wait() creates an unsafe first-boot/second-boot disk-lock race.
+    """
+    image = os.environ.get("NAS_VIRTIO_BLK_IMAGE")
+    group = proc.pid
+
+    def signal_group(sig: signal.Signals) -> None:
+        try:
+            os.killpg(group, sig)
+        except ProcessLookupError:
+            pass
+
+    def await_release(seconds: float) -> bool:
+        until = time.monotonic() + seconds
+        while True:
+            shell_done = proc.poll() is not None
+            disk_done = not image or disk_lock_released(image)
+            if shell_done and disk_done:
+                return True
+            if time.monotonic() >= until:
+                return False
+            time.sleep(0.10)
+
+    # Kill the process group even if the parent shell has *already* exited.
+    # Its children can still be running with the exact same PGID and holding
+    # the disk open. Do not mistake proc.poll() for a QEMU termination check.
+    signal_group(signal.SIGTERM)
+    if not await_release(8.0):
+        signal_group(signal.SIGKILL)
+        if not await_release(8.0):
+            raise RuntimeError("first native QEMU did not release its raw ext4 disk lock")
+    proc.wait()
 
 
 def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int) -> None:
@@ -187,25 +246,18 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
         print(observed.decode("utf-8", errors="replace")[-13000:], file=sys.stderr)
         raise
     finally:
-        if proc is not None and proc.poll() is None:
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                proc.wait(timeout=8)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                proc.wait()
-        os.close(hold)
-        fifo.unlink()
-        if observed:
-            clean_name = log_name.with_name(
-                log_name.name.removesuffix(".serial.log") + ".clean.log")
-            clean_name.write_bytes(bytes(observed).replace(b"\r", b""))
+        try:
+            if proc is not None:
+                stop_runner(proc)
+        finally:
+            # Preserve the original physical UART evidence and release FIFO
+            # handles even if an uncooperative QEMU fails the lock-release gate.
+            os.close(hold)
+            fifo.unlink()
+            if observed:
+                clean_name = log_name.with_name(
+                    log_name.name.removesuffix(".serial.log") + ".clean.log")
+                clean_name.write_bytes(bytes(observed).replace(b"\r", b""))
 
 
 def main() -> None:
