@@ -111,6 +111,10 @@ jobs:
           fi
           command -v docker
           command -v sudo
+      - name: Verify crash-to-reopen ext4 sync durability on host
+        if: matrix.port == 'amd64'
+        timeout-minutes: 8
+        run: sh scripts/check-lwext4-ramdisk.sh
       - name: M194 actual Alpine offline APK and crond start/status/stop then same ext4 readback after second native boot
         timeout-minutes: 70
         run: sh scripts/probe-m194-alpine-services.sh ${{ matrix.port }}

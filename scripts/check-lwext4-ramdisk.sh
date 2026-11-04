@@ -39,4 +39,11 @@ e2fsck -fn "$root/ext4.img"
 "$root/vfs-test" "$root/ext4.img" verify
 
 e2fsck -fn "$root/ext4.img"
+truncate -s 32M "$root/sync-crash.img"
+mke2fs -q -F -t ext4 -b 4096 -O '^metadata_csum,^64bit' "$root/sync-crash.img"
+"$root/ramdisk-test" "$root/sync-crash.img" sync-crash
+"$root/ramdisk-test" "$root/sync-crash.img" sync-reopen
+# The strict oracle catches stale total free counters, not just e2fsck's
+# often-zero read-only exit status. It must pass after two independent mounts.
+sh scripts/check-ext4-fsck-clean.sh "$root/sync-crash.img"
 echo "[LWEXT4 RAMDISK PASS] real pinned upstream ext4 create/write/rename/link/unlink/remount/fsck"

@@ -12,8 +12,11 @@ static void check(int rc,const char *action) {
     if(rc) {fprintf(stderr,"[LWEXT4] %s failed: %d\n",action,rc);exit(1);}
 }
 int main(int argc,char **argv) {
-    if(argc!=3 || (strcmp(argv[2],"write")&&strcmp(argv[2],"verify")))return 2;
-    bool write=!strcmp(argv[2],"write");
+    if(argc!=3 || (strcmp(argv[2],"write")&&strcmp(argv[2],"verify")&&
+                   strcmp(argv[2],"sync-crash")&&strcmp(argv[2],"sync-reopen")))return 2;
+    bool sync_crash=!strcmp(argv[2],"sync-crash");
+    bool sync_reopen=!strcmp(argv[2],"sync-reopen");
+    bool write=strcmp(argv[2],"verify")!=0;
     FILE *disk=fopen(argv[1],"rb+");
     assert(disk);
     assert(!fseek(disk,0,SEEK_END));
@@ -31,6 +34,45 @@ int main(int argc,char **argv) {
           "register upstream lwext4 device");
     assert(nas_ramdisk_detach(&rd)==-EBUSY); /* real reference pin */
     check(ext4_mount("ext-test","/mnt/",!write),"mount ext4");
+    if(sync_crash || sync_reopen) {
+        static const char witness[]="NaSeed original ext4 ordered-sync crash witness\n";
+        ext4_file f={0};
+        if(sync_crash) {
+            check(ext4_fopen(&f,"/mnt/sync-witness","w+"),"create sync witness");
+            size_t got=0;
+            check(ext4_fwrite(&f,witness,sizeof(witness)-1,&got),"write sync witness");
+            assert(got==sizeof(witness)-1);
+            check(ext4_fclose(&f),"close sync witness");
+            /* Persist the in-memory superblock free counters on a mounted
+             * filesystem, then simulate power removal by NEVER umounting.
+             * Dumping RAM-backed physical media models a completed device
+             * flush. A separate process must remount this exact image. */
+            check(ext4_sync("/mnt/"),"ordered mounted ext4 sync");
+            rewind(disk);
+            assert(fwrite(image,1,(size_t)bytes,disk)==(size_t)bytes);
+            assert(!fflush(disk));
+            assert(!fclose(disk));
+            puts("[LWEXT4 ORDERED SYNC] committed while mounted; omitted umount");
+            return 0;
+        }
+        check(ext4_fopen(&f,"/mnt/sync-witness","r"),"reopen sync witness");
+        char buf[sizeof(witness)]={0};
+        size_t got=0;
+        check(ext4_fread(&f,buf,sizeof(witness)-1,&got),"read sync witness");
+        assert(got==sizeof(witness)-1);
+        assert(!memcmp(buf,witness,sizeof(witness)-1));
+        check(ext4_fclose(&f),"close sync witness");
+        check(ext4_umount("/mnt/"),"clean second mount unmount");
+        check(nas_lwext4_device_detach(&device,"ext-test"),"detach ext4 device");
+        check(nas_ramdisk_detach(&rd),"detach RAM disk");
+        rewind(disk);
+        assert(fwrite(image,1,(size_t)bytes,disk)==(size_t)bytes);
+        assert(!fflush(disk));
+        assert(!fclose(disk));
+        free(image);
+        puts("[LWEXT4 ORDERED SYNC REOPEN PASS] original mounted write survived crash");
+        return 0;
+    }
     static const char payload[]="NaSeed VFS and BlockDevice real lwext4 data\n";
     if(write) {
         check(ext4_dir_mk("/mnt/sandbox"),"mkdir");

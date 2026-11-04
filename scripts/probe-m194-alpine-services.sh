@@ -20,6 +20,15 @@ rescue="$PWD/$work/smoke/rescue/rootfs.cpio"
 busybox="$PWD/$work/smoke/elf/busybox"
 test -s "$baseline" && test -s "$rescue" && test -s "$busybox"
 
+# Host-side read-only forensics for a still-failing native RV64 apk DSO
+# indirect call. This only inspects the signed original package files and
+# never edits the rootfs, ELF bytes, acceptance manifest or QEMU guest.
+# A missing symbol table/ambiguous size match is diagnostic, not a PASS gate.
+if [ "$port" = riscv64 ]; then
+    python3 scripts/m194-rv64-apk-dso-audit.py "$root" ||
+        echo '[M194 RV64 DSO] inspection unavailable; original guest oracle unchanged' >&2
+fi
+
 # Real login requires a deterministic credential only in an independent test
 # image. Preserve packaged UID/GID/modes and all signed original executables.
 overlay=$(mktemp -d "$PWD/$work/m194-service-overlay.XXXXXX")

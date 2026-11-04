@@ -408,7 +408,7 @@ static int ext_resize_inode(const struct nas_fs_node *node,uint64_t length) {
  * Common VFS/ABI never enumerates RAM/PCI/ISA drivers. */
 static int ext_sync_mount(struct nas_lwext4_mount *ctx) {
     if(!ctx || !ctx->mounted || !ctx->device.storage)return -ENODEV;
-    int rc=ext4_cache_flush(ctx->upstream_prefix);
+    int rc=ext4_sync(ctx->upstream_prefix);
     if(rc)return -rc;
     return nas_block_flush(ctx->device.storage);
 }
@@ -1332,10 +1332,10 @@ int nas_lwext4_device_mount(struct nas_lwext4_mount *ctx,
 #endif
             goto FailMount;
         }
-        rc=ext4_cache_flush(ctx->upstream_prefix);
+        rc=ext4_sync(ctx->upstream_prefix);
         if(rc){
 #ifdef NAS_ENABLE_M191_ALPINE_ROOT
-            m191_ext4_fail("ext4_cache_flush",rc);
+            m191_ext4_fail("ext4_sync",rc);
 #endif
             rc=-rc;goto FailMount;
         }

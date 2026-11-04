@@ -1436,6 +1436,35 @@ int ext4_cache_flush(const char *path)
 	return ret;
 }
 
+int ext4_sync(const char *path)
+{
+	struct ext4_mountpoint *mp = ext4_get_mount(path);
+	int ret;
+
+	if (!mp)
+		return ENOENT;
+
+	EXT4_MP_LOCK(mp);
+	/* First persist inode, allocation-group and bitmap changes. A later
+	 * superblock counter write may not precede the blocks it describes. */
+	ret = ext4_block_cache_flush(mp->fs.bdev);
+	if (ret != EOK)
+		goto Finish;
+
+	if (!mp->fs.read_only) {
+		/* ext4_fs_fini() would mark a STILL-MOUNTED filesystem clean.
+		 * Keep the normal mounted/error state and persist only the current
+		 * superblock counters and checksum on a real sync/fsync. */
+		ret = ext4_sb_write(mp->fs.bdev, &mp->fs.sb);
+		if (ret != EOK)
+			goto Finish;
+		ret = ext4_block_cache_flush(mp->fs.bdev);
+	}
+Finish:
+	EXT4_MP_UNLOCK(mp);
+	return ret;
+}
+
 int ext4_fremove(const char *path)
 {
 	ext4_file f;
