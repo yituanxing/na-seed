@@ -1,0 +1,3 @@
+# Second physical QEMU boot of the SAME ext4 root installed over VirtIO-Net.
+# This original BusyBox PID1 must execute the newly installed Alpine ELF.
+m195-batch	cpio	sh -c "apk info -e tree && /usr/bin/tree --version >/dev/null && cat /root/m195-wire.txt"	M195_SIGNED_ALPINE_WIRE_2026	-	/bin/busybox

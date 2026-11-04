@@ -1,0 +1,124 @@
+name: NaSeed M195 original Alpine signed APK over real VirtIO-Net and durable ext4
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/m195-alpine-network-apk.yml'
+      - 'scripts/m195-*'
+      - 'scripts/probe-m195-alpine-network-apk.sh'
+      - 'scripts/m194-alpine-uart.py'
+      - 'scripts/m193-alpine-*'
+      - 'scripts/probe-m191-alpine-root.sh'
+      - 'scripts/m191-*'
+      - 'rootfs/alpine/**'
+      - 'ports/lwip/**'
+      - 'ports/uboot/**'
+      - 'kernel/fs/**'
+      - 'kernel/drivers/virtio/**'
+
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  alpine-signed-online-apk:
+    name: M195 signed original APK over native NIC and two QEMU boots / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
+      - name: Verify isolated original package, guest UART and disk acceptance models
+        run: |
+          set -eu
+          sh -n scripts/probe-m195-alpine-network-apk.sh scripts/probe-m191-alpine-root.sh
+          python3 -m py_compile scripts/m194-alpine-uart.py scripts/m195-alpine-uart.py \
+            scripts/m195-alpine-repository.py scripts/m195-alpine-http.py \
+            scripts/m195-alpine-disk-check.py
+          python3 scripts/test-m195-alpine-host.py
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+          python3 - <<'PY'
+          from pathlib import Path
+          import runpy
+          def rows(path):
+              return [line for line in Path(path).read_text().splitlines()
+                      if line and not line.startswith('#')]
+          assert rows('scripts/m195-alpine-cases.tsv') == [
+              'm195-batch\tcpio\t \t-\t-\t/sbin/init']
+          assert rows('scripts/m195-alpine-reopen-cases.tsv') == [
+              'm195-batch\tcpio\tsh -c "apk info -e tree && /usr/bin/tree --version >/dev/null && cat /root/m195-wire.txt"\tM195_SIGNED_ALPINE_WIRE_2026\t-\t/bin/busybox']
+          m194 = runpy.run_path('scripts/m194-alpine-uart.py', run_name='m194_model')
+          m195 = runpy.run_path('scripts/m195-alpine-uart.py', run_name='m195_model')
+          assert len(m194['COMMANDS']) == 13
+          assert len(m195['COMMANDS']) == 8
+          assert m194['step_observed']('M195_APK_ADD_RC=0\n', 'M195_APK_ADD_RC=0')
+          assert not m194['step_observed']('echo M195_APK_ADD_RC=0\n', 'M195_APK_ADD_RC=0')
+          PY
+      - name: Install real native QEMU, ext4 and official Alpine tooling
+        timeout-minutes: 18
+        run: |
+          set -eu
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'cmake:cmake' 'g++:g++' 'clang:clang' 'ld.lld:lld' \
+                      'readelf:binutils' 'cpio:cpio' 'mke2fs:e2fsprogs' \
+                      'debugfs:e2fsprogs' 'e2fsck:e2fsprogs' \
+                      'xorriso:xorriso' 'mformat:mtools' 'sgdisk:gdisk' \
+                      'curl:curl' 'python3:python3' 'openssl:openssl'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case '${{ matrix.port }}' in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+              test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
+            riscv64)
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+            arm64)
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+          esac
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+          command -v sudo
+      - name: Real signed APK installation on physical Alpine root, network wire and reboot
+        timeout-minutes: 75
+        run: sh scripts/probe-m195-alpine-network-apk.sh ${{ matrix.port }}
+      - name: Save authentic APK HTTP, QEMU packet and ext4 persistence evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m195-alpine-signed-network-apk-${{ matrix.port }}
+          path: |
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m195-original-repository/m195-*.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m195-host-http.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m195-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m195-first-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m195-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m195-live.serial.log
+            build/busybox-source-parity-x86/m195-batch.clean.log
+            build/busybox-source-parity-x86/m195-batch.serial.log
+            build/port-riscv64/full/matrix-source/m195-batch.clean.log
+            build/port-riscv64/full/matrix-source/m195-batch.serial.log
+            build/port-aarch64/full/matrix-source/m195-batch.clean.log
+            build/port-aarch64/full/matrix-source/m195-batch.serial.log
+          if-no-files-found: ignore

@@ -214,7 +214,11 @@ def stop_runner(proc: subprocess.Popen[bytes]) -> None:
     proc.wait()
 
 
-def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int) -> None:
+def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int,
+        *, commands=COMMANDS, stage: str = "M194",
+        success_message: str | None = None) -> None:
+    if not commands:
+        raise ValueError("Alpine UART acceptance needs at least one real guest command")
     fifo.parent.mkdir(parents=True, exist_ok=True)
     if fifo.exists():
         raise RuntimeError("refusing to reuse an existing serial FIFO: " + str(fifo))
@@ -257,11 +261,11 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
                     dsr_replies += 1
 
                 if state == "login" and "naseed login:" in text:
-                    print("[M194 UART] original getty; submitting root", flush=True)
+                    print(f"[{stage} UART] original getty; submitting root", flush=True)
                     m193.sent(hold, "root\r")
                     state = "password"
                 elif state == "password" and "Password:" in text:
-                    print("[M194 UART] original login requested password", flush=True)
+                    print(f"[{stage} UART] original login requested password", flush=True)
                     m193.sent(hold, m193.PASSWORD + "\r")
                     state = "shell"
                 elif state == "shell" and (
@@ -272,19 +276,19 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
                     if shell_at == 0.0:
                         shell_at = time.monotonic()
                     if time.monotonic() - shell_at >= 0.6:
-                        print("[M194 UART] authenticated original ash; probing services", flush=True)
+                        print(f"[{stage} UART] authenticated original ash; probing services", flush=True)
                         step_start = len(text)
-                        m193.sent(hold, COMMANDS[0][0])
+                        m193.sent(hold, commands[0][0])
                         state = "commands"
                 elif state == "commands":
-                    _command, expected, description = COMMANDS[step]
+                    _command, expected, description = commands[step]
                     segment = text[step_start:]
                     found = step_match(segment, expected)
                     if found is not None:
-                        print(f"[M194 UART] verified {description}", flush=True)
+                        print(f"[{stage} UART] verified {description}", flush=True)
                         step_end = step_start + found.end()
                         step += 1
-                        if step == len(COMMANDS):
+                        if step == len(commands):
                             required = m193.PROOF + (
                                 "[EXEC] replaced process with lwext4 ELF: /bin/login",
                             )
@@ -292,7 +296,8 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
                             if missing:
                                 raise RuntimeError("missing physical QEMU login proof: "
                                                    + ", ".join(missing))
-                            print("[M194 ALPINE SERVICES PASS] original ext4 Alpine PID1 "
+                            print(success_message or
+                                  "[M194 ALPINE SERVICES PASS] original ext4 Alpine PID1 "
                                   "-> OpenRC -> password login -> genuine apk database "
                                   "-> rc-service crond start/status/pid/stop "
                                   "-> guest ext4 write/sync/readback; "
@@ -315,15 +320,15 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
                             f"completed without its required result; guest_rc={observed_rc[-1:]}")
                 elif state == "await_prompt" and m193.shell_prompt(text[step_end:]):
                     step_start = len(text)
-                    m193.sent(hold, COMMANDS[step][0])
+                    m193.sent(hold, commands[step][0])
                     state = "commands"
 
                 if proc.poll() is not None:
                     raise RuntimeError(f"native QEMU runner exited before proof: {proc.returncode}")
                 time.sleep(0.10)
-            raise RuntimeError(f"M194 original Alpine proof timed out: state={state} step={step}")
+            raise RuntimeError(f"{stage} original Alpine proof timed out: state={state} step={step}")
     except Exception:
-        print("[M194 ALPINE SERVICES FAIL] raw QEMU UART tail:", file=sys.stderr)
+        print(f"[{stage} ALPINE SERVICES FAIL] raw QEMU UART tail:", file=sys.stderr)
         print(observed.decode("utf-8", errors="replace")[-13000:], file=sys.stderr)
         raise
     finally:
