@@ -5,6 +5,7 @@
 #include "../../kernel/mm/heap.h"
 #include "../../kernel/errno.h"
 #include "../../kernel/lib/string.h"
+#include "../../kernel/drivers/serial.h"
 #include "../../kernel/task/kthread.h"
 #include "../../kernel/arch/arch.h"
 #include <stddef.h>
@@ -23,6 +24,22 @@
 
 static struct nas_uboot_net *net_owner(struct virtqueue *vq){
  return vq ? (struct nas_uboot_net *)vq->owner : NULL;
+}
+/* A real NIC is quarantined after a transport error. Report the exact
+ * failing boundary once, before reset destroys the original ring evidence.
+ * A stack consumer error must be distinguishable from corrupt DMA/vrings. */
+static void net_fault(const char *stage,struct nas_uboot_net *n,
+                      int rc,uint32_t detail){
+ nas_print("[VIRTIO-NET FAULT] stage=");nas_print(stage);
+ nas_print(" errno=");nas_dec((uint64_t)(rc<0?-rc:rc));
+ nas_print(" detail=");nas_dec(detail);
+ nas_print(" poisoned=");nas_dec(n->poisoned);
+ nas_print(" rx_used=");nas_dec(n->rx_ring.active?
+                          n->rx_ring.ring.used->idx:0);
+ nas_print(" rx_last=");nas_dec(n->rx_ring.last_used);
+ nas_print(" rx_inflight=");nas_dec(n->rx_ring.inflight);
+ nas_print(" rx_free=");nas_dec(n->rx_ring.free_count);
+ nas_print("\n");
 }
 static void net_poison(struct nas_uboot_net *n){
  if(!n || n->poisoned)return;
@@ -55,8 +72,9 @@ static int net_queue_add(struct virtqueue *vq,struct virtio_sg **sgs,
      int rc=nas_dma_sync(n->transport.dma,&n->rx_dma[slot],0,
                          NAS_UBOOT_NET_RX_BYTES,NAS_DMA_FROM_DEVICE);
      if(!rc)rc=nas_vring_queue_submit(&n->rx_ring,&seg,1,&head);
-     if(rc){net_poison(n);return rc;}
+     if(rc){net_fault("rx-submit",n,rc,slot);net_poison(n);return rc;}
      if(head>=NAS_UBOOT_NET_RX_RING_SIZE || n->rx_slot_by_head[head]){
+         net_fault("rx-head",n,-EIO,head);
          net_poison(n);return -EIO;
      }
      n->rx_slot_by_head[head]=(uint16_t)(slot+1);
@@ -73,14 +91,14 @@ static int net_queue_add(struct virtqueue *vq,struct virtio_sg **sgs,
         sgs[1]->addr,sgs[1]->length);
  int rc=nas_dma_sync(n->transport.dma,&n->tx_dma,0,
          NAS_NET_TX_FRAME_OFFSET+sgs[1]->length,NAS_DMA_TO_DEVICE);
- if(rc){net_poison(n);return rc;}
+ if(rc){net_fault("tx-dma",n,rc,sgs[1]->length);net_poison(n);return rc;}
  struct nas_vring_segment segments[2]={
      {n->tx_dma.bus_address,(uint32_t)sgs[0]->length,false},
      {n->tx_dma.bus_address+NAS_NET_TX_FRAME_OFFSET,
       (uint32_t)sgs[1]->length,false}
  };
  rc=nas_vring_queue_submit(&n->tx_ring,segments,2,&n->tx_head);
- if(rc){net_poison(n);return rc;}
+ if(rc){net_fault("tx-submit",n,rc,sgs[1]->length);net_poison(n);return rc;}
  /* Serialized send owns this completion semaphore until get_buf retires the
   * descriptor. Any earlier RX/old-TX wake token must not complete a new TX. */
  nas_ksem_init(&n->tx_completion,0);
@@ -104,6 +122,7 @@ static void *net_queue_get_buf(struct virtqueue *vq,unsigned *used_len){
           * and reset rather than falling back to the old polling path. */
          if(!nas_kthread_in_worker()){
              n->tx_pending=false;
+             net_fault("tx-nonworker",n,-EIO,0);
              net_poison(n);
              return vq;
          }
@@ -132,6 +151,7 @@ static void *net_queue_get_buf(struct virtqueue *vq,unsigned *used_len){
      }
      n->tx_pending=false;
      if(rc || head!=n->tx_head || bytes){
+         net_fault("tx-completion",n,rc?rc:-EIO,head);
          net_poison(n);return vq;
      }
      if(used_len)*used_len=bytes;
@@ -142,6 +162,7 @@ static void *net_queue_get_buf(struct virtqueue *vq,unsigned *used_len){
  if(rc==-EAGAIN)return NULL;
  if(rc || head>=NAS_UBOOT_NET_RX_RING_SIZE ||
     !n->rx_slot_by_head[head]){
+     net_fault("rx-completion",n,rc?rc:-EIO,head);
      net_poison(n);return NULL;
  }
  unsigned slot=n->rx_slot_by_head[head]-1U;
@@ -151,6 +172,7 @@ static void *net_queue_get_buf(struct virtqueue *vq,unsigned *used_len){
     bytes>NAS_UBOOT_NET_RX_BYTES ||
     nas_dma_sync(n->transport.dma,&n->rx_dma[slot],0,bytes,
                  NAS_DMA_FROM_DEVICE)){
+     net_fault("rx-payload",n,-EIO,bytes);
      net_poison(n);return NULL;
  }
  struct virtio_net_priv *priv=dev_get_priv(&n->udev);
@@ -192,11 +214,18 @@ static int net_poll(void *ctx,uint32_t budget,
      uchar *packet=NULL;
      int len=upstream_ops()->recv(&n->udev,0,&packet);
      if(len==-EAGAIN)break;
-     if(len<14 || len>1518 || !packet){net_poison(n);rc=-EIO;break;}
+     if(len<14 || len>1518 || !packet){
+         net_fault("rx-frame",n,-EIO,(uint32_t)len);
+         net_poison(n);rc=-EIO;break;
+     }
      rc=receive(consumer,packet,(uint32_t)len);
      (void)upstream_ops()->free_pkt(&n->udev,packet,len);
      if(n->poisoned){rc=-EIO;break;}
-     if(rc)break;
+     if(rc){
+         if(rc!=-EBUSY && rc!=-EAGAIN && rc!=-ENOBUFS && rc!=-ENOMEM)
+             net_fault("rx-consumer",n,rc,(uint32_t)len);
+         break;
+     }
      count++;
      n->rx_completed++;
  }

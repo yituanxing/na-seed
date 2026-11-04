@@ -356,6 +356,11 @@ static void receive_worker(void *ctx){
              /* A permanently poisoned transport cannot be rediscovered
               * as a fresh netif while the same driver incarnation lives.
               * Quarantine it until the bus owner retires and re-registers. */
+             nas_print("[LWIP RX FAULT] errno=");
+             nas_dec((uint64_t)-received);
+             nas_print(" irq=");
+             nas_dec(nic->ethernet.device->rx_irq_driven);
+             nas_print("\n");
              (void)nas_netdev_begin_remove(nic->ethernet.device);
              nas_print("[LWIP] NIC RX failed; quarantining and detaching its netif\n");
              request_detach(nic);continue;

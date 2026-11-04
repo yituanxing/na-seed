@@ -57,7 +57,7 @@ jobs:
           assert rows('scripts/m195-alpine-cases.tsv') == [
               'm195-batch\tcpio\t \t-\t-\t/sbin/init']
           assert rows('scripts/m195-alpine-reopen-cases.tsv') == [
-              'm195-batch\tcpio\tsh -c "apk info -e tree && /usr/bin/tree --version >/dev/null && cat /root/m195-wire.txt"\tM195_SIGNED_ALPINE_WIRE_2026\t-\t/bin/busybox']
+              'm195-batch\tcpio\tsh -c "/sbin/apk info -e tree && /usr/bin/tree --version >/dev/null && cat /root/m195-wire.txt"\tM195_SIGNED_ALPINE_WIRE_2026\t-\t/bin/busybox']
           m194 = runpy.run_path('scripts/m194-alpine-uart.py', run_name='m194_model')
           m195 = runpy.run_path('scripts/m195-alpine-uart.py', run_name='m195_model')
           assert len(m194['COMMANDS']) == 13
