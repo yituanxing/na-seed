@@ -991,10 +991,25 @@ static int ext_directory_path(const struct nas_fs_node *node,
         current=parent;
     }
     if(current!=root)return -ELOOP;
-    size_t base=strlen(ctx->mount_point);
+    /* All ext4 pathname APIs are resolved by upstream lwext4,
+     * whose mount registry uses upstream_prefix, NOT the public VFS path.
+     * They happened to be equal for /mnt; a genuine VFS / must never
+     * escape its private /naseed-root/ upstream namespace. Inode-based
+     * reads above are already independent of either spelling. */
+    size_t base=strlen(ctx->upstream_prefix);
+    if(!base || ctx->upstream_prefix[base-1]!='/')return -EINVAL;
     size_t relative=255U-cursor;
+    if(!relative) {
+        /* nas_vfs_join_child expects a canonical parent without a trailing
+         * slash, even though the upstream lwext4 mount registry does. */
+        if(base==1)return -EINVAL;
+        memcpy(absolute,ctx->upstream_prefix,base-1);
+        absolute[base-1]=0;
+        return 0;
+    }
+    base--; /* relative starts with '/', so avoid an extra separator */
     if(base+relative>=256)return -ENAMETOOLONG;
-    memcpy(absolute,ctx->mount_point,base);
+    memcpy(absolute,ctx->upstream_prefix,base);
     memcpy(absolute+base,reverse+cursor,relative+1);
     return 0;
 }
@@ -1095,7 +1110,16 @@ static const struct nas_vfs_type ext_type={
  * Only delete recognizably named regular orphan records. Always restart
  * iteration after mutation; corrupt or foreign entries fail closed. */
 static int ext_orphan_prepare(struct nas_lwext4_mount *ctx) {
-    int rc=nas_vfs_join_child(ctx->mount_point,EXT4_ORPHAN_DIRECTORY,
+    /* The private orphan store is an upstream lwext4 pathname. Its owner
+     * is the filesystem mounted at upstream_prefix, even when that same
+     * disk is published to the guest VFS at '/'. */
+    char upstream_root[256];
+    size_t base=strlen(ctx->upstream_prefix);
+    if(base<2 || base>=sizeof(upstream_root) ||
+       ctx->upstream_prefix[base-1]!='/')return -EINVAL;
+    memcpy(upstream_root,ctx->upstream_prefix,base);
+    upstream_root[base-1]=0;
+    int rc=nas_vfs_join_child(upstream_root,EXT4_ORPHAN_DIRECTORY,
                               ctx->orphan_dir);
     if(rc)return rc;
     char sample[256];
@@ -1283,7 +1307,12 @@ int nas_lwext4_device_mount(struct nas_lwext4_mount *ctx,
     }
     ctx->upstream_mount=dir.f.mp;
     rc=ext4_dir_close(&dir);
-    if(rc) {rc=-rc;goto FailMount;}
+    if(rc) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+        m191_ext4_fail("ext4_dir_close",rc);
+#endif
+        rc=-rc;goto FailMount;
+    }
     if(!ctx->upstream_mount) {rc=-EIO;goto FailMount;}
     struct ext4_inode root_raw;
     rc=ext4_raw_inode_fill(ctx->upstream_prefix,&ctx->root_ino,
@@ -1297,11 +1326,26 @@ int nas_lwext4_device_mount(struct nas_lwext4_mount *ctx,
     if(!ctx->root_ino){rc=-EIO;goto FailMount;}
     if(writable) {
         rc=ext_orphan_prepare(ctx);
-        if(rc)goto FailMount;
+        if(rc) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+            m191_ext4_fail("ext4_orphan_prepare",rc);
+#endif
+            goto FailMount;
+        }
         rc=ext4_cache_flush(ctx->upstream_prefix);
-        if(rc){rc=-rc;goto FailMount;}
+        if(rc){
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+            m191_ext4_fail("ext4_cache_flush",rc);
+#endif
+            rc=-rc;goto FailMount;
+        }
         rc=nas_block_flush(ctx->device.storage);
-        if(rc)goto FailMount;
+        if(rc) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+            m191_ext4_fail("block-flush",rc);
+#endif
+            goto FailMount;
+        }
     }
     ctx->mount=(struct nas_vfs_mount){
         .mountpoint=ctx->mount_point,
