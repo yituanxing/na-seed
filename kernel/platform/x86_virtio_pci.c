@@ -151,6 +151,9 @@ static int q35_set_pci_interrupt_mode(uint8_t slot,uint8_t function,
            -EIO:0;
 }
 static bool q35_device_needs_irq(const struct nas_bus_device *dev) {
+    /* Some profiles build this platform without any IRQ-owning VirtIO
+     * class; keep their exact same source and fail-closed PCI policy. */
+    (void)dev;
 #ifdef NAS_ENABLE_VIRTIO_INPUT
     if(dev->device_id==VIRTIO_ID_INPUT)return true;
 #endif

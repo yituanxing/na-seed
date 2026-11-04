@@ -10,6 +10,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+/* The production net-port reports a one-shot DMA/IRQ fault through the
+ * kernel's serial diagnostic interface. The host fixture supplies that
+ * boundary just as it supplies heap, timer and IRQ implementations. */
+void nas_print(const char *message){fputs(message,stderr);}
+void nas_dec(uint64_t value){fprintf(stderr,"%llu",(unsigned long long)value);}
 #define PAGES 80U /* two simultaneously live original 33-page U-Boot NICs */
 static _Alignas(4096) uint8_t pages[PAGES][NAS_DMA_PAGE_BYTES];
 static bool used[PAGES];
