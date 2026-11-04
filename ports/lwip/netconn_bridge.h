@@ -12,6 +12,7 @@
 #define NAS_LWIP_BRIDGE_ACTIVE_LIMIT 32U /* matches lwIP MEMP_NUM_NETCONN */
 #define NAS_LWIP_BRIDGE_QUEUE 8U /* bounded native work queue, not socket count */
 #define NAS_LWIP_BRIDGE_DATA 512U
+#define NAS_LWIP_UDP_PENDING 8U /* additional complete datagrams per UDP File */
 /* An asynchronous native close retains the old bridge generation even after
  * the former OpenFile refcount fell to zero; socket admission must not reuse
  * its indexed slot before native worker teardown completes. */
@@ -33,6 +34,17 @@ struct nas_lwip_bridge_pktinfo {
  uint32_t ifindex; /* actual inbound lwIP netif index */
  uint32_t spec_dst; /* local source address usable in a reply, host order */
  uint32_t destination; /* original IPv4 header destination, host order */
+};
+/* A whole UDP datagram, never a TCP-style partial byte stream. The File
+ * provider owns a bounded FIFO of these while the native worker is busy.
+ * Final close transfers the remaining accepted packets into the bridge's
+ * old generation, so closing a descriptor does not discard queued sends. */
+struct nas_lwip_bridge_datagram {
+ uint8_t bytes[NAS_LWIP_BRIDGE_DATA];
+ uint16_t length;
+ struct nas_lwip_bridge_address destination;
+ bool send_pktinfo;
+ struct nas_lwip_bridge_pktinfo packet_info;
 };
 struct nas_lwip_bridge_request {
  enum nas_lwip_bridge_op op;
@@ -69,6 +81,11 @@ int nas_lwip_bridge_open(unsigned open_file_slot,
                          struct nas_lwip_bridge_id *out);
 int nas_lwip_bridge_submit(struct nas_lwip_bridge_id id,
                            const struct nas_lwip_bridge_request *request);
+/* Completion notification is a nonblocking, same-kernel-stack callback.
+ * The bridge does not inspect File state; its provider may consume the
+ * finished result and enqueue the next owned datagram autonomously. */
+void nas_lwip_bridge_set_completion_hook(
+                     void (*hook)(struct nas_lwip_bridge_id));
 /* 1 = result consumed, 0 = pending/no completion, negative = stale/closed. */
 int nas_lwip_bridge_take(struct nas_lwip_bridge_id id,
                          struct nas_lwip_bridge_result *out);
@@ -79,6 +96,13 @@ int nas_lwip_bridge_take(struct nas_lwip_bridge_id id,
  * Neither path waits on a user Task; delivery itself is not guaranteed. */
 int nas_lwip_bridge_release_with_tail(struct nas_lwip_bridge_id id,
                                       const uint8_t *tail,uint16_t length);
+/* `active` is the unsubmitted UDP datagram (NULL when the worker owns it).
+ * `ring` is the provider's bounded FIFO with `first` as its oldest entry.
+ * Both are copied into the old bridge generation before File destruction. */
+int nas_lwip_bridge_release_with_udp(struct nas_lwip_bridge_id id,
+                              const struct nas_lwip_bridge_datagram *active,
+                              const struct nas_lwip_bridge_datagram *ring,
+                              unsigned first,unsigned count);
 int nas_lwip_bridge_release(struct nas_lwip_bridge_id id);
 bool nas_lwip_bridge_alive(struct nas_lwip_bridge_id id);
 /* lwIP's own acceptmbox event count, not a speculative ACCEPT attempt.

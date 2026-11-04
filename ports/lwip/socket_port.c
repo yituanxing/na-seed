@@ -5,7 +5,9 @@
  * kernel-side send queue, then returns the accepted byte count. Native SEND
  * completion is asynchronous; any subsequent failure is retained for a later
  * write()/SO_ERROR/POLLERR rather than falsely claiming network delivery.
- * A single worker command per bridge ID serializes control, RX and TX.
+ * UDP may copy several complete datagrams into one bounded File-owned FIFO:
+ * musl DNS sends A+AAAA without waiting between the two sendto() calls.
+ * A single worker command per bridge ID still serializes control, RX and TX.
  * No netconn readiness callback exists yet: requested RX readiness is probed
  * at most once per millisecond as poll/scheduler queries the description.
  */
@@ -56,6 +58,8 @@ struct port_socket {
     bool tx_send_pktinfo;
     struct nas_lwip_bridge_pktinfo tx_packet_info,rx_packet_info;
     uint16_t tx_length,tx_position;
+    struct nas_lwip_bridge_datagram udp_pending[NAS_LWIP_UDP_PENDING];
+    uint8_t udp_head,udp_count;
     int failure,rx_error,tx_error,connect_result;
     uint64_t rx_retry_at,tx_retry_at;
 };
@@ -239,6 +243,41 @@ static void submit_tx(struct port_socket *s) {
     }
 }
 
+/* The active TX and every FIFO entry own a different datagram, destination,
+ * and optional pktinfo. Dequeue only when the previous worker SEND is fully
+ * finished; no subsequent packet can overtake a packet accepted earlier. */
+static void udp_activate_next(struct port_socket *s) {
+    if(s->type!=NAS_LWIP_BRIDGE_UDP || s->command!=PORT_IDLE ||
+       s->tx_length || !s->udp_count)return;
+    const struct nas_lwip_bridge_datagram *next=&s->udp_pending[s->udp_head];
+    memcpy(s->tx,next->bytes,next->length);
+    s->tx_length=next->length;
+    s->tx_position=0;
+    s->tx_destination=next->destination;
+    s->tx_send_pktinfo=next->send_pktinfo;
+    s->tx_packet_info=next->packet_info;
+    s->tx_retry_at=0;
+    s->udp_head=(uint8_t)((s->udp_head+1U)%NAS_LWIP_UDP_PENDING);
+    s->udp_count--;
+}
+
+static int udp_enqueue(struct port_socket *s,const uint8_t *bytes,
+                       uint16_t length,
+                       struct nas_lwip_bridge_address destination,
+                       const struct nas_lwip_bridge_pktinfo *pktinfo) {
+    if(s->udp_count==NAS_LWIP_UDP_PENDING)return -EAGAIN;
+    unsigned index=(s->udp_head+s->udp_count)%NAS_LWIP_UDP_PENDING;
+    struct nas_lwip_bridge_datagram *item=&s->udp_pending[index];
+    memcpy(item->bytes,bytes,length);
+    item->length=length;
+    item->destination=destination;
+    item->send_pktinfo=pktinfo!=NULL;
+    item->packet_info=pktinfo ? *pktinfo :
+                                   (struct nas_lwip_bridge_pktinfo){0};
+    s->udp_count++;
+    return length;
+}
+
 /* RX only runs when requested via read or POLLIN. A read of an idle UDP
  * socket does not consume/spin on empty datagrams; the native worker owns
  * one nonblocking RECV and a deadline gates subsequent empty retries. */
@@ -299,6 +338,7 @@ static int check(struct port_socket *s) {
     /* Shutdown of a TCP stream follows the already-admitted copied SEND
      * queue. A caller may write() then immediately SHUT_WR: userspace has
      * been told its bytes were accepted, so we must never issue FIN first. */
+    if(s->command==PORT_IDLE)udp_activate_next(s);
     if(s->command==PORT_IDLE && s->tx_length)submit_tx(s);
     if(s->command==PORT_IDLE && s->queued_control && !s->tx_length) {
         if(s->tx_error) {
@@ -342,10 +382,22 @@ static int nas_lwip_socket_accept_cancel_internal(
 
 const struct nas_file_ops *nas_lwip_socket_port_ops(void);
 
+/* Completion is published by the native bridge worker before this callback.
+ * Only the same-generation OpenFile owner may consume that result. This
+ * advances accepted UDP SENDs even if userspace never calls poll/read/close;
+ * no callback executes Netconn or touches a foreign Task address space. */
+static void port_bridge_complete(struct nas_lwip_bridge_id id) {
+    struct port_socket *s=socket_at(id.slot);
+    if(!s || s->id.generation!=id.generation ||
+       s->type!=NAS_LWIP_BRIDGE_UDP)return;
+    (void)check(s);
+}
+
 int nas_lwip_socket_port_open(unsigned slot,enum nas_lwip_bridge_type type) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
         return -EBADF;
     if(sockets[slot].owned)return -EBUSY;
+    nas_lwip_bridge_set_completion_hook(port_bridge_complete);
     struct nas_lwip_bridge_id id={0};
     int rc=nas_lwip_bridge_open(slot,type,&id);
     if(rc)return rc;
@@ -495,17 +547,24 @@ int64_t nas_lwip_socket_sendto_pktinfo(
     int rc=check(s);
     if(rc)return rc;
     if(s->tx_error){rc=s->tx_error;s->tx_error=0;return rc;}
+    if(s->queued_control)return -EAGAIN;
+    if(!destination.port && !s->connected)
+        return s->command==PORT_CONTROL &&
+               s->control_request.op==NAS_LWIP_BRIDGE_CONNECT ?
+               -EAGAIN:-EDESTADDRREQ;
+    /* The native Netconn worker owns at most one SEND at a time. A second
+     * nonblocking sendto() must nevertheless be accepted while that SEND,
+     * OPEN, or even a concurrent RX is in flight. musl's unmodified
+     * resolver emits A and AAAA back-to-back on precisely this one FD. */
+    if(s->udp_count || s->tx_length ||
+       (s->command!=PORT_IDLE && s->command!=PORT_OPEN))
+        return udp_enqueue(s,bytes,length,destination,pktinfo);
     /* Linux socket() returns a usable UDP descriptor immediately. The
      * native Netconn worker may still be finishing its asynchronous OPEN;
-     * admit ONE genuine copied first datagram to the same OpenFile queue.
-     * check() submits that exact packet only AFTER the PCB exists. A
-     * second send cannot overwrite it, and queued bind/connect controls
-     * retain their ordering before data. This removes a real race seen by
-     * unmodified ldns/drill without falsely claiming network delivery. */
-    if(s->command!=PORT_IDLE && s->command!=PORT_OPEN)
-        return -EAGAIN;
-    if(s->tx_length || s->queued_control)return -EAGAIN;
-    if(!destination.port && !s->connected)return -EDESTADDRREQ;
+     * admit the first copied datagram to the same OpenFile. check() sends
+     * it only AFTER the PCB exists; later datagrams enter the FIFO above.
+     * Queued bind/connect controls still retain their ordering. This
+     * covers real ldns/drill and musl without promising network delivery. */
     memcpy(s->tx,bytes,length);
     s->tx_destination=destination;
     s->tx_send_pktinfo=pktinfo!=NULL;
@@ -619,6 +678,12 @@ static uint64_t write_plan(unsigned slot,uint64_t requested) {
         rc=s->tx_error;s->tx_error=0;
         return (uint64_t)(int64_t)rc;
     }
+    if(s->type==NAS_LWIP_BRIDGE_UDP) {
+        if(!s->connected)return (uint64_t)-ENOTCONN;
+        if(s->queued_control || s->udp_count==NAS_LWIP_UDP_PENDING)
+            return (uint64_t)-EAGAIN;
+        return requested;
+    }
     if(s->connecting)return (uint64_t)(int64_t)(
         (nas_open_files[slot].status_flags&0x800ULL) ? -EAGAIN:-EOPNOTSUPP);
     if(!s->connected)return (uint64_t)-ENOTCONN;
@@ -634,6 +699,9 @@ static uint64_t write_bytes(unsigned slot,const uint8_t *src,uint64_t count) {
     if(!count)return 0;
     if(send_shutdown_requested(s))return (uint64_t)-EPIPE;
     if(!src || count>NAS_LWIP_BRIDGE_DATA)return (uint64_t)-EINVAL;
+    if(s->type==NAS_LWIP_BRIDGE_UDP)
+        return (uint64_t)nas_lwip_socket_sendto(slot,src,(uint16_t)count,
+                           (struct nas_lwip_bridge_address){0});
     if(s->command!=PORT_IDLE || s->tx_length)return (uint64_t)-EAGAIN;
     memcpy(s->tx,src,(size_t)count);
     s->tx_destination=(struct nas_lwip_bridge_address){0};
@@ -689,11 +757,16 @@ static uint16_t poll_description(unsigned slot,uint16_t events) {
     }
     if(s->rx_eof)ready|=PORT_POLLHUP;
     if(s->tx_error || s->rx_error)ready|=PORT_POLLERR;
-    if((s->connected || s->type==NAS_LWIP_BRIDGE_UDP) && !s->connecting &&
-       !send_shutdown_requested(s) &&
-       !s->tx_length &&
-       s->command==PORT_IDLE)
-        ready|=PORT_POLLOUT;
+    if(s->type==NAS_LWIP_BRIDGE_UDP) {
+        /* Linux POLLOUT reports free SEND buffer capacity, not an idle
+         * network worker. The queued datagrams retain their own bounds. */
+        if(s->command!=PORT_CONTROL && s->command!=PORT_CONTROL_DONE &&
+           !s->queued_control && !s->tx_error &&
+           s->udp_count<NAS_LWIP_UDP_PENDING)
+            ready|=PORT_POLLOUT;
+    } else if(s->connected && !s->connecting &&
+              !send_shutdown_requested(s) && !s->tx_length &&
+              s->command==PORT_IDLE)ready|=PORT_POLLOUT;
     return ready&(uint16_t)(events|PORT_POLLERR|PORT_POLLHUP);
 }
 
@@ -723,17 +796,31 @@ static void release(unsigned slot) {
        s->control_request.op==NAS_LWIP_BRIDGE_ACCEPT &&
        s->control_result.accepted.generation)
         (void)nas_lwip_bridge_release(s->control_result.accepted);
-    /* `PORT_TX` already owns the suffix inside bridge.c, even if its
-     * completion has not yet been taken here. If a previous partial SEND
-     * completed, `PORT_IDLE` keeps the remaining copied suffix in this
-     * File. Transfer that suffix before clearing the File, so close() does
-     * not silently forget bytes previously accepted by write(). */
-    const uint16_t tail=s->tx_length>=s->tx_position ?
-                        s->tx_length-s->tx_position:0;
-    const bool bridge_tx=s->command==PORT_TX;
-    int rc=nas_lwip_bridge_release_with_tail(
-        id,tail && !bridge_tx ? s->tx+s->tx_position:NULL,
-        tail && !bridge_tx ? tail:0);
+    int rc;
+    if(s->type==NAS_LWIP_BRIDGE_UDP) {
+        /* The worker already copied PORT_TX, but an unsubmitted active
+         * datagram and every FIFO item still belong to this File. Transfer
+         * them in order before closing the old native bridge generation. */
+        struct nas_lwip_bridge_datagram active={0};
+        const bool pending=s->tx_length && s->command!=PORT_TX;
+        if(pending) {
+            memcpy(active.bytes,s->tx,s->tx_length);
+            active.length=s->tx_length;
+            active.destination=s->tx_destination;
+            active.send_pktinfo=s->tx_send_pktinfo;
+            active.packet_info=s->tx_packet_info;
+        }
+        rc=nas_lwip_bridge_release_with_udp(id,pending ? &active:NULL,
+                         s->udp_pending,s->udp_head,s->udp_count);
+    } else {
+        /* TCP retains its existing bounded partial-stream close drain. */
+        const uint16_t tail=s->tx_length>=s->tx_position ?
+                              s->tx_length-s->tx_position:0;
+        const bool bridge_tx=s->command==PORT_TX;
+        rc=nas_lwip_bridge_release_with_tail(
+            id,tail && !bridge_tx ? s->tx+s->tx_position:NULL,
+            tail && !bridge_tx ? tail:0);
+    }
     /* A malformed/overlapping bridge state must never orphan its native
      * Netconn after the File's final refcount has gone away. */
     if(rc)(void)nas_lwip_bridge_release(id);

@@ -30,6 +30,8 @@ _Static_assert(NAS_LWIP_BRIDGE_ACTIVE_LIMIT==MEMP_NUM_NETCONN,
 #define CLOSE_TX_RETRY_NS UINT64_C(20000000)
 #define CLOSE_TX_DEADLINE_NS UINT64_C(1000000000)
 #define CLOSE_TX_MAX_ATTEMPTS 64U
+#define CLOSE_UDP_RETRY_NS UINT64_C(1000000)
+#define CLOSE_UDP_CAPACITY (NAS_LWIP_UDP_PENDING+1U)
 
 enum bridge_internal_op { BRIDGE_OPEN=100 };
 struct bridge_slot {
@@ -40,6 +42,8 @@ struct bridge_slot {
     unsigned close_tx_attempts;
     uint16_t close_tx_position,close_tx_length;
     uint64_t close_tx_retry_at,close_tx_deadline;
+    uint8_t close_udp_count,close_udp_position;
+    struct nas_lwip_bridge_datagram close_udp[CLOSE_UDP_CAPACITY];
     enum nas_lwip_bridge_type type;
     struct netconn *connection;
     struct netbuf *held_tcp;
@@ -54,6 +58,7 @@ static struct {
     unsigned first,count,active;
     struct nas_ksem wake;
     struct nas_kthread_handle worker;
+    void (*completion_hook)(struct nas_lwip_bridge_id);
     bool started;
 } bridge;
 
@@ -305,6 +310,42 @@ static err_t send_udp_pktinfo(struct netconn *connection,struct pbuf *p,
     return c.status;
 }
 
+/* Shared by ordinary SEND and final-close UDP drain. Always submit a whole
+ * datagram via upstream lwIP; packet boundaries, destination and IP_PKTINFO
+ * never depend on which owner currently holds the copied bytes. */
+static int send_udp_datagram(struct netconn *connection,
+                             const uint8_t *bytes,uint16_t length,
+                             struct nas_lwip_bridge_address destination,
+                             bool send_pktinfo,
+                             struct nas_lwip_bridge_pktinfo packet_info) {
+    struct netbuf *packet=netbuf_new();
+    if(!packet)return -ENOMEM;
+    void *data=netbuf_alloc(packet,length);
+    if(!data && length){netbuf_delete(packet);return -ENOMEM;}
+    if(length)memcpy(data,bytes,length);
+    err_t err=ERR_OK;
+    if(send_pktinfo) {
+        if(!destination.port) { /* connected UDP sendmsg(NULL name) */
+            ip_addr_t peer;
+            u16_t peer_port=0;
+            err=netconn_getaddr(connection,&peer,&peer_port,0);
+            if(err==ERR_OK && (!peer_port || !IP_IS_V4(&peer)))
+                err=ERR_CONN;
+            if(err==ERR_OK) {
+                destination.ipv4=lwip_ntohl(ip4_addr_get_u32(ip_2_ip4(&peer)));
+                destination.port=peer_port;
+            }
+        }
+        if(err==ERR_OK)err=send_udp_pktinfo(connection,packet->p,
+                                             destination,packet_info);
+    } else if(destination.port) {
+        const ip_addr_t addr=ipv4(destination);
+        err=netconn_sendto(connection,packet,&addr,destination.port);
+    } else err=netconn_send(connection,packet);
+    netbuf_delete(packet);
+    return err==ERR_OK ? 0:-err_to_errno(err);
+}
+
 static void execute(unsigned slot) {
     struct bridge_slot *s=&bridge.slots[slot];
     struct nas_lwip_bridge_result *out=&s->result;
@@ -398,32 +439,10 @@ static void execute(unsigned slot) {
             if(sent>NAS_LWIP_BRIDGE_DATA){out->status=-EIO;return;}
             out->length=(uint16_t)sent;
         } else {
-            struct netbuf *packet=netbuf_new();
-            if(!packet){out->status=-ENOMEM;return;}
-            void *data=netbuf_alloc(packet,r->length);
-            if(!data && r->length){netbuf_delete(packet);out->status=-ENOMEM;return;}
-            if(r->length)memcpy(data,s->copied_send,r->length);
-            if(r->send_pktinfo) {
-                struct nas_lwip_bridge_address destination=r->address;
-                if(!destination.port) { /* connected UDP sendmsg(NULL name) */
-                    ip_addr_t peer;
-                    u16_t peer_port=0;
-                    err=netconn_getaddr(s->connection,&peer,&peer_port,0);
-                    if(err==ERR_OK && (!peer_port || !IP_IS_V4(&peer)))
-                        err=ERR_CONN;
-                    if(err==ERR_OK) {
-                        destination.ipv4=lwip_ntohl(ip4_addr_get_u32(
-                            ip_2_ip4(&peer)));
-                        destination.port=peer_port;
-                    }
-                }
-                if(err==ERR_OK)err=send_udp_pktinfo(
-                    s->connection,packet->p,destination,r->packet_info);
-            } else err=r->address.port ?
-                netconn_sendto(s->connection,packet,&address,r->address.port) :
-                netconn_send(s->connection,packet);
-            if(err==ERR_OK)out->length=r->length;
-            netbuf_delete(packet);
+            out->status=send_udp_datagram(s->connection,s->copied_send,
+                r->length,r->address,r->send_pktinfo,r->packet_info);
+            if(out->status==0)out->length=r->length;
+            return;
         }
         break;
     case NAS_LWIP_BRIDGE_RECV: {
@@ -534,6 +553,37 @@ static void execute(unsigned slot) {
  * accepts it, a real error arrives, or the close deadline expires. */
 static void finish_closing(unsigned slot) {
     struct bridge_slot *s=&bridge.slots[slot];
+    if(s->type==NAS_LWIP_BRIDGE_UDP) {
+        if(!s->connection ||
+           s->close_udp_position==s->close_udp_count ||
+           deadline_expired(nas_arch_monotonic_ns(),s->close_tx_deadline) ||
+           s->close_tx_attempts>=CLOSE_TX_MAX_ATTEMPTS) {
+            free_native(slot);
+            return;
+        }
+        const struct nas_lwip_bridge_datagram *packet=
+            &s->close_udp[s->close_udp_position];
+        int rc=send_udp_datagram(s->connection,packet->bytes,packet->length,
+                                  packet->destination,packet->send_pktinfo,
+                                  packet->packet_info);
+        s->close_tx_attempts++;
+        if(!rc) {
+            s->close_udp_position++;
+            if(s->close_udp_position==s->close_udp_count) {
+                free_native(slot);
+                return;
+            }
+        } else if(rc!=-EAGAIN && rc!=-ENOMEM && rc!=-ENOBUFS) {
+            free_native(slot);
+            return;
+        }
+        /* Give each queued packet a native worker slice, rather than
+         * spinning inside final close while other sockets need service. */
+        s->close_tx_wait=true;
+        s->close_tx_retry_at=add_deadline(nas_arch_monotonic_ns(),
+                                           CLOSE_UDP_RETRY_NS);
+        return;
+    }
     if(!s->close_tx_active || !s->connection ||
        s->type!=NAS_LWIP_BRIDGE_TCP) {
         free_native(slot);
@@ -630,8 +680,10 @@ static void worker(void *unused) {
                  * copied command. The finish step accounts for partial
                  * admission before trying its still-owned suffix. */
                 if(s->close_tx_result_pending ||
-                   (s->type==NAS_LWIP_BRIDGE_UDP && s->connection &&
-                    s->request.op==NAS_LWIP_BRIDGE_SEND)) {
+                   (s->type==NAS_LWIP_BRIDGE_UDP &&
+                    (s->close_udp_count ||
+                     (s->connection &&
+                      s->request.op==NAS_LWIP_BRIDGE_SEND)))) {
                     execute(slot);
                     s->finished=true;
                 }
@@ -651,6 +703,16 @@ static void worker(void *unused) {
                     s->result.status=-ECANCELED;
                 }
                 s->finished=true;
+                /* A File may have accepted multiple UDP datagrams without
+                 * another userspace operation. Notify its owner after the
+                 * worker publishes completion, so the owner can advance
+                 * its FIFO; the bridge itself never reads OpenFile state.
+                 * The callback is immediate and cannot run Netconn. */
+                if(s->type==NAS_LWIP_BRIDGE_UDP &&
+                   bridge.completion_hook)
+                    bridge.completion_hook((struct nas_lwip_bridge_id){
+                        (uint16_t)slot,s->generation
+                    });
             }
         } else {
             int slot=next_closing();
@@ -671,6 +733,10 @@ bool nas_lwip_bridge_start(void) {
     if(!nas_kthread_spawn(worker,NULL,&bridge.worker))return false;
     bridge.started=true;
     return true;
+}
+void nas_lwip_bridge_set_completion_hook(
+                         void (*hook)(struct nas_lwip_bridge_id)) {
+    bridge.completion_hook=hook;
 }
 bool nas_lwip_bridge_slot_available(unsigned slot) {
     return slot<NAS_LWIP_BRIDGE_SLOTS && !bridge.slots[slot].owned;
@@ -756,6 +822,39 @@ int nas_lwip_bridge_release_with_tail(struct nas_lwip_bridge_id id,
     /* A queued command keeps its slot owned until the worker observes it;
      * the native close drain also pins the old slot/generation, preventing
      * an unrelated new FD from claiming its worker-owned Netconn. */
+    (void)nas_ksem_post(&bridge.wake);
+    return 0;
+}
+int nas_lwip_bridge_release_with_udp(struct nas_lwip_bridge_id id,
+                             const struct nas_lwip_bridge_datagram *active,
+                             const struct nas_lwip_bridge_datagram *ring,
+                             unsigned first,unsigned count) {
+    struct bridge_slot *s=lookup(id);
+    if(!s)return -EBADF;
+    if(s->type!=NAS_LWIP_BRIDGE_UDP)return -EOPNOTSUPP;
+    if(count>NAS_LWIP_UDP_PENDING || (count && (!ring ||
+       first>=NAS_LWIP_UDP_PENDING)))return -EINVAL;
+    const unsigned total=count+(active ? 1U:0U);
+    if(total>CLOSE_UDP_CAPACITY)return -EINVAL;
+    if(active && (!active->length || active->length>NAS_LWIP_BRIDGE_DATA))
+        return -EINVAL;
+    for(unsigned i=0;i<count;i++) {
+        unsigned idx=(first+i)%NAS_LWIP_UDP_PENDING;
+        if(!ring[idx].length || ring[idx].length>NAS_LWIP_BRIDGE_DATA)
+            return -EINVAL;
+    }
+    unsigned offset=0;
+    if(active)s->close_udp[offset++]=*active;
+    for(unsigned i=0;i<count;i++)
+        s->close_udp[offset++]=ring[(first+i)%NAS_LWIP_UDP_PENDING];
+    s->close_udp_count=(uint8_t)total;
+    s->close_udp_position=0;
+    s->close_tx_deadline=add_deadline(nas_arch_monotonic_ns(),
+                                       CLOSE_TX_DEADLINE_NS);
+    s->closing=true;
+    /* The old Netconn identity stays reserved until every already accepted
+     * datagram has reached the native send API (or a real bounded error).
+     * No user buffer or new File generation is accessed after this call. */
     (void)nas_ksem_post(&bridge.wake);
     return 0;
 }

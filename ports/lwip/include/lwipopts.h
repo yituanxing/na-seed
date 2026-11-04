@@ -41,6 +41,12 @@
 #define MEMP_NUM_UDP_PCB 32
 #define MEMP_NUM_TCP_PCB_LISTEN 32
 #define MEMP_NUM_TCP_SEG 128
+/* Upstream's default MEMP_NUM_NETBUF=2 cannot hold even one musl A+AAAA
+ * burst while the Netconn worker is constructing an outgoing datagram.
+ * Every queued UDP receive consumes a Netbuf until userspace reads it;
+ * cover the configured 64-packet pbuf pool plus eight transient SEND/RX
+ * allocations, instead of silently dropping the second valid DNS reply. */
+#define MEMP_NUM_NETBUF 72
 #define PBUF_POOL_SIZE 64
 #define TCPIP_THREAD_STACKSIZE 8192
 #define TCPIP_THREAD_PRIO 1

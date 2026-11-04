@@ -201,6 +201,17 @@ static void flush_tx(unsigned slot){
     }
     abort();
 }
+static void drive_udp_tx(unsigned slot) {
+    /* Unlike a single-slot worker, UDP POLLOUT remains ready while the
+     * bounded FIFO has capacity. Drive the native worker independently of
+     * writable readiness, just as real poll(POLLIN) scans do in the guest. */
+    for(unsigned tries=0;tries<40;tries++) {
+        (void)ops->poll_description(slot,1U);
+        test_ns+=UINT64_C(1000000);
+        (void)nas_kthread_timers_tick(test_ns);
+        (void)nas_kthread_run(1);
+    }
+}
 static unsigned receive(unsigned slot,uint8_t *dst,unsigned amount) {
     for(unsigned tries=0;tries<300;tries++) {
         uint64_t budget=ops->read_plan(slot,amount);
@@ -214,6 +225,7 @@ static unsigned receive(unsigned slot,uint8_t *dst,unsigned amount) {
          * which re-probes an idle native Netconn after a bounded delay. */
         (void)ops->poll_description(slot,1U);
         test_ns+=UINT64_C(1000000);
+        (void)nas_kthread_timers_tick(test_ns);
         (void)nas_kthread_run(1);
     }
     abort();
@@ -284,6 +296,9 @@ int main(void) {
     assert(nas_lwip_socket_bind(20,lo(38007))==-EALREADY);
     assert(nas_lwip_socket_bind(20,lo(38008))==-EBUSY);
     finish_control(20,0);
+    reserve(26,NAS_LWIP_BRIDGE_UDP);
+    assert(nas_lwip_socket_bind(26,lo(38008))==0);
+    finish_control(26,0);
     /* Real ldns/drill does socket(AF_INET,SOCK_DGRAM) followed immediately
      * by sendto(), before the asynchronous Netconn OPEN worker runs. The
      * kernel must retain that actual first datagram, never leak EAGAIN. */
@@ -291,19 +306,85 @@ int main(void) {
     nas_open_files[24].status_flags=2;
     nas_open_files[24].ops=ops;
     assert(nas_lwip_socket_open(24,NAS_LWIP_BRIDGE_UDP)==0);
-    const uint8_t first_udp_packet[]={0xD1,0x15,0x42};
+    uint8_t first_udp_packet[]={0xD1,0x15,0x42};
+    const uint8_t second_udp_packet[]={0xD2,0x16,0x43,0x44};
     assert(nas_lwip_socket_sendto(24,first_udp_packet,
                 sizeof(first_udp_packet),lo(38007))==
            (int64_t)sizeof(first_udp_packet));
-    assert(nas_lwip_socket_sendto(24,first_udp_packet,
-                sizeof(first_udp_packet),lo(38007))==-EAGAIN);
-    flush_tx(24);
+    assert(nas_lwip_socket_sendto(24,second_udp_packet,
+                sizeof(second_udp_packet),lo(38008))==
+           (int64_t)sizeof(second_udp_packet));
+    memset(first_udp_packet,0,sizeof(first_udp_packet));
+    /* A+AAAA-style back-to-back UDP SENDs must preserve separate bytes,
+     * per-packet destinations, and enqueue while the first worker is busy. */
+    drive_udp_tx(24);
     uint8_t first_udp_received[8]={0};
     assert(receive(20,first_udp_received,sizeof(first_udp_received))==
            sizeof(first_udp_packet));
-    assert(!memcmp(first_udp_received,first_udp_packet,
-                   sizeof(first_udp_packet)));
+    const uint8_t first_expected[]={0xD1,0x15,0x42};
+    assert(!memcmp(first_udp_received,first_expected,sizeof(first_expected)));
+    assert(receive(26,first_udp_received,sizeof(first_udp_received))==
+           sizeof(second_udp_packet));
+    assert(!memcmp(first_udp_received,second_udp_packet,
+                   sizeof(second_udp_packet)));
+    /* An unmodified DNS client can send twice immediately after socket(),
+     * then close before native OPEN has even created the upstream PCB. */
+    nas_open_files[28].refcount=1;
+    nas_open_files[28].status_flags=2;
+    nas_open_files[28].ops=ops;
+    assert(nas_lwip_socket_open(28,NAS_LWIP_BRIDGE_UDP)==0);
+    assert(nas_lwip_socket_sendto(28,first_expected,
+                                  sizeof(first_expected),lo(38007))==
+           sizeof(first_expected));
+    assert(nas_lwip_socket_sendto(28,second_udp_packet,
+                                  sizeof(second_udp_packet),lo(38008))==
+           sizeof(second_udp_packet));
+    close_slot(28);
+    assert(receive(20,first_udp_received,sizeof(first_udp_received))==
+           sizeof(first_expected));
+    assert(!memcmp(first_udp_received,first_expected,sizeof(first_expected)));
+    assert(receive(26,first_udp_received,sizeof(first_udp_received))==
+           sizeof(second_udp_packet));
+    assert(!memcmp(first_udp_received,second_udp_packet,
+                   sizeof(second_udp_packet)));
     close_slot(24);
+    /* No poll/write/close of the sender after the two successful sendto()
+     * calls. The native worker must finish OPEN, then both queued SENDs on
+     * its own; accepted datagrams cannot depend on another user syscall. */
+    nas_open_files[29].refcount=1;
+    nas_open_files[29].status_flags=2;
+    nas_open_files[29].ops=ops;
+    assert(nas_lwip_socket_open(29,NAS_LWIP_BRIDGE_UDP)==0);
+    assert(nas_lwip_socket_sendto(29,first_expected,
+                                  sizeof(first_expected),lo(38007))==
+           sizeof(first_expected));
+    assert(nas_lwip_socket_sendto(29,second_udp_packet,
+                                  sizeof(second_udp_packet),lo(38008))==
+           sizeof(second_udp_packet));
+    assert(receive(20,first_udp_received,sizeof(first_udp_received))==
+           sizeof(first_expected));
+    assert(!memcmp(first_udp_received,first_expected,sizeof(first_expected)));
+    assert(receive(26,first_udp_received,sizeof(first_udp_received))==
+           sizeof(second_udp_packet));
+    assert(!memcmp(first_udp_received,second_udp_packet,
+                   sizeof(second_udp_packet)));
+    close_slot(29);
+    /* close() must hand its remaining accepted datagrams to the native
+     * bridge generation even if the first SEND is still outstanding. */
+    reserve(25,NAS_LWIP_BRIDGE_UDP);
+    assert(nas_lwip_socket_sendto(25,first_expected,sizeof(first_expected),
+                                  lo(38007))==sizeof(first_expected));
+    assert(nas_lwip_socket_sendto(25,second_udp_packet,
+                                  sizeof(second_udp_packet),lo(38008))==
+                                  sizeof(second_udp_packet));
+    close_slot(25);
+    assert(receive(20,first_udp_received,sizeof(first_udp_received))==
+           sizeof(first_expected));
+    assert(!memcmp(first_udp_received,first_expected,sizeof(first_expected)));
+    assert(receive(26,first_udp_received,sizeof(first_udp_received))==
+           sizeof(second_udp_packet));
+    assert(!memcmp(first_udp_received,second_udp_packet,
+                   sizeof(second_udp_packet)));
     struct nas_lwip_bridge_address named=name_slot(20,false);
     assert(named.ipv4==UINT32_C(0x7f000001) && named.port==38007);
     assert(nas_lwip_socket_connect(21,lo(38007))==0);
@@ -333,7 +414,7 @@ int main(void) {
     assert(ops->write_plan(21,length)==length);
     assert(ops->write(21,(const uint8_t *)payload,length)==length);
     memset(payload,'X',length); /* provider owns TX queue at return */
-    assert((int64_t)ops->write_plan(21,1)==-EOPNOTSUPP);
+    assert(ops->write_plan(21,1)==1); /* queue has space while SEND runs */
     flush_tx(21);
     uint8_t result[128]={0};
     assert(receive(20,result,sizeof(result))==length);
@@ -376,7 +457,8 @@ int main(void) {
     assert(nas_lwip_socket_sendto(23,addressed,sizeof(addressed)-1,
                                   lo(38007))==sizeof(addressed)-1);
     assert(nas_lwip_socket_sendto(23,addressed,sizeof(addressed)-1,
-                                  lo(38007))==-EAGAIN);
+                                  lo(38007))==sizeof(addressed)-1);
+    drive_udp_tx(23);
     struct nas_lwip_bridge_address source={0};
     struct nas_lwip_bridge_pktinfo recv_info={0};
     bool truncated=false;
@@ -396,6 +478,17 @@ int main(void) {
     assert(recv_info.ifindex &&
            recv_info.destination==UINT32_C(0x7f000001) &&
            recv_info.spec_dst==UINT32_C(0x7f000001));
+    /* Consume the second queued addressed datagram before the next case. */
+    for(unsigned tries=0;tries<300;tries++) {
+        got=nas_lwip_socket_recvfrom(20,result,sizeof(result),
+                                    &source,&truncated,NULL);
+        if(got>=0)break;
+        assert(got==-EAGAIN);
+        test_ns+=UINT64_C(1000000);
+        (void)nas_kthread_run(1);
+    }
+    assert(got==(int64_t)sizeof(addressed)-1 &&
+           !memcmp(result,addressed,(size_t)got));
     for(unsigned tries=0;tries<200 && !(ops->poll_description(23,4U)&4U);
         tries++) {
         test_ns+=UINT64_C(1000000);
@@ -434,6 +527,7 @@ int main(void) {
     assert(got==(int64_t)sizeof(addressed)-1 &&
            recv_info.destination==UINT32_C(0x7f000001));
     close_slot(23);
+    close_slot(26);
 
     reserve(30,NAS_LWIP_BRIDGE_TCP);
     /* A genuine core-thread PCB option: lwIP's TCP slow timer checks
@@ -778,6 +872,27 @@ int main(void) {
     close_slot(30);
     close_slot(21);
     close_slot(20);
+    /* A burst is bounded: one worker-owned datagram plus eight complete
+     * copied FIFO entries. The tenth SEND must report backpressure, never
+     * overwrite an earlier accepted packet or allocate without limit. */
+    reserve(27,NAS_LWIP_BRIDGE_UDP);
+    for(unsigned i=0;i<=NAS_LWIP_UDP_PENDING;i++)
+        assert(nas_lwip_socket_sendto(27,first_expected,
+                    sizeof(first_expected),lo(38077))==
+               sizeof(first_expected));
+    assert(nas_lwip_socket_sendto(27,first_expected,
+                    sizeof(first_expected),lo(38077))==-EAGAIN);
+    close_slot(27);
+    bool close_done=false;
+    for(unsigned tries=0;tries<200;tries++) {
+        if(nas_lwip_bridge_slot_available(27)) {close_done=true;break;}
+        test_ns+=UINT64_C(1000000);
+        (void)nas_kthread_timers_tick(test_ns);
+        (void)nas_kthread_run(1);
+    }
+    assert(close_done); /* old-generation close must eventually reclaim */
+    puts("[LWIP UDP BURST PASS] consecutive datagrams preserve destinations,");
+    puts("  native OPEN/close drains, full FIFO EAGAIN, bounded bridge reclaim");
     for(unsigned tries=0;tries<200;tries++) {
         if(!nas_kthread_runnable())break;
         (void)nas_kthread_run(1);
