@@ -16,10 +16,15 @@
 #define LWIP_ERRNO_INCLUDE <nas_lwip_errno.h>
 #define LWIP_NETIF_API 1
 #define LWIP_NETIF_STATUS_CALLBACK 1 /* verify DHCP lease, not DHCP start */
+#define LWIP_NETIF_EXT_STATUS_CALLBACK 1 /* ACK callback also on unchanged-IP DHCP renew */
 #define LWIP_IPV4 1
 #define LWIP_IPV6 0
 #define LWIP_DHCP 1
 #define LWIP_DNS 1
+/* Keep upstream DHCP option-6 decoding and DNS resolver integration.
+ * Exactly two addresses fit the default-route procfs atomic snapshot. */
+#define DNS_MAX_SERVERS 2
+#define LWIP_DHCP_MAX_DNS_SERVERS 2
 #define LWIP_ICMP 1
 #define LWIP_UDP 1
 #define LWIP_TCP 1

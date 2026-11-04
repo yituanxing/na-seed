@@ -14,6 +14,16 @@
 #include "../kernel/arch/user_pt.h"
 #include "../kernel/task/resources.h"
 #include "../kernel/ipc/sysv.h"
+#ifdef NAS_ENABLE_LWIP
+#include "../ports/lwip/network_boot.h"
+static uint32_t fixture_dns[NAS_LWIP_DNS_SERVER_LIMIT];
+static unsigned fixture_dns_count;
+unsigned nas_lwip_guest_dns_snapshot(uint32_t out[NAS_LWIP_DNS_SERVER_LIMIT]) {
+    if(!out)return 0;
+    for(unsigned i=0;i<NAS_LWIP_DNS_SERVER_LIMIT;i++)out[i]=fixture_dns[i];
+    return fixture_dns_count;
+}
+#endif
 static struct nas_task tasks[3];
 static struct nas_files files_fixture;
 static struct nas_mm address_spaces[2];
@@ -121,6 +131,64 @@ static void check_file(const char *path,const char *wanted) {
     assert(!memcmp(split,data,5));
     assert(nas_proc_read(node,(uint64_t)n,data,1)==0);
 }
+#ifdef NAS_ENABLE_LWIP
+static void check_live_dns(void) {
+    struct nas_proc_node net={0},resolver={0},inverse={0};
+    assert(nas_proc_lookup("/proc/net",&net) && nas_proc_is_dir(net));
+    assert(nas_proc_directory_from_ino(nas_proc_ino(net),&inverse) &&
+           inverse.kind==NAS_PROC_NET_DIR);
+    char path[256]={0},name[32]={0};
+    assert(nas_proc_dir_path(net,path) && !strcmp(path,"/proc/net"));
+    assert(nas_proc_child(net,0,name,&resolver) &&
+           !strcmp(name,"naseed-resolv.conf"));
+    assert(nas_proc_find_child(nas_proc_ino(net),name,&inverse) &&
+           inverse.kind==NAS_PROC_NET_RESOLV);
+    assert(nas_proc_node_from_ino(nas_proc_ino(resolver),&inverse) &&
+           inverse.kind==NAS_PROC_NET_RESOLV);
+    assert(nas_proc_lookup("/proc/net/naseed-resolv.conf",&inverse) &&
+           inverse.kind==NAS_PROC_NET_RESOLV);
+    assert(!nas_proc_child(net,1,name,&inverse));
+    assert(!nas_proc_find_child(nas_proc_ino(net),"other",&inverse));
+    assert(!nas_proc_lookup("/proc/net/naseed-resolv.conf/other",&inverse));
+    assert(!nas_proc_is_dir(resolver) && (nas_proc_mode(resolver)&0222U)==0);
+    uint8_t actual[96]={0};
+    fixture_dns_count=0;
+    assert(nas_proc_read(resolver,0,actual,sizeof(actual))==0);
+    fixture_dns[0]=UINT32_C(0x0a000203);fixture_dns_count=1;
+    static const char one[]="nameserver 10.0.2.3\n";
+    assert(nas_proc_read(resolver,0,actual,sizeof(actual))==(int64_t)strlen(one));
+    assert(!memcmp(actual,one,strlen(one)));
+    assert(nas_proc_read(resolver,11,actual,4)==4);
+    assert(!memcmp(actual,one+11,4));
+    fixture_dns[0]=UINT32_C(0x0a000303);
+    fixture_dns[1]=UINT32_C(0xc0000235);fixture_dns_count=2;
+    static const char two[]="nameserver 10.0.3.3\nnameserver 192.0.2.53\n";
+    for(unsigned offset=0;offset<strlen(two);offset+=3) {
+        unsigned take=3;
+        if(take>strlen(two)-offset)take=(unsigned)(strlen(two)-offset);
+        assert(nas_proc_read(resolver,offset,actual,take)==take);
+        assert(!memcmp(actual,two+offset,take));
+    }
+    assert(nas_proc_read(resolver,strlen(two),actual,1)==0);
+    /* A previously opened inode is live, not a copied /etc DNS artifact. */
+    fixture_dns[0]=UINT32_C(0xcb007109);fixture_dns[1]=0;
+    fixture_dns_count=1;
+    static const char changed[]="nameserver 203.0.113.9\n";
+    assert(nas_proc_read(resolver,0,actual,sizeof(actual))==(int64_t)strlen(changed));
+    assert(!memcmp(actual,changed,strlen(changed)));
+    fixture_dns[0]=0;fixture_dns_count=0;
+    assert(nas_proc_read(resolver,0,actual,sizeof(actual))==0);
+}
+#else
+static void check_live_dns(void) {
+    /* The same proc provider is linked by historical no-network kernels;
+     * it must remain linkable and expose no fabricated resolver. */
+    struct nas_proc_node resolver={0};
+    assert(nas_proc_lookup("/proc/net/naseed-resolv.conf",&resolver));
+    uint8_t data[48]={0};
+    assert(nas_proc_read(resolver,0,data,sizeof(data))==0);
+}
+#endif
 /* Compare exact offset reads, not just a prefix in a 1536-byte stack buffer.
  * Test every byte boundary and a few inhomogeneous small chunks, including
  * offsets after 1536 and beyond EOF. */
@@ -299,6 +367,7 @@ int main(void) {
     assert(nas_proc_read(mapnode,25,half,sizeof(half))==mapslen-25);
     assert(!memcmp(half,allmaps+25,(size_t)(mapslen-25)));
     check_file("/proc/meminfo","MemTotal:       4096 kB");
+    check_live_dns();
     check_file("/proc/uptime","12.50");
     check_file("/proc/stat","cpu  0 0 150 1100");
     check_file("/proc/stat","btime 1760000000");

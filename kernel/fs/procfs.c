@@ -14,6 +14,9 @@
 #include "../errno.h"
 #include "../uts.h"
 #include "../ipc/sysv.h"
+#ifdef NAS_ENABLE_LWIP
+#include "../../ports/lwip/network_boot.h"
+#endif
 #include <stdint.h>
 #include <stdbool.h>
 #define LIMIT 1536U
@@ -73,6 +76,10 @@ bool nas_proc_lookup(const char *path,struct nas_proc_node *out) {
     if(!strcmp(path,"/proc/sysvipc/shm")) {out->kind=NAS_PROC_SYSVIPC_SHM;return true;}
     if(!strcmp(path,"/proc/sysvipc/sem")) {out->kind=NAS_PROC_SYSVIPC_SEM;return true;}
     if(!strcmp(path,"/proc/sysvipc/msg")) {out->kind=NAS_PROC_SYSVIPC_MSG;return true;}
+    if(!strcmp(path,"/proc/net")) {out->kind=NAS_PROC_NET_DIR;return true;}
+    if(!strcmp(path,"/proc/net/naseed-resolv.conf")) {
+        out->kind=NAS_PROC_NET_RESOLV;return true;
+    }
     if(!strcmp(path,"/proc/sys")) {out->kind=NAS_PROC_SYS_DIR;return true;}
     if(!strcmp(path,"/proc/sys/kernel")) {out->kind=NAS_PROC_SYS_KERNEL_DIR;return true;}
     if(!strcmp(path,"/proc/sys/kernel/hostname")) {out->kind=NAS_PROC_SYS_HOSTNAME;return true;}
@@ -151,6 +158,7 @@ bool nas_proc_node_from_ino(uint64_t ino,struct nas_proc_node *out) {
         case NAS_PROC_SYS_HOSTNAME:case NAS_PROC_LOCKS:case NAS_PROC_SLABINFO:
         case NAS_PROC_SYSVIPC_DIR:case NAS_PROC_SYSVIPC_SHM:
         case NAS_PROC_SYSVIPC_SEM:case NAS_PROC_SYSVIPC_MSG:
+        case NAS_PROC_NET_DIR:case NAS_PROC_NET_RESOLV:
             node.kind=(uint8_t)kind;break;
         default:return false;
         }
@@ -248,6 +256,11 @@ bool nas_proc_dir_path(struct nas_proc_node node,char path[256]) {
         for(unsigned i=0;suffix[i];i++)path[p++]=suffix[i];
         path[p]=0;return true;
     }
+    if(node.kind==NAS_PROC_NET_DIR) {
+        const char *suffix="/net";
+        for(unsigned i=0;suffix[i];i++)path[p++]=suffix[i];
+        path[p]=0;return true;
+    }
     if(node.kind!=NAS_PROC_ROOT) {
         uint64_t leader=node.tgid?node.tgid:node.pid;
         if(!living(leader))return false;
@@ -271,7 +284,7 @@ bool nas_proc_dir_path(struct nas_proc_node node,char path[256]) {
 }
 bool nas_proc_is_dir(struct nas_proc_node node) {
     return node.kind==NAS_PROC_ROOT || node.kind==NAS_PROC_PID_DIR ||
-           node.kind==NAS_PROC_SYSVIPC_DIR ||
+           node.kind==NAS_PROC_SYSVIPC_DIR || node.kind==NAS_PROC_NET_DIR ||
            node.kind==NAS_PROC_SYS_DIR || node.kind==NAS_PROC_SYS_KERNEL_DIR ||
            node.kind==NAS_PROC_TASK_DIR || node.kind==NAS_PROC_TID_DIR ||
            node.kind==NAS_PROC_FD_DIR || node.kind==NAS_PROC_FDINFO_DIR;
@@ -291,7 +304,7 @@ uint64_t nas_proc_ino(struct nas_proc_node node) {
 bool nas_proc_child(struct nas_proc_node directory,unsigned index,
                     char name[32],struct nas_proc_node *node) {
     static const char *const root[]={"self","meminfo","uptime","version","cpuinfo","stat","loadavg","vmstat",
-                                    "mounts","sys","locks","slabinfo","sysvipc"};
+                                    "mounts","sys","locks","slabinfo","sysvipc","net"};
     static const char *const process[]={"stat","status","comm","cmdline","statm","task","fd","fdinfo","maps","mounts","cwd"};
     if(!name || !node)return false;
     if(directory.kind==NAS_PROC_ROOT) {
@@ -329,6 +342,13 @@ bool nas_proc_child(struct nas_proc_node directory,unsigned index,
         const char *s=names[index];unsigned i=0;
         do{name[i]=s[i];}while(s[i++]);
         *node=(struct nas_proc_node){(uint8_t)(NAS_PROC_SYSVIPC_SHM+index),0,0,0};
+        return true;
+    }
+    if(directory.kind==NAS_PROC_NET_DIR) {
+        if(index)return false;
+        const char *s="naseed-resolv.conf";
+        unsigned i=0;do{name[i]=s[i];}while(s[i++]);
+        *node=(struct nas_proc_node){NAS_PROC_NET_RESOLV,0,0,0};
         return true;
     }
     if(directory.kind==NAS_PROC_FD_DIR ||
@@ -688,6 +708,25 @@ int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
     case NAS_PROC_SYSVIPC_SHM: ipc_columns(&w,NAS_SYSVIPC_SHM);break;
     case NAS_PROC_SYSVIPC_SEM: ipc_columns(&w,NAS_SYSVIPC_SEM);break;
     case NAS_PROC_SYSVIPC_MSG: ipc_columns(&w,NAS_SYSVIPC_MSG);break;
+    case NAS_PROC_NET_RESOLV: {
+        /* A Linux-compatible resolver file from the live lwIP DHCP owner.
+         * Never overwrite an ext4 /etc file in the kernel. An optional
+         * Alpine /etc/resolv.conf symlink can consume this volatile view.
+         * No live lease (or no network support) must NOT expose stale DNS. */
+#ifdef NAS_ENABLE_LWIP
+        uint32_t dns[NAS_LWIP_DNS_SERVER_LIMIT]={0};
+        unsigned count=nas_lwip_guest_dns_snapshot(dns);
+        if(count>NAS_LWIP_DNS_SERVER_LIMIT)return -EIO;
+        for(unsigned i=0;i<count;i++) {
+            word(&w,"nameserver ");
+            decimal(&w,(dns[i]>>24)&255U);ch(&w,'.');
+            decimal(&w,(dns[i]>>16)&255U);ch(&w,'.');
+            decimal(&w,(dns[i]>>8)&255U);ch(&w,'.');
+            decimal(&w,dns[i]&255U);ch(&w,'\n');
+        }
+#endif
+        break;
+    }
     case NAS_PROC_MEMINFO:
         word(&w,"MemTotal:       ");decimal(&w,nas_managed_frames()*4U);word(&w," kB\n");
         word(&w,"MemFree:        ");decimal(&w,nas_free_frames()*4U);word(&w," kB\n");

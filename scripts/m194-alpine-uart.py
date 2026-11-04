@@ -75,6 +75,42 @@ def step_observed(segment: str, expected: str | re.Pattern[str]) -> bool:
     return step_match(segment, expected) is not None
 
 
+# After a command's independent result marker, ash can print its next prompt
+# and the kernel can immediately append an asynchronous printk on the SAME
+# UART line.  Checking only the final line (m193.shell_prompt) loses that
+# already-real prompt and deadlocks the next command until the QEMU timeout.
+# Anchor the prompt at the start of a fresh UART line: neither a shell command
+# echo ("naseed:~# apk ...") nor a printk mentioning "naseed:~#" is proof.
+_UART_CSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_ASH_PROMPT = re.compile(
+    r"^(?:[A-Za-z0-9_.-]+:[~/][^\s#]{0,45}"
+    r"|[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:[~/][^\s#]{0,45}"
+    r"|[~/][^\s#]{0,45})# ?"
+)
+_ASYNC_PRINTK = re.compile(
+    r"^\[(?:LWIP|VIRTIO|NET|IRQ|PROC|THREAD|TIMER|BLOCK|CLOCK|"
+    r"SCHED|EXEC|DYN|UART|TTY)(?:[- ][A-Z0-9 _-]{0,70})?\]"
+)
+
+
+def shell_prompt_after_step(segment: str) -> bool:
+    """Find a completed ash prompt *after* a verified command boundary.
+
+    An optional VT100 DSR query (ESC[6n) and a kernel printk can follow a
+    prompt without a newline.  Ignore those terminal sequences, but never
+    accept a prompt merely embedded in an echoed command or kernel log.
+    """
+    for raw_line in segment.split("\n"):
+        line = _UART_CSI.sub("", raw_line)
+        prompt = _ASH_PROMPT.match(line)
+        if prompt is None:
+            continue
+        suffix = line[prompt.end():]
+        if not suffix or _ASYNC_PRINTK.match(suffix):
+            return True
+    return False
+
+
 def disk_lock_released(image: str) -> bool:
     """Probe QEMU's advisory byte-range lock without changing the ext4 disk.
 
@@ -309,7 +345,7 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
                         # startup.  Queueing the next command too early can
                         # interleave with a cursor-position report.
                         state = "await_prompt"
-                    elif m193.shell_prompt(segment):
+                    elif shell_prompt_after_step(segment):
                         # A new REAL ash prompt means this command already
                         # returned.  Stop immediately when apk/rc-service or
                         # the daemon check failed; do not wait out the entire
@@ -318,7 +354,7 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
                         raise RuntimeError(
                             f"original Alpine command {step + 1} ({description}) "
                             f"completed without its required result; guest_rc={observed_rc[-1:]}")
-                elif state == "await_prompt" and m193.shell_prompt(text[step_end:]):
+                elif state == "await_prompt" and shell_prompt_after_step(text[step_end:]):
                     step_start = len(text)
                     m193.sent(hold, commands[step][0])
                     state = "commands"

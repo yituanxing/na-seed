@@ -40,4 +40,15 @@ struct nas_lwip_guest_ipv4_if {
 unsigned nas_lwip_guest_ipv4_ifconf(
     struct nas_lwip_guest_ipv4_if out[NAS_LWIP_GUEST_IF_LIMIT]);
 
+/* Published lwIP DNS for the same genuinely leased interface
+ * that owns the current lwIP default route. This read-only projection is
+ * safe from other kernel contexts; only tcpip_thread reads/writes lwIP
+ * internals, and publication is one atomic 64-bit value. No lease means
+ * zero entries. Upstream does not expose ACK option-6 presence, so a DHCP
+ * ACK omitting DNS may leave stale lwIP global servers; no stronger claim
+ * about option-6 provenance is made by this API. */
+#define NAS_LWIP_DNS_SERVER_LIMIT 2U
+unsigned nas_lwip_guest_dns_snapshot(
+    uint32_t out[NAS_LWIP_DNS_SERVER_LIMIT]);
+
 #endif

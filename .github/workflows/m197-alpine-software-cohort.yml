@@ -1,0 +1,147 @@
+name: NaSeed M197 public Alpine four-package functional software cohort
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/m197-alpine-software-cohort.yml'
+      - 'scripts/m197-*'
+      - 'scripts/probe-m197-alpine-software-cohort.sh'
+      - 'tests/m197-*'
+      - 'scripts/m194-alpine-uart.py'
+      - 'scripts/m195-alpine-disk-check.py'
+      - 'scripts/m196-public-wire-check.py'
+      - 'scripts/m196-alpine-uart.py'
+      - 'scripts/probe-m191-alpine-root.sh'
+      - 'scripts/m191-alpine-root-disk.py'
+      - 'ports/lwip/network_boot*'
+      - 'ports/lwip/include/lwipopts.h'
+      - 'ports/lwip/socket_port.c'
+      - 'ports/lwip/netconn_bridge.*'
+      - 'ports/uboot/**'
+      - 'kernel/fs/procfs*'
+      - 'kernel/fs/socket_syscall*'
+      - 'kernel/drivers/virtio/**'
+      - 'kernel/platform/**'
+      - 'kernel/time/**'
+      - 'rootfs/alpine/**'
+
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  real-public-software:
+    name: M197 official public Bash Lua SQLite Git and two QEMU boots / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
+      - name: Verify live DHCP DNS, official Alpine trust and host application oracles
+        run: |
+          set -eu
+          sh -n scripts/probe-m197-alpine-software-cohort.sh
+          bash -n tests/m197-software-workload.sh
+          python3 -m py_compile scripts/m197-alpine-stage.py \
+            scripts/m197-alpine-uart.py scripts/m197-alpine-disk-check.py \
+            scripts/test-m197-alpine-host.py
+          python3 scripts/test-m197-alpine-host.py
+          python3 scripts/test-m194-uart-prompt.py
+          python3 scripts/test-m196-public-wire.py
+          python3 scripts/test-m196-alpine-host.py
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+          mkdir -p build/lwip-foundation
+          cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin \
+            -I kernel -DNAS_ENABLE_LWIP=1 scripts/test-procfs.c \
+            kernel/fs/procfs.c kernel/uts.c kernel/lib/string.c \
+            -o build/lwip-foundation/test-m197-procfs
+          build/lwip-foundation/test-m197-procfs
+          python3 - <<'PY'
+          from pathlib import Path
+          def rows(path):
+              return [line for line in Path(path).read_text().splitlines()
+                      if line and not line.startswith('#')]
+          assert rows('scripts/m197-alpine-cases.tsv') == [
+              'm197-batch\tcpio\t \t-\t-\t/sbin/init']
+          reopened = rows('scripts/m197-alpine-reopen-cases.tsv')
+          assert len(reopened) == 1 and reopened[0].startswith('m197-batch\tcpio\tsh -c')
+          assert 'M197_PUBLIC_ALPINE_SOFTWARE_2026' in reopened[0]
+          assert '--reopen' in reopened[0] and '/bin/bash' in reopened[0]
+          print('[M197 HOST GATE PASS] public WAN, four original binaries, live DNS and durable applications')
+          PY
+      - name: Install native QEMU and official Alpine staging tools
+        timeout-minutes: 18
+        run: |
+          set -eu
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'cmake:cmake' 'g++:g++' 'clang:clang' 'ld.lld:lld' \
+                      'readelf:binutils' 'cpio:cpio' 'mke2fs:e2fsprogs' \
+                      'debugfs:e2fsprogs' 'e2fsck:e2fsprogs' \
+                      'xorriso:xorriso' 'mformat:mtools' 'sgdisk:gdisk' \
+                      'curl:curl' 'python3:python3' 'openssl:openssl'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case '${{ matrix.port }}' in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+              test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
+            riscv64)
+              command -v riscv64-linux-gnu-gcc >/dev/null || missing="$missing gcc-riscv64-linux-gnu"
+              command -v riscv64-linux-gnu-g++ >/dev/null || missing="$missing g++-riscv64-linux-gnu"
+              test -f /usr/riscv64-linux-gnu/include/bits/wordsize.h && \
+              test -f /usr/riscv64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-riscv64-cross"
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+            arm64)
+              command -v aarch64-linux-gnu-gcc >/dev/null || missing="$missing gcc-aarch64-linux-gnu"
+              command -v aarch64-linux-gnu-g++ >/dev/null || missing="$missing g++-aarch64-linux-gnu"
+              test -f /usr/aarch64-linux-gnu/include/bits/wordsize.h && \
+              test -f /usr/aarch64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-arm64-cross"
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/AAVMF/AAVMF_CODE.fd || \
+              test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+          esac
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+          command -v sudo
+      - name: Public Alpine four-package transaction, integrated native apps and durable reboot
+        timeout-minutes: 73
+        run: sh scripts/probe-m197-alpine-software-cohort.sh ${{ matrix.port }}
+      - name: Preserve public DNS TLS, QEMU and application persistence evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m197-public-alpine-software-${{ matrix.port }}
+          path: |
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-first-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-live.serial.log
+            build/busybox-source-parity-x86/m197-batch.clean.log
+            build/busybox-source-parity-x86/m197-batch.serial.log
+            build/port-riscv64/full/matrix-source/m197-batch.clean.log
+            build/port-riscv64/full/matrix-source/m197-batch.serial.log
+            build/port-aarch64/full/matrix-source/m197-batch.clean.log
+            build/port-aarch64/full/matrix-source/m197-batch.serial.log
+          if-no-files-found: ignore

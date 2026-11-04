@@ -16,6 +16,7 @@
 #include "lwip/tcpip.h"
 #include "lwip/sys.h"
 #include "lwip/dhcp.h"
+#include "lwip/dns.h"
 #include "lwip/ip4_addr.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -36,6 +37,7 @@ struct nas_guest_nic {
  uint64_t rx_last_irq_sequence;
  uint32_t dhcp_ipv4_host_order;
  uint8_t dhcp_prefix_len;
+ uint32_t dhcp_dns_host_order[NAS_LWIP_DNS_SERVER_LIMIT];
 };
 static struct {
  struct nas_guest_nic nic[NAS_NETDEV_LIMIT];
@@ -44,6 +46,7 @@ static struct {
  bool starting,ready,stop;
  uint64_t rx_deferred_drains,rx_fallback_polls;
  bool irq_reported;
+ uint64_t published_dns_pair;
 } network;
 
 /* The receive worker, not the hard IRQ, owns packet processing and reports
@@ -145,6 +148,15 @@ unsigned nas_lwip_guest_ipv4_ifconf(
  }
  return count;
 }
+unsigned nas_lwip_guest_dns_snapshot(
+    uint32_t out[NAS_LWIP_DNS_SERVER_LIMIT]) {
+ if(!out)return 0;
+ uint64_t pair=__atomic_load_n(&network.published_dns_pair,__ATOMIC_ACQUIRE);
+ out[0]=(uint32_t)(pair>>32);
+ out[1]=(uint32_t)pair;
+ if(!out[0])return 0;
+ return out[1] ? 2U : 1U;
+}
 /* Device/registry notifications only wake this one worker. Nothing ever
  * calls lwIP from the IRQ or the U-Boot driver remove path. */
 static void wake_rx(void *ctx){
@@ -162,17 +174,25 @@ static struct nas_guest_nic *owner_of(struct netif *netif){
  * choice without any new driver attach or carrier event. */
 static void choose_default_on_core(void){
  struct netif *choice=NULL;
+ struct nas_guest_nic *owner=NULL;
  for(unsigned i=0;i<NAS_NETDEV_LIMIT;i++){
-     struct nas_lwip_eth *e=&network.nic[i].ethernet;
+     struct nas_guest_nic *nic=&network.nic[i];
+     struct nas_lwip_eth *e=&nic->ethernet;
      if(e->attached && e->device &&
         !nas_netdev_is_removing(e->device) &&
         netif_is_up(&e->interface) && netif_is_link_up(&e->interface) &&
-        network.nic[i].dhcp_ipv4_host_order &&
-        network.nic[i].dhcp_prefix_len){
-         choice=&e->interface;break;
+        nic->dhcp_ipv4_host_order && nic->dhcp_prefix_len){
+         choice=&e->interface;owner=nic;break;
      }
  }
  netif_set_default(choice);
+ /* Per-interface DNS is captured at its own DHCP ACK, rather than using
+  * lwIP's global last-ACK-wins resolver for a different default NIC.
+  * This single release store cannot expose a half-updated resolver pair. */
+ uint64_t pair=owner ?
+     ((uint64_t)owner->dhcp_dns_host_order[0]<<32) |
+     owner->dhcp_dns_host_order[1] : 0;
+ __atomic_store_n(&network.published_dns_pair,pair,__ATOMIC_RELEASE);
 }
 /* A driver first makes the NetDevice unavailable. Only tcpip_thread can
  * stop DHCP and unregister its netif; only after this releases the device
@@ -193,6 +213,7 @@ static void detach_on_core(void *ctx){
  nic->rx_last_irq_sequence=0;
  nic->dhcp_ipv4_host_order=0;
  nic->dhcp_prefix_len=0;
+ nic->dhcp_dns_host_order[0]=nic->dhcp_dns_host_order[1]=0;
  nic->name[0]=0;
  choose_default_on_core();
  (void)nas_ksem_post(&network.rx_wakeup);
@@ -209,6 +230,7 @@ static void network_status(struct netif *netif){
  struct nas_guest_nic *nic=owner_of(netif);
  if(!nic)return;
  const ip4_addr_t *addr=netif_ip4_addr(netif);
+ uint32_t prior_ip=nic->dhcp_ipv4_host_order;
  nic->dhcp_ipv4_host_order=netif_is_up(netif) &&
      netif_is_link_up(netif) && dhcp_supplied_address(netif) &&
      !ip4_addr_isany_val(*addr) ?
@@ -220,6 +242,11 @@ static void network_status(struct netif *netif){
      uint8_t length=0;
      while(rest&UINT32_C(0x80000000)){length++;rest<<=1;}
      if(!rest)nic->dhcp_prefix_len=length;
+ }
+ if(prior_ip!=nic->dhcp_ipv4_host_order || !nic->dhcp_ipv4_host_order){
+     /* New lease identity or withdrawal: do not publish the old lease's
+      * nameservers in the window before this ACK's extended callback. */
+     nic->dhcp_dns_host_order[0]=nic->dhcp_dns_host_order[1]=0;
  }
  choose_default_on_core();
  nas_print("[LWIP NETIF STATUS] up=");nas_dec(netif_is_up(netif));
@@ -235,6 +262,38 @@ static void network_status(struct netif *netif){
  nas_dec(ip4_addr2(addr));nas_print(".");
  nas_dec(ip4_addr3(addr));nas_print(".");
  nas_dec(ip4_addr4(addr));nas_print("\n");
+}
+/* lwIP's ordinary status callback does not run on an ACK which renews an
+ * unchanged address. The upstream extended callback fires IPV4_ADDR_VALID
+ * on dhcp_bind(), even identical-IP renewals. Reproject official lwIP DNS
+ * on the same core thread for this NIC only. Note the upstream DHCP API
+ * exposes a global DNS array, not per-ACK option-6 presence/count: when an
+ * ACK omits option 6, lwIP retains prior global servers and this projection
+ * cannot distinguish that case without an upstream per-ACK accessor. Never
+ * claim this callback is proof that the ACK actually contained option 6. */
+NETIF_DECLARE_EXT_CALLBACK(network_dhcp_ext);
+static void network_dhcp_extended(struct netif *netif,
+                                  netif_nsc_reason_t reason,
+                                  const netif_ext_callback_args_t *args){
+ (void)args;
+ if(!(reason&LWIP_NSC_IPV4_ADDR_VALID))return;
+ struct nas_guest_nic *nic=owner_of(netif);
+ if(!nic)return;
+ nic->dhcp_dns_host_order[0]=nic->dhcp_dns_host_order[1]=0;
+ if(!nic->dhcp_ipv4_host_order || !nic->dhcp_prefix_len ||
+    !netif_is_link_up(netif) || !dhcp_supplied_address(netif)){
+     choose_default_on_core();return;
+ }
+ unsigned accepted=0;
+ for(unsigned i=0;i<NAS_LWIP_DNS_SERVER_LIMIT && i<DNS_MAX_SERVERS;i++) {
+     const ip_addr_t *server=dns_getserver((u8_t)i);
+     if(!server || !IP_IS_V4(server))continue;
+     const ip4_addr_t *v4=ip_2_ip4(server);
+     if(!ip4_addr_isany(v4))
+         nic->dhcp_dns_host_order[accepted++]=
+             lwip_ntohl(ip4_addr_get_u32(v4));
+ }
+ choose_default_on_core();
 }
 static void reconcile_link_on_core(void *ctx){
  struct nas_guest_nic *nic=ctx;
@@ -396,6 +455,7 @@ static void receive_worker(void *ctx){
  * after the core thread is ready to accept attach/detach callbacks. */
 static void tcpip_ready(void *unused){
  (void)unused;
+ netif_add_ext_callback(&network_dhcp_ext,network_dhcp_extended);
  network.ready=true;
  (void)nas_ksem_post(&network.rx_wakeup);
 }

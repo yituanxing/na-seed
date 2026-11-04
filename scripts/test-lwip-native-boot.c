@@ -11,6 +11,7 @@
 #include "lwip/netif.h"
 #include "lwip/tcpip.h"
 #include "lwip/dhcp.h"
+#include "lwip/dns.h"
 #include "lwip/prot/dhcp.h"
 #include <assert.h>
 #include <stdint.h>
@@ -111,6 +112,7 @@ static struct nas_bus_device second_bus={
 struct lease_change {
  unsigned ifindex;
  uint32_t host_ip;
+ uint32_t dns_host_order[NAS_LWIP_DNS_SERVER_LIMIT];
  bool complete;
 };
 static void change_lease_on_core(void *arg){
@@ -126,16 +128,36 @@ static void change_lease_on_core(void *arg){
      IP4_ADDR(&ip,v>>24,(v>>16)&255U,(v>>8)&255U,v&255U);
      IP4_ADDR(&mask,255,255,255,0);
      IP4_ADDR(&gateway,v>>24,(v>>16)&255U,(v>>8)&255U,2);
+     /* Mimic upstream DHCP's option-6 ACK side effect before dhcp_bind.
+      * Real core code must keep this last-ACK-wins DNS global per NIC. */
+     for(unsigned i=0;i<NAS_LWIP_DNS_SERVER_LIMIT;i++) {
+         ip_addr_t server;
+         uint32_t dns=change->dns_host_order[i];
+         IP_ADDR4(&server,dns>>24,(dns>>16)&255U,(dns>>8)&255U,dns&255U);
+         dns_setserver((u8_t)i,&server);
+     }
  }
  netif_set_addr(interface,&ip,&mask,&gateway);
  change->complete=true;
 }
-static void change_lease(unsigned ifindex,uint32_t host_ip){
- struct lease_change change={.ifindex=ifindex,.host_ip=host_ip};
+static void change_lease_dns(unsigned ifindex,uint32_t host_ip,
+                             uint32_t dns0,uint32_t dns1){
+ struct lease_change change={.ifindex=ifindex,.host_ip=host_ip,
+                             .dns_host_order={dns0,dns1}};
  assert(tcpip_try_callback(change_lease_on_core,&change)==ERR_OK);
  for(unsigned attempt=0;attempt<100 && !change.complete;attempt++)
      assert(nas_kthread_run(1)==1);
  assert(change.complete);
+}
+static void change_lease(unsigned ifindex,uint32_t host_ip){
+ change_lease_dns(ifindex,host_ip,host_ip ?
+                  (host_ip & UINT32_C(0xffffff00)) | 3U : 0,0);
+}
+static void assert_dns(uint32_t primary,uint32_t secondary){
+ uint32_t snapshot[NAS_LWIP_DNS_SERVER_LIMIT]={UINT32_MAX,UINT32_MAX};
+ unsigned count=nas_lwip_guest_dns_snapshot(snapshot);
+ assert(count==(primary ? secondary ? 2U : 1U : 0U));
+ assert(snapshot[0]==primary && snapshot[1]==secondary);
 }
 int main(void){
  nas_kthread_system_init();
@@ -155,6 +177,7 @@ int main(void){
         devices[1].up && devices[1].link_up && devices[1].mtu==1500 &&
         devices[1].ifindex>1);
  assert(!netif_default); /* a live carrier without DHCP is not IPv4 egress */
+ assert_dns(0,0);
  for(unsigned i=0;i<10 && !delivered;i++)assert(nas_kthread_run(1)==1);
  assert(delivered==1 && polls>=1); /* worker, outside tcpip stack */
  assert(nas_kthread_run(1)==1); /* upstream lwIP consumes inbound frame */
@@ -253,10 +276,12 @@ int main(void){
  assert(nas_lwip_guest_ifname(second_index,bound_name)==0 &&
         !strcmp(bound_name,"en1"));
  assert(!netif_default); /* neither DHCP client has a lease yet */
+ assert_dns(0,0);
  /* The first NIC may never receive DHCP while the later NIC does.
   * An actual lease, not registration order, must select the IPv4 route. */
  change_lease(second_index,UINT32_C(0x0a000314));
  assert(netif_default && netif_get_index(netif_default)==second_index);
+ assert_dns(UINT32_C(0x0a000303),0);
  struct nas_lwip_guest_ipv4_if addressed_second[NAS_LWIP_GUEST_IF_LIMIT]={0};
  assert(nas_lwip_guest_ipv4_ifconf(addressed_second)==2 &&
         !strcmp(addressed_second[1].name,"en1") &&
@@ -265,12 +290,23 @@ int main(void){
   * without losing carrier, must fall back to the still-leased sibling. */
  change_lease((unsigned)real_ifindex,UINT32_C(0x0a00020f));
  assert(netif_default && netif_get_index(netif_default)==(unsigned)real_ifindex);
+ assert_dns(UINT32_C(0x0a000203),0);
+ /* An ACK from en1 must not leak into DNS owned by the default en0.
+  * The unchanged-address ACK path also exercises lwIP's extended event. */
+ change_lease_dns(second_index,UINT32_C(0x0a000314),
+                  UINT32_C(0x0a000335),UINT32_C(0xc0000235));
+ assert_dns(UINT32_C(0x0a000203),0);
+ change_lease_dns((unsigned)real_ifindex,UINT32_C(0x0a00020f),
+                  UINT32_C(0x0a000235),UINT32_C(0xc6336435));
+ assert_dns(UINT32_C(0x0a000235),UINT32_C(0xc6336435));
  change_lease((unsigned)real_ifindex,0);
  assert(netif_default && netif_get_index(netif_default)==second_index);
+ assert_dns(UINT32_C(0x0a000335),UINT32_C(0xc0000235));
  assert(nas_lwip_guest_ipv4_ifconf(addressed_second)==2 &&
         !strcmp(addressed_second[1].name,"en1"));
  change_lease((unsigned)real_ifindex,UINT32_C(0x0a00020f));
  assert(netif_default && netif_get_index(netif_default)==(unsigned)real_ifindex);
+ assert_dns(UINT32_C(0x0a000203),0);
  for(unsigned attempt=0;attempt<20 && !second_delivered;attempt++)
      assert(nas_kthread_run(1)==1);
  assert(second_delivered==1 && second_polls>=1);
@@ -333,6 +369,7 @@ int main(void){
  assert(nas_lwip_guest_if_snapshot(devices)==2);
  assert(!strcmp(devices[1].name,"en1"));
  assert(netif_default && netif_get_index(netif_default)==devices[1].ifindex);
+ assert_dns(UINT32_C(0x0a000303),0);
  assert(nas_lwip_guest_ifindex("en0")==-ENODEV);
  assert(nas_netdev_unregister(&eth)==0);
  assert(nas_bus_device_request_remove(&second_bus)==0);
@@ -342,7 +379,8 @@ int main(void){
  assert(nas_bus_device_remove_status(&second_bus)==0);
  assert(nas_bus_driver_unregister(&second_driver)==0);
  assert(nas_lwip_guest_if_snapshot(devices)==1);
+ assert_dns(0,0);
 
  puts("[LWIP NATIVE BOOT PASS] two live NICs, late attach, independent DHCP/link,");
- puts("  delayed/withdrawn DHCP, route fallback, bounded RX, bus-owned async detach/re-attach, pins, core-owned routing");
+ puts("  delayed/withdrawn DHCP, route+DNS fallback, unchanged-IP renew, bounded RX, bus-owned async detach/re-attach, pins");
 }

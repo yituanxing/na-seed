@@ -8,6 +8,11 @@ on:
       - '.github/workflows/m196-alpine-public-apk.yml'
       - 'scripts/m196-*'
       - 'scripts/probe-m196-alpine-public-apk.sh'
+      - 'scripts/m194-alpine-uart.py'
+      - 'ports/lwip/socket_port.c'
+      - 'ports/lwip/netconn_bridge.c'
+      - 'ports/lwip/netconn_bridge.h'
+      - 'ports/lwip/include/lwipopts.h'
 
 permissions:
   contents: read
@@ -39,6 +44,7 @@ jobs:
             scripts/test-m196-alpine-host.py
           python3 scripts/test-m196-public-wire.py
           python3 scripts/test-m196-alpine-host.py
+          python3 scripts/test-m194-uart-prompt.py
           python3 scripts/test-m195-alpine-host.py
           python3 - <<'PY'
           from pathlib import Path
