@@ -137,6 +137,35 @@ void nas_rv_full_trap_c(struct nas_rv_trap_frame *frame) {
                         }
                         nas_print("\n");
                     }
+                    /* libcrypto.so.3 RV64 c.ld a5,32(a1) followed by
+                     * c.bnez and c.jalr has exposed a noncanonical callback
+                     * value. Read the actual data-table qwords in the
+                     * faulted process, not a guessed host offset. The MM
+                     * remote-copy helper validates every address. */
+                    const uint64_t table_va=frame->x[11];
+                    if(table_va<USER_LIMIT && UINT64_C(64)<=USER_LIMIT-table_va) {
+                        uint64_t values[8]={0};
+                        int64_t n=nas_vm_read_task_bytes(tracee,table_va,
+                            (uint8_t *)(void *)values,sizeof(values));
+                        nas_print("[RV64 CALLTARGET] a1=");nas_hex(table_va);
+                        nas_print(" read_qwords=");nas_dec(n==64?8:0);
+                        if(n==64)for(unsigned k=0;k<8;k++) {
+                            nas_print(" q");nas_dec(k);
+                            nas_print("=");nas_hex(values[k]);
+                        }
+                        const struct nas_anon_region *v=nas_vma_find(
+                            &tracee->mm->mmap_vmas,table_va+32);
+                        if(v) {
+                            nas_print(" map_start=");nas_hex(v->start);
+                            nas_print(" map_end=");nas_hex(v->end);
+                            nas_print(" map_file_off=");nas_hex(v->file_offset);
+                            nas_print(" callback_file_off=");
+                            nas_hex(v->file_offset+table_va+32-v->start);
+                            nas_print(" prot=");nas_hex(v->prot);
+                            nas_print(" kind=");nas_dec(v->kind);
+                        }
+                        nas_print("\n");
+                    }
                 }
             }
             live=frame;

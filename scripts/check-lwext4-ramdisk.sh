@@ -2,6 +2,7 @@
 # One host-level real ext4 integration, pinned upstream and no userland fake.
 # Large third-party source is built externally, never inside NaSeed/QEMU.
 set -eu
+case "${1:-}" in ''|sync-crash-only) ;; *) echo "usage: $0 [sync-crash-only]" >&2; exit 2 ;; esac
 revision=58bcf89a121b72d4fb66334f1693d3b30e4cb9c5
 for cmd in cmake cc mke2fs e2fsck truncate; do command -v "$cmd" >/dev/null; done
 root=build/external/lwext4
@@ -19,6 +20,20 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -I "$vendor/include" \
     scripts/test-lwext4-ramdisk.c ports/lwext4/lwext4_block.c \
     kernel/block/device.c kernel/block/ramdisk.c kernel/lib/string.c \
     "$root/host/src/liblwext4.a" -o "$root/ramdisk-test"
+check_sync_crash() {
+    truncate -s 32M "$root/sync-crash.img"
+    mke2fs -q -F -t ext4 -b 4096 -O '^metadata_csum,^64bit' "$root/sync-crash.img"
+    "$root/ramdisk-test" "$root/sync-crash.img" sync-crash
+    "$root/ramdisk-test" "$root/sync-crash.img" sync-reopen
+    # The strict oracle catches stale total free counters, not just
+    # e2fsck's often-zero read-only exit status.
+    sh scripts/check-ext4-fsck-clean.sh "$root/sync-crash.img"
+    echo '[LWEXT4 ORDERED SYNC CRASH PASS] exact persistent file and clean superblock counters'
+}
+if [ "${1:-}" = sync-crash-only ]; then
+    check_sync_crash
+    exit 0
+fi
 truncate -s 32M "$root/ext4.img"
 mke2fs -q -F -t ext4 -b 4096 -O '^metadata_csum,^64bit' "$root/ext4.img"
 "$root/ramdisk-test" "$root/ext4.img" write
@@ -39,11 +54,5 @@ e2fsck -fn "$root/ext4.img"
 "$root/vfs-test" "$root/ext4.img" verify
 
 e2fsck -fn "$root/ext4.img"
-truncate -s 32M "$root/sync-crash.img"
-mke2fs -q -F -t ext4 -b 4096 -O '^metadata_csum,^64bit' "$root/sync-crash.img"
-"$root/ramdisk-test" "$root/sync-crash.img" sync-crash
-"$root/ramdisk-test" "$root/sync-crash.img" sync-reopen
-# The strict oracle catches stale total free counters, not just e2fsck's
-# often-zero read-only exit status. It must pass after two independent mounts.
-sh scripts/check-ext4-fsck-clean.sh "$root/sync-crash.img"
+check_sync_crash
 echo "[LWEXT4 RAMDISK PASS] real pinned upstream ext4 create/write/rename/link/unlink/remount/fsck"

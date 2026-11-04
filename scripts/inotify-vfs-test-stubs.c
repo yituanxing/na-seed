@@ -16,3 +16,11 @@ void nas_inotify_erase_mount(const void *mount,uint64_t id) {
     (void)mount;(void)id;
 }
 uint32_t nas_inotify_rename_cookie(void) {return 1;}
+
+/* This isolated host lwext4/VFS fixture exercises only the explicitly
+ * registered ext4 mount. Production NaSeed links vfs_providers.c and mounts
+ * its real procfs/tmpfs/bootfs providers; loading them into this tiny host
+ * fixture would drag in unrelated task, tty and syscall dependencies. */
+/* Some host tests also link the real provider file: its strong definition
+ * must win instead of causing a duplicate-symbol link failure. */
+__attribute__((weak)) int nas_vfs_register_pseudo_mounts(void) {return 0;}
