@@ -491,6 +491,14 @@ static uint64_t sys_mount(uint64_t source_ptr,uint64_t target_ptr,
     if(!rc)rc=nas_user_read_cstr(type_ptr,fstype,sizeof(fstype));
     if(!rc && data_ptr)rc=nas_user_read_cstr(data_ptr,data,sizeof(data));
     if(rc)return (uint64_t)(int64_t)rc;
+#if defined(NAS_ENABLE_M191_ALPINE_ROOT)
+    /* Bounded original Alpine mount(2) evidence, to distinguish actual
+     * BusyBox VFS flags/data from OpenRC's shell-level option string. */
+    nas_print("[M192 MOUNT ABI] source=");nas_print(source);
+    nas_print(" fstype=");nas_print(fstype);
+    nas_print(" flags=");nas_hex(flags);
+    nas_print(" data=");nas_print(data);nas_print("\n");
+#endif
     if(strcmp(fstype,"tmpfs") && strcmp(fstype,"proc"))
         return (uint64_t)-ENODEV;
     rc=mount_target(target_ptr,target);
