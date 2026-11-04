@@ -11,6 +11,10 @@ grep -Fq 'scripts/m190-qmp-persistent.py' scripts/m187-qmp-verify.py
 grep -Fq 'tests/m190-durable-check.sh' scripts/m174-software-rootfs-copies.tsv
 grep -Fq 'sh scripts/probe-m190-persistent-desktop.sh' scripts/probe-m180-fs-user.sh
 grep -Fq 'M190_DURABLE_SAVED_FUNCTION_PASS' user/desktop/naseed-terminal.c
+grep -Fq 'M190_VECTORED_IRQ_FS_FUNCTION_PASS' user/desktop/naseed-terminal.c
+grep -Fq 'M190_VECTORED_IRQ_FS_FUNCTION_PASS' scripts/m190-qmp-persistent.py
+grep -Fq 'nas_fs_io_vectors_import' kernel/fs/user_broker.c
+grep -Fq 'nr==NAS_SC_readv || nr==NAS_SC_writev' kernel/fs/user_broker.c
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 printf 'm190vimoriginal\nm190nanopersist\n' > "$work/okay"

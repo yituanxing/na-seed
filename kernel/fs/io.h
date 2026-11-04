@@ -7,6 +7,24 @@ struct nas_task;
 struct nas_pending_io;
 struct nas_poll_snapshot;
 struct nas_fs_node;
+/* The ordinary File I/O layer imports a Linux LP64 iovec ONCE while the
+ * original Task owns its address space. The ext4 Worker may hold this
+ * kernel-owned metadata but must never read a userspace iov pointer. */
+struct nas_io_vector {uint64_t address,length;};
+struct nas_fs_io_vectors {
+    struct nas_io_vector *entries;
+    uint64_t count,total;
+};
+int nas_fs_io_vectors_import(unsigned slot,uint64_t user_iov,uint64_t count,
+                             bool writing,struct nas_fs_io_vectors *out);
+uint64_t nas_fs_io_vectors_accessible_prefix(
+    const struct nas_fs_io_vectors *vectors,uint64_t requested,bool writing);
+bool nas_fs_io_vectors_copyin(const struct nas_fs_io_vectors *vectors,
+                               uint8_t *buffer,uint64_t length);
+bool nas_fs_io_vectors_copyout(const struct nas_fs_io_vectors *vectors,
+                               const uint8_t *buffer,uint64_t length,
+                               uint64_t *copied);
+void nas_fs_io_vectors_release(struct nas_fs_io_vectors *vectors);
 /* One issuing syscall may park after a provider reports would-block.
  * The file layer owns the imported iovec and an independent File ref;
  * scheduler/Task carry only this opaque request during the native C wait. */

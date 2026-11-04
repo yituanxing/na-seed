@@ -26,3 +26,25 @@ This is clean-shutdown persistence, NOT proof against sudden power loss.
 The rootfs and genuine signed Alpine ELF binaries are unchanged. No new
 driver, filesystem, alternate shell or scheduler is introduced. Both real
 QEMU boots per ISA are required; host-only or printed markers cannot pass.
+
+## M190 exact-ISA vectored I/O compatibility fix
+
+The Alpine Nano binary is unchanged. musl's buffered `FILE*` output
+calls Linux `writev`, including a two-iovec buffer flush, while M180
+previously brokered only scalar `write` and positional `pwrite`. A
+`writev` on the worker-owned ext4 mount therefore fell through
+ordinary Task-side FileOps and returned `-EROFS` without writing bytes.
+
+The fix routes `readv` and `writev` through the existing M180 worker.
+It reuses the generic File I/O iovec metadata import, user-range
+validation and iovec copying rather than duplicating ABI/IOV_MAX logic.
+The issuing Task stages a bounded transfer prefix in kernel-owned
+memory; only the dedicated filesystem worker accesses upstream lwext4.
+The resumed Task scatters the readv bytes. Request/File ownership,
+cancellation and DMA IRQ completion are unchanged.
+
+Before original graphical Nano saves its document, a separate native
+probe performs a real scratch-file writev, fsync and readv on `/async`
+and compares exact bytes. This scratch probe does NOT satisfy the Nano
+document oracle. Physical QMP input, original editor content checks,
+two real reboot cycles, raw disk extraction and e2fsck remain mandatory.

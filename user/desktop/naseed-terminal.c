@@ -372,7 +372,7 @@ static void terminal_live(int channel) {
     nasd_send_surface_caps(channel,surface,TERMINAL,TERM_W,TERM_H,
                            NASD_INPUT_KEYS);
     nasd_mark("M170_PTY_INTERACTIVE_SHELL_ATTACHED");
-    unsigned verified=0,verified187=0,verified188=0,verified189=0,verified190=0;
+    unsigned verified=0,verified187=0,verified188=0,verified189=0,verified190=0,verified190iov=0;
     struct terminal_tx outgoing={0};
     for(;;) {
         struct pollfd fds[2]={
@@ -449,6 +449,11 @@ static void terminal_live(int channel) {
                    strstr(t.evidence,"\n189\n")) {
                     verified189|=2U;
                     nasd_mark("M189_PTY_SHELL_RESUMED_AFTER_EDITORS");
+                }
+                if(!verified190iov &&
+                   strstr(t.evidence,"\nM190_VECTORED_IRQ_FS_FUNCTION_PASS\n")) {
+                    verified190iov=1;
+                    nasd_mark("M190_VECTORED_IRQ_FS_FUNCTION_PASS");
                 }
                 if(!verified190 &&
                    strstr(t.evidence,"\nM190_DURABLE_EDITOR_CONTENT_VERIFIED\n")) {

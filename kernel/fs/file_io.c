@@ -465,7 +465,6 @@ uint64_t nas_fs_fd_pwrite(uint64_t fd,uint64_t address,uint64_t count,
  * kernel memory BEFORE any provider can consume data or change File offsets.
  * 1024 entries occupy 16 KiB, so never place the array on a kernel stack. */
 #define NAS_IOV_MAX 1024ULL
-struct nas_io_vector { uint64_t address,length; };
 struct nas_io_cursor { uint64_t index,offset; };
 struct nas_io_request {
     struct nas_io_vector *vectors;
@@ -593,26 +592,33 @@ static bool io_prepare_vector(const struct nas_io_request *req,
  * still be returned as a successful short read; never reject all admitted
  * bytes just because a later destination cannot be faulted in. In contrast,
  * eventfd's read_commit_before_copyout explicitly consumes before copyout. */
-static uint64_t io_writable_prefix(const struct nas_io_request *req,
-                                   struct nas_io_cursor cursor,
-                                   uint64_t requested) {
+static uint64_t io_accessible_prefix(const struct nas_io_request *req,
+                                     struct nas_io_cursor cursor,
+                                     uint64_t requested,bool writing) {
     uint64_t ready=0;
     while(ready<requested) {
         uint64_t addr,n;
         if(!io_next_slice(req,&cursor,requested-ready,&addr,&n))break;
-        /* Probe page-granular slices so that one bad page does not erase
-         * progress into valid earlier pages of the SAME iovec. */
+        /* A later bad source/destination page must not discard an earlier
+         * valid iovec prefix. Keep the original page-granular semantics. */
         uint64_t offset=0;
         while(offset<n) {
             uint64_t take=n-offset;
             uint64_t room=4096ULL-((addr+offset)&4095ULL);
             if(take>room)take=room;
-            if(!nas_user_prepare_write(addr+offset,take))return ready;
+            if(writing ? !nas_user_prepare_read(addr+offset,take) :
+                         !nas_user_prepare_write(addr+offset,take))
+                return ready;
             ready+=take;
             offset+=take;
         }
     }
     return ready;
+}
+static uint64_t io_writable_prefix(const struct nas_io_request *req,
+                                   struct nas_io_cursor cursor,
+                                   uint64_t requested) {
+    return io_accessible_prefix(req,cursor,requested,false);
 }
 static bool io_gather_vector(const struct nas_io_request *req,
                              struct nas_io_cursor *cursor,uint8_t *dst,
@@ -637,6 +643,52 @@ static bool io_scatter_vector(const struct nas_io_request *req,
         *copied+=take;
     }
     return true;
+}
+/* M180 uses the original iovec validator, cursor and usercopy rules.
+ * Metadata belongs to the blocked Task; ext4 receives only a kernel-owned
+ * transfer buffer on the dedicated parkable Worker stack. */
+int nas_fs_io_vectors_import(unsigned slot,uint64_t user_iov,uint64_t count,
+                             bool writing,struct nas_fs_io_vectors *out) {
+    if(!out)return -EINVAL;
+    *out=(struct nas_fs_io_vectors){0};
+    struct nas_io_request req={0};
+    int rc=io_request_import_slot(slot,user_iov,count,writing,&req);
+    if(rc)return rc;
+    *out=(struct nas_fs_io_vectors){req.vectors,req.count,req.total};
+    return 0;
+}
+static struct nas_io_request io_view(const struct nas_fs_io_vectors *vectors) {
+    return (struct nas_io_request){.vectors=vectors->entries,
+        .count=vectors->count,.total=vectors->total};
+}
+uint64_t nas_fs_io_vectors_accessible_prefix(
+    const struct nas_fs_io_vectors *vectors,uint64_t requested,bool writing) {
+    if(!vectors || requested>vectors->total)return 0;
+    struct nas_io_request req=io_view(vectors);
+    return io_accessible_prefix(&req,(struct nas_io_cursor){0},
+                                requested,writing);
+}
+bool nas_fs_io_vectors_copyin(const struct nas_fs_io_vectors *vectors,
+                               uint8_t *buffer,uint64_t length) {
+    if(!vectors || length>vectors->total || (length && !buffer))return false;
+    struct nas_io_request req=io_view(vectors);
+    struct nas_io_cursor cursor={0};
+    return io_gather_vector(&req,&cursor,buffer,length);
+}
+bool nas_fs_io_vectors_copyout(const struct nas_fs_io_vectors *vectors,
+                               const uint8_t *buffer,uint64_t length,
+                               uint64_t *copied) {
+    if(!copied)return false;
+    *copied=0;
+    if(!vectors || length>vectors->total || (length && !buffer))return false;
+    struct nas_io_request req=io_view(vectors);
+    struct nas_io_cursor cursor={0};
+    return io_scatter_vector(&req,&cursor,buffer,length,copied);
+}
+void nas_fs_io_vectors_release(struct nas_fs_io_vectors *vectors) {
+    if(!vectors)return;
+    if(vectors->entries)(void)nas_heap_free(vectors->entries);
+    *vectors=(struct nas_fs_io_vectors){0};
 }
 static uint64_t io_aggregate_read(const struct nas_io_request *req) {
     uint64_t requested=req->total;

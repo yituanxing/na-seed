@@ -144,6 +144,9 @@ def write(sock,reader,serial:Path,outdir:Path):
     m189['process_reaped'](
         sock,reader,serial,'M190 original existing-inode ABI probe',
         probe_pid,probe_exec,30)
+    prior['wait_native_marker'](
+        sock,reader,serial,'M190_VECTORED_IRQ_FS_FUNCTION_PASS',
+        time.monotonic()+15)
     physical_terminal_text(sock,reader,outdir,'open-abi-probe')
     before=m189['frame'](sock,reader,outdir,'before-durable-nano')
     after=len(serial.read_bytes())

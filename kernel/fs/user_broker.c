@@ -24,12 +24,14 @@
 #include "path_request.h"
 #include "syscall.h"
 #include "file_ops.h"
+#include "io.h"
 #include "broker.h"
 
 #define M180_TRANSFER_MAX 65536ULL
 #define M180_DIRENT_BATCH 8U
 enum user_broker_op { UBO_OPEN,UBO_READ,UBO_WRITE,UBO_PREAD,UBO_PWRITE,
-                      UBO_SYNC,UBO_FSTAT,UBO_STAT,UBO_GETDENTS };
+                      UBO_READV,UBO_WRITEV,UBO_SYNC,UBO_FSTAT,UBO_STAT,
+                      UBO_GETDENTS };
 struct user_broker_payload {
     enum user_broker_op op;
     struct nas_fs_path_request path;
@@ -48,6 +50,7 @@ struct user_broker_payload {
     bool fd_reserved;
     uint64_t flags,user_address,length,offset;
     uint8_t *buffer;
+    struct nas_fs_io_vectors vectors; /* Task-owned, never usercopy in Worker */
     unsigned dirent_count;
     struct nas_vfs_dirent dirents[M180_DIRENT_BATCH];
 };
@@ -151,13 +154,16 @@ static int64_t broker_worker_op(void *payload) {
         if(!file->refcount || !file->vnode_pinned ||
            !file->vnode.mount || !file->vnode.mount->worker_io)
             answer=-EBADF;
-        else if(p->op==UBO_READ || p->op==UBO_PREAD) {
+        else if(p->op==UBO_READ || p->op==UBO_PREAD ||
+               p->op==UBO_READV) {
             uint64_t where=p->op==UBO_PREAD?p->offset:file->position;
             if(node->is_dir)answer=-EISDIR;
             else if(!p->length)answer=0;
             else answer=nas_vfs_read_at(node,where,p->buffer,p->length);
-            if(p->op==UBO_READ && answer>0)file->position+=answer;
-        } else if(p->op==UBO_WRITE || p->op==UBO_PWRITE) {
+            if((p->op==UBO_READ || p->op==UBO_READV) && answer>0)
+                file->position+=answer;
+        } else if(p->op==UBO_WRITE || p->op==UBO_PWRITE ||
+                  p->op==UBO_WRITEV) {
             uint64_t where=p->op==UBO_PWRITE?p->offset:file->position;
             if(file->status_flags&0x400ULL)
                 where=nas_vfs_node_size(node);
@@ -167,7 +173,8 @@ static int64_t broker_worker_op(void *payload) {
             if(answer>0) {
                 if(where+(uint64_t)answer>file->vnode.size)
                     file->vnode.size=where+(uint64_t)answer;
-                if(p->op==UBO_WRITE)file->position=where+(uint64_t)answer;
+                if(p->op==UBO_WRITE || p->op==UBO_WRITEV)
+                    file->position=where+(uint64_t)answer;
             }
         } else if(p->op==UBO_SYNC) {
             p->opened=*node; /* borrowed snapshot; own held File protects it */
@@ -215,6 +222,7 @@ static void broker_payload_release(void *payload) {
         nas_fail("M180 FD reservation cancel failed");
     if(p->buffer && !nas_heap_free(p->buffer))
         nas_fail("M180 syscall buffer release failed");
+    nas_fs_io_vectors_release(&p->vectors);
 }
 
 static uint64_t broker_finish(struct nas_task *task) {
@@ -253,6 +261,11 @@ static uint64_t broker_finish(struct nas_task *task) {
     } else if(rc>=0 && (p->op==UBO_READ || p->op==UBO_PREAD)) {
         if(rc && !nas_user_write_bytes(p->user_address,p->buffer,(size_t)rc))
             rc=-EFAULT;
+    } else if(rc>=0 && p->op==UBO_READV && rc) {
+        uint64_t copied=0;
+        if(!nas_fs_io_vectors_copyout(&p->vectors,p->buffer,(uint64_t)rc,
+                                       &copied))
+            rc=copied?(int64_t)copied:-EFAULT;
     } else if(rc>=0 && (p->op==UBO_STAT || p->op==UBO_FSTAT)) {
         if(!nas_user_write_bytes(p->user_address,(const uint8_t *)&p->st,
                                 sizeof(p->st)))rc=-EFAULT;
@@ -351,6 +364,7 @@ struct nas_fs_user_broker_answer nas_fs_user_broker_enter(
               (nr==NAS_SC_lstat?0x100ULL:0);
         if(flags&~(0x100ULL|0x800ULL))return not_handled();
     } else if(nr==NAS_SC_read || nr==NAS_SC_write ||
+              nr==NAS_SC_readv || nr==NAS_SC_writev ||
               nr==NAS_SC_pread64 || nr==NAS_SC_pwrite64 ||
               nr==NAS_SC_fsync || nr==NAS_SC_fdatasync ||
               nr==NAS_SC_fstat || nr==NAS_SC_getdents64) {
@@ -358,6 +372,8 @@ struct nas_fs_user_broker_answer nas_fs_user_broker_enter(
            !broker_file((unsigned)args[1],&slot))return not_handled();
         if(nr==NAS_SC_read)op=UBO_READ;
         else if(nr==NAS_SC_write)op=UBO_WRITE;
+        else if(nr==NAS_SC_readv)op=UBO_READV;
+        else if(nr==NAS_SC_writev)op=UBO_WRITEV;
         else if(nr==NAS_SC_pread64)op=UBO_PREAD;
         else if(nr==NAS_SC_pwrite64)op=UBO_PWRITE;
         else if(nr==NAS_SC_fsync || nr==NAS_SC_fdatasync)op=UBO_SYNC;
@@ -421,16 +437,42 @@ struct nas_fs_user_broker_answer nas_fs_user_broker_enter(
         p->offset=args[4];
         struct nas_open_file *file=&nas_open_files[slot];
         if(file->status_flags&NAS_LINUX_O_PATH)rc=-EBADF;
-        if(!rc && (op==UBO_READ || op==UBO_PREAD) &&
+        if(!rc && (op==UBO_READ || op==UBO_PREAD || op==UBO_READV) &&
            (file->status_flags&3ULL)==1ULL)rc=-EBADF;
-        if(!rc && (op==UBO_WRITE || op==UBO_PWRITE) &&
+        if(!rc && (op==UBO_WRITE || op==UBO_PWRITE || op==UBO_WRITEV) &&
            (file->status_flags&3ULL)==0ULL)rc=-EBADF;
         if(!rc && (op==UBO_PREAD || op==UBO_PWRITE) &&
            p->offset>INT64_MAX)rc=-EINVAL;
         if(!rc && (op==UBO_PREAD || op==UBO_PWRITE) &&
            p->length>INT64_MAX-p->offset)rc=-EINVAL;
-        if(!rc && (op==UBO_READ || op==UBO_WRITE ||
-                   op==UBO_PREAD || op==UBO_PWRITE)) {
+        if(!rc && (op==UBO_READV || op==UBO_WRITEV)) {
+            /* Import the complete iovec metadata with exactly the same
+             * Linux IOV_MAX/address/access rules used by normal File I/O.
+             * A single Task-side kernel buffer is the only data the
+             * IRQ-backed filesystem worker ever sees. */
+            const bool writing=op==UBO_WRITEV;
+            rc=nas_fs_io_vectors_import(slot,p->user_address,p->length,
+                                         writing,&p->vectors);
+            if(!rc) {
+                p->length=p->vectors.total;
+                if(p->length>M180_TRANSFER_MAX)p->length=M180_TRANSFER_MAX;
+                if(p->length) {
+                    uint64_t accessible=
+                        nas_fs_io_vectors_accessible_prefix(
+                            &p->vectors,p->length,writing);
+                    if(!accessible)rc=-EFAULT;
+                    else p->length=accessible;
+                }
+            }
+            if(!rc && p->length) {
+                p->buffer=nas_heap_alloc((size_t)p->length);
+                if(!p->buffer)rc=-ENOMEM;
+            }
+            if(!rc && writing && p->length &&
+               !nas_fs_io_vectors_copyin(&p->vectors,p->buffer,p->length))
+                rc=-EFAULT;
+        } else if(!rc && (op==UBO_READ || op==UBO_WRITE ||
+                          op==UBO_PREAD || op==UBO_PWRITE)) {
             if(p->length>M180_TRANSFER_MAX)p->length=M180_TRANSFER_MAX;
             if(!valid_user_range(p->user_address,p->length))rc=-EFAULT;
             if(!rc && p->length) {
