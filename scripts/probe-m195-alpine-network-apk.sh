@@ -30,10 +30,10 @@ overlay=$(mktemp -d "$PWD/$work/m195-network-overlay.XXXXXX")
 sudo cp -a "$root/." "$overlay/"
 sudo python3 scripts/m193-alpine-login-overlay.py "$root" "$overlay"
 sudo install -m 0644 "$repo/repositories" "$overlay/root/m195-repositories"
-test -s "$overlay/root/m195-repositories" || {
+sudo test -s "$overlay/root/m195-repositories" || {
     echo '[M195 STAGE FAIL] scoped APK repository missing in test root' >&2; exit 1;
 }
-test ! -e "$overlay/root/m195-wire.txt" || {
+sudo test ! -e "$overlay/root/m195-wire.txt" || {
     echo '[M195 STAGE FAIL] HTTP witness was preseeded' >&2; exit 1;
 }
 # Alpine/BusyBox may expose an existing applet at /usr/bin/tree even when
