@@ -231,6 +231,20 @@ def debugfs_cat(partition: Path, name: str) -> bytes:
     return answer.stdout
 
 
+def check_fsck(partition: Path) -> None:
+    try:
+        subprocess.run(["sh", "scripts/check-ext4-fsck-clean.sh", str(partition)],
+                       check=True, stdout=subprocess.PIPE)
+    except subprocess.CalledProcessError as exc:
+        # The normal successful path suppresses verbose e2fsck output, but
+        # an actual guest-write failure MUST expose the allocation mismatch
+        # which made the strict oracle reject the physical disk.
+        if exc.stdout:
+            sys.stderr.buffer.write(exc.stdout)
+            sys.stderr.buffer.flush()
+        raise
+
+
 def prepare(port: str, root: Path, disk: Path) -> None:
     validate_tree(port, root)
     disk.parent.mkdir(parents=True, exist_ok=True)
@@ -246,8 +260,7 @@ def prepare(port: str, root: Path, disk: Path) -> None:
             "mke2fs", "-q", "-F", "-t", "ext4", "-b", "4096",
             "-O", "^metadata_csum,^64bit", "-d", str(root), str(partition),
         ], check=True)
-        subprocess.run(["sh", "scripts/check-ext4-fsck-clean.sh", str(partition)],
-                       check=True, stdout=subprocess.PIPE)
+        check_fsck(partition)
         candidate = temporary / "alpine-root.img"
         with candidate.open("wb") as output:
             output.truncate(DISK_SIZE)
@@ -275,8 +288,7 @@ def verify(port: str, root: Path, disk: Path) -> None:
     with tempfile.TemporaryDirectory(prefix="m191-disk-verify-") as work:
         partition = Path(work) / "root.ext4"
         extract_partition(disk, partition)
-        subprocess.run(["sh", "scripts/check-ext4-fsck-clean.sh", str(partition)],
-                       check=True, stdout=subprocess.PIPE)
+        check_fsck(partition)
         for name in READBACK:
             expected = guest_path(root, name).read_bytes()
             actual = debugfs_cat(partition, name)

@@ -108,6 +108,9 @@ void nas_rv_full_trap_c(struct nas_rv_trap_frame *frame) {
                     nas_print(" t2=");nas_hex(frame->x[7]);
                     nas_print(" a2=");nas_hex(frame->x[12]);
                     nas_print(" a3=");nas_hex(frame->x[13]);
+                    nas_print(" a4=");nas_hex(frame->x[14]);
+                    nas_print(" a5=");nas_hex(frame->x[15]);
+                    nas_print(" a6=");nas_hex(frame->x[16]);
                     nas_print(" si_code=");nas_dec((uint64_t)outcome.si_code);
                     nas_print("\n");
                     /* A noncanonical SEPC often follows a corrupted
