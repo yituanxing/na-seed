@@ -21,11 +21,18 @@ import sys
 
 FAULT_MAP_SPAN = 0x33F000
 FAULT_CALLSITE_DELTA = 0x5FD361A2 - 0x5FB2E000
+FAULT_CALLBACK_DELTA = 0x5FED0420 - 0x5FB2E000
 PAGE = 4096
 ELF_HEADER = struct.Struct("<16sHHIQQQIHHHHHH")
 PROGRAM_HEADER = struct.Struct("<IIQQQQQQ")
 SYM = re.compile(r"^\s*\d+:\s+([0-9a-fA-F]+)\s+(\d+)\s+"
                  r"(FUNC|IFUNC)\s+\S+\s+\S+\s+\S+\s+(.+)$")
+OBJECT_SYM = re.compile(r"^\s*\d+:\s+([0-9a-fA-F]+)\s+(\d+)\s+"
+                        r"OBJECT\s+\S+\s+\S+\s+\S+\s+(.+)$")
+SECTION = re.compile(r"^\s*\[\s*\d+\]\s+(\S+)\s+\S+\s+"
+                     r"([0-9a-fA-F]+)\s+([0-9a-fA-F]+)\s+([0-9a-fA-F]+)\s+")
+RELOCATION = re.compile(r"^\s*([0-9a-fA-F]{8,16})\s+[0-9a-fA-F]+\s+"
+                        r"R_RISCV_\S+\s*.*$")
 
 
 def align_down(n: int) -> int:
@@ -139,6 +146,77 @@ def callsite_bytes(path: Path, segment: tuple[int, int, int, int]) -> None:
     symbol_context(path, virtual_pc)
 
 
+def callback_data(path: Path) -> None:
+    """Inspect *original* ELF callback slot; never infer guest writes from it."""
+    callback_va = FAULT_CALLBACK_DELTA
+    phdrs: list[tuple[int, int, int, int, int]] = []
+    try:
+        with path.open("rb") as stream:
+            fields = ELF_HEADER.unpack(stream.read(ELF_HEADER.size))
+            phoff, phentsize, phnum = fields[5], fields[9], fields[10]
+            if phentsize != PROGRAM_HEADER.size or not 0 < phnum <= 128:
+                return
+            for k in range(phnum):
+                stream.seek(phoff + k * phentsize)
+                ptype, flags, offset, vaddr, _, filesz, memsz, _ = (
+                    PROGRAM_HEADER.unpack(stream.read(phentsize)))
+                if ptype == 1 and vaddr <= callback_va < vaddr + memsz:
+                    phdrs.append((flags, offset, vaddr, filesz, memsz))
+            if not phdrs:
+                print(f"[M194 RV64 DSO CALLBACK] va=0x{callback_va:x} "
+                      "NO FILE PT_LOAD MATCH")
+                return
+            flags, offset, vaddr, filesz, memsz = phdrs[0]
+            file_offset = offset + callback_va - vaddr
+            if callback_va - vaddr >= filesz:
+                print(f"[M194 RV64 DSO CALLBACK] va=0x{callback_va:x} "
+                      f"in zero-filled PT_LOAD flags=0x{flags:x}")
+                return
+            window_start = max(offset, file_offset - 32)
+            window_size = min(96, offset + filesz - window_start)
+            stream.seek(window_start)
+            original = stream.read(window_size)
+            stream.seek(file_offset)
+            qword = stream.read(8)
+    except (OSError, struct.error, OverflowError) as exc:
+        print(f"[M194 RV64 DSO CALLBACK] original file read failed: {exc}")
+        return
+    print(f"[M194 RV64 DSO CALLBACK] elf_va=0x{callback_va:x} "
+          f"file_offset=0x{file_offset:x} phdr_flags=0x{flags:x} "
+          f"file_qword=0x{int.from_bytes(qword, 'little'):016x} "
+          f"preview_start=0x{window_start:x} hex={original.hex()}")
+    for line in readelf(path, "-SW").splitlines():
+        found = SECTION.match(line)
+        if found:
+            name, addr, _, size = found.groups()
+            start, length = int(addr, 16), int(size, 16)
+            if start <= callback_va < start + length:
+                print(f"[M194 RV64 DSO CALLBACK SECTION] {name} "
+                      f"start=0x{start:x} size=0x{length:x} "
+                      f"offset_in_section=0x{callback_va-start:x}")
+    objects: list[tuple[int, int, str]] = []
+    for line in readelf(path, "-Ws").splitlines():
+        found = OBJECT_SYM.match(line)
+        if found and int(found[1], 16):
+            objects.append((int(found[1], 16), int(found[2]), found[3].strip()))
+    if objects:
+        nearby = sorted(objects, key=lambda entry: abs(entry[0] - callback_va))[:6]
+        for address, size, name in nearby:
+            print(f"[M194 RV64 DSO CALLBACK OBJECT] va=0x{address:x} "
+                  f"size=0x{size:x} delta={address-callback_va:+d} name={name}")
+    matches: list[tuple[int, str]] = []
+    for line in readelf(path, "-rW").splitlines():
+        found = RELOCATION.match(line)
+        if found:
+            reloc_va = int(found[1], 16)
+            if abs(reloc_va - callback_va) <= 64:
+                matches.append((reloc_va, line.strip()))
+    for addr, line in sorted(matches, key=lambda item: abs(item[0]-callback_va))[:24]:
+        print(f"[M194 RV64 DSO CALLBACK RELOC] delta={addr-callback_va:+d} {line}")
+    if not matches:
+        print("[M194 RV64 DSO CALLBACK RELOC] none within +-64 bytes")
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("usage: m194-rv64-apk-dso-audit.py ALPINE_ROOTFS")
@@ -169,6 +247,7 @@ def main() -> None:
               f"distance=0x{distance:x} rx_span=0x{segment[0]:x} "
               f"sha256={hashlib.sha256(path.read_bytes()).hexdigest()}")
         callsite_bytes(path, segment)
+        callback_data(path)
         # Print ELF program headers for mapping verification independently of
         # any target-toolchain-specific objdump or disassembler installation.
         print("[M194 RV64 DSO PHDR] " + "\n".join(
