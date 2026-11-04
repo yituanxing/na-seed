@@ -31,7 +31,9 @@
 /* This Q35 path uses the existing single-CPU 8259 virtual-wire route.
  * QEMU ICH9 maps bus-0 PCI INTx to PIRQ E-H for slots below 25. The
  * platform routes IRQ-capable class devices (Input and Net); PIC11 cannot
- * be inferred from PCI Interrupt Line (firmware-owned). */
+ * be inferred from PCI Interrupt Line (firmware-owned). In particular,
+ * a firmware-routed polled block device can share PIC11 even when its PIRQ
+ * differs from the network device's PIRQ. Its INTx must be disabled. */
 #define ICH9_LPC_SLOT 31U
 #define ICH9_PIRQ_E_ROUT 0x68U
 #define X86_PIC_DEVICE_IRQ 11U
@@ -41,7 +43,6 @@ static struct nas_virtio_pci_resources resources[VIRTIO_DEVICES];
 static struct nas_virtio_pci pci[VIRTIO_DEVICES];
 static struct nas_virtio_transport transports[VIRTIO_DEVICES];
 static struct nas_bus_device devices[VIRTIO_DEVICES];
-static struct nas_irq_action shared_irq_acks[VIRTIO_DEVICES];
 static uint8_t device_pirq[VIRTIO_DEVICES];
 static bool scanned;
 static unsigned block_count(void){
@@ -61,6 +62,9 @@ static unsigned net_count(void){
 static void out32(uint16_t port,uint32_t value) {
     __asm__ volatile("outl %0,%1"::"a"(value),"Nd"(port));
 }
+static void out16(uint16_t port,uint16_t value) {
+    __asm__ volatile("outw %0,%1"::"a"(value),"Nd"(port));
+}
 static uint32_t in32(uint16_t port) {
     uint32_t value;__asm__ volatile("inl %1,%0":"=a"(value):"Nd"(port));
     return value;
@@ -76,6 +80,14 @@ static void cfg_write(uint8_t bus,uint8_t slot,uint8_t fun,
     out32(0xcf8,UINT32_C(0x80000000) | ((uint32_t)bus<<16) |
         ((uint32_t)slot<<11) | ((uint32_t)fun<<8) | (offset&0xfcU));
     out32(0xcfc,value);
+}
+static void cfg_write_command(uint8_t slot,uint8_t fun,uint16_t command) {
+    /* PCI STATUS occupies the upper 16 bits of the command DWORD and
+     * contains write-one-to-clear bits. Never write it back merely to
+     * change IO/MEM/BUS_MASTER or INTX_DISABLE in PCI COMMAND. */
+    out32(0xcf8,UINT32_C(0x80000000) | ((uint32_t)slot<<11) |
+        ((uint32_t)fun<<8) | 4U);
+    out16(0xcfc,command);
 }
 static void load_config(uint8_t bus,uint8_t slot,uint8_t fun,uint8_t *cfg) {
     for(unsigned off=0;off<256;off+=4) {
@@ -111,11 +123,11 @@ static int q35_route_device_pirqs(uint8_t enabled_pirqs) {
         return -EIO;
     return 0;
 }
-static int q35_select_pci_intx(uint8_t slot,uint8_t function,
-                               const uint8_t *config) {
-    /* A modern-only VirtIO PCI function still has INTx.  Firmware might
-     * have left MSI/MSI-X enabled or PCI COMMAND.INTX_DISABLE set; force
-     * our chosen INTx path explicitly before the class driver activates. */
+static int q35_set_pci_interrupt_mode(uint8_t slot,uint8_t function,
+                                      const uint8_t *config,bool intx) {
+    /* Disable MSI/MSI-X for all legacy PIC devices, including polled
+     * ones. Only a class with an actual IRQ owner may activate INTx;
+     * firmware's PCI Interrupt Line can alias unrelated ICH9 PIRQs. */
     uint8_t visited[256]={0};
     unsigned cap=config[0x34U];
     for(unsigned traversed=0;cap;traversed++) {
@@ -132,20 +144,34 @@ static int q35_select_pci_intx(uint8_t slot,uint8_t function,
         cap=config[cap+1];
     }
     uint32_t command=cfg_read(0,slot,function,4U);
-    cfg_write(0,slot,function,4U,command&~(UINT32_C(1)<<10));
-    return (cfg_read(0,slot,function,4U)&(UINT32_C(1)<<10))?
+    uint32_t desired=intx?(command&~(UINT32_C(1)<<10)):
+                           (command|(UINT32_C(1)<<10));
+    cfg_write_command(slot,function,(uint16_t)desired);
+    return ((cfg_read(0,slot,function,4U)^desired)&(UINT32_C(1)<<10))?
            -EIO:0;
 }
-static void q35_shared_irq_ack_only(void *unused,uint32_t status) {
-    (void)unused;
-    (void)status;
+static bool q35_device_needs_irq(const struct nas_bus_device *dev) {
+#ifdef NAS_ENABLE_VIRTIO_INPUT
+    if(dev->device_id==VIRTIO_ID_INPUT)return true;
+#endif
+#ifdef NAS_ENABLE_VIRTIO_NET
+    if(dev->device_id==VIRTIO_ID_NET)return true;
+#endif
+#ifdef NAS_ENABLE_VIRTIO_GPU
+    if(dev->device_id==VIRTIO_ID_GPU)return true;
+#endif
+#ifdef NAS_ENABLE_VIRTIO_BLK_ASYNC
+    if(dev->device_id==VIRTIO_ID_BLOCK &&
+       nas_async_blk_is_fixture(dev))return true;
+#endif
+    return false;
 }
 static bool map_bars(uint8_t bus,uint8_t slot,uint8_t fun,unsigned index,
                      struct nas_virtio_pci_resources *res) {
     /* Disable decode while sizing, then enable memory + bus mastering
      * only for the device whose BAR regions passed bounds checks. */
-    uint32_t old_cmd=cfg_read(bus,slot,fun,4);
-    cfg_write(bus,slot,fun,4,old_cmd&~7U);
+    uint16_t old_cmd=(uint16_t)cfg_read(bus,slot,fun,4);
+    cfg_write_command(slot,fun,(uint16_t)(old_cmd&~7U));
     bool mapped=false;
     for(unsigned i=0;i<BAR_COUNT;i++) {
         unsigned off=0x10U+i*4U;
@@ -181,7 +207,7 @@ static bool map_bars(uint8_t bus,uint8_t slot,uint8_t fun,unsigned index,
         }
         if(type==2U)i++;
     }
-    cfg_write(bus,slot,fun,4,mapped?old_cmd|6U:old_cmd);
+    cfg_write_command(slot,fun,(uint16_t)(mapped?old_cmd|6U:old_cmd));
     return mapped;
 }
 int nas_platform_virtio_blk_probe(void) {
@@ -236,6 +262,10 @@ int nas_platform_virtio_blk_probe(void) {
                 nas_dec(slot);nas_print(" function=");nas_dec(function);
                 nas_print("\n");return -ENODEV;
             }
+            /* Start every modern VirtIO function with legacy INTx off.
+             * Only a class which installs an IRQ owner below may enable
+             * it. Firmware may have routed otherwise independent PIRQs
+             * to the same PIC line, so PIRQ identity alone is not safe. */
             rc=nas_virtio_pci_transport_init(&transports[count],&pci[count],
                                              &resources[count],
                                              &nas_dma_qemu_coherent);
@@ -261,29 +291,22 @@ int nas_platform_virtio_blk_probe(void) {
                 if(resources[count].bars[bar].cpu)
                     devices[count].resource.view.pci.mapped_bar_mask |=
                         (uint8_t)(1U<<bar);
+            rc=q35_set_pci_interrupt_mode((uint8_t)slot,
+                                            (uint8_t)function,
+                                            cfg_snapshot[count],false);
+            if(rc) {
+                nas_print("[VIRTIO PCI FAIL] stage=intx-disable\n");
+                return rc;
+            }
             count++;
         }
     }
-    /* Enumerate every transport before enabling a shared legacy IRQ.
-     * The real IRQ-driven Input and Net classes select the ICH9 PIRQ
-     * links; an otherwise polled device on a shared PIC line still needs
-     * its source status ACKed to release that level-triggered line. */
+    /* Enumerate every transport with legacy INTx disabled first. Only
+     * IRQ-owning class drivers select the ICH9 PIRQ links and unmask
+     * their own sources. Polled devices never need a shared ACK shim. */
     uint8_t active_pirqs=0;
     for(unsigned i=0;i<count;i++) {
-        bool needs_irq=false;
-#ifdef NAS_ENABLE_VIRTIO_INPUT
-        if(devices[i].device_id==VIRTIO_ID_INPUT)needs_irq=true;
-#endif
-#ifdef NAS_ENABLE_VIRTIO_NET
-        if(devices[i].device_id==VIRTIO_ID_NET)needs_irq=true;
-#endif
-#ifdef NAS_ENABLE_VIRTIO_GPU
-        if(devices[i].device_id==VIRTIO_ID_GPU)needs_irq=true;
-#endif
-#ifdef NAS_ENABLE_VIRTIO_BLK_ASYNC
-        if(devices[i].device_id==VIRTIO_ID_BLOCK)needs_irq=true;
-#endif
-        if(!needs_irq)continue;
+        if(!q35_device_needs_irq(&devices[i]))continue;
         if(device_pirq[i]==PIRQ_UNKNOWN) {
             nas_print("[VIRTIO PCI FAIL] stage=q35-device-pirq\n");
             return -EOPNOTSUPP;
@@ -325,12 +348,14 @@ int nas_platform_virtio_blk_probe(void) {
         }
     }
     for(unsigned i=0;i<count;i++) {
-        bool shared_line=device_pirq[i]!=PIRQ_UNKNOWN &&
+        bool shared_line=q35_device_needs_irq(&devices[i]) &&
+            device_pirq[i]!=PIRQ_UNKNOWN &&
             (active_pirqs&(1U<<device_pirq[i]));
         if(shared_line) {
-            rc=q35_select_pci_intx(devices[i].resource.view.pci.slot,
-                                   devices[i].resource.view.pci.function,
-                                   cfg_snapshot[i]);
+            rc=q35_set_pci_interrupt_mode(
+                devices[i].resource.view.pci.slot,
+                devices[i].resource.view.pci.function,
+                cfg_snapshot[i],true);
             if(rc)return rc;
             devices[i].resource.irq=(struct nas_irq_route){
                 .domain=NAS_IRQ_DOMAIN_X86_PIC,.hwirq=X86_PIC_DEVICE_IRQ
@@ -355,14 +380,9 @@ int nas_platform_virtio_blk_probe(void) {
         if(devices[i].device_id==VIRTIO_ID_BLOCK &&
            nas_async_blk_owns_device(&devices[i]))class_owns_irq=true;
 #endif
-        if(shared_line && !class_owns_irq) {
-            /* A class that has bound its own IRQ action must never have
-             * its read-to-clear VirtIO ISR consumed a second time here.
-             * Polled devices sharing IRQ11 still must ACK their source. */
-            rc=nas_irq_bind(&shared_irq_acks[i],devices[i].resource.irq,
-                            nas_virtio_irq_ack_source,&transports[i],
-                            q35_shared_irq_ack_only,NULL);
-            if(rc)return rc;
+        if(shared_line!=class_owns_irq) {
+            nas_print("[VIRTIO PCI FAIL] stage=irq-owner-mismatch\n");
+            return -EIO;
         }
     }
     nas_print("[VIRTIO-BLK] real modern PCI devices=");
