@@ -82,7 +82,8 @@ static int net_queue_add(struct virtqueue *vq,struct virtio_sg **sgs,
      n->rx_submitted++;
      return 0;
  }
- if(vq!=&n->tx_vq || in || out!=2 || n->tx_pending ||
+ if(vq!=&n->tx_vq || in || out!=2 ||
+    __atomic_load_n(&n->tx_pending,__ATOMIC_ACQUIRE) ||
     !sgs[0] || !sgs[1] || !sgs[0]->addr || !sgs[1]->addr ||
     sgs[0]->length!=sizeof(struct virtio_net_hdr_v1) ||
     sgs[1]->length<14U || sgs[1]->length>1518U)return -EINVAL;
@@ -97,12 +98,21 @@ static int net_queue_add(struct virtqueue *vq,struct virtio_sg **sgs,
      {n->tx_dma.bus_address+NAS_NET_TX_FRAME_OFFSET,
       (uint32_t)sgs[1]->length,false}
  };
- rc=nas_vring_queue_submit(&n->tx_ring,segments,2,&n->tx_head);
- if(rc){net_fault("tx-submit",n,rc,sgs[1]->length);net_poison(n);return rc;}
- /* Serialized send owns this completion semaphore until get_buf retires the
-  * descriptor. Any earlier RX/old-TX wake token must not complete a new TX. */
+ /* The submit function NOTIFIES the device before it returns. On x86
+  * shared INTx the hardware may complete and interrupt inside submit;
+  * publishing tx_pending afterwards drops that one completion wake and
+  * leaves the lwIP worker asleep until its 3s timeout. Initialize the
+  * semaphore first, then publish pending with release ordering, and only
+  * then expose the descriptor to hardware. Spurious RX wakes are harmless:
+  * the waiting path polls the exact TX descriptor after each notification. */
  nas_ksem_init(&n->tx_completion,0);
- n->tx_pending=true;
+ __atomic_store_n(&n->tx_pending,true,__ATOMIC_RELEASE);
+ rc=nas_vring_queue_submit(&n->tx_ring,segments,2,&n->tx_head);
+ if(rc){
+     __atomic_store_n(&n->tx_pending,false,__ATOMIC_RELEASE);
+     net_fault("tx-submit",n,rc,sgs[1]->length);
+     net_poison(n);return rc;
+ }
  return 0;
 }
 static void net_queue_kick(struct virtqueue *vq){
@@ -114,14 +124,14 @@ static void *net_queue_get_buf(struct virtqueue *vq,unsigned *used_len){
  if(!n || n->poisoned)return NULL;
  uint16_t head=0;uint32_t bytes=0;
  if(vq==&n->tx_vq){
-     if(!n->tx_pending)return NULL;
+     if(!__atomic_load_n(&n->tx_pending,__ATOMIC_ACQUIRE))return NULL;
      int rc=-EAGAIN;
      if(n->rx_irq.bound){
          /* A routed runtime NIC may not spin on a scheduler/kernel C frame.
           * The upstream send() loop needs a sentinel on failure, so poison
           * and reset rather than falling back to the old polling path. */
          if(!nas_kthread_in_worker()){
-             n->tx_pending=false;
+             __atomic_store_n(&n->tx_pending,false,__ATOMIC_RELEASE);
              net_fault("tx-nonworker",n,-EIO,0);
              net_poison(n);
              return vq;
@@ -149,7 +159,7 @@ static void *net_queue_get_buf(struct virtqueue *vq,unsigned *used_len){
              if(rc!=-EAGAIN)break;
          }
      }
-     n->tx_pending=false;
+     __atomic_store_n(&n->tx_pending,false,__ATOMIC_RELEASE);
      if(rc || head!=n->tx_head || bytes){
          net_fault("tx-completion",n,rc?rc:-EIO,head);
          net_poison(n);return vq;
@@ -249,7 +259,8 @@ static void net_rx_irq_notify(void *context,uint32_t source_status){
  if(!(source_status&(NAS_VIRTIO_IRQ_USED_BUFFER|
                       NAS_VIRTIO_IRQ_CONFIG_CHANGE)) || n->poisoned ||
     !n->netdev.registered || n->netdev.removing)return;
- if((source_status&NAS_VIRTIO_IRQ_USED_BUFFER) && n->tx_pending){
+ if((source_status&NAS_VIRTIO_IRQ_USED_BUFFER) &&
+    __atomic_load_n(&n->tx_pending,__ATOMIC_ACQUIRE)){
      if(nas_ksem_post(&n->tx_completion))++n->tx_irq_wakes;
  }
  /* Count only an installed worker wake, never a pre-registration or
