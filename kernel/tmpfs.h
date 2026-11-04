@@ -28,6 +28,8 @@ struct nas_tmp_directory {
 
 struct nas_tmp_file {
     bool used, is_dir;
+    /* An independent tmpfs superblock root is not a named dentry. */
+    bool is_mount_root;
     uint32_t nlink; /* directory-entry references, not open FD references */
     uint64_t ino; /* stable object identity, never derived from a pathname */
     uint64_t index_root; /* physical address of optional 512-entry root frame */
@@ -82,6 +84,8 @@ int tmp_link_at(const void *old_parent,const char *old_name,
                 const void *new_parent,const char *new_name);
 int tmp_symlink_at(const void *parent,const char *name,const char *target);
 struct nas_tmp_file *tmp_inode_alloc(bool dir,uint32_t mode);
+/* Called only after VFS successfully detaches the corresponding mount. */
+int tmp_destroy_mount_root(struct nas_tmp_file *root);
 void tmp_inode_link(struct nas_tmp_file *file);
 void tmp_inode_unlink(struct nas_tmp_file *file);
 void tmp_inode_discard(struct nas_tmp_file *file);

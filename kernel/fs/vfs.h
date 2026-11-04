@@ -234,6 +234,11 @@ int nas_vfs_mount_snapshot(unsigned ordinal,
 /* Only a leaf component, never a lexical normalization or mount walk. */
 int nas_vfs_join_child(const char *parent,const char *name,char out[256]);
 int nas_vfs_unregister_mount(const struct nas_vfs_mount *mount);
+/* Runtime independent tmpfs superblocks. The VFS owns the mount tree;
+ * the provider owns and reclaims the unaliased root inode. */
+int nas_vfs_mount_tmpfs(const char *target,const char *source,
+                        uint32_t mode,bool read_only);
+int nas_vfs_umount_tmpfs(const char *target);
 /* Early boot may select a real block-backed root BEFORE default pseudo
  * mounts acquire parent Dentries. This is a one-shot boot policy, never a
  * runtime root replacement or a second pathname resolution mechanism. */

@@ -37,3 +37,32 @@ Historical NaOS used a custom initramfs Stage 1 to mount and switch root,
 then preferred its own Aether Stage 2. NaSeed already mounts the real ext4
 root in kernel before loading PID1; copying NaOS's `switch_root` or custom
 PID1 would bypass the purpose of the original Alpine init acceptance.
+
+## Next coherent Alpine boot compatibility batch
+
+The initial M192 three-ISA QEMU logs showed original `/sbin/init` really
+executing original `/sbin/openrc` from the physical Alpine ext4 volume.
+They also showed OpenRC failing on **real missing mount(2)** for `proc` at
+`/proc` and `tmpfs` at `/run`, followed by six repeated nonexistent tty1–6
+getty attempts. Initial PID1 entry was observed on all three ports, but
+OpenRC and login were **not** ready.
+
+The follow-up host and kernel changes keep the original signed executables:
+
+- Rootfs assembly only adapts original Alpine `/etc/inittab` to one real
+  `/dev/ttyS0` getty and preserves its BusyBox PID1/OpenRC lines.
+- Generic FS syscall dispatch maps x86-64 `mount=165, umount2=166` and
+  RV64/AArch64 `mount=40, umount2=39` onto two shared semantic operations.
+- Already-mounted genuine `procfs` accepts only a matching idempotent
+  `proc` → `/proc` request; no arbitrary mount request receives fake success.
+- Runtime `tmpfs` uses an independent mounted inode/namespace (not the
+  historical `/tmp` bootfs overlay). Detach uses the VFS mount leases and
+  walks its owned inode directory tree before final root reclamation.
+- Unknown mount filesystems, remount/bind/propagation flags, and unsupported
+  tmpfs options return errors instead of silently changing boot semantics.
+
+The host smoke verifies independent mount roots, nested temporary files,
+iterative reclaim, and idempotent serialized Alpine `inittab` adaptation.
+The M192 system-QEMU diagnostic remains **entry-only** until an additional
+OpenRC/default-runlevel and interactive ttyS0 gate demonstrates real userspace
+readiness on all three architectures.

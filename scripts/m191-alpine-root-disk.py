@@ -29,6 +29,8 @@ CRITICAL = (
 )
 READBACK = ("/etc/alpine-release", "/etc/apk/world", "/etc/apk/repositories",
             "/etc/inittab")
+SERIAL_GETTY = "ttyS0::respawn:/sbin/getty -L ttyS0 115200 vt100"
+LEGACY_GETTYS = frozenset(f"tty{number}" for number in range(1, 7))
 
 
 def fail(message: str) -> None:
@@ -65,6 +67,42 @@ def guest_path(root: Path, name: str) -> Path:
     return root.joinpath(*parts)
 
 
+def configure_serial_inittab(root: Path) -> None:
+    """Adapt only the getty device names; leave signed Alpine init/OpenRC intact.
+
+    NaSeed has a real cross-ISA serial /dev/ttyS0 but no Linux virtual
+    terminals /dev/tty1..6. BusyBox init would otherwise spawn six failed
+    gettys indefinitely. This is a host rootfs configuration overlay, never
+    a replacement guest PID1 or a fake kernel console.
+    """
+    path = guest_path(root, "/etc/inittab")
+    if not path.is_file():
+        fail("official Alpine /etc/inittab missing")
+    original = path.read_text()
+    lines = original.splitlines()
+    selected = []
+    removed = 0
+    serial = 0
+    for line in lines:
+        fields = line.split(":", 3)
+        if len(fields) == 4 and fields[0] in LEGACY_GETTYS and fields[2] == "respawn":
+            removed += 1
+            continue
+        if len(fields) == 4 and fields[0] == "ttyS0" and fields[2] == "respawn":
+            if line != SERIAL_GETTY:
+                fail("conflicting Alpine serial getty configuration")
+            serial += 1
+        selected.append(line)
+    if serial > 1 or not removed and serial != 1:
+        fail("unexpected Alpine getty layout; refusing implicit init replacement")
+    if not serial:
+        selected.append(SERIAL_GETTY)
+    updated = "\n".join(selected) + "\n"
+    if updated != original:
+        path.write_text(updated)
+    path.chmod(0o644)
+
+
 def configure_tree(root: Path) -> None:
     root = root.resolve(strict=True)
     if os.geteuid() != 0:
@@ -90,6 +128,7 @@ def configure_tree(root: Path) -> None:
         entry = parent / basename
         if not entry.exists() and not entry.is_symlink():
             entry.symlink_to("/bin/busybox")
+    configure_serial_inittab(root)
     print("[M191 ROOT CONFIG PASS] guest-safe /etc, /dev, /proc, /sys, "
           "OpenRC/BusyBox PID1 applet links")
 
@@ -114,6 +153,12 @@ def validate_tree(port: str, root: Path) -> dict[str, object]:
     for name in CRITICAL:
         if not guest_path(root, name).is_file():
             fail("missing guest filesystem member: " + name)
+    inittab = guest_path(root, "/etc/inittab").read_text().splitlines()
+    if inittab.count(SERIAL_GETTY) != 1 or any(
+            len(fields := line.split(":", 3)) == 4 and
+            fields[0] in LEGACY_GETTYS and fields[2] == "respawn"
+            for line in inittab):
+        fail("Alpine init is not bound to one physical NaSeed serial console")
     if not (root / "etc/apk/keys").is_dir() or not list((root / "etc/apk/keys").glob("*.pub")):
         fail("signed APK trust keys missing")
     for name in ("/dev", "/dev/pts", "/proc", "/sys", "/run", "/tmp"):

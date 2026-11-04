@@ -65,6 +65,7 @@ static struct nas_tmp_directory *directory_state(const void *parent) {
     if(!parent)return 0;
     if(parent==tmp_root_inode())return &tmp_root_children;
     struct nas_tmp_file *f=(struct nas_tmp_file *)(uintptr_t)parent;
+    if(f->used && f->is_dir && f->is_mount_root)return &f->children;
     return find_inode(parent) ? &f->children : 0;
 }
 static bool parent_valid(const void *parent) {
@@ -132,6 +133,8 @@ const struct nas_tmp_dentry *tmp_child_entry_inode(const void *parent,
 const void *tmp_dir_parent_inode(const void *dir) {
     if(!dir)return 0;
     if(dir==tmp_root_inode())return dir;
+    const struct nas_tmp_file *f=dir;
+    if(f->used && f->is_dir && f->is_mount_root)return dir;
     struct nas_tmp_dentry *entry=find_inode(dir);
     return entry?entry->parent_inode:0;
 }
@@ -296,11 +299,43 @@ static bool under_inode(const void *parent,const void *directory) {
     while(parent) {
         if(parent==directory)return true;
         if(parent==root)return false;
+        const struct nas_tmp_file *f=parent;
+        if(f->used && f->is_dir && f->is_mount_root)return false;
         const struct nas_tmp_dentry *entry=find_inode(parent);
         if(!entry)return false;
         parent=entry->parent_inode;
     }
     return false;
+}
+/* A detached tmpfs superblock owns all its unnamed directory entries. Do
+ * not leak its subtree when umount succeeds: walk by inode without a path
+ * buffer or recursive kernel stack growth. VFS already excluded open Files,
+ * cwd Paths and child mounts before calling this function. */
+int tmp_destroy_mount_root(struct nas_tmp_file *root) {
+    if(!root || !root->used || !root->is_dir ||
+       !root->is_mount_root || !root->nlink)return -EINVAL;
+    struct nas_tmp_file *dir=root;
+    for(;;) {
+        struct nas_tmp_dentry *first=dir->children.first;
+        if(first) {
+            if(first->inode->is_dir && first->inode->children.first) {
+                dir=first->inode;
+                continue;
+            }
+            tmp_remove_entry(first);
+            continue;
+        }
+        if(dir==root)break;
+        struct nas_tmp_dentry *alias=dir->directory_alias;
+        if(!alias || !alias->parent_inode)return -EIO;
+        struct nas_tmp_file *parent=(struct nas_tmp_file *)(uintptr_t)
+                                    alias->parent_inode;
+        tmp_remove_entry(alias);
+        dir=parent;
+    }
+    root->is_mount_root=false;
+    tmp_inode_unlink(root);
+    return 0;
 }
 int tmp_rename_at(const void *old_parent,const char *old_name,
                   const void *new_parent,const char *new_name,uint64_t flags) {

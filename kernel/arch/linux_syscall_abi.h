@@ -141,6 +141,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_mkdir: return NAS_SC_mkdir;
     case __NR_mkdirat: return NAS_SC_mkdirat;
     case __NR_mmap: return NAS_SC_mmap;
+    case __NR_mount: return NAS_SC_mount;
     case __NR_memfd_create: return NAS_SC_memfd_create;
     case __NR_mincore: return NAS_SC_mincore;
     case __NR_msync: return NAS_SC_msync;
@@ -215,6 +216,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_sysinfo: return NAS_SC_sysinfo;
     case __NR_uname: return NAS_SC_uname;
     case __NR_umask: return NAS_SC_umask;
+    case __NR_umount2: return NAS_SC_umount2;
     case __NR_unlink: return NAS_SC_unlink;
     case __NR_unlinkat: return NAS_SC_unlinkat;
     case __NR_utimensat: return NAS_SC_utimensat;
@@ -224,6 +226,8 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_pwrite64: return NAS_SC_pwrite64;
     case __NR_writev: return NAS_SC_writev;
 #else
+    case 40U: return NAS_SC_mount; /* Linux asm-generic */
+    case 39U: return NAS_SC_umount2;
     case 52U: return NAS_SC_fchmod;
     case 53U: return NAS_SC_fchmodat;
     case 54U: return NAS_SC_fchownat;

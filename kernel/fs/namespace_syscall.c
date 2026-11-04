@@ -385,6 +385,97 @@ static uint64_t sys_fchdir(uint64_t fd) {
     return set_cwd_owned(&opened->vnode,&next,rc ? NULL : live);
 }
 
+/* Linux mount(2) is a namespace operation, not an architecture-specific
+ * backdoor into the boot filesystem. Accept only real supported providers
+ * and options; the VFS already owns the mount graph and covered dentries. */
+static int mount_target(uint64_t pointer,char target[256]) {
+    struct nas_fs_path_request request;
+    struct nas_vfs_path found={0};
+    struct nas_fs_node node={0};
+    int rc=nas_fs_user_lookup_begin((uint64_t)-100,pointer,true,
+                                     &request,&found,&node);
+    if(rc)return rc;
+    if(!node.is_dir)rc=-ENOTDIR;
+    if(!rc)rc=nas_vfs_path_string_buf(&found,target,256);
+    if(found.dentry && nas_vfs_path_put(&found))nas_fail("mount target ref");
+    nas_fs_path_end(&request);
+    return rc;
+}
+static int parse_tmpfs_options(const char *data,uint32_t *mode) {
+    *mode=0755U;
+    if(!data[0])return 0;
+    const char *cursor=data;
+    while(*cursor) {
+        char option[64];unsigned n=0;
+        while(*cursor && *cursor!=',') {
+            if(n+1>=sizeof(option))return -EINVAL;
+            option[n++]=*cursor++;
+        }
+        option[n]=0;
+        if(*cursor==',')cursor++;
+        if(!strncmp(option,"mode=",5)) {
+            if(!option[5])return -EINVAL;
+            uint32_t value=0;
+            for(const char *digit=option+5;*digit;digit++) {
+                if(*digit<'0' || *digit>'7' || value>0777U)
+                    return -EINVAL;
+                value=(value<<3)+(uint32_t)(*digit-'0');
+            }
+            if(value>07777U)return -EINVAL;
+            *mode=value;
+        } else if(strcmp(option,"nosuid") && strcmp(option,"nodev") &&
+                  strcmp(option,"rw") && strcmp(option,"ro"))
+            return -EOPNOTSUPP;
+    }
+    return 0;
+}
+static uint64_t sys_mount(uint64_t source_ptr,uint64_t target_ptr,
+                          uint64_t type_ptr,uint64_t flags,
+                          uint64_t data_ptr) {
+    /* MS_RDONLY, MS_NOSUID and MS_NODEV: privileged uid transitions and
+     * device node creation are not supported by this root-only kernel.
+     * Do not silently claim support for bind/remount/propagation/noexec. */
+    if(flags&~7ULL)return (uint64_t)-EOPNOTSUPP;
+    char source[64]={0},fstype[32],target[256],data[256]={0};
+    int rc=0;
+    if(source_ptr)rc=nas_user_read_cstr(source_ptr,source,sizeof(source));
+    if(!rc && !type_ptr)rc=-EINVAL;
+    if(!rc)rc=nas_user_read_cstr(type_ptr,fstype,sizeof(fstype));
+    if(!rc && data_ptr)rc=nas_user_read_cstr(data_ptr,data,sizeof(data));
+    if(rc)return (uint64_t)(int64_t)rc;
+    if(strcmp(fstype,"tmpfs") && strcmp(fstype,"proc"))
+        return (uint64_t)-ENODEV;
+    rc=mount_target(target_ptr,target);
+    if(rc)return (uint64_t)(int64_t)rc;
+    if(!strcmp(fstype,"proc")) {
+        if(strcmp(source,"proc") || flags || data[0] ||
+           strcmp(target,"/proc"))return (uint64_t)-EINVAL;
+        /* /proc is already a permanent, genuine procfs attachment.
+         * Idempotence is limited to the exact same existing superblock. */
+        for(unsigned i=0;;i++) {
+            struct nas_vfs_mount_snapshot entry;
+            rc=nas_vfs_mount_snapshot(i,&entry);
+            if(rc)return (uint64_t)-ENODEV;
+            if(!strcmp(entry.target,"/proc"))
+                return !strcmp(entry.fstype,"procfs") &&
+                       !strcmp(entry.source,"procfs") ?
+                       0 : (uint64_t)-EBUSY;
+        }
+    }
+    if(!source[0])return (uint64_t)-EINVAL;
+    uint32_t mode;
+    rc=parse_tmpfs_options(data,&mode);
+    if(!rc)rc=nas_vfs_mount_tmpfs(target,source,mode,(flags&1ULL)!=0);
+    return (uint64_t)(int64_t)rc;
+}
+static uint64_t sys_umount2(uint64_t target_ptr,uint64_t flags) {
+    if(flags)return (uint64_t)-EOPNOTSUPP;
+    char target[256];
+    int rc=mount_target(target_ptr,target);
+    if(!rc)rc=nas_vfs_umount_tmpfs(target);
+    return (uint64_t)(int64_t)rc;
+}
+
 
 #define NAMESPACE_RESULT(expr) return (struct nas_fs_result){ .handled=true, .value=(expr) }
 struct nas_fs_result nas_fs_namespace_syscall(enum nas_syscall_op op,
@@ -393,6 +484,8 @@ struct nas_fs_result nas_fs_namespace_syscall(enum nas_syscall_op op,
     case NAS_SC_getcwd: NAMESPACE_RESULT(sys_getcwd_root(args[1], args[2]));
     case NAS_SC_chdir: NAMESPACE_RESULT(sys_chdir(args[1]));
     case NAS_SC_fchdir: NAMESPACE_RESULT(sys_fchdir(args[1]));
+    case NAS_SC_mount: NAMESPACE_RESULT(sys_mount(args[1],args[2],args[3],args[4],args[5]));
+    case NAS_SC_umount2: NAMESPACE_RESULT(sys_umount2(args[1],args[2]));
     case NAS_SC_link: NAMESPACE_RESULT(sys_linkat_tmp((uint64_t)-100,args[1],(uint64_t)-100,args[2],0));
     case NAS_SC_linkat: NAMESPACE_RESULT(sys_linkat_tmp(args[1],args[2],args[3],args[4],args[5]));
     case NAS_SC_rename: NAMESPACE_RESULT(sys_renameat_tmp((uint64_t)-100, args[1], (uint64_t)-100, args[2], 0));

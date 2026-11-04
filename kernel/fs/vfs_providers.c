@@ -155,7 +155,13 @@ static bool tmp_is_overlay_root(const struct nas_fs_node *node) {
 }
 static int tmp_root(const struct nas_vfs_mount *mount,
                     struct nas_fs_node *out) {
-    (void)mount;
+    if(mount && mount->private_data) {
+        const struct nas_tmp_file *root=mount->private_data;
+        if(!root->used || !root->is_dir || !root->is_mount_root)
+            return -ESTALE;
+        tmp_fill(root,out);
+        return 0;
+    }
     /* The bootstrap /tmp overlay root is backed by the immutable CPIO
      * directory; children resolve through tmpfs unless fallback is needed. */
     const struct bootfs_entry *root=bootfs_find("/tmp");
@@ -445,6 +451,66 @@ static const struct nas_vfs_type tmp_type={
 };
 int nas_vfs_create_anonymous_tmpfs(uint64_t mode,struct nas_fs_node *owned) {
     return nas_vfs_create_anonymous(&tmp_type,mode,owned);
+}
+
+/* Each runtime tmpfs attachment owns a fresh superblock/root, unlike the
+ * historical bootfs-backed /tmp overlay. Static registration tokens have
+ * stable identity through VFS attach/detach (no slot compaction). */
+#define NAS_RUNTIME_TMPFS_MAX 8U
+static struct runtime_tmpfs {
+    struct nas_vfs_mount mount;
+    char target[256];
+    char source[64];
+    struct nas_tmp_file *root;
+    bool used;
+} runtime_tmpfs[NAS_RUNTIME_TMPFS_MAX];
+
+int nas_vfs_mount_tmpfs(const char *target,const char *source,
+                        uint32_t mode,bool read_only) {
+    if(!target || !source || !source[0] ||
+       strlen(target)>=sizeof(runtime_tmpfs[0].target) ||
+       strlen(source)>=sizeof(runtime_tmpfs[0].source) ||
+       (mode&~07777U))return -EINVAL;
+    struct runtime_tmpfs *entry=NULL;
+    for(unsigned i=0;i<NAS_RUNTIME_TMPFS_MAX;i++)
+        if(!runtime_tmpfs[i].used) {entry=&runtime_tmpfs[i];break;}
+    if(!entry)return -ENOSPC;
+    struct nas_tmp_file *root=tmp_inode_alloc(true,mode);
+    if(!root)return -ENOMEM;
+    root->is_mount_root=true;
+    tmp_inode_link(root); /* superblock's reference until detach */
+    memcpy(entry->target,target,strlen(target)+1);
+    memcpy(entry->source,source,strlen(source)+1);
+    entry->root=root;
+    entry->mount=(struct nas_vfs_mount){
+        .mountpoint=entry->target,.type=&tmp_type,
+        .private_data=root,.source_label=entry->source,
+        .read_only=read_only
+    };
+    int rc=nas_vfs_register_mount(&entry->mount);
+    if(rc) {
+        root->is_mount_root=false;
+        tmp_inode_unlink(root);
+        entry->root=NULL;
+        return rc;
+    }
+    entry->used=true;
+    return 0;
+}
+
+int nas_vfs_umount_tmpfs(const char *target) {
+    if(!target)return -EINVAL;
+    for(unsigned i=0;i<NAS_RUNTIME_TMPFS_MAX;i++) {
+        struct runtime_tmpfs *entry=&runtime_tmpfs[i];
+        if(!entry->used || strcmp(entry->target,target))continue;
+        int rc=nas_vfs_unregister_mount(&entry->mount);
+        if(rc)return rc;
+        rc=tmp_destroy_mount_root(entry->root);
+        if(rc)return rc; /* This would violate a VFS ownership invariant. */
+        *entry=(struct runtime_tmpfs){0};
+        return 0;
+    }
+    return -EINVAL;
 }
 static void proc_fill(struct nas_proc_node p,struct nas_fs_node *out) {
     *out=(struct nas_fs_node){.ino=nas_proc_ino(p),

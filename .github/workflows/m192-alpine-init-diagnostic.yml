@@ -9,8 +9,15 @@ on:
       - 'scripts/m192-*'
       - 'scripts/probe-m192-alpine-init.sh'
       - 'kernel/init/**'
+      - 'kernel/fs/**'
+      - 'kernel/arch/linux_syscall_abi.h'
+      - 'kernel/syscall/ops.h'
+      - 'kernel/tmpfs.h'
       - 'kernel/boot_image.c'
       - 'rootfs/alpine/**'
+      - 'scripts/m191-alpine-root-disk.py'
+      - 'scripts/m191-host-smoke.py'
+      - 'scripts/test-tmp-namespace.c'
 
 permissions:
   contents: read
@@ -38,6 +45,11 @@ jobs:
           sh -n scripts/probe-m192-alpine-init.sh scripts/probe-m191-alpine-root.sh
           python3 scripts/check-three-isa-core.py
           python3 scripts/check-architecture-boundaries.py
+          python3 scripts/m191-host-smoke.py
+          cc -std=c11 -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections \
+            -Wl,--gc-sections scripts/test-tmp-namespace.c kernel/tmpfs.c \
+            kernel/fs/tmp_namespace.c -o /tmp/naseed-m192-tmp-namespace
+          /tmp/naseed-m192-tmp-namespace
           python3 - <<'PY'
           from pathlib import Path
           lines = [line for line in Path('scripts/m192-init-cases.tsv').read_text().splitlines() if line and not line.startswith('#')]

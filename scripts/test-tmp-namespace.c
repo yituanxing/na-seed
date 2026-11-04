@@ -196,7 +196,32 @@ int main(void) {
     borrowed_vfs_pin=0;
     tmp_inode_discard(orphan); /* precisely the final generic unpin hook */
     assert(!orphan->used);
+    /* Runtime /run and later tmpfs mounts must not alias the historical
+     * CPIO-backed /tmp namespace or each other's unaliased roots. Mount
+     * teardown is iterative, releases even nested entries, and recycles
+     * the superblock root only after the VFS has detached its mount. */
+    struct nas_tmp_file *run_root=tmp_inode_alloc(true,0755);
+    struct nas_tmp_file *other_root=tmp_inode_alloc(true,0700);
+    assert(run_root && other_root);
+    run_root->is_mount_root=other_root->is_mount_root=true;
+    tmp_inode_link(run_root);
+    tmp_inode_link(other_root);
+    assert(tmp_dir_parent_inode(run_root)==run_root);
+    assert(tmp_dir_parent_inode(other_root)==other_root);
+    assert(tmp_mkdir_at(run_root,"openrc",0755)==0);
+    struct nas_tmp_file *openrc=tmp_find_child(run_root,"openrc");
+    assert(openrc && tmp_dir_parent_inode(openrc)==run_root);
+    assert(tmp_create_at(openrc,"status",false,0600));
+    assert(tmp_mkdir_at(openrc,"deep",0755)==0);
+    assert(tmp_create_at(tmp_find_child(openrc,"deep"),"pid",false,0600));
+    assert(!tmp_find_child(other_root,"openrc"));
+    assert(!tmp_find_child(root,"openrc"));
+    assert(tmp_destroy_mount_root(run_root)==0);
+    assert(!run_root->used);
+    assert(tmp_find_child(other_root,"openrc")==NULL);
+    assert(tmp_mkdir_at(other_root,"own",0755)==0);
+    assert(tmp_destroy_mount_root(other_root)==0 && !other_root->used);
     assert(frame_allocated>=frame_freed);
-    puts("[M63 TMP PASS] dentry/inode, real hardlinks, rename, cwd, unlink/open, symlink");
+    puts("[M63 TMP PASS] dentry/inode, hardlinks, rename, cwd, orphan lifetime, independent mount roots, iterative teardown");
     return 0;
 }

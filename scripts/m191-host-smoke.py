@@ -43,7 +43,10 @@ with tempfile.TemporaryDirectory(prefix="m191-host-smoke-") as temp:
             b"https://dl-cdn.alpinelinux.org/alpine/v3.23/main\n"
             b"https://dl-cdn.alpinelinux.org/alpine/v3.23/community\n"))
         write(root, "etc/apk/keys/alpine-devel.pub", b"official-key-placeholder\n")
-        write(root, "etc/inittab", b"::sysinit:/sbin/openrc sysinit\n")
+        inittab = "::sysinit:/sbin/openrc sysinit\n"
+        for index in range(1, 7):
+            inittab += f"tty{index}::respawn:/sbin/getty 38400 tty{index}\n"
+        write(root, "etc/inittab", inittab.encode())
         write(root, "bin/busybox", native_elf(machine))
         write(root, "sbin/openrc", native_elf(machine))
         write(root, "usr/bin/apk", native_elf(machine))
@@ -54,7 +57,18 @@ with tempfile.TemporaryDirectory(prefix="m191-host-smoke-") as temp:
         (root / "var/run").symlink_to("/run")
         if model["guest_path"](root, "/var/run/state") != root / "run/state":
             raise AssertionError("guest-absolute intermediate link escaped root")
+        model["configure_serial_inittab"](root)
+        original_serialized = (root / "etc/inittab").read_bytes()
+        model["configure_serial_inittab"](root)
+        if (root / "etc/inittab").read_bytes() != original_serialized:
+            raise AssertionError("Alpine serial getty overlay was not idempotent")
         model["validate_tree"](port, root)
+        write(root, "etc/inittab", original_serialized.replace(
+            model["SERIAL_GETTY"].encode(),
+            b"ttyS0::respawn:/sbin/getty -L ttyS0 9600 vt100"))
+        expect_fail(lambda: model["configure_serial_inittab"](root),
+                    "conflicting Alpine serial getty")
+        write(root, "etc/inittab", original_serialized)
         write(root, "usr/bin/apk", native_elf(999))
         expect_fail(lambda: model["validate_tree"](port, root), "wrong-ISA ELF")
         write(root, "usr/bin/apk", native_elf(machine))
