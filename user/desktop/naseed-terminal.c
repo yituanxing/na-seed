@@ -372,7 +372,7 @@ static void terminal_live(int channel) {
     nasd_send_surface_caps(channel,surface,TERMINAL,TERM_W,TERM_H,
                            NASD_INPUT_KEYS);
     nasd_mark("M170_PTY_INTERACTIVE_SHELL_ATTACHED");
-    unsigned verified=0,verified187=0,verified188=0;
+    unsigned verified=0,verified187=0,verified188=0,verified189=0;
     struct terminal_tx outgoing={0};
     for(;;) {
         struct pollfd fds[2]={
@@ -436,6 +436,19 @@ static void terminal_live(int channel) {
                    strstr(t.evidence,"\nM188_VIM_EDITED_CONTENT_VERIFIED\n")) {
                     verified188=1;
                     nasd_mark("M188_VIM_SAVED_FUNCTION_PASS");
+                }
+                /* M189 uses the same persistent PTY after Vim, Nano and
+                 * a second Vim. Report only lines received from genuine
+                 * process stdout; echoed command text cannot match. */
+                if(!(verified189&1U) &&
+                   strstr(t.evidence,"\nM189_NANO_EDITED_CONTENT_VERIFIED\n")) {
+                    verified189|=1U;
+                    nasd_mark("M189_NANO_SAVED_FUNCTION_PASS");
+                }
+                if((verified189&1U) && !(verified189&2U) &&
+                   strstr(t.evidence,"\n189\n")) {
+                    verified189|=2U;
+                    nasd_mark("M189_PTY_SHELL_RESUMED_AFTER_EDITORS");
                 }
                 nasd_send_packet(channel,MSG_UPDATED,tag);
             }

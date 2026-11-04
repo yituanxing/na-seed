@@ -21,6 +21,8 @@ on:
       - 'scripts/*m179*'
       - 'scripts/*m187*'
       - 'scripts/*m188*'
+      - 'scripts/*m189*'
+      - 'tests/m189-*.sh'
       - 'scripts/m174-expected-markers.txt'
       - 'scripts/m174-software-rootfs-copies.tsv'
       - 'scripts/stage-alpine-prebuilt-overlay.sh'
@@ -82,6 +84,7 @@ jobs:
           sh scripts/m188-software-check-manifest.sh
           sh scripts/check-m187-vt100.sh
           sh scripts/check-m188-pty.sh
+          sh scripts/check-m189-session.sh
 
   three-isa-real-async-filesystem:
     name: M179 real lwext4 worker, host-durable ext4 and block IRQ, M177 GPU + Alpine / ${{ matrix.port }}
@@ -159,6 +162,7 @@ jobs:
             build/external/m174-software-batch/${{ matrix.port }}/m187-vt100-qmp-check.log
             build/external/m174-software-batch/${{ matrix.port }}/m187-*.ppm
             build/external/m174-software-batch/${{ matrix.port }}/m188-*.ppm
+            build/external/m174-software-batch/${{ matrix.port }}/m189-*.ppm
             build/busybox-source-parity-x86/m174-batch.clean.log
             build/busybox-source-parity-x86/m174-batch.serial.log
             build/port-riscv64/full/matrix-source/m174-batch.clean.log

@@ -230,7 +230,11 @@ def main():
     ap.add_argument('--timeout',type=int,default=850)
     ap.add_argument('--m188',action='store_true',
                     help='also verify live pointer/scroll and original Vim')
+    ap.add_argument('--m189',action='store_true',
+                    help='also verify repeated Nano/Vim on one living PTY')
     args=ap.parse_args()
+    if args.m189 and not args.m188:
+        ap.error('--m189 requires --m188 (same running signed-CPIO session)')
     deadline=time.monotonic()+args.timeout
     args.outdir.mkdir(parents=True,exist_ok=True)
     base['wait_marker'](args.serial,'M187_DESKTOP_INITIAL_VISIBLE',deadline)
@@ -297,6 +301,11 @@ def main():
                                  run_name='m188_qmp_extension')
             extra['run'](sock,reader,args.serial,args.outdir)
 
+        if args.m189:
+            sequence=runpy.run_path('scripts/m189-qmp-sequence.py',
+                                    run_name='m189_qmp_extension')
+            sequence['run'](sock,reader,args.serial,args.outdir)
+
         # Deliberate compositor shortcut, exclusive to the new mode. Old
         # M173 QMP still exits on Q/ESC per its existing acceptance contract.
         base['send'](sock,reader,[base['key']('ctrl',True)])
@@ -312,6 +321,12 @@ def main():
         print('[M188 QMP REAL INPUT PASS] original upstream LVGL timed input, '
               'physical slider drag/scroll, original Alpine Vim edit and '
               'independent shell file-content verification',flush=True)
+
+
+    if args.m189:
+        print('[M189 QMP MULTI EDITOR PASS] physical original Vim -> Nano '
+              '-> Vim session, exact shared-file readback, actual PID/wait4 '
+              'and resumed shell',flush=True)
 
 
 if __name__=='__main__':

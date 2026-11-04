@@ -10,3 +10,5 @@ tests/m187-util-linux-run.sh	tests/m187-util-linux-run.sh
 tests/m188-editor-check.sh	tests/m188-editor-check.sh
 # The two NEW M188 signed ELF paths receive guest loader/CLI entry tests.
 tests/m188-software-entry.sh	tests/m188-software-entry.sh
+# M189 same-PTY Vim/Nano/Vim exact saved bytes oracle.
+tests/m189-editor-check.sh	tests/m189-editor-check.sh
