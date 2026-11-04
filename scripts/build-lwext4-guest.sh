@@ -92,7 +92,13 @@ else
                 } ;;
             # M179 is kernel-only: these are actual common-kernel worker,
             # VFS and IRQ-backed block engine exports, never hosted copies.
-            nas_async_blk_fixture_ready|nas_async_blk_get_stats|nas_async_blk_mountable_partition|nas_async_blk_register_block_device|nas_kthread_is_current|nas_kthread_spawn|nas_vfs_lookup|nas_vfs_create|nas_vfs_node_pin|nas_vfs_node_unpin|nas_vfs_write_at|nas_vfs_sync|nas_arch_halt|nas_dec)
+            nas_dec)
+                [ "$mode" = kernel ] && { [ "${NAS_ENABLE_M179_FS_IRQ:-0}" = 1 ] ||
+                                         [ "${NAS_ENABLE_M191_ALPINE_ROOT:-0}" = 1 ]; } || {
+                    echo '[LWEXT4 KERNEL LINK FAIL] diagnostic printer without M179/M191' >&2
+                    exit 1
+                } ;;
+            nas_async_blk_fixture_ready|nas_async_blk_get_stats|nas_async_blk_mountable_partition|nas_async_blk_register_block_device|nas_kthread_is_current|nas_kthread_spawn|nas_vfs_lookup|nas_vfs_create|nas_vfs_node_pin|nas_vfs_node_unpin|nas_vfs_write_at|nas_vfs_sync|nas_arch_halt)
                 [ "$mode" = kernel ] && [ "${NAS_ENABLE_M179_FS_IRQ:-0}" = 1 ] || {
                     echo "[LWEXT4 KERNEL LINK FAIL] unexpected M179 worker reference: $symbol" >&2
                     exit 1
