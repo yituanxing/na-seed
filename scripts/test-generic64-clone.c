@@ -42,8 +42,11 @@ int main(void) {
     assert(nas_linux_decode_syscall(101U)==NAS_SC_nanosleep);
     assert(nas_linux_decode_syscall(115U)==NAS_SC_clock_nanosleep);
     assert(nas_linux_decode_syscall(166U)==NAS_SC_umask);
+    assert(nas_linux_decode_syscall(161U)==NAS_SC_sethostname);
     assert(nas_linux_decode_syscall(165U)==NAS_SC_getrusage);
     assert(nas_linux_decode_syscall(233U)==NAS_SC_madvise);
+    assert(nas_linux_decode_syscall(258U)==NAS_SC_riscv_hwprobe);
+    assert(nas_linux_decode_syscall(259U)==NAS_SC_NONE);
     assert(nas_linux_decode_syscall(227U)==NAS_SC_msync);
     assert(nas_linux_decode_syscall(54U)==NAS_SC_fchownat);
     assert(nas_linux_decode_syscall(55U)==NAS_SC_fchown);

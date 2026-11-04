@@ -40,7 +40,7 @@ sh scripts/check-m89-poll.sh
 sh scripts/check-m90-io-wait.sh
 # M65: native procfs owner host regression (not a simulated guest PASS).
 cc -std=c11 -Wall -Wextra -Werror -fno-builtin -I kernel \
-    scripts/test-procfs.c kernel/fs/procfs.c kernel/lib/string.c \
+    scripts/test-procfs.c kernel/fs/procfs.c kernel/uts.c kernel/lib/string.c \
     -o /tmp/naseed-procfs-test
 /tmp/naseed-procfs-test
 # M66: account actual clock differences using the common Task mechanism.

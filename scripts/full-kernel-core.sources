@@ -4,6 +4,7 @@ kernel/kernel.c
 kernel/random.c
 kernel/init/main.c
 kernel/time/clock.c
+kernel/uts.c
 kernel/task/exec.c
 kernel/syscall/dispatch.c
 kernel/ipc/sysv.c

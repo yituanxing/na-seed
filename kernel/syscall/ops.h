@@ -193,6 +193,7 @@ enum nas_syscall_op {
     NAS_SC_statfs,
     NAS_SC_sysinfo,
     NAS_SC_uname,
+    NAS_SC_sethostname,
     NAS_SC_umask,
     NAS_SC_umount2,
     NAS_SC_unlink,
@@ -203,5 +204,6 @@ enum nas_syscall_op {
     NAS_SC_write,
     NAS_SC_pwrite64,
     NAS_SC_writev,
+    NAS_SC_riscv_hwprobe,
 };
 #endif

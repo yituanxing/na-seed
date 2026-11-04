@@ -48,6 +48,14 @@ jobs:
           python3 -m py_compile scripts/m194-alpine-uart.py scripts/m194-alpine-disk-check.py scripts/m193-alpine-login-overlay.py
           cc -std=c11 -Wall -Wextra -Werror scripts/test-syscall-abi.c -o /tmp/naseed-m194-syscall-abi
           /tmp/naseed-m194-syscall-abi
+          cc -std=c11 -Wall -Wextra -Werror scripts/test-generic64-clone.c -o /tmp/naseed-m194-generic64-abi
+          /tmp/naseed-m194-generic64-abi
+          cc -std=c11 -Wall -Wextra -Werror scripts/test-riscv-hwprobe.c -o /tmp/naseed-m194-riscv-hwprobe
+          /tmp/naseed-m194-riscv-hwprobe
+          cc -std=c11 -Wall -Wextra -Werror -fno-builtin -I kernel \
+            scripts/test-procfs.c kernel/fs/procfs.c kernel/uts.c kernel/lib/string.c \
+            -o /tmp/naseed-m194-procfs
+          /tmp/naseed-m194-procfs
           python3 scripts/check-three-isa-core.py
           python3 scripts/check-architecture-boundaries.py
           python3 scripts/m191-host-smoke.py

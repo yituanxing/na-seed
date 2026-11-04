@@ -12,6 +12,7 @@
 #include "../lib/string.h"
 #include "../mm/heap.h"
 #include "../errno.h"
+#include "../uts.h"
 #include "../ipc/sysv.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -744,7 +745,11 @@ int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
     }
     case NAS_PROC_VMSTAT:
         word(&w,"nr_free_pages ");decimal(&w,nas_free_frames());ch(&w,'\n');break;
-    case NAS_PROC_SYS_HOSTNAME:word(&w,"naseed\n");break;
+    case NAS_PROC_SYS_HOSTNAME: {
+        char name[NAS_UTS_NODENAME_MAX+1];
+        nas_uts_copy_hostname(name);
+        word(&w,name);ch(&w,'\n');break;
+    }
     case NAS_PROC_SLABINFO:
         /* NaSeed uses frame/heap allocators, no Linux slab cache. */
         word(&w,"slabinfo - version: 2.1\n");

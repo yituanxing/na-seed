@@ -11,6 +11,7 @@ int main(void) {
     assert(nas_linux_decode_syscall(__NR_setfsuid) == NAS_SC_setfsuid);
     assert(nas_linux_decode_syscall(__NR_setfsgid) == NAS_SC_setfsgid);
     assert(nas_linux_decode_syscall(__NR_setgroups) == NAS_SC_setgroups);
+    assert(nas_linux_decode_syscall(__NR_sethostname) == NAS_SC_sethostname);
     assert(nas_linux_decode_syscall(__NR_getgroups) == NAS_SC_getgroups);
     assert(nas_credentials_set_id(0)==0);
     assert((int64_t)nas_credentials_set_id(1)==-EPERM);

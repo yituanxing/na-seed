@@ -215,6 +215,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_statfs: return NAS_SC_statfs;
     case __NR_sysinfo: return NAS_SC_sysinfo;
     case __NR_uname: return NAS_SC_uname;
+    case __NR_sethostname: return NAS_SC_sethostname;
     case __NR_umask: return NAS_SC_umask;
     case __NR_umount2: return NAS_SC_umount2;
     case __NR_unlink: return NAS_SC_unlink;
@@ -227,6 +228,9 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_writev: return NAS_SC_writev;
 #else
     case 40U: return NAS_SC_mount; /* Linux asm-generic */
+#if defined(__riscv) && __riscv_xlen == 64
+    case 258U: return NAS_SC_riscv_hwprobe; /* RISC-V-specific Linux UAPI */
+#endif
     case 39U: return NAS_SC_umount2;
     case 52U: return NAS_SC_fchmod;
     case 53U: return NAS_SC_fchmodat;
@@ -347,6 +351,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 139U: return NAS_SC_rt_sigreturn;
     case 132U: return NAS_SC_sigaltstack; /* asm-generic Linux */
     case 160U: return NAS_SC_uname;
+    case 161U: return NAS_SC_sethostname; /* Linux asm-generic */
     case 166U: return NAS_SC_umask; /* Linux asm-generic */
     case 179U: return NAS_SC_sysinfo; /* Linux asm-generic sysinfo */
     case 96U: return NAS_SC_set_tid_address;

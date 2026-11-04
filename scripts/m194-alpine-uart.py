@@ -138,7 +138,8 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
                         state = "commands"
                 elif state == "commands":
                     _command, expected, description = COMMANDS[step]
-                    found = step_match(text[step_start:], expected)
+                    segment = text[step_start:]
+                    found = step_match(segment, expected)
                     if found is not None:
                         print(f"[M194 UART] verified {description}", flush=True)
                         step_end = step_start + found.end()
@@ -163,6 +164,15 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
                         # startup.  Queueing the next command too early can
                         # interleave with a cursor-position report.
                         state = "await_prompt"
+                    elif m193.shell_prompt(segment):
+                        # A new REAL ash prompt means this command already
+                        # returned.  Stop immediately when apk/rc-service or
+                        # the daemon check failed; do not wait out the entire
+                        # QEMU budget and conceal the original exit status.
+                        observed_rc = re.findall(r"M194_[A-Z_]+_RC=[0-9]+", segment)
+                        raise RuntimeError(
+                            f"original Alpine command {step + 1} ({description}) "
+                            f"completed without its required result; guest_rc={observed_rc[-1:]}")
                 elif state == "await_prompt" and m193.shell_prompt(text[step_end:]):
                     step_start = len(text)
                     m193.sent(hold, COMMANDS[step][0])

@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include "../kernel/task.h"
 #include "../kernel/fs/procfs.h"
+#include "../kernel/uts.h"
 #include "../kernel/fs/vfs.h"
 #include "../kernel/errno.h"
 #include "../kernel/mm/vm.h"
@@ -304,6 +305,30 @@ int main(void) {
     check_file("/proc/loadavg","1.00 0.50 0.25");
     check_file("/proc/vmstat","nr_free_pages 512");
     check_file("/proc/sys/kernel/hostname","naseed\n");
+    /* The production syscall and procfs must consume the same kernel-wide
+     * UTS state, including the Linux maximum hostname length. */
+    char hostname[NAS_UTS_NODENAME_MAX+1]={0};
+    nas_uts_copy_hostname(hostname);
+    assert(!strcmp(hostname,"naseed"));
+    assert(nas_uts_set_hostname("alpine",6));
+    nas_uts_copy_hostname(hostname);
+    assert(!strcmp(hostname,"alpine"));
+    check_file("/proc/sys/kernel/hostname","alpine\n");
+    char maxname[NAS_UTS_NODENAME_MAX+1];
+    memset(maxname,'x',NAS_UTS_NODENAME_MAX);
+    maxname[NAS_UTS_NODENAME_MAX]=0;
+    assert(nas_uts_set_hostname(maxname,NAS_UTS_NODENAME_MAX));
+    nas_uts_copy_hostname(hostname);
+    assert(!strcmp(hostname,maxname));
+    assert(!nas_uts_set_hostname(maxname,NAS_UTS_NODENAME_MAX+1));
+    assert(!nas_uts_set_hostname(0,1));
+    nas_uts_copy_hostname(hostname);
+    assert(!strcmp(hostname,maxname));
+    check_file("/proc/sys/kernel/hostname",maxname);
+    assert(nas_uts_set_hostname(0,0));
+    nas_uts_copy_hostname(hostname);
+    assert(!hostname[0]);
+    assert(nas_uts_set_hostname("naseed",6));
     check_file("/proc/slabinfo","slabinfo - version: 2.1");
     struct nas_proc_node sys_dir={0},kernel_dir={0},cwd_link={0};
     char sys_name[32];

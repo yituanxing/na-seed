@@ -5,6 +5,9 @@
 #include "../syscall/ops.h"
 #include "poll_wait_policy.h"
 #include "../arch/linux_syscall_abi.h"
+#if defined(__riscv) && __riscv_xlen == 64
+#include "../arch/riscv64/hwprobe.h"
+#endif
 #include "../errno.h"
 #include "../random.h"
 #include "../task.h"
@@ -38,6 +41,7 @@
 #include "../drivers/serial.h"
 #include "../drivers/tty.h"
 #include "../panic.h"
+#include "../uts.h"
 #define TASK (*nas_current_task)
 #define thread_clear_tid TASK.thread_clear_tid
 
@@ -290,15 +294,25 @@ static uint64_t nas_sysinfo(uint64_t addr) {
 }
 
 static uint32_t missing_count[512];
+static uint64_t sys_sethostname_naseed(uint64_t addr,uint64_t length) {
+    if(length>NAS_UTS_NODENAME_MAX)return (uint64_t)-EINVAL;
+    char hostname[NAS_UTS_NODENAME_MAX+1]={0};
+    if(length && !nas_user_read_bytes(addr,(uint8_t *)hostname,length))
+        return (uint64_t)-EFAULT;
+    /* Only the root primary credential is currently representable. */
+    return nas_uts_set_hostname(hostname,(size_t)length)
+        ? 0 : (uint64_t)-EINVAL;
+}
 static uint64_t sys_uname_naseed(uint64_t buffer) {
     struct uts {
         char sysname[65], node[65], release[65], version[65];
         char machine[65], domain[65];
     };
-    static const struct uts data = {
-        "Linux", "naseed", "0.1", "NaSeed experimental",
+    struct uts data = {
+        "Linux", "", "0.1", "NaSeed experimental",
         NAS_UTS_MACHINE, "localdomain"
     };
+    nas_uts_copy_hostname(data.node);
     return nas_user_write_bytes(buffer, (const uint8_t *)&data, sizeof(data))
         ? 0 : (uint64_t)-EFAULT;
 }
@@ -508,6 +522,10 @@ uint64_t syscall_dispatch(const uint64_t *args) {
 #endif
     if (nr == NAS_SC_ptrace) return nas_ptrace_request(args[1],args[2],args[3],args[4]);
     if (nr == NAS_SC_arch_prctl) return nas_linux_arch_prctl(args[1], args[2]);
+#if defined(__riscv) && __riscv_xlen == 64
+    if (nr == NAS_SC_riscv_hwprobe)
+        return nas_riscv_hwprobe(args[1],args[2],args[3],args[4],args[5]);
+#endif
     if (nr == NAS_SC_getrandom) return nas_random_getrandom(args[1],args[2],args[3]);
     if (nr == NAS_SC_set_tid_address) { thread_clear_tid = args[1]; return TASK.pid; }
     if (nr == NAS_SC_getpid) return TASK.tgid;
@@ -949,6 +967,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         return previous;
     }
     if (nr == NAS_SC_uname) return sys_uname_naseed(args[1]);
+    if (nr == NAS_SC_sethostname) return sys_sethostname_naseed(args[1],args[2]);
     if (nr == NAS_SC_sysinfo) return nas_sysinfo(args[1]);
 
     if (nr == NAS_SC_futex)
