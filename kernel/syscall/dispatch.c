@@ -41,6 +41,29 @@
 #define TASK (*nas_current_task)
 #define thread_clear_tid TASK.thread_clear_tid
 
+/* Linux gid_t is 32 bits on all our LP64 target ABIs.  Snapshot a complete
+ * bounded user group list BEFORE changing Task credentials; EFAULT, EPERM
+ * and EINVAL must leave the previous vector untouched. */
+static uint64_t nas_sys_setgroups(uint64_t count,uint64_t addr) {
+    if(count>NAS_CREDENTIAL_GROUP_LIMIT)return (uint64_t)-EINVAL;
+    uint32_t groups[NAS_CREDENTIAL_GROUP_LIMIT];
+    if(count && !nas_user_read_bytes(addr,(uint8_t *)groups,
+                                     count*sizeof(groups[0])))
+        return (uint64_t)-EFAULT;
+    return nas_credentials_setgroups(&TASK.credentials,count,groups);
+}
+static uint64_t nas_sys_getgroups(uint64_t count,uint64_t addr) {
+    const struct nas_credentials *cred=&TASK.credentials;
+    uint32_t groups[NAS_CREDENTIAL_GROUP_LIMIT];
+    uint64_t actual=nas_credentials_getgroups(cred,count,groups);
+    if((int64_t)actual<0)return actual;
+    if(actual && count &&
+       !nas_user_write_bytes(addr,(const uint8_t *)groups,
+                             actual*sizeof(groups[0])))
+        return (uint64_t)-EFAULT;
+    return actual;
+}
+
 /* Linux sched_attr v0 (48 bytes) plus utilization clamps (56 bytes).
  * Read-only export of the scheduler's actual SCHED_OTHER-only policy. */
 struct nas_linux_sched_attr {
@@ -578,13 +601,13 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if(nr==NAS_SC_nanosleep || nr==NAS_SC_clock_nanosleep)
         return nas_time_sleep_syscall((uint64_t *)(uintptr_t)args,nr,args);
     if (nr == NAS_SC_getuid || nr == NAS_SC_getgid || nr == NAS_SC_geteuid || nr == NAS_SC_getegid) return 0; /* root credentials */
-    if (nr == NAS_SC_getgroups) return nas_credentials_getgroups(args[1]);
+    if (nr == NAS_SC_getgroups) return nas_sys_getgroups(args[1],args[2]);
     if (nr == NAS_SC_setuid || nr == NAS_SC_setgid)
         return nas_credentials_set_id(args[1]);
     if (nr == NAS_SC_setfsuid || nr == NAS_SC_setfsgid)
         return nas_credentials_set_fs_id(args[1]);
     if (nr == NAS_SC_setgroups)
-        return nas_credentials_setgroups(args[1]);
+        return nas_sys_setgroups(args[1],args[2]);
     if (nr == NAS_SC_mincore)
         return nas_vm_mincore(args[1],args[2],args[3]);
     if (nr == NAS_SC_mprotect) {

@@ -30,6 +30,12 @@ PROOF = (
     "[EXEC] replaced process with lwext4 ELF: /sbin/getty",
     "naseed login:",
 )
+OPENRC_FATAL = (
+    "mount: mounting proc on /proc failed",
+    "mount: mounting tmpfs on /run failed",
+    "Unable to mount tmpfs on /run",
+    "Can't continue.",
+)
 
 
 def sent(fd: int, command: str) -> None:
@@ -83,7 +89,8 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
                         cursor += len(chunk)
                     observed.extend(chunk)
                 text = observed.decode("utf-8", errors="replace").replace("\r", "")
-                if "[FAIL]" in text or "TIOCSCTTY: Operation not permitted" in text:
+                if ("[FAIL]" in text or "TIOCSCTTY: Operation not permitted" in text
+                        or any(marker in text for marker in OPENRC_FATAL)):
                     raise RuntimeError("guest reported real boot/TTY failure")
 
                 if state == "login" and "naseed login:" in text:
@@ -127,6 +134,10 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
                                   "-> ash -> /bin/sh -> real output; timeout was NOT a PASS", flush=True)
                             return
                         step_start = len(text)
+                        if expected is None:
+                            # Exec committed the POSIX shell, but usermode
+                            # startup and the new readline may still be pending.
+                            time.sleep(0.4)
                         sent(hold, COMMANDS[step][0])
 
                 if proc.poll() is not None:
@@ -139,11 +150,17 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
         raise
     finally:
         if proc is not None and proc.poll() is None:
-            os.killpg(proc.pid, signal.SIGTERM)
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
             try:
                 proc.wait(timeout=8)
             except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
                 proc.wait()
         os.close(hold)
         fifo.unlink()

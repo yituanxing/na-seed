@@ -3,10 +3,17 @@
 #include <stdint.h>
 #include "../errno.h"
 
-/* The current kernel has precisely one real credential identity: uid/gid 0
- * and an empty supplementary-group set. Do not claim to switch identities
- * before a process credential owner and permission checks exist.
- * These successful operations are genuine no-ops against that state. */
+/* The current kernel has precisely one supported real primary credential
+ * identity: uid/gid 0.  The supplementary group vector is actual Task state:
+ * initgroups(root,0) from original BusyBox login can include wheel (gid 10)
+ * as well as group 0.  Root's supplementary groups are tracked and reported
+ * accurately; non-root primary identities require VFS permission support. */
+#define NAS_CREDENTIAL_GROUP_LIMIT 64U
+struct nas_credentials {
+    uint32_t groups[NAS_CREDENTIAL_GROUP_LIMIT];
+    uint32_t group_count;
+};
+
 static inline uint64_t nas_credentials_set_id(uint64_t requested) {
     return requested==0 ? 0 : (uint64_t)-EPERM;
 }
@@ -18,11 +25,36 @@ static inline uint64_t nas_credentials_set_fs_id(uint64_t requested) {
     (void)requested;
     return 0;
 }
-static inline uint64_t nas_credentials_setgroups(uint64_t count) {
-    return count==0 ? 0 : (uint64_t)-EPERM;
+/* Pure checked transition: user buffer access is performed transactionally
+ * by syscall dispatch BEFORE this helper can mutate Task-owned credentials.
+ * Linux root may join supplementary groups with nonzero GIDs while remaining
+ * the same primary root user/group.  Linux sorts the group vector. */
+static inline uint64_t nas_credentials_setgroups(struct nas_credentials *credentials,
+                                                  uint64_t count,
+                                                  const uint32_t *groups) {
+    if(count>NAS_CREDENTIAL_GROUP_LIMIT)return (uint64_t)-EINVAL;
+    if(count && !groups)return (uint64_t)-EFAULT;
+    for(uint64_t i=0;i<count;i++)credentials->groups[i]=groups[i];
+    for(uint64_t i=1;i<count;i++) {
+        uint32_t value=credentials->groups[i];
+        uint64_t j=i;
+        while(j && credentials->groups[j-1]>value) {
+            credentials->groups[j]=credentials->groups[j-1];
+            j--;
+        }
+        credentials->groups[j]=value;
+    }
+    credentials->group_count=(uint32_t)count;
+    return 0;
 }
-static inline uint64_t nas_credentials_getgroups(uint64_t count) {
-    (void)count;
-    return 0; /* no supplementary group IDs to copy */
+static inline uint64_t nas_credentials_getgroups(const struct nas_credentials *credentials,
+                                                  uint64_t count,
+                                                  uint32_t *groups) {
+    if(count>INT32_MAX)return (uint64_t)-EINVAL; /* Linux int size ABI */
+    if(count==0)return credentials->group_count;
+    if(count<credentials->group_count)return (uint64_t)-EINVAL;
+    if(credentials->group_count && !groups)return (uint64_t)-EFAULT;
+    for(uint32_t i=0;i<credentials->group_count;i++)groups[i]=credentials->groups[i];
+    return credentials->group_count;
 }
 #endif

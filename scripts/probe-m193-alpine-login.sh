@@ -49,6 +49,7 @@ if [ "$port" = amd64 ]; then
 fi
 
 fifo="$PWD/$work/m193-serial-input.fifo"
+export NAS_QEMU_SERIAL_FIFO="$fifo"
 runner_log="$PWD/$work/m193-login-runner.log"
 log="$PWD/$logs/m193-batch.serial.log"
 python3 scripts/m193-alpine-uart.py "$runner" "$log" "$runner_log" "$fifo"

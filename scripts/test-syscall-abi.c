@@ -2,8 +2,10 @@
 #include "../kernel/arch/linux_syscall_abi.h"
 #include "../kernel/task/credentials.h"
 int main(void) {
-    /* Real root-only credentials: 0/0 is idempotent; no supplementary
-     * groups exist. Changing IDs or creating group memberships is denied. */
+    /* Real root-only primary identity, with task-owned supplementary GIDs.
+     * Ordinary BusyBox login calls initgroups(root,0) before switching to
+     * root uid/gid; Alpine root also belongs to wheel (gid 10), so its
+     * getgroups must reflect the full actual vector. */
     assert(nas_linux_decode_syscall(__NR_setuid) == NAS_SC_setuid);
     assert(nas_linux_decode_syscall(__NR_setgid) == NAS_SC_setgid);
     assert(nas_linux_decode_syscall(__NR_setfsuid) == NAS_SC_setfsuid);
@@ -15,10 +17,25 @@ int main(void) {
     assert(nas_credentials_set_fs_id(0)==0);
     assert(nas_credentials_set_fs_id(UINT64_MAX)==0);
     assert(nas_credentials_set_fs_id(1000)==0);
-    assert(nas_credentials_setgroups(0)==0);
-    assert((int64_t)nas_credentials_setgroups(1)==-EPERM);
-    assert(nas_credentials_getgroups(0)==0);
-    assert(nas_credentials_getgroups(16)==0);
+    struct nas_credentials root={0};
+    uint32_t root_group[2]={10,0};
+    uint32_t observed[2]={UINT32_MAX,UINT32_MAX};
+    assert(nas_credentials_getgroups(&root,0,0)==0);
+    assert(nas_credentials_setgroups(&root,2,root_group)==0);
+    assert(nas_credentials_getgroups(&root,0,0)==2);
+    assert((int64_t)nas_credentials_getgroups(&root,1,observed)==-EINVAL);
+    assert(nas_credentials_getgroups(&root,2,observed)==2);
+    assert(observed[0]==0 && observed[1]==10); /* Linux sorted groups */
+    assert((int64_t)nas_credentials_getgroups(&root,UINT64_MAX,observed)==-EINVAL);
+    assert(nas_credentials_getgroups(&root,0,0)==2);
+    assert((int64_t)nas_credentials_setgroups(&root,1,0)==-EFAULT);
+    assert((int64_t)nas_credentials_setgroups(&root,NAS_CREDENTIAL_GROUP_LIMIT+1,
+                                              root_group)==-EINVAL);
+    struct nas_credentials fork_copy=root;
+    assert(nas_credentials_getgroups(&fork_copy,0,0)==2);
+    assert(nas_credentials_setgroups(&fork_copy,0,0)==0);
+    assert(nas_credentials_getgroups(&fork_copy,0,0)==0);
+    assert(nas_credentials_getgroups(&root,0,0)==2);
     assert(nas_linux_decode_syscall(__NR_access) == NAS_SC_access);
     assert(nas_linux_decode_syscall(__NR_chown) == NAS_SC_chown);
     assert(nas_linux_decode_syscall(__NR_lchown) == NAS_SC_lchown);

@@ -497,6 +497,8 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
      * released by nas_mm_put(previous_mm) after the root switch. */
     nas_time_timers_drop(); /* POSIX timers never survive execve. */
     TASK.execed = true; /* fork parent may no longer setpgid after exec */
+    /* Linux execve preserves credentials, including Task-owned supplementary
+     * groups.  Only the program image/argv/VM are replaced below. */
     TASK.signal_frame_active = false;
     TASK.signal_frame_sp = 0;
     TASK.signal_stack_sp=0;

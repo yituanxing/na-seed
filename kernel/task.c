@@ -114,6 +114,8 @@ struct nas_task *nas_task_fork_slot(void) {
             nas_signal_group_put(child_group);
             return NULL;
         }
+        /* Snapshot actual supplementary GIDs with the rest of Task state.
+         * Both fork and CLONE_THREAD use this owner; exec does not reset it. */
         memcpy(child, nas_current_task, sizeof(*child));
         child->files=child_files;
         child->fds=&child_files->table;
