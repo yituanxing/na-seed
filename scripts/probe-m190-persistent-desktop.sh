@@ -24,8 +24,10 @@ export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"
 export NAS_ACCEPTANCE_CPIO="$work/rootfs.cpio"
 for phase in write reopen; do
     export NAS_QEMU_QMP_SOCKET="$work/m190-$phase.qmp"
-    log="$logs/m190-$phase.clean.log"
-    serial="$logs/m190-$phase.serial.log"
+    # The original unchanged M187 batch ID owns the actual runner log paths.
+    # Save separate phase snapshots only AFTER each genuine QEMU run.
+    log="$logs/m187-vt100.clean.log"
+    serial="$logs/m187-vt100.serial.log"
     oracle="$work/m190-$phase-qmp-check.log"
     mkdir -p "$logs"
     truncate -s 0 "$serial"
@@ -51,6 +53,8 @@ for phase in write reopen; do
     grep -Fq '[M180 FS USER IRQ] clean unmount and durable flush' "$log"
     grep -Fq '[EXEC] replaced process with CPIO ELF: /usr/bin/vim' "$log"
     grep -Fq '[EXEC] replaced process with CPIO ELF: /usr/bin/nano' "$log"
+    cp "$log" "$logs/m190-$phase.clean.log"
+    cp "$serial" "$logs/m190-$phase.serial.log"
     python3 scripts/m190-durable-fixture.py verify "$disk"
     echo "[M190 $phase NATIVE PASS] $port same physical disk, real GUI and IRQ"
 done
