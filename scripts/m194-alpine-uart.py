@@ -252,7 +252,8 @@ def stop_runner(proc: subprocess.Popen[bytes]) -> None:
 
 def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int,
         *, commands=COMMANDS, stage: str = "M194",
-        success_message: str | None = None) -> None:
+        success_message: str | None = None,
+        failure_watch: Path | None = None) -> None:
     if not commands:
         raise ValueError("Alpine UART acceptance needs at least one real guest command")
     fifo.parent.mkdir(parents=True, exist_ok=True)
@@ -279,6 +280,12 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
                 stderr=subprocess.STDOUT, start_new_session=True)
             cursor = 0
             while time.monotonic() - started < deadline:
+                # Optional *independent* physical-QMP oracle. A failed video
+                # or hardware input observation should stop its Alpine UART
+                # runner immediately, not conceal the cause for 20 minutes.
+                if failure_watch is not None and failure_watch.is_file():
+                    raise RuntimeError("independent physical QMP rejected GUI: "
+                                       + failure_watch.read_text()[-2000:])
                 if log_name.is_file():
                     with log_name.open("rb") as stream:
                         stream.seek(cursor)

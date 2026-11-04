@@ -12,6 +12,17 @@ case "$port" in
 esac
 . scripts/native-qemu-target.sh
 
+# M198 reuses THIS full public-Alpine workload and the same disposable disk.
+# It adds already-established VirtIO GPU/input + userspace desktop, without
+# another distro image, PID1, graphical kernel ABI or software-test pipeline.
+m198=${NAS_M198_INTEGRATED_DESKTOP:-0}
+case "$m198" in 0|1) ;; *) echo '[M198 FAIL] invalid desktop selector' >&2; exit 2 ;; esac
+if [ "$m198" = 1 ]; then
+    # Must be set BEFORE M191 builds the native kernel on all three ISAs.
+    export NAS_ENABLE_VIRTIO_INPUT=1 NAS_ENABLE_VIRTIO_GPU=1
+    export NAS_M191_BUILD_TAG=m198-root
+fi
+
 export NAS_ENABLE_VIRTIO_NET=1 NAS_VIRTIO_NET_USER=1 NAS_ENABLE_LWIP=1
 unset NAS_SYSCALL_TRACE
 sh scripts/probe-m191-alpine-root.sh "$port"
@@ -35,6 +46,9 @@ overlay=$(mktemp -d "$PWD/$work/m197-software-overlay.XXXXXX")
 sudo cp -a "$root/." "$overlay/"
 sudo python3 scripts/m193-alpine-login-overlay.py "$root" "$overlay"
 sudo python3 scripts/m197-alpine-stage.py "$root" "$overlay"
+if [ "$m198" = 1 ]; then
+    sh scripts/stage-m198-alpine-desktop.sh "$port" "$overlay"
+fi
 sudo install -m 0644 tests/m197-software-workload.sh \
     "$overlay/root/m197-software-workload.sh"
 sudo test -s "$overlay/root/m197-software-workload.sh"
@@ -62,16 +76,51 @@ export BUSYBOX_PARITY_CASE=m197-batch BUSYBOX_PARITY_EXPECTED_COUNT=1
 export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv
 export NAS_ACCEPTANCE_QEMU_RAM=1536M
 export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M197_PUBLIC_QEMU_TIMEOUT:-1020}
+if [ "$m198" = 1 ]; then
+    export NAS_QEMU_INPUT_OPTIN=1 NAS_QEMU_VIRTIO_GPU=1 NAS_QEMU_RAMFB=0
+    export NAS_ACCEPTANCE_QEMU_RAM=2048M
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M198_DESKTOP_SECONDS:-1250}
+    export NAS_QEMU_QMP_SOCKET="$PWD/$work/m198-integrated-desktop.qmp"
+    test ! -e "$NAS_QEMU_QMP_SOCKET" || {
+        echo '[M198 QMP FAIL] stale socket from another run' >&2
+        exit 1
+    }
+fi
 if [ "$port" = amd64 ]; then
-    export NAS_ACCEPTANCE_KERNEL="$PWD/build/m191-root-virtio-x86/kernel.elf"
+    export NAS_ACCEPTANCE_KERNEL="$PWD/build/${NAS_M191_BUILD_TAG:-m191-root}-virtio-x86/kernel.elf"
     test -s "$NAS_ACCEPTANCE_KERNEL"
 fi
 
 fifo="$PWD/$work/m197-software-serial-input.fifo"
 export NAS_QEMU_SERIAL_FIFO="$fifo"
 serial="$PWD/$logs/m197-batch.serial.log"
-python3 scripts/m197-alpine-uart.py "$runner" "$serial" \
-    "$PWD/$work/m197-first-runner.log" "$fifo"
+if [ "$m198" = 1 ]; then
+    export NAS_M198_QMP_FAIL_FILE="$PWD/$work/m198-qmp.failed"
+    test ! -e "$NAS_M198_QMP_FAIL_FILE" || {
+        echo '[M198 QMP FAIL] stale failure file' >&2; exit 1;
+    }
+    python3 scripts/m198-qmp-alpine-desktop.py \
+        --serial "$serial" --qmp "$NAS_QEMU_QMP_SOCKET" \
+        --outdir "$work" --timeout "${NAS_M198_DESKTOP_SECONDS:-1250}" \
+        > "$work/m198-qmp-check.log" 2>&1 &
+    watcher=$!
+    if ! python3 scripts/m198-alpine-uart.py "$runner" "$serial" \
+            "$PWD/$work/m198-first-runner.log" "$fifo"; then
+        kill "$watcher" 2>/dev/null || :
+        wait "$watcher" 2>/dev/null || :
+        tail -100 "$work/m198-qmp-check.log" >&2 || :
+        exit 1
+    fi
+    if ! wait "$watcher"; then
+        echo '[M198 QMP FAIL] physical desktop and original editor' >&2
+        tail -100 "$work/m198-qmp-check.log" >&2
+        exit 1
+    fi
+    grep -Fq '[M198 PHYSICAL QMP PASS]' "$work/m198-qmp-check.log"
+else
+    python3 scripts/m197-alpine-uart.py "$runner" "$serial" \
+        "$PWD/$work/m197-first-runner.log" "$fifo"
+fi
 test -s "$serial" && test -s "$pcap"
 cp "$serial" "$PWD/$work/m197-live.serial.log"
 grep -Fq '[LWIP DHCP BOUND] addr=10.0.2.' "$serial" || {
@@ -88,11 +137,21 @@ grep -Fq 'M197_APP_WORKLOAD_PASS' "$serial" || {
 echo "[M197 ALPINE PUBLIC SOFTWARE LIVE PASS] $port official signed "\
      'Bash Lua SQLite Git from public HTTPS, live DHCP resolver, ' \
      'independent PCAP and four real applications on ext4'
+if [ "$m198" = 1 ]; then
+    grep -Fq 'M198_GUI_DURABLE_RC=0' "$serial"
+    grep -Fxq 'M187_DESKTOP_PASS' "$serial"
+    echo "[M198 ALPINE GUI LIVE PASS] $port original Alpine PID1 + public APK "\
+        'and old GUI as ordinary process, native VirtIO keyboard/Vim + GPU pixels'
+fi
 
 # A SECOND native QEMU has NO network requirement; it must observe and run
 # the genuine installed ELFs and all SQL/Git/application state from disk.
-unset NAS_QEMU_SERIAL_FIFO NAS_VIRTIO_NET_PCAP
-export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-reopen-cases.tsv
+unset NAS_QEMU_SERIAL_FIFO NAS_VIRTIO_NET_PCAP NAS_QEMU_QMP_SOCKET
+if [ "$m198" = 1 ]; then
+    export BUSYBOX_PARITY_MANIFEST=scripts/m198-alpine-reopen-cases.tsv
+else
+    export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-reopen-cases.tsv
+fi
 export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M197_REOPEN_SECONDS:-240}
 if ! sh "$runner" > "$PWD/$work/m197-reopen-runner.log" 2>&1; then
     echo "[M197 ALPINE REOPEN FAIL] $port second native QEMU" >&2
@@ -113,8 +172,21 @@ for marker in \
         exit 1
     }
 done
+if [ "$m198" = 1 ]; then
+    grep -Fxq 'M198_GUI_REOPEN_PASS' "$reopen" || {
+        echo '[M198 REOPEN FAIL] native editor did not persist' >&2; exit 1;
+    }
+fi
 sudo python3 scripts/m197-alpine-disk-check.py "$port" "$root" "$disk"
+if [ "$m198" = 1 ]; then
+    sudo python3 scripts/m198-alpine-disk-check.py "$port" "$root" "$disk"
+fi
 sudo python3 scripts/m191-alpine-root-disk.py verify "$port" "$root" "$baseline"
 echo "[M197 ALPINE PUBLIC SOFTWARE PERSISTENCE PASS] $port original "\
      'Alpine public signed four-package transaction, native Bash/Lua/SQLite/Git, ' \
      'second real QEMU, exact Git+SQL host disk oracle and ext4 fsck'
+if [ "$m198" = 1 ]; then
+    echo "[M198 ALPINE GUI REBOOT PASS] $port original PID1, publicly signed "\
+        'Bash/Lua/SQLite/Git and desktop dependencies, physical QMP/Vim, ' \
+        'second real QEMU, exact host ext4 byte and fsck oracle'
+fi

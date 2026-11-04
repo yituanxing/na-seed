@@ -88,7 +88,9 @@ export NAS_ACCEPTANCE_QEMU_RAM=1024M
 # port matrix scripts skip rebuilding when a kernel.elf already exists.
 if [ "$port" = amd64 ]; then
     . scripts/native-source-qemu.sh
-    nas_source_build_kernel m191-root
+    # Follow-on profiles may enable real hardware drivers which change the
+    # kernel object graph. Keep M191's established default output untouched.
+    nas_source_build_kernel "${NAS_M191_BUILD_TAG:-m191-root}"
 else
     case "$port" in
         riscv64) sh scripts/build-riscv64-full.sh ;;
