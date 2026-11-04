@@ -127,6 +127,18 @@ static void init_deferred_services(void) {
  * The scheduler publishes its group-finalization event; the boot policy
  * stays here, never in an ISA trap or the syscall dispatch hot path. */
 static void nas_init_finish_success(void) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+    /* The physical ext4 filesystem is /, and all other mounts attach to
+     * its Dentry tree. Detach any additional guests before the root. */
+#ifdef NAS_ENABLE_RAMFS
+    if (!nas_ramfs_guest_boot_shutdown())
+        nas_fail("upstream ramfs guest VFS unmount failed");
+#endif
+#ifdef NAS_ENABLE_LITTLEFS
+    if (!nas_littlefs_guest_boot_shutdown())
+        nas_fail("littlefs guest VFS unmount failed");
+#endif
+#endif
 #ifdef NAS_ENABLE_LWEXT4
     /* A successful fsync is NOT a clean filesystem shutdown. Keep the
      * ext4 mount and BlockDevice alive until PID1's final Files have
@@ -135,6 +147,7 @@ static void nas_init_finish_success(void) {
     if (!nas_lwext4_guest_boot_shutdown())
         nas_fail("lwext4 final unmount/durable device flush failed");
 #endif
+#ifndef NAS_ENABLE_M191_ALPINE_ROOT
 #ifdef NAS_ENABLE_LITTLEFS
     if (!nas_littlefs_guest_boot_shutdown())
         nas_fail("littlefs guest VFS unmount failed");
@@ -142,6 +155,7 @@ static void nas_init_finish_success(void) {
 #ifdef NAS_ENABLE_RAMFS
     if (!nas_ramfs_guest_boot_shutdown())
         nas_fail("upstream ramfs guest VFS unmount failed");
+#endif
 #endif
     if(nas_boot_argv_enabled())
         nas_print("[PASS] cmdline userspace exit 0\n");
@@ -255,8 +269,19 @@ void nas_init_userspace(void) {
      * bootfs.c; only this layer maps the actual ELF into userspace.
      */
     struct nas_boot_image selected_image;
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+    /* Keep CPIO as an immutable rescue archive, but take PID1 from the
+     * official Alpine ext4 root after its real BlockDevice is registered.
+     * Select root ownership before any pseudo mount gets a parent Dentry. */
+    if(!nas_boot_argv_first())
+        nas_fail("M191 requires explicit naseed.argv=/sbin/init");
+    const char *boot_error=nas_boot_prepare(NULL,&selected_image);
+    if(nas_vfs_prepare_external_boot_root())
+        nas_fail("M191 root selection happened after VFS registration");
+#else
     const char *boot_error = nas_boot_prepare(
         nas_boot_argv_first(), &selected_image);
+#endif
     if (boot_error) nas_fail(boot_error);
 #ifdef NAS_ENABLE_LWEXT4
     /* After the archive is indexed and before the actual userspace ELF
@@ -264,6 +289,11 @@ void nas_init_userspace(void) {
      * or architecture-specific mount dispatch is introduced here. */
     if (!nas_lwext4_guest_boot_mount())
         nas_fail("opt-in lwext4 Limine module/VFS mount failed");
+#endif
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+    boot_error=nas_boot_prepare_vfs_root(nas_boot_argv_first(),
+                                         &selected_image);
+    if(boot_error)nas_fail(boot_error);
 #endif
 #ifdef NAS_ENABLE_LITTLEFS
     if (!nas_littlefs_guest_boot_mount())
@@ -277,17 +307,14 @@ void nas_init_userspace(void) {
      * It uses the same kernel continuation scheduler as every other worker. */
     if (!nas_lwip_guest_boot())
         nas_fail("upstream lwIP native bootstrap failed");
-    struct elf_image main_image = {
-        .data = selected_image.image, .size = selected_image.size
-    };
-    struct elf_image interp_image = {
-        .data = selected_image.interpreter, .size = selected_image.interpreter_size
-    };
+    struct elf_image main_image,interp_image;
+    nas_boot_image_elf(&selected_image,&main_image,&interp_image);
     const struct elf_image *interpreter =
         selected_image.has_interpreter ? &interp_image : 0;
     uint64_t entry = 0;
     if (!nas_elf_load(&main_image, interpreter, &entry))
         nas_fail("invalid or unmappable userspace ELF");
+    nas_boot_image_release(&selected_image);
     if (!nas_user_stack_map_initial()) nas_fail("cannot map user stack");
     if(!nas_signal_install_trampoline())
         nas_fail("cannot install native RX rt_sigreturn trampoline");

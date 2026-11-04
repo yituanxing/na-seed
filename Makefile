@@ -79,6 +79,12 @@ $(error M180 user filesystem IRQ broker requires NAS_ENABLE_M179_FS_IRQ=1)
 endif
 CFLAGS += -DNAS_ENABLE_M180_FS_USER_IRQ=1
 endif
+ifeq ($(NAS_ENABLE_M191_ALPINE_ROOT),1)
+ifneq ($(NAS_ENABLE_LWEXT4)$(NAS_ENABLE_VIRTIO_BLK),11)
+$(error M191 external Alpine root requires NAS_ENABLE_LWEXT4=1 NAS_ENABLE_VIRTIO_BLK=1)
+endif
+CFLAGS += -DNAS_ENABLE_M191_ALPINE_ROOT=1
+endif
 CFLAGS += -DNAS_ENABLE_LWIP=1 -I ports/lwip/include -I third_party/lwip/src/include
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
  -z noexecstack -T kernel/arch/$(ARCH)/linker.ld

@@ -234,6 +234,13 @@ int nas_vfs_mount_snapshot(unsigned ordinal,
 /* Only a leaf component, never a lexical normalization or mount walk. */
 int nas_vfs_join_child(const char *parent,const char *name,char out[256]);
 int nas_vfs_unregister_mount(const struct nas_vfs_mount *mount);
+/* Early boot may select a real block-backed root BEFORE default pseudo
+ * mounts acquire parent Dentries. This is a one-shot boot policy, never a
+ * runtime root replacement or a second pathname resolution mechanism. */
+int nas_vfs_prepare_external_boot_root(void);
+/* Only after the final PID1 File/cwd release, detach boot-only pseudo
+ * mounts so a physical root can cleanly journal-umount and FLUSH. */
+int nas_vfs_shutdown_external_root_pseudos(void);
 int nas_vfs_node_pin(const struct nas_fs_node *node);
 int nas_vfs_node_unpin(const struct nas_fs_node *node);
 /* Advisory locks are common inode/File services (Linux file_lock_context),

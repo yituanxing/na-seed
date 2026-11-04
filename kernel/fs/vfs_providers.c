@@ -771,3 +771,36 @@ void nas_vfs_register_default_mounts(void) {
     for(unsigned i=0;i<sizeof(defaults)/sizeof(defaults[0]);i++)
         (void)nas_vfs_register_mount(&defaults[i]);
 }
+/* The external root was registered FIRST. Attach the existing pseudo
+ * providers to its actual root Dentry; never keep a parent pin to bootfs. */
+static struct nas_vfs_mount external_pseudos[
+    sizeof(defaults)/sizeof(defaults[0])-1];
+static bool external_pseudos_mounted;
+int nas_vfs_register_pseudo_mounts(void) {
+    if(external_pseudos_mounted)return 0;
+    for(unsigned i=0;i<sizeof(external_pseudos)/sizeof(external_pseudos[0]);i++) {
+        external_pseudos[i]=defaults[i+1];
+        /* Never guest-detach the legacy bootfs mounts. Only the external
+         * disk boot's final PID1 lifecycle is allowed to release these. */
+        external_pseudos[i].permanent=false;
+        int rc=nas_vfs_register_mount(&external_pseudos[i]);
+        if(rc) {
+            while(i>0) {
+                if(nas_vfs_unregister_mount(&external_pseudos[--i]))
+                    return -EIO;
+            }
+            return rc;
+        }
+    }
+    external_pseudos_mounted=true;
+    return 0;
+}
+int nas_vfs_shutdown_external_root_pseudos(void) {
+    if(!external_pseudos_mounted)return -EINVAL;
+    for(unsigned i=sizeof(external_pseudos)/sizeof(external_pseudos[0]);i>0;i--) {
+        int rc=nas_vfs_unregister_mount(&external_pseudos[i-1]);
+        if(rc)return rc;
+    }
+    external_pseudos_mounted=false;
+    return 0;
+}

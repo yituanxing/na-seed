@@ -37,6 +37,11 @@ if [ "${NAS_ENABLE_M180_FS_USER_IRQ:-0}" = 1 ]; then
       { echo '[M180] M179 filesystem worker gate required' >&2; exit 1; }
     flags="$flags -DNAS_ENABLE_M180_FS_USER_IRQ=1"
 fi
+if [ "${NAS_ENABLE_M191_ALPINE_ROOT:-0}" = 1 ]; then
+    [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ] && [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ] ||
+      { echo '[M191] physical lwext4 root requires VirtIO block' >&2; exit 1; }
+    flags="$flags -DNAS_ENABLE_M191_ALPINE_ROOT=1"
+fi
 flags="$flags -DNAS_ENABLE_LWIP=1 -I ports/lwip/include -I third_party/lwip/src/include"
 # One authoritative full-kernel core TU list for every native ISA.
 # ISA-specific hardware providers remain below in the arch= selection.

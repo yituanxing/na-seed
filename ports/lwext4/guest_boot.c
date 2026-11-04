@@ -82,6 +82,11 @@ bool nas_lwext4_guest_boot_mount(void) {
         }
     }
     if(file) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+        /* The persistent Alpine root must be backed by a real partition.
+         * A Limine RAM image cannot satisfy the reboot-persistence gate. */
+        return false;
+#endif
         bool ram_rw=ephemeral_rw_module(file);
         int rc=nas_lwext4_ramdisk_mount_mode(&boot_mount,"limine-ext4",
                                              "limine-ext4-dev","/mnt",
@@ -136,7 +141,13 @@ bool nas_lwext4_guest_boot_mount(void) {
             }
             nas_block_put(block);
         }
-        if(!found)return true; /* legitimate boot without ext4 disk */
+        if(!found) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+            return false; /* selected external root is mandatory */
+#else
+            return true; /* legitimate boot without ext4 disk */
+#endif
+        }
         const char *selected_device=chosen_disk;
         static char partition_name[32];
         if(chosen_partition_index) {
@@ -148,17 +159,26 @@ bool nas_lwext4_guest_boot_mount(void) {
             boot_partition_attached=true;
             selected_device=partition_name;
         }
+        const char *target=
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+            "/";
+#else
+            "/mnt";
+#endif
         if(nas_lwext4_device_mount(&boot_mount,selected_device,
-                                   "virtio-ext4","/mnt",chosen_writable)) {
+                                   "virtio-ext4",target,chosen_writable)) {
             if(boot_partition_attached) {
                 (void)nas_partition_detach(&boot_partition);
                 boot_partition_attached=false;
             }
             return false;
         }
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+        nas_print("[M191 ROOT] physical Alpine ext4 registered at /\n");
+#endif
         nas_print(chosen_partition_index ?
-            "[LWEXT4 GUEST] real GPT/MBR partition ext4 disk mounted at /mnt\n" :
-            "[LWEXT4 GUEST] real external VirtIO-Blk ext4 disk mounted at /mnt\n");
+            "[LWEXT4 GUEST] real GPT/MBR partition ext4 disk mounted\n" :
+            "[LWEXT4 GUEST] real external VirtIO-Blk ext4 disk mounted\n");
         if(!boot_mount.mount.read_only)
             nas_print("[VIRTIO-BLK] persistent block device write+flush enabled\n");
 #else
@@ -168,7 +188,13 @@ bool nas_lwext4_guest_boot_mount(void) {
     char path[256];
     struct nas_fs_node node;
     /* Same VFS pathwalk whether the provider owns a RAM module or real disk. */
-    if(nas_fs_lookup_node("/mnt",true,&node,path) || !node.is_dir ||
+    const char *mounted_path=
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+        "/";
+#else
+        "/mnt";
+#endif
+    if(nas_fs_lookup_node(mounted_path,true,&node,path) || !node.is_dir ||
        !node.filesystem || strcmp(node.filesystem->name,"lwext4"))
         return false;
 
@@ -192,6 +218,9 @@ bool nas_lwext4_guest_boot_mount(void) {
  * after fsync and block-cache flush; QEMU termination is not an unmount. */
 bool nas_lwext4_guest_boot_shutdown(void) {
     if (!boot_mount.mounted || boot_mount.mount.read_only) return true;
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+    if(nas_vfs_shutdown_external_root_pseudos())return false;
+#endif
     /* A read-only image cannot have dirty metadata to commit and some
      * upstream read-only close paths refuse redundant writeback. Only a
      * writable filesystem requires final ext4 superblock commit. */

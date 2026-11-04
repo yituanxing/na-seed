@@ -1228,12 +1228,21 @@ int nas_lwext4_device_mount(struct nas_lwext4_mount *ctx,
        !copy_name(ctx->mount_point,sizeof(ctx->mount_point),mount_point))
         return -ENAMETOOLONG;
     size_t length=strlen(ctx->mount_point);
-    if(ctx->mount_point[0]!='/' || length<2 ||
-       ctx->mount_point[length-1]=='/' || length+2>sizeof(ctx->upstream_prefix))
+    if(ctx->mount_point[0]!='/' || !length ||
+       (length>1 && ctx->mount_point[length-1]=='/') ||
+       length+2>sizeof(ctx->upstream_prefix))
         return -EINVAL;
-    memcpy(ctx->upstream_prefix,ctx->mount_point,length);
-    ctx->upstream_prefix[length]='/';
-    ctx->upstream_prefix[length+1]=0;
+    /* The upstream lwext4 mount registry and the VFS namespace are
+     * different owners. A VFS root mount still needs a private upstream
+     * prefix: never publish the raw lwext4 root as a second VFS root. */
+    if(length==1) {
+        static const char root_prefix[]="/naseed-root/";
+        memcpy(ctx->upstream_prefix,root_prefix,sizeof(root_prefix));
+    } else {
+        memcpy(ctx->upstream_prefix,ctx->mount_point,length);
+        ctx->upstream_prefix[length]='/';
+        ctx->upstream_prefix[length+1]=0;
+    }
     int rc=nas_lwext4_device_attach(&ctx->device,ctx->block_name,ctx->device_name);
     if(rc)return rc;
     rc=ext4_mount(ctx->device_name,ctx->upstream_prefix,!writable);

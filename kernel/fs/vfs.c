@@ -294,11 +294,21 @@ static int grow_mount_slots(void) {
     return 0;
 }
 static bool defaults_ready;
+static bool external_boot_root_pending;
 void nas_vfs_register_default_mounts(void);
+int nas_vfs_register_pseudo_mounts(void);
 static void ensure_defaults(void) {
-    if (defaults_ready) return;
+    if (defaults_ready || external_boot_root_pending) return;
     defaults_ready = true;
     nas_vfs_register_default_mounts();
+}
+int nas_vfs_prepare_external_boot_root(void) {
+    if(defaults_ready || external_boot_root_pending)
+        return -EBUSY;
+    for(unsigned i=0;i<mount_slots;i++)
+        if(mount_slot_at(i)->used)return -EBUSY;
+    external_boot_root_pending=true;
+    return 0;
 }
 /* Every inode data/control operation validates the SAME live mount and
  * incarnation that File/open, stat and the refcounted lease table own.
@@ -347,7 +357,12 @@ static bool mount_matches(const char *prefix, const char *path) {
     return !strncmp(prefix,path,n) && (path[n]=='/' || path[n]==0);
 }
 int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
-    ensure_defaults();
+    /* A selected external / must be attached first: registering bootfs /
+     * and then replacing it would strand /dev and /proc parent Dentries. */
+    bool initial_root=mount && external_boot_root_pending &&
+                      mount->mountpoint && !strcmp(mount->mountpoint,"/");
+    if(external_boot_root_pending && !initial_root)return -EBUSY;
+    if(!initial_root)ensure_defaults();
     if (!mount || !mount->type || !mount->type->root ||
         !mount->type->lookup_child || !mount->type->name ||
         !canonical_mountpoint(mount->mountpoint))
@@ -481,6 +496,20 @@ int nas_vfs_register_mount(const struct nas_vfs_mount *mount) {
     mount_slot_at(slot)->superblock.source_label=mount_slot_at(slot)->source_label;
     mount_slot_at(slot)->used=true;
     if(has_parent)++mount_slot_at(parent_slot)->child_refs;
+    if(initial_root) {
+        external_boot_root_pending=false;
+        defaults_ready=true;
+        int rc=nas_vfs_register_pseudo_mounts();
+        if(rc) {
+            /* No caller can observe a half-populated boot namespace. The
+             * pseudo provider undoes its completed attachments before
+             * reporting failure; remove this freshly published root too. */
+            if(nas_vfs_unregister_mount(mount))return -EIO;
+            defaults_ready=false;
+            external_boot_root_pending=true;
+            return rc;
+        }
+    }
     return 0;
 }
 /* The anonymous inode belongs to a genuine, already-mounted filesystem,
