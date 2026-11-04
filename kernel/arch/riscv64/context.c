@@ -18,6 +18,49 @@ extern void nas_rv_plic_external_irq(void);
 extern void nas_rv_save_fp(uint64_t *);
 extern void nas_rv_restore_fp(const uint64_t *);
 static struct nas_rv_trap_frame *live;
+/* M194 only: correlate the *original* libcrypto .data.rel.ro bytes with
+ * mmap and mprotect, to identify whether the two non-RELA data qwords are
+ * already populated on file mapping or change during musl relocation.
+ * This is a bounded read-only observation of the task's own mapped memory;
+ * do not modify the original DSO, VMA policy or kernel syscall result. */
+static void nas_rv_trace_libcrypto_relro(const char *stage,uint64_t nr,
+                                         uint64_t range_start,
+                                         uint64_t range_length) {
+    static unsigned reports;
+    if(reports>=12U || !range_length || !nas_current_task ||
+       !nas_current_task->mm)return;
+    struct nas_task *task=nas_current_task;
+    const struct nas_anon_regions *regions=&task->mm->mmap_vmas;
+    for(unsigned i=0;i<regions->capacity;i++) {
+        const struct nas_anon_region *rx=&regions->slots[i];
+        if(rx->kind!=NAS_VMA_FILE_PRIVATE_SNAPSHOT ||
+           rx->file_offset!=0 || (rx->prot&5U)!=5U ||
+           rx->end-rx->start!=UINT64_C(0x33f000))continue;
+        if(rx->start>USER_LIMIT-UINT64_C(0x3a2420))continue;
+        uint64_t q3=rx->start+UINT64_C(0x3a2418);
+        if(range_start>q3 || range_length<=q3-range_start)continue;
+        const struct nas_anon_region *rw=nas_vma_find(regions,q3);
+        if(!rw || rw->kind!=NAS_VMA_FILE_PRIVATE_SNAPSHOT ||
+           rw->file_offset>UINT64_C(0x3a2418) ||
+           q3-rw->start!=UINT64_C(0x3a2418)-rw->file_offset)continue;
+        uint64_t values[2]={0};
+        int64_t n=nas_vm_read_task_bytes(task,q3,
+                         (uint8_t *)(void *)values,sizeof(values));
+        nas_print("[RV64 RELRO TRACE] stage=");nas_print(stage);
+        nas_print(" nr=");nas_dec(nr);
+        nas_print(" pid=");nas_dec(task->pid);
+        nas_print(" q3_va=");nas_hex(q3);
+        nas_print(" count=");nas_dec(n==16?2:0);
+        nas_print(" q3=");nas_hex(values[0]);
+        nas_print(" q4=");nas_hex(values[1]);
+        nas_print(" region_prot=");nas_hex(rw->prot);
+        nas_print(" range_start=");nas_hex(range_start);
+        nas_print(" range_len=");nas_hex(range_length);
+        nas_print("\n");
+        reports++;
+        return;
+    }
+}
 /* Used by first user entry and by an execve that replaces a process image. */
 uint64_t nas_rv_entry_stack_top;
 uint64_t nas_rv_return_stack(const struct nas_rv_trap_frame *source) {
@@ -205,8 +248,20 @@ void nas_rv_full_trap_c(struct nas_rv_trap_frame *frame) {
     frame->sepc += 4; /* ECALL is always an uncompressed 4-byte instruction. */
     uint64_t call[15]={frame->x[17],frame->x[10],frame->x[11],
         frame->x[12],frame->x[13],frame->x[14],frame->x[15],frame->sepc};
+    const uint64_t trapped_nr=frame->x[17];
+    const uint64_t trapped_start=frame->x[10];
+    const uint64_t trapped_length=frame->x[11];
+    struct nas_task *const trapped_task=nas_current_task;
+    if(trapped_nr==226U)
+        nas_rv_trace_libcrypto_relro("before-mprotect",trapped_nr,
+                                    trapped_start,trapped_length);
     live=frame;
     uint64_t result=nas_ptrace_syscall_dispatch(call);
+    if(nas_current_task==trapped_task &&
+       (trapped_nr==222U || trapped_nr==226U))
+        nas_rv_trace_libcrypto_relro(trapped_nr==222U?
+                  "after-mmap":"after-mprotect",trapped_nr,
+                  trapped_nr==222U?result:trapped_start,trapped_length);
     /* Scheduler may have replaced *frame* with another task's snapshot. */
     frame->x[10]=result;
     nas_signal_user_return((uint64_t *)(void *)frame);
