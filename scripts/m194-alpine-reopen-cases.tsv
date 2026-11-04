@@ -1,0 +1,4 @@
+# M194 second REAL system-QEMU boot: the same physical ext4 root from a
+# prior interactive session must contain the guest's persisted file. The
+# ORIGINAL Alpine BusyBox becomes PID1 and exits zero for clean unmount.
+m194-batch	cpio	sh -c "test -s /etc/apk/world && cat /root/m194-persistent.txt"	M194_DURABLE_REAL_EXT4_2026	-	/bin/busybox
