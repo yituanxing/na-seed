@@ -33,7 +33,7 @@ if [ "${NAS_M191_REUSE_STAGED_ROOT:-0}" = 1 ]; then
         echo '[M191 QEMU FAIL] requested reuse but signed Alpine root is absent' >&2
         exit 1
     }
-    python3 scripts/m191-alpine-root-disk.py verify "$port" "$root" "$disk"
+    sudo python3 scripts/m191-alpine-root-disk.py verify "$port" "$root" "$disk"
 else
     sh scripts/m191-stage-alpine-rootfs.sh "$port"
 fi
@@ -41,7 +41,10 @@ fi
 mkdir -p "$work/smoke/elf"
 # Alpine can contain a guest-absolute /bin or /lib symlink.  Resolve inside
 # its own root before exporting original bytes for the rescue module.
-python3 scripts/m191-export-alpine-elf.py "$port" "$root" "$work/smoke/elf"
+# The exact root-owned Alpine tree intentionally contains mode 4711/0700
+# privileged helpers such as bbsuid. Never weaken their original modes or
+# chown the rootfs to satisfy a host smoke: inspect it as root instead.
+sudo python3 scripts/m191-export-alpine-elf.py "$port" "$root" "$work/smoke/elf"
 busybox="$work/smoke/elf/busybox"
 loader="$work/smoke/elf/ld-musl-$alpine_arch.so.1"
 test -f "$busybox" && test -s "$busybox" && test -s "$loader" || {
@@ -128,7 +131,7 @@ fi
 
 # Verify the guest really left a clean physical ext4 volume, with its Alpine
 # package bytes unchanged.  This is a host readback AFTER actual QEMU exit.
-python3 scripts/m191-alpine-root-disk.py verify "$port" "$root" "$disk"
+sudo python3 scripts/m191-alpine-root-disk.py verify "$port" "$root" "$disk"
 (
     cd "$PWD"
     sha256sum -c "$work/smoke/original-alpine-elfs.sha256"
