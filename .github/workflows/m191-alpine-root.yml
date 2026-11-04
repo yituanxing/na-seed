@@ -12,6 +12,7 @@ on:
       - 'ports/unikraft/**'
       - 'rootfs/alpine/**'
       - 'scripts/m191-*'
+      - 'scripts/test-m191-export-alpine-elf.py'
       - 'scripts/probe-m191-alpine-root.sh'
       - 'scripts/build-lwext4-guest.sh'
       - 'scripts/build-riscv64-full.sh'

@@ -96,6 +96,8 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
         return;
     }
     child->group_exit_pending=false;
+    if(child->pid==child->sid)
+        nas_tty_session_leader_exit(child->sid);
     if (child->vfork_shared_vm) {
         nas_process_vfork_release();
         /* The child has a separate MM reference; final put leaves

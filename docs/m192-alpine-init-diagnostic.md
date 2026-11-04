@@ -66,3 +66,13 @@ iterative reclaim, and idempotent serialized Alpine `inittab` adaptation.
 The M192 system-QEMU diagnostic remains **entry-only** until an additional
 OpenRC/default-runlevel and interactive ttyS0 gate demonstrates real userspace
 readiness on all three architectures.
+
+The next real three-ISA QEMU run then reached original `/sbin/getty`, after
+OpenRC successfully cached its dependencies and returned from sysinit/boot/
+default stages. Its new common failure was **`TIOCSCTTY: EPERM`**. BusyBox
+getty uses the Linux-defined force argument `1` after `setsid`; the shared
+TTY ioctl now recognizes that privileged session-leader ownership transfer,
+resets the old session input state and releases the controlling TTY on the
+session leader's final exit. Host regression exercises forced ownership,
+rejected ordinary stealing, and reacquisition after a session leader exits.
+This is not yet proof of a login shell or a runnable Alpine distribution.

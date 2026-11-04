@@ -146,7 +146,17 @@ uint64_t nas_tty_ioctl(uint64_t cmd,uint64_t arg) {
     }
     case 0x540e: /* TIOCSCTTY: only owning session leader */
         if(self->pid!=self->sid) return (uint64_t)-EPERM;
-        if(tty.sid && tty.sid!=self->sid) return (uint64_t)-EPERM;
+        if(tty.sid && tty.sid!=self->sid) {
+            /* Linux lets a root/CAP_SYS_ADMIN session leader forcibly
+             * steal a controlling TTY with arg=1. This kernel currently
+             * models every userspace process as root; original BusyBox
+             * getty uses exactly this operation after setsid(). */
+            if(arg!=1)return (uint64_t)-EPERM;
+            nas_ldisc_reset(&tty.ldisc);
+            tty.rx_head=tty.rx_count=0;
+            tty.unsupported_input=false;
+            tty.pending_signum=0;
+        }
         tty.sid=self->sid;tty.pgid=self->pgid;
         tty.rx_enabled=true; /* explicit switch; old noninteractive tests safe */
         return 0;
@@ -180,6 +190,19 @@ uint64_t nas_tty_ioctl(uint64_t cmd,uint64_t arg) {
     }
     default:return (uint64_t)-ENOTTY;
     }
+}
+/* Final process-group exit is the only point at which the controlling
+ * session leader can release this physical console. A later getty then
+ * acquires it as a different session; arbitrary sibling exits do nothing.
+ * The caller has already waited for the last thread-group worker. */
+void nas_tty_session_leader_exit(uint64_t sid) {
+    if(!sid || tty.sid!=sid)return;
+    tty.sid=tty.pgid=0;
+    tty.rx_enabled=false;
+    nas_ldisc_reset(&tty.ldisc);
+    tty.rx_head=tty.rx_count=0;
+    tty.unsupported_input=false;
+    tty.pending_signum=0;
 }
 unsigned nas_tty_take_signal(uint64_t *sid,uint64_t *pgid) {
     unsigned sig=tty.pending_signum;

@@ -14,10 +14,15 @@ on:
       - 'kernel/syscall/ops.h'
       - 'kernel/tmpfs.h'
       - 'kernel/boot_image.c'
+      - 'kernel/drivers/tty.c'
+      - 'kernel/drivers/tty.h'
+      - 'kernel/task/sched.c'
       - 'rootfs/alpine/**'
       - 'scripts/m191-alpine-root-disk.py'
       - 'scripts/m191-host-smoke.py'
+      - 'scripts/test-m191-export-alpine-elf.py'
       - 'scripts/test-tmp-namespace.c'
+      - 'scripts/test-m102-tty-cow.c'
 
 permissions:
   contents: read
@@ -46,10 +51,19 @@ jobs:
           python3 scripts/check-three-isa-core.py
           python3 scripts/check-architecture-boundaries.py
           python3 scripts/m191-host-smoke.py
+          python3 scripts/test-m191-export-alpine-elf.py
+          sh scripts/check-m191-root-provider.sh
           cc -std=c11 -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections \
             -Wl,--gc-sections scripts/test-tmp-namespace.c kernel/tmpfs.c \
             kernel/fs/tmp_namespace.c -o /tmp/naseed-m192-tmp-namespace
           /tmp/naseed-m192-tmp-namespace
+          cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin \
+            -ffunction-sections -fdata-sections -Wl,--gc-sections \
+            -I scripts/m89-test-include -I kernel \
+            scripts/test-m102-tty-cow.c kernel/fs/file_io.c \
+            kernel/drivers/tty.c kernel/drivers/display/fbdev.c \
+            kernel/drivers/tty_ldisc.c -o /tmp/naseed-m192-tty-session
+          /tmp/naseed-m192-tty-session
           python3 - <<'PY'
           from pathlib import Path
           lines = [line for line in Path('scripts/m192-init-cases.tsv').read_text().splitlines() if line and not line.startswith('#')]

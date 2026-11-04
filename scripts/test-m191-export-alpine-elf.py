@@ -2,6 +2,7 @@
 """Host-only isolation test: Alpine guest-absolute links must stay guest-local."""
 
 from pathlib import Path
+import runpy
 import struct
 import subprocess
 import tempfile
@@ -26,6 +27,7 @@ arch = {
     "riscv64": ("riscv64", 243),
     "arm64": ("aarch64", 183),
 }
+root_model = runpy.run_path("scripts/m191-alpine-root-disk.py")
 with tempfile.TemporaryDirectory(prefix="m191-guest-absolute-export-") as temp:
     for port, (alpine_arch, machine) in arch.items():
         base = Path(temp) / port
@@ -41,7 +43,11 @@ with tempfile.TemporaryDirectory(prefix="m191-guest-absolute-export-") as temp:
             b"https://dl-cdn.alpinelinux.org/alpine/v3.23/main\n"
             b"https://dl-cdn.alpinelinux.org/alpine/v3.23/community\n"))
         write(root, "etc/apk/keys/alpine-devel.pub", b"test-only\n")
-        write(root, "etc/inittab", b"::sysinit:/sbin/openrc sysinit\n")
+        original_inittab = "::sysinit:/sbin/openrc sysinit\n"
+        for index in range(1, 7):
+            original_inittab += f"tty{index}::respawn:/sbin/getty 38400 tty{index}\n"
+        write(root, "etc/inittab", original_inittab.encode())
+        root_model["configure_serial_inittab"](root)
         original_busybox = native_elf(machine, 0x37)
         original_loader = native_elf(machine, 0x42)
         write(root, "usr/bin/busybox", original_busybox)

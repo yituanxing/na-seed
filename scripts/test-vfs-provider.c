@@ -181,6 +181,26 @@ struct nas_tmp_file *tmp_inode_alloc(bool dir,uint32_t mode) {
     }
     return NULL;
 }
+/* Production VFS now links the runtime tmpfs mount owner API as well.
+ * This host fixture tests VFS path/lease logic with synthetic storage;
+ * the independent REAL tmpfs namespace teardown is tested separately by
+ * test-tmp-namespace.c, so these lifecycle stand-ins preserve linkability. */
+void tmp_inode_link(struct nas_tmp_file *node) {
+    assert(node && node->used);
+    node->nlink++;
+}
+void tmp_inode_unlink(struct nas_tmp_file *node) {
+    assert(node && node->used && node->nlink);
+    node->nlink--;
+    tmp_inode_discard(node);
+}
+int tmp_destroy_mount_root(struct nas_tmp_file *root) {
+    assert(root && root->used && root->is_mount_root);
+    assert(!root->children.count);
+    root->is_mount_root=false;
+    tmp_inode_unlink(root);
+    return 0;
+}
 /* The host VFS fixture borrows an archive inode for /tmp just like the
  * actual provider. Its live root timestamps come from the tmpfs owner. */
 void tmp_root_times(uint64_t *mtime_ns,uint64_t *ctime_ns) {
