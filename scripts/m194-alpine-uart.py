@@ -95,12 +95,69 @@ def disk_lock_released(image: str) -> bool:
         os.close(fd)
 
 
+def image_qemu_pids(image: str) -> list[int]:
+    """Find only native QEMU processes with this exact ext4 image open.
+
+    GNU ``timeout`` normally creates a separate child process group, so
+    killpg(runner.pid) does not necessarily reach its ``qemu-system-*``
+    process. Inspect Linux /proc FDs rather than guessing child PGIDs or
+    killing every QEMU on the CI host. The dev/inode comparison survives
+    relative paths and renamed open descriptors.
+    """
+    disk = os.stat(image)
+    owners = []
+    with os.scandir("/proc") as tasks:
+        for task in tasks:
+            if not task.name.isdecimal():
+                continue
+            pid = int(task.name)
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as command_file:
+                    cmdline = command_file.read(4096).split(b"\0", 1)[0]
+                if not os.path.basename(os.fsdecode(cmdline)).startswith("qemu-system-"):
+                    continue
+                with os.scandir(f"/proc/{pid}/fd") as descriptors:
+                    for descriptor in descriptors:
+                        try:
+                            opened = os.stat(descriptor.path)
+                        except (FileNotFoundError, PermissionError):
+                            continue
+                        if (opened.st_dev, opened.st_ino) == (disk.st_dev, disk.st_ino):
+                            owners.append(pid)
+                            break
+            except (FileNotFoundError, ProcessLookupError, PermissionError):
+                continue  # Process exited, or another user's inaccessible VM.
+    return owners
+
+
+def runner_session_pids(sid: int) -> list[int]:
+    """Find a runner's live descendants across GNU timeout process groups.
+
+    Popen(start_new_session=True) gives our runner a private Linux session.
+    GNU timeout's new process group does not move its QEMU child out of that
+    session. Session membership is therefore a strict owner check, unlike a
+    broad ``pkill qemu`` or an unverified PID obtained from a shell pipeline.
+    """
+    members = []
+    with os.scandir("/proc") as tasks:
+        for task in tasks:
+            if not task.name.isdecimal():
+                continue
+            pid = int(task.name)
+            try:
+                if os.getsid(pid) == sid:
+                    members.append(pid)
+            except (ProcessLookupError, PermissionError):
+                continue
+    return members
+
+
 def stop_runner(proc: subprocess.Popen[bytes]) -> None:
     """Stop the entire native-QEMU runner group and await image-lock release.
 
-    ``sh runner`` owns ``timeout -> qemu`` descendants in the fresh session
-    created below. The shell can be reaped earlier than QEMU, so calling only
-    proc.wait() creates an unsafe first-boot/second-boot disk-lock race.
+    ``sh runner`` starts ``timeout -> qemu``. GNU timeout may create its own
+    process group, and the shell may exit before QEMU releases its open disk;
+    neither shell wait() nor killpg(shell) is sufficient for this gate.
     """
     image = os.environ.get("NAS_VIRTIO_BLK_IMAGE")
     group = proc.pid
@@ -110,6 +167,24 @@ def stop_runner(proc: subprocess.Popen[bytes]) -> None:
             os.killpg(group, sig)
         except ProcessLookupError:
             pass
+
+    def signal_session(sig: signal.Signals) -> None:
+        for pid in runner_session_pids(group):
+            try:
+                # A second membership check avoids signaling a PID which
+                # exited and was recycled between scanning and delivery.
+                if os.getsid(pid) == group:
+                    os.kill(pid, sig)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+    def signal_disk_qemus(sig: signal.Signals) -> None:
+        if image:
+            for pid in image_qemu_pids(image):
+                try:
+                    os.kill(pid, sig)
+                except ProcessLookupError:
+                    pass
 
     def await_release(seconds: float) -> bool:
         until = time.monotonic() + seconds
@@ -122,14 +197,20 @@ def stop_runner(proc: subprocess.Popen[bytes]) -> None:
                 return False
             time.sleep(0.10)
 
-    # Kill the process group even if the parent shell has *already* exited.
-    # Its children can still be running with the exact same PGID and holding
-    # the disk open. Do not mistake proc.poll() for a QEMU termination check.
+    # The session catches GNU timeout's separately grouped QEMU; exact-image
+    # file descriptors catch a VM that detached even from its parent session.
     signal_group(signal.SIGTERM)
+    signal_session(signal.SIGTERM)
+    signal_disk_qemus(signal.SIGTERM)
     if not await_release(8.0):
         signal_group(signal.SIGKILL)
+        signal_session(signal.SIGKILL)
+        signal_disk_qemus(signal.SIGKILL)
         if not await_release(8.0):
-            raise RuntimeError("first native QEMU did not release its raw ext4 disk lock")
+            remaining = image_qemu_pids(image) if image else []
+            raise RuntimeError(
+                f"first native QEMU did not release its raw ext4 disk lock; "
+                f"exact-image QEMU PIDs={remaining}")
     proc.wait()
 
 

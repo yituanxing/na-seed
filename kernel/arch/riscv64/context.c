@@ -103,8 +103,37 @@ void nas_rv_full_trap_c(struct nas_rv_trap_frame *frame) {
                     nas_print(" tp=");nas_hex(frame->x[4]);
                     nas_print(" a0=");nas_hex(frame->x[10]);
                     nas_print(" a1=");nas_hex(frame->x[11]);
+                    nas_print(" t0=");nas_hex(frame->x[5]);
+                    nas_print(" t1=");nas_hex(frame->x[6]);
+                    nas_print(" t2=");nas_hex(frame->x[7]);
+                    nas_print(" a2=");nas_hex(frame->x[12]);
+                    nas_print(" a3=");nas_hex(frame->x[13]);
                     nas_print(" si_code=");nas_dec((uint64_t)outcome.si_code);
                     nas_print("\n");
+                    /* A noncanonical SEPC often follows a corrupted
+                     * indirect JALR in an mmaped DSO. Identify the call
+                     * site and its load segment without trusting user VA
+                     * as a kernel pointer or requiring debug symbols. */
+                    if(frame->x[1]>=8 && frame->x[1]<USER_LIMIT-4) {
+                        uint32_t words[3]={0};
+                        int64_t count=nas_vm_read_task_bytes(tracee,
+                            frame->x[1]-8,(uint8_t *)(void *)words,12);
+                        nas_print("[RV64 CALLSITE] ra=");nas_hex(frame->x[1]);
+                        nas_print(" code=");nas_hex(words[0]);
+                        nas_print(" ");nas_hex(words[1]);
+                        nas_print(" ");nas_hex(words[2]);
+                        nas_print(" count=");nas_dec(count==12);
+                        const struct nas_anon_region *v=nas_vma_find(
+                            &tracee->mm->mmap_vmas,frame->x[1]-4);
+                        if(v) {
+                            nas_print(" map_start=");nas_hex(v->start);
+                            nas_print(" map_end=");nas_hex(v->end);
+                            nas_print(" file_offset=");nas_hex(v->file_offset);
+                            nas_print(" prot=");nas_hex(v->prot);
+                            nas_print(" kind=");nas_dec(v->kind);
+                        }
+                        nas_print("\n");
+                    }
                 }
             }
             live=frame;
