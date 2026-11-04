@@ -23,6 +23,39 @@
 #define NAS_UBOOT_POLL_BUDGET 20000000U
 #define NAS_UBOOT_STATUS_BYTE 64U
 #define FEATURE(bit) (UINT64_C(1)<<(bit))
+/* M191/M192: failure-only proof from the common VirtIO-Blk adapter.
+ * A BlockDevice -EIO alone cannot distinguish queue timeout, transport
+ * failure, device status or malformed completion. Keep the durable-flush
+ * contract unchanged; do not mask or retry any uncertain write. */
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+extern void nas_print(const char *);
+extern void nas_dec(uint64_t);
+static void m191_blk_failure(const char *stage,
+                             const struct nas_uboot_block *b,
+                             int code,uint32_t observed,uint32_t expected) {
+ nas_print("[M191 BLK DIAG] stage=");nas_print(stage);
+ nas_print(" code=");nas_dec(code<0 ? (uint64_t)(-(int64_t)code) : (uint64_t)code);
+ nas_print(" seen=");nas_dec(observed);
+ nas_print(" expected=");nas_dec(expected);
+ if(b) {
+     nas_print(" poisoned=");nas_dec(b->poisoned);
+     nas_print(" vq_poisoned=");nas_dec(b->vq.poisoned);
+     nas_print(" pending=");nas_dec(b->vq.pending);
+     nas_print(" inflight=");nas_dec(b->ring.inflight);
+     nas_print(" last_used=");nas_dec(b->ring.last_used);
+     if(b->ring.active && b->ring.ring.used) {
+         nas_print(" used_idx=");nas_dec(b->ring.ring.used->idx);
+     }
+     if(b->transport.ops && b->transport.ops->read_status) {
+         nas_print(" transport_status=");
+         nas_dec(b->transport.ops->read_status(b->transport.context));
+     }
+ }
+ nas_print("\n");
+}
+#else
+#define m191_blk_failure(stage,b,code,observed,expected) ((void)0)
+#endif
 static struct nas_uboot_block *queue_backend(struct virtqueue *v) {
  return v ? (struct nas_uboot_block *)v->owner : NULL;
 }
@@ -100,6 +133,7 @@ static int blk_queue_add(struct virtqueue *v,struct virtio_sg **sgs,
  v->pending=true;
  return 0;
 fail:
+ m191_blk_failure("submit",b,rc,0,0);
  poison(v);return rc;
 }
 static void blk_queue_kick(struct virtqueue *v) {
@@ -116,12 +150,19 @@ static void *blk_queue_get_buf(struct virtqueue *v,unsigned *used_len) {
      if(rc!=-EAGAIN)break;
  }
  if(rc || id!=v->pending_head || !written){
+     m191_blk_failure(rc==-EAGAIN?"poll-budget":
+                      (rc?"poll-error":
+                       (id!=v->pending_head?"head-mismatch":"zero-used-length")),
+                      b,rc,written,v->pending_head);
      poison(v);v->pending=false;
      return v; /* Status initialized to IOERR by U-Boot. Never report OK. */
  }
  rc=nas_dma_sync(b->transport.dma,&b->header_dma,
                  NAS_UBOOT_STATUS_BYTE,1U,NAS_DMA_FROM_DEVICE);
- if(rc){poison(v);v->pending=false;return v;}
+ if(rc){
+     m191_blk_failure("status-dma",b,rc,written,1);
+     poison(v);v->pending=false;return v;
+ }
  uint8_t status=*((uint8_t*)b->header_dma.cpu+NAS_UBOOT_STATUS_BYTE);
  /* A successful read must have written every payload byte plus status;
   * writes and flushes only return the status byte. A short success must
@@ -130,16 +171,22 @@ static void *blk_queue_get_buf(struct virtqueue *v,unsigned *used_len) {
  uint32_t expected=1U;
  if(v->sg_out && v->in_count==2)expected+=v->sg_out->length;
  if(written>expected || (status==VIRTIO_BLK_S_OK && written!=expected)){
+     m191_blk_failure("used-length",b,-EIO,written,expected);
      poison(v);
      *(uint8_t*)v->sg_in->addr=VIRTIO_BLK_S_IOERR;
      v->pending=false;
      return v;
  }
  *(uint8_t*)v->sg_in->addr=status;
+ if(status!=VIRTIO_BLK_S_OK)
+     m191_blk_failure("device-status",b,status,written,expected);
  if(status==VIRTIO_BLK_S_OK && v->sg_out && v->in_count==2){
      rc=nas_dma_sync(b->transport.dma,&b->payload_dma,0,
                       v->sg_out->length,NAS_DMA_FROM_DEVICE);
-     if(rc){poison(v);*(uint8_t*)v->sg_in->addr=VIRTIO_BLK_S_IOERR;}
+     if(rc){
+         m191_blk_failure("read-dma",b,rc,written,expected);
+         poison(v);*(uint8_t*)v->sg_in->addr=VIRTIO_BLK_S_IOERR;
+     }
      else memcpy(v->sg_out->addr,b->payload_dma.cpu,v->sg_out->length);
  }
  if(used_len)*used_len=written;
@@ -155,9 +202,19 @@ static int submit_flush(struct nas_uboot_block *b){
  struct virtio_sg hs={&h,sizeof(h)},ss={&status,1};
  struct virtio_sg *sgs[2]={&hs,&ss};
  int rc=virtqueue_add(&b->vq,sgs,1,1);
- if(rc)return rc;
+ if(rc){
+     m191_blk_failure("flush-submit",b,rc,0,0);
+     return rc;
+ }
  virtqueue_kick(&b->vq);
- if(!virtqueue_get_buf(&b->vq,NULL)||status!=VIRTIO_BLK_S_OK)return -EIO;
+ if(!virtqueue_get_buf(&b->vq,NULL)){
+     m191_blk_failure("flush-no-completion",b,-EIO,0,1);
+     return -EIO;
+ }
+ if(status!=VIRTIO_BLK_S_OK){
+     m191_blk_failure("flush-status",b,status,status,VIRTIO_BLK_S_OK);
+     return -EIO;
+ }
  return 0;
 }
 static int64_t read_blocks(void *ctx,uint64_t lba,uint32_t count,void *dst){
@@ -181,6 +238,7 @@ static int flush_blocks(void *ctx){
  if(!b->flush_supported)return -EOPNOTSUPP;
  if(__atomic_exchange_n(&b->busy,true,__ATOMIC_ACQUIRE))return -EBUSY;
  int rc=b->poisoned?-EIO:submit_flush(b);
+ if(rc)m191_blk_failure("flush-end",b,rc,0,0);
  __atomic_store_n(&b->busy,false,__ATOMIC_RELEASE);return rc;
 }
 static const struct nas_port_block_ops block_ops={
