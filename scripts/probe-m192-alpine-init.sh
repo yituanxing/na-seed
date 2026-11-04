@@ -1,7 +1,7 @@
 #!/bin/sh
-# M192 first-contact diagnostic: run the real Alpine /sbin/init as PID1
-# without changing the established M191 exit-0 acceptance oracle.
-# The result is ONLY evidence of native ELF entry, NOT OpenRC readiness.
+# M192 original distro entry and serial login-prompt acceptance, without
+# changing the established M191 exit-0 physical-root oracle. Interactive
+# login and post-login shell execution remain a separate acceptance gate.
 set -eu
 [ "$#" -eq 1 ] || {
     echo 'usage: sh scripts/probe-m192-alpine-init.sh amd64|riscv64|arm64' >&2
@@ -76,9 +76,30 @@ if ! grep -Fq '[ELF] userspace entry=' "$log" ||
     exit 1
 fi
 
-# Distinguish genuine init launch from services/tty readiness. A future
-# OpenRC-positive gate must inspect service state and live PID1 explicitly.
-echo "[M192 INIT ENTRY OBSERVED] $port original /sbin/init mapped from real Alpine ext4 root; runner_rc=$runner_rc; NOT an OpenRC or login PASS"
+# The first three-ISA diagnostic exposed genuine mount(2) and TIOCSCTTY
+# blockers, which are now resolved through VFS and TTY ownership. Promote
+# only the POSITIVE observable stage reached: real original OpenRC, a
+# real getty ELF and its real ttyS0 login prompt. This is not a timeout PASS,
+# a successful password authentication or proof every OpenRC service works.
+for marker in \
+    'OpenRC 0.63 is starting up Linux 0.1' \
+    'Caching service dependencies ... [ ok ]' \
+    '[EXEC] replaced process with lwext4 ELF: /sbin/getty' \
+    'Welcome to Alpine Linux 3.23' \
+    '(/dev/ttyS0)' \
+    'naseed login:'; do
+    if ! grep -Fq "$marker" "$log"; then
+        echo "[M192 ALPINE LOGIN FAIL] $port missing original guest marker: $marker" >&2
+        tail -170 "$log" >&2
+        exit 1
+    fi
+done
+if grep -Eq 'TIOCSCTTY: Operation not permitted|Unable to mount tmpfs on /run|Can.t continue\.' "$log"; then
+    echo "[M192 ALPINE LOGIN FAIL] $port guest remained blocked in mount or tty init" >&2
+    tail -170 "$log" >&2
+    exit 1
+fi
+echo "[M192 ALPINE LOGIN PROMPT PASS] $port original Alpine ext4 /sbin/init -> OpenRC -> real serial getty -> naseed login:; runner_rc=$runner_rc; NOT an interactive shell PASS"
 tail -85 "$log"
 # No clean unmount is claimed while PID1 is still alive; QEMU was stopped by
 # the bounded runner. Verify the original, untouched M191 disk and its signed

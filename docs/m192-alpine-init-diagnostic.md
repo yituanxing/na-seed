@@ -63,9 +63,12 @@ The follow-up host and kernel changes keep the original signed executables:
 
 The host smoke verifies independent mount roots, nested temporary files,
 iterative reclaim, and idempotent serialized Alpine `inittab` adaptation.
-The M192 system-QEMU diagnostic remains **entry-only** until an additional
-OpenRC/default-runlevel and interactive ttyS0 gate demonstrates real userspace
-readiness on all three architectures.
+The first M192 diagnostic was **entry-only**. The follow-up three-ISA QEMU
+log on commit `2c6d98b` has now observed a real original serial login prompt
+following OpenRC startup on amd64, riscv64 and arm64. The subsequent M192
+probe requires those exact positive guest markers and refuses the previous
+mount/TIOCSCTTY failure signatures; it must never count a timeout alone as
+success. Interactive authentication and a post-login Shell are the next gate.
 
 The next real three-ISA QEMU run then reached original `/sbin/getty`, after
 OpenRC successfully cached its dependencies and returned from sysinit/boot/

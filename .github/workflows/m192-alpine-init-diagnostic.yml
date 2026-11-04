@@ -1,4 +1,4 @@
-name: NaSeed M192 original Alpine init entry diagnostic on three ISA
+name: NaSeed M192 original Alpine OpenRC and serial login prompt on three ISA
 
 on:
   workflow_dispatch:
@@ -32,7 +32,7 @@ concurrency:
 
 jobs:
   init-entry-diagnostic:
-    name: M192 initial native Alpine /sbin/init (not OpenRC readiness) / ${{ matrix.port }}
+    name: M192 original Alpine OpenRC to ttyS0 login prompt / ${{ matrix.port }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
@@ -104,7 +104,7 @@ jobs:
           fi
           command -v docker
           command -v sudo
-      - name: Run M191 strict gate then observe original Alpine init PID1
+      - name: Run M191 strict gate then require native Alpine OpenRC and real ttyS0 login prompt
         timeout-minutes: 70
         run: sh scripts/probe-m192-alpine-init.sh ${{ matrix.port }}
       - name: Keep genuine Alpine root image and M191/M192 serial evidence
