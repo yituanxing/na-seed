@@ -11,6 +11,8 @@ on:
       - 'scripts/m203-*'
       - 'scripts/stage-m203-*'
       - 'scripts/probe-m203-*'
+      - 'scripts/m194-alpine-uart.py'
+      - 'scripts/test-m194-uart-prompt.py'
       - 'docs/m203*'
       - 'kernel/drivers/display/fbcon*'
       - 'kernel/drivers/vt*'
@@ -41,6 +43,7 @@ jobs:
           python3 -m py_compile scripts/m203-disk-fixture.py \
             scripts/m203-qmp-alpine-fbcon.py scripts/m203-alpine-uart.py
           python3 scripts/test-m203-fbcon-oracle.py
+          python3 scripts/test-m194-uart-prompt.py
           python3 scripts/test-m202-interactive-oracle.py
           sh scripts/check-m203-fbcon.sh
           sh scripts/check-m202-vt.sh

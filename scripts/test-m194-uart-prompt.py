@@ -46,6 +46,21 @@ assert m194.shell_prompt_after_step("\x1b[32mnaseed:/root# \x1b[0m")
 assert m194.shell_prompt_after_step("root@host:~# ")
 assert m194.shell_prompt_after_step("naseed:~# [LWIP DHCP BOUND] addr=10.0.2.15\n")
 
+# Actual three-ISA M203 graphical VT boot: the kernel's one-time VirtIO-GPU
+# diagnostic interrupts the serial ash prompt just after its CSI 6n query.
+# Rejecting this known printk used to leave the serial witness stuck in
+# await_prompt although the *physical* tty1 shell had already written ext4.
+gpu_m203 = (
+    "M203_TTY1_GETTY_RC=0\n"
+    "naseed:~# \x1b[6n[M177 VIRTIO GPU 2D STATS] scanout=0 "
+    "backing_pages=469 submitted=14 completed=14\n"
+    "[M177 VIRTIO GPU 2D PASS]\n"
+)
+assert m194.shell_prompt_after_step(
+    result_boundary(gpu_m203, "M203_TTY1_GETTY_RC=0"))
+assert not m194.shell_prompt_after_step(
+    "naseed:~# [M177 VIRTIO GPU 2D FAKE] arbitrary user text\n")
+
 # Exact M199 ARM64 QEMU UART suffix: the prompt is real, but a kernel
 # unsupported-syscall diagnostic is printed immediately after ESC[6n.
 # Previously the driver waited for another prompt forever and never sent

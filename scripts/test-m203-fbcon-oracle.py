@@ -62,6 +62,8 @@ def main() -> None:
     assert 'export BUSYBOX_PARITY_CASE=m202-fbi' in probe
     assert 'serial="$PWD/$logs/$BUSYBOX_PARITY_CASE.serial.log"' in probe
     assert 'clean="$PWD/$logs/$BUSYBOX_PARITY_CASE.clean.log"' in probe
+    workflow = Path('.github/workflows/m203-original-alpine-fbcon.yml').read_text()
+    assert 'python3 scripts/test-m194-uart-prompt.py' in workflow
     stage = Path('scripts/m203-disk-fixture.py').read_text()
     assert 'TTY1_GETTY' in stage and 'ORIGINAL_APPS' in stage
     print('[M203 FBICON HOST CONTRACT PASS] exact glyph pixels/negative '

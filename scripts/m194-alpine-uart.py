@@ -90,6 +90,7 @@ _ASH_PROMPT = re.compile(
 _ASYNC_PRINTK = re.compile(
     r"^(?:\[(?:LWIP|VIRTIO|NET|IRQ|PROC|THREAD|TIMER|BLOCK|CLOCK|"
     r"SCHED|EXEC|DYN|UART|TTY)(?:[- ][A-Z0-9 _-]{0,70})?\]"
+    r"|\[M177 VIRTIO GPU 2D (?:STATS|PASS)\]"
     r"|\[MISS\] syscall nr=[0-9]+\r?$)"
 )
 
