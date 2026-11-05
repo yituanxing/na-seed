@@ -19,7 +19,8 @@ the kernel graphics/input infrastructure or the original signed distro init.
    Opt-in `NAS_M198_INTEGRATED_DESKTOP=1` enables this integrated profile.
 2. All existing M197 real user programs execute **before** desktop launch.
    During disposable-root staging, the existing signed multi-ISA Alpine APK
-   Docker installer adds just `vim`, `nano`, `ncurses-terminfo-base` to the
+   Docker installer adds `imagemagick`, `lynx`, `mc`, `dialog`, `vim`, `nano`,
+   `ncurses-terminfo-base` to the
    root's original package DB. It uses Alpine's original official keyring,
    `apk --arch` and official HTTPS index, with no `--allow-untrusted` or
    target-ISA install scripts. The *guest* still installs Bash/Lua/SQLite/Git
@@ -62,8 +63,9 @@ public APK transaction was still unpacking dozens of optional GUI utilities.
 The independent QMP timer had incorrectly started before the long M197/public
 installation phase. It was not evidence of a GPU or input failure.
 
-The opt-in integrated profile now pre-stages only the officially signed editor
-programs using the existing native Docker APK installer, **without** a second
+The opt-in integrated profile now pre-stages the exact original signed ELF
+dependencies of all four native GUI clients plus the two editors using the
+existing native Docker APK installer, **without** a second
 expensive QEMU-side APK install. The genuine guest-side M197 public HTTPS
 transaction is unchanged. It keeps a separate first-boot QEMU/UART budget
 (`NAS_M198_FIRST_BOOT_SECONDS`, default 2400), waits for the original shell's

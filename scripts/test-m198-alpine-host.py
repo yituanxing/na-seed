@@ -18,8 +18,10 @@ def check():
     new = load('m198-alpine-uart.py')
     assert new.COMMANDS[:len(old.COMMANDS)] == old.COMMANDS
     assert len(new.COMMANDS) == len(old.COMMANDS) + 5
-    assert 'apk info -e vim' in \
-        new.COMMANDS[len(old.COMMANDS)][0]
+    all_packages = ('imagemagick', 'lynx', 'mc', 'dialog', 'vim', 'nano',
+                    'ncurses-terminfo-base')
+    for pkg in all_packages:
+        assert 'apk info -e ' + pkg in new.COMMANDS[len(old.COMMANDS)][0]
     assert '/usr/bin/naseed-desktop m187' in new.COMMANDS[-3][0]
     assert 'M198_DESKTOP_EXIT_RC=0' == new.COMMANDS[-3][1]
     assert '/root/m198-editor.txt' in new.COMMANDS[-2][0]
@@ -39,10 +41,23 @@ def check():
                 'naseed-browser', 'naseed-lvgl'):
         assert app in stage
     assert 'host-configure-m171-lvgl.sh' in stage
-    assert 'add vim nano ncurses-terminfo-base' in stage
+    assert 'add ' + ' '.join(all_packages) in stage
+    # Every *actual* original ELF launched by the four desktop clients must
+    # be present in the signed host-stage and the guest executable checks.
+    original_clients = {'naseed-image.c': {'/usr/bin/magick'},
+                        'naseed-terminal.c': {'/usr/bin/dialog'},
+                        'naseed-browser.c': {'/usr/bin/lynx', '/usr/bin/mc'}}
+    for source, launched in original_clients.items():
+        client = Path('user/desktop', source).read_text()
+        for elf in launched:
+            assert elf in client
+            assert 'test -x ' + elf in new.COMMANDS[len(old.COMMANDS) + 1][0]
+            assert elf.rsplit('/', 1)[-1] in stage
     assert '--keys-dir /etc/apk/keys' in stage
     assert '--no-scripts --quiet' in stage
-    assert '--initdb' in stage  # only in a comment prohibiting it
+    cross_apk_command = stage.split('apk --arch "$APK_ARCH"', 1)[1].split(
+        'add ' + ' '.join(all_packages), 1)[0]
+    assert '--initdb' not in cross_apk_command
     assert 'm167-desktop-fixture.ppm' in stage
     assert 'm168-home.html' in stage
     watcher = Path('scripts/m198-qmp-alpine-desktop.py').read_text()

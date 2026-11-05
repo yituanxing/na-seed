@@ -30,17 +30,17 @@ if ! docker run --rm --volume "$overlay:/target" \
         apk --arch "$APK_ARCH" --root /target --keys-dir /etc/apk/keys \
             --no-scripts --quiet \
             -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main \
-            add vim nano ncurses-terminfo-base
+            add imagemagick lynx mc dialog vim nano ncurses-terminfo-base
     ' > "$PWD/$work/m198-signed-apk-stage.log" 2>&1; then
     echo "[M198 APK STAGE FAIL] $port signed original Alpine editors" >&2
     tail -90 "$PWD/$work/m198-signed-apk-stage.log" >&2
     exit 1
 fi
-for app in vim nano; do
+for app in magick lynx mc dialog vim nano; do
     test -x "$overlay/usr/bin/$app"
     readelf -h "$overlay/usr/bin/$app" | grep -Fq "$machine"
 done
-echo "[M198 APK STAGE PASS] $port official signed original Alpine Vim/Nano"
+echo "[M198 APK STAGE PASS] $port official signed ImageMagick/Lynx/MC/Dialog/Vim/Nano"
 for app in naseed-image naseed-terminal naseed-browser; do
     "$cc" -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
         "user/desktop/$app.c" user/desktop/protocol.c user/desktop/text.c \

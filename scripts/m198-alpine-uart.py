@@ -23,12 +23,16 @@ def load_m197():
 
 M197 = load_m197()
 COMMANDS = M197.COMMANDS + (
-    ("apk info -e vim && apk info -e nano && "
+    ("apk info -e imagemagick && apk info -e lynx && "
+     "apk info -e mc && apk info -e dialog && "
+     "apk info -e vim && apk info -e nano && "
      "apk info -e ncurses-terminfo-base; "
      "printf 'M198_PUBLIC_GUI_APK_RC=%d\\n' \"$?\"\r",
      "M198_PUBLIC_GUI_APK_RC=0",
-     "original signed Vim/Nano installed in disposable official root"),
-    ("test -x /usr/bin/vim && test -x /usr/bin/nano && "
+     "all original signed GUI client dependencies in disposable root"),
+    ("test -x /usr/bin/magick && test -x /usr/bin/lynx && "
+     "test -x /usr/bin/mc && test -x /usr/bin/dialog && "
+     "test -x /usr/bin/vim && test -x /usr/bin/nano && "
      "test -x /usr/bin/naseed-desktop && "
      "test -s /tests/m167-desktop-fixture.ppm && "
      "test -s /tests/m168-home.html; "
