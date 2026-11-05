@@ -85,22 +85,42 @@ functional() {
                 'http { access_log off; server { listen 127.0.0.1:18081;' \
                 'location / { return 200 "m204-nginx-ok"; } } }' \
                 > "$work/nginx.conf" || return 1
-            nginx -t -c "$work/nginx.conf" >/dev/null 2>&1 || return 1
+            if ! nginx -t -c "$work/nginx.conf" \
+                    > "$work/logs/nginx-config.log" 2>&1; then
+                /bin/busybox tail -n 3 "$work/logs/nginx-config.log" >&2
+                return 1
+            fi
             # Foreground single-process server owned by this test shell.
             # A daemonized worker surviving PID1 pins ext4 and invalidates
             # the independent reboot/unmount durability proof.
             nginx -c "$work/nginx.conf" -g 'daemon off; master_process off;' \
                 > "$work/logs/nginx-server.log" 2>&1 &
             server_pid=$!
-            sleep 1
-            body=$(/bin/busybox timeout 12 /bin/busybox wget -q -O - \
-                http://127.0.0.1:18081/ 2>/dev/null)
-            result=$?
+            # Under native QEMU the server's first listen may become ready
+            # after the parent's first scheduling slice. Probe the actual
+            # HTTP transaction with one bounded total retry window instead
+            # of mistaking an initial connection refusal for an ABI failure.
+            # A successful response with the wrong body is NEVER retried.
+            attempts=0 result=1 body=
+            while [ "$attempts" -lt 8 ]; do
+                body=$(/bin/busybox timeout 2 /bin/busybox wget -O - \
+                    http://127.0.0.1:18081/ 2> "$work/logs/nginx-client.log")
+                result=$?
+                [ "$result" -eq 0 ] && break
+                attempts=$((attempts + 1))
+                sleep 1
+            done
             kill -TERM "$server_pid" 2>/dev/null || :
             sleep 1
             kill -KILL "$server_pid" 2>/dev/null || :
             wait "$server_pid" 2>/dev/null || :
-            test "$result" -eq 0 && test "$body" = m204-nginx-ok
+            if [ "$result" -ne 0 ] || [ "$body" != m204-nginx-ok ]; then
+                printf 'nginx HTTP result=%s attempts=%s body=%s\n' \
+                    "$result" "$attempts" "$body" >&2
+                /bin/busybox tail -n 2 "$work/logs/nginx-client.log" >&2
+                /bin/busybox tail -n 2 "$work/logs/nginx-server.log" >&2
+                return 1
+            fi
             ;;
         openssh-keygen)
             rm -f "$work/ed25519" "$work/ed25519.pub"

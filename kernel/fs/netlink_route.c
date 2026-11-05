@@ -270,9 +270,17 @@ int64_t nas_netlink_route_sendto(unsigned slot,const uint8_t *bytes,
     if(length>NAS_NETLINK_ROUTE_MAX_DATAGRAM || length>s->send_quota)
         return -EMSGSIZE;
     if(!bytes || length<17)return -EINVAL;
-    if(!destination)return -EDESTADDRREQ;
     uint32_t target=0,groups=0;
-    int rc=parse_addr(destination,destination_length,&target,&groups);
+    /* Linux NETLINK_ROUTE send()/sendto(NULL) addresses the kernel's
+     * default port ID zero. iproute2's rtnl_{addr,link}dump_req use this
+     * ordinary socket path without supplying a sockaddr_nl. An explicit
+     * address must still be validated; peer or multicast delivery is not
+     * implemented by this kernel-owned endpoint. */
+    int rc=0;
+    if(destination)
+        rc=parse_addr(destination,destination_length,&target,&groups);
+    else if(destination_length)
+        rc=-EINVAL;
     if(rc)return rc;
     if(target || groups)return -EOPNOTSUPP; /* only real kernel endpoint */
     const uint32_t msg_len=get32(bytes);

@@ -173,6 +173,23 @@ int main(void) {
     assert(nas_netlink_route_set_rcvbuf(11,UINT32_MAX)==0);
     assert(nas_netlink_route_get_rcvbuf(11,&rcvbuf)==0 &&
            rcvbuf==real_rx_bytes);
+    /* Original iproute2 calls send() without a sockaddr_nl for route
+     * dumps. Linux implicitly selects the kernel port (zero); reject only
+     * malformed explicit destinations and unsupported peer/multicast. */
+    getaddr(request,10,99);
+    assert(nas_netlink_route_sendto(11,request,sizeof(request),NULL,0)==20);
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==16);
+    assert(rd16(reply+4)==3 && rd32(reply+8)==99);
+    assert(nas_netlink_route_sendto(11,request,sizeof(request),NULL,12)==
+           -EINVAL);
+    nl_sockaddr(addr,123,0);
+    assert(nas_netlink_route_sendto(11,request,sizeof(request),addr,12)==
+           -EOPNOTSUPP);
+    nl_sockaddr(addr,0,1);
+    assert(nas_netlink_route_sendto(11,request,sizeof(request),addr,12)==
+           -EOPNOTSUPP);
+    nl_sockaddr(addr,0,0);
     assert(nas_netlink_route_set_rcvbuf(11,64)==0);
     assert(nas_netlink_route_get_rcvbuf(11,&rcvbuf)==0 && rcvbuf==128);
     assert(nas_netlink_route_set_rcvbuf(11,UINT32_MAX)==0);
