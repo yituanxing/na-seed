@@ -16,7 +16,8 @@ struct nas_fb_boot_info {
 };
 
 /* Linux LP64 fbdev wire structs, common to x86_64, riscv64 and aarch64.
- * Keep the fixed-screen-info memory BAR address zero: there is no mmap ABI. */
+ * Keep the fixed-screen-info physical BAR address zero: user mmap eligibility
+ * is separately decided by the active, pinned display provider. */
 struct nas_fb_bitfield {
     uint32_t offset, length, msb_right;
 };
@@ -44,7 +45,9 @@ _Static_assert(sizeof(struct nas_fb_var_screeninfo)==160, "Linux fb_var_screenin
 _Static_assert(sizeof(struct nas_fb_fix_screeninfo)==80, "Linux LP64 fb_fix_screeninfo ABI");
 
 #define NAS_FBIOGET_VSCREENINFO 0x4600U
+#define NAS_FBIOPUT_VSCREENINFO 0x4601U
 #define NAS_FBIOGET_FSCREENINFO 0x4602U
+#define NAS_FBIOPAN_DISPLAY     0x4606U
 
 bool nas_fbdev_boot_init(const struct nas_fb_boot_info *);
 bool nas_fbdev_available(void);
@@ -55,4 +58,8 @@ uint64_t nas_fbdev_read_at(uint64_t offset,uint8_t *dst,uint64_t bytes);
 uint64_t nas_fbdev_write_at(uint64_t offset,const uint8_t *src,uint64_t bytes);
 bool nas_fbdev_var_screeninfo(struct nas_fb_var_screeninfo *);
 bool nas_fbdev_fix_screeninfo(struct nas_fb_fix_screeninfo *);
+/* This display class exposes a fixed scanout mode: Linux fbdev requests for
+ * that exact mode/no-op pan succeed, unsupported modes return -EINVAL. */
+int nas_fbdev_put_var_screeninfo(struct nas_fb_var_screeninfo *);
+int nas_fbdev_pan_display(const struct nas_fb_var_screeninfo *);
 #endif

@@ -252,6 +252,64 @@ bool nas_fbdev_var_screeninfo(struct nas_fb_var_screeninfo *out) {
     *out=info;
     return true;
 }
+/* fbdev's mode-setting ABI is independent of the scanout's buffer writes.
+ * Until a DisplayDevice explicitly provides modesetting, make identical-mode
+ * requests legal without claiming to implement a hardware mode transition. */
+static bool fb_bitfield_matches(struct nas_fb_bitfield requested,
+                                struct nas_fb_bitfield current) {
+    return requested.offset==current.offset &&
+           requested.length==current.length &&
+           requested.msb_right==current.msb_right;
+}
+static bool fb_fixed_geometry_matches(const struct nas_fb_var_screeninfo *requested,
+                                      const struct nas_fb_var_screeninfo *current) {
+    return requested->xres==current->xres &&
+           requested->yres==current->yres &&
+           requested->xres_virtual==current->xres_virtual &&
+           requested->yres_virtual==current->yres_virtual &&
+           requested->bits_per_pixel==current->bits_per_pixel &&
+           fb_bitfield_matches(requested->red,current->red) &&
+           fb_bitfield_matches(requested->green,current->green) &&
+           fb_bitfield_matches(requested->blue,current->blue) &&
+           fb_bitfield_matches(requested->transp,current->transp);
+}
+int nas_fbdev_put_var_screeninfo(struct nas_fb_var_screeninfo *requested) {
+    if(!requested)return -EINVAL;
+    struct nas_fb_var_screeninfo current;
+    if(!nas_fbdev_var_screeninfo(&current))return -ENODEV;
+    /* FB_ACTIVATE_NOW (0) and FB_ACTIVATE_TEST (2) are synchronous; the
+     * FORCE bit can request re-application of an already active mode. */
+    if((requested->activate & ~UINT32_C(0x82))!=0U ||
+       !fb_fixed_geometry_matches(requested,&current) ||
+       requested->xoffset || requested->yoffset ||
+       requested->grayscale || requested->nonstd ||
+       requested->vmode || requested->rotate || requested->colorspace ||
+       requested->accel_flags!=current.accel_flags ||
+       requested->pixclock!=current.pixclock ||
+       requested->left_margin!=current.left_margin ||
+       requested->right_margin!=current.right_margin ||
+       requested->upper_margin!=current.upper_margin ||
+       requested->lower_margin!=current.lower_margin ||
+       requested->hsync_len!=current.hsync_len ||
+       requested->vsync_len!=current.vsync_len ||
+       requested->sync!=current.sync)return -EINVAL;
+    for(unsigned i=0;i<4U;i++)
+        if(requested->reserved[i]!=current.reserved[i])return -EINVAL;
+    /* Linux fbdev's FBIOPUT_VSCREENINFO is read/write. Return the canonical
+     * fixed mode, including the actual RGB format and physical dimensions. */
+    *requested=current;
+    return 0;
+}
+int nas_fbdev_pan_display(const struct nas_fb_var_screeninfo *requested) {
+    if(!requested)return -EINVAL;
+    struct nas_fb_var_screeninfo current;
+    if(!nas_fbdev_var_screeninfo(&current))return -ENODEV;
+    /* xres_virtual == xres and yres_virtual == yres; no second page exists
+     * to pan to, and the backend cannot offer YWRAP. */
+    return !fb_fixed_geometry_matches(requested,&current) ||
+           requested->xoffset || requested->yoffset || requested->vmode ?
+           -EINVAL : 0;
+}
 bool nas_fbdev_fix_screeninfo(struct nas_fb_fix_screeninfo *out) {
     if(!out || !nas_fbdev_available())return false;
     struct nas_fb_fix_screeninfo info={0};

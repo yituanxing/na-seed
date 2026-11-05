@@ -33,10 +33,56 @@ static void assert_mode(const char *id) {
     assert(fix.line_length==16 && fix.smem_len==48);
     assert(strncmp(fix.id,id,sizeof(fix.id))==0);
     assert(fix.smem_start==0 && fix.mmio_start==0);
+    struct nas_fb_var_screeninfo put=var;
+    assert(nas_fbdev_put_var_screeninfo(&put)==0);
+    assert(put.xres==var.xres && put.xoffset==0 && put.yoffset==0);
+    put=var;
+    put.activate=2; /* FB_ACTIVATE_TEST validates without changing mode. */
+    assert(nas_fbdev_put_var_screeninfo(&put)==0 && put.activate==0);
+    put=var;
+    put.activate=0x80; /* FB_ACTIVATE_FORCE with unchanged fixed mode. */
+    assert(nas_fbdev_put_var_screeninfo(&put)==0);
+    put=var;
+    put.xres=5;
+    assert(nas_fbdev_put_var_screeninfo(&put)==-EINVAL);
+    put=var;
+    put.xres_virtual=8;
+    assert(nas_fbdev_put_var_screeninfo(&put)==-EINVAL);
+    put=var;
+    put.red.offset=0;
+    assert(nas_fbdev_put_var_screeninfo(&put)==-EINVAL);
+    put=var;
+    put.pixclock=1000;
+    assert(nas_fbdev_put_var_screeninfo(&put)==-EINVAL);
+    put=var;
+    put.reserved[3]=1;
+    assert(nas_fbdev_put_var_screeninfo(&put)==-EINVAL);
+    put=var;
+    put.height=80; /* Non-geometry physical metadata is not a modeset. */
+    assert(nas_fbdev_put_var_screeninfo(&put)==0 && put.height==UINT32_MAX);
+    put=var;
+    put.activate=0x10; /* Deferred vsync application is unsupported. */
+    assert(nas_fbdev_put_var_screeninfo(&put)==-EINVAL);
+    assert(nas_fbdev_pan_display(&var)==0);
+    put=var;
+    put.xoffset=1;
+    assert(nas_fbdev_pan_display(&put)==-EINVAL);
+    put=var;
+    put.yoffset=1;
+    assert(nas_fbdev_pan_display(&put)==-EINVAL);
+    put=var;
+    put.vmode=0x100; /* FB_VMODE_YWRAP */
+    assert(nas_fbdev_pan_display(&put)==-EINVAL);
+    put=var;
+    put.bits_per_pixel=16;
+    assert(nas_fbdev_pan_display(&put)==-EINVAL);
 }
 
 static void test_boot(void) {
     assert(!nas_fbdev_available());
+    struct nas_fb_var_screeninfo var={0};
+    assert(nas_fbdev_put_var_screeninfo(&var)==-ENODEV);
+    assert(nas_fbdev_pan_display(&var)==-ENODEV);
     assert(nas_fbdev_length()==0);
     assert(nas_fbdev_read_at(0,pixels,1)==0);
     assert(nas_fbdev_write_at(0,pixels,1)==0);

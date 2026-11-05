@@ -1016,11 +1016,26 @@ static uint64_t fb_ioctl(uint64_t fd,uint64_t cmd,uint64_t arg) {
         return nas_user_write_bytes(arg,(const uint8_t *)&info,sizeof(info)) ?
                0 : (uint64_t)-EFAULT;
     }
+    if(cmd==NAS_FBIOPUT_VSCREENINFO) {
+        struct nas_fb_var_screeninfo info;
+        if(!nas_user_read_bytes(arg,(uint8_t *)&info,sizeof(info)))
+            return (uint64_t)-EFAULT;
+        int rc=nas_fbdev_put_var_screeninfo(&info);
+        if(rc)return (uint64_t)(int64_t)rc;
+        return nas_user_write_bytes(arg,(const uint8_t *)&info,sizeof(info)) ?
+               0 : (uint64_t)-EFAULT;
+    }
     if(cmd==NAS_FBIOGET_FSCREENINFO) {
         struct nas_fb_fix_screeninfo info;
         if(!nas_fbdev_fix_screeninfo(&info))return (uint64_t)-ENODEV;
         return nas_user_write_bytes(arg,(const uint8_t *)&info,sizeof(info)) ?
                0 : (uint64_t)-EFAULT;
+    }
+    if(cmd==NAS_FBIOPAN_DISPLAY) {
+        struct nas_fb_var_screeninfo info;
+        if(!nas_user_read_bytes(arg,(uint8_t *)&info,sizeof(info)))
+            return (uint64_t)-EFAULT;
+        return (uint64_t)(int64_t)nas_fbdev_pan_display(&info);
     }
     return (uint64_t)-ENOTTY;
 }
