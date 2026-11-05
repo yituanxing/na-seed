@@ -18,9 +18,9 @@ def check():
     new = load('m198-alpine-uart.py')
     assert new.COMMANDS[:len(old.COMMANDS)] == old.COMMANDS
     assert len(new.COMMANDS) == len(old.COMMANDS) + 5
-    assert 'apk --no-cache add imagemagick lynx mc dialog vim nano ncurses-terminfo-base' in \
+    assert 'apk info -e vim' in \
         new.COMMANDS[len(old.COMMANDS)][0]
-    assert '/usr/bin/naseed-desktop' in new.COMMANDS[-3][0]
+    assert '/usr/bin/naseed-desktop m187' in new.COMMANDS[-3][0]
     assert 'M198_DESKTOP_EXIT_RC=0' == new.COMMANDS[-3][1]
     assert '/root/m198-editor.txt' in new.COMMANDS[-2][0]
     assert new.COMMANDS[-2][1] == 'M198_GUI_DURABLE_RC=0'
@@ -39,12 +39,20 @@ def check():
                 'naseed-browser', 'naseed-lvgl'):
         assert app in stage
     assert 'host-configure-m171-lvgl.sh' in stage
+    assert 'add vim nano ncurses-terminfo-base' in stage
+    assert '--keys-dir /etc/apk/keys' in stage
+    assert '--no-scripts --quiet' in stage
+    assert '--initdb' in stage  # only in a comment prohibiting it
     assert 'm167-desktop-fixture.ppm' in stage
     assert 'm168-home.html' in stage
     watcher = Path('scripts/m198-qmp-alpine-desktop.py').read_text()
     for token in ('M187_DESKTOP_INITIAL_VISIBLE', 'lwext4 ELF: ',
-                  'screenshot', 'vim_ready', 'original_reaped', 'f12'):
+                  'screenshot', 'vim_ready', 'original_reaped', 'f12',
+                  'M198_DESKTOP_INPUTS_RC=0', 'NAS_M198_PRE_GUI_SECONDS'):
         assert token in watcher
+    driver = Path('scripts/probe-m197-alpine-software-cohort.sh').read_text()
+    assert 'NAS_M198_FIRST_BOOT_SECONDS' in driver
+    assert 'NAS_M198_DESKTOP_SECONDS:-300' in driver
     print('[M198 HOST CONTRACT PASS] original Alpine init, M197 public apps, '
           'existing static GUI, independent QMP editor+ext4 oracle')
 

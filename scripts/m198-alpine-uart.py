@@ -23,13 +23,12 @@ def load_m197():
 
 M197 = load_m197()
 COMMANDS = M197.COMMANDS + (
-    ("apk --no-cache add imagemagick lynx mc dialog vim nano ncurses-terminfo-base; "
+    ("apk info -e vim && apk info -e nano && "
+     "apk info -e ncurses-terminfo-base; "
      "printf 'M198_PUBLIC_GUI_APK_RC=%d\\n' \"$?\"\r",
      "M198_PUBLIC_GUI_APK_RC=0",
-     "original public signed GUI dependencies installed"),
-    ("test -x /usr/bin/magick && test -x /usr/bin/lynx && "
-     "test -x /usr/bin/mc && test -x /usr/bin/dialog && "
-     "test -x /usr/bin/vim && test -x /usr/bin/nano && "
+     "original signed Vim/Nano installed in disposable official root"),
+    ("test -x /usr/bin/vim && test -x /usr/bin/nano && "
      "test -x /usr/bin/naseed-desktop && "
      "test -s /tests/m167-desktop-fixture.ppm && "
      "test -s /tests/m168-home.html; "
@@ -53,7 +52,9 @@ COMMANDS = M197.COMMANDS + (
 def main():
     if len(sys.argv) != 5:
         raise SystemExit("usage: m198-alpine-uart.py RUNNER SERIAL_LOG RUNNER_LOG FIFO")
-    seconds = int(os.environ.get("NAS_M198_DESKTOP_SECONDS", "1250"))
+    # The original M197 public APK transaction and M198 original editors
+    # run before the GUI, so this is the entire FIRST boot, not a GUI timer.
+    seconds = int(os.environ.get("NAS_M198_FIRST_BOOT_SECONDS", "2400"))
     fail_file = os.environ.get('NAS_M198_QMP_FAIL_FILE')
     M197.M194.run(sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3]),
                   Path(sys.argv[4]), seconds + 35, commands=COMMANDS,

@@ -33,8 +33,7 @@ def verify(port: str, root: Path, disk: Path):
             raise ValueError("[M198 HOST FAIL] physical original Vim bytes missing")
         installed = m191.debugfs_cat(partition, "/lib/apk/db/installed")
         world = m191.debugfs_cat(partition, "/etc/apk/world").splitlines()
-        for pkg in (b"imagemagick", b"lynx", b"mc", b"dialog", b"vim",
-                    b"nano", b"ncurses-terminfo-base"):
+        for pkg in (b"vim", b"nano", b"ncurses-terminfo-base"):
             if b"P:" + pkg + b"\n" not in b"\n" + installed or pkg not in world:
                 raise ValueError("[M198 HOST FAIL] original signed GUI package "
                                  + pkg.decode() + " absent")

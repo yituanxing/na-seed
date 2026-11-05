@@ -79,7 +79,9 @@ export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M197_PUBLIC_QEMU_TIMEOUT:-1020}
 if [ "$m198" = 1 ]; then
     export NAS_QEMU_INPUT_OPTIN=1 NAS_QEMU_VIRTIO_GPU=1 NAS_QEMU_RAMFB=0
     export NAS_ACCEPTANCE_QEMU_RAM=2048M
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M198_DESKTOP_SECONDS:-1250}
+    # One boot runs M197's full public transaction before GUI/Vim. Keep the
+    # slow external WAN budget separate from the post-install QMP budget.
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M198_FIRST_BOOT_SECONDS:-2400}
     export NAS_QEMU_QMP_SOCKET="$PWD/$work/m198-integrated-desktop.qmp"
     test ! -e "$NAS_QEMU_QMP_SOCKET" || {
         echo '[M198 QMP FAIL] stale socket from another run' >&2
@@ -101,7 +103,7 @@ if [ "$m198" = 1 ]; then
     }
     python3 scripts/m198-qmp-alpine-desktop.py \
         --serial "$serial" --qmp "$NAS_QEMU_QMP_SOCKET" \
-        --outdir "$work" --timeout "${NAS_M198_DESKTOP_SECONDS:-1250}" \
+        --outdir "$work" --timeout "${NAS_M198_DESKTOP_SECONDS:-300}" \
         > "$work/m198-qmp-check.log" 2>&1 &
     watcher=$!
     if ! python3 scripts/m198-alpine-uart.py "$runner" "$serial" \

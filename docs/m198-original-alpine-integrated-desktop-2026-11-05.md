@@ -18,10 +18,13 @@ the kernel graphics/input infrastructure or the original signed distro init.
    APK, login, DHCP, TCP/TLS trace, ext4 image and two-QEMU-oracle workflow.
    Opt-in `NAS_M198_INTEGRATED_DESKTOP=1` enables this integrated profile.
 2. All existing M197 real user programs execute **before** desktop launch.
-   On the same original Alpine password-authenticated root ash, signed APK
-   adds `imagemagick`, `lynx`, `mc`, `dialog`, `vim`, `nano` and
-   `ncurses-terminfo-base` from official
-   repositories. No native vendor ELF is replaced or installed untrusted.
+   During disposable-root staging, the existing signed multi-ISA Alpine APK
+   Docker installer adds just `vim`, `nano`, `ncurses-terminfo-base` to the
+   root's original package DB. It uses Alpine's original official keyring,
+   `apk --arch` and official HTTPS index, with no `--allow-untrusted` or
+   target-ISA install scripts. The *guest* still installs Bash/Lua/SQLite/Git
+   from the public Internet and exercises them on NaSeed's real network.
+   The original guest APK then independently checks all editor package entries.
 3. The disposable original Alpine root receives precisely five **NaSeed-built
    static** GUI client ELFs (image, terminal, browser, pinned LVGL, desktop)
    plus the two existing PPM/HTML inputs. The signed baseline stays separate
@@ -51,6 +54,23 @@ The original M196/M197 and M179/M180/M190 workflows remain independent gates.
 M198 neither claims a full X11/Wayland/DRM desktop, accelerated rendering,
 framebuffer mmap, generic secondary ext4 `mount(2)`, power-loss durability,
 nor permanently running OpenRC graphical services. Those are later work.
+
+## Network-install versus GUI timing
+
+The first end-to-end M198 run timed out on all three ISAs while the **second**
+public APK transaction was still unpacking dozens of optional GUI utilities.
+The independent QMP timer had incorrectly started before the long M197/public
+installation phase. It was not evidence of a GPU or input failure.
+
+The opt-in integrated profile now pre-stages only the officially signed editor
+programs using the existing native Docker APK installer, **without** a second
+expensive QEMU-side APK install. The genuine guest-side M197 public HTTPS
+transaction is unchanged. It keeps a separate first-boot QEMU/UART budget
+(`NAS_M198_FIRST_BOOT_SECONDS`, default 2400), waits for the original shell's
+`M198_DESKTOP_INPUTS_RC=0` readiness witness (pre-GUI deadline default 2100),
+and starts the **300-second QMP input/display deadline afterward**. A QMP
+failure still interrupts the UART runner immediately; this never treats a
+timeout as PASS or bypasses any official APK signatures.
 
 ## Exact scope of ownership
 

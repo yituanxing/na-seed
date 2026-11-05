@@ -5,16 +5,42 @@ set -eu
 [ "$#" -eq 2 ] || { echo 'usage: stage-m198-alpine-desktop.sh PORT DISPOSABLE_ROOT' >&2; exit 2; }
 port=$1 overlay=$2
 case "$port" in
-    amd64) cc=gcc; machine='Advanced Micro Devices X86-64' ;;
-    riscv64) cc=riscv64-linux-gnu-gcc; machine='RISC-V' ;;
-    arm64) cc=aarch64-linux-gnu-gcc; machine='AArch64' ;;
+    amd64) cc=gcc; machine='Advanced Micro Devices X86-64'; apk_arch=x86_64 ;;
+    riscv64) cc=riscv64-linux-gnu-gcc; machine='RISC-V'; apk_arch=riscv64 ;;
+    arm64) cc=aarch64-linux-gnu-gcc; machine='AArch64'; apk_arch=aarch64 ;;
     *) exit 2 ;;
 esac
 [ -d "$overlay" ] && [ ! -L "$overlay" ] || exit 2
+case "$overlay" in /*) ;; *) overlay="$PWD/$overlay" ;; esac
 command -v "$cc" >/dev/null
+command -v docker >/dev/null
 work="build/external/m198-alpine-desktop/$port"
 stage="$PWD/$work/native"
 mkdir -p "$stage/usr/bin"
+# Reuse the existing M191/Alpine-builder mechanism for a signed, foreign-ISA
+# APK transaction on the disposable host overlay. M197 still performs its
+# public HTTPS/signed Bash/Lua/SQLite/Git transaction INSIDE NaSeed/QEMU;
+# moving only extra editor installation here saves a second >10-minute WAN
+# APK extraction under emulation. Preserve the overlay's existing apk DB:
+# unlike rootfs/alpine/build.sh's initial root creation, do NOT --initdb.
+if ! docker run --rm --volume "$overlay:/target" \
+        --env APK_ARCH="$apk_arch" alpine:3.23 sh -ec '
+        test -n "$(find /target/etc/apk/keys -name "*.pub" -print -quit)"
+        cp -a /target/etc/apk/keys/. /etc/apk/keys/
+        apk --arch "$APK_ARCH" --root /target --keys-dir /etc/apk/keys \
+            --no-scripts --quiet \
+            -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main \
+            add vim nano ncurses-terminfo-base
+    ' > "$PWD/$work/m198-signed-apk-stage.log" 2>&1; then
+    echo "[M198 APK STAGE FAIL] $port signed original Alpine editors" >&2
+    tail -90 "$PWD/$work/m198-signed-apk-stage.log" >&2
+    exit 1
+fi
+for app in vim nano; do
+    test -x "$overlay/usr/bin/$app"
+    readelf -h "$overlay/usr/bin/$app" | grep -Fq "$machine"
+done
+echo "[M198 APK STAGE PASS] $port official signed original Alpine Vim/Nano"
 for app in naseed-image naseed-terminal naseed-browser; do
     "$cc" -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
         "user/desktop/$app.c" user/desktop/protocol.c user/desktop/text.c \

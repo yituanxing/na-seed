@@ -63,9 +63,17 @@ def original_reaped(sock, reader, serial: Path,
 
 
 def run(serial: Path, qmp: Path, outdir: Path, seconds: int) -> None:
+    # Public signed APK transactions are real network/database operations;
+    # they can take longer than the entire physical GUI interaction. Only
+    # start the GUI deadline after the independent UART has established that
+    # the original public packages AND static desktop clients are ready.
+    install_deadline = time.monotonic() + int(
+        os.environ.get('NAS_M198_PRE_GUI_SECONDS', '2100'))
+    prior['wait_native_marker'](None, None, serial,
+                                'M198_DESKTOP_INPUTS_RC=0', install_deadline)
     deadline = time.monotonic() + seconds
-    # This comes from the existing compositor, now launched as an ordinary
-    # child of a password-authenticated shell under *original* Alpine PID1.
+    # The existing compositor is a normal authenticated-shell child under
+    # the original Alpine PID1; its marker now has a fresh physical deadline.
     prior['wait_native_marker'](None, None, serial,
                                 'M187_DESKTOP_INITIAL_VISIBLE', deadline)
     sock, reader = base['connect'](qmp, deadline)
@@ -118,7 +126,7 @@ if __name__ == '__main__':
     parser.add_argument('--serial', type=Path, required=True)
     parser.add_argument('--qmp', type=Path, required=True)
     parser.add_argument('--outdir', type=Path, required=True)
-    parser.add_argument('--timeout', type=int, default=1250)
+    parser.add_argument('--timeout', type=int, default=300)
     args = parser.parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
     try:
