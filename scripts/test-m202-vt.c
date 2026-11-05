@@ -24,6 +24,13 @@ static struct nas_task process;
 struct nas_task *nas_current_task=&process;
 static void (*input_handler)(uint16_t,bool);
 static unsigned published;
+static bool fbcon_active,fbcon_graphics;
+void nas_fbcon_activate(bool enabled) {fbcon_active=enabled;}
+void nas_fbcon_set_graphics(bool graphics) {fbcon_graphics=graphics;}
+uint64_t nas_fbcon_write(const uint8_t *src,uint64_t len) {
+    assert(src || !len);
+    return len;
+}
 uint64_t nas_arch_monotonic_ns(void) {return 1234000000ULL;}
 bool nas_user_write_bytes(uint64_t addr,const uint8_t *src,uint64_t len) {
     memcpy((void *)(uintptr_t)addr,src,(size_t)len);return true;
@@ -68,6 +75,7 @@ int main(void) {
     assert((int64_t)nas_vt_ioctl(0x5429,(uint64_t)(uintptr_t)&ctty_sid)==-ENOTTY);
     nas_vt_open_session(0); /* session-leader open claims unowned VT */
     assert(nas_vt_ioctl(0x5429,(uint64_t)(uintptr_t)&ctty_sid)==0 && ctty_sid==100);
+    assert(fbcon_active);
 
     struct nas_vt_stat_test state={0};
     assert(nas_vt_ioctl(0x5603,(uint64_t)(uintptr_t)&state)==0);
@@ -79,6 +87,7 @@ int main(void) {
     struct nas_vt_mode_test mode={1,0,10,12,0};
     assert(nas_vt_ioctl(0x5602,(uint64_t)(uintptr_t)&mode)==0);
     assert(nas_vt_ioctl(0x4b3a,1)==0); /* KD_GRAPHICS */
+    assert(fbcon_graphics);
     int32_t kd=-1;
     assert(nas_vt_ioctl(0x4b3b,(uint64_t)(uintptr_t)&kd)==0 && kd==1);
     process.pid=101;
@@ -104,6 +113,7 @@ int main(void) {
 
     /* Unexpected viewer death releases graphical owner and raw N_TTY. */
     nas_vt_process_exit(100);
+    assert(!fbcon_graphics);
     assert(nas_vt_ioctl(0x4b3b,(uint64_t)(uintptr_t)&kd)==0 && kd==0);
     assert(nas_vt_ioctl(0x5401,(uint64_t)(uintptr_t)&tty)==0);
     assert((tty.lflag&0000002U)!=0); /* canonical restored */
@@ -113,8 +123,9 @@ int main(void) {
 
     send(16);assert((int64_t)nas_vt_read_plan(1,true)==-EAGAIN);
     send(28);expect_bytes("q\n",2);
-    assert((int64_t)nas_vt_write((const uint8_t *)"abc",3)==-EOPNOTSUPP);
+    assert(nas_vt_write((const uint8_t *)"abc",3)==3);
     nas_vt_session_leader_exit(100);
+    assert(!fbcon_active);
     assert((int64_t)nas_vt_ioctl(0x5429,(uint64_t)(uintptr_t)&ctty_sid)==-ENOTTY);
     puts("[M202 VT ABI/KEYBOARD HOST PASS] single VT, isolation, raw keys and cleanup");
     return 0;

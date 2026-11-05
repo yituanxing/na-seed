@@ -15,6 +15,7 @@
 #include "../time/clock.h"
 #include "../arch/arch.h"
 #include "../panic.h"
+#include "display/fbcon.h"
 #ifdef NAS_ENABLE_VIRTIO_INPUT
 #include "input/core.h"
 #endif
@@ -94,6 +95,7 @@ static void default_termios(void) {
 void nas_vt_init(void) {
     memset(&vt,0,sizeof(vt));
     vt.rows=25;vt.cols=80;
+    nas_fbcon_activate(false);
     reset_graphics_ownership();
     default_termios();
 #ifdef NAS_ENABLE_VIRTIO_INPUT
@@ -115,6 +117,7 @@ void nas_vt_open_session(uint64_t flags) {
     vt.sid=task->sid;
     vt.pgid=task->pgid;
     reset_input();
+    nas_fbcon_activate(true);
 }
 static uint64_t copy_pid(uint64_t arg,uint64_t pid) {
     uint32_t n=(uint32_t)pid;
@@ -170,6 +173,7 @@ uint64_t nas_vt_ioctl(uint64_t cmd,uint64_t arg) {
         if(vt.mode_owner_pid && vt.mode_owner_pid!=task->pid)
             return (uint64_t)-EBUSY;
         vt.kd_mode=(unsigned)arg;
+        nas_fbcon_set_graphics(arg==NAS_KD_GRAPHICS);
         return 0;
     case 0x4b3bU: { /* KDGETMODE */
         int32_t mode=(int32_t)vt.kd_mode;
@@ -252,6 +256,7 @@ uint64_t nas_vt_ioctl(uint64_t cmd,uint64_t arg) {
 void nas_vt_session_leader_exit(uint64_t sid) {
     if(!sid || vt.sid!=sid)return;
     vt.sid=vt.pgid=0;
+    nas_fbcon_activate(false);
     reset_input();
     reset_graphics_ownership();
     default_termios();
@@ -260,19 +265,18 @@ void nas_vt_process_exit(uint64_t pid) {
     if(!pid)return;
     bool graphical=vt.mode_owner_pid==pid;
     bool raw=vt.raw_owner_pid==pid;
-    if(graphical)reset_graphics_ownership();
+    if(graphical) {
+        reset_graphics_ownership();
+        nas_fbcon_set_graphics(false);
+    }
     if(graphical || raw) {
         default_termios();
         reset_input();
     }
 }
 
-/* Explicitly return EOPNOTSUPP for text output: there is not yet a kernel
- * VT glyph renderer. M202 owns real Linux console controls and input for
- * userspace graphics, but must not falsely claim to paint shell text. */
 uint64_t nas_vt_write(const uint8_t *src,uint64_t length) {
-    (void)src;
-    return length?(uint64_t)-EOPNOTSUPP:0;
+    return nas_fbcon_write(src,length);
 }
 
 static uint64_t vt_budget(uint64_t requested,bool nonblock) {
@@ -369,6 +373,10 @@ static void push_byte(uint8_t b) {
 static void emit_bytes(const char *seq) {
     for(;*seq;seq++)push_byte((uint8_t)*seq);
 }
+static void nas_vt_echo(void *context,uint8_t byte) {
+    (void)context;
+    (void)nas_fbcon_write(&byte,1);
+}
 static void feed_input(void) {
     while(vt.count && !vt.pending_signum) {
         uint8_t b=vt.rx[vt.head];
@@ -376,7 +384,8 @@ static void feed_input(void) {
             nas_ldisc_signal_event(&vt.termios,b)==NAS_LDISC_OK)break;
         vt.head=(vt.head+1U)%NAS_VT_QUEUE_CAP;
         vt.count--;
-        enum nas_ldisc_event e=nas_ldisc_feed(&vt.ldisc,&vt.termios,b,0,0);
+        enum nas_ldisc_event e=nas_ldisc_feed(&vt.ldisc,&vt.termios,b,
+                                               nas_vt_echo,0);
         if(e!=NAS_LDISC_OK) {
             if(!(vt.termios.lflag&0000200U))reset_input();
             vt.pending_signum=e==NAS_LDISC_SIGNAL_INT?2U:
