@@ -10,6 +10,13 @@
 /* Only the single upstream-lwIP AF_INET provider exists. The fake provider
  * below tests File publication/ABI, not another TCP/IP implementation. */
 void nas_unix_socket_init(unsigned slot){assert(slot<NAS_OPEN_FILE_LIMIT);}
+/* This fixture imports the real generic open syscall adapter, but exercises
+ * network descriptors only. Opening a VT must remain observable as an
+ * unexpected test path instead of leaving its production hook unresolved. */
+void nas_vt_open_session(uint64_t flags) {
+    (void)flags;
+    assert(!"unexpected virtual-terminal open in socket ABI fixture");
+}
 
 #include "../ports/lwip/socket_port.h"
 /* SIOCGIFCONF now exercises the real generic ioctl dispatcher. Its other
@@ -1042,6 +1049,19 @@ int main(void) {
     assert(sys_netlink_recvmsg(nl_fd,nl_message,0)==40);
     assert(user_ptr(nl_reply)[4]==20 && user_ptr(nl_reply)[16]==2 &&
            user_ptr(nl_reply)[17]==8 && user_ptr(nl_reply)[28]==127);
+    assert(sys_netlink_recvmsg(nl_fd,nl_message,0)==40); /* eth0 */
+    assert(sys_netlink_recvmsg(nl_fd,nl_message,0)==20); /* NLMSG_DONE */
+    assert(user_ptr(nl_reply)[4]==3 && user_ptr(nl_reply)[16]==0 &&
+           user_ptr(nl_reply)[17]==0 && user_ptr(nl_reply)[18]==0 &&
+           user_ptr(nl_reply)[19]==0);
+    /* Original iproute2 uses send(fd,...) with a NULL destination. Prove
+     * the shared Linux syscall adapter passes that legitimate default
+     * kernel endpoint through the real NETLINK_ROUTE File provider. */
+    assert(sys_netlink_sendto(nl_fd,nl_packet,20,0,0,0)==20);
+    assert(sys_netlink_recvmsg(nl_fd,nl_message,0)==40);
+    assert(user_ptr(nl_reply)[4]==20 && user_ptr(nl_reply)[16]==2);
+    assert(sys_netlink_recvmsg(nl_fd,nl_message,0)==40);
+    assert(sys_netlink_recvmsg(nl_fd,nl_message,0)==20);
     nas_fs_close_fd(nl_fd);
     puts("[LWIP SENDMSG BLOCKING PASS] full iovec import, TX park/resume,");
     puts("  immutable vector snapshot, held OpenFile across close/fd reuse");

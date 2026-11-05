@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Preflight the *unaccepted* M141 Alpine ELF discovery pool.
+"""Preflight an *unaccepted* Alpine ELF discovery pool.
 
 This is intentionally a host-only, zero-QEMU check. Passing it never counts
 an ELF as accepted: signed APK origin, actual ELF machine/SHA, guest execution
@@ -8,13 +8,12 @@ and semantic correctness are still checked by the later native-QEMU batch.
 
 from __future__ import annotations
 
+import argparse
 import re
 from pathlib import Path, PurePosixPath
 
 
 ROOT = Path(__file__).resolve().parent.parent
-POOL = ROOT / "scripts/m141-candidate-elfs.tsv"
-PACKAGES = ROOT / "rootfs/alpine/packages-m141-candidates.txt"
 HEADER = "package\telf_path\tfamily\tprobe"
 PACKAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+_-]*")
 TAG = re.compile(r"[a-z][a-z0-9-]*")
@@ -25,18 +24,22 @@ def entries(path: Path) -> list[str]:
             if line.strip() and not line.lstrip().startswith("#")]
 
 
-def main() -> None:
-    packages = set(entries(PACKAGES))
+def main(profile: str = "m141", minimum: int = 50) -> None:
+    if profile not in ("m141", "m205"):
+        raise ValueError(f"unrecognized candidate profile: {profile}")
+    pool = ROOT / f"scripts/{profile}-candidate-elfs.tsv"
+    packages_path = ROOT / f"rootfs/alpine/packages-{profile}-candidates.txt"
+    packages = set(entries(packages_path))
     if not packages or any(not PACKAGE.fullmatch(item) for item in packages):
         raise ValueError("invalid candidate package manifest")
 
     known: set[str] = set()
     for manifest in sorted((ROOT / "scripts").glob("m[0-9]*-original-elfs.txt")):
-        if manifest.name == "m141-original-elfs.txt":
+        if manifest.name == f"{profile}-original-elfs.txt":
             continue
         known.update(entries(manifest))
 
-    lines = POOL.read_text().splitlines()
+    lines = pool.read_text().splitlines()
     if not lines or lines[0] != HEADER:
         raise ValueError(f"expected TSV header {HEADER!r}")
 
@@ -63,14 +66,20 @@ def main() -> None:
         seen.add(raw)
         families.add(family)
 
-    if len(seen) < 50:
-        raise ValueError(f"pool too small: {len(seen)} candidates (need at least 50)")
+    if len(seen) < minimum:
+        raise ValueError(f"pool too small: {len(seen)} candidates (need at least {minimum})")
     if len(families) < 5:
         raise ValueError(f"pool lacks diversity: {len(families)} families (need at least 5)")
-    print(f"[M141 CANDIDATE PREFLIGHT PASS] {len(seen)} unaccepted paths, "
+    label=profile.upper()
+    print(f"[{label} CANDIDATE PREFLIGHT PASS] {len(seen)} unaccepted paths, "
           f"{len(packages)} signed-APK package requests, {len(families)} families")
-    print("[M141 NOT ACCEPTED] native ELF/SHA and QEMU semantic checks pending")
+    print(f"[{label} NOT ACCEPTED] native ELF/SHA and QEMU semantic checks pending")
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--profile", choices=("m141", "m205"), default="m141")
+    parser.add_argument("--minimum", type=int)
+    args = parser.parse_args()
+    main(args.profile, args.minimum if args.minimum is not None else
+         (50 if args.profile == "m141" else 25))

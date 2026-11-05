@@ -169,7 +169,7 @@ int main(void) {
     getaddr(request,10,99);
     assert(nas_netlink_route_sendto(11,request,sizeof(request),addr,12)==20);
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
-                                    NULL,NULL)==16);
+                                    NULL,NULL)==20);
     assert(nas_netlink_route_set_rcvbuf(11,UINT32_MAX)==0);
     assert(nas_netlink_route_get_rcvbuf(11,&rcvbuf)==0 &&
            rcvbuf==real_rx_bytes);
@@ -179,8 +179,9 @@ int main(void) {
     getaddr(request,10,99);
     assert(nas_netlink_route_sendto(11,request,sizeof(request),NULL,0)==20);
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
-                                    NULL,NULL)==16);
-    assert(rd16(reply+4)==3 && rd32(reply+8)==99);
+                                    NULL,NULL)==20);
+    assert(rd32(reply)==20 && rd16(reply+4)==3 &&
+           rd32(reply+8)==99 && rd32(reply+16)==0);
     assert(nas_netlink_route_sendto(11,request,sizeof(request),NULL,12)==
            -EINVAL);
     nl_sockaddr(addr,123,0);
@@ -202,7 +203,7 @@ int main(void) {
     assert(nas_netlink_route_set_sndbuf(11,8192)==0);
     assert(nas_netlink_route_sendto(11,padded,sizeof(padded),addr,12)==3000);
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
-                                    NULL,NULL)==16);
+                                    NULL,NULL)==20);
     assert(nas_netlink_route_getsockname(11,name)==0);
     assert(rd16(name)==16 && rd32(name+4)==4142 && rd32(name+8)==0);
 
@@ -221,12 +222,13 @@ int main(void) {
     uint32_t source_len=0,msg_flags=0;
     memset(reply,0,sizeof(reply));
     assert(nas_netlink_route_recvmsg(11,reply,8,2|32,source,
-                                    &source_len,&msg_flags)==16);
+                                    &source_len,&msg_flags)==20);
     assert(msg_flags==32 && source_len==12 && rd16(source)==16 &&
            rd32(source+4)==0);
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,source,
-                                    &source_len,&msg_flags)==16);
-    assert(msg_flags==0 && rd32(reply)==16 && rd16(reply+4)==3);
+                                    &source_len,&msg_flags)==20);
+    assert(msg_flags==0 && rd32(reply)==20 && rd16(reply+4)==3 &&
+           rd32(reply+16)==0);
     assert(rd32(reply+8)==101 && rd32(reply+12)==4142);
     assert(!(ops->poll_description(11,1)&1));
 
@@ -246,8 +248,8 @@ int main(void) {
                                     NULL,NULL)==52);
     expect_newlink(reply,4142,201,3,1,0x10041,"eth1",1500);
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
-                                    NULL,NULL)==16);
-    assert(rd16(reply+4)==3 && rd32(reply+8)==201);
+                                    NULL,NULL)==20);
+    assert(rd16(reply+4)==3 && rd32(reply+8)==201 && rd32(reply+16)==0);
 
     /* Stock iproute2 can request all address families. AF_UNSPEC reports
      * the real assigned IPv4 addresses; unsupported IPv6 is not invented. */
@@ -260,7 +262,7 @@ int main(void) {
                rd32(reply+20)==i+1U && reply[16]==2);
     }
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
-                                    NULL,NULL)==16);
+                                    NULL,NULL)==20);
 
     getaddr(request,2,102);
     assert(nas_netlink_route_sendto(11,request,20,addr,12)==20);
@@ -281,8 +283,8 @@ int main(void) {
     const uint8_t second[4]={10,0,3,20};
     expect_newaddr(reply,4142,102,3,24,0,second);
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,source,
-                                    &source_len,&msg_flags)==16);
-    assert(rd16(reply+4)==3 && rd32(reply+8)==102);
+                                    &source_len,&msg_flags)==20);
+    assert(rd16(reply+4)==3 && rd32(reply+8)==102 && rd32(reply+16)==0);
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,source,
                                     &source_len,&msg_flags)==-EAGAIN);
 
@@ -299,7 +301,7 @@ int main(void) {
         assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
                                         NULL,NULL)==40);
         assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
-                                        NULL,NULL)==16);
+                                        NULL,NULL)==20);
     }
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
                                     NULL,NULL)==-EAGAIN);
@@ -315,8 +317,8 @@ int main(void) {
                                     NULL,NULL)==40);
     expect_newaddr(reply,4142,106,2,24,0,ethernet);
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
-                                    NULL,NULL)==16);
-    assert(rd16(reply+4)==3 && rd32(reply+8)==106);
+                                    NULL,NULL)==20);
+    assert(rd16(reply+4)==3 && rd32(reply+8)==106 && rd32(reply+16)==0);
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
                                     NULL,NULL)==-EAGAIN);
     /* A lost DHCP address does not delete its physical link identity. */
@@ -331,7 +333,7 @@ int main(void) {
                        i==0?"lo":i==1?"eth0":"eth1",i?1500U:65536U);
     }
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
-                                    NULL,NULL)==16);
+                                    NULL,NULL)==20);
     second_addressed=true;
     /* Full registry capacity: lo + eight independently addressed NICs
      * must fit one all-or-nothing multipart dump, including NLMSG_DONE. */
@@ -348,8 +350,8 @@ int main(void) {
                        i?0U:254U,ip);
     }
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
-                                    NULL,NULL)==16);
-    assert(rd16(reply+4)==3 && rd32(reply+8)==105);
+                                    NULL,NULL)==20);
+    assert(rd16(reply+4)==3 && rd32(reply+8)==105 && rd32(reply+16)==0);
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
                                     NULL,NULL)==-EAGAIN);
     /* Full eight-NIC link dump fits the fixed 10-record ring atomically. */
@@ -367,7 +369,7 @@ int main(void) {
                        i?0x10041U:0x10049U,i?name:"lo",i?1500U:65536U);
     }
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
-                                    NULL,NULL)==16);
+                                    NULL,NULL)==20);
     full_snapshot=false;
     getaddr(request,2,104);
     wr32(request,21);

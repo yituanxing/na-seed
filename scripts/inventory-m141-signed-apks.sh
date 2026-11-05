@@ -1,11 +1,16 @@
 #!/bin/sh
-# Host-only M141 candidate census; this does NOT run or accept guest programs.
-# Usage: sh scripts/inventory-m141-signed-apks.sh amd64|riscv64|arm64
+# Host-only candidate census; this does NOT run or accept guest programs.
+# Usage: sh scripts/inventory-m141-signed-apks.sh amd64|riscv64|arm64 [m141|m205]
 # Download official signed Alpine 3.23 APKs once and classify candidate paths.
 set -eu
 
-[ "$#" -eq 1 ] || exit 2
+[ "$#" -ge 1 ] && [ "$#" -le 2 ] || exit 2
 port=$1
+profile=${2:-m141}
+case "$profile" in
+    m141|m205) ;;
+    *) echo '[CANDIDATE ERROR] unknown pool profile' >&2; exit 2 ;;
+esac
 case "$port" in
     amd64) arch=x86_64; machine='Advanced Micro Devices X86-64' ;;
     riscv64) arch=riscv64; machine='RISC-V' ;;
@@ -13,13 +18,13 @@ case "$port" in
     *) echo '[M141 CANDIDATE ERROR] unknown ISA' >&2; exit 2 ;;
 esac
 
-python3 scripts/check-m141-candidates.py
-command -v docker >/dev/null || { echo '[M141 CANDIDATE ERROR] docker required' >&2; exit 2; }
-command -v readelf >/dev/null || { echo '[M141 CANDIDATE ERROR] readelf required' >&2; exit 2; }
+python3 scripts/check-m141-candidates.py --profile "$profile"
+command -v docker >/dev/null || { echo '[CANDIDATE ERROR] docker required' >&2; exit 2; }
+command -v readelf >/dev/null || { echo '[CANDIDATE ERROR] readelf required' >&2; exit 2; }
 
-manifest=scripts/m141-candidate-elfs.tsv
-packages=rootfs/alpine/packages-m141-candidates.txt
-work="build/external/m141-candidate-inventory/$port"
+manifest="scripts/$profile-candidate-elfs.tsv"
+packages="rootfs/alpine/packages-$profile-candidates.txt"
+work="build/external/$profile-candidate-inventory/$port"
 package_sha=$(sha256sum "$packages" | awk '{print $1}')
 root="$work/packages-$package_sha/rootfs"
 # Unlike the normal overlay, this discovery root starts empty. apk --root
@@ -47,7 +52,7 @@ if [ ! -f "$work/packages-$package_sha/signed-install.ok" ]; then
                 -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
                 add $APK_PACKAGES
         ' > "$work/apk-install.log" 2>&1; then
-        echo "[M141 CANDIDATE APK FAIL] $port" >&2
+        echo "[$profile CANDIDATE APK FAIL] $port" >&2
         tail -100 "$work/apk-install.log" >&2
         exit 1
     fi
@@ -83,7 +88,7 @@ done
 native=$(awk -F '\t' '$3 == "NATIVE_ELF" { n++ } END { print n+0 }' "$report")
 unique=$(awk -F '\t' '$3 == "NATIVE_ELF" { print $4 }' "$report" | sort -u | wc -l)
 total=$(awk 'END {print NR-1}' "$report")
-printf '[M141 CANDIDATE INVENTORY] %s: %s/%s ELF paths, %s unique SHA\n' \
-    "$port" "$native" "$total" "$unique"
-awk -F '\t' 'NR > 1 && $3 != "NATIVE_ELF" { print "[M141 FILTER] " $2 " " $3 }' "$report"
-echo '[M141 NOT ACCEPTED] native QEMU semantics and cross-ISA SHA gates pending'
+printf '[%s CANDIDATE INVENTORY] %s: %s/%s ELF paths, %s unique SHA\n' \
+    "$profile" "$port" "$native" "$total" "$unique"
+awk -F '\t' -v p="$profile" 'NR > 1 && $3 != "NATIVE_ELF" { print "[" p " FILTER] " $2 " " $3 }' "$report"
+printf '[%s NOT ACCEPTED] native QEMU semantics and cross-ISA SHA gates pending\n' "$profile"

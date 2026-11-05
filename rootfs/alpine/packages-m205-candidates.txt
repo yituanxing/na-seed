@@ -1,0 +1,21 @@
+# M205 EXPLORATION ONLY: host-signed staging candidates, not installed guests.
+# No package is accepted until the actual target ELF/SHA and QEMU function pass.
+bind-tools
+llvm21
+iproute2
+iftop
+sshpass
+goawk
+ed
+indent
+rlwrap
+zoxide
+procps-ng
+zip
+unzip
+lzop
+mbuffer
+sysstat
+btop
+atop
+bmon

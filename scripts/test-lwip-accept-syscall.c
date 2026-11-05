@@ -17,7 +17,8 @@
 static uint8_t user_bytes[ACCEPT_USER_BYTES];
 static bool user_writable=true;
 static struct nas_task test_task;
-static struct nas_fd_table test_fds;
+static struct nas_files *test_files;
+#define test_fds (test_files->table)
 struct nas_task *nas_current_task=&test_task;
 
 static bool mapped(uint64_t ptr,uint64_t size) {
@@ -275,8 +276,12 @@ static uint32_t get_socklen(void) {
 int main(void) {
     nas_fd_system_init();
     memset(&test_task,0,sizeof(test_task));
-    memset(&test_fds,0,sizeof(test_fds));
-    test_task.fds=&test_fds;
+    /* FD ownership belongs to a referenced nas_files, not a detached
+     * nas_fd_table. The production lease path checks this identity. */
+    test_files=nas_files_new();
+    assert(test_files);
+    test_task.files=test_files;
+    test_task.fds=&test_files->table;
     nas_open_files[LISTENER_SLOT].refcount=1;
     nas_open_files[LISTENER_SLOT].status_flags=2;
     test_fds.entries[10]=(struct nas_fd_entry){FD_SOCKET,LISTENER_SLOT,0};

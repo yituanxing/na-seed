@@ -258,7 +258,10 @@ static void enqueue_link(struct netlink_socket *s,uint32_t seq,
 }
 static void enqueue_done(struct netlink_socket *s,uint32_t seq) {
     struct netlink_reply *r=enqueue(s);
-    r->length=16;
+    /* Linux multipart NLMSG_DONE carries an int error (zero on success).
+     * Stock iproute2 rtnl_dump_done rejects a header-only record as a
+     * truncated reply. enqueue() zeroes the payload, including error=0. */
+    r->length=20;
     make_nlmsg(r->bytes,r->length,NLMSG_DONE_LINUX,seq,s->port_id);
 }
 

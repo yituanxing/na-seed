@@ -1,0 +1,31 @@
+package	elf_path	family	probe
+# M205 DISCOVERY ONLY: 25 historically unseen command paths, not accepted ELFs.
+# These are candidates, not verified files: official signed Alpine v3.23 APK,
+# all three ISA ELF headers, realpath confinement, distinct SHA256 and native
+# semantic QEMU checks must precede any acceptance count. One symlink/alias
+# or absent architecture removes that entry rather than forging a 25/25.
+bind-tools	usr/bin/named-compilezone	dns	zone-roundtrip
+bind-tools	usr/sbin/tsig-keygen	dns	signed-key-generation
+llvm21	usr/bin/llvm21-symbolizer	toolchain	debug-symbol-resolution
+llvm21	usr/bin/llvm21-windres	toolchain	coff-resource-conversion
+iproute2	sbin/lnstat	network	link-counter-query
+iproute2	sbin/routel	network	route-table-query
+iproute2	sbin/rtstat	network	route-stat-query
+iftop	usr/bin/iftop	network	bounded-loopback-traffic
+sshpass	usr/bin/sshpass	network	controlled-ssh-authentication
+goawk	usr/bin/goawk	text	awk-field-transformation
+ed	usr/bin/ed	text	interactive-file-edit
+indent	usr/bin/indent	text	c-format-roundtrip
+rlwrap	usr/bin/rlwrap	terminal	pty-wrapped-command
+zoxide	usr/bin/zoxide	terminal	path-database-roundtrip
+procps-ng	usr/bin/watch	process	bounded-live-process-observation
+zip	usr/bin/zipcloak	archive	encrypted-zip-roundtrip
+unzip	usr/bin/funzip	archive	zip-stdin-extraction
+unzip	usr/bin/unzipsfx	archive	self-extracting-archive
+lzop	usr/bin/lzop	archive	compression-roundtrip
+mbuffer	usr/bin/mbuffer	io	stream-hash-roundtrip
+sysstat	usr/bin/iostat	process	block-io-snapshot
+sysstat	usr/bin/mpstat	process	cpu-stat-snapshot
+btop	usr/bin/btop	process	terminal-resource-monitor
+atop	usr/bin/atop	process	process-accounting-snapshot
+bmon	usr/bin/bmon	network	bandwidth-monitor-snapshot
