@@ -117,8 +117,57 @@ fixture, owned/reaped nginx/Redis processes, and precise pseudo/VFS/ext4/
 BlockDevice unmount diagnostics. In particular, these changes do not waive
 any clean-unmount requirement or reclassify past failed software as PASS.
 
-Until the native QEMU clean exit gate passes, the saved first and second UART
-records (not a nonexistent `m204-compat-report.json`) are the source of
-per-package observations. The next decision is based on their actual failure
-histogram, not on the number of Linux syscall IDs recognized. No per-package
-kernel name checks or special return values are permitted.
+The saved first and second UART records (rather than a missing JSON report)
+are the source of the #14 per-package observations. The next decision is
+based on their actual failure histogram, not on the number of Linux syscall
+IDs recognized. No per-package kernel name checks or special return values
+are permitted.
+
+### CI #15: verified real three-ISA results, report-path regression
+
+Commit `6136acff` was executed in
+[run 42036971520](https://github.com/yituanxing/na-seed/actions/runs/42036971520).
+All three QEMU jobs completed the new first-boot discovery and the independent
+second-boot execution. Reading the *archived original UART logs* with the
+existing strict `m204-compat-report.py` produced the following exact counts:
+
+| Architecture | Signed APK installs | First-boot functional | Second-boot functional | Second-boot upstream ext4 unmount |
+|---|---:|---:|---:|---|
+| x86-64 | 11/12 | 10/12 | 10/12 | PASS |
+| AArch64 | 12/12 | 11/12 | 11/12 | PASS |
+| RV64 | 12/12 | 11/12 | 11/12 | PASS |
+
+On every ISA, nginx now performs its real local HTTP transaction and exits
+without pinning ext4; procps-ng also runs against a controlled live child.
+All twelve real software tests were attempted in both QEMU invocations, and
+the second guest emitted both `[LWEXT4 GUEST] clean upstream unmount and
+durable flush` and `[PASS] cmdline userspace exit 0`.
+
+However, the CI jobs themselves are **FAIL, not green**: the host report
+accidentally passed the runner's `m197-batch.serial.log` path as the *first*
+UART argument after the second QEMU had overwritten that path. It rejected a
+missing `M204_FIRST_DISCOVERY_COMPLETE` despite the immutable saved
+`m197-live.serial.log` containing that exact marker. Re-running the strict
+reporter on the archived first UART and second clean log succeeded for all
+three ISAs, with 10/12, 11/12 and 11/12 genuine new three-phase software
+PASS, respectively. The subsequent fix points the first argument at the
+immutable saved first UART. This fixes evidence bookkeeping, not any failed
+application or underlying OS interface.
+
+The sole shared remaining functional failure is `iproute2`, which moved from
+the previously repaired `SO_SNDBUF` to a real `SO_RCVBUF: Protocol not
+available` diagnostic. A bounded per-NETLINK-OpenFile `SO_RCVBUF`
+implementation and host tests have been prepared, but are not yet verified
+by a new genuine QEMU. AMD64 Redis has an additional 150-second installation
+timeout: the original `addgroup`, `adduser` and Redis pre-install script all
+returned zero, so attributing the later stalled APK process to the pre-install
+script or inventing a missing syscall would be incorrect.
+
+To reduce the cost of further kernel-only ABI iteration, an optional **manual
+fast replay** path may use a disk checkpoint only after an earlier full cold
+two-boot execution, real original APK installation, a clean second-QEMU
+unmount and host ext4 check. It boots the *current* kernel in another real
+QEMU and creates an entirely new test ledger. Its provenance and validation
+are reported distinctly; **replay is not current-commit fresh HTTPS
+installation/two-boot acceptance**. Branch-push strict cold acceptance
+remains unchanged.

@@ -46,6 +46,32 @@ rescue="$PWD/$work/smoke/rescue/rootfs.cpio"
 busybox="$PWD/$work/smoke/elf/busybox"
 test -s "$baseline" && test -s "$rescue" && test -s "$busybox"
 
+# A prior *verified cold public two-boot run with clean final unmount* can
+# accelerate ABI iteration, but that separate third-boot replay is
+# never current-commit public HTTPS/two-boot acceptance. Default always cold.
+disk="$PWD/$work/m197-software-disposable.img"
+checkpoint="$PWD/$work/m204-first-checkpoint.img"
+checkpoint_meta="$PWD/$work/m204-first-checkpoint.json"
+checkpoint_serial="$PWD/$work/m204-first-checkpoint.serial.log"
+checkpoint_pcap="$PWD/$work/m204-first-checkpoint.pcap"
+checkpoint_reopen="$PWD/$work/m204-first-checkpoint.reopen.serial.log"
+replay=0
+case "${NAS_M204_FAST_REPLAY:-0}" in 0|1) ;; *) echo '[M204 FAIL] invalid replay flag' >&2; exit 2 ;; esac
+case "${NAS_M204_CAPTURE_CHECKPOINT:-0}" in 0|1) ;; *) echo '[M204 FAIL] invalid capture flag' >&2; exit 2 ;; esac
+if [ "${NAS_M204_FAST_REPLAY:-0}" = 1 ]; then
+    [ "$m204" = 1 ] || { echo '[M204 FAIL] replay requires M204 cohort' >&2; exit 2; }
+    if sudo python3 scripts/m204-alpine-checkpoint.py verify "$port" "$root" \
+            "$checkpoint" "$checkpoint_meta" "$checkpoint_serial" "$checkpoint_pcap" \
+            "$checkpoint_reopen"; then
+        replay=1
+        printf 'verified-replay\n' > "$PWD/$work/m204-replay-mode.txt"
+        echo '[M204 VERIFIED CHECKPOINT REPLAY] using prior cold two-boot clean image; this is NOT fresh public-HTTPS acceptance'
+    else
+        echo '[M204 CHECKPOINT MISS] missing/invalid provenance or fsck; falling back to full cold public HTTPS boot'
+    fi
+fi
+
+if [ "$replay" = 0 ]; then
 # An external mirror failure is a clear CI infrastructure failure, never a
 # guest success or a reason to silently substitute the local M195 repository.
 public_index="https://dl-cdn.alpinelinux.org/alpine/v3.23/main/$alpine_arch/APKINDEX.tar.gz"
@@ -85,9 +111,14 @@ sudo test ! -e "$overlay/root/m197-app" || {
 sudo test ! -e "$overlay/root/m197-wan.txt" || {
     echo '[M197 PUBLIC STAGE FAIL] persistence witness was preseeded' >&2; exit 1;
 }
-disk="$PWD/$work/m197-software-disposable.img"
 sudo python3 scripts/m191-alpine-root-disk.py prepare "$port" "$overlay" "$disk"
 sudo chown "$(id -u):$(id -g)" "$disk"
+else
+    # Never mutate the immutable checkpoint: all test writes go to a new
+    # disposable disk, and the current kernel performs a REAL QEMU reboot.
+    cp "$checkpoint" "$disk"
+    sudo chown "$(id -u):$(id -g)" "$disk"
+fi
 
 export NAS_ENABLE_LWEXT4=1 NAS_ENABLE_VIRTIO_BLK=1 NAS_ENABLE_M191_ALPINE_ROOT=1
 export NAS_ENABLE_RAMFS=0 NAS_ENABLE_LITTLEFS=0
@@ -96,8 +127,10 @@ unset NAS_ENABLE_VIRTIO_BLK_ASYNC NAS_QEMU_ASYNC_BLK NAS_QEMU_ASYNC_BLK_IMAGE
 export NAS_VIRTIO_BLK_IMAGE="$disk" NAS_ACCEPTANCE_CPIO="$rescue"
 pcap="$PWD/$work/m197-public-wire.pcap"
 wire_json="$PWD/$work/m197-public-wire.json"
-test ! -e "$pcap" || { echo '[M197 PUBLIC WIRE FAIL] stale PCAP'; exit 1; }
-export NAS_VIRTIO_NET_PCAP="$pcap"
+if [ "$replay" = 0 ]; then
+    test ! -e "$pcap" || { echo '[M197 PUBLIC WIRE FAIL] stale PCAP'; exit 1; }
+    export NAS_VIRTIO_NET_PCAP="$pcap"
+fi
 export BUSYBOX_PARITY_BINARY="$busybox"
 export BUSYBOX_PARITY_CASE=m197-batch BUSYBOX_PARITY_EXPECTED_COUNT=1
 export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv
@@ -133,6 +166,7 @@ if [ "$m199" = 1 ]; then
     export BUSYBOX_PARITY_MANIFEST=scripts/m199-alpine-boot-cases.tsv
 fi
 
+if [ "$replay" = 0 ]; then
 fifo="$PWD/$work/m197-software-serial-input.fifo"
 export NAS_QEMU_SERIAL_FIFO="$fifo"
 serial="$PWD/$logs/m197-batch.serial.log"
@@ -229,6 +263,9 @@ if [ "$m198" = 1 ]; then
     echo "[M198 ALPINE GUI LIVE PASS] $port original Alpine PID1 + public APK "\
         'and old GUI as ordinary process, native VirtIO keyboard/Vim + GPU pixels'
 fi
+else
+    serial="$checkpoint_serial"
+fi
 
 if [ "$m199" = 1 ]; then
     # Retain the first full UART proof before a SECOND original Alpine PID1
@@ -280,7 +317,11 @@ if [ "$m198" = 1 ]; then
     export BUSYBOX_PARITY_MANIFEST=scripts/m198-alpine-reopen-cases.tsv
 else
     if [ "$m204" = 1 ]; then
-        export BUSYBOX_PARITY_MANIFEST=scripts/m204-alpine-reopen-cases.tsv
+        if [ "$replay" = 1 ]; then
+            export BUSYBOX_PARITY_MANIFEST=scripts/m204-alpine-replay-cases.tsv
+        else
+            export BUSYBOX_PARITY_MANIFEST=scripts/m204-alpine-reopen-cases.tsv
+        fi
     else
         export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-reopen-cases.tsv
     fi
@@ -309,17 +350,33 @@ for marker in \
     }
 done
 if [ "$m204" = 1 ]; then
-    grep -Fq 'M204_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
+    if [ "$replay" = 1 ]; then
+        expected_m204_marker=M204_REPLAY_DISCOVERY_COMPLETE
+        report_replay_opt=--replay
+    else
+        expected_m204_marker=M204_REOPEN_DISCOVERY_COMPLETE
+        report_replay_opt=
+    fi
+    grep -Fq "$expected_m204_marker" "$reopen" || {
         echo '[M204 FAIL] second QEMU did not re-evaluate the cohort' >&2
         exit 1
     }
+    # The second native QEMU reuses the m197-batch SERIAL pathname! The
+    # original first-QEMU proof was copied before reboot and must be used by
+    # the report. A replay uses the immutable verified prior-first UART.
+    if [ "$replay" = 1 ]; then
+        first_serial="$checkpoint_serial"
+    else
+        first_serial="$PWD/$work/m197-live.serial.log"
+    fi
     case "${NAS_M204_REQUIRE_ALL:-0}" in
         0) python3 scripts/m204-compat-report.py \
-               scripts/m204-alpine-cohort.tsv "$serial" "$reopen" \
-               "$PWD/$work/m204-compat-report.json" ;;
+               scripts/m204-alpine-cohort.tsv "$first_serial" "$reopen" \
+               "$PWD/$work/m204-compat-report.json" ${report_replay_opt:+"$report_replay_opt"} ;;
         1) python3 scripts/m204-compat-report.py \
-               scripts/m204-alpine-cohort.tsv "$serial" "$reopen" \
-               "$PWD/$work/m204-compat-report.json" --require-all ;;
+               scripts/m204-alpine-cohort.tsv "$first_serial" "$reopen" \
+               "$PWD/$work/m204-compat-report.json" --require-all \
+               ${report_replay_opt:+"$report_replay_opt"} ;;
         *) echo '[M204 FAIL] invalid strict mode' >&2; exit 2 ;;
     esac
 fi
@@ -333,12 +390,38 @@ if [ "$m198" = 1 ]; then
     sudo python3 scripts/m198-alpine-disk-check.py "$port" "$root" "$disk"
 fi
 sudo python3 scripts/m191-alpine-root-disk.py verify "$port" "$root" "$baseline"
-echo "[M197 ALPINE PUBLIC SOFTWARE PERSISTENCE PASS] $port original "\
-     'Alpine public signed four-package transaction, native Bash/Lua/SQLite/Git, ' \
-     'second real QEMU, exact Git+SQL host disk oracle and ext4 fsck'
-if [ "$m204" = 1 ]; then
-    echo "[M204 ALPINE COMPAT DISCOVERY COMPLETE] $port official Alpine "\
-         'twelve-package results from both QEMU boots and JSON failure inventory'
+if [ "$m204" = 1 ] && [ "$replay" = 0 ] && [ "${NAS_M204_CAPTURE_CHECKPOINT:-0}" = 1 ]; then
+    # ONLY post-SECOND-boot clean ext4 is cached. The first Alpine init UART
+    # supervisor intentionally SIGTERMs QEMU and cannot supply unmount proof.
+    # The previous second guest ran and persisted all twelve test outcomes.
+    capture_log="$PWD/$work/m204-checkpoint-capture.log"
+    if sudo env GITHUB_SHA="${GITHUB_SHA:-}" python3 scripts/m204-alpine-checkpoint.py capture "$port" "$root" \
+        "$disk" "$PWD/$work/m197-live.serial.log" "$pcap" "$reopen" \
+        "$checkpoint" "$checkpoint_meta" "$checkpoint_serial" \
+        "$checkpoint_pcap" "$checkpoint_reopen" > "$capture_log" 2>&1; then
+        tail -10 "$capture_log"
+        if grep -Fq '[M204 CHECKPOINT CAPTURED]' "$capture_log"; then
+            : > "$PWD/$work/m204-checkpoint.fresh"
+        fi
+    else
+        # Optional replay cache must never make the original signed HTTPS
+        # acceptance fail. A bad cache simply cannot be saved or reused.
+        echo '[M204 CHECKPOINT NOT SAVED] optional provenance/fsck oracle rejected snapshot'
+        tail -80 "$capture_log" >&2
+    fi
+fi
+if [ "$replay" = 1 ]; then
+    echo "[M204 VERIFIED CHECKPOINT REPLAY COMPLETE] $port current kernel, "\
+         'one genuine independent QEMU reopen, twelve previously installed ' \
+         'official Alpine applications, Git+SQL and clean ext4; NO current-commit cold public install'
+else
+    echo "[M197 ALPINE PUBLIC SOFTWARE PERSISTENCE PASS] $port original "\
+         'Alpine public signed four-package transaction, native Bash/Lua/SQLite/Git, ' \
+         'second real QEMU, exact Git+SQL host disk oracle and ext4 fsck'
+    if [ "$m204" = 1 ]; then
+        echo "[M204 ALPINE COMPAT DISCOVERY COMPLETE] $port official Alpine "\
+             'twelve-package results from both QEMU boots and JSON failure inventory'
+    fi
 fi
 if [ "$m198" = 1 ]; then
     echo "[M198 ALPINE GUI REBOOT PASS] $port original PID1, publicly signed "\

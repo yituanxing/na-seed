@@ -1,0 +1,3 @@
+# Explicit opt-in third QEMU: original signed APKs from verified post-second-clean checkpoint.
+# --replay MUST make a distinct new ledger; cached old --reopen results never count.
+m197-batch	cpio	sh -c "/sbin/apk info -e bash && /sbin/apk info -e lua5.4 && /sbin/apk info -e sqlite && /sbin/apk info -e git && /bin/bash /root/m197-software-workload.sh --reopen && sh /root/m204-software-workload.sh --replay && cat /root/m197-wan.txt"	M197_PUBLIC_ALPINE_SOFTWARE_2026	-	/bin/busybox

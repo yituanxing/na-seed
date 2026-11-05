@@ -8,6 +8,11 @@ on:
         type: boolean
         required: false
         default: false
+      fast_replay:
+        description: 'M204 ONLY: replay a verified prior clean-second-QEMU disk (not fresh public acceptance)'
+        type: boolean
+        required: false
+        default: false
   push:
     branches: [naseed-app-batch2]
     paths:
@@ -136,17 +141,70 @@ jobs:
           fi
           command -v docker
           command -v sudo
+      - name: Inspect prior verified checkpoint (download only for manual replay)
+        id: m204_restore
+        if: github.event_name == 'push' || inputs.compat_cohort
+        uses: actions/cache/restore@v4
+        with:
+          # Full cold-push acceptance only checks existence: do not spend
+          # bandwidth restoring 256MiB that the strict path never uses.
+          lookup-only: ${{ github.event_name != 'workflow_dispatch' || !inputs.fast_replay }}
+          key: m204-public-v323-clean-reopen-v1-${{ matrix.port }}-${{ hashFiles('scripts/probe-m191-alpine-root.sh', 'scripts/probe-m197-alpine-software-cohort.sh', 'scripts/probe-m204-alpine-compat-cohort.sh', 'scripts/m191-alpine-root-disk.py', 'scripts/m193-alpine-login-overlay.py', 'scripts/m194-alpine-uart.py', 'scripts/m195-alpine-disk-check.py', 'scripts/m196-public-wire-check.py', 'scripts/m197-*', 'scripts/m204-*', 'tests/m197-*', 'tests/m204-*') }}
+          path: |
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-checkpoint.img
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-checkpoint.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-checkpoint.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-checkpoint.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-checkpoint.reopen.serial.log
       - name: Run public Alpine compatibility cohort with independent QEMU reboot
         timeout-minutes: 73
         run: |
           # A branch push is the current compatibility acceptance; avoid a
           # second, manually dispatched full-QEMU run for the same commit.
           # Keep the M197-only lane available on explicit workflow_dispatch.
+          if [ '${{ inputs.fast_replay }}' = 'true' ] && [ '${{ inputs.compat_cohort }}' != 'true' ]; then
+            echo '[M204 FAIL] fast replay requires the M204 compatibility cohort' >&2
+            exit 2
+          fi
           if [ '${{ github.event_name }}' = 'push' ] || [ '${{ inputs.compat_cohort }}' = 'true' ]; then
+          # Every push remains the full original signed HTTPS cold two-boot
+          # gate. Checkpoint capture is an extra verified output only.
+            export NAS_M204_CAPTURE_CHECKPOINT=1
+            if [ '${{ github.event_name }}' = 'workflow_dispatch' ] && \
+               [ '${{ inputs.fast_replay }}' = 'true' ]; then
+              export NAS_M204_FAST_REPLAY=1
+            fi
             sh scripts/probe-m204-alpine-compat-cohort.sh ${{ matrix.port }}
           else
             sh scripts/probe-m197-alpine-software-cohort.sh ${{ matrix.port }}
           fi
+      - name: Locate freshly verified cold second-boot disk for future manual ABI replay
+        if: always()
+        id: m204_checkpoint_ready
+        shell: bash
+        run: |
+          evidence=build/external/m191-alpine-rootfs/${{ matrix.port }}
+          if test -f "$evidence/m204-checkpoint.fresh" && \
+             test -s "$evidence/m204-first-checkpoint.img" && \
+             test -s "$evidence/m204-first-checkpoint.json" && \
+             test -s "$evidence/m204-first-checkpoint.serial.log" && \
+             test -s "$evidence/m204-first-checkpoint.pcap" && \
+             test -s "$evidence/m204-first-checkpoint.reopen.serial.log"; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Save verified second-clean-boot checkpoint (never an unverified or replayed disk)
+        # GitHub cache keys are immutable. A later ABI-only push must not
+        # fail because the prior signed/rootfs-identical disk is already cached.
+        if: always() && steps.m204_checkpoint_ready.outputs.ready == 'true' && steps.m204_restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          key: m204-public-v323-clean-reopen-v1-${{ matrix.port }}-${{ hashFiles('scripts/probe-m191-alpine-root.sh', 'scripts/probe-m197-alpine-software-cohort.sh', 'scripts/probe-m204-alpine-compat-cohort.sh', 'scripts/m191-alpine-root-disk.py', 'scripts/m193-alpine-login-overlay.py', 'scripts/m194-alpine-uart.py', 'scripts/m195-alpine-disk-check.py', 'scripts/m196-public-wire-check.py', 'scripts/m197-*', 'scripts/m204-*', 'tests/m197-*', 'tests/m204-*') }}
+          path: |
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-checkpoint.img
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-checkpoint.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-checkpoint.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-checkpoint.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-checkpoint.reopen.serial.log
       - name: Summarize actual M204 per-package evidence
         if: always()
         run: |
@@ -158,7 +216,15 @@ jobs:
           if path.exists():
               report = json.loads(path.read_text())
               with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
-                  print(f"### M204 {port}: {report['newly_installed_full_pass']}/{report['total']} full PASS", file=summary)
+                  is_replay = (path.parent / 'm204-replay-mode.txt').exists()
+                  print('**Verified prior clean-second-boot checkpoint REPLAY; current kernel QEMU reboot. '
+                        'Not fresh current-commit APK/HTTPS installation proof.**' if is_replay else
+                        '**Full cold public-HTTPS installation and independent two-QEMU-boot evidence.**',
+                        file=summary)
+                  if is_replay:
+                      print(f"### M204 {port}: {report['newly_installed_full_pass']}/{report['total']} verified prior installs + fresh current-kernel replay", file=summary)
+                  else:
+                      print(f"### M204 {port}: {report['newly_installed_full_pass']}/{report['total']} full PASS", file=summary)
                   print(f"Preexisting: {report['preexisting']} | Acceptance: discovery only", file=summary)
                   print('| Package | APK install | Functional | Reboot |', file=summary)
                   print('|---|---|---|---|', file=summary)

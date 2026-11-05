@@ -32,6 +32,7 @@
 #define MSG_DONTWAIT_LINUX 64U
 #define NETLINK_REPLY_QUEUE (NAS_LWIP_GUEST_IF_LIMIT + 1U)
 #define NETLINK_REPLY_SIZE 64U
+#define NETLINK_RCVBUF_CAPACITY (NETLINK_REPLY_QUEUE * NETLINK_REPLY_SIZE)
 /* SO_SNDBUF is an admission quota for the synchronous user->kernel request,
  * not a claim that the kernel has allocated this many queued TX bytes. */
 #define NETLINK_SNDBUF_MIN 2048U
@@ -56,6 +57,7 @@ struct netlink_socket {
     bool owned,bound;
     uint32_t owner_pid,port_id;
     uint32_t send_quota;
+    uint32_t receive_quota;
     uint8_t head,count;
     struct netlink_reply replies[NETLINK_REPLY_QUEUE];
 };
@@ -87,7 +89,8 @@ int nas_netlink_route_open(unsigned slot,uint32_t owner_pid) {
         return -EBADF;
     if(sockets[slot].owned)return -EBUSY;
     sockets[slot]=(struct netlink_socket){.owned=true,.owner_pid=owner_pid,
-        .send_quota=NAS_NETLINK_ROUTE_MAX_DATAGRAM};
+        .send_quota=NAS_NETLINK_ROUTE_MAX_DATAGRAM,
+        .receive_quota=NETLINK_RCVBUF_CAPACITY};
     return 0;
 }
 
@@ -105,6 +108,24 @@ int nas_netlink_route_get_sndbuf(unsigned slot,uint32_t *bytes) {
     if(!s)return -EBADF;
     if(!bytes)return -EINVAL;
     *bytes=s->send_quota;
+    return 0;
+}
+int nas_netlink_route_set_rcvbuf(unsigned slot,uint32_t requested) {
+    struct netlink_socket *s=live(slot);
+    if(!s)return -EBADF;
+    /* Linux's doubled socket quota is capped to memory this provider
+     * ACTUALLY owns. No accepted SO_RCVBUF can reserve phantom records. */
+    uint64_t doubled=(uint64_t)requested*2U;
+    if(doubled<NETLINK_REPLY_SIZE)doubled=NETLINK_REPLY_SIZE;
+    if(doubled>NETLINK_RCVBUF_CAPACITY)doubled=NETLINK_RCVBUF_CAPACITY;
+    s->receive_quota=(uint32_t)doubled;
+    return 0;
+}
+int nas_netlink_route_get_rcvbuf(unsigned slot,uint32_t *bytes) {
+    struct netlink_socket *s=live(slot);
+    if(!s)return -EBADF;
+    if(!bytes)return -EINVAL;
+    *bytes=s->receive_quota;
     return 0;
 }
 
@@ -174,6 +195,12 @@ static struct netlink_reply *enqueue(struct netlink_socket *s) {
     memset(reply,0,sizeof(*reply));
     ++s->count;
     return reply;
+}
+static bool can_enqueue(const struct netlink_socket *s,unsigned records) {
+    /* Every queued datagram owns a complete fixed 64-byte record even when
+     * its wire payload is smaller; account for allocated memory, not text. */
+    return (unsigned)s->count+records<=NETLINK_REPLY_QUEUE &&
+           ((uint64_t)s->count+records)*NETLINK_REPLY_SIZE<=s->receive_quota;
 }
 static void make_nlmsg(uint8_t *out,uint32_t length,uint16_t type,
                        uint32_t seq,uint32_t port) {
@@ -279,7 +306,7 @@ int64_t nas_netlink_route_sendto(unsigned slot,const uint8_t *bytes,
             for(unsigned j=0;j<i;j++)
                 if(links[j].ifindex==iface->ifindex)return -EIO;
         }
-        if(s->count+count+1U>NETLINK_REPLY_QUEUE)return -EAGAIN;
+        if(!can_enqueue(s,count+1U))return -EAGAIN;
         if(!s->bound) {
             rc=allocate_port(s,0);
             if(rc)return rc;
@@ -309,7 +336,7 @@ int64_t nas_netlink_route_sendto(unsigned slot,const uint8_t *bytes,
                interfaces[i].prefix_len!=8)return -EIO;
         } else if(interfaces[i].ifindex==1)return -EIO;
     }
-    if(s->count+count+1U>NETLINK_REPLY_QUEUE)return -EAGAIN;
+    if(!can_enqueue(s,count+1U))return -EAGAIN;
     if(!s->bound) {
         rc=allocate_port(s,0);
         if(rc)return rc;
@@ -362,7 +389,7 @@ static uint16_t poll_description(unsigned slot,uint16_t events) {
     if(!s)return PORT_POLLERR;
     uint16_t ready=0;
     if(s->count)ready|=PORT_POLLIN;
-    if(s->count<NETLINK_REPLY_QUEUE)ready|=PORT_POLLOUT;
+    if(can_enqueue(s,1))ready|=PORT_POLLOUT;
     return (uint16_t)(ready&events);
 }
 static uint16_t poll_fd(uint64_t fd,uint16_t events) {

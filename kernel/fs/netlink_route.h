@@ -22,6 +22,10 @@ int nas_netlink_route_getsockname(unsigned slot,
  * datagrams synchronously, but enforces this quota before accepting one. */
 int nas_netlink_route_set_sndbuf(unsigned slot,uint32_t requested);
 int nas_netlink_route_get_sndbuf(unsigned slot,uint32_t *bytes);
+/* SO_RCVBUF is bounded by the actual statically owned reply-record ring;
+ * reservations use the size of a whole 64-byte record. */
+int nas_netlink_route_set_rcvbuf(unsigned slot,uint32_t requested);
+int nas_netlink_route_get_rcvbuf(unsigned slot,uint32_t *bytes);
 int64_t nas_netlink_route_sendto(unsigned slot,const uint8_t *bytes,
                                 unsigned length,const uint8_t *destination,
                                 unsigned destination_length);

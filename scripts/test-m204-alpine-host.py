@@ -40,6 +40,21 @@ def reopen_uart(override=None):
 healthy = report.build_report(cases, first_uart(), reopen_uart())
 assert healthy["total"] == healthy["newly_installed_full_pass"] == 12
 assert not healthy["failures"] and healthy["preexisting"] == 0
+assert healthy["replay"] is False
+
+replayed = report.build_report(
+    cases, first_uart(),
+    reopen_uart().replace("M204_REOPEN_DISCOVERY_COMPLETE",
+                          "M204_REPLAY_DISCOVERY_COMPLETE"), replay=True)
+assert replayed["replay"] is True
+assert replayed["newly_installed_full_pass"] == 12
+assert replayed["acceptance"] == "verified-prior-disk-replay-not-current-cold-install"
+try:
+    report.build_report(cases, first_uart(), reopen_uart(), replay=True)
+except ValueError:
+    pass
+else:
+    raise AssertionError("replay accepted an old second-boot completion marker")
 
 broken = report.build_report(
     cases,

@@ -8,13 +8,15 @@ manifest=/root/m204-cohort.tsv
 work=/root/m204-work
 first=/root/m204-first-results.tsv
 reopen=/root/m204-reopen-results.tsv
+replayed=/root/m204-replay-results.tsv
 tab=$(printf '\t')
 
 case "${1:-}" in
     --first) phase=first; ledger=$first ;;
     --reopen) phase=reopen; ledger=$reopen ;;
+    --replay) phase=reopen; ledger=$replayed ;;
     --exercise) phase=exercise ;;
-    *) echo '[M204 FAIL] usage: m204-software-workload.sh --first|--reopen|--exercise WORKLOAD' >&2; exit 2 ;;
+    *) echo '[M204 FAIL] usage: m204-software-workload.sh --first|--reopen|--replay|--exercise WORKLOAD' >&2; exit 2 ;;
 esac
 
 record() {
@@ -26,7 +28,7 @@ record() {
 error_tail() {
     # Preserve a bounded per-package symptom on UART; full log stays on ext4.
     package=$1 operation=$2 logfile=$3
-    /bin/busybox tail -n 4 "$logfile" 2>/dev/null |
+    /bin/busybox tail -n 3 "$logfile" 2>/dev/null |
         while IFS= read -r line; do
             # M194's UART supervisor recognizes literal [FAIL] globally;
             # software stderr must never impersonate its boot-failure sentinel.
@@ -179,7 +181,15 @@ if [ "$phase" = first ]; then
     # multi-minute WAN transfer and previously timed out before any sample.
 else
     test -s "$first" || { echo '[M204 FAIL] first ledger not durable' >&2; exit 1; }
-    test ! -e "$reopen" || { echo '[M204 FAIL] preseeded reopen ledger' >&2; exit 1; }
+    if [ "${1:-}" = --replay ]; then
+        # Fast replay is a genuinely NEW third QEMU: the previous second
+        # boot's ledger must exist, and this boot MUST write a new ledger.
+        test -s "$reopen" && test ! -e "$replayed" || {
+            echo '[M204 FAIL] missing old reopen proof or preseeded fresh replay' >&2; exit 1;
+        }
+    else
+        test ! -e "$reopen" || { echo '[M204 FAIL] preseeded reopen ledger' >&2; exit 1; }
+    fi
 fi
 : > "$ledger" || exit 1
 
@@ -195,11 +205,14 @@ while IFS="$tab" read -r category package test_id || [ -n "$category" ]; do
     if [ "$phase" = first ]; then
         if apk info -e "$package" >/dev/null 2>&1; then
             record "$category" "$package" install PREEXISTING
-        elif /bin/busybox timeout 150 apk add "$package" \
+        elif /bin/busybox timeout 150 apk -v add "$package" \
                 > "$work/logs/$package.apk.log" 2>&1; then
             record "$category" "$package" install PASS
         else
+            install_rc=$?
             record "$category" "$package" install FAIL
+            printf 'M204_ERROR\t%s\tinstall\tapk exit=%s (timeout exit=124, budget=150s)\n' \
+                "$package" "$install_rc"
             error_tail "$package" install "$work/logs/$package.apk.log"
             record "$category" "$package" functional BLOCKED
             continue
@@ -231,6 +244,8 @@ test "$(/bin/busybox wc -l < "$ledger")" -ge 12 || exit 1
 sync || exit 1
 if [ "$phase" = first ]; then
     echo M204_FIRST_DISCOVERY_COMPLETE
+elif [ "${1:-}" = --replay ]; then
+    echo M204_REPLAY_DISCOVERY_COMPLETE
 else
     echo M204_REOPEN_DISCOVERY_COMPLETE
 fi

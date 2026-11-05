@@ -823,6 +823,12 @@ static uint64_t sys_netlink_getsockopt(uint64_t fd,uint64_t level,
         if(rc)return (uint64_t)(int64_t)rc;
         break;
     }
+    case 8: { /* SO_RCVBUF: actual bounded NETLINK reply ring quota */
+        int rc=nas_netlink_route_get_rcvbuf(
+            TASK.fds->entries[fd].slot,&answer);
+        if(rc)return (uint64_t)(int64_t)rc;
+        break;
+    }
     case 38:answer=0;break; /* SO_PROTOCOL: NETLINK_ROUTE */
     case 39:answer=16;break;/* SO_DOMAIN: AF_NETLINK */
     default:return (uint64_t)-ENOPROTOOPT;
@@ -842,15 +848,19 @@ static uint64_t sys_netlink_setsockopt(uint64_t fd,uint64_t level,
                                       uint64_t option,uint64_t value,
                                       uint64_t length) {
     if(!netlink_fd(fd))return (uint64_t)-EBADF;
-    if(level!=1 || option!=7)return (uint64_t)-ENOPROTOOPT;
+    if(level!=1 || (option!=7 && option!=8))
+        return (uint64_t)-ENOPROTOOPT;
     if(length<4)return (uint64_t)-EINVAL;
     if(!value)return (uint64_t)-EFAULT;
     int32_t requested;
     if(!nas_user_read_bytes(value,(uint8_t *)&requested,4))
         return (uint64_t)-EFAULT;
     if(requested<0)return (uint64_t)-EINVAL;
-    return (uint64_t)(int64_t)nas_netlink_route_set_sndbuf(
-        TASK.fds->entries[fd].slot,(uint32_t)requested);
+    unsigned slot=TASK.fds->entries[fd].slot;
+    int rc=option==7 ?
+        nas_netlink_route_set_sndbuf(slot,(uint32_t)requested) :
+        nas_netlink_route_set_rcvbuf(slot,(uint32_t)requested);
+    return (uint64_t)(int64_t)rc;
 }
 /* Linux LP64 cmsghdr (16 bytes) + struct in_pktinfo (12 bytes).
  * IP addresses are byte strings in network order, unlike the native

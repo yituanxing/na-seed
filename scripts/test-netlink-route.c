@@ -150,12 +150,32 @@ int main(void) {
     assert(nas_netlink_route_set_sndbuf(11,UINT32_MAX)==0);
     assert(nas_netlink_route_get_sndbuf(11,&sndbuf)==0 && sndbuf==262144);
     assert(nas_netlink_route_set_sndbuf(11,1)==0);
+    uint32_t rcvbuf=0;
+    const uint32_t real_rx_bytes=(NAS_LWIP_GUEST_IF_LIMIT+1U)*64U;
+    assert(nas_netlink_route_get_rcvbuf(11,&rcvbuf)==0 &&
+           rcvbuf==real_rx_bytes);
+    assert(nas_netlink_route_get_rcvbuf(11,NULL)==-EINVAL);
+    assert(nas_netlink_route_set_rcvbuf(11,1)==0);
+    assert(nas_netlink_route_get_rcvbuf(11,&rcvbuf)==0 && rcvbuf==64);
     uint8_t addr[12],name[12],request[20],reply[64],source[12];
     nl_sockaddr(addr,0,0x550); /* dnsmasq v2.91 multicast groups */
     assert(nas_netlink_route_bind(11,addr,12)==-EPERM);
     nl_sockaddr(addr,0,0);
     assert(nas_netlink_route_bind(11,addr,12)==0);
     assert(nas_netlink_route_bind(11,addr,12)==-EINVAL);
+    getaddr(request,2,99);
+    assert(nas_netlink_route_sendto(11,request,sizeof(request),addr,12)==
+           -EAGAIN); /* four records cannot fit one 64B RCVBUF */
+    getaddr(request,10,99);
+    assert(nas_netlink_route_sendto(11,request,sizeof(request),addr,12)==20);
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==16);
+    assert(nas_netlink_route_set_rcvbuf(11,UINT32_MAX)==0);
+    assert(nas_netlink_route_get_rcvbuf(11,&rcvbuf)==0 &&
+           rcvbuf==real_rx_bytes);
+    assert(nas_netlink_route_set_rcvbuf(11,64)==0);
+    assert(nas_netlink_route_get_rcvbuf(11,&rcvbuf)==0 && rcvbuf==128);
+    assert(nas_netlink_route_set_rcvbuf(11,UINT32_MAX)==0);
     /* A smaller SO_SNDBUF quota must actually reject an outbound datagram
      * that otherwise fits the provider's independent 4096-byte hard limit. */
     uint8_t padded[3000]={0};
@@ -350,10 +370,12 @@ int main(void) {
     assert(nas_netlink_route_open(11,9000)==0);
     assert(nas_netlink_route_get_sndbuf(11,&sndbuf)==0 &&
            sndbuf==NAS_NETLINK_ROUTE_MAX_DATAGRAM);
+    assert(nas_netlink_route_get_rcvbuf(11,&rcvbuf)==0 &&
+           rcvbuf==real_rx_bytes);
     assert(nas_netlink_route_bind(11,addr,12)==0);
     assert(nas_netlink_route_getsockname(11,name)==0);
     assert(rd32(name+4)==9000);
     puts("[NETLINK_ROUTE HOST PASS] single-snapshot IDs, address loss, and max eight-NIC RTM_GETADDR/RTM_GETLINK multipart, "
-         "SO_SNDBUF quota, SOCK_RAW port bind, MSG_PEEK/TRUNC, poll/release");
+         "SO_SNDBUF/SO_RCVBUF quotas, SOCK_RAW port bind, MSG_PEEK/TRUNC, poll/release");
     return 0;
 }

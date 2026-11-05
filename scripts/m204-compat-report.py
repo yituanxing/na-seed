@@ -40,11 +40,12 @@ def manifest_cases(path: Path) -> list[tuple[str, str]]:
     return cases
 
 
-def parse_uart(text: str, stage: str) -> dict[tuple[str, str, str], str]:
+def parse_uart(text: str, stage: str, *, replay: bool = False) -> dict[tuple[str, str, str], str]:
     if stage not in ("first", "reopen"):
         raise ValueError("invalid UART stage")
-    marker = ("M204_FIRST_DISCOVERY_COMPLETE" if stage == "first"
-              else "M204_REOPEN_DISCOVERY_COMPLETE")
+    marker = ("M204_FIRST_DISCOVERY_COMPLETE" if stage == "first" else
+              "M204_REPLAY_DISCOVERY_COMPLETE" if replay else
+              "M204_REOPEN_DISCOVERY_COMPLETE")
     if marker not in (line.rstrip("\r") for line in text.splitlines()):
         raise ValueError(f"{stage} QEMU missing real guest completion marker")
     records = {}
@@ -91,9 +92,9 @@ def parse_error_tails(text: str, packages: set[str],
 
 
 def build_report(cases: list[tuple[str, str]], first: str,
-                 reopen: str) -> dict:
+                 reopen: str, *, replay: bool = False) -> dict:
     first_records = parse_uart(first, "first")
-    reopen_records = parse_uart(reopen, "reopen")
+    reopen_records = parse_uart(reopen, "reopen", replay=replay)
     expected_first = {(c, p, op) for c, p in cases
                       for op in ("install", "functional")}
     expected_reopen = {(c, p, "reopen") for c, p in cases}
@@ -134,7 +135,10 @@ def build_report(cases: list[tuple[str, str]], first: str,
     for stage, text in (("first", first), ("reopen", reopen)):
         missed[stage] = dict(sorted(Counter(RAW_MISS.findall(text)).items(),
                                     key=lambda pair: int(pair[0])))
-    return dict(milestone="M204", acceptance="discovery-not-full-compatibility",
+    return dict(milestone="M204", acceptance=(
+                    "verified-prior-disk-replay-not-current-cold-install" if replay else
+                    "discovery-not-full-compatibility"),
+                replay=replay,
                 total=len(software), newly_installed_full_pass=sum(
                     item["newly_installed_full_pass"] for item in software),
                 preexisting=sum(item["install"] == "PREEXISTING" for item in software),
@@ -150,17 +154,26 @@ def main() -> int:
     parser.add_argument("reopen_uart", type=Path)
     parser.add_argument("json_output", type=Path)
     parser.add_argument("--require-all", action="store_true")
+    parser.add_argument("--replay", action="store_true",
+                        help="third QEMU on a verified prior cold-boot disk, not fresh installation")
     args = parser.parse_args()
     try:
         report = build_report(manifest_cases(args.manifest),
                               args.first_uart.read_text(errors="replace"),
-                              args.reopen_uart.read_text(errors="replace"))
+                              args.reopen_uart.read_text(errors="replace"),
+                              replay=args.replay)
     except (OSError, ValueError) as exc:
         parser.error(f"[M204 INVALID EVIDENCE] {exc}")
     args.json_output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
-    print(f"[M204 DISCOVERY REPORT] {report['newly_installed_full_pass']}/"
-          f"{report['total']} genuinely new packages passed install, functional, "
-          f"second QEMU; preexisting={report['preexisting']}")
+    if args.replay:
+        print(f"[M204 VERIFIED REPLAY REPORT] {report['newly_installed_full_pass']}/"
+              f"{report['total']} previously signed-and-installed packages "
+              "passed the current kernel's fresh third QEMU; "
+              "NOT a current-commit fresh public install")
+    else:
+        print(f"[M204 DISCOVERY REPORT] {report['newly_installed_full_pass']}/"
+              f"{report['total']} genuinely new packages passed install, functional, "
+              f"second QEMU; preexisting={report['preexisting']}")
     for item in report["software"]:
         print(f"[M204 PACKAGE] {item['package']} install={item['install']} "
               f"functional={item['functional']} reopen={item['reopen']}")
