@@ -20,7 +20,12 @@ def load_m196():
 M194 = load_m196().M194
 WITNESS = "M197_PUBLIC_ALPINE_SOFTWARE_2026"
 PACKAGES = ("bash", "lua5.4", "sqlite", "git")
-COMMANDS = (
+def build_commands(*, cache_index=False):
+    # The standalone M197 acceptance keeps its original no-cache contract.
+    # M204 retains the exact same signed public APKINDEX on ext4 for the
+    # subsequent twelve real-program installations in this single boot.
+    apk_add = "apk add" if cache_index else "apk --no-cache add"
+    return (
     ("n=0; while ! grep -q '^nameserver 10.0.2.3' "
      "/proc/net/naseed-resolv.conf 2>/dev/null; do "
      "n=$((n+1)); if [ \"$n\" -ge 90 ]; then break; fi; sleep 1; done; "
@@ -41,7 +46,7 @@ COMMANDS = (
      "then echo M197_PACKAGES_PREEXISTING; "
      "else echo M197_PACKAGES_ABSENT; fi\r",
      "M197_PACKAGES_ABSENT", "all four official packages absent before WAN"),
-    ("apk --no-cache add bash lua5.4 sqlite git; "
+    (f"{apk_add} bash lua5.4 sqlite git; "
      "printf 'M197_PUBLIC_APK_RC=%d\\n' \"$?\"\r",
      "M197_PUBLIC_APK_RC=0", "one genuine public TLS signed package transaction"),
     ("apk info -e bash >/dev/null && apk info -e lua5.4 >/dev/null && "
@@ -57,7 +62,10 @@ COMMANDS = (
      "M197_SYNC_RC=0", "sync the real physical ext4 root"),
     ("cat /root/m197-wan.txt\r", WITNESS,
      "witness produced only after four programs committed persistent work"),
-)
+    )
+
+
+COMMANDS = build_commands()
 
 
 def main():

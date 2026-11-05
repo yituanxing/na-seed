@@ -49,15 +49,18 @@ a **new full pass only if all three phases are `PASS`**. Failed or preexisting
 entries are never silently reclassified as passed or skipped.
 
 Discovery mode reports the failures and exits successfully **only when all
-evidence was collected**. Individual APK installs are time-bounded (150s),
-functional runs are time-bounded (45s), and the signed-index refresh is
-time-bounded (120s), so one hung program does not erase later measurements.
+evidence was collected**. Individual APK installs are time-bounded (150s)
+and functional runs are time-bounded (45s). M204 changes only the inherited
+M197 public transaction to regular `apk add`, which retains the official
+signed package index on ext4; its subsequent installations reuse that index.
+The standalone M197 lane still uses `apk --no-cache`. This avoids a redundant
+`apk update`: in the first real M204 CI run (#13), that second index refresh
+timed out on x86-64 and AArch64 *after* all four M197 programs had passed.
 To require all twelve to pass, set
 `NAS_M204_REQUIRE_ALL=1`; then the final host report returns nonzero if any
-package is not a genuine new three-phase PASS. An APK index-refresh failure
-aborts the batch with **unknown root cause** (WAN/DNS/TLS/ABI/disk), not a
-falsely assigned mirror problem or a software success. Use a fixed Alpine
-v3.23 repository and record artifacts per ISA.
+package is not a genuine new three-phase PASS. A package install timeout
+is recorded as a real failure, not a falsely assigned mirror or ABI problem.
+Use a fixed Alpine v3.23 repository and record artifacts per ISA.
 
 ## Safe host and QEMU gates
 

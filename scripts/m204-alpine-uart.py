@@ -18,7 +18,7 @@ def load_m197():
 
 
 M197 = load_m197()
-COMMANDS = M197.COMMANDS + (
+COMMANDS = M197.build_commands(cache_index=True) + (
     ("sh /root/m204-software-workload.sh --first; "
      "printf 'M204_COHORT_SCRIPT_RC=%d\\n' \"$?\"\r",
      "M204_COHORT_SCRIPT_RC=0",

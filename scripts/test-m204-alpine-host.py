@@ -81,5 +81,19 @@ assert "NAS_M198_INTEGRATED_DESKTOP=0" in new_probe
 assert "NAS_M199_ORIGINAL_OPENRC_DESKTOP=0" in new_probe
 assert "--allow-untrusted" not in new_probe
 
+# M197 retains its established no-cache baseline; M204 must reuse the
+# first public transaction's signed index, not run another WAN `apk update`.
+uart_path = ROOT / "scripts/m204-alpine-uart.py"
+uart_spec = importlib.util.spec_from_file_location("m204_cache_contract", uart_path)
+assert uart_spec is not None and uart_spec.loader is not None
+uart = importlib.util.module_from_spec(uart_spec)
+uart_spec.loader.exec_module(uart)
+assert uart.M197.COMMANDS[3][0].startswith("apk --no-cache add ")
+assert uart.COMMANDS[3][0].startswith("apk add bash lua5.4 sqlite git;")
+assert uart.M197.COMMANDS[3][1] == uart.COMMANDS[3][1]
+guest_lines = (ROOT / "tests/m204-software-workload.sh").read_text().splitlines()
+assert "apk update" not in "\n".join(
+    line for line in guest_lines if not line.lstrip().startswith("#"))
+
 print("[M204 HOST CONTRACT PASS] 12 distinct new samples, honest first/reopen "
       "accounting, no desktop, original M197 trust+network+ext4 chain reused")

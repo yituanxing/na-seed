@@ -142,13 +142,9 @@ test -r "$manifest" || { echo '[M204 FAIL] missing signed-root overlay manifest'
 if [ "$phase" = first ]; then
     test ! -e "$first" || { echo '[M204 FAIL] preseeded first ledger' >&2; exit 1; }
     mkdir -p "$work/logs" || exit 1
-    # One official signed index refresh, not twelve --no-cache downloads.
-    # If this fails, the cause (WAN, DNS, TLS, disk, or ABI) is NOT inferred.
-    if ! /bin/busybox timeout 120 apk update > "$work/logs/apk-update.log" 2>&1; then
-        echo '[M204 APK INDEX FAIL] repository or guest cause needs diagnosis' >&2
-        /bin/busybox tail -n 15 "$work/logs/apk-update.log" >&2 || :
-        exit 1
-    fi
+    # M197's first real public `apk add` retained its signed APKINDEX on
+    # this physical ext4 disk. Reuse it: another `apk update` repeated a
+    # multi-minute WAN transfer and previously timed out before any sample.
 else
     test -s "$first" || { echo '[M204 FAIL] first ledger not durable' >&2; exit 1; }
     test ! -e "$reopen" || { echo '[M204 FAIL] preseeded reopen ledger' >&2; exit 1; }
