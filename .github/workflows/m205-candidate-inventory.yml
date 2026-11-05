@@ -4,6 +4,10 @@ on:
     branches: [naseed-app-batch2]
     paths:
       - '.github/workflows/m205-candidate-inventory.yml'
+      - 'scripts/m205-candidate-elfs.tsv'
+      - 'rootfs/alpine/packages-m205-candidates.txt'
+      - 'scripts/check-m141-candidates.py'
+      - 'scripts/inventory-m141-signed-apks.sh'
   workflow_dispatch:
 
 permissions:

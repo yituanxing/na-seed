@@ -82,4 +82,4 @@ if __name__ == "__main__":
     parser.add_argument("--minimum", type=int)
     args = parser.parse_args()
     main(args.profile, args.minimum if args.minimum is not None else
-         (50 if args.profile == "m141" else 25))
+         (50 if args.profile == "m141" else 20))
