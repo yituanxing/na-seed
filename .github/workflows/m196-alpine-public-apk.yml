@@ -2,10 +2,9 @@ name: NaSeed M196 genuine public Alpine DNS HTTPS APK and persistent ext4
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened]
+  push:
+    branches: [naseed-app-batch2]
     paths:
-      - '.github/workflows/m196-alpine-public-apk.yml'
       - 'scripts/m196-*'
       - 'scripts/probe-m196-alpine-public-apk.sh'
       - 'scripts/m194-alpine-uart.py'
@@ -18,7 +17,7 @@ permissions:
   contents: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   public-signed-alpine:

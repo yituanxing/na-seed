@@ -2,10 +2,9 @@ name: NaSeed M191 original Alpine root ext4 and PID1 BusyBox on three ISA
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened]
+  push:
+    branches: [naseed-app-batch2]
     paths:
-      - '.github/workflows/m191-alpine-root.yml'
       - 'kernel/**'
       - 'ports/lwext4/**'
       - 'ports/uboot/**'
@@ -30,7 +29,7 @@ permissions:
   contents: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   host-root-contract:

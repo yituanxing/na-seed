@@ -2,10 +2,9 @@ name: NaSeed M197 public Alpine four-package functional software cohort
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened]
+  push:
+    branches: [naseed-app-batch2]
     paths:
-      - '.github/workflows/m197-alpine-software-cohort.yml'
       - 'scripts/m197-*'
       - 'scripts/probe-m197-alpine-software-cohort.sh'
       - 'tests/m197-*'
@@ -31,7 +30,7 @@ permissions:
   contents: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   real-public-software:

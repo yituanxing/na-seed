@@ -2,10 +2,9 @@ name: NaSeed M194 original Alpine APK OpenRC services and durable root on three 
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened]
+  push:
+    branches: [naseed-app-batch2]
     paths:
-      - '.github/workflows/m194-alpine-services-persistence.yml'
       - 'scripts/m194-*'
       - 'scripts/probe-m194-alpine-services.sh'
       - 'scripts/probe-m193-alpine-login.sh'
@@ -25,7 +24,7 @@ permissions:
   contents: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   alpine-apk-services-durable:

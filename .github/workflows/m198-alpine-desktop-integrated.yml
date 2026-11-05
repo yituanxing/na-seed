@@ -2,10 +2,9 @@ name: NaSeed M198 original Alpine PID1 with real GPU input desktop and ext4
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened]
+  push:
+    branches: [naseed-app-batch2]
     paths:
-      - '.github/workflows/m198-alpine-desktop-integrated.yml'
       - 'scripts/m198-*'
       - 'scripts/stage-m198-alpine-desktop.sh'
       - 'scripts/probe-m197-alpine-software-cohort.sh'
@@ -23,7 +22,7 @@ permissions:
   contents: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   original-alpine-desktop:

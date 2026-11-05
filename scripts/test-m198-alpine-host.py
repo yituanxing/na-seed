@@ -71,6 +71,9 @@ def check():
         'scripts/m199-qmp-alpine-openrc.py').read_text()
     check_vim_screen_oracle()
     driver = Path('scripts/probe-m197-alpine-software-cohort.sh').read_text()
+    # An actual Alpine getty/PTTY writes CRLF to the physical UART; demand
+    # the exact desktop marker line after removing the wire CR byte only.
+    assert "tr -d '\\r' < \"$serial\" | grep -Fxq 'M187_DESKTOP_PASS'" in driver
     assert 'NAS_M198_FIRST_BOOT_SECONDS' in driver
     assert 'NAS_M198_DESKTOP_SECONDS:-300' in driver
     print('[M198 HOST CONTRACT PASS] original Alpine init, M197 public apps, '

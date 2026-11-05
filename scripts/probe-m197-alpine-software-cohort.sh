@@ -190,7 +190,10 @@ if [ "$m198" = 1 ]; then
         grep -Fq 'M199_OPENRC_RESTART_RC=0' "$serial"
     else
         grep -Fq 'M198_GUI_DURABLE_RC=0' "$serial"
-        grep -Fxq 'M187_DESKTOP_PASS' "$serial"
+        # Real Alpine UART is CRLF-terminated. Normalize the serial line
+        # ending before strict whole-line matching: grep -x on raw \r\n
+        # falsely failed after QMP, Vim, wait4 and guest ext4 all passed.
+        tr -d '\r' < "$serial" | grep -Fxq 'M187_DESKTOP_PASS'
     fi
     echo "[M198 ALPINE GUI LIVE PASS] $port original Alpine PID1 + public APK "\
         'and old GUI as ordinary process, native VirtIO keyboard/Vim + GPU pixels'

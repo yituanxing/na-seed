@@ -2,10 +2,9 @@ name: NaSeed M192 original Alpine OpenRC and serial login prompt on three ISA
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened]
+  push:
+    branches: [naseed-app-batch2]
     paths:
-      - '.github/workflows/m192-alpine-init-diagnostic.yml'
       - 'scripts/m192-*'
       - 'scripts/probe-m192-alpine-init.sh'
       - 'kernel/init/**'
@@ -28,7 +27,7 @@ permissions:
   contents: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   init-entry-diagnostic:

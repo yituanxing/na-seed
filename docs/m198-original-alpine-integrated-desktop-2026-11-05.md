@@ -94,3 +94,35 @@ python3 scripts/test-m198-alpine-host.py
 
 The host check is NOT runtime acceptance: only all three real QEMU+raw disk
 jobs on the same commit establish M198 end-to-end success.
+
+## M198 physical Vim screenshot regression (2026-11-05)
+
+The first fully instrumented three-ISA run, Actions `41950120936`, reached
+original `/usr/bin/vim /root/m198-editor.txt` via a **lwext4 ELF** exec and
+captured actual QEMU `screendump` frames on all three ISAs. Every screenshot
+shows Vim's blue full-screen buffer, the left `~` gutter and the bottom
+`m198-editor.txt [New]` status. The old M188 ROI started at `x=309`, excluding
+the gutter (`x=300..308`), while the shell and Vim backgrounds shared their
+blue fill. All three architectures therefore reported the same artificial
+`full=690` versus `required=1000`, even though Vim was visible.
+
+The M198/M199-specific `alpine-ext4` screen profile now requires *separate*
+physical changes in the gutter (at least 250 changed RGB bytes) and bottom
+status line (at least 600), plus two consecutive stable full-window frames.
+The real captured shell-to-Vim pair had 330 and 1041 changes respectively;
+replaying it against the new checker passes. The old M188 CPIO editor uses
+its unchanged strict original ROI and threshold. Synthetic negative tests
+also reject shell echo alone, gutter alone and status alone. This repairs
+the screen oracle only: actual keyboard typing, Vim `:wq`, kernel process
+exit/reap and independent ext4 disk checks remain mandatory for a full PASS.
+
+The next three-ISA run, Actions `41953719311` on `d5d43b8`, reached the
+independent `[M198 PHYSICAL QMP PASS]`, `[M198 ALPINE GUI UART PASS]`, and
+`[M197 ALPINE PUBLIC SOFTWARE LIVE PASS]` markers on the first original
+Alpine boot. The strict shell marker check in the host wrapper still returned
+false because real serial captures terminate `M187_DESKTOP_PASS` with CRLF,
+while `grep -Fxq` compared it to an LF-only literal. Replaying that exact
+archived physical UART against a CRLF-normalized full-line matcher succeeds.
+This second **host oracle** repair leaves the original physical GPU, keyboard,
+process exit/wait4, second-QEMU and ext4 disk checks intact. Only the second
+QEMU + independent disk verification can mark the full M198 acceptance green.

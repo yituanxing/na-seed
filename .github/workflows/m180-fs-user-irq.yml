@@ -2,10 +2,9 @@ name: NaSeed M180 ordinary user syscalls via IRQ-backed ext4 filesystem worker o
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened]
+  push:
+    branches: [naseed-app-batch2]
     paths:
-      - '.github/workflows/m180-fs-user-irq.yml'
       - 'kernel/**'
       - 'ports/lwext4/**'
       - 'ports/uboot/**'
@@ -39,7 +38,7 @@ permissions:
   contents: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   host-contract:

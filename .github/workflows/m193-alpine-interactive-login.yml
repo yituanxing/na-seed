@@ -2,10 +2,9 @@ name: NaSeed M193 original Alpine interactive root login on three ISA
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened]
+  push:
+    branches: [naseed-app-batch2]
     paths:
-      - '.github/workflows/m193-alpine-interactive-login.yml'
       - 'scripts/m193-*'
       - 'scripts/probe-m193-alpine-login.sh'
       - 'scripts/probe-m191-alpine-root.sh'
@@ -23,7 +22,7 @@ permissions:
   contents: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   original-alpine-login:

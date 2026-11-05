@@ -2,10 +2,9 @@ name: NaSeed M195 original Alpine signed APK over real VirtIO-Net and durable ex
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened]
+  push:
+    branches: [naseed-app-batch2]
     paths:
-      - '.github/workflows/m195-alpine-network-apk.yml'
       - 'scripts/m195-*'
       - 'scripts/probe-m195-alpine-network-apk.sh'
       - 'scripts/m194-alpine-uart.py'
@@ -22,7 +21,7 @@ permissions:
   contents: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   alpine-signed-online-apk:
