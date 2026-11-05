@@ -2,28 +2,6 @@ name: NaSeed M191 original Alpine root ext4 and PID1 BusyBox on three ISA
 
 on:
   workflow_dispatch:
-  push:
-    branches: [naseed-app-batch2]
-    paths:
-      - 'kernel/**'
-      - 'ports/lwext4/**'
-      - 'ports/uboot/**'
-      - 'ports/unikraft/**'
-      - 'rootfs/alpine/**'
-      - 'scripts/m191-*'
-      - 'scripts/test-m191-export-alpine-elf.py'
-      - 'scripts/probe-m191-alpine-root.sh'
-      - 'scripts/build-lwext4-guest.sh'
-      - 'scripts/build-riscv64-full.sh'
-      - 'scripts/build-aarch64-full.sh'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'scripts/native-source-qemu.sh'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/run.sh'
-      - 'scripts/full-kernel-core.sources'
-      - 'Makefile'
 
 permissions:
   contents: read

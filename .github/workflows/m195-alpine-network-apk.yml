@@ -2,20 +2,6 @@ name: NaSeed M195 original Alpine signed APK over real VirtIO-Net and durable ex
 
 on:
   workflow_dispatch:
-  push:
-    branches: [naseed-app-batch2]
-    paths:
-      - 'scripts/m195-*'
-      - 'scripts/probe-m195-alpine-network-apk.sh'
-      - 'scripts/m194-alpine-uart.py'
-      - 'scripts/m193-alpine-*'
-      - 'scripts/probe-m191-alpine-root.sh'
-      - 'scripts/m191-*'
-      - 'rootfs/alpine/**'
-      - 'ports/lwip/**'
-      - 'ports/uboot/**'
-      - 'kernel/fs/**'
-      - 'kernel/drivers/virtio/**'
 
 permissions:
   contents: read

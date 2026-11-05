@@ -2,21 +2,6 @@ name: NaSeed M193 original Alpine interactive root login on three ISA
 
 on:
   workflow_dispatch:
-  push:
-    branches: [naseed-app-batch2]
-    paths:
-      - 'scripts/m193-*'
-      - 'scripts/probe-m193-alpine-login.sh'
-      - 'scripts/probe-m191-alpine-root.sh'
-      - 'scripts/m191-*'
-      - 'kernel/init/**'
-      - 'kernel/fs/**'
-      - 'kernel/arch/linux_syscall_abi.h'
-      - 'kernel/syscall/**'
-      - 'kernel/boot_image.c'
-      - 'kernel/drivers/tty*'
-      - 'kernel/task/**'
-      - 'rootfs/alpine/**'
 
 permissions:
   contents: read

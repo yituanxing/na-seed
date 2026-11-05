@@ -2,26 +2,6 @@ name: NaSeed M192 original Alpine OpenRC and serial login prompt on three ISA
 
 on:
   workflow_dispatch:
-  push:
-    branches: [naseed-app-batch2]
-    paths:
-      - 'scripts/m192-*'
-      - 'scripts/probe-m192-alpine-init.sh'
-      - 'kernel/init/**'
-      - 'kernel/fs/**'
-      - 'kernel/arch/linux_syscall_abi.h'
-      - 'kernel/syscall/ops.h'
-      - 'kernel/tmpfs.h'
-      - 'kernel/boot_image.c'
-      - 'kernel/drivers/tty.c'
-      - 'kernel/drivers/tty.h'
-      - 'kernel/task/sched.c'
-      - 'rootfs/alpine/**'
-      - 'scripts/m191-alpine-root-disk.py'
-      - 'scripts/m191-host-smoke.py'
-      - 'scripts/test-m191-export-alpine-elf.py'
-      - 'scripts/test-tmp-namespace.c'
-      - 'scripts/test-m102-tty-cow.c'
 
 permissions:
   contents: read

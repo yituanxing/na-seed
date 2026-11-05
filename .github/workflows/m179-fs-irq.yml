@@ -2,43 +2,6 @@ name: NaSeed M179 real kernel-worker ext4 via IRQ-driven VirtIO block and origin
 
 on:
   workflow_dispatch:
-  push:
-    branches: [naseed-app-batch2]
-    paths:
-      - 'kernel/fs/**'
-      - 'ports/lwext4/**'
-      - 'kernel/block/**'
-      - 'kernel/drivers/core/**'
-      - 'kernel/drivers/virtio/**'
-      - 'kernel/drivers/port/**'
-      - 'kernel/platform/**'
-      - 'kernel/task/**'
-      - 'ports/uboot/**'
-      - 'ports/unikraft/**'
-      - 'ports/lwip/network_boot.c'
-      - 'scripts/*m178*'
-      - 'scripts/*m179*'
-      - 'scripts/*m187*'
-      - 'scripts/*m188*'
-      - 'scripts/*m189*'
-      - 'tests/m189-*.sh'
-      - 'scripts/m174-expected-markers.txt'
-      - 'scripts/m174-software-rootfs-copies.tsv'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'tests/m174-software-run.sh'
-      - 'tests/m187-software-functions.sh'
-      - 'tests/m188-*.sh'
-      - 'rootfs/alpine/**'
-      - 'user/desktop/**'
-      - 'scripts/probe-m174-batch.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'scripts/run.sh'
-      - 'scripts/build-riscv64-full.sh'
-      - 'scripts/build-aarch64-full.sh'
-      - 'scripts/full-kernel-core.sources'
-      - 'Makefile'
 
 permissions:
   contents: read

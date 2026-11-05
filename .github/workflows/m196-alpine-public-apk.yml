@@ -2,16 +2,6 @@ name: NaSeed M196 genuine public Alpine DNS HTTPS APK and persistent ext4
 
 on:
   workflow_dispatch:
-  push:
-    branches: [naseed-app-batch2]
-    paths:
-      - 'scripts/m196-*'
-      - 'scripts/probe-m196-alpine-public-apk.sh'
-      - 'scripts/m194-alpine-uart.py'
-      - 'ports/lwip/socket_port.c'
-      - 'ports/lwip/netconn_bridge.c'
-      - 'ports/lwip/netconn_bridge.h'
-      - 'ports/lwip/include/lwipopts.h'
 
 permissions:
   contents: read

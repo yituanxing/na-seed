@@ -2,23 +2,6 @@ name: NaSeed M194 original Alpine APK OpenRC services and durable root on three 
 
 on:
   workflow_dispatch:
-  push:
-    branches: [naseed-app-batch2]
-    paths:
-      - 'scripts/m194-*'
-      - 'scripts/probe-m194-alpine-services.sh'
-      - 'scripts/probe-m193-alpine-login.sh'
-      - 'scripts/m193-alpine-*'
-      - 'scripts/probe-m191-alpine-root.sh'
-      - 'scripts/m191-*'
-      - 'kernel/init/**'
-      - 'kernel/fs/**'
-      - 'kernel/arch/linux_syscall_abi.h'
-      - 'kernel/syscall/**'
-      - 'kernel/boot_image.c'
-      - 'kernel/drivers/tty*'
-      - 'kernel/task/**'
-      - 'rootfs/alpine/**'
 
 permissions:
   contents: read
