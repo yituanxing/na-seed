@@ -1,0 +1,15 @@
+# Category<TAB>official Alpine package<TAB>functional workload ID.
+# Deliberately excludes M196 tree/jq, M197 bash/lua/sqlite/git and M52 python.
+# Each sample is tracked separately; no successful launch-only substitutions.
+terminal	tmux	tmux
+system	procps-ng	procps
+network	iproute2	iproute2
+service	nginx	nginx
+security	openssh-keygen	openssh-keygen
+service	redis	redis
+development	make	make
+filesystem	coreutils	coreutils
+filesystem	findutils	findutils
+filesystem	rsync	rsync
+development	patch	patch
+security	openssl	openssl

@@ -2,6 +2,12 @@ name: NaSeed M197 public Alpine four-package functional software cohort
 
 on:
   workflow_dispatch:
+    inputs:
+      compat_cohort:
+        description: 'Run M204 discovery instead of the M197-only workload'
+        type: boolean
+        required: false
+        default: false
   push:
     branches: [naseed-app-batch2]
     paths:
@@ -55,6 +61,9 @@ jobs:
             scripts/m197-alpine-uart.py scripts/m197-alpine-disk-check.py \
             scripts/test-m197-alpine-host.py
           python3 scripts/test-m197-alpine-host.py
+          sh -n scripts/probe-m204-alpine-compat-cohort.sh
+          sh -n tests/m204-software-workload.sh
+          python3 scripts/test-m204-alpine-host.py
           python3 scripts/test-m194-uart-prompt.py
           python3 scripts/test-m196-public-wire.py
           python3 scripts/test-m196-alpine-host.py
@@ -125,7 +134,12 @@ jobs:
           command -v sudo
       - name: Public Alpine four-package transaction, integrated native apps and durable reboot
         timeout-minutes: 73
-        run: sh scripts/probe-m197-alpine-software-cohort.sh ${{ matrix.port }}
+        run: |
+          if [ '${{ inputs.compat_cohort }}' = 'true' ]; then
+            sh scripts/probe-m204-alpine-compat-cohort.sh ${{ matrix.port }}
+          else
+            sh scripts/probe-m197-alpine-software-cohort.sh ${{ matrix.port }}
+          fi
       - name: Preserve public DNS TLS, QEMU and application persistence evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -137,6 +151,8 @@ jobs:
             build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-first-runner.log
             build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-reopen-runner.log
             build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-live.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-compat-report.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-runner.log
             build/busybox-source-parity-x86/m197-batch.clean.log
             build/busybox-source-parity-x86/m197-batch.serial.log
             build/port-riscv64/full/matrix-source/m197-batch.clean.log

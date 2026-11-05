@@ -19,6 +19,12 @@ m198=${NAS_M198_INTEGRATED_DESKTOP:-0}
 case "$m198" in 0|1) ;; *) echo '[M198 FAIL] invalid desktop selector' >&2; exit 2 ;; esac
 m199=${NAS_M199_ORIGINAL_OPENRC_DESKTOP:-0}
 case "$m199" in 0|1) ;; *) echo '[M199 FAIL] invalid original OpenRC selector' >&2; exit 2 ;; esac
+m204=${NAS_M204_COMPAT_COHORT:-0}
+case "$m204" in 0|1) ;; *) echo '[M204 FAIL] invalid compatibility selector' >&2; exit 2 ;; esac
+if [ "$m204" = 1 ] && { [ "$m198" = 1 ] || [ "$m199" = 1 ]; }; then
+    echo '[M204 FAIL] compatibility cohort cannot enable a desktop' >&2
+    exit 2
+fi
 if [ "$m199" = 1 ]; then
     # OpenRC runs the exact M198 graphics and original Alpine software; only
     # its lifecycle and *second genuine Alpine PID1 boot* differ.
@@ -62,6 +68,17 @@ fi
 sudo install -m 0644 tests/m197-software-workload.sh \
     "$overlay/root/m197-software-workload.sh"
 sudo test -s "$overlay/root/m197-software-workload.sh"
+if [ "$m204" = 1 ]; then
+    sudo install -m 0644 tests/m204-software-workload.sh \
+        "$overlay/root/m204-software-workload.sh"
+    sudo install -m 0644 scripts/m204-alpine-cohort.tsv \
+        "$overlay/root/m204-cohort.tsv"
+    sudo test -s "$overlay/root/m204-software-workload.sh"
+    sudo test -s "$overlay/root/m204-cohort.tsv"
+    sudo test ! -e "$overlay/root/m204-first-results.tsv" || {
+        echo '[M204 FAIL] cohort results were preseeded' >&2; exit 1;
+    }
+fi
 sudo test ! -e "$overlay/root/m197-app" || {
     echo '[M197 PUBLIC STAGE FAIL] application output was preseeded' >&2; exit 1;
 }
@@ -86,6 +103,9 @@ export BUSYBOX_PARITY_CASE=m197-batch BUSYBOX_PARITY_EXPECTED_COUNT=1
 export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv
 export NAS_ACCEPTANCE_QEMU_RAM=1536M
 export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M197_PUBLIC_QEMU_TIMEOUT:-1020}
+if [ "$m204" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M204_PUBLIC_QEMU_TIMEOUT:-2400}
+fi
 if [ "$m198" = 1 ]; then
     export NAS_QEMU_INPUT_OPTIN=1 NAS_QEMU_VIRTIO_GPU=1 NAS_QEMU_RAMFB=0
     export NAS_ACCEPTANCE_QEMU_RAM=2048M
@@ -165,8 +185,13 @@ if [ "$m198" = 1 ]; then
     grep -Fq '[M198 PHYSICAL QMP PASS]' "$work/m198-qmp-check.log"
     fi
 else
-    python3 scripts/m197-alpine-uart.py "$runner" "$serial" \
-        "$PWD/$work/m197-first-runner.log" "$fifo"
+    if [ "$m204" = 1 ]; then
+        python3 scripts/m204-alpine-uart.py "$runner" "$serial" \
+            "$PWD/$work/m204-first-runner.log" "$fifo"
+    else
+        python3 scripts/m197-alpine-uart.py "$runner" "$serial" \
+            "$PWD/$work/m197-first-runner.log" "$fifo"
+    fi
 fi
 test -s "$serial" && test -s "$pcap"
 cp "$serial" "$PWD/$work/m197-live.serial.log"
@@ -181,6 +206,12 @@ grep -Fq 'M197_APP_WORKLOAD_PASS' "$serial" || {
     echo '[M197 PUBLIC WORKLOAD FAIL] no genuine integrated app result' >&2
     exit 1
 }
+if [ "$m204" = 1 ]; then
+    grep -Fq 'M204_FIRST_DISCOVERY_COMPLETE' "$serial" || {
+        echo '[M204 FAIL] first compatibility inventory did not complete' >&2
+        exit 1
+    }
+fi
 echo "[M197 ALPINE PUBLIC SOFTWARE LIVE PASS] $port official signed "\
      'Bash Lua SQLite Git from public HTTPS, live DHCP resolver, ' \
      'independent PCAP and four real applications on ext4'
@@ -248,9 +279,16 @@ unset NAS_QEMU_SERIAL_FIFO NAS_VIRTIO_NET_PCAP NAS_QEMU_QMP_SOCKET
 if [ "$m198" = 1 ]; then
     export BUSYBOX_PARITY_MANIFEST=scripts/m198-alpine-reopen-cases.tsv
 else
-    export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-reopen-cases.tsv
+    if [ "$m204" = 1 ]; then
+        export BUSYBOX_PARITY_MANIFEST=scripts/m204-alpine-reopen-cases.tsv
+    else
+        export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-reopen-cases.tsv
+    fi
 fi
 export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M197_REOPEN_SECONDS:-240}
+if [ "$m204" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M204_REOPEN_SECONDS:-540}
+fi
 if ! sh "$runner" > "$PWD/$work/m197-reopen-runner.log" 2>&1; then
     echo "[M197 ALPINE REOPEN FAIL] $port second native QEMU" >&2
     tail -120 "$PWD/$work/m197-reopen-runner.log" >&2
@@ -270,6 +308,21 @@ for marker in \
         exit 1
     }
 done
+if [ "$m204" = 1 ]; then
+    grep -Fq 'M204_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
+        echo '[M204 FAIL] second QEMU did not re-evaluate the cohort' >&2
+        exit 1
+    }
+    case "${NAS_M204_REQUIRE_ALL:-0}" in
+        0) python3 scripts/m204-compat-report.py \
+               scripts/m204-alpine-cohort.tsv "$serial" "$reopen" \
+               "$PWD/$work/m204-compat-report.json" ;;
+        1) python3 scripts/m204-compat-report.py \
+               scripts/m204-alpine-cohort.tsv "$serial" "$reopen" \
+               "$PWD/$work/m204-compat-report.json" --require-all ;;
+        *) echo '[M204 FAIL] invalid strict mode' >&2; exit 2 ;;
+    esac
+fi
 if [ "$m198" = 1 ]; then
     grep -Fxq 'M198_GUI_REOPEN_PASS' "$reopen" || {
         echo '[M198 REOPEN FAIL] native editor did not persist' >&2; exit 1;
@@ -283,6 +336,10 @@ sudo python3 scripts/m191-alpine-root-disk.py verify "$port" "$root" "$baseline"
 echo "[M197 ALPINE PUBLIC SOFTWARE PERSISTENCE PASS] $port original "\
      'Alpine public signed four-package transaction, native Bash/Lua/SQLite/Git, ' \
      'second real QEMU, exact Git+SQL host disk oracle and ext4 fsck'
+if [ "$m204" = 1 ]; then
+    echo "[M204 ALPINE COMPAT DISCOVERY COMPLETE] $port official Alpine "\
+         'twelve-package results from both QEMU boots and JSON failure inventory'
+fi
 if [ "$m198" = 1 ]; then
     echo "[M198 ALPINE GUI REBOOT PASS] $port original PID1, publicly signed "\
         'Bash/Lua/SQLite/Git and desktop dependencies, physical QMP/Vim, ' \

@@ -7,7 +7,6 @@ on:
     paths:
       - 'scripts/m198-*'
       - 'scripts/stage-m198-alpine-desktop.sh'
-      - 'scripts/probe-m197-alpine-software-cohort.sh'
       - 'scripts/probe-m191-alpine-root.sh'
       - 'docs/m198-*'
       - 'user/desktop/**'
