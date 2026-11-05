@@ -95,8 +95,18 @@ FIRST_COMMANDS = M197.COMMANDS + (
      "grep -q M187_DESKTOP_INITIAL_VISIBLE /var/log/naseed-desktop.log; "
      "printf 'M199_OPENRC_RESTART_RC=%d\\n' \"$?\"\r",
      'M199_OPENRC_RESTART_RC=0', 'OpenRC restart of real GUI process'),
-    ("rc-service naseed-desktop stop && "
-     "test ! -e /tmp/naseed-desktop.sock; "
+    # Apply the SAME bounded async-reap oracle as the first service stop.
+    # OpenRC can report stop before the desktop has retired every window and
+    # unlinked its socket/pidfile; an immediate socket test is a CI race.
+    ("rc-service naseed-desktop stop; stop_rc=$?; "
+     "n=0; while [ -e /tmp/naseed-desktop.sock ] || "
+     "[ -e /run/naseed-desktop.pid ]; do "
+     "n=$((n+1)); if [ \"$n\" -ge 15 ]; then break; fi; "
+     "sleep 1; done; "
+     "test \"$stop_rc\" -eq 0 && "
+     "test ! -e /tmp/naseed-desktop.sock && "
+     "test ! -e /run/naseed-desktop.pid && "
+     "! rc-service naseed-desktop status >/dev/null 2>&1; "
      "printf 'M199_FINAL_STOP_RC=%d\\n' \"$?\"\r",
      'M199_FINAL_STOP_RC=0', 'clean shutdown before next Alpine boot'),
     # A second-boot log proof must NEVER be satisfied by bytes left over

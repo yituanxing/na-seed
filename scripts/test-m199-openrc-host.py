@@ -91,7 +91,17 @@ def check() -> None:
     assert 'M199_SERVICE_STOP_RC=0' in first_markers
     assert 'M199_OPENRC_RESTART_RC=0' in first_markers
     assert 'M199_STOP_CLEAN_RC=0' in first_markers
+    assert 'M199_FINAL_STOP_RC=0' in first_markers
     assert 'M199_FIRST_DURABLE_RC=0' in first_markers
+    # Final stop must also wait for asynchronous OpenRC child/socket teardown,
+    # not assume that the stop command returning means resources vanished.
+    final_stop = next(entry[0] for entry in first
+                      if entry[1] == 'M199_FINAL_STOP_RC=0')
+    for gate in ('stop_rc=$?', 'n=0; while',
+                 'test ! -e /tmp/naseed-desktop.sock',
+                 'test ! -e /run/naseed-desktop.pid',
+                 '! rc-service naseed-desktop status'):
+        assert gate in final_stop
     assert not re.search(r'(?:/usr/bin/)?naseed-desktop\s+m187', first_commands)
 
     second = uart.REBOOT_COMMANDS
