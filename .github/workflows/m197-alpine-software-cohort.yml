@@ -1,4 +1,4 @@
-name: NaSeed M197 public Alpine four-package functional software cohort
+name: NaSeed M197/M204 original Alpine software compatibility
 
 on:
   workflow_dispatch:
@@ -11,9 +11,13 @@ on:
   push:
     branches: [naseed-app-batch2]
     paths:
+      - '.github/workflows/m197-alpine-software-cohort.yml'
       - 'scripts/m197-*'
       - 'scripts/probe-m197-alpine-software-cohort.sh'
       - 'tests/m197-*'
+      - 'scripts/m204-*'
+      - 'scripts/probe-m204-alpine-compat-cohort.sh'
+      - 'tests/m204-*'
       - 'scripts/m194-alpine-uart.py'
       - 'scripts/m195-alpine-disk-check.py'
       - 'scripts/m196-public-wire-check.py'
@@ -40,7 +44,7 @@ concurrency:
 
 jobs:
   real-public-software:
-    name: M197 official public Bash Lua SQLite Git and two QEMU boots / ${{ matrix.port }}
+    name: Official Alpine APK functional and durable QEMU boot / ${{ matrix.port }}
     runs-on: ubuntu-24.04
     timeout-minutes: 95
     strategy:
@@ -132,14 +136,35 @@ jobs:
           fi
           command -v docker
           command -v sudo
-      - name: Public Alpine four-package transaction, integrated native apps and durable reboot
+      - name: Run public Alpine compatibility cohort with independent QEMU reboot
         timeout-minutes: 73
         run: |
-          if [ '${{ inputs.compat_cohort }}' = 'true' ]; then
+          # A branch push is the current compatibility acceptance; avoid a
+          # second, manually dispatched full-QEMU run for the same commit.
+          # Keep the M197-only lane available on explicit workflow_dispatch.
+          if [ '${{ github.event_name }}' = 'push' ] || [ '${{ inputs.compat_cohort }}' = 'true' ]; then
             sh scripts/probe-m204-alpine-compat-cohort.sh ${{ matrix.port }}
           else
             sh scripts/probe-m197-alpine-software-cohort.sh ${{ matrix.port }}
           fi
+      - name: Summarize actual M204 per-package evidence
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          port = '${{ matrix.port }}'
+          path = Path('build/external/m191-alpine-rootfs') / port / 'm204-compat-report.json'
+          if path.exists():
+              report = json.loads(path.read_text())
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+                  print(f"### M204 {port}: {report['newly_installed_full_pass']}/{report['total']} full PASS", file=summary)
+                  print(f"Preexisting: {report['preexisting']} | Acceptance: discovery only", file=summary)
+                  print('| Package | APK install | Functional | Reboot |', file=summary)
+                  print('|---|---|---|---|', file=summary)
+                  for item in report['software']:
+                      print(f"| {item['package']} | {item['install']} | {item['functional']} | {item['reopen']} |", file=summary)
+          PY
       - name: Preserve public DNS TLS, QEMU and application persistence evidence
         if: always()
         uses: actions/upload-artifact@v4

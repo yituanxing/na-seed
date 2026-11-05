@@ -28,7 +28,10 @@ error_tail() {
     package=$1 operation=$2 logfile=$3
     /bin/busybox tail -n 4 "$logfile" 2>/dev/null |
         while IFS= read -r line; do
+            # M194's UART supervisor recognizes literal [FAIL] globally;
+            # software stderr must never impersonate its boot-failure sentinel.
             detail=$(printf '%s' "$line" | /bin/busybox tr '\t\r' '  ' |
+                /bin/busybox sed 's/\[FAIL\]/[failed]/g' |
                 /bin/busybox cut -c 1-180)
             printf 'M204_ERROR\t%s\t%s\t%s\n' "$package" "$operation" "$detail"
         done
