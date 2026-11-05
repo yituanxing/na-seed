@@ -95,7 +95,8 @@ def run(serial: Path, qmp: Path, outdir: Path, seconds: int) -> None:
         prior['send_key'](sock, reader, 'ret')
         pid, observed = original_ext4_process(
             sock, reader, serial, '/usr/bin/vim', log_start, 90)
-        editor = m188['vim_ready'](sock, reader, outdir, before, 70)
+        editor = m188['vim_ready'](sock, reader, outdir, before, 70,
+                                   profile='alpine-ext4')
         prior['send_key'](sock, reader, 'i')
         m188['keys'](sock, reader, 'm198vimrealinput')
         m188['changed_until'](sock, reader, outdir, 'm198-original-vim-typed',

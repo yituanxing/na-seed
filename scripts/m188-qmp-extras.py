@@ -42,7 +42,7 @@ def changed_until(sock, reader, outdir, name, previous,
                          f'M188 {name} lacked actual changed QEMU pixels')
 
 
-def vim_ready(sock, reader, outdir, before, seconds):
+def vim_ready(sock, reader, outdir, before, seconds, *, profile='m188'):
     """Wait for the ORIGINAL editor's settled full-screen frame.
 
     A post-ELF-exec shell command echo also changes pixels, but is not a
@@ -50,12 +50,32 @@ def vim_ready(sock, reader, outdir, before, seconds):
     lower part of the 53x25 PTY (where Vim draws its status and empty-buffer
     marks), then two consecutive stable QEMU scanouts, just as M187 waits
     for a settled GNU dialog before sending the hardware arrow key.
+
+    M198/M199 run the same ORIGINAL Vim from Alpine ext4, but their shell
+    and Vim use identical blue backgrounds. The only upper-screen change
+    is the `~` gutter at x=300..308, outside M188's legacy x>=309 ROI.
+    Their explicit profile therefore requires *both* the gutter and the
+    separate bottom status line; a mere shell command echo cannot pass.
+    M188's original pixel thresholds remain unchanged.
     """
     def changed_bytes(a, b, left, top, right, bottom):
         return sum(sum(x != y for x, y in zip(
             a[(row * 800 + left) * 3:(row * 800 + right) * 3],
             b[(row * 800 + left) * 3:(row * 800 + right) * 3]))
             for row in range(top, bottom))
+
+    if profile == 'm188':
+        first_rect, first_min, first_label = (309, 199, 615, 410), 1000, 'full'
+        second_rect, second_min, second_label = (309, 350, 615, 410), 220, 'lower'
+        stable_rect = first_rect
+        frame_name = 'vim-visible'
+    elif profile == 'alpine-ext4':
+        first_rect, first_min, first_label = (300, 199, 309, 398), 250, 'tilde'
+        second_rect, second_min, second_label = (300, 399, 630, 415), 600, 'status'
+        stable_rect = (300, 199, 630, 415)
+        frame_name = 'alpine-ext4-vim-visible'
+    else:
+        raise ValueError(f'unknown Vim QMP screen profile: {profile}')
 
     deadline = time.monotonic() + seconds
     baseline = ui['pixels'](before)
@@ -68,20 +88,21 @@ def vim_ready(sock, reader, outdir, before, seconds):
     max_full = max_lower = 0
     min_delta = None
     while time.monotonic() < deadline:
-        shot = frame(sock, reader, outdir, 'vim-visible')
+        shot = frame(sock, reader, outdir, frame_name)
         data = ui['pixels'](shot)
         samples += 1
-        last_full = changed_bytes(baseline, data, 309, 199, 615, 410)
-        last_lower = changed_bytes(baseline, data, 309, 350, 615, 410)
+        last_full = changed_bytes(baseline, data, *first_rect)
+        last_lower = changed_bytes(baseline, data, *second_rect)
         max_full = max(max_full, last_full)
         max_lower = max(max_lower, last_lower)
-        last_delta = (changed_bytes(previous, data, 309, 199, 615, 410)
+        last_delta = (changed_bytes(previous, data, *stable_rect)
                       if previous is not None else None)
         if last_delta is not None:
             min_delta = (last_delta if min_delta is None else
                          min(min_delta, last_delta))
-        # Preserve M188's original strict byte-difference thresholds.
-        if last_full < 1000 or last_lower < 220:
+        # Distinct gutter + statusline evidence for ext4; unchanged M188
+        # strict full-screen thresholds for its existing CPIO regression.
+        if last_full < first_min or last_lower < second_min:
             stable = 0
         else:
             matching_frames += 1
@@ -92,10 +113,12 @@ def vim_ready(sock, reader, outdir, before, seconds):
                     return shot
         previous = data
         time.sleep(.4)
-    print('[M188 VIM FRAME DIAGNOSTIC] '
+    print(f'[M188 VIM FRAME DIAGNOSTIC profile={profile}] '
           f'samples={samples} matching_frames={matching_frames} '
-          f'full_last={last_full} full_max={max_full} full_required=1000 '
-          f'lower_last={last_lower} lower_max={max_lower} lower_required=220 '
+          f'{first_label}_last={last_full} {first_label}_max={max_full} '
+          f'{first_label}_required={first_min} '
+          f'{second_label}_last={last_lower} {second_label}_max={max_lower} '
+          f'{second_label}_required={second_min} '
           f'delta_last={last_delta} delta_min={min_delta} '
           f'stable_last={stable} stable_max={max_stable} stable_required=2 '
           'delta_limit=20', flush=True)

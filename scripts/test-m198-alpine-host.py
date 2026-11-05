@@ -2,6 +2,7 @@
 """Host-only M198 contract checks; never substitutes for QEMU input/video."""
 from pathlib import Path
 import importlib.util
+import runpy
 
 
 def load(name):
@@ -65,11 +66,79 @@ def check():
                   'screenshot', 'vim_ready', 'original_reaped', 'f12',
                   'M198_DESKTOP_INPUTS_RC=0', 'NAS_M198_PRE_GUI_SECONDS'):
         assert token in watcher
+    assert "profile='alpine-ext4'" in watcher
+    assert "profile='alpine-ext4'" in Path(
+        'scripts/m199-qmp-alpine-openrc.py').read_text()
+    check_vim_screen_oracle()
     driver = Path('scripts/probe-m197-alpine-software-cohort.sh').read_text()
     assert 'NAS_M198_FIRST_BOOT_SECONDS' in driver
     assert 'NAS_M198_DESKTOP_SECONDS:-300' in driver
     print('[M198 HOST CONTRACT PASS] original Alpine init, M197 public apps, '
           'existing static GUI, independent QMP editor+ext4 oracle')
+
+
+def check_vim_screen_oracle():
+    """Prove shell echo/status-only never masquerade as ext4 Vim.
+
+    Fully synthetic screenshots only test the host *detector*. Actual three
+    architecture acceptance still requires independent QEMU screendumps,
+    ELF PID, real keyboard edit and persisted ext4 bytes.
+    """
+    library = runpy.run_path('scripts/m188-qmp-extras.py',
+                             run_name='m198_screen_oracle_library')
+    ready = library['vim_ready']
+    env = ready.__globals__
+    baseline = bytes(800 * 600 * 3)
+
+    class Clock:
+        ticks = 0
+
+        def monotonic(self):
+            self.ticks += 1
+            return self.ticks / 100
+
+        def sleep(self, _seconds):
+            pass
+
+    def reject(_sock, _reader, _message):
+        raise RuntimeError('no physical Vim evidence')
+
+    def trial(tilde, status, shell_echo, should_pass):
+        current = bytearray(baseline)
+        if tilde:
+            # 100 changed RGB pixels spanning the left-side Vim `~` gutter.
+            for i in range(100):
+                x, y = 300 + i % 9, 200 + i
+                current[(y * 800 + x) * 3:(y * 800 + x) * 3 + 3] = b'\xff' * 3
+        if status:
+            for i in range(220):
+                x, y = 300 + i, 403
+                current[(y * 800 + x) * 3:(y * 800 + x) * 3 + 3] = b'\xff' * 3
+        if shell_echo:
+            for i in range(220):
+                x, y = 300 + i, 190
+                current[(y * 800 + x) * 3:(y * 800 + x) * 3 + 3] = b'\xff' * 3
+        env['ui'] = {'pixels': lambda frame: baseline if frame == 'before'
+                     else current}
+        env['frame'] = lambda *_args: 'screen'
+        env['time'] = Clock()
+        env['prior'] = {'fail_native': reject}
+        if should_pass:
+            assert ready(None, None, None, 'before', 0.2,
+                         profile='alpine-ext4') == 'screen'
+        else:
+            try:
+                ready(None, None, None, 'before', 0.2,
+                      profile='alpine-ext4')
+            except RuntimeError as exc:
+                assert str(exc) == 'no physical Vim evidence'
+            else:
+                raise AssertionError('false positive QMP Vim evidence')
+
+    trial(True, True, False, True)
+    trial(False, True, False, False)
+    trial(True, False, False, False)
+    trial(False, False, True, False)
 
 
 if __name__ == '__main__':

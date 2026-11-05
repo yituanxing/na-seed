@@ -62,7 +62,14 @@ FIRST_COMMANDS = M197.COMMANDS + (
     ("rc-service naseed-desktop stop; "
      "printf 'M199_SERVICE_STOP_RC=%d\\n' \"$?\"\r",
      'M199_SERVICE_STOP_RC=0', 'OpenRC SIGTERM graceful desktop stop'),
-    ("test ! -e /tmp/naseed-desktop.sock && "
+    # rc-service's SIGTERM can return before the compositor's bounded poll
+    # reaps child windows and unlinks its socket. Wait for actual cleanup,
+    # rather than racing a successful asynchronous OpenRC stop.
+    ("n=0; while [ -e /tmp/naseed-desktop.sock ] || "
+     "[ -e /run/naseed-desktop.pid ]; do "
+     "n=$((n+1)); if [ \"$n\" -ge 15 ]; then break; fi; "
+     "sleep 1; done; "
+     "test ! -e /tmp/naseed-desktop.sock && "
      "test ! -e /run/naseed-desktop.pid && "
      "! rc-service naseed-desktop status >/dev/null 2>&1; "
      "printf 'M199_STOP_CLEAN_RC=%d\\n' \"$?\"\r",
@@ -71,14 +78,33 @@ FIRST_COMMANDS = M197.COMMANDS + (
      "rc-service naseed-desktop status; "
      "printf 'M199_SERVICE_RESTART_FROM_STOP_RC=%d\\n' \"$?\"\r",
      'M199_SERVICE_RESTART_FROM_STOP_RC=0', 'OpenRC restart after full stop'),
-    ("rc-service naseed-desktop restart && "
-     "rc-service naseed-desktop status; "
+    # Old log markers and a still-running old PID must NOT satisfy a restart.
+    # Fresh OpenRC PID plus a fresh graphics-ready marker prove a new session.
+    ("old_pid=\"$(cat /run/naseed-desktop.pid)\" && "
+     ": > /var/log/naseed-desktop.log && "
+     "rc-service naseed-desktop restart && "
+     "rc-service naseed-desktop status && "
+     "new_pid=\"$(cat /run/naseed-desktop.pid)\" && "
+     "test -n \"$old_pid\" && test -n \"$new_pid\" && "
+     "test \"$old_pid\" != \"$new_pid\" && "
+     "kill -0 \"$new_pid\" && "
+     "n=0; while ! grep -q M187_DESKTOP_INITIAL_VISIBLE "
+     "/var/log/naseed-desktop.log 2>/dev/null; do "
+     "n=$((n+1)); if [ \"$n\" -ge 120 ]; then break; fi; "
+     "sleep 1; done; "
+     "grep -q M187_DESKTOP_INITIAL_VISIBLE /var/log/naseed-desktop.log; "
      "printf 'M199_OPENRC_RESTART_RC=%d\\n' \"$?\"\r",
      'M199_OPENRC_RESTART_RC=0', 'OpenRC restart of real GUI process'),
     ("rc-service naseed-desktop stop && "
      "test ! -e /tmp/naseed-desktop.sock; "
      "printf 'M199_FINAL_STOP_RC=%d\\n' \"$?\"\r",
      'M199_FINAL_STOP_RC=0', 'clean shutdown before next Alpine boot'),
+    # A second-boot log proof must NEVER be satisfied by bytes left over
+    # from the first boot. All first-boot log evidence was already printed
+    # to physical UART and copied to the host before this fresh boundary.
+    (": > /var/log/naseed-desktop.log; "
+     "printf 'M199_CLEAR_OLD_GUI_LOG_RC=%d\\n' \"$?\"\r",
+     'M199_CLEAR_OLD_GUI_LOG_RC=0', 'remove stale first-boot GUI log marker'),
     ("test \"$(cat /root/m198-editor.txt)\" = m198vimrealinput && "
      "test -L /etc/runlevels/default/naseed-desktop; "
      "printf 'M199_FIRST_DURABLE_RC=%d\\n' \"$?\"\r",

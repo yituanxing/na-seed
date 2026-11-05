@@ -80,6 +80,9 @@ def check() -> None:
     assert 'rc-service naseed-desktop status' in first_commands
     assert 'rc-service naseed-desktop stop' in first_commands
     assert 'rc-service naseed-desktop restart' in first_commands
+    assert 'test "$old_pid" != "$new_pid"' in first_commands
+    assert ': > /var/log/naseed-desktop.log' in first_commands
+    assert 'while [ -e /tmp/naseed-desktop.sock ]' in first_commands
     assert '/var/log/naseed-desktop.log' in first_commands
     assert '/run/naseed-desktop.pid' in first_commands
     assert '/tmp/naseed-desktop.sock' in first_commands

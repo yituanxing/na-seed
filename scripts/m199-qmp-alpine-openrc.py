@@ -31,8 +31,12 @@ def wait_original_openrc(serial: Path, mode: str, seconds: int) -> float:
     # command receipt alone is not a successful graphical service.
     expected = ('M199_FIRST_OPENRC_GUI_RC=0' if mode == 'first' else
                 'M199_REBOOT_AUTO_STATUS_RC=0')
+    # Public HTTPS APK transactions can occupy most of boot one. The QMP
+    # budget starts only when the native OpenRC GUI is visibly ready, while
+    # this pre-GUI limit follows the owning boot's full native QEMU budget.
+    default_preparation = ('2600' if mode == 'first' else '500')
     preparation = time.monotonic() + int(
-        os.environ.get('NAS_M199_PRE_GUI_SECONDS', '2100'))
+        os.environ.get('NAS_M199_PRE_GUI_SECONDS', default_preparation))
     prior['wait_native_marker'](None, None, serial, expected, preparation)
     deadline = time.monotonic() + seconds
     prior['wait_native_marker'](None, None, serial,
@@ -63,7 +67,8 @@ def first_boot(sock, reader, serial: Path, outdir: Path) -> None:
     prior['send_key'](sock, reader, 'ret')
     pid, observed = old['original_ext4_process'](
         sock, reader, serial, '/usr/bin/vim', log_start, 90)
-    editor = m188['vim_ready'](sock, reader, outdir, before, 70)
+    editor = m188['vim_ready'](sock, reader, outdir, before, 70,
+                               profile='alpine-ext4')
     prior['send_key'](sock, reader, 'i')
     m188['keys'](sock, reader, 'm198vimrealinput')
     m188['changed_until'](sock, reader, outdir, 'm199-original-vim-typed',
