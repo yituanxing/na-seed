@@ -17,6 +17,11 @@ int nas_netlink_route_open(unsigned slot,uint32_t owner_pid);
 int nas_netlink_route_bind(unsigned slot,const uint8_t *address,unsigned length);
 int nas_netlink_route_getsockname(unsigned slot,
                                  uint8_t address[NAS_NETLINK_ROUTE_SOCKADDR_SIZE]);
+/* Per-OpenFile send quota, in Linux SO_SNDBUF units (kernel accounts twice
+ * the userspace request). The NETLINK_ROUTE provider processes outbound
+ * datagrams synchronously, but enforces this quota before accepting one. */
+int nas_netlink_route_set_sndbuf(unsigned slot,uint32_t requested);
+int nas_netlink_route_get_sndbuf(unsigned slot,uint32_t *bytes);
 int64_t nas_netlink_route_sendto(unsigned slot,const uint8_t *bytes,
                                 unsigned length,const uint8_t *destination,
                                 unsigned destination_length);

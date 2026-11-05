@@ -92,8 +92,23 @@ assert uart.M197.COMMANDS[3][0].startswith("apk --no-cache add ")
 assert uart.COMMANDS[3][0].startswith("apk add bash lua5.4 sqlite git;")
 assert uart.M197.COMMANDS[3][1] == uart.COMMANDS[3][1]
 guest_lines = (ROOT / "tests/m204-software-workload.sh").read_text().splitlines()
+guest = "\n".join(guest_lines)
 assert "apk update" not in "\n".join(
     line for line in guest_lines if not line.lstrip().startswith("#"))
+# Each reboot owns its service processes. An inherited/detached nginx or
+# Redis daemon could pin the root mount after PID1 exits and falsify durable
+# ext4 re-open acceptance even when every program returned success.
+assert "pgrep -f init" not in guest
+assert "pgrep -f '^/bin/busybox sleep 20$'" in guest
+assert "master_process off;" in guest
+assert "--daemonize yes" not in guest
+assert "--daemonize no" in guest
+assert 'wait "$server_pid"' in guest
+
+boot = (ROOT / "ports/lwext4/guest_boot.c").read_text()
+vfs = (ROOT / "kernel/fs/vfs.c").read_text()
+assert "[LWEXT4 SHUTDOWN ERROR]" in boot
+assert "[M191 MOUNT BUSY]" in vfs
 
 print("[M204 HOST CONTRACT PASS] 12 distinct new samples, honest first/reopen "
       "accounting, no desktop, original M197 trust+network+ext4 chain reused")

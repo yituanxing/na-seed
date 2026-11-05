@@ -48,14 +48,30 @@ functional() {
             while [ ! -s "$work/tmux.txt" ] && [ "$n" -lt 8 ]; do
                 sleep 1; n=$((n + 1))
             done
+            # The short-lived session may have already made tmux auto-exit;
+            # a missing server is fine, a still-running server is not.
             tmux -L m204 kill-server >/dev/null 2>&1 || :
-            test "$(cat "$work/tmux.txt" 2>/dev/null)" = m204-tmux-ok
+            n=0
+            while tmux -L m204 list-sessions >/dev/null 2>&1 && [ "$n" -lt 8 ]; do
+                sleep 1; n=$((n + 1))
+            done
+            ! tmux -L m204 list-sessions >/dev/null 2>&1 &&
+                test "$(cat "$work/tmux.txt" 2>/dev/null)" = m204-tmux-ok
             ;;
         procps)
             # Do not accidentally invoke the preinstalled BusyBox ps applet.
             owner=$(apk info -W /usr/bin/pgrep 2>/dev/null) || return 1
             case "$owner" in *procps-ng-*) ;; *) return 1 ;; esac
-            /usr/bin/pgrep -f init >/dev/null
+            # Both boots exercise genuine procps-ng against a deliberately
+            # owned child: the second boot's PID1 command is NOT /sbin/init.
+            /bin/busybox sleep 20 &
+            probe_pid=$!
+            matches=$(/usr/bin/pgrep -f '^/bin/busybox sleep 20$' 2>/dev/null)
+            result=$?
+            kill "$probe_pid" 2>/dev/null || :
+            wait "$probe_pid" 2>/dev/null || :
+            test "$result" -eq 0 && printf '%s\n' "$matches" |
+                /bin/busybox grep -Fxq "$probe_pid"
             ;;
         iproute2)
             /sbin/ip -o addr show | /bin/busybox grep -Fq '10.0.2.'
@@ -68,12 +84,20 @@ functional() {
                 'location / { return 200 "m204-nginx-ok"; } } }' \
                 > "$work/nginx.conf" || return 1
             nginx -t -c "$work/nginx.conf" >/dev/null 2>&1 || return 1
-            nginx -c "$work/nginx.conf" >/dev/null 2>&1 || return 1
+            # Foreground single-process server owned by this test shell.
+            # A daemonized worker surviving PID1 pins ext4 and invalidates
+            # the independent reboot/unmount durability proof.
+            nginx -c "$work/nginx.conf" -g 'daemon off; master_process off;' \
+                > "$work/logs/nginx-server.log" 2>&1 &
+            server_pid=$!
             sleep 1
             body=$(/bin/busybox timeout 12 /bin/busybox wget -q -O - \
                 http://127.0.0.1:18081/ 2>/dev/null)
             result=$?
-            nginx -s quit -c "$work/nginx.conf" >/dev/null 2>&1 || :
+            kill -TERM "$server_pid" 2>/dev/null || :
+            sleep 1
+            kill -KILL "$server_pid" 2>/dev/null || :
+            wait "$server_pid" 2>/dev/null || :
             test "$result" -eq 0 && test "$body" = m204-nginx-ok
             ;;
         openssh-keygen)
@@ -83,14 +107,22 @@ functional() {
                 /usr/bin/ssh-keygen -l -f "$work/ed25519.pub" >/dev/null
             ;;
         redis)
-            redis-server --port 16379 --bind 127.0.0.1 --daemonize yes \
+            # Same owned, foreground lifecycle as nginx: no detached daemon
+            # may hold a rootfs reference after the test process exits.
+            redis-server --port 16379 --bind 127.0.0.1 --daemonize no \
                 --save '' --appendonly no --pidfile "$work/redis.pid" \
-                --dir "$work" >/dev/null 2>&1 || return 1
+                --dir "$work" > "$work/logs/redis-server.log" 2>&1 &
+            server_pid=$!
             sleep 1
             answer=$(redis-cli -p 16379 set m204 correct 2>/dev/null)
             result=$?
             value=$(redis-cli -p 16379 get m204 2>/dev/null)
-            redis-cli -p 16379 shutdown nosave >/dev/null 2>&1 || :
+            /bin/busybox timeout 6 redis-cli -p 16379 shutdown nosave \
+                >/dev/null 2>&1 || :
+            kill -TERM "$server_pid" 2>/dev/null || :
+            sleep 1
+            kill -KILL "$server_pid" 2>/dev/null || :
+            wait "$server_pid" 2>/dev/null || :
             test "$result" -eq 0 && test "$answer" = OK && test "$value" = correct
             ;;
         make)

@@ -2214,7 +2214,21 @@ int nas_vfs_unregister_mount(const struct nas_vfs_mount *registration) {
         }
     if(at==mount_slots)return -ENOENT;
     if(mount_slot_at(at)->superblock.permanent || mount_slot_at(at)->open_refs ||
-       mount_slot_at(at)->child_refs)return -EBUSY;
+       mount_slot_at(at)->child_refs) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+        /* The final Alpine PID1 shutdown must never hide a live File/cwd
+         * mount pin behind one generic lwext4 error. These are counted VFS
+         * references, not an inferred error from a guest-side timeout. */
+        extern void nas_print(const char *);
+        extern void nas_dec(uint64_t);
+        nas_print("[M191 MOUNT BUSY] ");nas_print(mount_slot_at(at)->path);
+        nas_print(" open_refs=");nas_dec(mount_slot_at(at)->open_refs);
+        nas_print(" child_refs=");nas_dec(mount_slot_at(at)->child_refs);
+        nas_print(" permanent=");nas_dec(mount_slot_at(at)->superblock.permanent);
+        nas_print("\n");
+#endif
+        return -EBUSY;
+    }
     /* The counted attachment graph already owns child_refs. Every nested
      * child has a pinned parent Path; scanning string prefixes would
      * incorrectly define topology from spelling instead of ownership.

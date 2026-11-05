@@ -2,8 +2,9 @@
  * interface state. This is a socket/OpenFile provider, not a VFS file or a
  * fabricated success path. The syscall adapter alone handles user pointers.
  *
- * Deliberately narrow: RTM_GETADDR(AF_INET/AF_INET6), multipart NEWADDR and
- * DONE, kernel source sockaddr_nl, genuine auto-assigned local port IDs.
+ * Deliberately narrow: RTM_GETADDR(AF_INET/AF_INET6) and RTM_GETLINK
+ * (AF_UNSPEC/AF_INET/AF_INET6), multipart NEWADDR/NEWLINK and DONE, kernel
+ * source sockaddr_nl, genuine auto-assigned local port IDs.
  * Route multicast subscriptions are NOT implemented: a nonzero group bind
  * returns EPERM, which the unmodified dnsmasq v2.91 explicitly handles by
  * retrying with nl_groups=0. No made-up change notifications are sent. */
@@ -16,8 +17,11 @@
 #include "../../ports/lwip/network_boot.h"
 
 #define AF_NETLINK_LINUX 16U
+#define AF_UNSPEC_LINUX 0U
 #define AF_INET_LINUX 2U
 #define AF_INET6_LINUX 10U
+#define RTM_NEWLINK_LINUX 16U
+#define RTM_GETLINK_LINUX 18U
 #define RTM_NEWADDR_LINUX 20U
 #define RTM_GETADDR_LINUX 22U
 #define NLMSG_DONE_LINUX 3U
@@ -28,6 +32,18 @@
 #define MSG_DONTWAIT_LINUX 64U
 #define NETLINK_REPLY_QUEUE (NAS_LWIP_GUEST_IF_LIMIT + 1U)
 #define NETLINK_REPLY_SIZE 64U
+/* SO_SNDBUF is an admission quota for the synchronous user->kernel request,
+ * not a claim that the kernel has allocated this many queued TX bytes. */
+#define NETLINK_SNDBUF_MIN 2048U
+#define NETLINK_SNDBUF_MAX 262144U
+#define ARPHRD_ETHER_LINUX 1U
+#define ARPHRD_LOOPBACK_LINUX 772U
+#define IFF_UP_LINUX 0x0001U
+#define IFF_LOOPBACK_LINUX 0x0008U
+#define IFF_RUNNING_LINUX 0x0040U
+#define IFF_LOWER_UP_LINUX 0x10000U
+#define IFLA_IFNAME_LINUX 3U
+#define IFLA_MTU_LINUX 4U
 #define PORT_POLLIN 1U
 #define PORT_POLLOUT 4U
 #define PORT_POLLERR 8U
@@ -39,6 +55,7 @@ struct netlink_reply {
 struct netlink_socket {
     bool owned,bound;
     uint32_t owner_pid,port_id;
+    uint32_t send_quota;
     uint8_t head,count;
     struct netlink_reply replies[NETLINK_REPLY_QUEUE];
 };
@@ -69,7 +86,25 @@ int nas_netlink_route_open(unsigned slot,uint32_t owner_pid) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
         return -EBADF;
     if(sockets[slot].owned)return -EBUSY;
-    sockets[slot]=(struct netlink_socket){.owned=true,.owner_pid=owner_pid};
+    sockets[slot]=(struct netlink_socket){.owned=true,.owner_pid=owner_pid,
+        .send_quota=NAS_NETLINK_ROUTE_MAX_DATAGRAM};
+    return 0;
+}
+
+int nas_netlink_route_set_sndbuf(unsigned slot,uint32_t requested) {
+    struct netlink_socket *s=live(slot);
+    if(!s)return -EBADF;
+    uint64_t doubled=(uint64_t)requested*2U;
+    if(doubled<NETLINK_SNDBUF_MIN)doubled=NETLINK_SNDBUF_MIN;
+    if(doubled>NETLINK_SNDBUF_MAX)doubled=NETLINK_SNDBUF_MAX;
+    s->send_quota=(uint32_t)doubled;
+    return 0;
+}
+int nas_netlink_route_get_sndbuf(unsigned slot,uint32_t *bytes) {
+    struct netlink_socket *s=live(slot);
+    if(!s)return -EBADF;
+    if(!bytes)return -EINVAL;
+    *bytes=s->send_quota;
     return 0;
 }
 
@@ -166,6 +201,34 @@ static void enqueue_addr(struct netlink_socket *s,uint32_t seq,
         r->bytes[off+7]=(uint8_t)ipv4;
     }
 }
+static void enqueue_link(struct netlink_socket *s,uint32_t seq,
+                         const struct nas_lwip_guest_if *iface) {
+    struct netlink_reply *r=enqueue(s);
+    /* Linux UAPI: nlmsghdr(16) + ifinfomsg(16) + IFLA_IFNAME + IFLA_MTU.
+     * IFNAMSIZ bounds the padded record to 60 bytes inside the 64-byte
+     * reply slot. All attributes come from the one native lwIP snapshot. */
+    const unsigned name_len=(unsigned)strnlen(iface->name,
+                                             NAS_LWIP_DEVICE_NAME_MAX)+1U;
+    const unsigned padded_name=(4U+name_len+3U)&~3U;
+    const unsigned mtu_off=32U+padded_name;
+    r->length=(uint8_t)(mtu_off+8U);
+    make_nlmsg(r->bytes,r->length,RTM_NEWLINK_LINUX,seq,s->port_id);
+    r->bytes[16]=AF_UNSPEC_LINUX;
+    put16(r->bytes+18,iface->loopback ? ARPHRD_LOOPBACK_LINUX :
+                            ARPHRD_ETHER_LINUX);
+    put32(r->bytes+20,iface->ifindex);
+    uint32_t flags=iface->up ? IFF_UP_LINUX:0;
+    if(iface->link_up)flags|=IFF_RUNNING_LINUX|IFF_LOWER_UP_LINUX;
+    if(iface->loopback)flags|=IFF_LOOPBACK_LINUX;
+    put32(r->bytes+24,flags);
+    put32(r->bytes+28,0); /* Snapshot, not a link-state change message. */
+    put16(r->bytes+32,(uint16_t)(4U+name_len));
+    put16(r->bytes+34,IFLA_IFNAME_LINUX);
+    memcpy(r->bytes+36,iface->name,name_len);
+    put16(r->bytes+mtu_off,8);
+    put16(r->bytes+mtu_off+2,IFLA_MTU_LINUX);
+    put32(r->bytes+mtu_off+4,iface->mtu);
+}
 static void enqueue_done(struct netlink_socket *s,uint32_t seq) {
     struct netlink_reply *r=enqueue(s);
     r->length=16;
@@ -177,8 +240,9 @@ int64_t nas_netlink_route_sendto(unsigned slot,const uint8_t *bytes,
                                 unsigned destination_length) {
     struct netlink_socket *s=live(slot);
     if(!s)return -EBADF;
-    if(length>NAS_NETLINK_ROUTE_MAX_DATAGRAM)return -EMSGSIZE;
-    if(!bytes || length<20)return -EINVAL;
+    if(length>NAS_NETLINK_ROUTE_MAX_DATAGRAM || length>s->send_quota)
+        return -EMSGSIZE;
+    if(!bytes || length<17)return -EINVAL;
     if(!destination)return -EDESTADDRREQ;
     uint32_t target=0,groups=0;
     int rc=parse_addr(destination,destination_length,&target,&groups);
@@ -187,15 +251,49 @@ int64_t nas_netlink_route_sendto(unsigned slot,const uint8_t *bytes,
     const uint32_t msg_len=get32(bytes);
     const uint16_t type=get16(bytes+4),flags=get16(bytes+6);
     const uint32_t seq=get32(bytes+8);
-    if(msg_len<20 || msg_len>length)return -EINVAL;
-    if(type!=RTM_GETADDR_LINUX || !(flags&NLM_F_REQUEST_LINUX))
+    if(msg_len<17 || msg_len>length)return -EINVAL;
+    if((type!=RTM_GETADDR_LINUX && type!=RTM_GETLINK_LINUX) ||
+       !(flags&NLM_F_REQUEST_LINUX))
         return -EOPNOTSUPP;
+    if(type==RTM_GETADDR_LINUX && msg_len<20)return -EINVAL;
+    if(type==RTM_GETLINK_LINUX && msg_len<32)return -EINVAL;
     const unsigned family=bytes[16];
-    if(family!=AF_INET_LINUX && family!=AF_INET6_LINUX)
+    if(family!=AF_UNSPEC_LINUX && family!=AF_INET_LINUX &&
+       family!=AF_INET6_LINUX)
         return -EAFNOSUPPORT;
 
+    if(type==RTM_GETLINK_LINUX) {
+        struct nas_lwip_guest_if links[NAS_LWIP_GUEST_IF_LIMIT]={0};
+        const unsigned count=nas_lwip_guest_if_snapshot(links);
+        if(!count || count>NAS_LWIP_GUEST_IF_LIMIT)return -EIO;
+        for(unsigned i=0;i<count;i++) {
+            const struct nas_lwip_guest_if *iface=&links[i];
+            const unsigned n=(unsigned)strnlen(iface->name,
+                                                NAS_LWIP_DEVICE_NAME_MAX);
+            if(!iface->ifindex || !n || n==NAS_LWIP_DEVICE_NAME_MAX ||
+               !iface->mtu)return -EIO;
+            if(i==0) {
+                if(strcmp(iface->name,"lo") || iface->ifindex!=1 ||
+                   !iface->loopback)return -EIO;
+            } else if(iface->loopback || iface->ifindex==1)return -EIO;
+            for(unsigned j=0;j<i;j++)
+                if(links[j].ifindex==iface->ifindex)return -EIO;
+        }
+        if(s->count+count+1U>NETLINK_REPLY_QUEUE)return -EAGAIN;
+        if(!s->bound) {
+            rc=allocate_port(s,0);
+            if(rc)return rc;
+        }
+        for(unsigned i=0;i<count;i++)enqueue_link(s,seq,&links[i]);
+        enqueue_done(s,seq);
+        return length;
+    }
+
     struct nas_lwip_guest_ipv4_if interfaces[NAS_LWIP_GUEST_IF_LIMIT]={0};
-    const unsigned count=family==AF_INET_LINUX ?
+    /* AF_UNSPEC is an IPv4+IPv6 family request. Our native stack currently
+     * publishes only genuine IPv4 leases; report those, never synthesize
+     * absent IPv6 addresses or an empty supposedly successful dump. */
+    const unsigned count=family!=AF_INET6_LINUX ?
         nas_lwip_guest_ipv4_ifconf(interfaces):0;
     if(count>NAS_LWIP_GUEST_IF_LIMIT)return -EIO;
     /* Reject an impossible or unverified core snapshot; never issue a

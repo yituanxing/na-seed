@@ -75,13 +75,50 @@ sh -n tests/m204-software-workload.sh
 ```
 
 The existing `m197-alpine-software-cohort` GitHub workflow has an optional
-manual `compat_cohort=true` input. Its default push path continues to run
-M197, while the manual mode runs this M204 cohort on all three architectures
-with the **same** QEMU setup and upload-artifact owner. Do not relaunch this
+manual `compat_cohort=true` input. The M204 branch's push path now runs the
+M204 cohort on all three architectures; manual `compat_cohort=false` retains
+the M197-only lane with the **same** QEMU setup and upload-artifact owner.
+Do not relaunch this
 entire workflow repeatedly for individual ABI issues: first reduce a failed
 original ELF into a minimal reproduction, compare with Linux on the same ISA,
 fix the shared Task/VFS/MM/Socket/UAPI owner once, and only then rerun cohort.
 
-The next engineering decision is based on the actual `m204-compat-report.json`
-failure histogram, not on the number of Linux syscall IDs recognized. No
-per-package kernel name checks or special return values are permitted.
+### CI #14: observed results before the lifecycle fixes
+
+Actual signed-Alpine/real-QEMU evidence from
+[run 42028904661](https://github.com/yituanxing/na-seed/actions/runs/42028904661)
+on commit `b066fdf`:
+
+| Architecture | APK installations | First-boot functional | Second-boot functional | System clean unmount |
+|---|---:|---:|---:|---|
+| x86-64 | 11/12 | 9/12 | 8/12 | FAIL |
+| AArch64 | 12/12 | 10/12 | 9/12 | FAIL |
+| RV64 | 12/12 | 10/12 | 9/12 | FAIL |
+
+Failures are independent of the M197 Bash/Lua/SQLite/Git baseline, which
+still passed on the first boot. All three architectures reached
+`M204_REOPEN_DISCOVERY_COMPLETE` after their second native QEMU; the kernel
+then emitted `lwext4 final unmount/durable device flush failed`. **This is
+not a full reboot PASS.** The earlier source collapsed pseudo-mount, ext4
+unmount and physical flush errors into one line, so the precise owner remains
+unconfirmed until the new stage/errno and mount-ref diagnostics run.
+
+Observed common software misses: `iproute2` hits unsupported NETLINK
+`SO_SNDBUF`; nginx is terminated; the second QEMU's procps test incorrectly
+assumed a process named `init`, unlike the actual second-boot PID1 command.
+The amd64 Redis installer also timed out; arm64 and RV64 Redis installed and
+passed functional testing. Fix shared Linux ABI and owned service lifecycles,
+not ISA-specific cases or synthetic success markers.
+
+The following coherent follow-up is **host-verified but not yet confirmed by
+fresh three-ISA QEMU**: bounded per-NETLINK socket `SO_SNDBUF`, actual lwIP
+`RTM_GETLINK` plus IPv4/AF_UNSPEC address dumps, a PID1-independent procps
+fixture, owned/reaped nginx/Redis processes, and precise pseudo/VFS/ext4/
+BlockDevice unmount diagnostics. In particular, these changes do not waive
+any clean-unmount requirement or reclassify past failed software as PASS.
+
+Until the native QEMU clean exit gate passes, the saved first and second UART
+records (not a nonexistent `m204-compat-report.json`) are the source of
+per-package observations. The next decision is based on their actual failure
+histogram, not on the number of Linux syscall IDs recognized. No per-package
+kernel name checks or special return values are permitted.

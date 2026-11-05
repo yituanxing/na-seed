@@ -817,6 +817,12 @@ static uint64_t sys_netlink_getsockopt(uint64_t fd,uint64_t level,
     switch(option) {
     case 3:answer=3;break;  /* SO_TYPE: SOCK_RAW */
     case 4:answer=0;break;  /* SO_ERROR: synchronous kernel route endpoint */
+    case 7: { /* SO_SNDBUF: actual per-socket outbound admission quota */
+        int rc=nas_netlink_route_get_sndbuf(
+            TASK.fds->entries[fd].slot,&answer);
+        if(rc)return (uint64_t)(int64_t)rc;
+        break;
+    }
     case 38:answer=0;break; /* SO_PROTOCOL: NETLINK_ROUTE */
     case 39:answer=16;break;/* SO_DOMAIN: AF_NETLINK */
     default:return (uint64_t)-ENOPROTOOPT;
@@ -831,6 +837,20 @@ static uint64_t sys_netlink_getsockopt(uint64_t fd,uint64_t level,
     return nas_user_write_bytes(value,(const uint8_t *)&answer,4) &&
            nas_user_write_bytes(length_ptr,(const uint8_t *)&actual,4) ?
            0:(uint64_t)-EFAULT;
+}
+static uint64_t sys_netlink_setsockopt(uint64_t fd,uint64_t level,
+                                      uint64_t option,uint64_t value,
+                                      uint64_t length) {
+    if(!netlink_fd(fd))return (uint64_t)-EBADF;
+    if(level!=1 || option!=7)return (uint64_t)-ENOPROTOOPT;
+    if(length<4)return (uint64_t)-EINVAL;
+    if(!value)return (uint64_t)-EFAULT;
+    int32_t requested;
+    if(!nas_user_read_bytes(value,(uint8_t *)&requested,4))
+        return (uint64_t)-EFAULT;
+    if(requested<0)return (uint64_t)-EINVAL;
+    return (uint64_t)(int64_t)nas_netlink_route_set_sndbuf(
+        TASK.fds->entries[fd].slot,(uint32_t)requested);
 }
 /* Linux LP64 cmsghdr (16 bytes) + struct in_pktinfo (12 bytes).
  * IP addresses are byte strings in network order, unlike the native
@@ -1298,6 +1318,9 @@ struct nas_fs_result nas_fs_socket_syscall(enum nas_syscall_op op,
         case NAS_SC_getsockopt:
             SOCKET_RESULT(sys_netlink_getsockopt(args[1],args[2],args[3],
                                                   args[4],args[5]));
+        case NAS_SC_setsockopt:
+            SOCKET_RESULT(sys_netlink_setsockopt(args[1],args[2],args[3],
+                                                  args[4],args[5]));
         case NAS_SC_sendto:
             SOCKET_RESULT(sys_netlink_sendto(args[1],args[2],args[3],
                            args[4],args[5],args[6]));
@@ -1306,7 +1329,7 @@ struct nas_fs_result nas_fs_socket_syscall(enum nas_syscall_op op,
         case NAS_SC_getpeername:SOCKET_RESULT((uint64_t)-ENOTCONN);
         case NAS_SC_connect:case NAS_SC_listen:
         case NAS_SC_accept:case NAS_SC_accept4:
-        case NAS_SC_setsockopt:case NAS_SC_sendmsg:
+        case NAS_SC_sendmsg:
         case NAS_SC_recvfrom:case NAS_SC_shutdown:
             SOCKET_RESULT((uint64_t)-EOPNOTSUPP);
         default:break;

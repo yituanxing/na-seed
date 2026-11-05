@@ -61,6 +61,16 @@ static void m191_boot_fail(const char *phase,int code) {
     nas_print("\n");
 }
 #endif
+static bool boot_shutdown_failed(const char *stage,int code) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+    nas_print("[LWEXT4 SHUTDOWN ERROR] ");nas_print(stage);
+    nas_print(" errno=");nas_dec((uint64_t)(code<0?-code:code));
+    nas_print("\n");
+#else
+    (void)stage;(void)code;
+#endif
+    return false;
+}
 static struct nas_lwext4_mount boot_mount;
 
 static bool ext4_module(const struct limine_file *file) {
@@ -247,17 +257,20 @@ bool nas_lwext4_guest_boot_mount(void) {
 bool nas_lwext4_guest_boot_shutdown(void) {
     if (!boot_mount.mounted || boot_mount.mount.read_only) return true;
 #ifdef NAS_ENABLE_M191_ALPINE_ROOT
-    if(nas_vfs_shutdown_external_root_pseudos())return false;
+    int rc=nas_vfs_shutdown_external_root_pseudos();
+    if(rc)return boot_shutdown_failed("pseudo-mount teardown",rc);
 #endif
     /* A read-only image cannot have dirty metadata to commit and some
      * upstream read-only close paths refuse redundant writeback. Only a
      * writable filesystem requires final ext4 superblock commit. */
-    if (nas_lwext4_unmount(&boot_mount)) return false;
+    int unmount_rc=nas_lwext4_unmount(&boot_mount);
+    if(unmount_rc)return boot_shutdown_failed("root ext4 unmount",unmount_rc);
 #ifdef NAS_ENABLE_VIRTIO_BLK
     /* The mounted filesystem has dropped its BlockDevice reference.
      * Only NOW may the partition release its parent physical device. */
     if(boot_partition_attached) {
-        if(nas_partition_detach(&boot_partition))return false;
+        int detach_rc=nas_partition_detach(&boot_partition);
+        if(detach_rc)return boot_shutdown_failed("partition detach",detach_rc);
         boot_partition_attached=false;
     }
 #endif

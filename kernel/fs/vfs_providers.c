@@ -895,7 +895,17 @@ int nas_vfs_shutdown_external_root_pseudos(void) {
     if(!external_pseudos_mounted)return -EINVAL;
     for(unsigned i=sizeof(external_pseudos)/sizeof(external_pseudos[0]);i>0;i--) {
         int rc=nas_vfs_unregister_mount(&external_pseudos[i-1]);
-        if(rc)return rc;
+        if(rc) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+            extern void nas_print(const char *);
+            extern void nas_dec(uint64_t);
+            nas_print("[M191 PSEUDO UNMOUNT ERROR] ");
+            nas_print(external_pseudos[i-1].mountpoint);
+            nas_print(" errno=");nas_dec((uint64_t)(rc<0?-rc:rc));
+            nas_print("\n");
+#endif
+            return rc;
+        }
     }
     external_pseudos_mounted=false;
     return 0;
