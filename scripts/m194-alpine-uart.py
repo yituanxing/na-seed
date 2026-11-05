@@ -253,7 +253,8 @@ def stop_runner(proc: subprocess.Popen[bytes]) -> None:
 def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int,
         *, commands=COMMANDS, stage: str = "M194",
         success_message: str | None = None,
-        failure_watch: Path | None = None) -> None:
+        failure_watch: Path | None = None,
+        before_command_barriers: dict[int, Path] | None = None) -> None:
     if not commands:
         raise ValueError("Alpine UART acceptance needs at least one real guest command")
     fifo.parent.mkdir(parents=True, exist_ok=True)
@@ -362,9 +363,16 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
                             f"original Alpine command {step + 1} ({description}) "
                             f"completed without its required result; guest_rc={observed_rc[-1:]}")
                 elif state == "await_prompt" and shell_prompt_after_step(text[step_end:]):
-                    step_start = len(text)
-                    m193.sent(hold, commands[step][0])
-                    state = "commands"
+                    # A graphical controller may need to finish *independent*
+                    # physical QMP keyboard/display checks before the next
+                    # command stops an OpenRC-managed desktop. The file is
+                    # only a host-side synchronization gate; success is still
+                    # determined from genuine guest UART/QMP evidence.
+                    barrier = (before_command_barriers or {}).get(step)
+                    if barrier is None or barrier.is_file():
+                        step_start = len(text)
+                        m193.sent(hold, commands[step][0])
+                        state = "commands"
 
                 if proc.poll() is not None:
                     raise RuntimeError(f"native QEMU runner exited before proof: {proc.returncode}")

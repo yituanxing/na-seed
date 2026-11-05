@@ -118,6 +118,7 @@ jobs:
             build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-live.serial.log
             build/external/m191-alpine-rootfs/${{ matrix.port }}/m198-qmp-check.log
             build/external/m191-alpine-rootfs/${{ matrix.port }}/m187-m198-*.ppm
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m188-vim-visible.ppm
             build/busybox-source-parity-x86/m197-batch.clean.log
             build/busybox-source-parity-x86/m197-batch.serial.log
             build/port-riscv64/full/matrix-source/m197-batch.clean.log

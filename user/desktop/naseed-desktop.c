@@ -6,6 +6,7 @@
 #include <linux/fb.h>
 #include <linux/input.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,6 +14,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/un.h>
 #include <sys/wait.h>
@@ -65,6 +67,22 @@ static const struct client_spec clients[]={
     [LVGL]={"/usr/bin/naseed-lvgl",75,365},
 };
 static uint8_t screen[SCREEN_W*SCREEN_H*4];
+/* OpenRC stop enters the ordinary compositor cleanup path. The handler
+ * performs no I/O, allocation or resource cleanup of its own. */
+static volatile sig_atomic_t service_stop_requested;
+static void request_service_stop(int signum) {
+    (void)signum;
+    service_stop_requested=1;
+}
+static void install_service_stop_handlers(void) {
+    struct sigaction action={0};
+    action.sa_handler=request_service_stop;
+    nasd_require(sigemptyset(&action.sa_mask)==0,
+                 "desktop service signal mask");
+    nasd_require(sigaction(SIGTERM,&action,NULL)==0 &&
+                 sigaction(SIGINT,&action,NULL)==0,
+                 "OpenRC desktop stop signal handlers");
+}
 
 static int has_bit(const uint8_t *bits,unsigned count,unsigned number) {
     return number/8U<count && !!(bits[number/8U]&(1U<<(number%8U)));
@@ -195,8 +213,30 @@ static int open_listener(void) {
     nasd_require(strlen(path)<sizeof(address.sun_path),
                  "desktop listener path bounded");
     strcpy(address.sun_path,path);
-    nasd_require(bind(fd,(const struct sockaddr *)&address,sizeof(address))==0,
-                 "bind real VFS pathname socket");
+    int bound=bind(fd,(const struct sockaddr *)&address,sizeof(address));
+    if(bound<0 && errno==EADDRINUSE) {
+        /* The persistent Alpine ext4 /tmp can retain a pathname after a
+         * killed desktop. A live listener, foreign-owned entry, symlink or
+         * changing inode must NEVER be unlinked by a new instance. */
+        struct stat old={0},current={0};
+        if(lstat(path,&old)==0 && S_ISSOCK(old.st_mode) &&
+           old.st_uid==geteuid()) {
+            int probe=socket(AF_UNIX,SOCK_STREAM,0);
+            nasd_require(probe>=0,"probe existing desktop listener");
+            int active=connect(probe,(const struct sockaddr *)&address,
+                               sizeof(address));
+            int probe_errno=errno;
+            nasd_require(close(probe)==0,"close desktop listener probe");
+            if(active<0 && probe_errno==ECONNREFUSED &&
+               lstat(path,&current)==0 && S_ISSOCK(current.st_mode) &&
+               current.st_dev==old.st_dev && current.st_ino==old.st_ino) {
+                nasd_require(unlink(path)==0,
+                             "remove confirmed stale desktop socket");
+                bound=bind(fd,(const struct sockaddr *)&address,sizeof(address));
+            }
+        }
+    }
+    nasd_require(bound==0,"bind real VFS pathname socket");
     nasd_require(listen(fd,WINDOW_LIMIT)==0,"listen desktop client socket");
     int flags=fcntl(fd,F_GETFL);
     nasd_require(flags>=0 && fcntl(fd,F_SETFL,flags|O_NONBLOCK)==0,
@@ -722,7 +762,7 @@ static void handle_client_message(struct session *s,unsigned slot,
     }
 }
 static void event_loop(struct session *s) {
-    while(!s->exit_requested) {
+    while(!s->exit_requested && !service_stop_requested) {
         const int dynamic=dynamic_mode(s->mode);
         const unsigned base=dynamic?4U:3U;
         struct pollfd fds[4+WINDOW_LIMIT]={
@@ -747,8 +787,12 @@ static void event_loop(struct session *s) {
                     .fd=s->windows[roles[i]].channel,.events=POLLIN};
             }
         }
-        int count=poll(fds,base+watchers,-1);
+        /* A bounded poll also closes the signal-before-poll race, where
+         * SIGTERM arrives after the while condition but before entering an
+         * infinite poll. Stop always reaches the original child reap path. */
+        int count=poll(fds,base+watchers,250);
         if(count<0 && errno==EINTR)continue;
+        if(count==0)continue;
         nasd_require(count>0,"poll hardware devices and live client IPC");
         for(unsigned i=0;i<base+watchers;i++) {
             if(i>=base && !s->windows[roles[i-base]].active &&
@@ -830,6 +874,10 @@ static void event_loop(struct session *s) {
 }
 static void desktop(int mode) {
     struct session s={0};
+    struct stat owned_socket={0};
+    char socket_path[sizeof(((struct sockaddr_un *)0)->sun_path)]={0};
+    service_stop_requested=0;
+    install_service_stop_handlers();
     const unsigned bootstrap=mode==167?2U:
                              (mode==171 || dynamic_mode(mode) || mode==0?4U:3U);
     s.mode=mode;s.count=dynamic_mode(mode)?WINDOW_LIMIT:bootstrap;
@@ -838,7 +886,16 @@ static void desktop(int mode) {
     s.pointer_client=s.hover_client=-1;s.listener=-1;
     s.input=open_input();
     s.fb=open_fb();
-    if(dynamic_mode(mode))s.listener=open_listener();
+    if(dynamic_mode(mode)) {
+        s.listener=open_listener();
+        const char *path=getenv(NASD_SOCKET_ENV);
+        nasd_require(path && strlen(path)<sizeof(socket_path),
+                     "record owned desktop socket path");
+        strcpy(socket_path,path);
+        nasd_require(lstat(socket_path,&owned_socket)==0 &&
+                     S_ISSOCK(owned_socket.st_mode),
+                     "record owned desktop listener inode");
+    }
     for(unsigned i=0;i<bootstrap;i++) {
         spawn_client(&s,(int)i);
         s.order[s.live_count++]=i;
@@ -862,8 +919,13 @@ static void desktop(int mode) {
         for(unsigned i=0;i<s.count;i++)
             if(s.windows[i].pending)discard_pending(&s,i);
         close(s.listener);
-        nasd_require(unlink(getenv(NASD_SOCKET_ENV))==0,
-                     "remove owned desktop pathname socket");
+        struct stat existing={0};
+        nasd_require(lstat(socket_path,&existing)==0 &&
+                     S_ISSOCK(existing.st_mode) &&
+                     existing.st_dev==owned_socket.st_dev &&
+                     existing.st_ino==owned_socket.st_ino &&
+                     unlink(socket_path)==0,
+                     "remove only our owned desktop pathname socket");
     }
     close(s.input.keyboard);close(s.input.tablet);close(s.input.mouse);
     close(s.fb);

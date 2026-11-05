@@ -51,30 +51,54 @@ def vim_ready(sock, reader, outdir, before, seconds):
     marks), then two consecutive stable QEMU scanouts, just as M187 waits
     for a settled GNU dialog before sending the hardware arrow key.
     """
+    def changed_bytes(a, b, left, top, right, bottom):
+        return sum(sum(x != y for x, y in zip(
+            a[(row * 800 + left) * 3:(row * 800 + right) * 3],
+            b[(row * 800 + left) * 3:(row * 800 + right) * 3]))
+            for row in range(top, bottom))
+
     deadline = time.monotonic() + seconds
+    baseline = ui['pixels'](before)
     previous = None
     stable = 0
+    max_stable = 0
+    samples = 0
+    matching_frames = 0
+    last_full = last_lower = last_delta = None
+    max_full = max_lower = 0
+    min_delta = None
     while time.monotonic() < deadline:
         shot = frame(sock, reader, outdir, 'vim-visible')
         data = ui['pixels'](shot)
-        try:
-            ui['changed'](before, shot, 309, 199, 615, 410, 1000)
-            ui['changed'](before, shot, 309, 350, 615, 410, 220)
-        except RuntimeError:
+        samples += 1
+        last_full = changed_bytes(baseline, data, 309, 199, 615, 410)
+        last_lower = changed_bytes(baseline, data, 309, 350, 615, 410)
+        max_full = max(max_full, last_full)
+        max_lower = max(max_lower, last_lower)
+        last_delta = (changed_bytes(previous, data, 309, 199, 615, 410)
+                      if previous is not None else None)
+        if last_delta is not None:
+            min_delta = (last_delta if min_delta is None else
+                         min(min_delta, last_delta))
+        # Preserve M188's original strict byte-difference thresholds.
+        if last_full < 1000 or last_lower < 220:
             stable = 0
         else:
-            if previous is not None:
-                delta = 0
-                for y in range(199, 410):
-                    left = (y * 800 + 309) * 3
-                    right = (y * 800 + 615) * 3
-                    delta += sum(a != b for a, b in
-                                 zip(previous[left:right], data[left:right]))
-                stable = stable + 1 if delta <= 20 else 0
+            matching_frames += 1
+            if last_delta is not None:
+                stable = stable + 1 if last_delta <= 20 else 0
+                max_stable = max(max_stable, stable)
                 if stable >= 2:
                     return shot
         previous = data
         time.sleep(.4)
+    print('[M188 VIM FRAME DIAGNOSTIC] '
+          f'samples={samples} matching_frames={matching_frames} '
+          f'full_last={last_full} full_max={max_full} full_required=1000 '
+          f'lower_last={last_lower} lower_max={max_lower} lower_required=220 '
+          f'delta_last={last_delta} delta_min={min_delta} '
+          f'stable_last={stable} stable_max={max_stable} stable_required=2 '
+          'delta_limit=20', flush=True)
     prior['fail_native'](sock, reader,
                          'original Vim did not show a settled physical '
                          'full-screen PTY frame after kernel ELF exec')

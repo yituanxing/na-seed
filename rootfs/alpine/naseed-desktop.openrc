@@ -1,0 +1,23 @@
+#!/sbin/openrc-run
+# Alpine's OWN OpenRC supervises the original NaSeed desktop program.
+# This is an ordinary third-party service; /sbin/init, OpenRC, runlevels and
+# the distro's other service scripts remain the unmodified Alpine originals.
+
+name="NaSeed graphical session"
+description="NaSeed VirtIO GPU/evdev desktop running in the original Alpine userspace"
+
+command="/usr/bin/naseed-desktop"
+command_args="m187"
+command_background="true"
+# Match the existing M198 authenticated-shell desktop environment.
+export NASEED_TERMINAL_VT100=1
+pidfile="/run/naseed-desktop.pid"
+output_log="/var/log/naseed-desktop.log"
+error_log="/var/log/naseed-desktop.err"
+
+depend() {
+    # OpenRC's normal sysinit/boot sequence has already established /run,
+    # procfs and the physical ext4 root. Do not force a fake device manager,
+    # substitute init, or introduce a custom NaSeed startup ordering scheme.
+    after localmount
+}

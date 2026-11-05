@@ -17,6 +17,13 @@ esac
 # another distro image, PID1, graphical kernel ABI or software-test pipeline.
 m198=${NAS_M198_INTEGRATED_DESKTOP:-0}
 case "$m198" in 0|1) ;; *) echo '[M198 FAIL] invalid desktop selector' >&2; exit 2 ;; esac
+m199=${NAS_M199_ORIGINAL_OPENRC_DESKTOP:-0}
+case "$m199" in 0|1) ;; *) echo '[M199 FAIL] invalid original OpenRC selector' >&2; exit 2 ;; esac
+if [ "$m199" = 1 ]; then
+    # OpenRC runs the exact M198 graphics and original Alpine software; only
+    # its lifecycle and *second genuine Alpine PID1 boot* differ.
+    m198=1
+fi
 if [ "$m198" = 1 ]; then
     # Must be set BEFORE M191 builds the native kernel on all three ISAs.
     export NAS_ENABLE_VIRTIO_INPUT=1 NAS_ENABLE_VIRTIO_GPU=1
@@ -48,6 +55,9 @@ sudo python3 scripts/m193-alpine-login-overlay.py "$root" "$overlay"
 sudo python3 scripts/m197-alpine-stage.py "$root" "$overlay"
 if [ "$m198" = 1 ]; then
     sh scripts/stage-m198-alpine-desktop.sh "$port" "$overlay"
+    if [ "$m199" = 1 ]; then
+        sh scripts/stage-m199-alpine-openrc.sh "$port" "$overlay"
+    fi
 fi
 sudo install -m 0644 tests/m197-software-workload.sh \
     "$overlay/root/m197-software-workload.sh"
@@ -81,7 +91,11 @@ if [ "$m198" = 1 ]; then
     export NAS_ACCEPTANCE_QEMU_RAM=2048M
     # One boot runs M197's full public transaction before GUI/Vim. Keep the
     # slow external WAN budget separate from the post-install QMP budget.
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M198_FIRST_BOOT_SECONDS:-2400}
+    if [ "$m199" = 1 ]; then
+        export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M199_FIRST_BOOT_SECONDS:-2600}
+    else
+        export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M198_FIRST_BOOT_SECONDS:-2400}
+    fi
     export NAS_QEMU_QMP_SOCKET="$PWD/$work/m198-integrated-desktop.qmp"
     test ! -e "$NAS_QEMU_QMP_SOCKET" || {
         echo '[M198 QMP FAIL] stale socket from another run' >&2
@@ -93,10 +107,40 @@ if [ "$port" = amd64 ]; then
     test -s "$NAS_ACCEPTANCE_KERNEL"
 fi
 
+if [ "$m199" = 1 ]; then
+    # This is the SAME original /sbin/init manifest on BOTH boots; M198's
+    # independent second QEMU previously used a CPIO BusyBox entry instead.
+    export BUSYBOX_PARITY_MANIFEST=scripts/m199-alpine-boot-cases.tsv
+fi
+
 fifo="$PWD/$work/m197-software-serial-input.fifo"
 export NAS_QEMU_SERIAL_FIFO="$fifo"
 serial="$PWD/$logs/m197-batch.serial.log"
 if [ "$m198" = 1 ]; then
+    if [ "$m199" = 1 ]; then
+        export NAS_M199_QMP_FAIL_FILE="$PWD/$work/m199-qmp-first.failed"
+        export NAS_M199_QMP_PASS_FILE="$PWD/$work/m199-qmp-first.pass"
+        test ! -e "$NAS_M199_QMP_FAIL_FILE" && test ! -e "$NAS_M199_QMP_PASS_FILE"
+        python3 scripts/m199-qmp-alpine-openrc.py --mode first \
+            --serial "$serial" --qmp "$NAS_QEMU_QMP_SOCKET" \
+            --outdir "$work" --success-file "$NAS_M199_QMP_PASS_FILE" \
+            --timeout "${NAS_M199_DESKTOP_SECONDS:-360}" \
+            > "$work/m199-first-qmp.log" 2>&1 &
+        watcher=$!
+        if ! python3 scripts/m199-alpine-uart.py first "$runner" "$serial" \
+                "$PWD/$work/m199-first-runner.log" "$fifo"; then
+            kill "$watcher" 2>/dev/null || :
+            wait "$watcher" 2>/dev/null || :
+            tail -100 "$work/m199-first-qmp.log" >&2 || :
+            exit 1
+        fi
+        if ! wait "$watcher"; then
+            echo '[M199 FIRST QMP FAIL] physical Vim and OpenRC desktop' >&2
+            tail -100 "$work/m199-first-qmp.log" >&2
+            exit 1
+        fi
+        test -s "$NAS_M199_QMP_PASS_FILE"
+    else
     export NAS_M198_QMP_FAIL_FILE="$PWD/$work/m198-qmp.failed"
     test ! -e "$NAS_M198_QMP_FAIL_FILE" || {
         echo '[M198 QMP FAIL] stale failure file' >&2; exit 1;
@@ -119,6 +163,7 @@ if [ "$m198" = 1 ]; then
         exit 1
     fi
     grep -Fq '[M198 PHYSICAL QMP PASS]' "$work/m198-qmp-check.log"
+    fi
 else
     python3 scripts/m197-alpine-uart.py "$runner" "$serial" \
         "$PWD/$work/m197-first-runner.log" "$fifo"
@@ -140,10 +185,58 @@ echo "[M197 ALPINE PUBLIC SOFTWARE LIVE PASS] $port official signed "\
      'Bash Lua SQLite Git from public HTTPS, live DHCP resolver, ' \
      'independent PCAP and four real applications on ext4'
 if [ "$m198" = 1 ]; then
-    grep -Fq 'M198_GUI_DURABLE_RC=0' "$serial"
-    grep -Fxq 'M187_DESKTOP_PASS' "$serial"
+    if [ "$m199" = 1 ]; then
+        grep -Fq 'M199_FIRST_DURABLE_RC=0' "$serial"
+        grep -Fq 'M199_OPENRC_RESTART_RC=0' "$serial"
+    else
+        grep -Fq 'M198_GUI_DURABLE_RC=0' "$serial"
+        grep -Fxq 'M187_DESKTOP_PASS' "$serial"
+    fi
     echo "[M198 ALPINE GUI LIVE PASS] $port original Alpine PID1 + public APK "\
         'and old GUI as ordinary process, native VirtIO keyboard/Vim + GPU pixels'
+fi
+
+if [ "$m199" = 1 ]; then
+    # Retain the first full UART proof before a SECOND original Alpine PID1
+    # overwrites the runner's m197-batch.serial.log in the same native matrix.
+    cp "$serial" "$PWD/$work/m199-first.serial.log"
+    unset NAS_QEMU_SERIAL_FIFO NAS_VIRTIO_NET_PCAP NAS_QEMU_QMP_SOCKET
+    export NAS_QEMU_QMP_SOCKET="$PWD/$work/m199-reboot-desktop.qmp"
+    export NAS_QEMU_SERIAL_FIFO="$PWD/$work/m199-reboot-serial-input.fifo"
+    export BUSYBOX_PARITY_MANIFEST=scripts/m199-alpine-boot-cases.tsv
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M199_REBOOT_SECONDS:-500}
+    export NAS_M199_QMP_FAIL_FILE="$PWD/$work/m199-qmp-reboot.failed"
+    export NAS_M199_QMP_PASS_FILE="$PWD/$work/m199-qmp-reboot.pass"
+    test ! -e "$NAS_QEMU_QMP_SOCKET" &&
+    test ! -e "$NAS_M199_QMP_FAIL_FILE" && test ! -e "$NAS_M199_QMP_PASS_FILE"
+    python3 scripts/m199-qmp-alpine-openrc.py --mode reboot \
+        --serial "$serial" --qmp "$NAS_QEMU_QMP_SOCKET" \
+        --outdir "$work" --success-file "$NAS_M199_QMP_PASS_FILE" \
+        --timeout "${NAS_M199_DESKTOP_SECONDS:-360}" \
+        > "$work/m199-reboot-qmp.log" 2>&1 &
+    watcher=$!
+    if ! python3 scripts/m199-alpine-uart.py reboot "$runner" "$serial" \
+            "$PWD/$work/m199-reboot-runner.log" "$NAS_QEMU_SERIAL_FIFO"; then
+        kill "$watcher" 2>/dev/null || :
+        wait "$watcher" 2>/dev/null || :
+        tail -100 "$work/m199-reboot-qmp.log" >&2 || :
+        exit 1
+    fi
+    if ! wait "$watcher"; then
+        echo '[M199 REBOOT QMP FAIL] OpenRC auto-started GPU desktop' >&2
+        tail -100 "$work/m199-reboot-qmp.log" >&2
+        exit 1
+    fi
+    grep -Fq 'M199_REBOOT_AUTO_STATUS_RC=0' "$serial"
+    grep -Fq 'M199_REBOOT_DURABLE_RC=0' "$serial"
+    grep -Fq 'M197_REOPEN_WORKLOAD_PASS' "$serial"
+    test -s "$NAS_M199_QMP_PASS_FILE"
+    sudo python3 scripts/m199-alpine-disk-check.py "$port" "$root" "$disk"
+    sudo python3 scripts/m191-alpine-root-disk.py verify "$port" "$root" "$baseline"
+    echo "[M199 ALPINE OPENRC TWO BOOT PASS] $port original signed Alpine "\
+         'init/OpenRC twice, guest rc-update persisted, OpenRC daemon lifecycle, ' \
+         'auto-restored physical GPU, QMP Vim and signed applications on ext4'
+    exit 0
 fi
 
 # A SECOND native QEMU has NO network requirement; it must observe and run
