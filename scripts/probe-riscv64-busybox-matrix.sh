@@ -104,6 +104,7 @@ boot_case() {
         m109-batch) time_budget=${NAS_M109_QEMU_TIMEOUT:-240} ;;
         m110-batch) time_budget=${NAS_M110_QEMU_TIMEOUT:-240} ;;
         m111-batch) time_budget=${NAS_M111_QEMU_TIMEOUT:-240} ;;
+        m200-fbdev) time_budget=${NAS_APP_BATCH_QEMU_TIMEOUT:-90} ;;
         m187-vt100) time_budget=${NAS_APP_BATCH_QEMU_TIMEOUT:-850} ;;
         m1??-batch) time_budget=${NAS_APP_BATCH_QEMU_TIMEOUT:-240} ;;
         m105-*) time_budget=120 ;;

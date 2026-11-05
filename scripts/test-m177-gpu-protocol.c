@@ -42,6 +42,18 @@ static unsigned ring_allocs,ring_frees,ring_release_failures;
 static unsigned dma_release_failures;
 static bool irq_unbind_failed;
 
+/* The host fixture injects synthetic heap-backed DMA, not the production
+ * PMM-owned QEMU coherent provider. M200 must keep this synthetic provider
+ * unmappable and must not fabricate a live /dev/fb0 VMA in old M177 tests.
+ * These are exact-signature link dependencies, not replacements for the GPU
+ * mapping/present code exercised in the kernel. */
+const struct nas_dma_provider nas_dma_qemu_coherent={.coherent=true};
+uint64_t nas_hhdm_offset(void) {return 0;}
+unsigned nas_display_mmap_pins(const struct nas_display_device *display) {
+    assert(display==primary);
+    return 0;
+}
+
 void nas_print(const char *str) { fputs(str,stdout); }
 void nas_dec(uint64_t n) { printf("%llu",(unsigned long long)n); }
 
@@ -326,6 +338,38 @@ static void deliver_gpu_completion(void) {
     assert(gpu.display.ops->present(&gpu.display)==0);
 }
 
+/* The synthetic DMA provider must be rejected by /dev/fb0 mmap, even though
+ * its fake bus address currently equals its heap CPU pointer. Independently
+ * exercise the QEMU-coherent PMM descriptor gate with a temporary fixture
+ * stand-in, restoring the real mock identity before any GPU DMA command. */
+static void test_mmap_page_provider_gate(void) {
+    assert(gpu.claimed && primary==&gpu.display);
+    assert(gpu.display.ops->mmap_page);
+    uint64_t frame=UINT64_MAX;
+    assert(gpu.display.ops->mmap_page(&gpu.display,0,&frame)==-EOPNOTSUPP);
+    assert(!frame);
+    const struct nas_dma_provider *old_provider=gpu.transport.dma;
+    struct nas_dma_page *first=&gpu.pixels[0];
+    const uint64_t fake_pmm_pa=(uintptr_t)first->cpu;
+    assert(!(fake_pmm_pa%NAS_DMA_PAGE_BYTES));
+    gpu.transport.dma=&nas_dma_qemu_coherent;
+    first->frame_pa=fake_pmm_pa;
+    assert(gpu.display.ops->mmap_page(&gpu.display,0,&frame)==0);
+    assert(frame==fake_pmm_pa);
+    assert(gpu.display.ops->mmap_page(&gpu.display,1,&frame)==-EINVAL);
+    assert(!frame);
+    assert(gpu.display.ops->mmap_page(&gpu.display,GPU_BYTES,&frame)==-EINVAL);
+    assert(!frame);
+    first->bus_address++;
+    assert(gpu.display.ops->mmap_page(&gpu.display,0,&frame)==-EIO);
+    assert(!frame);
+    first->bus_address--;
+    first->frame_pa=0;
+    assert(gpu.display.ops->mmap_page(&gpu.display,0,&frame)==-EIO);
+    assert(!frame);
+    gpu.transport.dma=old_provider;
+}
+
 static enum failure parse_mode(const char *name) {
     if (!strcmp(name,"good"))return GOOD;
     if (!strcmp(name,"bad_response"))return BAD_RESPONSE;
@@ -488,6 +532,7 @@ int main(int argc,char **argv) {
     assert(registered_driver->probe(&device)==-ENODEV);
     assert(gpu.display.mode.width==800 && gpu.display.mode.height==600);
     assert(gpu.display.mode.pitch==3200 && gpu.display.mode.bpp==32);
+    test_mmap_page_provider_gate();
     if(failure>=REMOVE_PIXEL_RELEASE_FAIL) {
         exercise_unplug(&device);
         return 0;

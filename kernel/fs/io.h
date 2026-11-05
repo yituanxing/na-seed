@@ -7,6 +7,7 @@ struct nas_task;
 struct nas_pending_io;
 struct nas_poll_snapshot;
 struct nas_fs_node;
+struct nas_vm_device;
 /* The ordinary File I/O layer imports a Linux LP64 iovec ONCE while the
  * original Task owns its address space. The ext4 Worker may hold this
  * kernel-owned metadata but must never read a userspace iov pointer. */
@@ -65,6 +66,11 @@ uint64_t nas_fs_fd_pwrite(uint64_t fd,uint64_t address,uint64_t count,uint64_t o
  * Negative Linux errno on invalid or unsupported file kinds. */
 int64_t nas_fs_mmap_read(uint64_t fd, uint64_t offset,
                         uint8_t *buffer, uint64_t length);
+/* Tri-state device mapping probe: 0 ordinary FD, 1 pinned device owner,
+ * negative errno for an invalid or unsupported character-device mapping.
+ * The caller must put() the returned owner after ledger insertion or abort. */
+int nas_fs_mmap_device_pin(uint64_t fd,bool writable,
+                           struct nas_vm_device **out);
 /* 1 iff an open readable regular file's bytes cannot change in this boot;
  * 0 for mutable/dynamic sources, negative errno for an invalid descriptor.
  * Read-only mounts alone do not imply immutable data. */

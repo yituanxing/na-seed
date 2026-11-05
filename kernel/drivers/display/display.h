@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "../../mm/device_backing.h"
 
 /* A scanout surface class, independent of firmware, PCI/MMIO transport,
  * userspace's Linux fbdev ABI and the desktop compositor. One fixed-mode
@@ -31,6 +32,11 @@ struct nas_display_ops {
      * can batch dirty byte writes and submit at a safe scheduler boundary;
      * this is NEVER called once for every internal 1-KiB FileOps chunk. */
     int (*present)(struct nas_display_device *);
+    /* Optional page-aligned CPU PHYSICAL backing for MAP_SHARED /dev/fb0.
+     * The result is a borrowed PMM-managed frame, not a DMA bus address;
+     * the VM separately nas_frame_get()s it for each user PTE. Firmware,
+     * MMIO and non-coherent backends MUST leave this hook unset. */
+    int (*mmap_page)(struct nas_display_device *,uint64_t,uint64_t *);
 };
 
 struct nas_display_device {
@@ -38,6 +44,9 @@ struct nas_display_device {
     void *backend;                    /* Private transport/memory ownership */
     struct nas_display_mode mode;
     const struct nas_display_ops *ops;
+    /* Stable VMA identity across close(fd), fork(), split and munmap().
+     * Initialized by primary registration, not by the backend's caller. */
+    struct nas_vm_device vm_mapping;
 };
 
 /* No display yet: register one. A registered non-firmware display cannot be
@@ -54,6 +63,13 @@ int nas_display_unregister_primary(struct nas_display_device *);
  * node is registered. The query counts live shared OpenFile descriptions,
  * not duplicated descriptors; a second different provider is rejected. */
 int nas_display_set_open_pins_callback(unsigned (*query)(void));
+/* Acquires one VMA owner pin, independent of File/OpenFile pins. The caller
+ * must put() the returned owner once for every successful pin; clones may
+ * call get() independently. Unsupported backends fail closed. */
+int nas_display_mmap_pin(struct nas_vm_device **out);
+/* Display drivers may use this to schedule deferred coherent scanout after
+ * direct user writes, which bypass the ordinary pwrite dirty hook. */
+unsigned nas_display_mmap_pins(const struct nas_display_device *);
 /* Called immediately before entering userspace; late registration and all
  * replacements are then refused, including if no display was discovered.
  * A subsequent explicit unregistration opens a distinct rebind vacancy. */

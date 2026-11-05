@@ -55,10 +55,12 @@ int64_t nas_vm_write_task_bytes(const struct nas_task *task,uint64_t va,
     for(uint64_t count=0;count<length;) {
         uint64_t at=va+count,pa=0;
         const struct nas_anon_region *v=nas_vma_find(&mm->mmap_vmas,at);
-        if(v && v->kind==NAS_VMA_FILE_MUTABLE_SHARED &&
+        if(v && (v->kind==NAS_VMA_FILE_MUTABLE_SHARED ||
+                 v->kind==NAS_VMA_DEVICE_SHARED) &&
            !(v->prot&NAS_VM_WRITE))return -EFAULT;
         if(!nas_mm_resolve_user(mm,at,&pa,0) &&
-           !(v && v->kind==NAS_VMA_FILE_MUTABLE_SHARED &&
+           !(v && (v->kind==NAS_VMA_FILE_MUTABLE_SHARED ||
+                  v->kind==NAS_VMA_DEVICE_SHARED) &&
              nas_mm_handle_fault((struct nas_mm *)mm,at,
                  NAS_UP_WRITE,false)==NAS_MM_FAULT_RESOLVED &&
              nas_mm_resolve_user(mm,at,&pa,0)))
@@ -81,7 +83,8 @@ int64_t nas_vm_write_task_bytes(const struct nas_task *task,uint64_t va,
         const struct nas_anon_region *v=nas_vma_find(&mm->mmap_vmas,at);
         if(v && v->kind==NAS_VMA_FILE_MUTABLE_SHARED) {
             if(nas_fs_mmap_dirty(v->backing)<0)return -EFAULT;
-        } else if(!(v && v->kind==NAS_VMA_ANON_SHARED) &&
+        } else if(!(v && (v->kind==NAS_VMA_ANON_SHARED ||
+                         v->kind==NAS_VMA_DEVICE_SHARED)) &&
                   !nas_mm_break_cow((struct nas_mm *)mm,at,0,true))
             return -EFAULT;
         uint64_t n=4096ULL-(at&4095ULL);

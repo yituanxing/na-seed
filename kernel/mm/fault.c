@@ -4,6 +4,7 @@
 #include "frame.h"
 #include "../errno.h"
 #include "file_backing.h"
+#include "device_backing.h"
 #include "../arch/mmu.h"
 #include "../arch/user_pt.h"
 #include "prot.h"
@@ -49,7 +50,11 @@ enum nas_mm_fault_result nas_mm_handle_fault(struct nas_mm *mm,uint64_t addr,
                        old==frame ? NAS_MM_FAULT_RESOLVED :
                                     NAS_MM_FAULT_INVARIANT;
             }
-            if(vma->kind==NAS_VMA_ANON_SHARED) {
+            if(vma->kind==NAS_VMA_ANON_SHARED ||
+               vma->kind==NAS_VMA_DEVICE_SHARED) {
+                /* Device PTEs alias provider-owned physical storage.  An
+                 * existing leaf may need a logical permission upgrade, but
+                 * its frame is never COWed or marked as a file-cache page. */
                 uint64_t old=0;
                 const uint64_t frame=pa&~UINT64_C(4095);
                 return nas_mmu_exchange_leaf_at(mm->root_phys,
@@ -63,6 +68,36 @@ enum nas_mm_fault_result nas_mm_handle_fault(struct nas_mm *mm,uint64_t addr,
         return NAS_MM_FAULT_INVARIANT; /* HW fault with usable user PTE */
     }
     if(hardware_protection_fault)return NAS_MM_FAULT_INVARIANT;
+    if(vma->kind==NAS_VMA_DEVICE_SHARED) {
+        /* page() BORROWS the provider's PMM-owned frame.  Only after an
+         * independent frame_get succeeds may this MM publish a leaf whose
+         * normal teardown will perform one matching frame_put.  Device
+         * lifetime remains pinned separately by its VMA ledger slot. */
+        const uint64_t va=addr&~UINT64_C(4095);
+        const uint64_t delta=va-vma->start;
+        if(!vma->device || !vma->device->page ||
+           vma->file_offset>UINT64_MAX-delta)
+            return NAS_MM_FAULT_NEEDS_BACKING;
+        uint64_t frame=0;
+        int rc=vma->device->page(vma->device->context,
+                                  vma->file_offset+delta,&frame);
+        if(rc)return rc==-ENOMEM ? NAS_MM_FAULT_OOM :
+                                   NAS_MM_FAULT_NEEDS_BACKING;
+        if(!frame || (frame&UINT64_C(4095)) || !nas_frame_get(frame))
+            return NAS_MM_FAULT_INVARIANT;
+        if(!nas_mmu_prepare_leaf_at(mm->root_phys,va)) {
+            (void)nas_frame_put(frame);
+            return NAS_MM_FAULT_OOM;
+        }
+        uint64_t old=0;
+        if(!nas_mmu_exchange_leaf_at(mm->root_phys,va,frame,
+                                     vma->prot,&old)) {
+            (void)nas_frame_put(frame);
+            return NAS_MM_FAULT_INVARIANT;
+        }
+        if(old)__builtin_trap(); /* absent leaf cannot own another ref */
+        return NAS_MM_FAULT_RESOLVED;
+    }
     if(vma->kind==NAS_VMA_FILE_PRIVATE_LAZY) {
         /* Immutable source identity outlives the creating FD. A private
          * page is copied into its OWN PMM frame at first access; the inode

@@ -16,6 +16,9 @@ static bool boot_taken_over;
  * primary registration even if the kernel already entered userspace. */
 static bool primary_vacant;
 static unsigned (*primary_open_pins)(void);
+/* VMAs outlive the originating shared OpenFile and can be cloned on fork.
+ * They pin the exact display owner and its DMA pages independently of fds. */
+static unsigned primary_mmap_pins;
 
 /* A Limine-provided framebuffer is an ordinary *backend*, not the display
  * interface itself. These pages belong to firmware and are already mapped
@@ -54,6 +57,54 @@ static bool valid_device(const struct nas_display_device *device,
        mode_valid(&device->mode,bytes);
 }
 
+static bool display_vm_get(void *context) {
+    const struct nas_display_device *device=context;
+    if(!device || device!=primary_display || !device->ops ||
+       !device->ops->mmap_page || primary_mmap_pins==UINT32_MAX)return false;
+    ++primary_mmap_pins;
+    return true;
+}
+static void display_vm_put(void *context) {
+    if(context!=primary_display || !primary_mmap_pins)__builtin_trap();
+    --primary_mmap_pins;
+}
+static int display_vm_page(void *context,uint64_t offset,uint64_t *pa) {
+    struct nas_display_device *device=context;
+    if(!pa)return -EINVAL;
+    *pa=0;
+    if(!device || device!=primary_display)return -ENODEV;
+    if(!device->ops || !device->ops->mmap_page)return -EOPNOTSUPP;
+    if((offset&UINT64_C(4095)) || offset>=primary_bytes)return -EINVAL;
+    int rc=device->ops->mmap_page(device,offset,pa);
+    if(rc) {*pa=0;return rc;}
+    if(!*pa || (*pa&UINT64_C(4095))) {*pa=0;return -EIO;}
+    return 0;
+}
+static void display_vm_init(struct nas_display_device *device) {
+    device->vm_mapping=(struct nas_vm_device){
+        .context=device,.extent_bytes=primary_bytes,.get=display_vm_get,
+        .put=display_vm_put,.page=display_vm_page
+    };
+}
+int nas_display_mmap_pin(struct nas_vm_device **out) {
+    if(!out)return -EINVAL;
+    *out=NULL;
+    if(!primary_display)return -ENODEV;
+    if(!primary_display->ops || !primary_display->ops->mmap_page)
+        return -EOPNOTSUPP;
+    /* Fail unsupported DMA/MMIO backing at mmap(2), not at the first user
+     * page fault. The backend must already be able to serve page zero. */
+    uint64_t first_frame=0;
+    int rc=display_vm_page(primary_display,0,&first_frame);
+    if(rc)return rc;
+    if(!primary_display->vm_mapping.get(primary_display))return -EBUSY;
+    *out=&primary_display->vm_mapping;
+    return 0;
+}
+unsigned nas_display_mmap_pins(const struct nas_display_device *device) {
+    return device && primary_display==device ? primary_mmap_pins : 0;
+}
+
 bool nas_display_register_primary(struct nas_display_device *device) {
     uint64_t bytes=0;
     if(primary_display || (primary_locked && !primary_vacant) ||
@@ -61,6 +112,8 @@ bool nas_display_register_primary(struct nas_display_device *device) {
         return false;
     primary_display=device;
     primary_bytes=bytes;
+    primary_mmap_pins=0;
+    display_vm_init(device);
     primary_vacant=false;
     return true;
 }
@@ -73,6 +126,8 @@ bool nas_display_boot_takeover(struct nas_display_device *device) {
      * init exposes the first process. No runtime framebuffer replacement. */
     primary_display=device;
     primary_bytes=bytes;
+    primary_mmap_pins=0;
+    display_vm_init(device);
     boot_taken_over=true;
     primary_vacant=false;
     return true;
@@ -92,6 +147,7 @@ int nas_display_unregister_primary(struct nas_display_device *device) {
      * zero live readers. Bootstrap failures can still retire pre-lock. */
     if(primary_locked && !primary_open_pins)return -EBUSY;
     if(primary_open_pins && primary_open_pins())return -EBUSY;
+    if(primary_mmap_pins)return -EBUSY;
     primary_display=NULL;
     primary_bytes=0;
     primary_vacant=true;
@@ -205,8 +261,9 @@ bool nas_fbdev_fix_screeninfo(struct nas_fb_fix_screeninfo *out) {
     info.line_length=primary_display->mode.pitch;
     info.type=0; /* FB_TYPE_PACKED_PIXELS */
     info.visual=2; /* FB_VISUAL_TRUECOLOR */
-    /* 0 addresses are intentional: framebuffer physical mapping and ioctl
-     * metadata must never become an ownership bypass or an mmap promise. */
+    /* A zero smem_start never exposes DMA's physical address through ioctl.
+     * Actual mmap eligibility is decided independently by a pinned display
+     * provider and a PMM-backed page callback, not by these UAPI fields. */
     *out=info;
     return true;
 }

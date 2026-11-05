@@ -11,6 +11,7 @@
 #include "../virtio/transport.h"
 #include "../../arch/arch.h"
 #include "../../time/clock.h"
+#include "../../mm/frame.h"
 #include "../../errno.h"
 #include "../../lib/string.h"
 #include "../../../ports/unikraft/split_queue.h"
@@ -41,6 +42,10 @@ extern void nas_dec(uint64_t);
 #define GPU_RESP_OK_NODATA 0x1100U
 #define GPU_RESP_OK_DISPLAY_INFO 0x1101U
 #define GPU_TIMEOUT_NS UINT64_C(3000000000)
+/* A direct MAP_SHARED store cannot call write_at/mark_dirty. While VMAs
+ * exist, refresh at a bounded 10 Hz through the existing deferred, IRQ-
+ * completed transfer/flush pipeline. Never submit GPU work in hardirq. */
+#define GPU_MMAP_REFRESH_NS UINT64_C(100000000)
 
 _Static_assert(GPU_PAGES == 469U, "800x600 DMA scatter page count");
 _Static_assert(GPU_ENTRY_PAGES == 2U, "attach command must cross a page");
@@ -88,6 +93,7 @@ struct gpu_device {
     uint32_t epoch_first, epoch_last;
     uint16_t runtime_head;
     uint64_t runtime_fence, runtime_deadline;
+    uint64_t next_mmap_refresh;
     enum gpu_runtime_phase runtime_phase;
     bool dirty, claimed, reported, stalled, teardown_pending;
 };
@@ -292,6 +298,31 @@ static uint64_t write_at(struct nas_display_device *display,uint64_t offset,
     return done;
 }
 
+/* QEMU's coherent identity DMA provider allocates pixels with nas_frame_alloc
+ * and retains one DMA owner reference until device retirement. Only for this
+ * exact provider is the CPU frame physical address safe to hand to nas_frame_get
+ * for an independent user PTE. A future IOMMU, MMIO or non-coherent provider
+ * must add its own proven mapping lifetime/coherency model first. */
+static int gpu_mmap_page(struct nas_display_device *display,uint64_t offset,
+                         uint64_t *frame_pa) {
+    struct gpu_device *g=display ? display->backend : NULL;
+    if(!frame_pa)return -EINVAL;
+    *frame_pa=0;
+    if(!g || !g->claimed || g->stalled)return -ENODEV;
+    if(g->transport.dma!=&nas_dma_qemu_coherent ||
+       !g->transport.dma->coherent)return -EOPNOTSUPP;
+    if((offset%NAS_DMA_PAGE_BYTES) || offset>=GPU_BYTES)return -EINVAL;
+    const unsigned index=(unsigned)(offset/NAS_DMA_PAGE_BYTES);
+    const struct nas_dma_page *page=&g->pixels[index];
+    if(!page->frame_pa || (page->frame_pa%NAS_DMA_PAGE_BYTES) ||
+       !page->cpu || page->bytes!=NAS_DMA_PAGE_BYTES ||
+       page->bus_address!=page->frame_pa ||
+       (uintptr_t)page->cpu!=nas_hhdm_offset()+page->frame_pa)
+        return -EIO;
+    *frame_pa=page->frame_pa;
+    return 0;
+}
+
 /* Runtime used-ring processing is strictly IRQ driven. An acknowledged
  * interrupt permits one bounded drain, but no scheduler-stack busy wait. */
 static int runtime_submit(struct gpu_device *g,const struct gpu_hdr *request,
@@ -350,6 +381,14 @@ static int gpu_present(struct nas_display_device *display) {
     if(g->stalled)return -EIO;
     int rc=runtime_complete(g);
     if(rc || g->runtime_phase!=GPU_RUNTIME_IDLE)return rc;
+    if(nas_display_mmap_pins(display)) {
+        const uint64_t now=nas_arch_monotonic_ns();
+        if(now>=g->next_mmap_refresh) {
+            mark_dirty(g,0U,GPU_HEIGHT);
+            g->next_mmap_refresh=nas_time_add_deadline(
+                now,GPU_MMAP_REFRESH_NS);
+        }
+    }else g->next_mmap_refresh=0;
     if(!g->dirty)return 0;
     const uint32_t first=g->dirty_y0,last=g->dirty_y1;
     if(last>GPU_HEIGHT || last<=first)return -EINVAL;
@@ -374,7 +413,8 @@ static int gpu_present(struct nas_display_device *display) {
 }
 
 static const struct nas_display_ops gpu_display_ops={
-    .read_at=read_at,.write_at=write_at,.present=gpu_present
+    .read_at=read_at,.write_at=write_at,.present=gpu_present,
+    .mmap_page=gpu_mmap_page
 };
 
 static int setup_resource(struct gpu_device *g) {

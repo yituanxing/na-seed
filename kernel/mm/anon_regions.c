@@ -1,6 +1,7 @@
 #include "anon_regions.h"
 #include "heap.h"
 #include "file_backing.h"
+#include "device_backing.h"
 #include "../lib/string.h"
 #include <stddef.h>
 #define PAGE 4096ULL
@@ -10,11 +11,22 @@ static bool valid_interval(uint64_t start,uint64_t length) {
            start>=NAS_ANON_FIXED_FLOOR && start<NAS_VMA_ADDRESS_LIMIT &&
            length<=NAS_VMA_ADDRESS_LIMIT-start;
 }
+/* One independently held backing pin belongs to EACH VMA slot. Retain
+ * before publishing a new slot, including speculative transaction tables;
+ * drop on reset, replacement, unmap, or a failed clone. */
+static bool owner_get(const struct nas_anon_region *v) {
+    if(v->device)return v->device->get(v->device->context);
+    if(v->backing)return nas_fs_mmap_get(v->backing);
+    return true;
+}
+static void owner_put(const struct nas_anon_region *v) {
+    if(v->device)v->device->put(v->device->context);
+    else if(v->backing)nas_fs_mmap_put(v->backing);
+}
 void nas_anon_reset(struct nas_anon_regions *regions) {
     if (!regions) return;
     for(unsigned i=0;i<regions->capacity;i++)
-        if(regions->slots[i].end && regions->slots[i].backing)
-            nas_fs_mmap_put(regions->slots[i].backing);
+        if(regions->slots[i].end)owner_put(&regions->slots[i]);
     if (regions->slots) (void)nas_heap_free(regions->slots);
     *regions=(struct nas_anon_regions){0};
 }
@@ -29,14 +41,13 @@ bool nas_vma_clone(struct nas_anon_regions *dst,
         if(!copy.slots)return false;
         memcpy(copy.slots,src->slots,(size_t)src->capacity*sizeof(*src->slots));
         copy.capacity=src->capacity;
-        /* Cloning a table is a new reference for every file-backed slot.
+        /* Cloning a table is a new reference for every backed slot.
          * A failed acquisition cannot alter either live owner table. */
         for(unsigned i=0;i<src->capacity;i++) {
-            if(!copy.slots[i].end || !copy.slots[i].backing)continue;
-            if(nas_fs_mmap_get(copy.slots[i].backing))continue;
+            if(!copy.slots[i].end)continue;
+            if(owner_get(&copy.slots[i]))continue;
             for(unsigned j=0;j<i;j++)
-                if(copy.slots[j].end && copy.slots[j].backing)
-                    nas_fs_mmap_put(copy.slots[j].backing);
+                if(copy.slots[j].end)owner_put(&copy.slots[j]);
             (void)nas_heap_free(copy.slots);
             return false;
         }
@@ -116,9 +127,10 @@ static bool eager_file_kind(unsigned kind) {
            kind==NAS_VMA_ELF_PRIVATE_SNAPSHOT ||
            kind==NAS_VMA_FILE_IMMUTABLE_SHARED;
 }
-static bool file_kind(unsigned kind) {
+static bool offset_backed_kind(unsigned kind) {
     return eager_file_kind(kind) || kind==NAS_VMA_FILE_MUTABLE_SHARED ||
-           kind==NAS_VMA_FILE_PRIVATE_LAZY;
+           kind==NAS_VMA_FILE_PRIVATE_LAZY ||
+           kind==NAS_VMA_DEVICE_SHARED;
 }
 /* Coalesce only matching logical policies. File offsets must be contiguous.
  * This prevents RW and RX mappings from erasing each other's VMA semantics. */
@@ -129,17 +141,22 @@ static bool compatible(const struct nas_anon_region *a,
     /* A private eager file snapshot does NOT carry a durable backing ref.
      * Never coalesce independent snapshots merely due to adjacent offsets:
      * the FD may have been closed/reused for another source. */
-    if(file_kind(a->kind))return false;
+    if(offset_backed_kind(a->kind))return false;
     return true;
 }
 static bool insert_area(struct nas_anon_regions *regions,
                         struct nas_anon_region candidate) {
     if(!regions || candidate.end<=candidate.start ||
        !valid_interval(candidate.start,candidate.end-candidate.start) ||
-       (candidate.prot &~7U) || candidate.kind>NAS_VMA_FILE_PRIVATE_LAZY ||
+       (candidate.prot &~7U) || candidate.kind>NAS_VMA_DEVICE_SHARED ||
        (candidate.kind==NAS_VMA_FILE_MUTABLE_SHARED ||
         candidate.kind==NAS_VMA_FILE_PRIVATE_LAZY)!=
            (candidate.backing!=NULL) ||
+       (candidate.kind==NAS_VMA_DEVICE_SHARED)!=
+           (candidate.device!=NULL) ||
+       (candidate.device &&
+        (!candidate.device->get || !candidate.device->put ||
+         !candidate.device->page)) ||
        (candidate.flags & ~NAS_VMA_DONTFORK))
         return false;
     int left=-1,right=-1;
@@ -164,38 +181,46 @@ static bool insert_area(struct nas_anon_regions *regions,
             slot=empty_slot(regions);
         }
         if(slot<0)return false;
-        if(candidate.backing && !nas_fs_mmap_get(candidate.backing))return false;
+        if(!owner_get(&candidate))return false;
         regions->slots[slot]=candidate;
     }
     return true;
 }
 static bool record_file(struct nas_anon_regions *regions,uint64_t addr,
                         uint64_t length,unsigned prot,unsigned kind,
-                        uint64_t file_offset,struct nas_mapped_file *backing) {
+                        uint64_t file_offset,struct nas_mapped_file *backing,
+                        struct nas_vm_device *device) {
     if(!valid_interval(addr,length) ||
-       (file_kind(kind) &&
+       (offset_backed_kind(kind) &&
         length>UINT64_MAX-file_offset))return false;
     return insert_area(regions,(struct nas_anon_region){
         .start=addr,.end=addr+length,.file_offset=file_offset,
-        .prot=prot,.kind=kind,.backing=backing});
+        .prot=prot,.kind=kind,.backing=backing,.device=device});
 }
 bool nas_vma_record(struct nas_anon_regions *regions,uint64_t addr,uint64_t length,
                     unsigned prot,unsigned kind,uint64_t file_offset) {
-    if(kind==NAS_VMA_FILE_MUTABLE_SHARED)return false;
-    return record_file(regions,addr,length,prot,kind,file_offset,NULL);
+    if(kind==NAS_VMA_FILE_MUTABLE_SHARED || kind==NAS_VMA_DEVICE_SHARED)
+        return false;
+    return record_file(regions,addr,length,prot,kind,file_offset,NULL,NULL);
 }
 bool nas_vma_record_shared(struct nas_anon_regions *regions,uint64_t addr,
                            uint64_t length,unsigned prot,uint64_t file_offset,
                            struct nas_mapped_file *backing) {
     if(!backing)return false;
     return record_file(regions,addr,length,prot,
-                       NAS_VMA_FILE_MUTABLE_SHARED,file_offset,backing);
+                       NAS_VMA_FILE_MUTABLE_SHARED,file_offset,backing,NULL);
 }
 bool nas_vma_record_backed(struct nas_anon_regions *regions,uint64_t addr,
                            uint64_t length,unsigned prot,unsigned kind,
                            uint64_t file_offset,struct nas_mapped_file *backing) {
     return kind==NAS_VMA_FILE_PRIVATE_LAZY && backing &&
-           record_file(regions,addr,length,prot,kind,file_offset,backing);
+           record_file(regions,addr,length,prot,kind,file_offset,backing,NULL);
+}
+bool nas_vma_record_device(struct nas_anon_regions *regions,uint64_t addr,
+                           uint64_t length,unsigned prot,uint64_t file_offset,
+                           struct nas_vm_device *device) {
+    return device && record_file(regions,addr,length,prot,
+                                 NAS_VMA_DEVICE_SHARED,file_offset,NULL,device);
 }
 bool nas_anon_record(struct nas_anon_regions *regions,
                      uint64_t addr,uint64_t length) {
@@ -220,26 +245,25 @@ bool nas_anon_forget(struct nas_anon_regions *regions,
         if(!grow_regions(regions))return false;
         spare=empty_slot(regions);
     }
-    /* Partial unmap leaves TWO independent VMA slots with the same backing.
-     * Acquire the new right-fragment owner BEFORE mutating any slot. */
-    if(split>=0 && regions->slots[split].backing &&
-       !nas_fs_mmap_get(regions->slots[split].backing))return false;
+    /* Partial unmap leaves TWO independent VMA slots with the same backing
+     * identity. Acquire the right fragment's file/device pin BEFORE edits. */
+    if(split>=0 && !owner_get(&regions->slots[split]))return false;
     for (unsigned i=0;i<regions->capacity;++i) {
         struct nas_anon_region *r=&regions->slots[i];
         if (!r->end || addr>=r->end || end<=r->start) continue;
         if (addr<=r->start && end>=r->end) {
-            if(r->backing)nas_fs_mmap_put(r->backing);
+            owner_put(r);
             *r=(struct nas_anon_region){0};
         }
         else if (addr<=r->start) {
-            if(file_kind(r->kind))
+            if(offset_backed_kind(r->kind))
                 r->file_offset+=end-r->start;
             r->start=end;
         } else if (end>=r->end) r->end=addr;
         else {
             struct nas_anon_region right=*r;
             right.start=end;
-            if(file_kind(right.kind))
+            if(offset_backed_kind(right.kind))
                 right.file_offset+=end-r->start;
             regions->slots[spare]=right;
             r->end=addr;
@@ -295,13 +319,14 @@ bool nas_anon_overlay(struct nas_anon_regions *regions,
  * failure cannot mutate the live MM's policy or free its storage. */
 static bool replace_file(struct nas_anon_regions *regions,uint64_t addr,
                          uint64_t length,unsigned prot,unsigned kind,
-                         uint64_t file_offset,struct nas_mapped_file *backing) {
+                         uint64_t file_offset,struct nas_mapped_file *backing,
+                         struct nas_vm_device *device) {
     if(!regions || !valid_interval(addr,length) || (prot&~7U) ||
-       kind>NAS_VMA_FILE_PRIVATE_LAZY)return false;
+       kind>NAS_VMA_DEVICE_SHARED)return false;
     struct nas_anon_regions planned={0};
     if(!nas_vma_clone(&planned,regions))return false;
     if(!nas_anon_forget(&planned,addr,length) ||
-       !record_file(&planned,addr,length,prot,kind,file_offset,backing)) {
+       !record_file(&planned,addr,length,prot,kind,file_offset,backing,device)) {
         nas_anon_reset(&planned);
         return false;
     }
@@ -310,21 +335,28 @@ static bool replace_file(struct nas_anon_regions *regions,uint64_t addr,
 }
 bool nas_vma_replace(struct nas_anon_regions *regions,uint64_t addr,uint64_t length,
                      unsigned prot,unsigned kind,uint64_t file_offset) {
-    if(kind==NAS_VMA_FILE_MUTABLE_SHARED)return false;
-    return replace_file(regions,addr,length,prot,kind,file_offset,NULL);
+    if(kind==NAS_VMA_FILE_MUTABLE_SHARED || kind==NAS_VMA_DEVICE_SHARED)
+        return false;
+    return replace_file(regions,addr,length,prot,kind,file_offset,NULL,NULL);
 }
 bool nas_vma_replace_shared(struct nas_anon_regions *regions,uint64_t addr,
                             uint64_t length,unsigned prot,uint64_t file_offset,
                             struct nas_mapped_file *backing) {
     if(!backing)return false;
     return replace_file(regions,addr,length,prot,
-                        NAS_VMA_FILE_MUTABLE_SHARED,file_offset,backing);
+                        NAS_VMA_FILE_MUTABLE_SHARED,file_offset,backing,NULL);
 }
 bool nas_vma_replace_backed(struct nas_anon_regions *regions,uint64_t addr,
                             uint64_t length,unsigned prot,unsigned kind,
                             uint64_t file_offset,struct nas_mapped_file *backing) {
     return kind==NAS_VMA_FILE_PRIVATE_LAZY && backing &&
-           replace_file(regions,addr,length,prot,kind,file_offset,backing);
+           replace_file(regions,addr,length,prot,kind,file_offset,backing,NULL);
+}
+bool nas_vma_replace_device(struct nas_anon_regions *regions,uint64_t addr,
+                            uint64_t length,unsigned prot,uint64_t file_offset,
+                            struct nas_vm_device *device) {
+    return device && replace_file(regions,addr,length,prot,
+                                  NAS_VMA_DEVICE_SHARED,file_offset,NULL,device);
 }
 /* Rebuild the metadata in a private staging set. Permission changes may
  * split existing VMAs, but must never change snapshot file offsets. */
@@ -356,13 +388,13 @@ static bool rewrite_policy(struct nas_anon_regions *regions,uint64_t addr,
         if(rewrite_prot)middle.prot=prot;
         else middle.flags=dontfork ? (middle.flags|NAS_VMA_DONTFORK) :
                                       (middle.flags&~NAS_VMA_DONTFORK);
-            if(file_kind(middle.kind))
+        if(offset_backed_kind(middle.kind))
             middle.file_offset+=middle_start-r->start;
         if(!insert_area(&planned,middle))goto failed;
         if(middle_end<r->end) {
             struct nas_anon_region right=*r;
             right.start=middle_end;
-            if(file_kind(right.kind))
+            if(offset_backed_kind(right.kind))
                 right.file_offset+=middle_end-r->start;
             if(!insert_area(&planned,right))goto failed;
         }

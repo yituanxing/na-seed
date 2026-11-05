@@ -1,7 +1,7 @@
 /* Host-only contract tests. Build with:
  * cc -std=c11 -Wall -Wextra -Werror fbdev.c fbdev_test.c -o fbdev-test
  * ./fbdev-test boot && ./fbdev-test provider && ./fbdev-test late &&
- * ./fbdev-test detach && ./fbdev-test boot-rebind
+ * ./fbdev-test detach && ./fbdev-test boot-rebind && ./fbdev-test mmap-pin
  * A fresh process is used for each scenario because the primary scanout
  * has process-global state and supports only explicit, pinned-safe rebind. */
 #include "display.h"
@@ -86,6 +86,16 @@ static uint64_t mock_write(struct nas_display_device *dev,uint64_t offset,
 }
 static const struct nas_display_ops mock_ops={
     .read_at=mock_read,.write_at=mock_write
+};
+static int mock_mmap_page(struct nas_display_device *dev,uint64_t offset,
+                          uint64_t *frame_pa) {
+    (void)dev;
+    if(offset>=sizeof(pixels) || (offset&4095U))return -EINVAL;
+    *frame_pa=UINT64_C(0x2000); /* Mock owned PMM page for class-only test. */
+    return 0;
+}
+static const struct nas_display_ops mock_mmap_ops={
+    .read_at=mock_read,.write_at=mock_write,.mmap_page=mock_mmap_page
 };
 static unsigned pinned_files;
 static unsigned file_pins(void) {return pinned_files;}
@@ -195,6 +205,52 @@ static void test_boot_rebind(void) {
     assert(!nas_display_boot_takeover(&gpu));
 }
 
+static void test_mmap_pin(void) {
+    struct nas_display_device owner={
+        .name="mappable PMM scanout",.backend=pixels,.mode=rgb32(),
+        .ops=&mock_mmap_ops
+    };
+    struct nas_display_device unsupported={
+        .name="unmappable scanout",.backend=pixels,.mode=rgb32(),
+        .ops=&mock_ops
+    };
+    struct nas_vm_device *map=&owner.vm_mapping;
+    assert(nas_display_mmap_pin(NULL)==-EINVAL);
+    assert(nas_display_mmap_pin(&map)==-ENODEV && map==NULL);
+    assert(nas_display_register_primary(&unsupported));
+    assert(nas_display_mmap_pin(&map)==-EOPNOTSUPP && map==NULL);
+    assert(nas_display_mmap_pins(&unsupported)==0);
+    assert(nas_display_unregister_primary(&unsupported)==0);
+    assert(nas_display_register_primary(&owner));
+    assert(nas_display_mmap_pin(&map)==0 && map==&owner.vm_mapping);
+    assert(nas_display_mmap_pins(&owner)==1);
+    assert(nas_display_mmap_pins(&unsupported)==0);
+    assert(map->context==&owner && map->extent_bytes==sizeof(pixels) &&
+           map->get && map->put && map->page);
+    uint64_t physical=0;
+    assert(map->page(map->context,0,&physical)==0 && physical==0x2000);
+    assert(map->page(map->context,0,NULL)==-EINVAL);
+    physical=UINT64_MAX;
+    assert(map->page(map->context,1,&physical)==-EINVAL && !physical);
+    assert(map->page(map->context,4096,&physical)==-EINVAL);
+    assert(map->get(map->context)); /* fork/split VMA takes its own owner. */
+    assert(nas_display_mmap_pins(&owner)==2);
+    /* Closing the /dev/fb0 fd may bring OpenFile pins to zero, but the VMAs
+     * still prohibit GPU unbind, DMA release and scanout replacement. */
+    assert(nas_display_set_open_pins_callback(file_pins)==0);
+    nas_display_lock_primary();
+    assert(nas_display_unregister_primary(&owner)==-EBUSY);
+    map->put(map->context);
+    assert(nas_display_mmap_pins(&owner)==1);
+    assert(nas_display_unregister_primary(&owner)==-EBUSY);
+    map->put(map->context);
+    assert(nas_display_mmap_pins(&owner)==0);
+    assert(nas_display_unregister_primary(&owner)==0);
+    assert(!map->get(map->context));
+    assert(map->page(map->context,0,&physical)==-ENODEV);
+    assert(nas_display_register_primary(&unsupported));
+}
+
 int main(int argc,char **argv) {
     if(argc!=2)return 2;
     if(strcmp(argv[1],"boot")==0)test_boot();
@@ -202,6 +258,7 @@ int main(int argc,char **argv) {
     else if(strcmp(argv[1],"late")==0)test_locked_late();
     else if(strcmp(argv[1],"detach")==0)test_detach_rebind();
     else if(strcmp(argv[1],"boot-rebind")==0)test_boot_rebind();
+    else if(strcmp(argv[1],"mmap-pin")==0)test_mmap_pin();
     else return 2;
     puts("DISPLAY BACKEND PASS");
     return 0;

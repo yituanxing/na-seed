@@ -7,6 +7,7 @@
 #include "prot.h"
 #include "anon_regions.h"
 #include "file_backing.h"
+#include "device_backing.h"
 #include "../lib/string.h"
 #include "../fs/io.h"
 #include "../arch/mmu.h"
@@ -248,6 +249,72 @@ uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
  * must not consume hundreds of MiB before touching any library page.
  * Mutable MAP_SHARED retains coherent cache frames on demand. All pinned
  * mappings survive close/rename/unlink/fork. */
+static uint64_t vm_device_shared_mmap(uint64_t hint,uint64_t length,
+                                      uint64_t prot,uint64_t flags,
+                                      uint64_t offset,
+                                      struct nas_vm_device *device) {
+    /* nas_fs_mmap_device_pin transferred an independent owner ref; a live
+     * VMA takes its own pin and neither depends on the fd remaining open.
+     * Unsupported DMA, private mappings and executable MMIO fail closed. */
+    const uint64_t MAP_FIXED=0x10ULL;
+    uint64_t result=(uint64_t)-EOPNOTSUPP;
+    struct nas_anon_regions planned={0};
+    if((flags&3U)!=1U || (prot&NAS_VM_EXEC))goto finish;
+    /* A framebuffer may end midway through its final PMM page. The mapped
+     * logical bytes, not the rounded-up virtual page extent, are bounded
+     * by the actual device surface size. */
+    uint64_t size=device->extent_bytes;
+    if(offset>=size || length>size-offset) {
+        result=(uint64_t)-EINVAL;
+        goto finish;
+    }
+    uint64_t pages=(length+PAGE-1)/PAGE,bytes=pages*PAGE;
+    uint64_t last=0;
+    if(!device->page || device->page(device->context,
+                                    offset+(pages-1)*PAGE,&last) || !last)
+        goto finish;
+    uint64_t start=hint;
+    if(flags&MAP_FIXED && !nas_anon_fixed_range_allowed(start,bytes)) {
+        result=(uint64_t)-EINVAL;
+        goto finish;
+    }
+    if(!nas_vma_clone(&planned,&TASK.mm->mmap_vmas)) {
+        result=(uint64_t)-ENOMEM;
+        goto finish;
+    }
+    if(!(flags&MAP_FIXED) && !nas_anon_find_gap(&planned,bytes,&start)) {
+        result=(uint64_t)-ENOMEM;
+        goto finish;
+    }
+    bool recorded=(flags&MAP_FIXED) ?
+        nas_vma_replace_device(&planned,start,bytes,(unsigned)prot,
+                               offset,device) :
+        nas_vma_record_device(&planned,start,bytes,(unsigned)prot,
+                              offset,device);
+    if(!recorded) {
+        result=(uint64_t)-ENOMEM;
+        goto finish;
+    }
+    if(flags&MAP_FIXED) {
+        int sync=sync_shared_intersection(&TASK.mm->mmap_vmas,
+                                          start,bytes,false);
+        if(sync) {
+            result=(uint64_t)(int64_t)sync;
+            goto finish;
+        }
+        /* Device pages are faulted from coherent DMA, never copied into
+         * independent snapshots. Replacement first drops old owned leaves,
+         * then publishes the pinned device VMA. */
+        result=stage_replace_pages(start,pages,0,false,0,0,0);
+        if(result)goto finish;
+    }
+    nas_vma_commit(&TASK.mm->mmap_vmas,&planned);
+    result=start;
+finish:
+    nas_anon_reset(&planned);
+    device->put(device->context);
+    return result;
+}
 uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
                           uint64_t flags, uint64_t fd, uint64_t offset) {
     const uint64_t MAP_SHARED=0x01ULL, MAP_PRIVATE=0x02ULL, MAP_FIXED=0x10ULL;
@@ -263,6 +330,11 @@ uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
     if (!prot || (prot & ~7ULL)) return (uint64_t)-ENOSYS;
     if (!nas_vm_prot_supported(prot) || !nas_arch_user_nx_supported())
         return (uint64_t)-EOPNOTSUPP;
+    struct nas_vm_device *device=NULL;
+    int probe=nas_fs_mmap_device_pin(fd,(prot&NAS_VM_WRITE)!=0,&device);
+    if(probe<0)return (uint64_t)(int64_t)probe;
+    if(probe>0)return vm_device_shared_mmap(hint,length,prot,flags,
+                                           offset,device);
     int64_t valid=nas_fs_mmap_read(fd,offset,0,0);
     if (valid<0) return (uint64_t)valid;
     bool live_shared=false, lazy_private=false;
@@ -448,6 +520,17 @@ uint64_t nas_vm_msync(uint64_t addr,uint64_t length,uint64_t flags) {
      * other address spaces. Explicitly reject it until that mechanism is
      * available; never acknowledge a no-op as MS_INVALIDATE success. */
     if(flags&MS_INVALIDATE)return (uint64_t)-EOPNOTSUPP;
+    /* A mapped GPU page is not a VFS inode cache page. No cache-flush or
+     * fence completion contract has yet been exposed through the device
+     * backing interface; report that limit instead of claiming a fake
+     * successful synchronous scanout. The normal deferred presentation
+     * path still refreshes writable mappings independently of msync. */
+    for(uint64_t at=addr,end=addr+pages*PAGE;at<end;) {
+        const struct nas_anon_region *v=nas_vma_find(&TASK.mm->mmap_vmas,at);
+        if(v && v->kind==NAS_VMA_DEVICE_SHARED)
+            return (uint64_t)-EOPNOTSUPP;
+        at=v->end<end?v->end:end;
+    }
     int rc=sync_shared_intersection(&TASK.mm->mmap_vmas,addr,pages*PAGE,true);
     return (uint64_t)(int64_t)rc;
 }
@@ -625,6 +708,11 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
                 if(!v)return (uint64_t)-ENOMEM;
                 if(v->kind==NAS_VMA_FILE_IMMUTABLE_SHARED)
                     return (uint64_t)-EACCES;
+                /* A read-only framebuffer FD must not gain write access
+                 * through mprotect after the original mmap authorization.
+                 * A lowered device VMA cannot recover that capability. */
+                if(v->kind==NAS_VMA_DEVICE_SHARED &&
+                   !(v->prot&NAS_VM_WRITE))return (uint64_t)-EACCES;
                 if(mutable_shared(v) && !nas_fs_mmap_writable(v->backing))
                     return (uint64_t)-EACCES;
                 at=v->end<end?v->end:end;
@@ -655,7 +743,8 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
                  * instead: the first genuine store marks inode times and
                  * advances the page's coherent dirty state. */
                 if(mutable_shared(v))hw_prot &= ~NAS_VM_WRITE;
-                else if(v && v->kind==NAS_VMA_ANON_SHARED)
+                else if(v && (v->kind==NAS_VMA_ANON_SHARED ||
+                              v->kind==NAS_VMA_DEVICE_SHARED))
                     hw_prot=(unsigned)prot; /* true shared physical frame */
                 else if((prot&NAS_VM_WRITE) &&
                         nas_frame_refs(pa&~UINT64_C(4095))>1)

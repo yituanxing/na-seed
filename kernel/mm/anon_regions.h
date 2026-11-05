@@ -24,7 +24,9 @@
  * ELF, heap, stack and signal helper ranges use this same MM-owned map.
  * Eager snapshot mappings have no live backing references. Lazy immutable
  * private and mutable shared mappings own a pinned file identity independent
- * of the original open FD and its lifetime. */
+ * of the original open FD and its lifetime. Device shared VMAs independently
+ * pin their exact provider; their resident PTEs still own normal PMM frame
+ * references when the provider advertises PMM-backed device pages. */
 enum nas_vma_kind {
     NAS_VMA_ANON_PRIVATE=0,
     NAS_VMA_FILE_PRIVATE_SNAPSHOT=1,
@@ -37,19 +39,23 @@ enum nas_vma_kind {
     /* Eager page-owned shared anonymous mapping; fork preserves writable
      * physical frame aliases instead of COW. */
     NAS_VMA_ANON_SHARED=8,
-    NAS_VMA_FILE_PRIVATE_LAZY=9
+    NAS_VMA_FILE_PRIVATE_LAZY=9,
+    NAS_VMA_DEVICE_SHARED=10
 };
 #define NAS_VMA_DONTFORK 1U
 struct nas_mapped_file;
+struct nas_vm_device;
 struct nas_anon_region {
     uint64_t start,end;
     uint64_t file_offset; /* file offset corresponding to this VMA's start */
     uint32_t prot;        /* logical permissions; NOT hardware PTE state */
     uint32_t kind;
     uint32_t flags;       /* Linux MADV_DONTFORK, MM-owned fork policy */
-    /* One owned ref per live VMA slot, including split fragments and forks.
-     * NULL for anonymous, ELF and eager snapshot policies. */
+    /* Exactly one backing identity per live VMA slot, including split
+     * fragments, staged metadata copies and forks. File and device pins are
+     * mutually exclusive; anonymous/ELF/eager snapshots use neither. */
     struct nas_mapped_file *backing;
+    struct nas_vm_device *device;
 };
 /* The MM owns this heap-backed table. A zeroed table is empty; cloning an MM
  * must use nas_vma_clone rather than copying the pointer. Capacity grows with
@@ -70,6 +76,9 @@ bool nas_vma_record_shared(struct nas_anon_regions *,uint64_t addr,
 bool nas_vma_record_backed(struct nas_anon_regions *,uint64_t addr,
                            uint64_t length,unsigned prot,unsigned kind,
                            uint64_t file_offset,struct nas_mapped_file *backing);
+bool nas_vma_record_device(struct nas_anon_regions *,uint64_t addr,
+                           uint64_t length,unsigned prot,uint64_t file_offset,
+                           struct nas_vm_device *device);
 bool nas_vma_replace(struct nas_anon_regions *,uint64_t addr,uint64_t length,
                      unsigned prot,unsigned kind,uint64_t file_offset);
 bool nas_vma_replace_shared(struct nas_anon_regions *,uint64_t addr,
@@ -78,6 +87,9 @@ bool nas_vma_replace_shared(struct nas_anon_regions *,uint64_t addr,
 bool nas_vma_replace_backed(struct nas_anon_regions *,uint64_t addr,
                             uint64_t length,unsigned prot,unsigned kind,
                             uint64_t file_offset,struct nas_mapped_file *backing);
+bool nas_vma_replace_device(struct nas_anon_regions *,uint64_t addr,
+                            uint64_t length,unsigned prot,uint64_t file_offset,
+                            struct nas_vm_device *device);
 bool nas_vma_protect(struct nas_anon_regions *,uint64_t addr,uint64_t length,
                      unsigned prot);
 bool nas_vma_set_dontfork(struct nas_anon_regions *,uint64_t addr,

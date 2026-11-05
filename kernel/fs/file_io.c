@@ -11,6 +11,7 @@
 #include "../mm/usercopy.h"
 #include "../mm/heap.h"
 #include "../drivers/tty.h"
+#include "../drivers/display/display.h"
 #include "../arch/arch.h"
 #include "../arch/mmu.h"
 #include "../arch/linux_fcntl_abi.h"
@@ -42,6 +43,24 @@ uint16_t nas_fs_poll_description(unsigned slot,uint16_t events) {
 
 /* Same open-file-description source for read(), exec and file mmap.
  * Do not expose kernel pointer paths or share mutable file offsets. */
+int nas_fs_mmap_device_pin(uint64_t fd,bool writable,
+                           struct nas_vm_device **out) {
+    if(!out)return -EINVAL;
+    *out=NULL;
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
+        return -EBADF;
+    unsigned slot=TASK.fds->entries[fd].slot;
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+        return -EBADF;
+    if(TASK.fds->entries[fd].kind!=FD_FRAMEBUFFER)return 0;
+    const struct nas_open_file *opened=&nas_open_files[slot];
+    if(opened->status_flags&NAS_LINUX_O_PATH)return -EBADF;
+    const unsigned access=(unsigned)(opened->status_flags&3ULL);
+    if(access==1U || access==3U || (writable && access!=2U))
+        return -EACCES;
+    int rc=nas_display_mmap_pin(out);
+    return rc ? rc : 1;
+}
 int nas_fs_mmap_immutable_readonly(uint64_t fd) {
     if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
         return -EBADF;

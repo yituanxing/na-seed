@@ -31,6 +31,9 @@ int64_t nas_fs_mmap_read_immutable(struct nas_mapped_file *f,
 }
 uint64_t nas_hhdm_offset(void){return (uint64_t)(uintptr_t)dummy_ram;}
 uint32_t nas_frame_refs(uint64_t pa){(void)pa;return 1;}
+/* M200's device-fault branch is linked but this older fixture records only
+ * anon/file VMAs. The real device PMM refcount oracle is in test-m101-cow. */
+bool nas_frame_get(uint64_t pa){(void)pa;assert(0);return false;}
 static bool fail_alloc,fail_prepare;
 uint64_t nas_frame_alloc(void) {
     if(fail_alloc)return 0;

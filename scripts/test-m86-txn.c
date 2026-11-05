@@ -11,6 +11,7 @@
 #include "../kernel/task.h"
 #include "../kernel/mm/vm.h"
 #include "../kernel/mm/frame.h"
+#include "../kernel/mm/device_backing.h"
 #include "../kernel/fs/io.h"
 #include "../kernel/fs/lookup.h"
 #include "../kernel/arch/abi.h"
@@ -47,6 +48,41 @@ bool nas_user_write_bytes(uint64_t addr,const uint8_t *src,uint64_t len){
 }
 static bool shared_regrown;
 static unsigned shared_dirty,shared_sync,shared_rearm,internal_sync;
+/* M200's file-mmap entry has a separate FD_FRAMEBUFFER adapter; model its
+ * exact lifetime boundary without substituting a fake VM implementation. */
+static uint64_t framebuffer_pages[2];
+static unsigned framebuffer_pins;
+static bool framebuffer_get(void *ctx){
+    if(ctx!=framebuffer_pages)return false;
+    framebuffer_pins++;
+    return true;
+}
+static void framebuffer_put(void *ctx){
+    assert(ctx==framebuffer_pages && framebuffer_pins);
+    framebuffer_pins--;
+}
+static int framebuffer_page(void *ctx,uint64_t off,uint64_t *out){
+    if(ctx!=framebuffer_pages || !out || (off&(P-1)) || off>=2*P)
+        return -22;
+    *out=framebuffer_pages[off/P];
+    return *out?0:-19;
+}
+static struct nas_vm_device framebuffer_device={
+    .context=framebuffer_pages,.extent_bytes=2*P-1024,
+    .get=framebuffer_get,.put=framebuffer_put,.page=framebuffer_page
+};
+int nas_fs_mmap_device_pin(uint64_t fd,bool writable,
+                           struct nas_vm_device **out){
+    if(!out)return -22;
+    *out=NULL;
+    if(fd==6 || fd==7){
+        if(fd==7 && writable)return -13;
+        if(!framebuffer_get(framebuffer_pages))return -16;
+        *out=&framebuffer_device;
+        return 1;
+    }
+    return 0;
+}
 int nas_fs_mmap_pin(uint64_t fd,bool writable,struct nas_mapped_file **out){
     if(!out)return -22;
     *out=0;
@@ -699,6 +735,51 @@ int main(void){
     assert(nas_mmu_unmap_page(lame_fault&~(P-1)));
     assert(nas_mmu_unmap_page(stack_bottom));
     assert(living()==before_stack);
+    /* Map an actual PMM-backed device alias through the REAL vm.c entry,
+     * not directly through the VMA helper. A borrowed page is pinned by
+     * the fault resolver, mprotect cannot escalate an RO device mapping,
+     * and partial unmap plus MAP_FIXED release VMA pins independently of
+     * the original provider-owned PMM pages. */
+    unsigned before_framebuffer=living();
+    framebuffer_pages[0]=nas_frame_alloc();
+    framebuffer_pages[1]=nas_frame_alloc();
+    assert(framebuffer_pages[0] && framebuffer_pages[1]);
+    assert((int64_t)nas_vm_file_mmap(0,2*P,3,1,6,0)==-22);
+    assert(framebuffer_pins==0);
+    assert((int64_t)nas_vm_file_mmap(0,P,3,2,6,0)==-95);
+    assert(framebuffer_pins==0);
+    uint64_t fb=nas_vm_file_mmap(0,2*P-1024,3,1,6,0);
+    assert((int64_t)fb>0 && framebuffer_pins==1);
+    const struct nas_anon_region *fv=nas_vma_find(&space.mmap_vmas,fb);
+    assert(fv && fv->kind==NAS_VMA_DEVICE_SHARED &&
+           fv->device==&framebuffer_device && !nas_mmu_user_byte(fb));
+    assert(nas_mm_handle_fault(&space,fb,NAS_UP_WRITE,false)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(nas_mm_handle_fault(&space,fb+P,NAS_UP_READ,false)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(slot(fb,false)->pa==framebuffer_pages[0] &&
+           slot(fb+P,false)->pa==framebuffer_pages[1]);
+    assert(nas_frame_refs(framebuffer_pages[0])==2 &&
+           nas_frame_refs(framebuffer_pages[1])==2);
+    *(uint8_t *)(ram+framebuffer_pages[0])=0x4a;
+    assert(*nas_mmu_user_byte(fb)==0x4a);
+    assert((int64_t)nas_vm_madvise(fb,P,4)==-95);
+    assert((int64_t)nas_vm_msync(fb,P,4)==-95);
+    assert(nas_vm_munmap(fb,P)==0 && framebuffer_pins==1);
+    assert(nas_frame_refs(framebuffer_pages[0])==1 &&
+           nas_frame_refs(framebuffer_pages[1])==2);
+    assert(nas_vm_anon_mmap(fb+P,P,3,0x32,UINT64_MAX,0)==fb+P);
+    assert(framebuffer_pins==0 && nas_frame_refs(framebuffer_pages[1])==1);
+    assert(nas_vm_munmap(fb+P,P)==0);
+    uint64_t fb_readonly=nas_vm_file_mmap(0,P,1,1,7,0);
+    assert((int64_t)fb_readonly>0 && framebuffer_pins==1);
+    assert((int64_t)nas_vm_mprotect(fb_readonly,P,3)==-13);
+    assert((int64_t)nas_vm_file_mmap(0,P,3,1,7,0)==-13);
+    assert(nas_vm_munmap(fb_readonly,P)==0 && framebuffer_pins==0);
+    assert(nas_frame_put(framebuffer_pages[0]));
+    assert(nas_frame_put(framebuffer_pages[1]));
+    assert(living()==before_framebuffer);
+    puts("[M200 DEVICE MMAP HOST PASS] real mmap route, partial DMA page, borrowed PMM frames, split, replacement, no COW");
     puts("[M80 LARGE ANON MMAP HOST PASS] 64MiB+4KiB, high 64-bit VMA, honest total-window ENOMEM");
     puts("[M124 IMMUTABLE MAP_SHARED HOST PASS] bootfs RO snapshot and write escalation rejected");
     puts("[A005 VM SHARED ALIAS HOST PASS] alias, VMA refs/split, truncate SIGBUS/regrow, write fault, mprotect and msync");

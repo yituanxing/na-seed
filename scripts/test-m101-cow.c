@@ -14,6 +14,7 @@
 #include "../kernel/mm/fault.h"
 #include "../kernel/mm/usercopy.h"
 #include "../kernel/mm/frame.h"
+#include "../kernel/mm/device_backing.h"
 #include "../kernel/fs/io.h"
 #include "../kernel/arch/user_pt.h"
 #define P 4096ULL
@@ -27,6 +28,7 @@ static struct mock_root roots[NROOTS];
 static alignas(4096) uint8_t memory[NFRAMES*P];
 static uint32_t refs[NFRAMES];
 static unsigned get_calls,fail_get_on;
+static bool fail_prepare,fail_exchange;
 /* Real MM/COW code over one shared inode-owned cache frame; only FS page
  * acquisition is mocked, so a fork that accidentally COWs the page fails. */
 struct nas_mapped_file { unsigned refs; };
@@ -34,8 +36,34 @@ static struct nas_mapped_file file_owner={.refs=1};
 static uint64_t file_pages[2];
 static uint64_t file_size=2*P;
 static unsigned mapped_dirty;
-/* This fixture has mutable shared VMAs only. Immutable lazy private reads
- * are verified with the real VM/fault path in test-m86-txn.c. */
+/* Device page() only BORROWS a PMM frame.  The provider holds its original
+ * reference and MM must acquire one more for EACH resident PTE. */
+static uint64_t device_pages[4];
+static unsigned device_pins=1,device_page_calls;
+static bool device_get(void *context) {
+    assert(context==device_pages && device_pins);
+    ++device_pins;
+    return true;
+}
+static void device_put(void *context) {
+    assert(context==device_pages && device_pins>1);
+    --device_pins;
+}
+static int device_page(void *context,uint64_t offset,uint64_t *pa) {
+    assert(context==device_pages && pa);
+    ++device_page_calls;
+    *pa=0;
+    if(offset==2*P)return -5; /* device error: no MM leaf or new ref */
+    if(offset%P || offset>=4*P)return -22;
+    *pa=device_pages[offset/P];
+    return *pa ? 0 : -5;
+}
+static struct nas_vm_device device_owner={
+    .context=device_pages,.get=device_get,
+    .put=device_put,.page=device_page
+};
+/* This fixture covers mutable-file and device shared VMAs. Immutable lazy
+ * private reads are verified by the real VM/fault path in test-m86-txn.c. */
 int64_t nas_fs_mmap_read_immutable(struct nas_mapped_file *file,
                                     uint64_t off,uint8_t *dst,uint64_t len) {
     (void)file;(void)off;(void)dst;(void)len;
@@ -117,11 +145,11 @@ bool nas_mmu_reclaim_root(uint64_t id) {
     return true;
 }
 bool nas_mmu_prepare_leaf_at(uint64_t id,uint64_t va) {
-    return root(id) && va && !(va&(P-1));
+    return !fail_prepare && root(id) && va && !(va&(P-1));
 }
 bool nas_mmu_exchange_leaf_at(uint64_t id,uint64_t va,uint64_t new_pa,
                               unsigned prot,uint64_t *old) {
-    if(!old || va&(P-1))return false;
+    if(fail_exchange || !old || va&(P-1))return false;
     struct mapping *m=entry(id,va,new_pa!=0);
     if(!m)return false;
     *old=m->pa;
@@ -301,8 +329,93 @@ int main(void) {
            nas_frame_refs(file_pages[1])==1);
     assert(nas_frame_put(file_pages[0]));file_pages[0]=0;
     assert(nas_frame_put(file_pages[1]));file_pages[1]=0;
+    /* M200: device-borrowed frames are not file-cache pages or private
+     * copies.  Fault, fork, usercopy and ptrace must all preserve PA. */
+    for(unsigned i=0;i<4;i++)if(i!=2) {
+        device_pages[i]=nas_frame_alloc();assert(device_pages[i]);
+        memset(memory+device_pages[i],0x61+i,P);
+    }
+    struct nas_mm *device_mm=nas_mm_new();assert(device_mm);
+    device_mm->root_phys=nas_mmu_alloc_root();assert(device_mm->root_phys);
+    assert(nas_vma_record_device(&device_mm->mmap_vmas,X,4*P,3,
+                                 0,&device_owner));
+    assert(nas_vma_record_device(&device_mm->mmap_vmas,A,P,1,
+                                 3*P,&device_owner));
+    assert(device_pins==3);
+    unsigned dirty_before=mapped_dirty;
+    assert(nas_mm_handle_fault(device_mm,X,NAS_UP_READ,false)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(phys(device_mm,X,&access)==device_pages[0] &&
+           access==(NAS_UP_READ|NAS_UP_WRITE) &&
+           nas_frame_refs(device_pages[0])==2);
+    /* Even an unusually read-only hardware leaf must upgrade in-place,
+     * without treating another device owner reference as COW. */
+    uint64_t same=0;
+    assert(nas_mmu_exchange_leaf_at(device_mm->root_phys,X,
+           device_pages[0],1,&same) && same==device_pages[0]);
+    assert(nas_mm_handle_fault(device_mm,X,NAS_UP_WRITE,true)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(phys(device_mm,X,&access)==device_pages[0] &&
+           (access&NAS_UP_WRITE) && nas_frame_refs(device_pages[0])==2);
+    assert(nas_mm_handle_fault(device_mm,A,NAS_UP_READ,false)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(phys(device_mm,A,&access)==device_pages[3] &&
+           access==NAS_UP_READ);
+    struct nas_mm *device_child=nas_mm_fork_cow(device_mm);
+    assert(device_child && device_pins==5 &&
+           phys(device_child,X,&access)==device_pages[0] &&
+           (access&NAS_UP_WRITE) && nas_frame_refs(device_pages[0])==3);
+    assert(phys(device_child,A,&access)==device_pages[3] &&
+           access==NAS_UP_READ);
+    struct nas_task device_task={.mm=device_child,.state=NAS_TASK_STOPPED};
+    nas_current_task=&device_task;
+    different=0xb7;
+    assert(nas_user_write_bytes(X+7,&different,1));
+    assert(memory[device_pages[0]+7]==0xb7 &&
+           phys(device_child,X,0)==phys(device_mm,X,0));
+    different=0xc8;
+    assert(nas_vm_write_task_bytes(&device_task,X+8,&different,1)==1 &&
+           memory[device_pages[0]+8]==0xc8);
+    assert(nas_vm_write_task_bytes(&device_task,A,&different,1)==-EFAULT &&
+           memory[device_pages[3]]==0x64); /* shared, but logically RO */
+    assert(nas_user_read_bytes(X+P,check,4) &&
+           check[0]==0x62 && nas_frame_refs(device_pages[1])==2);
+    assert(nas_mm_handle_fault(device_mm,X+P,NAS_UP_READ,false)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(phys(device_child,X+P,0)==phys(device_mm,X+P,0) &&
+           nas_frame_refs(device_pages[1])==3);
+    unsigned pages_before=device_page_calls;
+    unsigned refs_before=total_refs();
+    assert(nas_mm_handle_fault(device_mm,X+2*P,NAS_UP_READ,false)==
+           NAS_MM_FAULT_NEEDS_BACKING);
+    assert(device_page_calls==pages_before+1 &&
+           total_refs()==refs_before);
+    get_calls=0;fail_get_on=1;
+    assert(nas_mm_handle_fault(device_mm,X+3*P,NAS_UP_READ,false)==
+           NAS_MM_FAULT_INVARIANT && total_refs()==refs_before);
+    fail_get_on=0;
+    fail_prepare=true;
+    assert(nas_mm_handle_fault(device_mm,X+3*P,NAS_UP_READ,false)==
+           NAS_MM_FAULT_OOM && total_refs()==refs_before);
+    fail_prepare=false;fail_exchange=true;
+    assert(nas_mm_handle_fault(device_mm,X+3*P,NAS_UP_READ,false)==
+           NAS_MM_FAULT_INVARIANT && total_refs()==refs_before);
+    fail_exchange=false;
+    assert(nas_mm_handle_fault(device_mm,X+3*P,NAS_UP_READ,false)==
+           NAS_MM_FAULT_RESOLVED &&
+           nas_frame_refs(device_pages[3])==4);
+    assert(mapped_dirty==dirty_before);
+    nas_mm_put(device_child);
+    nas_mm_put(device_mm);
+    assert(device_pins==1 && nas_frame_refs(device_pages[0])==1 &&
+           nas_frame_refs(device_pages[1])==1 &&
+           nas_frame_refs(device_pages[3])==1);
+    for(unsigned i=0;i<4;i++)if(device_pages[i]) {
+        assert(nas_frame_put(device_pages[i]));device_pages[i]=0;
+    }
     nas_mm_put(parent);
     assert(total_refs()==0);
     puts("[M101 COW PASS] rollback, no orphan PTE fork, shared fork, COW write, singleton promotion, RX ptrace isolation and lazy usercopy");
     puts("[A005 SHARED FORK PASS] same inode frame across fork, lazy alias, usercopy and ptrace write");
+    puts("[M200 DEVICE SHARED PASS] PMM borrow/pin/ref rollback, fork aliases, usercopy/ptrace no-COW or file dirty");
 }

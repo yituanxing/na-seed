@@ -82,6 +82,18 @@ int main(void) {
     nas_open_files[SLOT].status_flags=2; /* O_RDWR */
     nas_open_files[SLOT].position=731;
     nas_open_files[SLOT].ops=&framebuffer;
+    /* Device mmap dispatch is a separate FD authorization path. This
+     * firmware-owned framebuffer has no PMM-managed DMA backing and must
+     * fail closed, even though ordinary positional pixel I/O still works. */
+    struct nas_vm_device *mmap_owner=(void *)(uintptr_t)1;
+    assert(nas_fs_mmap_device_pin(FD,true,&mmap_owner)==-EOPNOTSUPP);
+    assert(mmap_owner==NULL);
+    assert(nas_fs_mmap_device_pin(NAS_FD_LIMIT,true,&mmap_owner)==-EBADF);
+    nas_open_files[SLOT].status_flags=0; /* O_RDONLY */
+    assert(nas_fs_mmap_device_pin(FD,true,&mmap_owner)==-EACCES);
+    nas_open_files[SLOT].status_flags=1; /* O_WRONLY */
+    assert(nas_fs_mmap_device_pin(FD,false,&mmap_owner)==-EACCES);
+    nas_open_files[SLOT].status_flags=2;
 
     static uint8_t source[1300],target[1300];
     for(unsigned i=0;i<sizeof(source);i++)source[i]=(uint8_t)(i*17U+3U);
