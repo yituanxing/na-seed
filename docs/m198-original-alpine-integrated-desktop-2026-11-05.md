@@ -126,3 +126,20 @@ archived physical UART against a CRLF-normalized full-line matcher succeeds.
 This second **host oracle** repair leaves the original physical GPU, keyboard,
 process exit/wait4, second-QEMU and ext4 disk checks intact. Only the second
 QEMU + independent disk verification can mark the full M198 acceptance green.
+
+## Second-boot marker regression (Actions 41959762582)
+
+The next full run passed the first original Alpine boot, physical GUI and
+original Vim, real guest ext4 readback, signed public APK and M197 workload on
+all three ISAs. The second QEMU also **executed the exact saved editor-byte
+comparison successfully** and produced `M197_REOPEN_WORKLOAD_PASS` and a
+clean user exit. Its only failure was the M198 *host* exact-line oracle:
+`m198-alpine-reopen-cases.tsv` passed a `printf '...\\n'` command through
+Limine's argument escaping, where `\\n` became bare `n`. The captured native
+log therefore read `M198_GUI_REOPEN_PASSn[DYN]`, and `grep -Fxq` rejected it.
+
+Replace just the marker emitter with `echo M198_GUI_REOPEN_PASS`, whose newline
+does not depend on nested argv escape rules. Add a host-only contract to keep
+backslash-newline escapes out of this manifest. Actual second-boot ext4
+`debugfs` comparison, fsck and all three native QEMU jobs remain obligatory;
+this correction does not claim them passed until they are rerun.

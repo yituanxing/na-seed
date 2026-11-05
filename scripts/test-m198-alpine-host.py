@@ -33,6 +33,12 @@ def check():
     assert len(cases) == 1 and len(cases[0]) == 6
     assert cases[0][0] == 'm197-batch' and cases[0][5] == '/bin/busybox'
     assert 'M198_GUI_REOPEN_PASS' in cases[0][2]
+    # The manifest command crosses Limine's argv escape parser. A printf
+    # '\\n' is consumed as literal 'n' before the guest shell sees it; the
+    # archived 41959762582 second boot proved editor bytes existed but logged
+    # M198_GUI_REOPEN_PASSn, so an exact host line check falsely failed.
+    assert '&& echo M198_GUI_REOPEN_PASS &&' in cases[0][2]
+    assert '\\n' not in cases[0][2]
     assert '/root/m198-editor.txt' in cases[0][2]
     assert 'M197_PUBLIC_ALPINE_SOFTWARE_2026' in cases[0][3]
     disk = load('m198-alpine-disk-check.py')
