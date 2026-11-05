@@ -21,6 +21,22 @@ SAMPLES = ((100, 300, (255, 0, 0)),
            (700, 300, (255, 255, 255)))
 
 
+def guest_started_fbi(raw_uart: bytes) -> bool:
+    """Observe an entire line, not the echoed printf command.
+
+    Original Alpine getty/ash on RV64 can terminate UART output with CR CR LF;
+    bytes.splitlines() handles it and the other native ISAs' CR LF/LF.
+    """
+    return b'M201_FBI_START' in raw_uart.splitlines()
+
+
+def guest_exited_fbi(raw_uart: bytes) -> bool:
+    """Observe the executed command's numeric status, never shell echo."""
+    prefix = b'M201_FBI_EXEC_RC='
+    return any(line.startswith(prefix) and line[len(prefix):].isdigit()
+               for line in raw_uart.splitlines())
+
+
 def exact_physical_pixels(frame: Path) -> None:
     tokens, pixels = qmp['ppm_tokens'](frame.read_bytes())
     if tokens != [b'P6', b'800', b'600', b'255']:
@@ -48,7 +64,7 @@ def run(args: argparse.Namespace) -> None:
             serial = args.serial.read_bytes() if args.serial.is_file() else b''
             if b'[FAIL]' in serial:
                 raise RuntimeError('real guest reported kernel/boot failure')
-            if b'M201_FBI_START\r\n' in serial or b'M201_FBI_START\n' in serial:
+            if guest_started_fbi(serial):
                 break
             time.sleep(0.075)
         else:
@@ -77,7 +93,7 @@ def run(args: argparse.Namespace) -> None:
                 # once its single 15s slide has displayed; screen evidence
                 # MUST be captured before this exit/cleanup.
                 serial = args.serial.read_bytes() if args.serial.is_file() else b''
-                if b'M201_FBI_EXEC_RC=' in serial:
+                if guest_exited_fbi(serial):
                     raise RuntimeError('original fbi exited before QMP pixel '
                                        f'witness; {last_error}')
                 time.sleep(0.10)

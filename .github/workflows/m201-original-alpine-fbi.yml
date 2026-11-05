@@ -40,6 +40,7 @@ jobs:
           sh -n scripts/stage-m201-alpine-fbi.sh
           sh -n scripts/probe-m201-alpine-fbi.sh
           python3 -m py_compile scripts/m201-image-fixture.py scripts/m201-qmp-alpine-fbi.py scripts/m201-alpine-uart.py
+          python3 scripts/test-m201-serial-lines.py
           python3 scripts/m201-image-fixture.py /tmp/m201-original-bars.png
           python3 - <<'PY'
           import importlib.util

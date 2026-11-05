@@ -57,6 +57,13 @@ original exit is held until that QMP watcher has succeeded. Timeouts,
 original `fbi` nonzero status, missing fonts, missing real GPU pixels and
 stale success markers are hard failures.
 
+The first native RV64 attempt proved the original `fbi` exited `0`, but its
+raw getty/ash UART used CR CR LF rather than the QMP watcher's expected CR LF.
+The watcher now parses whole UART lines on all three ISAs, and explicitly
+rejects status strings found only inside echoed shell commands. The
+independent host regression covers both physical line endings and false
+positives. Only the new RV64 QMP result can close that acceptance gap.
+
 One real per-ISA kernel is built with the established ext4/VirtIO block and
 VirtIO-GPU feature gates, then **one** original Alpine/OpenRC QEMU instance
 starts. M197's much slower guest-side public HTTPS APK/Git/Bash/Lua/SQLite
