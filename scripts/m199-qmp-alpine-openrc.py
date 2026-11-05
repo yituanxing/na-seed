@@ -90,8 +90,13 @@ def reboot_auto_boot(sock, reader, outdir: Path) -> None:
     ui['pointer_release'](sock, reader)
     before = prior['screenshot'](sock, reader, outdir, 'm199-reboot-shell')
     prior['send_key'](sock, reader, 'a')
+    # The fresh shell prompt is on the *first* PTY text row (y=180..199).
+    # M188's Vim-body ROI starts at y=199 and can never observe this input:
+    # the preceding real RV64/ARM64 QMP frames visibly contain the 'a' at
+    # x=354, y=184 but differ by zero pixels inside the old Vim-body ROI.
+    # Limit this witness to the first-row text, not the animated LVGL clock.
     m188['changed_until'](sock, reader, outdir, 'm199-reboot-evdev-key',
-                          before, (309, 199, 615, 410), 30, 25)
+                          before, (340, 180, 500, 200), 65, 25)
     prior['screenshot'](sock, reader, outdir, 'm199-reboot-keyboard-visible')
     # Do not terminate the graphic service; the reboot oracle verifies that
     # OpenRC owns it, rather than a host terminal automation child process.

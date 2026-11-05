@@ -169,6 +169,10 @@ def check() -> None:
     assert "first_boot(sock, reader, serial, outdir)" in qmp
     assert "reboot_auto_boot(sock, reader, outdir)" in qmp
     assert 'm188' in qmp and 'changed_until' in qmp
+    # The reboot inputs one character at the first terminal row, above the
+    # M188 Vim-body ROI (y>=199). Reject a regression to the old invisible
+    # keyboard witness even if the synthetic host-only checks otherwise pass.
+    assert "before, (340, 180, 500, 200), 65, 25" in qmp
     assert "'M199_REBOOT_LOG_RC=0'" in qmp
     assert "'M187_DESKTOP_INITIAL_VISIBLE', deadline" not in qmp
     assert 'pointer_click' in qmp and 'screenshot' in qmp
