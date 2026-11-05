@@ -82,7 +82,14 @@ def main() -> None:
     # BusyBox setsid's new-session leader opens a real graphical tty1,
     # never sending QMP keyboard bytes into the serial authenticated shell.
     assert "setsid sh -c 'exec </dev/tty1; " in uart
-    assert 'exec /usr/bin/fbi' in uart
+    assert '/usr/bin/fbi --interactive' in uart
+    # BusyBox setsid can fork; its initial exit 0 MUST NOT be mistaken for
+    # real fbi completion. Only the new-session child writes its exit status.
+    assert "while [ ! -s /root/m202-fbi-exit.status ]; do sleep 1; done" in uart
+    assert '$(cat /root/m202-fbi-exit.status)' in uart
+    assert 'exec /usr/bin/fbi' not in uart
+    probe = Path('scripts/probe-m202-alpine-interactive-fbi.sh').read_text()
+    assert 'build/m202-$port.qmp' in probe and '${#NAS_QEMU_QMP_SOCKET}' in probe
     assert "'spc'" in Path('scripts/m202-qmp-alpine-interactive-fbi.py').read_text()
     print('[M202 HOST CONTRACT PASS] LF/CRLF/CRCRLF whole-line anti-echo, '
           'two distinct CRC-correct PNG inputs, exact two-frame RGB check, '

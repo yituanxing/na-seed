@@ -26,7 +26,14 @@ export BUSYBOX_PARITY_BINARY="$busybox"
 export BUSYBOX_PARITY_CASE=m202-fbi BUSYBOX_PARITY_EXPECTED_COUNT=1
 export BUSYBOX_PARITY_MANIFEST=scripts/m202-fbi-cases.tsv
 export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M202_DIAG_SECONDS:-280}
-export NAS_QEMU_QMP_SOCKET="$work/m202-interactive-fbi.qmp"
+# AF_UNIX sun_path is at most 107 pathname bytes on Linux. CI's checkout
+# prefix already consumes most of that budget; use one short per-ISA socket
+# rather than embedding the long signed-Alpine artifact directory.
+export NAS_QEMU_QMP_SOCKET="$PWD/build/m202-$port.qmp"
+if [ "${#NAS_QEMU_QMP_SOCKET}" -ge 108 ]; then
+    echo '[M202 QMP FAIL] UNIX socket pathname exceeds Linux sun_path' >&2
+    exit 1
+fi
 
 # No stale headless kernel; build once with both real hardware classes.
 case "$port" in

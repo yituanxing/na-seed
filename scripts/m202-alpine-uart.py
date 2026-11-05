@@ -22,19 +22,24 @@ COMMANDS = (
      'printf "M202_APK_VT_RC=%d\\n" "$?"\r',
      'M202_APK_VT_RC=0',
      'original signed fbi, two independent PNGs and real VT chrdev'),
-    # An ORIGINAL Alpine serial ash executes a real BusyBox `setsid` process
-    # and WAITS in foreground. Its new session reads only the virtual TTY,
-    # not serial UART (which still owns authenticated OpenRC/getty/login).
+    # An ORIGINAL Alpine serial ash executes a real BusyBox `setsid` process.
+    # BusyBox setsid forks when invoked as a process-group leader; its parent
+    # can report exit 0 before the new-session child has even exec'd fbi.
+    # Thus the child records ONLY fbi's real exit code in guest ext4, while
+    # the authenticated serial ash blocks until that code is available.
+    # The new session reads only VT1, not the UART OpenRC/getty/login tty.
     # Upstream fbi uses stdin's TCGETS/TCSETS + select/read, Linux VT/KD,
     # rather than libinput/udev or a synthetic guest keyboard helper.
-    ('printf "M202_FBI_START\\n"; '
+    (': > /root/m202-fbi-exit.status; printf "M202_FBI_START\\n"; '
      # Original BusyBox setsid has no portable -c option. Its new-session
      # leader opens tty1 after setsid; Linux TTY open acquires that ctty.
      # Serial OpenRC/getty remains an independent physical terminal.
-     "setsid sh -c 'exec </dev/tty1; exec /usr/bin/fbi --interactive -d /dev/fb0 -t 0 "
+     "setsid sh -c 'exec </dev/tty1; /usr/bin/fbi --interactive -d /dev/fb0 -t 0 "
      '/root/m201-four-bars.png /root/m202-second-bars.png '
-     ">/root/m202-fbi.log 2>&1'; "
-     'printf "M202_FBI_EXEC_RC=%d\\n" "$?"\r',
+     ">/root/m202-fbi.log 2>&1; printf \"%d\\n\" \"$?\" "
+     "> /root/m202-fbi-exit.status'; "
+     'while [ ! -s /root/m202-fbi-exit.status ]; do sleep 1; done; '
+     'printf "M202_FBI_EXEC_RC=%s\\n" "$(cat /root/m202-fbi-exit.status)"\r',
      'M202_FBI_EXEC_RC=0',
      'original unmodified fbi received physical VT keys and exited normally'),
     ('test -s /root/m202-fbi.log && '

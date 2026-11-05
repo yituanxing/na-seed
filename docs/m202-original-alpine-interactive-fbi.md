@@ -16,8 +16,10 @@ M202's one cohesive target is original Linux virtual-console operation:
   routing keyboard input into the active console. No duplicate hardware driver,
   host UART key injection or replacement guest application.
 - Original Alpine `/sbin/init`/OpenRC/getty/login/ash executes **the exact
-  signed APK `/usr/bin/fbi`**, with `--interactive`, foreground wait and stdin
-  bound to `/dev/tty1` in a new session. Its `kbd.c` default stdin path must
+  signed APK `/usr/bin/fbi`**, with `--interactive`, genuine child-exit wait and stdin
+  bound to `/dev/tty1` in a new session. BusyBox `setsid` may fork and return
+  0 before the child launches; the real child writes its eventual fbi exit
+  status to ext4, which the authenticated Alpine ash waits for. Its `kbd.c` default stdin path must
   consume the physical keyboard; opt-in libinput/udev is not presumed working.
 - Upstream `vt.c` uses Linux VT_GETMODE/SETMODE, KDGETMODE/SETMODE and
   VT_GETSTATE/ACTIVATE/WAITACTIVE; `kbd.c` uses TCGETS/TCSETS and poll/select.
@@ -44,7 +46,9 @@ One native system-QEMU per ISA must satisfy all of the following:
    GPU `screendump` must now contain `(100,300)` cyan, `(300,300)` magenta,
    `(500,300)` yellow, `(700,300)` black. An unchanged first screen fails.
 4. Host QMP injects *real* VirtIO keyboard `q` down/up. Only the genuine
-   original Alpine foreground fbi returning `M202_FBI_EXEC_RC=0` qualifies.
+   original Alpine fbi child returning `M202_FBI_EXEC_RC=0` after its new-session
+   shell writes the actual process exit status qualifies; setsid's parent's
+   earlier exit 0 cannot satisfy this criterion.
 5. The Alpine shell checks that upstream did not report failed Linux VT
    switching and the real `/dev/tty1` has working termios after fbi quits.
 
