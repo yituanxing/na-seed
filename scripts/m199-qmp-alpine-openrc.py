@@ -26,11 +26,13 @@ base = old['base']
 
 
 def wait_original_openrc(serial: Path, mode: str, seconds: int) -> float:
-    # The original ash checks the actual OpenRC status after the desktop's
-    # own stdout/stderr have been captured and re-printed to real UART.  A
-    # command receipt alone is not a successful graphical service.
+    # Original ash checks the service's real log, including compositor and
+    # LVGL milestones, and prints its own unique whole-line status to UART.
+    # Never replay raw desktop log lines onto UART: the strict M167 marker
+    # verifier counts physical occurrences and an echoed grep/cat command
+    # could otherwise look like two independent desktop instances.
     expected = ('M199_FIRST_OPENRC_GUI_RC=0' if mode == 'first' else
-                'M199_REBOOT_AUTO_STATUS_RC=0')
+                'M199_REBOOT_LOG_RC=0')
     # Public HTTPS APK transactions can occupy most of boot one. The QMP
     # budget starts only when the native OpenRC GUI is visibly ready, while
     # this pre-GUI limit follows the owning boot's full native QEMU budget.
@@ -38,12 +40,7 @@ def wait_original_openrc(serial: Path, mode: str, seconds: int) -> float:
     preparation = time.monotonic() + int(
         os.environ.get('NAS_M199_PRE_GUI_SECONDS', default_preparation))
     prior['wait_native_marker'](None, None, serial, expected, preparation)
-    deadline = time.monotonic() + seconds
-    prior['wait_native_marker'](None, None, serial,
-                                'M187_DESKTOP_INITIAL_VISIBLE', deadline)
-    prior['wait_native_marker'](None, None, serial,
-                                'M171_LVGL_REAL_RENDER_PASS', deadline)
-    return deadline
+    return time.monotonic() + seconds
 
 
 def check_native_gpu(sock, reader, outdir: Path, name: str) -> Path:

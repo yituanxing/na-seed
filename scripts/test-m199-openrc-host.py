@@ -84,6 +84,7 @@ def check() -> None:
     assert ': > /var/log/naseed-desktop.log' in first_commands
     assert 'while [ -e /tmp/naseed-desktop.sock ]' in first_commands
     assert '/var/log/naseed-desktop.log' in first_commands
+    assert 'cat /var/log/naseed-desktop.log' not in first_commands
     assert '/run/naseed-desktop.pid' in first_commands
     assert '/tmp/naseed-desktop.sock' in first_commands
     assert '/root/m198-editor.txt' in first_commands
@@ -115,6 +116,7 @@ def check() -> None:
     assert 'M199_REBOOT_APK_RC=0' in second_markers
     assert 'M199_REBOOT_WORKLOAD_RC=0' in second_markers
     assert 'M199_REBOOT_DURABLE_RC=0' in second_markers
+    assert 'cat /var/log/naseed-desktop.log' not in second_commands
     assert '/root/m198-editor.txt' in second_commands
     assert '/root/m197-wan.txt' in second_commands
     assert '/bin/bash /root/m197-software-workload.sh --reopen' in second_commands
@@ -167,6 +169,8 @@ def check() -> None:
     assert "first_boot(sock, reader, serial, outdir)" in qmp
     assert "reboot_auto_boot(sock, reader, outdir)" in qmp
     assert 'm188' in qmp and 'changed_until' in qmp
+    assert "'M199_REBOOT_LOG_RC=0'" in qmp
+    assert "'M187_DESKTOP_INITIAL_VISIBLE', deadline" not in qmp
     assert 'pointer_click' in qmp and 'screenshot' in qmp
     assert "success_file.write_text(marker + '\\n')" in qmp
 

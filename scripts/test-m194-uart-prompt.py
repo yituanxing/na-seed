@@ -46,6 +46,18 @@ assert m194.shell_prompt_after_step("\x1b[32mnaseed:/root# \x1b[0m")
 assert m194.shell_prompt_after_step("root@host:~# ")
 assert m194.shell_prompt_after_step("naseed:~# [LWIP DHCP BOUND] addr=10.0.2.15\n")
 
+# Exact M199 ARM64 QEMU UART suffix: the prompt is real, but a kernel
+# unsupported-syscall diagnostic is printed immediately after ESC[6n.
+# Previously the driver waited for another prompt forever and never sent
+# the next OpenRC GUI log probe, even though the service had already started.
+arm64_m199 = (
+    "M199_FIRST_SERVICE_START_RC=0\n"
+    "localhost:~# \x1b[6n[MISS] syscall nr=153\n"
+    "[MISS] syscall nr=153\n"
+)
+assert m194.shell_prompt_after_step(
+    result_boundary(arm64_m199, "M199_FIRST_SERVICE_START_RC=0"))
+
 # A prompt from BEFORE the command's completed marker cannot advance the
 # current step. A command echo and kernel message containing prompt text
 # cannot masquerade as fresh proof after step_end.
@@ -60,6 +72,9 @@ for fake in (
     "guest says naseed:~# \x1b[6n[LWIP DHCP BOUND]\n",
     "naseed:~# printf 'not a completed prompt'\x1b[6n\n",
     "naseed:~# [shell echo is not a kernel printk]\n",
+    "naseed:~# [MISS] arbitrary user text\n",
+    "naseed:~# [MISS] syscall nr=not-a-number\n",
+    "naseed:~# [MISS] syscall nr=153 forged suffix\n",
 ):
     assert not m194.shell_prompt_after_step(fake), repr(fake)
 

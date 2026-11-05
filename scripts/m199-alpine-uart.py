@@ -50,8 +50,7 @@ FIRST_COMMANDS = M197.COMMANDS + (
      "n=$((n+1)); if [ \"$n\" -ge 120 ]; then break; fi; "
      "sleep 1; done; "
      "grep -q M187_DESKTOP_INITIAL_VISIBLE /var/log/naseed-desktop.log && "
-     "grep -q M171_LVGL_REAL_RENDER_PASS /var/log/naseed-desktop.log && "
-     "cat /var/log/naseed-desktop.log; "
+     "grep -q M171_LVGL_REAL_RENDER_PASS /var/log/naseed-desktop.log; "
      "printf 'M199_FIRST_OPENRC_GUI_RC=%d\\n' \"$?\"\r",
      'M199_FIRST_OPENRC_GUI_RC=0', 'OpenRC stdout proves live GUI/LVGL'),
     ("rc-service naseed-desktop status && "
@@ -137,7 +136,7 @@ REBOOT_COMMANDS = (
      "n=$((n+1)); if [ \"$n\" -ge 120 ]; then break; fi; "
      "sleep 1; done; "
      "grep -q M187_DESKTOP_INITIAL_VISIBLE /var/log/naseed-desktop.log && "
-     "cat /var/log/naseed-desktop.log; "
+     "grep -q M171_LVGL_REAL_RENDER_PASS /var/log/naseed-desktop.log; "
      "printf 'M199_REBOOT_LOG_RC=%d\\n' \"$?\"\r",
      'M199_REBOOT_LOG_RC=0', 'second boot original compositor output'),
     ("apk info -e bash && apk info -e lua5.4 && "
