@@ -41,7 +41,9 @@ esac
 
 fifo="$work/m203-serial-input.fifo"
 export NAS_QEMU_SERIAL_FIFO="$fifo"
-serial="$PWD/$logs/m203-fbcon.serial.log"
+# The shared native runner names its UART after BUSYBOX_PARITY_CASE, not
+# this enclosing M203 probe. Watching a different file silently times out.
+serial="$PWD/$logs/$BUSYBOX_PARITY_CASE.serial.log"
 clean="$PWD/$logs/m203-fbcon.clean.log"
 runner_log="$work/m203-native-runner.log"
 qmp_log="$work/m203-original-fbcon-qmp.log"

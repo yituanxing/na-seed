@@ -56,6 +56,10 @@ def main() -> None:
     assert 'NAS_QEMU_VIRTIO_GPU=1' in probe
     assert 'NAS_QEMU_INPUT_OPTIN=1' in probe
     assert 'NAS_VIRTIO_BLK_IMAGE' in probe
+    # Native parity runners name their UART stream after the selected case.
+    # A distinct "m203" filename made three real guests appear silent.
+    assert 'export BUSYBOX_PARITY_CASE=m202-fbi' in probe
+    assert 'serial="$PWD/$logs/$BUSYBOX_PARITY_CASE.serial.log"' in probe
     stage = Path('scripts/m203-disk-fixture.py').read_text()
     assert 'TTY1_GETTY' in stage and 'ORIGINAL_APPS' in stage
     print('[M203 FBICON HOST CONTRACT PASS] exact glyph pixels/negative '

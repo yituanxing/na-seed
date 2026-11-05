@@ -29,6 +29,7 @@ void nas_fbcon_activate(bool enabled) {fbcon_active=enabled;}
 void nas_fbcon_set_graphics(bool graphics) {fbcon_graphics=graphics;}
 uint64_t nas_fbcon_write(const uint8_t *src,uint64_t len) {
     assert(src || !len);
+    assert(fbcon_active);
     return len;
 }
 uint64_t nas_arch_monotonic_ns(void) {return 1234000000ULL;}
@@ -73,9 +74,14 @@ int main(void) {
     uint32_t ctty_sid=0;
     nas_vt_open_session(0x100U); /* O_NOCTTY must not claim the VT */
     assert((int64_t)nas_vt_ioctl(0x5429,(uint64_t)(uintptr_t)&ctty_sid)==-ENOTTY);
-    nas_vt_open_session(0); /* session-leader open claims unowned VT */
+    assert(!fbcon_active);
+    /* Upstream BusyBox getty opens O_NOCTTY and claims with TIOCSCTTY.
+     * The actual framebuffer must become writable on that path too. */
+    assert(nas_vt_ioctl(0x540e,0)==0);
     assert(nas_vt_ioctl(0x5429,(uint64_t)(uintptr_t)&ctty_sid)==0 && ctty_sid==100);
     assert(fbcon_active);
+    assert(nas_vt_write((const uint8_t *)"login:",6)==6);
+    assert(nas_vt_ioctl(0x540e,0)==0); /* same SID must not blank again */
 
     struct nas_vt_stat_test state={0};
     assert(nas_vt_ioctl(0x5603,(uint64_t)(uintptr_t)&state)==0);
@@ -127,6 +133,9 @@ int main(void) {
     nas_vt_session_leader_exit(100);
     assert(!fbcon_active);
     assert((int64_t)nas_vt_ioctl(0x5429,(uint64_t)(uintptr_t)&ctty_sid)==-ENOTTY);
+    nas_vt_open_session(0); /* plain session-leader open still works */
+    assert(fbcon_active);
+    nas_vt_session_leader_exit(100);
     puts("[M202 VT ABI/KEYBOARD HOST PASS] single VT, isolation, raw keys and cleanup");
     return 0;
 }

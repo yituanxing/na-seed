@@ -219,13 +219,16 @@ uint64_t nas_vt_ioctl(uint64_t cmd,uint64_t arg) {
         vt.rows=ws[0];vt.cols=ws[1];vt.xpixel=ws[2];vt.ypixel=ws[3];
         return 0;
     }
-    case 0x540eU: /* TIOCSCTTY */
+    case 0x540eU: { /* TIOCSCTTY: getty's O_NOCTTY + explicit claim path */
         if(task->pid!=task->sid)return (uint64_t)-EPERM;
         if(vt.sid && vt.sid!=task->sid && arg!=1U)
             return (uint64_t)-EPERM;
-        if(vt.sid && vt.sid!=task->sid)reset_input();
+        bool new_owner=vt.sid!=task->sid;
+        if(vt.sid && new_owner)reset_input();
         vt.sid=task->sid;vt.pgid=task->pgid;
+        if(new_owner)nas_fbcon_activate(true);
         return 0;
+    }
     case 0x5422U: /* TIOCNOTTY */
         if(!controls_vt())return (uint64_t)-ENOTTY;
         if(task->pid==task->sid)nas_vt_session_leader_exit(task->sid);
