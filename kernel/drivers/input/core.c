@@ -13,6 +13,14 @@
  * Slot 0 is event0, not an assumption that it is a keyboard or a mouse. */
 static struct nas_input_device *devices[NAS_INPUT_MAX_DEVICES];
 static int (*publish_node)(unsigned index,bool add);
+static void (*keyboard_handler)(uint16_t code,bool pressed);
+
+int nas_input_set_keyboard_handler(void (*handler)(uint16_t code,bool pressed)) {
+    if (!handler) return -EINVAL;
+    if (keyboard_handler) return -EBUSY;
+    keyboard_handler=handler;
+    return 0;
+}
 
 int nas_input_set_publication(int (*publish)(unsigned index,bool add)) {
     if(!publish || publish_node)return -EINVAL;
@@ -197,4 +205,11 @@ void nas_input_event(struct nas_input_device *dev, uint16_t type,
         .type = type, .code = code, .value = value
     };
     nas_evdev_publish(dev, &event);
+    /* KEY_A (Linux code 30) identifies a keyboard; mouse/touchpad buttons
+     * are EV_KEY as well and must not leak into the foreground TTY. The
+     * event is dispatched to both independent consumers just as Linux's
+     * input handler fan-out does, without converting it into serial bytes. */
+    if (type == NAS_INPUT_EV_KEY && keyboard_handler &&
+        bit_test(dev->keybit,30U))
+        keyboard_handler(code,value!=0);
 }

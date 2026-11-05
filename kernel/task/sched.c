@@ -8,6 +8,7 @@
 #include "../arch/arch.h"
 #include "../fs/io.h"
 #include "../drivers/tty.h"
+#include "../drivers/vt.h"
 #include "../drivers/pty.h"
 #include "process.h"
 #include "sched.h"
@@ -96,8 +97,12 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
         return;
     }
     child->group_exit_pending=false;
-    if(child->pid==child->sid)
+    /* A dead VT_PROCESS owner cannot hold graphics/keyboard ownership. */
+    nas_vt_process_exit(child->pid);
+    if(child->pid==child->sid) {
         nas_tty_session_leader_exit(child->sid);
+        nas_vt_session_leader_exit(child->sid);
+    }
     if (child->vfork_shared_vm) {
         nas_process_vfork_release();
         /* The child has a separate MM reference; final put leaves
@@ -273,6 +278,15 @@ static void native_dispatcher(void) {
         unsigned sig=nas_tty_take_signal(&sid,&pgid);
         if(sig && !nas_signal_tty_event(sid,pgid,sig))
             nas_tty_signal_unsupported();
+        /* Physical VT keyboard and UART are independent foreground groups.
+         * Defer delivery to this scheduler stack, never a VirtIO callback. */
+        uint64_t vt_sid=0,vt_pgid=0;
+        unsigned vt_sig=nas_vt_take_signal(&vt_sid,&vt_pgid);
+        if(vt_sig && !nas_signal_tty_event(vt_sid,vt_pgid,vt_sig)) {
+            nas_print("[VT SIGNAL UNSUPPORTED] sid=");nas_dec(vt_sid);
+            nas_print(" pgid=");nas_dec(vt_pgid);
+            nas_print(" signal=");nas_dec(vt_sig);nas_print("\n");
+        }
         /* PTY master writes originate inside an arbitrary userspace Task's
          * syscall C continuation. Handle ISIG only after it reaches this
          * independent scheduler stack: a foreground SIGINT may terminate

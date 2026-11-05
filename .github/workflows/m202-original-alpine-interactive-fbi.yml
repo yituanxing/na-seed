@@ -1,0 +1,127 @@
+name: NaSeed M202 original signed Alpine interactive fbi with physical VT keyboard
+
+# Targeted M202 gate: original Alpine init/OpenRC + fbi under virtual TTY,
+# two distinct physical GPU frames and real QMP VirtIO key Space+q per ISA.
+on:
+  workflow_dispatch:
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/m202-*'
+      - 'scripts/m202-*'
+      - 'scripts/probe-m202-*'
+      - 'scripts/stage-m202-*'
+      - 'docs/m202*'
+      - 'kernel/drivers/tty*'
+      - 'kernel/drivers/vt*'
+      - 'kernel/drivers/input/**'
+      - 'kernel/fs/syscall.c'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m202-original-interactive-fbi-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  m202-host-contract:
+    name: VT keyboard contract, native root reuse, two distinct original PNGs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Verify original-root stage, QMP oracle and genuine two-image input
+        run: |
+          set -eu
+          sh -n scripts/stage-m202-alpine-interactive-fbi.sh
+          sh -n scripts/probe-m202-alpine-interactive-fbi.sh
+          python3 -m py_compile scripts/m202-image-fixture.py \
+            scripts/m202-disk-fixture.py scripts/m202-qmp-alpine-interactive-fbi.py \
+            scripts/m202-alpine-uart.py scripts/m201-qmp-alpine-fbi.py
+          python3 scripts/test-m202-interactive-oracle.py
+          sh scripts/check-m202-vt.sh
+          sh scripts/check-m202-input-routing.sh
+          grep -Fxq "$(printf 'm202-fbi\tcpio\t \t-\t-\t/sbin/init')" scripts/m202-fbi-cases.tsv
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+
+  original-interactive-fbi-physical-qmp:
+    name: Original Alpine interactive fbi + physical QMP key and GPU / ${{ matrix.port }}
+    needs: m202-host-contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Install QEMU, cross compiler, EFI and ext4 host tools
+        timeout-minutes: 18
+        run: |
+          set -eu
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'cmake:cmake' 'g++:g++' 'gcc:gcc' 'clang:clang' \
+                      'ld.lld:lld' 'readelf:binutils' 'cpio:cpio' \
+                      'mke2fs:e2fsprogs' 'debugfs:e2fsprogs' 'e2fsck:e2fsprogs' \
+                      'xorriso:xorriso' 'mformat:mtools' 'sgdisk:gdisk' \
+                      'curl:curl' 'python3:python3' 'openssl:openssl'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case '${{ matrix.port }}' in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+              test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
+            riscv64)
+              command -v riscv64-linux-gnu-gcc >/dev/null || missing="$missing gcc-riscv64-linux-gnu"
+              command -v riscv64-linux-gnu-g++ >/dev/null || missing="$missing g++-riscv64-linux-gnu"
+              test -f /usr/riscv64-linux-gnu/include/bits/wordsize.h && \
+              test -f /usr/riscv64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-riscv64-cross"
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+            arm64)
+              command -v aarch64-linux-gnu-gcc >/dev/null || missing="$missing gcc-aarch64-linux-gnu"
+              command -v aarch64-linux-gnu-g++ >/dev/null || missing="$missing g++-aarch64-linux-gnu"
+              test -f /usr/aarch64-linux-gnu/include/bits/wordsize.h && \
+              test -f /usr/aarch64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-arm64-cross"
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/AAVMF/AAVMF_CODE.fd || \
+              test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+          esac
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+          command -v sudo
+      - name: One native original Alpine OpenRC boot, real signed interactive fbi, exact GPU frames and hardware keys
+        timeout-minutes: 64
+        run: sh scripts/probe-m202-alpine-interactive-fbi.sh '${{ matrix.port }}'
+      - name: Preserve signed ELF provenance, two physical QMP frames and native UART
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m202-original-interactive-fbi-${{ matrix.port }}
+          path: |
+            build/external/m202-alpine-interactive-fbi/${{ matrix.port }}/m202-original-signed-fbi.sha256
+            build/external/m202-alpine-interactive-fbi/${{ matrix.port }}/m202-official-installed-apk-db
+            build/external/m202-alpine-interactive-fbi/${{ matrix.port }}/m202-first-physical-gpu.ppm
+            build/external/m202-alpine-interactive-fbi/${{ matrix.port }}/m202-second-physical-gpu.ppm
+            build/external/m202-alpine-interactive-fbi/${{ matrix.port }}/m202-original-fbi-qmp.log
+            build/external/m202-alpine-interactive-fbi/${{ matrix.port }}/m202-native-runner.log
+            build/external/m202-alpine-interactive-fbi/${{ matrix.port }}/m202-physical-qmp-*
+            build/busybox-source-parity-x86/m202-fbi.*.log
+            build/port-riscv64/full/matrix-source/m202-fbi.*.log
+            build/port-aarch64/full/matrix-source/m202-fbi.*.log
+          if-no-files-found: warn

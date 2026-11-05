@@ -9,6 +9,7 @@
 #include "../lib/string.h"
 #include "serial.h"
 #include "tty.h"
+#include "vt.h"
 #include "tty_ldisc.h"
 #include "core/chrdev.h"
 #include "../time/clock.h"
@@ -44,9 +45,10 @@ int nas_tty_chrdev_init(void) {
         int rc=nas_chrdev_node_register(&tty_nodes[i]);
         if(rc)return rc;
     }
-    return 0;
+    return nas_vt_chrdev_init();
 }
 void nas_tty_init(void) {
+    nas_vt_init();
     tty.sid=nas_current_task->sid; tty.pgid=nas_current_task->pgid;
     tty.ws_row=24; tty.ws_col=80; tty.ws_xpixel=tty.ws_ypixel=0;
     tty.rx_enabled=false;

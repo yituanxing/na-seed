@@ -20,6 +20,7 @@
 #include "../arch/linux_fcntl_abi.h"
 #include "../arch/mmu.h"
 #include "../drivers/tty.h"
+#include "../drivers/vt.h"
 #include "../drivers/pty.h"
 #include "../drivers/display/fbdev.h"
 #include "../drivers/core/chrdev.h"
@@ -742,6 +743,9 @@ static uint64_t open_path_owned(const char *path,
                            nas_linux_open_status_flags(flags),
                            !!(flags&0x80000ULL)))
         nas_fs_fail("reserved openat description was occupied");
+    /* POSIX/Linux: a session leader opening a real VT without O_NOCTTY
+     * acquires its controlling terminal, independent of serial OpenRC. */
+    if(!path_only && kind==FD_VT)nas_vt_open_session(flags);
     if(have_node) {
         nas_open_files[slot].vnode=opened_node;
         nas_open_files[slot].vnode_pinned=true;
@@ -1093,6 +1097,35 @@ static uint64_t vioctl_tty(uint64_t fd,uint64_t cmd,uint64_t arg) {
     (void)fd;
     return nas_tty_ioctl(cmd,arg);
 }
+/* Real framebuffer VT opens are separate Linux Files from boot UART. */
+static uint64_t vread_vt(unsigned slot,uint8_t *dst,uint64_t n) {
+    return nas_vt_read(dst,n,(nas_open_files[slot].status_flags&0x800ULL)!=0);
+}
+static uint64_t vread_vt_plan(unsigned slot,uint64_t n) {
+    return nas_vt_read_plan(n,(nas_open_files[slot].status_flags&0x800ULL)!=0);
+}
+static uint64_t vwrite_vt(unsigned slot,const uint8_t *src,uint64_t n) {
+    (void)slot;
+    return nas_vt_write(src,n);
+}
+static uint16_t dpoll_vt(unsigned slot,uint16_t events) {
+    (void)slot;
+    uint16_t ready=events&0x0004U;
+    if((events&0x0001U)&&nas_vt_poll_readable())ready|=0x0001U;
+    return ready;
+}
+static uint16_t vpoll_vt(uint64_t fd,uint16_t events) {
+    (void)fd;return dpoll_vt(0,events);
+}
+static void vt_wait_start(unsigned slot,struct nas_task *task,uint64_t n) {
+    (void)slot;(void)n;nas_vt_blocking_read_start(task);
+}
+static bool vt_wait_ready(unsigned slot,struct nas_task *task,uint64_t n) {
+    (void)slot;return nas_vt_read_ready(task,n);
+}
+static uint64_t vioctl_vt(uint64_t fd,uint64_t cmd,uint64_t arg) {
+    (void)fd;return nas_vt_ioctl(cmd,arg);
+}
 static uint64_t vioctl_uart(uint64_t fd,uint64_t cmd,uint64_t arg) {
     (void)fd;
     return (cmd==0x540eULL || nas_tty_enabled())
@@ -1116,6 +1149,14 @@ static const struct nas_file_ops ops_tty={
     .io_wait_flags=NAS_IO_WAIT_TTY,
     .poll=vpoll_tty,.poll_description=dpoll_tty,
     .ioctl=vioctl_tty
+};
+static const struct nas_file_ops ops_vt={
+    .read_plan=vread_vt_plan,.read=vread_vt,.write=vwrite_vt,
+    .aggregate_readv=true,.read_finalize_zero=true,
+    .io_wait_flags=NAS_IO_WAIT_INITIAL_EAGAIN|NAS_IO_WAIT_RETRY,
+    .read_wait_start=vt_wait_start,.read_wait_ready=vt_wait_ready,
+    .poll=vpoll_vt,.poll_description=dpoll_vt,
+    .ioctl=vioctl_vt
 };
 static const struct nas_file_ops ops_null={
     .read_plan=vread_null_plan,.read=vread_null,.write=vwrite_discard,
@@ -1344,6 +1385,7 @@ static const struct nas_file_ops ops_evdev={
 #endif
 static const struct nas_file_ops *const ops_by_kind[]={
     [FD_UART]=&ops_uart,[FD_TTY]=&ops_tty,[FD_NULL]=&ops_null,
+    [FD_VT]=&ops_vt,
     [FD_ZERO]=&ops_zero,[FD_RANDOM]=&ops_random,
     [FD_BOOTFS]=&ops_bootfs,
     [FD_FRAMEBUFFER]=&ops_fbdev,

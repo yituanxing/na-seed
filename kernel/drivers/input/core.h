@@ -80,6 +80,12 @@ const struct nas_input_device *nas_input_device_at(unsigned index);
 /* Capability blob for Linux EVIOCGBIT; size in bytes, NULL if unsupported. */
 const uint8_t *nas_input_capabilities(const struct nas_input_device *,
                                       uint16_t type, size_t *bytes);
+/* Optional virtual-console keyboard handler. The input core remains
+ * independent of TTY implementation and still fans out the exact same
+ * hardware events to every evdev OpenFile. Called only for keyboard-class
+ * devices (KEY_A capability), after key-state validation and never in an
+ * IRQ handler. Registration is one-time during console initialization. */
+int nas_input_set_keyboard_handler(void (*handler)(uint16_t code,bool pressed));
 /* The emitting driver is responsible for pairing events with SYN_REPORT.
  * Dispatch in a serialized kernel context, never switch Tasks inside IRQ. */
 void nas_input_event(struct nas_input_device *, uint16_t type,

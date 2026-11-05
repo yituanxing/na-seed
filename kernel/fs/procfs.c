@@ -505,6 +505,7 @@ int64_t nas_proc_readlink(struct nas_proc_node node,char *out,unsigned cap) {
     if(!path[0]) {
         switch(e.kind) {
         case FD_UART: case FD_TTY: path="/dev/console";break;
+        case FD_VT:path="/dev/tty1";break;
         case FD_NULL:path="/dev/null";break;
         case FD_ZERO:path="/dev/zero";break;
         case FD_RANDOM:path="/dev/urandom";break;

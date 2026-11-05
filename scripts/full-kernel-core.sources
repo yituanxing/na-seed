@@ -78,5 +78,6 @@ kernel/fs/inotify.c
 kernel/fs/unix_socket.c
 kernel/mm/anon_regions.c
 kernel/drivers/tty.c
+kernel/drivers/vt.c
 kernel/drivers/pty.c
 kernel/drivers/tty_ldisc.c
