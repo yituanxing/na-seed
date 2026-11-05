@@ -49,6 +49,7 @@ def main() -> None:
     assert "shell_command(sock, reader, 'naseed-m193-only')" in qmp
     assert "hardware_key(sock, reader, 'spc')" in qmp
     assert "hardware_key(sock, reader, 'q')" in qmp
+    assert "'typed-shell-command'" in qmp
     assert "'echo $? > /root/m203-fbi-rc.txt'" in qmp
     assert 'original_fbi_frame(sock, reader' in qmp
     probe = Path('scripts/probe-m203-alpine-fbcon.sh').read_text()
@@ -60,6 +61,7 @@ def main() -> None:
     # A distinct "m203" filename made three real guests appear silent.
     assert 'export BUSYBOX_PARITY_CASE=m202-fbi' in probe
     assert 'serial="$PWD/$logs/$BUSYBOX_PARITY_CASE.serial.log"' in probe
+    assert 'clean="$PWD/$logs/$BUSYBOX_PARITY_CASE.clean.log"' in probe
     stage = Path('scripts/m203-disk-fixture.py').read_text()
     assert 'TTY1_GETTY' in stage and 'ORIGINAL_APPS' in stage
     print('[M203 FBICON HOST CONTRACT PASS] exact glyph pixels/negative '

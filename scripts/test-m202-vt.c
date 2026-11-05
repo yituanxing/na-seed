@@ -25,8 +25,12 @@ struct nas_task *nas_current_task=&process;
 static void (*input_handler)(uint16_t,bool);
 static unsigned published;
 static bool fbcon_active,fbcon_graphics;
+static void (*fbcon_reply)(const uint8_t *,uint64_t);
 void nas_fbcon_activate(bool enabled) {fbcon_active=enabled;}
 void nas_fbcon_set_graphics(bool graphics) {fbcon_graphics=graphics;}
+void nas_fbcon_set_report_sink(void (*sink)(const uint8_t *,uint64_t)) {
+    fbcon_reply=sink;
+}
 uint64_t nas_fbcon_write(const uint8_t *src,uint64_t len) {
     assert(src || !len);
     assert(fbcon_active);
@@ -69,6 +73,7 @@ static void expect_bytes(const char *expected,unsigned n) {
 int main(void) {
     process.pid=100;process.sid=100;process.pgid=100;
     nas_vt_init();
+    assert(fbcon_reply);
     assert(nas_vt_chrdev_init()==0 && published==2);
     assert(nas_vt_read_waitable());
     uint32_t ctty_sid=0;
@@ -107,6 +112,9 @@ int main(void) {
     tty.cc[6]=1;tty.cc[5]=0;
     assert(nas_vt_ioctl(0x5404,(uint64_t)(uintptr_t)&tty)==0);
     assert((int64_t)nas_vt_read_plan(1,true)==-EAGAIN);
+    /* fbcon's CSI 6n reply must traverse native VT input and N_TTY. */
+    fbcon_reply((const uint8_t *)"\033[3;11R",7);
+    expect_bytes("\033[3;11R",7);
     send(16);expect_bytes("q",1);
     send(57);expect_bytes(" ",1);
     send(106);expect_bytes("\x1b[C",3);

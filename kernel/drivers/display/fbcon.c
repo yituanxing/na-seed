@@ -90,6 +90,36 @@ static struct {
     struct nas_fb_var_screeninfo mode;
 } con;
 static uint8_t row_pixels[FBCON_MAX_WIDTH*4U];
+static void (*report_sink)(const uint8_t *,uint64_t);
+
+void nas_fbcon_set_report_sink(void (*sink)(const uint8_t *,uint64_t)) {
+    report_sink=sink;
+}
+
+static unsigned append_decimal(uint8_t *out,unsigned n,unsigned value) {
+    /* The supported terminal is exactly 80x25: at most two digits. */
+    if(value>=10U)out[n++]=(uint8_t)('0'+value/10U);
+    out[n++]=(uint8_t)('0'+value%10U);
+    return n;
+}
+
+static void report_status(unsigned code) {
+    if(!report_sink || con.private_csi)return;
+    uint8_t response[12];
+    unsigned n=0;
+    response[n++]=0x1bU;
+    response[n++]='[';
+    if(code==5U) {
+        response[n++]='0';
+        response[n++]='n';
+    } else if(code==6U) {
+        n=append_decimal(response,n,con.row+1U);
+        response[n++]=';';
+        n=append_decimal(response,n,con.col+1U);
+        response[n++]='R';
+    } else return;
+    report_sink(response,n);
+}
 
 static const uint8_t *glyph(char c) {
     for(unsigned i=0;i<sizeof(font)/sizeof(font[0]);i++)
@@ -220,6 +250,7 @@ static void erase_row(unsigned y,unsigned first,unsigned end) {
 static void execute_csi(uint8_t final) {
     unsigned n=one(0);
     switch(final) {
+    case 'n':report_status(param(0));break;
     case 'm':
         for(unsigned i=0;i<con.param_count;i++)sgr(param(i));
         break;

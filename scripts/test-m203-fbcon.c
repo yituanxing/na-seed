@@ -13,6 +13,17 @@
 static uint8_t pixels[W*H*4U];
 static uint8_t snapshot[W*H*4U];
 static unsigned writes;
+static uint8_t report[16];
+static unsigned report_len;
+static void record_report(const uint8_t *bytes,uint64_t len) {
+    assert(len<=sizeof(report));
+    memcpy(report,bytes,(size_t)len);
+    report_len=(unsigned)len;
+}
+static void expect_report(const char *expected) {
+    size_t len=strlen(expected);
+    assert(report_len==len && !memcmp(report,expected,len));
+}
 
 bool nas_fbdev_available(void) {return true;}
 uint64_t nas_fbdev_length(void) {return sizeof(pixels);}
@@ -52,7 +63,17 @@ static void write_str(const char *s) {
 
 int main(void) {
     memset(pixels,0xff,sizeof(pixels));
+    nas_fbcon_set_report_sink(record_report);
     nas_fbcon_activate(true);
+    write_str("\033[6n");
+    expect_report("\033[1;1R");
+    write_str("\033[3;11H\033[6n");
+    expect_report("\033[3;11R");
+    write_str("\033[5n");
+    expect_report("\033[0n");
+    report_len=0;
+    write_str("\033[?6n"); /* private CSI must not fake a report */
+    assert(report_len==0);
     write_str("Alpine login: ");
     assert(colored_pixels()>0 && colored_pixels()<W*H/2U);
     memcpy(snapshot,pixels,sizeof(pixels));

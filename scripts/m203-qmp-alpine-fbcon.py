@@ -206,6 +206,10 @@ def run(args) -> None:
 
         shell_command(sock, reader,
                       'echo m203realtypedinput > /root/m203-typed-shell.txt')
+        # Capture the real terminal after the first complete shell command.
+        # If the original ash stalls or a VT escape report is missing, the
+        # failed CI artifact now exposes the actual physical console state.
+        screenshot(sock, reader, args.outdir, 'typed-shell-command')
         wait_serial(args.serial, b'M203_TYPED_FILE_RC=0', deadline)
         signed_count = serial_data(args.serial).count(
             b'[EXEC] replaced process with lwext4 ELF: /usr/bin/fbi')

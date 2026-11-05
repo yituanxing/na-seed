@@ -50,6 +50,8 @@ static struct {
     unsigned head,count;
 } vt;
 static void feed_input(void);
+static void push_byte(uint8_t b);
+static void fbcon_report(const uint8_t *bytes,uint64_t length);
 
 static struct nas_chrdev_node vt_nodes[]={
     { .path="/dev/tty0", .info={.fd_kind=23,.unit=0,.dev=2,
@@ -95,6 +97,7 @@ static void default_termios(void) {
 void nas_vt_init(void) {
     memset(&vt,0,sizeof(vt));
     vt.rows=25;vt.cols=80;
+    nas_fbcon_set_report_sink(fbcon_report);
     nas_fbcon_activate(false);
     reset_graphics_ownership();
     default_termios();
@@ -372,6 +375,12 @@ static void push_byte(uint8_t b) {
     if(vt.count>=NAS_VT_QUEUE_CAP){vt.rx_overflow=true;return;}
     vt.rx[(vt.head+vt.count)%NAS_VT_QUEUE_CAP]=b;
     vt.count++;
+}
+static void fbcon_report(const uint8_t *bytes,uint64_t length) {
+    /* Native console response, not a physical key. It still must traverse
+     * the same N_TTY read discipline and wake a blocked original ash. */
+    for(uint64_t i=0;i<length;i++)push_byte(bytes[i]);
+    feed_input();
 }
 static void emit_bytes(const char *seq) {
     for(;*seq;seq++)push_byte((uint8_t)*seq);
