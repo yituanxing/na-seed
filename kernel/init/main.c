@@ -12,8 +12,13 @@ extern bool nas_lwext4_guest_boot_shutdown(void);
 extern bool nas_lwext4_async_runtime_passed(void);
 extern bool nas_lwext4_async_runtime_armed(void);
 extern void nas_lwext4_async_runtime_step(void);
+#endif
+#if defined(NAS_ENABLE_M179_FS_IRQ) || defined(NAS_ENABLE_M191_ALPINE_ROOT)
 void nas_init_process_deferred_exit_service(void);
-static bool m179_pid1_exit_waiting;
+static bool pid1_exit_waiting;
+#endif
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+static bool pid1_shutdown_quiesced;
 #endif
 #ifdef NAS_ENABLE_M180_FS_USER_IRQ
 extern void nas_lwext4_m180_shutdown_request(void);
@@ -72,6 +77,8 @@ static void deferred_lwext4_worker(void *context) {
     (void)context;
     nas_lwext4_async_runtime_step();
 }
+#endif
+#if defined(NAS_ENABLE_M179_FS_IRQ) || defined(NAS_ENABLE_M191_ALPINE_ROOT)
 static void deferred_pid1_exit(void *context) {
     (void)context;
     nas_init_process_deferred_exit_service();
@@ -114,7 +121,7 @@ static void init_deferred_services(void) {
                                    deferred_input_events,NULL);
     if(rc)nas_fail("deferred input service registration failed");
 #endif
-#ifdef NAS_ENABLE_M179_FS_IRQ
+#if defined(NAS_ENABLE_M179_FS_IRQ) || defined(NAS_ENABLE_M191_ALPINE_ROOT)
     /* PID1 success requires the real filesystem worker's durable shutdown. */
     rc=nas_sched_register_deferred(NAS_SCHED_AFTER_WORKERS,
                                    deferred_pid1_exit,NULL);
@@ -173,6 +180,14 @@ void nas_init_process_terminated(uint32_t code,uint32_t signal) {
     if(signal)nas_fail("init terminated by default fatal signal");
     nas_print("[EXIT] user status=");nas_dec(code);nas_print("\n");
     if(code)nas_fail("userspace exited nonzero");
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+    /* A detached watchdog, daemon or worker may outlive a successful PID1.
+     * Do not unmount its /dev or ext4 beneath real live OpenFiles. The
+     * final scheduler boundary has its own stack and can quiesce all user
+     * thread groups before any M180 worker shutdown request or unmount. */
+    pid1_exit_waiting=true;
+    return;
+#else
 #ifdef NAS_ENABLE_M179_FS_IRQ
     /* Compilation enables the M179/M180 worker, but a later independent
      * desktop boot of this SAME kernel may have no async disk fixture.
@@ -192,28 +207,56 @@ void nas_init_process_terminated(uint32_t code,uint32_t signal) {
      * AFTER the final PID1 Files release. The shutdown command is queued
      * here, never run recursively on the dying Task's kernel stack. */
     nas_lwext4_m180_shutdown_request();
-    m179_pid1_exit_waiting=true;
+    pid1_exit_waiting=true;
     return;
 #else
     if(!nas_lwext4_async_runtime_passed()) {
-        m179_pid1_exit_waiting=true;
+        pid1_exit_waiting=true;
         return;
     }
 #endif
 #endif
     nas_init_finish_success();
+#endif
 }
 
-#ifdef NAS_ENABLE_M179_FS_IRQ
+#if defined(NAS_ENABLE_M179_FS_IRQ) || defined(NAS_ENABLE_M191_ALPINE_ROOT)
 void nas_init_process_deferred_exit_service(void) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+    if(!pid1_exit_waiting)return;
+    if(!pid1_shutdown_quiesced) {
+        /* Bound to one Task-table scan and the normal SIGKILL exit_group
+         * implementation. No wait4, nested task_schedule, or EBUSY bypass. */
+        if(nas_signal_shutdown_users())
+            nas_fail("PID1 deferred user Task quiescence failed");
+        pid1_shutdown_quiesced=true;
+        nas_print("[M191 PID1 QUIESCED] no live non-init user Tasks\n");
+#if defined(NAS_ENABLE_M179_FS_IRQ) && defined(NAS_ENABLE_M180_FS_USER_IRQ)
+        /* M180 must not start durable teardown while orphaned user FDs
+         * still pin pseudo mounts. Queue it only after quiescence. */
+        if(nas_lwext4_async_runtime_armed())
+            nas_lwext4_m180_shutdown_request();
+#endif
+    }
+#ifdef NAS_ENABLE_M179_FS_IRQ
+    if(nas_lwext4_async_runtime_armed()) {
 #ifdef NAS_ENABLE_M180_FS_USER_IRQ
-    if(!m179_pid1_exit_waiting || !nas_lwext4_m180_shutdown_complete())return;
+        if(!nas_lwext4_m180_shutdown_complete())return;
 #else
-    if(!m179_pid1_exit_waiting || !nas_lwext4_async_runtime_passed())return;
+        if(!nas_lwext4_async_runtime_passed())return;
+#endif
+    }
+#endif
+#else
+#ifdef NAS_ENABLE_M180_FS_USER_IRQ
+    if(!pid1_exit_waiting || !nas_lwext4_m180_shutdown_complete())return;
+#else
+    if(!pid1_exit_waiting || !nas_lwext4_async_runtime_passed())return;
 #endif
     /* Called by the post-worker service after a bounded slice. All PID1
      * Files/cwd pins were released by the normal process-exit path. */
-    m179_pid1_exit_waiting=false;
+#endif
+    pid1_exit_waiting=false;
     nas_init_finish_success();
 }
 #endif

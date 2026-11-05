@@ -71,6 +71,12 @@ bool nas_signal_timedwait_ready(const struct nas_task *task,uint64_t mask);
 uint64_t nas_signal_timedwait_consume(uint64_t mask,uint64_t info);
 /* Linux pid_t group selectors, nonmaskable SIGKILL and signal-zero probe. */
 uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame);
+/* Test-only PID1 post-exit quiescence: invoked from the independent native
+ * scheduler stack, never from a dying Task's syscall/IRQ C continuation.
+ * Non-init live process groups receive ordinary unmaskable SIGKILL, whose
+ * established exit_group path releases their real OpenFiles and cwd pins.
+ * Returns zero only when no non-init user Task remains live. */
+int nas_signal_shutdown_users(void);
 uint64_t nas_signal_tkill(uint64_t raw_tid,uint64_t signum,uint64_t *frame);
 uint64_t nas_signal_tgkill(uint64_t raw_tgid,uint64_t raw_tid,
                            uint64_t signum,uint64_t *frame);

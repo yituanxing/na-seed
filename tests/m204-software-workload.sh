@@ -76,7 +76,23 @@ functional() {
                 /bin/busybox grep -Fxq "$probe_pid"
             ;;
         iproute2)
-            /sbin/ip -o addr show | /bin/busybox grep -Fq '10.0.2.'
+            # Alpine's second independent QEMU may schedule its first
+            # userspace process before VirtIO DHCP has obtained an address.
+            # The original iproute2 must genuinely dump the current kernel
+            # interface state; a finite retry waits for the *real* lease,
+            # never replaces the query with a canned success string.
+            attempts=0
+            while [ "$attempts" -lt 10 ]; do
+                if /sbin/ip -o addr show > "$work/logs/iproute2.addr.log" 2>&1 &&
+                    /bin/busybox grep -Fq '10.0.2.' \
+                        "$work/logs/iproute2.addr.log"; then
+                    return 0
+                fi
+                attempts=$((attempts + 1))
+                sleep 1
+            done
+            /bin/busybox tail -n 3 "$work/logs/iproute2.addr.log" >&2
+            return 1
             ;;
         nginx)
             printf '%s\n' 'worker_processes 1;' \

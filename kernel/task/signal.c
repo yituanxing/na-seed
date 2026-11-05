@@ -10,6 +10,12 @@
 #include "../task/sched.h"
 #include "../panic.h"
 
+#if defined(__x86_64__) && defined(NAS_ENABLE_M191_ALPINE_ROOT)
+/* The normal x86 syscall entry already retains a bounded 64-call ring.
+ * An APK timeout can inspect it without enabling serial-heavy tracing. */
+extern void nas_x86_debug_recent_syscalls(uint64_t pid);
+#endif
+
 /* Linux UAPI asm-generic signal.h constants for LP64. 0x40000000 is
  * SA_NODEFER, NOT SA_RESETHAND (0x80000000). All three ISAs share them. */
 #define NAS_SA_NODEFER UINT64_C(0x40000000)
@@ -472,6 +478,38 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
                 signal_queue_process(target,(unsigned)signal);
                 continue;
             }
+#if defined(__x86_64__) && defined(NAS_ENABLE_M191_ALPINE_ROOT)
+            /* Diagnostic for the genuine M204 x86 Redis apk hang. Capture
+             * the *live* blocked syscall/FD before SIGTERM tears down the
+             * Task and closes its open descriptions. Restrict to timed-out
+             * apk processes and two snapshots per boot; no global trace or
+             * modified guest timeout, package source or install semantics. */
+            if(signal==NAS_SIGTERM &&
+               target->comm[0]=='a' && target->comm[1]=='p' &&
+               target->comm[2]=='k' && target->comm[3]=='\0') {
+                static unsigned apk_term_snapshots;
+                if(apk_term_snapshots++<2U) {
+                    nas_print("[X86_APK_TERM] pid=");nas_dec(target->pid);
+                    nas_print(" state=");nas_dec(target->state);
+                    nas_print(" runtime_ns=");nas_dec(target->cpu_runtime_ns);
+                    nas_print(" blocked_op=");nas_dec(target->wait.blocked_op);
+                    nas_print(" pending=");nas_dec(target->wait.pending_valid);
+                    nas_print(" fs_request=");nas_dec(target->wait.fs_request!=0);
+                    nas_print(" pending_io=");nas_dec(target->wait.pending_io!=0);
+                    nas_print(" arg0=");nas_hex(target->wait.blocked_args[0]);
+                    nas_print(" arg1=");nas_hex(target->wait.blocked_args[1]);
+                    nas_print("\n");
+                    uint64_t fd=target->wait.blocked_args[0];
+                    if(target->fds && fd<NAS_FD_LIMIT) {
+                        nas_print("[X86_APK_TERM_FD] fd=");nas_dec(fd);
+                        nas_print(" kind=");nas_dec(target->fds->entries[fd].kind);
+                        nas_print(" slot=");nas_dec(target->fds->entries[fd].slot);
+                        nas_print("\n");
+                    }
+                    nas_x86_debug_recent_syscalls(target->pid);
+                }
+            }
+#endif
             signal_kill_other(target,(unsigned)signal);
         } else if (signal==NAS_SIGSTOP) {
             if (target->state != NAS_TASK_STOPPED) {
@@ -507,6 +545,28 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
             return nas_task_schedule(frame);
         }
         /* SIGCONT to a running sender is a successful no-op. */
+    }
+    return 0;
+}
+
+/* PID1 has already completed final thread-group teardown and parked on the
+ * scheduler stack. Do not ask the dead PID1 to wait4 (or enter a nested
+ * scheduler); reuse normal SIGKILL/exit_group to drop orphaned descriptors.
+ * The Task table gives a strict bounded visit, even for STOPPED/BLOCKED or
+ * double-fork daemon descendants such as BusyBox timeout's /dev/null owner.
+ * This gate is unreachable during an ordinary running PID1/user lifetime. */
+int nas_signal_shutdown_users(void) {
+    const struct nas_task *init=nas_current_task;
+    if(!init || init->pid!=1 || init->tgid!=1 ||
+       init->state!=NAS_TASK_ZOMBIE || init->group_exit_pending)
+        return -EPERM;
+    const uint64_t result=nas_signal_kill((uint64_t)-1,NAS_SIGKILL,0);
+    if(result && result!=(uint64_t)-ESRCH)
+        return -EIO;
+    for(unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
+        const struct nas_task *task=nas_task_at(slot);
+        if(signal_live_member(task) && task->tgid!=1)
+            return -EBUSY;
     }
     return 0;
 }

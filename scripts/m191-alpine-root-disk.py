@@ -20,7 +20,13 @@ import tempfile
 
 ARCH_MACHINE = {"amd64": 62, "riscv64": 243, "arm64": 183}
 SECTOR = 512
-DISK_SIZE = 256 * 1024 * 1024
+# M191's verified baseline stays 256 MiB. Large, *separately selected*
+# original-package discovery pools (M205 LLVM included) use a bigger
+# disposable image without changing the normal boot geometry or format.
+DISK_MIB = os.environ.get("NAS_M191_DISK_MIB", "256")
+if DISK_MIB not in ("256", "512", "768"):
+    raise ValueError("[M191 HOST FAIL] unsupported disposable root disk size")
+DISK_SIZE = int(DISK_MIB) * 1024 * 1024
 PART_START = 4096  # 2 MiB, separate partition and DOS MBR
 PART_SECTORS = DISK_SIZE // SECTOR - PART_START
 CRITICAL = (
@@ -278,8 +284,8 @@ def prepare(port: str, root: Path, disk: Path) -> None:
         # The final image is published atomically only after all host checks.
         verify(port, root, candidate)
         os.replace(candidate, disk)
-    print(f"[M191 ROOT DISK PREPARED] {port} 256MiB MBR, "
-          "254MiB original Alpine ext4 root partition")
+    print(f"[M191 ROOT DISK PREPARED] {port} {DISK_MIB}MiB MBR, "
+          f"{int(DISK_MIB)-2}MiB original Alpine ext4 root partition")
 
 
 def verify(port: str, root: Path, disk: Path) -> None:

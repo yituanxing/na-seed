@@ -21,8 +21,15 @@ m199=${NAS_M199_ORIGINAL_OPENRC_DESKTOP:-0}
 case "$m199" in 0|1) ;; *) echo '[M199 FAIL] invalid original OpenRC selector' >&2; exit 2 ;; esac
 m204=${NAS_M204_COMPAT_COHORT:-0}
 case "$m204" in 0|1) ;; *) echo '[M204 FAIL] invalid compatibility selector' >&2; exit 2 ;; esac
-if [ "$m204" = 1 ] && { [ "$m198" = 1 ] || [ "$m199" = 1 ]; }; then
-    echo '[M204 FAIL] compatibility cohort cannot enable a desktop' >&2
+m205=${NAS_M205_COMPAT_COHORT:-0}
+case "$m205" in 0|1) ;; *) echo '[M205 FAIL] invalid compatibility selector' >&2; exit 2 ;; esac
+if { [ "$m204" = 1 ] || [ "$m205" = 1 ]; } && \
+   { [ "$m198" = 1 ] || [ "$m199" = 1 ]; }; then
+    echo '[M204/M205 FAIL] compatibility cohort cannot enable a desktop' >&2
+    exit 2
+fi
+if [ "$m204" = 1 ] && [ "$m205" = 1 ]; then
+    echo '[M204/M205 FAIL] compatibility cohorts must own separate ledgers' >&2
     exit 2
 fi
 if [ "$m199" = 1 ]; then
@@ -45,6 +52,13 @@ baseline="$PWD/$work/alpine-root.img"
 rescue="$PWD/$work/smoke/rescue/rootfs.cpio"
 busybox="$PWD/$work/smoke/elf/busybox"
 test -s "$baseline" && test -s "$rescue" && test -s "$busybox"
+disk_mib=256
+if [ "$m205" = 1 ]; then
+    # 20 additional originals include large LLVM21 dependencies; keep the
+    # canonical M191 256MiB baseline immutable and enlarge only M205's
+    # disposable guest disk, with matching geometry at prepare and fsck.
+    disk_mib=768
+fi
 
 # A prior *verified cold public two-boot run with clean final unmount* can
 # accelerate ABI iteration, but that separate third-boot replay is
@@ -105,13 +119,46 @@ if [ "$m204" = 1 ]; then
         echo '[M204 FAIL] cohort results were preseeded' >&2; exit 1;
     }
 fi
+if [ "$m205" = 1 ]; then
+    sudo install -m 0644 tests/m205-software-workload.sh \
+        "$overlay/root/m205-software-workload.sh"
+    sudo install -m 0644 scripts/m205-alpine-cohort.tsv \
+        "$overlay/root/m205-cohort.tsv"
+    # M205's genuine llvm21-symbolizer needs a real, debug-info-bearing
+    # target-ISA ELF. Build it on the host, just as our earlier M141 toolchain
+    # fixtures did: the guest receives NO alternate compiler or fake output.
+    # The only guest program under acceptance is the original Alpine LLVM.
+    case "$port" in
+        amd64) fixture_cc=gcc; fixture_nm=nm ;;
+        arm64) fixture_cc=aarch64-linux-gnu-gcc; fixture_nm=aarch64-linux-gnu-nm ;;
+        riscv64) fixture_cc=riscv64-linux-gnu-gcc; fixture_nm=riscv64-linux-gnu-nm ;;
+    esac
+    fixture_elf="$PWD/$work/m205-symbolizer.elf"
+    fixture_addr="$PWD/$work/m205-symbolizer.addr"
+    "$fixture_cc" -O0 -g -fno-inline tests/m205_symbol.c -o "$fixture_elf"
+    "$fixture_nm" -n "$fixture_elf" | awk \
+        '$3 == "m205_symbol" { print "0x" $1; found = 1 } END { if (!found) exit 1 }' \
+        > "$fixture_addr"
+    test -s "$fixture_elf" && test -s "$fixture_addr"
+    sudo install -d -m 0755 "$overlay/root/m205-fixtures"
+    sudo install -m 0644 "$fixture_elf" \
+        "$overlay/root/m205-fixtures/symbolizer.elf"
+    sudo install -m 0644 "$fixture_addr" \
+        "$overlay/root/m205-fixtures/symbolizer.addr"
+    sudo test -s "$overlay/root/m205-software-workload.sh"
+    sudo test -s "$overlay/root/m205-cohort.tsv"
+    sudo test ! -e "$overlay/root/m205-first-results.tsv" || {
+        echo '[M205 FAIL] cohort results were preseeded' >&2; exit 1;
+    }
+fi
 sudo test ! -e "$overlay/root/m197-app" || {
     echo '[M197 PUBLIC STAGE FAIL] application output was preseeded' >&2; exit 1;
 }
 sudo test ! -e "$overlay/root/m197-wan.txt" || {
     echo '[M197 PUBLIC STAGE FAIL] persistence witness was preseeded' >&2; exit 1;
 }
-sudo python3 scripts/m191-alpine-root-disk.py prepare "$port" "$overlay" "$disk"
+sudo env NAS_M191_DISK_MIB="$disk_mib" \
+    python3 scripts/m191-alpine-root-disk.py prepare "$port" "$overlay" "$disk"
 sudo chown "$(id -u):$(id -g)" "$disk"
 else
     # Never mutate the immutable checkpoint: all test writes go to a new
@@ -138,6 +185,9 @@ export NAS_ACCEPTANCE_QEMU_RAM=1536M
 export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M197_PUBLIC_QEMU_TIMEOUT:-1020}
 if [ "$m204" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M204_PUBLIC_QEMU_TIMEOUT:-2400}
+fi
+if [ "$m205" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M205_PUBLIC_QEMU_TIMEOUT:-4500}
 fi
 if [ "$m198" = 1 ]; then
     export NAS_QEMU_INPUT_OPTIN=1 NAS_QEMU_VIRTIO_GPU=1 NAS_QEMU_RAMFB=0
@@ -219,7 +269,10 @@ if [ "$m198" = 1 ]; then
     grep -Fq '[M198 PHYSICAL QMP PASS]' "$work/m198-qmp-check.log"
     fi
 else
-    if [ "$m204" = 1 ]; then
+    if [ "$m205" = 1 ]; then
+        python3 scripts/m205-alpine-uart.py "$runner" "$serial" \
+            "$PWD/$work/m205-first-runner.log" "$fifo"
+    elif [ "$m204" = 1 ]; then
         python3 scripts/m204-alpine-uart.py "$runner" "$serial" \
             "$PWD/$work/m204-first-runner.log" "$fifo"
     else
@@ -243,6 +296,12 @@ grep -Fq 'M197_APP_WORKLOAD_PASS' "$serial" || {
 if [ "$m204" = 1 ]; then
     grep -Fq 'M204_FIRST_DISCOVERY_COMPLETE' "$serial" || {
         echo '[M204 FAIL] first compatibility inventory did not complete' >&2
+        exit 1
+    }
+fi
+if [ "$m205" = 1 ]; then
+    grep -Fq 'M205_FIRST_DISCOVERY_COMPLETE' "$serial" || {
+        echo '[M205 FAIL] first new-ELF inventory did not complete' >&2
         exit 1
     }
 fi
@@ -316,7 +375,9 @@ unset NAS_QEMU_SERIAL_FIFO NAS_VIRTIO_NET_PCAP NAS_QEMU_QMP_SOCKET
 if [ "$m198" = 1 ]; then
     export BUSYBOX_PARITY_MANIFEST=scripts/m198-alpine-reopen-cases.tsv
 else
-    if [ "$m204" = 1 ]; then
+    if [ "$m205" = 1 ]; then
+        export BUSYBOX_PARITY_MANIFEST=scripts/m205-alpine-reopen-cases.tsv
+    elif [ "$m204" = 1 ]; then
         if [ "$replay" = 1 ]; then
             export BUSYBOX_PARITY_MANIFEST=scripts/m204-alpine-replay-cases.tsv
         else
@@ -329,6 +390,9 @@ fi
 export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M197_REOPEN_SECONDS:-240}
 if [ "$m204" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M204_REOPEN_SECONDS:-540}
+fi
+if [ "$m205" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M205_REOPEN_SECONDS:-900}
 fi
 if ! sh "$runner" > "$PWD/$work/m197-reopen-runner.log" 2>&1; then
     echo "[M197 ALPINE REOPEN FAIL] $port second native QEMU" >&2
@@ -380,16 +444,35 @@ if [ "$m204" = 1 ]; then
         *) echo '[M204 FAIL] invalid strict mode' >&2; exit 2 ;;
     esac
 fi
+if [ "$m205" = 1 ]; then
+    grep -Fq 'M205_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
+        echo '[M205 FAIL] second QEMU did not reevaluate new ELFs' >&2
+        exit 1
+    }
+    case "${NAS_M205_REQUIRE_ALL:-0}" in
+        0) python3 scripts/m205-compat-report.py \
+               scripts/m205-alpine-cohort.tsv \
+               "$PWD/$work/m197-live.serial.log" "$reopen" \
+               "$PWD/$work/m205-compat-report.json" ;;
+        1) python3 scripts/m205-compat-report.py \
+               scripts/m205-alpine-cohort.tsv \
+               "$PWD/$work/m197-live.serial.log" "$reopen" \
+               "$PWD/$work/m205-compat-report.json" --require-all ;;
+        *) echo '[M205 FAIL] invalid strict mode' >&2; exit 2 ;;
+    esac
+fi
 if [ "$m198" = 1 ]; then
     grep -Fxq 'M198_GUI_REOPEN_PASS' "$reopen" || {
         echo '[M198 REOPEN FAIL] native editor did not persist' >&2; exit 1;
     }
 fi
-sudo python3 scripts/m197-alpine-disk-check.py "$port" "$root" "$disk"
+sudo env NAS_M191_DISK_MIB="$disk_mib" \
+    python3 scripts/m197-alpine-disk-check.py "$port" "$root" "$disk"
 if [ "$m198" = 1 ]; then
     sudo python3 scripts/m198-alpine-disk-check.py "$port" "$root" "$disk"
 fi
-sudo python3 scripts/m191-alpine-root-disk.py verify "$port" "$root" "$baseline"
+sudo env NAS_M191_DISK_MIB=256 \
+    python3 scripts/m191-alpine-root-disk.py verify "$port" "$root" "$baseline"
 if [ "$m204" = 1 ] && [ "$replay" = 0 ] && [ "${NAS_M204_CAPTURE_CHECKPOINT:-0}" = 1 ]; then
     # ONLY post-SECOND-boot clean ext4 is cached. The first Alpine init UART
     # supervisor intentionally SIGTERMs QEMU and cannot supply unmount proof.
@@ -421,6 +504,10 @@ else
     if [ "$m204" = 1 ]; then
         echo "[M204 ALPINE COMPAT DISCOVERY COMPLETE] $port official Alpine "\
              'twelve-package results from both QEMU boots and JSON failure inventory'
+    fi
+    if [ "$m205" = 1 ]; then
+        echo "[M205 ALPINE COMPAT DISCOVERY COMPLETE] $port official signed "\
+             'new ELF entrypoints from two genuine QEMU boots; failures remain explicit'
     fi
 fi
 if [ "$m198" = 1 ]; then
