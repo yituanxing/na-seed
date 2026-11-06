@@ -100,7 +100,15 @@ bool nas_task_wait_ready(const struct nas_task *task) {
         task->wait.blocked_op == NAS_SC_readv ||
         task->wait.blocked_op == NAS_SC_recvfrom || /* TCP MSG_PEEK */
         task->wait.blocked_op == NAS_SC_write ||
-        task->wait.blocked_op == NAS_SC_writev)
-        return task_io_ready(task);
+        task->wait.blocked_op == NAS_SC_writev) {
+        if(!task->wait.netlink_receive)return task_io_ready(task);
+    }
+    /* Netlink wakeup never dereferences the caller's user msghdr/iovecs or
+     * the mutable integer fd. The held OpenFile slot is its sole identity. */
+    if(task->wait.netlink_receive &&
+       (task->wait.blocked_op==NAS_SC_recvmsg ||
+        task->wait.blocked_op==NAS_SC_recvfrom))
+        return (nas_fs_poll_description_task(task->wait.description_slot,
+                                            0x0001U,task)&0x0019U)!=0;
     return false;
 }

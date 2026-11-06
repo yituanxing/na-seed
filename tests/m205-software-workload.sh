@@ -5,8 +5,8 @@
 set -u
 export PATH=/usr/sbin:/sbin:/usr/bin:/bin HOME=/root LC_ALL=C LANG=C
 
-case "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}" in
-    0:0)
+case "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}:${NAS_M215_PILOT:-0}" in
+    0:0:0)
         milestone=M205
         manifest=/root/m205-cohort.tsv
         work=/root/m205-work
@@ -14,7 +14,7 @@ case "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}" in
         reopen=/root/m205-reopen-results.tsv
         exercise_script=/root/m205-software-workload.sh
         ;;
-    0:1)
+    0:1:0)
         milestone=M206
         manifest=/root/m206-cohort.tsv
         work=/root/m206-work
@@ -22,12 +22,22 @@ case "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}" in
         reopen=/root/m206-reopen-results.tsv
         exercise_script=/root/m206-software-workload.sh
         ;;
-    1:0)
+    1:0:0)
         milestone=M213
         manifest=/root/m213-cohort.tsv
         work=/root/m213-work
         first=/root/m213-first-results.tsv
         reopen=/root/m213-reopen-results.tsv
+        exercise_script=/root/m213-software-workload.sh
+        ;;
+    0:0:1)
+        # The M215 pilot contains ONLY the five genuinely executable M213
+        # cases; the other 15 remain blocked and cannot inflate acceptance.
+        milestone=M215
+        manifest=/root/m215-cohort.tsv
+        work=/root/m215-work
+        first=/root/m215-first-results.tsv
+        reopen=/root/m215-reopen-results.tsv
         exercise_script=/root/m213-software-workload.sh
         ;;
     *) echo '[COMPAT ERROR] invalid/overlapping signed Alpine cohort selector' >&2; exit 2 ;;
@@ -511,8 +521,10 @@ cohort_rows=$(/bin/busybox awk -F '\t' '
     $1 != "package" && $1 !~ /^#/ && NF { count++ }
     END { print count+0 }
 ' "$manifest") || exit 1
-test "$cohort_rows" -eq 20 || {
-    echo "[M205 ERROR] expected 20 guest cohort rows, got $cohort_rows" >&2
+expected_rows=20
+[ "$milestone" = M215 ] && expected_rows=5
+test "$cohort_rows" -eq "$expected_rows" || {
+    echo "[$milestone ERROR] expected $expected_rows guest cohort rows, got $cohort_rows" >&2
     exit 1
 }
 if [ "$phase" = first ]; then
@@ -673,7 +685,9 @@ while IFS="$tab" read -r package elf family case_id <&9 || [ -n "$package" ]; do
     fi
 done 9< "$manifest"
 
-test "$total" -eq 20 || { echo "[M205 ERROR] wrong cohort count: $total" >&2; exit 1; }
+test "$total" -eq "$expected_rows" || {
+    echo "[$milestone ERROR] wrong cohort count: $total" >&2; exit 1;
+}
 sync || exit 1
 if [ "$phase" = first ]; then
     echo "${milestone}_FIRST_DISCOVERY_COMPLETE"

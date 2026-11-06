@@ -25,12 +25,14 @@ m205=${NAS_M205_COMPAT_COHORT:-0}
 case "$m205" in 0|1) ;; *) echo '[M205 FAIL] invalid compatibility selector' >&2; exit 2 ;; esac
 m206=${NAS_M206_COMPAT_COHORT:-0}
 case "$m206" in 0|1) ;; *) echo '[M206 FAIL] invalid compatibility selector' >&2; exit 2 ;; esac
-if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ]; } && \
+m215=${NAS_M215_PILOT:-0}
+case "$m215" in 0|1) ;; *) echo '[M215 FAIL] invalid pilot selector' >&2; exit 2 ;; esac
+if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ]; } && \
    { [ "$m198" = 1 ] || [ "$m199" = 1 ]; }; then
     echo '[COMPAT FAIL] software cohort cannot enable a desktop' >&2
     exit 2
 fi
-if [ "$((m204+m205+m206))" -gt 1 ]; then
+if [ "$((m204+m205+m206+m215))" -gt 1 ]; then
     echo '[COMPAT FAIL] software cohorts must own separate ledgers' >&2
     exit 2
 fi
@@ -60,6 +62,11 @@ if [ "$m205" = 1 ] || [ "$m206" = 1 ]; then
     # canonical M191 256MiB baseline immutable and enlarge only the cohort's
     # disposable guest disk, with matching geometry at prepare and fsck.
     disk_mib=768
+fi
+if [ "$m215" = 1 ]; then
+    # This pilot installs only the two signed package owners of its five
+    # original ELFs. Never carry M213's unrelated LLVM/BIND/SSH closure.
+    disk_mib=512
 fi
 
 # A prior *verified cold public two-boot run with clean final unmount* can
@@ -121,12 +128,21 @@ if [ "$m204" = 1 ]; then
         echo '[M204 FAIL] cohort results were preseeded' >&2; exit 1;
     }
 fi
-if [ "$m205" = 1 ] || [ "$m206" = 1 ]; then
+if [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ]; then
     # Reuse the M205 signed-install/ledger owner for both independent cohorts;
     # the M206 module contributes only new original-program semantic probes.
     sudo install -m 0644 tests/m205-software-workload.sh \
         "$overlay/root/m205-software-workload.sh"
-    if [ "$m205" = 1 ]; then
+    if [ "$m215" = 1 ]; then
+    cohort=m215
+    sudo install -m 0644 tests/m213-software-workload.sh \
+        "$overlay/root/m213-software-workload.sh"
+    sudo install -m 0644 scripts/m215-candidate-elfs.tsv \
+        "$overlay/root/m215-cohort.tsv"
+    sudo test -s "$overlay/root/m205-software-workload.sh"
+    sudo test -s "$overlay/root/m213-software-workload.sh"
+    sudo test -s "$overlay/root/m215-cohort.tsv"
+    elif [ "$m205" = 1 ]; then
     cohort=m205
     sudo install -m 0644 scripts/m205-alpine-cohort.tsv \
         "$overlay/root/m205-cohort.tsv"
@@ -274,6 +290,9 @@ fi
 if [ "$m206" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M206_PUBLIC_QEMU_TIMEOUT:-4500}
 fi
+if [ "$m215" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M215_PUBLIC_QEMU_TIMEOUT:-2500}
+fi
 if [ "$m198" = 1 ]; then
     export NAS_QEMU_INPUT_OPTIN=1 NAS_QEMU_VIRTIO_GPU=1 NAS_QEMU_RAMFB=0
     export NAS_ACCEPTANCE_QEMU_RAM=2048M
@@ -354,7 +373,10 @@ if [ "$m198" = 1 ]; then
     grep -Fq '[M198 PHYSICAL QMP PASS]' "$work/m198-qmp-check.log"
     fi
 else
-    if [ "$m206" = 1 ]; then
+    if [ "$m215" = 1 ]; then
+        python3 scripts/m215-alpine-uart.py "$runner" "$serial" \
+            "$PWD/$work/m215-first-runner.log" "$fifo"
+    elif [ "$m206" = 1 ]; then
         python3 scripts/m206-alpine-uart.py "$runner" "$serial" \
             "$PWD/$work/m206-first-runner.log" "$fifo"
     elif [ "$m205" = 1 ]; then
@@ -396,6 +418,12 @@ fi
 if [ "$m206" = 1 ]; then
     grep -Fq 'M206_FIRST_DISCOVERY_COMPLETE' "$serial" || {
         echo '[M206 FAIL] first new-ELF inventory did not complete' >&2
+        exit 1
+    }
+fi
+if [ "$m215" = 1 ]; then
+    grep -Fq 'M215_FIRST_DISCOVERY_COMPLETE' "$serial" || {
+        echo '[M215 FAIL] first five-ELF pilot ledger did not complete' >&2
         exit 1
     }
 fi
@@ -469,7 +497,9 @@ unset NAS_QEMU_SERIAL_FIFO NAS_VIRTIO_NET_PCAP NAS_QEMU_QMP_SOCKET
 if [ "$m198" = 1 ]; then
     export BUSYBOX_PARITY_MANIFEST=scripts/m198-alpine-reopen-cases.tsv
 else
-    if [ "$m206" = 1 ]; then
+    if [ "$m215" = 1 ]; then
+        export BUSYBOX_PARITY_MANIFEST=scripts/m215-alpine-reopen-cases.tsv
+    elif [ "$m206" = 1 ]; then
         export BUSYBOX_PARITY_MANIFEST=scripts/m206-alpine-reopen-cases.tsv
     elif [ "$m205" = 1 ]; then
         export BUSYBOX_PARITY_MANIFEST=scripts/m205-alpine-reopen-cases.tsv
@@ -492,6 +522,9 @@ if [ "$m205" = 1 ]; then
 fi
 if [ "$m206" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M206_REOPEN_SECONDS:-900}
+fi
+if [ "$m215" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M215_REOPEN_SECONDS:-600}
 fi
 if ! sh "$runner" > "$PWD/$work/m197-reopen-runner.log" 2>&1; then
     echo "[M197 ALPINE REOPEN FAIL] $port second native QEMU" >&2
@@ -577,12 +610,27 @@ if [ "$m206" = 1 ]; then
         *) echo '[M206 FAIL] invalid strict mode' >&2; exit 2 ;;
     esac
 fi
+if [ "$m215" = 1 ]; then
+    grep -Fq 'M215_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
+        echo '[M215 FAIL] second QEMU did not re-execute five original ELFs' >&2
+        exit 1
+    }
+    # This strict pilot covers only five executable M213 probes. A blocked
+    # sixth case or false-positive timeouts cannot be accepted as PASS.
+    python3 scripts/m215-compat-report.py \
+        scripts/m215-candidate-elfs.tsv \
+        "$PWD/$work/m197-live.serial.log" "$reopen" \
+        "$PWD/$work/m215-compat-report.json" --require-all
+fi
 if [ "$m198" = 1 ]; then
     grep -Fxq 'M198_GUI_REOPEN_PASS' "$reopen" || {
         echo '[M198 REOPEN FAIL] native editor did not persist' >&2; exit 1;
     }
 fi
-if [ "$m206" = 1 ]; then
+if [ "$m215" = 1 ]; then
+    sudo env NAS_M191_DISK_MIB="$disk_mib" \
+        python3 scripts/m215-alpine-disk-check.py "$port" "$root" "$disk"
+elif [ "$m206" = 1 ]; then
     # M206 invokes the unchanged M197 physical ext4/Git/SQLite/fsck oracle
     # before separately verifying all 20 new native ELF SHA and APK records.
     sudo env NAS_M191_DISK_MIB="$disk_mib" \
@@ -635,6 +683,11 @@ else
     if [ "$m206" = 1 ]; then
         echo "[M206 ALPINE COMPAT DISCOVERY COMPLETE] $port official signed "\
              'network/storage/markup ELFs from two genuine QEMU boots; failures remain explicit'
+    fi
+    if [ "$m215" = 1 ]; then
+        echo "[M215 ALPINE FIVE-ELF PILOT PASS] $port exact two signed APK "\
+             'owners and five real original ELF functions in both native QEMUs; ' \
+             'clean durable ext4 and original M197 public HTTPS preserved'
     fi
 fi
 if [ "$m198" = 1 ]; then

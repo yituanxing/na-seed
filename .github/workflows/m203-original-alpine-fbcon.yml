@@ -2,22 +2,10 @@ name: NaSeed M203 real original Alpine graphical VT login and fbcon
 
 # M203 must independently observe a real GPU text terminal operated by real
 # VirtIO keyboard, signed original Alpine login and fbi KD takeover/restore.
+# Desktop work is paused: run only by workflow_dispatch until resumed.
+# General Makefile/syscall/VT changes are verified by active software gates.
 on:
   workflow_dispatch:
-  push:
-    branches: [naseed-app-batch2]
-    paths:
-      - '.github/workflows/m203-*'
-      - 'scripts/m203-*'
-      - 'scripts/stage-m203-*'
-      - 'scripts/probe-m203-*'
-      - 'scripts/m194-alpine-uart.py'
-      - 'scripts/test-m194-uart-prompt.py'
-      - 'docs/m203*'
-      - 'kernel/drivers/display/fbcon*'
-      - 'kernel/drivers/vt*'
-      - 'kernel/fs/syscall.c'
-      - 'Makefile'
 
 permissions:
   contents: read

@@ -98,6 +98,9 @@ enum nas_blocked_completion nas_blocked_complete(struct nas_task *task,
      * return that transient error to the caller as if O_NONBLOCK had been
      * requested; PTY/socket/eventfd share the same provider contract. */
     const bool io_again=nas_fs_io_should_block(pending,rc,false);
+    const bool netlink_again=task->wait.netlink_receive &&
+        (nr==NAS_SC_recvmsg || nr==NAS_SC_recvfrom) &&
+        (int64_t)rc==-EAGAIN;
     const bool poll_again=(int64_t)rc==-EAGAIN &&
         (nr==NAS_SC_poll || nr==NAS_SC_ppoll ||
          nr==NAS_SC_pselect6 || nr==NAS_SC_select ||
@@ -107,7 +110,7 @@ enum nas_blocked_completion nas_blocked_complete(struct nas_task *task,
          nr==NAS_SC_setsockopt || nr==NAS_SC_shutdown ||
          nr==NAS_SC_getsockname || nr==NAS_SC_getpeername
         );
-    if(io_again || poll_again) {
+    if(io_again || netlink_again || poll_again) {
         task->state=NAS_TASK_BLOCKED;
         return NAS_BLOCKED_RETRY;
     }

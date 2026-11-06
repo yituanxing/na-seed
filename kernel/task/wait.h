@@ -37,6 +37,8 @@ static inline void nas_task_wait_reset(struct nas_task *task) {
 static inline void nas_task_wait_dispose(struct nas_task *task) {
     if(!task)return;
     struct nas_pending_io *owned=task->wait.pending_io;
+    void *netlink_owned=task->wait.netlink_receive;
+    void (*netlink_release)(void *)=task->wait.netlink_receive_release;
     struct nas_fs_broker_request *fs_owned=task->wait.fs_request;
     void (*release)(struct nas_pending_io *)=task->wait.pending_io_release;
     struct nas_poll_snapshot *poll=task->wait.poll_snapshot;
@@ -49,6 +51,8 @@ static inline void nas_task_wait_dispose(struct nas_task *task) {
         task->wait.accept_lease_cancel;
     task->wait.pending_io=0;
     task->wait.pending_io_release=0;
+    task->wait.netlink_receive=0;
+    task->wait.netlink_receive_release=0;
     task->wait.fs_request=0;
     task->wait.poll_snapshot=0;
     task->wait.poll_snapshot_release=0;
@@ -56,6 +60,8 @@ static inline void nas_task_wait_dispose(struct nas_task *task) {
     task->wait.accept_lease_cancel=0;
     if(owned && !release)__builtin_trap();
     if(owned && release)release(owned);
+    if(netlink_owned && !netlink_release)__builtin_trap();
+    if(netlink_owned && netlink_release)netlink_release(netlink_owned);
     /* Detaching cannot free a RUNNING request while the FS worker still
      * accesses it; worker-side reference ownership lives in the broker. */
     if(fs_owned)nas_fs_broker_request_detach(fs_owned);

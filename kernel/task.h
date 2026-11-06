@@ -79,6 +79,11 @@ struct nas_task_wait {
      * Callback keeps Task's generic lifetime independent of fs/file_io.c. */
     struct nas_pending_io *pending_io;
     void (*pending_io_release)(struct nas_pending_io *);
+    /* A blocked Netlink recvmsg/recvfrom retains its imported Linux ABI
+     * snapshot. This is distinct from File readv's data-plane request, but
+     * owns the same original OpenFile pin through description_release. */
+    void *netlink_receive;
+    void (*netlink_receive_release)(void *);
     /* One kernel-owned filesystem request may outlive a parked Task.
      * The worker owns execution and its own reference; Task wait disposal
      * merely detaches, including on signal, exit_group, or teardown. */

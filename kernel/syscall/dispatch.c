@@ -202,6 +202,9 @@ static uint64_t finish_io(struct nas_task *task) {
      * original syscall. Its fd number may now designate another object. */
     return nas_fs_io_resume(task->wait.pending_io);
 }
+static uint64_t finish_netlink_receive(struct nas_task *task) {
+    return nas_fs_netlink_receive_resume(task->wait.netlink_receive);
+}
 static uint64_t finish_socket_accept(struct nas_task *task) {
     const uint64_t *a=task->wait.blocked_args;
     return nas_fs_socket_accept_description(task->wait.description_slot,
@@ -922,6 +925,21 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         if(prepared<0)return (uint64_t)(int64_t)prepared;
         if(prepared==1)return task_pipe_io((uint64_t *)(uintptr_t)args,
             NAS_SC_writev,args[1],iov,count,(args[3]&0x4000ULL)!=0);
+    }
+    if(nr==NAS_SC_recvmsg || nr==NAS_SC_recvfrom) {
+        struct nas_netlink_receive_attempt attempt;
+        nas_fs_netlink_receive_start(nr,args,&attempt);
+        if(attempt.applicable) {
+            if(!attempt.pending)return attempt.result;
+            TASK.wait.netlink_receive=attempt.pending;
+            TASK.wait.netlink_receive_release=nas_fs_netlink_receive_release;
+            TASK.wait.description_slot=attempt.slot;
+            TASK.wait.description_release=nas_fs_drop_kernel_description;
+            nas_wait_io_clear(&TASK);
+            nas_wait_io_arm(&TASK,attempt.slot,0x0001U,false);
+            return nas_task_block((uint64_t *)(uintptr_t)args,nr,
+                                  0,0,0,0,finish_netlink_receive);
+        }
     }
     struct nas_fs_result fs_result = nas_fs_syscall(nr, args);
     if (fs_result.handled) {

@@ -27,6 +27,7 @@ RAW_MISS = re.compile(r"\[MISS\] syscall nr=([0-9]+)")
 PHASES = {"first": ("install", "functional"), "reopen": ("reopen",)}
 MARKERS = {"first": "M205_FIRST_DISCOVERY_COMPLETE",
            "reopen": "M205_REOPEN_DISCOVERY_COMPLETE"}
+EXPECTED_COUNT = 20
 
 
 def manifest_cases(path: Path) -> list[dict[str, str]]:
@@ -54,8 +55,8 @@ def manifest_cases(path: Path) -> list[dict[str, str]]:
         seen.add(elf_path)
         cases.append(dict(package=package, elf_path=elf_path,
                           family=family, probe=probe))
-    if len(cases) != 20:
-        raise ValueError(f"M205 requires 20 individually accountable command paths, got {len(cases)}")
+    if len(cases) != EXPECTED_COUNT:
+        raise ValueError(f"M205 requires {EXPECTED_COUNT} individually accountable command paths, got {len(cases)}")
     return cases
 
 
@@ -183,7 +184,7 @@ def main() -> int:
         print(f"[M205 ENTRY] {item['elf_path']} install={item['install']} "
               f"functional={item['functional']} reopen={item['reopen']}")
     print(f"[M205 REPORT JSON] {args.json_output}")
-    if args.require_all and report["newly_installed_full_pass_entrypoints"] != 20:
+    if args.require_all and report["newly_installed_full_pass_entrypoints"] != EXPECTED_COUNT:
         print("[M205 STRICT FAIL] discovery results cannot count as full compatibility")
         return 1
     return 0

@@ -106,13 +106,44 @@ case "$case_id:$elf" in
     bridge-netlink-query:sbin/bridge)
         echo '[M213 BLOCKED] requires a real create/query/delete bridge device; RTM_GETLINK alone is not evidence' >&2 ;;
     generic-netlink-family-discovery:sbin/genl)
-        echo '[M213 BLOCKED] AF_NETLINK NETLINK_GENERIC(16) family support missing' >&2 ;;
+        # This is the ORIGINAL Alpine iproute2 genl ELF, speaking to NaSeed's
+        # real NETLINK_GENERIC nlctrl provider. Require independent family
+        # enumeration plus successful name AND numeric-ID lookup. Then demand
+        # a genuine kernel ENOENT for an absent family. A static banner,
+        # launch, empty dump, and timeout can never pass this probe.
+        if /bin/busybox timeout 12 /sbin/genl ctrl list \
+                > "$target/list" 2> "$target/list.err" &&
+           /bin/busybox timeout 12 /sbin/genl ctrl get name nlctrl \
+                > "$target/by-name" 2> "$target/by-name.err" &&
+           /bin/busybox timeout 12 /sbin/genl ctrl get id 0x10 \
+                > "$target/by-id" 2> "$target/by-id.err" &&
+           /bin/busybox grep -Eq 'Name:[[:space:]]*nlctrl' "$target/list" &&
+           /bin/busybox grep -Eq 'Name:[[:space:]]*nlctrl' "$target/by-name" &&
+           /bin/busybox grep -Eq 'Name:[[:space:]]*nlctrl' "$target/by-id" &&
+           /bin/busybox grep -Eq 'ID:[[:space:]]*0x10([[:space:]]|$)' \
+                "$target/by-name" &&
+           /bin/busybox grep -Eq 'ID:[[:space:]]*0x10([[:space:]]|$)' \
+                "$target/by-id"; then
+            /bin/busybox timeout 12 /sbin/genl ctrl get name \
+                __naseed_missing_family_213__ \
+                > "$target/notfound" 2> "$target/notfound.err"
+            missing_rc=$?
+            if [ "$missing_rc" -ne 0 ] && [ "$missing_rc" -ne 124 ] &&
+               [ "$missing_rc" -ne 137 ] &&
+               /bin/busybox grep -Fq 'RTNETLINK answers: No such file or directory' \
+                    "$target/notfound.err" &&
+               ! /bin/busybox grep -Eq 'Name:[[:space:]]*nlctrl' \
+                    "$target/notfound"; then
+                probe_rc=0
+            fi
+        fi
+        ;;
     live-interface-counter-delta:sbin/ifstat)
         echo '[M213 BLOCKED] requires staged real UDP stimulus and before/after /proc/net/dev counters' >&2 ;;
     live-protocol-counter-delta:sbin/nstat)
         echo '[M213 BLOCKED] requires authentic /proc/net/snmp and /proc/net/netstat producers' >&2 ;;
     route-multicast-event:sbin/rtmon)
-        echo '[M213 BLOCKED] requires real RTMGRP_LINK subscribe+unicast event trigger' >&2 ;;
+        echo '[M213 BLOCKED] RTMGRP_LINK exists but needs a deterministic post-subscribe real NIC/link stimulus and verifiable rtmon binary event log' >&2 ;;
     native-loopback-packet-capture:usr/bin/nping)
         echo '[M213 BLOCKED] requires real original nping packet generation and independent host PCAP oracle' >&2 ;;
     authenticated-host-command:usr/bin/ssh)

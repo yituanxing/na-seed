@@ -2,20 +2,10 @@ name: NaSeed M202 original signed Alpine interactive fbi with physical VT keyboa
 
 # Targeted M202 gate: original Alpine init/OpenRC + fbi under virtual TTY,
 # two distinct physical GPU frames and real QMP VirtIO key Space+q per ISA.
+# Desktop work is paused: no automatic three-ISA QEMU on push, even when
+# editing this workflow. Use workflow_dispatch when desktop work resumes.
 on:
   workflow_dispatch:
-  push:
-    branches: [naseed-app-batch2]
-    paths:
-      - '.github/workflows/m202-*'
-      - 'scripts/m202-*'
-      - 'scripts/probe-m202-*'
-      - 'scripts/stage-m202-*'
-      - 'docs/m202*'
-      - 'kernel/drivers/tty*'
-      - 'kernel/drivers/vt*'
-      - 'kernel/drivers/input/**'
-      - 'kernel/fs/syscall.c'
 
 permissions:
   contents: read

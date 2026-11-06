@@ -2,21 +2,10 @@ name: NaSeed M201 original signed Alpine fbi on three physical ISAs
 
 # One native QEMU/OpenRC boot per ISA. Staging uses official signed Alpine
 # APKs on the host; NO historical M191 warm-up VM or M197 guest public WAN.
+# Desktop work is paused: run this costly physical QEMU cohort manually only.
+# Shared kernel changes use the active M206/M204 regressions instead.
 on:
   workflow_dispatch:
-  push:
-    branches: [naseed-app-batch2]
-    paths:
-      - '.github/workflows/m201-*'
-      - 'scripts/m201-*'
-      - 'scripts/stage-m201-*'
-      - 'scripts/probe-m201-*'
-      - 'docs/m201*'
-      - 'kernel/drivers/display/**'
-      - 'kernel/fs/syscall.c'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
 
 permissions:
   contents: read

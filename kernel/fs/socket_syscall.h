@@ -5,6 +5,19 @@
 /* AF_UNIX socket ABI. Return handled=false outside this module's syscall set. */
 struct nas_fs_result nas_fs_socket_syscall(enum nas_syscall_op op,
                                            const uint64_t *args);
+/* Netlink datagrams block on the original held description. The adapter
+ * imports the complete Linux recvmsg/recvfrom metadata before Task parking;
+ * the scheduler never reopens a possibly reused integer fd. */
+struct nas_netlink_receive_attempt {
+    bool applicable;
+    void *pending;
+    unsigned slot;
+    uint64_t result;
+};
+void nas_fs_netlink_receive_start(enum nas_syscall_op op,const uint64_t *args,
+                                   struct nas_netlink_receive_attempt *out);
+uint64_t nas_fs_netlink_receive_resume(void *pending);
+void nas_fs_netlink_receive_release(void *pending);
 /* Native TCP sendmsg is a vector stream write. Validate its msghdr before
  * dispatching through the held-OpenFile, blocking writev executor.
  * Returns 1 for TCP with iov/count, 0 for other families, or -errno. */

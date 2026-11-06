@@ -5,7 +5,8 @@ package	elf_path	family	probe
 # A path is NOT a NaSeed PASS until exact-ISA signed APK+unique SHA, a real
 # semantic command and an independent second-QEMU run are all attested.
 # ssh/scp/sftp need a disposable authenticated host sshd; DNSSEC and update
-# need an isolated authoritative server; rtmon needs genuine link events.
+# need an isolated authoritative server; rtmon needs a deterministic
+# post-subscribe NIC change and independently decoded binary event log.
 iproute2	sbin/bridge	network	bridge-netlink-query
 iproute2	sbin/genl	network	generic-netlink-family-discovery
 iproute2	sbin/ifstat	network	live-interface-counter-delta

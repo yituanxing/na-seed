@@ -1191,7 +1191,73 @@ int main(void) {
     assert(user_ptr(nl_reply)[4]==3); /* NLMSG_DONE */
     nl_result=(int64_t)sys_netlink_recvfrom(nl_fd,nl_reply,64,0,0,0);
     assert(nl_result==-EAGAIN);
+    /* M215: original Alpine's rtmon must block on an empty ROUTE socket,
+     * rather than observe spurious EAGAIN. Import while the Task owns its
+     * address space; the pinned OpenFile survives close/reused fd numbers. */
+    struct nas_netlink_receive_attempt nl_wait;
+    uint64_t nl_wait_args[7]={0,nl_fd,nl_reply,64,0,0,0};
+    unsigned held_nl_slot=guest_task.fds->entries[nl_fd].slot;
+    unsigned nl_refs=nas_open_files[held_nl_slot].refcount;
+    nas_fs_netlink_receive_start(NAS_SC_recvfrom,nl_wait_args,&nl_wait);
+    assert(nl_wait.applicable && nl_wait.pending &&
+           nl_wait.slot==held_nl_slot &&
+           nas_open_files[held_nl_slot].refcount==nl_refs+1U);
+    assert((int64_t)nas_fs_netlink_receive_resume(nl_wait.pending)==-EAGAIN);
+    assert(!(nas_fs_poll_description(held_nl_slot,1)&1));
+    nas_fs_netlink_receive_release(nl_wait.pending);
+    nas_fs_drop_kernel_description(held_nl_slot);
+    assert(nas_open_files[held_nl_slot].refcount==nl_refs);
+    nl_wait_args[4]=0x40; /* per-call MSG_DONTWAIT never parks */
+    nas_fs_netlink_receive_start(NAS_SC_recvfrom,nl_wait_args,&nl_wait);
+    assert(nl_wait.applicable && !nl_wait.pending &&
+           (int64_t)nl_wait.result==-EAGAIN);
+    nl_wait_args[4]=0;
+    nas_open_files[held_nl_slot].status_flags|=0x800ULL; /* O_NONBLOCK */
+    nas_fs_netlink_receive_start(NAS_SC_recvfrom,nl_wait_args,&nl_wait);
+    assert(!nl_wait.pending && (int64_t)nl_wait.result==-EAGAIN);
+    nas_open_files[held_nl_slot].status_flags&=~0x800ULL;
+    nl_wait_args[4]=1; /* unsupported flags preflight before parking */
+    nas_fs_netlink_receive_start(NAS_SC_recvfrom,nl_wait_args,&nl_wait);
+    assert(!nl_wait.pending && (int64_t)nl_wait.result==-EOPNOTSUPP);
+    nl_wait_args[4]=0;
+    nl_wait_args[2]=TEST_BASE+TEST_PAGES*TEST_PAGE;
+    nas_fs_netlink_receive_start(NAS_SC_recvfrom,nl_wait_args,&nl_wait);
+    assert(!nl_wait.pending && (int64_t)nl_wait.result==-EFAULT);
+    nl_wait_args[2]=nl_reply;
+
+    /* Unlike a second call to sys_netlink_recvmsg(fd,...), the pending
+     * request's ORIGINAL user iovec, slot and name are immutable. */
+    nl_iov=(struct nas_iovec){.base=nl_reply,.length=64};
+    nl_msg=(struct nas_msghdr){.name=nl_source,.namelen=12,
+                             .iov=nl_iovec,.iovlen=1};
+    memcpy(user_ptr(nl_iovec),&nl_iov,sizeof(nl_iov));
+    memcpy(user_ptr(nl_message),&nl_msg,sizeof(nl_msg));
+    nl_wait_args[2]=nl_message;
+    nl_wait_args[3]=0;
+    nas_fs_netlink_receive_start(NAS_SC_recvmsg,nl_wait_args,&nl_wait);
+    assert(nl_wait.pending && nl_wait.slot==held_nl_slot);
+    nl_iov.base=TEST_BASE+TEST_PAGES*TEST_PAGE;
+    nl_msg.iov=TEST_BASE+TEST_PAGES*TEST_PAGE;
+    memcpy(user_ptr(nl_iovec),&nl_iov,sizeof(nl_iov));
+    memcpy(user_ptr(nl_message),&nl_msg,sizeof(nl_msg));
     nas_fs_close_fd(nl_fd);
+    assert(nas_open_files[held_nl_slot].refcount==1);
+    uint64_t nl_reused=sys_socket(16,3,NAS_NETLINK_GENERIC_PROTOCOL);
+    assert(nl_reused==nl_fd &&
+           guest_task.fds->entries[nl_reused].slot!=held_nl_slot);
+    assert(nas_netlink_core_sendto(held_nl_slot,nl_getaddr,20,NULL,0)==20);
+    assert(nas_fs_poll_description(held_nl_slot,1)&1);
+    assert(nas_fs_netlink_receive_resume(nl_wait.pending)==40);
+    assert(user_ptr(nl_reply)[4]==20 && user_ptr(nl_reply)[16]==2);
+    nas_fs_netlink_receive_release(nl_wait.pending);
+    nas_fs_drop_kernel_description(held_nl_slot);
+    assert(!nas_netlink_core_is_slot(held_nl_slot));
+    nas_fs_close_fd(nl_reused);
+    nl_iov=(struct nas_iovec){.base=nl_reply,.length=64};
+    nl_msg=(struct nas_msghdr){.name=nl_source,.namelen=12,
+                             .iov=nl_iovec,.iovlen=1};
+    memcpy(user_ptr(nl_iovec),&nl_iov,sizeof(nl_iov));
+    memcpy(user_ptr(nl_message),&nl_msg,sizeof(nl_msg));
     /* Keep ROUTE and NETFILTER as two actual kernel-owned OpenFile
      * providers behind the SAME syscall/usercopy/FD adapter. An original
      * nft binary queries the real nf_tables generation before transactions. */
@@ -1200,6 +1266,12 @@ int main(void) {
            !unix_fd(nf_fd) && !inet_fd(nf_fd));
     unsigned nf_slot=guest_task.fds->entries[nf_fd].slot;
     assert(nas_open_files[nf_slot].ops==nas_netlink_filter_ops());
+    uint64_t nf_wait_args[7]={0,nf_fd,nl_reply,64,0,0,0};
+    nas_fs_netlink_receive_start(NAS_SC_recvfrom,nf_wait_args,&nl_wait);
+    assert(nl_wait.applicable && nl_wait.pending && nl_wait.slot==nf_slot);
+    assert((int64_t)nas_fs_netlink_receive_resume(nl_wait.pending)==-EAGAIN);
+    nas_fs_netlink_receive_release(nl_wait.pending);
+    nas_fs_drop_kernel_description(nf_slot);
     nl_cap=4;
     memcpy(user_ptr(nl_length),&nl_cap,4);
     assert(sys_netlink_getsockopt(nf_fd,1,38,nl_reply,nl_length)==0);
@@ -1242,6 +1314,12 @@ int main(void) {
            !unix_fd(genl_fd) && !inet_fd(genl_fd));
     unsigned genl_slot=guest_task.fds->entries[genl_fd].slot;
     assert(nas_open_files[genl_slot].ops==nas_netlink_generic_ops());
+    uint64_t genl_wait_args[7]={0,genl_fd,nl_reply,64,0,0,0};
+    nas_fs_netlink_receive_start(NAS_SC_recvfrom,genl_wait_args,&nl_wait);
+    assert(nl_wait.applicable && nl_wait.pending && nl_wait.slot==genl_slot);
+    assert((int64_t)nas_fs_netlink_receive_resume(nl_wait.pending)==-EAGAIN);
+    nas_fs_netlink_receive_release(nl_wait.pending);
+    nas_fs_drop_kernel_description(genl_slot);
     nl_cap=4;memcpy(user_ptr(nl_length),&nl_cap,4);
     assert(sys_netlink_getsockopt(genl_fd,1,38,nl_reply,nl_length)==0);
     memcpy(&nf_protocol,user_ptr(nl_reply),4);
@@ -1315,5 +1393,6 @@ int main(void) {
     puts("[NETLINK FILTER ABI PASS] real nf_tables GETGEN via shared LP64 socket adapter");
     puts("[NETLINK CORE ABI PASS] ROUTE/DIAG/FILTER/GENERIC shared syscall, FD, PID, options");
     puts("[NETLINK GENERIC ABI PASS] nlctrl lookup/dump, ENOENT, PEEK/TRUNC, close");
+    puts("[NETLINK BLOCKING ABI PASS] ROUTE/FILTER/GENERIC immutable recvmsg, O_NONBLOCK/DONTWAIT, pinned OpenFile FD reuse");
     return 0;
 }

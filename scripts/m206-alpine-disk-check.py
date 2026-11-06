@@ -38,7 +38,7 @@ def load(name: str, alias: str):
     return module
 
 
-def manifest(path: Path = CANDIDATES) -> tuple[list[str], list[str]]:
+def manifest(path: Path = CANDIDATES, expected_count: int = 20) -> tuple[list[str], list[str]]:
     with path.open(newline="", encoding="utf-8") as stream:
         records = csv.reader(stream, delimiter="\t")
         if next(records, None) != HEADER:
@@ -60,8 +60,8 @@ def manifest(path: Path = CANDIDATES) -> tuple[list[str], list[str]]:
                 raise ValueError("[M206 HOST FAIL] malformed candidate path")
             package_names.append(package)
             binary_paths.append("/" + elf)
-    if len(binary_paths) != 20 or len(set(binary_paths)) != 20:
-        raise ValueError("[M206 HOST FAIL] expected 20 distinct original ELF paths")
+    if len(binary_paths) != expected_count or len(set(binary_paths)) != expected_count:
+        raise ValueError(f"[M206 HOST FAIL] expected {expected_count} distinct original ELF paths")
     return sorted(set(package_names)), binary_paths
 
 
@@ -101,8 +101,9 @@ def is_original_busybox_alias(m191, signed_root: Path, guest_path: str,
 
 
 def verify(port: str, signed_root: Path, disk: Path, *,
-           candidates: Path = CANDIDATES, packages: Path = PACKAGES) -> None:
-    package_names, binary_paths = manifest(candidates)
+           candidates: Path = CANDIDATES, packages: Path = PACKAGES,
+           expected_count: int = 20, label: str = "M206") -> None:
+    package_names, binary_paths = manifest(candidates, expected_count)
     package_requests = packages_in_world(packages)
     if package_names != package_requests:
         raise ValueError("[M206 HOST FAIL] candidate owners differ from APK requests")
@@ -151,8 +152,8 @@ def verify(port: str, signed_root: Path, disk: Path, *,
             if fingerprint in fingerprints:
                 raise ValueError("[M206 HOST FAIL] repeated ELF SHA256: " + path)
             fingerprints.add(fingerprint)
-    print(f"[M206 ORIGINAL APK DISK PASS] {port} {len(package_names)} signed-package "
-          "records in APK world+installed DB, 20 original ISA-matched unique-SHA ELFs "
+    print(f"[{label} ORIGINAL APK DISK PASS] {port} {len(package_names)} signed-package "
+          f"records in APK world+installed DB, {expected_count} original ISA-matched unique-SHA ELFs "
           "persisted after native second boot, M197 fsck/public-software proof intact")
 
 

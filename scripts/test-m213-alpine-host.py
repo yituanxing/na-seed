@@ -30,6 +30,7 @@ EXECUTABLE_CASES = {
     "child-exit-status-observation:usr/bin/waitpid": "/usr/bin/waitpid",
     "iso9660-size-fixture:usr/bin/isosize": "/usr/bin/isosize",
     "pipe-capacity-set-and-readback:bin/pipesz": "/bin/pipesz",
+    "generic-netlink-family-discovery:sbin/genl": "/sbin/genl",
 }
 
 
@@ -144,13 +145,22 @@ def workload_contract(candidate: list[tuple[str, str, str, str]]) -> None:
                 assert "-s8192" in branch and "4096" in branch and "8192" in branch
                 assert branch.count("/bin/pipesz") >= 3, (
                     "pipesz must set capacity and independently exec/read it back")
+            if label == "generic-netlink-family-discovery:sbin/genl":
+                for token in ("ctrl list", "ctrl get name nlctrl",
+                              "ctrl get id 0x10", "__naseed_missing_family_213__",
+                              "missing_rc", "RTNETLINK answers: No such file or directory",
+                              "Name:[[:space:]]*nlctrl", "ID:[[:space:]]*0x10"):
+                    assert token in branch, (
+                        f"genl is missing real positive/negative oracle: {token}")
+                assert "-ne 124" in branch and "-ne 137" in branch, (
+                    "timed-out negative family lookup cannot count as success")
         else:
             assert "[M213 BLOCKED]" in branch, (
                 f"unsupported native case not explicit fail-closed: {label}")
             assert "probe_rc=0" not in branch, (
                 f"blocked case could accidentally count as PASS: {label}")
             blocked += 1
-    assert blocked == 16 and len(EXECUTABLE_CASES) == 4
+    assert blocked == 15 and len(EXECUTABLE_CASES) == 5
     for script in (WORKLOAD, DISPATCH):
         subprocess.run(["sh", "-n", str(script)], check=True, timeout=10)
     ambiguous = subprocess.run(
@@ -219,9 +229,9 @@ def main() -> None:
           "canonical Alpine ELF paths, 8 exact signed-APK owners, 8 genuine "
           "semantic families; 11 anti-false-positive cases, original historical "
           "and M205/M206 deduplication, all four legacy/new preflight profiles")
-    print("[M213 REAL PROBE CONTRACT] 4 guest-local semantics (setpgid, pidfd "
-          "waitpid, ISO9660 PVD positive+negative, pipesz set/exec/readback); "
-          "16 explicit dependency "
+    print("[M213 REAL PROBE CONTRACT] 5 guest-local semantics (setpgid, pidfd "
+          "waitpid, ISO9660 PVD positive+negative, pipesz set/exec/readback, "
+          "genl nlctrl list/name/id/ENOENT); 15 explicit dependency "
           "fail-closed cases, no guessed PASS or parent manifest stdin theft")
     print("[M213 NOT ACCEPTED] original signed APK/native ISA SHA, executable "
           "guest semantic probes and first/reopen QEMU still required")
