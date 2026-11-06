@@ -5,8 +5,8 @@ on:
   # probes do NOT restart three 75-minute public WAN boots automatically.
   # Recheck genuine signed APK cache transactions, real PTY input and
   # native INET_DIAG TCP listeners in three independent QEMU guests.
-  # Re-run after correcting the host APKINDEX cache output root; verify
-  # original signed archives, fresh offline solver and two real QEMU boots.
+  # Recheck dual-path read-only APK cache in a fresh root with actual offline
+  # install, then run original signed ELF first/reopen in native QEMU twice.
   push:
     branches: [naseed-app-batch2]
     paths:

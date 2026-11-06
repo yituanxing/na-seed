@@ -172,12 +172,15 @@ if [ "$profile" = m205 ]; then
         exit 1
     }
     # The inventory root has ALREADY installed all packages; `apk add` there
-    # would be a misleading no-op. Instead resolve every candidate in an
-    # independent EMPTY target root against only this immutable cache, with
-    # genuine cross-ISA signing keys and no network, before any QEMU minutes.
+    # would be a misleading no-op. Use an independent EMPTY target root and
+    # install the real signed archives without network or target-ISA scripts.
+    # Alpine apk-tools resolves --cache-dir against --root; mount the same
+    # immutable cache at both roots so the verifier also works with apk
+    # versions which resolve it against the container's process root.
     if ! docker run --rm \
         --volume "$root_canonical:/target:ro" \
         --volume "$root_canonical/var/cache/apk:/verify/var/cache/apk:ro" \
+        --volume "$root_canonical/var/cache/apk:/var/cache/apk:ro" \
         --env APK_ARCH="$arch" --env APK_PACKAGES="$package_list" \
         alpine:3.23 sh -ec '
             mkdir -p /verify/lib/apk/db /verify/etc/apk/keys
@@ -188,6 +191,7 @@ if [ "$profile" = m205 ]; then
             : > /verify/etc/apk/world
             cp -a /target/etc/apk/keys/. /etc/apk/keys/
             cp -a /target/etc/apk/keys/. /verify/etc/apk/keys/
+            ln -s /var/cache/apk /verify/etc/apk/cache
             printf "%s\n" \
                 https://dl-cdn.alpinelinux.org/alpine/v3.23/main \
                 https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
@@ -195,6 +199,9 @@ if [ "$profile" = m205 ]; then
             apk --arch "$APK_ARCH" --root /verify --initdb \
                 --cache-dir /var/cache/apk --keys-dir /etc/apk/keys \
                 --no-network --simulate add $APK_PACKAGES
+            apk --arch "$APK_ARCH" --root /verify \
+                --cache-dir /var/cache/apk --keys-dir /etc/apk/keys \
+                --no-network --no-scripts add $APK_PACKAGES
         ' > "$work/apk-offline-proof.log" 2>&1; then
         echo '[M205 CACHE FAIL] independent empty-root APK offline resolution' >&2
         if [ -f "$work/apk-cache.log" ]; then
@@ -203,7 +210,7 @@ if [ "$profile" = m205 ]; then
         tail -60 "$work/apk-offline-proof.log" >&2
         exit 1
     fi
-    echo "[M205 SIGNED CACHE PASS] $port $archive_count upstream APK archives, $index_count retained indexes, SHA256 pinned; independent empty-root offline solver PASS"
+    echo "[M205 SIGNED CACHE PASS] $port $archive_count upstream APK archives, $index_count retained indexes, SHA256 pinned; independent empty-root offline install PASS"
 fi
 
 report="$work/candidates.tsv"
