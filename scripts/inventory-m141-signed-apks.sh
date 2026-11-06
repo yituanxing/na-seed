@@ -93,6 +93,14 @@ if [ ! -f "$work/packages-$package_sha/signed-install.ok" ]; then
 fi
 
 if [ "$profile" = m205 ]; then
+    # The guest M191 disk already pins BOTH official repositories. Mirror
+    # that exact configuration in this host-only cross-ISA root as well:
+    # apk-tools 3's index cache update follows persistent repository config,
+    # while transient -X flags alone need not leave two reusable indexes.
+    printf '%s\n' \
+        'https://dl-cdn.alpinelinux.org/alpine/v3.23/main' \
+        'https://dl-cdn.alpinelinux.org/alpine/v3.23/community' \
+        > "$root/etc/apk/repositories"
     cache="$root/var/cache/apk"
     # Alpine apk-tools 3 may finish a --root installation without writing
     # package archives into an implicitly selected cache. Explicitly fetch
@@ -136,6 +144,10 @@ if [ "$profile" = m205 ]; then
     index_count=$(find "$cache" -maxdepth 1 -type f -name 'APKINDEX*' | wc -l)
     [ "$archive_count" -ge 16 ] && [ "$index_count" -ge 2 ] || {
         echo "[M205 CACHE FAIL] archive/index shortage: $archive_count APKs $index_count indexes" >&2
+        find "$cache" -maxdepth 1 -type f -name '*INDEX*' -print >&2
+        if [ -f "$work/apk-cache.log" ]; then
+            tail -25 "$work/apk-cache.log" >&2
+        fi
         exit 1
     }
     [ -z "$(find "$cache" -maxdepth 1 -type l -print -quit)" ] || {
