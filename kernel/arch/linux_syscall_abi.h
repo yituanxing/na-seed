@@ -86,6 +86,8 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_getegid: return NAS_SC_getegid;
     case __NR_geteuid: return NAS_SC_geteuid;
     case __NR_getgid: return NAS_SC_getgid;
+    case __NR_getresgid: return NAS_SC_getresgid;
+    case __NR_getresuid: return NAS_SC_getresuid;
     case __NR_getgroups: return NAS_SC_getgroups;
     case __NR_getpgid: return NAS_SC_getpgid;
     case __NR_getpgrp: return NAS_SC_getpgrp;
@@ -104,6 +106,10 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_setfsgid: return NAS_SC_setfsgid;
     case __NR_setgid: return NAS_SC_setgid;
     case __NR_setgroups: return NAS_SC_setgroups;
+    case __NR_setregid: return NAS_SC_setregid;
+    case __NR_setresgid: return NAS_SC_setresgid;
+    case __NR_setresuid: return NAS_SC_setresuid;
+    case __NR_setreuid: return NAS_SC_setreuid;
     case __NR_setuid: return NAS_SC_setuid;
     case __NR_ioctl: return NAS_SC_ioctl;
     case __NR_ioprio_set: return NAS_SC_ioprio_set;
@@ -373,9 +379,15 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 174U: return NAS_SC_getuid;
     case 175U: return NAS_SC_geteuid;
     case 176U: return NAS_SC_getgid;
+    case 148U: return NAS_SC_getresuid; /* Linux asm-generic */
+    case 150U: return NAS_SC_getresgid; /* Linux asm-generic */
     case 158U: return NAS_SC_getgroups; /* asm-generic supplementary groups */
     case 177U: return NAS_SC_getegid;
     case 144U: return NAS_SC_setgid;
+    case 143U: return NAS_SC_setregid; /* Linux asm-generic */
+    case 145U: return NAS_SC_setreuid; /* Linux asm-generic */
+    case 147U: return NAS_SC_setresuid; /* Linux asm-generic */
+    case 149U: return NAS_SC_setresgid; /* Linux asm-generic */
     case 151U: return NAS_SC_setfsuid; /* Linux asm-generic */
     case 152U: return NAS_SC_setfsgid; /* Linux asm-generic */
     case 159U: return NAS_SC_setgroups;

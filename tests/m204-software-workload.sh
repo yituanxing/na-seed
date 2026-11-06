@@ -205,10 +205,17 @@ functional() {
 
 if [ "$phase" = exercise ]; then
     [ "$#" -eq 2 ] || exit 2
+    # A workhorse command may read stdin even when it receives explicit
+    # file arguments. Never inherit the cohort TSV or supervisor's UART.
+    exec 0</dev/null
     functional "$2"
     exit $?
 fi
 test -r "$manifest" || { echo '[M204 FAIL] missing signed-root overlay manifest' >&2; exit 1; }
+# Keep the manifest on a dedicated descriptor and reserve fd0 for isolated
+# children. M205 exposed a real three-ISA 19/20 hole from inherited stdin;
+# this older 12-entry cohort must obey the same invariant.
+exec 0</dev/null
 if [ "$phase" = first ]; then
     test ! -e "$first" || { echo '[M204 FAIL] preseeded first ledger' >&2; exit 1; }
     mkdir -p "$work/logs" || exit 1
@@ -230,7 +237,7 @@ fi
 : > "$ledger" || exit 1
 
 total=0
-while IFS="$tab" read -r category package test_id || [ -n "$category" ]; do
+while IFS="$tab" read -r category package test_id <&9 || [ -n "$category" ]; do
     case "$category" in ''|'#'*) continue ;; esac
     total=$((total + 1))
     if [ "$package" != "$test_id" ]; then
@@ -273,7 +280,7 @@ while IFS="$tab" read -r category package test_id || [ -n "$category" ]; do
             error_tail "$package" reopen "$work/logs/$package.reopen.log"
         fi
     fi
-done < "$manifest"
+done 9< "$manifest"
 
 test "$total" -eq 12 || { echo "[M204 FAIL] wrong cohort count: $total" >&2; exit 1; }
 test "$(/bin/busybox wc -l < "$ledger")" -ge 12 || exit 1

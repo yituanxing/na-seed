@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import runpy
 import subprocess
 import sys
@@ -19,6 +20,9 @@ MODULE = ROOT / "scripts/m205-compat-report.py"
 CANDIDATES = ROOT / "scripts/m205-candidate-elfs.tsv"
 COHORT = ROOT / "scripts/m205-alpine-cohort.tsv"
 PACKAGES = ROOT / "rootfs/alpine/packages-m205-candidates.txt"
+GUEST = ROOT / "tests/m205-software-workload.sh"
+M204_GUEST = ROOT / "tests/m204-software-workload.sh"
+M204_COHORT = ROOT / "scripts/m204-alpine-cohort.tsv"
 reporter = runpy.run_path(str(MODULE))
 manifest_cases = reporter["manifest_cases"]
 build_report = reporter["build_report"]
@@ -50,7 +54,56 @@ def uart(cases: list[dict[str, str]], phase: str,
     return "\n".join(lines) + "\n"
 
 
+def check_guest_manifest_isolation() -> None:
+    """Execute actual M204/M205 TSV-loop headers against stdin-stealing child.
+
+    This reproduces the exact M205 three-ISA 19/20 error without a QEMU boot:
+    the original `done < "$manifest"` bound every child's fd0 to the
+    manifest, and a native utility could consume a later row. Both first-boot
+    APK pre-scan and each first/reopen software loop must read only fd9.
+    """
+    contracts = ((GUEST, COHORT, 20,
+                  ("pkg path family check", "package elf family case_id")),
+                 (M204_GUEST, M204_COHORT, 12,
+                  ("category package test_id",)))
+    for source, cohort, expected, loops in contracts:
+        guest = source.read_text()
+        assert "exec 0</dev/null" in guest, source
+        assert guest.count('done 9< "$manifest"') == len(loops), source
+        for fields in loops:
+            check_guest_manifest_loop(guest, source, cohort, expected, fields)
+
+
+def check_guest_manifest_loop(guest: str, source: Path, cohort: Path,
+                              expected: int, fields: str) -> None:
+        name = fields.split()[0]
+        header = (f'while IFS="$tab" read -r {fields} <&9 || '
+                  f'[ -n "${name}" ]; do')
+        # Avoid a false static-only test: execute these exact production
+        # headers, including fd9 positioning, with an actual child that
+        # attempts to drain its inherited stdin on EACH of twenty rows.
+        assert len(re.findall(re.escape(header), guest)) == 1, (source, header)
+        script = f'''set -eu
+tab=$(printf '\\t')
+manifest=$1
+exec 0</dev/null
+n=0
+{header}
+    case "${name}" in ''|'#'*|package) continue ;; esac
+    sh -c 'while IFS= read -r stolen; do :; done'
+    n=$((n+1))
+done 9< "$manifest"
+printf '%s\\n' "$n"
+'''
+        completed = subprocess.run(["sh", "-c", script, "m205-loop", str(cohort)],
+                                   input=cohort.read_text(), capture_output=True,
+                                   text=True, check=False, timeout=15)
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stdout == f"{expected}\n", (source, header, completed.stdout)
+
+
 def main() -> None:
+    check_guest_manifest_isolation()
     cases = manifest_cases(CANDIDATES)
     # The signed-host census, guest installer and strict report must point to
     # EXACTLY the same twenty original ELF paths and sixteen package owners.
@@ -179,7 +232,8 @@ def main() -> None:
         raises("requires 20", manifest_cases, manifest)
 
     print("[M205 HOST CONTRACT PASS] 20 individually accounted signed-ELF candidates, "
-          "strict first/reopen records, dedup and status consistency, negative-proof "
+          "three M204/M205 fd9 stdin-theft regressions, strict first/reopen records, "
+          "dedup and status consistency, negative-proof "
           "cases; QEMU and unique SHA remain external acceptance gates")
 
 

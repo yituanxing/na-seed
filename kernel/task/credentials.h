@@ -15,7 +15,22 @@ struct nas_credentials {
 };
 
 static inline uint64_t nas_credentials_set_id(uint64_t requested) {
-    return requested==0 ? 0 : (uint64_t)-EPERM;
+    /* Linux uid_t/gid_t are 32-bit even on LP64.  Higher syscall register
+     * bits do not change the requested identity. */
+    return (uint32_t)requested==0 ? 0 : (uint64_t)-EPERM;
+}
+/* Linux setreuid/setregid and setresuid/setresgid allow the sentinel
+ * (uid_t)-1 to leave a field alone.  Neither a nonzero real, effective,
+ * nor saved identity is representable until NaSeed enforces non-root DAC
+ * across ALL VFS paths, metadata updates and privileged operations.
+ * Reject rather than claim a security-sensitive identity transition. */
+static inline uint64_t nas_credentials_set_root_ids(uint64_t real,
+                                                     uint64_t effective,
+                                                     uint64_t saved) {
+    const uint32_t r=(uint32_t)real,e=(uint32_t)effective,s=(uint32_t)saved;
+    if((r!=0 && r!=UINT32_MAX) || (e!=0 && e!=UINT32_MAX) ||
+       (s!=0 && s!=UINT32_MAX))return (uint64_t)-EPERM;
+    return 0;
 }
 /* Linux setfsuid/setfsgid return the PREVIOUS filesystem identity, not
  * a success/error result. Our only representable fs identity is root (0):

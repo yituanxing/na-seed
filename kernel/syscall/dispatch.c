@@ -67,6 +67,18 @@ static uint64_t nas_sys_getgroups(uint64_t count,uint64_t addr) {
         return (uint64_t)-EFAULT;
     return actual;
 }
+/* Linux LP64 passes 32-bit uid_t/gid_t pointers.  The root-only credential
+ * model has the same real/effective/saved value (zero), so expose all three
+ * honestly and reject invalid user pointers instead of omitting the ABI. */
+static uint64_t nas_sys_getresid(uint64_t real,uint64_t effective,
+                                 uint64_t saved) {
+    const uint32_t root=0;
+    if(!nas_user_write_bytes(real,(const uint8_t *)&root,sizeof(root)) ||
+       !nas_user_write_bytes(effective,(const uint8_t *)&root,sizeof(root)) ||
+       !nas_user_write_bytes(saved,(const uint8_t *)&root,sizeof(root)))
+        return (uint64_t)-EFAULT;
+    return 0;
+}
 
 /* Linux sched_attr v0 (48 bytes) plus utilization clamps (56 bytes).
  * Read-only export of the scheduler's actual SCHED_OTHER-only policy. */
@@ -619,9 +631,15 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if(nr==NAS_SC_nanosleep || nr==NAS_SC_clock_nanosleep)
         return nas_time_sleep_syscall((uint64_t *)(uintptr_t)args,nr,args);
     if (nr == NAS_SC_getuid || nr == NAS_SC_getgid || nr == NAS_SC_geteuid || nr == NAS_SC_getegid) return 0; /* root credentials */
+    if (nr == NAS_SC_getresuid || nr == NAS_SC_getresgid)
+        return nas_sys_getresid(args[1],args[2],args[3]);
     if (nr == NAS_SC_getgroups) return nas_sys_getgroups(args[1],args[2]);
     if (nr == NAS_SC_setuid || nr == NAS_SC_setgid)
         return nas_credentials_set_id(args[1]);
+    if (nr == NAS_SC_setreuid || nr == NAS_SC_setregid)
+        return nas_credentials_set_root_ids(args[1],args[2],UINT32_MAX);
+    if (nr == NAS_SC_setresuid || nr == NAS_SC_setresgid)
+        return nas_credentials_set_root_ids(args[1],args[2],args[3]);
     if (nr == NAS_SC_setfsuid || nr == NAS_SC_setfsgid)
         return nas_credentials_set_fs_id(args[1]);
     if (nr == NAS_SC_setgroups)

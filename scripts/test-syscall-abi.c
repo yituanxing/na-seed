@@ -8,6 +8,12 @@ int main(void) {
      * getgroups must reflect the full actual vector. */
     assert(nas_linux_decode_syscall(__NR_setuid) == NAS_SC_setuid);
     assert(nas_linux_decode_syscall(__NR_setgid) == NAS_SC_setgid);
+    assert(nas_linux_decode_syscall(__NR_setreuid) == NAS_SC_setreuid);
+    assert(nas_linux_decode_syscall(__NR_setregid) == NAS_SC_setregid);
+    assert(nas_linux_decode_syscall(__NR_setresuid) == NAS_SC_setresuid);
+    assert(nas_linux_decode_syscall(__NR_setresgid) == NAS_SC_setresgid);
+    assert(nas_linux_decode_syscall(__NR_getresuid) == NAS_SC_getresuid);
+    assert(nas_linux_decode_syscall(__NR_getresgid) == NAS_SC_getresgid);
     assert(nas_linux_decode_syscall(__NR_setfsuid) == NAS_SC_setfsuid);
     assert(nas_linux_decode_syscall(__NR_setfsgid) == NAS_SC_setfsgid);
     assert(nas_linux_decode_syscall(__NR_setgroups) == NAS_SC_setgroups);
@@ -15,6 +21,14 @@ int main(void) {
     assert(nas_linux_decode_syscall(__NR_getgroups) == NAS_SC_getgroups);
     assert(nas_credentials_set_id(0)==0);
     assert((int64_t)nas_credentials_set_id(1)==-EPERM);
+    assert(nas_credentials_set_root_ids(0,0,0)==0);
+    assert(nas_credentials_set_root_ids(UINT32_MAX,0,UINT32_MAX)==0);
+    assert(nas_credentials_set_root_ids(UINT64_MAX,UINT64_MAX,UINT64_MAX)==0);
+    assert((int64_t)nas_credentials_set_root_ids(0,65534,0)==-EPERM);
+    assert((int64_t)nas_credentials_set_root_ids(65534,0,0)==-EPERM);
+    assert((int64_t)nas_credentials_set_root_ids(0,0,65534)==-EPERM);
+    assert((int64_t)nas_credentials_set_root_ids(UINT32_MAX,65534,UINT32_MAX)==-EPERM);
+    assert(nas_credentials_set_id(UINT64_C(0x100000000))==0);
     assert(nas_credentials_set_fs_id(0)==0);
     assert(nas_credentials_set_fs_id(UINT64_MAX)==0);
     assert(nas_credentials_set_fs_id(1000)==0);

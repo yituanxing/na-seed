@@ -38,6 +38,72 @@ error_tail() {
         done
 }
 
+# Drive an actual util-linux script(1) PTY: original Alpine zipcloak and
+# rlwrap demand a controlling terminal, and piping a password before the
+# prompt can deadlock. Wait for each exact prompt, reply only when observed,
+# and require a genuine application output oracle after this helper returns.
+signed_pty_available() {
+    test -x /usr/bin/script || return 1
+    apk info -e util-linux-misc >/dev/null 2>&1 || return 1
+    apk info -W /usr/bin/script 2>/dev/null |
+        /bin/busybox grep -Fq util-linux-misc
+}
+
+pty_exchange() {
+    pty_dir=$1 pty_command=$2 pty_prompt1=$3 pty_reply1=$4
+    pty_prompt2=${5:-} pty_reply2=${6:-}
+    signed_pty_available || {
+        echo 'M205 signed util-linux-misc script PTY helper untrusted or missing' >&2
+        return 1
+    }
+    pty_fifo="$pty_dir/pty-input"
+    /bin/busybox mkfifo "$pty_fifo" || return 1
+    /usr/bin/script -q -f -e -c "$pty_command" "$pty_dir/typescript" \
+        < "$pty_fifo" > "$pty_dir/pty-output" 2>&1 &
+    pty_pid=$!
+    exec 3> "$pty_fifo"
+    pty_prompt=$pty_prompt1
+    pty_reply=$pty_reply1
+    pty_step=1
+    while [ "$pty_step" -le 2 ]; do
+        pty_n=0
+        while ! /bin/busybox grep -aFq "$pty_prompt" "$pty_dir/pty-output"; do
+            pty_n=$((pty_n+1))
+            if [ "$pty_n" -ge 12 ]; then
+                echo "M205 PTY prompt not observed: $pty_prompt" >&2
+                exec 3>&-
+                kill -TERM "$pty_pid" 2>/dev/null || :
+                sleep 1
+                kill -KILL "$pty_pid" 2>/dev/null || :
+                wait "$pty_pid" 2>/dev/null || :
+                return 1
+            fi
+            sleep 1
+        done
+        printf '%s\n' "$pty_reply" >&3
+        [ -n "$pty_prompt2" ] || break
+        pty_prompt=$pty_prompt2
+        pty_reply=$pty_reply2
+        pty_prompt2=
+        pty_step=$((pty_step+1))
+    done
+    exec 3>&-
+    pty_n=0
+    while kill -0 "$pty_pid" 2>/dev/null; do
+        pty_n=$((pty_n+1))
+        if [ "$pty_n" -ge 12 ]; then
+            echo 'M205 PTY child did not exit after true interaction' >&2
+            kill -TERM "$pty_pid" 2>/dev/null || :
+            sleep 1
+            kill -KILL "$pty_pid" 2>/dev/null || :
+            wait "$pty_pid" 2>/dev/null || :
+            return 1
+        fi
+        sleep 1
+    done
+    wait "$pty_pid"
+}
+
 probe() {
     case_id=$1 elf=$2
     # The manifest path is not permitted to point at BusyBox, an absent tool
@@ -147,10 +213,10 @@ probe() {
                 /bin/busybox grep -Fq '40 + 2' "$target/output.c"
             ;;
         pty-wrapped-command:usr/bin/rlwrap)
-            # A real controlling terminal is mandatory for an honest read-line
-            # test; M205's UART/stdin runner currently provides no PTY fixture.
-            echo 'M205 rlwrap requires a genuine PTY interaction fixture' >&2
-            return 1
+            pty_exchange "$target" \
+                "/usr/bin/rlwrap /bin/sh -c 'printf M205_RLWRAP_PROMPT; IFS= read -r -t 8 answer; test \"\$answer\" = m205-line && printf M205_RLWRAP_OK'" \
+                M205_RLWRAP_PROMPT m205-line &&
+                /bin/busybox grep -aFq M205_RLWRAP_OK "$target/pty-output"
             ;;
         path-database-roundtrip:usr/bin/zoxide)
             mkdir -p "$target/visited" "$target/database" || return 1
@@ -160,10 +226,20 @@ probe() {
                 /bin/busybox grep -Fxq "$target/visited" "$target/query"
             ;;
         encrypted-zip-roundtrip:usr/bin/zipcloak)
-            # zipcloak prompts on a controlling PTY. A scripted stdin pipe
-            # cannot establish success or prove a password-protected archive.
-            echo 'M205 zipcloak requires a genuine PTY password fixture' >&2
-            return 1
+            printf 'M205 ZIP SECRET CONTENTS\n' > "$target/source" || return 1
+            (cd "$target" && /usr/bin/zip -q archive.zip source) || return 1
+            pty_exchange "$target" "/usr/bin/zipcloak $target/archive.zip" \
+                'Enter password:' m205-secret 'Verify password:' m205-secret ||
+                return 1
+            test -x /usr/bin/unzip || return 1
+            /usr/bin/unzip -P m205-secret -p "$target/archive.zip" source \
+                > "$target/decrypted" || return 1
+            /bin/busybox cmp -s "$target/source" "$target/decrypted" || return 1
+            if /usr/bin/unzip -P definitely-wrong -p "$target/archive.zip" source \
+                    > "$target/wrong-password" 2>&1; then
+                echo 'M205 zipcloak accepted an incorrect password' >&2
+                return 1
+            fi
             ;;
         zip-stdin-extraction:usr/bin/funzip)
             printf 'M205 ZIP STREAM PAYLOAD\n' > "$target/source"
@@ -196,8 +272,12 @@ probe() {
                 /bin/busybox grep -Eq '^CPU ' "$target/out"
             ;;
         bandwidth-monitor-snapshot:usr/bin/bmon)
-            echo 'M205 bmon requires a genuine live interface statistics oracle' >&2
-            return 1
+            # Read actual eth0 packet-rate metrics using bmon's original
+            # format backend. A banner/exit code or timeout is not proof.
+            /bin/busybox timeout 8 /usr/bin/bmon -p eth0 \
+                -o 'format:fmt=$(element:name) $(attr:rxrate:packets)\n' \
+                > "$target/counters" 2> "$target/bmon.err" || :
+            /bin/busybox grep -Eq '^eth0[[:space:]]+[0-9]' "$target/counters"
             ;;
         *) echo "M205 unknown or mismatched case/ELF: $case_id / $elf" >&2; return 1 ;;
     esac
@@ -205,11 +285,29 @@ probe() {
 
 if [ "$phase" = exercise ]; then
     [ "$#" -eq 3 ] || exit 2
+    # An exercise receives every input through an explicit file or PTY.
+    # Never let an original command accidentally read a parent's UART or
+    # the cohort manifest as its standard input.
+    exec 0</dev/null
     probe "$2" "$3"
     exit $?
 fi
 
 test -r "$manifest" || { echo '[M205 ERROR] missing signed cohort manifest' >&2; exit 1; }
+# The original Alpine installer and tools are ordinary programs: some read
+# stdin even when called with file arguments. Reserve fd9 for TSV iteration
+# and give every child fd0=/dev/null, so a child cannot steal a subsequent
+# row as happened in the genuine three-ISA M205 run (19 instead of 20).
+exec 0</dev/null
+# Refuse a truncated/tampered guest cohort before spending minutes on APK.
+cohort_rows=$(/bin/busybox awk -F '\t' '
+    $1 != "package" && $1 !~ /^#/ && NF { count++ }
+    END { print count+0 }
+' "$manifest") || exit 1
+test "$cohort_rows" -eq 20 || {
+    echo "[M205 ERROR] expected 20 guest cohort rows, got $cohort_rows" >&2
+    exit 1
+}
 if [ "$phase" = first ]; then
     test ! -e "$first" || { echo '[M205 ERROR] preseeded first ledger' >&2; exit 1; }
     test ! -e "$work" || { echo '[M205 ERROR] preseeded work directory' >&2; exit 1; }
@@ -219,7 +317,7 @@ if [ "$phase" = first ]; then
     # (iproute2 -> iproute2-ss). That package is newly installed in THIS
     # boot, not PREEXISTING; otherwise 20/20 would become impossible solely
     # because of manifest order. Record the initial state for each package.
-    while IFS="$tab" read -r pkg path family check || [ -n "$pkg" ]; do
+    while IFS="$tab" read -r pkg path family check <&9 || [ -n "$pkg" ]; do
         case "$pkg" in ''|'#'*|package) continue ;; esac
         initial="$work/packages/$pkg.initial"
         if [ ! -e "$initial" ]; then
@@ -229,17 +327,42 @@ if [ "$phase" = first ]; then
                 printf 'ABSENT\n' > "$initial"
             fi
         fi
-    done < "$manifest"
+    done 9< "$manifest"
 else
     test -s "$first" || { echo '[M205 ERROR] missing durable first ledger' >&2; exit 1; }
     test ! -e "$reopen" || { echo '[M205 ERROR] preseeded second ledger' >&2; exit 1; }
     mkdir -p "$work/logs" || exit 1
 fi
+# ZIP decryption must be available before zipcloak's earlier entry; its
+# later funzip/unzipsfx entries share the exact same first-boot install
+# record, never count a pre-existing helper as a new signed APK install.
+# util-linux-misc is a signed PTY test dependency, NOT a twentieth new ELF.
+if [ "$phase" = first ]; then
+    for helper in unzip util-linux-misc; do
+        if apk info -e "$helper" >/dev/null 2>&1; then
+            helper_result=PREEXISTING
+        elif /bin/busybox timeout 150 apk -v add "$helper" \
+                > "$work/logs/$helper.apk.log" 2>&1; then
+            helper_result=PASS
+        else
+            helper_result=FAIL
+        fi
+        printf 'M205_HELPER\t%s\t%s\n' "$helper" "$helper_result"
+        if [ "$helper" = unzip ]; then
+            printf '%s\n' "$helper_result" > "$work/packages/unzip.status"
+        fi
+    done
+fi
+if signed_pty_available; then
+    echo M205_SIGNED_PTY_HELPER_READY
+else
+    echo M205_SIGNED_PTY_HELPER_UNAVAILABLE
+fi
 : > "$ledger" || exit 1
 export NAS_M205_BOOT_PHASE="$phase"
 
 total=0
-while IFS="$tab" read -r package elf family case_id || [ -n "$package" ]; do
+while IFS="$tab" read -r package elf family case_id <&9 || [ -n "$package" ]; do
     case "$package" in ''|'#'*|package) continue ;; esac
     total=$((total+1))
     case "$package:$elf:$case_id" in
@@ -301,7 +424,7 @@ while IFS="$tab" read -r package elf family case_id || [ -n "$package" ]; do
             error_tail "$package" "$elf" reopen "$work/logs/$case_id.reopen.log"
         fi
     fi
-done < "$manifest"
+done 9< "$manifest"
 
 test "$total" -eq 20 || { echo "[M205 ERROR] wrong cohort count: $total" >&2; exit 1; }
 sync || exit 1
