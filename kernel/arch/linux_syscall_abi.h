@@ -40,6 +40,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_chown: return NAS_SC_chown;
     case __NR_fchmod: return NAS_SC_fchmod;
     case __NR_fchmodat: return NAS_SC_fchmodat;
+    case __NR_fchmodat2: return NAS_SC_fchmodat2;
     case __NR_fchown: return NAS_SC_fchown;
     case __NR_fchownat: return NAS_SC_fchownat;
     case __NR_lchown: return NAS_SC_lchown;
@@ -240,6 +241,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 39U: return NAS_SC_umount2;
     case 52U: return NAS_SC_fchmod;
     case 53U: return NAS_SC_fchmodat;
+    case 452U: return NAS_SC_fchmodat2; /* Linux asm-generic */
     case 54U: return NAS_SC_fchownat;
     case 55U: return NAS_SC_fchown;
     case 48U: return NAS_SC_faccessat; /* Linux asm-generic */

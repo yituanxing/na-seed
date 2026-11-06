@@ -50,6 +50,8 @@ int main(void) {
     assert(nas_linux_decode_syscall(227U)==NAS_SC_msync);
     assert(nas_linux_decode_syscall(54U)==NAS_SC_fchownat);
     assert(nas_linux_decode_syscall(55U)==NAS_SC_fchown);
+    /* AArch64 and RV64 use the same asm-generic fchmodat2 number. */
+    assert(nas_linux_decode_syscall(452U)==NAS_SC_fchmodat2);
     assert(nas_linux_decode_syscall(123U)==NAS_SC_sched_getaffinity);
     assert(nas_linux_decode_syscall(122U)==NAS_SC_sched_setaffinity);
     assert(nas_linux_decode_syscall(151U)==NAS_SC_setfsuid);

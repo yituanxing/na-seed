@@ -136,15 +136,19 @@ if [ "$m205" = 1 ]; then
     fixture_elf="$PWD/$work/m205-symbolizer.elf"
     fixture_addr="$PWD/$work/m205-symbolizer.addr"
     "$fixture_cc" -O0 -g -fno-inline tests/m205_symbol.c -o "$fixture_elf"
+    fixture_listener="$PWD/$work/m205-loopback-listener.elf"
+    "$fixture_cc" -static -Os tests/m205-loopback-listener.c -o "$fixture_listener"
     "$fixture_nm" -n "$fixture_elf" | awk \
         '$3 == "m205_symbol" { print "0x" $1; found = 1 } END { if (!found) exit 1 }' \
         > "$fixture_addr"
-    test -s "$fixture_elf" && test -s "$fixture_addr"
+    test -s "$fixture_elf" && test -s "$fixture_addr" && test -s "$fixture_listener"
     sudo install -d -m 0755 "$overlay/root/m205-fixtures"
     sudo install -m 0644 "$fixture_elf" \
         "$overlay/root/m205-fixtures/symbolizer.elf"
     sudo install -m 0644 "$fixture_addr" \
         "$overlay/root/m205-fixtures/symbolizer.addr"
+    sudo install -m 0755 "$fixture_listener" \
+        "$overlay/root/m205-fixtures/loopback-listener"
     sudo test -s "$overlay/root/m205-software-workload.sh"
     sudo test -s "$overlay/root/m205-cohort.tsv"
     sudo test ! -e "$overlay/root/m205-first-results.tsv" || {

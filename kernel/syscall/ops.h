@@ -14,6 +14,7 @@ enum nas_syscall_op {
     NAS_SC_chown,
     NAS_SC_fchmod,
     NAS_SC_fchmodat,
+    NAS_SC_fchmodat2,
     NAS_SC_fchown,
     NAS_SC_fchownat,
     NAS_SC_lchown,

@@ -56,6 +56,10 @@ int main(void) {
     assert(nas_linux_decode_syscall(__NR_lchown) == NAS_SC_lchown);
     assert(nas_linux_decode_syscall(__NR_fchown) == NAS_SC_fchown);
     assert(nas_linux_decode_syscall(__NR_fchownat) == NAS_SC_fchownat);
+    /* Alpine APK's signed util-linux-misc installer uses Linux's newer
+     * flag-bearing chmod entry, whose x86 and generic64 NR is 452. */
+    assert(__NR_fchmodat2 == 452);
+    assert(nas_linux_decode_syscall(__NR_fchmodat2) == NAS_SC_fchmodat2);
     assert(nas_linux_decode_syscall(__NR_faccessat) == NAS_SC_faccessat);
     assert(nas_linux_decode_syscall(__NR_faccessat2) == NAS_SC_faccessat2);
     assert(nas_linux_decode_syscall(__NR_read) == NAS_SC_read);

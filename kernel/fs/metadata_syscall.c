@@ -385,14 +385,45 @@ static uint64_t sys_fchmod_fd(uint64_t fd,uint64_t mode) {
     return (uint64_t)(int64_t)nas_vfs_chmod(&opened->vnode,mode);
 }
 static uint64_t sys_chmod_path(uint64_t dirfd,uint64_t filename,
-                               uint64_t mode) {
+                               uint64_t mode,uint64_t flags) {
+    const uint64_t AT_SYMLINK_NOFOLLOW=0x100ULL;
+    const uint64_t AT_EMPTY_PATH=0x1000ULL;
+    if(flags & ~(AT_SYMLINK_NOFOLLOW|AT_EMPTY_PATH))
+        return (uint64_t)-EINVAL;
+    uint8_t first=0;
+    if(!filename || !nas_user_read_bytes(filename,&first,1))
+        return (uint64_t)-EFAULT;
+    if(!first && (flags&AT_EMPTY_PATH)) {
+        int64_t fd=nas_linux_signed_dirfd(dirfd);
+        if(fd==-100) {
+            if(TASK.fs->cwd_pinned)
+                return (uint64_t)(int64_t)nas_vfs_chmod(&TASK.fs->cwd_node,mode);
+            struct nas_fs_node cwd;
+            char canonical[256];
+            int rc=nas_fs_lookup_node(TASK.fs->cwd,true,&cwd,canonical);
+            return (uint64_t)(int64_t)(rc?rc:nas_vfs_chmod(&cwd,mode));
+        }
+        if(fd<0 || (uint64_t)fd>=NAS_FD_LIMIT ||
+           TASK.fds->entries[fd].kind==FD_CLOSED)
+            return (uint64_t)-EBADF;
+        const struct nas_open_file *opened=
+            &nas_open_files[TASK.fds->entries[fd].slot];
+        /* Unlike fchmod(2), AT_EMPTY_PATH also accepts O_PATH handles. */
+        if(!opened->vnode_pinned)return (uint64_t)-EBADF;
+        return (uint64_t)(int64_t)nas_vfs_chmod(&opened->vnode,mode);
+    }
+    if(!first)return (uint64_t)-ENOENT;
     struct nas_fs_path_request request;
     struct nas_vfs_path path={0};
     struct nas_fs_node node={0};
-    int rc=nas_fs_user_lookup_begin(dirfd,filename,true,
+    int rc=nas_fs_user_lookup_begin(dirfd,filename,
+                                    !(flags&AT_SYMLINK_NOFOLLOW),
                                     &request,&path,&node);
     if(rc)return (uint64_t)(int64_t)rc;
-    rc=nas_vfs_chmod(&node,mode);
+    /* Linux filesystems commonly cannot change a symlink's own mode.
+     * Never silently chmod its referent when NOFOLLOW was requested. */
+    rc=(node.is_symlink && (flags&AT_SYMLINK_NOFOLLOW)) ?
+       -EOPNOTSUPP : nas_vfs_chmod(&node,mode);
     end_mounted_lookup(&request,&path);
     return (uint64_t)(int64_t)rc;
 }
@@ -661,9 +692,10 @@ static uint64_t sys_getdents64(uint64_t fd,uint64_t dst,uint64_t capacity) {
 struct nas_fs_result nas_fs_metadata_syscall(enum nas_syscall_op op,
                                             const uint64_t *args) {
     switch (op) {
-    case NAS_SC_chmod: METADATA_RESULT(sys_chmod_path((uint64_t)-100,args[1],args[2]));
+    case NAS_SC_chmod: METADATA_RESULT(sys_chmod_path((uint64_t)-100,args[1],args[2],0));
     case NAS_SC_fchmod: METADATA_RESULT(sys_fchmod_fd(args[1],args[2]));
-    case NAS_SC_fchmodat: METADATA_RESULT(sys_chmod_path(args[1],args[2],args[3]));
+    case NAS_SC_fchmodat: METADATA_RESULT(sys_chmod_path(args[1],args[2],args[3],0));
+    case NAS_SC_fchmodat2: METADATA_RESULT(sys_chmod_path(args[1],args[2],args[3],args[4]));
     case NAS_SC_chown: METADATA_RESULT(sys_chown_path((uint64_t)-100,args[1],args[2],args[3],0));
     case NAS_SC_lchown: METADATA_RESULT(sys_chown_path((uint64_t)-100,args[1],args[2],args[3],0x100ULL));
     case NAS_SC_fchown: METADATA_RESULT(sys_fchown_fd(args[1],args[2],args[3]));

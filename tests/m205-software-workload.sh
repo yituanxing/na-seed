@@ -162,24 +162,43 @@ probe() {
                 /bin/busybox grep -Eq '[0-9]' "$target/out"
             ;;
         live-socket-list:sbin/ss)
-            # Socket enumeration must show a kernel TCP listening endpoint.
-            mkdir -p "$target/www" || return 1
-            printf 'm205-http\n' > "$target/www/index.html"
-            /bin/busybox httpd -f -p 127.0.0.1:18085 -h "$target/www" \
+            # Query an actual TCP LISTEN socket, not an availability banner.
+            # Alpine BusyBox need not contain the optional httpd applet.
+            /root/m205-fixtures/loopback-listener \
                 > "$target/server.log" 2>&1 &
             server_pid=$!
-            n=0; found=1
+            n=0; ready=1; found=1
             while [ "$n" -lt 6 ]; do
-                if /sbin/ss -ltn > "$target/sockets" 2> "$target/ss.err" &&
-                    /bin/busybox grep -Fq ':18085' "$target/sockets"; then
-                    found=0; break
+                if /bin/busybox grep -Fxq M205_LOOPBACK_LISTEN_READY \
+                        "$target/server.log"; then
+                    ready=0; break
                 fi
+                kill -0 "$server_pid" 2>/dev/null || break
                 n=$((n+1)); sleep 1
             done
+            if [ "$ready" -eq 0 ]; then
+                n=0
+                while [ "$n" -lt 6 ]; do
+                    if /sbin/ss -ltn > "$target/sockets" 2> "$target/ss.err" &&
+                        /bin/busybox grep -Fq ':18085' "$target/sockets"; then
+                        found=0; break
+                    fi
+                    n=$((n+1)); sleep 1
+                done
+            fi
             kill -TERM "$server_pid" 2>/dev/null || :
-            sleep 1
+            n=0
+            while kill -0 "$server_pid" 2>/dev/null && [ "$n" -lt 3 ]; do
+                n=$((n+1)); sleep 1
+            done
             kill -KILL "$server_pid" 2>/dev/null || :
             wait "$server_pid" 2>/dev/null || :
+            if [ "$found" -ne 0 ]; then
+                echo 'M205 live TCP socket probe failed' >&2
+                /bin/busybox tail -n 3 "$target/server.log" >&2 || :
+                /bin/busybox tail -n 3 "$target/ss.err" >&2 || :
+                /bin/busybox tail -n 3 "$target/sockets" >&2 || :
+            fi
             return "$found"
             ;;
         route-stat-query:sbin/rtstat)
@@ -346,6 +365,12 @@ if [ "$phase" = first ]; then
             helper_result=PASS
         else
             helper_result=FAIL
+            # Keep the *first* APK transaction error, not just the final
+            # "1 error" summary. The ext4 image is not uploaded to CI.
+            printf 'M205_HELPER_DIAG\t%s\t%s\n' "$helper" \
+                "$(/bin/busybox grep -iE 'error|failed|not supported|not found' \
+                    "$work/logs/$helper.apk.log" 2>/dev/null |
+                    /bin/busybox head -n 1 | /bin/busybox cut -c 1-180)"
         fi
         printf 'M205_HELPER\t%s\t%s\n' "$helper" "$helper_result"
         if [ "$helper" = unzip ]; then
@@ -394,6 +419,17 @@ while IFS="$tab" read -r package elf family case_id <&9 || [ -n "$package" ]; do
             printf 'M205_ERROR\t%s\t%s\tinstall\tapk exit=%s (150s budget)\n' \
                 "$package" "$elf" "$install_rc"
             error_tail "$package" "$elf" install "$work/logs/$package.apk.log"
+            # Error lines can precede a successful BusyBox trigger, so tail
+            # alone hides the original failure. This diagnostic is never
+            # parsed as a semantic program result.
+            /bin/busybox grep -iE 'error|failed|not supported|not found' \
+                "$work/logs/$package.apk.log" 2>/dev/null |
+                /bin/busybox head -n 3 |
+                while IFS= read -r detail; do
+                    detail=$(printf '%s' "$detail" | /bin/busybox tr '\t\r' '  ' |
+                        /bin/busybox cut -c 1-180)
+                    printf 'M205_APK_DIAG\t%s\t%s\n' "$package" "$detail"
+                done
         fi
         record "$package" "$elf" install "$install_result"
         if [ "$install_result" = FAIL ]; then
