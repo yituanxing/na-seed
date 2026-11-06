@@ -5,8 +5,9 @@ on:
   # probes do NOT restart three 75-minute public WAN boots automatically.
   # Recheck genuine signed APK cache transactions, real PTY input and
   # native INET_DIAG TCP listeners in three independent QEMU guests.
-  # Recheck dual-path read-only APK cache in a fresh root with actual offline
-  # install, then run original signed ELF first/reopen in native QEMU twice.
+  # Cache official APKs using metadata-hash filenames (apk cache download),
+  # prove fresh offline installation, then exercise btop/PTYS and 20 native
+  # original Alpine ELFs across independent first and reopen QEMU boots.
   push:
     branches: [naseed-app-batch2]
     paths:

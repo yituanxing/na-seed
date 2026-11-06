@@ -109,9 +109,12 @@ if [ "$profile" = m205 ]; then
     # signatures and installs everything itself; no binary is substituted.
     # This also repairs a previous interrupted host census whose signed
     # install marker exists but whose archive cache was incomplete.
-    archive_count=$(find "$cache" -maxdepth 1 -type f -name '*.apk' | wc -l)
+    # Only a checksum-suffixed filename is a valid apk-tools package cache
+    # entry. Plain output from `apk fetch` is not usable by --no-network.
+    canonical_count=$(find "$cache" -maxdepth 1 -type f -name '*.apk' -printf '%f\n' |
+        grep -Ec '\.[0-9a-f]{8}\.apk$' || :)
     index_count=$(find "$cache" -maxdepth 1 -type f -name 'APKINDEX*' | wc -l)
-    if [ "$archive_count" -lt 16 ] || [ "$index_count" -lt 1 ]; then
+    if [ "$canonical_count" -lt 16 ] || [ "$index_count" -lt 2 ]; then
         if ! docker run --rm --volume "$root_canonical:/target" \
             --env APK_ARCH="$arch" --env APK_PACKAGES="$package_list" \
             alpine:3.23 sh -ec '
@@ -126,12 +129,15 @@ if [ "$profile" = m205 ]; then
                     -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main \
                     -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
                     update
+                # `apk fetch --output` creates name-version.apk; those are
+                # NOT valid cache entries for --no-network add. apk cache
+                # download writes the signed metadata-hash-suffixed names
+                # which the native guest solver recognizes as cached packages.
                 apk --arch "$APK_ARCH" --root /target \
                     --cache-dir /var/cache/apk --keys-dir /etc/apk/keys \
                     -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main \
                     -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
-                    fetch --recursive --output /target/var/cache/apk \
-                    $APK_PACKAGES
+                    cache download --available $APK_PACKAGES
                 ls -la /target/var/cache/apk | head -n 15
             ' > "$work/apk-cache.log" 2>&1; then
             echo '[M205 CACHE FAIL] explicit signed index/archive fetch' >&2
@@ -147,10 +153,11 @@ if [ "$profile" = m205 ]; then
     # may retain only one persistent index in this host cross-root; the
     # authoritative question is whether a FRESH same-ISA apk solver can
     # resolve the entire cohort offline, not an arbitrary index-file count.
-    archive_count=$(find "$cache" -maxdepth 1 -type f -name '*.apk' | wc -l)
+    archive_count=$(find "$cache" -maxdepth 1 -type f -name '*.apk' -printf '%f\n' |
+        grep -Ec '\.[0-9a-f]{8}\.apk$' || :)
     index_count=$(find "$cache" -maxdepth 1 -type f -name 'APKINDEX*' | wc -l)
-    [ "$archive_count" -ge 16 ] && [ "$index_count" -ge 1 ] || {
-        echo "[M205 CACHE FAIL] archive/index shortage: $archive_count APKs $index_count indexes" >&2
+    [ "$archive_count" -ge 16 ] && [ "$index_count" -ge 2 ] || {
+        echo "[M205 CACHE FAIL] canonical hashed APK/index shortage: $archive_count APKs $index_count indexes" >&2
         find "$cache" -maxdepth 1 -type f -name '*INDEX*' -print >&2
         if [ -f "$work/apk-cache.log" ]; then
             tail -25 "$work/apk-cache.log" >&2

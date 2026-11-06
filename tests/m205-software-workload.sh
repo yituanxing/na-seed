@@ -249,8 +249,14 @@ probe() {
                 /bin/busybox cmp -s "$target/source" "$target/copy"
             ;;
         terminal-resource-monitor:usr/bin/btop)
-            echo 'M205 btop requires a genuine terminal capture/exit fixture' >&2
-            return 1
+            # btop is interactive; neither --help nor a timeout is an
+            # acceptance oracle. The real PTY fixture verifies kernel
+            # TIOCSWINSZ (120x40), captures CPU/MEM ANSI display bytes,
+            # sends the raw q key only after it paints, and waits for the
+            # original Alpine btop to exit successfully.
+            test -x /root/m205-fixtures/pty-exchange || return 1
+            /bin/busybox timeout 40 /root/m205-fixtures/pty-exchange \
+                --screen "$target/btop-terminal.raw" /usr/bin/btop
             ;;
         process-accounting-snapshot:usr/bin/atop-2.12.1)
             # Original atop's -b is a *begin time* for raw-log replay, not

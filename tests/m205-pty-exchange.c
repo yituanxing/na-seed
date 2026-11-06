@@ -8,6 +8,8 @@
  * Usage: m205-pty-exchange TRANSCRIPT PROMPT1 REPLY1 PROMPT2 REPLY2
  *                         COMMAND [ARGS...]
  * For one prompt use "-" as both PROMPT2 and REPLY2.
+ * Or:   m205-pty-exchange --screen TRANSCRIPT COMMAND [ARGS...]
+ *       Require real ANSI CPU/MEM screen output before sending the raw q key.
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -77,6 +79,21 @@ static void remember(char history[M205_PTY_HISTORY+1],size_t *length,
     memcpy(history+*length,data,count);
     *length+=count;
     history[*length]=0;
+}
+
+static bool visible_word(const char *text,const char *word) {
+    for(;*text;text++) {
+        const char *a=text,*b=word;
+        while(*a && *b) {
+            char ac=*a,bc=*b;
+            if(ac>='A' && ac<='Z')ac+=(char)('a'-'A');
+            if(bc>='A' && bc<='Z')bc+=(char)('a'-'A');
+            if(ac!=bc)break;
+            a++;b++;
+        }
+        if(!*b)return true;
+    }
+    return false;
 }
 
 /* Child uses its own session so the slave really becomes the controlling TTY.
@@ -166,13 +183,82 @@ static int exchange(int master,int transcript,pid_t child,
     return 0;
 }
 
+/* btop is a terminal application rather than a question/answer tool. Its
+ * signed Alpine ELF must actually paint a substantial ANSI screen with CPU
+ * and memory panels. Only then may the fixture type a real q keystroke.
+ * A usage banner, startup error, timeout, or killed child cannot pass. */
+static int screen_exchange(int master,int transcript,pid_t child) {
+    char history[M205_PTY_HISTORY+1]={0};
+    size_t history_len=0;
+    uint64_t total_bytes=0;
+    unsigned csi_count=0;
+    bool saw_cpu=false,saw_mem=false,sent_q=false,reaped=false,eof=false;
+    bool previous_escape=false;
+    int status=0;
+    uint64_t started=monotonic_ns();
+    if(!started) { error("no monotonic time source");return 1; }
+    while(!eof || !reaped) {
+        if(monotonic_ns()-started>M205_PTY_TIMEOUT_NS) {
+            fprintf(stderr,"M205 PTY fixture: btop screen timed out (bytes=%llu csi=%u cpu=%d mem=%d q=%d)\n",
+                    (unsigned long long)total_bytes,csi_count,saw_cpu,saw_mem,sent_q);
+            return 1;
+        }
+        struct pollfd input={.fd=master,.events=POLLIN|POLLHUP};
+        int polled=poll(&input,1,250);
+        if(polled<0 && errno!=EINTR) { error("poll btop PTY");return 1; }
+        if(polled>0 && (input.revents&(POLLIN|POLLHUP|POLLERR))) {
+            char data[1024];
+            ssize_t got=read(master,data,sizeof(data));
+            if(got>0) {
+                if(!write_all(transcript,data,(size_t)got)) {
+                    error("write original btop terminal output");return 1;
+                }
+                total_bytes+=(uint64_t)got;
+                for(ssize_t i=0;i<got;i++) {
+                    if(previous_escape && data[i]=='[')csi_count++;
+                    previous_escape=data[i]=='\033';
+                }
+                remember(history,&history_len,data,(size_t)got);
+                saw_cpu=saw_cpu || visible_word(history,"cpu");
+                saw_mem=saw_mem || visible_word(history,"mem");
+                if(!sent_q && total_bytes>=1024 && csi_count>=10 &&
+                   saw_cpu && saw_mem) {
+                    if(!write_all(master,"q",1)) {
+                        error("send q to real btop screen");return 1;
+                    }
+                    sent_q=true;
+                }
+            } else if(got==0 || (got<0 && errno==EIO)) {
+                eof=true;
+            } else if(got<0 && errno!=EINTR && errno!=EAGAIN) {
+                error("read btop PTY");return 1;
+            }
+        }
+        if(!reaped) {
+            pid_t waited=waitpid(child,&status,WNOHANG);
+            if(waited==child)reaped=true;
+            else if(waited<0 && errno!=EINTR) {
+                error("waitpid real btop");return 1;
+            }
+        }
+    }
+    if(!sent_q || !WIFEXITED(status) || WEXITSTATUS(status)!=0) {
+        fprintf(stderr,"M205 PTY fixture: genuine btop screen/exit failed (bytes=%llu csi=%u cpu=%d mem=%d q=%d status=%d)\n",
+                (unsigned long long)total_bytes,csi_count,saw_cpu,saw_mem,sent_q,status);
+        return 1;
+    }
+    return 0;
+}
+
 int main(int argc,char **argv) {
-    if(argc<7 || !*argv[2] || !*argv[3] ||
-       (strcmp(argv[4],"-")==0)!=(strcmp(argv[5],"-")==0)) {
+    bool screen=argc>=4 && strcmp(argv[1],"--screen")==0;
+    if((!screen && (argc<7 || !*argv[2] || !*argv[3] ||
+       (strcmp(argv[4],"-")==0)!=(strcmp(argv[5],"-")==0))) ||
+       (screen && argc<4)) {
         fputs("M205 PTY fixture: invalid command/prompt arguments\n",stderr);
         return 2;
     }
-    int transcript=open(argv[1],O_WRONLY|O_CREAT|O_TRUNC,0600);
+    int transcript=open(argv[screen?2:1],O_WRONLY|O_CREAT|O_TRUNC,0600);
     if(transcript<0) { error("open transcript");return 1; }
     int master=open("/dev/ptmx",O_RDWR|O_NOCTTY);
     if(master<0) { error("open /dev/ptmx");close(transcript);return 1; }
@@ -183,10 +269,26 @@ int main(int argc,char **argv) {
         error("configure actual ptmx/pts");
         close(master);close(transcript);return 1;
     }
+    if(screen) {
+        struct winsize geometry={.ws_row=40,.ws_col=120};
+        struct winsize actual={0};
+        if(ioctl(master,TIOCSWINSZ,&geometry)<0 ||
+           ioctl(master,TIOCGWINSZ,&actual)<0 ||
+           actual.ws_row!=geometry.ws_row || actual.ws_col!=geometry.ws_col) {
+            error("require real 120x40 btop terminal geometry");
+            close(master);close(transcript);return 1;
+        }
+        if(setenv("TERM","xterm-256color",1)<0) {
+            error("configure real terminal type");
+            close(master);close(transcript);return 1;
+        }
+    }
     pid_t child=fork();
     if(child<0) { error("fork real application");close(master);close(transcript);return 1; }
-    if(child==0)child_exec(number,master,&argv[6]);
-    int result=exchange(master,transcript,child,argv[2],argv[3],argv[4],argv[5]);
+    if(child==0)child_exec(number,master,&argv[screen?3:6]);
+    int result=screen?
+        screen_exchange(master,transcript,child):
+        exchange(master,transcript,child,argv[2],argv[3],argv[4],argv[5]);
     if(result) {
         /* Never leave an Alpine process blocked on a terminal when an oracle
          * failed. Do not signal a PID already reaped by exchange(): it may
