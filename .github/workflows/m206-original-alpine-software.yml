@@ -16,6 +16,8 @@ on:
   # against original signed iperf2/nft in first and independently reopened QEMU.
   # M211: validate Linux-oracle exact nft -c/add/list/delete Netlink frames,
   # stable real table handle and filtered empty NFT dumps on all three ISAs.
+  # M211.1: remove unsupported nas_hex host-link reference in bounded NFT
+  # diagnostics; rerun exact original signed software on first/reopen QEMU.
   push:
     branches: [naseed-app-batch2]
     paths:

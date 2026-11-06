@@ -451,8 +451,8 @@ static void trace_noent(const uint8_t *message,bool in_batch) {
     if(rejected_noent_traces>=8U)return;
     rejected_noent_traces++;
     const uint32_t n=rd32(message);
-    nas_print("[NFT ENOENT] type=");nas_hex(rd16(message+4));
-    nas_print(" flags=");nas_hex(rd16(message+6));
+    nas_print("[NFT ENOENT] type=");nas_dec(rd16(message+4));
+    nas_print(" flags=");nas_dec(rd16(message+6));
     nas_print(" family=");nas_dec(n>=20U?message[16]:255U);
     nas_print(" batch=");nas_dec(in_batch?1U:0U);
     nas_print(" length=");nas_dec(n);
