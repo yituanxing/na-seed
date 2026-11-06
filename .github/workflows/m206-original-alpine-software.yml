@@ -5,8 +5,9 @@ on:
   # the proven M191/M197 first and second native QEMU, without replacements.
   # Require 20 new native ELF hashes, real semantic tests, signed APK and
   # durable post-reboot ext4 proof independently on all three target ISAs.
-  # Recheck real capget/capset, RAW ICMP, and registered block sysfs after
-  # the first truthful 14/20 first/reopen result; never relax native oracles.
+  # Exact-head recheck: loopback noqueue, iputils keepcaps lifecycle and
+  # canonical Alpine BusyBox aliases; still require real function/reopen
+  # for every candidate, with no invented Netfilter or iperf success.
   push:
     branches: [naseed-app-batch2]
     paths:
