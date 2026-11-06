@@ -295,16 +295,20 @@ probe() {
             return 1
             ;;
         bounded-loopback-traffic:usr/sbin/iftop)
-            # The original libpcap reader must observe real packets DURING
-            # capture; sending a single ping before opening the socket
-            # cannot establish live traffic. Do not count a help screen.
+            # Upstream iftop's -t -s 3 timer advances from the packet handler,
+            # not an independent timer: it can capture real traffic and still
+            # wait forever if the last packet arrives before the 3s deadline.
+            # Send live traffic *past* that deadline so the original program
+            # can exit naturally. Keep a bounded inner timeout for diagnostics;
+            # timeout/nonzero exit is always a genuine functional FAIL.
             (
                 /bin/busybox sleep 1
-                /bin/busybox ping -c 6 -i 0.3 -W 1 10.0.2.2 \
+                /bin/busybox ping -c 30 -i 0.3 -W 1 10.0.2.2 \
                     > "$target/ping" 2>&1
             ) &
             ping_pid=$!
-            /usr/sbin/iftop -t -s 3 -i eth0 > "$target/out" 2>&1
+            /bin/busybox timeout 15 /usr/sbin/iftop -t -s 3 -i eth0 \
+                > "$target/out" 2>&1
             capture_rc=$?
             wait "$ping_pid" || :
             if test "$capture_rc" -eq 0 &&
@@ -313,6 +317,7 @@ probe() {
             fi
             printf 'M205 iftop: original exit=%s, no verified live wire capture\n' "$capture_rc" >&2
             probe_failure_excerpt iftop "$target/out" >&2
+            probe_failure_excerpt 'iftop real ping traffic' "$target/ping" >&2
             return 1
             ;;
         controlled-ssh-authentication:usr/bin/sshpass)
