@@ -12,6 +12,8 @@ on:
   # also carry real netdev byte/packet accounting for original procfs readers.
   # Recheck iproute2-filtered SOCK_DIAG sender PID, official btop UTF-8 flag,
   # LLVM-only finite unpack budget, and failure-only genuine serial witnesses.
+  # Recheck shared AF_PACKET/libpcap, NIC ioctls, Netlink qdisc error ordering,
+  # route stats, PTY session ownership and large writable-ext4 private mappings.
   push:
     branches: [naseed-app-batch2]
     paths:

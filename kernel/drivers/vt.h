@@ -12,6 +12,7 @@ int nas_vt_chrdev_init(void);
 void nas_vt_init(void);
 /* Linux session-leader open without O_NOCTTY may claim an unowned VT. */
 void nas_vt_open_session(uint64_t flags);
+bool nas_vt_controlling(void);
 uint64_t nas_vt_ioctl(uint64_t cmd,uint64_t arg);
 uint64_t nas_vt_read_plan(uint64_t requested,bool nonblock);
 uint64_t nas_vt_read(uint8_t *dst,uint64_t length,bool nonblock);

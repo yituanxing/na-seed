@@ -20,7 +20,9 @@ enum nas_proc_kind {
     NAS_PROC_LOCKS, NAS_PROC_SLABINFO,
     NAS_PROC_SYSVIPC_DIR, NAS_PROC_SYSVIPC_SHM,
     NAS_PROC_SYSVIPC_SEM, NAS_PROC_SYSVIPC_MSG,
-    NAS_PROC_NET_DIR, NAS_PROC_NET_RESOLV, NAS_PROC_NET_DEV
+    NAS_PROC_NET_DIR, NAS_PROC_NET_RESOLV, NAS_PROC_NET_DEV,
+    NAS_PROC_NET_STAT_DIR, NAS_PROC_NET_STAT_RT_CACHE,
+    NAS_PROC_NET_STAT_NASEED_LINK
 };
 /* pid identifies the actual TID for task/<tid>; tgid records the
  * parent process directory. The same node is owned by the shared FD.

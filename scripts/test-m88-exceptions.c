@@ -25,7 +25,7 @@ int nas_fs_mmap_page(struct nas_mapped_file *f,uint64_t o,uint64_t *pa) {
     (void)f;(void)o;(void)pa;assert(0);return -1;
 }
 int nas_fs_mmap_dirty(struct nas_mapped_file *f) {(void)f;assert(0);return -1;}
-int64_t nas_fs_mmap_read_immutable(struct nas_mapped_file *f,
+int64_t nas_fs_mmap_read_private(struct nas_mapped_file *f,
                                     uint64_t off,uint8_t *dst,uint64_t n) {
     (void)f;(void)off;(void)dst;(void)n;assert(0);return -1;
 }

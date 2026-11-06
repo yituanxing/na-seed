@@ -10,6 +10,8 @@
 static struct nas_netdev *devices[NAS_NETDEV_LIMIT];
 static nas_netdev_wake change_wake;
 static void *change_context;
+static nas_netdev_packet_tap packet_tap;
+static void *packet_tap_context;
 /* IRQs can interrupt callback installation on today's single CPU. Publish
  * the non-NULL context before the callback and retire the callback before
  * clearing the context; an acquire snapshot observes that order. This is
@@ -38,6 +40,18 @@ int nas_netdev_set_change_wake(nas_netdev_wake wake,void *consumer) {
     if(wake && __atomic_load_n(&change_wake,__ATOMIC_ACQUIRE))return -EBUSY;
     set_wake(&change_wake,&change_context,wake,consumer);
     return 0;
+}
+int nas_netdev_set_packet_tap(nas_netdev_packet_tap tap,void *consumer) {
+    if(tap && (!consumer || packet_tap))return -EBUSY;
+    /* This setter and the worker-context producer run on the same
+     * non-preemptive CPU. The IRQ path never calls packet_tap. */
+    packet_tap_context=tap?consumer:NULL;
+    packet_tap=tap;
+    return 0;
+}
+static void packet_observe(const struct nas_netdev *device,
+                           const uint8_t *frame,uint32_t bytes,bool tx) {
+    if(packet_tap)packet_tap(packet_tap_context,device,frame,bytes,tx);
 }
 
 int nas_netdev_register(struct nas_netdev *device) {
@@ -127,6 +141,7 @@ int nas_netdev_transmit(struct nas_netdev *device,
         return -EMSGSIZE;
     int rc=device->ops->transmit(device->backend,frame,bytes);
     if(!rc) {
+        packet_observe(device,frame,bytes,true);
         /* Driver has copied/queued the actual Ethernet frame. Completion
          * interrupts are not a second packet, and ring backpressure is
          * never reported as a successful transmission. */
@@ -144,6 +159,7 @@ struct rx_count_context {
 };
 static int counted_receive(void *context,const uint8_t *frame,uint32_t bytes) {
     struct rx_count_context *observer=context;
+    packet_observe(observer->device,frame,bytes,false);
     int rc=observer->callback(observer->consumer,frame,bytes);
     if(!rc) {
         __atomic_fetch_add(&observer->device->stats.rx_packets,1,

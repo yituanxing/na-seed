@@ -30,6 +30,8 @@
 #define RTM_GETLINK_LINUX 18U
 #define RTM_NEWADDR_LINUX 20U
 #define RTM_GETADDR_LINUX 22U
+#define RTM_GETQDISC_LINUX 38U
+#define NLMSG_ERROR_LINUX 2U
 #define NLMSG_DONE_LINUX 3U
 #define NLM_F_REQUEST_LINUX 1U
 #define NLM_F_MULTI_LINUX 2U
@@ -338,6 +340,21 @@ static void enqueue_done(struct netlink_socket *s,uint32_t seq) {
      * NLMSG_DONE, then loops waiting for a completion it never accepts. */
     make_nlmsg(r->bytes,r->length,NLMSG_DONE_LINUX,seq,s->port_id);
 }
+static void enqueue_unsupported_qdisc(struct netlink_socket *s,uint32_t seq,
+                                       const uint8_t *request) {
+    struct netlink_reply *r=enqueue(s);
+    /* rtnetlink sends a NLMSG_ERROR reply for unsupported requests. A
+     * synchronous sendmsg(-EOPNOTSUPP) is NOT equivalent: libnl advances its
+     * expected sequence only on NLMSG_ERROR/NLMSG_DONE. bmon requests an
+     * optional qdisc cache before the next RTM_GETLINK cache refresh; a
+     * missing error record therefore desynchronizes all later dumps.
+     * We have no real qdisc inventory, so report the limitation honestly. */
+    r->length=36U; /* nlmsghdr + nlmsgerr.error + original nlmsghdr */
+    make_nlmsg(r->bytes,r->length,NLMSG_ERROR_LINUX,seq,s->port_id);
+    put16(r->bytes+6,0); /* an error record is not multipart */
+    put32(r->bytes+16,(uint32_t)-EOPNOTSUPP);
+    memcpy(r->bytes+20,request,16);
+}
 static void enqueue_tcp_listener(struct netlink_socket *s,uint32_t seq,
                                  const struct nas_lwip_tcp_listener *listener) {
     struct netlink_reply *r=enqueue(s);
@@ -444,6 +461,19 @@ int64_t nas_netlink_route_sendto(unsigned slot,const uint8_t *bytes,
     if(msg_len<17 || msg_len>length)return -EINVAL;
     if(s->protocol==NETLINK_SOCK_DIAG_LINUX)
         return send_diag(s,bytes,length,seq);
+    if(type==RTM_GETQDISC_LINUX && (flags&NLM_F_REQUEST_LINUX)) {
+        /* A GETQDISC dump has a 20-byte tcmsg payload. We cannot return
+         * fictitious queue disciplines, but must deliver the kernel error
+         * through Netlink so an actual libnl client can consume its seq. */
+        if(msg_len<36U)return -EINVAL;
+        if(!can_enqueue(s,1))return -EAGAIN;
+        if(!s->bound) {
+            rc=allocate_port(s,0);
+            if(rc)return rc;
+        }
+        enqueue_unsupported_qdisc(s,seq,bytes);
+        return length;
+    }
     if((type!=RTM_GETADDR_LINUX && type!=RTM_GETLINK_LINUX) ||
        !(flags&NLM_F_REQUEST_LINUX))
         return -EOPNOTSUPP;

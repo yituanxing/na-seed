@@ -33,7 +33,7 @@ static bool read_fail;
 struct nas_mapped_file {unsigned refs;bool writable;};
 static struct nas_mapped_file shared_file={.refs=1,.writable=true};
 static struct nas_mapped_file immutable_file={.refs=1,.writable=false};
-static unsigned immutable_reads;
+static unsigned immutable_reads,mutable_private_reads;
 static uint64_t shared_pages[2],shared_size=2*P;
 static uint8_t mincore_vec[8];
 bool nas_user_prepare_write(uint64_t addr,uint64_t len){
@@ -92,18 +92,25 @@ int nas_fs_mmap_pin(uint64_t fd,bool writable,struct nas_mapped_file **out){
     *out=&shared_file;
     return 0;
 }
-int nas_fs_mmap_pin_immutable(uint64_t fd,struct nas_mapped_file **out){
+int nas_fs_mmap_pin_private(uint64_t fd,struct nas_mapped_file **out){
     if(!out)return -22;
     *out=0;
-    if(fd!=4)return fd==5?-95:-9;
-    immutable_file.refs++;
-    *out=&immutable_file;
+    if(fd!=4 && fd!=5)return -9;
+    struct nas_mapped_file *file=fd==4?&immutable_file:&shared_file;
+    file->refs++;
+    *out=file;
     return 0;
 }
-int64_t nas_fs_mmap_read_immutable(struct nas_mapped_file *file,
+int64_t nas_fs_mmap_read_private(struct nas_mapped_file *file,
                                     uint64_t off,uint8_t *dst,uint64_t len){
-    if(file!=&immutable_file || !file->refs || (!dst && len))return -9;
-    immutable_reads++;
+    if((file!=&immutable_file && file!=&shared_file) || !file->refs ||
+       (!dst && len))return -9;
+    if(file==&immutable_file)immutable_reads++;
+    else {
+        mutable_private_reads++;
+        if(off>=shared_size)return 0;
+        if(len>shared_size-off)len=shared_size-off;
+    }
     for(uint64_t i=0;i<len;i++)dst[i]=(uint8_t)((off+i+7)&255);
     return (int64_t)len;
 }
@@ -557,7 +564,42 @@ int main(void){
            lib_right->backing==&immutable_file);
     assert(nas_vm_munmap(lib,lib_bytes)==0 && immutable_file.refs==1 &&
            living()==before_lib);
-    assert((int64_t)nas_vm_file_mmap(0,lib_bytes,3,2,5,0)==-95);
+    /* M205: writable ext4 is a genuine MAP_PRIVATE source too. The original
+     * FD may be closed as soon as mmap returns: the independently pinned
+     * inode feeds lazy pages, not a live FD nor a false immutable flag. A
+     * 70-MiB virtual region may legally map a two-page file. The third
+     * page is SIGBUS on first touch (while the small file remains valid). */
+    unsigned before_mutable=living(),before_private=mutable_private_reads;
+    const uint64_t huge_mutable=(70ULL<<20);
+    uint64_t mutable=nas_vm_file_mmap(0,huge_mutable,3,2,5,0);
+    assert((int64_t)mutable>0 && shared_file.refs==2 &&
+           living()==before_mutable);
+    assert(nas_mm_handle_fault(&space,mutable,NAS_UP_READ,false)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(mutable_private_reads==before_private+1 &&
+           *nas_mmu_user_byte(mutable)==7);
+    assert(nas_mm_handle_fault(&space,mutable+2*P,NAS_UP_READ,false)==
+           NAS_MM_FAULT_NEEDS_BACKING);
+    assert(!nas_mmu_user_byte(mutable+2*P));
+    *nas_mmu_user_byte(mutable)=0x9e; /* private, no shared-cache mutation */
+    assert(!shared_pages[0]);
+    assert(nas_vm_madvise(mutable,P,4)==0);
+    assert(nas_mm_handle_fault(&space,mutable,NAS_UP_READ,false)==
+           NAS_MM_FAULT_RESOLVED && *nas_mmu_user_byte(mutable)==7);
+    /* Shrinking the original inode invalidates the no-longer-valid page in
+     * every VMA, including private lazily faulted ones, across fork owners. */
+    assert(nas_mm_handle_fault(&space,mutable+P,NAS_UP_READ,false)==
+           NAS_MM_FAULT_RESOLVED);
+    shared_size=P;
+    struct nas_fs_node resized_private={.ino=5};
+    nas_vm_invalidate_file(&resized_private,P);
+    assert(!nas_mmu_user_byte(mutable+P));
+    assert(nas_mm_handle_fault(&space,mutable+P,NAS_UP_READ,false)==
+           NAS_MM_FAULT_NEEDS_BACKING);
+    shared_size=2*P;
+    assert(nas_vm_munmap(mutable,huge_mutable)==0 && shared_file.refs==1 &&
+           living()==before_mutable);
+    puts("[M205 MUTABLE PRIVATE LAZY HOST PASS] 70MiB ext4-style lazy private map, EOF SIGBUS, pinned inode, DONTNEED and truncate");
     puts("[M138 IMMUTABLE PRIVATE LAZY HOST PASS] 128MiB reservation, page faults, MADV_DONTNEED re-read, COW ownership, split/fork and cleanup");
     /* XZ's original Linux encoder can reserve 64 MiB plus one extra page
      * in a single anonymous mmap. The VMA window, not an arbitrary 64-MiB

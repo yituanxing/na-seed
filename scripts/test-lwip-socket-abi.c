@@ -17,6 +17,12 @@ void nas_vt_open_session(uint64_t flags) {
     (void)flags;
     assert(!"unexpected virtual-terminal open in socket ABI fixture");
 }
+void nas_pty_open_session(unsigned slot,uint64_t flags) {
+    /* The imported M106 fixture explicitly exercises a mocked PTY open.
+     * Session ownership is separately verified against the real backend
+     * in check-m188-pty.sh; this socket test has no real PTY state. */
+    (void)slot;(void)flags;
+}
 
 #include "../ports/lwip/socket_port.h"
 /* This ABI-only fixture does not run native TCP listeners; the real
@@ -514,12 +520,55 @@ int main(void) {
     uint32_t ifmtu=0;
     memcpy(&ifmtu,user_ptr(ifraddr)+16,4);
     assert(ifmtu==1500U); /* observed native Ethernet core MTU */
+    /* Original libpcap/iftop queries ordinary IPv4 and ethtool ioctl
+     * through AF_INET SOCK_DGRAM. The address is the actual lease, not a
+     * guessed NIC constant. No hardware timestamp API is implemented:
+     * Linux EOPNOTSUPP makes libpcap select its supported software path. */
+    assert(sys_ioctl_fd(tcp_fd,0x8915ULL,ifraddr)==0); /* SIOCGIFADDR */
+    const uint8_t actual_dhcp[8]={2,0,0,0,10,0,2,15};
+    assert(!memcmp(user_ptr(ifraddr)+16,actual_dhcp,sizeof(actual_dhcp)));
+    assert(sys_ioctl_fd(tcp_fd,0x891bULL,ifraddr)==0); /* NETMASK */
+    const uint8_t actual_mask[8]={2,0,0,0,255,255,255,0};
+    assert(!memcmp(user_ptr(ifraddr)+16,actual_mask,sizeof(actual_mask)));
+    assert(sys_ioctl_fd(tcp_fd,0x8919ULL,ifraddr)==0); /* BROADCAST */
+    const uint8_t actual_broadcast[8]={2,0,0,0,10,0,2,255};
+    assert(!memcmp(user_ptr(ifraddr)+16,actual_broadcast,
+                   sizeof(actual_broadcast)));
+    const uint64_t ethtool_arg=TEST_BASE+2300;
+    uint32_t ethtool_get_ts_info=0x41U;
+    memcpy(user_ptr(ethtool_arg),&ethtool_get_ts_info,4);
+    memset(ifreq,0,sizeof(ifreq));
+    memcpy(ifreq,"eth0",5);
+    memcpy(ifreq+16,&ethtool_arg,sizeof(ethtool_arg));
+    memcpy(user_ptr(ifraddr),ifreq,sizeof(ifreq));
+    assert((int64_t)sys_ioctl_fd(tcp_fd,0x8946ULL,ifraddr)==-EOPNOTSUPP);
+    /* Unsupported ethtool commands are not successful no-ops. */
+    uint32_t other_ethtool_command=0x7U;
+    memcpy(user_ptr(ethtool_arg),&other_ethtool_command,4);
+    assert((int64_t)sys_ioctl_fd(tcp_fd,0x8946ULL,ifraddr)==-EOPNOTSUPP);
+    uint64_t bad_ethtool_pointer=0;
+    memcpy(ifreq+16,&bad_ethtool_pointer,sizeof(bad_ethtool_pointer));
+    memcpy(user_ptr(ifraddr),ifreq,sizeof(ifreq));
+    assert((int64_t)sys_ioctl_fd(tcp_fd,0x8946ULL,ifraddr)==-EFAULT);
+    bad_ethtool_pointer=0xffffffffffffffffULL;
+    memcpy(ifreq+16,&bad_ethtool_pointer,sizeof(bad_ethtool_pointer));
+    memcpy(user_ptr(ifraddr),ifreq,sizeof(ifreq));
+    assert((int64_t)sys_ioctl_fd(tcp_fd,0x8946ULL,ifraddr)==-EFAULT);
+    memcpy(ifreq,"missing0",9);
+    memcpy(user_ptr(ifraddr),ifreq,sizeof(ifreq));
+    assert((int64_t)sys_ioctl_fd(tcp_fd,0x8946ULL,ifraddr)==-ENODEV);
+    memset(ifreq,0,sizeof(ifreq));
+    memcpy(ifreq,"eth0",5);
+    memcpy(user_ptr(ifraddr),ifreq,sizeof(ifreq));
     abi_has_dhcp_ipv4=false;
     memset(ifreq,0,sizeof(ifreq));
     ifindex=2;memcpy(ifreq+16,&ifindex,4);
     memcpy(user_ptr(ifraddr),ifreq,sizeof(ifreq));
     assert(sys_ioctl_fd(tcp_fd,0x8910ULL,ifraddr)==0);
     assert(!strcmp((const char *)user_ptr(ifraddr),"eth0"));
+    assert((int64_t)sys_ioctl_fd(tcp_fd,0x8915ULL,ifraddr)==-EADDRNOTAVAIL);
+    assert((int64_t)sys_ioctl_fd(tcp_fd,0x891bULL,ifraddr)==-EADDRNOTAVAIL);
+    assert((int64_t)sys_ioctl_fd(tcp_fd,0x8919ULL,ifraddr)==-EADDRNOTAVAIL);
     assert(sys_ioctl_fd(tcp_fd,0x8913ULL,ifraddr)==0);
     memcpy(&ifflags,user_ptr(ifraddr)+16,2);
     assert(ifflags==0x1043U); /* no DHCP lease does not remove NIC */

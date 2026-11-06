@@ -498,6 +498,42 @@ int main(void) {
     assert(nas_netlink_route_sendto(11,request,20,addr,12)==-EINVAL);
     wr32(request,20);wr16(request+4,26); /* RTM_GETROUTE unsupported */
     assert(nas_netlink_route_sendto(11,request,20,addr,12)==-EOPNOTSUPP);
+    /* Real libnl/bmon requests a link cache and then an OPTIONAL qdisc
+     * cache. Linux reports unsupported GETQDISC through NLMSG_ERROR, not
+     * by failing sendmsg(): otherwise libnl's send seq advances but its
+     * receive seq does not, so the NEXT legitimate link dump is rejected
+     * as "Message sequence number mismatch". No qdisc is invented here. */
+    uint8_t qdisc[36]={0};
+    wr32(qdisc,36);wr16(qdisc+4,38); /* RTM_GETQDISC */
+    wr16(qdisc+6,0x305);wr32(qdisc+8,209);
+    assert(nas_netlink_route_sendto(11,qdisc,sizeof(qdisc),addr,12)==36);
+    assert(ops->poll_description(11,1)&1);
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,source,
+                                    &source_len,&msg_flags)==36);
+    assert(rd32(reply)==36 && rd16(reply+4)==2); /* NLMSG_ERROR */
+    assert(rd16(reply+6)==0 && rd32(reply+8)==209 &&
+           rd32(reply+12)==4142 && rd32(reply+16)==(uint32_t)-EOPNOTSUPP);
+    assert(!memcmp(reply+20,qdisc,16) && rd32(source+4)==0);
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==-EAGAIN);
+    /* Next cache dump receives the independent, new sequence normally. */
+    getlink(link_request,0,210);
+    assert(nas_netlink_route_sendto(11,link_request,sizeof(link_request),
+                                   addr,12)==32);
+    for(unsigned i=0;i<3;i++) {
+        assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                        NULL,NULL)==(i?356:48));
+        assert(rd16(reply+4)==16 && rd32(reply+8)==210 &&
+               rd32(reply+12)==4142);
+    }
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==20);
+    assert(rd16(reply+4)==3 && rd32(reply+8)==210);
+    wr32(qdisc,35);
+    assert(nas_netlink_route_sendto(11,qdisc,sizeof(qdisc),addr,12)==-EINVAL);
+    wr32(qdisc,36);
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==-EAGAIN);
     getlink(link_request,0,206);
     wr32(link_request,31); /* a partial ifinfomsg cannot be decoded */
     assert(nas_netlink_route_sendto(11,link_request,sizeof(link_request),
@@ -516,7 +552,7 @@ int main(void) {
     assert(nas_netlink_route_bind(11,addr,12)==0);
     assert(nas_netlink_route_getsockname(11,name)==0);
     assert(rd32(name+4)==9000);
-    puts("[NETLINK_ROUTE HOST PASS] true 64/32-bit NIC statistics, pinned all-or-nothing snapshots, single-snapshot IDs, address loss, and max eight-NIC RTM_GETADDR/RTM_GETLINK multipart, "
+    puts("[NETLINK_ROUTE HOST PASS] true 64/32-bit NIC statistics, pinned all-or-nothing snapshots, single-snapshot IDs, address loss, eight-NIC multipart, honest GETQDISC NLMSG_ERROR and next libnl seq, "
          "SO_SNDBUF/SO_RCVBUF quotas, SOCK_RAW port bind, MSG_PEEK/TRUNC, poll/release");
     return 0;
 }

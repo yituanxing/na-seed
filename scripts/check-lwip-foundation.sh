@@ -5,6 +5,7 @@ set -eu
 test "$(git -C third_party/lwip rev-parse HEAD)" = \
     77dcd25a72509eb83f72b033d219b1d40cd8eb95
 sh scripts/check-network-build-selection.sh
+sh scripts/check-packet-socket.sh
 # Run the actual Linux Socket usercopy/FD ABI in both default and lwIP
 # configurations; protocol traffic is separately exercised below.
 sh scripts/check-lwip-socket-abi.sh

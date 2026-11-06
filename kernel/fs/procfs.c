@@ -84,6 +84,15 @@ bool nas_proc_lookup(const char *path,struct nas_proc_node *out) {
     if(!strcmp(path,"/proc/net/dev")) {
         out->kind=NAS_PROC_NET_DEV;return true;
     }
+    if(!strcmp(path,"/proc/net/stat")) {
+        out->kind=NAS_PROC_NET_STAT_DIR;return true;
+    }
+    if(!strcmp(path,"/proc/net/stat/rt_cache")) {
+        out->kind=NAS_PROC_NET_STAT_RT_CACHE;return true;
+    }
+    if(!strcmp(path,"/proc/net/stat/naseed_link")) {
+        out->kind=NAS_PROC_NET_STAT_NASEED_LINK;return true;
+    }
     if(!strcmp(path,"/proc/sys")) {out->kind=NAS_PROC_SYS_DIR;return true;}
     if(!strcmp(path,"/proc/sys/kernel")) {out->kind=NAS_PROC_SYS_KERNEL_DIR;return true;}
     if(!strcmp(path,"/proc/sys/kernel/hostname")) {out->kind=NAS_PROC_SYS_HOSTNAME;return true;}
@@ -163,7 +172,8 @@ bool nas_proc_node_from_ino(uint64_t ino,struct nas_proc_node *out) {
         case NAS_PROC_SYSVIPC_DIR:case NAS_PROC_SYSVIPC_SHM:
         case NAS_PROC_SYSVIPC_SEM:case NAS_PROC_SYSVIPC_MSG:
         case NAS_PROC_NET_DIR:case NAS_PROC_NET_RESOLV:
-        case NAS_PROC_NET_DEV:
+        case NAS_PROC_NET_DEV:case NAS_PROC_NET_STAT_DIR:
+        case NAS_PROC_NET_STAT_RT_CACHE:case NAS_PROC_NET_STAT_NASEED_LINK:
             node.kind=(uint8_t)kind;break;
         default:return false;
         }
@@ -266,6 +276,11 @@ bool nas_proc_dir_path(struct nas_proc_node node,char path[256]) {
         for(unsigned i=0;suffix[i];i++)path[p++]=suffix[i];
         path[p]=0;return true;
     }
+    if(node.kind==NAS_PROC_NET_STAT_DIR) {
+        const char *suffix="/net/stat";
+        for(unsigned i=0;suffix[i];i++)path[p++]=suffix[i];
+        path[p]=0;return true;
+    }
     if(node.kind!=NAS_PROC_ROOT) {
         uint64_t leader=node.tgid?node.tgid:node.pid;
         if(!living(leader))return false;
@@ -290,6 +305,7 @@ bool nas_proc_dir_path(struct nas_proc_node node,char path[256]) {
 bool nas_proc_is_dir(struct nas_proc_node node) {
     return node.kind==NAS_PROC_ROOT || node.kind==NAS_PROC_PID_DIR ||
            node.kind==NAS_PROC_SYSVIPC_DIR || node.kind==NAS_PROC_NET_DIR ||
+           node.kind==NAS_PROC_NET_STAT_DIR ||
            node.kind==NAS_PROC_SYS_DIR || node.kind==NAS_PROC_SYS_KERNEL_DIR ||
            node.kind==NAS_PROC_TASK_DIR || node.kind==NAS_PROC_TID_DIR ||
            node.kind==NAS_PROC_FD_DIR || node.kind==NAS_PROC_FDINFO_DIR;
@@ -350,11 +366,22 @@ bool nas_proc_child(struct nas_proc_node directory,unsigned index,
         return true;
     }
     if(directory.kind==NAS_PROC_NET_DIR) {
-        if(index>=2)return false;
-        const char *s=index==0?"naseed-resolv.conf":"dev";
+        if(index>=3)return false;
+        const char *s=index==0?"naseed-resolv.conf":
+                      index==1?"dev":"stat";
         unsigned i=0;do{name[i]=s[i];}while(s[i++]);
         *node=(struct nas_proc_node){
-            index==0?NAS_PROC_NET_RESOLV:NAS_PROC_NET_DEV,0,0,0};
+            index==0?NAS_PROC_NET_RESOLV:
+            index==1?NAS_PROC_NET_DEV:NAS_PROC_NET_STAT_DIR,0,0,0};
+        return true;
+    }
+    if(directory.kind==NAS_PROC_NET_STAT_DIR) {
+        if(index>=2)return false;
+        const char *s=index==0?"rt_cache":"naseed_link";
+        unsigned i=0;do{name[i]=s[i];}while(s[i++]);
+        *node=(struct nas_proc_node){
+            index==0?NAS_PROC_NET_STAT_RT_CACHE:
+                     NAS_PROC_NET_STAT_NASEED_LINK,0,0,0};
         return true;
     }
     if(directory.kind==NAS_PROC_FD_DIR ||
@@ -644,6 +671,63 @@ static void mount_decimal(struct nas_mount_stream *s,uint64_t n) {
     while(n && count<sizeof(digits));
     while(count)mount_ch(s,digits[--count]);
 }
+static void mount_hex_counter(struct nas_mount_stream *s,uint64_t value) {
+    static const char hex[]="0123456789abcdef";
+    /* iproute2 lnstat consumes the kernel's /proc/net/stat values as
+     * hexadecimal unsigned long. Preserve the complete 64-bit NIC totals
+     * instead of wrapping them at 2^32 like a narrow hardware counter. */
+    bool leading=true;
+    for(unsigned shift=60;shift>0;shift-=4) {
+        unsigned digit=(unsigned)((value>>shift)&15U);
+        if(digit || shift<=28)leading=false;
+        if(!leading)mount_ch(s,hex[digit]);
+    }
+    mount_ch(s,hex[(unsigned)(value&15U)]);
+}
+/* Upstream Linux's /proc/net/stat/rt_cache has seventeen hex fields and
+ * one line per possible CPU. NaSeed's lwIP IP stack has no Linux IPv4
+ * route cache, cached dst_entry, FIB-route garbage collector or route
+ * statistics owner: those cache-event counters therefore have an invariant
+ * value of zero. Do not mislabel Ethernet RX/TX traffic as cache misses or
+ * slow route lookups. A separate file below exposes actual moving traffic.
+ * NaSeed currently schedules a single kernel CPU in each supported port. */
+static int64_t proc_rt_cache_read(uint64_t offset,uint8_t *output,unsigned size) {
+    struct nas_mount_stream s={.skip=offset,.output=output,.capacity=size};
+    mount_word(&s,"entries in_hit in_slow_tot in_slow_mc in_no_route in_brd in_martian_dst in_martian_src out_hit out_slow_tot out_slow_mc gc_total gc_ignored gc_goal_miss gc_dst_overflow in_hlist_search out_hlist_search\n");
+    for(unsigned i=0;i<17;i++) {
+        if(i)mount_ch(&s,' ');
+        mount_word(&s,"00000000");
+    }
+    mount_ch(&s,'\n');
+    return (int64_t)s.produced;
+}
+/* A truthful, generalized lnstat source: its fields are the exact driver
+ * counters also served by /proc/net/dev and RTM_GETLINK, not route-cache
+ * guesses. Snapshot each pinned live NIC, then sum across the whole system. */
+static int64_t proc_link_stats_read(uint64_t offset,uint8_t *output,unsigned size) {
+    struct nas_mount_stream s={.skip=offset,.output=output,.capacity=size};
+    uint64_t totals[6]={0};
+#ifdef NAS_ENABLE_LWIP
+    for(unsigned ordinal=0;;ordinal++) {
+        struct nas_netdev *device=nas_netdev_get_ordinal(ordinal);
+        if(!device)break;
+        struct nas_netdev_stats stats;
+        int rc=nas_netdev_stats_snapshot(device,&stats);
+        (void)nas_netdev_put(device);
+        if(rc)return rc;
+        totals[0]+=stats.rx_bytes;totals[1]+=stats.rx_packets;
+        totals[2]+=stats.rx_dropped;totals[3]+=stats.tx_bytes;
+        totals[4]+=stats.tx_packets;totals[5]+=stats.tx_errors;
+    }
+#endif
+    mount_word(&s,"rx_bytes rx_packets rx_dropped tx_bytes tx_packets tx_errors\n");
+    for(unsigned i=0;i<6;i++) {
+        if(i)mount_ch(&s,' ');
+        mount_hex_counter(&s,totals[i]);
+    }
+    mount_ch(&s,'\n');
+    return (int64_t)s.produced;
+}
 /* Linux /proc/net/dev exposes real Ethernet-device byte/packet totals, not
  * synthetic network activity. The shared netdev adapter counts frames at
  * driver TX submission and accepted RX callbacks, so all three ISAs share
@@ -728,6 +812,10 @@ int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
         return proc_locks_read(offset,output,size);
     if(node.kind==NAS_PROC_NET_DEV)
         return proc_netdev_read(offset,output,size);
+    if(node.kind==NAS_PROC_NET_STAT_RT_CACHE)
+        return proc_rt_cache_read(offset,output,size);
+    if(node.kind==NAS_PROC_NET_STAT_NASEED_LINK)
+        return proc_link_stats_read(offset,output,size);
     char data[LIMIT];struct writer w={data,0,LIMIT};
     if(node.kind==NAS_PROC_FD_LINK || node.kind==NAS_PROC_PID_CWD_LINK)
         return -EINVAL;

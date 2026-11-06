@@ -8,10 +8,12 @@
 struct nas_mapped_file;
 struct nas_fs_node;
 int nas_fs_mmap_pin(uint64_t fd,bool writable,struct nas_mapped_file **out);
-/* An immutable file's VFS inode can be pinned without a writable shared
- * page-cache provider. Private lazy faults read fresh independent frames. */
-int nas_fs_mmap_pin_immutable(uint64_t fd,struct nas_mapped_file **out);
-int64_t nas_fs_mmap_read_immutable(struct nas_mapped_file *file,
+/* A MAP_PRIVATE VMA holds its original VFS inode even after close/unlink.
+ * It needs only read_at: writable ext4 and immutable bootfs both fault a
+ * private frame per accessed page, without eagerly copying a huge DSO or
+ * requiring a MAP_SHARED page-cache provider. */
+int nas_fs_mmap_pin_private(uint64_t fd,struct nas_mapped_file **out);
+int64_t nas_fs_mmap_read_private(struct nas_mapped_file *file,
                                     uint64_t offset,uint8_t *dst,uint64_t len);
 bool nas_fs_mmap_get(struct nas_mapped_file *file);
 void nas_fs_mmap_put(struct nas_mapped_file *file);

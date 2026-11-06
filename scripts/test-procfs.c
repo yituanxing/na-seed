@@ -172,7 +172,17 @@ static void check_live_dns(void) {
            inverse.kind==NAS_PROC_NET_DEV);
     assert(nas_proc_node_from_ino(nas_proc_ino(netdev),&inverse) &&
            inverse.kind==NAS_PROC_NET_DEV);
-    assert(!nas_proc_child(net,2,name,&inverse));
+    struct nas_proc_node netstat={0};
+    assert(nas_proc_child(net,2,name,&netstat) && !strcmp(name,"stat"));
+    assert(nas_proc_is_dir(netstat) &&
+           nas_proc_node_from_ino(nas_proc_ino(netstat),&inverse) &&
+           inverse.kind==NAS_PROC_NET_STAT_DIR);
+    assert(nas_proc_directory_from_ino(nas_proc_ino(netstat),&inverse) &&
+           inverse.kind==NAS_PROC_NET_STAT_DIR);
+    assert(nas_proc_find_child(nas_proc_ino(net),"stat",&inverse) &&
+           inverse.kind==NAS_PROC_NET_STAT_DIR);
+    assert(nas_proc_dir_path(netstat,path) && !strcmp(path,"/proc/net/stat"));
+    assert(!nas_proc_child(net,3,name,&inverse));
     assert(!nas_proc_find_child(nas_proc_ino(net),"other",&inverse));
     assert(!nas_proc_lookup("/proc/net/naseed-resolv.conf/other",&inverse));
     assert(!nas_proc_is_dir(resolver) && (nas_proc_mode(resolver)&0222U)==0);
@@ -245,6 +255,78 @@ static void check_live_dns(void) {
     assert(strstr(empty,"Inter-|") && !strstr(empty,"eth0:"));
 }
 #endif
+static void check_network_stat_files(void) {
+    struct nas_proc_node netstat={0},route={0},link={0},inverse={0};
+    char name[32]={0};
+    assert(nas_proc_lookup("/proc/net/stat",&netstat) &&
+           nas_proc_is_dir(netstat));
+    assert(nas_proc_child(netstat,0,name,&route) &&
+           !strcmp(name,"rt_cache"));
+    assert(nas_proc_child(netstat,1,name,&link) &&
+           !strcmp(name,"naseed_link"));
+    assert(!nas_proc_child(netstat,2,name,&inverse));
+    assert(nas_proc_find_child(nas_proc_ino(netstat),"rt_cache",&inverse) &&
+           inverse.kind==NAS_PROC_NET_STAT_RT_CACHE);
+    assert(nas_proc_find_child(nas_proc_ino(netstat),"naseed_link",&inverse) &&
+           inverse.kind==NAS_PROC_NET_STAT_NASEED_LINK);
+    assert(nas_proc_node_from_ino(nas_proc_ino(link),&inverse) &&
+           inverse.kind==NAS_PROC_NET_STAT_NASEED_LINK);
+    assert(nas_proc_lookup("/proc/net/stat/rt_cache",&inverse) &&
+           inverse.kind==route.kind);
+    assert(nas_proc_lookup("/proc/net/stat/naseed_link",&inverse) &&
+           inverse.kind==link.kind);
+    assert(!nas_proc_is_dir(link) && !nas_proc_is_dir(route));
+    assert((nas_proc_mode(link)&0222U)==0);
+    check_file("/proc/net/stat/rt_cache","entries in_hit in_slow_tot");
+    check_file("/proc/net/stat/naseed_link","rx_bytes rx_packets");
+
+    char data[1024]={0};
+    int64_t length=nas_proc_read(route,0,(uint8_t *)data,sizeof(data)-1);
+    assert(length>0 && (unsigned)length<sizeof(data));
+    char *newline=strchr(data,'\n');
+    assert(newline);*newline++=0;
+    char *end=strchr(newline,'\n');assert(end);*end=0;
+    unsigned fields=0;
+    for(char *token=strtok(data," \t");token;
+        token=strtok(NULL," \t"))fields++;
+    assert(fields==17);
+    unsigned counters=0;
+    for(char *token=strtok(newline," \t");token;
+        token=strtok(NULL," \t")) {
+        assert(strlen(token)==8 && !strcmp(token,"00000000"));
+        counters++;
+    }
+    assert(counters==fields);
+    for(int64_t offset=0;offset<length;offset++) {
+        char byte=0;
+        assert(nas_proc_read(route,(uint64_t)offset,(uint8_t *)&byte,1)==1);
+    }
+#ifdef NAS_ENABLE_LWIP
+    fixture_net.stats=(struct nas_netdev_stats){
+        .rx_bytes=0x100000000ULL+0x123U,.rx_packets=8,
+        .rx_dropped=3,.tx_bytes=0x1234,.tx_packets=5,.tx_errors=1};
+    fixture_net_visible=true;
+    memset(data,0,sizeof(data));
+    length=nas_proc_read(link,0,(uint8_t *)data,sizeof(data)-1);
+    assert(length>0 && strstr(data,"100000123 00000008 00000003 00001234 00000005 00000001"));
+    /* The existing open inode must observe counter increments, not a
+     * fabricated static snapshot. Byte offsets preserve partial reads. */
+    fixture_net.stats.rx_packets++;
+    memset(data,0,sizeof(data));
+    length=nas_proc_read(link,0,(uint8_t *)data,sizeof(data)-1);
+    assert(length>0 && strstr(data,"100000123 00000009 00000003"));
+    for(int64_t offset=0;offset<length;offset++) {
+        char byte=0;
+        assert(nas_proc_read(link,(uint64_t)offset,(uint8_t *)&byte,1)==1);
+        assert(byte==data[offset]);
+    }
+    fixture_net_visible=false;
+#else
+    memset(data,0,sizeof(data));
+    length=nas_proc_read(link,0,(uint8_t *)data,sizeof(data)-1);
+    assert(length>0 && strstr(data,"00000000 00000000 00000000"));
+#endif
+}
 /* Compare exact offset reads, not just a prefix in a 1536-byte stack buffer.
  * Test every byte boundary and a few inhomogeneous small chunks, including
  * offsets after 1536 and beyond EOF. */
@@ -424,6 +506,7 @@ int main(void) {
     assert(!memcmp(half,allmaps+25,(size_t)(mapslen-25)));
     check_file("/proc/meminfo","MemTotal:       4096 kB");
     check_live_dns();
+    check_network_stat_files();
     check_file("/proc/uptime","12.50");
     check_file("/proc/stat","cpu  0 0 150 1100");
     check_file("/proc/stat","btime 1760000000");

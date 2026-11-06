@@ -20,6 +20,35 @@ void nas_vfs_notify_file_close(const struct nas_fs_node *node,bool writable) {
 }
 #include "../kernel/fs/metadata_syscall.c"
 #include "../kernel/fs/socket_syscall.c"
+/* This host fixture isolates generic usercopy/OpenFile ABI from driver/PMM.
+ * Full AF_PACKET capture is exercised by test-packet-socket.c with real
+ * packet provider + netdev port and page-backed ring ownership. */
+bool nas_packet_socket_is_slot(unsigned slot){(void)slot;return false;}
+const struct nas_file_ops *nas_packet_socket_ops(void){return NULL;}
+int nas_packet_socket_open(unsigned slot,unsigned type,uint16_t protocol) {
+    (void)slot;(void)type;(void)protocol;return -EOPNOTSUPP;
+}
+int nas_packet_socket_bind(unsigned slot,unsigned index,uint16_t protocol) {
+    (void)slot;(void)index;(void)protocol;return -EOPNOTSUPP;
+}
+int nas_packet_socket_name(unsigned slot,unsigned *index,uint16_t *protocol) {
+    (void)slot;(void)index;(void)protocol;return -EOPNOTSUPP;
+}
+int nas_packet_socket_version(unsigned slot,unsigned *version,bool change) {
+    (void)slot;(void)version;(void)change;return -EOPNOTSUPP;
+}
+int nas_packet_socket_reserve(unsigned slot,unsigned *reserve,bool change) {
+    (void)slot;(void)reserve;(void)change;return -EOPNOTSUPP;
+}
+int nas_packet_socket_ring(unsigned slot,const struct nas_packet_ring_request *request) {
+    (void)slot;(void)request;return -EOPNOTSUPP;
+}
+int nas_packet_socket_mmap_pin(unsigned slot,struct nas_vm_device **device) {
+    (void)slot;(void)device;return -EOPNOTSUPP;
+}
+int nas_packet_socket_stats(unsigned slot,struct nas_packet_stats *stats) {
+    (void)slot;(void)stats;return -EOPNOTSUPP;
+}
 #include "../kernel/fs/poll_syscall.c"
 #include "../kernel/drivers/core/misc.h"
 #include "../kernel/mm/fault.h"

@@ -15,6 +15,14 @@ typedef int (*nas_netdev_rx)(void *consumer, const uint8_t *frame,
 /* IRQ-safe notification: only wake the worker, NEVER parse packets or
  * call lwIP here. A worker sets this after acquiring a device reference. */
 typedef void (*nas_netdev_wake)(void *consumer);
+/* Worker-context packet tap, for real packet sockets/libpcap. This is
+ * invoked synchronously while the driver's original frame is valid, NEVER
+ * from the IRQ wake callback. A single registered dispatcher fans out to
+ * independently owned sockets without making the NIC driver own sockets. */
+struct nas_netdev;
+typedef void (*nas_netdev_packet_tap)(void *consumer,
+                const struct nas_netdev *device,const uint8_t *frame,
+                uint32_t bytes,bool outgoing);
 struct nas_netdev_ops {
     /* On success copy/retain the frame in driver-owned storage BEFORE
      * returning: the caller's pbuf/temporary frame may be freed at once.
@@ -67,6 +75,7 @@ bool nas_netdev_is_removing(const struct nas_netdev *device);
 /* One change-event subscriber, not another NIC registry. The callback only
  * wakes the network manager; it never runs lwIP or blocks in a driver. */
 int nas_netdev_set_change_wake(nas_netdev_wake wake,void *consumer);
+int nas_netdev_set_packet_tap(nas_netdev_packet_tap tap,void *consumer);
 /* Acquires one device reference; a live netif must call put on removal. */
 struct nas_netdev *nas_netdev_get(const char *name);
 /* Enumerate any NIC driver through the same pinned registry, independent

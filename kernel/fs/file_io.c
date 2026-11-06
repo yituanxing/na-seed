@@ -20,6 +20,7 @@
 #include "file_ops.h"
 #include "syscall.h"
 #include "vfs.h"
+#include "packet_socket.h"
 #define TASK (*nas_current_task)
 /* Linux MAX_RW_COUNT: apply one transfer ceiling consistently to scalar
  * and vector read/write, pread/pwrite, independent of filesystem kind. */
@@ -52,6 +53,13 @@ int nas_fs_mmap_device_pin(uint64_t fd,bool writable,
     unsigned slot=TASK.fds->entries[fd].slot;
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
         return -EBADF;
+    if(TASK.fds->entries[fd].kind==FD_SOCKET &&
+       nas_packet_socket_is_slot(slot)) {
+        const struct nas_open_file *opened=&nas_open_files[slot];
+        if((opened->status_flags&3ULL)!=2ULL)return -EACCES;
+        int rc=nas_packet_socket_mmap_pin(slot,out);
+        return rc ? rc : 1;
+    }
     if(TASK.fds->entries[fd].kind!=FD_FRAMEBUFFER)return 0;
     const struct nas_open_file *opened=&nas_open_files[slot];
     if(opened->status_flags&NAS_LINUX_O_PATH)return -EBADF;
@@ -94,6 +102,20 @@ struct nas_mapped_file {
     bool write_allowed;
     struct nas_fs_node node;
 };
+static int mmap_pin_node(const struct nas_fs_node *node,bool write_allowed,
+                         struct nas_mapped_file **out) {
+    struct nas_mapped_file *mapped=nas_heap_alloc(sizeof(*mapped));
+    if(!mapped)return -ENOMEM;
+    int rc=nas_vfs_node_pin(node);
+    if(rc) {
+        (void)nas_heap_free(mapped);
+        return rc;
+    }
+    *mapped=(struct nas_mapped_file){.refs=1,
+                .write_allowed=write_allowed,.node=*node};
+    *out=mapped;
+    return 0;
+}
 int nas_fs_mmap_pin(uint64_t fd,bool writable,struct nas_mapped_file **out) {
     if(!out)return -EINVAL;
     *out=NULL;
@@ -120,49 +142,33 @@ int nas_fs_mmap_pin(uint64_t fd,bool writable,struct nas_mapped_file **out) {
      * cache before participating. */
     if(!node->filesystem->acquire_shared_page)return -ENOSYS;
     if(writable && !nas_vfs_can_write(node))return -EACCES;
-    struct nas_mapped_file *mapped=nas_heap_alloc(sizeof(*mapped));
-    if(!mapped)return -ENOMEM;
-    int rc=nas_vfs_node_pin(node);
-    if(rc) {
-        (void)nas_heap_free(mapped);
-        return rc;
-    }
-    *mapped=(struct nas_mapped_file){.refs=1,.write_allowed=access==2U,
-                                      .node=*node};
-    *out=mapped;
-    return 0;
+    return mmap_pin_node(node,access==2U,out);
 }
-/* A private lazy mapping must hold its ORIGINAL immutable inode, not a live
- * task FD (which musl closes immediately after mapping libLLVM). CPIO bootfs
- * does not implement shared physical pages, and should not have to. */
-int nas_fs_mmap_pin_immutable(uint64_t fd,struct nas_mapped_file **out) {
+/* Every private lazy file mapping pins the ORIGINAL inode, never a pathname
+ * or an open FD. Even a writable ext4 inode needs only read_at to provide a
+ * private fault-time copy; no shared physical page provider is required. */
+int nas_fs_mmap_pin_private(uint64_t fd,struct nas_mapped_file **out) {
     if(!out)return -EINVAL;
     *out=NULL;
-    int immutable=nas_fs_mmap_immutable_readonly(fd);
-    if(immutable<0)return immutable;
-    if(!immutable)return -EOPNOTSUPP;
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
+        return -EBADF;
     unsigned slot=TASK.fds->entries[fd].slot;
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+        return -EBADF;
     const struct nas_open_file *opened=&nas_open_files[slot];
+    if(opened->status_flags&NAS_LINUX_O_PATH)return -EBADF;
+    const unsigned access=(unsigned)(opened->status_flags&3ULL);
+    if(access==1U || access==3U)return -EACCES;
     if(!opened->vnode_pinned)return -ENODEV;
     const struct nas_fs_node *node=&opened->vnode;
     if(node->is_dir || (node->mode&0170000U)!=0100000U ||
        !node->filesystem || !node->filesystem->read_at)return -ENODEV;
-    struct nas_mapped_file *mapped=nas_heap_alloc(sizeof(*mapped));
-    if(!mapped)return -ENOMEM;
-    int rc=nas_vfs_node_pin(node);
-    if(rc) {
-        (void)nas_heap_free(mapped);
-        return rc;
-    }
-    *mapped=(struct nas_mapped_file){.refs=1,.write_allowed=false,.node=*node};
-    *out=mapped;
-    return 0;
+    return mmap_pin_node(node,access==2U,out);
 }
-int64_t nas_fs_mmap_read_immutable(struct nas_mapped_file *file,
+int64_t nas_fs_mmap_read_private(struct nas_mapped_file *file,
                                     uint64_t offset,uint8_t *dst,uint64_t len) {
     if(!file || !file->refs || !file->node.filesystem ||
-       !file->node.filesystem->read_only ||
-       !file->node.filesystem->immutable_file_data ||
+       !file->node.filesystem->read_at ||
        (!dst && len))return -EINVAL;
     return nas_vfs_read_at(&file->node,offset,dst,len);
 }

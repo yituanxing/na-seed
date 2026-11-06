@@ -19,6 +19,8 @@ int nas_chrdev_node_register(struct nas_chrdev_node *node) {
 static struct nas_task owner={.pid=42,.sid=42,.pgid=77};
 static struct nas_fd_table fds;
 struct nas_task *nas_current_task=&owner;
+bool nas_tty_controlling(void) {return false;}
+bool nas_vt_controlling(void) {return false;}
 static unsigned slot_for_fd(unsigned fd) { return fds.entries[fd].slot; }
 struct nas_task *nas_task_at(unsigned slot) {(void)slot;return NULL;}
 bool nas_user_read_bytes(uint64_t address,uint8_t *dst,uint64_t length) {

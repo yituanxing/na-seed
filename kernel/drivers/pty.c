@@ -9,6 +9,7 @@
 #include "tty.h"
 #include "tty_ldisc.h"
 #include "pty.h"
+#include "vt.h"
 #include "core/chrdev.h"
 
 /* One multiplexor with N independently allocated master/slave pairs.
@@ -137,6 +138,20 @@ bool nas_pty_controlling(void) {
     for(unsigned i=0;i<NAS_PTY_LIMIT;i++)
         if(ptys[i].used && ptys[i].sid==sid)return true;
     return false;
+}
+void nas_pty_open_session(unsigned slot,uint64_t flags) {
+    struct nas_task *task=nas_current_task;
+    struct pty *p=get(slot);
+    /* O_NOCTTY is 0400 octal on Linux.  A background process, a process
+     * with an existing controlling tty or a non-leader can open an unlocked
+     * PTY slave, but must not acquire or steal control of that terminal.
+     * sshpass relies on the other case: setsid(); open(pts,O_RDWR); close();
+     * the acquired controlling terminal then remains available /dev/tty. */
+    if(!task || !p || slot_is_master[slot] || (flags&0x100U) ||
+       task->pid!=task->sid || p->sid || nas_tty_controlling() ||
+       nas_vt_controlling() || nas_pty_controlling())return;
+    p->sid=task->sid;
+    p->pgid=task->pgid;
 }
 int nas_pty_attach_controlling(unsigned slot) {
     uint64_t sid=nas_current_task->sid;

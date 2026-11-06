@@ -8,6 +8,10 @@
 #undef main
 #include "../kernel/drivers/tty.h"
 #include "../kernel/task/wait.h"
+/* The real VT is exercised by a separate owner; this host TTY fixture
+ * isolates the UART-backed N_TTY entrypoint. */
+void nas_vt_init(void) {}
+int nas_vt_chrdev_init(void) {return 0;}
 
 static const uint8_t *rx_bytes;
 static unsigned rx_length;

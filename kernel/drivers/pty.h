@@ -14,6 +14,10 @@ int nas_pty_attach(unsigned number,unsigned slot);
 int nas_pty_attach_controlling(unsigned slot);
 bool nas_pty_present(unsigned number);
 bool nas_pty_controlling(void);
+/* Linux session-leader open of an unlocked slave without O_NOCTTY claims
+ * that PTY as the controlling terminal.  The open itself still succeeds if
+ * another session already owns it. */
+void nas_pty_open_session(unsigned slot,uint64_t flags);
 unsigned nas_pty_number(unsigned slot);
 void nas_pty_release(unsigned slot);
 uint64_t nas_pty_read(unsigned slot,uint8_t *kernel_dst,uint64_t count);

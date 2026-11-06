@@ -244,9 +244,10 @@ uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
     return start;
 }
 /* Small MAP_PRIVATE remains an eager independent file snapshot. Large
- * MAP_PRIVATE of an immutable source retains a pinned inode and reads into
- * private frames on demand: musl maps >100-MiB signed libLLVM objects and
- * must not consume hundreds of MiB before touching any library page.
+ * MAP_PRIVATE of any regular VFS source retains a pinned inode and reads
+ * private frames on demand: musl can map >100-MiB libLLVM objects from a
+ * writable ext4 installation, not just from immutable boot media, without
+ * consuming hundreds of MiB before touching a single library page.
  * Mutable MAP_SHARED retains coherent cache frames on demand. All pinned
  * mappings survive close/rename/unlink/fork. */
 static uint64_t vm_device_shared_mmap(uint64_t hint,uint64_t length,
@@ -353,12 +354,12 @@ uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
             live_shared=true;
         }
     }
-    /* Eager file snapshots are intentionally bounded. Only an immutable
-     * private source can exceed this threshold without a full copy: pin its
-     * VFS identity and materialize page-sized private snapshots on fault. */
+    /* Eager file snapshots are intentionally bounded. A private VFS mapping
+     * can exceed this threshold without a full copy: pin the real inode
+     * (even for mutable ext4) and materialize each private page on fault. */
     if(!live_shared && length>(64ULL<<20)) {
         if(private_map) {
-            int pinned=nas_fs_mmap_pin_immutable(fd,&backing);
+            int pinned=nas_fs_mmap_pin_private(fd,&backing);
             if(!pinned)lazy_private=true;
             else return (uint64_t)(int64_t)pinned;
         } else return (uint64_t)-EINVAL;
@@ -416,7 +417,7 @@ uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
         }
     }
     /* MAP_FIXED first synchronizes displaced dirty shared pages. Both
-     * shared-live and immutable-private-lazy VMAs stay nonresident; eager
+     * shared-live and private-lazy VMAs stay nonresident; eager
      * snapshots preserve the original all-or-nothing data transaction. */
     uint64_t failure=0;
     if(flags & MAP_FIXED) {
@@ -650,7 +651,7 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
             return (uint64_t)-ENOMEM;
         /* Eager file/ELF snapshots have no backing if resident PTEs are
          * discarded. Live shared file mappings can dematerialize safely;
-         * immutable private lazy mappings can transition only while no
+         * private lazy mappings can transition only while no
          * privately modified page has become resident. */
         const uint64_t end=addr+pages*PAGE;
         for(uint64_t at=addr;at<end;) {
@@ -772,7 +773,7 @@ static bool invalidate_mm_after_resize(struct nas_mm *mm,void *opaque) {
     const struct nas_vm_resize_context *ctx=opaque;
     for(unsigned i=0;i<mm->mmap_vmas.capacity;i++) {
         const struct nas_anon_region *v=&mm->mmap_vmas.slots[i];
-        if(!mutable_shared(v) ||
+        if((!mutable_shared(v) && v->kind!=NAS_VMA_FILE_PRIVATE_LAZY) ||
            !nas_fs_mmap_matches(v->backing,ctx->node))continue;
         for(uint64_t va=v->start;va<v->end;va+=PAGE) {
             uint64_t off=v->file_offset+(va-v->start);
@@ -785,7 +786,7 @@ static bool invalidate_mm_after_resize(struct nas_mm *mm,void *opaque) {
                 if(!nas_frame_put(old))nas_arch_halt();
             } else if(ctx->new_size-off<PAGE) {
                 /* Linux zeroes the tail of the last partial page after
-                 * truncate, including every already-materialized alias. */
+                 * truncate, including private-lazy fault-time snapshots. */
                 uint64_t first=ctx->new_size-off;
                 memset((void *)(uintptr_t)(nas_hhdm_offset()+
                        (pa&~(PAGE-1))+first),0,(size_t)(PAGE-first));

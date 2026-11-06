@@ -196,6 +196,47 @@ static void screen_failure_excerpt(const char *history,size_t length) {
         else fprintf(stderr,"\\x%02x",(unsigned)c);
     }
     fputc('\n',stderr);
+
+    /* The original btop calls clean_quit(1) after restoring alternate
+     * screen/keyboard state. Its actionable ERROR text is near the END of
+     * the same PTY stream, but a plain hex rendering of the preceding ANSI
+     * controls can exhaust M205_ERROR's per-line budget before that text.
+     * Preserve the literal printable tail in a separate bounded record.
+     * This is diagnostic only; screen/exit PASS conditions are unchanged. */
+    char visible[257]={0};
+    size_t used=0;
+    enum {TEXT,ESC,CSI,OSC,OSC_ESC} state=TEXT;
+    for(size_t i=length>2048?length-2048:0;i<length;i++) {
+        unsigned char c=(unsigned char)history[i];
+        if(state==ESC) {
+            state=c=='['?CSI:(c==']'?OSC:TEXT);
+            continue;
+        }
+        if(state==CSI) {
+            if(c>=0x40 && c<=0x7e)state=TEXT;
+            continue;
+        }
+        if(state==OSC_ESC) {
+            state=c=='\\'?TEXT:OSC;
+            continue;
+        }
+        if(state==OSC) {
+            if(c==0x07)state=TEXT;
+            else if(c==0x1b)state=OSC_ESC;
+            continue;
+        }
+        if(c==0x1b) {state=ESC;continue;}
+        if(c<32 && c!='\t' && c!='\r' && c!='\n')continue;
+        if(c>126)continue;
+        if(used==256) {
+            memmove(visible,visible+1,255);
+            used=255;
+        }
+        visible[used++]=(c=='\r' || c=='\n' || c=='\t')?' ':c;
+    }
+    visible[used]=0;
+    fprintf(stderr,"M205 PTY fixture: original btop printable tail=%s\n",
+            used?visible:"(none)");
 }
 /* btop is a terminal application rather than a question/answer tool. Its
  * signed Alpine ELF must actually paint a substantial ANSI screen with CPU

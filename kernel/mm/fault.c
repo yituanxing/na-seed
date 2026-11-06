@@ -99,10 +99,10 @@ enum nas_mm_fault_result nas_mm_handle_fault(struct nas_mm *mm,uint64_t addr,
         return NAS_MM_FAULT_RESOLVED;
     }
     if(vma->kind==NAS_VMA_FILE_PRIVATE_LAZY) {
-        /* Immutable source identity outlives the creating FD. A private
-         * page is copied into its OWN PMM frame at first access; the inode
-         * is never writable through this mapping, and fork uses normal COW
-         * only after the frame becomes resident. */
+        /* A source inode survives the creating FD for BOTH immutable bootfs
+         * and mutable ext4. Every fault copies into a private PMM frame;
+         * stores never dirty the file cache. Fork COWs resident frames,
+         * while yet-unfaulted children read the pinned original inode. */
         const uint64_t va=addr&~UINT64_C(4095);
         const uint64_t delta=va-vma->start;
         if(!vma->backing || vma->file_offset>UINT64_MAX-delta)
@@ -111,7 +111,7 @@ enum nas_mm_fault_result nas_mm_handle_fault(struct nas_mm *mm,uint64_t addr,
         if(!fresh)return NAS_MM_FAULT_OOM;
         uint8_t *page=(uint8_t *)(uintptr_t)(nas_hhdm_offset()+fresh);
         memset(page,0,4096);
-        int64_t n=nas_fs_mmap_read_immutable(vma->backing,
+        int64_t n=nas_fs_mmap_read_private(vma->backing,
                             vma->file_offset+delta,page,4096);
         if(n<=0 || n>4096) {
             (void)nas_frame_put(fresh);

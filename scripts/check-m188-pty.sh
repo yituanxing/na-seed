@@ -10,6 +10,9 @@ trap 'rm -rf "$test_dir"' EXIT HUP INT TERM
     scripts/test-m188-linux-pty-oracle.c -o "$test_dir/linux-pty-oracle"
 timeout 10 "$test_dir/linux-pty-oracle"
 "${CC:-cc}" -std=c11 -O2 -Wall -Wextra -Werror \
+    scripts/test-m205-sshpass-linux-pty.c -o "$test_dir/sshpass-linux-pty"
+timeout 10 "$test_dir/sshpass-linux-pty"
+"${CC:-cc}" -std=c11 -O2 -Wall -Wextra -Werror \
     -ffunction-sections -fdata-sections -fno-builtin -Wl,--gc-sections \
     -I scripts/m89-test-include -I kernel \
     scripts/test-m188-pty-vectors-kernel.c kernel/fs/file_io.c \

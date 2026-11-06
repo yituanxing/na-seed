@@ -10,6 +10,8 @@
 static uint64_t simulated_ns;
 uint64_t nas_arch_monotonic_ns(void) { return simulated_ns; }
 struct nas_task *nas_task_at(unsigned slot) {(void)slot;return NULL;}
+static bool test_vt_controlling;
+bool nas_vt_controlling(void) {return test_vt_controlling;}
 
 enum { MASTER_FD=51,SLAVE_FD=52,MASTER_SLOT=55,SLAVE_SLOT=56 };
 static const uint64_t t_addr=TEST_BASE+3*TEST_PAGE+40;
@@ -52,6 +54,44 @@ static bool wait_ready(unsigned requested) {
 static void read_one(char expected) {
     assert(nas_fs_fd_read(SLAVE_FD,first_addr,1)==1);
     assert(*user_ptr(first_addr)==expected);
+}
+static void verify_session_leader_open(void) {
+    /* sshpass's child does setsid(); open(pts,O_RDWR); close(pts); then
+     * opens /dev/tty from the exec'd program.  No explicit TIOCSCTTY is
+     * issued.  Exercise the production PTY owner, not a fabricated tty. */
+    assert(!nas_pty_controlling());
+    nas_pty_open_session(SLAVE_SLOT,0x100U); /* O_NOCTTY */
+    assert(!nas_pty_controlling());
+    guest_task.pid++;
+    nas_pty_open_session(SLAVE_SLOT,0); /* not a session leader */
+    assert(!nas_pty_controlling());
+    guest_task.pid--;
+    nas_pty_open_session(MASTER_SLOT,0); /* master never claims */
+    assert(!nas_pty_controlling());
+    bootstrap_tty_present=true;
+    nas_pty_open_session(SLAVE_SLOT,0); /* existing serial controlling tty */
+    assert(!nas_pty_controlling());
+    bootstrap_tty_present=false;
+    test_vt_controlling=true;
+    nas_pty_open_session(SLAVE_SLOT,0); /* existing virtual console */
+    assert(!nas_pty_controlling());
+    test_vt_controlling=false;
+
+    nas_pty_open_session(SLAVE_SLOT,0);
+    assert(nas_pty_controlling());
+    nas_pty_release(SLAVE_SLOT); /* sshpass closes the claiming slave */
+    assert(nas_pty_controlling());
+    assert(nas_pty_attach_controlling(SLAVE_SLOT)==0);
+    assert(nas_pty_attach_controlling(57)==0); /* /dev/tty after close */
+    nas_pty_release(57);
+    guest_task.pid=guest_task.sid=42;
+    assert(!nas_pty_controlling());
+    nas_pty_open_session(SLAVE_SLOT,0); /* cannot steal another SID's PTY */
+    assert(!nas_pty_controlling());
+    assert(nas_pty_attach_controlling(57)==-ENXIO);
+    guest_task.pid=guest_task.sid=41;
+    assert(nas_pty_controlling());
+    puts("[M205 PTY SESSION OPEN PASS] setsid/auto-CTTY, O_NOCTTY, leader, nonsteal, /dev/tty");
 }
 static void verify_matrix(void) {
     /* Linux N_TTY 0/0: an empty blocking read returns 0 immediately,
@@ -218,6 +258,7 @@ int main(void) {
     assert(nas_pty_attach(0,SLAVE_SLOT)==0);
     assert(ops_pty.aggregate_readv && ops_pty.read_finalize_zero &&
            ops_pty.read_wait_start && ops_pty.read_wait_ready);
+    verify_session_leader_open();
     verify_matrix();
     verify_nonblock_and_races();
     verify_canon_and_winch();

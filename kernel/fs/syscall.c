@@ -39,6 +39,7 @@
 #include "inotify.h"
 #include "pidfd.h"
 #include "unix_socket.h"
+#include "packet_socket.h"
 #include "../../ports/lwip/socket_port.h"
 #include "../../ports/lwip/network_boot.h"
 #include "namespace_syscall.h"
@@ -336,8 +337,11 @@ static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
      * The semantic request is its low 32 bits, not the sign extension. */
     cmd=(uint32_t)cmd;
     unsigned slot=TASK.fds->entries[fd].slot;
-    if((cmd==0x8910U || cmd==0x8913U || cmd==0x8921U) &&
-       nas_lwip_socket_is_slot(slot)) { /* SIOCGIFNAME/FLAGS/MTU */
+    if((cmd==0x8910U || cmd==0x8913U || cmd==0x8915U ||
+        cmd==0x8919U || cmd==0x891bU || cmd==0x8921U ||
+        cmd==0x8933U || cmd==0x8927U || cmd==0x8946U) &&
+       (nas_lwip_socket_is_slot(slot) ||
+        nas_packet_socket_is_slot(slot))) { /* NIC-backed Linux ifreq */
         /* Device identity, administrative state and link carrier are
          * distinct from DHCP address assignment. SIOCGIFCONF lists only
          * IPv4 addresses; these ioctls can query an attached interface
@@ -357,13 +361,63 @@ static uint64_t sys_ioctl_fd(uint64_t fd,uint64_t cmd,uint64_t arg) {
                 if((int)interfaces[i].ifindex==index){found=i;break;}
             if(found==count)return (uint64_t)-ENODEV;
             memcpy(request,interfaces[found].name,16);
-        } else { /* ifr_name -> flags or real interface MTU */
+        } else { /* ifr_name -> NIC characteristics */
             char name[17];
             memcpy(name,request,16);name[16]=0;
             for(unsigned i=0;i<count;i++)
                 if(!strcmp(name,interfaces[i].name)) {found=i;break;}
             if(found==count)return (uint64_t)-ENODEV;
-            if(cmd==0x8913U) {
+            if(cmd==0x8933U) { /* SIOCGIFINDEX */
+                const int32_t index=(int32_t)interfaces[found].ifindex;
+                memcpy(request+16,&index,4);
+            } else if(cmd==0x8946U) { /* SIOCETHTOOL */
+                /* Linux ifreq.ifr_data is a native LP64 pointer. The
+                 * driver does not implement ETHTOOL_GET_TS_INFO or other
+                 * ethtool hardware features; report EOPNOTSUPP, not
+                 * ENOTTY (which libpcap treats as a fatal interface
+                 * discovery failure). Validate the real named NIC and
+                 * the nested user pointer first. */
+                uint64_t data=0;
+                uint32_t ethtool_command=0;
+                memcpy(&data,request+16,sizeof(data));
+                if(!data || !nas_user_read_bytes(data,
+                                                (uint8_t *)&ethtool_command,
+                                                sizeof(ethtool_command)))
+                    return (uint64_t)-EFAULT;
+                (void)ethtool_command;
+                return (uint64_t)-EOPNOTSUPP;
+            } else if(cmd==0x8927U) { /* SIOCGIFHWADDR */
+                if(interfaces[found].loopback)return (uint64_t)-ENODEV;
+                struct nas_netdev *nic=nas_netdev_get(interfaces[found].name);
+                if(!nic)return (uint64_t)-ENODEV;
+                uint16_t hardware=1U; /* ARPHRD_ETHER */
+                memcpy(request+16,&hardware,2);
+                memcpy(request+18,nic->mac,6);
+                nas_netdev_put(nic);
+            } else if(cmd==0x8915U || cmd==0x8919U || cmd==0x891bU) {
+                /* SIOCGIFADDR / SIOCGIFBRDADDR / SIOCGIFNETMASK.
+                 * The authoritative DHCP address and netmask come from
+                 * the same lwIP interface snapshot. An attached device
+                 * with no lease must not be assigned a fabricated IP. */
+                const struct nas_lwip_guest_if *iface=&interfaces[found];
+                if(!iface->ipv4_host_order || iface->prefix_len>32U ||
+                   (cmd!=0x8915U && !iface->prefix_len))
+                    return (uint64_t)-EADDRNOTAVAIL;
+                if(cmd==0x8919U && iface->loopback)
+                    return (uint64_t)-EADDRNOTAVAIL;
+                uint32_t addr=iface->ipv4_host_order;
+                if(cmd!=0x8915U) {
+                    uint32_t mask=iface->prefix_len==32U ? UINT32_MAX :
+                                  (UINT32_MAX<<(32U-iface->prefix_len));
+                    addr=cmd==0x891bU ? mask:(addr|~mask);
+                }
+                memset(request+16,0,24);
+                request[16]=2; /* sockaddr_in.sin_family = AF_INET */
+                request[20]=(uint8_t)(addr>>24);
+                request[21]=(uint8_t)(addr>>16);
+                request[22]=(uint8_t)(addr>>8);
+                request[23]=(uint8_t)addr;
+            } else if(cmd==0x8913U) {
                 /* IFF_RUNNING is a live carrier/operational assertion,
                  * not a fixed consequence of a named physical device. */
                 const uint16_t flags=(interfaces[found].up ? 0x0001U:0U) |
@@ -746,6 +800,11 @@ static uint64_t open_path_owned(const char *path,
     /* POSIX/Linux: a session leader opening a real VT without O_NOCTTY
      * acquires its controlling terminal, independent of serial OpenRC. */
     if(!path_only && kind==FD_VT)nas_vt_open_session(flags);
+    /* Likewise posix_openpt/grantpt/unlockpt + setsid + open(pts) must
+     * acquire the PTY as controlling tty without an explicit TIOCSCTTY.
+     * This is the actual sshpass login sequence, not a synthetic shim. */
+    if(!path_only && kind==FD_PTY_SLAVE)
+        nas_pty_open_session(slot,flags);
     if(have_node) {
         nas_open_files[slot].vnode=opened_node;
         nas_open_files[slot].vnode_pinned=true;

@@ -111,6 +111,7 @@ void nas_vt_init(void) {
 static bool controls_vt(void) {
     return vt.sid && nas_current_task && vt.sid==nas_current_task->sid;
 }
+bool nas_vt_controlling(void) { return controls_vt(); }
 void nas_vt_open_session(uint64_t flags) {
     struct nas_task *task=nas_current_task;
     /* Linux O_NOCTTY=0400 octal, carried unchanged through openat. Opening

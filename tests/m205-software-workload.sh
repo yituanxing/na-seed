@@ -57,6 +57,31 @@ probe_failure_excerpt() {
         done
 }
 
+# A missing large DSO may first emit "Error loading shared library" and
+# then hundreds of follow-up "Error relocating" lines.  The shared M205
+# report keeps only the final three stderr lines, so expose the ORIGINAL
+# earliest loader error alongside the last relocation when an LLVM probe
+# actually fails. No replacement ELF, inferred success or fake output.
+llvm_loader_failure_excerpt() {
+    loader_log=$1
+    if [ ! -s "$loader_log" ]; then
+        echo 'M205 LLVM: original command failed with empty stderr' >&2
+        return
+    fi
+    first_loader_error=$(/bin/busybox grep -iE \
+        'error loading shared library|error relocating' "$loader_log" \
+        2>/dev/null | /bin/busybox head -n 1)
+    [ -n "$first_loader_error" ] ||
+        first_loader_error=$(/bin/busybox head -n 1 "$loader_log")
+    last_loader_error=$(/bin/busybox tail -n 1 "$loader_log")
+    first_loader_error=$(printf '%s' "$first_loader_error" |
+        /bin/busybox tr '\t\r' '  ' | /bin/busybox cut -c 1-160)
+    last_loader_error=$(printf '%s' "$last_loader_error" |
+        /bin/busybox tr '\t\r' '  ' | /bin/busybox cut -c 1-160)
+    printf 'M205 LLVM first original loader error: %s\n' "$first_loader_error" >&2
+    printf 'M205 LLVM last original loader error: %s\n' "$last_loader_error" >&2
+}
+
 # Independently verify the original signed util-linux-misc PTY helper was
 # installed; it is not a target-ELF acceptance entry. Interactive probes use
 # a separate host-built native fixture to drive the kernel's real ptmx/pts
@@ -126,15 +151,23 @@ probe() {
             fi
             addr=$(/bin/busybox head -n 1 "$addr_file")
             test -n "$addr" || return 1
-            /usr/bin/llvm21-symbolizer --obj="$fixture" "$addr" > "$target/out" &&
-                /bin/busybox grep -Fq m205_symbol "$target/out" &&
+            if ! /usr/bin/llvm21-symbolizer --obj="$fixture" "$addr" \
+                    > "$target/out" 2> "$target/llvm.stderr"; then
+                llvm_loader_failure_excerpt "$target/llvm.stderr"
+                return 1
+            fi
+            /bin/busybox grep -Fq m205_symbol "$target/out" &&
                 /bin/busybox grep -Fq m205_symbol.c "$target/out"
             ;;
         coff-resource-conversion:usr/bin/llvm21-windres)
             printf '%s\n' '1 RCDATA { "M205-RESOURCE-CONTENTS" }' > "$target/resource.rc"
-            /usr/bin/llvm21-windres -i "$target/resource.rc" \
-                -o "$target/resource.res" -O res &&
-                test -s "$target/resource.res" &&
+            if ! /usr/bin/llvm21-windres -i "$target/resource.rc" \
+                    -o "$target/resource.res" -O res \
+                    2> "$target/llvm.stderr"; then
+                llvm_loader_failure_excerpt "$target/llvm.stderr"
+                return 1
+            fi
+            test -s "$target/resource.res" &&
                 /bin/busybox grep -aq M205-RESOURCE-CONTENTS "$target/resource.res"
             ;;
         link-counter-query:sbin/lnstat)
@@ -212,8 +245,12 @@ probe() {
         controlled-ssh-authentication:usr/bin/sshpass)
             # A controlled PTY password exchange is genuine sshpass behavior;
             # do not misreport it as an SSH server authentication test.
+            # Real sshpass only makes the slave a *controlling tty*: it does
+            # not dup2 it onto stdin/stdout.  The child must use /dev/tty
+            # explicitly just like OpenSSH.  stdin here is /dev/null and
+            # stdout is a persistent diagnostic file, not the PTY master.
             /usr/bin/sshpass -P 'Password:' -p m205-secret /bin/sh -c \
-                'printf "Password:"; IFS= read -r -t 8 reply; test "$reply" = m205-secret' \
+                'exec 3<>/dev/tty || exit 21; printf "Password:" >&3; IFS= read -r -t 8 reply <&3; test "$reply" = m205-secret' \
                 > "$target/session" 2>&1 && return 0
             echo 'M205 sshpass: original PTY password exchange failed' >&2
             probe_failure_excerpt sshpass "$target/session" >&2
@@ -299,8 +336,26 @@ probe() {
             # The PTY itself is a genuine xterm-256color terminal; use that
             # documented startup option rather than skipping real UI checks.
             test -x /root/m205-fixtures/pty-exchange || return 1
-            /bin/busybox timeout 40 /root/m205-fixtures/pty-exchange \
-                --screen "$target/btop-terminal.raw" /usr/bin/btop --force-utf
+            # Alpine btop 1.4.5 records its REAL startup failure in
+            # $XDG_STATE_HOME/btop.log. Give each boot a clean state path so
+            # a failed run cannot surface stale diagnostics from another boot.
+            mkdir -p "$target/btop-state" || return 1
+            if XDG_STATE_HOME="$target/btop-state" \
+                /bin/busybox timeout 40 /root/m205-fixtures/pty-exchange \
+                --screen "$target/btop-terminal.raw" /usr/bin/btop --force-utf; then
+                return 0
+            fi
+            if test -s "$target/btop-state/btop.log"; then
+                /bin/busybox tail -n 2 "$target/btop-state/btop.log" |
+                    /bin/busybox tr -cd '\11\12\15\40-\176' |
+                    /bin/busybox cut -c 1-160 |
+                    while IFS= read -r line; do
+                        test -n "$line" && printf 'M205 btop original log: %s\n' "$line" >&2
+                    done
+            else
+                echo 'M205 btop: original program did not create its log file' >&2
+            fi
+            return 1
             ;;
         process-accounting-snapshot:usr/bin/atop-2.12.1)
             # Original atop's -b is a *begin time* for raw-log replay, not

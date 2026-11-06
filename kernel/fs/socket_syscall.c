@@ -22,6 +22,7 @@
 #include "../../ports/lwip/socket_port.h"
 #include "../../ports/lwip/network_boot.h"
 #include "netlink_route.h"
+#include "packet_socket.h"
 #define TASK (*nas_current_task)
 
 /* Only this Linux ABI adapter decodes the network-order sockaddr_in wire
@@ -35,6 +36,10 @@ static bool lwip_fd(uint64_t fd) {
 static bool netlink_fd(uint64_t fd) {
     return fd<NAS_FD_LIMIT && TASK.fds->entries[fd].kind==FD_SOCKET &&
            nas_netlink_route_is_slot(TASK.fds->entries[fd].slot);
+}
+static bool packet_fd(uint64_t fd) {
+    return fd<NAS_FD_LIMIT && TASK.fds->entries[fd].kind==FD_SOCKET &&
+           nas_packet_socket_is_slot(TASK.fds->entries[fd].slot);
 }
 static struct nas_lwip_bridge_address lwip_address(
                                      struct nas_ipv4_endpoint endpoint) {
@@ -58,25 +63,28 @@ static bool unix_fd(uint64_t fd) {
            TASK.fds->entries[fd].slot<NAS_OPEN_FILE_LIMIT
            && !nas_lwip_socket_is_slot(TASK.fds->entries[fd].slot)
            && !nas_netlink_route_is_slot(TASK.fds->entries[fd].slot)
+           && !nas_packet_socket_is_slot(TASK.fds->entries[fd].slot)
            ;
 }
 static bool inet_fd(uint64_t fd) {
     return lwip_fd(fd);
 }
 static uint64_t sys_socket(uint64_t domain,uint64_t type,uint64_t protocol) {
-    if(domain!=1 && domain!=2
+    if(domain!=1 && domain!=2 && domain!=17
        && domain!=16 /* Linux AF_NETLINK */
        )return (uint64_t)-EAFNOSUPPORT;
     unsigned socket_type=(unsigned)(type&15U);
-    if((domain==16 && socket_type!=3U) ||
+    if(((domain==16 || domain==17) && socket_type!=3U) ||
        (socket_type!=1U
         && !(domain==2 && socket_type==2U)
         && !(domain==16 && socket_type==3U) /* SOCK_RAW Netlink */
+        && !(domain==17 && socket_type==3U) /* SOCK_RAW Ethernet */
        ) || (type&~(15ULL|0x800ULL|0x80000ULL)))
         return (uint64_t)-ESOCKTNOSUPPORT;
     if(protocol && !(domain==2 && protocol==6 && socket_type==1U)
        && !(domain==2 && protocol==17 && socket_type==2U)
        && !(domain==16 && protocol==4 && socket_type==3U)
+       && domain!=17
        )
         return (uint64_t)-EPROTONOSUPPORT;
     unsigned fds[2],slots[2];
@@ -114,7 +122,128 @@ static uint64_t sys_socket(uint64_t domain,uint64_t type,uint64_t protocol) {
             return (uint64_t)(int64_t)rc;
         }
     }
+    if(domain==17) {
+        nas_open_files[slot].ops=nas_packet_socket_ops();
+        /* socket(AF_PACKET,SOCK_RAW,protocol) takes network-order ETH_P_* */
+        uint16_t proto=(uint16_t)((protocol&255U)<<8 | ((protocol>>8)&255U));
+        int rc=nas_packet_socket_open(slot,socket_type,proto);
+        if(rc) {
+            nas_fs_close_fd(fd);
+            return (uint64_t)(int64_t)rc;
+        }
+    }
     return fd;
+}
+/* Linux sockaddr_ll is an exact 20-byte wire header. Ethernet protocol
+ * remains in network byte order at the UAPI boundary; internal matching is
+ * host order, just like real tpacket2 frames' skb->protocol. */
+static uint64_t sys_packet_bind(uint64_t fd,uint64_t addr,uint64_t length) {
+    if(!packet_fd(fd))return (uint64_t)-EBADF;
+    if(length<20)return (uint64_t)-EINVAL;
+    uint8_t wire[20];
+    if(!nas_user_read_bytes(addr,wire,sizeof(wire)))return (uint64_t)-EFAULT;
+    if(wire[0]!=17 || wire[1])return (uint64_t)-EAFNOSUPPORT;
+    int32_t index=0;
+    memcpy(&index,wire+4,sizeof(index));
+    if(index<=0)return (uint64_t)-EINVAL;
+    uint16_t protocol=(uint16_t)((unsigned)wire[2]<<8|wire[3]);
+    return (uint64_t)(int64_t)nas_packet_socket_bind(
+        TASK.fds->entries[fd].slot,(unsigned)index,protocol);
+}
+static uint64_t sys_packet_name(uint64_t fd,uint64_t addr,uint64_t sizeptr) {
+    if(!packet_fd(fd))return (uint64_t)-EBADF;
+    uint32_t size;
+    if(!nas_user_read_bytes(sizeptr,(uint8_t *)&size,4))return (uint64_t)-EFAULT;
+    unsigned index=0;uint16_t proto=0;
+    int rc=nas_packet_socket_name(TASK.fds->entries[fd].slot,&index,&proto);
+    if(rc)return (uint64_t)(int64_t)rc;
+    uint8_t wire[20]={17};
+    wire[2]=(uint8_t)(proto>>8);wire[3]=(uint8_t)proto;
+    memcpy(wire+4,&index,4);
+    if(index) {
+        char name[NAS_LWIP_DEVICE_NAME_MAX]={0};
+        if(!nas_lwip_guest_ifname(index,name)) {
+            struct nas_netdev *nic=nas_netdev_get(name);
+            if(nic) {
+                uint16_t hw=1;
+                memcpy(wire+8,&hw,2);
+                wire[11]=6;memcpy(wire+12,nic->mac,6);
+                nas_netdev_put(nic);
+            }
+        }
+    }
+    const uint32_t actual=sizeof(wire);
+    if(size>actual)size=actual;
+    if(!nas_user_prepare_write(sizeptr,4) ||
+       (size && !nas_user_prepare_write(addr,size)))return (uint64_t)-EFAULT;
+    return nas_user_write_bytes(sizeptr,(const uint8_t *)&actual,4) &&
+           (!size || nas_user_write_bytes(addr,wire,size)) ? 0:(uint64_t)-EFAULT;
+}
+static uint64_t sys_packet_getsockopt(uint64_t fd,uint64_t level,
+                                      uint64_t opt,uint64_t addr,uint64_t sizeptr) {
+    if(!packet_fd(fd))return (uint64_t)-EBADF;
+    uint32_t size;
+    if(!nas_user_read_bytes(sizeptr,(uint8_t *)&size,4))return (uint64_t)-EFAULT;
+    if(size<4)return (uint64_t)-EINVAL;
+    unsigned slot=TASK.fds->entries[fd].slot;
+    uint32_t result[2]={0};uint32_t actual=4;
+    int rc=0;
+    if(level==1 && opt==3)result[0]=3; /* SO_TYPE */
+    else if(level==1 && opt==4)result[0]=0; /* SO_ERROR */
+    else if(level==263 && opt==10) {
+        unsigned version=0;
+        rc=nas_packet_socket_version(slot,&version,false);
+        result[0]=version;
+    } else if(level==263 && opt==11) { /* PACKET_HDRLEN input version */
+        if(!nas_user_read_bytes(addr,(uint8_t *)&result[0],4))
+            return (uint64_t)-EFAULT;
+        if(result[0]!=1U)return (uint64_t)-EINVAL;
+        result[0]=32U; /* sizeof(tpacket2_hdr), NOT TPACKET2_HDRLEN */
+    } else if(level==263 && opt==12) {
+        unsigned reserve=0;
+        rc=nas_packet_socket_reserve(slot,&reserve,false);
+        result[0]=reserve;
+    } else if(level==263 && opt==6) { /* PACKET_STATISTICS clear-on-read */
+        if(size<8)return (uint64_t)-EINVAL;
+        actual=8;
+        if(!nas_user_prepare_write(addr,actual) ||
+           !nas_user_prepare_write(sizeptr,4))return (uint64_t)-EFAULT;
+        struct nas_packet_stats stats;
+        rc=nas_packet_socket_stats(slot,&stats);
+        result[0]=stats.packets;
+        result[1]=stats.drops;
+    } else return (uint64_t)-ENOPROTOOPT;
+    if(rc)return (uint64_t)(int64_t)rc;
+    if(!nas_user_prepare_write(addr,actual) ||
+       !nas_user_prepare_write(sizeptr,4))return (uint64_t)-EFAULT;
+    return nas_user_write_bytes(addr,(const uint8_t *)result,actual) &&
+           nas_user_write_bytes(sizeptr,(const uint8_t *)&actual,4) ?
+           0:(uint64_t)-EFAULT;
+}
+static uint64_t sys_packet_setsockopt(uint64_t fd,uint64_t level,
+                                      uint64_t opt,uint64_t addr,uint64_t size) {
+    if(!packet_fd(fd))return (uint64_t)-EBADF;
+    if(level!=263)return (uint64_t)-ENOPROTOOPT;
+    unsigned slot=TASK.fds->entries[fd].slot;
+    if(opt==5) { /* PACKET_RX_RING: real PMM-backed TPACKET_V2 frames */
+        struct nas_packet_ring_request request;
+        if(size<sizeof(request))return (uint64_t)-EINVAL;
+        if(!nas_user_read_bytes(addr,(uint8_t *)&request,sizeof(request)))
+            return (uint64_t)-EFAULT;
+        return (uint64_t)(int64_t)nas_packet_socket_ring(slot,&request);
+    }
+    if(opt==10 || opt==12) {
+        uint32_t value;
+        if(size<4)return (uint64_t)-EINVAL;
+        if(!nas_user_read_bytes(addr,(uint8_t *)&value,4))return (uint64_t)-EFAULT;
+        unsigned answer=value;
+        return (uint64_t)(int64_t)(opt==10 ?
+            nas_packet_socket_version(slot,&answer,true) :
+            nas_packet_socket_reserve(slot,&answer,true));
+    }
+    /* No pretend promiscuous NIC mode, ignored kernel-BPF filter or fake
+     * VLAN auxdata: return a real failure until lower layers implement it. */
+    return (uint64_t)-ENOPROTOOPT;
 }
 /* sockaddr_in: all supported Linux LP64 architectures use native 16-bit
  * AF_INET followed by network-order port/IPv4 bytes. Do not cast a user
@@ -1361,6 +1490,28 @@ struct nas_fs_result nas_fs_socket_syscall(enum nas_syscall_op op,
                                          const uint64_t *args) {
     int fd_error=socket_fd_error(op,args[1]);
     if(fd_error)SOCKET_RESULT((uint64_t)(int64_t)fd_error);
+    if(op!=NAS_SC_socket && packet_fd(args[1])) {
+        switch(op) {
+        case NAS_SC_bind:
+            SOCKET_RESULT(sys_packet_bind(args[1],args[2],args[3]));
+        case NAS_SC_getsockname:
+            SOCKET_RESULT(sys_packet_name(args[1],args[2],args[3]));
+        case NAS_SC_getsockopt:
+            SOCKET_RESULT(sys_packet_getsockopt(args[1],args[2],args[3],
+                                                args[4],args[5]));
+        case NAS_SC_setsockopt:
+            SOCKET_RESULT(sys_packet_setsockopt(args[1],args[2],args[3],
+                                                args[4],args[5]));
+        case NAS_SC_getpeername:SOCKET_RESULT((uint64_t)-ENOTCONN);
+        case NAS_SC_connect:case NAS_SC_listen:
+        case NAS_SC_accept:case NAS_SC_accept4:
+        case NAS_SC_sendto:case NAS_SC_recvfrom:
+        case NAS_SC_sendmsg:case NAS_SC_recvmsg:
+        case NAS_SC_shutdown:
+            SOCKET_RESULT((uint64_t)-EOPNOTSUPP);
+        default:break;
+        }
+    }
     if(op!=NAS_SC_socket && netlink_fd(args[1])) {
         switch(op) {
         case NAS_SC_bind:
