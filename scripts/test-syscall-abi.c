@@ -86,6 +86,9 @@ int main(void) {
     assert(nas_linux_decode_syscall(__NR_getrusage) == NAS_SC_getrusage);
     assert(nas_linux_decode_syscall(__NR_eventfd) == NAS_SC_eventfd);
     assert(nas_linux_decode_syscall(__NR_eventfd2) == NAS_SC_eventfd2);
+    assert(nas_linux_decode_syscall(__NR_timerfd_create) == NAS_SC_timerfd_create);
+    assert(nas_linux_decode_syscall(__NR_timerfd_settime) == NAS_SC_timerfd_settime);
+    assert(nas_linux_decode_syscall(__NR_timerfd_gettime) == NAS_SC_timerfd_gettime);
     assert(nas_linux_decode_syscall(__NR_epoll_create1) == NAS_SC_epoll_create1);
     assert(nas_linux_decode_syscall(__NR_epoll_ctl) == NAS_SC_epoll_ctl);
     assert(nas_linux_decode_syscall(__NR_epoll_wait) == NAS_SC_epoll_wait);

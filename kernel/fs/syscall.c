@@ -36,6 +36,7 @@
 #include "posix_locks.h"
 #include "epoll.h"
 #include "eventfd.h"
+#include "timerfd.h"
 #include "inotify.h"
 #include "pidfd.h"
 #include "unix_socket.h"
@@ -1409,6 +1410,13 @@ static const struct nas_file_ops ops_eventfd={
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
     .poll=nas_eventfd_poll,.poll_description=nas_eventfd_poll_slot,.release=vrelease_eventfd
 };
+static const struct nas_file_ops ops_timerfd={
+    .read_plan=nas_timerfd_read_plan,.read=nas_timerfd_read,
+    .read_commit_before_copyout=true,.aggregate_readv=true,
+    .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
+    .poll=nas_timerfd_poll_fd,.poll_description=nas_timerfd_poll_slot,
+    .release=nas_timerfd_release
+};
 static uint64_t vioctl_inotify(uint64_t fd,uint64_t cmd,uint64_t arg) {
     if(cmd!=0x541bULL)return (uint64_t)-ENOTTY; /* Linux FIONREAD */
     const unsigned slot=TASK.fds->entries[fd].slot;
@@ -1464,6 +1472,7 @@ static const struct nas_file_ops *const ops_by_kind[]={
     [FD_PIPE_R]=&ops_pipe_read,[FD_PIPE_W]=&ops_pipe_write,
     [FD_EPOLL]=&ops_epoll,
     [FD_EVENTFD]=&ops_eventfd,[FD_SIGNALFD]=&ops_signalfd,
+    [FD_TIMERFD]=&ops_timerfd,
     [FD_INOTIFY]=&ops_inotify,
     [FD_PIDFD]=&ops_pidfd,
     [FD_SOCKET]=&ops_socket,
@@ -1615,6 +1624,12 @@ struct nas_fs_result nas_fs_syscall(enum nas_syscall_op op,
         FS_RESULT(nas_eventfd_create(args[1],0));
     case NAS_SC_eventfd2:
         FS_RESULT(nas_eventfd_create(args[1],args[2]));
+    case NAS_SC_timerfd_create:
+        FS_RESULT(nas_timerfd_create(args[1],args[2]));
+    case NAS_SC_timerfd_settime:
+        FS_RESULT(nas_timerfd_settime(args[1],args[2],args[3],args[4]));
+    case NAS_SC_timerfd_gettime:
+        FS_RESULT(nas_timerfd_gettime(args[1],args[2]));
     case NAS_SC_inotify_init:
         FS_RESULT(nas_inotify_init1(0));
     case NAS_SC_inotify_init1:

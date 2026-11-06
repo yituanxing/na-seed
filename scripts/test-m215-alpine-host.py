@@ -94,7 +94,14 @@ def adapter_contract() -> None:
             "      - '.github/workflows/m215-five-original-pilot.yml'") in workflow
     assert "sh scripts/inventory-m141-signed-apks.sh amd64 m215" in workflow
     assert "sh scripts/probe-m215-alpine-pilot.sh amd64" in workflow
-    assert "matrix:" not in workflow, "pilot must not multiply into three simultaneous long QEMUs"
+    # A parallel, host-only signed-APK census is cheap and deliberately has a
+    # matrix.  The real QEMU pilot must still be a single native x86 job.
+    assert workflow.count("  original-five-x86:") == 1
+    census, x86 = workflow.split("  original-five-x86:", 1)
+    assert "matrix:" not in x86, "pilot must not multiply into three simultaneous long QEMUs"
+    assert "port: [riscv64, arm64]" in census
+    assert "sh scripts/probe-m215-alpine-pilot.sh" not in census
+    assert "sh scripts/inventory-m141-signed-apks.sh '${{ matrix.port }}' m215" in census
     for script in (OWNER, RUNNER, REOPEN, PROBE, INVENTORY,
                    ROOT / "scripts/probe-m215-alpine-pilot.sh"):
         if script.suffix == ".sh":

@@ -164,6 +164,9 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_pipe2: return NAS_SC_pipe2;
     case __NR_eventfd: return NAS_SC_eventfd;
     case __NR_eventfd2: return NAS_SC_eventfd2;
+    case __NR_timerfd_create: return NAS_SC_timerfd_create;
+    case __NR_timerfd_settime: return NAS_SC_timerfd_settime;
+    case __NR_timerfd_gettime: return NAS_SC_timerfd_gettime;
     case __NR_inotify_init: return NAS_SC_inotify_init;
     case __NR_inotify_init1: return NAS_SC_inotify_init1;
     case __NR_inotify_add_watch: return NAS_SC_inotify_add_watch;
@@ -251,6 +254,9 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 44U: return NAS_SC_fstatfs;
     case 439U: return NAS_SC_faccessat2; /* same Linux syscall ID */
     case 19U: return NAS_SC_eventfd2;
+    case 85U: return NAS_SC_timerfd_create; /* Linux asm-generic LP64 */
+    case 86U: return NAS_SC_timerfd_settime;
+    case 87U: return NAS_SC_timerfd_gettime;
     case 26U: return NAS_SC_inotify_init1;
     case 27U: return NAS_SC_inotify_add_watch;
     case 28U: return NAS_SC_inotify_rm_watch;

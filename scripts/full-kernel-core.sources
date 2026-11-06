@@ -79,6 +79,7 @@ kernel/fs/poll_syscall.c
 kernel/fs/metadata_syscall.c
 kernel/fs/epoll.c
 kernel/fs/eventfd.c
+kernel/fs/timerfd.c
 kernel/fs/inotify.c
 kernel/fs/unix_socket.c
 kernel/mm/anon_regions.c

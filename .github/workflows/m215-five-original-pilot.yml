@@ -19,6 +19,48 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  signed-five-cross-isa-census:
+    name: Signed original five-ELF host-only census / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Check five-ELF manifest and strict host contract
+        run: |
+          set -eu
+          python3 scripts/test-m215-alpine-host.py
+          python3 scripts/check-m141-candidates.py --profile m215
+          command -v docker
+          command -v readelf
+      - name: Verify official signed native APK, distinct ELF SHA and independent offline install
+        timeout-minutes: 22
+        run: |
+          set -eu
+          sh scripts/inventory-m141-signed-apks.sh '${{ matrix.port }}' m215
+          tsv='build/external/m215-candidate-inventory/${{ matrix.port }}/candidates.tsv'
+          awk -F '\t' 'NR > 1 { n++; if ($3 != "NATIVE_ELF") bad++ }
+            END { if (n != 5 || bad) exit 1 }' "$tsv"
+          unique=$(awk -F '\t' 'NR > 1 { print $4 }' "$tsv" | sort -u | wc -l)
+          test "$unique" -eq 5
+          echo '[M215 CROSS-ISA SIGNED CENSUS PASS] ${{ matrix.port }} five genuine native ELFs; no guest QEMU claim'
+      - name: Preserve signed APK and exact native ELF census
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m215-cross-isa-census-${{ matrix.port }}
+          path: |
+            build/external/m215-candidate-inventory/${{ matrix.port }}/candidates.tsv
+            build/external/m215-candidate-inventory/${{ matrix.port }}/signed-cache.sha256
+            build/external/m215-candidate-inventory/${{ matrix.port }}/apk-install.log
+            build/external/m215-candidate-inventory/${{ matrix.port }}/apk-offline-proof.log
+
   original-five-x86:
     name: Five distinct signed original ELF/first+reopen ext4 / amd64
     runs-on: ubuntu-24.04

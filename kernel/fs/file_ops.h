@@ -61,9 +61,9 @@ struct nas_file_ops {
     /* An admitted atomic write must validate the whole user source before
      * the first provider commit; 0 means ordinary page-local staging. */
     uint64_t atomic_write_limit;
-    /* Linux eventfd is exceptional: it consumes the counter before copying
-     * the value out, even when usercopy fails with EFAULT. Other providers
-     * preflight writable user memory BEFORE consuming any data. */
+    /* Counter FDs (eventfd/timerfd) consume their prepared expiration count
+     * before copying it out; other providers preflight writable user memory
+     * BEFORE consuming any data. */
     bool read_commit_before_copyout;
     bool read_finalize_zero;
     /* Null-like sinks ignore source PAGE CONTENTS: Linux accepts unmapped
