@@ -147,11 +147,15 @@ if [ "$m205" = 1 ] || [ "$m206" = 1 ]; then
     fixture_pty="$PWD/$work/m205-pty-exchange.elf"
     "$fixture_cc" -static -O2 -Wall -Wextra -Werror \
         tests/m205-pty-exchange.c -o "$fixture_pty"
+    fixture_udp="$PWD/$work/m205-udp-traffic.elf"
+    "$fixture_cc" -static -O2 -Wall -Wextra -Werror \
+        tests/m205-udp-traffic.c -o "$fixture_udp"
     "$fixture_nm" -n "$fixture_elf" | awk \
         '$3 == "m205_symbol" { print "0x" $1; found = 1 } END { if (!found) exit 1 }' \
         > "$fixture_addr"
     test -s "$fixture_elf" && test -s "$fixture_addr" && \
-        test -s "$fixture_listener" && test -s "$fixture_pty"
+        test -s "$fixture_listener" && test -s "$fixture_pty" &&
+        test -s "$fixture_udp"
     sudo install -d -m 0755 "$overlay/root/m205-fixtures"
     sudo install -m 0644 "$fixture_elf" \
         "$overlay/root/m205-fixtures/symbolizer.elf"
@@ -161,6 +165,8 @@ if [ "$m205" = 1 ] || [ "$m206" = 1 ]; then
         "$overlay/root/m205-fixtures/loopback-listener"
     sudo install -m 0755 "$fixture_pty" \
         "$overlay/root/m205-fixtures/pty-exchange"
+    sudo install -m 0755 "$fixture_udp" \
+        "$overlay/root/m205-fixtures/udp-traffic"
     sudo test -s "$overlay/root/m205-software-workload.sh"
     sudo test -s "$overlay/root/m205-cohort.tsv"
     else

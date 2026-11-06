@@ -166,9 +166,38 @@ printf '%s\\n' "$n"
         assert completed.stdout == f"{expected}\n", (source, header, completed.stdout)
 
 
+def check_original_iftop_wire_contract() -> None:
+    """Never count a no-packet timed iftop run as a capture regression.
+
+    Original iftop -t -s 3 advances its timer only from packet callbacks.
+    BusyBox ping used AF_INET/SOCK_RAW, which NaSeed correctly rejected;
+    no real traffic was ever produced in the previous three-ISA witness.
+    The new guest fixture must emit real UDP packets via a supported
+    transport for the whole time window, and be checked independently from
+    the unmodified original Alpine iftop's actual captured-IP output.
+    """
+    guest = GUEST.read_text()
+    case = guest.split("bounded-loopback-traffic:usr/sbin/iftop)", 1)[1].split(
+        "\n            ;;", 1)[0]
+    assert "ping -c" not in case
+    assert "/root/m205-fixtures/udp-traffic" in case
+    assert "M205_REAL_UDP_SENT=40 dst=10.0.2.3:53" in case
+    assert 'test "$traffic_rc" -eq 0' in case
+    assert 'test "$capture_rc" -eq 0' in case
+    assert "grep -Fq '10.0.2.'" in case
+    fixture = (ROOT / "tests/m205-udp-traffic.c").read_text()
+    assert "SOCK_DGRAM" in fixture and "sendto(" in fixture
+    assert "SOCK_RAW" not in fixture.split("int main(void)", 1)[1]
+    assert "PACKET_COUNT = 40" in fixture
+    stage = (ROOT / "scripts/probe-m197-alpine-software-cohort.sh").read_text()
+    assert 'tests/m205-udp-traffic.c -o "$fixture_udp"' in stage
+    assert '"$overlay/root/m205-fixtures/udp-traffic"' in stage
+
+
 def main() -> None:
     check_guest_manifest_isolation()
     check_original_iproute2_lnstat_contract()
+    check_original_iftop_wire_contract()
     cases = manifest_cases(CANDIDATES)
     # The signed-host census, guest installer and strict report must point to
     # EXACTLY the same twenty original ELF paths and sixteen package owners.

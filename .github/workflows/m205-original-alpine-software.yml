@@ -21,6 +21,8 @@ on:
   # userland BPF fallback and real iftop wire capture in both QEMU boots.
   # Recheck upstream iftop -s 3 packet-triggered timer with a genuine ICMP
   # stream extending beyond its deadline; retain strict first/reopen gates.
+  # Recheck genuine UDP wire stimulus from the guest (40 DNS datagrams) so
+  # iftop observes traffic without relying on unsupported BusyBox RAW ping.
   push:
     branches: [naseed-app-batch2]
     paths:
