@@ -116,6 +116,7 @@ if [ "$profile" = m205 ]; then
     index_count=$(find "$cache" -maxdepth 1 -type f -name 'APKINDEX*' | wc -l)
     if [ "$canonical_count" -lt 16 ] || [ "$index_count" -lt 2 ]; then
         if ! docker run --rm --volume "$root_canonical:/target" \
+            --volume "$root_canonical/var/cache/apk:/var/cache/apk" \
             --env APK_ARCH="$arch" --env APK_PACKAGES="$package_list" \
             alpine:3.23 sh -ec '
                 cp -a /target/etc/apk/keys/. /etc/apk/keys/
@@ -133,18 +134,19 @@ if [ "$profile" = m205 ]; then
                 # NOT valid cache entries for --no-network add. apk cache
                 # download writes the signed metadata-hash-suffixed names
                 # which the native guest solver recognizes as cached packages.
-                # Like `apk update` above, address the MOUNTED cache
-                # directly from this container. `--root /target` silently
-                # selected the Docker-local cache during `cache download`:
-                # all 76 downloads succeeded but NONE reached /target.
-                apk --arch "$APK_ARCH" \
-                    --cache-dir /target/var/cache/apk --keys-dir /etc/apk/keys \
+                # Use the TARGET ISA database and signing keys, but bind
+                # the process-local cache path to the guest ext4 source.
+                # Without this second bind apk-tools 3 downloaded into the
+                # ephemeral Docker cache; without --root the x86 Docker DB
+                # could select host-ISA packages in RV64/ARM64 builds.
+                apk --arch "$APK_ARCH" --root /target \
+                    --cache-dir /var/cache/apk --keys-dir /etc/apk/keys \
                     -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main \
                     -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
                     cache download --available $APK_PACKAGES
                 ls -la /target/var/cache/apk | head -n 15
             ' > "$work/apk-cache.log" 2>&1; then
-            echo '[M205 CACHE FAIL] explicit signed index/archive fetch' >&2
+            echo '[M205 CACHE FAIL] canonical signed index/archive cache download' >&2
             tail -80 "$work/apk-cache.log" >&2
             exit 1
         fi
@@ -153,10 +155,9 @@ if [ "$profile" = m205 ]; then
         echo '[M205 CACHE FAIL] missing real signed package cache directory' >&2
         exit 1
     }
-    # All native official APK archives live in this directory. apk-tools 3
-    # may retain only one persistent index in this host cross-root; the
-    # authoritative question is whether a FRESH same-ISA apk solver can
-    # resolve the entire cohort offline, not an arbitrary index-file count.
+    # Require the exact two official repository indexes and canonical hashed
+    # package cache files; the independent install below also verifies their
+    # actual transitive dependency closure, beyond a file-count check.
     archive_count=$(find "$cache" -maxdepth 1 -type f -name '*.apk' -printf '%f\n' |
         grep -Ec '\.[0-9a-f]{8}\.apk$' || :)
     index_count=$(find "$cache" -maxdepth 1 -type f -name 'APKINDEX*' | wc -l)
@@ -185,16 +186,21 @@ if [ "$profile" = m205 ]; then
     # The inventory root has ALREADY installed all packages; `apk add` there
     # would be a misleading no-op. Use an independent EMPTY target root and
     # install the real signed archives without network or target-ISA scripts.
-    # Alpine apk-tools resolves --cache-dir against --root; mount the same
-    # immutable cache at both roots so the verifier also works with apk
-    # versions which resolve it against the container's process root.
+    # Alpine apk-tools resolves --cache-dir differently across root modes.
+    # Copy the signed cache to both potential lookup paths in this separate
+    # ephemeral verifier; the original source is mounted read-only. apk
+    # requires a writable LOCAL cache
+    # even for --no-network transactions, so clone it into this disposable
+    # Docker verifier, never modify the signed source or guest staging.
     if ! docker run --rm \
         --volume "$root_canonical:/target:ro" \
-        --volume "$root_canonical/var/cache/apk:/verify/var/cache/apk:ro" \
-        --volume "$root_canonical/var/cache/apk:/var/cache/apk:ro" \
+        --volume "$root_canonical/var/cache/apk:/original-cache:ro" \
         --env APK_ARCH="$arch" --env APK_PACKAGES="$package_list" \
         alpine:3.23 sh -ec '
-            mkdir -p /verify/lib/apk/db /verify/etc/apk/keys
+            mkdir -p /verify/lib/apk/db /verify/etc/apk/keys \
+                /verify/var/cache/apk /var/cache/apk
+            cp -a /original-cache/. /verify/var/cache/apk/
+            cp -a /original-cache/. /var/cache/apk/
             # A simulated transaction intentionally performs no --initdb
             # writes. Give this pristine verification root a genuine empty
             # installed/world database so the solver reaches repo metadata.

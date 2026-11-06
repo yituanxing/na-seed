@@ -5,8 +5,8 @@ on:
   # probes do NOT restart three 75-minute public WAN boots automatically.
   # Recheck genuine signed APK cache transactions, real PTY input and
   # native INET_DIAG TCP listeners in three independent QEMU guests.
-  # Cache official APKs via Docker-mounted output paths (apk cache download),
-  # prove fresh offline installation, then exercise real PTY and 20 native
+  # Bind target-root and container cache views to the SAME original APK bytes;
+  # prove fresh offline installation in writable scratch, then run 20 native
   # original Alpine ELFs across independent first and reopen QEMU boots.
   push:
     branches: [naseed-app-batch2]
