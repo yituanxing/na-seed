@@ -175,7 +175,7 @@ static void finish(struct port_socket *s) {
             s->rx_retry_at=after_retry();
         } else if(result.status) {
             s->rx_error=result.status;
-        } else if(result.length || s->type==NAS_LWIP_BRIDGE_UDP) {
+        } else if(result.length || s->type!=NAS_LWIP_BRIDGE_TCP) {
             s->rx_valid=true;
             s->rx_truncated=result.truncated;
             s->rx_source=result.peer;
@@ -250,7 +250,7 @@ static void submit_tx(struct port_socket *s) {
  * and optional pktinfo. Dequeue only when the previous worker SEND is fully
  * finished; no subsequent packet can overtake a packet accepted earlier. */
 static void udp_activate_next(struct port_socket *s) {
-    if(s->type!=NAS_LWIP_BRIDGE_UDP || s->command!=PORT_IDLE ||
+    if(s->type==NAS_LWIP_BRIDGE_TCP || s->command!=PORT_IDLE ||
        s->tx_length || !s->udp_count)return;
     const struct nas_lwip_bridge_datagram *next=&s->udp_pending[s->udp_head];
     memcpy(s->tx,next->bytes,next->length);
@@ -392,7 +392,7 @@ const struct nas_file_ops *nas_lwip_socket_port_ops(void);
 static void port_bridge_complete(struct nas_lwip_bridge_id id) {
     struct port_socket *s=socket_at(id.slot);
     if(!s || s->id.generation!=id.generation ||
-       s->type!=NAS_LWIP_BRIDGE_UDP)return;
+       s->type==NAS_LWIP_BRIDGE_TCP)return;
     (void)check(s);
 }
 
@@ -546,7 +546,9 @@ int64_t nas_lwip_socket_sendto_pktinfo(
     const struct nas_lwip_bridge_pktinfo *pktinfo) {
     struct port_socket *s=socket_at(slot);
     if(!s)return -EBADF;
-    if(s->type!=NAS_LWIP_BRIDGE_UDP)return -EOPNOTSUPP;
+    if(s->type==NAS_LWIP_BRIDGE_TCP)return -EOPNOTSUPP;
+    if(s->type==NAS_LWIP_BRIDGE_RAW_ICMP && pktinfo)
+        return -EOPNOTSUPP; /* no fake RAW IP_PKTINFO source override */
     if(length>NAS_LWIP_BRIDGE_DATA)return -EMSGSIZE;
     /* A zero-length UDP datagram needs an explicit pending-data marker;
      * leave it unsupported until that state is represented faithfully. */
@@ -556,7 +558,8 @@ int64_t nas_lwip_socket_sendto_pktinfo(
     if(rc)return rc;
     if(s->tx_error){rc=s->tx_error;s->tx_error=0;return rc;}
     if(s->queued_control)return -EAGAIN;
-    if(!destination.port && !s->connected)
+    if(!(s->type==NAS_LWIP_BRIDGE_RAW_ICMP ? destination.ipv4 :
+         destination.port) && !s->connected)
         return s->command==PORT_CONTROL &&
                s->control_request.op==NAS_LWIP_BRIDGE_CONNECT ?
                -EAGAIN:-EDESTADDRREQ;
@@ -600,7 +603,7 @@ int64_t nas_lwip_socket_recvfrom(unsigned slot,uint8_t *bytes,
                                  struct nas_lwip_bridge_pktinfo *pktinfo) {
     struct port_socket *s=socket_at(slot);
     if(!s)return -EBADF;
-    if(s->type!=NAS_LWIP_BRIDGE_UDP)return -EOPNOTSUPP;
+    if(s->type==NAS_LWIP_BRIDGE_TCP)return -EOPNOTSUPP;
     int rc=check(s);
     if(rc)return rc;
     if(s->rx_error){rc=s->rx_error;s->rx_error=0;return rc;}
@@ -652,7 +655,7 @@ static uint64_t read_bytes(unsigned slot,uint8_t *dst,uint64_t count) {
     if(count && !dst)return (uint64_t)-EINVAL;
     if(count)memcpy(dst,s->rx+s->rx_position,(size_t)count);
     s->rx_position+=(uint16_t)count;
-    if(s->type==NAS_LWIP_BRIDGE_UDP || s->rx_position==s->rx_length)
+    if(s->type!=NAS_LWIP_BRIDGE_TCP || s->rx_position==s->rx_length)
         s->rx_valid=false;
     return count;
 }
@@ -677,7 +680,7 @@ static uint64_t write_plan(unsigned slot,uint64_t requested) {
     struct port_socket *s=socket_at(slot);
     if(!s)return (uint64_t)-EBADF;
     if(!requested)return 0;
-    if(s->type==NAS_LWIP_BRIDGE_UDP && requested>NAS_LWIP_BRIDGE_DATA)
+    if(s->type!=NAS_LWIP_BRIDGE_TCP && requested>NAS_LWIP_BRIDGE_DATA)
         return (uint64_t)-EMSGSIZE; /* one write must remain one datagram */
     int rc=check(s);
     if(rc)return (uint64_t)(int64_t)rc;
@@ -686,7 +689,7 @@ static uint64_t write_plan(unsigned slot,uint64_t requested) {
         rc=s->tx_error;s->tx_error=0;
         return (uint64_t)(int64_t)rc;
     }
-    if(s->type==NAS_LWIP_BRIDGE_UDP) {
+    if(s->type!=NAS_LWIP_BRIDGE_TCP) {
         if(!s->connected)return (uint64_t)-ENOTCONN;
         if(s->queued_control || s->udp_count==NAS_LWIP_UDP_PENDING)
             return (uint64_t)-EAGAIN;
@@ -707,7 +710,7 @@ static uint64_t write_bytes(unsigned slot,const uint8_t *src,uint64_t count) {
     if(!count)return 0;
     if(send_shutdown_requested(s))return (uint64_t)-EPIPE;
     if(!src || count>NAS_LWIP_BRIDGE_DATA)return (uint64_t)-EINVAL;
-    if(s->type==NAS_LWIP_BRIDGE_UDP)
+    if(s->type!=NAS_LWIP_BRIDGE_TCP)
         return (uint64_t)nas_lwip_socket_sendto(slot,src,(uint16_t)count,
                            (struct nas_lwip_bridge_address){0});
     if(s->command!=PORT_IDLE || s->tx_length)return (uint64_t)-EAGAIN;
@@ -765,7 +768,7 @@ static uint16_t poll_description(unsigned slot,uint16_t events) {
     }
     if(s->rx_eof)ready|=PORT_POLLHUP;
     if(s->tx_error || s->rx_error)ready|=PORT_POLLERR;
-    if(s->type==NAS_LWIP_BRIDGE_UDP) {
+    if(s->type!=NAS_LWIP_BRIDGE_TCP) {
         /* Linux POLLOUT reports free SEND buffer capacity, not an idle
          * network worker. The queued datagrams retain their own bounds. */
         if(s->command!=PORT_CONTROL && s->command!=PORT_CONTROL_DONE &&
@@ -805,7 +808,7 @@ static void release(unsigned slot) {
        s->control_result.accepted.generation)
         (void)nas_lwip_bridge_release(s->control_result.accepted);
     int rc;
-    if(s->type==NAS_LWIP_BRIDGE_UDP) {
+    if(s->type!=NAS_LWIP_BRIDGE_TCP) {
         /* The worker already copied PORT_TX, but an unsubmitted active
          * datagram and every FIFO item still belong to this File. Transfer
          * them in order before closing the old native bridge generation. */

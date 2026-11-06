@@ -105,6 +105,15 @@ def guest_contract(entries: list[tuple[str, str, str, str]]) -> None:
         case = script.split(label, 1)[1].split("\n        ;;", 1)[0]
         assert "/" + path in case, f"semantic probe never invokes original ELF: {label}"
         assert "--help" not in case, f"help banner is not semantic acceptance: {label}"
+    # Original util-linux partx rejects --show with --raw. An earlier
+    # mistaken combination failed on Linux itself, not because of NaSeed.
+    # The paired sfdisk/partx probe must create and READ the same isolated
+    # MBR image and check actual start/length instead of --help or a banner.
+    assert "--show --raw" not in script
+    assert "/usr/sbin/partx --show -o START,SECTORS" in script
+    assert "/sbin/sfdisk --wipe never" in script
+    assert "/sbin/sfdisk --dump" in script
+    assert "2048[[:space:]]+4096" in script
 
     reopen = "\n".join(records(REOPEN))
     assert "NAS_M206_COMPAT_COHORT=1" in reopen
@@ -208,9 +217,13 @@ def physical_disk_oracle_contract(entries: list[tuple[str, str, str, str]]) -> N
             for idx, (_, path, _, _) in enumerate(entries):
                 blobs["/" + path] = sample + bytes([idx])
 
+            # Use the real M191 guest-root-confined symlink resolver in this
+            # test, not a fake Path join, so /bin/ping BusyBox alias handling
+            # and malicious absolute/parent-traversal links are exercised.
+            real_m191 = runpy.run_path(str(ROOT / "scripts/m191-alpine-root-disk.py"))
             m191 = SimpleNamespace(
                 ARCH_MACHINE={"amd64": 62, "riscv64": 243, "arm64": 183},
-                guest_path=lambda root, path: root / path.lstrip("/"),
+                guest_path=real_m191["guest_path"],
                 extract_partition=lambda src, dst: dst.write_bytes(b"dummy ext4"),
                 debugfs_cat=lambda part, path: blobs.get(path, b""),
             )
@@ -277,15 +290,71 @@ def physical_disk_oracle_contract(entries: list[tuple[str, str, str, str]]) -> N
                 raise AssertionError("disk oracle accepted duplicate program SHA")
             blobs[other] = saved
 
-            preseed = signed / entries[0][1]
-            preseed.parent.mkdir(parents=True)
-            preseed.write_bytes(b"forbidden host-preseed")
+            ping = signed / "bin/ping"
+            busybox = signed / "bin/busybox"
+            assert "bin/ping" in {entry[1] for entry in entries}
+            busybox.parent.mkdir(parents=True, exist_ok=True)
+            busybox.write_bytes(sample + b"signed-original-Alpine-BusyBox-simulated")
+            ping.symlink_to("busybox")
+            # This exact base BusyBox applet is NOT a preseeded independent
+            # iputils-ping ELF; original signed iputils will replace it.
+            with redirect_stdout(io.StringIO()):
+                verify("amd64", signed, disk)
+
+            # Even an exact pathname is insufficient if the supposed
+            # BusyBox target is not a native ELF for the guest ISA.
+            correct_busybox = busybox.read_bytes()
+            wrong_busybox = bytearray(correct_busybox)
+            struct.pack_into("<H", wrong_busybox, 18, 243)
+            busybox.write_bytes(wrong_busybox)
+            try:
+                verify("amd64", signed, disk)
+            except ValueError as exc:
+                assert "candidate preinstalled" in str(exc)
+            else:
+                raise AssertionError("disk oracle accepted wrong-ISA BusyBox alias")
+            busybox.write_bytes(correct_busybox)
+
+            ping.unlink()
+            rogue = signed / "bin/rogue"
+            rogue.write_bytes(b"forbidden custom baseline executable")
+            ping.symlink_to("rogue")
+            try:
+                verify("amd64", signed, disk)
+            except ValueError as exc:
+                assert "candidate preinstalled" in str(exc)
+            else:
+                raise AssertionError("disk oracle accepted malicious ping symlink")
+
+            ping.unlink()
+            ping.symlink_to("../../../outside-signed-root")
+            try:
+                verify("amd64", signed, disk)
+            except ValueError as exc:
+                assert "symlink escapes root" in str(exc)
+            else:
+                raise AssertionError("disk oracle accepted guest symlink escape")
+
+            ping.unlink()
+            ping.write_bytes(b"forbidden host-preseed")
             try:
                 verify("amd64", signed, disk)
             except ValueError as exc:
                 assert "candidate preinstalled" in str(exc)
             else:
                 raise AssertionError("disk oracle accepted a preseeded software binary")
+
+            ping.unlink()
+            path = signed / "sbin/ip"
+            assert "sbin/ip" in {entry[1] for entry in entries}
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.symlink_to("../bin/busybox")
+            try:
+                verify("amd64", signed, disk)
+            except ValueError as exc:
+                assert "candidate preinstalled" in str(exc)
+            else:
+                raise AssertionError("disk oracle accepted an arbitrary BusyBox applet")
     finally:
         verify.__globals__["load"] = original_load
 

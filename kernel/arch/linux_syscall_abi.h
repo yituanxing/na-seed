@@ -36,6 +36,8 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_faccessat2: return NAS_SC_faccessat2;
     case __NR_brk: return NAS_SC_brk;
     case __NR_chdir: return NAS_SC_chdir;
+    case __NR_capget: return NAS_SC_capget;
+    case __NR_capset: return NAS_SC_capset;
     case __NR_chmod: return NAS_SC_chmod;
     case __NR_chown: return NAS_SC_chown;
     case __NR_fchmod: return NAS_SC_fchmod;
@@ -316,6 +318,8 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 23U: return NAS_SC_dup;
     case 24U: return NAS_SC_dup3;
     case 49U: return NAS_SC_chdir;
+    case 90U: return NAS_SC_capget; /* Linux asm-generic capget */
+    case 91U: return NAS_SC_capset; /* Linux asm-generic capset */
     case 29U: return NAS_SC_ioctl;
     case 30U: return NAS_SC_ioprio_set; /* asm-generic ioprio_set */
     case 31U: return NAS_SC_ioprio_get; /* asm-generic ioprio_get */

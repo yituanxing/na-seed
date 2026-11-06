@@ -7,6 +7,9 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
   scripts/test-vfs-provider.c $NAS_VFS_HOST_SOURCES \
   -o build/vfs-provider/test
 build/vfs-provider/test
+# Real registered disks and partitions must be reflected in both devfs and
+# the Linux sysfs block-class topology, never in image-specific mock files.
+sh scripts/check-sysfs-block.sh
 # memfd_create validates Linux arguments then asks for a pathless mounted
 # tmpfs inode. Provider tests above prove last-pin orphan reclamation and
 # removable mount EBUSY without ever creating a temporary namespace name.

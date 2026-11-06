@@ -66,10 +66,18 @@ case "$case_id:$elf" in
             -p 18086 -1 > "$target/server" 2>&1 &
         server_pid=$!
         /bin/busybox sleep 1
+        client_rc=0
         /bin/busybox timeout 12 /usr/bin/iperf -c 127.0.0.1 \
-            -p 18086 -t 2 > "$target/out" 2>&1 &&
+            -p 18086 -t 2 > "$target/out" 2>&1 || client_rc=$?
+        if test "$client_rc" -eq 0 &&
             /bin/busybox grep -Eq '[1-9][0-9]*([.][0-9]+)?[[:space:]]+[KMG]?bits/sec' "$target/out" &&
+            /bin/busybox grep -Fq '127.0.0.1' "$target/out"; then
             probe_rc=0
+        else
+            printf 'M206 iperf: real client exit=%s; original server diagnostics follow\n' \
+                "$client_rc" >&2
+            failure_excerpt 'iperf server' "$target/server"
+        fi
         kill -TERM "$server_pid" 2>/dev/null || :
         wait "$server_pid" 2>/dev/null || :
         ;;
@@ -106,7 +114,10 @@ case "$case_id:$elf" in
                         probe_rc=0
                     ;;
                 usr/sbin/partx)
-                    /usr/sbin/partx --show --raw -o START,SECTORS \
+                    # Upstream util-linux treats --show and --raw as mutually
+                    # exclusive output modes. Their conjunction previously
+                    # gave a guaranteed oracle FAIL before reading any MBR.
+                    /usr/sbin/partx --show -o START,SECTORS \
                         "$target/mbr.img" > "$target/out" 2>&1 &&
                         /bin/busybox grep -Eq '2048[[:space:]]+4096' "$target/out" &&
                         probe_rc=0

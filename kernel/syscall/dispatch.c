@@ -21,6 +21,7 @@
 #include "../fs/mode.h"
 #include "../task/process.h"
 #include "../task/credentials.h"
+#include "../task/capability.h"
 #include "../task/ptrace.h"
 #include "../task/wait_pid.h"
 #include "../task/session.h"
@@ -78,6 +79,44 @@ static uint64_t nas_sys_getresid(uint64_t real,uint64_t effective,
        !nas_user_write_bytes(saved,(const uint8_t *)&root,sizeof(root)))
         return (uint64_t)-EFAULT;
     return 0;
+}
+
+/* Raw Linux capget/capset ABI. Linux first probes ONLY the 32-bit version;
+ * unknown versions publish v3 back to the caller, including capget(NULL)
+ * version probing. Do not read the pid or data until the version is valid.
+ * Capability masks reflect and change Task credentials, and currently
+ * represent only the enforced CAP_NET_RAW privilege. */
+static uint64_t nas_sys_capabilities(bool set,uint64_t hdrp,uint64_t datap) {
+    uint32_t version;
+    if(!nas_user_read_bytes(hdrp,(uint8_t *)&version,sizeof(version)))
+        return (uint64_t)-EFAULT;
+    const unsigned words=nas_cap_version_words(version);
+    if(!words) {
+        uint64_t result=nas_cap_negotiate_version(&version,set,!datap);
+        if(!nas_user_write_bytes(hdrp,(const uint8_t *)&version,sizeof(version)))
+            return (uint64_t)-EFAULT;
+        return result;
+    }
+    if(!set && !datap)return 0;
+
+    int32_t pid;
+    if(!nas_user_read_bytes(hdrp+sizeof(version),(uint8_t *)&pid,sizeof(pid)))
+        return (uint64_t)-EFAULT;
+    uint64_t valid_target=nas_cap_validate_target(set,pid,(uint32_t)TASK.pid);
+    if((int64_t)valid_target<0)return valid_target;
+    if(set) {
+        struct nas_cap_user_data requested[2]={{0},{0}};
+        if(!nas_user_read_bytes(datap,(uint8_t *)requested,
+                                words*sizeof(requested[0])))
+            return (uint64_t)-EFAULT;
+        return nas_cap_set(&TASK.credentials,words,requested);
+    }
+    struct nas_task *target=pid ? nas_task_by_pid((uint32_t)pid) : &TASK;
+    if(!target || target->state==NAS_TASK_ZOMBIE)return (uint64_t)-ESRCH;
+    struct nas_cap_user_data observed[2];
+    nas_cap_get(&target->credentials,observed);
+    return nas_user_write_bytes(datap,(const uint8_t *)observed,
+                                words*sizeof(observed[0])) ? 0 : (uint64_t)-EFAULT;
 }
 
 /* Linux sched_attr v0 (48 bytes) plus utilization clamps (56 bytes).
@@ -542,6 +581,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_set_tid_address) { thread_clear_tid = args[1]; return TASK.pid; }
     if (nr == NAS_SC_getpid) return TASK.tgid;
     if (nr == NAS_SC_gettid) return TASK.pid;
+    if (nr == NAS_SC_capget) return nas_sys_capabilities(false,args[1],args[2]);
+    if (nr == NAS_SC_capset) return nas_sys_capabilities(true,args[1],args[2]);
     if(nr==NAS_SC_shmget)return nas_sysvipc_call(NAS_SYSVIPC_SHM,0,args[1],args[2],args[3],0);
     if(nr==NAS_SC_shmctl)return nas_sysvipc_call(NAS_SYSVIPC_SHM,1,args[1],args[2],args[3],0);
     if(nr==NAS_SC_shmat || nr==NAS_SC_shmdt)return (uint64_t)-ENOSYS;

@@ -1,5 +1,6 @@
 #ifndef NASEED_TASK_CREDENTIALS_H
 #define NASEED_TASK_CREDENTIALS_H
+#include <stdbool.h>
 #include <stdint.h>
 #include "../errno.h"
 
@@ -12,6 +13,11 @@
 struct nas_credentials {
     uint32_t groups[NAS_CREDENTIAL_GROUP_LIMIT];
     uint32_t group_count;
+    /* Linux capability state is per task. Legacy zero-initialized root tasks
+     * have the single capability NaSeed actually enforces, CAP_NET_RAW.
+     * cap_initialized distinguishes that default from an explicit drop. */
+    uint64_t cap_effective,cap_permitted;
+    bool cap_initialized;
 };
 
 static inline uint64_t nas_credentials_set_id(uint64_t requested) {

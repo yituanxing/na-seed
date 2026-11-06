@@ -210,6 +210,21 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
             nas_print(" rdx=");nas_hex(frame[3]);
             nas_print(" rdi=");nas_hex(frame[1]);
             nas_print(" rbx=");nas_hex(frame[9]);
+            /* Compare the actual CPU TLS register with the Task's saved
+             * owner when diagnosing threaded libc faults. An invalid FS
+             * base can make an ordinary %fs-relative access look like a
+             * null-pointer read (for example, CR2=0x10). This is strictly
+             * diagnostic: no register or user mapping is repaired here. */
+            nas_print(" fs_live=");nas_hex(rdmsr(UINT32_C(0xc0000100)));
+            nas_print(" fs_task=");nas_hex(nas_task_tls_base(tracee));
+            /* Usercopy resolves through the MMU's checked kernel alias,
+             * never by dereferencing a raw user instruction pointer.
+             * Bound both the number of fault reports and bytes per report. */
+            uint8_t opcode[8];
+            if(nas_user_read_bytes(user_rip,opcode,sizeof(opcode))) {
+                nas_print(" opcode=");
+                for(unsigned b=0;b<sizeof(opcode);b++)nas_hex(opcode[b]);
+            } else nas_print(" opcode=unavailable");
             nas_print("\n");
             extern void nas_x86_debug_recent_syscalls(uint64_t);
             nas_x86_debug_recent_syscalls(tracee->pid);

@@ -6,6 +6,7 @@
 #include "devfs.h"
 #include "../errno.h"
 #include "../mm/frame.h"
+#include "../block/device.h"
 #include "../lib/string.h"
 #include <stddef.h>
 
@@ -628,6 +629,7 @@ enum {
     SYS_POSSIBLE, SYS_PRESENT, SYS_ONLINE, SYS_OFFLINE, SYS_KERNEL_MAX,
     SYS_CORE_ID, SYS_PACKAGE_ID, SYS_THREAD_SIBLINGS, SYS_CORE_SIBLINGS,
     SYS_MEMORY, SYS_MEMORY_BLOCK_SIZE,
+    SYS_DEV, SYS_DEV_BLOCK, SYS_BLOCK, SYS_VIRTUAL, SYS_VIRTUAL_BLOCK,
     SYS_NODE_COUNT
 };
 #define SYS_INO_BASE 900000ULL
@@ -662,8 +664,152 @@ static const struct sys_entry sys_entries[SYS_NODE_COUNT]={
     [SYS_THREAD_SIBLINGS]={SYS_TOPOLOGY,"thread_siblings_list","0\n",false},
     [SYS_CORE_SIBLINGS]={SYS_TOPOLOGY,"core_siblings_list","0\n",false},
     [SYS_MEMORY]={SYS_SYSTEM,"memory",0,true},
-    [SYS_MEMORY_BLOCK_SIZE]={SYS_MEMORY,"block_size_bytes","8000000\n",false}
+    [SYS_MEMORY_BLOCK_SIZE]={SYS_MEMORY,"block_size_bytes","8000000\n",false},
+    [SYS_DEV]={SYS_ROOT,"dev",0,true},
+    [SYS_DEV_BLOCK]={SYS_DEV,"block",0,true},
+    [SYS_BLOCK]={SYS_ROOT,"block",0,true},
+    [SYS_VIRTUAL]={SYS_DEVICES,"virtual",0,true},
+    [SYS_VIRTUAL_BLOCK]={SYS_VIRTUAL,"block",0,true}
 };
+/* Dynamic sysfs block identities are incarnations issued by the real block
+ * class registry. No symlink, geometry or partition appears before its owner
+ * registers, and stale inodes cannot become another disk after slot reuse. */
+#define SYS_BLOCK_INO_BASE (UINT64_C(1)<<56)
+#define SYS_BLOCK_INO_STRIDE 32U
+enum {
+    SB_DIR, SB_DEV, SB_SIZE, SB_RO, SB_REMOVABLE, SB_UEVENT,
+    SB_QUEUE, SB_LOGICAL, SB_PHYSICAL, SB_PARTITION, SB_START,
+    SB_ROOT_LINK, SB_DEV_LINK
+};
+struct sys_block_attr {const char *name; unsigned kind,parent;};
+static const struct sys_block_attr sys_block_attrs[]={
+    {"dev",SB_DEV,SB_DIR},{"size",SB_SIZE,SB_DIR},
+    {"ro",SB_RO,SB_DIR},{"removable",SB_REMOVABLE,SB_DIR},
+    {"uevent",SB_UEVENT,SB_DIR},{"queue",SB_QUEUE,SB_DIR},
+    {"partition",SB_PARTITION,SB_DIR},{"start",SB_START,SB_DIR},
+    {"logical_block_size",SB_LOGICAL,SB_QUEUE},
+    {"physical_block_size",SB_PHYSICAL,SB_QUEUE}
+};
+static uint64_t sys_block_ino(const struct nas_block_device *dev,unsigned kind) {
+    return SYS_BLOCK_INO_BASE+dev->incarnation*SYS_BLOCK_INO_STRIDE+kind;
+}
+static const struct nas_block_device *sys_block_decode(
+    const struct nas_fs_node *node,unsigned *kind) {
+    if(!node || node->ino<SYS_BLOCK_INO_BASE)return NULL;
+    uint64_t delta=node->ino-SYS_BLOCK_INO_BASE;
+    uint64_t epoch=delta/SYS_BLOCK_INO_STRIDE;
+    unsigned type=(unsigned)(delta%SYS_BLOCK_INO_STRIDE);
+    if(type>SB_DEV_LINK)return NULL;
+    for(unsigned i=0;;i++) {
+        const struct nas_block_device *dev=nas_block_at(i);
+        if(!dev)return NULL;
+        if(dev->incarnation==epoch) {
+            if(kind)*kind=type;
+            return dev;
+        }
+    }
+}
+/* All text is built from registered device geometry, not from a boot image,
+ * lsblk-specific string or a second device inventory. */
+static int sys_append(char dst[256],unsigned *length,const char *str) {
+    size_t n=strlen(str);
+    if(n>255U-*length)return -ENAMETOOLONG;
+    memcpy(dst+*length,str,n);
+    *length+=(unsigned)n;
+    dst[*length]=0;
+    return 0;
+}
+static int sys_append_uint(char dst[256],unsigned *length,uint64_t number) {
+    char digits[20];unsigned n=0;
+    do {digits[n++]=(char)('0'+number%10);number/=10;} while(number);
+    if(n>255U-*length)return -ENAMETOOLONG;
+    while(n)dst[(*length)++]=digits[--n];
+    dst[*length]=0;
+    return 0;
+}
+static int sys_block_dev_name(const struct nas_block_device *dev,char out[256]) {
+    unsigned n=0;out[0]=0;
+    if(sys_append_uint(out,&n,dev->rdev>>8) || sys_append(out,&n,":") ||
+       sys_append_uint(out,&n,dev->rdev&255U))return -ENAMETOOLONG;
+    return 0;
+}
+static int sys_block_text(const struct nas_block_device *dev,unsigned kind,
+                          char out[256]) {
+    unsigned n=0;out[0]=0;
+    switch(kind) {
+    case SB_DEV:
+        if(sys_block_dev_name(dev,out))return -ENAMETOOLONG;
+        n=(unsigned)strlen(out);
+        return sys_append(out,&n,"\n");
+    case SB_SIZE:
+        if(sys_append_uint(out,&n,dev->sectors*(dev->sector_bytes/512U)))return -ENAMETOOLONG;
+        return sys_append(out,&n,"\n");
+    case SB_RO:case SB_REMOVABLE:
+        return sys_append(out,&n,kind==SB_RO && dev->read_only?"1\n":"0\n");
+    case SB_LOGICAL:case SB_PHYSICAL:
+        if(sys_append_uint(out,&n,dev->sector_bytes))return -ENAMETOOLONG;
+        return sys_append(out,&n,"\n");
+    case SB_PARTITION:
+        if(!dev->parent || !dev->partition_number)return -ENOENT;
+        if(sys_append_uint(out,&n,dev->partition_number))return -ENAMETOOLONG;
+        return sys_append(out,&n,"\n");
+    case SB_START:
+        if(!dev->parent)return -ENOENT;
+        if(sys_append_uint(out,&n,dev->start_lba*(dev->sector_bytes/512U)))return -ENAMETOOLONG;
+        return sys_append(out,&n,"\n");
+    case SB_UEVENT:
+        if(sys_append(out,&n,"MAJOR=") ||
+           sys_append_uint(out,&n,dev->rdev>>8) ||
+           sys_append(out,&n,"\nMINOR=") ||
+           sys_append_uint(out,&n,dev->rdev&255U) ||
+           sys_append(out,&n,"\nDEVNAME=") ||
+           sys_append(out,&n,dev->name) ||
+           sys_append(out,&n,dev->parent?"\nDEVTYPE=partition\n":"\nDEVTYPE=disk\n"))
+            return -ENAMETOOLONG;
+        return 0;
+    default:return -EINVAL;
+    }
+}
+static void sys_block_fill(const struct nas_block_device *dev,unsigned kind,
+                           struct nas_fs_node *out) {
+    bool dir=kind==SB_DIR || kind==SB_QUEUE;
+    bool symlink=kind==SB_ROOT_LINK || kind==SB_DEV_LINK;
+    char textbuf[256]={0};
+    int length=dir||symlink?0:sys_block_text(dev,kind,textbuf);
+    *out=(struct nas_fs_node){.ino=sys_block_ino(dev,kind),
+        .mode=dir?0040555U:symlink?0120777U:0100444U,
+        .size=!dir && !symlink && length>=0?(uint64_t)strlen(textbuf):0,
+        .nlink=dir?2:1,.is_dir=dir,.is_symlink=symlink};
+    if(dir||symlink)out->size=0;
+}
+static bool sys_block_attr_visible(const struct nas_block_device *dev,
+                                   unsigned kind) {
+    if(kind==SB_QUEUE)return !dev->parent;
+    if(kind==SB_PARTITION)return dev->parent && dev->partition_number;
+    if(kind==SB_START)return !!dev->parent;
+    return (kind!=SB_LOGICAL && kind!=SB_PHYSICAL) || !dev->parent;
+}
+/* Index once by registered class children, with shared logic for lookup and
+ * readdir; the result never derives from a hardcoded virtio device count. */
+static bool sys_block_child_at(const struct nas_block_device *dev,
+                               unsigned dir_kind,uint64_t index,
+                               const struct nas_block_device **child,
+                               unsigned *kind,const char **name) {
+    for(unsigned i=0;i<sizeof(sys_block_attrs)/sizeof(sys_block_attrs[0]);i++) {
+        const struct sys_block_attr *a=&sys_block_attrs[i];
+        if(a->parent!=dir_kind || !sys_block_attr_visible(dev,a->kind))continue;
+        if(index--)continue;
+        *child=dev;*kind=a->kind;*name=a->name;return true;
+    }
+    if(dir_kind==SB_DIR && !dev->parent)for(unsigned i=0;;i++) {
+        const struct nas_block_device *other=nas_block_at(i);
+        if(!other)break;
+        if(other->parent!=dev)continue;
+        if(index--)continue;
+        *child=other;*kind=SB_DIR;*name=other->name;return true;
+    }
+    return false;
+}
 static uint64_t sys_memory_ino(uint64_t block,unsigned kind) {
     return SYS_MEMORY_INO_BASE+block*SYS_MEMORY_INO_STRIDE+kind;
 }
@@ -731,6 +877,20 @@ static int sys_child(const struct nas_fs_node *parent,const char *name,
     if(!name || !*name || !out || strchr(name,'/'))return -EINVAL;
     unsigned kind;
     if(id<0) {
+        const struct nas_block_device *dev=sys_block_decode(parent,&kind);
+        if(dev) {
+            if(kind!=SB_DIR && kind!=SB_QUEUE)return -ENOTDIR;
+            for(uint64_t i=0;;i++) {
+                const struct nas_block_device *child;
+                unsigned childkind;const char *childname;
+                if(!sys_block_child_at(dev,kind,i,&child,&childkind,&childname))break;
+                if(!strcmp(childname,name)) {
+                    sys_block_fill(child,childkind,out);
+                    return 0;
+                }
+            }
+            return -ENOENT;
+        }
         if(!sys_memory_decode(parent,0,&kind) || kind!=SYS_MEMORY_DIR)
             return -ENOTDIR;
         if(!strcmp(name,"state"))kind=SYS_MEMORY_STATE;
@@ -754,6 +914,22 @@ static int sys_child(const struct nas_fs_node *parent,const char *name,
             return 0;
         }
     }
+    if(id==SYS_VIRTUAL_BLOCK || id==SYS_BLOCK || id==SYS_DEV_BLOCK) {
+        for(unsigned i=0;;i++) {
+            const struct nas_block_device *dev=nas_block_at(i);
+            if(!dev)break;
+            if(id==SYS_VIRTUAL_BLOCK || id==SYS_BLOCK) {
+                if(dev->parent || strcmp(name,dev->name))continue;
+                sys_block_fill(dev,id==SYS_BLOCK?SB_ROOT_LINK:SB_DIR,out);
+                return 0;
+            }
+            char devname[256];
+            if(!sys_block_dev_name(dev,devname) && !strcmp(name,devname)) {
+                sys_block_fill(dev,SB_DEV_LINK,out);
+                return 0;
+            }
+        }
+    }
     return -ENOENT;
 }
 static int sys_read_dir(const struct nas_fs_node *node,uint64_t cursor,
@@ -762,6 +938,34 @@ static int sys_read_dir(const struct nas_fs_node *node,uint64_t cursor,
     if(!node || !node->is_dir || !out || !maximum)return -EINVAL;
     uint64_t block;unsigned kind;
     if(id<0) {
+        const struct nas_block_device *dev=sys_block_decode(node,&kind);
+        if(dev) {
+            if(kind!=SB_DIR && kind!=SB_QUEUE)return -ENOTDIR;
+            unsigned count=0;
+            for(;count<maximum;count++,cursor++) {
+                const char *name=".";
+                const struct nas_block_device *child=dev;
+                unsigned childkind=kind;
+                uint64_t ino=sys_block_ino(dev,kind);
+                unsigned dtype=4;
+                if(cursor==1) {
+                    name="..";
+                    if(kind==SB_QUEUE)childkind=SB_DIR;
+                    else if(dev->parent)child=dev->parent;
+                    else ino=SYS_INO_BASE+SYS_VIRTUAL_BLOCK;
+                    if(ino!=SYS_INO_BASE+SYS_VIRTUAL_BLOCK)
+                        ino=sys_block_ino(child,childkind);
+                } else if(cursor>=2) {
+                    if(!sys_block_child_at(dev,kind,cursor-2,&child,&childkind,&name))
+                        break;
+                    ino=sys_block_ino(child,childkind);
+                    dtype=childkind==SB_QUEUE || childkind==SB_DIR?4:8;
+                }
+                int rc=fill_dirent(&out[count],name,ino,dtype);
+                if(rc)return rc;
+            }
+            return (int)count;
+        }
         if(!sys_memory_decode(node,&block,&kind) || kind!=SYS_MEMORY_DIR)
             return -EINVAL;
         unsigned count=0;
@@ -787,7 +991,7 @@ static int sys_read_dir(const struct nas_fs_node *node,uint64_t cursor,
     for(;count<maximum;count++,cursor++) {
         unsigned child=(unsigned)id;
         const char *name=".";
-        char generated_name[32];
+        char generated_name[256];
         if(cursor==1) {
             name="..";
             child=sys_entries[id].parent;
@@ -810,6 +1014,29 @@ static int sys_read_dir(const struct nas_fs_node *node,uint64_t cursor,
                 if(rc)return rc;
                 continue;
             }
+            if(!found && (id==SYS_VIRTUAL_BLOCK || id==SYS_BLOCK ||
+                          id==SYS_DEV_BLOCK)) {
+                for(unsigned i=0;;i++) {
+                    const struct nas_block_device *dev=nas_block_at(i);
+                    if(!dev)break;
+                    if(id!=SYS_DEV_BLOCK && dev->parent)continue;
+                    if(skip--)continue;
+                    if(id==SYS_DEV_BLOCK) {
+                        if(sys_block_dev_name(dev,generated_name))return -ENAMETOOLONG;
+                        name=generated_name;
+                    } else name=dev->name;
+                    unsigned dtype=id==SYS_VIRTUAL_BLOCK?4:10;
+                    unsigned nodekind=id==SYS_VIRTUAL_BLOCK?SB_DIR:
+                        id==SYS_BLOCK?SB_ROOT_LINK:SB_DEV_LINK;
+                    int rc=fill_dirent(&out[count],name,
+                        sys_block_ino(dev,nodekind),dtype);
+                    if(rc)return rc;
+                    found=true;
+                    break;
+                }
+                if(!found)break;
+                continue;
+            }
             if(!found)break;
         }
         int rc=fill_dirent(&out[count],name,SYS_INO_BASE+child,
@@ -824,6 +1051,20 @@ static int64_t sys_read_inode(const struct nas_fs_node *node,uint64_t offset,
     if(!dst && length)return -EINVAL;
     const char *content;
     if(id<0) {
+        unsigned blockkind;
+        const struct nas_block_device *dev=sys_block_decode(node,&blockkind);
+        if(dev) {
+            if(blockkind==SB_DIR || blockkind==SB_QUEUE)return -EISDIR;
+            if(blockkind==SB_ROOT_LINK || blockkind==SB_DEV_LINK)return -EINVAL;
+            char blocktext[256];
+            int rc=sys_block_text(dev,blockkind,blocktext);
+            if(rc)return rc;
+            uint64_t size=strlen(blocktext);
+            if(offset>=size)return 0;
+            if(length>size-offset)length=size-offset;
+            memcpy(dst,blocktext+offset,(size_t)length);
+            return (int64_t)length;
+        }
         unsigned kind;
         if(!sys_memory_decode(node,0,&kind))return -EINVAL;
         if(kind==SYS_MEMORY_DIR)return -EISDIR;
@@ -839,10 +1080,26 @@ static int64_t sys_read_inode(const struct nas_fs_node *node,uint64_t offset,
     memcpy(dst,content+offset,(size_t)length);
     return (int64_t)length;
 }
+static int sys_readlink(const struct nas_fs_node *node,char target[256]) {
+    unsigned kind;
+    const struct nas_block_device *dev=sys_block_decode(node,&kind);
+    if(!dev || (kind!=SB_ROOT_LINK && kind!=SB_DEV_LINK))return -EINVAL;
+    unsigned n=0;target[0]=0;
+    if(sys_append(target,&n,kind==SB_ROOT_LINK?
+                  "../devices/virtual/block/":"../../devices/virtual/block/"))
+        return -ENAMETOOLONG;
+    if(kind==SB_DEV_LINK && dev->parent) {
+        if(sys_append(target,&n,dev->parent->name) ||
+           sys_append(target,&n,"/"))return -ENAMETOOLONG;
+    }
+    if(sys_append(target,&n,dev->name))return -ENAMETOOLONG;
+    return (int)n;
+}
 static const struct nas_vfs_type sys_type={
     .name="sysfs",.exec_source_label="sysfs",
     .root=sys_root,.lookup_child=sys_child,
-    .read_at=sys_read_inode,.read_dir=sys_read_dir,.read_only=true
+    .readlink=sys_readlink,.read_at=sys_read_inode,
+    .read_dir=sys_read_dir,.read_only=true
 };
 static const struct nas_vfs_mount defaults[]={
     {.mountpoint="/",.type=&boot_type,.permanent=true},

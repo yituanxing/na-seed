@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include "../errno.h"
 #include "../task.h"
+#include "../task/capability.h"
 #include "../fd.h"
 #include "../pipe.h"
 #include "lookup.h"
@@ -76,17 +77,23 @@ static uint64_t sys_socket(uint64_t domain,uint64_t type,uint64_t protocol) {
     unsigned socket_type=(unsigned)(type&15U);
     if(((domain==16 || domain==17) && socket_type!=3U) ||
        (socket_type!=1U
-        && !(domain==2 && socket_type==2U)
+        && !(domain==2 && (socket_type==2U || socket_type==3U))
         && !(domain==16 && socket_type==3U) /* SOCK_RAW Netlink */
         && !(domain==17 && socket_type==3U) /* SOCK_RAW Ethernet */
        ) || (type&~(15ULL|0x800ULL|0x80000ULL)))
         return (uint64_t)-ESOCKTNOSUPPORT;
+    if(domain==2 && socket_type==3U && protocol!=1U)
+        return (uint64_t)-EPROTONOSUPPORT;
     if(protocol && !(domain==2 && protocol==6 && socket_type==1U)
        && !(domain==2 && protocol==17 && socket_type==2U)
+       && !(domain==2 && protocol==1 && socket_type==3U)
        && !(domain==16 && protocol==4 && socket_type==3U)
        && domain!=17
        )
         return (uint64_t)-EPROTONOSUPPORT;
+    if(((domain==2 && socket_type==3U) || domain==17) &&
+       !nas_credentials_can_net_raw(&TASK.credentials))
+        return (uint64_t)-EPERM;
     unsigned fds[2],slots[2];
     /* Closing Netconns retain the original indexed bridge generation until
      * native worker teardown. Generic Files may reuse zero-ref slots; a new
@@ -105,8 +112,10 @@ static uint64_t sys_socket(uint64_t domain,uint64_t type,uint64_t protocol) {
         nas_fail("reserved socket descriptor became occupied");
     if(domain==2) {
         nas_open_files[slot].ops=nas_lwip_socket_port_ops();
-        int rc=nas_lwip_socket_open(slot,socket_type==1U ?
-                                   NAS_LWIP_BRIDGE_TCP:NAS_LWIP_BRIDGE_UDP);
+        enum nas_lwip_bridge_type native_type=socket_type==1U ?
+            NAS_LWIP_BRIDGE_TCP : socket_type==2U ?
+            NAS_LWIP_BRIDGE_UDP:NAS_LWIP_BRIDGE_RAW_ICMP;
+        int rc=nas_lwip_socket_open(slot,native_type);
         if(rc) {
             nas_fs_close_fd(fd); /* same FileOps finalizer, no second table */
             return (uint64_t)(int64_t)rc;
@@ -322,8 +331,8 @@ static uint64_t sys_ipv4_connect(uint64_t fd,uint64_t addr,uint64_t len) {
         unsigned slot=TASK.fds->entries[fd].slot;
         rc=nas_lwip_socket_connect(slot,lwip_address(ep));
         if(rc)return (uint64_t)(int64_t)(rc==-EAGAIN?-ENOBUFS:rc);
-        if(nas_lwip_socket_type(slot)==NAS_LWIP_BRIDGE_UDP)
-            return 0; /* no UDP remote handshake; errors via SO_ERROR */
+        if(nas_lwip_socket_type(slot)!=NAS_LWIP_BRIDGE_TCP)
+            return 0; /* no UDP/RAW remote handshake; SO_ERROR on failure */
         /* SOCK_NONBLOCK observes a pending native connect. The worker,
          * not this user syscall, completes the actual TCP handshake. */
         if(nas_open_files[slot].status_flags&0x800ULL)
@@ -732,7 +741,8 @@ static uint64_t sys_ipv4_getsockopt(uint64_t fd,uint64_t level,
             value=enabled?1U:0U;
         } else if(level==1) {
             switch(opt) {
-            case 3:value=type==NAS_LWIP_BRIDGE_TCP ? 1U:2U;break;
+            case 3:value=type==NAS_LWIP_BRIDGE_TCP ? 1U:
+                         type==NAS_LWIP_BRIDGE_UDP ? 2U:3U;break;
             case 4: {
                 int error=nas_lwip_socket_port_take_error(slot);
                 value=(uint32_t)(error<0?-error:error);break;
@@ -744,7 +754,8 @@ static uint64_t sys_ipv4_getsockopt(uint64_t fd,uint64_t level,
                 value=(uint32_t)capacity;break;
             }
             case 30:value=nas_lwip_socket_is_listening(slot)?1U:0U;break;
-            case 38:value=type==NAS_LWIP_BRIDGE_TCP ? 6U:17U;break;
+            case 38:value=type==NAS_LWIP_BRIDGE_TCP ? 6U:
+                          type==NAS_LWIP_BRIDGE_UDP ? 17U:1U;break;
             case 39:value=2U;break;
             default:return (uint64_t)-ENOPROTOOPT;
             }
@@ -819,7 +830,7 @@ static uint64_t sys_ipv4_setsockopt(uint64_t fd,uint64_t level,
                 slot,true,&enabled));
         }
         if(opt==6) {
-            if(nas_lwip_socket_type(slot)!=NAS_LWIP_BRIDGE_UDP)
+            if(nas_lwip_socket_type(slot)==NAS_LWIP_BRIDGE_TCP)
                 return (uint64_t)-EOPNOTSUPP;
             return lwip_control_result(nas_lwip_socket_setbroadcast(
                 slot,value!=0));
@@ -1236,12 +1247,16 @@ static uint64_t sys_ipv4_sendmsg(uint64_t fd,uint64_t address,uint64_t flags) {
             if(rc!=1)return (uint64_t)-EIO;
             return nas_fs_fd_writev(fd,iov,count);
         }
-        if(nas_lwip_socket_type(slot)!=NAS_LWIP_BRIDGE_UDP)
+        const int socket_type=nas_lwip_socket_type(slot);
+        if(socket_type!=NAS_LWIP_BRIDGE_UDP &&
+           socket_type!=NAS_LWIP_BRIDGE_RAW_ICMP)
             return (uint64_t)-EOPNOTSUPP;
         if(flags & ~(0x4000ULL|0x40ULL))return (uint64_t)-EOPNOTSUPP;
         struct nas_lwip_bridge_pktinfo pktinfo={0};
         int ancillary=ipv4_pktinfo_import(&msg,&pktinfo);
         if(ancillary<0)return (uint64_t)(int64_t)ancillary;
+        if(socket_type==NAS_LWIP_BRIDGE_RAW_ICMP && ancillary)
+            return (uint64_t)-EOPNOTSUPP;
         if(msg.iovlen>32)return (uint64_t)-EMSGSIZE;
         struct nas_lwip_bridge_address destination={0};
         if(msg.name) {
@@ -1273,7 +1288,9 @@ static uint64_t sys_ipv4_sendmsg(uint64_t fd,uint64_t address,uint64_t flags) {
 static uint64_t sys_ipv4_recvmsg(uint64_t fd,uint64_t address,uint64_t flags) {
     if(lwip_fd(fd)) {
         unsigned slot=TASK.fds->entries[fd].slot;
-        if(nas_lwip_socket_type(slot)!=NAS_LWIP_BRIDGE_UDP)
+        const int socket_type=nas_lwip_socket_type(slot);
+        if(socket_type!=NAS_LWIP_BRIDGE_UDP &&
+           socket_type!=NAS_LWIP_BRIDGE_RAW_ICMP)
             return (uint64_t)-EOPNOTSUPP;
         if(flags & ~(0x40ULL|0x4000ULL))return (uint64_t)-EOPNOTSUPP;
         struct nas_msghdr msg;
@@ -1299,7 +1316,8 @@ static uint64_t sys_ipv4_recvmsg(uint64_t fd,uint64_t address,uint64_t flags) {
            !nas_user_prepare_write(msg.name,name_capacity))
             return (uint64_t)-EFAULT;
         bool enabled=false;
-        int option=nas_lwip_socket_ip_pktinfo(slot,false,&enabled);
+        int option=socket_type==NAS_LWIP_BRIDGE_UDP ?
+            nas_lwip_socket_ip_pktinfo(slot,false,&enabled):0;
         if(option)return (uint64_t)(int64_t)option;
         /* Preflight ancillary output BEFORE consuming the datagram. */
         unsigned control_bytes=enabled && msg.control && msg.controllen>=28 ?
@@ -1363,7 +1381,7 @@ static uint64_t sys_ipv4_sendto(uint64_t fd,uint64_t buffer,
         if(flags & ~(0x40ULL|0x4000ULL|(tcp?0x8000ULL:0ULL)))
             return (uint64_t)-EOPNOTSUPP;
         if(destination) {
-            if(nas_lwip_socket_type(slot)!=NAS_LWIP_BRIDGE_UDP)
+            if(nas_lwip_socket_type(slot)==NAS_LWIP_BRIDGE_TCP)
                 return (uint64_t)-EISCONN;
             struct nas_ipv4_endpoint ep;
             int rc=ipv4_endpoint(destination,address_size,&ep);
@@ -1385,7 +1403,7 @@ static uint64_t sys_ipv4_recvfrom(uint64_t fd,uint64_t buffer,
                                   uint64_t address,uint64_t length_ptr) {
     if(lwip_fd(fd)) {
         unsigned slot=TASK.fds->entries[fd].slot;
-        if(nas_lwip_socket_type(slot)==NAS_LWIP_BRIDGE_UDP) {
+        if(nas_lwip_socket_type(slot)!=NAS_LWIP_BRIDGE_TCP) {
             if(flags & ~(0x40ULL|0x4000ULL))return (uint64_t)-EOPNOTSUPP;
             if(address && !length_ptr)return (uint64_t)-EFAULT;
             uint32_t capacity=0;

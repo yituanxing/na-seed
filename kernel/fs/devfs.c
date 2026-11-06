@@ -3,6 +3,7 @@
 #include "devfs.h"
 #include "lookup.h"
 #include "../drivers/core/chrdev.h"
+#include "../block/device.h"
 #include "../errno.h"
 #include "../lib/string.h"
 #include <stddef.h>
@@ -27,6 +28,27 @@ static void device_inode(const struct nas_chrdev_node *node,
         .mode=(uint32_t)node->info.mode,.size=node->info.size,
         .nlink=1,.is_dir=false
     };
+}
+/* Block-class entries share /dev with character nodes but retain distinct
+ * S_IFBLK identities and real kernel-assigned dev_t values. */
+#define DEV_BLOCK_INO_BASE (UINT64_C(1)<<52)
+static void block_inode(const struct nas_block_device *dev,
+                        struct nas_fs_node *out) {
+    *out=(struct nas_fs_node){
+        .inode=dev,.ino=DEV_BLOCK_INO_BASE+dev->incarnation,
+        .rdev=dev->rdev,.mode=0060600U,.nlink=1
+    };
+}
+static bool block_inode_known(const struct nas_fs_node *node) {
+    if(!node || (node->mode&0170000U)!=0060000U ||
+       node->ino<DEV_BLOCK_INO_BASE)return false;
+    for(unsigned i=0;;i++) {
+        struct nas_block_device *dev=nas_block_at(i);
+        if(!dev)break;
+        if(node->inode==dev && node->rdev==dev->rdev &&
+           node->ino==DEV_BLOCK_INO_BASE+dev->incarnation)return true;
+    }
+    return false;
 }
 static unsigned dir_number(const struct nas_fs_node *node) {
     for(unsigned i=0;i<3U;i++)if(is_dir(node,i))return i;
@@ -68,11 +90,18 @@ static int lookup_child(const struct nas_fs_node *parent,const char *name,
             return 0;
         }
     }
+    if(dir==0U)for(unsigned i=0;;i++) {
+        const struct nas_block_device *dev=nas_block_at(i);
+        if(!dev)break;
+        if(!strcmp(dev->name,name)) {block_inode(dev,out);return 0;}
+    }
     return -ENOENT;
 }
 static int validate_inode(const struct nas_fs_node *node) {
     if(!node)return -EINVAL;
     if(dir_number(node)!=3U)return 0;
+    if((node->mode&0170000U)==0060000U)
+        return block_inode_known(node)?0:-ESTALE;
     const struct nas_chrdev_node *device=node->inode;
     if(!device || !device->registered || device->devfs_ino!=node->ino ||
        device->info.rdev!=node->rdev)return -ESTALE;
@@ -82,10 +111,22 @@ static int validate_inode(const struct nas_fs_node *node) {
 }
 static int first_inode_pin(const struct nas_fs_node *node) {
     if(dir_number(node)!=3U)return 0;
+    if((node->mode&0170000U)==0060000U) {
+        if(!block_inode_known(node))return -ESTALE;
+        struct nas_block_device *dev=(struct nas_block_device *)node->inode;
+        struct nas_block_device *pinned=nas_block_get(dev->name);
+        if(pinned!=dev) {
+            if(pinned)nas_block_put(pinned);
+            return -ENODEV;
+        }
+        return 0;
+    }
     return nas_chrdev_node_pin((struct nas_chrdev_node *)(uintptr_t)node->inode);
 }
 static void last_inode_unpin(const struct nas_fs_node *node) {
-    if(dir_number(node)==3U)
+    if(dir_number(node)==3U && (node->mode&0170000U)==0060000U)
+        nas_block_put((struct nas_block_device *)(uintptr_t)node->inode);
+    else if(dir_number(node)==3U)
         nas_chrdev_node_put((struct nas_chrdev_node *)(uintptr_t)node->inode);
 }
 static int getattr(const struct nas_fs_node *node,struct nas_fs_node *out) {
@@ -93,6 +134,7 @@ static int getattr(const struct nas_fs_node *node,struct nas_fs_node *out) {
     if(rc)return rc;
     *out=*node;
     if(dir_number(node)!=3U)return 0;
+    if((node->mode&0170000U)==0060000U)return 0;
     const struct nas_chrdev_node *device=node->inode;
     /* Preserve mount/incarnation, but read mutable metadata from owner. */
     out->mode=(uint32_t)device->info.mode;
@@ -121,12 +163,20 @@ static int entry_at(unsigned directory,uint64_t cursor,
     }
     for(unsigned i=0;;i++) {
         struct nas_chrdev_node *node=nas_chrdev_node_at(i);
-        if(!node)return 0;
+        if(!node)break;
         const char *name=child_name(node,directory);
         if(!name)continue;
         if(cursor--)continue;
         return dirent(out,name,node->devfs_ino,2U);
     }
+    if(directory==0U)for(unsigned i=0;;i++) {
+        const struct nas_block_device *block=nas_block_at(i);
+        if(!block)break;
+        if(cursor--)continue;
+        return dirent(out,block->name,
+                      DEV_BLOCK_INO_BASE+block->incarnation,6U);
+    }
+    return 0;
 }
 static int read_dir(const struct nas_fs_node *node,uint64_t cursor,
                     struct nas_vfs_dirent *entries,unsigned maximum) {

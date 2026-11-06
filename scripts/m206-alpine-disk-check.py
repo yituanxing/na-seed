@@ -74,6 +74,31 @@ def packages_in_world(path: Path = PACKAGES) -> list[str]:
     return sorted(values)
 
 
+def is_original_busybox_ping_alias(m191, signed_root: Path, guest_path: str,
+                                   port: str) -> bool:
+    """Recognize ONLY Alpine's base /bin/ping BusyBox symlink.
+
+    iputils-ping must replace this existing BusyBox applet with its own ELF
+    after a real signed APK install. That original applet is not a preseeded
+    independent candidate. Use M191's guest-root-confined symlink resolution:
+    neither an absolute guest link nor a `..` chain may escape signed_root.
+    Other candidate symlinks and any preseeded regular ELF remain forbidden.
+    """
+    if guest_path != "/bin/ping":
+        return False
+    alias = m191.guest_path(signed_root, "/bin") / "ping"
+    if not alias.is_symlink():
+        return False
+    busybox = m191.guest_path(signed_root, "/bin/busybox")
+    target = m191.guest_path(signed_root, "/bin/ping")
+    if target != busybox or not busybox.is_file():
+        return False
+    with busybox.open("rb") as stream:
+        header = stream.read(20)
+    return (len(header) == 20 and header[:6] == b"\x7fELF\x02\x01" and
+            struct.unpack_from("<H", header, 18)[0] == m191.ARCH_MACHINE[port])
+
+
 def verify(port: str, signed_root: Path, disk: Path, *,
            candidates: Path = CANDIDATES, packages: Path = PACKAGES) -> None:
     package_names, binary_paths = manifest(candidates)
@@ -93,9 +118,12 @@ def verify(port: str, signed_root: Path, disk: Path, *,
     for path in binary_paths:
         # The M206 ELFs must come from the guest's APK transaction, not the
         # host's preconfigured root image or a BusyBox applet masquerading
-        # as an independently installed signed Alpine program.
+        # as an independently installed signed Alpine program. The sole
+        # legitimate exception is base /bin/ping -> BusyBox, which signed
+        # iputils-ping replaces with a native independent ELF in the guest.
         staged = m191.guest_path(signed_root, path)
-        if staged.exists() or staged.is_symlink():
+        if (staged.exists() or staged.is_symlink()) and not \
+                is_original_busybox_ping_alias(m191, signed_root, path, port):
             raise ValueError("[M206 HOST FAIL] candidate preinstalled in rootfs: " + path)
 
     with tempfile.TemporaryDirectory(prefix="m206-physical-disk-") as work:

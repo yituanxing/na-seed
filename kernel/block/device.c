@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 static struct nas_block_device *registered[NAS_BLOCK_DEVICE_LIMIT];
+static uint64_t next_incarnation=1;
 
 static bool sector_size_valid(uint32_t n) {
     return n >= 512U && n <= 4096U && !(n & (n - 1U));
@@ -16,8 +17,15 @@ int nas_block_register(struct nas_block_device *dev) {
         dev->sectors > UINT64_MAX / dev->sector_bytes ||
         (!dev->read_only && !dev->ops->write))
         return -EINVAL;
+    /* One devfs/sysfs basename per registered device, including nested
+     * partition symlinks. Keep every generated path and uevent in 256 bytes. */
+    if (!strcmp(dev->name,".") || !strcmp(dev->name,"..") ||
+        strchr(dev->name,'/'))return -EINVAL;
+    if(strlen(dev->name)>95U)return -ENAMETOOLONG;
     if (dev->registered || dev->removing || dev->refs)
         return -EBUSY;
+    if (!next_incarnation || next_incarnation >= (UINT64_C(1)<<48))
+        return -ENOSPC;
     unsigned vacant = NAS_BLOCK_DEVICE_LIMIT;
     for (unsigned n = 0; n < NAS_BLOCK_DEVICE_LIMIT; ++n) {
         if (registered[n] && !strcmp(registered[n]->name, dev->name))
@@ -28,6 +36,8 @@ int nas_block_register(struct nas_block_device *dev) {
     if (vacant == NAS_BLOCK_DEVICE_LIMIT)
         return -ENOSPC;
     registered[vacant] = dev;
+    dev->rdev=(NAS_BLOCK_MAJOR<<8)|vacant;
+    dev->incarnation=next_incarnation++;
     dev->registered = true;
     return 0;
 }
@@ -60,6 +70,14 @@ struct nas_block_device *nas_block_get(const char *name) {
             ++dev->refs;
             return dev;
         }
+    }
+    return NULL;
+}
+struct nas_block_device *nas_block_at(unsigned ordinal) {
+    for(unsigned i=0;i<NAS_BLOCK_DEVICE_LIMIT;i++) {
+        struct nas_block_device *dev=registered[i];
+        if(!dev || !dev->registered)continue;
+        if(!ordinal--)return dev;
     }
     return NULL;
 }

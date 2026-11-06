@@ -10,6 +10,8 @@ enum nas_syscall_op {
     NAS_SC_faccessat2,
     NAS_SC_brk,
     NAS_SC_chdir,
+    NAS_SC_capget,
+    NAS_SC_capset,
     NAS_SC_chmod,
     NAS_SC_chown,
     NAS_SC_fchmod,

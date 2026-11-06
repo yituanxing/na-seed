@@ -75,6 +75,17 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -fno-builtin \
    kernel/arch/x86_64/kernel_switch.S \
    -o build/lwip-foundation/test-netconn-bridge
 build/lwip-foundation/test-netconn-bridge
+# Run an actual upstream lwIP RAW/ICMP echo through the native Netconn
+# worker.  Assert IPv4+ICMP receive bytes, checksum, and async final close;
+# mere socket construction cannot validate the original iputils path.
+cc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -fno-builtin \
+   $includes scripts/test-lwip-netconn-raw-icmp.c \
+   ports/lwip/sys_arch.c ports/lwip/netconn_bridge.c $upstream \
+   kernel/task/k_sync.c kernel/task/kthread.c \
+   kernel/task/wait_queue.c kernel/task/kernel_context.c \
+   kernel/arch/x86_64/kernel_switch.S \
+   -o build/lwip-foundation/test-netconn-raw-icmp
+build/lwip-foundation/test-netconn-raw-icmp
 # Socket data/control provider stays on the shared OpenFile identity.
 # Run a separate genuine lwIP TCP/UDP host test, without a fake Netconn.
 cc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -fno-builtin \

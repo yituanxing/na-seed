@@ -20,7 +20,11 @@ bool nas_lwip_bridge_slot_available(unsigned slot);
 
 struct nas_lwip_bridge_id { uint16_t slot; uint32_t generation; };
 struct nas_lwip_bridge_address { uint32_t ipv4; uint16_t port; };
-enum nas_lwip_bridge_type { NAS_LWIP_BRIDGE_TCP=1, NAS_LWIP_BRIDGE_UDP=2 };
+/* RAW is IPv4 ICMP protocol 1, using lwIP's genuine RAW PCB. */
+enum nas_lwip_bridge_type {
+ NAS_LWIP_BRIDGE_TCP=1, NAS_LWIP_BRIDGE_UDP=2,
+ NAS_LWIP_BRIDGE_RAW_ICMP=3
+};
 enum nas_lwip_bridge_op {
  NAS_LWIP_BRIDGE_BIND=1, NAS_LWIP_BRIDGE_CONNECT,
  NAS_LWIP_BRIDGE_LISTEN, NAS_LWIP_BRIDGE_ACCEPT,
