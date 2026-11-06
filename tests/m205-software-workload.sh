@@ -253,7 +253,9 @@ probe() {
             return 1
             ;;
         process-accounting-snapshot:usr/bin/atop-2.12.1)
-            /usr/bin/atop-2.12.1 -P CPU -b 1 1 > "$target/out" &&
+            # Original atop's -b is a *begin time* for raw-log replay, not
+            # "batch" mode. Live parseable CPU records use -P CPU 1 1.
+            /usr/bin/atop-2.12.1 -P CPU 1 1 > "$target/out" &&
                 /bin/busybox grep -Eq '^CPU ' "$target/out"
             ;;
         bandwidth-monitor-snapshot:usr/bin/bmon)

@@ -111,7 +111,7 @@ if [ "$profile" = m205 ]; then
     # install marker exists but whose archive cache was incomplete.
     archive_count=$(find "$cache" -maxdepth 1 -type f -name '*.apk' | wc -l)
     index_count=$(find "$cache" -maxdepth 1 -type f -name 'APKINDEX*' | wc -l)
-    if [ "$archive_count" -lt 16 ] || [ "$index_count" -lt 2 ]; then
+    if [ "$archive_count" -lt 16 ] || [ "$index_count" -lt 1 ]; then
         if ! docker run --rm --volume "$root_canonical:/target" \
             --env APK_ARCH="$arch" --env APK_PACKAGES="$package_list" \
             alpine:3.23 sh -ec '
@@ -138,11 +138,13 @@ if [ "$profile" = m205 ]; then
         echo '[M205 CACHE FAIL] missing real signed package cache directory' >&2
         exit 1
     }
-    # Alpine's official main/community APKINDEX and native APK archives are
-    # cached in the *same* directory. Validate both before guest publication.
+    # All native official APK archives live in this directory. apk-tools 3
+    # may retain only one persistent index in this host cross-root; the
+    # authoritative question is whether a FRESH same-ISA apk solver can
+    # resolve the entire cohort offline, not an arbitrary index-file count.
     archive_count=$(find "$cache" -maxdepth 1 -type f -name '*.apk' | wc -l)
     index_count=$(find "$cache" -maxdepth 1 -type f -name 'APKINDEX*' | wc -l)
-    [ "$archive_count" -ge 16 ] && [ "$index_count" -ge 2 ] || {
+    [ "$archive_count" -ge 16 ] && [ "$index_count" -ge 1 ] || {
         echo "[M205 CACHE FAIL] archive/index shortage: $archive_count APKs $index_count indexes" >&2
         find "$cache" -maxdepth 1 -type f -name '*INDEX*' -print >&2
         if [ -f "$work/apk-cache.log" ]; then
@@ -164,7 +166,31 @@ if [ "$profile" = m205 ]; then
         echo '[M205 CACHE FAIL] native archive/index hash mismatch' >&2
         exit 1
     }
-    echo "[M205 SIGNED CACHE PASS] $port $archive_count upstream APK archives and $index_count indexes, SHA256 pinned"
+    # The inventory root has ALREADY installed all packages; `apk add` there
+    # would be a misleading no-op. Instead resolve every candidate in an
+    # independent EMPTY target root against only this immutable cache, with
+    # genuine cross-ISA signing keys and no network, before any QEMU minutes.
+    if ! docker run --rm \
+        --volume "$root_canonical:/target:ro" \
+        --volume "$root_canonical/var/cache/apk:/verify/var/cache/apk:ro" \
+        --env APK_ARCH="$arch" --env APK_PACKAGES="$package_list" \
+        alpine:3.23 sh -ec '
+            mkdir -p /verify/lib/apk/db /verify/etc/apk/keys
+            cp -a /target/etc/apk/keys/. /etc/apk/keys/
+            cp -a /target/etc/apk/keys/. /verify/etc/apk/keys/
+            printf "%s\n" \
+                https://dl-cdn.alpinelinux.org/alpine/v3.23/main \
+                https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
+                > /verify/etc/apk/repositories
+            apk --arch "$APK_ARCH" --root /verify --initdb \
+                --cache-dir /var/cache/apk --keys-dir /etc/apk/keys \
+                --no-network --simulate add $APK_PACKAGES
+        ' > "$work/apk-offline-proof.log" 2>&1; then
+        echo '[M205 CACHE FAIL] independent empty-root APK offline resolution' >&2
+        tail -60 "$work/apk-offline-proof.log" >&2
+        exit 1
+    fi
+    echo "[M205 SIGNED CACHE PASS] $port $archive_count upstream APK archives, $index_count retained indexes, SHA256 pinned; independent empty-root offline solver PASS"
 fi
 
 report="$work/candidates.tsv"
