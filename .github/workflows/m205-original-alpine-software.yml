@@ -5,8 +5,8 @@ on:
   # probes do NOT restart three 75-minute public WAN boots automatically.
   # Recheck genuine signed APK cache transactions, real PTY input and
   # native INET_DIAG TCP listeners in three independent QEMU guests.
-  # Re-run exactly once after correcting the Alpine 3 host archive cache
-  # and matching genuine iproute2 LISTEN|CLOSE diagnostic request.
+  # Re-run after pinning BOTH official main/community signed APK indexes;
+  # preserve the real iproute2 LISTEN|CLOSE socket probe and dual QEMU.
   push:
     branches: [naseed-app-batch2]
     paths:
