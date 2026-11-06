@@ -1,6 +1,6 @@
 #!/bin/sh
 # Host-only candidate census; this does NOT run or accept guest programs.
-# Usage: sh scripts/inventory-m141-signed-apks.sh amd64|riscv64|arm64 [m141|m205|m206]
+# Usage: sh scripts/inventory-m141-signed-apks.sh amd64|riscv64|arm64 [m141|m205|m206|m213]
 # Download official signed Alpine 3.23 APKs once and classify candidate paths.
 set -eu
 
@@ -8,7 +8,7 @@ set -eu
 port=$1
 profile=${2:-m141}
 case "$profile" in
-    m141|m205|m206) ;;
+    m141|m205|m206|m213) ;;
     *) echo '[CANDIDATE ERROR] unknown pool profile' >&2; exit 2 ;;
 esac
 case "$port" in
@@ -40,7 +40,7 @@ test -n "$package_list"
 # APK v3.0 (Alpine 3.23) supports --cache-predownload and recognizes this
 # conventional ext4-backed /etc/apk/cache symlink. Never use --allow-untrusted.
 cache_flags=
-if [ "$profile" = m205 ] || [ "$profile" = m206 ]; then
+if [ "$profile" = m205 ] || [ "$profile" = m206 ] || [ "$profile" = m213 ]; then
     # The guest's genuine PTY/metadata regression also installs the signed
     # util-linux-misc helper. It is not one of the 20 candidate entrypoints,
     # but must be present in the offline package closure.
@@ -58,7 +58,7 @@ fi
 if [ ! -f "$work/packages-$package_sha/signed-install.ok" ]; then
     NAS_ALPINE_PROFILE=runtime sh rootfs/alpine/build.sh "$port"
     cp -a "build/external/m39-packages/$port/rootfs/." "$root/"
-    if [ "$profile" = m205 ] || [ "$profile" = m206 ]; then
+    if [ "$profile" = m205 ] || [ "$profile" = m206 ] || [ "$profile" = m213 ]; then
         # The cached M39 minirootfs was copied only NOW. Configure the cache
         # after copying it, so no base-root entry can replace the link.
         mkdir -p "$root/var/cache/apk"
@@ -94,7 +94,7 @@ if [ ! -f "$work/packages-$package_sha/signed-install.ok" ]; then
     touch "$work/packages-$package_sha/signed-install.ok"
 fi
 
-if [ "$profile" = m205 ] || [ "$profile" = m206 ]; then
+if [ "$profile" = m205 ] || [ "$profile" = m206 ] || [ "$profile" = m213 ]; then
     # The guest M191 disk already pins BOTH official repositories. Mirror
     # that exact configuration in this host-only cross-ISA root as well:
     # apk-tools 3's index cache update follows persistent repository config,

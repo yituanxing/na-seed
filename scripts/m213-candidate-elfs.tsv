@@ -1,0 +1,28 @@
+package	elf_path	family	probe
+# M213 UNACCEPTED DISCOVERY: 20 new official Alpine v3.23 ELF candidates.
+# Every path is an M141 signed-APK ELF-class representative but is absent
+# from M205/M206 and all previous accepted original-ELF manifests.
+# A path is NOT a NaSeed PASS until exact-ISA signed APK+unique SHA, a real
+# semantic command and an independent second-QEMU run are all attested.
+# ssh/scp/sftp need a disposable authenticated host sshd; DNSSEC and update
+# need an isolated authoritative server; rtmon needs genuine link events.
+iproute2	sbin/bridge	network	bridge-netlink-query
+iproute2	sbin/genl	network	generic-netlink-family-discovery
+iproute2	sbin/ifstat	network	live-interface-counter-delta
+iproute2	sbin/nstat	network	live-protocol-counter-delta
+iproute2	sbin/rtmon	network	route-multicast-event
+nmap-nping	usr/bin/nping	network	native-loopback-packet-capture
+openssh-client-default	usr/bin/ssh	ssh	authenticated-host-command
+openssh-client-common	usr/bin/scp	ssh	authenticated-scp-file-roundtrip
+openssh-client-common	usr/bin/sftp	ssh	authenticated-sftp-file-roundtrip
+bind-tools	usr/bin/delv	dns	validated-dnssec-chain
+bind-tools	usr/bin/dnstap-read	dns	genuine-dnstap-fixture-decode
+bind-tools	usr/bin/named-journalprint	dns	genuine-dns-journal-decode
+bind-tools	usr/bin/nsupdate	dns	authoritative-dns-update-roundtrip
+util-linux-misc	bin/pipesz	pipe	pipe-capacity-set-and-readback
+util-linux-misc	usr/bin/setpgid	process	child-process-group-transition
+util-linux-misc	usr/bin/waitpid	process	child-exit-status-observation
+util-linux-misc	usr/bin/utmpdump	terminal	utmp-record-roundtrip
+util-linux-misc	usr/bin/isosize	filesystem	iso9660-size-fixture
+binutils	usr/bin/gprof	toolchain	nonempty-gmon-callgraph-parse
+llvm21	usr/bin/llvm21-c-test	toolchain	llvm-c-api-module-validation

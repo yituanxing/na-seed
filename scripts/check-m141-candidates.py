@@ -25,7 +25,7 @@ def entries(path: Path) -> list[str]:
 
 
 def main(profile: str = "m141", minimum: int = 50) -> None:
-    if profile not in ("m141", "m205", "m206"):
+    if profile not in ("m141", "m205", "m206", "m213"):
         raise ValueError(f"unrecognized candidate profile: {profile}")
     pool = ROOT / f"scripts/{profile}-candidate-elfs.tsv"
     packages_path = ROOT / f"rootfs/alpine/packages-{profile}-candidates.txt"
@@ -37,8 +37,13 @@ def main(profile: str = "m141", minimum: int = 50) -> None:
     for manifest in sorted((ROOT / "scripts").glob("m[0-9]*-original-elfs.txt")):
         if manifest.name == f"{profile}-original-elfs.txt":
             continue
+        if profile == "m213" and manifest.name == "m141-original-elfs.txt":
+            # M141 is an explicitly UNACCEPTED 68-ELF discovery pool.
+            # M213 deliberately promotes a subset through fresh real QEMU
+            # semantics; provenance there must not count as prior success.
+            continue
         known.update(entries(manifest))
-    if profile == "m206":
+    if profile in ("m206", "m213"):
         # M205 is a real new-candidate batch but has no historical accepted
         # m*-original-elfs.txt manifest yet; excluding only the latter would
         # silently count the same original command again.
@@ -47,6 +52,9 @@ def main(profile: str = "m141", minimum: int = 50) -> None:
         known.update(row.split("\t")[1] for row in
                      entries(ROOT / "scripts/m204-alpine-cohort.tsv")[1:]
                      if len(row.split("\t")) >= 2)
+    if profile == "m213":
+        known.update(row.split("\t")[1] for row in
+                     entries(ROOT / "scripts/m206-candidate-elfs.tsv")[1:])
 
     lines = pool.read_text().splitlines()
     if not lines or lines[0] != HEADER:
@@ -89,7 +97,7 @@ def main(profile: str = "m141", minimum: int = 50) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", choices=("m141", "m205", "m206"), default="m141")
+    parser.add_argument("--profile", choices=("m141", "m205", "m206", "m213"), default="m141")
     parser.add_argument("--minimum", type=int)
     args = parser.parse_args()
     main(args.profile, args.minimum if args.minimum is not None else

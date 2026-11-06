@@ -5,8 +5,8 @@
 set -u
 export PATH=/usr/sbin:/sbin:/usr/bin:/bin HOME=/root LC_ALL=C LANG=C
 
-case "${NAS_M206_COMPAT_COHORT:-0}" in
-    0)
+case "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}" in
+    0:0)
         milestone=M205
         manifest=/root/m205-cohort.tsv
         work=/root/m205-work
@@ -14,7 +14,7 @@ case "${NAS_M206_COMPAT_COHORT:-0}" in
         reopen=/root/m205-reopen-results.tsv
         exercise_script=/root/m205-software-workload.sh
         ;;
-    1)
+    0:1)
         milestone=M206
         manifest=/root/m206-cohort.tsv
         work=/root/m206-work
@@ -22,7 +22,15 @@ case "${NAS_M206_COMPAT_COHORT:-0}" in
         reopen=/root/m206-reopen-results.tsv
         exercise_script=/root/m206-software-workload.sh
         ;;
-    *) echo '[M206 ERROR] invalid compatibility cohort selector' >&2; exit 2 ;;
+    1:0)
+        milestone=M213
+        manifest=/root/m213-cohort.tsv
+        work=/root/m213-work
+        first=/root/m213-first-results.tsv
+        reopen=/root/m213-reopen-results.tsv
+        exercise_script=/root/m213-software-workload.sh
+        ;;
+    *) echo '[COMPAT ERROR] invalid/overlapping signed Alpine cohort selector' >&2; exit 2 ;;
 esac
 tab=$(printf '\t')
 
@@ -484,7 +492,7 @@ if [ "$phase" = exercise ]; then
     # Never let an original command accidentally read a parent's UART or
     # the cohort manifest as its standard input.
     exec 0</dev/null
-    if [ "$milestone" = M206 ]; then
+    if [ "$milestone" != M205 ]; then
         sh "$exercise_script" --exercise "$2" "$3"
     else
         probe "$2" "$3"
@@ -578,6 +586,7 @@ fi
 : > "$ledger" || exit 1
 export NAS_M205_BOOT_PHASE="$phase"
 export NAS_M206_BOOT_PHASE="$phase"
+export NAS_M213_BOOT_PHASE="$phase"
 
 total=0
 while IFS="$tab" read -r package elf family case_id <&9 || [ -n "$package" ]; do
