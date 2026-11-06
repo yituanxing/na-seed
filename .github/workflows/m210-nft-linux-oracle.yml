@@ -140,18 +140,50 @@ jobs:
             -o "$M210_OUTPUT/nft-check.strace" \
             chroot "$M210_ROOT" /usr/sbin/nft -c -f /tmp/m210-nft.conf \
             > "$M210_OUTPUT/nft.stdout" 2> "$M210_OUTPUT/nft.stderr" || nft_rc=$?
+          # Exercise the remaining three exact M206 operations in the SAME
+          # disposable namespace. Keep every raw request/response trace so a
+          # first-check fix cannot conceal a later Linux ABI difference.
+          add_rc=99
+          list_rc=99
+          delete_rc=99
+          if [ "$nft_rc" -eq 0 ]; then
+            add_rc=0
+            strace -ff -tt -yy -xx -s 512 \
+              -e trace=socket,sendmsg,sendto,recvmsg,recvfrom,getsockopt,setsockopt \
+              -o "$M210_OUTPUT/nft-add.strace" \
+              chroot "$M210_ROOT" /usr/sbin/nft add table inet m206 \
+              > "$M210_OUTPUT/add.stdout" 2> "$M210_OUTPUT/add.stderr" || add_rc=$?
+            if [ "$add_rc" -eq 0 ]; then
+              list_rc=0
+              strace -ff -tt -yy -xx -s 512 \
+                -e trace=socket,sendmsg,sendto,recvmsg,recvfrom,getsockopt,setsockopt \
+                -o "$M210_OUTPUT/nft-list.strace" \
+                chroot "$M210_ROOT" /usr/sbin/nft list table inet m206 \
+                > "$M210_OUTPUT/list.stdout" 2> "$M210_OUTPUT/list.stderr" || list_rc=$?
+              # Always attempt cleanup if creation succeeded, even if list
+              # fails; the entire namespace will be discarded at exit.
+              delete_rc=0
+              strace -ff -tt -yy -xx -s 512 \
+                -e trace=socket,sendmsg,sendto,recvmsg,recvfrom,getsockopt,setsockopt \
+                -o "$M210_OUTPUT/nft-delete.strace" \
+                chroot "$M210_ROOT" /usr/sbin/nft delete table inet m206 \
+                > "$M210_OUTPUT/delete.stdout" 2> "$M210_OUTPUT/delete.stderr" || delete_rc=$?
+            fi
+          fi
           after_rc=0
           chroot "$M210_ROOT" /usr/sbin/nft -a list ruleset \
             > "$M210_OUTPUT/after.ruleset" 2> "$M210_OUTPUT/after.stderr" || after_rc=$?
-          printf 'before_ruleset_exit=%s\nnft_check_exit=%s\nafter_ruleset_exit=%s\n' \
-            "$before_rc" "$nft_rc" "$after_rc" > "$M210_OUTPUT/exit-codes.txt"
+          printf 'before_ruleset_exit=%s\nnft_check_exit=%s\nadd_exit=%s\nlist_exit=%s\ndelete_exit=%s\nafter_ruleset_exit=%s\n' \
+            "$before_rc" "$nft_rc" "$add_rc" "$list_rc" "$delete_rc" "$after_rc" > "$M210_OUTPUT/exit-codes.txt"
           if [ "$before_rc" -eq 0 ] && [ "$nft_rc" -eq 0 ] &&
-             [ "$after_rc" -eq 0 ] &&
+             [ "$add_rc" -eq 0 ] && [ "$list_rc" -eq 0 ] &&
+             [ "$delete_rc" -eq 0 ] && [ "$after_rc" -eq 0 ] &&
+             grep -Eq '^table inet m206' "$M210_OUTPUT/list.stdout" &&
              cmp -s "$M210_OUTPUT/before.ruleset" "$M210_OUTPUT/after.ruleset"; then
-            echo '[M210 LINUX NETLINK PASS] signed Alpine nft -c -f; namespace ruleset unchanged' \
+            echo '[M210 LINUX NETLINK PASS] signed Alpine nft check/add/list/delete; namespace ruleset unchanged' \
               | tee "$M210_OUTPUT/result.txt"
           else
-            echo '[M210 LINUX NETLINK FAIL] nft check/namespace readback mismatch; see strace' \
+            echo '[M210 LINUX NETLINK FAIL] nft check/add/list/delete or namespace readback mismatch; see strace' \
               | tee "$M210_OUTPUT/result.txt"
             sed -n '1,100p' "$M210_OUTPUT/nft.stderr" >&2
             exit 1
