@@ -19,6 +19,8 @@ on:
   # and ARM first-boot PTY prompt diagnostics without relaxing acceptance.
   # Recheck Linux SO_DETACH_FILTER no-filter ENOENT, original libpcap
   # userland BPF fallback and real iftop wire capture in both QEMU boots.
+  # Recheck upstream iftop -s 3 packet-triggered timer with a genuine ICMP
+  # stream extending beyond its deadline; retain strict first/reopen gates.
   push:
     branches: [naseed-app-batch2]
     paths:
