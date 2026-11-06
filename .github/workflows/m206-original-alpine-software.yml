@@ -20,6 +20,8 @@ on:
   # diagnostics; rerun exact original signed software on first/reopen QEMU.
   # M212: enforce fail-closed 20/20 native software acceptance on real
   # first and independent reopen QEMU, retaining APK SHA and ext4 proof.
+  # M211.2: require the original nft delete exit and post-delete ENOENT
+  # across both native QEMU boots, beyond check/add/list output.
   push:
     branches: [naseed-app-batch2]
     paths:

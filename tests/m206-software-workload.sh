@@ -89,10 +89,24 @@ case "$case_id:$elf" in
         if /usr/sbin/nft -c -f "$target/nft.conf" \
                 > "$target/syntax" 2>&1 &&
             /usr/sbin/nft add table inet m206 > "$target/add" 2>&1; then
-            /usr/sbin/nft list table inet m206 > "$target/out" 2>&1 &&
+            # Require the *whole* real Linux lifecycle. In particular, a
+            # successful add/list must never hide failed deletion, nor may
+            # a failed follow-up table lookup count as an absence unless
+            # nft actually reports ENOENT for the removed table.
+            if /usr/sbin/nft list table inet m206 > "$target/out" 2>&1 &&
                 /bin/busybox grep -Fq 'table inet m206' "$target/out" &&
+                /usr/sbin/nft delete table inet m206 > "$target/delete" 2>&1 &&
+                ! /usr/sbin/nft list table inet m206 > "$target/absent" 2>&1 &&
+                /bin/busybox grep -Fq 'No such file or directory' "$target/absent"; then
                 probe_rc=0
-            /usr/sbin/nft delete table inet m206 > "$target/delete" 2>&1 || :
+            else
+                for diagnostic in delete absent; do
+                    if [ -s "$target/$diagnostic" ]; then
+                        printf '\n[M206 nft %s]\n' "$diagnostic" >> "$target/out"
+                        /bin/busybox head -n 12 "$target/$diagnostic" >> "$target/out"
+                    fi
+                done
+            fi
         else
             /bin/busybox cp "$target/syntax" "$target/out" 2>/dev/null || :
             if [ -s "$target/add" ]; then
