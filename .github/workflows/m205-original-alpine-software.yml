@@ -8,6 +8,8 @@ on:
   # Bind target-root and container cache views to the SAME original APK bytes;
   # prove fresh offline installation in writable scratch, then run 20 native
   # original Alpine ELFs across independent first and reopen QEMU boots.
+  # Recheck genuine cached APK after lwext4 statfs/fstatfs superblock support;
+  # also carry real netdev byte/packet accounting for original procfs readers.
   push:
     branches: [naseed-app-batch2]
     paths:

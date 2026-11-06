@@ -30,6 +30,14 @@ struct nas_netdev_ops {
                 nas_netdev_rx receive, void *consumer);
     bool (*link_up)(void *backend);
 };
+/* Counters measure actual Ethernet frames at the common NIC boundary.
+ * They are monotonic while this device instance is registered. A procfs
+ * observer may snapshot them concurrently with the lwIP network worker.
+ * Driver-internal FIFO/collision/error counters are not invented here. */
+struct nas_netdev_stats {
+    uint64_t rx_bytes,rx_packets,rx_dropped;
+    uint64_t tx_bytes,tx_packets,tx_errors;
+};
 struct nas_netdev {
     const char *name; /* driver-owned, valid until successful unregister */
     uint8_t mac[NAS_NETDEV_MAC_BYTES];
@@ -44,6 +52,7 @@ struct nas_netdev {
     nas_netdev_wake rx_wake;
     void *rx_wake_context;
     uint64_t rx_sequence;
+    struct nas_netdev_stats stats;
     uint32_t refs;
     bool registered;
     bool removing; /* reject new pins while live consumers detach */
@@ -74,4 +83,9 @@ int nas_netdev_set_rx_wake(struct nas_netdev *device,
 /* May be called by a device interrupt; never blocks or switches context. */
 void nas_netdev_notify_rx(struct nas_netdev *device);
 bool nas_netdev_link_up(const struct nas_netdev *device);
+/* Caller must hold a reference or otherwise own the live device lifetime.
+ * Individual counters use relaxed atomics: snapshots may cross packet
+ * boundaries but are always genuine non-decreasing hardware port counts. */
+int nas_netdev_stats_snapshot(const struct nas_netdev *device,
+                              struct nas_netdev_stats *out);
 #endif

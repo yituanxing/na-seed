@@ -204,6 +204,39 @@ static int ext_snapshot_inode(struct nas_lwext4_mount *ctx,uint32_t ino,
     rc=ext4_fs_put_inode_ref(&ref);
     return rc ? -rc : 0;
 }
+/* Linux statfs/fstatfs are superblock queries, not inode/path operations.
+ * Query the real, live upstream mount instead of returning EOPNOTSUPP for
+ * every persistent inode (apk requires fstatfs for its cache and database).
+ * In particular, f_bavail excludes ext4's reserved blocks even though
+ * f_bfree includes them; values must reflect allocations after mount. */
+static int ext_statfs(const struct nas_fs_node *node,
+                      struct nas_vfs_statfs *out) {
+    if(!node || !node->mount || !node->mount->private_data || !out)
+        return -EINVAL;
+    struct nas_lwext4_mount *ctx=node->mount->private_data;
+    if(!ctx->mounted || !ctx->upstream_super || !ctx->upstream_mount)
+        return -ENODEV;
+    struct ext4_mount_stats stats={0};
+    int rc=ext4_mount_point_stats(ctx->upstream_prefix,&stats);
+    if(rc)return -rc;
+    if(!stats.block_size || stats.free_blocks_count>stats.blocks_count ||
+       stats.free_inodes_count>stats.inodes_count)return -EIO;
+    uint64_t reserved=ext4_get32(ctx->upstream_super,reserved_blocks_count_lo);
+    reserved|=(uint64_t)ext4_get32(ctx->upstream_super,reserved_blocks_count_hi)<<32;
+    *out=(struct nas_vfs_statfs){
+        .magic=0xef53U, /* Linux EXT4_SUPER_MAGIC */
+        .block_size=stats.block_size,
+        .blocks=stats.blocks_count,
+        .free_blocks=stats.free_blocks_count,
+        .available_blocks=stats.free_blocks_count>reserved ?
+                          stats.free_blocks_count-reserved : 0,
+        .files=stats.inodes_count,
+        .free_files=stats.free_inodes_count,
+        .fragment_size=stats.block_size,
+        .name_max=255
+    };
+    return 0;
+}
 static int ext_lookup_root(const struct nas_vfs_mount *vfs,
                            struct nas_fs_node *out) {
     if(!vfs || !vfs->private_data || !out)return -EINVAL;
@@ -1107,7 +1140,7 @@ static const struct nas_vfs_type ext_type={
     .root=ext_lookup_root,.lookup_child=ext_lookup_child,
     .readlink=ext_readlink_node,
     .last_inode_unpin=ext_last_inode_unpin,
-    .getattr=ext_live_getattr,
+    .getattr=ext_live_getattr,.statfs=ext_statfs,
     .read_at=ext_read_inode,
     .read_size_is_eof=true,
     .write_at=ext_write_inode,

@@ -125,13 +125,45 @@ int nas_netdev_transmit(struct nas_netdev *device,
     if(!device || !device->registered || device->removing)return -ENODEV;
     if(!frame || bytes<14U || bytes>(uint32_t)device->mtu+18U)
         return -EMSGSIZE;
-    return device->ops->transmit(device->backend,frame,bytes);
+    int rc=device->ops->transmit(device->backend,frame,bytes);
+    if(!rc) {
+        /* Driver has copied/queued the actual Ethernet frame. Completion
+         * interrupts are not a second packet, and ring backpressure is
+         * never reported as a successful transmission. */
+        __atomic_fetch_add(&device->stats.tx_packets,1,__ATOMIC_RELAXED);
+        __atomic_fetch_add(&device->stats.tx_bytes,bytes,__ATOMIC_RELAXED);
+    } else if(rc!=-EAGAIN && rc!=-EBUSY && rc!=-ENOBUFS) {
+        __atomic_fetch_add(&device->stats.tx_errors,1,__ATOMIC_RELAXED);
+    }
+    return rc;
+}
+struct rx_count_context {
+    struct nas_netdev *device;
+    nas_netdev_rx callback;
+    void *consumer;
+};
+static int counted_receive(void *context,const uint8_t *frame,uint32_t bytes) {
+    struct rx_count_context *observer=context;
+    int rc=observer->callback(observer->consumer,frame,bytes);
+    if(!rc) {
+        __atomic_fetch_add(&observer->device->stats.rx_packets,1,
+                           __ATOMIC_RELAXED);
+        __atomic_fetch_add(&observer->device->stats.rx_bytes,bytes,
+                           __ATOMIC_RELAXED);
+    } else {
+        /* The Ethernet device did deliver a frame, but its consumer
+         * rejected it; never count the frame as received by the stack. */
+        __atomic_fetch_add(&observer->device->stats.rx_dropped,1,
+                           __ATOMIC_RELAXED);
+    }
+    return rc;
 }
 int nas_netdev_poll(struct nas_netdev *device,uint32_t budget,
                    nas_netdev_rx receive,void *consumer) {
     if(!device || !device->registered || device->removing)return -ENODEV;
     if(!budget || !receive)return -EINVAL;
-    int rc=device->ops->poll(device->backend,budget,receive,consumer);
+    struct rx_count_context observer={device,receive,consumer};
+    int rc=device->ops->poll(device->backend,budget,counted_receive,&observer);
     return rc>=0 && (uint32_t)rc>budget ? -EIO : rc;
 }
 int nas_netdev_set_rx_wake(struct nas_netdev *device,
@@ -154,4 +186,15 @@ void nas_netdev_notify_rx(struct nas_netdev *device) {
 bool nas_netdev_link_up(const struct nas_netdev *device) {
     return device && device->registered && !device->removing &&
            device->ops->link_up(device->backend);
+}
+int nas_netdev_stats_snapshot(const struct nas_netdev *device,
+                              struct nas_netdev_stats *out) {
+    if(!device || !device->registered || !out)return -ENODEV;
+    out->rx_bytes=__atomic_load_n(&device->stats.rx_bytes,__ATOMIC_RELAXED);
+    out->rx_packets=__atomic_load_n(&device->stats.rx_packets,__ATOMIC_RELAXED);
+    out->rx_dropped=__atomic_load_n(&device->stats.rx_dropped,__ATOMIC_RELAXED);
+    out->tx_bytes=__atomic_load_n(&device->stats.tx_bytes,__ATOMIC_RELAXED);
+    out->tx_packets=__atomic_load_n(&device->stats.tx_packets,__ATOMIC_RELAXED);
+    out->tx_errors=__atomic_load_n(&device->stats.tx_errors,__ATOMIC_RELAXED);
+    return 0;
 }

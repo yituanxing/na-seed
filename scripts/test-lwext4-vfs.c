@@ -9,6 +9,7 @@
 #include "../kernel/task/resources.h"
 #include <ext4.h>
 #include <ext4_inode.h>
+#include <ext4_misc.h>
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -107,6 +108,45 @@ static const struct nas_vfs_mount root_mount={
 };
 void nas_vfs_register_default_mounts(void) {
     assert(nas_vfs_register_mount(&root_mount)==0);
+}
+/* The persistent root used by genuine Alpine apk must report the REAL
+ * mutable upstream ext4 superblock counters from either an inode or dirfd.
+ * Compare VFS results with pinned lwext4's own mount-stat interface, not
+ * with synthetic block counts or a copied host filesystem's statvfs. */
+static struct nas_vfs_statfs check_ext4_statfs(
+    const struct nas_lwext4_mount *mounted,const struct nas_fs_node *node) {
+    struct ext4_mount_stats upstream={0};
+    assert(ext4_mount_point_stats(mounted->upstream_prefix,&upstream)==0);
+    struct nas_vfs_statfs fs={0};
+    assert(nas_vfs_statfs(node,&fs)==0);
+    assert(fs.magic==0xef53 && fs.block_size==upstream.block_size);
+    assert(fs.fragment_size==upstream.block_size && fs.name_max==255);
+    assert(fs.blocks==upstream.blocks_count);
+    assert(fs.free_blocks==upstream.free_blocks_count);
+    assert(fs.files==upstream.inodes_count);
+    assert(fs.free_files==upstream.free_inodes_count);
+    uint64_t reserved=ext4_get32(mounted->upstream_super,reserved_blocks_count_lo);
+    reserved|=(uint64_t)ext4_get32(mounted->upstream_super,reserved_blocks_count_hi)<<32;
+    assert(fs.available_blocks==(fs.free_blocks>reserved ?
+                                fs.free_blocks-reserved : 0));
+    return fs;
+}
+static void check_ext4_statfs_live_allocation(
+    const struct nas_lwext4_mount *mounted,const struct nas_fs_node *directory) {
+    struct nas_vfs_statfs before=check_ext4_statfs(mounted,directory);
+    const char *path="/mnt/sandbox/m205-live-statfs-data";
+    assert(nas_vfs_create(path,0600)==0);
+    struct nas_fs_node file={0};
+    char resolved[256];
+    assert(nas_fs_lookup_node(path,true,&file,resolved)==0);
+    static const uint8_t data[8192]={0};
+    assert(nas_vfs_write_at(&file,0,data,sizeof(data))==(int64_t)sizeof(data));
+    struct nas_vfs_statfs after=check_ext4_statfs(mounted,&file);
+    assert(after.free_blocks<before.free_blocks);
+    assert(after.free_files<before.free_files);
+    assert(after.blocks==before.blocks && after.files==before.files);
+    assert(nas_vfs_unlink(path,0)==0);
+    puts("[M205 LWEXT4 STATFS PASS] real mount counters, live allocation, inode and directory identity");
 }
 /* M82: Namespace mutations are observable by GNU make's directory
  * prerequisites and by find/rsync/tar metadata consumers. The fixture has a
@@ -410,6 +450,7 @@ int main(int argc,char **argv) {
     assert(nas_fs_lookup_node("/mnt/.naseed-orphans",true,
                               &hidden,actual)==-ENOENT);
     assert(nas_fs_lookup_node("/mnt",true,&root_dir,actual)==0);
+    (void)check_ext4_statfs(&mounted,&root_dir);
     struct nas_vfs_dirent root_entries[16];
     uint64_t root_cursor=0;
     for(unsigned iteration=0;iteration<256;iteration++) {
@@ -423,6 +464,12 @@ int main(int argc,char **argv) {
     }
     struct nas_fs_node node;
     assert(nas_fs_lookup_node("/mnt/sandbox/hardlink",true,&node,actual)==0);
+    struct nas_vfs_statfs root_stats=check_ext4_statfs(&mounted,&root_dir);
+    struct nas_vfs_statfs file_stats=check_ext4_statfs(&mounted,&node);
+    assert(root_stats.blocks==file_stats.blocks &&
+           root_stats.free_blocks==file_stats.free_blocks &&
+           root_stats.free_files==file_stats.free_files);
+    if(write)check_ext4_statfs_live_allocation(&mounted,&root_dir);
     assert(!strcmp(node.filesystem->name,"lwext4"));
     assert(!strcmp(actual,"/mnt/sandbox/hardlink"));
     assert(!node.is_dir && !node.is_symlink && nas_vfs_can_write(&node)==write);

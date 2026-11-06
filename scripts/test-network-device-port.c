@@ -6,6 +6,7 @@
 #include "../kernel/errno.h"
 
 static unsigned tx_count,rx_count,wake_count;
+static bool reject_rx,fail_tx;
 static unsigned registry_events,registry_rebound_events,wake_rebound_count;
 static void changed(void *context){
     assert(context==&registry_events);
@@ -17,6 +18,7 @@ static void changed_rebound(void *context){
 }
 static int send(void *context,const uint8_t *data,uint32_t size){
     assert(context==(void *)&tx_count && data && size==60);
+    if(fail_tx)return -EIO;
     tx_count++;
     return 0;
 }
@@ -24,11 +26,13 @@ static int incoming(void *context,uint32_t budget,nas_netdev_rx receive,
                     void *consumer){
     assert(context==(void *)&tx_count && budget==4);
     const uint8_t frame[60]={0};
-    assert(receive(consumer,frame,sizeof(frame))==0);
+    int rc=receive(consumer,frame,sizeof(frame));
+    if(rc)return rc;
     return 1;
 }
 static int on_frame(void *consumer,const uint8_t *frame,uint32_t bytes){
     assert(consumer==(void *)&rx_count && frame && bytes==60);
+    if(reject_rx)return -ENOMEM;
     rx_count++;
     return 0;
 }
@@ -80,6 +84,21 @@ int main(void){
     assert(nas_netdev_transmit(pin,frame,13)==-EMSGSIZE);
     assert(nas_netdev_transmit(pin,frame,1519)==-EMSGSIZE);
     assert(nas_netdev_poll(pin,4,on_frame,&rx_count)==1 && rx_count==1);
+    struct nas_netdev_stats stats={0};
+    assert(nas_netdev_stats_snapshot(pin,&stats)==0);
+    assert(stats.rx_packets==1 && stats.rx_bytes==60 && !stats.rx_dropped);
+    assert(stats.tx_packets==1 && stats.tx_bytes==60 && !stats.tx_errors);
+    /* One real rejected RX and one failed TX must never inflate the
+     * delivered-byte totals. IRQ notifications are not packets either. */
+    reject_rx=true;
+    assert(nas_netdev_poll(pin,4,on_frame,&rx_count)==-ENOMEM);
+    reject_rx=false;
+    fail_tx=true;
+    assert(nas_netdev_transmit(pin,frame,sizeof(frame))==-EIO);
+    fail_tx=false;
+    assert(nas_netdev_stats_snapshot(pin,&stats)==0);
+    assert(stats.rx_packets==1 && stats.rx_bytes==60 && stats.rx_dropped==1);
+    assert(stats.tx_packets==1 && stats.tx_bytes==60 && stats.tx_errors==1);
     assert(nas_netdev_unregister(&first)==-EBUSY);
     assert(nas_netdev_put(pin)==-EBUSY); /* cannot leave an IRQ callback */
     assert(nas_netdev_set_rx_wake(pin,NULL,NULL)==0);
@@ -127,6 +146,6 @@ int main(void){
     assert(nas_netdev_unregister(&first)==0);
     assert(registry_rebound_events==2 && registry_events==5);
     assert(nas_netdev_set_change_wake(NULL,NULL)==0);
-    puts("[NET DEVICE PORT PASS] bounded poll, callback/context rebind, remove/drain, DMA pins");
+    puts("[NET DEVICE PORT PASS] real RX/TX byte/packet counters, dropped/error integrity, bounded poll, remove/drain, DMA pins");
     return 0;
 }

@@ -16,8 +16,25 @@
 #include "../kernel/ipc/sysv.h"
 #ifdef NAS_ENABLE_LWIP
 #include "../ports/lwip/network_boot.h"
+#include "../kernel/drivers/port/net.h"
 static uint32_t fixture_dns[NAS_LWIP_DNS_SERVER_LIMIT];
 static unsigned fixture_dns_count;
+/* Standalone procfs test models only the registry snapshot interface; the
+ * actual frame counter and device lifetime machinery is separately tested
+ * by test-network-device-port.c linked against the real net.c provider. */
+static struct nas_netdev fixture_net={.name="eth0",.registered=true};
+static bool fixture_net_visible;
+struct nas_netdev *nas_netdev_get_ordinal(unsigned ordinal) {
+    return fixture_net_visible && !ordinal?&fixture_net:NULL;
+}
+int nas_netdev_put(struct nas_netdev *device) {
+    return device==&fixture_net?0:-EINVAL;
+}
+int nas_netdev_stats_snapshot(const struct nas_netdev *device,
+                              struct nas_netdev_stats *out) {
+    if(device!=&fixture_net || !out)return -EINVAL;
+    *out=device->stats;return 0;
+}
 unsigned nas_lwip_guest_dns_snapshot(uint32_t out[NAS_LWIP_DNS_SERVER_LIMIT]) {
     if(!out)return 0;
     for(unsigned i=0;i<NAS_LWIP_DNS_SERVER_LIMIT;i++)out[i]=fixture_dns[i];
@@ -147,7 +164,15 @@ static void check_live_dns(void) {
            inverse.kind==NAS_PROC_NET_RESOLV);
     assert(nas_proc_lookup("/proc/net/naseed-resolv.conf",&inverse) &&
            inverse.kind==NAS_PROC_NET_RESOLV);
-    assert(!nas_proc_child(net,1,name,&inverse));
+    struct nas_proc_node netdev={0};
+    assert(nas_proc_child(net,1,name,&netdev) && !strcmp(name,"dev"));
+    assert(nas_proc_lookup("/proc/net/dev",&inverse) &&
+           inverse.kind==NAS_PROC_NET_DEV);
+    assert(nas_proc_find_child(nas_proc_ino(net),"dev",&inverse) &&
+           inverse.kind==NAS_PROC_NET_DEV);
+    assert(nas_proc_node_from_ino(nas_proc_ino(netdev),&inverse) &&
+           inverse.kind==NAS_PROC_NET_DEV);
+    assert(!nas_proc_child(net,2,name,&inverse));
     assert(!nas_proc_find_child(nas_proc_ino(net),"other",&inverse));
     assert(!nas_proc_lookup("/proc/net/naseed-resolv.conf/other",&inverse));
     assert(!nas_proc_is_dir(resolver) && (nas_proc_mode(resolver)&0222U)==0);
@@ -178,6 +203,32 @@ static void check_live_dns(void) {
     assert(!memcmp(actual,changed,strlen(changed)));
     fixture_dns[0]=0;fixture_dns_count=0;
     assert(nas_proc_read(resolver,0,actual,sizeof(actual))==0);
+    char stats_text[1024]={0};
+    int64_t stats_bytes=nas_proc_read(netdev,0,(uint8_t *)stats_text,
+                                     sizeof(stats_text)-1);
+    assert(stats_bytes>0 && strstr(stats_text,"Inter-|") &&
+           !strstr(stats_text,"eth0:"));
+    fixture_net.stats=(struct nas_netdev_stats){
+        .rx_bytes=4196,.rx_packets=8,.rx_dropped=2,
+        .tx_bytes=1234,.tx_packets=4,.tx_errors=1};
+    fixture_net_visible=true;
+    memset(stats_text,0,sizeof(stats_text));
+    stats_bytes=nas_proc_read(netdev,0,(uint8_t *)stats_text,
+                              sizeof(stats_text)-1);
+    assert(stats_bytes>0 && strstr(stats_text,"eth0: 4196 8 0 2 0 0 0 0 1234 4 1 0 0 0 0 0"));
+    char one_byte=0;
+    for(int64_t off=0;off<stats_bytes;off++) {
+        assert(nas_proc_read(netdev,(uint64_t)off,(uint8_t *)&one_byte,1)==1);
+        assert(one_byte==stats_text[off]);
+    }
+    assert(nas_proc_read(netdev,(uint64_t)stats_bytes,
+                         (uint8_t *)&one_byte,1)==0);
+    fixture_net.stats.rx_packets=9;
+    memset(stats_text,0,sizeof(stats_text));
+    assert(nas_proc_read(netdev,0,(uint8_t *)stats_text,
+                         sizeof(stats_text)-1)>0);
+    assert(strstr(stats_text,"eth0: 4196 9 0 2"));
+    fixture_net_visible=false;
 }
 #else
 static void check_live_dns(void) {
@@ -187,6 +238,11 @@ static void check_live_dns(void) {
     assert(nas_proc_lookup("/proc/net/naseed-resolv.conf",&resolver));
     uint8_t data[48]={0};
     assert(nas_proc_read(resolver,0,data,sizeof(data))==0);
+    struct nas_proc_node dev={0};
+    assert(nas_proc_lookup("/proc/net/dev",&dev));
+    char empty[512]={0};
+    assert(nas_proc_read(dev,0,(uint8_t *)empty,sizeof(empty)-1)>0);
+    assert(strstr(empty,"Inter-|") && !strstr(empty,"eth0:"));
 }
 #endif
 /* Compare exact offset reads, not just a prefix in a 1536-byte stack buffer.

@@ -16,6 +16,7 @@
 #include "../ipc/sysv.h"
 #ifdef NAS_ENABLE_LWIP
 #include "../../ports/lwip/network_boot.h"
+#include "../drivers/port/net.h"
 #endif
 #include <stdint.h>
 #include <stdbool.h>
@@ -79,6 +80,9 @@ bool nas_proc_lookup(const char *path,struct nas_proc_node *out) {
     if(!strcmp(path,"/proc/net")) {out->kind=NAS_PROC_NET_DIR;return true;}
     if(!strcmp(path,"/proc/net/naseed-resolv.conf")) {
         out->kind=NAS_PROC_NET_RESOLV;return true;
+    }
+    if(!strcmp(path,"/proc/net/dev")) {
+        out->kind=NAS_PROC_NET_DEV;return true;
     }
     if(!strcmp(path,"/proc/sys")) {out->kind=NAS_PROC_SYS_DIR;return true;}
     if(!strcmp(path,"/proc/sys/kernel")) {out->kind=NAS_PROC_SYS_KERNEL_DIR;return true;}
@@ -159,6 +163,7 @@ bool nas_proc_node_from_ino(uint64_t ino,struct nas_proc_node *out) {
         case NAS_PROC_SYSVIPC_DIR:case NAS_PROC_SYSVIPC_SHM:
         case NAS_PROC_SYSVIPC_SEM:case NAS_PROC_SYSVIPC_MSG:
         case NAS_PROC_NET_DIR:case NAS_PROC_NET_RESOLV:
+        case NAS_PROC_NET_DEV:
             node.kind=(uint8_t)kind;break;
         default:return false;
         }
@@ -345,10 +350,11 @@ bool nas_proc_child(struct nas_proc_node directory,unsigned index,
         return true;
     }
     if(directory.kind==NAS_PROC_NET_DIR) {
-        if(index)return false;
-        const char *s="naseed-resolv.conf";
+        if(index>=2)return false;
+        const char *s=index==0?"naseed-resolv.conf":"dev";
         unsigned i=0;do{name[i]=s[i];}while(s[i++]);
-        *node=(struct nas_proc_node){NAS_PROC_NET_RESOLV,0,0,0};
+        *node=(struct nas_proc_node){
+            index==0?NAS_PROC_NET_RESOLV:NAS_PROC_NET_DEV,0,0,0};
         return true;
     }
     if(directory.kind==NAS_PROC_FD_DIR ||
@@ -638,6 +644,40 @@ static void mount_decimal(struct nas_mount_stream *s,uint64_t n) {
     while(n && count<sizeof(digits));
     while(count)mount_ch(s,digits[--count]);
 }
+/* Linux /proc/net/dev exposes real Ethernet-device byte/packet totals, not
+ * synthetic network activity. The shared netdev adapter counts frames at
+ * driver TX submission and accepted RX callbacks, so all three ISAs share
+ * the exact same source of truth. Fields with no hardware statistic (FIFO,
+ * collisions, compressed, multicast, carrier) are zero by definition until
+ * their drivers expose those optional counters. Stream instead of copying
+ * into the small scalar /proc buffer: 8 NICs can exceed its 1536 bytes. */
+static int64_t proc_netdev_read(uint64_t offset,uint8_t *output,unsigned size) {
+    if(!size)return 0;
+    struct nas_mount_stream s={.skip=offset,.output=output,.capacity=size};
+    mount_word(&s,"Inter-|   Receive                                                |  Transmit\n");
+    mount_word(&s," face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n");
+#ifdef NAS_ENABLE_LWIP
+    for(unsigned ordinal=0;;ordinal++) {
+        struct nas_netdev *device=nas_netdev_get_ordinal(ordinal);
+        if(!device)break;
+        struct nas_netdev_stats stats;
+        int rc=nas_netdev_stats_snapshot(device,&stats);
+        if(!rc) {
+            mount_word(&s,"  ");mount_word(&s,device->name);mount_word(&s,": ");
+            mount_decimal(&s,stats.rx_bytes);mount_ch(&s,' ');
+            mount_decimal(&s,stats.rx_packets);mount_word(&s," 0 ");
+            mount_decimal(&s,stats.rx_dropped);mount_word(&s," 0 0 0 0 ");
+            mount_decimal(&s,stats.tx_bytes);mount_ch(&s,' ');
+            mount_decimal(&s,stats.tx_packets);mount_ch(&s,' ');
+            mount_decimal(&s,stats.tx_errors);mount_word(&s," 0 0 0 0 0\n");
+        }
+        (void)nas_netdev_put(device);
+        if(rc)return s.produced?(int64_t)s.produced:rc;
+        if(s.produced==size)return (int64_t)size;
+    }
+#endif
+    return (int64_t)s.produced;
+}
 static uint64_t lock_owner_pid(const void *owner) {
     if(!owner)return 0;
     for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
@@ -686,6 +726,8 @@ int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
         return proc_mounts_read(offset,output,size);
     if(node.kind==NAS_PROC_LOCKS)
         return proc_locks_read(offset,output,size);
+    if(node.kind==NAS_PROC_NET_DEV)
+        return proc_netdev_read(offset,output,size);
     char data[LIMIT];struct writer w={data,0,LIMIT};
     if(node.kind==NAS_PROC_FD_LINK || node.kind==NAS_PROC_PID_CWD_LINK)
         return -EINVAL;
