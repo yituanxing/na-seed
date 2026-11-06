@@ -133,8 +133,12 @@ if [ "$profile" = m205 ]; then
                 # NOT valid cache entries for --no-network add. apk cache
                 # download writes the signed metadata-hash-suffixed names
                 # which the native guest solver recognizes as cached packages.
-                apk --arch "$APK_ARCH" --root /target \
-                    --cache-dir /var/cache/apk --keys-dir /etc/apk/keys \
+                # Like `apk update` above, address the MOUNTED cache
+                # directly from this container. `--root /target` silently
+                # selected the Docker-local cache during `cache download`:
+                # all 76 downloads succeeded but NONE reached /target.
+                apk --arch "$APK_ARCH" \
+                    --cache-dir /target/var/cache/apk --keys-dir /etc/apk/keys \
                     -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main \
                     -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
                     cache download --available $APK_PACKAGES
