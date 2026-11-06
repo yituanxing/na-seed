@@ -14,6 +14,8 @@ on:
   # generation, transactional rollback and CAP_NET_ADMIN on original nft ELF.
   # M209: verify musl's 20-byte rtnetlink GETLINK and real Netlink recvfrom
   # against original signed iperf2/nft in first and independently reopened QEMU.
+  # M211: validate Linux-oracle exact nft -c/add/list/delete Netlink frames,
+  # stable real table handle and filtered empty NFT dumps on all three ISAs.
   push:
     branches: [naseed-app-batch2]
     paths:

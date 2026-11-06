@@ -10,6 +10,7 @@
 #include "../task/capability.h"
 #include "../errno.h"
 #include "../lib/string.h"
+#include "../drivers/serial.h"
 
 #define NLMSG_NOOP 1U
 #define NLMSG_ERROR 2U
@@ -39,6 +40,7 @@
 #define NFATTR_TABLE_NAME 1U
 #define NFATTR_TABLE_FLAGS 2U
 #define NFATTR_TABLE_USE 3U
+#define NFATTR_TABLE_HANDLE 4U
 #define NFATTR_GEN_ID 1U
 #define NFATTR_BATCH_GENID 1U
 #define NFPROTO_UNSPEC 0U
@@ -63,7 +65,11 @@
 #define NF_SNDBUF_MIN 2048U
 #define NF_SNDBUF_MAX 262144U
 
-struct nf_table { uint8_t family; char name[NF_TABLE_NAME_BYTES]; };
+struct nf_table {
+    uint8_t family;
+    uint64_t handle;
+    char name[NF_TABLE_NAME_BYTES];
+};
 struct nf_reply { uint16_t len; uint8_t data[NF_REPLY_BYTES]; };
 struct nf_batch_operation {
     uint8_t original_header[16];
@@ -73,6 +79,7 @@ struct nf_batch_operation {
 struct nf_batch {
     bool active,failed,changed;
     uint32_t starting_generation;
+    uint64_t next_table_handle;
     unsigned count;
     struct nf_table tables[NF_TABLE_LIMIT];
     unsigned table_count;
@@ -93,7 +100,13 @@ static struct nf_batch batch_scratch;
 static struct nf_table global_tables[NF_TABLE_LIMIT];
 static unsigned global_table_count;
 static uint32_t global_generation=1;
+static uint64_t global_next_table_handle=1;
 static uint32_t next_port_id=UINT32_C(0x50000000);
+/* Host fixtures prove the table state machine, but the original Alpine nft
+ * may emit a different sequence (notably during `nft -c -f`).  A bounded
+ * wire-level rejection record identifies the exact type/flags/first NLA
+ * on genuine QEMU without dumping kernel or userspace memory. */
+static unsigned rejected_noent_traces;
 
 static uint16_t rd16(const uint8_t *p) {
     return (uint16_t)((unsigned)p[0]|((unsigned)p[1]<<8));
@@ -114,6 +127,10 @@ static void wr32(uint8_t *p,uint32_t v) {
 static void wb32(uint8_t *p,uint32_t v) {
     p[0]=(uint8_t)(v>>24);p[1]=(uint8_t)(v>>16);
     p[2]=(uint8_t)(v>>8);p[3]=(uint8_t)v;
+}
+static void wb64(uint8_t *p,uint64_t v) {
+    wb32(p,(uint32_t)(v>>32));
+    wb32(p+4,(uint32_t)v);
 }
 static unsigned align4(unsigned n) {return (n+3U)&~3U;}
 static bool valid_family(uint8_t family) {
@@ -263,7 +280,7 @@ static void table_reply(struct nf_socket *s,uint32_t seq,
                         const struct nf_table *t,bool multi,uint16_t op) {
     const unsigned name_bytes=(unsigned)strlen(t->name)+1U;
     const unsigned n=align4(4U+name_bytes);
-    const unsigned total=20U+n+16U;
+    const unsigned total=20U+n+28U;
     struct nf_reply *r=header(s,total,(NFNL_NFTABLES<<8)|op,
                                multi ? NLM_F_MULTI:0,seq);
     r->data[16]=t->family;
@@ -275,10 +292,15 @@ static void table_reply(struct nf_socket *s,uint32_t seq,
     wr16(r->data+22,NFATTR_TABLE_NAME);
     memcpy(r->data+24,t->name,name_bytes);
     const unsigned off=20U+n;
-    wr16(r->data+off,8);wr16(r->data+off+2,NFATTR_TABLE_FLAGS);
-    wb32(r->data+off+4,0); /* zero flags: no table hooks configured */
-    wr16(r->data+off+8,8);wr16(r->data+off+10,NFATTR_TABLE_USE);
-    wb32(r->data+off+12,0); /* zero chains, genuinely no references */
+    /* Linux nf_tables_fill_table_info emits NAME, USE, HANDLE, FLAGS in
+     * that order.  A stable nonzero handle belongs to each registered
+     * table and is not invented separately when userspace reads it. */
+    wr16(r->data+off,8);wr16(r->data+off+2,NFATTR_TABLE_USE);
+    wb32(r->data+off+4,0); /* zero chains, genuinely no references */
+    wr16(r->data+off+8,12);wr16(r->data+off+10,NFATTR_TABLE_HANDLE);
+    wb64(r->data+off+12,t->handle);
+    wr16(r->data+off+20,8);wr16(r->data+off+22,NFATTR_TABLE_FLAGS);
+    wb32(r->data+off+24,0); /* zero flags: no table hooks configured */
 }
 static int locate(const struct nf_table *tables,unsigned count,
                   uint8_t family,const char *name) {
@@ -336,9 +358,59 @@ static int read_batch_genid(const uint8_t *data,unsigned size,
     }
     return 0;
 }
+/* An empty ruleset still accepts real nf_tables filtered dumps.  In
+ * particular, libnftnl sends NFTA_SET_TABLE for `nft list table ...`; a
+ * filtered request is not an unsupported operation merely because it has
+ * attributes after nfgenmsg.  Validate the complete NLA stream before
+ * returning an honest empty NLMSG_DONE; no chain/rule/set is fabricated. */
+static int read_empty_dump_attrs(const uint8_t *data,unsigned size,
+                                 uint16_t operation) {
+    /* These are the distinct UAPI attribute IDs for each operation:
+     * CHAIN TABLE=1 NAME=3; RULE TABLE=1 CHAIN=2;
+     * SET TABLE=1; SETELEM TABLE=1 SET=2;
+     * OBJ TABLE=1 TYPE=3; FLOWTABLE TABLE=1 NAME=2. */
+    unsigned second=0,numeric=0;
+    switch(operation) {
+    case NFT_GETCHAIN:second=3;break;
+    case NFT_GETRULE:second=2;break;
+    case NFT_GETSET:break;
+    case NFT_GETSETELEM:second=2;break;
+    case NFT_GETOBJ:numeric=3;break;
+    case NFT_GETFLOWTABLE:second=2;break;
+    default:return -EOPNOTSUPP;
+    }
+    bool seen_table=false,seen_second=false,seen_number=false;
+    unsigned off=0;
+    while(off<size) {
+        if(size-off<4)return -EINVAL;
+        const unsigned length=rd16(data+off);
+        const unsigned type=rd16(data+off+2)&0x3fffU;
+        if(length<4 || length>size-off)return -EINVAL;
+        if(type==1U || (second && type==second)) {
+            bool *seen=type==1U?&seen_table:&seen_second;
+            const unsigned text_len=length-4U;
+            if(*seen || text_len<2U || text_len>NF_TABLE_NAME_BYTES)
+                return -EINVAL;
+            const uint8_t *name=data+off+4;
+            if(name[text_len-1U])return -EINVAL;
+            for(unsigned i=0;i<text_len-1U;i++)
+                if(!name[i])return -EINVAL;
+            *seen=true;
+        } else if(numeric && type==numeric) {
+            /* NFTA_OBJ_TYPE is a network-order U32.  Unknown selectors
+             * must not be silently treated as an empty successful dump. */
+            if(seen_number || length!=8U)return -EINVAL;
+            if(be32(data+off+4)>10U)return -EOPNOTSUPP;
+            seen_number=true;
+        } else return -EOPNOTSUPP;
+        off+=align4(length);
+        if(off>size)return -EINVAL;
+    }
+    return 0;
+}
 static int table_update(struct nf_table *tables,unsigned *count,
                         uint8_t family,const char *name,uint16_t operation,
-                        uint16_t flags,bool *changed) {
+                        uint16_t flags,uint64_t *next_handle,bool *changed) {
     int index=locate(tables,*count,family,name);
     if(operation==NFT_NEWTABLE) {
         if(index>=0) {
@@ -347,10 +419,17 @@ static int table_update(struct nf_table *tables,unsigned *count,
             /* idempotent create with no requested change */
             return 0;
         }
-        if(!(flags&NLM_F_CREATE))return -ENOENT;
+        /* Linux nf_tables_newtable permits an unflagged NFT_NEWTABLE to
+         * create a missing table. This is not hypothetical: official Alpine
+         * nft's `nft -c -f` emits exactly NLM_F_REQUEST (without CREATE or
+         * ACK), staging the table in a BEGIN-without-END dry-run batch.
+         * Requiring CREATE here wrongly returned ENOENT before the parser
+         * check could finish. EXCL still rejects existing tables above. */
         if(*count==NF_TABLE_LIMIT)return -ENOSPC;
+        if(!*next_handle)return -ENOSPC;
         struct nf_table *t=&tables[(*count)++];
         memset(t,0,sizeof(*t));t->family=family;
+        t->handle=(*next_handle)++;
         memcpy(t->name,name,strlen(name)+1U);
         *changed=true;
         return 0;
@@ -367,6 +446,28 @@ static bool admin_allowed(void) {
     return nas_current_task &&
        (nas_cap_effective(&nas_current_task->credentials)&
         NAS_CAP_NET_ADMIN)!=0;
+}
+static void trace_noent(const uint8_t *message,bool in_batch) {
+    if(rejected_noent_traces>=8U)return;
+    rejected_noent_traces++;
+    const uint32_t n=rd32(message);
+    nas_print("[NFT ENOENT] type=");nas_hex(rd16(message+4));
+    nas_print(" flags=");nas_hex(rd16(message+6));
+    nas_print(" family=");nas_dec(n>=20U?message[16]:255U);
+    nas_print(" batch=");nas_dec(in_batch?1U:0U);
+    nas_print(" length=");nas_dec(n);
+    nas_print(" attr=");nas_dec(n>=24U?rd16(message+22)&0x3fffU:0U);
+    nas_print(" name=");
+    if(n>=26U && rd16(message+20)>=6U &&
+       rd16(message+20)<=n-20U && rd16(message+22)==NFATTR_TABLE_NAME) {
+        const unsigned limit=rd16(message+20)-4U;
+        for(unsigned i=0;i<limit && i<32U && message[24+i];i++) {
+            const uint8_t c=message[24+i];
+            nas_putchar(c>=32U && c<127U?(char)c:'?');
+        }
+    }
+    nas_print(" gen=");nas_dec(global_generation);
+    nas_putchar('\n');
 }
 static bool batch_subsystem(const uint8_t *message) {
     /* libnftnl's older batch helper encoded res_id in host order, while
@@ -400,7 +501,9 @@ static int handle_nft(struct nf_socket *s,const uint8_t *message,
         /* No configured chains/rules/sets/objects/flowtables can exist while
          * their creation requests are rejected. Empty dump is therefore an
          * accurate registry result, not a fabricated success payload. */
-        if(batch->active || !dump || length!=20)return -EOPNOTSUPP;
+        if(batch->active || !dump)return -EOPNOTSUPP;
+        int rc=read_empty_dump_attrs(message+20,length-20,operation);
+        if(rc)return rc;
         if(!room(s,1U+((flags&NLM_F_ACK)!=0)))return -EAGAIN;
         done(s,seq);
         if(flags&NLM_F_ACK)ack(s,message,0);
@@ -448,20 +551,28 @@ static int handle_nft(struct nf_socket *s,const uint8_t *message,
         memcpy(op->original_header,message,16);
         op->ack=(flags&NLM_F_ACK)!=0;op->error=0;
         op->error=table_update(batch->tables,&batch->table_count,family,
-                               attrs.name,operation,flags,&batch->changed);
+                               attrs.name,operation,flags,
+                               &batch->next_table_handle,&batch->changed);
         if(op->error)batch->failed=true;
         return 0;
     }
     if(!room(s,1U+((flags&NLM_F_ECHO)!=0)))return -EAGAIN;
+    struct nf_table echo_table={.family=family};
+    if((flags&NLM_F_ECHO) && operation==NFT_DELTABLE) {
+        int index=locate(global_tables,global_table_count,family,attrs.name);
+        if(index>=0)echo_table=global_tables[index];
+    }
     bool changed=false;
     rc=table_update(global_tables,&global_table_count,family,attrs.name,
-                    operation,flags,&changed);
+                    operation,flags,&global_next_table_handle,&changed);
     if(rc)return rc;
     if(changed)global_generation++;
     if(flags&NLM_F_ECHO) {
-        struct nf_table table={.family=family};
-        memcpy(table.name,attrs.name,strlen(attrs.name)+1U);
-        table_reply(s,seq,&table,false,operation);
+        if(operation==NFT_NEWTABLE) {
+            int index=locate(global_tables,global_table_count,family,attrs.name);
+            if(index>=0)echo_table=global_tables[index];
+        }
+        table_reply(s,seq,&echo_table,false,operation);
     }
     if(flags&NLM_F_ACK)ack(s,message,0);
     return 0;
@@ -489,6 +600,7 @@ static int finish_batch(struct nf_socket *s,bool commit,
         global_table_count=b->table_count;
         memcpy(global_tables,b->tables,
                b->table_count*sizeof(*global_tables));
+        global_next_table_handle=b->next_table_handle;
         global_generation++;
     }
     for(unsigned i=0;i<b->count;i++) {
@@ -560,6 +672,7 @@ int64_t nas_netlink_filter_sendto(unsigned slot,const uint8_t *bytes,
                     struct nf_batch *b=&batch_scratch;
                     memset(b,0,sizeof(*b));b->active=true;
                     b->starting_generation=global_generation;
+                    b->next_table_handle=global_next_table_handle;
                     b->table_count=global_table_count;
                     memcpy(b->tables,global_tables,
                            global_table_count*sizeof(*global_tables));
@@ -574,6 +687,7 @@ int64_t nas_netlink_filter_sendto(unsigned slot,const uint8_t *bytes,
         } else if(type==NLMSG_NOOP)rc=0;
         else rc=handle_nft(s,msg,n,type,flags);
         if(rc) {
+            if(rc==-ENOENT)trace_noent(msg,batch_scratch.active);
             if(batch_scratch.active && batch_scratch.count<NF_BATCH_OPS) {
                 /* Linux nfnetlink collects both successful ACK requests
                  * and errors, then emits them in request order after the
