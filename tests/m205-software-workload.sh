@@ -167,9 +167,19 @@ probe() {
                 /bin/busybox grep -Eq '[0-9]' "$target/out"
             ;;
         bounded-loopback-traffic:usr/sbin/iftop)
-            # The tool must capture actual traffic, not display --help.
-            /bin/busybox ping -c 1 -W 2 10.0.2.2 > "$target/ping" 2>&1 || :
-            /usr/sbin/iftop -t -s 3 -i eth0 > "$target/out" 2>&1 &&
+            # The original libpcap reader must observe real packets DURING
+            # capture; sending a single ping before opening the socket
+            # cannot establish live traffic. Do not count a help screen.
+            (
+                /bin/busybox sleep 1
+                /bin/busybox ping -c 6 -i 0.3 -W 1 10.0.2.2 \
+                    > "$target/ping" 2>&1
+            ) &
+            ping_pid=$!
+            /usr/sbin/iftop -t -s 3 -i eth0 > "$target/out" 2>&1
+            capture_rc=$?
+            wait "$ping_pid" || :
+            test "$capture_rc" -eq 0 &&
                 /bin/busybox grep -Fq '10.0.2.' "$target/out"
             ;;
         controlled-ssh-authentication:usr/bin/sshpass)

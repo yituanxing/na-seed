@@ -37,10 +37,10 @@
 #define MSG_TRUNC_LINUX 32U
 #define MSG_DONTWAIT_LINUX 64U
 #define NETLINK_REPLY_QUEUE (NAS_LWIP_GUEST_IF_LIMIT + 1U)
-#define NETLINK_ROUTE_REPLY_SIZE 64U
+#define NETLINK_ROUTE_REPLY_SIZE 384U
 /* Linux inet_diag_msg is 72 bytes, plus a 16-byte nlmsghdr. */
 #define NETLINK_DIAG_REPLY_SIZE 96U
-#define NETLINK_REPLY_SIZE NETLINK_DIAG_REPLY_SIZE
+#define NETLINK_REPLY_SIZE NETLINK_ROUTE_REPLY_SIZE
 /* SO_SNDBUF is an admission quota for the synchronous user->kernel request,
  * not a claim that the kernel has allocated this many queued TX bytes. */
 #define NETLINK_SNDBUF_MIN 2048U
@@ -53,13 +53,25 @@
 #define IFF_LOWER_UP_LINUX 0x10000U
 #define IFLA_IFNAME_LINUX 3U
 #define IFLA_MTU_LINUX 4U
+#define IFLA_STATS_LINUX 7U
+#define IFLA_STATS64_LINUX 23U
+#define RTNL_LINK_STATS32_FIELDS 24U
+#define RTNL_LINK_STATS64_FIELDS 25U
+/* Longest IFNAMSIZ-1 name (16 bytes including terminator): base 32 +
+ * padded name 20 + MTU 8 + stats64 204 + stats32 100 = 364 bytes.
+ * The queue's physical backing must hold every route datagram, even
+ * when a SOCK_DIAG reservation is charged at its smaller 96-byte size. */
+_Static_assert(NETLINK_ROUTE_REPLY_SIZE>=364U,
+               "route reply must fit full Linux 64/32-bit NIC statistics");
+_Static_assert(NETLINK_ROUTE_REPLY_SIZE>=NETLINK_DIAG_REPLY_SIZE,
+               "route reply backing must fit inet_diag message");
 #define PORT_POLLIN 1U
 #define PORT_POLLOUT 4U
 #define PORT_POLLERR 8U
 
 struct netlink_reply {
     uint8_t bytes[NETLINK_REPLY_SIZE];
-    uint8_t length;
+    uint16_t length;
 };
 struct netlink_socket {
     bool owned,bound;
@@ -86,6 +98,9 @@ static void put16(uint8_t *p,uint16_t v) {
 static void put32(uint8_t *p,uint32_t v) {
     p[0]=(uint8_t)v;p[1]=(uint8_t)(v>>8);
     p[2]=(uint8_t)(v>>16);p[3]=(uint8_t)(v>>24);
+}
+static void put64(uint8_t *p,uint64_t v) {
+    put32(p,(uint32_t)v);put32(p+4,(uint32_t)(v>>32));
 }
 static struct netlink_socket *live(unsigned slot) {
     return slot<NAS_OPEN_FILE_LIMIT && sockets[slot].owned &&
@@ -258,16 +273,22 @@ static void enqueue_addr(struct netlink_socket *s,uint32_t seq,
     }
 }
 static void enqueue_link(struct netlink_socket *s,uint32_t seq,
-                         const struct nas_lwip_guest_if *iface) {
+                         const struct nas_lwip_guest_if *iface,
+                         const struct nas_netdev_stats *stats) {
     struct netlink_reply *r=enqueue(s);
-    /* Linux UAPI: nlmsghdr(16) + ifinfomsg(16) + IFLA_IFNAME + IFLA_MTU.
-     * IFNAMSIZ bounds the padded record to 60 bytes inside the 64-byte
-     * reply slot. All attributes come from the one native lwIP snapshot. */
+    /* Linux UAPI: nlmsghdr(16) + ifinfomsg(16), name, MTU, optional
+     * 25x64-bit and 24x32-bit link statistics. The latter are genuine
+     * pinned-device counters captured before any multipart reply is queued.
+     * There is presently no loopback byte/packet instrumentation, so omit
+     * statistics attributes for lo rather than invent counters for it. */
     const unsigned name_len=(unsigned)strnlen(iface->name,
                                              NAS_LWIP_DEVICE_NAME_MAX)+1U;
     const unsigned padded_name=(4U+name_len+3U)&~3U;
     const unsigned mtu_off=32U+padded_name;
-    r->length=(uint8_t)(mtu_off+8U);
+    const unsigned stats64_off=mtu_off+8U;
+    const unsigned stats32_off=stats64_off+4U+RTNL_LINK_STATS64_FIELDS*8U;
+    r->length=(uint16_t)(stats ? stats32_off+4U+
+                        RTNL_LINK_STATS32_FIELDS*4U : stats64_off);
     make_nlmsg(r->bytes,r->length,RTM_NEWLINK_LINUX,seq,s->port_id);
     r->bytes[16]=AF_UNSPEC_LINUX;
     put16(r->bytes+18,iface->loopback ? ARPHRD_LOOPBACK_LINUX :
@@ -284,6 +305,26 @@ static void enqueue_link(struct netlink_socket *s,uint32_t seq,
     put16(r->bytes+mtu_off,8);
     put16(r->bytes+mtu_off+2,IFLA_MTU_LINUX);
     put32(r->bytes+mtu_off+4,iface->mtu);
+    if(!stats)return;
+    put16(r->bytes+stats64_off,4U+RTNL_LINK_STATS64_FIELDS*8U);
+    put16(r->bytes+stats64_off+2,IFLA_STATS64_LINUX);
+    put16(r->bytes+stats32_off,4U+RTNL_LINK_STATS32_FIELDS*4U);
+    put16(r->bytes+stats32_off+2,IFLA_STATS_LINUX);
+    /* struct rtnl_link_stats64 / rtnl_link_stats field order:
+     * rx_packets,tx_packets,rx_bytes,tx_bytes,rx_errors,tx_errors,
+     * rx_dropped,tx_dropped,... . Counters without device sources remain
+     * zero, exactly as a Linux driver with no optional hardware counters.
+     * Preserve full 64-bit values, truncate only the 32-bit compatibility
+     * projection, and do not count IRQ events or rejected TX as packets. */
+    const uint64_t fields[8]={
+        stats->rx_packets,stats->tx_packets,
+        stats->rx_bytes,stats->tx_bytes,
+        0,stats->tx_errors,stats->rx_dropped,0
+    };
+    for(unsigned i=0;i<8;i++) {
+        put64(r->bytes+stats64_off+4U+i*8U,fields[i]);
+        put32(r->bytes+stats32_off+4U+i*4U,(uint32_t)fields[i]);
+    }
 }
 static void enqueue_done(struct netlink_socket *s,uint32_t seq) {
     struct netlink_reply *r=enqueue(s);
@@ -412,6 +453,7 @@ int64_t nas_netlink_route_sendto(unsigned slot,const uint8_t *bytes,
 
     if(type==RTM_GETLINK_LINUX) {
         struct nas_lwip_guest_if links[NAS_LWIP_GUEST_IF_LIMIT]={0};
+        struct nas_netdev_stats stats[NAS_LWIP_GUEST_IF_LIMIT]={0};
         const unsigned count=nas_lwip_guest_if_snapshot(links);
         if(!count || count>NAS_LWIP_GUEST_IF_LIMIT)return -EIO;
         for(unsigned i=0;i<count;i++) {
@@ -426,13 +468,25 @@ int64_t nas_netlink_route_sendto(unsigned slot,const uint8_t *bytes,
             } else if(iface->loopback || iface->ifindex==1)return -EIO;
             for(unsigned j=0;j<i;j++)
                 if(links[j].ifindex==iface->ifindex)return -EIO;
+            if(!iface->loopback) {
+                /* Exactly one authoritative one-shot Ethernet statistics
+                 * snapshot per link: no re-resolution after reply enqueue.
+                 * A concurrent NIC removal must not yield a partial dump. */
+                struct nas_netdev *dev=nas_netdev_get(iface->name);
+                if(!dev)return -ENODEV;
+                int read_rc=nas_netdev_stats_snapshot(dev,&stats[i]);
+                int put_rc=nas_netdev_put(dev);
+                if(read_rc || put_rc)return read_rc ? read_rc:put_rc;
+            }
         }
         if(!can_enqueue(s,count+1U))return -EAGAIN;
         if(!s->bound) {
             rc=allocate_port(s,0);
             if(rc)return rc;
         }
-        for(unsigned i=0;i<count;i++)enqueue_link(s,seq,&links[i]);
+        for(unsigned i=0;i<count;i++)
+            enqueue_link(s,seq,&links[i],
+                         links[i].loopback ? NULL:&stats[i]);
         enqueue_done(s,seq);
         return length;
     }

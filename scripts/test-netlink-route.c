@@ -10,6 +10,7 @@
 #include "../kernel/errno.h"
 #include "../ports/lwip/network_boot.h"
 #include "../ports/lwip/socket_port.h"
+#include "../kernel/drivers/port/net.h"
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -28,7 +29,37 @@ int nas_lwip_tcp_listeners_snapshot(struct nas_lwip_tcp_listener *out,
     for(int i=0;i<diag_fixture_count;i++)out[i]=diag_fixture[i];
     return diag_fixture_count;
 }
-static bool full_snapshot,second_addressed=true;
+static bool full_snapshot,second_addressed=true,long_name_mode;
+/* Route statistics must share real NetDevice ownership, not the DHCP/IP
+ * snapshot alone. This fixture emulates the pinned network-device port's
+ * stable names and supplies deliberately nontrivial, >32-bit counters.
+ * Production uses nas_netdev_get/stats_snapshot/put from the real registry. */
+static struct nas_netdev stats_devices[NAS_NETDEV_LIMIT];
+static char stats_names[NAS_NETDEV_LIMIT][5];
+static unsigned stats_pin_count,stats_snapshot_count;
+struct nas_netdev *nas_netdev_get(const char *name) {
+    for(unsigned i=0;i<NAS_NETDEV_LIMIT;i++)
+        if(stats_devices[i].registered &&
+           !strcmp(stats_devices[i].name,name)) {
+            stats_devices[i].refs++;
+            stats_pin_count++;
+            return &stats_devices[i];
+        }
+    return NULL;
+}
+int nas_netdev_put(struct nas_netdev *device) {
+    if(!device || !device->refs)return -EINVAL;
+    device->refs--;
+    stats_pin_count--;
+    return 0;
+}
+int nas_netdev_stats_snapshot(const struct nas_netdev *device,
+                              struct nas_netdev_stats *out) {
+    if(!device || !device->registered || !out)return -ENODEV;
+    *out=device->stats;
+    stats_snapshot_count++;
+    return 0;
+}
 unsigned nas_lwip_guest_ipv4_ifconf(
     struct nas_lwip_guest_ipv4_if out[NAS_LWIP_GUEST_IF_LIMIT]) {
     if(!out)return 0;
@@ -70,6 +101,8 @@ unsigned nas_lwip_guest_if_snapshot(
         struct nas_lwip_guest_if *nic=&out[i];
         nic->name[0]='e';nic->name[1]='t';nic->name[2]='h';
         nic->name[3]=(char)('0'+i-1U);
+        if(long_name_mode && i==1)
+            memcpy(nic->name,"eth012345678901",16);
         nic->ifindex=full_snapshot?100U+i:i+1U;
         nic->mtu=1500;
         nic->up=true;
@@ -96,6 +129,9 @@ static uint16_t rd16(const uint8_t *p) {
 static uint32_t rd32(const uint8_t *p) {
     return (uint32_t)p[0]|((uint32_t)p[1]<<8)|
            ((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);
+}
+static uint64_t rd64(const uint8_t *p) {
+    return rd32(p)|((uint64_t)rd32(p+4)<<32);
 }
 static void wr16(uint8_t *p,uint16_t value) {
     p[0]=(uint8_t)value;p[1]=(uint8_t)(value>>8);
@@ -124,7 +160,14 @@ static void expect_newlink(const uint8_t *reply,uint32_t port,
     const unsigned n=(unsigned)strlen(name)+1U;
     const unsigned attr=4U+n;
     const unsigned mtu_off=32U+((attr+3U)&~3U);
-    assert(rd32(reply)==mtu_off+8U && rd16(reply+4)==16);
+    const struct nas_netdev_stats *stats=NULL;
+    if(index!=1) {
+        const unsigned phy=(unsigned)(name[3]-'0');
+        assert(phy<NAS_NETDEV_LIMIT);
+        stats=&stats_devices[phy].stats;
+    }
+    assert(rd32(reply)==mtu_off+8U+(stats?304U:0U) &&
+           rd16(reply+4)==16);
     assert(rd16(reply+6)==2 && rd32(reply+8)==seq && rd32(reply+12)==port);
     assert(reply[16]==0 && rd16(reply+18)==type && rd32(reply+20)==index);
     assert(rd32(reply+24)==flags && rd32(reply+28)==0);
@@ -132,6 +175,25 @@ static void expect_newlink(const uint8_t *reply,uint32_t port,
     assert(!memcmp(reply+36,name,n));
     assert(rd16(reply+mtu_off)==8 && rd16(reply+mtu_off+2)==4 &&
            rd32(reply+mtu_off+4)==mtu);
+    if(stats) {
+        const unsigned off64=mtu_off+8U,off32=off64+204U;
+        assert(rd16(reply+off64)==204 && rd16(reply+off64+2)==23);
+        assert(rd16(reply+off32)==100 && rd16(reply+off32+2)==7);
+        const uint64_t values[8]={
+            stats->rx_packets,stats->tx_packets,stats->rx_bytes,
+            stats->tx_bytes,0,stats->tx_errors,stats->rx_dropped,0
+        };
+        for(unsigned i=0;i<8;i++) {
+            assert(rd64(reply+off64+4U+i*8U)==values[i]);
+            assert(rd32(reply+off32+4U+i*4U)==(uint32_t)values[i]);
+        }
+        /* Optional fields have no actual device data and must not receive
+         * fictitious positive packet, collision or error counts. */
+        for(unsigned i=8;i<25;i++)
+            assert(rd64(reply+off64+4U+i*8U)==0);
+        for(unsigned i=8;i<24;i++)
+            assert(rd32(reply+off32+4U+i*4U)==0);
+    }
 }
 static void expect_newaddr(const uint8_t *reply,uint32_t port,
                            uint32_t seq,unsigned index,uint8_t prefix,
@@ -145,6 +207,19 @@ static void expect_newaddr(const uint8_t *reply,uint32_t port,
     assert(!memcmp(reply+28,ip,4) && !memcmp(reply+36,ip,4));
 }
 int main(void) {
+    for(unsigned i=0;i<NAS_NETDEV_LIMIT;i++) {
+        stats_names[i][0]='e';stats_names[i][1]='t';
+        stats_names[i][2]='h';
+        stats_names[i][3]=(char)('0'+i);stats_names[i][4]=0;
+        stats_devices[i]=(struct nas_netdev){
+            .name=stats_names[i],.registered=true,
+            .stats={.rx_packets=UINT64_C(0x100000002)+i,
+                    .tx_packets=17+i,
+                    .rx_bytes=UINT64_C(0x200000003)+i*40U,
+                    .tx_bytes=2400+i,
+                    .rx_dropped=4+i,.tx_errors=2+i}
+        };
+    }
     const struct nas_file_ops *ops=nas_netlink_route_ops();
     assert(ops && ops->poll_description && ops->release);
     nas_open_files[11].refcount=1;
@@ -163,13 +238,13 @@ int main(void) {
     assert(nas_netlink_route_get_sndbuf(11,&sndbuf)==0 && sndbuf==262144);
     assert(nas_netlink_route_set_sndbuf(11,1)==0);
     uint32_t rcvbuf=0;
-    const uint32_t real_rx_bytes=(NAS_LWIP_GUEST_IF_LIMIT+1U)*64U;
+    const uint32_t real_rx_bytes=(NAS_LWIP_GUEST_IF_LIMIT+1U)*384U;
     assert(nas_netlink_route_get_rcvbuf(11,&rcvbuf)==0 &&
            rcvbuf==real_rx_bytes);
     assert(nas_netlink_route_get_rcvbuf(11,NULL)==-EINVAL);
     assert(nas_netlink_route_set_rcvbuf(11,1)==0);
-    assert(nas_netlink_route_get_rcvbuf(11,&rcvbuf)==0 && rcvbuf==64);
-    uint8_t addr[12],name[12],request[20],reply[64],source[12];
+    assert(nas_netlink_route_get_rcvbuf(11,&rcvbuf)==0 && rcvbuf==384);
+    uint8_t addr[12],name[12],request[20],reply[384],source[12];
     nl_sockaddr(addr,0,0x550); /* dnsmasq v2.91 multicast groups */
     assert(nas_netlink_route_bind(11,addr,12)==-EPERM);
     nl_sockaddr(addr,0,0);
@@ -177,7 +252,7 @@ int main(void) {
     assert(nas_netlink_route_bind(11,addr,12)==-EINVAL);
     getaddr(request,2,99);
     assert(nas_netlink_route_sendto(11,request,sizeof(request),addr,12)==
-           -EAGAIN); /* four records cannot fit one 64B RCVBUF */
+           -EAGAIN); /* four records cannot fit one 384B RCVBUF */
     getaddr(request,10,99);
     assert(nas_netlink_route_sendto(11,request,sizeof(request),addr,12)==20);
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
@@ -204,7 +279,7 @@ int main(void) {
            -EOPNOTSUPP);
     nl_sockaddr(addr,0,0);
     assert(nas_netlink_route_set_rcvbuf(11,64)==0);
-    assert(nas_netlink_route_get_rcvbuf(11,&rcvbuf)==0 && rcvbuf==128);
+    assert(nas_netlink_route_get_rcvbuf(11,&rcvbuf)==0 && rcvbuf==384);
     assert(nas_netlink_route_set_rcvbuf(11,UINT32_MAX)==0);
     /* A smaller SO_SNDBUF quota must actually reject an outbound datagram
      * that otherwise fits the provider's independent 4096-byte hard limit. */
@@ -244,8 +319,8 @@ int main(void) {
     assert(rd32(reply+8)==101 && rd32(reply+12)==4142);
     assert(!(ops->poll_description(11,1)&1));
 
-    /* RTM_GETLINK returns live native link metadata, including an exact
-     * IFLA_IFNAME and IFLA_MTU, never invented MACs or TX statistics. */
+    /* RTM_GETLINK reports both 64/32-bit genuine NIC counters, captured
+     * with a real registry pin; loopback has no false statistics. */
     uint8_t link_request[32];
     getlink(link_request,0,201);
     assert(nas_netlink_route_sendto(11,link_request,sizeof(link_request),
@@ -254,10 +329,10 @@ int main(void) {
                                     NULL,NULL)==48);
     expect_newlink(reply,4142,201,1,772,0x10049,"lo",65536);
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
-                                    NULL,NULL)==52);
+                                    NULL,NULL)==356);
     expect_newlink(reply,4142,201,2,1,0x10041,"eth0",1500);
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
-                                    NULL,NULL)==52);
+                                    NULL,NULL)==356);
     expect_newlink(reply,4142,201,3,1,0x10041,"eth1",1500);
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
                                     NULL,NULL)==20);
@@ -339,7 +414,7 @@ int main(void) {
                                    addr,12)==32);
     for(unsigned i=0;i<3;i++) {
         assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
-                                        NULL,NULL)==(i?52:48));
+                                        NULL,NULL)==(i?356:48));
         expect_newlink(reply,4142,202,i+1U,i?1U:772U,
                        i==2?1U:i?0x10041U:0x10049U,
                        i==0?"lo":i==1?"eth0":"eth1",i?1500U:65536U);
@@ -374,7 +449,7 @@ int main(void) {
                                    addr,12)==-EAGAIN);
     for(unsigned i=0;i<NAS_LWIP_GUEST_IF_LIMIT;i++) {
         assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
-                                        NULL,NULL)==(i?52:48));
+                                        NULL,NULL)==(i?356:48));
         char name[5]="eth0";
         if(i)name[3]=(char)('0'+i-1U);
         expect_newlink(reply,4142,205,i?100U+i:1U,i?1U:772U,
@@ -382,7 +457,42 @@ int main(void) {
     }
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
                                     NULL,NULL)==20);
+    assert(!stats_pin_count && stats_snapshot_count>0);
     full_snapshot=false;
+    /* The IFNAMSIZ-1 longest legal name drives the real maximum wire
+     * payload: 16+16+20+8+204+100=364 B. Its receive must fit and leave
+     * the adjacent destination canary untouched. */
+    long_name_mode=true;
+    stats_devices[0].name="eth012345678901";
+    getlink(link_request,0,207);
+    assert(nas_netlink_route_sendto(11,link_request,sizeof(link_request),
+                                   addr,12)==32);
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==48);
+    struct {uint8_t bytes[364];uint32_t canary;} exact_packet={
+        .canary=UINT32_C(0xfeedbabe)};
+    assert(nas_netlink_route_recvmsg(11,exact_packet.bytes,
+                                    sizeof(exact_packet.bytes),0,NULL,
+                                    NULL,NULL)==364);
+    assert(exact_packet.canary==UINT32_C(0xfeedbabe));
+    expect_newlink(exact_packet.bytes,4142,207,2,1,0x10041,
+                   "eth012345678901",1500);
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==356);
+    expect_newlink(reply,4142,207,3,1,0x10041,"eth1",1500);
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==20);
+    long_name_mode=false;
+    stats_devices[0].name=stats_names[0];
+    /* A concurrent NIC withdrawal while collecting the one-shot source
+     * data fails closed BEFORE any multipart reply is published. */
+    stats_devices[1].registered=false;
+    getlink(link_request,0,208);
+    assert(nas_netlink_route_sendto(11,link_request,sizeof(link_request),
+                                   addr,12)==-ENODEV);
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==-EAGAIN);
+    stats_devices[1].registered=true;
     getaddr(request,2,104);
     wr32(request,21);
     assert(nas_netlink_route_sendto(11,request,20,addr,12)==-EINVAL);
@@ -406,7 +516,7 @@ int main(void) {
     assert(nas_netlink_route_bind(11,addr,12)==0);
     assert(nas_netlink_route_getsockname(11,name)==0);
     assert(rd32(name+4)==9000);
-    puts("[NETLINK_ROUTE HOST PASS] single-snapshot IDs, address loss, and max eight-NIC RTM_GETADDR/RTM_GETLINK multipart, "
+    puts("[NETLINK_ROUTE HOST PASS] true 64/32-bit NIC statistics, pinned all-or-nothing snapshots, single-snapshot IDs, address loss, and max eight-NIC RTM_GETADDR/RTM_GETLINK multipart, "
          "SO_SNDBUF/SO_RCVBUF quotas, SOCK_RAW port bind, MSG_PEEK/TRUNC, poll/release");
     return 0;
 }
