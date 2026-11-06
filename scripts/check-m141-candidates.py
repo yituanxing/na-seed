@@ -25,7 +25,7 @@ def entries(path: Path) -> list[str]:
 
 
 def main(profile: str = "m141", minimum: int = 50) -> None:
-    if profile not in ("m141", "m205"):
+    if profile not in ("m141", "m205", "m206"):
         raise ValueError(f"unrecognized candidate profile: {profile}")
     pool = ROOT / f"scripts/{profile}-candidate-elfs.tsv"
     packages_path = ROOT / f"rootfs/alpine/packages-{profile}-candidates.txt"
@@ -38,6 +38,15 @@ def main(profile: str = "m141", minimum: int = 50) -> None:
         if manifest.name == f"{profile}-original-elfs.txt":
             continue
         known.update(entries(manifest))
+    if profile == "m206":
+        # M205 is a real new-candidate batch but has no historical accepted
+        # m*-original-elfs.txt manifest yet; excluding only the latter would
+        # silently count the same original command again.
+        known.update(row.split("\t")[1] for row in
+                     entries(ROOT / "scripts/m205-candidate-elfs.tsv")[1:])
+        known.update(row.split("\t")[1] for row in
+                     entries(ROOT / "scripts/m204-alpine-cohort.tsv")[1:]
+                     if len(row.split("\t")) >= 2)
 
     lines = pool.read_text().splitlines()
     if not lines or lines[0] != HEADER:
@@ -68,8 +77,10 @@ def main(profile: str = "m141", minimum: int = 50) -> None:
 
     if len(seen) < minimum:
         raise ValueError(f"pool too small: {len(seen)} candidates (need at least {minimum})")
-    if len(families) < 5:
-        raise ValueError(f"pool lacks diversity: {len(families)} families (need at least 5)")
+    minimum_families = 3 if profile == "m206" else 5
+    if len(families) < minimum_families:
+        raise ValueError(f"pool lacks diversity: {len(families)} families "
+                         f"(need at least {minimum_families})")
     label=profile.upper()
     print(f"[{label} CANDIDATE PREFLIGHT PASS] {len(seen)} unaccepted paths, "
           f"{len(packages)} signed-APK package requests, {len(families)} families")
@@ -78,7 +89,7 @@ def main(profile: str = "m141", minimum: int = 50) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", choices=("m141", "m205"), default="m141")
+    parser.add_argument("--profile", choices=("m141", "m205", "m206"), default="m141")
     parser.add_argument("--minimum", type=int)
     args = parser.parse_args()
     main(args.profile, args.minimum if args.minimum is not None else

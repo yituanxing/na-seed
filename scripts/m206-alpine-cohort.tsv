@@ -1,0 +1,24 @@
+package	elf_path	family	probe
+# The same 20 M206 signed-index discovery candidates and case IDs.
+# Successful guest launch, banner, timeout or archive installation alone is
+# insufficient. Real functionality must pass in both physical ext4 QEMU boots.
+iputils-ping	bin/ping	network	icmp-loopback-echo
+iproute2-minimal	sbin/ip	network	netlink-lo-address-route
+iproute2-tc	sbin/tc	network	loopback-qdisc-query
+iperf	usr/bin/iperf	network	local-tcp-throughput-roundtrip
+nftables	usr/sbin/nft	network	nft-ruleset-parse-and-kernel-query
+sfdisk	sbin/sfdisk	storage	mbr-image-create-dump-verify
+partx	usr/sbin/partx	storage	partition-image-table-read
+sgdisk	usr/bin/sgdisk	storage	gpt-image-create-verify
+lsblk	bin/lsblk	storage	live-root-block-device-json
+html-xml-utils	usr/bin/hxselect	markup	css-selector-content-extraction
+html-xml-utils	usr/bin/hxcount	markup	count-elements-on-fixture
+html-xml-utils	usr/bin/hxnormalize	markup	html-to-xhtml-reparse
+html-xml-utils	usr/bin/hxremove	markup	remove-selector-keep-other
+html-xml-utils	usr/bin/hxprune	markup	strip-excluded-node
+html-xml-utils	usr/bin/hxprintlinks	markup	extract-expected-anchor-urls
+html-xml-utils	usr/bin/hxunent	markup	entity-decode-content
+html-xml-utils	usr/bin/hxuncdata	markup	cdata-content-transform
+html-xml-utils	usr/bin/hxaddid	markup	generate-unique-heading-ids
+html-xml-utils	usr/bin/hxpipe	markup	pipe-escape-transform
+html-xml-utils	usr/bin/hxunpipe	markup	pipe-unescape-roundtrip

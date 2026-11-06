@@ -5,21 +5,36 @@
 set -u
 export PATH=/usr/sbin:/sbin:/usr/bin:/bin HOME=/root LC_ALL=C LANG=C
 
-manifest=/root/m205-cohort.tsv
-work=/root/m205-work
-first=/root/m205-first-results.tsv
-reopen=/root/m205-reopen-results.tsv
+case "${NAS_M206_COMPAT_COHORT:-0}" in
+    0)
+        milestone=M205
+        manifest=/root/m205-cohort.tsv
+        work=/root/m205-work
+        first=/root/m205-first-results.tsv
+        reopen=/root/m205-reopen-results.tsv
+        exercise_script=/root/m205-software-workload.sh
+        ;;
+    1)
+        milestone=M206
+        manifest=/root/m206-cohort.tsv
+        work=/root/m206-work
+        first=/root/m206-first-results.tsv
+        reopen=/root/m206-reopen-results.tsv
+        exercise_script=/root/m206-software-workload.sh
+        ;;
+    *) echo '[M206 ERROR] invalid compatibility cohort selector' >&2; exit 2 ;;
+esac
 tab=$(printf '\t')
 
 case "${1:-}" in
     --first) phase=first; ledger=$first ;;
     --reopen) phase=reopen; ledger=$reopen ;;
     --exercise) phase=exercise ;;
-    *) echo '[M205 ERROR] usage: --first|--reopen|--exercise CASE PATH' >&2; exit 2 ;;
+    *) echo "[$milestone ERROR] usage: --first|--reopen|--exercise CASE PATH" >&2; exit 2 ;;
 esac
 
 record() {
-    printf 'M205_RESULT\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" |
+    printf '%s_RESULT\t%s\t%s\t%s\t%s\n' "$milestone" "$1" "$2" "$3" "$4" |
         /bin/busybox tee -a "$ledger"
 }
 
@@ -33,8 +48,8 @@ error_tail() {
             detail=$(printf '%s' "$line" | /bin/busybox tr '\t\r' '  ' |
                 /bin/busybox sed 's/\[FAIL\]/[failed]/g' |
                 /bin/busybox cut -c 1-180)
-            printf 'M205_ERROR\t%s\t%s\t%s\t%s\n' \
-                "$package" "$elf" "$stage" "$detail"
+            printf '%s_ERROR\t%s\t%s\t%s\t%s\n' \
+                "$milestone" "$package" "$elf" "$stage" "$detail"
         done
 }
 
@@ -466,7 +481,11 @@ if [ "$phase" = exercise ]; then
     # Never let an original command accidentally read a parent's UART or
     # the cohort manifest as its standard input.
     exec 0</dev/null
-    probe "$2" "$3"
+    if [ "$milestone" = M206 ]; then
+        sh "$exercise_script" --exercise "$2" "$3"
+    else
+        probe "$2" "$3"
+    fi
     exit $?
 fi
 
@@ -514,7 +533,7 @@ fi
 # later funzip/unzipsfx entries share the exact same first-boot install
 # record, never count a pre-existing helper as a new signed APK install.
 # util-linux-misc is a signed PTY test dependency, NOT a twentieth new ELF.
-if [ "$phase" = first ]; then
+if [ "$phase" = first ] && [ "$milestone" = M205 ]; then
     # Signed original Alpine packages were predownloaded and SHA-pinned by
     # the host inventory; installation and all scripts still run INSIDE this
     # guest. M197's separate APK transaction remains real public HTTPS.
@@ -546,13 +565,16 @@ if [ "$phase" = first ]; then
         fi
     done
 fi
-if signed_pty_available; then
-    echo M205_SIGNED_PTY_HELPER_READY
-else
-    echo M205_SIGNED_PTY_HELPER_UNAVAILABLE
+if [ "$milestone" = M205 ]; then
+    if signed_pty_available; then
+        echo M205_SIGNED_PTY_HELPER_READY
+    else
+        echo M205_SIGNED_PTY_HELPER_UNAVAILABLE
+    fi
 fi
 : > "$ledger" || exit 1
 export NAS_M205_BOOT_PHASE="$phase"
+export NAS_M206_BOOT_PHASE="$phase"
 
 total=0
 while IFS="$tab" read -r package elf family case_id <&9 || [ -n "$package" ]; do
@@ -592,8 +614,8 @@ while IFS="$tab" read -r package elf family case_id <&9 || [ -n "$package" ]; do
                 install_rc=$?
                 install_result=FAIL
                 printf '%s\n' "$install_result" > "$status_file"
-                printf 'M205_ERROR\t%s\t%s\tinstall\tapk exit=%s (%ss budget)\n' \
-                    "$package" "$elf" "$install_rc" "$install_budget"
+                printf '%s_ERROR\t%s\t%s\tinstall\tapk exit=%s (%ss budget)\n' \
+                    "$milestone" "$package" "$elf" "$install_rc" "$install_budget"
                 error_tail "$package" "$elf" install "$work/logs/$package.apk.log"
                 # Error lines can precede a successful BusyBox trigger, so
                 # tail alone hides the original failure. This diagnostic is
@@ -604,7 +626,7 @@ while IFS="$tab" read -r package elf family case_id <&9 || [ -n "$package" ]; do
                     while IFS= read -r detail; do
                         detail=$(printf '%s' "$detail" | /bin/busybox tr '\t\r' '  ' |
                             /bin/busybox cut -c 1-180)
-                        printf 'M205_APK_DIAG\t%s\t%s\n' "$package" "$detail"
+                        printf '%s_APK_DIAG\t%s\t%s\n' "$milestone" "$package" "$detail"
                     done
             fi
         fi
@@ -613,7 +635,7 @@ while IFS="$tab" read -r package elf family case_id <&9 || [ -n "$package" ]; do
             record "$package" "$elf" functional BLOCKED
             continue
         fi
-        if /bin/busybox timeout 45 sh /root/m205-software-workload.sh \
+        if /bin/busybox timeout 45 sh "$exercise_script" \
                 --exercise "$case_id" "$elf" \
                 > "$work/logs/$case_id.first.log" 2>&1; then
             record "$package" "$elf" functional PASS
@@ -623,12 +645,12 @@ while IFS="$tab" read -r package elf family case_id <&9 || [ -n "$package" ]; do
         fi
     else
         if /bin/busybox grep -Fxq \
-                "M205_RESULT${tab}${package}${tab}${elf}${tab}install${tab}FAIL" "$first"; then
+                "${milestone}_RESULT${tab}${package}${tab}${elf}${tab}install${tab}FAIL" "$first"; then
             record "$package" "$elf" reopen BLOCKED
         elif ! apk info -e "$package" >/dev/null 2>&1; then
             record "$package" "$elf" reopen FAIL
-            echo "M205_ERROR${tab}${package}${tab}${elf}${tab}reopen${tab}APK database missing package"
-        elif /bin/busybox timeout 45 sh /root/m205-software-workload.sh \
+            echo "${milestone}_ERROR${tab}${package}${tab}${elf}${tab}reopen${tab}APK database missing package"
+        elif /bin/busybox timeout 45 sh "$exercise_script" \
                 --exercise "$case_id" "$elf" \
                 > "$work/logs/$case_id.reopen.log" 2>&1; then
             record "$package" "$elf" reopen PASS
@@ -642,7 +664,7 @@ done 9< "$manifest"
 test "$total" -eq 20 || { echo "[M205 ERROR] wrong cohort count: $total" >&2; exit 1; }
 sync || exit 1
 if [ "$phase" = first ]; then
-    echo M205_FIRST_DISCOVERY_COMPLETE
+    echo "${milestone}_FIRST_DISCOVERY_COMPLETE"
 else
-    echo M205_REOPEN_DISCOVERY_COMPLETE
+    echo "${milestone}_REOPEN_DISCOVERY_COMPLETE"
 fi

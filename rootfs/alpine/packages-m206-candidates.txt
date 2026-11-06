@@ -1,0 +1,13 @@
+# M206 discovery-only official Alpine v3.23 signed APK package set.
+# Native ISA-specific signed index/SHA, actual ELF identity, dependencies and
+# two fresh semantic QEMU executions are mandatory before acceptance.
+iputils-ping
+iproute2-minimal
+iproute2-tc
+iperf
+nftables
+sfdisk
+partx
+sgdisk
+lsblk
+html-xml-utils

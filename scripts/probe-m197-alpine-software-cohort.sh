@@ -23,13 +23,15 @@ m204=${NAS_M204_COMPAT_COHORT:-0}
 case "$m204" in 0|1) ;; *) echo '[M204 FAIL] invalid compatibility selector' >&2; exit 2 ;; esac
 m205=${NAS_M205_COMPAT_COHORT:-0}
 case "$m205" in 0|1) ;; *) echo '[M205 FAIL] invalid compatibility selector' >&2; exit 2 ;; esac
-if { [ "$m204" = 1 ] || [ "$m205" = 1 ]; } && \
+m206=${NAS_M206_COMPAT_COHORT:-0}
+case "$m206" in 0|1) ;; *) echo '[M206 FAIL] invalid compatibility selector' >&2; exit 2 ;; esac
+if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ]; } && \
    { [ "$m198" = 1 ] || [ "$m199" = 1 ]; }; then
-    echo '[M204/M205 FAIL] compatibility cohort cannot enable a desktop' >&2
+    echo '[COMPAT FAIL] software cohort cannot enable a desktop' >&2
     exit 2
 fi
-if [ "$m204" = 1 ] && [ "$m205" = 1 ]; then
-    echo '[M204/M205 FAIL] compatibility cohorts must own separate ledgers' >&2
+if [ "$((m204+m205+m206))" -gt 1 ]; then
+    echo '[COMPAT FAIL] software cohorts must own separate ledgers' >&2
     exit 2
 fi
 if [ "$m199" = 1 ]; then
@@ -53,9 +55,9 @@ rescue="$PWD/$work/smoke/rescue/rootfs.cpio"
 busybox="$PWD/$work/smoke/elf/busybox"
 test -s "$baseline" && test -s "$rescue" && test -s "$busybox"
 disk_mib=256
-if [ "$m205" = 1 ]; then
+if [ "$m205" = 1 ] || [ "$m206" = 1 ]; then
     # 20 additional originals include large LLVM21 dependencies; keep the
-    # canonical M191 256MiB baseline immutable and enlarge only M205's
+    # canonical M191 256MiB baseline immutable and enlarge only the cohort's
     # disposable guest disk, with matching geometry at prepare and fsck.
     disk_mib=768
 fi
@@ -119,9 +121,13 @@ if [ "$m204" = 1 ]; then
         echo '[M204 FAIL] cohort results were preseeded' >&2; exit 1;
     }
 fi
-if [ "$m205" = 1 ]; then
+if [ "$m205" = 1 ] || [ "$m206" = 1 ]; then
+    # Reuse the M205 signed-install/ledger owner for both independent cohorts;
+    # the M206 module contributes only new original-program semantic probes.
     sudo install -m 0644 tests/m205-software-workload.sh \
         "$overlay/root/m205-software-workload.sh"
+    if [ "$m205" = 1 ]; then
+    cohort=m205
     sudo install -m 0644 scripts/m205-alpine-cohort.tsv \
         "$overlay/root/m205-cohort.tsv"
     # M205's genuine llvm21-symbolizer needs a real, debug-info-bearing
@@ -157,29 +163,39 @@ if [ "$m205" = 1 ]; then
         "$overlay/root/m205-fixtures/pty-exchange"
     sudo test -s "$overlay/root/m205-software-workload.sh"
     sudo test -s "$overlay/root/m205-cohort.tsv"
+    else
+    cohort=m206
+    sudo install -m 0644 tests/m206-software-workload.sh \
+        "$overlay/root/m206-software-workload.sh"
+    sudo install -m 0644 scripts/m206-alpine-cohort.tsv \
+        "$overlay/root/m206-cohort.tsv"
+    sudo test -s "$overlay/root/m205-software-workload.sh"
+    sudo test -s "$overlay/root/m206-software-workload.sh"
+    sudo test -s "$overlay/root/m206-cohort.tsv"
+    fi
     # The M205 host census already fetched every package from Alpine's
     # signature-verified official indexes. Reuse the original byte-for-byte
     # APK archives as a standard local Alpine cache, not preinstalled ELFs.
     # The genuine APK guest still performs every install and postinstall
     # transaction; M197's separate public HTTPS installs stay live/unchanged.
-    m205_package_sha=$(sha256sum rootfs/alpine/packages-m205-candidates.txt |
+    cohort_package_sha=$(sha256sum "rootfs/alpine/packages-$cohort-candidates.txt" |
         awk '{print $1}')
-    m205_cache_root="$PWD/build/external/m205-candidate-inventory/$port/packages-$m205_package_sha/rootfs"
-    m205_cache_src="$m205_cache_root/var/cache/apk"
-    m205_cache_manifest="$PWD/build/external/m205-candidate-inventory/$port/signed-cache.sha256"
-    test -d "$m205_cache_src" &&
-        test ! -L "$m205_cache_root" &&
-        test ! -L "$m205_cache_root/var" &&
-        test ! -L "$m205_cache_root/var/cache" &&
-        test ! -L "$m205_cache_src" &&
-        test -s "$m205_cache_manifest" &&
-        test ! -L "$m205_cache_manifest" &&
-        test "$(cd "$m205_cache_src" && pwd -P)" = "$m205_cache_src" || {
-            echo '[M205 CACHE FAIL] signed host APK archive/index proof missing' >&2
+    cohort_cache_root="$PWD/build/external/$cohort-candidate-inventory/$port/packages-$cohort_package_sha/rootfs"
+    cohort_cache_src="$cohort_cache_root/var/cache/apk"
+    cohort_cache_manifest="$PWD/build/external/$cohort-candidate-inventory/$port/signed-cache.sha256"
+    test -d "$cohort_cache_src" &&
+        test ! -L "$cohort_cache_root" &&
+        test ! -L "$cohort_cache_root/var" &&
+        test ! -L "$cohort_cache_root/var/cache" &&
+        test ! -L "$cohort_cache_src" &&
+        test -s "$cohort_cache_manifest" &&
+        test ! -L "$cohort_cache_manifest" &&
+        test "$(cd "$cohort_cache_src" && pwd -P)" = "$cohort_cache_src" || {
+            echo '[SIGNED CACHE FAIL] signed host APK archive/index proof missing' >&2
             exit 1
         }
-    ( cd "$m205_cache_src" && sha256sum -c "$m205_cache_manifest" >/dev/null ) || {
-        echo '[M205 CACHE FAIL] host APK archive/index SHA256 changed' >&2
+    ( cd "$cohort_cache_src" && sha256sum -c "$cohort_cache_manifest" >/dev/null ) || {
+        echo '[SIGNED CACHE FAIL] host APK archive/index SHA256 changed' >&2
         exit 1
     }
     sudo test ! -L "$overlay/var" &&
@@ -187,28 +203,28 @@ if [ "$m205" = 1 ]; then
         sudo test ! -L "$overlay/etc/apk" &&
         sudo test ! -e "$overlay/etc/apk/cache" &&
         sudo test ! -L "$overlay/etc/apk/cache" || {
-            echo '[M205 CACHE FAIL] unsafe guest cache parent/destination' >&2
+            echo '[SIGNED CACHE FAIL] unsafe guest cache parent/destination' >&2
             exit 1
         }
     sudo install -d -m 0755 "$overlay/var/cache/apk"
-    sudo cp -a "$m205_cache_src/." "$overlay/var/cache/apk/"
+    sudo cp -a "$cohort_cache_src/." "$overlay/var/cache/apk/"
     sudo ln -s /var/cache/apk "$overlay/etc/apk/cache"
     ( cd "$overlay/var/cache/apk" &&
-      sha256sum -c "$m205_cache_manifest" >/dev/null ) || {
-        echo '[M205 CACHE FAIL] staged guest APK archive/index SHA256 mismatch' >&2
+      sha256sum -c "$cohort_cache_manifest" >/dev/null ) || {
+        echo '[SIGNED CACHE FAIL] staged guest APK archive/index SHA256 mismatch' >&2
         exit 1
     }
     # Require conservative post-install headroom for the unpacked LLVM/BIND
     # dependencies, ext4 metadata and persistent second QEMU. No silent disk
     # enlargement or fallback to an unverified network install is allowed.
-    m205_used_mib=$(du -sm "$overlay" | awk '{print $1}')
-    if [ "$((m205_used_mib+256+16))" -ge "$disk_mib" ]; then
-        echo "[M205 CACHE FAIL] disk capacity: staged=${m205_used_mib}MiB, disk=${disk_mib}MiB" >&2
+    cohort_used_mib=$(du -sm "$overlay" | awk '{print $1}')
+    if [ "$((cohort_used_mib+256+16))" -ge "$disk_mib" ]; then
+        echo "[SIGNED CACHE FAIL] disk capacity: staged=${cohort_used_mib}MiB, disk=${disk_mib}MiB" >&2
         exit 1
     fi
-    echo '[M205 SIGNED APK CACHE STAGED] official native archives/indexes; guest add is --no-network, M197 stays public HTTPS'
-    sudo test ! -e "$overlay/root/m205-first-results.tsv" || {
-        echo '[M205 FAIL] cohort results were preseeded' >&2; exit 1;
+    echo "[$cohort SIGNED APK CACHE STAGED] official native archives/indexes; guest add is --no-network, M197 stays public HTTPS"
+    sudo test ! -e "$overlay/root/$cohort-first-results.tsv" || {
+        echo '[COMPAT FAIL] cohort results were preseeded' >&2; exit 1;
     }
 fi
 sudo test ! -e "$overlay/root/m197-app" || {
@@ -248,6 +264,9 @@ if [ "$m204" = 1 ]; then
 fi
 if [ "$m205" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M205_PUBLIC_QEMU_TIMEOUT:-4500}
+fi
+if [ "$m206" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M206_PUBLIC_QEMU_TIMEOUT:-4500}
 fi
 if [ "$m198" = 1 ]; then
     export NAS_QEMU_INPUT_OPTIN=1 NAS_QEMU_VIRTIO_GPU=1 NAS_QEMU_RAMFB=0
@@ -329,7 +348,10 @@ if [ "$m198" = 1 ]; then
     grep -Fq '[M198 PHYSICAL QMP PASS]' "$work/m198-qmp-check.log"
     fi
 else
-    if [ "$m205" = 1 ]; then
+    if [ "$m206" = 1 ]; then
+        python3 scripts/m206-alpine-uart.py "$runner" "$serial" \
+            "$PWD/$work/m206-first-runner.log" "$fifo"
+    elif [ "$m205" = 1 ]; then
         python3 scripts/m205-alpine-uart.py "$runner" "$serial" \
             "$PWD/$work/m205-first-runner.log" "$fifo"
     elif [ "$m204" = 1 ]; then
@@ -362,6 +384,12 @@ fi
 if [ "$m205" = 1 ]; then
     grep -Fq 'M205_FIRST_DISCOVERY_COMPLETE' "$serial" || {
         echo '[M205 FAIL] first new-ELF inventory did not complete' >&2
+        exit 1
+    }
+fi
+if [ "$m206" = 1 ]; then
+    grep -Fq 'M206_FIRST_DISCOVERY_COMPLETE' "$serial" || {
+        echo '[M206 FAIL] first new-ELF inventory did not complete' >&2
         exit 1
     }
 fi
@@ -435,7 +463,9 @@ unset NAS_QEMU_SERIAL_FIFO NAS_VIRTIO_NET_PCAP NAS_QEMU_QMP_SOCKET
 if [ "$m198" = 1 ]; then
     export BUSYBOX_PARITY_MANIFEST=scripts/m198-alpine-reopen-cases.tsv
 else
-    if [ "$m205" = 1 ]; then
+    if [ "$m206" = 1 ]; then
+        export BUSYBOX_PARITY_MANIFEST=scripts/m206-alpine-reopen-cases.tsv
+    elif [ "$m205" = 1 ]; then
         export BUSYBOX_PARITY_MANIFEST=scripts/m205-alpine-reopen-cases.tsv
     elif [ "$m204" = 1 ]; then
         if [ "$replay" = 1 ]; then
@@ -453,6 +483,9 @@ if [ "$m204" = 1 ]; then
 fi
 if [ "$m205" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M205_REOPEN_SECONDS:-900}
+fi
+if [ "$m206" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M206_REOPEN_SECONDS:-900}
 fi
 if ! sh "$runner" > "$PWD/$work/m197-reopen-runner.log" 2>&1; then
     echo "[M197 ALPINE REOPEN FAIL] $port second native QEMU" >&2
@@ -521,13 +554,37 @@ if [ "$m205" = 1 ]; then
         *) echo '[M205 FAIL] invalid strict mode' >&2; exit 2 ;;
     esac
 fi
+if [ "$m206" = 1 ]; then
+    grep -Fq 'M206_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
+        echo '[M206 FAIL] second QEMU did not reevaluate new ELFs' >&2
+        exit 1
+    }
+    case "${NAS_M206_REQUIRE_ALL:-0}" in
+        0) python3 scripts/m206-compat-report.py \
+               scripts/m206-alpine-cohort.tsv \
+               "$PWD/$work/m197-live.serial.log" "$reopen" \
+               "$PWD/$work/m206-compat-report.json" ;;
+        1) python3 scripts/m206-compat-report.py \
+               scripts/m206-alpine-cohort.tsv \
+               "$PWD/$work/m197-live.serial.log" "$reopen" \
+               "$PWD/$work/m206-compat-report.json" --require-all ;;
+        *) echo '[M206 FAIL] invalid strict mode' >&2; exit 2 ;;
+    esac
+fi
 if [ "$m198" = 1 ]; then
     grep -Fxq 'M198_GUI_REOPEN_PASS' "$reopen" || {
         echo '[M198 REOPEN FAIL] native editor did not persist' >&2; exit 1;
     }
 fi
-sudo env NAS_M191_DISK_MIB="$disk_mib" \
-    python3 scripts/m197-alpine-disk-check.py "$port" "$root" "$disk"
+if [ "$m206" = 1 ]; then
+    # M206 invokes the unchanged M197 physical ext4/Git/SQLite/fsck oracle
+    # before separately verifying all 20 new native ELF SHA and APK records.
+    sudo env NAS_M191_DISK_MIB="$disk_mib" \
+        python3 scripts/m206-alpine-disk-check.py "$port" "$root" "$disk"
+else
+    sudo env NAS_M191_DISK_MIB="$disk_mib" \
+        python3 scripts/m197-alpine-disk-check.py "$port" "$root" "$disk"
+fi
 if [ "$m198" = 1 ]; then
     sudo python3 scripts/m198-alpine-disk-check.py "$port" "$root" "$disk"
 fi
@@ -568,6 +625,10 @@ else
     if [ "$m205" = 1 ]; then
         echo "[M205 ALPINE COMPAT DISCOVERY COMPLETE] $port official signed "\
              'new ELF entrypoints from two genuine QEMU boots; failures remain explicit'
+    fi
+    if [ "$m206" = 1 ]; then
+        echo "[M206 ALPINE COMPAT DISCOVERY COMPLETE] $port official signed "\
+             'network/storage/markup ELFs from two genuine QEMU boots; failures remain explicit'
     fi
 fi
 if [ "$m198" = 1 ]; then
