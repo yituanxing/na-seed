@@ -277,6 +277,55 @@ int main(void) {
     finish_control(22,0);
     close_slot(22);
 
+    /* Original signed Alpine iputils ping does RAW connect() immediately
+     * followed by getsockname(). Linux connect() is already successful,
+     * while the native Netconn association is still queued. GETNAME must
+     * wait for the real native endpoint, not return internal EBUSY or a
+     * fabricated sockaddr. Cover both the OPEN+CONNECT and the in-flight
+     * CONNECT cases on genuinely scheduled lwIP, also for UDP. */
+    nas_open_files[52].refcount=1;
+    nas_open_files[52].status_flags=2;
+    nas_open_files[52].ops=ops;
+    assert(nas_lwip_socket_open(52,NAS_LWIP_BRIDGE_RAW_ICMP)==0);
+    assert(nas_lwip_socket_connect(52,lo(0))==0);
+    assert(nas_lwip_socket_getname_begin(52,false)==0);
+    assert(nas_lwip_socket_getname_begin(52,false)==-EALREADY);
+    assert(nas_lwip_socket_getname_begin(52,true)==-EBUSY);
+    struct nas_lwip_bridge_address connected_name={0};
+    bool connected_named=false;
+    for(unsigned tries=0;tries<300;tries++) {
+        int rc=nas_lwip_socket_getname_complete(52,&connected_name);
+        if(rc==1){connected_named=true;break;}
+        assert(rc==0);
+        test_ns+=UINT64_C(1000000);
+        (void)nas_kthread_run(1);
+    }
+    assert(connected_named && connected_name.port==0);
+    /* A fresh GETNAME genuinely queries the same upstream Netconn again. */
+    struct nas_lwip_bridge_address confirmed_name=name_slot(52,false);
+    assert(connected_name.ipv4==confirmed_name.ipv4 &&
+           connected_name.port==confirmed_name.port);
+    close_slot(52);
+
+    reserve(53,NAS_LWIP_BRIDGE_UDP);
+    assert(nas_lwip_socket_connect(53,lo(38007))==0);
+    assert(nas_lwip_socket_getname_begin(53,false)==0);
+    connected_name=(struct nas_lwip_bridge_address){0};
+    connected_named=false;
+    for(unsigned tries=0;tries<300;tries++) {
+        int rc=nas_lwip_socket_getname_complete(53,&connected_name);
+        if(rc==1){connected_named=true;break;}
+        assert(rc==0);
+        test_ns+=UINT64_C(1000000);
+        (void)nas_kthread_run(1);
+    }
+    assert(connected_named && connected_name.port!=0);
+    confirmed_name=name_slot(53,false);
+    assert(connected_name.ipv4==confirmed_name.ipv4 &&
+           connected_name.port==confirmed_name.port);
+    close_slot(53);
+    puts("[LWIP CONNECT/GETNAME PASS] upstream RAW/UDP true native address after async connect");
+
     reserve(20,NAS_LWIP_BRIDGE_UDP);
     reserve(21,NAS_LWIP_BRIDGE_UDP);
     /* The same global OpenFile queues a genuine native PCB binding. An

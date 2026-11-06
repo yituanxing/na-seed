@@ -24,6 +24,16 @@ struct nas_lwip_guest_if {
 };
 unsigned nas_lwip_guest_if_snapshot(
     struct nas_lwip_guest_if out[NAS_LWIP_GUEST_IF_LIMIT]);
+/* Traffic control is a separately owned, live attachment: an interface
+ * snapshot alone does not imply that a Linux qdisc exists. Today only the
+ * upstream lwIP loopif has an attached noqueue/direct-output policy; each
+ * physical NIC remains unreported until it owns a real TC discipline. */
+struct nas_lwip_guest_qdisc {
+ uint32_t ifindex;
+ enum nas_net_qdisc_kind kind;
+};
+unsigned nas_lwip_guest_qdisc_snapshot(
+    struct nas_lwip_guest_qdisc out[NAS_LWIP_GUEST_IF_LIMIT]);
 int nas_lwip_guest_ifindex(const char *device_name); /* positive or -ENODEV */
 int nas_lwip_guest_ifname(unsigned index,
                          char output[NAS_LWIP_DEVICE_NAME_MAX]);

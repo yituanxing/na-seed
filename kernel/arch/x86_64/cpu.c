@@ -210,22 +210,50 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
             nas_print(" rdx=");nas_hex(frame[3]);
             nas_print(" rdi=");nas_hex(frame[1]);
             nas_print(" rbx=");nas_hex(frame[9]);
+            nas_print(" rbp=");nas_hex(frame[10]);
             /* Compare the actual CPU TLS register with the Task's saved
              * owner when diagnosing threaded libc faults. An invalid FS
              * base can make an ordinary %fs-relative access look like a
              * null-pointer read (for example, CR2=0x10). This is strictly
              * diagnostic: no register or user mapping is repaired here. */
-            nas_print(" fs_live=");nas_hex(rdmsr(UINT32_C(0xc0000100)));
+            const uint64_t fs_base=rdmsr(UINT32_C(0xc0000100));
+            nas_print(" fs_live=");nas_hex(fs_base);
             nas_print(" fs_task=");nas_hex(nas_task_tls_base(tracee));
+            uint64_t fs_self=0;
+            if(fs_base && nas_user_read_bytes(fs_base,(uint8_t *)&fs_self,
+                                              sizeof(fs_self))) {
+                nas_print(" fs_self=");nas_hex(fs_self);
+            } else nas_print(" fs_self=inaccessible");
             /* Usercopy resolves through the MMU's checked kernel alias,
              * never by dereferencing a raw user instruction pointer.
              * Bound both the number of fault reports and bytes per report. */
             uint8_t opcode[8];
-            if(nas_user_read_bytes(user_rip,opcode,sizeof(opcode))) {
+            const bool opcode_ok=nas_user_read_bytes(user_rip,opcode,
+                                                     sizeof(opcode));
+            if(opcode_ok) {
                 nas_print(" opcode=");
                 for(unsigned b=0;b<sizeof(opcode);b++)nas_hex(opcode[b]);
             } else nas_print(" opcode=unavailable");
             nas_print("\n");
+            /* musl mallocng get_meta() has the recognizable sequence
+             * cmpq 0x10(%rax),%rcx; je ...; hlt. With RAX=0 and CR2=0x10,
+             * inspect only the suspected group's first two words: the
+             * meta pointer and header. This is a bounded, checked read in
+             * the faulting Task's MM, never a raw dereference or repair. */
+            if(opcode_ok && fault_addr==16U && frame[0]==0 &&
+               opcode[0]==0x48 && opcode[1]==0x39 &&
+               opcode[2]==0x48 && opcode[3]==0x10 &&
+               frame[7]<=UINT64_MAX-16U) {
+                uint64_t group_words[2]={0};
+                nas_print("[USERPF MALLOCNG] group=");nas_hex(frame[7]);
+                nas_print(" brk=");nas_hex(tracee->mm->heap_break);
+                if(nas_user_read_bytes(frame[7],(uint8_t *)group_words,
+                                       sizeof(group_words))) {
+                    nas_print(" meta=");nas_hex(group_words[0]);
+                    nas_print(" header=");nas_hex(group_words[1]);
+                } else nas_print(" inaccessible");
+                nas_print("\n");
+            }
             extern void nas_x86_debug_recent_syscalls(uint64_t);
             nas_x86_debug_recent_syscalls(tracee->pid);
         }

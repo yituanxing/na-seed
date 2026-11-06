@@ -32,6 +32,7 @@ enum port_command {
 };
 struct port_socket {
     bool owned,connected,connecting,listening,queued_control;
+    bool queued_after_connect;
     bool connect_result_pending;
     bool accept_owned,accept_cancelling,prefetch_owned;
     bool shut_read,shut_write,peer_known;
@@ -43,6 +44,7 @@ struct port_socket {
     struct nas_lwip_bridge_id id;
     struct nas_lwip_bridge_result control_result;
     struct nas_lwip_bridge_request control_request;
+    struct nas_lwip_bridge_request after_connect_request;
     struct nas_lwip_bridge_address connect_address;
     struct nas_lwip_bridge_address peer_address;
     struct nas_lwip_bridge_address listen_address;
@@ -363,6 +365,26 @@ static int check(struct port_socket *s) {
             return rc;
         }
     }
+    /* UDP and RAW connect() have no handshake to wait for: their Linux
+     * syscall returns success as soon as the native command is admitted.
+     * A subsequent getsockname()/setsockopt()/bind() must nevertheless run
+     * AFTER that native CONNECT. Retain its own request separately from
+     * control_request (which the in-flight CONNECT still owns), then submit
+     * it on the same Netconn worker once CONNECT has completed. In
+     * particular, never expose the worker's internal EBUSY to userspace. */
+    if(s->command==PORT_IDLE && s->queued_after_connect && !s->tx_length) {
+        int rc=nas_lwip_bridge_submit(s->id,&s->after_connect_request);
+        if(!rc) {
+            s->control_request=s->after_connect_request;
+            s->after_connect_request=(struct nas_lwip_bridge_request){0};
+            s->queued_after_connect=false;
+            s->command=PORT_CONTROL;
+        } else if(rc!=-EAGAIN && rc!=-EBUSY) {
+            s->failure=rc;
+            s->command=PORT_FAILED;
+            return rc;
+        }
+    }
     if(s->command==PORT_IDLE)submit_probe(s);
     return 0;
 }
@@ -422,6 +444,23 @@ int nas_lwip_socket_port_adopt(struct nas_lwip_bridge_id accepted,
     return 0;
 }
 
+static bool same_control_request(const struct nas_lwip_bridge_request *a,
+                                 const struct nas_lwip_bridge_request *b) {
+    return a->op==b->op && a->address.ipv4==b->address.ipv4 &&
+           a->address.port==b->address.port &&
+           a->name_peer==b->name_peer &&
+           a->shutdown_how==b->shutdown_how &&
+           a->reuseaddr==b->reuseaddr &&
+           a->broadcast==b->broadcast &&
+           a->nodelay==b->nodelay &&
+           a->keepalive==b->keepalive &&
+           a->pktinfo==b->pktinfo &&
+           a->if_index==b->if_index &&
+           a->accept_slot==b->accept_slot &&
+           a->accept_lease_token==b->accept_lease_token &&
+           a->backlog==b->backlog;
+}
+
 int nas_lwip_socket_port_begin(unsigned slot,
                               const struct nas_lwip_bridge_request *request) {
     struct port_socket *s=socket_at(slot);
@@ -445,24 +484,28 @@ int nas_lwip_socket_port_begin(unsigned slot,
                old->address.ipv4==request->address.ipv4 &&
                old->address.port==request->address.port ? -EALREADY:-EBUSY;
     }
+    if(s->queued_after_connect) {
+        /* Only one Task may own the eventual one-shot control result. */
+        return same_control_request(&s->after_connect_request,request) ?
+               -EALREADY:-EBUSY;
+    }
+    if(s->type!=NAS_LWIP_BRIDGE_TCP &&
+       (s->queued_control || s->command==PORT_CONTROL) &&
+       s->control_request.op==NAS_LWIP_BRIDGE_CONNECT) {
+        /* There is no blocked Task to consume the UDP/RAW CONNECT result:
+         * sys_ipv4_connect already returned. Serialize this next control
+         * behind the native association, including while OPEN is queued. */
+        s->after_connect_request=*request;
+        s->after_connect_request.bytes=NULL;
+        s->queued_after_connect=true;
+        return 0;
+    }
     if(s->queued_control || s->command==PORT_CONTROL ||
        s->command==PORT_CONTROL_DONE) {
         /* Never create two Task waiters for one consumable result. The
          * original Task resumes by slot, not by replaying this request. */
-        const struct nas_lwip_bridge_request *old=&s->control_request;
-        return old->op==request->op && old->address.ipv4==request->address.ipv4 &&
-               old->address.port==request->address.port &&
-               old->name_peer==request->name_peer &&
-               old->shutdown_how==request->shutdown_how &&
-               old->reuseaddr==request->reuseaddr &&
-               old->broadcast==request->broadcast &&
-               old->nodelay==request->nodelay &&
-               old->keepalive==request->keepalive &&
-               old->pktinfo==request->pktinfo &&
-               old->if_index==request->if_index &&
-               old->accept_slot==request->accept_slot &&
-               old->accept_lease_token==request->accept_lease_token &&
-               old->backlog==request->backlog ? -EALREADY:-EBUSY;
+        return same_control_request(&s->control_request,request) ?
+               -EALREADY:-EBUSY;
     }
     if(s->command==PORT_OPEN) {
         s->control_request=*request;
@@ -504,6 +547,9 @@ int nas_lwip_socket_port_complete(unsigned slot,
     if(!result)return -EINVAL;
     int rc=check(s);
     if(rc)return rc;
+    /* The current native command is the already-returned UDP/RAW CONNECT.
+     * Its successor has a distinct pending request and is not ready yet. */
+    if(s->queued_after_connect)return 0;
     if(s->connect_result_pending) {
         if(s->connecting)return 0;
         result->status=s->connect_result;
@@ -976,7 +1022,10 @@ int nas_lwip_socket_getname_complete(unsigned slot,
     struct port_socket *s=socket_at(slot);
     if(!s)return -EBADF;
     if(!address)return -EINVAL;
-    if(s->control_request.op!=NAS_LWIP_BRIDGE_GETNAME)return -EINVAL;
+    if(s->control_request.op!=NAS_LWIP_BRIDGE_GETNAME &&
+       !(s->queued_after_connect &&
+         s->after_connect_request.op==NAS_LWIP_BRIDGE_GETNAME))
+        return -EINVAL;
     struct nas_lwip_bridge_result result={0};
     int rc=nas_lwip_socket_port_complete(slot,&result);
     if(rc<=0)return rc;

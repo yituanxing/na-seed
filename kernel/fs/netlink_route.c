@@ -361,10 +361,9 @@ static void enqueue_unsupported_qdisc(struct netlink_socket *s,uint32_t seq,
 static void enqueue_loopback_noqueue(struct netlink_socket *s,uint32_t seq,
                                      uint32_t ifindex) {
     struct netlink_reply *r=enqueue(s);
-    /* The upstream lwIP loopback path does not enqueue packets in a
-     * traffic-control discipline. Report that real noqueue topology for
-     * the actual interface, not a synthetic FIFO or kernel-wide qdisc
-     * inventory. Linux tcmsg(20) + TCA_KIND("noqueue" including NUL). */
+    /* Serialization of the actual per-interface attached noqueue policy.
+     * Its direct-output callback hands packets to upstream lwIP, whose
+     * internal pbuf queue is unrelated to Linux TC queuing. */
     r->length=48U;
     make_nlmsg(r->bytes,r->length,RTM_NEWQDISC_LINUX,seq,s->port_id);
     put32(r->bytes+20,ifindex); /* tcmsg.tcm_ifindex */
@@ -480,30 +479,31 @@ int64_t nas_netlink_route_sendto(unsigned slot,const uint8_t *bytes,
     if(s->protocol==NETLINK_SOCK_DIAG_LINUX)
         return send_diag(s,bytes,length,seq);
     if(type==RTM_GETQDISC_LINUX && (flags&NLM_F_REQUEST_LINUX)) {
-        /* A GETQDISC dump has a 20-byte tcmsg payload. The native lwIP
-         * loopback is genuinely queue-less, unlike NICs whose scheduling
-         * discipline we do not model. Only an explicit lo query can be
-         * answered: a wildcard dump must not claim to enumerate all qdiscs.
-         * Unsupported queries still receive a sequenced NLMSG_ERROR so
-         * libnl can continue with its later link-cache requests. */
+        /* Only device-scoped dumps of actually attached qdiscs are in
+         * scope. We cannot claim the physical NICs have any TC model, or
+         * that a wildcard dump enumerates all disciplines. */
         if(msg_len<36U)return -EINVAL;
         const uint32_t ifindex=get32(bytes+20);
         const bool loopback_query=ifindex==1U &&
             (flags&0x300U)==0x300U && bytes[16]==AF_UNSPEC_LINUX &&
             get32(bytes+24)==0 && get32(bytes+28)==0 &&
             get32(bytes+32)==0;
-        if(!can_enqueue(s,loopback_query ? 2U:1U))return -EAGAIN;
+        struct nas_lwip_guest_qdisc qdiscs[NAS_LWIP_GUEST_IF_LIMIT]={0};
+        const unsigned qdisc_count=loopback_query ?
+            nas_lwip_guest_qdisc_snapshot(qdiscs) : 0;
+        if(qdisc_count>NAS_LWIP_GUEST_IF_LIMIT)return -EIO;
+        bool attached_noqueue=false;
+        for(unsigned i=0;i<qdisc_count;i++)
+            if(qdiscs[i].ifindex==ifindex &&
+               qdiscs[i].kind==NAS_NET_QDISC_NOQUEUE)
+                attached_noqueue=true;
+        if(!can_enqueue(s,attached_noqueue ? 2U:1U))return -EAGAIN;
         if(!s->bound) {
             rc=allocate_port(s,0);
             if(rc)return rc;
         }
-        if(loopback_query) {
-            struct nas_lwip_guest_if links[NAS_LWIP_GUEST_IF_LIMIT]={0};
-            const unsigned count=nas_lwip_guest_if_snapshot(links);
-            if(!count || links[0].ifindex!=1U ||
-               !links[0].loopback || strcmp(links[0].name,"lo"))
-                return -ENODEV;
-            enqueue_loopback_noqueue(s,seq,links[0].ifindex);
+        if(attached_noqueue) {
+            enqueue_loopback_noqueue(s,seq,ifindex);
             enqueue_done(s,seq);
             return length;
         }

@@ -46,6 +46,40 @@ struct nas_netdev_stats {
     uint64_t rx_bytes,rx_packets,rx_dropped;
     uint64_t tx_bytes,tx_packets,tx_errors;
 };
+/* A traffic-control attachment is owned by the live network interface,
+ * including virtual interfaces which have no Ethernet NetDevice. This is a
+ * *policy*, not the NIC's DMA ring or lwIP's private loopback pbuf list.
+ * NOQUEUE forwards synchronously to the stack's original output callback;
+ * the downstream stack may legitimately buffer a packet for later input.
+ * No physical NIC is assigned a scheduler merely by being registered. */
+enum nas_net_qdisc_kind {
+    NAS_NET_QDISC_NONE=0,
+    NAS_NET_QDISC_NOQUEUE=1
+};
+struct nas_net_qdisc {
+    uint32_t ifindex;
+    enum nas_net_qdisc_kind kind;
+};
+static inline bool nas_net_qdisc_attach_noqueue(struct nas_net_qdisc *qdisc,
+                                                uint32_t ifindex) {
+    if(!qdisc || !ifindex ||
+       __atomic_load_n(&qdisc->kind,__ATOMIC_ACQUIRE)!=NAS_NET_QDISC_NONE)
+        return false;
+    qdisc->ifindex=ifindex;
+    __atomic_store_n(&qdisc->kind,NAS_NET_QDISC_NOQUEUE,__ATOMIC_RELEASE);
+    return true;
+}
+static inline void nas_net_qdisc_detach(struct nas_net_qdisc *qdisc) {
+    if(!qdisc)return;
+    __atomic_store_n(&qdisc->kind,NAS_NET_QDISC_NONE,__ATOMIC_RELEASE);
+    qdisc->ifindex=0;
+}
+static inline bool nas_net_qdisc_direct(const struct nas_net_qdisc *qdisc,
+                                        uint32_t ifindex) {
+    return qdisc && ifindex &&
+           __atomic_load_n(&qdisc->kind,__ATOMIC_ACQUIRE)==
+               NAS_NET_QDISC_NOQUEUE && qdisc->ifindex==ifindex;
+}
 struct nas_netdev {
     const char *name; /* driver-owned, valid until successful unregister */
     uint8_t mac[NAS_NETDEV_MAC_BYTES];

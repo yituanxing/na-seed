@@ -41,6 +41,17 @@ struct nas_guest_nic {
 };
 static struct {
  struct nas_guest_nic nic[NAS_NETDEV_LIMIT];
+ /* The actual lwIP loopif owns its noqueue/direct-TX policy. This is not a
+  * fabricated link attribute; the core installs a real output dispatcher
+  * and retires it when the upstream netif is removed. */
+ struct nas_net_qdisc loopback_qdisc;
+ struct netif *loopback_if;
+#if LWIP_IPV4
+ netif_output_fn loopback_original_ipv4;
+#endif
+#if LWIP_IPV6
+ netif_output_ip6_fn loopback_original_ipv6;
+#endif
  struct nas_ksem rx_wakeup;
  struct nas_kthread_handle rx_handle;
  bool starting,ready,stop;
@@ -48,6 +59,77 @@ static struct {
  bool irq_reported;
  uint64_t published_dns_pair;
 } network;
+
+/* noqueue means no NaSeed traffic-control scheduler: forward immediately
+ * into lwIP's original loopback output. lwIP may still buffer pbufs in
+ * loop_first/loop_last awaiting netif_poll; those are NOT a tc qdisc. */
+#if LWIP_IPV4
+static err_t loopback_noqueue_ipv4(struct netif *iface,struct pbuf *packet,
+                                   const ip4_addr_t *dest) {
+ if(iface!=network.loopback_if ||
+    !nas_net_qdisc_direct(&network.loopback_qdisc,netif_get_index(iface)) ||
+    !network.loopback_original_ipv4)return ERR_IF;
+ return network.loopback_original_ipv4(iface,packet,dest);
+}
+#endif
+#if LWIP_IPV6
+static err_t loopback_noqueue_ipv6(struct netif *iface,struct pbuf *packet,
+                                   const ip6_addr_t *dest) {
+ if(iface!=network.loopback_if ||
+    !nas_net_qdisc_direct(&network.loopback_qdisc,netif_get_index(iface)) ||
+    !network.loopback_original_ipv6)return ERR_IF;
+ return network.loopback_original_ipv6(iface,packet,dest);
+}
+#endif
+static bool is_upstream_loopif(const struct netif *iface) {
+ return iface && iface->name[0]=='l' && iface->name[1]=='o' &&
+        netif_get_index((struct netif *)iface)==1U;
+}
+/* Called only in tcpip_thread while the upstream netif is live. */
+static void attach_loopback_qdisc_on_core(struct netif *iface) {
+ if(!is_upstream_loopif(iface) || network.loopback_if)return;
+#if LWIP_IPV4
+ if(!iface->output)return;
+#endif
+#if LWIP_IPV6
+ if(!iface->output_ip6)return;
+#endif
+ if(!nas_net_qdisc_attach_noqueue(&network.loopback_qdisc,
+                                  netif_get_index(iface)))return;
+ network.loopback_if=iface;
+#if LWIP_IPV4
+ network.loopback_original_ipv4=iface->output;
+ iface->output=loopback_noqueue_ipv4;
+#endif
+#if LWIP_IPV6
+ network.loopback_original_ipv6=iface->output_ip6;
+ iface->output_ip6=loopback_noqueue_ipv6;
+#endif
+}
+static void detach_loopback_qdisc_on_core(struct netif *iface) {
+ if(iface!=network.loopback_if)return;
+ nas_net_qdisc_detach(&network.loopback_qdisc);
+#if LWIP_IPV4
+ iface->output=network.loopback_original_ipv4;
+ network.loopback_original_ipv4=NULL;
+#endif
+#if LWIP_IPV6
+ iface->output_ip6=network.loopback_original_ipv6;
+ network.loopback_original_ipv6=NULL;
+#endif
+ network.loopback_if=NULL;
+}
+unsigned nas_lwip_guest_qdisc_snapshot(
+    struct nas_lwip_guest_qdisc out[NAS_LWIP_GUEST_IF_LIMIT]) {
+ if(!out)return 0;
+ /* The attached policy itself is the source. Merely seeing a "lo" in an
+  * interface snapshot never invents a qdisc during boot or teardown. */
+ if(!nas_net_qdisc_direct(&network.loopback_qdisc,1U))return 0;
+ out[0]=(struct nas_lwip_guest_qdisc){
+     .ifindex=1U,.kind=NAS_NET_QDISC_NOQUEUE
+ };
+ return 1;
+}
 
 /* The receive worker, not the hard IRQ, owns packet processing and reports
  * the proof after two independently attached, IRQ-routed NICs have delivered
@@ -276,6 +358,12 @@ static void network_dhcp_extended(struct netif *netif,
                                   netif_nsc_reason_t reason,
                                   const netif_ext_callback_args_t *args){
  (void)args;
+ /* The lwIP netif lifecycle, never an arbitrary Netlink query, controls
+  * attaching/retiring the real loopback direct-output discipline. */
+ if(reason&LWIP_NSC_NETIF_REMOVED)
+     detach_loopback_qdisc_on_core(netif);
+ if(reason&LWIP_NSC_NETIF_ADDED)
+     attach_loopback_qdisc_on_core(netif);
  if(!(reason&LWIP_NSC_IPV4_ADDR_VALID))return;
  struct nas_guest_nic *nic=owner_of(netif);
  if(!nic)return;
@@ -456,6 +544,13 @@ static void receive_worker(void *ctx){
 static void tcpip_ready(void *unused){
  (void)unused;
  netif_add_ext_callback(&network_dhcp_ext,network_dhcp_extended);
+ /* Upstream initialized loopif before registering this callback. Validate
+  * and attach to the already-live netif, not a presumed synthetic device. */
+ for(struct netif *iface=netif_list;iface;iface=iface->next)
+     if(is_upstream_loopif(iface)){
+         attach_loopback_qdisc_on_core(iface);
+         break;
+     }
  network.ready=true;
  (void)nas_ksem_post(&network.rx_wakeup);
 }

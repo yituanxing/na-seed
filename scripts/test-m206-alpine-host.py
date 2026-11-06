@@ -105,6 +105,30 @@ def guest_contract(entries: list[tuple[str, str, str, str]]) -> None:
         case = script.split(label, 1)[1].split("\n        ;;", 1)[0]
         assert "/" + path in case, f"semantic probe never invokes original ELF: {label}"
         assert "--help" not in case, f"help banner is not semantic acceptance: {label}"
+    # Real signed Alpine iproute2 `tc qdisc show dev lo` reports
+    # `qdisc noqueue 0: root refcnt 0` with rc=0, WITHOUT a literal `lo`.
+    # The former `grep -Fq 'lo'` gave an OS false negative on every arch.
+    tc_case = script.split("loopback-qdisc-query:sbin/tc)", 1)[1].split(";;", 1)[0]
+    assert "/sbin/tc qdisc show dev lo" in tc_case, "tc must query the real lo device"
+    assert "grep -Fq 'lo'" not in tc_case, "tc output need not repeat its dev filter"
+    tc_patterns = re.findall(r"/bin/busybox grep -Eq '([^']+)'", tc_case)
+    assert len(tc_patterns) == 1, "tc must use one strict qdisc-object oracle"
+    tc_pattern = tc_patterns[0]
+    for output, expected in (
+        ("qdisc noqueue 0: root refcnt 0\n", True),
+        ("qdisc fq_codel 1: root refcnt 2\n", True),
+        ("lo\n", False),
+        ("qdisc lo\n", False),
+        ("Usage: tc qdisc noqueue 0: root\n", False),
+        ("qdisc noqueue 0: parent 1:1\n", False),
+        ("qdisc 0: root refcnt 0\n", False),
+    ):
+        result = subprocess.run(["grep", "-Eq", tc_pattern], input=output,
+                                capture_output=True, text=True, timeout=5)
+        assert (result.returncode == 0) == expected, (
+            f"tc oracle false {'negative' if expected else 'positive'}: {output!r}")
+    assert "lo" not in "qdisc noqueue 0: root refcnt 0", (
+        "old tc device-name oracle regression fixture unexpectedly matches")
     # Original util-linux partx rejects --show with --raw. An earlier
     # mistaken combination failed on Linux itself, not because of NaSeed.
     # The paired sfdisk/partx probe must create and READ the same isolated

@@ -283,6 +283,13 @@ unsigned nas_lwip_guest_if_snapshot(
     };
     return 2;
 }
+unsigned nas_lwip_guest_qdisc_snapshot(
+    struct nas_lwip_guest_qdisc out[NAS_LWIP_GUEST_IF_LIMIT]) {
+    /* This isolated socket/FD host fixture never attaches the real lwIP
+     * loopif's output policy. Interface existence alone is not a qdisc. */
+    (void)out;
+    return 0;
+}
 unsigned nas_lwip_guest_ipv4_ifconf(
     struct nas_lwip_guest_ipv4_if out[NAS_LWIP_GUEST_IF_LIMIT]) {
     assert(out);

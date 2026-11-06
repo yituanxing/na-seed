@@ -23,6 +23,8 @@ on:
   # stream extending beyond its deadline; retain strict first/reopen gates.
   # Recheck genuine UDP wire stimulus from the guest (40 DNS datagrams) so
   # iftop observes traffic without relying on unsupported BusyBox RAW ping.
+  # M207: verify owned loopback qdisc lifecycle, RAW connect/getname sequencing,
+  # and the exact native tc root-qdisc oracle on three first/reopen QEMU guests.
   push:
     branches: [naseed-app-batch2]
     paths:

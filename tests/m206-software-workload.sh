@@ -56,8 +56,10 @@ case "$case_id:$elf" in
         ;;
     loopback-qdisc-query:sbin/tc)
         /sbin/tc qdisc show dev lo > "$target/out" 2>&1 &&
-            /bin/busybox grep -Fq 'qdisc' "$target/out" &&
-            /bin/busybox grep -Fq 'lo' "$target/out" &&
+            # With an explicit `dev lo` filter, genuine Alpine tc can emit
+            # `qdisc noqueue 0: root refcnt 0` without repeating `lo`.
+            # Require a real root qdisc object (kind + handle), not a banner.
+            /bin/busybox grep -Eq '^qdisc [[:alnum:]_+-]+ [[:xdigit:]]+: root([[:space:]]|$)' "$target/out" &&
             probe_rc=0
         ;;
     local-tcp-throughput-roundtrip:usr/bin/iperf)

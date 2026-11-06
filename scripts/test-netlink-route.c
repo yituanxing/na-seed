@@ -30,6 +30,18 @@ int nas_lwip_tcp_listeners_snapshot(struct nas_lwip_tcp_listener *out,
     return diag_fixture_count;
 }
 static bool full_snapshot,second_addressed=true,long_name_mode;
+/* A live interface owns the tested attachment, not the Netlink provider.
+ * Production attaches this object from tcpip_thread to the real loopif and
+ * uses the same direct-output guard in IPv4/IPv6 TX callbacks. */
+static struct nas_net_qdisc owned_loopback_qdisc;
+unsigned nas_lwip_guest_qdisc_snapshot(
+    struct nas_lwip_guest_qdisc out[NAS_LWIP_GUEST_IF_LIMIT]) {
+    if(!out || !nas_net_qdisc_direct(&owned_loopback_qdisc,1U))return 0;
+    out[0]=(struct nas_lwip_guest_qdisc){
+        .ifindex=owned_loopback_qdisc.ifindex,.kind=owned_loopback_qdisc.kind
+    };
+    return 1;
+}
 /* Route statistics must share real NetDevice ownership, not the DHCP/IP
  * snapshot alone. This fixture emulates the pinned network-device port's
  * stable names and supplies deliberately nontrivial, >32-bit counters.
@@ -516,9 +528,25 @@ int main(void) {
     assert(!memcmp(reply+20,qdisc,16) && rd32(source+4)==0);
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
                                     NULL,NULL)==-EAGAIN);
-    /* A device-specific dump may describe the REAL queue-less lwIP
-     * loopback. A wildcard request above still cannot invent NIC qdiscs. */
+    /* Seeing an interface called lo is insufficient; before the upstream
+     * core attaches its actual output policy, there is no owned qdisc. */
     wr32(qdisc+20,1); /* tcmsg.tcm_ifindex = actual lo interface */
+    assert(!nas_net_qdisc_direct(&owned_loopback_qdisc,1));
+    wr32(qdisc+8,213);
+    assert(nas_netlink_route_sendto(11,qdisc,sizeof(qdisc),addr,12)==36);
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==36);
+    assert(rd16(reply+4)==2 && rd32(reply+8)==213 &&
+           rd32(reply+16)==(uint32_t)-EOPNOTSUPP);
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==-EAGAIN);
+    /* Actual attachment changes direct TX policy and makes the qdisc
+     * visible. No other link obtains a discipline from this transition. */
+    assert(!nas_net_qdisc_attach_noqueue(&owned_loopback_qdisc,0));
+    assert(nas_net_qdisc_attach_noqueue(&owned_loopback_qdisc,1));
+    assert(!nas_net_qdisc_attach_noqueue(&owned_loopback_qdisc,1));
+    assert(nas_net_qdisc_direct(&owned_loopback_qdisc,1));
+    assert(!nas_net_qdisc_direct(&owned_loopback_qdisc,2));
     wr32(qdisc+8,211);
     assert(nas_netlink_route_sendto(11,qdisc,sizeof(qdisc),addr,12)==36);
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
@@ -540,6 +568,18 @@ int main(void) {
                                     NULL,NULL)==36);
     assert(rd16(reply+4)==2 && rd32(reply+8)==212 &&
            rd32(reply+16)==(uint32_t)-EOPNOTSUPP);
+    /* Removing the upstream loopif must retire its qdisc first. An old
+     * stale ifindex must never retain a fabricated noqueue reply. */
+    nas_net_qdisc_detach(&owned_loopback_qdisc);
+    assert(!nas_net_qdisc_direct(&owned_loopback_qdisc,1));
+    wr32(qdisc+20,1);wr32(qdisc+8,214);
+    assert(nas_netlink_route_sendto(11,qdisc,sizeof(qdisc),addr,12)==36);
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==36);
+    assert(rd16(reply+4)==2 && rd32(reply+8)==214 &&
+           rd32(reply+16)==(uint32_t)-EOPNOTSUPP);
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==-EAGAIN);
     /* Next cache dump receives the independent, new sequence normally. */
     getlink(link_request,0,210);
     assert(nas_netlink_route_sendto(11,link_request,sizeof(link_request),
@@ -576,7 +616,7 @@ int main(void) {
     assert(nas_netlink_route_bind(11,addr,12)==0);
     assert(nas_netlink_route_getsockname(11,name)==0);
     assert(rd32(name+4)==9000);
-    puts("[NETLINK_ROUTE HOST PASS] true 64/32-bit NIC statistics, pinned all-or-nothing snapshots, single-snapshot IDs, address loss, eight-NIC multipart, real lo noqueue plus honest unsupported GETQDISC error and next libnl seq, "
+    puts("[NETLINK_ROUTE HOST PASS] true 64/32-bit NIC statistics, pinned all-or-nothing snapshots, single-snapshot IDs, address loss, eight-NIC multipart, owned lo qdisc attach/TX policy/detach + unsupported GETQDISC sequencing, "
          "SO_SNDBUF/SO_RCVBUF quotas, SOCK_RAW port bind, MSG_PEEK/TRUNC, poll/release");
     return 0;
 }

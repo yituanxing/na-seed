@@ -159,6 +159,34 @@ static void assert_dns(uint32_t primary,uint32_t secondary){
  assert(count==(primary ? secondary ? 2U : 1U : 0U));
  assert(snapshot[0]==primary && snapshot[1]==secondary);
 }
+struct loopback_tx_probe {bool completed,queued;};
+static void send_loopback_on_core(void *ctx){
+ struct loopback_tx_probe *probe=ctx;
+ struct netif *loopif=netif_get_by_index(1);
+ assert(loopif && loopif->output && loopif->name[0]=='l');
+ struct pbuf *packet=pbuf_alloc(PBUF_RAW,4,PBUF_RAM);
+ assert(packet && packet->len==4);
+ memset(packet->payload,0,packet->len); /* deliberately short IPv4: dropped */
+ ip4_addr_t destination;
+ IP4_ADDR(&destination,127,0,0,1);
+ assert(loopif->output(loopif,packet,&destination)==ERR_OK);
+ /* The TC policy performed immediate forwarding, yet upstream lwIP uses
+  * a distinct pbuf loopback queue awaiting netif_poll. */
+ probe->queued=loopif->loop_first!=NULL;
+ pbuf_free(packet);
+ probe->completed=true;
+}
+/* The real tcpip_thread owns loopif mutation. Its output callback is a
+ * noqueue/direct dispatch while attached, and the netif removal callback
+ * must tear down the visible qdisc before the interface can disappear. */
+static void remove_loopif_on_core(void *ctx){
+ bool *completed=ctx;
+ struct netif *loopif=netif_get_by_index(1);
+ assert(loopif && loopif->name[0]=='l' && loopif->name[1]=='o');
+ assert(loopif->output);
+ netif_remove(loopif);
+ *completed=true;
+}
 int main(void){
  nas_kthread_system_init();
  assert(nas_netdev_register(&eth)==0);
@@ -173,6 +201,9 @@ int main(void){
  assert(nas_lwip_guest_if_snapshot(devices)==2);
  assert(!strcmp(devices[0].name,"lo") && devices[0].loopback &&
         devices[0].ifindex==1 && devices[0].ipv4_host_order==0x7f000001U);
+ struct nas_lwip_guest_qdisc qdiscs[NAS_LWIP_GUEST_IF_LIMIT]={0};
+ assert(nas_lwip_guest_qdisc_snapshot(qdiscs)==1);
+ assert(qdiscs[0].ifindex==1 && qdiscs[0].kind==NAS_NET_QDISC_NOQUEUE);
  assert(!strcmp(devices[1].name,"en0") && !devices[1].loopback &&
         devices[1].up && devices[1].link_up && devices[1].mtu==1500 &&
         devices[1].ifindex>1);
@@ -380,7 +411,18 @@ int main(void){
  assert(nas_bus_driver_unregister(&second_driver)==0);
  assert(nas_lwip_guest_if_snapshot(devices)==1);
  assert_dns(0,0);
+ assert(nas_lwip_guest_qdisc_snapshot(qdiscs)==1);
+ struct loopback_tx_probe loopback_tx={0};
+ assert(tcpip_try_callback(send_loopback_on_core,&loopback_tx)==ERR_OK);
+ for(unsigned attempt=0;attempt<60 && !loopback_tx.completed;attempt++)
+     assert(nas_kthread_run(1)==1);
+ assert(loopback_tx.completed && loopback_tx.queued);
+ bool loopif_removed=false;
+ assert(tcpip_try_callback(remove_loopif_on_core,&loopif_removed)==ERR_OK);
+ for(unsigned attempt=0;attempt<60 && !loopif_removed;attempt++)
+     assert(nas_kthread_run(1)==1);
+ assert(loopif_removed && nas_lwip_guest_qdisc_snapshot(qdiscs)==0);
 
  puts("[LWIP NATIVE BOOT PASS] two live NICs, late attach, independent DHCP/link,");
- puts("  delayed/withdrawn DHCP, route+DNS fallback, unchanged-IP renew, bounded RX, bus-owned async detach/re-attach, pins");
+ puts("  delayed/withdrawn DHCP, route+DNS fallback, unchanged-IP renew, bounded RX, bus-owned async detach/re-attach, pins, owned lo qdisc direct TX/lifetime");
 }
