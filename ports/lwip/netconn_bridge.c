@@ -383,7 +383,20 @@ static void execute(unsigned slot) {
         s->accept_pending=0;
         err=netconn_listen_with_backlog(s->connection,
                                         (u8_t)(r->backlog>255U?255U:r->backlog));
-        if(err==ERR_OK)s->listening=true;
+        if(err==ERR_OK) {
+            s->listening=true;
+            /* A diagnostic snapshot must reflect the actual native PCB,
+             * not the userspace bind request (which may have used port 0).
+             * Failure to observe it must not undo a successful listen. */
+            ip_addr_t actual;
+            u16_t actual_port=0;
+            if(netconn_getaddr(s->connection,&actual,&actual_port,1U)==ERR_OK &&
+               IP_IS_V4(&actual) && actual_port) {
+                out->local.ipv4=lwip_ntohl(ip4_addr_get_u32(ip_2_ip4(&actual)));
+                out->local.port=actual_port;
+                out->local_valid=true;
+            }
+        }
         break;
     case NAS_LWIP_BRIDGE_ACCEPT: {
         if(s->type!=NAS_LWIP_BRIDGE_TCP){err=ERR_ARG;break;}

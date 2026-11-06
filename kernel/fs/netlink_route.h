@@ -14,6 +14,10 @@ struct nas_file_ops;
 const struct nas_file_ops *nas_netlink_route_ops(void);
 bool nas_netlink_route_is_slot(unsigned slot);
 int nas_netlink_route_open(unsigned slot,uint32_t owner_pid);
+/* Same native Netlink OpenFile provider, separate Linux protocol namespace.
+ * Protocol 4 exposes only real IPv4 TCP LISTEN state via SOCK_DIAG. */
+int nas_netlink_diag_open(unsigned slot,uint32_t owner_pid);
+int nas_netlink_route_protocol(unsigned slot);
 int nas_netlink_route_bind(unsigned slot,const uint8_t *address,unsigned length);
 int nas_netlink_route_getsockname(unsigned slot,
                                  uint8_t address[NAS_NETLINK_ROUTE_SOCKADDR_SIZE]);

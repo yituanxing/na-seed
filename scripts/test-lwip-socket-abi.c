@@ -19,6 +19,12 @@ void nas_vt_open_session(uint64_t flags) {
 }
 
 #include "../ports/lwip/socket_port.h"
+/* This ABI-only fixture does not run native TCP listeners; the real
+ * socket_port.c implementation is exercised by its separate host test. */
+int nas_lwip_tcp_listeners_snapshot(struct nas_lwip_tcp_listener *out,
+                                    unsigned capacity) {
+    (void)out;(void)capacity;return 0;
+}
 /* SIOCGIFCONF now exercises the real generic ioctl dispatcher. Its other
  * filesystem/PTY branches are unrelated to this network fixture and must
  * not silently succeed if an unexpected branch becomes reachable. */

@@ -45,6 +45,9 @@ struct port_socket {
     struct nas_lwip_bridge_request control_request;
     struct nas_lwip_bridge_address connect_address;
     struct nas_lwip_bridge_address peer_address;
+    struct nas_lwip_bridge_address listen_address;
+    uint16_t listen_backlog;
+    bool listen_address_valid;
     struct nas_lwip_bridge_address tx_destination,rx_source;
     bool ip_recverr,ip_pktinfo,tcp_nodelay,keepalive;
     /* Nonblocking connect() may return to userspace before Netconn finishes.
@@ -510,8 +513,13 @@ int nas_lwip_socket_port_complete(unsigned slot,
     }
     if(s->command!=PORT_CONTROL_DONE)return s->command==PORT_CONTROL ? 0:-EINVAL;
     *result=s->control_result;
-    if(s->control_request.op==NAS_LWIP_BRIDGE_LISTEN && !result->status)
+    if(s->control_request.op==NAS_LWIP_BRIDGE_LISTEN && !result->status) {
         s->listening=true;
+        s->listen_address_valid=result->local_valid;
+        if(result->local_valid)s->listen_address=result->local;
+        s->listen_backlog=s->control_request.backlog>255U ?
+                          255U:s->control_request.backlog;
+    }
     if(s->control_request.op==NAS_LWIP_BRIDGE_SHUTDOWN && !result->status) {
         unsigned how=s->control_request.shutdown_how;
         if(how==0U || how==2U)s->shut_read=true;
@@ -902,6 +910,25 @@ int nas_lwip_socket_port_set_peer(unsigned slot,
 bool nas_lwip_socket_is_listening(unsigned slot) {
     struct port_socket *s=socket_at(slot);
     return s && s->listening;
+}
+int nas_lwip_tcp_listeners_snapshot(struct nas_lwip_tcp_listener *out,
+                                    unsigned capacity) {
+    if(!out && capacity)return -EINVAL;
+    unsigned count=0;
+    for(unsigned slot=0;slot<NAS_OPEN_FILE_LIMIT;slot++) {
+        const struct port_socket *s=socket_at(slot);
+        if(!s || !s->listening || s->type!=NAS_LWIP_BRIDGE_TCP)continue;
+        /* Refuse a supposedly complete TCP dump if native endpoint state or
+         * exact live accept-queue depth cannot be observed. An empty/zero
+         * fake listener would be worse than a truthful unsupported result. */
+        if(!s->listen_address_valid || !s->listen_address.port ||
+           nas_lwip_bridge_listener_readable(s->id))return -EOPNOTSUPP;
+        if(count>=capacity)return -ENOBUFS;
+        out[count++]=(struct nas_lwip_tcp_listener){
+            .slot=slot,.local=s->listen_address,.backlog=s->listen_backlog
+        };
+    }
+    return (int)count;
 }
 int nas_lwip_socket_bind(unsigned slot,struct nas_lwip_bridge_address address) {
     const struct nas_lwip_bridge_request req={

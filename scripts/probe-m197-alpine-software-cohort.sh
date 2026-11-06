@@ -138,10 +138,14 @@ if [ "$m205" = 1 ]; then
     "$fixture_cc" -O0 -g -fno-inline tests/m205_symbol.c -o "$fixture_elf"
     fixture_listener="$PWD/$work/m205-loopback-listener.elf"
     "$fixture_cc" -static -Os tests/m205-loopback-listener.c -o "$fixture_listener"
+    fixture_pty="$PWD/$work/m205-pty-exchange.elf"
+    "$fixture_cc" -static -O2 -Wall -Wextra -Werror \
+        tests/m205-pty-exchange.c -o "$fixture_pty"
     "$fixture_nm" -n "$fixture_elf" | awk \
         '$3 == "m205_symbol" { print "0x" $1; found = 1 } END { if (!found) exit 1 }' \
         > "$fixture_addr"
-    test -s "$fixture_elf" && test -s "$fixture_addr" && test -s "$fixture_listener"
+    test -s "$fixture_elf" && test -s "$fixture_addr" && \
+        test -s "$fixture_listener" && test -s "$fixture_pty"
     sudo install -d -m 0755 "$overlay/root/m205-fixtures"
     sudo install -m 0644 "$fixture_elf" \
         "$overlay/root/m205-fixtures/symbolizer.elf"
@@ -149,8 +153,60 @@ if [ "$m205" = 1 ]; then
         "$overlay/root/m205-fixtures/symbolizer.addr"
     sudo install -m 0755 "$fixture_listener" \
         "$overlay/root/m205-fixtures/loopback-listener"
+    sudo install -m 0755 "$fixture_pty" \
+        "$overlay/root/m205-fixtures/pty-exchange"
     sudo test -s "$overlay/root/m205-software-workload.sh"
     sudo test -s "$overlay/root/m205-cohort.tsv"
+    # The M205 host census already fetched every package from Alpine's
+    # signature-verified official indexes. Reuse the original byte-for-byte
+    # APK archives as a standard local Alpine cache, not preinstalled ELFs.
+    # The genuine APK guest still performs every install and postinstall
+    # transaction; M197's separate public HTTPS installs stay live/unchanged.
+    m205_package_sha=$(sha256sum rootfs/alpine/packages-m205-candidates.txt |
+        awk '{print $1}')
+    m205_cache_root="$PWD/build/external/m205-candidate-inventory/$port/packages-$m205_package_sha/rootfs"
+    m205_cache_src="$m205_cache_root/var/cache/apk"
+    m205_cache_manifest="$PWD/build/external/m205-candidate-inventory/$port/signed-cache.sha256"
+    test -d "$m205_cache_src" &&
+        test ! -L "$m205_cache_root" &&
+        test ! -L "$m205_cache_root/var" &&
+        test ! -L "$m205_cache_root/var/cache" &&
+        test ! -L "$m205_cache_src" &&
+        test -s "$m205_cache_manifest" &&
+        test ! -L "$m205_cache_manifest" &&
+        test "$(cd "$m205_cache_src" && pwd -P)" = "$m205_cache_src" || {
+            echo '[M205 CACHE FAIL] signed host APK archive/index proof missing' >&2
+            exit 1
+        }
+    ( cd "$m205_cache_src" && sha256sum -c "$m205_cache_manifest" >/dev/null ) || {
+        echo '[M205 CACHE FAIL] host APK archive/index SHA256 changed' >&2
+        exit 1
+    }
+    sudo test ! -L "$overlay/var" &&
+        sudo test ! -L "$overlay/var/cache" &&
+        sudo test ! -L "$overlay/etc/apk" &&
+        sudo test ! -e "$overlay/etc/apk/cache" &&
+        sudo test ! -L "$overlay/etc/apk/cache" || {
+            echo '[M205 CACHE FAIL] unsafe guest cache parent/destination' >&2
+            exit 1
+        }
+    sudo install -d -m 0755 "$overlay/var/cache/apk"
+    sudo cp -a "$m205_cache_src/." "$overlay/var/cache/apk/"
+    sudo ln -s /var/cache/apk "$overlay/etc/apk/cache"
+    ( cd "$overlay/var/cache/apk" &&
+      sha256sum -c "$m205_cache_manifest" >/dev/null ) || {
+        echo '[M205 CACHE FAIL] staged guest APK archive/index SHA256 mismatch' >&2
+        exit 1
+    }
+    # Require conservative post-install headroom for the unpacked LLVM/BIND
+    # dependencies, ext4 metadata and persistent second QEMU. No silent disk
+    # enlargement or fallback to an unverified network install is allowed.
+    m205_used_mib=$(du -sm "$overlay" | awk '{print $1}')
+    if [ "$((m205_used_mib+256+16))" -ge "$disk_mib" ]; then
+        echo "[M205 CACHE FAIL] disk capacity: staged=${m205_used_mib}MiB, disk=${disk_mib}MiB" >&2
+        exit 1
+    fi
+    echo '[M205 SIGNED APK CACHE STAGED] official native archives/indexes; guest add is --no-network, M197 stays public HTTPS'
     sudo test ! -e "$overlay/root/m205-first-results.tsv" || {
         echo '[M205 FAIL] cohort results were preseeded' >&2; exit 1;
     }

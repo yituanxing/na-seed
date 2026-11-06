@@ -61,6 +61,17 @@ int nas_lwip_socket_type(unsigned slot); /* TCP/UDP enum, or -EBADF */
 int nas_lwip_socket_buffer_capacity(unsigned slot,bool sending);
 bool nas_lwip_socket_is_connected(unsigned slot);
 bool nas_lwip_socket_is_listening(unsigned slot);
+/* A bounded kernel-owned LISTEN snapshot for Linux SOCK_DIAG. Every local
+ * endpoint was read back from the actual native Netconn after listen(),
+ * never guessed from bind parameters. Pending accepts with unobservable
+ * exact queue depth and listeners without a verified endpoint fail closed. */
+struct nas_lwip_tcp_listener {
+    unsigned slot;
+    struct nas_lwip_bridge_address local;
+    uint16_t backlog;
+};
+int nas_lwip_tcp_listeners_snapshot(struct nas_lwip_tcp_listener *out,
+                                    unsigned capacity);
 /* TCP recvfrom() can report the established peer without another native
  * request. Active CONNECT caches its target after successful completion;
  * the syscall adapter passes an accepted child's REAL bridge peer after

@@ -9,13 +9,13 @@ package	elf_path	family	probe
 # never two distinct ELFs in the acceptance count.
 # Keep package order identical to the guest inventory; lightweight
 # independent installs precede large packages that can hit network budget.
+zip	usr/bin/zipcloak	archive	encrypted-zip-roundtrip
 unzip	usr/bin/funzip	archive	zip-stdin-extraction
 unzip	usr/bin/unzipsfx	archive	self-extracting-archive
 sshpass	usr/bin/sshpass	network	controlled-ssh-authentication
 goawk	usr/bin/goawk	text	awk-field-transformation
 indent	usr/bin/indent	text	c-format-roundtrip
 zoxide	usr/bin/zoxide	terminal	path-database-roundtrip
-zip	usr/bin/zipcloak	archive	encrypted-zip-roundtrip
 rlwrap	usr/bin/rlwrap	terminal	pty-wrapped-command
 mbuffer	usr/bin/mbuffer	io	stream-hash-roundtrip
 iftop	usr/sbin/iftop	network	bounded-loopback-traffic

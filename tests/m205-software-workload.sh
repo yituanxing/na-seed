@@ -38,10 +38,10 @@ error_tail() {
         done
 }
 
-# Drive an actual util-linux script(1) PTY: original Alpine zipcloak and
-# rlwrap demand a controlling terminal, and piping a password before the
-# prompt can deadlock. Wait for each exact prompt, reply only when observed,
-# and require a genuine application output oracle after this helper returns.
+# Independently verify the original signed util-linux-misc PTY helper was
+# installed; it is not a target-ELF acceptance entry. Interactive probes use
+# a separate host-built native fixture to drive the kernel's real ptmx/pts
+# interface, since NaSeed does not yet support named FIFO (mknodat).
 signed_pty_available() {
     test -x /usr/bin/script || return 1
     apk info -e util-linux-misc >/dev/null 2>&1 || return 1
@@ -50,58 +50,19 @@ signed_pty_available() {
 }
 
 pty_exchange() {
-    pty_dir=$1 pty_command=$2 pty_prompt1=$3 pty_reply1=$4
-    pty_prompt2=${5:-} pty_reply2=${6:-}
-    signed_pty_available || {
-        echo 'M205 signed util-linux-misc script PTY helper untrusted or missing' >&2
+    pty_dir=$1 pty_prompt1=$2 pty_reply1=$3
+    pty_prompt2=$4 pty_reply2=$5
+    shift 5
+    test -x /root/m205-fixtures/pty-exchange || {
+        echo 'M205 missing host-built real PTY exchange fixture' >&2
         return 1
     }
-    pty_fifo="$pty_dir/pty-input"
-    /bin/busybox mkfifo "$pty_fifo" || return 1
-    /usr/bin/script -q -f -e -c "$pty_command" "$pty_dir/typescript" \
-        < "$pty_fifo" > "$pty_dir/pty-output" 2>&1 &
-    pty_pid=$!
-    exec 3> "$pty_fifo"
-    pty_prompt=$pty_prompt1
-    pty_reply=$pty_reply1
-    pty_step=1
-    while [ "$pty_step" -le 2 ]; do
-        pty_n=0
-        while ! /bin/busybox grep -aFq "$pty_prompt" "$pty_dir/pty-output"; do
-            pty_n=$((pty_n+1))
-            if [ "$pty_n" -ge 12 ]; then
-                echo "M205 PTY prompt not observed: $pty_prompt" >&2
-                exec 3>&-
-                kill -TERM "$pty_pid" 2>/dev/null || :
-                sleep 1
-                kill -KILL "$pty_pid" 2>/dev/null || :
-                wait "$pty_pid" 2>/dev/null || :
-                return 1
-            fi
-            sleep 1
-        done
-        printf '%s\n' "$pty_reply" >&3
-        [ -n "$pty_prompt2" ] || break
-        pty_prompt=$pty_prompt2
-        pty_reply=$pty_reply2
-        pty_prompt2=
-        pty_step=$((pty_step+1))
-    done
-    exec 3>&-
-    pty_n=0
-    while kill -0 "$pty_pid" 2>/dev/null; do
-        pty_n=$((pty_n+1))
-        if [ "$pty_n" -ge 12 ]; then
-            echo 'M205 PTY child did not exit after true interaction' >&2
-            kill -TERM "$pty_pid" 2>/dev/null || :
-            sleep 1
-            kill -KILL "$pty_pid" 2>/dev/null || :
-            wait "$pty_pid" 2>/dev/null || :
-            return 1
-        fi
-        sleep 1
-    done
-    wait "$pty_pid"
+    # The fixture forks the REAL original Alpine command with a controlling
+    # slave, waits for prompts from the master, sends replies, and verifies
+    # its exit status. No result is synthetic and no shell FIFO is needed.
+    /bin/busybox timeout 40 /root/m205-fixtures/pty-exchange \
+        "$pty_dir/pty-output" "$pty_prompt1" "$pty_reply1" \
+        "$pty_prompt2" "$pty_reply2" "$@"
 }
 
 probe() {
@@ -225,16 +186,20 @@ probe() {
                 /bin/busybox cmp -s "$target/expected" "$target/out"
             ;;
         c-format-roundtrip:usr/bin/indent)
+            # GNU indent may place the function's return type and name on
+            # separate lines. Compare the whole token stream instead of a
+            # particular whitespace style.
             printf 'int main(void){return(40+2);}\n' > "$target/input.c"
             /usr/bin/indent -st "$target/input.c" > "$target/output.c" &&
-                /bin/busybox grep -Fq 'int main' "$target/output.c" &&
-                /bin/busybox grep -Fq 'return' "$target/output.c" &&
-                /bin/busybox grep -Fq '40 + 2' "$target/output.c"
+                /bin/busybox tr -d '[:space:]' < "$target/input.c" > "$target/expected.tokens" &&
+                /bin/busybox tr -d '[:space:]' < "$target/output.c" > "$target/actual.tokens" &&
+                /bin/busybox cmp -s "$target/expected.tokens" "$target/actual.tokens"
             ;;
         pty-wrapped-command:usr/bin/rlwrap)
             pty_exchange "$target" \
-                "/usr/bin/rlwrap /bin/sh -c 'printf M205_RLWRAP_PROMPT; IFS= read -r -t 8 answer; test \"\$answer\" = m205-line && printf M205_RLWRAP_OK'" \
-                M205_RLWRAP_PROMPT m205-line &&
+                M205_RLWRAP_PROMPT m205-line - - \
+                /usr/bin/rlwrap /bin/sh -c \
+                'printf M205_RLWRAP_PROMPT; IFS= read -r -t 8 answer; test "$answer" = m205-line && printf M205_RLWRAP_OK' &&
                 /bin/busybox grep -aFq M205_RLWRAP_OK "$target/pty-output"
             ;;
         path-database-roundtrip:usr/bin/zoxide)
@@ -247,8 +212,9 @@ probe() {
         encrypted-zip-roundtrip:usr/bin/zipcloak)
             printf 'M205 ZIP SECRET CONTENTS\n' > "$target/source" || return 1
             (cd "$target" && /usr/bin/zip -q archive.zip source) || return 1
-            pty_exchange "$target" "/usr/bin/zipcloak $target/archive.zip" \
-                'Enter password:' m205-secret 'Verify password:' m205-secret ||
+            pty_exchange "$target" 'Enter password:' m205-secret \
+                'Verify password:' m205-secret \
+                /usr/bin/zipcloak "$target/archive.zip" ||
                 return 1
             test -x /usr/bin/unzip || return 1
             /usr/bin/unzip -P m205-secret -p "$target/archive.zip" source \
@@ -357,10 +323,20 @@ fi
 # record, never count a pre-existing helper as a new signed APK install.
 # util-linux-misc is a signed PTY test dependency, NOT a twentieth new ELF.
 if [ "$phase" = first ]; then
+    # Signed original Alpine packages were predownloaded and SHA-pinned by
+    # the host inventory; installation and all scripts still run INSIDE this
+    # guest. M197's separate APK transaction remains real public HTTPS.
+    test -L /etc/apk/cache &&
+        test "$(readlink /etc/apk/cache)" = /var/cache/apk &&
+        test -d /var/cache/apk || {
+            echo '[M205 CACHE FAIL] guest signed APK cache missing' >&2
+            exit 1
+        }
+    echo M205_APK_SOURCE_OFFICIAL_SIGNED_CACHE_NO_NETWORK
     for helper in unzip util-linux-misc; do
         if apk info -e "$helper" >/dev/null 2>&1; then
             helper_result=PREEXISTING
-        elif /bin/busybox timeout 150 apk -v add "$helper" \
+        elif /bin/busybox timeout 150 apk --no-network -v add "$helper" \
                 > "$work/logs/$helper.apk.log" 2>&1; then
             helper_result=PASS
         else
@@ -408,7 +384,7 @@ while IFS="$tab" read -r package elf family case_id <&9 || [ -n "$package" ]; do
             # exact M205 first boot; it was absent from the baseline.
             install_result=PASS
             printf '%s\n' "$install_result" > "$status_file"
-        elif /bin/busybox timeout 150 apk -v add "$package" \
+        elif /bin/busybox timeout 150 apk --no-network -v add "$package" \
                 > "$work/logs/$package.apk.log" 2>&1; then
             install_result=PASS
             printf '%s\n' "$install_result" > "$status_file"

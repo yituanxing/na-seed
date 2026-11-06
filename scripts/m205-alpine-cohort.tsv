@@ -3,13 +3,14 @@ package	elf_path	family	probe
 # Host reporter verifies every line; guest executes the named semantic probe.
 # Smaller independent signed APKs go first: a timed-out LLVM/bind-libs
 # transaction must not taint every subsequent package-discovery result.
+# The ZIP creator must be installed before funzip/unzipsfx functional probes.
+zip	usr/bin/zipcloak	archive	encrypted-zip-roundtrip
 unzip	usr/bin/funzip	archive	zip-stdin-extraction
 unzip	usr/bin/unzipsfx	archive	self-extracting-archive
 sshpass	usr/bin/sshpass	network	controlled-ssh-authentication
 goawk	usr/bin/goawk	text	awk-field-transformation
 indent	usr/bin/indent	text	c-format-roundtrip
 zoxide	usr/bin/zoxide	terminal	path-database-roundtrip
-zip	usr/bin/zipcloak	archive	encrypted-zip-roundtrip
 rlwrap	usr/bin/rlwrap	terminal	pty-wrapped-command
 mbuffer	usr/bin/mbuffer	io	stream-hash-roundtrip
 iftop	usr/sbin/iftop	network	bounded-loopback-traffic

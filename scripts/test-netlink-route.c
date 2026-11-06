@@ -9,6 +9,7 @@
 #include "../kernel/task.h"
 #include "../kernel/errno.h"
 #include "../ports/lwip/network_boot.h"
+#include "../ports/lwip/socket_port.h"
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -16,6 +17,17 @@
 
 struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
 struct nas_task *nas_current_task;
+/* Host-only stub: the standalone SOCK_DIAG fixture supplies these samples;
+ * the ROUTE regression runs with an honest empty listener registry. */
+static int diag_fixture_count;
+static struct nas_lwip_tcp_listener diag_fixture[3];
+int nas_lwip_tcp_listeners_snapshot(struct nas_lwip_tcp_listener *out,
+                                    unsigned capacity) {
+    if(diag_fixture_count<0)return diag_fixture_count;
+    if((unsigned)diag_fixture_count>capacity)return -ENOBUFS;
+    for(int i=0;i<diag_fixture_count;i++)out[i]=diag_fixture[i];
+    return diag_fixture_count;
+}
 static bool full_snapshot,second_addressed=true;
 unsigned nas_lwip_guest_ipv4_ifconf(
     struct nas_lwip_guest_ipv4_if out[NAS_LWIP_GUEST_IF_LIMIT]) {

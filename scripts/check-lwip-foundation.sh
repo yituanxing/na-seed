@@ -15,6 +15,14 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -DNAS_ENABLE_LWIP=1 \
    scripts/test-netlink-route.c kernel/fs/netlink_route.c kernel/lib/string.c \
    -o build/lwip-foundation/test-netlink-route
 build/lwip-foundation/test-netlink-route
+# Original Alpine ss uses NETLINK_SOCK_DIAG, distinct from ROUTE. Exercise
+# Linux inet_diag wire offsets and genuine TCP listener snapshots in the
+# same lightweight pre-QEMU gate, including unsupported-state refusals.
+cc -std=c11 -O2 -Wall -Wextra -Werror -DNAS_ENABLE_LWIP=1 \
+   -I kernel -I ports/lwip/include -I third_party/lwip/src/include \
+   scripts/test-netlink-diag.c kernel/fs/netlink_route.c kernel/lib/string.c \
+   -o build/lwip-foundation/test-netlink-diag
+build/lwip-foundation/test-netlink-diag
 cc -std=c11 -O2 -Wall -Wextra -Werror -ffunction-sections \
    -fdata-sections -Wl,--gc-sections -DNAS_ENABLE_LWIP=1 \
    -I scripts/m89-test-include -I kernel \

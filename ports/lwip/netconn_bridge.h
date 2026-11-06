@@ -69,8 +69,10 @@ struct nas_lwip_bridge_result {
  int status; /* 0 or negative Linux errno from original lwIP err_t */
  uint16_t length; /* accepted send / received bytes, up to DATA */
  bool truncated; /* UDP datagram larger than DATA was consumed, not hidden */
+ bool local_valid; /* LISTEN: native netconn_getaddr verified local endpoint */
  uint8_t bytes[NAS_LWIP_BRIDGE_DATA];
  struct nas_lwip_bridge_address peer; /* ACCEPT/RECV peer; GETNAME endpoint */
+ struct nas_lwip_bridge_address local; /* post-LISTEN native endpoint only */
  struct nas_lwip_bridge_pktinfo packet_info; /* actual UDP RX Netbuf metadata */
  struct nas_lwip_bridge_id accepted; /* ACCEPT transfers an owned bridge ID */
 };

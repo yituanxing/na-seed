@@ -34,6 +34,31 @@ root_canonical=$(cd "$root" && pwd -P)
 package_list=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$packages")
 test -n "$package_list"
 
+# M205's guest otherwise downloads the same large original Alpine APKs a
+# second time over the emulated network. Retain precisely the packages that
+# the HOST already obtains from Alpine's signed repository/index closure.
+# APK v3.0 (Alpine 3.23) supports --cache-predownload and recognizes this
+# conventional ext4-backed /etc/apk/cache symlink. Never use --allow-untrusted.
+cache_flags=
+if [ "$profile" = m205 ]; then
+    # The guest's genuine PTY/metadata regression also installs the signed
+    # util-linux-misc helper. It is not one of the 20 candidate entrypoints,
+    # but must be present in the offline package closure.
+    package_list="$package_list
+util-linux-misc"
+    mkdir -p "$root/var/cache/apk"
+    if [ ! -L "$root/etc/apk/cache" ]; then
+        [ ! -e "$root/etc/apk/cache" ] || {
+            echo '[M205 CACHE FAIL] APK cache path was not a symlink' >&2; exit 1;
+        }
+        ln -s /var/cache/apk "$root/etc/apk/cache"
+    fi
+    [ "$(readlink "$root/etc/apk/cache")" = /var/cache/apk ] || {
+        echo '[M205 CACHE FAIL] unexpected APK cache symlink target' >&2; exit 1;
+    }
+    cache_flags='--cache-predownload'
+fi
+
 # Reuse the canonical Alpine runtime builder, which SHA256-verifies the
 # target-ISA minirootfs and extracts its architecture-specific signing keys.
 # The amd64 Docker image's own keys do NOT verify riscv64/aarch64 indexes.
@@ -43,10 +68,12 @@ if [ ! -f "$work/packages-$package_sha/signed-install.ok" ]; then
     cp -a "build/external/m39-packages/$port/rootfs/." "$root/"
     if ! docker run --rm --volume "$root_canonical:/target" \
         --env APK_ARCH="$arch" --env APK_PACKAGES="$package_list" \
+        --env APK_CACHE_FLAGS="$cache_flags" \
         alpine:3.23 sh -ec '
             cp -a /target/etc/apk/keys/. /etc/apk/keys/
             apk --arch "$APK_ARCH" --root /target --initdb \
                 --keys-dir /etc/apk/keys \
+                $APK_CACHE_FLAGS \
                 --no-scripts \
                 -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main \
                 -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
@@ -57,6 +84,37 @@ if [ ! -f "$work/packages-$package_sha/signed-install.ok" ]; then
         exit 1
     fi
     touch "$work/packages-$package_sha/signed-install.ok"
+fi
+
+if [ "$profile" = m205 ]; then
+    cache="$root/var/cache/apk"
+    [ -d "$cache" ] && [ ! -L "$cache" ] || {
+        echo '[M205 CACHE FAIL] missing real signed package cache directory' >&2
+        exit 1
+    }
+    # Alpine's official main/community APKINDEX and native APK archives are
+    # cached in the *same* directory. Validate both before guest publication.
+    archive_count=$(find "$cache" -maxdepth 1 -type f -name '*.apk' | wc -l)
+    index_count=$(find "$cache" -maxdepth 1 -type f -name 'APKINDEX*' | wc -l)
+    [ "$archive_count" -ge 16 ] && [ "$index_count" -ge 2 ] || {
+        echo "[M205 CACHE FAIL] archive/index shortage: $archive_count APKs $index_count indexes" >&2
+        exit 1
+    }
+    [ -z "$(find "$cache" -maxdepth 1 -type l -print -quit)" ] || {
+        echo '[M205 CACHE FAIL] cached archive path is a symlink' >&2
+        exit 1
+    }
+    # A digest manifest is generated solely from fixed-depth regular files;
+    # each path starts with ./ and is checked again after staging into ext4.
+    cache_manifest="$PWD/$work/signed-cache.sha256"
+    ( cd "$cache"
+      find . -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum
+    ) > "$cache_manifest"
+    ( cd "$cache" && sha256sum -c "$cache_manifest" >/dev/null ) || {
+        echo '[M205 CACHE FAIL] native archive/index hash mismatch' >&2
+        exit 1
+    }
+    echo "[M205 SIGNED CACHE PASS] $port $archive_count upstream APK archives and $index_count indexes, SHA256 pinned"
 fi
 
 report="$work/candidates.tsv"
