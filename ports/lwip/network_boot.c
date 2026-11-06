@@ -11,6 +11,7 @@
 #include "../../kernel/task/kthread.h"
 #include "../../kernel/drivers/serial.h"
 #include "../../kernel/errno.h"
+#include "../../kernel/fs/netlink_route.h"
 #include "../../kernel/lib/string.h"
 #include "../../kernel/time/clock.h"
 #include "lwip/tcpip.h"
@@ -38,6 +39,10 @@ struct nas_guest_nic {
  uint32_t dhcp_ipv4_host_order;
  uint8_t dhcp_prefix_len;
  uint32_t dhcp_dns_host_order[NAS_LWIP_DNS_SERVER_LIMIT];
+ /* Only the last published transition, not a second interface registry.
+  * The actual NetDevice pin and lwIP netif remain authoritative. */
+ struct nas_lwip_guest_if route_last;
+ bool route_published;
 };
 static struct {
  struct nas_guest_nic nic[NAS_NETDEV_LIMIT];
@@ -250,6 +255,37 @@ static struct nas_guest_nic *owner_of(struct netif *netif){
      if(&network.nic[i].ethernet.interface==netif)return &network.nic[i];
  return NULL;
 }
+/* Called exclusively from tcpip_thread after real lwIP mutation. Link
+ * multicast reports flags/MTU/index transitions; IPv4 address multicast
+ * reports genuine DHCP lease add/withdraw/change independently. An unchanged
+ * DHCP renewal is not a fabricated link event. */
+static void publish_nic_state(struct nas_guest_nic *nic){
+ if(!nic || !nic->ethernet.attached || !nic->ethernet.device)return;
+ const struct netif *iface=&nic->ethernet.interface;
+ struct nas_lwip_guest_if now={
+     .ifindex=netif_get_index((struct netif *)iface),.mtu=iface->mtu,
+     .up=netif_is_up(iface),.link_up=netif_is_link_up(iface)
+ };
+ memcpy(now.name,nic->name,sizeof(now.name));
+ if(now.up && now.link_up){
+     now.ipv4_host_order=nic->dhcp_ipv4_host_order;
+     now.prefix_len=nic->dhcp_prefix_len;
+ }
+ const struct nas_lwip_guest_if *old=&nic->route_last;
+ const bool had=nic->route_published;
+ const bool link_changed=!had || old->ifindex!=now.ifindex ||
+     old->mtu!=now.mtu || old->up!=now.up ||
+     old->link_up!=now.link_up || strcmp(old->name,now.name);
+ const bool addr_changed=!had || old->ipv4_host_order!=now.ipv4_host_order ||
+     old->prefix_len!=now.prefix_len || old->ifindex!=now.ifindex;
+ if(had && addr_changed && old->ipv4_host_order)
+     nas_netlink_route_publish_ipv4(old,true);
+ if(link_changed)nas_netlink_route_publish_link(&now,false);
+ if(addr_changed && now.ipv4_host_order)
+     nas_netlink_route_publish_ipv4(&now,false);
+ nic->route_last=now;
+ nic->route_published=true;
+}
 /* The core alone owns default-route selection. A carrier-up netif without
  * a DHCP lease is not yet a usable IPv4 egress route. Prefer the first
  * genuinely addressed interface; DHCP completion/loss may change this
@@ -284,13 +320,24 @@ static void detach_on_core(void *ctx){
  if(!nic)return;
  nic->pending_detach=false;
  if(nic->ethernet.attached && nic->ethernet.device){
+     const bool published=nic->route_published;
+     const struct nas_lwip_guest_if departed=nic->route_last;
      (void)nas_netdev_set_rx_wake(nic->ethernet.device,NULL,NULL);
      netif_set_status_callback(&nic->ethernet.interface,NULL);
      if(nas_lwip_eth_core_detach(&nic->ethernet)){
          nas_print("[LWIP] netif detach retained owner; will retry\n");
          return;
      }
+     /* Only a successful upstream core detach retires the published link.
+      * Failed detach preserves the prior identity for the next retry. */
+     if(published){
+         if(departed.ipv4_host_order)
+             nas_netlink_route_publish_ipv4(&departed,true);
+         nas_netlink_route_publish_link(&departed,true);
+     }
  }
+ nic->route_published=false;
+ nic->route_last=(struct nas_lwip_guest_if){0};
  nic->link_sync_queued=false;
  nic->rx_last_irq_sequence=0;
  nic->dhcp_ipv4_host_order=0;
@@ -331,6 +378,7 @@ static void network_status(struct netif *netif){
      nic->dhcp_dns_host_order[0]=nic->dhcp_dns_host_order[1]=0;
  }
  choose_default_on_core();
+ publish_nic_state(nic);
  nas_print("[LWIP NETIF STATUS] up=");nas_dec(netif_is_up(netif));
  nas_print(" link=");nas_dec(netif_is_link_up(netif));
  nas_print(" dhcp=");nas_dec(dhcp_supplied_address(netif));

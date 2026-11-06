@@ -652,7 +652,114 @@ int main(void) {
     assert(nas_netlink_route_bind(11,addr,12)==0);
     assert(nas_netlink_route_getsockname(11,name)==0);
     assert(rd32(name+4)==9000);
+    /* Multicast fan-out uses the same bounded, refcounted OpenFile slots as
+     * route dumps. This fixture injects observed authoritative interface
+     * snapshots; test-lwip-native-boot separately proves the callbacks are
+     * wired to actual tcpip_thread attach/DHCP/down/detach transitions. */
+    nas_open_files[12].refcount=0;
+    ops->release(12); /* prior autobind test's old OpenFile generation */
+    nas_open_files[12].refcount=1;
+    nas_open_files[12].ops=ops;
+    nas_open_files[13].refcount=1;
+    nas_open_files[13].ops=ops;
+    assert(nas_netlink_route_open(12,41212)==0);
+    assert(nas_netlink_route_open(13,41313)==0);
+    nl_sockaddr(addr,0,17); /* RTMGRP_LINK | RTMGRP_IPV4_IFADDR */
+    assert(nas_netlink_route_bind(12,addr,12)==0);
+    assert(nas_netlink_route_getsockname(12,name)==0 &&
+           rd32(name+4)==41212 && rd32(name+8)==17);
+    nl_sockaddr(addr,0,1);
+    assert(nas_netlink_route_bind(13,addr,12)==0);
+    assert(nas_netlink_route_recvmsg(12,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==-EAGAIN);
+    struct nas_lwip_guest_if current[NAS_LWIP_GUEST_IF_LIMIT]={0};
+    assert(nas_lwip_guest_if_snapshot(current)==3);
+    nas_netlink_route_publish_link(&current[1],false);
+    assert(ops->poll_description(12,1)&1);
+    assert(ops->poll_description(13,1)&1);
+    source_len=0;msg_flags=0;
+    assert(nas_netlink_route_recvmsg(12,reply,16,2,source,
+                                    &source_len,&msg_flags)==16);
+    assert(rd16(reply+4)==16 && rd16(reply+6)==0 &&
+           rd32(reply+8)==0 && rd32(reply+12)==0);
+    assert(source_len==12 && rd32(source+4)==0 && rd32(source+8)==1);
+    assert(msg_flags==32); /* MSG_PEEK kept the full link notification */
+    assert(nas_netlink_route_recvmsg(12,reply,sizeof(reply),0,source,
+                                    &source_len,&msg_flags)==52);
+    assert(rd16(reply+4)==16 && rd32(reply+20)==current[1].ifindex &&
+           rd32(reply+28)==UINT32_MAX && msg_flags==0);
+    assert(rd32(source+8)==1);
+    assert(nas_netlink_route_recvmsg(13,reply,sizeof(reply),0,source,
+                                    NULL,NULL)==52);
+    assert(rd32(source+8)==1);
+    current[1].ipv4_host_order=UINT32_C(0x0a00020f);
+    current[1].prefix_len=24;
+    nas_netlink_route_publish_ipv4(&current[1],false);
+    assert(nas_netlink_route_recvmsg(13,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==-EAGAIN);
+    assert(nas_netlink_route_recvmsg(12,reply,sizeof(reply),0,source,
+                                    NULL,NULL)==40);
+    assert(rd16(reply+4)==20 && rd16(reply+6)==0 &&
+           rd32(reply+8)==0 && rd32(reply+12)==0 &&
+           rd32(source+8)==16 && reply[17]==24);
+    nas_netlink_route_publish_ipv4(&current[1],true);
+    assert(nas_netlink_route_recvmsg(12,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==40 && rd16(reply+4)==21);
+    nas_netlink_route_publish_link(&current[1],true);
+    assert(nas_netlink_route_recvmsg(12,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==52 && rd16(reply+4)==17);
+    assert(nas_netlink_route_recvmsg(13,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==52 && rd16(reply+4)==17);
+    /* A real per-record memory quota applies to multicast too. Unhandled
+     * loss becomes one ENOBUFS/POLLERR and cannot masquerade as success. */
+    assert(nas_netlink_route_set_rcvbuf(12,1)==0);
+    nas_netlink_route_publish_link(&current[1],false);
+    nas_netlink_route_publish_link(&current[1],true);
+    assert((ops->poll_description(12,1)&8)==8);
+    assert(nas_netlink_route_recvmsg(12,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==-ENOBUFS);
+    assert(!(ops->poll_description(12,8)&8));
+    assert(nas_netlink_route_recvmsg(12,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==52 && rd16(reply+4)==16);
+    assert(nas_netlink_route_recvmsg(12,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==-EAGAIN);
+    assert(nas_netlink_route_recvmsg(13,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==52);
+    assert(nas_netlink_route_recvmsg(13,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==52);
+    /* Final close retires both subscription and pending datagram; reopening
+     * the same index must not inherit an old generation's event or overrun. */
+    nas_netlink_route_publish_link(&current[1],false);
+    nas_open_files[12].refcount=0;
+    ops->release(12);
+    nas_open_files[12].refcount=1;
+    assert(nas_netlink_route_open(12,42121)==0);
+    assert(nas_netlink_route_recvmsg(12,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==-EAGAIN);
+    nl_sockaddr(addr,0,1);
+    assert(nas_netlink_route_bind(12,addr,12)==0);
+    assert(nas_netlink_route_getsockname(12,name)==0 &&
+           rd32(name+4)==42121 && rd32(name+8)==1);
+    nas_netlink_route_publish_link(&current[1],true);
+    assert(nas_netlink_route_recvmsg(12,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==52 && rd16(reply+4)==17);
+    assert(nas_netlink_route_recvmsg(13,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==52 && rd16(reply+4)==16);
+    assert(nas_netlink_route_recvmsg(13,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==52 && rd16(reply+4)==17);
+    /* Saturate the physical ring itself, independently of SO_RCVBUF's
+     * smaller-quota admission: there is no unbounded multicast backlog. */
+    for(unsigned i=0;i<NAS_LWIP_GUEST_IF_LIMIT+3U;i++)
+        nas_netlink_route_publish_link(&current[1],false);
+    assert(ops->poll_description(12,0)&8);
+    assert(nas_netlink_route_recvmsg(12,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==-ENOBUFS);
+    for(unsigned i=0;i<NAS_LWIP_GUEST_IF_LIMIT+1U;i++)
+        assert(nas_netlink_route_recvmsg(12,reply,sizeof(reply),0,NULL,
+                                        NULL,NULL)==52);
+    assert(nas_netlink_route_recvmsg(12,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==-EAGAIN);
     puts("[NETLINK_ROUTE HOST PASS] true 64/32-bit NIC statistics, pinned all-or-nothing snapshots, single-snapshot IDs, address loss, eight-NIC multipart, owned lo qdisc attach/TX policy/detach + unsupported GETQDISC sequencing, "
-         "SO_SNDBUF/SO_RCVBUF quotas, SOCK_RAW port bind, MSG_PEEK/TRUNC, poll/release");
+         "SO_SNDBUF/SO_RCVBUF quotas, RTMGRP_LINK/IPV4_IFADDR multicast fan-out, ENOBUFS overflow, generation-safe close/rebind, SOCK_RAW port bind, MSG_PEEK/TRUNC, poll/release");
     return 0;
 }

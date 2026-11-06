@@ -4,6 +4,7 @@
 #include "../kernel/task/k_sync.h"
 #include "../kernel/fd.h"
 #include "../ports/lwip/netif_port.h"
+#include "../ports/lwip/network_boot.h"
 #include "../kernel/errno.h"
 #include "lwip/sys.h"
 #include "lwip/tcpip.h"
@@ -25,6 +26,12 @@ bool nas_heap_free(void *p){free(p);return true;}
 /* Netconn ACCEPT validates the same OpenFile lease as the real kernel;
  * this fixture never opens a user socket, but must provide the registry. */
 struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
+/* This fixture has no subscribed NETLINK_ROUTE OpenFiles. The separate
+ * route fixture verifies serialized multicast payloads and queue bounds. */
+void nas_netlink_route_publish_link(const struct nas_lwip_guest_if *iface,
+                                   bool removed){(void)iface;(void)removed;}
+void nas_netlink_route_publish_ipv4(const struct nas_lwip_guest_if *iface,
+                                   bool removed){(void)iface;(void)removed;}
 
 static sys_sem_t sem;
 static sys_mbox_t box;

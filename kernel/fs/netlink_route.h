@@ -11,6 +11,7 @@
 #define NAS_NETLINK_ROUTE_MAX_DATAGRAM 4096U
 
 struct nas_file_ops;
+struct nas_lwip_guest_if;
 const struct nas_file_ops *nas_netlink_route_ops(void);
 bool nas_netlink_route_is_slot(unsigned slot);
 int nas_netlink_route_open(unsigned slot,uint32_t owner_pid);
@@ -42,4 +43,11 @@ int64_t nas_netlink_route_recvmsg(unsigned slot,uint8_t *destination,
                                  unsigned capacity,unsigned flags,
                                  uint8_t source[NAS_NETLINK_ROUTE_SOCKADDR_SIZE],
                                  uint32_t *source_length,uint32_t *msg_flags);
+/* tcpip_thread publishes only transitions observed on its actual lwIP
+ * netif. Fixed-capacity subscriber fan-out never retains this pointer or
+ * queues work referencing an OpenFile slot after close/reuse. */
+void nas_netlink_route_publish_link(const struct nas_lwip_guest_if *iface,
+                                   bool removed);
+void nas_netlink_route_publish_ipv4(const struct nas_lwip_guest_if *iface,
+                                   bool removed);
 #endif

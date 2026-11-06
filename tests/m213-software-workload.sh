@@ -130,7 +130,25 @@ case "$case_id:$elf" in
     authoritative-dns-update-roundtrip:usr/bin/nsupdate)
         echo '[M213 BLOCKED] requires isolated authoritative DNS UPDATE server and readback oracle' >&2 ;;
     pipe-capacity-set-and-readback:bin/pipesz)
-        echo '[M213 BLOCKED] requires F_GETPIPE_SZ/F_SETPIPE_SZ kernel fcntl semantics' >&2 ;;
+        # The ORIGINAL util-linux pipesz must see a fresh 4 KiB shell pipe,
+        # enlarge a second one to 8 KiB, then exec itself to read the same
+        # inherited pipe object back. Neither banner nor launch is evidence.
+        if /bin/busybox printf 'pipe-base\n' | \
+                /bin/pipesz -cgi > "$target/base" 2> "$target/base.err" &&
+           /bin/busybox printf 'pipe-grown\n' | \
+                /bin/pipesz -ci -s8192 -- /bin/pipesz -cgi \
+                > "$target/grown" 2> "$target/grown.err" &&
+           /bin/busybox awk '
+                $1=="fd" && $2=="0" && $3=="4096" && NF==4 {ok=1}
+                END {exit !ok}
+           ' "$target/base" &&
+           /bin/busybox awk '
+                $1=="fd" && $2=="0" && $3=="8192" && NF==4 {ok=1}
+                END {exit !ok}
+           ' "$target/grown"; then
+            probe_rc=0
+        fi
+        ;;
     utmp-record-roundtrip:usr/bin/utmpdump)
         echo '[M213 BLOCKED] requires authentic utmp binary record fixture and reverse byte comparison' >&2 ;;
     nonempty-gmon-callgraph-parse:usr/bin/gprof)

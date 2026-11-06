@@ -35,6 +35,31 @@ __attribute__((noreturn)) void nas_arch_halt(void){abort();}
 void *nas_heap_calloc(size_t n,size_t size){return calloc(n,size);}
 bool nas_heap_free(void *p){free(p);return true;}
 struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
+/* Observe the exact production tcpip_thread->NETLINK_ROUTE publication
+ * boundary while upstream lwIP and NetDevice do actual lifecycle work.
+ * Wire layout/fan-out is separately checked by test-netlink-route.c. */
+struct route_observation {
+    struct nas_lwip_guest_if iface;
+    unsigned message_type;
+};
+static struct route_observation route_observations[64];
+static unsigned route_observation_count;
+static void observe_route(const struct nas_lwip_guest_if *iface,
+                          unsigned type){
+    assert(iface && iface->ifindex && iface->mtu);
+    assert(route_observation_count<64);
+    route_observations[route_observation_count++]=
+        (struct route_observation){.iface=*iface,.message_type=type};
+}
+void nas_netlink_route_publish_link(const struct nas_lwip_guest_if *iface,
+                                   bool removed){
+    observe_route(iface,removed ? 17U:16U);
+}
+void nas_netlink_route_publish_ipv4(const struct nas_lwip_guest_if *iface,
+                                   bool removed){
+    assert(iface->ipv4_host_order && iface->prefix_len);
+    observe_route(iface,removed ? 21U:20U);
+}
 int nas_platform_virtio_blk_probe(void){scans++;return 0;}
 
 static int transmit(void *ctx,const uint8_t *frame,uint32_t bytes){
@@ -324,12 +349,14 @@ int main(void){
  assert_dns(UINT32_C(0x0a000203),0);
  /* An ACK from en1 must not leak into DNS owned by the default en0.
   * The unchanged-address ACK path also exercises lwIP's extended event. */
+ const unsigned before_renew=route_observation_count;
  change_lease_dns(second_index,UINT32_C(0x0a000314),
                   UINT32_C(0x0a000335),UINT32_C(0xc0000235));
  assert_dns(UINT32_C(0x0a000203),0);
  change_lease_dns((unsigned)real_ifindex,UINT32_C(0x0a00020f),
                   UINT32_C(0x0a000235),UINT32_C(0xc6336435));
  assert_dns(UINT32_C(0x0a000235),UINT32_C(0xc6336435));
+ assert(route_observation_count==before_renew);
  change_lease((unsigned)real_ifindex,0);
  assert(netif_default && netif_get_index(netif_default)==second_index);
  assert_dns(UINT32_C(0x0a000335),UINT32_C(0xc0000235));
@@ -423,6 +450,33 @@ int main(void){
      assert(nas_kthread_run(1)==1);
  assert(loopif_removed && nas_lwip_guest_qdisc_snapshot(qdiscs)==0);
 
+ /* Verify observed transitions originated in real lwIP lifecycle rather
+  * than fabricated query-time messages. Explicitly inspect first attach,
+  * both link-up/down edges, DHCP add/loss, and teardown after bus removal. */
+ assert(route_observation_count>=12);
+ assert(route_observations[0].message_type==16 &&
+        !strcmp(route_observations[0].iface.name,"en0") &&
+        route_observations[0].iface.ifindex==(unsigned)real_ifindex);
+ unsigned link_up_events=0,link_down_events=0,link_removed_events=0;
+ unsigned addr_added_events=0,addr_removed_events=0;
+ for(unsigned i=0;i<route_observation_count;i++){
+     const struct route_observation *event=&route_observations[i];
+     assert(!event->iface.loopback && !strncmp(event->iface.name,"en",2));
+     switch(event->message_type){
+         case 16:
+             if(event->iface.link_up)link_up_events++;
+             else link_down_events++;
+             break;
+         case 17:link_removed_events++;break;
+         case 20:addr_added_events++;break;
+         case 21:addr_removed_events++;break;
+         default:assert(!"unexpected netif lifecycle event type");
+     }
+ }
+ assert(link_up_events>=3 && link_down_events>=2 &&
+        link_removed_events==3 && addr_added_events>=4 &&
+        addr_removed_events>=3);
+
  puts("[LWIP NATIVE BOOT PASS] two live NICs, late attach, independent DHCP/link,");
- puts("  delayed/withdrawn DHCP, route+DNS fallback, unchanged-IP renew, bounded RX, bus-owned async detach/re-attach, pins, owned lo qdisc direct TX/lifetime");
+ puts("  delayed/withdrawn DHCP, route+DNS fallback, unchanged-IP renew, genuine Netlink link/address events, bounded RX, bus-owned async detach/re-attach, pins, owned lo qdisc direct TX/lifetime");
 }

@@ -2,6 +2,7 @@
 #include "fd.h"
 #include "task.h"
 #include "errno.h"
+#include "mm/heap.h"
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
 
@@ -11,7 +12,10 @@ extern void nas_dec(uint64_t);
  */
 struct nas_pipe {
     bool used;
+    bool socket_channel;
     uint8_t bytes[NAS_PIPE_CAP];
+    uint8_t *data;
+    unsigned capacity;
     unsigned head, count, read_slot, write_slot;
 };
 static struct nas_pipe pipe_table[NAS_PIPE_COUNT];
@@ -29,6 +33,39 @@ static struct nas_pipe *pipe_for_slot(unsigned slot, bool writing) {
     if (!owner || owner > NAS_PIPE_COUNT) return 0;
     struct nas_pipe *pipe = &pipe_table[owner - 1];
     return pipe->used ? pipe : 0;
+}
+static struct nas_pipe *pipe_for_end(unsigned slot) {
+    struct nas_pipe *pipe = pipe_for_slot(slot, false);
+    return pipe ? pipe : pipe_for_slot(slot, true);
+}
+int64_t nas_pipe_capacity(unsigned slot) {
+    const struct nas_pipe *pipe = pipe_for_end(slot);
+    return pipe && !pipe->socket_channel ? (int64_t)pipe->capacity : -EBADF;
+}
+int64_t nas_pipe_set_capacity(unsigned slot, int32_t requested) {
+    struct nas_pipe *pipe = pipe_for_end(slot);
+    if (!pipe || pipe->socket_channel) return -EBADF;
+    if (requested < 0) return -EINVAL;
+    unsigned target = NAS_PIPE_CAP;
+    if ((unsigned)requested > NAS_PIPE_MAX_CAP) return -EPERM;
+    /* Linux rounds upward to the next power-of-two multiple of a page.
+     * The 4 KiB minimum also applies to a zero-byte request. */
+    while (target < (unsigned)requested) target <<= 1;
+    if (target == pipe->capacity) return (int64_t)target;
+    if (target < pipe->count) return -EBUSY;
+
+    /* The embedded default buffer avoids 32 tiny heap allocations at boot;
+     * growth is transactional and may fail without touching live data. */
+    uint8_t *next = target == NAS_PIPE_CAP ? pipe->bytes : nas_heap_alloc(target);
+    if (!next) return -ENOMEM;
+    for (unsigned i = 0; i < pipe->count; i++)
+        next[i] = pipe->data[(pipe->head + i) % pipe->capacity];
+    uint8_t *old = pipe->data;
+    pipe->data = next;
+    pipe->capacity = target;
+    pipe->head = 0;
+    if (old != pipe->bytes) (void)nas_heap_free(old);
+    return (int64_t)target;
 }
 static bool pipe_has_reader(const struct nas_pipe *pipe) {
     return pipe->read_slot < NAS_OPEN_FILE_LIMIT &&
@@ -57,6 +94,9 @@ int nas_pipe_create(unsigned read_slot, unsigned write_slot) {
     }
     struct nas_pipe *pipe = &pipe_table[index];
     pipe->used = true;
+    pipe->socket_channel = false;
+    pipe->data = pipe->bytes;
+    pipe->capacity = NAS_PIPE_CAP;
     pipe->head = pipe->count = 0;
     pipe->read_slot = read_slot;
     pipe->write_slot = write_slot;
@@ -75,6 +115,8 @@ int nas_pipe_create_socketpair(unsigned first_slot,unsigned second_slot) {
         nas_pipe_release_description(first_slot);
         nas_pipe_release_description(second_slot);
     } else {
+        pipe_for_slot(first_slot,true)->socket_channel=true;
+        pipe_for_slot(second_slot,true)->socket_channel=true;
         socket_read_closed[first_slot]=socket_read_closed[second_slot]=false;
         socket_write_closed[first_slot]=socket_write_closed[second_slot]=false;
     }
@@ -92,6 +134,9 @@ static void pipe_release_direction(unsigned slot,bool writing) {
         pipe_read_owner[slot]=0;
     }
     if (pipe->used && !pipe_has_reader(pipe) && !pipe_has_writer(pipe)) {
+        if (pipe->data != pipe->bytes) (void)nas_heap_free(pipe->data);
+        pipe->data=pipe->bytes;
+        pipe->capacity=NAS_PIPE_CAP;
         pipe->used=false;
         pipe->count=pipe->head=0;
     }
@@ -132,7 +177,7 @@ bool nas_pipe_read_ready(unsigned slot) {
 bool nas_pipe_write_ready(unsigned slot) {
     const struct nas_pipe *pipe = pipe_for_slot(slot,true);
     /* Waking for EPIPE is mandatory, not a false claim of writability. */
-    return !pipe || pipe->count < NAS_PIPE_CAP || !pipe_has_reader(pipe);
+    return !pipe || pipe->count < pipe->capacity || !pipe_has_reader(pipe);
 }
 bool nas_pipe_poll_readable(unsigned slot) {
     const struct nas_pipe *pipe = pipe_for_slot(slot,false);
@@ -144,7 +189,7 @@ bool nas_pipe_read_hup(unsigned slot) {
 }
 bool nas_pipe_poll_writable(unsigned slot) {
     const struct nas_pipe *pipe = pipe_for_slot(slot,true);
-    return pipe && pipe_has_reader(pipe) && pipe->count < NAS_PIPE_CAP;
+    return pipe && pipe_has_reader(pipe) && pipe->count < pipe->capacity;
 }
 int64_t nas_pipe_read_amount(unsigned slot, uint64_t requested, bool nonblock) {
     const struct nas_pipe *pipe = pipe_for_slot(slot,false);
@@ -158,12 +203,12 @@ int64_t nas_pipe_read_amount(unsigned slot, uint64_t requested, bool nonblock) {
 }
 uint8_t nas_pipe_read_byte(unsigned slot, unsigned offset) {
     const struct nas_pipe *pipe = pipe_for_slot(slot,false);
-    return pipe ? pipe->bytes[(pipe->head + offset) % NAS_PIPE_CAP] : 0;
+    return pipe ? pipe->data[(pipe->head + offset) % pipe->capacity] : 0;
 }
 void nas_pipe_read_commit(unsigned slot, unsigned count) {
     struct nas_pipe *pipe = pipe_for_slot(slot,false);
     if (!pipe) return;
-    pipe->head = (pipe->head + count) % NAS_PIPE_CAP;
+    pipe->head = (pipe->head + count) % pipe->capacity;
     pipe->count -= count;
 }
 int64_t nas_pipe_write_amount(unsigned slot, uint64_t requested, bool nonblock) {
@@ -171,9 +216,9 @@ int64_t nas_pipe_write_amount(unsigned slot, uint64_t requested, bool nonblock) 
     if (!pipe) return -EBADF;
     if (!requested) return 0;
     if (!pipe_has_reader(pipe)) return -EPIPE;
-    if (pipe->count == NAS_PIPE_CAP)
+    if (pipe->count == pipe->capacity)
         return nonblock ? -EAGAIN : -EOPNOTSUPP;
-    unsigned space = NAS_PIPE_CAP - pipe->count;
+    unsigned space = pipe->capacity - pipe->count;
     if (requested > space) {
         if (requested <= NAS_PIPE_CAP)
             return nonblock ? -EAGAIN : -EOPNOTSUPP;
@@ -190,7 +235,7 @@ int64_t nas_socket_write_amount(unsigned slot, uint64_t requested, bool nonblock
      * AF_UNIX stream writes <= PIPE_BUF are atomic. Unlike pipe writes,
      * a stream sender may advance as soon as ANY receive space exists.
      * The public File data plane preserves the committed short count. */
-    unsigned space = NAS_PIPE_CAP - pipe->count;
+    unsigned space = pipe->capacity - pipe->count;
     if (!space) return nonblock ? -EAGAIN : -EOPNOTSUPP;
     if (requested > space) requested = space;
     return (int64_t)requested;
@@ -198,7 +243,7 @@ int64_t nas_socket_write_amount(unsigned slot, uint64_t requested, bool nonblock
 void nas_pipe_write_byte(unsigned slot, unsigned offset, uint8_t value) {
     struct nas_pipe *pipe = pipe_for_slot(slot,true);
     if (!pipe) return;
-    pipe->bytes[(pipe->head + pipe->count + offset) % NAS_PIPE_CAP] = value;
+    pipe->data[(pipe->head + pipe->count + offset) % pipe->capacity] = value;
 }
 void nas_pipe_write_commit(unsigned slot, unsigned count) {
     struct nas_pipe *pipe = pipe_for_slot(slot,true);

@@ -9,6 +9,5 @@ cc -std=c11 -O0 -Wall -Wextra -Werror -Wno-unused-parameter \
    -DNAS_ENABLE_LWIP=1 -I ports/lwip/include \
    -I third_party/lwip/src/include -I kernel \
    scripts/test-lwip-accept-syscall.c kernel/fd.c \
-   kernel/fs/netlink_filter.c \
    -Wl,--gc-sections -o build/lwip-foundation/test-accept-syscall
 build/lwip-foundation/test-accept-syscall

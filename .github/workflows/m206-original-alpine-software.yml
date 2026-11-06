@@ -22,6 +22,9 @@ on:
   # first and independent reopen QEMU, retaining APK SHA and ext4 proof.
   # M211.2: require the original nft delete exit and post-delete ENOENT
   # across both native QEMU boots, beyond check/add/list output.
+  # M214: one native three-ISA regression after common Netlink protocol
+  # dispatch, genuine link/address events, nlctrl and resizable pipe ABI;
+  # M213 is only a host/probe contract here, not an accepted ELF cohort.
   push:
     branches: [naseed-app-batch2]
     paths:
@@ -54,6 +57,8 @@ jobs:
           set -eu
           sh scripts/check-packet-socket.sh
           sh scripts/check-lwip-foundation.sh
+          sh scripts/check-pipe-capacity.sh
+          python3 scripts/test-m213-alpine-host.py
           python3 scripts/check-m141-candidates.py --profile m206
           python3 scripts/test-m206-alpine-host.py
           python3 scripts/test-m205-alpine-host.py

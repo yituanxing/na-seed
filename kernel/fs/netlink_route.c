@@ -4,10 +4,9 @@
  *
  * Deliberately narrow: RTM_GETADDR(AF_INET/AF_INET6) and RTM_GETLINK
  * (AF_UNSPEC/AF_INET/AF_INET6), multipart NEWADDR/NEWLINK and DONE, kernel
- * source sockaddr_nl, genuine auto-assigned local port IDs.
- * Route multicast subscriptions are NOT implemented: a nonzero group bind
- * returns EPERM, which the unmodified dnsmasq v2.91 explicitly handles by
- * retrying with nl_groups=0. No made-up change notifications are sent. */
+ * source sockaddr_nl, genuine auto-assigned local port IDs. RTMGRP_LINK
+ * and RTMGRP_IPV4_IFADDR receive only actual lwIP netif transitions on its
+ * tcpip_thread. Unsupported groups still fail, never silently subscribe. */
 #include "netlink_route.h"
 #include "file_ops.h"
 #include "../fd.h"
@@ -27,8 +26,10 @@
 #define IPPROTO_TCP_LINUX 6U
 #define TCP_LISTEN_LINUX 10U
 #define RTM_NEWLINK_LINUX 16U
+#define RTM_DELLINK_LINUX 17U
 #define RTM_GETLINK_LINUX 18U
 #define RTM_NEWADDR_LINUX 20U
+#define RTM_DELADDR_LINUX 21U
 #define RTM_GETADDR_LINUX 22U
 #define RTM_NEWQDISC_LINUX 36U
 #define RTM_GETQDISC_LINUX 38U
@@ -41,6 +42,9 @@
 #define MSG_TRUNC_LINUX 32U
 #define MSG_DONTWAIT_LINUX 64U
 #define NETLINK_REPLY_QUEUE (NAS_LWIP_GUEST_IF_LIMIT + 1U)
+#define RTMGRP_LINK_LINUX 1U
+#define RTMGRP_IPV4_IFADDR_LINUX 16U
+#define ROUTE_SUPPORTED_GROUPS (RTMGRP_LINK_LINUX|RTMGRP_IPV4_IFADDR_LINUX)
 #define NETLINK_ROUTE_REPLY_SIZE 384U
 /* Linux inet_diag_msg is 72 bytes, plus a 16-byte nlmsghdr. */
 #define NETLINK_DIAG_REPLY_SIZE 96U
@@ -78,11 +82,12 @@ _Static_assert(NETLINK_ROUTE_REPLY_SIZE>=NETLINK_DIAG_REPLY_SIZE,
 struct netlink_reply {
     uint8_t bytes[NETLINK_REPLY_SIZE];
     uint16_t length;
+    uint32_t source_groups;
 };
 struct netlink_socket {
-    bool owned,bound;
+    bool owned,bound,overrun;
     uint8_t protocol;
-    uint32_t owner_pid,port_id;
+    uint32_t owner_pid,port_id,groups;
     uint32_t send_quota;
     uint32_t receive_quota;
     uint8_t head,count;
@@ -224,17 +229,21 @@ int nas_netlink_route_bind(unsigned slot,const uint8_t *address,unsigned length)
     uint32_t pid=0,groups=0;
     int rc=parse_addr(address,length,&pid,&groups);
     if(rc)return rc;
-    /* We cannot honor multicast route subscriptions: report that rather
-     * than pretend to deliver async routing change notifications. */
-    if(groups)return -EPERM;
-    return allocate_port(s,pid);
+    /* Linux nl_groups is a mask of group numbers, not a group number.
+     * SOCK_DIAG has no supported multicast; reject unknown groups for
+     * NETLINK_ROUTE rather than inventing event delivery. */
+    if(groups&(uint32_t)~(s->protocol==NETLINK_ROUTE_LINUX ?
+                          ROUTE_SUPPORTED_GROUPS:0U))return -EPERM;
+    const int result=allocate_port(s,pid);
+    if(!result)s->groups=groups;
+    return result;
 }
 int nas_netlink_route_getsockname(unsigned slot,
                                  uint8_t address[NAS_NETLINK_ROUTE_SOCKADDR_SIZE]) {
     struct netlink_socket *s=live(slot);
     if(!s)return -EBADF;
     if(!address)return -EINVAL;
-    make_addr(address,s->bound?s->port_id:0,0);
+    make_addr(address,s->bound?s->port_id:0,s->groups);
     return 0;
 }
 
@@ -251,6 +260,14 @@ static bool can_enqueue(const struct netlink_socket *s,unsigned records) {
      * its wire payload is smaller than the fixed-slot backing storage. */
     return (unsigned)s->count+records<=NETLINK_REPLY_QUEUE &&
            ((uint64_t)s->count+records)*reply_allocation(s)<=s->receive_quota;
+}
+/* All NaSeed kernel C, including tcpip_thread callbacks, runs with local
+ * IRQs masked and without kernel preemption on one CPU (k_sync.c contract).
+ * Thus producer, recv, and final OpenFile release are serialized here. No
+ * callback persists a slot pointer across scheduling. SMP/preemptible kernel
+ * requires one shared irqsave lock covering these same queue operations. */
+static struct netlink_reply *newest_reply(struct netlink_socket *s) {
+    return &s->replies[(s->head+s->count-1U)%NETLINK_REPLY_QUEUE];
 }
 static void make_nlmsg(uint8_t *out,uint32_t length,uint16_t type,
                        uint32_t seq,uint32_t port) {
@@ -330,6 +347,49 @@ static void enqueue_link(struct netlink_socket *s,uint32_t seq,
     for(unsigned i=0;i<8;i++) {
         put64(r->bytes+stats64_off+4U+i*8U,fields[i]);
         put32(r->bytes+stats32_off+4U+i*4U,(uint32_t)fields[i]);
+    }
+}
+/* No second NetDevice registry: the publisher supplies one already observed
+ * upstream netif identity. These records contain no speculative counters,
+ * and are only emitted by the real attach/status/detach lifecycle. */
+static bool valid_event_if(const struct nas_lwip_guest_if *iface) {
+    if(!iface || !iface->ifindex || !iface->mtu)return false;
+    const unsigned n=(unsigned)strnlen(iface->name,NAS_LWIP_DEVICE_NAME_MAX);
+    return n && n<NAS_LWIP_DEVICE_NAME_MAX;
+}
+void nas_netlink_route_publish_link(const struct nas_lwip_guest_if *iface,
+                                   bool removed) {
+    if(!valid_event_if(iface))return;
+    for(unsigned slot=0;slot<NAS_OPEN_FILE_LIMIT;slot++) {
+        struct netlink_socket *s=live(slot);
+        if(!s || s->protocol!=NETLINK_ROUTE_LINUX ||
+           !(s->groups&RTMGRP_LINK_LINUX))continue;
+        if(!can_enqueue(s,1)) {s->overrun=true;continue;}
+        enqueue_link(s,0,iface,NULL);
+        struct netlink_reply *r=newest_reply(s);
+        put16(r->bytes+4,removed ? RTM_DELLINK_LINUX:RTM_NEWLINK_LINUX);
+        put16(r->bytes+6,0); /* notification, not a multipart dump */
+        put32(r->bytes+12,0); /* kernel sender nl_pid */
+        put32(r->bytes+28,UINT32_MAX); /* ifi_change: complete state */
+        r->source_groups=RTMGRP_LINK_LINUX;
+    }
+}
+void nas_netlink_route_publish_ipv4(const struct nas_lwip_guest_if *iface,
+                                   bool removed) {
+    if(!valid_event_if(iface) || !iface->ipv4_host_order ||
+       !iface->prefix_len || iface->prefix_len>32)return;
+    for(unsigned slot=0;slot<NAS_OPEN_FILE_LIMIT;slot++) {
+        struct netlink_socket *s=live(slot);
+        if(!s || s->protocol!=NETLINK_ROUTE_LINUX ||
+           !(s->groups&RTMGRP_IPV4_IFADDR_LINUX))continue;
+        if(!can_enqueue(s,1)) {s->overrun=true;continue;}
+        enqueue_addr(s,0,iface->ifindex,iface->prefix_len,
+                     iface->loopback ? 254U:0U,iface->ipv4_host_order);
+        struct netlink_reply *r=newest_reply(s);
+        put16(r->bytes+4,removed ? RTM_DELADDR_LINUX:RTM_NEWADDR_LINUX);
+        put16(r->bytes+6,0);
+        put32(r->bytes+12,0);
+        r->source_groups=RTMGRP_IPV4_IFADDR_LINUX;
     }
 }
 static void enqueue_done(struct netlink_socket *s,uint32_t seq) {
@@ -609,11 +669,15 @@ int64_t nas_netlink_route_recvmsg(unsigned slot,uint8_t *destination,
     if(flags&~(MSG_PEEK_LINUX|MSG_TRUNC_LINUX|MSG_DONTWAIT_LINUX))
         return -EOPNOTSUPP;
     if(capacity && !destination)return -EINVAL;
+    /* Linux reports an asynchronous multicast receive overflow as one
+     * ENOBUFS. This is not a successful empty read, and retained queued
+     * datagrams remain readable on the following call. */
+    if(s->overrun) {s->overrun=false;return -ENOBUFS;}
     if(!s->count)return -EAGAIN;
     struct netlink_reply *r=&s->replies[s->head];
     unsigned copied=capacity<r->length ? capacity:r->length;
     if(copied)memcpy(destination,r->bytes,copied);
-    if(source)make_addr(source,0,0);
+    if(source)make_addr(source,0,r->source_groups);
     if(source_length)*source_length=NAS_NETLINK_ROUTE_SOCKADDR_SIZE;
     if(msg_flags)*msg_flags=copied<r->length ? MSG_TRUNC_LINUX:0;
     const unsigned actual=r->length;
@@ -628,6 +692,7 @@ static uint64_t read_plan(unsigned slot,uint64_t requested) {
     struct netlink_socket *s=live(slot);
     if(!s)return (uint64_t)-EBADF;
     if(!requested)return 0;
+    if(s->overrun)return (uint64_t)-ENOBUFS;
     if(!s->count)return (uint64_t)-EAGAIN;
     return requested<s->replies[s->head].length ? requested:
            s->replies[s->head].length;
@@ -641,8 +706,9 @@ static uint16_t poll_description(unsigned slot,uint16_t events) {
     if(!s)return PORT_POLLERR;
     uint16_t ready=0;
     if(s->count)ready|=PORT_POLLIN;
+    if(s->overrun)ready|=PORT_POLLERR;
     if(can_enqueue(s,1))ready|=PORT_POLLOUT;
-    return (uint16_t)(ready&events);
+    return (uint16_t)((ready&events)|(ready&PORT_POLLERR));
 }
 static uint16_t poll_fd(uint64_t fd,uint16_t events) {
     if(!nas_current_task || !nas_current_task->fds || fd>=NAS_FD_LIMIT ||

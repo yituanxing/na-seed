@@ -9,7 +9,9 @@
  * stay in the callers. Two endpoint slots have independent refcounts.
  */
 #define NAS_PIPE_COUNT 32
+/* Linux PIPE_BUF is independent of the adjustable ring capacity. */
 #define NAS_PIPE_CAP 4096U
+#define NAS_PIPE_MAX_CAP (1024U * 1024U)
 
 /* Bind two already-reserved open-description slots; no user addresses. */
 int nas_pipe_create(unsigned read_slot, unsigned write_slot);
@@ -24,6 +26,15 @@ void nas_pipe_release_description(unsigned slot);
 /* Return the opposing receive-description of a connected AF_UNIX stream.
  * Used for genuine SCM_RIGHTS delivery, never a process-local FD number. */
 int nas_pipe_peer_slot(unsigned writing_slot);
+
+/* Linux F_{GET,SET}PIPE_SZ operate on the pipe object, not on an FD alias.
+ * Both read and write description slots observe the same byte capacity.
+ * SET rounds to a power-of-two page multiple (4 KiB..1 MiB), preserves
+ * unread bytes, and returns the installed capacity or negative errno.
+ * The caller must reject non-pipe descriptors (in particular sockets).
+ */
+int64_t nas_pipe_capacity(unsigned slot);
+int64_t nas_pipe_set_capacity(unsigned slot, int32_t requested);
 
 /* Readiness reports also include EOF (read side) and the EPIPE condition
  * (write side) so a blocked syscall can resume to return the real result.

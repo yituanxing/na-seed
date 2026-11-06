@@ -322,6 +322,15 @@ static uint64_t sys_fcntl(uint64_t fd, uint64_t command, uint64_t arg) {
     case 5: case 6: case 7: /* F_GETLK / F_SETLK / F_SETLKW */
         return sys_fcntl_lock(fd,command,arg);
     case 1030: return fd_duplicate(fd, arg, true); /* F_DUPFD_CLOEXEC */
+    case 1031: /* F_SETPIPE_SZ: Linux int arg, capacity shared by aliases. */
+    case 1032: { /* F_GETPIPE_SZ */
+        uint8_t kind=TASK.fds->entries[fd].kind;
+        if (kind!=FD_PIPE_R && kind!=FD_PIPE_W)
+            return (uint64_t)-EBADF;
+        return (uint64_t)(command==1031 ?
+            nas_pipe_set_capacity(slot,(int32_t)arg) :
+            nas_pipe_capacity(slot));
+    }
     default: return (uint64_t)-EINVAL; /* unsupported fcntl cmd */
     }
 }

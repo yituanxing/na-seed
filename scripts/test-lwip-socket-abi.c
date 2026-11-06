@@ -6,6 +6,9 @@
 #define main m106_prior_main
 #include "test-m106-usercopy-syscalls.c"
 #undef main
+#include "../kernel/fs/netlink_route.h"
+#include "../kernel/fs/netlink_filter.h"
+#include "../kernel/fs/netlink_generic.h"
 
 /* Only the single upstream-lwIP AF_INET provider exists. The fake provider
  * below tests File publication/ABI, not another TCP/IP implementation. */
@@ -1216,11 +1219,101 @@ int main(void) {
     assert(user_ptr(nl_reply)[4]==15 && user_ptr(nl_reply)[5]==10 &&
            user_ptr(nl_reply)[8]==0x34 && user_ptr(nl_reply)[9]==0x12);
     nas_fs_close_fd(nf_fd);
+
+    /* SOCK_DIAG is another genuine protocol namespace of the ROUTE owner.
+     * Every Netlink protocol must use identical fd/usercopy/socketopt ABI. */
+    uint64_t diag_fd=sys_socket(16,3,4);
+    assert(diag_fd<NAS_FD_LIMIT && netlink_fd(diag_fd));
+    assert(nas_open_files[guest_task.fds->entries[diag_fd].slot].ops==
+           nas_netlink_route_ops());
+    nl_cap=4;memcpy(user_ptr(nl_length),&nl_cap,4);
+    assert(sys_netlink_getsockopt(diag_fd,1,38,nl_reply,nl_length)==0);
+    memcpy(&nf_protocol,user_ptr(nl_reply),4);
+    assert(nf_protocol==4);
+    memcpy(user_ptr(nl_name),nl_kernel,12);
+    assert(sys_netlink_bind(diag_fd,nl_name,12)==0);
+    nas_fs_close_fd(diag_fd);
+
+    /* Original Alpine's `/sbin/genl ctrl list` uses NETLINK_GENERIC (16)
+     * and real GETFAMILY. Discover exactly the nlctrl provider, without
+     * inventing nl80211, devlink or any unimplemented family. */
+    uint64_t genl_fd=sys_socket(16,3,NAS_NETLINK_GENERIC_PROTOCOL);
+    assert(genl_fd<NAS_FD_LIMIT && netlink_fd(genl_fd) &&
+           !unix_fd(genl_fd) && !inet_fd(genl_fd));
+    unsigned genl_slot=guest_task.fds->entries[genl_fd].slot;
+    assert(nas_open_files[genl_slot].ops==nas_netlink_generic_ops());
+    nl_cap=4;memcpy(user_ptr(nl_length),&nl_cap,4);
+    assert(sys_netlink_getsockopt(genl_fd,1,38,nl_reply,nl_length)==0);
+    memcpy(&nf_protocol,user_ptr(nl_reply),4);
+    assert(nf_protocol==NAS_NETLINK_GENERIC_PROTOCOL);
+    uint32_t quota=4096;
+    memcpy(user_ptr(nl_reply),&quota,4);
+    assert(sys_netlink_setsockopt(genl_fd,1,7,nl_reply,4)==0);
+    assert(sys_netlink_setsockopt(genl_fd,1,8,nl_reply,4)==0);
+    assert(sys_netlink_getsockopt(genl_fd,1,7,nl_reply,nl_length)==0);
+    memcpy(&quota,user_ptr(nl_reply),4);
+    assert(quota==8192);
+
+    /* GETFAMILY by name: 16-byte nlmsghdr + 4-byte genlmsghdr +
+     * CTRL_ATTR_FAMILY_NAME NLA, padded to the next 4-byte boundary. */
+    const uint8_t genl_name_req[32]={
+        32,0,0,0,16,0,1,0,0x45,0x23,0,0,0,0,0,0,
+        3,2,0,0,11,0,2,0,'n','l','c','t','r','l',0,0
+    };
+    memcpy(user_ptr(nl_packet),genl_name_req,sizeof(genl_name_req));
+    assert(sys_netlink_sendto(genl_fd,nl_packet,32,0,0,0)==32);
+    assert((int64_t)sys_netlink_recvfrom(genl_fd,nl_reply,8,0x22,0,0)>32);
+    assert(user_ptr(nl_reply)[4]==16);
+    assert((int64_t)sys_netlink_recvfrom(genl_fd,nl_reply,96,0,0,0)>32);
+    assert(user_ptr(nl_reply)[4]==16 && user_ptr(nl_reply)[16]==1 &&
+           user_ptr(nl_reply)[8]==0x45 && user_ptr(nl_reply)[9]==0x23);
+    /* The first published family NLA must truthfully name nlctrl. */
+    assert(user_ptr(nl_reply)[22]==2 &&
+           !memcmp(user_ptr(nl_reply)+24,"nlctrl",7));
+    assert((int64_t)sys_netlink_recvfrom(genl_fd,nl_reply,96,0,0,0)==-EAGAIN);
+
+    /* Netlink controller dump: one advertised registered family, followed
+     * by Linux's multipart NLMSG_DONE. An unknown family produces ENOENT
+     * as NLMSG_ERROR, not a fabricated empty or successful family. */
+    const uint8_t genl_dump[20]={20,0,0,0,16,0,1,3,99,0,0,0,
+                                  0,0,0,0,3,2,0,0};
+    memcpy(user_ptr(nl_packet),genl_dump,sizeof(genl_dump));
+    assert(sys_netlink_sendto(genl_fd,nl_packet,20,0,nl_name,12)==20);
+    assert((int64_t)sys_netlink_recvfrom(genl_fd,nl_reply,96,0,0,0)>32);
+    assert(user_ptr(nl_reply)[4]==16 && (user_ptr(nl_reply)[6]&2));
+    assert((int64_t)sys_netlink_recvfrom(genl_fd,nl_reply,96,0,0,0)==20);
+    assert(user_ptr(nl_reply)[4]==3 && user_ptr(nl_reply)[16]==0);
+    uint8_t genl_missing[32];
+    memcpy(genl_missing,genl_name_req,sizeof(genl_missing));
+    memcpy(genl_missing+24,"absent",7);
+    memcpy(user_ptr(nl_packet),genl_missing,sizeof(genl_missing));
+    assert(sys_netlink_sendto(genl_fd,nl_packet,32,0,0,0)==32);
+    assert((int64_t)sys_netlink_recvfrom(genl_fd,nl_reply,96,0,0,0)==36);
+    assert(user_ptr(nl_reply)[4]==2);
+    int32_t genl_error=0;
+    memcpy(&genl_error,user_ptr(nl_reply)+16,4);
+    assert(genl_error==-ENOENT);
+
+    /* A distinct NETLINK_GENERIC socket must not hijack an in-use bound
+     * pid. File closing drops only its own port/reply-queue state. */
+    memcpy(user_ptr(nl_name),nl_kernel,12);
+    assert((int64_t)sys_netlink_bind(genl_fd,nl_name,12)==-EINVAL); /* auto-bound */
+    nl_cap=12;memcpy(user_ptr(nl_length),&nl_cap,4);
+    assert(sys_netlink_name(genl_fd,nl_name,nl_length)==0);
+    uint64_t genl_other=sys_socket(16,3,NAS_NETLINK_GENERIC_PROTOCOL);
+    assert(genl_other<NAS_FD_LIMIT && netlink_fd(genl_other));
+    assert((int64_t)sys_netlink_bind(genl_other,nl_name,12)==-EADDRINUSE);
+    nas_fs_close_fd(genl_other);
+    nas_fs_close_fd(genl_fd);
+    assert((int64_t)sys_socket(16,3,UINT64_C(0x100000010))==
+           -EPROTONOSUPPORT);
     assert((int64_t)sys_socket(16,3,13)==-EPROTONOSUPPORT);
     puts("[LWIP SENDMSG BLOCKING PASS] full iovec import, TX park/resume,");
     puts("  immutable vector snapshot, held OpenFile across close/fd reuse");
     puts("[LWIP SOCKET ABI PASS] native AF_INET TCP/UDP OpenFile + user sockaddr,");
     puts("  async control/GETNAME/SHUTDOWN/REUSEADDR, AF_UNIX preserved");
     puts("[NETLINK FILTER ABI PASS] real nf_tables GETGEN via shared LP64 socket adapter");
+    puts("[NETLINK CORE ABI PASS] ROUTE/DIAG/FILTER/GENERIC shared syscall, FD, PID, options");
+    puts("[NETLINK GENERIC ABI PASS] nlctrl lookup/dump, ENOENT, PEEK/TRUNC, close");
     return 0;
 }

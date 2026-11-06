@@ -246,16 +246,24 @@ while IFS="$tab" read -r category package test_id <&9 || [ -n "$category" ]; do
         }
     fi
     if [ "$phase" = first ]; then
+        # The x86 public-wire capture showed Redis still receiving a steady
+        # HTTPS APK stream when the former 150s timeout sent SIGTERM. Give
+        # only this larger official package a bounded slow-WAN allowance;
+        # keep every other install and all functional/reopen checks unchanged.
+        case "$package" in
+            redis) install_budget=360 ;;
+            *) install_budget=150 ;;
+        esac
         if apk info -e "$package" >/dev/null 2>&1; then
             record "$category" "$package" install PREEXISTING
-        elif /bin/busybox timeout 150 apk -v add "$package" \
+        elif /bin/busybox timeout "$install_budget" apk -v add "$package" \
                 > "$work/logs/$package.apk.log" 2>&1; then
             record "$category" "$package" install PASS
         else
             install_rc=$?
             record "$category" "$package" install FAIL
-            printf 'M204_ERROR\t%s\tinstall\tapk exit=%s (timeout exit=124, budget=150s)\n' \
-                "$package" "$install_rc"
+            printf 'M204_ERROR\t%s\tinstall\tapk exit=%s (bounded budget=%ss)\n' \
+                "$package" "$install_rc" "$install_budget"
             error_tail "$package" install "$work/logs/$package.apk.log"
             record "$category" "$package" functional BLOCKED
             continue

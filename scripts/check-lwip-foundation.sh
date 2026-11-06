@@ -19,6 +19,10 @@ build/lwip-foundation/test-netlink-route
 # Native nftables uses a distinct Netlink family. Run the real stateful
 # nftables table-registry/transaction protocol, not a synthetic command pass.
 sh scripts/check-netlink-filter.sh
+# Original Alpine `genl ctrl list` queries the Linux generic Netlink
+# controller. Verify the truthful registered-family registry independently
+# of the shared usercopy/syscall adapter fixture above.
+sh scripts/check-netlink-generic.sh
 # Original Alpine ss uses NETLINK_SOCK_DIAG, distinct from ROUTE. Exercise
 # Linux inet_diag wire offsets and genuine TCP listener snapshots in the
 # same lightweight pre-QEMU gate, including unsupported-state refusals.

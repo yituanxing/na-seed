@@ -2,6 +2,7 @@
 """Host-only M204 contract: strict accounting, no fake skip/pass, M197 reused."""
 
 import importlib.util
+import re
 from pathlib import Path
 
 
@@ -108,6 +109,15 @@ assert uart.COMMANDS[3][0].startswith("apk add bash lua5.4 sqlite git;")
 assert uart.M197.COMMANDS[3][1] == uart.COMMANDS[3][1]
 guest_lines = (ROOT / "tests/m204-software-workload.sh").read_text().splitlines()
 guest = "\n".join(guest_lines)
+# The public-wire capture of the x86 Redis failure showed continuous HTTPS
+# download at the instant BusyBox timeout killed apk (exit 143). Bound only
+# Redis's slow-WAN allowance; other packages must retain the original 150s.
+assert re.search(r'case "\$package" in\s+redis\) install_budget=360 ;;'
+                 r'\s+\*\) install_budget=150 ;;\s+esac', guest)
+assert '/bin/busybox timeout "$install_budget" apk -v add "$package"' in guest
+assert 'apk exit=%s (bounded budget=%ss)' in guest
+assert 'record "$category" "$package" install FAIL' in guest
+assert 'record "$category" "$package" functional BLOCKED' in guest
 assert "apk update" not in "\n".join(
     line for line in guest_lines if not line.lstrip().startswith("#"))
 # Each reboot owns its service processes. An inherited/detached nginx or

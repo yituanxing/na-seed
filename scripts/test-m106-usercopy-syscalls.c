@@ -329,7 +329,7 @@ bool nas_tty_poll_readable(void){return false;}
 void nas_unix_socket_pair_ready(unsigned a,unsigned b){(void)a;(void)b;}
 #if !defined(NAS_ENABLE_LWIP) || !NAS_ENABLE_LWIP
 bool nas_lwip_socket_is_slot(unsigned slot){(void)slot;return false;}
-bool nas_netlink_route_is_slot(unsigned slot){(void)slot;return false;}
+bool nas_netlink_core_is_slot(unsigned slot){(void)slot;return false;}
 #endif
 /* M107 tests the backend; here we observe the real syscall adapter's
  * prepare-before-I/O, commit-on-progress and cancel-on-failure decisions. */
