@@ -16,6 +16,7 @@
 #include "wait.h"
 #include "futex_wait.h"
 #include "ptrace.h"
+#include "capability.h"
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
 extern void nas_hex(uint64_t);
@@ -26,6 +27,10 @@ static void proc_fail(const char *s) { nas_print("[FAIL] M1 "); nas_print(s); na
  * process-control semantics which are not yet implemented. */
 uint64_t nas_process_prctl(uint64_t option,uint64_t arg) {
     struct nas_task *task=nas_current_task;
+    if(option==7ULL) /* PR_GET_KEEPCAPS */
+        return nas_cap_get_keepcaps(&task->credentials);
+    if(option==8ULL) /* PR_SET_KEEPCAPS */
+        return nas_cap_set_keepcaps(&task->credentials,arg);
     if(option==15ULL) { /* PR_SET_NAME */
         char name[16]={0};
         for(unsigned i=0;i<15;i++) {

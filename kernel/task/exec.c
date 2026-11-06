@@ -21,6 +21,7 @@
 #include "exec.h"
 #include "../time/clock.h"
 #include "process.h"
+#include "capability.h"
 #include "rusage.h"
 #include "signal.h"
 #include "ptrace.h"
@@ -498,7 +499,9 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
     nas_time_timers_drop(); /* POSIX timers never survive execve. */
     TASK.execed = true; /* fork parent may no longer setpgid after exec */
     /* Linux execve preserves credentials, including Task-owned supplementary
-     * groups.  Only the program image/argv/VM are replaced below. */
+     * groups, but explicitly clears PR_SET_KEEPCAPS. No non-root identity
+     * or file-capability transition is silently enabled by this reset. */
+    nas_cap_exec_reset(&TASK.credentials);
     TASK.signal_frame_active = false;
     TASK.signal_frame_sp = 0;
     TASK.signal_stack_sp=0;

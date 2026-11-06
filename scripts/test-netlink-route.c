@@ -516,6 +516,30 @@ int main(void) {
     assert(!memcmp(reply+20,qdisc,16) && rd32(source+4)==0);
     assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
                                     NULL,NULL)==-EAGAIN);
+    /* A device-specific dump may describe the REAL queue-less lwIP
+     * loopback. A wildcard request above still cannot invent NIC qdiscs. */
+    wr32(qdisc+20,1); /* tcmsg.tcm_ifindex = actual lo interface */
+    wr32(qdisc+8,211);
+    assert(nas_netlink_route_sendto(11,qdisc,sizeof(qdisc),addr,12)==36);
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==48);
+    assert(rd32(reply)==48 && rd16(reply+4)==36 &&
+           rd32(reply+8)==211 && rd32(reply+12)==4142);
+    assert(rd32(reply+20)==1 && rd32(reply+28)==UINT32_MAX);
+    assert(rd16(reply+36)==12 && rd16(reply+38)==1 &&
+           !memcmp(reply+40,"noqueue",8));
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==20);
+    assert(rd16(reply+4)==3 && rd32(reply+8)==211);
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==-EAGAIN);
+    wr32(qdisc+20,2); /* real eth0 exists but has no qdisc model */
+    wr32(qdisc+8,212);
+    assert(nas_netlink_route_sendto(11,qdisc,sizeof(qdisc),addr,12)==36);
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==36);
+    assert(rd16(reply+4)==2 && rd32(reply+8)==212 &&
+           rd32(reply+16)==(uint32_t)-EOPNOTSUPP);
     /* Next cache dump receives the independent, new sequence normally. */
     getlink(link_request,0,210);
     assert(nas_netlink_route_sendto(11,link_request,sizeof(link_request),
@@ -552,7 +576,7 @@ int main(void) {
     assert(nas_netlink_route_bind(11,addr,12)==0);
     assert(nas_netlink_route_getsockname(11,name)==0);
     assert(rd32(name+4)==9000);
-    puts("[NETLINK_ROUTE HOST PASS] true 64/32-bit NIC statistics, pinned all-or-nothing snapshots, single-snapshot IDs, address loss, eight-NIC multipart, honest GETQDISC NLMSG_ERROR and next libnl seq, "
+    puts("[NETLINK_ROUTE HOST PASS] true 64/32-bit NIC statistics, pinned all-or-nothing snapshots, single-snapshot IDs, address loss, eight-NIC multipart, real lo noqueue plus honest unsupported GETQDISC error and next libnl seq, "
          "SO_SNDBUF/SO_RCVBUF quotas, SOCK_RAW port bind, MSG_PEEK/TRUNC, poll/release");
     return 0;
 }

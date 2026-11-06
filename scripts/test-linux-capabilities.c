@@ -55,6 +55,17 @@ static void test_uapi(void) {
 static void test_root_capabilities(void) {
     struct nas_credentials parent={0};
     struct nas_cap_user_data data[2]={{0},{0}};
+    assert(nas_cap_get_keepcaps(&parent)==0);
+    assert(nas_cap_set_keepcaps(&parent,1)==0);
+    assert(nas_cap_get_keepcaps(&parent)==1);
+    assert((int64_t)nas_cap_set_keepcaps(&parent,2)==-EINVAL);
+    assert(nas_cap_get_keepcaps(&parent)==1);
+    struct nas_credentials inherited=parent; /* actual fork copies creds */
+    nas_cap_exec_reset(&inherited);
+    assert(nas_cap_get_keepcaps(&inherited)==0);
+    assert(nas_cap_get_keepcaps(&parent)==1);
+    assert(nas_cap_set_keepcaps(&parent,0)==0);
+    assert(nas_cap_get_keepcaps(&parent)==0);
     assert(nas_credentials_can_net_raw(&parent));
     nas_cap_get(&parent,data);
     assert(data[0].permitted==(uint32_t)NAS_CAP_NET_RAW);

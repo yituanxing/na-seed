@@ -349,12 +349,28 @@ def physical_disk_oracle_contract(entries: list[tuple[str, str, str, str]]) -> N
             assert "sbin/ip" in {entry[1] for entry in entries}
             path.parent.mkdir(parents=True, exist_ok=True)
             path.symlink_to("../bin/busybox")
+            # Alpine's original ip BusyBox alias is no more a preinstalled
+            # independent iproute2 ELF than the base ping applet above.
+            with redirect_stdout(io.StringIO()):
+                verify("amd64", signed, disk)
+
+            path.unlink()
+            path.symlink_to("../bin/rogue")
             try:
                 verify("amd64", signed, disk)
             except ValueError as exc:
                 assert "candidate preinstalled" in str(exc)
             else:
-                raise AssertionError("disk oracle accepted an arbitrary BusyBox applet")
+                raise AssertionError("disk oracle accepted a non-BusyBox ip link")
+
+            path.unlink()
+            path.write_bytes(sample + b"forbidden-preseeded-independent-ip")
+            try:
+                verify("amd64", signed, disk)
+            except ValueError as exc:
+                assert "candidate preinstalled" in str(exc)
+            else:
+                raise AssertionError("disk oracle accepted preseeded ip ELF")
     finally:
         verify.__globals__["load"] = original_load
 

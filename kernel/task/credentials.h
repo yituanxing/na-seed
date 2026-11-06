@@ -18,6 +18,10 @@ struct nas_credentials {
      * cap_initialized distinguishes that default from an explicit drop. */
     uint64_t cap_effective,cap_permitted;
     bool cap_initialized;
+    /* Linux PR_SET_KEEPCAPS is inherited by fork and cleared by execve.
+     * Retaining this real task flag does not authorize non-root identities:
+     * those remain forbidden until the VFS has an enforcing DAC model. */
+    bool cap_keep_on_setuid;
 };
 
 static inline uint64_t nas_credentials_set_id(uint64_t requested) {

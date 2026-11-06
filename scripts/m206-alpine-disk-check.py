@@ -74,23 +74,24 @@ def packages_in_world(path: Path = PACKAGES) -> list[str]:
     return sorted(values)
 
 
-def is_original_busybox_ping_alias(m191, signed_root: Path, guest_path: str,
-                                   port: str) -> bool:
-    """Recognize ONLY Alpine's base /bin/ping BusyBox symlink.
+def is_original_busybox_alias(m191, signed_root: Path, guest_path: str,
+                              port: str) -> bool:
+    """Recognize ONLY base Alpine /bin/ping and /sbin/ip BusyBox applets.
 
-    iputils-ping must replace this existing BusyBox applet with its own ELF
-    after a real signed APK install. That original applet is not a preseeded
-    independent candidate. Use M191's guest-root-confined symlink resolution:
-    neither an absolute guest link nor a `..` chain may escape signed_root.
-    Other candidate symlinks and any preseeded regular ELF remain forbidden.
+    The genuine signed iputils-ping/iproute2-minimal APK must replace these
+    base BusyBox aliases with independent ELF binaries in the guest. Neither
+    alias is a preinstalled independent candidate. M191's root-confined
+    resolution rejects any link escaping the signed source root; every other
+    candidate symlink and any preseeded regular ELF remain forbidden.
     """
-    if guest_path != "/bin/ping":
+    if guest_path not in ("/bin/ping", "/sbin/ip"):
         return False
-    alias = m191.guest_path(signed_root, "/bin") / "ping"
+    alias = m191.guest_path(signed_root, str(Path(guest_path).parent)) / \
+        Path(guest_path).name
     if not alias.is_symlink():
         return False
     busybox = m191.guest_path(signed_root, "/bin/busybox")
-    target = m191.guest_path(signed_root, "/bin/ping")
+    target = m191.guest_path(signed_root, guest_path)
     if target != busybox or not busybox.is_file():
         return False
     with busybox.open("rb") as stream:
@@ -119,11 +120,11 @@ def verify(port: str, signed_root: Path, disk: Path, *,
         # The M206 ELFs must come from the guest's APK transaction, not the
         # host's preconfigured root image or a BusyBox applet masquerading
         # as an independently installed signed Alpine program. The sole
-        # legitimate exception is base /bin/ping -> BusyBox, which signed
-        # iputils-ping replaces with a native independent ELF in the guest.
+        # legitimate exceptions are the two base BusyBox applets above,
+        # replaced by independently signed native ELFs inside the guest.
         staged = m191.guest_path(signed_root, path)
         if (staged.exists() or staged.is_symlink()) and not \
-                is_original_busybox_ping_alias(m191, signed_root, path, port):
+                is_original_busybox_alias(m191, signed_root, path, port):
             raise ValueError("[M206 HOST FAIL] candidate preinstalled in rootfs: " + path)
 
     with tempfile.TemporaryDirectory(prefix="m206-physical-disk-") as work:

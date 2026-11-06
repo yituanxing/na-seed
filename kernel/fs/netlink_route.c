@@ -30,6 +30,7 @@
 #define RTM_GETLINK_LINUX 18U
 #define RTM_NEWADDR_LINUX 20U
 #define RTM_GETADDR_LINUX 22U
+#define RTM_NEWQDISC_LINUX 36U
 #define RTM_GETQDISC_LINUX 38U
 #define NLMSG_ERROR_LINUX 2U
 #define NLMSG_DONE_LINUX 3U
@@ -57,6 +58,8 @@
 #define IFLA_MTU_LINUX 4U
 #define IFLA_STATS_LINUX 7U
 #define IFLA_STATS64_LINUX 23U
+#define TCA_KIND_LINUX 1U
+#define TC_H_ROOT_LINUX UINT32_MAX
 #define RTNL_LINK_STATS32_FIELDS 24U
 #define RTNL_LINK_STATS64_FIELDS 25U
 /* Longest IFNAMSIZ-1 name (16 bytes including terminator): base 32 +
@@ -355,6 +358,21 @@ static void enqueue_unsupported_qdisc(struct netlink_socket *s,uint32_t seq,
     put32(r->bytes+16,(uint32_t)-EOPNOTSUPP);
     memcpy(r->bytes+20,request,16);
 }
+static void enqueue_loopback_noqueue(struct netlink_socket *s,uint32_t seq,
+                                     uint32_t ifindex) {
+    struct netlink_reply *r=enqueue(s);
+    /* The upstream lwIP loopback path does not enqueue packets in a
+     * traffic-control discipline. Report that real noqueue topology for
+     * the actual interface, not a synthetic FIFO or kernel-wide qdisc
+     * inventory. Linux tcmsg(20) + TCA_KIND("noqueue" including NUL). */
+    r->length=48U;
+    make_nlmsg(r->bytes,r->length,RTM_NEWQDISC_LINUX,seq,s->port_id);
+    put32(r->bytes+20,ifindex); /* tcmsg.tcm_ifindex */
+    put32(r->bytes+28,TC_H_ROOT_LINUX); /* tcmsg.tcm_parent */
+    put16(r->bytes+36,12U);
+    put16(r->bytes+38,TCA_KIND_LINUX);
+    memcpy(r->bytes+40,"noqueue",8U);
+}
 static void enqueue_tcp_listener(struct netlink_socket *s,uint32_t seq,
                                  const struct nas_lwip_tcp_listener *listener) {
     struct netlink_reply *r=enqueue(s);
@@ -462,14 +480,32 @@ int64_t nas_netlink_route_sendto(unsigned slot,const uint8_t *bytes,
     if(s->protocol==NETLINK_SOCK_DIAG_LINUX)
         return send_diag(s,bytes,length,seq);
     if(type==RTM_GETQDISC_LINUX && (flags&NLM_F_REQUEST_LINUX)) {
-        /* A GETQDISC dump has a 20-byte tcmsg payload. We cannot return
-         * fictitious queue disciplines, but must deliver the kernel error
-         * through Netlink so an actual libnl client can consume its seq. */
+        /* A GETQDISC dump has a 20-byte tcmsg payload. The native lwIP
+         * loopback is genuinely queue-less, unlike NICs whose scheduling
+         * discipline we do not model. Only an explicit lo query can be
+         * answered: a wildcard dump must not claim to enumerate all qdiscs.
+         * Unsupported queries still receive a sequenced NLMSG_ERROR so
+         * libnl can continue with its later link-cache requests. */
         if(msg_len<36U)return -EINVAL;
-        if(!can_enqueue(s,1))return -EAGAIN;
+        const uint32_t ifindex=get32(bytes+20);
+        const bool loopback_query=ifindex==1U &&
+            (flags&0x300U)==0x300U && bytes[16]==AF_UNSPEC_LINUX &&
+            get32(bytes+24)==0 && get32(bytes+28)==0 &&
+            get32(bytes+32)==0;
+        if(!can_enqueue(s,loopback_query ? 2U:1U))return -EAGAIN;
         if(!s->bound) {
             rc=allocate_port(s,0);
             if(rc)return rc;
+        }
+        if(loopback_query) {
+            struct nas_lwip_guest_if links[NAS_LWIP_GUEST_IF_LIMIT]={0};
+            const unsigned count=nas_lwip_guest_if_snapshot(links);
+            if(!count || links[0].ifindex!=1U ||
+               !links[0].loopback || strcmp(links[0].name,"lo"))
+                return -ENODEV;
+            enqueue_loopback_noqueue(s,seq,links[0].ifindex);
+            enqueue_done(s,seq);
+            return length;
         }
         enqueue_unsupported_qdisc(s,seq,bytes);
         return length;

@@ -53,6 +53,23 @@ static inline bool nas_credentials_can_net_raw(const struct nas_credentials *cre
     return (nas_cap_effective(cred)&NAS_CAP_NET_RAW)!=0;
 }
 
+/* PR_GET_KEEPCAPS (7) and PR_SET_KEEPCAPS (8) own one persistent task
+ * flag. An argument other than 0/1 must fail without mutating state; Linux
+ * retains the flag across fork and clears it on successful execve. With
+ * NaSeed's root-only identity, setuid(0) has no capability drop to suppress. */
+static inline uint64_t nas_cap_get_keepcaps(const struct nas_credentials *cred) {
+    return cred->cap_keep_on_setuid ? 1U:0U;
+}
+static inline uint64_t nas_cap_set_keepcaps(struct nas_credentials *cred,
+                                            uint64_t enabled) {
+    if(enabled>1U)return (uint64_t)-EINVAL;
+    cred->cap_keep_on_setuid=enabled!=0;
+    return 0;
+}
+static inline void nas_cap_exec_reset(struct nas_credentials *cred) {
+    cred->cap_keep_on_setuid=false;
+}
+
 static inline void nas_cap_get(const struct nas_credentials *cred,
                                struct nas_cap_user_data data[2]) {
     const uint64_t effective=nas_cap_effective(cred);
