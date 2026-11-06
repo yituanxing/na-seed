@@ -46,6 +46,12 @@ int nas_irq_unbind(struct nas_irq_action *action);
 /* Called after the interrupt controller has claimed hwirq and before its
  * controller-level EOI/complete. Returns true iff any source asserted. */
 bool nas_irq_dispatch(unsigned hwirq);
+/* Count hardware interrupt entries (including timer interrupts) rather
+ * than inventing Linux /proc/stat `intr` totals from elapsed wall time.
+ * Architecture timer handlers call note_hardware directly; external IRQs
+ * are counted by nas_irq_dispatch after the controller claims a source. */
+void nas_irq_note_hardware(void);
+uint64_t nas_irq_total_snapshot(void);
 
 /* Platform IRQ controller hooks: first binder unmasks, last unbinder masks.
  * Controller claim/EOI is architecture-owned, not performed by this core. */

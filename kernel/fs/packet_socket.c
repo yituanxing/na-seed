@@ -25,7 +25,8 @@
 struct packet_ring {
     struct nas_vm_device device;
     uint64_t *pages;
-    uint32_t page_count,refs,bytes,frame_size,frame_count,next;
+    uint32_t page_count,refs,bytes,block_size,frame_size;
+    uint32_t frames_per_block,frame_count,next;
 };
 struct packet_socket {
     struct nas_netdev *nic;
@@ -48,6 +49,15 @@ bool nas_packet_socket_is_slot(unsigned slot) {return live(slot)!=NULL;}
 static uint8_t *ring_pointer(const struct packet_ring *ring,uint32_t off) {
     if(!ring || off>=ring->bytes)return NULL;
     return (uint8_t *)(uintptr_t)(nas_hhdm_offset()+ring->pages[off/PACKET_PAGE]+off%PACKET_PAGE);
+}
+/* Linux PACKET_MMAP packs floor(block_size/frame_size) frames into each
+ * page-aligned block. A final slack region is valid and is never a frame.
+ * libpcap's snapshot-derived, 16-byte-aligned frame size is commonly NOT
+ * page-aligned or an exact divisor of its power-of-two block size. */
+static uint32_t ring_frame_offset(const struct packet_ring *ring,
+                                  uint32_t frame_index) {
+    return (frame_index/ring->frames_per_block)*ring->block_size+
+           (frame_index%ring->frames_per_block)*ring->frame_size;
 }
 static void ring_copy(struct packet_ring *ring,uint32_t off,const uint8_t *src,uint32_t length) {
     while(length) {
@@ -86,7 +96,7 @@ static void publish(struct packet_socket *socket,const struct nas_netdev *nic,
     if(!ring)return;
     socket->packets++;
     uint32_t frame_index=ring->next;
-    uint32_t base=frame_index*ring->frame_size;
+    uint32_t base=ring_frame_offset(ring,frame_index);
     uint32_t *status=(uint32_t *)(void *)ring_pointer(ring,base);
     if(__atomic_load_n(status,__ATOMIC_ACQUIRE)!=0) {
         socket->drops++;
@@ -100,8 +110,8 @@ static void publish(struct packet_socket *socket,const struct nas_netdev *nic,
     }
     uint32_t copied=length;
     if(copied>ring->frame_size-macoff)copied=ring->frame_size-macoff;
-    /* No frame can cross block boundaries, and tpacket_req frame_size is
-     * page-compatible. The first 32 bytes always reside in one page. */
+    /* No frame can cross block boundaries. A 16-byte-aligned frame may
+     * span PMM pages; ring_copy preserves those page transitions. */
     uint8_t header[32]={0};
     memcpy(header+4,&length,4);
     memcpy(header+8,&copied,4);
@@ -212,9 +222,6 @@ int nas_packet_socket_ring(unsigned slot,const struct nas_packet_ring_request *r
        req->block_size<PACKET_PAGE || req->block_size%PACKET_PAGE ||
        !req->block_nr || req->frame_size<128U ||
        (req->frame_size&15U) || req->frame_size>req->block_size ||
-       req->block_size%req->frame_size ||
-       (req->frame_size<PACKET_PAGE ?
-        PACKET_PAGE%req->frame_size : req->frame_size%PACKET_PAGE) ||
        (uint64_t)req->block_size*req->block_nr>PACKET_MAX_RING ||
        (uint64_t)(req->block_size/req->frame_size)*req->block_nr!=req->frame_nr ||
        !req->frame_nr || req->frame_nr>PACKET_MAX_RING/128U ||
@@ -227,7 +234,9 @@ int nas_packet_socket_ring(unsigned slot,const struct nas_packet_ring_request *r
     if(!ring->pages){nas_heap_free(ring);return -ENOMEM;}
     ring->refs=1;
     ring->bytes=size;
+    ring->block_size=req->block_size;
     ring->frame_size=req->frame_size;
+    ring->frames_per_block=req->block_size/req->frame_size;
     ring->frame_count=req->frame_nr;
     ring->device=(struct nas_vm_device){.context=ring,.extent_bytes=size,
                                        .get=ring_get,.put=ring_put,.page=ring_page};
@@ -274,7 +283,7 @@ static uint16_t packet_poll(unsigned slot,uint16_t events) {
     if((events&PACKET_POLLIN) && socket->ring) {
         struct packet_ring *ring=socket->ring;
         for(uint32_t i=0;i<ring->frame_count;i++) {
-            uint32_t *status=(uint32_t *)(void *)ring_pointer(ring,i*ring->frame_size);
+            uint32_t *status=(uint32_t *)(void *)ring_pointer(ring,ring_frame_offset(ring,i));
             if(__atomic_load_n(status,__ATOMIC_ACQUIRE)&PACKET_STATUS_USER) {
                 ready|=PACKET_POLLIN;break;
             }

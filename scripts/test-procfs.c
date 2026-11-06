@@ -137,6 +137,9 @@ void nas_task_cpu_account_snapshot(uint64_t *busy,uint64_t *idle,
     if(loads){loads[0]=65536;loads[1]=32768;loads[2]=16384;}
     if(switches)*switches=12;
 }
+/* Real IRQ counter has a dedicated kernel owner; this standalone fixture
+ * must model it explicitly instead of deriving it from CPU time. */
+uint64_t nas_irq_total_snapshot(void) {return 37;}
 static void check_file(const char *path,const char *wanted) {
     struct nas_proc_node node={0};
     assert(nas_proc_lookup(path,&node) && !nas_proc_is_dir(node));
@@ -509,6 +512,7 @@ int main(void) {
     check_network_stat_files();
     check_file("/proc/uptime","12.50");
     check_file("/proc/stat","cpu  0 0 150 1100");
+    check_file("/proc/stat","\nintr 37\nctxt 12\n");
     check_file("/proc/stat","btime 1760000000");
     check_file("/proc/loadavg","1.00 0.50 0.25");
     check_file("/proc/vmstat","nr_free_pages 512");

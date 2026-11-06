@@ -14,6 +14,9 @@ on:
   # LLVM-only finite unpack budget, and failure-only genuine serial witnesses.
   # Recheck shared AF_PACKET/libpcap, NIC ioctls, Netlink qdisc error ordering,
   # route stats, PTY session ownership and large writable-ext4 private mappings.
+  # Recheck TPACKET_V2 per-block slack geometry, real IRQ procstat ordering,
+  # original iproute2 success exit-1 oracle, LLVM no-preprocess resource test,
+  # and ARM first-boot PTY prompt diagnostics without relaxing acceptance.
   push:
     branches: [naseed-app-batch2]
     paths:

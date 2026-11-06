@@ -81,6 +81,30 @@ static void remember(char history[M205_PTY_HISTORY+1],size_t *length,
     history[*length]=0;
 }
 
+/* A timeout may occur after the master transiently reports EIO before the
+ * child has opened its slave; errno from that earlier read is NOT the cause
+ * of a later timeout. Preserve the actual prompt progress and a bounded,
+ * password-redacted PTY suffix only on failure. Never alter PASS behavior. */
+static void prompt_failure_excerpt(const char *history,size_t length,
+                                   const char *reply1,const char *reply2) {
+    const size_t begin=length>64?length-64:0;
+    const size_t red1=reply1?strlen(reply1):0;
+    const size_t red2=reply2 && strcmp(reply2,"-")?strlen(reply2):0;
+    fputs("M205 PTY fixture: original prompt transcript tail=",stderr);
+    for(size_t i=begin;i<length;) {
+        if(red1 && i+red1<=length && !memcmp(history+i,reply1,red1)) {
+            fputs("[redacted]",stderr);i+=red1;continue;
+        }
+        if(red2 && i+red2<=length && !memcmp(history+i,reply2,red2)) {
+            fputs("[redacted]",stderr);i+=red2;continue;
+        }
+        const unsigned char c=(unsigned char)history[i++];
+        if(c>=32 && c<=126 && c!='\\')fputc(c,stderr);
+        else fprintf(stderr,"\\x%02x",(unsigned)c);
+    }
+    fputc('\n',stderr);
+}
+
 static bool visible_word(const char *text,const char *word) {
     for(;*text;text++) {
         const char *a=text,*b=word;
@@ -124,11 +148,14 @@ static int exchange(int master,int transcript,pid_t child,
     const int required=strcmp(prompt2,"-")==0?1:2;
     int status=0;
     bool reaped=false,eof=false;
+    unsigned master_eio=0,master_hup=0;
     uint64_t started=monotonic_ns();
     if(!started) { error("no monotonic time source");return 1; }
     while(!eof || !reaped) {
         if(monotonic_ns()-started>M205_PTY_TIMEOUT_NS) {
-            error("real PTY prompt/child timed out");
+            fprintf(stderr,"M205 PTY fixture: real PTY prompt/child timed out (prompt=%d/%d bytes=%zu master_eio=%u hup=%u child_reaped=%d)\n",
+                    next,required,history_len,master_eio,master_hup,reaped);
+            prompt_failure_excerpt(history,history_len,reply1,reply2);
             return 1;
         }
         struct pollfd input={.fd=master,.events=POLLIN|POLLHUP};
@@ -137,6 +164,7 @@ static int exchange(int master,int transcript,pid_t child,
             error("poll master PTY");return 1;
         }
         if(polled>0 && (input.revents&(POLLIN|POLLHUP|POLLERR))) {
+            if(input.revents&POLLHUP)master_hup++;
             char data[1024];
             ssize_t got=read(master,data,sizeof(data));
             if(got>0) {
@@ -157,6 +185,7 @@ static int exchange(int master,int transcript,pid_t child,
                     next=2;
                 }
             } else if(got==0 || (got<0 && errno==EIO)) {
+                if(got<0 && errno==EIO)master_eio++;
                 eof=true;
             } else if(got<0 && errno!=EINTR && errno!=EAGAIN) {
                 error("read master PTY");return 1;

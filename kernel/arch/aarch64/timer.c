@@ -147,6 +147,7 @@ static uint32_t arm_irq_claim(void) {
     return iar;
 }
 static void arm_timer_complete_irq(uint32_t iar) {
+    nas_irq_note_hardware();
     rearm_timer();
     iface[GICC_EOIR/4]=iar;
     __asm__ volatile("dsb sy" : : : "memory");

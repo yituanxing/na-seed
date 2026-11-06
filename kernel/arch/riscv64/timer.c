@@ -142,12 +142,16 @@ void nas_rv_idle_irq_c(void) {
     __asm__ volatile("csrr %0,sstatus" : "=r"(status));
     if (!(status & (1ULL<<8)))
         nas_fail("RV64 idle interrupt lost supervisor SPP");
-    if (cause==RV_SCAUSE_SUPERVISOR_TIMER) arm_next_tick();
+    if (cause==RV_SCAUSE_SUPERVISOR_TIMER) {
+        nas_irq_note_hardware();
+        arm_next_tick();
+    }
     else if (cause==RV_SCAUSE_SUPERVISOR_EXTERNAL)
         nas_rv_plic_external_irq();
     else nas_fail("RV64 idle unexpected supervisor interrupt");
 }
 void nas_rv_timer_handle(struct nas_rv_trap_frame *frame) {
+    nas_irq_note_hardware();
     arm_next_tick(); /* OpenSBI clears the pending STIP when rearmed. */
     struct nas_task *from=nas_current_task;
     if(!from || !nas_task_kernel_stack_ok(from)) nas_fail("RV64 timer invalid task");

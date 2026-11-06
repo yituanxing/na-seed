@@ -94,7 +94,7 @@ int main(void) {
     assert(nas_packet_socket_ring(12,&bad)==-EINVAL);
     bad=(struct nas_packet_ring_request){4096,3000,2048,6000};
     assert(nas_packet_socket_ring(12,&bad)==-EINVAL);
-    bad=(struct nas_packet_ring_request){4096,2,144,56};
+    bad=(struct nas_packet_ring_request){4096,2,144,55};
     assert(nas_packet_socket_ring(12,&bad)==-EINVAL);
     assert(frames_live==0); /* geometry errors allocate nothing */
     assert(nas_packet_socket_ring(12,&request)==0);
@@ -141,9 +141,39 @@ int main(void) {
     nas_open_files[12].refcount=0;
     assert(!nas_packet_socket_is_slot(12) && nic.refs==0);
     assert(frames_live==2 && frame_ptr(dev,0)==f0);
-    assert(nas_netdev_unregister(&nic)==0);
     dev->put(dev->context);
     assert(frames_live==0 && frames_freed==2);
-    puts("[PACKET SOCKET PASS] real NIC RX/TX, V2 PMM mmap, protocol-0 rebind, ring status, drop stats, VMA lifetime");
+    /* libpcap 1.10.x derives tp_frame_size from snapshot+TPACKET2 headers:
+     * it is 16-byte aligned, NOT necessarily page aligned or an exact
+     * divisor of its power-of-two block size. Linux's accepted layout has
+     * one 262208-byte frame per 524288-byte block and 262080-byte slack.
+     * Frame #1 is at block #1, NOT immediately after frame #0. */
+    nas_open_files[13].refcount=1;
+    assert(nas_packet_socket_open(13,3,0)==0);
+    assert(nas_packet_socket_bind(13,2,3)==0);
+    setting=1;
+    assert(nas_packet_socket_version(13,&setting,true)==0);
+    struct nas_packet_ring_request libpcap={524288,4,262208,4};
+    assert(nas_packet_socket_ring(13,&libpcap)==0);
+    assert(frames_live==512);
+    struct nas_vm_device *large_dev=NULL;
+    assert(nas_packet_socket_mmap_pin(13,&large_dev)==0);
+    assert(large_dev && large_dev->extent_bytes==2097152);
+    assert(nas_netdev_poll(&nic,4,consume,&rx_count)==1);
+    assert(nas_netdev_poll(&nic,4,consume,&rx_count)==1);
+    uint8_t *large_f0=frame_ptr(large_dev,0);
+    uint8_t *large_f1=frame_ptr(large_dev,524288);
+    assert(u32(large_f0)==1 && u32(large_f1)==1);
+    assert(u32(frame_ptr(large_dev,262208))==0); /* real block slack */
+    assert(u32(large_f1+4)==sizeof(original));
+    assert(memcmp(large_f1+66,original,sizeof(original))==0);
+    assert(fileops->poll_description(13,1)&1U);
+    fileops->release(13);
+    nas_open_files[13].refcount=0;
+    assert(nic.refs==0 && frames_live==512);
+    large_dev->put(large_dev->context);
+    assert(frames_live==0 && frames_freed==514);
+    assert(nas_netdev_unregister(&nic)==0);
+    puts("[PACKET SOCKET PASS] real NIC RX/TX, V2 PMM mmap, libpcap block slack, protocol-0 rebind, ring status, drop stats, VMA lifetime");
     return 0;
 }

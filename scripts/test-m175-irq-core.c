@@ -40,6 +40,7 @@ static void notify(void *ctx,uint32_t flags) {
 int main(void) {
     struct nas_irq_action one={0},two={0},bad={0};
     struct source keyboard={0},mouse={0};
+    assert(nas_irq_total_snapshot()==0);
     const struct nas_irq_route pic11={NAS_IRQ_DOMAIN_X86_PIC,11};
     const struct nas_irq_route wrong={NAS_IRQ_DOMAIN_RISCV_PLIC,11};
     assert(nas_irq_bind(&bad,(struct nas_irq_route){0},ack,&keyboard,
@@ -78,6 +79,14 @@ int main(void) {
     assert(nas_irq_bind(&bad,pic11,ack,&keyboard,notify,&keyboard)==0);
     assert(enable_count==3);
     assert(nas_irq_unbind(&bad)==0 && disable_count==2);
+    /* /proc/stat intr reports ACTUAL interrupt claims, including physical
+     * lines whose class has already deasserted. Timer handlers increment the
+     * same core via nas_irq_note_hardware(), without claiming a device. */
+    assert(nas_irq_total_snapshot()==5);
+    nas_irq_note_hardware();
+    nas_irq_note_hardware();
+    assert(nas_irq_total_snapshot()==7);
     puts("[M175 IRQ CORE PASS] shared route, source-specific ACK, spurious, first enable, final mask, rollback");
+    puts("[M205 IRQ ACCOUNTING PASS] real claimed external IRQs and timer entries, no fabricated procfs totals");
     return 0;
 }

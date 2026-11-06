@@ -14,6 +14,7 @@
 #include "../errno.h"
 #include "../uts.h"
 #include "../ipc/sysv.h"
+#include "../drivers/core/irq.h"
 #ifdef NAS_ENABLE_LWIP
 #include "../../ports/lwip/network_boot.h"
 #include "../drivers/port/net.h"
@@ -883,6 +884,12 @@ int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
             word(&w,"0 0 ");decimal(&w,bt);ch(&w,' ');
             decimal(&w,it);word(&w," 0 0 0 0 0 0\n");
         }
+        /* Linux /proc/stat presents `intr` immediately after its cpuN
+         * records. The original btop CPU parser treats subsequent leading
+         * 'c' records as additional cores, so omitting this Linux boundary
+         * makes it attempt stoi("t") on `ctxt`. This total is counted at
+         * real hardware timer/IRQ entry points, not synthesized from time. */
+        word(&w,"intr ");decimal(&w,nas_irq_total_snapshot());ch(&w,'\n');
         word(&w,"ctxt ");decimal(&w,switches);ch(&w,'\n');
         uint64_t boot_epoch=0;
         if(nas_time_boot_epoch_seconds(&boot_epoch)) {
@@ -897,6 +904,8 @@ int64_t nas_proc_read(struct nas_proc_node node,uint64_t offset,
         }
         word(&w,"procs_running ");decimal(&w,run);ch(&w,'\n');
         word(&w,"procs_blocked ");decimal(&w,blocked);ch(&w,'\n');
+        /* NaSeed has no Linux softirq subsystem, so its counter is zero. */
+        word(&w,"softirq 0\n");
         break;
     }
     case NAS_PROC_LOADAVG: {

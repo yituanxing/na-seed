@@ -74,6 +74,70 @@ def check_guest_manifest_isolation() -> None:
             check_guest_manifest_loop(guest, source, cohort, expected, fields)
 
 
+def check_original_iproute2_lnstat_contract() -> None:
+    """Run the *guest's own* lnstat/rtstat parser checks against bad outputs.
+
+    Upstream iproute2 unconditionally returns 1 after its lnstat sample,
+    including a successful one.  The guest must therefore verify authentic
+    four-row network statistics and a valid procfs file instead of treating
+    either an exit status or a diagnostic containing digits as success.
+    """
+    guest = GUEST.read_text()
+    assert 'if [ "$lnstat_rc" -eq 1 ]' in guest
+    assert 'if [ "$rtstat_rc" -eq 1 ]' in guest
+    assert 'lnstat_parsed_rt_cache_ok "$target/out"' in guest
+    assert 'rtstat_only_rt_cache_ok "$target/out"' in guest
+    helpers = '# iproute2\'s original' + guest.split(
+        "# iproute2's original", 1)[1].split(
+            '# A missing large DSO', 1)[0]
+    # Only adapt absolute BusyBox paths and the virtual proc file to the
+    # host; all parsing functions, awk expressions and regular expressions
+    # are copied verbatim from the production guest acceptance oracle.
+    with tempfile.TemporaryDirectory(prefix='m205-lnstat-') as temp:
+        folder = Path(temp)
+        proc = folder / 'rt_cache'
+        proc.write_text('entries in_hit ' + ' '.join(f'field{i}' for i in range(15)) +
+                        '\n' + ' '.join(['00000000'] * 17) + '\n')
+        helpers = helpers.replace('/bin/busybox ', '').replace(
+            '/proc/net/stat/rt_cache', str(proc))
+        output = folder / 'original-output'
+
+        def accepted(text: str, *, only_cache: bool = False) -> bool:
+            output.write_text(text)
+            command = ('lnstat_parsed_rt_cache_ok "$1" && '
+                       'lnstat_kernel_rt_cache_ok')
+            if only_cache:
+                command += ' && rtstat_only_rt_cache_ok "$1"'
+            result = subprocess.run(['sh', '-c', helpers + '\n' + command,
+                                     'm205-lnstat-regression', str(output)],
+                                    capture_output=True, text=True, timeout=10,
+                                    check=False)
+            return result.returncode == 0
+
+        columns = ['entries', 'in_hit'] + ['field'] * 15
+        hdr = ''.join('rt_cache|' for _ in range(17)) + '\n'
+        fields = ''.join(f'{column:>8}|' for column in columns) + '\n'
+        continuation = ''.join('        |' for _ in columns) + '\n'
+        numbers = ''.join('       0|' for _ in columns) + '\n'
+        valid = hdr + fields + continuation + numbers
+        assert accepted(valid, only_cache=True)
+        assert not accepted('Error loading shared library libc.so.6: 1\n',
+                            only_cache=True)
+        assert not accepted(hdr + fields + continuation, only_cache=True)
+        assert not accepted(hdr + 'not statistics 2026\n' + continuation + numbers,
+                            only_cache=True)
+        assert not accepted('wrong_source|' * 17 + '\n' + fields +
+                            continuation + numbers, only_cache=True)
+        assert accepted(valid.replace('rt_cache|', 'naseed_l|', 1))
+        assert not accepted(valid.replace('rt_cache|', 'naseed_l|', 1),
+                            only_cache=True)
+        proc.write_text('entries in_hit\n00000000 00000000\n')
+        assert not accepted(valid, only_cache=True)
+        proc.write_text('entries in_hit ' + ' '.join(f'field{i}' for i in range(15)) +
+                        '\n' + ' '.join(['00000000'] * 16 + ['malformed']) + '\n')
+        assert not accepted(valid, only_cache=True)
+
+
 def check_guest_manifest_loop(guest: str, source: Path, cohort: Path,
                               expected: int, fields: str) -> None:
         name = fields.split()[0]
@@ -104,6 +168,7 @@ printf '%s\\n' "$n"
 
 def main() -> None:
     check_guest_manifest_isolation()
+    check_original_iproute2_lnstat_contract()
     cases = manifest_cases(CANDIDATES)
     # The signed-host census, guest installer and strict report must point to
     # EXACTLY the same twenty original ELF paths and sixteen package owners.
@@ -233,7 +298,7 @@ def main() -> None:
 
     print("[M205 HOST CONTRACT PASS] 20 individually accounted signed-ELF candidates, "
           "three M204/M205 fd9 stdin-theft regressions, strict first/reopen records, "
-          "dedup and status consistency, negative-proof "
+          "dedup and status consistency, strict iproute2 lnstat/rtstat output checks, negative-proof "
           "cases; QEMU and unique SHA remain external acceptance gates")
 
 

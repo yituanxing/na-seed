@@ -4,6 +4,7 @@
 #include "../arch.h"
 #include "../../panic.h"
 #include "irq.h"
+#include "../../drivers/core/irq.h"
 
 /* Single CPU: the IDT interrupt gate masks IF and syscall FMASK masks IF.
  * The trap frame is live on the interrupted task's kernel entry stack.
@@ -69,6 +70,7 @@ void nas_arch_idle_wait(void) {
     __asm__ volatile("sti; hlt; cli" : : : "memory");
 }
 void nas_x86_timer_irq(struct nas_x86_user_irq_frame *frame) {
+    nas_irq_note_hardware();
     if ((frame->cs & 3U) == 0U) {
         /* Kernel-origin PIT wake: no Task register or FPU snapshots.
          * The common ISR restores its exact three-word kernel IRET frame. */

@@ -57,6 +57,51 @@ probe_failure_excerpt() {
         done
 }
 
+# iproute2's original lnstat main() returns 1 even after successfully
+# printing a sample; rtstat is the same executable selected by argv[0].
+# Verify real parsed Linux counters, not an exit code, banner, or a random
+# digit in a loader error. The first row names the source; the second names
+# fields; the fourth contains formatted decimal counter values.
+lnstat_parsed_rt_cache_ok() {
+    table=$1
+    /bin/busybox head -n 1 "$table" | /bin/busybox grep -Fq 'rt_cache|' &&
+        /bin/busybox sed -n '2p' "$table" |
+            /bin/busybox grep -Eq 'entries[|]' &&
+        /bin/busybox sed -n '2p' "$table" |
+            /bin/busybox grep -Eq 'in_hit[|]' &&
+        /bin/busybox sed -n '4p' "$table" |
+            /bin/busybox grep -Eq '^[[:space:]]*[0-9]+[|][[:space:]]*[0-9]+[|]'
+}
+
+# The original reader consumes seventeen hexadecimal rt_cache fields from
+# /proc/net/stat/rt_cache.  The content must be supplied by NaSeed's procfs,
+# not by a copied userspace fixture or invented route-cache activity.
+lnstat_kernel_rt_cache_ok() {
+    test -r /proc/net/stat/rt_cache &&
+        /bin/busybox awk '
+            NR == 1 {if (NF != 17 || $1 != "entries" || $2 != "in_hit") exit 1}
+            NR == 2 {
+                if (NF != 17) exit 1
+                for (i = 1; i <= NF; i++)
+                    if ($i !~ /^[0-9a-fA-F]+$/) exit 1
+            }
+            END {if (NR != 2) exit 1}
+        ' /proc/net/stat/rt_cache
+}
+
+# When invoked as `rtstat`, the original iproute2 binary must select the
+# rt_cache family alone; never accept an all-family lnstat header instead.
+rtstat_only_rt_cache_ok() {
+    /bin/busybox awk -F '[|]' '
+        NR == 1 {
+            if (NF != 18) exit 1
+            for (i = 1; i <= 17; i++)
+                if ($i != "rt_cache") exit 1
+        }
+        END {if (NR < 4) exit 1}
+    ' "$1"
+}
+
 # A missing large DSO may first emit "Error loading shared library" and
 # then hundreds of follow-up "Error relocating" lines.  The shared M205
 # report keeps only the final three stderr lines, so expose the ORIGINAL
@@ -160,8 +205,12 @@ probe() {
                 /bin/busybox grep -Fq m205_symbol.c "$target/out"
             ;;
         coff-resource-conversion:usr/bin/llvm21-windres)
+            # The checked RCDATA fixture has no macros/includes.  LLVM's
+            # original windres --no-preprocess option runs the real resource
+            # parser/compiler without requiring a separately installed
+            # clang driver.  The emitted .res bytes are still verified below.
             printf '%s\n' '1 RCDATA { "M205-RESOURCE-CONTENTS" }' > "$target/resource.rc"
-            if ! /usr/bin/llvm21-windres -i "$target/resource.rc" \
+            if ! /usr/bin/llvm21-windres --no-preprocess -i "$target/resource.rc" \
                     -o "$target/resource.res" -O res \
                     2> "$target/llvm.stderr"; then
                 llvm_loader_failure_excerpt "$target/llvm.stderr"
@@ -171,8 +220,19 @@ probe() {
                 /bin/busybox grep -aq M205-RESOURCE-CONTENTS "$target/resource.res"
             ;;
         link-counter-query:sbin/lnstat)
-            /sbin/lnstat -c 1 > "$target/out" &&
-                /bin/busybox grep -Eq '[0-9]' "$target/out"
+            lnstat_rc=0
+            /sbin/lnstat -c 1 > "$target/out" 2> "$target/err" || lnstat_rc=$?
+            if [ "$lnstat_rc" -eq 1 ] &&
+               lnstat_parsed_rt_cache_ok "$target/out" &&
+               lnstat_kernel_rt_cache_ok; then
+                return 0
+            fi
+            printf 'M205 lnstat: original exit=%s or invalid parsed rt_cache table\n' "$lnstat_rc" >&2
+            probe_failure_excerpt 'lnstat stderr' "$target/err" >&2
+            probe_failure_excerpt 'lnstat stdout' "$target/out" >&2
+            /bin/busybox ls -l /proc/net/stat > "$target/dir" 2>&1 || :
+            probe_failure_excerpt 'lnstat stat directory' "$target/dir" >&2
+            return 1
             ;;
         live-socket-list:sbin/ss)
             # Query an actual TCP LISTEN socket, not an availability banner.
@@ -218,8 +278,21 @@ probe() {
             return "$found"
             ;;
         route-stat-query:sbin/rtstat)
-            /sbin/rtstat -c 1 > "$target/out" &&
-                /bin/busybox grep -Eq '[0-9]' "$target/out"
+            rtstat_rc=0
+            /sbin/rtstat -c 1 > "$target/out" 2> "$target/err" || rtstat_rc=$?
+            if [ "$rtstat_rc" -eq 1 ] &&
+               lnstat_parsed_rt_cache_ok "$target/out" &&
+               lnstat_kernel_rt_cache_ok &&
+               rtstat_only_rt_cache_ok "$target/out"; then
+                return 0
+            fi
+            printf 'M205 rtstat: original exit=%s or invalid rt_cache-only table\n' "$rtstat_rc" >&2
+            probe_failure_excerpt 'rtstat stderr' "$target/err" >&2
+            probe_failure_excerpt 'rtstat stdout' "$target/out" >&2
+            /bin/busybox head -n 2 /proc/net/stat/rt_cache \
+                > "$target/rt_cache" 2>&1 || :
+            probe_failure_excerpt 'rtstat rt_cache' "$target/rt_cache" >&2
+            return 1
             ;;
         bounded-loopback-traffic:usr/sbin/iftop)
             # The original libpcap reader must observe real packets DURING

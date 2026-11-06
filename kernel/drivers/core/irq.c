@@ -7,6 +7,14 @@
  * registration/removal runs in the IRQ-masked single-CPU kernel context.
  * Dispatch only reads this list; callbacks cannot register or unregister. */
 static struct nas_irq_action *actions;
+static uint64_t hardware_irq_total;
+
+void nas_irq_note_hardware(void) {
+    __atomic_fetch_add(&hardware_irq_total,1U,__ATOMIC_RELAXED);
+}
+uint64_t nas_irq_total_snapshot(void) {
+    return __atomic_load_n(&hardware_irq_total,__ATOMIC_RELAXED);
+}
 
 static bool valid_route(struct nas_irq_route route) {
     return route.hwirq &&
@@ -67,6 +75,9 @@ int nas_irq_unbind(struct nas_irq_action *action) {
 }
 
 bool nas_irq_dispatch(unsigned hwirq) {
+    /* Each call follows one actual PIC/PLIC/GIC interrupt-controller claim.
+     * An edge whose class has already deasserted is still a hardware IRQ. */
+    nas_irq_note_hardware();
     bool claimed=false;
     for(struct nas_irq_action *p=actions;p;p=p->next) {
         if(p->route.hwirq!=hwirq)continue;
