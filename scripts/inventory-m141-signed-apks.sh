@@ -116,8 +116,13 @@ if [ "$profile" = m205 ]; then
             --env APK_ARCH="$arch" --env APK_PACKAGES="$package_list" \
             alpine:3.23 sh -ec '
                 cp -a /target/etc/apk/keys/. /etc/apk/keys/
-                apk --arch "$APK_ARCH" --root /target \
-                    --cache-dir /var/cache/apk --keys-dir /etc/apk/keys \
+                # For repository indexes, point the container apk client
+                # DIRECTLY at the mounted output directory. The --root
+                # cache selection left these indexes in a different root,
+                # although its package fetch correctly wrote 76 archives.
+                apk --arch "$APK_ARCH" \
+                    --cache-dir /target/var/cache/apk \
+                    --cache-max-age 0 --keys-dir /etc/apk/keys \
                     -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main \
                     -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
                     update
@@ -192,6 +197,9 @@ if [ "$profile" = m205 ]; then
                 --no-network --simulate add $APK_PACKAGES
         ' > "$work/apk-offline-proof.log" 2>&1; then
         echo '[M205 CACHE FAIL] independent empty-root APK offline resolution' >&2
+        if [ -f "$work/apk-cache.log" ]; then
+            tail -18 "$work/apk-cache.log" >&2
+        fi
         tail -60 "$work/apk-offline-proof.log" >&2
         exit 1
     fi
