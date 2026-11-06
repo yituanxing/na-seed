@@ -76,6 +76,10 @@ int main(void) {
     nas_open_files[12].refcount=1;
     assert(nas_packet_socket_open(12,3,0)==0);
     assert(nas_packet_socket_is_slot(12));
+    /* There is no attached kernel BPF filter. Linux SO_DETACH_FILTER must
+     * report ENOENT so unmodified libpcap can use userspace filtering.
+     * Claiming a successful detach would conceal unsupported filtering. */
+    assert(nas_packet_socket_detach_filter(12)==-ENOENT);
     assert(nas_packet_socket_bind(12,2,0)==0);
     assert(nic.refs==1);
     assert(nas_packet_socket_bind(12,9,3)==-ENODEV);
@@ -140,6 +144,7 @@ int main(void) {
     fileops->release(12);
     nas_open_files[12].refcount=0;
     assert(!nas_packet_socket_is_slot(12) && nic.refs==0);
+    assert(nas_packet_socket_detach_filter(12)==-EBADF);
     assert(frames_live==2 && frame_ptr(dev,0)==f0);
     dev->put(dev->context);
     assert(frames_live==0 && frames_freed==2);

@@ -223,6 +223,9 @@ static uint64_t sys_packet_getsockopt(uint64_t fd,uint64_t level,
 static uint64_t sys_packet_setsockopt(uint64_t fd,uint64_t level,
                                       uint64_t opt,uint64_t addr,uint64_t size) {
     if(!packet_fd(fd))return (uint64_t)-EBADF;
+    if(level==1 && opt==27) /* SOL_SOCKET / SO_DETACH_FILTER */
+        return (uint64_t)(int64_t)nas_packet_socket_detach_filter(
+            TASK.fds->entries[fd].slot);
     if(level!=263)return (uint64_t)-ENOPROTOOPT;
     unsigned slot=TASK.fds->entries[fd].slot;
     if(opt==5) { /* PACKET_RX_RING: real PMM-backed TPACKET_V2 frames */

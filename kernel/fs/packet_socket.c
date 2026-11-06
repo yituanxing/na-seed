@@ -266,6 +266,14 @@ int nas_packet_socket_stats(unsigned slot,struct nas_packet_stats *stats) {
     socket->packets=socket->drops=0;
     return 0;
 }
+/* Linux SO_DETACH_FILTER reports ENOENT when no socket filter is installed.
+ * This packet endpoint never accepts SO_ATTACH_FILTER, so there can be no
+ * kernel-owned filter to detach. libpcap explicitly accepts ENOENT here and
+ * continues with its real userspace BPF evaluator. Returning success would
+ * incorrectly claim that we had removed an attached kernel filter. */
+int nas_packet_socket_detach_filter(unsigned slot) {
+    return live(slot)?-ENOENT:-EBADF;
+}
 static void packet_release(unsigned slot) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !sockets[slot].owned)return;
     struct packet_socket socket=sockets[slot];

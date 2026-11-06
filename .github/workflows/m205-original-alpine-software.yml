@@ -17,6 +17,8 @@ on:
   # Recheck TPACKET_V2 per-block slack geometry, real IRQ procstat ordering,
   # original iproute2 success exit-1 oracle, LLVM no-preprocess resource test,
   # and ARM first-boot PTY prompt diagnostics without relaxing acceptance.
+  # Recheck Linux SO_DETACH_FILTER no-filter ENOENT, original libpcap
+  # userland BPF fallback and real iftop wire capture in both QEMU boots.
   push:
     branches: [naseed-app-batch2]
     paths:
@@ -47,6 +49,7 @@ jobs:
       - name: Validate new unaccepted ELF manifest, real guest oracle and shared ABI
         run: |
           set -eu
+          sh scripts/check-packet-socket.sh
           python3 scripts/check-m141-candidates.py --profile m205
           python3 scripts/test-m205-alpine-host.py
           python3 scripts/test-m197-alpine-host.py

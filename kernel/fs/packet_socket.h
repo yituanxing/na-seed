@@ -22,4 +22,5 @@ int nas_packet_socket_reserve(unsigned slot,unsigned *reserve,bool change);
 int nas_packet_socket_ring(unsigned slot,const struct nas_packet_ring_request *request);
 int nas_packet_socket_mmap_pin(unsigned slot,struct nas_vm_device **device);
 int nas_packet_socket_stats(unsigned slot,struct nas_packet_stats *stats);
+int nas_packet_socket_detach_filter(unsigned slot);
 #endif
