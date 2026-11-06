@@ -1,0 +1,236 @@
+name: NaSeed M210 original Alpine nft native Linux Netlink oracle
+
+# This is an independent, host-only investigation of the exact signed M206
+# Alpine nft -c input. Never run the nft command in the host network namespace.
+on:
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/m210-nft-linux-oracle.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  original-nft-linux-netlink:
+    name: Original signed Alpine nft / isolated Linux Netlink trace (amd64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Validate signed inventory and isolated trace prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/check-m141-candidates.py --profile m206
+          missing=
+          for executable in docker readelf cpio curl sha256sum sudo strace unshare readlink; do
+            if command -v "$executable" >/dev/null 2>&1; then continue; fi
+            case "$executable" in
+              cpio) missing="$missing cpio" ;;
+              readelf) missing="$missing binutils" ;;
+              strace) missing="$missing strace" ;;
+              unshare) missing="$missing util-linux" ;;
+              *) echo "[M210 PRECHECK FAIL] missing $executable" >&2; exit 1 ;;
+            esac
+          done
+          if [ -n "$missing" ]; then
+            sh scripts/ci-ubuntu-mirror.sh
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          docker info >/dev/null
+
+      - name: Obtain M206 official signed Alpine original nft ELF
+        timeout-minutes: 30
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh scripts/inventory-m141-signed-apks.sh amd64 m206
+          tsv=build/external/m206-candidate-inventory/amd64/candidates.tsv
+          awk -F '\t' 'NR > 1 { n++; if ($3 != "NATIVE_ELF") bad++ }
+            END { if (n != 20 || bad) exit 1 }' "$tsv" || {
+              echo '[M210 SIGNED ELF FAIL] expected 20 native original ELFs' >&2
+              exit 1
+            }
+          unique=$(awk -F '\t' 'NR > 1 {print $4}' "$tsv" | sort -u | wc -l)
+          [ "$unique" -eq 20 ] || {
+            echo "[M210 SIGNED ELF FAIL] only $unique unique hashes" >&2
+            exit 1
+          }
+          package_sha=$(sha256sum rootfs/alpine/packages-m206-candidates.txt | awk '{print $1}')
+          root="$PWD/build/external/m206-candidate-inventory/amd64/packages-$package_sha/rootfs"
+          test -f "$root/../signed-install.ok"
+          test -x "$root/usr/sbin/nft"
+          nft_sha=$(sha256sum "$root/usr/sbin/nft" | awk '{print $1}')
+          awk -F '\t' -v expected="$nft_sha" '
+            $1 == "nftables" && $2 == "usr/sbin/nft" &&
+            $3 == "NATIVE_ELF" && $4 == expected { matched++ }
+            END { exit (matched == 1 ? 0 : 1) }' "$tsv" || {
+              echo '[M210 SIGNED ELF FAIL] nft ELF/path/SHA mismatch' >&2
+              exit 1
+            }
+          readelf -h "$root/usr/sbin/nft" | grep -Fq 'Advanced Micro Devices X86-64'
+          echo "M210_ALPINE_ROOT=$root" >> "$GITHUB_ENV"
+          echo '[M210 SIGNED ELF PASS] verified original nft + 20 unique ELF SHA'
+
+      - name: Trace unchanged nft check-only input inside disposable Linux netns
+        id: oracle
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=$M210_ALPINE_ROOT
+          output="$PWD/build/m210-nft-linux-oracle"
+          mkdir -p "$output" "$root/tmp"
+          chmod 1777 "$root/tmp"
+          printf '%s\n' 'table inet m206 { }' > "$root/tmp/m210-nft.conf"
+          printf 'table inet m206 { }\n' > "$output/nft.conf"
+          # The original signed root may not contain /dev nodes; these are
+          # chroot-local character devices, not modifications to host /dev.
+          sudo mkdir -p "$root/dev"
+          for spec in 'null 1 3' 'zero 1 5' 'urandom 1 9'; do
+            read -r name major minor <<< "$spec"
+            if [ ! -e "$root/dev/$name" ]; then
+              sudo mknod -m 666 "$root/dev/$name" c "$major" "$minor"
+            fi
+          done
+          host_netns=$(readlink /proc/self/ns/net)
+          printf 'host_network_namespace=%s\n' "$host_netns" > "$output/namespaces.txt"
+          # Fail closed if Linux cannot create an independent network ns.
+          # No fallback to the host netns and NO nft add/delete operations.
+          namespace_rc=0
+          sudo env M210_ROOT="$root" M210_OUTPUT="$output" \
+            M210_HOST_NETNS="$host_netns" \
+            unshare --net --fork -- /bin/bash -s <<'M210_ISOLATED_NETNS' || namespace_rc=$?
+          set -euo pipefail
+          isolated=$(readlink /proc/self/ns/net)
+          printf 'isolated_network_namespace=%s\n' "$isolated" >> "$M210_OUTPUT/namespaces.txt"
+          if [ "$isolated" = "$M210_HOST_NETNS" ]; then
+            echo '[M210 NETNS FAIL] still in host network namespace' >&2
+            exit 1
+          fi
+          # CAP_NET_ADMIN is bit 12 of effective capabilities. Checking
+          # *inside* the new namespace prevents misleading host-root claims.
+          effective=$(awk '$1 == "CapEff:" {print $2}' /proc/self/status)
+          if [ -z "$effective" ] || ! (( (16#$effective & 0x1000) != 0 )); then
+            echo "[M210 NETNS FAIL] missing CAP_NET_ADMIN: CapEff=$effective" >&2
+            exit 1
+          fi
+          printf 'isolated_CapEff=%s; CAP_NET_ADMIN=yes\n' "$effective" \
+            >> "$M210_OUTPUT/namespaces.txt"
+          # Read-only before/after snapshots expose accidental mutation.
+          before_rc=0
+          chroot "$M210_ROOT" /usr/sbin/nft -a list ruleset \
+            > "$M210_OUTPUT/before.ruleset" 2> "$M210_OUTPUT/before.stderr" || before_rc=$?
+          # -c means nft check-only; strace runs OUTSIDE the chroot so its
+          # original host executable and trace files remain accessible.
+          nft_rc=0
+          strace -ff -tt -yy -xx -s 512 \
+            -e trace=socket,sendmsg,sendto,recvmsg,recvfrom,getsockopt,setsockopt \
+            -o "$M210_OUTPUT/nft-check.strace" \
+            chroot "$M210_ROOT" /usr/sbin/nft -c -f /tmp/m210-nft.conf \
+            > "$M210_OUTPUT/nft.stdout" 2> "$M210_OUTPUT/nft.stderr" || nft_rc=$?
+          after_rc=0
+          chroot "$M210_ROOT" /usr/sbin/nft -a list ruleset \
+            > "$M210_OUTPUT/after.ruleset" 2> "$M210_OUTPUT/after.stderr" || after_rc=$?
+          printf 'before_ruleset_exit=%s\nnft_check_exit=%s\nafter_ruleset_exit=%s\n' \
+            "$before_rc" "$nft_rc" "$after_rc" > "$M210_OUTPUT/exit-codes.txt"
+          if [ "$before_rc" -eq 0 ] && [ "$nft_rc" -eq 0 ] &&
+             [ "$after_rc" -eq 0 ] &&
+             cmp -s "$M210_OUTPUT/before.ruleset" "$M210_OUTPUT/after.ruleset"; then
+            echo '[M210 LINUX NETLINK PASS] signed Alpine nft -c -f; namespace ruleset unchanged' \
+              | tee "$M210_OUTPUT/result.txt"
+          else
+            echo '[M210 LINUX NETLINK FAIL] nft check/namespace readback mismatch; see strace' \
+              | tee "$M210_OUTPUT/result.txt"
+            sed -n '1,100p' "$M210_OUTPUT/nft.stderr" >&2
+            exit 1
+          fi
+          M210_ISOLATED_NETNS
+          if [ "$namespace_rc" -ne 0 ]; then
+            if [ ! -s "$output/result.txt" ]; then
+              echo '[M210 LINUX NETLINK FAIL] isolated netns/CAP_NET_ADMIN unavailable or test aborted' \
+                | tee "$output/result.txt"
+            fi
+            exit "$namespace_rc"
+          fi
+
+      - name: Preserve original nft ELF/dependencies, signed provenance and wire trace
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          output=build/m210-nft-linux-oracle
+          mkdir -p "$output"
+          for name in apk-install.log candidates.tsv; do
+            candidate=build/external/m206-candidate-inventory/amd64/$name
+            if [ -f "$candidate" ]; then cp "$candidate" "$output/$name"; fi
+          done
+          root=${M210_ALPINE_ROOT:-}
+          [ -n "$root" ] && [ -f "$root/usr/sbin/nft" ] || exit 0
+          mkdir -p "$output/elf/usr/sbin" "$output/elf/lib"
+          cp -L "$root/usr/sbin/nft" "$output/elf/usr/sbin/nft"
+          readelf -h "$root/usr/sbin/nft" > "$output/nft-elf-header.txt"
+          readelf -l "$root/usr/sbin/nft" > "$output/nft-program-headers.txt"
+          readelf -d "$root/usr/sbin/nft" > "$output/nft-dynamic.txt"
+          interpreter=$(sed -n 's/.*Requesting program interpreter: \(.*\)]/\1/p' \
+            "$output/nft-program-headers.txt")
+          [ "$interpreter" = /lib/ld-musl-x86_64.so.1 ] || {
+            echo "[M210 EXPORT FAIL] unexpected interpreter: $interpreter" >&2
+            exit 1
+          }
+          test -f "$root$interpreter"
+          cp -L "$root$interpreter" "$output/elf/lib/ld-musl-x86_64.so.1"
+          declare -A seen=()
+          queue=("$root/usr/sbin/nft" "$root$interpreter")
+          while [ "${#queue[@]}" -gt 0 ]; do
+            file=${queue[0]}
+            queue=("${queue[@]:1}")
+            [ -z "${seen[$file]:-}" ] || continue
+            seen[$file]=1
+            while IFS= read -r needed; do
+              [ -n "$needed" ] || continue
+              original=
+              for dir in "$root/lib" "$root/usr/lib"; do
+                if [ -f "$dir/$needed" ]; then original="$dir/$needed"; break; fi
+              done
+              [ -n "$original" ] || {
+                echo "[M210 EXPORT FAIL] missing DT_NEEDED $needed" >&2
+                exit 1
+              }
+              cp -L "$original" "$output/elf/lib/$needed"
+              queue+=("$original")
+            done < <(readelf -d "$file" | sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p')
+          done
+          cp rootfs/alpine/packages-m206-candidates.txt "$output/requested-packages.txt"
+          (cd "$output" && find elf -type f -print0 | sort -z | xargs -0 sha256sum) \
+            > "$output/original-elf-sha256.txt"
+          echo '[M210 EXPORT PASS] original signed ELF, musl, dependency closure, Netlink trace'
+
+      - name: Report actual isolated Linux oracle result
+        if: always()
+        run: |
+          if [ -f build/m210-nft-linux-oracle/result.txt ]; then
+            cat build/m210-nft-linux-oracle/result.txt >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '[M210 LINUX NETLINK INCOMPLETE] no result; inspect netns/trace logs' \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload signed original nft and Linux NETLINK_NETFILTER trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m210-original-alpine-nft-linux-netlink-amd64
+          path: build/m210-nft-linux-oracle/
+          if-no-files-found: warn
