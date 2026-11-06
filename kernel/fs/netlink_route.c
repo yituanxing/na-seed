@@ -339,9 +339,11 @@ static int64_t send_diag(struct netlink_socket *s,const uint8_t *bytes,
     if((family!=AF_INET_LINUX && family!=AF_INET6_LINUX) ||
        protocol!=IPPROTO_TCP_LINUX || bytes[18] || bytes[19])
         return -EOPNOTSUPP;
-    /* Reporting no ESTABLISHED/etc sockets would be a false full result:
-     * this provider has only an auditable native LISTEN inventory. */
-    if(family==AF_INET_LINUX && (states&~(1U<<TCP_LISTEN_LINUX)))
+    /* iproute2 ss -ltn requests LISTEN|CLOSE (0x480): Linux does not keep
+     * closed TCP endpoints in this listener inventory. Allow CLOSE in that
+     * exact query, but never claim to enumerate ESTABLISHED/etc sockets. */
+    if(family==AF_INET_LINUX &&
+       (states&~((1U<<TCP_LISTEN_LINUX)|(1U<<7U))))
         return -EOPNOTSUPP;
     /* The base request's local/remote filters and optional NLA bytecode
      * are unsupported; refusing them prevents an incorrect full dump. */

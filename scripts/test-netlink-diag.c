@@ -89,6 +89,16 @@ int main(void) {
            rd32(reply+80)==0 && rd32(reply+84)==45);
     diag_done(slot,101);
 
+    /* Actual iproute2 `ss -ltn` includes SS_CLOSE as well as SS_LISTEN.
+     * Return the real listener, without inventing any CLOSE entry. */
+    diag_request(req,2,(1U<<10)|(1U<<7),109);
+    assert(nas_netlink_route_sendto(slot,req,72,NULL,0)==72);
+    assert(nas_netlink_route_recvmsg(slot,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==88);
+    assert(rd32(reply+8)==109 && rd16(reply+4)==20 && reply[17]==10 &&
+           reply[20]==(18085>>8) && reply[21]==(18085&255));
+    diag_done(slot,109);
+
     /* No invented IPv6 PCB or partial filter support. */
     diag_request(req,10,1U<<10,102);
     assert(nas_netlink_route_sendto(slot,req,72,NULL,0)==72);

@@ -46,17 +46,7 @@ if [ "$profile" = m205 ]; then
     # but must be present in the offline package closure.
     package_list="$package_list
 util-linux-misc"
-    mkdir -p "$root/var/cache/apk"
-    if [ ! -L "$root/etc/apk/cache" ]; then
-        [ ! -e "$root/etc/apk/cache" ] || {
-            echo '[M205 CACHE FAIL] APK cache path was not a symlink' >&2; exit 1;
-        }
-        ln -s /var/cache/apk "$root/etc/apk/cache"
-    fi
-    [ "$(readlink "$root/etc/apk/cache")" = /var/cache/apk ] || {
-        echo '[M205 CACHE FAIL] unexpected APK cache symlink target' >&2; exit 1;
-    }
-    cache_flags='--cache-predownload'
+    cache_flags='--cache-dir /var/cache/apk --cache-packages --cache-predownload'
 fi
 
 # Reuse the canonical Alpine runtime builder, which SHA256-verifies the
@@ -66,6 +56,22 @@ fi
 if [ ! -f "$work/packages-$package_sha/signed-install.ok" ]; then
     NAS_ALPINE_PROFILE=runtime sh rootfs/alpine/build.sh "$port"
     cp -a "build/external/m39-packages/$port/rootfs/." "$root/"
+    if [ "$profile" = m205 ]; then
+        # The cached M39 minirootfs was copied only NOW. Configure the cache
+        # after copying it, so no base-root entry can replace the link.
+        mkdir -p "$root/var/cache/apk"
+        if [ ! -L "$root/etc/apk/cache" ]; then
+            [ ! -e "$root/etc/apk/cache" ] || {
+                echo '[M205 CACHE FAIL] APK cache path was not a symlink' >&2
+                exit 1
+            }
+            ln -s /var/cache/apk "$root/etc/apk/cache"
+        fi
+        [ "$(readlink "$root/etc/apk/cache")" = /var/cache/apk ] || {
+            echo '[M205 CACHE FAIL] unexpected APK cache symlink target' >&2
+            exit 1
+        }
+    fi
     if ! docker run --rm --volume "$root_canonical:/target" \
         --env APK_ARCH="$arch" --env APK_PACKAGES="$package_list" \
         --env APK_CACHE_FLAGS="$cache_flags" \
@@ -88,6 +94,38 @@ fi
 
 if [ "$profile" = m205 ]; then
     cache="$root/var/cache/apk"
+    # Alpine apk-tools 3 may finish a --root installation without writing
+    # package archives into an implicitly selected cache. Explicitly fetch
+    # the *official repository closure* into the native cache directory and
+    # refresh both signed repository indexes there. The guest still checks
+    # signatures and installs everything itself; no binary is substituted.
+    # This also repairs a previous interrupted host census whose signed
+    # install marker exists but whose archive cache was incomplete.
+    archive_count=$(find "$cache" -maxdepth 1 -type f -name '*.apk' | wc -l)
+    index_count=$(find "$cache" -maxdepth 1 -type f -name 'APKINDEX*' | wc -l)
+    if [ "$archive_count" -lt 16 ] || [ "$index_count" -lt 2 ]; then
+        if ! docker run --rm --volume "$root_canonical:/target" \
+            --env APK_ARCH="$arch" --env APK_PACKAGES="$package_list" \
+            alpine:3.23 sh -ec '
+                cp -a /target/etc/apk/keys/. /etc/apk/keys/
+                apk --arch "$APK_ARCH" --root /target \
+                    --cache-dir /var/cache/apk --keys-dir /etc/apk/keys \
+                    -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main \
+                    -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
+                    update
+                apk --arch "$APK_ARCH" --root /target \
+                    --cache-dir /var/cache/apk --keys-dir /etc/apk/keys \
+                    -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main \
+                    -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
+                    fetch --recursive --output /target/var/cache/apk \
+                    $APK_PACKAGES
+                ls -la /target/var/cache/apk | head -n 15
+            ' > "$work/apk-cache.log" 2>&1; then
+            echo '[M205 CACHE FAIL] explicit signed index/archive fetch' >&2
+            tail -80 "$work/apk-cache.log" >&2
+            exit 1
+        fi
+    fi
     [ -d "$cache" ] && [ ! -L "$cache" ] || {
         echo '[M205 CACHE FAIL] missing real signed package cache directory' >&2
         exit 1

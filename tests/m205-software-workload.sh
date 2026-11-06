@@ -336,7 +336,7 @@ if [ "$phase" = first ]; then
     for helper in unzip util-linux-misc; do
         if apk info -e "$helper" >/dev/null 2>&1; then
             helper_result=PREEXISTING
-        elif /bin/busybox timeout 150 apk --no-network -v add "$helper" \
+        elif /bin/busybox timeout 150 apk --cache-dir /var/cache/apk --no-network -v add "$helper" \
                 > "$work/logs/$helper.apk.log" 2>&1; then
             helper_result=PASS
         else
@@ -384,7 +384,7 @@ while IFS="$tab" read -r package elf family case_id <&9 || [ -n "$package" ]; do
             # exact M205 first boot; it was absent from the baseline.
             install_result=PASS
             printf '%s\n' "$install_result" > "$status_file"
-        elif /bin/busybox timeout 150 apk --no-network -v add "$package" \
+        elif /bin/busybox timeout 150 apk --cache-dir /var/cache/apk --no-network -v add "$package" \
                 > "$work/logs/$package.apk.log" 2>&1; then
             install_result=PASS
             printf '%s\n' "$install_result" > "$status_file"
