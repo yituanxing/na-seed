@@ -176,6 +176,11 @@ if [ "$profile" = m205 ]; then
         --env APK_ARCH="$arch" --env APK_PACKAGES="$package_list" \
         alpine:3.23 sh -ec '
             mkdir -p /verify/lib/apk/db /verify/etc/apk/keys
+            # A simulated transaction intentionally performs no --initdb
+            # writes. Give this pristine verification root a genuine empty
+            # installed/world database so the solver reaches repo metadata.
+            : > /verify/lib/apk/db/installed
+            : > /verify/etc/apk/world
             cp -a /target/etc/apk/keys/. /etc/apk/keys/
             cp -a /target/etc/apk/keys/. /verify/etc/apk/keys/
             printf "%s\n" \
