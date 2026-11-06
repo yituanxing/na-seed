@@ -38,6 +38,13 @@ jobs:
           python3 scripts/test-m197-alpine-host.py
           python3 scripts/test-m204-alpine-host.py
           sh scripts/check-m191-pid1-quiesce.sh
+          mkdir -p build/m205-host
+          cc -std=c11 -Wall -Wextra -Werror scripts/test-syscall-abi.c \
+            -o build/m205-host/syscall-abi
+          build/m205-host/syscall-abi
+          cc -std=c11 -Wall -Wextra -Werror scripts/test-generic64-clone.c \
+            -o build/m205-host/generic64-abi
+          build/m205-host/generic64-abi
           python3 scripts/check-three-isa-core.py
           python3 scripts/check-architecture-boundaries.py
           sh -n scripts/probe-m197-alpine-software-cohort.sh
@@ -133,6 +140,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: m205-original-alpine-${{ matrix.port }}
+          # On early guest command failure the M197 runner exits before it
+          # copies UART to m197-live.serial.log. Preserve native per-ISA logs.
           path: |
             build/external/m205-candidate-inventory/${{ matrix.port }}/apk-install.log
             build/external/m205-candidate-inventory/${{ matrix.port }}/candidates.tsv
@@ -143,4 +152,7 @@ jobs:
             build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.json
             build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
             build/acceptance/**/m197-batch*.log
+            build/busybox-source-parity-x86/m197-batch*.log
+            build/port-riscv64/full/matrix-source/m197-batch*.log
+            build/port-aarch64/full/matrix-source/m197-batch*.log
           if-no-files-found: ignore
