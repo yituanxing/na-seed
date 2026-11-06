@@ -5,8 +5,8 @@ on:
   # probes do NOT restart three 75-minute public WAN boots automatically.
   # Recheck genuine signed APK cache transactions, real PTY input and
   # native INET_DIAG TCP listeners in three independent QEMU guests.
-  # Re-run after adding a fresh empty-root offline APK solver proof and
-  # the original atop CPU sampling oracle; keep first/reopen dual QEMU.
+  # Re-run with a real empty installed/world DB for --simulate to resolve
+  # the signed APK closure; keep original software and dual QEMU gates.
   push:
     branches: [naseed-app-batch2]
     paths:
