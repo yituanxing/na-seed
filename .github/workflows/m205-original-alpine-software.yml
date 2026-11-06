@@ -3,6 +3,8 @@ name: NaSeed M205 original Alpine software, native first and second QEMU
 on:
   # One deliberate new-software discovery run. Changes to kernel or case
   # probes do NOT restart three 75-minute public WAN boots automatically.
+  # M205 syscall-452 and real listener probe: trigger the three-ISA QEMU gate
+  # exactly once after completing the matching source-side batch.
   push:
     branches: [naseed-app-batch2]
     paths:
