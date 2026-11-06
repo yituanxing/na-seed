@@ -10,6 +10,8 @@ on:
   # for every candidate, with no invented Netfilter or iperf success.
   # M207: rerun original native tc, ping, iperf and nft in both boots after
   # owned loopback noqueue and serial native connect/getname correctness work.
+  # M208: verify real NETLINK_NETFILTER empty-table create/list/delete,
+  # generation, transactional rollback and CAP_NET_ADMIN on original nft ELF.
   push:
     branches: [naseed-app-batch2]
     paths:

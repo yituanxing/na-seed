@@ -16,6 +16,9 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -DNAS_ENABLE_LWIP=1 \
    scripts/test-netlink-route.c kernel/fs/netlink_route.c kernel/lib/string.c \
    -o build/lwip-foundation/test-netlink-route
 build/lwip-foundation/test-netlink-route
+# Native nftables uses a distinct Netlink family. Run the real stateful
+# nftables table-registry/transaction protocol, not a synthetic command pass.
+sh scripts/check-netlink-filter.sh
 # Original Alpine ss uses NETLINK_SOCK_DIAG, distinct from ROUTE. Exercise
 # Linux inet_diag wire offsets and genuine TCP listener snapshots in the
 # same lightweight pre-QEMU gate, including unsupported-state refusals.

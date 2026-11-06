@@ -1125,9 +1125,34 @@ int main(void) {
     assert(sys_netlink_recvmsg(nl_fd,nl_message,0)==40);
     assert(sys_netlink_recvmsg(nl_fd,nl_message,0)==20);
     nas_fs_close_fd(nl_fd);
+    /* Keep ROUTE and NETFILTER as two actual kernel-owned OpenFile
+     * providers behind the SAME syscall/usercopy/FD adapter. An original
+     * nft binary queries the real nf_tables generation before transactions. */
+    uint64_t nf_fd=sys_socket(16,3,NAS_NETLINK_FILTER_PROTOCOL);
+    assert(nf_fd<NAS_FD_LIMIT && netlink_fd(nf_fd) &&
+           !unix_fd(nf_fd) && !inet_fd(nf_fd));
+    unsigned nf_slot=guest_task.fds->entries[nf_fd].slot;
+    assert(nas_open_files[nf_slot].ops==nas_netlink_filter_ops());
+    nl_cap=4;
+    memcpy(user_ptr(nl_length),&nl_cap,4);
+    assert(sys_netlink_getsockopt(nf_fd,1,38,nl_reply,nl_length)==0);
+    uint32_t nf_protocol=0;
+    memcpy(&nf_protocol,user_ptr(nl_reply),4);
+    assert(nf_protocol==NAS_NETLINK_FILTER_PROTOCOL);
+    const uint8_t get_generation[20]={20,0,0,0,0x10,0x0a,1,0,
+                                      0x34,0x12,0,0,0,0,0,0,0,0,0,0};
+    memcpy(user_ptr(nl_packet),get_generation,sizeof(get_generation));
+    assert(sys_netlink_sendto(nf_fd,nl_packet,sizeof(get_generation),0,0,0)==
+           sizeof(get_generation));
+    assert(sys_netlink_recvmsg(nf_fd,nl_message,0)==28);
+    assert(user_ptr(nl_reply)[4]==15 && user_ptr(nl_reply)[5]==10 &&
+           user_ptr(nl_reply)[8]==0x34 && user_ptr(nl_reply)[9]==0x12);
+    nas_fs_close_fd(nf_fd);
+    assert((int64_t)sys_socket(16,3,13)==-EPROTONOSUPPORT);
     puts("[LWIP SENDMSG BLOCKING PASS] full iovec import, TX park/resume,");
     puts("  immutable vector snapshot, held OpenFile across close/fd reuse");
     puts("[LWIP SOCKET ABI PASS] native AF_INET TCP/UDP OpenFile + user sockaddr,");
     puts("  async control/GETNAME/SHUTDOWN/REUSEADDR, AF_UNIX preserved");
+    puts("[NETLINK FILTER ABI PASS] real nf_tables GETGEN via shared LP64 socket adapter");
     return 0;
 }

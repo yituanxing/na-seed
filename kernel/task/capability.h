@@ -8,7 +8,9 @@
 #define NAS_CAP_VERSION_1 UINT32_C(0x19980330)
 #define NAS_CAP_VERSION_2 UINT32_C(0x20071026)
 #define NAS_CAP_VERSION_3 UINT32_C(0x20080522)
+#define NAS_CAP_NET_ADMIN (UINT64_C(1)<<12)
 #define NAS_CAP_NET_RAW (UINT64_C(1)<<13)
+#define NAS_CAP_SUPPORTED (NAS_CAP_NET_ADMIN|NAS_CAP_NET_RAW)
 
 struct nas_cap_user_header { uint32_t version; int32_t pid; };
 struct nas_cap_user_data {
@@ -41,16 +43,21 @@ static inline uint64_t nas_cap_validate_target(bool set,int32_t pid,
 }
 
 /* Root is NaSeed's only representable primary UID. Do NOT expose Linux's
- * all-capabilities root mask: only CAP_NET_RAW maps to implemented raw socket
- * access. The mask is task-owned and may be dropped irreversibly from P. */
+ * all-capabilities root mask: NET_RAW authorizes actual raw sockets, and
+ * NET_ADMIN authorizes the bounded, stateful nf_tables control plane.
+ * Unsupported network administration stays explicitly rejected. The mask
+ * is task-owned and may be dropped irreversibly from P. */
 static inline uint64_t nas_cap_permitted(const struct nas_credentials *cred) {
-    return cred->cap_initialized ? cred->cap_permitted : NAS_CAP_NET_RAW;
+    return cred->cap_initialized ? cred->cap_permitted : NAS_CAP_SUPPORTED;
 }
 static inline uint64_t nas_cap_effective(const struct nas_credentials *cred) {
-    return cred->cap_initialized ? cred->cap_effective : NAS_CAP_NET_RAW;
+    return cred->cap_initialized ? cred->cap_effective : NAS_CAP_SUPPORTED;
 }
 static inline bool nas_credentials_can_net_raw(const struct nas_credentials *cred) {
     return (nas_cap_effective(cred)&NAS_CAP_NET_RAW)!=0;
+}
+static inline bool nas_credentials_can_net_admin(const struct nas_credentials *cred) {
+    return (nas_cap_effective(cred)&NAS_CAP_NET_ADMIN)!=0;
 }
 
 /* PR_GET_KEEPCAPS (7) and PR_SET_KEEPCAPS (8) own one persistent task
@@ -98,7 +105,7 @@ static inline uint64_t nas_cap_set(struct nas_credentials *cred,
         inheritable|=(uint64_t)data[1].inheritable<<32;
     }
     if((effective&~permitted) || (permitted&~nas_cap_permitted(cred)) ||
-       (effective&~NAS_CAP_NET_RAW) || inheritable)
+       (effective&~NAS_CAP_SUPPORTED) || inheritable)
         return (uint64_t)-EPERM;
     cred->cap_permitted=permitted;
     cred->cap_effective=effective;

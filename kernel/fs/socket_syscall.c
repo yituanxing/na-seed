@@ -23,8 +23,62 @@
 #include "../../ports/lwip/socket_port.h"
 #include "../../ports/lwip/network_boot.h"
 #include "netlink_route.h"
+#include "netlink_filter.h"
 #include "packet_socket.h"
 #define TASK (*nas_current_task)
+
+/* Both Linux Netlink families use the same LP64 sockaddr_nl, msghdr and
+ * usercopy rules. Keep the ABI adapter shared; protocol-specific state and
+ * validation remain with their owning kernel Netlink provider. */
+_Static_assert(NAS_NETLINK_FILTER_SOCKADDR_SIZE==
+               NAS_NETLINK_ROUTE_SOCKADDR_SIZE,"sockaddr_nl shared ABI");
+_Static_assert(NAS_NETLINK_FILTER_MAX_DATAGRAM==
+               NAS_NETLINK_ROUTE_MAX_DATAGRAM,"Netlink datagram budget");
+static bool nas_netlink_slot(unsigned slot) {
+    return nas_netlink_route_is_slot(slot) || nas_netlink_filter_is_slot(slot);
+}
+static int nas_netlink_bind_slot(unsigned slot,const uint8_t *addr,unsigned length) {
+    return nas_netlink_filter_is_slot(slot) ?
+        nas_netlink_filter_bind(slot,addr,length) :
+        nas_netlink_route_bind(slot,addr,length);
+}
+static int nas_netlink_name_slot(unsigned slot,uint8_t addr[12]) {
+    return nas_netlink_filter_is_slot(slot) ?
+        nas_netlink_filter_getsockname(slot,addr) :
+        nas_netlink_route_getsockname(slot,addr);
+}
+static int64_t nas_netlink_send_slot(unsigned slot,const uint8_t *data,
+                                    unsigned length,const uint8_t *addr,
+                                    unsigned addr_length) {
+    return nas_netlink_filter_is_slot(slot) ?
+        nas_netlink_filter_sendto(slot,data,length,addr,addr_length) :
+        nas_netlink_route_sendto(slot,data,length,addr,addr_length);
+}
+static int64_t nas_netlink_recv_slot(unsigned slot,uint8_t *data,unsigned size,
+                                    unsigned flags,uint8_t source[12],
+                                    uint32_t *source_length,uint32_t *msg_flags) {
+    return nas_netlink_filter_is_slot(slot) ?
+        nas_netlink_filter_recvmsg(slot,data,size,flags,source,source_length,msg_flags) :
+        nas_netlink_route_recvmsg(slot,data,size,flags,source,source_length,msg_flags);
+}
+static int nas_netlink_protocol_slot(unsigned slot) {
+    return nas_netlink_filter_is_slot(slot) ?
+        nas_netlink_filter_protocol(slot) :nas_netlink_route_protocol(slot);
+}
+static int nas_netlink_getbuf_slot(unsigned slot,bool send,uint32_t *bytes) {
+    if(nas_netlink_filter_is_slot(slot))return send ?
+        nas_netlink_filter_get_sndbuf(slot,bytes) :
+        nas_netlink_filter_get_rcvbuf(slot,bytes);
+    return send ? nas_netlink_route_get_sndbuf(slot,bytes) :
+                  nas_netlink_route_get_rcvbuf(slot,bytes);
+}
+static int nas_netlink_setbuf_slot(unsigned slot,bool send,uint32_t requested) {
+    if(nas_netlink_filter_is_slot(slot))return send ?
+        nas_netlink_filter_set_sndbuf(slot,requested) :
+        nas_netlink_filter_set_rcvbuf(slot,requested);
+    return send ? nas_netlink_route_set_sndbuf(slot,requested) :
+                  nas_netlink_route_set_rcvbuf(slot,requested);
+}
 
 /* Only this Linux ABI adapter decodes the network-order sockaddr_in wire
  * format; Netconn and the driver never own this host-order stack value. */
@@ -36,7 +90,7 @@ static bool lwip_fd(uint64_t fd) {
 }
 static bool netlink_fd(uint64_t fd) {
     return fd<NAS_FD_LIMIT && TASK.fds->entries[fd].kind==FD_SOCKET &&
-           nas_netlink_route_is_slot(TASK.fds->entries[fd].slot);
+           nas_netlink_slot(TASK.fds->entries[fd].slot);
 }
 static bool packet_fd(uint64_t fd) {
     return fd<NAS_FD_LIMIT && TASK.fds->entries[fd].kind==FD_SOCKET &&
@@ -63,7 +117,7 @@ static bool unix_fd(uint64_t fd) {
     return fd<NAS_FD_LIMIT && TASK.fds->entries[fd].kind==FD_SOCKET &&
            TASK.fds->entries[fd].slot<NAS_OPEN_FILE_LIMIT
            && !nas_lwip_socket_is_slot(TASK.fds->entries[fd].slot)
-           && !nas_netlink_route_is_slot(TASK.fds->entries[fd].slot)
+           && !nas_netlink_slot(TASK.fds->entries[fd].slot)
            && !nas_packet_socket_is_slot(TASK.fds->entries[fd].slot)
            ;
 }
@@ -88,6 +142,8 @@ static uint64_t sys_socket(uint64_t domain,uint64_t type,uint64_t protocol) {
        && !(domain==2 && protocol==17 && socket_type==2U)
        && !(domain==2 && protocol==1 && socket_type==3U)
        && !(domain==16 && protocol==4 && socket_type==3U)
+       && !(domain==16 && protocol==NAS_NETLINK_FILTER_PROTOCOL &&
+            socket_type==3U)
        && domain!=17
        )
         return (uint64_t)-EPROTONOSUPPORT;
@@ -122,9 +178,12 @@ static uint64_t sys_socket(uint64_t domain,uint64_t type,uint64_t protocol) {
         }
     }
     if(domain==16) {
-        nas_open_files[slot].ops=nas_netlink_route_ops();
+        const bool netfilter=protocol==NAS_NETLINK_FILTER_PROTOCOL;
+        nas_open_files[slot].ops=netfilter ? nas_netlink_filter_ops() :
+                                             nas_netlink_route_ops();
         uint32_t pid=(uint32_t)nas_task_process_pid(nas_current_task);
-        int rc=protocol==4 ? nas_netlink_diag_open(slot,pid) :
+        int rc=netfilter ? nas_netlink_filter_open(slot,pid) :
+               protocol==4 ? nas_netlink_diag_open(slot,pid) :
                              nas_netlink_route_open(slot,pid);
         if(rc) {
             nas_fs_close_fd(fd);
@@ -859,7 +918,7 @@ static uint64_t sys_netlink_bind(uint64_t fd,uint64_t address,uint64_t length) {
     uint8_t local[NAS_NETLINK_ROUTE_SOCKADDR_SIZE];
     if(!nas_user_read_bytes(address,local,sizeof(local)))
         return (uint64_t)-EFAULT;
-    return (uint64_t)(int64_t)nas_netlink_route_bind(
+    return (uint64_t)(int64_t)nas_netlink_bind_slot(
         TASK.fds->entries[fd].slot,local,sizeof(local));
 }
 static uint64_t sys_netlink_name(uint64_t fd,uint64_t address,
@@ -870,7 +929,7 @@ static uint64_t sys_netlink_name(uint64_t fd,uint64_t address,
     if(!nas_user_read_bytes(length_ptr,(uint8_t *)&capacity,sizeof(capacity)))
         return (uint64_t)-EFAULT;
     uint8_t name[NAS_NETLINK_ROUTE_SOCKADDR_SIZE];
-    int rc=nas_netlink_route_getsockname(TASK.fds->entries[fd].slot,name);
+    int rc=nas_netlink_name_slot(TASK.fds->entries[fd].slot,name);
     if(rc)return (uint64_t)(int64_t)rc;
     uint32_t actual=sizeof(name),n=capacity<actual?capacity:actual;
     if(!nas_user_prepare_write(length_ptr,4) ||
@@ -894,7 +953,7 @@ static uint64_t sys_netlink_sendto(uint64_t fd,uint64_t user_data,
         return (uint64_t)-EFAULT;
     if(user_name && !nas_user_read_bytes(user_name,name,sizeof(name)))
         return (uint64_t)-EFAULT;
-    return (uint64_t)nas_netlink_route_sendto(TASK.fds->entries[fd].slot,
+    return (uint64_t)nas_netlink_send_slot(TASK.fds->entries[fd].slot,
         packet,(unsigned)length,user_name?name:NULL,
         user_name?sizeof(name):0);
 }
@@ -928,7 +987,7 @@ static uint64_t sys_netlink_sendmsg(uint64_t fd,uint64_t user_message,
     }
     if(msg.name && !nas_user_read_bytes(msg.name,name,sizeof(name)))
         return (uint64_t)-EFAULT;
-    return (uint64_t)nas_netlink_route_sendto(TASK.fds->entries[fd].slot,
+    return (uint64_t)nas_netlink_send_slot(TASK.fds->entries[fd].slot,
           packet,(unsigned)length,msg.name?name:NULL,
           msg.name?sizeof(name):0);
 }
@@ -961,7 +1020,7 @@ static uint64_t sys_netlink_recvmsg(uint64_t fd,uint64_t user_message,
     uint8_t packet[NAS_NETLINK_ROUTE_MAX_DATAGRAM];
     uint8_t source[NAS_NETLINK_ROUTE_SOCKADDR_SIZE];
     uint32_t source_length=0,received_flags=0;
-    int64_t got=nas_netlink_route_recvmsg(TASK.fds->entries[fd].slot,
+    int64_t got=nas_netlink_recv_slot(TASK.fds->entries[fd].slot,
                    packet,(unsigned)capacity,(unsigned)flags,
                    source,&source_length,&received_flags);
     if(got<0)return (uint64_t)got;
@@ -998,19 +1057,17 @@ static uint64_t sys_netlink_getsockopt(uint64_t fd,uint64_t level,
     case 3:answer=3;break;  /* SO_TYPE: SOCK_RAW */
     case 4:answer=0;break;  /* SO_ERROR: synchronous kernel route endpoint */
     case 7: { /* SO_SNDBUF: actual per-socket outbound admission quota */
-        int rc=nas_netlink_route_get_sndbuf(
-            TASK.fds->entries[fd].slot,&answer);
+        int rc=nas_netlink_getbuf_slot(TASK.fds->entries[fd].slot,true,&answer);
         if(rc)return (uint64_t)(int64_t)rc;
         break;
     }
     case 8: { /* SO_RCVBUF: actual bounded NETLINK reply ring quota */
-        int rc=nas_netlink_route_get_rcvbuf(
-            TASK.fds->entries[fd].slot,&answer);
+        int rc=nas_netlink_getbuf_slot(TASK.fds->entries[fd].slot,false,&answer);
         if(rc)return (uint64_t)(int64_t)rc;
         break;
     }
-    case 38: { /* SO_PROTOCOL: actual NETLINK_ROUTE or SOCK_DIAG */
-        int protocol=nas_netlink_route_protocol(TASK.fds->entries[fd].slot);
+    case 38: { /* SO_PROTOCOL: actual ROUTE, SOCK_DIAG or NETFILTER */
+        int protocol=nas_netlink_protocol_slot(TASK.fds->entries[fd].slot);
         if(protocol<0)return (uint64_t)(int64_t)protocol;
         answer=(uint32_t)protocol;
         break;
@@ -1042,9 +1099,7 @@ static uint64_t sys_netlink_setsockopt(uint64_t fd,uint64_t level,
         return (uint64_t)-EFAULT;
     if(requested<0)return (uint64_t)-EINVAL;
     unsigned slot=TASK.fds->entries[fd].slot;
-    int rc=option==7 ?
-        nas_netlink_route_set_sndbuf(slot,(uint32_t)requested) :
-        nas_netlink_route_set_rcvbuf(slot,(uint32_t)requested);
+    int rc=nas_netlink_setbuf_slot(slot,option==7,(uint32_t)requested);
     return (uint64_t)(int64_t)rc;
 }
 /* Linux LP64 cmsghdr (16 bytes) + struct in_pktinfo (12 bytes).

@@ -14,8 +14,9 @@ struct nas_credentials {
     uint32_t groups[NAS_CREDENTIAL_GROUP_LIMIT];
     uint32_t group_count;
     /* Linux capability state is per task. Legacy zero-initialized root tasks
-     * have the single capability NaSeed actually enforces, CAP_NET_RAW.
-     * cap_initialized distinguishes that default from an explicit drop. */
+     * have the two implemented privileges NET_RAW and NET_ADMIN (the latter
+     * only for the bounded nf_tables control plane); cap_initialized
+     * distinguishes that default from an explicit irreversible drop. */
     uint64_t cap_effective,cap_permitted;
     bool cap_initialized;
     /* Linux PR_SET_KEEPCAPS is inherited by fork and cleared by execve.

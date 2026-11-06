@@ -291,6 +291,11 @@ int main(void) {
     assert(nas_lwip_socket_getname_begin(52,false)==0);
     assert(nas_lwip_socket_getname_begin(52,false)==-EALREADY);
     assert(nas_lwip_socket_getname_begin(52,true)==-EBUSY);
+    const uint8_t following_raw[]={0x08,0x00,0,0};
+    /* A different Task's SEND came after this accepted GETNAME. It must
+     * not join the UDP/RAW FIFO ahead of the one-shot control result. */
+    assert(nas_lwip_socket_sendto(52,following_raw,sizeof(following_raw),
+                                 lo(0))==-EAGAIN);
     struct nas_lwip_bridge_address connected_name={0};
     bool connected_named=false;
     for(unsigned tries=0;tries<300;tries++) {
@@ -310,6 +315,9 @@ int main(void) {
     reserve(53,NAS_LWIP_BRIDGE_UDP);
     assert(nas_lwip_socket_connect(53,lo(38007))==0);
     assert(nas_lwip_socket_getname_begin(53,false)==0);
+    const uint8_t following_udp[]={0xca,0xfe};
+    assert(nas_lwip_socket_sendto(53,following_udp,sizeof(following_udp),
+                                 lo(38007))==-EAGAIN);
     connected_name=(struct nas_lwip_bridge_address){0};
     connected_named=false;
     for(unsigned tries=0;tries<300;tries++) {
@@ -324,7 +332,29 @@ int main(void) {
     assert(connected_name.ipv4==confirmed_name.ipv4 &&
            connected_name.port==confirmed_name.port);
     close_slot(53);
-    puts("[LWIP CONNECT/GETNAME PASS] upstream RAW/UDP true native address after async connect");
+    /* Closing before GETNAME executes cancels this File's successor: the
+     * old bridge generation must drain before this slot can be reopened,
+     * and an old completion must never become the new owner's result. */
+    reserve(54,NAS_LWIP_BRIDGE_UDP);
+    assert(nas_lwip_socket_connect(54,lo(38007))==0);
+    assert(nas_lwip_socket_getname_begin(54,false)==0);
+    assert(nas_lwip_socket_sendto(54,following_udp,sizeof(following_udp),
+                                 lo(38007))==-EAGAIN);
+    close_slot(54);
+    assert(!nas_lwip_socket_slot_reusable(54));
+    bool old_drained=false;
+    for(unsigned tries=0;tries<300;tries++) {
+        if(nas_lwip_socket_slot_reusable(54)){old_drained=true;break;}
+        test_ns+=UINT64_C(1000000);
+        (void)nas_kthread_run(1);
+    }
+    assert(old_drained);
+    reserve(54,NAS_LWIP_BRIDGE_UDP);
+    assert(nas_lwip_socket_getname_complete(54,&connected_name)==-EINVAL);
+    assert(nas_lwip_socket_bind(54,lo(38028))==0);
+    finish_control(54,0);
+    close_slot(54);
+    puts("[LWIP CONNECT/GETNAME PASS] real RAW/UDP results, control-before-later-SEND, close/reopen generation");
 
     reserve(20,NAS_LWIP_BRIDGE_UDP);
     reserve(21,NAS_LWIP_BRIDGE_UDP);

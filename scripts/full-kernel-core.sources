@@ -67,6 +67,7 @@ kernel/fs/syscall.c
 kernel/fs/namespace_syscall.c
 kernel/fs/socket_syscall.c
 kernel/fs/netlink_route.c
+kernel/fs/netlink_filter.c
 kernel/fs/packet_socket.c
 kernel/fs/memfd.c
 kernel/fs/file_io.c

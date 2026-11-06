@@ -67,9 +67,10 @@ static void test_root_capabilities(void) {
     assert(nas_cap_set_keepcaps(&parent,0)==0);
     assert(nas_cap_get_keepcaps(&parent)==0);
     assert(nas_credentials_can_net_raw(&parent));
+    assert(nas_credentials_can_net_admin(&parent));
     nas_cap_get(&parent,data);
-    assert(data[0].permitted==(uint32_t)NAS_CAP_NET_RAW);
-    assert(data[0].effective==(uint32_t)NAS_CAP_NET_RAW);
+    assert(data[0].permitted==(uint32_t)NAS_CAP_SUPPORTED);
+    assert(data[0].effective==(uint32_t)NAS_CAP_SUPPORTED);
     assert(data[0].inheritable==0);
     assert(data[1].permitted==0 && data[1].effective==0 && data[1].inheritable==0);
 
@@ -77,17 +78,20 @@ static void test_root_capabilities(void) {
     data[0].effective=0;
     assert(nas_cap_set(&parent,2,data)==0);
     assert(!nas_credentials_can_net_raw(&parent));
+    assert(!nas_credentials_can_net_admin(&parent));
     struct nas_credentials fork_copy=parent;
     assert(!nas_credentials_can_net_raw(&fork_copy));
-    data[0].effective=(uint32_t)NAS_CAP_NET_RAW;
+    assert(!nas_credentials_can_net_admin(&fork_copy));
+    data[0].effective=(uint32_t)NAS_CAP_SUPPORTED;
     assert(nas_cap_set(&parent,2,data)==0);
     assert(nas_credentials_can_net_raw(&parent));
+    assert(nas_credentials_can_net_admin(&parent));
     assert(!nas_credentials_can_net_raw(&fork_copy));
 
     /* Capset may not raise unsupported privilege, even for NaSeed root. */
-    data[0].permitted|=1U<<12; /* CAP_NET_ADMIN unsupported */
+    data[0].permitted|=1U<<21; /* CAP_SYS_ADMIN remains unsupported */
     assert((int64_t)nas_cap_set(&parent,2,data)==-EPERM);
-    data[0].permitted=(uint32_t)NAS_CAP_NET_RAW;
+    data[0].permitted=(uint32_t)NAS_CAP_SUPPORTED;
     data[0].inheritable=1U<<13; /* no inheritable file capability model */
     assert((int64_t)nas_cap_set(&parent,2,data)==-EPERM);
     data[0].inheritable=0;
@@ -97,6 +101,27 @@ static void test_root_capabilities(void) {
     data[0].permitted=0; /* effective must be subset of permitted */
     assert((int64_t)nas_cap_set(&parent,2,data)==-EPERM);
     assert(nas_credentials_can_net_raw(&parent)); /* rejected transaction is atomic */
+    assert(nas_credentials_can_net_admin(&parent));
+
+    /* NET_RAW and NET_ADMIN are separate enforced task-owned privileges. */
+    struct nas_credentials independent={0};
+    struct nas_cap_user_data split[2]={{0},{0}};
+    split[0].permitted=(uint32_t)NAS_CAP_SUPPORTED;
+    split[0].effective=(uint32_t)NAS_CAP_NET_RAW;
+    assert(nas_cap_set(&independent,2,split)==0);
+    assert(nas_credentials_can_net_raw(&independent));
+    assert(!nas_credentials_can_net_admin(&independent));
+    split[0].effective=(uint32_t)NAS_CAP_NET_ADMIN;
+    assert(nas_cap_set(&independent,2,split)==0);
+    assert(!nas_credentials_can_net_raw(&independent));
+    assert(nas_credentials_can_net_admin(&independent));
+    split[0].permitted=(uint32_t)NAS_CAP_NET_ADMIN;
+    assert(nas_cap_set(&independent,2,split)==0);
+    split[0].effective=(uint32_t)NAS_CAP_SUPPORTED;
+    split[0].permitted=(uint32_t)NAS_CAP_SUPPORTED;
+    assert((int64_t)nas_cap_set(&independent,2,split)==-EPERM);
+    assert(!nas_credentials_can_net_raw(&independent));
+    assert(nas_credentials_can_net_admin(&independent));
 
     /* Valid permanent permitted drop then attempted restoration is denied. */
     data[0].effective=0;
@@ -108,6 +133,7 @@ static void test_root_capabilities(void) {
     data[0].permitted=(uint32_t)NAS_CAP_NET_RAW;
     assert((int64_t)nas_cap_set(&parent,1,data)==-EPERM);
     assert(!nas_credentials_can_net_raw(&parent));
+    assert(!nas_credentials_can_net_admin(&parent));
     assert((int64_t)nas_cap_set(&parent,0,data)==-EINVAL);
     assert((int64_t)nas_cap_set(&parent,3,data)==-EINVAL);
 }

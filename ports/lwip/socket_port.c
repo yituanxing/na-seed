@@ -604,6 +604,13 @@ int64_t nas_lwip_socket_sendto_pktinfo(
     if(rc)return rc;
     if(s->tx_error){rc=s->tx_error;s->tx_error=0;return rc;}
     if(s->queued_control)return -EAGAIN;
+    /* A different Task may already own a GETNAME/setsockopt/BIND result
+     * admitted immediately after an asynchronous UDP/RAW CONNECT. Do not
+     * accept a later SEND into udp_pending: check() must drain datagrams
+     * accepted BEFORE that control, but must not let newer datagrams
+     * overtake the accepted control. Once the control reaches the native
+     * worker, later SENDs may queue behind it as usual. */
+    if(s->queued_after_connect)return -EAGAIN;
     if(!(s->type==NAS_LWIP_BRIDGE_RAW_ICMP ? destination.ipv4 :
          destination.port) && !s->connected)
         return s->command==PORT_CONTROL &&
@@ -737,7 +744,8 @@ static uint64_t write_plan(unsigned slot,uint64_t requested) {
     }
     if(s->type!=NAS_LWIP_BRIDGE_TCP) {
         if(!s->connected)return (uint64_t)-ENOTCONN;
-        if(s->queued_control || s->udp_count==NAS_LWIP_UDP_PENDING)
+        if(s->queued_control || s->queued_after_connect ||
+           s->udp_count==NAS_LWIP_UDP_PENDING)
             return (uint64_t)-EAGAIN;
         return requested;
     }
@@ -818,7 +826,7 @@ static uint16_t poll_description(unsigned slot,uint16_t events) {
         /* Linux POLLOUT reports free SEND buffer capacity, not an idle
          * network worker. The queued datagrams retain their own bounds. */
         if(s->command!=PORT_CONTROL && s->command!=PORT_CONTROL_DONE &&
-           !s->queued_control && !s->tx_error &&
+           !s->queued_control && !s->queued_after_connect && !s->tx_error &&
            s->udp_count<NAS_LWIP_UDP_PENDING)
             ready|=PORT_POLLOUT;
     } else if(s->connected && !s->connecting &&
