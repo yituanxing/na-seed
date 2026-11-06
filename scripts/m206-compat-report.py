@@ -48,10 +48,16 @@ def main() -> int:
         report = build_report(manifest_cases(args.manifest),
                               args.first_uart.read_text(errors="replace"),
                               args.reopen_uart.read_text(errors="replace"))
+        passed = report["newly_installed_full_pass_entrypoints"]
+        if (args.require_all and passed == 20 and
+                report["total_entrypoints"] == 20 and
+                report["preexisting"] == 0):
+            # This flag certifies the first/reopen guest oracle only; the
+            # signed APK and post-reboot physical ext4 gates run separately.
+            report["acceptance"] = "strict-native-first-and-reopen-20-of-20"
         args.json_output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     except (OSError, ValueError) as exc:
         parser.error(f"[M206 INVALID EVIDENCE] {exc}")
-    passed = report["newly_installed_full_pass_entrypoints"]
     print(f"[M206 DISCOVERY REPORT] {passed}/{report['total_entrypoints']} "
           "original signed Alpine programs passed fresh install, real function "
           f"and independent second QEMU; preexisting={report['preexisting']}")
@@ -59,9 +65,12 @@ def main() -> int:
         print(f"[M206 ENTRY] {item['elf_path']} install={item['install']} "
               f"functional={item['functional']} reopen={item['reopen']}")
     print(f"[M206 REPORT JSON] {args.json_output}")
-    if args.require_all and passed != 20:
+    if args.require_all and (passed != 20 or report["preexisting"] != 0):
         print("[M206 STRICT FAIL] discovery cannot count as full compatibility")
         return 1
+    if args.require_all:
+        print("[M206 STRICT GUEST PASS] 20/20 original signed Alpine software "
+              "functional in first and independent second QEMU boot")
     return 0
 
 

@@ -18,6 +18,8 @@ on:
   # stable real table handle and filtered empty NFT dumps on all three ISAs.
   # M211.1: remove unsupported nas_hex host-link reference in bounded NFT
   # diagnostics; rerun exact original signed software on first/reopen QEMU.
+  # M212: enforce fail-closed 20/20 native software acceptance on real
+  # first and independent reopen QEMU, retaining APK SHA and ext4 proof.
   push:
     branches: [naseed-app-batch2]
     paths:
@@ -142,12 +144,12 @@ jobs:
       - name: Run real M197 signed public HTTPS and M206 per-ELF first/reopen QEMU
         timeout-minutes: 95
         env:
-          NAS_M206_REQUIRE_ALL: '0'
+          NAS_M206_REQUIRE_ALL: '1'
           NAS_M206_PUBLIC_QEMU_TIMEOUT: '4500'
           NAS_M206_PUBLIC_SECONDS: '4400'
           NAS_M206_REOPEN_SECONDS: '900'
         run: sh scripts/probe-m206-alpine-compat-cohort.sh ${{ matrix.port }}
-      - name: Summarize actual guest outcome without equating discovery to PASS
+      - name: Summarize independently verified strict original guest acceptance
         if: always()
         run: |
           python3 - <<'PY'

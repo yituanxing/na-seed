@@ -186,6 +186,7 @@ def reporting_contract(entries: list[tuple[str, str, str, str]]) -> None:
         assert data is not None and data["milestone"] == "M206"
         assert data["total_entrypoints"] == 20
         assert data["newly_installed_full_pass_entrypoints"] == 20
+        assert data["acceptance"] == "strict-native-first-and-reopen-20-of-20"
         assert not data["independent_elf_sha_attested_here"]
 
         p, path, _, _ = entries[0]
@@ -195,8 +196,10 @@ def reporting_contract(entries: list[tuple[str, str, str, str]]) -> None:
         rc, data, logs = call()
         assert rc != 0 and data is not None and path in data["failures"], logs
         assert data["newly_installed_full_pass_entrypoints"] == 19
-        rc, _, _ = call(strict=False)
+        assert data["acceptance"] == "discovery-not-full-compatibility"
+        rc, data, _ = call(strict=False)
         assert rc == 0, "discovery mode must preserve genuine FAIL rather than disappear"
+        assert data is not None and data["acceptance"] == "discovery-not-full-compatibility"
 
         first.write_text(uart(entries, "first", {(p, path, "install"): "PREEXISTING"}))
         reopen.write_text(clean_reopen)
