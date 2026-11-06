@@ -8,6 +8,8 @@ on:
   # Exact-head recheck: loopback noqueue, iputils keepcaps lifecycle and
   # canonical Alpine BusyBox aliases; still require real function/reopen
   # for every candidate, with no invented Netfilter or iperf success.
+  # M207: rerun original native tc, ping, iperf and nft in both boots after
+  # owned loopback noqueue and serial native connect/getname correctness work.
   push:
     branches: [naseed-app-batch2]
     paths:
