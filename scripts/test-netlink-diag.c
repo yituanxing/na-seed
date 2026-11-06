@@ -23,11 +23,17 @@ static void diag_request(uint8_t request[72],uint8_t family,
 static void diag_done(unsigned slot,uint32_t seq) {
     uint8_t reply[96]={0};
     uint8_t source[12];
+    uint8_t local[12];
     uint32_t namelen=0,flags=0;
+    assert(nas_netlink_route_getsockname(slot,local)==0);
     assert(nas_netlink_route_recvmsg(slot,reply,sizeof(reply),0,source,
                                     &namelen,&flags)==20);
     assert(rd32(reply)==20 && rd16(reply+4)==3 && rd16(reply+6)==2);
-    assert(rd32(reply+8)==seq && rd32(reply+12)==0 && rd32(reply+16)==0);
+    /* Match stock iproute2/libnetlink.c rtnl_dump_filter_l(): the reply
+     * HEADER pid is our local port, while sockaddr_nl SENDER pid is zero.
+     * A header pid of zero makes `ss -ltn` skip NLMSG_DONE forever. */
+    assert(rd32(reply+8)==seq && rd32(reply+12)==rd32(local+4) &&
+           rd32(reply+16)==0);
     assert(namelen==12 && rd16(source)==16 && rd32(source+4)==0);
     assert(flags==0);
 }
@@ -77,7 +83,8 @@ int main(void) {
     assert(nas_netlink_route_recvmsg(slot,reply,sizeof(reply),0,source,
                                     &namelen,&flags)==88);
     assert(flags==0 && rd32(reply)==88 && rd16(reply+4)==20 &&
-           rd16(reply+6)==2 && rd32(reply+8)==101 && rd32(reply+12)==0);
+           rd16(reply+6)==2 && rd32(reply+8)==101 && rd32(reply+12)==7777);
+    assert(rd32(source+4)==0); /* kernel sender, never the local port */
     assert(reply[16]==2 && reply[17]==10);
     assert(reply[20]==(18085>>8) && reply[21]==(18085&255));
     const uint8_t loopback[4]={127,0,0,1};
@@ -95,7 +102,8 @@ int main(void) {
     assert(nas_netlink_route_sendto(slot,req,72,NULL,0)==72);
     assert(nas_netlink_route_recvmsg(slot,reply,sizeof(reply),0,NULL,
                                     NULL,NULL)==88);
-    assert(rd32(reply+8)==109 && rd16(reply+4)==20 && reply[17]==10 &&
+    assert(rd32(reply+8)==109 && rd32(reply+12)==7777 &&
+           rd16(reply+4)==20 && reply[17]==10 &&
            reply[20]==(18085>>8) && reply[21]==(18085&255));
     diag_done(slot,109);
 

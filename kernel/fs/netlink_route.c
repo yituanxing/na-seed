@@ -332,8 +332,11 @@ static void enqueue_done(struct netlink_socket *s,uint32_t seq) {
      * Stock iproute2 rtnl_dump_done rejects a header-only record as a
      * truncated reply. enqueue() zeroes the payload, including error=0. */
     r->length=20;
-    make_nlmsg(r->bytes,r->length,NLMSG_DONE_LINUX,seq,
-               s->protocol==NETLINK_SOCK_DIAG_LINUX ? 0:s->port_id);
+    /* A multipart dump's nlmsg_pid is the receiving socket's assigned
+     * local port, even though the sender sockaddr_nl reports kernel pid 0.
+     * iproute2 libnetlink rejects every mismatched nlmsg_pid, including
+     * NLMSG_DONE, then loops waiting for a completion it never accepts. */
+    make_nlmsg(r->bytes,r->length,NLMSG_DONE_LINUX,seq,s->port_id);
 }
 static void enqueue_tcp_listener(struct netlink_socket *s,uint32_t seq,
                                  const struct nas_lwip_tcp_listener *listener) {
@@ -343,7 +346,7 @@ static void enqueue_tcp_listener(struct netlink_socket *s,uint32_t seq,
      * endpoint comes from Netconn's post-listen GETNAME result. There is
      * no fabricated socket for an empty host/guest listener table. */
     r->length=88;
-    make_nlmsg(r->bytes,r->length,SOCK_DIAG_BY_FAMILY_LINUX,seq,0);
+    make_nlmsg(r->bytes,r->length,SOCK_DIAG_BY_FAMILY_LINUX,seq,s->port_id);
     r->bytes[16]=AF_INET_LINUX;
     r->bytes[17]=TCP_LISTEN_LINUX;
     r->bytes[20]=(uint8_t)(listener->local.port>>8);

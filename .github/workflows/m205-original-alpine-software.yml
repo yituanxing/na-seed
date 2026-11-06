@@ -10,6 +10,8 @@ on:
   # original Alpine ELFs across independent first and reopen QEMU boots.
   # Recheck genuine cached APK after lwext4 statfs/fstatfs superblock support;
   # also carry real netdev byte/packet accounting for original procfs readers.
+  # Recheck iproute2-filtered SOCK_DIAG sender PID, official btop UTF-8 flag,
+  # LLVM-only finite unpack budget, and failure-only genuine serial witnesses.
   push:
     branches: [naseed-app-batch2]
     paths:

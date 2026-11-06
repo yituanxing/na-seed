@@ -183,6 +183,20 @@ static int exchange(int master,int transcript,pid_t child,
     return 0;
 }
 
+/* Print a bounded, escaped actual PTY suffix on failure. The raw transcript
+ * stays on the persistent guest ext4 disk, but CI does not upload that disk.
+ * A one-line ASCII diagnostic lets the host distinguish an original btop
+ * runtime error from a kernel PTY/terminal failure without fake success. */
+static void screen_failure_excerpt(const char *history,size_t length) {
+    const size_t begin=length>256?length-256:0;
+    fputs("M205 PTY fixture: original btop escaped PTY tail=",stderr);
+    for(size_t i=begin;i<length;i++) {
+        unsigned char c=(unsigned char)history[i];
+        if(c>=32 && c<=126 && c!='\\')fputc(c,stderr);
+        else fprintf(stderr,"\\x%02x",(unsigned)c);
+    }
+    fputc('\n',stderr);
+}
 /* btop is a terminal application rather than a question/answer tool. Its
  * signed Alpine ELF must actually paint a substantial ANSI screen with CPU
  * and memory panels. Only then may the fixture type a real q keystroke.
@@ -201,6 +215,7 @@ static int screen_exchange(int master,int transcript,pid_t child) {
         if(monotonic_ns()-started>M205_PTY_TIMEOUT_NS) {
             fprintf(stderr,"M205 PTY fixture: btop screen timed out (bytes=%llu csi=%u cpu=%d mem=%d q=%d)\n",
                     (unsigned long long)total_bytes,csi_count,saw_cpu,saw_mem,sent_q);
+            screen_failure_excerpt(history,history_len);
             return 1;
         }
         struct pollfd input={.fd=master,.events=POLLIN|POLLHUP};
@@ -245,6 +260,7 @@ static int screen_exchange(int master,int transcript,pid_t child) {
     if(!sent_q || !WIFEXITED(status) || WEXITSTATUS(status)!=0) {
         fprintf(stderr,"M205 PTY fixture: genuine btop screen/exit failed (bytes=%llu csi=%u cpu=%d mem=%d q=%d status=%d)\n",
                 (unsigned long long)total_bytes,csi_count,saw_cpu,saw_mem,sent_q,status);
+        screen_failure_excerpt(history,history_len);
         return 1;
     }
     return 0;

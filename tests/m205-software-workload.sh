@@ -38,6 +38,25 @@ error_tail() {
         done
 }
 
+# The guest writes probe output to persistent ext4, but the CI artifact does
+# not contain that scratch directory. On a genuine functional failure,
+# preserve at most two bounded, printable ORIGINAL command-output lines in
+# the existing --exercise log; its owner will attach the proper package and
+# ELF identity via M205_ERROR. This never changes PASS classification.
+probe_failure_excerpt() {
+    pname=$1 plog=$2
+    if [ ! -s "$plog" ]; then
+        printf 'M205 %s: original command produced no output\n' "$pname"
+        return
+    fi
+    /bin/busybox tail -n 2 "$plog" 2>/dev/null |
+        /bin/busybox tr -cd '\11\12\15\40-\176' |
+        /bin/busybox cut -c 1-160 |
+        while IFS= read -r line; do
+            [ -n "$line" ] && printf 'M205 %s: %s\n' "$pname" "$line"
+        done
+}
+
 # Independently verify the original signed util-linux-misc PTY helper was
 # installed; it is not a target-ELF acceptance entry. Interactive probes use
 # a separate host-built native fixture to drive the kernel's real ptmx/pts
@@ -140,6 +159,9 @@ probe() {
             if [ "$ready" -eq 0 ]; then
                 n=0
                 while [ "$n" -lt 6 ]; do
+                    # This exact marker survives an outer 45s timeout if
+                    # original ss parks in recvmsg before any error text.
+                    echo 'M205 ss: real listener ready; querying original ss -ltn' >&2
                     if /sbin/ss -ltn > "$target/sockets" 2> "$target/ss.err" &&
                         /bin/busybox grep -Fq ':18085' "$target/sockets"; then
                         found=0; break
@@ -156,9 +178,9 @@ probe() {
             wait "$server_pid" 2>/dev/null || :
             if [ "$found" -ne 0 ]; then
                 echo 'M205 live TCP socket probe failed' >&2
-                /bin/busybox tail -n 3 "$target/server.log" >&2 || :
-                /bin/busybox tail -n 3 "$target/ss.err" >&2 || :
-                /bin/busybox tail -n 3 "$target/sockets" >&2 || :
+                probe_failure_excerpt 'ss listener' "$target/server.log" >&2
+                probe_failure_excerpt 'ss stderr' "$target/ss.err" >&2
+                probe_failure_excerpt 'ss output' "$target/sockets" >&2
             fi
             return "$found"
             ;;
@@ -179,15 +201,23 @@ probe() {
             /usr/sbin/iftop -t -s 3 -i eth0 > "$target/out" 2>&1
             capture_rc=$?
             wait "$ping_pid" || :
-            test "$capture_rc" -eq 0 &&
-                /bin/busybox grep -Fq '10.0.2.' "$target/out"
+            if test "$capture_rc" -eq 0 &&
+               /bin/busybox grep -Fq '10.0.2.' "$target/out"; then
+                return 0
+            fi
+            printf 'M205 iftop: original exit=%s, no verified live wire capture\n' "$capture_rc" >&2
+            probe_failure_excerpt iftop "$target/out" >&2
+            return 1
             ;;
         controlled-ssh-authentication:usr/bin/sshpass)
             # A controlled PTY password exchange is genuine sshpass behavior;
             # do not misreport it as an SSH server authentication test.
             /usr/bin/sshpass -P 'Password:' -p m205-secret /bin/sh -c \
                 'printf "Password:"; IFS= read -r -t 8 reply; test "$reply" = m205-secret' \
-                > "$target/session" 2>&1
+                > "$target/session" 2>&1 && return 0
+            echo 'M205 sshpass: original PTY password exchange failed' >&2
+            probe_failure_excerpt sshpass "$target/session" >&2
+            return 1
             ;;
         awk-field-transformation:usr/bin/goawk)
             printf '12,7\n5,9\n' > "$target/input"
@@ -263,10 +293,14 @@ probe() {
             # acceptance oracle. The real PTY fixture verifies kernel
             # TIOCSWINSZ (120x40), captures CPU/MEM ANSI display bytes,
             # sends the raw q key only after it paints, and waits for the
-            # original Alpine btop to exit successfully.
+            # original Alpine btop to exit successfully. Our test environment
+            # fixes LC_ALL=C for parseable diagnostics; original btop 1.4.5
+            # explicitly requires a UTF-8 locale unless --force-utf is set.
+            # The PTY itself is a genuine xterm-256color terminal; use that
+            # documented startup option rather than skipping real UI checks.
             test -x /root/m205-fixtures/pty-exchange || return 1
             /bin/busybox timeout 40 /root/m205-fixtures/pty-exchange \
-                --screen "$target/btop-terminal.raw" /usr/bin/btop
+                --screen "$target/btop-terminal.raw" /usr/bin/btop --force-utf
             ;;
         process-accounting-snapshot:usr/bin/atop-2.12.1)
             # Original atop's -b is a *begin time* for raw-log replay, not
@@ -277,10 +311,17 @@ probe() {
         bandwidth-monitor-snapshot:usr/bin/bmon)
             # Read actual eth0 packet-rate metrics using bmon's original
             # format backend. A banner/exit code or timeout is not proof.
+            monitor_rc=0
             /bin/busybox timeout 8 /usr/bin/bmon -p eth0 \
                 -o 'format:fmt=$(element:name) $(attr:rxrate:packets)\n' \
-                > "$target/counters" 2> "$target/bmon.err" || :
-            /bin/busybox grep -Eq '^eth0[[:space:]]+[0-9]' "$target/counters"
+                > "$target/counters" 2> "$target/bmon.err" || monitor_rc=$?
+            if /bin/busybox grep -Eq '^eth0[[:space:]]+[0-9]' "$target/counters"; then
+                return 0
+            fi
+            printf 'M205 bmon: original exit=%s, no verified eth0 counters\n' "$monitor_rc" >&2
+            probe_failure_excerpt 'bmon stderr' "$target/bmon.err" >&2
+            probe_failure_excerpt 'bmon output' "$target/counters" >&2
+            return 1
             ;;
         *) echo "M205 unknown or mismatched case/ELF: $case_id / $elf" >&2; return 1 ;;
     esac
@@ -402,28 +443,37 @@ while IFS="$tab" read -r package elf family case_id <&9 || [ -n "$package" ]; do
             # exact M205 first boot; it was absent from the baseline.
             install_result=PASS
             printf '%s\n' "$install_result" > "$status_file"
-        elif /bin/busybox timeout 150 apk --cache-dir /var/cache/apk --no-network -v add "$package" \
-                > "$work/logs/$package.apk.log" 2>&1; then
-            install_result=PASS
-            printf '%s\n' "$install_result" > "$status_file"
         else
-            install_rc=$?
-            install_result=FAIL
-            printf '%s\n' "$install_result" > "$status_file"
-            printf 'M205_ERROR\t%s\t%s\tinstall\tapk exit=%s (150s budget)\n' \
-                "$package" "$elf" "$install_rc"
-            error_tail "$package" "$elf" install "$work/logs/$package.apk.log"
-            # Error lines can precede a successful BusyBox trigger, so tail
-            # alone hides the original failure. This diagnostic is never
-            # parsed as a semantic program result.
-            /bin/busybox grep -iE 'error|failed|not supported|not found' \
-                "$work/logs/$package.apk.log" 2>/dev/null |
-                /bin/busybox head -n 3 |
-                while IFS= read -r detail; do
-                    detail=$(printf '%s' "$detail" | /bin/busybox tr '\t\r' '  ' |
-                        /bin/busybox cut -c 1-180)
-                    printf 'M205_APK_DIAG\t%s\t%s\n' "$package" "$detail"
-                done
+            # llvm21 unpacks large signed C++ DSOs on emulated ext4. The
+            # 150-second budget used for small utilities timed out midway
+            # through its genuine x86 install (exit 143), leaving both
+            # LLVM entrypoints blocked. Keep a finite package-specific
+            # limit; a timed-out transaction must stay FAIL, never PASS.
+            install_budget=150
+            case "$package" in llvm21) install_budget=600 ;; esac
+            if /bin/busybox timeout "$install_budget" apk --cache-dir /var/cache/apk --no-network -v add "$package" \
+                > "$work/logs/$package.apk.log" 2>&1; then
+                install_result=PASS
+                printf '%s\n' "$install_result" > "$status_file"
+            else
+                install_rc=$?
+                install_result=FAIL
+                printf '%s\n' "$install_result" > "$status_file"
+                printf 'M205_ERROR\t%s\t%s\tinstall\tapk exit=%s (%ss budget)\n' \
+                    "$package" "$elf" "$install_rc" "$install_budget"
+                error_tail "$package" "$elf" install "$work/logs/$package.apk.log"
+                # Error lines can precede a successful BusyBox trigger, so
+                # tail alone hides the original failure. This diagnostic is
+                # never parsed as a semantic program result.
+                /bin/busybox grep -iE 'error|failed|not supported|not found' \
+                    "$work/logs/$package.apk.log" 2>/dev/null |
+                    /bin/busybox head -n 3 |
+                    while IFS= read -r detail; do
+                        detail=$(printf '%s' "$detail" | /bin/busybox tr '\t\r' '  ' |
+                            /bin/busybox cut -c 1-180)
+                        printf 'M205_APK_DIAG\t%s\t%s\n' "$package" "$detail"
+                    done
+            fi
         fi
         record "$package" "$elf" install "$install_result"
         if [ "$install_result" = FAIL ]; then
