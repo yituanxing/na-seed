@@ -2,6 +2,8 @@ name: NaSeed M215 five original Alpine ELFs, x86 native pilot
 
 # One-shot push trigger: only adding/modifying this workflow schedules the
 # long first/reopen QEMU, not unrelated kernel/CI changes.
+# M215.1: align the host trigger contract with the branch-scoped push gate;
+# previous run stopped in preflight before APK fetch or any native QEMU.
 on:
   push:
     branches: [naseed-app-batch2]

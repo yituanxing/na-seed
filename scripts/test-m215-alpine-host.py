@@ -90,7 +90,8 @@ def adapter_contract() -> None:
     assert "expected_count=5" in DISK.read_text() and "m206-alpine-disk-check.py" in DISK.read_text()
     workflow = WORKFLOW.read_text()
     assert "workflow_dispatch:" in workflow
-    assert "  push:\n    paths:\n      - '.github/workflows/m215-five-original-pilot.yml'" in workflow
+    assert ("  push:\n    branches: [naseed-app-batch2]\n    paths:\n"
+            "      - '.github/workflows/m215-five-original-pilot.yml'") in workflow
     assert "sh scripts/inventory-m141-signed-apks.sh amd64 m215" in workflow
     assert "sh scripts/probe-m215-alpine-pilot.sh amd64" in workflow
     assert "matrix:" not in workflow, "pilot must not multiply into three simultaneous long QEMUs"
