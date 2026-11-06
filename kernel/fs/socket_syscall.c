@@ -1047,6 +1047,53 @@ static uint64_t sys_netlink_recvmsg(uint64_t fd,uint64_t user_message,
     return nas_user_write_bytes(user_message,(const uint8_t *)&msg,
                                 sizeof(msg)) ? (uint64_t)got:(uint64_t)-EFAULT;
 }
+/* musl getifaddrs() uses recv(fd, buffer, size, MSG_DONTWAIT), whose Linux
+ * ABI is recvfrom(fd, buffer, size, flags, NULL, NULL), not recvmsg().
+ * Both entrypoints consume the SAME per-OpenFile Netlink datagram queue.
+ * Validate all destination ranges before dequeuing an irreversible record. */
+static uint64_t sys_netlink_recvfrom(uint64_t fd,uint64_t user_buffer,
+                                     uint64_t length,uint64_t flags,
+                                     uint64_t user_source,
+                                     uint64_t user_source_length) {
+    if(!netlink_fd(fd))return (uint64_t)-EBADF;
+    if(flags&~(0x2ULL|0x20ULL|0x40ULL))return (uint64_t)-EOPNOTSUPP;
+    if(user_source && !user_source_length)return (uint64_t)-EFAULT;
+    uint32_t source_capacity=0;
+    if(user_source) {
+        if(!nas_user_read_bytes(user_source_length,
+                                (uint8_t *)&source_capacity,4))
+            return (uint64_t)-EFAULT;
+        uint32_t n=source_capacity>NAS_NETLINK_ROUTE_SOCKADDR_SIZE ?
+                   NAS_NETLINK_ROUTE_SOCKADDR_SIZE:source_capacity;
+        if(!nas_user_prepare_write(user_source_length,4) ||
+           (n && !nas_user_prepare_write(user_source,n)))
+            return (uint64_t)-EFAULT;
+    }
+    unsigned capacity=length>NAS_NETLINK_ROUTE_MAX_DATAGRAM ?
+                      NAS_NETLINK_ROUTE_MAX_DATAGRAM:(unsigned)length;
+    if(capacity && !nas_user_prepare_write(user_buffer,capacity))
+        return (uint64_t)-EFAULT;
+    uint8_t packet[NAS_NETLINK_ROUTE_MAX_DATAGRAM];
+    uint8_t source[NAS_NETLINK_ROUTE_SOCKADDR_SIZE];
+    uint32_t source_length=0;
+    int64_t got=nas_netlink_recv_slot(TASK.fds->entries[fd].slot,
+                    packet,capacity,(unsigned)flags,
+                    user_source ? source:NULL,
+                    user_source ? &source_length:NULL,NULL);
+    if(got<0)return (uint64_t)got;
+    unsigned copied=(uint64_t)got<capacity ? (unsigned)got:capacity;
+    if(copied && !nas_user_write_bytes(user_buffer,packet,copied))
+        return (uint64_t)-EFAULT;
+    if(user_source) {
+        unsigned n=source_capacity<source_length ?
+                   source_capacity:source_length;
+        if((n && !nas_user_write_bytes(user_source,source,n)) ||
+           !nas_user_write_bytes(user_source_length,
+                                 (const uint8_t *)&source_length,4))
+            return (uint64_t)-EFAULT;
+    }
+    return (uint64_t)got;
+}
 static uint64_t sys_netlink_getsockopt(uint64_t fd,uint64_t level,
                                        uint64_t option,uint64_t value,
                                        uint64_t length_ptr) {
@@ -1607,10 +1654,13 @@ struct nas_fs_result nas_fs_socket_syscall(enum nas_syscall_op op,
             SOCKET_RESULT(sys_netlink_sendmsg(args[1],args[2],args[3]));
         case NAS_SC_recvmsg:
             SOCKET_RESULT(sys_netlink_recvmsg(args[1],args[2],args[3]));
+        case NAS_SC_recvfrom:
+            SOCKET_RESULT(sys_netlink_recvfrom(args[1],args[2],args[3],
+                        args[4],args[5],args[6]));
         case NAS_SC_getpeername:SOCKET_RESULT((uint64_t)-ENOTCONN);
         case NAS_SC_connect:case NAS_SC_listen:
         case NAS_SC_accept:case NAS_SC_accept4:
-        case NAS_SC_recvfrom:case NAS_SC_shutdown:
+        case NAS_SC_shutdown:
             SOCKET_RESULT((uint64_t)-EOPNOTSUPP);
         default:break;
         }

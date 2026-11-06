@@ -12,6 +12,8 @@ on:
   # owned loopback noqueue and serial native connect/getname correctness work.
   # M208: verify real NETLINK_NETFILTER empty-table create/list/delete,
   # generation, transactional rollback and CAP_NET_ADMIN on original nft ELF.
+  # M209: verify musl's 20-byte rtnetlink GETLINK and real Netlink recvfrom
+  # against original signed iperf2/nft in first and independently reopened QEMU.
   push:
     branches: [naseed-app-batch2]
     paths:

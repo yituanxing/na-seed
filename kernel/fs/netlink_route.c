@@ -36,6 +36,7 @@
 #define NLMSG_DONE_LINUX 3U
 #define NLM_F_REQUEST_LINUX 1U
 #define NLM_F_MULTI_LINUX 2U
+#define NLM_F_DUMP_LINUX 0x300U
 #define MSG_PEEK_LINUX 2U
 #define MSG_TRUNC_LINUX 32U
 #define MSG_DONTWAIT_LINUX 64U
@@ -514,7 +515,14 @@ int64_t nas_netlink_route_sendto(unsigned slot,const uint8_t *bytes,
        !(flags&NLM_F_REQUEST_LINUX))
         return -EOPNOTSUPP;
     if(type==RTM_GETADDR_LINUX && msg_len<20)return -EINVAL;
-    if(type==RTM_GETLINK_LINUX && msg_len<32)return -EINVAL;
+    if(type==RTM_GETLINK_LINUX && msg_len<32) {
+        /* musl getifaddrs() sends the valid 20-byte rtgenmsg form of
+         * RTM_GETLINK, whereas iproute2 sends a 32-byte ifinfomsg. Both
+         * request the same real link snapshot. Never reject the native
+         * musl wire shape just because it lacks ifinfomsg fields. */
+        if(msg_len!=20 || (flags&NLM_F_DUMP_LINUX)!=NLM_F_DUMP_LINUX ||
+           bytes[17] || bytes[18] || bytes[19])return -EINVAL;
+    }
     const unsigned family=bytes[16];
     if(family!=AF_UNSPEC_LINUX && family!=AF_INET_LINUX &&
        family!=AF_INET6_LINUX)

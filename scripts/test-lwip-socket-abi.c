@@ -1124,6 +1124,70 @@ int main(void) {
     assert(user_ptr(nl_reply)[4]==20 && user_ptr(nl_reply)[16]==2);
     assert(sys_netlink_recvmsg(nl_fd,nl_message,0)==40);
     assert(sys_netlink_recvmsg(nl_fd,nl_message,0)==20);
+
+    /* Real musl getifaddrs calls recv(), which musl implements as
+     * recvfrom(fd,buffer,len,flags,NULL,NULL). Exercise the real native
+     * syscall adapter against the same NETLINK_ROUTE provider queue;
+     * previous tests only exercised recvmsg and missed this Linux ABI. */
+    uint64_t nl_recv_args[7]={0,nl_fd,nl_reply,64,0,0,0};
+    int64_t nl_result=(int64_t)sys_netlink_recvfrom(nl_recv_args[1],
+        nl_recv_args[2],nl_recv_args[3],nl_recv_args[4],
+        nl_recv_args[5],nl_recv_args[6]);
+    assert(nl_result==-EAGAIN);
+    assert(sys_netlink_sendto(nl_fd,nl_packet,20,0,0,0)==20);
+    /* Rejected flags and usercopy failures must leave the first datagram
+     * untouched, not silently consume it and corrupt the multipart stream. */
+    nl_recv_args[4]=1; /* MSG_OOB is not supported for Netlink datagrams */
+    nl_result=(int64_t)sys_netlink_recvfrom(nl_fd,nl_reply,64,1,0,0);
+    assert(nl_result==-EOPNOTSUPP);
+    nl_recv_args[4]=0x40; /* musl MSG_DONTWAIT */
+    nl_recv_args[2]=TEST_BASE+TEST_PAGES*TEST_PAGE; /* unmapped */
+    nl_result=(int64_t)sys_netlink_recvfrom(nl_fd,nl_recv_args[2],64,0x40,0,0);
+    assert(nl_result==-EFAULT);
+    nl_recv_args[2]=nl_reply;
+    nl_recv_args[5]=nl_source;
+    nl_recv_args[6]=0; /* populated sockaddr requires a socklen_t pointer */
+    nl_result=(int64_t)sys_netlink_recvfrom(nl_fd,nl_reply,64,0x40,nl_source,0);
+    assert(nl_result==-EFAULT);
+    nl_recv_args[6]=TEST_BASE+TEST_PAGES*TEST_PAGE;
+    nl_result=(int64_t)sys_netlink_recvfrom(nl_fd,nl_reply,64,0x40,
+                     nl_source,nl_recv_args[6]);
+    assert(nl_result==-EFAULT);
+    nl_recv_args[6]=nl_length;
+    nl_cap=12;memcpy(user_ptr(nl_length),&nl_cap,4);
+    nl_recv_args[3]=8;
+    nl_recv_args[4]=0x2|0x20|0x40; /* PEEK | TRUNC | DONTWAIT */
+    nl_result=(int64_t)sys_netlink_recvfrom(nl_fd,nl_reply,8,0x2|0x20|0x40,
+                     nl_source,nl_length);
+    assert(nl_result==40);
+    assert(user_ptr(nl_reply)[4]==20 && user_ptr(nl_source)[0]==16 &&
+           user_ptr(nl_source)[1]==0);
+    memcpy(&nl_cap,user_ptr(nl_length),4);
+    assert(nl_cap==12);
+    /* PEEK preserved the first packet; this ordinary recvfrom consumes it
+     * and returns only bytes copied, NOT the full datagram's 40 bytes. */
+    nl_recv_args[3]=40;nl_recv_args[4]=0x40;
+    nl_result=(int64_t)sys_netlink_recvfrom(nl_fd,nl_reply,40,0x40,
+                     nl_source,nl_length);
+    assert(nl_result==40);
+    assert(user_ptr(nl_reply)[4]==20 && user_ptr(nl_reply)[16]==2 &&
+           user_ptr(nl_reply)[28]==127);
+    /* Source socklen truncation reports the ACTUAL 12-byte sockaddr_nl,
+     * while preserving the 4-byte caller-provided output prefix. */
+    nl_cap=4;memcpy(user_ptr(nl_length),&nl_cap,4);
+    nl_recv_args[3]=8;nl_recv_args[4]=0x20; /* MSG_TRUNC without PEEK */
+    nl_result=(int64_t)sys_netlink_recvfrom(nl_fd,nl_reply,8,0x20,
+                     nl_source,nl_length);
+    assert(nl_result==40);
+    memcpy(&nl_cap,user_ptr(nl_length),4);
+    assert(nl_cap==12 && user_ptr(nl_source)[0]==16);
+    nl_recv_args[3]=64;nl_recv_args[4]=0;nl_recv_args[5]=0;
+    nl_recv_args[6]=0; /* ordinary musl recv() has no source address */
+    nl_result=(int64_t)sys_netlink_recvfrom(nl_fd,nl_reply,64,0,0,0);
+    assert(nl_result==20);
+    assert(user_ptr(nl_reply)[4]==3); /* NLMSG_DONE */
+    nl_result=(int64_t)sys_netlink_recvfrom(nl_fd,nl_reply,64,0,0,0);
+    assert(nl_result==-EAGAIN);
     nas_fs_close_fd(nl_fd);
     /* Keep ROUTE and NETFILTER as two actual kernel-owned OpenFile
      * providers behind the SAME syscall/usercopy/FD adapter. An original
@@ -1144,6 +1208,10 @@ int main(void) {
     memcpy(user_ptr(nl_packet),get_generation,sizeof(get_generation));
     assert(sys_netlink_sendto(nf_fd,nl_packet,sizeof(get_generation),0,0,0)==
            sizeof(get_generation));
+    /* The new recvfrom ABI is shared by NETLINK_NETFILTER too: PEEK sees
+     * the genuine generation reply, then recvmsg consumes that same record. */
+    assert((int64_t)sys_netlink_recvfrom(nf_fd,nl_reply,32,0x42,0,0)==28);
+    assert(user_ptr(nl_reply)[4]==15 && user_ptr(nl_reply)[5]==10);
     assert(sys_netlink_recvmsg(nf_fd,nl_message,0)==28);
     assert(user_ptr(nl_reply)[4]==15 && user_ptr(nl_reply)[5]==10 &&
            user_ptr(nl_reply)[8]==0x34 && user_ptr(nl_reply)[9]==0x12);

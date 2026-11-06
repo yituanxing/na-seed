@@ -350,6 +350,42 @@ int main(void) {
                                     NULL,NULL)==20);
     assert(rd16(reply+4)==3 && rd32(reply+8)==201 && rd32(reply+16)==0);
 
+    /* Stock musl getifaddrs() sends a 20-byte rtgenmsg GETLINK followed
+     * by GETADDR on the same NETLINK_ROUTE socket; iproute2's 32-byte
+     * ifinfomsg path above must continue to work. This was the actual
+     * iperf2 failure preceding an invalid free in application cleanup. */
+    getlink(link_request,0,211);
+    wr32(link_request,20);
+    assert(nas_netlink_route_sendto(11,link_request,20,NULL,0)==20);
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==48);
+    expect_newlink(reply,4142,211,1,772,0x10049,"lo",65536);
+    for(unsigned i=1;i<3;i++) {
+        assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                        NULL,NULL)==356);
+        assert(rd16(reply+4)==16 && rd32(reply+8)==211 &&
+               rd32(reply+20)==i+1U);
+    }
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==20);
+    assert(rd16(reply+4)==3 && rd32(reply+8)==211);
+    getaddr(request,0,212);
+    assert(nas_netlink_route_sendto(11,request,20,NULL,0)==20);
+    for(unsigned i=0;i<3;i++) {
+        assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                        NULL,NULL)==40);
+        assert(rd16(reply+4)==20 && rd32(reply+8)==212);
+    }
+    assert(nas_netlink_route_recvmsg(11,reply,sizeof(reply),0,NULL,
+                                    NULL,NULL)==20);
+    assert(rd16(reply+4)==3 && rd32(reply+8)==212);
+    wr32(link_request,17);
+    assert(nas_netlink_route_sendto(11,link_request,20,NULL,0)==-EINVAL);
+    wr32(link_request,20);
+    link_request[19]=1; /* malformed rtgenmsg reserved padding */
+    assert(nas_netlink_route_sendto(11,link_request,20,NULL,0)==-EINVAL);
+    link_request[19]=0;
+
     /* Stock iproute2 can request all address families. AF_UNSPEC reports
      * the real assigned IPv4 addresses; unsupported IPv6 is not invented. */
     getaddr(request,0,203);
