@@ -1,0 +1,237 @@
+name: NaSeed M209 original Alpine iperf2 native Linux oracle
+
+# Host-only diagnostic: the exact signed M206 Alpine executable runs against
+# the real Linux kernel. No NaSeed kernel build, QEMU boot or three-ISA matrix.
+# Run once when this small oracle workflow is first introduced, then allow
+# explicit manual repetition; ordinary NaSeed source edits do not trigger it.
+on:
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - .github/workflows/m209-iperf-linux-oracle.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  original-iperf2-linux:
+    name: Signed Alpine iperf2 / real Linux x86-64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Validate exact original APK inventory prerequisites
+        run: |
+          set -euo pipefail
+          python3 scripts/check-m141-candidates.py --profile m206
+          for executable in docker readelf cpio curl sha256sum sudo timeout ss; do
+            if ! command -v "$executable" >/dev/null 2>&1; then
+              case "$executable" in
+                cpio) missing="${missing:-} cpio" ;;
+                readelf) missing="${missing:-} binutils" ;;
+                ss) missing="${missing:-} iproute2" ;;
+                *) echo "[M209 PRECHECK FAIL] missing $executable" >&2; exit 1 ;;
+              esac
+            fi
+          done
+          if [ -n "${missing:-}" ]; then
+            sh scripts/ci-ubuntu-mirror.sh
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          docker info >/dev/null
+
+      - name: Recreate M206 verified original Alpine amd64 ELF inventory
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          sh scripts/inventory-m141-signed-apks.sh amd64 m206
+          tsv=build/external/m206-candidate-inventory/amd64/candidates.tsv
+          awk -F '\t' 'NR > 1 { n++; if ($3 != "NATIVE_ELF") bad++ }
+            END { if (n != 20 || bad) exit 1 }' "$tsv" || {
+              echo '[M209 SIGNED ELF FAIL] 20 original native ELFs not verified' >&2
+              exit 1
+            }
+          unique=$(awk -F '\t' 'NR > 1 {print $4}' "$tsv" | sort -u | wc -l)
+          test "$unique" -eq 20 || {
+            echo "[M209 SIGNED ELF FAIL] only $unique distinct hashes" >&2
+            exit 1
+          }
+          package_sha=$(sha256sum rootfs/alpine/packages-m206-candidates.txt | awk '{print $1}')
+          root="$PWD/build/external/m206-candidate-inventory/amd64/packages-$package_sha/rootfs"
+          test -f "$root/../signed-install.ok"
+          test -x "$root/usr/bin/iperf"
+          test -x "$root/bin/busybox"
+          iperf_sha=$(sha256sum "$root/usr/bin/iperf" | awk '{print $1}')
+          awk -F '\t' -v expected="$iperf_sha" '
+            $1 == "iperf" && $2 == "usr/bin/iperf" &&
+            $3 == "NATIVE_ELF" && $4 == expected { matched++ }
+            END { exit (matched == 1 ? 0 : 1) }' "$tsv" || {
+              echo '[M209 SIGNED ELF FAIL] iperf entrypoint/hash mismatch' >&2
+              exit 1
+            }
+          readelf -h "$root/usr/bin/iperf" | grep -Fq 'Advanced Micro Devices X86-64'
+          echo "M209_ALPINE_ROOT=$root" >> "$GITHUB_ENV"
+          echo '[M209 SIGNED ELF PASS] 20/20 unique native ELF SHA; original iperf verified'
+
+      - name: Linux kernel oracle using original server and client commands
+        id: oracle
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=$M209_ALPINE_ROOT
+          output=build/m209-iperf-oracle
+          mkdir -p "$output"
+          # The signed inventory is a chroot root with authentic Alpine
+          # BusyBox/musl, but no mounted /dev. Provide only standard device
+          # nodes needed by ordinary Linux libc/program startup.
+          sudo mkdir -p "$root/dev"
+          for spec in 'null 1 3' 'zero 1 5' 'urandom 1 9'; do
+            read -r name major minor <<< "$spec"
+            if [ ! -e "$root/dev/$name" ]; then
+              sudo mknod -m 666 "$root/dev/$name" c "$major" "$minor"
+            fi
+          done
+          # Avoid mistaking an unrelated existing listener for iperf.
+          if ss -H -lnt '( sport = :18086 )' | grep -q .; then
+            echo '[M209 LINUX ORACLE FAIL] TCP 18086 occupied before test' | tee "$output/result.txt"
+            exit 1
+          fi
+
+          server_pid=
+          cleanup() {
+            if [ -n "$server_pid" ]; then
+              kill -TERM "$server_pid" 2>/dev/null || :
+              wait "$server_pid" 2>/dev/null || :
+            fi
+          }
+          trap cleanup EXIT
+          # Byte-for-byte command arguments from tests/m206-software-workload.sh.
+          sudo chroot "$root" /bin/busybox timeout 15 /usr/bin/iperf \
+            -s -B 127.0.0.1 -p 18086 -1 > "$output/server.log" 2>&1 &
+          server_pid=$!
+          # Check LISTEN without connecting: a readiness TCP probe would
+          # itself consume iperf2's single (-1) accepted connection.
+          ready=0
+          for attempt in {1..50}; do
+            if ! kill -0 "$server_pid" 2>/dev/null; then break; fi
+            if ss -H -lnt '( sport = :18086 )' |
+               grep -Eq '127[.]0[.]0[.]1:18086([[:space:]]|$)'; then
+              ready=1
+              break
+            fi
+            sleep 0.1
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo '[M209 LINUX ORACLE FAIL] server never reached LISTEN' | tee "$output/result.txt"
+            sed -n '1,80p' "$output/server.log"
+            exit 1
+          fi
+
+          # M206's one-second server warmup, same authentic BusyBox timeout,
+          # original iperf2 ELF, independent native Linux server/client.
+          sudo chroot "$root" /bin/busybox sleep 1
+          client_rc=0
+          sudo chroot "$root" /bin/busybox timeout 12 /usr/bin/iperf \
+            -c 127.0.0.1 -p 18086 -t 2 > "$output/client.log" 2>&1 || client_rc=$?
+          server_rc=0
+          wait "$server_pid" || server_rc=$?
+          server_pid=
+          printf 'client_exit=%s\nserver_exit=%s\n' "$client_rc" "$server_rc" \
+            > "$output/exit-codes.txt"
+          cat "$output/client.log"
+          echo '--- original server output ---'
+          cat "$output/server.log"
+          # The guest check requires a successful client, numeric loopback
+          # peer and nonzero real TCP throughput. Here also require clean
+          # one-shot server exit to expose teardown/pthread crashes.
+          if [ "$client_rc" -eq 0 ] && [ "$server_rc" -eq 0 ] &&
+             grep -Eq '[1-9][0-9]*([.][0-9]+)?[[:space:]]+[KMG]?bits/sec' "$output/client.log" &&
+             grep -Fq '127.0.0.1' "$output/client.log"; then
+            echo '[M209 LINUX ORACLE PASS] authentic Alpine iperf2 server/client TCP throughput' \
+              | tee "$output/result.txt"
+          else
+            echo '[M209 LINUX ORACLE FAIL] exact signed Alpine ELF failed on host Linux' \
+              | tee "$output/result.txt"
+            exit 1
+          fi
+
+      - name: Preserve only original ELF, interpreter, shared libraries and provenance
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          output=build/m209-iperf-oracle
+          mkdir -p "$output"
+          for name in apk-install.log candidates.tsv; do
+            candidate=build/external/m206-candidate-inventory/amd64/$name
+            if [ -f "$candidate" ]; then cp "$candidate" "$output/$name"; fi
+          done
+          root=${M209_ALPINE_ROOT:-}
+          [ -n "$root" ] && [ -f "$root/usr/bin/iperf" ] || exit 0
+          mkdir -p "$output/elf/usr/bin" "$output/elf/lib"
+          cp -L "$root/usr/bin/iperf" "$output/elf/usr/bin/iperf"
+          readelf -h "$root/usr/bin/iperf" > "$output/iperf-elf-header.txt"
+          readelf -l "$root/usr/bin/iperf" > "$output/iperf-program-headers.txt"
+          readelf -d "$root/usr/bin/iperf" > "$output/iperf-dynamic.txt"
+          interpreter=$(sed -n 's/.*Requesting program interpreter: \(.*\)]/\1/p' \
+            "$output/iperf-program-headers.txt")
+          [ "$interpreter" = /lib/ld-musl-x86_64.so.1 ] || {
+            echo "[M209 EXPORT FAIL] unexpected interpreter: $interpreter" >&2
+            exit 1
+          }
+          test -f "$root$interpreter"
+          cp -L "$root$interpreter" "$output/elf/lib/ld-musl-x86_64.so.1"
+
+          # Walk direct and transitive ELF DT_NEEDED entries so the evidence
+          # is sufficient for local disassembly and native-Linux replay.
+          declare -A seen=()
+          queue=("$root/usr/bin/iperf" "$root$interpreter")
+          while [ "${#queue[@]}" -gt 0 ]; do
+            file=${queue[0]}
+            queue=("${queue[@]:1}")
+            [ -z "${seen[$file]:-}" ] || continue
+            seen[$file]=1
+            while IFS= read -r needed; do
+              [ -n "$needed" ] || continue
+              original=
+              for dir in "$root/lib" "$root/usr/lib"; do
+                if [ -f "$dir/$needed" ]; then original="$dir/$needed"; break; fi
+              done
+              [ -n "$original" ] || {
+                echo "[M209 EXPORT FAIL] missing original DT_NEEDED $needed" >&2
+                exit 1
+              }
+              cp -L "$original" "$output/elf/lib/$needed"
+              queue+=("$original")
+            done < <(readelf -d "$file" | sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p')
+          done
+          # Record exact provenance and canonical package database; retain
+          # no full rootfs, APK cache or kernel/VM images in this artifact.
+          cp rootfs/alpine/packages-m206-candidates.txt "$output/requested-packages.txt"
+          (cd "$output" && find elf -type f -print0 | sort -z | xargs -0 sha256sum) \
+            > "$output/original-elf-sha256.txt"
+          echo '[M209 EXPORT PASS] original iperf2, musl loader, DT_NEEDED closure and provenance'
+
+      - name: Publish Linux oracle outcome
+        if: always()
+        run: |
+          if [ -f build/m209-iperf-oracle/result.txt ]; then
+            cat build/m209-iperf-oracle/result.txt >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '[M209 LINUX ORACLE INCOMPLETE] no native test result' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload signed ELF and Linux oracle diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m209-original-alpine-iperf2-linux-amd64
+          path: build/m209-iperf-oracle/
+          if-no-files-found: warn
