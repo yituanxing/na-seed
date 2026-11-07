@@ -1,0 +1,2 @@
+# One official signed Alpine APK owns both original DNS client ELFs.
+bind-tools

@@ -132,7 +132,7 @@ def integration_contract() -> None:
     assert "--no-capture" not in guest.split('rc=0\n', 1)[-1]
     assert "--help" not in guest and "--version" not in guest
     owner = OWNER.read_text()
-    for marker in ("0:0:0:0:0:1)", "milestone=M220",
+    for marker in ("0:0:0:0:0:1:0)", "milestone=M220",
                    "manifest=/root/m220-cohort.tsv",
                    "exercise_script=/root/m220-nping-workload.sh",
                    "first=/root/m220-first-results.tsv",
