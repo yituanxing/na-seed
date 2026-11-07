@@ -1,0 +1,2 @@
+# Both native boots use the untouched official Alpine PID1, not one-shot BusyBox.
+m197-batch	cpio	 	-	-	/sbin/init

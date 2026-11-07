@@ -45,12 +45,14 @@ m225=${NAS_M225_PILOT:-0}
 case "$m225" in 0|1) ;; *) echo '[M225 FAIL] invalid pilot selector' >&2; exit 2 ;; esac
 m226=${NAS_M226_PILOT:-0}
 case "$m226" in 0|1) ;; *) echo '[M226 FAIL] invalid pilot selector' >&2; exit 2 ;; esac
-if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ] || [ "$m225" = 1 ] || [ "$m226" = 1 ]; } && \
+m227=${NAS_M227_INTEGRATED_OPENRC:-0}
+case "$m227" in 0|1) ;; *) echo '[M227 FAIL] invalid integrated OpenRC selector' >&2; exit 2 ;; esac
+if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ] || [ "$m225" = 1 ] || [ "$m226" = 1 ] || [ "$m227" = 1 ]; } && \
    { [ "$m198" = 1 ] || [ "$m199" = 1 ]; }; then
     echo '[COMPAT FAIL] software cohort cannot enable a desktop' >&2
     exit 2
 fi
-if [ "$((m204+m205+m206+m215+m218+m219+m220+m221+m222+m223+m224+m225+m226))" -gt 1 ]; then
+if [ "$((m204+m205+m206+m215+m218+m219+m220+m221+m222+m223+m224+m225+m226+m227))" -gt 1 ]; then
     echo '[COMPAT FAIL] software cohorts must own separate ledgers' >&2
     exit 2
 fi
@@ -81,7 +83,7 @@ if [ "$m205" = 1 ] || [ "$m206" = 1 ]; then
     # disposable guest disk, with matching geometry at prepare and fsck.
     disk_mib=768
 fi
-if [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ] || [ "$m225" = 1 ] || [ "$m226" = 1 ]; then
+if [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ] || [ "$m225" = 1 ] || [ "$m226" = 1 ] || [ "$m227" = 1 ]; then
     # Small exact-owner pilots keep an isolated physical ext4 disk; never
     # carry M213's unrelated LLVM/BIND/SSH discovery pool closure.
     disk_mib=512
@@ -183,6 +185,17 @@ fi
 sudo install -m 0644 tests/m197-software-workload.sh \
     "$overlay/root/m197-software-workload.sh"
 sudo test -s "$overlay/root/m197-software-workload.sh"
+if [ "$m227" = 1 ]; then
+    sudo install -m 0644 tests/m227-alpine-openrc-workload.sh \
+        "$overlay/root/m227-alpine-openrc-workload.sh"
+    sudo test -s "$overlay/root/m227-alpine-openrc-workload.sh"
+    sudo test ! -e "$overlay/var/www/m227" || {
+        echo '[M227 FAIL] HTTP response was preseeded' >&2; exit 1;
+    }
+    sudo test ! -e "$overlay/etc/runlevels/default/lighttpd" || {
+        echo '[M227 FAIL] OpenRC service was pre-enabled' >&2; exit 1;
+    }
+fi
 if [ "$m204" = 1 ]; then
     sudo install -m 0644 tests/m204-software-workload.sh \
         "$overlay/root/m204-software-workload.sh"
@@ -519,6 +532,9 @@ fi
 if [ "$m226" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M226_PUBLIC_QEMU_TIMEOUT:-3900}
 fi
+if [ "$m227" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M227_PUBLIC_QEMU_TIMEOUT:-1800}
+fi
 if [ "$m198" = 1 ]; then
     export NAS_QEMU_INPUT_OPTIN=1 NAS_QEMU_VIRTIO_GPU=1 NAS_QEMU_RAMFB=0
     export NAS_ACCEPTANCE_QEMU_RAM=2048M
@@ -652,6 +668,9 @@ if [ "$m199" = 1 ]; then
     # independent second QEMU previously used a CPIO BusyBox entry instead.
     export BUSYBOX_PARITY_MANIFEST=scripts/m199-alpine-boot-cases.tsv
 fi
+if [ "$m227" = 1 ]; then
+    export BUSYBOX_PARITY_MANIFEST=scripts/m227-alpine-boot-cases.tsv
+fi
 
 if [ "$replay" = 0 ]; then
 fifo="$PWD/$work/m197-software-serial-input.fifo"
@@ -706,7 +725,10 @@ if [ "$m198" = 1 ]; then
     grep -Fq '[M198 PHYSICAL QMP PASS]' "$work/m198-qmp-check.log"
     fi
 else
-    if [ "$m226" = 1 ]; then
+    if [ "$m227" = 1 ]; then
+        python3 scripts/m227-alpine-uart.py first "$runner" "$serial" \
+            "$PWD/$work/m227-first-runner.log" "$fifo"
+    elif [ "$m226" = 1 ]; then
         python3 scripts/m226-alpine-uart.py "$runner" "$serial" \
             "$PWD/$work/m226-first-runner.log" "$fifo"
     elif [ "$m225" = 1 ]; then
@@ -821,6 +843,12 @@ grep -Fq 'M197_APP_WORKLOAD_PASS' "$serial" || {
 if [ "$m204" = 1 ]; then
     grep -Fq 'M204_FIRST_DISCOVERY_COMPLETE' "$serial" || {
         echo '[M204 FAIL] first compatibility inventory did not complete' >&2
+        exit 1
+    }
+fi
+if [ "$m227" = 1 ]; then
+    grep -Fq 'M227_FIRST_OPENRC_HTTP_PASS' "$serial" || {
+        echo '[M227 FAIL] original lighttpd OpenRC/HTTP first-boot proof missing' >&2
         exit 1
     }
 fi
@@ -952,6 +980,33 @@ if [ "$m199" = 1 ]; then
     echo "[M199 ALPINE OPENRC TWO BOOT PASS] $port original signed Alpine "\
          'init/OpenRC twice, guest rc-update persisted, OpenRC daemon lifecycle, ' \
          'auto-restored physical GPU, QMP Vim and signed applications on ext4'
+    exit 0
+fi
+
+if [ "$m227" = 1 ]; then
+    # M199's true second original PID1, without M199's GUI/QMP. A separate
+    # UART log and FIFO prevent first-boot bytes from faking auto-restart.
+    cp "$serial" "$PWD/$work/m227-first.serial.log"
+    unset NAS_QEMU_SERIAL_FIFO NAS_VIRTIO_NET_PCAP NAS_QEMU_QMP_SOCKET
+    export NAS_QEMU_SERIAL_FIFO="$PWD/$work/m227-reopen-input.fifo"
+    export BUSYBOX_PARITY_MANIFEST=scripts/m227-alpine-boot-cases.tsv
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M227_REOPEN_QEMU_TIMEOUT:-650}
+    python3 scripts/m227-alpine-uart.py reopen "$runner" "$serial" \
+        "$PWD/$work/m227-reopen-runner.log" "$NAS_QEMU_SERIAL_FIFO"
+    grep -Fq 'M227_SECOND_OPENRC_AUTO_HTTP_PASS' "$serial" || {
+        echo '[M227 FAIL] second genuine OpenRC auto-start HTTP proof absent' >&2
+        exit 1
+    }
+    grep -Fq 'M197_REOPEN_WORKLOAD_PASS' "$serial" || {
+        echo '[M227 FAIL] original Bash/Lua/SQLite/Git persistence missing' >&2
+        exit 1
+    }
+    sudo python3 scripts/m227-alpine-disk-check.py "$port" "$root" "$disk"
+    sudo python3 scripts/m191-alpine-root-disk.py verify "$port" "$root" "$baseline"
+    echo "[M227 ORIGINAL ALPINE OPENRC TWO BOOT PASS] $port signed public "\
+         'Bash Lua SQLite Git wget aria2 lighttpd lighttpd-openrc, two real ' \
+         'original PID1 boots, automatic guest-loopback HTTP service restart, ' \
+         'SQLite/Git and independent physical ext4 fsck'
     exit 0
 fi
 
