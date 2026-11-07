@@ -39,12 +39,14 @@ m222=${NAS_M222_PILOT:-0}
 case "$m222" in 0|1) ;; *) echo '[M222 FAIL] invalid pilot selector' >&2; exit 2 ;; esac
 m223=${NAS_M223_PILOT:-0}
 case "$m223" in 0|1) ;; *) echo '[M223 FAIL] invalid pilot selector' >&2; exit 2 ;; esac
-if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ]; } && \
+m224=${NAS_M224_PILOT:-0}
+case "$m224" in 0|1) ;; *) echo '[M224 FAIL] invalid pilot selector' >&2; exit 2 ;; esac
+if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ]; } && \
    { [ "$m198" = 1 ] || [ "$m199" = 1 ]; }; then
     echo '[COMPAT FAIL] software cohort cannot enable a desktop' >&2
     exit 2
 fi
-if [ "$((m204+m205+m206+m215+m218+m219+m220+m221+m222+m223))" -gt 1 ]; then
+if [ "$((m204+m205+m206+m215+m218+m219+m220+m221+m222+m223+m224))" -gt 1 ]; then
     echo '[COMPAT FAIL] software cohorts must own separate ledgers' >&2
     exit 2
 fi
@@ -75,7 +77,7 @@ if [ "$m205" = 1 ] || [ "$m206" = 1 ]; then
     # disposable guest disk, with matching geometry at prepare and fsck.
     disk_mib=768
 fi
-if [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ]; then
+if [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ]; then
     # Small exact-owner pilots keep an isolated physical ext4 disk; never
     # carry M213's unrelated LLVM/BIND/SSH discovery pool closure.
     disk_mib=512
@@ -102,6 +104,15 @@ if [ "$m223" = 1 ]; then
     # staging. EXIT always kills this exact independent HTTP server.
     . scripts/m223-http-host.sh
     trap 'm223_cleanup' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+fi
+if [ "$m224" = 1 ]; then
+    # Each independent native boot owns unique external host-only TCP bytes,
+    # genuine iperf3 server and open/closed Nmap witness sockets.
+    . scripts/m224-tcp-host.sh
+    trap 'm224_cleanup' EXIT
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
@@ -161,12 +172,23 @@ if [ "$m204" = 1 ]; then
         echo '[M204 FAIL] cohort results were preseeded' >&2; exit 1;
     }
 fi
-if [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ]; then
+if [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ]; then
     # Reuse the M205 signed-install/ledger owner for both independent cohorts;
     # the M206 module contributes only new original-program semantic probes.
     sudo install -m 0644 tests/m205-software-workload.sh \
         "$overlay/root/m205-software-workload.sh"
-    if [ "$m223" = 1 ]; then
+    if [ "$m224" = 1 ]; then
+    cohort=m224
+    sudo install -m 0644 tests/m224-tcp-workload.sh \
+        "$overlay/root/m224-tcp-workload.sh"
+    sudo install -m 0644 scripts/m224-candidate-elfs.tsv \
+        "$overlay/root/m224-cohort.tsv"
+    sudo test -s "$overlay/root/m224-tcp-workload.sh"
+    sudo test -s "$overlay/root/m224-cohort.tsv"
+    # Signed original native candidates must not appear in the stage,
+    # apart from a precisely verified genuine BusyBox alias (if observed).
+    sudo python3 scripts/m224-alpine-disk-check.py stage "$port" "$overlay"
+    elif [ "$m223" = 1 ]; then
     cohort=m223
     sudo install -m 0644 tests/m223-http-workload.sh \
         "$overlay/root/m223-http-workload.sh"
@@ -442,6 +464,9 @@ fi
 if [ "$m223" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M223_PUBLIC_QEMU_TIMEOUT:-2500}
 fi
+if [ "$m224" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M224_PUBLIC_QEMU_TIMEOUT:-2500}
+fi
 if [ "$m198" = 1 ]; then
     export NAS_QEMU_INPUT_OPTIN=1 NAS_QEMU_VIRTIO_GPU=1 NAS_QEMU_RAMFB=0
     export NAS_ACCEPTANCE_QEMU_RAM=2048M
@@ -556,6 +581,13 @@ fi
 if [ "$m223" = 1 ]; then
     m223_start_host first
 fi
+if [ "$m224" = 1 ]; then
+    command -v iperf3 >/dev/null || {
+        echo '[M224 HOST FAIL] original host iperf3 TCP server missing' >&2
+        exit 1
+    }
+    m224_start_host first
+fi
 
 if [ "$m199" = 1 ]; then
     # This is the SAME original /sbin/init manifest on BOTH boots; M198's
@@ -616,7 +648,10 @@ if [ "$m198" = 1 ]; then
     grep -Fq '[M198 PHYSICAL QMP PASS]' "$work/m198-qmp-check.log"
     fi
 else
-    if [ "$m223" = 1 ]; then
+    if [ "$m224" = 1 ]; then
+        python3 scripts/m224-alpine-uart.py "$runner" "$serial" \
+            "$PWD/$work/m224-first-runner.log" "$fifo"
+    elif [ "$m223" = 1 ]; then
         python3 scripts/m223-alpine-uart.py "$runner" "$serial" \
             "$PWD/$work/m223-first-runner.log" "$fifo"
     elif [ "$m222" = 1 ]; then
@@ -677,6 +712,13 @@ if [ "$m223" = 1 ]; then
         "$pcap" "$PWD/$work/m223-first-host-http.log" \
         "$PWD/$work/m223-host-first" "$disk" \
         "$PWD/$work/m223-first-wire.json"
+fi
+if [ "$m224" = 1 ]; then
+    m224_stop_host
+    NAS_M191_DISK_MIB="$disk_mib" python3 scripts/m224-tcp-wire.py first "$port" \
+        "$pcap" "$PWD/$work/m224-first-host-tcp.log" \
+        "$PWD/$work/m224-host-first" "$disk" \
+        "$PWD/$work/m224-first-wire.json"
 fi
 cp "$serial" "$PWD/$work/m197-live.serial.log"
 grep -Fq '[LWIP DHCP BOUND] addr=10.0.2.' "$serial" || {
@@ -746,6 +788,11 @@ fi
 if [ "$m223" = 1 ]; then
     grep -Fq 'M223_FIRST_DISCOVERY_COMPLETE' "$serial" || {
         echo '[M223 FAIL] first original HTTP client/server ledger incomplete' >&2; exit 1;
+    }
+fi
+if [ "$m224" = 1 ]; then
+    grep -Fq 'M224_FIRST_DISCOVERY_COMPLETE' "$serial" || {
+        echo '[M224 FAIL] first original TCP client ledger incomplete' >&2; exit 1;
     }
 fi
 echo "[M197 ALPINE PUBLIC SOFTWARE LIVE PASS] $port official signed "\
@@ -845,10 +892,19 @@ if [ "$m223" = 1 ]; then
     }
     m223_start_host reopen
 fi
+if [ "$m224" = 1 ]; then
+    export NAS_VIRTIO_NET_PCAP="$PWD/$work/m224-reopen-wire.pcap"
+    test ! -e "$NAS_VIRTIO_NET_PCAP" || {
+        echo '[M224 HOST FAIL] stale independent second TCP QEMU PCAP' >&2; exit 1;
+    }
+    m224_start_host reopen
+fi
 if [ "$m198" = 1 ]; then
     export BUSYBOX_PARITY_MANIFEST=scripts/m198-alpine-reopen-cases.tsv
 else
-    if [ "$m223" = 1 ]; then
+    if [ "$m224" = 1 ]; then
+        export BUSYBOX_PARITY_MANIFEST=scripts/m224-alpine-reopen-cases.tsv
+    elif [ "$m223" = 1 ]; then
         export BUSYBOX_PARITY_MANIFEST=scripts/m223-alpine-reopen-cases.tsv
     elif [ "$m222" = 1 ]; then
         export BUSYBOX_PARITY_MANIFEST=scripts/m222-alpine-reopen-cases.tsv
@@ -907,6 +963,9 @@ fi
 if [ "$m223" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M223_REOPEN_SECONDS:-900}
 fi
+if [ "$m224" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M224_REOPEN_SECONDS:-900}
+fi
 if ! sh "$runner" > "$PWD/$work/m197-reopen-runner.log" 2>&1; then
     echo "[M197 ALPINE REOPEN FAIL] $port second native QEMU" >&2
     tail -120 "$PWD/$work/m197-reopen-runner.log" >&2
@@ -941,6 +1000,14 @@ if [ "$m223" = 1 ]; then
         "$PWD/$work/m223-reopen-host-http.log" \
         "$PWD/$work/m223-host-reopen" "$disk" \
         "$PWD/$work/m223-reopen-wire.json"
+fi
+if [ "$m224" = 1 ]; then
+    m224_stop_host
+    NAS_M191_DISK_MIB="$disk_mib" python3 scripts/m224-tcp-wire.py reopen "$port" \
+        "$PWD/$work/m224-reopen-wire.pcap" \
+        "$PWD/$work/m224-reopen-host-tcp.log" \
+        "$PWD/$work/m224-host-reopen" "$disk" \
+        "$PWD/$work/m224-reopen-wire.json"
 fi
 reopen="$PWD/$logs/m197-batch.clean.log"
 for marker in \
@@ -1091,12 +1158,26 @@ if [ "$m223" = 1 ]; then
         "$PWD/$work/m197-live.serial.log" "$reopen" \
         "$PWD/$work/m223-compat-report.json" --require-all
 fi
+if [ "$m224" = 1 ]; then
+    grep -Fq 'M224_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
+        echo '[M224 FAIL] second original TCP nmap/iperf3/ncat ledger incomplete' >&2
+        exit 1
+    }
+    python3 scripts/m224-compat-report.py \
+        scripts/m224-candidate-elfs.tsv \
+        "$PWD/$work/m197-live.serial.log" "$reopen" \
+        "$PWD/$work/m224-compat-report.json" --require-all
+fi
 if [ "$m198" = 1 ]; then
     grep -Fxq 'M198_GUI_REOPEN_PASS' "$reopen" || {
         echo '[M198 REOPEN FAIL] native editor did not persist' >&2; exit 1;
     }
 fi
-if [ "$m223" = 1 ]; then
+if [ "$m224" = 1 ]; then
+    sudo env NAS_M191_DISK_MIB="$disk_mib" \
+        python3 scripts/m224-alpine-disk-check.py verify "$port" "$root" "$disk" \
+        "$PWD/$work/m224-host-first" "$PWD/$work/m224-host-reopen"
+elif [ "$m223" = 1 ]; then
     sudo env NAS_M191_DISK_MIB="$disk_mib" \
         python3 scripts/m223-alpine-disk-check.py verify "$port" "$root" "$disk" \
         "$PWD/$work/m223-host-first" "$PWD/$work/m223-host-reopen"
@@ -1201,6 +1282,12 @@ else
         echo "[M223 ORIGINAL ALPINE HTTP TWO-BOOT PASS] $port signed wget/aria2c "\
              'real host-random GET + signed lighttpd loopback via wget, ' \
              'independent host logs/PCAP, physical ext4 bytes and M197 public HTTPS'
+    fi
+    if [ "$m224" = 1 ]; then
+        echo "[M224 ORIGINAL ALPINE TCP TWO-BOOT PASS] $port three signed "\
+             'nmap/iperf3/ncat ELF real connect/open-closed, throughput and ' \
+             'phase-unique host random TCP duplex, two PCAPs, physical ext4, ' \
+             'original signed SHA and M197 public HTTPS'
     fi
 fi
 if [ "$m198" = 1 ]; then

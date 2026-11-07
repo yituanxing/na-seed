@@ -5,8 +5,8 @@
 set -u
 export PATH=/usr/sbin:/sbin:/usr/bin:/bin HOME=/root LC_ALL=C LANG=C
 
-case "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}:${NAS_M215_PILOT:-0}:${NAS_M218_PILOT:-0}:${NAS_M219_PILOT:-0}:${NAS_M220_PILOT:-0}:${NAS_M221_PILOT:-0}:${NAS_M222_PILOT:-0}:${NAS_M223_PILOT:-0}" in
-    0:0:0:0:0:0:0:0:0)
+case "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}:${NAS_M215_PILOT:-0}:${NAS_M218_PILOT:-0}:${NAS_M219_PILOT:-0}:${NAS_M220_PILOT:-0}:${NAS_M221_PILOT:-0}:${NAS_M222_PILOT:-0}:${NAS_M223_PILOT:-0}:${NAS_M224_PILOT:-0}" in
+    0:0:0:0:0:0:0:0:0:0)
         milestone=M205
         manifest=/root/m205-cohort.tsv
         work=/root/m205-work
@@ -14,7 +14,7 @@ case "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}:${NAS_M215_PILOT
         reopen=/root/m205-reopen-results.tsv
         exercise_script=/root/m205-software-workload.sh
         ;;
-    0:1:0:0:0:0:0:0:0)
+    0:1:0:0:0:0:0:0:0:0)
         milestone=M206
         manifest=/root/m206-cohort.tsv
         work=/root/m206-work
@@ -22,7 +22,7 @@ case "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}:${NAS_M215_PILOT
         reopen=/root/m206-reopen-results.tsv
         exercise_script=/root/m206-software-workload.sh
         ;;
-    1:0:0:0:0:0:0:0:0)
+    1:0:0:0:0:0:0:0:0:0)
         milestone=M213
         manifest=/root/m213-cohort.tsv
         work=/root/m213-work
@@ -30,7 +30,7 @@ case "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}:${NAS_M215_PILOT
         reopen=/root/m213-reopen-results.tsv
         exercise_script=/root/m213-software-workload.sh
         ;;
-    0:0:1:0:0:0:0:0:0)
+    0:0:1:0:0:0:0:0:0:0)
         # The M215 pilot contains ONLY the five genuinely executable M213
         # cases; the other 15 remain blocked and cannot inflate acceptance.
         milestone=M215
@@ -40,7 +40,7 @@ case "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}:${NAS_M215_PILOT
         reopen=/root/m215-reopen-results.tsv
         exercise_script=/root/m213-software-workload.sh
         ;;
-    0:0:0:1:0:0:0:0:0)
+    0:0:0:1:0:0:0:0:0:0)
         milestone=M218
         manifest=/root/m218-cohort.tsv
         work=/root/m218-work
@@ -48,7 +48,7 @@ case "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}:${NAS_M215_PILOT
         reopen=/root/m218-reopen-results.tsv
         exercise_script=/root/m218-ifstat-workload.sh
         ;;
-    0:0:0:0:1:0:0:0:0)
+    0:0:0:0:1:0:0:0:0:0)
         milestone=M219
         manifest=/root/m219-cohort.tsv
         work=/root/m219-work
@@ -56,7 +56,7 @@ case "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}:${NAS_M215_PILOT
         reopen=/root/m219-reopen-results.tsv
         exercise_script=/root/m219-utmpdump-workload.sh
         ;;
-    0:0:0:0:0:1:0:0:0)
+    0:0:0:0:0:1:0:0:0:0)
         milestone=M220
         manifest=/root/m220-cohort.tsv
         work=/root/m220-work
@@ -64,7 +64,7 @@ case "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}:${NAS_M215_PILOT
         reopen=/root/m220-reopen-results.tsv
         exercise_script=/root/m220-nping-workload.sh
         ;;
-    0:0:0:0:0:0:1:0:0)
+    0:0:0:0:0:0:1:0:0:0)
         milestone=M221
         manifest=/root/m221-cohort.tsv
         work=/root/m221-work
@@ -72,7 +72,7 @@ case "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}:${NAS_M215_PILOT
         reopen=/root/m221-reopen-results.tsv
         exercise_script=/root/m221-dns-update-workload.sh
         ;;
-    0:0:0:0:0:0:0:1:0)
+    0:0:0:0:0:0:0:1:0:0)
         milestone=M222
         manifest=/root/m222-cohort.tsv
         work=/root/m222-work
@@ -80,13 +80,21 @@ case "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}:${NAS_M215_PILOT
         reopen=/root/m222-reopen-results.tsv
         exercise_script=/root/m222-ssh-workload.sh
         ;;
-    0:0:0:0:0:0:0:0:1)
+    0:0:0:0:0:0:0:0:1:0)
         milestone=M223
         manifest=/root/m223-cohort.tsv
         work=/root/m223-work
         first=/root/m223-first-results.tsv
         reopen=/root/m223-reopen-results.tsv
         exercise_script=/root/m223-http-workload.sh
+        ;;
+    0:0:0:0:0:0:0:0:0:1)
+        milestone=M224
+        manifest=/root/m224-cohort.tsv
+        work=/root/m224-work
+        first=/root/m224-first-results.tsv
+        reopen=/root/m224-reopen-results.tsv
+        exercise_script=/root/m224-tcp-workload.sh
         ;;
     *) echo '[COMPAT ERROR] invalid/overlapping signed Alpine cohort selector' >&2; exit 2 ;;
 esac
@@ -577,6 +585,7 @@ expected_rows=20
 [ "$milestone" = M221 ] && expected_rows=2
 [ "$milestone" = M222 ] && expected_rows=3
 [ "$milestone" = M223 ] && expected_rows=3
+[ "$milestone" = M224 ] && expected_rows=3
 test "$cohort_rows" -eq "$expected_rows" || {
     echo "[$milestone ERROR] expected $expected_rows guest cohort rows, got $cohort_rows" >&2
     exit 1
@@ -659,6 +668,7 @@ export NAS_M220_BOOT_PHASE="$phase"
 export NAS_M221_BOOT_PHASE="$phase"
 export NAS_M222_BOOT_PHASE="$phase"
 export NAS_M223_BOOT_PHASE="$phase"
+export NAS_M224_BOOT_PHASE="$phase"
 # M218/M220/M221 network probes must wait for DHCP on the independent second
 # CPIO boot. The other cohort budgets remain unchanged; this is not a
 # blanket timeout increase or a bypass of original ELF semantics.
@@ -668,6 +678,7 @@ exercise_budget=45
 [ "$milestone" = M221 ] && exercise_budget=140
 [ "$milestone" = M222 ] && exercise_budget=240
 [ "$milestone" = M223 ] && exercise_budget=180
+[ "$milestone" = M224 ] && exercise_budget=180
 
 total=0
 while IFS="$tab" read -r package elf family case_id <&9 || [ -n "$package" ]; do
@@ -686,10 +697,10 @@ while IFS="$tab" read -r package elf family case_id <&9 || [ -n "$package" ]; do
         elif [ "$(/bin/busybox head -n 1 "$work/packages/$package.initial")" = PREEXISTING ]; then
             install_result=PREEXISTING
             printf '%s\n' "$install_result" > "$status_file"
-        elif [ "$milestone" != M222 ] && [ "$milestone" != M223 ] && apk info -e "$package" >/dev/null 2>&1; then
+        elif [ "$milestone" != M222 ] && [ "$milestone" != M223 ] && [ "$milestone" != M224 ] && apk info -e "$package" >/dev/null 2>&1; then
             # Already installed by an earlier signed APK dependency in this
-            # exact M205 first boot; it was absent from the baseline. M222/M223
-            # must use the real offline apk add below to explicitly register
+            # exact M205 first boot; it was absent from the baseline. M222-
+            # M224 must use the real offline apk add below to register
             # even transitive dependencies in /etc/apk/world.
             install_result=PASS
             printf '%s\n' "$install_result" > "$status_file"
