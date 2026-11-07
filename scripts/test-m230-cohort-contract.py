@@ -54,7 +54,7 @@ def gate(source: str, workflow: str) -> None:
         "NAS_M230_HOST_PORT: '12222'",
         'timeout-minutes: 100',
         "options: [amd64, riscv64, arm64, all]",
-        "github.event_name == 'push' && '[\"amd64\"]'",
+        "github.event_name == 'push' && '[\"amd64\",\"riscv64\",\"arm64\"]'",
         'scripts/test-m230-dropbear-guest-contract.py',
         'scripts/test-m230-host-ssh.py',
         'scripts/test-m230-dropbear-disk-check.py',
@@ -87,6 +87,9 @@ def negative() -> None:
                         'echo fake-reboot-receipt'), workflow),
         (script.replace('ssh-keygen -q -t ed25519', 'true -q -t ed25519'), workflow),
         (script, workflow.replace('m230-reopen-wire.pcap', 'missing-second-pcap')),
+        (script, workflow.replace(
+            "github.event_name == 'push' && '[\"amd64\",\"riscv64\",\"arm64\"]'",
+            "github.event_name == 'push' && '[\"amd64\"]'")),
     ]
     for mutation, (src, wf) in enumerate(broken, 1):
         try:

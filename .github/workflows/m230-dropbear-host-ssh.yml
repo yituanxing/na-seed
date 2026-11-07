@@ -1,7 +1,7 @@
 name: NaSeed M230 original Alpine Dropbear OpenRC host SSH two-native-boot
 
-# The pilot is intentionally amd64-only on scoped source changes. Run all
-# three actual target-native QEMUs only after the pilot proves real SSH.
+# The original amd64 native two-boot SSH pilot passed in #42382082498.
+# Promote this scoped workflow to all three native QEMUs on its next push.
 on:
   push:
     branches: [naseed-app-batch2]
@@ -34,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        port: ${{ fromJSON(github.event_name == 'push' && '["amd64"]' || (inputs.port == 'all' && '["amd64","riscv64","arm64"]' || format('["{0}"]', inputs.port))) }}
+        port: ${{ fromJSON(github.event_name == 'push' && '["amd64","riscv64","arm64"]' || (inputs.port == 'all' && '["amd64","riscv64","arm64"]' || format('["{0}"]', inputs.port))) }}
     steps:
       - uses: actions/checkout@v4
         with:

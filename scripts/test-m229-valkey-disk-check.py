@@ -47,7 +47,7 @@ def check():
         '/etc/conf.d/valkey': b'cfgfile="/etc/valkey/m229.conf"\ncommand_user="root:root"\n',
         '/etc/valkey/m229.conf': config,
         '/root/m229-auth-token': token + b'\n',
-        '/var/lib/valkey/m229.rdb': b'REDIS0012\x00' + key.encode() +
+        '/var/lib/valkey/m229.rdb': b'VALKEY080\x00' + key.encode() +
                                   b'\x00' + value.encode() + b'\x00' * 8,
     }
     metadata = {
@@ -65,6 +65,13 @@ def check():
     for change in [
         lambda: files.__setitem__('/var/lib/valkey/m229.rdb', b'BAD' +
                                   files['/var/lib/valkey/m229.rdb'][3:]),
+        lambda: files.__setitem__('/var/lib/valkey/m229.rdb',
+                                  b'REDIS0012' +
+                                  files['/var/lib/valkey/m229.rdb'][9:]),
+        lambda: files.__setitem__('/var/lib/valkey/m229.rdb',
+                                  b'VALKEY079' +
+                                  files['/var/lib/valkey/m229.rdb'][9:]),
+        lambda: files.__setitem__('/var/lib/valkey/m229.rdb', b'VALKEY080'),
         lambda: files.__setitem__('/etc/valkey/m229.conf', config.replace(
             b'protected-mode yes', b'protected-mode no')),
         lambda: files.__setitem__('/etc/conf.d/valkey',

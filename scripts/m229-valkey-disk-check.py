@@ -91,8 +91,12 @@ def check_artifacts(port: str, read, stat, receipt: dict) -> dict:
             fail('physical ext4 lacks private authentication/config mode: ' + path)
 
     snapshot = read('/var/lib/valkey/m229.rdb')
-    if len(snapshot) < 32 or re.match(rb'REDIS[0-9]{4}', snapshot[:9]) is None:
-        fail('real Valkey RDB snapshot absent/truncated/invalid magic')
+    # Original Alpine Valkey 9 writes VALKEY%03d with RDB_VERSION=80,
+    # unlike Redis's legacy REDIS%04d header. Requiring REDIS here wrongly
+    # rejected the real two-QEMU host SAVE/GET acceptance at #42382629492.
+    # Pin this signed Valkey 9 cohort's actual format, not a Redis stand-in.
+    if len(snapshot) < 32 or snapshot[:9] != b'VALKEY080':
+        fail('real Valkey 9 RDB snapshot absent/truncated/invalid magic')
     key, value = receipt['key'].encode('ascii'), receipt['value'].encode('ascii')
     # rdbcompression=no explicitly prevents hiding the unpredictable first
     # host SET bytes in a compressed stream. This proves the actual disk,
