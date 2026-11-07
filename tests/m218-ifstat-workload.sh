@@ -111,6 +111,24 @@ test "$magic" = 7f454c46 || {
 target="/root/m218-work/ifstat.${NAS_M218_BOOT_PHASE:-manual}"
 mkdir -p "$target" || exit 1
 
+# On the first genuine Alpine PID1 boot, M197 UART already waited for DHCP.
+# The independently reopened QEMU instead runs a compact BusyBox CPIO
+# command immediately; on RV64/AArch64 it raced the actual lwIP DHCP ACK.
+# A physical NIC alone is not proof that 10.0.2.3 is routed. Wait for the
+# SAME DHCP-owned /proc signal as the original first-boot UART, never invent
+# an address, install a synthetic route or relax the 40-packet oracle.
+waited=0
+until /bin/busybox grep -q '^nameserver 10\.0\.2\.3' \
+        /proc/net/naseed-resolv.conf 2>/dev/null; do
+    if [ "$waited" -ge 90 ]; then
+        echo '[M218 DHCP ROUTE TIMEOUT] no genuine lease-backed 10.0.2.3 DNS route after 90s' >&2
+        exit 1
+    fi
+    waited=$((waited+1))
+    /bin/busybox sleep 1 || exit 1
+done
+echo "[M218 GENUINE DHCP ROUTE READY] waited=${waited}s"
+
 cat /proc/net/dev > "$target/proc-before" || exit 1
 /bin/busybox timeout 15 /sbin/ifstat -a -s -z -j eth0 \
     > "$target/ifstat-before" 2> "$target/ifstat-before.err" || {

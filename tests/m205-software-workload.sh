@@ -619,6 +619,11 @@ export NAS_M206_BOOT_PHASE="$phase"
 export NAS_M213_BOOT_PHASE="$phase"
 export NAS_M218_BOOT_PHASE="$phase"
 export NAS_M219_BOOT_PHASE="$phase"
+# M218's real eth0 stimulus must wait for DHCP on the independent second
+# CPIO boot. The other cohort budgets remain unchanged; this is not a
+# blanket timeout increase or a bypass of original ELF semantics.
+exercise_budget=45
+[ "$milestone" = M218 ] && exercise_budget=165
 
 total=0
 while IFS="$tab" read -r package elf family case_id <&9 || [ -n "$package" ]; do
@@ -679,7 +684,7 @@ while IFS="$tab" read -r package elf family case_id <&9 || [ -n "$package" ]; do
             record "$package" "$elf" functional BLOCKED
             continue
         fi
-        if /bin/busybox timeout 45 sh "$exercise_script" \
+        if /bin/busybox timeout "$exercise_budget" sh "$exercise_script" \
                 --exercise "$case_id" "$elf" \
                 > "$work/logs/$case_id.first.log" 2>&1; then
             record "$package" "$elf" functional PASS
@@ -694,7 +699,7 @@ while IFS="$tab" read -r package elf family case_id <&9 || [ -n "$package" ]; do
         elif ! apk info -e "$package" >/dev/null 2>&1; then
             record "$package" "$elf" reopen FAIL
             echo "${milestone}_ERROR${tab}${package}${tab}${elf}${tab}reopen${tab}APK database missing package"
-        elif /bin/busybox timeout 45 sh "$exercise_script" \
+        elif /bin/busybox timeout "$exercise_budget" sh "$exercise_script" \
                 --exercise "$case_id" "$elf" \
                 > "$work/logs/$case_id.reopen.log" 2>&1; then
             record "$package" "$elf" reopen PASS

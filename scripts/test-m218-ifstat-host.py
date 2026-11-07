@@ -94,6 +94,13 @@ def main() -> None:
     assert "/sbin/ifstat -a -s -z -j eth0" in text
     assert text.count("/sbin/ifstat -a -s -z -j eth0") == 2
     assert "/proc/net/dev" in text and "/root/m205-fixtures/udp-traffic" in text
+    # A second native QEMU has no first-boot UART DHCP wait. Reject future
+    # regressions that send all 40 packets before real lwIP route readiness.
+    assert '/proc/net/naseed-resolv.conf' in text
+    assert 'waited=0' in text and '[ "$waited" -ge 90 ]' in text
+    assert 'M218 DHCP ROUTE TIMEOUT' in text
+    assert 'M218 GENUINE DHCP ROUTE READY' in text
+    assert 'exercise_budget=165' in OWNER.read_text()
     assert "M205_REAL_UDP_SENT=40" in text and "c[2] - b[2] < 40" in text
     assert "M218 genuine guest semantic PASS" in text
     assert "--help" not in text and "--version" not in text

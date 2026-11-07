@@ -7,6 +7,9 @@ on:
     branches: [naseed-app-batch2]
     paths:
       - '.github/workflows/m218-ifstat-alpine.yml'
+      - 'tests/m218-ifstat-workload.sh'
+      - 'scripts/test-m218-ifstat-host.py'
+      - 'tests/m205-software-workload.sh'
   workflow_dispatch:
 
 permissions:
