@@ -1,6 +1,7 @@
 name: NaSeed M227 headless Alpine OpenRC seven-program two-native-boot cohort
 
-# The initial push to this exact workflow launches amd64 only. Older software
+# M227.1: use M223's root-only-compatible lighttpd config. The initial push
+# to this exact workflow launches amd64 only. Older software
 # workflows keep their own path filters; unrelated changes do not relaunch M227.
 on:
   push:

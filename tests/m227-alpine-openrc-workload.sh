@@ -65,8 +65,6 @@ server.document-root = "/var/www/m227"
 server.bind = "127.0.0.1"
 server.port = 15432
 server.pid-file = "/run/lighttpd.pid"
-server.username = "lighttpd"
-server.groupname = "lighttpd"
 mimetype.assign = ( ".txt" => "text/plain" )
 CONF
         /usr/sbin/lighttpd -tt -f "$config" || fail 'signed server config invalid'
