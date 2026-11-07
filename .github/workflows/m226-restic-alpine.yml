@@ -1,5 +1,6 @@
 name: NaSeed M226 original signed Alpine restic true REST two native boots
 
+# M226 rerun: select phase-unique restic snapshots, independent of QEMU clocks.
 # Targeted; M225's active runs remain untouched. Never label a green host
 # preflight or QEMU serial marker as genuine two-boot RTL/OS acceptance.
 on:

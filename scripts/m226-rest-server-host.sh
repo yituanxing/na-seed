@@ -59,7 +59,9 @@ m226_host_check() {
         > "$PWD/$work/m226-$m226_verify_phase-host-restic-check.log" 2>&1
     "$m226_client" --no-cache snapshots --json \
         > "$PWD/$work/m226-$m226_verify_phase-host-snapshots.json"
-    "$m226_client" --no-cache restore latest --target "$m226_verify_target" \
+    "$m226_client" --no-cache restore latest \
+        --path "/root/m226-work/$m226_verify_phase/source.bin" \
+        --target "$m226_verify_target" \
         > "$PWD/$work/m226-$m226_verify_phase-host-restore.log" 2>&1
     cmp -s "$PWD/$work/m226-host-$m226_verify_phase/source.bin" \
         "$m226_verify_target/root/m226-work/$m226_verify_phase/source.bin" || {

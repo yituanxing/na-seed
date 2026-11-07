@@ -56,7 +56,8 @@ else
     # Validate the first real remote snapshot survived a separate host server
     # lifecycle and second independent QEMU before creating the new snapshot.
     run_restic preexisting-snapshots snapshots
-    run_restic restore-first restore latest --target "$work/restore-first"
+    run_restic restore-first restore latest --path "$root/first/source.bin" \
+        --target "$work/restore-first"
     $busy cmp -s "$root/first/source.bin" \
         "$work/restore-first/root/m226-work/first/source.bin" || {
             echo '[M226 GUEST FAIL] remote first snapshot did not restore' >&2; exit 1;
@@ -65,10 +66,11 @@ fi
 
 run_restic backup backup "$work/source.bin" --tag "m226-$phase"
 run_restic snapshots snapshots
-run_restic restore-current restore latest --target "$work/restore-current"
+run_restic restore-current restore latest --path "$work/source.bin" \
+    --target "$work/restore-current"
 $busy cmp -s "$work/source.bin" \
     "$work/restore-current/root/m226-work/$phase/source.bin" || {
-        echo '[M226 GUEST FAIL] remote latest restore bytes mismatch' >&2; exit 1;
+        echo '[M226 GUEST FAIL] phase-selected remote restore bytes mismatch' >&2; exit 1;
     }
 run_restic check check
 sync

@@ -96,7 +96,8 @@ def main():
                     if len(stored) != (1 if phase == 'first' else 2):
                         raise AssertionError('upstream repository snapshot count mismatch')
                     restore = root / ('restored-' + phase)
-                    run('restore', 'latest', '--target', str(restore), env=env)
+                    run('restore', 'latest', '--path', str(origin_dir / 'source.bin'),
+                        '--target', str(restore), env=env)
                     actual = restore / str((origin_dir / 'source.bin').relative_to('/'))
                     if actual.read_bytes() != challenge:
                         raise AssertionError('independent real restic restored wrong bytes')
