@@ -73,6 +73,33 @@ def iperf3_bytes(value: bytes, phase: str) -> int:
         raise ValueError(f'[M224 DISK FAIL] guest iperf3 {phase} JSON has no real transfer') from exc
 
 
+def nmap_port_contrast(content: bytes) -> bool:
+    """Require the exact two original Nmap result lines, on physical bytes."""
+    return bool(re.search(rb'(?m)^15441/tcp\s+open\b', content) and
+                re.search(rb'(?m)^15442/tcp\s+closed\b', content))
+
+
+def nmap_physical_diagnostic(partition: Path, name: str,
+                             content: bytes) -> str:
+    """Failure-only forensic evidence; never changes the acceptance oracle."""
+    import subprocess
+
+    state = subprocess.run(['debugfs', '-R', 'stat ' + name, str(partition)],
+                           check=False, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE)
+    directory = subprocess.run(['debugfs', '-R', 'ls -l ' + str(Path(name).parent),
+                                 str(partition)], check=False, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE)
+    m191 = owner.load('m191-alpine-root-disk.py', 'm224_diag_m191')
+    nmap_stderr = m191.debugfs_cat(partition, str(Path(name).with_name('nmap.err')))
+    ledger = m191.debugfs_cat(partition, '/root/m224-first-results.tsv')
+    return (f'path={name!r} size={len(content)} '
+            f'sha256={hashlib.sha256(content).hexdigest()} '
+            f'first256={content[:256]!r} '
+            f'err={nmap_stderr[:512]!r} ledger={ledger[:900]!r} '
+            f'inode_stat={state.stdout[:900]!r} directory={directory.stdout[:800]!r}')
+
+
 def physical_outputs(partition: Path, m191, first_dir: Path,
                      reopen_dir: Path) -> dict:
     sources = []
@@ -87,9 +114,10 @@ def physical_outputs(partition: Path, m191, first_dir: Path,
         sources.append(source)
         nmap = m191.debugfs_cat(partition,
                                 f'/root/m224-work/{CASES["nmap"]}.{phase}/nmap.txt')
-        if not (re.search(rb'(?m)^15441/tcp\s+open\b', nmap) and
-                re.search(rb'(?m)^15442/tcp\s+closed\b', nmap)):
-            raise ValueError('[M224 DISK FAIL] native Nmap physical port contrast absent')
+        if not nmap_port_contrast(nmap):
+            name = f'/root/m224-work/{CASES["nmap"]}.{phase}/nmap.txt'
+            raise ValueError('[M224 DISK FAIL] native Nmap physical port contrast absent: '
+                             + nmap_physical_diagnostic(partition, name, nmap))
         result = m191.debugfs_cat(partition,
                                   f'/root/m224-work/{CASES["iperf3"]}.{phase}/iperf3.json')
         transfer[phase] = iperf3_bytes(result, phase)

@@ -208,9 +208,11 @@ def physical_guest_proof(phase: str, port: str, disk: Path,
                              'ext4 bytes differ from host source')
         nmap_text = m191.debugfs_cat(partition,
                                      f'/root/m224-work/{disk_oracle.CASES["nmap"]}.{phase}/nmap.txt')
-        if not (re.search(rb'(?m)^15441/tcp\s+open\b', nmap_text) and
-                re.search(rb'(?m)^15442/tcp\s+closed\b', nmap_text)):
-            raise ValueError('[M224 DISK FAIL] original Nmap port scan not persisted')
+        if not disk_oracle.nmap_port_contrast(nmap_text):
+            name = f'/root/m224-work/{disk_oracle.CASES["nmap"]}.{phase}/nmap.txt'
+            raise ValueError('[M224 DISK FAIL] original Nmap port scan not persisted: '
+                             + disk_oracle.nmap_physical_diagnostic(
+                                 partition, name, nmap_text))
         report = m191.debugfs_cat(partition,
                                   f'/root/m224-work/{disk_oracle.CASES["iperf3"]}.{phase}/iperf3.json')
         sent = disk_oracle.iperf3_bytes(report, phase)

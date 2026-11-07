@@ -687,6 +687,12 @@ else
     fi
 fi
 test -s "$serial" && test -s "$pcap"
+if [ "$m224" = 1 ]; then
+    # A first-boot host/wire/physical proof can fail BEFORE the generic
+    # evidence copy below. Preserve actual guest functional FAIL lines and
+    # the unedited Nmap stderr on that failure path for one-shot diagnosis.
+    cp "$serial" "$PWD/$work/m197-live.serial.log"
+fi
 if [ "$m220" = 1 ]; then
     m220_stop_host
     python3 scripts/m220-nping-wire-check.py first \

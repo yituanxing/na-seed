@@ -214,6 +214,15 @@ class IndependentHostLogTests(unittest.TestCase):
 
 
 class PhysicalWitnessTests(unittest.TestCase):
+    def test_nmap_physical_requires_both_original_port_lines(self):
+        real = b'PORT     STATE SERVICE\n15441/tcp open  unknown\n15442/tcp closed unknown\n'
+        self.assertTrue(disk.nmap_port_contrast(real))
+        for fake in (b'', real.replace(b'closed', b'filtered'),
+                     real.replace(b'open', b'filtered'),
+                     real.replace(b'15442/tcp', b'15445/tcp')):
+            with self.subTest(fake=fake):
+                self.assertFalse(disk.nmap_port_contrast(fake))
+
     @staticmethod
     def fake_physical(source_first, source_reopen, *, wrong_random=False):
         class Ext4:
