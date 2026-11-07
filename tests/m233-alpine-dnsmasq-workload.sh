@@ -29,6 +29,7 @@ bind-interfaces
 no-resolv
 no-hosts
 no-poll
+log-facility=-
 no-dhcp-interface=eth0
 user=root
 group=root
@@ -49,7 +50,19 @@ test -f /etc/dnsmasq.conf && test ! -L /etc/dnsmasq.conf || fail 'DNS config abs
 $busy grep -qx 'port=15453' /etc/dnsmasq.conf || fail 'wrong DNS port'
 $busy grep -qx 'address=/m233.naseed.test/198.51.100.233' /etc/dnsmasq.conf ||
     fail 'DNS fixture not durable'
-rc-service dnsmasq status || fail 'original Alpine dnsmasq not under OpenRC'
+if ! rc-service dnsmasq status; then
+    # Preserve actual original daemon errno/message in the serial artifact.
+    # M152's proven dnsmasq path uses --log-facility=-; a subsequent failure
+    # must remain a hard FAIL, never a synthetic service-status substitution.
+    $busy printf '%s\n' '[M233 DNS DIAG] original OpenRC service crashed; rerun bounded original daemon in foreground'
+    diagnostic_rc=0
+    $busy timeout 8 /usr/sbin/dnsmasq --no-daemon --log-facility=- \
+        --conf-file=/etc/dnsmasq.conf > /root/m233-dnsmasq-diagnostic.log 2>&1 || \
+        diagnostic_rc=$?
+    $busy printf '[M233 DNS DIAG] original foreground exit=%s\n' "$diagnostic_rc"
+    $busy cat /root/m233-dnsmasq-diagnostic.log || :
+    fail 'original Alpine dnsmasq not under OpenRC'
+fi
 case "$phase" in
     FIRST) echo M233_FIRST_HOST_DNS_READY ;;
     REOPEN) echo M233_REOPEN_HOST_DNS_READY ;;

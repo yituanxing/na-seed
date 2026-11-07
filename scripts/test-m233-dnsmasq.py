@@ -117,7 +117,8 @@ def contract_checks() -> None:
                     'rc-service dnsmasq start', 'rc-service dnsmasq status',
                     'M233_FIRST_HOST_DNS_READY', 'M233_REOPEN_HOST_DNS_READY',
                     '/root/m227-alpine-openrc-workload.sh --reopen',
-                    'port=15453', 'user=root', 'group=root'):
+                    'port=15453', 'user=root', 'group=root',
+                    'log-facility=-', 'diagnostic_rc=$?'):
         assert literal in guest, literal
     assert guest.split('REOPEN)')[1].count('rc-service dnsmasq start') == 0
     for literal in ('NAS_M233_DNSMASQ_HOST',

@@ -33,7 +33,8 @@ GUEST_NET = ipaddress.IPv4Network('10.0.2.0/24')
 TS = re.compile(r'20[0-9]{2}-[01][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]Z\Z')
 PACKAGES = ('dnsmasq', 'dnsmasq-openrc')
 CONFIG = (b'port=15453', b'listen-address=0.0.0.0', b'bind-interfaces',
-          b'no-resolv', b'no-hosts', b'no-poll', b'user=root', b'group=root',
+          b'no-resolv', b'no-hosts', b'no-poll', b'log-facility=-',
+          b'user=root', b'group=root',
           b'local=/m233.naseed.test/',
           b'address=/m233.naseed.test/198.51.100.233')
 
