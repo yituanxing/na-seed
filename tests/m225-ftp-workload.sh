@@ -15,7 +15,7 @@ case "$case_id:$elf" in
     original-host-bidirectional-transfer:usr/bin/rclone) package=rclone ;;
     *) echo '[M225 TCP FAIL] unexpected signed ELF case' >&2; exit 2 ;;
 esac
-test -x "/$elf" && apk info -e "$package" >/dev/null 2>&1 || {
+test -x "/$elf" && /sbin/apk info -e "$package" >/dev/null 2>&1 || {
     echo '[M225 TCP FAIL] original signed Alpine package not installed' >&2; exit 1;
 }
 magic=$($busy od -An -tx1 -N4 "/$elf" | $busy tr -d ' \t\r\n')

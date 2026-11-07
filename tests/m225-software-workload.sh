@@ -27,9 +27,9 @@ while IFS="$tab" read -r package elf family case_id || [ -n "$package" ]; do
         *) echo '[M225 GUEST FAIL] unrecognized signed cohort manifest'; exit 2 ;;
     esac
     if [ "$phase" = first ]; then
-        if apk info -e "$package" >/dev/null 2>&1; then
+        if /sbin/apk info -e "$package" >/dev/null 2>&1; then
             install=PREEXISTING
-        elif "$busy" timeout 300 apk --cache-dir /var/cache/apk --no-network \
+        elif "$busy" timeout 300 /sbin/apk --cache-dir /var/cache/apk --no-network \
                 -v add "$package" > "/root/m225-$package-apk.log" 2>&1; then
             install=PASS
         else
@@ -44,7 +44,7 @@ while IFS="$tab" read -r package elf family case_id || [ -n "$package" ]; do
         result_phase=functional
     else
         result_phase=reopen
-        if ! apk info -e "$package" >/dev/null 2>&1; then
+        if ! /sbin/apk info -e "$package" >/dev/null 2>&1; then
             record "$package" "$elf" reopen FAIL
             failed=$((failed+1))
             continue

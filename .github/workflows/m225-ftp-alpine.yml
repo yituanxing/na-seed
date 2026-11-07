@@ -4,6 +4,8 @@ name: NaSeed M225 original Alpine lftp rclone FTP two native boots
 # expensive M224 native QEMU jobs. Manual dispatch remains available.
 # Rerun M225 with Alpine rclone direct final-path STOR via --inplace;
 # all original signed, wire, physical ext4 and independent reboot gates remain.
+# M225 first login shell had /sbin in PATH, second PID1 sh -c did not;
+# both FTP scripts now invoke /sbin/apk explicitly on both boots.
 on:
   push:
     branches: [naseed-app-batch2]
