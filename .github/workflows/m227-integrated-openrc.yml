@@ -1,7 +1,7 @@
 name: NaSeed M227 headless Alpine OpenRC seven-program two-native-boot cohort
 
-# M227.2: original Alpine ifupdown-ng pre-up checks true NaSeed DHCP/eth0;
-# no custom net provider or false dependency bypass. This exact workflow
+# M227.3: accept second Alpine getty's real localhost login prompt while
+# preserving password authentication and full PID1 proofs. This workflow
 # launches amd64 only. Older software
 # workflows keep their own path filters; unrelated changes do not relaunch M227.
 on:
@@ -43,6 +43,7 @@ jobs:
         run: |
           set -eu
           python3 scripts/test-m227-openrc-contract.py
+          python3 scripts/test-m227-uart-login.py
           python3 scripts/check-three-isa-core.py
           python3 scripts/check-architecture-boundaries.py
           python3 scripts/test-m197-alpine-host.py

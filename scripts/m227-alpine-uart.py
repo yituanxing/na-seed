@@ -50,6 +50,8 @@ def main() -> None:
     owner.M194.run(sys.argv[2], Path(sys.argv[3]), Path(sys.argv[4]),
                    Path(sys.argv[5]), seconds + 35, commands=commands,
                    stage=f'M227-{mode.upper()}',
+                   login_hostnames=(('naseed', 'localhost') if mode == 'reopen'
+                                    else ('naseed',)),
                    success_message=f'[M227 {mode.upper()} UART PASS] original '
                                    'Alpine PID1, signed applications and '
                                    'OpenRC service; independent host ext4 '

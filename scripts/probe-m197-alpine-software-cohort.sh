@@ -726,8 +726,24 @@ if [ "$m198" = 1 ]; then
     fi
 else
     if [ "$m227" = 1 ]; then
-        python3 scripts/m227-alpine-uart.py first "$runner" "$serial" \
-            "$PWD/$work/m227-first-runner.log" "$fifo"
+        # Keep the REAL first native UART even if the original signed Alpine
+        # workload fails before M227 can reach its second QEMU. The artifact
+        # uploader runs on failure, so this path must exist immediately.
+        echo "[M227 FIRST UART START] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        if python3 scripts/m227-alpine-uart.py first "$runner" "$serial" \
+                "$PWD/$work/m227-first-runner.log" "$fifo"; then
+            cp "$serial" "$PWD/$work/m227-first.serial.log"
+            echo "[M227 FIRST UART COMPLETE] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        else
+            m227_first_rc=$?
+            if [ -f "$serial" ]; then
+                cp "$serial" "$PWD/$work/m227-first.serial.log"
+                echo "[M227 FIRST UART FAILURE SNAPSHOT] $(date -u +%Y-%m-%dT%H:%M:%SZ) rc=$m227_first_rc"
+            else
+                echo '[M227 FIRST UART FAILURE] original serial not created' >&2
+            fi
+            exit "$m227_first_rc"
+        fi
     elif [ "$m226" = 1 ]; then
         python3 scripts/m226-alpine-uart.py "$runner" "$serial" \
             "$PWD/$work/m226-first-runner.log" "$fifo"
@@ -986,13 +1002,18 @@ fi
 if [ "$m227" = 1 ]; then
     # M199's true second original PID1, without M199's GUI/QMP. A separate
     # UART log and FIFO prevent first-boot bytes from faking auto-restart.
-    cp "$serial" "$PWD/$work/m227-first.serial.log"
+    test -s "$PWD/$work/m227-first.serial.log" || {
+        echo '[M227 FAIL] first raw UART snapshot missing before reboot' >&2
+        exit 1
+    }
+    echo "[M227 REOPEN UART START] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     unset NAS_QEMU_SERIAL_FIFO NAS_VIRTIO_NET_PCAP NAS_QEMU_QMP_SOCKET
     export NAS_QEMU_SERIAL_FIFO="$PWD/$work/m227-reopen-input.fifo"
     export BUSYBOX_PARITY_MANIFEST=scripts/m227-alpine-boot-cases.tsv
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M227_REOPEN_QEMU_TIMEOUT:-650}
     python3 scripts/m227-alpine-uart.py reopen "$runner" "$serial" \
         "$PWD/$work/m227-reopen-runner.log" "$NAS_QEMU_SERIAL_FIFO"
+    echo "[M227 REOPEN UART COMPLETE] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     grep -Fq 'M227_SECOND_OPENRC_AUTO_HTTP_PASS' "$serial" || {
         echo '[M227 FAIL] second genuine OpenRC auto-start HTTP proof absent' >&2
         exit 1

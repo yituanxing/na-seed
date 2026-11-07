@@ -32,6 +32,9 @@ def check() -> None:
             'both UART phases are physical QEMU not synthetic scripts')
     require('owner.M194.run(' in uart and 'owner.build_commands(cache_index=True)' in uart,
             'reuse original M197 signed WAN and M194 authenticated UART')
+    require("('naseed', 'localhost') if mode == 'reopen'" in uart and
+            'login_hostnames=' in uart,
+            'second real getty may use distro localhost hostname without bypassing login')
     require("'lighttpd-openrc'" in uart or 'lighttpd-openrc' in uart,
             'must install official signed lighttpd-openrc package')
     require('rc-update add lighttpd default' in guest and

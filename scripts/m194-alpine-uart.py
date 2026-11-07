@@ -75,6 +75,20 @@ def step_observed(segment: str, expected: str | re.Pattern[str]) -> bool:
     return step_match(segment, expected) is not None
 
 
+def getty_login_host(text: str, allowed: tuple[str, ...] = ('naseed',)) -> str | None:
+    """Find a genuine whole-line Alpine getty prompt, never a command echo.
+
+    OpenRC can set the distro's saved hostname to ``localhost`` on a later
+    original PID1 boot. Callers opt in explicitly; historical M194/M197
+    single-boot probes retain their strict ``naseed`` baseline.
+    """
+    for hostname in allowed:
+        if re.search(r'(?:^|\n)' + re.escape(hostname)
+                     + r' login: ?(?:\n|$)', text):
+            return hostname
+    return None
+
+
 # After a command's independent result marker, ash can print its next prompt
 # and the kernel can immediately append an asynchronous printk on the SAME
 # UART line.  Checking only the final line (m193.shell_prompt) loses that
@@ -256,7 +270,8 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
         *, commands=COMMANDS, stage: str = "M194",
         success_message: str | None = None,
         failure_watch: Path | None = None,
-        before_command_barriers: dict[int, Path] | None = None) -> None:
+        before_command_barriers: dict[int, Path] | None = None,
+        login_hostnames: tuple[str, ...] = ('naseed',)) -> None:
     if not commands:
         raise ValueError("Alpine UART acceptance needs at least one real guest command")
     fifo.parent.mkdir(parents=True, exist_ok=True)
@@ -275,6 +290,7 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
     step_end = 0
     shell_at = 0.0
     dsr_replies = 0
+    authenticated_login_host = None
     started = time.monotonic()
     try:
         with runner_log.open("wb") as runner_out:
@@ -306,7 +322,10 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
                     m193.sent(hold, "\x1b[1;1R")
                     dsr_replies += 1
 
-                if state == "login" and "naseed login:" in text:
+                if state == "login" and (
+                    detected_host := getty_login_host(text, login_hostnames)
+                ) is not None:
+                    authenticated_login_host = detected_host
                     print(f"[{stage} UART] original getty; submitting root", flush=True)
                     m193.sent(hold, "root\r")
                     state = "password"
@@ -335,13 +354,21 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
                         step_end = step_start + found.end()
                         step += 1
                         if step == len(commands):
-                            required = m193.PROOF + (
+                            # M193's original single-boot proof literally
+                            # names "naseed login:"; M227's independently
+                            # observed second getty may print "localhost".
+                            # Preserve ALL other physical PID1/login guards.
+                            required = tuple(marker for marker in m193.PROOF
+                                             if marker != 'naseed login:') + (
                                 "[EXEC] replaced process with lwext4 ELF: /bin/login",
                             )
                             missing = [marker for marker in required if marker not in text]
                             if missing:
                                 raise RuntimeError("missing physical QEMU login proof: "
                                                    + ", ".join(missing))
+                            if (authenticated_login_host is None or
+                                getty_login_host(text, (authenticated_login_host,)) is None):
+                                raise RuntimeError('missing genuine line-oriented getty prompt')
                             print(success_message or
                                   "[M194 ALPINE SERVICES PASS] original ext4 Alpine PID1 "
                                   "-> OpenRC -> password login -> genuine apk database "
