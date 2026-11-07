@@ -1,0 +1,139 @@
+name: NaSeed M230 original Alpine Dropbear OpenRC host SSH two-native-boot
+
+# The pilot is intentionally amd64-only on scoped source changes. Run all
+# three actual target-native QEMUs only after the pilot proves real SSH.
+on:
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/m230-dropbear-host-ssh.yml'
+      - 'tests/m230-alpine-dropbear-workload.sh'
+      - 'scripts/m230-*.py'
+      - 'scripts/test-m230-*.py'
+  workflow_dispatch:
+    inputs:
+      port:
+        description: 'Original Alpine guest native ISA (or all-three)'
+        type: choice
+        required: true
+        default: amd64
+        options: [amd64, riscv64, arm64, all]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  original-alpine-dropbear:
+    name: Real host Ed25519 SSH Dropbear / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 130
+    strategy:
+      fail-fast: false
+      matrix:
+        port: ${{ fromJSON(github.event_name == 'push' && '["amd64"]' || (inputs.port == 'all' && '["amd64","riscv64","arm64"]' || format('["{0}"]', inputs.port))) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Reject synthetic SSH, stale receipts, private guest key and architecture regression
+        run: |
+          set -eu
+          python3 scripts/test-m227-uart-login.py
+          python3 scripts/test-m227-openrc-contract.py
+          python3 scripts/test-m228-hostfwd-contract.py
+          python3 scripts/test-m230-cohort-contract.py
+          python3 scripts/test-m230-dropbear-guest-contract.py
+          python3 scripts/test-m230-host-ssh.py
+          python3 scripts/test-m230-dropbear-disk-check.py
+          python3 -m py_compile scripts/m230-alpine-uart.py \
+            scripts/m230-host-ssh-check.py scripts/m230-dropbear-disk-check.py
+          sh -n tests/m230-alpine-dropbear-workload.sh
+          sh -n scripts/probe-m197-alpine-software-cohort.sh
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+          python3 scripts/test-m197-alpine-host.py
+      - name: Install official Alpine and native QEMU dependency toolchains
+        timeout-minutes: 20
+        run: |
+          set -eu
+          PATH=/usr/sbin:/sbin:$PATH
+          export PATH
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'cmake:cmake' 'g++:g++' 'clang:clang' 'ld.lld:lld' \
+                      'readelf:binutils' 'cpio:cpio' 'mke2fs:e2fsprogs' \
+                      'debugfs:e2fsprogs' 'e2fsck:e2fsprogs' \
+                      'xorriso:xorriso' 'mformat:mtools' 'sgdisk:gdisk' \
+                      'curl:curl' 'python3:python3' 'openssl:openssl' \
+                      'ssh:openssh-client' 'ssh-keygen:openssh-client'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case '${{ matrix.port }}' in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+                test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
+            riscv64)
+              command -v riscv64-linux-gnu-gcc >/dev/null || missing="$missing gcc-riscv64-linux-gnu"
+              command -v riscv64-linux-gnu-g++ >/dev/null || missing="$missing g++-riscv64-linux-gnu"
+              test -f /usr/riscv64-linux-gnu/include/bits/wordsize.h && \
+                test -f /usr/riscv64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-riscv64-cross"
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+            arm64)
+              command -v aarch64-linux-gnu-gcc >/dev/null || missing="$missing gcc-aarch64-linux-gnu"
+              command -v aarch64-linux-gnu-g++ >/dev/null || missing="$missing g++-aarch64-linux-gnu"
+              test -f /usr/aarch64-linux-gnu/include/bits/wordsize.h && \
+                test -f /usr/aarch64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-arm64-cross"
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/AAVMF/AAVMF_CODE.fd || \
+                test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+          esac
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+      - name: Two true original Alpine PID1 QEMUs and independent host SSH
+        timeout-minutes: 100
+        env:
+          NAS_M230_DROPBEAR_HOST: '1'
+          NAS_M230_PUBLIC_QEMU_TIMEOUT: '2850'
+          NAS_M230_FIRST_SECONDS: '2700'
+          NAS_M230_REOPEN_QEMU_TIMEOUT: '1300'
+          NAS_M230_REOPEN_SECONDS: '1150'
+          NAS_M230_HOST_PORT: '12222'
+        run: sh scripts/probe-m197-alpine-software-cohort.sh '${{ matrix.port }}'
+      - name: Preserve two native host SSH receipts, UART and Ethernet ext4 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          # No client private key, guest disk, host known_hosts, or ephemeral
+          # host-only credentials are ever uploaded. Encrypted SSH PCAP is
+          # evidence of wire traffic, not decrypted remote-command proof.
+          name: m230-dropbear-host-ssh-original-${{ matrix.port }}
+          path: |
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m230-first.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m230-reopen.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m230-first-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m230-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m230-first-host-ssh.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m230-reopen-host-ssh.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m230-first-host-ssh.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m230-reopen-host-ssh.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m230-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m230-dropbear-final-oracle.json
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+          retention-days: 1
