@@ -25,7 +25,7 @@ def entries(path: Path) -> list[str]:
 
 
 def main(profile: str = "m141", minimum: int = 50) -> None:
-    if profile not in ("m141", "m205", "m206", "m213", "m215", "m218", "m219", "m220", "m221", "m222", "m223", "m224"):
+    if profile not in ("m141", "m205", "m206", "m213", "m215", "m218", "m219", "m220", "m221", "m222", "m223", "m224", "m225"):
         raise ValueError(f"unrecognized candidate profile: {profile}")
     pool = ROOT / f"scripts/{profile}-candidate-elfs.tsv"
     packages_path = ROOT / f"rootfs/alpine/packages-{profile}-candidates.txt"
@@ -48,8 +48,16 @@ def main(profile: str = "m141", minimum: int = 50) -> None:
             # to two independent boots with host-random wire+disk evidence.
             # This exception does not waive overlap with any other cohort.
             continue
-        known.update(entries(manifest))
-    if profile in ("m206", "m213", "m215", "m218", "m219", "m220", "m221", "m222", "m223", "m224"):
+        previous = entries(manifest)
+        if profile == "m225" and manifest.name == "m137-original-elfs.txt":
+            # M137 proved rclone LOCAL copying, never live remote FTP. Only
+            # this exact formerly signed ELF path gets a NEW semantic gate.
+            previous = [entry for entry in previous if entry != "usr/bin/rclone"]
+        if profile == "m225" and manifest.name == "m149-original-elfs.txt":
+            # M149 only launched lftp --version, never FTP wire+disk upload.
+            previous = [entry for entry in previous if entry != "usr/bin/lftp"]
+        known.update(previous)
+    if profile in ("m206", "m213", "m215", "m218", "m219", "m220", "m221", "m222", "m223", "m224", "m225"):
         # M205 is a real new-candidate batch but has no historical accepted
         # m*-original-elfs.txt manifest yet; excluding only the latter would
         # silently count the same original command again.
@@ -58,30 +66,33 @@ def main(profile: str = "m141", minimum: int = 50) -> None:
         known.update(row.split("\t")[1] for row in
                      entries(ROOT / "scripts/m204-alpine-cohort.tsv")[1:]
                      if len(row.split("\t")) >= 2)
-    if profile in ("m213", "m215", "m218", "m219", "m220", "m221", "m222", "m223", "m224"):
+    if profile in ("m213", "m215", "m218", "m219", "m220", "m221", "m222", "m223", "m224", "m225"):
         known.update(row.split("\t")[1] for row in
                      entries(ROOT / "scripts/m206-candidate-elfs.tsv")[1:])
-    if profile in ("m218", "m219", "m220", "m221", "m222", "m223", "m224"):
+    if profile in ("m218", "m219", "m220", "m221", "m222", "m223", "m224", "m225"):
         known.update(row.split("\t")[1] for row in
                      entries(ROOT / "scripts/m215-candidate-elfs.tsv")[1:])
-    if profile in ("m219", "m220", "m221", "m222", "m223", "m224"):
+    if profile in ("m219", "m220", "m221", "m222", "m223", "m224", "m225"):
         known.update(row.split("\t")[1] for row in
                      entries(ROOT / "scripts/m218-candidate-elfs.tsv")[1:])
-    if profile in ("m220", "m221", "m222", "m223", "m224"):
+    if profile in ("m220", "m221", "m222", "m223", "m224", "m225"):
         known.update(row.split("\t")[1] for row in
                      entries(ROOT / "scripts/m219-candidate-elfs.tsv")[1:])
-    if profile in ("m221", "m222", "m223", "m224"):
+    if profile in ("m221", "m222", "m223", "m224", "m225"):
         known.update(row.split("\t")[1] for row in
                      entries(ROOT / "scripts/m220-candidate-elfs.tsv")[1:])
-    if profile in ("m222", "m223", "m224"):
+    if profile in ("m222", "m223", "m224", "m225"):
         known.update(row.split("\t")[1] for row in
                      entries(ROOT / "scripts/m221-candidate-elfs.tsv")[1:])
-    if profile in ("m223", "m224"):
+    if profile in ("m223", "m224", "m225"):
         known.update(row.split("\t")[1] for row in
                      entries(ROOT / "scripts/m222-candidate-elfs.tsv")[1:])
-    if profile == "m224":
+    if profile in ("m224", "m225"):
         known.update(row.split("\t")[1] for row in
                      entries(ROOT / "scripts/m223-candidate-elfs.tsv")[1:])
+    if profile == "m225":
+        known.update(row.split("\t")[1] for row in
+                     entries(ROOT / "scripts/m224-candidate-elfs.tsv")[1:])
 
     lines = pool.read_text().splitlines()
     if not lines or lines[0] != HEADER:
@@ -112,7 +123,10 @@ def main(profile: str = "m141", minimum: int = 50) -> None:
 
     if len(seen) < minimum:
         raise ValueError(f"pool too small: {len(seen)} candidates (need at least {minimum})")
-    minimum_families = (1 if profile in ("m218", "m219", "m220", "m221", "m222", "m223", "m224") else
+    if profile == "m225" and (seen != {"usr/bin/lftp", "usr/bin/rclone"} or
+                                 packages != {"lftp", "rclone"}):
+        raise ValueError("M225 admits exactly two historically signed FTP-original identities")
+    minimum_families = (1 if profile in ("m218", "m219", "m220", "m221", "m222", "m223", "m224", "m225") else
                         3 if profile == "m206" else
                         4 if profile == "m215" else 5)
     if len(families) < minimum_families:
@@ -122,7 +136,9 @@ def main(profile: str = "m141", minimum: int = 50) -> None:
     status = ("historical M143 one-boot HTTP paths requiring new two-boot acceptance"
               if profile == "m223" else
               "historical unaccepted M141 TCP paths requiring real host two-boot acceptance"
-              if profile == "m224" else "unaccepted paths")
+              if profile == "m224" else
+              "historical M137 local rclone/M149 lftp version needing remote FTP two-boot proof"
+              if profile == "m225" else "unaccepted paths")
     print(f"[{label} CANDIDATE PREFLIGHT PASS] {len(seen)} {status}, "
           f"{len(packages)} signed-APK package requests, {len(families)} families")
     print(f"[{label} NOT ACCEPTED] native ELF/SHA and QEMU semantic checks pending")
@@ -130,10 +146,10 @@ def main(profile: str = "m141", minimum: int = 50) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", choices=("m141", "m205", "m206", "m213", "m215", "m218", "m219", "m220", "m221", "m222", "m223", "m224"), default="m141")
+    parser.add_argument("--profile", choices=("m141", "m205", "m206", "m213", "m215", "m218", "m219", "m220", "m221", "m222", "m223", "m224", "m225"), default="m141")
     parser.add_argument("--minimum", type=int)
     args = parser.parse_args()
     main(args.profile, args.minimum if args.minimum is not None else
          (50 if args.profile == "m141" else 5 if args.profile == "m215" else
-          3 if args.profile in ("m222", "m223", "m224") else 2 if args.profile == "m221" else
+          3 if args.profile in ("m222", "m223", "m224") else 2 if args.profile in ("m221", "m225") else
           1 if args.profile in ("m218", "m219", "m220") else 20))
