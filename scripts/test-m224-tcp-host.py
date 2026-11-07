@@ -214,6 +214,16 @@ class IndependentHostLogTests(unittest.TestCase):
 
 
 class PhysicalWitnessTests(unittest.TestCase):
+    def test_iperf_error_rejected_even_if_real_bytes_were_sent(self):
+        # The first repaired QEMU really delivered 5120 bytes to the host,
+        # but original iperf3 also returned a top-level JSON error. Host
+        # traffic and an unrelated sum_sent must never mask that failure.
+        report = (b'{"error":"original client control failed",'
+                  b'"end":{"sum_sent":{"bytes":5120,"bits_per_second":40000},'
+                  b'"sum_received":{"bytes":5120}}}')
+        with self.assertRaisesRegex(ValueError, 'no real transfer'):
+            disk.iperf3_bytes(report, 'first')
+
     def test_nmap_physical_requires_both_original_port_lines(self):
         real = b'PORT     STATE SERVICE\n15441/tcp open  unknown\n15442/tcp closed unknown\n'
         self.assertTrue(disk.nmap_port_contrast(real))

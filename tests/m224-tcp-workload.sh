@@ -54,7 +54,9 @@ case "$case_id:$elf" in
             if $busy timeout 30 /usr/bin/iperf3 -4 -c 10.0.2.2 -p 15444 \
                     -t 1 -l 512 -P 1 -J \
                     > "$target/iperf3.json" 2> "$target/iperf3.err" &&
+               ! $busy grep -Eq '"error"[[:space:]]*:' "$target/iperf3.json" &&
                $busy grep -q '"sum_sent"' "$target/iperf3.json" &&
+               $busy grep -q '"sum_received"' "$target/iperf3.json" &&
                $busy grep -Eq '"bytes"[[:space:]]*:[[:space:]]*[1-9][0-9]*' \
                     "$target/iperf3.json"; then
                 iperf_done=1
@@ -63,10 +65,12 @@ case "$case_id:$elf" in
             $busy sleep 1
         done
         [ "$iperf_done" -eq 1 ] || {
-                echo '[M224 TCP FAIL] no nonzero iperf3 TCP transfer report' >&2
+            echo '[M224 TCP FAIL] no complete error-free iperf3 TCP result' >&2
+            $busy grep -E -m 3 '"error"[[:space:]]*:|"sum_(sent|received)"' \
+                "$target/iperf3.json" >&2 || :
             $busy tail -n 4 "$target/iperf3.err" >&2 || :
-                exit 1
-            }
+            exit 1
+        }
         ;;
     real-host-ncat-random:usr/bin/ncat)
         # The host verifies this boot-specific token before returning a NEW

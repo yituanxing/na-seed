@@ -73,6 +73,24 @@ def iperf3_bytes(value: bytes, phase: str) -> int:
         raise ValueError(f'[M224 DISK FAIL] guest iperf3 {phase} JSON has no real transfer') from exc
 
 
+def iperf3_physical_diagnostic(partition: Path, m191,
+                               phase: str, value: bytes) -> str:
+    """Failure-only original ELF output evidence; never grants acceptance."""
+    name = f'/root/m224-work/{CASES["iperf3"]}.{phase}/iperf3.err'
+    stderr = m191.debugfs_cat(partition, name)
+    try:
+        decoded = json.loads(value)
+        shape = ({'keys': sorted(decoded), 'error': decoded.get('error'),
+                  'end_keys': sorted(decoded.get('end', {}))}
+                 if isinstance(decoded, dict) else {'type': type(decoded).__name__})
+    except (ValueError, TypeError) as exc:
+        shape = {'json_parse_error': str(exc)}
+    return (f'phase={phase!r} json_size={len(value)} '
+            f'json_sha256={hashlib.sha256(value).hexdigest()} '
+            f'json_shape={shape!r} json_start={value[:1200]!r} '
+            f'json_end={value[-600:]!r} stderr={stderr[:900]!r}')
+
+
 def nmap_port_contrast(content: bytes) -> bool:
     """Require the exact two original Nmap result lines, on physical bytes."""
     return bool(re.search(rb'(?m)^15441/tcp\s+open\b', content) and
@@ -120,7 +138,12 @@ def physical_outputs(partition: Path, m191, first_dir: Path,
                              + nmap_physical_diagnostic(partition, name, nmap))
         result = m191.debugfs_cat(partition,
                                   f'/root/m224-work/{CASES["iperf3"]}.{phase}/iperf3.json')
-        transfer[phase] = iperf3_bytes(result, phase)
+        try:
+            transfer[phase] = iperf3_bytes(result, phase)
+        except ValueError as exc:
+            raise ValueError(str(exc) + ': ' +
+                             iperf3_physical_diagnostic(partition, m191,
+                                                        phase, result)) from exc
     if sources[0] == sources[1]:
         raise ValueError('[M224 DISK FAIL] first/reopen share the same host random source')
     return {'ncat_source_sha256': {phase: hashlib.sha256(data).hexdigest()
