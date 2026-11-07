@@ -175,6 +175,12 @@ def contract() -> None:
                    '"$milestone" = M222 ] && exercise_budget=240',
                    'export NAS_M222_BOOT_PHASE="$phase"'):
         assert marker in m205, marker
+    # Installed-as-a-dependency is not an explicit APK world request.
+    # M222 requires the genuine offline add even for an already installed
+    # signed owner; do not weaken the independent physical-disk world oracle.
+    assert ('elif [ "$milestone" != M222 ] && '
+            'apk info -e "$package" >/dev/null 2>&1; then') in m205
+    assert 'apk --cache-dir /var/cache/apk --no-network -v add "$package"' in m205
     for marker in ('m222_prepare_host first', 'm222_prepare_host reopen',
                    'm222_start_host first', 'm222_start_host reopen',
                    'm222_stop_host', 'm222-first-wire.json', 'm222-reopen-wire.json',

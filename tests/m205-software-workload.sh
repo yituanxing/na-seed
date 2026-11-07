@@ -675,9 +675,11 @@ while IFS="$tab" read -r package elf family case_id <&9 || [ -n "$package" ]; do
         elif [ "$(/bin/busybox head -n 1 "$work/packages/$package.initial")" = PREEXISTING ]; then
             install_result=PREEXISTING
             printf '%s\n' "$install_result" > "$status_file"
-        elif apk info -e "$package" >/dev/null 2>&1; then
+        elif [ "$milestone" != M222 ] && apk info -e "$package" >/dev/null 2>&1; then
             # Already installed by an earlier signed APK dependency in this
-            # exact M205 first boot; it was absent from the baseline.
+            # exact M205 first boot; it was absent from the baseline. M222
+            # must use the real offline apk add below to explicitly register
+            # even transitive dependencies in /etc/apk/world.
             install_result=PASS
             printf '%s\n' "$install_result" > "$status_file"
         else
